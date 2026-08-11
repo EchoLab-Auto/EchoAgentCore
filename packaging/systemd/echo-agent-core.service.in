@@ -1,0 +1,22 @@
+[Unit]
+Description=EchoAgentCore Core Service
+Documentation=https://gitlab.com/echo_tech/EchoAgentCore
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@SOURCE_DIR@
+ExecStart="@BINARY@" --config "@CORE_CONFIG@"
+Environment="ECHO_UPDATE_STATUS_FILE=@STATUS_FILE@"
+Environment="PATH=@SERVICE_PATH@"
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=default.target

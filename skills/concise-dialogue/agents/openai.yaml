@@ -1,0 +1,4 @@
+interface:
+  display_name: "简洁对话"
+  short_description: "让所有对话回复保持简洁直接，并约束 QQ 消息的单段长度"
+  default_prompt: "Use $concise-dialogue to answer clearly and concisely."

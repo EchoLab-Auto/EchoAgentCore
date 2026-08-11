@@ -1,0 +1,421 @@
+//! OneBot v11 message segments.
+//!
+//! A message is an array of segments, each shaped like
+//! `{"type": "<segment_type>", "data": {...}}`.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// A single message segment.
+///
+/// Known segment types are fully typed. Anything unrecognized — NapCat or
+/// future extensions — is preserved verbatim in [`Segment::Unknown`] so it
+/// survives serialization round-trips.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Segment {
+    Known(KnownSegment),
+    Unknown(Value),
+}
+
+/// Known segment types, discriminated by the `type` field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum KnownSegment {
+    /// Plain text. `{"type":"text","data":{"text":"hi"}}`
+    Text { data: TextData },
+    /// QQ built-in emoji. `{"type":"face","data":{"id":"123"}}`
+    Face { data: FaceData },
+    /// Image. `file` may be a URL, a local path, or `base64://...`.
+    Image { data: ImageData },
+    /// Voice message. `{"type":"record","data":{"file":"..."}}`
+    Record { data: RecordData },
+    /// Video. `{"type":"video","data":{"file":"..."}}`
+    Video { data: VideoData },
+    /// @ a user; `qq = "all"` mentions everyone in a group.
+    At { data: AtData },
+    /// Reply to a previous message. `{"type":"reply","data":{"id":"9001"}}`
+    Reply { data: ReplyData },
+    /// Forwarded message list (for `send_group_forward_msg`).
+    Forward { data: ForwardData },
+    /// A message node inside a forward chain.
+    Node { data: NodeData },
+    /// Rich XML message. `{"type":"xml","data":{"data":"<msg>..."}}`
+    Xml { data: XmlData },
+    /// Rich JSON message (JSON string). `{"type":"json","data":{"data":"{...}"}}`
+    Json { data: JsonData },
+    /// Poke / poke sticker. `{"type":"poke","data":{"type":"1","id":"..."}}`
+    Poke { data: PokeData },
+    /// Card image. `{"type":"cardimage","data":{"file":"..."}}`
+    #[serde(rename = "cardimage")]
+    CardImage { data: CardImageData },
+    /// Dice roll — the spec defines no `data` payload.
+    Dice {
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        data: Value,
+    },
+    /// Rock-paper-scissors — no payload.
+    Rps {
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        data: Value,
+    },
+    /// Shake window — no payload.
+    Shake {
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        data: Value,
+    },
+}
+
+impl Segment {
+    pub fn text(content: impl Into<String>) -> Self {
+        Segment::Known(KnownSegment::Text {
+            data: TextData {
+                text: content.into(),
+            },
+        })
+    }
+
+    pub fn at(qq: impl Into<String>) -> Self {
+        Segment::Known(KnownSegment::At {
+            data: AtData {
+                qq: qq.into(),
+                name: None,
+            },
+        })
+    }
+
+    pub fn at_all() -> Self {
+        Segment::at("all")
+    }
+
+    pub fn image(file: impl Into<String>) -> Self {
+        Segment::Known(KnownSegment::Image {
+            data: ImageData {
+                file: file.into(),
+                url: None,
+                flash: None,
+                cache: None,
+                proxy: None,
+                timeout: None,
+            },
+        })
+    }
+
+    pub fn face(id: impl Into<String>) -> Self {
+        Segment::Known(KnownSegment::Face {
+            data: FaceData { id: id.into() },
+        })
+    }
+
+    pub fn reply(message_id: impl Into<String>) -> Self {
+        Segment::Known(KnownSegment::Reply {
+            data: ReplyData {
+                id: message_id.into(),
+            },
+        })
+    }
+}
+
+// -- data payloads ----------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TextData {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FaceData {
+    /// May arrive as a number or a string; normalized to a string.
+    #[serde(deserialize_with = "de_string_or_int")]
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ImageData {
+    pub file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// 闪照标记（NapCat 用 flash 字段，部分实现用 type="flash"）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flash: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct RecordData {
+    pub file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magic: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct VideoData {
+    pub file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AtData {
+    /// Target QQ number, or `"all"` for everyone.
+    #[serde(deserialize_with = "de_string_or_int")]
+    pub qq: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReplyData {
+    #[serde(deserialize_with = "de_string_or_int")]
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ForwardData {
+    #[serde(deserialize_with = "de_string_or_int")]
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NodeData {
+    /// Set for received forward messages.
+    #[serde(
+        default,
+        deserialize_with = "de_opt_string_or_int",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<String>,
+    /// Set when building a forward chain to send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<Vec<Segment>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct XmlData {
+    pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct JsonData {
+    pub data: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PokeData {
+    #[serde(
+        rename = "type",
+        default,
+        deserialize_with = "de_opt_string_or_int",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub poke_type: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "de_opt_string_or_int",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CardImageData {
+    pub file: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minwidth: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minheight: Option<i64>,
+}
+
+// -- lenient deserializers ---------------------------------------------------
+
+/// Deserialize a field that implementations may send as either a string or a
+/// number, normalizing to a string.
+fn de_string_or_int<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Visitor;
+
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = String;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a string or an integer")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(v)
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(v.to_string())
+        }
+    }
+
+    deserializer.deserialize_any(Visitor)
+}
+
+/// Like [`de_string_or_int`], but for `Option<String>` fields.
+fn de_opt_string_or_int<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    de_string_or_int(deserializer).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_text_segment() {
+        let seg: Segment = serde_json::from_str(r#"{"type":"text","data":{"text":"hi"}}"#).unwrap();
+        assert_eq!(
+            seg,
+            Segment::Known(KnownSegment::Text {
+                data: TextData {
+                    text: "hi".to_string()
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn face_id_accepts_number() {
+        let seg: Segment = serde_json::from_str(r#"{"type":"face","data":{"id":123}}"#).unwrap();
+        match seg {
+            Segment::Known(KnownSegment::Face { data }) => assert_eq!(data.id, "123"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_segment_is_preserved() {
+        let raw = r#"{"type":"custom_ext","data":{"some":1}}"#;
+        let seg: Segment = serde_json::from_str(raw).unwrap();
+        assert!(matches!(seg, Segment::Unknown(_)));
+        // Compare as values: serde_json's map may reorder keys on serialize.
+        assert_eq!(
+            serde_json::to_value(&seg).unwrap(),
+            serde_json::from_str::<Value>(raw).unwrap()
+        );
+    }
+
+    #[test]
+    fn dice_without_data() {
+        let seg: Segment = serde_json::from_str(r#"{"type":"dice"}"#).unwrap();
+        assert!(matches!(seg, Segment::Known(KnownSegment::Dice { .. })));
+        assert_eq!(serde_json::to_string(&seg).unwrap(), r#"{"type":"dice"}"#);
+    }
+
+    #[test]
+    fn builder_constructors() {
+        let segs = vec![
+            Segment::text("hi"),
+            Segment::at("12345"),
+            Segment::at_all(),
+            Segment::image("https://example.com/a.png"),
+            Segment::face("1"),
+            Segment::reply("9001"),
+        ];
+        let json = serde_json::to_value(&segs).unwrap();
+        let back: Vec<Segment> = serde_json::from_value(json).unwrap();
+        assert_eq!(segs, back);
+    }
+
+    #[test]
+    fn parses_media_segments() {
+        let record: Segment =
+            serde_json::from_str(r#"{"type":"record","data":{"file":"a.amr"}}"#).unwrap();
+        assert!(matches!(
+            record,
+            Segment::Known(KnownSegment::Record { .. })
+        ));
+        let video: Segment =
+            serde_json::from_str(r#"{"type":"video","data":{"file":"b.mp4"}}"#).unwrap();
+        assert!(matches!(video, Segment::Known(KnownSegment::Video { .. })));
+        let image: Segment =
+            serde_json::from_str(r#"{"type":"image","data":{"file":"c.png","url":"http://x"}}"#)
+                .unwrap();
+        match image {
+            Segment::Known(KnownSegment::Image { data }) => {
+                assert_eq!(data.file, "c.png");
+                assert_eq!(data.url.as_deref(), Some("http://x"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_rich_and_action_segments() {
+        let xml: Segment =
+            serde_json::from_str(r#"{"type":"xml","data":{"data":"<msg>hi</msg>"}}"#).unwrap();
+        assert!(matches!(xml, Segment::Known(KnownSegment::Xml { .. })));
+        let json: Segment =
+            serde_json::from_str(r#"{"type":"json","data":{"data":"{\"k\":1}"}}"#).unwrap();
+        assert!(matches!(json, Segment::Known(KnownSegment::Json { .. })));
+        let poke: Segment =
+            serde_json::from_str(r#"{"type":"poke","data":{"type":"1","id":"2"}}"#).unwrap();
+        assert!(matches!(poke, Segment::Known(KnownSegment::Poke { .. })));
+        let card: Segment =
+            serde_json::from_str(r#"{"type":"cardimage","data":{"file":"d.png"}}"#).unwrap();
+        assert!(matches!(
+            card,
+            Segment::Known(KnownSegment::CardImage { .. })
+        ));
+        let rps: Segment = serde_json::from_str(r#"{"type":"rps"}"#).unwrap();
+        assert!(matches!(rps, Segment::Known(KnownSegment::Rps { .. })));
+        let shake: Segment = serde_json::from_str(r#"{"type":"shake"}"#).unwrap();
+        assert!(matches!(shake, Segment::Known(KnownSegment::Shake { .. })));
+    }
+
+    #[test]
+    fn parses_forward_and_node() {
+        let forward: Segment =
+            serde_json::from_str(r#"{"type":"forward","data":{"id":"123"}}"#).unwrap();
+        assert!(matches!(
+            forward,
+            Segment::Known(KnownSegment::Forward { .. })
+        ));
+        let node: Segment = serde_json::from_str(r#"{"type":"node","data":{"id":"456"}}"#).unwrap();
+        assert!(matches!(node, Segment::Known(KnownSegment::Node { .. })));
+    }
+
+    #[test]
+    fn at_all_serializes_as_qq_all() {
+        let seg = Segment::at_all();
+        let json = serde_json::to_value(&seg).unwrap();
+        assert_eq!(json["type"], "at");
+        assert_eq!(json["data"]["qq"], "all");
+    }
+
+    #[test]
+    fn unknown_fields_on_known_segments_are_ignored() {
+        let seg: Segment =
+            serde_json::from_str(r#"{"type":"text","data":{"text":"hi","extra_field":123}}"#)
+                .unwrap();
+        match seg {
+            Segment::Known(KnownSegment::Text { data }) => assert_eq!(data.text, "hi"),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+}

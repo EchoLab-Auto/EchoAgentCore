@@ -1,0 +1,37 @@
+# ============================================================
+# EchoAgentPanel + NapCat (QQ) 一键部署
+#
+# 启动:   docker compose up -d
+# 停止:   docker compose down
+# 日志:   docker compose logs -f napcat
+#
+# 首次使用:
+#   1. docker compose up -d
+#   2. 浏览器打开 http://localhost:6099 扫码登录 QQ
+#   3. 运行配置脚本: bash napcat/setup.sh
+#   4. 启动 EchoAgentPanel: cargo run --release
+# ============================================================
+
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: napcat
+    restart: unless-stopped
+    ports:
+      - "6099:6099"    # WebUI (扫码登录用)
+      - "3000:3000"    # HTTP API
+      - "3001:3001"    # WebSocket API
+    environment:
+      - NAPCAT_UID=0
+      - NAPCAT_GID=0
+    # 让容器内能解析 host.docker.internal 指向宿主机，
+    # 否则 NapCat 无法连回宿主机的反向 WS 端口 (3131)。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - napcat_data:/app/napcat/data
+      - napcat_config:/app/napcat/config
+
+volumes:
+  napcat_data:
+  napcat_config:

@@ -1,0 +1,62 @@
+# EchoAgentCore 配置 — Agent 核心服务
+# 复制为 config/echo-agent-core.local.toml 后按需修改。
+# Panel（TUI 前端）的配置在 EchoAgentPanel 仓库的 config/echo-agent-panel.toml。
+
+[logging]
+level = "info"    # trace | debug | info | warn | error
+format = "text"   # text | json
+# 日志文件路径。留空 = stdout（Docker 中可用 docker logs 查看）。
+log_file = ""
+max_file_size_mb = 20
+max_files = 5
+
+[agent]
+# DeepSeek（默认）。支持多配置存储与一键切换（Panel 的 /api 命令），保存后由 Core 持久化到本文件。
+provider = "deepseek"
+model = "deepseek-v4-flash"
+# DeepSeek Anthropic 兼容端点
+base_url = "https://api.deepseek.com/anthropic"
+api_key = ""
+# DeepSeek 思考模式与推理强度；默认即为 enabled + max。
+thinking = "enabled"
+reasoning_effort = "max"
+max_tool_iterations = 1024
+# 上下文 token 预算（trunk 按 token 裁剪）：1M × 0.8 = 800,000。
+# 旧字段 memory_limit（按消息条数）已废弃，不再参与计算。
+memory_limit_tokens = 800000
+skills_dir = "skills"                    # 递归发现 SKILL.md，运行时自动热重载
+system_prompt = "请你使用中文"
+
+[agent.self_update]
+# 仅一键安装后的 systemd 服务环境支持。源码运行时保持关闭。
+enabled = false
+# 本机 Panel 会话可请求更新；QQ 仅允许下方列表及 [adapters.qq].owner_qq。
+allow_local = true
+allowed_qq_users = []
+
+[adapters.qq]
+# 是否启用 QQ 适配器（启动时自动连接 NapCat）。
+enabled = false
+# NapCat OneBot HTTP API，用于读取完整群和好友列表。
+napcat_onebot_url = "http://localhost:3000"
+# 允许执行管理员命令（status/shutdown）的 QQ 号，0 表示禁用管理员命令。
+owner_qq = 0
+# 命令前缀。
+command_prefix = "/"
+
+[adapters.qq.server]
+# 反向 WebSocket 监听地址，NapCat 将作为客户端连接到这里。
+bind_address = "0.0.0.0:3131"
+# 与 NapCat「网络配置 → WebSocket 客户端」中配置的 Token 保持一致。
+# 留空表示不开启鉴权。也可通过环境变量 ECHO_ACCESS_TOKEN 覆盖。
+access_token = ""
+# 心跳探测间隔（秒），0 表示禁用探测。
+heartbeat_interval = 30
+
+[adapters.qq.trigger]
+dm_auto_reply = true
+group_at_reply = true
+
+[core]
+# Panel 连接用的 management WebSocket 监听地址。
+management_address = "127.0.0.1:3132"

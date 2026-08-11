@@ -1,0 +1,769 @@
+//! Anthropic Claude provider (Messages API).
+
+use async_trait::async_trait;
+use futures_util::StreamExt;
+use serde::Deserialize;
+use serde_json::json;
+use tokio::sync::mpsc;
+
+use super::{
+    ChatChunk, ChatRequest, ChatResponse, LlmError, LlmProvider, ToolCall, ToolCallDelta, Usage,
+};
+
+#[derive(Debug, Clone)]
+pub struct AnthropicProvider {
+    base_url: String,
+    api_key: String,
+    model: String,
+    client: reqwest::Client,
+    thinking: Option<crate::config::ThinkingMode>,
+    reasoning_effort: crate::config::ReasoningEffort,
+}
+
+impl AnthropicProvider {
+    pub fn new(base_url: &str, api_key: &str, model: &str) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key: api_key.to_string(),
+            model: model.to_string(),
+            thinking: None,
+            reasoning_effort: crate::config::ReasoningEffort::default(),
+            client: match reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    // Extremely unlikely, but the fallback client has NO
+                    // timeout — surface it so hangs are diagnosable.
+                    tracing::warn!(error = %e, "reqwest builder failed, using client without timeouts");
+                    reqwest::Client::new()
+                }
+            },
+        }
+    }
+
+    pub fn with_reasoning(
+        mut self,
+        thinking: crate::config::ThinkingMode,
+        effort: crate::config::ReasoningEffort,
+    ) -> Self {
+        self.thinking = Some(thinking);
+        self.reasoning_effort = effort;
+        self
+    }
+}
+
+#[async_trait]
+impl LlmProvider for AnthropicProvider {
+    fn name(&self) -> &str {
+        "anthropic"
+    }
+
+    fn default_model(&self) -> &str {
+        &self.model
+    }
+
+    async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError> {
+        let body =
+            build_request_body_with_reasoning(request, false, self.thinking, self.reasoning_effort);
+        let resp = self
+            .client
+            .post(format!("{}/v1/messages", self.base_url))
+            // Anthropic 官方与 DeepSeek /anthropic 端点均用 x-api-key 认证
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&body)
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            return Err(LlmError::Api(format!(
+                "HTTP {status}: {}",
+                super::truncate(&text, 300)
+            )));
+        }
+        let parsed: MessagesResponse = serde_json::from_str(&text)
+            .map_err(|e| LlmError::Parse(format!("{e} — body: {}", super::truncate(&text, 300))))?;
+        let mut content = String::new();
+        let mut reasoning_content = String::new();
+        let mut tool_calls = Vec::new();
+        for block in parsed.content {
+            match block {
+                ContentBlock::Text { text } => content.push_str(&text),
+                ContentBlock::Thinking { thinking } => reasoning_content.push_str(&thinking),
+                ContentBlock::ToolUse { id, name, input } => {
+                    tool_calls.push(ToolCall {
+                        id,
+                        name,
+                        arguments: input.to_string(),
+                    });
+                }
+                // 未知块（推理模型的 thinking 等）宽容跳过
+                ContentBlock::Other => {}
+            }
+        }
+        Ok(ChatResponse {
+            // 只有 tool_use 没有文本时置 None，避免助手消息带空 content 被严格端点拒绝
+            content: if content.is_empty() {
+                None
+            } else {
+                Some(content)
+            },
+            reasoning_content: if reasoning_content.is_empty() {
+                None
+            } else {
+                Some(reasoning_content)
+            },
+            tool_calls,
+            usage: parsed
+                .usage
+                .map(|u| Usage {
+                    prompt_tokens: u.input_tokens,
+                    completion_tokens: u.output_tokens,
+                })
+                .unwrap_or_default(),
+        })
+    }
+
+    async fn chat_stream(
+        &self,
+        request: &ChatRequest,
+        tx: mpsc::UnboundedSender<ChatChunk>,
+    ) -> Result<(), LlmError> {
+        let body =
+            build_request_body_with_reasoning(request, true, self.thinking, self.reasoning_effort);
+        let resp = self
+            .client
+            .post(format!("{}/v1/messages", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&body)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await?;
+            return Err(LlmError::Api(format!(
+                "HTTP {status}: {}",
+                super::truncate(&text, 300)
+            )));
+        }
+        let mut stream = resp.bytes_stream();
+        let mut buffer = String::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(pos) = buffer.find("\n\n") {
+                let event = buffer[..pos].to_string();
+                buffer.drain(..pos + 2);
+                for outcome in parse_anthropic_event(&event) {
+                    match outcome {
+                        AnthropicOutcome::Chunk(chunk) => {
+                            let _ = tx.send(chunk);
+                        }
+                        AnthropicOutcome::ApiError(msg) => {
+                            return Err(LlmError::Api(format!(
+                                "流式响应错误: {}",
+                                super::truncate(&msg, 300)
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+        let _ = tx.send(ChatChunk {
+            content_delta: None,
+            reasoning_delta: None,
+            tool_call_delta: None,
+        });
+        Ok(())
+    }
+}
+
+/// Result of parsing one Anthropic SSE event block.
+#[derive(Debug, PartialEq)]
+enum AnthropicOutcome {
+    /// A content or tool-call delta to forward.
+    Chunk(ChatChunk),
+    /// In-stream `event: error` payload.
+    ApiError(String),
+}
+
+/// Parse one complete Anthropic SSE event block.
+///
+/// Pure function extracted from `chat_stream` so the wire parsing is
+/// unit-testable. The `data:` line is the last one in the event.
+fn parse_anthropic_event(event: &str) -> Vec<AnthropicOutcome> {
+    let mut data = None;
+    for line in event.lines() {
+        let line = line.trim();
+        if let Some(d) = line.strip_prefix("data: ") {
+            data = Some(d.to_string());
+        }
+    }
+    let Some(data) = data else {
+        return Vec::new();
+    };
+    let parsed: StreamEvent = match serde_json::from_str(&data) {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let mut outcomes = Vec::new();
+    match parsed {
+        StreamEvent::ContentBlockStart {
+            index,
+            content_block: Some(ContentBlockStartWire::ToolUse { id, name, .. }),
+        } => {
+            outcomes.push(AnthropicOutcome::Chunk(ChatChunk {
+                content_delta: None,
+                reasoning_delta: None,
+                tool_call_delta: Some(ToolCallDelta {
+                    index,
+                    id: Some(id),
+                    name: Some(name),
+                    arguments: None,
+                }),
+            }));
+        }
+        StreamEvent::ContentBlockDelta { index, delta } => match delta {
+            DeltaWire::TextDelta { text } => {
+                outcomes.push(AnthropicOutcome::Chunk(ChatChunk {
+                    content_delta: Some(text),
+                    reasoning_delta: None,
+                    tool_call_delta: None,
+                }));
+            }
+            DeltaWire::ThinkingDelta { thinking } => {
+                outcomes.push(AnthropicOutcome::Chunk(ChatChunk {
+                    content_delta: None,
+                    reasoning_delta: Some(thinking),
+                    tool_call_delta: None,
+                }));
+            }
+            DeltaWire::InputJsonDelta { partial_json } => {
+                outcomes.push(AnthropicOutcome::Chunk(ChatChunk {
+                    content_delta: None,
+                    reasoning_delta: None,
+                    tool_call_delta: Some(ToolCallDelta {
+                        index,
+                        id: None,
+                        name: None,
+                        arguments: Some(partial_json),
+                    }),
+                }));
+            }
+            // thinking_delta 等未知增量跳过
+            DeltaWire::Other => {}
+        },
+        // 流中段错误不能静默当作成功
+        StreamEvent::Error => outcomes.push(AnthropicOutcome::ApiError(data)),
+        _ => {}
+    }
+    outcomes
+}
+
+#[cfg(test)]
+fn build_request_body(request: &ChatRequest, stream: bool) -> serde_json::Value {
+    build_request_body_with_reasoning(
+        request,
+        stream,
+        None,
+        crate::config::ReasoningEffort::default(),
+    )
+}
+
+fn build_request_body_with_reasoning(
+    request: &ChatRequest,
+    stream: bool,
+    thinking: Option<crate::config::ThinkingMode>,
+    reasoning_effort: crate::config::ReasoningEffort,
+) -> serde_json::Value {
+    let system = request
+        .messages
+        .iter()
+        .filter(|m| m.role == super::ChatRole::System)
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let messages: Vec<serde_json::Value> = {
+        let mut out: Vec<serde_json::Value> = Vec::new();
+        let mut i = 0;
+        let msgs = &request.messages;
+        while i < msgs.len() {
+            let m = &msgs[i];
+            if m.role == super::ChatRole::System {
+                i += 1;
+                continue;
+            }
+            if m.role == super::ChatRole::Tool {
+                let mut results: Vec<serde_json::Value> = Vec::new();
+                while i < msgs.len() && msgs[i].role == super::ChatRole::Tool {
+                    let tm = &msgs[i];
+                    results.push(json!({
+                        "type": "tool_result",
+                        "tool_use_id": tm.tool_call_id.clone().unwrap_or_default(),
+                        "content": tm.content,
+                    }));
+                    i += 1;
+                }
+                out.push(json!({"role": "user", "content": results}));
+            } else {
+                out.push(match m.role {
+                    super::ChatRole::User => json!({"role": "user", "content": m.content}),
+                    super::ChatRole::Assistant => {
+                        // Match directly on tool_calls instead of a separate
+                        // has_tools guard + unwrap, so an empty/None tool_calls
+                        // can never panic here.
+                        match (&m.tool_calls, &m.reasoning_content) {
+                            (Some(tcs), reasoning) if !tcs.is_empty() || reasoning.is_some() => {
+                                let mut blocks: Vec<serde_json::Value> = Vec::new();
+                                if let Some(reasoning) = reasoning {
+                                    blocks.push(json!({"type": "thinking", "thinking": reasoning}));
+                                }
+                                if !m.content.is_empty() {
+                                    blocks.push(json!({"type": "text", "text": m.content}));
+                                }
+                                for tc in tcs {
+                                    blocks.push(json!({
+                                        "type": "tool_use",
+                                        "id": tc.id,
+                                        "name": tc.name,
+                                        "input": serde_json::from_str::<serde_json::Value>(&tc.arguments).unwrap_or_else(|_| json!({})),
+                                    }));
+                                }
+                                json!({
+                                    "role": "assistant",
+                                    "content": blocks,
+                                })
+                            }
+                            (None, Some(reasoning)) => json!({
+                                "role": "assistant",
+                                "content": [
+                                    {"type": "thinking", "thinking": reasoning},
+                                    {"type": "text", "text": m.content}
+                                ]
+                            }),
+                            _ => json!({"role": "assistant", "content": m.content}),
+                        }
+                    }
+                    _ => unreachable!(),
+                });
+                i += 1;
+            }
+        }
+        out
+    };
+    let mut body = json!({
+        "model": request.model,
+        "messages": messages,
+        "stream": stream,
+    });
+    if !system.is_empty() {
+        body["system"] = json!(system);
+    }
+    if let Some(tools) = &request.tools {
+        body["tools"] = json!(tools.iter().map(|t| json!({
+            "name": t.name,
+            "description": t.description,
+            "input_schema": t.parameters.clone().unwrap_or_else(|| json!({"type": "object", "properties": {}})),
+        })).collect::<Vec<_>>());
+    }
+    if let Some(t) = request.temperature {
+        body["temperature"] = json!(t);
+    }
+    // Anthropic Messages API 要求 max_tokens 必填（DeepSeek /anthropic 同样）
+    body["max_tokens"] = json!(request.max_tokens.unwrap_or(4096));
+    if let Some(mode) = thinking {
+        body["thinking"] = json!({"type": mode.as_str()});
+        if mode == crate::config::ThinkingMode::Enabled {
+            body["output_config"] = json!({"effort": reasoning_effort.as_str()});
+        }
+    }
+    body
+}
+
+// ---- wire types -----------------------------------------------------------
+
+#[derive(Deserialize)]
+struct MessagesResponse {
+    content: Vec<ContentBlock>,
+    usage: Option<UsageWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type")]
+#[allow(dead_code)]
+enum ContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "thinking")]
+    Thinking { thinking: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// 未知内容块（如推理模型的 thinking 块），宽容跳过
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+struct UsageWire {
+    input_tokens: u32,
+    output_tokens: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum StreamEvent {
+    ContentBlockStart {
+        index: usize,
+        content_block: Option<ContentBlockStartWire>,
+    },
+    ContentBlockDelta {
+        index: usize,
+        delta: DeltaWire,
+    },
+    MessageStart,
+    MessageDelta,
+    ContentBlockStop,
+    MessageStop,
+    Ping,
+    Error,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)]
+enum ContentBlockStartWire {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum DeltaWire {
+    TextDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        thinking: String,
+    },
+    InputJsonDelta {
+        partial_json: String,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::ChatMessage;
+
+    #[test]
+    fn parses_response_with_thinking_blocks() {
+        // DeepSeek 推理模型在 Anthropic 兼容端点返回 thinking 块，
+        // 必须宽容跳过而不是让整个响应解析失败
+        let raw = r#"{
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "deepseek-v4-flash",
+            "content": [
+                {"type": "thinking", "thinking": "用户只发了一个斜杠，应该询问需求"},
+                {"type": "text", "text": "你好，请问需要什么帮助？"}
+            ],
+            "usage": {"input_tokens": 12, "output_tokens": 18}
+        }"#;
+        let parsed: super::MessagesResponse = serde_json::from_str(raw).unwrap();
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let mut tool_calls = Vec::new();
+        for block in parsed.content {
+            match block {
+                super::ContentBlock::Text { text } => content.push_str(&text),
+                super::ContentBlock::Thinking { thinking } => reasoning.push_str(&thinking),
+                super::ContentBlock::ToolUse { id, name, input } => {
+                    tool_calls.push((id, name, input));
+                }
+                super::ContentBlock::Other => {}
+            }
+        }
+        assert_eq!(content, "你好，请问需要什么帮助？");
+        assert_eq!(reasoning, "用户只发了一个斜杠，应该询问需求");
+        assert!(tool_calls.is_empty());
+    }
+
+    #[test]
+    fn body_strips_system_into_top_level() {
+        let body = build_request_body(
+            &ChatRequest {
+                model: "claude-test".into(),
+                messages: vec![ChatMessage::system("你是助手"), ChatMessage::user("hi")],
+                tools: None,
+                temperature: None,
+                max_tokens: None,
+            },
+            false,
+        );
+        assert_eq!(body["system"], "你是助手");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(body["messages"][0]["role"], "user");
+    }
+
+    #[test]
+    fn deepseek_anthropic_body_enables_max_reasoning_and_replays_thinking() {
+        let mut assistant = ChatMessage::assistant_with_reasoning("", Some("先调用计算器".into()));
+        assistant.tool_calls = Some(vec![ToolCall {
+            id: "c1".into(),
+            name: "calculator".into(),
+            arguments: "{}".into(),
+        }]);
+        let request = ChatRequest {
+            model: "deepseek-v4-flash".into(),
+            messages: vec![assistant, ChatMessage::tool("2", "c1")],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+        };
+        let body = build_request_body_with_reasoning(
+            &request,
+            false,
+            Some(crate::config::ThinkingMode::Enabled),
+            crate::config::ReasoningEffort::Max,
+        );
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["output_config"]["effort"], "max");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "thinking");
+        assert_eq!(
+            body["messages"][0]["content"][0]["thinking"],
+            "先调用计算器"
+        );
+    }
+
+    #[test]
+    fn tool_results_are_grouped_into_one_user_message() {
+        let body = build_request_body(
+            &ChatRequest {
+                model: "claude-test".into(),
+                messages: vec![
+                    ChatMessage::system("sys"),
+                    ChatMessage::user("calculate"),
+                    ChatMessage::assistant("calling"),
+                    ChatMessage {
+                        role: crate::llm::ChatRole::Assistant,
+                        content: "".into(),
+                        reasoning_content: None,
+                        tool_calls: Some(vec![ToolCall {
+                            id: "call_1".into(),
+                            name: "calculator".into(),
+                            arguments: "{\"expr\":\"1+1\"}".into(),
+                        }]),
+                        tool_call_id: None,
+                    },
+                    ChatMessage::tool("2", "call_1"),
+                    ChatMessage::tool("3", "call_2"),
+                ],
+                tools: None,
+                temperature: None,
+                max_tokens: None,
+            },
+            false,
+        );
+        let messages = body["messages"].as_array().unwrap();
+        // user + assistant + assistant-with-tool_use + one grouped user message.
+        assert_eq!(messages.len(), 4);
+        let tool_result_msg = &messages[3];
+        assert_eq!(tool_result_msg["role"], "user");
+        let results = tool_result_msg["content"].as_array().unwrap();
+        assert_eq!(results.len(), 2, "both tool results grouped");
+        assert_eq!(results[0]["tool_use_id"], "call_1");
+        assert_eq!(results[0]["content"], "2");
+        assert_eq!(results[1]["tool_use_id"], "call_2");
+        assert_eq!(results[1]["content"], "3");
+    }
+
+    #[test]
+    fn assistant_tool_use_includes_input_blocks() {
+        let body = build_request_body(
+            &ChatRequest {
+                model: "claude-test".into(),
+                messages: vec![
+                    ChatMessage::system("sys"),
+                    ChatMessage {
+                        role: crate::llm::ChatRole::Assistant,
+                        content: "I'll check".into(),
+                        reasoning_content: None,
+                        tool_calls: Some(vec![ToolCall {
+                            id: "c1".into(),
+                            name: "read_file".into(),
+                            arguments: "{\"path\":\"a.rs\"}".into(),
+                        }]),
+                        tool_call_id: None,
+                    },
+                ],
+                tools: None,
+                temperature: None,
+                max_tokens: None,
+            },
+            false,
+        );
+        let msg = &body["messages"][0];
+        assert_eq!(msg["role"], "assistant");
+        let blocks = msg["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2, "text block + tool_use block");
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[1]["type"], "tool_use");
+        assert_eq!(blocks[1]["name"], "read_file");
+        assert_eq!(blocks[1]["input"]["path"], "a.rs");
+    }
+
+    #[test]
+    fn multiple_system_messages_are_joined() {
+        let body = build_request_body(
+            &ChatRequest {
+                model: "claude-test".into(),
+                messages: vec![
+                    ChatMessage::system("第一部分"),
+                    ChatMessage::system("第二部分"),
+                    ChatMessage::user("hi"),
+                ],
+                tools: None,
+                temperature: None,
+                max_tokens: None,
+            },
+            false,
+        );
+        assert_eq!(body["system"], "第一部分\n第二部分");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn malformed_tool_arguments_fall_back_to_empty_object() {
+        let body = build_request_body(
+            &ChatRequest {
+                model: "claude-test".into(),
+                messages: vec![
+                    ChatMessage::system("sys"),
+                    ChatMessage {
+                        role: crate::llm::ChatRole::Assistant,
+                        content: "".into(),
+                        reasoning_content: None,
+                        tool_calls: Some(vec![ToolCall {
+                            id: "c1".into(),
+                            name: "t".into(),
+                            arguments: "not-json".into(),
+                        }]),
+                        tool_call_id: None,
+                    },
+                ],
+                tools: None,
+                temperature: None,
+                max_tokens: None,
+            },
+            false,
+        );
+        let blocks = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "tool_use");
+        assert_eq!(blocks[0]["input"], serde_json::json!({}));
+    }
+
+    // ── SSE stream parsing ──────────────────────────────────────────────
+
+    #[test]
+    fn anthropic_sse_text_delta() {
+        let event = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}";
+        let outcomes = parse_anthropic_event(event);
+        assert_eq!(outcomes.len(), 1);
+        match &outcomes[0] {
+            AnthropicOutcome::Chunk(c) => {
+                assert_eq!(c.content_delta.as_deref(), Some("你好"));
+                assert!(c.tool_call_delta.is_none());
+            }
+            other => panic!("expected Chunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anthropic_sse_thinking_delta() {
+        let event = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"分析中\"}}";
+        let outcomes = parse_anthropic_event(event);
+        match &outcomes[0] {
+            AnthropicOutcome::Chunk(chunk) => {
+                assert_eq!(chunk.reasoning_delta.as_deref(), Some("分析中"));
+                assert!(chunk.content_delta.is_none());
+            }
+            other => panic!("expected Chunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anthropic_sse_tool_use_start() {
+        let event = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"calc\",\"input\":{}}}";
+        let outcomes = parse_anthropic_event(event);
+        assert_eq!(outcomes.len(), 1);
+        match &outcomes[0] {
+            AnthropicOutcome::Chunk(c) => {
+                let d = c.tool_call_delta.as_ref().unwrap();
+                assert_eq!(d.index, 1);
+                assert_eq!(d.id.as_deref(), Some("tool_1"));
+                assert_eq!(d.name.as_deref(), Some("calc"));
+            }
+            other => panic!("expected Chunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anthropic_sse_input_json_delta() {
+        let event = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"expr\\\":\"}}";
+        let outcomes = parse_anthropic_event(event);
+        assert_eq!(outcomes.len(), 1);
+        match &outcomes[0] {
+            AnthropicOutcome::Chunk(c) => {
+                let d = c.tool_call_delta.as_ref().unwrap();
+                assert_eq!(d.index, 1);
+                assert_eq!(d.arguments.as_deref(), Some("{\"expr\":"));
+                assert!(c.content_delta.is_none());
+            }
+            other => panic!("expected Chunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anthropic_sse_error_is_surfaced() {
+        let event = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}";
+        let outcomes = parse_anthropic_event(event);
+        assert_eq!(outcomes.len(), 1);
+        assert!(
+            matches!(&outcomes[0], AnthropicOutcome::ApiError(msg) if msg.contains("overloaded"))
+        );
+    }
+
+    #[test]
+    fn anthropic_sse_ignores_heartbeats_and_stops() {
+        let ping = "event: ping\ndata: {\"type\":\"ping\"}";
+        assert_eq!(parse_anthropic_event(ping), vec![]);
+        let stop = "event: message_stop\ndata: {\"type\":\"message_stop\"}";
+        assert_eq!(parse_anthropic_event(stop), vec![]);
+    }
+
+    #[test]
+    fn anthropic_sse_ignores_bad_json_and_missing_data() {
+        assert_eq!(parse_anthropic_event("event: ping\ndata: not-json"), vec![]);
+        assert_eq!(parse_anthropic_event(": comment only"), vec![]);
+    }
+}

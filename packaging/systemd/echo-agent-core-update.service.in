@@ -1,0 +1,17 @@
+[Unit]
+Description=Update EchoAgentCore from its configured Git remote
+Documentation=https://gitlab.com/echo_tech/EchoAgentCore
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# cargo build --release can take minutes; the systemd default start timeout
+# (90s) would SIGTERM the updater mid-build and leave a stale "running" state.
+TimeoutStartSec=1800
+WorkingDirectory=@SOURCE_DIR@
+ExecStart="@UPDATE_SCRIPT@" --source "@SOURCE_DIR@" --binary "@BINARY@" --status "@STATUS_FILE@"
+Environment="PATH=@SERVICE_PATH@"
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077

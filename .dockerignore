@@ -1,0 +1,7 @@
+# 构建上下文排除项：本地密钥配置与宿主构建产物不进镜像
+config/*.local.toml
+target/
+.git
+logs/
+*.log
+qrcode.png

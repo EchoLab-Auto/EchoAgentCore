@@ -1,0 +1,15 @@
+[package]
+name = "echo-test-utils"
+description = "Shared mocks and test helpers for the EchoAgentPanel workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+echo-adapter = { path = "../echo-adapter" }
+tokio.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true

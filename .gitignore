@@ -1,0 +1,6 @@
+/target
+/config/*.local.toml
+*.log
+qrcode.png
+/napcat/data/
+echo-sessions.json

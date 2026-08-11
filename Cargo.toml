@@ -1,0 +1,66 @@
+[workspace]
+resolver = "2"
+members = [
+    "source/protocol/echo-protocol",
+    "source/backend/echo-core",
+    "source/backend/echo-server",
+    "source/backend/echo-agent",
+    "source/backend/echo-adapter",
+    "source/backend/echo-adapter-qq",
+    "source/backend/echo-test-utils",
+    "source/core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+repository = "https://gitlab.com/echo_tech/EchoAgentCore"
+
+# Faster test builds (cheap to compile, noticeably faster test runs).
+[profile.test]
+opt-level = 1
+
+[workspace.dependencies]
+# internal
+echo-protocol = { path = "source/protocol/echo-protocol" }
+echo-adapter = { path = "source/backend/echo-adapter" }
+echo-core = { path = "source/backend/echo-core" }
+echo-server = { path = "source/backend/echo-server" }
+echo-agent = { path = "source/backend/echo-agent" }
+echo-adapter-qq = { path = "source/backend/echo-adapter-qq" }
+echo-test-utils = { path = "source/backend/echo-test-utils" }
+
+# async runtime
+tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
+tokio-tungstenite = "0.24"
+
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# error handling
+thiserror = "2"
+anyhow = "1"
+
+# logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# config
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+
+# concurrency / misc
+dashmap = "6"
+uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# agent framework
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+chrono = "0.4"
+walkdir = "2"
+regex = "1"

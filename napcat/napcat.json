@@ -1,0 +1,9 @@
+{
+  "ws_reverse": [
+    {
+      "url": "ws://host.docker.internal:3131",
+      "type": "array",
+      "token": ""
+    }
+  ]
+}
