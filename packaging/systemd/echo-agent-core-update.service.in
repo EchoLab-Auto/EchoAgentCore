@@ -10,7 +10,10 @@ Type=oneshot
 # (90s) would SIGTERM the updater mid-build and leave a stale "running" state.
 TimeoutStartSec=1800
 WorkingDirectory=@SOURCE_DIR@
-ExecStart="@UPDATE_SCRIPT@" --source "@SOURCE_DIR@" --binary "@BINARY@" --status "@STATUS_FILE@"
+# 显式 --local：自更新默认构建当前工作树（含未提交改动），
+# 不自动 fetch 远程；需要远程更新时手动执行
+#   systemctl --user start echo-agent-core-update.service -- --remote
+ExecStart="@UPDATE_SCRIPT@" --local --source "@SOURCE_DIR@" --binary "@BINARY@" --status "@STATUS_FILE@"
 Environment="PATH=@SERVICE_PATH@"
 # 更新器只拉取并构建代码、替换用户本地二进制，从不运行 sudo；
 # 保留 NoNewPrivileges 以限制被攻破的构建脚本的提权能力。
