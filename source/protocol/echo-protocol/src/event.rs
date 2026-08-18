@@ -45,6 +45,31 @@ pub struct ContextMessageInfo {
     pub sequence: Option<u64>,
 }
 
+/// One visual block of the trunk context (`/context`).
+///
+/// The system prompt is decomposed into named blocks (base prompt, skill
+/// metadata, per-skill injections, orchestration, per-input boundary rules)
+/// so the panel can visualize where tokens are spent; conversation history is
+/// aggregated per role.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextBlockInfo {
+    /// Stable identifier, e.g. "base", "skills", "skill:alix-persona",
+    /// "triggered:web-search", "orchestration", "boundary:qq_hook",
+    /// "history:user".
+    pub key: String,
+    /// Human-readable label for the block list.
+    pub label: String,
+    /// Category: "base" | "skills" | "skill" | "triggered" | "orchestration"
+    /// | "boundary" | "history".
+    pub kind: String,
+    /// Estimated token count of this block.
+    pub tokens: usize,
+    /// Character count of this block.
+    pub chars: usize,
+    /// Full block text (prompt sections) or a per-message summary (history).
+    pub content: String,
+}
+
 /// Source provenance of a timeline user message (mirrors `MessageReceived`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimelineSource {
@@ -245,6 +270,10 @@ pub enum BackendEvent {
     ContextSnapshot {
         /// Every message currently in the trunk (oldest first).
         messages: Vec<ContextMessageInfo>,
+        /// Decomposed context blocks for visualization (system prompt
+        /// sections + per-role history aggregates).
+        #[serde(default)]
+        blocks: Vec<ContextBlockInfo>,
         /// Estimated total tokens of the trunk.
         total_tokens: usize,
         /// Effective token budget for the trunk.

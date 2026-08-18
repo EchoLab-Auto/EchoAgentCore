@@ -64,6 +64,9 @@ pub struct Agent {
     /// channel; see [`crate::sudo`].
     pub sudo_broker: tokio::sync::RwLock<Option<Arc<crate::sudo::SudoBroker>>>,
     system_prompt_cache: RwLock<Option<String>>,
+    /// Decomposed system-prompt blocks of the most recent turn, kept so the
+    /// panel can visualize the exact prompt sections sent to the LLM.
+    last_prompt_blocks: tokio::sync::Mutex<Option<Vec<PromptBlock>>>,
     skill_reload_started: AtomicBool,
     orchestration_started: AtomicBool,
     timer_scheduler: orchestration::TimerScheduler,
@@ -131,6 +134,7 @@ impl Agent {
             handle: tokio::sync::RwLock::new(None),
             sudo_broker: tokio::sync::RwLock::new(None),
             system_prompt_cache: RwLock::new(None),
+            last_prompt_blocks: tokio::sync::Mutex::new(None),
             skill_reload_started: AtomicBool::new(false),
             orchestration_started: AtomicBool::new(false),
             timer_scheduler,
@@ -1101,63 +1105,26 @@ impl Agent {
         });
 
         let delivery_plan = DeliveryPlan::from_input(content);
-        let mut system_prompt = self.build_system_prompt(content).await;
         // Distinguish input origin by content markers, NOT by the session's
         // platform. A QQ session can receive backend/TUI input (no hook), and
         // that must be answered in the backend — never pushed to QQ.
         let is_qq_hook = content.contains("<qq_message_hook>");
         let is_timer = content.contains(crate::input_marker::TIMER_EVENT_OPEN);
         let is_qq_session = session.session_key.platform.eq_ignore_ascii_case("qq");
-        system_prompt.push_str(
-            "\n\n# Background orchestration\n\
-             Complete the current request normally; do not spawn detached work \
-             merely to keep the conversation responsive. Use run_subagent for \
-             bounded delegated reasoning. Use spawn_background_task only when \
-             the requester explicitly asks for detached work, and \
-             spawn_parallel_task only for independent work with declared \
-             delivery targets. After detached work is accepted, do not poll it; \
-             completion returns as an ordered background_task_event. Use \
-             list_background_tasks only when status is requested and \
-             cancel_background_task only on an explicit cancellation.",
-        );
-        if is_qq_hook {
-            system_prompt.push_str(
-                "\n\n# QQ transport boundary\n\
-                 This input is an external QQ message (<qq_message_hook>); read \
-                 sender and group IDs from the structured hook payload.\n\
-                 Answer every <qq_message_hook> exactly once via a send tool: \
-                 send_private_msg for private chats (user_id from \
-                 payload.sender.user_id), send_group_msg for groups (group_id \
-                 from payload.channel.group_id). Never invent a target ID, never \
-                 send twice, and never substitute normal assistant output for \
-                 the send — it is backend-only and invisible to the QQ user. Put \
-                 the whole reply (including any 'sent' wording) inside the \
-                 tool's content, and do not claim a reply before the send tool \
-                 returns success.\n\
-                 Inputs wrapped in <backend_message_hook>/<timer_event>/\
-                 <background_task_event> are backend events, not QQ chat: answer \
-                 them in the backend and deliver per their own rules.",
-            );
+        let boundary = if is_qq_hook {
+            Some(BoundaryKind::QqHook)
         } else if is_timer {
-            system_prompt.push_str(
-                "\n\n# Backend task boundary\n\
-                 This input is a scheduled backend task (<timer_event>), not an \
-                 incoming QQ message. Your normal output is backend-only text. \
-                 Only if the task explicitly asks to deliver a message to QQ, \
-                 call send_private_msg or send_group_msg with an explicit target ID.",
-            );
+            Some(BoundaryKind::Timer)
         } else if is_qq_session {
-            system_prompt.push_str(
-                "\n\n# Backend input boundary\n\
-                 This input was typed locally (TUI/backend), not received from \
-                 QQ. Reply directly in the backend. Do NOT call send_private_msg \
-                 or send_group_msg unless the user explicitly asks you to send a \
-                 message to a QQ user or group.",
-            );
-            system_prompt.push_str(
-                "\nEach turn owns only its final QQ hook, identified by message_sequence. Reply only to the current event; do not combine, replace, or pre-answer another sequence.",
-            );
-        }
+            Some(BoundaryKind::BackendInput)
+        } else {
+            None
+        };
+        // Build the system prompt as named blocks so the panel can visualize
+        // token usage per section; keep the last build for `/context`.
+        let blocks = self.build_prompt_blocks(content, boundary).await;
+        let system_prompt = join_prompt_blocks(&blocks);
+        *self.last_prompt_blocks.lock().await = Some(blocks);
 
         let mut messages = vec![ChatMessage::system(system_prompt)];
         if let Some(history_snapshot) = history_snapshot {
@@ -1634,6 +1601,147 @@ impl Agent {
     }
 
     /// System prompt = base prompt + skill metadata + triggered skill instructions.
+    /// System prompt = base prompt + skill metadata + triggered skill
+    /// instructions, decomposed into named blocks for panel visualization.
+    async fn build_prompt_blocks(
+        &self,
+        content: &str,
+        boundary: Option<BoundaryKind>,
+    ) -> Vec<PromptBlock> {
+        let skills = self.skills.lock().await;
+        let matched = skills.find_matching(content);
+        let base = self.config.read().await.system_prompt.clone();
+        let mut blocks = Vec::new();
+        blocks.push(PromptBlock {
+            key: "base".into(),
+            label: "系统提示词".into(),
+            kind: "base".into(),
+            content: base,
+        });
+        if !skills.is_empty() {
+            blocks.push(PromptBlock {
+                key: "skills".into(),
+                label: "技能清单".into(),
+                kind: "skills".into(),
+                content: format!("# Available skills\n{}", skills.metadata_lines()),
+            });
+        }
+        for skill in skills.always_enabled() {
+            blocks.push(PromptBlock {
+                key: format!("skill:{}", skill.metadata.name),
+                label: format!("常驻技能 · {}", skill.metadata.name),
+                kind: "skill".into(),
+                content: format!(
+                    "# Active skill: {}\n{}",
+                    skill.metadata.name, skill.instructions
+                ),
+            });
+        }
+        if let Some(matched) = matched {
+            blocks.push(PromptBlock {
+                key: format!("triggered:{}", matched.metadata.name),
+                label: format!("触发技能 · {}", matched.metadata.name),
+                kind: "triggered".into(),
+                content: format!(
+                    "# Triggered skill: {}\n{}",
+                    matched.metadata.name, matched.instructions
+                ),
+            });
+        }
+        blocks.push(PromptBlock {
+            key: "orchestration".into(),
+            label: "后台编排".into(),
+            kind: "orchestration".into(),
+            content: "# Background orchestration\n\
+             Complete the current request normally; do not spawn detached work \
+             merely to keep the conversation responsive. Use run_subagent for \
+             bounded delegated reasoning. Use spawn_background_task only when \
+             the requester explicitly asks for detached work, and \
+             spawn_parallel_task only for independent work with declared \
+             delivery targets. After detached work is accepted, do not poll it; \
+             completion returns as an ordered background_task_event. Use \
+             list_background_tasks only when status is requested and \
+             cancel_background_task only on an explicit cancellation."
+                .into(),
+        });
+        if let Some(boundary) = boundary {
+            blocks.push(boundary.block());
+        }
+        blocks
+    }
+
+    /// Decomposed context blocks for `/context`: the prompt sections of the
+    /// most recent turn (falling back to a boundary-free build) plus the
+    /// conversation history aggregated per role. The trunk history holds user
+    /// / assistant / tool messages only — the system prompt is rebuilt every
+    /// turn and is represented by the prompt blocks above.
+    pub async fn context_blocks(&self, history: &[ChatMessage]) -> Vec<crate::event::ContextBlockInfo> {
+        let prompt = match self.last_prompt_blocks.lock().await.clone() {
+            Some(blocks) => blocks,
+            // No turn has run yet in this process — build a representative
+            // set without input-specific sections.
+            None => self.build_prompt_blocks("", None).await,
+        };
+        let mut blocks: Vec<crate::event::ContextBlockInfo> = prompt
+            .iter()
+            .map(|block| crate::event::ContextBlockInfo {
+                key: block.key.clone(),
+                label: block.label.clone(),
+                kind: block.kind.clone(),
+                tokens: crate::llm::estimate_message_tokens(&ChatMessage::system(
+                    block.content.clone(),
+                )),
+                chars: block.content.chars().count(),
+                content: block.content.clone(),
+            })
+            .collect();
+        // Aggregate the history per role.
+        let mut by_role: std::collections::BTreeMap<&str, Vec<&ChatMessage>> =
+            std::collections::BTreeMap::new();
+        for message in history {
+            by_role
+                .entry(match message.role {
+                    crate::llm::ChatRole::System => "system",
+                    crate::llm::ChatRole::User => "user",
+                    crate::llm::ChatRole::Assistant => "assistant",
+                    crate::llm::ChatRole::Tool => "tool",
+                })
+                .or_default()
+                .push(message);
+        }
+        for (role, messages) in by_role {
+            let tokens: usize = messages
+                .iter()
+                .map(|message| crate::llm::estimate_message_tokens(message))
+                .sum();
+            let content = messages
+                .iter()
+                .map(|message| {
+                    let preview = message.content.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let preview: String = preview.chars().take(120).collect();
+                    format!(
+                        "[{}] {}t {}",
+                        role,
+                        crate::llm::estimate_message_tokens(message),
+                        preview
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            blocks.push(crate::event::ContextBlockInfo {
+                key: format!("history:{role}"),
+                label: format!("对话历史 · {}", role_label(role)),
+                kind: "history".into(),
+                tokens,
+                chars: content.chars().count(),
+                content,
+            });
+        }
+        blocks
+    }
+
+    /// System prompt string (kept for tests; the turn loop uses blocks).
+    #[allow(dead_code)]
     async fn build_system_prompt(&self, content: &str) -> String {
         let skills = self.skills.lock().await;
         let matched = skills.find_matching(content);
@@ -2110,6 +2218,96 @@ fn target_expected_id(target: &DeliveryTarget) -> (&'static str, &str) {
         DeliveryTarget::Direct { user_id } => ("user_id", user_id),
         DeliveryTarget::Group { group_id } => ("group_id", group_id),
         DeliveryTarget::Backend { session_id } => ("session_id", session_id),
+    }
+}
+
+/// One named section of the system prompt, kept for token-usage
+/// visualization in the panel.
+#[derive(Debug, Clone)]
+pub(crate) struct PromptBlock {
+    pub key: String,
+    pub label: String,
+    pub kind: String,
+    pub content: String,
+}
+
+/// Input-origin boundary rules appended to the system prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundaryKind {
+    QqHook,
+    Timer,
+    BackendInput,
+}
+
+impl BoundaryKind {
+    fn block(self) -> PromptBlock {
+        let (key, label, content) = match self {
+            Self::QqHook => (
+                "boundary:qq_hook",
+                "QQ 消息边界",
+                "# QQ transport boundary\n\
+                 This input is an external QQ message (<qq_message_hook>); read \
+                 sender and group IDs from the structured hook payload.\n\
+                 Answer every <qq_message_hook> exactly once via a send tool: \
+                 send_private_msg for private chats (user_id from \
+                 payload.sender.user_id), send_group_msg for groups (group_id \
+                 from payload.channel.group_id). Never invent a target ID, never \
+                 send twice, and never substitute normal assistant output for \
+                 the send — it is backend-only and invisible to the QQ user. Put \
+                 the whole reply (including any 'sent' wording) inside the \
+                 tool's content, and do not claim a reply before the send tool \
+                 returns success.\n\
+                 Inputs wrapped in <backend_message_hook>/<timer_event>/\
+                 <background_task_event> are backend events, not QQ chat: answer \
+                 them in the backend and deliver per their own rules.",
+            ),
+            Self::Timer => (
+                "boundary:timer",
+                "后台任务边界",
+                "# Backend task boundary\n\
+                 This input is a scheduled backend task (<timer_event>), not an \
+                 incoming QQ message. Your normal output is backend-only text. \
+                 Only if the task explicitly asks to deliver a message to QQ, \
+                 call send_private_msg or send_group_msg with an explicit target ID.",
+            ),
+            Self::BackendInput => (
+                "boundary:backend_input",
+                "后台输入边界",
+                "# Backend input boundary\n\
+                 This input was typed locally (TUI/backend), not received from \
+                 QQ. Reply directly in the backend. Do NOT call send_private_msg \
+                 or send_group_msg unless the user explicitly asks you to send a \
+                 message to a QQ user or group.\n\
+                 Each turn owns only its final QQ hook, identified by \
+                 message_sequence. Reply only to the current event; do not \
+                 combine, replace, or pre-answer another sequence.",
+            ),
+        };
+        PromptBlock {
+            key: key.into(),
+            label: label.into(),
+            kind: "boundary".into(),
+            content: content.into(),
+        }
+    }
+}
+
+/// Join prompt blocks with the same separator the original string builder used.
+pub(crate) fn join_prompt_blocks(blocks: &[PromptBlock]) -> String {
+    blocks
+        .iter()
+        .map(|block| block.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn role_label(role: &str) -> &'static str {
+    match role {
+        "system" => "系统",
+        "user" => "用户",
+        "assistant" => "助手",
+        "tool" => "工具",
+        _ => "其他",
     }
 }
 
@@ -2778,6 +2976,60 @@ pub mod tests {
             "unexpected: {content}"
         );
         std::fs::remove_file(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn context_blocks_decompose_prompt_and_history_by_role() {
+        let mut reg = SkillRegistry::new();
+        reg.register(crate::skill::Skill {
+            metadata: crate::skill::SkillMetadata {
+                name: "calc".into(),
+                description: "d".into(),
+                keywords: vec!["calc".into()],
+                always: false,
+                enabled: true,
+            },
+            instructions: "use calculator tool".into(),
+        });
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Agent::new(
+            provider,
+            AgentConfig::default(),
+            reg,
+            ToolRegistry::new(),
+            Arc::new(AdapterRegistry::new()),
+        );
+        let session = agent
+            .trunk
+            .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+        agent.process_message(&session, "help me calc 1+1").await.unwrap();
+        let history = session.history.lock().await.clone();
+        let blocks = agent.context_blocks(&history).await;
+        let keys: Vec<&str> = blocks.iter().map(|block| block.key.as_str()).collect();
+        assert!(keys.contains(&"base"), "base prompt block: {keys:?}");
+        assert!(keys.contains(&"skills"), "skill metadata block: {keys:?}");
+        assert!(
+            keys.contains(&"triggered:calc"),
+            "triggered skill block: {keys:?}"
+        );
+        assert!(
+            keys.contains(&"orchestration"),
+            "orchestration block: {keys:?}"
+        );
+        assert!(
+            keys.iter().any(|key| key.starts_with("history:user")),
+            "history aggregated per role: {keys:?}"
+        );
+        let total: usize = blocks.iter().map(|block| block.tokens).sum();
+        assert!(total > 0, "blocks carry token estimates");
+        let system = blocks
+            .iter()
+            .find(|block| block.key == "triggered:calc")
+            .expect("triggered block");
+        assert!(system.content.contains("calculator"));
     }
 
     #[tokio::test]

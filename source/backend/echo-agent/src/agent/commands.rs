@@ -152,8 +152,10 @@ impl Agent {
                         sequence: crate::agent::structured_message_sequence(&message.content),
                     })
                     .collect();
+                let blocks = self.context_blocks(&history).await;
                 self.emit(BackendEvent::ContextSnapshot {
                     messages,
+                    blocks,
                     total_tokens,
                     limit_tokens: self.trunk.memory_limit_tokens(),
                 });
