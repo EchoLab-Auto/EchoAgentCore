@@ -101,6 +101,10 @@ pub struct TimelineMessage {
     /// "user" | "backend" | "tool" | "system".
     pub kind: String,
     pub content: String,
+    /// Owning session key (e.g. "local:tui::local_user", "qq:dm::123",
+    /// "qq:group:456:123"). Empty = global/unknown (legacy entries).
+    #[serde(default)]
+    pub session_id: String,
     /// Unix seconds.
     pub time: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1039,6 +1039,7 @@ mod tests {
             store.push_timeline(crate::event::TimelineMessage {
                 kind: "user".into(),
                 content: format!("msg-{i}"),
+                session_id: "local:tui::local_user".into(),
                 time: i as i64,
                 source: None,
                 reasoning: None,
@@ -1067,6 +1068,7 @@ mod tests {
         store.push_timeline(crate::event::TimelineMessage {
             kind: "user".into(),
             content: "你好".into(),
+            session_id: "qq:dm::123".into(),
             time: 1700000000,
             source: Some(crate::event::TimelineSource {
                 adapter_name: "qq".into(),
@@ -1084,6 +1086,7 @@ mod tests {
         store.push_timeline(crate::event::TimelineMessage {
             kind: "backend".into(),
             content: "回复".into(),
+            session_id: "qq:dm::123".into(),
             time: 1700000001,
             source: None,
             reasoning: Some(vec!["先分析".into()]),

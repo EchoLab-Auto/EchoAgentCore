@@ -60,6 +60,7 @@ impl TimelineProjector {
     fn record(&self, event: &BackendEvent) {
         match event {
             BackendEvent::MessageReceived {
+                session_id,
                 adapter_name,
                 platform,
                 user_id,
@@ -85,6 +86,7 @@ impl TimelineProjector {
                             }
                             None => "定时任务触发".into(),
                         },
+                        session_id: session_id.clone(),
                         time: *timestamp,
                         source: None,
                         reasoning: None,
@@ -95,6 +97,7 @@ impl TimelineProjector {
                 self.trunk.push_timeline(TimelineMessage {
                     kind: "user".into(),
                     content: content.clone(),
+                    session_id: session_id.clone(),
                     time: *timestamp,
                     source: Some(TimelineSource {
                         adapter_name: adapter_name.clone(),
@@ -157,6 +160,7 @@ impl TimelineProjector {
                 self.trunk.push_timeline(TimelineMessage {
                     kind: "backend".into(),
                     content: content.clone(),
+                    session_id: session_id.clone(),
                     time: chrono::Utc::now().timestamp(),
                     source: None,
                     reasoning,
@@ -164,6 +168,7 @@ impl TimelineProjector {
                 });
             }
             BackendEvent::ToolCall {
+                session_id,
                 tool_name,
                 arguments,
                 ..
@@ -171,6 +176,7 @@ impl TimelineProjector {
                 self.trunk.push_timeline(TimelineMessage {
                     kind: "tool".into(),
                     content: tool_name.clone(),
+                    session_id: session_id.clone(),
                     time: chrono::Utc::now().timestamp(),
                     source: None,
                     reasoning: None,
@@ -183,10 +189,13 @@ impl TimelineProjector {
                 });
             }
             BackendEvent::ToolResult {
-                tool_name, result, ..
+                session_id,
+                tool_name,
+                result,
+                ..
             } => {
                 let failed = result.trim_start().starts_with("error:");
-                self.update_timeline_tool(tool_name, result, failed);
+                self.update_timeline_tool(session_id, tool_name, result, failed);
             }
             _ => {}
         }
@@ -229,13 +238,20 @@ impl TimelineProjector {
 
     /// Attach the outcome to the newest still-running timeline tool entry with
     /// the same name (mirrors the TUI's `finish_tool_entry`).
-    fn update_timeline_tool(&self, tool_name: &str, result: &str, failed: bool) {
+    fn update_timeline_tool(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        result: &str,
+        failed: bool,
+    ) {
         let mut timeline = match self.trunk.timeline_mut() {
             Some(guard) => guard,
             None => return,
         };
         if let Some(entry) = timeline.iter_mut().rev().find(|entry| {
             entry.kind == "tool"
+                && entry.session_id == session_id
                 && entry
                     .tool
                     .as_ref()
@@ -252,6 +268,7 @@ impl TimelineProjector {
         self.trunk.push_timeline(TimelineMessage {
             kind: "tool".into(),
             content: tool_name.to_string(),
+            session_id: session_id.to_string(),
             time: chrono::Utc::now().timestamp(),
             source: None,
             reasoning: None,
