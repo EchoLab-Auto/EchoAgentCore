@@ -37,18 +37,10 @@ impl Default for LoggingSection {
 // ── Plugins ────────────────────────────────────────────────────────────────
 
 /// Core 插件配置。系统提示词是第一个插件化注入项。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct PluginsSection {
     pub system_prompt: SystemPromptPlugin,
-}
-
-impl Default for PluginsSection {
-    fn default() -> Self {
-        Self {
-            system_prompt: SystemPromptPlugin::default(),
-        }
-    }
 }
 
 /// 系统提示词插件：`text` 为空时不做基础系统提示词注入。
