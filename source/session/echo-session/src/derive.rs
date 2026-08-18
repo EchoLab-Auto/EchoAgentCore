@@ -109,11 +109,71 @@ fn flush_tool_calls(
 /// Trimming happens here, at projection time, never on the log itself. The
 /// projection is split at message boundaries so a single oversized message is
 /// truncated in place (the same behaviour as the pre-event-sourced trunk).
+///
+/// The last step repairs tool-call pairing on the projected copy: the durable
+/// log can legitimately end mid-pair (a tool that is cancelled, times out, or
+/// is killed mid-execution records its `ToolCall` event but its `ToolResult`
+/// never lands), and trimming or a compaction boundary can cut between a
+/// tool_use message and its result. Providers reject both shapes (Anthropic:
+/// HTTP 400 "tool_use ids were found without tool_result blocks"), so dangling
+/// calls gain a synthetic error result and orphan results are dropped.
 pub fn derive_messages(log: &[SessionEvent], token_budget: usize) -> Vec<ChatMessage> {
     let mut messages = project_messages(log);
     merge_consecutive_assistant_messages(&mut messages);
     trim_to_budget(&mut messages, token_budget);
+    repair_tool_pairing(&mut messages);
     messages
+}
+
+/// Repair tool-call pairing on a projected message list.
+///
+/// Runs on the projected copy, never on the log. A tool message is kept only
+/// when its `tool_call_id` answers a tool call still waiting for its result;
+/// any call left waiting when the pairing breaks (another message role
+/// intervenes, or the list simply ends) is closed with a synthetic error
+/// result so the model sees the call as interrupted instead of the provider
+/// rejecting the whole request.
+fn repair_tool_pairing(messages: &mut Vec<ChatMessage>) {
+    let mut repaired: Vec<ChatMessage> = Vec::with_capacity(messages.len());
+    // Tool calls whose result has not appeared yet, in call order.
+    let mut pending: Vec<(String, String)> = Vec::new();
+    for message in messages.drain(..) {
+        if message.role == echo_defs::message::ChatRole::Tool {
+            let position = message
+                .tool_call_id
+                .as_ref()
+                .and_then(|id| pending.iter().position(|(pending_id, _)| pending_id == id));
+            // A missing position means an orphan result: its tool_use was
+            // trimmed or compacted away. Drop it or the provider rejects the
+            // request.
+            if let Some(position) = position {
+                pending.remove(position);
+                repaired.push(message);
+            }
+            continue;
+        }
+        close_dangling_calls(&mut repaired, &mut pending);
+        if message.role == echo_defs::message::ChatRole::Assistant {
+            if let Some(calls) = &message.tool_calls {
+                pending.extend(calls.iter().map(|call| (call.id.clone(), call.name.clone())));
+            }
+        }
+        repaired.push(message);
+    }
+    close_dangling_calls(&mut repaired, &mut pending);
+    *messages = repaired;
+}
+
+/// Append a synthetic error result for every tool call that never got one.
+/// The `error:` prefix matches the runtime's own failure convention, so the
+/// call reads as failed rather than successful-but-empty.
+fn close_dangling_calls(messages: &mut Vec<ChatMessage>, pending: &mut Vec<(String, String)>) {
+    for (id, name) in pending.drain(..) {
+        messages.push(ChatMessage::tool(
+            format!("error: tool '{name}' was interrupted before its result was recorded"),
+            id,
+        ));
+    }
 }
 
 /// Merge consecutive assistant messages so the request alternates roles.
@@ -491,5 +551,128 @@ mod tests {
             Some("c1"),
             "tool result linkage survives"
         );
+    }
+
+    #[test]
+    fn dangling_tool_call_gains_synthetic_result() {
+        // A cancelled / timed-out / killed tool records its ToolCall event but
+        // the ToolResult never lands. Left as-is, the projection ends with an
+        // assistant tool_use that no tool_result answers and the provider
+        // rejects the whole request (HTTP 400). The derived context must close
+        // the pair with a synthetic error result.
+        let log = vec![
+            user("跑个命令"),
+            SessionEvent::ToolCall(ToolCallEvent {
+                id: "call_00_dead".into(),
+                name: "run_command".into(),
+                arguments: r#"{"command":"sleep 999"}"#.into(),
+            }),
+        ];
+        let messages = derive_messages(&log, 100_000);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1].role, echo_defs::message::ChatRole::Assistant);
+        assert_eq!(
+            messages[1].tool_calls.as_ref().unwrap()[0].id,
+            "call_00_dead"
+        );
+        assert_eq!(messages[2].role, echo_defs::message::ChatRole::Tool);
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("call_00_dead"));
+        assert!(messages[2].content.starts_with("error:"));
+    }
+
+    #[test]
+    fn dangling_tool_call_is_closed_before_the_next_message() {
+        // The synthetic result must sit directly after the assistant tool_use,
+        // before any later user message, or the provider still rejects it.
+        let log = vec![
+            user("跑个命令"),
+            SessionEvent::ToolCall(ToolCallEvent {
+                id: "call_00_dead".into(),
+                name: "run_command".into(),
+                arguments: "{}".into(),
+            }),
+            user("先别管了"),
+        ];
+        let messages = derive_messages(&log, 100_000);
+        let roles: Vec<&str> = messages
+            .iter()
+            .map(|m| match m.role {
+                echo_defs::message::ChatRole::User => "user",
+                echo_defs::message::ChatRole::Assistant => "assistant",
+                echo_defs::message::ChatRole::Tool => "tool",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(roles, vec!["user", "assistant", "tool", "user"]);
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("call_00_dead"));
+        assert_eq!(messages[3].content, "先别管了");
+    }
+
+    #[test]
+    fn orphan_tool_result_is_dropped() {
+        // A tool result whose tool_use never made it into the context (e.g.
+        // trimming cut between them) must be dropped: the provider rejects a
+        // tool_result that answers no tool_use.
+        let mut messages = vec![
+            ChatMessage::tool("ok", "call_orphan"),
+            ChatMessage::user("最新"),
+        ];
+        repair_tool_pairing(&mut messages);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, echo_defs::message::ChatRole::User);
+    }
+
+    #[test]
+    fn compaction_orphaned_tool_result_is_dropped() {
+        // A compaction boundary between a ToolCall and its ToolResult covers
+        // the call but leaves the result: the orphan must be dropped, and the
+        // summary itself must not gain dangling calls.
+        let log = vec![
+            user("旧消息"),
+            SessionEvent::ToolCall(ToolCallEvent {
+                id: "call_c".into(),
+                name: "run_command".into(),
+                arguments: "{}".into(),
+            }),
+            SessionEvent::Compaction(CompactionEvent {
+                replaced_count: 2,
+                summary: "已压缩".into(),
+            }),
+            SessionEvent::ToolResult(ToolResultEvent {
+                tool_call_id: "call_c".into(),
+                result: "ok".into(),
+            }),
+            assistant("新回复"),
+        ];
+        let messages = derive_messages(&log, 100_000);
+        assert!(messages
+            .iter()
+            .all(|m| m.role != echo_defs::message::ChatRole::Tool));
+        assert!(messages
+            .iter()
+            .all(|m| m.tool_call_id.as_deref() != Some("call_c")));
+    }
+
+    #[test]
+    fn paired_calls_survive_repair_untouched() {
+        // Repair must not reorder or alter a healthy paired exchange.
+        let log = vec![
+            user("查一下"),
+            SessionEvent::ToolCall(ToolCallEvent {
+                id: "call_A".into(),
+                name: "adapter_status".into(),
+                arguments: "{}".into(),
+            }),
+            SessionEvent::ToolResult(ToolResultEvent {
+                tool_call_id: "call_A".into(),
+                result: "ok".into(),
+            }),
+            assistant("完毕"),
+        ];
+        let messages = derive_messages(&log, 100_000);
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[1].tool_calls.as_ref().unwrap()[0].id, "call_A");
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("call_A"));
+        assert_eq!(messages[2].content, "ok");
     }
 }

@@ -1279,9 +1279,22 @@ impl Agent {
                 let result = tokio::select! {
                     result = self.run_tool(&session_id, branch_id, call) => result,
                     _ = tokio::time::sleep(tool_timeout) => {
-                        format!("error: tool '{}' timed out after {}s", call.name, tool_timeout.as_secs())
+                        let result = format!("error: tool '{}' timed out after {}s", call.name, tool_timeout.as_secs());
+                        // run_tool was dropped mid-flight: it already recorded
+                        // the ToolCall event, so record the matching ToolResult
+                        // or the durable log keeps a dangling call.
+                        self.record_interrupted_tool_result(&session_id, branch_id, call, &result);
+                        result
                     }
-                    _ = turn_cancel.cancelled() => return Err(anyhow!(TURN_CANCELLED)),
+                    _ = turn_cancel.cancelled() => {
+                        self.record_interrupted_tool_result(
+                            &session_id,
+                            branch_id,
+                            call,
+                            "error: tool execution cancelled",
+                        );
+                        return Err(anyhow!(TURN_CANCELLED));
+                    }
                 };
                 tracing::info!(
                     turn_id = %turn_id,
@@ -1389,6 +1402,35 @@ impl Agent {
             }
         }
         result
+    }
+
+    /// Record the `ToolResult` for a call whose `run_tool` future was dropped
+    /// (timeout or cancellation). `run_tool` appends the `ToolCall` event
+    /// before dispatching, so without this the durable log would keep a
+    /// dangling call: after a reload the projection synthesizes an assistant
+    /// tool_use no result answers, and the provider rejects the request
+    /// (HTTP 400). Also emits the backend event so the UI can close out the
+    /// pending tool row.
+    fn record_interrupted_tool_result(
+        &self,
+        session_id: &str,
+        branch_id: &str,
+        call: &ToolCall,
+        result: &str,
+    ) {
+        self.emit(BackendEvent::ToolResult {
+            session_id: session_id.to_string(),
+            tool_name: call.name.clone(),
+            result: result.to_string(),
+            branch_id: branch_id.to_string(),
+        });
+        self.trunk
+            .append_event(echo_session::SessionEvent::ToolResult(
+                echo_session::event::ToolResultEvent {
+                    tool_call_id: call.id.clone(),
+                    result: result.to_string(),
+                },
+            ));
     }
 
     /// Run a command with root privileges (the `run_sudo` orchestration tool).
