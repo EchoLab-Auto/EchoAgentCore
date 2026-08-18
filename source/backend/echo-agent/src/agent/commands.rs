@@ -165,6 +165,13 @@ impl Agent {
                     messages: self.trunk.timeline_snapshot(),
                 });
             }
+            BackendCommand::CancelRequestedWork { session_id, all } => {
+                let cancelled = self.cancel_requested_work(&session_id, all).await;
+                self.emit(BackendEvent::Error {
+                    session_id: Some(session_id.clone()),
+                    message: format!("已取消 {cancelled} 个进行中的任务"),
+                });
+            }
             BackendCommand::SendMessage {
                 session_id,
                 content,

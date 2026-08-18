@@ -40,6 +40,9 @@ pub enum BackendCommand {
     RequestState,
     /// Request a snapshot of the current trunk context (`BackendEvent::ContextSnapshot`).
     RequestContext,
+    /// Cancel running work for a session (agent turns + background tasks).
+    /// `all` = true cancels every active turn; false cancels only the newest.
+    CancelRequestedWork { session_id: String, all: bool },
     /// Request the persisted display timeline (`BackendEvent::TrunkTimeline`).
     /// The TUI sends this on startup to restore historical messages.
     RequestTrunkTimeline,
