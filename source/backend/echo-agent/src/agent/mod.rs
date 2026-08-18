@@ -1252,11 +1252,13 @@ impl Agent {
                             session_id: session_id.clone(),
                             tool_name: call.name.clone(),
                             arguments: call.arguments.clone(),
+                            branch_id: branch_id.to_string(),
                         });
                         self.emit(BackendEvent::ToolResult {
                             session_id: session_id.clone(),
                             tool_name: call.name.clone(),
                             result: result.clone(),
+                            branch_id: branch_id.to_string(),
                         });
                         messages.push(ChatMessage::tool(result, &call.id));
                         continue;
@@ -1322,6 +1324,7 @@ impl Agent {
             session_id: session_id.to_string(),
             tool_name: call.name.clone(),
             arguments: call.arguments.clone(),
+            branch_id: branch_id.to_string(),
         });
         // The tool call is a durable event: the model-visible loop (call +
         // result) must be reconstructable from the log after a reload.
@@ -1368,6 +1371,7 @@ impl Agent {
             session_id: session_id.to_string(),
             tool_name: call.name.clone(),
             result: result.clone(),
+            branch_id: branch_id.to_string(),
         });
         self.trunk
             .append_event(echo_session::SessionEvent::ToolResult(

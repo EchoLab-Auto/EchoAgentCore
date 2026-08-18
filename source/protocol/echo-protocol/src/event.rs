@@ -233,12 +233,18 @@ pub enum BackendEvent {
         session_id: String,
         tool_name: String,
         arguments: String,
+        /// Owning reply branch (empty for pre-branch legacy paths).
+        #[serde(default)]
+        branch_id: String,
     },
     /// Tool execution completed.
     ToolResult {
         session_id: String,
         tool_name: String,
         result: String,
+        /// Owning reply branch (empty for pre-branch legacy paths).
+        #[serde(default)]
+        branch_id: String,
     },
     /// A tool published a structured state snapshot for TUI visualization
     /// (e.g. the checklist tool → checklist panel). `state` is tool-specific;
