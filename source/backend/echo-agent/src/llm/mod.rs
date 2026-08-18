@@ -35,7 +35,7 @@ pub fn create_provider(cfg: &crate::config::AgentConfig) -> Result<Box<dyn LlmPr
         || cfg.base_url.contains("api.deepseek.com"))
     .then_some((cfg.thinking, cfg.reasoning_effort));
     match provider_kind {
-        "openai" | "deepseek" if anthropic_style => {
+        "openai" | "deepseek" | "third-party" if anthropic_style => {
             // DeepSeek 的 /anthropic 端点只实现 Messages API（POST /v1/messages）
             let mut provider =
                 echo_llm_anthropic::AnthropicProvider::new(&cfg.base_url, &cfg.api_key, &cfg.model);
@@ -44,7 +44,7 @@ pub fn create_provider(cfg: &crate::config::AgentConfig) -> Result<Box<dyn LlmPr
             }
             Ok(Box::new(provider))
         }
-        "openai" | "deepseek" => {
+        "openai" | "deepseek" | "third-party" => {
             let mut provider =
                 echo_llm_openai::OpenAiProvider::new(&cfg.base_url, &cfg.api_key, &cfg.model);
             if let Some((thinking, effort)) = deepseek_reasoning {
@@ -62,7 +62,7 @@ pub fn create_provider(cfg: &crate::config::AgentConfig) -> Result<Box<dyn LlmPr
             &cfg.model,
         ))),
         other => Err(LlmError::Config(format!(
-            "不支持的 provider: {other} (可选: openai/deepseek/anthropic/ollama)"
+            "不支持的 provider: {other} (可选: openai/deepseek/third-party/anthropic/ollama)"
         ))),
     }
 }
@@ -94,6 +94,15 @@ mod tests {
         assert_eq!(p.name(), "openai");
         let p = create_provider(&cfg("deepseek", "")).unwrap();
         assert_eq!(p.name(), "openai");
+    }
+
+    #[test]
+    fn third_party_provider_uses_openai_compatible_client() {
+        let p = create_provider(&cfg("third-party", "https://one-api.example.com/v1")).unwrap();
+        assert_eq!(p.name(), "openai");
+        // anthropic-style URL switches to the Messages client.
+        let p = create_provider(&cfg("third-party", "https://one-api.example.com/anthropic")).unwrap();
+        assert_eq!(p.name(), "anthropic");
     }
 
     #[test]
