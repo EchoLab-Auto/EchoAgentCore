@@ -147,6 +147,34 @@ impl QqAdapter {
         *self.inner.gate_mode.lock().expect("poisoned")
     }
 
+    /// Set the QQ owner (admin) at runtime. Updates the in-memory value used
+    /// for gating exemptions and persists `[adapters.qq] owner_qq` through the
+    /// shared ConfigStore, so the change survives a restart.
+    pub fn set_owner_qq(&self, owner_qq: i64) {
+        *self.inner.owner_qq.lock().expect("poisoned") = owner_qq;
+        let store = match self.inner.config_store.lock().expect("poisoned").clone() {
+            Some(s) => s,
+            None => {
+                tracing::warn!("QQ owner persist skipped: no config store set");
+                return;
+            }
+        };
+        if let Err(e) = store.patch(|root| {
+            let qq = echo_adapter::ensure_table(echo_adapter::ensure_table(root, "adapters"), "qq");
+            qq.insert("owner_qq".into(), toml::Value::Integer(owner_qq));
+            Ok(())
+        }) {
+            tracing::warn!(error = %e, "failed to persist QQ owner");
+        } else {
+            tracing::info!(owner_qq, "QQ owner persisted");
+        }
+    }
+
+    /// Get the current QQ owner (admin) — the runtime value.
+    pub fn get_owner_qq(&self) -> i64 {
+        *self.inner.owner_qq.lock().expect("poisoned")
+    }
+
     /// Return the current effective filter config (runtime overrides merged).
     pub fn get_filter_config(&self) -> crate::config::QqFilterConfig {
         let mut cfg = self.inner.config.filter.clone();

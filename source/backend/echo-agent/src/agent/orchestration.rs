@@ -644,6 +644,7 @@ fn background_tool_allowed(name: &str) -> bool {
             | "start_adapter"
             | "stop_adapter"
             | "restart_adapter"
+            | "run_sudo" // interactive sudo prompts must not fire from detached branches
     )
 }
 
@@ -887,7 +888,26 @@ fn resolve_due_at(args: &ScheduleTimerArgs) -> Result<DateTime<Utc>, String> {
     }
 }
 
-pub(super) fn tool_definitions(self_update_enabled: bool) -> Vec<ToolDefinition> {
+/// The stable set of orchestration tool names, in schema order. Both the
+/// schema generation (`tool_definitions`) and the execution dispatch
+/// (`Agent::run_tool`) derive from this single table, so a new orchestration
+/// tool cannot drift between its schema and its handler.
+pub(super) const ORCHESTRATION_TOOL_NAMES: &[&str] = &[
+    "schedule_timer",
+    "list_timers",
+    "cancel_timer",
+    "run_subagent",
+    "spawn_background_task",
+    "spawn_parallel_task",
+    "list_background_tasks",
+    "cancel_background_task",
+    "send_backend_message",
+];
+
+pub(super) fn tool_definitions(
+    self_update_enabled: bool,
+    sudo_enabled: bool,
+) -> Vec<ToolDefinition> {
     let mut definitions = vec![
         ToolDefinition {
             name: "schedule_timer".into(),
@@ -1025,6 +1045,20 @@ pub(super) fn tool_definitions(self_update_enabled: bool) -> Vec<ToolDefinition>
                     "confirm": { "type": "boolean", "description": "Must be true for action=apply" }
                 },
                 "required": ["action"],
+                "additionalProperties": false
+            })),
+        });
+    }
+    if sudo_enabled {
+        definitions.push(ToolDefinition {
+            name: "run_sudo".into(),
+            description: "Run a shell command with root privileges via sudo. The user is prompted in the Panel to authorize with their password; you never see or handle the password, so never ask for it and never try to guess it. Use only when elevated privileges are genuinely required. Returns stdout and stderr. Timeout for user authorization: 120s; command timeout: 60s.".into(),
+            parameters: Some(json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "The shell command to run with sudo (e.g. 'apt-get update', 'systemctl restart nginx')" }
+                },
+                "required": ["command"],
                 "additionalProperties": false
             })),
         });
@@ -1194,34 +1228,36 @@ mod tests {
 
     #[test]
     fn orchestration_tool_names_are_stable() {
-        let names: Vec<_> = tool_definitions(false)
+        let names: Vec<_> = tool_definitions(false, false)
             .into_iter()
             .map(|definition| definition.name)
             .collect();
         assert_eq!(
-            names,
-            [
-                "schedule_timer",
-                "list_timers",
-                "cancel_timer",
-                "run_subagent",
-                "spawn_background_task",
-                "spawn_parallel_task",
-                "list_background_tasks",
-                "cancel_background_task",
-                "send_backend_message"
-            ]
+            names, ORCHESTRATION_TOOL_NAMES,
+            "schema order matches the single dispatch table"
         );
+        // Every schema name must have a handler in the same table.
+        assert_eq!(names.len(), ORCHESTRATION_TOOL_NAMES.len());
     }
 
     #[test]
     fn self_update_tool_is_opt_in() {
-        assert!(!tool_definitions(false)
+        assert!(!tool_definitions(false, false)
             .iter()
             .any(|definition| definition.name == "framework_update"));
-        assert!(tool_definitions(true)
+        assert!(tool_definitions(true, false)
             .iter()
             .any(|definition| definition.name == "framework_update"));
+    }
+
+    #[test]
+    fn sudo_tool_is_opt_in() {
+        assert!(!tool_definitions(false, false)
+            .iter()
+            .any(|definition| definition.name == "run_sudo"));
+        assert!(tool_definitions(false, true)
+            .iter()
+            .any(|definition| definition.name == "run_sudo"));
     }
 
     #[test]

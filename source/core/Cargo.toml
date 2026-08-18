@@ -13,6 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 echo-protocol.workspace = true
+echo-context.workspace = true
+echo-session.workspace = true
+echo-loop.workspace = true
 echo-core.workspace = true
 echo-server.workspace = true
 echo-agent.workspace = true

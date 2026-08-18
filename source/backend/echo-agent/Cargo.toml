@@ -8,6 +8,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+echo-defs = { path = "../../defs/echo-defs" }
+echo-context = { path = "../../context/echo-context" }
+echo-session = { path = "../../session/echo-session" }
+echo-llm-openai = { path = "../../llm/echo-llm-openai" }
+echo-llm-anthropic = { path = "../../llm/echo-llm-anthropic" }
+echo-llm-ollama = { path = "../../llm/echo-llm-ollama" }
+echo-chat-capability = { path = "../../chat/echo-chat-capability" }
 echo-protocol = { path = "../../protocol/echo-protocol" }
 echo-adapter = { path = "../echo-adapter" }
 tokio.workspace = true

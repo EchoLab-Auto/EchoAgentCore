@@ -48,6 +48,32 @@ impl Default for SelfUpdateConfig {
     }
 }
 
+/// Policy for the human-in-the-loop `run_sudo` tool.
+///
+/// When enabled, the LLM can request privileged commands; the user authorizes
+/// each one by entering the sudo password in the Panel. The password never
+/// reaches the LLM context, the session log, or the agent command queue.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SudoConfig {
+    /// Register the `run_sudo` tool. Disabled by default for safety.
+    pub enabled: bool,
+    /// How long the tool waits for the user to submit the password (seconds).
+    pub auth_timeout_secs: u64,
+    /// Maximum runtime of the privileged command itself (seconds).
+    pub command_timeout_secs: u64,
+}
+
+impl Default for SudoConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auth_timeout_secs: 120,
+            command_timeout_secs: 60,
+        }
+    }
+}
+
 impl ApiProfile {
     pub fn new(
         name: impl Into<String>,
@@ -90,6 +116,10 @@ pub struct AgentConfig {
     /// 当前激活的 profile 名；为空使用顶层字段。
     pub active_api: String,
     /// System prompt describing the bot's personality and rules.
+    ///
+    /// In Core this is owned by `[plugins.system_prompt]` and therefore
+    /// excluded from generic agent-config serialization.
+    #[serde(skip_serializing)]
     pub system_prompt: String,
     /// Maximum number of tool-call iterations in one agent turn.
     pub max_tool_iterations: usize,
@@ -116,6 +146,8 @@ pub struct AgentConfig {
     pub context_window_tokens: Option<usize>,
     /// Privileged framework update policy.
     pub self_update: SelfUpdateConfig,
+    /// Human-in-the-loop sudo authorization policy.
+    pub sudo: SudoConfig,
 }
 
 impl Default for AgentConfig {
@@ -138,6 +170,7 @@ impl Default for AgentConfig {
             memory_limit_tokens: None,
             context_window_tokens: None,
             self_update: SelfUpdateConfig::default(),
+            sudo: SudoConfig::default(),
         }
     }
 }

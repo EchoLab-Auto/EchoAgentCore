@@ -1,0 +1,15 @@
+[package]
+name = "echo-context"
+description = "EchoAgentCore service context — Ctx service locator, typed EventBus, reversible registration, scoped registries"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tokio.workspace = true
+dashmap.workspace = true
+
+[dev-dependencies]
+proptest = "1"

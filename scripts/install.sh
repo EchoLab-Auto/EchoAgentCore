@@ -16,7 +16,6 @@ SYSTEMD_DIR="$CONFIG_HOME/systemd/user"
 CORE_CONFIG="$CONFIG_DIR/core.toml"
 STATUS_FILE="$STATE_DIR/update-status"
 REPOSITORY_URL=${ECHO_REPOSITORY_URL:-}
-OWNER_QQ=""
 START_SERVICE=1
 DRY_RUN=0
 
@@ -29,7 +28,6 @@ The Panel (TUI) frontend lives in the separate EchoAgentPanel repository and
 is installed by its own installer.
 
 Options:
-  --owner-qq <number>   Set the QQ owner and authorize it for self-update
   --repository <url>    Upstream Git repository used by self-update
   --no-start            Install and enable units without starting Core
   --dry-run             Print resolved paths without changing the system
@@ -39,10 +37,6 @@ EOF
 
 while (($#)); do
     case "$1" in
-        --owner-qq)
-            OWNER_QQ=${2:-}
-            shift 2
-            ;;
         --repository)
             REPOSITORY_URL=${2:-}
             shift 2
@@ -66,11 +60,6 @@ while (($#)); do
             ;;
     esac
 done
-
-if [[ -n "$OWNER_QQ" && ! "$OWNER_QQ" =~ ^[0-9]+$ ]]; then
-    echo "error: --owner-qq must be a numeric QQ ID" >&2
-    exit 2
-fi
 
 if [[ -z "$REPOSITORY_URL" ]]; then
     REPOSITORY_URL=$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null || true)
@@ -248,9 +237,6 @@ allowed_qq_users = []
 EOF
 else
     sed -i '/^\[agent\.self_update\]$/,/^\[.*\]$/{s/^enabled = false$/enabled = true/;}' "$CORE_CONFIG"
-fi
-if [[ -n "$OWNER_QQ" ]]; then
-    sed -i "s/^owner_qq = [0-9][0-9]*$/owner_qq = $OWNER_QQ/" "$CORE_CONFIG"
 fi
 
 INSTALL_PHASE=launcher

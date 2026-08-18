@@ -9,9 +9,9 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use super::{
-    ChatChunk, ChatRequest, ChatResponse, LlmError, LlmProvider, ToolCall, ToolCallDelta, Usage,
-};
+use echo_defs::llm::LlmError;
+use echo_defs::llm::LlmProvider;
+use echo_defs::message::{ChatChunk, ChatRequest, ChatResponse, ToolCall, ToolCallDelta, Usage};
 
 #[derive(Debug, Clone)]
 pub struct OpenAiProvider {
@@ -19,8 +19,8 @@ pub struct OpenAiProvider {
     api_key: String,
     model: String,
     client: reqwest::Client,
-    thinking: Option<crate::config::ThinkingMode>,
-    reasoning_effort: crate::config::ReasoningEffort,
+    thinking: Option<echo_defs::ThinkingMode>,
+    reasoning_effort: echo_defs::ReasoningEffort,
 }
 
 impl OpenAiProvider {
@@ -30,7 +30,7 @@ impl OpenAiProvider {
             api_key: api_key.to_string(),
             model: model.to_string(),
             thinking: None,
-            reasoning_effort: crate::config::ReasoningEffort::default(),
+            reasoning_effort: echo_defs::ReasoningEffort::default(),
             // 超时保护：上游挂起时不能让 agent 任务无限阻塞
             client: match reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
@@ -48,8 +48,8 @@ impl OpenAiProvider {
 
     pub fn with_reasoning(
         mut self,
-        thinking: crate::config::ThinkingMode,
-        effort: crate::config::ReasoningEffort,
+        thinking: echo_defs::ThinkingMode,
+        effort: echo_defs::ReasoningEffort,
     ) -> Self {
         self.thinking = Some(thinking);
         self.reasoning_effort = effort;
@@ -76,17 +76,25 @@ impl LlmProvider for OpenAiProvider {
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()
-            .await?;
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
         let status = resp.status();
-        let text = resp.text().await?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
         if !status.is_success() {
             return Err(LlmError::Api(format!(
                 "HTTP {status}: {}",
-                super::truncate(&text, 300)
+                echo_defs::token::truncate(&text, 300)
             )));
         }
-        let parsed: OpenAIResponse = serde_json::from_str(&text)
-            .map_err(|e| LlmError::Parse(format!("{e} — body: {}", super::truncate(&text, 300))))?;
+        let parsed: OpenAIResponse = serde_json::from_str(&text).map_err(|e| {
+            LlmError::Parse(format!(
+                "{e} — body: {}",
+                echo_defs::token::truncate(&text, 300)
+            ))
+        })?;
         let choice = parsed
             .choices
             .into_iter()
@@ -129,19 +137,23 @@ impl LlmProvider for OpenAiProvider {
             .bearer_auth(&self.api_key)
             .json(&body)
             .send()
-            .await?;
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await?;
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| LlmError::Http(e.to_string()))?;
             return Err(LlmError::Api(format!(
                 "HTTP {status}: {}",
-                super::truncate(&text, 300)
+                echo_defs::token::truncate(&text, 300)
             )));
         }
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
+            let chunk = chunk.map_err(|e| LlmError::Http(e.to_string()))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
             // 规范化 CRLF 与多余空白，兼容不同实现的行结尾
             buffer = buffer.replace("\r\n", "\n");
@@ -165,7 +177,7 @@ impl LlmProvider for OpenAiProvider {
                         SseOutcome::ApiError(msg) => {
                             return Err(LlmError::Api(format!(
                                 "流式响应错误: {}",
-                                super::truncate(&msg, 300)
+                                echo_defs::token::truncate(&msg, 300)
                             )));
                         }
                     }
@@ -259,19 +271,14 @@ fn parse_sse_event(event: &str) -> Vec<SseOutcome> {
 
 #[cfg(test)]
 fn build_request_body(request: &ChatRequest, stream: bool) -> serde_json::Value {
-    build_request_body_with_reasoning(
-        request,
-        stream,
-        None,
-        crate::config::ReasoningEffort::default(),
-    )
+    build_request_body_with_reasoning(request, stream, None, echo_defs::ReasoningEffort::default())
 }
 
 fn build_request_body_with_reasoning(
     request: &ChatRequest,
     stream: bool,
-    thinking: Option<crate::config::ThinkingMode>,
-    reasoning_effort: crate::config::ReasoningEffort,
+    thinking: Option<echo_defs::ThinkingMode>,
+    reasoning_effort: echo_defs::ReasoningEffort,
 ) -> serde_json::Value {
     let messages: Vec<serde_json::Value> = request
         .messages
@@ -323,19 +330,19 @@ fn build_request_body_with_reasoning(
     }
     if let Some(mode) = thinking {
         body["thinking"] = json!({"type": mode.as_str()});
-        if mode == crate::config::ThinkingMode::Enabled {
+        if mode == echo_defs::ThinkingMode::Enabled {
             body["reasoning_effort"] = json!(reasoning_effort.as_str());
         }
     }
     body
 }
 
-fn role_str(role: super::ChatRole) -> &'static str {
+fn role_str(role: echo_defs::message::ChatRole) -> &'static str {
     match role {
-        super::ChatRole::System => "system",
-        super::ChatRole::User => "user",
-        super::ChatRole::Assistant => "assistant",
-        super::ChatRole::Tool => "tool",
+        echo_defs::message::ChatRole::System => "system",
+        echo_defs::message::ChatRole::User => "user",
+        echo_defs::message::ChatRole::Assistant => "assistant",
+        echo_defs::message::ChatRole::Tool => "tool",
     }
 }
 
@@ -422,7 +429,7 @@ struct StreamFunctionWire {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::ChatMessage;
+    use echo_defs::message::ChatMessage;
 
     #[tokio::test]
     async fn chat_parses_response() {
@@ -450,17 +457,17 @@ mod tests {
                 model: "m".into(),
                 messages: vec![
                     ChatMessage {
-                        role: crate::llm::ChatRole::Assistant,
+                        role: echo_defs::message::ChatRole::Assistant,
                         content: "".into(),
                         reasoning_content: None,
-                        tool_calls: Some(vec![crate::llm::ToolCall {
+                        tool_calls: Some(vec![echo_defs::message::ToolCall {
                             id: "c1".into(),
                             name: "calc".into(),
                             arguments: "{\"expr\":\"1+1\"}".into(),
                         }]),
                         tool_call_id: None,
                     },
-                    crate::llm::ChatMessage::tool("2", "c1"),
+                    echo_defs::message::ChatMessage::tool("2", "c1"),
                 ],
                 tools: None,
                 temperature: None,
@@ -487,7 +494,7 @@ mod tests {
     fn deepseek_body_enables_max_reasoning_and_returns_it_in_tool_loop() {
         let mut assistant =
             ChatMessage::assistant_with_reasoning("", Some("需要先读取文件".into()));
-        assistant.tool_calls = Some(vec![crate::llm::ToolCall {
+        assistant.tool_calls = Some(vec![echo_defs::message::ToolCall {
             id: "c1".into(),
             name: "read_file".into(),
             arguments: "{}".into(),
@@ -502,8 +509,8 @@ mod tests {
         let body = build_request_body_with_reasoning(
             &request,
             false,
-            Some(crate::config::ThinkingMode::Enabled),
-            crate::config::ReasoningEffort::Max,
+            Some(echo_defs::ThinkingMode::Enabled),
+            echo_defs::ReasoningEffort::Max,
         );
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["reasoning_effort"], "max");
@@ -522,8 +529,8 @@ mod tests {
         let body = build_request_body_with_reasoning(
             &request,
             false,
-            Some(crate::config::ThinkingMode::Disabled),
-            crate::config::ReasoningEffort::Max,
+            Some(echo_defs::ThinkingMode::Disabled),
+            echo_defs::ReasoningEffort::Max,
         );
         assert_eq!(body["thinking"]["type"], "disabled");
         assert!(body.get("reasoning_effort").is_none());
@@ -535,7 +542,7 @@ mod tests {
             &ChatRequest {
                 model: "m".into(),
                 messages: vec![ChatMessage::user("hi")],
-                tools: Some(vec![crate::llm::ToolDefinition {
+                tools: Some(vec![echo_defs::tool::ToolDefinition {
                     name: "web_search".into(),
                     description: "search the web".into(),
                     parameters: Some(serde_json::json!({"type": "object"})),
@@ -561,7 +568,7 @@ mod tests {
             &ChatRequest {
                 model: "m".into(),
                 messages: vec![ChatMessage::user("hi")],
-                tools: Some(vec![crate::llm::ToolDefinition {
+                tools: Some(vec![echo_defs::tool::ToolDefinition {
                     name: "no_params".into(),
                     description: "d".into(),
                     parameters: None,
@@ -578,10 +585,10 @@ mod tests {
     #[test]
     fn all_roles_are_mapped() {
         for (role, expected) in [
-            (crate::llm::ChatRole::System, "system"),
-            (crate::llm::ChatRole::User, "user"),
-            (crate::llm::ChatRole::Assistant, "assistant"),
-            (crate::llm::ChatRole::Tool, "tool"),
+            (echo_defs::message::ChatRole::System, "system"),
+            (echo_defs::message::ChatRole::User, "user"),
+            (echo_defs::message::ChatRole::Assistant, "assistant"),
+            (echo_defs::message::ChatRole::Tool, "tool"),
         ] {
             assert_eq!(role_str(role), expected);
         }

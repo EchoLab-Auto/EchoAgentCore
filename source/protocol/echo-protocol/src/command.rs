@@ -11,8 +11,10 @@ pub enum BackendCommand {
     SwitchModel { model: String },
     /// Switch the active provider.
     SwitchProvider { provider: String },
-    /// Replace the system prompt.
+    /// Replace the system prompt (owned by the Core plugin, not the API config).
     SetSystemPrompt { prompt: String },
+    /// Request the current system prompt plugin text.
+    RequestSystemPrompt,
     /// Update an API profile (or the top-level default when `name` is empty).
     /// The profile is activated after saving. An empty `api_key` keeps the
     /// current key unchanged.
@@ -71,4 +73,92 @@ pub enum BackendCommand {
     RequestQqFilterConfig,
     /// Set QQ gating mode. Serialised as "none" / "allowlist" / "denylist".
     SetQqGateMode { mode: GateMode },
+    /// Set the QQ owner (admin) at runtime. Persisted through the Core's
+    /// shared ConfigStore. **Frontend-only** — never exposed to the agent/LLM.
+    SetQqOwner { owner_qq: i64 },
+    /// Request the current QQ owner (admin) QQ number. **Frontend-only** —
+    /// never exposed to the agent/LLM.
+    RequestQqOwner,
+}
+
+/// Who is allowed to issue a given command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandClearance {
+    /// Commands any frontend (Panel/TUI/API) may send.
+    Frontend,
+    /// Commands the agent/LLM may also trigger through its own tools.
+    ///
+    /// Reserved for future agent-originated command paths; today the agent
+    /// never constructs [`BackendCommand`] values directly.
+    Agent,
+}
+
+/// Return the command clearance level for `cmd`.
+///
+/// QQ gate/admin mutations are **Frontend** only: the agent has no tool that
+/// updates allowlists/denylists, changes the gate mode, or sets/queries the
+/// owner QQ. These are human-in-the-loop configuration surfaces and must not
+/// be controllable by the model.
+pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
+    match cmd {
+        BackendCommand::UpdateQqAllowlist { .. }
+        | BackendCommand::UpdateQqDenylist { .. }
+        | BackendCommand::SetQqGateMode { .. }
+        | BackendCommand::SetQqOwner { .. }
+        | BackendCommand::RequestQqOwner
+        | BackendCommand::RequestQqFilterConfig => CommandClearance::Frontend,
+        _ => CommandClearance::Agent,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qq_admin_commands_are_frontend_only() {
+        assert_eq!(
+            command_clearance(&BackendCommand::UpdateQqAllowlist {
+                user_ids: vec![],
+                group_ids: vec![]
+            }),
+            CommandClearance::Frontend
+        );
+        assert_eq!(
+            command_clearance(&BackendCommand::UpdateQqDenylist {
+                user_ids: vec![],
+                group_ids: vec![]
+            }),
+            CommandClearance::Frontend
+        );
+        assert_eq!(
+            command_clearance(&BackendCommand::SetQqGateMode {
+                mode: crate::mode::GateMode::Allowlist
+            }),
+            CommandClearance::Frontend
+        );
+        assert_eq!(
+            command_clearance(&BackendCommand::SetQqOwner { owner_qq: 123 }),
+            CommandClearance::Frontend
+        );
+        assert_eq!(
+            command_clearance(&BackendCommand::RequestQqOwner),
+            CommandClearance::Frontend
+        );
+        assert_eq!(
+            command_clearance(&BackendCommand::RequestQqFilterConfig),
+            CommandClearance::Frontend
+        );
+        assert_eq!(
+            command_clearance(&BackendCommand::RequestAdapterStatus),
+            CommandClearance::Agent
+        );
+        assert_eq!(
+            command_clearance(&BackendCommand::SendMessage {
+                session_id: "s".into(),
+                content: "hi".into()
+            }),
+            CommandClearance::Agent
+        );
+    }
 }

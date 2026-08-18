@@ -157,6 +157,14 @@ pub struct TrunkStore {
     /// token-bounded LLM trunk: bounded by entry count, keeps richer metadata
     /// (source provenance, tool calls, reasoning) for the TUI history view.
     timeline: Arc<Mutex<Vec<crate::event::TimelineMessage>>>,
+    /// The append-only session event log — the **single source of truth** for
+    /// the model-facing context. `trunk_history` is its in-memory projection
+    /// cache (see `append_event`); persistence writes this log, and older
+    /// formats migrate into it (dsh "model-visible means logged").
+    event_log: echo_session::EventLog,
+    /// Fork/resume metadata (lineage, origin, delegation depth). The global
+    /// trunk model keeps one header for the store.
+    header: std::sync::Mutex<Option<echo_session::SessionHeader>>,
     persist_path: std::sync::Mutex<Option<std::path::PathBuf>>,
     dirty: std::sync::atomic::AtomicBool,
 }
@@ -169,6 +177,8 @@ impl Clone for TrunkStore {
             trunk_history: Arc::clone(&self.trunk_history),
             trunk_turn_lock: Arc::clone(&self.trunk_turn_lock),
             timeline: Arc::clone(&self.timeline),
+            event_log: self.event_log.clone(),
+            header: std::sync::Mutex::new(self.header.lock().expect("header poisoned").clone()),
             persist_path: std::sync::Mutex::new(
                 self.persist_path.lock().expect("poisoned").clone(),
             ),
@@ -192,10 +202,11 @@ impl std::fmt::Debug for TrunkStore {
 /// source label is evicted; the trunk history is never touched.
 const IDENTITY_IDLE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// Persistence format version. v4 = single global trunk + identity labels +
-/// display timeline. Older versions (v1 per-session array, v2 shared context,
-/// v3 single trunk) migrate into the same structures.
-const PERSIST_VERSION: u32 = 4;
+/// Persistence format version. v5 = event-sourced: the session event log is
+/// the source of truth, `trunk_history`/`identities`/`timeline` are persisted
+/// projections for compatibility. v4 and older (v1 per-session array, v2
+/// shared context, v3 single trunk) migrate into the event log on load.
+const PERSIST_VERSION: u32 = 5;
 
 /// Upper bound on persisted display timeline entries.
 const TRUNK_TIMELINE_MAX: usize = 1024;
@@ -209,6 +220,8 @@ impl TrunkStore {
             trunk_history: Arc::new(Mutex::new(Vec::new())),
             trunk_turn_lock: Arc::new(tokio::sync::Mutex::new(())),
             timeline: Arc::new(Mutex::new(Vec::new())),
+            event_log: echo_session::EventLog::new(),
+            header: std::sync::Mutex::new(None),
             persist_path: std::sync::Mutex::new(None),
             dirty: std::sync::atomic::AtomicBool::new(false),
         }
@@ -329,8 +342,14 @@ impl TrunkStore {
         let history = self.trunk_history.try_lock().ok()?;
         let timeline = self.timeline.try_lock().ok()?;
         let identities = self.all().iter().map(identity_metadata).collect::<Vec<_>>();
+        let events = self.event_log.log();
+        let header = self.header.lock().expect("header poisoned").clone();
         serde_json::to_string_pretty(&serde_json::json!({
             "version": PERSIST_VERSION,
+            // The event log is the source of truth; the projection fields are
+            // persisted for forward compatibility with older readers.
+            "header": header,
+            "events": events,
             "trunk_history": serialize_messages(&history),
             "identities": identities,
             "timeline": &*timeline,
@@ -342,13 +361,136 @@ impl TrunkStore {
         .ok()
     }
 
-    /// Restore a persisted file. Accepts v1 (per-session array), v2 (shared
-    /// context object) and v3 (single trunk) formats; older formats migrate
-    /// into the single trunk. Returns the number of restored identities.
+    /// Restore a persisted file.
+    ///
+    /// v5 (event-sourced): the event log is the source of truth and re-derives
+    /// the trunk projection. v4 and older (v1 per-session array, v2 shared
+    /// context, v3 single trunk): the document is migrated into the event log
+    /// (`echo_session::legacy`), preserving old-history compatibility. Returns
+    /// the number of restored identities.
     fn deserialize(&self, data: &str) -> usize {
         let Ok(root) = serde_json::from_str::<serde_json::Value>(data) else {
             return 0;
         };
+
+        // v5: event log is authoritative. Re-project the trunk from it.
+        if let Some(events) = root["events"].as_array() {
+            if let Ok(header) = serde_json::from_value::<Option<echo_session::SessionHeader>>(
+                root["header"].clone(),
+            ) {
+                *self.header.lock().expect("header poisoned") = header;
+            }
+            let events: Vec<echo_session::SessionEvent> = events
+                .iter()
+                .filter_map(|event| serde_json::from_value(event.clone()).ok())
+                .collect();
+            if !events.is_empty() || root["version"].as_u64() == Some(5) {
+                self.event_log.extend(events.clone());
+                let projected = echo_session::derive::derive_messages(
+                    &self.event_log.log(),
+                    self.memory_limit_tokens,
+                );
+                if let Ok(mut trunk) = self.trunk_history.try_lock() {
+                    *trunk = projected;
+                }
+                let count = self.restore_identity_labels(&root);
+                let timeline = root["timeline"]
+                    .as_array()
+                    .map(|entries| {
+                        entries
+                            .iter()
+                            .filter_map(|entry| {
+                                serde_json::from_value::<crate::event::TimelineMessage>(
+                                    entry.clone(),
+                                )
+                                .ok()
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if let Ok(mut timeline_guard) = self.timeline.try_lock() {
+                    *timeline_guard = timeline;
+                }
+                return count;
+            }
+        }
+
+        // v4 and older: migrate into the event log (compatibility read).
+        if let Ok(migrated) = echo_session::legacy::migrate_v4_document(data) {
+            let mut all_events = Vec::new();
+            for session in &migrated {
+                all_events.extend(session.events.clone());
+            }
+            // The old format kept one global trunk shared by all identities;
+            // deduplicate the migrated events so the log is not duplicated.
+            all_events.dedup();
+            self.event_log.extend(all_events.clone());
+            let projected = echo_session::derive::derive_messages(
+                &self.event_log.log(),
+                self.memory_limit_tokens,
+            );
+            if let Ok(mut trunk) = self.trunk_history.try_lock() {
+                *trunk = projected;
+            }
+            // Fall through to the identity/timeline restore below.
+            let count = self.restore_identity_labels(&root);
+            let restored_timeline = root["timeline"]
+                .as_array()
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| {
+                            serde_json::from_value::<crate::event::TimelineMessage>(entry.clone())
+                                .ok()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if let Ok(mut timeline) = self.timeline.try_lock() {
+                *timeline = restored_timeline;
+            }
+            return count;
+        }
+        self.deserialize_legacy(root)
+    }
+
+    /// Restore identity labels from a v4/v5 document root.
+    fn restore_identity_labels(&self, root: &serde_json::Value) -> usize {
+        let identity_values = match root {
+            serde_json::Value::Array(sessions) => sessions.as_slice(),
+            serde_json::Value::Object(_) => root["identities"]
+                .as_array()
+                .or_else(|| root["sessions"].as_array())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+            _ => &[],
+        };
+        let mut count = 0;
+        for s in identity_values {
+            let Some(_id) = s["id"].as_str() else {
+                continue;
+            };
+            let key = SessionKey {
+                platform: s["platform"].as_str().unwrap_or("local").into(),
+                scope: s["scope"].as_str().unwrap_or("tui").into(),
+                scope_id: s["scope_id"].as_str().unwrap_or("").into(),
+                user_id: s["user_id"].as_str().unwrap_or("0").into(),
+            };
+            let nickname = s["nickname"].as_str().unwrap_or("").into();
+            let group_name = s["group_name"].as_str().map(|g| g.to_string());
+            let session = self.get_or_create(&key, nickname, group_name);
+            if let Some(last_active) = s["last_active"].as_i64() {
+                session.last_active.store(last_active, Ordering::Relaxed);
+            }
+            count += 1;
+        }
+        count
+    }
+
+    /// Restore a persisted file. Accepts v1 (per-session array), v2 (shared
+    /// context object) and v3 (single trunk) formats; older formats migrate
+    /// into the single trunk. Returns the number of restored identities.
+    fn deserialize_legacy(&self, root: serde_json::Value) -> usize {
         let (identity_values, persisted_trunk) = match &root {
             serde_json::Value::Array(sessions) => (sessions.as_slice(), None),
             serde_json::Value::Object(_) => {
@@ -497,6 +639,57 @@ impl TrunkStore {
     /// Clone the current trunk history (point-in-time snapshot).
     pub async fn snapshot(&self) -> Vec<ChatMessage> {
         self.trunk_history.lock().await.clone()
+    }
+
+    // ── Event-sourced session log (Phase 3) ────────────────────────────────
+
+    /// Append one durable session event and update the in-memory trunk
+    /// projection cache under the same lock. The event log is the source of
+    /// truth; `trunk_history` is its projection, trimmed to the token budget.
+    ///
+    /// The caller must hold `session.turn_lock` (or otherwise serialize
+    /// writers) so the event order matches the projected message order.
+    pub(crate) fn append_event(&self, event: echo_session::SessionEvent) {
+        self.event_log.append(event);
+        let projected =
+            echo_session::derive::derive_messages(&self.event_log.log(), self.memory_limit_tokens);
+        if let Ok(mut trunk) = self.trunk_history.try_lock() {
+            *trunk = projected;
+        }
+        self.mark_dirty();
+    }
+
+    /// The full event log (oldest first) — the durable source of truth.
+    pub fn event_log(&self) -> Vec<echo_session::SessionEvent> {
+        self.event_log.log()
+    }
+
+    /// Insert an event after the last user event carrying `sequence`
+    /// (concurrent-branch merge), then re-project the trunk cache.
+    pub(crate) fn insert_event_after_sequence(
+        &self,
+        sequence: u64,
+        event: echo_session::SessionEvent,
+    ) {
+        self.event_log.insert_after_sequence(sequence, event);
+        let projected =
+            echo_session::derive::derive_messages(&self.event_log.log(), self.memory_limit_tokens);
+        if let Ok(mut trunk) = self.trunk_history.try_lock() {
+            *trunk = projected;
+        }
+        self.mark_dirty();
+    }
+
+    // ── Session header (fork/resume metadata) ───────────────────────────────
+
+    /// Set the store's session header (lineage, origin, delegation depth).
+    pub fn set_header(&self, header: echo_session::SessionHeader) {
+        *self.header.lock().expect("header poisoned") = Some(header);
+    }
+
+    /// The store's session header, if set.
+    pub fn header(&self) -> Option<echo_session::SessionHeader> {
+        self.header.lock().expect("header poisoned").clone()
     }
 }
 
@@ -721,23 +914,29 @@ mod tests {
         let store = TrunkStore::new(1000);
         store.set_persist_path(&path);
         let key = SessionKey::parse("qq:group:789:456").unwrap();
-        let s = store.get_or_create(&key, "bob".into(), Some("TestGroup".into()));
-        s.history
-            .lock()
-            .await
-            .push(crate::llm::ChatMessage::user("你好"));
-        s.history
-            .lock()
-            .await
-            .push(crate::llm::ChatMessage::assistant("回复"));
-        store.mark_dirty();
+        let _s = store.get_or_create(&key, "bob".into(), Some("TestGroup".into()));
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                content: "你好".into(),
+                timestamp: 1700000000,
+                message_sequence: None,
+                source: None,
+            },
+        ));
+        store.append_event(echo_session::SessionEvent::AssistantMessage(
+            echo_session::event::AssistantMessage {
+                content: "回复".into(),
+                reasoning_content: None,
+                tool_calls: vec![],
+            },
+        ));
         store.save_now().await;
         assert!(path.exists(), "trunk file written");
 
         let root: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(root["version"], 4, "v4 persistence format");
-        assert_eq!(root["trunk_history"].as_array().unwrap().len(), 2);
+        assert_eq!(root["version"], 5, "v5 event-sourced format");
+        assert_eq!(root["events"].as_array().unwrap().len(), 2);
         assert!(root["identities"]
             .as_array()
             .unwrap()
@@ -764,14 +963,24 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let store = TrunkStore::new(1000);
         store.set_persist_path(&path);
-        let local = store.get_or_create(&SessionKey::local_tui(), "local".into(), None);
+        let _local = store.get_or_create(&SessionKey::local_tui(), "local".into(), None);
         let qq_key = SessionKey::parse("qq:dm::123").unwrap();
         let _qq = store.get_or_create(&qq_key, "alice".into(), None);
-        local.history.lock().await.extend([
-            ChatMessage::user("from tui"),
-            ChatMessage::assistant("shared reply"),
-        ]);
-        store.mark_dirty();
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                content: "from tui".into(),
+                timestamp: 0,
+                message_sequence: None,
+                source: None,
+            },
+        ));
+        store.append_event(echo_session::SessionEvent::AssistantMessage(
+            echo_session::event::AssistantMessage {
+                content: "shared reply".into(),
+                reasoning_content: None,
+                tool_calls: vec![],
+            },
+        ));
         store.save_now().await;
 
         let restored = TrunkStore::new(1000);
@@ -884,7 +1093,7 @@ mod tests {
 
         let root: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(root["version"], 4, "timeline persisted as v4");
+        assert_eq!(root["version"], 5, "timeline persisted as v5");
         assert_eq!(root["timeline"].as_array().unwrap().len(), 2);
 
         let restored = TrunkStore::new(1000);
@@ -919,6 +1128,35 @@ mod tests {
         );
         assert_eq!(restored, 0);
         assert!(store.timeline_snapshot().is_empty(), "no timeline → empty");
+    }
+
+    /// BASELINE (Phase 0): the v4 persistence format dropped `tool_calls` and
+    /// `tool_call_id` on the tool round-trip — a tool message serialized then
+    /// deserialized degraded to plain text. Phase 3 replaced the format with
+    /// the event-sourced log (`echo_session`), whose event round-trip
+    /// preserves tool structure (see `echo_session::event` tests). This
+    /// legacy serializer is retained only for v4-compatible writes and
+    /// documents the old lossy behaviour.
+    #[test]
+    fn baseline_tool_message_structure_is_lost_on_roundtrip() {
+        let message = ChatMessage {
+            role: crate::llm::ChatRole::Assistant,
+            content: "".into(),
+            reasoning_content: None,
+            tool_calls: Some(vec![crate::llm::ToolCall {
+                id: "call_1".into(),
+                name: "send_private_msg".into(),
+                arguments: r#"{"user_id":123,"content":"hi"}"#.into(),
+            }]),
+            tool_call_id: None,
+        };
+        let serialized = serialize_messages(std::slice::from_ref(&message));
+        let restored = deserialize_messages(&serialized);
+        assert_eq!(restored.len(), 1);
+        assert!(
+            restored[0].tool_calls.is_none(),
+            "baseline: tool_calls are dropped by the v4 format (Phase 3 target: preserved)"
+        );
     }
 
     #[tokio::test]

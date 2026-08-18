@@ -20,6 +20,20 @@ EchoAgentCore/
 ├── config/echo-agent-core.toml   # Core 配置模板
 ├── skills/                       # SKILL.md 技能定义（Core 独占消费，热重载）
 ├── source/
+│   ├── defs/
+│   │   └── echo-defs/            # Service Definition 层：词汇类型 + trait，零实现
+│   ├── context/
+│   │   └── echo-context/         # 服务定位 Ctx + 类型化 EventBus + 可逆注册 + 作用域
+│   ├── session/
+│   │   └── echo-session/         # 事件溯源会话存储：append-only 事件日志 + 投影 + 兼容迁移
+│   ├── loop/
+│   │   └── echo-loop/            # 默认 agent 驱动：TurnRunner turn/step 状态机 + 工具执行管道
+│   ├── llm/
+│   │   ├── echo-llm-openai/      # OpenAI 兼容 provider（Service Provider 角色）
+│   ├── chat/
+│   │   └── echo-chat-capability/ # 平台能力接缝定义：DeliveryPolicy/DeliveryTarget（Service Definition 角色）
+│   │   ├── echo-llm-anthropic/   # Anthropic Messages provider
+│   │   └── echo-llm-ollama/      # Ollama provider（薄包装 OpenAI 兼容端点）
 │   ├── protocol/
 │   │   └── echo-protocol/        # 前后端线协议 crate（BackendCommand/BackendEvent/bridge）
 │   ├── backend/
@@ -31,6 +45,7 @@ EchoAgentCore/
 │   │   └── echo-test-utils/      # 共享测试 mock（仅 dev-dependency）
 │   └── core/                     # echo-agent-core 二进制（组合根）
 ├── doc/develop/                  # 开发文档（含 protocol.md 线协议契约）
+├── doc/decisions/                # 架构决策记录（ADR）
 ├── packaging/systemd/            # 用户级 systemd 单元模板
 ├── scripts/                      # install.sh / update.sh（受控自更新）
 ├── napcat/                       # NapCat Docker 配置
@@ -42,20 +57,26 @@ EchoAgentCore/
 
 | Crate | 职责 |
 |---|---|
-| `echo-protocol` | **前后端契约的唯一来源**：`BackendCommand`/`BackendEvent`/`WsMessage`、bridge、`GateMode`/`ThinkingMode`/`ReasoningEffort`。不依赖任何 agent/平台代码，前端只需依赖它 |
+| `echo-defs` | **Service Definition 层**：LLM/工具/技能/平台消息词汇与 trait（`LlmProvider`/`Tool`/`SkillProvider`/`ChatAdapter`）、策略枚举（`GateMode` 等）、token 纯函数。零实现、零 harness 依赖 |
+| `echo-context` | **服务定位与事件机制**：`Ctx`（按 key 注册/解析服务）、`EventBus`（Observe/Waterfall/Parallel/Serial 类型化事件）、`Disposer`（可逆注册）、`ScopedRegistry`（per-scope shadowing）。零 echo-* 依赖 |
+| `echo-session` | **事件溯源会话存储**：`SessionEvent` 事件集、`EventLog`（append-only 持久化）、`derive_messages` 投影、compaction、`SessionHeader`（fork/resume）、v1–v4 旧格式兼容迁移 |
+| `echo-loop` | **默认 agent 驱动**：`TurnRunner` turn/step 状态机（`turn/*`/`step/*`/`agent/*` 生命周期事件）、`ToolPipeline` 工具执行管道（pre/execute/post waterfall 中间件） |
+| `echo-llm-openai` / `echo-llm-anthropic` / `echo-llm-ollama` | **LLM provider（Service Provider 角色）**：各自实现 `echo_defs::LlmProvider`,只依赖定义层 |
+| `echo-chat-capability` | **平台能力接缝（Service Definition 角色）**：`DeliveryPolicy`/`DeliveryTarget`（交付策略与目标词汇），核心循环只依赖此定义 |
+| `echo-protocol` | **前后端契约的唯一来源**：`BackendCommand`/`BackendEvent`/`WsMessage`、bridge；`GateMode`/`ThinkingMode`/`ReasoningEffort` 从 `echo-defs` re-export。前端只需依赖它 |
 | `echo-agent` | Agent 框架：agent 循环、LLM provider（OpenAI/Anthropic/Ollama）、工具注册表、技能系统、trunk 记忆、编排（定时器/后台任务/自更新） |
 | `echo-adapter` | 协议无关的适配器抽象：`Adapter` trait、`InboundMessageHook`、过滤管道、`ConfigStore` |
 | `echo-adapter-qq` | QQ 适配器：反向 WS 接入、5 层门控、NapCat HTTP 客户端 |
 | `echo-core` / `echo-server` | OneBot v11 类型 / 反向 WS 服务器（仅供 echo-adapter-qq 使用） |
 | `echo-agent-core`（bin） | 组合根：加载配置、装配 Agent + QQ 适配器、对外提供 management WS |
 
-依赖方向（单向，无环）：
+依赖方向（单向，无环，扩展只依赖定义层）：
 
 ```
-echo-protocol ◄── echo-adapter ◄── echo-agent ◄── echo-agent-core (bin)
-                    ▲   ▲                          ▲
-                    └───┴── echo-adapter-qq ◄──────┘
-                           (→ echo-core, echo-server)
+echo-defs ◄── echo-protocol ◄── echo-adapter ◄── echo-agent ◄── echo-agent-core (bin)
+    ▲              ▲                ▲   ▲                          ▲
+    └── echo-context ◄──────────────┴───┴── echo-adapter-qq ◄──────┘
+                                          (→ echo-core, echo-server)
 ```
 
 ## 构建与运行
@@ -78,7 +99,7 @@ cargo fmt --all --check
 ## 安装部署（systemd 用户服务）
 
 ```bash
-./scripts/install.sh [--owner-qq QQ_ID] [--no-start]
+./scripts/install.sh [--no-start]
 # 先检查路径：./scripts/install.sh --dry-run
 ```
 
@@ -94,7 +115,12 @@ cargo fmt --all --check
 | `echo-agent-core.service` | 常驻 Core 服务 |
 | `echo-agent-core-update.service` | 一次性更新器（agent 自更新工具触发） |
 
-详见 [doc/develop/install.md](doc/develop/install.md)。
+详见 [doc/develop/install.md](doc/develop/install.md)。卸载：`./scripts/uninstall.sh`
+（保留配置与会话历史；`--purge` 连配置一起删，`--dry-run` 先预览）。
+
+> 注意：为了让 `run_sudo` 能提权，常驻 `echo-agent-core.service` 关闭了
+> `NoNewPrivileges`（sudo 依赖 setuid）；一次性更新器服务保留
+> `NoNewPrivileges=true`（不运行 sudo，仅构建并替换本地二进制）。
 
 ### Docker
 
@@ -111,6 +137,7 @@ docker run -v "$PWD/config:/app/config" -p 3131:3131 -p 3132:3132 echo-agent-cor
 
 - `[agent]`：LLM provider/model/base_url/api_key（env 覆盖：`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`）、`memory_limit_tokens`（trunk token 预算）、`skills_dir`、`system_prompt`、多 API profile。
 - `[agent.self_update]`：受控自更新授权（`allow_local`、`allowed_qq_users`）。
+- `[agent.sudo]`：`run_sudo` 工具（LLM 以 root 执行命令）。每次执行都需要你在 Panel 输入 sudo 密码授权；密码只走专用通道（不进入 LLM 上下文/会话日志/命令队列），输入后立即零化。`enabled` 默认开启，`auth_timeout_secs`/`command_timeout_secs` 可调。
 - `[adapters.qq]`：QQ 适配器开关、NapCat HTTP API、owner_qq、命令前缀；`[adapters.qq.server]` 反向 WS 监听 `:3131` 与访问令牌（`ECHO_ACCESS_TOKEN` env 可覆盖）。
 - `[core] management_address`：前端连接地址（默认 `127.0.0.1:3132`）。
 

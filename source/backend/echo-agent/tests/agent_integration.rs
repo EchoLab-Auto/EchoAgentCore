@@ -220,6 +220,29 @@ async fn set_system_prompt_changes_behaviour() {
 }
 
 #[tokio::test]
+async fn set_system_prompt_persists_to_config() {
+    let (agent, _provider) = test_agent("ok");
+    let tmp = std::env::temp_dir().join(format!("echo-agent-prompt-{}.toml", uuid::Uuid::new_v4()));
+    std::fs::write(
+        &tmp,
+        "[agent]\nprovider = \"openai\"\nsystem_prompt = \"old\"\n",
+    )
+    .unwrap();
+    agent.set_config_path(tmp.clone());
+    agent
+        .apply_command(BackendCommand::SetSystemPrompt {
+            prompt: "你是翻译助手".into(),
+        })
+        .await;
+    let content = std::fs::read_to_string(&tmp).unwrap();
+    assert!(
+        content.contains("system_prompt = \"你是翻译助手\""),
+        "unexpected: {content}"
+    );
+    std::fs::remove_file(&tmp).ok();
+}
+
+#[tokio::test]
 async fn switch_model_updates_active_model() {
     let (agent, _provider) = test_agent("ok");
     agent
@@ -228,6 +251,29 @@ async fn switch_model_updates_active_model() {
         })
         .await;
     assert_eq!(agent.active_model().await, "gpt-4o");
+}
+
+#[tokio::test]
+async fn switch_model_persists_to_config() {
+    let (agent, _provider) = test_agent("ok");
+    let tmp = std::env::temp_dir().join(format!("echo-agent-model-{}.toml", uuid::Uuid::new_v4()));
+    std::fs::write(
+        &tmp,
+        "[agent]\nprovider = \"openai\"\nmodel = \"old-model\"\n",
+    )
+    .unwrap();
+    agent.set_config_path(tmp.clone());
+    agent
+        .apply_command(BackendCommand::SwitchModel {
+            model: "gpt-4o".into(),
+        })
+        .await;
+    let content = std::fs::read_to_string(&tmp).unwrap();
+    assert!(
+        content.contains("model = \"gpt-4o\""),
+        "unexpected: {content}"
+    );
+    std::fs::remove_file(&tmp).ok();
 }
 
 #[tokio::test]
@@ -619,6 +665,178 @@ async fn local_tui_input_has_no_qq_boundary() {
     assert!(!prompt.contains("# Backend input boundary"));
 }
 
+/// A tool that fails its execution, to exercise the error path.
+struct FailingTool {
+    name: &'static str,
+}
+
+#[async_trait]
+impl Tool for FailingTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "failing mock tool"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
+    async fn execute(&self, _arguments: serde_json::Value) -> Result<String, ToolError> {
+        Err(ToolError::Execution("mock failure".into()))
+    }
+}
+
+/// Baseline: a turn that performs one tool call and then replies must emit the
+/// lifecycle events in the documented order — branch start, LLM request,
+/// tool call/result, agent completion, branch completion. This freezes the
+/// turn protocol the refactor (TurnRunner) must keep emitting.
+#[tokio::test]
+async fn turn_emits_lifecycle_events_in_order() {
+    let script = vec![
+        ChatResponse {
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![ToolCall {
+                id: "calc_1".into(),
+                name: "mock_tool".into(),
+                arguments: r#"{"x":1}"#.into(),
+            }],
+            usage: Usage::default(),
+        },
+        ChatResponse {
+            content: Some("final".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            usage: Usage::default(),
+        },
+    ];
+    let provider = Arc::new(ScriptedProvider::new(script));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(MockTool {
+        name: "mock_tool",
+        result: "tool done".into(),
+    }));
+    let agent = Arc::new(Agent::new(
+        provider.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        tools,
+        Arc::new(AdapterRegistry::new()),
+    ));
+    let (bridge, handle) = echo_agent::create_bridge();
+    agent.attach(Arc::new(handle));
+
+    let key = SessionKey::parse("qq:dm::123").unwrap();
+    let session = agent.trunk.get_or_create(&key, "u".into(), None);
+    agent.process_message(&session, "计算").await.unwrap();
+
+    let mut events = Vec::new();
+    {
+        let mut rx = bridge.event_rx.lock().await;
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+    }
+
+    // Filter to the lifecycle-relevant variants, preserving order.
+    let lifecycle: Vec<&str> = events
+        .iter()
+        .map(|ev| match ev {
+            BackendEvent::ReplyBranchStarted { .. } => "branch_started",
+            BackendEvent::AgentThinking { .. } => "thinking",
+            BackendEvent::LlmRequest { .. } => "llm_request",
+            BackendEvent::LlmResponse { .. } => "llm_response",
+            BackendEvent::ToolCall { .. } => "tool_call",
+            BackendEvent::ToolResult { .. } => "tool_result",
+            BackendEvent::AgentCompleted { .. } => "agent_completed",
+            BackendEvent::ReplyBranchCompleted { .. } => "branch_completed",
+            _ => "other",
+        })
+        .filter(|kind| *kind != "other")
+        .collect();
+
+    assert_eq!(
+        lifecycle,
+        vec![
+            "branch_started",
+            "thinking",
+            "llm_request",
+            "llm_response",
+            "tool_call",
+            "tool_result",
+            "llm_request",
+            "llm_response",
+            "agent_completed",
+            "branch_completed",
+        ],
+        "turn lifecycle order frozen: {lifecycle:?}"
+    );
+}
+
+/// Baseline: a tool that fails must produce a tool_result whose text starts
+/// with "error:", and the turn must still complete (not hang).
+#[tokio::test]
+async fn failing_tool_result_marks_error_and_turn_completes() {
+    let script = vec![
+        ChatResponse {
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![ToolCall {
+                id: "f_1".into(),
+                name: "failing_tool".into(),
+                arguments: "{}".into(),
+            }],
+            usage: Usage::default(),
+        },
+        ChatResponse {
+            content: Some("after failure".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            usage: Usage::default(),
+        },
+    ];
+    let provider = Arc::new(ScriptedProvider::new(script));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(FailingTool {
+        name: "failing_tool",
+    }));
+    let agent = Arc::new(Agent::new(
+        provider.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        tools,
+        Arc::new(AdapterRegistry::new()),
+    ));
+    let (bridge, handle) = echo_agent::create_bridge();
+    agent.attach(Arc::new(handle));
+
+    let key = SessionKey::parse("qq:dm::123").unwrap();
+    let session = agent.trunk.get_or_create(&key, "u".into(), None);
+    let reply = agent.process_message(&session, "run").await.unwrap();
+    assert_eq!(reply, "after failure");
+
+    let mut events = Vec::new();
+    {
+        let mut rx = bridge.event_rx.lock().await;
+        while let Ok(ev) = rx.try_recv() {
+            events.push(ev);
+        }
+    }
+    let failed_result = events.iter().find_map(|ev| match ev {
+        BackendEvent::ToolResult {
+            tool_name, result, ..
+        } if tool_name == "failing_tool" => Some(result.as_str()),
+        _ => None,
+    });
+    assert!(
+        failed_result.is_some_and(|result| result.starts_with("error:")),
+        "tool failure must surface as error: result, got {failed_result:?}"
+    );
+    assert!(events
+        .iter()
+        .any(|ev| matches!(ev, BackendEvent::AgentCompleted { .. })));
+}
+
 #[tokio::test]
 async fn non_triggering_message_uses_cached_prompt() {
     let (agent, provider) = test_agent("ok");
@@ -652,4 +870,77 @@ async fn non_triggering_message_uses_cached_prompt() {
         })
         .await;
     assert_eq!(provider.last_system_prompt().await, first);
+}
+
+/// Phase 3 invariant: after a session with tool calls is persisted and the
+/// store is reloaded, the model context rebuilt from the event log still
+/// contains the tool-call structure (the pre-event-sourced format dropped
+/// it). The event log is the source of truth; trunk_history is its
+/// projection.
+#[tokio::test]
+async fn event_log_persists_tool_structure_across_reload() {
+    let path =
+        std::env::temp_dir().join(format!("echo-session-events-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+
+    // Build an agent, run a turn that produces a tool call and a reply.
+    let script = vec![
+        ChatResponse {
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![ToolCall {
+                id: "calc_1".into(),
+                name: "mock_tool".into(),
+                arguments: r#"{"expr":"1+1"}"#.into(),
+            }],
+            usage: Usage::default(),
+        },
+        ChatResponse {
+            content: Some("结果是 2".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            usage: Usage::default(),
+        },
+    ];
+    let provider = Arc::new(ScriptedProvider::new(script));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(MockTool {
+        name: "mock_tool",
+        result: "2".into(),
+    }));
+    let agent = Arc::new(Agent::new(
+        provider.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        tools,
+        Arc::new(AdapterRegistry::new()),
+    ));
+    let key = SessionKey::parse("qq:dm::123").unwrap();
+    let session = agent.trunk.get_or_create(&key, "u".into(), None);
+    agent.trunk.set_persist_path(path.clone());
+    agent.process_message(&session, "计算 1+1").await.unwrap();
+    agent.trunk.save_now().await;
+
+    // Reload into a fresh store: the event log must rebuild the full context.
+    let store2 = echo_agent::TrunkStore::new(1000);
+    store2.set_persist_path(path.clone());
+    let restored = store2.load_from_file().await;
+    assert_eq!(restored, 1, "identity restored");
+
+    let events = store2.event_log();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, echo_session::SessionEvent::ToolCall(_))),
+        "tool call event persisted"
+    );
+    // The rebuilt trunk history (from the event log) contains the tool result.
+    let history = store2.snapshot().await;
+    assert!(
+        history
+            .iter()
+            .any(|message| matches!(message.role, echo_agent::llm::ChatRole::Tool)),
+        "tool message rebuilt from log: {history:?}"
+    );
+    let _ = std::fs::remove_file(&path);
 }

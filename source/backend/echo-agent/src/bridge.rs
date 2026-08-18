@@ -5,6 +5,7 @@
 //! `echo_agent::bridge::…` paths keep working.
 
 pub use echo_protocol::{
-    create_bridge, deserialize_message, serialize_command, serialize_event, BackendBridge,
-    BackendHandle, FanoutHandle, WsMessage,
+    create_bridge, deserialize_message, deserialize_sudo_password, serialize_command,
+    serialize_event, serialize_sudo_password, BackendBridge, BackendHandle, FanoutHandle,
+    SudoPasswordSubmit, WsMessage,
 };

@@ -55,6 +55,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     init_tracing(&cfg.logging)?;
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    // Keep one sender alive for the whole `run_core` scope. The admin handler
+    // (the only other sender) is stored inside the QQ adapter's handler
+    // registry; if that registry is dropped during an adapter restart,
+    // `shutdown_rx.changed()` would otherwise complete with a `RecvError` and
+    // the select below would misinterpret it as an admin shutdown.
+    let _shutdown_tx_guard = shutdown_tx.clone();
     let tracker = ConnectionTracker::default();
 
     // ---- agent framework ----
@@ -94,6 +100,23 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let provider = echo_agent::llm::create_provider(&provider_cfg)?;
     info!(provider = %provider_cfg.provider, model = %provider_cfg.model, "llm provider ready");
 
+    // ---- Service context (dsh-style service locator) ----
+    // Core services are registered under stable keys; extension plugins and
+    // consumers resolve by key instead of importing concrete providers.
+    let ctx: Arc<echo_context::Ctx> = Arc::new(echo_context::Ctx::default());
+    let provider_arc: Arc<dyn echo_agent::LlmProvider> = Arc::from(provider);
+    let _ctx_keep = ctx.register::<Arc<dyn echo_agent::LlmProvider>>("llm", provider_arc.clone());
+
+    // The default turn runner (dsh: the loop is a swappable plugin, resolved
+    // by key). Register it now; consumers (the agent driver) resolve it.
+    let runner: Arc<echo_loop::TurnRunner> = Arc::new(echo_loop::TurnRunner::new(
+        Arc::new(echo_context::EventBus::default()),
+        provider_arc,
+        Arc::new(echo_loop::ToolPipeline::new()),
+        echo_loop::LoopOptions::default(),
+    ));
+    let _runner_keep = ctx.register::<Arc<echo_loop::TurnRunner>>("loop", runner);
+
     // Tools — platform-independent.
     let mut tools = echo_agent::ToolRegistry::new();
 
@@ -120,6 +143,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // The configured QQ owner is also an update administrator. Additional
     // administrators can be listed under `[agent.self_update]`.
     let mut agent_config = cfg.agent.clone();
+    // System prompt is owned by the Core plugin, not the API config.
+    agent_config.system_prompt = cfg.plugins.system_prompt.text.clone();
     if cfg.qq_adapter.owner_qq > 0 {
         let owner = cfg.qq_adapter.owner_qq as u64;
         if !agent_config.self_update.allowed_qq_users.contains(&owner) {
@@ -131,8 +156,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         "agent context policy: single global trunk (token-budget trimmed)"
     );
 
+    // Resolve the provider from the service context for the agent.
+    let provider = ctx
+        .resolve::<Arc<dyn echo_agent::LlmProvider>>("llm")
+        .expect("llm provider registered");
+
     // Create the agent.
-    let agent = echo_agent::Agent::new(Arc::from(provider), agent_config, skills, tools, adapters);
+    let agent = echo_agent::Agent::new(provider, agent_config, skills, tools, adapters);
     // One shared ConfigStore: Agent (`[agent]`) and QqAdapter
     // (`[adapters.qq]`) persist through the same store, so concurrent TOML
     // writes cannot lose each other's sections.
@@ -144,11 +174,26 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let bridge = Arc::new(bridge);
     agent.attach(Arc::new(handle));
 
+    // ---- Sudo authorization broker ----
+    // The broker is shared between the agent (run_sudo awaits a password
+    // here) and the management server (sudo password frames are routed here
+    // directly, bypassing the agent command queue, session log and LLM
+    // context).
+    let sudo_broker = Arc::new(echo_agent::SudoBroker::new());
+    agent.attach_sudo_broker(sudo_broker.clone());
+
     let agent = Arc::new(agent);
     // Restore persisted sessions and start periodic save.
     let restored = agent.load_sessions().await;
     if restored > 0 {
         info!(restored, "sessions restored from disk");
+    }
+    // The composition root owns the session header: a restored store keeps
+    // its persisted lineage, a fresh one is a top-level session.
+    if agent.trunk.header().is_none() {
+        agent
+            .trunk
+            .set_header(echo_session::SessionHeader::top_level("trunk"));
     }
     agent.start_session_save_task();
     agent.start_skill_reload_task().await;
@@ -202,8 +247,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let mgmt_addr = cfg.core.management_address.clone();
     let mgmt_agent = agent.clone();
     let mgmt_bridge = bridge.clone();
+    let mgmt_sudo = sudo_broker.clone();
     tokio::spawn(async move {
-        if let Err(e) = management::serve(&mgmt_addr, mgmt_bridge, mgmt_agent).await {
+        if let Err(e) = management::serve(&mgmt_addr, mgmt_bridge, mgmt_agent, mgmt_sudo).await {
             warn!(error = %e, "management WS server stopped");
         }
     });

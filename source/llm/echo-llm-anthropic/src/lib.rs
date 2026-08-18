@@ -6,9 +6,9 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use super::{
-    ChatChunk, ChatRequest, ChatResponse, LlmError, LlmProvider, ToolCall, ToolCallDelta, Usage,
-};
+use echo_defs::llm::LlmError;
+use echo_defs::llm::LlmProvider;
+use echo_defs::message::{ChatChunk, ChatRequest, ChatResponse, ToolCall, ToolCallDelta, Usage};
 
 #[derive(Debug, Clone)]
 pub struct AnthropicProvider {
@@ -16,8 +16,8 @@ pub struct AnthropicProvider {
     api_key: String,
     model: String,
     client: reqwest::Client,
-    thinking: Option<crate::config::ThinkingMode>,
-    reasoning_effort: crate::config::ReasoningEffort,
+    thinking: Option<echo_defs::ThinkingMode>,
+    reasoning_effort: echo_defs::ReasoningEffort,
 }
 
 impl AnthropicProvider {
@@ -27,7 +27,7 @@ impl AnthropicProvider {
             api_key: api_key.to_string(),
             model: model.to_string(),
             thinking: None,
-            reasoning_effort: crate::config::ReasoningEffort::default(),
+            reasoning_effort: echo_defs::ReasoningEffort::default(),
             client: match reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .connect_timeout(std::time::Duration::from_secs(10))
@@ -46,8 +46,8 @@ impl AnthropicProvider {
 
     pub fn with_reasoning(
         mut self,
-        thinking: crate::config::ThinkingMode,
-        effort: crate::config::ReasoningEffort,
+        thinking: echo_defs::ThinkingMode,
+        effort: echo_defs::ReasoningEffort,
     ) -> Self {
         self.thinking = Some(thinking);
         self.reasoning_effort = effort;
@@ -76,17 +76,25 @@ impl LlmProvider for AnthropicProvider {
             .header("anthropic-version", "2023-06-01")
             .json(&body)
             .send()
-            .await?;
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
         let status = resp.status();
-        let text = resp.text().await?;
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
         if !status.is_success() {
             return Err(LlmError::Api(format!(
                 "HTTP {status}: {}",
-                super::truncate(&text, 300)
+                echo_defs::token::truncate(&text, 300)
             )));
         }
-        let parsed: MessagesResponse = serde_json::from_str(&text)
-            .map_err(|e| LlmError::Parse(format!("{e} — body: {}", super::truncate(&text, 300))))?;
+        let parsed: MessagesResponse = serde_json::from_str(&text).map_err(|e| {
+            LlmError::Parse(format!(
+                "{e} — body: {}",
+                echo_defs::token::truncate(&text, 300)
+            ))
+        })?;
         let mut content = String::new();
         let mut reasoning_content = String::new();
         let mut tool_calls = Vec::new();
@@ -142,19 +150,23 @@ impl LlmProvider for AnthropicProvider {
             .header("anthropic-version", "2023-06-01")
             .json(&body)
             .send()
-            .await?;
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
-            let text = resp.text().await?;
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| LlmError::Http(e.to_string()))?;
             return Err(LlmError::Api(format!(
                 "HTTP {status}: {}",
-                super::truncate(&text, 300)
+                echo_defs::token::truncate(&text, 300)
             )));
         }
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
+            let chunk = chunk.map_err(|e| LlmError::Http(e.to_string()))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
             while let Some(pos) = buffer.find("\n\n") {
                 let event = buffer[..pos].to_string();
@@ -167,7 +179,7 @@ impl LlmProvider for AnthropicProvider {
                         AnthropicOutcome::ApiError(msg) => {
                             return Err(LlmError::Api(format!(
                                 "流式响应错误: {}",
-                                super::truncate(&msg, 300)
+                                echo_defs::token::truncate(&msg, 300)
                             )));
                         }
                     }
@@ -267,24 +279,19 @@ fn parse_anthropic_event(event: &str) -> Vec<AnthropicOutcome> {
 
 #[cfg(test)]
 fn build_request_body(request: &ChatRequest, stream: bool) -> serde_json::Value {
-    build_request_body_with_reasoning(
-        request,
-        stream,
-        None,
-        crate::config::ReasoningEffort::default(),
-    )
+    build_request_body_with_reasoning(request, stream, None, echo_defs::ReasoningEffort::default())
 }
 
 fn build_request_body_with_reasoning(
     request: &ChatRequest,
     stream: bool,
-    thinking: Option<crate::config::ThinkingMode>,
-    reasoning_effort: crate::config::ReasoningEffort,
+    thinking: Option<echo_defs::ThinkingMode>,
+    reasoning_effort: echo_defs::ReasoningEffort,
 ) -> serde_json::Value {
     let system = request
         .messages
         .iter()
-        .filter(|m| m.role == super::ChatRole::System)
+        .filter(|m| m.role == echo_defs::message::ChatRole::System)
         .map(|m| m.content.clone())
         .collect::<Vec<_>>()
         .join("\n");
@@ -294,13 +301,13 @@ fn build_request_body_with_reasoning(
         let msgs = &request.messages;
         while i < msgs.len() {
             let m = &msgs[i];
-            if m.role == super::ChatRole::System {
+            if m.role == echo_defs::message::ChatRole::System {
                 i += 1;
                 continue;
             }
-            if m.role == super::ChatRole::Tool {
+            if m.role == echo_defs::message::ChatRole::Tool {
                 let mut results: Vec<serde_json::Value> = Vec::new();
-                while i < msgs.len() && msgs[i].role == super::ChatRole::Tool {
+                while i < msgs.len() && msgs[i].role == echo_defs::message::ChatRole::Tool {
                     let tm = &msgs[i];
                     results.push(json!({
                         "type": "tool_result",
@@ -309,11 +316,32 @@ fn build_request_body_with_reasoning(
                     }));
                     i += 1;
                 }
+                // User texts directly after tool results (e.g. requests that
+                // followed a failed turn) must not become second consecutive
+                // user messages; fold them into the same message as text
+                // blocks, which Anthropic allows alongside tool_result.
+                while i < msgs.len() && msgs[i].role == echo_defs::message::ChatRole::User {
+                    results.push(json!({"type": "text", "text": msgs[i].content}));
+                    i += 1;
+                }
                 out.push(json!({"role": "user", "content": results}));
             } else {
                 out.push(match m.role {
-                    super::ChatRole::User => json!({"role": "user", "content": m.content}),
-                    super::ChatRole::Assistant => {
+                    echo_defs::message::ChatRole::User => {
+                        // Merge consecutive user texts (a failed turn leaves a
+                        // user message with no reply) so the request strictly
+                        // alternates roles. In-memory history keeps them
+                        // separate — the concurrent-reply merge keys off each
+                        // message's sequence marker.
+                        let mut content = m.content.clone();
+                        while i + 1 < msgs.len() && msgs[i + 1].role == echo_defs::message::ChatRole::User {
+                            i += 1;
+                            content.push('\n');
+                            content.push_str(&msgs[i].content);
+                        }
+                        json!({"role": "user", "content": content})
+                    }
+                    echo_defs::message::ChatRole::Assistant => {
                         // Match directly on tool_calls instead of a separate
                         // has_tools guard + unwrap, so an empty/None tool_calls
                         // can never panic here.
@@ -378,7 +406,7 @@ fn build_request_body_with_reasoning(
     body["max_tokens"] = json!(request.max_tokens.unwrap_or(4096));
     if let Some(mode) = thinking {
         body["thinking"] = json!({"type": mode.as_str()});
-        if mode == crate::config::ThinkingMode::Enabled {
+        if mode == echo_defs::ThinkingMode::Enabled {
             body["output_config"] = json!({"effort": reasoning_effort.as_str()});
         }
     }
@@ -472,7 +500,7 @@ enum DeltaWire {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::ChatMessage;
+    use echo_defs::message::{ChatMessage, ToolCall};
 
     #[test]
     fn parses_response_with_thinking_blocks() {
@@ -543,8 +571,8 @@ mod tests {
         let body = build_request_body_with_reasoning(
             &request,
             false,
-            Some(crate::config::ThinkingMode::Enabled),
-            crate::config::ReasoningEffort::Max,
+            Some(echo_defs::ThinkingMode::Enabled),
+            echo_defs::ReasoningEffort::Max,
         );
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["output_config"]["effort"], "max");
@@ -565,7 +593,7 @@ mod tests {
                     ChatMessage::user("calculate"),
                     ChatMessage::assistant("calling"),
                     ChatMessage {
-                        role: crate::llm::ChatRole::Assistant,
+                        role: echo_defs::message::ChatRole::Assistant,
                         content: "".into(),
                         reasoning_content: None,
                         tool_calls: Some(vec![ToolCall {
@@ -598,6 +626,77 @@ mod tests {
     }
 
     #[test]
+    fn user_text_after_tool_results_folds_into_the_same_user_message() {
+        // User texts directly after tool results (e.g. requests that followed
+        // a failed turn) must not become consecutive user messages, which the
+        // strict-role-alternation endpoints reject.
+        let mut assistant = ChatMessage::assistant_with_reasoning("checking", None);
+        assistant.tool_calls = Some(vec![ToolCall {
+            id: "call_1".into(),
+            name: "run_command".into(),
+            arguments: "{\"command\":\"ls\"}".into(),
+        }]);
+        let body = build_request_body(
+            &ChatRequest {
+                model: "claude-test".into(),
+                messages: vec![
+                    ChatMessage::system("sys"),
+                    assistant,
+                    ChatMessage::tool("ok", "call_1"),
+                    ChatMessage::user("继续"),
+                    ChatMessage::user("再来一次"),
+                ],
+                tools: None,
+                temperature: None,
+                max_tokens: None,
+            },
+            false,
+        );
+        let messages = body["messages"].as_array().unwrap();
+        // assistant-with-tool_use + one user message (tool_result + texts).
+        assert_eq!(messages.len(), 2);
+        let merged = &messages[1];
+        assert_eq!(merged["role"], "user");
+        let blocks = merged["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0]["type"], "tool_result");
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[1]["text"], "继续");
+        assert_eq!(blocks[2]["text"], "再来一次");
+    }
+
+    #[test]
+    fn consecutive_user_texts_merge_into_one_message() {
+        // Failed turns leave user messages without replies; the request must
+        // still alternate roles.
+        let body = build_request_body(
+            &ChatRequest {
+                model: "claude-test".into(),
+                messages: vec![
+                    ChatMessage::system("sys"),
+                    ChatMessage::user("第一次"),
+                    ChatMessage::user("第二次"),
+                    ChatMessage::assistant("收到"),
+                    ChatMessage::user("第三次"),
+                ],
+                tools: None,
+                temperature: None,
+                max_tokens: None,
+            },
+            false,
+        );
+        let messages = body["messages"].as_array().unwrap();
+        let roles: Vec<&str> = messages
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, vec!["user", "assistant", "user"]);
+        assert!(messages[0]["content"].as_str().unwrap().contains("第一次"));
+        assert!(messages[0]["content"].as_str().unwrap().contains("第二次"));
+        assert_eq!(messages[2]["content"], "第三次");
+    }
+
+    #[test]
     fn assistant_tool_use_includes_input_blocks() {
         let body = build_request_body(
             &ChatRequest {
@@ -605,7 +704,7 @@ mod tests {
                 messages: vec![
                     ChatMessage::system("sys"),
                     ChatMessage {
-                        role: crate::llm::ChatRole::Assistant,
+                        role: echo_defs::message::ChatRole::Assistant,
                         content: "I'll check".into(),
                         reasoning_content: None,
                         tool_calls: Some(vec![ToolCall {
@@ -660,7 +759,7 @@ mod tests {
                 messages: vec![
                     ChatMessage::system("sys"),
                     ChatMessage {
-                        role: crate::llm::ChatRole::Assistant,
+                        role: echo_defs::message::ChatRole::Assistant,
                         content: "".into(),
                         reasoning_content: None,
                         tool_calls: Some(vec![ToolCall {

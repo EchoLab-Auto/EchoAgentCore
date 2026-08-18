@@ -34,6 +34,38 @@ impl Default for LoggingSection {
     }
 }
 
+// ── Plugins ────────────────────────────────────────────────────────────────
+
+/// Core 插件配置。系统提示词是第一个插件化注入项。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PluginsSection {
+    pub system_prompt: SystemPromptPlugin,
+}
+
+impl Default for PluginsSection {
+    fn default() -> Self {
+        Self {
+            system_prompt: SystemPromptPlugin::default(),
+        }
+    }
+}
+
+/// 系统提示词插件：`text` 为空时不做基础系统提示词注入。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SystemPromptPlugin {
+    pub text: String,
+}
+
+impl Default for SystemPromptPlugin {
+    fn default() -> Self {
+        Self {
+            text: "请你使用中文".to_string(),
+        }
+    }
+}
+
 // ── Core 配置 ──────────────────────────────────────────────────────────────
 
 /// Core 侧配置：Agent、适配器与 management 服务。
@@ -42,6 +74,7 @@ impl Default for LoggingSection {
 pub struct CoreConfig {
     pub logging: LoggingSection,
     pub agent: echo_agent::AgentConfig,
+    pub plugins: PluginsSection,
     pub core: CoreSection,
     /// Legacy server section — auto-migrated to `[adapters.qq.server]`.
     pub server: ServerSection,

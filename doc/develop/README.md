@@ -4,12 +4,14 @@
 
 | Document | Content |
 |---|---|
+| [architecture.md](../architecture.md) | Architecture spine: composition, crates, seams, events, session, extension points |
 | [protocol.md](protocol.md) | Frontend ⇄ Core wire protocol (management WS contract) |
 | [install.md](install.md) | One-click user installation, systemd Core service, controlled self-update |
 | [config/persistence.md](config/persistence.md) | ConfigStore, agent & gate persistence, atomic writes, sessions |
 | [agent/background-tasks.md](agent/background-tasks.md) | Detached tasks, parallel branches, ordered integration, delivery targets |
 | [adapter/qq/gating.md](adapter/qq/gating.md) | QQ message gating pipeline (5-layer), runtime mutability |
 | [testing.md](testing.md) | Test strategy: unit / proptest / integration / concurrency layers |
+| [decisions/](decisions/README.md) | Architecture decision records (ADR) |
 
 > 架构/Agent/Adapter/Config 的通用文档已删除——这些信息通过源码注释（`//! module doc`）和 README 维护，避免文档与代码分叉。
 > TUI 前端文档在 EchoAgentPanel 仓库。
@@ -22,6 +24,8 @@ EchoAgentCore/
 ├── config/                    # Core TOML configuration
 ├── skills/                    # SKILL.md skill definitions
 ├── source/
+│   ├── defs/
+│   │   └── echo-defs/         # Service Definition layer (vocabulary + traits, zero impl)
 │   ├── protocol/
 │   │   └── echo-protocol/     # Frontend ⇄ Core wire contract crate
 │   ├── backend/
@@ -33,6 +37,7 @@ EchoAgentCore/
 │   │   └── echo-test-utils/   # Shared test mocks (dev-dependency only)
 │   └── core/                  # echo-agent-core binary (composition root)
 ├── doc/develop/               # This documentation
+├── doc/decisions/             # Architecture decision records (ADR)
 ├── packaging/systemd/         # User service templates
 ├── scripts/                   # Installer and controlled updater
 ├── tools/                     # Utility scripts
@@ -43,15 +48,17 @@ EchoAgentCore/
 ```
 
 ### Key Traits
-- `LlmProvider` — LLM backend abstraction (OpenAI/Anthropic/Ollama)
-- `Tool` — LLM-callable function (calculator, adapter mgmt, coding tools)
-- `Adapter` — Platform integration (QQ/OneBot); `InboundMessageHook` — one-way adapter→agent input
+- `LlmProvider` (`echo-defs`) — LLM backend seam; providers: OpenAI/Anthropic/Ollama (in echo-agent)
+- `Tool` (`echo-defs`) — LLM-callable function (calculator, adapter mgmt, coding tools)
+- `SkillProvider` / `Skill` (`echo-defs`) — skill seam; concrete `SkillRegistry` in echo-agent
+- `ChatAdapter` (`echo-defs`) — platform seam (Message/Target/Channel vocabulary + capability words)
+- `Adapter` (echo-adapter) — legacy platform integration trait (QQ/OneBot), to converge onto `ChatAdapter`
 - `MessageFilter` — Inbound message filter (allowlist, denylist, rate limit, keyword, content length)
 - `Handler` — OneBot event handler (priority-ordered chain, panic isolation)
 
 ### Key Abstractions
 - `ConfigStore` — Atomic TOML read-modify-write (shared by Agent + QqAdapter, eliminates concurrent-write races)
-- `GateMode` — Strongly-typed gating mode (`None` / `Allowlist` / `Denylist`), defined in echo-protocol for wire sharing
+- `GateMode` — Strongly-typed gating mode (`None` / `Allowlist` / `Denylist`), defined in echo-defs, re-exported by echo-protocol for wire sharing
 - `AgentMessageHook` — echo-agent implements the one-way `InboundMessageHook`; platform output requires tools
 - `FanoutHandle` — Multi-subscriber event fanout with stale subscriber pruning
 

@@ -189,6 +189,7 @@ mod tests {
             subscribers: StdMutex::new(Vec::new()),
             filter: StdMutex::new(None),
             shutdown_tx: StdMutex::new(None),
+            server_task: StdMutex::new(None),
             napcat_config_task: StdMutex::new(None),
             tracker: echo_server::ConnectionTracker::default(),
             message_hook: StdMutex::new(None),
@@ -198,6 +199,7 @@ mod tests {
             runtime_denylist_users: StdMutex::new(Vec::new()),
             runtime_denylist_groups: StdMutex::new(Vec::new()),
             gate_mode: StdMutex::new(QqGateMode::None),
+            owner_qq: StdMutex::new(0),
             config_store: StdMutex::new(None),
             file_bridge: crate::file_bridge::FileBridge::new(
                 "http://localhost:3000",

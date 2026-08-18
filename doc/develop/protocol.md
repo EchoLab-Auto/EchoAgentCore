@@ -18,8 +18,9 @@
 ```rust
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum WsMessage {
-    Command(BackendCommand),   // Panel → Core
-    Event(BackendEvent),       // Core → Panel
+    Command(BackendCommand),       // Panel → Core
+    Event(BackendEvent),           // Core → Panel
+    SudoPassword(SudoPasswordSubmit), // Panel → Core（专用 sudo 通道）
 }
 ```
 
@@ -28,10 +29,18 @@ pub enum WsMessage {
 {"type":"command","payload":{"SendMessage":{"session_id":"...","content":"..."}}}
 // Core → Panel
 {"type":"event","payload":{"AgentOutput":{"session_id":"...","content":"...","branch_id":null}}}
+// Panel → Core（sudo 密码；仅此通道，绝不走 Command）
+{"type":"sudo_password","payload":{"request_id":1,"password":"***"}}
 ```
 
 序列化/反序列化助手：`serialize_command` / `serialize_event` /
 `deserialize_message`（`echo_protocol::bridge`）。无法解析的帧记日志后丢弃。
+
+> **sudo 密码安全约定**：`SudoPasswordSubmit.password` 是 `Option<String>`
+> （`Some` 授权 / `None` 拒绝）。密码帧由 management server **直接路由到
+> sudo broker**，不经过 agent 命令队列、会话日志与 LLM 上下文；专用反序列化器
+> （`deserialize_sudo_password` / `serialize_sudo_password`）失败时只记错误、
+> 不记原始文本，`Debug` 输出也会打码。
 
 ## BackendCommand（Panel → Core）
 
@@ -56,6 +65,7 @@ pub enum WsMessage {
 | `UpdateQqAllowlist` / `UpdateQqDenylist` | `{user_ids: [i64], group_ids: [i64]}` | 运行时更新 QQ 名单 |
 | `RequestQqFilterConfig` | — | → `QqFilterConfig` |
 | `SetQqGateMode` | `{mode: GateMode}` | 门控模式，`"none"/"allowlist"/"denylist"`（snake_case） |
+| `SetQqOwner` | `{owner_qq: i64}` | 设置 QQ 管理员（owner），运行时生效并持久化；`0` 清除 |
 
 ## BackendEvent（Core → Panel）
 
@@ -80,6 +90,9 @@ pub enum WsMessage {
   （也用于信息性 toast）
 - **QQ 管理**：`GroupList`、`FriendList`、`QqFilterConfig{allowlist_users,
   allowlist_groups, denylist_users, denylist_groups}`、`QqGateMode{mode}`
+- **sudo 授权（人机交互）**：`SudoRequest{request_id, command, session_id}`
+  （Core → Panel：请用户输入密码）、`SudoResolved{request_id, accepted,
+  message}`（结果通知，用于关闭弹窗/toast）。密码本身从不作为事件字段出现。
 
 ## 共享枚举
 

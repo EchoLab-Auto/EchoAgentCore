@@ -447,6 +447,18 @@ impl Tool for RunCommandTool {
             }
         }
 
+        // sudo needs an interactive password; the user must authorize it via
+        // the run_sudo tool instead. Detect a leading `sudo` token so the
+        // model learns the right tool rather than hitting a tty-less failure.
+        if let Some(rest) = cmd.trim_start().strip_prefix("sudo") {
+            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                return Err(ToolError::Execution(
+                    "sudo 需要交互授权：请改用 run_sudo 工具（用户会在 Panel 中输入密码，密码不会出现在上下文中）"
+                        .into(),
+                ));
+            }
+        }
+
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             tokio::process::Command::new("sh")

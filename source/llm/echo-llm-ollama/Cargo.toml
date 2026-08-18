@@ -1,0 +1,19 @@
+[package]
+name = "echo-llm-ollama"
+description = "EchoAgentCore echo-llm-ollama LLM provider (Service Provider role of the llm seam)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+echo-defs = { path = "../../defs/echo-defs" }
+echo-llm-openai = { path = "../echo-llm-openai" }
+async-trait.workspace = true
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+tracing.workspace = true

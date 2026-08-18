@@ -24,10 +24,11 @@ pub mod event;
 pub mod mode;
 
 pub use bridge::{
-    create_bridge, deserialize_message, serialize_command, serialize_event, BackendBridge,
-    BackendHandle, FanoutHandle, WsMessage,
+    create_bridge, deserialize_message, deserialize_sudo_password, serialize_command,
+    serialize_event, serialize_sudo_password, BackendBridge, BackendHandle, FanoutHandle,
+    SudoPasswordSubmit, WsMessage,
 };
-pub use command::BackendCommand;
+pub use command::{command_clearance, BackendCommand, CommandClearance};
 pub use event::{
     AdapterStatus, ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, FriendInfo,
     GroupInfo, SessionInfo, TimelineMessage, TimelineSource, TimelineTool,

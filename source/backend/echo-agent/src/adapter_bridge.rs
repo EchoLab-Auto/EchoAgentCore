@@ -179,10 +179,7 @@ fn format_hook_input(msg: &IncomingMessage, message_sequence: u64, received_at_m
         "metadata": msg.metadata
     });
     let json = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
-    format!(
-        "<{}_message_hook>\n{json}\n</{}_message_hook>",
-        msg.platform, msg.platform
-    )
+    crate::input_marker::wrap_hook(&msg.platform, &json)
 }
 
 /// Returns `Some(true)` for "cancel all" and `Some(false)` for the newest task.
@@ -493,7 +490,7 @@ mod tests {
                 .all()
                 .first()
                 .and_then(|session| session.history.try_lock().ok())
-                .is_some_and(|history| history.len() >= 2)
+                .is_some_and(|history| history.len() >= 4)
         })
         .await;
 
@@ -509,7 +506,14 @@ mod tests {
         assert!(history[0].content.contains("\"event\": \"qq_message\""));
         assert!(history[0].content.contains("\"user_id\": \"123456\""));
         assert!(history[0].content.contains("\"content\": \"hello\""));
-        assert_eq!(history[1].content, "后台完成");
+        // user + synthesized assistant tool_use + tool result + final reply.
+        assert_eq!(history[1].role, crate::llm::ChatRole::Assistant);
+        assert_eq!(
+            history[1].tool_calls.as_ref().unwrap()[0].name,
+            "send_private_msg"
+        );
+        assert_eq!(history[2].role, crate::llm::ChatRole::Tool);
+        assert_eq!(history[3].content, "后台完成");
     }
 
     #[tokio::test]

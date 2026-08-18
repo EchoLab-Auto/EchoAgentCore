@@ -8,7 +8,10 @@
 //!
 //! API base URL defaults to `http://localhost:6099` (NapCat WebUI).
 
+pub mod service;
+
 use serde::Deserialize;
+use serde_json::Value;
 
 /// NapCat API client.
 pub struct NapCatClient {
@@ -250,35 +253,145 @@ impl NapCatClient {
 
     // ---- reverse WebSocket configuration ----
 
-    /// Auto-configure NapCat to connect back to our reverse WebSocket server.
-    ///
-    /// `ws_url` is the address NapCat should connect to, e.g. `ws://host:3131`.
-    pub async fn configure_reverse_ws(&self, ws_url: &str, token: &str) -> Result<(), String> {
-        let url = format!("{}/api/network/wsReverse", self.base_url);
-        let body = serde_json::json!({
-            "enabled": true,
-            "url": ws_url,
-            "type": "array",
-            "token": token,
-        });
+    /// Log into the NapCat WebUI with `webui.json`'s token and return the
+    /// short-lived credential used by the WebUI API.
+    async fn webui_login(&self, webui_token: &str) -> Result<String, String> {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{webui_token}.napcat").as_bytes());
+        let hash = format!("{:x}", hasher.finalize());
+
+        let url = format!("{}/api/auth/login", self.base_url);
         let resp = self
             .client
             .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
+            .json(&serde_json::json!({ "hash": hash, "totpCode": "" }))
             .send()
             .await
-            .map_err(|e| format!("HTTP error: {e}"))?;
+            .map_err(|e| format!("NapCat WebUI login HTTP error: {e}"))?;
 
-        if resp.status().is_success() {
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("NapCat WebUI login parse error: {e}"))?;
+        let code = body.get("code").and_then(|c| c.as_i64());
+        if code != Some(0) {
+            return Err(format!(
+                "NapCat WebUI login failed: {}",
+                body.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error")
+            ));
+        }
+        body.pointer("/data/Credential")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| "NapCat WebUI login response missing Credential".to_string())
+    }
+
+    /// Auto-configure NapCat to connect back to our reverse WebSocket server.
+    ///
+    /// `ws_url` is the address NapCat should connect to, e.g.
+    /// `ws://host.docker.internal:3131`. `token` is the reverse-WS access
+    /// token configured in `[adapters.qq.server]`; `webui_token` is the
+    /// NapCat WebUI token from `webui.json`.
+    pub async fn configure_reverse_ws(
+        &self,
+        ws_url: &str,
+        token: &str,
+        webui_token: &str,
+    ) -> Result<(), String> {
+        let credential = self.webui_login(webui_token).await?;
+
+        // Fetch the current OneBot 11 network config via the NapCat v4 WebUI API.
+        let get_url = format!("{}/api/OB11Config/GetConfig", self.base_url);
+        let get_resp = self
+            .client
+            .post(&get_url)
+            .bearer_auth(&credential)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .map_err(|e| format!("NapCat OB11Config GetConfig HTTP error: {e}"))?;
+        let get_body: Value = get_resp
+            .json()
+            .await
+            .map_err(|e| format!("NapCat OB11Config GetConfig parse error: {e}"))?;
+        if get_body.get("code").and_then(|c| c.as_i64()) != Some(0) {
+            return Err(format!(
+                "NapCat OB11Config GetConfig failed: {}",
+                get_body
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error")
+            ));
+        }
+
+        let mut config = get_body
+            .get("data")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !config.is_object() {
+            config = serde_json::json!({});
+        }
+
+        let network = config
+            .as_object_mut()
+            .ok_or_else(|| "NapCat OB11 config is not an object".to_string())?
+            .entry("network")
+            .or_insert_with(|| serde_json::json!({}));
+        let clients = network
+            .as_object_mut()
+            .ok_or_else(|| "NapCat OB11 network is not an object".to_string())?
+            .entry("websocketClients")
+            .or_insert_with(|| serde_json::json!([]));
+        let clients = clients
+            .as_array_mut()
+            .ok_or_else(|| "NapCat websocketClients is not an array".to_string())?;
+        clients.retain(|client| {
+            client
+                .get("name")
+                .and_then(|n| n.as_str())
+                != Some("EchoAgentCore")
+        });
+        clients.push(serde_json::json!({
+            "enable": true,
+            "name": "EchoAgentCore",
+            "url": ws_url,
+            "reportSelfMessage": false,
+            "messagePostFormat": "array",
+            "token": token,
+            "debug": false,
+            "heartInterval": 30000,
+            "reconnectInterval": 30000,
+            "verifyCertificate": true,
+        }));
+
+        let set_url = format!("{}/api/OB11Config/SetConfig", self.base_url);
+        let set_resp = self
+            .client
+            .post(&set_url)
+            .bearer_auth(&credential)
+            .json(&serde_json::json!({ "config": config.to_string() }))
+            .send()
+            .await
+            .map_err(|e| format!("NapCat OB11Config SetConfig HTTP error: {e}"))?;
+        let set_body: Value = set_resp
+            .json()
+            .await
+            .map_err(|e| format!("NapCat OB11Config SetConfig parse error: {e}"))?;
+        if set_body.get("code").and_then(|c| c.as_i64()) == Some(0) {
             tracing::info!(%ws_url, "NapCat reverse WS configured");
             Ok(())
         } else {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            tracing::warn!(%status, %body, "NapCat reverse WS config may have failed — verify in WebUI");
-            // Don't fail hard — the config might have been applied anyway.
-            Ok(())
+            Err(format!(
+                "NapCat OB11Config SetConfig failed: {}",
+                set_body
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error")
+            ))
         }
     }
 
@@ -326,6 +439,32 @@ impl NapCatClient {
             .map(|b| b.to_vec())
             .map_err(|e| format!("read error: {e}"))
     }
+}
+
+/// Read the NapCat WebUI token from the container's `webui.json`.
+pub fn webui_token_from_container(container_name: &str) -> Result<String, String> {
+    use std::process::Command;
+    let output = Command::new("docker")
+        .args([
+            "exec",
+            container_name,
+            "cat",
+            "/app/napcat/config/webui.json",
+        ])
+        .output()
+        .map_err(|e| format!("无法读取 NapCat webui.json: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "无法读取 NapCat webui.json: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let body: Value =
+        serde_json::from_slice(&output.stdout).map_err(|e| format!("webui.json 解析失败: {e}"))?;
+    body.get("token")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "webui.json 缺少 token".to_string())
 }
 
 #[cfg(test)]
@@ -453,31 +592,52 @@ mod tests {
     async fn configure_reverse_ws_posts_config() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/network/wsReverse"))
-            .respond_with(ResponseTemplate::new(200))
+            .and(path("/api/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "data": { "Credential": "test-cred" }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/OB11Config/GetConfig"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "data": { "network": { "websocketClients": [] } }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/OB11Config/SetConfig"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0
+            })))
             .mount(&server)
             .await;
         let client = NapCatClient::new(&server.uri());
         client
-            .configure_reverse_ws("ws://host.docker.internal:3131", "tok123")
+            .configure_reverse_ws("ws://host.docker.internal:3131", "tok123", "webui-token")
             .await
             .expect("config accepted");
     }
 
     #[tokio::test]
-    async fn configure_reverse_ws_does_not_fail_hard_on_error() {
+    async fn configure_reverse_ws_reports_login_failure() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/network/wsReverse"))
-            .respond_with(ResponseTemplate::new(500))
+            .and(path("/api/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": -1,
+                "message": "Unauthorized"
+            })))
             .mount(&server)
             .await;
         let client = NapCatClient::new(&server.uri());
-        // The API treats non-2xx as "verify in WebUI" — still Ok.
-        client
-            .configure_reverse_ws("ws://x:3131", "")
+        let error = client
+            .configure_reverse_ws("ws://x:3131", "", "bad-token")
             .await
-            .expect("lenient error handling");
+            .unwrap_err();
+        assert!(error.contains("login failed"), "{error}");
     }
 
     #[tokio::test]

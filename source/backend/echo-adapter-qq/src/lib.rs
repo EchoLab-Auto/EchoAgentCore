@@ -17,4 +17,5 @@ pub mod napcat;
 
 pub use adapter::QqAdapter;
 pub use config::{QqAdapterConfig, QqFilterConfig, QqServerConfig, QqTriggerConfig};
+pub use napcat::service::{NapCatService, NapCatServiceState};
 pub use napcat::NapCatClient;

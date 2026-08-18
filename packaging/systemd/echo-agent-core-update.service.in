@@ -1,5 +1,5 @@
 [Unit]
-Description=Update EchoAgentCore from its configured Git remote
+Description=Update EchoAgentCore from its managed source checkout
 Documentation=https://gitlab.com/echo_tech/EchoAgentCore
 Wants=network-online.target
 After=network-online.target
@@ -12,6 +12,8 @@ TimeoutStartSec=1800
 WorkingDirectory=@SOURCE_DIR@
 ExecStart="@UPDATE_SCRIPT@" --source "@SOURCE_DIR@" --binary "@BINARY@" --status "@STATUS_FILE@"
 Environment="PATH=@SERVICE_PATH@"
+# 更新器只拉取并构建代码、替换用户本地二进制，从不运行 sudo；
+# 保留 NoNewPrivileges 以限制被攻破的构建脚本的提权能力。
 NoNewPrivileges=true
 PrivateTmp=true
 UMask=0077

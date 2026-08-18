@@ -359,7 +359,7 @@ name = "echo-adapter"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "echo-protocol",
+ "echo-defs",
  "echo-test-utils",
  "regex",
  "serde",
@@ -386,6 +386,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
  "tokio",
  "toml",
@@ -403,7 +404,14 @@ dependencies = [
  "chrono",
  "dashmap",
  "echo-adapter",
+ "echo-chat-capability",
+ "echo-context",
+ "echo-defs",
+ "echo-llm-anthropic",
+ "echo-llm-ollama",
+ "echo-llm-openai",
  "echo-protocol",
+ "echo-session",
  "echo-test-utils",
  "futures-util",
  "proptest",
@@ -431,9 +439,12 @@ dependencies = [
  "echo-adapter",
  "echo-adapter-qq",
  "echo-agent",
+ "echo-context",
  "echo-core",
+ "echo-loop",
  "echo-protocol",
  "echo-server",
+ "echo-session",
  "echo-test-utils",
  "futures-util",
  "serde",
@@ -446,6 +457,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-chat-capability"
+version = "0.1.0"
+dependencies = [
+ "echo-defs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "echo-context"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "proptest",
+ "tokio",
+]
+
+[[package]]
 name = "echo-core"
 version = "0.1.0"
 dependencies = [
@@ -455,9 +484,80 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-defs"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "echo-llm-anthropic"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "echo-defs",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "echo-llm-ollama"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "echo-defs",
+ "echo-llm-openai",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "echo-llm-openai"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "echo-defs",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "echo-loop"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "echo-context",
+ "echo-defs",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "echo-protocol"
 version = "0.1.0"
 dependencies = [
+ "echo-context",
+ "echo-defs",
  "serde",
  "serde_json",
  "tokio",
@@ -480,6 +580,19 @@ dependencies = [
  "tracing",
  "tungstenite",
  "uuid",
+]
+
+[[package]]
+name = "echo-session"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "echo-defs",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
@@ -1611,6 +1724,17 @@ name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest",
+]
+
+[[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",

@@ -1,0 +1,19 @@
+[package]
+name = "echo-session"
+description = "EchoAgentCore event-sourced session store — append-only event log, derive_messages projection, compaction"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+echo-defs = { path = "../../defs/echo-defs" }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+proptest = "1"

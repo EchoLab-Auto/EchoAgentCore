@@ -17,6 +17,7 @@ use echo_server::{ConnCallback, Context, HandlerRegistry, Server, ServerConfig};
 use tokio::sync::mpsc;
 
 use crate::config::QqAdapterConfig;
+use crate::napcat::service::NapCatService;
 use crate::napcat::NapCatState;
 use crate::NapCatClient;
 
@@ -46,13 +47,14 @@ pub(crate) struct QqInner {
     pub(crate) subscribers: StdMutex<Vec<mpsc::UnboundedSender<AdapterEvent>>>,
     pub(crate) filter: StdMutex<Option<Arc<FilterPipeline>>>,
     pub(crate) shutdown_tx: StdMutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub(crate) server_task: StdMutex<Option<tokio::task::JoinHandle<()>>>,
     pub(crate) napcat_config_task: StdMutex<Option<tokio::task::AbortHandle>>,
     pub(crate) tracker: echo_server::ConnectionTracker,
     /// One-way inbound hook (set externally before start). Adapters depend
     /// only on echo-adapter abstractions, not on echo-agent itself.
     pub(crate) message_hook: StdMutex<Option<Arc<dyn echo_adapter::InboundMessageHook>>>,
     /// Extra handlers to register alongside the internal QQ handler.
-    pub(crate) extra_handlers: StdMutex<Vec<Box<dyn echo_server::Handler>>>,
+    pub(crate) extra_handlers: StdMutex<Vec<Arc<dyn echo_server::Handler>>>,
     /// Runtime allowlist overrides (takes precedence over config file values).
     pub(crate) runtime_allowlist_users: StdMutex<Vec<i64>>,
     pub(crate) runtime_allowlist_groups: StdMutex<Vec<i64>>,
@@ -61,6 +63,9 @@ pub(crate) struct QqInner {
     pub(crate) runtime_denylist_groups: StdMutex<Vec<i64>>,
     /// Current gating mode (mutually exclusive).
     pub(crate) gate_mode: StdMutex<QqGateMode>,
+    /// Runtime QQ owner (admin) — initialized from config, updatable at
+    /// runtime via `set_owner_qq` (persisted through the ConfigStore).
+    pub(crate) owner_qq: StdMutex<i64>,
     /// Shared config store for persisting gate/filter changes.
     pub(crate) config_store: StdMutex<Option<echo_adapter::ConfigStore>>,
     /// Resolves local file paths into paths/URLs visible to NapCat, so
@@ -73,8 +78,8 @@ pub(crate) struct QqInner {
     pub(crate) group_names: dashmap::DashMap<i64, String>,
 }
 
-/// Wrapper to make a boxed handler satisfy the `Handler` trait constraint.
-struct BoxedHandler(Box<dyn echo_server::Handler>);
+/// Wrapper to make an Arc'd handler satisfy the `Handler` trait constraint.
+struct BoxedHandler(Arc<dyn echo_server::Handler>);
 
 #[async_trait]
 impl echo_server::Handler for BoxedHandler {
@@ -112,6 +117,7 @@ impl QqAdapter {
             "denylist" => QqGateMode::Denylist,
             _ => QqGateMode::None,
         };
+        let owner_qq = config.owner_qq;
         // Clone the NapCat bridge parameters before `config` is moved into the
         // struct initializer below.
         let napcat_onebot_url = config.napcat_onebot_url.clone();
@@ -130,6 +136,7 @@ impl QqAdapter {
                 subscribers: StdMutex::new(Vec::new()),
                 filter: StdMutex::new(None), // built below via rebuild_filter_pipeline
                 shutdown_tx: StdMutex::new(None),
+                server_task: StdMutex::new(None),
                 napcat_config_task: StdMutex::new(None),
                 tracker: echo_server::ConnectionTracker::default(),
                 message_hook: StdMutex::new(None),
@@ -139,6 +146,7 @@ impl QqAdapter {
                 runtime_denylist_users: StdMutex::new(du),
                 runtime_denylist_groups: StdMutex::new(dg),
                 gate_mode: StdMutex::new(gate_mode),
+                owner_qq: StdMutex::new(owner_qq),
                 config_store: StdMutex::new(None),
                 file_bridge: crate::file_bridge::FileBridge::new(
                     &napcat_onebot_url,
@@ -174,8 +182,20 @@ impl QqAdapter {
                             "NapCat online - configuring reverse WebSocket"
                         );
                     }
-                    if let Err(e) = napcat.configure_reverse_ws(&ws_url, &token).await {
-                        tracing::warn!(error = %e, "NapCat auto-config failed; will retry");
+                    let webui_token =
+                        crate::napcat::webui_token_from_container(&inner.config.napcat_container);
+                    match webui_token {
+                        Ok(webui_token) => {
+                            if let Err(e) = napcat
+                                .configure_reverse_ws(&ws_url, &token, &webui_token)
+                                .await
+                            {
+                                tracing::warn!(error = %e, "NapCat auto-config failed; will retry");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "NapCat WebUI token unavailable; will retry");
+                        }
                     }
                     last_state = Some("online");
                 }
@@ -212,7 +232,7 @@ impl QqAdapter {
             .extra_handlers
             .lock()
             .expect("handlers poisoned")
-            .push(handler);
+            .push(Arc::from(handler));
     }
 
     /// Get ALL groups without gate-mode filtering (privileged — used by TUI).
@@ -400,7 +420,7 @@ impl QqAdapter {
         }
 
         let cfg = self.get_filter_config();
-        let owner = self.inner.config.owner_qq;
+        let owner = *self.inner.owner_qq.lock().expect("poisoned");
         match mode {
             QqGateMode::Allowlist => {
                 let allowed: std::collections::HashSet<i64> =
@@ -699,9 +719,27 @@ impl Adapter for QqAdapter {
 
         let bind_addr = server_cfg.bind_address.clone();
 
+        // Bind the reverse-WS listener first so NapCat can connect as soon as
+        // its container starts. The listener is just a socket at this point;
+        // the server task is spawned below.
         let listener = tokio::net::TcpListener::bind(&bind_addr)
             .await
             .map_err(|e| AdapterError::Internal(format!("bind {}: {e}", bind_addr)))?;
+
+        // When enabled, the QQ adapter owns the NapCat Docker container
+        // lifecycle: starting the adapter also starts NapCat. This makes
+        // "启动 QQ" in the Panel sufficient for a dockerised NapCat install.
+        if self.inner.config.napcat_auto_start {
+            let napcat_service = NapCatService::new(
+                self.inner.config.napcat_compose_file.clone(),
+                self.inner.config.napcat_container.clone(),
+            );
+            let state = napcat_service
+                .start()
+                .await
+                .map_err(|e| AdapterError::Internal(format!("NapCat 启动失败: {e}")))?;
+            tracing::info!(state = %state.describe(), "NapCat Docker service ensured");
+        }
 
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         *inner
@@ -726,10 +764,12 @@ impl Adapter for QqAdapter {
         });
 
         let mut registry = HandlerRegistry::new();
-        // Cannot clone Box<dyn Handler>, so we take them out and re-create later if needed.
-        // For now, take ownership and register via the wrapper.
-        let extra: Vec<Box<dyn echo_server::Handler>> =
-            std::mem::take(&mut *inner.extra_handlers.lock().expect("handlers poisoned"));
+        // Clone the Arc'd handlers so they survive across adapter restarts.
+        let extra = inner
+            .extra_handlers
+            .lock()
+            .expect("handlers poisoned")
+            .clone();
         for h in extra {
             registry.register(BoxedHandler(h));
         }
@@ -746,7 +786,7 @@ impl Adapter for QqAdapter {
             Some(conn_cb),
         );
 
-        tokio::spawn(async move {
+        let server_task = tokio::spawn(async move {
             let run_fut = server.run_with_listener(listener);
             tokio::select! {
                 result = run_fut => {
@@ -760,6 +800,11 @@ impl Adapter for QqAdapter {
             }
             inner.running.store(false, Ordering::SeqCst);
         });
+        *self
+            .inner
+            .server_task
+            .lock()
+            .map_err(|e| AdapterError::Internal(e.to_string()))? = Some(server_task);
 
         // Keep trying until NapCat has logged in and established the reverse
         // WebSocket. Startup commonly happens before the QR login completes.
@@ -791,6 +836,7 @@ impl Adapter for QqAdapter {
         if !self.inner.running.load(Ordering::SeqCst) {
             return Err(AdapterError::NotRunning("qq".into()));
         }
+
         let tx = self
             .inner
             .shutdown_tx
@@ -800,6 +846,7 @@ impl Adapter for QqAdapter {
         if let Some(tx) = tx {
             let _ = tx.send(());
         }
+
         if let Some(handle) = self
             .inner
             .napcat_config_task
@@ -809,7 +856,39 @@ impl Adapter for QqAdapter {
         {
             handle.abort();
         }
+
+        // Wait for the server task to release the bind before returning so a
+        // restart can bind the same port immediately.
+        let server_task = self
+            .inner
+            .server_task
+            .lock()
+            .map_err(|e| AdapterError::Internal(e.to_string()))?
+            .take();
+        if let Some(handle) = server_task {
+            match tokio::time::timeout(Duration::from_secs(5), handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(error = %error, "QQ server task join failed"),
+                Err(_) => tracing::warn!("QQ server task did not stop within 5s"),
+            }
+        }
+
         self.inner.running.store(false, Ordering::SeqCst);
+
+        // When enabled, the QQ adapter also stops the NapCat Docker container.
+        // The adapter itself is already stopped, so a Docker permission problem
+        // is logged as a warning and does not roll back the adapter state.
+        if self.inner.config.napcat_auto_stop {
+            let napcat_service = NapCatService::new(
+                self.inner.config.napcat_compose_file.clone(),
+                self.inner.config.napcat_container.clone(),
+            );
+            match napcat_service.stop().await {
+                Ok(()) => tracing::info!("NapCat Docker service stopped"),
+                Err(error) => tracing::warn!(%error, "NapCat Docker service stop failed"),
+            }
+        }
+
         Ok(())
     }
 
@@ -840,7 +919,7 @@ impl Adapter for QqAdapter {
                     ChannelType::Direct => None,
                 };
                 // The owner is always exempt from outbound gating.
-                let owner = self.inner.config.owner_qq;
+                let owner = *self.inner.owner_qq.lock().expect("poisoned");
                 let is_owner = user_id != 0 && user_id == owner;
 
                 match mode {
@@ -1058,6 +1137,14 @@ impl Adapter for QqAdapter {
             QqGateMode::Denylist => GateMode::Denylist,
             QqGateMode::None => GateMode::None,
         }
+    }
+
+    fn set_owner_qq(&self, owner_qq: i64) {
+        self.set_owner_qq(owner_qq);
+    }
+
+    fn get_owner_qq(&self) -> i64 {
+        self.get_owner_qq()
     }
 }
 

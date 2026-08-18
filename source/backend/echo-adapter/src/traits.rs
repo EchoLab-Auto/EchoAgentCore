@@ -64,9 +64,10 @@ pub trait InboundMessageHook: Send + Sync {
 /// Gating mode: which users/groups may interact with the bot.
 ///
 /// `GateMode` is part of the frontend wire contract (`SetQqGateMode` /
-/// `QqGateMode`), so its single definition lives in the `echo-protocol`
-/// crate; re-exported here so `echo_adapter::GateMode` keeps working.
-pub use echo_protocol::GateMode;
+/// `QqGateMode`), defined in `echo-defs` and re-exported through
+/// `echo-protocol`; re-exported here so `echo_adapter::GateMode` keeps
+/// working.
+pub use echo_defs::GateMode;
 
 /// Adapter errors.
 #[derive(Debug, thiserror::Error)]
@@ -187,5 +188,13 @@ pub trait Adapter: Send + Sync {
     /// Get the current gating mode.  Default: [`GateMode::None`].
     fn get_gate_mode(&self) -> GateMode {
         GateMode::None
+    }
+
+    /// Set the platform owner (admin) at runtime. Default: no-op.
+    fn set_owner_qq(&self, _owner_qq: i64) {}
+
+    /// Get the current platform owner (admin). Default: 0 (unset).
+    fn get_owner_qq(&self) -> i64 {
+        0
     }
 }

@@ -3,8 +3,9 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use super::{ChatRequest, ChatResponse, LlmError, LlmProvider};
-use crate::llm::openai::OpenAiProvider;
+use echo_defs::llm::{LlmError, LlmProvider};
+use echo_defs::message::{ChatRequest, ChatResponse};
+use echo_llm_openai::OpenAiProvider;
 
 /// Ollama exposes an OpenAI-compatible endpoint, so this is a thin wrapper
 /// around [`OpenAiProvider`] pointed at `{base_url}/v1`.
@@ -44,7 +45,7 @@ impl LlmProvider for OllamaProvider {
     async fn chat_stream(
         &self,
         request: &ChatRequest,
-        tx: mpsc::UnboundedSender<super::ChatChunk>,
+        tx: mpsc::UnboundedSender<echo_defs::message::ChatChunk>,
     ) -> Result<(), LlmError> {
         self.inner.chat_stream(request, tx).await
     }
@@ -53,6 +54,7 @@ impl LlmProvider for OllamaProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use echo_defs::llm::LlmProvider;
 
     #[test]
     fn appends_v1_to_plain_base_url() {

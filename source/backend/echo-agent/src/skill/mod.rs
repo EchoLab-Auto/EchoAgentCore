@@ -1,48 +1,17 @@
 //! Skill system: SKILL.md-driven capabilities with progressive disclosure.
 //!
-//! Tier 1: metadata (name + description + keywords) injected into the system
-//! prompt so the model knows what exists.
-//! Tier 2: full instructions loaded when the skill triggers on a message.
+//! The `Skill`/`SkillMetadata` vocabulary and the `SkillProvider` seam live
+//! in [`echo_defs`](echo_defs); this module re-exports them (keeping the
+//! `echo_agent::skill::…` paths) and owns the concrete [`SkillRegistry`]
+//! (file discovery + hot-reload state).
+
+pub use echo_defs::skill::{Skill, SkillMetadata};
+
+pub mod loader;
 
 use std::collections::HashMap;
 
 use thiserror::Error;
-
-pub mod loader;
-
-/// Skill metadata (Tier 1 — cheap, always loaded).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkillMetadata {
-    pub name: String,
-    pub description: String,
-    /// Keywords that trigger this skill when they appear in a message.
-    pub keywords: Vec<String>,
-    /// Whether this skill is included in every conversation.
-    pub always: bool,
-    pub enabled: bool,
-}
-
-/// A loaded skill definition (Tier 2 — full instructions).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Skill {
-    pub metadata: SkillMetadata,
-    pub instructions: String,
-}
-
-impl Skill {
-    /// Whether a message triggers this skill (keyword match).
-    /// 关键词匹配大小写不敏感（英文关键词 "calc" 也能命中 "Calc"）。
-    pub fn matches(&self, content: &str) -> bool {
-        if !self.metadata.enabled {
-            return false;
-        }
-        let lower = content.to_lowercase();
-        self.metadata
-            .keywords
-            .iter()
-            .any(|k| !k.is_empty() && lower.contains(&k.to_lowercase()))
-    }
-}
 
 /// Registry of discovered skills.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

@@ -2,8 +2,8 @@
 
 mod commands;
 mod orchestration;
+mod qq_commands;
 
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -21,6 +21,7 @@ use crate::llm::{ChatMessage, ChatRequest, LlmProvider, ToolCall};
 use crate::session::{Session, TrunkStore};
 use crate::skill::SkillRegistry;
 use crate::tool::ToolRegistry;
+use echo_chat_capability::{DeliveryPolicy, DeliveryTarget};
 
 const TURN_CANCELLED: &str = "agent turn cancelled by requester";
 const MAX_CONCURRENT_REPLY_BRANCHES: usize = 8;
@@ -28,10 +29,6 @@ const MAX_CONCURRENT_REPLY_BRANCHES: usize = 8;
 /// QQ branch spawns a delayed interim reply; without a cap, many parallel
 /// branches would each fire an extra LLM request at the same moment.
 const MAX_CONCURRENT_WAIT_REPLIES: usize = 4;
-
-/// Pending reasoning fragments keyed by session; each queue holds
-/// (branch_id, fragments in arrival order).
-type ReasoningByBranch = std::collections::HashMap<String, VecDeque<(String, Vec<String>)>>;
 
 #[derive(Debug, Clone)]
 struct ActiveInboundTurn {
@@ -62,6 +59,10 @@ pub struct Agent {
     /// worker thread. All access goes through `try_*` (never held across
     /// await points, contention is negligible).
     pub handle: tokio::sync::RwLock<Option<Arc<BackendHandle>>>,
+    /// Human-in-the-loop sudo authorization broker (set by the composition
+    /// root). `run_sudo` awaits a password submitted on the dedicated sudo
+    /// channel; see [`crate::sudo`].
+    pub sudo_broker: tokio::sync::RwLock<Option<Arc<crate::sudo::SudoBroker>>>,
     system_prompt_cache: RwLock<Option<String>>,
     skill_reload_started: AtomicBool,
     orchestration_started: AtomicBool,
@@ -73,13 +74,12 @@ pub struct Agent {
     wait_reply_slots: tokio::sync::Semaphore,
     active_inbound_turns: DashMap<String, ActiveInboundTurn>,
     next_message_sequence: AtomicU64,
-    /// Reasoning fragments per (session, branch), in arrival order. Consumed
-    /// when the branch's final `AgentOutput` is recorded into the timeline.
-    timeline_pending_reasoning: std::sync::Mutex<ReasoningByBranch>,
-    /// Branches whose final reply already arrived (mirrors the TUI's
-    /// completed-reasoning queue for `branch_id == None` outputs).
-    timeline_completed_branches:
-        std::sync::Mutex<std::collections::HashMap<String, VecDeque<String>>>,
+    /// Event bus: `emit` broadcasts through it; consumers (the timeline
+    /// projector, the frontend bridge) subscribe as listeners.
+    pub event_bus: std::sync::Arc<echo_context::EventBus>,
+    /// Keeps the timeline projector's bus subscription alive for the agent's
+    /// lifetime; dropped (disposed) together with the agent.
+    _timeline_projection: echo_context::Disposer,
     /// Cancels background tasks (identity eviction / save) on shutdown.
     cancel: tokio_util::sync::CancellationToken,
 }
@@ -110,6 +110,15 @@ impl Agent {
         let eviction_cancel = cancel.clone();
         let timer_scheduler = orchestration::TimerScheduler::new(cancel.clone());
         let background_tasks = orchestration::BackgroundTaskManager::new(cancel.clone());
+        let event_bus: std::sync::Arc<echo_context::EventBus> =
+            std::sync::Arc::new(echo_context::EventBus::default());
+        // The display timeline is a projection of emitted events; subscribe
+        // the projector as an observe listener so `emit` fans out to it. The
+        // returned disposer must be held for the agent's lifetime, or the
+        // subscription unwinds immediately.
+        let timeline_projector: std::sync::Arc<crate::timeline::TimelineProjector> =
+            std::sync::Arc::new(crate::timeline::TimelineProjector::new(trunk.clone()));
+        let _timeline_projection = timeline_projector.subscribe(&event_bus);
         let agent = Self {
             provider: RwLock::new(provider),
             config: RwLock::new(config),
@@ -120,6 +129,7 @@ impl Agent {
             trunk,
             adapters,
             handle: tokio::sync::RwLock::new(None),
+            sudo_broker: tokio::sync::RwLock::new(None),
             system_prompt_cache: RwLock::new(None),
             skill_reload_started: AtomicBool::new(false),
             orchestration_started: AtomicBool::new(false),
@@ -129,8 +139,8 @@ impl Agent {
             wait_reply_slots: tokio::sync::Semaphore::new(MAX_CONCURRENT_WAIT_REPLIES),
             active_inbound_turns: DashMap::new(),
             next_message_sequence: AtomicU64::new(1),
-            timeline_pending_reasoning: std::sync::Mutex::new(std::collections::HashMap::new()),
-            timeline_completed_branches: std::sync::Mutex::new(std::collections::HashMap::new()),
+            event_bus,
+            _timeline_projection,
             cancel,
         };
         // Spawn periodic identity eviction (every 5 minutes). Only stale
@@ -282,7 +292,7 @@ impl Agent {
                         },
                         "task": event.task
                     });
-                    let input = format!("<timer_event>{input}</timer_event>");
+                    let input = crate::input_marker::wrap_timer(&input);
                     agent.emit(BackendEvent::MessageReceived {
                         session_id: session.id.clone(),
                         adapter_name: "timer".into(),
@@ -400,7 +410,7 @@ impl Agent {
             "origin_session": completion.session_id,
             "deliveries": deliveries
         });
-        let input = format!("<background_task_event>{payload}</background_task_event>");
+        let input = crate::input_marker::wrap_background(&payload);
         self.emit(BackendEvent::MessageReceived {
             session_id: session.id.clone(),
             adapter_name: "background".into(),
@@ -485,6 +495,20 @@ impl Agent {
         }
     }
 
+    /// Attach the sudo authorization broker (called once by the composition
+    /// root). No-op when a broker is already attached.
+    pub fn attach_sudo_broker(&self, broker: Arc<crate::sudo::SudoBroker>) {
+        if let Ok(mut slot) = self.sudo_broker.try_write() {
+            if slot.is_none() {
+                *slot = Some(broker);
+            } else {
+                tracing::warn!("sudo broker slot busy, ignoring attach");
+            }
+        } else {
+            tracing::warn!("sudo broker slot busy, ignoring attach");
+        }
+    }
+
     /// Non-blocking poll for a frontend command (used by the command pump).
     pub fn try_recv_command(&self) -> Option<BackendCommand> {
         self.handle
@@ -496,11 +520,13 @@ impl Agent {
 
     /// Emit an event to subscribers (TUI, ...). No-op when unattached.
     ///
-    /// Every emitted event is also fed into the persisted display timeline
-    /// (before the subscriber hand-off) so the TUI can restore history after a
-    /// restart — see `record_timeline`.
+    /// The event is broadcast through the [`EventBus`] first (observe mode):
+    /// the timeline projector and any other listeners consume it before the
+    /// frontend hand-off, so the persisted display timeline and the wire both
+    /// derive from the same emission.
     pub fn emit(&self, event: BackendEvent) {
-        self.record_timeline(&event);
+        self.event_bus
+            .emit_sync(event.clone(), echo_context::DispatchMode::Observe);
         if let Some(h) = self
             .handle
             .try_read()
@@ -510,215 +536,6 @@ impl Agent {
         {
             h.emit(event);
         }
-    }
-
-    /// Record an event into the persisted display timeline. Only conversation
-    /// content is kept: inbound user messages (with source provenance), timer
-    /// summaries, tool calls/results and final agent outputs (with reasoning).
-    /// Background-task hooks and lifecycle noise are deliberately skipped.
-    fn record_timeline(&self, event: &BackendEvent) {
-        use crate::event::{TimelineMessage, TimelineSource, TimelineTool};
-        match event {
-            BackendEvent::MessageReceived {
-                adapter_name,
-                platform,
-                user_id,
-                user_name,
-                channel,
-                group_name,
-                content,
-                timestamp,
-                received_at_ms,
-                message_sequence,
-                ..
-            } => {
-                if adapter_name == "background" {
-                    return; // internal parent-context hook, not conversation content
-                }
-                if adapter_name == "timer" {
-                    let task = timeline_timer_task(content);
-                    self.trunk.push_timeline(TimelineMessage {
-                        kind: "system".into(),
-                        content: match task {
-                            Some(task) => {
-                                format!("定时任务触发 · {}", truncate_one_line(&task, 120))
-                            }
-                            None => "定时任务触发".into(),
-                        },
-                        time: *timestamp,
-                        source: None,
-                        reasoning: None,
-                        tool: None,
-                    });
-                    return;
-                }
-                self.trunk.push_timeline(TimelineMessage {
-                    kind: "user".into(),
-                    content: content.clone(),
-                    time: *timestamp,
-                    source: Some(TimelineSource {
-                        adapter_name: adapter_name.clone(),
-                        platform: platform.clone(),
-                        user_id: user_id.clone(),
-                        user_name: user_name.clone(),
-                        channel: channel.clone(),
-                        group_name: group_name.clone(),
-                        received_at_ms: *received_at_ms,
-                        message_sequence: *message_sequence,
-                    }),
-                    reasoning: None,
-                    tool: None,
-                });
-            }
-            BackendEvent::AgentReasoning {
-                session_id,
-                branch_id,
-                content,
-            } => {
-                let content = content.trim().to_string();
-                if content.is_empty() {
-                    return;
-                }
-                if let Ok(mut pending) = self.timeline_pending_reasoning.lock() {
-                    let queue = pending.entry(session_id.clone()).or_default();
-                    if let Some((_, reasoning)) = queue.back_mut() {
-                        reasoning.push(content);
-                    } else {
-                        queue.push_back((branch_id.clone(), vec![content]));
-                    }
-                }
-            }
-            BackendEvent::ReplyBranchCompleted {
-                session_id,
-                branch_id,
-                success,
-                cancelled,
-                ..
-            } => {
-                if *success && !*cancelled {
-                    if let Ok(mut completed) = self.timeline_completed_branches.lock() {
-                        completed
-                            .entry(session_id.clone())
-                            .or_default()
-                            .push_back(branch_id.clone());
-                    }
-                }
-            }
-            BackendEvent::AgentOutput {
-                session_id,
-                content,
-                branch_id,
-            } => {
-                let reasoning = self.take_timeline_reasoning(session_id, branch_id.as_deref());
-                let reasoning = (!reasoning.is_empty()).then_some(reasoning);
-                self.trunk.push_timeline(TimelineMessage {
-                    kind: "backend".into(),
-                    content: content.clone(),
-                    time: chrono::Utc::now().timestamp(),
-                    source: None,
-                    reasoning,
-                    tool: None,
-                });
-            }
-            BackendEvent::ToolCall {
-                tool_name,
-                arguments,
-                ..
-            } => {
-                self.trunk.push_timeline(TimelineMessage {
-                    kind: "tool".into(),
-                    content: tool_name.clone(),
-                    time: chrono::Utc::now().timestamp(),
-                    source: None,
-                    reasoning: None,
-                    tool: Some(TimelineTool {
-                        name: tool_name.clone(),
-                        input: summarize_timeline_value(arguments, 160),
-                        output: None,
-                        failed: false,
-                    }),
-                });
-            }
-            BackendEvent::ToolResult {
-                tool_name, result, ..
-            } => {
-                let failed = result.trim_start().starts_with("error:");
-                self.update_timeline_tool(tool_name, result, failed);
-            }
-            _ => {}
-        }
-    }
-
-    /// Consume pending reasoning for an agent output. With a branch id the
-    /// matching branch is removed directly; without one, the oldest completed
-    /// branch of that session is consumed first (mirrors the TUI behaviour).
-    fn take_timeline_reasoning(&self, session_id: &str, branch_id: Option<&str>) -> Vec<String> {
-        let target = if let Some(branch_id) = branch_id {
-            Some(branch_id.to_string())
-        } else if let Ok(mut completed) = self.timeline_completed_branches.lock() {
-            completed
-                .get_mut(session_id)
-                .and_then(|queue| queue.pop_front())
-        } else {
-            None
-        };
-        let Some(target) = target else {
-            return Vec::new();
-        };
-        if let Ok(mut pending) = self.timeline_pending_reasoning.lock() {
-            let Some(queue) = pending.get_mut(session_id) else {
-                return Vec::new();
-            };
-            let Some(index) = queue.iter().position(|(branch, _)| *branch == target) else {
-                return Vec::new();
-            };
-            let Some((_, reasoning)) = queue.remove(index) else {
-                return Vec::new();
-            };
-            if queue.is_empty() {
-                pending.remove(session_id);
-            }
-            reasoning
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Attach the outcome to the newest still-running timeline tool entry with
-    /// the same name (mirrors the TUI's `finish_tool_entry`).
-    fn update_timeline_tool(&self, tool_name: &str, result: &str, failed: bool) {
-        let mut timeline = match self.trunk.timeline_mut() {
-            Some(guard) => guard,
-            None => return,
-        };
-        if let Some(entry) = timeline.iter_mut().rev().find(|entry| {
-            entry.kind == "tool"
-                && entry
-                    .tool
-                    .as_ref()
-                    .is_some_and(|tool| tool.name == tool_name && tool.output.is_none())
-        }) {
-            if let Some(tool) = entry.tool.as_mut() {
-                tool.output = Some(summarize_timeline_value(result, 200));
-                tool.failed = failed;
-            }
-            return;
-        }
-        // No running entry found — record a completed tool entry directly.
-        drop(timeline);
-        self.trunk.push_timeline(crate::event::TimelineMessage {
-            kind: "tool".into(),
-            content: tool_name.to_string(),
-            time: chrono::Utc::now().timestamp(),
-            source: None,
-            reasoning: None,
-            tool: Some(crate::event::TimelineTool {
-                name: tool_name.to_string(),
-                input: String::new(),
-                output: Some(summarize_timeline_value(result, 200)),
-                failed,
-            }),
-        });
     }
 
     fn emit_reasoning(&self, session_id: &str, branch_id: &str, reasoning: &Option<String>) {
@@ -816,12 +633,16 @@ impl Agent {
         content: &str,
     ) -> Vec<ChatMessage> {
         let _turn = session.turn_lock.lock().await;
-        let mut history = session.history.lock().await;
-        history.push(ChatMessage::user(content));
-        trim_history(&mut history, self.trunk.memory_limit_tokens());
-        let snapshot = history.clone();
-        drop(history);
-        self.trunk.mark_dirty();
+        self.trunk
+            .append_event(echo_session::SessionEvent::UserMessage(
+                echo_session::event::UserMessage {
+                    content: content.to_string(),
+                    timestamp: chrono::Utc::now().timestamp(),
+                    message_sequence: structured_message_sequence(content),
+                    source: None,
+                },
+            ));
+        let snapshot = session.history.lock().await.clone();
         snapshot
     }
 
@@ -835,12 +656,16 @@ impl Agent {
     ) -> (InboundTurnRegistration, Vec<ChatMessage>) {
         let _turn = session.turn_lock.lock().await;
         let registration = self.register_inbound_turn(&session.id, message_sequence, true);
-        let mut history = session.history.lock().await;
-        history.push(ChatMessage::user(content));
-        trim_history(&mut history, self.trunk.memory_limit_tokens());
-        let snapshot = history.clone();
-        drop(history);
-        self.trunk.mark_dirty();
+        self.trunk
+            .append_event(echo_session::SessionEvent::UserMessage(
+                echo_session::event::UserMessage {
+                    content: content.to_string(),
+                    timestamp: chrono::Utc::now().timestamp(),
+                    message_sequence: Some(message_sequence),
+                    source: None,
+                },
+            ));
+        let snapshot = session.history.lock().await.clone();
         (registration, snapshot)
     }
 
@@ -858,24 +683,20 @@ impl Agent {
         if cancel.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
             return false;
         }
-        let mut history = session.history.lock().await;
-        let message = ChatMessage::assistant(reply);
-        let insert_at = message_sequence.and_then(|sequence| {
-            history
-                .iter()
-                .rposition(|message| {
-                    structured_message_sequence(&message.content) == Some(sequence)
-                })
-                .map(|index| index + 1)
-        });
-        if let Some(index) = insert_at {
-            history.insert(index, message);
-        } else {
-            history.push(message);
+        // The assistant reply is a durable event; the event log re-derives
+        // the trunk projection. When the reply answers a sequenced request
+        // (concurrent branches), insert it after that request's user event so
+        // the projected order matches request order.
+        let event =
+            echo_session::SessionEvent::AssistantMessage(echo_session::event::AssistantMessage {
+                content: reply,
+                reasoning_content: None,
+                tool_calls: vec![],
+            });
+        match message_sequence {
+            Some(sequence) => self.trunk.insert_event_after_sequence(sequence, event),
+            None => self.trunk.append_event(event),
         }
-        trim_history(&mut history, self.trunk.memory_limit_tokens());
-        drop(history);
-        self.trunk.mark_dirty();
         true
     }
 
@@ -1285,7 +1106,7 @@ impl Agent {
         // platform. A QQ session can receive backend/TUI input (no hook), and
         // that must be answered in the backend — never pushed to QQ.
         let is_qq_hook = content.contains("<qq_message_hook>");
-        let is_timer = content.contains("<timer_event>");
+        let is_timer = content.contains(crate::input_marker::TIMER_EVENT_OPEN);
         let is_qq_session = session.session_key.platform.eq_ignore_ascii_case("qq");
         system_prompt.push_str(
             "\n\n# Background orchestration\n\
@@ -1347,8 +1168,14 @@ impl Agent {
         }
 
         let mut tools = (*self.tools.definitions().await).clone();
-        let self_update_enabled = self.config.read().await.self_update.enabled;
-        tools.extend(orchestration::tool_definitions(self_update_enabled));
+        let config = self.config.read().await;
+        let self_update_enabled = config.self_update.enabled;
+        let sudo_enabled = config.sudo.enabled;
+        drop(config);
+        tools.extend(orchestration::tool_definitions(
+            self_update_enabled,
+            sudo_enabled,
+        ));
         // max_tool_iterations == 0 still allows one direct reply (without tools).
         let max_iterations = self.config.read().await.max_tool_iterations.max(1);
         let mut delivered_targets = std::collections::HashSet::new();
@@ -1405,7 +1232,7 @@ impl Agent {
                             "required deliveries were not completed after two corrections: {}",
                             pending_deliveries
                                 .iter()
-                                .map(|target| target.key())
+                                .map(|target| echo_chat_capability::target_key(target))
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         ));
@@ -1416,9 +1243,9 @@ impl Agent {
                             response.reasoning_content.clone(),
                         ));
                     }
-                    messages.push(ChatMessage::user(DeliveryPlan::delivery_reminder(
-                        &pending_deliveries,
-                    )));
+                    messages.push(ChatMessage::user(
+                        QqDeliveryPolicy.delivery_reminder(&pending_deliveries),
+                    ));
                     delivery_reminders += 1;
                     continue;
                 }
@@ -1443,8 +1270,11 @@ impl Agent {
                 &response.reasoning_content,
             ));
             for call in &response.tool_calls {
-                let delivery_key = match validate_delivery_call(
-                    delivery_plan.as_ref(),
+                let delivery_key = match QqDeliveryPolicy.validate_delivery_call(
+                    delivery_plan
+                        .as_ref()
+                        .map(|plan| plan.targets.as_slice())
+                        .unwrap_or(&[]),
                     &delivered_targets,
                     call,
                 ) {
@@ -1526,6 +1356,16 @@ impl Agent {
             tool_name: call.name.clone(),
             arguments: call.arguments.clone(),
         });
+        // The tool call is a durable event: the model-visible loop (call +
+        // result) must be reconstructable from the log after a reload.
+        self.trunk
+            .append_event(echo_session::SessionEvent::ToolCall(
+                echo_session::event::ToolCallEvent {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                },
+            ));
         let args = serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
         let result = match call.name.as_str() {
             "schedule_timer" => self.timer_scheduler.schedule(session_id, args).await,
@@ -1541,11 +1381,20 @@ impl Agent {
                 let config = self.config.read().await.self_update.clone();
                 orchestration::framework_update(&config, session_id, args).await
             }
-            _ => self
-                .tools
-                .execute(&call.name, args)
-                .await
-                .map_err(|error| error.to_string()),
+            "run_sudo" => self.run_sudo(session_id, args).await,
+            other => {
+                // Every orchestration tool must live in the single dispatch
+                // table; a name here that is not in the table would silently
+                // bypass schema generation (drift between schema and handler).
+                debug_assert!(
+                    !crate::agent::orchestration::ORCHESTRATION_TOOL_NAMES.contains(&other),
+                    "orchestration tool {other} missing from ORCHESTRATION_TOOL_NAMES"
+                );
+                self.tools
+                    .execute(other, args)
+                    .await
+                    .map_err(|error| error.to_string())
+            }
         }
         .unwrap_or_else(|error| format!("error: {error}"));
         self.emit(BackendEvent::ToolResult {
@@ -1553,6 +1402,13 @@ impl Agent {
             tool_name: call.name.clone(),
             result: result.clone(),
         });
+        self.trunk
+            .append_event(echo_session::SessionEvent::ToolResult(
+                echo_session::event::ToolResultEvent {
+                    tool_call_id: call.id.clone(),
+                    result: result.clone(),
+                },
+            ));
         if call.name == "checklist" {
             if let Some(state) = self.tools.snapshot(&call.name) {
                 self.emit(BackendEvent::ChecklistUpdated {
@@ -1562,6 +1418,92 @@ impl Agent {
             }
         }
         result
+    }
+
+    /// Run a command with root privileges (the `run_sudo` orchestration tool).
+    ///
+    /// The password is never seen by the LLM: a pending request is registered
+    /// with the [`SudoBroker`](crate::sudo::SudoBroker), a `SudoRequest` event
+    /// tells the Panel to prompt the user, and the Panel answers on the
+    /// dedicated sudo channel (bypassing the agent command queue and the
+    /// session log). The command's stdout/stderr are returned; the password
+    /// itself never enters the context.
+    async fn run_sudo(&self, session_id: &str, args: serde_json::Value) -> Result<String, String> {
+        let command = args["command"]
+            .as_str()
+            .ok_or_else(|| "run_sudo: `command` (string) is required".to_string())?
+            .to_string();
+        if command.trim().is_empty() {
+            return Err("run_sudo: command must not be empty".into());
+        }
+
+        let config = self.config.read().await.sudo.clone();
+        if !config.enabled {
+            return Err("run_sudo: sudo is disabled (set [agent.sudo] enabled = true)".into());
+        }
+        let broker = self
+            .sudo_broker
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "run_sudo: sudo broker not attached".to_string())?;
+
+        let pending = broker.request();
+        let request_id = pending.request_id;
+        self.emit(BackendEvent::SudoRequest {
+            request_id,
+            command: command.clone(),
+            session_id: session_id.to_string(),
+        });
+
+        let receiver = pending.into_receiver();
+        let password = tokio::time::timeout(
+            std::time::Duration::from_secs(config.auth_timeout_secs.max(1)),
+            receiver,
+        )
+        .await
+        .map_err(|_| {
+            broker.cancel(request_id);
+            self.emit(BackendEvent::SudoResolved {
+                request_id,
+                accepted: false,
+                message: "sudo 授权超时".into(),
+            });
+            format!(
+                "sudo authorization timed out after {}s — no password was submitted",
+                config.auth_timeout_secs
+            )
+        })?
+        .map_err(|_| {
+            broker.cancel(request_id);
+            self.emit(BackendEvent::SudoResolved {
+                request_id,
+                accepted: false,
+                message: "sudo 授权通道关闭".into(),
+            });
+            "sudo authorization channel closed".to_string()
+        })?
+        .ok_or_else(|| {
+            broker.cancel(request_id);
+            self.emit(BackendEvent::SudoResolved {
+                request_id,
+                accepted: false,
+                message: "sudo 授权被拒绝".into(),
+            });
+            "sudo authorization denied by the user".to_string()
+        })?;
+
+        self.emit(BackendEvent::SudoResolved {
+            request_id,
+            accepted: true,
+            message: "sudo 已授权，正在执行".into(),
+        });
+        crate::sudo::run_sudo_command(
+            &command,
+            &password,
+            std::time::Duration::from_secs(config.command_timeout_secs.max(1)),
+        )
+        .await
     }
 
     async fn spawn_background_task(
@@ -1960,6 +1902,24 @@ impl Agent {
         }
     }
 
+    /// Persist the system prompt plugin text to `[plugins.system_prompt]`
+    /// instead of `[agent]`. The API config no longer owns the system prompt.
+    async fn persist_system_prompt_plugin(&self, text: &str) {
+        let store = match self.config_store.lock().await.clone() {
+            Some(s) => s,
+            None => return,
+        };
+        let text = text.to_string();
+        if let Err(error) = store.patch(|root| {
+            let plugins = echo_adapter::ensure_table(root, "plugins");
+            let system_prompt = echo_adapter::ensure_table(plugins, "system_prompt");
+            system_prompt.insert("text".into(), toml::Value::String(text));
+            Ok(())
+        }) {
+            tracing::warn!(error = %error, "failed to persist system prompt plugin");
+        }
+    }
+
     /// Persist a config snapshot's `[agent]` section back to the TOML file
     /// through the shared [`echo_adapter::ConfigStore`].
     async fn persist_config(&self, cfg: &AgentConfig) {
@@ -1967,7 +1927,7 @@ impl Agent {
             Some(s) => s,
             None => return,
         };
-        let value = match toml::Value::try_from(cfg) {
+        let mut value = match toml::Value::try_from(cfg) {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to serialize agent config");
@@ -1976,6 +1936,22 @@ impl Agent {
         };
         tracing::debug!(api_key_len = cfg.api_key.len(), "persisting agent config");
         if let Err(e) = store.patch(|root| {
+            // `api_key` is excluded from AgentConfig's generic serialization.
+            // Write the explicit in-memory key when set; otherwise keep the
+            // on-disk value so unrelated persists never strip it from the file.
+            let key_value = if cfg.api_key.is_empty() {
+                root.get("agent")
+                    .and_then(|agent| agent.get("api_key"))
+                    .cloned()
+            } else {
+                Some(toml::Value::String(cfg.api_key.clone()))
+            };
+            if let Some(key_value) = key_value {
+                value
+                    .as_table_mut()
+                    .expect("serialized agent config is a table")
+                    .insert("api_key".into(), key_value);
+            }
             root.insert("agent".into(), value.clone());
             Ok(())
         }) {
@@ -1986,69 +1962,47 @@ impl Agent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum OutgoingTarget {
-    Direct { user_id: String },
-    Group { group_id: String },
-    Backend { session_id: String },
-}
-
-impl OutgoingTarget {
-    fn from_qq_hook(content: &str) -> Option<Self> {
-        let payload = content
-            .trim()
-            .strip_prefix("<qq_message_hook>")?
-            .strip_suffix("</qq_message_hook>")?
-            .trim();
-        let value: serde_json::Value = serde_json::from_str(payload).ok()?;
-        match value.pointer("/channel/type")?.as_str()? {
-            "private" => Some(Self::Direct {
-                user_id: json_id(value.pointer("/sender/user_id")?)?,
-            }),
-            "group" => Some(Self::Group {
-                group_id: json_id(value.pointer("/channel/group_id")?)?,
-            }),
-            _ => None,
-        }
-    }
-
-    fn tool_name(&self) -> &'static str {
-        match self {
-            Self::Direct { .. } => "send_private_msg",
-            Self::Group { .. } => "send_group_msg",
-            Self::Backend { .. } => "send_backend_message",
-        }
-    }
-
-    fn expected_id(&self) -> (&'static str, &str) {
-        match self {
-            Self::Direct { user_id } => ("user_id", user_id),
-            Self::Group { group_id } => ("group_id", group_id),
-            Self::Backend { session_id } => ("session_id", session_id),
-        }
-    }
-
-    fn key(&self) -> String {
-        let (id_name, id) = self.expected_id();
-        format!("{}:{id_name}={id}", self.tool_name())
-    }
-}
-
 #[derive(Debug, Clone)]
+/// The QQ delivery policy: parses deliveries from QQ/background inputs and
+/// validates send tool calls against the declared targets. This is the
+/// platform implementation of the [`DeliveryPolicy`] seam; the loop depends
+/// only on the trait.
+struct QqDeliveryPolicy;
+
 struct DeliveryPlan {
-    targets: Vec<OutgoingTarget>,
+    targets: Vec<DeliveryTarget>,
 }
 
 impl DeliveryPlan {
     fn from_input(content: &str) -> Option<Self> {
-        if let Some(target) = OutgoingTarget::from_qq_hook(content) {
-            return Some(Self {
-                targets: vec![target],
-            });
+        QqDeliveryPolicy
+            .plan_from_input(content)
+            .map(|targets| Self { targets })
+    }
+
+    fn pending<'a>(
+        &'a self,
+        delivered: &std::collections::HashSet<String>,
+    ) -> Vec<&'a DeliveryTarget> {
+        self.targets
+            .iter()
+            .filter(|target| !delivered.contains(&echo_chat_capability::target_key(target)))
+            .collect()
+    }
+}
+
+/// The QQ implementation of the delivery policy seam: parses QQ hooks and
+/// background-task deliveries, and validates `send_*` tool calls against the
+/// declared targets. The loop never imports QQ tool names directly — it
+/// drives deliveries through [`DeliveryPolicy`].
+impl DeliveryPolicy for QqDeliveryPolicy {
+    fn plan_from_input(&self, content: &str) -> Option<Vec<DeliveryTarget>> {
+        if let Some(target) = Self::from_qq_hook(content) {
+            return Some(vec![target]);
         }
         let payload = content
             .trim()
-            .strip_prefix("<background_task_event>")?
+            .strip_prefix(crate::input_marker::BACKGROUND_EVENT_OPEN)?
             .strip_suffix("</background_task_event>")?
             .trim();
         let value: serde_json::Value = serde_json::from_str(payload).ok()?;
@@ -2056,13 +2010,13 @@ impl DeliveryPlan {
         for delivery in value["deliveries"].as_array()? {
             let target = &delivery["target"];
             let parsed = match target["kind"].as_str()? {
-                "backend" => OutgoingTarget::Backend {
+                "backend" => DeliveryTarget::Backend {
                     session_id: json_id(&target["session_id"])?,
                 },
-                "qq_private" => OutgoingTarget::Direct {
+                "qq_private" => DeliveryTarget::Direct {
                     user_id: json_id(&target["user_id"])?,
                 },
-                "qq_group" => OutgoingTarget::Group {
+                "qq_group" => DeliveryTarget::Group {
                     group_id: json_id(&target["group_id"])?,
                 },
                 _ => return None,
@@ -2071,31 +2025,91 @@ impl DeliveryPlan {
                 targets.push(parsed);
             }
         }
-        (!targets.is_empty()).then_some(Self { targets })
+        (!targets.is_empty()).then_some(targets)
     }
 
-    fn pending<'a>(
-        &'a self,
+    fn validate_delivery_call(
+        &self,
+        plan: &[DeliveryTarget],
         delivered: &std::collections::HashSet<String>,
-    ) -> Vec<&'a OutgoingTarget> {
-        self.targets
+        call: &ToolCall,
+    ) -> Result<Option<String>, String> {
+        if !matches!(
+            call.name.as_str(),
+            "send_private_msg" | "send_group_msg" | "send_backend_message"
+        ) {
+            return Ok(None);
+        }
+        if plan.is_empty() {
+            return Ok(None);
+        }
+        let args: serde_json::Value = serde_json::from_str(&call.arguments)
+            .map_err(|error| format!("invalid delivery arguments: {error}"))?;
+        let target = plan
             .iter()
-            .filter(|target| !delivered.contains(&target.key()))
-            .collect()
+            .find(|target| {
+                if call.name != target_tool_name(target) {
+                    return false;
+                }
+                let (id_name, expected) = target_expected_id(target);
+                json_id(&args[id_name]).as_deref() == Some(expected)
+            })
+            .ok_or_else(|| format!("delivery target is not declared for {}", call.name))?;
+        let key = echo_chat_capability::target_key(target);
+        if delivered.contains(&key) {
+            return Err(format!("duplicate delivery blocked: {key}"));
+        }
+        Ok(Some(key))
     }
 
-    fn delivery_reminder(targets: &[&OutgoingTarget]) -> String {
-        let required = targets
+    fn delivery_reminder(&self, pending: &[&DeliveryTarget]) -> String {
+        let required = pending
             .iter()
             .map(|target| {
-                let (id_name, id) = target.expected_id();
-                format!("{} with {id_name}={id}", target.tool_name())
+                let (id_name, id) = target_expected_id(target);
+                format!("{} with {id_name}={id}", target_tool_name(target))
             })
             .collect::<Vec<_>>()
             .join("; ");
         format!(
             "<backend_delivery_correction>The previous response did not complete all declared deliveries. Call these tools now, exactly once per target: {required}. Use the corresponding branch result as content. Do not return another direct answer before every tool succeeds.</backend_delivery_correction>"
         )
+    }
+}
+
+impl QqDeliveryPolicy {
+    fn from_qq_hook(content: &str) -> Option<DeliveryTarget> {
+        let payload = content
+            .trim()
+            .strip_prefix("<qq_message_hook>")?
+            .strip_suffix("</qq_message_hook>")?
+            .trim();
+        let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+        match value.pointer("/channel/type")?.as_str()? {
+            "private" => Some(DeliveryTarget::Direct {
+                user_id: json_id(value.pointer("/sender/user_id")?)?,
+            }),
+            "group" => Some(DeliveryTarget::Group {
+                group_id: json_id(value.pointer("/channel/group_id")?)?,
+            }),
+            _ => None,
+        }
+    }
+}
+
+fn target_tool_name(target: &DeliveryTarget) -> &'static str {
+    match target {
+        DeliveryTarget::Direct { .. } => "send_private_msg",
+        DeliveryTarget::Group { .. } => "send_group_msg",
+        DeliveryTarget::Backend { .. } => "send_backend_message",
+    }
+}
+
+fn target_expected_id(target: &DeliveryTarget) -> (&'static str, &str) {
+    match target {
+        DeliveryTarget::Direct { user_id } => ("user_id", user_id),
+        DeliveryTarget::Group { group_id } => ("group_id", group_id),
+        DeliveryTarget::Backend { session_id } => ("session_id", session_id),
     }
 }
 
@@ -2107,98 +2121,11 @@ fn json_id(value: &serde_json::Value) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
-/// Trim a history by the token budget, keeping at least the newest message.
-/// Delegates to [`crate::session::trim_by_tokens`].
-fn trim_history(history: &mut Vec<ChatMessage>, token_limit: usize) {
-    crate::session::trim_by_tokens(history, token_limit);
-}
-
-/// Known structured input markers that carry a `message_sequence`.
-///
-/// Sequence parsing is deliberately restricted to these markers so ordinary
-/// conversation text that happens to contain braces (JSON snippets, code,
-/// math) can never be misread as structured input.
-const STRUCTURED_INPUT_MARKERS: [&str; 4] = [
-    "<qq_message_hook>",
-    "<backend_message_hook>",
-    "<timer_event>",
-    "<background_task_event>",
-];
-
+/// Extract the structured `message_sequence` from a marked input, if any.
+/// Parsing is delegated to [`crate::input_marker`] (single source of truth).
 pub(crate) fn structured_message_sequence(content: &str) -> Option<u64> {
-    if !STRUCTURED_INPUT_MARKERS
-        .iter()
-        .any(|marker| content.starts_with(marker))
-    {
-        return None;
-    }
-    let start = content.find('{')?;
-    let end = content.rfind('}')?;
-    serde_json::from_str::<serde_json::Value>(&content[start..=end]).ok()?["message_sequence"]
-        .as_u64()
+    crate::input_marker::structured_message_sequence(content)
 }
-/// Extract the task description from a `<timer_event>` payload (used for the
-/// display timeline summary).
-fn timeline_timer_task(content: &str) -> Option<String> {
-    let payload = content
-        .trim()
-        .strip_prefix("<timer_event>")?
-        .strip_suffix("</timer_event>")?;
-    serde_json::from_str::<serde_json::Value>(payload)
-        .ok()?
-        .get("task")?
-        .as_str()
-        .map(str::to_string)
-}
-
-/// Collapse whitespace and truncate to `max_chars`.
-fn truncate_one_line(value: &str, max_chars: usize) -> String {
-    let one_line = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.chars().count() <= max_chars {
-        one_line
-    } else {
-        one_line.chars().take(max_chars).collect::<String>() + "…"
-    }
-}
-
-/// Compact, secret-redacting summary of a tool argument/result payload for the
-/// display timeline. JSON objects are walked shallowly (one level); values of
-/// sensitive keys are replaced with "[已隐藏]".
-fn summarize_timeline_value(value: &str, max_chars: usize) -> String {
-    let compact = match serde_json::from_str::<serde_json::Value>(value) {
-        Ok(serde_json::Value::Object(map)) => {
-            let summarized = map
-                .iter()
-                .take(8)
-                .map(|(key, value)| {
-                    let rendered = if is_sensitive_timeline_key(key) {
-                        "[已隐藏]".into()
-                    } else {
-                        match value {
-                            serde_json::Value::String(s) => truncate_one_line(s, 48),
-                            serde_json::Value::Array(items) => format!("[{}]", items.len()),
-                            other => other.to_string(),
-                        }
-                    };
-                    format!("{key}={rendered}")
-                })
-                .collect::<Vec<_>>()
-                .join(" · ");
-            format!("{{{summarized}}}")
-        }
-        Ok(other) => other.to_string(),
-        Err(_) => truncate_one_line(value, max_chars),
-    };
-    truncate_one_line(&compact, max_chars)
-}
-
-fn is_sensitive_timeline_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
-    ["token", "secret", "password", "api_key", "access_key"]
-        .iter()
-        .any(|needle| key.contains(needle))
-}
-
 /// After a delay, generate and send one interim reply for a still-running
 /// branch, unless the branch already produced a visible reply or finished.
 #[allow(clippy::too_many_arguments)]
@@ -2260,40 +2187,6 @@ pub(crate) fn spawn_contextual_wait_reply(
             _ = branch_completed.cancelled() => {}
         }
     });
-}
-
-fn validate_delivery_call(
-    plan: Option<&DeliveryPlan>,
-    delivered: &std::collections::HashSet<String>,
-    call: &ToolCall,
-) -> std::result::Result<Option<String>, String> {
-    if !matches!(
-        call.name.as_str(),
-        "send_private_msg" | "send_group_msg" | "send_backend_message"
-    ) {
-        return Ok(None);
-    }
-    let Some(plan) = plan else {
-        return Ok(None);
-    };
-    let args: serde_json::Value = serde_json::from_str(&call.arguments)
-        .map_err(|error| format!("invalid delivery arguments: {error}"))?;
-    let target = plan
-        .targets
-        .iter()
-        .find(|target| {
-            if call.name != target.tool_name() {
-                return false;
-            }
-            let (id_name, expected) = target.expected_id();
-            json_id(&args[id_name]).as_deref() == Some(expected)
-        })
-        .ok_or_else(|| format!("delivery target is not declared for {}", call.name))?;
-    let key = target.key();
-    if delivered.contains(&key) {
-        return Err(format!("duplicate delivery blocked: {key}"));
-    }
-    Ok(Some(key))
 }
 
 fn assistant_with_tool_calls(
@@ -2672,6 +2565,140 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn run_sudo_emits_request_and_resolves_with_password() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Arc::new(test_agent(provider));
+        let (bridge, handle) = crate::create_bridge();
+        agent.attach(Arc::new(handle));
+        let broker = Arc::new(crate::sudo::SudoBroker::new());
+        agent.attach_sudo_broker(broker.clone());
+        // Enable sudo and use the fake-sudo-friendly `true` (no real root
+        // needed; with a wrong password sudo still exits and returns text).
+        {
+            let mut config = agent.config.write().await;
+            config.sudo.enabled = true;
+            config.sudo.auth_timeout_secs = 30;
+            config.sudo.command_timeout_secs = 30;
+        }
+        let session_id = "local:tui::one";
+        agent
+            .trunk
+            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
+        let call = ToolCall {
+            id: "sudo-1".into(),
+            name: "run_sudo".into(),
+            arguments: r#"{"command":"true"}"#.into(),
+        };
+        let agent_for_task = agent.clone();
+        let task =
+            tokio::spawn(
+                async move { agent_for_task.run_tool(session_id, "branch-1", &call).await },
+            );
+
+        // Wait for the SudoRequest event.
+        let mut request_id = None;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let mut events = Vec::new();
+            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+                if let BackendEvent::SudoRequest { request_id: id, .. } = event {
+                    request_id = Some(id);
+                    break;
+                }
+                events.push(event);
+            }
+            if request_id.is_some() {
+                break;
+            }
+        }
+        let request_id = request_id.expect("SudoRequest event emitted");
+        assert!(broker.submit(request_id, Some("hunter2".into())));
+
+        let result = task.await.expect("tool completes");
+        assert!(
+            !result.contains("hunter2"),
+            "password must never reach the model: {result}"
+        );
+        // The command itself ran (or failed with a sudo error) — never a leak.
+        assert!(!result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_sudo_denied_returns_error() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Arc::new(test_agent(provider));
+        let (bridge, handle) = crate::create_bridge();
+        agent.attach(Arc::new(handle));
+        let broker = Arc::new(crate::sudo::SudoBroker::new());
+        agent.attach_sudo_broker(broker.clone());
+        {
+            let mut config = agent.config.write().await;
+            config.sudo.enabled = true;
+            config.sudo.auth_timeout_secs = 30;
+        }
+        let session_id = "local:tui::one";
+        agent
+            .trunk
+            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
+        let call = ToolCall {
+            id: "sudo-2".into(),
+            name: "run_sudo".into(),
+            arguments: r#"{"command":"true"}"#.into(),
+        };
+        let agent_for_task = agent.clone();
+        let task =
+            tokio::spawn(
+                async move { agent_for_task.run_tool(session_id, "branch-1", &call).await },
+            );
+        let mut request_id = None;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+                if let BackendEvent::SudoRequest { request_id: id, .. } = event {
+                    request_id = Some(id);
+                    break;
+                }
+            }
+            if request_id.is_some() {
+                break;
+            }
+        }
+        let request_id = request_id.expect("SudoRequest event emitted");
+        assert!(broker.submit(request_id, None));
+        let result = task.await.expect("tool completes");
+        assert!(
+            result.contains("denied"),
+            "denial must surface to the model: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_sudo_disabled_returns_error_without_broker() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Arc::new(test_agent(provider));
+        let session_id = "local:tui::one";
+        agent
+            .trunk
+            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
+        let call = ToolCall {
+            id: "sudo-3".into(),
+            name: "run_sudo".into(),
+            arguments: r#"{"command":"true"}"#.into(),
+        };
+        let result = agent.run_tool(session_id, "branch-1", &call).await;
+        assert!(result.contains("disabled"), "unexpected: {result}");
+    }
+
+    #[tokio::test]
     async fn update_api_config_persists() {
         let tmp =
             std::env::temp_dir().join(format!("echo-agent-cfg-{}.toml", uuid::Uuid::new_v4()));
@@ -2693,7 +2720,7 @@ pub mod tests {
                 provider: "anthropic".into(),
                 model: "claude-x".into(),
                 base_url: "http://example.test".into(),
-                api_key: String::new(),
+                api_key: "sk-test-123".into(),
                 thinking: None,
                 reasoning_effort: None,
             })
@@ -2703,7 +2730,7 @@ pub mod tests {
         assert_eq!(cfg.provider, "anthropic");
         assert_eq!(cfg.model, "claude-x");
         assert_eq!(cfg.base_url, "http://example.test");
-        assert!(cfg.effective_api_key().is_empty());
+        assert_eq!(cfg.effective_api_key(), "sk-test-123");
         assert!(cfg.active_api.is_empty());
 
         let content = std::fs::read_to_string(&tmp).unwrap();
@@ -2711,7 +2738,45 @@ pub mod tests {
         assert!(content.contains("provider = \"anthropic\""));
         assert!(content.contains("model = \"claude-x\""));
         assert!(content.contains("base_url = \"http://example.test\""));
+        assert!(content.contains("api_key = \"sk-test-123\""));
         assert!(!content.contains("old-model"));
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn persist_config_keeps_on_disk_api_key() {
+        let tmp =
+            std::env::temp_dir().join(format!("echo-agent-cfg-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &tmp,
+            "[agent]\nprovider = \"openai\"\napi_key = \"sk-on-disk\"\n",
+        )
+        .unwrap();
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = test_agent(provider);
+        agent.set_config_path(tmp.clone());
+
+        agent
+            .apply_command(BackendCommand::UpdateApiConfig {
+                name: String::new(),
+                provider: "anthropic".into(),
+                model: "claude-x".into(),
+                base_url: "http://example.test".into(),
+                api_key: String::new(),
+                thinking: None,
+                reasoning_effort: None,
+            })
+            .await;
+
+        let content = std::fs::read_to_string(&tmp).unwrap();
+        assert!(content.contains("provider = \"anthropic\""));
+        assert!(
+            content.contains("api_key = \"sk-on-disk\""),
+            "unexpected: {content}"
+        );
         std::fs::remove_file(&tmp).ok();
     }
 
@@ -3052,8 +3117,23 @@ pub mod tests {
                 && message.content.contains("user_id=123456")
         }));
         let history = session.history.lock().await;
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[1].content, "delivered");
+        // Event-sourced history: user hook + synthesized assistant tool_use +
+        // tool result + assistant reply. The tool_use must precede its result
+        // so the provider never sees an orphaned tool_result after a reload.
+        assert_eq!(history.len(), 4);
+        assert_eq!(
+            history[1].role,
+            crate::llm::ChatRole::Assistant,
+            "tool_use is model-visible before its tool_result"
+        );
+        let tool_use = history[1].tool_calls.as_ref().unwrap();
+        assert_eq!(tool_use[0].name, "send_private_msg");
+        assert_eq!(history[2].role, crate::llm::ChatRole::Tool);
+        assert_eq!(
+            history[2].tool_call_id.as_deref(),
+            Some(tool_use[0].id.as_str())
+        );
+        assert_eq!(history[3].content, "delivered");
     }
 
     #[test]
@@ -3091,18 +3171,18 @@ pub mod tests {
 
     #[test]
     fn qq_delivery_validation_blocks_wrong_target_and_duplicate_send() {
-        let plan = DeliveryPlan {
-            targets: vec![OutgoingTarget::Direct {
-                user_id: "123456".into(),
-            }],
-        };
+        let policy = QqDeliveryPolicy;
+        let targets = vec![DeliveryTarget::Direct {
+            user_id: "123456".into(),
+        }];
         let mut delivered = std::collections::HashSet::new();
         let wrong = ToolCall {
             id: "1".into(),
             name: "send_private_msg".into(),
             arguments: r#"{"user_id":999,"content":"x"}"#.into(),
         };
-        assert!(validate_delivery_call(Some(&plan), &delivered, &wrong)
+        assert!(policy
+            .validate_delivery_call(&targets, &delivered, &wrong)
             .unwrap_err()
             .contains("not declared"));
 
@@ -3111,11 +3191,13 @@ pub mod tests {
             name: "send_private_msg".into(),
             arguments: r#"{"user_id":123456,"content":"x"}"#.into(),
         };
-        let key = validate_delivery_call(Some(&plan), &delivered, &correct)
+        let key = policy
+            .validate_delivery_call(&targets, &delivered, &correct)
             .unwrap()
             .unwrap();
         delivered.insert(key);
-        assert!(validate_delivery_call(Some(&plan), &delivered, &correct)
+        assert!(policy
+            .validate_delivery_call(&targets, &delivered, &correct)
             .unwrap_err()
             .contains("duplicate delivery"));
     }
@@ -3148,8 +3230,10 @@ pub mod tests {
                 arguments: r#"{"group_id":"200","content":"c"}"#.into(),
             },
         ];
+        let targets = plan.targets.as_slice();
         for call in &calls {
-            let key = validate_delivery_call(Some(&plan), &delivered, call)
+            let key = QqDeliveryPolicy
+                .validate_delivery_call(targets, &delivered, call)
                 .unwrap()
                 .unwrap();
             delivered.insert(key);
@@ -3378,9 +3462,22 @@ pub mod tests {
         .expect("due timer should invoke the agent");
 
         let history = session.history.lock().await;
-        assert_eq!(history.len(), 4);
-        assert!(history[2].content.starts_with("<timer_event>"));
-        assert_eq!(history[3].content, "timer completed");
+        // Event-sourced history: user + synthesized assistant tool_use +
+        // tool result + "timer scheduled" + timer-event user + "timer completed".
+        assert_eq!(history.len(), 6);
+        assert_eq!(history[1].role, crate::llm::ChatRole::Assistant);
+        assert_eq!(
+            history[1].tool_calls.as_ref().unwrap()[0].name,
+            "schedule_timer"
+        );
+        assert_eq!(history[2].role, crate::llm::ChatRole::Tool);
+        assert_eq!(
+            history[2].tool_call_id.as_deref(),
+            Some(history[1].tool_calls.as_ref().unwrap()[0].id.as_str())
+        );
+        assert_eq!(history[3].content, "timer scheduled");
+        assert!(history[4].content.starts_with("<timer_event>"));
+        assert_eq!(history[5].content, "timer completed");
         drop(history);
         agent.shutdown().await;
     }

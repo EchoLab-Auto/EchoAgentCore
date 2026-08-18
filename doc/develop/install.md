@@ -6,7 +6,7 @@ The installer targets Linux hosts with a systemd user manager. It does not
 require root and does not modify system-wide directories.
 
 ```bash
-./scripts/install.sh [--owner-qq QQ_ID] [--no-start]
+./scripts/install.sh [--no-start]
 ```
 
 Use `./scripts/install.sh --dry-run` to inspect all resolved paths without
@@ -31,6 +31,17 @@ from EchoAgentPanel's own `scripts/install.sh`.
 Existing configuration files are preserved. Re-running the installer refreshes
 the binary, updater and service units. The installer enables self-update in an
 existing config without changing API credentials or other settings.
+
+## Service hardening and sudo
+
+The long-running `echo-agent-core.service` sets `NoNewPrivileges=false`
+(template `packaging/systemd/echo-agent-core.service.in`): the `run_sudo`
+human-in-the-loop flow (ADR-0012) relies on `sudo`'s setuid escalation, which
+`NoNewPrivileges=true` would block. The one-shot
+`echo-agent-core-update.service` keeps `NoNewPrivileges=true` — it only fetches
+remote code, builds, and replaces the user-local binary, never runs `sudo`, so
+the hardening limits the privilege-escalation surface of a compromised build
+script.
 
 Re-running the installer is transactional after the release build completes:
 the current binary, launcher, updater, configuration, units and revision state
@@ -95,10 +106,11 @@ allowed_qq_users = [123456789]
 
 ## Failure behavior
 
-The updater takes a non-blocking file lock and refuses concurrent runs. It also
-refuses to update when the managed checkout has tracked local changes, is on a
-detached HEAD, or the remote update is not a fast-forward. Untracked custom
-skills are left in place.
+The updater takes a non-blocking file lock and refuses concurrent runs. Local
+mode builds whatever the source tree contains — tracked local changes are
+allowed and recorded as `+dirty`. `--remote` mode refuses to update when the
+managed checkout has tracked local changes, is on a detached HEAD, or the
+remote update is not a fast-forward. Untracked custom skills are left in place.
 
 Git advances before compilation, but the installed binary is replaced only
 after a successful locked release build. A fetch or build failure therefore
@@ -125,9 +137,17 @@ systemctl --user start echo-agent-core-update.service
 
 ## Install the current local worktree
 
-For development builds, use the updater's explicit local mode. It skips Git
-fetch and merge, then compiles the current worktree including uncommitted
-changes:
+For development builds, use the updater's local mode (the default). It skips
+Git fetch and merge, then compiles the current worktree including uncommitted
+changes. All three paths default to the installed layout — `--source` prefers
+this checkout when it contains a Cargo.toml — so from the repository a bare run
+is enough:
+
+```bash
+scripts/update.sh --local
+```
+
+Equivalent explicit form:
 
 ```bash
 scripts/update.sh --local \
@@ -137,5 +157,20 @@ scripts/update.sh --local \
 ```
 
 Local mode always rebuilds. It records `local:<commit>+dirty` when the worktree
-has changes. The systemd updater remains remote-only and continues to require a
-clean managed checkout.
+has changes. The systemd updater runs in the default local mode: the unit passes
+no mode flag, so it builds the managed checkout as-is. Pass `--remote` for a
+fetch-and-fast-forward update of a clean checkout.
+
+## Uninstall
+
+```bash
+./scripts/uninstall.sh            # keep config (core.toml + session history)
+./scripts/uninstall.sh --purge    # also remove the config directory
+```
+
+`--dry-run` prints the resolved paths first. The script stops and disables the
+systemd units, removes them, the launcher, the runtime binary, the managed
+source checkout and the update state, then `daemon-reload`s. Without `--purge`
+the config directory is kept so a reinstall restores everything; re-running
+`./scripts/install.sh` recreates the rest. `ECHO_PREFIX`, `XDG_CONFIG_HOME`,
+`XDG_DATA_HOME`, and `XDG_STATE_HOME` are respected, matching the installer.

@@ -159,6 +159,10 @@ async fn handle_connection(
     // Capture request headers during the WebSocket upgrade. Authentication is
     // enforced here too: a bad token yields a 401 before the upgrade finishes.
     let mut captured: Option<(i64, Option<String>)> = None;
+    // The Err type is `tungstenite::ErrorResponse` — fixed by the vendored
+    // `Callback` trait signature (`FnOnce(&Request, Response) -> Result<Response, ErrorResponse>`);
+    // it cannot be boxed or shrunk at this boundary, so the lint is allowed here.
+    #[allow(clippy::result_large_err)]
     let callback = |req: &Request,
                     resp: Response|
      -> Result<

@@ -1,0 +1,20 @@
+[package]
+name = "echo-loop"
+description = "EchoAgentCore agent loop — TurnRunner turn/step state machine and the tools execution pipeline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+echo-defs = { path = "../../defs/echo-defs" }
+echo-context = { path = "../../context/echo-context" }
+tokio.workspace = true
+tokio-util.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true

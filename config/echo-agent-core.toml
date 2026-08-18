@@ -25,7 +25,11 @@ max_tool_iterations = 1024
 # 旧字段 memory_limit（按消息条数）已废弃，不再参与计算。
 memory_limit_tokens = 800000
 skills_dir = "skills"                    # 递归发现 SKILL.md，运行时自动热重载
-system_prompt = "请你使用中文"
+
+[plugins.system_prompt]
+# 系统提示词插件：由 Core 注入，可在 Panel 顶部“系统提示词”中编辑保存。
+# 留空表示不注入基础系统提示词。
+text = "请你使用中文"
 
 [agent.self_update]
 # 仅一键安装后的 systemd 服务环境支持。源码运行时保持关闭。
@@ -34,11 +38,27 @@ enabled = false
 allow_local = true
 allowed_qq_users = []
 
+[agent.sudo]
+# run_sudo 工具：LLM 可请求以 root 执行命令，但每次都需要你在 Panel 中输入
+# sudo 密码授权。密码只走专用通道（不进入 LLM 上下文、会话日志或命令队列），
+# 输入后立即零化，agent 永远不会看到密码内容。
+enabled = true
+# 等待用户在 Panel 输入密码的秒数，超时则该次请求失败。
+auth_timeout_secs = 120
+# 授权后 sudo 命令本身的执行超时（秒）。
+command_timeout_secs = 60
+
 [adapters.qq]
 # 是否启用 QQ 适配器（启动时自动连接 NapCat）。
 enabled = false
 # NapCat OneBot HTTP API，用于读取完整群和好友列表。
 napcat_onebot_url = "http://localhost:3000"
+# NapCat Docker 容器由 QQ 适配器托管：启动 QQ 适配器时自动启动 NapCat，
+# 停止 QQ 适配器时自动停止 NapCat。若 Docker CLI 缺失/无权限，启动会在 Panel 中报错。
+napcat_auto_start = true
+napcat_auto_stop = true
+# Docker Compose 文件路径（相对 Core 工作目录或绝对路径）。也可在启动失败时手动准备容器。
+napcat_compose_file = "docker-compose.yml"
 # 允许执行管理员命令（status/shutdown）的 QQ 号，0 表示禁用管理员命令。
 owner_qq = 0
 # 命令前缀。

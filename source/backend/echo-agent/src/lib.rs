@@ -15,9 +15,12 @@ pub mod bridge;
 pub mod command;
 pub mod config;
 pub mod event;
+pub mod input_marker;
 pub mod llm;
 pub mod session;
 pub mod skill;
+pub mod sudo;
+pub mod timeline;
 pub mod tool;
 
 pub use adapter_bridge::AgentMessageHook;
@@ -32,4 +35,5 @@ pub use event::{
 pub use llm::LlmProvider;
 pub use session::{Session, SessionKey, TrunkStore};
 pub use skill::{Skill, SkillRegistry};
+pub use sudo::{PendingSudo, SudoBroker};
 pub use tool::{Tool, ToolRegistry};

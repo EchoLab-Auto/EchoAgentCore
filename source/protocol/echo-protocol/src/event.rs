@@ -276,6 +276,10 @@ pub enum BackendEvent {
         active_api: String,
         profiles: Vec<ApiProfileInfo>,
     },
+    /// Current system prompt plugin text.
+    SystemPrompt {
+        text: String,
+    },
     /// Backend error (also used for info toasts).
     Error {
         session_id: Option<String>,
@@ -301,9 +305,34 @@ pub enum BackendEvent {
     QqGateMode {
         mode: crate::mode::GateMode,
     },
+    /// Current QQ owner (admin) QQ number. Frontend-only; never emitted to
+    /// the agent/LLM context.
+    QqOwner {
+        owner_qq: i64,
+    },
     /// QQ friend list (for interactive allowlist/denylist picker).
     FriendList {
         friends: Vec<FriendInfo>,
+    },
+
+    // ---- Sudo authorization (human-in-the-loop) ----
+    /// The agent requests root privileges for `command`. The Panel must show
+    /// the user a masked password prompt and answer with
+    /// [`SudoPasswordSubmit`](crate::bridge::SudoPasswordSubmit) on the
+    /// dedicated sudo channel (never through the agent command queue). The
+    /// password itself never appears in any event.
+    SudoRequest {
+        request_id: u64,
+        command: String,
+        session_id: String,
+    },
+    /// A sudo authorization request was resolved (password submitted,
+    /// denied, or the tool timed out). `message` is a short human-readable
+    /// outcome for the Panel toast; it never contains the password.
+    SudoResolved {
+        request_id: u64,
+        accepted: bool,
+        message: String,
     },
 }
 
@@ -346,3 +375,8 @@ pub struct BackendState {
     pub enabled_skills: Vec<String>,
     pub sessions: Vec<SessionInfo>,
 }
+
+/// `BackendEvent` is dispatchable on the harness event bus: the enum derives
+/// Clone + Debug + Send + Sync, this impl declares the membership so
+/// listeners can subscribe by event type (dsh typed events).
+impl echo_context::Event for BackendEvent {}

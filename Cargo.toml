@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
+    "source/defs/echo-defs",
+    "source/context/echo-context",
+    "source/session/echo-session",
+    "source/loop/echo-loop",
+    "source/llm/echo-llm-openai",
+    "source/llm/echo-llm-anthropic",
+    "source/llm/echo-llm-ollama",
+    "source/chat/echo-chat-capability",
     "source/protocol/echo-protocol",
     "source/backend/echo-core",
     "source/backend/echo-server",
@@ -24,6 +32,14 @@ opt-level = 1
 
 [workspace.dependencies]
 # internal
+echo-defs = { path = "source/defs/echo-defs" }
+echo-context = { path = "source/context/echo-context" }
+echo-session = { path = "source/session/echo-session" }
+echo-loop = { path = "source/loop/echo-loop" }
+echo-llm-openai = { path = "source/llm/echo-llm-openai" }
+echo-llm-anthropic = { path = "source/llm/echo-llm-anthropic" }
+echo-llm-ollama = { path = "source/llm/echo-llm-ollama" }
+echo-chat-capability = { path = "source/chat/echo-chat-capability" }
 echo-protocol = { path = "source/protocol/echo-protocol" }
 echo-adapter = { path = "source/backend/echo-adapter" }
 echo-core = { path = "source/backend/echo-core" }
@@ -62,5 +78,6 @@ tokio-util = { version = "0.7", features = ["rt"] }
 # agent framework
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 chrono = "0.4"
+sha2 = "0.10"
 walkdir = "2"
 regex = "1"

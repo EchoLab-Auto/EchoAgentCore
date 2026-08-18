@@ -46,6 +46,22 @@ pub struct QqAdapterConfig {
     /// to, and which is considered "already visible to NapCat".
     #[serde(default = "default_napcat_data_dir")]
     pub napcat_container_data_dir: String,
+    /// Start the NapCat Docker container automatically when the QQ adapter
+    /// starts. When false, NapCat is assumed to be managed externally.
+    #[serde(default = "default_true")]
+    pub napcat_auto_start: bool,
+    /// Stop the NapCat Docker container automatically when the QQ adapter
+    /// stops. Does not remove the container or its data volumes.
+    #[serde(default = "default_true")]
+    pub napcat_auto_stop: bool,
+    /// Docker Compose file used to start/stop the NapCat service. The file is
+    /// relative to the Core working directory when no absolute path is given.
+    #[serde(default = "default_napcat_compose_file")]
+    pub napcat_compose_file: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_napcat_url() -> String {
@@ -68,6 +84,10 @@ fn default_napcat_data_dir() -> String {
     "/app/napcat/data".into()
 }
 
+fn default_napcat_compose_file() -> String {
+    "docker-compose.yml".into()
+}
+
 impl Default for QqAdapterConfig {
     fn default() -> Self {
         Self {
@@ -83,6 +103,9 @@ impl Default for QqAdapterConfig {
             napcat_host: default_napcat_host(),
             napcat_container: default_napcat_container(),
             napcat_container_data_dir: default_napcat_data_dir(),
+            napcat_auto_start: default_true(),
+            napcat_auto_stop: default_true(),
+            napcat_compose_file: default_napcat_compose_file(),
         }
     }
 }
