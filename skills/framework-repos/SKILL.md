@@ -36,11 +36,27 @@ EchoAgent 框架由两个 Git 仓库组成，所有框架相关的修改、构�
 
 ## 生效方式
 
-- Core 改动需要重启服务：`systemctl --user restart echo-agent-core-fixed.service`
+- Core 改动需要重启服务：`systemctl --user restart echo-agent-core.service`
 - Panel 改动构建后刷新浏览器即可（服务托管静态目录）
 - 框架自更新（framework_update 工具）也只会在这两个受管仓库的指定目录下工作
 
+## ⛔ 绝对禁止：stop Core 服务
+
+**永远不要执行 `systemctl --user stop echo-agent-core.service`，也不要 kill core 进程。**
+
+Agent 自己就运行在 echo-agent-core 进程内 —— stop 会立刻杀死当前会话，
+命令中断在 stop 这一步，后续的 start 永远执行不到，服务就一直停止，
+Panel 随之显示"与后端断开，正在重连…"（2026-08-19 已实际发生两次）。
+
+安全替代方式：
+
+- 让改动生效：`systemctl --user restart echo-agent-core.service`（原子操作，会自动拉起）
+- 框架更新：`systemctl --user start echo-agent-core-update.service`（oneshot，内部负责构建与重启）
+- 确需先停后启（如清理数据文件）：把整个操作交给脱离本会话的单元执行，例如
+  `systemd-run --user --collect bash -c 'systemctl --user stop echo-agent-core.service; <操作>; systemctl --user start echo-agent-core.service'`
+  绝不在会话内直接分步 stop。
+
 ## 注意
 
-- 当前机器的 Core 以 systemd 用户服务 `echo-agent-core-fixed.service` 运行，二进制在 /tmp 下的仅为检查副本，不要在其中修改
+- 当前机器的 Core 以 systemd 用户服务 `echo-agent-core.service` 运行（Panel 为 `echo-agent-panel.service`），/tmp 下的仅为检查副本，不要在其中修改
 - 未显式要求时不要动 `~/.config` 之外的全局配置
