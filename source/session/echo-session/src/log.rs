@@ -99,6 +99,12 @@ impl EventLog {
         self.events.lock().expect("event log poisoned").len()
     }
 
+    /// Drop every event. Callers clearing conversation memory use this
+    /// together with resetting the derived projections.
+    pub fn clear(&self) {
+        self.events.lock().expect("event log poisoned").clear();
+    }
+
     pub fn is_empty(&self) -> bool {
         self.events.lock().expect("event log poisoned").is_empty()
     }

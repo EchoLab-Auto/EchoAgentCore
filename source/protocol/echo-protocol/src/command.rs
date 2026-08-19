@@ -46,6 +46,12 @@ pub enum BackendCommand {
     /// Request the persisted display timeline (`BackendEvent::TrunkTimeline`).
     /// The TUI sends this on startup to restore historical messages.
     RequestTrunkTimeline,
+    /// Erase all agent conversation memory: the durable session event log,
+    /// the in-memory trunk context and the persisted display timeline.
+    /// Responds with a fresh (empty) `TrunkTimeline` + `ContextSnapshot`.
+    /// **Frontend-only** — destructive, human-in-the-loop action; the agent
+    /// must never wipe its own memory.
+    ClearHistory,
     /// Start an adapter by name.
     StartAdapter { name: String },
     /// Stop an adapter by name.
@@ -109,7 +115,8 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
         | BackendCommand::SetQqGateMode { .. }
         | BackendCommand::SetQqOwner { .. }
         | BackendCommand::RequestQqOwner
-        | BackendCommand::RequestQqFilterConfig => CommandClearance::Frontend,
+        | BackendCommand::RequestQqFilterConfig
+        | BackendCommand::ClearHistory => CommandClearance::Frontend,
         _ => CommandClearance::Agent,
     }
 }
@@ -151,6 +158,11 @@ mod tests {
         assert_eq!(
             command_clearance(&BackendCommand::RequestQqFilterConfig),
             CommandClearance::Frontend
+        );
+        assert_eq!(
+            command_clearance(&BackendCommand::ClearHistory),
+            CommandClearance::Frontend,
+            "wiping memory is a human decision, never agent-originated"
         );
         assert_eq!(
             command_clearance(&BackendCommand::RequestAdapterStatus),

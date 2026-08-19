@@ -641,6 +641,19 @@ impl TrunkStore {
         self.trunk_history.lock().await.clone()
     }
 
+    /// Erase all conversation memory: the durable event log, the in-memory
+    /// trunk projection and the display timeline, then persist immediately so
+    /// a restart cannot resurrect the cleared history. Identity labels
+    /// (provenance metadata) and the session header are kept — they carry no
+    /// message content.
+    pub async fn clear_history(&self) {
+        self.event_log.clear();
+        self.trunk_history.lock().await.clear();
+        self.timeline.lock().await.clear();
+        self.mark_dirty();
+        self.save_now().await;
+    }
+
     // ── Event-sourced session log (Phase 3) ────────────────────────────────
 
     /// Append one durable session event and update the in-memory trunk
@@ -1057,6 +1070,47 @@ mod tests {
             timeline.last().unwrap().content,
             format!("msg-{}", TRUNK_TIMELINE_MAX + 49)
         );
+    }
+
+    #[tokio::test]
+    async fn clear_history_wipes_log_trunk_timeline_and_disk() {
+        let path = temp_sessions_path("clear-history");
+        let _ = std::fs::remove_file(&path);
+        let store = TrunkStore::new(1000);
+        store.set_persist_path(&path);
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                content: "记住我".into(),
+                timestamp: 1700000000,
+                message_sequence: None,
+                source: None,
+            },
+        ));
+        store.push_timeline(crate::event::TimelineMessage {
+            kind: "user".into(),
+            content: "记住我".into(),
+            session_id: "local:tui::local_user".into(),
+            time: 1700000000,
+            source: None,
+            reasoning: None,
+            tool: None,
+        });
+        store.save_now().await;
+        assert_eq!(store.trunk_len(), 1);
+        assert_eq!(store.timeline_snapshot().len(), 1);
+
+        store.clear_history().await;
+
+        assert_eq!(store.trunk_len(), 0, "trunk projection cleared");
+        assert!(store.event_log().is_empty(), "event log cleared");
+        assert!(store.timeline_snapshot().is_empty(), "timeline cleared");
+        // The persisted file must already reflect the wipe.
+        let restored = TrunkStore::new(1000);
+        restored.set_persist_path(&path);
+        restored.load_from_file().await;
+        assert_eq!(restored.trunk_len(), 0, "cleared history survives restart");
+        assert!(restored.timeline_snapshot().is_empty());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]

@@ -9,6 +9,34 @@ use crate::event::BackendEvent;
 use crate::session::SessionKey;
 
 impl Agent {
+    /// Emit the current trunk context snapshot (`BackendEvent::ContextSnapshot`).
+    async fn emit_context_snapshot(&self) {
+        let history = self.trunk.snapshot().await;
+        let total_tokens = crate::llm::estimate_history_tokens(&history);
+        let messages = history
+            .iter()
+            .map(|message| crate::event::ContextMessageInfo {
+                role: match message.role {
+                    crate::llm::ChatRole::System => "system",
+                    crate::llm::ChatRole::User => "user",
+                    crate::llm::ChatRole::Assistant => "assistant",
+                    crate::llm::ChatRole::Tool => "tool",
+                }
+                .into(),
+                content: message.content.clone(),
+                tokens: crate::llm::estimate_message_tokens(message),
+                sequence: crate::agent::structured_message_sequence(&message.content),
+            })
+            .collect();
+        let blocks = self.context_blocks(&history).await;
+        self.emit(BackendEvent::ContextSnapshot {
+            messages,
+            blocks,
+            total_tokens,
+            limit_tokens: self.trunk.memory_limit_tokens(),
+        });
+    }
+
     pub async fn apply_command(&self, cmd: BackendCommand) {
         match cmd {
             BackendCommand::SwitchModel { model } => {
@@ -135,34 +163,24 @@ impl Agent {
                 }
             }
             BackendCommand::RequestContext => {
-                let history = self.trunk.snapshot().await;
-                let total_tokens = crate::llm::estimate_history_tokens(&history);
-                let messages = history
-                    .iter()
-                    .map(|message| crate::event::ContextMessageInfo {
-                        role: match message.role {
-                            crate::llm::ChatRole::System => "system",
-                            crate::llm::ChatRole::User => "user",
-                            crate::llm::ChatRole::Assistant => "assistant",
-                            crate::llm::ChatRole::Tool => "tool",
-                        }
-                        .into(),
-                        content: message.content.clone(),
-                        tokens: crate::llm::estimate_message_tokens(message),
-                        sequence: crate::agent::structured_message_sequence(&message.content),
-                    })
-                    .collect();
-                let blocks = self.context_blocks(&history).await;
-                self.emit(BackendEvent::ContextSnapshot {
-                    messages,
-                    blocks,
-                    total_tokens,
-                    limit_tokens: self.trunk.memory_limit_tokens(),
-                });
+                self.emit_context_snapshot().await;
             }
             BackendCommand::RequestTrunkTimeline => {
                 self.emit(BackendEvent::TrunkTimeline {
                     messages: self.trunk.timeline_snapshot(),
+                });
+            }
+            BackendCommand::ClearHistory => {
+                self.trunk.clear_history().await;
+                // Push the empty projections so every connected frontend drops
+                // its local copy immediately (chat view + open context modal).
+                self.emit(BackendEvent::TrunkTimeline {
+                    messages: Vec::new(),
+                });
+                self.emit_context_snapshot().await;
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: "历史记忆已清理".into(),
                 });
             }
             BackendCommand::CancelRequestedWork { session_id, all } => {
