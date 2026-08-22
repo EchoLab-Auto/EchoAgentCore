@@ -306,6 +306,41 @@ if ((core_was_active)); then
     if ((restart_failed)); then
         false
     fi
+
+    # ── QQ/NapCat 恢复：Core 重启会切断反向 WS，NapCat 客户端有时无法
+    #   自动重连（需手动 docker restart）。这里代劳：先等它自己重连，
+    #    超时后自动重启 napcat 容器，避免每次自更新后手动操作。 ──
+    PHASE=restoring_qq
+    qq_connected() {
+        command -v ss >/dev/null 2>&1 || return 1
+        ss -Htn state established '( sport = :3131 )' 2>/dev/null | grep -q .
+    }
+    if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx napcat; then
+        qq_ok=0
+        for _ in {1..30}; do
+            if qq_connected; then
+                qq_ok=1
+                break
+            fi
+            sleep 1
+        done
+        if ((qq_ok == 0)); then
+            echo "QQ 反向 WS 未在 30s 内重连，自动重启 napcat 容器…" >&2
+            docker restart napcat >/dev/null 2>&1 || true
+            for _ in {1..60}; do
+                if qq_connected; then
+                    qq_ok=1
+                    break
+                fi
+                sleep 1
+            done
+        fi
+        if ((qq_ok == 1)); then
+            echo "QQ 连接已恢复（napcat 反向 WS 已建立）"
+        else
+            echo "警告：等待 QQ 反向 WS 恢复超时，可能需要手动检查 napcat 容器" >&2
+        fi
+    fi
 fi
 
 if [[ -f "$SOURCE_DIR/scripts/update.sh" ]]; then
