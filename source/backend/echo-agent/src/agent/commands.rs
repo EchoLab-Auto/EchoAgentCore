@@ -128,6 +128,9 @@ impl Agent {
             BackendCommand::SwitchApi { name } => {
                 self.switch_api(&name).await;
             }
+            BackendCommand::TestApi { name } => {
+                self.test_api_config(&name).await;
+            }
             BackendCommand::DeleteApi { name } => {
                 self.delete_api(&name).await;
             }

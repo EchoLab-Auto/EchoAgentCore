@@ -17,7 +17,7 @@ use crate::bridge::BackendHandle;
 use crate::command::BackendCommand;
 use crate::config::{AgentConfig, ApiProfile};
 use crate::event::{AdapterStatus, BackendEvent};
-use crate::llm::{ChatMessage, ChatRequest, LlmProvider, ToolCall};
+use crate::llm::{create_provider, ChatMessage, ChatRequest, LlmProvider, ToolCall};
 use crate::session::{Session, TrunkStore};
 use crate::skill::SkillRegistry;
 use crate::tool::ToolRegistry;
@@ -2101,6 +2101,95 @@ impl Agent {
                 message: format!("API config not found: {name}"),
             });
         }
+    }
+
+    /// Test connectivity of an API config by sending a minimal probe request.
+    ///
+    /// `name` empty tests the active (top-level) config; otherwise the named
+    /// profile's values are used. Emits `BackendEvent::ApiTestResult`; the
+    /// active provider is never modified.
+    async fn test_api_config(&self, name: &str) {
+        let timestamp_start = std::time::Instant::now();
+        let config = self.config.read().await.clone();
+
+        // Resolve the config to test: named profile or the active default.
+        let mut probe = config.clone();
+        if name.is_empty() {
+            probe.apply_active_profile();
+            probe.api_key = probe.effective_api_key();
+            probe.base_url = probe.effective_base_url();
+        } else {
+            let profile = match config.api_profiles.iter().find(|p| p.name == name) {
+                Some(profile) => profile,
+                None => {
+                    self.emit(BackendEvent::ApiTestResult {
+                        name: name.into(),
+                        ok: false,
+                        message: format!("profile not found: {name}"),
+                        latency_ms: timestamp_start.elapsed().as_millis() as u64,
+                    });
+                    return;
+                }
+            };
+            probe.provider = profile.provider.clone();
+            probe.model = profile.model.clone();
+            probe.base_url = profile.base_url.clone();
+            probe.api_key = profile.api_key.clone();
+            probe.thinking = profile.thinking;
+            probe.reasoning_effort = profile.reasoning_effort;
+        }
+        drop(config);
+
+        // Build a throwaway provider from the probe config.
+        let provider = match create_provider(&probe) {
+            Ok(provider) => provider,
+            Err(error) => {
+                self.emit(BackendEvent::ApiTestResult {
+                    name: name.into(),
+                    ok: false,
+                    message: format!("provider build failed: {error}"),
+                    latency_ms: timestamp_start.elapsed().as_millis() as u64,
+                });
+                return;
+            }
+        };
+
+        let model = probe.model.clone();
+        let request = ChatRequest {
+            model: model.clone(),
+            messages: vec![ChatMessage::user("ping")],
+            tools: None,
+            temperature: Some(0.0),
+            max_tokens: Some(4),
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            provider.chat(&request),
+        )
+        .await;
+
+        let latency_ms = timestamp_start.elapsed().as_millis() as u64;
+        let (ok, message) = match result {
+            Ok(Ok(response)) => (
+                true,
+                match response.content {
+                    Some(content) if !content.trim().is_empty() => format!(
+                        "OK ({}) — 响应: {}",
+                        model,
+                        echo_defs::token::truncate(content.trim(), 60)
+                    ),
+                    _ => format!("OK ({model}) — 收到空响应"),
+                },
+            ),
+            Ok(Err(error)) => (false, format!("请求失败: {error}")),
+            Err(_) => (false, "请求超时（>20s）".into()),
+        };
+        self.emit(BackendEvent::ApiTestResult {
+            name: name.into(),
+            ok,
+            message,
+            latency_ms,
+        });
     }
 
     /// Persist the system prompt plugin text to `[plugins.system_prompt]`

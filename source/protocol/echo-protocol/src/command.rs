@@ -31,6 +31,9 @@ pub enum BackendCommand {
     },
     /// Switch to an API profile by name (empty = top-level default).
     SwitchApi { name: String },
+    /// Test connectivity of an API config: `name` empty = top-level default,
+    /// otherwise that profile. Replies with `BackendEvent::ApiTestResult`.
+    TestApi { name: String },
     /// Delete an API profile by name.
     DeleteApi { name: String },
     /// Enable or disable a skill.

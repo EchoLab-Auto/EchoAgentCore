@@ -315,6 +315,16 @@ pub enum BackendEvent {
         active_api: String,
         profiles: Vec<ApiProfileInfo>,
     },
+    /// API connectivity test result (response to `TestApi`).
+    ApiTestResult {
+        /// Tested config name (empty = top-level default).
+        name: String,
+        ok: bool,
+        /// Human-readable message (error detail or success note).
+        message: String,
+        /// Round-trip latency of the probe request, ms.
+        latency_ms: u64,
+    },
     /// Current system prompt plugin text.
     SystemPrompt {
         text: String,
