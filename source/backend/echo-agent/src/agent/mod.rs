@@ -1244,7 +1244,7 @@ impl Agent {
                         .as_ref()
                         .map(|plan| plan.targets.as_slice())
                         .unwrap_or(&[]),
-                    &delivered_targets,
+                    &mut delivered_targets,
                     call,
                 ) {
                     Ok(delivery_key) => delivery_key,
@@ -2232,7 +2232,7 @@ impl DeliveryPolicy for QqDeliveryPolicy {
     fn validate_delivery_call(
         &self,
         plan: &[DeliveryTarget],
-        delivered: &std::collections::HashSet<String>,
+        delivered: &mut std::collections::HashSet<String>,
         call: &ToolCall,
     ) -> Result<Option<String>, String> {
         if !matches!(
@@ -2257,9 +2257,10 @@ impl DeliveryPolicy for QqDeliveryPolicy {
             })
             .ok_or_else(|| format!("delivery target is not declared for {}", call.name))?;
         let key = echo_chat_capability::target_key(target);
-        if delivered.contains(&key) {
-            return Err(format!("duplicate delivery blocked: {key}"));
-        }
+        // 允许同一目标多次投递：回复条数完全由 agent 决定（例如先回
+        // 一条图片说明、再回一条文字）。`delivered` 集合仅用于判定"是否
+        // 已满足至少一次投递"（驱动 delivery reminder），不再拦截重复。
+        delivered.insert(key.clone());
         Ok(Some(key))
     }
 
@@ -3576,7 +3577,7 @@ pub mod tests {
     }
 
     #[test]
-    fn qq_delivery_validation_blocks_wrong_target_and_duplicate_send() {
+    fn qq_delivery_rejects_wrong_target_but_allows_repeat_delivery() {
         let policy = QqDeliveryPolicy;
         let targets = vec![DeliveryTarget::Direct {
             user_id: "123456".into(),
@@ -3588,7 +3589,7 @@ pub mod tests {
             arguments: r#"{"user_id":999,"content":"x"}"#.into(),
         };
         assert!(policy
-            .validate_delivery_call(&targets, &delivered, &wrong)
+            .validate_delivery_call(&targets, &mut delivered, &wrong)
             .unwrap_err()
             .contains("not declared"));
 
@@ -3597,15 +3598,24 @@ pub mod tests {
             name: "send_private_msg".into(),
             arguments: r#"{"user_id":123456,"content":"x"}"#.into(),
         };
+        // 第一次投递：声明目标匹配，记录 delivered。
         let key = policy
-            .validate_delivery_call(&targets, &delivered, &correct)
+            .validate_delivery_call(&targets, &mut delivered, &correct)
             .unwrap()
             .unwrap();
-        delivered.insert(key);
+        assert!(delivered.contains(&key));
+        // 同一目标再次投递：不再拦截（回复条数由 agent 决定）。
+        let again = ToolCall {
+            id: "3".into(),
+            name: "send_private_msg".into(),
+            arguments: r#"{"user_id":123456,"content":"y"}"#.into(),
+        };
         assert!(policy
-            .validate_delivery_call(&targets, &delivered, &correct)
-            .unwrap_err()
-            .contains("duplicate delivery"));
+            .validate_delivery_call(&targets, &mut delivered, &again)
+            .is_ok());
+        // pending() 在首次投递后为空：reminder 不再触发。
+        let plan = DeliveryPlan { targets: targets.clone() };
+        assert!(plan.pending(&delivered).is_empty());
     }
 
     #[test]
@@ -3639,7 +3649,7 @@ pub mod tests {
         let targets = plan.targets.as_slice();
         for call in &calls {
             let key = QqDeliveryPolicy
-                .validate_delivery_call(targets, &delivered, call)
+                .validate_delivery_call(targets, &mut delivered, call)
                 .unwrap()
                 .unwrap();
             delivered.insert(key);

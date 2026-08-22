@@ -37,15 +37,18 @@ pub trait DeliveryPolicy: Send + Sync {
     /// input carries no delivery requirements.
     fn plan_from_input(&self, content: &str) -> Option<Vec<DeliveryTarget>>;
 
-    /// Validate a tool call against the plan. Returns `Ok(None)` when the
-    /// call is not a delivery call; `Ok(Some(key))` when it satisfies one
-    /// (the key identifies the target for dedup); `Err` when it is a delivery
-    /// call that does not match the plan or duplicates an already-delivered
-    /// target.
+    /// Validate a tool call against the plan and record it as delivered.
+    ///
+    /// Returns `Ok(None)` when the call is not a delivery call; `Ok(Some(key))`
+    /// when it satisfies a declared target (the key is recorded into
+    /// `delivered`, which drives the "at least one delivery" reminder);
+    /// `Err` when it targets an undeclared destination. Repeat deliveries to
+    /// the same target are allowed — how many replies to send is the agent's
+    /// decision.
     fn validate_delivery_call(
         &self,
         plan: &[DeliveryTarget],
-        delivered: &HashSet<String>,
+        delivered: &mut HashSet<String>,
         call: &ToolCall,
     ) -> Result<Option<String>, String>;
 
