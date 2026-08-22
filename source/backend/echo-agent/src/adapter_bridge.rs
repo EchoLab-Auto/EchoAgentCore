@@ -176,7 +176,8 @@ fn format_hook_input(msg: &IncomingMessage, message_sequence: u64, received_at_m
         "received_at_ms": received_at_ms,
         "message_sequence": message_sequence,
         "content": msg.content,
-        "metadata": msg.metadata
+        "metadata": msg.metadata,
+        "images": msg.images
     });
     let json = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
     crate::input_marker::wrap_hook(&msg.platform, &json)
@@ -466,6 +467,7 @@ mod tests {
             timestamp: 1700000000,
             at_me: false,
             metadata: serde_json::Value::Null,
+            images: vec![],
         }
     }
 

@@ -85,6 +85,7 @@ mod message_tests {
                 reasoning_content: None,
                 tool_calls,
                 tool_call_id: (role == ChatRole::Tool).then_some(tool_call_id),
+            images: vec![],
             };
             let json = serde_json::to_string(&msg).expect("serialize");
             let back: ChatMessage = serde_json::from_str(&json).expect("deserialize");

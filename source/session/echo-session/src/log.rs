@@ -170,7 +170,8 @@ mod tests {
             content: "你好".into(),
             timestamp: 1700000000,
             message_sequence: None,
-            source: None,
+            source: None,                images: vec![],
+
         }));
         log.append(SessionEvent::AssistantMessage(AssistantMessage {
             content: "回复".into(),
@@ -197,7 +198,8 @@ mod tests {
             content: "跑一下".into(),
             timestamp: 1700000000,
             message_sequence: Some(1),
-            source: None,
+            source: None,                images: vec![],
+
         }));
         log.append(SessionEvent::ToolCall(ToolCallEvent {
             id: "call_1".into(),
@@ -207,6 +209,7 @@ mod tests {
         log.append(SessionEvent::ToolResult(ToolResultEvent {
             tool_call_id: "call_1".into(),
             result: "ok".into(),
+            images: vec![],
         }));
         // The final reply must land after the turn's own tool events, not
         // between the user event and them.

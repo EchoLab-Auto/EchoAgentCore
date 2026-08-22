@@ -75,6 +75,11 @@ pub struct IncomingMessage {
     pub at_me: bool,
     /// Opaque metadata for platform-specific use.
     pub metadata: serde_json::Value,
+    /// Multimodal media attached to the message: image URLs or `data:` URIs.
+    ///
+    /// Populated by adapters that carry media (e.g. QQ images); the agent
+    /// forwards them to vision-capable models. Empty for text-only messages.
+    pub images: Vec<String>,
 }
 
 /// Describes where to send a reply message.

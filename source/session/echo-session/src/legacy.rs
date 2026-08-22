@@ -162,7 +162,8 @@ fn migrate_history(history: &[V4Message]) -> Vec<SessionEvent> {
                 content: message.content.clone(),
                 timestamp: 0,
                 message_sequence: None,
-                source: None,
+                source: None,                images: vec![],
+
             })),
             "assistant" => Some(SessionEvent::AssistantMessage(AssistantMessage {
                 content: message.content.clone(),
@@ -174,6 +175,7 @@ fn migrate_history(history: &[V4Message]) -> Vec<SessionEvent> {
                 // The old format dropped tool_call_id; the content is kept.
                 tool_call_id: String::new(),
                 result: message.content.clone(),
+                images: vec![],
             })),
             _ => None,
         })

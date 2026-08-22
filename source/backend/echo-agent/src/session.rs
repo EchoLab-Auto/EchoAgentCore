@@ -776,6 +776,14 @@ fn deserialize_messages(history: &[serde_json::Value]) -> Vec<ChatMessage> {
                 reasoning_content: message["reasoning_content"].as_str().map(str::to_string),
                 tool_calls: None,
                 tool_call_id: None,
+                images: message["images"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|m| m.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
         })
         .collect()
@@ -934,6 +942,7 @@ mod tests {
                 timestamp: 1700000000,
                 message_sequence: None,
                 source: None,
+                images: vec![],
             },
         ));
         store.append_event(echo_session::SessionEvent::AssistantMessage(
@@ -985,6 +994,7 @@ mod tests {
                 timestamp: 0,
                 message_sequence: None,
                 source: None,
+                images: vec![],
             },
         ));
         store.append_event(echo_session::SessionEvent::AssistantMessage(
@@ -1084,6 +1094,7 @@ mod tests {
                 timestamp: 1700000000,
                 message_sequence: None,
                 source: None,
+                images: vec![],
             },
         ));
         store.push_timeline(crate::event::TimelineMessage {
@@ -1206,6 +1217,7 @@ mod tests {
                 arguments: r#"{"user_id":123,"content":"hi"}"#.into(),
             }]),
             tool_call_id: None,
+            images: vec![],
         };
         let serialized = serialize_messages(std::slice::from_ref(&message));
         let restored = deserialize_messages(&serialized);

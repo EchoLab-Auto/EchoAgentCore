@@ -501,6 +501,7 @@ mod tests {
             timestamp: 0,
             at_me: true,
             metadata: serde_json::Value::Null,
+            images: vec![],
         }
     }
 
@@ -518,6 +519,7 @@ mod tests {
             timestamp: 0,
             at_me: true,
             metadata: serde_json::Value::Null,
+            images: vec![],
         }
     }
 
@@ -827,6 +829,7 @@ mod tests {
             timestamp: 0,
             at_me: true,
             metadata: serde_json::Value::Null,
+            images: vec![],
         };
         assert!(matches!(
             f.check(&group_msg("a")).await,

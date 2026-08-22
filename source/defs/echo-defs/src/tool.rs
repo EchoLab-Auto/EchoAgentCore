@@ -30,6 +30,46 @@ pub struct ToolDefinition {
     pub parameters: Option<Value>,
 }
 
+/// The result of a tool execution: model-visible text plus optional
+/// multimodal media (image URLs or `data:` URIs).
+///
+/// `text` stays the primary channel; `images` lets a tool hand pictures to a
+/// vision-capable model through the same caller (e.g. screenshots, generated
+/// charts, search result thumbnails).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolResult {
+    pub text: String,
+    pub images: Vec<String>,
+}
+
+impl ToolResult {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            images: vec![],
+        }
+    }
+
+    pub fn with_images(text: impl Into<String>, images: Vec<String>) -> Self {
+        Self {
+            text: text.into(),
+            images,
+        }
+    }
+}
+
+impl From<String> for ToolResult {
+    fn from(value: String) -> Self {
+        Self::text(value)
+    }
+}
+
+impl From<&str> for ToolResult {
+    fn from(value: &str) -> Self {
+        Self::text(value)
+    }
+}
+
 /// A capability the LLM can invoke during the agent loop.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -39,7 +79,16 @@ pub trait Tool: Send + Sync {
     fn parameters(&self) -> Value {
         json!({"type": "object", "properties": {}})
     }
+    /// Execute the tool, returning model-visible text.
     async fn execute(&self, arguments: Value) -> Result<String, ToolError>;
+
+    /// Execute the tool with multimodal output. Defaults to [`execute`] with
+    /// no images; tools that produce media override this to attach them.
+    async fn execute_rich(&self, arguments: Value) -> Result<ToolResult, ToolError> {
+        let text = self.execute(arguments).await?;
+        Ok(ToolResult::text(text))
+    }
+
     /// Optional structured state snapshot for UI visualization. Tools that
     /// expose a state panel (e.g. checklist) override this; the agent emits
     /// the returned value in a `ChecklistUpdated` event after each execution.

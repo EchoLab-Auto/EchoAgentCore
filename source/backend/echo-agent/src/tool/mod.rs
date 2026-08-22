@@ -8,7 +8,7 @@
 //! a disposer that removes the tool and invalidates the definitions cache
 //! (the dsh "registrations are effects" rule).
 
-pub use echo_defs::tool::{Tool, ToolDefinition, ToolError};
+pub use echo_defs::tool::{Tool, ToolDefinition, ToolError, ToolResult};
 
 pub mod builtin;
 
@@ -168,6 +168,19 @@ impl ToolRegistry {
         let tool = self.tools.read().await.get(name).cloned();
         match tool {
             Some(tool) => tool.execute(arguments).await,
+            None => Err(ToolError::NotFound(name.to_string())),
+        }
+    }
+
+    /// Execute a tool with multimodal output support (text + images).
+    pub async fn execute_rich(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> Result<echo_defs::tool::ToolResult, ToolError> {
+        let tool = self.tools.read().await.get(name).cloned();
+        match tool {
+            Some(tool) => tool.execute_rich(arguments).await,
             None => Err(ToolError::NotFound(name.to_string())),
         }
     }

@@ -69,15 +69,22 @@ pub fn is_structured_input(content: &str) -> bool {
         .any(|marker| content.starts_with(marker))
 }
 
-/// Extract the `message_sequence` from a structured input's JSON payload, if
-/// present.
-pub fn structured_message_sequence(content: &str) -> Option<u64> {
+/// Extract the JSON payload (between the first `{` and last `}`) of a
+/// structured input, if it is one.
+pub fn hook_payload(content: &str) -> Option<String> {
     if !is_structured_input(content) {
         return None;
     }
     let start = content.find('{')?;
     let end = content.rfind('}')?;
-    serde_json::from_str::<serde_json::Value>(&content[start..=end]).ok()?["message_sequence"]
+    Some(content[start..=end].to_string())
+}
+
+/// Extract the `message_sequence` from a structured input's JSON payload, if
+/// present.
+pub fn structured_message_sequence(content: &str) -> Option<u64> {
+    let payload = hook_payload(content)?;
+    serde_json::from_str::<serde_json::Value>(&payload).ok()?["message_sequence"]
         .as_u64()
 }
 

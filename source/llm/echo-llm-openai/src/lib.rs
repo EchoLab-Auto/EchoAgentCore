@@ -286,7 +286,7 @@ fn build_request_body_with_reasoning(
         .map(|m| {
             let mut v = json!({
                 "role": role_str(m.role),
-                "content": m.content,
+                "content": serialize_content(m),
             });
             if let Some(tool_calls) = &m.tool_calls {
                 v["tool_calls"] = json!(tool_calls
@@ -335,6 +335,33 @@ fn build_request_body_with_reasoning(
         }
     }
     body
+}
+
+/// Serialize a message's content field.
+///
+/// Plain text stays a string (backward compatible). Messages carrying
+/// `images` become a content-part array with `image_url` entries — the
+/// OpenAI multimodal format. Non-user roles (tool/system) keep a string
+/// when no images are attached, matching the strictest endpoints.
+fn serialize_content(m: &echo_defs::message::ChatMessage) -> serde_json::Value {
+    if m.images.is_empty() {
+        return json!(m.content);
+    }
+    let mut parts: Vec<serde_json::Value> = Vec::new();
+    if !m.content.is_empty() {
+        parts.push(json!({"type": "text", "text": m.content}));
+    }
+    for image in &m.images {
+        parts.push(json!({
+            "type": "image_url",
+            "image_url": { "url": image }
+        }));
+    }
+    if parts.is_empty() {
+        json!(m.content)
+    } else {
+        json!(parts)
+    }
 }
 
 fn role_str(role: echo_defs::message::ChatRole) -> &'static str {
@@ -466,6 +493,7 @@ mod tests {
                             arguments: "{\"expr\":\"1+1\"}".into(),
                         }]),
                         tool_call_id: None,
+                        images: vec![],
                     },
                     echo_defs::message::ChatMessage::tool("2", "c1"),
                 ],
@@ -671,5 +699,43 @@ mod tests {
     fn sse_empty_choices_are_skipped() {
         let event = r#"data: {"choices":[]}"#;
         assert_eq!(parse_sse_event(event), vec![]);
+    }
+
+    #[test]
+    fn multimodal_user_message_serializes_content_parts() {
+        let request = ChatRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage::user_with_images(
+                "看看这张图",
+                vec!["https://example.com/a.png".into()],
+            )],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+        };
+        let body = build_request_body(&request, false);
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "看看这张图");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[1]["image_url"]["url"], "https://example.com/a.png");
+    }
+
+    #[test]
+    fn multimodal_tool_result_carries_images() {
+        let request = ChatRequest {
+            model: "gpt-4o".into(),
+            messages: vec![
+                ChatMessage::tool_with_images("result", "c1", vec!["data:image/png;base64,AAAA".into()]),
+            ],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+        };
+        let body = build_request_body(&request, false);
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "result");
+        assert_eq!(content[1]["type"], "image_url");
     }
 }

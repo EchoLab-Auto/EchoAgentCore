@@ -38,6 +38,9 @@ pub struct UserMessage {
     /// Adapter/platform provenance (optional; display-only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<MessageSource>,
+    /// Multimodal media attached to the message (image URLs / data URIs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 /// Source provenance of an inbound message (display/routing only).
@@ -83,6 +86,9 @@ pub struct ToolResultEvent {
     pub tool_call_id: String,
     /// The model-visible result text (may start with "error:").
     pub result: String,
+    /// Multimodal media produced by the tool (image URLs / data URIs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 /// A compaction replaced a prefix of the log with a summary.
@@ -141,7 +147,11 @@ impl From<CompactionEvent> for SessionEvent {
 
 /// Build the model-facing message for a user event.
 pub(crate) fn user_message(event: &UserMessage) -> ChatMessage {
-    ChatMessage::user(&event.content)
+    if event.images.is_empty() {
+        ChatMessage::user(&event.content)
+    } else {
+        ChatMessage::user_with_images(&event.content, event.images.clone())
+    }
 }
 
 /// Build the model-facing assistant message, preserving tool calls.
@@ -156,7 +166,11 @@ pub(crate) fn assistant_message(event: &AssistantMessage) -> ChatMessage {
 
 /// Build the model-facing tool message answering a call id.
 pub(crate) fn tool_result_message(event: &ToolResultEvent) -> ChatMessage {
-    ChatMessage::tool(&event.result, &event.tool_call_id)
+    if event.images.is_empty() {
+        ChatMessage::tool(&event.result, &event.tool_call_id)
+    } else {
+        ChatMessage::tool_with_images(&event.result, &event.tool_call_id, event.images.clone())
+    }
 }
 
 #[cfg(test)]
@@ -188,6 +202,7 @@ mod tests {
                     timestamp: 0,
                     message_sequence: None,
                     source: None,
+                    images: vec![],
                 }),
                 "user/message",
             ),
@@ -211,6 +226,7 @@ mod tests {
                 SessionEvent::ToolResult(ToolResultEvent {
                     tool_call_id: "c".into(),
                     result: "r".into(),
+                    images: vec![],
                 }),
                 "tool/result",
             ),

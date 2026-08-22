@@ -633,7 +633,22 @@ impl QqAdapter {
             return None;
         }
         let content = msg.plain_text();
-        if content.trim().is_empty() {
+        let images: Vec<String> = msg
+            .message()
+            .iter()
+            .filter_map(|seg| match seg {
+                echo_core::segment::Segment::Known(
+                    echo_core::segment::KnownSegment::Image { data },
+                ) => data
+                    .url
+                    .clone()
+                    .or_else(|| (!data.file.is_empty()).then(|| data.file.clone())),
+                _ => None,
+            })
+            .collect();
+        // 纯图片消息（无文本）也要送达：以标记文本承载内容，
+        // 图片 URL 经 images 字段传递，模型可通过视觉能力解读。
+        if content.trim().is_empty() && images.is_empty() {
             return None;
         }
         let (channel, group_name) = if let Some(gid) = msg.group_id() {
@@ -657,6 +672,7 @@ impl QqAdapter {
             timestamp: msg.timestamp(),
             at_me: msg.at_me(),
             metadata: serde_json::Value::Null,
+            images,
         })
     }
 }
@@ -1445,7 +1461,8 @@ mod tests {
 
     #[test]
     fn converts_cq_image_segments_without_content() {
-        // A message with only an image has no plain text — content empty.
+        // Image-only messages are now accepted: the image URL/file travels via
+        // `images` so multimodal-capable models can see it.
         let event = serde_json::from_value(serde_json::json!({
             "post_type": "message",
             "message_type": "private",
@@ -1454,15 +1471,16 @@ mod tests {
             "sub_type": "friend",
             "message_id": 42,
             "user_id": 123456,
-            "message": [{"type": "image", "data": {"file": "abc.png"}}],
-            "raw_message": "[CQ:image,file=abc.png]",
+            "message": [{"type": "image", "data": {"file": "abc.png", "url": "https://example.com/abc.png"}}],
+            "raw_message": "[CQ:image,file=abc.png,url=https://example.com/abc.png]",
             "font": 0,
             "sender": {"user_id": 123456, "nickname": "tester"}
         }))
         .unwrap();
-        // Image-only messages carry no text, so they are dropped.
         let names = dashmap::DashMap::new();
-        assert!(QqAdapter::convert_message(&event, &names).is_none());
+        let msg = QqAdapter::convert_message(&event, &names).expect("image message accepted");
+        assert!(msg.content.is_empty(), "image-only message has no text");
+        assert_eq!(msg.images, vec!["https://example.com/abc.png".to_string()]);
     }
 }
 

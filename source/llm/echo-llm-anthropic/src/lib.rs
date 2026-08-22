@@ -312,7 +312,7 @@ fn build_request_body_with_reasoning(
                     results.push(json!({
                         "type": "tool_result",
                         "tool_use_id": tm.tool_call_id.clone().unwrap_or_default(),
-                        "content": tm.content,
+                        "content": content_blocks(&tm.content, &tm.images),
                     }));
                     i += 1;
                 }
@@ -339,7 +339,9 @@ fn build_request_body_with_reasoning(
                             content.push('\n');
                             content.push_str(&msgs[i].content);
                         }
-                        json!({"role": "user", "content": content})
+                        // 多模态：带图用户消息用 content blocks（text + image）。
+                        let blocks = content_blocks(&content, &m.images);
+                        json!({"role": "user", "content": blocks})
                     }
                     echo_defs::message::ChatRole::Assistant => {
                         // Match directly on tool_calls instead of a separate
@@ -411,6 +413,48 @@ fn build_request_body_with_reasoning(
         }
     }
     body
+}
+
+/// Build Anthropic content blocks for a message part.
+///
+/// Text-only content stays a plain string (most compact and compatible);
+/// when images are attached, return blocks `[{type:text}, {type:image}]`.
+/// `data:` URIs are decoded to base64 source blocks; plain URLs are sent as
+/// `url` source (Anthropic supports both on the Messages API).
+fn content_blocks(text: &str, images: &[String]) -> serde_json::Value {
+    if images.is_empty() {
+        return json!(text);
+    }
+    let mut blocks: Vec<serde_json::Value> = Vec::new();
+    if !text.is_empty() {
+        blocks.push(json!({"type": "text", "text": text}));
+    }
+    for image in images {
+        if let Some((media_type, data)) = parse_data_uri(image) {
+            blocks.push(json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": data,
+                }
+            }));
+        } else {
+            blocks.push(json!({
+                "type": "image",
+                "source": { "type": "url", "url": image }
+            }));
+        }
+    }
+    json!(blocks)
+}
+
+/// Parse a `data:image/png;base64,....` URI into `(media_type, data)`.
+fn parse_data_uri(uri: &str) -> Option<(String, String)> {
+    let rest = uri.strip_prefix("data:")?;
+    let (meta, data) = rest.split_once(',')?;
+    let media_type = meta.split(';').next().unwrap_or("image/png").to_string();
+    Some((media_type, data.to_string()))
 }
 
 // ---- wire types -----------------------------------------------------------
@@ -602,6 +646,7 @@ mod tests {
                             arguments: "{\"expr\":\"1+1\"}".into(),
                         }]),
                         tool_call_id: None,
+                        images: vec![],
                     },
                     ChatMessage::tool("2", "call_1"),
                     ChatMessage::tool("3", "call_2"),
@@ -713,6 +758,7 @@ mod tests {
                             arguments: "{\"path\":\"a.rs\"}".into(),
                         }]),
                         tool_call_id: None,
+                        images: vec![],
                     },
                 ],
                 tools: None,
@@ -768,6 +814,7 @@ mod tests {
                             arguments: "not-json".into(),
                         }]),
                         tool_call_id: None,
+                        images: vec![],
                     },
                 ],
                 tools: None,
@@ -864,5 +911,59 @@ mod tests {
     fn anthropic_sse_ignores_bad_json_and_missing_data() {
         assert_eq!(parse_anthropic_event("event: ping\ndata: not-json"), vec![]);
         assert_eq!(parse_anthropic_event(": comment only"), vec![]);
+    }
+
+    #[test]
+    fn multimodal_user_message_uses_image_blocks() {
+        let body = build_request_body(
+            &ChatRequest {
+                model: "claude-sonnet-4".into(),
+                messages: vec![ChatMessage::user_with_images(
+                    "看图",
+                    vec!["data:image/png;base64,QUJD".into()],
+                )],
+                tools: None,
+                temperature: None,
+                max_tokens: None,
+            },
+            false,
+        );
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image");
+        let source = &content[1]["source"];
+        assert_eq!(source["type"], "base64");
+        assert_eq!(source["media_type"], "image/png");
+        assert_eq!(source["data"], "QUJD");
+    }
+
+    #[test]
+    fn multimodal_tool_result_embeds_image_blocks() {
+        let body = build_request_body(
+            &ChatRequest {
+                model: "claude-sonnet-4".into(),
+                messages: vec![
+                    ChatMessage::tool_with_images("ok", "c1", vec!["https://example.com/x.png".into()]),
+                ],
+                tools: None,
+                temperature: None,
+                max_tokens: None,
+            },
+            false,
+        );
+        // tool_result 分组进 user 消息
+        let users: Vec<&serde_json::Value> = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "user")
+            .collect();
+        let blocks = users[0]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "tool_result");
+        let content = blocks[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "url");
+        assert_eq!(content[1]["source"]["url"], "https://example.com/x.png");
     }
 }

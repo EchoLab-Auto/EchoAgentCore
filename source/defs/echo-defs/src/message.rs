@@ -27,6 +27,13 @@ pub struct ChatMessage {
     /// Required for `role == Tool`: the id of the tool call being answered.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Multimodal media: image URLs or `data:` URIs attached to the message.
+    ///
+    /// When non-empty, providers serialize `content` as a content-part array
+    /// instead of a plain string (OpenAI `image_url`, Anthropic `image` blocks).
+    /// Keep the plain-text `content` so text-only pipelines are unaffected.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 impl ChatMessage {
@@ -37,6 +44,7 @@ impl ChatMessage {
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
+            images: vec![],
         }
     }
     pub fn user(content: impl Into<String>) -> Self {
@@ -46,6 +54,19 @@ impl ChatMessage {
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
+            images: vec![],
+        }
+    }
+
+    /// Build a user message with attached images (URLs or data URIs).
+    pub fn user_with_images(content: impl Into<String>, images: Vec<String>) -> Self {
+        Self {
+            role: ChatRole::User,
+            content: content.into(),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+            images,
         }
     }
     pub fn assistant(content: impl Into<String>) -> Self {
@@ -55,6 +76,7 @@ impl ChatMessage {
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
+            images: vec![],
         }
     }
     pub fn assistant_with_reasoning(
@@ -67,6 +89,7 @@ impl ChatMessage {
             reasoning_content,
             tool_calls: None,
             tool_call_id: None,
+            images: vec![],
         }
     }
     pub fn tool(content: impl Into<String>, tool_call_id: impl Into<String>) -> Self {
@@ -76,6 +99,23 @@ impl ChatMessage {
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            images: vec![],
+        }
+    }
+
+    /// Build a tool result message carrying attached images (URLs/data URIs).
+    pub fn tool_with_images(
+        content: impl Into<String>,
+        tool_call_id: impl Into<String>,
+        images: Vec<String>,
+    ) -> Self {
+        Self {
+            role: ChatRole::Tool,
+            content: content.into(),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+            images,
         }
     }
 }

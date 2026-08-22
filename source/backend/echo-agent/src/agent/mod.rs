@@ -644,6 +644,7 @@ impl Agent {
                     timestamp: chrono::Utc::now().timestamp(),
                     message_sequence: structured_message_sequence(content),
                     source: None,
+                    images: extract_input_images(content),
                 },
             ));
         let snapshot = session.history.lock().await.clone();
@@ -667,6 +668,7 @@ impl Agent {
                     timestamp: chrono::Utc::now().timestamp(),
                     message_sequence: Some(message_sequence),
                     source: None,
+                    images: extract_input_images(content),
                 },
             ));
         let snapshot = session.history.lock().await.clone();
@@ -801,8 +803,8 @@ impl Agent {
             arguments: arguments.to_string(),
         };
         let result = self.run_tool(&session.id, "control-reply", &call).await;
-        if result.trim_start().starts_with("error:") {
-            Err(result)
+        if result.text.trim_start().starts_with("error:") {
+            Err(result.text)
         } else {
             Ok(())
         }
@@ -1279,12 +1281,12 @@ impl Agent {
                 let result = tokio::select! {
                     result = self.run_tool(&session_id, branch_id, call) => result,
                     _ = tokio::time::sleep(tool_timeout) => {
-                        let result = format!("error: tool '{}' timed out after {}s", call.name, tool_timeout.as_secs());
+                        let text = format!("error: tool '{}' timed out after {}s", call.name, tool_timeout.as_secs());
                         // run_tool was dropped mid-flight: it already recorded
                         // the ToolCall event, so record the matching ToolResult
                         // or the durable log keeps a dangling call.
-                        self.record_interrupted_tool_result(&session_id, branch_id, call, &result);
-                        result
+                        self.record_interrupted_tool_result(&session_id, branch_id, call, &text);
+                        crate::tool::ToolResult::text(text)
                     }
                     _ = turn_cancel.cancelled() => {
                         self.record_interrupted_tool_result(
@@ -1302,19 +1304,23 @@ impl Agent {
                     session = %session_id,
                     tool_call_id = %call.id,
                     tool = %call.name,
-                    success = !result.trim_start().starts_with("error:"),
+                    success = !result.text.trim_start().starts_with("error:"),
                     elapsed_ms = tool_started.elapsed().as_millis() as u64,
                     "agent tool call completed"
                 );
                 if let Some(delivery_key) =
-                    delivery_key.filter(|_| !result.trim_start().starts_with("error:"))
+                    delivery_key.filter(|_| !result.text.trim_start().starts_with("error:"))
                 {
                     delivered_targets.insert(delivery_key);
                     if let Some(visible_reply) = &visible_reply {
                         let _ = visible_reply.send(true);
                     }
                 }
-                messages.push(ChatMessage::tool(result, &call.id));
+                messages.push(ChatMessage::tool_with_images(
+                    result.text.clone(),
+                    &call.id,
+                    result.images.clone(),
+                ));
             }
         }
 
@@ -1332,7 +1338,12 @@ impl Agent {
         ))
     }
 
-    async fn run_tool(&self, session_id: &str, branch_id: &str, call: &ToolCall) -> String {
+    async fn run_tool(
+        &self,
+        session_id: &str,
+        branch_id: &str,
+        call: &ToolCall,
+    ) -> crate::tool::ToolResult {
         self.emit(BackendEvent::ToolCall {
             session_id: session_id.to_string(),
             tool_name: call.name.clone(),
@@ -1351,20 +1362,52 @@ impl Agent {
             ));
         let args = serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
         let result = match call.name.as_str() {
-            "schedule_timer" => self.timer_scheduler.schedule(session_id, args).await,
-            "list_timers" => Ok(self.timer_scheduler.list(session_id).await),
-            "cancel_timer" => self.timer_scheduler.cancel(session_id, args).await,
-            "run_subagent" => self.run_subagent(session_id, branch_id, args).await,
-            "spawn_background_task" => self.spawn_background_task(session_id, args, false).await,
-            "spawn_parallel_task" => self.spawn_background_task(session_id, args, true).await,
-            "list_background_tasks" => Ok(self.background_tasks.list(session_id).await),
-            "cancel_background_task" => self.background_tasks.cancel(session_id, args).await,
-            "send_backend_message" => self.send_backend_message(args),
+            "schedule_timer" => self
+                .timer_scheduler
+                .schedule(session_id, args)
+                .await
+                .map(crate::tool::ToolResult::text),
+            "list_timers" => Ok(crate::tool::ToolResult::text(
+                self.timer_scheduler.list(session_id).await,
+            )),
+            "cancel_timer" => self
+                .timer_scheduler
+                .cancel(session_id, args)
+                .await
+                .map(crate::tool::ToolResult::text),
+            "run_subagent" => self
+                .run_subagent(session_id, branch_id, args)
+                .await
+                .map(crate::tool::ToolResult::text),
+            "spawn_background_task" => self
+                .spawn_background_task(session_id, args, false)
+                .await
+                .map(crate::tool::ToolResult::text),
+            "spawn_parallel_task" => self
+                .spawn_background_task(session_id, args, true)
+                .await
+                .map(crate::tool::ToolResult::text),
+            "list_background_tasks" => Ok(crate::tool::ToolResult::text(
+                self.background_tasks.list(session_id).await,
+            )),
+            "cancel_background_task" => self
+                .background_tasks
+                .cancel(session_id, args)
+                .await
+                .map(crate::tool::ToolResult::text),
+            "send_backend_message" => self
+                .send_backend_message(args)
+                .map(crate::tool::ToolResult::text),
             "framework_update" => {
                 let config = self.config.read().await.self_update.clone();
-                orchestration::framework_update(&config, session_id, args).await
+                orchestration::framework_update(&config, session_id, args)
+                    .await
+                    .map(crate::tool::ToolResult::text)
             }
-            "run_sudo" => self.run_sudo(session_id, args).await,
+            "run_sudo" => self
+                .run_sudo(session_id, args)
+                .await
+                .map(crate::tool::ToolResult::text),
             other => {
                 // Every orchestration tool must live in the single dispatch
                 // table; a name here that is not in the table would silently
@@ -1374,23 +1417,26 @@ impl Agent {
                     "orchestration tool {other} missing from ORCHESTRATION_TOOL_NAMES"
                 );
                 self.tools
-                    .execute(other, args)
+                    .execute_rich(other, args)
                     .await
                     .map_err(|error| error.to_string())
             }
         }
-        .unwrap_or_else(|error| format!("error: {error}"));
+        .unwrap_or_else(|error| crate::tool::ToolResult::text(format!("error: {error}")));
+        let result_text = result.text.clone();
+        let result_images = result.images.clone();
         self.emit(BackendEvent::ToolResult {
             session_id: session_id.to_string(),
             tool_name: call.name.clone(),
-            result: result.clone(),
+            result: result_text.clone(),
             branch_id: branch_id.to_string(),
         });
         self.trunk
             .append_event(echo_session::SessionEvent::ToolResult(
                 echo_session::event::ToolResultEvent {
                     tool_call_id: call.id.clone(),
-                    result: result.clone(),
+                    result: result_text.clone(),
+                    images: result_images.clone(),
                 },
             ));
         if call.name == "checklist" {
@@ -1429,6 +1475,7 @@ impl Agent {
                 echo_session::event::ToolResultEvent {
                     tool_call_id: call.id.clone(),
                     result: result.to_string(),
+                    images: vec![],
                 },
             ));
     }
@@ -2370,6 +2417,30 @@ fn json_id(value: &serde_json::Value) -> Option<String> {
 pub(crate) fn structured_message_sequence(content: &str) -> Option<u64> {
     crate::input_marker::structured_message_sequence(content)
 }
+
+/// Extract image URLs / data URIs from a structured hook input.
+///
+/// Hook payloads carry `"images": [...]` (set by
+/// [`crate::adapter_bridge::format_hook_input`]); this pulls them into the
+/// durable `UserMessage` event so session replay keeps the multimodal
+/// content. Returns an empty vec for plain text.
+pub(crate) fn extract_input_images(content: &str) -> Vec<String> {
+    let Some(payload) = crate::input_marker::hook_payload(content) else {
+        return Vec::new();
+    };
+    let value: serde_json::Value = match serde_json::from_str(&payload) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    value["images"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
 /// After a delay, generate and send one interim reply for a still-running
 /// branch, unless the branch already produced a visible reply or finished.
 #[allow(clippy::too_many_arguments)]
@@ -2444,6 +2515,7 @@ fn assistant_with_tool_calls(
         reasoning_content: reasoning_content.clone(),
         tool_calls: Some(calls.to_vec()),
         tool_call_id: None,
+        images: vec![],
     }
 }
 
@@ -2611,7 +2683,7 @@ pub mod tests {
             arguments: r#"{"query":"x","api_key":"secret-1"}"#.into(),
         };
         let result = agent.run_tool("local:tui::one", "branch-1", &call).await;
-        assert_eq!(result, "found");
+        assert_eq!(result.text, "found");
 
         let timeline = agent.trunk.timeline_snapshot();
         assert_eq!(timeline.len(), 1);
@@ -2863,11 +2935,12 @@ pub mod tests {
 
         let result = task.await.expect("tool completes");
         assert!(
-            !result.contains("hunter2"),
-            "password must never reach the model: {result}"
+            !result.text.contains("hunter2"),
+            "password must never reach the model: {}",
+            result.text
         );
         // The command itself ran (or failed with a sudo error) — never a leak.
-        assert!(!result.is_empty());
+        assert!(!result.text.is_empty());
     }
 
     #[tokio::test]
@@ -2917,8 +2990,9 @@ pub mod tests {
         assert!(broker.submit(request_id, None));
         let result = task.await.expect("tool completes");
         assert!(
-            result.contains("denied"),
-            "denial must surface to the model: {result}"
+            result.text.contains("denied"),
+            "denial must surface to the model: {}",
+            result.text
         );
     }
 
@@ -2939,7 +3013,7 @@ pub mod tests {
             arguments: r#"{"command":"true"}"#.into(),
         };
         let result = agent.run_tool(session_id, "branch-1", &call).await;
-        assert!(result.contains("disabled"), "unexpected: {result}");
+        assert!(result.text.contains("disabled"), "unexpected: {}", result.text);
     }
 
     #[tokio::test]
@@ -3468,6 +3542,40 @@ pub mod tests {
     }
 
     #[test]
+    fn extract_input_images_reads_hook_payload() {
+        let hook = r#"<qq_message_hook>
+        {"channel":{"type":"private"},"message_sequence":7,"content":"hi","images":["https://example.com/a.png","data:image/png;base64,AAA"]}
+        </qq_message_hook>"#;
+        assert_eq!(
+            extract_input_images(hook),
+            vec![
+                "https://example.com/a.png".to_string(),
+                "data:image/png;base64,AAA".to_string()
+            ]
+        );
+        // 无图 hook 返回空
+        let plain = r#"<qq_message_hook>{"message_sequence":1,"content":"hi","images":[]}</qq_message_hook>"#;
+        assert!(extract_input_images(plain).is_empty());
+        // 普通文本不解析
+        assert!(extract_input_images("看一下这张图片 https://example.com/a.png").is_empty());
+    }
+
+    #[test]
+    fn user_message_event_roundtrips_images() {
+        let hook = r#"<qq_message_hook>{"message_sequence":3,"content":"看图","images":["https://example.com/a.png"]}</qq_message_hook>"#;
+        let event = echo_session::event::UserMessage {
+            content: hook.into(),
+            timestamp: 0,
+            message_sequence: Some(3),
+            source: None,
+            images: extract_input_images(hook),
+        };
+        let json = serde_json::to_string(&echo_session::SessionEvent::UserMessage(event.clone())).unwrap();
+        let back: echo_session::SessionEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, echo_session::SessionEvent::UserMessage(event));
+    }
+
+    #[test]
     fn qq_delivery_validation_blocks_wrong_target_and_duplicate_send() {
         let policy = QqDeliveryPolicy;
         let targets = vec![DeliveryTarget::Direct {
@@ -3672,7 +3780,7 @@ pub mod tests {
         let scheduled = agent
             .run_tool("local:tui::one", "test-branch", &schedule)
             .await;
-        let timer_id = serde_json::from_str::<serde_json::Value>(&scheduled).unwrap()["timer_id"]
+        let timer_id = serde_json::from_str::<serde_json::Value>(&scheduled.text).unwrap()["timer_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -3688,7 +3796,7 @@ pub mod tests {
                 },
             )
             .await;
-        assert!(listed.contains(&timer_id));
+        assert!(listed.text.contains(&timer_id));
 
         let cancel = ToolCall {
             id: "cancel_1".into(),
@@ -3698,11 +3806,11 @@ pub mod tests {
         let rejected = agent
             .run_tool("local:tui::two", "test-branch", &cancel)
             .await;
-        assert!(rejected.contains("not found in the current session"));
+        assert!(rejected.text.contains("not found in the current session"));
         let cancelled = agent
             .run_tool("local:tui::one", "test-branch", &cancel)
             .await;
-        assert!(cancelled.contains("cancelled"));
+        assert!(cancelled.text.contains("cancelled"));
         agent.shutdown().await;
     }
 
