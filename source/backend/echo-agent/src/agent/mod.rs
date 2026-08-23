@@ -2142,45 +2142,18 @@ impl Agent {
         let config = self.config.read().await.clone();
 
         // Resolve the config to test: named profile or the active default.
-        let mut probe = config.clone();
-        if name.is_empty() {
-            probe.apply_active_profile();
-            probe.api_key = probe.effective_api_key();
-            probe.base_url = probe.effective_base_url();
-        } else {
-            let profile = match config.api_profiles.iter().find(|p| p.name == name) {
-                Some(profile) => profile,
-                None => {
-                    self.emit(BackendEvent::ApiTestResult {
-                        name: name.into(),
-                        ok: false,
-                        message: format!("profile not found: {name}"),
-                        latency_ms: timestamp_start.elapsed().as_millis() as u64,
-                    });
-                    return;
-                }
-            };
-            // 与 apply_active_profile 一致的宽松语义：profile 的空字段
-            // 回退到当前生效值，避免字段残缺的 profile 测不出自己本来
-            // 可用的配置（误报 "provider build failed"）。
-            if !profile.provider.is_empty() {
-                probe.provider = profile.provider.clone();
+        let probe = match resolve_probe_config(&config, name) {
+            Ok(probe) => probe,
+            Err(message) => {
+                self.emit(BackendEvent::ApiTestResult {
+                    name: name.into(),
+                    ok: false,
+                    message,
+                    latency_ms: timestamp_start.elapsed().as_millis() as u64,
+                });
+                return;
             }
-            if !profile.model.is_empty() {
-                probe.model = profile.model.clone();
-            }
-            if !profile.base_url.is_empty() {
-                probe.base_url = profile.base_url.clone();
-            }
-            if !profile.api_key.is_empty() {
-                probe.api_key = profile.api_key.clone();
-            }
-            probe.thinking = profile.thinking;
-            probe.reasoning_effort = profile.reasoning_effort;
-            probe.api_key = probe.effective_api_key();
-            probe.base_url = probe.effective_base_url();
-        }
-        drop(config);
+        };
 
         // Build a throwaway provider from the probe config.
         let provider = match create_provider(&probe) {
@@ -2233,6 +2206,7 @@ impl Agent {
             latency_ms,
         });
     }
+
 
     /// Persist the system prompt plugin text to `[plugins.system_prompt]`
     /// instead of `[agent]`. The API config no longer owns the system prompt.
@@ -2292,6 +2266,52 @@ impl Agent {
         }
         tracing::info!(path = %store.path().display(), "agent config persisted");
     }
+}
+
+/// Build the config snapshot used for a connectivity probe.
+///
+/// `name` empty → active (top-level) config with the active profile merged
+/// in; otherwise the named profile's non-empty values override the current
+/// effective config. Returns an error string when the profile does not exist
+/// or the resolved config has no provider.
+fn resolve_probe_config(
+    config: &crate::config::AgentConfig,
+    name: &str,
+) -> Result<crate::config::AgentConfig, String> {
+    let mut probe = config.clone();
+    if name.is_empty() {
+        probe.apply_active_profile();
+    } else {
+        let profile = config
+            .api_profiles
+            .iter()
+            .find(|p| p.name == name)
+            .ok_or_else(|| format!("profile not found: {name}"))?;
+        // 与 apply_active_profile 一致的宽松语义：profile 的空字段
+        // 回退到当前生效值，避免字段残缺的 profile 测不出本来的配置。
+        if !profile.provider.is_empty() {
+            probe.provider = profile.provider.clone();
+        }
+        if !profile.model.is_empty() {
+            probe.model = profile.model.clone();
+        }
+        if !profile.base_url.is_empty() {
+            probe.base_url = profile.base_url.clone();
+        }
+        if !profile.api_key.is_empty() {
+            probe.api_key = profile.api_key.clone();
+        }
+        probe.thinking = profile.thinking;
+        probe.reasoning_effort = profile.reasoning_effort;
+    }
+    probe.api_key = probe.effective_api_key();
+    probe.base_url = probe.effective_base_url();
+    if probe.provider.is_empty() {
+        return Err(format!(
+            "provider not set (name={name}); 请先在设置中配置 Provider/API 或激活某个 profile"
+        ));
+    }
+    Ok(probe)
 }
 
 #[derive(Debug, Clone)]
@@ -3839,6 +3859,56 @@ pub mod tests {
         let json = serde_json::to_string(&echo_session::SessionEvent::UserMessage(event.clone())).unwrap();
         let back: echo_session::SessionEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(back, echo_session::SessionEvent::UserMessage(event));
+    }
+
+    #[test]
+    fn probe_config_resolves_active_profile_and_named_profiles() {
+        use crate::config::ApiProfile;
+        let mut cfg = crate::config::AgentConfig::default();
+        cfg.provider = "deepseek".into();
+        cfg.model = "deepseek-v4-flash".into();
+        cfg.base_url = "https://api.deepseek.com/anthropic".into();
+        cfg.api_key = "sk-xxx".into();
+        cfg.active_api = "deepseek".into();
+        cfg.api_profiles.push(ApiProfile {
+            name: "deepseek".into(),
+            provider: "deepseek".into(),
+            model: "deepseek-v4-flash".into(),
+            base_url: "https://api.deepseek.com/anthropic".into(),
+            api_key: "sk-xxx".into(),
+            thinking: crate::config::ThinkingMode::Enabled,
+            reasoning_effort: crate::config::ReasoningEffort::Max,
+        });
+        cfg.api_profiles.push(ApiProfile {
+            name: "openai".into(),
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            api_key: String::new(),
+            thinking: crate::config::ThinkingMode::Disabled,
+            reasoning_effort: crate::config::ReasoningEffort::Low,
+        });
+
+        // 默认配置（name=''）：合并激活 profile → provider 非空。
+        let probe = resolve_probe_config(&cfg, "").expect("default probe resolves");
+        assert_eq!(probe.provider, "deepseek");
+        assert!(!probe.api_key.is_empty(), "api key resolved");
+
+        // 指定 profile：使用该 profile 的值。
+        let probe = resolve_probe_config(&cfg, "openai").expect("openai probe resolves");
+        assert_eq!(probe.provider, "openai");
+        assert_eq!(probe.model, "gpt-4o");
+
+        // 不存在的 profile → 明确报错。
+        let err = resolve_probe_config(&cfg, "nope").unwrap_err();
+        assert!(err.contains("profile not found"));
+    }
+
+    #[test]
+    fn probe_config_reports_missing_provider() {
+        let cfg = crate::config::AgentConfig::default();
+        let err = resolve_probe_config(&cfg, "").unwrap_err();
+        assert!(err.contains("provider"), "error must mention provider: {err}");
     }
 
     #[test]
