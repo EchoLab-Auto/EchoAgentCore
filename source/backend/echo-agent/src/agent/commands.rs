@@ -131,6 +131,37 @@ impl Agent {
             BackendCommand::TestApi { name } => {
                 self.test_api_config(&name).await;
             }
+            BackendCommand::RequestSkillsList => {
+                let skills = self.skills.lock().await;
+                let mut list: Vec<crate::event::SkillInfo> = skills
+                    .all()
+                    .iter()
+                    .map(|skill| crate::event::SkillInfo {
+                        name: skill.metadata.name.clone(),
+                        description: skill.metadata.description.clone(),
+                        keywords: skill.metadata.keywords.clone(),
+                        always: skill.metadata.always,
+                        enabled: skill.metadata.enabled,
+                        content: skill.instructions.clone(),
+                    })
+                    .collect();
+                list.sort_by_key(|s| s.name.clone());
+                drop(skills);
+                self.emit(BackendEvent::SkillsList { skills: list });
+            }
+            BackendCommand::RequestToolsList => {
+                let defs = self.tools.definitions().await;
+                let mut list: Vec<crate::event::ToolInfo> = defs
+                    .iter()
+                    .map(|t| crate::event::ToolInfo {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        parameters: t.parameters.clone().unwrap_or(serde_json::Value::Null),
+                    })
+                    .collect();
+                list.sort_by_key(|t| t.name.clone());
+                self.emit(BackendEvent::ToolsList { tools: list });
+            }
             BackendCommand::DeleteApi { name } => {
                 self.delete_api(&name).await;
             }

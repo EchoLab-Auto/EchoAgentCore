@@ -76,6 +76,12 @@ pub enum BackendCommand {
         user_ids: Vec<i64>,
         group_ids: Vec<i64>,
     },
+    /// Request the list of all discovered skills (metadata + instructions).
+    /// Responds with `BackendEvent::SkillsList`.
+    RequestSkillsList,
+    /// Request the list of all registered tool definitions.
+    /// Responds with `BackendEvent::ToolsList`.
+    RequestToolsList,
     /// Update QQ adapter denylist at runtime.
     UpdateQqDenylist {
         user_ids: Vec<i64>,

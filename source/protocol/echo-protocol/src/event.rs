@@ -315,6 +315,14 @@ pub enum BackendEvent {
         active_api: String,
         profiles: Vec<ApiProfileInfo>,
     },
+    /// Full list of discovered skills (response to `RequestSkillsList`).
+    SkillsList {
+        skills: Vec<SkillInfo>,
+    },
+    /// Full list of registered tools (response to `RequestToolsList`).
+    ToolsList {
+        tools: Vec<ToolInfo>,
+    },
     /// API connectivity test result (response to `TestApi`).
     ApiTestResult {
         /// Tested config name (empty = top-level default).
@@ -383,6 +391,35 @@ pub enum BackendEvent {
         accepted: bool,
         message: String,
     },
+}
+
+/// One discovered skill with its full instructions (for panel display).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub keywords: Vec<String>,
+    #[serde(default)]
+    pub always: bool,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Full instructions body of `SKILL.md`.
+    #[serde(default)]
+    pub content: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// One registered tool definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolInfo {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub parameters: serde_json::Value,
 }
 
 /// QQ group info for display.

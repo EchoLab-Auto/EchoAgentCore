@@ -121,6 +121,13 @@ impl SkillRegistry {
         lines.join("\n")
     }
 
+    /// All skills (name-sorted) for panel/API listings.
+    pub fn all(&self) -> Vec<&Skill> {
+        let mut list: Vec<&Skill> = self.skills.values().collect();
+        list.sort_by_key(|s| s.metadata.name.clone());
+        list
+    }
+
     pub fn names(&self) -> Vec<String> {
         self.skills.keys().cloned().collect()
     }
