@@ -352,10 +352,21 @@ fn serialize_content(m: &echo_defs::message::ChatMessage) -> serde_json::Value {
         parts.push(json!({"type": "text", "text": m.content}));
     }
     for image in &m.images {
-        parts.push(json!({
-            "type": "image_url",
-            "image_url": { "url": image }
-        }));
+        if image.starts_with("data:") {
+            // 内嵌的 data: URI 原样下发（OpenAI image_url 支持 data URI）。
+            parts.push(json!({
+                "type": "image_url",
+                "image_url": { "url": image }
+            }));
+        } else {
+            // 远程 URL（QQ CDN 的 rkey 等会过期）不下发：端点下载失败会
+            // 400 且毒化整段历史。图片在入库时已内嵌，走到这里的基本都
+            // 是内嵌修复前的遗留链接，替换为占位文本。
+            parts.push(json!({
+                "type": "text",
+                "text": "[图片链接已过期或不可用]"
+            }));
+        }
     }
     if parts.is_empty() {
         json!(m.content)
@@ -707,7 +718,7 @@ mod tests {
             model: "gpt-4o".into(),
             messages: vec![ChatMessage::user_with_images(
                 "看看这张图",
-                vec!["https://example.com/a.png".into()],
+                vec!["data:image/png;base64,QUJD".into()],
             )],
             tools: None,
             temperature: None,
@@ -718,7 +729,34 @@ mod tests {
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[0]["text"], "看看这张图");
         assert_eq!(content[1]["type"], "image_url");
-        assert_eq!(content[1]["image_url"]["url"], "https://example.com/a.png");
+        assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,QUJD");
+    }
+
+    #[test]
+    fn remote_image_url_becomes_placeholder_text() {
+        // 远程 URL（QQ CDN rkey 会过期）不下发 image_url——端点下载失败
+        // 会 400 并毒化整段历史；替换为占位文本保请求可用。
+        let request = ChatRequest {
+            model: "gpt-4o".into(),
+            messages: vec![ChatMessage::user_with_images(
+                "看图",
+                vec!["https://multimedia.nt.qq.com.cn/download?rkey=expired".into()],
+            )],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+        };
+        let body = build_request_body(&request, false);
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert!(
+            !content.iter().any(|p| p["type"] == "image_url"),
+            "no image_url parts for remote URLs: {content:?}"
+        );
+        assert!(
+            content.iter().any(|p| p["type"] == "text"
+                && p["text"].as_str().unwrap().contains("图片")),
+            "placeholder text present: {content:?}"
+        );
     }
 
     #[test]

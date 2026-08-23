@@ -334,13 +334,16 @@ fn build_request_body_with_reasoning(
                         // separate — the concurrent-reply merge keys off each
                         // message's sequence marker.
                         let mut content = m.content.clone();
+                        let mut images = m.images.clone();
                         while i + 1 < msgs.len() && msgs[i + 1].role == echo_defs::message::ChatRole::User {
                             i += 1;
                             content.push('\n');
                             content.push_str(&msgs[i].content);
+                            // 被合并消息的图片也要保留，不能随文本折叠丢失。
+                            images.extend(msgs[i].images.iter().cloned());
                         }
                         // 多模态：带图用户消息用 content blocks（text + image）。
-                        let blocks = content_blocks(&content, &m.images);
+                        let blocks = content_blocks(&content, &images);
                         json!({"role": "user", "content": blocks})
                     }
                     echo_defs::message::ChatRole::Assistant => {
@@ -440,9 +443,12 @@ fn content_blocks(text: &str, images: &[String]) -> serde_json::Value {
                 }
             }));
         } else {
+            // 远程 URL（QQ CDN 的 rkey 等会过期）不再原样下发：端点下载
+            // 失败会 400 且毒化整段历史。图片在入库时已内嵌为 data: URI，
+            // 走到这里的基本都是内嵌修复前的遗留链接，替换为占位文本。
             blocks.push(json!({
-                "type": "image",
-                "source": { "type": "url", "url": image }
+                "type": "text",
+                "text": "[图片链接已过期或不可用]"
             }));
         }
     }
@@ -943,7 +949,7 @@ mod tests {
             &ChatRequest {
                 model: "claude-sonnet-4".into(),
                 messages: vec![
-                    ChatMessage::tool_with_images("ok", "c1", vec!["https://example.com/x.png".into()]),
+                    ChatMessage::tool_with_images("ok", "c1", vec!["data:image/png;base64,QUJD".into()]),
                 ],
                 tools: None,
                 temperature: None,
@@ -963,7 +969,65 @@ mod tests {
         let content = blocks[0]["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[1]["type"], "image");
-        assert_eq!(content[1]["source"]["type"], "url");
-        assert_eq!(content[1]["source"]["url"], "https://example.com/x.png");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["data"], "QUJD");
+    }
+
+    #[test]
+    fn remote_image_url_becomes_placeholder_text() {
+        // 远程 URL（QQ CDN rkey 会过期）不再原样下发为 image/url 块——
+        // 端点下载失败会 400 并毒化整段历史；替换为占位文本保请求可用。
+        let body = build_request_body(
+            &ChatRequest {
+                model: "claude-sonnet-4".into(),
+                messages: vec![ChatMessage::user_with_images(
+                    "看图",
+                    vec!["https://multimedia.nt.qq.com.cn/download?rkey=expired".into()],
+                )],
+                tools: None,
+                temperature: None,
+                max_tokens: None,
+            },
+            false,
+        );
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "看图");
+        assert_eq!(content[1]["type"], "text");
+        assert!(
+            content[1]["text"].as_str().unwrap().contains("图片"),
+            "placeholder text, got: {content:?}"
+        );
+        // 不允许再出现任何 image/url 块
+        assert!(
+            !content.iter().any(|b| b["type"] == "image"),
+            "no image blocks for remote URLs: {content:?}"
+        );
+    }
+
+    #[test]
+    fn merged_user_messages_keep_all_images() {
+        // 连续 user 消息合并时，被合并消息的图片不能丢。
+        let body = build_request_body(
+            &ChatRequest {
+                model: "claude-sonnet-4".into(),
+                messages: vec![
+                    ChatMessage::user_with_images("第一条", vec!["data:image/png;base64,QQ==".into()]),
+                    ChatMessage::user_with_images("第二条", vec!["data:image/png;base64,Qg==".into()]),
+                ],
+                tools: None,
+                temperature: None,
+                max_tokens: None,
+            },
+            false,
+        );
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        let images: Vec<&serde_json::Value> = content
+            .iter()
+            .filter(|b| b["type"] == "image")
+            .collect();
+        assert_eq!(images.len(), 2, "both merged messages' images kept: {content:?}");
+        assert_eq!(images[0]["source"]["data"], "QQ==");
+        assert_eq!(images[1]["source"]["data"], "Qg==");
     }
 }

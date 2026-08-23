@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use echo_adapter::types::AdapterEvent;
+use echo_adapter::types::{AdapterEvent, IncomingMessage};
 use echo_core::Event as OneBotEvent;
 use echo_server::{Context, HandleResult};
 
@@ -69,6 +69,9 @@ impl echo_server::Handler for QqHandler {
         let Some(msg) = QqAdapter::convert_message(event, &self.inner.group_names) else {
             return HandleResult::Pass;
         };
+        // QQ CDN 图片链接的 rkey 会过期：在入库前下载并内嵌为 data: URI。
+        // 否则历史消息里的过期链接会让视觉端点每次请求都 400（毒化整段历史）。
+        let msg = embed_remote_images(msg).await;
         // convert_message returns Some only for message events, so this
         // reference is always valid — no unwrap required.
         let message_event = event.as_message();
@@ -128,6 +131,82 @@ impl echo_server::Handler for QqHandler {
 
         HandleResult::Handled
     }
+}
+
+/// 单张图片最大内嵌体积（编码前字节数）；超出则保留原 URL。
+const MAX_EMBEDDED_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+
+/// Shared HTTP client for image downloads (built once).
+fn image_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "reqwest builder failed, using client without timeouts");
+                    reqwest::Client::new()
+                })
+        })
+        .clone()
+}
+
+/// 把消息里的远程图片 URL 逐个下载并改写为 data: URI；下载失败的保留
+/// 原 URL（请求构建侧的占位替换会兜住过期链接，不会再毒化请求）。
+async fn embed_remote_images(mut msg: IncomingMessage) -> IncomingMessage {
+    if msg.images.is_empty() {
+        return msg;
+    }
+    let mut images = Vec::with_capacity(msg.images.len());
+    for image in std::mem::take(&mut msg.images) {
+        images.push(embed_remote_image(image).await);
+    }
+    msg.images = images;
+    msg
+}
+
+async fn embed_remote_image(url: String) -> String {
+    if url.starts_with("data:") || !url.starts_with("http") {
+        return url;
+    }
+    match download_as_data_uri(&url).await {
+        Ok(data_uri) => data_uri,
+        Err(error) => {
+            tracing::warn!(%error, "image download failed, keeping original URL");
+            url
+        }
+    }
+}
+
+async fn download_as_data_uri(url: &str) -> Result<String, String> {
+    use base64::Engine;
+    let resp = image_client()
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let mime = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|raw| raw.split(';').next())
+        .map(str::trim)
+        .filter(|value| value.starts_with("image/"))
+        .unwrap_or("image/jpeg")
+        .to_string();
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_EMBEDDED_IMAGE_BYTES {
+        return Err(format!("image too large ({} bytes)", bytes.len()));
+    }
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 #[cfg(test)]
@@ -373,5 +452,52 @@ mod tests {
             event,
             echo_adapter::AdapterEvent::MessageReceived(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn download_as_data_uri_embeds_bytes_and_mime() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/img.png"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(vec![1u8, 2, 3])
+                    .insert_header("content-type", "image/png"),
+            )
+            .mount(&server)
+            .await;
+
+        let uri = download_as_data_uri(&format!("{}/img.png", server.uri()))
+            .await
+            .expect("download succeeds");
+        assert_eq!(uri, "data:image/png;base64,AQID");
+    }
+
+    #[tokio::test]
+    async fn embed_remote_image_keeps_url_on_failure() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/missing.png", server.uri());
+        assert_eq!(
+            embed_remote_image(url.clone()).await,
+            url,
+            "failed downloads keep the original URL"
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_remote_image_passes_through_data_uris() {
+        let data = "data:image/png;base64,QUJD".to_string();
+        assert_eq!(embed_remote_image(data.clone()).await, data);
     }
 }
