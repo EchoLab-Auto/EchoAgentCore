@@ -298,6 +298,7 @@ impl Agent {
             BackendCommand::SendMessage {
                 session_id,
                 content,
+                images,
             } => {
                 // Parse or fall back to local TUI session key.
                 let key = SessionKey::parse(&session_id).unwrap_or_else(SessionKey::local_tui);
@@ -321,6 +322,7 @@ impl Agent {
                     },
                     group_name: None,
                     content: content.clone(),
+                    images: images.clone(),
                     timestamp: received_at_ms / 1000,
                     received_at_ms,
                     message_sequence,
@@ -336,7 +338,8 @@ impl Agent {
                         "scope_id": key.scope_id,
                         "user_id": key.user_id
                     },
-                    "content": content
+                    "content": content,
+                    "images": images
                 });
                 let backend_input =
                     format!("<backend_message_hook>{backend_input}</backend_message_hook>");

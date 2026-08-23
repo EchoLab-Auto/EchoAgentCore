@@ -74,7 +74,6 @@ impl InboundMessageHook for AgentMessageHook {
             channel: format!("{}", msg.channel),
             group_name: msg.group_name.clone(),
             content: msg.content.clone(),
-            images: msg.images.clone(),
             timestamp: msg.timestamp,
             received_at_ms,
             message_sequence,

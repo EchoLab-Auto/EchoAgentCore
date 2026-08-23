@@ -113,6 +113,9 @@ pub struct TimelineMessage {
     pub reasoning: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<TimelineTool>,
+    /// Multimodal media attached to the message (URLs / data URIs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
 }
 
 /// Events flowing from the backend to the TUI.
@@ -138,6 +141,9 @@ pub enum BackendEvent {
         channel: String,
         group_name: Option<String>,
         content: String,
+        /// Multimodal media attached to the message (URLs / data URIs).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<String>,
         /// Source/platform timestamp in Unix seconds.
         timestamp: i64,
         /// Core receive timestamp in Unix milliseconds.

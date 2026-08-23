@@ -6,7 +6,13 @@ use crate::mode::{GateMode, ReasoningEffort, ThinkingMode};
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BackendCommand {
     /// Send a message into a session (as if from the local user).
-    SendMessage { session_id: String, content: String },
+    /// `images` carries image URLs / data URIs for multimodal models.
+    SendMessage {
+        session_id: String,
+        content: String,
+        #[serde(default)]
+        images: Vec<String>,
+    },
     /// Switch the active model.
     SwitchModel { model: String },
     /// Switch the active provider.
@@ -198,7 +204,8 @@ mod tests {
         assert_eq!(
             command_clearance(&BackendCommand::SendMessage {
                 session_id: "s".into(),
-                content: "hi".into()
+                content: "hi".into(),
+                images: vec![]
             }),
             CommandClearance::Agent
         );

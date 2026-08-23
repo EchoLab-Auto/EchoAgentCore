@@ -68,6 +68,7 @@ impl TimelineProjector {
                 channel,
                 group_name,
                 content,
+                images,
                 timestamp,
                 received_at_ms,
                 message_sequence,
@@ -91,6 +92,7 @@ impl TimelineProjector {
                         source: None,
                         reasoning: None,
                         tool: None,
+                        images: None,
                     });
                     return;
                 }
@@ -111,6 +113,7 @@ impl TimelineProjector {
                     }),
                     reasoning: None,
                     tool: None,
+                    images: Some(images.clone()),
                 });
             }
             BackendEvent::AgentReasoning {
@@ -165,6 +168,7 @@ impl TimelineProjector {
                     source: None,
                     reasoning,
                     tool: None,
+                    images: None,
                 });
             }
             BackendEvent::ToolCall {
@@ -186,6 +190,7 @@ impl TimelineProjector {
                         output: None,
                         failed: false,
                     }),
+                    images: None,
                 });
             }
             BackendEvent::ToolResult {
@@ -278,6 +283,7 @@ impl TimelineProjector {
                 output: Some(summarize_timeline_value(result, 200)),
                 failed,
             }),
+            images: None,
         });
     }
 }
@@ -380,6 +386,7 @@ mod tests {
             channel: "direct".into(),
             group_name: None,
             content: "你好".into(),
+images: vec![],
             timestamp: 1700000000,
             received_at_ms: 1700000000123,
             message_sequence: 1,
@@ -432,6 +439,7 @@ mod tests {
             channel: "direct".into(),
             group_name: None,
             content: "<background_task_event>…</background_task_event>".into(),
+images: vec![],
             timestamp: 0,
             received_at_ms: 0,
             message_sequence: 0,

@@ -1067,6 +1067,7 @@ mod tests {
                 source: None,
                 reasoning: None,
                 tool: None,
+                images: None,
             });
         }
         let timeline = store.timeline_snapshot();
@@ -1105,6 +1106,7 @@ mod tests {
             source: None,
             reasoning: None,
             tool: None,
+            images: None,
         });
         store.save_now().await;
         assert_eq!(store.trunk_len(), 1);
@@ -1147,6 +1149,7 @@ mod tests {
             }),
             reasoning: None,
             tool: None,
+            images: None,
         });
         store.push_timeline(crate::event::TimelineMessage {
             kind: "backend".into(),
@@ -1156,6 +1159,7 @@ mod tests {
             source: None,
             reasoning: Some(vec!["先分析".into()]),
             tool: None,
+            images: None,
         });
         store.save_now().await;
 
