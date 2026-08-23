@@ -1965,6 +1965,35 @@ impl Agent {
     ) {
         let mut config = self.config.write().await;
         let keep_key = api_key.is_empty();
+        // 新建命名 profile 时，空的 provider/model/base_url 从当前生效配置
+        // 继承，避免写出残缺 profile：残缺 profile 单独做 TestApi 时必然
+        // "provider build failed"，且极易误导用户以为 LLM 整体不可用。
+        // （更新已有 profile 时保持"空 = 保留该 profile 原值"的语义。）
+        let (provider, model, base_url) = if !name.is_empty()
+            && !config.api_profiles.iter().any(|p| p.name == name)
+        {
+            let mut resolved = config.clone();
+            resolved.apply_active_profile();
+            (
+                if provider.is_empty() {
+                    resolved.provider
+                } else {
+                    provider
+                },
+                if model.is_empty() {
+                    resolved.model
+                } else {
+                    model
+                },
+                if base_url.is_empty() {
+                    resolved.base_url
+                } else {
+                    base_url
+                },
+            )
+        } else {
+            (provider, model, base_url)
+        };
         if name.is_empty() {
             if !provider.is_empty() {
                 config.provider = provider.clone();
@@ -2131,12 +2160,25 @@ impl Agent {
                     return;
                 }
             };
-            probe.provider = profile.provider.clone();
-            probe.model = profile.model.clone();
-            probe.base_url = profile.base_url.clone();
-            probe.api_key = profile.api_key.clone();
+            // 与 apply_active_profile 一致的宽松语义：profile 的空字段
+            // 回退到当前生效值，避免字段残缺的 profile 测不出自己本来
+            // 可用的配置（误报 "provider build failed"）。
+            if !profile.provider.is_empty() {
+                probe.provider = profile.provider.clone();
+            }
+            if !profile.model.is_empty() {
+                probe.model = profile.model.clone();
+            }
+            if !profile.base_url.is_empty() {
+                probe.base_url = profile.base_url.clone();
+            }
+            if !profile.api_key.is_empty() {
+                probe.api_key = profile.api_key.clone();
+            }
             probe.thinking = profile.thinking;
             probe.reasoning_effort = profile.reasoning_effort;
+            probe.api_key = probe.effective_api_key();
+            probe.base_url = probe.effective_base_url();
         }
         drop(config);
 
@@ -3186,6 +3228,140 @@ pub mod tests {
             "unexpected: {content}"
         );
         std::fs::remove_file(&tmp).ok();
+    }
+
+    #[tokio::test]
+    async fn update_api_config_new_profile_inherits_empty_fields() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = test_agent(provider);
+
+        // 先建立顶层默认配置。
+        agent
+            .apply_command(BackendCommand::UpdateApiConfig {
+                name: String::new(),
+                provider: "deepseek".into(),
+                model: "deepseek-x".into(),
+                base_url: "http://ds.test".into(),
+                api_key: "sk-top".into(),
+                thinking: None,
+                reasoning_effort: None,
+            })
+            .await;
+
+        // 用全空字段创建命名 profile：应从当前生效配置继承，而不是写出
+        // 残缺 profile（真实事故：TUI 只改 model 保存后 profile 缺字段）。
+        agent
+            .apply_command(BackendCommand::UpdateApiConfig {
+                name: "backup".into(),
+                provider: String::new(),
+                model: String::new(),
+                base_url: String::new(),
+                api_key: String::new(),
+                thinking: None,
+                reasoning_effort: None,
+            })
+            .await;
+
+        let cfg = agent.api_config().await;
+        assert_eq!(cfg.active_api, "backup");
+        let profile = cfg
+            .api_profiles
+            .iter()
+            .find(|p| p.name == "backup")
+            .expect("profile created");
+        assert_eq!(profile.provider, "deepseek", "provider inherited");
+        assert_eq!(profile.model, "deepseek-x", "model inherited");
+        assert_eq!(profile.base_url, "http://ds.test", "base_url inherited");
+
+        // 更新已有 profile 时保持"空 = 保留原值"语义。
+        agent
+            .apply_command(BackendCommand::UpdateApiConfig {
+                name: "backup".into(),
+                provider: String::new(),
+                model: "deepseek-y".into(),
+                base_url: String::new(),
+                api_key: String::new(),
+                thinking: None,
+                reasoning_effort: None,
+            })
+            .await;
+        let cfg = agent.api_config().await;
+        let profile = cfg
+            .api_profiles
+            .iter()
+            .find(|p| p.name == "backup")
+            .expect("profile exists");
+        assert_eq!(profile.provider, "deepseek", "provider kept, not inherited");
+        assert_eq!(profile.model, "deepseek-y");
+    }
+
+    #[tokio::test]
+    async fn test_api_config_profile_empty_fields_fall_back() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Arc::new(test_agent(provider));
+        let (bridge, handle) = crate::create_bridge();
+        agent.attach(Arc::new(handle));
+
+        // 顶层配置指向一个必然连不上的地址（连接即刻被拒绝，不打真实网络）。
+        agent
+            .apply_command(BackendCommand::UpdateApiConfig {
+                name: String::new(),
+                provider: "deepseek".into(),
+                model: "deepseek-x".into(),
+                base_url: "http://127.0.0.1:1".into(),
+                api_key: "sk-top".into(),
+                thinking: None,
+                reasoning_effort: None,
+            })
+            .await;
+
+        // 手工注入一个字段残缺的 profile（provider/base_url 为空）。
+        agent.config.write().await.api_profiles.push(ApiProfile {
+            name: "broken".into(),
+            provider: String::new(),
+            model: "deepseek-x".into(),
+            base_url: String::new(),
+            api_key: String::new(),
+            thinking: crate::config::ThinkingMode::Enabled,
+            reasoning_effort: crate::config::ReasoningEffort::Max,
+        });
+
+        agent
+            .apply_command(BackendCommand::TestApi {
+                name: "broken".into(),
+            })
+            .await;
+
+        let mut result = None;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+                if let BackendEvent::ApiTestResult { name, message, .. } = event {
+                    result = Some((name, message));
+                    break;
+                }
+            }
+            if result.is_some() {
+                break;
+            }
+        }
+        let (name, message) = result.expect("ApiTestResult event emitted");
+        assert_eq!(name, "broken");
+        assert!(
+            !message.contains("provider build failed"),
+            "空字段应回退到顶层配置而不是构建失败: {message}"
+        );
+        // 回退后 provider 构建成功，失败只可能发生在请求阶段（连接拒绝）。
+        assert!(
+            message.contains("请求失败") || message.contains("请求超时"),
+            "unexpected message: {message}"
+        );
     }
 
     #[tokio::test]
