@@ -180,8 +180,7 @@ fn format_hook_input(msg: &IncomingMessage, message_sequence: u64, received_at_m
         "metadata": msg.metadata,
         "images": msg.images
     });
-    let json = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
-    crate::input_marker::wrap_hook(&msg.platform, &json)
+    crate::input_marker::wrap_hook_value(&msg.platform, &payload)
 }
 
 /// Returns `Some(true)` for "cancel all" and `Some(false)` for the newest task.

@@ -153,15 +153,15 @@ impl Agent {
                 content,
             } => {
                 let dir = self.current_skills_dir().await;
-                match self.save_skill_file(
-                    &dir,
-                    &name,
-                    &description,
-                    &keywords,
+                let draft = SkillDraft {
+                    name: name.clone(),
+                    description,
+                    keywords,
                     always,
-                    &category,
-                    &content,
-                ) {
+                    category,
+                    content,
+                };
+                match self.save_skill_file(&dir, &draft) {
                     Ok(()) => {
                         if let Err(e) = self.reload_skills(&dir).await {
                             tracing::warn!(error = %e, "skill reload after save failed");
@@ -341,8 +341,7 @@ impl Agent {
                     "content": content,
                     "images": images
                 });
-                let backend_input =
-                    format!("<backend_message_hook>{backend_input}</backend_message_hook>");
+                let backend_input = crate::input_marker::wrap_hook_value("backend", &backend_input);
                 tracing::info!(
                     message_sequence,
                     session = %session.id,
@@ -527,36 +526,24 @@ impl Agent {
     /// The frontmatter is regenerated from the metadata fields; the content
     /// is stored verbatim as the markdown body. Returns an error string on
     /// invalid names or filesystem failures.
-    fn save_skill_file(
-        &self,
-        skills_dir: &str,
-        name: &str,
-        description: &str,
-        keywords: &[String],
-        always: bool,
-        category: &str,
-        content: &str,
-    ) -> Result<(), String> {
-        validate_skill_name(name)?;
+    fn save_skill_file(&self, skills_dir: &str, draft: &SkillDraft) -> Result<(), String> {
+        validate_skill_name(&draft.name)?;
         let dir = std::path::Path::new(skills_dir);
-        let skill_dir = dir.join(name);
+        let skill_dir = dir.join(&draft.name);
         std::fs::create_dir_all(&skill_dir)
             .map_err(|e| format!("cannot create {}: {e}", skill_dir.display()))?;
-        let keywords_str = if keywords.is_empty() {
+        let keywords_str = if draft.keywords.is_empty() {
             String::new()
         } else {
-            format!("keywords: [{}]
-", keywords.join(", "))
+            format!("keywords: [{}]\n", draft.keywords.join(", "))
         };
         let body = format!(
-            "---
-name: {name}
-description: {description}
-{keywords_str}metadata:
-  always: {always}
-  category: {category}
----
-{content}"
+            "---\nname: {}\ndescription: {}\n{keywords_str}metadata:\n  always: {}\n  category: {}\n---\n{}",
+            draft.name,
+            draft.description,
+            draft.always,
+            draft.category,
+            draft.content
         );
         std::fs::write(skill_dir.join("SKILL.md"), body)
             .map_err(|e| format!("cannot write SKILL.md: {e}"))?;
@@ -587,20 +574,59 @@ description: {description}
     }
 }
 
-/// Skill name/directory key validation: `[a-zA-Z0-9_-]`, no path separators,
-/// no leading dots.
+/// Draft payload for creating/updating a skill (`BackendCommand::SaveSkill`).
+#[derive(Debug, Clone)]
+pub(crate) struct SkillDraft {
+    pub name: String,
+    pub description: String,
+    pub keywords: Vec<String>,
+    pub always: bool,
+    pub category: String,
+    pub content: String,
+}
+
+/// Skill name/directory key validation: Unicode letters/digits (covers Chinese),
+/// `-`, `_` and spaces; no path separators, no leading dots.
 fn validate_skill_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("skill name is empty".into());
     }
+    // 目录 key 校验：Unicode 字母/数字（支持中文名）+ '-' + '_'；
+    // 拒绝路径分隔符、点开头（防路径穿越）与空白/控制字符。
     if name.starts_with('.')
         || !name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ' ')
     {
         return Err(format!(
-            "invalid skill name {name:?}: only letters, digits, '-' and '_' allowed"
+            "invalid skill name {name:?}: only Unicode letters/digits, '-', '_' allowed"
         ));
     }
+    // 路径分隔符显式禁止（is_alphanumeric 不含它们，这里兜底明确语义）。
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("skill name must be a single directory key".into());
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod skill_name_tests {
+    use super::validate_skill_name;
+
+    #[test]
+    fn accepts_unicode_chinese_names() {
+        assert!(validate_skill_name("信息检索").is_ok());
+        assert!(validate_skill_name("web-search").is_ok());
+        assert!(validate_skill_name("my_skill-2").is_ok());
+    }
+
+    #[test]
+    fn rejects_path_traversal_and_separators() {
+        assert!(validate_skill_name("").is_err());
+        assert!(validate_skill_name(".hidden").is_err());
+        assert!(validate_skill_name("a/b").is_err());
+        assert!(validate_skill_name("a\\b").is_err());
+        assert!(validate_skill_name("..").is_err());
+        assert!(validate_skill_name("../evil").is_err());
+    }
 }

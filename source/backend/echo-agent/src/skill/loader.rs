@@ -29,8 +29,13 @@ pub fn load_skill(path: &Path) -> Result<Skill, SkillError> {
 
 fn parse_skill(path: &Path, text: &str) -> Result<Skill, SkillError> {
     let (frontmatter, body) = split_frontmatter(text);
-    let (mut name, mut description, mut keywords, mut always, mut category) =
-        (String::new(), String::new(), Vec::new(), false, String::new());
+    let (mut name, mut description, mut keywords, mut always, mut category) = (
+        String::new(),
+        String::new(),
+        Vec::new(),
+        false,
+        String::new(),
+    );
     let mut in_metadata = false;
     for raw_line in frontmatter.lines() {
         let is_indented = raw_line.starts_with([' ', '\t']);

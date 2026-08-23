@@ -28,6 +28,16 @@ pub fn wrap_hook(platform: &str, json: &str) -> String {
     format!("{}\n{json}\n{}", hook_open(platform), hook_close(platform))
 }
 
+/// Serialize a JSON value (pretty) and wrap it in a platform hook envelope.
+///
+/// Single entry point for building structured hook inputs — adapter bridges
+/// and the frontend `SendMessage` command both use this so the wire format
+/// cannot drift.
+pub fn wrap_hook_value(platform: &str, value: &serde_json::Value) -> String {
+    let json = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+    wrap_hook(platform, &json)
+}
+
 /// The timer-event envelope opener.
 pub const TIMER_EVENT_OPEN: &str = "<timer_event>";
 
@@ -84,8 +94,7 @@ pub fn hook_payload(content: &str) -> Option<String> {
 /// present.
 pub fn structured_message_sequence(content: &str) -> Option<u64> {
     let payload = hook_payload(content)?;
-    serde_json::from_str::<serde_json::Value>(&payload).ok()?["message_sequence"]
-        .as_u64()
+    serde_json::from_str::<serde_json::Value>(&payload).ok()?["message_sequence"].as_u64()
 }
 
 #[cfg(test)]

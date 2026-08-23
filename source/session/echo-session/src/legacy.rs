@@ -162,8 +162,8 @@ fn migrate_history(history: &[V4Message]) -> Vec<SessionEvent> {
                 content: message.content.clone(),
                 timestamp: 0,
                 message_sequence: None,
-                source: None,                images: vec![],
-
+                source: None,
+                images: vec![],
             })),
             "assistant" => Some(SessionEvent::AssistantMessage(AssistantMessage {
                 content: message.content.clone(),

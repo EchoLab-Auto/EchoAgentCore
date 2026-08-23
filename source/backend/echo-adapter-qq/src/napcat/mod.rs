@@ -349,12 +349,8 @@ impl NapCatClient {
         let clients = clients
             .as_array_mut()
             .ok_or_else(|| "NapCat websocketClients is not an array".to_string())?;
-        clients.retain(|client| {
-            client
-                .get("name")
-                .and_then(|n| n.as_str())
-                != Some("EchoAgentCore")
-        });
+        clients
+            .retain(|client| client.get("name").and_then(|n| n.as_str()) != Some("EchoAgentCore"));
         clients.push(serde_json::json!({
             "enable": true,
             "name": "EchoAgentCore",

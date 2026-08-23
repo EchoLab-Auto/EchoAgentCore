@@ -170,8 +170,8 @@ mod tests {
             content: "你好".into(),
             timestamp: 1700000000,
             message_sequence: None,
-            source: None,                images: vec![],
-
+            source: None,
+            images: vec![],
         }));
         log.append(SessionEvent::AssistantMessage(AssistantMessage {
             content: "回复".into(),
@@ -198,8 +198,8 @@ mod tests {
             content: "跑一下".into(),
             timestamp: 1700000000,
             message_sequence: Some(1),
-            source: None,                images: vec![],
-
+            source: None,
+            images: vec![],
         }));
         log.append(SessionEvent::ToolCall(ToolCallEvent {
             id: "call_1".into(),

@@ -349,18 +349,15 @@ mod tests {
         assert_eq!(names, vec!["keeper"], "disabled tool hidden from LLM");
 
         assert!(registry.is_disabled("stub").await);
-        assert!(registry
-            .execute("stub", Value::Null)
-            .await
-            .is_err(), "disabled tool calls fail");
+        assert!(
+            registry.execute("stub", Value::Null).await.is_err(),
+            "disabled tool calls fail"
+        );
 
         // Re-enable restores visibility and callability.
         assert!(registry.set_enabled("stub", true).await);
         assert_eq!(registry.definitions().await.len(), 2);
-        assert_eq!(
-            registry.execute("stub", Value::Null).await.unwrap(),
-            "stub"
-        );
+        assert_eq!(registry.execute("stub", Value::Null).await.unwrap(), "stub");
         // Unknown tool cannot be toggled.
         assert!(!registry.set_enabled("nope", false).await);
     }

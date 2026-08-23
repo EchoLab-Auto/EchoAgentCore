@@ -254,6 +254,7 @@ mod tests {
         let cmd = BackendCommand::SendMessage {
             session_id: "qq:group:123:456".into(),
             content: "你好".into(),
+            images: vec![],
         };
         let text = serialize_command(&cmd);
         assert!(text.contains("\"type\":\"command\""));
@@ -263,7 +264,9 @@ mod tests {
                 BackendCommand::SendMessage {
                     session_id,
                     content,
+                    images,
                 } => {
+                    assert!(images.is_empty());
                     assert_eq!(session_id, "qq:group:123:456");
                     assert_eq!(content, "你好");
                 }

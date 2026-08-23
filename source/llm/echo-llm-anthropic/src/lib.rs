@@ -948,9 +948,11 @@ mod tests {
         let body = build_request_body(
             &ChatRequest {
                 model: "claude-sonnet-4".into(),
-                messages: vec![
-                    ChatMessage::tool_with_images("ok", "c1", vec!["data:image/png;base64,QUJD".into()]),
-                ],
+                messages: vec![ChatMessage::tool_with_images(
+                    "ok",
+                    "c1",
+                    vec!["data:image/png;base64,QUJD".into()],
+                )],
                 tools: None,
                 temperature: None,
                 max_tokens: None,
@@ -1012,8 +1014,14 @@ mod tests {
             &ChatRequest {
                 model: "claude-sonnet-4".into(),
                 messages: vec![
-                    ChatMessage::user_with_images("第一条", vec!["data:image/png;base64,QQ==".into()]),
-                    ChatMessage::user_with_images("第二条", vec!["data:image/png;base64,Qg==".into()]),
+                    ChatMessage::user_with_images(
+                        "第一条",
+                        vec!["data:image/png;base64,QQ==".into()],
+                    ),
+                    ChatMessage::user_with_images(
+                        "第二条",
+                        vec!["data:image/png;base64,Qg==".into()],
+                    ),
                 ],
                 tools: None,
                 temperature: None,
@@ -1022,11 +1030,13 @@ mod tests {
             false,
         );
         let content = body["messages"][0]["content"].as_array().unwrap();
-        let images: Vec<&serde_json::Value> = content
-            .iter()
-            .filter(|b| b["type"] == "image")
-            .collect();
-        assert_eq!(images.len(), 2, "both merged messages' images kept: {content:?}");
+        let images: Vec<&serde_json::Value> =
+            content.iter().filter(|b| b["type"] == "image").collect();
+        assert_eq!(
+            images.len(),
+            2,
+            "both merged messages' images kept: {content:?}"
+        );
         assert_eq!(images[0]["source"]["data"], "QQ==");
         assert_eq!(images[1]["source"]["data"], "Qg==");
     }

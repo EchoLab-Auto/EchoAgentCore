@@ -15,6 +15,8 @@ max_files = 5
 provider = "deepseek"
 model = "deepseek-v4-flash"
 # DeepSeek Anthropic 兼容端点
+# 注意：api_key 以明文持久化在本文件，请保持文件权限 600（本仓库安装脚本默认已设置）。
+# 也可改用环境变量 DEEPSEEK_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY 提供，留空此字段。
 base_url = "https://api.deepseek.com/anthropic"
 api_key = ""
 # DeepSeek 思考模式与推理强度；默认即为 enabled + max。

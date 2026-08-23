@@ -101,7 +101,8 @@ mod tests {
         let p = create_provider(&cfg("third-party", "https://one-api.example.com/v1")).unwrap();
         assert_eq!(p.name(), "openai");
         // anthropic-style URL switches to the Messages client.
-        let p = create_provider(&cfg("third-party", "https://one-api.example.com/anthropic")).unwrap();
+        let p =
+            create_provider(&cfg("third-party", "https://one-api.example.com/anthropic")).unwrap();
         assert_eq!(p.name(), "anthropic");
     }
 

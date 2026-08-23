@@ -1795,7 +1795,10 @@ impl Agent {
     /// conversation history aggregated per role. The trunk history holds user
     /// / assistant / tool messages only — the system prompt is rebuilt every
     /// turn and is represented by the prompt blocks above.
-    pub async fn context_blocks(&self, history: &[ChatMessage]) -> Vec<crate::event::ContextBlockInfo> {
+    pub async fn context_blocks(
+        &self,
+        history: &[ChatMessage],
+    ) -> Vec<crate::event::ContextBlockInfo> {
         let prompt = match self.last_prompt_blocks.lock().await.clone() {
             Some(blocks) => blocks,
             // No turn has run yet in this process — build a representative
@@ -1837,7 +1840,11 @@ impl Agent {
             let content = messages
                 .iter()
                 .map(|message| {
-                    let preview = message.content.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let preview = message
+                        .content
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     let preview: String = preview.chars().take(120).collect();
                     format!(
                         "[{}] {}t {}",
@@ -1996,31 +2003,30 @@ impl Agent {
         // 继承，避免写出残缺 profile：残缺 profile 单独做 TestApi 时必然
         // "provider build failed"，且极易误导用户以为 LLM 整体不可用。
         // （更新已有 profile 时保持"空 = 保留该 profile 原值"的语义。）
-        let (provider, model, base_url) = if !name.is_empty()
-            && !config.api_profiles.iter().any(|p| p.name == name)
-        {
-            let mut resolved = config.clone();
-            resolved.apply_active_profile();
-            (
-                if provider.is_empty() {
-                    resolved.provider
-                } else {
-                    provider
-                },
-                if model.is_empty() {
-                    resolved.model
-                } else {
-                    model
-                },
-                if base_url.is_empty() {
-                    resolved.base_url
-                } else {
-                    base_url
-                },
-            )
-        } else {
-            (provider, model, base_url)
-        };
+        let (provider, model, base_url) =
+            if !name.is_empty() && !config.api_profiles.iter().any(|p| p.name == name) {
+                let mut resolved = config.clone();
+                resolved.apply_active_profile();
+                (
+                    if provider.is_empty() {
+                        resolved.provider
+                    } else {
+                        provider
+                    },
+                    if model.is_empty() {
+                        resolved.model
+                    } else {
+                        model
+                    },
+                    if base_url.is_empty() {
+                        resolved.base_url
+                    } else {
+                        base_url
+                    },
+                )
+            } else {
+                (provider, model, base_url)
+            };
         if name.is_empty() {
             if !provider.is_empty() {
                 config.provider = provider.clone();
@@ -2204,11 +2210,8 @@ impl Agent {
             temperature: Some(0.0),
             max_tokens: Some(4),
         };
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(20),
-            provider.chat(&request),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(20), provider.chat(&request)).await;
 
         let latency_ms = timestamp_start.elapsed().as_millis() as u64;
         let (ok, message) = match result {
@@ -2233,7 +2236,6 @@ impl Agent {
             latency_ms,
         });
     }
-
 
     /// Persist the system prompt plugin text to `[plugins.system_prompt]`
     /// instead of `[agent]`. The API config no longer owns the system prompt.
@@ -2645,6 +2647,11 @@ pub(crate) fn invalid_tool_arguments(
 /// [`crate::adapter_bridge::format_hook_input`]); this pulls them into the
 /// durable `UserMessage` event so session replay keeps the multimodal
 /// content. Returns an empty vec for plain text.
+/// 单张图片（URL 或 data URI 字符串）进入持久化/模型请求的上限。
+/// 超过的 data URI 直接丢弃（downstream 已按源码大小限制，这里兜底，
+/// 防止超大 base64 撑大会话日志与每次请求的 prompt）。
+const MAX_INPUT_IMAGE_CHARS: usize = 8 * 1024 * 1024;
+
 pub(crate) fn extract_input_images(content: &str) -> Vec<String> {
     let Some(payload) = crate::input_marker::hook_payload(content) else {
         return Vec::new();
@@ -2657,7 +2664,11 @@ pub(crate) fn extract_input_images(content: &str) -> Vec<String> {
         .as_array()
         .map(|arr| {
             arr.iter()
-                .filter_map(|m| m.as_str().map(str::to_string))
+                .filter_map(|m| {
+                    m.as_str()
+                        .filter(|s| s.len() <= MAX_INPUT_IMAGE_CHARS)
+                        .map(str::to_string)
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -2858,7 +2869,7 @@ pub mod tests {
             channel: "direct".into(),
             group_name: None,
             content: "hi".into(),
-images: vec![],
+            images: vec![],
             timestamp: 1700000000,
             received_at_ms: 1700000000123,
             message_sequence: 1,
@@ -2934,7 +2945,7 @@ images: vec![],
             channel: "direct".into(),
             group_name: None,
             content: "<background_task_event>{}</background_task_event>".into(),
-images: vec![],
+            images: vec![],
             timestamp: 1,
             received_at_ms: 1000,
             message_sequence: 1,
@@ -3080,7 +3091,7 @@ images: vec![],
             channel: "direct".into(),
             group_name: None,
             content: "你好".into(),
-images: vec![],
+            images: vec![],
             timestamp: 1700000000,
             received_at_ms: 1700000000123,
             message_sequence: 1,
@@ -3238,7 +3249,11 @@ images: vec![],
             arguments: r#"{"command":"true"}"#.into(),
         };
         let result = agent.run_tool(session_id, "branch-1", &call).await;
-        assert!(result.text.contains("disabled"), "unexpected: {}", result.text);
+        assert!(
+            result.text.contains("disabled"),
+            "unexpected: {}",
+            result.text
+        );
     }
 
     #[tokio::test]
@@ -3471,24 +3486,26 @@ images: vec![],
         assert!(message.contains("你发送的参数: {}"), "{message}");
         assert!(message.contains("schema"), "{message}");
         // null 值同样算缺失
-        assert!(
-            invalid_tool_arguments("run_command", "{}", &serde_json::json!({"command": null}), &schema)
-                .is_some()
-        );
+        assert!(invalid_tool_arguments(
+            "run_command",
+            "{}",
+            &serde_json::json!({"command": null}),
+            &schema
+        )
+        .is_some());
         // 参数不是对象：所有必需字段都缺失
         assert!(
-            invalid_tool_arguments("run_command", "[]", &serde_json::Value::Null, &schema).is_some()
+            invalid_tool_arguments("run_command", "[]", &serde_json::Value::Null, &schema)
+                .is_some()
         );
         // 字段齐全（含空字符串——合法值，不算缺失）：通过
-        assert!(
-            invalid_tool_arguments(
-                "run_command",
-                "{}",
-                &serde_json::json!({"command": ""}),
-                &schema,
-            )
-            .is_none()
-        );
+        assert!(invalid_tool_arguments(
+            "run_command",
+            "{}",
+            &serde_json::json!({"command": ""}),
+            &schema,
+        )
+        .is_none());
         // schema 无 required：不预检
         let free = serde_json::json!({"type": "object", "properties": {}});
         assert!(invalid_tool_arguments("stub", "{}", &serde_json::json!({}), &free).is_none());
@@ -3626,7 +3643,10 @@ images: vec![],
         let session = agent
             .trunk
             .get_or_create(&SessionKey::local_tui(), "user".into(), None);
-        agent.process_message(&session, "help me calc 1+1").await.unwrap();
+        agent
+            .process_message(&session, "help me calc 1+1")
+            .await
+            .unwrap();
         let history = session.history.lock().await.clone();
         let blocks = agent.context_blocks(&history).await;
         let keys: Vec<&str> = blocks.iter().map(|block| block.key.as_str()).collect();
@@ -4072,7 +4092,8 @@ images: vec![],
             source: None,
             images: extract_input_images(hook),
         };
-        let json = serde_json::to_string(&echo_session::SessionEvent::UserMessage(event.clone())).unwrap();
+        let json =
+            serde_json::to_string(&echo_session::SessionEvent::UserMessage(event.clone())).unwrap();
         let back: echo_session::SessionEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(back, echo_session::SessionEvent::UserMessage(event));
     }
@@ -4124,7 +4145,10 @@ images: vec![],
     fn probe_config_reports_missing_provider() {
         let cfg = crate::config::AgentConfig::default();
         let err = resolve_probe_config(&cfg, "").unwrap_err();
-        assert!(err.contains("provider"), "error must mention provider: {err}");
+        assert!(
+            err.contains("provider"),
+            "error must mention provider: {err}"
+        );
     }
 
     #[test]
@@ -4165,7 +4189,9 @@ images: vec![],
             .validate_delivery_call(&targets, &mut delivered, &again)
             .is_ok());
         // pending() 在首次投递后为空：reminder 不再触发。
-        let plan = DeliveryPlan { targets: targets.clone() };
+        let plan = DeliveryPlan {
+            targets: targets.clone(),
+        };
         assert!(plan.pending(&delivered).is_empty());
     }
 
@@ -4341,7 +4367,8 @@ images: vec![],
         let scheduled = agent
             .run_tool("local:tui::one", "test-branch", &schedule)
             .await;
-        let timer_id = serde_json::from_str::<serde_json::Value>(&scheduled.text).unwrap()["timer_id"]
+        let timer_id = serde_json::from_str::<serde_json::Value>(&scheduled.text).unwrap()
+            ["timer_id"]
             .as_str()
             .unwrap()
             .to_string();

@@ -101,7 +101,7 @@ fn flush_tool_calls(
         reasoning_content: None,
         tool_calls: Some(calls),
         tool_call_id: None,
-            images: vec![],
+        images: vec![],
     });
 }
 
@@ -156,7 +156,11 @@ fn repair_tool_pairing(messages: &mut Vec<ChatMessage>) {
         close_dangling_calls(&mut repaired, &mut pending);
         if message.role == echo_defs::message::ChatRole::Assistant {
             if let Some(calls) = &message.tool_calls {
-                pending.extend(calls.iter().map(|call| (call.id.clone(), call.name.clone())));
+                pending.extend(
+                    calls
+                        .iter()
+                        .map(|call| (call.id.clone(), call.name.clone())),
+                );
             }
         }
         repaired.push(message);
@@ -256,8 +260,8 @@ mod tests {
             content: content.into(),
             timestamp: 0,
             message_sequence: None,
-            source: None,                images: vec![],
-
+            source: None,
+            images: vec![],
         })
     }
 
@@ -299,7 +303,7 @@ mod tests {
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "c1".into(),
                 result: "2".into(),
-                    images: vec![],
+                images: vec![],
             }),
             assistant("结果是 2"),
         ];
@@ -328,7 +332,7 @@ mod tests {
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_00_abc".into(),
                 result: "a.txt".into(),
-                    images: vec![],
+                images: vec![],
             }),
             assistant("已列出"),
         ];
@@ -369,7 +373,7 @@ mod tests {
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_A".into(),
                 result: "ok".into(),
-                    images: vec![],
+                images: vec![],
             }),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_B".into(),
@@ -379,7 +383,7 @@ mod tests {
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_B".into(),
                 result: "now".into(),
-                    images: vec![],
+                images: vec![],
             }),
             assistant("完毕"),
         ];
@@ -415,7 +419,7 @@ mod tests {
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "c1".into(),
                 result: "2".into(),
-                    images: vec![],
+                images: vec![],
             }),
             assistant("结果是 2"),
         ];
@@ -449,7 +453,7 @@ mod tests {
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_00_x".into(),
                 result: "ok".into(),
-                    images: vec![],
+                images: vec![],
             }),
             assistant("完毕"),
         ];
@@ -532,7 +536,7 @@ mod tests {
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "c1".into(),
                 result: "2".into(),
-                    images: vec![],
+                images: vec![],
             }),
             assistant("结果是 2"),
         ];
@@ -650,7 +654,7 @@ mod tests {
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_c".into(),
                 result: "ok".into(),
-                    images: vec![],
+                images: vec![],
             }),
             assistant("新回复"),
         ];
@@ -676,7 +680,7 @@ mod tests {
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_A".into(),
                 result: "ok".into(),
-                    images: vec![],
+                images: vec![],
             }),
             assistant("完毕"),
         ];

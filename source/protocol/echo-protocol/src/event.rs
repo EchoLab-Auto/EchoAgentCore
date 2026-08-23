@@ -118,6 +118,80 @@ pub struct TimelineMessage {
     pub images: Option<Vec<String>>,
 }
 
+impl TimelineMessage {
+    /// A user message with provenance and optional images.
+    pub fn user(
+        content: impl Into<String>,
+        session_id: impl Into<String>,
+        time: i64,
+        source: Option<TimelineSource>,
+        images: Vec<String>,
+    ) -> Self {
+        Self {
+            kind: "user".into(),
+            content: content.into(),
+            session_id: session_id.into(),
+            time,
+            source,
+            reasoning: None,
+            tool: None,
+            images: (!images.is_empty()).then_some(images),
+        }
+    }
+
+    /// An assistant/backend output.
+    pub fn backend(
+        content: impl Into<String>,
+        session_id: impl Into<String>,
+        time: i64,
+        reasoning: Option<Vec<String>>,
+    ) -> Self {
+        Self {
+            kind: "backend".into(),
+            content: content.into(),
+            session_id: session_id.into(),
+            time,
+            source: None,
+            reasoning,
+            tool: None,
+            images: None,
+        }
+    }
+
+    /// A tool-call/result entry.
+    pub fn tool(
+        tool_name: impl Into<String>,
+        session_id: impl Into<String>,
+        time: i64,
+        tool: TimelineTool,
+    ) -> Self {
+        Self {
+            kind: "tool".into(),
+            content: tool_name.into(),
+            session_id: session_id.into(),
+            time,
+            source: None,
+            reasoning: None,
+            tool: Some(tool),
+            images: None,
+        }
+    }
+
+    /// A system notice (e.g. timer summary).
+    pub fn system(content: impl Into<String>, session_id: impl Into<String>, time: i64) -> Self {
+        Self {
+            kind: "system".into(),
+            content: content.into(),
+            session_id: session_id.into(),
+            time,
+            source: None,
+            reasoning: None,
+            tool: None,
+            images: None,
+        }
+    }
+}
+
 /// Events flowing from the backend to the TUI.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum BackendEvent {

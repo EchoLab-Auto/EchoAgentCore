@@ -753,8 +753,9 @@ mod tests {
             "no image_url parts for remote URLs: {content:?}"
         );
         assert!(
-            content.iter().any(|p| p["type"] == "text"
-                && p["text"].as_str().unwrap().contains("图片")),
+            content
+                .iter()
+                .any(|p| p["type"] == "text" && p["text"].as_str().unwrap().contains("图片")),
             "placeholder text present: {content:?}"
         );
     }
@@ -763,9 +764,11 @@ mod tests {
     fn multimodal_tool_result_carries_images() {
         let request = ChatRequest {
             model: "gpt-4o".into(),
-            messages: vec![
-                ChatMessage::tool_with_images("result", "c1", vec!["data:image/png;base64,AAAA".into()]),
-            ],
+            messages: vec![ChatMessage::tool_with_images(
+                "result",
+                "c1",
+                vec!["data:image/png;base64,AAAA".into()],
+            )],
             tools: None,
             temperature: None,
             max_tokens: None,

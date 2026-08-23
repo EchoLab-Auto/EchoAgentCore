@@ -79,29 +79,22 @@ impl TimelineProjector {
                 }
                 if adapter_name == "timer" {
                     let task = timeline_timer_task(content);
-                    self.trunk.push_timeline(TimelineMessage {
-                        kind: "system".into(),
-                        content: match task {
-                            Some(task) => {
-                                format!("定时任务触发 · {}", truncate_one_line(&task, 120))
-                            }
-                            None => "定时任务触发".into(),
-                        },
-                        session_id: session_id.clone(),
-                        time: *timestamp,
-                        source: None,
-                        reasoning: None,
-                        tool: None,
-                        images: None,
-                    });
+                    let content = match task {
+                        Some(task) => format!("定时任务触发 · {}", truncate_one_line(&task, 120)),
+                        None => "定时任务触发".into(),
+                    };
+                    self.trunk.push_timeline(TimelineMessage::system(
+                        content,
+                        session_id.clone(),
+                        *timestamp,
+                    ));
                     return;
                 }
-                self.trunk.push_timeline(TimelineMessage {
-                    kind: "user".into(),
-                    content: content.clone(),
-                    session_id: session_id.clone(),
-                    time: *timestamp,
-                    source: Some(TimelineSource {
+                self.trunk.push_timeline(TimelineMessage::user(
+                    content.clone(),
+                    session_id.clone(),
+                    *timestamp,
+                    Some(TimelineSource {
                         adapter_name: adapter_name.clone(),
                         platform: platform.clone(),
                         user_id: user_id.clone(),
@@ -111,10 +104,8 @@ impl TimelineProjector {
                         received_at_ms: *received_at_ms,
                         message_sequence: *message_sequence,
                     }),
-                    reasoning: None,
-                    tool: None,
-                    images: Some(images.clone()),
-                });
+                    images.clone(),
+                ));
             }
             BackendEvent::AgentReasoning {
                 session_id,
@@ -160,16 +151,12 @@ impl TimelineProjector {
             } => {
                 let reasoning = self.take_timeline_reasoning(session_id, branch_id.as_deref());
                 let reasoning = (!reasoning.is_empty()).then_some(reasoning);
-                self.trunk.push_timeline(TimelineMessage {
-                    kind: "backend".into(),
-                    content: content.clone(),
-                    session_id: session_id.clone(),
-                    time: chrono::Utc::now().timestamp(),
-                    source: None,
+                self.trunk.push_timeline(TimelineMessage::backend(
+                    content.clone(),
+                    session_id.clone(),
+                    chrono::Utc::now().timestamp(),
                     reasoning,
-                    tool: None,
-                    images: None,
-                });
+                ));
             }
             BackendEvent::ToolCall {
                 session_id,
@@ -177,21 +164,17 @@ impl TimelineProjector {
                 arguments,
                 ..
             } => {
-                self.trunk.push_timeline(TimelineMessage {
-                    kind: "tool".into(),
-                    content: tool_name.clone(),
-                    session_id: session_id.clone(),
-                    time: chrono::Utc::now().timestamp(),
-                    source: None,
-                    reasoning: None,
-                    tool: Some(TimelineTool {
+                self.trunk.push_timeline(TimelineMessage::tool(
+                    tool_name.clone(),
+                    session_id.clone(),
+                    chrono::Utc::now().timestamp(),
+                    TimelineTool {
                         name: tool_name.clone(),
                         input: summarize_timeline_value(arguments, 160),
                         output: None,
                         failed: false,
-                    }),
-                    images: None,
-                });
+                    },
+                ));
             }
             BackendEvent::ToolResult {
                 session_id,
@@ -243,13 +226,7 @@ impl TimelineProjector {
 
     /// Attach the outcome to the newest still-running timeline tool entry with
     /// the same name (mirrors the TUI's `finish_tool_entry`).
-    fn update_timeline_tool(
-        &self,
-        session_id: &str,
-        tool_name: &str,
-        result: &str,
-        failed: bool,
-    ) {
+    fn update_timeline_tool(&self, session_id: &str, tool_name: &str, result: &str, failed: bool) {
         let mut timeline = match self.trunk.timeline_mut() {
             Some(guard) => guard,
             None => return,
@@ -270,21 +247,17 @@ impl TimelineProjector {
         }
         // No running entry found — record a completed tool entry directly.
         drop(timeline);
-        self.trunk.push_timeline(TimelineMessage {
-            kind: "tool".into(),
-            content: tool_name.to_string(),
-            session_id: session_id.to_string(),
-            time: chrono::Utc::now().timestamp(),
-            source: None,
-            reasoning: None,
-            tool: Some(TimelineTool {
+        self.trunk.push_timeline(TimelineMessage::tool(
+            tool_name.to_string(),
+            session_id.to_string(),
+            chrono::Utc::now().timestamp(),
+            TimelineTool {
                 name: tool_name.to_string(),
                 input: String::new(),
                 output: Some(summarize_timeline_value(result, 200)),
                 failed,
-            }),
-            images: None,
-        });
+            },
+        ));
     }
 }
 
@@ -386,7 +359,7 @@ mod tests {
             channel: "direct".into(),
             group_name: None,
             content: "你好".into(),
-images: vec![],
+            images: vec![],
             timestamp: 1700000000,
             received_at_ms: 1700000000123,
             message_sequence: 1,
@@ -439,7 +412,7 @@ images: vec![],
             channel: "direct".into(),
             group_name: None,
             content: "<background_task_event>…</background_task_event>".into(),
-images: vec![],
+            images: vec![],
             timestamp: 0,
             received_at_ms: 0,
             message_sequence: 0,

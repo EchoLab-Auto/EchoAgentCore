@@ -201,7 +201,8 @@ mod tests {
                     cmd,
                     BackendCommand::SendMessage {
                         session_id: "s1".into(),
-                        content: "hi".into()
+                        content: "hi".into(),
+                        images: vec![]
                     }
                 );
             }

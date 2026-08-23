@@ -637,9 +637,9 @@ impl QqAdapter {
             .message()
             .iter()
             .filter_map(|seg| match seg {
-                echo_core::segment::Segment::Known(
-                    echo_core::segment::KnownSegment::Image { data },
-                ) => data
+                echo_core::segment::Segment::Known(echo_core::segment::KnownSegment::Image {
+                    data,
+                }) => data
                     .url
                     .clone()
                     .or_else(|| (!data.file.is_empty()).then(|| data.file.clone())),

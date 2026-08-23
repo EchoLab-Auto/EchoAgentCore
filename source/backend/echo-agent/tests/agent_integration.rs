@@ -161,7 +161,7 @@ async fn send_message_command_produces_agent_output_event() {
         .apply_command(BackendCommand::SendMessage {
             session_id: "qq:dm::123".into(),
             content: "hello".into(),
-images: vec![],
+            images: vec![],
         })
         .await;
 
@@ -190,7 +190,7 @@ async fn send_message_creates_session() {
         .apply_command(BackendCommand::SendMessage {
             session_id: "qq:group:999:456".into(),
             content: "hi".into(),
-images: vec![],
+            images: vec![],
         })
         .await;
 
@@ -215,7 +215,7 @@ async fn set_system_prompt_changes_behaviour() {
         .apply_command(BackendCommand::SendMessage {
             session_id: "qq:dm::123".into(),
             content: "translate".into(),
-images: vec![],
+            images: vec![],
         })
         .await;
     let prompt = provider.last_system_prompt().await;
@@ -238,10 +238,17 @@ async fn set_system_prompt_persists_to_config() {
         })
         .await;
     let content = std::fs::read_to_string(&tmp).unwrap();
+    // 系统提示词由 [plugins.system_prompt] 插件段拥有（Core 插件注入后端 API
+    // 配置无关），持久化目标是 plugins 段而非 [agent] 段。
     assert!(
-        content.contains("system_prompt = \"你是翻译助手\""),
-        "unexpected: {content}"
+        content.contains("[plugins.system_prompt]"),
+        "plugins section missing: {content}"
     );
+    assert!(
+        content.contains("text = \"你是翻译助手\""),
+        "prompt not persisted into plugins: {content}"
+    );
+    // 运行期以 plugins 段为准（Core 启动时用 plugins 覆盖 agent 段）。
     std::fs::remove_file(&tmp).ok();
 }
 
@@ -502,7 +509,7 @@ async fn skill_keyword_injects_instructions_into_prompt() {
         .apply_command(BackendCommand::SendMessage {
             session_id: "qq:dm::123".into(),
             content: "帮我计算 1+1".into(),
-images: vec![],
+            images: vec![],
         })
         .await;
     let prompt = provider.last_system_prompt().await;
@@ -550,7 +557,7 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
         .apply_command(BackendCommand::SendMessage {
             session_id: "qq:dm::123".into(),
             content: "帮我计算 1+1".into(),
-images: vec![],
+            images: vec![],
         })
         .await;
 
@@ -866,7 +873,7 @@ async fn non_triggering_message_uses_cached_prompt() {
         .apply_command(BackendCommand::SendMessage {
             session_id: "qq:dm::123".into(),
             content: "你好".into(),
-images: vec![],
+            images: vec![],
         })
         .await;
     let first = provider.last_system_prompt().await;
@@ -878,7 +885,7 @@ images: vec![],
         .apply_command(BackendCommand::SendMessage {
             session_id: "qq:dm::123".into(),
             content: "再见".into(),
-images: vec![],
+            images: vec![],
         })
         .await;
     assert_eq!(provider.last_system_prompt().await, first);
