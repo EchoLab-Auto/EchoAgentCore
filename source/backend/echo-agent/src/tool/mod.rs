@@ -164,6 +164,15 @@ impl ToolRegistry {
         }
     }
 
+    /// Parameter JSON schema of a registered tool, if present.
+    pub async fn parameters(&self, name: &str) -> Option<Value> {
+        self.tools
+            .read()
+            .await
+            .get(name)
+            .map(|tool| tool.parameters())
+    }
+
     pub async fn execute(&self, name: &str, arguments: Value) -> Result<String, ToolError> {
         let tool = self.tools.read().await.get(name).cloned();
         match tool {

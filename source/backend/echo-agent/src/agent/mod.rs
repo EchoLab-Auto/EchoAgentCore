@@ -1338,6 +1338,18 @@ impl Agent {
         ))
     }
 
+    /// 模型可见的工具参数预检：schema 必需字段缺失时返回纠正性错误文案
+    /// （说清"你发了什么、应该发什么"），返回 None 表示通过预检。
+    async fn tool_arguments_error(
+        &self,
+        tool_name: &str,
+        raw_arguments: &str,
+        args: &serde_json::Value,
+    ) -> Option<String> {
+        let schema = self.tools.parameters(tool_name).await?;
+        invalid_tool_arguments(tool_name, raw_arguments, args, &schema)
+    }
+
     async fn run_tool(
         &self,
         session_id: &str,
@@ -1360,8 +1372,16 @@ impl Agent {
                     arguments: call.arguments.clone(),
                 },
             ));
-        let args = serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
-        let result = match call.name.as_str() {
+        // 参数解析与预检：给模型可纠正的错误反馈。非法 JSON 或缺少必需
+        // 字段时，错误文案必须说清"你发了什么、应该发什么"——一句模糊的
+        // "command required" 只会让模型原样重试，形成空调用退化循环。
+        let result = match serde_json::from_str::<serde_json::Value>(&call.arguments) {
+            Err(error) => crate::tool::ToolResult::text(format!(
+                "error: 工具参数不是合法 JSON（{error}）。你发送的原始参数: {}。请修正为合法 JSON 后重新调用 {}。",
+                crate::llm::truncate(&call.arguments, 200),
+                call.name,
+            )),
+            Ok(args) => match call.name.as_str() {
             "schedule_timer" => self
                 .timer_scheduler
                 .schedule(session_id, args)
@@ -1416,13 +1436,18 @@ impl Agent {
                     !crate::agent::orchestration::ORCHESTRATION_TOOL_NAMES.contains(&other),
                     "orchestration tool {other} missing from ORCHESTRATION_TOOL_NAMES"
                 );
-                self.tools
-                    .execute_rich(other, args)
-                    .await
-                    .map_err(|error| error.to_string())
+                match self.tool_arguments_error(other, &call.arguments, &args).await {
+                    Some(message) => Err(message),
+                    None => self
+                        .tools
+                        .execute_rich(other, args)
+                        .await
+                        .map_err(|error| error.to_string()),
+                }
             }
         }
-        .unwrap_or_else(|error| crate::tool::ToolResult::text(format!("error: {error}")));
+        .unwrap_or_else(|error| crate::tool::ToolResult::text(format!("error: {error}"))),
+        };
         let result_text = result.text.clone();
         let result_images = result.images.clone();
         self.emit(BackendEvent::ToolResult {
@@ -2570,6 +2595,48 @@ pub(crate) fn structured_message_sequence(content: &str) -> Option<u64> {
     crate::input_marker::structured_message_sequence(content)
 }
 
+/// 模型可见的工具参数预检：schema 声明的必需字段缺失时，返回纠正性错误
+/// 文案（说清"你发了什么、应该发什么"）。返回 None 表示参数通过预检。
+///
+/// 设计动机：模型在长工具循环中可能退化出空参调用（如 run_command {}），
+/// 若错误反馈只是模糊的"command required"，模型不知道错在哪，会原样
+/// 重试形成退化循环，烧掉整段上下文预算。
+pub(crate) fn invalid_tool_arguments(
+    tool_name: &str,
+    raw_arguments: &str,
+    args: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Option<String> {
+    let required: Vec<&str> = schema["required"]
+        .as_array()?
+        .iter()
+        .filter_map(|field| field.as_str())
+        .collect();
+    if required.is_empty() {
+        return None;
+    }
+    // 缺失 = 键不存在或值为 null（空字符串保留给各工具自己判定，
+    // 避免把 write_file content:"" 这类合法调用误判为缺参）。
+    let missing: Vec<&str> = match args.as_object() {
+        Some(obj) => required
+            .iter()
+            .filter(|field| obj.get(**field).map_or(true, |v| v.is_null()))
+            .copied()
+            .collect(),
+        None => required.clone(),
+    };
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "工具参数无效: {tool_name} 缺少必需参数 {}（你发送的参数: {}）。\
+         该工具的参数 schema: {}。请按 schema 携带全部必需参数重新调用。",
+        missing.join(", "),
+        crate::llm::truncate(raw_arguments, 200),
+        schema,
+    ))
+}
+
 /// Extract image URLs / data URIs from a structured hook input.
 ///
 /// Hook payloads carry `"images": [...]` (set by
@@ -3381,6 +3448,147 @@ pub mod tests {
         assert!(
             message.contains("请求失败") || message.contains("请求超时"),
             "unexpected message: {message}"
+        );
+    }
+
+    #[test]
+    fn invalid_tool_arguments_flags_missing_required() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        });
+        // 空对象：缺 command
+        let message = invalid_tool_arguments("run_command", "{}", &serde_json::json!({}), &schema)
+            .expect("missing required flagged");
+        assert!(message.contains("缺少必需参数 command"), "{message}");
+        assert!(message.contains("你发送的参数: {}"), "{message}");
+        assert!(message.contains("schema"), "{message}");
+        // null 值同样算缺失
+        assert!(
+            invalid_tool_arguments("run_command", "{}", &serde_json::json!({"command": null}), &schema)
+                .is_some()
+        );
+        // 参数不是对象：所有必需字段都缺失
+        assert!(
+            invalid_tool_arguments("run_command", "[]", &serde_json::Value::Null, &schema).is_some()
+        );
+        // 字段齐全（含空字符串——合法值，不算缺失）：通过
+        assert!(
+            invalid_tool_arguments(
+                "run_command",
+                "{}",
+                &serde_json::json!({"command": ""}),
+                &schema,
+            )
+            .is_none()
+        );
+        // schema 无 required：不预检
+        let free = serde_json::json!({"type": "object", "properties": {}});
+        assert!(invalid_tool_arguments("stub", "{}", &serde_json::json!({}), &free).is_none());
+    }
+
+    #[tokio::test]
+    async fn run_tool_empty_arguments_gets_corrective_error() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let mut tools = ToolRegistry::new();
+        crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir());
+        let agent = Agent::new(
+            provider,
+            AgentConfig::default(),
+            SkillRegistry::new(),
+            tools,
+            Arc::new(AdapterRegistry::new()),
+        );
+        let call = ToolCall {
+            id: "bad-1".into(),
+            name: "run_command".into(),
+            arguments: "{}".into(),
+        };
+        let result = agent.run_tool("local:tui::one", "branch-1", &call).await;
+        assert!(
+            result.text.contains("缺少必需参数 command"),
+            "corrective message: {}",
+            result.text
+        );
+        assert!(
+            result.text.contains("你发送的参数: {}"),
+            "echoes received args: {}",
+            result.text
+        );
+        assert!(
+            result.text.contains("schema"),
+            "includes tool schema: {}",
+            result.text
+        );
+    }
+
+    #[tokio::test]
+    async fn run_tool_malformed_json_gets_clear_error() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let mut tools = ToolRegistry::new();
+        crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir());
+        let agent = Agent::new(
+            provider,
+            AgentConfig::default(),
+            SkillRegistry::new(),
+            tools,
+            Arc::new(AdapterRegistry::new()),
+        );
+        let call = ToolCall {
+            id: "bad-2".into(),
+            name: "run_command".into(),
+            arguments: "{bad json".into(),
+        };
+        let result = agent.run_tool("local:tui::one", "branch-1", &call).await;
+        assert!(
+            result.text.contains("工具参数不是合法 JSON"),
+            "clear JSON error: {}",
+            result.text
+        );
+        assert!(
+            result.text.contains("{bad json"),
+            "echoes raw arguments: {}",
+            result.text
+        );
+    }
+
+    #[tokio::test]
+    async fn run_tool_valid_arguments_pass_preflight() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let mut tools = ToolRegistry::new();
+        crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir());
+        let agent = Agent::new(
+            provider,
+            AgentConfig::default(),
+            SkillRegistry::new(),
+            tools,
+            Arc::new(AdapterRegistry::new()),
+        );
+        let call = ToolCall {
+            id: "ok-1".into(),
+            name: "run_command".into(),
+            arguments: r#"{"command":"echo preflight-ok"}"#.into(),
+        };
+        let result = agent.run_tool("local:tui::one", "branch-1", &call).await;
+        assert!(
+            result.text.contains("preflight-ok"),
+            "valid call executes: {}",
+            result.text
+        );
+        assert!(
+            !result.text.contains("工具参数无效"),
+            "no preflight error: {}",
+            result.text
         );
     }
 
