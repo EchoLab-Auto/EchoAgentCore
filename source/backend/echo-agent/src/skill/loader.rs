@@ -29,8 +29,8 @@ pub fn load_skill(path: &Path) -> Result<Skill, SkillError> {
 
 fn parse_skill(path: &Path, text: &str) -> Result<Skill, SkillError> {
     let (frontmatter, body) = split_frontmatter(text);
-    let (mut name, mut description, mut keywords, mut always) =
-        (String::new(), String::new(), Vec::new(), false);
+    let (mut name, mut description, mut keywords, mut always, mut category) =
+        (String::new(), String::new(), Vec::new(), false, String::new());
     let mut in_metadata = false;
     for raw_line in frontmatter.lines() {
         let is_indented = raw_line.starts_with([' ', '\t']);
@@ -52,6 +52,7 @@ fn parse_skill(path: &Path, text: &str) -> Result<Skill, SkillError> {
             "keywords" => {
                 keywords = parse_list(value);
             }
+            "category" => category = value.trim_matches('"').trim_matches('\'').to_string(),
             "always" if in_metadata => always = value.eq_ignore_ascii_case("true"),
             _ => {}
         }
@@ -71,6 +72,7 @@ fn parse_skill(path: &Path, text: &str) -> Result<Skill, SkillError> {
             keywords,
             always,
             enabled: true,
+            category,
         },
         instructions: body.trim().to_string(),
     })
@@ -172,6 +174,26 @@ keywords: [天气, 新闻, "搜索"]
         let skill = parse_skill(Path::new("/skills/orphan/SKILL.md"), text).unwrap();
         assert_eq!(skill.metadata.name, "orphan", "falls back to dir name");
         assert!(skill.metadata.description.is_empty());
+    }
+
+    #[test]
+    fn parses_category_metadata() {
+        let text = r#"---
+name: web-search
+description: 搜索网页获取最新信息
+keywords: [天气, 新闻]
+metadata:
+  category: 信息检索
+---
+使用说明"#;
+        let skill = parse_skill(Path::new("/x/SKILL.md"), text).unwrap();
+        assert_eq!(skill.metadata.category, "信息检索");
+    }
+
+    #[test]
+    fn missing_category_defaults_to_empty() {
+        let skill = parse_skill(Path::new("/x/SKILL.md"), "---\nname: plain\n---\nbody").unwrap();
+        assert_eq!(skill.metadata.category, "");
     }
 
     #[test]

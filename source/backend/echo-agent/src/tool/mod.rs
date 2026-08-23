@@ -28,6 +28,9 @@ pub struct ToolRegistry {
     /// Cache of the definition list sent to the LLM; invalidated on any
     /// registration change.
     cached_definitions: tokio::sync::RwLock<Option<Arc<Vec<ToolDefinition>>>>,
+    /// Names of tools disabled at runtime (excluded from the LLM definition
+    /// list; calls fail with NotFound). Persisted via `[agent].disabled_tools`.
+    disabled: tokio::sync::RwLock<std::collections::HashSet<String>>,
 }
 
 impl std::fmt::Debug for ToolRegistry {
@@ -49,6 +52,7 @@ impl ToolRegistry {
         Self {
             tools: tokio::sync::RwLock::new(HashMap::new()),
             cached_definitions: tokio::sync::RwLock::new(None),
+            disabled: tokio::sync::RwLock::new(std::collections::HashSet::new()),
         }
     }
 
@@ -114,7 +118,41 @@ impl ToolRegistry {
         }
     }
 
+    /// Toggle a tool's runtime enable/disable state. `false` when the tool
+    /// does not exist. Invalidates the definition cache when changed.
+    pub async fn set_enabled(&self, name: &str, enabled: bool) -> bool {
+        if !self.tools.read().await.contains_key(name) {
+            return false;
+        }
+        let mut disabled = self.disabled.write().await;
+        let changed = if enabled {
+            disabled.remove(name)
+        } else {
+            disabled.insert(name.to_string())
+        };
+        drop(disabled);
+        if changed {
+            self.invalidate_definitions();
+        }
+        true
+    }
+
+    /// Whether a registered tool is currently disabled.
+    pub async fn is_disabled(&self, name: &str) -> bool {
+        self.disabled.read().await.contains(name)
+    }
+
+    /// All disabled tool names.
+    pub async fn disabled_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.disabled.read().await.iter().cloned().collect();
+        names.sort();
+        names
+    }
+
     /// Build (or reuse) the tool definition list sent to the LLM.
+    ///
+    /// Disabled tools are excluded: the model never sees them, and calls
+    /// against them fail with [`ToolError::NotFound`].
     pub async fn definitions(&self) -> Arc<Vec<ToolDefinition>> {
         // Fast path: read lock.
         if let Some(defs) = self.cached_definitions.read().await.as_ref() {
@@ -128,18 +166,47 @@ impl ToolRegistry {
         }
         let defs: Vec<ToolDefinition> = {
             let tools = self.tools.read().await;
-            tools
+            let disabled = self.disabled.read().await;
+            let mut list: Vec<ToolDefinition> = tools
                 .values()
+                .filter(|t| !disabled.contains(t.name()))
                 .map(|t| ToolDefinition {
                     name: t.name().to_string(),
                     description: t.description().to_string(),
                     parameters: Some(t.parameters()),
                 })
-                .collect()
+                .collect();
+            list.sort_by(|a, b| a.name.cmp(&b.name));
+            list
         };
         let arc = Arc::new(defs);
         *cache = Some(Arc::clone(&arc));
         arc
+    }
+
+    /// Full tool definition list (including disabled tools) for the frontend
+    /// browser. Not cached — requested on demand by the Panel.
+    /// Returns `(definition, category, enabled)`.
+    pub async fn full_definitions(&self) -> Vec<(ToolDefinition, String, bool)> {
+        let tools = self.tools.read().await;
+        let disabled = self.disabled.read().await;
+        let mut list: Vec<(ToolDefinition, String, bool)> = tools
+            .values()
+            .map(|t| {
+                let enabled = !disabled.contains(t.name());
+                (
+                    ToolDefinition {
+                        name: t.name().to_string(),
+                        description: t.description().to_string(),
+                        parameters: Some(t.parameters()),
+                    },
+                    t.category().to_string(),
+                    enabled,
+                )
+            })
+            .collect();
+        list.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+        list
     }
 
     pub fn names(&self) -> Vec<String> {
@@ -174,7 +241,14 @@ impl ToolRegistry {
     }
 
     pub async fn execute(&self, name: &str, arguments: Value) -> Result<String, ToolError> {
-        let tool = self.tools.read().await.get(name).cloned();
+        let (tool, disabled) = {
+            let tools = self.tools.read().await;
+            let disabled = self.disabled.read().await;
+            (tools.get(name).cloned(), disabled.contains(name))
+        };
+        if disabled {
+            return Err(ToolError::NotFound(name.to_string()));
+        }
         match tool {
             Some(tool) => tool.execute(arguments).await,
             None => Err(ToolError::NotFound(name.to_string())),
@@ -187,7 +261,14 @@ impl ToolRegistry {
         name: &str,
         arguments: Value,
     ) -> Result<echo_defs::tool::ToolResult, ToolError> {
-        let tool = self.tools.read().await.get(name).cloned();
+        let (tool, disabled) = {
+            let tools = self.tools.read().await;
+            let disabled = self.disabled.read().await;
+            (tools.get(name).cloned(), disabled.contains(name))
+        };
+        if disabled {
+            return Err(ToolError::NotFound(name.to_string()));
+        }
         match tool {
             Some(tool) => tool.execute_rich(arguments).await,
             None => Err(ToolError::NotFound(name.to_string())),
@@ -249,6 +330,54 @@ mod tests {
             1,
             "cache invalidated after dispose"
         );
+    }
+
+    #[tokio::test]
+    async fn disable_hides_tool_from_definitions_and_blocks_calls() {
+        let registry: Arc<ToolRegistry> = Arc::new(ToolRegistry::new());
+        let _keep_stub = registry.register_reversible(Arc::new(StubTool { name: "stub" }));
+        let _keep_keeper = registry.register_reversible(Arc::new(StubTool { name: "keeper" }));
+        assert_eq!(registry.definitions().await.len(), 2);
+
+        assert!(registry.set_enabled("stub", false).await);
+        let names: Vec<String> = registry
+            .definitions()
+            .await
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert_eq!(names, vec!["keeper"], "disabled tool hidden from LLM");
+
+        assert!(registry.is_disabled("stub").await);
+        assert!(registry
+            .execute("stub", Value::Null)
+            .await
+            .is_err(), "disabled tool calls fail");
+
+        // Re-enable restores visibility and callability.
+        assert!(registry.set_enabled("stub", true).await);
+        assert_eq!(registry.definitions().await.len(), 2);
+        assert_eq!(
+            registry.execute("stub", Value::Null).await.unwrap(),
+            "stub"
+        );
+        // Unknown tool cannot be toggled.
+        assert!(!registry.set_enabled("nope", false).await);
+    }
+
+    #[tokio::test]
+    async fn full_definitions_reports_categories_and_enabled_state() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(StubTool { name: "stub" }));
+        let registry = Arc::new(registry);
+        let list = registry.full_definitions().await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].0.name, "stub");
+        assert_eq!(list[0].1, "builtin");
+        assert!(list[0].2);
+        registry.set_enabled("stub", false).await;
+        let list = registry.full_definitions().await;
+        assert!(!list[0].2, "disabled state reported for frontend");
     }
 
     #[tokio::test]

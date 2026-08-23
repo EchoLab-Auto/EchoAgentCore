@@ -441,6 +441,7 @@ async fn toggle_skill_enables_and_disables() {
             keywords: vec!["计算".into()],
             always: false,
             enabled: true,
+            category: String::new(),
         },
         instructions: "use calculator".into(),
     });
@@ -488,6 +489,7 @@ async fn skill_keyword_injects_instructions_into_prompt() {
             keywords: vec!["计算".into()],
             always: false,
             enabled: true,
+            category: String::new(),
         },
         instructions: "使用 calculator 工具计算表达式".into(),
     });
@@ -524,6 +526,7 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
             keywords: vec![],
             always: true,
             enabled: true,
+            category: String::new(),
         },
         instructions: "QQ 单段通常不超过 30 个字符".into(),
     });
@@ -534,6 +537,7 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
             keywords: vec!["计算".into()],
             always: false,
             enabled: true,
+            category: String::new(),
         },
         instructions: "使用 calculator 工具".into(),
     });
@@ -847,6 +851,7 @@ async fn non_triggering_message_uses_cached_prompt() {
             keywords: vec!["计算".into()],
             always: false,
             enabled: true,
+            category: String::new(),
         },
         instructions: "use calculator".into(),
     });

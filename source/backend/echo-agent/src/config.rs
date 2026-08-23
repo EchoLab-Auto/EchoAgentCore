@@ -129,6 +129,12 @@ pub struct AgentConfig {
     pub tool_timeout_secs: Option<u64>,
     /// Directory containing `SKILL.md` definitions.
     pub skills_dir: String,
+    /// Skills disabled at runtime (survives restarts).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_skills: Vec<String>,
+    /// Tools disabled at runtime (survives restarts).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_tools: Vec<String>,
     /// DEPRECATED — legacy message-count limit. Kept only for config
     /// compatibility (deserialization); no longer participates in any
     /// calculation. Use `memory_limit_tokens` instead.
@@ -166,6 +172,8 @@ impl Default for AgentConfig {
             max_tool_iterations: 5,
             tool_timeout_secs: Some(120),
             skills_dir: "skills".into(),
+            disabled_skills: Vec::new(),
+            disabled_tools: Vec::new(),
             memory_limit: 40,
             memory_limit_tokens: None,
             context_window_tokens: None,

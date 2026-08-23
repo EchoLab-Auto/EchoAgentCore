@@ -75,6 +75,10 @@ impl From<&str> for ToolResult {
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
+    /// UI grouping category (empty = "内置" on the frontend).
+    fn category(&self) -> &'static str {
+        "builtin"
+    }
     /// JSON Schema for the arguments object.
     fn parameters(&self) -> Value {
         json!({"type": "object", "properties": {}})

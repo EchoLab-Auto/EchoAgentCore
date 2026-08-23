@@ -404,6 +404,9 @@ pub struct SkillInfo {
     pub always: bool,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// UI grouping category (from SKILL.md metadata; empty = "未分类").
+    #[serde(default)]
+    pub category: String,
     /// Full instructions body of `SKILL.md`.
     #[serde(default)]
     pub content: String,
@@ -420,6 +423,12 @@ pub struct ToolInfo {
     pub description: String,
     #[serde(default)]
     pub parameters: serde_json::Value,
+    /// UI grouping category.
+    #[serde(default)]
+    pub category: String,
+    /// Runtime enable/disable state.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// QQ group info for display.

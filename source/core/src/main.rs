@@ -64,8 +64,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let tracker = ConnectionTracker::default();
 
     // ---- agent framework ----
-    let skills = echo_agent::SkillRegistry::discover(&cfg.agent.skills_dir)
+    let mut skills = echo_agent::SkillRegistry::discover(&cfg.agent.skills_dir)
         .map_err(|e| anyhow::anyhow!("failed to load skills: {e}"))?;
+    // Apply persisted runtime disable state (survives restarts).
+    for name in &cfg.agent.disabled_skills {
+        if !skills.set_enabled(name, false) {
+            warn!(skill = %name, "disabled_skills entry not found, skipping");
+        }
+    }
     info!(skills = ?skills.names(), "skills discovered");
 
     let mut provider_cfg = cfg.agent.clone();
@@ -139,6 +145,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // Register built-in tools (needs adapter registry for adapter management tools).
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     echo_agent::tool::builtin::register_all(&mut tools, adapters.clone(), workspace);
+    // Apply persisted runtime disable state (survives restarts).
+    for name in &cfg.agent.disabled_tools {
+        if !tools.set_enabled(name, false).await {
+            warn!(tool = %name, "disabled_tools entry not found, skipping");
+        }
+    }
 
     // The configured QQ owner is also an update administrator. Additional
     // administrators can be listed under `[agent.self_update]`.

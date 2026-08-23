@@ -167,6 +167,7 @@ mod tests {
                 keywords: keywords.iter().map(|k| k.to_string()).collect(),
                 always: false,
                 enabled: true,
+                category: String::new(),
             },
             instructions: "instructions".into(),
         }

@@ -36,11 +36,29 @@ pub enum BackendCommand {
     TestApi { name: String },
     /// Delete an API profile by name.
     DeleteApi { name: String },
-    /// Enable or disable a skill.
-    ToggleSkill { name: String, enabled: bool },
     /// Request a full state snapshot (responded with `BackendEvent::SessionUpdated`
     /// per session plus a fresh [`crate::BackendState`] via the bridge).
     RequestState,
+    /// Enable or disable a skill.
+    ToggleSkill { name: String, enabled: bool },
+    /// Enable or disable a registered tool at runtime. Disabled tools are
+    /// hidden from the model and calls fail; persisted via `[agent]`.
+    ToggleTool { name: String, enabled: bool },
+    /// Create or overwrite a `SKILL.md` file in the configured skills
+    /// directory. `name` is the directory/file key; content is the markdown
+    /// body (the frontmatter is regenerated from the metadata fields).
+    SaveSkill {
+        name: String,
+        description: String,
+        keywords: Vec<String>,
+        #[serde(default)]
+        always: bool,
+        #[serde(default)]
+        category: String,
+        content: String,
+    },
+    /// Delete a skill directory under the configured skills directory.
+    DeleteSkill { name: String },
     /// Request a snapshot of the current trunk context (`BackendEvent::ContextSnapshot`).
     RequestContext,
     /// Cancel running work for a session (agent turns + background tasks).

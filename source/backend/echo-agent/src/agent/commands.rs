@@ -93,6 +93,19 @@ impl Agent {
                 let mut skills = self.skills.lock().await;
                 let ok = skills.set_enabled(&name, enabled);
                 *self.system_prompt_cache.write().await = None;
+                drop(skills);
+                if ok {
+                    // Persist the choice so it survives restarts.
+                    let mut cfg = self.config.write().await;
+                    cfg.disabled_skills.retain(|n| n != &name);
+                    if !enabled {
+                        cfg.disabled_skills.push(name.clone());
+                    }
+                    let cfg_snapshot = cfg.clone();
+                    drop(cfg);
+                    self.persist_config(&cfg_snapshot).await;
+                    self.emit_skills_list().await;
+                }
                 self.emit(BackendEvent::Error {
                     session_id: None,
                     message: if ok {
@@ -104,6 +117,89 @@ impl Agent {
                         format!("skill {name} not found")
                     },
                 });
+            }
+            BackendCommand::ToggleTool { name, enabled } => {
+                let ok = self.tools.set_enabled(&name, enabled).await;
+                if ok {
+                    let mut cfg = self.config.write().await;
+                    cfg.disabled_tools.retain(|n| n != &name);
+                    if !enabled {
+                        cfg.disabled_tools.push(name.clone());
+                    }
+                    let cfg_snapshot = cfg.clone();
+                    drop(cfg);
+                    self.persist_config(&cfg_snapshot).await;
+                    self.emit_tools_list().await;
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: format!(
+                            "tool {name} {}",
+                            if enabled { "enabled" } else { "disabled" }
+                        ),
+                    });
+                } else {
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: format!("tool {name} not found"),
+                    });
+                }
+            }
+            BackendCommand::SaveSkill {
+                name,
+                description,
+                keywords,
+                always,
+                category,
+                content,
+            } => {
+                let dir = self.current_skills_dir().await;
+                match self.save_skill_file(
+                    &dir,
+                    &name,
+                    &description,
+                    &keywords,
+                    always,
+                    &category,
+                    &content,
+                ) {
+                    Ok(()) => {
+                        if let Err(e) = self.reload_skills(&dir).await {
+                            tracing::warn!(error = %e, "skill reload after save failed");
+                        }
+                        self.emit_skills_list().await;
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("skill {name} saved"),
+                        });
+                    }
+                    Err(e) => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("save skill failed: {e}"),
+                        });
+                    }
+                }
+            }
+            BackendCommand::DeleteSkill { name } => {
+                let dir = self.current_skills_dir().await;
+                match self.delete_skill_file(&dir, &name) {
+                    Ok(()) => {
+                        if let Err(e) = self.reload_skills(&dir).await {
+                            tracing::warn!(error = %e, "skill reload after delete failed");
+                        }
+                        self.emit_skills_list().await;
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("skill {name} deleted"),
+                        });
+                    }
+                    Err(e) => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("delete skill failed: {e}"),
+                        });
+                    }
+                }
             }
             BackendCommand::UpdateApiConfig {
                 name,
@@ -132,35 +228,10 @@ impl Agent {
                 self.test_api_config(&name).await;
             }
             BackendCommand::RequestSkillsList => {
-                let skills = self.skills.lock().await;
-                let mut list: Vec<crate::event::SkillInfo> = skills
-                    .all()
-                    .iter()
-                    .map(|skill| crate::event::SkillInfo {
-                        name: skill.metadata.name.clone(),
-                        description: skill.metadata.description.clone(),
-                        keywords: skill.metadata.keywords.clone(),
-                        always: skill.metadata.always,
-                        enabled: skill.metadata.enabled,
-                        content: skill.instructions.clone(),
-                    })
-                    .collect();
-                list.sort_by_key(|s| s.name.clone());
-                drop(skills);
-                self.emit(BackendEvent::SkillsList { skills: list });
+                self.emit_skills_list().await;
             }
             BackendCommand::RequestToolsList => {
-                let defs = self.tools.definitions().await;
-                let mut list: Vec<crate::event::ToolInfo> = defs
-                    .iter()
-                    .map(|t| crate::event::ToolInfo {
-                        name: t.name.clone(),
-                        description: t.description.clone(),
-                        parameters: t.parameters.clone().unwrap_or(serde_json::Value::Null),
-                    })
-                    .collect();
-                list.sort_by_key(|t| t.name.clone());
-                self.emit(BackendEvent::ToolsList { tools: list });
+                self.emit_tools_list().await;
             }
             BackendCommand::DeleteApi { name } => {
                 self.delete_api(&name).await;
@@ -403,4 +474,130 @@ impl Agent {
             }
         }
     }
+
+    /// Emit the full skill list (`BackendEvent::SkillsList`).
+    pub async fn emit_skills_list(&self) {
+        let skills = self.skills.lock().await;
+        let mut list: Vec<crate::event::SkillInfo> = skills
+            .all()
+            .iter()
+            .map(|skill| crate::event::SkillInfo {
+                name: skill.metadata.name.clone(),
+                description: skill.metadata.description.clone(),
+                keywords: skill.metadata.keywords.clone(),
+                always: skill.metadata.always,
+                enabled: skill.metadata.enabled,
+                category: skill.metadata.category.clone(),
+                content: skill.instructions.clone(),
+            })
+            .collect();
+        list.sort_by_key(|s| s.name.clone());
+        drop(skills);
+        self.emit(BackendEvent::SkillsList { skills: list });
+    }
+
+    /// Emit the full tool list (`BackendEvent::ToolsList`), including
+    /// disabled tools with their runtime enable state.
+    pub async fn emit_tools_list(&self) {
+        let defs = self.tools.full_definitions().await;
+        let mut list: Vec<crate::event::ToolInfo> = defs
+            .into_iter()
+            .map(|(t, category, enabled)| crate::event::ToolInfo {
+                name: t.name,
+                description: t.description,
+                parameters: t.parameters.unwrap_or(serde_json::Value::Null),
+                category,
+                enabled,
+            })
+            .collect();
+        list.sort_by_key(|t| t.name.clone());
+        self.emit(BackendEvent::ToolsList { tools: list });
+    }
+
+    /// Current configured skill directory (resolved from the live config).
+    async fn current_skills_dir(&self) -> String {
+        self.config.read().await.skills_dir.clone()
+    }
+
+    /// Persist a skill to `{skills_dir}/{name}/SKILL.md`.
+    ///
+    /// The frontmatter is regenerated from the metadata fields; the content
+    /// is stored verbatim as the markdown body. Returns an error string on
+    /// invalid names or filesystem failures.
+    fn save_skill_file(
+        &self,
+        skills_dir: &str,
+        name: &str,
+        description: &str,
+        keywords: &[String],
+        always: bool,
+        category: &str,
+        content: &str,
+    ) -> Result<(), String> {
+        validate_skill_name(name)?;
+        let dir = std::path::Path::new(skills_dir);
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir)
+            .map_err(|e| format!("cannot create {}: {e}", skill_dir.display()))?;
+        let keywords_str = if keywords.is_empty() {
+            String::new()
+        } else {
+            format!("keywords: [{}]
+", keywords.join(", "))
+        };
+        let body = format!(
+            "---
+name: {name}
+description: {description}
+{keywords_str}metadata:
+  always: {always}
+  category: {category}
+---
+{content}"
+        );
+        std::fs::write(skill_dir.join("SKILL.md"), body)
+            .map_err(|e| format!("cannot write SKILL.md: {e}"))?;
+        Ok(())
+    }
+
+    /// Delete `{skills_dir}/{name}` (only when it is a skill directory inside
+    /// the configured skills directory).
+    fn delete_skill_file(&self, skills_dir: &str, name: &str) -> Result<(), String> {
+        validate_skill_name(name)?;
+        let root = std::path::Path::new(skills_dir);
+        let canonical_root = root
+            .canonicalize()
+            .map_err(|e| format!("skills dir missing: {e}"))?;
+        let skill_dir = root.join(name);
+        let canonical_target = skill_dir
+            .canonicalize()
+            .map_err(|e| format!("skill {name} not found: {e}"))?;
+        if !canonical_target.starts_with(&canonical_root) {
+            return Err("refusing to delete outside skills directory".into());
+        }
+        if !canonical_target.join("SKILL.md").exists() {
+            return Err(format!("{name} is not a skill directory"));
+        }
+        std::fs::remove_dir_all(&canonical_target)
+            .map_err(|e| format!("cannot delete {name}: {e}"))?;
+        Ok(())
+    }
+}
+
+/// Skill name/directory key validation: `[a-zA-Z0-9_-]`, no path separators,
+/// no leading dots.
+fn validate_skill_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("skill name is empty".into());
+    }
+    if name.starts_with('.')
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "invalid skill name {name:?}: only letters, digits, '-' and '_' allowed"
+        ));
+    }
+    Ok(())
 }

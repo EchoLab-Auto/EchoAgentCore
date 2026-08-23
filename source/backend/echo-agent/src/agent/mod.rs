@@ -3602,6 +3602,7 @@ pub mod tests {
                 keywords: vec!["calc".into()],
                 always: false,
                 enabled: true,
+                category: String::new(),
             },
             instructions: "use calculator tool".into(),
         });
@@ -3656,6 +3657,7 @@ pub mod tests {
                 keywords: vec!["calc".into()],
                 always: false,
                 enabled: true,
+                category: String::new(),
             },
             instructions: "use calculator tool".into(),
         });

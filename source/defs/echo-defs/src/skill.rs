@@ -16,6 +16,8 @@ pub struct SkillMetadata {
     /// Whether this skill is included in every conversation.
     pub always: bool,
     pub enabled: bool,
+    /// UI grouping category (empty = "未分类" on the frontend).
+    pub category: String,
 }
 
 /// A loaded skill definition (Tier 2 — full instructions).
