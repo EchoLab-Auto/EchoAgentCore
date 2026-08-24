@@ -1214,12 +1214,37 @@ async fn framework_update_status() -> Result<String, String> {
             || line.starts_with("state=current")
             || line.starts_with("state=interrupted")
     });
+    // 附带插件摘要（内置插件清单快照），供 Panel / LLM 展示更新后的能力面。
+    let plugins = gather_plugin_summary();
     Ok(json!({
         "service": service,
         "update": status_file.trim(),
-        "stale_status": service_failed && !status_terminal
+        "stale_status": service_failed && !status_terminal,
+        "plugins": plugins
     })
     .to_string())
+}
+
+/// Snapshot of registered plugins (id/version/kind/enabled), gathered from
+/// the agent's plugin host when available, or an empty list (e.g. tests).
+fn gather_plugin_summary() -> Vec<serde_json::Value> {
+    // The orchestration module runs inside the agent; the plugin host is
+    // available through the process-wide (best-effort) atomic registration
+    // set up by the composition root.
+    let Some(host) = crate::agent::plugin_host_global() else {
+        return Vec::new();
+    };
+    host.descriptors()
+        .into_iter()
+        .map(|d| {
+            json!({
+                "id": d.id,
+                "version": d.version,
+                "kind": d.kind,
+                "enabled": d.enabled
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

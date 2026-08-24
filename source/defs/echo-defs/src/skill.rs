@@ -28,6 +28,29 @@ pub struct Skill {
 }
 
 impl Skill {
+    /// Build a skill directly from parts (used by builtin skill plugins and
+    /// tests; file-based discovery goes through the loader instead).
+    pub fn direct(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        keywords: Vec<String>,
+        always: bool,
+        category: impl Into<String>,
+        instructions: impl Into<String>,
+    ) -> Self {
+        Self {
+            metadata: SkillMetadata {
+                name: name.into(),
+                description: description.into(),
+                keywords,
+                always,
+                enabled: true,
+                category: category.into(),
+            },
+            instructions: instructions.into(),
+        }
+    }
+
     /// Whether a message triggers this skill (keyword match, case-insensitive).
     pub fn matches(&self, content: &str) -> bool {
         if !self.metadata.enabled {

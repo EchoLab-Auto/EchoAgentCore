@@ -68,6 +68,7 @@ pub struct Agent {
     /// panel can visualize the exact prompt sections sent to the LLM.
     last_prompt_blocks: tokio::sync::Mutex<Option<Vec<PromptBlock>>>,
     skill_reload_started: AtomicBool,
+    plugin_reload_started: AtomicBool,
     orchestration_started: AtomicBool,
     timer_scheduler: orchestration::TimerScheduler,
     background_tasks: orchestration::BackgroundTaskManager,
@@ -85,6 +86,9 @@ pub struct Agent {
     _timeline_projection: echo_context::Disposer,
     /// Cancels background tasks (identity eviction / save) on shutdown.
     cancel: tokio_util::sync::CancellationToken,
+    /// Plugin host: registry + mount context bridging `echo_plugin` to the
+    /// agent's concrete registries.
+    pub plugin_host: std::sync::Arc<crate::plugins::PluginHost>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -94,6 +98,21 @@ impl std::fmt::Debug for Agent {
             .field("adapters", &self.adapters.names())
             .finish_non_exhaustive()
     }
+}
+
+/// Process-wide plugin host (best-effort): set once by the composition root.
+/// Used by utility code (e.g. framework_update status summary) that runs
+/// inside the agent but outside a `&Agent` scope.
+pub fn plugin_host_global() -> Option<std::sync::Arc<crate::plugins::PluginHost>> {
+    static HOST: std::sync::OnceLock<std::sync::Arc<crate::plugins::PluginHost>> =
+        std::sync::OnceLock::new();
+    HOST.get().cloned()
+}
+
+pub fn set_plugin_host_global(host: std::sync::Arc<crate::plugins::PluginHost>) {
+    static HOST: std::sync::OnceLock<std::sync::Arc<crate::plugins::PluginHost>> =
+        std::sync::OnceLock::new();
+    let _ = HOST.set(host);
 }
 
 impl Agent {
@@ -136,6 +155,7 @@ impl Agent {
             system_prompt_cache: RwLock::new(None),
             last_prompt_blocks: tokio::sync::Mutex::new(None),
             skill_reload_started: AtomicBool::new(false),
+            plugin_reload_started: AtomicBool::new(false),
             orchestration_started: AtomicBool::new(false),
             timer_scheduler,
             background_tasks,
@@ -146,6 +166,7 @@ impl Agent {
             event_bus,
             _timeline_projection,
             cancel,
+            plugin_host: std::sync::Arc::new(crate::plugins::PluginHost::new()),
         };
         // Spawn periodic identity eviction (every 5 minutes). Only stale
         // source labels are dropped; the trunk history is never evicted.
@@ -239,6 +260,93 @@ impl Agent {
                 }
             }
         });
+    }
+
+    /// Watch the configured plugin directory for `plugin.toml` manifests and
+    /// hot-(re)mount discovered data plugins (skills/tools). Code plugins
+    /// (provider/loop/adapter) still require the binary-reload path: this
+    /// watcher only handles data plugins.
+    pub async fn start_plugin_reload_task(self: &Arc<Self>) {
+        let plugins_dir = self.config.read().await.plugins_dir.clone();
+        if plugins_dir.trim().is_empty()
+            || !std::path::Path::new(&plugins_dir).exists()
+            || self
+                .plugin_reload_started
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return;
+        }
+        let agent = Arc::clone(self);
+        let cancel = self.cancel.clone();
+        tracing::info!(path = %plugins_dir, interval_seconds = 5, "plugin hot reload started");
+        tokio::spawn(async move {
+            let start = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut interval = tokio::time::interval_at(start, std::time::Duration::from_secs(5));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let _ = agent.reload_data_plugins(&plugins_dir).await;
+                    }
+                    _ = cancel.cancelled() => break,
+                }
+            }
+        });
+    }
+
+    /// Scan `plugins_dir` for `plugin.toml` files and hot-mount/unmount data
+    /// plugins based on manifest changes (simple: unmount all discovered,
+    /// remount from current disk state).
+    async fn reload_data_plugins(&self, plugins_dir: &str) -> Result<(), String> {
+        let dir = std::path::Path::new(plugins_dir);
+        if !dir.exists() {
+            return Ok(());
+        }
+        let mut manifests = Vec::new();
+        for entry in walkdir::WalkDir::new(dir)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            let path = entry.path();
+            if path.is_file() && path.file_name().and_then(|n| n.to_str()) == Some("plugin.toml") {
+                if let Ok(manifest) = echo_plugin::manifest::load_manifest(path) {
+                    manifests.push(manifest);
+                }
+            }
+        }
+        let id_set: std::collections::HashSet<String> =
+            manifests.iter().map(|m| m.id.clone()).collect();
+        let host = &self.plugin_host;
+        // Unmount discovered plugins that no longer exist.
+        for desc in host.descriptors() {
+            if !desc.builtin && desc.enabled && !id_set.contains(&desc.id) {
+                let _ = host.registry.unmount(&desc.id);
+            }
+        }
+        // Mount newly seen data plugins (skill/tool kinds).
+        for manifest in manifests {
+            if desc_exists(host, &manifest.id) {
+                continue;
+            }
+            let kind = manifest.kind;
+            if !matches!(
+                kind,
+                echo_plugin::PluginKind::Skill | echo_plugin::PluginKind::Tool
+            ) {
+                continue; // code plugins need binary reload
+            }
+            let manifest2 = manifest.clone();
+            let plugin =
+                std::sync::Arc::new(echo_plugin::BuiltinPlugin::new(manifest, move |_ctx| {
+                    Ok(vec![])
+                }));
+            let _ = &manifest2;
+            if let Err(e) = host.register_and_mount(plugin) {
+                tracing::warn!(%e, "discovered plugin mount failed");
+            }
+        }
+        Ok(())
     }
 
     /// Start delivery of scheduled timer events back into their originating sessions.
@@ -2673,6 +2781,11 @@ pub(crate) fn extract_input_images(content: &str) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+/// Whether a plugin with `id` is already registered in the host.
+fn desc_exists(host: &crate::plugins::PluginHost, id: &str) -> bool {
+    host.descriptors().iter().any(|d| d.id == id)
+}
+
 /// After a delay, generate and send one interim reply for a still-running
 /// branch, unless the branch already produced a visible reply or finished.
 #[allow(clippy::too_many_arguments)]

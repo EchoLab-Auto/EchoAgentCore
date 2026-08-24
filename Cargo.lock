@@ -411,6 +411,7 @@ dependencies = [
  "echo-llm-anthropic",
  "echo-llm-ollama",
  "echo-llm-openai",
+ "echo-plugin",
  "echo-protocol",
  "echo-session",
  "echo-test-utils",
@@ -443,6 +444,7 @@ dependencies = [
  "echo-context",
  "echo-core",
  "echo-loop",
+ "echo-plugin",
  "echo-protocol",
  "echo-server",
  "echo-session",
@@ -551,6 +553,18 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "echo-plugin"
+version = "0.1.0"
+dependencies = [
+ "echo-context",
+ "echo-defs",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "toml",
 ]
 
 [[package]]

@@ -31,7 +31,7 @@ pub use bridge::{
 pub use command::{command_clearance, BackendCommand, CommandClearance};
 pub use event::{
     AdapterStatus, ApiProfileInfo, BackendEvent, BackendState, ContextBlockInfo,
-    ContextMessageInfo, FriendInfo, GroupInfo, SessionInfo, SkillInfo, TimelineMessage,
+    ContextMessageInfo, FriendInfo, GroupInfo, PluginInfo, SessionInfo, SkillInfo, TimelineMessage,
     TimelineSource, TimelineTool, ToolInfo,
 };
 pub use mode::{GateMode, ReasoningEffort, ThinkingMode};

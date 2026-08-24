@@ -65,6 +65,13 @@ pub enum BackendCommand {
     },
     /// Delete a skill directory under the configured skills directory.
     DeleteSkill { name: String },
+    /// Request the list of all mounted plugins.
+    /// Responds with `BackendEvent::PluginsList`.
+    RequestPluginsList,
+    /// Enable or disable a plugin at runtime. Disabled plugins are unmounted
+    /// (registrations disposed); enabled ones are remounted. Persisted via
+    /// `[agent].disabled_plugins`.
+    TogglePlugin { id: String, enabled: bool },
     /// Request a snapshot of the current trunk context (`BackendEvent::ContextSnapshot`).
     RequestContext,
     /// Cancel running work for a session (agent turns + background tasks).

@@ -21,6 +21,7 @@ echo-server.workspace = true
 echo-agent.workspace = true
 echo-adapter.workspace = true
 echo-adapter-qq.workspace = true
+echo-plugin = { path = "../plugin/echo-plugin" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

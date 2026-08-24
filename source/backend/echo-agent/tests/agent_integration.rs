@@ -442,6 +442,55 @@ async fn concurrent_messages_merge_by_request_sequence() {
 }
 
 #[tokio::test]
+async fn plugin_list_and_toggle_roundtrip() {
+    use echo_plugin::{BuiltinPlugin, PluginKind, PluginManifest};
+    let (agent, _provider) = test_agent("ok");
+    // 注册一个内置插件并挂载。
+    agent
+        .plugin_host
+        .register_and_mount(std::sync::Arc::new(BuiltinPlugin::new(
+            PluginManifest::builtin(
+                "test.plugin.one",
+                "测试插件",
+                "0.1",
+                PluginKind::Tool,
+                "t",
+                "d",
+            ),
+            |_| Ok(vec![]),
+        )))
+        .unwrap();
+    assert_eq!(agent.plugin_host.descriptors().len(), 1);
+
+    // 拉取列表。
+    agent
+        .apply_command(BackendCommand::RequestPluginsList)
+        .await;
+    // 禁用 → descriptor enabled=false；再启用恢复。
+    agent
+        .apply_command(BackendCommand::TogglePlugin {
+            id: "test.plugin.one".into(),
+            enabled: false,
+        })
+        .await;
+    assert!(!agent.plugin_host.descriptors()[0].enabled);
+    agent
+        .apply_command(BackendCommand::TogglePlugin {
+            id: "test.plugin.one".into(),
+            enabled: true,
+        })
+        .await;
+    assert!(agent.plugin_host.descriptors()[0].enabled);
+    // 未知插件报错（通过 Error 事件，不 panic）。
+    agent
+        .apply_command(BackendCommand::TogglePlugin {
+            id: "nope.nope".into(),
+            enabled: false,
+        })
+        .await;
+}
+
+#[tokio::test]
 async fn toggle_skill_enables_and_disables() {
     let (agent, _provider) = test_agent("ok");
     agent.skills.lock().await.register(echo_agent::Skill {

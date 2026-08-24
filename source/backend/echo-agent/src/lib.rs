@@ -17,6 +17,7 @@ pub mod config;
 pub mod event;
 pub mod input_marker;
 pub mod llm;
+pub mod plugins;
 pub mod session;
 pub mod skill;
 pub mod sudo;

@@ -17,6 +17,7 @@ members = [
     "source/backend/echo-adapter-qq",
     "source/backend/echo-test-utils",
     "source/core",
+    "source/plugin/echo-plugin",
 ]
 
 [workspace.package]
@@ -47,6 +48,7 @@ echo-server = { path = "source/backend/echo-server" }
 echo-agent = { path = "source/backend/echo-agent" }
 echo-adapter-qq = { path = "source/backend/echo-adapter-qq" }
 echo-test-utils = { path = "source/backend/echo-test-utils" }
+echo-plugin = { path = "source/plugin/echo-plugin" }
 
 # async runtime
 tokio = { version = "1", features = ["full"] }

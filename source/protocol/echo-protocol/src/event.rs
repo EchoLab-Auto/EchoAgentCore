@@ -403,6 +403,10 @@ pub enum BackendEvent {
     ToolsList {
         tools: Vec<ToolInfo>,
     },
+    /// Full list of mounted plugins (response to `RequestPluginsList`).
+    PluginsList {
+        plugins: Vec<PluginInfo>,
+    },
     /// API connectivity test result (response to `TestApi`).
     ApiTestResult {
         /// Tested config name (empty = top-level default).
@@ -509,6 +513,28 @@ pub struct ToolInfo {
     /// Runtime enable/disable state.
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+/// One mounted plugin (frontend display).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub entry: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Whether the plugin ships inside the binary.
+    #[serde(default = "default_true")]
+    pub builtin: bool,
 }
 
 /// QQ group info for display.

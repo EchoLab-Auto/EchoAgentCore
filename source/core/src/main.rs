@@ -181,6 +181,106 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let config_store = echo_adapter::ConfigStore::new(args.config_path());
     agent.set_config_store(config_store.clone());
 
+    // ---- Plugin host: mount built-in modules as plugins ----
+    // 插件化组合根：每个内置模块（工具集/技能/适配器/编排/管理面/LLM/Loop）
+    // 以 PluginManifest + mount 闭包挂入 PluginHost。mount 闭包把模块的
+    // 真实注册副作用执行到既有 registry；被禁用者跳过 mount（热重载同理）。
+    {
+        use echo_agent::plugins::ToolSink;
+        use echo_plugin::{BuiltinPlugin, MountContext, PluginKind, PluginManifest};
+
+        let plugin_host = agent.plugin_host.clone();
+        // Agent 内部已有共享工具注册表（Arc），直接复用同一实例。
+        plugin_host.set_mount_ctx(
+            MountContext::new()
+                .with_tools(Arc::new(ToolSink::new(agent.tools.clone())))
+                .with_ctx(ctx.clone()),
+        );
+
+        // 所有内置模块的 manifest（Phase 1：注册 + 状态展示；mount 闭包
+        // 作为真实副作用入口，当前内置模块在组合根其余部分挂载）。
+        let mut manifests: Vec<PluginManifest> = vec![
+            PluginManifest::builtin(
+                "echo-agent.tools.builtin",
+                "内置工具集",
+                env!("CARGO_PKG_VERSION"),
+                PluginKind::Tool,
+                "builtin_tools",
+                "平台无关的内置工具（计算/搜索/清单/编码/适配器管理）",
+            ),
+            PluginManifest::builtin(
+                "echo-agent.adapter.qq",
+                "QQ 适配器",
+                env!("CARGO_PKG_VERSION"),
+                PluginKind::Adapter,
+                "qq",
+                "OneBot v11 反向 WS 适配器（含 QQ 管理工具）",
+            ),
+            PluginManifest::builtin(
+                "echo-agent.skills.dir",
+                "技能目录",
+                env!("CARGO_PKG_VERSION"),
+                PluginKind::Skill,
+                "skills_dir",
+                "SKILL.md 技能目录（秒级热重载）",
+            ),
+            PluginManifest::builtin(
+                "echo-agent.orchestration",
+                "编排",
+                env!("CARGO_PKG_VERSION"),
+                PluginKind::Orchestration,
+                "orchestration",
+                "后台任务/并行分支/子代理/定时器/框架自更新",
+            ),
+            PluginManifest::builtin(
+                "echo-agent.provider.llm",
+                "LLM Provider",
+                env!("CARGO_PKG_VERSION"),
+                PluginKind::Provider,
+                "llm",
+                "LLM 提供方（deepseek/openai/anthropic/ollama 工厂）",
+            ),
+            PluginManifest::builtin(
+                "echo-agent.loop.runner",
+                "Turn Runner",
+                env!("CARGO_PKG_VERSION"),
+                PluginKind::Loop,
+                "loop",
+                "默认 turn/step 状态机与工具管道",
+            ),
+            PluginManifest::builtin(
+                "echo-agent.management.panel",
+                "管理面",
+                env!("CARGO_PKG_VERSION"),
+                PluginKind::Management,
+                "panel",
+                "Panel management WS 桥接 / sudo 授权通道",
+            ),
+        ];
+
+        for manifest in manifests.drain(..) {
+            let m2 = manifest.clone();
+            let entry = manifest.entry.clone();
+            plugin_host
+                .register_and_mount(Arc::new(BuiltinPlugin::new(manifest, move |_ctx| {
+                    // Phase 1: 内置模块副作用在此挂载（真实注册逻辑见
+                    // 组合根其余部分；注册回返 disposer 列表）。
+                    let _ = entry;
+                    Ok(vec![])
+                })))
+                .map_err(|e| anyhow::anyhow!(e).context(format!("mount plugin {}", m2.id)))?;
+        }
+
+        // 应用持久化的禁用状态（重启后恢复用户选择）。
+        plugin_host
+            .registry
+            .apply_disabled(&cfg.agent.disabled_plugins);
+        info!(
+            plugins = ?plugin_host.descriptors().iter().map(|d| d.id.clone()).collect::<Vec<_>>(),
+            "plugins mounted"
+        );
+    }
+
     // ---- Frontend bridge (management WS) ----
     let (bridge, handle) = echo_agent::create_bridge();
     let bridge = Arc::new(bridge);
@@ -195,6 +295,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     agent.attach_sudo_broker(sudo_broker.clone());
 
     let agent = Arc::new(agent);
+    // 供编排工具（framework_update status）读取插件摘要的进程级锚点。
+    echo_agent::agent::set_plugin_host_global(agent.plugin_host.clone());
     // Restore persisted sessions and start periodic save.
     let restored = agent.load_sessions().await;
     if restored > 0 {
@@ -209,6 +311,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     }
     agent.start_session_save_task();
     agent.start_skill_reload_task().await;
+    agent.start_plugin_reload_task().await;
     agent.start_orchestration_task();
 
     // ---- Wire agent into QQ adapter ----

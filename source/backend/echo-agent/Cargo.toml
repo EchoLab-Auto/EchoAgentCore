@@ -17,6 +17,7 @@ echo-llm-ollama = { path = "../../llm/echo-llm-ollama" }
 echo-chat-capability = { path = "../../chat/echo-chat-capability" }
 echo-protocol = { path = "../../protocol/echo-protocol" }
 echo-adapter = { path = "../echo-adapter" }
+echo-plugin = { path = "../../plugin/echo-plugin" }
 tokio.workspace = true
 futures-util.workspace = true
 serde.workspace = true
@@ -37,3 +38,4 @@ tokio-util.workspace = true
 [dev-dependencies]
 echo-test-utils = { path = "../echo-test-utils" }
 proptest = "1"
+

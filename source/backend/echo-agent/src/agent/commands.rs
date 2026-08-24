@@ -233,6 +233,38 @@ impl Agent {
             BackendCommand::RequestToolsList => {
                 self.emit_tools_list().await;
             }
+            BackendCommand::RequestPluginsList => {
+                self.emit_plugins_list().await;
+            }
+            BackendCommand::TogglePlugin { id, enabled } => {
+                match self.plugin_host.set_enabled(&id, enabled).await {
+                    Ok(()) => {
+                        // Persist so the choice survives restarts.
+                        let mut cfg = self.config.write().await;
+                        cfg.disabled_plugins.retain(|p| p != &id);
+                        if !enabled {
+                            cfg.disabled_plugins.push(id.clone());
+                        }
+                        let cfg_snapshot = cfg.clone();
+                        drop(cfg);
+                        self.persist_config(&cfg_snapshot).await;
+                        self.emit_plugins_list().await;
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!(
+                                "plugin {id} {}",
+                                if enabled { "enabled" } else { "disabled" }
+                            ),
+                        });
+                    }
+                    Err(e) => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("toggle plugin failed: {e}"),
+                        });
+                    }
+                }
+            }
             BackendCommand::DeleteApi { name } => {
                 self.delete_api(&name).await;
             }
@@ -514,6 +546,27 @@ impl Agent {
             .collect();
         list.sort_by_key(|t| t.name.clone());
         self.emit(BackendEvent::ToolsList { tools: list });
+    }
+
+    /// Emit the full plugin list (`BackendEvent::PluginsList`).
+    pub async fn emit_plugins_list(&self) {
+        let plugins: Vec<crate::event::PluginInfo> = self
+            .plugin_host
+            .descriptors()
+            .into_iter()
+            .map(|d| crate::event::PluginInfo {
+                id: d.id,
+                name: d.name,
+                version: d.version,
+                kind: d.kind,
+                description: d.description,
+                entry: d.entry,
+                author: d.author,
+                enabled: d.enabled,
+                builtin: d.builtin,
+            })
+            .collect();
+        self.emit(BackendEvent::PluginsList { plugins });
     }
 
     /// Current configured skill directory (resolved from the live config).

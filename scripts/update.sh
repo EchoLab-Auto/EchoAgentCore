@@ -24,7 +24,9 @@ usage() {
 Usage: scripts/update.sh [options]
 
 Rebuild EchoAgentCore and atomically replace the installed binary, then
-restart the Core service if it is running.
+restart the Core service if it is running. After the restart the updater
+verifies the new binary's built-in plugin manifests (plugin-aware update):
+every built-in plugin id must be present in the running binary.
 
 Options:
   --source <dir>   Source tree to build. Default: this checkout when it
@@ -362,6 +364,23 @@ PHASE=committing
 revision_temporary=$(mktemp "${REVISION_FILE}.new.XXXXXX")
 printf '%s\n' "$TARGET" >"$revision_temporary"
 mv -f "$revision_temporary" "$REVISION_FILE"
+# ── 插件感知校验：确认新二进制内含全部内置插件 manifest（id/kind）。 ──
+# 校验失败不视为更新失败（二进制已替换并运行），仅警告并记录。
+PHASE=verifying_plugins
+missing_plugins=""
+if [[ -x "$BINARY" ]]; then
+    expected_ids="echo-agent.tools.builtin echo-agent.adapter.qq echo-agent.skills.dir echo-agent.orchestration echo-agent.provider.llm echo-agent.loop.runner echo-agent.management.panel"
+    for id in $expected_ids; do
+        if ! strings "$BINARY" | grep -q "$id"; then
+            missing_plugins="$missing_plugins $id"
+        fi
+    done
+fi
+if [[ -n "$missing_plugins" ]]; then
+    echo "警告：新二进制缺少内置插件 manifest：$missing_plugins（请检查构建产物）" >&2
+    echo "missing_plugins=$missing_plugins" >>"$STATUS_FILE"
+fi
+
 if [[ "$UPDATE_MODE" == local ]]; then
     write_status updated "installed successfully from local source" "$TARGET"
 else
