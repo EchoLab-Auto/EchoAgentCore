@@ -135,6 +135,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_adapter: Arc<echo_adapter_qq::QqAdapter> =
         Arc::new(echo_adapter_qq::QqAdapter::new(cfg.qq_adapter.clone()));
     crate::qq_tools::register_qq_tools(&mut tools, qq_adapter.clone());
+    // 包元数据：QQ 工具属于 "echo-agent.adapter.qq"（与对应技能同包）。
+    for name in tools.names() {
+        if name.starts_with("send_") || name.contains("qq") || name.starts_with("get_") {
+            tools.set_package(&name, "echo-agent.adapter.qq");
+        }
+    }
     adapter_registry.register(qq_adapter.clone());
     if cfg.qq_adapter.enabled {
         info!("QQ adapter configured — will auto-start");

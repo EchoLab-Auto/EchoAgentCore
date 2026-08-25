@@ -638,6 +638,7 @@ impl Agent {
                 always: skill.metadata.always,
                 enabled: skill.metadata.enabled,
                 category: skill.metadata.category.clone(),
+                package: skill.metadata.package.clone(),
                 content: skill.instructions.clone(),
             })
             .collect();
@@ -653,12 +654,13 @@ impl Agent {
         let defs = self.tools.full_definitions().await;
         let mut list: Vec<crate::event::ToolInfo> = defs
             .into_iter()
-            .map(|(t, category, enabled)| crate::event::ToolInfo {
+            .map(|(t, category, enabled, pkg)| crate::event::ToolInfo {
                 name: t.name,
                 description: t.description,
                 parameters: t.parameters.unwrap_or(serde_json::Value::Null),
                 category,
                 enabled,
+                package: pkg,
             })
             .collect();
         // 动态编排工具（timers/subagents/background/framework_update/run_sudo）
@@ -672,6 +674,7 @@ impl Agent {
                 parameters: serde_json::Value::Null,
                 category: category.to_string(),
                 enabled: self.allows_dynamic_tool(name),
+                package: Some("echo-agent.orchestration".into()),
             });
         }
         list.sort_by_key(|t| t.name.clone());

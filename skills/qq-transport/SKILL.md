@@ -1,4 +1,5 @@
 ---
+package: echo-agent.adapter.qq
 name: qq-transport
 description: QQ 消息收发闭环 — 收到带 <qq_message_hook> 的 QQ 消息必须通过发送工具回复；后台输入直接在后台回复，禁止误发 QQ
 metadata:

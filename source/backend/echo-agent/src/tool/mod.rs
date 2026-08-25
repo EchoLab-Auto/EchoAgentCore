@@ -31,6 +31,10 @@ pub struct ToolRegistry {
     /// Names of tools disabled at runtime (excluded from the LLM definition
     /// list; calls fail with NotFound). Persisted via `[agent].disabled_tools`.
     disabled: tokio::sync::RwLock<std::collections::HashSet<String>>,
+    /// Tool -> owning package id (e.g. "echo-agent.adapter.qq"). Set by the
+    /// composition root when assembling; the frontend uses it to group
+    /// checkboxes so a whole package (tools + skills) can be toggled at once.
+    packages: tokio::sync::RwLock<std::collections::HashMap<String, String>>,
 }
 
 impl std::fmt::Debug for ToolRegistry {
@@ -53,6 +57,7 @@ impl ToolRegistry {
             tools: tokio::sync::RwLock::new(HashMap::new()),
             cached_definitions: tokio::sync::RwLock::new(None),
             disabled: tokio::sync::RwLock::new(std::collections::HashSet::new()),
+            packages: tokio::sync::RwLock::new(std::collections::HashMap::new()),
         }
     }
 
@@ -142,6 +147,24 @@ impl ToolRegistry {
         self.disabled.read().await.contains(name)
     }
 
+    /// Assign the owning package id for a tool (metadata for the Panel).
+    pub fn set_package(&self, name: &str, package: impl Into<String>) {
+        self.packages
+            .try_write()
+            .map(|mut p| {
+                p.insert(name.to_string(), package.into());
+            })
+            .ok();
+    }
+
+    /// Package id of a tool (None = not assigned).
+    pub fn package_of(&self, name: &str) -> Option<String> {
+        self.packages
+            .try_read()
+            .ok()
+            .and_then(|p| p.get(name).cloned())
+    }
+
     /// All disabled tool names.
     pub async fn disabled_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.disabled.read().await.iter().cloned().collect();
@@ -186,11 +209,12 @@ impl ToolRegistry {
 
     /// Full tool definition list (including disabled tools) for the frontend
     /// browser. Not cached — requested on demand by the Panel.
-    /// Returns `(definition, category, enabled)`.
-    pub async fn full_definitions(&self) -> Vec<(ToolDefinition, String, bool)> {
+    /// Returns `(definition, category, enabled, package)`.
+    pub async fn full_definitions(&self) -> Vec<(ToolDefinition, String, bool, Option<String>)> {
         let tools = self.tools.read().await;
         let disabled = self.disabled.read().await;
-        let mut list: Vec<(ToolDefinition, String, bool)> = tools
+        let packages = self.packages.try_read().ok();
+        let mut list: Vec<(ToolDefinition, String, bool, Option<String>)> = tools
             .values()
             .map(|t| {
                 let enabled = !disabled.contains(t.name());
@@ -202,6 +226,7 @@ impl ToolRegistry {
                     },
                     t.category().to_string(),
                     enabled,
+                    packages.as_ref().and_then(|p| p.get(t.name()).cloned()),
                 )
             })
             .collect();

@@ -18,6 +18,8 @@ pub struct SkillMetadata {
     pub enabled: bool,
     /// UI grouping category (empty = "未分类" on the frontend).
     pub category: String,
+    /// Owning package id (from SKILL.md frontmatter `package:`); None = standalone.
+    pub package: Option<String>,
 }
 
 /// A loaded skill definition (Tier 2 — full instructions).
@@ -46,6 +48,7 @@ impl Skill {
                 always,
                 enabled: true,
                 category: category.into(),
+                package: None,
             },
             instructions: instructions.into(),
         }

@@ -29,12 +29,13 @@ pub fn load_skill(path: &Path) -> Result<Skill, SkillError> {
 
 fn parse_skill(path: &Path, text: &str) -> Result<Skill, SkillError> {
     let (frontmatter, body) = split_frontmatter(text);
-    let (mut name, mut description, mut keywords, mut always, mut category) = (
+    let (mut name, mut description, mut keywords, mut always, mut category, mut package) = (
         String::new(),
         String::new(),
         Vec::new(),
         false,
         String::new(),
+        None,
     );
     let mut in_metadata = false;
     for raw_line in frontmatter.lines() {
@@ -58,6 +59,14 @@ fn parse_skill(path: &Path, text: &str) -> Result<Skill, SkillError> {
                 keywords = parse_list(value);
             }
             "category" => category = value.trim_matches('"').trim_matches('\'').to_string(),
+            "package" => {
+                let v = value.trim_matches('"').trim_matches('\'');
+                package = if v.is_empty() {
+                    None
+                } else {
+                    Some(v.to_string())
+                };
+            }
             "always" if in_metadata => always = value.eq_ignore_ascii_case("true"),
             _ => {}
         }
@@ -78,6 +87,7 @@ fn parse_skill(path: &Path, text: &str) -> Result<Skill, SkillError> {
             always,
             enabled: true,
             category,
+            package,
         },
         instructions: body.trim().to_string(),
     })

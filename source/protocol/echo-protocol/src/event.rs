@@ -498,6 +498,9 @@ pub struct SkillInfo {
     /// UI grouping category (from SKILL.md metadata; empty = "未分类").
     #[serde(default)]
     pub category: String,
+    /// Owning package id (from SKILL.md frontmatter `package:`); None = standalone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
     /// Full instructions body of `SKILL.md`.
     #[serde(default)]
     pub content: String,
@@ -520,6 +523,9 @@ pub struct ToolInfo {
     /// Runtime enable/disable state.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Owning package id (e.g. "echo-agent.adapter.qq"); None = standalone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
 }
 
 /// One persona agent (frontend display).

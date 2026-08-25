@@ -1,4 +1,5 @@
 ---
+package: echo-agent.adapter.qq
 name: qq-management
 description: Manage QQ/OneBot adapter lifecycle — start, stop, restart, and check status
 keywords: [QQ, 适配器, 连接, 启动, 停止, 重启, 状态, adapter, NapCat, OneBot]
