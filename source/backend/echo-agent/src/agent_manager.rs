@@ -80,6 +80,9 @@ impl AgentManager {
                     description: "默认助手（配置文件未定义人格）".into(),
                     system_prompt: raw.system_prompt.clone(),
                     enabled: true,
+                    disabled_plugins: raw.disabled_plugins.clone(),
+                    disabled_tools: raw.disabled_tools.clone(),
+                    disabled_skills: raw.disabled_skills.clone(),
                 },
             );
         }
@@ -286,6 +289,9 @@ impl AgentManager {
                 enabled: agents.contains_key(id),
                 sessions: agents.get(id).map(|r| r.agent.session_count()).unwrap_or(0),
                 system_prompt: p.system_prompt.clone(),
+                disabled_plugins: p.disabled_plugins.clone(),
+                disabled_tools: p.disabled_tools.clone(),
+                disabled_skills: p.disabled_skills.clone(),
             })
             .collect();
         list.sort_by(|a, b| a.id.cmp(&b.id));

@@ -537,6 +537,13 @@ pub struct AgentInfo {
     /// Persona system prompt (empty = inherits global prompt/skills).
     #[serde(default)]
     pub system_prompt: String,
+    /// Per-persona disabled capability ids (plugins/tools/skills).
+    #[serde(default)]
+    pub disabled_plugins: Vec<String>,
+    #[serde(default)]
+    pub disabled_tools: Vec<String>,
+    #[serde(default)]
+    pub disabled_skills: Vec<String>,
 }
 
 /// One mounted plugin (frontend display).

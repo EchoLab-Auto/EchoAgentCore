@@ -641,6 +641,27 @@ impl Agent {
         self.agent_id.lock().unwrap().clone()
     }
 
+    /// Apply per-persona capability configuration: disable selected plugins,
+    /// tools and skills so the LLM never sees them for this agent.
+    pub async fn apply_capabilities(&self, profile: &crate::config::AgentProfile) {
+        for plugin in &profile.disabled_plugins {
+            if self.plugin_host.registry.plugin(plugin).is_some() {
+                let _ = self.plugin_host.registry.set_enabled(
+                    plugin,
+                    false,
+                    &echo_plugin::MountContext::default(),
+                );
+            }
+        }
+        for tool in &profile.disabled_tools {
+            let _ = self.tools.set_enabled(tool, false).await;
+        }
+        let mut skills = self.skills.lock().await;
+        for skill in &profile.disabled_skills {
+            skills.set_enabled(skill, false);
+        }
+    }
+
     /// Number of active sessions (for the Panel agent overview).
     pub fn session_count(&self) -> usize {
         self.trunk.all().len()

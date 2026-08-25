@@ -199,6 +199,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 adapters2.clone(),
             ));
             agent.set_agent_id(Some(id.clone()));
+            // 能力配置在 make_agent 之后的启动阶段应用（见 start loop）。
             // 独立会话文件：echo-sessions-{id}.json（default 沿用旧文件名）。
             let file = if id == "default" {
                 config_store_path.with_file_name("echo-sessions.json")
@@ -351,6 +352,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .trunk
                 .set_header(echo_session::SessionHeader::top_level("trunk"));
         }
+        persona.agent.apply_capabilities(&persona.profile).await;
         persona.agent.start_session_save_task();
         persona.agent.start_skill_reload_task().await;
         persona.agent.start_plugin_reload_task().await;

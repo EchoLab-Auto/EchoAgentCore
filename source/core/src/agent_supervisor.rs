@@ -53,6 +53,9 @@ impl AgentSupervisor {
                     description: "默认助手（配置文件未定义人格）".into(),
                     system_prompt: raw.system_prompt.clone(),
                     enabled: true,
+                    disabled_plugins: raw.disabled_plugins.clone(),
+                    disabled_tools: raw.disabled_tools.clone(),
+                    disabled_skills: raw.disabled_skills.clone(),
                 },
             ));
         }

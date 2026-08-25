@@ -86,6 +86,12 @@ pub enum BackendCommand {
         system_prompt: String,
         #[serde(default = "default_true_agent")]
         enabled: bool,
+        #[serde(default)]
+        disabled_plugins: Vec<String>,
+        #[serde(default)]
+        disabled_tools: Vec<String>,
+        #[serde(default)]
+        disabled_skills: Vec<String>,
     },
     /// Delete a persona profile (the default/main agent is protected).
     DeleteAgent { id: String },

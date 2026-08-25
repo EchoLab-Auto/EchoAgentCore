@@ -114,6 +114,17 @@ pub struct AgentProfile {
     /// Whether to instantiate this agent at startup (runtime toggling
     /// persists separately via `disabled_agents`).
     pub enabled: bool,
+    /// Per-persona disabled built-in plugins (e.g. "echo-agent.adapter.qq",
+    /// "echo-agent.orchestration"). These capabilities are hidden from this
+    /// agent's LLM: adapter tools, background/spawn tools, etc.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_plugins: Vec<String>,
+    /// Per-persona disabled tools (by tool name, e.g. "framework_update").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_tools: Vec<String>,
+    /// Per-persona disabled skills (by skill name).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_skills: Vec<String>,
 }
 
 impl Default for AgentProfile {
@@ -123,6 +134,9 @@ impl Default for AgentProfile {
             description: String::new(),
             system_prompt: String::new(),
             enabled: true,
+            disabled_plugins: Vec::new(),
+            disabled_tools: Vec::new(),
+            disabled_skills: Vec::new(),
         }
     }
 }
