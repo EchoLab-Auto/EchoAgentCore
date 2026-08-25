@@ -277,6 +277,7 @@ impl AgentManager {
                 description: p.description.clone(),
                 enabled: agents.contains_key(id),
                 sessions: agents.get(id).map(|r| r.agent.session_count()).unwrap_or(0),
+                system_prompt: p.system_prompt.clone(),
             })
             .collect();
         list.sort_by(|a, b| a.id.cmp(&b.id));
