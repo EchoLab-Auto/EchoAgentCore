@@ -105,16 +105,15 @@ impl std::fmt::Debug for Agent {
 /// Process-wide plugin host (best-effort): set once by the composition root.
 /// Used by utility code (e.g. framework_update status summary) that runs
 /// inside the agent but outside a `&Agent` scope.
+static GLOBAL_PLUGIN_HOST: std::sync::OnceLock<std::sync::Arc<crate::plugins::PluginHost>> =
+    std::sync::OnceLock::new();
+
 pub fn plugin_host_global() -> Option<std::sync::Arc<crate::plugins::PluginHost>> {
-    static HOST: std::sync::OnceLock<std::sync::Arc<crate::plugins::PluginHost>> =
-        std::sync::OnceLock::new();
-    HOST.get().cloned()
+    GLOBAL_PLUGIN_HOST.get().cloned()
 }
 
 pub fn set_plugin_host_global(host: std::sync::Arc<crate::plugins::PluginHost>) {
-    static HOST: std::sync::OnceLock<std::sync::Arc<crate::plugins::PluginHost>> =
-        std::sync::OnceLock::new();
-    let _ = HOST.set(host);
+    let _ = GLOBAL_PLUGIN_HOST.set(host);
 }
 
 impl Agent {

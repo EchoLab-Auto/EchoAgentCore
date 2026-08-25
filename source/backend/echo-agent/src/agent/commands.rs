@@ -336,64 +336,60 @@ impl Agent {
                 description,
                 system_prompt,
                 enabled,
-            } => {
-                match crate::agent_manager::global_manager() {
-                    Some(mgr) => {
-                        let profile = crate::config::AgentProfile {
-                            name,
-                            description,
-                            system_prompt,
-                            enabled,
-                        };
-                        match mgr.save_profile(&id, profile, enabled) {
-                            Ok(()) => {
-                                self.emit_agents_list().await;
-                                self.emit(BackendEvent::Error {
-                                    session_id: None,
-                                    message: format!("agent {id} saved"),
-                                });
-                            }
-                            Err(e) => {
-                                self.emit(BackendEvent::Error {
-                                    session_id: None,
-                                    message: format!("save agent failed: {e}"),
-                                });
-                            }
-                        }
-                    }
-                    None => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: "agent manager unavailable".into(),
-                        });
-                    }
-                }
-            }
-            BackendCommand::DeleteAgent { id } => {
-                match crate::agent_manager::global_manager() {
-                    Some(mgr) => match mgr.delete_profile(&id) {
+            } => match crate::agent_manager::global_manager() {
+                Some(mgr) => {
+                    let profile = crate::config::AgentProfile {
+                        name,
+                        description,
+                        system_prompt,
+                        enabled,
+                    };
+                    match mgr.save_profile(&id, profile, enabled) {
                         Ok(()) => {
                             self.emit_agents_list().await;
                             self.emit(BackendEvent::Error {
                                 session_id: None,
-                                message: format!("agent {id} deleted"),
+                                message: format!("agent {id} saved"),
                             });
                         }
                         Err(e) => {
                             self.emit(BackendEvent::Error {
                                 session_id: None,
-                                message: format!("delete agent failed: {e}"),
+                                message: format!("save agent failed: {e}"),
                             });
                         }
-                    },
-                    None => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: "agent manager unavailable".into(),
-                        });
                     }
                 }
-            }
+                None => {
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: "agent manager unavailable".into(),
+                    });
+                }
+            },
+            BackendCommand::DeleteAgent { id } => match crate::agent_manager::global_manager() {
+                Some(mgr) => match mgr.delete_profile(&id) {
+                    Ok(()) => {
+                        self.emit_agents_list().await;
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("agent {id} deleted"),
+                        });
+                    }
+                    Err(e) => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("delete agent failed: {e}"),
+                        });
+                    }
+                },
+                None => {
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: "agent manager unavailable".into(),
+                    });
+                }
+            },
             BackendCommand::ToggleAgent { id, enabled } => {
                 // 组合根 AgentManager 处理；这里转发回进程级管理器。
                 match crate::agent_manager::global_manager() {

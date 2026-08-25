@@ -44,9 +44,9 @@ pub struct AgentManager {
 
 /// Closure that persists the profiles map (composition root injects the
 /// ConfigStore patch writer).
-pub type ConfigWriter =
-    Box<dyn Fn(&std::collections::BTreeMap<String, AgentProfile>) -> Result<(), String>
-        + Send + Sync>;
+pub type ConfigWriter = Box<
+    dyn Fn(&std::collections::BTreeMap<String, AgentProfile>) -> Result<(), String> + Send + Sync,
+>;
 
 impl std::fmt::Debug for AgentManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -203,8 +203,16 @@ impl AgentManager {
 
     /// Create or update a profile. When enabled and not running, instantiates
     /// via the factory; persists through the config writer.
-    pub fn save_profile(&self, id: &str, profile: AgentProfile, enabled: bool) -> Result<(), String> {
-        self.profiles.write().unwrap().insert(id.to_string(), profile.clone());
+    pub fn save_profile(
+        &self,
+        id: &str,
+        profile: AgentProfile,
+        enabled: bool,
+    ) -> Result<(), String> {
+        self.profiles
+            .write()
+            .unwrap()
+            .insert(id.to_string(), profile.clone());
         {
             let mut disabled = self.disabled.lock().unwrap();
             if enabled {
@@ -285,17 +293,25 @@ impl AgentManager {
     }
 }
 
+/// Process-wide manager & factory slots.
+///
+/// ⚠️ MUST be module-level statics: function-local `static` items in Rust are
+/// **per-function instances**, so a setter and a getter declared in separate
+/// functions would refer to different statics and the value would never be
+/// visible. (This exact bug made SaveAgent report "agent manager unavailable".)
+static GLOBAL_MANAGER: std::sync::OnceLock<std::sync::Arc<AgentManager>> =
+    std::sync::OnceLock::new();
+static AGENT_FACTORY: std::sync::OnceLock<AgentFactory> = std::sync::OnceLock::new();
+
 /// Process-wide AgentManager (best-effort): set once by the composition root.
 /// Lets any Agent read the persona list (e.g. RequestAgentsList) without a
 /// direct dependency on the manager instance.
 pub fn global_manager() -> Option<std::sync::Arc<AgentManager>> {
-    static MGR: std::sync::OnceLock<std::sync::Arc<AgentManager>> = std::sync::OnceLock::new();
-    MGR.get().cloned()
+    GLOBAL_MANAGER.get().cloned()
 }
 
 pub fn set_global_manager(manager: std::sync::Arc<AgentManager>) {
-    static MGR: std::sync::OnceLock<std::sync::Arc<AgentManager>> = std::sync::OnceLock::new();
-    let _ = MGR.set(manager);
+    let _ = GLOBAL_MANAGER.set(manager);
 }
 
 /// Process-wide agent factory (set once by the composition root). Used by
@@ -303,8 +319,7 @@ pub fn set_global_manager(manager: std::sync::Arc<AgentManager>) {
 pub fn set_agent_factory(
     factory: impl Fn(String, AgentProfile) -> Arc<Agent> + Send + Sync + 'static,
 ) {
-    static FACTORY: std::sync::OnceLock<AgentFactory> = std::sync::OnceLock::new();
-    let _ = FACTORY.set(AgentFactory {
+    let _ = AGENT_FACTORY.set(AgentFactory {
         inner: std::sync::Arc::new(factory),
     });
 }
@@ -325,8 +340,7 @@ impl AgentFactory {
 
 /// Retrieve the registered factory (panics with a clear message when unset).
 pub fn agent_factory_for_toggle() -> AgentFactory {
-    static FACTORY: std::sync::OnceLock<AgentFactory> = std::sync::OnceLock::new();
-    FACTORY
+    AGENT_FACTORY
         .get()
         .cloned()
         .unwrap_or_else(|| panic!("agent factory not set by composition root"))

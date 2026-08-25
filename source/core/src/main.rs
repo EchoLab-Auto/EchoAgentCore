@@ -439,28 +439,27 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 配置写回：SaveAgent/DeleteAgent 持久化到 core.toml。
         {
             let store = config_store.clone();
-            mgr_arc.set_config_writer(Box::new(move |profiles: &std::collections::BTreeMap<String, echo_agent::AgentProfile>| {
-                store
-                    .patch(|root| {
-                        let agent = echo_adapter::ensure_table(root, "agent");
-                        let mut tbl = toml::map::Map::new();
-                        for (id, p) in profiles {
-                            let mut v = toml::Value::try_from(p.clone())
-                                .map_err(|e| format!("serialize profile: {e}"))?;
-                            if let Some(t) = v.as_table_mut() {
-                                // 持久化 enabled 状态（与运行期启用开关保持一致）。
-                                t.insert(
-                                    "enabled".into(),
-                                    toml::Value::Boolean(p.enabled),
-                                );
+            mgr_arc.set_config_writer(Box::new(
+                move |profiles: &std::collections::BTreeMap<String, echo_agent::AgentProfile>| {
+                    store
+                        .patch(|root| {
+                            let agent = echo_adapter::ensure_table(root, "agent");
+                            let mut tbl = toml::map::Map::new();
+                            for (id, p) in profiles {
+                                let mut v = toml::Value::try_from(p.clone())
+                                    .map_err(|e| format!("serialize profile: {e}"))?;
+                                if let Some(t) = v.as_table_mut() {
+                                    // 持久化 enabled 状态（与运行期启用开关保持一致）。
+                                    t.insert("enabled".into(), toml::Value::Boolean(p.enabled));
+                                }
+                                tbl.insert(id.clone(), v);
                             }
-                            tbl.insert(id.clone(), v);
-                        }
-                        agent.insert("profiles".into(), toml::Value::Table(tbl));
-                        Ok(())
-                    })
-                    .map_err(|e| e.to_string())
-            }));
+                            agent.insert("profiles".into(), toml::Value::Table(tbl));
+                            Ok(())
+                        })
+                        .map_err(|e| e.to_string())
+                },
+            ));
             echo_agent::agent_manager::set_global_manager(mgr_arc);
         }
     }

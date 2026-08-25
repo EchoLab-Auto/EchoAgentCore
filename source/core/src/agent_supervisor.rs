@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-
 use echo_agent::bridge::BackendBridge;
 use echo_agent::{Agent, AgentConfig, AgentProfile};
 
@@ -73,7 +72,9 @@ impl AgentSupervisor {
         }
         // default_id 必须是排序后的第一个 profile（BTreeMap 语义），
         // 而不是 HashMap 的随机迭代首项——否则默认人格会漂移。
-        let default_id = profiles_sorted_first.clone().unwrap_or_else(|| "default".into());
+        let default_id = profiles_sorted_first
+            .clone()
+            .unwrap_or_else(|| "default".into());
         Self {
             default_id,
             personas: std::sync::Mutex::new(personas),
@@ -111,16 +112,12 @@ impl AgentSupervisor {
     }
 
     pub fn get(&self, id: &str) -> Option<Persona> {
-        self.personas
-            .lock()
-            .unwrap()
-            .get(id)
-            .map(|p| Persona {
-                id: p.id.clone(),
-                profile: p.profile.clone(),
-                agent: Arc::clone(&p.agent),
-                bridge: None,
-            })
+        self.personas.lock().unwrap().get(id).map(|p| Persona {
+            id: p.id.clone(),
+            profile: p.profile.clone(),
+            agent: Arc::clone(&p.agent),
+            bridge: None,
+        })
     }
 
     /// Resolve target persona (None agent_id -> default; unknown -> default).
