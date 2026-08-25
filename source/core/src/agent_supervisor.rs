@@ -58,6 +58,7 @@ impl AgentSupervisor {
             ));
         }
         profiles.sort_by(|a, b| a.0.cmp(&b.0));
+        let profiles_sorted_first = profiles.first().map(|(id, _)| id.clone());
         for (id, profile) in profiles {
             let agent = make_agent(id.clone(), profile.clone());
             personas.insert(
@@ -70,11 +71,9 @@ impl AgentSupervisor {
                 },
             );
         }
-        let default_id = personas
-            .keys()
-            .next()
-            .cloned()
-            .unwrap_or_else(|| "default".into());
+        // default_id 必须是排序后的第一个 profile（BTreeMap 语义），
+        // 而不是 HashMap 的随机迭代首项——否则默认人格会漂移。
+        let default_id = profiles_sorted_first.clone().unwrap_or_else(|| "default".into());
         Self {
             default_id,
             personas: std::sync::Mutex::new(personas),
