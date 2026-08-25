@@ -76,6 +76,19 @@ pub enum BackendCommand {
     RequestAgentsList,
     /// Enable or disable a persona agent at runtime (unloads memory/logs).
     ToggleAgent { id: String, enabled: bool },
+    /// Create or update a persona profile (persisted to [agent].profiles).
+    SaveAgent {
+        id: String,
+        name: String,
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        system_prompt: String,
+        #[serde(default = "default_true_agent")]
+        enabled: bool,
+    },
+    /// Delete a persona profile (the default/main agent is protected).
+    DeleteAgent { id: String },
     /// Enable or disable a plugin at runtime. Disabled plugins are unmounted
     /// (registrations disposed); enabled ones are remounted. Persisted via
     /// `[agent].disabled_plugins`.
@@ -226,4 +239,8 @@ mod tests {
             CommandClearance::Agent
         );
     }
+}
+
+fn default_true_agent() -> bool {
+    true
 }

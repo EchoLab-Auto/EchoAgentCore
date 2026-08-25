@@ -414,18 +414,55 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             profiles.insert(persona.id.clone(), persona.profile.clone());
         }
         raw.profiles = profiles;
-        let mgr = echo_agent::AgentManager::build(&raw, |id, p| {
+        let mgr_arc = std::sync::Arc::new(echo_agent::AgentManager::build(&raw, |id, p| {
             // 返回 supervisor 中对应人格的 Agent（共享实例）。
             supervisor
                 .get(&id)
                 .map(|x| Arc::clone(&x.agent))
                 .unwrap_or_else(|| {
-                    // 兜底：不应发生
+                    // 兜底：不应发生（新人格通过 factory 创建，见下）
                     let _ = p;
                     agent.clone()
                 })
-        });
-        echo_agent::agent_manager::set_global_manager(std::sync::Arc::new(mgr));
+        }));
+        // 进程级 agent factory：运行时新增/重启人格时重建实例。
+        {
+            let supervisor2 = Arc::clone(&supervisor);
+            echo_agent::agent_manager::set_agent_factory(move |id: String, p: AgentProfile| {
+                if let Some(existing) = supervisor2.get(&id) {
+                    return Arc::clone(&existing.agent);
+                }
+                // 新建人格：用保存的 make_agent 闭包（supervisor 提供）
+                supervisor2.create(&id, p)
+            });
+        }
+        // 配置写回：SaveAgent/DeleteAgent 持久化到 core.toml。
+        {
+            let store = config_store.clone();
+            mgr_arc.set_config_writer(Box::new(move |profiles: &std::collections::BTreeMap<String, echo_agent::AgentProfile>| {
+                store
+                    .patch(|root| {
+                        let agent = echo_adapter::ensure_table(root, "agent");
+                        let mut tbl = toml::map::Map::new();
+                        for (id, p) in profiles {
+                            let mut v = toml::Value::try_from(p.clone())
+                                .map_err(|e| format!("serialize profile: {e}"))?;
+                            if let Some(t) = v.as_table_mut() {
+                                // 持久化 enabled 状态（与运行期启用开关保持一致）。
+                                t.insert(
+                                    "enabled".into(),
+                                    toml::Value::Boolean(p.enabled),
+                                );
+                            }
+                            tbl.insert(id.clone(), v);
+                        }
+                        agent.insert("profiles".into(), toml::Value::Table(tbl));
+                        Ok(())
+                    })
+                    .map_err(|e| e.to_string())
+            }));
+            echo_agent::agent_manager::set_global_manager(mgr_arc);
+        }
     }
     // 事件镜像：非默认人格的事件经 Agent.event_bus 订阅 → 转发进默认
     // 人格的 handle.event_tx（Panel 单连接即可看到所有人格活动）。

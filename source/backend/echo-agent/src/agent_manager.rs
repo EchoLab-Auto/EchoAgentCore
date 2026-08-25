@@ -34,11 +34,19 @@ impl std::fmt::Debug for RunningAgent {
 pub struct AgentManager {
     default_id: String,
     /// All profile definitions (including disabled ones), for rebuild.
-    profiles: HashMap<String, AgentProfile>,
+    profiles: std::sync::RwLock<HashMap<String, AgentProfile>>,
     /// Running instances (disabled ones are absent).
     agents: std::sync::RwLock<HashMap<String, RunningAgent>>,
     disabled: std::sync::Mutex<Vec<String>>,
+    /// Persistence hook: writes the profiles map back to TOML (or any store).
+    config_writer: std::sync::Mutex<Option<ConfigWriter>>,
 }
+
+/// Closure that persists the profiles map (composition root injects the
+/// ConfigStore patch writer).
+pub type ConfigWriter =
+    Box<dyn Fn(&std::collections::BTreeMap<String, AgentProfile>) -> Result<(), String>
+        + Send + Sync>;
 
 impl std::fmt::Debug for AgentManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -75,9 +83,10 @@ impl AgentManager {
                 },
             );
         }
+        let profiles = std::sync::RwLock::new(profiles);
         let disabled: Vec<String> = raw.disabled_agents.clone();
         let mut agents = HashMap::new();
-        for (id, profile) in &profiles {
+        for (id, profile) in profiles.read().unwrap().iter() {
             if disabled.contains(id) {
                 continue;
             }
@@ -102,6 +111,7 @@ impl AgentManager {
             profiles,
             agents: std::sync::RwLock::new(agents),
             disabled: std::sync::Mutex::new(disabled),
+            config_writer: std::sync::Mutex::new(None),
         }
     }
 
@@ -117,13 +127,13 @@ impl AgentManager {
 
     /// All known profile ids (running + disabled).
     pub fn profile_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.profiles.keys().cloned().collect();
+        let mut ids: Vec<String> = self.profiles.read().unwrap().keys().cloned().collect();
         ids.sort();
         ids
     }
 
     pub fn profile(&self, id: &str) -> Option<AgentProfile> {
-        self.profiles.get(id).cloned()
+        self.profiles.read().unwrap().get(id).cloned()
     }
 
     /// Resolve the target agent for a command (None agent_id -> default).
@@ -154,7 +164,7 @@ impl AgentManager {
         enabled: bool,
         factory: impl Fn(String, AgentProfile) -> Arc<Agent>,
     ) -> Result<(), String> {
-        if !self.profiles.contains_key(id) {
+        if !self.profiles.read().unwrap().contains_key(id) {
             return Err(format!("agent not found: {id}"));
         }
         let mut agents = self.agents.write().unwrap();
@@ -163,7 +173,7 @@ impl AgentManager {
             if agents.contains_key(id) {
                 return Ok(());
             }
-            let profile = self.profiles.get(id).cloned().unwrap();
+            let profile = self.profiles.read().unwrap().get(id).cloned().unwrap();
             agents.insert(
                 id.to_string(),
                 RunningAgent {
@@ -181,7 +191,70 @@ impl AgentManager {
                 disabled.push(id.to_string());
             }
         }
+        drop(disabled);
+        self.persist_profiles()?;
         Ok(())
+    }
+
+    /// Inject the persistence hook (writes profiles to TOML).
+    pub fn set_config_writer(&self, writer: ConfigWriter) {
+        *self.config_writer.lock().unwrap() = Some(writer);
+    }
+
+    /// Create or update a profile. When enabled and not running, instantiates
+    /// via the factory; persists through the config writer.
+    pub fn save_profile(&self, id: &str, profile: AgentProfile, enabled: bool) -> Result<(), String> {
+        self.profiles.write().unwrap().insert(id.to_string(), profile.clone());
+        {
+            let mut disabled = self.disabled.lock().unwrap();
+            if enabled {
+                disabled.retain(|d| d != id);
+            } else if !disabled.contains(&id.to_string()) {
+                disabled.push(id.to_string());
+            }
+        }
+        let running = self.agents.read().unwrap().contains_key(id);
+        if enabled && !running {
+            let agent = agent_factory_for_toggle().call(id.to_string(), profile.clone());
+            self.agents.write().unwrap().insert(
+                id.to_string(),
+                RunningAgent {
+                    id: id.to_string(),
+                    profile,
+                    agent,
+                },
+            );
+        } else if !enabled && running {
+            self.agents.write().unwrap().remove(id);
+        }
+        self.persist_profiles()?;
+        Ok(())
+    }
+
+    /// Delete a profile; the default/main agent is protected.
+    pub fn delete_profile(&self, id: &str) -> Result<(), String> {
+        if id == self.default_id {
+            return Err("不能删除默认/主 agent".into());
+        }
+        self.profiles.write().unwrap().remove(id);
+        self.agents.write().unwrap().remove(id);
+        let mut disabled = self.disabled.lock().unwrap();
+        disabled.retain(|d| d != id);
+        drop(disabled);
+        self.persist_profiles()?;
+        Ok(())
+    }
+
+    fn persist_profiles(&self) -> Result<(), String> {
+        let writer = self.config_writer.lock().unwrap();
+        match writer.as_ref() {
+            Some(w) => {
+                let map: std::collections::BTreeMap<String, AgentProfile> =
+                    self.profiles.read().unwrap().clone().into_iter().collect();
+                w(&map)
+            }
+            None => Ok(()),
+        }
     }
 
     /// Persisted disable list (runtime toggles, survives restarts).
@@ -195,8 +268,8 @@ impl AgentManager {
     /// running state and session counts.
     pub fn infos(&self) -> Vec<AgentInfo> {
         let agents = self.agents.read().unwrap();
-        let mut list: Vec<AgentInfo> = self
-            .profiles
+        let profiles = self.profiles.read().unwrap();
+        let mut list: Vec<AgentInfo> = profiles
             .iter()
             .map(|(id, p)| AgentInfo {
                 id: id.clone(),
