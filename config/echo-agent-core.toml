@@ -33,12 +33,12 @@ skills_dir = "skills"                    # 递归发现 SKILL.md，运行时自�
 # 每个 profile = 一个独立 Agent（独立记忆/会话文件/系统提示词）。
 # 不配置此项 = 单默认 agent，行为与旧版一致。
 # 前端"资源 → 插件"可浏览人格；运行时启停通过 Panel。
-# [agent.profiles.assistant]
+# [agent.teams.assistant]
 # name = "通用助手"
 # description = "日常问答与信息聚合"
 # system_prompt = "你是通用助手，用中文回答。"
 #
-# [agent.profiles.writer]
+# [agent.teams.writer]
 # name = "写作助理"
 # description = "专注于文档写作"
 # system_prompt = "你是资深写作教练，帮助打磨文档。"

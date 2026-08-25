@@ -30,7 +30,9 @@ pub use agent::Agent;
 pub use agent_manager::AgentManager;
 pub use bridge::{create_bridge, BackendBridge, BackendHandle, FanoutHandle};
 pub use command::BackendCommand;
-pub use config::{AgentConfig, AgentProfile, ReasoningEffort, SelfUpdateConfig, ThinkingMode};
+pub use config::{
+    AgentConfig, AgentProfile, ReasoningEffort, SelfUpdateConfig, TeamMember, ThinkingMode,
+};
 pub use event::{
     ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, GroupInfo, SessionInfo,
     TimelineMessage, TimelineSource, TimelineTool,

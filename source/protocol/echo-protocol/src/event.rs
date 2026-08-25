@@ -19,9 +19,9 @@ pub struct AdapterStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
-    /// Owning persona agent id (None = default/legacy single agent).
+    /// Owning team id (None = default/legacy single agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
+    pub team_id: Option<String>,
     /// Platform identifier (e.g., "qq", "local").
     pub platform: String,
     /// Scope within the platform ("dm", "group", "tui").
@@ -410,9 +410,9 @@ pub enum BackendEvent {
     PluginsList {
         plugins: Vec<PluginInfo>,
     },
-    /// Full list of persona agents (response to `RequestAgentsList`).
-    AgentsList {
-        agents: Vec<AgentInfo>,
+    /// Full list of team members (response to `RequestTeamsList`).
+    TeamsList {
+        teams: Vec<TeamInfo>,
     },
     /// API connectivity test result (response to `TestApi`).
     ApiTestResult {
@@ -528,9 +528,9 @@ pub struct ToolInfo {
     pub package: Option<String>,
 }
 
-/// One persona agent (frontend display).
+/// One team member (frontend display).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentInfo {
+pub struct TeamInfo {
     pub id: String,
     pub name: String,
     #[serde(default)]

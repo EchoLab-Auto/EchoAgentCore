@@ -92,8 +92,8 @@ pub struct Agent {
     /// Plugin host: registry + mount context bridging `echo_plugin` to the
     /// agent's concrete registries.
     pub plugin_host: std::sync::Arc<crate::plugins::PluginHost>,
-    /// Persona id (None/empty = default). Sets session tagging after boot.
-    agent_id: std::sync::Mutex<Option<String>>,
+    /// Team id (None/empty = default). Sets session tagging after boot.
+    team_id: std::sync::Mutex<Option<String>>,
     /// Graceful-drain flag: set during shutdown so new turns are rejected
     /// while in-flight replies finish (self-update continuity).
     draining: AtomicBool,
@@ -177,7 +177,7 @@ impl Agent {
             _timeline_projection,
             cancel,
             plugin_host: std::sync::Arc::new(crate::plugins::PluginHost::new()),
-            agent_id: std::sync::Mutex::new(None),
+            team_id: std::sync::Mutex::new(None),
             draining: AtomicBool::new(false),
             capabilities: std::sync::Mutex::new(None),
         };
@@ -634,15 +634,15 @@ impl Agent {
         Ok(true)
     }
 
-    /// Assign the persona id and tag the trunk (sessions created later carry
+    /// Assign the team id and tag the trunk (sessions created later carry
     /// it in SessionInfo). Call once at boot before any message arrives.
-    pub fn set_agent_id(&self, agent_id: Option<String>) {
-        *self.agent_id.lock().unwrap() = agent_id.clone();
-        self.trunk.set_agent_id(agent_id);
+    pub fn set_team_id(&self, team_id: Option<String>) {
+        *self.team_id.lock().unwrap() = team_id.clone();
+        self.trunk.set_team_id(team_id);
     }
 
-    pub fn agent_id(&self) -> Option<String> {
-        self.agent_id.lock().unwrap().clone()
+    pub fn team_id(&self) -> Option<String> {
+        self.team_id.lock().unwrap().clone()
     }
 
     /// Apply per-persona capability configuration.
@@ -3340,7 +3340,7 @@ pub mod tests {
         });
 
         agent
-            .apply_command(BackendCommand::RequestTrunkTimeline { agent_id: None })
+            .apply_command(BackendCommand::RequestTrunkTimeline { team_id: None })
             .await;
         let mut events = Vec::new();
         while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
@@ -3868,6 +3868,7 @@ pub mod tests {
                 always: false,
                 enabled: true,
                 category: String::new(),
+                package: None,
             },
             instructions: "use calculator tool".into(),
         });
@@ -3926,6 +3927,7 @@ pub mod tests {
                 always: false,
                 enabled: true,
                 category: String::new(),
+                package: None,
             },
             instructions: "use calculator tool".into(),
         });

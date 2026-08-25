@@ -10,6 +10,12 @@ use crate::session::SessionKey;
 
 impl Agent {
     /// Emit the current trunk context snapshot (`BackendEvent::ContextSnapshot`).
+    /// Public wrapper: forward a context snapshot request to this agent
+    /// (used by the management agent for team-routed requests).
+    pub async fn emit_context_snapshot_for(&self) {
+        self.emit_context_snapshot().await;
+    }
+
     async fn emit_context_snapshot(&self) {
         let history = self.trunk.snapshot().await;
         let total_tokens = crate::llm::estimate_history_tokens(&history);
@@ -299,12 +305,21 @@ impl Agent {
                     });
                 }
             }
-            BackendCommand::RequestContext => {
+            BackendCommand::RequestContext { team_id } => {
+                // 会话隔离：team 指定时返回该成员自己的上下文快照。
+                if let Some(id) = team_id {
+                    let agent =
+                        crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(&id)));
+                    if let Some(t) = agent {
+                        t.emit_context_snapshot_for().await;
+                        return;
+                    }
+                }
                 self.emit_context_snapshot().await;
             }
-            BackendCommand::RequestTrunkTimeline { agent_id } => {
+            BackendCommand::RequestTrunkTimeline { team_id } => {
                 // 指定人格时返回该 persona 的独立 timeline（不同记忆）。
-                if let Some(id) = agent_id {
+                if let Some(id) = team_id {
                     let messages = match crate::agent_manager::global_manager() {
                         Some(mgr) => match mgr.resolve(Some(&id)) {
                             Some(agent) => agent.trunk.timeline_snapshot(),
@@ -339,10 +354,10 @@ impl Agent {
                     message: format!("已取消 {cancelled} 个进行中的任务"),
                 });
             }
-            BackendCommand::RequestAgentsList => {
-                self.emit_agents_list().await;
+            BackendCommand::RequestTeamsList => {
+                self.emit_teams_list().await;
             }
-            BackendCommand::SaveAgent {
+            BackendCommand::SaveTeam {
                 id,
                 name,
                 description,
@@ -370,7 +385,7 @@ impl Agent {
                     };
                     match mgr.save_profile(&id, profile, enabled) {
                         Ok(()) => {
-                            self.emit_agents_list().await;
+                            self.emit_teams_list().await;
                             self.emit(BackendEvent::Error {
                                 session_id: None,
                                 message: format!("agent {id} saved"),
@@ -391,10 +406,10 @@ impl Agent {
                     });
                 }
             },
-            BackendCommand::DeleteAgent { id } => match crate::agent_manager::global_manager() {
+            BackendCommand::DeleteTeam { id } => match crate::agent_manager::global_manager() {
                 Some(mgr) => match mgr.delete_profile(&id) {
                     Ok(()) => {
-                        self.emit_agents_list().await;
+                        self.emit_teams_list().await;
                         self.emit(BackendEvent::Error {
                             session_id: None,
                             message: format!("agent {id} deleted"),
@@ -414,7 +429,7 @@ impl Agent {
                     });
                 }
             },
-            BackendCommand::ToggleAgent { id, enabled } => {
+            BackendCommand::ToggleTeam { id, enabled } => {
                 // 组合根 AgentManager 处理；这里转发回进程级管理器。
                 match crate::agent_manager::global_manager() {
                     None => {}
@@ -423,7 +438,7 @@ impl Agent {
                         let f = move |i: String, p: crate::config::AgentProfile| factory.call(i, p);
                         match mgr.set_enabled(&id, enabled, f) {
                             Ok(()) => {
-                                self.emit_agents_list().await;
+                                self.emit_teams_list().await;
                                 self.emit(BackendEvent::Error {
                                     session_id: None,
                                     message: format!(
@@ -446,7 +461,7 @@ impl Agent {
                 session_id,
                 content,
                 images,
-                agent_id: _,
+                team_id: _,
             } => {
                 // Parse or fall back to local TUI session key.
                 let key = SessionKey::parse(&session_id).unwrap_or_else(SessionKey::local_tui);
@@ -681,12 +696,12 @@ impl Agent {
         self.emit(BackendEvent::ToolsList { tools: list });
     }
 
-    /// Emit the agent list (`BackendEvent::AgentsList`).
-    pub async fn emit_agents_list(&self) {
-        let agents = crate::agent_manager::global_manager()
+    /// Emit the team list (`BackendEvent::TeamsList`).
+    pub async fn emit_teams_list(&self) {
+        let teams = crate::agent_manager::global_manager()
             .map(|m| m.infos())
             .unwrap_or_default();
-        self.emit(BackendEvent::AgentsList { agents });
+        self.emit(BackendEvent::TeamsList { teams });
     }
 
     /// Emit the full plugin list (`BackendEvent::PluginsList`).

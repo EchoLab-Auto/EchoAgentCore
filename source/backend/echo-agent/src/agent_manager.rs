@@ -8,16 +8,16 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use echo_protocol::AgentInfo;
+use echo_protocol::TeamInfo;
 
 use crate::agent::Agent;
-use crate::config::{AgentConfig, AgentProfile};
+use crate::config::{AgentConfig, TeamMember};
 
 /// A running persona: profile + its agent instance.
 #[derive(Clone)]
 pub struct RunningAgent {
     pub id: String,
-    pub profile: AgentProfile,
+    pub profile: TeamMember,
     pub agent: Arc<Agent>,
 }
 
@@ -33,8 +33,8 @@ impl std::fmt::Debug for RunningAgent {
 /// Owns all persona agents and routes frontend commands to the right one.
 pub struct AgentManager {
     default_id: String,
-    /// All profile definitions (including disabled ones), for rebuild.
-    profiles: std::sync::RwLock<HashMap<String, AgentProfile>>,
+    /// All team member definitions (including disabled ones), for rebuild.
+    teams: std::sync::RwLock<HashMap<String, TeamMember>>,
     /// Running instances (disabled ones are absent).
     agents: std::sync::RwLock<HashMap<String, RunningAgent>>,
     disabled: std::sync::Mutex<Vec<String>>,
@@ -45,7 +45,7 @@ pub struct AgentManager {
 /// Closure that persists the profiles map (composition root injects the
 /// ConfigStore patch writer).
 pub type ConfigWriter = Box<
-    dyn Fn(&std::collections::BTreeMap<String, AgentProfile>) -> Result<(), String> + Send + Sync,
+    dyn Fn(&std::collections::BTreeMap<String, TeamMember>) -> Result<(), String> + Send + Sync,
 >;
 
 impl std::fmt::Debug for AgentManager {
@@ -62,9 +62,9 @@ impl AgentManager {
     ///
     /// `factory(id, profile)` constructs the Agent for a persona (the
     /// composition root wires provider/config/session paths there).
-    pub fn build(raw: &AgentConfig, factory: impl Fn(String, AgentProfile) -> Arc<Agent>) -> Self {
-        let mut profiles: HashMap<String, AgentProfile> = HashMap::new();
-        for (id, profile) in &raw.profiles {
+    pub fn build(raw: &AgentConfig, factory: impl Fn(String, TeamMember) -> Arc<Agent>) -> Self {
+        let mut profiles: HashMap<String, TeamMember> = HashMap::new();
+        for (id, profile) in &raw.teams {
             let mut p = profile.clone();
             if p.name.is_empty() {
                 p.name = id.clone();
@@ -75,7 +75,7 @@ impl AgentManager {
         if profiles.is_empty() {
             profiles.insert(
                 "default".into(),
-                AgentProfile {
+                TeamMember {
                     name: "默认".into(),
                     description: "默认助手（配置文件未定义人格）".into(),
                     system_prompt: raw.system_prompt.clone(),
@@ -89,10 +89,10 @@ impl AgentManager {
                 },
             );
         }
-        let profiles = std::sync::RwLock::new(profiles);
-        let disabled: Vec<String> = raw.disabled_agents.clone();
+        let teams = std::sync::RwLock::new(profiles);
+        let disabled: Vec<String> = raw.disabled_teams.clone();
         let mut agents = HashMap::new();
-        for (id, profile) in profiles.read().unwrap().iter() {
+        for (id, profile) in teams.read().unwrap().iter() {
             if disabled.contains(id) {
                 continue;
             }
@@ -107,14 +107,14 @@ impl AgentManager {
             );
         }
         let default_id = raw
-            .profiles
+            .teams
             .keys()
             .next()
             .cloned()
             .unwrap_or_else(|| "default".into());
         Self {
             default_id,
-            profiles,
+            teams,
             agents: std::sync::RwLock::new(agents),
             disabled: std::sync::Mutex::new(disabled),
             config_writer: std::sync::Mutex::new(None),
@@ -132,14 +132,14 @@ impl AgentManager {
     }
 
     /// All known profile ids (running + disabled).
-    pub fn profile_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.profiles.read().unwrap().keys().cloned().collect();
+    pub fn team_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.teams.read().unwrap().keys().cloned().collect();
         ids.sort();
         ids
     }
 
-    pub fn profile(&self, id: &str) -> Option<AgentProfile> {
-        self.profiles.read().unwrap().get(id).cloned()
+    pub fn team(&self, id: &str) -> Option<TeamMember> {
+        self.teams.read().unwrap().get(id).cloned()
     }
 
     /// Resolve the target agent for a command (None agent_id -> default).
@@ -168,9 +168,9 @@ impl AgentManager {
         &self,
         id: &str,
         enabled: bool,
-        factory: impl Fn(String, AgentProfile) -> Arc<Agent>,
+        factory: impl Fn(String, TeamMember) -> Arc<Agent>,
     ) -> Result<(), String> {
-        if !self.profiles.read().unwrap().contains_key(id) {
+        if !self.teams.read().unwrap().contains_key(id) {
             return Err(format!("agent not found: {id}"));
         }
         let mut agents = self.agents.write().unwrap();
@@ -179,7 +179,7 @@ impl AgentManager {
             if agents.contains_key(id) {
                 return Ok(());
             }
-            let profile = self.profiles.read().unwrap().get(id).cloned().unwrap();
+            let profile = self.teams.read().unwrap().get(id).cloned().unwrap();
             agents.insert(
                 id.to_string(),
                 RunningAgent {
@@ -209,13 +209,8 @@ impl AgentManager {
 
     /// Create or update a profile. When enabled and not running, instantiates
     /// via the factory; persists through the config writer.
-    pub fn save_profile(
-        &self,
-        id: &str,
-        profile: AgentProfile,
-        enabled: bool,
-    ) -> Result<(), String> {
-        self.profiles
+    pub fn save_profile(&self, id: &str, profile: TeamMember, enabled: bool) -> Result<(), String> {
+        self.teams
             .write()
             .unwrap()
             .insert(id.to_string(), profile.clone());
@@ -250,7 +245,7 @@ impl AgentManager {
         if id == self.default_id {
             return Err("不能删除默认/主 agent".into());
         }
-        self.profiles.write().unwrap().remove(id);
+        self.teams.write().unwrap().remove(id);
         self.agents.write().unwrap().remove(id);
         let mut disabled = self.disabled.lock().unwrap();
         disabled.retain(|d| d != id);
@@ -263,8 +258,8 @@ impl AgentManager {
         let writer = self.config_writer.lock().unwrap();
         match writer.as_ref() {
             Some(w) => {
-                let map: std::collections::BTreeMap<String, AgentProfile> =
-                    self.profiles.read().unwrap().clone().into_iter().collect();
+                let map: std::collections::BTreeMap<String, TeamMember> =
+                    self.teams.read().unwrap().clone().into_iter().collect();
                 w(&map)
             }
             None => Ok(()),
@@ -280,12 +275,12 @@ impl AgentManager {
 
     /// Snapshot for the Panel (AgentsList event) — all known profiles with
     /// running state and session counts.
-    pub fn infos(&self) -> Vec<AgentInfo> {
+    pub fn infos(&self) -> Vec<TeamInfo> {
         let agents = self.agents.read().unwrap();
-        let profiles = self.profiles.read().unwrap();
-        let mut list: Vec<AgentInfo> = profiles
+        let teams = self.teams.read().unwrap();
+        let mut list: Vec<TeamInfo> = teams
             .iter()
-            .map(|(id, p)| AgentInfo {
+            .map(|(id, p)| TeamInfo {
                 id: id.clone(),
                 name: p.name.clone(),
                 description: p.description.clone(),
@@ -329,7 +324,7 @@ pub fn set_global_manager(manager: std::sync::Arc<AgentManager>) {
 /// Process-wide agent factory (set once by the composition root). Used by
 /// runtime toggling: enabling a disabled agent rebuilds it from config.
 pub fn set_agent_factory(
-    factory: impl Fn(String, AgentProfile) -> Arc<Agent> + Send + Sync + 'static,
+    factory: impl Fn(String, TeamMember) -> Arc<Agent> + Send + Sync + 'static,
 ) {
     let _ = AGENT_FACTORY.set(AgentFactory {
         inner: std::sync::Arc::new(factory),
@@ -341,11 +336,11 @@ pub fn set_agent_factory(
 /// (should not happen in production).
 #[derive(Clone)]
 pub struct AgentFactory {
-    inner: std::sync::Arc<dyn Fn(String, AgentProfile) -> Arc<Agent> + Send + Sync>,
+    inner: std::sync::Arc<dyn Fn(String, TeamMember) -> Arc<Agent> + Send + Sync>,
 }
 
 impl AgentFactory {
-    pub fn call(&self, id: String, profile: AgentProfile) -> Arc<Agent> {
+    pub fn call(&self, id: String, profile: TeamMember) -> Arc<Agent> {
         (self.inner)(id, profile)
     }
 }

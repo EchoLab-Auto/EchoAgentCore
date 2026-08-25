@@ -203,7 +203,7 @@ mod tests {
                         session_id: "s1".into(),
                         content: "hi".into(),
                         images: vec![],
-                        agent_id: None
+                        team_id: None
                     }
                 );
             }

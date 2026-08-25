@@ -204,7 +204,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 t,
                 adapters2.clone(),
             ));
-            agent.set_agent_id(Some(id.clone()));
+            agent.set_team_id(Some(id.clone()));
             // 能力配置在 make_agent 之后的启动阶段应用（见 start loop）。
             // 独立会话文件：echo-sessions-{id}.json（default 沿用旧文件名）。
             let file = if id == "default" {
@@ -393,8 +393,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             interval.tick().await;
             while let Some(cmd) = pump_default.try_recv_command() {
                 let target = match &cmd {
-                    echo_agent::BackendCommand::SendMessage { agent_id, .. } => {
-                        let id = agent_id.clone().unwrap_or_default();
+                    echo_agent::BackendCommand::SendMessage { team_id, .. } => {
+                        let id = team_id.clone().unwrap_or_default();
                         if id.is_empty() {
                             Arc::clone(&pump_default)
                         } else {
@@ -421,7 +421,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         for persona in supervisor.personas() {
             profiles.insert(persona.id.clone(), persona.profile.clone());
         }
-        raw.profiles = profiles;
+        raw.teams = profiles;
         let mgr_arc = std::sync::Arc::new(echo_agent::AgentManager::build(&raw, |id, p| {
             // 返回 supervisor 中对应人格的 Agent（共享实例）。
             supervisor
@@ -448,12 +448,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         {
             let store = config_store.clone();
             mgr_arc.set_config_writer(Box::new(
-                move |profiles: &std::collections::BTreeMap<String, echo_agent::AgentProfile>| {
+                move |teams: &std::collections::BTreeMap<String, echo_agent::TeamMember>| {
                     store
                         .patch(|root| {
                             let agent = echo_adapter::ensure_table(root, "agent");
                             let mut tbl = toml::map::Map::new();
-                            for (id, p) in profiles {
+                            for (id, p) in teams {
                                 let mut v = toml::Value::try_from(p.clone())
                                     .map_err(|e| format!("serialize profile: {e}"))?;
                                 if let Some(t) = v.as_table_mut() {
@@ -462,7 +462,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                                 }
                                 tbl.insert(id.clone(), v);
                             }
-                            agent.insert("profiles".into(), toml::Value::Table(tbl));
+                            agent.insert("teams".into(), toml::Value::Table(tbl));
                             Ok(())
                         })
                         .map_err(|e| e.to_string())

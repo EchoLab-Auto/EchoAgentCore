@@ -168,6 +168,7 @@ mod tests {
                 always: false,
                 enabled: true,
                 category: String::new(),
+                package: None,
             },
             instructions: "instructions".into(),
         }

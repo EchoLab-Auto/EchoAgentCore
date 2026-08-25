@@ -93,8 +93,8 @@ impl SessionKey {
 #[derive(Debug, Clone)]
 pub struct Session {
     pub id: String,
-    /// Owning persona agent id (None = default/legacy).
-    pub agent_id: Option<String>,
+    /// Owning team id (None = default/legacy).
+    pub team_id: Option<String>,
     pub session_key: SessionKey,
     pub nickname: String,
     pub group_name: Option<String>,
@@ -109,7 +109,7 @@ pub struct Session {
 impl Session {
     fn with_trunk(
         key: &SessionKey,
-        agent_id: Option<String>,
+        team_id: Option<String>,
         nickname: String,
         group_name: Option<String>,
         history: Arc<Mutex<Vec<ChatMessage>>>,
@@ -117,7 +117,7 @@ impl Session {
     ) -> Self {
         Self {
             id: key.to_session_id(),
-            agent_id,
+            team_id,
             session_key: key.clone(),
             nickname,
             group_name,
@@ -140,7 +140,7 @@ impl Session {
     pub fn info(&self, last_message: String) -> SessionInfo {
         SessionInfo {
             id: self.id.clone(),
-            agent_id: self.agent_id.clone(),
+            team_id: self.team_id.clone(),
             platform: self.session_key.platform.clone(),
             scope: self.session_key.scope.clone(),
             user_id: self.session_key.user_id.clone(),
@@ -154,8 +154,8 @@ impl Session {
 
 /// Registry of source identities plus the single global conversation trunk.
 pub struct TrunkStore {
-    /// Owning persona agent id (None = default). Set once by the Agent.
-    agent_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// Owning team id (None = default). Set once by the Agent.
+    team_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     identities: Arc<DashMap<String, Session>>,
     memory_limit_tokens: usize,
     trunk_history: Arc<Mutex<Vec<ChatMessage>>>,
@@ -179,7 +179,7 @@ pub struct TrunkStore {
 impl Clone for TrunkStore {
     fn clone(&self) -> Self {
         Self {
-            agent_id: Arc::clone(&self.agent_id),
+            team_id: Arc::clone(&self.team_id),
             identities: Arc::clone(&self.identities),
             memory_limit_tokens: self.memory_limit_tokens,
             trunk_history: Arc::clone(&self.trunk_history),
@@ -223,7 +223,7 @@ impl TrunkStore {
     /// Create a store owning the single global conversation trunk.
     pub fn new(memory_limit_tokens: usize) -> Self {
         Self {
-            agent_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            team_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
             identities: Arc::new(DashMap::new()),
             memory_limit_tokens,
             trunk_history: Arc::new(Mutex::new(Vec::new())),
@@ -586,14 +586,14 @@ impl TrunkStore {
     /// bound to the same global trunk.
     ///
     /// Uses entry API so concurrent callers for the same key see only one identity.
-    /// Assign the owning persona id; every session created afterwards is
+    /// Assign the owning team id; every session created afterwards is
     /// tagged with it (call once at boot before any session is created).
-    pub fn set_agent_id(&self, agent_id: Option<String>) {
-        *self.agent_id.lock().unwrap() = agent_id;
+    pub fn set_team_id(&self, team_id: Option<String>) {
+        *self.team_id.lock().unwrap() = team_id;
     }
 
-    pub fn agent_id(&self) -> Option<String> {
-        self.agent_id.lock().unwrap().clone()
+    pub fn team_id(&self) -> Option<String> {
+        self.team_id.lock().unwrap().clone()
     }
 
     pub fn get_or_create(
@@ -611,7 +611,7 @@ impl TrunkStore {
             dashmap::mapref::entry::Entry::Vacant(v) => {
                 let session = Session::with_trunk(
                     key,
-                    self.agent_id(),
+                    self.team_id(),
                     nickname,
                     group_name,
                     Arc::clone(&self.trunk_history),

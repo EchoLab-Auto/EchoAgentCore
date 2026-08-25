@@ -255,7 +255,7 @@ mod tests {
             session_id: "qq:group:123:456".into(),
             content: "你好".into(),
             images: vec![],
-            agent_id: None,
+            team_id: None,
         };
         let text = serialize_command(&cmd);
         assert!(text.contains("\"type\":\"command\""));
@@ -266,10 +266,10 @@ mod tests {
                     session_id,
                     content,
                     images,
-                    agent_id,
+                    team_id,
                 } => {
                     assert!(images.is_empty());
-                    assert!(agent_id.is_none());
+                    assert!(team_id.is_none());
                     assert_eq!(session_id, "qq:group:123:456");
                     assert_eq!(content, "你好");
                 }
@@ -391,7 +391,7 @@ mod tests {
     fn session_updated_event_roundtrip() {
         let session = SessionInfo {
             id: "qq:group:123:456".into(),
-            agent_id: None,
+            team_id: None,
             platform: "qq".into(),
             scope: "group".into(),
             user_id: "456".into(),

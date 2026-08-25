@@ -162,7 +162,7 @@ async fn send_message_command_produces_agent_output_event() {
             session_id: "qq:dm::123".into(),
             content: "hello".into(),
             images: vec![],
-            agent_id: None,
+            team_id: None,
         })
         .await;
 
@@ -192,7 +192,7 @@ async fn send_message_creates_session() {
             session_id: "qq:group:999:456".into(),
             content: "hi".into(),
             images: vec![],
-            agent_id: None,
+            team_id: None,
         })
         .await;
 
@@ -218,7 +218,7 @@ async fn set_system_prompt_changes_behaviour() {
             session_id: "qq:dm::123".into(),
             content: "translate".into(),
             images: vec![],
-            agent_id: None,
+            team_id: None,
         })
         .await;
     let prompt = provider.last_system_prompt().await;
@@ -504,6 +504,7 @@ async fn toggle_skill_enables_and_disables() {
             always: false,
             enabled: true,
             category: String::new(),
+            package: None,
         },
         instructions: "use calculator".into(),
     });
@@ -552,6 +553,7 @@ async fn skill_keyword_injects_instructions_into_prompt() {
             always: false,
             enabled: true,
             category: String::new(),
+            package: None,
         },
         instructions: "使用 calculator 工具计算表达式".into(),
     });
@@ -562,7 +564,7 @@ async fn skill_keyword_injects_instructions_into_prompt() {
             session_id: "qq:dm::123".into(),
             content: "帮我计算 1+1".into(),
             images: vec![],
-            agent_id: None,
+            team_id: None,
         })
         .await;
     let prompt = provider.last_system_prompt().await;
@@ -591,6 +593,7 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
             always: true,
             enabled: true,
             category: String::new(),
+            package: None,
         },
         instructions: "QQ 单段通常不超过 30 个字符".into(),
     });
@@ -602,6 +605,7 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
             always: false,
             enabled: true,
             category: String::new(),
+            package: None,
         },
         instructions: "使用 calculator 工具".into(),
     });
@@ -611,7 +615,7 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
             session_id: "qq:dm::123".into(),
             content: "帮我计算 1+1".into(),
             images: vec![],
-            agent_id: None,
+            team_id: None,
         })
         .await;
 
@@ -918,6 +922,7 @@ async fn non_triggering_message_uses_cached_prompt() {
             always: false,
             enabled: true,
             category: String::new(),
+            package: None,
         },
         instructions: "use calculator".into(),
     });
@@ -928,7 +933,7 @@ async fn non_triggering_message_uses_cached_prompt() {
             session_id: "qq:dm::123".into(),
             content: "你好".into(),
             images: vec![],
-            agent_id: None,
+            team_id: None,
         })
         .await;
     let first = provider.last_system_prompt().await;
@@ -941,7 +946,7 @@ async fn non_triggering_message_uses_cached_prompt() {
             session_id: "qq:dm::123".into(),
             content: "再见".into(),
             images: vec![],
-            agent_id: None,
+            team_id: None,
         })
         .await;
     assert_eq!(provider.last_system_prompt().await, first);

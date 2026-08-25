@@ -41,7 +41,7 @@ impl AgentSupervisor {
     ) -> Self {
         let mut personas: HashMap<String, Persona> = HashMap::new();
         let mut profiles: Vec<(String, AgentProfile)> = raw
-            .profiles
+            .teams
             .iter()
             .map(|(id, p)| (id.clone(), p.clone()))
             .collect();

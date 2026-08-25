@@ -7,14 +7,14 @@ use crate::mode::{GateMode, ReasoningEffort, ThinkingMode};
 pub enum BackendCommand {
     /// Send a message into a session (as if from the local user).
     /// `images` carries image URLs / data URIs for multimodal models.
-    /// `agent_id` routes the message to a persona agent (None = default).
+    /// `team_id` routes the message to a team member (None = default).
     SendMessage {
         session_id: String,
         content: String,
         #[serde(default)]
         images: Vec<String>,
         #[serde(default)]
-        agent_id: Option<String>,
+        team_id: Option<String>,
     },
     /// Switch the active model.
     SwitchModel { model: String },
@@ -71,13 +71,13 @@ pub enum BackendCommand {
     /// Request the list of all mounted plugins.
     /// Responds with `BackendEvent::PluginsList`.
     RequestPluginsList,
-    /// Request the list of multi-agent personas.
-    /// Responds with `BackendEvent::AgentsList`.
-    RequestAgentsList,
-    /// Enable or disable a persona agent at runtime (unloads memory/logs).
-    ToggleAgent { id: String, enabled: bool },
-    /// Create or update a persona profile (persisted to [agent].profiles).
-    SaveAgent {
+    /// Request the list of team members (multi-agent).
+    /// Responds with `BackendEvent::TeamsList`.
+    RequestTeamsList,
+    /// Enable or disable a team member at runtime (unloads memory/logs).
+    ToggleTeam { id: String, enabled: bool },
+    /// Create or update a team member (persisted to [agent].teams).
+    SaveTeam {
         id: String,
         name: String,
         #[serde(default)]
@@ -99,14 +99,17 @@ pub enum BackendCommand {
         #[serde(default)]
         enabled_skills: Vec<String>,
     },
-    /// Delete a persona profile (the default/main agent is protected).
-    DeleteAgent { id: String },
+    /// Delete a team member (the default/main agent is protected).
+    DeleteTeam { id: String },
     /// Enable or disable a plugin at runtime. Disabled plugins are unmounted
     /// (registrations disposed); enabled ones are remounted. Persisted via
     /// `[agent].disabled_plugins`.
     TogglePlugin { id: String, enabled: bool },
     /// Request a snapshot of the current trunk context (`BackendEvent::ContextSnapshot`).
-    RequestContext,
+    RequestContext {
+        #[serde(default)]
+        team_id: Option<String>,
+    },
     /// Cancel running work for a session (agent turns + background tasks).
     /// `all` = true cancels every active turn; false cancels only the newest.
     CancelRequestedWork { session_id: String, all: bool },
@@ -115,7 +118,7 @@ pub enum BackendCommand {
     /// `agent_id` selects the persona timeline (None = management/default).
     RequestTrunkTimeline {
         #[serde(default)]
-        agent_id: Option<String>,
+        team_id: Option<String>,
     },
     /// Erase all agent conversation memory: the durable session event log,
     /// the in-memory trunk context and the persisted display timeline.
@@ -250,7 +253,7 @@ mod tests {
                 session_id: "s".into(),
                 content: "hi".into(),
                 images: vec![],
-                agent_id: None
+                team_id: None
             }),
             CommandClearance::Agent
         );
