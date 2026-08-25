@@ -647,7 +647,8 @@ impl Agent {
     }
 
     /// Emit the full tool list (`BackendEvent::ToolsList`), including
-    /// disabled tools with their runtime enable state.
+    /// disabled tools and the dynamic orchestration tools, each with their
+    /// category and (for this agent's perspective) enable state.
     pub async fn emit_tools_list(&self) {
         let defs = self.tools.full_definitions().await;
         let mut list: Vec<crate::event::ToolInfo> = defs
@@ -660,6 +661,19 @@ impl Agent {
                 enabled,
             })
             .collect();
+        // 动态编排工具（timers/subagents/background/framework_update/run_sudo）
+        // 属于 agent 循环内联定义，不在 ToolRegistry；作为"编排"类补进列表，
+        // 勾选后通过 allows_dynamic_tool 在循环层过滤。
+        for (name, description, category) in crate::agent::orchestration::orchestration_tool_meta()
+        {
+            list.push(crate::event::ToolInfo {
+                name: name.to_string(),
+                description: description.to_string(),
+                parameters: serde_json::Value::Null,
+                category: category.to_string(),
+                enabled: self.allows_dynamic_tool(name),
+            });
+        }
         list.sort_by_key(|t| t.name.clone());
         self.emit(BackendEvent::ToolsList { tools: list });
     }

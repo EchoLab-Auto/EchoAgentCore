@@ -904,6 +904,72 @@ pub(super) const ORCHESTRATION_TOOL_NAMES: &[&str] = &[
     "send_backend_message",
 ];
 
+/// Orchestration tool category shown in the Panel capability editor.
+pub const ORCHESTRATION_CATEGORY: &str = "编排";
+
+/// Tool metadata (name/description/category) for the frontend tool list.
+/// `tool_definitions` builds the LLM schemas from the same names, so the
+/// panel list can never drift from what the agent actually exposes.
+pub fn orchestration_tool_meta() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        (
+            "schedule_timer",
+            "安排定时任务，到点以 <timer_event> 回投（进程内，重启丢失）",
+            ORCHESTRATION_CATEGORY,
+        ),
+        (
+            "list_timers",
+            "列出当前会话的待执行定时任务",
+            ORCHESTRATION_CATEGORY,
+        ),
+        (
+            "cancel_timer",
+            "取消一个待执行的定时任务",
+            ORCHESTRATION_CATEGORY,
+        ),
+        (
+            "run_subagent",
+            "启动一个有边界的子代理执行推理任务，返回结果给宿主",
+            ORCHESTRATION_CATEGORY,
+        ),
+        (
+            "spawn_background_task",
+            "启动长期运行的后台任务分支（不阻塞宿主）",
+            ORCHESTRATION_CATEGORY,
+        ),
+        (
+            "spawn_parallel_task",
+            "并发启动多个独立分支并汇总结果",
+            ORCHESTRATION_CATEGORY,
+        ),
+        (
+            "list_background_tasks",
+            "列出当前会话的后台任务状态",
+            ORCHESTRATION_CATEGORY,
+        ),
+        (
+            "cancel_background_task",
+            "取消一个运行中的后台任务",
+            ORCHESTRATION_CATEGORY,
+        ),
+        (
+            "send_backend_message",
+            "向某个后端/TUI 会话投递消息（structured event 交付用）",
+            ORCHESTRATION_CATEGORY,
+        ),
+        (
+            "framework_update",
+            "查询或触发框架自更新（需授权）",
+            "自更新",
+        ),
+        (
+            "run_sudo",
+            "通过 sudo 以 root 执行命令（需用户在 Panel 输入密码）",
+            "运维",
+        ),
+    ]
+}
+
 pub(super) fn tool_definitions(
     self_update_enabled: bool,
     sudo_enabled: bool,

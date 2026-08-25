@@ -97,6 +97,9 @@ pub struct Agent {
     /// Graceful-drain flag: set during shutdown so new turns are rejected
     /// while in-flight replies finish (self-update continuity).
     draining: AtomicBool,
+    /// Per-persona capability config (allow/deny lists for plugins, tools,
+    /// skills). Applied at boot; used to filter dynamic orchestration tools.
+    capabilities: std::sync::Mutex<Option<crate::config::AgentProfile>>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -176,6 +179,7 @@ impl Agent {
             plugin_host: std::sync::Arc::new(crate::plugins::PluginHost::new()),
             agent_id: std::sync::Mutex::new(None),
             draining: AtomicBool::new(false),
+            capabilities: std::sync::Mutex::new(None),
         };
         // Spawn periodic identity eviction (every 5 minutes). Only stale
         // source labels are dropped; the trunk history is never evicted.
@@ -641,16 +645,50 @@ impl Agent {
         self.agent_id.lock().unwrap().clone()
     }
 
-    /// Apply per-persona capability configuration: disable selected plugins,
-    /// tools and skills so the LLM never sees them for this agent.
+    /// Apply per-persona capability configuration.
+    ///
+    /// Semantics:
+    /// - `enabled_*` allowlists: non-empty => only the listed plugins/tools/
+    ///   skills are visible to this agent; empty => everything is available.
+    /// - `disabled_*` denylists refine afterwards (keeps old configs working).
     pub async fn apply_capabilities(&self, profile: &crate::config::AgentProfile) {
+        *self.capabilities.lock().unwrap() = Some(profile.clone());
+        let enable_ctx = echo_plugin::MountContext::default();
+        // 1) allowlist: hide everything not listed.
+        if !profile.enabled_plugins.is_empty() {
+            let all: Vec<String> = self.plugin_host.registry.ids();
+            for id in all {
+                if !profile.enabled_plugins.contains(&id) {
+                    let _ = self
+                        .plugin_host
+                        .registry
+                        .set_enabled(&id, false, &enable_ctx);
+                }
+            }
+        }
+        if !profile.enabled_tools.is_empty() {
+            let all = self.tools.names();
+            for name in all {
+                if !profile.enabled_tools.contains(&name) {
+                    let _ = self.tools.set_enabled(&name, false).await;
+                }
+            }
+        }
+        if !profile.enabled_skills.is_empty() {
+            let mut skills = self.skills.lock().await;
+            for name in skills.names() {
+                if !profile.enabled_skills.contains(&name) {
+                    skills.set_enabled(&name, false);
+                }
+            }
+        }
+        // 2) denylist refinement.
         for plugin in &profile.disabled_plugins {
             if self.plugin_host.registry.plugin(plugin).is_some() {
-                let _ = self.plugin_host.registry.set_enabled(
-                    plugin,
-                    false,
-                    &echo_plugin::MountContext::default(),
-                );
+                let _ = self
+                    .plugin_host
+                    .registry
+                    .set_enabled(plugin, false, &enable_ctx);
             }
         }
         for tool in &profile.disabled_tools {
@@ -660,6 +698,22 @@ impl Agent {
         for skill in &profile.disabled_skills {
             skills.set_enabled(skill, false);
         }
+    }
+
+    /// Whether a dynamic orchestration tool is allowed for this agent
+    /// (allowlist first, denylist refinement; empty allowlist = all allowed).
+    pub fn allows_dynamic_tool(&self, name: &str) -> bool {
+        let guard = self.capabilities.lock().unwrap();
+        let Some(cap) = guard.as_ref() else {
+            return true;
+        };
+        if !cap.enabled_tools.is_empty() && !cap.enabled_tools.iter().any(|t| t == name) {
+            return false;
+        }
+        if cap.disabled_tools.iter().any(|t| t == name) {
+            return false;
+        }
+        true
     }
 
     /// Number of active sessions (for the Panel agent overview).
@@ -1324,10 +1378,12 @@ impl Agent {
         let self_update_enabled = config.self_update.enabled;
         let sudo_enabled = config.sudo.enabled;
         drop(config);
-        tools.extend(orchestration::tool_definitions(
-            self_update_enabled,
-            sudo_enabled,
-        ));
+        let dynamic = orchestration::tool_definitions(self_update_enabled, sudo_enabled);
+        tools.extend(
+            dynamic
+                .into_iter()
+                .filter(|d| self.allows_dynamic_tool(&d.name)),
+        );
         // max_tool_iterations == 0 still allows one direct reply (without tools).
         let max_iterations = self.config.read().await.max_tool_iterations.max(1);
         let mut delivered_targets = std::collections::HashSet::new();
