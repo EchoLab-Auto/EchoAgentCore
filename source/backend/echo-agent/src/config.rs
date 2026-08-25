@@ -125,6 +125,17 @@ pub struct AgentProfile {
     /// Per-persona disabled skills (by skill name).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_skills: Vec<String>,
+    /// Per-persona **allowlist** of plugins: when non-empty, ONLY these
+    /// plugins are enabled for this agent (everything else is hidden).
+    /// Empty = all plugins enabled (denylist semantics via disabled_*).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_plugins: Vec<String>,
+    /// Per-persona allowlist of tools: non-empty = only these tools visible.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_tools: Vec<String>,
+    /// Per-persona allowlist of skills: non-empty = only these skills active.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_skills: Vec<String>,
 }
 
 impl Default for AgentProfile {
@@ -137,6 +148,9 @@ impl Default for AgentProfile {
             disabled_plugins: Vec::new(),
             disabled_tools: Vec::new(),
             disabled_skills: Vec::new(),
+            enabled_plugins: Vec::new(),
+            enabled_tools: Vec::new(),
+            enabled_skills: Vec::new(),
         }
     }
 }

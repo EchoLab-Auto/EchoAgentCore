@@ -92,6 +92,12 @@ pub enum BackendCommand {
         disabled_tools: Vec<String>,
         #[serde(default)]
         disabled_skills: Vec<String>,
+        #[serde(default)]
+        enabled_plugins: Vec<String>,
+        #[serde(default)]
+        enabled_tools: Vec<String>,
+        #[serde(default)]
+        enabled_skills: Vec<String>,
     },
     /// Delete a persona profile (the default/main agent is protected).
     DeleteAgent { id: String },

@@ -83,6 +83,9 @@ impl AgentManager {
                     disabled_plugins: raw.disabled_plugins.clone(),
                     disabled_tools: raw.disabled_tools.clone(),
                     disabled_skills: raw.disabled_skills.clone(),
+                    enabled_plugins: Vec::new(),
+                    enabled_tools: Vec::new(),
+                    enabled_skills: Vec::new(),
                 },
             );
         }
@@ -292,6 +295,9 @@ impl AgentManager {
                 disabled_plugins: p.disabled_plugins.clone(),
                 disabled_tools: p.disabled_tools.clone(),
                 disabled_skills: p.disabled_skills.clone(),
+                enabled_plugins: p.enabled_plugins.clone(),
+                enabled_tools: p.enabled_tools.clone(),
+                enabled_skills: p.enabled_skills.clone(),
             })
             .collect();
         list.sort_by(|a, b| a.id.cmp(&b.id));

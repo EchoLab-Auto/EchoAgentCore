@@ -544,6 +544,13 @@ pub struct AgentInfo {
     pub disabled_tools: Vec<String>,
     #[serde(default)]
     pub disabled_skills: Vec<String>,
+    /// Per-persona allowlists (empty = everything enabled).
+    #[serde(default)]
+    pub enabled_plugins: Vec<String>,
+    #[serde(default)]
+    pub enabled_tools: Vec<String>,
+    #[serde(default)]
+    pub enabled_skills: Vec<String>,
 }
 
 /// One mounted plugin (frontend display).

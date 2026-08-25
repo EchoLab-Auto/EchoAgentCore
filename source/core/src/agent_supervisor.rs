@@ -56,6 +56,9 @@ impl AgentSupervisor {
                     disabled_plugins: raw.disabled_plugins.clone(),
                     disabled_tools: raw.disabled_tools.clone(),
                     disabled_skills: raw.disabled_skills.clone(),
+                    enabled_plugins: Vec::new(),
+                    enabled_tools: Vec::new(),
+                    enabled_skills: Vec::new(),
                 },
             ));
         }
