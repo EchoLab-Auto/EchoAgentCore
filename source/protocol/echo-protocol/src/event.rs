@@ -534,6 +534,9 @@ pub struct AgentInfo {
     /// Number of active sessions owned by this agent.
     #[serde(default)]
     pub sessions: usize,
+    /// Persona system prompt (empty = inherits global prompt/skills).
+    #[serde(default)]
+    pub system_prompt: String,
 }
 
 /// One mounted plugin (frontend display).
