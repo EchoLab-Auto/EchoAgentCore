@@ -24,6 +24,9 @@ use crate::tool::ToolRegistry;
 use echo_chat_capability::{DeliveryPolicy, DeliveryTarget};
 
 const TURN_CANCELLED: &str = "agent turn cancelled by requester";
+/// Graceful-shutdown drain window: how long to wait for in-flight turns to
+/// finish before force-cancelling (self-update interruption guard).
+const SHUTDOWN_DRAIN_SECS: u64 = 120;
 const MAX_CONCURRENT_REPLY_BRANCHES: usize = 8;
 /// Upper bound on concurrent "wait reply" generation calls. Every long-running
 /// QQ branch spawns a delayed interim reply; without a cap, many parallel
@@ -91,6 +94,9 @@ pub struct Agent {
     pub plugin_host: std::sync::Arc<crate::plugins::PluginHost>,
     /// Persona id (None/empty = default). Sets session tagging after boot.
     agent_id: std::sync::Mutex<Option<String>>,
+    /// Graceful-drain flag: set during shutdown so new turns are rejected
+    /// while in-flight replies finish (self-update continuity).
+    draining: AtomicBool,
 }
 
 impl std::fmt::Debug for Agent {
@@ -169,6 +175,7 @@ impl Agent {
             cancel,
             plugin_host: std::sync::Arc::new(crate::plugins::PluginHost::new()),
             agent_id: std::sync::Mutex::new(None),
+            draining: AtomicBool::new(false),
         };
         // Spawn periodic identity eviction (every 5 minutes). Only stale
         // source labels are dropped; the trunk history is never evicted.
@@ -186,6 +193,26 @@ impl Agent {
 
     /// Graceful shutdown: stop background tasks and flush sessions to disk.
     pub async fn shutdown(&self) {
+        // Graceful drain: reject new work, let in-flight turns finish so a
+        // self-update restart does not cut off an ongoing reply.
+        self.draining.store(true, Ordering::Release);
+        if let Some(h) = self
+            .handle
+            .try_read()
+            .ok()
+            .as_ref()
+            .and_then(|g| g.as_ref())
+        {
+            h.emit(BackendEvent::Error {
+                session_id: None,
+                message: "Core 正在重启：等待当前回复完成…".into(),
+            });
+        }
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs(SHUTDOWN_DRAIN_SECS);
+        while !self.active_inbound_turns.is_empty() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
         self.cancel_all_inbound_turns();
         self.cancel.cancel();
         self.trunk.save_now().await;
@@ -1028,6 +1055,9 @@ impl Agent {
 
     /// Process one user message through the agent loop and return the reply.
     pub async fn process_message(&self, session: &Session, content: &str) -> Result<String> {
+        if self.draining.load(Ordering::Acquire) {
+            return Err(anyhow!("Core 正在重启，消息暂未处理，请稍后重试"));
+        }
         let message_sequence =
             structured_message_sequence(content).unwrap_or_else(|| self.next_message_sequence());
         let (registration, history_snapshot) = self
@@ -1080,6 +1110,10 @@ impl Agent {
         group_id: Option<String>,
         wait_reply_after: std::time::Duration,
     ) {
+        if self.draining.load(Ordering::Acquire) {
+            tracing::info!(session = %session.id, "inbound message dropped: core draining for restart");
+            return;
+        }
         let content = content.to_string();
         let (registration, history_snapshot) = self
             .register_incoming_branch(session, &content, message_sequence)

@@ -12,7 +12,7 @@ Environment="ECHO_UPDATE_STATUS_FILE=@STATUS_FILE@"
 Environment="PATH=@SERVICE_PATH@"
 Restart=on-failure
 RestartSec=5s
-TimeoutStopSec=30s
+TimeoutStopSec=180s  # graceful drain window (in-flight reply finishes before restart)
 KillSignal=SIGTERM
 # run_sudo（人机交互 sudo 授权）依赖 setuid 提权，NoNewPrivileges 必须关闭。
 NoNewPrivileges=false

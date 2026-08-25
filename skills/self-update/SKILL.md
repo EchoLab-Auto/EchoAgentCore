@@ -8,15 +8,19 @@ keywords: [自更新, 更新框架, 部署, update, 升级, 重启服务]
 
 本框架采用"原子二进制替换 + 进程重启"的自更新机制。执行前后请遵循以下流程与经验。
 
-## 核心认知：自更新 = 对话中断
+## 核心认知：自更新 = 短暂重启（已实现 Graceful Drain，不打断回复）
 
 - Core 服务进程就是 Agent 自己。`update.sh` 构建成功后执行
-  `systemctl --user restart echo-agent-core.service`，进程重启 = 当前对话
-  中断，期间 Agent 无法回复。
-- **必须在执行前告知用户**："即将更新 Core，对话可能中断片刻，完成后会恢复"。
-  用户明确同意后再执行。
-- 更新完成后会话上下文自动恢复（`echo-sessions-{id}.json` 持久化），
-  但进行中的一轮对话会被打断。
+  `systemctl --user restart echo-agent-core.service`。
+- **Graceful Drain（决策 0015）**：收到 SIGTERM 后 Core 先进入排空模式——
+  拒绝新消息、等待进行中的回复完成（最多 120s），然后才退出。因此：
+  - 正在输出的回复会**完整生成完**，Panel 看到全文后再重连
+  - 无活跃 turn 时近乎秒级重启，无感
+  - 超过 120s 的长任务才会被强制打断（待任务完成再更新）
+- systemd `TimeoutStopSec=180s` 保证排空窗口内不被 SIGKILL。
+- **仍必须在执行前告知用户**（涉及重启与短暂断连）："即将更新 Core，
+  当前回复会先完成，随后面板短暂重连；确认执行？"。
+- 更新完成后会话上下文自动恢复（`echo-sessions-{id}.json` 持久化）。
 
 ## 更新流程（Core）
 
