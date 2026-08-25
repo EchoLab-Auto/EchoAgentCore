@@ -309,9 +309,10 @@ if ((core_was_active)); then
         false
     fi
 
-    # ── QQ/NapCat 恢复：Core 重启会切断反向 WS，NapCat 客户端有时无法
-    #   自动重连（需手动 docker restart）。这里代劳：先等它自己重连，
-    #    超时后自动重启 napcat 容器，避免每次自更新后手动操作。 ──
+    # ── QQ/NapCat 恢复：方案 1 —— NapCat 自带重连（reconnectInterval 5s），
+    #    Core 重启后让它自己重连，尽量不动 NapCat 进程（动它就等于动登录）。
+    #    等待窗口 = 5 个重连周期（25s）+ 2 个心跳探测 + 余量 ≈ 40s；
+    #    仅当超过窗口仍未连上才 docker restart（最后的兜底）。 ──
     PHASE=restoring_qq
     qq_connected() {
         command -v ss >/dev/null 2>&1 || return 1
@@ -319,7 +320,8 @@ if ((core_was_active)); then
     }
     if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx napcat; then
         qq_ok=0
-        for _ in {1..30}; do
+        echo "等待 NapCat 自动重连（reconnectInterval=5s，窗口 40s）…"
+        for _ in {1..40}; do
             if qq_connected; then
                 qq_ok=1
                 break
@@ -327,9 +329,9 @@ if ((core_was_active)); then
             sleep 1
         done
         if ((qq_ok == 0)); then
-            echo "QQ 反向 WS 未在 30s 内重连，自动重启 napcat 容器…" >&2
+            echo "40s 内 NapCat 未自动重连，执行 docker restart 兜底（登录态保存在卷中，会自动恢复）" >&2
             docker restart napcat >/dev/null 2>&1 || true
-            for _ in {1..60}; do
+            for _ in {1..90}; do
                 if qq_connected; then
                     qq_ok=1
                     break
@@ -338,7 +340,7 @@ if ((core_was_active)); then
             done
         fi
         if ((qq_ok == 1)); then
-            echo "QQ 连接已恢复（napcat 反向 WS 已建立）"
+            echo "QQ 连接已恢复（NapCat 自动重连成功）"
         else
             echo "警告：等待 QQ 反向 WS 恢复超时，可能需要手动检查 napcat 容器" >&2
         fi

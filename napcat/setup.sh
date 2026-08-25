@@ -45,7 +45,9 @@ CONFIG_RESULT=$(curl -s -X POST "http://localhost:6099/api/network/wsReverse" \
         \"enabled\": true,
         \"url\": \"$WS_URL\",
         \"type\": \"array\",
-        \"token\": \"\"
+        \"token\": \"\",
+        \"reconnectInterval\": 5000,
+        \"heartInterval\": 30000
     }" 2>/dev/null || echo '{"error":"api not available"}')
 
 if echo "$CONFIG_RESULT" | grep -q '"ok"\|"success"\|"status":"ok"'; then
