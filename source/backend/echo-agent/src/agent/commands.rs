@@ -327,10 +327,42 @@ impl Agent {
                     message: format!("已取消 {cancelled} 个进行中的任务"),
                 });
             }
+            BackendCommand::RequestAgentsList => {
+                self.emit_agents_list().await;
+            }
+            BackendCommand::ToggleAgent { id, enabled } => {
+                // 组合根 AgentManager 处理；这里转发回进程级管理器。
+                match crate::agent_manager::global_manager() {
+                    None => {}
+                    Some(mgr) => {
+                        let factory = crate::agent_manager::agent_factory_for_toggle();
+                        let f = move |i: String, p: crate::config::AgentProfile| factory.call(i, p);
+                        match mgr.set_enabled(&id, enabled, f) {
+                            Ok(()) => {
+                                self.emit_agents_list().await;
+                                self.emit(BackendEvent::Error {
+                                    session_id: None,
+                                    message: format!(
+                                        "agent {id} {}",
+                                        if enabled { "enabled" } else { "disabled" }
+                                    ),
+                                });
+                            }
+                            Err(e) => {
+                                self.emit(BackendEvent::Error {
+                                    session_id: None,
+                                    message: format!("toggle agent failed: {e}"),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             BackendCommand::SendMessage {
                 session_id,
                 content,
                 images,
+                agent_id: _,
             } => {
                 // Parse or fall back to local TUI session key.
                 let key = SessionKey::parse(&session_id).unwrap_or_else(SessionKey::local_tui);
@@ -546,6 +578,14 @@ impl Agent {
             .collect();
         list.sort_by_key(|t| t.name.clone());
         self.emit(BackendEvent::ToolsList { tools: list });
+    }
+
+    /// Emit the agent list (`BackendEvent::AgentsList`).
+    pub async fn emit_agents_list(&self) {
+        let agents = crate::agent_manager::global_manager()
+            .map(|m| m.infos())
+            .unwrap_or_default();
+        self.emit(BackendEvent::AgentsList { agents });
     }
 
     /// Emit the full plugin list (`BackendEvent::PluginsList`).

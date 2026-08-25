@@ -95,6 +95,38 @@ impl ApiProfile {
 /// Default trunk token budget: 1M × 0.8 = 800,000 tokens.
 pub const DEFAULT_MEMORY_LIMIT_TOKENS: usize = 1_000_000 * 8 / 10;
 
+/// A multi-agent persona profile (`[agent.profiles.{id}]`).
+///
+/// Each profile is instantiated as an independent `Agent` with its own
+/// trunk memory, session log and system prompt. Version 1: shared
+/// provider/model; per-profile LLM config is Phase 2.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AgentProfile {
+    /// Display name (e.g. "写作助理").
+    pub name: String,
+    /// Short description shown in the Panel agent picker.
+    #[serde(default)]
+    pub description: String,
+    /// Persona system prompt (replaces the global prompt for this agent).
+    #[serde(default)]
+    pub system_prompt: String,
+    /// Whether to instantiate this agent at startup (runtime toggling
+    /// persists separately via `disabled_agents`).
+    pub enabled: bool,
+}
+
+impl Default for AgentProfile {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: String::new(),
+            system_prompt: String::new(),
+            enabled: true,
+        }
+    }
+}
+
 /// Configuration for the agent framework (the `[agent]` TOML section).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -142,6 +174,12 @@ pub struct AgentConfig {
     /// Plugins disabled at runtime (survives restarts).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_plugins: Vec<String>,
+    /// Multi-agent personas. Empty = single default agent (legacy behavior).
+    #[serde(default)]
+    pub profiles: std::collections::BTreeMap<String, AgentProfile>,
+    /// Agents disabled at runtime (survives restarts).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled_agents: Vec<String>,
     /// DEPRECATED — legacy message-count limit. Kept only for config
     /// compatibility (deserialization); no longer participates in any
     /// calculation. Use `memory_limit_tokens` instead.
@@ -183,6 +221,8 @@ impl Default for AgentConfig {
             disabled_skills: Vec::new(),
             disabled_tools: Vec::new(),
             disabled_plugins: Vec::new(),
+            profiles: std::collections::BTreeMap::new(),
+            disabled_agents: Vec::new(),
             memory_limit: 40,
             memory_limit_tokens: None,
             context_window_tokens: None,

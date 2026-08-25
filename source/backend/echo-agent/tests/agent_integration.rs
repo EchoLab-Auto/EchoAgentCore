@@ -162,6 +162,7 @@ async fn send_message_command_produces_agent_output_event() {
             session_id: "qq:dm::123".into(),
             content: "hello".into(),
             images: vec![],
+            agent_id: None,
         })
         .await;
 
@@ -191,6 +192,7 @@ async fn send_message_creates_session() {
             session_id: "qq:group:999:456".into(),
             content: "hi".into(),
             images: vec![],
+            agent_id: None,
         })
         .await;
 
@@ -216,6 +218,7 @@ async fn set_system_prompt_changes_behaviour() {
             session_id: "qq:dm::123".into(),
             content: "translate".into(),
             images: vec![],
+            agent_id: None,
         })
         .await;
     let prompt = provider.last_system_prompt().await;
@@ -559,6 +562,7 @@ async fn skill_keyword_injects_instructions_into_prompt() {
             session_id: "qq:dm::123".into(),
             content: "帮我计算 1+1".into(),
             images: vec![],
+            agent_id: None,
         })
         .await;
     let prompt = provider.last_system_prompt().await;
@@ -607,6 +611,7 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
             session_id: "qq:dm::123".into(),
             content: "帮我计算 1+1".into(),
             images: vec![],
+            agent_id: None,
         })
         .await;
 
@@ -923,6 +928,7 @@ async fn non_triggering_message_uses_cached_prompt() {
             session_id: "qq:dm::123".into(),
             content: "你好".into(),
             images: vec![],
+            agent_id: None,
         })
         .await;
     let first = provider.last_system_prompt().await;
@@ -935,6 +941,7 @@ async fn non_triggering_message_uses_cached_prompt() {
             session_id: "qq:dm::123".into(),
             content: "再见".into(),
             images: vec![],
+            agent_id: None,
         })
         .await;
     assert_eq!(provider.last_system_prompt().await, first);

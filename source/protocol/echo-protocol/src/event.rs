@@ -19,6 +19,9 @@ pub struct AdapterStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
+    /// Owning persona agent id (None = default/legacy single agent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     /// Platform identifier (e.g., "qq", "local").
     pub platform: String,
     /// Scope within the platform ("dm", "group", "tui").
@@ -407,6 +410,10 @@ pub enum BackendEvent {
     PluginsList {
         plugins: Vec<PluginInfo>,
     },
+    /// Full list of persona agents (response to `RequestAgentsList`).
+    AgentsList {
+        agents: Vec<AgentInfo>,
+    },
     /// API connectivity test result (response to `TestApi`).
     ApiTestResult {
         /// Tested config name (empty = top-level default).
@@ -513,6 +520,20 @@ pub struct ToolInfo {
     /// Runtime enable/disable state.
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+/// One persona agent (frontend display).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Number of active sessions owned by this agent.
+    #[serde(default)]
+    pub sessions: usize,
 }
 
 /// One mounted plugin (frontend display).

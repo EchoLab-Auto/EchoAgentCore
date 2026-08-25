@@ -202,7 +202,8 @@ mod tests {
                     BackendCommand::SendMessage {
                         session_id: "s1".into(),
                         content: "hi".into(),
-                        images: vec![]
+                        images: vec![],
+                        agent_id: None
                     }
                 );
             }

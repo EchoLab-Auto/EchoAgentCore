@@ -11,6 +11,7 @@
 
 pub mod adapter_bridge;
 pub mod agent;
+pub mod agent_manager;
 pub mod bridge;
 pub mod command;
 pub mod config;
@@ -26,9 +27,10 @@ pub mod tool;
 
 pub use adapter_bridge::AgentMessageHook;
 pub use agent::Agent;
+pub use agent_manager::AgentManager;
 pub use bridge::{create_bridge, BackendBridge, BackendHandle, FanoutHandle};
 pub use command::BackendCommand;
-pub use config::{AgentConfig, ReasoningEffort, SelfUpdateConfig, ThinkingMode};
+pub use config::{AgentConfig, AgentProfile, ReasoningEffort, SelfUpdateConfig, ThinkingMode};
 pub use event::{
     ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, GroupInfo, SessionInfo,
     TimelineMessage, TimelineSource, TimelineTool,

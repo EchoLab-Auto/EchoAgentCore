@@ -1,0 +1,107 @@
+//! AgentSupervisor — 多 persona agent 的装配与命令路由。
+//!
+//! 每个 `[agent.profiles]` 条目 = 一个独立 `Agent`（独立 trunk / 会话文件 /
+//! 系统提示词）。管理面仍是**一个** WS 连接：非默认 persona 的事件经
+//! 镜像任务转发进默认 persona 的 BackendBridge；发送命令时按
+//! `SendMessage.agent_id` 路由到对应 persona 的后端通道。
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use echo_agent::bridge::BackendBridge;
+use echo_agent::{Agent, AgentConfig, AgentProfile};
+
+/// A persona instance with its own backend channel.
+pub struct Persona {
+    pub id: String,
+    #[allow(dead_code)] // 供 Panel agent 概览 / 后续事件镜像
+    pub profile: AgentProfile,
+    pub agent: Arc<Agent>,
+    /// Per-persona backend channel (event mirror target). Created per
+    /// persona at build time; the default persona's bridge is consumed by
+    /// the management server.
+    #[allow(dead_code)]
+    pub bridge: Option<BackendBridge>,
+}
+
+/// Owns all personas; wires events + routes commands.
+pub struct AgentSupervisor {
+    default_id: String,
+    personas: HashMap<String, Persona>,
+}
+
+impl AgentSupervisor {
+    /// Build personas. `make_agent(id, profile)` creates each Agent (the
+    /// caller must have set its agent_id and config path).
+    pub fn build(
+        raw: &AgentConfig,
+        make_agent: impl Fn(String, AgentProfile) -> Arc<Agent>,
+    ) -> Self {
+        let mut personas: HashMap<String, Persona> = HashMap::new();
+        let mut profiles: Vec<(String, AgentProfile)> = raw
+            .profiles
+            .iter()
+            .map(|(id, p)| (id.clone(), p.clone()))
+            .collect();
+        if profiles.is_empty() {
+            profiles.push((
+                "default".into(),
+                AgentProfile {
+                    name: "默认".into(),
+                    description: "默认助手（配置文件未定义人格）".into(),
+                    system_prompt: raw.system_prompt.clone(),
+                    enabled: true,
+                },
+            ));
+        }
+        profiles.sort_by(|a, b| a.0.cmp(&b.0));
+        for (id, profile) in profiles {
+            let agent = make_agent(id.clone(), profile.clone());
+            personas.insert(
+                id.clone(),
+                Persona {
+                    id: id.clone(),
+                    profile,
+                    agent,
+                    bridge: None,
+                },
+            );
+        }
+        let default_id = personas
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "default".into());
+        Self {
+            default_id,
+            personas,
+        }
+    }
+
+    pub fn default_id(&self) -> String {
+        self.default_id.clone()
+    }
+
+    pub fn get(&self, id: &str) -> Option<&Persona> {
+        self.personas.get(id)
+    }
+
+    /// Resolve target persona (None agent_id -> default; unknown -> default).
+    pub fn resolve(&self, agent_id: Option<&str>) -> &Persona {
+        let id = agent_id.unwrap_or(&self.default_id);
+        self.personas
+            .get(id)
+            .or_else(|| self.personas.get(&self.default_id))
+            .expect("at least the default persona exists")
+    }
+
+    pub fn ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.personas.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    pub fn personas(&self) -> impl Iterator<Item = &Persona> {
+        self.personas.values()
+    }
+}

@@ -29,6 +29,21 @@ memory_limit_tokens = 800000
 skills_dir = "skills"                    # 递归发现 SKILL.md，运行时自动热重载
 # plugins_dir = "plugins"                  # plugin.toml 插件目录（5s 热重载）
 
+# ── 多 agent 人格（可选）───────────────────────────────────────────────
+# 每个 profile = 一个独立 Agent（独立记忆/会话文件/系统提示词）。
+# 不配置此项 = 单默认 agent，行为与旧版一致。
+# 前端"资源 → 插件"可浏览人格；运行时启停通过 Panel。
+# [agent.profiles.assistant]
+# name = "通用助手"
+# description = "日常问答与信息聚合"
+# system_prompt = "你是通用助手，用中文回答。"
+#
+# [agent.profiles.writer]
+# name = "写作助理"
+# description = "专注于文档写作"
+# system_prompt = "你是资深写作教练，帮助打磨文档。"
+# disabled_agents = []                  # 运行时禁用人格（重启保留）
+
 [plugins.system_prompt]
 # 系统提示词插件：由 Core 注入，可在 Panel 顶部“系统提示词”中编辑保存。
 # 留空表示不注入基础系统提示词。

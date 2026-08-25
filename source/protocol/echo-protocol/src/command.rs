@@ -7,11 +7,14 @@ use crate::mode::{GateMode, ReasoningEffort, ThinkingMode};
 pub enum BackendCommand {
     /// Send a message into a session (as if from the local user).
     /// `images` carries image URLs / data URIs for multimodal models.
+    /// `agent_id` routes the message to a persona agent (None = default).
     SendMessage {
         session_id: String,
         content: String,
         #[serde(default)]
         images: Vec<String>,
+        #[serde(default)]
+        agent_id: Option<String>,
     },
     /// Switch the active model.
     SwitchModel { model: String },
@@ -68,6 +71,11 @@ pub enum BackendCommand {
     /// Request the list of all mounted plugins.
     /// Responds with `BackendEvent::PluginsList`.
     RequestPluginsList,
+    /// Request the list of multi-agent personas.
+    /// Responds with `BackendEvent::AgentsList`.
+    RequestAgentsList,
+    /// Enable or disable a persona agent at runtime (unloads memory/logs).
+    ToggleAgent { id: String, enabled: bool },
     /// Enable or disable a plugin at runtime. Disabled plugins are unmounted
     /// (registrations disposed); enabled ones are remounted. Persisted via
     /// `[agent].disabled_plugins`.
@@ -212,7 +220,8 @@ mod tests {
             command_clearance(&BackendCommand::SendMessage {
                 session_id: "s".into(),
                 content: "hi".into(),
-                images: vec![]
+                images: vec![],
+                agent_id: None
             }),
             CommandClearance::Agent
         );

@@ -14,6 +14,7 @@ use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod agent_supervisor;
 mod config;
 mod handlers;
 mod management;
@@ -21,6 +22,7 @@ mod qq_tools;
 
 use config::CoreConfig;
 use echo_adapter::traits::Adapter;
+use echo_agent::{Agent, AgentProfile};
 use echo_server::ConnectionTracker;
 
 /// EchoAgentCore — agent core service (agent + QQ adapter + management WS).
@@ -117,7 +119,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // by key). Register it now; consumers (the agent driver) resolve it.
     let runner: Arc<echo_loop::TurnRunner> = Arc::new(echo_loop::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
-        provider_arc,
+        provider_arc.clone(),
         Arc::new(echo_loop::ToolPipeline::new()),
         echo_loop::LoopOptions::default(),
     ));
@@ -168,18 +170,55 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         "agent context policy: single global trunk (token-budget trimmed)"
     );
 
-    // Resolve the provider from the service context for the agent.
-    let provider = ctx
-        .resolve::<Arc<dyn echo_agent::LlmProvider>>("llm")
-        .expect("llm provider registered");
-
-    // Create the agent.
-    let agent = echo_agent::Agent::new(provider, agent_config, skills, tools, adapters);
-    // One shared ConfigStore: Agent (`[agent]`) and QqAdapter
-    // (`[adapters.qq]`) persist through the same store, so concurrent TOML
-    // writes cannot lose each other's sections.
+    // Create the agent(s): multi-persona supervisor (one Agent per
+    // profile; no profiles -> single default agent, legacy behavior).
     let config_store = echo_adapter::ConfigStore::new(args.config_path());
-    agent.set_config_store(config_store.clone());
+
+    // 多人格装配闭包：persona id + profile -> 独立 Agent 实例。
+    let make_agent = {
+        let provider_arc2 = provider_arc.clone();
+        let skills2 = skills;
+        let adapters2 = adapters.clone();
+        let base_cfg = agent_config.clone();
+        let config_store_path = args.config_path();
+        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        move |id: String, profile: AgentProfile| -> Arc<Agent> {
+            let mut cfg = base_cfg.clone();
+            // 人格系统提示词覆盖全局默认。
+            if !profile.system_prompt.is_empty() {
+                cfg.system_prompt = profile.system_prompt;
+            }
+            // 每个 persona 独立的工具注册表（启动期一次性组装）。
+            let mut t = echo_agent::ToolRegistry::new();
+            echo_agent::tool::builtin::register_all(&mut t, adapters2.clone(), workspace.clone());
+            let agent = Arc::new(echo_agent::Agent::new(
+                Arc::clone(&provider_arc2),
+                cfg,
+                skills2.clone(),
+                t,
+                adapters2.clone(),
+            ));
+            agent.set_agent_id(Some(id.clone()));
+            // 独立会话文件：echo-sessions-{id}.json（default 沿用旧文件名）。
+            let file = if id == "default" {
+                config_store_path.with_file_name("echo-sessions.json")
+            } else {
+                config_store_path.with_file_name(format!("echo-sessions-{id}.json"))
+            };
+            let store = echo_adapter::ConfigStore::new(file);
+            agent.set_config_store(store);
+            agent
+        }
+    };
+    // 默认人格（管理面/QQ 入口）挂在原变量 `agent` 上，后续代码不变。
+    let supervisor = std::sync::Arc::new(agent_supervisor::AgentSupervisor::build(
+        &agent_config,
+        make_agent,
+    ));
+    let default_id = supervisor.default_id();
+    let default_persona = supervisor.resolve(None);
+    let agent: Arc<echo_agent::Agent> = Arc::clone(&default_persona.agent);
+    info!(agents = ?supervisor.ids(), default = %default_id, "agent supervisor ready");
 
     // ---- Plugin host: mount built-in modules as plugins ----
     // 插件化组合根：每个内置模块（工具集/技能/适配器/编排/管理面/LLM/Loop）
@@ -292,27 +331,31 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // directly, bypassing the agent command queue, session log and LLM
     // context).
     let sudo_broker = Arc::new(echo_agent::SudoBroker::new());
-    agent.attach_sudo_broker(sudo_broker.clone());
+    // 所有人格共享 sudo 授权通道。
+    for persona in supervisor.personas() {
+        persona.agent.attach_sudo_broker(sudo_broker.clone());
+    }
 
-    let agent = Arc::new(agent);
     // 供编排工具（framework_update status）读取插件摘要的进程级锚点。
+    // 注：default persona 已由 supervisor 持有 Arc，这里不再包一层。
     echo_agent::agent::set_plugin_host_global(agent.plugin_host.clone());
-    // Restore persisted sessions and start periodic save.
-    let restored = agent.load_sessions().await;
-    if restored > 0 {
-        info!(restored, "sessions restored from disk");
+    // Restore persisted sessions and start periodic save (all personas).
+    for persona in supervisor.personas() {
+        let restored = persona.agent.load_sessions().await;
+        if restored > 0 {
+            info!(agent = %persona.id, restored, "sessions restored from disk");
+        }
+        if persona.agent.trunk.header().is_none() {
+            persona
+                .agent
+                .trunk
+                .set_header(echo_session::SessionHeader::top_level("trunk"));
+        }
+        persona.agent.start_session_save_task();
+        persona.agent.start_skill_reload_task().await;
+        persona.agent.start_plugin_reload_task().await;
+        persona.agent.start_orchestration_task();
     }
-    // The composition root owns the session header: a restored store keeps
-    // its persisted lineage, a fresh one is a top-level session.
-    if agent.trunk.header().is_none() {
-        agent
-            .trunk
-            .set_header(echo_session::SessionHeader::top_level("trunk"));
-    }
-    agent.start_session_save_task();
-    agent.start_skill_reload_task().await;
-    agent.start_plugin_reload_task().await;
-    agent.start_orchestration_task();
 
     // ---- Wire agent into QQ adapter ----
     qq_adapter.set_config_store(config_store.clone());
@@ -331,24 +374,83 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         tracker.clone(),
     )));
 
-    // ---- Command pump ----
-    let pump_agent = agent.clone();
+    // ---- Command pump（多 persona 路由）----
+    // 默认后端通道接收 Panel 命令；SendMessage 按 agent_id 路由到对应人格，
+    // 其余命令交给默认人格（管理面/QQ 入口同旧版）。
+    let pump_default = agent.clone();
+    let supervisor_for_pump = Arc::clone(&supervisor);
     let pump = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         loop {
             interval.tick().await;
-            while let Some(cmd) = pump_agent.try_recv_command() {
-                if matches!(&cmd, echo_agent::BackendCommand::SendMessage { .. }) {
-                    let branch_agent = Arc::clone(&pump_agent);
-                    tokio::spawn(async move {
-                        branch_agent.apply_command(cmd).await;
-                    });
-                } else {
-                    pump_agent.apply_command(cmd).await;
-                }
+            while let Some(cmd) = pump_default.try_recv_command() {
+                let target = match &cmd {
+                    echo_agent::BackendCommand::SendMessage { agent_id, .. } => {
+                        let id = agent_id.clone().unwrap_or_default();
+                        if id.is_empty() {
+                            Arc::clone(&pump_default)
+                        } else {
+                            match supervisor_for_pump.get(&id) {
+                                Some(p) => Arc::clone(&p.agent),
+                                None => Arc::clone(&pump_default),
+                            }
+                        }
+                    }
+                    _ => Arc::clone(&pump_default),
+                };
+                let branch_target = Arc::clone(&target);
+                tokio::spawn(async move {
+                    branch_target.apply_command(cmd).await;
+                });
             }
         }
     });
+    // 进程级 AgentManager 锚点（RequestAgentsList 使用）：把 supervisor 的
+    // 人格注册表镜像成 echo_agent::AgentManager（共享同一 Agent 实例）。
+    {
+        let mut raw = agent_config.clone();
+        let mut profiles = std::collections::BTreeMap::new();
+        for persona in supervisor.personas() {
+            profiles.insert(persona.id.clone(), persona.profile.clone());
+        }
+        raw.profiles = profiles;
+        let mgr = echo_agent::AgentManager::build(&raw, |id, p| {
+            // 返回 supervisor 中对应人格的 Agent（共享实例）。
+            supervisor
+                .get(&id)
+                .map(|x| Arc::clone(&x.agent))
+                .unwrap_or_else(|| {
+                    // 兜底：不应发生
+                    let _ = p;
+                    agent.clone()
+                })
+        });
+        echo_agent::agent_manager::set_global_manager(std::sync::Arc::new(mgr));
+    }
+    // 事件镜像：非默认人格的事件经 Agent.event_bus 订阅 → 转发进默认
+    // 人格的 handle.event_tx（Panel 单连接即可看到所有人格活动）。
+    {
+        let mirror_target = default_persona
+            .agent
+            .handle
+            .try_read()
+            .ok()
+            .and_then(|h| h.as_ref().map(|d| d.event_tx.clone()));
+        if let Some(tx) = mirror_target {
+            for persona in supervisor.personas() {
+                if persona.id == default_id {
+                    continue;
+                }
+                let tx2 = tx.clone();
+                let bus = persona.agent.event_bus.clone();
+                let _keep = bus.observe(move |ev: &mut echo_agent::BackendEvent| {
+                    let _ = tx2.send(ev.clone());
+                });
+                std::mem::forget(_keep);
+            }
+            info!("event mirror installed for non-default personas");
+        }
+    }
 
     // ---- Auto-start QQ adapter if enabled ----
     if cfg.qq_adapter.enabled {
