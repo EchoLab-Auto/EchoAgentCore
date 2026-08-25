@@ -100,7 +100,11 @@ pub enum BackendCommand {
     CancelRequestedWork { session_id: String, all: bool },
     /// Request the persisted display timeline (`BackendEvent::TrunkTimeline`).
     /// The TUI sends this on startup to restore historical messages.
-    RequestTrunkTimeline,
+    /// `agent_id` selects the persona timeline (None = management/default).
+    RequestTrunkTimeline {
+        #[serde(default)]
+        agent_id: Option<String>,
+    },
     /// Erase all agent conversation memory: the durable session event log,
     /// the in-memory trunk context and the persisted display timeline.
     /// Responds with a fresh (empty) `TrunkTimeline` + `ContextSnapshot`.

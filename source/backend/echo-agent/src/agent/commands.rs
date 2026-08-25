@@ -302,10 +302,22 @@ impl Agent {
             BackendCommand::RequestContext => {
                 self.emit_context_snapshot().await;
             }
-            BackendCommand::RequestTrunkTimeline => {
-                self.emit(BackendEvent::TrunkTimeline {
-                    messages: self.trunk.timeline_snapshot(),
-                });
+            BackendCommand::RequestTrunkTimeline { agent_id } => {
+                // 指定人格时返回该 persona 的独立 timeline（不同记忆）。
+                if let Some(id) = agent_id {
+                    let messages = match crate::agent_manager::global_manager() {
+                        Some(mgr) => match mgr.resolve(Some(&id)) {
+                            Some(agent) => agent.trunk.timeline_snapshot(),
+                            None => self.trunk.timeline_snapshot(),
+                        },
+                        None => self.trunk.timeline_snapshot(),
+                    };
+                    self.emit(BackendEvent::TrunkTimeline { messages });
+                } else {
+                    self.emit(BackendEvent::TrunkTimeline {
+                        messages: self.trunk.timeline_snapshot(),
+                    });
+                }
             }
             BackendCommand::ClearHistory => {
                 self.trunk.clear_history().await;

@@ -3229,7 +3229,7 @@ pub mod tests {
         });
 
         agent
-            .apply_command(BackendCommand::RequestTrunkTimeline)
+            .apply_command(BackendCommand::RequestTrunkTimeline { agent_id: None })
             .await;
         let mut events = Vec::new();
         while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
