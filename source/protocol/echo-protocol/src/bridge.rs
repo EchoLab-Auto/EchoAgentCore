@@ -283,6 +283,7 @@ mod tests {
     fn event_roundtrip_via_ws() {
         let ev = BackendEvent::AgentOutput {
             session_id: "user_0".into(),
+            team_id: None,
             content: "回复内容".into(),
             branch_id: Some("branch-1".into()),
         };
@@ -294,9 +295,11 @@ mod tests {
             WsMessage::Event(e) => match e {
                 BackendEvent::AgentOutput {
                     session_id,
+                    team_id,
                     content,
                     branch_id,
                 } => {
+                    assert!(team_id.is_none());
                     assert_eq!(session_id, "user_0");
                     assert_eq!(content, "回复内容");
                     assert_eq!(branch_id.as_deref(), Some("branch-1"));
@@ -317,9 +320,11 @@ mod tests {
         match msg {
             WsMessage::Event(BackendEvent::AgentOutput {
                 session_id,
+                team_id,
                 content,
                 branch_id,
             }) => {
+                assert!(team_id.is_none());
                 assert_eq!(session_id, "s1");
                 assert_eq!(content, "hi");
                 assert_eq!(branch_id, None);
@@ -478,6 +483,7 @@ mod tests {
         handle
             .emit(BackendEvent::AgentOutput {
                 session_id: "s1".into(),
+                team_id: None,
                 content: "hi".into(),
                 branch_id: None,
             })
@@ -499,6 +505,7 @@ mod tests {
         handle
             .emit(BackendEvent::AgentOutput {
                 session_id: "s".into(),
+                team_id: None,
                 content: "x".into(),
                 branch_id: None,
             })
@@ -520,6 +527,7 @@ mod tests {
             handle
                 .emit(BackendEvent::AgentOutput {
                     session_id: "s".into(),
+                    team_id: None,
                     content: format!("m{i}"),
                     branch_id: None,
                 })

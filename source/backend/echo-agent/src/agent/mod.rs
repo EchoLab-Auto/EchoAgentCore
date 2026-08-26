@@ -455,6 +455,7 @@ impl Agent {
                         timestamp: received_at_ms / 1000,
                         received_at_ms,
                         message_sequence,
+                        team_id: None,
                     });
                     let branch_agent = Arc::clone(&agent);
                     let timer_id = event.id.clone();
@@ -465,6 +466,7 @@ impl Agent {
                                     session_id: session.id.clone(),
                                     content,
                                     branch_id: None,
+                                    team_id: None,
                                 });
                             }
                             Ok(_) => {}
@@ -574,6 +576,7 @@ impl Agent {
             timestamp: completion.completed_at.timestamp(),
             received_at_ms,
             message_sequence,
+            team_id: None,
         });
         tracing::info!(
             task_id = %completion.task_id,
@@ -759,6 +762,9 @@ impl Agent {
     /// frontend hand-off, so the persisted display timeline and the wire both
     /// derive from the same emission.
     pub fn emit(&self, event: BackendEvent) {
+        // 中心化注入 team_id：事件镜像/多 team 场景下 Panel 需要知道事件
+        // 归属哪个 team，才能过滤实时消息（避免串线）。
+        let event = self.annotate_team(event);
         self.event_bus
             .emit_sync(event.clone(), echo_context::DispatchMode::Observe);
         if let Some(h) = self
@@ -769,6 +775,84 @@ impl Agent {
             .and_then(|g| g.as_ref())
         {
             h.emit(event);
+        }
+    }
+
+    /// 为携带 session 的实时事件标注 team_id（本 agent 的 team id）。
+    fn annotate_team(&self, event: BackendEvent) -> BackendEvent {
+        let team_id = self.team_id();
+        match event {
+            BackendEvent::MessageReceived {
+                session_id,
+                adapter_name,
+                platform,
+                user_id,
+                user_name,
+                channel,
+                group_name,
+                content,
+                images,
+                timestamp,
+                received_at_ms,
+                message_sequence,
+                ..
+            } => BackendEvent::MessageReceived {
+                session_id,
+                adapter_name,
+                platform,
+                user_id,
+                user_name,
+                channel,
+                group_name,
+                content,
+                images,
+                timestamp,
+                received_at_ms,
+                message_sequence,
+                team_id,
+            },
+            BackendEvent::AgentOutput {
+                session_id,
+                content,
+                branch_id,
+                ..
+            } => BackendEvent::AgentOutput {
+                session_id,
+                team_id,
+                content,
+                branch_id,
+            },
+            BackendEvent::ToolCall {
+                session_id,
+                tool_name,
+                arguments,
+                branch_id,
+                ..
+            } => BackendEvent::ToolCall {
+                session_id,
+                team_id,
+                tool_name,
+                arguments,
+                branch_id,
+            },
+            BackendEvent::ToolResult {
+                session_id,
+                tool_name,
+                result,
+                branch_id,
+                ..
+            } => BackendEvent::ToolResult {
+                session_id,
+                team_id,
+                tool_name,
+                result,
+                branch_id,
+            },
+            BackendEvent::AgentThinking { session_id, .. } => BackendEvent::AgentThinking {
+                session_id,
+                team_id,
+            },
+            other => other,
         }
     }
 
@@ -1271,6 +1355,7 @@ impl Agent {
                             session_id: session_id.clone(),
                             content: output,
                             branch_id: Some(branch_id.clone()),
+                            team_id: None,
                         });
                     }
                     tracing::info!(
@@ -1341,6 +1426,7 @@ impl Agent {
         );
         self.emit(BackendEvent::AgentThinking {
             session_id: session_id.clone(),
+            team_id: None,
         });
 
         let delivery_plan = DeliveryPlan::from_input(content);
@@ -1491,12 +1577,14 @@ impl Agent {
                         let result = format!("error: {error}");
                         self.emit(BackendEvent::ToolCall {
                             session_id: session_id.clone(),
+                            team_id: None,
                             tool_name: call.name.clone(),
                             arguments: call.arguments.clone(),
                             branch_id: branch_id.to_string(),
                         });
                         self.emit(BackendEvent::ToolResult {
                             session_id: session_id.clone(),
+                            team_id: None,
                             tool_name: call.name.clone(),
                             result: result.clone(),
                             branch_id: branch_id.to_string(),
@@ -1597,6 +1685,7 @@ impl Agent {
     ) -> crate::tool::ToolResult {
         self.emit(BackendEvent::ToolCall {
             session_id: session_id.to_string(),
+            team_id: None,
             tool_name: call.name.clone(),
             arguments: call.arguments.clone(),
             branch_id: branch_id.to_string(),
@@ -1691,6 +1780,7 @@ impl Agent {
         let result_images = result.images.clone();
         self.emit(BackendEvent::ToolResult {
             session_id: session_id.to_string(),
+            team_id: None,
             tool_name: call.name.clone(),
             result: result_text.clone(),
             branch_id: branch_id.to_string(),
@@ -1730,6 +1820,7 @@ impl Agent {
     ) {
         self.emit(BackendEvent::ToolResult {
             session_id: session_id.to_string(),
+            team_id: None,
             tool_name: call.name.clone(),
             result: result.to_string(),
             branch_id: branch_id.to_string(),
@@ -1889,6 +1980,7 @@ impl Agent {
             session_id: session_id.to_string(),
             content: content.to_string(),
             branch_id: None,
+            team_id: None,
         });
         Ok(serde_json::json!({
             "status": "delivered",
@@ -3115,12 +3207,14 @@ pub mod tests {
             timestamp: 1700000000,
             received_at_ms: 1700000000123,
             message_sequence: 1,
+            team_id: None,
         });
         let reply = agent.process_message(&session, "hi").await.unwrap();
         agent.emit(BackendEvent::AgentOutput {
             session_id: session.id.clone(),
             content: reply.clone(),
             branch_id: None,
+            team_id: None,
         });
         assert_eq!(reply, "Hello!");
 
@@ -3191,6 +3285,7 @@ pub mod tests {
             timestamp: 1,
             received_at_ms: 1000,
             message_sequence: 1,
+            team_id: None,
         });
         assert!(agent.trunk.timeline_snapshot().is_empty());
 
@@ -3209,6 +3304,7 @@ pub mod tests {
             timestamp: 2,
             received_at_ms: 2000,
             message_sequence: 2,
+            team_id: None,
         });
         let timeline = agent.trunk.timeline_snapshot();
         assert_eq!(timeline.len(), 1);
@@ -3242,6 +3338,7 @@ pub mod tests {
             session_id: session_id.into(),
             content: "done".into(),
             branch_id: Some(branch_id.into()),
+            team_id: None,
         });
         let timeline = agent.trunk.timeline_snapshot();
         assert_eq!(timeline.len(), 1);
@@ -3337,6 +3434,7 @@ pub mod tests {
             timestamp: 1700000000,
             received_at_ms: 1700000000123,
             message_sequence: 1,
+            team_id: None,
         });
 
         agent

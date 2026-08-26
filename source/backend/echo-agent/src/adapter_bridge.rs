@@ -78,6 +78,7 @@ impl InboundMessageHook for AgentMessageHook {
             timestamp: msg.timestamp,
             received_at_ms,
             message_sequence,
+            team_id: None,
         });
 
         let hook_input = format_hook_input(&msg, message_sequence, received_at_ms);

@@ -546,6 +546,7 @@ impl Agent {
                     timestamp: received_at_ms / 1000,
                     received_at_ms,
                     message_sequence,
+                    team_id: None,
                 });
                 let backend_input = serde_json::json!({
                     "event": "backend_message",
@@ -574,6 +575,7 @@ impl Agent {
                             session_id: sid,
                             content: reply,
                             branch_id: None,
+                            team_id: None,
                         });
                     }
                     Err(e) => {

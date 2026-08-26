@@ -227,12 +227,18 @@ pub enum BackendEvent {
         received_at_ms: i64,
         /// Monotonic sequence assigned by this Core process.
         message_sequence: u64,
+        /// Owning team id (empty/None = default). Lets the panel filter
+        /// realtime events to the active team.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
     },
 
     // ---- Agent processing (platform-agnostic) ----
     /// Agent began processing (LLM call pending).
     AgentThinking {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
     },
     /// LLM request was sent.
     LlmRequest {
@@ -318,6 +324,8 @@ pub enum BackendEvent {
     /// Agent invoked a tool.
     ToolCall {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
         tool_name: String,
         arguments: String,
         /// Owning reply branch (empty for pre-branch legacy paths).
@@ -327,6 +335,8 @@ pub enum BackendEvent {
     /// Tool execution completed.
     ToolResult {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
         tool_name: String,
         result: String,
         /// Owning reply branch (empty for pre-branch legacy paths).
@@ -347,6 +357,8 @@ pub enum BackendEvent {
     /// for detached emissions such as `send_backend_message` deliveries.
     AgentOutput {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
         content: String,
         #[serde(default)]
         branch_id: Option<String>,

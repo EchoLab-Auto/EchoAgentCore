@@ -362,6 +362,7 @@ mod tests {
         // Emit an event from the agent side; the server forwards it.
         handle.emit(echo_agent::BackendEvent::AgentOutput {
             session_id: "s1".into(),
+            team_id: None,
             content: "回复".into(),
             branch_id: None,
         });

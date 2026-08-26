@@ -146,6 +146,7 @@ impl TimelineProjector {
             }
             BackendEvent::AgentOutput {
                 session_id,
+                team_id: _,
                 content,
                 branch_id,
             } => {
@@ -363,9 +364,11 @@ mod tests {
             timestamp: 1700000000,
             received_at_ms: 1700000000123,
             message_sequence: 1,
+            team_id: None,
         });
         projector.record(&BackendEvent::AgentOutput {
             session_id: "qq:dm::1".into(),
+            team_id: None,
             content: "回复".into(),
             branch_id: None,
         });
@@ -389,6 +392,7 @@ mod tests {
         bus.emit_sync(
             BackendEvent::AgentOutput {
                 session_id: "qq:dm::1".into(),
+                team_id: None,
                 content: "通过总线".into(),
                 branch_id: None,
             },
@@ -416,6 +420,7 @@ mod tests {
             timestamp: 0,
             received_at_ms: 0,
             message_sequence: 0,
+            team_id: None,
         });
         assert!(store.timeline_snapshot().is_empty());
     }
