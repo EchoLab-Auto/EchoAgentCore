@@ -674,6 +674,95 @@ impl TrunkStore {
         self.save_now().await;
     }
 
+    /// 归档会话：先把当前持久化文件复制到 `archives/`，再清空历史
+    /// （归档后从头开始）。返回归档文件路径。
+    pub async fn archive_history(&self) -> Result<String, String> {
+        let path = {
+            self.persist_path
+                .lock()
+                .expect("persist path poisoned")
+                .clone()
+        };
+        if let Some(ref p) = path {
+            if p.exists() {
+                let data = std::fs::read_to_string(p)
+                    .map_err(|e| format!("read session file failed: {e}"))?;
+                let dir = p.parent().unwrap_or_else(|| std::path::Path::new("."));
+                let archive_dir = dir.join("archives");
+                std::fs::create_dir_all(&archive_dir)
+                    .map_err(|e| format!("create archives dir failed: {e}"))?;
+                let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("session");
+                let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                let archive = archive_dir.join(format!("{stem}-{ts}.json"));
+                std::fs::write(&archive, data).map_err(|e| format!("write archive failed: {e}"))?;
+                self.clear_history().await;
+                self.timeline
+                    .lock()
+                    .await
+                    .push(crate::event::TimelineMessage::system(
+                        format!("历史已归档：{}", archive.display()),
+                        String::new(),
+                        chrono::Utc::now().timestamp(),
+                    ));
+                return Ok(archive.display().to_string());
+            }
+        }
+        Err("没有可归档的会话文件".into())
+    }
+
+    /// 压缩历史：事件日志前 `keep_recent` 条之外的部分替换为一条
+    /// 规则摘要（Compaction 事件），投影随之更新并立即持久化。
+    pub async fn compact_history(&self, keep_recent: usize) -> Result<String, String> {
+        let events = self.event_log.log();
+        if events.len() <= keep_recent + 1 {
+            return Err(format!("历史不足（{} 条事件，无需压缩）", events.len()));
+        }
+        let replaced_count = events.len() - keep_recent;
+        let (tools, users) = {
+            let tools = events[..replaced_count]
+                .iter()
+                .filter(|e| matches!(e, echo_session::SessionEvent::ToolCall(_)))
+                .count();
+            let users = events[..replaced_count]
+                .iter()
+                .filter(|e| matches!(e, echo_session::SessionEvent::UserMessage(_)))
+                .count();
+            (tools, users)
+        };
+        let summary = format!(
+            "[历史摘要] 已压缩 {replaced_count} 条历史事件（{users} 条用户消息，{tools} 次工具调用），保留最近 {keep_recent} 条。"
+        );
+        // 重写日志：摘要 + 现存尾部
+        let tail = events[replaced_count..].to_vec();
+        self.event_log.clear();
+        self.event_log
+            .append(echo_session::SessionEvent::Compaction(
+                echo_session::CompactionEvent {
+                    replaced_count,
+                    summary,
+                },
+            ));
+        self.event_log.extend(tail);
+        let projected =
+            echo_session::derive::derive_messages(&self.event_log.log(), self.memory_limit_tokens);
+        if let Ok(mut trunk) = self.trunk_history.try_lock() {
+            *trunk = projected;
+        }
+        self.timeline
+            .lock()
+            .await
+            .push(crate::event::TimelineMessage::system(
+                format!("历史已压缩：{replaced_count} 条事件 → 摘要（保留最近 {keep_recent} 条）"),
+                String::new(),
+                chrono::Utc::now().timestamp(),
+            ));
+        self.mark_dirty();
+        self.save_now().await;
+        Ok(format!(
+            "已压缩 {replaced_count} 条历史事件，保留最近 {keep_recent} 条"
+        ))
+    }
+
     // ── Event-sourced session log (Phase 3) ────────────────────────────────
 
     /// Append one durable session event and update the in-memory trunk

@@ -68,6 +68,18 @@ pub enum BackendCommand {
     },
     /// Delete a skill directory under the configured skills directory.
     DeleteSkill { name: String },
+    /// 归档某个 team 的历史会话（快照到 archives/ 并清空当前历史）。
+    ArchiveHistory {
+        #[serde(default)]
+        team_id: Option<String>,
+    },
+    /// 压缩某个 team 的历史：旧事件替换为规则摘要（保留最近 keep_recent 条）。
+    CompactHistory {
+        #[serde(default)]
+        team_id: Option<String>,
+        #[serde(default)]
+        keep_recent: Option<usize>,
+    },
     /// Request the list of all mounted plugins.
     /// Responds with `BackendEvent::PluginsList`.
     RequestPluginsList,

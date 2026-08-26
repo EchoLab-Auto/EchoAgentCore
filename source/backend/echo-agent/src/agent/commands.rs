@@ -357,6 +357,63 @@ impl Agent {
             BackendCommand::RequestTeamsList => {
                 self.emit_teams_list().await;
             }
+            BackendCommand::ArchiveHistory { team_id } => {
+                if let Some(id) = team_id {
+                    match crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(&id)))
+                    {
+                        Some(agent) => match agent.trunk.archive_history().await {
+                            Ok(path) => self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("历史已归档：{path}"),
+                            }),
+                            Err(e) => self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("归档失败：{e}"),
+                            }),
+                        },
+                        None => self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("team {id} 不存在"),
+                        }),
+                    }
+                } else {
+                    match self.trunk.archive_history().await {
+                        Ok(path) => self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("历史已归档：{path}"),
+                        }),
+                        Err(e) => self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("归档失败：{e}"),
+                        }),
+                    }
+                }
+            }
+            BackendCommand::CompactHistory {
+                team_id,
+                keep_recent,
+            } => {
+                let keep = keep_recent.unwrap_or(40).clamp(10, 500);
+                let result = if let Some(id) = team_id {
+                    match crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(&id)))
+                    {
+                        Some(agent) => agent.trunk.compact_history(keep).await,
+                        None => Err(format!("team {id} 不存在")),
+                    }
+                } else {
+                    self.trunk.compact_history(keep).await
+                };
+                match result {
+                    Ok(msg) => self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: msg,
+                    }),
+                    Err(e) => self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: format!("压缩失败：{e}"),
+                    }),
+                }
+            }
             BackendCommand::SaveTeam {
                 id,
                 name,
