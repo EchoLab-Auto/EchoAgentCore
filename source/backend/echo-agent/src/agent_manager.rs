@@ -86,6 +86,8 @@ impl AgentManager {
                     enabled_plugins: Vec::new(),
                     enabled_tools: Vec::new(),
                     enabled_skills: Vec::new(),
+                    memory_limit_tokens: None,
+                    context_window_tokens: None,
                 },
             );
         }
@@ -210,6 +212,17 @@ impl AgentManager {
     /// Create or update a profile. When enabled and not running, instantiates
     /// via the factory; persists through the config writer.
     pub fn save_profile(&self, id: &str, profile: TeamMember, enabled: bool) -> Result<(), String> {
+        // 合并语义：传入 profile 的 per-agent 预算为 None 且旧 profile 已有值时
+        // 保留旧值，避免前端（未编辑该字段）保存时擦除手工写入 TOML 的预算。
+        let mut profile = profile;
+        if let Some(old) = self.teams.read().unwrap().get(id) {
+            if profile.memory_limit_tokens.is_none() {
+                profile.memory_limit_tokens = old.memory_limit_tokens;
+            }
+            if profile.context_window_tokens.is_none() {
+                profile.context_window_tokens = old.context_window_tokens;
+            }
+        }
         self.teams
             .write()
             .unwrap()
@@ -293,6 +306,8 @@ impl AgentManager {
                 enabled_plugins: p.enabled_plugins.clone(),
                 enabled_tools: p.enabled_tools.clone(),
                 enabled_skills: p.enabled_skills.clone(),
+                memory_limit_tokens: p.memory_limit_tokens,
+                context_window_tokens: p.context_window_tokens,
             })
             .collect();
         list.sort_by(|a, b| a.id.cmp(&b.id));

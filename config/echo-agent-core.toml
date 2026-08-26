@@ -43,6 +43,17 @@ skills_dir = "skills"                    # 递归发现 SKILL.md，运行时自�
 # description = "专注于文档写作"
 # system_prompt = "你是资深写作教练，帮助打磨文档。"
 # disabled_agents = []                  # 运行时禁用人格（重启保留）
+#
+# ── 人格级上下文预算（可选）─────────────────────────────────────────
+# 不配置 = 继承上方全局 memory_limit_tokens / context_window_tokens。
+# 每个 agent 的 trunk 独立裁剪，互不影响。最小 200 token。
+# memory_limit_tokens = 400000          # 该人格的 trunk 预算
+# context_window_tokens = 128000        # 该人格的模型窗口（预算按 ×0.8 封顶）
+#
+# [agent.teams.self-coding]
+# name = "self-coding"
+# description = "专注于框架自更新"
+# memory_limit_tokens = 200000          # 只给这个 agent 较小的记忆预算
 
 [plugins.system_prompt]
 # 系统提示词插件：由 Core 注入，可在 Panel 顶部“系统提示词”中编辑保存。

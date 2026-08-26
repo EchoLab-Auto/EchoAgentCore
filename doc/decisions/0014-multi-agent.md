@@ -95,6 +95,8 @@ SessionInfo { agent_id: Option<String>, .. }
 
 - 不做 per-agent LLM 模型/密钥隔离（Phase 2）
 - 不做 agent 间通信/委派（Phase 2+，与 Orchestration 结合）
+- ~~不做 per-agent 记忆预算~~（已实现：`[agent.teams.{id}].memory_limit_tokens`
+  / `context_window_tokens`，None = 继承全局；上下文内容本已按实例隔离）
 - 不做动态创建/删除（配置驱动，改配置重启生效；运行时可启停但不增删）
 - QQ/平台消息仍进 default agent（Phase 2 支持按群绑定人格）
 

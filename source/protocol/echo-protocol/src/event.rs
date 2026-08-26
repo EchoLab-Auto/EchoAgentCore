@@ -569,6 +569,12 @@ pub struct TeamInfo {
     pub enabled_tools: Vec<String>,
     #[serde(default)]
     pub enabled_skills: Vec<String>,
+    /// Per-agent trunk token budget (None = 继承全局 [agent].memory_limit_tokens)。
+    #[serde(default)]
+    pub memory_limit_tokens: Option<usize>,
+    /// Per-agent context window cap (None = 继承全局 [agent].context_window_tokens)。
+    #[serde(default)]
+    pub context_window_tokens: Option<usize>,
 }
 
 /// One mounted plugin (frontend display).

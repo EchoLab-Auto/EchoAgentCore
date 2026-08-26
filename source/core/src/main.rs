@@ -194,6 +194,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             if !profile.system_prompt.is_empty() {
                 cfg.system_prompt = profile.system_prompt;
             }
+            // 人格级记忆预算/上下文窗口覆盖全局（None = 继承全局）。
+            if profile.memory_limit_tokens.is_some() {
+                cfg.memory_limit_tokens = profile.memory_limit_tokens;
+            }
+            if profile.context_window_tokens.is_some() {
+                cfg.context_window_tokens = profile.context_window_tokens;
+            }
             // 每个 persona 独立的工具注册表（启动期一次性组装）。
             let mut t = echo_agent::ToolRegistry::new();
             echo_agent::tool::builtin::register_all(&mut t, adapters2.clone(), workspace.clone());

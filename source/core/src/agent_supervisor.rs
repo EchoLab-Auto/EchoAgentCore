@@ -59,6 +59,8 @@ impl AgentSupervisor {
                     enabled_plugins: Vec::new(),
                     enabled_tools: Vec::new(),
                     enabled_skills: Vec::new(),
+                    memory_limit_tokens: None,
+                    context_window_tokens: None,
                 },
             ));
         }

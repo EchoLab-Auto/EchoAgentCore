@@ -426,6 +426,8 @@ impl Agent {
                 enabled_plugins,
                 enabled_tools,
                 enabled_skills,
+                memory_limit_tokens,
+                context_window_tokens,
             } => match crate::agent_manager::global_manager() {
                 Some(mgr) => {
                     let profile = crate::config::AgentProfile {
@@ -439,6 +441,8 @@ impl Agent {
                         enabled_plugins,
                         enabled_tools,
                         enabled_skills,
+                        memory_limit_tokens,
+                        context_window_tokens,
                     };
                     match mgr.save_profile(&id, profile, enabled) {
                         Ok(()) => {

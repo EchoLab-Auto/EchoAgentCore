@@ -136,6 +136,16 @@ pub struct TeamMember {
     /// Per-persona allowlist of skills: non-empty = only these skills active.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enabled_skills: Vec<String>,
+    /// Per-persona trunk token budget. `None` = 继承全局
+    /// `[agent].memory_limit_tokens`（或默认 800k）。每个 agent 的上下文
+    /// 裁剪互不影响。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_limit_tokens: Option<usize>,
+    /// Per-persona model context window cap. `None` = 继承全局
+    /// `[agent].context_window_tokens`。设置后该 agent 的有效预算被
+    /// `window × 0.8` 封顶。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<usize>,
 }
 
 impl Default for TeamMember {
@@ -151,6 +161,8 @@ impl Default for TeamMember {
             enabled_plugins: Vec::new(),
             enabled_tools: Vec::new(),
             enabled_skills: Vec::new(),
+            memory_limit_tokens: None,
+            context_window_tokens: None,
         }
     }
 }
@@ -614,6 +626,39 @@ mod tests {
             cfg.effective_tool_timeout(),
             std::time::Duration::from_secs(5)
         );
+    }
+
+    #[test]
+    fn team_member_budget_roundtrips_through_toml() {
+        let mut cfg = AgentConfig::default();
+        cfg.teams.insert(
+            "alix".into(),
+            TeamMember {
+                name: "Alix".into(),
+                memory_limit_tokens: Some(100_000),
+                context_window_tokens: Some(64_000),
+                ..Default::default()
+            },
+        );
+        let toml_str = toml::to_string(&cfg).unwrap();
+        assert!(toml_str.contains("memory_limit_tokens = 100000"));
+        assert!(toml_str.contains("context_window_tokens = 64000"));
+        let parsed: AgentConfig = toml::from_str(&toml_str).unwrap();
+        let member = &parsed.teams["alix"];
+        assert_eq!(member.name, "Alix");
+        assert_eq!(member.memory_limit_tokens, Some(100_000));
+        assert_eq!(member.context_window_tokens, Some(64_000));
+    }
+
+    #[test]
+    fn team_member_budget_defaults_to_inherit_global() {
+        // 未配置预算字段时 None 不序列化；反序列化后仍为 None（继承全局）。
+        let cfg = AgentConfig::default();
+        let toml_str = toml::to_string(&cfg).unwrap();
+        assert!(!toml_str.contains("memory_limit_tokens"));
+        let member = TeamMember::default();
+        assert_eq!(member.memory_limit_tokens, None);
+        assert_eq!(member.context_window_tokens, None);
     }
 
     #[test]
