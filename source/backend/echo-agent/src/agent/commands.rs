@@ -236,6 +236,30 @@ impl Agent {
             BackendCommand::RequestSkillsList => {
                 self.emit_skills_list().await;
             }
+            BackendCommand::ReloadSkills => {
+                let dir = self.current_skills_dir().await;
+                match self.reload_skills(&dir).await {
+                    Ok(true) => {
+                        self.emit_skills_list().await;
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: "技能已重新加载".into(),
+                        });
+                    }
+                    Ok(false) => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: "技能无变化".into(),
+                        });
+                    }
+                    Err(e) => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("技能重载失败：{e}"),
+                        });
+                    }
+                }
+            }
             BackendCommand::RequestToolsList => {
                 self.emit_tools_list().await;
             }
@@ -444,9 +468,19 @@ impl Agent {
                         memory_limit_tokens,
                         context_window_tokens,
                     };
-                    match mgr.save_profile(&id, profile, enabled) {
+                    match mgr.save_profile(&id, profile.clone(), enabled) {
                         Ok(()) => {
-                            self.emit_teams_list().await;
+                            // 勾选变化立即生效：对运行中的目标 agent 重新发现技能
+                            // 文件（覆盖用户手动新增/修改的 SKILL.md），再应用新的
+                            // 启用/禁用白名单，最后推送技能列表。
+                            if let Some(target) = mgr.resolve(Some(&id)) {
+                                let dir = target.config.read().await.skills_dir.clone();
+                                if let Err(e) = target.reload_skills(&dir).await {
+                                    tracing::warn!(error = %e, agent = %id, "skill reload after team save failed");
+                                }
+                                target.apply_capabilities(&profile).await;
+                                target.emit_skills_list().await;
+                            }
                             self.emit(BackendEvent::Error {
                                 session_id: None,
                                 message: format!("agent {id} saved"),

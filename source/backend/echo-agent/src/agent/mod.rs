@@ -70,7 +70,6 @@ pub struct Agent {
     /// Decomposed system-prompt blocks of the most recent turn, kept so the
     /// panel can visualize the exact prompt sections sent to the LLM.
     last_prompt_blocks: tokio::sync::Mutex<Option<Vec<PromptBlock>>>,
-    skill_reload_started: AtomicBool,
     plugin_reload_started: AtomicBool,
     orchestration_started: AtomicBool,
     timer_scheduler: orchestration::TimerScheduler,
@@ -164,7 +163,6 @@ impl Agent {
             sudo_broker: tokio::sync::RwLock::new(None),
             system_prompt_cache: RwLock::new(None),
             last_prompt_blocks: tokio::sync::Mutex::new(None),
-            skill_reload_started: AtomicBool::new(false),
             plugin_reload_started: AtomicBool::new(false),
             orchestration_started: AtomicBool::new(false),
             timer_scheduler,
@@ -256,39 +254,6 @@ impl Agent {
             loop {
                 tokio::select! {
                     _ = interval.tick() => agent.trunk.maybe_save().await,
-                    _ = cancel.cancelled() => break,
-                }
-            }
-        });
-    }
-
-    /// Watch the configured skill directory and reload changed `SKILL.md`
-    /// files. Runtime enable/disable choices survive content reloads.
-    pub async fn start_skill_reload_task(self: &Arc<Self>) {
-        let skills_dir = self.config.read().await.skills_dir.clone();
-        if skills_dir.trim().is_empty()
-            || self
-                .skill_reload_started
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
-        {
-            return;
-        }
-
-        let agent = Arc::clone(self);
-        let cancel = self.cancel.clone();
-        tracing::info!(path = %skills_dir, interval_seconds = 1, "skill hot reload started");
-        tokio::spawn(async move {
-            let start = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
-            let mut interval = tokio::time::interval_at(start, std::time::Duration::from_secs(1));
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        if let Err(error) = agent.reload_skills(&skills_dir).await {
-                            tracing::warn!(%error, path = %skills_dir, "skill hot reload failed; keeping previous registry");
-                        }
-                    }
                     _ = cancel.cancelled() => break,
                 }
             }
@@ -4063,6 +4028,7 @@ pub mod tests {
             ..Default::default()
         };
         let initial = SkillRegistry::discover(&config.skills_dir).unwrap();
+        let skills_dir = config.skills_dir.clone();
         let provider = Arc::new(MockProvider {
             calls: Arc::new(AtomicUsize::new(0)),
             reply: "ok".into(),
@@ -4077,8 +4043,8 @@ pub mod tests {
 
         let first_prompt = agent.build_system_prompt("plain input").await;
         assert!(first_prompt.contains("old instructions"));
-        agent.start_skill_reload_task().await;
 
+        // 手动触发重载（替代旧的定时扫描）：修改 + 新增技能后显式 reload。
         std::fs::write(
             &style_path,
             "---\nname: style\ndescription: updated\nmetadata:\n  always: true\n---\nnew instructions",
@@ -4091,44 +4057,35 @@ pub mod tests {
             "---\nname: extra\ndescription: extra\nkeywords: [extra]\n---\nextra instructions",
         )
         .unwrap();
+        assert!(
+            agent.reload_skills(&skills_dir).await.unwrap(),
+            "modified + added skills should report a reload"
+        );
 
-        tokio::time::timeout(std::time::Duration::from_secs(4), async {
-            loop {
-                let skills = agent.skills.lock().await;
-                let updated = skills
-                    .get("style")
-                    .is_some_and(|skill| skill.instructions == "new instructions");
-                let added = skills.get("extra").is_some();
-                drop(skills);
-                if updated && added {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect("modified and added skills should hot reload");
+        let skills = agent.skills.lock().await;
+        let updated = skills
+            .get("style")
+            .is_some_and(|skill| skill.instructions == "new instructions");
+        let added = skills.get("extra").is_some();
+        drop(skills);
+        assert!(updated, "modified skill content should reload");
+        assert!(added, "added skill should be discovered");
 
         let second_prompt = agent.build_system_prompt("plain input").await;
         assert!(second_prompt.contains("new instructions"));
         assert!(!second_prompt.contains("old instructions"));
 
+        // 删除技能后再次手动重载。
         std::fs::remove_file(&style_path).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(4), async {
-            loop {
-                if agent.skills.lock().await.get("style").is_none() {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect("deleted skill should be removed by hot reload");
+        assert!(
+            agent.reload_skills(&skills_dir).await.unwrap(),
+            "deleted skill should report a reload"
+        );
+        assert!(agent.skills.lock().await.get("style").is_none());
 
         agent.shutdown().await;
         std::fs::remove_dir_all(&dir).ok();
     }
-
     // ── Tool calling loop ──────────────────────────────────────────────────
 
     /// LLM provider that replays a fixed script of responses.

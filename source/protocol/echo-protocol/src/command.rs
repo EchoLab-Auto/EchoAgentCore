@@ -168,6 +168,9 @@ pub enum BackendCommand {
     /// Request the list of all discovered skills (metadata + instructions).
     /// Responds with `BackendEvent::SkillsList`.
     RequestSkillsList,
+    /// 手动重新发现技能目录中的 SKILL.md 并刷新注册表（替代定时扫描）。
+    /// Responds with `BackendEvent::SkillsList`.
+    ReloadSkills,
     /// Request the list of all registered tool definitions.
     /// Responds with `BackendEvent::ToolsList`.
     RequestToolsList,

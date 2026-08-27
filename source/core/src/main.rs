@@ -366,8 +366,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .set_header(echo_session::SessionHeader::top_level("trunk"));
         }
         persona.agent.apply_capabilities(&persona.profile).await;
-        persona.agent.start_session_save_task();
-        persona.agent.start_skill_reload_task().await;
         persona.agent.start_plugin_reload_task().await;
         persona.agent.start_orchestration_task();
     }
