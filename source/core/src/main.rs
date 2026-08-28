@@ -370,9 +370,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         persona.agent.start_plugin_reload_task().await;
         persona.agent.start_orchestration_task();
     }
-    }
 
     // ---- Wire agent into QQ adapter ----
+    qq_adapter.set_config_store(config_store.clone());
     // QQ events enter through a one-way hook. Outbound messages require tools.
     qq_adapter.set_message_hook(Arc::new(echo_agent::AgentMessageHook::new(agent.clone())));
     qq_adapter.add_handler(Box::new(handlers::EchoHandler::new(
