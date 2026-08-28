@@ -228,10 +228,14 @@ impl Agent {
 
     /// Attach a shared [`echo_adapter::ConfigStore`] for `[agent]` persistence.
     ///
-    /// Also sets the session persistence path (same directory). Called once
-    /// at startup — uses try_lock since no concurrent access exists yet.
+    /// Also sets the session persistence path. ⚠️ 会话文件路径 = ConfigStore
+    /// 路径本身（组合根按 persona 构造 `echo-sessions-{id}.json`）；绝不能在
+    /// 这里用 `with_file_name` 覆盖回统一的 `echo-sessions.json`，否则所有
+    /// persona 写同一个文件、互相覆盖，重启后每个 agent 都读回混合/丢失的
+    /// 上下文。Called once at startup — uses try_lock since no concurrent
+    /// access exists yet.
     pub fn set_config_store(&self, store: echo_adapter::ConfigStore) {
-        let sessions_path = store.path().with_file_name("echo-sessions.json");
+        let sessions_path = store.path();
         self.trunk.set_persist_path(sessions_path);
         if let Ok(mut slot) = self.config_store.try_lock() {
             *slot = Some(store);

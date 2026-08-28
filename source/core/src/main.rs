@@ -366,12 +366,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .set_header(echo_session::SessionHeader::top_level("trunk"));
         }
         persona.agent.apply_capabilities(&persona.profile).await;
+        persona.agent.start_session_save_task();
         persona.agent.start_plugin_reload_task().await;
         persona.agent.start_orchestration_task();
     }
+    }
 
     // ---- Wire agent into QQ adapter ----
-    qq_adapter.set_config_store(config_store.clone());
     // QQ events enter through a one-way hook. Outbound messages require tools.
     qq_adapter.set_message_hook(Arc::new(echo_agent::AgentMessageHook::new(agent.clone())));
     qq_adapter.add_handler(Box::new(handlers::EchoHandler::new(
@@ -530,7 +531,20 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // background tasks, and flush sessions to disk.
     pump.abort();
     let _ = qq_adapter.stop().await;
-    agent.shutdown().await;
+    // 所有人格都要优雅关闭（drain + save_now）。只保存 default 时，非默认
+    // 人格（如 self-coding）的最近会话 flush 不到磁盘——叠加此前没有周期
+    // 保存任务，一次重启就会丢光非默认 agent 的上下文。
+    let shutdown_tasks: Vec<_> = supervisor
+        .personas()
+        .into_iter()
+        .map(|p| {
+            let agent = Arc::clone(&p.agent);
+            tokio::spawn(async move { agent.shutdown().await })
+        })
+        .collect();
+    for task in shutdown_tasks {
+        let _ = task.await;
+    }
     Ok(())
 }
 
