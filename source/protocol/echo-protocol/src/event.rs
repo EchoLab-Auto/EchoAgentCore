@@ -545,6 +545,9 @@ pub struct ToolInfo {
 pub struct TeamInfo {
     pub id: String,
     pub name: String,
+    /// Whether this agent is the primary/default agent (protected from deletion).
+    #[serde(default)]
+    pub is_default: bool,
     #[serde(default)]
     pub description: String,
     #[serde(default = "default_true")]

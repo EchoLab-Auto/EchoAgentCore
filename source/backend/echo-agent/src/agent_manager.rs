@@ -296,6 +296,7 @@ impl AgentManager {
             .map(|(id, p)| TeamInfo {
                 id: id.clone(),
                 name: p.name.clone(),
+                is_default: id == &self.default_id,
                 description: p.description.clone(),
                 enabled: agents.contains_key(id),
                 sessions: agents.get(id).map(|r| r.agent.session_count()).unwrap_or(0),
