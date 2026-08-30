@@ -15,6 +15,25 @@ pub struct AdapterStatus {
     pub started_at: Option<i64>,
 }
 
+/// 后台 shell 会话摘要（前端可视化终端）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellSessionInfo {
+    pub session_id: String,
+    /// 启动时的工作目录。
+    pub workdir: String,
+    /// 创建时间（Unix 毫秒）。
+    pub created_at_ms: i64,
+    /// 最后活动时间（Unix 毫秒）。
+    pub last_active_ms: i64,
+    /// 已执行命令数。
+    pub exec_count: u64,
+    /// 会话是否处于运行态。
+    pub running: bool,
+    /// 最近一次执行结果（截断到 4096 字符，供列表预览）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_output: Option<String>,
+}
+
 /// Snapshot of a conversation session, for the TUI session list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
@@ -413,6 +432,38 @@ pub enum BackendEvent {
         total_tokens: usize,
         /// Effective token budget for the trunk.
         limit_tokens: usize,
+    },
+    /// 后台 shell 会话列表（响应 RequestShellSessions）。
+    ShellSessionsList {
+        sessions: Vec<crate::event::ShellSessionInfo>,
+    },
+    /// 新建 shell 会话成功。
+    ShellSessionStarted {
+        session: crate::event::ShellSessionInfo,
+    },
+    /// 一次命令执行开始（面板据此显示运行态/回显命令）。
+    ShellExecStarted {
+        session_id: String,
+        seq: u64,
+        command: String,
+    },
+    /// 命令输出的增量块（stdout/stderr 合并，按到达顺序分块）。
+    ShellExecOutput {
+        session_id: String,
+        seq: u64,
+        chunk: String,
+    },
+    /// 一次命令执行结束。
+    ShellExecDone {
+        session_id: String,
+        seq: u64,
+        success: bool,
+        elapsed_ms: u64,
+    },
+    /// shell 会话被销毁（停止/空闲回收/进程退出）。
+    ShellSessionClosed {
+        session_id: String,
+        reason: String,
     },
     /// The persisted display timeline (response to `RequestTrunkTimeline`).
     /// Sent on TUI startup so historical messages survive restarts.

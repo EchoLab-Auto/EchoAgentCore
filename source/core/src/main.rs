@@ -349,6 +349,19 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         );
     }
 
+    // ---- Background shell sessions（进程级，面板 + 工具共用）----
+    {
+        use echo_agent::shell::{ShellManager, ShellEvent};
+        let mgr = std::sync::Arc::new(ShellManager::new());
+        echo_agent::shell::set_shell_manager_global(std::sync::Arc::clone(&mgr));
+        // 事件广播：接到默认 agent 的 handle，Panel 单连接即可实时可视化。
+        let default_agent = agent.clone();
+        echo_agent::shell::set_shell_emit(std::sync::Arc::new(move |event: ShellEvent| {
+            default_agent.emit(echo_agent::shell::shell_event_to_backend(event));
+        }));
+        info!("background shell manager ready");
+    }
+
     // ---- Frontend bridge (management WS) ----
     let (bridge, handle) = echo_agent::create_bridge();
     let bridge = Arc::new(bridge);

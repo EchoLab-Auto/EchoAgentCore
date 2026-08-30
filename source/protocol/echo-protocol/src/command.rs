@@ -142,6 +142,22 @@ pub enum BackendCommand {
         #[serde(default)]
         since_seq: u64,
     },
+    /// 请求所有后台 shell 会话列表。
+    RequestShellSessions,
+    /// 新建一个后台 shell 会话（持久 bash，可反复执行命令）。
+    ShellStart {
+        #[serde(default)]
+        workdir: Option<String>,
+    },
+    /// 在指定 shell 会话中执行一条命令（超时内返回输出；超时标注且会话保留）。
+    ShellExec {
+        session_id: String,
+        command: String,
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+    },
+    /// 停止（销毁）一个后台 shell 会话。
+    ShellStop { session_id: String },
     /// Erase all agent conversation memory: the durable session event log,
     /// the in-memory trunk context and the persisted display timeline.
     /// Responds with a fresh (empty) `TrunkTimeline` + `ContextSnapshot`.

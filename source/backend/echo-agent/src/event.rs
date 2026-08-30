@@ -6,6 +6,6 @@
 
 pub use echo_protocol::{
     AdapterStatus, ApiProfileInfo, BackendEvent, BackendState, ContextBlockInfo,
-    ContextMessageInfo, FriendInfo, GroupInfo, PluginInfo, SessionInfo, SkillInfo, TimelineMessage,
-    TimelineSource, TimelineTool, ToolInfo,
+    ContextMessageInfo, FriendInfo, GroupInfo, PluginInfo, SessionInfo, ShellSessionInfo,
+    SkillInfo, TimelineMessage, TimelineSource, TimelineTool, ToolInfo,
 };

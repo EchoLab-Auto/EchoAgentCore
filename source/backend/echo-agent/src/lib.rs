@@ -22,6 +22,7 @@ pub mod plugins;
 pub mod session;
 pub mod skill;
 pub mod sudo;
+pub mod shell;
 pub mod timeline;
 pub mod tool;
 

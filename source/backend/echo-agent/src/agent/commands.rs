@@ -298,6 +298,101 @@ impl Agent {
             BackendCommand::DeleteApi { name } => {
                 self.delete_api(&name).await;
             }
+            BackendCommand::RequestShellSessions => {
+                let sessions = crate::shell::shell_manager_global()
+                    .map(|m| m.list())
+                    .unwrap_or_default();
+                self.emit(BackendEvent::ShellSessionsList { sessions });
+            }
+            BackendCommand::ShellStart { workdir } => {
+                match crate::shell::shell_manager_global() {
+                    Some(m) => {
+                        let emit = crate::shell::shell_emit_for_self(self);
+                        match m.start(workdir, &emit).await {
+                            Ok(info) => {
+                                self.emit(BackendEvent::ShellSessionStarted { session: info.clone() });
+                                self.emit(BackendEvent::Error {
+                                    session_id: None,
+                                    message: format!("shell session started: {}", info.session_id),
+                                });
+                            }
+                            Err(e) => {
+                                self.emit(BackendEvent::Error {
+                                    session_id: None,
+                                    message: format!("shell start failed: {e}"),
+                                });
+                            }
+                        }
+                    }
+                    None => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: "shell manager unavailable".into(),
+                        });
+                    }
+                }
+            }
+            BackendCommand::ShellExec {
+                session_id,
+                command,
+                timeout_secs,
+            } => {
+                match crate::shell::shell_manager_global() {
+                    Some(m) => {
+                        let emit = crate::shell::shell_emit_for_self(self);
+                        match m.exec(&session_id, &command, timeout_secs, &emit).await {
+                            Ok((output, _success, _timed_out)) => {
+                                self.emit(BackendEvent::Error {
+                                    session_id: None,
+                                    message: format!(
+                                        "shell exec done ({session_id}): {} chars",
+                                        output.chars().count()
+                                    ),
+                                });
+                            }
+                            Err(e) => {
+                                self.emit(BackendEvent::Error {
+                                    session_id: None,
+                                    message: format!("shell exec failed: {e}"),
+                                });
+                            }
+                        }
+                    }
+                    None => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: "shell manager unavailable".into(),
+                        });
+                    }
+                }
+            }
+            BackendCommand::ShellStop { session_id } => {
+                match crate::shell::shell_manager_global() {
+                    Some(m) => {
+                        let emit = crate::shell::shell_emit_for_self(self);
+                        match m.stop(&session_id, &emit).await {
+                            Ok(()) => {
+                                self.emit(BackendEvent::Error {
+                                    session_id: None,
+                                    message: format!("shell session {session_id} stopped"),
+                                });
+                            }
+                            Err(e) => {
+                                self.emit(BackendEvent::Error {
+                                    session_id: None,
+                                    message: format!("shell stop failed: {e}"),
+                                });
+                            }
+                        }
+                    }
+                    None => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: "shell manager unavailable".into(),
+                        });
+                    }
+                }
+            }
             BackendCommand::RequestState => {
                 self.emit_api_config().await;
                 // 会话列表要覆盖**所有人格**：每个会话由事件自带 team_id

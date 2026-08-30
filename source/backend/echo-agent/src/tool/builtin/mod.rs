@@ -4,6 +4,7 @@ pub mod adapter;
 pub mod calculator;
 pub mod checklist;
 pub mod coding;
+mod shell_tools;
 pub mod websearch;
 
 /// Register all built-in tools into a registry.
@@ -16,5 +17,6 @@ pub fn register_all(
     registry.register(std::sync::Arc::new(websearch::WebSearchTool));
     registry.register(std::sync::Arc::new(checklist::ChecklistTool::new()));
     adapter::register_adapter_tools(registry, adapters);
-    coding::register_coding_tools(registry, workspace);
+    coding::register_coding_tools(registry, workspace.clone());
+    shell_tools::register_shell_tools(registry, workspace);
 }
