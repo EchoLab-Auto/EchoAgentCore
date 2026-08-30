@@ -341,22 +341,30 @@ impl Agent {
                 }
                 self.emit_context_snapshot().await;
             }
-            BackendCommand::RequestTrunkTimeline { team_id } => {
+            BackendCommand::RequestTrunkTimeline { team_id, since_seq } => {
                 // 指定人格时返回该 persona 的独立 timeline（不同记忆）。
-                if let Some(id) = team_id {
-                    let messages = match crate::agent_manager::global_manager() {
+                // since_seq > 0 时走增量快照；增量窗口不完整（None）回退全量。
+                let (messages, seq) = if let Some(id) = team_id {
+                    match crate::agent_manager::global_manager() {
                         Some(mgr) => match mgr.resolve(Some(&id)) {
-                            Some(agent) => agent.trunk.timeline_snapshot(),
-                            None => self.trunk.timeline_snapshot(),
+                            Some(agent) => {
+                                if since_seq > 0 {
+                                    agent
+                                        .trunk
+                                        .timeline_snapshot_since(since_seq)
+                                        .unwrap_or_else(|| (agent.trunk.timeline_snapshot(), agent.trunk.timeline_seq()))
+                                } else {
+                                    (agent.trunk.timeline_snapshot(), agent.trunk.timeline_seq())
+                                }
+                            }
+                            None => (self.trunk.timeline_snapshot(), self.trunk.timeline_seq()),
                         },
-                        None => self.trunk.timeline_snapshot(),
-                    };
-                    self.emit(BackendEvent::TrunkTimeline { messages });
+                        None => (self.trunk.timeline_snapshot(), self.trunk.timeline_seq()),
+                    }
                 } else {
-                    self.emit(BackendEvent::TrunkTimeline {
-                        messages: self.trunk.timeline_snapshot(),
-                    });
-                }
+                    (self.trunk.timeline_snapshot(), self.trunk.timeline_seq())
+                };
+                self.emit(BackendEvent::TrunkTimeline { messages, seq });
             }
             BackendCommand::ClearHistory => {
                 self.trunk.clear_history().await;
@@ -364,6 +372,7 @@ impl Agent {
                 // its local copy immediately (chat view + open context modal).
                 self.emit(BackendEvent::TrunkTimeline {
                     messages: Vec::new(),
+                    seq: self.trunk.timeline_seq(),
                 });
                 self.emit_context_snapshot().await;
                 self.emit(BackendEvent::Error {

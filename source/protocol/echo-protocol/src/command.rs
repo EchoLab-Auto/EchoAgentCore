@@ -137,6 +137,10 @@ pub enum BackendCommand {
     RequestTrunkTimeline {
         #[serde(default)]
         team_id: Option<String>,
+        /// 增量拉取：仅返回 seq > since_seq 的 timeline 条目并携带最新 seq。
+        /// None / 0 = 全量（默认）。前端首次加载全量，此后切换/回放只拉增量。
+        #[serde(default)]
+        since_seq: u64,
     },
     /// Erase all agent conversation memory: the durable session event log,
     /// the in-memory trunk context and the persisted display timeline.

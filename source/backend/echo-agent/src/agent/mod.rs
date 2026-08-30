@@ -3408,13 +3408,13 @@ pub mod tests {
             team_id: None,
         });
         let timeline = agent.trunk.timeline_snapshot();
-        assert_eq!(timeline.len(), 1);
-        assert_eq!(timeline[0].kind, "backend");
-        assert_eq!(
-            timeline[0].reasoning.as_deref(),
-            Some(vec!["先查资料".to_string()].as_slice()),
-            "reasoning attached to its branch output"
-        );
+        // 新语义：推理按到达顺序落为独立 reasoning 条目，backend 输出不再附加。
+        assert_eq!(timeline.len(), 2);
+        assert_eq!(timeline[0].kind, "reasoning");
+        assert_eq!(timeline[0].content, "先查资料");
+        assert_eq!(timeline[1].kind, "backend");
+        assert_eq!(timeline[1].content, "done");
+        assert!(timeline[1].reasoning.is_none(), "reasoning is a standalone entry");
     }
 
     #[tokio::test]
@@ -3505,7 +3505,7 @@ pub mod tests {
         });
 
         agent
-            .apply_command(BackendCommand::RequestTrunkTimeline { team_id: None })
+            .apply_command(BackendCommand::RequestTrunkTimeline { team_id: None, since_seq: 0 })
             .await;
         let mut events = Vec::new();
         while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
@@ -3514,7 +3514,7 @@ pub mod tests {
         let timeline = events
             .into_iter()
             .find_map(|event| match event {
-                BackendEvent::TrunkTimeline { messages } => Some(messages),
+                BackendEvent::TrunkTimeline { messages, .. } => Some(messages),
                 _ => None,
             })
             .expect("TrunkTimeline event emitted");

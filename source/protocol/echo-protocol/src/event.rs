@@ -388,6 +388,10 @@ pub enum BackendEvent {
     /// Sent on TUI startup so historical messages survive restarts.
     TrunkTimeline {
         messages: Vec<TimelineMessage>,
+        /// 该 agent timeline 的最新单调序号（每次新增条目递增）。
+        /// 前端据此缓存与增量请求（since_seq），避免每次切换全量传输。
+        #[serde(default)]
+        seq: u64,
     },
     /// API configuration changed (for TUI settings form).
     ApiConfigUpdated {

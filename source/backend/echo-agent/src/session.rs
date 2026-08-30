@@ -164,6 +164,10 @@ pub struct TrunkStore {
     /// token-bounded LLM trunk: bounded by entry count, keeps richer metadata
     /// (source provenance, tool calls, reasoning) for the TUI history view.
     timeline: Arc<Mutex<Vec<crate::event::TimelineMessage>>>,
+    /// Timeline 单调序号：每次新增/更新条目递增。前端用它做增量同步
+    ///（RequestTrunkTimeline.since_seq + TrunkTimeline.seq），避免切换
+    /// agent 时全量重传。
+    timeline_seq: Arc<std::sync::atomic::AtomicU64>,
     /// The append-only session event log — the **single source of truth** for
     /// the model-facing context. `trunk_history` is its in-memory projection
     /// cache (see `append_event`); persistence writes this log, and older
@@ -185,6 +189,7 @@ impl Clone for TrunkStore {
             trunk_history: Arc::clone(&self.trunk_history),
             trunk_turn_lock: Arc::clone(&self.trunk_turn_lock),
             timeline: Arc::clone(&self.timeline),
+            timeline_seq: Arc::clone(&self.timeline_seq),
             event_log: self.event_log.clone(),
             header: std::sync::Mutex::new(self.header.lock().expect("header poisoned").clone()),
             persist_path: std::sync::Mutex::new(
@@ -229,6 +234,7 @@ impl TrunkStore {
             trunk_history: Arc::new(Mutex::new(Vec::new())),
             trunk_turn_lock: Arc::new(tokio::sync::Mutex::new(())),
             timeline: Arc::new(Mutex::new(Vec::new())),
+            timeline_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             event_log: echo_session::EventLog::new(),
             header: std::sync::Mutex::new(None),
             persist_path: std::sync::Mutex::new(None),
@@ -261,6 +267,8 @@ impl TrunkStore {
             timeline.drain(..excess);
         }
         drop(timeline);
+        // 序号在锁外递增（不需要与条目严格原子对应，仅用于");
+        self.timeline_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.mark_dirty();
     }
 
@@ -270,6 +278,39 @@ impl TrunkStore {
             .try_lock()
             .map(|timeline| timeline.clone())
             .unwrap_or_default()
+    }
+
+    /// 当前 timeline 单调序号（增量同步游标）。
+    pub fn timeline_seq(&self) -> u64 {
+        self.timeline_seq.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 增量快照：返回 seq > since_seq 的条目 + 最新 seq。
+    /// `since_seq == 0` 时为全量快照。注意：timeline 本身有 1024 条目上限，
+    /// 若增量窗口内的条目已被滚出（since_seq 落后太多），返回 None 表示
+    /// 无法增量对齐，调用方应回退全量。
+    pub fn timeline_snapshot_since(
+        &self,
+        since_seq: u64,
+    ) -> Option<(Vec<crate::event::TimelineMessage>, u64)> {
+        let current = self.timeline_seq();
+        if since_seq >= current {
+            return Some((Vec::new(), current));
+        }
+        let timeline = self.timeline.try_lock().ok()?;
+        // 估算：每条条目对应一次 seq 递增（push_timeline 每次 +1）。
+        // timeline 长度 ≤ TRUNK_TIMELINE_MAX；滚动淘汰只发生在 push 时，
+        // 因此 seq 差值即"被淘汰 + 新增"的总量。
+        let dropped_est = (current - since_seq).saturating_sub(timeline.len() as u64);
+        if dropped_est > 0 {
+            // 增量窗口已不完整：回退全量。
+            return None;
+        }
+        // 每 push 一次 seq+1 且 timeline 只淘汰头部，seq 与条目数线性对应。
+        // 增量窗口起点 = 当前长度 - seq 差值（seq 差 ≤ 长度时窗口完整）。
+        let start = timeline.len().saturating_sub((current - since_seq) as usize);
+        let messages = timeline[start..].to_vec();
+        Some((messages, current))
     }
 
     /// Mutable access to the display timeline for in-place updates (e.g.
