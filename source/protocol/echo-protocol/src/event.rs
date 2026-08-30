@@ -392,6 +392,11 @@ pub enum BackendEvent {
         /// 前端据此缓存与增量请求（since_seq），避免每次切换全量传输。
         #[serde(default)]
         seq: u64,
+        /// 响应归属：= 请求的 team_id（None = 主/默认 agent）。
+        /// 前端必须按此路由缓存——绝不能拿当前 activeTeamId 猜测，
+        /// 否则其他 agent 的兜底请求会污染当前视图（串显 alix 会话）。
+        #[serde(default)]
+        team_id: Option<String>,
     },
     /// API configuration changed (for TUI settings form).
     ApiConfigUpdated {

@@ -365,7 +365,7 @@ impl Agent {
             BackendCommand::RequestTrunkTimeline { team_id, since_seq } => {
                 // 指定人格时返回该 persona 的独立 timeline（不同记忆）。
                 // since_seq > 0 时走增量快照；增量窗口不完整（None）回退全量。
-                let (messages, seq) = if let Some(id) = team_id {
+                let (messages, seq) = if let Some(ref id) = team_id {
                     match crate::agent_manager::global_manager() {
                         Some(mgr) => match mgr.resolve(Some(&id)) {
                             Some(agent) => {
@@ -385,7 +385,11 @@ impl Agent {
                 } else {
                     (self.trunk.timeline_snapshot(), self.trunk.timeline_seq())
                 };
-                self.emit(BackendEvent::TrunkTimeline { messages, seq });
+                self.emit(BackendEvent::TrunkTimeline {
+                    messages,
+                    seq,
+                    team_id: team_id.clone(),
+                });
             }
             BackendCommand::ClearHistory => {
                 self.trunk.clear_history().await;
@@ -394,6 +398,7 @@ impl Agent {
                 self.emit(BackendEvent::TrunkTimeline {
                     messages: Vec::new(),
                     seq: self.trunk.timeline_seq(),
+                    team_id: None,
                 });
                 self.emit_context_snapshot().await;
                 self.emit(BackendEvent::Error {
