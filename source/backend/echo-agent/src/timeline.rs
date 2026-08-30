@@ -4,23 +4,19 @@
 //! [`BackendEvent`]s, not a second source of truth: a [`TimelineProjector`]
 //! subscribes to the [`EventBus`] as an observe listener and records only
 //! conversation content (user messages with provenance, timer summaries, tool
-//! calls/results, final agent outputs with reasoning). Background-task hooks
-//! and lifecycle noise are deliberately skipped.
+//! calls/results, final agent outputs). Background-task hooks
+//! and lifecycle noise are deliberately skipped. 推理按事件到达顺序直接落
+//! 为独立 reasoning 条目（不再缓冲到 backend 尾部），保证持久化时间线与
+//! 实时时序一致（推理真实穿插在工具调用之间）。
 //!
 //! This is the first consumer migrated onto the event bus: `Agent::emit`
 //! broadcasts through the bus, and this projector (like the frontend bridge
 //! later) is just another listener.
 
-use std::collections::{HashMap, VecDeque};
-
 use echo_context::EventBus;
 use echo_protocol::{BackendEvent, TimelineMessage, TimelineSource, TimelineTool};
 
 use crate::session::TrunkStore;
-
-/// Pending reasoning fragments keyed by session; each queue holds
-/// (branch_id, fragments in arrival order).
-type ReasoningByBranch = HashMap<String, VecDeque<(String, Vec<String>)>>;
 
 /// Records conversation content from backend events into the trunk timeline.
 ///
@@ -30,18 +26,11 @@ type ReasoningByBranch = HashMap<String, VecDeque<(String, Vec<String>)>>;
 #[derive(Clone)]
 pub struct TimelineProjector {
     trunk: TrunkStore,
-    timeline_pending_reasoning: std::sync::Arc<std::sync::Mutex<ReasoningByBranch>>,
-    timeline_completed_branches:
-        std::sync::Arc<std::sync::Mutex<HashMap<String, VecDeque<String>>>>,
 }
 
 impl TimelineProjector {
     pub fn new(trunk: TrunkStore) -> Self {
-        Self {
-            trunk,
-            timeline_pending_reasoning: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
-            timeline_completed_branches: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
-        }
+        Self { trunk }
     }
 
     /// Subscribe this projector to the bus as an observe listener on
@@ -109,54 +98,38 @@ impl TimelineProjector {
             }
             BackendEvent::AgentReasoning {
                 session_id,
-                branch_id,
+                branch_id: _,
                 content,
             } => {
                 let content = content.trim().to_string();
                 if content.is_empty() {
                     return;
                 }
-                if let Ok(mut pending) = self.timeline_pending_reasoning.lock() {
-                    let queue = pending.entry(session_id.clone()).or_default();
-                    if let Some((_, reasoning)) = queue.back_mut() {
-                        reasoning.push(content);
-                    } else {
-                        queue.push_back((branch_id.clone(), vec![content]));
-                    }
-                }
-            }
-            BackendEvent::ReplyBranchCompleted {
-                session_id,
-                branch_id,
-                success,
-                cancelled,
-                ..
-            } => {
-                // The suggested collapse uses let-chains, which require
-                // edition 2024; the nested guard is the readable 2021 form.
-                #[allow(clippy::collapsible_match)]
-                if *success && !*cancelled {
-                    if let Ok(mut completed) = self.timeline_completed_branches.lock() {
-                        completed
-                            .entry(session_id.clone())
-                            .or_default()
-                            .push_back(branch_id.clone());
-                    }
-                }
+                // 按到达顺序直接落独立条目：推理与工具调用在时间线中真实交错。
+                self.trunk.push_timeline(TimelineMessage {
+                    kind: "reasoning".into(),
+                    content,
+                    session_id: session_id.clone(),
+                    time: chrono::Utc::now().timestamp(),
+                    source: None,
+                    reasoning: None,
+                    tool: None,
+                    images: None,
+                });
             }
             BackendEvent::AgentOutput {
                 session_id,
                 team_id: _,
                 content,
-                branch_id,
+                branch_id: _,
             } => {
-                let reasoning = self.take_timeline_reasoning(session_id, branch_id.as_deref());
-                let reasoning = (!reasoning.is_empty()).then_some(reasoning);
+                // 推理已作为独立 reasoning 条目落库（见 AgentReasoning 分支）；
+                // backend 条目不再附加 reasoning（旧数据仍保留字段兼容）。
                 self.trunk.push_timeline(TimelineMessage::backend(
                     content.clone(),
                     session_id.clone(),
                     chrono::Utc::now().timestamp(),
-                    reasoning,
+                    None,
                 ));
             }
             BackendEvent::ToolCall {
@@ -187,41 +160,6 @@ impl TimelineProjector {
                 self.update_timeline_tool(session_id, tool_name, result, failed);
             }
             _ => {}
-        }
-    }
-
-    /// Consume pending reasoning for an agent output. With a branch id the
-    /// matching branch is removed directly; without one, the oldest completed
-    /// branch of that session is consumed first (mirrors the TUI behaviour).
-    fn take_timeline_reasoning(&self, session_id: &str, branch_id: Option<&str>) -> Vec<String> {
-        let target = if let Some(branch_id) = branch_id {
-            Some(branch_id.to_string())
-        } else if let Ok(mut completed) = self.timeline_completed_branches.lock() {
-            completed
-                .get_mut(session_id)
-                .and_then(|queue| queue.pop_front())
-        } else {
-            None
-        };
-        let Some(target) = target else {
-            return Vec::new();
-        };
-        if let Ok(mut pending) = self.timeline_pending_reasoning.lock() {
-            let Some(queue) = pending.get_mut(session_id) else {
-                return Vec::new();
-            };
-            let Some(index) = queue.iter().position(|(branch, _)| *branch == target) else {
-                return Vec::new();
-            };
-            let Some((_, reasoning)) = queue.remove(index) else {
-                return Vec::new();
-            };
-            if queue.is_empty() {
-                pending.remove(session_id);
-            }
-            reasoning
-        } else {
-            Vec::new()
         }
     }
 
