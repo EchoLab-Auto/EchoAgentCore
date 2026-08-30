@@ -560,6 +560,11 @@ pub struct TeamInfo {
     /// echo-agent.branch.reply）。禁用时后端不发射分支事件，前端不展示。
     #[serde(default = "default_true")]
     pub reply_branches_enabled: bool,
+    /// 「全局会话」视图是否对该 agent 启用。由插件 id
+    /// echo-agent.session.global 按 persona 白名单语义推导。
+    /// 禁用时 Panel 侧边栏不展示"全局"分组（该 agent 只有其独立会话）。
+    #[serde(default = "default_true")]
+    pub global_session_enabled: bool,
     /// Persona system prompt (empty = inherits global prompt/skills).
     #[serde(default)]
     pub system_prompt: String,

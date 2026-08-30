@@ -285,6 +285,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 "临时回复分支：入站消息的可见分支/任务卡（可按人格白名单禁用）",
             ),
             PluginManifest::builtin(
+                echo_agent::agent::GLOBAL_SESSION_PLUGIN_ID,
+                "全局会话",
+                env!("CARGO_PKG_VERSION"),
+                PluginKind::Management,
+                "global_session",
+                "全局会话视图：合并展示该 agent 的所有会话消息（可按人格白名单禁用）",
+            ),
+            PluginManifest::builtin(
                 "echo-agent.provider.llm",
                 "LLM Provider",
                 env!("CARGO_PKG_VERSION"),

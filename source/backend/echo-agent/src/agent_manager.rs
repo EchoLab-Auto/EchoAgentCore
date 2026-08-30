@@ -312,6 +312,17 @@ impl AgentManager {
                             .iter()
                             .any(|x| x == crate::agent::REPLY_BRANCH_PLUGIN_ID)
                 },
+                // 全局会话视图开关：与 Agent::allows_global_session 同语义。
+                global_session_enabled: {
+                    let has_global = p.enabled_plugins.is_empty()
+                        || p.enabled_plugins
+                            .iter()
+                            .any(|x| x == crate::agent::GLOBAL_SESSION_PLUGIN_ID);
+                    has_global
+                        && !p.disabled_plugins
+                            .iter()
+                            .any(|x| x == crate::agent::GLOBAL_SESSION_PLUGIN_ID)
+                },
                 system_prompt: p.system_prompt.clone(),
                 disabled_plugins: p.disabled_plugins.clone(),
                 disabled_tools: p.disabled_tools.clone(),

@@ -41,6 +41,11 @@ const MAX_CONCURRENT_WAIT_REPLIES: usize = 4;
 /// 禁用时后端不发射 ReplyBranch* 可见性事件（分支仍执行并合并，仅面板不可见）。
 pub const REPLY_BRANCH_PLUGIN_ID: &str = "echo-agent.branch.reply";
 
+/// 「全局会话」视图对应的插件 id。同样按 persona 白名单语义推导：
+/// 禁用时 Panel 不展示"全局"分组，该 agent 仅保留与具体来源绑定的
+/// 独立会话（如 self-coding 只留 local:tui::local_user）。
+pub const GLOBAL_SESSION_PLUGIN_ID: &str = "echo-agent.session.global";
+
 #[derive(Debug, Clone)]
 struct ActiveInboundTurn {
     session_id: String,
@@ -708,6 +713,24 @@ impl Agent {
             return false;
         }
         if cap.disabled_plugins.iter().any(|p| p == REPLY_BRANCH_PLUGIN_ID) {
+            return false;
+        }
+        true
+    }
+
+    /// 「全局会话」视图是否对该 agent 启用（见 [`GLOBAL_SESSION_PLUGIN_ID`]）。
+    /// 纯前端展示能力开关；沿用插件白名单语义保持配置一致。
+    pub fn allows_global_session(&self) -> bool {
+        let guard = self.capabilities.lock().unwrap();
+        let Some(cap) = guard.as_ref() else {
+            return true;
+        };
+        if !cap.enabled_plugins.is_empty()
+            && !cap.enabled_plugins.iter().any(|p| p == GLOBAL_SESSION_PLUGIN_ID)
+        {
+            return false;
+        }
+        if cap.disabled_plugins.iter().any(|p| p == GLOBAL_SESSION_PLUGIN_ID) {
             return false;
         }
         true
