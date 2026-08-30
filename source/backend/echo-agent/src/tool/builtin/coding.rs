@@ -418,14 +418,14 @@ impl Tool for RunCommandTool {
         "run_command"
     }
     fn description(&self) -> &str {
-        "Run a terminal command in the project workspace. Returns stdout and stderr. Use for git operations, cargo builds, file operations, and other shell commands. Timeout: 30s."
+        "Run a terminal command in the project workspace. Returns stdout and stderr. Use for git operations, cargo builds, file operations, and other shell commands. Timeout: 120s (max 300s). Long-running polling loops should pass timeout_secs explicitly."
     }
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "The shell command to run (e.g. 'cargo build', 'git status', 'ls -la')"},
-                "timeout_secs": {"type": "integer", "description": "Timeout in seconds (default 30, max 120)"}
+                "timeout_secs": {"type": "integer", "description": "Timeout in seconds (default 120, max 300)"}
             },
             "required": ["command"]
         })
@@ -435,7 +435,7 @@ impl Tool for RunCommandTool {
         if cmd.is_empty() {
             return Err(ToolError::InvalidArguments("command required".into()));
         }
-        let timeout_secs = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
+        let timeout_secs = args["timeout_secs"].as_u64().unwrap_or(120).min(300);
 
         // Block dangerous patterns.
         let lower = cmd.to_lowercase();
