@@ -1657,11 +1657,20 @@ impl Agent {
                 );
                 // Guard every tool with a timeout so a hung tool (e.g. an
                 // unresponsive HTTP call) cannot stall the branch forever.
+                // 超时只是中止单个工具调用，**不中断 turn**：结果以 notice
+                // 形式喂回模型（非 error 前缀），loop 继续，模型可重试或
+                // 直接继续作答。
                 let tool_timeout = self.config.read().await.effective_tool_timeout();
+                let mut timed_out = false;
                 let result = tokio::select! {
                     result = self.run_tool(&session_id, branch_id, call) => result,
                     _ = tokio::time::sleep(tool_timeout) => {
-                        let text = format!("error: tool '{}' timed out after {}s", call.name, tool_timeout.as_secs());
+                        timed_out = true;
+                        let text = format!(
+                            "notice: tool '{}' timed out after {}s and its execution was aborted.                              You may retry this tool (e.g. shorter command) or continue the answer                              directly with the information you already have; do not treat this                              timeout as a fatal failure.",
+                            call.name,
+                            tool_timeout.as_secs(),
+                        );
                         // run_tool was dropped mid-flight: it already recorded
                         // the ToolCall event, so record the matching ToolResult
                         // or the durable log keeps a dangling call.
@@ -1678,18 +1687,21 @@ impl Agent {
                         return Err(anyhow!(TURN_CANCELLED));
                     }
                 };
+                // 失败判定：error 前缀 或 超时（超时不算成功，也不算 delivery 送达）。
+                let failed = result.text.trim_start().starts_with("error:");
+                let success = !failed && !timed_out;
                 tracing::info!(
                     turn_id = %turn_id,
                     message_sequence = message_sequence.unwrap_or_default(),
                     session = %session_id,
                     tool_call_id = %call.id,
                     tool = %call.name,
-                    success = !result.text.trim_start().starts_with("error:"),
+                    success,
+                    timed_out,
                     elapsed_ms = tool_started.elapsed().as_millis() as u64,
                     "agent tool call completed"
                 );
-                if let Some(delivery_key) =
-                    delivery_key.filter(|_| !result.text.trim_start().starts_with("error:"))
+                if let Some(delivery_key) = delivery_key.filter(|_| success)
                 {
                     delivered_targets.insert(delivery_key);
                     if let Some(visible_reply) = &visible_reply {
