@@ -948,6 +948,17 @@ impl Agent {
                 session_id,
                 team_id,
             },
+            BackendEvent::AgentReasoning {
+                session_id,
+                branch_id,
+                content,
+                ..
+            } => BackendEvent::AgentReasoning {
+                session_id,
+                team_id,
+                branch_id,
+                content,
+            },
             other => other,
         }
     }
@@ -959,6 +970,7 @@ impl Agent {
         {
             self.emit(BackendEvent::AgentReasoning {
                 session_id: session_id.to_string(),
+                team_id: None, // 由 annotate_team 统一注入
                 branch_id: branch_id.to_string(),
                 content: content.to_string(),
             });
@@ -3475,6 +3487,7 @@ pub mod tests {
         let branch_id = "branch-abc";
         agent.emit(BackendEvent::AgentReasoning {
             session_id: session_id.into(),
+            team_id: None,
             branch_id: branch_id.into(),
             content: "先查资料".into(),
         });

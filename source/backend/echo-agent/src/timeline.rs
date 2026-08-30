@@ -99,6 +99,7 @@ impl TimelineProjector {
             BackendEvent::AgentReasoning {
                 session_id,
                 branch_id: _,
+                team_id: _,
                 content,
             } => {
                 let content = content.trim().to_string();

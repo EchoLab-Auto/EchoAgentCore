@@ -270,6 +270,10 @@ pub enum BackendEvent {
     /// Model reasoning content returned before the visible answer.
     AgentReasoning {
         session_id: String,
+        /// 归属 team（多 persona 场景由 annotate_team 注入，前端据此过滤
+        /// 实时事件，避免跨 agent 串显）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
         /// Reply branch that owns this reasoning fragment.
         branch_id: String,
         content: String,
