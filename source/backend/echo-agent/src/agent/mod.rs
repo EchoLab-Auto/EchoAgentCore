@@ -33,6 +33,14 @@ const MAX_CONCURRENT_REPLY_BRANCHES: usize = 8;
 /// branches would each fire an extra LLM request at the same moment.
 const MAX_CONCURRENT_WAIT_REPLIES: usize = 4;
 
+/// 临时回复分支能力对应的插件 id。作为内置能力插件注册（Core 组合根），
+/// 纳入 persona 的 enabled_plugins / disabled_plugins 白名单语义：
+/// - enabled_plugins 为空（默认/主 agent）→ 启用
+/// - enabled_plugins 非空且不含该 id → 禁用（如 self-coding）
+/// - disabled_plugins 含该 id → 禁用
+/// 禁用时后端不发射 ReplyBranch* 可见性事件（分支仍执行并合并，仅面板不可见）。
+pub const REPLY_BRANCH_PLUGIN_ID: &str = "echo-agent.branch.reply";
+
 #[derive(Debug, Clone)]
 struct ActiveInboundTurn {
     session_id: String,
@@ -688,6 +696,23 @@ impl Agent {
         true
     }
 
+    /// 临时回复分支能力是否对该 agent 启用（见 [`REPLY_BRANCH_PLUGIN_ID`]）。
+    pub fn allows_reply_branches(&self) -> bool {
+        let guard = self.capabilities.lock().unwrap();
+        let Some(cap) = guard.as_ref() else {
+            return true;
+        };
+        if !cap.enabled_plugins.is_empty()
+            && !cap.enabled_plugins.iter().any(|p| p == REPLY_BRANCH_PLUGIN_ID)
+        {
+            return false;
+        }
+        if cap.disabled_plugins.iter().any(|p| p == REPLY_BRANCH_PLUGIN_ID) {
+            return false;
+        }
+        true
+    }
+
     /// Number of active sessions (for the Panel agent overview).
     pub fn session_count(&self) -> usize {
         self.trunk.all().len()
@@ -1192,14 +1217,19 @@ impl Agent {
             .register_incoming_branch(session, content, message_sequence)
             .await;
         let branch_id = registration.id.clone();
-        self.emit(BackendEvent::ReplyBranchStarted {
-            session_id: session.id.clone(),
-            branch_id: branch_id.clone(),
-            message_sequence,
-            task: content.to_string(),
-            target: "源会话".into(),
-            started_at_ms: chrono::Utc::now().timestamp_millis(),
-        });
+        // 分支可见性（ReplyBranch* 事件）由能力开关决定：禁用时前端不展示
+        // 分支卡/任务卡，但分支照常执行（取消/合并语义不变）。
+        let show_branch = self.allows_reply_branches();
+        if show_branch {
+            self.emit(BackendEvent::ReplyBranchStarted {
+                session_id: session.id.clone(),
+                branch_id: branch_id.clone(),
+                message_sequence,
+                task: content.to_string(),
+                target: "源会话".into(),
+                started_at_ms: chrono::Utc::now().timestamp_millis(),
+            });
+        }
         let result = self
             .process_recorded_message(
                 session,
@@ -1212,14 +1242,16 @@ impl Agent {
         let cancelled = registration.cancel.is_cancelled()
             || result.as_ref().err().is_some_and(Self::is_turn_cancelled);
         self.finish_inbound_turn(&branch_id);
-        self.emit(BackendEvent::ReplyBranchCompleted {
-            session_id: session.id.clone(),
-            branch_id,
-            message_sequence,
-            success: result.is_ok() && !cancelled,
-            cancelled,
-            completed_at_ms: chrono::Utc::now().timestamp_millis(),
-        });
+        if show_branch {
+            self.emit(BackendEvent::ReplyBranchCompleted {
+                session_id: session.id.clone(),
+                branch_id,
+                message_sequence,
+                success: result.is_ok() && !cancelled,
+                cancelled,
+                completed_at_ms: chrono::Utc::now().timestamp_millis(),
+            });
+        }
         result
     }
 
@@ -1255,14 +1287,18 @@ impl Agent {
             started_at_ms = chrono::Utc::now().timestamp_millis(),
             "temporary inbound reply branch started"
         );
-        self.emit(BackendEvent::ReplyBranchStarted {
-            session_id: session_id.clone(),
-            branch_id: branch_id.clone(),
-            message_sequence,
-            task: content.clone(),
-            target: "源会话".into(),
-            started_at_ms: chrono::Utc::now().timestamp_millis(),
-        });
+        // 能力开关：禁用时跳过 ReplyBranch* 可见性事件（分支照常执行）。
+        let show_branch = self.allows_reply_branches();
+        if show_branch {
+            self.emit(BackendEvent::ReplyBranchStarted {
+                session_id: session_id.clone(),
+                branch_id: branch_id.clone(),
+                message_sequence,
+                task: content.clone(),
+                target: "源会话".into(),
+                started_at_ms: chrono::Utc::now().timestamp_millis(),
+            });
+        }
 
         let (visible_reply_tx, visible_reply_rx) = tokio::sync::watch::channel(false);
         let branch_completed = tokio_util::sync::CancellationToken::new();
@@ -1309,14 +1345,16 @@ impl Agent {
                 completed_at_ms = chrono::Utc::now().timestamp_millis(),
                 "temporary inbound reply branch finished"
             );
-            agent.emit(BackendEvent::ReplyBranchCompleted {
-                session_id: session_id.clone(),
-                branch_id: branch_id.clone(),
-                message_sequence,
-                success: result.is_ok() && !cancelled,
-                cancelled,
-                completed_at_ms: chrono::Utc::now().timestamp_millis(),
-            });
+            if show_branch {
+                agent.emit(BackendEvent::ReplyBranchCompleted {
+                    session_id: session_id.clone(),
+                    branch_id: branch_id.clone(),
+                    message_sequence,
+                    success: result.is_ok() && !cancelled,
+                    cancelled,
+                    completed_at_ms: chrono::Utc::now().timestamp_millis(),
+                });
+            }
             match result {
                 Ok(output) => {
                     if !output.trim().is_empty() {
@@ -3018,12 +3056,14 @@ pub(crate) fn spawn_contextual_wait_reply(
                     .await
                 {
                     tracing::warn!(%error, session = %session.id, "wait reply send failed");
-                    agent.emit(BackendEvent::ReplyBranchContent {
-                        session_id: session.id.clone(),
-                        branch_id,
-                        content: format!("临时回复发送失败：{error}\n待发送内容：{reply}"),
-                    });
-                } else {
+                    if agent.allows_reply_branches() {
+                        agent.emit(BackendEvent::ReplyBranchContent {
+                            session_id: session.id.clone(),
+                            branch_id,
+                            content: format!("临时回复发送失败：{error}\n待发送内容：{reply}"),
+                        });
+                    }
+                } else if agent.allows_reply_branches() {
                     agent.emit(BackendEvent::ReplyBranchContent {
                         session_id: session.id.clone(),
                         branch_id,

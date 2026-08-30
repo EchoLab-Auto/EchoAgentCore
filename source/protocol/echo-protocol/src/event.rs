@@ -555,6 +555,11 @@ pub struct TeamInfo {
     /// Number of active sessions owned by this agent.
     #[serde(default)]
     pub sessions: usize,
+    /// 临时回复分支（Reply Branch）机制是否对该 agent 启用。由
+    /// enabled_plugins / disabled_plugins 白名单语义推导（插件 id
+    /// echo-agent.branch.reply）。禁用时后端不发射分支事件，前端不展示。
+    #[serde(default = "default_true")]
+    pub reply_branches_enabled: bool,
     /// Persona system prompt (empty = inherits global prompt/skills).
     #[serde(default)]
     pub system_prompt: String,

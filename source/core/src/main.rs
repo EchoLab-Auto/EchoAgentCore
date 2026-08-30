@@ -125,22 +125,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     ));
     let _runner_keep = ctx.register::<Arc<echo_loop::TurnRunner>>("loop", runner);
 
-    // Tools — platform-independent.
-    let mut tools = echo_agent::ToolRegistry::new();
-
     // Adapter registry.
     let mut adapter_registry = echo_adapter::AdapterRegistry::new();
 
     // ---- QQ adapter (always registered, auto-started only when enabled) ----
     let qq_adapter: Arc<echo_adapter_qq::QqAdapter> =
         Arc::new(echo_adapter_qq::QqAdapter::new(cfg.qq_adapter.clone()));
-    crate::qq_tools::register_qq_tools(&mut tools, qq_adapter.clone());
-    // 包元数据：QQ 工具属于 "echo-agent.adapter.qq"（与对应技能同包）。
-    for name in tools.names() {
-        if name.starts_with("send_") || name.contains("qq") || name.starts_with("get_") {
-            tools.set_package(&name, "echo-agent.adapter.qq");
-        }
-    }
     adapter_registry.register(qq_adapter.clone());
     if cfg.qq_adapter.enabled {
         info!("QQ adapter configured — will auto-start");
@@ -149,16 +139,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     }
 
     let adapters = Arc::new(adapter_registry);
-
-    // Register built-in tools (needs adapter registry for adapter management tools).
-    let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    echo_agent::tool::builtin::register_all(&mut tools, adapters.clone(), workspace);
-    // Apply persisted runtime disable state (survives restarts).
-    for name in &cfg.agent.disabled_tools {
-        if !tools.set_enabled(name, false).await {
-            warn!(tool = %name, "disabled_tools entry not found, skipping");
-        }
-    }
 
     // The configured QQ owner is also an update administrator. Additional
     // administrators can be listed under `[agent.self_update]`.
@@ -185,6 +165,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let provider_arc2 = provider_arc.clone();
         let skills2 = skills;
         let adapters2 = adapters.clone();
+        let qq_adapter2 = qq_adapter.clone();
         let base_cfg = agent_config.clone();
         let config_store_path = args.config_path();
         let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -204,6 +185,16 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             // 每个 persona 独立的工具注册表（启动期一次性组装）。
             let mut t = echo_agent::ToolRegistry::new();
             echo_agent::tool::builtin::register_all(&mut t, adapters2.clone(), workspace.clone());
+            // 平台（QQ）工具同样必须注册到每个 persona：QQ 消息的发送/查询
+            // 都依赖 send_private_msg / send_group_msg 等工具，缺少它们时
+            // persona 收到 QQ hook 后无法完成声明目标的投递。
+            crate::qq_tools::register_qq_tools(&mut t, qq_adapter2.clone());
+            // 包元数据：QQ 工具属于 "echo-agent.adapter.qq"（与对应技能同包）。
+            for name in t.names() {
+                if name.starts_with("send_") || name.contains("qq") || name.starts_with("get_") {
+                    t.set_package(&name, "echo-agent.adapter.qq");
+                }
+            }
             let agent = Arc::new(echo_agent::Agent::new(
                 Arc::clone(&provider_arc2),
                 cfg,
@@ -286,6 +277,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 "后台任务/并行分支/子代理/定时器/框架自更新",
             ),
             PluginManifest::builtin(
+                echo_agent::agent::REPLY_BRANCH_PLUGIN_ID,
+                "回执分支",
+                env!("CARGO_PKG_VERSION"),
+                PluginKind::Orchestration,
+                "reply_branch",
+                "临时回复分支：入站消息的可见分支/任务卡（可按人格白名单禁用）",
+            ),
+            PluginManifest::builtin(
                 "echo-agent.provider.llm",
                 "LLM Provider",
                 env!("CARGO_PKG_VERSION"),
@@ -366,6 +365,15 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .set_header(echo_session::SessionHeader::top_level("trunk"));
         }
         persona.agent.apply_capabilities(&persona.profile).await;
+        // 全局 [agent].disabled_tools（Panel ToggleTool 持久化）应用到此
+        // persona 的工具注册表。该状态序列化在 `[agent]` 段而非 persona
+        // profile，因此必须在这里逐人格应用（此前应用在从未使用的全局
+        // registry 上，实际从未生效）。
+        for name in &cfg.agent.disabled_tools {
+            if !persona.agent.tools.set_enabled(name, false).await {
+                warn!(tool = %name, "disabled_tools entry not found, skipping");
+            }
+        }
         persona.agent.start_session_save_task();
         persona.agent.start_plugin_reload_task().await;
         persona.agent.start_orchestration_task();

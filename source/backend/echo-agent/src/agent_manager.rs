@@ -300,6 +300,18 @@ impl AgentManager {
                 description: p.description.clone(),
                 enabled: agents.contains_key(id),
                 sessions: agents.get(id).map(|r| r.agent.session_count()).unwrap_or(0),
+                // 回执分支能力开关：与 Agent::allows_reply_branches 同语义
+                //（enabled_plugins 为空=全部启用；非空需含该 id；黑名单优先）。
+                reply_branches_enabled: {
+                    let has_branch = p.enabled_plugins.is_empty()
+                        || p.enabled_plugins
+                            .iter()
+                            .any(|x| x == crate::agent::REPLY_BRANCH_PLUGIN_ID);
+                    has_branch
+                        && !p.disabled_plugins
+                            .iter()
+                            .any(|x| x == crate::agent::REPLY_BRANCH_PLUGIN_ID)
+                },
                 system_prompt: p.system_prompt.clone(),
                 disabled_plugins: p.disabled_plugins.clone(),
                 disabled_tools: p.disabled_tools.clone(),
