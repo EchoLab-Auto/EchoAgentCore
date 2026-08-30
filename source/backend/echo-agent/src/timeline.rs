@@ -115,6 +115,7 @@ impl TimelineProjector {
                     reasoning: None,
                     tool: None,
                     images: None,
+                    seq: 0, // 由 push_timeline 赋递增序号
                 });
             }
             BackendEvent::AgentOutput {
@@ -136,6 +137,7 @@ impl TimelineProjector {
                 session_id,
                 tool_name,
                 arguments,
+                tool_call_id,
                 ..
             } => {
                 self.trunk.push_timeline(TimelineMessage::tool(
@@ -147,6 +149,8 @@ impl TimelineProjector {
                         input: summarize_timeline_value(arguments, 160),
                         output: None,
                         failed: false,
+                        tool_call_id: tool_call_id.clone(),
+                        timed_out: false,
                     },
                 ));
             }
@@ -154,34 +158,64 @@ impl TimelineProjector {
                 session_id,
                 tool_name,
                 result,
+                tool_call_id,
+                timed_out,
                 ..
             } => {
-                let failed = result.trim_start().starts_with("error:");
-                self.update_timeline_tool(session_id, tool_name, result, failed);
+                let failed = *timed_out || result.trim_start().starts_with("error:");
+                self.update_timeline_tool(session_id, tool_name, tool_call_id, result, failed, *timed_out);
             }
             _ => {}
         }
     }
 
-    /// Attach the outcome to the newest still-running timeline tool entry with
-    /// the same name (mirrors the TUI's `finish_tool_entry`).
-    fn update_timeline_tool(&self, session_id: &str, tool_name: &str, result: &str, failed: bool) {
+    /// Attach the outcome to the newest still-running timeline tool entry.
+    /// 优先按 tool_call_id 精确配对（同名并行调用不再配错对）；旧版对端
+    /// （tool_call_id 为空）回退为按名字匹配（mirrors the TUI's
+    /// `finish_tool_entry`）。就地更新会推进条目 seq，已同步过的前端可在
+    /// 下次增量窗口中收到该条目的完成态。
+    fn update_timeline_tool(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        tool_call_id: &str,
+        result: &str,
+        failed: bool,
+        timed_out: bool,
+    ) {
         let mut timeline = match self.trunk.timeline_mut() {
             Some(guard) => guard,
             None => return,
         };
-        if let Some(entry) = timeline.iter_mut().rev().find(|entry| {
-            entry.kind == "tool"
-                && entry.session_id == session_id
-                && entry
-                    .tool
-                    .as_ref()
-                    .is_some_and(|tool| tool.name == tool_name && tool.output.is_none())
-        }) {
+        let found = if tool_call_id.is_empty() {
+            timeline.iter_mut().rev().find(|entry| {
+                entry.kind == "tool"
+                    && entry.session_id == session_id
+                    && entry
+                        .tool
+                        .as_ref()
+                        .is_some_and(|tool| tool.name == tool_name && tool.output.is_none())
+            })
+        } else {
+            timeline.iter_mut().rev().find(|entry| {
+                entry.kind == "tool"
+                    && entry.session_id == session_id
+                    && entry
+                        .tool
+                        .as_ref()
+                        .is_some_and(|tool| tool.tool_call_id == tool_call_id && tool.output.is_none())
+            })
+        };
+        if let Some(entry) = found {
             if let Some(tool) = entry.tool.as_mut() {
                 tool.output = Some(summarize_timeline_value(result, 200));
                 tool.failed = failed;
+                tool.timed_out = timed_out;
             }
+            // 就地更新也推进条目 seq，否则增量同步（since_seq）永远看不到
+            // 这次完成态，前端会一直显示 running。
+            let seq = self.trunk.bump_timeline_seq();
+            entry.seq = seq;
             return;
         }
         // No running entry found — record a completed tool entry directly.
@@ -195,6 +229,8 @@ impl TimelineProjector {
                 input: String::new(),
                 output: Some(summarize_timeline_value(result, 200)),
                 failed,
+                tool_call_id: tool_call_id.to_string(),
+                timed_out,
             },
         ));
     }

@@ -23,6 +23,10 @@ api_key = ""
 thinking = "enabled"
 reasoning_effort = "max"
 max_tool_iterations = 1024
+# 单个工具调用的外圈超时（秒），防止挂死的工具拖死整个 turn；默认 120。
+# 工具自声明的超时优先（如 run_command 的 timeout_secs，最长 300s），
+# 此处配置仅作为无自声明超时工具的保护上限。
+# tool_timeout_secs = 120
 # 上下文 token 预算（trunk 按 token 裁剪）：1M × 0.8 = 800,000。
 # 旧字段 memory_limit（按消息条数）已废弃，不再参与计算。
 memory_limit_tokens = 800000

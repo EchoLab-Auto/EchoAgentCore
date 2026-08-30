@@ -265,6 +265,20 @@ impl ToolRegistry {
             .map(|tool| tool.parameters())
     }
 
+    /// Self-declared execution timeout of a registered tool for the given
+    /// arguments, if the tool publishes one (see [`Tool::timeout_hint`]).
+    pub async fn timeout_hint(
+        &self,
+        name: &str,
+        arguments: &Value,
+    ) -> Option<std::time::Duration> {
+        self.tools
+            .read()
+            .await
+            .get(name)
+            .and_then(|tool| tool.timeout_hint(arguments))
+    }
+
     pub async fn execute(&self, name: &str, arguments: Value) -> Result<String, ToolError> {
         let (tool, disabled) = {
             let tools = self.tools.read().await;

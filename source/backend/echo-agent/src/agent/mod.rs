@@ -60,6 +60,56 @@ struct ActiveInboundTurn {
     cancel: tokio_util::sync::CancellationToken,
 }
 
+/// `run_sudo` 的 SudoResolved 恰好一次保证。
+///
+/// 正常路径调用 [`SudoResolvedGuard::resolve`] 发出授权结果；其余退出
+/// 路径（包括外层工具守卫超时 drop 掉 `run_sudo` future）由 Drop 兜底：
+/// 取消 broker 条目并发出拒绝事件，Panel 的授权弹窗因此总能关闭。
+struct SudoResolvedGuard<'a> {
+    agent: &'a Agent,
+    broker: Arc<crate::sudo::SudoBroker>,
+    request_id: u64,
+    resolved: bool,
+}
+
+impl<'a> SudoResolvedGuard<'a> {
+    fn new(agent: &'a Agent, broker: &Arc<crate::sudo::SudoBroker>, request_id: u64) -> Self {
+        Self {
+            agent,
+            broker: Arc::clone(broker),
+            request_id,
+            resolved: false,
+        }
+    }
+
+    fn resolve(&mut self, accepted: bool, message: impl Into<String>) {
+        if self.resolved {
+            return;
+        }
+        self.resolved = true;
+        // 幂等：已 submit/取消的条目 remove 返回 None，无副作用。
+        self.broker.cancel(self.request_id);
+        self.agent.emit(BackendEvent::SudoResolved {
+            request_id: self.request_id,
+            accepted,
+            message: message.into(),
+        });
+    }
+}
+
+impl Drop for SudoResolvedGuard<'_> {
+    fn drop(&mut self) {
+        if !self.resolved {
+            self.broker.cancel(self.request_id);
+            self.agent.emit(BackendEvent::SudoResolved {
+                request_id: self.request_id,
+                accepted: false,
+                message: "sudo 授权已取消（执行被中断）".into(),
+            });
+        }
+    }
+}
+
 pub(crate) struct InboundTurnRegistration {
     pub id: String,
     pub cancel: tokio_util::sync::CancellationToken,
@@ -866,6 +916,7 @@ impl Agent {
                 session_id,
                 tool_name,
                 arguments,
+                tool_call_id,
                 branch_id,
                 ..
             } => BackendEvent::ToolCall {
@@ -873,12 +924,15 @@ impl Agent {
                 team_id,
                 tool_name,
                 arguments,
+                tool_call_id,
                 branch_id,
             },
             BackendEvent::ToolResult {
                 session_id,
                 tool_name,
                 result,
+                tool_call_id,
+                timed_out,
                 branch_id,
                 ..
             } => BackendEvent::ToolResult {
@@ -886,6 +940,8 @@ impl Agent {
                 team_id,
                 tool_name,
                 result,
+                tool_call_id,
+                timed_out,
                 branch_id,
             },
             BackendEvent::AgentThinking { session_id, .. } => BackendEvent::AgentThinking {
@@ -1633,6 +1689,7 @@ impl Agent {
                             team_id: None,
                             tool_name: call.name.clone(),
                             arguments: call.arguments.clone(),
+                            tool_call_id: call.id.clone(),
                             branch_id: branch_id.to_string(),
                         });
                         self.emit(BackendEvent::ToolResult {
@@ -1640,6 +1697,8 @@ impl Agent {
                             team_id: None,
                             tool_name: call.name.clone(),
                             result: result.clone(),
+                            tool_call_id: call.id.clone(),
+                            timed_out: false,
                             branch_id: branch_id.to_string(),
                         });
                         messages.push(ChatMessage::tool(result, &call.id));
@@ -1660,21 +1719,52 @@ impl Agent {
                 // 超时只是中止单个工具调用，**不中断 turn**：结果以 notice
                 // 形式喂回模型（非 error 前缀），loop 继续，模型可重试或
                 // 直接继续作答。
-                let tool_timeout = self.config.read().await.effective_tool_timeout();
+                //
+                // 外圈超时尊重工具自声明的超时（Tool::timeout_hint），否则
+                // run_command 的 timeout_secs=300 会被默认 120s 的守卫截断。
+                // run_sudo 是 agent 内置编排工具（不在注册表内），其内部已有
+                // 授权+执行双重超时，外圈只需长过两者之和。
+                let tool_timeout = {
+                    let (base, sudo_bound) = {
+                        let config = self.config.read().await;
+                        (
+                            config.effective_tool_timeout(),
+                            std::time::Duration::from_secs(
+                                config.sudo.auth_timeout_secs + config.sudo.command_timeout_secs + 30,
+                            ),
+                        )
+                    };
+                    let hinted = if call.name == "run_sudo" {
+                        Some(sudo_bound)
+                    } else {
+                        match serde_json::from_str::<serde_json::Value>(&call.arguments) {
+                            Ok(args) => self
+                                .tools
+                                .timeout_hint(&call.name, &args)
+                                .await
+                                .map(|h| h + std::time::Duration::from_secs(15)),
+                            Err(_) => None,
+                        }
+                    };
+                    // 工具自声明超时硬上限 600s；用户配置的 base 不受此限。
+                    hinted
+                        .map(|h| base.max(h.min(std::time::Duration::from_secs(600))))
+                        .unwrap_or(base)
+                };
                 let mut timed_out = false;
                 let result = tokio::select! {
                     result = self.run_tool(&session_id, branch_id, call) => result,
                     _ = tokio::time::sleep(tool_timeout) => {
                         timed_out = true;
                         let text = format!(
-                            "notice: tool '{}' timed out after {}s and its execution was aborted.                              You may retry this tool (e.g. shorter command) or continue the answer                              directly with the information you already have; do not treat this                              timeout as a fatal failure.",
+                            "notice: tool '{}' timed out after {}s and its execution was aborted. You may retry this tool (e.g. with a shorter command) or continue the answer directly with the information you already have; do not treat this timeout as a fatal failure.",
                             call.name,
                             tool_timeout.as_secs(),
                         );
                         // run_tool was dropped mid-flight: it already recorded
                         // the ToolCall event, so record the matching ToolResult
                         // or the durable log keeps a dangling call.
-                        self.record_interrupted_tool_result(&session_id, branch_id, call, &text);
+                        self.record_interrupted_tool_result(&session_id, branch_id, call, &text, true);
                         crate::tool::ToolResult::text(text)
                     }
                     _ = turn_cancel.cancelled() => {
@@ -1683,6 +1773,7 @@ impl Agent {
                             branch_id,
                             call,
                             "error: tool execution cancelled",
+                            false,
                         );
                         return Err(anyhow!(TURN_CANCELLED));
                     }
@@ -1753,6 +1844,7 @@ impl Agent {
             team_id: None,
             tool_name: call.name.clone(),
             arguments: call.arguments.clone(),
+            tool_call_id: call.id.clone(),
             branch_id: branch_id.to_string(),
         });
         // The tool call is a durable event: the model-visible loop (call +
@@ -1848,6 +1940,8 @@ impl Agent {
             team_id: None,
             tool_name: call.name.clone(),
             result: result_text.clone(),
+            tool_call_id: call.id.clone(),
+            timed_out: false,
             branch_id: branch_id.to_string(),
         });
         self.trunk
@@ -1882,12 +1976,15 @@ impl Agent {
         branch_id: &str,
         call: &ToolCall,
         result: &str,
+        timed_out: bool,
     ) {
         self.emit(BackendEvent::ToolResult {
             session_id: session_id.to_string(),
             team_id: None,
             tool_name: call.name.clone(),
             result: result.to_string(),
+            tool_call_id: call.id.clone(),
+            timed_out,
             branch_id: branch_id.to_string(),
         });
         self.trunk
@@ -1935,49 +2032,37 @@ impl Agent {
             command: command.clone(),
             session_id: session_id.to_string(),
         });
+        // RAII：任何退出路径（含外层工具守卫超时 drop 掉本 future）都恰好
+        // 发一次 SudoResolved 并释放 broker 条目，Panel 的授权弹窗不会挂在
+        // 死请求上。
+        let mut resolved = SudoResolvedGuard::new(self, &broker, request_id);
 
         let receiver = pending.into_receiver();
-        let password = tokio::time::timeout(
+        let password = match tokio::time::timeout(
             std::time::Duration::from_secs(config.auth_timeout_secs.max(1)),
             receiver,
         )
         .await
-        .map_err(|_| {
-            broker.cancel(request_id);
-            self.emit(BackendEvent::SudoResolved {
-                request_id,
-                accepted: false,
-                message: "sudo 授权超时".into(),
-            });
-            format!(
-                "sudo authorization timed out after {}s — no password was submitted",
-                config.auth_timeout_secs
-            )
-        })?
-        .map_err(|_| {
-            broker.cancel(request_id);
-            self.emit(BackendEvent::SudoResolved {
-                request_id,
-                accepted: false,
-                message: "sudo 授权通道关闭".into(),
-            });
-            "sudo authorization channel closed".to_string()
-        })?
-        .ok_or_else(|| {
-            broker.cancel(request_id);
-            self.emit(BackendEvent::SudoResolved {
-                request_id,
-                accepted: false,
-                message: "sudo 授权被拒绝".into(),
-            });
-            "sudo authorization denied by the user".to_string()
-        })?;
+        {
+            Err(_) => {
+                resolved.resolve(false, "sudo 授权超时");
+                return Err(format!(
+                    "sudo authorization timed out after {}s — no password was submitted",
+                    config.auth_timeout_secs
+                ));
+            }
+            Ok(Err(_)) => {
+                resolved.resolve(false, "sudo 授权通道关闭");
+                return Err("sudo authorization channel closed".to_string());
+            }
+            Ok(Ok(None)) => {
+                resolved.resolve(false, "sudo 授权被拒绝");
+                return Err("sudo authorization denied by the user".to_string());
+            }
+            Ok(Ok(Some(password))) => password,
+        };
 
-        self.emit(BackendEvent::SudoResolved {
-            request_id,
-            accepted: true,
-            message: "sudo 已授权，正在执行".into(),
-        });
+        resolved.resolve(true, "sudo 已授权，正在执行");
         crate::sudo::run_sudo_command(
             &command,
             &password,
@@ -3636,6 +3721,78 @@ pub mod tests {
             result.text.contains("denied"),
             "denial must surface to the model: {}",
             result.text
+        );
+    }
+
+    #[tokio::test]
+    async fn run_sudo_aborted_by_outer_guard_still_resolves_exactly_once() {
+        // 外层工具守卫超时/取消会 drop 掉 run_sudo future；SudoResolvedGuard
+        // 的 Drop 必须兜底发出恰好一次 SudoResolved 并释放 broker 条目，
+        // 否则 Panel 的授权弹窗会永远挂在死请求上。
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Arc::new(test_agent(provider));
+        let (bridge, handle) = crate::create_bridge();
+        agent.attach(Arc::new(handle));
+        let broker = Arc::new(crate::sudo::SudoBroker::new());
+        agent.attach_sudo_broker(broker.clone());
+        {
+            let mut config = agent.config.write().await;
+            config.sudo.enabled = true;
+            config.sudo.auth_timeout_secs = 300;
+        }
+        let session_id = "local:tui::one";
+        agent
+            .trunk
+            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
+        let call = ToolCall {
+            id: "sudo-abort".into(),
+            name: "run_sudo".into(),
+            arguments: r#"{"command":"true"}"#.into(),
+        };
+        let agent_for_task = agent.clone();
+        let task =
+            tokio::spawn(
+                async move { agent_for_task.run_tool(session_id, "branch-1", &call).await },
+            );
+
+        // Wait for the SudoRequest event, then abort mid-wait (simulates the
+        // outer tool guard dropping the future).
+        let mut request_id = None;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+                if let BackendEvent::SudoRequest { request_id: id, .. } = event {
+                    request_id = Some(id);
+                    break;
+                }
+            }
+            if request_id.is_some() {
+                break;
+            }
+        }
+        let request_id = request_id.expect("SudoRequest event emitted");
+        task.abort();
+        let _ = task.await;
+
+        // Drain events: exactly one SudoResolved, rejected.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let mut resolved_events = Vec::new();
+        while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+            if let BackendEvent::SudoResolved { accepted, .. } = event {
+                resolved_events.push(accepted);
+            }
+        }
+        assert_eq!(
+            resolved_events,
+            vec![false],
+            "abort must emit exactly one rejecting SudoResolved"
+        );
+        assert!(
+            !broker.submit(request_id, Some("late".into())),
+            "broker entry must be released"
         );
     }
 

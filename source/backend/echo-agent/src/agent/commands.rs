@@ -365,30 +365,37 @@ impl Agent {
             BackendCommand::RequestTrunkTimeline { team_id, since_seq } => {
                 // 指定人格时返回该 persona 的独立 timeline（不同记忆）。
                 // since_seq > 0 时走增量快照；增量窗口不完整（None）回退全量。
-                let (messages, seq) = if let Some(ref id) = team_id {
+                // full 标志告知前端本次是替换还是追加/修补，前端不再凭 seq
+                // 大小猜测（全量误当增量会整段重复，空增量误当全量会清空聊天）。
+                let (messages, seq, full) = if let Some(ref id) = team_id {
                     match crate::agent_manager::global_manager() {
                         Some(mgr) => match mgr.resolve(Some(&id)) {
                             Some(agent) => {
                                 if since_seq > 0 {
-                                    agent
-                                        .trunk
-                                        .timeline_snapshot_since(since_seq)
-                                        .unwrap_or_else(|| (agent.trunk.timeline_snapshot(), agent.trunk.timeline_seq()))
+                                    match agent.trunk.timeline_snapshot_since(since_seq) {
+                                        Some((messages, seq)) => (messages, seq, false),
+                                        None => (
+                                            agent.trunk.timeline_snapshot(),
+                                            agent.trunk.timeline_seq(),
+                                            true,
+                                        ),
+                                    }
                                 } else {
-                                    (agent.trunk.timeline_snapshot(), agent.trunk.timeline_seq())
+                                    (agent.trunk.timeline_snapshot(), agent.trunk.timeline_seq(), true)
                                 }
                             }
-                            None => (self.trunk.timeline_snapshot(), self.trunk.timeline_seq()),
+                            None => (self.trunk.timeline_snapshot(), self.trunk.timeline_seq(), true),
                         },
-                        None => (self.trunk.timeline_snapshot(), self.trunk.timeline_seq()),
+                        None => (self.trunk.timeline_snapshot(), self.trunk.timeline_seq(), true),
                     }
                 } else {
-                    (self.trunk.timeline_snapshot(), self.trunk.timeline_seq())
+                    (self.trunk.timeline_snapshot(), self.trunk.timeline_seq(), true)
                 };
                 self.emit(BackendEvent::TrunkTimeline {
                     messages,
                     seq,
                     team_id: team_id.clone(),
+                    full,
                 });
             }
             BackendCommand::ClearHistory => {
@@ -399,6 +406,7 @@ impl Agent {
                     messages: Vec::new(),
                     seq: self.trunk.timeline_seq(),
                     team_id: None,
+                    full: true,
                 });
                 self.emit_context_snapshot().await;
                 self.emit(BackendEvent::Error {

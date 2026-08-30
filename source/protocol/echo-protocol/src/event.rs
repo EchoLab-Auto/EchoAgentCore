@@ -94,6 +94,13 @@ pub struct TimelineTool {
     pub input: String,
     pub output: Option<String>,
     pub failed: bool,
+    /// Provider-issued tool-call id; empty = legacy entry.
+    /// 前端据此精确配对/就地修补（同名并行调用不再配错对）。
+    #[serde(default)]
+    pub tool_call_id: String,
+    /// 执行被外圈超时守卫中止。
+    #[serde(default)]
+    pub timed_out: bool,
 }
 
 /// One persisted trunk timeline entry. The timeline is a *display* history
@@ -119,6 +126,10 @@ pub struct TimelineMessage {
     /// Multimodal media attached to the message (URLs / data URIs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
+    /// 条目级单调序号（push 与就地更新都会推进）；0 = 旧版/重启前条目。
+    /// 增量同步（since_seq）按此过滤，就地更新的工具条目会被重新投递。
+    #[serde(default)]
+    pub seq: u64,
 }
 
 impl TimelineMessage {
@@ -139,6 +150,7 @@ impl TimelineMessage {
             reasoning: None,
             tool: None,
             images: (!images.is_empty()).then_some(images),
+            seq: 0,
         }
     }
 
@@ -158,6 +170,7 @@ impl TimelineMessage {
             reasoning,
             tool: None,
             images: None,
+            seq: 0,
         }
     }
 
@@ -177,6 +190,7 @@ impl TimelineMessage {
             reasoning: None,
             tool: Some(tool),
             images: None,
+            seq: 0,
         }
     }
 
@@ -191,6 +205,7 @@ impl TimelineMessage {
             reasoning: None,
             tool: None,
             images: None,
+            seq: 0,
         }
     }
 }
@@ -328,6 +343,10 @@ pub enum BackendEvent {
         team_id: Option<String>,
         tool_name: String,
         arguments: String,
+        /// Provider-issued tool-call id; empty = legacy peer (pre-id protocol).
+        /// 前端据此精确配对 ToolResult（同名并行调用不再配错对）。
+        #[serde(default)]
+        tool_call_id: String,
         /// Owning reply branch (empty for pre-branch legacy paths).
         #[serde(default)]
         branch_id: String,
@@ -339,6 +358,13 @@ pub enum BackendEvent {
         team_id: Option<String>,
         tool_name: String,
         result: String,
+        /// Provider-issued tool-call id; empty = legacy peer.
+        #[serde(default)]
+        tool_call_id: String,
+        /// 执行被外圈超时守卫中止（notice 语义：不算 error，但也不算成功）。
+        /// 前端据此把该工具渲染为失败而非成功。
+        #[serde(default)]
+        timed_out: bool,
         /// Owning reply branch (empty for pre-branch legacy paths).
         #[serde(default)]
         branch_id: String,
@@ -397,6 +423,11 @@ pub enum BackendEvent {
         /// 否则其他 agent 的兜底请求会污染当前视图（串显 alix 会话）。
         #[serde(default)]
         team_id: Option<String>,
+        /// true = 完整快照（替换缓存）；false = 相对 since_seq 的增量
+        /// （追加/就地修补）。前端不再凭 seq 大小猜测，避免把全量快照
+        /// 误当增量追加导致整段历史重复。
+        #[serde(default)]
+        full: bool,
     },
     /// API configuration changed (for TUI settings form).
     ApiConfigUpdated {

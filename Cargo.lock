@@ -416,6 +416,7 @@ dependencies = [
  "echo-session",
  "echo-test-utils",
  "futures-util",
+ "libc",
  "proptest",
  "regex",
  "reqwest",

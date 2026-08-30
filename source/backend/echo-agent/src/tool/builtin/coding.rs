@@ -410,6 +410,55 @@ impl RunCommandTool {
     pub fn new(workspace: PathBuf) -> Self {
         Self { workspace }
     }
+
+    /// 工具自声明的执行超时（与 execute 内部一致：默认 120s，上限 300s）。
+    fn requested_timeout(args: &Value) -> std::time::Duration {
+        std::time::Duration::from_secs(args["timeout_secs"].as_u64().unwrap_or(120).min(300))
+    }
+}
+
+/// RAII：Drop 时向子进程所属的整个进程组发 SIGKILL。
+///
+/// `sh -c` 的孙进程与直接子进程同组（spawn 时 `process_group(0)`），
+/// 因此超时或外层守卫 drop 掉执行 future 时，整组都能被清理，不会留下
+/// 孤儿进程继续运行。正常完成后调用 [`ChildGroupGuard::disarm`] 解除。
+struct ChildGroupGuard {
+    pgid: Option<i32>,
+}
+
+impl ChildGroupGuard {
+    fn new(child: &tokio::process::Child) -> Self {
+        Self {
+            pgid: child.id().map(|pid| pid as i32),
+        }
+    }
+
+    #[cfg(unix)]
+    fn kill_group(&mut self) {
+        if let Some(pgid) = self.pgid.take() {
+            // SAFETY: 负 pid 表示向进程组发信号；该组由我们通过
+            // process_group(0) 创建，组内都是被托管的命令进程。
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn kill_group(&mut self) {
+        // 非 Unix 平台依赖 Command::kill_on_drop 终止直接子进程。
+        self.pgid = None;
+    }
+
+    fn disarm(&mut self) {
+        self.pgid = None;
+    }
+}
+
+impl Drop for ChildGroupGuard {
+    fn drop(&mut self) {
+        self.kill_group();
+    }
 }
 
 #[async_trait]
@@ -430,12 +479,17 @@ impl Tool for RunCommandTool {
             "required": ["command"]
         })
     }
+    fn timeout_hint(&self, arguments: &Value) -> Option<std::time::Duration> {
+        Some(Self::requested_timeout(arguments))
+    }
+
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let cmd = args["command"].as_str().unwrap_or("");
         if cmd.is_empty() {
             return Err(ToolError::InvalidArguments("command required".into()));
         }
-        let timeout_secs = args["timeout_secs"].as_u64().unwrap_or(120).min(300);
+        let timeout = Self::requested_timeout(&args);
+        let timeout_secs = timeout.as_secs();
 
         // Block dangerous patterns.
         let lower = cmd.to_lowercase();
@@ -459,18 +513,29 @@ impl Tool for RunCommandTool {
             }
         }
 
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(cmd)
-                .current_dir(&self.workspace)
-                .output(),
-        )
-        .await;
+        // 独立进程组 + kill_on_drop：无论是内层超时还是外层守卫 drop 掉本
+        // future，都能确保 `sh` 及其子进程被终止（进程组由 guard 兜底）。
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .arg("-c")
+            .arg(cmd)
+            .current_dir(&self.workspace)
+            // spawn + wait_with_output 需显式 pipe（.output() 原本隐式设置）。
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
+        let child = command
+            .spawn()
+            .map_err(|e| ToolError::Execution(format!("command failed: {e}")))?;
+        let mut guard = ChildGroupGuard::new(&child);
+
+        let output = tokio::time::timeout(timeout, child.wait_with_output()).await;
 
         match output {
             Ok(Ok(out)) => {
+                guard.disarm();
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 let stderr = String::from_utf8_lossy(&out.stderr);
                 let mut result = format!("$ {cmd}\n");
@@ -494,10 +559,16 @@ impl Tool for RunCommandTool {
                     ))
                 }
             }
-            Ok(Err(e)) => Err(ToolError::Execution(format!("command failed: {e}"))),
-            Err(_) => Err(ToolError::Execution(format!(
-                "timeout after {timeout_secs}s"
-            ))),
+            Ok(Err(e)) => {
+                guard.disarm();
+                Err(ToolError::Execution(format!("command failed: {e}")))
+            }
+            Err(_) => {
+                guard.kill_group();
+                Err(ToolError::Execution(format!(
+                    "timeout after {timeout_secs}s"
+                )))
+            }
         }
     }
 }
@@ -535,6 +606,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn run_command_timeout_hint_mirrors_execute_parsing() {
+        let tool = RunCommandTool::new(PathBuf::from("/tmp"));
+        // 默认 120s
+        assert_eq!(
+            tool.timeout_hint(&json!({"command": "ls"})),
+            Some(std::time::Duration::from_secs(120))
+        );
+        // 显式值
+        assert_eq!(
+            tool.timeout_hint(&json!({"command": "ls", "timeout_secs": 200})),
+            Some(std::time::Duration::from_secs(200))
+        );
+        // 上限 300s
+        assert_eq!(
+            tool.timeout_hint(&json!({"command": "ls", "timeout_secs": 9999})),
+            Some(std::time::Duration::from_secs(300))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_command_timeout_kills_the_whole_process_group() {
+        let ws = temp_workspace("pgkill");
+        let tool = RunCommandTool::new(ws);
+        // 独特的 sleep 时长作为标记：`sh -c` 派生的孙进程（后台 sleep）与
+        // 前台 sleep 同进程组；若只杀直接子进程，后台 sleep 会继续存活。
+        let marker = 410000 + (std::process::id() % 1000) as u64;
+        let result = tool
+            .execute(json!({
+                "command": format!("sleep {marker} & sleep {marker}"),
+                "timeout_secs": 1
+            }))
+            .await;
+        assert!(
+            matches!(&result, Err(ToolError::Execution(e)) if e.contains("timeout")),
+            "expected timeout, got {result:?}"
+        );
+        let leftover = std::process::Command::new("pgrep")
+            .arg("-f")
+            .arg(format!("sleep {marker}"))
+            .output()
+            .expect("pgrep runs");
+        assert!(
+            !leftover.status.success(),
+            "no process-group survivor expected: {}",
+            String::from_utf8_lossy(&leftover.stdout)
+        );
+        let _ = std::fs::remove_dir_all(temp_workspace("pgkill"));
     }
 
     #[tokio::test]

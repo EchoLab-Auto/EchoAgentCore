@@ -35,6 +35,10 @@ regex.workspace = true
 toml.workspace = true
 tokio-util.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# run_command 进程组清理（ChildGroupGuard 向进程组发 SIGKILL）。
+libc = "0.2"
+
 [dev-dependencies]
 echo-test-utils = { path = "../echo-test-utils" }
 proptest = "1"

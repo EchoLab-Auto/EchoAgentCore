@@ -596,7 +596,13 @@ async fn run_background_branch(
                         .map_err(|error| error.to_string())
                         .unwrap_or_else(|error| format!("error: {error}")),
                     _ = tokio::time::sleep(tool_timeout) => {
-                        format!("error: tool '{}' timed out after {}s", call.name, tool_timeout.as_secs())
+                        // 与主循环一致：超时以 notice（非 error 前缀）喂回模型，
+                        // 分支可重试或用已有信息继续作答，不视为致命失败。
+                        format!(
+                            "notice: tool '{}' timed out after {}s and its execution was aborted. You may retry this tool (e.g. with a shorter command) or continue the answer directly with the information you already have; do not treat this timeout as a fatal failure.",
+                            call.name,
+                            tool_timeout.as_secs(),
+                        )
                     }
                 };
                 messages.push(ChatMessage::tool(output, call.id));

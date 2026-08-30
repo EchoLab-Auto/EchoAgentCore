@@ -107,59 +107,88 @@ async fn handle_connection(
     sudo_broker: Arc<echo_agent::SudoBroker>,
 ) -> anyhow::Result<()> {
     let ws = tokio_tungstenite::accept_async(stream).await?;
-    let (write, mut read) = ws.split();
+    let (mut write, mut read) = ws.split();
 
-    // Forward events from Agent → this Panel connection.
-    //
     // Each connection has its own subscription channel, so one Panel can no
     // longer drain the shared receiver and starve the others. A dead socket
     // only drops this connection's subscriber.
     let mut event_rx = events.subscribe().await;
-    let write_lock = Arc::new(Mutex::new(write));
-    let forwarder = tokio::spawn(async move {
-        while let Some(ev) = event_rx.recv().await {
-            let text = echo_agent::bridge::serialize_event(&ev);
-            let mut w = write_lock.lock().await;
-            if w.send(tokio_tungstenite::tungstenite::Message::Text(text))
-                .await
-                .is_err()
-            {
-                return; // client gone — subscriber is dropped on return
-            }
-        }
-    });
 
-    // Forward commands from Panel → Agent, and sudo passwords → broker.
-    while let Some(Ok(msg)) = read.next().await {
-        match msg {
-            tokio_tungstenite::tungstenite::Message::Text(text) => {
-                match handle_inbound_text(&text) {
-                    Some(InboundFrame::Command(cmd)) => {
-                        let _ = bridge.send_command(cmd);
-                    }
-                    Some(InboundFrame::SudoPassword(submit)) => {
-                        // The password resolves the pending run_sudo oneshot
-                        // directly; it is never logged or serialized into an
-                        // event, and it never enters the agent command queue.
-                        let accepted = sudo_broker.submit(submit.request_id, submit.password);
-                        if !accepted {
-                            warn!(
-                                request_id = submit.request_id,
-                                "sudo password submitted for unknown/expired request"
-                            );
+    // 心跳保活：30s 一次 Ping（tungstenite 在读侧自动回 Pong；任何入站帧
+    // 都刷新 last_seen）。超过 90s 无任何入站活动即判死并断开，避免空闲
+    // 连接被中间层悄悄断开后服务端永远悬挂。
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
+    heartbeat.tick().await; // 首次 tick 立即返回，跳过
+    let mut last_seen = std::time::Instant::now();
+
+    loop {
+        tokio::select! {
+            // Agent → Panel 事件转发。
+            ev = event_rx.recv() => {
+                match ev {
+                    Some(ev) => {
+                        let text = echo_agent::bridge::serialize_event(&ev);
+                        if write
+                            .send(tokio_tungstenite::tungstenite::Message::Text(text))
+                            .await
+                            .is_err()
+                        {
+                            break; // client gone — subscriber is dropped on return
                         }
                     }
-                    None => {}
+                    None => break, // bridge closed
                 }
             }
-            tokio_tungstenite::tungstenite::Message::Close(_) => break,
-            _ => {}
+            // Panel → Agent 命令，以及 sudo 密码 → broker。
+            msg = read.next() => {
+                match msg {
+                    Some(Ok(msg)) => {
+                        last_seen = std::time::Instant::now();
+                        match msg {
+                            tokio_tungstenite::tungstenite::Message::Text(text) => {
+                                match handle_inbound_text(&text) {
+                                    Some(InboundFrame::Command(cmd)) => {
+                                        let _ = bridge.send_command(cmd);
+                                    }
+                                    Some(InboundFrame::SudoPassword(submit)) => {
+                                        // The password resolves the pending run_sudo
+                                        // oneshot directly; it is never logged or
+                                        // serialized into an event, and it never
+                                        // enters the agent command queue.
+                                        let accepted =
+                                            sudo_broker.submit(submit.request_id, submit.password);
+                                        if !accepted {
+                                            warn!(
+                                                request_id = submit.request_id,
+                                                "sudo password submitted for unknown/expired request"
+                                            );
+                                        }
+                                    }
+                                    None => {}
+                                }
+                            }
+                            tokio_tungstenite::tungstenite::Message::Close(_) => break,
+                            _ => {}
+                        }
+                    }
+                    Some(Err(_)) | None => break,
+                }
+            }
+            _ = heartbeat.tick() => {
+                if last_seen.elapsed() > std::time::Duration::from_secs(90) {
+                    break; // 对端已死（无 Pong/任何入站帧）
+                }
+                if write
+                    .send(tokio_tungstenite::tungstenite::Message::Ping(Vec::new()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
         }
     }
 
-    // Connection closed — stop the forwarder so this connection's subscriber
-    // is removed and can no longer accumulate undelivered events.
-    forwarder.abort();
     Ok(())
 }
 

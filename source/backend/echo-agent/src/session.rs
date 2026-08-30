@@ -254,22 +254,36 @@ impl TrunkStore {
 
     /// Append one entry to the display timeline, dropping the oldest entries
     /// beyond the cap. Marks the store dirty so the entry is persisted.
-    pub fn push_timeline(&self, message: crate::event::TimelineMessage) {
+    ///
+    /// 条目 seq 在锁内赋值并与计数器同步推进（仅在条目真正入列时递增），
+    /// 保证 `timeline_snapshot_since` 的按 seq 过滤语义成立。
+    pub fn push_timeline(&self, mut message: crate::event::TimelineMessage) {
         let mut timeline = match self.timeline.try_lock() {
             Ok(guard) => guard,
             // A concurrent save/record is holding the lock; skip rather than
             // block the event loop (emit runs on the hot path).
             Err(_) => return,
         };
+        message.seq = self
+            .timeline_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
         timeline.push(message);
         if timeline.len() > TRUNK_TIMELINE_MAX {
             let excess = timeline.len() - TRUNK_TIMELINE_MAX;
             timeline.drain(..excess);
         }
         drop(timeline);
-        // 序号在锁外递增（不需要与条目严格原子对应，仅用于");
-        self.timeline_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.mark_dirty();
+    }
+
+    /// 推进 timeline 序号并返回新值（就地更新场景：条目内容变化但位置
+    /// 不变，调用方把返回的 seq 写到被更新的条目上，增量同步即可重新
+    /// 投递该条目）。
+    pub fn bump_timeline_seq(&self) -> u64 {
+        self.timeline_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
     }
 
     /// Point-in-time snapshot of the display timeline (oldest first).
@@ -288,28 +302,38 @@ impl TrunkStore {
     /// 增量快照：返回 seq > since_seq 的条目 + 最新 seq。
     /// `since_seq == 0` 时为全量快照。注意：timeline 本身有 1024 条目上限，
     /// 若增量窗口内的条目已被滚出（since_seq 落后太多），返回 None 表示
-    /// 无法增量对齐，调用方应回退全量。
+    /// 无法增量对齐，调用方应回退全量。`since_seq > current`（前端游标来自
+    /// 本 core 重启之前）同样返回 None——序号在重启后重新从持久化条目
+    /// 重建，无法与旧游标对齐。
     pub fn timeline_snapshot_since(
         &self,
         since_seq: u64,
     ) -> Option<(Vec<crate::event::TimelineMessage>, u64)> {
         let current = self.timeline_seq();
-        if since_seq >= current {
+        if since_seq > current {
+            // 游标超前于当前序号（如对端缓存自 core 重启前）：无法对齐。
+            return None;
+        }
+        if since_seq == current {
             return Some((Vec::new(), current));
         }
         let timeline = self.timeline.try_lock().ok()?;
-        // 估算：每条条目对应一次 seq 递增（push_timeline 每次 +1）。
-        // timeline 长度 ≤ TRUNK_TIMELINE_MAX；滚动淘汰只发生在 push 时，
-        // 因此 seq 差值即"被淘汰 + 新增"的总量。
-        let dropped_est = (current - since_seq).saturating_sub(timeline.len() as u64);
-        if dropped_est > 0 {
-            // 增量窗口已不完整：回退全量。
-            return None;
+        // 缺口检测：淘汰只发生在头部；若现存最老条目的 seq 已越过
+        // since_seq + 1，说明窗口内有条目被滚出，增量不再完整。
+        // （seq == 0 的旧版/重启前条目不参与缺口判断，直接按全量处理。）
+        if since_seq > 0 {
+            match timeline.first() {
+                Some(oldest) if oldest.seq > 0 && oldest.seq > since_seq + 1 => return None,
+                Some(oldest) if oldest.seq == 0 => return None,
+                None => return None,
+                _ => {}
+            }
         }
-        // 每 push 一次 seq+1 且 timeline 只淘汰头部，seq 与条目数线性对应。
-        // 增量窗口起点 = 当前长度 - seq 差值（seq 差 ≤ 长度时窗口完整）。
-        let start = timeline.len().saturating_sub((current - since_seq) as usize);
-        let messages = timeline[start..].to_vec();
+        let messages: Vec<_> = timeline
+            .iter()
+            .filter(|m| m.seq > since_seq)
+            .cloned()
+            .collect();
         Some((messages, current))
     }
 
@@ -458,9 +482,7 @@ impl TrunkStore {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
-                if let Ok(mut timeline_guard) = self.timeline.try_lock() {
-                    *timeline_guard = timeline;
-                }
+                self.restore_timeline(timeline);
                 return count;
             }
         }
@@ -496,12 +518,23 @@ impl TrunkStore {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            if let Ok(mut timeline) = self.timeline.try_lock() {
-                *timeline = restored_timeline;
-            }
+            self.restore_timeline(restored_timeline);
             return count;
         }
         self.deserialize_legacy(root)
+    }
+
+    /// Restore the persisted display timeline and rehydrate the seq counter
+    /// from the highest entry seq. 旧版文件的条目没有 seq（反序列化为 0），
+    /// 计数器保持为 0，新条目从 1 开始——此时增量同步的缺口检测会以
+    /// 最老条目 seq == 0 为依据回退全量，语义仍然正确。
+    fn restore_timeline(&self, timeline: Vec<crate::event::TimelineMessage>) {
+        let max_seq = timeline.iter().map(|entry| entry.seq).max().unwrap_or(0);
+        if let Ok(mut guard) = self.timeline.try_lock() {
+            *guard = timeline;
+        }
+        self.timeline_seq
+            .store(max_seq, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Restore identity labels from a v4/v5 document root.
@@ -1218,6 +1251,7 @@ mod tests {
                 reasoning: None,
                 tool: None,
                 images: None,
+                seq: 0,
             });
         }
         let timeline = store.timeline_snapshot();
@@ -1257,6 +1291,7 @@ mod tests {
             reasoning: None,
             tool: None,
             images: None,
+            seq: 0,
         });
         store.save_now().await;
         assert_eq!(store.trunk_len(), 1);
@@ -1300,6 +1335,7 @@ mod tests {
             reasoning: None,
             tool: None,
             images: None,
+            seq: 0,
         });
         store.push_timeline(crate::event::TimelineMessage {
             kind: "backend".into(),
@@ -1310,6 +1346,7 @@ mod tests {
             reasoning: Some(vec!["先分析".into()]),
             tool: None,
             images: None,
+            seq: 0,
         });
         store.save_now().await;
 
@@ -1350,6 +1387,94 @@ mod tests {
         );
         assert_eq!(restored, 0);
         assert!(store.timeline_snapshot().is_empty(), "no timeline → empty");
+    }
+
+    fn push_user(store: &TrunkStore, content: &str) {
+        store.push_timeline(crate::event::TimelineMessage {
+            kind: "user".into(),
+            content: content.into(),
+            session_id: "local:tui::local_user".into(),
+            time: 0,
+            source: None,
+            reasoning: None,
+            tool: None,
+            images: None,
+            seq: 0,
+        });
+    }
+
+    #[test]
+    fn snapshot_since_filters_by_entry_seq() {
+        let store = TrunkStore::new(1000);
+        push_user(&store, "a");
+        push_user(&store, "b");
+        push_user(&store, "c");
+        // seq: a=1, b=2, c=3
+        let (delta, seq) = store.timeline_snapshot_since(1).expect("window intact");
+        assert_eq!(seq, 3);
+        assert_eq!(
+            delta.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(),
+            vec!["b", "c"]
+        );
+        // 空增量：只推进游标，不返回条目（前端不得据此清空聊天）。
+        let (delta, seq) = store.timeline_snapshot_since(3).expect("no-op");
+        assert!(delta.is_empty());
+        assert_eq!(seq, 3);
+    }
+
+    #[test]
+    fn snapshot_since_redelivers_in_place_updated_entry() {
+        let store = TrunkStore::new(1000);
+        push_user(&store, "a");
+        // 模拟 update_timeline_tool 的就地更新：bump 计数器并写回条目 seq。
+        let new_seq = store.bump_timeline_seq();
+        if let Some(mut timeline) = store.timeline_mut() {
+            timeline[0].seq = new_seq;
+            timeline[0].content = "a-updated".into();
+        }
+        let (delta, seq) = store.timeline_snapshot_since(1).expect("window intact");
+        assert_eq!(seq, 2);
+        assert_eq!(delta.len(), 1, "updated entry re-delivered");
+        assert_eq!(delta[0].content, "a-updated");
+    }
+
+    #[test]
+    fn snapshot_since_returns_none_on_gap_or_future_cursor() {
+        let store = TrunkStore::new(1000);
+        for i in 0..(TRUNK_TIMELINE_MAX + 10) {
+            push_user(&store, &format!("msg-{i}"));
+        }
+        // 头部已滚出：最老条目 seq = 11，since_seq = 1 的窗口不完整 → None。
+        assert!(store.timeline_snapshot_since(1).is_none(), "gap → full fallback");
+        // 恰好贴着现存最老条目（seq 11 的前一个）仍可增量。
+        let cursor = store.timeline_snapshot().first().unwrap().seq - 1;
+        assert!(store.timeline_snapshot_since(cursor).is_some());
+        // 游标超前于当前序号（来自 core 重启前）→ None。
+        let current = store.timeline_seq();
+        assert!(store.timeline_snapshot_since(current + 1).is_none());
+    }
+
+    #[tokio::test]
+    async fn timeline_seq_survives_save_load() {
+        let path = temp_sessions_path("timeline-seq-rehydrate");
+        let _ = std::fs::remove_file(&path);
+        let store = TrunkStore::new(1000);
+        store.set_persist_path(&path);
+        push_user(&store, "a");
+        push_user(&store, "b");
+        store.save_now().await;
+
+        let restored = TrunkStore::new(1000);
+        restored.set_persist_path(&path);
+        restored.load_from_file().await;
+        assert_eq!(restored.timeline_seq(), 2, "seq counter rehydrated from disk");
+        // 重启后继续 push，序号连续不回退。
+        push_user(&restored, "c");
+        assert_eq!(restored.timeline_seq(), 3);
+        let (delta, _) = restored.timeline_snapshot_since(2).expect("intact");
+        assert_eq!(delta.len(), 1);
+        assert_eq!(delta[0].content, "c");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// BASELINE (Phase 0): the v4 persistence format dropped `tool_calls` and
