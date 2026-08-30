@@ -565,6 +565,12 @@ pub struct TeamInfo {
     /// 禁用时 Panel 侧边栏不展示"全局"分组（该 agent 只有其独立会话）。
     #[serde(default = "default_true")]
     pub global_session_enabled: bool,
+    /// Chatbot 会话系统插件是否对该 agent 启用（插件 id
+    /// echo-agent.chatbot.sessions）。会话/临时分支相关能力的总开关：
+    /// 禁用时侧边栏不显示「会话」与「临时分支」卡片，该 agent 只保留
+    /// 独立会话的数据流（对话仍正常，仅不展示会话管理 UI）。
+    #[serde(default = "default_true")]
+    pub chat_sessions_enabled: bool,
     /// Persona system prompt (empty = inherits global prompt/skills).
     #[serde(default)]
     pub system_prompt: String,

@@ -46,6 +46,12 @@ pub const REPLY_BRANCH_PLUGIN_ID: &str = "echo-agent.branch.reply";
 /// 独立会话（如 self-coding 只留 local:tui::local_user）。
 pub const GLOBAL_SESSION_PLUGIN_ID: &str = "echo-agent.session.global";
 
+/// Chatbot 会话系统插件 id（会话/临时分支能力的总开关）。
+/// 由 persona enabled_plugins/disabled_plugins 白名单语义推导：
+/// 禁用时 Panel 侧边栏不显示「会话」与「临时分支」卡片；该 agent
+/// 的对话数据流不受影响（消息照常收发，仅不展示会话管理 UI）。
+pub const CHAT_SESSIONS_PLUGIN_ID: &str = "echo-agent.chatbot.sessions";
+
 #[derive(Debug, Clone)]
 struct ActiveInboundTurn {
     session_id: String,
@@ -731,6 +737,23 @@ impl Agent {
             return false;
         }
         if cap.disabled_plugins.iter().any(|p| p == GLOBAL_SESSION_PLUGIN_ID) {
+            return false;
+        }
+        true
+    }
+
+    /// Chatbot 会话系统是否对该 agent 启用（见 [`CHAT_SESSIONS_PLUGIN_ID`]）。
+    pub fn allows_chat_sessions(&self) -> bool {
+        let guard = self.capabilities.lock().unwrap();
+        let Some(cap) = guard.as_ref() else {
+            return true;
+        };
+        if !cap.enabled_plugins.is_empty()
+            && !cap.enabled_plugins.iter().any(|p| p == CHAT_SESSIONS_PLUGIN_ID)
+        {
+            return false;
+        }
+        if cap.disabled_plugins.iter().any(|p| p == CHAT_SESSIONS_PLUGIN_ID) {
             return false;
         }
         true

@@ -323,6 +323,17 @@ impl AgentManager {
                             .iter()
                             .any(|x| x == crate::agent::GLOBAL_SESSION_PLUGIN_ID)
                 },
+                // Chatbot 会话系统总开关：与 Agent::allows_chat_sessions 同语义。
+                chat_sessions_enabled: {
+                    let has_sessions = p.enabled_plugins.is_empty()
+                        || p.enabled_plugins
+                            .iter()
+                            .any(|x| x == crate::agent::CHAT_SESSIONS_PLUGIN_ID);
+                    has_sessions
+                        && !p.disabled_plugins
+                            .iter()
+                            .any(|x| x == crate::agent::CHAT_SESSIONS_PLUGIN_ID)
+                },
                 system_prompt: p.system_prompt.clone(),
                 disabled_plugins: p.disabled_plugins.clone(),
                 disabled_tools: p.disabled_tools.clone(),

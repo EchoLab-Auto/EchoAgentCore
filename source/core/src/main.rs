@@ -293,6 +293,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 "全局会话视图：合并展示该 agent 的所有会话消息（可按人格白名单禁用）",
             ),
             PluginManifest::builtin(
+                echo_agent::agent::CHAT_SESSIONS_PLUGIN_ID,
+                "会话系统",
+                env!("CARGO_PKG_VERSION"),
+                PluginKind::Management,
+                "chat_sessions",
+                "Chatbot 会话系统：会话列表/全局会话/临时分支等会话相关能力的总开关（可按人格白名单禁用）",
+            ),
+            PluginManifest::builtin(
                 "echo-agent.provider.llm",
                 "LLM Provider",
                 env!("CARGO_PKG_VERSION"),
