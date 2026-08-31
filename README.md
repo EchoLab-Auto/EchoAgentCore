@@ -44,8 +44,7 @@ EchoAgentCore/
 │   │   ├── echo-adapter-qq/      # QQ/OneBot 适配器（门控、NapCat 客户端）
 │   │   └── echo-test-utils/      # 共享测试 mock（仅 dev-dependency）
 │   └── core/                     # echo-agent-core 二进制（组合根）
-├── doc/develop/                  # 开发文档（含 protocol.md 线协议契约）
-├── doc/decisions/                # 架构决策记录（ADR）
+├── document/                     # 项目文档群（ProDoc 格式：index.md 入口，含 ADR 0001-0017）
 ├── packaging/systemd/            # 用户级 systemd 单元模板
 ├── scripts/                      # install.sh / update.sh（受控自更新）
 ├── napcat/                       # NapCat Docker 配置
@@ -115,7 +114,7 @@ cargo fmt --all --check
 | `echo-agent-core.service` | 常驻 Core 服务 |
 | `echo-agent-core-update.service` | 一次性更新器（agent 自更新工具触发） |
 
-详见 [doc/develop/install.md](doc/develop/install.md)。卸载：`./scripts/uninstall.sh`
+详见 [document/ops-deploy.md](document/ops-deploy.md)。卸载：`./scripts/uninstall.sh`
 （保留配置与会话历史；`--purge` 连配置一起删，`--dry-run` 先预览）。
 
 > 注意：为了让 `run_sudo` 能提权，常驻 `echo-agent-core.service` 关闭了
@@ -141,22 +140,28 @@ docker run -v "$PWD/config:/app/config" -p 3131:3131 -p 3132:3132 echo-agent-cor
 - `[adapters.qq]`：QQ 适配器开关、NapCat HTTP API、owner_qq、命令前缀；`[adapters.qq.server]` 反向 WS 监听 `:3131` 与访问令牌（`ECHO_ACCESS_TOKEN` env 可覆盖）。
 - `[core] management_address`：前端连接地址（默认 `127.0.0.1:3132`）。
 
-前端通过 `/api`、`/qq setting` 等命令发起的修改由 Core 经 `ConfigStore` 原子写回本文件（见 [doc/develop/config/persistence.md](doc/develop/config/persistence.md)）。
+前端通过 `/api`、`/qq setting` 等命令发起的修改由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core-config-persistence.md](document/core-config-persistence.md)）。
 
 ## 前端协议
 
-Core 与前端之间是 `ws://<management_address>` 上的 JSON 文本帧协议，类型定义在 `echo-protocol` crate，完整契约见 [doc/develop/protocol.md](doc/develop/protocol.md)。serde 表示即线格式，向后兼容演进（新增字段必须 `#[serde(default)]`）。
+Core 与前端之间是 `ws://<management_address>` 上的 JSON 文本帧协议，类型定义在 `echo-protocol` crate，完整契约见 [document/protocol.md](document/protocol.md)。serde 表示即线格式，向后兼容演进（新增字段必须 `#[serde(default)]`）。
 
 ## 文档索引
 
+文档群按 [ProDoc](https://github.com/EchoLab-Auto/DocRenderer) 规范组织（文档图模型：`echo-prodoc view document/` 可视化浏览）。入口 [document/index.md](document/index.md)。
+
 | 文档 | 内容 |
 |---|---|
-| [doc/develop/protocol.md](doc/develop/protocol.md) | 前端 ⇄ Core 线协议契约 |
-| [doc/develop/install.md](doc/develop/install.md) | 一键安装、systemd 服务、受控自更新 |
-| [doc/develop/agent/background-tasks.md](doc/develop/agent/background-tasks.md) | 后台任务、并行分支、有序整合 |
-| [doc/develop/config/persistence.md](doc/develop/config/persistence.md) | ConfigStore 原子持久化 |
-| [doc/develop/adapter/qq/gating.md](doc/develop/adapter/qq/gating.md) | QQ 5 层门控管道 |
-| [doc/develop/testing.md](doc/develop/testing.md) | 测试策略 |
+| [document/architecture.md](document/architecture.md) | 架构总览（crate、接缝、事件、会话、扩展点） |
+| [document/protocol.md](document/protocol.md) | 前端 ⇄ Core 线协议契约 |
+| [document/ops-deploy.md](document/ops-deploy.md) | 一键安装、systemd 服务、受控自更新 |
+| [document/core.md](document/core.md) | Core 框架（进程结构、会话记忆、配置） |
+| [document/panel.md](document/panel.md) | Panel 前端（仓库布局、数据流、视图规范） |
+| [document/core-background-tasks.md](document/core-background-tasks.md) | 后台任务、并行分支、有序整合 |
+| [document/core-config-persistence.md](document/core-config-persistence.md) | ConfigStore 原子持久化 |
+| [document/adapter-qq-gating.md](document/adapter-qq-gating.md) | QQ 5 层门控管道 |
+| [document/dev-testing.md](document/dev-testing.md) | 测试策略 |
+| [document/adr-index.md](document/adr-index.md) | 架构决策记录（ADR 0001-0017） |
 
 ## 从 EchoAgentPanel 单体仓库迁移
 
