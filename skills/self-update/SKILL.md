@@ -32,7 +32,23 @@ bash ~/.local/libexec/echo-agent-core/update.sh
 - 构建产物：`target/release/echo-agent-core`
 - 替换目标：`~/.local/libexec/echo-agent-core/echo-agent-core-bin`
 - 状态文件：`~/.local/state/echo-agent-core/update-status`
-  （state=running → building → done；服务失败时可能停在 failed）
+  （state=running → restarting → updated；服务失败时可能停在 failed）
+
+## ⚠️ 轮询契约：看到 restarting 就立即收尾（防自杀）
+
+**不要轮询等待 `state=updated`/`done`**：updated 在重启 + QQ 恢复
+（最长约 2 分钟）之后才写入，等它的 turn 会被自己的重启杀死——
+排空窗口耗尽后 SIGKILL，命令永远拿不到结果，Panel 时间线上留下
+一条永远"运行中"的僵尸工具行（已实际发生多次）。
+
+正确做法：
+
+1. 启动 update.sh 后轮询 `state=`，间隔 5-10s；
+2. **一看到 `state=restarting`（构建完成、即将重启）就立即停止轮询**，
+   直接结束当前 turn，告知用户："更新已构建安装，服务正在重启
+   （进行中的回复会先完成），面板将短暂重连，稍后验证即可"；
+3. 重启后面板重连，再读取状态文件确认 `state=updated` 完成验证。
+   （重启后的验证属于新 turn，不受重启影响。）
 
 ## 更新流程（Panel）
 
@@ -61,8 +77,9 @@ bash ~/.local/libexec/echo-agent-panel/update.sh \
 5. 启动日志：`journalctl --user -u echo-agent-core --no-pager -n 40`
    - 应看到 `agent supervisor ready agents=[...]`、
      `plugins mounted plugins=[...]`、`sessions restored` 等行
-6. 若 update-status 停在 state=running 且服务已重启：人工补写 state=done
-   （构建脚本可能在超时中断，但二进制已替换、服务已重启，仅为状态残留）。
+6. 若 update-status 停在 state=running/restarting 且服务已重启：人工补写
+   state=updated（构建脚本可能在超时中断，但二进制已替换、服务已重启，
+   仅为状态残留）。
 
 ## 硬性红线（来自实际事故）
 

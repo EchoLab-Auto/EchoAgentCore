@@ -528,8 +528,34 @@ impl TrunkStore {
     /// from the highest entry seq. 旧版文件的条目没有 seq（反序列化为 0），
     /// 计数器保持为 0，新条目从 1 开始——此时增量同步的缺口检测会以
     /// 最老条目 seq == 0 为依据回退全量，语义仍然正确。
+    ///
+    /// 顺带清理僵尸 running 工具条目：进程被杀（如自更新重启）时
+    /// run_tool 的 ToolResult 永远不会到达，条目 output 永远为 null，
+    /// 前端会一直显示"运行中"。恢复时把这类条目标注为中断并分配新
+    /// seq（增量同步会把完成态重新投递给已连接的前端）。
     fn restore_timeline(&self, timeline: Vec<crate::event::TimelineMessage>) {
-        let max_seq = timeline.iter().map(|entry| entry.seq).max().unwrap_or(0);
+        let mut max_seq = timeline.iter().map(|entry| entry.seq).max().unwrap_or(0);
+        let mut timeline = timeline;
+        let mut interrupted = 0usize;
+        for entry in timeline.iter_mut() {
+            if entry.kind != "tool" {
+                continue;
+            }
+            let Some(tool) = entry.tool.as_mut() else {
+                continue;
+            };
+            if tool.output.is_none() {
+                tool.output = Some("[已中断] Core 服务重启导致本次调用未返回，可重试".into());
+                tool.failed = true;
+                max_seq += 1;
+                entry.seq = max_seq;
+                interrupted += 1;
+            }
+        }
+        if interrupted > 0 {
+            tracing::info!(interrupted, "dangling running tool entries marked interrupted on restore");
+            self.mark_dirty();
+        }
         if let Ok(mut guard) = self.timeline.try_lock() {
             *guard = timeline;
         }
@@ -1454,9 +1480,42 @@ mod tests {
         assert!(store.timeline_snapshot_since(current + 1).is_none());
     }
 
+    #[test]
+    fn restore_marks_dangling_running_tool_as_interrupted() {
+        // 进程被杀（如自更新重启）时 ToolResult 永远不会到达；恢复时必须
+        // 把 output=null 的僵尸 running 条目标注为中断并分配新 seq，
+        // 否则前端会一直显示"运行中"。
+        let store = TrunkStore::new(1000);
+        store.deserialize(
+            r#"{
+                "version": 5,
+                "events": [],
+                "timeline": [
+                    {"kind":"tool","content":"run_command","session_id":"s","time":1,
+                     "tool":{"name":"run_command","input":"x","output":null,"failed":false}},
+                    {"kind":"tool","content":"read_file","session_id":"s","time":2,
+                     "tool":{"name":"read_file","input":"y","output":"ok","failed":false}}
+                ]
+            }"#,
+        );
+        let timeline = store.timeline_snapshot();
+        let zombie = timeline[0].tool.as_ref().unwrap();
+        assert!(zombie.failed, "dangling entry marked failed");
+        assert!(
+            zombie.output.as_deref().unwrap_or_default().contains("已中断"),
+            "interrupted note attached"
+        );
+        assert!(timeline[0].seq > 0, "interrupted entry gets a fresh seq");
+        // 已完成的条目不受影响。
+        let done = timeline[1].tool.as_ref().unwrap();
+        assert!(!done.failed);
+        assert_eq!(done.output.as_deref(), Some("ok"));
+        assert_eq!(timeline[1].seq, 0);
+        assert_eq!(store.timeline_seq(), 1, "seq counter past the patched entry");
+    }
+
     #[tokio::test]
-    async fn timeline_seq_survives_save_load() {
-        let path = temp_sessions_path("timeline-seq-rehydrate");
+    async fn timeline_seq_survives_save_load() {        let path = temp_sessions_path("timeline-seq-rehydrate");
         let _ = std::fs::remove_file(&path);
         let store = TrunkStore::new(1000);
         store.set_persist_path(&path);

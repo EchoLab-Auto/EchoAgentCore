@@ -287,6 +287,11 @@ temporary=""
 
 if ((core_was_active)); then
     PHASE=restarting
+    # 重启前先落一个"即将重启"的中间终态：正在轮询 update-status 的 agent
+    # （self-update 流程）看到 restarting 就应立即结束当前 turn，而不是等
+    # state=updated——updated 在重启+QQ 恢复之后才写入，等它的 turn 会被
+    # 自己的重启杀死（排空窗口耗尽后 SIGKILL，遗留僵尸 running 工具条目）。
+    write_status restarting "binary installed; restarting core (active turns drain first)" "$TARGET"
     if ! systemctl --user restart echo-agent-core.service; then
         restart_failed=1
     else
