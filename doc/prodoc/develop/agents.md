@@ -1,6 +1,7 @@
 ---
 id: agents
 title: "多 Agent 与会话"
+order: 4
 x: 760
 y: 300
 group: 机制

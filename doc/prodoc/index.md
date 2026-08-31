@@ -1,6 +1,7 @@
 ---
 id: index
 title: "EchoAgent 文档总览"
+order: 0
 x: 40
 y: 40
 group: 总览

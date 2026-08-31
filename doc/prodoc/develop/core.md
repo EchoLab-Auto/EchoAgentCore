@@ -1,6 +1,7 @@
 ---
 id: core
 title: "Core 框架"
+order: 1
 x: 400
 y: 40
 group: 架构

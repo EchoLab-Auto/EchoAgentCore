@@ -1,6 +1,7 @@
 ---
 id: plugins
 title: "插件系统"
+order: 5
 x: 1120
 y: 300
 group: 机制

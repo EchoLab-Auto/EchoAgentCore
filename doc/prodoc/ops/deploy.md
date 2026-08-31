@@ -1,6 +1,7 @@
 ---
 id: deploy
 title: "部署与自更新"
+order: 1
 x: 400
 y: 560
 group: 运维

@@ -1,6 +1,7 @@
 ---
 id: panel
 title: "Panel 前端"
+order: 2
 x: 760
 y: 40
 group: 架构
