@@ -2,10 +2,17 @@
 id: core
 title: "Core 框架"
 order: 1
+parent: index
 x: 400
 y: 40
 group: 架构
-link: ["protocol | 协议与数据流", "agents | 多 Agent 与会话", "plugins | 插件系统"]
+link: [
+    "panel | Panel 前端",
+    "protocol | 协议与数据流",
+    "agents | 多 Agent 与会话",
+    "plugins | 插件系统",
+    "deploy | 部署与自更新",
+]
 ---
 
 # Core 框架

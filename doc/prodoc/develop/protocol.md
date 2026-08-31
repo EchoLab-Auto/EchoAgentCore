@@ -2,10 +2,16 @@
 id: protocol
 title: "协议与数据流"
 order: 3
+parent: index
 x: 400
 y: 300
 group: 架构
-link: ["agents | 多 Agent 与会话"]
+link: [
+    "core | Core 框架",
+    "panel | Panel 前端",
+    "agents | 多 Agent 与会话",
+    "deploy | 部署与自更新",
+]
 ---
 
 # 协议与数据流

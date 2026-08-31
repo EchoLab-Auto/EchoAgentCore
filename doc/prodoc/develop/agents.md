@@ -2,10 +2,16 @@
 id: agents
 title: "多 Agent 与会话"
 order: 4
+parent: index
 x: 760
 y: 300
 group: 机制
-link: ["plugins | 插件系统"]
+link: [
+    "plugins | 插件系统",
+    "core | Core 框架",
+    "protocol | 协议与数据流",
+    "panel | Panel 前端",
+]
 ---
 
 # 多 Agent 与会话

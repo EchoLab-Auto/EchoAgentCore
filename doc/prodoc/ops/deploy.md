@@ -2,10 +2,17 @@
 id: deploy
 title: "部署与自更新"
 order: 1
+parent: index
 x: 400
 y: 560
 group: 运维
-link: ["core | Core 框架", "panel | Panel 前端"]
+link: [
+    "core | Core 框架",
+    "panel | Panel 前端",
+    "protocol | 协议与数据流",
+    "plugins | 插件系统",
+    "agents | 多 Agent 与会话",
+]
 ---
 
 # 部署与自更新

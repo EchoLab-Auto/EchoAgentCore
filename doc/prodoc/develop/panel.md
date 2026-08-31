@@ -2,10 +2,15 @@
 id: panel
 title: "Panel 前端"
 order: 2
+parent: index
 x: 760
 y: 40
 group: 架构
-link: ["protocol | 协议与数据流"]
+link: [
+    "protocol | 协议与数据流",
+    "core | Core 框架",
+    "agents | 多 Agent 与会话",
+]
 ---
 
 # Panel 前端
