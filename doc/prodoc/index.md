@@ -6,12 +6,10 @@ x: 40
 y: 40
 group: 总览
 link: [
-    "develop/core | Core 框架",
-    "develop/panel | Panel 前端",
-    "develop/protocol | 协议与数据流",
-    "develop/agents | 多 Agent 与会话",
-    "develop/plugins | 插件系统",
-    "ops/deploy | 部署与自更新",
+    "core | Core 后端",
+    "panel | Panel 前端",
+    "protocol | 协议",
+    "ops | 运维",
 ]
 ---
 

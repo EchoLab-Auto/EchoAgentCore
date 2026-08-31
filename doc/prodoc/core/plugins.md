@@ -2,10 +2,10 @@
 id: plugins
 title: "插件系统"
 order: 5
-parent: index
+parent: core
 x: 1120
 y: 300
-group: 机制
+group: 后端模块
 link: [
     "agents | 多 Agent 与会话",
     "core | Core 框架",

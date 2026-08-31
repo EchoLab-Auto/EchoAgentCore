@@ -5,11 +5,11 @@ order: 2
 parent: index
 x: 760
 y: 40
-group: 架构
+group: 前端模块
 link: [
-    "protocol | 协议与数据流",
-    "core | Core 框架",
-    "agents | 多 Agent 与会话",
+    "core | Core 后端",
+    "protocol | 协议",
+    "ops | 运维",
 ]
 ---
 

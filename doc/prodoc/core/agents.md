@@ -2,10 +2,10 @@
 id: agents
 title: "多 Agent 与会话"
 order: 4
-parent: index
+parent: core
 x: 760
 y: 300
-group: 机制
+group: 后端模块
 link: [
     "plugins | 插件系统",
     "core | Core 框架",
