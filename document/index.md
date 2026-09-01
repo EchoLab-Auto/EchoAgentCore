@@ -31,12 +31,14 @@ graph LR
   Home --> Ops[部署与自更新|/ops-deploy.md]
   Home --> Dev[开发指南|/dev-guide.md]
   Home --> ADR[架构决策|/adr-index.md]
-  Core --> Loop[Agent 循环与工具|/core-agent-loop.md]
+  Core --> Loop[Agent 循环|/core-agent-loop.md]
+  Core --> Tools[工具系统|/core-tools.md]
+  Core --> Skills[技能系统|/core-skills.md]
   Core --> Agents[多 Agent 与会话|/core-agents.md]
   Core --> Plugins[插件化设计|/core-plugins.md]
   Core --> Tasks[后台任务|/core-background-tasks.md]
   Core --> Persist[配置持久化|/core-config-persistence.md]
-  Core --> Gating[QQ 门控|/adapter-qq-gating.md]
+  Plugins --> Gating[QQ 门控|/adapter-qq-gating.md]
   Proto --> Core
   Panel --> Proto
   Ops --> Drain[ADR-0015 优雅排空|/0015-graceful-drain.md]
