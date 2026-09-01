@@ -326,6 +326,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             ),
         ];
 
+        // 先应用持久化的禁用状态再挂载：register_and_mount 对禁用插件只注册
+        // 不挂载，禁用的插件在启动时不获得任何副作用。
+        plugin_host
+            .registry
+            .apply_disabled(&cfg.agent.disabled_plugins);
+
         for manifest in manifests.drain(..) {
             let m2 = manifest.clone();
             let entry = manifest.entry.clone();
@@ -339,10 +345,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!(e).context(format!("mount plugin {}", m2.id)))?;
         }
 
-        // 应用持久化的禁用状态（重启后恢复用户选择）。
-        plugin_host
-            .registry
-            .apply_disabled(&cfg.agent.disabled_plugins);
         info!(
             plugins = ?plugin_host.descriptors().iter().map(|d| d.id.clone()).collect::<Vec<_>>(),
             "plugins mounted"

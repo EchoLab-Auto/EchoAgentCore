@@ -37,11 +37,12 @@ y: 1385
 - 每个插件 id 均可放入 agent 的 `enabled_plugins`（白名单）或 `disabled_plugins`（黑名单）
 - 白名单非空 = 只启用列出的插件；黑名单优先
 - 前端资源页可按 kind 勾选（adapter/management 类），保存后写回 TOML
+- **当前生效范围（Phase 1）**：三个 UI 门控插件（`echo-agent.branch.reply` / `echo-agent.session.global` / `echo-agent.chatbot.sessions`）的禁用真实生效（面板侧会话/分支能力隐藏）；其余内置插件的禁用目前只影响 Panel 展示与持久化状态（mount 闭包实化随 Phase 2 推进，见 [ADR-0013](./0013-plugin-architecture.md)）
 
 ## 动态编排工具
 
 - 编排类工具（`schedule_timer`、`run_subagent`、`spawn_background_task`、`spawn_parallel_task`、`framework_update`、`run_sudo` 等）由 loop 内联调度，按 persona 白名单过滤（`allows_dynamic_tool`）
-- 工具 schema 与处理函数同源（`ORCHESTRATION_TOOL_NAMES`），避免漂移
+- 工具名表 `ORCHESTRATION_TOOL_NAMES` 由单元测试守护与 schema 一致（`framework_update`/`run_sudo` 因另有配置门控不在表内）
 
 ## 用户扩展方式
 

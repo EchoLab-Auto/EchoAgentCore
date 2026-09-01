@@ -175,7 +175,9 @@ impl PluginRegistry {
         Ok(())
     }
 
-    fn is_enabled(&self, id: &str) -> bool {
+    /// Whether a plugin is currently enabled (default true before any
+    /// `apply_disabled` / `set_enabled`).
+    pub fn is_enabled(&self, id: &str) -> bool {
         self.enabled_state
             .lock()
             .unwrap()

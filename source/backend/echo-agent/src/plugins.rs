@@ -109,9 +109,16 @@ impl PluginHost {
     }
 
     /// Register a plugin and mount it (composition root).
+    ///
+    /// A plugin whose persisted state is disabled (see
+    /// [`PluginRegistry::apply_disabled`]) is registered but **not mounted**:
+    /// disabled plugins must never acquire side effects at boot.
     pub fn register_and_mount(&self, plugin: Arc<dyn echo_plugin::Plugin>) -> Result<(), String> {
         let id = plugin.manifest().id.clone();
         self.registry.register(Arc::clone(&plugin))?;
+        if !self.registry.is_enabled(&id) {
+            return Ok(());
+        }
         self.registry
             .mount(&id, &self.ctx())
             .map_err(|e| format!("plugin {id} mount failed: {e}"))?;

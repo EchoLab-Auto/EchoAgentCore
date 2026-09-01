@@ -115,8 +115,11 @@ pub struct TeamMember {
     /// persists separately via `disabled_agents`).
     pub enabled: bool,
     /// Per-persona disabled built-in plugins (e.g. "echo-agent.adapter.qq",
-    /// "echo-agent.orchestration"). These capabilities are hidden from this
-    /// agent's LLM: adapter tools, background/spawn tools, etc.
+    /// "echo-agent.orchestration").
+    /// 当前实际效果（Phase 1）：仅三个 UI 门控插件（branch.reply /
+    /// session.global / chatbot.sessions）的禁用会真实生效（隐藏面板侧
+    /// 会话/分支能力）；其余插件的禁用只影响 Panel 展示与持久化状态，
+    /// 不会对 LLM 隐藏该插件的工具（工具级控制请用 disabled_tools）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_plugins: Vec<String>,
     /// Per-persona disabled tools (by tool name, e.g. "framework_update").

@@ -376,7 +376,7 @@ mv -f "$revision_temporary" "$REVISION_FILE"
 PHASE=verifying_plugins
 missing_plugins=""
 if [[ -x "$BINARY" ]]; then
-    expected_ids="echo-agent.tools.builtin echo-agent.adapter.qq echo-agent.skills.dir echo-agent.orchestration echo-agent.provider.llm echo-agent.loop.runner echo-agent.management.panel"
+    expected_ids="echo-agent.tools.builtin echo-agent.adapter.qq echo-agent.skills.dir echo-agent.orchestration echo-agent.provider.llm echo-agent.loop.runner echo-agent.management.panel echo-agent.branch.reply echo-agent.session.global echo-agent.chatbot.sessions"
     for id in $expected_ids; do
         if ! strings "$BINARY" | grep -q "$id"; then
             missing_plugins="$missing_plugins $id"

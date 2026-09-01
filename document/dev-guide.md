@@ -20,7 +20,7 @@ EchoAgentCore 开发速查：仓库结构、关键抽象、关键流程、构建
 | [core-background-tasks.md](./core-background-tasks.md) | 后台任务、并行分支、有序整合、投递目标 |
 | [adapter-qq-gating.md](./adapter-qq-gating.md) | QQ 消息门控管道（五层）、运行时可变 |
 | [dev-testing.md](./dev-testing.md) | 测试策略：单元 / proptest / 集成 / 并发 |
-| [adr-index.md](./adr-index.md) | 架构决策记录（ADR 0001-0017） |
+| [adr-index.md](./adr-index.md) | 架构决策记录（ADR 0002-0017） |
 
 > 架构/Agent/Adapter/Config 的通用细节通过源码注释（`//! module doc`）和 README 维护，避免文档与代码分叉。
 

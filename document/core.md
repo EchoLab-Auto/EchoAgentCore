@@ -4,7 +4,7 @@ title: "Core 后端"
 group: 后端模块
 x: 615
 y: 1193
-link: ["core-agent-loop | Agent 循环", "core-tools | 工具系统", "core-skills | 技能系统", "core-agents | 多 Agent 与会话 | r>l", "core-plugins | 插件化设计", "core-background-tasks | 后台任务", "core-config-persistence | 配置持久化 | r>l"]
+link: ["core-agent-loop | Agent 循环", "core-tools | 工具系统 | r>l", "core-skills | 技能系统 | r>l", "core-agents | 多 Agent 与会话 | r>l", "core-plugins | 插件化设计", "core-background-tasks | 后台任务", "core-config-persistence | 配置持久化 | r>l"]
 ---
 
 # Core 框架

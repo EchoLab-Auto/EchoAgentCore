@@ -8,6 +8,14 @@ y: 528
 
 前后端通过 **management WebSocket**（默认 `127.0.0.1:3132`）通信，消息为 JSON 文本帧。命令与事件定义在 `source/protocol/echo-protocol`（Core 与 Panel 共用同一 crate/类型）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
 
+## 仓库拆分与契约归属
+
+- 仓库拆分为 **EchoAgentCore**（后端 agent 服务）与 **EchoAgentPanel**（前端）两个独立仓库，两端可独立构建、发布、演进，仅通过 `echo-protocol` 契约耦合
+- `echo-protocol` 是前端 ⇄ Core **线契约的唯一来源**：只定义 `BackendCommand` / `BackendEvent` / `WsMessage` / bridge / 共享枚举（`GateMode` / `ThinkingMode` / `ReasoningEffort`），不依赖任何 agent、平台或 UI 代码；serde 表示即线格式
+- Panel 是纯粹的「协议客户端」：仅依赖 `echo-protocol` 中的类型，不包含任何 agent 或 QQ 逻辑；后端各 crate 通过 re-export 保持 `echo_agent::…` 路径兼容
+- Panel 以相对路径依赖 `echo-protocol`（要求两个仓库并排克隆，CI 须将 EchoAgentCore 作为 sibling 检出），或改指 git 依赖
+- 协议演进必须两端同步：新增字段向后兼容（见文末「兼容性规则」）；语义变更需双端协同合入
+
 ## 传输与信封
 
 - Core 监听 `[core] management_address`（默认 `127.0.0.1:3132`），由 `source/core/src/management.rs` 提供；每个前端建立一条 WS 连接
