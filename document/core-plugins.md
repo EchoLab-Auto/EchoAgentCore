@@ -2,6 +2,7 @@
 id: plugins
 title: "插件系统"
 group: 后端模块
+link: ["adapter-qq-gating | QQ 适配器（插件）"]
 x: 970
 y: 1570
 ---
