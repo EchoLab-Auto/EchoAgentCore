@@ -2,7 +2,6 @@
 id: background-tasks
 title: "后台任务与并行分支"
 group: 后端模块
-link: ["core-agent-loop | Agent 循环与工具"]
 x: 616
 y: 384
 ---

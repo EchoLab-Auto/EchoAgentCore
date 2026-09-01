@@ -1,8 +1,7 @@
 ---
 group: 总览
-link: ["adr-index | 架构决策", "core | Core 框架", "protocol | 协议与数据流", "index | 文档总览"]
 x: 48
-y: 1560
+y: 216
 ---
 
 # 架构总览

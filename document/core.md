@@ -2,9 +2,9 @@
 id: core
 title: "Core 后端"
 group: 后端模块
-link: ["core-agent-loop | Agent 循环与工具", "core-agents | 多 Agent 与会话", "core-plugins | 插件系统", "protocol | 协议与数据流", "ops-deploy | 部署与自更新"]
-x: 48
-y: 1728
+x: 474
+y: 48
+link: ["core-agent-loop | Agent 循环与工具", "core-agents | 多 Agent 与会话", "core-plugins | 插件系统", "core-background-tasks | 后台任务", "core-config-persistence | 配置持久化", "adapter-qq-gating | QQ 门控"]
 ---
 
 # Core 框架

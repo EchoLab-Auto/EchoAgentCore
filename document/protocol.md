@@ -1,8 +1,7 @@
 ---
 group: 协议模块
-link: ["core | Core 框架", "panel | Panel 前端", "adr-index | 协议相关决策"]
-x: 332
-y: 720
+x: 1224
+y: 48
 ---
 
 # 协议与数据流

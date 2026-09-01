@@ -2,9 +2,8 @@
 id: adr-0010
 title: "ADR-0010 治理与文档"
 group: 架构决策
-link: ["adr-index | 决策索引"]
-x: 900
-y: 216
+x: 2360
+y: 888
 ---
 # ADR-0010: 治理与文档(architecture.md + CI 门禁)
 

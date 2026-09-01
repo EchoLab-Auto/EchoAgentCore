@@ -2,9 +2,8 @@
 id: config-persistence
 title: "配置持久化"
 group: 后端模块
-link: ["adapter-qq-gating | QQ 门控", "core | Core 框架"]
-x: 900
-y: 384
+x: 332
+y: 552
 ---
 # 配置持久化
 

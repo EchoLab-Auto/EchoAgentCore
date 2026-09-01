@@ -2,9 +2,8 @@
 id: adr-0004
 title: "ADR-0004 事件溯源会话存储"
 group: 架构决策
-link: ["adr-index | 决策索引"]
-x: 900
-y: 48
+x: 2360
+y: 384
 ---
 # ADR-0004: 事件溯源会话存储(echo-session)
 

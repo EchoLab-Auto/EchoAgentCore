@@ -1,8 +1,7 @@
 ---
 group: 运维模块
-link: ["adr-0015 | 优雅排空", "adr-0016 | Panel 中继架构", "core | Core 框架", "panel | Panel 前端"]
-x: 48
-y: 1056
+x: 1508
+y: 48
 ---
 
 # 部署与自更新

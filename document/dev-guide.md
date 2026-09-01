@@ -1,8 +1,8 @@
 ---
 group: 开发指南
-link: ["architecture | 架构总览", "dev-testing | 测试策略", "protocol | 协议与数据流", "adr-index | 架构决策"]
-x: 900
-y: 552
+x: 1792
+y: 48
+link: ["dev-testing | 测试策略"]
 ---
 
 # 开发指南

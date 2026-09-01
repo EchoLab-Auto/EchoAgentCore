@@ -2,9 +2,8 @@
 id: adr-0017
 title: "ADR-0017 Panel 时序与动画规范"
 group: 架构决策
-link: ["adr-index | 决策索引", "panel | Panel 前端"]
-x: 48
-y: 384
+x: 2076
+y: 1560
 ---
 # ADR-0017：Agent 思考/工具调用/回答的面板时序与动画规范
 

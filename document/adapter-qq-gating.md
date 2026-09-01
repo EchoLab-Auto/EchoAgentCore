@@ -2,7 +2,6 @@
 id: qq-gating
 title: "QQ 适配器门控"
 group: 后端模块
-link: ["adr-0011 | QQ 管理员决策", "core-config-persistence | 配置持久化", "protocol | 协议与数据流"]
 x: 616
 y: 552
 ---

@@ -2,9 +2,8 @@
 id: adr-0002
 title: "ADR-0002 echo-defs 定义层"
 group: 架构决策
-link: ["adr-index | 决策索引"]
-x: 332
-y: 48
+x: 2360
+y: 216
 ---
 # ADR-0002: echo-defs 定义层抽取(Service Definition 层)
 

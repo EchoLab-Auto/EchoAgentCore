@@ -2,9 +2,8 @@
 id: adr-0003
 title: "ADR-0003 服务定位与事件总线"
 group: 架构决策
-link: ["adr-index | 决策索引"]
-x: 616
-y: 48
+x: 2076
+y: 384
 ---
 # ADR-0003: echo-context — 服务定位、事件总线、可逆注册、作用域
 

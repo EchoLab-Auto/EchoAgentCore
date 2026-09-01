@@ -2,9 +2,8 @@
 id: adr-0012
 title: "ADR-0012 sudo 人机授权"
 group: 架构决策
-link: ["adr-index | 决策索引"]
-x: 1184
-y: 216
+x: 2360
+y: 1056
 ---
 # ADR-0012: 人机交互 sudo 授权（run_sudo）
 

@@ -2,9 +2,8 @@
 id: adr-0013
 title: "ADR-0013 插件化核心架构"
 group: 架构决策
-link: ["adr-index | 决策索引"]
-x: 48
-y: 2064
+x: 2076
+y: 1224
 ---
 # 0013 Plugin Architecture — 插件化核心架构设计
 

@@ -2,9 +2,8 @@
 id: adr-0015
 title: "ADR-0015 优雅排空"
 group: 架构决策
-link: ["adr-index | 决策索引"]
-x: 48
-y: 1224
+x: 2076
+y: 1392
 ---
 # 0015 Graceful Drain — 自更新不打断当前回复
 

@@ -2,9 +2,8 @@
 id: agent-loop
 title: "Agent 循环与工具"
 group: 后端模块
-link: ["adr-0015 | 优雅排空", "core | Core 框架"]
 x: 332
-y: 552
+y: 216
 ---
 
 # Agent 循环与工具

@@ -2,9 +2,8 @@
 id: adr-0011
 title: "ADR-0011 QQ 管理员设置"
 group: 架构决策
-link: ["adr-index | 决策索引"]
-x: 48
-y: 720
+x: 2076
+y: 1056
 ---
 # ADR-0011: QQ 管理员运行时设置(SetQqOwner)
 

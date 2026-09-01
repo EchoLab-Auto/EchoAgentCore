@@ -2,9 +2,8 @@
 id: agents
 title: "多 Agent 与会话"
 group: 后端模块
-link: ["adr-0014 | 多 Agent 决策", "core | Core 框架", "panel | Panel 前端"]
-x: 332
-y: 384
+x: 616
+y: 216
 ---
 
 # 多 Agent 与会话

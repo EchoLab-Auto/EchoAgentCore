@@ -1,8 +1,8 @@
 ---
 group: 总览
+x: 48
+y: 48
 link: ["architecture | 架构总览", "core | Core 框架", "panel | Panel 前端", "protocol | 协议与数据流", "ops-deploy | 部署与自更新", "dev-guide | 开发指南", "adr-index | 架构决策"]
-x: 1468
-y: 384
 ---
 
 # EchoAgent 文档总览

@@ -2,9 +2,8 @@
 id: plugins
 title: "插件系统"
 group: 后端模块
-link: ["adr-0013 | 插件化决策", "core | Core 框架"]
-x: 48
-y: 1896
+x: 332
+y: 384
 ---
 
 # 插件系统

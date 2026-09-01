@@ -2,9 +2,8 @@
 id: adr-0007
 title: "ADR-0007 平台能力接缝"
 group: 架构决策
-link: ["adr-index | 决策索引"]
-x: 48
-y: 216
+x: 2076
+y: 720
 ---
 # ADR-0007: 平台能力接缝(DeliveryPolicy 解耦 QQ)
 

@@ -2,9 +2,8 @@
 id: adr-0009
 title: "ADR-0009 输入标记集中化"
 group: 架构决策
-link: ["adr-index | 决策索引"]
-x: 616
-y: 216
+x: 2076
+y: 888
 ---
 # ADR-0009: 结构化输入标记集中化(input_marker)
 

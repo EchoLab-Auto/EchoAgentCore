@@ -2,9 +2,8 @@
 id: adr-0016
 title: "ADR-0016 Web 面板无状态中继"
 group: 架构决策
-link: ["adr-index | 决策索引", "panel | Panel 前端"]
-x: 1468
-y: 216
+x: 2360
+y: 1392
 ---
 # ADR-0016: Web 面板 = 无状态字节级 WS 中继 + 静态托管
 

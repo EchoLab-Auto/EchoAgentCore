@@ -2,9 +2,8 @@
 id: adr-0006
 title: "ADR-0006 LLM provider 拆分"
 group: 架构决策
-link: ["adr-index | 决策索引"]
-x: 1468
-y: 48
+x: 2360
+y: 552
 ---
 # ADR-0006: LLM provider 拆分(echo-llm-* Service Provider crates)
 
