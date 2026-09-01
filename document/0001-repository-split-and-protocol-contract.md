@@ -2,8 +2,8 @@
 id: adr-0001
 title: "ADR-0001 仓库拆分与协议契约"
 group: 架构决策
-x: 2076
-y: 216
+x: 1614
+y: 257
 ---
 # ADR-0001: 仓库拆分与 echo-protocol 跨仓库契约
 

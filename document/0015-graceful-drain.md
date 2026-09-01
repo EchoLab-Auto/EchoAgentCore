@@ -2,8 +2,8 @@
 id: adr-0015
 title: "ADR-0015 优雅排空"
 group: 架构决策
-x: 2076
-y: 1392
+x: 1614
+y: 1433
 ---
 # 0015 Graceful Drain — 自更新不打断当前回复
 

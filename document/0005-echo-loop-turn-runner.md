@@ -2,8 +2,8 @@
 id: adr-0005
 title: "ADR-0005 echo-loop 轮次执行器"
 group: 架构决策
-x: 2076
-y: 552
+x: 1614
+y: 593
 ---
 # ADR-0005: echo-loop TurnRunner(默认 agent 驱动,可替换)
 

@@ -2,8 +2,8 @@
 id: adr-0014
 title: "ADR-0014 多 Agent 系统"
 group: 架构决策
-x: 2360
-y: 1224
+x: 1898
+y: 1265
 ---
 # 0014 Multi-Agent System — 多 agent 对话架构
 

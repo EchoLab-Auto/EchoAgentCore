@@ -2,8 +2,8 @@
 id: adr-0008
 title: "ADR-0008 命令分发拆分"
 group: 架构决策
-x: 2360
-y: 720
+x: 1898
+y: 761
 ---
 # ADR-0008: 命令分发拆分与 CommandRegistry
 

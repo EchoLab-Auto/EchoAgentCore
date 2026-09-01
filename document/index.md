@@ -2,7 +2,7 @@
 group: 总览
 x: 48
 y: 48
-link: ["architecture | 架构总览", "core | Core 框架", "panel | Panel 前端", "protocol | 协议与数据流", "ops-deploy | 部署与自更新", "dev-guide | 开发指南", "adr-index | 架构决策"]
+link: ["architecture | 架构总览", "core | Core 框架 | r>l", "panel | Panel 前端 | r>l", "protocol | 协议与数据流", "ops-deploy | 部署与自更新", "dev-guide | 开发指南", "adr-index | 架构决策"]
 ---
 
 # EchoAgent 文档总览
@@ -26,6 +26,7 @@ graph LR
   Home --> Arch[架构总览|/architecture.md]
   Home --> Core[Core 框架|/core.md]
   Home --> Panel[Panel 前端|/panel.md]
+  Panel --> Interaction[交互定义|/panel-interaction.md]
   Home --> Proto[协议与数据流|/protocol.md]
   Home --> Ops[部署与自更新|/ops-deploy.md]
   Home --> Dev[开发指南|/dev-guide.md]
