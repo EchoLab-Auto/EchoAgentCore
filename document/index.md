@@ -33,7 +33,7 @@ graph LR
   Home --> ADR[架构决策|/adr-index.md]
   Core --> Loop[Agent 循环与工具|/core-agent-loop.md]
   Core --> Agents[多 Agent 与会话|/core-agents.md]
-  Core --> Plugins[插件系统|/core-plugins.md]
+  Core --> Plugins[插件化设计|/core-plugins.md]
   Core --> Tasks[后台任务|/core-background-tasks.md]
   Core --> Persist[配置持久化|/core-config-persistence.md]
   Core --> Gating[QQ 门控|/adapter-qq-gating.md]

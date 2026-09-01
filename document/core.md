@@ -2,9 +2,9 @@
 id: core
 title: "Core 后端"
 group: 后端模块
-x: 619
-y: 1330
-link: ["core-agent-loop | Agent 循环与工具", "core-agents | 多 Agent 与会话 | r>l", "core-plugins | 插件系统", "core-background-tasks | 后台任务", "core-config-persistence | 配置持久化 | r>l"]
+x: 615
+y: 1193
+link: ["core-agent-loop | Agent 循环与工具", "core-agents | 多 Agent 与会话 | r>l", "core-plugins | 插件化设计", "core-background-tasks | 后台任务", "core-config-persistence | 配置持久化 | r>l"]
 ---
 
 # Core 框架

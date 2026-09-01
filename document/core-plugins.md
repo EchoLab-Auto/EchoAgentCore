@@ -1,13 +1,13 @@
 ---
 id: plugins
-title: "插件系统"
+title: "插件化设计"
 group: 后端模块
 link: ["adapter-qq-gating | QQ 适配器（插件）"]
 x: 970
-y: 1570
+y: 1385
 ---
 
-# 插件系统
+# 插件化设计
 
 插件化是 Core 的组合方式：每个内置模块以 `PluginManifest` 注册进 `PluginHost`（`source/backend/echo-agent/src/plugins.rs`），有权启用/禁用/热加载，且纳入 persona 能力白名单语义。
 
