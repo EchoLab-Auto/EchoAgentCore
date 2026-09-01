@@ -16,6 +16,21 @@ use echo_plugin::{
 use crate::skill::Skill;
 use crate::tool::ToolRegistry;
 
+/// 内置插件 id（组合根与挂/卸效果共用，避免字符串漂移）。
+pub const TOOLS_BUILTIN_PLUGIN_ID: &str = "echo-agent.tools.builtin";
+pub const ADAPTER_QQ_PLUGIN_ID: &str = "echo-agent.adapter.qq";
+pub const SKILLS_DIR_PLUGIN_ID: &str = "echo-agent.skills.dir";
+pub const MANAGEMENT_PANEL_PLUGIN_ID: &str = "echo-agent.management.panel";
+
+/// mount 有真实包维度效果（工具/技能批量启停）的插件。persona 白名单的
+/// 启动期门控按此表遍历（management.panel 无 per-persona 注册表效果，
+/// 不在表内）。
+pub const GATED_PLUGIN_IDS: [&str; 3] = [
+    TOOLS_BUILTIN_PLUGIN_ID,
+    ADAPTER_QQ_PLUGIN_ID,
+    SKILLS_DIR_PLUGIN_ID,
+];
+
 /// Tool sink adaptor: wraps the agent ToolRegistry behind the plugin seam.
 pub struct ToolSink {
     registry: Arc<ToolRegistry>,

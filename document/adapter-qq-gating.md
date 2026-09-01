@@ -88,6 +88,7 @@ y: 1529
 | 连接/触发条件 | 修改配置文件 + 重启 | 下次启动 |
 | 白名单/黑名单 | TUI 交互式命令 | 立即生效 |
 | 门控模式 | `/qq setting` 单选切换 | 立即生效 + 持久化 |
+| 管理员 owner | `SetQqOwner` 协议命令 | 立即生效 + 持久化 |
 
 白名单/黑名单的运行时修改路径：
 
@@ -96,6 +97,16 @@ TUI 表单选择 → BackendCommand (携带 GateMode 枚举)
   → Agent 分发 → 适配器更新 → rebuild_filter_pipeline() → persist_filter()
     (通过共享的 ConfigStore 原子写入)
 ```
+
+### 管理员（owner_qq）运行时设置
+
+owner 与门控/名单一样有运行时更新路径，无需重启：
+
+- 经 `BackendCommand::SetQqOwner { owner_qq }` 设置（`0` = 清除）；`QqInner` 持运行时值（初始化自配置），`set_owner_qq` 更新运行时值并经共享 ConfigStore 原子写回 `[adapters.qq] owner_qq`，`get_owner_qq` 读运行时值
+- 门控豁免一律读运行时值：过滤管道的「管理员绕过」、`get_gated_friend_list`、出站门控
+- `Adapter` trait 提供 `set_owner_qq`/`get_owner_qq` 默认 no-op 方法，QQ 实现覆盖
+- **语义边界**：运行时设置的 owner 仅影响门控豁免；自更新授权仍由 `[agent.self_update]` 控制（与 `allowed_qq_users` 的联动未接入——见 [部署与自更新](./ops-deploy.md)）
+- `install.sh --owner-qq` 已移除：设置入口为协议命令或直接编辑 `[adapters.qq]`（当前 Web Panel 仅只读显示 owner，未接设置 UI）
 
 ### 门控模式类型
 

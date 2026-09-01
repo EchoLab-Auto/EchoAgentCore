@@ -741,6 +741,35 @@ impl Agent {
         }
     }
 
+    /// 插件启停对本 agent 注册表的批量效果（包维度）。
+    ///
+    /// 插件 mount/unmount 闭包与启动期禁用恢复共用：工具按 package 标签
+    /// （= 插件 id，装配时打标）批量启停；`echo-agent.skills.dir` 额外
+    /// 整表启停技能。适配器进程启停不在此（由组合根的 mount 闭包处理）。
+    pub fn apply_plugin_gating(&self, plugin_id: &str, enabled: bool) {
+        let affected = self.tools.set_package_enabled(plugin_id, enabled);
+        if affected > 0 {
+            tracing::info!(
+                plugin = plugin_id,
+                enabled,
+                affected,
+                "plugin tool package toggled"
+            );
+        }
+        if plugin_id == crate::plugins::SKILLS_DIR_PLUGIN_ID {
+            // 技能目录插件：整表启停（锁竞争时跳过——下一周期/切换时再应用）。
+            if let Ok(mut skills) = self.skills.try_lock() {
+                let names = skills.names();
+                for name in &names {
+                    skills.set_enabled(name, enabled);
+                }
+                if !names.is_empty() {
+                    tracing::info!(enabled, affected = names.len(), "skills dir plugin toggled");
+                }
+            }
+        }
+    }
+
     /// Whether a dynamic orchestration tool is allowed for this agent
     /// (allowlist first, denylist refinement; empty allowlist = all allowed).
     pub fn allows_dynamic_tool(&self, name: &str) -> bool {

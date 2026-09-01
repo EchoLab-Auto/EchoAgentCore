@@ -37,7 +37,12 @@ y: 1385
 - 每个插件 id 均可放入 agent 的 `enabled_plugins`（白名单）或 `disabled_plugins`（黑名单）
 - 白名单非空 = 只启用列出的插件；黑名单优先
 - 前端资源页可按 kind 勾选（adapter/management 类），保存后写回 TOML
-- **当前生效范围（Phase 1）**：三个 UI 门控插件（`echo-agent.branch.reply` / `echo-agent.session.global` / `echo-agent.chatbot.sessions`）的禁用真实生效（面板侧会话/分支能力隐藏）；其余内置插件的禁用目前只影响 Panel 展示与持久化状态（mount 闭包实化随 Phase 2 推进，见 [ADR-0013](./0013-plugin-architecture.md)）
+- **当前生效范围**：
+  - `branch.reply` / `session.global` / `chatbot.sessions`：UI 门控真实生效（面板侧会话/分支能力隐藏）
+  - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具/技能对所有 persona 批量禁用（对 LLM 不可见），启用恢复
+  - `adapter.qq`：禁用 = 停止 QQ 适配器进程 + QQ 工具包禁用；启用 = 启动 + 恢复
+  - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）
+  - `provider.llm` / `loop.runner` / `orchestration`：仍为名义挂载（Phase 3，见 [ADR-0018](./0018-plugin-phase2-mount-materialization.md)）
 
 ## 动态编排工具
 

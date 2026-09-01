@@ -225,13 +225,42 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let agent: Arc<echo_agent::Agent> = Arc::clone(&default_persona.agent);
     info!(agents = ?supervisor.ids(), default = %default_id, "agent supervisor ready");
 
+    // ---- Frontend bridge (management WS) ----
+    //（提前到插件挂载之前：management.panel 插件的 mount 闭包依赖它们）
+    let (bridge, handle) = echo_agent::create_bridge();
+    let bridge = Arc::new(bridge);
+    agent.attach(Arc::new(handle));
+
+    // ---- Sudo authorization broker ----
+    // The broker is shared between the agent (run_sudo awaits a password
+    // here) and the management server (sudo password frames are routed here
+    // directly, bypassing the agent command queue, session log and LLM
+    // context).
+    let sudo_broker = Arc::new(echo_agent::SudoBroker::new());
+    // 所有人格共享 sudo 授权通道。
+    for persona in supervisor.personas() {
+        persona.agent.attach_sudo_broker(sudo_broker.clone());
+    }
+
     // ---- Plugin host: mount built-in modules as plugins ----
     // 插件化组合根：每个内置模块（工具集/技能/适配器/编排/管理面/LLM/Loop）
-    // 以 PluginManifest + mount 闭包挂入 PluginHost。mount 闭包把模块的
-    // 真实注册副作用执行到既有 registry；被禁用者跳过 mount（热重载同理）。
+    // 以 PluginManifest + mount 闭包挂入 PluginHost。ADR-0018 第 2 步起，
+    // tools.builtin / skills.dir / adapter.qq / management.panel 的 mount
+    // 闭包执行真实副作用（禁用即卸载效果）；其余仍为名义挂载（Phase 3）。
+    //
+    // QQ 适配器的接线（hook/handler/config store）在插件挂载之后才完成；
+    // qq_wired 标志保证启动期 mount 不抢跑启动适配器（启动期由接线后的
+    // 门控启动负责），运行期 TogglePlugin 才真正 start/stop。
+    let qq_wired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let qq_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
-        use echo_agent::plugins::ToolSink;
+        use echo_agent::plugins::{
+            ToolSink, ADAPTER_QQ_PLUGIN_ID, MANAGEMENT_PANEL_PLUGIN_ID, SKILLS_DIR_PLUGIN_ID,
+            TOOLS_BUILTIN_PLUGIN_ID,
+        };
+        use echo_context::Disposer;
         use echo_plugin::{BuiltinPlugin, MountContext, PluginKind, PluginManifest};
+        use std::sync::atomic::Ordering;
 
         let plugin_host = agent.plugin_host.clone();
         // Agent 内部已有共享工具注册表（Arc），直接复用同一实例。
@@ -241,37 +270,165 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .with_ctx(ctx.clone()),
         );
 
-        // 所有内置模块的 manifest（Phase 1：注册 + 状态展示；mount 闭包
-        // 作为真实副作用入口，当前内置模块在组合根其余部分挂载）。
-        let mut manifests: Vec<PluginManifest> = vec![
+        // 先应用持久化的禁用状态再挂载：register_and_mount 对禁用插件只注册
+        // 不挂载，禁用的插件在启动时不获得任何副作用。
+        plugin_host
+            .registry
+            .apply_disabled(&cfg.agent.disabled_plugins);
+
+        // 遍历全部 persona（运行期 TogglePlugin 时 AgentManager 已就位；
+        // 启动期尚未设置，守卫为 no-op，启动期禁用恢复见 persona 循环）。
+        fn for_each_agent(f: impl Fn(&echo_agent::Agent)) {
+            if let Some(mgr) = echo_agent::agent_manager::global_manager() {
+                for running in mgr.all() {
+                    f(&running.agent);
+                }
+            }
+        }
+
+        let version = env!("CARGO_PKG_VERSION");
+        fn register(
+            plugin_host: &echo_agent::plugins::PluginHost,
+            manifest: PluginManifest,
+            mount: impl Fn(&MountContext) -> echo_plugin::PluginMountResult + Send + Sync + 'static,
+        ) -> Result<()> {
+            let id = manifest.id.clone();
+            plugin_host
+                .register_and_mount(Arc::new(BuiltinPlugin::new(manifest, mount)))
+                .map_err(|e| anyhow::anyhow!(e).context(format!("mount plugin {id}")))?;
+            Ok(())
+        }
+
+        // 名义挂载（Phase 3 实化：provider/loop 保持重启生效语义，编排依赖
+        // echo-loop 迁移；UI 门控三插件由 allows_* 能力门真实生效）。
+        let nominal = |entry: String| {
+            move |_ctx: &MountContext| {
+                let _ = entry;
+                Ok(vec![])
+            }
+        };
+
+        // ── 实化 1：内置工具集（包维度批量启停，跨 persona）──
+        register(&plugin_host,
             PluginManifest::builtin(
-                "echo-agent.tools.builtin",
+                TOOLS_BUILTIN_PLUGIN_ID,
                 "内置工具集",
-                env!("CARGO_PKG_VERSION"),
+                version,
                 PluginKind::Tool,
                 "builtin_tools",
                 "平台无关的内置工具（计算/搜索/清单/编码/适配器管理）",
             ),
+            move |_ctx| {
+                for_each_agent(|a| a.apply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, true));
+                Ok(vec![Disposer::from_fn(|| {
+                    for_each_agent(|a| a.apply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, false));
+                })])
+            },
+        )?;
+
+        // ── 实化 2：技能目录（整表启停，跨 persona）──
+        register(&plugin_host,
             PluginManifest::builtin(
-                "echo-agent.adapter.qq",
-                "QQ 适配器",
-                env!("CARGO_PKG_VERSION"),
-                PluginKind::Adapter,
-                "qq",
-                "OneBot v11 反向 WS 适配器（含 QQ 管理工具）",
-            ),
-            PluginManifest::builtin(
-                "echo-agent.skills.dir",
+                SKILLS_DIR_PLUGIN_ID,
                 "技能目录",
-                env!("CARGO_PKG_VERSION"),
+                version,
                 PluginKind::Skill,
                 "skills_dir",
-                "SKILL.md 技能目录（秒级热重载）",
+                "SKILL.md 技能目录（热重载）",
             ),
+            move |_ctx| {
+                for_each_agent(|a| a.apply_plugin_gating(SKILLS_DIR_PLUGIN_ID, true));
+                Ok(vec![Disposer::from_fn(|| {
+                    for_each_agent(|a| a.apply_plugin_gating(SKILLS_DIR_PLUGIN_ID, false));
+                })])
+            },
+        )?;
+
+        // ── 实化 3：QQ 适配器（启停进程 + 工具包启停）──
+        {
+            let qq = qq_adapter.clone();
+            let wired = qq_wired.clone();
+            let running = qq_running.clone();
+            register(&plugin_host,
+                PluginManifest::builtin(
+                    ADAPTER_QQ_PLUGIN_ID,
+                    "QQ 适配器",
+                    version,
+                    PluginKind::Adapter,
+                    "qq",
+                    "OneBot v11 反向 WS 适配器（含 QQ 管理工具）",
+                ),
+                move |_ctx| {
+                    for_each_agent(|a| a.apply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, true));
+                    if wired.load(Ordering::SeqCst) && !running.swap(true, Ordering::SeqCst) {
+                        let qq2 = qq.clone();
+                        let running2 = running.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = qq2.start().await {
+                                running2.store(false, Ordering::SeqCst);
+                                warn!(error = %e, "QQ adapter start via plugin mount failed");
+                            }
+                        });
+                    }
+                    let qq = qq.clone();
+                    let running = running.clone();
+                    Ok(vec![Disposer::from_fn(move || {
+                        for_each_agent(|a| a.apply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, false));
+                        if running.swap(false, Ordering::SeqCst) {
+                            let qq3 = qq.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = qq3.stop().await {
+                                    warn!(error = %e, "QQ adapter stop via plugin unmount failed");
+                                }
+                            });
+                        }
+                    })])
+                },
+            )?;
+        }
+
+        // ── 实化 4：管理面（management WS 起停）──
+        // 注意自锁语义：禁用管理面 = 关闭 Panel 通道本身，恢复需编辑
+        // core.toml 的 disabled_plugins 后重启（文档已注明）。
+        {
+            let mgmt_addr = cfg.core.management_address.clone();
+            let mgmt_agent = agent.clone();
+            let mgmt_bridge = bridge.clone();
+            let mgmt_sudo = sudo_broker.clone();
+            register(&plugin_host,
+                PluginManifest::builtin(
+                    MANAGEMENT_PANEL_PLUGIN_ID,
+                    "管理面",
+                    version,
+                    PluginKind::Management,
+                    "panel",
+                    "Panel management WS 桥接 / sudo 授权通道",
+                ),
+                move |_ctx| {
+                    let (addr, br, ag, sudo) = (
+                        mgmt_addr.clone(),
+                        mgmt_bridge.clone(),
+                        mgmt_agent.clone(),
+                        mgmt_sudo.clone(),
+                    );
+                    let server = tokio::spawn(async move {
+                        if let Err(e) = management::serve(&addr, br, ag, sudo).await {
+                            warn!(error = %e, "management WS server stopped");
+                        }
+                    });
+                    let abort = server.abort_handle();
+                    Ok(vec![Disposer::from_fn(move || abort.abort())])
+                },
+            )?;
+        }
+
+        // ── 名义挂载（Phase 3）：orchestration / provider / loop 保持重启
+        // 生效语义；三个 UI 门控插件由 allows_* 能力门真实生效。──
+        let nominal_manifests: Vec<PluginManifest> = vec![
             PluginManifest::builtin(
                 "echo-agent.orchestration",
                 "编排",
-                env!("CARGO_PKG_VERSION"),
+                version,
                 PluginKind::Orchestration,
                 "orchestration",
                 "后台任务/并行分支/子代理/定时器/框架自更新",
@@ -279,7 +436,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             PluginManifest::builtin(
                 echo_agent::agent::REPLY_BRANCH_PLUGIN_ID,
                 "回执分支",
-                env!("CARGO_PKG_VERSION"),
+                version,
                 PluginKind::Orchestration,
                 "reply_branch",
                 "临时回复分支：入站消息的可见分支/任务卡（可按人格白名单禁用）",
@@ -287,7 +444,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             PluginManifest::builtin(
                 echo_agent::agent::GLOBAL_SESSION_PLUGIN_ID,
                 "全局会话",
-                env!("CARGO_PKG_VERSION"),
+                version,
                 PluginKind::Management,
                 "global_session",
                 "全局会话视图：合并展示该 agent 的所有会话消息（可按人格白名单禁用）",
@@ -295,7 +452,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             PluginManifest::builtin(
                 echo_agent::agent::CHAT_SESSIONS_PLUGIN_ID,
                 "会话系统",
-                env!("CARGO_PKG_VERSION"),
+                version,
                 PluginKind::Management,
                 "chat_sessions",
                 "Chatbot 会话系统：会话列表/全局会话/临时分支等会话相关能力的总开关（可按人格白名单禁用）",
@@ -303,7 +460,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             PluginManifest::builtin(
                 "echo-agent.provider.llm",
                 "LLM Provider",
-                env!("CARGO_PKG_VERSION"),
+                version,
                 PluginKind::Provider,
                 "llm",
                 "LLM 提供方（deepseek/openai/anthropic/ollama 工厂）",
@@ -311,38 +468,15 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             PluginManifest::builtin(
                 "echo-agent.loop.runner",
                 "Turn Runner",
-                env!("CARGO_PKG_VERSION"),
+                version,
                 PluginKind::Loop,
                 "loop",
                 "默认 turn/step 状态机与工具管道",
             ),
-            PluginManifest::builtin(
-                "echo-agent.management.panel",
-                "管理面",
-                env!("CARGO_PKG_VERSION"),
-                PluginKind::Management,
-                "panel",
-                "Panel management WS 桥接 / sudo 授权通道",
-            ),
         ];
-
-        // 先应用持久化的禁用状态再挂载：register_and_mount 对禁用插件只注册
-        // 不挂载，禁用的插件在启动时不获得任何副作用。
-        plugin_host
-            .registry
-            .apply_disabled(&cfg.agent.disabled_plugins);
-
-        for manifest in manifests.drain(..) {
-            let m2 = manifest.clone();
+        for manifest in nominal_manifests {
             let entry = manifest.entry.clone();
-            plugin_host
-                .register_and_mount(Arc::new(BuiltinPlugin::new(manifest, move |_ctx| {
-                    // Phase 1: 内置模块副作用在此挂载（真实注册逻辑见
-                    // 组合根其余部分；注册回返 disposer 列表）。
-                    let _ = entry;
-                    Ok(vec![])
-                })))
-                .map_err(|e| anyhow::anyhow!(e).context(format!("mount plugin {}", m2.id)))?;
+            register(&plugin_host, manifest, nominal(entry))?;
         }
 
         info!(
@@ -364,22 +498,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         info!("background shell manager ready");
     }
 
-    // ---- Frontend bridge (management WS) ----
-    let (bridge, handle) = echo_agent::create_bridge();
-    let bridge = Arc::new(bridge);
-    agent.attach(Arc::new(handle));
-
-    // ---- Sudo authorization broker ----
-    // The broker is shared between the agent (run_sudo awaits a password
-    // here) and the management server (sudo password frames are routed here
-    // directly, bypassing the agent command queue, session log and LLM
-    // context).
-    let sudo_broker = Arc::new(echo_agent::SudoBroker::new());
-    // 所有人格共享 sudo 授权通道。
-    for persona in supervisor.personas() {
-        persona.agent.attach_sudo_broker(sudo_broker.clone());
-    }
-
     // 供编排工具（framework_update status）读取插件摘要的进程级锚点。
     // 注：default persona 已由 supervisor 持有 Arc，这里不再包一层。
     echo_agent::agent::set_plugin_host_global(agent.plugin_host.clone());
@@ -396,6 +514,21 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .set_header(echo_session::SessionHeader::top_level("trunk"));
         }
         persona.agent.apply_capabilities(&persona.profile).await;
+        // 全局禁用插件（[agent].disabled_plugins）的启动期注册表效果：
+        // 这些插件的 mount 已被 register_and_mount 守卫跳过，这里补齐
+        // 包维度的工具/技能批量禁用（运行期启停由 mount/unmount 闭包处理）。
+        for plugin_id in &cfg.agent.disabled_plugins {
+            persona.agent.apply_plugin_gating(plugin_id, false);
+        }
+        // persona 白名单/黑名单的包维度启动期效果（运行期 unmount 闭包只在
+        // AgentManager 就位后生效，启动期由这里覆盖）：白名单非空时不在
+        // 名单内的"实化插件"也要批量禁用其工具/技能。
+        for plugin_id in echo_agent::plugins::GATED_PLUGIN_IDS {
+            let allowed = profile_allows_plugin(&persona.profile, plugin_id);
+            if !allowed {
+                persona.agent.apply_plugin_gating(plugin_id, false);
+            }
+        }
         // 全局 [agent].disabled_tools（Panel ToggleTool 持久化）应用到此
         // persona 的工具注册表。该状态序列化在 `[agent]` 段而非 persona
         // profile，因此必须在这里逐人格应用（此前应用在从未使用的全局
@@ -542,23 +675,21 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     }
 
     // ---- Auto-start QQ adapter if enabled ----
-    if cfg.qq_adapter.enabled {
+    // 接线完成，标记 wired：此后 adapter.qq 插件的运行期 enable 才会真正
+    // start 适配器（启动期 mount 不抢跑）。启动受配置与插件状态双重门控。
+    qq_wired.store(true, std::sync::atomic::Ordering::SeqCst);
+    if cfg.qq_adapter.enabled
+        && agent
+            .plugin_host
+            .registry
+            .is_enabled(echo_agent::plugins::ADAPTER_QQ_PLUGIN_ID)
+    {
         qq_adapter
             .start()
             .await
             .map_err(|e| anyhow::anyhow!("QQ adapter start failed: {e}"))?;
+        qq_running.store(true, std::sync::atomic::Ordering::SeqCst);
     }
-
-    // ---- Management WS server (for remote Panel) ----
-    let mgmt_addr = cfg.core.management_address.clone();
-    let mgmt_agent = agent.clone();
-    let mgmt_bridge = bridge.clone();
-    let mgmt_sudo = sudo_broker.clone();
-    tokio::spawn(async move {
-        if let Err(e) = management::serve(&mgmt_addr, mgmt_bridge, mgmt_agent, mgmt_sudo).await {
-            warn!(error = %e, "management WS server stopped");
-        }
-    });
 
     // ---- Main loop ----
     tokio::select! {
@@ -585,6 +716,19 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let _ = task.await;
     }
     Ok(())
+}
+
+/// persona 能力白名单语义（与 `Agent::allows_reply_branches` 等一致）：
+/// 白名单非空时只允许名单内插件；黑名单再收紧。
+fn profile_allows_plugin(profile: &AgentProfile, plugin_id: &str) -> bool {
+    if !profile.enabled_plugins.is_empty() && !profile.enabled_plugins.iter().any(|p| p == plugin_id)
+    {
+        return false;
+    }
+    if profile.disabled_plugins.iter().any(|p| p == plugin_id) {
+        return false;
+    }
+    true
 }
 
 async fn shutdown_signal() {

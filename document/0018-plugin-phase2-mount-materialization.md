@@ -9,7 +9,7 @@ y: 1601
 # 0018 Plugin Phase 2 — 插件 mount 实化（让禁用/启用有真实效果）
 
 日期: 2026-09-01
-状态: proposed
+状态: accepted（第 1、2 步已实现；第 3 步与数据插件/framework_update 待办）
 
 ## 问题
 
@@ -40,17 +40,22 @@ Phase 2 按"效果真实化"分三步推进，每步独立可部署：
 
 ### 第 2 步：可安全逆注册的内置插件先实化
 
-按可逆性从易到难，逐个把组合根的装配搬进 mount 闭包：
+按可逆性从易到难，逐个把组合根的装配搬进 mount 闭包（本次已落地）：
 
 1. **management.panel**：mount = 起 management WS 监听；unmount = 停止
-   （disposer 持 CancellationToken）。无 per-persona 状态，最安全
-2. **tools.builtin**：mount = `ToolRegistry::register_reversible` 批量注册；
-   注意工具注册表是 per-persona 的——MountContext 的 ToolSink 需扩展为
-   遍历 agent_manager 全部 persona 注册/卸载
-3. **adapter.qq**：mount = 起适配器（含 QQ 管理工具注册）；unmount = 停止。
-   依赖 persona 工具注册表，与第 2 步共用 ToolSink 扩展
-4. **skills.dir**：mount = 注册技能目录进各 persona 的 SkillRegistry
-   （SkillSink 占位实化）
+   （disposer 持 AbortHandle）。**自锁注意**：禁用后 Panel 断连，恢复需
+   编辑 core.toml 移除 `disabled_plugins` 条目并重启（文档已注明）
+2. **tools.builtin**：工具在装配时打包标签（package = 插件 id）；
+   mount/unmount = `ToolRegistry::set_package_enabled` 跨 persona 批量
+   启停（对 LLM 不可见即禁用，注册表条目保留、可逆恢复）
+3. **adapter.qq**：mount = 启动适配器 + 恢复 QQ 工具包；unmount = 停止
+   适配器 + 禁用 QQ 工具包。启动期 mount 不抢跑（wired 标志在适配器
+   接线完成后才置位）；启动受 `[adapters.qq].enabled` 与插件状态双重门控
+4. **skills.dir**：mount/unmount = 整表技能启停（跨 persona）
+
+persona 白名单的启动期门控由组合根 persona 循环补齐（运行期
+unmount 闭包依赖 AgentManager 就位；启动期按 `GATED_PLUGIN_IDS` 表
+逐人格批量禁用）。
 
 ### 第 3 步：难逆注册的延后
 

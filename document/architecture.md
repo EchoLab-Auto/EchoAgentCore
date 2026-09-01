@@ -62,6 +62,22 @@ graph BT
 | `echo-core`/`echo-server` | OneBot 类型/反向 WS | 仅供 QQ 适配器 |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、启动 |
 
+### echo-defs 模块清单与约束
+
+定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（仅 serde/async-trait/tokio 基础依赖），可独立测试：
+
+| 模块 | 内容 |
+|---|---|
+| `message` / `llm` | `ChatMessage`/`ChatRequest`/`ChatResponse`/`ToolCall`/`ChatChunk`/`Usage` + `LlmProvider` trait + 传输无关的 `LlmError`（携带字符串，provider 自行 `map_err`，定义层不依赖 reqwest） |
+| `tool` | `Tool` trait、`ToolError`、`ToolDefinition`（工具 schema 归工具域，`ChatRequest` 引用它） |
+| `skill` | `Skill`/`SkillMetadata` + `SkillProvider` trait；文件发现/热重载留在 `echo-agent` 的具体 `SkillRegistry` |
+| `chat` | 平台无关 `ChannelType`/`IncomingMessage`/`MessageTarget`/`SendResult`/`AdapterEvent` + `ChatAdapter` trait；门控词不在此层 |
+| `mode` | `GateMode`/`ThinkingMode`/`ReasoningEffort`（自 `echo-protocol` 移入，`echo-protocol` re-export 保持 wire 路径；`echo-adapter` 不依赖 `echo-protocol`） |
+| `token` | 纯 token 估算/截断函数 |
+| `session` | `SessionEvent` + `SessionStore` trait（事件溯源会话契约） |
+
+依赖方向收敛为 `echo-defs ◄ echo-protocol ◄ echo-adapter ◄ echo-agent`，扩展插件只依赖定义层；旧 crate（`echo-agent`/`echo-adapter`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
+
 ## 能力接缝
 
 一个可替换能力 = 三角色。当前接缝：
@@ -107,5 +123,5 @@ graph BT
 
 ## 关键文档
 
-- [架构决策](./adr-index.md)：ADR 0002-0017 全记录（0001 仓库拆分与协议契约已并入 [协议与数据流](./protocol.md)；含 Panel 侧 0016/0017）
+- [架构决策](./adr-index.md)：ADR 0003-0018 全记录（0001/0002/0011 已并入主文档；含 Panel 侧 0016/0017）
 - [开发指南](./dev-guide.md)：仓库结构、关键抽象、构建与测试

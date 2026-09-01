@@ -104,6 +104,8 @@ graph LR
 
 ## 共享枚举
 
+三者定义在 `echo-defs::mode`（Service Definition 层），`echo-protocol` re-export 保持 wire 路径：
+
 | 类型 | 取值（线格式，snake_case） |
 |---|---|
 | `GateMode` | `"none"` / `"allowlist"` / `"denylist"` |

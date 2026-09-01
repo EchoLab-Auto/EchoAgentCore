@@ -314,6 +314,55 @@ impl ToolRegistry {
         }
     }
 
+    /// Bulk enable/disable every tool owned by a package (package id = 插件 id，
+    /// 装配时打标）。同步接口：插件 mount/unmount 闭包是同步上下文，锁竞争
+    /// 时退到 blocking pool。返回受影响的工具数。
+    pub fn set_package_enabled(&self, package: &str, enabled: bool) -> usize {
+        if let (Ok(packages), Ok(mut disabled)) = (self.packages.try_read(), self.disabled.try_write())
+        {
+            let names: Vec<String> = packages
+                .iter()
+                .filter(|(_, p)| p.as_str() == package)
+                .map(|(n, _)| n.clone())
+                .collect();
+            for name in &names {
+                if enabled {
+                    disabled.remove(name);
+                } else {
+                    disabled.insert(name.clone());
+                }
+            }
+            drop(disabled);
+            if !names.is_empty() {
+                self.invalidate_definitions();
+            }
+            return names.len();
+        }
+        // 锁竞争路径：退到 blocking pool（与 register_reversible 同模式）。
+        // block_in_place 在当前线程执行闭包，可直接借用 self。
+        tokio::task::block_in_place(|| {
+            let packages = self.packages.blocking_read();
+            let mut disabled = self.disabled.blocking_write();
+            let names: Vec<String> = packages
+                .iter()
+                .filter(|(_, p)| p.as_str() == package)
+                .map(|(n, _)| n.clone())
+                .collect();
+            for name in &names {
+                if enabled {
+                    disabled.remove(name);
+                } else {
+                    disabled.insert(name.clone());
+                }
+            }
+            drop(disabled);
+            if !names.is_empty() {
+                self.invalidate_definitions();
+            }
+            names.len()
+        })
+    }
+
     pub fn len(&self) -> usize {
         match self.tools.try_read() {
             Ok(tools) => tools.len(),
@@ -349,6 +398,34 @@ mod tests {
         async fn execute(&self, _arguments: Value) -> Result<String, ToolError> {
             Ok("stub".into())
         }
+    }
+
+    #[tokio::test]
+    async fn package_toggle_bulk_disables_and_restores() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(StubTool { name: "a1" }));
+        registry.register(Arc::new(StubTool { name: "a2" }));
+        registry.register(Arc::new(StubTool { name: "b1" }));
+        registry.set_package("a1", "pkg-a");
+        registry.set_package("a2", "pkg-a");
+        registry.set_package("b1", "pkg-b");
+
+        assert_eq!(registry.set_package_enabled("pkg-a", false), 2);
+        assert!(registry.is_disabled("a1").await);
+        assert!(registry.is_disabled("a2").await);
+        assert!(!registry.is_disabled("b1").await, "other package untouched");
+        let visible: Vec<String> = registry
+            .definitions()
+            .await
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert_eq!(visible, vec!["b1"], "definitions exclude disabled package");
+
+        assert_eq!(registry.set_package_enabled("pkg-a", true), 2);
+        assert!(!registry.is_disabled("a1").await);
+        assert_eq!(registry.definitions().await.len(), 3);
+        assert_eq!(registry.set_package_enabled("nonexistent", false), 0);
     }
 
     #[tokio::test]
