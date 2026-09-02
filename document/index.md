@@ -2,7 +2,7 @@
 group: 总览
 x: 48
 y: 48
-link: ["architecture | 架构总览", "core | Core 框架 | r>l", "panel | Panel 前端 | r>l", "protocol | 协议与数据流", "ops-deploy | 部署与自更新", "dev-guide | 开发指南", "adr-index | 架构决策"]
+link: ["architecture | 架构总览", "core | Core 框架 | r>l", "panel | Panel 前端 | r>l", "protocol | 协议与数据流", "ops-deploy | 部署与自更新", "dev-guide | 开发指南"]
 ---
 
 # EchoAgent 文档总览
@@ -16,7 +16,6 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板** 框架
 - **新人起步**：本页 → [架构总览](./architecture.md) → [协议与数据流](./protocol.md)
 - **日常开发**：[Core 框架](./core.md) / [Panel 前端](./panel.md) / [开发指南](./dev-guide.md)
 - **排障运维**：[部署与自更新](./ops-deploy.md)
-- **设计理由**：[架构决策（ADR 0003-0018）](./adr-index.md)
 
 ## 导航地图
 
@@ -30,7 +29,6 @@ graph LR
   Home --> Proto[协议与数据流|/protocol.md]
   Home --> Ops[部署与自更新|/ops-deploy.md]
   Home --> Dev[开发指南|/dev-guide.md]
-  Home --> ADR[架构决策|/adr-index.md]
   Core --> Loop[Agent 循环|/core-agent-loop.md]
   Core --> Tools[工具系统|/core-tools.md]
   Core --> Skills[技能系统|/core-skills.md]
@@ -41,11 +39,11 @@ graph LR
   Plugins --> Gating[QQ 门控|/adapter-qq-gating.md]
   Proto --> Core
   Panel --> Proto
-  Ops --> Drain[ADR-0015 优雅排空|/0015-graceful-drain.md]
 ```
 
 ## 文档分层约定
 
 - **模块文档**（core-* / panel / protocol / ops-deploy）：**当前实现**的权威描述，与代码同步更新
-- **架构决策**（0003-0018）：决策当时的历史记录，只增不改；与模块文档冲突时以模块文档为准
 - **开发指南**（dev-*）：面向开发者的速查与测试策略
+
+> 原架构决策记录（ADR 0001-0018）已于 2026-09 全部并入对应模块文档，不再单独立卷；设计理由随模块文档维护。

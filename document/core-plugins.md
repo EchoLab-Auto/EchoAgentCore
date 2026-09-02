@@ -11,11 +11,29 @@ y: 1385
 
 插件化是 Core 的组合方式：每个内置模块以 `PluginManifest` 注册进 `PluginHost`（`source/backend/echo-agent/src/plugins.rs`），有权启用/禁用/热加载，且纳入 persona 能力白名单语义。
 
+## 设计原则
+
+1. **一切皆插件**：LLM provider、TurnRunner、工具、技能、适配器、编排、management server 均为插件，无特权核心模块
+2. 插件 = manifest + 生命周期钩子；注册是可逆副作用（disposer）
+3. **热重载优先于重启**：数据类插件（技能/工具/清单）秒级热重载；代码类插件（provider/loop/适配器）经原子二进制替换 + 进程重启生效
+4. 插件**只依赖定义层**（echo-defs / echo-plugin / echo-context），不 import echo-agent，依赖方向单一
+
+### 为什么不用动态库（.so）插件
+
+Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" 桥，维护成本高、崩溃诊断难。因此采用**源码级插件 + 进程级热替换**：插件以 crate/目录形式存在，更新 = 重新构建二进制 + restart（复用自更新的原子替换机制）；热重载范畴限定为数据类插件。
+
+### 边界与不做
+
+- 不做动态库加载、不做插件沙箱（源码级插件即本仓库内代码，信任边界 = 仓库）
+- 不做插件市场/远程安装（需签名与供应链考虑）
+
 ## 插件模型
 
 - 核心类型：`PluginManifest`（id/name/version/kind/entry/description）+ `BuiltinPlugin` + `MountContext`
 - 注册为**可逆**副作用：`register_and_mount` 返回 disposer，禁用即卸载注册
 - 数据插件（skill/tool）支持热重载（插件目录 5s 轮询）；代码插件需二进制重载
+- **启动顺序**：`apply_disabled` 先于挂载——禁用插件启动时只注册不挂载；persona 白名单的启动期门控按 `GATED_PLUGIN_IDS` 表逐人格批量禁用
+- **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / adapter.qq / skills.dir）已把组合根装配搬进 mount 闭包，`TogglePlugin` 对它们有真实运行效果；`adapter.qq` 的启动期 mount 不抢跑（wired 标志在适配器接线完成后才置位），启动受 `[adapters.qq].enabled` 与插件状态双重门控
 
 ## 内置插件清单
 
@@ -42,7 +60,7 @@ y: 1385
   - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具/技能对所有 persona 批量禁用（对 LLM 不可见），启用恢复
   - `adapter.qq`：禁用 = 停止 QQ 适配器进程 + QQ 工具包禁用；启用 = 启动 + 恢复
   - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）
-  - `provider.llm` / `loop.runner` / `orchestration`：仍为名义挂载（Phase 3，见 [ADR-0018](./0018-plugin-phase2-mount-materialization.md)）
+  - `provider.llm` / `loop.runner` / `orchestration`：仍为名义挂载——运行中替换 provider/loop 涉及在途 turn，保持"重启生效"语义（禁用 = 下次重启不装配）；orchestration 的实化依赖 echo-loop 迁移完成度
 
 ## 动态编排工具
 
@@ -52,5 +70,9 @@ y: 1385
 ## 用户扩展方式
 
 - **技能**：在 skills_dir 放置 `SKILL.md`（带 frontmatter：name/description/keywords/always/category/package），运行时自动发现、热重载
-- **数据插件**：在 plugins_dir 放置 `plugin.toml`（skill/tool kind），5s 热加载
+- **数据插件**：在 plugins_dir 放置 `plugins/{kind}/{id}/plugin.toml`（skill/tool kind），5s 轮询热加载；记录 manifest 哈希做内容 diff，变化即 unmount+remount；启用状态持久化于 `[agent].disabled_plugins`
 - **代码插件**（provider/loop/adapter）：需修改源码并走自更新流程
+
+## 待办
+
+- `framework_update` 补 `action=plugins`（列出/启停插件，复用 TogglePlugin 授权语义，与 status 的插件摘要共用 `gather_plugin_summary`）

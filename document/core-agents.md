@@ -40,6 +40,15 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - 插件/工具/技能三个维度独立配置；主 agent 未配置白名单时默认全部启用
 - 全局 `[agent].disabled_tools`（Panel ToggleTool 持久化）启动时逐人格应用
 
+## 设计取舍与边界
+
+- **多实例而非单实例多上下文**：每个 Agent 一辆"车"（独立 `Agent::new` + 事件溯源日志），复用现有结构、互不干扰；代价是每 agent 一份上下文内存（数量预期个位数，可接受）。单实例 + 上下文分桶方案因 trunk/事件溯源改动面大、风险高被否决
+- **配置驱动**：人格在配置文件中定义，`enabled=false` 跳过实例化；运行时可通过 `ToggleTeam` 启停，但不动态增删（改配置重启生效）
+- **兼容性**：无 `[agent.teams]` 的旧配置 = 单 agent（default），行为与多 agent 之前一致；旧协议 `SendMessage` 无 `team_id` 时路由到 default agent
+- 所有 persona 共享同一 provider/模型；不做 per-agent 模型/密钥隔离
+- QQ/平台消息仍进 default agent（按群绑定人格为后续方向）
+- 每人格可独立配置记忆预算：`[agent.teams.{id}].memory_limit_tokens` / `context_window_tokens`（未配置 = 继承全局）
+
 ## 典型配置
 
 ```toml

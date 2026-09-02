@@ -20,7 +20,6 @@ EchoAgentCore 开发速查：仓库结构、关键抽象、关键流程、构建
 | [core-background-tasks.md](./core-background-tasks.md) | 后台任务、并行分支、有序整合、投递目标 |
 | [adapter-qq-gating.md](./adapter-qq-gating.md) | QQ 消息门控管道（五层）、运行时可变 |
 | [dev-testing.md](./dev-testing.md) | 测试策略：单元 / proptest / 集成 / 并发 |
-| [adr-index.md](./adr-index.md) | 架构决策记录（ADR 0003-0018） |
 
 > 架构/Agent/Adapter/Config 的通用细节通过源码注释（`//! module doc`）和 README 维护，避免文档与代码分叉。
 
@@ -32,6 +31,12 @@ EchoAgentCore/
 ├── skills/                    # SKILL.md 技能定义（运行时热重载）
 ├── source/
 │   ├── defs/echo-defs/        # Service Definition 层（词汇 + trait，零实现）
+│   ├── context/echo-context/  # Ctx 服务定位 / EventBus / Disposer / ScopedRegistry
+│   ├── session/echo-session/  # 事件溯源会话存储（EventLog + derive_messages）
+│   ├── loop/echo-loop/        # TurnRunner 默认驱动 + ToolPipeline
+│   ├── llm/echo-llm-*/        # LLM provider crates（openai/anthropic/ollama）
+│   ├── chat/echo-chat-capability/  # DeliveryPolicy 交付策略接缝
+│   ├── plugin/echo-plugin/    # Plugin trait / PluginManifest / 注册表
 │   ├── protocol/echo-protocol/# 前后端线契约 crate
 │   ├── backend/
 │   │   ├── echo-core/         # OneBot v11 协议类型
@@ -92,3 +97,9 @@ cargo fmt --all --check
 # 指定 crate
 cargo test -p echo-agent
 ```
+
+## 治理门禁（CI）
+
+- **依赖方向 lint**（`scripts/check-deps.sh`，CI `deps-lint` job）：扩展/provider crate 只依赖定义层（echo-defs/echo-context/echo-protocol）；`echo-llm-*` 不得依赖 agent 框架。违规即 CI 失败，不靠人肉 review
+- **config 模板测试**（`source/core/tests/config_template.rs`）：`config/echo-agent-core.toml` 必须是合法 TOML 且含运行时依赖的 section，防模板漂移；并入 `cargo test`
+- **Panel CI 钉版**：Panel 仓库 CI 以 `ECHO_CORE_REF` 变量钉住 echo-protocol 兼容 commit（协议变更验证后钉到 commit），消除跨仓库克隆 master 的版本漂移

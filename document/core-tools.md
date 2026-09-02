@@ -28,3 +28,15 @@ y: 1673
 
 - `ToolCall` / `ToolResult` 都写入事件日志（事件溯源），重启后可完整重放
 - 协议事件携带 `tool_call_id` + `timed_out`：前端精确配对（同名并行调用不再配错对），超时渲染为失败；显示时间线就地更新会重新投递完成态（见 [协议与数据流](./protocol.md)）
+
+## run_sudo：人机交互 sudo 授权
+
+让 agent 能执行需 root 的命令，同时满足硬约束：**每次 sudo 都由用户在 Panel 输入密码授权；密码绝不进入日志、LLM 上下文与会话日志；模型不知道密码内容**。
+
+- 链路：`run_sudo` 向 `SudoBroker` 注册 pending 请求 → 发 `SudoRequest` 事件 → 带超时等待 oneshot；management server 收到 `SudoPassword` 帧后**直接** `broker.submit`——不经 agent 命令队列、不进会话日志（结构性带外通道）
+- 拿到密码后 `sudo -S -p '' -- sh -c <command>` 把密码写入 stdin 管道，缓冲区立即零化；只有 stdout/stderr 返回给模型；`PendingSudo` Drop 时取消 broker 条目（外层超时也不泄漏）
+- 密码只在「Panel 输入框 → WS 帧 → broker oneshot → sudo stdin」四个暂存点间流转，随后零化；密码从未 model-visible，"模型可见 ⟺ 已记录"不变量不受影响
+- 配置：`[agent.sudo] enabled`（模板默认开启、代码默认关闭）、`auth_timeout_secs = 120`、`command_timeout_secs = 60`；`run_sudo` 仅在 enabled 时进入 schema，background 分支禁用（脱离交互不应触发 sudo 弹窗）
+- `run_command` 检测到开头 `sudo` 时提示改用 `run_sudo`
+- 已知限制：密码每次请求输入（不做 credential 缓存）；多个并发 sudo 请求时 Panel 只展示最新一个（旧请求超时失败）；无 Panel 在线时请求超时失败（安全降级）
+- 协议帧与打码约定见 [协议与数据流](./protocol.md)；systemd `NoNewPrivileges` 配合见 [部署与自更新](./ops-deploy.md)

@@ -32,7 +32,7 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 
 ### 服务加固与 sudo
 
-长驻 `echo-agent-core.service` 设 `NoNewPrivileges=false`：`run_sudo` 人机授权流（ADR-0012）依赖 sudo 的 setuid 提权，`NoNewPrivileges=true` 会阻断。oneshot 更新单元保持 `NoNewPrivileges=true`——它只拉代码、构建、替换用户目录二进制，从不运行 sudo，限制被攻破构建脚本的提权面。
+长驻 `echo-agent-core.service` 设 `NoNewPrivileges=false`：`run_sudo` 人机授权流（见 [工具系统](./core-tools.md)）依赖 sudo 的 setuid 提权，`NoNewPrivileges=true` 会阻断。oneshot 更新单元保持 `NoNewPrivileges=true`——它只拉代码、构建、替换用户目录二进制，从不运行 sudo，限制被攻破构建脚本的提权面。
 
 ## 更新流程（update.sh）
 
@@ -66,7 +66,7 @@ allowed_qq_users = [123456789]
 
 - **绝不** `systemctl --user stop echo-agent-core.service`：agent 本身运行在 core 进程内，stop 会杀死当前会话，后续 start 永远执行不到（已实际发生）
 - 安全替代：`systemctl --user restart echo-agent-core.service`（原子操作）；确需先停后启时用 `systemd-run --user` 脱离会话执行
-- **优雅排空（ADR-0015）**：Core 收到 SIGTERM 后先进入排空模式——拒绝新消息、等待进行中的回复完成（最多 120s）再退出；`TimeoutStopSec=180s` 兜底
+- **优雅排空（drain-then-exit）**：Core 收到 SIGTERM 后先进入排空模式——拒绝新消息（Panel 主动发送会收到"Core 正在重启"错误提示，重试即可）、等待进行中的回复完成（最多 `DRAIN_TIMEOUT_SECS = 120s`，期间回复继续实时 emit 到 Panel）再退出；超时仍未完成才强制取消该 turn；`TimeoutStopSec=180s` 兜底保证 drain 窗口内不被 SIGKILL。停机顺序：`pump.abort()`（停命令泵）→ `qq_adapter.stop()`（QQ 停收）→ `agent.shutdown()`（drain）。后台任务/定时器不在 `active_inbound_turns` 计数内，drain 不等待它们；其持久化结果在重启后仍会投递（事件溯源）
 - Core 重启后恢复时间线时，进程被杀导致的悬空 running 工具条目会被标注为"已中断"，不再永远显示"运行中"
 
 ## 日常体检

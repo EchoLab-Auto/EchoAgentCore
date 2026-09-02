@@ -30,7 +30,12 @@ EchoAgentPanel/
 
 ## 后端：无状态字节级中继
 
-每个浏览器 WS 连接对应一条到 Core management WS 的专用连接；帧按原文转发，**不解析、不记录负载**——sudo 密码帧因此与日志、命令队列完全隔离（ADR-0016）。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong。
+每个浏览器 WS 连接对应一条到 Core management WS 的专用连接；帧按原文转发，**不解析、不记录负载**——sudo 密码帧因此与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong。
+
+- 中继极薄（一个 crate、约 200 行），可独立测试（`tests/proxy.rs` 用假 Core 验证双向帧透传，含 sudo 帧）
+- 多标签页 = 多条 Core 连接（Core 的 management 支持多 Panel）
+- 已知限制：无会话恢复——刷新页面后从 `RequestState` / `RequestTrunkTimeline` 重新 Bootstrap
+- 否决的备选：后端做协议层转发/会话管理（等于重写 Core 桥接层且 sudo 帧需额外安全处理）；浏览器直连 Core :3132（跨域 + 暴露 management 端口）
 
 ## 状态管理与数据流
 
@@ -56,7 +61,25 @@ EchoAgentPanel/
 
 ## 时序与动画规范
 
-推理、工具调用、正式回答**按事件到达顺序实时插入**主时间线，推理真实穿插在工具调用之间；正式回答始终最后。规范详见 [ADR-0017](./0017-panel-agent-visual-timeline.md)。
+主时间线对 Agent 运行过程的展示规范（一致性基线，改动需保持三条规则）：
+
+**1. 及时性（实时渲染，不缓冲）**：`AgentReasoning` / `ToolCall` / `ToolResult` / `AgentOutput` 事件到达即渲染进主时间线，**不得**等回复完成后一次性写入；推理是独立 `reasoning` 角色消息按序插入，不缓冲到回复尾部。
+
+**2. 时序表现（还原真实顺序）**：主时间线顺序 = 事件到达顺序（`用户消息 → 推理 → 工具调用 → 工具结果 → … → 正式回答`），推理真实穿插在工具调用之间，正式回答始终最后；历史回放（`loadTimeline`）同样把 `backend.reasoning` 拆分为独立 reasoning 消息、插在回答之前，与实时路径时序一致；侧边栏临时分支详情继承同一规则（仅做连续 reasoning 的合并展示）。
+
+**3. 动画反馈（对应位置对应动画）**：
+
+| 阶段 | 位置 | 动画 |
+| --- | --- | --- |
+| 连接中 | 顶栏状态点 | 状态点呼吸 |
+| 思考 / 调用工具 / 子代理 | 输入框上方活动浮条 | 旋转 spinner + 动态文案 |
+| 推理输出 | 推理块 | 打字机逐字显示（自适应速度，约 6s 封顶）+ 光标/呼吸点 |
+| 工具执行中 | 工具卡 | running 状态 spinner |
+| 消息到达 | 每条实时消息 | 0.28s 淡入上移入场动画 |
+
+- 打字机/入场动画**仅**对实时消息（`DisplayMessage.animate === true`）播放；历史回放、刷新加载不播动画
+- 动画为纯视觉层：`animate` 是展示元数据，不进入任何数据/逻辑判断
+- 实现要点：ui-frame `ChatRole` 不含 `reasoning`，必须在 `ChatView` 的 `#message` slot 层拦截（否则未知角色会被渲染成 Agent 气泡）；`pendingReasoning`/`completedReasoning` 保留给分支合并块消费，主时间线不再读取
 
 ## 主题
 
