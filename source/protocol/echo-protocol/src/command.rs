@@ -133,7 +133,15 @@ pub enum BackendCommand {
     },
     /// Cancel running work for a session (agent turns + background tasks).
     /// `all` = true cancels every active turn; false cancels only the newest.
-    CancelRequestedWork { session_id: String, all: bool },
+    CancelRequestedWork {
+        session_id: String,
+        all: bool,
+        /// 目标 agent（None/未指定 = 默认 agent）。
+        /// 取消必须路由到 turn 实际所在的 agent：self-coding 的 turn 在
+        /// self-coding 的 Agent 中，默认 agent 取消永远为 0。
+        #[serde(default)]
+        team_id: Option<String>,
+    },
     /// Request the persisted display timeline (`BackendEvent::TrunkTimeline`).
     /// The TUI sends this on startup to restore historical messages.
     /// `agent_id` selects the persona timeline (None = management/default).

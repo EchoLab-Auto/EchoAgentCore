@@ -509,7 +509,11 @@ impl Agent {
                     message: "历史记忆已清理".into(),
                 });
             }
-            BackendCommand::CancelRequestedWork { session_id, all } => {
+            BackendCommand::CancelRequestedWork {
+                session_id,
+                all,
+                team_id: _,
+            } => {
                 let cancelled = self.cancel_requested_work(&session_id, all).await;
                 self.emit(BackendEvent::Error {
                     session_id: Some(session_id.clone()),

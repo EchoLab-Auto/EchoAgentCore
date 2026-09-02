@@ -571,7 +571,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             interval.tick().await;
             while let Some(cmd) = pump_default.try_recv_command() {
                 let target = match &cmd {
-                    echo_agent::BackendCommand::SendMessage { team_id, .. } => {
+                    echo_agent::BackendCommand::SendMessage { team_id, .. }
+                    | echo_agent::BackendCommand::CancelRequestedWork { team_id, .. } => {
                         let id = team_id.clone().unwrap_or_default();
                         if id.is_empty() {
                             Arc::clone(&pump_default)
