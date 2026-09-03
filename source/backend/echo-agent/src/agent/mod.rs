@@ -1395,6 +1395,14 @@ impl Agent {
                 completed_at_ms: chrono::Utc::now().timestamp_millis(),
             });
         }
+        // 取消也要发 AgentCompleted（与 QQ 路径一致）：
+        // 前端据此把 activity phase 置 completed —— 否则 busy 卡住、
+        // 取消按钮/活动浮条/思考动画永远不中断。
+        if cancelled {
+            self.emit(BackendEvent::AgentCompleted {
+                session_id: session.id.clone(),
+            });
+        }
         result
     }
 
