@@ -23,6 +23,7 @@ pub mod session;
 pub mod skill;
 pub mod sudo;
 pub mod shell;
+pub mod skill_install;
 pub mod timeline;
 pub mod tool;
 

@@ -145,6 +145,21 @@ pub enum BackendCommand {
     /// Request the persisted display timeline (`BackendEvent::TrunkTimeline`).
     /// The TUI sends this on startup to restore historical messages.
     /// `agent_id` selects the persona timeline (None = management/default).
+    /// 从外部 Git 仓库安装 skill（clone 到 skills_dir，热重载自动发现）。
+    InstallSkillFromGit {
+        /// git 仓库 URL（支持 https/ssh/本地路径）
+        url: String,
+        /// 安装目录名（缺省取仓库名）
+        #[serde(default)]
+        name: Option<String>,
+        /// 分支/标签（缺省 = 仓库默认分支）
+        #[serde(default)]
+        branch: Option<String>,
+    },
+    /// 更新从 Git 安装的 skill（根据 sources 记录 fetch + reset）。
+    UpdateSkillFromGit { name: String },
+    /// 移除 Git 来源记录（不删除目录；目录删除仍用 DeleteSkill）。
+    RemoveSkillSource { name: String },
     RequestTrunkTimeline {
         #[serde(default)]
         team_id: Option<String>,

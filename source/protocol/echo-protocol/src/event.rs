@@ -3,6 +3,17 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// 技能来源信息（外部 Git 仓库安装）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillSourceInfo {
+    pub url: String,
+    pub rev: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub installed_at: Option<String>,
+}
+
 /// Adapter status reported to the TUI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdapterStatus {
@@ -611,6 +622,9 @@ pub struct SkillInfo {
     /// Full instructions body of `SKILL.md`.
     #[serde(default)]
     pub content: String,
+    /// 外部 Git 来源（安装的 skill；内置技能为 None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SkillSourceInfo>,
 }
 
 fn default_true() -> bool {

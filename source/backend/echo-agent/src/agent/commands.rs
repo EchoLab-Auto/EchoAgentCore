@@ -393,6 +393,74 @@ impl Agent {
                     }
                 }
             }
+            BackendCommand::InstallSkillFromGit {
+                url,
+                name,
+                branch,
+            } => {
+                let dir = self.current_skills_dir().await;
+                match crate::skill_install::install(
+                    std::path::Path::new(&dir),
+                    &url,
+                    name.as_deref(),
+                    branch.as_deref(),
+                ) {
+                    Ok(_) => {
+                        if let Err(e) = self.reload_skills(&dir).await {
+                            tracing::warn!(error = %e, "skill reload after install failed");
+                        }
+                        self.emit_skills_list().await;
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("skill source installed: {url}"),
+                        });
+                    }
+                    Err(e) => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("install skill source failed: {e}"),
+                        });
+                    }
+                }
+            }
+            BackendCommand::UpdateSkillFromGit { name } => {
+                let dir = self.current_skills_dir().await;
+                match crate::skill_install::update(std::path::Path::new(&dir), &name) {
+                    Ok(src) => {
+                        if let Err(e) = self.reload_skills(&dir).await {
+                            tracing::warn!(error = %e, "skill reload after update failed");
+                        }
+                        self.emit_skills_list().await;
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("skill {name} updated to {}", src.rev),
+                        });
+                    }
+                    Err(e) => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("update skill source failed: {e}"),
+                        });
+                    }
+                }
+            }
+            BackendCommand::RemoveSkillSource { name } => {
+                let dir = self.current_skills_dir().await;
+                match crate::skill_install::remove_source(std::path::Path::new(&dir), &name) {
+                    Ok(()) => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("skill source record removed: {name}"),
+                        });
+                    }
+                    Err(e) => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("remove skill source failed: {e}"),
+                        });
+                    }
+                }
+            }
             BackendCommand::RequestState => {
                 self.emit_api_config().await;
                 // 会话列表要覆盖**所有人格**：每个会话由事件自带 team_id
@@ -882,6 +950,10 @@ impl Agent {
     /// Emit the full skill list (`BackendEvent::SkillsList`).
     pub async fn emit_skills_list(&self) {
         let skills = self.skills.lock().await;
+        // 注入外部 Git 来源信息（skills/.sources.json）
+        let sources = crate::skill_install::load_sources(std::path::Path::new(
+            &self.config.read().await.skills_dir,
+        ));
         let mut list: Vec<crate::event::SkillInfo> = skills
             .all()
             .iter()
@@ -894,6 +966,14 @@ impl Agent {
                 category: skill.metadata.category.clone(),
                 package: skill.metadata.package.clone(),
                 content: skill.instructions.clone(),
+                source: sources.get(&skill.metadata.name).map(|src| {
+                    crate::event::SkillSourceInfo {
+                        url: src.url.clone(),
+                        rev: src.rev.clone(),
+                        branch: src.branch.clone(),
+                        installed_at: src.installed_at.clone(),
+                    }
+                }),
             })
             .collect();
         list.sort_by_key(|s| s.name.clone());
