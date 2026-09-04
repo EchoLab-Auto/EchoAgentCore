@@ -179,6 +179,8 @@ graph LR
 - **Bootstrap 命令组**（每次 onopen 按序发送）：`RequestState` → `RequestTrunkTimeline{team_id: 上次Agent}` → `RequestAdapterStatus` → `RequestQqFilterConfig` → `RequestTeamsList` → `RequestShellSessions`
 - **重连清空**：`branchTabs`、`tasks`、`activities` 以及时间线状态（`trunk`、`teamTimelines`、`trunkTeamId`）全部清空后全量重建——断连期间错过的实时事件与就地更新无法对齐，全量是唯一安全恢复路径
 - **退避**：500ms 起、×2 递增、上限 30s；成功连接后复位 500ms
+- **前台自愈（heal）**：`visibilitychange` 回到前台或 `online` 事件时主动评估连接——已断开则立即重连（复位退避，不等可能被浏览器冻结的退避定时器）；显示 OPEN 也可能半死（设备休眠期间对端已消失而本端未察觉），发 `RequestTeamsList` 探测帧，**5s** 内无任何下行帧则判死、主动关闭走标准重连（`connection.ts`）
+- **中继半死收割**：一侧超过 90s（3 个心跳周期）无任何帧（含 Pong）→ 中继断开整条链路（`proxy.rs`；设备休眠留下的僵尸连接因此被清理，唤醒后重连拿到干净状态）
 - **断连期间**：顶栏显示"连接中…"；输入框禁用（placeholder `未连接到 Core，暂时无法发送`）；`sendCommand` 不发送并弹 error toast；QQ 面板按钮禁用
 - **兜底对齐**：`AgentCompleted` 时若该会话最后一条不是正式回答，自动补拉 `RequestTrunkTimeline`（带当前 team_id，`state.ts:595-608`）
 - 协议信封 `{type: command|event|sudo_password, payload}`；无法解析的帧静默丢弃（`protocol.ts:437-459`）
@@ -460,6 +462,7 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 | 常量 | 值 | 位置 |
 |---|---|---|
 | WS 重连退避 | 500ms ×2，上限 30s | connection.ts |
+| 前台自愈 / 中继收割 | 探测帧 5s 判死；一侧 90s 无帧断链 | connection.ts / proxy.rs |
 | Toast | 6s；队列/同屏 8；≤512 字符；右上 | main.ts:11 / App.vue:222, 344 / state.ts:912-914 |
 | 主时间线容量 | 1024 条 | timeline.ts:6-11 |
 | 推理打字机 | 24ms/tick，约 6s 封顶，≥2 字符/tick | ReasoningBlock.vue:18-53 |
