@@ -59,7 +59,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   - `branch.reply` / `session.global` / `chatbot.sessions`：UI 门控真实生效（面板侧会话/分支能力隐藏）
   - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具/技能对所有 persona 批量禁用（对 LLM 不可见），启用恢复
   - `adapter.qq`：禁用 = 停止 QQ 适配器进程 + QQ 工具包禁用；启用 = 启动 + 恢复
-  - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）
+  - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）。**防自锁保护**：经 `TogglePlugin` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
   - `provider.llm` / `loop.runner` / `orchestration`：仍为名义挂载——运行中替换 provider/loop 涉及在途 turn，保持"重启生效"语义（禁用 = 下次重启不装配）；orchestration 的实化依赖 echo-loop 迁移完成度
 
 ## 动态编排工具

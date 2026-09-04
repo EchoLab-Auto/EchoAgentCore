@@ -267,6 +267,18 @@ impl Agent {
                 self.emit_plugins_list().await;
             }
             BackendCommand::TogglePlugin { id, enabled } => {
+                // 防自锁：管理面插件承载 management WS，经命令禁用它 = Panel 立即
+                // 断连且无法经 UI 恢复。拒绝经 TogglePlugin 禁用——确需禁用只能
+                // 编辑 core.toml 的 disabled_plugins 后重启 Core。
+                if !enabled && id == crate::plugins::MANAGEMENT_PANEL_PLUGIN_ID {
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: format!(
+                            "refuse to disable {id}: 管理面插件禁用即关闭 management 通道（Panel 自锁），如需禁用请编辑 core.toml 的 disabled_plugins 后重启 Core"
+                        ),
+                    });
+                    return;
+                }
                 match self.plugin_host.set_enabled(&id, enabled).await {
                     Ok(()) => {
                         // Persist so the choice survives restarts.

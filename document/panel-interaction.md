@@ -278,6 +278,7 @@ graph LR
 
 | 操作 | 确认形式 |
 |---|---|
+| 禁用「管理面」插件 | **禁止**（core 拒绝命令 + UI alert 明示，防自锁；只能 core.toml + 重启） |
 | 删除技能 | `window.confirm`（提示会删除 SKILL.md 文件） |
 | 删除 Team | 主 Agent `window.alert` 禁止；其余 `window.confirm`（不可恢复） |
 | 移除技能 Git 来源 | `window.confirm`（明示"目录保留，可手动删除"） |
@@ -315,7 +316,7 @@ graph LR
 |---|---|---|
 | 技能 | 分类/常驻标签、Git 来源徽标（`Git · {短URL}`，悬停显示 `{url} @ {rev}`，URL 超 42 字符截断）、描述、触发词、SKILL.md 原文（≤420px 滚动） | 启停开关（`ToggleSkill`）、编辑（名称锁定）、删除（confirm）；**Git 来源技能追加**：更新（`UpdateSkillFromGit`，无确认）、移除来源（confirm「目录保留，可手动删除」→ `RemoveSkillSource`） |
 | 工具 | 分类、描述、JSON 参数 schema | 启停开关（`ToggleTool`，禁用后模型不可见） |
-| 插件 | kind/版本/外部标签、描述、ID/Entry/Author | 启停开关（`TogglePlugin`，禁用即卸载注册；全局生效） |
+| 插件 | kind/版本/外部标签、描述、ID/Entry/Author | 启停开关（`TogglePlugin`，禁用即卸载注册；全局生效；**「管理面」插件禁用被保护**——core 拒绝 + UI 明示，防 Panel 自锁断连） |
 | 智能体 | 主 Agent/N 会话标签、提示词、能力白名单、禁用能力（error 色标签组） | 选中即进编辑态；启停（`ToggleTeam`）；非主 Agent 可删除 |
 
 - **技能编辑器**：名称（编辑时锁定）、描述、触发词（逗号分隔）、分类、常驻开关、Markdown 正文（12 行自适应）；保存 `SaveSkill`

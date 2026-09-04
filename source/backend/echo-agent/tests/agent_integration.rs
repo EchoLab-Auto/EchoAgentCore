@@ -494,6 +494,42 @@ async fn plugin_list_and_toggle_roundtrip() {
 }
 
 #[tokio::test]
+async fn toggle_management_panel_plugin_disable_is_refused() {
+    use echo_plugin::{BuiltinPlugin, PluginKind, PluginManifest};
+    let (agent, _provider) = test_agent("ok");
+    agent
+        .plugin_host
+        .register_and_mount(std::sync::Arc::new(BuiltinPlugin::new(
+            PluginManifest::builtin(
+                echo_agent::plugins::MANAGEMENT_PANEL_PLUGIN_ID,
+                "管理面",
+                "0.1",
+                PluginKind::Management,
+                "m",
+                "d",
+            ),
+            |_| Ok(vec![]),
+        )))
+        .unwrap();
+    // 防自锁：经 TogglePlugin 禁用管理面插件被拒绝，插件保持启用。
+    agent
+        .apply_command(BackendCommand::TogglePlugin {
+            id: echo_agent::plugins::MANAGEMENT_PANEL_PLUGIN_ID.into(),
+            enabled: false,
+        })
+        .await;
+    assert!(agent.plugin_host.descriptors()[0].enabled);
+    // 启用路径不受影响（幂等）。
+    agent
+        .apply_command(BackendCommand::TogglePlugin {
+            id: echo_agent::plugins::MANAGEMENT_PANEL_PLUGIN_ID.into(),
+            enabled: true,
+        })
+        .await;
+    assert!(agent.plugin_host.descriptors()[0].enabled);
+}
+
+#[tokio::test]
 async fn toggle_skill_enables_and_disables() {
     let (agent, _provider) = test_agent("ok");
     agent.skills.lock().await.register(echo_agent::Skill {
