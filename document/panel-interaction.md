@@ -9,16 +9,79 @@ link: ["protocol | 协议命令"]
 
 # Panel 交互定义
 
-Panel 前端全部交互行为的完备规范：视图、导航、输入、反馈、模态、异常与恢复。实现位置以 `web/src/` 相对路径标注；渲染基元来自 `@echolab-auto/ui-frame`（新拟态组件库），本文档只定义 Panel 自身的交互契约，库组件的通用行为（按钮、折叠卡、开关等）不展开。
+Panel 前端全部交互行为的完备规范：§一以图给出层级总览（视图/布局/数据流），其后各节为具体定义——视图、导航、输入、反馈、模态、异常与恢复。实现位置以 `web/src/` 相对路径标注；渲染基元来自 `@echolab-auto/ui-frame`（新拟态组件库），本文档只定义 Panel 自身的交互契约，库组件的通用行为（按钮、折叠卡、开关等）不展开。
 
 **核心原则**：
 
-1. **Core 是状态的唯一事实来源**——前端不持有业务真相，一切展示由 WS 事件流驱动，断连重连后全量重建而非增量对齐；唯一例外是**取消任务的乐观中断**（§6.6、§十：先本地把运行中态置为已取消，再由 Core 事件确认）
+1. **Core 是状态的唯一事实来源**——前端不持有业务真相，一切展示由 WS 事件流驱动，断连重连后全量重建而非增量对齐；唯一例外是**取消任务的乐观中断**（§7.6、§十一：先本地把运行中态置为已取消，再由 Core 事件确认）
 2. **实时优先**——推理/工具/回答按事件到达顺序即时渲染，不缓冲等待（规范见 [Panel 前端](./panel.md)「时序与动画规范」）
 3. **危险操作显式确认**——删除/清理走确认（两步确认或原生 confirm）；sudo 授权不可绕过
 4. **编辑即生效**——QQ 门控、启停开关等操作无草稿态，点击立即下发命令
 
-## 一、视图与导航
+## 一、结构总览（层级图）
+
+本节以图表达 Panel 的层级逻辑——视图组成、布局组件树、数据流分层；各项的具体定义（行为、常量、协议命令）见后续对应小节。
+
+### 1.1 视图层级
+
+```prodoc-flow
+graph TD
+  Root[Panel 主视图] --> Chat[会话]
+  Root --> Tasks[任务]
+  Root --> ShellV[Shell]
+  Root --> Sets[设置]
+  Sets --> Api[API 设置]
+  Sets --> Skills[技能]
+  Sets --> Tools[工具]
+  Sets --> Plugins[插件]
+  Sets --> Teams[智能体]
+  Sets --> Logs[日志]
+```
+
+- 四主视图仅经顶栏导航切换（§二）；设置视图的六个分类走内部一级菜单（§九）
+- 模态与覆盖层（Sudo / Branch / Agent 配置 / 上下文）浮于全部视图之上（§八）；侧边栏点选会话强制回会话视图
+
+### 1.2 布局与组件树
+
+```prodoc-flow
+graph TD
+  App[App.vue 应用壳] --> Layout[NeumorphismLayout 外壳]
+  Layout --> Header[顶栏：品牌 · 连接状态 · 导航 · 主题]
+  Layout --> Sider[侧边栏 PanelSidebar]
+  Layout --> Main[主区：当前视图组件]
+  Sider --> BranchCard[临时分支卡]
+  Sider --> SessionCard[会话卡 SessionGroups]
+  Main --> ChatView[ChatView 会话]
+  Main --> SettingsView[SettingsView 设置]
+  Main --> TasksPanel[TasksPanel 任务]
+  Main --> ShellPanel[ShellPanel Shell]
+  ChatView --> MsgList[消息列表]
+  ChatView --> EntryRow[活动浮条 · 入口行]
+  ChatView --> Composer[悬浮输入区]
+  ChatView --> Pops[弹出层：清单 · QQ 适配器]
+  ChatView --> Overs[覆盖层：上下文 · Agent 配置]
+  App --> Modals[模态：Sudo · Branch]
+  App --> Toasts[ToastProvider 右上]
+```
+
+几何与层叠常量见 §三；设置视图内部为 一级菜单 → 工具条 → 列表/详情 三段（§九）。
+
+### 1.3 数据流分层
+
+```prodoc-flow
+graph LR
+  Core[Core 事件流] -->|WS /ws 中继| Conn[connection 单例]
+  Conn -->|dispatch 逐事件归约| Store[state reducer]
+  Store -->|响应式驱动| Views[视图渲染]
+  Views -->|用户操作| Cmd[BackendCommand]
+  Cmd -->|sendCommand| Conn
+  Conn -->|命令下行| Core
+```
+
+- Core 是状态唯一事实来源；断连重连后全量重建（§四）；唯一乐观例外 = 取消任务（§7.6、§十一）
+- HTTP 仅有三条旁路（QQ 状态/二维码、日志），其余全部走 WS（§十一）
+
+## 二、视图与导航
 
 Panel 有四个主视图，仅经顶栏导航按钮切换；地址栏不承载视图状态（无路由）。
 
@@ -38,11 +101,11 @@ graph LR
 - 点选侧边栏会话项**强制切回会话视图**（`App.vue:154-156`）
 - 任务按钮在有运行中任务时显示计数徽标 `任务(N)`（`App.vue:150-152, 278`）
 
-> 2026-09-04 起原「资源」「日志」视图与 API 设置弹窗合并为「设置」视图（§八），顶栏设置下拉随之移除。
+> 2026-09-04 起原「资源」「日志」视图与 API 设置弹窗合并为「设置」视图（§九），顶栏设置下拉随之移除。
 
-## 二、应用外壳与布局
+## 三、应用外壳与布局
 
-### 2.1 布局区域与几何
+### 3.1 布局区域与几何
 
 外壳 = ui-frame `NeumorphismLayout`（`App.vue:243-328`）：`:sider-width="264"`、`:collapsed-width="0"`、`height="100%"`。
 
@@ -60,7 +123,7 @@ graph LR
 - sider 槽位去背景/边框/阴影（由卡片自带新拟态）；内容栈 `.panel-sider` 纵向 flex、gap 14px、padding 12px、自身 `overflow-y:auto`
 - 自定义样式层只写类选择器，**禁止裸元素选择器**（`button/input/…` 会污染库组件）——`styles.css` 头注
 
-### 2.2 层叠秩序（z-index）
+### 3.2 层叠秩序（z-index）
 
 | 层 | z-index | 内容 |
 |---|---|---|
@@ -69,9 +132,9 @@ graph LR
 | Agent 菜单 | 30 | AgentSwitcher 上弹菜单 |
 | 模态 / Toast | 库管理 | SudoModal、BranchModal、ToastProvider 等由 ui-frame 统一分配，始终高于应用层 |
 
-会话视图内的悬浮元素（输入区、入口行、弹出层）不参与全局 z-index 竞争，靠 DOM 顺序与定位叠放，详见 §6.6/§6.7。
+会话视图内的悬浮元素（输入区、入口行、弹出层）不参与全局 z-index 竞争，靠 DOM 顺序与定位叠放，详见 §7.6/§7.7。
 
-### 2.3 主题与设计令牌
+### 3.3 主题与设计令牌
 
 视觉体系来自 `@echolab-auto/ui-frame`（`--nm-*` 令牌 + `[data-theme='dark']` 机制），Panel 在其上覆盖（`styles.css:13-39`）：
 
@@ -82,14 +145,14 @@ graph LR
 | `--panel-ok/warn/err` | `#1a7f37/#9a6700/#cf222e` | `#3fb950/#d29922/#f85149` | 状态语义色 |
 | `--panel-hover` | 文本色 6% 混合（`color-mix`） | 同 | 悬停底 |
 
-### 2.4 顶栏交互
+### 3.4 顶栏交互
 
 - **连接指示**：`已连接`（online 绿点）/ `连接中…`（connecting 呼吸点），驱动源 `state.connected`（`App.vue:249-252`）
 - **模型显示**：`state.model`（无数据时 `—`）；任一会话处于 thinking/tool/subagent 相位时追加 `忙碌 ×N` 警告标签（`App.vue:143-148, 254-257`）
-- **设置入口**：顶栏导航「设置」直达设置视图（§八）——2026-09-04 起不再有设置下拉与 API 弹窗
+- **设置入口**：顶栏导航「设置」直达设置视图（§九）——2026-09-04 起不再有设置下拉与 API 弹窗
 - **主题开关**：三态循环（浅色 → 跟随系统 → 深色），持久化 `localStorage: echo-panel-theme`；外壳默认 `auto`，index.html 内联脚本防闪烁
 
-### 2.5 持久化的界面状态
+### 3.5 持久化的界面状态
 
 | localStorage 键 | 内容 | 缺省 |
 |---|---|---|
@@ -100,7 +163,7 @@ graph LR
 
 所有读写包 try/catch（隐私模式降级为不持久化）。侧边栏卡片自身的展开/折叠**不持久化**（组件内状态，默认双卡展开）。
 
-## 三、连接生命周期
+## 四、连接生命周期
 
 ```prodoc-flow
 graph LR
@@ -120,16 +183,16 @@ graph LR
 - **兜底对齐**：`AgentCompleted` 时若该会话最后一条不是正式回答，自动补拉 `RequestTrunkTimeline`（带当前 team_id，`state.ts:595-608`）
 - 协议信封 `{type: command|event|sudo_password, payload}`；无法解析的帧静默丢弃（`protocol.ts:437-459`）
 
-## 四、侧边栏
+## 五、侧边栏
 
-### 4.1 临时分支卡
+### 5.1 临时分支卡
 
 - 仅当当前 Agent 为 **chatbot 编排模式**时显示（`orchestrationModeOf(team) === 'chatbot'`，`PanelSidebar.vue:17-24`）；徽标显示运行中分支数
 - 分支行：脉冲 spinner（8px warn 色圆点，`branch-pulse 1s ease-in-out infinite`）+ 任务摘要（截断 24 字符）；无关闭按钮——`ReplyBranchCompleted` 或重连后自动消失
 - 点击分支行 → 打开 BranchModal（分支详情）
 - 卡片几何：头部 padding 12px/14px + 11px 折叠 caret，正文 padding 4px/12px/12px；分支行 padding 5px/8px、圆角 6px；徽标圆角 9px、10px 字、主色底（`styles.css:125-145, 222-241`）
 
-### 4.2 会话卡与分组
+### 5.2 会话卡与分组
 
 仅当当前 Agent 为 **chatbot 编排模式**时显示（single 模式会话卡与分支卡整体隐藏）。分组规则（按会话 id `platform:scope:…` 解析）：
 
@@ -146,7 +209,7 @@ graph LR
 - 点选 = 切换会话过滤（不重拉时间线）+ 强制回会话视图
 - 会话项几何：padding 6px/8px、圆角 6px、3px 透明左边框；选中 = 左边框 `--panel-accent` + `--panel-accent-soft` 底；分组 tag 10px 字、圆角 8px，配色 全局 `#64748b` / Local `#0ea5e9` / QQ 私聊 `#2ea46e` / QQ 群 `#f59e0b` / 其他 `#8b5cf6`（`styles.css:180-219`）
 
-## 五、Agent 切换器
+## 六、Agent 切换器
 
 锚定在会话视图入口行左侧的玻璃胶囊（头像 + 名称 + 箭头，箭头开启时旋转 180°）。几何（`AgentSwitcher.vue:120-228`）：卡片高 34px、圆角 999px、`blur(20px) saturate(1.6)` 玻璃底；卡内头像 26px、菜单内 24px（圆形）；名称 120px 省略；箭头 14px、过渡 0.15s。
 
@@ -156,9 +219,9 @@ graph LR
 - 与"点选会话"的本质区别：切换 Agent = 切换记忆空间（重载时间线）；点选会话 = 同一记忆空间内的过滤
 - 当前 Agent 被删除时：回退主 Agent、重载时间线、重选本地会话（`App.vue:203-224`，TeamsList 为空时不校验，避免误清刚恢复的 id）；全局会话被禁用时从「全部消息」回退本地会话（`App.vue:191-201`）
 
-## 六、会话视图（聊天）
+## 七、会话视图（聊天）
 
-### 6.1 消息列表
+### 7.1 消息列表
 
 - **自动滚动**：仅当用户处于底部 120px 阈值内时跟随新内容；上翻后出现「回到底部 ↓」按钮（平滑滚动，500ms 后解除锁定）。滚动区内 padding-bottom 190px、按钮抬升至 bottom 180px——为悬浮玻璃输入区让位
 - **入场动画**：0.28s 淡入 + 上移 6px，仅实时消息（`animate: true`）播放；历史回放不播
@@ -170,7 +233,7 @@ graph LR
 - **Markdown**：仅 Agent 消息渲染 Markdown
 - **时间格式**：zh-CN 24 小时制
 
-### 6.2 消息角色与渲染
+### 7.2 消息角色与渲染
 
 | 角色 | 渲染 |
 |---|---|
@@ -183,7 +246,7 @@ graph LR
 
 补充来源：定时器触发以 system 消息插入主时间线（`⏰ 定时器触发 · {task}`，task 截断 160 字符）；`adapter_name === 'background'` 的消息走 hook 解析、不进时间线（`state.ts:802-807`，`helpers.ts:26-36`）。
 
-### 6.3 工具卡生命周期
+### 7.3 工具卡生命周期
 
 ```prodoc-flow
 graph LR
@@ -198,17 +261,17 @@ graph LR
 - **配对兜底**：ToolResult 到达时主时间线找不到 running 条目（如恢复后的时间线）——追加一条已完成工具卡而非丢弃（`timeline.ts:44-53`）；增量重投递按 tool_call_id **就地修补**已有工具卡，避免 core 带新 seq 重投完成态时出现重复行（`timeline.ts:131-146`）
 - **中断标记**：历史回放时 `output==null` 且未失败的工具恢复为 running（`timeline.ts:58-61`）；「已中断」标记完全由 core 侧重启清理写入（`session.rs`，output = 「[已中断] Core 服务重启导致本次调用未返回，可重试」），panel 自身不做兜底标记
 
-### 6.4 推理块（ReasoningBlock）
+### 7.4 推理块（ReasoningBlock）
 
 - **实时**：打字机逐字——24ms/tick，每 tick ≥2 字符，总时长约 6s 封顶（按文本长度自适应提速）；紫色左边框 + 「思考」标签 + 输入中提示「正在推演…」+ 闪烁光标 + 呼吸点
 - **历史**：一次性全量显示，无动画
 - 动画纯视觉层（`animate` 元数据不参与逻辑）
 
-### 6.5 活动浮条
+### 7.5 活动浮条
 
 输入区上方的胶囊浮条（仅当前会话忙碌时可见）：旋转 spinner（0.8s）+ 相位文案——`正在思考：{detail}…` / `正在调用工具 {detail}…` / `子代理工作中…`（320px 省略截断）。
 
-### 6.6 输入区
+### 7.6 输入区
 
 - **发送**：Enter（IME 组合输入守卫，`isComposing`/229 不触发）；Shift+Enter 换行；空文本（trim 后）不发送；发送后清空
 - **文本域**：1 行起自适应撑高，上限 `calc(8em + 20px)` 后内部滚动
@@ -220,23 +283,23 @@ graph LR
   3. 库组件自带的取消按钮不渲染（`cancelable: false`，`@cancel` 仅作转发）
 - 发送按钮为库 `#actions` slot 自绘（替换默认按钮，保持与输入区新拟态风格一致）
 
-### 6.7 入口行按钮与弹出层
+### 7.7 入口行按钮与弹出层
 
 入口行位于输入区上方（`bottom = 输入区高度 + 24px`，ResizeObserver 跟踪）：
 
 | 按钮 | 行为 |
 |---|---|
-| Agent 切换 | 见 §五 |
+| Agent 切换 | 见 §六 |
 | 配置 | 打开 AgentConfigModal（当前 Agent 的能力配置）；无激活 Agent 时回退 teams[0]（`ChatView.vue:146-151`） |
 | 上下文 | 打开 ContextView 覆盖层（trunk 上下文明细） |
 | 清单 | 弹出清单卡（徽标 = 清单数）：内嵌 SidebarCard 折叠卡（默认展开、计数徽标），各清单进度条 + ☑/☐ 项（完成项加粗），只读；空态「（暂无清单）」 |
-| 适配器 | 弹出 QQ 管理面板（§九）；仅当前 Agent 启用适配器插件时显示；切换 Agent 强制关闭 |
+| 适配器 | 弹出 QQ 管理面板（§十）；仅当前 Agent 启用适配器插件时显示；切换 Agent 强制关闭 |
 
 弹出层宽 `min(520px, 82vw)`，锚定按钮上方 8px、相对输入区水平居中。**清单/适配器弹出层没有全屏遮罩**——是 fixed 定位的内容尺寸面板，仅点到弹层自身 padding 空白（`@click.self`）才关闭，点弹层外的聊天区不关闭（`ChatView.vue:334-351, 848-861`）；有全屏磨砂遮罩、点空白关闭的是 ContextView 覆盖层（`ChatView.vue:354, 783-791`）。
 
-## 七、模态与覆盖层
+## 八、模态与覆盖层
 
-### 7.1 SudoModal（最高优先级）
+### 8.1 SudoModal（最高优先级）
 
 由 Core `SudoRequest` 事件触发，**不可绕过**：`closable=false`、`mask-closable=false`、无关闭按钮、无页脚。
 
@@ -253,11 +316,11 @@ graph LR
 - 密码经专用 `sudo_password` 帧（不进命令队列/日志/LLM 上下文）；提交后清空输入框
 - `SudoResolved` 到达即关闭弹窗并弹 toast（授权 success / 拒绝或中断 error）；Core 侧保证所有退出路径（含超时、turn 取消）恰好发一次——弹窗不会挂在死请求上
 
-### 7.2 BranchModal（分支详情）
+### 8.2 BranchModal（分支详情）
 
 侧边栏分支行点击进入：头部 `临时分支 · {id前8位}` + 状态标签（运行中 primary/已完成 success/已取消 warning/失败 error）；正文 = 任务/目标/会话元信息 + 分支内消息流（按 kind 分别用工具卡/推理块/纯文本渲染，新消息自动滚底；消息区 max-height 55vh）；运行中时底部提示「分支执行中…」；分支 tab 被移除后弹窗保持打开，显示「（分支已结束并合并到主会话）」。
 
-### 7.3 ContextView（上下文覆盖层）
+### 8.3 ContextView（上下文覆盖层）
 
 入口行「上下文」进入，会话视图内磨砂全覆盖；点遮罩或「返回聊天」关闭。打开时 `RequestContext{team_id: null}`：
 
@@ -266,7 +329,7 @@ graph LR
 - 逐条消息明细（角色 + token + 内容），默认折叠
 - 操作：**清理历史**（两步确认：首击变为「确认清理？不可恢复」，再击发送 `ClearHistory`）；**归档**（confirm → `ArchiveHistory`）；**压缩**（confirm → `CompactHistory{keep_recent: 40}`）；**重载技能**（`ReloadSkills`）；**刷新**
 
-### 7.4 AgentConfigModal（当前 Agent 配置）
+### 8.4 AgentConfigModal（当前 Agent 配置）
 
 锚定会话区上方的磨砂覆盖层（底边 = 入口行高 + 42px，`ChatView.vue:152-157, 399-405`）；点遮罩/✕/取消/保存后关闭。打开时拉取技能/工具/插件清单：
 
@@ -274,7 +337,7 @@ graph LR
 - 三类能力复选表（插件按 kind 分组、工具/技能按包分组，组级全选）：**白名单语义——空表 = 全部启用**；首次取消勾选时先把全量写入列表再移除该项
 - 保存 → `SaveTeam`
 
-### 7.5 原生确认与受保护操作
+### 8.5 原生确认与受保护操作
 
 | 操作 | 确认形式 |
 |---|---|
@@ -283,10 +346,10 @@ graph LR
 | 删除 Team | 主 Agent `window.alert` 禁止；其余 `window.confirm`（不可恢复） |
 | 移除技能 Git 来源 | `window.confirm`（明示"目录保留，可手动删除"） |
 | 归档/压缩历史 | `window.confirm` |
-| 清理历史 | 两步按钮确认（见 §7.3） |
+| 清理历史 | 两步按钮确认（见 §8.3） |
 | 删除 API Profile / 更新 Git 技能 | **无确认**，立即生效 |
 
-## 八、设置视图（SettingsView）
+## 九、设置视图（SettingsView）
 
 2026-09-04 起，原「资源」「日志」视图与 API 设置弹窗合并为统一的设置视图：**左栏一级菜单 + 右侧分类工作区**。
 
@@ -294,7 +357,7 @@ graph LR
 - **工具条**：标题 + 副标题（API = 当前 `provider / model · Profile`；日志 = 来源说明；资源类 = `共 N 项 · K 已禁用`）+ 分类级操作（技能：Git 安装 / 新建技能；智能体：新建智能体）
 - 打开视图时自动拉取四类清单（onMounted）；条目消失时选中态自动置空
 
-### 8.1 API 设置（整页表单，max-width 720px）
+### 9.1 API 设置（整页表单，max-width 720px）
 
 原 SettingsModal 内容的去弹窗化（`ApiSettings.vue`），交互不变：
 
@@ -304,7 +367,7 @@ graph LR
 - **Profile 管理**：每行显示 激活/编辑中 标签与 `provider / model · key` 摘要；操作 测试 / 编辑 / 切换（`SwitchApi`）/ 删除（`DeleteApi`，**无确认，立即生效**）；新建 = 命名 + 保存为新 profile；编辑已有 profile 时保存钮文案变为「保存到 {name}」，保存后保持编辑态
 - 进入页面或 `state.api` 更新时表单重置为当前配置
 
-### 8.2 资源工作区（技能 / 工具 / 插件 / 智能体）
+### 9.2 资源工作区（技能 / 工具 / 插件 / 智能体）
 
 **条目列表**（250px，与详情面板并排，组头可折叠）：
 
@@ -323,7 +386,7 @@ graph LR
 - **智能体编辑器**：ID 必填 + `/^[A-Za-z0-9_-]+$/`（编辑时锁定，留空回退为名称）、名称必填；**编排模式分段单选**（单任务/多任务并行，互斥——写入 `enabled_plugins` 白名单的 `orchestration.single`/`chatbot` 子插件 id：空表显示 chatbot，切 single 先物化全量再替换，保存时剔除旧特性 id）；启用包（Package 级主控，一次切换整包工具+技能）、启用插件/工具/技能复选组；粘性页脚 删除/放弃更改/保存（`SaveTeam`）
 - `builtin` 类工具归入「内置工具」组
 
-### 8.3 从 Git 仓库安装技能
+### 9.3 从 Git 仓库安装技能
 
 技能工具条「Git 安装」展开内联表单（虚线边框卡片），三字段 + 提交钮：仓库 URL（https/ssh/本地路径，**唯一必填**，trim 后为空直接不提交）、安装目录名（默认取仓库名）、分支（默认取仓库默认分支）；后两者留空传 `null`。提交下发 `InstallSkillFromGit{url, name?, branch?}`（`SettingsView.vue:460-472`，`protocol.ts:262`）。Core 侧机制（shallow clone、目录提升、`.sources.json` 来源记录、更新/移除语义）见 [技能系统](./core-skills.md)「外部 Git 来源技能」。
 
@@ -340,11 +403,11 @@ graph LR
 - **结果反馈约定**：提交后立即清空表单，本地**无加载态、无成败提示**——安装结果完全依赖 Core 回推 `SkillsList` 事件刷新列表；成功与失败都经 Core `Error` 事件以 toast 呈现（消息文本区分）。这是与"编辑即生效"原则一致的单向命令模式（panel 不预测 core 侧耗时操作的结果）
 - **已装 Git 技能**：详情页头部追加「更新」（`UpdateSkillFromGit`，无确认）与「移除来源」（confirm 明示目录保留）按钮；来源徽标 `Git · {短URL}` 悬停显示 `{url} @ {rev}`
 
-### 8.4 日志（整页查看器）
+### 9.4 日志（整页查看器）
 
 原日志视图的平移（`LogView.vue`），交互不变并新增手动「刷新」按钮：Core/Panel 分段切换（默认 Core），拉取 `/api/logs/{core,panel}?lines=100` 原文显示（max-height 65vh 内滚动）；自动刷新默认开（**5s** 间隔），可切手动；切换来源或自动开关立即重载并重启定时器；HTTP 错误显示状态码。**切换分类即卸载**——定时器随卸载清理，切回时重新挂载拉取。
 
-## 九、QQ 管理（适配器弹出层）
+## 十、QQ 管理（适配器弹出层）
 
 入口行「适配器」弹出的 QQ 面板。**所有编辑即点即生效**（无草稿、无保存按钮，页脚明示"点击名单条目即生效"）：
 
@@ -357,19 +420,19 @@ graph LR
 - **门控模式**：分段选择 无约束/白名单/黑名单（`SetQqGateMode` 即选即生效），每模式附说明
 - **2×2 名单卡**（白名单用户/黑名单用户/白名单群/黑名单群）：计数胶囊 + 已选 id 筹码（点击移除，黑名单染 error 色）+ 候选筹码（好友/群列表，点击切换归属，`UpdateQqAllowlist`/`UpdateQqDenylist` 两类 id 一并提交）；**黑名单群无候选列表**（提示"群列表仅对白名单开放，黑名单群请在 Core 侧配置"）
 
-## 十、任务 / Shell 视图
+## 十一、任务 / Shell 视图
 
 - **任务视图**：任务卡片**倒序**（最新在前），kind 四类标签（后台/并行/Subagent/临时回复）+ 状态六态（运行中/已完成/失败/已取消/**等待整合 awaiting**/**已整合 integrated**）+ 目标 + 创建时间 + 耗时；`running` 或 `awaiting` 状态时耗时**每 1s** 跳动；分支状态与结果逐条列出；运行中任务可「取消」——与聊天区同一约定：先本地乐观中断，再发 `CancelRequestedWork{session_id, all:false, team_id}`
 - **Shell 视图**：新建会话（工作目录 + Enter）；每会话一张终端卡（卡头 = 创建时间 + 命令计数；运行中 spinner，完成/失败/超时 + 耗时（一位小数秒）+ 输出，终端区 max-height 320px）；命令输入 Enter 执行（`ShellExec`）、Esc 清空；新输出自动滚底；可停止会话；「刷新」按钮重拉会话列表
 - **HTTP 通道**：WS 之外的仅有接口（QQ 状态/二维码、日志）走 `fetchWithTimeout`，超时 10s（`api.ts:4`）
 
-## 十一、Toast 系统
+## 十二、Toast 系统
 
 - 三类：`info / success / error`；位置右上；单条 **6s** 自动消失；同屏上限 8 条（`ToastProvider :max-count="8"`，溢出挤掉最旧）；队列 cap 8、文本截断 512 字符（`App.vue:233, 367`，`state.ts:912-914`）
 - `state.toasts` 仅作转发队列：watcher 逐条泵入组件库 ToastProvider 后清空（`App.vue:226-235`）
 - 来源与类型：断连/重连提示（info）、断连时发送命令（error）、`SudoResolved`（授权 success / 拒绝或中断 error）、Core `Error` 事件（**按 info 展示**，`state.ts:762-765`——Git 安装等异步操作的失败也经此通道呈现）
 
-## 十二、键盘清单
+## 十三、键盘清单
 
 Panel 无全局快捷键系统；所有键处理局部于组件：
 
@@ -382,7 +445,7 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 | Enter | Shell 命令行 | 执行命令 |
 | Esc | Shell 命令行 | 清空输入 |
 
-## 十三、设计边界（协议已定义但 UI 未接线）
+## 十四、设计边界（协议已定义但 UI 未接线）
 
 以下 `BackendCommand` 在协议层存在，但当前 UI 无任何入口——属有意留白而非缺陷，新增入口时按本文档规范补充：
 
@@ -390,9 +453,9 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 - `StartAllAdapters` / `StopAllAdapters`（逐个适配器控制已覆盖）
 - `SetQqOwner`（管理员显示为只读）
 
-> 2026-09-03 起 `InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 已接线（§8.3），不再属于本清单。
+> 2026-09-03 起 `InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 已接线（§9.3），不再属于本清单。
 
-## 十四、关键常量速查
+## 十五、关键常量速查
 
 | 常量 | 值 | 位置 |
 |---|---|---|
