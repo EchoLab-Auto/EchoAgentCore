@@ -649,6 +649,20 @@ pub struct ToolInfo {
     pub package: Option<String>,
 }
 
+/// 编排模式（per-persona，互斥）：single = 单任务编排（无会话管理 UI、
+/// 回执分支不可见）；chatbot = 多任务并行编排（会话列表/全局会话/可见回执分支）。
+/// 由 persona 的 enabled_plugins/disabled_plugins 白名单语义对
+/// echo-agent.orchestration.{single,chatbot} 两个互斥子插件推导（single 为兜底）。
+/// serde default = Chatbot：对齐旧三布尔（reply_branches_enabled 等）的
+/// default_true 语义——旧 core 消息缺字段时按全功能模式处理。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrchestrationMode {
+    Single,
+    #[default]
+    Chatbot,
+}
+
 /// One team member (frontend display).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamInfo {
@@ -664,22 +678,13 @@ pub struct TeamInfo {
     /// Number of active sessions owned by this agent.
     #[serde(default)]
     pub sessions: usize,
-    /// 临时回复分支（Reply Branch）机制是否对该 agent 启用。由
-    /// enabled_plugins / disabled_plugins 白名单语义推导（插件 id
-    /// echo-agent.branch.reply）。禁用时后端不发射分支事件，前端不展示。
-    #[serde(default = "default_true")]
-    pub reply_branches_enabled: bool,
-    /// 「全局会话」视图是否对该 agent 启用。由插件 id
-    /// echo-agent.session.global 按 persona 白名单语义推导。
-    /// 禁用时 Panel 侧边栏不展示"全局"分组（该 agent 只有其独立会话）。
-    #[serde(default = "default_true")]
-    pub global_session_enabled: bool,
-    /// Chatbot 会话系统插件是否对该 agent 启用（插件 id
-    /// echo-agent.chatbot.sessions）。会话/临时分支相关能力的总开关：
-    /// 禁用时侧边栏不显示「会话」与「临时分支」卡片，该 agent 只保留
-    /// 独立会话的数据流（对话仍正常，仅不展示会话管理 UI）。
-    #[serde(default = "default_true")]
-    pub chat_sessions_enabled: bool,
+    /// 该 agent 的编排模式（互斥子插件推导，single 为兜底）。
+    /// single：侧边栏不显示「会话」「临时分支」卡片与「全局」分组，
+    /// 后端不发射 ReplyBranch* 可见性事件（分支照常执行合并，仅不可见）；
+    /// chatbot：全部可见。取代旧 reply_branches_enabled /
+    /// global_session_enabled / chat_sessions_enabled 三布尔（2026-09 协议变更）。
+    #[serde(default)]
+    pub orchestration_mode: OrchestrationMode,
     /// Persona system prompt (empty = inherits global prompt/skills).
     #[serde(default)]
     pub system_prompt: String,

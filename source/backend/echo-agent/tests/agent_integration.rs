@@ -530,6 +530,39 @@ async fn toggle_management_panel_plugin_disable_is_refused() {
 }
 
 #[tokio::test]
+async fn allows_reply_branches_follows_orchestration_mode() {
+    use echo_agent::config::TeamMember;
+    use echo_agent::plugins::{CHATBOT_ORCHESTRATION_PLUGIN_ID, SINGLE_ORCHESTRATION_PLUGIN_ID};
+    let (agent, _provider) = test_agent("ok");
+    // 未配置 capabilities：默认 chatbot（可见性事件发射开启）。
+    assert!(agent.allows_reply_branches());
+    // chatbot 模式 → true
+    agent
+        .apply_capabilities(&TeamMember {
+            enabled_plugins: vec![CHATBOT_ORCHESTRATION_PLUGIN_ID.into()],
+            ..Default::default()
+        })
+        .await;
+    assert!(agent.allows_reply_branches());
+    // single 模式 → false（分支仍执行，仅不发射可见性事件）
+    agent
+        .apply_capabilities(&TeamMember {
+            enabled_plugins: vec![SINGLE_ORCHESTRATION_PLUGIN_ID.into()],
+            ..Default::default()
+        })
+        .await;
+    assert!(!agent.allows_reply_branches());
+    // 非空白名单无模式 id → single 兜底
+    agent
+        .apply_capabilities(&TeamMember {
+            enabled_plugins: vec!["echo-agent.tools.builtin".into()],
+            ..Default::default()
+        })
+        .await;
+    assert!(!agent.allows_reply_branches());
+}
+
+#[tokio::test]
 async fn toggle_skill_enables_and_disables() {
     let (agent, _provider) = test_agent("ok");
     agent.skills.lock().await.register(echo_agent::Skill {

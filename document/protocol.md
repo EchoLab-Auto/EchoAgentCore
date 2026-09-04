@@ -111,6 +111,9 @@ graph LR
 | `GateMode` | `"none"` / `"allowlist"` / `"denylist"` |
 | `ThinkingMode` | `"enabled"` / `"disabled"` |
 | `ReasoningEffort` | `"low"` / `"high"` / `"max"` |
+| `OrchestrationMode` | `"single"` / `"chatbot"`（`#[default] = chatbot`） |
+
+`OrchestrationMode` 定义在 `echo-protocol::event`（TeamInfo 旁）：per-persona 编排模式，由 `enabled_plugins`/`disabled_plugins` 对互斥子插件 `echo-agent.orchestration.{single,chatbot}` 推导（single 为兜底）。**2026-09 协议变更**：`TeamInfo` 删除 `reply_branches_enabled` / `global_session_enabled` / `chat_sessions_enabled` 三布尔（旧三特性插件合并的后续），替换为 `orchestration_mode`——旧 Panel 连新 Core 时三布尔缺失（其判空逻辑默认全 true，single persona 显示空壳卡片）；新 Panel 连旧 Core 时 mode 缺省按 chatbot。部署须先 Core 后 Panel。
 
 ## 兼容性规则
 

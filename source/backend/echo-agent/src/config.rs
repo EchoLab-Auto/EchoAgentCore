@@ -115,11 +115,11 @@ pub struct TeamMember {
     /// persists separately via `disabled_agents`).
     pub enabled: bool,
     /// Per-persona disabled built-in plugins (e.g. "echo-agent.adapter.qq",
-    /// "echo-agent.orchestration").
-    /// 当前实际效果（Phase 1）：仅三个 UI 门控插件（branch.reply /
-    /// session.global / chatbot.sessions）的禁用会真实生效（隐藏面板侧
-    /// 会话/分支能力）；其余插件的禁用只影响 Panel 展示与持久化状态，
-    /// 不会对 LLM 隐藏该插件的工具（工具级控制请用 disabled_tools）。
+    /// "echo-agent.orchestration.chatbot").
+    /// 当前实际效果：编排模式子插件（orchestration.chatbot 及旧特性 id）
+    /// 的禁用会把该 agent 推导为 single 模式（隐藏面板侧会话/分支能力）；
+    /// 其余插件的禁用只影响 Panel 展示与持久化状态，不会对 LLM 隐藏该
+    /// 插件的工具（工具级控制请用 disabled_tools）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_plugins: Vec<String>,
     /// Per-persona disabled tools (by tool name, e.g. "framework_update").
@@ -149,6 +149,31 @@ pub struct TeamMember {
     /// `window × 0.8` 封顶。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<usize>,
+}
+
+impl TeamMember {
+    /// 编排模式推导（互斥子插件 `echo-agent.orchestration.{single,chatbot}`，
+    /// single 为兜底）：
+    /// - `enabled_plugins` 为空（=全部启用）→ Chatbot
+    /// - 白名单含 chatbot 子插件 id 或任一旧特性 id（branch.reply /
+    ///   session.global / chatbot.sessions）→ Chatbot；两者并含亦为 Chatbot
+    /// - 白名单非空但不含任何 chatbot 相关 id → Single
+    /// - `disabled_plugins` 含 chatbot/旧 id → Single（黑名单优先）
+    /// - `disabled_plugins` 含 single id → no-op（single 是兜底，禁用兜底无意义）
+    pub fn orchestration_mode(&self) -> echo_protocol::OrchestrationMode {
+        let listed = self.enabled_plugins.is_empty()
+            || crate::plugins::CHATBOT_MODE_IDS
+                .iter()
+                .any(|id| self.enabled_plugins.iter().any(|p| p == id));
+        let denied = crate::plugins::CHATBOT_MODE_IDS
+            .iter()
+            .any(|id| self.disabled_plugins.iter().any(|p| p == id));
+        if listed && !denied {
+            echo_protocol::OrchestrationMode::Chatbot
+        } else {
+            echo_protocol::OrchestrationMode::Single
+        }
+    }
 }
 
 impl Default for TeamMember {
@@ -677,6 +702,71 @@ mod tests {
         // None is not serialized at all.
         let none_str = toml::to_string(&AgentConfig::default()).unwrap();
         assert!(!none_str.contains("memory_limit_tokens"));
+    }
+
+    // ── 编排模式推导（orchestration_mode）──
+
+    fn member_with_plugins(enabled: &[&str], disabled: &[&str]) -> TeamMember {
+        TeamMember {
+            enabled_plugins: enabled.iter().map(|s| s.to_string()).collect(),
+            disabled_plugins: disabled.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn orchestration_mode_matrix() {
+        use echo_protocol::OrchestrationMode::*;
+        use crate::plugins::{
+            CHAT_SESSIONS_PLUGIN_ID, CHATBOT_ORCHESTRATION_PLUGIN_ID, GLOBAL_SESSION_PLUGIN_ID,
+            REPLY_BRANCH_PLUGIN_ID, SINGLE_ORCHESTRATION_PLUGIN_ID,
+        };
+        let chatbot = CHATBOT_ORCHESTRATION_PLUGIN_ID;
+        let single = SINGLE_ORCHESTRATION_PLUGIN_ID;
+        let legacy = [
+            REPLY_BRANCH_PLUGIN_ID,
+            GLOBAL_SESSION_PLUGIN_ID,
+            CHAT_SESSIONS_PLUGIN_ID,
+        ];
+        // 空白名单（=全部启用）→ Chatbot
+        assert_eq!(member_with_plugins(&[], &[]).orchestration_mode(), Chatbot);
+        // 仅 chatbot → Chatbot；仅 single → Single
+        assert_eq!(member_with_plugins(&[chatbot], &[]).orchestration_mode(), Chatbot);
+        assert_eq!(member_with_plugins(&[single], &[]).orchestration_mode(), Single);
+        // 任一旧特性 id → Chatbot（向后兼容推导）
+        for id in legacy {
+            assert_eq!(
+                member_with_plugins(&[id], &[]).orchestration_mode(),
+                Chatbot,
+                "legacy id {id} should derive chatbot"
+            );
+        }
+        // single + chatbot 并含 → Chatbot（互斥优先）
+        assert_eq!(
+            member_with_plugins(&[single, chatbot], &[]).orchestration_mode(),
+            Chatbot
+        );
+        // 非空白名单但无任何模式 id → Single（兜底）
+        assert_eq!(
+            member_with_plugins(&["echo-agent.tools.builtin", "echo-agent.orchestration"], &[])
+                .orchestration_mode(),
+            Single
+        );
+        // 黑名单含 chatbot/旧 id → Single（黑名单优先）
+        assert_eq!(member_with_plugins(&[], &[chatbot]).orchestration_mode(), Single);
+        assert_eq!(
+            member_with_plugins(&[chatbot], &[chatbot]).orchestration_mode(),
+            Single
+        );
+        assert_eq!(
+            member_with_plugins(&[chatbot], &[REPLY_BRANCH_PLUGIN_ID]).orchestration_mode(),
+            Single
+        );
+        // 黑名单含 single id → no-op（忽略，不因它改变推导）
+        assert_eq!(
+            member_with_plugins(&[chatbot], &[single]).orchestration_mode(),
+            Chatbot
+        );
     }
 }
 

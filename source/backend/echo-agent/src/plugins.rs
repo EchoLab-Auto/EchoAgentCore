@@ -22,6 +22,50 @@ pub const ADAPTER_QQ_PLUGIN_ID: &str = "echo-agent.adapter.qq";
 pub const SKILLS_DIR_PLUGIN_ID: &str = "echo-agent.skills.dir";
 pub const MANAGEMENT_PANEL_PLUGIN_ID: &str = "echo-agent.management.panel";
 
+/// 编排模式互斥子插件（按 persona 二选一，single 为推导兜底）：
+/// - single：单任务编排——无会话管理 UI（会话卡/全局分组隐藏）、
+///   回执分支不可见（后端不发射 ReplyBranch* 事件，分支照常执行合并）；
+/// - chatbot：多任务并行编排——会话列表/全局会话/可见回执分支全套。
+/// 两者均为名义挂载（空闭包），真实效果是 per-persona 白名单推导出的
+/// `OrchestrationMode`（见 `TeamMember::orchestration_mode`）。
+pub const SINGLE_ORCHESTRATION_PLUGIN_ID: &str = "echo-agent.orchestration.single";
+pub const CHATBOT_ORCHESTRATION_PLUGIN_ID: &str = "echo-agent.orchestration.chatbot";
+
+/// 旧三特性插件 id（已合并为 orchestration 互斥子插件，不再注册）：
+/// 仅用于配置迁移映射与向后兼容推导。
+pub const REPLY_BRANCH_PLUGIN_ID: &str = "echo-agent.branch.reply";
+pub const GLOBAL_SESSION_PLUGIN_ID: &str = "echo-agent.session.global";
+pub const CHAT_SESSIONS_PLUGIN_ID: &str = "echo-agent.chatbot.sessions";
+
+/// 推导编排模式时视为 chatbot 的全部 id（新 id + 旧三 id）。
+pub const CHATBOT_MODE_IDS: [&str; 4] = [
+    CHATBOT_ORCHESTRATION_PLUGIN_ID,
+    REPLY_BRANCH_PLUGIN_ID,
+    GLOBAL_SESSION_PLUGIN_ID,
+    CHAT_SESSIONS_PLUGIN_ID,
+];
+
+/// 旧三特性 id → chatbot 子插件 id 的归一化（配置迁移与 SaveTeam 防御共用）：
+/// 把列表中的旧 id 替换为 `CHATBOT_ORCHESTRATION_PLUGIN_ID`，去重、保序。
+/// 返回是否有改动。
+pub fn normalize_mode_plugins(list: &mut Vec<String>) -> bool {
+    let mut changed = false;
+    for item in list.iter_mut() {
+        if matches!(
+            item.as_str(),
+            REPLY_BRANCH_PLUGIN_ID | GLOBAL_SESSION_PLUGIN_ID | CHAT_SESSIONS_PLUGIN_ID
+        ) {
+            *item = CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string();
+            changed = true;
+        }
+    }
+    if changed {
+        let mut seen = std::collections::HashSet::new();
+        list.retain(|item| seen.insert(item.clone()));
+    }
+    changed
+}
+
 /// mount 有真实包维度效果（工具/技能批量启停）的插件。persona 白名单的
 /// 启动期门控按此表遍历（management.panel 无 per-persona 注册表效果，
 /// 不在表内）。
@@ -203,5 +247,58 @@ pub mod skill_registry_handle {
         pub fn lock(&self) -> tokio::sync::MutexGuard<'_, SkillRegistry> {
             self.inner.blocking_lock()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_mode_plugins_maps_legacy_ids() {
+        // 单个旧 id → chatbot id
+        let mut list = vec![REPLY_BRANCH_PLUGIN_ID.to_string()];
+        assert!(normalize_mode_plugins(&mut list));
+        assert_eq!(list, vec![CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()]);
+
+        // 多个旧 id → 去重为一个 chatbot id（保序：出现在首个旧 id 位置）
+        let mut list = vec![
+            "echo-agent.tools.builtin".to_string(),
+            REPLY_BRANCH_PLUGIN_ID.to_string(),
+            GLOBAL_SESSION_PLUGIN_ID.to_string(),
+            CHAT_SESSIONS_PLUGIN_ID.to_string(),
+        ];
+        assert!(normalize_mode_plugins(&mut list));
+        assert_eq!(
+            list,
+            vec![
+                "echo-agent.tools.builtin".to_string(),
+                CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()
+            ]
+        );
+
+        // 已有 chatbot id + 旧 id → 去重保留首个
+        let mut list = vec![
+            CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string(),
+            REPLY_BRANCH_PLUGIN_ID.to_string(),
+        ];
+        assert!(normalize_mode_plugins(&mut list));
+        assert_eq!(list, vec![CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()]);
+    }
+
+    #[test]
+    fn normalize_mode_plugins_noop_and_idempotent() {
+        // 无旧 id：原样、无改动
+        let mut list = vec![
+            SINGLE_ORCHESTRATION_PLUGIN_ID.to_string(),
+            "echo-agent.tools.builtin".to_string(),
+        ];
+        assert!(!normalize_mode_plugins(&mut list));
+        assert_eq!(list.len(), 2);
+
+        // 幂等：迁移后的列表再次归一化无改动
+        let mut list = vec![GLOBAL_SESSION_PLUGIN_ID.to_string()];
+        assert!(normalize_mode_plugins(&mut list));
+        assert!(!normalize_mode_plugins(&mut list));
     }
 }

@@ -124,18 +124,18 @@ graph LR
 
 ### 4.1 临时分支卡
 
-- 仅当当前 Agent 启用回执分支能力时显示（`reply_branches_enabled !== false`，`PanelSidebar.vue:18-30`）；徽标显示运行中分支数
+- 仅当当前 Agent 为 **chatbot 编排模式**时显示（`orchestrationModeOf(team) === 'chatbot'`，`PanelSidebar.vue:17-24`）；徽标显示运行中分支数
 - 分支行：脉冲 spinner（8px warn 色圆点，`branch-pulse 1s ease-in-out infinite`）+ 任务摘要（截断 24 字符）；无关闭按钮——`ReplyBranchCompleted` 或重连后自动消失
 - 点击分支行 → 打开 BranchModal（分支详情）
 - 卡片几何：头部 padding 12px/14px + 11px 折叠 caret，正文 padding 4px/12px/12px；分支行 padding 5px/8px、圆角 6px；徽标圆角 9px、10px 字、主色底（`styles.css:125-145, 222-241`）
 
 ### 4.2 会话卡与分组
 
-仅当当前 Agent 启用会话能力时显示。分组规则（按会话 id `platform:scope:…` 解析）：
+仅当当前 Agent 为 **chatbot 编排模式**时显示（single 模式会话卡与分支卡整体隐藏）。分组规则（按会话 id `platform:scope:…` 解析）：
 
 | 分组 | 内容 | 备注 |
 |---|---|---|
-| 全局 | 合成的「全部消息」项（预览"共享同一 trunk 上下文"） | 仅当 Agent 启用全局会话；选中后发消息会重定向到本地会话 |
+| 全局 | 合成的「全部消息」项（预览"共享同一 trunk 上下文"） | 仅 chatbot 模式；选中后发消息会重定向到本地会话 |
 | Local | 本地会话（`local:tui::local_user`） | 启动默认选中 |
 | QQ 私聊 / QQ 群 / 其他 | 按平台归组 | 空分组隐藏 |
 
@@ -317,10 +317,10 @@ graph LR
 | 技能 | 分类/常驻标签、Git 来源徽标（`Git · {短URL}`，悬停显示 `{url} @ {rev}`，URL 超 42 字符截断）、描述、触发词、SKILL.md 原文（≤420px 滚动） | 启停开关（`ToggleSkill`）、编辑（名称锁定）、删除（confirm）；**Git 来源技能追加**：更新（`UpdateSkillFromGit`，无确认）、移除来源（confirm「目录保留，可手动删除」→ `RemoveSkillSource`） |
 | 工具 | 分类、描述、JSON 参数 schema | 启停开关（`ToggleTool`，禁用后模型不可见） |
 | 插件 | kind/版本/外部标签、描述、ID/Entry/Author | 启停开关（`TogglePlugin`，禁用即卸载注册；全局生效；**「管理面」插件禁用被保护**——core 拒绝 + UI 明示，防 Panel 自锁断连） |
-| 智能体 | 主 Agent/N 会话标签、提示词、能力白名单、禁用能力（error 色标签组） | 选中即进编辑态；启停（`ToggleTeam`）；非主 Agent 可删除 |
+| 智能体 | 主 Agent/N 会话/编排模式标签、提示词、能力白名单、禁用能力（error 色标签组） | 选中即进编辑态；启停（`ToggleTeam`）；非主 Agent 可删除 |
 
 - **技能编辑器**：名称（编辑时锁定）、描述、触发词（逗号分隔）、分类、常驻开关、Markdown 正文（12 行自适应）；保存 `SaveSkill`
-- **智能体编辑器**：ID 必填 + `/^[A-Za-z0-9_-]+$/`（编辑时锁定，留空回退为名称）、名称必填；启用包（Package 级主控，一次切换整包工具+技能）、启用插件/工具/技能复选组；粘性页脚 删除/放弃更改/保存（`SaveTeam`）
+- **智能体编辑器**：ID 必填 + `/^[A-Za-z0-9_-]+$/`（编辑时锁定，留空回退为名称）、名称必填；**编排模式分段单选**（单任务/多任务并行，互斥——写入 `enabled_plugins` 白名单的 `orchestration.single`/`chatbot` 子插件 id：空表显示 chatbot，切 single 先物化全量再替换，保存时剔除旧特性 id）；启用包（Package 级主控，一次切换整包工具+技能）、启用插件/工具/技能复选组；粘性页脚 删除/放弃更改/保存（`SaveTeam`）
 - `builtin` 类工具归入「内置工具」组
 
 ### 8.3 从 Git 仓库安装技能

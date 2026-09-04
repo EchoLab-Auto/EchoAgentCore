@@ -33,24 +33,12 @@ const MAX_CONCURRENT_REPLY_BRANCHES: usize = 8;
 /// branches would each fire an extra LLM request at the same moment.
 const MAX_CONCURRENT_WAIT_REPLIES: usize = 4;
 
-/// 临时回复分支能力对应的插件 id。作为内置能力插件注册（Core 组合根），
-/// 纳入 persona 的 enabled_plugins / disabled_plugins 白名单语义：
-/// - enabled_plugins 为空（默认/主 agent）→ 启用
-/// - enabled_plugins 非空且不含该 id → 禁用（如 self-coding）
-/// - disabled_plugins 含该 id → 禁用
-/// 禁用时后端不发射 ReplyBranch* 可见性事件（分支仍执行并合并，仅面板不可见）。
-pub const REPLY_BRANCH_PLUGIN_ID: &str = "echo-agent.branch.reply";
-
-/// 「全局会话」视图对应的插件 id。同样按 persona 白名单语义推导：
-/// 禁用时 Panel 不展示"全局"分组，该 agent 仅保留与具体来源绑定的
-/// 独立会话（如 self-coding 只留 local:tui::local_user）。
-pub const GLOBAL_SESSION_PLUGIN_ID: &str = "echo-agent.session.global";
-
-/// Chatbot 会话系统插件 id（会话/临时分支能力的总开关）。
-/// 由 persona enabled_plugins/disabled_plugins 白名单语义推导：
-/// 禁用时 Panel 侧边栏不显示「会话」与「临时分支」卡片；该 agent
-/// 的对话数据流不受影响（消息照常收发，仅不展示会话管理 UI）。
-pub const CHAT_SESSIONS_PLUGIN_ID: &str = "echo-agent.chatbot.sessions";
+/// 旧三特性插件 id（回执分支/全局会话/会话系统）——已合并为
+/// echo-agent.orchestration.{single,chatbot} 互斥子插件（见 plugins.rs），
+/// 这些 id 仅保留用于配置迁移映射与向后兼容推导，不再注册。
+pub use crate::plugins::{
+    CHAT_SESSIONS_PLUGIN_ID, GLOBAL_SESSION_PLUGIN_ID, REPLY_BRANCH_PLUGIN_ID,
+};
 
 #[derive(Debug, Clone)]
 struct ActiveInboundTurn {
@@ -786,56 +774,22 @@ impl Agent {
         true
     }
 
-    /// 临时回复分支能力是否对该 agent 启用（见 [`REPLY_BRANCH_PLUGIN_ID`]）。
+    /// 该 agent 的编排模式（互斥子插件推导，见
+    /// [`crate::plugins::SINGLE_ORCHESTRATION_PLUGIN_ID`] /
+    /// [`crate::plugins::CHATBOT_ORCHESTRATION_PLUGIN_ID`]）。
+    /// 未配置 capabilities 时默认 Chatbot（与"未配置=全功能"语义一致）。
+    pub fn orchestration_mode(&self) -> echo_protocol::OrchestrationMode {
+        let guard = self.capabilities.lock().unwrap();
+        match guard.as_ref() {
+            None => echo_protocol::OrchestrationMode::Chatbot,
+            Some(cap) => cap.orchestration_mode(),
+        }
+    }
+
+    /// 临时回复分支的可见性是否开启：仅 chatbot 编排模式发射
+    /// ReplyBranch* 可见性事件；single 模式分支仍执行并合并，仅面板不可见。
     pub fn allows_reply_branches(&self) -> bool {
-        let guard = self.capabilities.lock().unwrap();
-        let Some(cap) = guard.as_ref() else {
-            return true;
-        };
-        if !cap.enabled_plugins.is_empty()
-            && !cap.enabled_plugins.iter().any(|p| p == REPLY_BRANCH_PLUGIN_ID)
-        {
-            return false;
-        }
-        if cap.disabled_plugins.iter().any(|p| p == REPLY_BRANCH_PLUGIN_ID) {
-            return false;
-        }
-        true
-    }
-
-    /// 「全局会话」视图是否对该 agent 启用（见 [`GLOBAL_SESSION_PLUGIN_ID`]）。
-    /// 纯前端展示能力开关；沿用插件白名单语义保持配置一致。
-    pub fn allows_global_session(&self) -> bool {
-        let guard = self.capabilities.lock().unwrap();
-        let Some(cap) = guard.as_ref() else {
-            return true;
-        };
-        if !cap.enabled_plugins.is_empty()
-            && !cap.enabled_plugins.iter().any(|p| p == GLOBAL_SESSION_PLUGIN_ID)
-        {
-            return false;
-        }
-        if cap.disabled_plugins.iter().any(|p| p == GLOBAL_SESSION_PLUGIN_ID) {
-            return false;
-        }
-        true
-    }
-
-    /// Chatbot 会话系统是否对该 agent 启用（见 [`CHAT_SESSIONS_PLUGIN_ID`]）。
-    pub fn allows_chat_sessions(&self) -> bool {
-        let guard = self.capabilities.lock().unwrap();
-        let Some(cap) = guard.as_ref() else {
-            return true;
-        };
-        if !cap.enabled_plugins.is_empty()
-            && !cap.enabled_plugins.iter().any(|p| p == CHAT_SESSIONS_PLUGIN_ID)
-        {
-            return false;
-        }
-        if cap.disabled_plugins.iter().any(|p| p == CHAT_SESSIONS_PLUGIN_ID) {
-            return false;
-        }
-        true
+        self.orchestration_mode() == echo_protocol::OrchestrationMode::Chatbot
     }
 
     /// Number of active sessions (for the Panel agent overview).

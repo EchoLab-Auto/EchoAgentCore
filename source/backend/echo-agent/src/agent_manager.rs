@@ -212,9 +212,14 @@ impl AgentManager {
     /// Create or update a profile. When enabled and not running, instantiates
     /// via the factory; persists through the config writer.
     pub fn save_profile(&self, id: &str, profile: TeamMember, enabled: bool) -> Result<(), String> {
+        let mut profile = profile;
+        // 编排模式插件 id 归一化：旧特性 id（branch.reply / session.global /
+        // chatbot.sessions）统一映射为 orchestration.chatbot——所有写入路径
+        // （含旧 panel 回写旧 id）在此防御。
+        crate::plugins::normalize_mode_plugins(&mut profile.enabled_plugins);
+        crate::plugins::normalize_mode_plugins(&mut profile.disabled_plugins);
         // 合并语义：传入 profile 的 per-agent 预算为 None 且旧 profile 已有值时
         // 保留旧值，避免前端（未编辑该字段）保存时擦除手工写入 TOML 的预算。
-        let mut profile = profile;
         if let Some(old) = self.teams.read().unwrap().get(id) {
             if profile.memory_limit_tokens.is_none() {
                 profile.memory_limit_tokens = old.memory_limit_tokens;
@@ -300,40 +305,10 @@ impl AgentManager {
                 description: p.description.clone(),
                 enabled: agents.contains_key(id),
                 sessions: agents.get(id).map(|r| r.agent.session_count()).unwrap_or(0),
-                // 回执分支能力开关：与 Agent::allows_reply_branches 同语义
-                //（enabled_plugins 为空=全部启用；非空需含该 id；黑名单优先）。
-                reply_branches_enabled: {
-                    let has_branch = p.enabled_plugins.is_empty()
-                        || p.enabled_plugins
-                            .iter()
-                            .any(|x| x == crate::agent::REPLY_BRANCH_PLUGIN_ID);
-                    has_branch
-                        && !p.disabled_plugins
-                            .iter()
-                            .any(|x| x == crate::agent::REPLY_BRANCH_PLUGIN_ID)
-                },
-                // 全局会话视图开关：与 Agent::allows_global_session 同语义。
-                global_session_enabled: {
-                    let has_global = p.enabled_plugins.is_empty()
-                        || p.enabled_plugins
-                            .iter()
-                            .any(|x| x == crate::agent::GLOBAL_SESSION_PLUGIN_ID);
-                    has_global
-                        && !p.disabled_plugins
-                            .iter()
-                            .any(|x| x == crate::agent::GLOBAL_SESSION_PLUGIN_ID)
-                },
-                // Chatbot 会话系统总开关：与 Agent::allows_chat_sessions 同语义。
-                chat_sessions_enabled: {
-                    let has_sessions = p.enabled_plugins.is_empty()
-                        || p.enabled_plugins
-                            .iter()
-                            .any(|x| x == crate::agent::CHAT_SESSIONS_PLUGIN_ID);
-                    has_sessions
-                        && !p.disabled_plugins
-                            .iter()
-                            .any(|x| x == crate::agent::CHAT_SESSIONS_PLUGIN_ID)
-                },
+                // 编排模式：互斥子插件推导（single 为兜底），单一来源
+                // TeamMember::orchestration_mode；chatbot 才展示会话管理 UI
+                // 并发射 ReplyBranch* 可见性事件。
+                orchestration_mode: p.orchestration_mode(),
                 system_prompt: p.system_prompt.clone(),
                 disabled_plugins: p.disabled_plugins.clone(),
                 disabled_tools: p.disabled_tools.clone(),
@@ -401,4 +376,83 @@ pub fn agent_factory_for_toggle() -> AgentFactory {
         .get()
         .cloned()
         .unwrap_or_else(|| panic!("agent factory not set by composition root"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use echo_protocol::OrchestrationMode;
+
+    fn member_with_plugins(enabled: &[&str]) -> TeamMember {
+        TeamMember {
+            name: "t".into(),
+            enabled_plugins: enabled.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// 构造 manager：测试成员全部放进 disabled_teams，build 不调 factory
+    ///（factory 缺失会 panic——确保测试不触碰实例化路径）。
+    /// 空 teams 会合成 "default" persona，同样需要屏蔽。
+    fn manager_with(mut raw: AgentConfig) -> AgentManager {
+        if !raw.disabled_teams.iter().any(|d| d == "default") {
+            raw.disabled_teams.push("default".into());
+        }
+        AgentManager::build(&raw, |_id, _p| panic!("factory must not be called in tests"))
+    }
+
+    #[test]
+    fn infos_reports_orchestration_mode_per_member() {
+        use crate::plugins::{CHATBOT_ORCHESTRATION_PLUGIN_ID, SINGLE_ORCHESTRATION_PLUGIN_ID};
+        let mut raw = AgentConfig::default();
+        raw.teams.insert(
+            "bot".into(),
+            member_with_plugins(&[CHATBOT_ORCHESTRATION_PLUGIN_ID]),
+        );
+        raw.teams.insert(
+            "coder".into(),
+            member_with_plugins(&[SINGLE_ORCHESTRATION_PLUGIN_ID]),
+        );
+        raw.teams.insert(
+            "bare".into(),
+            member_with_plugins(&["echo-agent.tools.builtin"]),
+        );
+        raw.disabled_teams = vec!["bot".into(), "coder".into(), "bare".into()];
+        let mgr = manager_with(raw);
+        let infos = mgr.infos();
+        let mode_of = |id: &str| infos.iter().find(|t| t.id == id).unwrap().orchestration_mode;
+        assert_eq!(mode_of("bot"), OrchestrationMode::Chatbot);
+        assert_eq!(mode_of("coder"), OrchestrationMode::Single);
+        // 非空白名单无模式 id → Single（兜底）
+        assert_eq!(mode_of("bare"), OrchestrationMode::Single);
+    }
+
+    #[test]
+    fn save_profile_normalizes_legacy_mode_plugin_ids() {
+        use crate::plugins::{CHATBOT_ORCHESTRATION_PLUGIN_ID, REPLY_BRANCH_PLUGIN_ID};
+        let mgr = manager_with(AgentConfig::default());
+        let mut profile = member_with_plugins(&[
+            "echo-agent.tools.builtin",
+            REPLY_BRANCH_PLUGIN_ID,
+        ]);
+        profile
+            .disabled_plugins
+            .push(crate::plugins::GLOBAL_SESSION_PLUGIN_ID.to_string());
+        // enabled=false：跳过 factory 实例化；无 config_writer 时 persist 为 Ok。
+        mgr.save_profile("legacy", profile, false).unwrap();
+        let teams = mgr.teams.read().unwrap();
+        let saved = teams.get("legacy").unwrap();
+        assert!(saved
+            .enabled_plugins
+            .contains(&CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()));
+        assert!(!saved
+            .enabled_plugins
+            .contains(&REPLY_BRANCH_PLUGIN_ID.to_string()));
+        assert!(saved
+            .disabled_plugins
+            .contains(&CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()));
+        // infos 同步反映归一化后的模式（黑名单含 chatbot → Single）
+        let info = mgr.infos().into_iter().find(|t| t.id == "legacy").unwrap();
+        assert_eq!(info.orchestration_mode, OrchestrationMode::Single);
+    }
 }
