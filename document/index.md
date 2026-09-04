@@ -7,7 +7,7 @@ link: ["architecture | 架构总览", "core | Core 框架 | r>l", "panel | Panel
 
 # EchoAgent 文档总览
 
-EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板** 框架：Core 负责 LLM agent 循环、工具调用、多 agent 人格、QQ 适配器；Panel 是 Vue 3 前端，通过 WebSocket 与 Core 通信，提供聊天、资源、任务、日志、适配器管理等界面。
+EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板** 框架：Core 负责 LLM agent 循环、工具调用、多 agent 人格、QQ 适配器；Panel 是 Vue 3 前端，通过 WebSocket 与 Core 通信，提供聊天、任务、日志、Shell、设置（API/技能/工具/插件/智能体）等界面。
 
 > 本文档群按 ProDoc 规范组织（文档图模型）：每个 `.md` 为画布上一个框，`group` 围合分组、`link` 表达导航，点击框即可进入对应文档；两仓库（core + panel）的文档统一维护在本目录。
 

@@ -52,11 +52,11 @@ EchoAgentPanel/
 - 活动浮条：思考中 / 调用工具 / 子代理 的 spinner + 动态文案
 - 消息入场动画 0.28s 淡入上移，仅实时消息（`animate` 标记）播放
 
-## 侧边栏与资源页
+## 侧边栏与设置页
 
 - `PanelSidebar.vue`：临时分支卡 + 会话卡（按当前 agent 能力开关显示/隐藏）
 - `SessionGroups.vue`：按平台分组（全局/Local/QQ 私聊/QQ 群/其他），组内按最近活跃排序，按 agent 过滤
-- `CapabilitiesPanel.vue`：资源中心——技能/工具/插件/Team 的浏览、启停、编辑、删除
+- `SettingsView.vue`：设置视图——API 设置（ApiSettings.vue）+ 技能/工具/插件/智能体的浏览、启停、编辑、删除（左侧一级菜单 + 右侧工作区；2026-09-04 起取代原资源视图与 API 弹窗）
 - `AgentSwitcher.vue`：输入框上方 Agent 切换悬浮卡片
 
 ## 时序与动画规范
