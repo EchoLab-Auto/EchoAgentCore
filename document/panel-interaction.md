@@ -325,9 +325,20 @@ graph LR
 
 ### 8.3 从 Git 仓库安装技能
 
-技能工具条「Git 安装」展开内联表单（虚线边框卡片），三字段 + 提交钮：仓库 URL（https/ssh/本地路径，**唯一必填**，trim 后为空直接不提交）、安装目录名（默认取仓库名）、分支（默认取仓库默认分支）；后两者留空传 `null`。提交下发 `InstallSkillFromGit{url, name?, branch?}`（`SettingsView.vue:460-472`，`protocol.ts:262`）。
+技能工具条「Git 安装」展开内联表单（虚线边框卡片），三字段 + 提交钮：仓库 URL（https/ssh/本地路径，**唯一必填**，trim 后为空直接不提交）、安装目录名（默认取仓库名）、分支（默认取仓库默认分支）；后两者留空传 `null`。提交下发 `InstallSkillFromGit{url, name?, branch?}`（`SettingsView.vue:460-472`，`protocol.ts:262`）。Core 侧机制（shallow clone、目录提升、`.sources.json` 来源记录、更新/移除语义）见 [技能系统](./core-skills.md)「外部 Git 来源技能」。
 
-**结果反馈约定**：提交后立即清空表单，本地**无加载态、无成败提示**——安装结果完全依赖 Core 回推 `SkillsList` 事件刷新列表；失败经 Core `Error` 事件以 toast 呈现。这是与"编辑即生效"原则一致的单向命令模式（panel 不预测 core 侧耗时操作的结果）。
+```prodoc-flow
+graph LR
+  Form[表单提交] -->|InstallSkillFromGit| Clone[core: git clone --depth 1]
+  Clone -->|校验/目录提升| Reload[reload_skills 热重载]
+  Clone -->|失败: 目录已存在/无SKILL.md/网络| Err[Error 事件]
+  Reload -->|SkillsList 回推| List[列表刷新: Git 徽标]
+  Reload -->|Error 事件| Toast[toast 通知结果]
+  Err --> Toast
+```
+
+- **结果反馈约定**：提交后立即清空表单，本地**无加载态、无成败提示**——安装结果完全依赖 Core 回推 `SkillsList` 事件刷新列表；成功与失败都经 Core `Error` 事件以 toast 呈现（消息文本区分）。这是与"编辑即生效"原则一致的单向命令模式（panel 不预测 core 侧耗时操作的结果）
+- **已装 Git 技能**：详情页头部追加「更新」（`UpdateSkillFromGit`，无确认）与「移除来源」（confirm 明示目录保留）按钮；来源徽标 `Git · {短URL}` 悬停显示 `{url} @ {rev}`
 
 ### 8.4 日志（整页查看器）
 

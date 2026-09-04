@@ -54,7 +54,7 @@ pub enum WsMessage {
 `BackendCommand` 主要分三类：
 
 - **会话类**：`SendMessage`（带 `team_id` 路由到对应 agent）、`ClearHistory`、`ArchiveHistory`、`CompactHistory`、`RequestTrunkTimeline`（支持 `since_seq` 增量）
-- **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`、`SaveTeam/DeleteTeam/ToggleTeam`
+- **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`、`InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource`（Git 来源技能，见 [技能系统](./core-skills.md)）、`SaveTeam/DeleteTeam/ToggleTeam`
 - **运维类**：`Start/Stop/RestartAdapter`、`UpdateQqAllowlist/Denylist`、`SetQqGateMode`、`SetQqOwner`、`UpdateApiConfig/SwitchApi/TestApi/DeleteApi`
 
 完整变体与载荷见 `echo-protocol/src/command.rs`；QQ 管理类还有 `RequestGroupList` / `RequestFriendList` / `RequestQqFilterConfig` 等查询命令。
