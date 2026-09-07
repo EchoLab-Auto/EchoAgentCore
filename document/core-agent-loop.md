@@ -23,7 +23,14 @@ y: 1193
 - **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。超时、审批、审计、限流都是注册进管道的中间件，不是循环代码——新策略 = 一次 `push_pre`/`push_post`
 - 工具经 harness 提供的 `ToolExecutor` 闭包执行，runner 本身不含任何策略代码
 
-现有 `Agent::process_message_inner` 仍是生产循环（新驱动并行存在、逐步取代）。三处形似循环的评估结论：`run_subagent` 与 `generate_wait_reply` 是无工具单请求，保持自身实现；`run_background_branch` 收敛到 TurnRunner 需工具白名单与独立事件桥，列为后续工作。
+**实化状态**：`echo-agent.loop.runner` 已是**实化插件**——mount 把组合根共享的
+`TurnRunner` 注入各 agent 并启用 echo-loop 驱动；umount 恢复内置循环。
+分派规则（`process_message_inner` 开头）：**普通输入**（非 QQ hook / 定时器 /
+QQ 会话）经 TurnRunner 的 turn/step 状态机 + `ToolPipeline` 执行；QQ hook、
+定时器、QQ 会话的边界与投递语义仍由内置循环保证。两套驱动并行、同一工具
+路径（`run_tool`）与提示词构建（`build_prompt_blocks`）复用。三处形似循环的
+评估结论：`run_subagent` 与 `generate_wait_reply` 是无工具单请求，保持自身实现；
+`run_background_branch` 收敛到 TurnRunner 需工具白名单与独立事件桥，列为后续工作。
 
 ## 取消与中断
 

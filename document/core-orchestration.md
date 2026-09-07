@@ -22,7 +22,7 @@ y: 1193
 | id | `echo-agent.orchestration` |
 | kind | Orchestration |
 | 说明 | 后台任务 / 并行分支 / 子代理 / 定时器 / 自更新 |
-| 实化状态 | 名义挂载（实化依赖 echo-loop 迁移完成度），禁用 = 下次重启不装配 |
+| 实化状态 | 名义挂载（迁移依赖 echo-loop 迁移完成度）；禁用 = 下次重启不装配。注：循环驱动本身已实化（见 [Agent 循环](./core-agent-loop.md)） |
 
 主要动态工具（loop 内联调度，按 persona 白名单过滤 `allows_dynamic_tool`）：
 
