@@ -2220,6 +2220,44 @@ impl Agent {
             kind: "base".into(),
             content: base,
         });
+        // 可插拔系统提示词：所有启用的 system:true skill 注入 base 区
+        //（身份/规则层，任意 SKILL.md 声明 system: true 即参与）。
+        {
+            let mut system_skills: Vec<&crate::skill::Skill> = skills
+                .all()
+                .into_iter()
+                .filter(|sk| sk.metadata.system && sk.metadata.enabled)
+                .collect();
+            system_skills.sort_by(|a, b| a.metadata.name.cmp(&b.metadata.name));
+            for sk in system_skills {
+                blocks.push(PromptBlock {
+                    key: format!("system:{}", sk.metadata.name),
+                    label: format!("系统提示词 · {}", sk.metadata.name),
+                    kind: "system-skill".into(),
+                    content: sk.instructions.clone(),
+                });
+            }
+        }
+        // persona 级系统提示词 skill（TeamMember.system_skills 引用，
+        // 非空时作为该 agent 的额外身份层，追加在全局 system skills 后）。
+        if let Some(cap) = self.capabilities.lock().unwrap().as_ref() {
+            if !cap.system_skills.is_empty() {
+                let mut persona_skills: Vec<&crate::skill::Skill> = skills
+                    .all()
+                    .into_iter()
+                    .filter(|sk| cap.system_skills.iter().any(|n| n == &sk.metadata.name))
+                    .collect();
+                persona_skills.sort_by(|a, b| a.metadata.name.cmp(&b.metadata.name));
+                for sk in persona_skills {
+                    blocks.push(PromptBlock {
+                        key: format!("persona:{}", sk.metadata.name),
+                        label: format!("人格系统提示词 · {}", sk.metadata.name),
+                        kind: "system-skill".into(),
+                        content: sk.instructions.clone(),
+                    });
+                }
+            }
+        }
         if !skills.is_empty() {
             blocks.push(PromptBlock {
                 key: "skills".into(),
@@ -4195,6 +4233,7 @@ pub mod tests {
                 enabled: true,
                 category: String::new(),
                 package: None,
+                system: false,
             },
             instructions: "use calculator tool".into(),
         });
@@ -4254,6 +4293,7 @@ pub mod tests {
                 enabled: true,
                 category: String::new(),
                 package: None,
+                system: false,
             },
             instructions: "use calculator tool".into(),
         });

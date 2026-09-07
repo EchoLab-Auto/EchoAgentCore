@@ -65,6 +65,9 @@ pub enum BackendCommand {
         #[serde(default)]
         category: String,
         content: String,
+        /// 系统提示词 skill（system: true）：内容注入 base 区。
+        #[serde(default)]
+        system: bool,
     },
     /// Delete a skill directory under the configured skills directory.
     DeleteSkill { name: String },
@@ -98,6 +101,9 @@ pub enum BackendCommand {
         system_prompt: String,
         #[serde(default = "default_true_agent")]
         enabled: bool,
+        /// 该 agent 系统提示词由哪些 skill 组成（空 = 用 system_prompt 字段）。
+        #[serde(default)]
+        system_skills: Vec<String>,
         #[serde(default)]
         disabled_plugins: Vec<String>,
         #[serde(default)]

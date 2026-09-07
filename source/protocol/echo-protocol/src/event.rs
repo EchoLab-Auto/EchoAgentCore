@@ -622,6 +622,9 @@ pub struct SkillInfo {
     /// Full instructions body of `SKILL.md`.
     #[serde(default)]
     pub content: String,
+    /// 系统提示词 skill（system: true）：内容注入 base 区。
+    #[serde(default)]
+    pub system: bool,
     /// 外部 Git 来源（安装的 skill；内置技能为 None）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SkillSourceInfo>,
@@ -675,6 +678,9 @@ pub struct TeamInfo {
     pub description: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// 该 agent 系统提示词由哪些 skill 组成（空 = 回退 system_prompt 字段）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_skills: Vec<String>,
     /// Number of active sessions owned by this agent.
     #[serde(default)]
     pub sessions: usize,

@@ -15,6 +15,9 @@ pub struct SkillMetadata {
     pub keywords: Vec<String>,
     /// Whether this skill is included in every conversation.
     pub always: bool,
+    /// 系统提示词 skill：内容注入 base 区（身份/规则）。任意 SKILL.md
+    /// 声明 `system: true` 即成为可插拔系统提示词的一部分。
+    pub system: bool,
     pub enabled: bool,
     /// UI grouping category (empty = "未分类" on the frontend).
     pub category: String,
@@ -46,6 +49,7 @@ impl Skill {
                 description: description.into(),
                 keywords,
                 always,
+                system: false,
                 enabled: true,
                 category: category.into(),
                 package: None,

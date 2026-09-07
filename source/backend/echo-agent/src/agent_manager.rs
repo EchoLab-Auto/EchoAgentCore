@@ -80,6 +80,7 @@ impl AgentManager {
                     description: "默认助手（配置文件未定义人格）".into(),
                     system_prompt: raw.system_prompt.clone(),
                     enabled: true,
+                    system_skills: Vec::new(),
                     disabled_plugins: raw.disabled_plugins.clone(),
                     disabled_tools: raw.disabled_tools.clone(),
                     disabled_skills: raw.disabled_skills.clone(),
@@ -306,6 +307,7 @@ impl AgentManager {
                 is_default: id == &self.default_id,
                 description: p.description.clone(),
                 enabled: agents.contains_key(id),
+                system_skills: p.system_skills.clone(),
                 sessions: agents.get(id).map(|r| r.agent.session_count()).unwrap_or(0),
                 // 编排模式：互斥子插件推导（single 为兜底），单一来源
                 // TeamMember::orchestration_mode；chatbot 才展示会话管理 UI

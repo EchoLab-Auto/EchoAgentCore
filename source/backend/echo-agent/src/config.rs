@@ -114,6 +114,10 @@ pub struct TeamMember {
     /// Whether to instantiate this agent at startup (runtime toggling
     /// persists separately via `disabled_agents`).
     pub enabled: bool,
+    /// 该 agent 系统提示词由哪些 skill 组成（名字引用，热重载即生效）。
+    /// 非空时优先于 system_prompt 字段；为空回退 system_prompt（兼容）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_skills: Vec<String>,
     /// Per-persona disabled built-in plugins (e.g. "echo-agent.adapter.qq",
     /// "echo-agent.orchestration.chatbot").
     /// 当前实际效果：编排模式子插件（orchestration.chatbot 及旧特性 id）
@@ -183,6 +187,7 @@ impl Default for TeamMember {
             description: String::new(),
             system_prompt: String::new(),
             enabled: true,
+            system_skills: Vec::new(),
             disabled_plugins: Vec::new(),
             disabled_tools: Vec::new(),
             disabled_skills: Vec::new(),

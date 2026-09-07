@@ -157,6 +157,7 @@ impl Agent {
                 always,
                 category,
                 content,
+                system,
             } => {
                 let dir = self.current_skills_dir().await;
                 let draft = SkillDraft {
@@ -166,6 +167,7 @@ impl Agent {
                     always,
                     category,
                     content,
+                    system,
                 };
                 match self.save_skill_file(&dir, &draft) {
                     Ok(()) => {
@@ -689,6 +691,7 @@ impl Agent {
                 description,
                 system_prompt,
                 enabled,
+                system_skills,
                 disabled_plugins,
                 disabled_tools,
                 disabled_skills,
@@ -700,6 +703,7 @@ impl Agent {
             } => match crate::agent_manager::global_manager() {
                 Some(mgr) => {
                     let profile = crate::config::AgentProfile {
+                        system_skills: system_skills,
                         name,
                         description,
                         system_prompt,
@@ -1001,6 +1005,7 @@ impl Agent {
                 category: skill.metadata.category.clone(),
                 package: skill.metadata.package.clone(),
                 content: skill.instructions.clone(),
+                system: skill.metadata.system,
                 source: sources.get(&skill.metadata.name).map(|src| {
                     crate::event::SkillSourceInfo {
                         url: src.url.clone(),
@@ -1100,14 +1105,22 @@ impl Agent {
         } else {
             format!("keywords: [{}]\n", draft.keywords.join(", "))
         };
-        let body = format!(
-            "---\nname: {}\ndescription: {}\n{keywords_str}metadata:\n  always: {}\n  category: {}\n---\n{}",
+        let mut frontmatter = format!(
+            "---\nname: {}\ndescription: {}\n{keywords_str}",
             draft.name,
             draft.description,
-            draft.always,
-            draft.category,
-            draft.content
         );
+        if draft.always {
+            frontmatter.push_str("metadata:\n  always: true\n");
+        }
+        if !draft.category.is_empty() {
+            frontmatter.push_str(&format!("category: {}\n", draft.category));
+        }
+        if draft.system {
+            frontmatter.push_str("system: true\n");
+        }
+        frontmatter.push_str("---\n");
+        let body = format!("{frontmatter}{}", draft.content);
         std::fs::write(skill_dir.join("SKILL.md"), body)
             .map_err(|e| format!("cannot write SKILL.md: {e}"))?;
         Ok(())
@@ -1146,6 +1159,7 @@ pub(crate) struct SkillDraft {
     pub always: bool,
     pub category: String,
     pub content: String,
+    pub system: bool,
 }
 
 /// Skill name/directory key validation: Unicode letters/digits (covers Chinese),
