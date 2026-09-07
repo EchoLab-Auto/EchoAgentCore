@@ -113,3 +113,6 @@ group_at_reply = true
 [core]
 # Panel 连接用的 management WebSocket 监听地址。
 management_address = "127.0.0.1:3132"
+# Panel 连接 Core 时使用的 Bearer token；留空表示仅依赖监听地址隔离。
+# 若 management_address 暴露到局域网/公网，请务必设置随机长 token。
+management_access_token = ""

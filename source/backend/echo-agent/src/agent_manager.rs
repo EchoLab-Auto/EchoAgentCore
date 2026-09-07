@@ -95,7 +95,7 @@ impl AgentManager {
         let disabled: Vec<String> = raw.disabled_teams.clone();
         let mut agents = HashMap::new();
         for (id, profile) in teams.read().unwrap().iter() {
-            if disabled.contains(id) {
+            if !profile.enabled || disabled.contains(id) {
                 continue;
             }
             let p = profile.clone();
@@ -108,10 +108,9 @@ impl AgentManager {
                 },
             );
         }
-        let default_id = raw
-            .teams
+        let default_id = agents
             .keys()
-            .next()
+            .min()
             .cloned()
             .unwrap_or_else(|| "default".into());
         Self {
@@ -178,26 +177,29 @@ impl AgentManager {
         let mut agents = self.agents.write().unwrap();
         let mut disabled = self.disabled.lock().unwrap();
         if enabled {
-            if agents.contains_key(id) {
-                return Ok(());
+            if !agents.contains_key(id) {
+                let profile = self.teams.read().unwrap().get(id).cloned().unwrap();
+                agents.insert(
+                    id.to_string(),
+                    RunningAgent {
+                        id: id.to_string(),
+                        profile: profile.clone(),
+                        agent: factory(id.to_string(), profile),
+                    },
+                );
             }
-            let profile = self.teams.read().unwrap().get(id).cloned().unwrap();
-            agents.insert(
-                id.to_string(),
-                RunningAgent {
-                    id: id.to_string(),
-                    profile: profile.clone(),
-                    agent: factory(id.to_string(), profile),
-                },
-            );
             disabled.retain(|d| d != id);
         } else {
-            if agents.remove(id).is_none() {
-                return Ok(());
-            }
+            agents.remove(id);
             if !disabled.contains(&id.to_string()) {
                 disabled.push(id.to_string());
             }
+        }
+        // Keep the profile's persisted flag in lockstep with the runtime
+        // registry. Otherwise a ToggleTeam(false) would appear disabled only
+        // until the next rebuild, then restart as enabled.
+        if let Some(profile) = self.teams.write().unwrap().get_mut(id) {
+            profile.enabled = enabled;
         }
         drop(disabled);
         self.persist_profiles()?;
@@ -454,5 +456,23 @@ mod tests {
         // infos 同步反映归一化后的模式（黑名单含 chatbot → Single）
         let info = mgr.infos().into_iter().find(|t| t.id == "legacy").unwrap();
         assert_eq!(info.orchestration_mode, OrchestrationMode::Single);
+    }
+
+    #[test]
+    fn disabled_profile_is_not_instantiated() {
+        let mut raw = AgentConfig::default();
+        raw.teams.insert(
+            "disabled".into(),
+            TeamMember {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        let manager = AgentManager::build(&raw, |_id, _profile| {
+            panic!("disabled profiles must not instantiate an Agent")
+        });
+        assert!(manager.agent_ids().is_empty());
+        assert_eq!(manager.team_ids(), vec!["disabled"]);
+        assert!(!manager.infos()[0].enabled);
     }
 }

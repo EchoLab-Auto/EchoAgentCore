@@ -573,21 +573,44 @@ impl Agent {
                     full,
                 });
             }
-            BackendCommand::ClearHistory => {
-                self.trunk.clear_history().await;
-                // Push the empty projections so every connected frontend drops
-                // its local copy immediately (chat view + open context modal).
-                self.emit(BackendEvent::TrunkTimeline {
-                    messages: Vec::new(),
-                    seq: self.trunk.timeline_seq(),
-                    team_id: None,
-                    full: true,
-                });
-                self.emit_context_snapshot().await;
-                self.emit(BackendEvent::Error {
-                    session_id: None,
-                    message: "历史记忆已清理".into(),
-                });
+            BackendCommand::ClearHistory { team_id } => {
+                if let Some(id) = team_id {
+                    let target = crate::agent_manager::global_manager()
+                        .and_then(|m| m.resolve(Some(&id)));
+                    match target {
+                        Some(agent) => {
+                            agent.trunk.clear_history().await;
+                            agent.emit(BackendEvent::TrunkTimeline {
+                                messages: Vec::new(),
+                                seq: agent.trunk.timeline_seq(),
+                                team_id: Some(id),
+                                full: true,
+                            });
+                            agent.emit_context_snapshot_for().await;
+                            agent.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: "历史记忆已清理".into(),
+                            });
+                        }
+                        None => self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("team {id} 不存在"),
+                        }),
+                    }
+                } else {
+                    self.trunk.clear_history().await;
+                    self.emit(BackendEvent::TrunkTimeline {
+                        messages: Vec::new(),
+                        seq: self.trunk.timeline_seq(),
+                        team_id: None,
+                        full: true,
+                    });
+                    self.emit_context_snapshot().await;
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: "历史记忆已清理".into(),
+                    });
+                }
             }
             BackendCommand::CancelRequestedWork {
                 session_id,

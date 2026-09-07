@@ -57,11 +57,22 @@ pub async fn serve(
     agent: Arc<echo_agent::Agent>,
     sudo_broker: Arc<echo_agent::SudoBroker>,
 ) -> anyhow::Result<()> {
+    serve_with_token(addr, bridge, agent, sudo_broker, String::new()).await
+}
+
+/// Start the management server with an optional bearer token.
+pub async fn serve_with_token(
+    addr: &str,
+    bridge: Arc<BackendBridge>,
+    agent: Arc<echo_agent::Agent>,
+    sudo_broker: Arc<echo_agent::SudoBroker>,
+    access_token: String,
+) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("bind management address {addr}"))?;
     info!("Panel management WS server listening on {addr}");
-    serve_with_listener(listener, bridge, agent, sudo_broker).await
+    serve_with_listener_and_token(listener, bridge, agent, sudo_broker, access_token).await
 }
 
 /// Serve on a pre-bound listener (used by tests to pick a free port).
@@ -70,6 +81,16 @@ pub async fn serve_with_listener(
     bridge: Arc<BackendBridge>,
     agent: Arc<echo_agent::Agent>,
     sudo_broker: Arc<echo_agent::SudoBroker>,
+) -> anyhow::Result<()> {
+    serve_with_listener_and_token(listener, bridge, agent, sudo_broker, String::new()).await
+}
+
+async fn serve_with_listener_and_token(
+    listener: TcpListener,
+    bridge: Arc<BackendBridge>,
+    agent: Arc<echo_agent::Agent>,
+    sudo_broker: Arc<echo_agent::SudoBroker>,
+    access_token: String,
 ) -> anyhow::Result<()> {
     let events = Arc::new(EventBroker::new(bridge.clone()));
     let event_runner = events.clone();
@@ -91,8 +112,9 @@ pub async fn serve_with_listener(
         let bridge = bridge.clone();
         let agent = agent.clone();
         let sudo_broker = sudo_broker.clone();
+        let access_token = access_token.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, events, bridge, agent, sudo_broker).await {
+            if let Err(e) = handle_connection(stream, events, bridge, agent, sudo_broker, &access_token).await {
                 warn!(error = %e, "Panel connection error");
             }
         });
@@ -105,8 +127,25 @@ async fn handle_connection(
     bridge: Arc<BackendBridge>,
     _agent: Arc<echo_agent::Agent>,
     sudo_broker: Arc<echo_agent::SudoBroker>,
+    access_token: &str,
 ) -> anyhow::Result<()> {
-    let ws = tokio_tungstenite::accept_async(stream).await?;
+    let ws = if access_token.is_empty() {
+        tokio_tungstenite::accept_async(stream).await?
+    } else {
+        tokio_tungstenite::accept_hdr_async(stream, |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            let authorized = request
+                .headers()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value == format!("Bearer {access_token}"))
+                .unwrap_or(false);
+            if authorized {
+                Ok(response)
+            } else {
+                Err(tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(Some("unauthorized".into())))
+            }
+        }).await?
+    };
     let (mut write, mut read) = ws.split();
 
     // Each connection has its own subscription channel, so one Panel can no

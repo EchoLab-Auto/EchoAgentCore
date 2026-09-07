@@ -65,8 +65,14 @@ impl AgentSupervisor {
             ));
         }
         profiles.sort_by(|a, b| a.0.cmp(&b.0));
-        let profiles_sorted_first = profiles.first().map(|(id, _)| id.clone());
+        let mut first_enabled = None;
         for (id, profile) in profiles {
+            if !profile.enabled || raw.disabled_teams.iter().any(|disabled| disabled == &id) {
+                continue;
+            }
+            if first_enabled.is_none() {
+                first_enabled = Some(id.clone());
+            }
             let agent = make_agent(id.clone(), profile.clone());
             personas.insert(
                 id.clone(),
@@ -78,11 +84,31 @@ impl AgentSupervisor {
                 },
             );
         }
+        // Keep a routable management persona even when configuration disables
+        // every declared team. This avoids a startup panic while preserving
+        // the persisted enabled state of those teams.
+        if personas.is_empty() {
+            let id = "default".to_string();
+            let profile = AgentProfile {
+                name: "默认".into(),
+                description: "临时管理助手（所有配置人格均已禁用）".into(),
+                system_prompt: raw.system_prompt.clone(),
+                enabled: true,
+                disabled_plugins: raw.disabled_plugins.clone(),
+                disabled_tools: raw.disabled_tools.clone(),
+                disabled_skills: raw.disabled_skills.clone(),
+                enabled_plugins: Vec::new(),
+                enabled_tools: Vec::new(),
+                enabled_skills: Vec::new(),
+                memory_limit_tokens: None,
+                context_window_tokens: None,
+            };
+            let agent = make_agent(id.clone(), profile.clone());
+            personas.insert(id.clone(), Persona { id, profile, agent, bridge: None });
+        }
         // default_id 必须是排序后的第一个 profile（BTreeMap 语义），
         // 而不是 HashMap 的随机迭代首项——否则默认人格会漂移。
-        let default_id = profiles_sorted_first
-            .clone()
-            .unwrap_or_else(|| "default".into());
+        let default_id = first_enabled.unwrap_or_else(|| "default".into());
         Self {
             default_id,
             personas: std::sync::Mutex::new(personas),

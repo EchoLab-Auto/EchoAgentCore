@@ -189,7 +189,10 @@ pub enum BackendCommand {
     /// Responds with a fresh (empty) `TrunkTimeline` + `ContextSnapshot`.
     /// **Frontend-only** — destructive, human-in-the-loop action; the agent
     /// must never wipe its own memory.
-    ClearHistory,
+    ClearHistory {
+        #[serde(default)]
+        team_id: Option<String>,
+    },
     /// Start an adapter by name.
     StartAdapter { name: String },
     /// Stop an adapter by name.
@@ -263,7 +266,7 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
         | BackendCommand::SetQqOwner { .. }
         | BackendCommand::RequestQqOwner
         | BackendCommand::RequestQqFilterConfig
-        | BackendCommand::ClearHistory => CommandClearance::Frontend,
+        | BackendCommand::ClearHistory { .. } => CommandClearance::Frontend,
         _ => CommandClearance::Agent,
     }
 }
@@ -307,7 +310,7 @@ mod tests {
             CommandClearance::Frontend
         );
         assert_eq!(
-            command_clearance(&BackendCommand::ClearHistory),
+            command_clearance(&BackendCommand::ClearHistory { team_id: None }),
             CommandClearance::Frontend,
             "wiping memory is a human decision, never agent-originated"
         );

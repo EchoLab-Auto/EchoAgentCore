@@ -392,6 +392,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // core.toml 的 disabled_plugins 后重启（文档已注明）。
         {
             let mgmt_addr = cfg.core.management_address.clone();
+            let mgmt_token = cfg.core.management_access_token.clone();
             let mgmt_agent = agent.clone();
             let mgmt_bridge = bridge.clone();
             let mgmt_sudo = sudo_broker.clone();
@@ -411,8 +412,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         mgmt_agent.clone(),
                         mgmt_sudo.clone(),
                     );
+                    let token = mgmt_token.clone();
                     let server = tokio::spawn(async move {
-                        if let Err(e) = management::serve(&addr, br, ag, sudo).await {
+                        if let Err(e) = management::serve_with_token(&addr, br, ag, sudo, token).await {
                             warn!(error = %e, "management WS server stopped");
                         }
                     });
@@ -587,12 +589,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 进程级 AgentManager 锚点（RequestAgentsList 使用）：把 supervisor 的
     // 人格注册表镜像成 echo_agent::AgentManager（共享同一 Agent 实例）。
     {
-        let mut raw = agent_config.clone();
-        let mut profiles = std::collections::BTreeMap::new();
-        for persona in supervisor.personas() {
-            profiles.insert(persona.id.clone(), persona.profile.clone());
-        }
-        raw.teams = profiles;
+        // Keep disabled profiles in the manager registry so the Panel can
+        // display and re-enable them; AgentManager itself skips instantiation
+        // for `enabled=false` / `disabled_teams` entries.
+        let raw = agent_config.clone();
         let mgr_arc = std::sync::Arc::new(echo_agent::AgentManager::build(&raw, |id, p| {
             // 返回 supervisor 中对应人格的 Agent（共享实例）。
             supervisor
