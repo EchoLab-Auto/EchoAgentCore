@@ -166,6 +166,7 @@ mod tests {
                 description: "desc".into(),
                 keywords: keywords.iter().map(|k| k.to_string()).collect(),
                 always: false,
+                system: false,
                 enabled: true,
                 category: String::new(),
                 package: None,

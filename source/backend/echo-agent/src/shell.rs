@@ -9,7 +9,6 @@
 //! - 用户可 `ShellStop` 销毁；进程意外退出时自动清理并广播关闭事件
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::sync::Arc;
 use std::time::Duration;
 
