@@ -28,6 +28,24 @@ y: 1824
 - 重载**继承运行时启停状态**（`inherit_enabled_from`）：文件更新/新增/删除不丢失用户在面板的启停选择
 - 启停持久化于 `[agent].disabled_skills`，重启后保持；Panel 设置视图可浏览/启停/编辑/删除技能（含正文）
 
+## 系统提示词技能（system: true）—— 可插拔身份层
+
+系统提示词也可作为 skill 插拔：**任意 SKILL.md 声明 `system: true`**（顶层或 `metadata:` 下）
+即成为可插拔系统提示词，与业务技能（知识/操作指南）区分——它是"身份/规则"层。
+
+- **注入**：所有**启用**的 system skills 在构建系统提示词时注入 base 区
+  （`PromptBlock` kind = `system-skill`，标签"系统提示词 · 名称"，按名称排序）；
+  `always`/关键词与否**不影响** system 注入——只要启用就注入
+- **人格级引用**：`TeamMember.system_skills`（名字列表）非空时，这些 skill 追加为
+  该 agent 的人格系统提示词层；为空回退 `system_prompt` 文本（旧配置兼容）。
+  注入层级：全局 system skills → 人格 system_skills → 人格 system_prompt 字段
+- **生命周期完全复用技能系统**：可新建/编辑/启停（`[agent].disabled_skills`）/删除/
+  Git 安装/热重载——身份规则与业务知识同样可插拔，默认全局启用、可按 agent 白名单关闭
+- **保存入口**：`SaveSkill.system` 字段（写入 SKILL.md frontmatter `system: true`）；
+  `SkillInfo.system` 由 SkillsList 携带，面板显示"系统提示词"徽标；
+  `SaveTeam.system_skills` 保存人格引用列表
+- **面板**：技能编辑表单"系统提示词"开关 + 智能体（Team）编辑"系统提示词 skills"勾选
+
 ## 外部 Git 来源技能
 
 技能可从外部 Git 仓库安装/更新（`skill_install.rs` + `InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource` 三命令），Panel 设置视图「技能」分类提供完整交互（见 [Panel 交互定义](./panel-interaction.md) §9.3）。

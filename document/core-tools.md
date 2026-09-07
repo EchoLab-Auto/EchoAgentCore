@@ -29,6 +29,24 @@ y: 1673
 - `ToolCall` / `ToolResult` 都写入事件日志（事件溯源），重启后可完整重放
 - 协议事件携带 `tool_call_id` + `timed_out`：前端精确配对（同名并行调用不再配错对），超时渲染为失败；显示时间线就地更新会重新投递完成态（见 [协议与数据流](./protocol.md)）
 
+## 后台 Shell 会话（持久 bash）
+
+进程级 `ShellManager`（`backend/echo-agent/src/shell.rs`）管理**持久 bash 会话**：
+与 Panel Shell 面板共用同一会话，LLM 与用户看到的是同一终端上下文。
+
+- **会话模型**：每个会话 = 一个 `bash --noprofile --norc` 子进程（stdin/stdout/stderr 管道）；
+  会话串行执行（一次一条命令），不同会话并行；上限 8（`MAX_SHELL_SESSIONS`）
+- **命令执行**：写入命令 + 随机哨兵标记，读 stdout/stderr 直到哨兵出现（或超时）；
+  输出按行流式广播（`ShellExecOutput` 事件）；主时间线/面板终端实时可见
+- **超时**：单条命令超时（默认 120s，最大 300s）只中止读取、**保留会话**；
+  超时文本以 notice 语义返回（面板显示"可能仍在运行"）
+- **工具**：`shell_start` / `shell_exec` / `shell_stop`（builtin 注册，按人格白名单）；
+- **命令**：`RequestShellSessions` / `ShellStart` / `ShellExec` / `ShellStop`（面板直控）
+- **事件**：`ShellSessionsList` / `ShellSessionStarted` / `ShellExecStarted` /
+  `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
+- **生命周期**：`ShellStop` 销毁；进程意外退出（try_wait）自动清理并广播关闭事件；
+  Core 重启后会话不保留（一次性的运行期资源）
+
 ## run_sudo：人机交互 sudo 授权
 
 让 agent 能执行需 root 的命令，同时满足硬约束：**每次 sudo 都由用户在 Panel 输入密码授权；密码绝不进入日志、LLM 上下文与会话日志；模型不知道密码内容**。

@@ -56,8 +56,23 @@ EchoAgentPanel/
 
 - `PanelSidebar.vue`：临时分支卡 + 会话卡（按当前 agent 能力开关显示/隐藏）
 - `SessionGroups.vue`：按平台分组（全局/Local/QQ 私聊/QQ 群/其他），组内按最近活跃排序，按 agent 过滤
-- `SettingsView.vue`：设置视图——API 设置（ApiSettings.vue）+ 技能/工具/插件/智能体的浏览、启停、编辑、删除（左侧一级菜单 + 右侧工作区；2026-09-04 起取代原资源视图与 API 弹窗）
+- `SettingsView.vue`：设置视图——API 设置（ApiSettings.vue）+ 技能/工具/插件/智能体的浏览、启停、编辑、删除（左侧一级菜单 + 右侧工作区；2026-09-04 起取代原资源视图与 API 弹窗）。技能编辑含**「系统提示词」开关**（`system: true`，详见 [技能系统](./core-skills.md)）；智能体编辑含**「系统提示词 skills」勾选**（SaveTeam.system_skills）与 Git 安装表单
 - `AgentSwitcher.vue`：输入框上方 Agent 切换悬浮卡片
+- `AgentConfigModal.vue`：聊天区 ⚙「配置」按钮唤起的**会话区内磨砂玻璃弹层**——
+  名称/描述/系统提示词/启用/插件/工具/技能白名单（表格 + pkg 分组，含"系统提示词 skills"勾选），
+  保存走 SaveTeam；上/左/右距会话框 12px、底部距配置按钮 12px
+- `ShellPanel.vue`：顶栏 Shell 视图——持久 bash 会话终端可视化
+  （新建/停止会话、命令回显 + 流式输出自动吸底、运行态 spinner、
+  完成/失败/超时状态、Enter 执行 Esc 清空、工作目录指定）
+
+## 取消任务的即时反馈
+
+- 前端 `cancelSessionWork`（state.ts）**乐观中断**：点击取消后立即
+  活动浮条/取消按钮消失（phase → completed）、running 任务/分支 tab → cancelled、
+  running 工具卡 → failed（"已取消"），不等后端确认
+- 取消命令带 `team_id`（当前 agent）——多 agent 下按 persona 路由；
+  后端取消成功即回 `AgentCompleted` 对齐状态
+- 入口：聊天区"取消任务"按钮（busy 时显示）与任务页取消按钮，共用同一逻辑
 
 ## 时序与动画规范
 
