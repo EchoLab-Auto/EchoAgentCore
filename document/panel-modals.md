@@ -1,0 +1,65 @@
+---
+id: panel-modals
+title: "Panel 模态与覆盖层"
+group: 前端模块
+link: ["panel-interaction | Panel 布局 & 交互定义"]
+x: 332
+y: 48
+---
+
+# Panel 模态与覆盖层
+
+全部模态与覆盖层行为：Sudo 授权（不可绕过）、分支详情、上下文覆盖层、Agent 配置弹层，以及各危险操作的确认形式（原生 confirm / 两步确认）。
+
+## 八、模态与覆盖层
+
+### 8.1 SudoModal（最高优先级）
+
+由 Core `SudoRequest` 事件触发，**不可绕过**：`closable=false`、`mask-closable=false`、无关闭按钮、无页脚。
+
+```prodoc-flow
+graph LR
+  Req[SudoRequest 事件] --> Modal[密码框自动聚焦]
+  Modal -->|Enter / 授权| Auth[sendSudoPassword: 密码]
+  Modal -->|Esc / 拒绝| Deny[sendSudoPassword: null]
+  Auth --> Wait[等待 Core]
+  Deny --> Wait
+  Wait --> Resolved[SudoResolved: 卸载弹窗 + toast]
+```
+
+- 密码经专用 `sudo_password` 帧（不进命令队列/日志/LLM 上下文）；提交后清空输入框
+- `SudoResolved` 到达即关闭弹窗并弹 toast（授权 success / 拒绝或中断 error）；Core 侧保证所有退出路径（含超时、turn 取消）恰好发一次——弹窗不会挂在死请求上
+
+### 8.2 BranchModal（分支详情）
+
+侧边栏分支行点击进入：头部 `临时分支 · {id前8位}` + 状态标签（运行中 primary/已完成 success/已取消 warning/失败 error）；正文 = 任务/目标/会话元信息 + 分支内消息流（按 kind 分别用工具卡/推理块/纯文本渲染，新消息自动滚底；消息区 max-height 55vh）；运行中时底部提示「分支执行中…」；分支 tab 被移除后弹窗保持打开，显示「（分支已结束并合并到主会话）」。
+
+### 8.3 ContextView（上下文覆盖层）
+
+入口行「上下文」进入，会话视图内磨砂全覆盖；点遮罩或「返回聊天」关闭。打开时 `RequestContext{team_id: null}`：
+
+- token 仪表盘：`NeumorphismProgress`（≥90% error、≥70% warning），总量/提示词/历史/上限四项统计
+- 上下文块分「系统提示词与注入块」「对话历史」两组折叠（仅 base 块默认展开）：kind 色签 + token 数 + 占比条（按最大块 token 归一）
+- 逐条消息明细（角色 + token + 内容），默认折叠
+- 操作：**清理历史**（两步确认：首击变为「确认清理？不可恢复」，再击发送 `ClearHistory`）；**归档**（confirm → `ArchiveHistory`）；**压缩**（confirm → `CompactHistory{keep_recent: 40}`）；**重载技能**（`ReloadSkills`）；**刷新**
+
+### 8.4 AgentConfigModal（当前 Agent 配置）
+
+锚定会话区上方的磨砂覆盖层（底边 = 入口行高 + 42px，`ChatView.vue:152-157, 399-405`）；点遮罩/✕/取消/保存后关闭。打开时拉取技能/工具/插件清单：
+
+- 字段：名称、描述、系统提示词（留空继承全局）、启用开关（**禁用即卸载记忆**，重启用重新挂载）
+- 三类能力复选表（插件按 kind 分组、工具/技能按包分组，组级全选）：**白名单语义——空表 = 全部启用**；首次取消勾选时先把全量写入列表再移除该项
+- 保存 → `SaveTeam`
+
+### 8.5 原生确认与受保护操作
+
+| 操作 | 确认形式 |
+|---|---|
+| 禁用「管理面」插件 | **禁止**（core 拒绝命令 + UI alert 明示，防自锁；只能 core.toml + 重启） |
+| 删除技能 | `window.confirm`（提示会删除 SKILL.md 文件） |
+| 删除 Team | 主 Agent `window.alert` 禁止；其余 `window.confirm`（不可恢复） |
+| 移除技能 Git 来源 | `window.confirm`（明示"目录保留，可手动删除"） |
+| 归档/压缩历史 | `window.confirm` |
+| 清理历史 | 两步按钮确认（见 §8.3） |
+| 删除 API Profile / 更新 Git 技能 | **无确认**，立即生效 |
+

@@ -2,7 +2,7 @@
 group: 前端模块
 x: 606
 y: 727
-link: ["panel-interaction | 交互定义"]
+link: ["panel-interaction | 布局与交互定义"]
 ---
 
 # Panel 前端
