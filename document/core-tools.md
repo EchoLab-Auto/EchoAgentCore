@@ -2,9 +2,8 @@
 id: tools
 title: "工具系统"
 group: 后端模块
-x: 970
-y: 1644
-link: ["plugins | 插件化设计"]
+x: 1298
+y: 1481
 ---
 
 # 工具系统

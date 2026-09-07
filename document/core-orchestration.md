@@ -2,9 +2,8 @@
 id: orchestration
 title: "编排插件"
 group: 后端模块
-x: 970
-y: 1500
-link: ["plugins | 插件化设计"]
+x: 1298
+y: 1193
 ---
 
 # 编排插件

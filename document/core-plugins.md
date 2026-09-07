@@ -2,9 +2,9 @@
 id: plugins
 title: "插件化设计"
 group: 后端模块
-link: ["adapter-qq-gating | QQ 适配器（插件）", "core-tools | 工具系统", "core-skills | 技能系统", "core-orchestration | 编排插件"]
+link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "orchestration | r>l", "tools | r>l"]
 x: 970
-y: 1385
+y: 1333
 ---
 
 # 插件化设计
@@ -42,11 +42,8 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.tools.builtin` | Tool | 内置工具集（计算/搜索/清单/编码/适配器管理） |
 | `echo-agent.adapter.qq` | Adapter | QQ 适配器（OneBot v11 反向 WS，含 QQ 管理工具） |
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
-| `echo-agent.orchestration` | Orchestration | 后台任务/并行分支/子代理/定时器/自更新 |
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂 |
 | `echo-agent.loop.runner` | Loop | turn/step 状态机与工具管道 |
-| `echo-agent.management.panel` | Management | Panel 桥接/sudo 授权通道 |
-| `echo-agent.orchestration` | Orchestration | 编排能力总插件（后台任务/并行分支/子代理/定时器/自更新）——详见[编排插件](./core-orchestration.md)；`single`/`chatbot` 互斥模式子插件已移入该节点 |
 
 ## 能力开关（per-persona）
 

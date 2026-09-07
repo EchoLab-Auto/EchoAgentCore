@@ -2,9 +2,8 @@
 id: skills
 title: "技能系统"
 group: 后端模块
-x: 970
-y: 1765
-link: ["plugins | 插件化设计"]
+x: 1298
+y: 1333
 ---
 
 # 技能系统
