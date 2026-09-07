@@ -58,10 +58,10 @@ impl ToolPipeline {
     /// returning a future that `run` awaits; pre stages run first (each may
     /// short-circuit), then `execute` runs unless short-circuited, then post
     /// stages run on the result.
-    pub async fn run(
+    pub async fn run<'a>(
         &self,
         call: &ToolCall,
-        execute: impl FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>,
+        execute: impl FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>>,
     ) -> ToolPipelineResult {
         // Pre stages: each may short-circuit before execution.
         let mut index = 0usize;

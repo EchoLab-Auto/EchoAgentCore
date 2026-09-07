@@ -129,6 +129,11 @@ pub struct Agent {
     last_prompt_blocks: tokio::sync::Mutex<Option<Vec<PromptBlock>>>,
     plugin_reload_started: AtomicBool,
     orchestration_started: AtomicBool,
+    /// 可插拔循环驱动（echo-loop TurnRunner，由 echo-agent.loop.runner 插件
+    /// mount 时注入）；启用（use_echo_loop）时普通 TUI turn 经 TurnRunner 的
+    /// turn/step 状态机 + ToolPipeline 执行，否则使用内置循环（默认）。
+    loop_runner: RwLock<Option<std::sync::Arc<echo_loop::runner::TurnRunner>>>,
+    use_echo_loop: AtomicBool,
     timer_scheduler: orchestration::TimerScheduler,
     background_tasks: orchestration::BackgroundTaskManager,
     reply_branch_slots: tokio::sync::Semaphore,
@@ -222,6 +227,8 @@ impl Agent {
             last_prompt_blocks: tokio::sync::Mutex::new(None),
             plugin_reload_started: AtomicBool::new(false),
             orchestration_started: AtomicBool::new(false),
+            loop_runner: RwLock::new(None),
+            use_echo_loop: AtomicBool::new(false),
             timer_scheduler,
             background_tasks,
             reply_branch_slots: tokio::sync::Semaphore::new(MAX_CONCURRENT_REPLY_BRANCHES),
@@ -665,6 +672,21 @@ impl Agent {
 
     /// Assign the team id and tag the trunk (sessions created later carry
     /// it in SessionInfo). Call once at boot before any message arrives.
+    /// 注入可插拔循环驱动（echo-loop TurnRunner；由 loop.runner 插件 mount 调用）。
+    pub fn set_loop_runner(&self, runner: std::sync::Arc<echo_loop::runner::TurnRunner>) {
+        if let Ok(mut slot) = self.loop_runner.try_write() {
+            *slot = Some(runner);
+        } else {
+            tracing::warn!("loop runner slot busy, ignoring set_loop_runner");
+        }
+    }
+
+    /// 是否启用 echo-loop 驱动（plugin mount/unmount 切换；默认 false = 内置循环）。
+    pub fn set_use_echo_loop(&self, enabled: bool) {
+        self.use_echo_loop.store(enabled, Ordering::Release);
+        tracing::info!(enabled, "echo-loop turn driver toggled");
+    }
+
     pub fn set_team_id(&self, team_id: Option<String>) {
         *self.team_id.lock().unwrap() = team_id.clone();
         self.trunk.set_team_id(team_id);
@@ -1514,6 +1536,73 @@ impl Agent {
         });
     }
 
+    /// 经 echo-loop TurnRunner 驱动一轮（仅普通输入；`history_snapshot` 由
+    /// 调用方提供——与内置循环同语义：以点切快照为基准，不重复读取）。
+    async fn process_via_echo_loop(
+        &self,
+        session: &Session,
+        content: &str,
+        history_snapshot: Option<Vec<ChatMessage>>,
+        turn_cancel: tokio_util::sync::CancellationToken,
+        branch_id: &str,
+        runner: std::sync::Arc<echo_loop::runner::TurnRunner>,
+    ) -> Result<String> {
+        let session_id = session.id.clone();
+        // 系统提示词（与内置循环一致，按块构建后合并）。
+        let blocks = self.build_prompt_blocks(content, None).await;
+        let system_prompt = join_prompt_blocks(&blocks);
+        let history = history_snapshot.unwrap_or_else(|| {
+            session.history.blocking_lock().clone()
+        });
+        // 工具 schema：注册表定义 + 动态编排过滤（与内置循环同源）。
+        let mut tools = (*self.tools.definitions().await).clone();
+        let config = self.config.read().await;
+        let dynamic = orchestration::tool_definitions(config.self_update.enabled, config.sudo.enabled);
+        drop(config);
+        tools.extend(
+            dynamic
+                .into_iter()
+                .filter(|d| self.allows_dynamic_tool(&d.name)),
+        );
+
+        // 推理回调（引用式，生命周期 = run 调用作用域）。
+        let reasoning_cb = |sid: String, text: String| {
+            self.emit_reasoning(&sid, branch_id, &Some(text));
+        };
+
+        // 工具执行：同步闭包内用 block_in_place + 当前运行时 block_on 执行
+        // run_tool（run_tool 内部已发 ToolCall/ToolResult 事件并写事件日志）。
+        let result = {
+            let this = self;
+            let executor = |sid: &str, _branch: &str, call: &crate::llm::ToolCall| {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(this.run_tool(sid, branch_id, call)).text
+                })
+            };
+            let extras = echo_loop::runner::RunExtras {
+                tools: Some(tools),
+                on_reasoning: Some(&reasoning_cb),
+            };
+            runner
+                .run(
+                    &session_id,
+                    content.to_string(),
+                    system_prompt,
+                    history,
+                    turn_cancel,
+                    &executor,
+                    extras,
+                )
+                .await
+        };
+
+        match result {
+            Ok(reply) => Ok(reply),
+            Err(echo_loop::runner::LoopError::Cancelled) => Err(anyhow!(TURN_CANCELLED)),
+            Err(other) => Err(anyhow!(other.to_string())),
+        }
+    }
+
     async fn process_message_inner(
         &self,
         session: &Session,
@@ -1523,6 +1612,33 @@ impl Agent {
         visible_reply: Option<tokio::sync::watch::Sender<bool>>,
         branch_id: &str,
     ) -> Result<String> {
+
+        // ── 可插拔循环驱动（echo-loop）──
+        // loop.runner 插件启用且持有 TurnRunner 时，普通输入（非 QQ hook/
+        // 定时器/QQ 会话——边界与投递语义仍由内置循环保证）经 TurnRunner 的
+        // turn/step 状态机 + ToolPipeline 执行；否则走内置循环（默认行为）。
+        if self.use_echo_loop.load(Ordering::Acquire) {
+            if let Some(runner) = self.loop_runner.read().await.clone() {
+                let boundary = {
+                    let is_qq_hook = content.contains("<qq_message_hook>");
+                    let is_timer = content.contains(crate::input_marker::TIMER_EVENT_OPEN);
+                    let is_qq_session = session.session_key.platform.eq_ignore_ascii_case("qq");
+                    is_qq_hook || is_timer || is_qq_session
+                };
+                if !boundary {
+                    return self
+                        .process_via_echo_loop(
+                            session,
+                            content,
+                            history_snapshot,
+                            turn_cancel,
+                            branch_id,
+                            runner,
+                        )
+                        .await;
+                }
+            }
+        }
         let queued_at = std::time::Instant::now();
         let turn_started_at = chrono::Utc::now();
         let turn_id = uuid::Uuid::new_v4().to_string();

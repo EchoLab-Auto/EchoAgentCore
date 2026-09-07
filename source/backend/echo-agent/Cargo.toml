@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 echo-defs = { path = "../../defs/echo-defs" }
 echo-context = { path = "../../context/echo-context" }
+echo-loop = { path = "../../loop/echo-loop" }
 echo-session = { path = "../../session/echo-session" }
 echo-llm-openai = { path = "../../llm/echo-llm-openai" }
 echo-llm-anthropic = { path = "../../llm/echo-llm-anthropic" }

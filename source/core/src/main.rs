@@ -123,7 +123,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         Arc::new(echo_loop::ToolPipeline::new()),
         echo_loop::LoopOptions::default(),
     ));
-    let _runner_keep = ctx.register::<Arc<echo_loop::TurnRunner>>("loop", runner);
+    let _runner_keep = ctx.register::<Arc<echo_loop::TurnRunner>>("loop", runner.clone());
 
     // Adapter registry.
     let mut adapter_registry = echo_adapter::AdapterRegistry::new();
@@ -345,6 +345,32 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             },
         )?;
 
+        // ── 实化 4：Turn Runner（echo-loop 可插拔循环驱动）──
+        // mount：把组合根共享的 TurnRunner 注入各 agent 并启用 echo-loop
+        // 驱动（普通 TUI turn 经 turn/step 状态机执行）；umount：恢复内置循环。
+        register(&plugin_host,
+            PluginManifest::builtin(
+                "echo-agent.loop.runner",
+                "Turn Runner",
+                version,
+                PluginKind::Loop,
+                "loop",
+                "默认 turn/step 状态机与工具管道（可插拔循环驱动）",
+            ),
+            {
+                let runner = runner.clone();
+                move |_ctx| {
+                    for_each_agent(|a| {
+                        a.set_loop_runner(runner.clone());
+                        a.set_use_echo_loop(true);
+                    });
+                    Ok(vec![Disposer::from_fn(|| {
+                        for_each_agent(|a| a.set_use_echo_loop(false));
+                    })])
+                }
+            },
+        )?;
+
         // ── 实化 3：任务清单（checklist 工具，包维度启停）──
         register(&plugin_host,
             PluginManifest::builtin(
@@ -477,14 +503,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 PluginKind::Provider,
                 "llm",
                 "LLM 提供方（deepseek/openai/anthropic/ollama 工厂）",
-            ),
-            PluginManifest::builtin(
-                "echo-agent.loop.runner",
-                "Turn Runner",
-                version,
-                PluginKind::Loop,
-                "loop",
-                "默认 turn/step 状态机与工具管道",
             ),
         ];
         for manifest in nominal_manifests {

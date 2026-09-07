@@ -99,7 +99,8 @@ async fn turn_emits_lifecycle_events_in_order() {
             "系统提示".into(),
             vec![],
             tokio_util::sync::CancellationToken::new(),
-            Arc::new(|_s, _b, call| format!("执行了 {}", call.name)),
+            &|_s, _b, call| format!("执行了 {}", call.name),
+            Default::default(),
         )
         .await
         .unwrap();
@@ -147,7 +148,8 @@ async fn pre_step_rejection_closes_turn_without_request() {
             "sys".into(),
             vec![],
             tokio_util::sync::CancellationToken::new(),
-            Arc::new(|_, _, _| String::new()),
+            &|_, _, _| String::new(),
+            Default::default(),
         )
         .await;
     assert!(matches!(result, Err(echo_loop::LoopError::StepRejected)));

@@ -48,8 +48,19 @@ impl Default for LoopOptions {
 
 /// How the runner executes one tool call. The harness owns the concrete
 /// executor (registry lookup + orchestration tools); the runner only drives
-/// the lifecycle around it.
-pub type ToolExecutor = Arc<dyn Fn(&str, &str, &ToolCall) -> String + Send + Sync>;
+/// the lifecycle around it. 引用式（非 Arc/`'static`）：executor 可与调用方
+/// 的会话状态绑定（由 agent 提供 &self 闭包）。
+pub type ToolExecutor<'a> = &'a (dyn Fn(&str, &str, &ToolCall) -> String + Send + Sync);
+
+/// run 的扩展参数：工具 schema（发给模型）与推理回调（转发至 UI）。
+#[derive(Default, Clone)]
+pub struct RunExtras<'a> {
+    /// 模型可见的工具定义（None = 无工具请求，纯对话）。
+    pub tools: Option<Vec<echo_defs::tool::ToolDefinition>>,
+    /// 推理回调：（session_id, reasoning_text）。None = 忽略。
+    /// 引用式（与 executor 相同哲学）：回调可与调用方的会话状态绑定。
+    pub on_reasoning: Option<&'a (dyn Fn(String, String) + Send + Sync)>,
+}
 
 /// The default agent-loop driver.
 ///
@@ -104,7 +115,8 @@ impl TurnRunner {
         system_prompt: String,
         history: Vec<ChatMessage>,
         cancel: tokio_util::sync::CancellationToken,
-        execute_tool: ToolExecutor,
+        execute_tool: ToolExecutor<'_>,
+        extras: RunExtras<'_>,
     ) -> Result<String, LoopError> {
         self.bus.emit_sync(
             TurnStart {
@@ -157,7 +169,7 @@ impl TurnRunner {
                 request: ChatRequest {
                     model: model.clone(),
                     messages: messages.clone(),
-                    tools: None,
+                    tools: extras.tools.clone(),
                     temperature: None,
                     max_tokens: None,
                 },
@@ -169,6 +181,13 @@ impl TurnRunner {
                 .chat(&request.request)
                 .await
                 .map_err(|e| LoopError::Model(e.to_string()))?;
+            if let Some(ref cb) = extras.on_reasoning {
+                if let Some(ref text) = response.reasoning_content {
+                    if !text.trim().is_empty() {
+                        cb(session_id.to_string(), text.clone());
+                    }
+                }
+            }
 
             if response.tool_calls.is_empty() {
                 let reply = response.content.unwrap_or_default();
