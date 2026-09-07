@@ -195,6 +195,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     t.set_package(&name, "echo-agent.adapter.qq");
                 }
             }
+            t.set_package("checklist", echo_agent::plugins::CHECKLIST_PLUGIN_ID);
             let agent = Arc::new(echo_agent::Agent::new(
                 Arc::clone(&provider_arc2),
                 cfg,
@@ -255,8 +256,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         use echo_agent::plugins::{
-            ToolSink, ADAPTER_QQ_PLUGIN_ID, MANAGEMENT_PANEL_PLUGIN_ID, SKILLS_DIR_PLUGIN_ID,
-            TOOLS_BUILTIN_PLUGIN_ID,
+            CHECKLIST_PLUGIN_ID, ToolSink, ADAPTER_QQ_PLUGIN_ID, MANAGEMENT_PANEL_PLUGIN_ID,
+            SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
         };
         use echo_context::Disposer;
         use echo_plugin::{BuiltinPlugin, MountContext, PluginKind, PluginManifest};
@@ -340,6 +341,24 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 for_each_agent(|a| a.apply_plugin_gating(SKILLS_DIR_PLUGIN_ID, true));
                 Ok(vec![Disposer::from_fn(|| {
                     for_each_agent(|a| a.apply_plugin_gating(SKILLS_DIR_PLUGIN_ID, false));
+                })])
+            },
+        )?;
+
+        // ── 实化 3：任务清单（checklist 工具，包维度启停）──
+        register(&plugin_host,
+            PluginManifest::builtin(
+                CHECKLIST_PLUGIN_ID,
+                "任务清单",
+                version,
+                PluginKind::Tool,
+                "checklist",
+                "任务清单工具（清单保存/读取/勾选，可按人格独立启停）",
+            ),
+            move |_ctx| {
+                for_each_agent(|a| a.apply_plugin_gating(CHECKLIST_PLUGIN_ID, true));
+                Ok(vec![Disposer::from_fn(|| {
+                    for_each_agent(|a| a.apply_plugin_gating(CHECKLIST_PLUGIN_ID, false));
                 })])
             },
         )?;
