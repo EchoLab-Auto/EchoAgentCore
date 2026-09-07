@@ -2,7 +2,7 @@
 id: plugins
 title: "插件化设计"
 group: 后端模块
-link: ["adapter-qq-gating | QQ 适配器（插件）"]
+link: ["adapter-qq-gating | QQ 适配器（插件）", "core-tools | 工具系统", "core-skills | 技能系统", "core-orchestration | 编排插件"]
 x: 970
 y: 1385
 ---
@@ -46,20 +46,14 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂 |
 | `echo-agent.loop.runner` | Loop | turn/step 状态机与工具管道 |
 | `echo-agent.management.panel` | Management | Panel 桥接/sudo 授权通道 |
-| `echo-agent.orchestration.single` | Orchestration | **编排模式（互斥）**：单任务编排——无会话管理 UI（会话卡/全局分组隐藏）、回执分支不可见 |
-| `echo-agent.orchestration.chatbot` | Orchestration | **编排模式（互斥）**：多任务并行编排——会话列表/全局会话/可见回执分支（取代旧 `branch.reply`/`session.global`/`chatbot.sessions` 三插件） |
+| `echo-agent.orchestration` | Orchestration | 编排能力总插件（后台任务/并行分支/子代理/定时器/自更新）——详见[编排插件](./core-orchestration.md)；`single`/`chatbot` 互斥模式子插件已移入该节点 |
 
 ## 能力开关（per-persona）
 
 - 每个插件 id 均可放入 agent 的 `enabled_plugins`（白名单）或 `disabled_plugins`（黑名单）
 - 白名单非空 = 只启用列出的插件；黑名单优先
 - 前端设置视图可按 kind 勾选（adapter/management 类），保存后写回 TOML
-- **编排模式推导**（互斥，single 为兜底；单一来源 `TeamMember::orchestration_mode()`）：
-  - `enabled_plugins` 为空（=全部启用）→ **chatbot**
-  - 含 `orchestration.chatbot`（或旧特性 id，加载期自动迁移）→ **chatbot**；两者并含 chatbot 优先（迁移时 warn）
-  - 非空但无任何模式 id → **single**
-  - `disabled_plugins` 含 chatbot/旧 id → **single**；含 single id → no-op（禁用兜底无意义，warn）
-  - chatbot：会话卡/全局分组/ReplyBranch* 事件发射全开；single：全部关闭（分支照常执行合并，仅不可见——可见性开关而非执行开关）
+- **编排模式推导**（互斥，single 为兜底）：见[编排插件](./core-orchestration.md)§编排模式（单一来源 `TeamMember::orchestration_mode()`）
 - **其余插件当前生效范围**：
   - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具/技能对所有 persona 批量禁用（对 LLM 不可见），启用恢复
   - `adapter.qq`：禁用 = 停止 QQ 适配器进程 + QQ 工具包禁用；启用 = 启动 + 恢复
