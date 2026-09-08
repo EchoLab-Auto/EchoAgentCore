@@ -3,8 +3,8 @@ id: plugins
 title: "插件化设计"
 group: 后端模块
 link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "orchestration | r>l", "tools | r>l"]
-x: 970
-y: 1333
+x: 948.5
+y: 2003
 ---
 
 # 插件化设计

@@ -2,9 +2,8 @@
 id: panel-layout
 title: "Panel 布局与导航"
 group: 前端模块
-link: ["panel-interaction | Panel 布局 & 交互定义"]
-x: 48
-y: 48
+x: 1186
+y: 1164
 ---
 
 # Panel 布局与导航

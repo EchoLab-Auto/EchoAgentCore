@@ -2,8 +2,8 @@
 id: orchestration
 title: "编排插件"
 group: 后端模块
-x: 1298
-y: 1193
+x: 1276.5
+y: 1863
 ---
 
 # 编排插件

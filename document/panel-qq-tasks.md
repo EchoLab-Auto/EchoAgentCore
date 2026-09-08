@@ -2,9 +2,8 @@
 id: panel-qq-tasks
 title: "Panel QQ 管理 · 任务 · Shell"
 group: 前端模块
-link: ["panel-interaction | Panel 布局 & 交互定义"]
-x: 616
-y: 48
+x: 1186
+y: 637
 ---
 
 # Panel QQ 管理 · 任务 · Shell

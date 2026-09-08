@@ -2,9 +2,8 @@
 id: panel-system
 title: "Panel 系统交互"
 group: 前端模块
-link: ["panel-interaction | Panel 布局 & 交互定义"]
-x: 332
-y: 216
+x: 1186
+y: 894
 ---
 
 # Panel 系统交互

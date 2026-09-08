@@ -2,9 +2,8 @@
 id: panel-settings
 title: "Panel 设置视图"
 group: 前端模块
-link: ["panel-interaction | Panel 布局 & 交互定义"]
-x: 48
-y: 216
+x: 1186
+y: 1025
 ---
 
 # Panel 设置视图

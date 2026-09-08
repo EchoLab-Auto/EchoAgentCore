@@ -2,8 +2,8 @@
 id: dev-testing
 title: "测试策略"
 group: 开发指南
-x: 970
-y: 360
+x: 873
+y: 53
 ---
 # Testing Strategy
 

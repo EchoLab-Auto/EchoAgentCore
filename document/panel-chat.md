@@ -2,9 +2,8 @@
 id: panel-chat
 title: "Panel 会话视图"
 group: 前端模块
-link: ["panel-interaction | Panel 布局 & 交互定义"]
-x: 48
-y: 384
+x: 1186
+y: 1301
 ---
 
 # Panel 会话视图
