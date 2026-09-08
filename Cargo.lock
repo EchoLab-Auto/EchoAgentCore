@@ -411,6 +411,7 @@ dependencies = [
  "echo-llm-anthropic",
  "echo-llm-ollama",
  "echo-llm-openai",
+ "echo-loop",
  "echo-plugin",
  "echo-protocol",
  "echo-session",
