@@ -1491,8 +1491,8 @@ mod tests {
                 "version": 5,
                 "events": [],
                 "timeline": [
-                    {"kind":"tool","content":"run_command","session_id":"s","time":1,
-                     "tool":{"name":"run_command","input":"x","output":null,"failed":false}},
+                    {"kind":"tool","content":"bash","session_id":"s","time":1,
+                     "tool":{"name":"bash","input":"x","output":null,"failed":false}},
                     {"kind":"tool","content":"read_file","session_id":"s","time":2,
                      "tool":{"name":"read_file","input":"y","output":"ok","failed":false}}
                 ]

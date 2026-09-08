@@ -89,7 +89,7 @@ pub trait Tool: Send + Sync {
     /// Self-declared execution timeout parsed from the tool's own arguments.
     /// The agent loop's outer guard uses `max(configured tool_timeout_secs,
     /// hint + grace)` so a tool that explicitly allows a long run (e.g.
-    /// `run_command` with `timeout_secs: 300`) is not cut short by the
+    /// `bash` with `timeout_secs: 300`) is not cut short by the
     /// generic guard. `None` = no hint; the configured default applies.
     fn timeout_hint(&self, _arguments: &Value) -> Option<std::time::Duration> {
         None

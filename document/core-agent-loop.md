@@ -2,7 +2,7 @@
 id: agent-loop
 title: "Agent 循环（插件化）"
 group: 后端模块
-x: 948.5
+x: 949
 y: 1863
 link: ["plugins | 插件化设计"]
 ---

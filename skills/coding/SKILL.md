@@ -13,7 +13,7 @@ You can interact with the project's source code using these tools:
 - `search_code` — Search for a pattern across source files
 - `write_file` — Create or overwrite a file with new content
 - `edit_file` — Replace specific lines in a file (start_line to end_line)
-- `run_command` — Run a terminal command (e.g. `cargo build`, `git status`). Timeout 30s, workspace-restricted, dangerous commands blocked.
+- `bash` — Run a terminal command (e.g. `cargo build`, `git status`). Timeout 30s, workspace-restricted, dangerous commands blocked.
 
 ## When to use
 

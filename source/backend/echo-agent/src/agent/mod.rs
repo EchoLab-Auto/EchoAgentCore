@@ -1840,7 +1840,7 @@ impl Agent {
                 // 直接继续作答。
                 //
                 // 外圈超时尊重工具自声明的超时（Tool::timeout_hint），否则
-                // run_command 的 timeout_secs=300 会被默认 120s 的守卫截断。
+                // bash 的 timeout_secs=300 会被默认 120s 的守卫截断。
                 // run_sudo 是 agent 内置编排工具（不在注册表内），其内部已有
                 // 授权+执行双重超时，外圈只需长过两者之和。
                 let tool_timeout = {
@@ -3238,7 +3238,7 @@ pub(crate) fn structured_message_sequence(content: &str) -> Option<u64> {
 /// 模型可见的工具参数预检：schema 声明的必需字段缺失时，返回纠正性错误
 /// 文案（说清"你发了什么、应该发什么"）。返回 None 表示参数通过预检。
 ///
-/// 设计动机：模型在长工具循环中可能退化出空参调用（如 run_command {}），
+/// 设计动机：模型在长工具循环中可能退化出空参调用（如 bash {}），
 /// 若错误反馈只是模糊的"command required"，模型不知道错在哪，会原样
 /// 重试形成退化循环，烧掉整段上下文预算。
 pub(crate) fn invalid_tool_arguments(
@@ -4202,14 +4202,14 @@ pub mod tests {
             "required": ["command"],
         });
         // 空对象：缺 command
-        let message = invalid_tool_arguments("run_command", "{}", &serde_json::json!({}), &schema)
+        let message = invalid_tool_arguments("bash", "{}", &serde_json::json!({}), &schema)
             .expect("missing required flagged");
         assert!(message.contains("缺少必需参数 command"), "{message}");
         assert!(message.contains("你发送的参数: {}"), "{message}");
         assert!(message.contains("schema"), "{message}");
         // null 值同样算缺失
         assert!(invalid_tool_arguments(
-            "run_command",
+            "bash",
             "{}",
             &serde_json::json!({"command": null}),
             &schema
@@ -4217,12 +4217,12 @@ pub mod tests {
         .is_some());
         // 参数不是对象：所有必需字段都缺失
         assert!(
-            invalid_tool_arguments("run_command", "[]", &serde_json::Value::Null, &schema)
+            invalid_tool_arguments("bash", "[]", &serde_json::Value::Null, &schema)
                 .is_some()
         );
         // 字段齐全（含空字符串——合法值，不算缺失）：通过
         assert!(invalid_tool_arguments(
-            "run_command",
+            "bash",
             "{}",
             &serde_json::json!({"command": ""}),
             &schema,
@@ -4250,7 +4250,7 @@ pub mod tests {
         );
         let call = ToolCall {
             id: "bad-1".into(),
-            name: "run_command".into(),
+            name: "bash".into(),
             arguments: "{}".into(),
         };
         let result = agent.run_tool("local:tui::one", "branch-1", &call).await;
@@ -4288,7 +4288,7 @@ pub mod tests {
         );
         let call = ToolCall {
             id: "bad-2".into(),
-            name: "run_command".into(),
+            name: "bash".into(),
             arguments: "{bad json".into(),
         };
         let result = agent.run_tool("local:tui::one", "branch-1", &call).await;
@@ -4321,7 +4321,7 @@ pub mod tests {
         );
         let call = ToolCall {
             id: "ok-1".into(),
-            name: "run_command".into(),
+            name: "bash".into(),
             arguments: r#"{"command":"echo preflight-ok"}"#.into(),
         };
         let result = agent.run_tool("local:tui::one", "branch-1", &call).await;

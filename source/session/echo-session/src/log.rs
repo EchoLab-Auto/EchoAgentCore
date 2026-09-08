@@ -203,7 +203,7 @@ mod tests {
         }));
         log.append(SessionEvent::ToolCall(ToolCallEvent {
             id: "call_1".into(),
-            name: "run_command".into(),
+            name: "bash".into(),
             arguments: "{}".into(),
         }));
         log.append(SessionEvent::ToolResult(ToolResultEvent {

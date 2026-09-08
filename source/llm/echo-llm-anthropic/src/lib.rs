@@ -684,7 +684,7 @@ mod tests {
         let mut assistant = ChatMessage::assistant_with_reasoning("checking", None);
         assistant.tool_calls = Some(vec![ToolCall {
             id: "call_1".into(),
-            name: "run_command".into(),
+            name: "bash".into(),
             arguments: "{\"command\":\"ls\"}".into(),
         }]);
         let body = build_request_body(

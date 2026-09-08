@@ -464,10 +464,10 @@ impl Drop for ChildGroupGuard {
 #[async_trait]
 impl Tool for RunCommandTool {
     fn name(&self) -> &str {
-        "run_command"
+        "bash"
     }
     fn description(&self) -> &str {
-        "Run a terminal command in the project workspace. Returns stdout and stderr. Use for git operations, cargo builds, file operations, and other shell commands. Timeout: 120s (max 300s). Long-running polling loops should pass timeout_secs explicitly."
+        "Run a shell (bash) command in the project workspace. Returns stdout and stderr. Use for git operations, cargo builds, file operations, and other shell commands. Timeout: 120s (max 300s). Long-running polling loops should pass timeout_secs explicitly."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -609,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn run_command_timeout_hint_mirrors_execute_parsing() {
+    fn bash_timeout_hint_mirrors_execute_parsing() {
         let tool = RunCommandTool::new(PathBuf::from("/tmp"));
         // 默认 120s
         assert_eq!(
@@ -630,7 +630,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn run_command_timeout_kills_the_whole_process_group() {
+    async fn bash_timeout_kills_the_whole_process_group() {
         let ws = temp_workspace("pgkill");
         let tool = RunCommandTool::new(ws);
         // 独特的 sleep 时长作为标记：`sh -c` 派生的孙进程（后台 sleep）与
@@ -781,7 +781,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_command_blocks_dangerous_patterns() {
+    async fn bash_blocks_dangerous_patterns() {
         let ws = temp_workspace("cmd");
         let tool = RunCommandTool::new(ws.clone());
         for dangerous in ["rm -rf /", "mkfs.ext4", "dd if=/dev/zero", ":(){ :|:& };:"] {
@@ -798,7 +798,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_command_rejects_empty() {
+    async fn bash_rejects_empty() {
         let ws = temp_workspace("cmd-empty");
         let tool = RunCommandTool::new(ws.clone());
         let err = tool.execute(json!({"command": ""})).await.unwrap_err();
@@ -807,7 +807,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_command_executes_in_workspace() {
+    async fn bash_executes_in_workspace() {
         let ws = temp_workspace("cmd-run");
         let tool = RunCommandTool::new(ws.clone());
         let result = tool.execute(json!({"command": "pwd"})).await.unwrap();

@@ -326,7 +326,7 @@ mod tests {
             user("列出文件"),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_00_abc".into(),
-                name: "run_command".into(),
+                name: "bash".into(),
                 arguments: r#"{"command":"ls"}"#.into(),
             }),
             SessionEvent::ToolResult(ToolResultEvent {
@@ -377,7 +377,7 @@ mod tests {
             }),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_B".into(),
-                name: "run_command".into(),
+                name: "bash".into(),
                 arguments: r#"{"command":"date"}"#.into(),
             }),
             SessionEvent::ToolResult(ToolResultEvent {
@@ -447,7 +447,7 @@ mod tests {
             }),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_00_x".into(),
-                name: "run_command".into(),
+                name: "bash".into(),
                 arguments: "{}".into(),
             }),
             SessionEvent::ToolResult(ToolResultEvent {
@@ -577,7 +577,7 @@ mod tests {
             user("跑个命令"),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_00_dead".into(),
-                name: "run_command".into(),
+                name: "bash".into(),
                 arguments: r#"{"command":"sleep 999"}"#.into(),
             }),
         ];
@@ -601,7 +601,7 @@ mod tests {
             user("跑个命令"),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_00_dead".into(),
-                name: "run_command".into(),
+                name: "bash".into(),
                 arguments: "{}".into(),
             }),
             user("先别管了"),
@@ -644,7 +644,7 @@ mod tests {
             user("旧消息"),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_c".into(),
-                name: "run_command".into(),
+                name: "bash".into(),
                 arguments: "{}".into(),
             }),
             SessionEvent::Compaction(CompactionEvent {
