@@ -43,6 +43,10 @@ pub enum BackendCommand {
     /// Test connectivity of an API config: `name` empty = top-level default,
     /// otherwise that profile. Replies with `BackendEvent::ApiTestResult`.
     TestApi { name: String },
+    /// Query account balance of an API config (DeepSeek endpoint only):
+    /// `name` empty = top-level default, otherwise that profile.
+    /// Replies with `BackendEvent::ApiBalanceResult`.
+    QueryApiBalance { name: String },
     /// Delete an API profile by name.
     DeleteApi { name: String },
     /// Request a full state snapshot (responded with `BackendEvent::SessionUpdated`
@@ -122,6 +126,11 @@ pub enum BackendCommand {
         /// Per-agent context window cap (None = 继承全局 [agent].context_window_tokens)。
         #[serde(default)]
         context_window_tokens: Option<usize>,
+        /// Persona 级 API 供应商引用（None = 跟随全局默认配置；
+        /// Some(name) = 使用全局供应商池 `[agent].api_profiles` 中的该 profile）。
+        /// 保存在 `[agent.teams.{id}].api_profile`，运行期即时重建该 persona 的 provider。
+        #[serde(default)]
+        api_profile: Option<String>,
     },
     /// Delete a team member (the default/main agent is protected).
     DeleteTeam { id: String },

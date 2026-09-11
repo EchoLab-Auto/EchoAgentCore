@@ -20,10 +20,10 @@ pub mod input_marker;
 pub mod llm;
 pub mod plugins;
 pub mod session;
-pub mod skill;
-pub mod sudo;
 pub mod shell;
+pub mod skill;
 pub mod skill_install;
+pub mod sudo;
 pub mod timeline;
 pub mod tool;
 

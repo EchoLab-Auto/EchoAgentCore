@@ -119,11 +119,11 @@ pub struct TeamMember {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub system_skills: Vec<String>,
     /// Per-persona disabled built-in plugins (e.g. "echo-agent.adapter.qq",
-    /// "echo-agent.orchestration.chatbot").
-    /// 当前实际效果：编排模式子插件（orchestration.chatbot 及旧特性 id）
-    /// 的禁用会把该 agent 推导为 single 模式（隐藏面板侧会话/分支能力）；
-    /// 其余插件的禁用只影响 Panel 展示与持久化状态，不会对 LLM 隐藏该
-    /// 插件的工具（工具级控制请用 disabled_tools）。
+    /// "echo-agent.loop.parallel").
+    /// 当前实际效果：并行循环插件（`loop.parallel` 及旧编排模式 id）的
+    /// 禁用会把该 agent 推导为单会话模式（会话内串行 + 隐藏面板侧会话/
+    /// 分支能力）；其余插件的禁用只影响 Panel 展示与持久化状态，不会对
+    /// LLM 隐藏该插件的工具（工具级控制请用 disabled_tools）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_plugins: Vec<String>,
     /// Per-persona disabled tools (by tool name, e.g. "framework_update").
@@ -153,29 +153,35 @@ pub struct TeamMember {
     /// `window × 0.8` 封顶。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<usize>,
+    /// Persona 级 API 供应商引用：`Some(name)` = 使用全局供应商池
+    /// （`[agent].api_profiles`）中该名字的 profile（运行期即时生效，
+    /// 重建该 persona 自己的 provider）；`None` = 跟随全局默认配置
+    /// （顶层 + active_api）。供应商池、默认配置与 profile 的增删改
+    /// 都在设置视图「API」分类维护；本字段只做引用，不内嵌值。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_profile: Option<String>,
 }
 
 impl TeamMember {
-    /// 编排模式推导（互斥子插件 `echo-agent.orchestration.{single,chatbot}`，
-    /// single 为兜底）：
-    /// - `enabled_plugins` 为空（=全部启用）→ Chatbot
-    /// - 白名单含 chatbot 子插件 id 或任一旧特性 id（branch.reply /
-    ///   session.global / chatbot.sessions）→ Chatbot；两者并含亦为 Chatbot
-    /// - 白名单非空但不含任何 chatbot 相关 id → Single
-    /// - `disabled_plugins` 含 chatbot/旧 id → Single（黑名单优先）
+    /// 循环模式推导（互斥插件 `echo-agent.loop.{single,parallel}`，
+    /// single 为兜底，也是默认）：
+    /// - 白名单含 `loop.parallel`（或旧编排模式 id）→ Parallel；两者并含亦为 Parallel
+    /// - 其余（含白名单为空 = 默认）→ Single
+    /// - `disabled_plugins` 含 parallel/旧 id → Single（黑名单优先）
     /// - `disabled_plugins` 含 single id → no-op（single 是兜底，禁用兜底无意义）
-    pub fn orchestration_mode(&self) -> echo_protocol::OrchestrationMode {
-        let listed = self.enabled_plugins.is_empty()
-            || crate::plugins::CHATBOT_MODE_IDS
-                .iter()
-                .any(|id| self.enabled_plugins.iter().any(|p| p == id));
-        let denied = crate::plugins::CHATBOT_MODE_IDS
+    pub fn loop_mode(&self) -> echo_defs::LoopMode {
+        let listed = self
+            .enabled_plugins
             .iter()
-            .any(|id| self.disabled_plugins.iter().any(|p| p == id));
+            .any(|p| crate::plugins::PARALLEL_MODE_IDS.iter().any(|id| p == id));
+        let denied = self
+            .disabled_plugins
+            .iter()
+            .any(|p| crate::plugins::PARALLEL_MODE_IDS.iter().any(|id| p == id));
         if listed && !denied {
-            echo_protocol::OrchestrationMode::Chatbot
+            echo_defs::LoopMode::Parallel
         } else {
-            echo_protocol::OrchestrationMode::Single
+            echo_defs::LoopMode::Single
         }
     }
 }
@@ -196,6 +202,7 @@ impl Default for TeamMember {
             enabled_skills: Vec::new(),
             memory_limit_tokens: None,
             context_window_tokens: None,
+            api_profile: None,
         }
     }
 }
@@ -228,6 +235,8 @@ pub struct AgentConfig {
     pub system_prompt: String,
     /// Maximum number of tool-call iterations in one agent turn.
     pub max_tool_iterations: usize,
+    /// 单次请求输出预算：0 = 无上限（后端回退到 128K 实用上限）。
+    pub max_tokens: usize,
     /// Per-tool-call timeout in seconds. A tool that exceeds this is aborted
     /// and the LLM receives an error result. `None` disables the timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -288,6 +297,7 @@ impl Default for AgentConfig {
             active_api: String::new(),
             system_prompt: "You are a helpful assistant. Respond concisely and clearly.".into(),
             max_tool_iterations: 5,
+            max_tokens: 0,
             tool_timeout_secs: Some(120),
             skills_dir: "skills".into(),
             plugins_dir: "plugins".into(),
@@ -333,6 +343,30 @@ impl AgentConfig {
         }
         self.thinking = p.thinking;
         self.reasoning_effort = p.reasoning_effort;
+    }
+
+    /// 将**指定名字**的 profile 值合入顶层字段（persona 级 API 用）。
+    /// 语义与 [`Self::apply_active_profile`] 一致（非空覆盖），但不依赖
+    /// `active_api`；找不到该 profile 时返回 false（配置保持不变）。
+    pub fn apply_named_profile(&mut self, name: &str) -> bool {
+        let Some(p) = self.api_profiles.iter().find(|p| p.name == name).cloned() else {
+            return false;
+        };
+        if !p.provider.is_empty() {
+            self.provider = p.provider;
+        }
+        if !p.model.is_empty() {
+            self.model = p.model;
+        }
+        if !p.base_url.is_empty() {
+            self.base_url = p.base_url;
+        }
+        if !p.api_key.is_empty() {
+            self.api_key = p.api_key;
+        }
+        self.thinking = p.thinking;
+        self.reasoning_effort = p.reasoning_effort;
+        true
     }
 
     /// Resolve the effective API key: explicit config, then env var by provider.
@@ -381,6 +415,16 @@ impl AgentConfig {
     ///   message-count field is deprecated and no longer participates.
     /// - When `context_window_tokens` is set, the result is capped at
     ///   `window × 0.8` so the prompt never exceeds the model window.
+    /// 单次请求输出预算：0 = 无上限（None）；否则 Some(value)。
+    /// 与 Anthropic/OpenAI 兼容端点的默认行为对齐（None 时后端回退 128K）。
+    pub fn effective_max_tokens(&self) -> Option<u32> {
+        if self.max_tokens == 0 {
+            None
+        } else {
+            Some(self.max_tokens.min(u32::MAX as usize) as u32)
+        }
+    }
+
     pub fn effective_memory_limit_tokens(&self) -> usize {
         let limit = if let Some(tokens) = self.memory_limit_tokens {
             tokens.max(200)
@@ -709,7 +753,7 @@ mod tests {
         assert!(!none_str.contains("memory_limit_tokens"));
     }
 
-    // ── 编排模式推导（orchestration_mode）──
+    // ── 循环模式推导（loop_mode）──
 
     fn member_with_plugins(enabled: &[&str], disabled: &[&str]) -> TeamMember {
         TeamMember {
@@ -720,57 +764,61 @@ mod tests {
     }
 
     #[test]
-    fn orchestration_mode_matrix() {
-        use echo_protocol::OrchestrationMode::*;
+    fn loop_mode_matrix() {
+        use echo_defs::LoopMode::*;
+
         use crate::plugins::{
-            CHAT_SESSIONS_PLUGIN_ID, CHATBOT_ORCHESTRATION_PLUGIN_ID, GLOBAL_SESSION_PLUGIN_ID,
-            REPLY_BRANCH_PLUGIN_ID, SINGLE_ORCHESTRATION_PLUGIN_ID,
+            LEGACY_CHATBOT_MODE_IDS, LEGACY_SINGLE_MODE_ID, PARALLEL_LOOP_PLUGIN_ID,
+            SINGLE_LOOP_PLUGIN_ID,
         };
-        let chatbot = CHATBOT_ORCHESTRATION_PLUGIN_ID;
-        let single = SINGLE_ORCHESTRATION_PLUGIN_ID;
-        let legacy = [
-            REPLY_BRANCH_PLUGIN_ID,
-            GLOBAL_SESSION_PLUGIN_ID,
-            CHAT_SESSIONS_PLUGIN_ID,
-        ];
-        // 空白名单（=全部启用）→ Chatbot
-        assert_eq!(member_with_plugins(&[], &[]).orchestration_mode(), Chatbot);
-        // 仅 chatbot → Chatbot；仅 single → Single
-        assert_eq!(member_with_plugins(&[chatbot], &[]).orchestration_mode(), Chatbot);
-        assert_eq!(member_with_plugins(&[single], &[]).orchestration_mode(), Single);
-        // 任一旧特性 id → Chatbot（向后兼容推导）
-        for id in legacy {
+        let parallel = PARALLEL_LOOP_PLUGIN_ID;
+        let single = SINGLE_LOOP_PLUGIN_ID;
+        // 空白名单（=默认）→ Single（单会话是默认，非"全部启用"）
+        assert_eq!(member_with_plugins(&[], &[]).loop_mode(), Single);
+        // 仅 parallel → Parallel；仅 single → Single
+        assert_eq!(member_with_plugins(&[parallel], &[]).loop_mode(), Parallel);
+        assert_eq!(member_with_plugins(&[single], &[]).loop_mode(), Single);
+        // 任一旧编排模式 id → Parallel（向后兼容推导）
+        for id in LEGACY_CHATBOT_MODE_IDS {
             assert_eq!(
-                member_with_plugins(&[id], &[]).orchestration_mode(),
-                Chatbot,
-                "legacy id {id} should derive chatbot"
+                member_with_plugins(&[id], &[]).loop_mode(),
+                Parallel,
+                "legacy id {id} should derive parallel"
             );
         }
-        // single + chatbot 并含 → Chatbot（互斥优先）
+        // 旧 single id → Single
         assert_eq!(
-            member_with_plugins(&[single, chatbot], &[]).orchestration_mode(),
-            Chatbot
+            member_with_plugins(&[LEGACY_SINGLE_MODE_ID], &[]).loop_mode(),
+            Single
+        );
+        // single + parallel 并含 → Parallel（互斥优先）
+        assert_eq!(
+            member_with_plugins(&[single, parallel], &[]).loop_mode(),
+            Parallel
         );
         // 非空白名单但无任何模式 id → Single（兜底）
         assert_eq!(
-            member_with_plugins(&["echo-agent.tools.builtin", "echo-agent.orchestration"], &[])
-                .orchestration_mode(),
+            member_with_plugins(
+                &["echo-agent.tools.builtin", "echo-agent.orchestration"],
+                &[]
+            )
+            .loop_mode(),
             Single
         );
-        // 黑名单含 chatbot/旧 id → Single（黑名单优先）
-        assert_eq!(member_with_plugins(&[], &[chatbot]).orchestration_mode(), Single);
+        // 黑名单含 parallel/旧 id → Single（黑名单优先）
+        assert_eq!(member_with_plugins(&[], &[parallel]).loop_mode(), Single);
         assert_eq!(
-            member_with_plugins(&[chatbot], &[chatbot]).orchestration_mode(),
+            member_with_plugins(&[parallel], &[parallel]).loop_mode(),
             Single
         );
         assert_eq!(
-            member_with_plugins(&[chatbot], &[REPLY_BRANCH_PLUGIN_ID]).orchestration_mode(),
+            member_with_plugins(&[parallel], &[LEGACY_CHATBOT_MODE_IDS[1]]).loop_mode(),
             Single
         );
         // 黑名单含 single id → no-op（忽略，不因它改变推导）
         assert_eq!(
-            member_with_plugins(&[chatbot], &[single]).orchestration_mode(),
-            Chatbot
+            member_with_plugins(&[parallel], &[single]).loop_mode(),
+            Parallel
         );
     }
 }

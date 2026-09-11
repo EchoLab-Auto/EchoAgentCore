@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::mode::LoopMode;
+
 /// 技能来源信息（外部 Git 仓库安装）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillSourceInfo {
@@ -542,6 +544,25 @@ pub enum BackendEvent {
         /// Round-trip latency of the probe request, ms.
         latency_ms: u64,
     },
+    /// API account balance (response to `QueryApiBalance`；目前仅 DeepSeek
+    /// 官方端点支持 `/user/balance`）。
+    ApiBalanceResult {
+        /// Queried config name (empty = top-level default).
+        name: String,
+        ok: bool,
+        /// 账户是否可用（is_available）。
+        #[serde(default)]
+        available: bool,
+        /// 总余额（含赠送），如 "110.00"；失败时为空串。
+        #[serde(default)]
+        total: String,
+        /// 币种，如 "CNY"；失败时为空串。
+        #[serde(default)]
+        currency: String,
+        /// Human-readable message (error detail or success note).
+        #[serde(default)]
+        message: String,
+    },
     /// Current system prompt plugin text.
     SystemPrompt {
         text: String,
@@ -652,18 +673,26 @@ pub struct ToolInfo {
     pub package: Option<String>,
 }
 
-/// 编排模式（per-persona，互斥）：single = 单任务编排（无会话管理 UI、
-/// 回执分支不可见）；chatbot = 多任务并行编排（会话列表/全局会话/可见回执分支）。
-/// 由 persona 的 enabled_plugins/disabled_plugins 白名单语义对
-/// echo-agent.orchestration.{single,chatbot} 两个互斥子插件推导（single 为兜底）。
-/// serde default = Chatbot：对齐旧三布尔（reply_branches_enabled 等）的
-/// default_true 语义——旧 core 消息缺字段时按全功能模式处理。
+/// 已退役的编排模式（兼容旧前端）：新字段是 [`LoopMode`]。
+///
+/// 该枚举只用于 `TeamInfo.orchestration_mode` 的过渡期兼容——`Parallel`
+/// 序列化为 `"chatbot"`（旧名），`Single` 为 `"single"`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OrchestrationMode {
     Single,
     #[default]
     Chatbot,
+}
+
+impl From<LoopMode> for OrchestrationMode {
+    /// 循环模式 → 旧的编排模式名（`parallel` 即旧 `chatbot`）。
+    fn from(value: LoopMode) -> Self {
+        match value {
+            LoopMode::Single => OrchestrationMode::Single,
+            LoopMode::Parallel => OrchestrationMode::Chatbot,
+        }
+    }
 }
 
 /// One team member (frontend display).
@@ -684,11 +713,16 @@ pub struct TeamInfo {
     /// Number of active sessions owned by this agent.
     #[serde(default)]
     pub sessions: usize,
-    /// 该 agent 的编排模式（互斥子插件推导，single 为兜底）。
-    /// single：侧边栏不显示「会话」「临时分支」卡片与「全局」分组，
-    /// 后端不发射 ReplyBranch* 可见性事件（分支照常执行合并，仅不可见）；
-    /// chatbot：全部可见。取代旧 reply_branches_enabled /
-    /// global_session_enabled / chat_sessions_enabled 三布尔（2026-09 协议变更）。
+    /// 该 agent 的循环模式（互斥循环插件推导：`echo-agent.loop.{single,parallel}`）。
+    /// single（默认）：侧边栏不显示「会话」「临时分支」卡片与「全局」分组，
+    /// 后端不发射 ReplyBranch* 可见性事件，同一会话的 turn 串行排队；
+    /// parallel：全部可见、同一会话可并发分支。取代旧
+    /// reply_branches_enabled / global_session_enabled / chat_sessions_enabled
+    /// 三布尔（2026-09 协议变更）。
+    #[serde(default)]
+    pub loop_mode: LoopMode,
+    /// 旧字段（过渡期同时下发，供未刷新的前端读取）：`parallel` 记为
+    /// `"chatbot"`。下个版本删除。
     #[serde(default)]
     pub orchestration_mode: OrchestrationMode,
     /// Persona system prompt (empty = inherits global prompt/skills).
@@ -714,6 +748,11 @@ pub struct TeamInfo {
     /// Per-agent context window cap (None = 继承全局 [agent].context_window_tokens)。
     #[serde(default)]
     pub context_window_tokens: Option<usize>,
+    /// Persona 级 API 供应商引用（None = 跟随全局默认配置；
+    /// Some(name) = 使用全局供应商池中该名字的 profile）。
+    /// 与 Profile 池、全局默认的展示组合见 API 设置页。
+    #[serde(default)]
+    pub api_profile: Option<String>,
 }
 
 /// One mounted plugin (frontend display).
@@ -736,6 +775,9 @@ pub struct PluginInfo {
     /// Whether the plugin ships inside the binary.
     #[serde(default = "default_true")]
     pub builtin: bool,
+    /// 所属包 id（横跨 plugin+tool+skill 的组合标签；未声明 = 插件 id）。
+    #[serde(default)]
+    pub package: String,
 }
 
 /// QQ group info for display.

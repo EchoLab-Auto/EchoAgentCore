@@ -2,8 +2,8 @@
 id: config-persistence
 title: "配置持久化"
 group: 后端模块
-x: 948.5
-y: 2151
+x: 955
+y: 2047
 ---
 # 配置持久化
 
@@ -55,10 +55,17 @@ Agent 始终使用单一全局 Trunk（每个 persona 独立一份）。各平�
 ```text
 Core 启动时 --config 指定的文件（如 config/echo-agent-core.local.toml）
 
-ConfigStore 由 main.rs 创建一次，分发给 Agent 和 QqAdapter：
+ConfigStore 由 main.rs 创建一次，分发给各 persona 的 Agent 与 QqAdapter（都指向同一 core.toml 的 `[agent]` / `[adapters.qq]` section）：
   let config_store = echo_adapter::ConfigStore::new(args.config_path());
-  agent.set_config_store(config_store.clone());
   qq_adapter.set_config_store(config_store.clone());
+  // make_agent 内：每个 persona 共享同一个 config_store（agents_config_store.clone()），
+  // 会话文件路径独立设置（JSON，见下）。
+
+⚠️ **会话持久化与配置持久化解耦**（2026-09 修复）：`Agent::set_config_store` 只接管 TOML 配置，
+不再连带把 trunk 会话路径设成同一文件；会话路径由 `Agent::set_session_persist_path` 单独设置
+（`echo-sessions-{id}.json`）。历史上二者曾共用 ConfigStore 路径——patch 读 JSON 文件时
+TOML 解析失败，所有 `/api` 与 Panel API 保存静默丢失（日志 `failed to persist agent config:
+config parse failed ... line 1, column 1 ... invalid key`）。
 ```
 
 Panel 自身不读写 Core 配置文件——所有配置操作都通过 Core 的 management
@@ -71,13 +78,14 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 
 - legacy `[server]`/`[bot]` → `[adapters.qq]`（有显式值才触发，打印提示）
 - `api_profiles` 按名去重（历史持久化 bug 自愈）
-- **编排模式插件 id**（`migrate_orchestration_mode_plugins`）：teams 各成员与全局
-  `[agent].disabled_plugins` 中的旧特性 id（`echo-agent.branch.reply` /
-  `session.global` / `chatbot.sessions`）统一映射为
-  `echo-agent.orchestration.chatbot` 并去重——旧 id 不再注册，不迁移则
-  `apply_disabled` 静默失效；白名单同时含 single+chatbot 记 warn（chatbot 优先）；
-  黑名单含 single id 记 warn（no-op）。运行期 `SaveTeam`（`AgentManager::save_profile`）
-  入口做同样归一化，防御旧 Panel 回写旧 id
+- **循环模式插件 id**（`migrate_orchestration_mode_plugins`）：teams 各成员与全局
+  `[agent].disabled_plugins` 中的旧 id 归一化为循环模式插件 id——旧编排模式 id
+  （`echo-agent.orchestration.chatbot` / `branch.reply` / `session.global` /
+  `chatbot.sessions`）→ `echo-agent.loop.parallel`；`orchestration.single` →
+  `echo-agent.loop.single`；`echo-agent.loop.runner` 剔除（模式插件取代）——旧 id
+  不再注册，不迁移则 `apply_disabled` 静默失效；白名单同时含 single+parallel 记
+  warn（parallel 优先）；黑名单含 single id 记 warn（no-op）。运行期 `SaveTeam`
+  （`AgentManager::save_profile`）入口做同样归一化，防御旧 Panel 回写旧 id
 
 ### 不持久化的内容
 

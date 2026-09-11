@@ -2,16 +2,42 @@
 id: agent-loop
 title: "Agent 循环（插件化）"
 group: 后端模块
-x: 949
-y: 1863
-link: ["plugins | 插件化设计"]
+x: 1283
+y: 1512
 ---
 
 # Agent 循环（插件化）
 
-Agent 循环是 `echo-agent.loop.runner` 插件（kind=Loop）承载的**可插拔驱动**：
-turn/step 状态机 + 工具管道，经 [插件化设计](./core-plugins.md) 节点统一治理
-（启用/禁用/挂载可逆）。本文档描述其机制细节与当前实化状态。
+Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥二选一）
+承载的**可插拔驱动**：turn/step 状态机 + 工具管道，经 [插件化设计](./core-plugins.md)
+节点统一治理（启用/禁用/挂载可逆）。本文档描述其机制细节与当前实化状态。
+
+## 循环模式（单会话 / 并行多会话）
+
+循环模式是**会话内的准入策略**，二选一，由互斥循环插件在 persona 白名单里
+表达（`echo-agent.loop.single` 默认 / `echo-agent.loop.parallel`）：
+
+| 模式 | 插件 id | 会话内准入 | 分支可见性 | 会话管理 UI |
+| --- | --- | --- | --- | --- |
+| 单会话（默认） | `echo-agent.loop.single` | turn 串行排队（FIFO） | 不发射 `ReplyBranch*` | 隐藏 |
+| 并行多会话 | `echo-agent.loop.parallel` | 各 turn 并发分支 | 发射 `ReplyBranch*` | 显示 |
+
+- **串行语义**：单会话下 `Session.turn_queue`（tokio Mutex，公平 FIFO）是准入
+  闸门；turn 在拿到闸门后才记录输入并取上下文快照，因此排队的第二个 turn 看到
+  的是第一轮结束后的上下文。不同会话互不排队——**另启一个会话就是另一条并行
+  通道**。并行模式下不使用闸门（到达即快照，与旧行为一致）。
+- **排队期间可取消**：turn 在等待闸门**之前**就注册进 `active_inbound_turns`，
+  取消命令能中断排队（该 turn 不执行、不留残回复）；QQ 入站注册在分支任务内
+  完成，适配器入站永不因排队阻塞。
+- **工具面**：单会话模式隐藏 `spawn_parallel_task`（一个会话一次只处理一件事，
+  并行分支与串行准入冲突）；`run_subagent` / `spawn_background_task` 仍可用。
+- **推导**：`TeamMember::loop_mode()`（单一来源）——白名单含 `loop.parallel`
+  或任一旧编排模式 id → parallel；其余（含白名单为空 = 默认）→ single；
+  黑名单含 parallel → single（黑名单优先）。旧 id（`orchestration.{single,chatbot}`、
+  `branch.reply`、`session.global`、`chatbot.sessions`、`loop.runner`）在配置加载
+  与 `SaveTeam` 时归一化为模式插件 id。
+- **落地**：两个插件 mount 的是同一个 `TurnRunner`（驱动本体），模式只改策略；
+  两个都卸载才回退内置循环。模式只能经面板「循环模式」分段单选修改（写白名单）。
 
 ## Turn 循环
 
@@ -21,6 +47,7 @@ turn/step 状态机 + 工具管道，经 [插件化设计](./core-plugins.md) �
   技能清单、常驻/触发技能、**后台编排说明（仅该 agent 启用了编排工具时注入**——
   白名单无编排工具的 agent 不注入描述不可用工具的规则）、输入边界规则
 - 循环迭代（`max_tool_iterations`，默认 1024）：发 LLM 请求 → 有工具调用则逐个执行并回填结果 → 直至产出最终回复或达上限
+- 输出预算：`[agent].max_tokens`（0 = 无上限，后端回退 `DEFAULT_MAX_TOKENS = 128K` 实用上限）；响应被 `max_tokens` 掐断（finish_reason = length/max_tokens）时自动续跑（最多 4 次，提示"继续上次输出"喂回模型；半截工具调用丢弃后重发完整调用）
 - 达上限未完成时报错收尾；工具的超时/失败不中断 loop（见 [工具系统](./core-tools.md)）
 
 ## echo-loop：可替换的默认驱动（TurnRunner）
@@ -33,9 +60,10 @@ turn/step 状态机 + 工具管道，经 [插件化设计](./core-plugins.md) �
 
 ### 实化与分派（插件的运行期效果）
 
-`echo-agent.loop.runner` 是**实化插件**（见 [插件化设计](./core-plugins.md)「能力开关」）：
-mount 把组合根共享的 `TurnRunner` 注入各 agent（`set_loop_runner`）并置位
-`use_echo_loop` 开关；umount 复位（回退内置循环）。分派规则
+`echo-agent.loop.single` / `echo-agent.loop.parallel` 是**实化插件**（见
+[插件化设计](./core-plugins.md)「能力开关」）：mount 把组合根共享的 `TurnRunner`
+注入各 agent（`set_loop_runner`）并置位 `use_echo_loop` 开关——两者 mount 同一
+驱动，差异只在循环模式（策略）；全部卸载才复位（回退内置循环）。分派规则
 （`process_message_inner` 开头）：
 
 - **普通输入**（非 QQ hook / 定时器 / QQ 会话）→ `process_via_echo_loop`：
@@ -47,7 +75,7 @@ mount 把组合根共享的 `TurnRunner` 注入各 agent（`set_loop_runner`）�
   定时器回投、send 工具声明校验）由内置循环保证，echo-loop 不接管
 
 两套驱动并行、同一工具路径（`run_tool`）与提示词构建（`build_prompt_blocks`）
-复用；关闭 loop.runner 插件（配置 `disabled_plugins` 或面板 TogglePlugin）即恢复
+复用；卸载全部循环插件（配置 `disabled_plugins` 或面板 TogglePlugin）即恢复
 内置循环。三处形似循环的评估结论：`run_subagent` 与 `generate_wait_reply` 是
 无工具单请求，保持自身实现；`run_background_branch` 收敛到 TurnRunner 需工具
 白名单与独立事件桥，列为后续工作。

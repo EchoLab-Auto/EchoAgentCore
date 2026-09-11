@@ -60,9 +60,32 @@ pub struct PluginManifest {
     /// Human-facing metadata shown in the Panel.
     #[serde(default)]
     pub author: String,
+    /// Owning **package** id — the cross-cutting tag spanning
+    /// plugin + tools + skills（见 [`Self::package_id`]）。
+    /// `None` = 本插件自身即包根：插件 id 同时是包标签（当前全部内置
+    /// 插件如此，因此默认行为与历史一致）。声明后，本插件的启停门控
+    /// 应以包 id 传播到同名包的工具与技能。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
 }
 
 impl PluginManifest {
+    /// 本插件所属的**包** id：显式声明优先，未声明时回退为插件 id。
+    ///
+    /// Package 是横跨三类的标签：插件（本 manifest）声明归属；工具经
+    /// `ToolRegistry::set_package` 打标；技能经 `SKILL.md` frontmatter
+    /// `package:` 打标。包级门控（禁用一个包 = 其全部成员不可见）即按
+    /// 该字符串聚合（QQ 包 = `echo-agent.adapter.qq`）。
+    pub fn package_id(&self) -> &str {
+        self.package.as_deref().unwrap_or(&self.id)
+    }
+
+    /// 显式声明所属包（builder 风格；未调用时包 id = 插件 id）。
+    pub fn with_package(mut self, package: impl Into<String>) -> Self {
+        self.package = Some(package.into());
+        self
+    }
+
     pub fn builtin(
         id: impl Into<String>,
         name: impl Into<String>,
@@ -78,6 +101,7 @@ impl PluginManifest {
             description: description.into(),
             kind,
             entry: entry.into(),
+            package: None,
             author: "EchoAgentCore".into(),
         }
     }

@@ -114,7 +114,9 @@ async fn serve_with_listener_and_token(
         let sudo_broker = sudo_broker.clone();
         let access_token = access_token.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, events, bridge, agent, sudo_broker, &access_token).await {
+            if let Err(e) =
+                handle_connection(stream, events, bridge, agent, sudo_broker, &access_token).await
+            {
                 warn!(error = %e, "Panel connection error");
             }
         });
@@ -132,19 +134,27 @@ async fn handle_connection(
     let ws = if access_token.is_empty() {
         tokio_tungstenite::accept_async(stream).await?
     } else {
-        tokio_tungstenite::accept_hdr_async(stream, |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
-            let authorized = request
-                .headers()
-                .get("authorization")
-                .and_then(|value| value.to_str().ok())
-                .map(|value| value == format!("Bearer {access_token}"))
-                .unwrap_or(false);
-            if authorized {
-                Ok(response)
-            } else {
-                Err(tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(Some("unauthorized".into())))
-            }
-        }).await?
+        tokio_tungstenite::accept_hdr_async(
+            stream,
+            |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                let authorized = request
+                    .headers()
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .map(|value| value == format!("Bearer {access_token}"))
+                    .unwrap_or(false);
+                if authorized {
+                    Ok(response)
+                } else {
+                    Err(
+                        tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(
+                            Some("unauthorized".into()),
+                        ),
+                    )
+                }
+            },
+        )
+        .await?
     };
     let (mut write, mut read) = ws.split();
 

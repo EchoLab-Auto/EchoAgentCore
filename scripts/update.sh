@@ -376,12 +376,17 @@ mv -f "$revision_temporary" "$REVISION_FILE"
 PHASE=verifying_plugins
 missing_plugins=""
 if [[ -x "$BINARY" ]]; then
-    expected_ids="echo-agent.tools.builtin echo-agent.adapter.qq echo-agent.skills.dir echo-agent.orchestration echo-agent.provider.llm echo-agent.loop.runner echo-agent.management.panel echo-agent.branch.reply echo-agent.session.global echo-agent.chatbot.sessions"
+    # 先落盘再 grep：pipefail 下 `strings | grep -q` 会因 grep -q 提前退出
+    # 触发 strings SIGPIPE（退出码 141）而误判全部 missing——与二进制内容无关。
+    strings_tmp=$(mktemp "${BINARY}.strings.XXXXXX")
+    strings "$BINARY" >"$strings_tmp" || true
+    expected_ids="echo-agent.tools.builtin echo-agent.adapter.qq echo-agent.skills.dir echo-agent.checklist echo-agent.orchestration echo-agent.provider.llm echo-agent.loop.single echo-agent.loop.parallel echo-agent.management.panel"
     for id in $expected_ids; do
-        if ! strings "$BINARY" | grep -q "$id"; then
+        if ! grep -q "$id" "$strings_tmp"; then
             missing_plugins="$missing_plugins $id"
         fi
     done
+    rm -f "$strings_tmp"
 fi
 if [[ -n "$missing_plugins" ]]; then
     echo "警告：新二进制缺少内置插件 manifest：$missing_plugins（请检查构建产物）" >&2

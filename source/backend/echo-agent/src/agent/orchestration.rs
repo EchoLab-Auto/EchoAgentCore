@@ -1502,6 +1502,7 @@ mod tests {
         ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
             tokio::time::sleep(Duration::from_millis(200)).await;
             Ok(crate::llm::ChatResponse {
+                stop_reason: None,
                 content: Some("done".into()),
                 reasoning_content: None,
                 tool_calls: Vec::new(),

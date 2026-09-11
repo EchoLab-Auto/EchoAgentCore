@@ -8,9 +8,14 @@ use serde_json::json;
 
 use crate::shell::shell_manager_global;
 
-pub fn register_shell_tools(registry: &mut crate::tool::ToolRegistry, workspace: std::path::PathBuf) {
+pub fn register_shell_tools(
+    registry: &mut crate::tool::ToolRegistry,
+    workspace: std::path::PathBuf,
+) {
     let dir = workspace.display().to_string();
-    registry.register(std::sync::Arc::new(ShellStartTool { default_workdir: dir }));
+    registry.register(std::sync::Arc::new(ShellStartTool {
+        default_workdir: dir,
+    }));
     registry.register(std::sync::Arc::new(ShellExecTool));
     registry.register(std::sync::Arc::new(ShellStopTool));
 }
@@ -35,8 +40,12 @@ impl crate::tool::Tool for ShellStartTool {
             }
         })
     }
-    async fn execute(&self, arguments: serde_json::Value) -> Result<String, crate::tool::ToolError> {
-        let manager = shell_manager_global().ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+    ) -> Result<String, crate::tool::ToolError> {
+        let manager = shell_manager_global()
+            .ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
         let workdir = arguments["workdir"].as_str().map(|s| s.to_string());
         let info = manager
             .start(workdir, &crate::shell::shell_emit())
@@ -70,15 +79,19 @@ impl crate::tool::Tool for ShellExecTool {
             "required": ["session_id", "command"]
         })
     }
-    async fn execute(&self, arguments: serde_json::Value) -> Result<String, crate::tool::ToolError> {
-        let session_id = arguments["session_id"]
-            .as_str()
-            .ok_or_else(|| crate::tool::ToolError::InvalidArguments("session_id required".into()))?;
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+    ) -> Result<String, crate::tool::ToolError> {
+        let session_id = arguments["session_id"].as_str().ok_or_else(|| {
+            crate::tool::ToolError::InvalidArguments("session_id required".into())
+        })?;
         let command = arguments["command"]
             .as_str()
             .ok_or_else(|| crate::tool::ToolError::InvalidArguments("command required".into()))?;
         let timeout = arguments["timeout_secs"].as_u64().map(|t| t.min(300));
-        let manager = shell_manager_global().ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
+        let manager = shell_manager_global()
+            .ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
         let (output, success, timed_out) = manager
             .exec(session_id, command, timeout, &crate::shell::shell_emit())
             .await
@@ -115,11 +128,15 @@ impl crate::tool::Tool for ShellStopTool {
             "required": ["session_id"]
         })
     }
-    async fn execute(&self, arguments: serde_json::Value) -> Result<String, crate::tool::ToolError> {
-        let session_id = arguments["session_id"]
-            .as_str()
-            .ok_or_else(|| crate::tool::ToolError::InvalidArguments("session_id required".into()))?;
-        let manager = shell_manager_global().ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+    ) -> Result<String, crate::tool::ToolError> {
+        let session_id = arguments["session_id"].as_str().ok_or_else(|| {
+            crate::tool::ToolError::InvalidArguments("session_id required".into())
+        })?;
+        let manager = shell_manager_global()
+            .ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
         manager
             .stop(session_id, &crate::shell::shell_emit())
             .await

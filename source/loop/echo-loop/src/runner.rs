@@ -25,6 +25,8 @@ pub enum LoopError {
     MaxIterations(usize),
     #[error("step rejected by pre-step listener")]
     StepRejected,
+    #[error("output truncated by token limit {0} times in one turn; giving up")]
+    Truncated(usize),
 }
 
 /// Turn runner configuration.
@@ -35,6 +37,9 @@ pub struct LoopOptions {
     pub max_tool_iterations: usize,
     /// Per-tool execution timeout.
     pub tool_timeout: std::time::Duration,
+    /// 单次模型请求的 completion 预算（max_tokens）。`None` = 无上限
+    /// （后端回退到 echo_defs::message::DEFAULT_MAX_TOKENS，128K）。
+    pub max_tokens: Option<u32>,
 }
 
 impl Default for LoopOptions {
@@ -42,9 +47,18 @@ impl Default for LoopOptions {
         Self {
             max_tool_iterations: 1024,
             tool_timeout: std::time::Duration::from_secs(120),
+            max_tokens: None,
         }
     }
 }
+
+/// 一轮内允许的自动续跑次数上限：输出被 max_tokens 截断时把残片入栈并
+/// 让模型接着写。超过上限说明模型陷入"每轮都写满预算"的循环，按错误上报，
+/// 不再静默重试。
+const MAX_TRUNCATION_CONTINUES: usize = 4;
+
+/// 截断续跑时喂给模型的提示（user 角色，区别于真实用户输入）。
+const TRUNCATION_CONTINUE_PROMPT: &str = "[system notice] Your previous output was cut off by the max token limit before the turn was complete. Continue exactly from where you stopped. If you were composing a tool call, discard the partial call and re-issue it in full.";
 
 /// How the runner executes one tool call. The harness owns the concrete
 /// executor (registry lookup + orchestration tools); the runner only drives
@@ -150,6 +164,7 @@ impl TurnRunner {
 
         let model = self.llm.default_model().to_string();
         let max_iterations = self.options.max_tool_iterations.max(1);
+        let mut truncation_continues = 0usize;
 
         for step_index in 0..max_iterations {
             if cancel.is_cancelled() {
@@ -171,7 +186,7 @@ impl TurnRunner {
                     messages: messages.clone(),
                     tools: extras.tools.clone(),
                     temperature: None,
-                    max_tokens: None,
+                    max_tokens: self.options.max_tokens,
                 },
             };
             let request = self.bus.emit_sync(request, DispatchMode::Waterfall);
@@ -187,6 +202,33 @@ impl TurnRunner {
                         cb(session_id.to_string(), text.clone());
                     }
                 }
+            }
+
+            // 输出被 token 上限截断：残片（含未写完的工具调用）不能当作
+            // 正常收尾——丢弃半截工具调用，把已生成的文本入栈，让模型续写。
+            // 历史上这里直接 TurnEnd，表现为"agent 自己断掉、空回复"。
+            if response.truncated() {
+                truncation_continues += 1;
+                tracing::warn!(
+                    session = %session_id,
+                    step_index,
+                    truncation_continues,
+                    stop_reason = ?response.stop_reason,
+                    "model output truncated at token limit; continuing"
+                );
+                if truncation_continues > MAX_TRUNCATION_CONTINUES {
+                    return Err(LoopError::Truncated(MAX_TRUNCATION_CONTINUES));
+                }
+                if let Some(text) = &response.content {
+                    if !text.trim().is_empty() {
+                        messages.push(ChatMessage::assistant_with_reasoning(
+                            text.clone(),
+                            response.reasoning_content.clone(),
+                        ));
+                    }
+                }
+                messages.push(ChatMessage::user(TRUNCATION_CONTINUE_PROMPT));
+                continue;
             }
 
             if response.tool_calls.is_empty() {

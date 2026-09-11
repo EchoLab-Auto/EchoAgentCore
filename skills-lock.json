@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "prodoc-format": {
+      "source": "EchoLab-Auto/skill-echo-prodoc",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "1504c1420c59c063444230b94108db8789575a5600275a90f63585baf047abed"
+    }
+  }
+}

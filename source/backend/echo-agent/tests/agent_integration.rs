@@ -35,6 +35,7 @@ impl LlmProvider for StaticProvider {
         assert_eq!(system.role, echo_agent::llm::ChatRole::System);
         *self.last_system_prompt.lock().await = Some(system.content.clone());
         Ok(ChatResponse {
+            stop_reason: None,
             content: Some(self.reply.into()),
             reasoning_content: None,
             tool_calls: vec![],
@@ -361,6 +362,7 @@ impl LlmProvider for SlowProvider {
         tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
         let _ = request;
         Ok(ChatResponse {
+            stop_reason: None,
             content: Some(reply.into()),
             reasoning_content: None,
             tool_calls: vec![],
@@ -530,36 +532,38 @@ async fn toggle_management_panel_plugin_disable_is_refused() {
 }
 
 #[tokio::test]
-async fn allows_reply_branches_follows_orchestration_mode() {
+async fn reply_branch_visibility_follows_loop_mode() {
     use echo_agent::config::TeamMember;
-    use echo_agent::plugins::{CHATBOT_ORCHESTRATION_PLUGIN_ID, SINGLE_ORCHESTRATION_PLUGIN_ID};
+    use echo_agent::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
     let (agent, _provider) = test_agent("ok");
-    // 未配置 capabilities：默认 chatbot（可见性事件发射开启）。
-    assert!(agent.allows_reply_branches());
-    // chatbot 模式 → true
+    // 未配置 capabilities：默认单会话（分支不可见、turn 串行）。
+    assert_eq!(agent.loop_mode(), echo_defs::LoopMode::Single);
+    assert!(!agent.shows_reply_branches());
+    // 并行多会话 → 可见性事件开启
     agent
         .apply_capabilities(&TeamMember {
-            enabled_plugins: vec![CHATBOT_ORCHESTRATION_PLUGIN_ID.into()],
+            enabled_plugins: vec![PARALLEL_LOOP_PLUGIN_ID.into()],
             ..Default::default()
         })
         .await;
-    assert!(agent.allows_reply_branches());
-    // single 模式 → false（分支仍执行，仅不发射可见性事件）
+    assert_eq!(agent.loop_mode(), echo_defs::LoopMode::Parallel);
+    assert!(agent.shows_reply_branches());
+    // 单会话 id → 关闭（分支仍执行，仅不发射可见性事件）
     agent
         .apply_capabilities(&TeamMember {
-            enabled_plugins: vec![SINGLE_ORCHESTRATION_PLUGIN_ID.into()],
+            enabled_plugins: vec![SINGLE_LOOP_PLUGIN_ID.into()],
             ..Default::default()
         })
         .await;
-    assert!(!agent.allows_reply_branches());
-    // 非空白名单无模式 id → single 兜底
+    assert!(!agent.shows_reply_branches());
+    // 非空白名单无模式 id → 单会话兜底
     agent
         .apply_capabilities(&TeamMember {
             enabled_plugins: vec!["echo-agent.tools.builtin".into()],
             ..Default::default()
         })
         .await;
-    assert!(!agent.allows_reply_branches());
+    assert!(!agent.shows_reply_branches());
 }
 
 #[tokio::test]
@@ -571,6 +575,7 @@ async fn toggle_skill_enables_and_disables() {
             description: "d".into(),
             keywords: vec!["计算".into()],
             always: false,
+            system: false,
             enabled: true,
             category: String::new(),
             package: None,
@@ -620,6 +625,7 @@ async fn skill_keyword_injects_instructions_into_prompt() {
             description: "算术计算".into(),
             keywords: vec!["计算".into()],
             always: false,
+            system: false,
             enabled: true,
             category: String::new(),
             package: None,
@@ -660,6 +666,7 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
             description: "简洁表达".into(),
             keywords: vec![],
             always: true,
+            system: false,
             enabled: true,
             category: String::new(),
             package: None,
@@ -672,6 +679,7 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
             description: "算术计算".into(),
             keywords: vec!["计算".into()],
             always: false,
+            system: false,
             enabled: true,
             category: String::new(),
             package: None,
@@ -715,12 +723,14 @@ async fn qq_hook_input_enforces_transport_boundary() {
     // then the agent calls send_private_msg and finishes with a direct reply.
     let script = vec![
         ChatResponse {
+            stop_reason: None,
             content: Some("backend only".into()),
             reasoning_content: None,
             tool_calls: vec![],
             usage: Usage::default(),
         },
         ChatResponse {
+            stop_reason: None,
             content: None,
             reasoning_content: None,
             tool_calls: vec![ToolCall {
@@ -731,6 +741,7 @@ async fn qq_hook_input_enforces_transport_boundary() {
             usage: Usage::default(),
         },
         ChatResponse {
+            stop_reason: None,
             content: Some("delivered".into()),
             reasoning_content: None,
             tool_calls: vec![],
@@ -837,6 +848,7 @@ impl Tool for FailingTool {
 async fn turn_emits_lifecycle_events_in_order() {
     let script = vec![
         ChatResponse {
+            stop_reason: None,
             content: None,
             reasoning_content: None,
             tool_calls: vec![ToolCall {
@@ -847,6 +859,7 @@ async fn turn_emits_lifecycle_events_in_order() {
             usage: Usage::default(),
         },
         ChatResponse {
+            stop_reason: None,
             content: Some("final".into()),
             reasoning_content: None,
             tool_calls: vec![],
@@ -868,6 +881,15 @@ async fn turn_emits_lifecycle_events_in_order() {
     ));
     let (bridge, handle) = echo_agent::create_bridge();
     agent.attach(Arc::new(handle));
+
+    // 该用例冻结的是含可见回执分支的完整生命周期 → 取并行多会话模式
+    //（默认单会话不发射 ReplyBranch*，生命周期少两个事件）。
+    agent
+        .apply_capabilities(&echo_agent::config::TeamMember {
+            enabled_plugins: vec![echo_agent::plugins::PARALLEL_LOOP_PLUGIN_ID.into()],
+            ..Default::default()
+        })
+        .await;
 
     let key = SessionKey::parse("qq:dm::123").unwrap();
     let session = agent.trunk.get_or_create(&key, "u".into(), None);
@@ -922,6 +944,7 @@ async fn turn_emits_lifecycle_events_in_order() {
 async fn failing_tool_result_marks_error_and_turn_completes() {
     let script = vec![
         ChatResponse {
+            stop_reason: None,
             content: None,
             reasoning_content: None,
             tool_calls: vec![ToolCall {
@@ -932,6 +955,7 @@ async fn failing_tool_result_marks_error_and_turn_completes() {
             usage: Usage::default(),
         },
         ChatResponse {
+            stop_reason: None,
             content: Some("after failure".into()),
             reasoning_content: None,
             tool_calls: vec![],
@@ -989,6 +1013,7 @@ async fn non_triggering_message_uses_cached_prompt() {
             description: "算术计算".into(),
             keywords: vec!["计算".into()],
             always: false,
+            system: false,
             enabled: true,
             category: String::new(),
             package: None,
@@ -1035,6 +1060,7 @@ async fn event_log_persists_tool_structure_across_reload() {
     // Build an agent, run a turn that produces a tool call and a reply.
     let script = vec![
         ChatResponse {
+            stop_reason: None,
             content: None,
             reasoning_content: None,
             tool_calls: vec![ToolCall {
@@ -1045,6 +1071,7 @@ async fn event_log_persists_tool_structure_across_reload() {
             usage: Usage::default(),
         },
         ChatResponse {
+            stop_reason: None,
             content: Some("结果是 2".into()),
             reasoning_content: None,
             tool_calls: vec![],
@@ -1092,4 +1119,290 @@ async fn event_log_persists_tool_structure_across_reload() {
         "tool message rebuilt from log: {history:?}"
     );
     let _ = std::fs::remove_file(&path);
+}
+
+// ── Persona 级门控热更新（插件/工具/技能勾选即时生效、可恢复、全局优先）──
+
+use echo_agent::plugins::{CHECKLIST_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID};
+
+/// 构造带"门控工具"的 agent：checklist 属 echo-agent.checklist 包，
+/// bash 属 echo-agent.tools.builtin 包。
+fn agent_with_gated_caps() -> Arc<Agent> {
+    let provider = Arc::new(StaticProvider {
+        reply: "ok",
+        calls: AtomicUsize::new(0),
+        last_system_prompt: tokio::sync::Mutex::new(None),
+    });
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(MockTool {
+        name: "checklist",
+        result: "ok".into(),
+    }));
+    tools.register(Arc::new(MockTool {
+        name: "bash",
+        result: "ok".into(),
+    }));
+    tools.set_package("checklist", CHECKLIST_PLUGIN_ID);
+    tools.set_package("bash", TOOLS_BUILTIN_PLUGIN_ID);
+    Arc::new(Agent::new(
+        provider,
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        tools,
+        Arc::new(AdapterRegistry::new()),
+    ))
+}
+
+fn persona_with_plugins(enabled: &[&str]) -> echo_agent::config::TeamMember {
+    echo_agent::config::TeamMember {
+        name: "t".into(),
+        enabled_plugins: enabled.iter().map(|s| s.to_string()).collect(),
+        ..Default::default()
+    }
+}
+
+/// 插件勾选往返：取消勾选立即禁用、重新勾选立即恢复、其他包不受影响。
+#[tokio::test]
+async fn persona_plugin_checkbox_round_trip_applies_immediately() {
+    let agent = agent_with_gated_caps();
+
+    agent
+        .apply_capabilities(&persona_with_plugins(&[
+            TOOLS_BUILTIN_PLUGIN_ID,
+            CHECKLIST_PLUGIN_ID,
+        ]))
+        .await;
+    assert!(!agent.tools.is_disabled("checklist").await);
+    assert!(!agent.tools.is_disabled("bash").await);
+
+    // 取消勾选 checklist → 立即禁用（无需重启）
+    agent
+        .apply_capabilities(&persona_with_plugins(&[TOOLS_BUILTIN_PLUGIN_ID]))
+        .await;
+    assert!(
+        agent.tools.is_disabled("checklist").await,
+        "取消勾选应立即禁用该包工具"
+    );
+    assert!(!agent.tools.is_disabled("bash").await, "其他包不受影响");
+
+    // 重新勾选 → 立即恢复（旧实现只能重启恢复）
+    agent
+        .apply_capabilities(&persona_with_plugins(&[
+            TOOLS_BUILTIN_PLUGIN_ID,
+            CHECKLIST_PLUGIN_ID,
+        ]))
+        .await;
+    assert!(
+        !agent.tools.is_disabled("checklist").await,
+        "重新勾选应立即恢复"
+    );
+}
+
+/// 全局插件 mount/unmount（TogglePlugin）逐 persona 重评估：
+/// mount 不放开"名单外"的 persona；unmount 对全员生效；重新 mount 恢复。
+#[tokio::test]
+async fn global_plugin_gating_respects_persona_allowlist() {
+    let agent = agent_with_gated_caps();
+    agent
+        .apply_capabilities(&persona_with_plugins(&[TOOLS_BUILTIN_PLUGIN_ID]))
+        .await;
+    assert!(agent.tools.is_disabled("checklist").await);
+
+    // 全局 mount（启用）不应把"名单外"的 persona 放开
+    agent.reapply_plugin_gating(CHECKLIST_PLUGIN_ID, true);
+    assert!(
+        agent.tools.is_disabled("checklist").await,
+        "名单外 persona 不该被全局 mount 放开"
+    );
+
+    // 勾选后（名单允许）全局 mount 恢复
+    agent
+        .apply_capabilities(&persona_with_plugins(&[
+            TOOLS_BUILTIN_PLUGIN_ID,
+            CHECKLIST_PLUGIN_ID,
+        ]))
+        .await;
+    assert!(!agent.tools.is_disabled("checklist").await);
+
+    // 全局 unmount（禁用）对全员生效（即使名单允许）
+    agent.reapply_plugin_gating(CHECKLIST_PLUGIN_ID, false);
+    assert!(
+        agent.tools.is_disabled("checklist").await,
+        "全局禁用应优先于 persona 名单"
+    );
+
+    // 全局重新启用 + 名单允许 → 恢复
+    agent.reapply_plugin_gating(CHECKLIST_PLUGIN_ID, true);
+    assert!(!agent.tools.is_disabled("checklist").await);
+}
+
+/// 全局工具启停逐 persona 重评估：persona 黑名单不被全局启用覆盖；
+/// 全局禁用全员生效；全局重新启用可恢复。
+#[tokio::test]
+async fn global_tool_toggle_respects_persona_denylist() {
+    let agent = agent_with_gated_caps();
+    agent
+        .apply_capabilities(&echo_agent::config::TeamMember {
+            name: "t".into(),
+            disabled_tools: vec!["checklist".into()],
+            ..Default::default()
+        })
+        .await;
+    assert!(agent.tools.is_disabled("checklist").await);
+
+    assert!(agent.reapply_tool_gating("checklist", true).await);
+    assert!(
+        agent.tools.is_disabled("checklist").await,
+        "persona 黑名单不被全局启用覆盖"
+    );
+
+    assert!(agent.reapply_tool_gating("bash", false).await);
+    assert!(agent.tools.is_disabled("bash").await, "全局禁用全员生效");
+
+    assert!(agent.reapply_tool_gating("bash", true).await);
+    assert!(!agent.tools.is_disabled("bash").await, "全局重新启用可恢复");
+}
+
+/// 技能勾选往返：enabled_skills 白名单收紧，重新勾选恢复。
+#[tokio::test]
+async fn persona_skill_checkbox_round_trip() {
+    let (agent, _provider) = test_agent("ok");
+    for name in ["alpha", "beta"] {
+        agent.skills.lock().await.register(echo_agent::Skill {
+            metadata: echo_agent::skill::SkillMetadata {
+                name: name.into(),
+                description: "d".into(),
+                keywords: vec![],
+                always: false,
+                system: false,
+                enabled: true,
+                category: String::new(),
+                package: None,
+            },
+            instructions: "use it".into(),
+        });
+    }
+
+    agent
+        .apply_capabilities(&echo_agent::config::TeamMember {
+            name: "t".into(),
+            enabled_skills: vec!["alpha".into()],
+            ..Default::default()
+        })
+        .await;
+    let skills = agent.skills.lock().await;
+    assert!(skills.get("alpha").unwrap().metadata.enabled);
+    assert!(
+        !skills.get("beta").unwrap().metadata.enabled,
+        "白名单外的技能应禁用"
+    );
+    drop(skills);
+
+    agent
+        .apply_capabilities(&echo_agent::config::TeamMember {
+            name: "t".into(),
+            enabled_skills: vec!["alpha".into(), "beta".into()],
+            ..Default::default()
+        })
+        .await;
+    let skills = agent.skills.lock().await;
+    assert!(
+        skills.get("beta").unwrap().metadata.enabled,
+        "重新勾选应立即恢复"
+    );
+}
+
+/// Package 标签横跨工具与技能：一次包级门控同时作用于两个注册表；
+/// 启用方向受 persona 名单收紧；包外成员不受影响。
+#[tokio::test]
+async fn package_gating_spans_tools_and_skills() {
+    use echo_agent::plugins::{ADAPTER_QQ_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID};
+
+    let provider = Arc::new(StaticProvider {
+        reply: "ok",
+        calls: AtomicUsize::new(0),
+        last_system_prompt: tokio::sync::Mutex::new(None),
+    });
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(MockTool {
+        name: "send_private_msg",
+        result: "ok".into(),
+    }));
+    tools.register(Arc::new(MockTool {
+        name: "bash",
+        result: "ok".into(),
+    }));
+    tools.set_package("send_private_msg", ADAPTER_QQ_PLUGIN_ID);
+    tools.set_package("bash", TOOLS_BUILTIN_PLUGIN_ID);
+
+    let mut skills = SkillRegistry::new();
+    for (name, pkg) in [
+        ("qq-management", Some(ADAPTER_QQ_PLUGIN_ID)),
+        ("qq-transport", Some(ADAPTER_QQ_PLUGIN_ID)),
+        ("calculator", None),
+    ] {
+        skills.register(echo_agent::Skill {
+            metadata: echo_agent::skill::SkillMetadata {
+                name: name.into(),
+                description: "d".into(),
+                keywords: vec![],
+                always: false,
+                system: false,
+                enabled: true,
+                category: String::new(),
+                package: pkg.map(str::to_string),
+            },
+            instructions: "use it".into(),
+        });
+    }
+
+    let agent = Arc::new(Agent::new(
+        provider,
+        AgentConfig::default(),
+        skills,
+        tools,
+        Arc::new(AdapterRegistry::new()),
+    ));
+
+    // 包级禁用：QQ 工具 + QQ 技能一起关闭，包外成员不受影响。
+    agent.apply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, false);
+    assert!(agent.tools.is_disabled("send_private_msg").await);
+    {
+        let s = agent.skills.lock().await;
+        assert!(!s.get("qq-management").unwrap().metadata.enabled);
+        assert!(!s.get("qq-transport").unwrap().metadata.enabled);
+        assert!(
+            s.get("calculator").unwrap().metadata.enabled,
+            "包外技能不受影响"
+        );
+    }
+    assert!(!agent.tools.is_disabled("bash").await, "包外工具不受影响");
+
+    // 包级恢复：两者一起恢复。
+    agent.apply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, true);
+    assert!(!agent.tools.is_disabled("send_private_msg").await);
+    {
+        let s = agent.skills.lock().await;
+        assert!(s.get("qq-management").unwrap().metadata.enabled);
+        assert!(s.get("qq-transport").unwrap().metadata.enabled);
+    }
+
+    // 启用方向受 persona 名单收紧：黑名单中的包内技能保持禁用。
+    agent
+        .apply_capabilities(&echo_agent::config::TeamMember {
+            name: "t".into(),
+            disabled_skills: vec!["qq-management".into()],
+            ..Default::default()
+        })
+        .await;
+    agent.apply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, false);
+    agent.apply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, true);
+    {
+        let s = agent.skills.lock().await;
+        assert!(
+            !s.get("qq-management").unwrap().metadata.enabled,
+            "persona 黑名单技能不随包恢复"
+        );
+        assert!(s.get("qq-transport").unwrap().metadata.enabled);
+    }
 }

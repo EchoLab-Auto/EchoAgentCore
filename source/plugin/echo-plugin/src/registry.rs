@@ -22,6 +22,10 @@ pub struct PluginDescriptor {
     pub enabled: bool,
     /// Whether the plugin ships inside the binary (vs. discovered from disk).
     pub builtin: bool,
+    /// 所属包 id（横跨 plugin+tool+skill 的标签，见
+    /// [`PluginManifest::package_id`]）；未声明 = 插件 id 自身。
+    #[serde(default)]
+    pub package: String,
     /// Mount error description when `enabled == false && builtin`.
     #[serde(default)]
     pub error: Option<String>,
@@ -39,6 +43,7 @@ impl From<&PluginManifest> for PluginDescriptor {
             author: m.author.clone(),
             enabled: true,
             builtin: true,
+            package: m.package_id().to_string(),
             error: None,
         }
     }

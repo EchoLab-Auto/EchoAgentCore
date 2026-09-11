@@ -24,6 +24,11 @@ use crate::tool::ToolRegistry;
 use echo_chat_capability::{DeliveryPolicy, DeliveryTarget};
 
 const TURN_CANCELLED: &str = "agent turn cancelled by requester";
+/// 一轮内允许的截断自动续跑次数上限：输出被 max_tokens 截断时把残片入栈
+/// 让模型接着写；超过上限按错误上报，不再静默重试。
+const MAX_TRUNCATION_CONTINUES: usize = 4;
+/// 截断续跑时喂给模型的提示（user 角色，区别于真实用户输入）。
+const TRUNCATION_CONTINUE_PROMPT: &str = "[system notice] Your previous output was cut off by the max token limit before the turn was complete. Continue exactly from where you stopped. If you were composing a tool call, discard the partial call and re-issue it in full.";
 /// Graceful-shutdown drain window: how long to wait for in-flight turns to
 /// finish before force-cancelling (self-update interruption guard).
 const SHUTDOWN_DRAIN_SECS: u64 = 120;
@@ -33,12 +38,10 @@ const MAX_CONCURRENT_REPLY_BRANCHES: usize = 8;
 /// branches would each fire an extra LLM request at the same moment.
 const MAX_CONCURRENT_WAIT_REPLIES: usize = 4;
 
-/// 旧三特性插件 id（回执分支/全局会话/会话系统）——已合并为
-/// echo-agent.orchestration.{single,chatbot} 互斥子插件（见 plugins.rs），
-/// 这些 id 仅保留用于配置迁移映射与向后兼容推导，不再注册。
-pub use crate::plugins::{
-    CHAT_SESSIONS_PLUGIN_ID, GLOBAL_SESSION_PLUGIN_ID, REPLY_BRANCH_PLUGIN_ID,
-};
+/// 循环模式互斥插件 id（见 plugins.rs）：`loop.single`（单会话，默认）与
+/// `loop.parallel`（并行多会话）。两者 mount 同一 TurnRunner，模式经
+/// `TeamMember::loop_mode` 推导。
+pub use crate::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
 
 #[derive(Debug, Clone)]
 struct ActiveInboundTurn {
@@ -103,6 +106,17 @@ pub(crate) struct InboundTurnRegistration {
     pub cancel: tokio_util::sync::CancellationToken,
 }
 
+impl Default for InboundTurnRegistration {
+    /// 并行模式先取闸门再注册：占位值不进入注册表（`id` 为空时
+    /// `finish_inbound_turn` 是 no-op，取消令牌不会被使用）。
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+}
+
 /// The agent: owns provider, tools, skills, sessions, adapters, and emits events.
 pub struct Agent {
     provider: RwLock<Arc<dyn LlmProvider>>,
@@ -129,8 +143,8 @@ pub struct Agent {
     last_prompt_blocks: tokio::sync::Mutex<Option<Vec<PromptBlock>>>,
     plugin_reload_started: AtomicBool,
     orchestration_started: AtomicBool,
-    /// 可插拔循环驱动（echo-loop TurnRunner，由 echo-agent.loop.runner 插件
-    /// mount 时注入）；启用（use_echo_loop）时普通 TUI turn 经 TurnRunner 的
+    /// 可插拔循环驱动（echo-loop TurnRunner，由 `echo-agent.loop.{single,parallel}`
+    /// 插件 mount 时注入）；启用（use_echo_loop）时普通 TUI turn 经 TurnRunner 的
     /// turn/step 状态机 + ToolPipeline 执行，否则使用内置循环（默认）。
     loop_runner: RwLock<Option<std::sync::Arc<echo_loop::runner::TurnRunner>>>,
     use_echo_loop: AtomicBool,
@@ -158,9 +172,13 @@ pub struct Agent {
     /// Graceful-drain flag: set during shutdown so new turns are rejected
     /// while in-flight replies finish (self-update continuity).
     draining: AtomicBool,
-    /// Per-persona capability config (allow/deny lists for plugins, tools,
-    /// skills). Applied at boot; used to filter dynamic orchestration tools.
     capabilities: std::sync::Mutex<Option<crate::config::AgentProfile>>,
+    /// Persona 级 API 供应商引用（None = 跟随全局默认配置；
+    /// Some(name) = 全局供应商池 `[agent].api_profiles` 中该名字的 profile）。
+    /// 保存于 `[agent.teams.{id}].api_profile`；运行期变更经由
+    /// [`Self::apply_persona_api`] 重建本 persona 的 provider，不依赖全局
+    /// UpdateApiConfig / SwitchApi 激活路径。
+    persona_api: tokio::sync::RwLock<Option<String>>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -242,6 +260,7 @@ impl Agent {
             team_id: std::sync::Mutex::new(None),
             draining: AtomicBool::new(false),
             capabilities: std::sync::Mutex::new(None),
+            persona_api: tokio::sync::RwLock::new(None),
         };
         // Spawn periodic identity eviction (every 5 minutes). Only stale
         // source labels are dropped; the trunk history is never evicted.
@@ -285,6 +304,11 @@ impl Agent {
     }
 
     /// Set the TOML config file that `[agent]` changes are persisted to.
+    ///
+    /// 仅设置配置持久化路径（`ConfigStore::patch` 读写的 TOML）；
+    /// 会话（trunk）持久化路径必须用 [`Self::set_session_persist_path`]
+    /// 单独设置——两者文件格式不同（TOML vs JSON 事件溯源），
+    /// 绝不可共用同一路径，否则 patch 读 JSON 会 TOML 解析失败。
     pub fn set_config_path(&self, path: impl Into<std::path::PathBuf>) {
         let p: std::path::PathBuf = path.into();
         self.set_config_store(echo_adapter::ConfigStore::new(p));
@@ -292,20 +316,23 @@ impl Agent {
 
     /// Attach a shared [`echo_adapter::ConfigStore`] for `[agent]` persistence.
     ///
-    /// Also sets the session persistence path. ⚠️ 会话文件路径 = ConfigStore
-    /// 路径本身（组合根按 persona 构造 `echo-sessions-{id}.json`）；绝不能在
-    /// 这里用 `with_file_name` 覆盖回统一的 `echo-sessions.json`，否则所有
-    /// persona 写同一个文件、互相覆盖，重启后每个 agent 都读回混合/丢失的
-    /// 上下文。Called once at startup — uses try_lock since no concurrent
-    /// access exists yet.
+    /// 只接管 TOML 配置持久化，不动会话路径（会话路径由
+    /// [`Self::set_session_persist_path`] 独立设置）。Called once at startup —
+    /// uses try_lock since no concurrent access exists yet.
     pub fn set_config_store(&self, store: echo_adapter::ConfigStore) {
-        let sessions_path = store.path();
-        self.trunk.set_persist_path(sessions_path);
         if let Ok(mut slot) = self.config_store.try_lock() {
             *slot = Some(store);
         } else {
             tracing::warn!("config store slot busy, ignoring set_config_store");
         }
+    }
+
+    /// Set the session (trunk) persistence path.
+    ///
+    /// 组合根按 persona 构造 `echo-sessions-{id}.json`（default 沿用
+    /// `echo-sessions.json`）；与配置 TOML 分开，避免 JSON/TOML 互写。
+    pub fn set_session_persist_path(&self, path: impl Into<std::path::PathBuf>) {
+        self.trunk.set_persist_path(path);
     }
 
     /// Load persisted sessions from disk.
@@ -672,7 +699,7 @@ impl Agent {
 
     /// Assign the team id and tag the trunk (sessions created later carry
     /// it in SessionInfo). Call once at boot before any message arrives.
-    /// 注入可插拔循环驱动（echo-loop TurnRunner；由 loop.runner 插件 mount 调用）。
+    /// 注入可插拔循环驱动（echo-loop TurnRunner；由循环模式插件 mount 调用）。
     pub fn set_loop_runner(&self, runner: std::sync::Arc<echo_loop::runner::TurnRunner>) {
         if let Ok(mut slot) = self.loop_runner.try_write() {
             *slot = Some(runner);
@@ -696,93 +723,305 @@ impl Agent {
         self.team_id.lock().unwrap().clone()
     }
 
-    /// Apply per-persona capability configuration.
+    /// Apply per-persona capability configuration（运行期热更新入口）。
     ///
     /// Semantics:
     /// - `enabled_*` allowlists: non-empty => only the listed plugins/tools/
     ///   skills are visible to this agent; empty => everything is available.
     /// - `disabled_*` denylists refine afterwards (keeps old configs working).
+    /// - 全局禁用（`[agent].disabled_tools/disabled_skills`、共享注册表中被
+    ///   `TogglePlugin` 卸载的插件）优先于 persona 名单。
+    ///
+    /// 与旧实现的区别：**逐名双向应用**（取消勾选即禁用、重新勾选即恢复，
+    /// 此前只有禁用方向，重勾必须重启才生效），且插件维度只作用于本
+    /// persona 的工具/技能注册表（不再驱动共享 registry 的
+    /// mount/unmount，避免"单人格改动扩散到全员"）。
     pub async fn apply_capabilities(&self, profile: &crate::config::AgentProfile) {
         *self.capabilities.lock().unwrap() = Some(profile.clone());
-        let enable_ctx = echo_plugin::MountContext::default();
-        // 1) allowlist: hide everything not listed.
-        if !profile.enabled_plugins.is_empty() {
-            let all: Vec<String> = self.plugin_host.registry.ids();
-            for id in all {
-                if !profile.enabled_plugins.contains(&id) {
-                    let _ = self
-                        .plugin_host
-                        .registry
-                        .set_enabled(&id, false, &enable_ctx);
-                }
-            }
+
+        // 全局禁用列表：优先管理面（默认 agent）的实时配置——ToggleTool /
+        // ToggleSkill 只更新管理面配置，其余 persona 的启动快照会过期。
+        let (global_disabled_tools, global_disabled_skills) = self.global_disabled_lists().await;
+
+        // 1) 工具逐名双向：白名单 ∧ 非黑名单 ∧ 非全局禁用。
+        for name in self.tools.names() {
+            let allowed = persona_tool_allowed(profile, &name)
+                && !global_disabled_tools.iter().any(|t| t == &name);
+            self.tools.set_enabled(&name, allowed).await;
         }
-        if !profile.enabled_tools.is_empty() {
-            let all = self.tools.names();
-            for name in all {
-                if !profile.enabled_tools.contains(&name) {
-                    let _ = self.tools.set_enabled(&name, false).await;
-                }
-            }
-        }
-        if !profile.enabled_skills.is_empty() {
+
+        // 2) 技能逐名双向：同一语义。
+        {
             let mut skills = self.skills.lock().await;
             for name in skills.names() {
-                if !profile.enabled_skills.contains(&name) {
-                    skills.set_enabled(&name, false);
-                }
+                let allowed = persona_skill_allowed(profile, &name)
+                    && !global_disabled_skills.iter().any(|s| s == &name);
+                skills.set_enabled(&name, allowed);
             }
         }
-        // 2) denylist refinement.
-        for plugin in &profile.disabled_plugins {
-            if self.plugin_host.registry.plugin(plugin).is_some() {
-                let _ = self
-                    .plugin_host
-                    .registry
-                    .set_enabled(plugin, false, &enable_ctx);
+        *self.system_prompt_cache.write().await = None;
+
+        // 3) 门控插件（包/表维度）：仅在"不允许"时禁用——与启动期逐人格
+        //    门控同语义；重新允许的恢复由上面的逐名双向步骤完成。全局状态
+        //    （注册表）优先：运行期 TogglePlugin 的卸载不会被本步骤反向覆盖。
+        for plugin_id in crate::plugins::GATED_PLUGIN_IDS {
+            let allowed = crate::plugins::profile_allows_plugin(profile, plugin_id)
+                && self.plugin_globally_enabled(plugin_id);
+            if !allowed {
+                self.apply_plugin_gating(plugin_id, false);
             }
-        }
-        for tool in &profile.disabled_tools {
-            let _ = self.tools.set_enabled(tool, false).await;
-        }
-        let mut skills = self.skills.lock().await;
-        for skill in &profile.disabled_skills {
-            skills.set_enabled(skill, false);
         }
     }
 
-    /// 插件启停对本 agent 注册表的批量效果（包维度）。
+    /// 全局禁用列表（工具/技能）：优先管理面（默认 agent）的实时配置，
+    /// 无管理器（单元测试）时回退本 agent 的配置快照。
+    async fn global_disabled_lists(&self) -> (Vec<String>, Vec<String>) {
+        if let Some(mgr) = crate::agent_manager::global_manager() {
+            if let Some(default_agent) = mgr.resolve(None) {
+                let cfg = default_agent.config.read().await;
+                return (cfg.disabled_tools.clone(), cfg.disabled_skills.clone());
+            }
+        }
+        let cfg = self.config.read().await;
+        (cfg.disabled_tools.clone(), cfg.disabled_skills.clone())
+    }
+
+    /// 本 persona 白/黑名单是否允许某插件（capabilities 未设置 = 允许）。
+    pub fn persona_allows_plugin(&self, plugin_id: &str) -> bool {
+        self.capabilities
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                guard
+                    .as_ref()
+                    .map(|p| crate::plugins::profile_allows_plugin(p, plugin_id))
+            })
+            .unwrap_or(true)
+    }
+
+    /// 共享注册表中该插件当前是否启用（无全局锚点 = true，以名单为准）。
+    fn plugin_globally_enabled(&self, plugin_id: &str) -> bool {
+        plugin_host_global()
+            .map(|host| host.registry.is_enabled(plugin_id))
+            .unwrap_or(true)
+    }
+
+    /// 全局插件状态变化后，重新评估该插件在本 persona 的最终效果：
+    /// 最终 = 全局启用 ∧ 本 persona 白/黑名单（禁用对全员生效）。
     ///
-    /// 插件 mount/unmount 闭包与启动期禁用恢复共用：工具按 package 标签
-    /// （= 插件 id，装配时打标）批量启停；`echo-agent.skills.dir` 额外
-    /// 整表启停技能。适配器进程启停不在此（由组合根的 mount 闭包处理）。
+    /// 全局 mount/unmount 闭包逐 persona 调用，取代旧的无条件批量启停——
+    /// 后者会在 mount 时把"名单外"的 persona 一并放开。
+    pub fn reapply_plugin_gating(&self, plugin_id: &str, globally_enabled: bool) {
+        let allowed = globally_enabled && self.persona_allows_plugin(plugin_id);
+        self.apply_plugin_gating(plugin_id, allowed);
+    }
+
+    /// 全局工具启停变化后，重新评估本 persona 的最终状态：
+    /// 最终 = 全局启用 ∧ 本 persona 名单。返回工具是否存在。
+    pub async fn reapply_tool_gating(&self, name: &str, globally_enabled: bool) -> bool {
+        let allowed = globally_enabled
+            && self
+                .capabilities
+                .lock()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|p| persona_tool_allowed(p, name)))
+                .unwrap_or(true);
+        self.tools.set_enabled(name, allowed).await
+    }
+
+    /// 全局技能启停变化后，重新评估本 persona 的最终状态。返回技能是否存在。
+    pub async fn reapply_skill_gating(&self, name: &str, globally_enabled: bool) -> bool {
+        let allowed = globally_enabled
+            && self
+                .capabilities
+                .lock()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|p| persona_skill_allowed(p, name)))
+                .unwrap_or(true);
+        let ok = {
+            let mut skills = self.skills.lock().await;
+            skills.set_enabled(name, allowed)
+        };
+        if ok {
+            *self.system_prompt_cache.write().await = None;
+        }
+        ok
+    }
+
+    /// Persona 级 API：设置本 agent 对全局供应商池的引用（不重建）。
+    /// `None` = 跟随全局默认配置；`Some(name)` = 使用池中该 profile。
+    pub async fn set_persona_api(&self, name: Option<String>) {
+        *self.persona_api.write().await = name;
+    }
+
+    /// 同步版 [`Self::set_persona_api`]：供组合根启动期（make_agent 为同步
+    /// 闭包）调用；启动期无人持有读锁，try_write 必然成功。
+    pub fn set_persona_api_now(&self, name: Option<String>) {
+        if let Ok(mut slot) = self.persona_api.try_write() {
+            *slot = name;
+        }
+    }
+
+    /// 当前 persona 级的 API 供应商引用。
+    pub async fn persona_api(&self) -> Option<String> {
+        self.persona_api.read().await.clone()
+    }
+
+    /// Persona 级 API：按引用重建本 agent 的 provider。
+    ///
+    /// 以传入的**全局配置**（含最新供应商池）为基准：
+    /// - `Some(name)` 且池中存在 → 合入该 profile 值（非空覆盖），
+    ///   不改变全局 active_api / 顶层字段；
+    /// - 其他情况（None 或名字不存在）→ 跟随全局默认（顶层 + active_api）。
+    ///
+    /// 返回是否成功重建；失败时保留旧 provider 并 emit Error。
+    pub async fn apply_persona_api(&self, global: &AgentConfig) -> bool {
+        let reference = self.persona_api.read().await.clone();
+        let mut resolved = global.clone();
+        let ok = match reference.as_deref().filter(|n| !n.is_empty()) {
+            Some(name) => resolved.apply_named_profile(name),
+            None => {
+                resolved.apply_active_profile();
+                true
+            }
+        };
+        if !ok {
+            self.emit(BackendEvent::Error {
+                session_id: None,
+                message: format!(
+                    "persona API profile not found in pool: {} — falling back to global default",
+                    reference.unwrap_or_default()
+                ),
+            });
+            resolved.apply_active_profile();
+        }
+        resolved.api_key = resolved.effective_api_key();
+        resolved.base_url = resolved.effective_base_url();
+        // 本 persona 的 config 只更新 API 相关字段（保留权限、预算等其余项）。
+        {
+            let mut cfg = self.config.write().await;
+            cfg.provider = resolved.provider.clone();
+            cfg.model = resolved.model.clone();
+            cfg.base_url = resolved.base_url.clone();
+            cfg.api_key = resolved.api_key.clone();
+            cfg.thinking = resolved.thinking;
+            cfg.reasoning_effort = resolved.reasoning_effort;
+        }
+        let provider = match crate::llm::create_provider(&resolved) {
+            Ok(p) => p,
+            Err(e) => {
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: format!("persona API provider build failed: {e}"),
+                });
+                return false;
+            }
+        };
+        *self.provider.write().await = Arc::from(provider);
+        self.set_model(resolved.model.clone()).await;
+        true
+    }
+
+    /// 插件启停对本 agent 注册表的批量效果（**包维度，横跨工具与技能**）。
+    ///
+    /// Package 是横跨 plugin + tool + skill 的标签：本方法把一次包级
+    /// 启停传播到本 agent 的两类注册表——
+    /// - 工具：`ToolRegistry::set_package_enabled`（按工具的 package 标签）；
+    /// - 技能：`SkillRegistry::set_package_enabled`（按 `SKILL.md` 的
+    ///   `package:` frontmatter）——`skills.dir` 插件为**整表**语义，
+    ///   其余包按同名 package 精确匹配（如 QQ 包：qq-management /
+    ///   qq-transport 随 `echo-agent.adapter.qq` 一起启停）。
+    ///
+    /// 启用方向会按本 persona 的工具/技能名单**收紧**：整包启用不越过
+    /// 白/黑名单（名单外的成员保持禁用），与启动期"名单先应用、包后禁用"
+    /// 的组合语义一致。
     pub fn apply_plugin_gating(&self, plugin_id: &str, enabled: bool) {
-        let affected = self.tools.set_package_enabled(plugin_id, enabled);
-        if affected > 0 {
+        // 工具维度：按 package 标签批量启停。
+        let affected_tools = self.tools.set_package_enabled(plugin_id, enabled);
+        if enabled {
+            self.tighten_tools_by_lists(plugin_id);
+        }
+        if affected_tools > 0 {
             tracing::info!(
                 plugin = plugin_id,
                 enabled,
-                affected,
+                affected = affected_tools,
                 "plugin tool package toggled"
             );
         }
-        if plugin_id == crate::plugins::SKILLS_DIR_PLUGIN_ID {
-            // 技能目录插件：整表启停（锁竞争时跳过——下一周期/切换时再应用）。
-            if let Ok(mut skills) = self.skills.try_lock() {
+
+        // 技能维度：Package 标签横跨技能，同名包内技能随包启停。
+        // （锁竞争时跳过——下一周期/切换时再应用。）
+        if let Ok(mut skills) = self.skills.try_lock() {
+            let cap = self.capabilities.lock().ok().and_then(|g| g.clone());
+            let affected_skills = if plugin_id == crate::plugins::SKILLS_DIR_PLUGIN_ID {
+                // 技能目录插件：整表启停。启用时只放开名单内的技能。
                 let names = skills.names();
                 for name in &names {
-                    skills.set_enabled(name, enabled);
+                    let ok = cap
+                        .as_ref()
+                        .map_or(true, |p| persona_skill_allowed(p, name));
+                    skills.set_enabled(name, enabled && ok);
                 }
-                if !names.is_empty() {
-                    tracing::info!(enabled, affected = names.len(), "skills dir plugin toggled");
+                names.len()
+            } else {
+                let affected = skills.set_package_enabled(plugin_id, enabled);
+                if enabled {
+                    // 收紧：包启用不越过 persona 技能名单。
+                    if let Some(cap) = cap.as_ref() {
+                        for name in skills.package_names(plugin_id) {
+                            if !persona_skill_allowed(cap, &name) {
+                                skills.set_enabled(&name, false);
+                            }
+                        }
+                    }
                 }
+                affected
+            };
+            if affected_skills > 0 {
+                if plugin_id == crate::plugins::SKILLS_DIR_PLUGIN_ID {
+                    tracing::info!(
+                        enabled,
+                        affected = affected_skills,
+                        "skills dir plugin toggled"
+                    );
+                } else {
+                    tracing::info!(
+                        plugin = plugin_id,
+                        enabled,
+                        affected = affected_skills,
+                        "plugin skill package toggled"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 按本 persona 的工具名单，把包内"名单外"的成员重新禁用。
+    /// 同步尽力（try_write）；未配置 capabilities 时为 no-op。
+    fn tighten_tools_by_lists(&self, package: &str) {
+        let Some(cap) = self.capabilities.lock().ok().and_then(|g| g.clone()) else {
+            return;
+        };
+        if cap.enabled_tools.is_empty() && cap.disabled_tools.is_empty() {
+            return;
+        }
+        for name in self.tools.package_names(package) {
+            if !persona_tool_allowed(&cap, &name) {
+                self.tools.try_disable(&name);
             }
         }
     }
 
     /// Whether a dynamic orchestration tool is allowed for this agent
     /// (allowlist first, denylist refinement; empty allowlist = all allowed).
+    ///
+    /// 单会话模式额外隐藏 `spawn_parallel_task`：一个会话一次只处理一件事，
+    /// 并行分支与串行准入语义冲突（改用另一个会话 = 另一条并行通道）。
     pub fn allows_dynamic_tool(&self, name: &str) -> bool {
+        if name == "spawn_parallel_task" && self.loop_mode() == echo_defs::LoopMode::Single {
+            return false;
+        }
         let guard = self.capabilities.lock().unwrap();
         let Some(cap) = guard.as_ref() else {
             return true;
@@ -796,22 +1035,39 @@ impl Agent {
         true
     }
 
-    /// 该 agent 的编排模式（互斥子插件推导，见
-    /// [`crate::plugins::SINGLE_ORCHESTRATION_PLUGIN_ID`] /
-    /// [`crate::plugins::CHATBOT_ORCHESTRATION_PLUGIN_ID`]）。
-    /// 未配置 capabilities 时默认 Chatbot（与"未配置=全功能"语义一致）。
-    pub fn orchestration_mode(&self) -> echo_protocol::OrchestrationMode {
+    /// 该 agent 的循环模式（互斥循环插件推导，见
+    /// [`crate::plugins::SINGLE_LOOP_PLUGIN_ID`] /
+    /// [`crate::plugins::PARALLEL_LOOP_PLUGIN_ID`]）。
+    /// 未配置 capabilities 时默认 `Single`（单会话，见
+    /// [`echo_defs::LoopMode`]）。
+    pub fn loop_mode(&self) -> echo_defs::LoopMode {
         let guard = self.capabilities.lock().unwrap();
         match guard.as_ref() {
-            None => echo_protocol::OrchestrationMode::Chatbot,
-            Some(cap) => cap.orchestration_mode(),
+            None => echo_defs::LoopMode::Single,
+            Some(cap) => cap.loop_mode(),
         }
     }
 
-    /// 临时回复分支的可见性是否开启：仅 chatbot 编排模式发射
-    /// ReplyBranch* 可见性事件；single 模式分支仍执行并合并，仅面板不可见。
-    pub fn allows_reply_branches(&self) -> bool {
-        self.orchestration_mode() == echo_protocol::OrchestrationMode::Chatbot
+    /// 测试专用：直接设置循环模式（绕过 capabilities 白名单推导）。
+    #[cfg(test)]
+    pub(crate) async fn set_loop_mode_for_test(&self, mode: echo_defs::LoopMode) {
+        use crate::config::TeamMember;
+        let plugin = match mode {
+            echo_defs::LoopMode::Single => crate::plugins::SINGLE_LOOP_PLUGIN_ID,
+            echo_defs::LoopMode::Parallel => crate::plugins::PARALLEL_LOOP_PLUGIN_ID,
+        };
+        self.apply_capabilities(&TeamMember {
+            enabled_plugins: vec![plugin.into()],
+            ..Default::default()
+        })
+        .await;
+        debug_assert_eq!(self.loop_mode(), mode);
+    }
+
+    /// 临时回复分支的可见性是否开启：仅并行模式发射 ReplyBranch* 可见性
+    /// 事件；单会话模式分支仍执行并合并，仅面板不可见。
+    pub fn shows_reply_branches(&self) -> bool {
+        self.loop_mode() == echo_defs::LoopMode::Parallel
     }
 
     /// Number of active sessions (for the Panel agent overview).
@@ -1078,16 +1334,71 @@ impl Agent {
         snapshot
     }
 
+    /// Acquire this session's serial turn slot when the agent runs in
+    /// single-session mode (`LoopMode::Single`, the default).
+    ///
+    /// tokio's `Mutex` is a fair FIFO queue, so queued turns start in arrival
+    /// order; the slot is released when the returned guard drops (end of the
+    /// turn). Parallel mode returns `None` and never blocks. Cancellation
+    /// while queued also resolves to `None` (the caller gives up the turn).
+    async fn acquire_turn_slot(
+        &self,
+        session: &Session,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        if self.loop_mode() != echo_defs::LoopMode::Single {
+            return None;
+        }
+        tokio::select! {
+            slot = Arc::clone(&session.turn_queue).lock_owned() => Some(slot),
+            _ = cancel.cancelled() => None,
+        }
+    }
+
     /// Register a cancellable branch and record its input under the same
     /// conversation lock used by clear and merge operations.
+    ///
+    /// 单会话模式（默认）：先注册可取消的 turn（排队期间同样可被取消），
+    /// 拿到该会话的串行闸门后才记录输入并取快照——排队的第二个 turn 因此
+    /// 看到的是第一轮结束后的上下文；闸门随返回值交给调用方，turn 结束
+    /// （guard drop）才让位。并行模式：注册与记录一次完成，各分支并发执行
+    /// （到达时快照）。
+    ///
+    /// 返回 `None` = 排队期间被取消，调用方应直接收尾（不执行 turn）。
+    #[allow(clippy::type_complexity)]
     pub(crate) async fn register_incoming_branch(
         &self,
         session: &Session,
         content: &str,
         message_sequence: u64,
-    ) -> (InboundTurnRegistration, Vec<ChatMessage>) {
+    ) -> Option<(
+        InboundTurnRegistration,
+        Vec<ChatMessage>,
+        Option<tokio::sync::OwnedMutexGuard<()>>,
+    )> {
+        let serial = self.loop_mode() == echo_defs::LoopMode::Single;
+        let registration = if serial {
+            self.register_inbound_turn(&session.id, message_sequence, true)
+        } else {
+            InboundTurnRegistration::default()
+        };
+        let slot = if serial {
+            match self.acquire_turn_slot(session, &registration.cancel).await {
+                Some(slot) => Some(slot),
+                None => {
+                    self.finish_inbound_turn(&registration.id);
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
         let _turn = session.turn_lock.lock().await;
-        let registration = self.register_inbound_turn(&session.id, message_sequence, true);
+        let registration = if serial {
+            registration
+        } else {
+            self.register_inbound_turn(&session.id, message_sequence, true)
+        };
         self.trunk
             .append_event(echo_session::SessionEvent::UserMessage(
                 echo_session::event::UserMessage {
@@ -1099,7 +1410,7 @@ impl Agent {
                 },
             ));
         let snapshot = session.history.lock().await.clone();
-        (registration, snapshot)
+        Some((registration, snapshot, slot))
     }
 
     async fn record_assistant_reply(
@@ -1263,9 +1574,9 @@ impl Agent {
             messages,
             tools: None,
             temperature: Some(0.4),
-            // Thinking tokens share the completion budget. Keep enough room
-            // for max-effort reasoning and the short visible wait reply.
-            max_tokens: Some(4096),
+            // None = 无上限（后端回退 DEFAULT_MAX_TOKENS=128K）。思考模式的
+            // thinking token 共享 completion 预算，小预算会让可见回复被烧光。
+            max_tokens: None,
         };
         let response = self
             .provider
@@ -1325,6 +1636,13 @@ impl Agent {
         *self.active_model.write().await = model;
     }
 
+    /// 同步版 [`Self::set_model`]：供组合根启动期（make_agent 为同步闭包）调用。
+    pub fn set_model_now(&self, model: String) {
+        if let Ok(mut slot) = self.active_model.try_write() {
+            *slot = model;
+        }
+    }
+
     /// Process one user message through the agent loop and return the reply.
     pub async fn process_message(&self, session: &Session, content: &str) -> Result<String> {
         if self.draining.load(Ordering::Acquire) {
@@ -1332,13 +1650,18 @@ impl Agent {
         }
         let message_sequence =
             structured_message_sequence(content).unwrap_or_else(|| self.next_message_sequence());
-        let (registration, history_snapshot) = self
+        // `_serial`：单会话模式的排队闸门，持有到本轮结束（drop 即让位）。
+        // 排队期间被取消 → None：入站事件已记录，但没有可回复的内容。
+        let Some((registration, history_snapshot, _serial)) = self
             .register_incoming_branch(session, content, message_sequence)
-            .await;
+            .await
+        else {
+            return Err(anyhow!(TURN_CANCELLED));
+        };
         let branch_id = registration.id.clone();
         // 分支可见性（ReplyBranch* 事件）由能力开关决定：禁用时前端不展示
         // 分支卡/任务卡，但分支照常执行（取消/合并语义不变）。
-        let show_branch = self.allows_reply_branches();
+        let show_branch = self.shows_reply_branches();
         if show_branch {
             self.emit(BackendEvent::ReplyBranchStarted {
                 session_id: session.id.clone(),
@@ -1389,6 +1712,11 @@ impl Agent {
     ///
     /// Runs the branch in the background and returns immediately, matching the
     /// one-way inbound hook contract.
+    ///
+    /// 单会话模式（默认）：注册（含会话串行闸门）在分支任务内完成——QQ 入站
+    /// 不因排队而阻塞，排队中的分支同样可被取消，且本轮拿到的是前一轮结束后
+    /// 的上下文快照。并行多会话模式：到达即注册并取快照（与旧行为一致），
+    /// 各分支并发执行。
     pub(crate) async fn process_inbound_branch(
         self: &Arc<Self>,
         session: &Session,
@@ -1402,11 +1730,82 @@ impl Agent {
             return;
         }
         let content = content.to_string();
-        let (registration, history_snapshot) = self
-            .register_incoming_branch(session, &content, message_sequence)
-            .await;
-        let branch_id = registration.id.clone();
+        let session = session.clone();
+        // 能力开关：禁用时跳过 ReplyBranch* 可见性事件（分支照常执行）。
+        let show_branch = self.shows_reply_branches();
+        let serial = self.loop_mode() == echo_defs::LoopMode::Single;
+        if serial {
+            let agent = Arc::clone(self);
+            tokio::spawn(async move {
+                let Some((registration, history_snapshot, slot)) = agent
+                    .register_incoming_branch(&session, &content, message_sequence)
+                    .await
+                else {
+                    tracing::info!(
+                        session = %session.id,
+                        message_sequence,
+                        "queued inbound branch cancelled before it started"
+                    );
+                    return;
+                };
+                agent
+                    .run_inbound_turn(
+                        session,
+                        content,
+                        message_sequence,
+                        group_id,
+                        wait_reply_after,
+                        show_branch,
+                        registration,
+                        history_snapshot,
+                        slot,
+                    )
+                    .await;
+            });
+            return;
+        }
+        let (registration, history_snapshot, slot) = self
+            .register_incoming_branch(&session, &content, message_sequence)
+            .await
+            .expect("parallel mode never cancels before the branch starts");
+        let agent = Arc::clone(self);
+        tokio::spawn(async move {
+            agent
+                .run_inbound_turn(
+                    session,
+                    content,
+                    message_sequence,
+                    group_id,
+                    wait_reply_after,
+                    show_branch,
+                    registration,
+                    history_snapshot,
+                    slot,
+                )
+                .await;
+        });
+    }
+
+    /// 分支主体（两模式共用）：可见性事件 + 有界等待回复 + 执行 + 收尾。
+    ///
+    /// `_serial` 在单会话模式下是本会话的排队闸门，持有到本轮结束（任何
+    /// 返回路径都会 drop 让位）。
+    #[allow(clippy::too_many_arguments)]
+    async fn run_inbound_turn(
+        self: Arc<Self>,
+        session: Session,
+        content: String,
+        message_sequence: u64,
+        group_id: Option<String>,
+        wait_reply_after: std::time::Duration,
+        show_branch: bool,
+        registration: InboundTurnRegistration,
+        history_snapshot: Vec<ChatMessage>,
+        _serial: Option<tokio::sync::OwnedMutexGuard<()>>,
+    ) {
+        let agent = Arc::clone(&self);
         let session_id = session.id.clone();
+        let branch_id = registration.id.clone();
         tracing::info!(
             session = %session_id,
             message_sequence,
@@ -1414,10 +1813,8 @@ impl Agent {
             started_at_ms = chrono::Utc::now().timestamp_millis(),
             "temporary inbound reply branch started"
         );
-        // 能力开关：禁用时跳过 ReplyBranch* 可见性事件（分支照常执行）。
-        let show_branch = self.allows_reply_branches();
         if show_branch {
-            self.emit(BackendEvent::ReplyBranchStarted {
+            agent.emit(BackendEvent::ReplyBranchStarted {
                 session_id: session_id.clone(),
                 branch_id: branch_id.clone(),
                 message_sequence,
@@ -1426,12 +1823,11 @@ impl Agent {
                 started_at_ms: chrono::Utc::now().timestamp_millis(),
             });
         }
-
         let (visible_reply_tx, visible_reply_rx) = tokio::sync::watch::channel(false);
         let branch_completed = tokio_util::sync::CancellationToken::new();
         let group_id_for_wait = group_id.clone();
         spawn_contextual_wait_reply(
-            Arc::clone(self),
+            Arc::clone(&agent),
             session.clone(),
             branch_id.clone(),
             group_id_for_wait,
@@ -1440,100 +1836,92 @@ impl Agent {
             branch_completed.clone(),
             wait_reply_after,
         );
+        let turn_cancel = registration.cancel.clone();
+        let result = agent
+            .process_recorded_message_with_progress(
+                &session,
+                &content,
+                history_snapshot,
+                turn_cancel.clone(),
+                Some(visible_reply_tx),
+                &branch_id,
+            )
+            .await;
+        branch_completed.cancel();
+        let cancelled = turn_cancel.is_cancelled()
+            || result.as_ref().err().is_some_and(Self::is_turn_cancelled);
+        agent.finish_inbound_turn(&branch_id);
 
-        let agent = Arc::clone(self);
-        let session = session.clone();
-        let session_id = session_id.clone();
-        let branch_id = branch_id.clone();
-        let group_id = group_id.clone();
-        tokio::spawn(async move {
-            let turn_cancel = registration.cancel.clone();
-            let result = agent
-                .process_recorded_message_with_progress(
-                    &session,
-                    &content,
-                    history_snapshot,
-                    turn_cancel.clone(),
-                    Some(visible_reply_tx),
-                    &branch_id,
-                )
-                .await;
-            branch_completed.cancel();
-            let cancelled = turn_cancel.is_cancelled()
-                || result.as_ref().err().is_some_and(Self::is_turn_cancelled);
-            agent.finish_inbound_turn(&branch_id);
-
-            tracing::info!(
-                session = %session_id,
+        tracing::info!(
+            session = %session_id,
+            message_sequence,
+            branch_id = %branch_id,
+            success = result.is_ok() && !cancelled,
+            cancelled,
+            completed_at_ms = chrono::Utc::now().timestamp_millis(),
+            "temporary inbound reply branch finished"
+        );
+        if show_branch {
+            agent.emit(BackendEvent::ReplyBranchCompleted {
+                session_id: session_id.clone(),
+                branch_id: branch_id.clone(),
                 message_sequence,
-                branch_id = %branch_id,
-                success = result.is_ok() && !cancelled,
+                success: result.is_ok() && !cancelled,
                 cancelled,
-                completed_at_ms = chrono::Utc::now().timestamp_millis(),
-                "temporary inbound reply branch finished"
-            );
-            if show_branch {
-                agent.emit(BackendEvent::ReplyBranchCompleted {
-                    session_id: session_id.clone(),
-                    branch_id: branch_id.clone(),
+                completed_at_ms: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+        match result {
+            Ok(output) => {
+                if !output.trim().is_empty() {
+                    agent.emit(BackendEvent::AgentOutput {
+                        session_id: session_id.clone(),
+                        content: output,
+                        branch_id: Some(branch_id.clone()),
+                        team_id: None,
+                    });
+                }
+                tracing::info!(
+                    session = %session_id,
                     message_sequence,
-                    success: result.is_ok() && !cancelled,
-                    cancelled,
-                    completed_at_ms: chrono::Utc::now().timestamp_millis(),
+                    "inbound adapter message processed"
+                );
+            }
+            Err(error) if Self::is_turn_cancelled(&error) => {
+                agent.emit(BackendEvent::AgentCompleted {
+                    session_id: session_id.clone(),
+                });
+                tracing::info!(
+                    session = %session_id,
+                    message_sequence,
+                    "inbound adapter task cancelled"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(%error, session = %session_id, "agent processing failed");
+                agent.emit(BackendEvent::Error {
+                    session_id: Some(session_id.clone()),
+                    message: error.to_string(),
+                });
+                // The platform user has no view of backend Error events —
+                // send a bounded failure notice so they are not left
+                // wondering why no reply arrived.
+                let agent = Arc::clone(&agent);
+                let session = session.clone();
+                let session_id = session_id.clone();
+                let group_id = group_id.clone();
+                tokio::spawn(async move {
+                    let notice = format!("处理失败：{error}");
+                    let notice: String = notice.chars().take(500).collect();
+                    if let Err(send_error) = agent
+                        .send_control_reply(&session, group_id.as_deref(), &notice)
+                        .await
+                    {
+                        tracing::warn!(%send_error, session = %session_id, "failure notice could not be delivered");
+                    }
                 });
             }
-            match result {
-                Ok(output) => {
-                    if !output.trim().is_empty() {
-                        agent.emit(BackendEvent::AgentOutput {
-                            session_id: session_id.clone(),
-                            content: output,
-                            branch_id: Some(branch_id.clone()),
-                            team_id: None,
-                        });
-                    }
-                    tracing::info!(
-                        session = %session_id,
-                        message_sequence,
-                        "inbound adapter message processed"
-                    );
-                }
-                Err(error) if Self::is_turn_cancelled(&error) => {
-                    agent.emit(BackendEvent::AgentCompleted {
-                        session_id: session_id.clone(),
-                    });
-                    tracing::info!(
-                        session = %session_id,
-                        message_sequence,
-                        "inbound adapter task cancelled"
-                    );
-                }
-                Err(error) => {
-                    tracing::warn!(%error, session = %session_id, "agent processing failed");
-                    agent.emit(BackendEvent::Error {
-                        session_id: Some(session_id.clone()),
-                        message: error.to_string(),
-                    });
-                    // The platform user has no view of backend Error events —
-                    // send a bounded failure notice so they are not left
-                    // wondering why no reply arrived.
-                    let agent = Arc::clone(&agent);
-                    let session = session.clone();
-                    let session_id = session_id.clone();
-                    let group_id = group_id.clone();
-                    tokio::spawn(async move {
-                        let notice = format!("处理失败：{error}");
-                        let notice: String = notice.chars().take(500).collect();
-                        if let Err(send_error) = agent
-                            .send_control_reply(&session, group_id.as_deref(), &notice)
-                            .await
-                        {
-                            tracing::warn!(%send_error, session = %session_id, "failure notice could not be delivered");
-                        }
-                    });
-                }
-            }
-        });
+        }
     }
 
     /// 经 echo-loop TurnRunner 驱动一轮（仅普通输入；`history_snapshot` 由
@@ -1551,13 +1939,12 @@ impl Agent {
         // 系统提示词（与内置循环一致，按块构建后合并）。
         let blocks = self.build_prompt_blocks(content, None).await;
         let system_prompt = join_prompt_blocks(&blocks);
-        let history = history_snapshot.unwrap_or_else(|| {
-            session.history.blocking_lock().clone()
-        });
+        let history = history_snapshot.unwrap_or_else(|| session.history.blocking_lock().clone());
         // 工具 schema：注册表定义 + 动态编排过滤（与内置循环同源）。
         let mut tools = (*self.tools.definitions().await).clone();
         let config = self.config.read().await;
-        let dynamic = orchestration::tool_definitions(config.self_update.enabled, config.sudo.enabled);
+        let dynamic =
+            orchestration::tool_definitions(config.self_update.enabled, config.sudo.enabled);
         drop(config);
         tools.extend(
             dynamic
@@ -1576,7 +1963,9 @@ impl Agent {
             let this = self;
             let executor = |sid: &str, _branch: &str, call: &crate::llm::ToolCall| {
                 tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(this.run_tool(sid, branch_id, call)).text
+                    tokio::runtime::Handle::current()
+                        .block_on(this.run_tool(sid, branch_id, call))
+                        .text
                 })
             };
             let extras = echo_loop::runner::RunExtras {
@@ -1612,7 +2001,6 @@ impl Agent {
         visible_reply: Option<tokio::sync::watch::Sender<bool>>,
         branch_id: &str,
     ) -> Result<String> {
-
         // ── 可插拔循环驱动（echo-loop）──
         // loop.runner 插件启用且持有 TurnRunner 时，普通输入（非 QQ hook/
         // 定时器/QQ 会话——边界与投递语义仍由内置循环保证）经 TurnRunner 的
@@ -1700,8 +2088,11 @@ impl Agent {
         );
         // max_tool_iterations == 0 still allows one direct reply (without tools).
         let max_iterations = self.config.read().await.max_tool_iterations.max(1);
+        // None/0 = 无上限（后端回退 DEFAULT_MAX_TOKENS=128K）。
+        let max_tokens = self.config.read().await.effective_max_tokens();
         let mut delivered_targets = std::collections::HashSet::new();
         let mut delivery_reminders = 0usize;
+        let mut truncation_continues = 0usize;
 
         for _ in 0..max_iterations {
             if turn_cancel.is_cancelled() {
@@ -1717,7 +2108,7 @@ impl Agent {
                 messages: messages.clone(),
                 tools: Some(tools.clone()),
                 temperature: None,
-                max_tokens: None,
+                max_tokens,
             };
             let provider = self.provider.read().await.clone();
             let response = tokio::select! {
@@ -1741,6 +2132,35 @@ impl Agent {
                 prompt_tokens: response.usage.prompt_tokens,
                 completion_tokens: response.usage.completion_tokens,
             });
+
+            if response.truncated() {
+                // 输出被 token 上限截断：残片（含未写完的工具调用）不能当作
+                // 正常收尾——丢弃半截工具调用，已生成文本入栈，让模型续写。
+                // 历史上这里直接返回空 reply，表现为"agent 自己断掉"。
+                truncation_continues += 1;
+                tracing::warn!(
+                    turn_id = %turn_id,
+                    session = %session_id,
+                    truncation_continues,
+                    stop_reason = ?response.stop_reason,
+                    "model output truncated at token limit; continuing"
+                );
+                if truncation_continues > MAX_TRUNCATION_CONTINUES {
+                    return Err(anyhow!(
+                        "model output was truncated at the token limit {MAX_TRUNCATION_CONTINUES} times in one turn; giving up"
+                    ));
+                }
+                if let Some(text) = &response.content {
+                    if !text.trim().is_empty() {
+                        messages.push(ChatMessage::assistant_with_reasoning(
+                            text.clone(),
+                            response.reasoning_content.clone(),
+                        ));
+                    }
+                }
+                messages.push(ChatMessage::user(TRUNCATION_CONTINUE_PROMPT));
+                continue;
+            }
 
             if response.tool_calls.is_empty() {
                 let reply = response.content.unwrap_or_default();
@@ -1849,7 +2269,9 @@ impl Agent {
                         (
                             config.effective_tool_timeout(),
                             std::time::Duration::from_secs(
-                                config.sudo.auth_timeout_secs + config.sudo.command_timeout_secs + 30,
+                                config.sudo.auth_timeout_secs
+                                    + config.sudo.command_timeout_secs
+                                    + 30,
                             ),
                         )
                     };
@@ -1911,15 +2333,14 @@ impl Agent {
                     elapsed_ms = tool_started.elapsed().as_millis() as u64,
                     "agent tool call completed"
                 );
-                if let Some(delivery_key) = delivery_key.filter(|_| success)
-                {
+                if let Some(delivery_key) = delivery_key.filter(|_| success) {
                     delivered_targets.insert(delivery_key);
                     if let Some(visible_reply) = &visible_reply {
                         let _ = visible_reply.send(true);
                     }
                 }
                 messages.push(ChatMessage::tool_with_images(
-                    result.text.clone(),
+                    echo_defs::media::compact_embedded_media(&result.text, &result.images),
                     &call.id,
                     result.images.clone(),
                 ));
@@ -2873,6 +3294,121 @@ impl Agent {
         });
     }
 
+    /// 查询 API 账户余额（目前仅 DeepSeek 官方端点支持 `/user/balance`）。
+    ///
+    /// `name` 空 = 全局默认配置，非空 = 该 profile；用 profile 自身的
+    /// api_key / base_url 请求。响应示例：
+    /// `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"110.00",...}]}`
+    async fn query_api_balance(&self, name: &str) {
+        let config = self.config.read().await.clone();
+        let probe = match resolve_probe_config(&config, name) {
+            Ok(probe) => probe,
+            Err(message) => {
+                self.emit_balance_fail(name, message).await;
+                return;
+            }
+        };
+        let Some(endpoint) = deepseek_balance_endpoint(&probe.base_url) else {
+            self.emit_balance_fail(
+                name,
+                format!(
+                    "余额查询仅支持 DeepSeek 官方端点（当前 base_url: {}）",
+                    probe.base_url
+                ),
+            )
+            .await;
+            return;
+        };
+        let api_key = probe.effective_api_key();
+        if api_key.is_empty() {
+            self.emit_balance_fail(name, "缺少 API Key，无法查询余额".into())
+                .await;
+            return;
+        }
+
+        #[derive(serde::Deserialize)]
+        struct BalanceResponse {
+            #[serde(default)]
+            is_available: bool,
+            #[serde(default)]
+            balance_infos: Vec<BalanceInfo>,
+        }
+        #[derive(serde::Deserialize)]
+        struct BalanceInfo {
+            #[serde(default)]
+            currency: String,
+            #[serde(default)]
+            total_balance: String,
+        }
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let client = reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .map_err(|e| format!("HTTP client build failed: {e}"))?;
+            let response = client
+                .get(&endpoint)
+                .bearer_auth(&api_key)
+                .send()
+                .await
+                .map_err(|e| format!("请求失败: {e}"))?;
+            let status = response.status();
+            let text = response
+                .text()
+                .await
+                .map_err(|e| format!("读取响应失败: {e}"))?;
+            if !status.is_success() {
+                return Err(format!(
+                    "HTTP {status}: {}",
+                    echo_defs::token::truncate(&text, 200)
+                ));
+            }
+            let parsed: BalanceResponse = serde_json::from_str(&text).map_err(|e| {
+                format!(
+                    "响应解析失败: {e} — body: {}",
+                    echo_defs::token::truncate(&text, 200)
+                )
+            })?;
+            Ok::<BalanceResponse, String>(parsed)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(parsed)) => {
+                let info = parsed.balance_infos.first();
+                self.emit(BackendEvent::ApiBalanceResult {
+                    name: name.into(),
+                    ok: true,
+                    available: parsed.is_available,
+                    total: info.map(|i| i.total_balance.clone()).unwrap_or_default(),
+                    currency: info.map(|i| i.currency.clone()).unwrap_or_default(),
+                    message: if parsed.is_available {
+                        "余额已更新".into()
+                    } else {
+                        "账户当前不可用（余额不足或已停用）".into()
+                    },
+                });
+            }
+            Ok(Err(message)) => self.emit_balance_fail(name, message).await,
+            Err(_) => {
+                self.emit_balance_fail(name, "请求超时（>15s）".into())
+                    .await
+            }
+        }
+    }
+
+    /// 余额查询失败时发 `ApiBalanceResult{ok:false}`。
+    async fn emit_balance_fail(&self, name: &str, message: String) {
+        self.emit(BackendEvent::ApiBalanceResult {
+            name: name.into(),
+            ok: false,
+            available: false,
+            total: String::new(),
+            currency: String::new(),
+            message,
+        });
+    }
+
     /// Persist the system prompt plugin text to `[plugins.system_prompt]`
     /// instead of `[agent]`. The API config no longer owns the system prompt.
     async fn persist_system_prompt_plugin(&self, text: &str) {
@@ -2939,6 +3475,25 @@ impl Agent {
 /// in; otherwise the named profile's non-empty values override the current
 /// effective config. Returns an error string when the profile does not exist
 /// or the resolved config has no provider.
+/// 从 base_url 推导 DeepSeek 余额查询端点。
+///
+/// `https://api.deepseek.com/anthropic` / `.../v1` / `.../beta` / 裸域
+/// 统一映射为 `{root}/user/balance`；非 DeepSeek 域返回 None。
+fn deepseek_balance_endpoint(base_url: &str) -> Option<String> {
+    let mut root = base_url.trim().trim_end_matches('/');
+    for suffix in ["/anthropic", "/v1", "/beta"] {
+        if let Some(stripped) = root.strip_suffix(suffix) {
+            root = stripped;
+            break;
+        }
+    }
+    if root.contains("deepseek.com") {
+        Some(format!("{root}/user/balance"))
+    } else {
+        None
+    }
+}
+
 fn resolve_probe_config(
     config: &crate::config::AgentConfig,
     name: &str,
@@ -3284,9 +3839,12 @@ pub(crate) fn invalid_tool_arguments(
 /// durable `UserMessage` event so session replay keeps the multimodal
 /// content. Returns an empty vec for plain text.
 /// 单张图片（URL 或 data URI 字符串）进入持久化/模型请求的上限。
-/// 超过的 data URI 直接丢弃（downstream 已按源码大小限制，这里兜底，
-/// 防止超大 base64 撑大会话日志与每次请求的 prompt）。
-const MAX_INPUT_IMAGE_CHARS: usize = 8 * 1024 * 1024;
+///
+/// 上限对齐各入口的内嵌上限：QQ 适配器按解码后 ≤10MB 内嵌
+/// （`MAX_EMBEDDED_IMAGE_BYTES`，base64 后约 13.4M 字符），Panel 把 data URL
+/// 压到 ≤1.5M 字符。这里留一档余量兜底，只拦真正的异常负载——图片本身
+/// 走 image 块，体积不影响 token，超限只发生在编码前的极端输入上。
+const MAX_INPUT_IMAGE_CHARS: usize = 16 * 1024 * 1024;
 
 pub(crate) fn extract_input_images(content: &str) -> Vec<String> {
     let Some(payload) = crate::input_marker::hook_payload(content) else {
@@ -3310,6 +3868,18 @@ pub(crate) fn extract_input_images(content: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 /// Whether a plugin with `id` is already registered in the host.
+/// persona 名单对某工具是否允许（白名单非空 = 仅列出；黑名单命中即拒绝）。
+fn persona_tool_allowed(profile: &crate::config::AgentProfile, name: &str) -> bool {
+    (profile.enabled_tools.is_empty() || profile.enabled_tools.iter().any(|t| t == name))
+        && !profile.disabled_tools.iter().any(|t| t == name)
+}
+
+/// persona 名单对某技能是否允许（语义同 [`persona_tool_allowed`]）。
+fn persona_skill_allowed(profile: &crate::config::AgentProfile, name: &str) -> bool {
+    (profile.enabled_skills.is_empty() || profile.enabled_skills.iter().any(|s| s == name))
+        && !profile.disabled_skills.iter().any(|s| s == name)
+}
+
 fn desc_exists(host: &crate::plugins::PluginHost, id: &str) -> bool {
     host.descriptors().iter().any(|d| d.id == id)
 }
@@ -3356,14 +3926,14 @@ pub(crate) fn spawn_contextual_wait_reply(
                     .await
                 {
                     tracing::warn!(%error, session = %session.id, "wait reply send failed");
-                    if agent.allows_reply_branches() {
+                    if agent.shows_reply_branches() {
                         agent.emit(BackendEvent::ReplyBranchContent {
                             session_id: session.id.clone(),
                             branch_id,
                             content: format!("临时回复发送失败：{error}\n待发送内容：{reply}"),
                         });
                     }
-                } else if agent.allows_reply_branches() {
+                } else if agent.shows_reply_branches() {
                     agent.emit(BackendEvent::ReplyBranchContent {
                         session_id: session.id.clone(),
                         branch_id,
@@ -3428,6 +3998,7 @@ pub mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             assert_eq!(request.messages[0].role, crate::llm::ChatRole::System);
             Ok(ChatResponse {
+                stop_reason: None,
                 content: Some(self.reply.clone()),
                 reasoning_content: None,
                 tool_calls: vec![],
@@ -3467,6 +4038,79 @@ pub mod tests {
                 .next_back()
                 .unwrap_or_default();
             Ok(ChatResponse {
+                stop_reason: None,
+                content: Some(format!("reply-{sequence}")),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                usage: Usage::default(),
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: &ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
+        ) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
+    /// 记录每次请求看到的历史，并在测试放行前一直挂起（用于单会话排队断言）。
+    #[derive(Clone)]
+    struct SnapshotProvider {
+        calls: Arc<AtomicUsize>,
+        seen: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        gate: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl SnapshotProvider {
+        /// 等第一次模型调用进入（此后队列闸门被第一个 turn 持有）。
+        async fn wait_entered(&self) {
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while self.calls.load(Ordering::SeqCst) == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("first turn should reach the provider");
+        }
+
+        /// 放行所有挂起的模型调用。
+        fn release(&self) {
+            self.gate.add_permits(8);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for SnapshotProvider {
+        fn name(&self) -> &str {
+            "snapshot"
+        }
+
+        fn default_model(&self) -> &str {
+            "snapshot"
+        }
+
+        async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError> {
+            let seen: Vec<String> = request
+                .messages
+                .iter()
+                .map(|message| message.content.clone())
+                .collect();
+            let sequence = seen
+                .iter()
+                .filter_map(|content| structured_message_sequence(content))
+                .next_back()
+                .unwrap_or_default();
+            self.seen.lock().expect("seen poisoned").push(seen);
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.gate
+                .acquire()
+                .await
+                .expect("gate semaphore should stay open")
+                .forget();
+            Ok(ChatResponse {
+                stop_reason: None,
                 content: Some(format!("reply-{sequence}")),
                 reasoning_content: None,
                 tool_calls: Vec::new(),
@@ -3657,7 +4301,10 @@ pub mod tests {
         assert_eq!(timeline[0].content, "先查资料");
         assert_eq!(timeline[1].kind, "backend");
         assert_eq!(timeline[1].content, "done");
-        assert!(timeline[1].reasoning.is_none(), "reasoning is a standalone entry");
+        assert!(
+            timeline[1].reasoning.is_none(),
+            "reasoning is a standalone entry"
+        );
     }
 
     #[tokio::test]
@@ -3677,8 +4324,9 @@ pub mod tests {
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     }
 
+    /// 并行多会话模式：同一会话的多个 turn 并发进入模型，按请求序号合并。
     #[tokio::test]
-    async fn ordinary_turns_run_in_parallel_and_merge_by_request_sequence() {
+    async fn parallel_mode_runs_turns_concurrently_and_merges_by_request_sequence() {
         let entered = Arc::new(AtomicUsize::new(0));
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let provider = Arc::new(ConcurrentProvider {
@@ -3686,6 +4334,9 @@ pub mod tests {
             release: Arc::clone(&release),
         });
         let agent = Arc::new(test_agent(provider));
+        agent
+            .set_loop_mode_for_test(echo_defs::LoopMode::Parallel)
+            .await;
         let session = agent
             .trunk
             .get_or_create(&SessionKey::local_tui(), "user".into(), None);
@@ -3722,6 +4373,82 @@ pub mod tests {
         assert_eq!(history[3].content, "reply-2");
     }
 
+    /// 单会话模式隐藏并行分支工具；并行模式恢复（工具 schema 与提示词同源）。
+    #[tokio::test]
+    async fn spawn_parallel_task_is_hidden_in_single_mode() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Arc::new(test_agent(provider));
+        assert!(!agent.allows_dynamic_tool("spawn_parallel_task"));
+        assert!(agent.allows_dynamic_tool("spawn_background_task"));
+        assert!(agent.allows_dynamic_tool("run_subagent"));
+        agent
+            .set_loop_mode_for_test(echo_defs::LoopMode::Parallel)
+            .await;
+        assert!(agent.allows_dynamic_tool("spawn_parallel_task"));
+    }
+
+    /// 单会话模式（默认）：同一会话的 turn 串行排队——第二个 turn 拿到的是
+    /// 第一轮结束后的上下文（能看到 reply-1），且不会并发进入模型。
+    #[tokio::test]
+    async fn single_mode_serialises_turns_and_second_turn_sees_the_first_reply() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(SnapshotProvider {
+            calls: Arc::clone(&calls),
+            seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+            gate: Arc::new(tokio::sync::Semaphore::new(0)),
+        });
+        let agent = Arc::new(test_agent(provider.clone()));
+        // 默认即单会话：不做任何配置。
+        assert_eq!(agent.loop_mode(), echo_defs::LoopMode::Single);
+        let session = agent
+            .trunk
+            .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+        let first = r#"<backend_message_hook>{"message_sequence":1,"content":"first"}</backend_message_hook>"#;
+        let second = r#"<backend_message_hook>{"message_sequence":2,"content":"second"}</backend_message_hook>"#;
+
+        let first_task = {
+            let agent = Arc::clone(&agent);
+            let session = session.clone();
+            tokio::spawn(async move { agent.process_message(&session, first).await })
+        };
+        // 等第一轮真的进入模型（持有队列闸门），再投第二个输入。
+        provider.wait_entered().await;
+        let second_task = {
+            let agent = Arc::clone(&agent);
+            let session = session.clone();
+            tokio::spawn(async move { agent.process_message(&session, second).await })
+        };
+        // 第二个 turn 必须排队：闸门仍被第一轮持有，模型调用数不增加。
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "second turn must wait");
+        assert_eq!(
+            agent.active_inbound_turn_count(),
+            2,
+            "queued turn is cancellable"
+        );
+
+        provider.release();
+        first_task.await.unwrap().unwrap();
+        second_task.await.unwrap().unwrap();
+
+        let seen = provider.seen.lock().expect("seen poisoned").clone();
+        assert_eq!(seen.len(), 2, "both turns ran");
+        assert!(
+            seen[1].iter().any(|content| content == "reply-1"),
+            "the queued turn must see the first reply: {:?}",
+            seen[1]
+        );
+        let history = session.history.lock().await;
+        assert_eq!(history.len(), 4);
+        assert_eq!(structured_message_sequence(&history[0].content), Some(1));
+        assert_eq!(history[1].content, "reply-1");
+        assert_eq!(structured_message_sequence(&history[2].content), Some(2));
+        assert_eq!(history[3].content, "reply-2");
+    }
+
     #[tokio::test]
     async fn request_trunk_timeline_returns_the_persisted_history() {
         let provider = Arc::new(MockProvider {
@@ -3748,7 +4475,10 @@ pub mod tests {
         });
 
         agent
-            .apply_command(BackendCommand::RequestTrunkTimeline { team_id: None, since_seq: 0 })
+            .apply_command(BackendCommand::RequestTrunkTimeline {
+                team_id: None,
+                since_seq: 0,
+            })
             .await;
         let mut events = Vec::new();
         while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
@@ -4216,18 +4946,12 @@ pub mod tests {
         )
         .is_some());
         // 参数不是对象：所有必需字段都缺失
-        assert!(
-            invalid_tool_arguments("bash", "[]", &serde_json::Value::Null, &schema)
-                .is_some()
-        );
+        assert!(invalid_tool_arguments("bash", "[]", &serde_json::Value::Null, &schema).is_some());
         // 字段齐全（含空字符串——合法值，不算缺失）：通过
-        assert!(invalid_tool_arguments(
-            "bash",
-            "{}",
-            &serde_json::json!({"command": ""}),
-            &schema,
-        )
-        .is_none());
+        assert!(
+            invalid_tool_arguments("bash", "{}", &serde_json::json!({"command": ""}), &schema,)
+                .is_none()
+        );
         // schema 无 required：不预检
         let free = serde_json::json!({"type": "object", "properties": {}});
         assert!(invalid_tool_arguments("stub", "{}", &serde_json::json!({}), &free).is_none());
@@ -4578,6 +5302,7 @@ pub mod tests {
 
     fn tool_call(id: &str, name: &str) -> ChatResponse {
         ChatResponse {
+            stop_reason: None,
             content: Some(format!("calling {name}")),
             reasoning_content: None,
             tool_calls: vec![ToolCall {
@@ -4594,6 +5319,7 @@ pub mod tests {
         let script = vec![
             tool_call("call_1", "mock_tool"),
             ChatResponse {
+                stop_reason: None,
                 content: Some("final answer".into()),
                 reasoning_content: None,
                 tool_calls: vec![],
@@ -4631,6 +5357,7 @@ pub mod tests {
         let provider = Arc::new(ScriptedProvider::new(vec![
             first,
             ChatResponse {
+                stop_reason: None,
                 content: Some("done".into()),
                 reasoning_content: Some("工具返回成功".into()),
                 tool_calls: Vec::new(),
@@ -4673,12 +5400,14 @@ pub mod tests {
     async fn qq_hook_retries_backend_only_reply_until_send_tool_is_called() {
         let script = vec![
             ChatResponse {
+                stop_reason: None,
                 content: Some("backend only".into()),
                 reasoning_content: None,
                 tool_calls: vec![],
                 usage: Usage::default(),
             },
             ChatResponse {
+                stop_reason: None,
                 content: None,
                 reasoning_content: None,
                 tool_calls: vec![ToolCall {
@@ -4689,6 +5418,7 @@ pub mod tests {
                 usage: Usage::default(),
             },
             ChatResponse {
+                stop_reason: None,
                 content: Some("delivered".into()),
                 reasoning_content: None,
                 tool_calls: vec![],
@@ -4801,6 +5531,43 @@ pub mod tests {
     }
 
     #[test]
+    fn inbound_image_hook_yields_a_compact_model_request() {
+        // 端到端护栏：大图入站后，模型请求里不允许再出现 base64 —— 图片只走
+        // image 块，文本里是占位符（1.3MB 截图 ≈ 125 万文本 token 的根因）。
+        let payload = "A".repeat(6000);
+        let uri = format!("data:image/png;base64,{payload}");
+        let hook = format!(
+            "<backend_message_hook>{{\"message_sequence\":15,\"content\":\"看截图\",\"images\":[\"{uri}\"]}}</backend_message_hook>"
+        );
+        let images = extract_input_images(&hook);
+        assert_eq!(images, vec![uri.clone()]);
+
+        let log = vec![echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                content: hook.clone(),
+                timestamp: 0,
+                message_sequence: Some(15),
+                source: None,
+                images,
+            },
+        )];
+        let messages = echo_session::derive::derive_messages(&log, 800_000);
+        assert_eq!(messages.len(), 1);
+        assert!(
+            !messages[0].content.contains("AAAA"),
+            "base64 must not reach the model text"
+        );
+        assert!(messages[0].content.contains("[图片#1]"));
+        assert_eq!(
+            messages[0].images.len(),
+            1,
+            "image block still carries the payload"
+        );
+        // 单条消息的估算成本从 6000+ 降到占位符级别。
+        assert!(echo_defs::token::estimate_message_tokens(&messages[0]) < 500);
+    }
+
+    #[test]
     fn user_message_event_roundtrips_images() {
         let hook = r#"<qq_message_hook>{"message_sequence":3,"content":"看图","images":["https://example.com/a.png"]}</qq_message_hook>"#;
         let event = echo_session::event::UserMessage {
@@ -4857,6 +5624,30 @@ pub mod tests {
         // 不存在的 profile → 明确报错。
         let err = resolve_probe_config(&cfg, "nope").unwrap_err();
         assert!(err.contains("profile not found"));
+    }
+
+    #[test]
+    fn deepseek_balance_endpoint_maps_official_variants() {
+        // Anthropic / OpenAI / beta / 裸域 → 统一 /user/balance
+        assert_eq!(
+            deepseek_balance_endpoint("https://api.deepseek.com/anthropic").as_deref(),
+            Some("https://api.deepseek.com/user/balance")
+        );
+        assert_eq!(
+            deepseek_balance_endpoint("https://api.deepseek.com/v1").as_deref(),
+            Some("https://api.deepseek.com/user/balance")
+        );
+        assert_eq!(
+            deepseek_balance_endpoint("https://api.deepseek.com").as_deref(),
+            Some("https://api.deepseek.com/user/balance")
+        );
+        assert_eq!(
+            deepseek_balance_endpoint("https://api.deepseek.com/").as_deref(),
+            Some("https://api.deepseek.com/user/balance")
+        );
+        // 非 DeepSeek 域 → None（前端不展示余额入口）
+        assert!(deepseek_balance_endpoint("https://uuapi.io/v1").is_none());
+        assert!(deepseek_balance_endpoint("https://api.openai.com/v1").is_none());
     }
 
     #[test]
@@ -4988,6 +5779,7 @@ pub mod tests {
         let script = vec![
             tool_call("call_1", "missing_tool"),
             ChatResponse {
+                stop_reason: None,
                 content: Some("done".into()),
                 reasoning_content: None,
                 tool_calls: vec![],
@@ -5012,6 +5804,7 @@ pub mod tests {
     async fn subagent_runs_without_tools_and_returns_to_parent() {
         let script = vec![
             ChatResponse {
+                stop_reason: None,
                 content: None,
                 reasoning_content: None,
                 tool_calls: vec![ToolCall {
@@ -5026,12 +5819,14 @@ pub mod tests {
                 usage: Usage::default(),
             },
             ChatResponse {
+                stop_reason: None,
                 content: Some("isolated result".into()),
                 reasoning_content: None,
                 tool_calls: vec![],
                 usage: Usage::default(),
             },
             ChatResponse {
+                stop_reason: None,
                 content: Some("parent final".into()),
                 reasoning_content: None,
                 tool_calls: vec![],
@@ -5124,6 +5919,7 @@ pub mod tests {
     async fn due_timer_reenters_the_original_session() {
         let script = vec![
             ChatResponse {
+                stop_reason: None,
                 content: None,
                 reasoning_content: None,
                 tool_calls: vec![ToolCall {
@@ -5138,12 +5934,14 @@ pub mod tests {
                 usage: Usage::default(),
             },
             ChatResponse {
+                stop_reason: None,
                 content: Some("timer scheduled".into()),
                 reasoning_content: None,
                 tool_calls: vec![],
                 usage: Usage::default(),
             },
             ChatResponse {
+                stop_reason: None,
                 content: Some("timer completed".into()),
                 reasoning_content: None,
                 tool_calls: vec![],

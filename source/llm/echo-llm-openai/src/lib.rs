@@ -31,9 +31,9 @@ impl OpenAiProvider {
             model: model.to_string(),
             thinking: None,
             reasoning_effort: echo_defs::ReasoningEffort::default(),
-            // 超时保护：上游挂起时不能让 agent 任务无限阻塞
+            // 保留连接超时防止上游挂死；不设总超时——思考模式 + 大
+            // completion 预算下单次响应可能合法地跑数分钟。
             client: match reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()
             {
@@ -85,14 +85,16 @@ impl LlmProvider for OpenAiProvider {
             .map_err(|e| LlmError::Http(e.to_string()))?;
         if !status.is_success() {
             return Err(LlmError::Api(format!(
-                "HTTP {status}: {}",
-                echo_defs::token::truncate(&text, 300)
+                "HTTP {status}: {}{}",
+                echo_defs::token::truncate(&text, 300),
+                html_endpoint_hint(&text)
             )));
         }
         let parsed: OpenAIResponse = serde_json::from_str(&text).map_err(|e| {
             LlmError::Parse(format!(
-                "{e} — body: {}",
-                echo_defs::token::truncate(&text, 300)
+                "{e} — body: {}{}",
+                echo_defs::token::truncate(&text, 300),
+                html_endpoint_hint(&text)
             ))
         })?;
         let choice = parsed
@@ -100,10 +102,12 @@ impl LlmProvider for OpenAiProvider {
             .into_iter()
             .next()
             .ok_or_else(|| LlmError::Api("响应中没有 choices".into()))?;
+        let finish_reason = choice.finish_reason;
         let msg = choice.message;
         Ok(ChatResponse {
             content: msg.content,
             reasoning_content: msg.reasoning_content,
+            stop_reason: finish_reason,
             tool_calls: msg
                 .tool_calls
                 .unwrap_or_default()
@@ -347,9 +351,12 @@ fn serialize_content(m: &echo_defs::message::ChatMessage) -> serde_json::Value {
     if m.images.is_empty() {
         return json!(m.content);
     }
+    // 多模态约定：图片只走 image_url part，文本里不留 base64（否则按文本
+    // token 计费）。projection 已压过一次，这里是同一规则的第二道闸门。
+    let text = echo_defs::media::compact_embedded_media(&m.content, &m.images);
     let mut parts: Vec<serde_json::Value> = Vec::new();
-    if !m.content.is_empty() {
-        parts.push(json!({"type": "text", "text": m.content}));
+    if !text.is_empty() {
+        parts.push(json!({"type": "text", "text": text}));
     }
     for image in &m.images {
         if image.starts_with("data:") {
@@ -375,6 +382,21 @@ fn serialize_content(m: &echo_defs::message::ChatMessage) -> serde_json::Value {
     }
 }
 
+/// 当响应体是 HTML（典型：base_url 指向了网页根域而非 API 前缀，如缺少
+/// `/v1`）时给出诊断提示，附在解析/HTTP 错误消息尾部。
+fn html_endpoint_hint(body: &str) -> &'static str {
+    let head = body.trim_start();
+    let lower = head
+        .get(..16)
+        .unwrap_or(head)
+        .to_ascii_lowercase();
+    if lower.starts_with("<!doctype") || lower.starts_with("<html") {
+        "\n提示：该地址返回网页而非 JSON——请检查 Base URL 是否为 API 前缀（OpenAI 兼容端点通常以 /v1 结尾）。"
+    } else {
+        ""
+    }
+}
+
 fn role_str(role: echo_defs::message::ChatRole) -> &'static str {
     match role {
         echo_defs::message::ChatRole::System => "system",
@@ -395,6 +417,9 @@ struct OpenAIResponse {
 #[derive(Deserialize)]
 struct Choice {
     message: MessageWire,
+    /// "stop" / "length" / "tool_calls" / "content_filter"；
+    /// 截断检测的唯一信号，必须透传，不能丢弃。
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -466,6 +491,19 @@ struct StreamFunctionWire {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn html_endpoint_hint_detects_webpage_bodies() {
+        assert!(!html_endpoint_hint("{\"ok\":true}").contains("提示"));
+        let html = "<!doctype html>\n<html lang=\"zh-CN\"><head>...";
+        let hint = html_endpoint_hint(html);
+        assert!(hint.contains("返回网页"), "hint: {hint}");
+        assert!(hint.contains("Base URL"), "hint must mention Base URL: {hint}");
+        // 大小写变体
+        assert!(html_endpoint_hint("<HTML>").contains("返回网页"));
+        // 前导空白容忍
+        assert!(html_endpoint_hint("  \n<!DOCTYPE html>").contains("返回网页"));
+    }
+
     use super::*;
     use echo_defs::message::ChatMessage;
 

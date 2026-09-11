@@ -164,7 +164,14 @@ impl TimelineProjector {
                 ..
             } => {
                 let failed = *timed_out || result.trim_start().starts_with("error:");
-                self.update_timeline_tool(session_id, tool_name, tool_call_id, result, failed, *timed_out);
+                self.update_timeline_tool(
+                    session_id,
+                    tool_name,
+                    tool_call_id,
+                    result,
+                    failed,
+                    *timed_out,
+                );
             }
             _ => {}
         }
@@ -201,10 +208,9 @@ impl TimelineProjector {
             timeline.iter_mut().rev().find(|entry| {
                 entry.kind == "tool"
                     && entry.session_id == session_id
-                    && entry
-                        .tool
-                        .as_ref()
-                        .is_some_and(|tool| tool.tool_call_id == tool_call_id && tool.output.is_none())
+                    && entry.tool.as_ref().is_some_and(|tool| {
+                        tool.tool_call_id == tool_call_id && tool.output.is_none()
+                    })
             })
         };
         if let Some(entry) = found {

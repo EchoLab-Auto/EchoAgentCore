@@ -25,59 +25,97 @@ pub const SKILLS_DIR_PLUGIN_ID: &str = "echo-agent.skills.dir";
 pub const CHECKLIST_PLUGIN_ID: &str = "echo-agent.checklist";
 pub const MANAGEMENT_PANEL_PLUGIN_ID: &str = "echo-agent.management.panel";
 
-/// 编排模式互斥子插件（按 persona 二选一，single 为推导兜底）：
-/// - single：单任务编排——无会话管理 UI（会话卡/全局分组隐藏）、
-///   回执分支不可见（后端不发射 ReplyBranch* 事件，分支照常执行合并）；
-/// - chatbot：多任务并行编排——会话列表/全局会话/可见回执分支全套。
-/// 两者均为名义挂载（空闭包），真实效果是 per-persona 白名单推导出的
-/// `OrchestrationMode`（见 `TeamMember::orchestration_mode`）。
-pub const SINGLE_ORCHESTRATION_PLUGIN_ID: &str = "echo-agent.orchestration.single";
-pub const CHATBOT_ORCHESTRATION_PLUGIN_ID: &str = "echo-agent.orchestration.chatbot";
+/// 循环模式互斥插件（按 persona 二选一，single 为推导兜底，也是默认）：
+/// - `loop.single`：单会话循环（默认）——同一会话内 turn 串行排队，
+///   无会话管理 UI（会话卡/全局分组隐藏）、回执分支不可见（后端不发射
+///   `ReplyBranch*` 事件，分支照常执行合并）；
+/// - `loop.parallel`：并行多会话循环——同一会话可并发分支，
+///   会话列表/全局会话/可见回执分支全套。
+/// 两者 mount 的是同一个 TurnRunner（驱动本体），真实效果是 per-persona
+/// 白名单推导出的 `LoopMode`（见 `TeamMember::loop_mode`）。
+pub const SINGLE_LOOP_PLUGIN_ID: &str = "echo-agent.loop.single";
+pub const PARALLEL_LOOP_PLUGIN_ID: &str = "echo-agent.loop.parallel";
 
-/// 旧三特性插件 id（已合并为 orchestration 互斥子插件，不再注册）：
-/// 仅用于配置迁移映射与向后兼容推导。
-pub const REPLY_BRANCH_PLUGIN_ID: &str = "echo-agent.branch.reply";
-pub const GLOBAL_SESSION_PLUGIN_ID: &str = "echo-agent.session.global";
-pub const CHAT_SESSIONS_PLUGIN_ID: &str = "echo-agent.chatbot.sessions";
+/// 旧驱动插件 id（模式插件取代后不再注册；配置加载时从名单剔除）。
+pub const LEGACY_LOOP_RUNNER_PLUGIN_ID: &str = "echo-agent.loop.runner";
 
-/// 推导编排模式时视为 chatbot 的全部 id（新 id + 旧三 id）。
-pub const CHATBOT_MODE_IDS: [&str; 4] = [
-    CHATBOT_ORCHESTRATION_PLUGIN_ID,
-    REPLY_BRANCH_PLUGIN_ID,
-    GLOBAL_SESSION_PLUGIN_ID,
-    CHAT_SESSIONS_PLUGIN_ID,
+/// 旧编排模式 id（已由循环模式插件取代）：仅用于配置迁移映射。
+pub const LEGACY_CHATBOT_MODE_IDS: [&str; 4] = [
+    "echo-agent.orchestration.chatbot",
+    "echo-agent.branch.reply",
+    "echo-agent.session.global",
+    "echo-agent.chatbot.sessions",
+];
+pub const LEGACY_SINGLE_MODE_ID: &str = "echo-agent.orchestration.single";
+
+/// 推导循环模式时视为「并行」的全部 id（新 id + 旧编排模式 id）。
+pub const PARALLEL_MODE_IDS: [&str; 5] = [
+    PARALLEL_LOOP_PLUGIN_ID,
+    LEGACY_CHATBOT_MODE_IDS[0],
+    LEGACY_CHATBOT_MODE_IDS[1],
+    LEGACY_CHATBOT_MODE_IDS[2],
+    LEGACY_CHATBOT_MODE_IDS[3],
 ];
 
-/// 旧三特性 id → chatbot 子插件 id 的归一化（配置迁移与 SaveTeam 防御共用）：
-/// 把列表中的旧 id 替换为 `CHATBOT_ORCHESTRATION_PLUGIN_ID`，去重、保序。
-/// 返回是否有改动。
+/// 名单归一化（配置加载与 SaveTeam 防御共用）：把旧编排模式 id 与旧驱动
+/// 插件 id 折叠为循环模式插件 id——chatbot/旧特性 id → `loop.parallel`，
+/// orchestration.single → `loop.single`，loop.runner → 剔除（模式插件取代）。
+/// 去重、保序。返回是否有改动。
 pub fn normalize_mode_plugins(list: &mut Vec<String>) -> bool {
     let mut changed = false;
-    for item in list.iter_mut() {
-        if matches!(
-            item.as_str(),
-            REPLY_BRANCH_PLUGIN_ID | GLOBAL_SESSION_PLUGIN_ID | CHAT_SESSIONS_PLUGIN_ID
-        ) {
-            *item = CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string();
-            changed = true;
+    let mut normalized: Vec<String> = Vec::with_capacity(list.len());
+    for item in list.iter() {
+        let is_parallel = LEGACY_CHATBOT_MODE_IDS.contains(&item.as_str());
+        let is_single = item == LEGACY_SINGLE_MODE_ID;
+        let is_legacy_runner = item == LEGACY_LOOP_RUNNER_PLUGIN_ID;
+        if !is_parallel && !is_single && !is_legacy_runner {
+            normalized.push(item.clone());
+            continue;
+        }
+        changed = true;
+        let replacement = if is_parallel {
+            Some(PARALLEL_LOOP_PLUGIN_ID)
+        } else if is_single {
+            Some(SINGLE_LOOP_PLUGIN_ID)
+        } else {
+            // 旧驱动插件 id：模式插件取代，配置里不再保留。
+            None
+        };
+        if let Some(id) = replacement {
+            if !normalized.iter().any(|existing| existing == id) {
+                normalized.push(id.to_string());
+            }
         }
     }
     if changed {
-        let mut seen = std::collections::HashSet::new();
-        list.retain(|item| seen.insert(item.clone()));
+        *list = normalized;
     }
     changed
 }
 
-/// mount 有真实包维度效果（工具/技能批量启停）的插件。persona 白名单的
-/// 启动期门控按此表遍历（management.panel 无 per-persona 注册表效果，
-/// 不在表内）。
 pub const GATED_PLUGIN_IDS: [&str; 4] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
     CHECKLIST_PLUGIN_ID,
     ADAPTER_QQ_PLUGIN_ID,
 ];
+
+/// 某 persona 的白/黑名单是否允许一个插件 id。
+///
+/// 语义：白名单非空 = 仅列出的插件；黑名单优先（命中即拒绝）。
+/// 启动期逐人格门控（core main.rs）与运行期 `Agent::apply_capabilities` /
+/// `Agent::reapply_plugin_gating` 共用本判定，避免两套规则漂移。
+pub fn profile_allows_plugin(profile: &crate::config::TeamMember, plugin_id: &str) -> bool {
+    if !profile.enabled_plugins.is_empty()
+        && !profile.enabled_plugins.iter().any(|p| p == plugin_id)
+    {
+        return false;
+    }
+    if profile.disabled_plugins.iter().any(|p| p == plugin_id) {
+        return false;
+    }
+    true
+}
 
 /// Tool sink adaptor: wraps the agent ToolRegistry behind the plugin seam.
 pub struct ToolSink {
@@ -260,48 +298,71 @@ mod tests {
 
     #[test]
     fn normalize_mode_plugins_maps_legacy_ids() {
-        // 单个旧 id → chatbot id
-        let mut list = vec![REPLY_BRANCH_PLUGIN_ID.to_string()];
+        // 单个旧 chatbot id → loop.parallel
+        let mut list = vec![LEGACY_CHATBOT_MODE_IDS[0].to_string()];
         assert!(normalize_mode_plugins(&mut list));
-        assert_eq!(list, vec![CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()]);
+        assert_eq!(list, vec![PARALLEL_LOOP_PLUGIN_ID.to_string()]);
 
-        // 多个旧 id → 去重为一个 chatbot id（保序：出现在首个旧 id 位置）
+        // 旧三特性 id → 去重为一个 loop.parallel（保序：出现在首个旧 id 位置）
         let mut list = vec![
             "echo-agent.tools.builtin".to_string(),
-            REPLY_BRANCH_PLUGIN_ID.to_string(),
-            GLOBAL_SESSION_PLUGIN_ID.to_string(),
-            CHAT_SESSIONS_PLUGIN_ID.to_string(),
+            LEGACY_CHATBOT_MODE_IDS[1].to_string(),
+            LEGACY_CHATBOT_MODE_IDS[2].to_string(),
+            LEGACY_CHATBOT_MODE_IDS[3].to_string(),
         ];
         assert!(normalize_mode_plugins(&mut list));
         assert_eq!(
             list,
             vec![
                 "echo-agent.tools.builtin".to_string(),
-                CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()
+                PARALLEL_LOOP_PLUGIN_ID.to_string()
             ]
         );
 
-        // 已有 chatbot id + 旧 id → 去重保留首个
+        // 已有 parallel id + 旧 id → 去重保留首个
         let mut list = vec![
-            CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string(),
-            REPLY_BRANCH_PLUGIN_ID.to_string(),
+            PARALLEL_LOOP_PLUGIN_ID.to_string(),
+            LEGACY_CHATBOT_MODE_IDS[0].to_string(),
         ];
         assert!(normalize_mode_plugins(&mut list));
-        assert_eq!(list, vec![CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()]);
+        assert_eq!(list, vec![PARALLEL_LOOP_PLUGIN_ID.to_string()]);
+    }
+
+    #[test]
+    fn normalize_mode_plugins_folds_single_and_drops_legacy_runner() {
+        // orchestration.single → loop.single
+        let mut list = vec![LEGACY_SINGLE_MODE_ID.to_string()];
+        assert!(normalize_mode_plugins(&mut list));
+        assert_eq!(list, vec![SINGLE_LOOP_PLUGIN_ID.to_string()]);
+
+        // 旧驱动插件 id 被剔除（模式插件取代），其余保序
+        let mut list = vec![
+            LEGACY_LOOP_RUNNER_PLUGIN_ID.to_string(),
+            "echo-agent.tools.builtin".to_string(),
+            LEGACY_SINGLE_MODE_ID.to_string(),
+        ];
+        assert!(normalize_mode_plugins(&mut list));
+        assert_eq!(
+            list,
+            vec![
+                "echo-agent.tools.builtin".to_string(),
+                SINGLE_LOOP_PLUGIN_ID.to_string()
+            ]
+        );
     }
 
     #[test]
     fn normalize_mode_plugins_noop_and_idempotent() {
         // 无旧 id：原样、无改动
         let mut list = vec![
-            SINGLE_ORCHESTRATION_PLUGIN_ID.to_string(),
+            SINGLE_LOOP_PLUGIN_ID.to_string(),
             "echo-agent.tools.builtin".to_string(),
         ];
         assert!(!normalize_mode_plugins(&mut list));
         assert_eq!(list.len(), 2);
 
         // 幂等：迁移后的列表再次归一化无改动
-        let mut list = vec![GLOBAL_SESSION_PLUGIN_ID.to_string()];
+        let mut list = vec![LEGACY_CHATBOT_MODE_IDS[2].to_string()];
         assert!(normalize_mode_plugins(&mut list));
         assert!(!normalize_mode_plugins(&mut list));
     }

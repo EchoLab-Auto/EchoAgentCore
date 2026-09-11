@@ -89,6 +89,7 @@ impl AgentManager {
                     enabled_skills: Vec::new(),
                     memory_limit_tokens: None,
                     context_window_tokens: None,
+                    api_profile: None,
                 },
             );
         }
@@ -216,9 +217,10 @@ impl AgentManager {
     /// via the factory; persists through the config writer.
     pub fn save_profile(&self, id: &str, profile: TeamMember, enabled: bool) -> Result<(), String> {
         let mut profile = profile;
-        // 编排模式插件 id 归一化：旧特性 id（branch.reply / session.global /
-        // chatbot.sessions）统一映射为 orchestration.chatbot——所有写入路径
-        // （含旧 panel 回写旧 id）在此防御。
+        // 循环模式插件 id 归一化：旧编排模式 id（orchestration.{single,chatbot} /
+        // branch.reply / session.global / chatbot.sessions）与旧驱动 id（loop.runner）
+        // 统一折叠为 loop.{single,parallel}——所有写入路径（含旧 panel 回写旧 id）
+        // 在此防御。
         crate::plugins::normalize_mode_plugins(&mut profile.enabled_plugins);
         crate::plugins::normalize_mode_plugins(&mut profile.disabled_plugins);
         // 合并语义：传入 profile 的 per-agent 预算为 None 且旧 profile 已有值时
@@ -309,10 +311,11 @@ impl AgentManager {
                 enabled: agents.contains_key(id),
                 system_skills: p.system_skills.clone(),
                 sessions: agents.get(id).map(|r| r.agent.session_count()).unwrap_or(0),
-                // 编排模式：互斥子插件推导（single 为兜底），单一来源
-                // TeamMember::orchestration_mode；chatbot 才展示会话管理 UI
-                // 并发射 ReplyBranch* 可见性事件。
-                orchestration_mode: p.orchestration_mode(),
+                // 循环模式：互斥循环插件推导（single 为兜底，也是默认），
+                // 单一来源 TeamMember::loop_mode；parallel 才展示会话管理 UI
+                // 并发射 ReplyBranch* 可见性事件。旧字段过渡期同时下发。
+                loop_mode: p.loop_mode(),
+                orchestration_mode: p.loop_mode().into(),
                 system_prompt: p.system_prompt.clone(),
                 disabled_plugins: p.disabled_plugins.clone(),
                 disabled_tools: p.disabled_tools.clone(),
@@ -322,6 +325,7 @@ impl AgentManager {
                 enabled_skills: p.enabled_skills.clone(),
                 memory_limit_tokens: p.memory_limit_tokens,
                 context_window_tokens: p.context_window_tokens,
+                api_profile: p.api_profile.clone(),
             })
             .collect();
         list.sort_by(|a, b| a.id.cmp(&b.id));
@@ -385,7 +389,6 @@ pub fn agent_factory_for_toggle() -> AgentFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use echo_protocol::OrchestrationMode;
 
     fn member_with_plugins(enabled: &[&str]) -> TeamMember {
         TeamMember {
@@ -402,20 +405,22 @@ mod tests {
         if !raw.disabled_teams.iter().any(|d| d == "default") {
             raw.disabled_teams.push("default".into());
         }
-        AgentManager::build(&raw, |_id, _p| panic!("factory must not be called in tests"))
+        AgentManager::build(&raw, |_id, _p| {
+            panic!("factory must not be called in tests")
+        })
     }
 
     #[test]
-    fn infos_reports_orchestration_mode_per_member() {
-        use crate::plugins::{CHATBOT_ORCHESTRATION_PLUGIN_ID, SINGLE_ORCHESTRATION_PLUGIN_ID};
+    fn infos_reports_loop_mode_per_member() {
+        use crate::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
         let mut raw = AgentConfig::default();
         raw.teams.insert(
             "bot".into(),
-            member_with_plugins(&[CHATBOT_ORCHESTRATION_PLUGIN_ID]),
+            member_with_plugins(&[PARALLEL_LOOP_PLUGIN_ID]),
         );
         raw.teams.insert(
             "coder".into(),
-            member_with_plugins(&[SINGLE_ORCHESTRATION_PLUGIN_ID]),
+            member_with_plugins(&[SINGLE_LOOP_PLUGIN_ID]),
         );
         raw.teams.insert(
             "bare".into(),
@@ -424,40 +429,49 @@ mod tests {
         raw.disabled_teams = vec!["bot".into(), "coder".into(), "bare".into()];
         let mgr = manager_with(raw);
         let infos = mgr.infos();
-        let mode_of = |id: &str| infos.iter().find(|t| t.id == id).unwrap().orchestration_mode;
-        assert_eq!(mode_of("bot"), OrchestrationMode::Chatbot);
-        assert_eq!(mode_of("coder"), OrchestrationMode::Single);
+        let mode_of = |id: &str| {
+            let info = infos.iter().find(|t| t.id == id).unwrap();
+            // 新字段与旧（过渡）字段必须一致。
+            assert_eq!(info.orchestration_mode, info.loop_mode.into());
+            info.loop_mode
+        };
+        assert_eq!(mode_of("bot"), echo_defs::LoopMode::Parallel);
+        assert_eq!(mode_of("coder"), echo_defs::LoopMode::Single);
         // 非空白名单无模式 id → Single（兜底）
-        assert_eq!(mode_of("bare"), OrchestrationMode::Single);
+        assert_eq!(mode_of("bare"), echo_defs::LoopMode::Single);
     }
 
     #[test]
     fn save_profile_normalizes_legacy_mode_plugin_ids() {
-        use crate::plugins::{CHATBOT_ORCHESTRATION_PLUGIN_ID, REPLY_BRANCH_PLUGIN_ID};
+        use crate::plugins::{
+            LEGACY_CHATBOT_MODE_IDS, LEGACY_LOOP_RUNNER_PLUGIN_ID, PARALLEL_LOOP_PLUGIN_ID,
+        };
         let mgr = manager_with(AgentConfig::default());
         let mut profile = member_with_plugins(&[
             "echo-agent.tools.builtin",
-            REPLY_BRANCH_PLUGIN_ID,
+            LEGACY_CHATBOT_MODE_IDS[1],
+            LEGACY_LOOP_RUNNER_PLUGIN_ID,
         ]);
         profile
             .disabled_plugins
-            .push(crate::plugins::GLOBAL_SESSION_PLUGIN_ID.to_string());
+            .push(LEGACY_CHATBOT_MODE_IDS[2].to_string());
         // enabled=false：跳过 factory 实例化；无 config_writer 时 persist 为 Ok。
         mgr.save_profile("legacy", profile, false).unwrap();
         let teams = mgr.teams.read().unwrap();
         let saved = teams.get("legacy").unwrap();
         assert!(saved
             .enabled_plugins
-            .contains(&CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()));
+            .contains(&PARALLEL_LOOP_PLUGIN_ID.to_string()));
         assert!(!saved
             .enabled_plugins
-            .contains(&REPLY_BRANCH_PLUGIN_ID.to_string()));
+            .iter()
+            .any(|p| p == LEGACY_CHATBOT_MODE_IDS[1] || p == LEGACY_LOOP_RUNNER_PLUGIN_ID));
         assert!(saved
             .disabled_plugins
-            .contains(&CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()));
-        // infos 同步反映归一化后的模式（黑名单含 chatbot → Single）
+            .contains(&PARALLEL_LOOP_PLUGIN_ID.to_string()));
+        // infos 同步反映归一化后的模式（黑名单含 parallel → Single）
         let info = mgr.infos().into_iter().find(|t| t.id == "legacy").unwrap();
-        assert_eq!(info.orchestration_mode, OrchestrationMode::Single);
+        assert_eq!(info.loop_mode, echo_defs::LoopMode::Single);
     }
 
     #[test]

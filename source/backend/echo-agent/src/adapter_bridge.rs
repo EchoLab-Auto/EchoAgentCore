@@ -261,6 +261,7 @@ mod tests {
                     ("send_private_msg", r#"{"user_id":123456,"content":"ok"}"#)
                 };
                 return Ok(ChatResponse {
+                    stop_reason: None,
                     content: None,
                     reasoning_content: None,
                     tool_calls: vec![ToolCall {
@@ -272,6 +273,7 @@ mod tests {
                 });
             }
             Ok(ChatResponse {
+                stop_reason: None,
                 content: Some(self.reply.clone()),
                 reasoning_content: None,
                 tool_calls: Vec::new(),
@@ -374,6 +376,7 @@ mod tests {
                 .content
                 .contains("Avoid fixed-template wording"));
             Ok(ChatResponse {
+                stop_reason: None,
                 content: Some(self.reply.clone()),
                 reasoning_content: None,
                 tool_calls: Vec::new(),
@@ -472,6 +475,17 @@ mod tests {
         }
     }
 
+    /// 切到并行多会话模式（这些用例断言并发分支语义；单会话是默认模式）。
+    async fn use_parallel_mode(agent: &Arc<Agent>) {
+        agent
+            .apply_capabilities(&crate::config::TeamMember {
+                enabled_plugins: vec![crate::plugins::PARALLEL_LOOP_PLUGIN_ID.into()],
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(agent.loop_mode(), echo_defs::LoopMode::Parallel);
+    }
+
     async fn wait_until(mut predicate: impl FnMut() -> bool) {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !predicate() {
@@ -527,6 +541,17 @@ mod tests {
             group_id: "999".into(),
         };
         let _ = hook.on_incoming_message(msg).await;
+        // 默认单会话模式：入站分支在任务内注册（不阻塞 QQ 入站），
+        // 因此等历史里出现该条用户事件再断言。
+        wait_until(|| {
+            hook.agent
+                .trunk
+                .all()
+                .first()
+                .and_then(|session| session.history.try_lock().ok())
+                .is_some_and(|history| !history.is_empty())
+        })
+        .await;
 
         let sessions = hook.agent.trunk.all();
         let session = &sessions[0];
@@ -678,6 +703,7 @@ mod tests {
             tools,
             Arc::new(echo_adapter::registry::AdapterRegistry::new()),
         ));
+        use_parallel_mode(&agent).await;
         let hook = AgentMessageHook::new(Arc::clone(&agent));
 
         hook.on_incoming_message(dm_message("第一句话"))

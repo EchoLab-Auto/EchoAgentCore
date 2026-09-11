@@ -55,8 +55,8 @@ pub enum WsMessage {
 
 - **会话类**：`SendMessage`（带 `team_id` 路由到对应 agent）、`CancelRequestedWork`（带 `team_id` 按 persona 路由，向后兼容缺省）、`ClearHistory`、`ArchiveHistory`、`CompactHistory`、`RequestTrunkTimeline`（支持 `since_seq` 增量）
 - **Shell 类**：`RequestShellSessions` / `ShellStart` / `ShellExec` / `ShellStop`（后台持久 bash，见 [工具系统](./core-tools.md)）
-- **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`（`SaveSkill.system` 声明系统提示词技能）、`InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource`（Git 来源技能，见 [技能系统](./core-skills.md)）、`SaveTeam/DeleteTeam/ToggleTeam`（`SaveTeam.system_skills` 声明人格系统提示词技能；`TeamInfo.system_skills` / `SkillInfo.system` 随列表事件下发）
-- **运维类**：`Start/Stop/RestartAdapter`、`UpdateQqAllowlist/Denylist`、`SetQqGateMode`、`SetQqOwner`、`UpdateApiConfig/SwitchApi/TestApi/DeleteApi`
+- **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`（`SaveSkill.system` 声明系统提示词技能）、`InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource`（Git 来源技能，见 [技能系统](./core-skills.md)）、`SaveTeam/DeleteTeam/ToggleTeam`（`SaveTeam.system_skills` 声明人格系统提示词技能；`TeamInfo.system_skills` / `SkillInfo.system` 随列表事件下发；`SaveTeam.api_profile` / `TeamInfo.api_profile` 声明与回推人格级 API 供应商引用；`PluginInfo.package` 回推插件所属包——横跨 plugin+tool+skill 的组合标签）
+- **运维类**：`Start/Stop/RestartAdapter`、`UpdateQqAllowlist/Denylist`、`SetQqGateMode`、`SetQqOwner`、`UpdateApiConfig/SwitchApi/TestApi/QueryApiBalance/DeleteApi`（2026-09：`SwitchApi` 全局激活已被 persona 级选用取代——`SaveTeam.api_profile` 引用供应商池；协议字段保留兼容，UI 不再暴露；`QueryApiBalance` 查 DeepSeek 官方 `/user/balance`，回 `ApiBalanceResult`）
 
 完整变体与载荷见 `echo-protocol/src/command.rs`；QQ 管理类还有 `RequestGroupList` / `RequestFriendList` / `RequestQqFilterConfig` 等查询命令。
 
@@ -83,7 +83,7 @@ graph LR
 - **适配器生命周期**：`AdapterStateChanged`、`AdapterList`
 - **编排**：`SubagentStarted/Completed`、`ReplyBranchStarted/Content/Completed`、`BackgroundTaskStarted/Completed/Integrated`
 - **Shell**：`ShellSessionsList` / `ShellSessionStarted` / `ShellExecStarted` / `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
-- **状态快照**：`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`ApiConfigUpdated`、`ApiProfilesUpdated`、`Error`（也用于信息性 toast）
+- **状态快照**：`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`、`Error`（也用于信息性 toast）
 - **QQ 管理**：`GroupList`、`FriendList`、`QqFilterConfig`、`QqGateMode`
 - **sudo 授权**：`SudoRequest`（请用户输入密码）/ `SudoResolved`（关闭弹窗/toast；所有退出路径恰好一次，由 run_sudo guard 保证——工具侧链路见 [工具系统](./core-tools.md)）
 
@@ -115,7 +115,7 @@ graph LR
 | `ReasoningEffort` | `"low"` / `"high"` / `"max"` |
 | `OrchestrationMode` | `"single"` / `"chatbot"`（`#[default] = chatbot`） |
 
-`OrchestrationMode` 定义在 `echo-protocol::event`（TeamInfo 旁）：per-persona 编排模式，由 `enabled_plugins`/`disabled_plugins` 对互斥子插件 `echo-agent.orchestration.{single,chatbot}` 推导（single 为兜底）。**2026-09 协议变更**：`TeamInfo` 删除 `reply_branches_enabled` / `global_session_enabled` / `chat_sessions_enabled` 三布尔（旧三特性插件合并的后续），替换为 `orchestration_mode`——旧 Panel 连新 Core 时三布尔缺失（其判空逻辑默认全 true，single persona 显示空壳卡片）；新 Panel 连旧 Core 时 mode 缺省按 chatbot。部署须先 Core 后 Panel。
+`LoopMode` 定义在 `echo-defs::mode`（经 `echo-protocol` 再导出）：per-persona 循环模式，由 `enabled_plugins`/`disabled_plugins` 对互斥插件 `echo-agent.loop.{single,parallel}` 推导（单会话为默认与兜底）。**2026-09 协议变更**：`TeamInfo` 新增 `loop_mode`（`"single"`/`"parallel"`），旧的 `orchestration_mode`（`"single"`/`"chatbot"`）过渡期同时下发（`parallel` 记为 `"chatbot"`）供未刷新的前端读取，下个版本删除；面板 `loopModeOf()` 优先读 `loop_mode`，缺字段时按旧字段映射（chatbot → parallel），再缺省按 single。
 
 ## 兼容性规则
 

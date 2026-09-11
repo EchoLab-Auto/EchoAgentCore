@@ -1,6 +1,6 @@
 //! Plugin system for EchoAgentCore — the "everything is a plugin" seam.
 //!
-//! Design (see document/0013-plugin-architecture.md):
+//! Design (see document/core-plugins.md):
 //! - A plugin is a manifest + lifecycle hooks; mounting is a reversible side
 //!   effect (returns disposers), matching dsh's "registrations are effects".
 //! - Plugins are **source-level** (compiled into the binary). Hot-reload

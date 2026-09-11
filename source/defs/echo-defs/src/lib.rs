@@ -15,8 +15,9 @@
 //! | [`tool`] | the `Tool` seam: trait, `ToolError`, `ToolDefinition` |
 //! | [`skill`] | the skill seam: `Skill`, `SkillMetadata`, `SkillProvider` trait |
 //! | [`chat`] | the chat-platform seam: platform-agnostic message/target types + `ChatAdapter` trait |
-//! | [`mode`] | shared policy enums (`GateMode`, `ThinkingMode`, `ReasoningEffort`) |
+//! | [`mode`] | shared policy enums (`GateMode`, `ThinkingMode`, `ReasoningEffort`, `LoopMode`) |
 //! | [`token`] | pure token-estimation/truncation helpers |
+//! | [`media`] | multimodal payload hygiene: embedded base64 → placeholder text |
 //! | [`session`] | the event-sourced session seam: `SessionEvent` + `SessionStore` traits |
 //!
 //! # Dependency rules
@@ -28,6 +29,7 @@
 
 pub mod chat;
 pub mod llm;
+pub mod media;
 pub mod message;
 pub mod mode;
 pub mod session;
@@ -39,14 +41,15 @@ pub use chat::{
     AdapterEvent, ChannelType, ChatAdapter, IncomingMessage, MessageTarget, SendResult,
 };
 pub use llm::{LlmError, LlmProvider};
+pub use media::{compact_embedded_media, elide_inline_data_uris, image_placeholder};
 pub use message::{
     ChatChunk, ChatMessage, ChatRequest, ChatResponse, ChatRole, ToolCall, ToolCallDelta, Usage,
 };
-pub use mode::{GateMode, ReasoningEffort, ThinkingMode};
+pub use mode::{GateMode, LoopMode, ReasoningEffort, ThinkingMode};
 pub use session::{SessionEvent, SessionStore};
 pub use skill::{Skill, SkillMetadata, SkillProvider};
 pub use token::{
-    estimate_history_tokens, estimate_message_tokens, estimate_tokens, truncate,
-    truncate_message_to_tokens, truncate_text_to_tokens,
+    estimate_history_tokens, estimate_image_tokens, estimate_message_tokens, estimate_tokens,
+    truncate, truncate_message_to_tokens, truncate_text_to_tokens,
 };
 pub use tool::{Tool, ToolDefinition, ToolError};

@@ -104,6 +104,11 @@ pub struct Session {
     pub history: Arc<Mutex<Vec<ChatMessage>>>,
     /// Serialises trunk snapshot creation and result merges; branch execution never holds this lock.
     pub turn_lock: Arc<tokio::sync::Mutex<()>>,
+    /// 单会话模式的 turn 排队闸门（FIFO，tokio Mutex 保证公平）：
+    /// 同一会话同一时刻只跑一个 turn，其余 turn 在获得许可后才取上下文
+    /// 快照（因此排队的 turn 能看到前一轮的回复）。并行多会话模式下不使
+    /// 用（`Agent::loop_mode` = `Parallel`）。按会话共享。
+    pub turn_queue: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Session {
@@ -114,6 +119,7 @@ impl Session {
         group_name: Option<String>,
         history: Arc<Mutex<Vec<ChatMessage>>>,
         turn_lock: Arc<tokio::sync::Mutex<()>>,
+        turn_queue: Arc<tokio::sync::Mutex<()>>,
     ) -> Self {
         Self {
             id: key.to_session_id(),
@@ -124,6 +130,7 @@ impl Session {
             last_active: Arc::new(AtomicI64::new(chrono::Utc::now().timestamp())),
             history,
             turn_lock,
+            turn_queue,
         }
     }
 
@@ -160,6 +167,8 @@ pub struct TrunkStore {
     memory_limit_tokens: usize,
     trunk_history: Arc<Mutex<Vec<ChatMessage>>>,
     trunk_turn_lock: Arc<tokio::sync::Mutex<()>>,
+    /// 单会话模式的 turn 排队闸门（见 [`Session::turn_queue`]）。
+    trunk_turn_queue: Arc<tokio::sync::Mutex<()>>,
     /// Display timeline (persisted, survives TUI restarts). Independent of the
     /// token-bounded LLM trunk: bounded by entry count, keeps richer metadata
     /// (source provenance, tool calls, reasoning) for the TUI history view.
@@ -188,6 +197,7 @@ impl Clone for TrunkStore {
             memory_limit_tokens: self.memory_limit_tokens,
             trunk_history: Arc::clone(&self.trunk_history),
             trunk_turn_lock: Arc::clone(&self.trunk_turn_lock),
+            trunk_turn_queue: Arc::clone(&self.trunk_turn_queue),
             timeline: Arc::clone(&self.timeline),
             timeline_seq: Arc::clone(&self.timeline_seq),
             event_log: self.event_log.clone(),
@@ -233,6 +243,7 @@ impl TrunkStore {
             memory_limit_tokens,
             trunk_history: Arc::new(Mutex::new(Vec::new())),
             trunk_turn_lock: Arc::new(tokio::sync::Mutex::new(())),
+            trunk_turn_queue: Arc::new(tokio::sync::Mutex::new(())),
             timeline: Arc::new(Mutex::new(Vec::new())),
             timeline_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             event_log: echo_session::EventLog::new(),
@@ -553,7 +564,10 @@ impl TrunkStore {
             }
         }
         if interrupted > 0 {
-            tracing::info!(interrupted, "dangling running tool entries marked interrupted on restore");
+            tracing::info!(
+                interrupted,
+                "dangling running tool entries marked interrupted on restore"
+            );
             self.mark_dirty();
         }
         if let Ok(mut guard) = self.timeline.try_lock() {
@@ -716,6 +730,7 @@ impl TrunkStore {
                     group_name,
                     Arc::clone(&self.trunk_history),
                     Arc::clone(&self.trunk_turn_lock),
+                    Arc::clone(&self.trunk_turn_queue),
                 );
                 v.insert(session.clone());
                 session
@@ -1471,7 +1486,10 @@ mod tests {
             push_user(&store, &format!("msg-{i}"));
         }
         // 头部已滚出：最老条目 seq = 11，since_seq = 1 的窗口不完整 → None。
-        assert!(store.timeline_snapshot_since(1).is_none(), "gap → full fallback");
+        assert!(
+            store.timeline_snapshot_since(1).is_none(),
+            "gap → full fallback"
+        );
         // 恰好贴着现存最老条目（seq 11 的前一个）仍可增量。
         let cursor = store.timeline_snapshot().first().unwrap().seq - 1;
         assert!(store.timeline_snapshot_since(cursor).is_some());
@@ -1502,7 +1520,11 @@ mod tests {
         let zombie = timeline[0].tool.as_ref().unwrap();
         assert!(zombie.failed, "dangling entry marked failed");
         assert!(
-            zombie.output.as_deref().unwrap_or_default().contains("已中断"),
+            zombie
+                .output
+                .as_deref()
+                .unwrap_or_default()
+                .contains("已中断"),
             "interrupted note attached"
         );
         assert!(timeline[0].seq > 0, "interrupted entry gets a fresh seq");
@@ -1511,11 +1533,16 @@ mod tests {
         assert!(!done.failed);
         assert_eq!(done.output.as_deref(), Some("ok"));
         assert_eq!(timeline[1].seq, 0);
-        assert_eq!(store.timeline_seq(), 1, "seq counter past the patched entry");
+        assert_eq!(
+            store.timeline_seq(),
+            1,
+            "seq counter past the patched entry"
+        );
     }
 
     #[tokio::test]
-    async fn timeline_seq_survives_save_load() {        let path = temp_sessions_path("timeline-seq-rehydrate");
+    async fn timeline_seq_survives_save_load() {
+        let path = temp_sessions_path("timeline-seq-rehydrate");
         let _ = std::fs::remove_file(&path);
         let store = TrunkStore::new(1000);
         store.set_persist_path(&path);
@@ -1526,7 +1553,11 @@ mod tests {
         let restored = TrunkStore::new(1000);
         restored.set_persist_path(&path);
         restored.load_from_file().await;
-        assert_eq!(restored.timeline_seq(), 2, "seq counter rehydrated from disk");
+        assert_eq!(
+            restored.timeline_seq(),
+            2,
+            "seq counter rehydrated from disk"
+        );
         // 重启后继续 push，序号连续不回退。
         push_user(&restored, "c");
         assert_eq!(restored.timeline_seq(), 3);

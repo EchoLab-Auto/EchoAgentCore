@@ -44,7 +44,7 @@ EchoAgentCore/
 │   │   ├── echo-adapter-qq/      # QQ/OneBot 适配器（门控、NapCat 客户端）
 │   │   └── echo-test-utils/      # 共享测试 mock（仅 dev-dependency）
 │   └── core/                     # echo-agent-core 二进制（组合根）
-├── document/                     # 项目文档群（ProDoc 格式：index.md 入口，含 ADR 0001-0017）
+├── document/                     # 项目文档群（ProDoc 格式：index.md 入口）
 ├── packaging/systemd/            # 用户级 systemd 单元模板
 ├── scripts/                      # install.sh / update.sh（受控自更新）
 ├── napcat/                       # NapCat Docker 配置
@@ -161,7 +161,6 @@ Core 与前端之间是 `ws://<management_address>` 上的 JSON 文本帧协议�
 | [document/core-config-persistence.md](document/core-config-persistence.md) | ConfigStore 原子持久化 |
 | [document/adapter-qq-gating.md](document/adapter-qq-gating.md) | QQ 5 层门控管道 |
 | [document/dev-testing.md](document/dev-testing.md) | 测试策略 |
-| [document/adr-index.md](document/adr-index.md) | 架构决策记录（ADR 0001-0017） |
 
 ## 从 EchoAgentPanel 单体仓库迁移
 

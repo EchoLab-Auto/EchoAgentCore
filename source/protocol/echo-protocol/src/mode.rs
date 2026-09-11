@@ -4,4 +4,4 @@
 //! module re-exports them so `echo_protocol::GateMode` etc. keep working —
 //! the wire contract must not own policy types.
 
-pub use echo_defs::mode::{GateMode, ReasoningEffort, ThinkingMode};
+pub use echo_defs::mode::{GateMode, LoopMode, ReasoningEffort, ThinkingMode};

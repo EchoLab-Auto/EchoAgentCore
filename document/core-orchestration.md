@@ -2,17 +2,18 @@
 id: orchestration
 title: "编排插件"
 group: 后端模块
-x: 1276.5
-y: 1863
+x: 1283
+y: 1759
 ---
 
 # 编排插件
 
 编排插件是**编排能力**的载体：主插件 `echo-agent.orchestration` 提供后台任务/并行分支/
-子代理/定时器/自更新；两个**互斥**模式子插件 `echo-agent.orchestration.single` /
-`echo-agent.orchestration.chatbot` 决定该 agent 的编排模式（会话管理 UI 与回执分支可见性）。
+子代理/定时器/自更新。
 
-> 编排模式是单一来源 `TeamMember::orchestration_mode()` 推导的（默认 chatbot）。
+> 会话内的准入策略（单会话串行 / 并行多会话）不再是编排插件的一部分——它是
+> [Agent 循环](./core-agent-loop.md)的**循环模式**，由互斥循环插件
+> `echo-agent.loop.{single,parallel}` 表达（默认单会话）。
 > 本节点与[插件化设计](./core-plugins.md)同属后端模块，仅通过插件节点衔接。
 
 ## echo-agent.orchestration
@@ -32,20 +33,11 @@ y: 1863
 - `list_background_tasks` / `cancel_background_task` —— 后台任务管理
 - `framework_update` / `run_sudo` —— 自更新与人机交互 sudo（另有配置门控）
 
-## 编排模式（互斥子插件）
+## 循环模式（见 Agent 循环）
 
-| id | kind | 说明 |
-| --- | --- | --- |
-| `echo-agent.orchestration.single` | Orchestration | **编排模式（互斥）**：单任务编排——无会话管理 UI（会话卡/全局分组隐藏）、回执分支不可见 |
-| `echo-agent.orchestration.chatbot` | Orchestration | **编排模式（互斥）**：多任务并行编排——会话列表/全局会话/可见回执分支（取代旧 `branch.reply`/`session.global`/`chatbot.sessions` 三插件） |
-
-### 模式推导（单一来源）
-
-- `enabled_plugins` 为空（=全部启用）→ **chatbot**
-- 含 `orchestration.chatbot`（或旧特性 id，加载期自动迁移）→ **chatbot**；两者并含 chatbot 优先（迁移时 warn）
-- 非空但无任何模式 id → **single**
-- `disabled_plugins` 含 chatbot/旧 id → **single**；含 single id → no-op（禁用兜底无意义，warn）
-- chatbot：会话卡/全局分组/`ReplyBranch*` 事件发射全开；single：全部关闭（分支照常执行合并，仅不可见——可见性开关而非执行开关）
+单会话 / 并行多会话的选择、串行排队语义与推导规则见
+[Agent 循环](./core-agent-loop.md)§循环模式。要点：模式与"编排能力"正交——
+编排插件提供工具，循环模式决定同一会话的准入与分支可见性。
 
 ## 动态工具与 per-persona
 

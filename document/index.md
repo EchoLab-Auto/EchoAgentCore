@@ -1,7 +1,7 @@
 ---
 group: 总览
-x: 48
-y: 48
+x: -53
+y: 637
 link: ["architecture | 架构总览", "core | Core 框架 | r>l", "panel | Panel 前端 | r>l", "protocol | 协议与数据流", "ops-deploy | 部署与自更新", "dev-guide | 开发指南"]
 ---
 

@@ -2,7 +2,8 @@
 
 use echo_defs::message::{ChatMessage, ChatRole, ToolCall};
 use echo_defs::token::{
-    estimate_history_tokens, estimate_message_tokens, estimate_tokens, truncate_message_to_tokens,
+    estimate_history_tokens, estimate_image_tokens, estimate_message_tokens, estimate_tokens,
+    truncate_message_to_tokens, truncate_text_to_tokens,
 };
 use proptest::prelude::Just;
 use proptest::prop_assert_eq;
@@ -41,6 +42,64 @@ mod token_tests {
     fn history_tokens_sum_messages() {
         let history = vec![ChatMessage::user("你好"), ChatMessage::assistant("ok")];
         assert_eq!(estimate_history_tokens(&history), (2 + 4) + (1 + 4));
+    }
+
+    #[test]
+    fn long_base64_runs_count_one_token_per_char() {
+        // 实测 DeepSeek /anthropic：40k base64 字符 ≈ 28k 输入 token（0.7/字符）。
+        // 旧的 1 token / 3 字符把内嵌图片少算 >2×，是 1M 窗口被单张图打爆的根因。
+        let payload = "QUJD".repeat(100);
+        assert_eq!(payload.len(), 400);
+        assert_eq!(estimate_tokens(&payload), 400);
+        // 短串（普通英文单词大小）仍按文本计。
+        assert_eq!(estimate_tokens("QUJDQUJDQUJDQUJD"), 6);
+    }
+
+    #[test]
+    fn embedded_image_payload_dominates_the_estimate() {
+        let text = format!("look data:image/png;base64,{}", "A".repeat(4096));
+        assert!(estimate_tokens(&text) >= 4096);
+    }
+
+    #[test]
+    fn image_tokens_follow_encoded_size_and_stay_bounded() {
+        let tiny = format!("data:image/png;base64,{}", "A".repeat(1000));
+        assert_eq!(
+            estimate_image_tokens(&tiny),
+            85,
+            "floor keeps small images honest"
+        );
+        let medium = format!("data:image/png;base64,{}", "A".repeat(2_000_000));
+        assert_eq!(estimate_image_tokens(&medium), 6000);
+        let absurd = format!("data:image/png;base64,{}", "A".repeat(20_000_000));
+        assert_eq!(estimate_image_tokens(&absurd), 8192, "capped");
+        assert_eq!(estimate_image_tokens("https://cdn.example.com/a.png"), 85);
+    }
+
+    #[test]
+    fn message_tokens_include_tool_calls_and_images() {
+        let mut user = ChatMessage::user("hi");
+        user.images = vec![format!("data:image/png;base64,{}", "A".repeat(2000))];
+        assert!(estimate_message_tokens(&user) >= 1 + 4 + 85);
+
+        let mut assistant = ChatMessage::assistant("");
+        assistant.tool_calls = Some(vec![ToolCall {
+            id: "call_1".into(),
+            name: "bash".into(),
+            arguments: format!("{{\"script\":\"{}\"}}", "x".repeat(300)),
+        }]);
+        assert!(
+            estimate_message_tokens(&assistant) > 300,
+            "tool arguments count toward the budget"
+        );
+    }
+
+    #[test]
+    fn truncation_honours_the_base64_cost_model() {
+        let text = format!("head data:image/png;base64,{}", "A".repeat(4096));
+        let truncated = truncate_text_to_tokens(&text, 500);
+        assert!(estimate_tokens(&truncated) <= 500);
+        assert!(truncated.contains("内容过长已截断"));
     }
 
     #[test]

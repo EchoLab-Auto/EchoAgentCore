@@ -38,7 +38,7 @@ graph TD
 ```prodoc-flow
 graph TD
   App[App.vue 应用壳] --> Layout[NeumorphismLayout 外壳]
-  Layout --> Header[顶栏：品牌 · 连接状态 · 导航 · 主题]
+  Layout --> Header[顶栏：品牌 · 连接状态 · 忙碌徽标 · 导航 · 主题]
   Layout --> Sider[侧边栏 PanelSidebar]
   Layout --> Main[主区：当前视图组件]
   Sider --> BranchCard[临时分支卡]
@@ -51,7 +51,7 @@ graph TD
   ChatView --> EntryRow[活动浮条 · 入口行]
   ChatView --> Composer[悬浮输入区]
   ChatView --> Pops[弹出层：清单 · QQ 适配器]
-  ChatView --> Overs[覆盖层：上下文 · Agent 配置]
+  ChatView --> Overs[会话区内弹层：上下文 · Agent 配置]
   App --> Modals[模态：Sudo · Branch]
   App --> Toasts[ToastProvider 右上]
 ```
@@ -104,7 +104,7 @@ graph LR
 | 区域 | 内容 | 几何 |
 |---|---|---|
 | 顶栏左 | 品牌 "EchoAgent Panel"（`.brand` 字重 700） | 顶栏分左中右三段，右侧操作 `margin-left:auto` 顶齐 |
-| 顶栏中 | 连接状态点 + 模型名 + 忙碌徽标 | 状态组 gap 6px、13px 次要色 |
+| 顶栏中 | 连接状态点 + 忙碌徽标 | 状态组 gap 6px、13px 次要色；模型名已于 2026-09-11 移除（改在设置视图 API 分类查看） |
 | 顶栏右 | 四视图导航（聊天/任务/Shell/设置）、主题开关 | 操作组 gap 6px、允许折行 |
 | 侧边栏 | 临时分支卡 + 会话卡 | 固定 264px，可折叠为 0（`.nm-layout--sider-collapsed` 兜底 `width:0!important` + `overflow:hidden`） |
 | 主区 | 当前视图组件 | `flex:1` + `min-width:0`，纵向 flex，`overflow:hidden`（滚动交给视图内部） |
@@ -140,7 +140,7 @@ graph LR
 ### 3.4 顶栏交互
 
 - **连接指示**：`已连接`（online 绿点）/ `连接中…`（connecting 呼吸点），驱动源 `state.connected`（`App.vue:249-252`）
-- **模型显示**：`state.model`（无数据时 `—`）；任一会话处于 thinking/tool/subagent 相位时追加 `忙碌 ×N` 警告标签（`App.vue:143-148, 254-257`）
+- **忙碌徽标**：任一会话处于 thinking/tool/subagent 相位时显示 `忙碌 ×N` 警告标签（`App.vue`）；顶栏原「模型名」显示已删除，模型/供应商改在设置视图「API」分类查看（`SettingsView` 的 `当前：provider / model · Profile「name」` 摘要）
 - **设置入口**：顶栏导航「设置」直达设置视图（§九）——2026-09-04 起不再有设置下拉与 API 弹窗
 - **主题开关**：三态循环（浅色 → 跟随系统 → 深色），持久化 `localStorage: echo-panel-theme`；外壳默认 `auto`，index.html 内联脚本防闪烁
 
@@ -159,14 +159,14 @@ graph LR
 
 ### 5.1 临时分支卡
 
-- 仅当当前 Agent 为 **chatbot 编排模式**时显示（`orchestrationModeOf(team) === 'chatbot'`，`PanelSidebar.vue:17-24`）；徽标显示运行中分支数
+- 仅当当前 Agent 为**并行多会话循环模式**时显示（`loopModeOf(team) === 'parallel'`，`PanelSidebar.vue:17-24`）；徽标显示运行中分支数
 - 分支行：脉冲 spinner（8px warn 色圆点，`branch-pulse 1s ease-in-out infinite`）+ 任务摘要（截断 24 字符）；无关闭按钮——`ReplyBranchCompleted` 或重连后自动消失
 - 点击分支行 → 打开 BranchModal（分支详情）
 - 卡片几何：头部 padding 12px/14px + 11px 折叠 caret，正文 padding 4px/12px/12px；分支行 padding 5px/8px、圆角 6px；徽标圆角 9px、10px 字、主色底（`styles.css:125-145, 222-241`）
 
 ### 5.2 会话卡与分组
 
-仅当当前 Agent 为 **chatbot 编排模式**时显示（single 模式会话卡与分支卡整体隐藏）。分组规则（按会话 id `platform:scope:…` 解析）：
+仅当当前 Agent 为**并行多会话循环模式**时显示（单会话模式会话卡与分支卡整体隐藏）。分组规则（按会话 id `platform:scope:…` 解析）：
 
 | 分组 | 内容 | 备注 |
 |---|---|---|

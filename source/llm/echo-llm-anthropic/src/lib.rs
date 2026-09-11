@@ -29,7 +29,9 @@ impl AnthropicProvider {
             thinking: None,
             reasoning_effort: echo_defs::ReasoningEffort::default(),
             client: match reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
+                // 不设总超时：思考模式 + 大 completion 预算下，一次响应可以
+                // 合法地跑好几分钟；总超时会把长生成拦腰砍断。保留连接超时，
+                // 读流中断由 reqwest/turn 取消机制兜底。
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()
             {
@@ -85,14 +87,16 @@ impl LlmProvider for AnthropicProvider {
             .map_err(|e| LlmError::Http(e.to_string()))?;
         if !status.is_success() {
             return Err(LlmError::Api(format!(
-                "HTTP {status}: {}",
-                echo_defs::token::truncate(&text, 300)
+                "HTTP {status}: {}{}",
+                echo_defs::token::truncate(&text, 300),
+                html_endpoint_hint(&text)
             )));
         }
         let parsed: MessagesResponse = serde_json::from_str(&text).map_err(|e| {
             LlmError::Parse(format!(
-                "{e} — body: {}",
-                echo_defs::token::truncate(&text, 300)
+                "{e} — body: {}{}",
+                echo_defs::token::truncate(&text, 300),
+                html_endpoint_hint(&text)
             ))
         })?;
         let mut content = String::new();
@@ -126,6 +130,7 @@ impl LlmProvider for AnthropicProvider {
                 Some(reasoning_content)
             },
             tool_calls,
+            stop_reason: parsed.stop_reason,
             usage: parsed
                 .usage
                 .map(|u| Usage {
@@ -277,6 +282,21 @@ fn parse_anthropic_event(event: &str) -> Vec<AnthropicOutcome> {
     outcomes
 }
 
+/// 当响应体是 HTML（典型：base_url 指向了网页根域而非 API 端点）时给出
+/// 诊断提示，附在解析/HTTP 错误消息尾部。
+fn html_endpoint_hint(body: &str) -> &'static str {
+    let head = body.trim_start();
+    let lower = head
+        .get(..16)
+        .unwrap_or(head)
+        .to_ascii_lowercase();
+    if lower.starts_with("<!doctype") || lower.starts_with("<html") {
+        "\n提示：该地址返回网页而非 JSON——请检查 Base URL 是否正确（Anthropic 兼容端点通常以 /anthropic 结尾）。"
+    } else {
+        ""
+    }
+}
+
 #[cfg(test)]
 fn build_request_body(request: &ChatRequest, stream: bool) -> serde_json::Value {
     build_request_body_with_reasoning(request, stream, None, echo_defs::ReasoningEffort::default())
@@ -407,8 +427,12 @@ fn build_request_body_with_reasoning(
     if let Some(t) = request.temperature {
         body["temperature"] = json!(t);
     }
-    // Anthropic Messages API 要求 max_tokens 必填（DeepSeek /anthropic 同样）
-    body["max_tokens"] = json!(request.max_tokens.unwrap_or(4096));
+    // Anthropic Messages API 要求 max_tokens 必填（DeepSeek /anthropic 同样），
+    // 无法真正省略；缺省给"实用无上限"的 DEFAULT_MAX_TOKENS（128K），
+    // 避免思考模式烧光小预算导致空回复截断。
+    body["max_tokens"] = json!(request
+        .max_tokens
+        .unwrap_or(echo_defs::message::DEFAULT_MAX_TOKENS));
     if let Some(mode) = thinking {
         body["thinking"] = json!({"type": mode.as_str()});
         if mode == echo_defs::ThinkingMode::Enabled {
@@ -428,6 +452,11 @@ fn content_blocks(text: &str, images: &[String]) -> serde_json::Value {
     if images.is_empty() {
         return json!(text);
     }
+    // 多模态约定：图片只走 image 块，文本里不留 base64（否则按文本 token
+    // 计费，约为 image 块的两个数量级）。projection 已压过一次，这里是同一条
+    // 规则的第二道闸门（工具结果、合并消息等所有调用点共用）。
+    let text = echo_defs::media::compact_embedded_media(text, images);
+    let text = text.as_str();
     let mut blocks: Vec<serde_json::Value> = Vec::new();
     if !text.is_empty() {
         blocks.push(json!({"type": "text", "text": text}));
@@ -469,6 +498,9 @@ fn parse_data_uri(uri: &str) -> Option<(String, String)> {
 struct MessagesResponse {
     content: Vec<ContentBlock>,
     usage: Option<UsageWire>,
+    /// "end_turn" / "max_tokens" / "stop_sequence" / "tool_use"；
+    /// 截断检测的唯一信号，必须透传，不能丢弃。
+    stop_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -549,6 +581,19 @@ enum DeltaWire {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn html_endpoint_hint_detects_webpage_bodies() {
+        assert!(!html_endpoint_hint("{\"ok\":true}").contains("提示"));
+        let html = "<!doctype html>\n<html lang=\"zh-CN\"><head>...";
+        let hint = html_endpoint_hint(html);
+        assert!(hint.contains("返回网页"), "hint: {hint}");
+        assert!(hint.contains("Base URL"), "hint must mention Base URL: {hint}");
+        // 大小写变体
+        assert!(html_endpoint_hint("<HTML>").contains("返回网页"));
+        // 前导空白容忍
+        assert!(html_endpoint_hint("  \n<!DOCTYPE html>").contains("返回网页"));
+    }
+
     use super::*;
     use echo_defs::message::{ChatMessage, ToolCall};
 

@@ -12,7 +12,7 @@ keywords: [自更新, 更新框架, 部署, update, 升级, 重启服务]
 
 - Core 服务进程就是 Agent 自己。`update.sh` 构建成功后执行
   `systemctl --user restart echo-agent-core.service`。
-- **Graceful Drain（ADR-0015，document/0015-graceful-drain.md）**：收到 SIGTERM 后 Core 先进入排空模式——
+- **Graceful Drain（机制细节见 document/ops-deploy.md）**：收到 SIGTERM 后 Core 先进入排空模式——
   拒绝新消息、等待进行中的回复完成（最多 120s），然后才退出。因此：
   - 正在输出的回复会**完整生成完**，Panel 看到全文后再重连
   - 无活跃 turn 时近乎秒级重启，无感

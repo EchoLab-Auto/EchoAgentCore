@@ -140,46 +140,62 @@ impl Default for CoreSection {
     }
 }
 
-/// 编排模式插件 id 迁移（旧三特性 id → `echo-agent.orchestration.chatbot`）。
+/// 循环模式插件 id 迁移（旧编排模式 id / 旧驱动插件 id → `loop.{single,parallel}`）。
 /// 覆盖 per-persona 的 enabled/disabled_plugins 与全局 `[agent].disabled_plugins`
 /// （后者是 apply_disabled 的输入，旧 id 不清理会因插件不再注册而静默失效）。
 /// 返回迁移/警告说明（load 期打印；纯函数便于测试断言）。
 pub fn migrate_orchestration_mode_plugins(agent: &mut echo_agent::AgentConfig) -> Vec<String> {
     use echo_agent::plugins::{
-        CHATBOT_ORCHESTRATION_PLUGIN_ID, SINGLE_ORCHESTRATION_PLUGIN_ID, normalize_mode_plugins,
+        normalize_mode_plugins, LEGACY_LOOP_RUNNER_PLUGIN_ID, PARALLEL_LOOP_PLUGIN_ID,
+        SINGLE_LOOP_PLUGIN_ID,
     };
     let mut notes = Vec::new();
     let mut normalize = |list: &mut Vec<String>, scope: &str, notes: &mut Vec<String>| {
         if normalize_mode_plugins(list) {
             notes.push(format!(
-                "migrated legacy orchestration feature plugin ids → {CHATBOT_ORCHESTRATION_PLUGIN_ID} ({scope})"
+                "migrated legacy orchestration/loop plugin ids → {SINGLE_LOOP_PLUGIN_ID}/{PARALLEL_LOOP_PLUGIN_ID} ({scope})"
             ));
         }
-        if list.iter().any(|p| p == SINGLE_ORCHESTRATION_PLUGIN_ID) && scope.contains("disabled") {
+        if list
+            .iter()
+            .any(|p| p == SINGLE_LOOP_PLUGIN_ID || p == LEGACY_LOOP_RUNNER_PLUGIN_ID)
+            && scope.contains("disabled")
+        {
             notes.push(format!(
-                "warning: {SINGLE_ORCHESTRATION_PLUGIN_ID} 在黑名单中无意义（single 是编排模式推导的兜底），已保留但忽略 ({scope})"
+                "warning: {SINGLE_LOOP_PLUGIN_ID} 在黑名单中无意义（single 是循环模式推导的兜底与默认），已保留但忽略 ({scope})"
             ));
         }
     };
     for (id, member) in agent.teams.iter_mut() {
-        normalize(&mut member.enabled_plugins, &format!("teams.{id}.enabled_plugins"), &mut notes);
+        normalize(
+            &mut member.enabled_plugins,
+            &format!("teams.{id}.enabled_plugins"),
+            &mut notes,
+        );
         normalize(
             &mut member.disabled_plugins,
             &format!("teams.{id}.disabled_plugins"),
             &mut notes,
         );
-        if member.enabled_plugins.iter().any(|p| p == CHATBOT_ORCHESTRATION_PLUGIN_ID)
+        if member
+            .enabled_plugins
+            .iter()
+            .any(|p| p == PARALLEL_LOOP_PLUGIN_ID)
             && member
                 .enabled_plugins
                 .iter()
-                .any(|p| p == SINGLE_ORCHESTRATION_PLUGIN_ID)
+                .any(|p| p == SINGLE_LOOP_PLUGIN_ID)
         {
             notes.push(format!(
-                "warning: teams.{id}.enabled_plugins 同时含 single 与 chatbot 编排子插件，互斥按 chatbot 优先"
+                "warning: teams.{id}.enabled_plugins 同时含 single 与 parallel 循环插件，互斥按 parallel 优先"
             ));
         }
     }
-    normalize(&mut agent.disabled_plugins, "agent.disabled_plugins", &mut notes);
+    normalize(
+        &mut agent.disabled_plugins,
+        "agent.disabled_plugins",
+        &mut notes,
+    );
     notes
 }
 
@@ -432,37 +448,41 @@ model = "gpt-4o"
     fn migrate_orchestration_mode_plugins_maps_legacy_ids() {
         use echo_agent::config::TeamMember;
         use echo_agent::plugins::{
-            CHATBOT_ORCHESTRATION_PLUGIN_ID, GLOBAL_SESSION_PLUGIN_ID, REPLY_BRANCH_PLUGIN_ID,
+            LEGACY_CHATBOT_MODE_IDS, LEGACY_LOOP_RUNNER_PLUGIN_ID, PARALLEL_LOOP_PLUGIN_ID,
         };
         let mut agent = echo_agent::AgentConfig::default();
         let mut member = TeamMember::default();
         member.enabled_plugins = vec![
             "echo-agent.tools.builtin".into(),
-            REPLY_BRANCH_PLUGIN_ID.into(),
+            LEGACY_CHATBOT_MODE_IDS[1].into(),
+            LEGACY_LOOP_RUNNER_PLUGIN_ID.into(),
         ];
-        member.disabled_plugins = vec![GLOBAL_SESSION_PLUGIN_ID.into()];
+        member.disabled_plugins = vec![LEGACY_CHATBOT_MODE_IDS[2].into()];
         agent.teams.insert("bot".into(), member);
-        agent.disabled_plugins = vec![REPLY_BRANCH_PLUGIN_ID.into()];
+        agent.disabled_plugins = vec![LEGACY_CHATBOT_MODE_IDS[1].into()];
 
         let notes = migrate_orchestration_mode_plugins(&mut agent);
 
         let m = &agent.teams["bot"];
         assert!(m
             .enabled_plugins
-            .contains(&CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()));
+            .contains(&PARALLEL_LOOP_PLUGIN_ID.to_string()));
         assert!(!m
             .enabled_plugins
-            .contains(&REPLY_BRANCH_PLUGIN_ID.to_string()));
+            .iter()
+            .any(|p| p == LEGACY_CHATBOT_MODE_IDS[1] || p == LEGACY_LOOP_RUNNER_PLUGIN_ID));
         assert!(m
             .disabled_plugins
-            .contains(&CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()));
+            .contains(&PARALLEL_LOOP_PLUGIN_ID.to_string()));
         // 全局层旧 id 同样被清理映射（否则 apply_disabled 静默失效）
         assert_eq!(
             agent.disabled_plugins,
-            vec![CHATBOT_ORCHESTRATION_PLUGIN_ID.to_string()]
+            vec![PARALLEL_LOOP_PLUGIN_ID.to_string()]
         );
         // 迁移报告覆盖 teams 与全局层
-        assert!(notes.iter().any(|n| n.contains("teams.bot.enabled_plugins")));
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("teams.bot.enabled_plugins")));
         assert!(notes.iter().any(|n| n.contains("agent.disabled_plugins")));
         // 幂等：二次运行无新报告
         assert!(migrate_orchestration_mode_plugins(&mut agent).is_empty());
@@ -471,23 +491,42 @@ model = "gpt-4o"
     #[test]
     fn migrate_orchestration_mode_plugins_warns_on_conflict() {
         use echo_agent::config::TeamMember;
+        use echo_agent::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
+        let mut agent = echo_agent::AgentConfig::default();
+        let mut member = TeamMember::default();
+        member.enabled_plugins = vec![SINGLE_LOOP_PLUGIN_ID.into(), PARALLEL_LOOP_PLUGIN_ID.into()];
+        agent.teams.insert("both".into(), member);
+        let notes = migrate_orchestration_mode_plugins(&mut agent);
+        assert!(notes.iter().any(|n| n.contains("parallel 优先")));
+        // 两个模式 id 都不迁移（保持计数），冲突按 parallel 优先推导
+        assert_eq!(
+            agent.teams["both"].enabled_plugins.len(),
+            2,
+            "single/parallel ids must be kept as-is"
+        );
+    }
+
+    /// 旧配置：`loop.runner` + orchestration.single → 折叠为 loop 模式 id。
+    #[test]
+    fn migrate_folds_single_and_drops_runner() {
+        use echo_agent::config::TeamMember;
         use echo_agent::plugins::{
-            CHATBOT_ORCHESTRATION_PLUGIN_ID, SINGLE_ORCHESTRATION_PLUGIN_ID,
+            LEGACY_LOOP_RUNNER_PLUGIN_ID, LEGACY_SINGLE_MODE_ID, SINGLE_LOOP_PLUGIN_ID,
         };
         let mut agent = echo_agent::AgentConfig::default();
         let mut member = TeamMember::default();
         member.enabled_plugins = vec![
-            SINGLE_ORCHESTRATION_PLUGIN_ID.into(),
-            CHATBOT_ORCHESTRATION_PLUGIN_ID.into(),
+            LEGACY_LOOP_RUNNER_PLUGIN_ID.into(),
+            LEGACY_SINGLE_MODE_ID.into(),
         ];
-        agent.teams.insert("both".into(), member);
+        agent.teams.insert("tui".into(), member);
         let notes = migrate_orchestration_mode_plugins(&mut agent);
-        assert!(notes.iter().any(|n| n.contains("chatbot 优先")));
-        // 无旧 id 时不产生迁移报告（single id 保留原样）
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("teams.tui.enabled_plugins")));
         assert_eq!(
-            agent.teams["both"].enabled_plugins.len(),
-            2,
-            "single/chatbot ids must be kept as-is"
+            agent.teams["tui"].enabled_plugins,
+            vec![SINGLE_LOOP_PLUGIN_ID.to_string()]
         );
     }
 }

@@ -2,9 +2,9 @@
 id: plugins
 title: "插件化设计"
 group: 后端模块
-link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "orchestration | r>l", "tools | r>l"]
-x: 948.5
-y: 2003
+link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "orchestration | r>l", "tools | r>l", "agent-loop | r>l"]
+x: 955
+y: 1899
 ---
 
 # 插件化设计
@@ -20,7 +20,7 @@ y: 2003
 
 ### 为什么不用动态库（.so）插件
 
-Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" 桥，维护成本高、崩溃诊断难。因此采用**源码级插件 + 进程级热替换**：插件以 crate/目录形式存在，更新 = 重新构建二进制 + restart（复用自更新的原子替换机制）；热重载范畴限定为数据类插件。
+Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" 桥，维护成本高、崩溃诊断难。因此采用**源码级插件 + 进程级热替换**：��件以 crate/目录形式存在，更新 = 重新构建二进制 + restart（复用自更新的原子替换机制）；热重载范畴限定为数据类插件。
 
 ### 边界与不做
 
@@ -32,8 +32,9 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 - 核心类型：`PluginManifest`（id/name/version/kind/entry/description）+ `BuiltinPlugin` + `MountContext`
 - 注册为**可逆**副作用：`register_and_mount` 返回 disposer，禁用即卸载注册
 - 数据插件（skill/tool）支持热重载（插件目录 5s 轮询）；代码插件需二进制重载
-- **启动顺序**：`apply_disabled` 先于挂载——禁用插件启动时只注册不挂载；persona 白名单的启动期门控按 `GATED_PLUGIN_IDS` 表逐人格批量禁用
-- **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / adapter.qq / skills.dir）已把组合根装配搬进 mount 闭包，`TogglePlugin` 对它们有真实运行效果；`adapter.qq` 的启动期 mount 不抢跑（wired 标志在适配器接线完成后才置位），启动受 `[adapters.qq].enabled` 与插件状态双重门控
+- **启动顺序**：`apply_disabled` 先于挂载——禁用插件启动时只注册不挂载；persona 白名单的门控**启动期与运行期统一**由 `Agent::apply_capabilities` 承担（`GATED_PLUGIN_IDS` 表逐人格计算：全局启用 ∧ 白/黑名单）
+- **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / adapter.qq / skills.dir）已把组合根装配搬进 mount 闭包，`TogglePlugin` 对它们有真实运行效果；`adapter.qq` 的启动期 mount 不抢跑（wired 标志在适配器接线完成后才置位），启动受 `[adapters.qq].enabled` 与插��状态双重门控
+- **运行期热更新（2026-09）**：插件/工具/技能勾选在 `SaveTeam` 保存后**立即生效**，无需重启——工具/技能逐名双向应用（取消勾选即禁用、重新勾选即恢复）；全局 `TogglePlugin` 经 mount/unmount 闭包逐 persona 重评估（`reapply_plugin_gating`：全局启用 ∧ persona 名单，名单外不放开、unmount 对全员生效）；`ToggleTool`/`ToggleSkill` 同样逐 persona 重算（`reapply_tool_gating` / `reapply_skill_gating`：persona 黑名单不被全局启用覆盖）
 
 ## 内置插件清单
 
@@ -43,20 +44,54 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.adapter.qq` | Adapter | QQ 适配器（OneBot v11 反向 WS，含 QQ 管理工具） |
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂 |
-| `echo-agent.loop.runner` | Loop | turn/step 状态机与工具管道（实化插件：mount 启用 echo-loop 驱动，umount 恢复内置循环） |
+| `echo-agent.loop.single` | Loop | 单会话循环（默认）：mount 启用 echo-loop 驱动；会话内 turn 串行排队、无会话管理 UI |
+| `echo-agent.loop.parallel` | Loop | 并行多会话循环：同一 TurnRunner；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
 
 ## 能力开关（per-persona）
 
 - 每个插件 id 均可放入 agent 的 `enabled_plugins`（白名单）或 `disabled_plugins`（黑名单）
-- 白名单非空 = 只启用列出的插件；黑名单优先
+- 白名单非空 = 只启用列出���插件；黑名单优先
 - 前端设置视图可按 kind 勾选（adapter/management 类），保存后写回 TOML
-- **编排模式推导**（互斥，single 为兜底）：见[编排插件](./core-orchestration.md)§编排模式（单一来源 `TeamMember::orchestration_mode()`）
+- **循环模式推导**（互斥，默认与兜底都是单会话）：见[Agent 循环](./core-agent-loop.md)§循环模式（单一来源 `TeamMember::loop_mode()`）
+- **包级聚合**：白/黑名单里的插件 id 即包 id——一次勾选同时门控该插件的
+  生命周期与同名包的工具、技能（QQ 包见下「Package」章节）
 - **其余插件当前生效范围**：
-  - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具/技能对所有 persona 批量禁用（对 LLM 不可见），启用恢复
-  - `adapter.qq`：禁用 = 停止 QQ 适配器进程 + QQ 工具包禁用；启用 = 启动 + 恢复
+  - `tools.builtin` / `skills.dir` / `checklist`：禁用 = 该包全部工具（skills.dir 为全部技能）对所有 persona 批量禁用（对 LLM 不可见），启用按各 persona 名单恢复——**仅作用于目标 persona 时用 Agent 配置弹层的勾选**（运行期双向、即时生效）
+  - `adapter.qq`：禁用 = 停止 QQ 适配器进程 + QQ 工具包禁用；启用 = 启动 + 按名单恢复
   - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）。**防自锁保护**：经 `TogglePlugin` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
-  - `loop.runner`：**已实化**——mount 注入 TurnRunner 并启用 echo-loop 驱动，umount 恢复内置循环（普通输入走 turn/step 状态机；QQ hook/定时器/Q 会话仍走内置循环）
-  - `provider.llm` / `orchestration`：仍为名义挂载——运行中替换 provider 涉及在途 turn，保持"重启生效"语义（禁用 = 下次重启不装配）；orchestration 的实化依赖 echo-loop 迁移完成度
+  - `loop.single` / `loop.parallel`：**已实化**——mount 注入 TurnRunner 并启用 echo-loop 驱动；两者 mount 同一驱动（模式只改策略），全部卸载才回退内置循环（普通输入走 turn/step 状态机；QQ hook/定时器/QQ 会话仍走内置循环）
+  - `provider.llm` / `orchestration`：仍为名义挂载——运行中替换 provider 涉及在途 turn，保持"重启生效"语义（禁用 = 下次重启不装配）
+- **优先级**：全局禁用（`TogglePlugin` 卸载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
+- **内置工具包覆盖**：`echo-agent.checklist` 为独立包（可按 persona 单独启停）；禁用该插件时 Core 逐 persona 卸载 checklist 工具包，Panel 入口行同步移除「清单」入口、关闭已打开浮层并清空徽标状态（热更新，无需重启）；`base` 人格演示了"纯对话"配置（禁用 tools.builtin + skills.dir）
+
+## Package（包）——横跨 plugin + tool + skill 的标签
+
+**Package 是一等标签**（非实体、无独立 manifest），把三种异构成员聚合成
+一个可整体启停的能力单元。三种载体各自声明归属，按**同一个字符串**聚合：
+
+| 维度 | 声明方式 | 示例（QQ 包） |
+| --- | --- | --- |
+| Plugin | `PluginManifest.package`（缺省 = 插件 id 自身，`package_id()` 归一） | `echo-agent.adapter.qq` |
+| Tool | `ToolRegistry::set_package(name, pkg)`（装配期打标） | QQ 工具（send_*/get_*） |
+| Skill | `SKILL.md` frontmatter `package:` | qq-management / qq-transport |
+
+**包级门控语义**（`Agent::apply_plugin_gating`，横跨两个注册表）：
+
+- 禁用包 → 包内**工具与技能一起**关闭（对 LLM 不可见）+ 插件自身生命周期
+  副作用（如 adapter.qq 停进程）；包外成员不受影响
+- 启用包 → 两者一起恢复，但按 persona 名单**收紧**（黑名单/白名单外的
+  成员保持禁用；全局禁用优先）
+- `skills.dir` 插件是**整表**语义（全部技能），其余包按同名 `package:` 精确匹配
+- persona 白名单里的插件 id 即包 id——勾选/取消勾选一个插件 = 勾选/取消
+  整个包（plugin + tools + skills）
+
+**可观测性**：`PluginInfo.package` 随 `PluginsList` 下发（未声明回退为插件
+id），Panel 插件详情展示「包（Package）」字段；设置视图已按包分组展示
+工具/技能。
+
+**多插件包（前瞻）**：`PluginManifest.with_package()` 允许一个包绑定多个
+插件；当前全部内置插件均为「插件 id = 包 id」的单插件包，门控按插件 id
+传播即可（QQ 包为现行示例）。
 
 ## 动态编排工具
 

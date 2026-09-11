@@ -35,6 +35,19 @@ pub fn create_provider(cfg: &crate::config::AgentConfig) -> Result<Box<dyn LlmPr
         || cfg.base_url.contains("api.deepseek.com"))
     .then_some((cfg.thinking, cfg.reasoning_effort));
     match provider_kind {
+        // Kimi For Coding（Kimi Code 订阅）：Anthropic 兼容端点
+        //（`https://api.kimi.com/coding/v1/messages`），认证 = Kimi Code Console
+        // 创建的 API Key（`x-api-key`），推理档位经 `output_config.effort`
+        //（low/high/max，与 ReasoningEffort 一一对应）。
+        // opencode / Claude Code 走的也是这条协议（见 Kimi Code 文档
+        //「Use in Third-Party Tools」）。
+        "kimi" | "moonshot-coding" => {
+            let base = kimi_base_url(&cfg.base_url);
+            let provider =
+                echo_llm_anthropic::AnthropicProvider::new(&base, &cfg.api_key, &cfg.model)
+                    .with_reasoning(cfg.thinking, cfg.reasoning_effort);
+            Ok(Box::new(provider))
+        }
         "openai" | "deepseek" | "third-party" if anthropic_style => {
             // DeepSeek 的 /anthropic 端点只实现 Messages API（POST /v1/messages）
             let mut provider =
@@ -62,9 +75,29 @@ pub fn create_provider(cfg: &crate::config::AgentConfig) -> Result<Box<dyn LlmPr
             &cfg.model,
         ))),
         other => Err(LlmError::Config(format!(
-            "不支持的 provider: {other} (可选: openai/deepseek/third-party/anthropic/ollama)"
+            "不支持的 provider: {other} (可选: openai/deepseek/third-party/anthropic/kimi/ollama)"
         ))),
     }
+}
+
+/// Kimi For Coding 的 base_url 归一化。
+///
+/// 官方文档给的是 `https://api.kimi.com/coding/`（Anthropic 兼容），而本项目
+/// 的 Anthropic 客户端会自行拼接 `/v1/messages`——因此这里接受两种写法：
+/// `https://api.kimi.com/coding` 与 `https://api.kimi.com/coding/v1`（也容忍
+/// 结尾斜杠与 `/v1/messages`）。空值回退到官方端点。
+fn kimi_base_url(configured: &str) -> String {
+    const DEFAULT: &str = "https://api.kimi.com/coding";
+    let trimmed = configured.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return DEFAULT.to_string();
+    }
+    let trimmed = trimmed
+        .strip_suffix("/v1/messages")
+        .or_else(|| trimmed.strip_suffix("/messages"))
+        .unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
+    trimmed.trim_end_matches('/').to_string()
 }
 
 #[cfg(test)]
@@ -103,6 +136,31 @@ mod tests {
         // anthropic-style URL switches to the Messages client.
         let p =
             create_provider(&cfg("third-party", "https://one-api.example.com/anthropic")).unwrap();
+        assert_eq!(p.name(), "anthropic");
+    }
+
+    #[test]
+    fn kimi_provider_uses_anthropic_client_and_normalizes_base_url() {
+        // 官方写法（带 /v1）与不带 /v1 都归一到同一 Anthropic 端点。
+        assert_eq!(
+            kimi_base_url("https://api.kimi.com/coding/v1"),
+            "https://api.kimi.com/coding"
+        );
+        assert_eq!(
+            kimi_base_url("https://api.kimi.com/coding/"),
+            "https://api.kimi.com/coding"
+        );
+        assert_eq!(
+            kimi_base_url("https://api.kimi.com/coding/v1/messages"),
+            "https://api.kimi.com/coding"
+        );
+        assert_eq!(kimi_base_url(""), "https://api.kimi.com/coding");
+        assert_eq!(
+            kimi_base_url("https://api.kimi.com/coding"),
+            "https://api.kimi.com/coding"
+        );
+
+        let p = create_provider(&cfg("kimi", "https://api.kimi.com/coding/v1")).unwrap();
         assert_eq!(p.name(), "anthropic");
     }
 

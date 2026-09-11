@@ -62,6 +62,7 @@ impl AgentSupervisor {
                     enabled_skills: Vec::new(),
                     memory_limit_tokens: None,
                     context_window_tokens: None,
+                    api_profile: None,
                 },
             ));
         }
@@ -104,9 +105,18 @@ impl AgentSupervisor {
                 enabled_skills: Vec::new(),
                 memory_limit_tokens: None,
                 context_window_tokens: None,
+                api_profile: None,
             };
             let agent = make_agent(id.clone(), profile.clone());
-            personas.insert(id.clone(), Persona { id, profile, agent, bridge: None });
+            personas.insert(
+                id.clone(),
+                Persona {
+                    id,
+                    profile,
+                    agent,
+                    bridge: None,
+                },
+            );
         }
         // default_id 必须是排序后的第一个 profile（BTreeMap 语义），
         // 而不是 HashMap 的随机迭代首项——否则默认人格会漂移。

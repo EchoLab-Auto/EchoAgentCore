@@ -88,6 +88,33 @@ impl SkillRegistry {
         }
     }
 
+    /// 包内成员名（按 `SKILL.md` frontmatter `package:` 匹配，名称排序）。
+    ///
+    /// Package 是横跨 plugin + tool + skill 的标签：技能维度的成员即
+    /// 声明了同一 `package:` 的技能（如 QQ 包 = `echo-agent.adapter.qq`）。
+    pub fn package_names(&self, package: &str) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .skills
+            .iter()
+            .filter(|(_, skill)| skill.metadata.package.as_deref() == Some(package))
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// 按包批量启停（包级门控的技能维度）；返回受影响技能数。
+    pub fn set_package_enabled(&mut self, package: &str, enabled: bool) -> usize {
+        let mut affected = 0;
+        for skill in self.skills.values_mut() {
+            if skill.metadata.package.as_deref() == Some(package) {
+                skill.metadata.enabled = enabled;
+                affected += 1;
+            }
+        }
+        affected
+    }
+
     /// Preserve runtime enable/disable choices across a filesystem reload.
     /// Newly discovered skills keep their loader default (`enabled = true`).
     pub fn inherit_enabled_from(&mut self, previous: &Self) {
@@ -317,5 +344,56 @@ mod tests {
         assert!(SkillRegistry::discover(missing.to_str().unwrap())
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn package_toggle_bulk_disables_and_restores() {
+        let mut registry = SkillRegistry::new();
+        for (name, pkg) in [
+            ("qq-management", Some("echo-agent.adapter.qq")),
+            ("qq-transport", Some("echo-agent.adapter.qq")),
+            ("calculator", None),
+        ] {
+            registry.register(Skill {
+                metadata: SkillMetadata {
+                    name: name.into(),
+                    description: "d".into(),
+                    keywords: vec![],
+                    always: false,
+                    system: false,
+                    enabled: true,
+                    category: String::new(),
+                    package: pkg.map(str::to_string),
+                },
+                instructions: "x".into(),
+            });
+        }
+
+        // 包内成员列举（排序稳定）
+        assert_eq!(
+            registry.package_names("echo-agent.adapter.qq"),
+            vec!["qq-management".to_string(), "qq-transport".to_string()]
+        );
+
+        // 禁用包：仅包内技能关闭
+        assert_eq!(
+            registry.set_package_enabled("echo-agent.adapter.qq", false),
+            2
+        );
+        assert!(!registry.get("qq-management").unwrap().metadata.enabled);
+        assert!(!registry.get("qq-transport").unwrap().metadata.enabled);
+        assert!(
+            registry.get("calculator").unwrap().metadata.enabled,
+            "包外技能不受影响"
+        );
+
+        // 恢复
+        assert_eq!(
+            registry.set_package_enabled("echo-agent.adapter.qq", true),
+            2
+        );
+        assert!(registry.get("qq-management").unwrap().metadata.enabled);
+        // 未知包 no-op
+        assert_eq!(registry.set_package_enabled("nope", false), 0);
     }
 }

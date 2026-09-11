@@ -69,7 +69,9 @@ impl ShellSession {
             session_id: self.session_id.clone(),
             workdir: self.workdir.clone(),
             created_at_ms: self.created_at_ms,
-            last_active_ms: self.last_active_ms.load(std::sync::atomic::Ordering::Relaxed),
+            last_active_ms: self
+                .last_active_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
             exec_count: self.exec_count.load(std::sync::atomic::Ordering::Relaxed),
             running: true,
             last_output: None,
@@ -112,14 +114,12 @@ impl ShellManager {
         workdir: Option<String>,
         emit: &ShellEmit,
     ) -> Result<ShellSessionInfo, String> {
-        let dir = workdir
-            .filter(|d| !d.trim().is_empty())
-            .unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap_or_else(|_| ".".into())
-                    .display()
-                    .to_string()
-            });
+        let dir = workdir.filter(|d| !d.trim().is_empty()).unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| ".".into())
+                .display()
+                .to_string()
+        });
         {
             let sessions = self.sessions.lock().unwrap();
             if sessions.len() >= MAX_SHELL_SESSIONS {
@@ -140,7 +140,10 @@ impl ShellManager {
         let stdin = child.stdin.take().ok_or("bash stdin unavailable")?;
         let stdout = BufReader::new(child.stdout.take().ok_or("bash stdout unavailable")?);
         let stderr = BufReader::new(child.stderr.take().ok_or("bash stderr unavailable")?);
-        let seq = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let seq = self
+            .next_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
         let session_id = format!("sh-{seq}");
         let now = chrono::Utc::now().timestamp_millis();
         let session = Arc::new(ShellSession {
@@ -215,7 +218,9 @@ impl ShellManager {
         // 检查进程是否还活着
         {
             let mut child = session.child.lock().await;
-            if let Some(status) = child.try_wait().map_err(|e| format!("child check failed: {e}"))?
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|e| format!("child check failed: {e}"))?
             {
                 drop(child);
                 self.close_internal(session_id, &format!("exited ({status})"), emit);
@@ -223,8 +228,14 @@ impl ShellManager {
             }
         }
 
-        let seq = session.exec_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-        session.last_active_ms.store(chrono::Utc::now().timestamp_millis(), std::sync::atomic::Ordering::Relaxed);
+        let seq = session
+            .exec_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        session.last_active_ms.store(
+            chrono::Utc::now().timestamp_millis(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         emit(ShellEvent::ExecStarted {
             session_id: session_id.to_string(),
             seq,
@@ -371,7 +382,8 @@ pub fn shell_emit_for_self(agent: &crate::agent::Agent) -> ShellEmit {
     let agent = unsafe {
         // 调用方持有 agent 引用，且回调在命令处理期间使用——生命周期与
         // apply_command 一致，此处通过原始指针延长（Arc 由组合根持有）。
-        let ptr: *const crate::agent::Agent = std::mem::transmute(agent as *const crate::agent::Agent);
+        let ptr: *const crate::agent::Agent =
+            std::mem::transmute(agent as *const crate::agent::Agent);
         &*ptr
     };
     shell_emit_for(move |event: ShellEvent| {
@@ -413,12 +425,8 @@ pub fn shell_event_to_backend(event: ShellEvent) -> crate::event::BackendEvent {
             success,
             elapsed_ms,
         },
-        ShellEvent::Closed {
-            session_id,
-            reason,
-        } => BackendEvent::ShellSessionClosed {
-            session_id,
-            reason,
-        },
+        ShellEvent::Closed { session_id, reason } => {
+            BackendEvent::ShellSessionClosed { session_id, reason }
+        }
     }
 }

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use echo_defs::media::compact_embedded_media;
 use echo_defs::message::{ChatMessage, ToolCall};
 
 /// One durable fact in a session log.
@@ -66,7 +67,7 @@ pub struct AssistantMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
     /// Tool calls requested alongside this message; serialized fully (the
-    /// pre-event-sourced format dropped these — see Phase 3 ADR).
+    /// pre-event-sourced format dropped these).
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
 }
@@ -146,11 +147,17 @@ impl From<CompactionEvent> for SessionEvent {
 }
 
 /// Build the model-facing message for a user event.
+///
+/// 文本里的内嵌图片数据（hook JSON 的 `"images"` 字段、平台带过来的 data
+/// URI）先压成 `[图片#n]` 占位符再进模型：图片本身走 `images` 的 image 块，
+/// 文本里再留一份 base64 会被端点按文本 token 计费（实测约 0.7–1 token/字符，
+/// 一份 1.3MB 截图 ≈ 125 万 token）——这正是 1M 窗口被单张图片打爆的原因。
 pub(crate) fn user_message(event: &UserMessage) -> ChatMessage {
+    let content = compact_embedded_media(&event.content, &event.images);
     if event.images.is_empty() {
-        ChatMessage::user(&event.content)
+        ChatMessage::user(&content)
     } else {
-        ChatMessage::user_with_images(&event.content, event.images.clone())
+        ChatMessage::user_with_images(&content, event.images.clone())
     }
 }
 
@@ -165,17 +172,63 @@ pub(crate) fn assistant_message(event: &AssistantMessage) -> ChatMessage {
 }
 
 /// Build the model-facing tool message answering a call id.
+///
+/// 工具输出里的内嵌图片同样按多模态约定处理：文本只留占位，图片走 image 块。
 pub(crate) fn tool_result_message(event: &ToolResultEvent) -> ChatMessage {
+    let result = compact_embedded_media(&event.result, &event.images);
     if event.images.is_empty() {
-        ChatMessage::tool(&event.result, &event.tool_call_id)
+        ChatMessage::tool(&result, &event.tool_call_id)
     } else {
-        ChatMessage::tool_with_images(&event.result, &event.tool_call_id, event.images.clone())
+        ChatMessage::tool_with_images(&result, &event.tool_call_id, event.images.clone())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_message_keeps_image_blocks_but_strips_base64_from_text() {
+        let payload = "A".repeat(4096);
+        let uri = format!("data:image/png;base64,{payload}");
+        let content = format!(
+            "<backend_message_hook>\n{{\"content\":\"看图\",\"images\":[\"{uri}\"]}}\n</backend_message_hook>"
+        );
+        let event = UserMessage {
+            content,
+            timestamp: 0,
+            message_sequence: Some(7),
+            source: None,
+            images: vec![uri.clone()],
+        };
+        let message = user_message(&event);
+        assert_eq!(message.images, vec![uri], "image block keeps the payload");
+        assert!(message.content.contains("[图片#1]"), "{}", message.content);
+        assert!(
+            !message.content.contains("AAAA"),
+            "base64 no longer in text"
+        );
+        // 模型面对的最大单条消息现在远小于编码前。
+        assert!(
+            echo_defs::token::estimate_message_tokens(&message) < 1000,
+            "compacted message stays small"
+        );
+    }
+
+    #[test]
+    fn tool_result_message_strips_embedded_payload_from_text() {
+        let payload = "B".repeat(2048);
+        let uri = format!("data:image/jpeg;base64,{payload}");
+        let event = ToolResultEvent {
+            tool_call_id: "call_1".into(),
+            result: format!("screenshot: {uri}"),
+            images: vec![uri.clone()],
+        };
+        let message = tool_result_message(&event);
+        assert_eq!(message.images, vec![uri]);
+        assert!(message.content.contains("[图片#1]"));
+        assert!(!message.content.contains("BBBB"));
+    }
 
     #[test]
     fn event_roundtrip_preserves_tool_calls() {

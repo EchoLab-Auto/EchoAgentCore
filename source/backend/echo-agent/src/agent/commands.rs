@@ -96,11 +96,12 @@ impl Agent {
                 self.emit(BackendEvent::SystemPrompt { text });
             }
             BackendCommand::ToggleSkill { name, enabled } => {
-                let mut skills = self.skills.lock().await;
-                let ok = skills.set_enabled(&name, enabled);
-                *self.system_prompt_cache.write().await = None;
-                drop(skills);
+                let ok = {
+                    let mut skills = self.skills.lock().await;
+                    skills.set_enabled(&name, enabled)
+                };
                 if ok {
+                    *self.system_prompt_cache.write().await = None;
                     // Persist the choice so it survives restarts.
                     let mut cfg = self.config.write().await;
                     cfg.disabled_skills.retain(|n| n != &name);
@@ -110,6 +111,13 @@ impl Agent {
                     let cfg_snapshot = cfg.clone();
                     drop(cfg);
                     self.persist_config(&cfg_snapshot).await;
+                    // 全局生效：最终状态 = 全局启停 ∧ 各 persona 名单，
+                    // 逐 persona 重算（此前只作用于管理面，其他人格照旧）。
+                    if let Some(mgr) = crate::agent_manager::global_manager() {
+                        for running in mgr.all() {
+                            running.agent.reapply_skill_gating(&name, enabled).await;
+                        }
+                    }
                     self.emit_skills_list().await;
                 }
                 self.emit(BackendEvent::Error {
@@ -135,6 +143,13 @@ impl Agent {
                     let cfg_snapshot = cfg.clone();
                     drop(cfg);
                     self.persist_config(&cfg_snapshot).await;
+                    // 全局生效：最终状态 = 全局启停 ∧ 各 persona 名单，
+                    // 逐 persona 重算（此前只作用于管理面，其他人格照旧）。
+                    if let Some(mgr) = crate::agent_manager::global_manager() {
+                        for running in mgr.all() {
+                            running.agent.reapply_tool_gating(&name, enabled).await;
+                        }
+                    }
                     self.emit_tools_list().await;
                     self.emit(BackendEvent::Error {
                         session_id: None,
@@ -235,6 +250,9 @@ impl Agent {
             BackendCommand::TestApi { name } => {
                 self.test_api_config(&name).await;
             }
+            BackendCommand::QueryApiBalance { name } => {
+                self.query_api_balance(&name).await;
+            }
             BackendCommand::RequestSkillsList => {
                 self.emit_skills_list().await;
             }
@@ -318,68 +336,66 @@ impl Agent {
                     .unwrap_or_default();
                 self.emit(BackendEvent::ShellSessionsList { sessions });
             }
-            BackendCommand::ShellStart { workdir } => {
-                match crate::shell::shell_manager_global() {
-                    Some(m) => {
-                        let emit = crate::shell::shell_emit_for_self(self);
-                        match m.start(workdir, &emit).await {
-                            Ok(info) => {
-                                self.emit(BackendEvent::ShellSessionStarted { session: info.clone() });
-                                self.emit(BackendEvent::Error {
-                                    session_id: None,
-                                    message: format!("shell session started: {}", info.session_id),
-                                });
-                            }
-                            Err(e) => {
-                                self.emit(BackendEvent::Error {
-                                    session_id: None,
-                                    message: format!("shell start failed: {e}"),
-                                });
-                            }
+            BackendCommand::ShellStart { workdir } => match crate::shell::shell_manager_global() {
+                Some(m) => {
+                    let emit = crate::shell::shell_emit_for_self(self);
+                    match m.start(workdir, &emit).await {
+                        Ok(info) => {
+                            self.emit(BackendEvent::ShellSessionStarted {
+                                session: info.clone(),
+                            });
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("shell session started: {}", info.session_id),
+                            });
+                        }
+                        Err(e) => {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("shell start failed: {e}"),
+                            });
                         }
                     }
-                    None => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: "shell manager unavailable".into(),
-                        });
-                    }
                 }
-            }
+                None => {
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: "shell manager unavailable".into(),
+                    });
+                }
+            },
             BackendCommand::ShellExec {
                 session_id,
                 command,
                 timeout_secs,
-            } => {
-                match crate::shell::shell_manager_global() {
-                    Some(m) => {
-                        let emit = crate::shell::shell_emit_for_self(self);
-                        match m.exec(&session_id, &command, timeout_secs, &emit).await {
-                            Ok((output, _success, _timed_out)) => {
-                                self.emit(BackendEvent::Error {
-                                    session_id: None,
-                                    message: format!(
-                                        "shell exec done ({session_id}): {} chars",
-                                        output.chars().count()
-                                    ),
-                                });
-                            }
-                            Err(e) => {
-                                self.emit(BackendEvent::Error {
-                                    session_id: None,
-                                    message: format!("shell exec failed: {e}"),
-                                });
-                            }
+            } => match crate::shell::shell_manager_global() {
+                Some(m) => {
+                    let emit = crate::shell::shell_emit_for_self(self);
+                    match m.exec(&session_id, &command, timeout_secs, &emit).await {
+                        Ok((output, _success, _timed_out)) => {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!(
+                                    "shell exec done ({session_id}): {} chars",
+                                    output.chars().count()
+                                ),
+                            });
+                        }
+                        Err(e) => {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("shell exec failed: {e}"),
+                            });
                         }
                     }
-                    None => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: "shell manager unavailable".into(),
-                        });
-                    }
                 }
-            }
+                None => {
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: "shell manager unavailable".into(),
+                    });
+                }
+            },
             BackendCommand::ShellStop { session_id } => {
                 match crate::shell::shell_manager_global() {
                     Some(m) => {
@@ -407,11 +423,7 @@ impl Agent {
                     }
                 }
             }
-            BackendCommand::InstallSkillFromGit {
-                url,
-                name,
-                branch,
-            } => {
+            BackendCommand::InstallSkillFromGit { url, name, branch } => {
                 let dir = self.current_skills_dir().await;
                 match crate::skill_install::install(
                     std::path::Path::new(&dir),
@@ -510,7 +522,10 @@ impl Agent {
                         emit_sessions_of(&running.agent, &mut emitted_sessions).await;
                     }
                 }
-                tracing::info!(sessions = emitted_sessions, "state sessions emitted for all personas");
+                tracing::info!(
+                    sessions = emitted_sessions,
+                    "state sessions emitted for all personas"
+                );
                 // Also emit adapter status and QQ gate/filter state so the
                 // TUI starts up with the correct persisted values.
                 self.emit_adapter_list();
@@ -558,15 +573,31 @@ impl Agent {
                                         ),
                                     }
                                 } else {
-                                    (agent.trunk.timeline_snapshot(), agent.trunk.timeline_seq(), true)
+                                    (
+                                        agent.trunk.timeline_snapshot(),
+                                        agent.trunk.timeline_seq(),
+                                        true,
+                                    )
                                 }
                             }
-                            None => (self.trunk.timeline_snapshot(), self.trunk.timeline_seq(), true),
+                            None => (
+                                self.trunk.timeline_snapshot(),
+                                self.trunk.timeline_seq(),
+                                true,
+                            ),
                         },
-                        None => (self.trunk.timeline_snapshot(), self.trunk.timeline_seq(), true),
+                        None => (
+                            self.trunk.timeline_snapshot(),
+                            self.trunk.timeline_seq(),
+                            true,
+                        ),
                     }
                 } else {
-                    (self.trunk.timeline_snapshot(), self.trunk.timeline_seq(), true)
+                    (
+                        self.trunk.timeline_snapshot(),
+                        self.trunk.timeline_seq(),
+                        true,
+                    )
                 };
                 self.emit(BackendEvent::TrunkTimeline {
                     messages,
@@ -577,8 +608,8 @@ impl Agent {
             }
             BackendCommand::ClearHistory { team_id } => {
                 if let Some(id) = team_id {
-                    let target = crate::agent_manager::global_manager()
-                        .and_then(|m| m.resolve(Some(&id)));
+                    let target =
+                        crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(&id)));
                     match target {
                         Some(agent) => {
                             agent.trunk.clear_history().await;
@@ -700,6 +731,7 @@ impl Agent {
                 enabled_skills,
                 memory_limit_tokens,
                 context_window_tokens,
+                api_profile,
             } => match crate::agent_manager::global_manager() {
                 Some(mgr) => {
                     let profile = crate::config::AgentProfile {
@@ -716,6 +748,7 @@ impl Agent {
                         enabled_skills,
                         memory_limit_tokens,
                         context_window_tokens,
+                        api_profile,
                     };
                     match mgr.save_profile(&id, profile.clone(), enabled) {
                         Ok(()) => {
@@ -729,6 +762,12 @@ impl Agent {
                                 }
                                 target.apply_capabilities(&profile).await;
                                 target.emit_skills_list().await;
+                                // Persona 级 API 引用变更：立即重建该 persona 的
+                                // provider（以管理面本 agent 的全局配置为池基准）。
+                                target.set_persona_api(profile.api_profile.clone()).await;
+                                let global_cfg = self.config.read().await.clone();
+                                target.apply_persona_api(&global_cfg).await;
+                                self.emit_teams_list().await;
                             }
                             self.emit(BackendEvent::Error {
                                 session_id: None,
@@ -782,6 +821,14 @@ impl Agent {
                         let f = move |i: String, p: crate::config::AgentProfile| factory.call(i, p);
                         match mgr.set_enabled(&id, enabled, f) {
                             Ok(()) => {
+                                // 重新启用的人格：补应用启动期门控（名单 +
+                                // 全局禁用），否则新实例以"全开"状态运行到
+                                // 下次保存/重启。
+                                if enabled {
+                                    if let Some(running) = mgr.get(&id) {
+                                        running.agent.apply_capabilities(&running.profile).await;
+                                    }
+                                }
                                 self.emit_teams_list().await;
                                 self.emit(BackendEvent::Error {
                                     session_id: None,
@@ -1079,6 +1126,7 @@ impl Agent {
                 author: d.author,
                 enabled: d.enabled,
                 builtin: d.builtin,
+                package: d.package,
             })
             .collect();
         self.emit(BackendEvent::PluginsList { plugins });
@@ -1107,8 +1155,7 @@ impl Agent {
         };
         let mut frontmatter = format!(
             "---\nname: {}\ndescription: {}\n{keywords_str}",
-            draft.name,
-            draft.description,
+            draft.name, draft.description,
         );
         if draft.always {
             frontmatter.push_str("metadata:\n  always: true\n");

@@ -1,7 +1,7 @@
 ---
 group: 总览
-x: 48
-y: 216
+x: -53
+y: 805
 ---
 
 # 架构总览
@@ -53,7 +53,7 @@ graph BT
 | `echo-defs` | Service Definition 层 | LLM/工具/技能/平台消息词汇与 trait，零实现、零 harness 依赖 |
 | `echo-context` | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry` |
 | `echo-session` | 事件溯源会话 | `SessionEvent` 事件集、`EventLog` append-only 持久化、`derive_messages` 投影、compaction、`SessionHeader`、v1-v4 兼容迁移 |
-| `echo-loop` | 默认 agent 驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道 |
+| `echo-loop` | 默认 agent 驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话，见 Agent 循环文档） |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 echo-defs |
 | `echo-chat-capability` | 平台能力定义 | `DeliveryPolicy`/`DeliveryTarget`（交付策略接缝） |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge，Panel 只依赖它 |
@@ -152,5 +152,3 @@ graph BT
 ## 关键文档
 
 - [开发指南](./dev-guide.md)：仓库结构、关键抽象、构建与测试、治理门禁
-
-> 本文档已吸收原 ADR 0001-0010 的架构决策（仓库拆分、定义层、机制层、事件溯源、TurnRunner、provider 拆分、平台接缝、命令分发、输入标记、治理）。

@@ -165,6 +165,37 @@ impl ToolRegistry {
             .and_then(|p| p.get(name).cloned())
     }
 
+    /// 包内成员名（同步尽力：锁竞争时返回空列表，调用方可跳过本轮）。
+    pub fn package_names(&self, package: &str) -> Vec<String> {
+        self.packages
+            .try_read()
+            .map(|p| {
+                p.iter()
+                    .filter(|(_, pkg)| pkg.as_str() == package)
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 同步禁用（try_write；锁竞争时返回 false 且不改动）。
+    ///
+    /// 供 sync 闭包路径（插件 mount/unmount 的 persona 名单收紧）使用；
+    /// async 路径请用 [`Self::set_enabled`]。
+    pub fn try_disable(&self, name: &str) -> bool {
+        match self.disabled.try_write() {
+            Ok(mut disabled) => {
+                let changed = disabled.insert(name.to_string());
+                drop(disabled);
+                if changed {
+                    self.invalidate_definitions();
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// All disabled tool names.
     pub async fn disabled_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self.disabled.read().await.iter().cloned().collect();
@@ -267,11 +298,7 @@ impl ToolRegistry {
 
     /// Self-declared execution timeout of a registered tool for the given
     /// arguments, if the tool publishes one (see [`Tool::timeout_hint`]).
-    pub async fn timeout_hint(
-        &self,
-        name: &str,
-        arguments: &Value,
-    ) -> Option<std::time::Duration> {
+    pub async fn timeout_hint(&self, name: &str, arguments: &Value) -> Option<std::time::Duration> {
         self.tools
             .read()
             .await
@@ -318,7 +345,8 @@ impl ToolRegistry {
     /// 装配时打标）。同步接口：插件 mount/unmount 闭包是同步上下文，锁竞争
     /// 时退到 blocking pool。返回受影响的工具数。
     pub fn set_package_enabled(&self, package: &str, enabled: bool) -> usize {
-        if let (Ok(packages), Ok(mut disabled)) = (self.packages.try_read(), self.disabled.try_write())
+        if let (Ok(packages), Ok(mut disabled)) =
+            (self.packages.try_read(), self.disabled.try_write())
         {
             let names: Vec<String> = packages
                 .iter()

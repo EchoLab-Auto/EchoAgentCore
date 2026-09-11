@@ -121,7 +121,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         Arc::new(echo_context::EventBus::default()),
         provider_arc.clone(),
         Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        echo_loop::LoopOptions {
+            max_tokens: cfg.agent.effective_max_tokens(),
+            ..Default::default()
+        },
     ));
     let _runner_keep = ctx.register::<Arc<echo_loop::TurnRunner>>("loop", runner.clone());
 
@@ -168,6 +171,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let qq_adapter2 = qq_adapter.clone();
         let base_cfg = agent_config.clone();
         let config_store_path = args.config_path();
+        let agents_config_store = config_store.clone();
         let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         move |id: String, profile: AgentProfile| -> Arc<Agent> {
             let mut cfg = base_cfg.clone();
@@ -196,23 +200,63 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 }
             }
             t.set_package("checklist", echo_agent::plugins::CHECKLIST_PLUGIN_ID);
+            // Persona 级 API：配置了 api_profile 的 persona 在启动时构建
+            // 自己的 provider（从全局池解析，不共享默认 provider）。
+            let mut api_cfg_override: Option<echo_agent::AgentConfig> = None;
+            let persona_provider: Option<Arc<dyn echo_agent::LlmProvider>> = if let Some(ref name) =
+                profile.api_profile
+            {
+                let mut resolved = cfg.clone();
+                if resolved.apply_named_profile(name) {
+                    resolved.api_key = resolved.effective_api_key();
+                    resolved.base_url = resolved.effective_base_url();
+                    match echo_agent::llm::create_provider(&resolved) {
+                        Ok(p) => {
+                            api_cfg_override = Some(resolved.clone());
+                            Some(Arc::from(p) as Arc<dyn echo_agent::LlmProvider>)
+                        }
+                        Err(e) => {
+                            tracing::warn!(agent = %id, profile = %name, error = %e,
+                                    "persona API profile provider build failed; falling back to default provider");
+                            None
+                        }
+                    }
+                } else {
+                    tracing::warn!(agent = %id, profile = %name,
+                            "persona API profile not found in pool; falling back to default provider");
+                    None
+                }
+            } else {
+                None
+            };
             let agent = Arc::new(echo_agent::Agent::new(
-                Arc::clone(&provider_arc2),
-                cfg,
+                persona_provider.unwrap_or_else(|| Arc::clone(&provider_arc2)),
+                cfg.clone(),
                 skills2.clone(),
                 t,
                 adapters2.clone(),
             ));
             agent.set_team_id(Some(id.clone()));
+            // Persona 级 API 引用（None = 跟随全局默认；运行期重建走 apply_persona_api）。
+            agent.set_persona_api_now(profile.api_profile.clone());
+            if let Some(api_cfg) = api_cfg_override {
+                // 启动期已按 persona profile 解析好：把生效 model 同步给
+                // active_model（provider 已独立构建，无需重建）。
+                agent.set_model_now(api_cfg.model);
+            }
             // 能力配置在 make_agent 之后的启动阶段应用（见 start loop）。
-            // 独立会话文件：echo-sessions-{id}.json（default 沿用旧文件名）。
+            //
+            // 配置持久化（TOML）与会话持久化（JSON）解耦：
+            // - config store：共享 core.toml 的 ConfigStore（[agent] section）
+            // - 会话路径：独立 JSON 文件 echo-sessions-{id}.json（default 沿用旧文件名）
+            // 两者文件格式不同，绝不可共用同一路径（JSON 会让 TOML parse 失败）。
+            agent.set_config_store(agents_config_store.clone());
             let file = if id == "default" {
                 config_store_path.with_file_name("echo-sessions.json")
             } else {
                 config_store_path.with_file_name(format!("echo-sessions-{id}.json"))
             };
-            let store = echo_adapter::ConfigStore::new(file);
-            agent.set_config_store(store);
+            agent.set_session_persist_path(file);
             agent
         }
     };
@@ -245,9 +289,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
     // ---- Plugin host: mount built-in modules as plugins ----
     // 插件化组合根：每个内置模块（工具集/技能/适配器/编排/管理面/LLM/Loop）
-    // 以 PluginManifest + mount 闭包挂入 PluginHost。ADR-0018 第 2 步起，
-    // tools.builtin / skills.dir / adapter.qq / management.panel 的 mount
-    // 闭包执行真实副作用（禁用即卸载效果）；其余仍为名义挂载（Phase 3）。
+    // 以 PluginManifest + mount 闭包挂入 PluginHost。实化插件
+    //（tools.builtin / skills.dir / checklist / adapter.qq / management.panel /
+    // loop.runner）的 mount 闭包执行真实副作用（禁用即卸载效果）；
+    // orchestration 与 provider.llm 仍为名义挂载（重启生效）。
     //
     // QQ 适配器的接线（hook/handler/config store）在插件挂载之后才完成；
     // qq_wired 标志保证启动期 mount 不抢跑启动适配器（启动期由接线后的
@@ -256,7 +301,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         use echo_agent::plugins::{
-            CHECKLIST_PLUGIN_ID, ToolSink, ADAPTER_QQ_PLUGIN_ID, MANAGEMENT_PANEL_PLUGIN_ID,
+            ToolSink, ADAPTER_QQ_PLUGIN_ID, CHECKLIST_PLUGIN_ID, MANAGEMENT_PANEL_PLUGIN_ID,
             SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
         };
         use echo_context::Disposer;
@@ -300,8 +345,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             Ok(())
         }
 
-        // 名义挂载（Phase 3 实化：provider/loop 保持重启生效语义，编排依赖
-        // echo-loop 迁移；UI 门控三插件由 allows_* 能力门真实生效）。
+        // 名义挂载：provider.llm / orchestration 保持重启生效语义。
         let nominal = |entry: String| {
             move |_ctx: &MountContext| {
                 let _ = entry;
@@ -310,7 +354,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         };
 
         // ── 实化 1：内置工具集（包维度批量启停，跨 persona）──
-        register(&plugin_host,
+        register(
+            &plugin_host,
             PluginManifest::builtin(
                 TOOLS_BUILTIN_PLUGIN_ID,
                 "内置工具集",
@@ -320,15 +365,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 "平台无关的内置工具（计算/搜索/清单/编码/适配器管理）",
             ),
             move |_ctx| {
-                for_each_agent(|a| a.apply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, true));
+                // 逐 persona 重评估：全局启用 ∧ 各 persona 白/黑名单。
+                for_each_agent(|a| a.reapply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, true));
                 Ok(vec![Disposer::from_fn(|| {
-                    for_each_agent(|a| a.apply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, false));
+                    for_each_agent(|a| a.reapply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, false));
                 })])
             },
         )?;
 
         // ── 实化 2：技能目录（整表启停，跨 persona）──
-        register(&plugin_host,
+        register(
+            &plugin_host,
             PluginManifest::builtin(
                 SKILLS_DIR_PLUGIN_ID,
                 "技能目录",
@@ -338,41 +385,63 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 "SKILL.md 技能目录（热重载）",
             ),
             move |_ctx| {
-                for_each_agent(|a| a.apply_plugin_gating(SKILLS_DIR_PLUGIN_ID, true));
+                for_each_agent(|a| a.reapply_plugin_gating(SKILLS_DIR_PLUGIN_ID, true));
                 Ok(vec![Disposer::from_fn(|| {
-                    for_each_agent(|a| a.apply_plugin_gating(SKILLS_DIR_PLUGIN_ID, false));
+                    for_each_agent(|a| a.reapply_plugin_gating(SKILLS_DIR_PLUGIN_ID, false));
                 })])
             },
         )?;
 
-        // ── 实化 4：Turn Runner（echo-loop 可插拔循环驱动）──
-        // mount：把组合根共享的 TurnRunner 注入各 agent 并启用 echo-loop
-        // 驱动（普通 TUI turn 经 turn/step 状态机执行）；umount：恢复内置循环。
-        register(&plugin_host,
-            PluginManifest::builtin(
-                "echo-agent.loop.runner",
-                "Turn Runner",
-                version,
-                PluginKind::Loop,
-                "loop",
-                "默认 turn/step 状态机与工具管道（可插拔循环驱动）",
+        // ── 实化 4：循环模式（echo-loop 可插拔循环驱动，二选一）──
+        // 两个模式插件 mount 的是同一个 TurnRunner：注入各 agent 并启用
+        // echo-loop 驱动（普通 TUI turn 经 turn/step 状态机执行）；
+        // 差异（单会话串行 / 并行多会话）由 per-persona 白名单推导的
+        // `LoopMode` 决定（见 `TeamMember::loop_mode`）。
+        // 计数器保证"两个都挂载也不会提前回退"，全部卸载才恢复内置循环。
+        let loop_mounts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for (id, name, description) in [
+            (
+                echo_agent::plugins::SINGLE_LOOP_PLUGIN_ID,
+                "单会话循环",
+                "单会话（默认）：同一会话的 turn 串行排队，后续输入等待前一轮结束；无会话管理 UI、回执分支不可见",
             ),
-            {
-                let runner = runner.clone();
+            (
+                echo_agent::plugins::PARALLEL_LOOP_PLUGIN_ID,
+                "并行多会话循环",
+                "并行多会话：同一会话可并发多个 turn 分支，会话列表/全局会话/可见回执分支全套",
+            ),
+        ] {
+            let runner = runner.clone();
+            let loop_mounts = Arc::clone(&loop_mounts);
+            register(&plugin_host,
+                PluginManifest::builtin(
+                    id,
+                    name,
+                    version,
+                    PluginKind::Loop,
+                    "loop",
+                    description,
+                ),
                 move |_ctx| {
+                    loop_mounts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                     for_each_agent(|a| {
                         a.set_loop_runner(runner.clone());
                         a.set_use_echo_loop(true);
                     });
-                    Ok(vec![Disposer::from_fn(|| {
-                        for_each_agent(|a| a.set_use_echo_loop(false));
+                    let counter = Arc::clone(&loop_mounts);
+                    Ok(vec![Disposer::from_fn(move || {
+                        if counter.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1 {
+                            // 最后一个循环插件卸载：回退内置循环。
+                            for_each_agent(|a| a.set_use_echo_loop(false));
+                        }
                     })])
-                }
-            },
-        )?;
+                },
+            )?;
+        }
 
         // ── 实化 3：任务清单（checklist 工具，包维度启停）──
-        register(&plugin_host,
+        register(
+            &plugin_host,
             PluginManifest::builtin(
                 CHECKLIST_PLUGIN_ID,
                 "任务清单",
@@ -382,9 +451,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 "任务清单工具（清单保存/读取/勾选，可按人格独立启停）",
             ),
             move |_ctx| {
-                for_each_agent(|a| a.apply_plugin_gating(CHECKLIST_PLUGIN_ID, true));
+                for_each_agent(|a| a.reapply_plugin_gating(CHECKLIST_PLUGIN_ID, true));
                 Ok(vec![Disposer::from_fn(|| {
-                    for_each_agent(|a| a.apply_plugin_gating(CHECKLIST_PLUGIN_ID, false));
+                    for_each_agent(|a| a.reapply_plugin_gating(CHECKLIST_PLUGIN_ID, false));
                 })])
             },
         )?;
@@ -394,7 +463,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let qq = qq_adapter.clone();
             let wired = qq_wired.clone();
             let running = qq_running.clone();
-            register(&plugin_host,
+            register(
+                &plugin_host,
                 PluginManifest::builtin(
                     ADAPTER_QQ_PLUGIN_ID,
                     "QQ 适配器",
@@ -404,7 +474,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     "OneBot v11 反向 WS 适配器（含 QQ 管理工具）",
                 ),
                 move |_ctx| {
-                    for_each_agent(|a| a.apply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, true));
+                    for_each_agent(|a| a.reapply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, true));
                     if wired.load(Ordering::SeqCst) && !running.swap(true, Ordering::SeqCst) {
                         let qq2 = qq.clone();
                         let running2 = running.clone();
@@ -418,7 +488,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     let qq = qq.clone();
                     let running = running.clone();
                     Ok(vec![Disposer::from_fn(move || {
-                        for_each_agent(|a| a.apply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, false));
+                        for_each_agent(|a| a.reapply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, false));
                         if running.swap(false, Ordering::SeqCst) {
                             let qq3 = qq.clone();
                             tokio::spawn(async move {
@@ -441,7 +511,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let mgmt_agent = agent.clone();
             let mgmt_bridge = bridge.clone();
             let mgmt_sudo = sudo_broker.clone();
-            register(&plugin_host,
+            register(
+                &plugin_host,
                 PluginManifest::builtin(
                     MANAGEMENT_PANEL_PLUGIN_ID,
                     "管理面",
@@ -459,7 +530,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     );
                     let token = mgmt_token.clone();
                     let server = tokio::spawn(async move {
-                        if let Err(e) = management::serve_with_token(&addr, br, ag, sudo, token).await {
+                        if let Err(e) =
+                            management::serve_with_token(&addr, br, ag, sudo, token).await
+                        {
                             warn!(error = %e, "management WS server stopped");
                         }
                     });
@@ -469,8 +542,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             )?;
         }
 
-        // ── 名义挂载（Phase 3）：orchestration / provider / loop 保持重启
-        // 生效语义；三个 UI 门控插件由 allows_* 能力门真实生效。──
+        // ── 名义挂载：orchestration / provider.llm 保持重启生效语义；
+        // orchestration 的模式子插件（single/chatbot）由能力门控推导。──
         let nominal_manifests: Vec<PluginManifest> = vec![
             PluginManifest::builtin(
                 "echo-agent.orchestration",
@@ -479,22 +552,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 PluginKind::Orchestration,
                 "orchestration",
                 "后台任务/并行分支/子代理/定时器/框架自更新",
-            ),
-            PluginManifest::builtin(
-                echo_agent::plugins::SINGLE_ORCHESTRATION_PLUGIN_ID,
-                "单任务编排",
-                version,
-                PluginKind::Orchestration,
-                "orchestration_single",
-                "单任务编排模式：无会话管理 UI（会话卡/全局分组隐藏）、回执分支不可见（按 persona 白名单互斥推导，single 为兜底）",
-            ),
-            PluginManifest::builtin(
-                echo_agent::plugins::CHATBOT_ORCHESTRATION_PLUGIN_ID,
-                "多任务并行编排",
-                version,
-                PluginKind::Orchestration,
-                "orchestration_chatbot",
-                "多任务并行编排模式（chatbot）：会话列表/全局会话/可见回执分支的会话管理 UI 套件（与 single 互斥）",
             ),
             PluginManifest::builtin(
                 "echo-agent.provider.llm",
@@ -518,7 +575,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
     // ---- Background shell sessions（进程级，面板 + 工具共用）----
     {
-        use echo_agent::shell::{ShellManager, ShellEvent};
+        use echo_agent::shell::{ShellEvent, ShellManager};
         let mgr = std::sync::Arc::new(ShellManager::new());
         echo_agent::shell::set_shell_manager_global(std::sync::Arc::clone(&mgr));
         // 事件广播：接到默认 agent 的 handle，Panel 单连接即可实时可视化。
@@ -544,31 +601,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .trunk
                 .set_header(echo_session::SessionHeader::top_level("trunk"));
         }
+        // 启动期与运行期统一：apply_capabilities 同时承担
+        // persona 白/黑名单（工具/技能/门控插件）、全局 [agent].disabled_tools /
+        // disabled_skills、以及共享注册表里被 TogglePlugin 卸载的插件。
         persona.agent.apply_capabilities(&persona.profile).await;
-        // 全局禁用插件（[agent].disabled_plugins）的启动期注册表效果：
-        // 这些插件的 mount 已被 register_and_mount 守卫跳过，这里补齐
-        // 包维度的工具/技能批量禁用（运行期启停由 mount/unmount 闭包处理）。
-        for plugin_id in &cfg.agent.disabled_plugins {
-            persona.agent.apply_plugin_gating(plugin_id, false);
-        }
-        // persona 白名单/黑名单的包维度启动期效果（运行期 unmount 闭包只在
-        // AgentManager 就位后生效，启动期由这里覆盖）：白名单非空时不在
-        // 名单内的"实化插件"也要批量禁用其工具/技能。
-        for plugin_id in echo_agent::plugins::GATED_PLUGIN_IDS {
-            let allowed = profile_allows_plugin(&persona.profile, plugin_id);
-            if !allowed {
-                persona.agent.apply_plugin_gating(plugin_id, false);
-            }
-        }
-        // 全局 [agent].disabled_tools（Panel ToggleTool 持久化）应用到此
-        // persona 的工具注册表。该状态序列化在 `[agent]` 段而非 persona
-        // profile，因此必须在这里逐人格应用（此前应用在从未使用的全局
-        // registry 上，实际从未生效）。
-        for name in &cfg.agent.disabled_tools {
-            if !persona.agent.tools.set_enabled(name, false).await {
-                warn!(tool = %name, "disabled_tools entry not found, skipping");
-            }
-        }
         persona.agent.start_session_save_task();
         persona.agent.start_plugin_reload_task().await;
         persona.agent.start_orchestration_task();
@@ -750,17 +786,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
 /// persona 能力白名单语义（与 `Agent::allows_reply_branches` 等一致）：
 /// 白名单非空时只允许名单内插件；黑名单再收紧。
-fn profile_allows_plugin(profile: &AgentProfile, plugin_id: &str) -> bool {
-    if !profile.enabled_plugins.is_empty() && !profile.enabled_plugins.iter().any(|p| p == plugin_id)
-    {
-        return false;
-    }
-    if profile.disabled_plugins.iter().any(|p| p == plugin_id) {
-        return false;
-    }
-    true
-}
-
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()

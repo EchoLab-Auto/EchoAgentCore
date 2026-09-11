@@ -132,7 +132,10 @@ pub fn install(
     if !target.join("SKILL.md").exists() {
         if let Some(sub) = find_skill_root(&target) {
             // 拷贝子目录内容到 root，然后清掉子目录
-            for entry in std::fs::read_dir(&sub).map_err(|e| e.to_string())?.flatten() {
+            for entry in std::fs::read_dir(&sub)
+                .map_err(|e| e.to_string())?
+                .flatten()
+            {
                 let src = entry.path();
                 let dst = target.join(entry.file_name());
                 if dst.exists() {
@@ -186,8 +189,7 @@ pub fn update(skills_dir: &Path, name: &str) -> Result<SkillSource, String> {
     if reset.is_err() {
         sh(&["-C", &target_str, "reset", "--hard", "origin/HEAD"])?;
     }
-    let rev = sh(&["-C", &target_str, "rev-parse", "HEAD"])
-        .unwrap_or_else(|_| "unknown".into());
+    let rev = sh(&["-C", &target_str, "rev-parse", "HEAD"]).unwrap_or_else(|_| "unknown".into());
     let mut updated = source.clone();
     updated.rev = rev;
     updated.installed_at = Some(chrono::Utc::now().to_rfc3339());
