@@ -6446,6 +6446,92 @@ pub mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// workspace 插件门控：白名单外人格的工具包被禁用、提示词区块不注入；
+    /// 白名单内人格工具可见且激活会话时注入「工作区会话」区块。
+    #[tokio::test]
+    async fn workspace_plugin_gates_tool_and_prompt_block() {
+        let mut tools = ToolRegistry::new();
+        let store = Arc::new(crate::workspace::WorkspaceStore::load(None));
+        store
+            .upsert(echo_protocol::WorkspaceSessionInfo {
+                id: "proj".into(),
+                name: "Proj".into(),
+                description: String::new(),
+                directories: vec!["/srv/proj".into()],
+            })
+            .unwrap();
+        store.set_active(Some("proj".into())).unwrap();
+        tools.register(Arc::new(crate::workspace::WorkspaceTool::new(
+            store.clone(),
+        )));
+        tools.set_package("workspace", crate::plugins::WORKSPACE_PLUGIN_ID);
+        let agent = Agent::new(
+            Arc::new(MockProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                reply: "ok".into(),
+            }),
+            AgentConfig::default(),
+            SkillRegistry::new(),
+            tools,
+            Arc::new(AdapterRegistry::new()),
+        );
+        agent.set_workspace_store(store);
+
+        // 白名单含 workspace → 工具可见 + 提示区块注入。
+        agent
+            .apply_capabilities(&crate::config::TeamMember {
+                enabled_plugins: vec![
+                    crate::plugins::TOOLS_BUILTIN_PLUGIN_ID.into(),
+                    crate::plugins::WORKSPACE_PLUGIN_ID.into(),
+                ],
+                ..Default::default()
+            })
+            .await;
+        let names: Vec<String> = agent
+            .tools
+            .definitions()
+            .await
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert!(names.contains(&"workspace".to_string()), "tools: {names:?}");
+        let blocks = agent.build_prompt_blocks("", None).await;
+        assert!(
+            blocks.iter().any(|b| b.key == "workspace"),
+            "workspace block injected"
+        );
+        assert!(blocks
+            .iter()
+            .find(|b| b.key == "workspace")
+            .unwrap()
+            .content
+            .contains("/srv/proj"));
+
+        // 白名单不含 workspace → 工具包禁用 + 区块消失。
+        agent
+            .apply_capabilities(&crate::config::TeamMember {
+                enabled_plugins: vec![crate::plugins::TOOLS_BUILTIN_PLUGIN_ID.into()],
+                ..Default::default()
+            })
+            .await;
+        let names: Vec<String> = agent
+            .tools
+            .definitions()
+            .await
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert!(
+            !names.contains(&"workspace".to_string()),
+            "tools: {names:?}"
+        );
+        let blocks = agent.build_prompt_blocks("", None).await;
+        assert!(
+            !blocks.iter().any(|b| b.key == "workspace"),
+            "workspace block hidden without the plugin"
+        );
+    }
+
     /// 缺 team_id 的工作区命令被拒绝（与其它会话类命令同一约定）。
     #[tokio::test]
     async fn workspace_commands_require_team_id() {
