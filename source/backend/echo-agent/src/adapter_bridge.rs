@@ -12,7 +12,7 @@ use echo_adapter::InboundMessageHook;
 
 use crate::agent::Agent;
 use crate::event::BackendEvent;
-use crate::session::SessionKey;
+use crate::session::{SessionKey, DEFAULT_QQ_INSTANCE};
 
 const QQ_WAIT_REPLY_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -31,6 +31,8 @@ impl AgentMessageHook {
 impl InboundMessageHook for AgentMessageHook {
     async fn on_incoming_message(&self, msg: IncomingMessage) -> Result<(), String> {
         let agent = &self.agent;
+        // 多实例维度：适配器名即 QQ 实例名（非 "qq" 时进会话键）。
+        let account = (msg.adapter_name != DEFAULT_QQ_INSTANCE).then(|| msg.adapter_name.clone());
         let key = SessionKey {
             platform: msg.platform.clone(),
             scope: if msg.channel.is_group() {
@@ -40,6 +42,7 @@ impl InboundMessageHook for AgentMessageHook {
             },
             scope_id: msg.channel.group_id().unwrap_or("").to_string(),
             user_id: msg.user_id.clone(),
+            account,
         };
         let session =
             agent

@@ -54,7 +54,6 @@ impl AgentSupervisor {
                     system_prompt: raw.system_prompt.clone(),
                     enabled: true,
                     system_skills: Vec::new(),
-                    disabled_plugins: raw.disabled_plugins.clone(),
                     disabled_tools: raw.disabled_tools.clone(),
                     disabled_skills: raw.disabled_skills.clone(),
                     enabled_plugins: Vec::new(),
@@ -63,6 +62,7 @@ impl AgentSupervisor {
                     memory_limit_tokens: None,
                     context_window_tokens: None,
                     api_profile: None,
+                    disabled_plugins: Vec::new(),
                 },
             ));
         }
@@ -97,7 +97,6 @@ impl AgentSupervisor {
                 system_prompt: raw.system_prompt.clone(),
                 enabled: true,
                 system_skills: Vec::new(),
-                disabled_plugins: raw.disabled_plugins.clone(),
                 disabled_tools: raw.disabled_tools.clone(),
                 disabled_skills: raw.disabled_skills.clone(),
                 enabled_plugins: Vec::new(),
@@ -106,6 +105,7 @@ impl AgentSupervisor {
                 memory_limit_tokens: None,
                 context_window_tokens: None,
                 api_profile: None,
+                disabled_plugins: Vec::new(),
             };
             let agent = make_agent(id.clone(), profile.clone());
             personas.insert(
@@ -153,6 +153,10 @@ impl AgentSupervisor {
         self.personas.lock().unwrap().remove(id).is_some()
     }
 
+    /// ⚠️ 仅为兼容保留（去主智能体后不再有"默认人格"语义）。
+    /// 新代码请按显式 id 解析；本方法不再参与任何路由。
+    #[deprecated(note = "there is no default persona any more; resolve by explicit id")]
+    #[allow(dead_code)]
     pub fn default_id(&self) -> String {
         self.default_id.clone()
     }
@@ -166,20 +170,43 @@ impl AgentSupervisor {
         })
     }
 
-    /// Resolve target persona (None agent_id -> default; unknown -> default).
+    /// Resolve target persona。
+    ///
+    /// 去主智能体（2026-09）：没有"默认人格"回退——未知 id 时回退到**任一**
+    /// 已存在人格（仅用于事件/日志上下文，不用于会话路由；路由由
+    /// `Agent::apply_command` 的显式 team_id 校验负责）。
     pub fn resolve(&self, agent_id: Option<&str>) -> Persona {
-        let id = agent_id.unwrap_or(&self.default_id);
         let personas = self.personas.lock().unwrap();
+        if let Some(id) = agent_id {
+            if let Some(p) = personas.get(id) {
+                return Persona {
+                    id: p.id.clone(),
+                    profile: p.profile.clone(),
+                    agent: Arc::clone(&p.agent),
+                    bridge: None,
+                };
+            }
+        }
         let p = personas
-            .get(id)
-            .or_else(|| personas.get(&self.default_id))
-            .expect("at least the default persona exists");
+            .values()
+            .next()
+            .expect("at least one persona exists");
         Persona {
             id: p.id.clone(),
             profile: p.profile.clone(),
             agent: Arc::clone(&p.agent),
             bridge: None,
         }
+    }
+
+    /// 按 id 解析（未知返回 None）——路由用，绝无兜底。
+    pub fn get_exact(&self, id: &str) -> Option<Persona> {
+        self.personas.lock().unwrap().get(id).map(|p| Persona {
+            id: p.id.clone(),
+            profile: p.profile.clone(),
+            agent: Arc::clone(&p.agent),
+            bridge: None,
+        })
     }
 
     pub fn ids(&self) -> Vec<String> {

@@ -38,7 +38,7 @@ graph TD
 ```prodoc-flow
 graph TD
   App[App.vue 应用壳] --> Layout[NeumorphismLayout 外壳]
-  Layout --> Header[顶栏：品牌 · 连接状态 · 忙碌徽标 · 导航 · 主题]
+  Layout --> Header[顶栏：品牌 · 连接状态 · 导航 · 主题]
   Layout --> Sider[侧边栏 PanelSidebar]
   Layout --> Main[主区：当前视图组件]
   Sider --> BranchCard[临时分支卡]
@@ -104,7 +104,7 @@ graph LR
 | 区域 | 内容 | 几何 |
 |---|---|---|
 | 顶栏左 | 品牌 "EchoAgent Panel"（`.brand` 字重 700） | 顶栏分左中右三段，右侧操作 `margin-left:auto` 顶齐 |
-| 顶栏中 | 连接状态点 + 忙碌徽标 | 状态组 gap 6px、13px 次要色；模型名已于 2026-09-11 移除（改在设置视图 API 分类查看） |
+| 顶栏中 | 连接状态点 | 状态组 gap 6px、13px 次要色 |
 | 顶栏右 | 四视图导航（聊天/任务/Shell/设置）、主题开关 | 操作组 gap 6px、允许折行 |
 | 侧边栏 | 临时分支卡 + 会话卡 | 固定 264px，可折叠为 0（`.nm-layout--sider-collapsed` 兜底 `width:0!important` + `overflow:hidden`） |
 | 主区 | 当前视图组件 | `flex:1` + `min-width:0`，纵向 flex，`overflow:hidden`（滚动交给视图内部） |
@@ -140,7 +140,6 @@ graph LR
 ### 3.4 顶栏交互
 
 - **连接指示**：`已连接`（online 绿点）/ `连接中…`（connecting 呼吸点），驱动源 `state.connected`（`App.vue:249-252`）
-- **忙碌徽标**：任一会话处于 thinking/tool/subagent 相位时显示 `忙碌 ×N` 警告标签（`App.vue`）；顶栏原「模型名」显示已删除，模型/供应商改在设置视图「API」分类查看（`SettingsView` 的 `当前：provider / model · Profile「name」` 摘要）
 - **设置入口**：顶栏导航「设置」直达设置视图（§九）——2026-09-04 起不再有设置下拉与 API 弹窗
 - **主题开关**：三态循环（浅色 → 跟随系统 → 深色），持久化 `localStorage: echo-panel-theme`；外壳默认 `auto`，index.html 内联脚本防闪烁
 
@@ -149,7 +148,7 @@ graph LR
 | localStorage 键 | 内容 | 缺省 |
 |---|---|---|
 | `echo-panel-view` | 当前视图 | `chat` |
-| `echo-panel-active-team` | 当前 Agent（刷新/重连后停留原 Agent） | 主 Agent |
+| `echo-panel-active-team` | 当前 Agent（刷新/重连后停留原 Agent） | 列表首个 |
 | `echo-panel-sidebar-collapsed` | 侧边栏折叠 `'1'/'0'` | 展开 |
 | `echo-panel-theme` | 主题三态 | `auto` |
 
@@ -189,7 +188,7 @@ graph LR
 - 头像 = 名称首字符，颜色按名称哈希取 7 色板；菜单项选中态 = 主色 18% 底 + 40% 描边；禁用成员灰显 + online/offline 状态点
 - **切换效果**（`App.vue:68-93` onTeamSelect）：持久化选择 → 清空分支标签 → 立即用本地缓存渲染该 Agent 时间线 → 后台 `RequestTrunkTimeline{since_seq}` 增量对齐（无缓存则全量）→ 重选本地会话
 - 与"点选会话"的本质区别：切换 Agent = 切换记忆空间（重载时间线）；点选会话 = 同一记忆空间内的过滤
-- 当前 Agent 被删除时：回退主 Agent、重载时间线、重选本地会话（`App.vue:203-224`，TeamsList 为空时不校验，避免误清刚恢复的 id）；全局会话被禁用时从「全部消息」回退本地会话（`App.vue:191-201`）
+- 当前 Agent 被删除（或尚未选中）时：切到列表首个、重载时间线、重选本地会话（`App.vue:203-224`，TeamsList 为空时不校验，避免误清刚恢复的 id）；全局会话被禁用时从「全部消息」回退本地会话（`App.vue:191-201`）
 
 ## 四、连接生命周期
 

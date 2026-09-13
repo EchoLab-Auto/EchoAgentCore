@@ -13,7 +13,8 @@ EchoAgentCore 的配置通过一个共享的 `ConfigStore` 进行原子化读写
 
 | 类型 | 机制 | 写入 section |
 |---|---|---|
-| Agent 配置（API key、模型、prompt、profiles） | `ConfigStore::patch()` 替换 `[agent]` | `[agent]` |
+| Agent 配置（API key、模型、profiles） | `ConfigStore::patch()` 替换 `[agent]` | `[agent]` |
+| 全局系统提示词 | `persist_system_prompt_plugin()` → `ConfigStore::patch()` | `[plugins.system_prompt].text` |
 | QQ 门控配置（gate mode、白名单、黑名单） | `ConfigStore::patch()` 替换 `[adapters.qq]` | `[adapters.qq.gate]` + `[adapters.qq.filter]` |
 
 `ConfigStore` 内部使用 `std::sync::Mutex` 序列化所有写入，读写一次全文件，
@@ -31,7 +32,7 @@ EchoAgentCore 的配置通过一个共享的 `ConfigStore` 进行原子化读写
 | `/api key <key>` | 修改 API key → `persist_config()` |
 | `/api model <name>` | 修改模型 → `persist_config()` |
 | `/api provider <name>` | 修改 provider → `persist_config()` |
-| `/api prompt <text>` | 修改 system prompt → `persist_config()` |
+| `/api prompt <text>` / Panel 系统提示词保存 | 修改 system prompt → `persist_system_prompt_plugin()`（写 `[plugins.system_prompt].text`，不动 `[agent]`） |
 | `/api new <name>` | 新建 profile → `persist_config()` |
 
 ### 数据流
@@ -78,14 +79,19 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 
 - legacy `[server]`/`[bot]` → `[adapters.qq]`（有显式值才触发，打印提示）
 - `api_profiles` 按名去重（历史持久化 bug 自愈）
-- **循环模式插件 id**（`migrate_orchestration_mode_plugins`）：teams 各成员与全局
+- **循环模式插件 id**（`migrate_orchestration_mode_plugins`）：teams 各成员白名单与全局
   `[agent].disabled_plugins` 中的旧 id 归一化为循环模式插件 id——旧编排模式 id
   （`echo-agent.orchestration.chatbot` / `branch.reply` / `session.global` /
   `chatbot.sessions`）→ `echo-agent.loop.parallel`；`orchestration.single` →
   `echo-agent.loop.single`；`echo-agent.loop.runner` 剔除（模式插件取代）——旧 id
   不再注册，不迁移则 `apply_disabled` 静默失效；白名单同时含 single+parallel 记
-  warn（parallel 优先）；黑名单含 single id 记 warn（no-op）。运行期 `SaveTeam`
+  warn（parallel 优先）。运行期 `SaveTeam`
   （`AgentManager::save_profile`）入口做同样归一化，防御旧 Panel 回写旧 id
+- **per-persona 插件黑名单移除**（2026-09-11，同函数内）：`[agent.teams.*].disabled_plugins`
+  的语义物化进 `enabled_plugins` 白名单（`convert_plugin_blacklist_to_whitelist`）——
+  空白名单 + 黑名单 → 「全部内置插件 − 黑名单 − parallel 模式 id」；非空白名单 → 剔除
+  黑名单项（黑名单含 parallel id 时同时剔除白名单的 parallel id，保持单会话推导）。
+  迁移后字段清空、序列化不再写回（`#[serde(default, skip_serializing)]`），下次保存自愈
 
 ### 不持久化的内容
 

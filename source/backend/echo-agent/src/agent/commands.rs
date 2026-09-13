@@ -43,7 +43,70 @@ impl Agent {
         });
     }
 
+    /// 命令的目标 team_id（会话类命令；None = 未指定）。
+    fn command_team_id(cmd: &BackendCommand) -> Option<&str> {
+        match cmd {
+            BackendCommand::SendMessage { team_id, .. }
+            | BackendCommand::CancelRequestedWork { team_id, .. }
+            | BackendCommand::RequestTrunkTimeline { team_id, .. }
+            | BackendCommand::RequestContext { team_id }
+            | BackendCommand::ClearHistory { team_id }
+            | BackendCommand::ArchiveHistory { team_id }
+            | BackendCommand::CompactHistory { team_id, .. } => team_id.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// 会话类命令是否必须显式指定 team_id（去主智能体后没有"默认人格"）。
+    fn requires_explicit_team(cmd: &BackendCommand) -> bool {
+        matches!(
+            cmd,
+            BackendCommand::SendMessage { .. }
+                | BackendCommand::CancelRequestedWork { .. }
+                | BackendCommand::RequestTrunkTimeline { .. }
+                | BackendCommand::RequestContext { .. }
+                | BackendCommand::ClearHistory { .. }
+                | BackendCommand::ArchiveHistory { .. }
+                | BackendCommand::CompactHistory { .. }
+        )
+    }
+
     pub async fn apply_command(&self, cmd: BackendCommand) {
+        // ---- 去主智能体：会话类命令按显式 team_id 路由 ----
+        // 每个智能体一律平等；没有"默认人格"兜底，缺失 team_id 直接报错。
+        if Self::requires_explicit_team(&cmd) {
+            match Self::command_team_id(&cmd) {
+                None => {
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: "该命令必须指定 team_id（没有默认智能体；请在前端选择智能体）"
+                            .into(),
+                    });
+                    return;
+                }
+                Some(target_id) => {
+                    let current = self.team_id();
+                    if current.as_deref() != Some(target_id) {
+                        // 转发给目标人格（未知 team_id → 明确报错，不再回退默认）。
+                        match crate::agent_manager::global_manager()
+                            .and_then(|m| m.resolve(Some(target_id)))
+                        {
+                            Some(agent) => {
+                                Box::pin(agent.apply_command(cmd)).await;
+                                return;
+                            }
+                            None => {
+                                self.emit(BackendEvent::Error {
+                                    session_id: None,
+                                    message: format!("智能体 {target_id} 不存在"),
+                                });
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         match cmd {
             BackendCommand::SwitchModel { model } => {
                 self.config.write().await.model = model.clone();
@@ -111,6 +174,10 @@ impl Agent {
                     let cfg_snapshot = cfg.clone();
                     drop(cfg);
                     self.persist_config(&cfg_snapshot).await;
+                    // 全局策略（进程级）：所有 persona 重算时读同一份事实。
+                    if let Some(policy) = crate::agent::global_policy() {
+                        policy.set_skill_enabled(&name, enabled);
+                    }
                     // 全局生效：最终状态 = 全局启停 ∧ 各 persona 名单，
                     // 逐 persona 重算（此前只作用于管理面，其他人格照旧）。
                     if let Some(mgr) = crate::agent_manager::global_manager() {
@@ -143,6 +210,10 @@ impl Agent {
                     let cfg_snapshot = cfg.clone();
                     drop(cfg);
                     self.persist_config(&cfg_snapshot).await;
+                    // 全局策略（进程级）：所有 persona 重算时读同一份事实。
+                    if let Some(policy) = crate::agent::global_policy() {
+                        policy.set_tool_enabled(&name, enabled);
+                    }
                     // 全局生效：最终状态 = 全局启停 ∧ 各 persona 名单，
                     // 逐 persona 重算（此前只作用于管理面，其他人格照旧）。
                     if let Some(mgr) = crate::agent_manager::global_manager() {
@@ -299,7 +370,7 @@ impl Agent {
                     });
                     return;
                 }
-                match self.plugin_host.set_enabled(&id, enabled).await {
+                match self.plugin_host().set_enabled(&id, enabled).await {
                     Ok(()) => {
                         // Persist so the choice survives restarts.
                         let mut cfg = self.config.write().await;
@@ -529,16 +600,26 @@ impl Agent {
                 // Also emit adapter status and QQ gate/filter state so the
                 // TUI starts up with the correct persisted values.
                 self.emit_adapter_list();
-                if let Some(adapter) = self.adapters.get("qq") {
+                // QQ 状态：逐个实例下发（多实例；单实例时前端行为不变）。
+                for name in self.adapters.names() {
+                    let Some(adapter) = self.adapters.get(&name) else {
+                        continue;
+                    };
+                    if adapter.platform() != "qq" {
+                        continue;
+                    }
+                    let instance = Some(name.clone());
                     let (au, ag, du, dg) = adapter.get_filter_info();
                     self.emit(BackendEvent::QqFilterConfig {
                         allowlist_users: au.iter().filter_map(|s| s.parse().ok()).collect(),
                         allowlist_groups: ag.iter().filter_map(|s| s.parse().ok()).collect(),
                         denylist_users: du.iter().filter_map(|s| s.parse().ok()).collect(),
                         denylist_groups: dg.iter().filter_map(|s| s.parse().ok()).collect(),
+                        adapter: instance.clone(),
                     });
                     self.emit(BackendEvent::QqGateMode {
                         mode: adapter.get_gate_mode(),
+                        adapter: instance,
                     });
                 }
             }
@@ -723,7 +804,6 @@ impl Agent {
                 system_prompt,
                 enabled,
                 system_skills,
-                disabled_plugins,
                 disabled_tools,
                 disabled_skills,
                 enabled_plugins,
@@ -740,7 +820,6 @@ impl Agent {
                         description,
                         system_prompt,
                         enabled,
-                        disabled_plugins,
                         disabled_tools,
                         disabled_skills,
                         enabled_plugins,
@@ -749,6 +828,7 @@ impl Agent {
                         memory_limit_tokens,
                         context_window_tokens,
                         api_profile,
+                        disabled_plugins: Vec::new(),
                     };
                     match mgr.save_profile(&id, profile.clone(), enabled) {
                         Ok(()) => {
@@ -1024,10 +1104,12 @@ impl Agent {
             | BackendCommand::UpdateQqDenylist { .. }
             | BackendCommand::SetQqGateMode { .. }
             | BackendCommand::SetQqOwner { .. }
-            | BackendCommand::RequestQqOwner
-            | BackendCommand::RequestQqFilterConfig
-            | BackendCommand::RequestGroupList
-            | BackendCommand::RequestFriendList => {
+            | BackendCommand::RequestQqOwner { .. }
+            | BackendCommand::RequestQqFilterConfig { .. }
+            | BackendCommand::RequestGroupList { .. }
+            | BackendCommand::RequestFriendList { .. }
+            | BackendCommand::RequestQqLoginStatus { .. }
+            | BackendCommand::RequestQqQrcode { .. } => {
                 self.apply_qq_command(cmd).await;
             }
         }
@@ -1113,7 +1195,7 @@ impl Agent {
     /// Emit the full plugin list (`BackendEvent::PluginsList`).
     pub async fn emit_plugins_list(&self) {
         let plugins: Vec<crate::event::PluginInfo> = self
-            .plugin_host
+            .plugin_host()
             .descriptors()
             .into_iter()
             .map(|d| crate::event::PluginInfo {

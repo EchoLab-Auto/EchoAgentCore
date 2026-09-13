@@ -97,6 +97,19 @@ owner_qq = 0
 # 命令前缀。
 command_prefix = "/"
 
+# ── QQ 多实例（可选）──────────────────────────────────────────────
+# 每个实例 = 一个 NapCat 容器 + 一条反向 WS 通道 + 一个 QQ 账号，互不冲突；
+# 实例归属某人格（一个人格可挂多个实例）。启用了本适配器插件的 persona
+# 若没有归属实例，Core 会自动建档并按空闲端口分配（端口写回下方 [...]ports）。
+#
+# [adapters.qq.instances.alix-two]
+# persona = "alix"
+# napcat_auto_start = false          # 覆盖共享默认
+# [adapters.qq.instances.alix-two.ports]
+# reverse_ws = 3140                  # 缺省自动分配并持久化
+# onebot_http = 3010
+# webui = 6100
+
 [adapters.qq.server]
 # 反向 WebSocket 监听地址，NapCat 将作为客户端连接到这里。
 bind_address = "0.0.0.0:3131"

@@ -286,10 +286,7 @@ fn parse_anthropic_event(event: &str) -> Vec<AnthropicOutcome> {
 /// 诊断提示，附在解析/HTTP 错误消息尾部。
 fn html_endpoint_hint(body: &str) -> &'static str {
     let head = body.trim_start();
-    let lower = head
-        .get(..16)
-        .unwrap_or(head)
-        .to_ascii_lowercase();
+    let lower = head.get(..16).unwrap_or(head).to_ascii_lowercase();
     if lower.starts_with("<!doctype") || lower.starts_with("<html") {
         "\n提示：该地址返回网页而非 JSON——请检查 Base URL 是否正确（Anthropic 兼容端点通常以 /anthropic 结尾）。"
     } else {
@@ -587,7 +584,10 @@ mod tests {
         let html = "<!doctype html>\n<html lang=\"zh-CN\"><head>...";
         let hint = html_endpoint_hint(html);
         assert!(hint.contains("返回网页"), "hint: {hint}");
-        assert!(hint.contains("Base URL"), "hint must mention Base URL: {hint}");
+        assert!(
+            hint.contains("Base URL"),
+            "hint must mention Base URL: {hint}"
+        );
         // 大小写变体
         assert!(html_endpoint_hint("<HTML>").contains("返回网页"));
         // 前导空白容忍

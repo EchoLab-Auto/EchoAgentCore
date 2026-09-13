@@ -81,7 +81,6 @@ impl AgentManager {
                     system_prompt: raw.system_prompt.clone(),
                     enabled: true,
                     system_skills: Vec::new(),
-                    disabled_plugins: raw.disabled_plugins.clone(),
                     disabled_tools: raw.disabled_tools.clone(),
                     disabled_skills: raw.disabled_skills.clone(),
                     enabled_plugins: Vec::new(),
@@ -90,6 +89,7 @@ impl AgentManager {
                     memory_limit_tokens: None,
                     context_window_tokens: None,
                     api_profile: None,
+                    disabled_plugins: Vec::new(),
                 },
             );
         }
@@ -145,9 +145,12 @@ impl AgentManager {
         self.teams.read().unwrap().get(id).cloned()
     }
 
-    /// Resolve the target agent for a command (None agent_id -> default).
+    /// Resolve the target agent for a command.
+    ///
+    /// 去主智能体（2026-09）：`None` 不再回退"默认人格"——返回 `None`，
+    /// 由调用方给出明确错误；未知 id 同样返回 `None`（不再静默兜底）。
     pub fn resolve(&self, agent_id: Option<&str>) -> Option<Arc<Agent>> {
-        let id = agent_id.unwrap_or(&self.default_id);
+        let id = agent_id?;
         self.agents
             .read()
             .unwrap()
@@ -222,7 +225,6 @@ impl AgentManager {
         // 统一折叠为 loop.{single,parallel}——所有写入路径（含旧 panel 回写旧 id）
         // 在此防御。
         crate::plugins::normalize_mode_plugins(&mut profile.enabled_plugins);
-        crate::plugins::normalize_mode_plugins(&mut profile.disabled_plugins);
         // 合并语义：传入 profile 的 per-agent 预算为 None 且旧 profile 已有值时
         // 保留旧值，避免前端（未编辑该字段）保存时擦除手工写入 TOML 的预算。
         if let Some(old) = self.teams.read().unwrap().get(id) {
@@ -263,10 +265,19 @@ impl AgentManager {
         Ok(())
     }
 
-    /// Delete a profile; the default/main agent is protected.
+    /// Delete a profile.
+    ///
+    /// 去主智能体（2026-09）：不再有受保护的"主 agent"；唯一约束是
+    /// **至少保留一个智能体**（否则前端/路由将无目标可选）。
     pub fn delete_profile(&self, id: &str) -> Result<(), String> {
-        if id == self.default_id {
-            return Err("不能删除默认/主 agent".into());
+        {
+            let teams = self.teams.read().unwrap();
+            if teams.len() <= 1 {
+                return Err("至少保留一个智能体".into());
+            }
+            if !teams.contains_key(id) {
+                return Err(format!("智能体 {id} 不存在"));
+            }
         }
         self.teams.write().unwrap().remove(id);
         self.agents.write().unwrap().remove(id);
@@ -306,7 +317,9 @@ impl AgentManager {
             .map(|(id, p)| TeamInfo {
                 id: id.clone(),
                 name: p.name.clone(),
-                is_default: id == &self.default_id,
+                // 去主智能体（2026-09）：不再有"主"角色；字段过渡期保留恒 false，
+                // 下个协议版本删除。
+                is_default: false,
                 description: p.description.clone(),
                 enabled: agents.contains_key(id),
                 system_skills: p.system_skills.clone(),
@@ -317,7 +330,6 @@ impl AgentManager {
                 loop_mode: p.loop_mode(),
                 orchestration_mode: p.loop_mode().into(),
                 system_prompt: p.system_prompt.clone(),
-                disabled_plugins: p.disabled_plugins.clone(),
                 disabled_tools: p.disabled_tools.clone(),
                 disabled_skills: p.disabled_skills.clone(),
                 enabled_plugins: p.enabled_plugins.clone(),
@@ -447,14 +459,11 @@ mod tests {
             LEGACY_CHATBOT_MODE_IDS, LEGACY_LOOP_RUNNER_PLUGIN_ID, PARALLEL_LOOP_PLUGIN_ID,
         };
         let mgr = manager_with(AgentConfig::default());
-        let mut profile = member_with_plugins(&[
+        let profile = member_with_plugins(&[
             "echo-agent.tools.builtin",
             LEGACY_CHATBOT_MODE_IDS[1],
             LEGACY_LOOP_RUNNER_PLUGIN_ID,
         ]);
-        profile
-            .disabled_plugins
-            .push(LEGACY_CHATBOT_MODE_IDS[2].to_string());
         // enabled=false：跳过 factory 实例化；无 config_writer 时 persist 为 Ok。
         mgr.save_profile("legacy", profile, false).unwrap();
         let teams = mgr.teams.read().unwrap();
@@ -466,12 +475,24 @@ mod tests {
             .enabled_plugins
             .iter()
             .any(|p| p == LEGACY_CHATBOT_MODE_IDS[1] || p == LEGACY_LOOP_RUNNER_PLUGIN_ID));
-        assert!(saved
-            .disabled_plugins
-            .contains(&PARALLEL_LOOP_PLUGIN_ID.to_string()));
-        // infos 同步反映归一化后的模式（黑名单含 parallel → Single）
+        // infos 同步反映归一化后的模式（白名单含 parallel → Parallel）
         let info = mgr.infos().into_iter().find(|t| t.id == "legacy").unwrap();
-        assert_eq!(info.loop_mode, echo_defs::LoopMode::Single);
+        assert_eq!(info.loop_mode, echo_defs::LoopMode::Parallel);
+    }
+
+    #[test]
+    fn saved_profile_ignores_deprecated_plugin_blacklist() {
+        // 插件黑名单已移除：旧端回写的 blacklist 不影响循环模式推导
+        //（推导只看白名单），也不再被归一化写回。
+        use crate::plugins::{LEGACY_CHATBOT_MODE_IDS, PARALLEL_LOOP_PLUGIN_ID};
+        let mgr = manager_with(AgentConfig::default());
+        let mut profile = member_with_plugins(&[PARALLEL_LOOP_PLUGIN_ID]);
+        profile
+            .disabled_plugins
+            .push(LEGACY_CHATBOT_MODE_IDS[2].to_string());
+        mgr.save_profile("legacy", profile, false).unwrap();
+        let info = mgr.infos().into_iter().find(|t| t.id == "legacy").unwrap();
+        assert_eq!(info.loop_mode, echo_defs::LoopMode::Parallel);
     }
 
     #[test]

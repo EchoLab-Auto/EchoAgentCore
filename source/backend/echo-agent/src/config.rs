@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 // `ThinkingMode` / `ReasoningEffort` are part of the frontend wire contract
 // and are defined in the standalone `echo-protocol` crate; re-exported here
 // so existing `echo_agent::config::…` paths keep working.
+/// 循环模式（single/parallel）——单一事实来源在 echo-defs，这里随 config 再导出，
+/// 便于 core 等消费方引用 `echo_agent::config::LoopMode`（无需直接依赖定义层）。
+pub use echo_defs::LoopMode;
 pub use echo_protocol::{ReasoningEffort, ThinkingMode};
 
 /// A named LLM API profile (multi-API storage, switchable from the TUI).
@@ -118,13 +121,13 @@ pub struct TeamMember {
     /// 非空时优先于 system_prompt 字段；为空回退 system_prompt（兼容）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub system_skills: Vec<String>,
-    /// Per-persona disabled built-in plugins (e.g. "echo-agent.adapter.qq",
-    /// "echo-agent.loop.parallel").
-    /// 当前实际效果：并行循环插件（`loop.parallel` 及旧编排模式 id）的
-    /// 禁用会把该 agent 推导为单会话模式（会话内串行 + 隐藏面板侧会话/
-    /// 分支能力）；其余插件的禁用只影响 Panel 展示与持久化状态，不会对
-    /// LLM 隐藏该插件的工具（工具级控制请用 disabled_tools）。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// DEPRECATED（2026-09-11 移除）：per-persona 插件黑名单。
+    /// 白名单（`enabled_plugins`）已能表达全部语义（空表 = 全部启用，前端
+    /// 首次取消勾选即物化全量），黑名单不再参与任何门控判定、也不再写回
+    /// 配置；字段仅保留反序列化能力，供加载期迁移
+    /// （[`crate::plugins::convert_plugin_blacklist_to_whitelist`] 把它物化进
+    /// 白名单，既有配置行为不变）。
+    #[serde(default, skip_serializing)]
     pub disabled_plugins: Vec<String>,
     /// Per-persona disabled tools (by tool name, e.g. "framework_update").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -134,7 +137,7 @@ pub struct TeamMember {
     pub disabled_skills: Vec<String>,
     /// Per-persona **allowlist** of plugins: when non-empty, ONLY these
     /// plugins are enabled for this agent (everything else is hidden).
-    /// Empty = all plugins enabled (denylist semantics via disabled_*).
+    /// Empty = all plugins enabled（唯一名单；黑名单已移除）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enabled_plugins: Vec<String>,
     /// Per-persona allowlist of tools: non-empty = only these tools visible.
@@ -165,20 +168,16 @@ pub struct TeamMember {
 impl TeamMember {
     /// 循环模式推导（互斥插件 `echo-agent.loop.{single,parallel}`，
     /// single 为兜底，也是默认）：
-    /// - 白名单含 `loop.parallel`（或旧编排模式 id）→ Parallel；两者并含亦为 Parallel
+    /// - 白名单含 `loop.parallel`（或旧编排模式 id）→ Parallel
     /// - 其余（含白名单为空 = 默认）→ Single
-    /// - `disabled_plugins` 含 parallel/旧 id → Single（黑名单优先）
-    /// - `disabled_plugins` 含 single id → no-op（single 是兜底，禁用兜底无意义）
+    ///
+    /// 插件黑名单已移除（2026-09-11），本推导只看白名单。
     pub fn loop_mode(&self) -> echo_defs::LoopMode {
         let listed = self
             .enabled_plugins
             .iter()
             .any(|p| crate::plugins::PARALLEL_MODE_IDS.iter().any(|id| p == id));
-        let denied = self
-            .disabled_plugins
-            .iter()
-            .any(|p| crate::plugins::PARALLEL_MODE_IDS.iter().any(|id| p == id));
-        if listed && !denied {
+        if listed {
             echo_defs::LoopMode::Parallel
         } else {
             echo_defs::LoopMode::Single
@@ -805,21 +804,33 @@ mod tests {
             .loop_mode(),
             Single
         );
-        // 黑名单含 parallel/旧 id → Single（黑名单优先）
+        // 已废弃的插件黑名单字段不再影响推导（2026-09-11 移除，白名单单轨）：
+        // 黑名单即使含 parallel/旧 id，也只看白名单。
         assert_eq!(member_with_plugins(&[], &[parallel]).loop_mode(), Single);
         assert_eq!(
             member_with_plugins(&[parallel], &[parallel]).loop_mode(),
-            Single
+            Parallel
         );
         assert_eq!(
             member_with_plugins(&[parallel], &[LEGACY_CHATBOT_MODE_IDS[1]]).loop_mode(),
-            Single
-        );
-        // 黑名单含 single id → no-op（忽略，不因它改变推导）
-        assert_eq!(
-            member_with_plugins(&[parallel], &[single]).loop_mode(),
             Parallel
         );
+    }
+
+    #[test]
+    fn team_member_blacklist_is_deserialization_only() {
+        // 反序列化仍接受旧字段（供加载期迁移读取），但序列化不再写回。
+        let toml_str = r#"
+disabled_plugins = ["echo-agent.tools.builtin"]
+enabled_plugins = ["echo-agent.adapter.qq"]
+"#;
+        let member: TeamMember = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            member.disabled_plugins,
+            vec!["echo-agent.tools.builtin".to_string()]
+        );
+        let out = toml::to_string(&member).unwrap();
+        assert!(!out.contains("disabled_plugins"), "serialized: {out}");
     }
 }
 

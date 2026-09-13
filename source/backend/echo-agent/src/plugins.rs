@@ -100,20 +100,66 @@ pub const GATED_PLUGIN_IDS: [&str; 4] = [
     ADAPTER_QQ_PLUGIN_ID,
 ];
 
-/// 某 persona 的白/黑名单是否允许一个插件 id。
+/// 全部内置插件 id（与 `scripts/update.sh` 的插件校验清单一致）。
+/// 供插件黑名单移除迁移物化白名单时使用。
+pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
+    TOOLS_BUILTIN_PLUGIN_ID,
+    ADAPTER_QQ_PLUGIN_ID,
+    SKILLS_DIR_PLUGIN_ID,
+    CHECKLIST_PLUGIN_ID,
+    MANAGEMENT_PANEL_PLUGIN_ID,
+    SINGLE_LOOP_PLUGIN_ID,
+    PARALLEL_LOOP_PLUGIN_ID,
+    "echo-agent.orchestration",
+    "echo-agent.provider.llm",
+];
+
+/// 某 persona 的白名单是否允许一个插件 id。
 ///
-/// 语义：白名单非空 = 仅列出的插件；黑名单优先（命中即拒绝）。
+/// 语义：白名单非空 = 仅列出的插件；空白名单 = 全部允许。
 /// 启动期逐人格门控（core main.rs）与运行期 `Agent::apply_capabilities` /
 /// `Agent::reapply_plugin_gating` 共用本判定，避免两套规则漂移。
+/// （插件黑名单 `disabled_plugins` 已于 2026-09-11 移除，白名单单轨。）
 pub fn profile_allows_plugin(profile: &crate::config::TeamMember, plugin_id: &str) -> bool {
-    if !profile.enabled_plugins.is_empty()
-        && !profile.enabled_plugins.iter().any(|p| p == plugin_id)
-    {
+    profile.enabled_plugins.is_empty() || profile.enabled_plugins.iter().any(|p| p == plugin_id)
+}
+
+/// 插件黑名单移除迁移（2026-09-11）：把 `disabled_plugins` 语义物化进
+/// `enabled_plugins` 白名单，使既有配置的门控行为不变——
+/// - 黑名单为空：no-op（返回 false）
+/// - 白名单为空（历史语义 = 全部启用）：物化为「全部内置插件 − 黑名单 −
+///   parallel 模式 id」（空白名单历史推导单会话，物化不得翻成并行）
+/// - 白名单非空：剔除黑名单项；黑名单含 parallel id 时同时剔除白名单里的
+///   parallel id（历史上黑名单优先，避免物化后循环模式翻成并行）
+///
+/// 返回是否有改动。仅由加载期迁移调用（`migrate_orchestration_mode_plugins`）。
+pub fn convert_plugin_blacklist_to_whitelist(
+    enabled: &mut Vec<String>,
+    disabled: &[String],
+) -> bool {
+    if disabled.is_empty() {
         return false;
     }
-    if profile.disabled_plugins.iter().any(|p| p == plugin_id) {
-        return false;
+    let disabled_parallel = disabled
+        .iter()
+        .any(|d| PARALLEL_MODE_IDS.iter().any(|id| id == d));
+    let mut materialized: Vec<String> = if enabled.is_empty() {
+        BUILTIN_PLUGIN_IDS
+            .iter()
+            .filter(|id| !PARALLEL_MODE_IDS.contains(*id))
+            .map(|id| (*id).to_string())
+            .collect()
+    } else {
+        std::mem::take(enabled)
+    };
+    materialized.retain(|id| !disabled.iter().any(|d| d == id));
+    if disabled_parallel {
+        materialized.retain(|id| !PARALLEL_MODE_IDS.contains(&id.as_str()));
     }
+    // 去重保序（白名单语义按集合，去重避免重复项污染配置）
+    let mut seen = std::collections::HashSet::new();
+    materialized.retain(|id| seen.insert(id.clone()));
+    *enabled = materialized;
     true
 }
 
@@ -365,5 +411,92 @@ mod tests {
         let mut list = vec![LEGACY_CHATBOT_MODE_IDS[2].to_string()];
         assert!(normalize_mode_plugins(&mut list));
         assert!(!normalize_mode_plugins(&mut list));
+    }
+
+    // ── 插件黑名单移除迁移（黑名单 → 白名单物化）──
+
+    #[test]
+    fn blacklist_conversion_materializes_all_plugins_minus_blacklisted() {
+        // 空白名单 + 黑名单两项（base 人格的真实配置形态）→ 物化全部内置
+        // 插件减去黑名单项与 parallel 模式 id（保持单会话推导）
+        let mut enabled: Vec<String> = Vec::new();
+        let disabled = vec![
+            "echo-agent.tools.builtin".to_string(),
+            "echo-agent.skills.dir".to_string(),
+        ];
+        assert!(convert_plugin_blacklist_to_whitelist(
+            &mut enabled,
+            &disabled
+        ));
+        assert!(!enabled.iter().any(|id| id == "echo-agent.tools.builtin"));
+        assert!(!enabled.iter().any(|id| id == "echo-agent.skills.dir"));
+        assert!(enabled.iter().any(|id| id == "echo-agent.checklist"));
+        assert!(enabled.iter().any(|id| id == "echo-agent.adapter.qq"));
+        // 物化不得引入 parallel 模式 id（空白名单历史推导单会话）
+        assert!(!enabled
+            .iter()
+            .any(|id| PARALLEL_MODE_IDS.iter().any(|p| p == id)));
+    }
+
+    #[test]
+    fn blacklist_conversion_refines_existing_whitelist() {
+        // 白名单非空：只剔除黑名单项
+        let mut enabled = vec![
+            "echo-agent.tools.builtin".to_string(),
+            "echo-agent.adapter.qq".to_string(),
+        ];
+        assert!(convert_plugin_blacklist_to_whitelist(
+            &mut enabled,
+            &["echo-agent.tools.builtin".to_string()]
+        ));
+        assert_eq!(enabled, vec!["echo-agent.adapter.qq".to_string()]);
+    }
+
+    #[test]
+    fn blacklist_conversion_keeps_single_mode_when_parallel_was_denied() {
+        // 历史上黑名单优先：白名单含 parallel + 黑名单含 parallel → 单会话；
+        // 物化后白名单不得再含 parallel（循环模式推导只看白名单）
+        let mut enabled = vec![
+            PARALLEL_LOOP_PLUGIN_ID.to_string(),
+            "echo-agent.tools.builtin".to_string(),
+        ];
+        assert!(convert_plugin_blacklist_to_whitelist(
+            &mut enabled,
+            &[PARALLEL_LOOP_PLUGIN_ID.to_string()]
+        ));
+        assert!(!enabled.iter().any(|id| id == PARALLEL_LOOP_PLUGIN_ID));
+        assert!(enabled.iter().any(|id| id == "echo-agent.tools.builtin"));
+        // 白名单含 parallel、黑名单不含 → 保持并行
+        let mut enabled = vec![PARALLEL_LOOP_PLUGIN_ID.to_string()];
+        assert!(convert_plugin_blacklist_to_whitelist(
+            &mut enabled,
+            &["echo-agent.adapter.qq".to_string()]
+        ));
+        assert_eq!(enabled, vec![PARALLEL_LOOP_PLUGIN_ID.to_string()]);
+    }
+
+    #[test]
+    fn blacklist_conversion_is_noop_without_blacklist() {
+        let mut enabled: Vec<String> = Vec::new();
+        assert!(!convert_plugin_blacklist_to_whitelist(&mut enabled, &[]));
+        assert!(enabled.is_empty());
+    }
+
+    #[test]
+    fn profile_allows_plugin_is_whitelist_only() {
+        use crate::config::TeamMember;
+        // 空白名单 = 全部允许（黑名单字段即使有值也不再参与判定）
+        let member = TeamMember {
+            disabled_plugins: vec![TOOLS_BUILTIN_PLUGIN_ID.to_string()],
+            ..Default::default()
+        };
+        assert!(profile_allows_plugin(&member, TOOLS_BUILTIN_PLUGIN_ID));
+        // 白名单非空 = 仅列出项
+        let member = TeamMember {
+            enabled_plugins: vec![SKILLS_DIR_PLUGIN_ID.to_string()],
+            ..Default::default()
+        };
+        assert!(profile_allows_plugin(&member, SKILLS_DIR_PLUGIN_ID));
+        assert!(!profile_allows_plugin(&member, TOOLS_BUILTIN_PLUGIN_ID));
     }
 }

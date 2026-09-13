@@ -32,7 +32,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 - 核心类型：`PluginManifest`（id/name/version/kind/entry/description）+ `BuiltinPlugin` + `MountContext`
 - 注册为**可逆**副作用：`register_and_mount` 返回 disposer，禁用即卸载注册
 - 数据插件（skill/tool）支持热重载（插件目录 5s 轮询）；代码插件需二进制重载
-- **启动顺序**：`apply_disabled` 先于挂载——禁用插件启动时只注册不挂载；persona 白名单的门控**启动期与运行期统一**由 `Agent::apply_capabilities` 承担（`GATED_PLUGIN_IDS` 表逐人格计算：全局启用 ∧ 白/黑名单）
+- **启动顺序**：`apply_disabled` 先于挂载——禁用插件启动时只注册不挂载；persona 白名单的门控**启动期与运行期统一**由 `Agent::apply_capabilities` 承担（`GATED_PLUGIN_IDS` 表逐人格计算：全局启用 ∧ 白名单）；插件宿主由组合根注入为**进程级单例**（所有人格共享，不再寄居某个“默认人格”）
 - **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / adapter.qq / skills.dir）已把组合根装配搬进 mount 闭包，`TogglePlugin` 对它们有真实运行效果；`adapter.qq` 的启动期 mount 不抢跑（wired 标志在适配器接线完成后才置位），启动受 `[adapters.qq].enabled` 与插��状态双重门控
 - **运行期热更新（2026-09）**：插件/工具/技能勾选在 `SaveTeam` 保存后**立即生效**，无需重启——工具/技能逐名双向应用（取消勾选即禁用、重新勾选即恢复）；全局 `TogglePlugin` 经 mount/unmount 闭包逐 persona 重评估（`reapply_plugin_gating`：全局启用 ∧ persona 名单，名单外不放开、unmount 对全员生效）；`ToggleTool`/`ToggleSkill` 同样逐 persona 重算（`reapply_tool_gating` / `reapply_skill_gating`：persona 黑名单不被全局启用覆盖）
 
@@ -40,20 +40,25 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 | id | kind | 说明 |
 | --- | --- | --- |
-| `echo-agent.tools.builtin` | Tool | 内置工具集（计算/搜索/清单/编码/适配器管理） |
+| `echo-agent.tools.builtin` | Tool | 内置工具集（计算/搜索/编码/适配器管理） |
 | `echo-agent.adapter.qq` | Adapter | QQ 适配器（OneBot v11 反向 WS，含 QQ 管理工具） |
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
-| `echo-agent.provider.llm` | Provider | LLM 提供方工厂 |
+| `echo-agent.checklist` | Tool | 任务清单（checklist 工具包；可按 persona 单独启停，默认启用） |
+| `echo-agent.orchestration` | Orchestration | 后台任务/并行分支/子代理/定时器/框架自更新（名义挂载：重启生效） |
+| `echo-agent.provider.llm` | Provider | LLM 提供方工厂（名义挂载：重启生效） |
 | `echo-agent.loop.single` | Loop | 单会话循环（默认）：mount 启用 echo-loop 驱动；会话内 turn 串行排队、无会话管理 UI |
 | `echo-agent.loop.parallel` | Loop | 并行多会话循环：同一 TurnRunner；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
+| `echo-agent.management.panel` | Management | 管理面：management WS 桥接 + sudo 授权通道（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
+
+> 以上 9 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单。
 
 ## 能力开关（per-persona）
 
-- 每个插件 id 均可放入 agent 的 `enabled_plugins`（白名单）或 `disabled_plugins`（黑名单）
-- 白名单非空 = 只启用列出���插件；黑名单优先
+- 每个插件 id 均可放入 agent 的 `enabled_plugins`（白名单；空表 = 全部启用）
+- **插件黑名单 `disabled_plugins` 已于 2026-09-11 移除**：与白名单语义重复（前端首次取消勾选即物化全量白名单），既有配置在加载期物化进白名单（见 [配置持久化](./core-config-persistence.md)）；运行期 `SaveTeam` 只写白名单
 - 前端设置视图可按 kind 勾选（adapter/management 类），保存后写回 TOML
 - **循环模式推导**（互斥，默认与兜底都是单会话）：见[Agent 循环](./core-agent-loop.md)§循环模式（单一来源 `TeamMember::loop_mode()`）
-- **包级聚合**：白/黑名单里的插件 id 即包 id——一次勾选同时门控该插件的
+- **包级聚合**：白名单里的插件 id 即包 id——一次勾选同时门控该插件的
   生命周期与同名包的工具、技能（QQ 包见下「Package」章节）
 - **其余插件当前生效范围**：
   - `tools.builtin` / `skills.dir` / `checklist`：禁用 = 该包全部工具（skills.dir 为全部技能）对所有 persona 批量禁用（对 LLM 不可见），启用按各 persona 名单恢复——**仅作用于目标 persona 时用 Agent 配置弹层的勾选**（运行期双向、即时生效）
@@ -79,7 +84,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 - 禁用包 → 包内**工具与技能一起**关闭（对 LLM 不可见）+ 插件自身生命周期
   副作用（如 adapter.qq 停进程）；包外成员不受影响
-- 启用包 → 两者一起恢复，但按 persona 名单**收紧**（黑名单/白名单外的
+- 启用包 → 两者一起恢复，但按 persona 白名单**收紧**（名单外的
   成员保持禁用；全局禁用优先）
 - `skills.dir` 插件是**整表**语义（全部技能），其余包按同名 `package:` 精确匹配
 - persona 白名单里的插件 id 即包 id——勾选/取消勾选一个插件 = 勾选/取消

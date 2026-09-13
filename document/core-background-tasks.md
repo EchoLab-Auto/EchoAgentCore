@@ -26,7 +26,7 @@ y: 1636
   -> 1..8 个临时分支并发运行
   -> 完成事件进入 OrderedCompletionBuffer
   -> 按 task_sequence 写入共享上下文
-  -> 主 Agent 显式投递到每个声明目标
+  -> 宿主 Agent 显式投递到每个声明目标
 ```
 
 同步 `run_subagent` 仍用于短推理。后台分支可调用普通工具，但消息发送、文件上传、

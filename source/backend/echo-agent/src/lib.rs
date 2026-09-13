@@ -28,7 +28,7 @@ pub mod timeline;
 pub mod tool;
 
 pub use adapter_bridge::AgentMessageHook;
-pub use agent::Agent;
+pub use agent::{Agent, EventSink};
 pub use agent_manager::AgentManager;
 pub use bridge::{create_bridge, BackendBridge, BackendHandle, FanoutHandle};
 pub use command::BackendCommand;

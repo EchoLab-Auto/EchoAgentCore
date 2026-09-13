@@ -61,7 +61,8 @@ impl ToolPipeline {
     pub async fn run<'a>(
         &self,
         call: &ToolCall,
-        execute: impl FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>>,
+        execute: impl FnOnce()
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>>,
     ) -> ToolPipelineResult {
         // Pre stages: each may short-circuit before execution.
         let mut index = 0usize;

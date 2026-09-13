@@ -18,6 +18,7 @@ mod agent_supervisor;
 mod config;
 mod handlers;
 mod management;
+mod qq_instances;
 mod qq_tools;
 
 use config::CoreConfig;
@@ -131,15 +132,108 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // Adapter registry.
     let mut adapter_registry = echo_adapter::AdapterRegistry::new();
 
-    // ---- QQ adapter (always registered, auto-started only when enabled) ----
-    let qq_adapter: Arc<echo_adapter_qq::QqAdapter> =
-        Arc::new(echo_adapter_qq::QqAdapter::new(cfg.qq_adapter.clone()));
-    adapter_registry.register(qq_adapter.clone());
-    if cfg.qq_adapter.enabled {
-        info!("QQ adapter configured — will auto-start");
-    } else {
-        info!("QQ adapter registered — use /adapters → [s] start in Panel");
+    // ---- QQ 实例（多实例；实例 = 适配器名 = 会话 account 维度）----
+    // persona 门控：启用了 `echo-agent.adapter.qq` 的人格各自获得实例
+    // （未配置实例时自动建档），legacy 单实例部署行为不变。
+    let qq_enabled_personas: Vec<String> = cfg
+        .agent
+        .teams
+        .iter()
+        .filter(|(_, m)| {
+            m.enabled
+                && echo_agent::plugins::profile_allows_plugin(
+                    m,
+                    echo_agent::plugins::ADAPTER_QQ_PLUGIN_ID,
+                )
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    let qq_default_persona = qq_enabled_personas
+        .first()
+        .cloned()
+        .unwrap_or_else(|| cfg.agent.teams.keys().next().cloned().unwrap_or_default());
+    // 数据目录：实例 compose / 卷命名都从这里派生（配置同目录）。
+    // 配置存储（QQ 实例端口持久化、Agent 配置写回等都依赖它）。
+    let config_store = echo_adapter::ConfigStore::new(args.config_path());
+    let qq_data_dir = args
+        .config_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let qq_instances = qq_instances::resolve_instances_in(
+        &cfg.qq_adapter,
+        &cfg.qq_instances,
+        &qq_enabled_personas,
+        &qq_default_persona,
+        Some(&qq_data_dir),
+    );
+    let mut qq_adapters: Vec<(String, String, Arc<echo_adapter_qq::QqAdapter>)> = Vec::new();
+    for instance in &qq_instances {
+        let adapter = Arc::new(echo_adapter_qq::QqAdapter::with_instance(
+            instance.id.clone(),
+            Some(instance.persona.clone()),
+            instance.config.clone(),
+        ));
+        adapter_registry.register(adapter.clone());
+        qq_adapters.push((instance.id.clone(), instance.persona.clone(), adapter));
     }
+    if !qq_instances.is_empty() {
+        let ids: Vec<&str> = qq_instances.iter().map(|i| i.id.as_str()).collect();
+        info!(instances = ?ids, "QQ instances registered");
+    }
+    // 兼容旧单实例路径：第一个实例（通常是 `qq`）。
+    let qq_adapter: Arc<echo_adapter_qq::QqAdapter> = qq_adapters
+        .first()
+        .map(|(_, _, a)| a.clone())
+        .unwrap_or_else(|| Arc::new(echo_adapter_qq::QqAdapter::new(cfg.qq_adapter.clone())));
+    // 端口持久化：新分配的端口写回 `[adapters.qq.instances.<id>.ports]`，
+    // 保证跨重启稳定（容器端口映射必须稳定，NapCat 才能重连到同一处）。
+    {
+        let mut patches: Vec<(String, qq_instances::QqPorts)> = Vec::new();
+        for instance in &qq_instances {
+            if instance.id == qq_instances::DEFAULT_INSTANCE {
+                continue; // legacy 实例沿用既定端口，不写配置
+            }
+            let configured = cfg
+                .qq_instances
+                .get(&instance.id)
+                .map(|section| section.ports.clone())
+                .unwrap_or_default();
+            if configured != instance.ports {
+                patches.push((instance.id.clone(), instance.ports.clone()));
+            }
+        }
+        if !patches.is_empty() {
+            if let Err(error) = config_store.patch(|root| {
+                let adapters = echo_adapter::ensure_table(root, "adapters");
+                let qq = echo_adapter::ensure_table(adapters, "qq");
+                let instances = echo_adapter::ensure_table(qq, "instances");
+                for (id, ports) in &patches {
+                    let entry = echo_adapter::ensure_table(instances, id);
+                    let value = toml::Value::try_from(ports).map_err(|e| format!("ports: {e}"))?;
+                    entry.insert("ports".into(), value);
+                }
+                Ok(())
+            }) {
+                warn!(%error, "QQ instance ports persist failed");
+            } else {
+                let ids: Vec<&str> = patches.iter().map(|(id, _)| id.as_str()).collect();
+                info!(instances = ?ids, "QQ instance ports allocated and persisted");
+            }
+        }
+    }
+
+    // persona → 该人格的 QQ 实例集合（工具注册按人格隔离）。
+    let qq_by_persona: std::collections::HashMap<String, Vec<Arc<echo_adapter_qq::QqAdapter>>> = {
+        let mut map: std::collections::HashMap<String, Vec<Arc<echo_adapter_qq::QqAdapter>>> =
+            std::collections::HashMap::new();
+        for (_, persona, adapter) in &qq_adapters {
+            map.entry(persona.clone())
+                .or_default()
+                .push(adapter.clone());
+        }
+        map
+    };
 
     let adapters = Arc::new(adapter_registry);
 
@@ -159,122 +253,199 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         "agent context policy: single global trunk (token-budget trimmed)"
     );
 
-    // Create the agent(s): multi-persona supervisor (one Agent per
-    // profile; no profiles -> single default agent, legacy behavior).
-    let config_store = echo_adapter::ConfigStore::new(args.config_path());
-
-    // 多人格装配闭包：persona id + profile -> 独立 Agent 实例。
-    let make_agent = {
-        let provider_arc2 = provider_arc.clone();
-        let skills2 = skills;
-        let adapters2 = adapters.clone();
-        let qq_adapter2 = qq_adapter.clone();
-        let base_cfg = agent_config.clone();
-        let config_store_path = args.config_path();
-        let agents_config_store = config_store.clone();
-        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        move |id: String, profile: AgentProfile| -> Arc<Agent> {
-            let mut cfg = base_cfg.clone();
-            // 人格系统提示词覆盖全局默认。
-            if !profile.system_prompt.is_empty() {
-                cfg.system_prompt = profile.system_prompt;
-            }
-            // 人格级记忆预算/上下文窗口覆盖全局（None = 继承全局）。
-            if profile.memory_limit_tokens.is_some() {
-                cfg.memory_limit_tokens = profile.memory_limit_tokens;
-            }
-            if profile.context_window_tokens.is_some() {
-                cfg.context_window_tokens = profile.context_window_tokens;
-            }
-            // 每个 persona 独立的工具注册表（启动期一次性组装）。
-            let mut t = echo_agent::ToolRegistry::new();
-            echo_agent::tool::builtin::register_all(&mut t, adapters2.clone(), workspace.clone());
-            // 平台（QQ）工具同样必须注册到每个 persona：QQ 消息的发送/查询
-            // 都依赖 send_private_msg / send_group_msg 等工具，缺少它们时
-            // persona 收到 QQ hook 后无法完成声明目标的投递。
-            crate::qq_tools::register_qq_tools(&mut t, qq_adapter2.clone());
-            // 包元数据：QQ 工具属于 "echo-agent.adapter.qq"（与对应技能同包）。
-            for name in t.names() {
-                if name.starts_with("send_") || name.contains("qq") || name.starts_with("get_") {
-                    t.set_package(&name, "echo-agent.adapter.qq");
-                }
-            }
-            t.set_package("checklist", echo_agent::plugins::CHECKLIST_PLUGIN_ID);
-            // Persona 级 API：配置了 api_profile 的 persona 在启动时构建
-            // 自己的 provider（从全局池解析，不共享默认 provider）。
-            let mut api_cfg_override: Option<echo_agent::AgentConfig> = None;
-            let persona_provider: Option<Arc<dyn echo_agent::LlmProvider>> = if let Some(ref name) =
-                profile.api_profile
-            {
-                let mut resolved = cfg.clone();
-                if resolved.apply_named_profile(name) {
-                    resolved.api_key = resolved.effective_api_key();
-                    resolved.base_url = resolved.effective_base_url();
-                    match echo_agent::llm::create_provider(&resolved) {
-                        Ok(p) => {
-                            api_cfg_override = Some(resolved.clone());
-                            Some(Arc::from(p) as Arc<dyn echo_agent::LlmProvider>)
-                        }
-                        Err(e) => {
-                            tracing::warn!(agent = %id, profile = %name, error = %e,
-                                    "persona API profile provider build failed; falling back to default provider");
-                            None
-                        }
-                    }
-                } else {
-                    tracing::warn!(agent = %id, profile = %name,
-                            "persona API profile not found in pool; falling back to default provider");
-                    None
-                }
-            } else {
-                None
-            };
-            let agent = Arc::new(echo_agent::Agent::new(
-                persona_provider.unwrap_or_else(|| Arc::clone(&provider_arc2)),
-                cfg.clone(),
-                skills2.clone(),
-                t,
-                adapters2.clone(),
-            ));
-            agent.set_team_id(Some(id.clone()));
-            // Persona 级 API 引用（None = 跟随全局默认；运行期重建走 apply_persona_api）。
-            agent.set_persona_api_now(profile.api_profile.clone());
-            if let Some(api_cfg) = api_cfg_override {
-                // 启动期已按 persona profile 解析好：把生效 model 同步给
-                // active_model（provider 已独立构建，无需重建）。
-                agent.set_model_now(api_cfg.model);
-            }
-            // 能力配置在 make_agent 之后的启动阶段应用（见 start loop）。
-            //
-            // 配置持久化（TOML）与会话持久化（JSON）解耦：
-            // - config store：共享 core.toml 的 ConfigStore（[agent] section）
-            // - 会话路径：独立 JSON 文件 echo-sessions-{id}.json（default 沿用旧文件名）
-            // 两者文件格式不同，绝不可共用同一路径（JSON 会让 TOML parse 失败）。
-            agent.set_config_store(agents_config_store.clone());
-            let file = if id == "default" {
-                config_store_path.with_file_name("echo-sessions.json")
-            } else {
-                config_store_path.with_file_name(format!("echo-sessions-{id}.json"))
-            };
-            agent.set_session_persist_path(file);
-            agent
-        }
-    };
-    // 默认人格（管理面/QQ 入口）挂在原变量 `agent` 上，后续代码不变。
-    let supervisor = std::sync::Arc::new(agent_supervisor::AgentSupervisor::build(
-        &agent_config,
-        make_agent,
-    ));
-    let default_id = supervisor.default_id();
-    let default_persona = supervisor.resolve(None);
-    let agent: Arc<echo_agent::Agent> = Arc::clone(&default_persona.agent);
-    info!(agents = ?supervisor.ids(), default = %default_id, "agent supervisor ready");
-
     // ---- Frontend bridge (management WS) ----
-    //（提前到插件挂载之前：management.panel 插件的 mount 闭包依赖它们）
+    //（提前到人格装配之前：每个 persona 建好即接入进程级事件汇聚点，
+    //  不再依赖"默认人格"转接事件）
     let (bridge, handle) = echo_agent::create_bridge();
     let bridge = Arc::new(bridge);
-    agent.attach(Arc::new(handle));
+    let handle = Arc::new(handle);
+    // 进程级事件汇聚点：所有 persona 的 emit 都投递到它（即 bridge 的事件端），
+    // Panel 单连接即可看到全部人格活动。
+    let event_sink: echo_agent::EventSink = {
+        let tx = handle.event_tx.clone();
+        Arc::new(move |event| {
+            let _ = tx.send(event);
+        })
+    };
+
+    // 进程级插件宿主（去主 P1）：所有人格共享同一实例，插件注册/挂载/卸载
+    // 与「谁挂到 Panel」同样不再寄居在某个"默认人格"上。
+    let plugin_host: std::sync::Arc<echo_agent::plugins::PluginHost> =
+        std::sync::Arc::new(echo_agent::plugins::PluginHost::new());
+    // 进程级全局策略（工具/技能启停）：全局开关不属于任何人格。
+    echo_agent::agent::set_global_policy(std::sync::Arc::new(
+        echo_agent::agent::GlobalPolicy::new(
+            agent_config.disabled_tools.clone(),
+            agent_config.disabled_skills.clone(),
+        ),
+    ));
+
+    // 多人格装配闭包：persona id + profile -> 独立 Agent 实例。
+    // 用 Arc 包一层：supervisor 与"进程级核心服务代理"共用同一装配逻辑；
+    // 装配所需的共享件预先 clone 好，闭包按需再 clone（Fn 语义）。
+    let factory_provider = provider_arc.clone();
+    let factory_skills = skills.clone();
+    let factory_adapters = adapters.clone();
+    let factory_qq_adapter = qq_adapter.clone();
+    let factory_qq_by_persona = qq_by_persona.clone();
+    let factory_base_cfg = agent_config.clone();
+    let factory_event_sink = event_sink.clone();
+    let factory_plugin_host = plugin_host.clone();
+    let factory_config_store = config_store.clone();
+    let factory_config_path = args.config_path();
+    let make_agent: Arc<dyn Fn(String, AgentProfile) -> Arc<Agent> + Send + Sync> = Arc::new(
+        move |id: String, profile: AgentProfile| -> Arc<Agent> {
+            let provider_arc2 = factory_provider.clone();
+            let skills2 = factory_skills.clone();
+            let adapters2 = factory_adapters.clone();
+            let qq_adapter2 = factory_qq_adapter.clone();
+            let base_cfg = factory_base_cfg.clone();
+            let event_sink = factory_event_sink.clone();
+            let shared_plugin_host = factory_plugin_host.clone();
+            let config_store_path = factory_config_path.clone();
+            let agents_config_store = factory_config_store.clone();
+            let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            {
+                let mut cfg = base_cfg.clone();
+                // 人格系统提示词覆盖全局默认。
+                if !profile.system_prompt.is_empty() {
+                    cfg.system_prompt = profile.system_prompt;
+                }
+                // 人格级记忆预算/上下文窗口覆盖全局（None = 继承全局）。
+                if profile.memory_limit_tokens.is_some() {
+                    cfg.memory_limit_tokens = profile.memory_limit_tokens;
+                }
+                if profile.context_window_tokens.is_some() {
+                    cfg.context_window_tokens = profile.context_window_tokens;
+                }
+                // 每个 persona 独立的工具注册表（启动期一次性组装）。
+                let mut t = echo_agent::ToolRegistry::new();
+                echo_agent::tool::builtin::register_all(
+                    &mut t,
+                    adapters2.clone(),
+                    workspace.clone(),
+                );
+                // 平台（QQ）工具同样必须注册到每个 persona：QQ 消息的发送/查询
+                // 都依赖 send_private_msg / send_group_msg 等工具，缺少它们时
+                // persona 收到 QQ hook 后无法完成声明目标的投递。
+                // 每人格注册**自己实例集合**的 QQ 工具（多实例经 account 寻址）。
+                let persona_instances = factory_qq_by_persona
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| vec![qq_adapter2.clone()]);
+                crate::qq_tools::register_qq_tools_multi(&mut t, persona_instances);
+                // 包元数据：QQ 工具属于 "echo-agent.adapter.qq"（与对应技能同包）。
+                for name in t.names() {
+                    if name.starts_with("send_") || name.contains("qq") || name.starts_with("get_")
+                    {
+                        t.set_package(&name, "echo-agent.adapter.qq");
+                    }
+                }
+                t.set_package("checklist", echo_agent::plugins::CHECKLIST_PLUGIN_ID);
+                // Persona 级 API：配置了 api_profile 的 persona 在启动时构建
+                // 自己的 provider（从全局池解析，不共享默认 provider）。
+                let mut api_cfg_override: Option<echo_agent::AgentConfig> = None;
+                let persona_provider: Option<Arc<dyn echo_agent::LlmProvider>> = if let Some(
+                    ref name,
+                ) =
+                    profile.api_profile
+                {
+                    let mut resolved = cfg.clone();
+                    if resolved.apply_named_profile(name) {
+                        resolved.api_key = resolved.effective_api_key();
+                        resolved.base_url = resolved.effective_base_url();
+                        match echo_agent::llm::create_provider(&resolved) {
+                            Ok(p) => {
+                                api_cfg_override = Some(resolved.clone());
+                                Some(Arc::from(p) as Arc<dyn echo_agent::LlmProvider>)
+                            }
+                            Err(e) => {
+                                tracing::warn!(agent = %id, profile = %name, error = %e,
+                                    "persona API profile provider build failed; falling back to default provider");
+                                None
+                            }
+                        }
+                    } else {
+                        tracing::warn!(agent = %id, profile = %name,
+                            "persona API profile not found in pool; falling back to default provider");
+                        None
+                    }
+                } else {
+                    None
+                };
+                let agent = Arc::new(echo_agent::Agent::new(
+                    persona_provider.unwrap_or_else(|| Arc::clone(&provider_arc2)),
+                    cfg.clone(),
+                    skills2.clone(),
+                    t,
+                    adapters2.clone(),
+                ));
+                agent.set_team_id(Some(id.clone()));
+                // 接入进程级事件汇聚点与共享插件宿主（运行期新建人格同样走这里）。
+                agent.attach_event_sink(event_sink.clone());
+                agent.set_plugin_host(shared_plugin_host.clone());
+                // Persona 级 API 引用（None = 跟随全局默认；运行期重建走 apply_persona_api）。
+                agent.set_persona_api_now(profile.api_profile.clone());
+                if let Some(api_cfg) = api_cfg_override {
+                    // 启动期已按 persona profile 解析好：把生效 model 同步给
+                    // active_model（provider 已独立构建，无需重建）。
+                    agent.set_model_now(api_cfg.model);
+                }
+                // 能力配置在 make_agent 之后的启动阶段应用（见 start loop）。
+                //
+                // 配置持久化（TOML）与会话持久化（JSON）解耦：
+                // - config store：共享 core.toml 的 ConfigStore（[agent] section）
+                // - 会话路径：独立 JSON 文件 echo-sessions-{id}.json（统一命名；
+                //   旧的 default 专用 echo-sessions.json 首次启动自动改名迁移）
+                // 两者文件格式不同，绝不可共用同一路径（JSON 会让 TOML parse 失败）。
+                agent.set_config_store(agents_config_store.clone());
+                let file = config_store_path.with_file_name(format!("echo-sessions-{id}.json"));
+                if id == "default" {
+                    let legacy = config_store_path.with_file_name("echo-sessions.json");
+                    if !file.exists() && legacy.exists() {
+                        match std::fs::rename(&legacy, &file) {
+                            Ok(()) => tracing::info!(
+                                from = %legacy.display(),
+                                to = %file.display(),
+                                "migrated legacy session file"
+                            ),
+                            Err(error) => tracing::warn!(
+                                %error,
+                                "legacy session file migration failed; starting fresh"
+                            ),
+                        }
+                    }
+                }
+                agent.set_session_persist_path(file);
+                agent
+            }
+        },
+    );
+    // 默认人格（管理面/QQ 入口）挂在原变量 `agent` 上，后续代码不变。
+    // 进程级核心服务代理（不是人格）：承接全局/管理类命令（API 配置、技能/
+    // 工具/插件清单与启停、适配器启停、Shell、Teams 管理…）。它不出现在
+    // `[agent.teams]` 与 TeamsList 中，team_id 为空，也不接收聊天消息。
+    let core_agent: Arc<echo_agent::Agent> = make_agent(
+        "__core".into(),
+        echo_agent::AgentProfile {
+            name: "Core".into(),
+            description: "进程级核心服务（非人格）：管理面命令宿主".into(),
+            enabled: true,
+            ..Default::default()
+        },
+    );
+    core_agent.set_team_id(None);
+
+    let supervisor =
+        std::sync::Arc::new(agent_supervisor::AgentSupervisor::build(&agent_config, {
+            let f = make_agent.clone();
+            move |id: String, profile: AgentProfile| f(id, profile)
+        }));
+    // 去"主智能体"：不存在默认人格。全局/管理用途一律走进程级核心服务代理
+    // （`core_agent`，team_id 为空、不在 TeamsList 中）；聊天与会话按 team_id
+    // 显式路由到具体人格。
+    let agent: Arc<echo_agent::Agent> = core_agent.clone();
+    info!(agents = ?supervisor.ids(), "agent supervisor ready");
 
     // ---- Sudo authorization broker ----
     // The broker is shared between the agent (run_sudo awaits a password
@@ -286,6 +457,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     for persona in supervisor.personas() {
         persona.agent.attach_sudo_broker(sudo_broker.clone());
     }
+    // 核心服务代理同样接入（它承接全局命令，需要 sudo/事件通路）。
+    core_agent.attach_sudo_broker(sudo_broker.clone());
+    core_agent
+        .apply_capabilities(&echo_agent::AgentProfile {
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
 
     // ---- Plugin host: mount built-in modules as plugins ----
     // 插件化组合根：每个内置模块（工具集/技能/适配器/编排/管理面/LLM/Loop）
@@ -308,7 +487,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         use echo_plugin::{BuiltinPlugin, MountContext, PluginKind, PluginManifest};
         use std::sync::atomic::Ordering;
 
-        let plugin_host = agent.plugin_host.clone();
+        let plugin_host = plugin_host.clone();
         // Agent 内部已有共享工具注册表（Arc），直接复用同一实例。
         plugin_host.set_mount_ctx(
             MountContext::new()
@@ -508,7 +687,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         {
             let mgmt_addr = cfg.core.management_address.clone();
             let mgmt_token = cfg.core.management_access_token.clone();
-            let mgmt_agent = agent.clone();
+            let mgmt_agent = core_agent.clone();
             let mgmt_bridge = bridge.clone();
             let mgmt_sudo = sudo_broker.clone();
             register(
@@ -579,16 +758,16 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let mgr = std::sync::Arc::new(ShellManager::new());
         echo_agent::shell::set_shell_manager_global(std::sync::Arc::clone(&mgr));
         // 事件广播：接到默认 agent 的 handle，Panel 单连接即可实时可视化。
-        let default_agent = agent.clone();
+        let shell_emitter = core_agent.clone();
         echo_agent::shell::set_shell_emit(std::sync::Arc::new(move |event: ShellEvent| {
-            default_agent.emit(echo_agent::shell::shell_event_to_backend(event));
+            shell_emitter.emit(echo_agent::shell::shell_event_to_backend(event));
         }));
         info!("background shell manager ready");
     }
 
-    // 供编排工具（framework_update status）读取插件摘要的进程级锚点。
-    // 注：default persona 已由 supervisor 持有 Arc，这里不再包一层。
-    echo_agent::agent::set_plugin_host_global(agent.plugin_host.clone());
+    // 供编排工具（framework_update status）读取插件摘要的进程级锚点：
+    // 直接指向进程级共享宿主（与各 persona 注入的是同一实例）。
+    echo_agent::agent::set_plugin_host_global(plugin_host.clone());
     // Restore persisted sessions and start periodic save (all personas).
     for persona in supervisor.personas() {
         let restored = persona.agent.load_sessions().await;
@@ -602,55 +781,66 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .set_header(echo_session::SessionHeader::top_level("trunk"));
         }
         // 启动期与运行期统一：apply_capabilities 同时承担
-        // persona 白/黑名单（工具/技能/门控插件）、全局 [agent].disabled_tools /
-        // disabled_skills、以及共享注册表里被 TogglePlugin 卸载的插件。
+        // persona 白名单（工具/技能/门控插件；插件黑名单已移除）、全局
+        // [agent].disabled_tools / disabled_skills、以及共享注册表里被
+        // TogglePlugin 卸载的插件。
         persona.agent.apply_capabilities(&persona.profile).await;
         persona.agent.start_session_save_task();
         persona.agent.start_plugin_reload_task().await;
         persona.agent.start_orchestration_task();
     }
 
-    // ---- Wire agent into QQ adapter ----
-    qq_adapter.set_config_store(config_store.clone());
-    // QQ events enter through a one-way hook. Outbound messages require tools.
-    qq_adapter.set_message_hook(Arc::new(echo_agent::AgentMessageHook::new(agent.clone())));
-    qq_adapter.add_handler(Box::new(handlers::EchoHandler::new(
-        &cfg.bot.command_prefix,
-    )));
-    qq_adapter.add_handler(Box::new(handlers::HelpHandler::new(
-        &cfg.bot.command_prefix,
-    )));
-    qq_adapter.add_handler(Box::new(handlers::AdminHandler::new(
-        &cfg.bot.command_prefix,
-        cfg.bot.owner_qq,
-        shutdown_tx,
-        tracker.clone(),
-    )));
+    // ---- Wire agents into QQ instances ----
+    // 每个实例把入站消息投给**归属人格**（不再是"默认人格"）；实例间互相隔离。
+    for (instance_id, persona_id, adapter) in &qq_adapters {
+        adapter.set_config_store(config_store.clone());
+        let target = match supervisor.get_exact(persona_id) {
+            Some(p) => p.agent,
+            None => {
+                warn!(persona = %persona_id, "QQ instance persona not found; skipping wire");
+                continue;
+            }
+        };
+        // QQ events enter through a one-way hook. Outbound messages require tools.
+        adapter.set_message_hook(Arc::new(echo_agent::AgentMessageHook::new(target)));
+        adapter.add_handler(Box::new(handlers::EchoHandler::new(
+            &cfg.bot.command_prefix,
+        )));
+        adapter.add_handler(Box::new(handlers::HelpHandler::new(
+            &cfg.bot.command_prefix,
+        )));
+        let owner = adapter.get_owner_qq();
+        adapter.add_handler(Box::new(handlers::AdminHandler::new(
+            &cfg.bot.command_prefix,
+            if owner > 0 { owner } else { cfg.bot.owner_qq },
+            shutdown_tx.clone(),
+            tracker.clone(),
+        )));
+        tracing::info!(instance = %instance_id, persona = %persona_id, "QQ instance wired to persona");
+    }
+    // legacy 变量（下方自动启动/停止路径仍按第一个实例语义使用）。
+    if let Some((_, _, first)) = qq_adapters.first() {
+        let _ = first;
+    }
 
     // ---- Command pump（多 persona 路由）----
-    // 默认后端通道接收 Panel 命令；SendMessage 按 agent_id 路由到对应人格，
-    // 其余命令交给默认人格（管理面/QQ 入口同旧版）。
-    let pump_default = agent.clone();
-    let supervisor_for_pump = Arc::clone(&supervisor);
+    // 命令从进程级通道读取（不再是"默认人格"的 mailbox）：
+    // - 聊天/取消：按 team_id 路由到目标人格；
+    // - 会话类（timeline/context/历史维护）：暂交默认人格处理，由处理侧按
+    //   team_id 解析目标（P3 起 team_id 必填）；
+    // - 其余（全局/管理类）：交给进程级核心服务代理（非人格）。
+    let pump_core = core_agent.clone();
+    let pump_handle = handle.clone();
     let pump = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         loop {
             interval.tick().await;
-            while let Some(cmd) = pump_default.try_recv_command() {
+            while let Some(cmd) = pump_handle.try_recv_command() {
                 let target = match &cmd {
-                    echo_agent::BackendCommand::SendMessage { team_id, .. }
-                    | echo_agent::BackendCommand::CancelRequestedWork { team_id, .. } => {
-                        let id = team_id.clone().unwrap_or_default();
-                        if id.is_empty() {
-                            Arc::clone(&pump_default)
-                        } else {
-                            match supervisor_for_pump.get(&id) {
-                                Some(p) => Arc::clone(&p.agent),
-                                None => Arc::clone(&pump_default),
-                            }
-                        }
-                    }
-                    _ => Arc::clone(&pump_default),
+                    // 所有命令统一交核心服务代理；聊天/取消类由它在
+                    // `apply_command` 内按 team_id 路由（缺失 → 明确报错，
+                    // 不再有"默认人格"兜底）。
+                    _ => Arc::clone(&pump_core),
                 };
                 let branch_target = Arc::clone(&target);
                 tokio::spawn(async move {
@@ -715,45 +905,36 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             echo_agent::agent_manager::set_global_manager(mgr_arc);
         }
     }
-    // 事件镜像：非默认人格的事件经 Agent.event_bus 订阅 → 转发进默认
-    // 人格的 handle.event_tx（Panel 单连接即可看到所有人格活动）。
-    {
-        let mirror_target = default_persona
-            .agent
-            .handle
-            .try_read()
-            .ok()
-            .and_then(|h| h.as_ref().map(|d| d.event_tx.clone()));
-        if let Some(tx) = mirror_target {
-            for persona in supervisor.personas() {
-                if persona.id == default_id {
-                    continue;
-                }
-                let tx2 = tx.clone();
-                let bus = persona.agent.event_bus.clone();
-                let _keep = bus.observe(move |ev: &mut echo_agent::BackendEvent| {
-                    let _ = tx2.send(ev.clone());
-                });
-                std::mem::forget(_keep);
-            }
-            info!("event mirror installed for non-default personas");
-        }
-    }
-
-    // ---- Auto-start QQ adapter if enabled ----
+    // ---- Auto-start QQ instances if enabled ----
     // 接线完成，标记 wired：此后 adapter.qq 插件的运行期 enable 才会真正
     // start 适配器（启动期 mount 不抢跑）。启动受配置与插件状态双重门控。
     qq_wired.store(true, std::sync::atomic::Ordering::SeqCst);
-    if cfg.qq_adapter.enabled
-        && agent
-            .plugin_host
-            .registry
-            .is_enabled(echo_agent::plugins::ADAPTER_QQ_PLUGIN_ID)
-    {
-        qq_adapter
-            .start()
-            .await
-            .map_err(|e| anyhow::anyhow!("QQ adapter start failed: {e}"))?;
+    let qq_plugin_enabled = agent
+        .plugin_host()
+        .registry
+        .is_enabled(echo_agent::plugins::ADAPTER_QQ_PLUGIN_ID);
+    if cfg.qq_adapter.enabled && qq_plugin_enabled {
+        // 多实例：逐个生成 compose（非 legacy）并启动；单个失败不影响其余。
+        let data_dir = qq_data_dir.clone();
+        for (instance_id, persona_id, adapter) in &qq_adapters {
+            if let Some(instance) = qq_instances.iter().find(|i| &i.id == instance_id) {
+                if instance.id != qq_instances::DEFAULT_INSTANCE {
+                    if let Err(error) =
+                        qq_instances::write_compose(&data_dir, &instance.id, &instance.ports)
+                    {
+                        warn!(instance = %instance.id, %error, "compose write failed");
+                    }
+                }
+            }
+            match adapter.start().await {
+                Ok(()) => {
+                    info!(instance = %instance_id, persona = %persona_id, "QQ instance started");
+                }
+                Err(error) => {
+                    warn!(instance = %instance_id, %error, "QQ instance start failed");
+                }
+            }
+        }
         qq_running.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 

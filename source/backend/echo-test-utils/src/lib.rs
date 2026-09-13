@@ -120,6 +120,10 @@ mod adapter {
                 started_at: None,
                 platform: "mock".into(),
                 configured: self.configured,
+                persona: None,
+                container: None,
+                webui_url: None,
+                onebot_url: None,
             }
         }
         async fn start(&self) -> Result<(), AdapterError> {

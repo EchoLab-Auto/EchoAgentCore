@@ -26,6 +26,18 @@ pub struct AdapterStatus {
     pub self_id: Option<String>,
     pub bind_address: String,
     pub started_at: Option<i64>,
+    /// QQ 实例（2026-09 多实例）：归属人格 id。
+    #[serde(default)]
+    pub persona: Option<String>,
+    /// QQ 实例：NapCat 容器名（Panel 展示 / 诊断用）。
+    #[serde(default)]
+    pub container: Option<String>,
+    /// QQ 实例：NapCat WebUI 地址（扫码登录页面链接）。
+    #[serde(default)]
+    pub webui_url: Option<String>,
+    /// QQ 实例：OneBot HTTP API 地址。
+    #[serde(default)]
+    pub onebot_url: Option<String>,
 }
 
 /// 后台 shell 会话摘要（前端可视化终端）。
@@ -577,9 +589,11 @@ pub enum BackendEvent {
     AdapterList {
         adapters: Vec<AdapterStatus>,
     },
-    /// QQ group list.
+    /// QQ group list. `adapter` = 实例名（多实例寻址；None = 旧单实例）。
     GroupList {
         groups: Vec<GroupInfo>,
+        #[serde(default)]
+        adapter: Option<String>,
     },
     /// Current QQ filter configuration (allowlist/denylist).
     QqFilterConfig {
@@ -587,19 +601,44 @@ pub enum BackendEvent {
         allowlist_groups: Vec<i64>,
         denylist_users: Vec<i64>,
         denylist_groups: Vec<i64>,
+        #[serde(default)]
+        adapter: Option<String>,
     },
     /// QQ gate mode changed.
     QqGateMode {
         mode: crate::mode::GateMode,
+        #[serde(default)]
+        adapter: Option<String>,
+    },
+    /// QQ 登录状态（Core 代理查询，Panel 不再直连 OneBot HTTP）。
+    QqLoginStatus {
+        adapter: String,
+        online: bool,
+        #[serde(default)]
+        user_id: Option<String>,
+        #[serde(default)]
+        nickname: Option<String>,
+    },
+    /// QQ 登录二维码（PNG base64；Core 从 NapCat 容器取回）。
+    QqQrcode {
+        adapter: String,
+        /// base64 编码的 PNG；错误时为空字符串。
+        png_base64: String,
+        #[serde(default)]
+        error: Option<String>,
     },
     /// Current QQ owner (admin) QQ number. Frontend-only; never emitted to
     /// the agent/LLM context.
     QqOwner {
         owner_qq: i64,
+        #[serde(default)]
+        adapter: Option<String>,
     },
     /// QQ friend list (for interactive allowlist/denylist picker).
     FriendList {
         friends: Vec<FriendInfo>,
+        #[serde(default)]
+        adapter: Option<String>,
     },
 
     // ---- Sudo authorization (human-in-the-loop) ----
@@ -728,9 +767,7 @@ pub struct TeamInfo {
     /// Persona system prompt (empty = inherits global prompt/skills).
     #[serde(default)]
     pub system_prompt: String,
-    /// Per-persona disabled capability ids (plugins/tools/skills).
-    #[serde(default)]
-    pub disabled_plugins: Vec<String>,
+    /// Per-persona disabled tool/skill ids（插件黑名单已移除：白名单单轨）。
     #[serde(default)]
     pub disabled_tools: Vec<String>,
     #[serde(default)]

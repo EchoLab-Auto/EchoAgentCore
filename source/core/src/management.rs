@@ -333,6 +333,7 @@ mod tests {
                 assert_eq!(
                     cmd,
                     BackendCommand::SetQqGateMode {
+                        adapter: None,
                         mode: echo_adapter::GateMode::Allowlist
                     }
                 );

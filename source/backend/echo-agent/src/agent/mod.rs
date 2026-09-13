@@ -5,6 +5,10 @@ mod orchestration;
 mod qq_commands;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// 进程级事件汇聚点：任意 persona 的 `emit` 都投递到此，组合根保证
+/// 所有人格（含运行期新建）共享同一汇聚点，Panel 单连接即可看到全部活动。
+pub type EventSink = std::sync::Arc<dyn Fn(BackendEvent) + Send + Sync>;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -133,6 +137,10 @@ pub struct Agent {
     /// worker thread. All access goes through `try_*` (never held across
     /// await points, contention is negligible).
     pub handle: tokio::sync::RwLock<Option<Arc<BackendHandle>>>,
+    /// 进程级事件汇聚点（组合根注入）：所有 persona 的 `emit` 都投递到同一
+    /// 汇聚点，Panel 单连接即可看到所有人格活动，无需求助"默认人格"镜像。
+    /// 设置后优先于 `handle`（`handle` 保留给单 agent 测试与旧路径）。
+    event_sink: std::sync::RwLock<Option<EventSink>>,
     /// Human-in-the-loop sudo authorization broker (set by the composition
     /// root). `run_sudo` awaits a password submitted on the dedicated sudo
     /// channel; see [`crate::sudo`].
@@ -165,8 +173,9 @@ pub struct Agent {
     /// Cancels background tasks (identity eviction / save) on shutdown.
     cancel: tokio_util::sync::CancellationToken,
     /// Plugin host: registry + mount context bridging `echo_plugin` to the
-    /// agent's concrete registries.
-    pub plugin_host: std::sync::Arc<crate::plugins::PluginHost>,
+    /// agent's concrete registries. 组合根注入**同一个**进程级宿主
+    /// （去主智能体 P1：插件宿主不再寄居在某个"默认人格"上）。
+    plugin_host: std::sync::RwLock<std::sync::Arc<crate::plugins::PluginHost>>,
     /// Team id (None/empty = default). Sets session tagging after boot.
     team_id: std::sync::Mutex<Option<String>>,
     /// Graceful-drain flag: set during shutdown so new turns are rejected
@@ -202,6 +211,68 @@ pub fn plugin_host_global() -> Option<std::sync::Arc<crate::plugins::PluginHost>
 
 pub fn set_plugin_host_global(host: std::sync::Arc<crate::plugins::PluginHost>) {
     let _ = GLOBAL_PLUGIN_HOST.set(host);
+}
+
+/// 进程级全局策略（`[agent]` 层的工具/技能启停）：全局开关不属于任何人格，
+/// 组合根注入一次，所有 persona 重算门控时读取同一份事实。
+#[derive(Debug, Default)]
+pub struct GlobalPolicy {
+    disabled_tools: std::sync::RwLock<Vec<String>>,
+    disabled_skills: std::sync::RwLock<Vec<String>>,
+}
+
+impl GlobalPolicy {
+    pub fn new(disabled_tools: Vec<String>, disabled_skills: Vec<String>) -> Self {
+        Self {
+            disabled_tools: std::sync::RwLock::new(disabled_tools),
+            disabled_skills: std::sync::RwLock::new(disabled_skills),
+        }
+    }
+
+    pub fn disabled_tools(&self) -> Vec<String> {
+        self.disabled_tools
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn disabled_skills(&self) -> Vec<String> {
+        self.disabled_skills
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    /// 全局启停某工具（enabled=false 记入禁用表）。
+    pub fn set_tool_enabled(&self, name: &str, enabled: bool) {
+        if let Ok(mut list) = self.disabled_tools.write() {
+            list.retain(|n| n != name);
+            if !enabled {
+                list.push(name.to_string());
+            }
+        }
+    }
+
+    /// 全局启停某技能。
+    pub fn set_skill_enabled(&self, name: &str, enabled: bool) {
+        if let Ok(mut list) = self.disabled_skills.write() {
+            list.retain(|n| n != name);
+            if !enabled {
+                list.push(name.to_string());
+            }
+        }
+    }
+}
+
+static GLOBAL_POLICY: std::sync::OnceLock<std::sync::Arc<GlobalPolicy>> =
+    std::sync::OnceLock::new();
+
+pub fn global_policy() -> Option<std::sync::Arc<GlobalPolicy>> {
+    GLOBAL_POLICY.get().cloned()
+}
+
+pub fn set_global_policy(policy: std::sync::Arc<GlobalPolicy>) {
+    let _ = GLOBAL_POLICY.set(policy);
 }
 
 impl Agent {
@@ -240,6 +311,7 @@ impl Agent {
             trunk,
             adapters,
             handle: tokio::sync::RwLock::new(None),
+            event_sink: std::sync::RwLock::new(None),
             sudo_broker: tokio::sync::RwLock::new(None),
             system_prompt_cache: RwLock::new(None),
             last_prompt_blocks: tokio::sync::Mutex::new(None),
@@ -256,7 +328,9 @@ impl Agent {
             event_bus,
             _timeline_projection,
             cancel,
-            plugin_host: std::sync::Arc::new(crate::plugins::PluginHost::new()),
+            plugin_host: std::sync::RwLock::new(std::sync::Arc::new(
+                crate::plugins::PluginHost::new(),
+            )),
             team_id: std::sync::Mutex::new(None),
             draining: AtomicBool::new(false),
             capabilities: std::sync::Mutex::new(None),
@@ -281,18 +355,10 @@ impl Agent {
         // Graceful drain: reject new work, let in-flight turns finish so a
         // self-update restart does not cut off an ongoing reply.
         self.draining.store(true, Ordering::Release);
-        if let Some(h) = self
-            .handle
-            .try_read()
-            .ok()
-            .as_ref()
-            .and_then(|g| g.as_ref())
-        {
-            h.emit(BackendEvent::Error {
-                session_id: None,
-                message: "Core 正在重启：等待当前回复完成…".into(),
-            });
-        }
+        self.emit(BackendEvent::Error {
+            session_id: None,
+            message: "Core 正在重启：等待当前回复完成…".into(),
+        });
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_secs(SHUTDOWN_DRAIN_SECS);
         while !self.active_inbound_turns.is_empty() && std::time::Instant::now() < deadline {
@@ -410,7 +476,7 @@ impl Agent {
         }
         let id_set: std::collections::HashSet<String> =
             manifests.iter().map(|m| m.id.clone()).collect();
-        let host = &self.plugin_host;
+        let host = &self.plugin_host();
         // Unmount discovered plugins that no longer exist.
         for desc in host.descriptors() {
             if !desc.builtin && desc.enabled && !id_set.contains(&desc.id) {
@@ -773,14 +839,11 @@ impl Agent {
         }
     }
 
-    /// 全局禁用列表（工具/技能）：优先管理面（默认 agent）的实时配置，
-    /// 无管理器（单元测试）时回退本 agent 的配置快照。
+    /// 全局禁用列表（工具/技能）：读进程级策略（组合根注入）。
+    /// 无策略（单元测试）时回退本 agent 的配置快照。
     async fn global_disabled_lists(&self) -> (Vec<String>, Vec<String>) {
-        if let Some(mgr) = crate::agent_manager::global_manager() {
-            if let Some(default_agent) = mgr.resolve(None) {
-                let cfg = default_agent.config.read().await;
-                return (cfg.disabled_tools.clone(), cfg.disabled_skills.clone());
-            }
+        if let Some(policy) = global_policy() {
+            return (policy.disabled_tools(), policy.disabled_skills());
         }
         let cfg = self.config.read().await;
         (cfg.disabled_tools.clone(), cfg.disabled_skills.clone())
@@ -1083,6 +1146,34 @@ impl Agent {
         }
     }
 
+    /// 进程级插件宿主（组合根注入；未注入时为该 agent 自带的空宿主，
+    /// 便于单元测试）。
+    pub fn plugin_host(&self) -> std::sync::Arc<crate::plugins::PluginHost> {
+        self.plugin_host
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| std::sync::Arc::new(crate::plugins::PluginHost::new()))
+    }
+
+    /// 注入共享的进程级插件宿主（组合根对每个 persona 调用一次）。
+    pub fn set_plugin_host(&self, host: std::sync::Arc<crate::plugins::PluginHost>) {
+        if let Ok(mut slot) = self.plugin_host.write() {
+            *slot = host;
+        } else {
+            tracing::warn!("plugin host slot busy, ignoring set_plugin_host");
+        }
+    }
+
+    /// 注入进程级事件汇聚点（组合根对每个 persona 调用一次）。
+    /// 汇聚点优先于 `handle`：设置后 `emit` 只投递汇聚点，避免双投。
+    pub fn attach_event_sink(&self, sink: EventSink) {
+        if let Ok(mut slot) = self.event_sink.write() {
+            *slot = Some(sink);
+        } else {
+            tracing::warn!("event sink slot busy, ignoring attach_event_sink");
+        }
+    }
+
     /// Attach the sudo authorization broker (called once by the composition
     /// root). No-op when a broker is already attached.
     pub fn attach_sudo_broker(&self, broker: Arc<crate::sudo::SudoBroker>) {
@@ -1113,11 +1204,17 @@ impl Agent {
     /// frontend hand-off, so the persisted display timeline and the wire both
     /// derive from the same emission.
     pub fn emit(&self, event: BackendEvent) {
-        // 中心化注入 team_id：事件镜像/多 team 场景下 Panel 需要知道事件
-        // 归属哪个 team，才能过滤实时消息（避免串线）。
+        // 中心化注入 team_id：多 team 场景下 Panel 需要知道事件归属哪个
+        // team，才能过滤实时消息（避免串线）。
         let event = self.annotate_team(event);
         self.event_bus
             .emit_sync(event.clone(), echo_context::DispatchMode::Observe);
+        // 汇聚点优先：组合根把所有 persona 都接到同一个进程级汇聚点，
+        // 「谁挂到 Panel」不再取决于是否为默认人格。
+        if let Some(sink) = self.event_sink.read().ok().and_then(|g| g.clone()) {
+            sink(event);
+            return;
+        }
         if let Some(h) = self
             .handle
             .try_read()
@@ -2825,22 +2922,30 @@ impl Agent {
                 ),
             });
         }
-        blocks.push(PromptBlock {
-            key: "orchestration".into(),
-            label: "后台编排".into(),
-            kind: "orchestration".into(),
-            content: "# Background orchestration\n\
-             Complete the current request normally; do not spawn detached work \
-             merely to keep the conversation responsive. Use run_subagent for \
-             bounded delegated reasoning. Use spawn_background_task only when \
-             the requester explicitly asks for detached work, and \
-             spawn_parallel_task only for independent work with declared \
-             delivery targets. After detached work is accepted, do not poll it; \
-             completion returns as an ordered background_task_event. Use \
-             list_background_tasks only when status is requested and \
-             cancel_background_task only on an explicit cancellation."
-                .into(),
-        });
+        // 编排提示词按需注入：仅当该 agent 至少允许一个动态编排工具时描述，
+        // 白名单无编排工具的 agent 不注入描述不可用工具的规则（与动态工具
+        // schema 的过滤同源：ORCHESTRATION_TOOL_NAMES ∩ allows_dynamic_tool）。
+        let orchestration_allowed = orchestration::ORCHESTRATION_TOOL_NAMES
+            .iter()
+            .any(|name| self.allows_dynamic_tool(name));
+        if orchestration_allowed {
+            blocks.push(PromptBlock {
+                key: "orchestration".into(),
+                label: "后台编排".into(),
+                kind: "orchestration".into(),
+                content: "# Background orchestration\n\
+                 Complete the current request normally; do not spawn detached work \
+                 merely to keep the conversation responsive. Use run_subagent for \
+                 bounded delegated reasoning. Use spawn_background_task only when \
+                 the requester explicitly asks for detached work, and \
+                 spawn_parallel_task only for independent work with declared \
+                 delivery targets. After detached work is accepted, do not poll it; \
+                 completion returns as an ordered background_task_event. Use \
+                 list_background_tasks only when status is requested and \
+                 cancel_background_task only on an explicit cancellation."
+                    .into(),
+            });
+        }
         if let Some(boundary) = boundary {
             blocks.push(boundary.block());
         }
@@ -2974,6 +3079,10 @@ impl Agent {
                 self_id: info.self_id,
                 bind_address: String::new(), // populated by QqAdapter
                 started_at: info.started_at,
+                persona: info.persona,
+                container: info.container,
+                webui_url: info.webui_url,
+                onebot_url: info.onebot_url,
             })
             .collect();
         self.emit(BackendEvent::AdapterList { adapters });
@@ -3458,6 +3567,23 @@ impl Agent {
                     .as_table_mut()
                     .expect("serialized agent config is a table")
                     .insert("api_key".into(), key_value);
+            }
+            // `teams` / `disabled_teams` 由 AgentManager 独立持久化
+            // （config_writer 只写这两张表）。人格快照里的副本可能已过期，
+            // 这里一律以磁盘为准，避免"某次无关保存把新人格名单写回旧值"。
+            let table = value
+                .as_table_mut()
+                .expect("serialized agent config is a table");
+            for key in ["teams", "disabled_teams"] {
+                let disk = root.get("agent").and_then(|agent| agent.get(key)).cloned();
+                match disk {
+                    Some(v) => {
+                        table.insert(key.into(), v);
+                    }
+                    None => {
+                        table.remove(key);
+                    }
+                }
             }
             root.insert("agent".into(), value.clone());
             Ok(())
@@ -4137,6 +4263,85 @@ pub mod tests {
         )
     }
 
+    // ── 进程级事件汇聚点（去主智能体 P0）──
+
+    /// 多人格共享同一汇聚点：任一人格 emit 的事件都到达同一处，
+    /// 「谁挂到 Panel」不再取决于默认人格。
+    #[tokio::test]
+    async fn shared_event_sink_receives_events_from_every_persona() {
+        let received = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink: EventSink = {
+            let received = received.clone();
+            Arc::new(move |event: BackendEvent| {
+                let id = match &event {
+                    BackendEvent::AgentOutput { session_id, .. } => session_id.clone(),
+                    _ => "other".into(),
+                };
+                received.lock().unwrap().push(id);
+            })
+        };
+        let a = test_agent(Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "a".into(),
+        }));
+        let b = test_agent(Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "b".into(),
+        }));
+        a.attach_event_sink(sink.clone());
+        b.attach_event_sink(sink);
+
+        a.emit(BackendEvent::AgentOutput {
+            session_id: "from-a".into(),
+            team_id: None,
+            content: "x".into(),
+            branch_id: None,
+        });
+        b.emit(BackendEvent::AgentOutput {
+            session_id: "from-b".into(),
+            team_id: None,
+            content: "y".into(),
+            branch_id: None,
+        });
+
+        let got = received.lock().unwrap().clone();
+        assert!(got.contains(&"from-a".to_string()), "got {got:?}");
+        assert!(got.contains(&"from-b".to_string()), "got {got:?}");
+    }
+
+    /// 汇聚点优先于 handle：同时配置两者时只投递一次（不双投）。
+    #[tokio::test]
+    async fn event_sink_takes_precedence_over_handle_without_double_delivery() {
+        let (bridge, handle) = crate::create_bridge();
+        let agent = test_agent(Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        }));
+        agent.attach(Arc::new(handle));
+        let sink_calls = Arc::new(AtomicUsize::new(0));
+        let sink: EventSink = {
+            let sink_calls = sink_calls.clone();
+            Arc::new(move |_event: BackendEvent| {
+                sink_calls.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+        agent.attach_event_sink(sink);
+
+        agent.emit(BackendEvent::AgentOutput {
+            session_id: "s".into(),
+            team_id: None,
+            content: "x".into(),
+            branch_id: None,
+        });
+
+        assert_eq!(sink_calls.load(Ordering::SeqCst), 1);
+        let mut rx = bridge.event_rx.lock().await;
+        assert!(
+            rx.try_recv().is_err(),
+            "sink must suppress the legacy handle path (no double delivery)"
+        );
+    }
+
     #[tokio::test]
     async fn emitted_events_are_recorded_into_the_display_timeline() {
         let provider = Arc::new(MockProvider {
@@ -4456,6 +4661,8 @@ pub mod tests {
             reply: "ok".into(),
         });
         let agent = Arc::new(test_agent(provider));
+        // 去主智能体后会话命令必须带 team_id：本 agent 视为 "t"。
+        agent.set_team_id(Some("t".into()));
         let (bridge, handle) = crate::create_bridge();
         agent.attach(Arc::new(handle));
         agent.emit(BackendEvent::MessageReceived {
@@ -4476,7 +4683,7 @@ pub mod tests {
 
         agent
             .apply_command(BackendCommand::RequestTrunkTimeline {
-                team_id: None,
+                team_id: Some("t".into()),
                 since_seq: 0,
             })
             .await;
@@ -4494,6 +4701,41 @@ pub mod tests {
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].kind, "user");
         assert_eq!(timeline[0].content, "你好");
+    }
+
+    /// 去主智能体：会话类命令缺少 team_id 时必须明确报错（无默认人格兜底）。
+    #[tokio::test]
+    async fn session_commands_require_explicit_team_id() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Arc::new(test_agent(provider));
+        let (bridge, handle) = crate::create_bridge();
+        agent.attach(Arc::new(handle));
+
+        for cmd in [
+            BackendCommand::RequestTrunkTimeline {
+                team_id: None,
+                since_seq: 0,
+            },
+            BackendCommand::RequestContext { team_id: None },
+            BackendCommand::ClearHistory { team_id: None },
+        ] {
+            agent.apply_command(cmd).await;
+        }
+
+        let mut errors = Vec::new();
+        while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+            if let BackendEvent::Error { message, .. } = event {
+                errors.push(message);
+            }
+        }
+        assert_eq!(errors.len(), 3, "each command must error: {errors:?}");
+        assert!(
+            errors.iter().all(|m| m.contains("team_id")),
+            "errors must explain the missing team_id: {errors:?}"
+        );
     }
 
     #[tokio::test]
@@ -4786,6 +5028,45 @@ pub mod tests {
         assert!(
             content.contains("api_key = \"sk-on-disk\""),
             "unexpected: {content}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    /// 人格名单由 AgentManager 独立落盘；人格快照里的副本可能过期，
+    /// `persist_config` 必须以磁盘为准（否则无关保存会写回旧名单）。
+    #[tokio::test]
+    async fn persist_config_preserves_on_disk_teams() {
+        let tmp =
+            std::env::temp_dir().join(format!("echo-agent-cfg-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &tmp,
+            "[agent]\nprovider = \"openai\"\n\n[agent.teams.fresh]\nname = \"Fresh\"\n",
+        )
+        .unwrap();
+        let agent = test_agent(Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        }));
+        // 模拟"过期快照"：agent 内存里的 teams 是空的，磁盘上已有 fresh。
+        agent.set_config_path(tmp.clone());
+
+        agent
+            .apply_command(BackendCommand::UpdateApiConfig {
+                name: String::new(),
+                provider: "anthropic".into(),
+                model: "claude-x".into(),
+                base_url: "http://example.test".into(),
+                api_key: String::new(),
+                thinking: None,
+                reasoning_effort: None,
+            })
+            .await;
+
+        let content = std::fs::read_to_string(&tmp).unwrap();
+        assert!(content.contains("provider = \"anthropic\""));
+        assert!(
+            content.contains("[agent.teams.fresh]"),
+            "on-disk teams must survive an unrelated persist: {content}"
         );
         std::fs::remove_file(&tmp).ok();
     }
@@ -5122,6 +5403,39 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn orchestration_prompt_block_requires_allowed_tool() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Agent::new(
+            provider,
+            AgentConfig::default(),
+            SkillRegistry::new(),
+            ToolRegistry::new(),
+            Arc::new(AdapterRegistry::new()),
+        );
+        // 空白名单（= 全部允许）→ 编排提示词注入。
+        let blocks = agent.build_prompt_blocks("", None).await;
+        assert!(
+            blocks.iter().any(|block| block.key == "orchestration"),
+            "default agent keeps the orchestration block"
+        );
+        // 白名单只含非编排工具 → 不注入（不再描述不可用工具）。
+        agent
+            .apply_capabilities(&crate::config::TeamMember {
+                enabled_tools: vec!["read_file".into()],
+                ..Default::default()
+            })
+            .await;
+        let blocks = agent.build_prompt_blocks("", None).await;
+        assert!(
+            !blocks.iter().any(|block| block.key == "orchestration"),
+            "orchestration block hidden without an allowed orchestration tool"
+        );
+    }
+
+    #[tokio::test]
     async fn skill_keyword_loads_instructions() {
         let mut reg = SkillRegistry::new();
         reg.register(crate::skill::Skill {
@@ -5443,6 +5757,7 @@ pub mod tests {
             scope: "dm".into(),
             scope_id: String::new(),
             user_id: "123456".into(),
+            account: None,
         };
         let session = agent.trunk.get_or_create(&key, "tester".into(), None);
         let hook = r#"<qq_message_hook>

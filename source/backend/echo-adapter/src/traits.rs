@@ -41,6 +41,14 @@ pub struct AdapterInfo {
     pub platform: String,
     /// Whether this adapter is configured and enabled.
     pub configured: bool,
+    /// QQ 实例：归属人格 id（多实例；其他平台为空）。
+    pub persona: Option<String>,
+    /// QQ 实例：NapCat 容器名。
+    pub container: Option<String>,
+    /// QQ 实例：NapCat WebUI 地址。
+    pub webui_url: Option<String>,
+    /// QQ 实例：OneBot HTTP API 地址。
+    pub onebot_url: Option<String>,
 }
 
 /// Hook that platform adapters use to deliver inbound messages into the
@@ -167,6 +175,12 @@ pub trait Adapter: Send + Sync {
     /// Default: same as [`get_friend_list`](Self::get_friend_list).
     async fn get_all_friends(&self) -> Result<Vec<(i64, String)>, AdapterError> {
         self.get_friend_list().await
+    }
+
+    /// 取登录二维码 PNG（多实例/代理登录：Core 代 Panel 从平台容器取回）。
+    /// 默认不支持（非 QQ 平台适配器无需实现）。
+    async fn login_qrcode_png(&self) -> Result<Vec<u8>, String> {
+        Err("该适配器不支持二维码登录".into())
     }
 
     /// Update the adapter's runtime allowlist.  Default: no-op.

@@ -2,6 +2,9 @@
 //!
 //! Filter/gate management and TOML persistence live in `filter.rs`.
 
+/// 默认（legacy）QQ 实例名：会话 id 不产生 `@` 后缀。
+pub const DEFAULT_INSTANCE_NAME: &str = "qq";
+
 mod filter;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,6 +41,10 @@ pub enum QqGateMode {
 /// Shared inner state — lives in an Arc so the server task can reference it.
 /// Fields are `pub(crate)` so the message handler (handler.rs) can use them.
 pub(crate) struct QqInner {
+    /// 归属人格 id（多实例；None = legacy 单实例未指定）。
+    pub(crate) persona: Option<String>,
+    /// 实例化显示名（"QQ / OneBot" 或 "QQ（<persona> / <实例>）"）。
+    pub(crate) display_name: String,
     pub(crate) config: QqAdapterConfig,
     pub(crate) active_context: StdMutex<Option<Arc<Context>>>,
     pub(crate) running: AtomicBool,
@@ -106,7 +113,18 @@ pub struct QqAdapter {
 }
 
 impl QqAdapter {
+    /// Legacy 单实例构造（适配器名固定为 `qq`）。
     pub fn new(config: QqAdapterConfig) -> Self {
+        Self::with_instance(DEFAULT_INSTANCE_NAME, None, config)
+    }
+
+    /// 多实例构造：实例名 + 归属人格（实例名即适配器名与会话 account 维度）。
+    pub fn with_instance(
+        name: impl Into<String>,
+        persona: Option<String>,
+        config: QqAdapterConfig,
+    ) -> Self {
+        let name = name.into();
         // Seed runtime override fields from config.
         let au = config.filter.allowlist.user_ids.clone();
         let ag = config.filter.allowlist.group_ids.clone();
@@ -124,9 +142,17 @@ impl QqAdapter {
         let napcat_host = config.napcat_host.clone();
         let napcat_container = config.napcat_container.clone();
         let napcat_container_data_dir = config.napcat_container_data_dir.clone();
+        let display_name = match persona.as_deref() {
+            Some(p) if name != DEFAULT_INSTANCE_NAME => format!("QQ（{p} / {name}）"),
+            Some(p) => format!("QQ（{p}）"),
+            None if name != DEFAULT_INSTANCE_NAME => format!("QQ（{name}）"),
+            None => "QQ / OneBot".to_string(),
+        };
         let adapter = Self {
-            name: "qq".into(),
+            name,
             inner: Arc::new(QqInner {
+                persona,
+                display_name,
                 config,
                 active_context: StdMutex::new(None),
                 running: AtomicBool::new(false),
@@ -684,7 +710,7 @@ impl Adapter for QqAdapter {
     }
 
     fn display_name(&self) -> &str {
-        "QQ / OneBot"
+        &self.inner.display_name
     }
 
     fn platform(&self) -> &str {
@@ -712,6 +738,10 @@ impl Adapter for QqAdapter {
             started_at: self.inner.started_at.lock().ok().and_then(|g| *g),
             platform: "qq".into(),
             configured: self.is_configured(),
+            persona: self.inner.persona.clone(),
+            container: Some(self.inner.config.napcat_container.clone()),
+            webui_url: Some(self.inner.config.napcat_webui_url.clone()),
+            onebot_url: Some(self.inner.config.napcat_onebot_url.clone()),
         }
     }
 
@@ -1090,6 +1120,14 @@ impl Adapter for QqAdapter {
 
     async fn get_all_groups(&self) -> Result<Vec<(i64, String)>, AdapterError> {
         self.get_all_groups().await.map_err(AdapterError::Internal)
+    }
+
+    /// Core 代理登录：从 NapCat 容器取登录二维码 PNG。
+    async fn login_qrcode_png(&self) -> Result<Vec<u8>, String> {
+        let container = self.inner.config.napcat_container.clone();
+        tokio::task::spawn_blocking(move || NapCatClient::fetch_qrcode_docker(&container))
+            .await
+            .map_err(|e| format!("qrcode task failed: {e}"))?
     }
 
     async fn get_all_friends(&self) -> Result<Vec<(i64, String)>, AdapterError> {

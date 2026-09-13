@@ -35,7 +35,7 @@ graph LR
 
 ### 8.3 ContextView（上下文弹层）
 
-入口行「上下文」进入，弹层几何与 AgentConfigModal 一致（上/左/右 12px、底边 = 入口行高 + 42px，磨砂玻璃卡片，`ChatView.vue` `ctxBottomOffsetCss`）；**无独立返回按钮，点弹层外遮罩即关闭**。打开时 `RequestContext{team_id: null}`：
+入口行「上下文」进入，弹层几何与 AgentConfigModal 一致（上/左/右 12px、底边 = 入口行高 + 42px，磨砂玻璃卡片，`ChatView.vue` `ctxBottomOffsetCss`）；**无独立返回按钮，点弹层外遮罩即关闭**。打开时按当前 Agent 发送 `RequestContext{team_id: 当前 Agent id}`（按人格定向取上下文快照；无 active agent 时为 `null`）：
 
 - token 仪表盘：`NeumorphismProgress`（≥90% error、≥70% warning），总量/提示词/历史/上限四项统计
 - 上下文块分「系统提示词与注入块」「对话历史」两组折叠（仅 base 块默认展开）：kind 色签 + token 数 + 占比条（按最大块 token 归一）
@@ -58,7 +58,7 @@ graph LR
 |---|---|
 | 禁用「管理面」插件 | **禁止**（core 拒绝命令 + UI alert 明示，防自锁；只能 core.toml + 重启） |
 | 删除技能 | `window.confirm`（提示会删除 SKILL.md 文件） |
-| 删除 Team | 主 Agent `window.alert` 禁止；其余 `window.confirm`（不可恢复） |
+| 删除 Team | 仅当**只剩一个智能体**时 `window.alert` 拒绝（去主智能体：无受保护成员）；否则 `window.confirm`（不可恢复） |
 | 移除技能 Git 来源 | `window.confirm`（明示"目录保留，可手动删除"） |
 | 归档/压缩历史 | `window.confirm` |
 | 清理历史 | 两步按钮确认（见 §8.3） |

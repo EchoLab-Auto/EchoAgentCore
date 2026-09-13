@@ -32,8 +32,8 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 - **工具面**：单会话模式隐藏 `spawn_parallel_task`（一个会话一次只处理一件事，
   并行分支与串行准入冲突）；`run_subagent` / `spawn_background_task` 仍可用。
 - **推导**：`TeamMember::loop_mode()`（单一来源）——白名单含 `loop.parallel`
-  或任一旧编排模式 id → parallel；其余（含白名单为空 = 默认）→ single；
-  黑名单含 parallel → single（黑名单优先）。旧 id（`orchestration.{single,chatbot}`、
+  或任一旧编排模式 id → parallel；其余（含白名单为空 = 默认）→ single。
+  插件黑名单已移除（2026-09-11），推导只看白名单。旧 id（`orchestration.{single,chatbot}`、
   `branch.reply`、`session.global`、`chatbot.sessions`、`loop.runner`）在配置加载
   与 `SaveTeam` 时归一化为模式插件 id。
 - **落地**：两个插件 mount 的是同一个 `TurnRunner`（驱动本体），模式只改策略；

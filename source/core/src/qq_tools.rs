@@ -14,13 +14,105 @@ use serde_json::{json, Value};
 
 use echo_adapter_qq::QqAdapter;
 
+/// 该 persona 的 QQ 实例集合（多实例寻址）。
+#[derive(Clone)]
+struct QqInstanceSet {
+    adapters: Vec<Arc<QqAdapter>>,
+    /// 缺省实例（恰好一个实例时即它；多实例时 None → 必须给 account）。
+    default_index: Option<usize>,
+}
+
+impl QqInstanceSet {
+    fn new(adapters: Vec<Arc<QqAdapter>>) -> Self {
+        let default_index = (adapters.len() == 1).then_some(0);
+        Self {
+            adapters,
+            default_index,
+        }
+    }
+
+    fn multi(&self) -> bool {
+        self.adapters.len() > 1
+    }
+
+    fn names(&self) -> Vec<String> {
+        self.adapters.iter().map(|a| a.name().to_string()).collect()
+    }
+
+    /// 按 `account` 参数解析目标实例（缺省回退唯一实例）。
+    fn pick(&self, arguments: &Value) -> Result<Arc<QqAdapter>, String> {
+        if let Some(account) = arguments["account"].as_str().filter(|a| !a.is_empty()) {
+            return self
+                .adapters
+                .iter()
+                .find(|a| a.name() == account)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "account {account:?} 未找到；可用实例：{}",
+                        self.names().join(", ")
+                    )
+                });
+        }
+        match self.default_index {
+            Some(i) => Ok(self.adapters[i].clone()),
+            None if self.adapters.is_empty() => Err("该人格没有可用的 QQ 实例".into()),
+            None => Err(format!(
+                "该人格有多个 QQ 实例，请用 account 指定：{}",
+                self.names().join(", ")
+            )),
+        }
+    }
+}
+
 /// Register QQ tools into the agent's `ToolRegistry`.
+///
+/// **多实例**（2026-09）：传入该 persona 的全部 QQ 实例。
+/// - 恰好 1 个实例：行为与旧版一致（不带 `account` 参数，绑定该实例）；
+/// - 多于 1 个：schema 增加可选 `account`（实例名），缺省时报错列出可选实例。
 pub fn register_qq_tools(registry: &mut echo_agent::ToolRegistry, qq_adapter: Arc<QqAdapter>) {
-    let qq = qq_adapter.clone();
-    registry.register(Arc::new(QqToolWrapper {
-        name: "send_group_msg".into(),
-        description: "Send a text message to a QQ group. This is the only way to produce QQ-visible group output. Requires group_id and content.".into(),
-        parameters: json!({
+    register_qq_tools_multi(registry, vec![qq_adapter]);
+}
+
+/// 多实例版本：该 persona 的实例集合。
+pub fn register_qq_tools_multi(
+    registry: &mut echo_agent::ToolRegistry,
+    adapters: Vec<Arc<QqAdapter>>,
+) {
+    let set = QqInstanceSet::new(adapters);
+    let multi = set.multi();
+
+    /// 多实例时在 schema 上补 `account` 字段。
+    fn with_account(params: Value, multi: bool) -> Value {
+        if !multi {
+            return params;
+        }
+        let mut params = params;
+        if let Some(props) = params.get_mut("properties").and_then(|p| p.as_object_mut()) {
+            props.insert(
+                "account".into(),
+                json!({
+                    "type": "string",
+                    "description": "QQ 实例名（多实例时指定用哪个 QQ；缺省 = 该人格唯一实例）"
+                }),
+            );
+        }
+        params
+    }
+
+    let mut register = |name: &str, description: &str, params: Value| {
+        registry.register(Arc::new(QqToolWrapper {
+            name: name.to_string(),
+            description: description.to_string(),
+            parameters: with_account(params, multi),
+            instances: set.clone(),
+        }));
+    };
+
+    register(
+        "send_group_msg",
+        "Send a text message to a QQ group. This is the only way to produce QQ-visible group output. Requires group_id and content.",
+        json!({
             "type": "object",
             "properties": {
                 "group_id": {"type": "integer", "description": "QQ group ID"},
@@ -28,14 +120,11 @@ pub fn register_qq_tools(registry: &mut echo_agent::ToolRegistry, qq_adapter: Ar
             },
             "required": ["group_id", "content"]
         }),
-        adapter: qq,
-    }));
-
-    let qq = qq_adapter.clone();
-    registry.register(Arc::new(QqToolWrapper {
-        name: "send_private_msg".into(),
-        description: "Send a private text message to a QQ user. This is the only way to produce QQ-visible private output. Requires user_id and content.".into(),
-        parameters: json!({
+    );
+    register(
+        "send_private_msg",
+        "Send a private text message to a QQ user. This is the only way to produce QQ-visible private output. Requires user_id and content.",
+        json!({
             "type": "object",
             "properties": {
                 "user_id": {"type": "integer", "description": "QQ user ID"},
@@ -43,14 +132,11 @@ pub fn register_qq_tools(registry: &mut echo_agent::ToolRegistry, qq_adapter: Ar
             },
             "required": ["user_id", "content"]
         }),
-        adapter: qq,
-    }));
-
-    let qq = qq_adapter.clone();
-    registry.register(Arc::new(QqToolWrapper {
-        name: "get_group_member_info".into(),
-        description: "Get QQ group member information. Requires group_id and user_id.".into(),
-        parameters: json!({
+    );
+    register(
+        "get_group_member_info",
+        "Get QQ group member information. Requires group_id and user_id.",
+        json!({
             "type": "object",
             "properties": {
                 "group_id": {"type": "integer", "description": "QQ group ID"},
@@ -58,43 +144,21 @@ pub fn register_qq_tools(registry: &mut echo_agent::ToolRegistry, qq_adapter: Ar
             },
             "required": ["group_id", "user_id"]
         }),
-        adapter: qq,
-    }));
-
-    let qq = qq_adapter.clone();
-    registry.register(Arc::new(QqToolWrapper {
-        name: "get_group_list".into(),
-        description: "List all QQ groups the bot has joined. Returns group IDs and names.".into(),
-        parameters: json!({
-            "type": "object",
-            "properties": {}
-        }),
-        adapter: qq,
-    }));
-
-    registry.register(Arc::new(QqToolWrapper {
-        name: "get_friend_list".into(),
-        description:
-            "List QQ friends visible under the current gate mode. Returns user IDs and nicknames."
-                .into(),
-        parameters: json!({
-            "type": "object",
-            "properties": {}
-        }),
-        adapter: qq_adapter.clone(),
-    }));
-
-    let qq = qq_adapter.clone();
-    registry.register(Arc::new(QqToolWrapper {
-        name: "send_file".into(),
-        description: "Upload a local file to a QQ chat (group or private). \
-                      file_path is an absolute path on THIS machine (where the agent \
-                      runs) — the framework transparently bridges it to NapCat \
-                      (docker cp when possible, otherwise a local HTTP URL that NapCat \
-                      pulls from). file_name is the display name in QQ. Requires \
-                      target_type (group|private), target_id, file_path and file_name."
-            .into(),
-        parameters: json!({
+    );
+    register(
+        "get_group_list",
+        "List all QQ groups the bot has joined. Returns group IDs and names.",
+        json!({ "type": "object", "properties": {} }),
+    );
+    register(
+        "get_friend_list",
+        "List QQ friends visible under the current gate mode. Returns user IDs and nicknames.",
+        json!({ "type": "object", "properties": {} }),
+    );
+    register(
+        "send_file",
+        "Upload a local file to a QQ chat (group or private).          file_path is an absolute path on THIS machine (where the agent          runs) — the framework transparently bridges it to NapCat          (docker cp when possible, otherwise a local HTTP URL that NapCat          pulls from). file_name is the display name in QQ. Requires          target_type (group|private), target_id, file_path and file_name.",
+        json!({
             "type": "object",
             "properties": {
                 "target_type": {
@@ -117,8 +181,7 @@ pub fn register_qq_tools(registry: &mut echo_agent::ToolRegistry, qq_adapter: Ar
             },
             "required": ["target_type", "target_id", "file_path", "file_name"]
         }),
-        adapter: qq,
-    }));
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +195,8 @@ struct QqToolWrapper {
     name: String,
     description: String,
     parameters: Value,
-    adapter: Arc<QqAdapter>,
+    /// 该 persona 的 QQ 实例集合（多实例经 `account` 参数寻址）。
+    instances: QqInstanceSet,
 }
 
 #[async_trait]
@@ -149,6 +213,11 @@ impl echo_agent::Tool for QqToolWrapper {
     async fn execute(&self, arguments: Value) -> Result<String, echo_agent::tool::ToolError> {
         use echo_agent::tool::ToolError;
 
+        // 多实例寻址：account 指定；单实例缺省即唯一实例。
+        let adapter = self
+            .instances
+            .pick(&arguments)
+            .map_err(ToolError::InvalidArguments)?;
         match self.name.as_str() {
             "send_group_msg" => {
                 let group_id = arguments["group_id"]
@@ -158,13 +227,13 @@ impl echo_agent::Tool for QqToolWrapper {
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("content required".into()))?;
                 let target = MessageTarget {
-                    adapter_name: "qq".into(),
+                    adapter_name: adapter.name().to_string(),
                     channel: ChannelType::Group {
                         group_id: group_id.to_string(),
                     },
                     user_id: String::new(),
                 };
-                match self.adapter.send_message(&target, content).await {
+                match adapter.send_message(&target, content).await {
                     Ok(result) => {
                         if result.success {
                             Ok(format!(
@@ -188,11 +257,11 @@ impl echo_agent::Tool for QqToolWrapper {
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("content required".into()))?;
                 let target = MessageTarget {
-                    adapter_name: "qq".into(),
+                    adapter_name: adapter.name().to_string(),
                     channel: ChannelType::Direct,
                     user_id: user_id.to_string(),
                 };
-                match self.adapter.send_message(&target, content).await {
+                match adapter.send_message(&target, content).await {
                     Ok(result) => {
                         if result.success {
                             Ok(format!(
@@ -215,12 +284,12 @@ impl echo_agent::Tool for QqToolWrapper {
                 let user_id = arguments["user_id"]
                     .as_i64()
                     .ok_or_else(|| ToolError::InvalidArguments("user_id required".into()))?;
-                match self.adapter.get_group_member_info(group_id, user_id).await {
+                match adapter.get_group_member_info(group_id, user_id).await {
                     Ok(info) => Ok(info),
                     Err(e) => Err(ToolError::Execution(e)),
                 }
             }
-            "get_group_list" => match self.adapter.get_group_list().await {
+            "get_group_list" => match adapter.get_group_list().await {
                 Ok(groups) => {
                     let lines: Vec<String> = groups
                         .iter()
@@ -234,7 +303,7 @@ impl echo_agent::Tool for QqToolWrapper {
                 }
                 Err(e) => Err(ToolError::Execution(e)),
             },
-            "get_friend_list" => match self.adapter.get_gated_friend_list().await {
+            "get_friend_list" => match adapter.get_gated_friend_list().await {
                 Ok(friends) => {
                     let lines: Vec<String> = friends
                         .iter()
@@ -266,13 +335,11 @@ impl echo_agent::Tool for QqToolWrapper {
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("file_name required".into()))?;
                 match target_type {
-                    "group" => self
-                        .adapter
+                    "group" => adapter
                         .upload_group_file(target_id, file_path, file_name)
                         .await
                         .map_err(ToolError::Execution),
-                    "private" => self
-                        .adapter
+                    "private" => adapter
                         .upload_private_file(target_id, file_path, file_name)
                         .await
                         .map_err(ToolError::Execution),

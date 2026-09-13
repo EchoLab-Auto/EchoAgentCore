@@ -149,6 +149,8 @@ fn test_agent(reply: &'static str) -> (Arc<Agent>, Arc<StaticProvider>) {
         ToolRegistry::new(),
         Arc::new(AdapterRegistry::new()),
     ));
+    // 去主智能体：会话类命令必须带 team_id，测试 agent 统一用 "t"。
+    agent.set_team_id(Some("t".into()));
     (agent, provider)
 }
 
@@ -163,7 +165,7 @@ async fn send_message_command_produces_agent_output_event() {
             session_id: "qq:dm::123".into(),
             content: "hello".into(),
             images: vec![],
-            team_id: None,
+            team_id: Some("t".into()),
         })
         .await;
 
@@ -193,7 +195,7 @@ async fn send_message_creates_session() {
             session_id: "qq:group:999:456".into(),
             content: "hi".into(),
             images: vec![],
-            team_id: None,
+            team_id: Some("t".into()),
         })
         .await;
 
@@ -219,7 +221,7 @@ async fn set_system_prompt_changes_behaviour() {
             session_id: "qq:dm::123".into(),
             content: "translate".into(),
             images: vec![],
-            team_id: None,
+            team_id: Some("t".into()),
         })
         .await;
     let prompt = provider.last_system_prompt().await;
@@ -452,7 +454,7 @@ async fn plugin_list_and_toggle_roundtrip() {
     let (agent, _provider) = test_agent("ok");
     // 注册一个内置插件并挂载。
     agent
-        .plugin_host
+        .plugin_host()
         .register_and_mount(std::sync::Arc::new(BuiltinPlugin::new(
             PluginManifest::builtin(
                 "test.plugin.one",
@@ -465,7 +467,7 @@ async fn plugin_list_and_toggle_roundtrip() {
             |_| Ok(vec![]),
         )))
         .unwrap();
-    assert_eq!(agent.plugin_host.descriptors().len(), 1);
+    assert_eq!(agent.plugin_host().descriptors().len(), 1);
 
     // 拉取列表。
     agent
@@ -478,14 +480,14 @@ async fn plugin_list_and_toggle_roundtrip() {
             enabled: false,
         })
         .await;
-    assert!(!agent.plugin_host.descriptors()[0].enabled);
+    assert!(!agent.plugin_host().descriptors()[0].enabled);
     agent
         .apply_command(BackendCommand::TogglePlugin {
             id: "test.plugin.one".into(),
             enabled: true,
         })
         .await;
-    assert!(agent.plugin_host.descriptors()[0].enabled);
+    assert!(agent.plugin_host().descriptors()[0].enabled);
     // 未知插件报错（通过 Error 事件，不 panic）。
     agent
         .apply_command(BackendCommand::TogglePlugin {
@@ -500,7 +502,7 @@ async fn toggle_management_panel_plugin_disable_is_refused() {
     use echo_plugin::{BuiltinPlugin, PluginKind, PluginManifest};
     let (agent, _provider) = test_agent("ok");
     agent
-        .plugin_host
+        .plugin_host()
         .register_and_mount(std::sync::Arc::new(BuiltinPlugin::new(
             PluginManifest::builtin(
                 echo_agent::plugins::MANAGEMENT_PANEL_PLUGIN_ID,
@@ -520,7 +522,7 @@ async fn toggle_management_panel_plugin_disable_is_refused() {
             enabled: false,
         })
         .await;
-    assert!(agent.plugin_host.descriptors()[0].enabled);
+    assert!(agent.plugin_host().descriptors()[0].enabled);
     // 启用路径不受影响（幂等）。
     agent
         .apply_command(BackendCommand::TogglePlugin {
@@ -528,7 +530,7 @@ async fn toggle_management_panel_plugin_disable_is_refused() {
             enabled: true,
         })
         .await;
-    assert!(agent.plugin_host.descriptors()[0].enabled);
+    assert!(agent.plugin_host().descriptors()[0].enabled);
 }
 
 #[tokio::test]
@@ -639,7 +641,7 @@ async fn skill_keyword_injects_instructions_into_prompt() {
             session_id: "qq:dm::123".into(),
             content: "帮我计算 1+1".into(),
             images: vec![],
-            team_id: None,
+            team_id: Some("t".into()),
         })
         .await;
     let prompt = provider.last_system_prompt().await;
@@ -692,7 +694,7 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
             session_id: "qq:dm::123".into(),
             content: "帮我计算 1+1".into(),
             images: vec![],
-            team_id: None,
+            team_id: Some("t".into()),
         })
         .await;
 
@@ -1027,7 +1029,7 @@ async fn non_triggering_message_uses_cached_prompt() {
             session_id: "qq:dm::123".into(),
             content: "你好".into(),
             images: vec![],
-            team_id: None,
+            team_id: Some("t".into()),
         })
         .await;
     let first = provider.last_system_prompt().await;
@@ -1040,7 +1042,7 @@ async fn non_triggering_message_uses_cached_prompt() {
             session_id: "qq:dm::123".into(),
             content: "再见".into(),
             images: vec![],
-            team_id: None,
+            team_id: Some("t".into()),
         })
         .await;
     assert_eq!(provider.last_system_prompt().await, first);
@@ -1144,13 +1146,15 @@ fn agent_with_gated_caps() -> Arc<Agent> {
     }));
     tools.set_package("checklist", CHECKLIST_PLUGIN_ID);
     tools.set_package("bash", TOOLS_BUILTIN_PLUGIN_ID);
-    Arc::new(Agent::new(
+    let agent = Arc::new(Agent::new(
         provider,
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
         Arc::new(AdapterRegistry::new()),
-    ))
+    ));
+    agent.set_team_id(Some("t".into()));
+    agent
 }
 
 fn persona_with_plugins(enabled: &[&str]) -> echo_agent::config::TeamMember {

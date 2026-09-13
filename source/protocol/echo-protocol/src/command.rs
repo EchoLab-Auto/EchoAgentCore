@@ -109,8 +109,6 @@ pub enum BackendCommand {
         #[serde(default)]
         system_skills: Vec<String>,
         #[serde(default)]
-        disabled_plugins: Vec<String>,
-        #[serde(default)]
         disabled_tools: Vec<String>,
         #[serde(default)]
         disabled_skills: Vec<String>,
@@ -217,15 +215,34 @@ pub enum BackendCommand {
     /// Request the current adapter status list.
     RequestAdapterStatus,
     /// Request the QQ group list.
-    RequestGroupList,
+    RequestGroupList {
+        #[serde(default)]
+        adapter: Option<String>,
+    },
     /// Request the QQ friend list (for interactive allowlist/denylist UI).
-    RequestFriendList,
+    RequestFriendList {
+        #[serde(default)]
+        adapter: Option<String>,
+    },
+    /// 查询某 QQ 实例的登录状态（Core 代理，Panel 不直连 OneBot）。
+    RequestQqLoginStatus {
+        #[serde(default)]
+        adapter: Option<String>,
+    },
+    /// 拉取某 QQ 实例的登录二维码（Core 代理：从 NapCat 容器取 PNG）。
+    RequestQqQrcode {
+        #[serde(default)]
+        adapter: Option<String>,
+    },
     /// Start all configured adapters.
     StartAllAdapters,
     /// Stop all running adapters.
     StopAllAdapters,
     /// Update QQ adapter allowlist at runtime.
     UpdateQqAllowlist {
+        /// QQ 实例名（多实例寻址；None = 唯一实例/legacy "qq"）。
+        #[serde(default)]
+        adapter: Option<String>,
         user_ids: Vec<i64>,
         group_ids: Vec<i64>,
     },
@@ -240,19 +257,37 @@ pub enum BackendCommand {
     RequestToolsList,
     /// Update QQ adapter denylist at runtime.
     UpdateQqDenylist {
+        /// QQ 实例名（多实例寻址；None = 唯一实例）。
+        #[serde(default)]
+        adapter: Option<String>,
         user_ids: Vec<i64>,
         group_ids: Vec<i64>,
     },
     /// Request current QQ filter config.
-    RequestQqFilterConfig,
+    RequestQqFilterConfig {
+        #[serde(default)]
+        adapter: Option<String>,
+    },
     /// Set QQ gating mode. Serialised as "none" / "allowlist" / "denylist".
-    SetQqGateMode { mode: GateMode },
+    SetQqGateMode {
+        mode: GateMode,
+        /// QQ 实例名（多实例寻址；None = 唯一实例）。
+        #[serde(default)]
+        adapter: Option<String>,
+    },
     /// Set the QQ owner (admin) at runtime. Persisted through the Core's
     /// shared ConfigStore. **Frontend-only** — never exposed to the agent/LLM.
-    SetQqOwner { owner_qq: i64 },
+    SetQqOwner {
+        owner_qq: i64,
+        #[serde(default)]
+        adapter: Option<String>,
+    },
     /// Request the current QQ owner (admin) QQ number. **Frontend-only** —
     /// never exposed to the agent/LLM.
-    RequestQqOwner,
+    RequestQqOwner {
+        #[serde(default)]
+        adapter: Option<String>,
+    },
 }
 
 /// Who is allowed to issue a given command.
@@ -279,8 +314,8 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
         | BackendCommand::UpdateQqDenylist { .. }
         | BackendCommand::SetQqGateMode { .. }
         | BackendCommand::SetQqOwner { .. }
-        | BackendCommand::RequestQqOwner
-        | BackendCommand::RequestQqFilterConfig
+        | BackendCommand::RequestQqOwner { .. }
+        | BackendCommand::RequestQqFilterConfig { .. }
         | BackendCommand::ClearHistory { .. } => CommandClearance::Frontend,
         _ => CommandClearance::Agent,
     }
@@ -295,33 +330,39 @@ mod tests {
         assert_eq!(
             command_clearance(&BackendCommand::UpdateQqAllowlist {
                 user_ids: vec![],
-                group_ids: vec![]
+                group_ids: vec![],
+                adapter: None
             }),
             CommandClearance::Frontend
         );
         assert_eq!(
             command_clearance(&BackendCommand::UpdateQqDenylist {
                 user_ids: vec![],
-                group_ids: vec![]
+                group_ids: vec![],
+                adapter: None
             }),
             CommandClearance::Frontend
         );
         assert_eq!(
             command_clearance(&BackendCommand::SetQqGateMode {
-                mode: crate::mode::GateMode::Allowlist
+                mode: crate::mode::GateMode::Allowlist,
+                adapter: None
             }),
             CommandClearance::Frontend
         );
         assert_eq!(
-            command_clearance(&BackendCommand::SetQqOwner { owner_qq: 123 }),
+            command_clearance(&BackendCommand::SetQqOwner {
+                owner_qq: 123,
+                adapter: None
+            }),
             CommandClearance::Frontend
         );
         assert_eq!(
-            command_clearance(&BackendCommand::RequestQqOwner),
+            command_clearance(&BackendCommand::RequestQqOwner { adapter: None }),
             CommandClearance::Frontend
         );
         assert_eq!(
-            command_clearance(&BackendCommand::RequestQqFilterConfig),
+            command_clearance(&BackendCommand::RequestQqFilterConfig { adapter: None }),
             CommandClearance::Frontend
         );
         assert_eq!(

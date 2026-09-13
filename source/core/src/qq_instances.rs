@@ -1,0 +1,404 @@
+//! QQ 多实例：配置解析、端口分配、容器编排。
+//!
+//! 设计（2026-09）：
+//! - **实例是一等概念**：`instance_id` 全局唯一，`persona` 是归属字段
+//!   （一个 persona 可挂多个实例）；实例 id 即适配器名与会话 `@account` 维度。
+//! - **端口自动分配并持久化**：每实例 3 个宿主端口（反向 WS / OneBot HTTP /
+//!   WebUI）。首次分配后写入 `[adapters.qq.instances.<id>.ports]`，跨重启稳定
+//!   （容器端口映射必须稳定才能让 NapCat 重连到同一处）。
+//! - **容器编排**：每实例一个 compose 文件（独立容器名与数据卷、独立端口映射），
+//!   落在 `~/.local/share/echo-agent-core/napcat/<id>/docker-compose.yml`。
+//! - **自动创建**：persona 启用 `echo-agent.adapter.qq` 且没有归属实例时自动建
+//!   档（id = persona，重复则 `<persona>-2`…）。
+//! - 单实例（id = `qq`）时端口沿用 legacy 3131/3000/6099，行为与旧版一致。
+
+use std::collections::BTreeMap;
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+
+use crate::config::QqInstanceSection;
+pub use crate::config::QqPorts;
+
+/// legacy 默认实例名（会话 id 不产生 `@` 后缀）。
+pub const DEFAULT_INSTANCE: &str = "qq";
+
+/// 一个解析完成的 QQ 实例（配置已合并、端口已确定）。
+#[derive(Debug, Clone)]
+pub struct QqInstance {
+    /// 实例 id（= 适配器名 = 会话 account 维度）。
+    pub id: String,
+    /// 归属人格 id。
+    pub persona: String,
+    /// 合并后的适配器配置（含该实例的端口与容器名）。
+    pub config: echo_adapter_qq::QqAdapterConfig,
+    /// 宿主端口三元组。
+    pub ports: QqPorts,
+}
+
+impl QqInstance {
+    /// 容器名（自动实例：`echo-napcat-<id>`；legacy 实例沿用配置里的名字）。
+    pub fn container(&self) -> String {
+        self.config.napcat_container.clone()
+    }
+
+    /// 该实例的 compose 文件路径（多实例自动生成；legacy 用共享配置里的路径）。
+    pub fn compose_file(&self, data_dir: &Path) -> PathBuf {
+        if self.id == DEFAULT_INSTANCE {
+            PathBuf::from(&self.config.napcat_compose_file)
+        } else {
+            data_dir
+                .join("napcat")
+                .join(&self.id)
+                .join("docker-compose.yml")
+        }
+    }
+}
+
+/// 端口分配：优先沿用已配置值；缺省时探测空闲端口。
+///
+/// legacy 实例（`qq`）缺省沿用 3131/3000/6099，保持既有部署零变化。
+pub fn allocate_ports(existing: &QqPorts, id: &str) -> QqPorts {
+    allocate_ports_avoiding(existing, id, &Default::default())
+}
+
+/// 同上，但避开本轮已分配给其他实例的端口（同一次解析里不重复分配）。
+pub fn allocate_ports_avoiding(
+    existing: &QqPorts,
+    id: &str,
+    taken: &std::collections::HashSet<u16>,
+) -> QqPorts {
+    let mut ports = existing.clone();
+    // legacy 实例缺省沿用 3131（可绑定则保留，保持既有部署零变化）。
+    if ports.reverse_ws == 0 && id == DEFAULT_INSTANCE && app_port_ok(3131) {
+        ports.reverse_ws = 3131;
+    }
+    if ports.reverse_ws != 0 && !app_port_ok(ports.reverse_ws) {
+        ports.reverse_ws = 0;
+    }
+    if ports.reverse_ws == 0 || taken.contains(&ports.reverse_ws) {
+        ports.reverse_ws = find_free_port(3140, 3400, taken).unwrap_or(0);
+    }
+    if ports.onebot_http == 0 || taken.contains(&ports.onebot_http) {
+        ports.onebot_http = find_free_port(3010, 3090, taken).unwrap_or(0);
+    }
+    if ports.webui == 0 || taken.contains(&ports.webui) {
+        ports.webui = find_free_port(6100, 6190, taken).unwrap_or(0);
+    }
+    ports
+}
+
+fn app_port_ok(port: u16) -> bool {
+    if port == 0 {
+        return false;
+    }
+    TcpListener::bind(("0.0.0.0", port)).is_ok()
+}
+
+/// 在 [start, end) 里找第一个可绑定且未被本轮占用的端口。
+fn find_free_port(start: u16, end: u16, taken: &std::collections::HashSet<u16>) -> Option<u16> {
+    (start..end).find(|p| !taken.contains(p) && app_port_ok(*p))
+}
+
+/// 把实例配置合并到共享默认之上（persona 相关字段逐个覆盖）。
+pub fn merge_instance(
+    shared: &echo_adapter_qq::QqAdapterConfig,
+    section: &QqInstanceSection,
+    id: &str,
+    persona: &str,
+    ports: &QqPorts,
+    compose_file: Option<String>,
+) -> echo_adapter_qq::QqAdapterConfig {
+    let mut cfg = shared.clone();
+    cfg.server.bind_address = format!("0.0.0.0:{}", ports.reverse_ws);
+    if let Some(server) = &section.server {
+        // 端口以外允许覆盖（token/心跳），但 bind_address 以端口分配为准。
+        cfg.server.access_token = server.access_token.clone();
+        cfg.server.heartbeat_interval = server.heartbeat_interval;
+    }
+    if let Some(owner) = section.owner_qq {
+        cfg.owner_qq = owner;
+    }
+    let auto = id != DEFAULT_INSTANCE;
+    cfg.napcat_container = section
+        .napcat_container
+        .clone()
+        .unwrap_or_else(|| format!("echo-napcat-{id}"));
+    cfg.napcat_webui_url = section
+        .napcat_webui_url
+        .clone()
+        .unwrap_or_else(|| format!("http://localhost:{}", ports.webui));
+    cfg.napcat_onebot_url = section
+        .napcat_onebot_url
+        .clone()
+        .unwrap_or_else(|| format!("http://localhost:{}", ports.onebot_http));
+    // 多实例容器由 Core 托管：自动启停按共享默认（除非显式覆盖）。
+    cfg.napcat_auto_start = section
+        .napcat_auto_start
+        .unwrap_or(shared.napcat_auto_start);
+    cfg.napcat_auto_stop = section.napcat_auto_stop.unwrap_or(shared.napcat_auto_stop);
+    if auto {
+        // 多实例：compose 由 Core 生成（路径由调用方给出）。
+        cfg.napcat_compose_file = compose_file.unwrap_or_default();
+    }
+    let _ = persona;
+    cfg
+}
+
+/// 生成实例的 compose 文件内容（独立容器名 / 端口 / 数据卷）。
+pub fn render_compose(id: &str, ports: &QqPorts) -> String {
+    format!(
+        r#"# 由 EchoAgentCore 自动生成（QQ 实例 `{id}`）——请勿手工编辑。
+# 端口映射由 [adapters.qq.instances.{id}.ports] 决定。
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: echo-napcat-{id}
+    restart: unless-stopped
+    ports:
+      - "{webui}:6099"      # WebUI（扫码登录）
+      - "{onebot}:3000"     # HTTP API
+    environment:
+      - NAPCAT_UID=0
+      - NAPCAT_GID=0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - echo-napcat-{id}-data:/app/napcat/data
+      - echo-napcat-{id}-config:/app/napcat/config
+
+volumes:
+  echo-napcat-{id}-data:
+  echo-napcat-{id}-config:
+"#,
+        id = id,
+        webui = ports.webui,
+        onebot = ports.onebot_http,
+    )
+}
+
+/// 写实例 compose 文件（幂等；内容变化才写）。
+pub fn write_compose(data_dir: &Path, id: &str, ports: &QqPorts) -> Result<PathBuf, String> {
+    let dir = data_dir.join("napcat").join(id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let path = dir.join("docker-compose.yml");
+    let content = render_compose(id, ports);
+    let unchanged = std::fs::read_to_string(&path)
+        .map(|old| old == content)
+        .unwrap_or(false);
+    if !unchanged {
+        std::fs::write(&path, content).map_err(|e| format!("write {}: {e}", path.display()))?;
+    }
+    Ok(path)
+}
+
+/// 解析实例列表：显式配置的实例 + persona 门控自动创建的实例。
+///
+/// `enabled_personas` 是启用了 `echo-agent.adapter.qq` 插件的人格 id 列表。
+pub fn resolve_instances(
+    shared: &echo_adapter_qq::QqAdapterConfig,
+    sections: &BTreeMap<String, QqInstanceSection>,
+    enabled_personas: &[String],
+    default_persona: &str,
+) -> Vec<QqInstance> {
+    resolve_instances_in(shared, sections, enabled_personas, default_persona, None)
+}
+
+/// 同 [`resolve_instances`]，但已知数据目录时把自动生成 compose 的路径写进
+/// 实例配置（容器编排据此启停 NapCat）。
+pub fn resolve_instances_in(
+    shared: &echo_adapter_qq::QqAdapterConfig,
+    sections: &BTreeMap<String, QqInstanceSection>,
+    enabled_personas: &[String],
+    default_persona: &str,
+    data_dir: Option<&Path>,
+) -> Vec<QqInstance> {
+    let mut out: Vec<QqInstance> = Vec::new();
+    let mut used_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut taken_ports: std::collections::HashSet<u16> = std::collections::HashSet::new();
+
+    /// 记录实例端口，避免后续实例重复分配。
+    fn reserve(ports: &QqPorts, taken: &mut std::collections::HashSet<u16>) {
+        for p in [ports.reverse_ws, ports.onebot_http, ports.webui] {
+            if p > 0 {
+                taken.insert(p);
+            }
+        }
+    }
+
+    // 1) 显式实例
+    for (id, section) in sections {
+        let enabled = section.enabled.unwrap_or(shared.enabled);
+        if !enabled {
+            continue;
+        }
+        let persona = section
+            .persona
+            .clone()
+            .unwrap_or_else(|| default_persona.to_string());
+        let ports = allocate_ports_avoiding(&section.ports, id, &taken_ports);
+        reserve(&ports, &mut taken_ports);
+        let compose = auto_compose_path(data_dir, id);
+        let config = merge_instance(shared, section, id, &persona, &ports, compose);
+        used_ids.insert(id.clone());
+        out.push(QqInstance {
+            id: id.clone(),
+            persona,
+            config,
+            ports,
+        });
+    }
+
+    // 2) legacy：没有实例表但共享默认 enabled → 单实例 `qq`
+    if sections.is_empty() && shared.enabled {
+        let ports = allocate_ports_avoiding(&QqPorts::default(), DEFAULT_INSTANCE, &taken_ports);
+        reserve(&ports, &mut taken_ports);
+        let config = merge_instance(
+            shared,
+            &QqInstanceSection::default(),
+            DEFAULT_INSTANCE,
+            default_persona,
+            &ports,
+            None,
+        );
+        out.push(QqInstance {
+            id: DEFAULT_INSTANCE.into(),
+            persona: default_persona.to_string(),
+            config,
+            ports,
+        });
+    }
+
+    // 3) persona 门控自动创建（启用插件但无归属实例）。
+    // 前提：QQ 适配器全局启用（`[adapters.qq].enabled`）——否则不该有实例。
+    if !shared.enabled {
+        return out;
+    }
+    for persona in enabled_personas {
+        if out.iter().any(|i| &i.persona == persona) {
+            continue;
+        }
+        let id = unique_id(persona, &used_ids);
+        used_ids.insert(id.clone());
+        let ports = allocate_ports_avoiding(&QqPorts::default(), &id, &taken_ports);
+        reserve(&ports, &mut taken_ports);
+        let compose = auto_compose_path(data_dir, &id);
+        let config = merge_instance(
+            shared,
+            &QqInstanceSection::default(),
+            &id,
+            persona,
+            &ports,
+            compose,
+        );
+        out.push(QqInstance {
+            id,
+            persona: persona.clone(),
+            config,
+            ports,
+        });
+    }
+
+    out
+}
+
+/// 自动生成的 compose 路径（data_dir 已知时）。
+fn auto_compose_path(data_dir: Option<&Path>, id: &str) -> Option<String> {
+    data_dir.map(|dir| {
+        dir.join("napcat")
+            .join(id)
+            .join("docker-compose.yml")
+            .to_string_lossy()
+            .to_string()
+    })
+}
+
+fn unique_id(base: &str, used: &std::collections::HashSet<String>) -> String {
+    if !used.contains(base) {
+        return base.to_string();
+    }
+    (2..100)
+        .map(|n| format!("{base}-{n}"))
+        .find(|candidate| !used.contains(candidate))
+        .unwrap_or_else(|| format!("{base}-x"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_single_instance_keeps_ports_and_id() {
+        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
+        shared.enabled = true;
+        shared.napcat_auto_start = false;
+        let instances = resolve_instances(&shared, &BTreeMap::new(), &[], "alix");
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].id, DEFAULT_INSTANCE);
+        assert_eq!(instances[0].persona, "alix");
+        // legacy 端口沿用既定值（若被占用则回退探测，故只断言非零）
+        assert!(instances[0].ports.reverse_ws > 0);
+        assert!(instances[0].ports.onebot_http > 0);
+        assert!(instances[0].ports.webui > 0);
+    }
+
+    #[test]
+    fn auto_creates_instance_per_enabled_persona() {
+        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
+        shared.enabled = true;
+        shared.napcat_auto_start = false;
+        let personas = vec!["alix".to_string(), "self-coding".to_string()];
+        let instances = resolve_instances(&shared, &BTreeMap::new(), &personas, "alix");
+        // legacy 实例 + self-coding 自动实例（alix 已被 legacy 覆盖）
+        let ids: Vec<&str> = instances.iter().map(|i| i.id.as_str()).collect();
+        assert!(ids.contains(&DEFAULT_INSTANCE), "ids: {ids:?}");
+        assert!(ids.contains(&"self-coding"), "ids: {ids:?}");
+    }
+
+    #[test]
+    fn two_personas_get_distinct_ports_and_containers() {
+        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
+        shared.enabled = true;
+        shared.napcat_auto_start = false;
+        // legacy 实例归属 a（默认人格），b 自动建档 → 恰好 2 个实例
+        let personas = vec!["a".to_string(), "b".to_string()];
+        let instances = resolve_instances(&shared, &BTreeMap::new(), &personas, "a");
+        assert_eq!(instances.len(), 2, "legacy(a) + auto(b)");
+        let (x, y) = (&instances[0], &instances[1]);
+        assert_ne!(x.ports.reverse_ws, y.ports.reverse_ws);
+        assert_ne!(x.ports.onebot_http, y.ports.onebot_http);
+        assert_ne!(x.container(), y.container());
+    }
+
+    #[test]
+    fn compose_has_per_instance_container_and_volumes() {
+        let ports = QqPorts {
+            reverse_ws: 3141,
+            onebot_http: 3011,
+            webui: 6111,
+        };
+        let yaml = render_compose("alix-2", &ports);
+        assert!(yaml.contains("container_name: echo-napcat-alix-2"));
+        assert!(yaml.contains("\"6111:6099\""));
+        assert!(yaml.contains("\"3011:3000\""));
+        assert!(yaml.contains("echo-napcat-alix-2-data:"));
+    }
+
+    #[test]
+    fn explicit_instance_wins_over_auto_creation() {
+        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
+        shared.enabled = true;
+        shared.napcat_auto_start = false;
+        let mut sections = BTreeMap::new();
+        sections.insert(
+            "qq2".to_string(),
+            QqInstanceSection {
+                persona: Some("alix".to_string()),
+                ..Default::default()
+            },
+        );
+        let instances = resolve_instances(&shared, &sections, &["alix".to_string()], "x");
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].id, "qq2");
+        assert_eq!(instances[0].persona, "alix");
+    }
+}

@@ -2,10 +2,10 @@
 
 可独立部署的 Agent 核心服务：LLM agent 循环 + 工具/技能系统 + 会话记忆 + QQ（OneBot v11）适配器，通过 management WebSocket（默认 `127.0.0.1:3132`）向前端提供统一的命令/事件协议。
 
-本仓库是 **Core（后端）**。TUI 前端在独立仓库 [EchoAgentPanel](../EchoAgentPanel)（`echo-agent-panel` 二进制），任何实现了协议的前端都可以连接本服务。
+本仓库是 **Core（后端）**。Web 面板前端在独立仓库 [EchoAgentPanel](../EchoAgentPanel)（`echo-agent-panel` 二进制，Rust 中继 + Vue 3），任何实现了协议的前端都可以连接本服务。
 
 ```
- NapCat (QQ)                 EchoAgentCore                 EchoAgentPanel (TUI)
+ NapCat (QQ)                 EchoAgentCore                 EchoAgentPanel (Web)
  ┌──────────┐  reverse WS   ┌──────────────────────┐   WS/JSON   ┌─────────────┐
  │ OneBot11 │ ◄──────────►  │ echo-agent-core :3131 │ ◄─────────► │ :3132 连接方 │
  └──────────┘   :3131       │  Agent · Tools ·      │   :3132     └─────────────┘
@@ -134,13 +134,14 @@ docker run -v "$PWD/config:/app/config" -p 3131:3131 -p 3132:3132 echo-agent-cor
 
 见 [config/echo-agent-core.toml](config/echo-agent-core.toml) 内联注释。要点：
 
-- `[agent]`：LLM provider/model/base_url/api_key（env 覆盖：`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`）、`memory_limit_tokens`（trunk token 预算）、`skills_dir`、`system_prompt`、多 API profile。
+- `[agent]`：LLM provider/model/base_url/api_key（env 覆盖：`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`）、`memory_limit_tokens`（trunk token 预算）、`skills_dir`、多 API profile。
+- `[plugins.system_prompt]`：全局系统提示词（Panel 中编辑保存的基础提示词层）。
 - `[agent.self_update]`：受控自更新授权（`allow_local`、`allowed_qq_users`）。
 - `[agent.sudo]`：`run_sudo` 工具（LLM 以 root 执行命令）。每次执行都需要你在 Panel 输入 sudo 密码授权；密码只走专用通道（不进入 LLM 上下文/会话日志/命令队列），输入后立即零化。`enabled` 默认开启，`auth_timeout_secs`/`command_timeout_secs` 可调。
 - `[adapters.qq]`：QQ 适配器开关、NapCat HTTP API、owner_qq、命令前缀；`[adapters.qq.server]` 反向 WS 监听 `:3131` 与访问令牌（`ECHO_ACCESS_TOKEN` env 可覆盖）。
 - `[core] management_address`：前端连接地址（默认 `127.0.0.1:3132`）。
 
-前端通过 `/api`、`/qq setting` 等命令发起的修改由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core-config-persistence.md](document/core-config-persistence.md)）。
+前端通过设置视图（API/技能/工具/插件/智能体）与 QQ 管理面板发起的修改，由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core-config-persistence.md](document/core-config-persistence.md)）。
 
 ## 前端协议
 

@@ -78,13 +78,68 @@ pub struct CoreConfig {
     /// Resolved QQ adapter config (populated in `load()`).
     #[serde(skip)]
     pub qq_adapter: echo_adapter_qq::QqAdapterConfig,
+    /// QQ 实例表（多实例；缺省 = 单实例 `qq`）。
+    #[serde(skip)]
+    pub qq_instances: std::collections::BTreeMap<String, QqInstanceSection>,
 }
 
 /// Container for the `[adapters]` TOML section.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct AdaptersSection {
-    pub qq: Option<echo_adapter_qq::QqAdapterConfig>,
+    pub qq: Option<QqSection>,
+}
+
+/// `[adapters.qq]`：共享默认 + 多实例表。
+///
+/// - 顶层字段是**共享默认值**（镜像、auto_start、路径模板…）；
+/// - `instances.<id>` 覆盖单实例差异（persona 归属、端口、owner…）。
+/// - 未配置 `instances` 时按「默认值 → 唯一实例 `qq`」解析（legacy 行为）。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct QqSection {
+    #[serde(flatten)]
+    pub shared: echo_adapter_qq::QqAdapterConfig,
+    /// 实例表：实例 id → 覆盖项。
+    pub instances: std::collections::BTreeMap<String, QqInstanceSection>,
+}
+
+/// 单个 QQ 实例的配置覆盖项（缺省继承 `[adapters.qq]` 共享默认）。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct QqInstanceSection {
+    /// 归属人格 id（缺省 = 迁移期的旧单实例语义：第一个已启用人格）。
+    pub persona: Option<String>,
+    /// 该实例独立端口（多容器多通道）；缺省由分配器填写并持久化。
+    pub ports: QqPorts,
+    /// 仅覆盖需要差异化的子字段（None = 继承共享默认）。
+    pub server: Option<echo_adapter_qq::QqServerConfig>,
+    pub owner_qq: Option<i64>,
+    pub napcat_container: Option<String>,
+    pub napcat_webui_url: Option<String>,
+    pub napcat_onebot_url: Option<String>,
+    pub napcat_auto_start: Option<bool>,
+    pub napcat_auto_stop: Option<bool>,
+    /// 该实例是否启用（缺省跟随共享默认的 `enabled`）。
+    pub enabled: Option<bool>,
+}
+
+/// QQ 实例的宿主端口三元组（自动分配并持久化）。
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct QqPorts {
+    /// 反向 WS 监听端口（NapCat 连回 Core）。
+    pub reverse_ws: u16,
+    /// OneBot HTTP API 宿主端口。
+    pub onebot_http: u16,
+    /// NapCat WebUI 宿主端口。
+    pub webui: u16,
+}
+
+impl QqPorts {
+    pub fn is_complete(&self) -> bool {
+        self.reverse_ws > 0 && self.onebot_http > 0 && self.webui > 0
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -140,29 +195,27 @@ impl Default for CoreSection {
     }
 }
 
-/// 循环模式插件 id 迁移（旧编排模式 id / 旧驱动插件 id → `loop.{single,parallel}`）。
-/// 覆盖 per-persona 的 enabled/disabled_plugins 与全局 `[agent].disabled_plugins`
-/// （后者是 apply_disabled 的输入，旧 id 不清理会因插件不再注册而静默失效）。
+/// 加载期插件名单迁移（内存迁移，保存自愈）：
+/// 1. 循环模式插件 id 归一化（旧编排模式 id / 旧驱动插件 id →
+///    `loop.{single,parallel}`），覆盖 per-persona 白名单与全局
+///    `[agent].disabled_plugins`（后者是 apply_disabled 的输入，旧 id 不清理
+///    会因插件不再注册而静默失效）；
+/// 2. **per-persona 插件黑名单移除**（2026-09-11）：`disabled_plugins` 的
+///    语义物化进 `enabled_plugins` 白名单（见
+///    [`echo_agent::plugins::convert_plugin_blacklist_to_whitelist`]），既有
+///    配置的门控与循环模式行为不变；黑名单字段自此不再参与判定。
+///
 /// 返回迁移/警告说明（load 期打印；纯函数便于测试断言）。
 pub fn migrate_orchestration_mode_plugins(agent: &mut echo_agent::AgentConfig) -> Vec<String> {
     use echo_agent::plugins::{
-        normalize_mode_plugins, LEGACY_LOOP_RUNNER_PLUGIN_ID, PARALLEL_LOOP_PLUGIN_ID,
+        convert_plugin_blacklist_to_whitelist, normalize_mode_plugins, PARALLEL_LOOP_PLUGIN_ID,
         SINGLE_LOOP_PLUGIN_ID,
     };
     let mut notes = Vec::new();
-    let mut normalize = |list: &mut Vec<String>, scope: &str, notes: &mut Vec<String>| {
+    let normalize = |list: &mut Vec<String>, scope: &str, notes: &mut Vec<String>| {
         if normalize_mode_plugins(list) {
             notes.push(format!(
                 "migrated legacy orchestration/loop plugin ids → {SINGLE_LOOP_PLUGIN_ID}/{PARALLEL_LOOP_PLUGIN_ID} ({scope})"
-            ));
-        }
-        if list
-            .iter()
-            .any(|p| p == SINGLE_LOOP_PLUGIN_ID || p == LEGACY_LOOP_RUNNER_PLUGIN_ID)
-            && scope.contains("disabled")
-        {
-            notes.push(format!(
-                "warning: {SINGLE_LOOP_PLUGIN_ID} 在黑名单中无意义（single 是循环模式推导的兜底与默认），已保留但忽略 ({scope})"
             ));
         }
     };
@@ -172,11 +225,15 @@ pub fn migrate_orchestration_mode_plugins(agent: &mut echo_agent::AgentConfig) -
             &format!("teams.{id}.enabled_plugins"),
             &mut notes,
         );
-        normalize(
-            &mut member.disabled_plugins,
-            &format!("teams.{id}.disabled_plugins"),
-            &mut notes,
-        );
+        if convert_plugin_blacklist_to_whitelist(
+            &mut member.enabled_plugins,
+            &member.disabled_plugins,
+        ) {
+            notes.push(format!(
+                "migrated teams.{id}.disabled_plugins（插件黑名单已移除）→ enabled_plugins 白名单物化；该字段不再参与门控"
+            ));
+            member.disabled_plugins.clear();
+        }
         if member
             .enabled_plugins
             .iter()
@@ -234,8 +291,9 @@ impl CoreConfig {
         // ---- Build QQ adapter config ----
         if let Some(ref adapters) = config.adapters_section {
             if let Some(ref qq_cfg) = adapters.qq {
-                // New-format config takes priority.
-                config.qq_adapter = qq_cfg.clone();
+                // New-format config takes priority（共享默认层）。
+                config.qq_adapter = qq_cfg.shared.clone();
+                config.qq_instances = qq_cfg.instances.clone();
             }
         }
 
@@ -464,16 +522,16 @@ model = "gpt-4o"
         let notes = migrate_orchestration_mode_plugins(&mut agent);
 
         let m = &agent.teams["bot"];
-        assert!(m
-            .enabled_plugins
-            .contains(&PARALLEL_LOOP_PLUGIN_ID.to_string()));
-        assert!(!m
-            .enabled_plugins
-            .iter()
-            .any(|p| p == LEGACY_CHATBOT_MODE_IDS[1] || p == LEGACY_LOOP_RUNNER_PLUGIN_ID));
-        assert!(m
-            .disabled_plugins
-            .contains(&PARALLEL_LOOP_PLUGIN_ID.to_string()));
+        // 白名单里的旧编排 id → loop.parallel，但黑名单里含有旧并行特性 id
+        // （session.global）：历史上黑名单优先（推导单会话），物化后白名单
+        // 不得再含 parallel，行为保持不变。
+        assert_eq!(
+            m.enabled_plugins,
+            vec!["echo-agent.tools.builtin".to_string()]
+        );
+        // 黑名单已物化并清空（字段不再参与门控，也不再写回）
+        assert!(m.disabled_plugins.is_empty());
+        assert_eq!(m.loop_mode(), echo_agent::config::LoopMode::Single);
         // 全局层旧 id 同样被清理映射（否则 apply_disabled 静默失效）
         assert_eq!(
             agent.disabled_plugins,
@@ -483,8 +541,48 @@ model = "gpt-4o"
         assert!(notes
             .iter()
             .any(|n| n.contains("teams.bot.enabled_plugins")));
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("teams.bot.disabled_plugins")));
         assert!(notes.iter().any(|n| n.contains("agent.disabled_plugins")));
         // 幂等：二次运行无新报告
+        assert!(migrate_orchestration_mode_plugins(&mut agent).is_empty());
+    }
+
+    /// 插件黑名单移除：空白名单 + 黑名单 → 物化为「全部内置 − 黑名单」，
+    /// 门控行为与循环模式不变（base 人格的真实配置形态）。
+    #[test]
+    fn migrate_converts_plugin_blacklist_to_whitelist() {
+        use echo_agent::config::TeamMember;
+        let mut agent = echo_agent::AgentConfig::default();
+        let mut member = TeamMember::default();
+        member.disabled_plugins = vec![
+            "echo-agent.tools.builtin".into(),
+            "echo-agent.skills.dir".into(),
+        ];
+        agent.teams.insert("base".into(), member);
+
+        let notes = migrate_orchestration_mode_plugins(&mut agent);
+
+        let m = &agent.teams["base"];
+        assert!(m.disabled_plugins.is_empty(), "blacklist must be cleared");
+        assert!(!m
+            .enabled_plugins
+            .iter()
+            .any(|p| p == "echo-agent.tools.builtin"));
+        assert!(!m
+            .enabled_plugins
+            .iter()
+            .any(|p| p == "echo-agent.skills.dir"));
+        assert!(m
+            .enabled_plugins
+            .iter()
+            .any(|p| p == "echo-agent.adapter.qq"));
+        assert_eq!(m.loop_mode(), echo_agent::config::LoopMode::Single);
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("teams.base.disabled_plugins")));
+        // 幂等
         assert!(migrate_orchestration_mode_plugins(&mut agent).is_empty());
     }
 

@@ -79,6 +79,40 @@ y: 1636
 - `owner_qq` 保留管理员绕过权限；用户白名单为空时，与消息门控一致，不限制私聊好友
 - TUI 管理界面使用有权限的全量列表；LLM tool 不能通过该接口绕过 gate
 
+## 多实例（2026-09-13）
+
+QQ 适配器支持**多实例**：一个实例 = 一个 NapCat 容器 + 一条反向 WS 通道 + 一个账号，
+互不冲突；实例归属某个人格（**一个人格可挂多个实例**）。
+
+| 概念 | 说明 |
+| --- | --- |
+| 实例 id | `instance_id`，全局唯一，即**适配器名**与会话 `@account` 维度 |
+| 归属 | `[adapters.qq.instances.<id>].persona = "<team>"` |
+| 端口 | 每实例 3 个宿主端口：反向 WS / OneBot HTTP / WebUI（`[...ports]`），**自动分配并持久化** |
+| 容器 | `echo-napcat-<id>`，独立数据卷 `echo-napcat-<id>-{data,config}`，compose 由 Core 生成（`<数据目录>/napcat/<id>/docker-compose.yml`） |
+| 自动创建 | 人格启用 `echo-agent.adapter.qq` 且无归属实例时自动建档（id = 人格 id，重复则 `<id>-2`…） |
+
+```toml
+[adapters.qq]              # 共享默认（镜像/auto_start/路径模板…）
+enabled = true
+
+[adapters.qq.instances.alix-two]
+persona = "alix"
+# 端口首次自动分配后写回（可手工固定）
+[adapters.qq.instances.alix-two.ports]
+reverse_ws = 3140
+onebot_http = 3010
+webui = 6100
+```
+
+**路由与隔离**：
+
+- 入站：每实例把消息投给**归属人格**（`AgentMessageHook` 按实例接线），事件带实例名
+- 会话键：`qq:group:<gid>:<uid>@<实例>`；实例名为默认 `qq` 时不加后缀（单实例部署零迁移）
+- 出站工具：每人格注册**自己实例集合**的 `send_*`/`get_*`；多实例时 schema 增加可选 `account`（实例名），缺省在多实例下报错列出可选值
+- 管理面（门控/名单/owner/登录）：命令与事件均带 `adapter` 字段；缺省时若只有唯一实例则回退（旧 Panel 兼容）
+- **登录由 Core 代理**：`RequestQqLoginStatus` / `RequestQqQrcode`（二维码以 PNG base64 回推 `QqQrcode` 事件），Panel 不再直连 OneBot HTTP / docker
+
 ## 运行时可变性
 
 门控规则分为两类：

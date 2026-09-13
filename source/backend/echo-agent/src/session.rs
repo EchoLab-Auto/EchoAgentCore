@@ -18,16 +18,23 @@ use tokio::sync::Mutex;
 use crate::event::SessionInfo;
 use crate::llm::{estimate_history_tokens, estimate_message_tokens, ChatMessage};
 
+/// 默认 QQ 实例名（legacy 单实例）：作为会话 id 后缀被省略。
+pub const DEFAULT_QQ_INSTANCE: &str = "qq";
+
 /// Structured session identity, replacing the old `user_{qq_number}` format.
 ///
 /// ```text
-/// format: {platform}:{scope}:{scope_id}:{user_id}
+/// format: {platform}:{scope}:{scope_id}:{user_id}[@{account}]
 ///
 /// Examples:
 ///   qq:dm::123456           — QQ direct message, user 123456
 ///   qq:group:987654:123456  — QQ group 987654, user 123456
+///   qq:dm::123456@alix-2    — 同上，但来自 QQ 实例 "alix-2"（多实例维度）
 ///   local:tui::local_user   — local TUI interaction
 /// ```
+///
+/// `account` 是 **QQ 实例名**（`[adapters.qq.instances.<id>]`）。单实例
+/// （实例名恰为 `qq`）时不产生后缀，历史会话 id 全部保持有效。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionKey {
     /// Platform (e.g., "qq", "local").
@@ -38,15 +45,33 @@ pub struct SessionKey {
     pub scope_id: String,
     /// User identifier (platform-specific user ID as string).
     pub user_id: String,
+    /// QQ 实例名（多实例维度；None/`qq` = 默认单实例，不写入 id）。
+    pub account: Option<String>,
 }
 
 impl SessionKey {
     /// Build the canonical session ID string.
+    ///
+    /// 多实例（account 非 `qq`）时以 `@{account}` 结尾，与旧格式天然区分：
+    /// 单实例部署的既有会话 id 一字不变。
     pub fn to_session_id(&self) -> String {
-        format!(
+        let base = format!(
             "{}:{}:{}:{}",
             self.platform, self.scope, self.scope_id, self.user_id
-        )
+        );
+        match self.account.as_deref() {
+            Some(account) if !account.is_empty() && account != DEFAULT_QQ_INSTANCE => {
+                format!("{base}@{account}")
+            }
+            _ => base,
+        }
+    }
+
+    /// 实例名（None/默认实例 → None）。
+    pub fn account(&self) -> Option<&str> {
+        self.account
+            .as_deref()
+            .filter(|a| !a.is_empty() && *a != DEFAULT_QQ_INSTANCE)
     }
 
     /// Create a session key for local TUI use.
@@ -56,6 +81,7 @@ impl SessionKey {
             scope: "tui".into(),
             scope_id: String::new(),
             user_id: "local_user".into(),
+            account: None,
         }
     }
 
@@ -70,17 +96,24 @@ impl SessionKey {
                 scope: "tui".into(),
                 scope_id: String::new(),
                 user_id: user_id.to_string(),
+                account: None,
             });
         }
         let parts: Vec<&str> = session_id.splitn(4, ':').collect();
         if parts.len() != 4 {
             return None;
         }
+        // 多实例维度：user_id 尾部 `@<account>`（默认实例不写后缀）。
+        let (user_id, account) = match parts[3].split_once('@') {
+            Some((user, account)) if !account.is_empty() => (user, Some(account.to_string())),
+            _ => (parts[3], None),
+        };
         Some(SessionKey {
             platform: parts[0].to_string(),
             scope: parts[1].to_string(),
             scope_id: parts[2].to_string(),
-            user_id: parts[3].to_string(),
+            user_id: user_id.to_string(),
+            account,
         })
     }
 }
@@ -593,12 +626,15 @@ impl TrunkStore {
             let Some(_id) = s["id"].as_str() else {
                 continue;
             };
-            let key = SessionKey {
+            // 旧档里的 id 可能带 `@account` 后缀（多实例）：以 id 为准解析，
+            // 缺字段的旧记录按默认实例处理。
+            let key = SessionKey::parse(_id).unwrap_or(SessionKey {
                 platform: s["platform"].as_str().unwrap_or("local").into(),
                 scope: s["scope"].as_str().unwrap_or("tui").into(),
                 scope_id: s["scope_id"].as_str().unwrap_or("").into(),
                 user_id: s["user_id"].as_str().unwrap_or("0").into(),
-            };
+                account: None,
+            });
             let nickname = s["nickname"].as_str().unwrap_or("").into();
             let group_name = s["group_name"].as_str().map(|g| g.to_string());
             let session = self.get_or_create(&key, nickname, group_name);
@@ -638,12 +674,15 @@ impl TrunkStore {
             let Some(_id) = s["id"].as_str() else {
                 continue;
             };
-            let key = SessionKey {
+            // 旧档里的 id 可能带 `@account` 后缀（多实例）：以 id 为准解析，
+            // 缺字段的旧记录按默认实例处理。
+            let key = SessionKey::parse(_id).unwrap_or(SessionKey {
                 platform: s["platform"].as_str().unwrap_or("local").into(),
                 scope: s["scope"].as_str().unwrap_or("tui").into(),
                 scope_id: s["scope_id"].as_str().unwrap_or("").into(),
                 user_id: s["user_id"].as_str().unwrap_or("0").into(),
-            };
+                account: None,
+            });
             let nickname = s["nickname"].as_str().unwrap_or("").into();
             let group_name = s["group_name"].as_str().map(|g| g.to_string());
             let session = self.get_or_create(&key, nickname, group_name);
@@ -1042,7 +1081,7 @@ mod tests {
             scope_id in "[0-9]{0,12}",
             user_id in "[0-9]{1,15}",
         ) {
-            let key = SessionKey { platform, scope, scope_id, user_id };
+            let key = SessionKey { platform, scope, scope_id, user_id, account: None };
             let id = key.to_session_id();
             let parsed = SessionKey::parse(&id).expect("roundtrip parse");
             prop_assert_eq!(parsed, key);
@@ -1067,6 +1106,7 @@ mod tests {
             scope: "dm".into(),
             scope_id: "".into(),
             user_id: "123".into(),
+            account: None,
         };
         assert_eq!(key.to_session_id(), "qq:dm::123");
     }
