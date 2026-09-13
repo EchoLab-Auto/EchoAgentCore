@@ -268,7 +268,8 @@ pub fn resolve_instances_in(
         });
     }
 
-    // 2) legacy：没有实例表但共享默认 enabled → 单实例 `qq`
+    // 2) legacy 快速路径：没有实例表但共享默认 enabled → 单实例 `qq`
+    //（有任何显式实例时跳过；默认人格的 `qq` 由下方自动建档兜底创建）
     if sections.is_empty() && shared.enabled {
         let ports = allocate_ports_avoiding(&QqPorts::default(), DEFAULT_INSTANCE, &taken_ports);
         reserve(&ports, &mut taken_ports);
@@ -297,7 +298,17 @@ pub fn resolve_instances_in(
         if out.iter().any(|i| &i.persona == persona) {
             continue;
         }
-        let id = unique_id(persona, &used_ids);
+        // 默认人格的自动实例沿用 legacy id `qq`：容器沿用共享默认（`napcat`）、
+        // 端口沿用 3131/3000/6099，且**不写回配置**——与"没有实例表"时的
+        // legacy 语义完全一致。否则一旦其他人格的实例被写回配置表，
+        // legacy 快速路径（sections 为空）不再命中，默认人格的实例会从
+        // `qq` 漂移为新实例（容器/端口全变）。
+        let base = if persona == default_persona {
+            DEFAULT_INSTANCE
+        } else {
+            persona.as_str()
+        };
+        let id = unique_id(base, &used_ids);
         used_ids.insert(id.clone());
         let ports = allocate_ports_avoiding(&QqPorts::default(), &id, &taken_ports);
         reserve(&ports, &mut taken_ports);
@@ -443,6 +454,45 @@ mod tests {
         assert!(yaml.contains("\"6111:6099\""));
         assert!(yaml.contains("\"3011:3000\""));
         assert!(yaml.contains("echo-napcat-alix-2-data:"));
+    }
+
+    /// 防漂移：显式实例（其他人格）存在时，默认人格的自动实例仍沿用 legacy
+    /// id `qq` 与共享容器/端口——否则"首个实例被挤出配置表"后归属会漂移。
+    #[test]
+    fn default_persona_keeps_legacy_id_when_other_instances_persisted() {
+        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
+        shared.enabled = true;
+        shared.napcat_auto_start = false;
+        let mut sections = BTreeMap::new();
+        sections.insert(
+            "alix".to_string(),
+            QqInstanceSection {
+                persona: Some("alix".to_string()),
+                ports: QqPorts {
+                    reverse_ws: 3142,
+                    onebot_http: 3011,
+                    webui: 6101,
+                },
+                ..Default::default()
+            },
+        );
+        let instances = resolve_instances(
+            &shared,
+            &sections,
+            &["Alice".into(), "alix".into()],
+            "Alice",
+        );
+        let ids: Vec<&str> = instances.iter().map(|i| i.id.as_str()).collect();
+        assert!(
+            ids.contains(&DEFAULT_INSTANCE),
+            "default persona keeps `qq`: {ids:?}"
+        );
+        let default = instances
+            .iter()
+            .find(|i| i.persona == "Alice")
+            .expect("Alice instance exists");
+        assert_eq!(default.id, DEFAULT_INSTANCE);
+        assert_eq!(default.container(), "napcat", "shared container kept");
     }
 
     #[test]

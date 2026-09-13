@@ -90,7 +90,9 @@ QQ 适配器支持**多实例**：一个实例 = 一个 NapCat 容器 + 一条�
 | 归属 | `[adapters.qq.instances.<id>].persona = "<team>"` |
 | 端口 | 每实例 3 个宿主端口：反向 WS / OneBot HTTP / WebUI（`[...ports]`），**自动分配并持久化** |
 | 容器 | `echo-napcat-<id>`，独立数据卷 `echo-napcat-<id>-{data,config}`，compose 由 Core 生成（`<数据目录>/napcat/<id>/docker-compose.yml`） |
-| 自动创建 | 人格启用 `echo-agent.adapter.qq` 且无归属实例时自动建档（id = 人格 id，重复则 `<id>-2`…） |
+| 自动创建 | 人格启用 `echo-agent.adapter.qq` 且无归属实例时自动建档（id = 人格 id，重复则 `<id>-2`…）；**默认人格（首个启用者）固定用 legacy id `qq`**，沿用共享容器/端口语义 |
+| 显示名 | 实例化：`QQ（<persona> / <实例>）`；实例名为 `qq` 时 `QQ（<persona>）`；未归属时 `QQ / OneBot`——Panel 多实例下据此区分 |
+| 持久化 | 自动建档时把 **persona + ports** 一并写回 `[adapters.qq.instances.<id>]`（仅缺字段才写；legacy 实例不写回）。只写端口会让重启后的 persona 缺失、被重新分配给默认人格（归属漂移） |
 
 ```toml
 [adapters.qq]              # 共享默认（镜像/auto_start/路径模板…）
@@ -109,6 +111,10 @@ webui = 6100
 QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的宿主映射，不做探测），
 容器与 NapCat 地址沿用共享默认（容器 `napcat`、`localhost:3000/6099`），**不写回配置**
 ——与多实例之前完全一致（零迁移）。
+
+**默认人格的实例恒为 `qq`**：即使其他人格的实例已被写回配置表（legacy 快速路径不再
+命中），默认人格也会经自动建档拿到同一份 legacy 语义（id `qq`、共享容器/端口、不写回）
+——保证从单实例演进到多 persona 时，首个实例的容器与端口不漂移。
 
 **路由与隔离**：
 

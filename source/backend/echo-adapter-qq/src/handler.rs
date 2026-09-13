@@ -259,6 +259,8 @@ mod tests {
             ..Default::default()
         };
         Arc::new(QqInner {
+            persona: None,
+            display_name: "QQ / OneBot".to_string(),
             config: cfg,
             active_context: StdMutex::new(None),
             running: AtomicBool::new(false),

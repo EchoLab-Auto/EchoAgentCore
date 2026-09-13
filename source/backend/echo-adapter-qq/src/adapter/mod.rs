@@ -726,7 +726,9 @@ impl Adapter for QqAdapter {
         let running = self.inner.running.load(Ordering::SeqCst);
         AdapterInfo {
             name: self.name.clone(),
-            display_name: "QQ / OneBot".into(),
+            // 实例化显示名（`QQ（<persona> / <实例>）`）——多实例面板据此区分；
+            // 此处曾硬编码 "QQ / OneBot"，导致多实例下两行同名。
+            display_name: self.inner.display_name.clone(),
             status: if !running {
                 AdapterConnectionState::Stopped
             } else if connected {
@@ -1208,6 +1210,26 @@ mod tests {
     use echo_core::Event;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// 多实例：AdapterInfo.display_name 必须是实例化显示名（含 persona/实例），
+    /// 供 Panel 在多实例下区分同名适配器行。
+    #[test]
+    fn adapter_info_carries_instance_display_name() {
+        let single = QqAdapter::new(QqAdapterConfig::default());
+        assert_eq!(single.status_info().display_name, "QQ / OneBot");
+
+        let legacy = QqAdapter::with_instance(
+            DEFAULT_INSTANCE_NAME,
+            Some("alix".into()),
+            QqAdapterConfig::default(),
+        );
+        assert_eq!(legacy.status_info().display_name, "QQ（alix）");
+
+        let multi =
+            QqAdapter::with_instance("alix-two", Some("alix".into()), QqAdapterConfig::default());
+        assert_eq!(multi.status_info().display_name, "QQ（alix / alix-two）");
+        assert_eq!(multi.status_info().persona.as_deref(), Some("alix"));
+    }
 
     async fn mount_login_info(server: &MockServer, user_id: i64) {
         Mock::given(method("POST"))

@@ -186,21 +186,34 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         .first()
         .map(|(_, _, a)| a.clone())
         .unwrap_or_else(|| Arc::new(echo_adapter_qq::QqAdapter::new(cfg.qq_adapter.clone())));
-    // 端口持久化：新分配的端口写回 `[adapters.qq.instances.<id>.ports]`，
-    // 保证跨重启稳定（容器端口映射必须稳定，NapCat 才能重连到同一处）。
+    // 实例持久化：新分配的**归属人格与端口**写回
+    // `[adapters.qq.instances.<id>]`（persona + ports），保证跨重启稳定：
+    // - 端口：容器端口映射必须稳定，NapCat 才能重连到同一处；
+    // - persona：自动建档实例若只写端口，重启后 persona 缺失会被重新
+    //   分配给默认人格（首个启用 QQ 的人格），实例归属漂移。
     {
-        let mut patches: Vec<(String, qq_instances::QqPorts)> = Vec::new();
+        struct InstancePatch {
+            id: String,
+            persona: String,
+            ports: qq_instances::QqPorts,
+            /// persona 是否需要写回（已有显式 persona 的实例跳过该字段）。
+            write_persona: bool,
+        }
+        let mut patches: Vec<InstancePatch> = Vec::new();
         for instance in &qq_instances {
             if instance.id == qq_instances::DEFAULT_INSTANCE {
-                continue; // legacy 实例沿用既定端口，不写配置
+                continue; // legacy 实例沿用既定端口与默认归属，不写配置
             }
-            let configured = cfg
-                .qq_instances
-                .get(&instance.id)
-                .map(|section| section.ports.clone())
-                .unwrap_or_default();
-            if configured != instance.ports {
-                patches.push((instance.id.clone(), instance.ports.clone()));
+            let section = cfg.qq_instances.get(&instance.id);
+            let configured_ports = section.map(|s| s.ports.clone()).unwrap_or_default();
+            let has_persona = section.and_then(|s| s.persona.clone()).is_some();
+            if configured_ports != instance.ports || !has_persona {
+                patches.push(InstancePatch {
+                    id: instance.id.clone(),
+                    persona: instance.persona.clone(),
+                    ports: instance.ports.clone(),
+                    write_persona: !has_persona,
+                });
             }
         }
         if !patches.is_empty() {
@@ -208,17 +221,21 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 let adapters = echo_adapter::ensure_table(root, "adapters");
                 let qq = echo_adapter::ensure_table(adapters, "qq");
                 let instances = echo_adapter::ensure_table(qq, "instances");
-                for (id, ports) in &patches {
-                    let entry = echo_adapter::ensure_table(instances, id);
-                    let value = toml::Value::try_from(ports).map_err(|e| format!("ports: {e}"))?;
+                for patch in &patches {
+                    let entry = echo_adapter::ensure_table(instances, &patch.id);
+                    let value =
+                        toml::Value::try_from(&patch.ports).map_err(|e| format!("ports: {e}"))?;
                     entry.insert("ports".into(), value);
+                    if patch.write_persona {
+                        entry.insert("persona".into(), toml::Value::String(patch.persona.clone()));
+                    }
                 }
                 Ok(())
             }) {
-                warn!(%error, "QQ instance ports persist failed");
+                warn!(%error, "QQ instance persist failed");
             } else {
-                let ids: Vec<&str> = patches.iter().map(|(id, _)| id.as_str()).collect();
-                info!(instances = ?ids, "QQ instance ports allocated and persisted");
+                let ids: Vec<&str> = patches.iter().map(|patch| patch.id.as_str()).collect();
+                info!(instances = ?ids, "QQ instance persona/ports allocated and persisted");
             }
         }
     }
