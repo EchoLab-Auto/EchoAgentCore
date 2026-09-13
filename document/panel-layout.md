@@ -203,7 +203,9 @@ graph LR
 ```
 
 - WS 地址 `ws(s)://{host}/ws`（随页面协议）；单例连接（`connection.ts`）
-- **Bootstrap 命令组**（每次 onopen 按序发送）：`RequestState` → `RequestTrunkTimeline{team_id: 上次Agent}` → `RequestAdapterStatus` → `RequestQqFilterConfig` → `RequestTeamsList` → `RequestShellSessions`
+- **Bootstrap 命令组**（每次 onopen 按序发送）：`RequestState` →（有保存的 Agent 时）`RequestTrunkTimeline{team_id: 上次Agent}` → `RequestAdapterStatus` → `RequestTeamsList` → `RequestShellSessions`。
+  - 去主智能体后 `team_id` 必填：没有保存过 Agent 时**跳过**时间线请求（发了必被 Core 拒绝），等 `TeamsList` 到达后由 App watcher 用列表首个发起
+  - QQ 过滤配置**不预取**（QqPanel/QqLoginSection 打开时按实例自行刷新；无 QQ 或多实例未指定实例时预取必被拒，产生无意义的"QQ 适配器未找到"提示）
 - **重连清空**：`branchTabs`、`tasks`、`activities` 以及时间线状态（`trunk`、`teamTimelines`、`trunkTeamId`）全部清空后全量重建——断连期间错过的实时事件与就地更新无法对齐，全量是唯一安全恢复路径
 - **退避**：500ms 起、×2 递增、上限 30s；成功连接后复位 500ms
 - **前台自愈（heal）**：`visibilitychange` 回到前台或 `online` 事件时主动评估连接——已断开则立即重连（复位退避，不等可能被浏览器冻结的退避定时器）；显示 OPEN 也可能半死（设备休眠期间对端已消失而本端未察觉），发 `RequestTeamsList` 探测帧，**5s** 内无任何下行帧则判死、主动关闭走标准重连（`connection.ts`）
