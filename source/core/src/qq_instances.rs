@@ -68,13 +68,27 @@ pub fn allocate_ports_avoiding(
     taken: &std::collections::HashSet<u16>,
 ) -> QqPorts {
     let mut ports = existing.clone();
-    // legacy 实例缺省沿用 3131（可绑定则保留，保持既有部署零变化）。
-    if ports.reverse_ws == 0 && id == DEFAULT_INSTANCE && app_port_ok(3131) {
-        ports.reverse_ws = 3131;
+    if id == DEFAULT_INSTANCE {
+        // legacy 实例（`qq`）：语义与旧版一致，缺省沿用 3131/3000/6099。
+        // - 反向 WS 由 Core 自身 bind：3131 可绑定则保留（否则回退探测）；
+        // - OneBot HTTP / WebUI 是既有 NapCat 容器的宿主映射（端口被容器
+        //   持有，宿主侧 bind 探测必然失败），缺省**直接沿用、不探测**。
+        if ports.reverse_ws == 0 {
+            ports.reverse_ws = if app_port_ok(3131) {
+                3131
+            } else {
+                find_free_port(3140, 3400, taken).unwrap_or(3131)
+            };
+        }
+        if ports.onebot_http == 0 {
+            ports.onebot_http = 3000;
+        }
+        if ports.webui == 0 {
+            ports.webui = 6099;
+        }
+        return ports;
     }
-    if ports.reverse_ws != 0 && !app_port_ok(ports.reverse_ws) {
-        ports.reverse_ws = 0;
-    }
+    // 多实例：全部端口由 Core 分配并持久化（空闲探测，避开本轮已分配）。
     if ports.reverse_ws == 0 || taken.contains(&ports.reverse_ws) {
         ports.reverse_ws = find_free_port(3140, 3400, taken).unwrap_or(0);
     }
@@ -119,17 +133,23 @@ pub fn merge_instance(
         cfg.owner_qq = owner;
     }
     let auto = id != DEFAULT_INSTANCE;
-    cfg.napcat_container = section
-        .napcat_container
-        .clone()
+    // legacy 实例的容器名与 NapCat 地址是"既有部署"的一部分：实例段未覆盖时
+    // 必须沿用共享默认（container 默认 `napcat`、地址默认 localhost:3000/6099），
+    // 否则会把 docker 管理指向不存在的新容器名。
+    let shared_or = |chosen: Option<String>, shared_value: &str| -> Option<String> {
+        chosen.or_else(|| {
+            if !auto && !shared_value.trim().is_empty() {
+                Some(shared_value.to_string())
+            } else {
+                None
+            }
+        })
+    };
+    cfg.napcat_container = shared_or(section.napcat_container.clone(), &shared.napcat_container)
         .unwrap_or_else(|| format!("echo-napcat-{id}"));
-    cfg.napcat_webui_url = section
-        .napcat_webui_url
-        .clone()
+    cfg.napcat_webui_url = shared_or(section.napcat_webui_url.clone(), &shared.napcat_webui_url)
         .unwrap_or_else(|| format!("http://localhost:{}", ports.webui));
-    cfg.napcat_onebot_url = section
-        .napcat_onebot_url
-        .clone()
+    cfg.napcat_onebot_url = shared_or(section.napcat_onebot_url.clone(), &shared.napcat_onebot_url)
         .unwrap_or_else(|| format!("http://localhost:{}", ports.onebot_http));
     // 多实例容器由 Core 托管：自动启停按共享默认（除非显式覆盖）。
     cfg.napcat_auto_start = section
@@ -335,10 +355,52 @@ mod tests {
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].id, DEFAULT_INSTANCE);
         assert_eq!(instances[0].persona, "alix");
-        // legacy 端口沿用既定值（若被占用则回退探测，故只断言非零）
+        // legacy 语义与旧版一致：缺省沿用 3131/3000/6099（OneBot/WebUI 是
+        // 既有容器的宿主映射，不探测；反向 WS 若被占用则回退探测其他端口）。
         assert!(instances[0].ports.reverse_ws > 0);
-        assert!(instances[0].ports.onebot_http > 0);
-        assert!(instances[0].ports.webui > 0);
+        assert_eq!(instances[0].ports.onebot_http, 3000);
+        assert_eq!(instances[0].ports.webui, 6099);
+        // 容器与地址沿用共享默认（docker 管理必须指向既有容器 `napcat`）。
+        assert_eq!(instances[0].container(), "napcat");
+        assert!(instances[0].config.napcat_onebot_url.contains(":3000"));
+        assert!(instances[0].config.napcat_webui_url.contains(":6099"));
+    }
+
+    #[test]
+    fn legacy_instance_keeps_shared_container_and_urls() {
+        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
+        shared.enabled = true;
+        shared.napcat_auto_start = false;
+        shared.napcat_container = "my-napcat".into();
+        shared.napcat_onebot_url = "http://10.0.0.5:3000".into();
+        let instances = resolve_instances(&shared, &BTreeMap::new(), &[], "alix");
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].container(), "my-napcat");
+        assert_eq!(
+            instances[0].config.napcat_onebot_url,
+            "http://10.0.0.5:3000"
+        );
+    }
+
+    #[test]
+    fn auto_instance_derives_container_and_urls_from_ports() {
+        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
+        shared.enabled = true;
+        shared.napcat_auto_start = false;
+        // legacy 归属默认人格 a；b 由自动建档覆盖 → 取 b 断言派生值。
+        let personas = vec!["a".to_string(), "b".to_string()];
+        let instances = resolve_instances(&shared, &BTreeMap::new(), &personas, "a");
+        let auto = instances
+            .iter()
+            .find(|i| i.id != DEFAULT_INSTANCE)
+            .expect("auto instance exists");
+        assert_eq!(auto.container(), format!("echo-napcat-{}", auto.id));
+        assert!(auto
+            .config
+            .napcat_onebot_url
+            .contains(&auto.ports.onebot_http.to_string()));
+        assert!((3010..3090).contains(&auto.ports.onebot_http));
+        assert!((6100..6190).contains(&auto.ports.webui));
     }
 
     #[test]

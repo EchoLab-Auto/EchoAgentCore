@@ -318,12 +318,32 @@ if ((core_was_active)); then
     #    Core 重启后让它自己重连，尽量不动 NapCat 进程（动它就等于动登录）。
     #    等待窗口 = 5 个重连周期（25s）+ 2 个心跳探测 + 余量 ≈ 40s；
     #    仅当超过窗口仍未连上才 docker restart（最后的兜底）。 ──
+    #
+    #    仅当 QQ 确实启用（[adapters.qq].enabled = true）且存在 NapCat 容器
+    #    时才做恢复：QQ 关闭的部署没有反向 WS 可等，重启容器只会制造噪音。
     PHASE=restoring_qq
     qq_connected() {
         command -v ss >/dev/null 2>&1 || return 1
-        ss -Htn state established '( sport = :3131 )' 2>/dev/null | grep -q .
+        # 多实例：反向 WS 端口为 3131（legacy）或 3140-3399（自动分配）。
+        # 注意不要匹配 3132（管理面端口）。
+        ss -Htn state established 2>/dev/null \
+            | grep -qE ':(3131|31[4-9][0-9]|3[2-3][0-9][0-9])\b'
     }
-    if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx napcat; then
+    qq_enabled=1
+    qq_config="${XDG_CONFIG_HOME:-$HOME/.config}/echo-agent-core/core.toml"
+    if [[ -f "$qq_config" ]] && ! awk '
+        /^\[adapters\.qq\]/{f=1;next}
+        /^\[/{f=0}
+        f && /^enabled[[:space:]]*=/ {gsub(/[[:space:]]/,"");if ($0=="enabled=true") found=1}
+        END{exit !found}' "$qq_config"; then
+        qq_enabled=0
+    fi
+    qq_containers=""
+    if command -v docker >/dev/null 2>&1; then
+        qq_containers=$(docker ps --format '{{.Names}}' 2>/dev/null \
+            | grep -E '^(napcat|echo-napcat-.+)$' || true)
+    fi
+    if (( qq_enabled )) && [[ -n "$qq_containers" ]]; then
         qq_ok=0
         echo "等待 NapCat 自动重连（reconnectInterval=5s，窗口 40s）…"
         for _ in {1..40}; do
@@ -335,7 +355,9 @@ if ((core_was_active)); then
         done
         if ((qq_ok == 0)); then
             echo "40s 内 NapCat 未自动重连，执行 docker restart 兜底（登录态保存在卷中，会自动恢复）" >&2
-            docker restart napcat >/dev/null 2>&1 || true
+            for container in $qq_containers; do
+                docker restart "$container" >/dev/null 2>&1 || true
+            done
             for _ in {1..90}; do
                 if qq_connected; then
                     qq_ok=1
@@ -349,6 +371,8 @@ if ((core_was_active)); then
         else
             echo "警告：等待 QQ 反向 WS 恢复超时，可能需要手动检查 napcat 容器" >&2
         fi
+    else
+        echo "QQ 未启用（适配器禁用或无 NapCat 容器），跳过 NapCat 恢复"
     fi
 fi
 
