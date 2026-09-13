@@ -3,6 +3,7 @@
 mod commands;
 mod orchestration;
 mod qq_commands;
+mod workspace_commands;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -172,6 +173,9 @@ pub struct Agent {
     _timeline_projection: echo_context::Disposer,
     /// Cancels background tasks (identity eviction / save) on shutdown.
     cancel: tokio_util::sync::CancellationToken,
+    /// 工作区会话存储（`echo-agent.workspace` 插件；组合根按 persona 注入）。
+    /// None = 未挂载（命令会回明确错误）。
+    workspace_store: std::sync::RwLock<Option<std::sync::Arc<crate::workspace::WorkspaceStore>>>,
     /// Plugin host: registry + mount context bridging `echo_plugin` to the
     /// agent's concrete registries. 组合根注入**同一个**进程级宿主
     /// （去主智能体 P1：插件宿主不再寄居在某个"默认人格"上）。
@@ -331,6 +335,7 @@ impl Agent {
             plugin_host: std::sync::RwLock::new(std::sync::Arc::new(
                 crate::plugins::PluginHost::new(),
             )),
+            workspace_store: std::sync::RwLock::new(None),
             team_id: std::sync::Mutex::new(None),
             draining: AtomicBool::new(false),
             capabilities: std::sync::Mutex::new(None),
@@ -1186,6 +1191,23 @@ impl Agent {
         } else {
             tracing::warn!("sudo broker slot busy, ignoring attach");
         }
+    }
+
+    /// 注入该 persona 的工作区会话存储（`echo-agent.workspace` 插件）。
+    pub fn set_workspace_store(&self, store: std::sync::Arc<crate::workspace::WorkspaceStore>) {
+        if let Ok(mut slot) = self.workspace_store.write() {
+            *slot = Some(store);
+        } else {
+            tracing::warn!("workspace store slot busy, ignoring set_workspace_store");
+        }
+    }
+
+    /// 当前 persona 的工作区会话存储（None = 插件未挂载）。
+    pub fn workspace_store(&self) -> Option<std::sync::Arc<crate::workspace::WorkspaceStore>> {
+        self.workspace_store
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone())
     }
 
     /// Non-blocking poll for a frontend command (used by the command pump).
@@ -2921,6 +2943,29 @@ impl Agent {
                     matched.metadata.name, matched.instructions
                 ),
             });
+        }
+        // 工作区会话（workspace 插件）：插件对该 persona 启用且存在激活会话
+        // 时注入——名称 + 工作目录清单，让模型知道在哪些目录内工作。
+        if let Some(store) = self.workspace_store() {
+            let plugin_allowed = self
+                .capabilities
+                .lock()
+                .ok()
+                .and_then(|cap| cap.clone())
+                .map(|cap| {
+                    crate::plugins::profile_allows_plugin(&cap, crate::plugins::WORKSPACE_PLUGIN_ID)
+                })
+                .unwrap_or(false);
+            if plugin_allowed {
+                if let Some(content) = store.prompt_text() {
+                    blocks.push(PromptBlock {
+                        key: "workspace".into(),
+                        label: "工作区会话".into(),
+                        kind: "workspace".into(),
+                        content,
+                    });
+                }
+            }
         }
         // 编排提示词按需注入：仅当该 agent 至少允许一个动态编排工具时描述，
         // 白名单无编排工具的 agent 不注入描述不可用工具的规则（与动态工具
@@ -6305,5 +6350,126 @@ pub mod tests {
         assert_eq!(history[5].content, "timer completed");
         drop(history);
         agent.shutdown().await;
+    }
+
+    // ── 工作区会话（workspace 插件）──
+
+    /// 工作区命令走 team 路由（去主智能体后不落"默认人格"兜底），
+    /// 且 save → list → active → git 的完整链路可用。
+    #[tokio::test]
+    async fn workspace_commands_lifecycle() {
+        let agent = Arc::new(test_agent(Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        })));
+        agent.set_team_id(Some("t".into()));
+        let path = std::env::temp_dir().join(format!(
+            "echo-workspace-agent-test-{}.json",
+            std::process::id()
+        ));
+        std::fs::remove_file(&path).ok();
+        agent.set_workspace_store(Arc::new(crate::workspace::WorkspaceStore::load(Some(
+            path.clone(),
+        ))));
+
+        let (bridge, handle) = crate::create_bridge();
+        agent.attach(Arc::new(handle));
+
+        // 保存（空 id → 服务端生成）。
+        agent
+            .apply_command(BackendCommand::SaveWorkspaceSession {
+                team_id: Some("t".into()),
+                session: echo_protocol::WorkspaceSessionInfo {
+                    id: String::new(),
+                    name: "core".into(),
+                    description: String::new(),
+                    directories: vec![env!("CARGO_MANIFEST_DIR").to_string()],
+                },
+            })
+            .await;
+        // 激活。
+        agent
+            .apply_command(BackendCommand::ActivateWorkspaceSession {
+                team_id: Some("t".into()),
+                id: Some("core".into()),
+            })
+            .await;
+        // 列表。
+        agent
+            .apply_command(BackendCommand::RequestWorkspaceSessions {
+                team_id: Some("t".into()),
+            })
+            .await;
+        // git 状态（真实仓库 checkout）。
+        agent
+            .apply_command(BackendCommand::RequestWorkspaceGitStatus {
+                team_id: Some("t".into()),
+                session_id: "core".into(),
+            })
+            .await;
+
+        let mut events = Vec::new();
+        while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+            events.push(event);
+        }
+        // 取最后一次列表快照（save → activate 都会推送列表）。
+        let list = events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                BackendEvent::WorkspaceSessions {
+                    sessions, active, ..
+                } => Some((sessions.clone(), active.clone())),
+                _ => None,
+            })
+            .expect("WorkspaceSessions emitted");
+        assert_eq!(list.0.len(), 1);
+        assert_eq!(list.0[0].id, "core");
+        assert_eq!(list.1.as_deref(), Some("core"), "activation survives");
+
+        let git = events
+            .iter()
+            .find_map(|e| match e {
+                BackendEvent::WorkspaceGitStatus { directories, .. } => Some(directories.clone()),
+                _ => None,
+            })
+            .expect("WorkspaceGitStatus emitted");
+        assert_eq!(git.len(), 1);
+        assert!(git[0].is_repo, "repo checkout detected: {git:?}");
+
+        // 提示注入：激活后 build_prompt_blocks 含 workspace 区块。
+        let store = agent.workspace_store().expect("store attached");
+        let text = store.prompt_text().expect("active prompt text");
+        assert!(text.contains("core"));
+        assert!(text.contains(env!("CARGO_MANIFEST_DIR")));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 缺 team_id 的工作区命令被拒绝（与其它会话类命令同一约定）。
+    #[tokio::test]
+    async fn workspace_commands_require_team_id() {
+        let agent = Arc::new(test_agent(Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        })));
+        agent.set_team_id(Some("t".into()));
+        let (bridge, handle) = crate::create_bridge();
+        agent.attach(Arc::new(handle));
+        agent
+            .apply_command(BackendCommand::RequestWorkspaceSessions { team_id: None })
+            .await;
+        let mut events = Vec::new();
+        while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+            events.push(event);
+        }
+        let message = events
+            .iter()
+            .find_map(|e| match e {
+                BackendEvent::Error { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .expect("error emitted");
+        assert!(message.contains("team_id"), "unexpected: {message}");
     }
 }

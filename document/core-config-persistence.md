@@ -185,3 +185,8 @@ group_ids = []
 | 格式 | v5 事件溯源：`events`（append-only 事件日志）为权威，`trunk_history`/`identities`/`timeline` 为持久化投影；v1-v4 旧格式加载时自动迁移 |
 | 触发 | 30s 周期保存（dirty 时）+ 关闭时 flush |
 | 加载 | 启动时自动恢复；显示时间线的 `timeline_seq` 从条目最大 seq 重建，悬空 running 工具条目标注为"已中断" |
+
+工作区会话（`echo-agent.workspace` 插件）独立持久化于
+`~/.config/echo-agent-core/echo-workspaces-{id}.json`（每 persona 一份；
+`{active, sessions[]}` 文档，任何变更即时原子写回）——与配置 TOML、会话
+JSON 均不共用路径。

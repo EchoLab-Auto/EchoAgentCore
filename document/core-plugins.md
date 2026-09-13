@@ -44,13 +44,14 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.adapter.qq` | Adapter | QQ 适配器（OneBot v11 反向 WS，含 QQ 管理工具） |
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
 | `echo-agent.checklist` | Tool | 任务清单（checklist 工具包；可按 persona 单独启停，默认启用） |
+| `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、激活会话注入系统提示词；Panel 入口行「工作区」面板） |
 | `echo-agent.orchestration` | Orchestration | 后台任务/并行分支/子代理/定时器/框架自更新（名义挂载：重启生效） |
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂（名义挂载：重启生效） |
 | `echo-agent.loop.single` | Loop | 单会话循环（默认）：mount 启用 echo-loop 驱动；会话内 turn 串行排队、无会话管理 UI |
 | `echo-agent.loop.parallel` | Loop | 并行多会话循环：同一 TurnRunner；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
 | `echo-agent.management.panel` | Management | 管理面：management WS 桥接 + sudo 授权通道（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
 
-> 以上 9 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单。
+> 以上 10 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单。
 
 ## 能力开关（per-persona）
 

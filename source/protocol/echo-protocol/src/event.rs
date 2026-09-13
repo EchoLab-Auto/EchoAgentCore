@@ -641,6 +641,24 @@ pub enum BackendEvent {
         adapter: Option<String>,
     },
 
+    // ---- 工作区会话（workspace 插件）----
+    /// 工作区会话列表快照（含激活会话标记）。
+    WorkspaceSessions {
+        #[serde(default)]
+        team_id: Option<String>,
+        sessions: Vec<WorkspaceSessionInfo>,
+        /// 当前激活会话 id（None = 未激活）。
+        #[serde(default)]
+        active: Option<String>,
+    },
+    /// 某会话各工作区目录的 git 状态（`RequestWorkspaceGitStatus` 响应）。
+    WorkspaceGitStatus {
+        #[serde(default)]
+        team_id: Option<String>,
+        session_id: String,
+        directories: Vec<WorkspaceGitInfo>,
+    },
+
     // ---- Sudo authorization (human-in-the-loop) ----
     /// The agent requests root privileges for `command`. The Panel must show
     /// the user a masked password prompt and answer with
@@ -822,6 +840,54 @@ pub struct PluginInfo {
 pub struct GroupInfo {
     pub group_id: i64,
     pub group_name: String,
+}
+
+/// 一个工作区会话（workspace 插件）：名称 + 多个工作区目录。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceSessionInfo {
+    /// 稳定 id（空 = 由 Core 依名称生成）。
+    #[serde(default)]
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// 工作区目录（绝对路径列表，一个会话可含多个）。
+    #[serde(default)]
+    pub directories: Vec<String>,
+}
+
+/// 一个工作区目录的 git 状态快照（只读采集）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceGitInfo {
+    pub directory: String,
+    /// 是否是 git 仓库（工作树内）。
+    pub is_repo: bool,
+    /// 当前分支（detached 时为 `HEAD`）。
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// 相对上游的领先/落后提交数（无上游时为 0）。
+    #[serde(default)]
+    pub ahead: u32,
+    #[serde(default)]
+    pub behind: u32,
+    /// 已暂存（索引区）文件数。
+    #[serde(default)]
+    pub staged: u32,
+    /// 工作区已修改（未暂存）文件数。
+    #[serde(default)]
+    pub modified: u32,
+    /// 未跟踪文件数。
+    #[serde(default)]
+    pub untracked: u32,
+    /// 变更文件路径（`git status --porcelain` 前若干条，供 UI 展示）。
+    #[serde(default)]
+    pub changed_files: Vec<String>,
+    /// 最近一次提交的摘要（`<short-hash> <subject>`）。
+    #[serde(default)]
+    pub last_commit: Option<String>,
+    /// 采集失败原因（目录不存在 / git 不可用等；非仓库时为 None）。
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// QQ friend info for allowlist/denylist picker.

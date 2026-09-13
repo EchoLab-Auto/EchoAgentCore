@@ -26,6 +26,7 @@ pub mod skill_install;
 pub mod sudo;
 pub mod timeline;
 pub mod tool;
+pub mod workspace;
 
 pub use adapter_bridge::AgentMessageHook;
 pub use agent::{Agent, EventSink};

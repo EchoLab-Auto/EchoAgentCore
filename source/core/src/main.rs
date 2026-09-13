@@ -342,6 +342,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     }
                 }
                 t.set_package("checklist", echo_agent::plugins::CHECKLIST_PLUGIN_ID);
+                // 工作区会话（workspace 插件）：每 persona 独立存储 + 工具。
+                // 存储文件与配置 TOML 解耦（独立 JSON，绝不同路径互写）；
+                // 插件未列入该 persona 白名单时工具会被门控禁用（GATED_PLUGIN_IDS）。
+                let workspace_store =
+                    std::sync::Arc::new(echo_agent::workspace::WorkspaceStore::load(Some(
+                        config_store_path.with_file_name(format!("echo-workspaces-{id}.json")),
+                    )));
+                t.register(std::sync::Arc::new(
+                    echo_agent::workspace::WorkspaceTool::new(workspace_store.clone()),
+                ));
+                t.set_package("workspace", echo_agent::plugins::WORKSPACE_PLUGIN_ID);
                 // Persona 级 API：配置了 api_profile 的 persona 在启动时构建
                 // 自己的 provider（从全局池解析，不共享默认 provider）。
                 let mut api_cfg_override: Option<echo_agent::AgentConfig> = None;
@@ -381,6 +392,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     adapters2.clone(),
                 ));
                 agent.set_team_id(Some(id.clone()));
+                // 工作区会话存储（命令处理 + 系统提示注入共用同一实例）。
+                agent.set_workspace_store(workspace_store);
                 // 接入进程级事件汇聚点与共享插件宿主（运行期新建人格同样走这里）。
                 agent.attach_event_sink(event_sink.clone());
                 agent.set_plugin_host(shared_plugin_host.clone());
@@ -636,6 +649,28 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 })])
             },
         )?;
+
+        // ── 实化 6：工作区会话（workspace 插件）──
+        {
+            use echo_agent::plugins::WORKSPACE_PLUGIN_ID;
+            register(
+                &plugin_host,
+                PluginManifest::builtin(
+                    WORKSPACE_PLUGIN_ID,
+                    "工作区会话",
+                    version,
+                    PluginKind::Tool,
+                    "workspace",
+                    "基于工作空间的会话管理：Panel 多会话/多目录管理 + git 状态查看 + workspace 工具",
+                ),
+                move |_ctx| {
+                    for_each_agent(|a| a.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, true));
+                    Ok(vec![Disposer::from_fn(|| {
+                        for_each_agent(|a| a.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, false));
+                    })])
+                },
+            )?;
+        }
 
         // ── 实化 3：QQ 适配器（启停进程 + 工具包启停）──
         {

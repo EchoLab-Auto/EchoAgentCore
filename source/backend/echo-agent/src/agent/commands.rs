@@ -52,7 +52,12 @@ impl Agent {
             | BackendCommand::RequestContext { team_id }
             | BackendCommand::ClearHistory { team_id }
             | BackendCommand::ArchiveHistory { team_id }
-            | BackendCommand::CompactHistory { team_id, .. } => team_id.as_deref(),
+            | BackendCommand::CompactHistory { team_id, .. }
+            | BackendCommand::RequestWorkspaceSessions { team_id }
+            | BackendCommand::SaveWorkspaceSession { team_id, .. }
+            | BackendCommand::DeleteWorkspaceSession { team_id, .. }
+            | BackendCommand::ActivateWorkspaceSession { team_id, .. }
+            | BackendCommand::RequestWorkspaceGitStatus { team_id, .. } => team_id.as_deref(),
             _ => None,
         }
     }
@@ -68,6 +73,11 @@ impl Agent {
                 | BackendCommand::ClearHistory { .. }
                 | BackendCommand::ArchiveHistory { .. }
                 | BackendCommand::CompactHistory { .. }
+                | BackendCommand::RequestWorkspaceSessions { .. }
+                | BackendCommand::SaveWorkspaceSession { .. }
+                | BackendCommand::DeleteWorkspaceSession { .. }
+                | BackendCommand::ActivateWorkspaceSession { .. }
+                | BackendCommand::RequestWorkspaceGitStatus { .. }
         )
     }
 
@@ -1111,6 +1121,13 @@ impl Agent {
             | BackendCommand::RequestQqLoginStatus { .. }
             | BackendCommand::RequestQqQrcode { .. } => {
                 self.apply_qq_command(cmd).await;
+            }
+            BackendCommand::RequestWorkspaceSessions { .. }
+            | BackendCommand::SaveWorkspaceSession { .. }
+            | BackendCommand::DeleteWorkspaceSession { .. }
+            | BackendCommand::ActivateWorkspaceSession { .. }
+            | BackendCommand::RequestWorkspaceGitStatus { .. } => {
+                self.apply_workspace_command(cmd).await;
             }
         }
     }

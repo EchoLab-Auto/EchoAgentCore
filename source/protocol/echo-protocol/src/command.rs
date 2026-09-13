@@ -234,6 +234,42 @@ pub enum BackendCommand {
         #[serde(default)]
         adapter: Option<String>,
     },
+
+    // ---- 工作区会话（workspace 插件：基于工作空间的会话管理）----
+    /// 请求某 persona 的工作区会话列表。
+    /// 响应 `BackendEvent::WorkspaceSessions`。
+    RequestWorkspaceSessions {
+        #[serde(default)]
+        team_id: Option<String>,
+    },
+    /// 新建/更新一个工作区会话（按 `session.id` upsert；空 id 由服务端
+    /// 依名称生成）。响应为刷新后的 `WorkspaceSessions` 列表。
+    SaveWorkspaceSession {
+        #[serde(default)]
+        team_id: Option<String>,
+        session: crate::event::WorkspaceSessionInfo,
+    },
+    /// 删除一个工作区会话（若为激活会话则同时清除激活标记）。
+    DeleteWorkspaceSession {
+        #[serde(default)]
+        team_id: Option<String>,
+        id: String,
+    },
+    /// 激活（或 `id = None` 取消激活）一个工作区会话。
+    /// 激活会话的工作目录会注入系统提示词。
+    ActivateWorkspaceSession {
+        #[serde(default)]
+        team_id: Option<String>,
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// 请求某会话各工作区目录的 git 状态（`git` CLI 采集，只读）。
+    /// 响应 `BackendEvent::WorkspaceGitStatus`。
+    RequestWorkspaceGitStatus {
+        #[serde(default)]
+        team_id: Option<String>,
+        session_id: String,
+    },
     /// Start all configured adapters.
     StartAllAdapters,
     /// Stop all running adapters.
@@ -316,6 +352,9 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
         | BackendCommand::SetQqOwner { .. }
         | BackendCommand::RequestQqOwner { .. }
         | BackendCommand::RequestQqFilterConfig { .. }
+        | BackendCommand::SaveWorkspaceSession { .. }
+        | BackendCommand::DeleteWorkspaceSession { .. }
+        | BackendCommand::ActivateWorkspaceSession { .. }
         | BackendCommand::ClearHistory { .. } => CommandClearance::Frontend,
         _ => CommandClearance::Agent,
     }
