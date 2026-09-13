@@ -57,7 +57,20 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 - 每个插件 id 均可放入 agent 的 `enabled_plugins`（白名单；空表 = 全部启用）
 - **插件黑名单 `disabled_plugins` 已于 2026-09-11 移除**：与白名单语义重复（前端首次取消勾选即物化全量白名单），既有配置在加载期物化进白名单（见 [配置持久化](./core-config-persistence.md)）；运行期 `SaveTeam` 只写白名单
-- 前端设置视图可按 kind 勾选（adapter/management 类），保存后写回 TOML
+- **前端「启用插件」勾选区的成员规则**（两处 UI：智能体配置弹层 ⚙ 配置、
+  设置视图智能体编辑器；判定单一来源 = Panel `capabilities.ts::isPluginCheckboxVisible`）：
+  `kind ∈ {adapter, management}` **∪** 下列包维度门控插件固定清单
+  （`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本节 `GATED_PLUGIN_IDS` 逐项镜像）：
+  `tools.builtin` / `skills.dir` / `checklist` / `workspace` / `adapter.qq`。
+  其余插件（`loop.*` 由循环模式分段控件管理、`orchestration` / `provider.llm`
+  名义挂载重启生效）**不出现**在该勾选区。保存后写回 TOML
+- ⚠️ **新增包维度门控插件时的同步清单**（缺一即"配置里看不到/门控失效"）：
+  ① Core `plugins.rs` 的 `GATED_PLUGIN_IDS` 与 `BUILTIN_PLUGIN_IDS`；
+  ② 更新器 `scripts/update.sh` 的插件校验 `expected_ids`；
+  ③ Panel `capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`（勾选区可见性）
+  与 `PACKAGE_DISPLAY_NAMES`（包显示名）。
+  ①②③ 均有测试/校验守护；历史事故：workspace 插件仅同步了 ①②，
+  导致智能体配置的「启用插件」中不可见（2026-09-13 修复）
 - **循环模式推导**（互斥，默认与兜底都是单会话）：见[Agent 循环](./core-agent-loop.md)§循环模式（单一来源 `TeamMember::loop_mode()`）
 - **包级聚合**：白名单里的插件 id 即包 id——一次勾选同时门控该插件的
   生命周期与同名包的工具、技能（QQ 包见下「Package」章节）
