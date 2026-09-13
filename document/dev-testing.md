@@ -28,6 +28,12 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
   absolute-path rejection, 50-result search cap.
 - **Persistence** (echo-agent): session save/load round-trips, lenient
   malformed-entry recovery, idle eviction, ConfigStore atomic patches.
+- **Teamless multi-agent & QQ instances** (echo-agent + core): session
+  commands reject a missing `team_id` (no default agent), the process-level
+  `EventSink` fans in every persona's events without double delivery, and
+  `core/src/qq_instances.rs` covers instance resolution — legacy ports
+  (3131/3000/6099) + shared container kept, auto-provisioning per QQ-enabled
+  persona, distinct ports/containers per instance, compose rendering.
 - **LLM providers** (OpenAI / Anthropic): request body builders (tool-call
   grouping, system-message joining, malformed-argument fallback).
 - **SSE streaming** (OpenAI / Anthropic): pure-function `parse_sse_event` /
@@ -63,6 +69,8 @@ Generated inputs that must satisfy invariants:
   forward.
 - `echo-adapter-qq` — NapCat client against a `wiremock` HTTP server:
   login status detection, WebUI fallback, reverse-WS config, QR fetch.
+  Multi-instance adapters (`QqAdapter::with_instance(id, persona, cfg)`)
+  carry their instance name/display name and persona metadata.
 
 ### 4. Concurrency tests
 Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):

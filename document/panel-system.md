@@ -59,7 +59,7 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 | 入口行按钮 | ui-frame `NeumorphismButton`（glass/pill/small；`--nm-glass-bg` 45% 更透 + blur 24px）；清单徽标 `NeumorphismBadge` | ChatView.vue |
 | z-index | 清单浮层 3；Agent 菜单 30；模态/Toast 库管理 | styles.css:352 / AgentSwitcher.vue:188 |
 | Agent 切换器 | 卡片高 34px；菜单 min-width 220px、max-height `min(60vh, 100vh-200px)` | AgentSwitcher.vue:120-199 |
-| 轮询：QQ 状态 / 日志 / 任务耗时 | 5s / 5s / 1s | QqLoginSection:42 / LogView / TasksPanel:92-94 |
+| 轮询：日志 / 任务耗时 | 5s / 1s | LogView:48 / TasksPanel:63-66（QQ 登录状态为 WS 事件驱动，无轮询） |
 | HTTP 超时 | 10s | api.ts:4 |
-| 二维码有效期 / 定时器摘要截断 | 约 2 分钟；160 字符 | QqLoginSection:131 / state.ts:802-805 |
+| 二维码有效期 / 定时器摘要截断 | 约 2 分钟；160 字符 | QqLoginSection.vue / state.ts:802-805 |
 

@@ -27,7 +27,7 @@ EchoAgentCore/
 │   ├── session/
 │   │   └── echo-session/         # 事件溯源会话存储：append-only 事件日志 + 投影 + 兼容迁移
 │   ├── loop/
-│   │   └── echo-loop/            # 默认 agent 驱动：TurnRunner turn/step 状态机 + 工具执行管道
+│   │   └── echo-loop/            # Agent 循环驱动：TurnRunner turn/step 状态机 + 工具执行管道
 │   ├── llm/
 │   │   ├── echo-llm-openai/      # OpenAI 兼容 provider（Service Provider 角色）
 │   ├── chat/
@@ -59,7 +59,7 @@ EchoAgentCore/
 | `echo-defs` | **Service Definition 层**：LLM/工具/技能/平台消息词汇与 trait（`LlmProvider`/`Tool`/`SkillProvider`/`ChatAdapter`）、策略枚举（`GateMode` 等）、token 纯函数。零实现、零 harness 依赖 |
 | `echo-context` | **服务定位与事件机制**：`Ctx`（按 key 注册/解析服务）、`EventBus`（Observe/Waterfall/Parallel/Serial 类型化事件）、`Disposer`（可逆注册）、`ScopedRegistry`（per-scope shadowing）。零 echo-* 依赖 |
 | `echo-session` | **事件溯源会话存储**：`SessionEvent` 事件集、`EventLog`（append-only 持久化）、`derive_messages` 投影、compaction、`SessionHeader`（fork/resume）、v1–v4 旧格式兼容迁移 |
-| `echo-loop` | **默认 agent 驱动**：`TurnRunner` turn/step 状态机（`turn/*`/`step/*`/`agent/*` 生命周期事件）、`ToolPipeline` 工具执行管道（pre/execute/post waterfall 中间件） |
+| `echo-loop` | **Agent 循环驱动**：`TurnRunner` turn/step 状态机（`turn/*`/`step/*`/`agent/*` 生命周期事件）、`ToolPipeline` 工具执行管道（pre/execute/post waterfall 中间件） |
 | `echo-llm-openai` / `echo-llm-anthropic` / `echo-llm-ollama` | **LLM provider（Service Provider 角色）**：各自实现 `echo_defs::LlmProvider`,只依赖定义层 |
 | `echo-chat-capability` | **平台能力接缝（Service Definition 角色）**：`DeliveryPolicy`/`DeliveryTarget`（交付策略与目标词汇），核心循环只依赖此定义 |
 | `echo-protocol` | **前后端契约的唯一来源**：`BackendCommand`/`BackendEvent`/`WsMessage`、bridge；`GateMode`/`ThinkingMode`/`ReasoningEffort` 从 `echo-defs` re-export。前端只需依赖它 |
