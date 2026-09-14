@@ -435,6 +435,99 @@ impl NapCatClient {
             .map(|b| b.to_vec())
             .map_err(|e| format!("read error: {e}"))
     }
+
+    /// Age (seconds) of the QR PNG inside the container; `None` when the file
+    /// is missing or Docker/the container is unreachable.
+    pub fn qrcode_age_secs(container_name: &str) -> Option<u64> {
+        use std::process::Command;
+        let output = Command::new("docker")
+            .args([
+                "exec",
+                container_name,
+                "stat",
+                "-c",
+                "%Y",
+                "/app/napcat/cache/qrcode.png",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let mtime: u64 = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .ok()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
+        Some(now.saturating_sub(mtime))
+    }
+
+    /// Ask NapCat to regenerate the login QR code (WebUI `/api/QQLogin/RefreshQRcode`).
+    ///
+    /// NapCat's own auto-refresh loop can stall (observed: stops regenerating
+    /// after a while, leaving an expired QR that "refresh" in the panel cannot
+    /// fix because Core would just re-read the stale file). This call forces a
+    /// fresh QR on demand. The WebUI credential is derived from the container's
+    /// `webui.json` token: `sha256(token + ".napcat")` → `/api/auth/login`.
+    pub async fn refresh_qrcode(&self, container_name: &str) -> Result<(), String> {
+        let container = container_name.to_string();
+        let token = tokio::task::spawn_blocking(move || webui_token_from_container(&container))
+            .await
+            .map_err(|e| format!("token task failed: {e}"))??;
+        self.refresh_qrcode_with_token(&token).await
+    }
+
+    /// Same as [`refresh_qrcode`](Self::refresh_qrcode) but takes the WebUI
+    /// token directly (pure HTTP — unit-testable without Docker).
+    pub async fn refresh_qrcode_with_token(&self, token: &str) -> Result<(), String> {
+        let hash = sha256_hex(&format!("{token}.napcat"));
+
+        // 1) WebUI 登录换取 Credential
+        let login_url = format!("{}/api/auth/login", self.base_url);
+        let login: Value = self
+            .client
+            .post(&login_url)
+            .json(&serde_json::json!({ "hash": hash, "totpCode": "" }))
+            .send()
+            .await
+            .map_err(|e| format!("NapCat WebUI 登录失败: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("NapCat WebUI 登录响应解析失败: {e}"))?;
+        let credential = login
+            .pointer("/data/Credential")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("NapCat WebUI 登录响应缺少 Credential: {login}"))?;
+
+        // 2) 请求刷新二维码
+        let refresh_url = format!("{}/api/QQLogin/RefreshQRcode", self.base_url);
+        let body: Value = self
+            .client
+            .post(&refresh_url)
+            .bearer_auth(credential)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .map_err(|e| format!("无法刷新 NapCat 二维码: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("NapCat 刷新响应解析失败: {e}"))?;
+        if body.get("code").and_then(|c| c.as_i64()) != Some(0) {
+            return Err(format!("NapCat 刷新二维码失败: {body}"));
+        }
+        Ok(())
+    }
+}
+
+/// Hex SHA-256 of the input (used for the NapCat WebUI credential hash).
+fn sha256_hex(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 /// Read the NapCat WebUI token from the container's `webui.json`.
@@ -647,6 +740,105 @@ mod tests {
         let client = NapCatClient::new(&server.uri());
         let bytes = client.fetch_qrcode_web().await.expect("qrcode");
         assert_eq!(bytes, vec![1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    async fn refresh_qrcode_logs_in_and_requests_refresh() {
+        use wiremock::matchers::{body_json, header, method, path};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "data": {"Credential": "cred-123"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/QQLogin/RefreshQRcode"))
+            .and(header("authorization", "Bearer cred-123"))
+            .and(body_json(serde_json::json!({})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "message": "success"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = NapCatClient::new(&server.uri());
+        client
+            .refresh_qrcode_with_token("e9df24198bdf")
+            .await
+            .expect("refresh succeeds");
+    }
+
+    #[tokio::test]
+    async fn refresh_qrcode_surfaces_login_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": -1,
+                "message": "Unauthorized"
+            })))
+            .mount(&server)
+            .await;
+        let client = NapCatClient::new(&server.uri());
+        let error = client
+            .refresh_qrcode_with_token("token")
+            .await
+            .expect_err("must fail without Credential");
+        assert!(error.contains("Credential"), "unexpected: {error}");
+    }
+
+    #[tokio::test]
+    async fn refresh_qrcode_surfaces_refresh_rejection() {
+        use wiremock::matchers::path;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "data": {"Credential": "cred-123"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/QQLogin/RefreshQRcode"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": -1,
+                "message": "busy"
+            })))
+            .mount(&server)
+            .await;
+        let client = NapCatClient::new(&server.uri());
+        let error = client
+            .refresh_qrcode_with_token("token")
+            .await
+            .expect_err("non-zero code must fail");
+        assert!(error.contains("刷新二维码失败"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn credential_hash_matches_napcat_scheme() {
+        // 已知向量（本机 webui.json token 实测核对）：
+        // python3: hashlib.sha256(b"e9df24198bdf.napcat").hexdigest()
+        let hex = sha256_hex("e9df24198bdf.napcat");
+        assert_eq!(hex.len(), 64);
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(hex, sha256_hex("e9df24198bdf.napcat"), "deterministic");
+        // 与 Python hashlib 实测值对照（NapCat WebUI 前端同款算法）：
+        assert_eq!(
+            hex,
+            "46b719efc18c97a479fffaec3ae293edf561b763e9121bfe094b16f012f9b162"
+        );
+        // 空输入向量兜底校验实现正确性：
+        assert_eq!(
+            sha256_hex(""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     #[tokio::test]

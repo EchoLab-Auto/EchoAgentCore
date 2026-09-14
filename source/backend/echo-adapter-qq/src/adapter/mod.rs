@@ -27,6 +27,11 @@ use crate::NapCatClient;
 const NAPCAT_INITIAL_CHECK_DELAY: Duration = Duration::from_secs(2);
 const NAPCAT_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
+/// 二维码新鲜度阈值（秒）：超过则先让 NapCat 重新生成再取。
+/// NapCat 二维码约 2 分钟有效，这里取 90s——既不频繁作废用户刚扫的码，
+/// 也保证点「获取登录二维码」时拿到的总是接近新鲜的有效码。
+const QR_MAX_AGE_SECS: u64 = 90;
+
 /// Gating mode — mutually exclusive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QqGateMode {
@@ -1125,8 +1130,34 @@ impl Adapter for QqAdapter {
     }
 
     /// Core 代理登录：从 NapCat 容器取登录二维码 PNG。
+    ///
+    /// **陈旧自动刷新**：NapCat 自身的轮换循环可能停摆（实测：停摆后
+    /// 面板「获取二维码」只会重复读到过期文件——"刷新也没用"）。因此这里
+    /// 检查容器内文件的 mtime：缺失或超过 [`QR_MAX_AGE_SECS`] 时先让
+    /// NapCat 重新生成（WebUI `/api/QQLogin/RefreshQRcode`），等待落盘后
+    /// 再取 PNG；阈值内的新鲜二维码直接返回，避免作废用户刚扫的码。
     async fn login_qrcode_png(&self) -> Result<Vec<u8>, String> {
         let container = self.inner.config.napcat_container.clone();
+        let webui_url = self.inner.config.napcat_webui_url.clone();
+
+        let probe = container.clone();
+        let age = tokio::task::spawn_blocking(move || NapCatClient::qrcode_age_secs(&probe))
+            .await
+            .map_err(|e| format!("qrcode probe task failed: {e}"))?;
+        let stale = age.map_or(true, |age| age > QR_MAX_AGE_SECS);
+        if stale {
+            let client = NapCatClient::new(&webui_url);
+            match client.refresh_qrcode(&container).await {
+                Ok(()) => {
+                    // 给 NapCat 落盘新 PNG 留出时间（旧 Panel 直连实现同样等待 2s）。
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "NapCat 二维码刷新失败，退回读取现有文件");
+                }
+            }
+        }
+
         tokio::task::spawn_blocking(move || NapCatClient::fetch_qrcode_docker(&container))
             .await
             .map_err(|e| format!("qrcode task failed: {e}"))?
