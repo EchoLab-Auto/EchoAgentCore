@@ -32,6 +32,7 @@ y: 1759
 - `spawn_background_task` / `spawn_parallel_task` —— 后台/并行分支
 - `list_background_tasks` / `cancel_background_task` —— 后台任务管理
 - `framework_update` / `run_sudo` —— 自更新与人机交互 sudo（另有配置门控）
+- `present_menu` —— 向 Panel 用户发起选单（menu 插件门控；应答走专用通道，见 [工具系统](./core-tools.md)）
 
 ## 循环模式（见 Agent 循环）
 

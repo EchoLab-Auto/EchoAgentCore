@@ -18,6 +18,7 @@ pub mod config;
 pub mod event;
 pub mod input_marker;
 pub mod llm;
+pub mod menu;
 pub mod plugins;
 pub mod session;
 pub mod shell;
@@ -37,10 +38,11 @@ pub use config::{
     AgentConfig, AgentProfile, ReasoningEffort, SelfUpdateConfig, TeamMember, ThinkingMode,
 };
 pub use event::{
-    ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, GroupInfo, SessionInfo,
-    TimelineMessage, TimelineSource, TimelineTool,
+    ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, GroupInfo, MenuOptionInfo,
+    SessionInfo, TimelineMessage, TimelineSource, TimelineTool,
 };
 pub use llm::LlmProvider;
+pub use menu::{MenuBroker, PendingMenu, MENU_WAIT_TIMEOUT_SECS};
 pub use session::{Session, SessionKey, TrunkStore};
 pub use skill::{Skill, SkillRegistry};
 pub use sudo::{PendingSudo, SudoBroker};

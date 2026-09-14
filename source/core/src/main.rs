@@ -489,6 +489,15 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     }
     // 核心服务代理同样接入（它承接全局命令，需要 sudo/事件通路）。
     core_agent.attach_sudo_broker(sudo_broker.clone());
+
+    // ---- 选单（menu）broker ----
+    // 与 sudo 同构：`present_menu` 在 broker 上挂未决选单，管理面服务器把
+    // Panel 的 menu_answer 帧直连到 broker（不经命令队列）。
+    let menu_broker = Arc::new(echo_agent::MenuBroker::new());
+    for persona in supervisor.personas() {
+        persona.agent.attach_menu_broker(menu_broker.clone());
+    }
+    core_agent.attach_menu_broker(menu_broker.clone());
     core_agent
         .apply_capabilities(&echo_agent::AgentProfile {
             enabled: true,
@@ -511,7 +520,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     {
         use echo_agent::plugins::{
             ToolSink, ADAPTER_QQ_PLUGIN_ID, CHECKLIST_PLUGIN_ID, MANAGEMENT_PANEL_PLUGIN_ID,
-            SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
+            MENU_PLUGIN_ID, SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
         };
         use echo_context::Disposer;
         use echo_plugin::{BuiltinPlugin, MountContext, PluginKind, PluginManifest};
@@ -689,6 +698,28 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             )?;
         }
 
+        // ── 实化 7：选单（menu 插件）──
+        // 工具本体在 agent 内联派发表中（`present_menu`，需要 session_id），
+        // 门控经 `Agent::menu_plugin_enabled`（persona 白名单 ∧ 全局启停）；
+        // reapply 调用保持与其它实化插件同构（无注册表工具，仅记录状态）。
+        register(
+            &plugin_host,
+            PluginManifest::builtin(
+                MENU_PLUGIN_ID,
+                "选单",
+                version,
+                PluginKind::Tool,
+                "menu",
+                "向 Panel 用户发起选单（present_menu 工具 + 专用应答通道），选择结果回到模型继续下一步",
+            ),
+            move |_ctx| {
+                for_each_agent(|a| a.reapply_plugin_gating(MENU_PLUGIN_ID, true));
+                Ok(vec![Disposer::from_fn(|| {
+                    for_each_agent(|a| a.reapply_plugin_gating(MENU_PLUGIN_ID, false));
+                })])
+            },
+        )?;
+
         // ── 实化 3：QQ 适配器（启停进程 + 工具包启停）──
         {
             let qq = qq_adapter.clone();
@@ -742,6 +773,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let mgmt_agent = core_agent.clone();
             let mgmt_bridge = bridge.clone();
             let mgmt_sudo = sudo_broker.clone();
+            let mgmt_menu = menu_broker.clone();
             register(
                 &plugin_host,
                 PluginManifest::builtin(
@@ -750,19 +782,20 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     version,
                     PluginKind::Management,
                     "panel",
-                    "Panel management WS 桥接 / sudo 授权通道",
+                    "Panel management WS 桥接 / sudo 授权与选单应答通道",
                 ),
                 move |_ctx| {
-                    let (addr, br, ag, sudo) = (
+                    let (addr, br, ag, sudo, menu) = (
                         mgmt_addr.clone(),
                         mgmt_bridge.clone(),
                         mgmt_agent.clone(),
                         mgmt_sudo.clone(),
+                        mgmt_menu.clone(),
                     );
                     let token = mgmt_token.clone();
                     let server = tokio::spawn(async move {
                         if let Err(e) =
-                            management::serve_with_token(&addr, br, ag, sudo, token).await
+                            management::serve_with_token(&addr, br, ag, sudo, menu, token).await
                         {
                             warn!(error = %e, "management WS server stopped");
                         }

@@ -908,6 +908,7 @@ pub(super) const ORCHESTRATION_TOOL_NAMES: &[&str] = &[
     "list_background_tasks",
     "cancel_background_task",
     "send_backend_message",
+    "present_menu",
 ];
 
 /// Orchestration tool category shown in the Panel capability editor.
@@ -962,6 +963,11 @@ pub fn orchestration_tool_meta() -> Vec<(&'static str, &'static str, &'static st
             "send_backend_message",
             "向某个后端/TUI 会话投递消息（structured event 交付用）",
             ORCHESTRATION_CATEGORY,
+        ),
+        (
+            "present_menu",
+            "向 Panel 用户发起选单，等其选择后继续（选单插件）",
+            "选单",
         ),
         (
             "framework_update",
@@ -1105,6 +1111,34 @@ pub(super) fn tool_definitions(
                 "additionalProperties": false
             })),
         },
+        ToolDefinition {
+            name: "present_menu".into(),
+            description: "Present a menu of 2-10 options to the user in the Panel and wait (up to 5 minutes) for them to pick one. Use it when the next step depends on a concrete user decision and the alternatives are already known; ask in plain text instead when the question is open-ended. The chosen option (label + id) is returned as the tool result. If the user cancels or the menu times out, the result says so and you must not treat it as a choice. This is a Panel-side interaction: in QQ conversations ask in text instead.".into(),
+            parameters: Some(json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "One-line question the choice answers (e.g. '用哪个方案继续？')" },
+                    "description": { "type": "string", "description": "Optional context shown above the options" },
+                    "options": {
+                        "type": "array",
+                        "minItems": MENU_MIN_OPTIONS,
+                        "maxItems": MENU_MAX_OPTIONS,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string", "description": "Optional stable id; defaults to the 1-based option position" },
+                                "label": { "type": "string", "description": "Short label shown on the option button" },
+                                "description": { "type": "string", "description": "Optional explanation of what this option means" }
+                            },
+                            "required": ["label"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["title", "options"],
+                "additionalProperties": false
+            })),
+        },
     ];
     if self_update_enabled {
         definitions.push(ToolDefinition {
@@ -1136,6 +1170,87 @@ pub(super) fn tool_definitions(
         });
     }
     definitions
+}
+
+/// 选单可选项数量边界：少于 2 项不构成选择，超过 10 项弹层不可读。
+pub(super) const MENU_MIN_OPTIONS: usize = 2;
+pub(super) const MENU_MAX_OPTIONS: usize = 10;
+
+/// `present_menu` 参数（LLM schema 见 [`tool_definitions`]）。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MenuArgs {
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    options: Vec<MenuOptionArg>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MenuOptionArg {
+    #[serde(default)]
+    id: Option<String>,
+    label: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+/// 校验并归一化 `present_menu` 参数。
+///
+/// 归一化：`id` 缺省时按 1-based 位置生成（"1".."n"），显式 id 去空白后
+/// 必须唯一且非空（重复 id 会让用户的选择无法唯一映射回选项）。
+pub(super) fn parse_menu_args(
+    arguments: &Value,
+) -> Result<(String, Option<String>, Vec<crate::event::MenuOptionInfo>), String> {
+    let args: MenuArgs = serde_json::from_value(arguments.clone())
+        .map_err(|error| format!("invalid present_menu arguments: {error}"))?;
+    let title = args.title.trim().to_string();
+    if title.is_empty() {
+        return Err("present_menu: `title` must not be empty".into());
+    }
+    if args.options.len() < MENU_MIN_OPTIONS || args.options.len() > MENU_MAX_OPTIONS {
+        return Err(format!(
+            "present_menu: `options` needs {MENU_MIN_OPTIONS}-{MENU_MAX_OPTIONS} items, got {}",
+            args.options.len()
+        ));
+    }
+    let mut options: Vec<crate::event::MenuOptionInfo> = Vec::with_capacity(args.options.len());
+    for (index, option) in args.options.iter().enumerate() {
+        let label = option.label.trim().to_string();
+        if label.is_empty() {
+            return Err(format!(
+                "present_menu: options[{index}].label must not be empty"
+            ));
+        }
+        let id = option
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| (index + 1).to_string());
+        if options.iter().any(|existing| existing.id == id) {
+            return Err(format!("present_menu: duplicate option id {id:?}"));
+        }
+        options.push(crate::event::MenuOptionInfo {
+            id,
+            label,
+            description: option
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string),
+        });
+    }
+    let description = args
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
+    Ok((title, description, options))
 }
 
 fn delivery_target_schema() -> Value {
@@ -1322,6 +1437,75 @@ fn gather_plugin_summary() -> Vec<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_args_normalize_ids_and_optional_fields() {
+        let (title, description, options) = parse_menu_args(&json!({
+            "title": "  用哪个方案？ ",
+            "description": "  简要说说明 ",
+            "options": [
+                { "label": " A ", "description": " 首选 " },
+                { "label": "B", "id": "second" }
+            ]
+        }))
+        .expect("valid menu args");
+        assert_eq!(title, "用哪个方案？");
+        assert_eq!(description.as_deref(), Some("简要说说明"));
+        assert_eq!(
+            options[0].id, "1",
+            "missing id defaults to 1-based position"
+        );
+        assert_eq!(options[0].label, "A");
+        assert_eq!(options[0].description.as_deref(), Some("首选"));
+        assert_eq!(options[1].id, "second", "explicit id is kept");
+        assert_eq!(options[1].description, None);
+    }
+
+    #[test]
+    fn menu_args_reject_bad_shapes() {
+        // 少于 2 项不构成选择。
+        let error = parse_menu_args(&json!({
+            "title": "只有一个",
+            "options": [{ "label": "A" }]
+        }))
+        .unwrap_err();
+        assert!(error.contains("2-10"), "unexpected: {error}");
+
+        // 超过上限。
+        let many: Vec<serde_json::Value> = (0..MENU_MAX_OPTIONS + 1)
+            .map(|i| json!({ "label": format!("选项{i}") }))
+            .collect();
+        let error = parse_menu_args(&json!({ "title": "太多", "options": many })).unwrap_err();
+        assert!(error.contains("2-10"), "unexpected: {error}");
+
+        // 重复 id 让选择无法唯一映射。
+        let error = parse_menu_args(&json!({
+            "title": "重复",
+            "options": [{ "label": "A", "id": "x" }, { "label": "B", "id": "x" }]
+        }))
+        .unwrap_err();
+        assert!(error.contains("duplicate"), "unexpected: {error}");
+
+        // 空标题 / 空 label。
+        assert!(parse_menu_args(&json!({
+            "title": "   ",
+            "options": [{ "label": "A" }, { "label": "B" }]
+        }))
+        .is_err());
+        assert!(parse_menu_args(&json!({
+            "title": "空 label",
+            "options": [{ "label": "A" }, { "label": "  " }]
+        }))
+        .is_err());
+
+        // 未知字段（schema 漂移）直接拒绝。
+        assert!(parse_menu_args(&json!({
+            "title": "额外字段",
+            "multi": true,
+            "options": [{ "label": "A" }, { "label": "B" }]
+        }))
+        .is_err());
+    }
 
     #[test]
     fn orchestration_tool_names_are_stable() {

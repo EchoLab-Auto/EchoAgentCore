@@ -106,6 +106,57 @@ impl Drop for SudoResolvedGuard<'_> {
     }
 }
 
+/// `present_menu` 的 MenuResolved 恰好一次保证。
+///
+/// 与 [`SudoResolvedGuard`] 同语义：正常路径调用 [`MenuResolvedGuard::resolve`]
+/// 发出选单结果；其余退出路径（含外层工具守卫超时 drop 掉 `present_menu`
+/// future）由 Drop 兜底——取消 broker 条目并发出"已取消"事件，Panel 的选单
+/// 弹层因此总能关闭。
+struct MenuResolvedGuard<'a> {
+    agent: &'a Agent,
+    broker: Arc<crate::menu::MenuBroker>,
+    request_id: u64,
+    resolved: bool,
+}
+
+impl<'a> MenuResolvedGuard<'a> {
+    fn new(agent: &'a Agent, broker: &Arc<crate::menu::MenuBroker>, request_id: u64) -> Self {
+        Self {
+            agent,
+            broker: Arc::clone(broker),
+            request_id,
+            resolved: false,
+        }
+    }
+
+    fn resolve(&mut self, accepted: bool, message: impl Into<String>) {
+        if self.resolved {
+            return;
+        }
+        self.resolved = true;
+        // 幂等：已被 submit/取消的条目 remove 返回 None，无副作用。
+        self.broker.cancel(self.request_id);
+        self.agent.emit(BackendEvent::MenuResolved {
+            request_id: self.request_id,
+            accepted,
+            message: message.into(),
+        });
+    }
+}
+
+impl Drop for MenuResolvedGuard<'_> {
+    fn drop(&mut self) {
+        if !self.resolved {
+            self.broker.cancel(self.request_id);
+            self.agent.emit(BackendEvent::MenuResolved {
+                request_id: self.request_id,
+                accepted: false,
+                message: "选单已取消（执行被中断）".into(),
+            });
+        }
+    }
+}
+
 pub(crate) struct InboundTurnRegistration {
     pub id: String,
     pub cancel: tokio_util::sync::CancellationToken,
@@ -146,6 +197,10 @@ pub struct Agent {
     /// root). `run_sudo` awaits a password submitted on the dedicated sudo
     /// channel; see [`crate::sudo`].
     pub sudo_broker: tokio::sync::RwLock<Option<Arc<crate::sudo::SudoBroker>>>,
+    /// Human-in-the-loop 选单 broker（组合根注入）。`present_menu` 在此
+    /// 注册未决选单并等待用户在 Panel 中选择；应答走专用 menu 通道，
+    /// 见 [`crate::menu`]。
+    pub menu_broker: tokio::sync::RwLock<Option<Arc<crate::menu::MenuBroker>>>,
     system_prompt_cache: RwLock<Option<String>>,
     /// Decomposed system-prompt blocks of the most recent turn, kept so the
     /// panel can visualize the exact prompt sections sent to the LLM.
@@ -317,6 +372,7 @@ impl Agent {
             handle: tokio::sync::RwLock::new(None),
             event_sink: std::sync::RwLock::new(None),
             sudo_broker: tokio::sync::RwLock::new(None),
+            menu_broker: tokio::sync::RwLock::new(None),
             system_prompt_cache: RwLock::new(None),
             last_prompt_blocks: tokio::sync::Mutex::new(None),
             plugin_reload_started: AtomicBool::new(false),
@@ -867,6 +923,13 @@ impl Agent {
             .unwrap_or(true)
     }
 
+    /// 选单插件（`echo-agent.menu`）对本 agent 是否生效：
+    /// 全局启用（共享注册表）∧ 本 persona 白名单。
+    fn menu_plugin_enabled(&self) -> bool {
+        self.persona_allows_plugin(crate::plugins::MENU_PLUGIN_ID)
+            && self.plugin_globally_enabled(crate::plugins::MENU_PLUGIN_ID)
+    }
+
     /// 共享注册表中该插件当前是否启用（无全局锚点 = true，以名单为准）。
     fn plugin_globally_enabled(&self, plugin_id: &str) -> bool {
         plugin_host_global()
@@ -1090,6 +1153,10 @@ impl Agent {
         if name == "spawn_parallel_task" && self.loop_mode() == echo_defs::LoopMode::Single {
             return false;
         }
+        // 选单工具随 `echo-agent.menu` 插件启停（persona 白名单 ∧ 全局）。
+        if name == "present_menu" && !self.menu_plugin_enabled() {
+            return false;
+        }
         let guard = self.capabilities.lock().unwrap();
         let Some(cap) = guard.as_ref() else {
             return true;
@@ -1190,6 +1257,20 @@ impl Agent {
             }
         } else {
             tracing::warn!("sudo broker slot busy, ignoring attach");
+        }
+    }
+
+    /// Attach the 选单 broker (called once by the composition root).
+    /// No-op when a broker is already attached.
+    pub fn attach_menu_broker(&self, broker: Arc<crate::menu::MenuBroker>) {
+        if let Ok(mut slot) = self.menu_broker.try_write() {
+            if slot.is_none() {
+                *slot = Some(broker);
+            } else {
+                tracing::warn!("menu broker slot busy, ignoring attach");
+            }
+        } else {
+            tracing::warn!("menu broker slot busy, ignoring attach");
         }
     }
 
@@ -2406,7 +2487,7 @@ impl Agent {
                 // run_sudo 是 agent 内置编排工具（不在注册表内），其内部已有
                 // 授权+执行双重超时，外圈只需长过两者之和。
                 let tool_timeout = {
-                    let (base, sudo_bound) = {
+                    let (base, sudo_bound, menu_bound) = {
                         let config = self.config.read().await;
                         (
                             config.effective_tool_timeout(),
@@ -2415,10 +2496,17 @@ impl Agent {
                                     + config.sudo.command_timeout_secs
                                     + 30,
                             ),
+                            std::time::Duration::from_secs(
+                                crate::menu::MENU_WAIT_TIMEOUT_SECS + 30,
+                            ),
                         )
                     };
                     let hinted = if call.name == "run_sudo" {
                         Some(sudo_bound)
+                    } else if call.name == "present_menu" {
+                        // 选单等待用户在 Panel 中选择：外圈守卫必须长过
+                        // 等待窗口本身，否则会在用户选择前把 future drop 掉。
+                        Some(menu_bound)
                     } else {
                         match serde_json::from_str::<serde_json::Value>(&call.arguments) {
                             Ok(args) => self
@@ -2596,6 +2684,10 @@ impl Agent {
                 .run_sudo(session_id, args)
                 .await
                 .map(crate::tool::ToolResult::text),
+            "present_menu" => self
+                .present_menu(session_id, args)
+                .await
+                .map(crate::tool::ToolResult::text),
             other => {
                 // Every orchestration tool must live in the single dispatch
                 // table; a name here that is not in the table would silently
@@ -2754,6 +2846,96 @@ impl Agent {
             std::time::Duration::from_secs(config.command_timeout_secs.max(1)),
         )
         .await
+    }
+
+    /// 向用户发起选单并等待其选择（`present_menu`，选单插件）。
+    ///
+    /// 与 [`Self::run_sudo`] 同构：向 [`MenuBroker`](crate::menu::MenuBroker)
+    /// 注册未决请求 → 发 `MenuRequest` 事件 → 等待 Panel 经专用通道回传的
+    /// 选择。选单内容与结果都不是秘密，会进入会话日志与 LLM 上下文（模型
+    /// 据此继续下一步），这是它存在的意义。
+    ///
+    /// 返回给模型的文案必须能区分三种结局：选定 / 取消 / 超时——把"取消"
+    /// 当成选择会让模型在用户未表态时继续执行。
+    async fn present_menu(
+        &self,
+        session_id: &str,
+        args: serde_json::Value,
+    ) -> Result<String, String> {
+        if !self.menu_plugin_enabled() {
+            return Err(
+                "present_menu: 选单插件（echo-agent.menu）对本智能体未启用，请在智能体配置中启用后重试"
+                    .into(),
+            );
+        }
+        let (title, description, options) = crate::agent::orchestration::parse_menu_args(&args)?;
+        let broker = self
+            .menu_broker
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| "present_menu: menu broker not attached".to_string())?;
+
+        let pending = broker.request();
+        let request_id = pending.request_id;
+        self.emit(BackendEvent::MenuRequest {
+            request_id,
+            session_id: session_id.to_string(),
+            title: title.clone(),
+            description: description.clone(),
+            options: options.clone(),
+            timeout_secs: crate::menu::MENU_WAIT_TIMEOUT_SECS,
+        });
+        // RAII：任何退出路径（含外层工具守卫超时 drop 掉本 future）都恰好
+        // 发一次 MenuResolved 并释放 broker 条目，Panel 的选单弹层不会挂在
+        // 死请求上。
+        let mut resolved = MenuResolvedGuard::new(self, &broker, request_id);
+
+        let receiver = pending.into_receiver();
+        let answer = match tokio::time::timeout(
+            std::time::Duration::from_secs(crate::menu::MENU_WAIT_TIMEOUT_SECS),
+            receiver,
+        )
+        .await
+        {
+            Err(_) => {
+                resolved.resolve(false, "选单超时（用户未选择）");
+                return Err(format!(
+                    "present_menu timed out after {}s — the user did not choose. Do not assume an option; ask in text or continue without the decision.",
+                    crate::menu::MENU_WAIT_TIMEOUT_SECS
+                ));
+            }
+            Ok(Err(_)) => {
+                resolved.resolve(false, "选单通道已关闭");
+                return Err("present_menu: answer channel closed".to_string());
+            }
+            Ok(Ok(answer)) => answer,
+        };
+
+        let Some(option_id) = answer else {
+            resolved.resolve(false, "用户取消了选单");
+            return Ok(
+                "用户取消了选单（未做任何选择）。不要把取消当成选项；可以改为用文字询问，或直接说明你的建议。"
+                    .into(),
+            );
+        };
+        let Some(option) = options.iter().find(|option| option.id == option_id) else {
+            resolved.resolve(false, "选单应答与选项不匹配");
+            return Err(format!(
+                "present_menu: answer carries unknown option id {option_id:?}"
+            ));
+        };
+        resolved.resolve(true, format!("已选择「{}」", option.label));
+        Ok(match option.description.as_deref() {
+            Some(note) => format!(
+                "用户选择了「{}」（id: {}）——{}。请据此继续下一步。",
+                option.label, option.id, note
+            ),
+            None => format!(
+                "用户选择了「{}」（id: {}）。请据此继续下一步。",
+                option.label, option.id
+            ),
+        })
     }
 
     async fn spawn_background_task(
@@ -4666,6 +4848,37 @@ pub mod tests {
         assert!(agent.allows_dynamic_tool("spawn_parallel_task"));
     }
 
+    /// 选单工具随 `echo-agent.menu` 插件启停：persona 白名单未列该插件时
+    /// 工具从 schema 中消失（与 spawn_parallel_task 的循环模式门控同层）。
+    #[tokio::test]
+    async fn present_menu_follows_menu_plugin_whitelist() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Arc::new(test_agent(provider));
+        // 空白名单 = 全部允许。
+        assert!(agent.allows_dynamic_tool("present_menu"));
+
+        // 白名单不含 menu 插件 → 门控关闭。
+        agent
+            .apply_capabilities(&crate::config::AgentProfile {
+                enabled_plugins: vec![crate::plugins::TOOLS_BUILTIN_PLUGIN_ID.to_string()],
+                ..Default::default()
+            })
+            .await;
+        assert!(!agent.allows_dynamic_tool("present_menu"));
+
+        // 白名单显式列出 → 恢复。
+        agent
+            .apply_capabilities(&crate::config::AgentProfile {
+                enabled_plugins: vec![crate::plugins::MENU_PLUGIN_ID.to_string()],
+                ..Default::default()
+            })
+            .await;
+        assert!(agent.allows_dynamic_tool("present_menu"));
+    }
+
     /// 单会话模式（默认）：同一会话的 turn 串行排队——第二个 turn 拿到的是
     /// 第一轮结束后的上下文（能看到 reply-1），且不会并发进入模型。
     #[tokio::test]
@@ -4809,6 +5022,182 @@ pub mod tests {
         assert!(
             errors.iter().all(|m| m.contains("team_id")),
             "errors must explain the missing team_id: {errors:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn present_menu_emits_request_and_returns_selection() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Arc::new(test_agent(provider));
+        let (bridge, handle) = crate::create_bridge();
+        agent.attach(Arc::new(handle));
+        let broker = Arc::new(crate::menu::MenuBroker::new());
+        agent.attach_menu_broker(broker.clone());
+        let session_id = "local:tui::one";
+        agent
+            .trunk
+            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
+        let call = ToolCall {
+            id: "menu-1".into(),
+            name: "present_menu".into(),
+            arguments: r#"{"title":"用哪个方案？","options":[{"label":"方案 A","id":"a"},{"label":"方案 B","id":"b","description":"更稳妥"}]}"#.into(),
+        };
+        let agent_for_task = agent.clone();
+        let task =
+            tokio::spawn(
+                async move { agent_for_task.run_tool(session_id, "branch-1", &call).await },
+            );
+
+        // Wait for the MenuRequest event and answer it over the broker.
+        let mut request_id = None;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+                if let BackendEvent::MenuRequest {
+                    request_id: id,
+                    options,
+                    ..
+                } = event
+                {
+                    assert_eq!(options.len(), 2);
+                    assert_eq!(options[1].id, "b");
+                    request_id = Some(id);
+                    break;
+                }
+            }
+            if request_id.is_some() {
+                break;
+            }
+        }
+        let request_id = request_id.expect("MenuRequest event emitted");
+        assert!(broker.submit(request_id, Some("b".into())));
+
+        let result = task.await.expect("tool completes");
+        assert!(
+            result.text.contains("方案 B") && result.text.contains("更稳妥"),
+            "selection must reach the model: {}",
+            result.text
+        );
+    }
+
+    #[tokio::test]
+    async fn present_menu_cancel_is_not_a_selection() {
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Arc::new(test_agent(provider));
+        let (bridge, handle) = crate::create_bridge();
+        agent.attach(Arc::new(handle));
+        let broker = Arc::new(crate::menu::MenuBroker::new());
+        agent.attach_menu_broker(broker.clone());
+        let session_id = "local:tui::one";
+        agent
+            .trunk
+            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
+        let call = ToolCall {
+            id: "menu-cancel".into(),
+            name: "present_menu".into(),
+            arguments: r#"{"title":"继续吗？","options":[{"label":"继续"},{"label":"停止"}]}"#
+                .into(),
+        };
+        let agent_for_task = agent.clone();
+        let task =
+            tokio::spawn(
+                async move { agent_for_task.run_tool(session_id, "branch-1", &call).await },
+            );
+
+        let mut request_id = None;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+                if let BackendEvent::MenuRequest { request_id: id, .. } = event {
+                    request_id = Some(id);
+                    break;
+                }
+            }
+            if request_id.is_some() {
+                break;
+            }
+        }
+        let request_id = request_id.expect("MenuRequest event emitted");
+        assert!(
+            broker.submit(request_id, None),
+            "cancel resolves the request"
+        );
+
+        let result = task.await.expect("tool completes");
+        assert!(
+            result.text.contains("取消") && !result.text.contains("error"),
+            "cancel must be reported as a non-choice, not an error: {}",
+            result.text
+        );
+    }
+
+    #[tokio::test]
+    async fn present_menu_aborted_by_outer_guard_still_resolves_exactly_once() {
+        // 外层工具守卫超时/取消会 drop 掉 present_menu future；
+        // MenuResolvedGuard 的 Drop 必须兜底发出恰好一次 MenuResolved 并
+        // 释放 broker 条目，否则 Panel 的选单弹层会永远挂在死请求上。
+        let provider = Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        });
+        let agent = Arc::new(test_agent(provider));
+        let (bridge, handle) = crate::create_bridge();
+        agent.attach(Arc::new(handle));
+        let broker = Arc::new(crate::menu::MenuBroker::new());
+        agent.attach_menu_broker(broker.clone());
+        let session_id = "local:tui::one";
+        agent
+            .trunk
+            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
+        let call = ToolCall {
+            id: "menu-abort".into(),
+            name: "present_menu".into(),
+            arguments: r#"{"title":"选一个","options":[{"label":"A"},{"label":"B"}]}"#.into(),
+        };
+        let agent_for_task = agent.clone();
+        let task =
+            tokio::spawn(
+                async move { agent_for_task.run_tool(session_id, "branch-1", &call).await },
+            );
+
+        let mut request_id = None;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+                if let BackendEvent::MenuRequest { request_id: id, .. } = event {
+                    request_id = Some(id);
+                    break;
+                }
+            }
+            if request_id.is_some() {
+                break;
+            }
+        }
+        let request_id = request_id.expect("MenuRequest event emitted");
+        task.abort();
+        let _ = task.await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let mut resolved_events = Vec::new();
+        while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+            if let BackendEvent::MenuResolved { accepted, .. } = event {
+                resolved_events.push(accepted);
+            }
+        }
+        assert_eq!(
+            resolved_events,
+            vec![false],
+            "abort must emit exactly one rejecting MenuResolved"
+        );
+        assert!(
+            !broker.submit(request_id, Some("1".into())),
+            "broker entry must be released"
         );
     }
 

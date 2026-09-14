@@ -21,7 +21,7 @@ y: 2047
 ## 超时治理
 
 - `Tool::timeout_hint`：工具从自己的参数自声明执行超时（如 `bash` 的 `timeout_secs`，默认 120s、上限 300s）
-- 外圈守卫 = `max(tool_timeout_secs（默认 120s）, hint + 15s)`（自声明硬上限 600s；`run_sudo` 特判为授权+执行双超时之和 + 30s）
+- 外圈守卫 = `max(tool_timeout_secs（默认 120s）, hint + 15s)`（自声明硬上限 600s；`run_sudo` 特判为授权+执行双超时之和 + 30s，`present_menu` 特判为等待窗口 + 30s——守卫必须长过用户的思考时间，否则会在选择前把 future drop 掉）
 - 超时只中止单个调用：`bash` 的 `sh -c` 整组进程被 SIGKILL（不留孤儿）；结果以 notice 文本喂回模型，**不中断 turn**，模型可重试或带已有信息继续作答
 
 ## 事件与持久化
@@ -46,6 +46,18 @@ y: 2047
   `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
 - **生命周期**：`ShellStop` 销毁；进程意外退出（try_wait）自动清理并广播关闭事件；
   Core 重启后会话不保留（一次性的运行期资源）
+
+## present_menu：人机交互选单（menu 插件）
+
+让 agent 在 Panel 里向用户发起**选单**（2-10 个选项），用户选定后再继续下一步：
+模型提出选项 → 用户在 Panel 点选 → 选择结果作为工具结果喂回同一次 turn 的上下文。
+
+- 链路：`present_menu` 向 `MenuBroker` 注册未决请求 → 发 `MenuRequest` 事件（标题/说明/选项/超时）→ 带超时等待 oneshot；management server 收到 `menu_answer` 帧后**直接** `broker.submit`——不经 agent 命令队列（应答不是"新输入"，不开启新 turn），也不进会话日志
+- 结果语义（喂回模型的工具结果）三态分明：**选定**返回 `用户选择了「label」（id: …）——description。请据此继续下一步`；**取消**（用户 Esc/点取消）返回"用户取消了选单（未做任何选择）"，提示模型不要当成选项；**超时/中断**返回错误文本
+- 选项归一化：`id` 可省略（按 1-based 位置生成 `"1".."n"`），显式 id 必须唯一非空；`title`、`label` 必填。重复 id / 数量越界（<2 或 >10）/ 未知字段在参数预检阶段拒绝
+- 等待窗口：`MENU_WAIT_TIMEOUT_SECS = 300s`（`menu.rs` 常量）；`MenuResolvedGuard` 的 Drop 兜底保证选定/取消/超时/中断**恰好一次** `MenuResolved`——Panel 弹层不会挂在死请求上（与 sudo guard 同模式）
+- 门控：选单插件 `echo-agent.menu`（persona 白名单 ∧ 全局启停，`Agent::menu_plugin_enabled`）；未启用时工具从 schema 消失、直接调用返回错误。schema 随 turn 重建，配置改动即时生效
+- 局限：选单是 **Panel 侧交互**——QQ 会话里用户看不到弹层，工具描述明确要求改用文字询问；无 Panel 在线时请求超时失败（与 sudo 同语义）
 
 ## run_sudo：人机交互 sudo 授权
 

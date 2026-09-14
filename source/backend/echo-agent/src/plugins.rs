@@ -27,6 +27,11 @@ pub const MANAGEMENT_PANEL_PLUGIN_ID: &str = "echo-agent.management.panel";
 /// 工作区会话管理插件（workspace）：Panel 侧多会话/多目录管理 + git 状态，
 /// 模型侧 `workspace` 工具与激活会话的系统提示注入。
 pub const WORKSPACE_PLUGIN_ID: &str = "echo-agent.workspace";
+/// 选单插件（menu）：模型经 `present_menu` 向 Panel 用户发起选单，
+/// 用户选择后把结果作为工具结果喂回模型继续下一步。
+/// 门控维度是「编排工具 + Panel 应答通道」——工具在 agent 内联派发表中，
+/// 按 persona 白名单 ∧ 全局启停判定（见 `Agent::menu_plugin_enabled`）。
+pub const MENU_PLUGIN_ID: &str = "echo-agent.menu";
 
 /// 循环模式互斥插件（按 persona 二选一，single 为推导兜底，也是默认）：
 /// - `loop.single`：单会话循环（默认）——同一会话内 turn 串行排队，
@@ -96,22 +101,24 @@ pub fn normalize_mode_plugins(list: &mut Vec<String>) -> bool {
     changed
 }
 
-pub const GATED_PLUGIN_IDS: [&str; 5] = [
+pub const GATED_PLUGIN_IDS: [&str; 6] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
     CHECKLIST_PLUGIN_ID,
     ADAPTER_QQ_PLUGIN_ID,
     WORKSPACE_PLUGIN_ID,
+    MENU_PLUGIN_ID,
 ];
 
 /// 全部内置插件 id（与 `scripts/update.sh` 的插件校验清单一致）。
 /// 供插件黑名单移除迁移物化白名单时使用。
-pub const BUILTIN_PLUGIN_IDS: [&str; 10] = [
+pub const BUILTIN_PLUGIN_IDS: [&str; 11] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     ADAPTER_QQ_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
     CHECKLIST_PLUGIN_ID,
     WORKSPACE_PLUGIN_ID,
+    MENU_PLUGIN_ID,
     MANAGEMENT_PANEL_PLUGIN_ID,
     SINGLE_LOOP_PLUGIN_ID,
     PARALLEL_LOOP_PLUGIN_ID,

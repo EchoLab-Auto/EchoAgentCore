@@ -8,7 +8,7 @@ y: 766
 
 # Panel 模态与覆盖层
 
-全部模态与覆盖层行为：Sudo 授权（不可绕过）、分支详情、上下文弹层、Agent 配置弹层，以及各危险操作的确认形式（原生 confirm / 两步确认）。
+全部模态与覆盖层行为：Sudo 授权（不可绕过）、选单（menu）、分支详情、上下文弹层、Agent 配置弹层，以及各危险操作的确认形式（原生 confirm / 两步确认）。
 
 ## 八、模态与覆盖层
 
@@ -28,6 +28,26 @@ graph LR
 
 - 密码经专用 `sudo_password` 帧（不进命令队列/日志/LLM 上下文）；提交后清空输入框
 - `SudoResolved` 到达即关闭弹窗并弹 toast（授权 success / 拒绝或中断 error）；Core 侧保证所有退出路径（含超时、turn 取消）恰好发一次——弹窗不会挂在死请求上
+
+### 8.1b MenuModal（选单，menu 插件）
+
+由 Core `MenuRequest` 事件触发（模型调用 `present_menu` 工具）：标题 + 可选说明 + 选项列表。
+
+```prodoc-flow
+graph LR
+  Req[MenuRequest 事件] --> Modal[选项列表自动聚焦]
+  Modal -->|点击选项 / 数字键 1-9| Pick[sendMenuAnswer: option_id]
+  Modal -->|Esc / 取消按钮| Cancel[sendMenuAnswer: null]
+  Pick --> Wait[等待 Core]
+  Cancel --> Wait
+  Wait --> Resolved[MenuResolved: 卸载弹层]
+```
+
+- **三态分明**：选定回传 `option_id`；取消回传 `null`（模型收到"用户取消"，**不会**被当成某个选项）；超时/中断由 Core 兜底发 `MenuResolved`——弹层不会挂在死请求上
+- 不可绕过：`closable=false`、`mask-closable=false`、无关闭按钮（避免误触把"未表态"当成"表态"）；底部「取消 (Esc)」是唯一的主动放弃入口
+- 交互：选项行显示序号 + label + 可选说明；数字键 1-9 直选；`timeout_secs > 0` 时页脚提示等待时长
+- 应答经专用 `menu_answer` 帧（不经命令队列——应答不是新输入，不开启新 turn）；选定静默关闭，取消/超时才弹 toast
+- 门控：`echo-agent.menu` 插件未启用时模型侧没有该工具（见 [插件化设计](./core-plugins.md)）；QQ 会话里用户看不到面板弹层（工具描述要求改用文字询问）
 
 ### 8.2 BranchModal（分支详情）
 
