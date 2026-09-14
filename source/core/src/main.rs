@@ -708,7 +708,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 MENU_PLUGIN_ID,
                 "选单",
                 version,
-                PluginKind::Tool,
+                PluginKind::Interaction,
                 "menu",
                 "向 Panel 用户发起选单（present_menu 工具 + 专用应答通道），选择结果回到模型继续下一步",
             ),

@@ -45,7 +45,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
 | `echo-agent.checklist` | Tool | 任务清单（checklist 工具包；可按 persona 单独启停，默认启用） |
 | `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
-| `echo-agent.menu` | Tool | 选单（`present_menu` 工具 + Panel 选单弹层；**人在环的选择**——模型发起选项、用户在 Panel 点选、结果回到同一次 turn 继续，见 [工具系统](./core-tools.md)§present_menu） |
+| `echo-agent.menu` | Interaction | 选单（`present_menu` 工具 + Panel 选单弹层；**人在环的选择**——模型发起选项、用户在 Panel 点选、结果回到同一次 turn 继续，见 [工具系统](./core-tools.md)§present_menu）。kind=interaction = 人在环交互面（Panel 内问答），与 adapter/management 同属「整类能力开关」 |
 | `echo-agent.orchestration` | Orchestration | 后台任务/并行分支/子代理/定时器/框架自更新（名义挂载：重启生效） |
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂（名义挂载：重启生效） |
 | `echo-agent.loop.single` | Loop | 单会话循环（默认）：mount 启用 echo-loop 驱动；会话内 turn 串行排队、无会话管理 UI |
@@ -60,7 +60,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 - **插件黑名单 `disabled_plugins` 已于 2026-09-11 移除**：与白名单语义重复（前端首次取消勾选即物化全量白名单），既有配置在加载期物化进白名单（见 [配置持久化](./core-config-persistence.md)）；运行期 `SaveTeam` 只写白名单
 - **前端「启用插件」勾选区的成员规则**（两处 UI：智能体配置弹层 ⚙ 配置、
   设置视图智能体编辑器；判定单一来源 = Panel `capabilities.ts::isPluginCheckboxVisible`）：
-  `kind ∈ {adapter, management}` **∪** 下列包维度门控插件固定清单
+  `kind ∈ {adapter, management, interaction}` **∪** 下列包维度门控插件固定清单
   （`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本节 `GATED_PLUGIN_IDS` 逐项镜像）：
   `tools.builtin` / `skills.dir` / `checklist` / `workspace` / `menu` / `adapter.qq`。
   其余插件（`loop.*` 由循环模式分段控件管理、`orchestration` / `provider.llm`

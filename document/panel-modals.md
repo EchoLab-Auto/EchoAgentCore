@@ -69,7 +69,7 @@ graph LR
 - 字段：名称、描述、系统提示词（留空继承全局）、启用开关（**禁用即卸载记忆**，重启用重新挂载）
 - **API 供应商下拉**（2026-09 新增）：选项 = 「跟随全局默认配置」+ 全局供应商池各 profile（`name（provider / model · key 状态）`）；保存写入 `SaveTeam.api_profile`，运行期立即重建该 persona 的 provider（见 [设置视图 §9.1.1](./panel-settings.md)）
 - 三类能力复选表（插件按 kind 分组、工具/技能按包分组，组级全选）：**白名单语义——空表 = 全部启用**；首次取消勾选时先把全量写入列表再移除该项
-  - 「启用插件」区成员 = `kind ∈ {adapter, management}` ∪ 包维度门控插件固定清单（单一来源 `capabilities.ts::isPluginCheckboxVisible`，与设置视图同一常量；详见 [插件化设计](./core-plugins.md)「新增包维度门控插件时的同步清单」）
+  - 「启用插件」区成员 = `kind ∈ {adapter, management, interaction}` ∪ 包维度门控插件固定清单（单一来源 `capabilities.ts::isPluginCheckboxVisible`，与设置视图同一常量；详见 [插件化设计](./core-plugins.md)「新增包维度门控插件时的同步清单」）。分组按 kind：适配器 / 交互独立成组，其余整类能力项归入「管理面」
 - **保存即热生效**：勾选/取消立即影响该 Agent 的模型可见能力（取消 = 禁用，重新勾选 = 恢复，无需重启；全局禁用优先，不受勾选覆盖）
 - 保存 → `SaveTeam`
 

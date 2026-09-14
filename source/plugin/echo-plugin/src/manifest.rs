@@ -21,6 +21,9 @@ pub enum PluginKind {
     Orchestration,
     /// Management surface (Panel bridge, sudo broker).
     Management,
+    /// Interaction surface: human-in-the-loop UI driven from the agent
+    /// (menus/prompts answered in the Panel on a dedicated channel).
+    Interaction,
 }
 
 impl PluginKind {
@@ -33,6 +36,7 @@ impl PluginKind {
             PluginKind::Adapter => "adapter",
             PluginKind::Orchestration => "orchestration",
             PluginKind::Management => "management",
+            PluginKind::Interaction => "interaction",
         }
     }
 }
@@ -173,6 +177,24 @@ kind = "skill"
         // Missing id either fails deserialization (kind present but id absent
         // → missing required field) or validation; both are errors.
         assert!(parse_manifest(text).is_err());
+    }
+
+    #[test]
+    fn interaction_kind_wire_name_is_stable() {
+        // 前端按字符串分派显示分组：wire 名必须稳定。
+        assert_eq!(PluginKind::Interaction.as_str(), "interaction");
+        let m = PluginManifest::builtin(
+            "echo-agent.menu",
+            "选单",
+            "0.1.0",
+            PluginKind::Interaction,
+            "menu",
+            "desc",
+        );
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("\"kind\":\"interaction\""), "{json}");
+        let back: PluginManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.kind, PluginKind::Interaction);
     }
 
     #[test]
