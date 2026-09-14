@@ -58,7 +58,7 @@ pub enum WsMessage {
 - **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`（`SaveSkill.system` 声明系统提示词技能）、`InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource`（Git 来源技能，见 [技能系统](./core-skills.md)）、`SaveTeam/DeleteTeam/ToggleTeam`（`SaveTeam.system_skills` 声明人格系统提示词技能；`TeamInfo.system_skills` / `SkillInfo.system` 随列表事件下发；`SaveTeam.api_profile` / `TeamInfo.api_profile` 声明与回推人格级 API 供应商引用；`PluginInfo.package` 回推插件所属包——横跨 plugin+tool+skill 的组合标签）
 - **运维类**：
   - QQ：`Start/Stop/RestartAdapter`、`UpdateQqAllowlist/Denylist`、`SetQqGateMode`、`SetQqOwner`、`RequestQqLoginStatus`、`RequestQqQrcode`——**均带可选 `adapter`（实例名，`#[serde(default)]`）**：给定 = 精确寻址该实例；缺省 = 唯一 QQ 实例时回退，多实例时报错要求显式指定（旧 Panel 单实例部署行为不变）。登录由 Core 代理（`QqLoginStatus`/`QqQrcode` 事件回推）
-  - 工作区：`RequestWorkspaceSessions` / `SaveWorkspaceSession` / `DeleteWorkspaceSession` / `ActivateWorkspaceSession` / `RequestWorkspaceGitStatus`——会话类命令，**`team_id` 必填**并按 persona 路由；状态即改即存（`echo-workspaces-{id}.json`），git 为只读采集
+  - 工作区：`RequestWorkspaceSessions` / `SaveWorkspaceSession` / `DeleteWorkspaceSession` / `ActivateWorkspaceSession` / `RequestWorkspaceGitStatus`——会话类命令，**`team_id` 必填**并按 persona 路由；状态即改即存（`echo-workspaces-{id}.json`），git 为只读采集。**激活 = 进入项目对话通道**（2026-09-14 重定义）：前端「本地当前对话」按 `active` 投影——选通道 = 激活、选默认本地会话 = 取消激活；`active` 变化必须广播 `WorkspaceSessions`
   - API：`UpdateApiConfig/SwitchApi/TestApi/QueryApiBalance/DeleteApi`（2026-09：`SwitchApi` 全局激活已被 persona 级选用取代——`SaveTeam.api_profile` 引用供应商池；协议字段保留兼容，UI 不再暴露；`QueryApiBalance` 查 DeepSeek 官方 `/user/balance`，回 `ApiBalanceResult`）
 
 完整变体与载荷见 `echo-protocol/src/command.rs`；QQ 管理类还有 `RequestGroupList` / `RequestFriendList` / `RequestQqFilterConfig` 等查询命令。
@@ -88,7 +88,7 @@ graph LR
 - **Shell**：`ShellSessionsList` / `ShellSessionStarted` / `ShellExecStarted` / `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
 - **状态快照**：`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`、`Error`（也用于信息性 toast）
 - **QQ 管理**：`GroupList`、`FriendList`、`QqFilterConfig`、`QqGateMode`、`QqLoginStatus`、`QqQrcode`（二维码 PNG base64；均带 `adapter` 实例名）
-- **工作区会话**：`WorkspaceSessions`（列表 + 激活标记，`team_id` 归属）、`WorkspaceGitStatus`（某会话各目录的 git 快照：分支 / 领先落后 / 暂存·修改·未跟踪计数 / 最近提交 / 变更文件列表 / 错误）
+- **工作区会话**：`WorkspaceSessions`（列表 + 激活标记，`team_id` 归属；**`active` 是项目通道的单一事实来源**——面板/工具 `use` 等所有激活来源都必须广播，前端据此切换本地对话投影，2026-09-14）、`WorkspaceGitStatus`（某会话各目录的 git 快照：分支 / 领先落后 / 暂存·修改·未跟踪计数 / 最近提交 / 变更文件列表 / 错误）
 - **sudo 授权**：`SudoRequest`（请用户输入密码）/ `SudoResolved`（关闭弹窗/toast；所有退出路径恰好一次，由 run_sudo guard 保证——工具侧链路见 [工具系统](./core-tools.md)）
 
 ## 工具事件的精确配对

@@ -189,4 +189,6 @@ group_ids = []
 工作区会话（`echo-agent.workspace` 插件）独立持久化于
 `~/.config/echo-agent-core/echo-workspaces-{id}.json`（每 persona 一份；
 `{active, sessions[]}` 文档，任何变更即时原子写回）——与配置 TOML、会话
-JSON 均不共用路径。
+JSON 均不共用路径。`active` 同时是「项目通道」的单一事实来源（激活 = 本地
+对话切换 + 提示词注入，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道）；
+**所有激活来源（面板/工具 `use`）都必须广播 `WorkspaceSessions`**。

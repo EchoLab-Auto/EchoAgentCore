@@ -24,6 +24,7 @@ Core（EchoAgentCore）是 Agent 后端核心服务，Rust 实现。组合根在
 - 每个 agent 独立 `TrunkStore`：事件日志、显示时间线、会话持久化文件（`echo-sessions-{id}.json`）
 - 模型上下文 = 事件日志的投影（token 预算裁剪）；显示时间线带来源/工具/推理元数据
 - 时间线序号 `timeline_seq` 支持增量同步（`since_seq`），切换 agent 只传增量
+- 本地对话支持**工作区通道**（`local:workspace:<id>:local_user`）：激活工作区 = 进入项目对话——本地上下文切换 + 提示词注入（2026-09-14，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道）
 
 ## 多模态输入（图片）
 
