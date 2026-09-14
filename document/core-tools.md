@@ -53,6 +53,7 @@ y: 2047
 模型提出选项 → 用户在 Panel 点选 → 选择结果作为工具结果喂回同一次 turn 的上下文。
 
 - 链路：`present_menu` 向 `MenuBroker` 注册未决请求 → 发 `MenuRequest` 事件（标题/说明/选项/超时）→ 带超时等待 oneshot；management server 收到 `menu_answer` 帧后**直接** `broker.submit`——不经 agent 命令队列（应答不是"新输入"，不开启新 turn），也不进会话日志
+- Panel 呈现：**会话区内联卡片**（`MenuCard`，追加在消息流尾部，按 `session_id` 归属过滤；非弹窗，见 [模态与覆盖层](./panel-modals.md)§8.1b）
 - 结果语义（喂回模型的工具结果）三态分明：**选定**返回 `用户选择了「label」（id: …）——description。请据此继续下一步`；**取消**（用户 Esc/点取消）返回"用户取消了选单（未做任何选择）"，提示模型不要当成选项；**超时/中断**返回错误文本
 - 选项归一化：`id` 可省略（按 1-based 位置生成 `"1".."n"`），显式 id 必须唯一非空；`title`、`label` 必填。重复 id / 数量越界（<2 或 >10）/ 未知字段在参数预检阶段拒绝
 - 等待窗口：`MENU_WAIT_TIMEOUT_SECS = 300s`（`menu.rs` 常量）；`MenuResolvedGuard` 的 Drop 兜底保证选定/取消/超时/中断**恰好一次** `MenuResolved`——Panel 弹层不会挂在死请求上（与 sudo guard 同模式）
