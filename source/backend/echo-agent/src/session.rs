@@ -801,10 +801,16 @@ impl TrunkStore {
 
     /// Evict identity labels idle longer than TTL. Called periodically from a
     /// background task; only the source label is dropped, the trunk survives.
+    ///
+    /// **工作区通道常驻**（scope = `workspace`）：它们是用户管理的项目上下文
+    /// （每工作区一条、数量有界），不随闲置回收——否则会话列表行消失、
+    /// 重建时昵称退化（2026-09-14 激活 = 进入项目对话）。
     pub fn evict_idle(&self) {
         let now = chrono::Utc::now().timestamp_millis();
-        self.identities
-            .retain(|_, s| now - s.last_active() * 1000 < IDENTITY_IDLE_TTL_MS);
+        self.identities.retain(|_, s| {
+            s.session_key.scope == "workspace"
+                || now - s.last_active() * 1000 < IDENTITY_IDLE_TTL_MS
+        });
     }
 
     /// Get or create an identity label for the given key. Every identity is
@@ -1656,6 +1662,28 @@ mod tests {
     fn session_key_parse_malformed() {
         assert!(SessionKey::parse("abc").is_none());
         assert!(SessionKey::parse("a:b").is_none());
+    }
+
+    /// 工作区通道不随闲置回收（列表行常驻），普通身份照常回收。
+    #[tokio::test]
+    async fn evict_idle_keeps_workspace_channels() {
+        let store = TrunkStore::new(1000);
+        let channel = store.ensure_workspace_channel("proj", "Proj");
+        let plain = store.get_or_create(&SessionKey::parse("qq:dm::111").unwrap(), "a".into(), None);
+        let past = chrono::Utc::now().timestamp() - (IDENTITY_IDLE_TTL_MS / 1000) * 2;
+        channel
+            .last_active
+            .store(past, std::sync::atomic::Ordering::Relaxed);
+        plain
+            .last_active
+            .store(past, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(store.len(), 2);
+        store.evict_idle();
+        assert!(
+            store.get("local:workspace:proj:local_user").is_some(),
+            "workspace channel survives eviction"
+        );
+        assert!(store.get("qq:dm::111").is_none(), "stale identity evicted");
     }
 
     #[tokio::test]

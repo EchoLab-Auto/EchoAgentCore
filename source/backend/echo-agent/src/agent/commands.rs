@@ -969,7 +969,18 @@ impl Agent {
             } => {
                 // Parse or fall back to local TUI session key.
                 let key = SessionKey::parse(&session_id).unwrap_or_else(SessionKey::local_tui);
-                let session = self.trunk.get_or_create(&key, "local user".into(), None);
+                // 工作区通道（激活 = 进入项目对话）：昵称解析为工作区名，重建
+                // 不退化（正常路径由激活 ensure 注册，这里是兜底）。
+                let nickname = if key.scope == "workspace" {
+                    self.workspace_store()
+                        .and_then(|store| store.get(&key.scope_id))
+                        .map(|ws| ws.name)
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or_else(|| key.scope_id.clone())
+                } else {
+                    "local user".into()
+                };
+                let session = self.trunk.get_or_create(&key, nickname, None);
                 let sid = session.id.clone();
                 let received_at_ms = chrono::Utc::now().timestamp_millis();
                 let message_sequence = self.next_message_sequence();
