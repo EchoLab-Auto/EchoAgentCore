@@ -123,6 +123,7 @@ QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的
 - 出站工具：每人格注册**自己实例集合**的 `send_*`/`get_*`；多实例时 schema 增加可选 `account`（实例名），缺省在多实例下报错列出可选值
 - 管理面（门控/名单/owner/登录）：命令与事件均带 `adapter` 字段；缺省时若只有唯一实例则回退（旧 Panel 兼容）
 - **登录由 Core 代理**：`RequestQqLoginStatus` / `RequestQqQrcode`（二维码以 PNG base64 回推 `QqQrcode` 事件），Panel 不再直连 OneBot HTTP / docker
+- **二维码陈旧自动刷新**：`login_qrcode_png` 先探测容器内 PNG 的 mtime，缺失或 >90s（`QR_MAX_AGE_SECS`）时经 WebUI（`webui.json` token → `sha256(token+".napcat")` → `/api/auth/login` → `/api/QQLogin/RefreshQRcode`）让 NapCat 重新生成、等 2s 落盘再取；刷新失败仅告警并退回读现有文件。NapCat 自身轮换循环停摆时（实测会发生），这是"刷新没反应"的解法；新鲜码（<90s）直接返回，不会作废用户刚扫的码
 
 ## 运行时可变性
 

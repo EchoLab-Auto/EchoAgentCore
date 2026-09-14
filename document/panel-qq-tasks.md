@@ -20,7 +20,7 @@ y: 637
 - **无实例零噪音**：实例列表为空（QQ 未启用）时面板**不发任何命令**（`refreshLists` 直接返回、登录区跳过请求）——此前打开面板会发 6 条必被 Core 拒绝的查询，堆出"QQ 适配器未找到"×5 + "QQ 实例 qq 未找到"×1
 - **适配器行**：逐实例列出（状态点、display name `QQ（<persona> / <实例>）`、self_id、运行中/已停止 胶囊；启动/停止/重启按钮 `StartAdapter`/`StopAdapter`/`RestartAdapter`，断连禁用）
 - **刷新列表**：逐实例拉取群/好友/门控配置/管理员/登录状态（挂载时与连接恢复时自动触发）
-- **扫码登录区（Core 代理）**：登录状态与二维码都走 WS——`RequestQqLoginStatus` → `QqLoginStatus` 事件；「获取登录二维码」→ `RequestQqQrcode` → `QqQrcode`（PNG base64，前端转 data URL）；**Panel 不再直连 OneBot HTTP / docker**（旧 `/api/qq/*` 已移除）。适配器运行中 + 离线 + 无二维码时**自动获取一次**（`qrRequested` 单次闸）；获取失败显示错误行
+- **扫码登录区（Core 代理）**：登录状态与二维码都走 WS——`RequestQqLoginStatus` → `QqLoginStatus` 事件；「获取登录二维码」→ `RequestQqQrcode` → `QqQrcode`（PNG base64，前端转 data URL）；**Panel 不再直连 OneBot HTTP / docker**（旧 `/api/qq/*` 已移除）。适配器运行中 + 离线 + 无二维码时**自动获取一次**（挂载即判定，`immediate`；`qrRequested` 单次闸）；获取失败显示错误行。Core 对陈旧码（>90s）自动向 NapCat 请求重新生成后再返回，因此手动「获取登录二维码」总能拿到接近新鲜的码
   - 连接状态经 `AdapterStateChanged` 实时推送（扫码成功后状态行自动转"已连接"）；二维码约 2 分钟有效；显示 `QQ 管理员：{owner}`（只读——`SetQqOwner` 协议命令未接 UI）与实例 WebUI 链接（`AdapterStatus.webui_url`，多实例各不同）
 - **门控模式**：分段选择 无约束/白名单/黑名单（`SetQqGateMode{adapter}` 即选即生效），每模式附说明
 - **2×2 名单卡**（白名单用户/黑名单用户/白名单群/黑名单群）：计数胶囊 + 已选 id 筹码（点击移除，黑名单染 error 色）+ 候选筹码（好友/群列表，点击切换归属，`UpdateQqAllowlist`/`UpdateQqDenylist` 带 `adapter` 提交）；**黑名单群无候选列表**（提示"群列表仅对白名单开放，黑名单群请在 Core 侧配置"）
