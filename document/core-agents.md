@@ -37,7 +37,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 - 当前 agent 持久化于 localStorage（`echo-panel-active-team`），刷新/重连后停留原 agent
 - 切换 agent：先渲染该 agent 的时间线缓存（零等待），再以 `since_seq` 增量刷新
-- 侧边栏会话/分支卡与「全局」分组仅**并行多会话模式**显示；单会话模式整体隐藏
+- 侧边栏分支卡与「全局」会话项仅**并行多会话模式**显示；单会话模式隐藏（会话切换统一在入口行「会话」按钮，2026-09-14 起）
 
 ## 能力隔离
 
@@ -71,7 +71,7 @@ description = "管理型人格"
 
 [agent.teams.self-coding]
 name = "self-coding"
-# 显式开启并行多会话循环模式（会话卡/全局分组/可见分支）
+# 显式开启并行多会话循环模式（侧栏分支卡/全局项/可见分支）
 enabled_plugins = ["echo-agent.orchestration", "echo-agent.tools.builtin", "echo-agent.management.panel"]
 # 可选：persona 级 API（引用全局供应商池 [agent].api_profiles 中的 profile 名）
 # api_profile = "openai"   # 不配置 = 跟随全局默认配置

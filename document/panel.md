@@ -54,8 +54,8 @@ EchoAgentPanel/
 
 ## 侧边栏与设置页
 
-- `PanelSidebar.vue`：临时分支卡 + 会话卡（按当前 agent 能力开关显示/隐藏）
-- `SessionGroups.vue`：按平台分组（全局/Local/QQ 私聊/QQ 群/其他），组内按最近活跃排序，按 agent 过滤
+- `PanelSidebar.vue`：临时分支卡（仅并行多会话模式；按当前 agent 能力开关显示/隐藏）
+- `SessionSwitcher.vue`：入口行「会话」按钮弹出——按平台分组（Local/QQ 私聊/QQ 群/其他）切换会话；并行模式附「全局」项；每个会话独立上下文（2026-09）
 - `SettingsView.vue`：设置视图——API 设置（`ApiSettings.vue`：概览视图 + 点击「编辑」/「添加 API 服务商」时展开表单，默认不常驻）+ 技能/工具/插件/智能体的浏览、启停、编辑、删除（左侧一级菜单 + 右侧工作区；2026-09-04 起取代原资源视图与 API 弹窗）。技能编辑含**「系统提示词」开关**（`system: true`，详见 [技能系统](./core-skills.md)）；智能体编辑含**「系统提示词 skills」勾选**（SaveTeam.system_skills）与 Git 安装表单
 - `AgentSwitcher.vue`：输入框上方 Agent 切换悬浮卡片；卡片与菜单行显示当前 persona **生效模型**（按 `api_profile` 从全局供应商池解析，未引用 = 全局默认 model）
 - `AgentConfigModal.vue`：聊天区 ⚙「配置」按钮唤起的**会话区内磨砂玻璃弹层**——

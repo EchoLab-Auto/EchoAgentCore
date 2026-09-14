@@ -8,7 +8,7 @@ y: 1164
 
 # Panel 布局与导航
 
-Panel 的布局骨架与导航形态：视图层级（四主视图 + 设置六分类）、应用外壳几何与层叠秩序、侧边栏（临时分支卡/会话卡）、Agent 切换器，以及连接生命周期（重连/自愈）。实现位置以 `web/src/` 相对路径标注。
+Panel 的布局骨架与导航形态：视图层级（四主视图 + 设置六分类）、应用外壳几何与层叠秩序、侧边栏（临时分支卡）、Agent 切换器与会话切换（入口行），以及连接生命周期（重连/自愈）。实现位置以 `web/src/` 相对路径标注。
 
 ## 一、结构总览（层级图）
 
@@ -42,7 +42,6 @@ graph TD
   Layout --> Sider[侧边栏 PanelSidebar]
   Layout --> Main[主区：当前视图组件]
   Sider --> BranchCard[临时分支卡]
-  Sider --> SessionCard[会话卡 SessionGroups]
   Main --> ChatView[ChatView 会话]
   Main --> SettingsView[SettingsView 设置]
   Main --> TasksPanel[TasksPanel 任务]
@@ -90,7 +89,7 @@ graph LR
 
 - 当前视图持久化于 `localStorage: echo-panel-view`（非法值回退 `chat`；旧值 `caps`/`logs` 自动迁移为 `settings`），刷新后恢复（`App.vue:31-40, 92-99`）
 - 主区同一时间只渲染一个视图组件（`App.vue:311-323`）
-- 点选侧边栏会话项**强制切回会话视图**（`App.vue:154-156`）
+- 点选会话项（入口行「会话」切换器）**强制切回会话视图**（`App.vue` selectSession）
 - 任务按钮在有运行中任务时显示计数徽标 `任务(N)`（`App.vue:150-152, 278`）
 
 > 2026-09-04 起原「资源」「日志」视图与 API 设置弹窗合并为「设置」视图（§九），顶栏设置下拉随之移除。
@@ -106,7 +105,7 @@ graph LR
 | 顶栏左 | 品牌 "EchoAgent Panel"（`.brand` 字重 700） | 顶栏分左中右三段，右侧操作 `margin-left:auto` 顶齐 |
 | 顶栏中 | 连接状态点 | 状态组 gap 6px、13px 次要色 |
 | 顶栏右 | 四视图导航（聊天/任务/Shell/设置）、主题开关 | 操作组 gap 6px、允许折行 |
-| 侧边栏 | 临时分支卡 + 会话卡 | 固定 264px，可折叠为 0（`.nm-layout--sider-collapsed` 兜底 `width:0!important` + `overflow:hidden`） |
+| 侧边栏 | 临时分支卡（会话卡已迁至入口行「会话」切换器，2026-09-14） | 固定 264px，可折叠为 0（`.nm-layout--sider-collapsed` 兜底 `width:0!important` + `overflow:hidden`） |
 | 主区 | 当前视图组件 | `flex:1` + `min-width:0`，纵向 flex，`overflow:hidden`（滚动交给视图内部） |
 
 页面级约束（`styles.css:43-57, 147-154, 581-606`）：
@@ -163,22 +162,18 @@ graph LR
 - 点击分支行 → 打开 BranchModal（分支详情）
 - 卡片几何：头部 padding 12px/14px + 11px 折叠 caret，正文 padding 4px/12px/12px；分支行 padding 5px/8px、圆角 6px；徽标圆角 9px、10px 字、主色底（`styles.css:125-145, 222-241`）
 
-### 5.2 会话卡与分组
+### 5.2 会话切换（入口行「会话」按钮，2026-09-14 起）
 
-仅当当前 Agent 为**并行多会话循环模式**时显示（单会话模式会话卡与分支卡整体隐藏）。分组规则（按会话 id `platform:scope:…` 解析）：
+会话卡已从侧边栏**删除**（避免与入口行双入口/状态分叉）——会话切换统一走
+入口行「会话」按钮弹出的 `SessionSwitcher`：
 
-| 分组 | 内容 | 备注 |
-|---|---|---|
-| 全局 | 合成的「全部消息」项（预览"共享同一 trunk 上下文"） | 仅 chatbot 模式；选中后发消息会重定向到本地会话 |
-| Local | 本地会话（`local:tui::local_user`） | 启动默认选中 |
-| QQ 私聊 / QQ 群 / 其他 | 按平台归组 | 空分组隐藏 |
-
+- **按钮显隐**：当前智能体会话数 >1，或并行多会话模式（含「全局」入口）时显示；切换 Agent 强制关闭
+- 分组规则（按会话 id `platform:scope:…` 解析）：Local / QQ 私聊 / QQ 群 / 其他；并行模式顶部另有合成的**「全局」**项（跨会话合并视图，选中后发消息重定向到本地会话）
 - **排序**：组内按 `last_active` 倒序（活跃上浮）
 - **归属过滤**：只显示当前 Agent 的会话（`team_id` 归一化匹配；TeamsList 未到达时他属会话不放行，避免闪现）
 - **忙碌点**：会话有未完成活动时显示主色 `●`（`state.activities[id].phase ≠ completed`）
-- **预览行**：`session.last_message`
 - 点选 = 切换会话过滤（不重拉时间线）+ 强制回会话视图
-- 会话项几何：padding 6px/8px、圆角 6px、3px 透明左边框；选中 = 左边框 `--panel-accent` + `--panel-accent-soft` 底；分组 tag 10px 字、圆角 8px，配色 全局 `#64748b` / Local `#0ea5e9` / QQ 私聊 `#2ea46e` / QQ 群 `#f59e0b` / 其他 `#8b5cf6`（`styles.css:180-219`）
+- 每个群/私聊拥有独立模型上下文（见 [多 Agent](./core-agents.md)§会话模型）
 
 ## 六、Agent 切换器
 
