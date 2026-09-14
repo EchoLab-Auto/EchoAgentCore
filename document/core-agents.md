@@ -21,8 +21,10 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 ## 会话模型
 
-- 会话（Session）= 对话身份，由 `SessionKey`（platform:scope:user_id）标识，带昵称/群名/最后活跃/team_id
-- 同一 agent 内所有会话共享同一个 trunk 上下文；不同 agent 的 trunk 完全隔离
+- 会话（Session）= 对话身份，由 `SessionKey`（platform:scope:user_id，多实例带 `@account`）标识，带昵称/群名/最后活跃/team_id
+- **每个会话拥有独立的模型上下文**（多会话，2026-09）：事件日志是唯一事实来源，事件带 `session` 归属；`TrunkStore` 按会话投影出各自的 `history`（token 预算逐会话生效），不同会话的上下文互不可见——QQ 私聊、QQ 群、本地 TUI 是独立对话
+- 不同 agent 的上下文完全隔离（各自独立的事件日志与投影）
+- 上下文快照（`RequestContext`）按会话返回（`session_id`；`ContextSnapshot` 回带归属）；`CompactHistory` 按会话分别压缩，`ClearHistory` 清空该智能体全部会话
 - `RequestState` 返回**所有人格**的会话（各会话携带自身 team_id），Panel 按当前 agent 过滤展示
 
 ## 临时分支
@@ -48,7 +50,8 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 ## 设计取舍与边界
 
-- **多实例而非单实例多上下文**：每个 Agent 一辆"车"（独立 `Agent::new` + 事件溯源日志），复用现有结构、互不干扰；代价是每 agent 一份上下文内存（数量预期个位数，可接受）。单实例 + 上下文分桶方案因 trunk/事件溯源改动面大、风险高被否决
+- **多实例而非单实例多上下文**（对人而言）：每个人格一辆"车"（独立 `Agent::new` + 事件溯源日志），复用现有结构、互不干扰
+- **人格内多会话上下文**（2026-09 落地）：同一人格内再按来源（本地/QQ 私聊/QQ 群）分区上下文——单份事件日志 + `session` 归属字段 + 按会话投影（`derive_messages_for`），避免"每个聊天一份完整 Agent"的内存与调度开销
 - **配置驱动**：人格在配置文件中定义，`enabled=false` 跳过实例化；运行时可通过 `ToggleTeam` 启停，但不动态增删（改配置重启生效）
 - **兼容性**：无 `[agent.teams]` 的旧配置 = 单 agent（id 仍可为 `default`，但**无特权**）；旧协议 `SendMessage`/会话类命令若无 `team_id` 会被明确拒绝（破坏性变更，2026-09-13），旧 Panel 需同步升级
 - **删除保护**：仅"至少保留一个智能体"；不再有受保护成员

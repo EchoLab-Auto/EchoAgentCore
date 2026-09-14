@@ -182,7 +182,7 @@ group_ids = []
 | 属性 | 说明 |
 |---|---|
 | 文件 | `~/.config/echo-agent-core/echo-sessions-{id}.json`（每个 persona 独立文件，严禁合并；旧默认专用的 `echo-sessions.json` 仅当存在 `default` 人格时于首次启动自动改名迁移，配置里没有 `default` 时旧文件保持原样不动） |
-| 格式 | v5 事件溯源：`events`（append-only 事件日志）为权威，`trunk_history`/`identities`/`timeline` 为持久化投影；v1-v4 旧格式加载时自动迁移 |
+| 格式 | **v6**（2026-09 多会话）：`events`（append-only 事件日志）为权威，每事件带 `session` 归属；`trunk_histories`（按会话投影映射）/`identities`/`timeline` 为持久化投影。v5 及更旧格式加载时自动迁移（无归属事件按 hook 内容归因：QQ 私聊/群/backend 推导 + 粘滞继承 + 兜底本地会话），下次保存写回 v6；v1-v4 旧格式先经事件化迁移再归因 |
 | 触发 | 30s 周期保存（dirty 时）+ 关闭时 flush |
 | 加载 | 启动时自动恢复；显示时间线的 `timeline_seq` 从条目最大 seq 重建，悬空 running 工具条目标注为"已中断" |
 
