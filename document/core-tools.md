@@ -56,9 +56,9 @@ y: 2047
 - Panel 呈现：**会话区内联卡片**（`MenuCard`，追加在消息流尾部，按 `session_id` 归属过滤；非弹窗，见 [模态与覆盖层](./panel-modals.md)§8.1b）
 - 结果语义（喂回模型的工具结果）三态分明：**选定**返回 `用户选择了「label」（id: …）——description。请据此继续下一步`；**取消**（用户 Esc/点取消）返回"用户取消了选单（未做任何选择）"，提示模型不要当成选项；**超时/中断**返回错误文本
 - 选项归一化：`id` 可省略（按 1-based 位置生成 `"1".."n"`），显式 id 必须唯一非空；`title`、`label` 必填。重复 id / 数量越界（<2 或 >10）/ 未知字段在参数预检阶段拒绝
-- 等待窗口：`MENU_WAIT_TIMEOUT_SECS = 300s`（`menu.rs` 常量）；`MenuResolvedGuard` 的 Drop 兜底保证选定/取消/超时/中断**恰好一次** `MenuResolved`——Panel 弹层不会挂在死请求上（与 sudo guard 同模式）
+- 等待窗口：`MENU_WAIT_TIMEOUT_SECS = 300s`（`menu.rs` 常量）；`MenuResolvedGuard` 的 Drop 兜底保证选定/取消/超时/中断**恰好一次** `MenuResolved`——Panel 选单卡片不会挂在死请求上（与 sudo guard 同模式）
 - 门控：选单插件 `echo-agent.menu`（persona 白名单 ∧ 全局启停，`Agent::menu_plugin_enabled`）；未启用时工具从 schema 消失、直接调用返回错误。schema 随 turn 重建，配置改动即时生效
-- 局限：选单是 **Panel 侧交互**——QQ 会话里用户看不到弹层，工具描述明确要求改用文字询问；无 Panel 在线时请求超时失败（与 sudo 同语义）
+- 局限：选单是 **Panel 侧交互**——QQ 会话里用户看不到选单卡片，工具描述明确要求改用文字询问；无 Panel 在线时请求超时失败（与 sudo 同语义）
 
 ## run_sudo：人机交互 sudo 授权
 

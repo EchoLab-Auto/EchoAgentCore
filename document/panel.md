@@ -24,7 +24,7 @@ EchoAgentPanel/
 │       ├── state.ts                 # 状态 + reducer
 │       ├── state_domains/           # timeline / orchestration / helpers
 │       ├── connection.ts            # WS 连接（重连退避 + Bootstrap）
-│       └── components/              # 聊天 / 设置 / sudo / QQ / 任务 / 清单
+│       └── components/              # 聊天（含内联选单）/ 设置 / sudo / QQ / 任务 / 清单
 └── scripts/                         # install.sh / update.sh / uninstall.sh
 ```
 
@@ -51,6 +51,7 @@ EchoAgentPanel/
 - `ReasoningBlock.vue`：推理打字机动画（实时消息 6 秒封顶；历史回放不播）
 - 活动浮条：思考中 / 调用工具 / 子代理 的 spinner + 动态文案
 - 消息入场动画 0.28s 淡入上移，仅实时消息（`animate` 标记）播放
+- `MenuCard.vue`：选单（menu 插件）**内联在会话区消息流尾部**（合成条目，按会话归属过滤；非弹窗）——模型发起选项、用户点选/取消作答，见 [会话视图](./panel-chat.md)§7.4b
 
 ## 侧边栏与设置页
 

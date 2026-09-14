@@ -30,6 +30,9 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 ## 插件模型
 
 - 核心类型：`PluginManifest`（id/name/version/kind/entry/description）+ `BuiltinPlugin` + `MountContext`
+- **插件类型（`PluginKind`，wire 名以 `as_str` 为准）**：`skill` / `tool` / `provider` / `loop` / `adapter` / `orchestration` / `management` / `interaction`。
+  - `interaction`（2026-09-14 新增，选单插件启用）：**人在环交互面**——模型发起、用户在 Panel 应答（Panel 内的问答 UI + 专用应答通道），与 `adapter` / `management` 同属「整类能力开关」，在 Panel「启用插件」勾选区按 kind 即可见（`capabilities.ts::isPluginCheckboxVisible` 的 kind 类判定）
+  - 新增类型时同步：Core `PluginKind::as_str` 的 wire 名（测试守护）+ Panel `capabilities.ts::PLUGIN_KIND_LABELS` 中文名（测试守护覆盖全部 wire 名）
 - 注册为**可逆**副作用：`register_and_mount` 返回 disposer，禁用即卸载注册
 - 数据插件（skill/tool）支持热重载（插件目录 5s 轮询）；代码插件需二进制重载
 - **启动顺序**：`apply_disabled` 先于挂载——禁用插件启动时只注册不挂载；persona 白名单的门控**启动期与运行期统一**由 `Agent::apply_capabilities` 承担（`GATED_PLUGIN_IDS` 表逐人格计算：全局启用 ∧ 白名单）；插件宿主由组合根注入为**进程级单例**（所有人格共享，不再寄居某个“默认人格”）
@@ -71,7 +74,10 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   ③ Panel `capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`（勾选区可见性）
   与 `PACKAGE_DISPLAY_NAMES`（包显示名）。
   ①②③ 均有测试/校验守护；历史事故：workspace 插件仅同步了 ①②，
-  导致智能体配置的「启用插件」中不可见（2026-09-13 修复）
+  导致智能体配置的「启用插件」中不可见（2026-09-13 修复）。
+  另：新增**插件类型**（`PluginKind`）时同步 Panel `PLUGIN_KIND_LABELS`
+  （中文显示名，测试覆盖全部 wire 名）与 `isPluginCheckboxVisible`
+  的 kind 类判定（若属「整类能力开关」）——见「插件模型」
 - **循环模式推导**（互斥，默认与兜底都是单会话）：见[Agent 循环](./core-agent-loop.md)§循环模式（单一来源 `TeamMember::loop_mode()`）
 - **包级聚合**：白名单里的插件 id 即包 id——一次勾选同时门控该插件的
   生命周期与同名包的工具、技能（QQ 包见下「Package」章节）

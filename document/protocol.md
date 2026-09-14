@@ -95,7 +95,7 @@ graph LR
 - **QQ 管理**：`GroupList`、`FriendList`、`QqFilterConfig`、`QqGateMode`、`QqLoginStatus`、`QqQrcode`（二维码 PNG base64；均带 `adapter` 实例名）
 - **工作区会话**：`WorkspaceSessions`（列表 + 激活标记，`team_id` 归属；**`active` 是项目通道的单一事实来源**——面板/工具 `use` 等所有激活来源都必须广播，前端据此切换本地对话投影，2026-09-14）、`WorkspaceGitStatus`（某会话各目录的 git 快照：分支 / 领先落后 / 暂存·修改·未跟踪计数 / 最近提交 / 变更文件列表 / 错误）
 - **sudo 授权**：`SudoRequest`（请用户输入密码）/ `SudoResolved`（关闭弹窗/toast；所有退出路径恰好一次，由 run_sudo guard 保证——工具侧链路见 [工具系统](./core-tools.md)）
-- **选单（menu 插件）**：`MenuRequest`（`title` / `description?` / `options[{id,label,description?}]` / `timeout_secs`，Panel 渲染选单弹层）/ `MenuResolved`（`accepted` + 一句话 `message`；选定/取消/超时/中断全部恰好一次，由 present_menu guard 保证——Panel 弹层不会挂在死请求上）
+- **选单（menu 插件）**：`MenuRequest`（`title` / `description?` / `options[{id,label,description?}]` / `timeout_secs`，Panel 在会话区渲染内联选单卡片）/ `MenuResolved`（`accepted` + 一句话 `message`；选定/取消/超时/中断全部恰好一次，由 present_menu guard 保证——Panel 选单卡片不会挂在死请求上）
 
 ## 工具事件的精确配对
 
