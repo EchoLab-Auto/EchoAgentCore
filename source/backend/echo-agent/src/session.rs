@@ -85,6 +85,20 @@ impl SessionKey {
         }
     }
 
+    /// Create a session key for a local workspace channel
+    /// (`local:workspace:<workspace_id>:local_user`): the workspace's own
+    /// local conversation — activating a workspace enters this channel
+    /// (2026-09-14「激活 = 进入项目对话」).
+    pub fn local_workspace(workspace_id: &str) -> Self {
+        SessionKey {
+            platform: "local".into(),
+            scope: "workspace".into(),
+            scope_id: workspace_id.to_string(),
+            user_id: "local_user".into(),
+            account: None,
+        }
+    }
+
     /// Parse a session ID string back into a key. Returns `None` on legacy
     /// `user_{id}` format (falls back to `local:tui:`) or malformed strings.
     pub fn parse(session_id: &str) -> Option<Self> {
@@ -832,6 +846,27 @@ impl TrunkStore {
                 v.insert(session.clone());
                 session
             }
+        }
+    }
+
+    /// 确保本地工作区通道会话存在（激活 = 进入项目对话；惰性注册后常驻）。
+    ///
+    /// 已存在时把昵称刷新为最新工作区名（工作区可改名而 id 不变），
+    /// 返回刷新后的会话（带 team_id 归属，供 Panel 过滤展示与广播
+    /// `SessionUpdated`）。
+    pub fn ensure_workspace_channel(&self, workspace_id: &str, name: &str) -> Session {
+        let key = SessionKey::local_workspace(workspace_id);
+        let _ = self.get_or_create(&key, name.to_string(), None);
+        match self.identities.get_mut(&key.to_session_id()) {
+            Some(mut entry) => {
+                if !name.is_empty() && entry.nickname != name {
+                    entry.nickname = name.to_string();
+                }
+                entry.touch();
+                (*entry).clone()
+            }
+            // `get_or_create` 刚插入：不可达；兜底再走一次完整路径。
+            None => self.get_or_create(&key, name.to_string(), None),
         }
     }
 
@@ -1599,6 +1634,22 @@ mod tests {
     fn session_key_local_tui() {
         let key = SessionKey::local_tui();
         assert_eq!(key.to_session_id(), "local:tui::local_user");
+    }
+
+    #[test]
+    fn session_key_local_workspace_roundtrip() {
+        let key = SessionKey::local_workspace("echo-agent");
+        assert_eq!(
+            key.to_session_id(),
+            "local:workspace:echo-agent:local_user"
+        );
+        // parse 往返：scope=workspace / scope_id=工作区 id
+        let parsed = SessionKey::parse("local:workspace:echo-agent:local_user").unwrap();
+        assert_eq!(parsed.platform, "local");
+        assert_eq!(parsed.scope, "workspace");
+        assert_eq!(parsed.scope_id, "echo-agent");
+        assert_eq!(parsed.user_id, "local_user");
+        assert_eq!(parsed.to_session_id(), key.to_session_id());
     }
 
     #[test]

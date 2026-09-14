@@ -169,7 +169,7 @@ graph LR
 
 - **按钮显隐**：当前智能体会话数 >1，或并行多会话模式（含「全局」入口）时显示；切换 Agent 强制关闭
 - 分组规则（按会话 id `platform:scope:…` 解析）：Local / QQ 私聊 / QQ 群 / 其他；并行模式顶部另有合成的**「全局」**项（跨会话合并视图，选中后发消息重定向到本地会话）
-- **Local 分组含工作区通道**（`local:workspace:<id>:local_user`，昵称 = 工作区名）：选通道 = 激活对应工作区、选默认会话 = 取消激活；active 回推变化仅当当前停留在 Local 来源会话上时跟随切换（2026-09-14，见 [多 Agent](./core-agents.md)§工作区会话与项目通道）
+- **Local 分组含工作区通道**（`local:workspace:<id>:local_user`，昵称 = 工作区名，标签「工作区」独立配色）：选通道 = 激活对应工作区、选默认会话 = 取消激活；active 回推变化仅当当前停留在 Local 来源会话上时跟随切换（2026-09-14，见 [多 Agent](./core-agents.md)§工作区会话与项目通道）
 - **排序**：组内按 `last_active` 倒序（活跃上浮）
 - **归属过滤**：只显示当前 Agent 的会话（`team_id` 归一化匹配；TeamsList 未到达时他属会话不放行，避免闪现）
 - **忙碌点**：会话有未完成活动时显示主色 `●`（`state.activities[id].phase ≠ completed`）

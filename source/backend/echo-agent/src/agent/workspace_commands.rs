@@ -24,7 +24,7 @@ impl Agent {
                 };
                 match store.upsert(session) {
                     Ok(saved) => {
-                        self.emit_workspace_sessions();
+                        // 列表/激活广播走 store 变更钩子（workspace_after_change）。
                         self.emit(BackendEvent::Error {
                             session_id: None,
                             message: format!("工作区会话已保存：{}（{}）", saved.name, saved.id),
@@ -40,7 +40,7 @@ impl Agent {
                 };
                 match store.delete(&id) {
                     Ok(true) => {
-                        self.emit_workspace_sessions();
+                        // 列表/激活广播走 store 变更钩子（workspace_after_change）。
                         self.emit(BackendEvent::Error {
                             session_id: None,
                             message: format!("工作区会话已删除：{id}"),
@@ -57,7 +57,8 @@ impl Agent {
                 };
                 match store.set_active(id.clone()) {
                     Ok(()) => {
-                        self.emit_workspace_sessions();
+                        // 激活 = 进入项目对话：通道会话注册 + 列表广播都走
+                        // store 变更钩子（workspace_after_change）。
                         let message = match id {
                             Some(id) => format!("已激活工作区会话：{id}"),
                             None => "已取消工作区会话激活".into(),
@@ -102,6 +103,38 @@ impl Agent {
             }
             _ => {}
         }
+    }
+
+    /// 确保当前激活工作区的本地通道会话已注册（激活 = 进入项目对话）。
+    ///
+    /// 返回刷新后的通道会话（昵称 = 最新工作区名），None = 未激活 / 未挂载
+    /// 存储。幂等：重复调用只刷昵称与活跃时间。
+    pub(crate) fn ensure_workspace_channel_for_active(
+        &self,
+    ) -> Option<crate::session::Session> {
+        let store = self.workspace_store()?;
+        let active = store.active()?;
+        Some(
+            self.trunk
+                .ensure_workspace_channel(&active.id, &active.name),
+        )
+    }
+
+    /// 工作区状态变更后的统一广播（store 变更钩子的唯一落点）：
+    ///
+    /// 1. active 存在 → 确保通道会话注册并推送 `SessionUpdated`（面板据此
+    ///    把通道加进会话列表/刷新昵称）；
+    /// 2. 广播 `WorkspaceSessions`（列表 + 激活标记）——面板的「本地当前
+    ///    对话」按 active 投影切换（见文档 §工作区会话与项目通道）。
+    ///
+    /// 面板命令与模型侧 `workspace` 工具（use/create/delete）共用本路径。
+    pub(crate) fn workspace_after_change(&self) {
+        if let Some(session) = self.ensure_workspace_channel_for_active() {
+            self.emit(BackendEvent::SessionUpdated {
+                session: session.info(String::new()),
+            });
+        }
+        self.emit_workspace_sessions();
     }
 
     /// Emit the current workspace session list snapshot.

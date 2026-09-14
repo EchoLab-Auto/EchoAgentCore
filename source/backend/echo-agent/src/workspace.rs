@@ -40,12 +40,39 @@ struct WorkspaceDocument {
     sessions: Vec<WorkspaceSessionInfo>,
 }
 
+/// 变更通知钩子：store 每次成功变更（新建/重命名/删除/激活）后触发一次。
+/// 组合根在装配期经 `Agent::set_workspace_store` 注入——「变更 → 广播」
+/// 的唯一入口（面板命令与模型 `use` 工具共用同一条广播路径）。
+pub type ChangeHook = std::sync::Arc<dyn Fn() + Send + Sync + 'static>;
+
 /// Per-persona workspace store (shared between command handlers, the tool and
 /// the system-prompt builder). All mutations persist atomically.
-#[derive(Debug, Default)]
 pub struct WorkspaceStore {
     doc: RwLock<WorkspaceDocument>,
     persist: Option<PathBuf>,
+    /// 变更钩子（见 [`WorkspaceStore::set_on_change`]）；None = 未接线。
+    on_change: RwLock<Option<ChangeHook>>,
+}
+
+impl std::fmt::Debug for WorkspaceStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (sessions, active) = self.snapshot();
+        f.debug_struct("WorkspaceStore")
+            .field("sessions", &sessions.len())
+            .field("active", &active)
+            .field("persist", &self.persist)
+            .finish()
+    }
+}
+
+impl Default for WorkspaceStore {
+    fn default() -> Self {
+        Self {
+            doc: RwLock::new(WorkspaceDocument::default()),
+            persist: None,
+            on_change: RwLock::new(None),
+        }
+    }
 }
 
 impl WorkspaceStore {
@@ -60,6 +87,23 @@ impl WorkspaceStore {
         Self {
             doc: RwLock::new(doc),
             persist,
+            on_change: RwLock::new(None),
+        }
+    }
+
+    /// 注册变更钩子（组合根装配期注入一次；重复调用替换旧钩子）。
+    pub fn set_on_change(&self, hook: ChangeHook) {
+        if let Ok(mut slot) = self.on_change.write() {
+            *slot = Some(hook);
+        }
+    }
+
+    /// 触发变更通知。必须在释放 `doc` 写锁**之后**调用（钩子会回读 store），
+    /// 且钩子只做广播、不得再次修改 store（避免递归）。
+    fn notify_change(&self) {
+        let hook = self.on_change.read().ok().and_then(|slot| slot.clone());
+        if let Some(hook) = hook {
+            hook();
         }
     }
 
@@ -109,51 +153,66 @@ impl WorkspaceStore {
         }
         session.directories = dirs;
 
-        let mut doc = self.doc.write().unwrap_or_else(|e| e.into_inner());
-        if session.id.trim().is_empty() {
-            let base = slugify(&session.name);
-            let mut candidate = base.clone();
-            let mut n = 2;
-            while doc.sessions.iter().any(|s| s.id == candidate) {
-                candidate = format!("{base}-{n}");
-                n += 1;
+        let result = {
+            let mut doc = self.doc.write().unwrap_or_else(|e| e.into_inner());
+            if session.id.trim().is_empty() {
+                let base = slugify(&session.name);
+                let mut candidate = base.clone();
+                let mut n = 2;
+                while doc.sessions.iter().any(|s| s.id == candidate) {
+                    candidate = format!("{base}-{n}");
+                    n += 1;
+                }
+                session.id = candidate;
             }
-            session.id = candidate;
-        }
-        match doc.sessions.iter_mut().find(|s| s.id == session.id) {
-            Some(existing) => *existing = session.clone(),
-            None => doc.sessions.push(session.clone()),
-        }
-        let result = session;
-        self.save_locked(&doc)?;
+            match doc.sessions.iter_mut().find(|s| s.id == session.id) {
+                Some(existing) => *existing = session.clone(),
+                None => doc.sessions.push(session.clone()),
+            }
+            let result = session;
+            self.save_locked(&doc)?;
+            result
+        };
+        self.notify_change();
         Ok(result)
     }
 
     /// Delete a session; clears the active marker when it pointed at it.
     pub fn delete(&self, id: &str) -> Result<bool, String> {
-        let mut doc = self.doc.write().unwrap_or_else(|e| e.into_inner());
-        let before = doc.sessions.len();
-        doc.sessions.retain(|s| s.id != id);
-        if doc.sessions.len() == before {
-            return Ok(false);
+        let removed = {
+            let mut doc = self.doc.write().unwrap_or_else(|e| e.into_inner());
+            let before = doc.sessions.len();
+            doc.sessions.retain(|s| s.id != id);
+            if doc.sessions.len() == before {
+                false
+            } else {
+                if doc.active.as_deref() == Some(id) {
+                    doc.active = None;
+                }
+                self.save_locked(&doc)?;
+                true
+            }
+        };
+        if removed {
+            self.notify_change();
         }
-        if doc.active.as_deref() == Some(id) {
-            doc.active = None;
-        }
-        self.save_locked(&doc)?;
-        Ok(true)
+        Ok(removed)
     }
 
     /// Activate a session (`None` clears the marker). The id must exist.
     pub fn set_active(&self, id: Option<String>) -> Result<(), String> {
-        let mut doc = self.doc.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(ref id) = id {
-            if !doc.sessions.iter().any(|s| &s.id == id) {
-                return Err(format!("工作区会话 {id} 不存在"));
+        {
+            let mut doc = self.doc.write().unwrap_or_else(|e| e.into_inner());
+            if let Some(ref id) = id {
+                if !doc.sessions.iter().any(|s| &s.id == id) {
+                    return Err(format!("工作区会话 {id} 不存在"));
+                }
             }
+            doc.active = id;
+            self.save_locked(&doc)?;
         }
-        doc.active = id;
-        self.save_locked(&doc)
+        self.notify_change();
+        Ok(())
     }
 
     /// System-prompt text for the active session (`None` = nothing to inject).
@@ -637,6 +696,74 @@ mod tests {
         assert!(store.delete("proj").unwrap());
         assert!(store.active().is_none(), "删除激活会话后清除激活标记");
         assert!(store.prompt_text().is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn change_hook_fires_on_mutations_only() {
+        let (store, path) = temp_store("hook");
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let hits = hits.clone();
+            store.set_on_change(std::sync::Arc::new(move || {
+                hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        }
+        let s = store
+            .upsert(WorkspaceSessionInfo {
+                id: "p".into(),
+                name: "P".into(),
+                description: String::new(),
+                directories: vec![],
+            })
+            .unwrap();
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "upsert");
+        // 读取路径不触发。
+        let _ = store.snapshot();
+        let _ = store.prompt_text();
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        store.set_active(Some(s.id.clone())).unwrap();
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2, "激活");
+        store.set_active(None).unwrap();
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 3, "取消激活");
+        // 无效操作（不存在 id / 重复删除）不触发。
+        assert!(store.set_active(Some("nope".into())).is_err());
+        assert!(!store.delete("nope").unwrap());
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 3);
+        store.delete("p").unwrap();
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 4, "删除");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 钩子在锁外回调：钩子内部回读 store（active/snapshot）不得死锁。
+    #[test]
+    fn change_hook_can_read_the_store() {
+        let (store, path) = temp_store("hook-read");
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
+        {
+            let observed = observed.clone();
+            let weak = std::sync::Arc::downgrade(&store);
+            store.set_on_change(std::sync::Arc::new(move || {
+                if let Some(store) = weak.upgrade() {
+                    let (sessions, active) = store.snapshot();
+                    observed
+                        .lock()
+                        .unwrap()
+                        .push(active.or(Some(format!("{} sessions", sessions.len()))));
+                }
+            }));
+        }
+        store
+            .upsert(WorkspaceSessionInfo {
+                id: "p".into(),
+                name: "P".into(),
+                description: String::new(),
+                directories: vec![],
+            })
+            .unwrap();
+        store.set_active(Some("p".into())).unwrap();
+        let log = observed.lock().unwrap().clone();
+        assert_eq!(log, vec![Some("1 sessions".into()), Some("p".into())]);
         std::fs::remove_file(&path).ok();
     }
 

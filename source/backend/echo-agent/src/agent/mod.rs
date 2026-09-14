@@ -1194,12 +1194,32 @@ impl Agent {
     }
 
     /// 注入该 persona 的工作区会话存储（`echo-agent.workspace` 插件）。
-    pub fn set_workspace_store(&self, store: std::sync::Arc<crate::workspace::WorkspaceStore>) {
+    ///
+    /// 同时完成三件事（激活 = 进入项目对话，2026-09-14）：
+    /// 1. 写入存储槽（命令处理 + 工具 + 提示词注入共用同一实例）；
+    /// 2. 接线**变更钩子**——store 任何成功变更（面板命令 / 模型 `use`
+    ///    工具）后统一广播 `WorkspaceSessions` 并确保通道会话注册，
+    ///    「变更 → 广播」只有一个入口（弱引用，不构成循环）；
+    /// 3. 若持久化的 `active` 存在（重启恢复），把对应通道会话补注册，
+    ///    Panel 的会话列表/投影在连接后即可见（不广播：事件汇聚点尚未接入）。
+    pub fn set_workspace_store(
+        self: &std::sync::Arc<Self>,
+        store: std::sync::Arc<crate::workspace::WorkspaceStore>,
+    ) {
         if let Ok(mut slot) = self.workspace_store.write() {
-            *slot = Some(store);
+            *slot = Some(store.clone());
         } else {
             tracing::warn!("workspace store slot busy, ignoring set_workspace_store");
+            return;
         }
+        let weak = std::sync::Arc::downgrade(self);
+        store.set_on_change(std::sync::Arc::new(move || {
+            if let Some(agent) = weak.upgrade() {
+                agent.workspace_after_change();
+            }
+        }));
+        // 启动补注册：active 持久化 → 通道会话常驻（幂等）。
+        self.ensure_workspace_channel_for_active();
     }
 
     /// 当前 persona 的工作区会话存储（None = 插件未挂载）。
@@ -6454,7 +6474,106 @@ pub mod tests {
         assert!(text.contains("core"));
         assert!(text.contains(env!("CARGO_MANIFEST_DIR")));
 
+        // 激活 = 进入项目对话：通道会话注册并广播 SessionUpdated。
+        let channel = events
+            .iter()
+            .find_map(|e| match e {
+                BackendEvent::SessionUpdated { session }
+                    if session.id == "local:workspace:core:local_user" =>
+                {
+                    Some(session)
+                }
+                _ => None,
+            })
+            .expect("channel SessionUpdated emitted");
+        assert_eq!(channel.nickname, "core");
+        assert_eq!(channel.team_id.as_deref(), Some("t"));
+        // 通道会话常驻 trunk registry（RequestState 会带上它，供切换器展示）。
+        assert!(
+            agent
+                .trunk
+                .all()
+                .iter()
+                .any(|s| s.id == "local:workspace:core:local_user"),
+            "channel session registered"
+        );
+
         std::fs::remove_file(&path).ok();
+    }
+
+    /// 通道广播唯一入口（store 变更钩子）：
+    /// - 重启恢复：装配前 store 已带 active → `set_workspace_store` 补注册通道；
+    /// - 模型侧 `workspace` 工具 `use`：与面板命令同一条广播路径
+    ///   （`WorkspaceSessions` + 通道 `SessionUpdated`）。
+    #[tokio::test]
+    async fn workspace_channel_tool_use_broadcasts() {
+        let store = Arc::new(crate::workspace::WorkspaceStore::load(None));
+        for (id, name) in [("core", "Core"), ("docs", "Docs")] {
+            store
+                .upsert(echo_protocol::WorkspaceSessionInfo {
+                    id: id.into(),
+                    name: name.into(),
+                    description: String::new(),
+                    directories: vec!["/srv/x".into()],
+                })
+                .unwrap();
+        }
+        // 模拟持久化恢复：激活发生在进程装配之前。
+        store.set_active(Some("core".into())).unwrap();
+
+        let agent = Arc::new(test_agent(Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        })));
+        agent.set_team_id(Some("t".into()));
+        agent.set_workspace_store(store.clone());
+        assert!(
+            agent
+                .trunk
+                .all()
+                .iter()
+                .any(|s| s.id == "local:workspace:core:local_user"),
+            "startup ensure registers the persisted active channel"
+        );
+
+        let (bridge, handle) = crate::create_bridge();
+        agent.attach(Arc::new(handle));
+
+        // 模型侧工具直接切换激活（不经命令路径）。
+        let tool = crate::workspace::WorkspaceTool::new(store.clone());
+        crate::tool::Tool::execute(&tool, serde_json::json!({"operation": "use", "id": "docs"}))
+            .await
+            .expect("tool use");
+
+        let mut events = Vec::new();
+        while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+            events.push(event);
+        }
+        let active = events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                BackendEvent::WorkspaceSessions { active, .. } => Some(active.clone()),
+                _ => None,
+            })
+            .expect("WorkspaceSessions broadcast on tool use");
+        assert_eq!(active.as_deref(), Some("docs"));
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                BackendEvent::SessionUpdated { session }
+                    if session.id == "local:workspace:docs:local_user"
+            )),
+            "tool use broadcasts the channel SessionUpdated"
+        );
+        assert!(
+            agent
+                .trunk
+                .all()
+                .iter()
+                .any(|s| s.id == "local:workspace:docs:local_user"),
+            "tool use registers the channel"
+        );
     }
 
     /// workspace 插件门控：白名单外人格的工具包被禁用、提示词区块不注入；
@@ -6476,7 +6595,7 @@ pub mod tests {
             store.clone(),
         )));
         tools.set_package("workspace", crate::plugins::WORKSPACE_PLUGIN_ID);
-        let agent = Agent::new(
+        let agent = Arc::new(Agent::new(
             Arc::new(MockProvider {
                 calls: Arc::new(AtomicUsize::new(0)),
                 reply: "ok".into(),
@@ -6485,7 +6604,7 @@ pub mod tests {
             SkillRegistry::new(),
             tools,
             Arc::new(AdapterRegistry::new()),
-        );
+        ));
         agent.set_workspace_store(store);
 
         // 白名单含 workspace → 工具可见 + 提示区块注入。

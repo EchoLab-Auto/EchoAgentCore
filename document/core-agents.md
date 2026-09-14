@@ -53,10 +53,12 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - `workspace` 工具默认操作该工作区。
 
 **④ 单一事实来源 = `active` 标记**（`echo-workspaces-{id}.json`）。所有激活来源——
-面板按钮、会话切换器、模型 `use` 工具——**都必须广播 `WorkspaceSessions`**；面板的
-「本地当前对话」是 active 的**投影**（active 空 → 默认会话；active=W → W 通道），
-不是独立状态。实现注意：`workspace` 工具的 `use` 路径当前只写存储、不广播（面板
-徽标不刷新）——落地时须与命令路径统一为「变更 → 广播」。
+面板按钮、会话切换器、模型 `use` 工具——共用**同一条广播路径**：store 变更钩子
+（`WorkspaceStore::set_on_change`，由 `Agent::set_workspace_store` 装配期接线，
+弱引用不构成循环）。任何成功变更（新建/重命名/删除/激活）→ 确保通道会话注册 +
+`SessionUpdated`（active 存在时）→ 广播 `WorkspaceSessions`；面板的「本地当前
+对话」是 active 的**投影**（active 空 → 默认会话；active=W → W 通道），不是独立
+状态。重启恢复：装配时持久化的 `active` 直接补注册通道（幂等，不广播）。
 
 **⑤ 前端联动规则**：
 - 会话切换器 Local 分组 = 默认会话 + 已注册通道：**选通道 = 激活对应工作区；选默认会话 = 取消激活**；
