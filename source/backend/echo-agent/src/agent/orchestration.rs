@@ -1315,7 +1315,10 @@ fn self_update_authorized(config: &SelfUpdateConfig, session_id: &str) -> bool {
     let Some(session) = crate::session::SessionKey::parse(session_id) else {
         return false;
     };
-    if session.platform == "local" && session.scope == "tui" {
+    // 本机来源（platform = local）：TUI 与本机工作区通道（local:workspace:*）
+    // 同为本机用户在 Panel 内的操作，授权等级相同——只认平台，不认 scope，
+    // 否则新增的本地通道会被误拒（2026-09-14 实测：workspace 通道拒绝自更新）。
+    if session.platform == "local" {
         return config.allow_local;
     }
     if session.platform != "qq" {
@@ -1549,10 +1552,26 @@ mod tests {
             allowed_qq_users: vec![12345],
         };
         assert!(self_update_authorized(&config, "local:tui::local_user"));
+        // 本机工作区通道（local:workspace:*）同为本机来源，同等授权。
+        assert!(self_update_authorized(
+            &config,
+            "local:workspace:echo-agent:local_user"
+        ));
         assert!(self_update_authorized(&config, "qq:dm::12345"));
         assert!(self_update_authorized(&config, "qq:group:99:12345"));
         assert!(!self_update_authorized(&config, "qq:dm::99999"));
         assert!(!self_update_authorized(&config, "timer:tui::12345"));
+        // allow_local = false 时本机全部 scope 一律拒绝。
+        let strict = SelfUpdateConfig {
+            enabled: true,
+            allow_local: false,
+            allowed_qq_users: vec![],
+        };
+        assert!(!self_update_authorized(&strict, "local:tui::local_user"));
+        assert!(!self_update_authorized(
+            &strict,
+            "local:workspace:echo-agent:local_user"
+        ));
     }
 
     #[tokio::test]

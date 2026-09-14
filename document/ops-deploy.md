@@ -55,7 +55,7 @@ state=running → state=restarting → state=updated（失败时停在 failed / 
 
 ### Agent 自更新授权（framework_update 工具）
 
-Agent 不能向工具传递命令/仓库/路径/分支/服务名——仅接受 `status` 与 `apply` 两个动作，`apply` 还需 `confirm=true`；服务名编译期固定为 `echo-agent-core-update.service`。授权按真实会话 ID 判定：local 会话需 `allow_local = true`；QQ 会话需匹配 `[adapters.qq].owner_qq` 或 `allowed_qq_users`；其他平台一律拒绝。
+Agent 不能向工具传递命令/仓库/路径/分支/服务名——仅接受 `status` 与 `apply` 两个动作，`apply` 还需 `confirm=true`；服务名编译期固定为 `echo-agent-core-update.service`。授权按真实会话 ID 判定：local 平台会话（TUI 与本机工作区通道 `local:workspace:*`）需 `allow_local = true`；QQ 会话需匹配 `[adapters.qq].owner_qq` 或 `allowed_qq_users`；其他平台一律拒绝。
 
 ```toml
 [agent.self_update]

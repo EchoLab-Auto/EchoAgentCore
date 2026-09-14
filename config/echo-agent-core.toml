@@ -67,7 +67,7 @@ text = "请你使用中文"
 [agent.self_update]
 # 仅一键安装后的 systemd 服务环境支持。源码运行时保持关闭。
 enabled = false
-# 本机 Panel 会话可请求更新；QQ 仅允许下方列表及 [adapters.qq].owner_qq。
+# 本机 Panel 会话（TUI / 工作区通道）可请求更新；QQ 仅允许下方列表及 [adapters.qq].owner_qq。
 allow_local = true
 allowed_qq_users = []
 

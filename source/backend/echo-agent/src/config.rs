@@ -35,7 +35,8 @@ pub struct ApiProfile {
 pub struct SelfUpdateConfig {
     /// Register the `framework_update` tool. Disabled for source/dev runs.
     pub enabled: bool,
-    /// Allow requests originating from the local TUI session.
+    /// Allow requests originating from local sessions (TUI and the local
+    /// workspace channel — 本机来源一律同权).
     pub allow_local: bool,
     /// Additional QQ user IDs allowed to request an update.
     pub allowed_qq_users: Vec<u64>,
