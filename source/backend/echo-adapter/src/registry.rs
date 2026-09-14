@@ -137,6 +137,11 @@ mod tests {
                 started_at: None,
                 platform: "mock".into(),
                 configured: self.configured,
+                // 多实例元数据（QQ 适配器使用；mock 无容器归属）。
+                persona: None,
+                container: None,
+                webui_url: None,
+                onebot_url: None,
             }
         }
         async fn start(&self) -> Result<(), AdapterError> {

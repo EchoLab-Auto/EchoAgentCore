@@ -1447,6 +1447,7 @@ impl Agent {
                     message_sequence: structured_message_sequence(content),
                     source: None,
                     images: extract_input_images(content),
+                    session: Some(session.id.clone()),
                 },
             ));
         let snapshot = session.history.lock().await.clone();
@@ -1526,6 +1527,7 @@ impl Agent {
                     message_sequence: Some(message_sequence),
                     source: None,
                     images: extract_input_images(content),
+                    session: Some(session.id.clone()),
                 },
             ));
         let snapshot = session.history.lock().await.clone();
@@ -1555,6 +1557,7 @@ impl Agent {
                 content: reply,
                 reasoning_content: None,
                 tool_calls: vec![],
+                session: Some(session.id.clone()),
             });
         match message_sequence {
             Some(sequence) => self.trunk.insert_event_after_sequence(sequence, event),
@@ -2514,6 +2517,7 @@ impl Agent {
                     id: call.id.clone(),
                     name: call.name.clone(),
                     arguments: call.arguments.clone(),
+                    session: Some(session_id.to_string()),
                 },
             ));
         // 参数解析与预检：给模型可纠正的错误反馈。非法 JSON 或缺少必需
@@ -2609,6 +2613,7 @@ impl Agent {
                     tool_call_id: call.id.clone(),
                     result: result_text.clone(),
                     images: result_images.clone(),
+                    session: Some(session_id.to_string()),
                 },
             ));
         if call.name == "checklist" {
@@ -2652,6 +2657,7 @@ impl Agent {
                     tool_call_id: call.id.clone(),
                     result: result.to_string(),
                     images: vec![],
+                    session: Some(session_id.to_string()),
                 },
             ));
     }
@@ -4764,7 +4770,10 @@ pub mod tests {
                 team_id: None,
                 since_seq: 0,
             },
-            BackendCommand::RequestContext { team_id: None },
+            BackendCommand::RequestContext {
+                team_id: None,
+                session_id: None,
+            },
             BackendCommand::ClearHistory { team_id: None },
         ] {
             agent.apply_command(cmd).await;
@@ -5904,6 +5913,7 @@ pub mod tests {
 
         let log = vec![echo_session::SessionEvent::UserMessage(
             echo_session::event::UserMessage {
+                session: None,
                 content: hook.clone(),
                 timestamp: 0,
                 message_sequence: Some(15),
@@ -5931,6 +5941,7 @@ pub mod tests {
     fn user_message_event_roundtrips_images() {
         let hook = r#"<qq_message_hook>{"message_sequence":3,"content":"看图","images":["https://example.com/a.png"]}</qq_message_hook>"#;
         let event = echo_session::event::UserMessage {
+            session: None,
             content: hook.into(),
             timestamp: 0,
             message_sequence: Some(3),

@@ -42,6 +42,11 @@ pub struct UserMessage {
     /// Multimodal media attached to the message (image URLs / data URIs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// 归属会话 id（多会话上下文，2026-09）：投影按该字段分区——
+    /// 每个来源（本地/QQ 私聊/群）有独立的模型上下文。
+    /// None = 旧版事件（加载期归因迁移）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 /// Source provenance of an inbound message (display/routing only).
@@ -70,6 +75,9 @@ pub struct AssistantMessage {
     /// pre-event-sourced format dropped these).
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
+    /// 归属会话 id（多会话上下文投影分区；None = 旧版事件）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 /// A tool call executed by the harness.
@@ -78,6 +86,9 @@ pub struct ToolCallEvent {
     pub id: String,
     pub name: String,
     pub arguments: String,
+    /// 归属会话 id（多会话上下文投影分区；None = 旧版事件）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 /// The result of a tool call, fed back to the model.
@@ -90,6 +101,9 @@ pub struct ToolResultEvent {
     /// Multimodal media produced by the tool (image URLs / data URIs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// 归属会话 id（多会话上下文投影分区；None = 旧版事件）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 /// A compaction replaced a prefix of the log with a summary.
@@ -99,9 +113,34 @@ pub struct CompactionEvent {
     pub replaced_count: usize,
     /// The summary text that stands in for the replaced events.
     pub summary: String,
+    /// 归属会话 id（多会话下按会话分别压缩；None = 旧版全局压缩）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 impl SessionEvent {
+    /// 事件的归属会话 id（多会话上下文投影分区；None = 旧版/未归因事件）。
+    pub fn session(&self) -> Option<&str> {
+        match self {
+            SessionEvent::UserMessage(event) => event.session.as_deref(),
+            SessionEvent::AssistantMessage(event) => event.session.as_deref(),
+            SessionEvent::ToolResult(event) => event.session.as_deref(),
+            SessionEvent::ToolCall(event) => event.session.as_deref(),
+            SessionEvent::Compaction(event) => event.session.as_deref(),
+        }
+    }
+
+    /// Mutable access to the attribution field (migration).
+    pub fn session_mut(&mut self) -> &mut Option<String> {
+        match self {
+            SessionEvent::UserMessage(event) => &mut event.session,
+            SessionEvent::AssistantMessage(event) => &mut event.session,
+            SessionEvent::ToolResult(event) => &mut event.session,
+            SessionEvent::ToolCall(event) => &mut event.session,
+            SessionEvent::Compaction(event) => &mut event.session,
+        }
+    }
+
     /// Stable event kind for wire/persistence tagging.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -200,6 +239,7 @@ mod tests {
             message_sequence: Some(7),
             source: None,
             images: vec![uri.clone()],
+            session: None,
         };
         let message = user_message(&event);
         assert_eq!(message.images, vec![uri], "image block keeps the payload");
@@ -220,6 +260,7 @@ mod tests {
         let payload = "B".repeat(2048);
         let uri = format!("data:image/jpeg;base64,{payload}");
         let event = ToolResultEvent {
+            session: None,
             tool_call_id: "call_1".into(),
             result: format!("screenshot: {uri}"),
             images: vec![uri.clone()],
@@ -233,6 +274,7 @@ mod tests {
     #[test]
     fn event_roundtrip_preserves_tool_calls() {
         let event = SessionEvent::AssistantMessage(AssistantMessage {
+            session: None,
             content: String::new(),
             reasoning_content: None,
             tool_calls: vec![ToolCall {
@@ -251,6 +293,7 @@ mod tests {
         let cases = [
             (
                 SessionEvent::UserMessage(UserMessage {
+                    session: None,
                     content: "hi".into(),
                     timestamp: 0,
                     message_sequence: None,
@@ -261,6 +304,7 @@ mod tests {
             ),
             (
                 SessionEvent::AssistantMessage(AssistantMessage {
+                    session: None,
                     content: "ok".into(),
                     reasoning_content: None,
                     tool_calls: vec![],
@@ -269,6 +313,7 @@ mod tests {
             ),
             (
                 SessionEvent::ToolCall(ToolCallEvent {
+                    session: None,
                     id: "c".into(),
                     name: "t".into(),
                     arguments: "{}".into(),
@@ -277,6 +322,7 @@ mod tests {
             ),
             (
                 SessionEvent::ToolResult(ToolResultEvent {
+                    session: None,
                     tool_call_id: "c".into(),
                     result: "r".into(),
                     images: vec![],
@@ -285,6 +331,7 @@ mod tests {
             ),
             (
                 SessionEvent::Compaction(CompactionEvent {
+                    session: None,
                     replaced_count: 2,
                     summary: "s".into(),
                 }),

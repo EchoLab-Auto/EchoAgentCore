@@ -167,6 +167,7 @@ mod tests {
     fn sample_log() -> EventLog {
         let log = EventLog::new();
         log.append(SessionEvent::UserMessage(UserMessage {
+            session: None,
             content: "你好".into(),
             timestamp: 1700000000,
             message_sequence: None,
@@ -174,6 +175,7 @@ mod tests {
             images: vec![],
         }));
         log.append(SessionEvent::AssistantMessage(AssistantMessage {
+            session: None,
             content: "回复".into(),
             reasoning_content: None,
             tool_calls: vec![],
@@ -195,6 +197,7 @@ mod tests {
         use crate::event::{ToolCallEvent, ToolResultEvent};
         let log = EventLog::new();
         log.append(SessionEvent::UserMessage(UserMessage {
+            session: None,
             content: "跑一下".into(),
             timestamp: 1700000000,
             message_sequence: Some(1),
@@ -202,11 +205,13 @@ mod tests {
             images: vec![],
         }));
         log.append(SessionEvent::ToolCall(ToolCallEvent {
+            session: None,
             id: "call_1".into(),
             name: "bash".into(),
             arguments: "{}".into(),
         }));
         log.append(SessionEvent::ToolResult(ToolResultEvent {
+            session: None,
             tool_call_id: "call_1".into(),
             result: "ok".into(),
             images: vec![],
@@ -216,6 +221,7 @@ mod tests {
         log.insert_after_sequence(
             1,
             SessionEvent::AssistantMessage(AssistantMessage {
+                session: None,
                 content: "完成".into(),
                 reasoning_content: None,
                 tool_calls: vec![],

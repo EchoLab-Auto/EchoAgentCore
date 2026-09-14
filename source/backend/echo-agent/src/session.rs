@@ -1,13 +1,13 @@
-//! Global conversation trunk with per-source identities.
+//! Multi-session conversation contexts with per-source identities.
 //!
-//! The agent keeps exactly ONE conversation context — the trunk. Every
-//! inbound message forks a temporary branch from a point-in-time snapshot
-//! of the trunk; when the branch finishes, its result is merged back in
-//! append-only order (see [`crate::agent::Agent::process_message`]).
+//! 每个来源（本地 TUI / QQ 私聊 / QQ 群 / …）是一个 `Session`，拥有**独立
+//! 的模型上下文**（按事件归属从同一份 append-only 事件日志投影而来，
+//! 2026-09 多会话改造）。消息到达时从该会话上下文的时点快照 fork 一条临时
+//! 分支；分支结束后按序合并回事件日志（见
+//! [`crate::agent::Agent::process_message`]）。
 //!
-//! `Session` is now a lightweight identity (origin label) bound to the
-//! trunk: it records who said what and where, but owns no conversation
-//! history of its own.
+//! 展示时间线（timeline）仍是全部会话的合并视图（条目自带 session 归属），
+//! 由前端按当前选中会话过滤。
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -118,11 +118,13 @@ impl SessionKey {
     }
 }
 
-/// A source identity bound to the global conversation trunk.
+/// A source identity with its **own conversation context**（多会话, 2026-09）.
 ///
-/// All sessions share the same trunk history and turn lock; a session only
-/// carries provenance metadata (platform user/channel, nickname, activity).
-/// Cloneable: clones share the same trunk and activity clock.
+/// Each session (local TUI / QQ DM / QQ group / …) owns an independent
+/// model-facing history projected from the shared append-only event log
+/// (events carry a `session` attribution). Sessions share only the display
+/// timeline and the write locks; contexts never bleed across sources.
+/// Cloneable: clones share the same history and activity clock.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub id: String,
@@ -132,8 +134,8 @@ pub struct Session {
     pub nickname: String,
     pub group_name: Option<String>,
     last_active: Arc<AtomicI64>,
-    /// The global trunk history (shared by every session, bounded by the
-    /// token budget `memory_limit_tokens`).
+    /// 本会话的模型上下文投影（由事件日志按 `session` 归属过滤导出，
+    /// 受 token 预算 `memory_limit_tokens` 约束）。
     pub history: Arc<Mutex<Vec<ChatMessage>>>,
     /// Serialises trunk snapshot creation and result merges; branch execution never holds this lock.
     pub turn_lock: Arc<tokio::sync::Mutex<()>>,
@@ -192,13 +194,15 @@ impl Session {
     }
 }
 
-/// Registry of source identities plus the single global conversation trunk.
+/// Registry of source identities with per-session conversation contexts.
 pub struct TrunkStore {
     /// Owning team id (None = default). Set once by the Agent.
     team_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     identities: Arc<DashMap<String, Session>>,
     memory_limit_tokens: usize,
-    trunk_history: Arc<Mutex<Vec<ChatMessage>>>,
+    /// 每会话的上下文投影缓存（session_id → history）。事件日志是唯一
+    /// 事实来源，这里只是它的按会话投影（见 `reproject_session`）。
+    session_histories: Arc<DashMap<String, Arc<Mutex<Vec<ChatMessage>>>>>,
     trunk_turn_lock: Arc<tokio::sync::Mutex<()>>,
     /// 单会话模式的 turn 排队闸门（见 [`Session::turn_queue`]）。
     trunk_turn_queue: Arc<tokio::sync::Mutex<()>>,
@@ -228,7 +232,7 @@ impl Clone for TrunkStore {
             team_id: Arc::clone(&self.team_id),
             identities: Arc::clone(&self.identities),
             memory_limit_tokens: self.memory_limit_tokens,
-            trunk_history: Arc::clone(&self.trunk_history),
+            session_histories: Arc::clone(&self.session_histories),
             trunk_turn_lock: Arc::clone(&self.trunk_turn_lock),
             trunk_turn_queue: Arc::clone(&self.trunk_turn_queue),
             timeline: Arc::clone(&self.timeline),
@@ -258,11 +262,16 @@ impl std::fmt::Debug for TrunkStore {
 /// source label is evicted; the trunk history is never touched.
 const IDENTITY_IDLE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// Persistence format version. v5 = event-sourced: the session event log is
-/// the source of truth, `trunk_history`/`identities`/`timeline` are persisted
-/// projections for compatibility. v4 and older (v1 per-session array, v2
-/// shared context, v3 single trunk) migrate into the event log on load.
-const PERSIST_VERSION: u32 = 5;
+/// Persistence format version.
+///
+/// - v5 = event-sourced: the session event log is the source of truth;
+///   `trunk_history`/`identities`/`timeline` are projections.
+/// - v6（2026-09）= **multi-session contexts**: every event carries a
+///   `session` attribution; per-session projections are persisted as
+///   `trunk_histories` (map) instead of the old flat `trunk_history`.
+///   v5 files load fine — events are attributed on load (migration) and the
+///   next save writes v6.
+const PERSIST_VERSION: u32 = 6;
 
 /// Upper bound on persisted display timeline entries.
 const TRUNK_TIMELINE_MAX: usize = 1024;
@@ -274,7 +283,7 @@ impl TrunkStore {
             team_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
             identities: Arc::new(DashMap::new()),
             memory_limit_tokens,
-            trunk_history: Arc::new(Mutex::new(Vec::new())),
+            session_histories: Arc::new(DashMap::new()),
             trunk_turn_lock: Arc::new(tokio::sync::Mutex::new(())),
             trunk_turn_queue: Arc::new(tokio::sync::Mutex::new(())),
             timeline: Arc::new(Mutex::new(Vec::new())),
@@ -457,10 +466,19 @@ impl TrunkStore {
     /// the caller can skip the write instead of silently replacing the file
     /// with garbage.
     fn serialize(&self) -> Option<String> {
-        let history = self.trunk_history.try_lock().ok()?;
         let timeline = self.timeline.try_lock().ok()?;
         let identities = self.all().iter().map(identity_metadata).collect::<Vec<_>>();
         let events = self.event_log.log();
+        // 每会话投影（v6）：调试/兼容读者可读；事件日志仍是唯一事实来源。
+        let mut trunk_histories = serde_json::Map::new();
+        for entry in self.session_histories.iter() {
+            if let Ok(history) = entry.value().try_lock() {
+                trunk_histories.insert(
+                    entry.key().clone(),
+                    serde_json::Value::Array(serialize_messages(&history)),
+                );
+            }
+        }
         let header = self.header.lock().expect("header poisoned").clone();
         serde_json::to_string_pretty(&serde_json::json!({
             "version": PERSIST_VERSION,
@@ -468,7 +486,7 @@ impl TrunkStore {
             // persisted for forward compatibility with older readers.
             "header": header,
             "events": events,
-            "trunk_history": serialize_messages(&history),
+            "trunk_histories": trunk_histories,
             "identities": identities,
             "timeline": &*timeline,
         }))
@@ -491,27 +509,34 @@ impl TrunkStore {
             return 0;
         };
 
-        // v5: event log is authoritative. Re-project the trunk from it.
+        // v5/v6: event log is authoritative. Re-project per session from it.
         if let Some(events) = root["events"].as_array() {
             if let Ok(header) = serde_json::from_value::<Option<echo_session::SessionHeader>>(
                 root["header"].clone(),
             ) {
                 *self.header.lock().expect("header poisoned") = header;
             }
-            let events: Vec<echo_session::SessionEvent> = events
+            let mut events: Vec<echo_session::SessionEvent> = events
                 .iter()
                 .filter_map(|event| serde_json::from_value(event.clone()).ok())
                 .collect();
-            if !events.is_empty() || root["version"].as_u64() == Some(5) {
+            // 旧版（v5 及更早）事件没有会话归属：加载期归因迁移，否则
+            // 多会话投影会把整段历史丢弃（或互相泄漏）。
+            let attributed = attribute_legacy_events(&mut events);
+            let version = root["version"].as_u64();
+            if !events.is_empty() || version == Some(5) || version == Some(6) {
                 self.event_log.extend(events.clone());
-                let projected = echo_session::derive::derive_messages(
-                    &self.event_log.log(),
-                    self.memory_limit_tokens,
-                );
-                if let Ok(mut trunk) = self.trunk_history.try_lock() {
-                    *trunk = projected;
+                if attributed {
+                    tracing::info!(
+                        events = events.len(),
+                        "legacy session events attributed to per-session contexts"
+                    );
+                    self.mark_dirty();
                 }
                 let count = self.restore_identity_labels(&root);
+                // 按会话重建投影（身份 + 事件中出现的所有会话）。
+                self.ensure_histories_for_events(&events);
+                self.reproject_all();
                 let timeline = root["timeline"]
                     .as_array()
                     .map(|entries| {
@@ -533,23 +558,42 @@ impl TrunkStore {
 
         // v4 and older: migrate into the event log (compatibility read).
         if let Ok(migrated) = echo_session::legacy::migrate_v4_document(data) {
-            let mut all_events = Vec::new();
+            let mut all_events: Vec<echo_session::SessionEvent> = Vec::new();
+            let mut first_events: Option<Vec<echo_session::SessionEvent>> = None;
             for session in &migrated {
-                all_events.extend(session.events.clone());
+                // v2–v4 共享 trunk：每个身份携带同一份事件，只保留首份
+                //（归首个身份）。v1 是每身份各自历史，逐个归入自身会话。
+                let duplicate_shared = first_events
+                    .as_ref()
+                    .is_some_and(|first| *first == session.events);
+                if duplicate_shared {
+                    continue;
+                }
+                if first_events.is_none() {
+                    first_events = Some(session.events.clone());
+                }
+                let mut events = session.events.clone();
+                // 合成 "trunk"（无身份标签的早期档案）留给启发式归因。
+                if session.session_id != "trunk" {
+                    for event in events.iter_mut() {
+                        if event.session().is_none() {
+                            *event.session_mut() = Some(session.session_id.clone());
+                        }
+                    }
+                }
+                all_events.extend(events);
             }
-            // The old format kept one global trunk shared by all identities;
-            // deduplicate the migrated events so the log is not duplicated.
             all_events.dedup();
-            self.event_log.extend(all_events.clone());
-            let projected = echo_session::derive::derive_messages(
-                &self.event_log.log(),
-                self.memory_limit_tokens,
-            );
-            if let Ok(mut trunk) = self.trunk_history.try_lock() {
-                *trunk = projected;
+            // 剩余未归因（合成 trunk 等）：归因迁移补全。
+            let attributed = attribute_legacy_events(&mut all_events);
+            if attributed {
+                self.mark_dirty();
             }
+            self.event_log.extend(all_events.clone());
             // Fall through to the identity/timeline restore below.
             let count = self.restore_identity_labels(&root);
+            self.ensure_histories_for_events(&all_events);
+            self.reproject_all();
             let restored_timeline = root["timeline"]
                 .as_array()
                 .map(|entries| {
@@ -669,43 +713,57 @@ impl TrunkStore {
             _ => return 0,
         };
         let mut count = 0;
-        let mut legacy_histories = Vec::new();
+        // 最老格式（v1/v2，2026-09 多会话改造）：把消息转成**带归属**的事件
+        // ——v1 的每身份历史归入各自会话；v2/v3 的共享 trunk 归入首个身份
+        // （没有身份时归本地会话），此后一切走事件日志投影。
+        let mut events: Vec<echo_session::SessionEvent> = Vec::new();
+        let shared_owner: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
         for s in identity_values {
-            let Some(_id) = s["id"].as_str() else {
+            let Some(id) = s["id"].as_str() else {
                 continue;
             };
             // 旧档里的 id 可能带 `@account` 后缀（多实例）：以 id 为准解析，
             // 缺字段的旧记录按默认实例处理。
-            let key = SessionKey::parse(_id).unwrap_or(SessionKey {
+            let key = SessionKey::parse(id).unwrap_or(SessionKey {
                 platform: s["platform"].as_str().unwrap_or("local").into(),
                 scope: s["scope"].as_str().unwrap_or("tui").into(),
                 scope_id: s["scope_id"].as_str().unwrap_or("").into(),
                 user_id: s["user_id"].as_str().unwrap_or("0").into(),
                 account: None,
             });
-            let nickname = s["nickname"].as_str().unwrap_or("").into();
-            let group_name = s["group_name"].as_str().map(|g| g.to_string());
-            let session = self.get_or_create(&key, nickname, group_name);
+            let session = self.get_or_create(&key, String::new(), None);
             if let Some(last_active) = s["last_active"].as_i64() {
                 session.last_active.store(last_active, Ordering::Relaxed);
             }
+            if shared_owner.lock().ok().is_some_and(|o| o.is_none()) {
+                *shared_owner.lock().expect("owner") = Some(session.id.clone());
+            }
             if persisted_trunk.is_none() {
                 if let Some(history) = s["history"].as_array() {
-                    legacy_histories.push((
-                        s["last_active"].as_i64().unwrap_or_default(),
-                        deserialize_messages(history),
+                    events.extend(events_from_messages(
+                        &deserialize_messages(history),
+                        Some(session.id.clone()),
                     ));
                 }
             }
             count += 1;
         }
-
-        let mut history = persisted_trunk
-            .map(|history| deserialize_messages(history))
-            .unwrap_or_else(|| merge_legacy_histories(legacy_histories));
-        trim_by_tokens(&mut history, self.memory_limit_tokens);
-        if let Ok(mut trunk) = self.trunk_history.try_lock() {
-            *trunk = history;
+        if let Some(shared) = persisted_trunk {
+            let owner = shared_owner
+                .lock()
+                .ok()
+                .and_then(|o| o.clone())
+                .unwrap_or_else(|| SessionKey::local_tui().to_session_id());
+            events.extend(events_from_messages(
+                &deserialize_messages(shared),
+                Some(owner),
+            ));
+        }
+        if !events.is_empty() {
+            self.event_log.extend(events.clone());
+            self.ensure_histories_for_events(&events);
+            self.reproject_all();
+            self.mark_dirty();
         }
 
         // Restore the display timeline (v4+). Older files have no timeline —
@@ -756,7 +814,7 @@ impl TrunkStore {
         group_name: Option<String>,
     ) -> Session {
         let session_id = key.to_session_id();
-        match self.identities.entry(session_id) {
+        match self.identities.entry(session_id.clone()) {
             dashmap::mapref::entry::Entry::Occupied(e) => {
                 e.get().touch();
                 e.get().clone()
@@ -767,7 +825,7 @@ impl TrunkStore {
                     self.team_id(),
                     nickname,
                     group_name,
-                    Arc::clone(&self.trunk_history),
+                    self.history_or_create(&session_id),
                     Arc::clone(&self.trunk_turn_lock),
                     Arc::clone(&self.trunk_turn_queue),
                 );
@@ -775,6 +833,33 @@ impl TrunkStore {
                 session
             }
         }
+    }
+
+    /// 某会话的上下文投影句柄（不存在时惰性创建空投影）。
+    pub fn history_or_create(&self, session_id: &str) -> Arc<Mutex<Vec<ChatMessage>>> {
+        if let Some(existing) = self.session_histories.get(session_id) {
+            return Arc::clone(existing.value());
+        }
+        self.session_histories
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(Vec::new())))
+            .value()
+            .clone()
+    }
+
+    /// 某会话的上下文投影句柄（只读；None = 该会话从未有过历史）。
+    pub fn history_for(&self, session_id: &str) -> Option<Arc<Mutex<Vec<ChatMessage>>>> {
+        self.session_histories
+            .get(session_id)
+            .map(|entry| Arc::clone(entry.value()))
+    }
+
+    /// 已登记上下文的全部会话 id。
+    pub fn history_sessions(&self) -> Vec<String> {
+        self.session_histories
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
     }
 
     pub fn get(&self, session_id: &str) -> Option<Session> {
@@ -797,22 +882,35 @@ impl TrunkStore {
         self.memory_limit_tokens
     }
 
-    /// Number of messages currently in the trunk.
+    /// 全部会话投影的条目总数（调试/监控聚合口径）。
     pub fn trunk_len(&self) -> usize {
-        self.trunk_history.try_lock().map(|h| h.len()).unwrap_or(0)
+        self.session_histories
+            .iter()
+            .map(|entry| entry.value().try_lock().map(|h| h.len()).unwrap_or(0))
+            .sum()
     }
 
-    /// Estimated tokens currently held in the trunk.
+    /// 全部会话投影的估算 token 总数。
     pub fn trunk_tokens(&self) -> usize {
-        self.trunk_history
-            .try_lock()
-            .map(|h| estimate_history_tokens(&h))
-            .unwrap_or(0)
+        self.session_histories
+            .iter()
+            .map(|entry| {
+                entry
+                    .value()
+                    .try_lock()
+                    .map(|h| estimate_history_tokens(&h))
+                    .unwrap_or(0)
+            })
+            .sum()
     }
 
-    /// Clone the current trunk history (point-in-time snapshot).
-    pub async fn snapshot(&self) -> Vec<ChatMessage> {
-        self.trunk_history.lock().await.clone()
+    /// Clone one session's model-facing history (point-in-time snapshot)。
+    /// 会话不存在（从未收发过消息）时返回空列表。
+    pub async fn snapshot_for(&self, session_id: &str) -> Vec<ChatMessage> {
+        match self.history_for(session_id) {
+            Some(history) => history.lock().await.clone(),
+            None => Vec::new(),
+        }
     }
 
     /// Erase all conversation memory: the durable event log, the in-memory
@@ -822,7 +920,9 @@ impl TrunkStore {
     /// message content.
     pub async fn clear_history(&self) {
         self.event_log.clear();
-        self.trunk_history.lock().await.clear();
+        for entry in self.session_histories.iter() {
+            entry.value().lock().await.clear();
+        }
         self.timeline.lock().await.clear();
         self.mark_dirty();
         self.save_now().await;
@@ -864,56 +964,81 @@ impl TrunkStore {
         Err("没有可归档的会话文件".into())
     }
 
-    /// 压缩历史：事件日志前 `keep_recent` 条之外的部分替换为一条
-    /// 规则摘要（Compaction 事件），投影随之更新并立即持久化。
+    /// 压缩历史（多会话，2026-09）：**按会话分别**把该会话前
+    /// `keep_recent` 条之外的事件替换为一条规则摘要（Compaction 事件，
+    /// 带会话归属），投影随之更新并立即持久化。未归因的旧事件单独成组。
     pub async fn compact_history(&self, keep_recent: usize) -> Result<String, String> {
         let events = self.event_log.log();
         if events.len() <= keep_recent + 1 {
             return Err(format!("历史不足（{} 条事件，无需压缩）", events.len()));
         }
-        let replaced_count = events.len() - keep_recent;
-        let (tools, users) = {
-            let tools = events[..replaced_count]
-                .iter()
-                .filter(|e| matches!(e, echo_session::SessionEvent::ToolCall(_)))
-                .count();
-            let users = events[..replaced_count]
-                .iter()
-                .filter(|e| matches!(e, echo_session::SessionEvent::UserMessage(_)))
-                .count();
-            (tools, users)
-        };
-        let summary = format!(
-            "[历史摘要] 已压缩 {replaced_count} 条历史事件（{users} 条用户消息，{tools} 次工具调用），保留最近 {keep_recent} 条。"
-        );
-        // 重写日志：摘要 + 现存尾部
-        let tail = events[replaced_count..].to_vec();
-        self.event_log.clear();
-        self.event_log
-            .append(echo_session::SessionEvent::Compaction(
+        // 按会话分组：保持会话首次出现顺序（None 组排在末尾）。
+        let mut order: Vec<Option<String>> = Vec::new();
+        let mut groups: std::collections::HashMap<Option<String>, Vec<echo_session::SessionEvent>> =
+            std::collections::HashMap::new();
+        for event in events {
+            let key = event.session().map(str::to_string);
+            if !groups.contains_key(&key) {
+                order.push(key.clone());
+            }
+            groups.entry(key).or_default().push(event);
+        }
+        let mut new_log: Vec<echo_session::SessionEvent> = Vec::new();
+        let mut total_replaced = 0usize;
+        for key in order {
+            let Some(group) = groups.remove(&key) else {
+                continue;
+            };
+            if group.len() <= keep_recent + 1 {
+                new_log.extend(group);
+                continue;
+            }
+            let replaced_count = group.len() - keep_recent;
+            let (tools, users) = {
+                let tools = group[..replaced_count]
+                    .iter()
+                    .filter(|e| matches!(e, echo_session::SessionEvent::ToolCall(_)))
+                    .count();
+                let users = group[..replaced_count]
+                    .iter()
+                    .filter(|e| matches!(e, echo_session::SessionEvent::UserMessage(_)))
+                    .count();
+                (tools, users)
+            };
+            let summary = format!(
+                "[历史摘要] 已压缩 {replaced_count} 条历史事件（{users} 条用户消息，{tools} 次工具调用），保留最近 {keep_recent} 条。"
+            );
+            new_log.push(echo_session::SessionEvent::Compaction(
                 echo_session::CompactionEvent {
                     replaced_count,
                     summary,
+                    session: key.clone(),
                 },
             ));
-        self.event_log.extend(tail);
-        let projected =
-            echo_session::derive::derive_messages(&self.event_log.log(), self.memory_limit_tokens);
-        if let Ok(mut trunk) = self.trunk_history.try_lock() {
-            *trunk = projected;
+            new_log.extend(group[replaced_count..].to_vec());
+            total_replaced += replaced_count;
         }
+        if total_replaced == 0 {
+            return Err(format!(
+                "历史不足（{} 条事件，无需压缩）",
+                self.event_log.len()
+            ));
+        }
+        self.event_log.clear();
+        self.event_log.extend(new_log);
+        self.reproject_all();
         self.timeline
             .lock()
             .await
             .push(crate::event::TimelineMessage::system(
-                format!("历史已压缩：{replaced_count} 条事件 → 摘要（保留最近 {keep_recent} 条）"),
+                format!("历史已压缩：{total_replaced} 条事件 → 摘要（保留最近 {keep_recent} 条）"),
                 String::new(),
                 chrono::Utc::now().timestamp(),
             ));
         self.mark_dirty();
         self.save_now().await;
         Ok(format!(
-            "已压缩 {replaced_count} 条历史事件，保留最近 {keep_recent} 条"
+            "已压缩 {total_replaced} 条历史事件，保留最近 {keep_recent} 条"
         ))
     }
 
@@ -926,13 +1051,69 @@ impl TrunkStore {
     /// The caller must hold `session.turn_lock` (or otherwise serialize
     /// writers) so the event order matches the projected message order.
     pub(crate) fn append_event(&self, event: echo_session::SessionEvent) {
+        let session = event.session().map(str::to_string);
         self.event_log.append(event);
-        let projected =
-            echo_session::derive::derive_messages(&self.event_log.log(), self.memory_limit_tokens);
-        if let Ok(mut trunk) = self.trunk_history.try_lock() {
-            *trunk = projected;
-        }
+        self.reproject(&session);
         self.mark_dirty();
+    }
+
+    /// 事件日志变化后刷新投影缓存：`Some(id)` 只刷新该会话（其余会话的
+    /// 投影不受影响）；`None` 刷新全部会话（未归因事件的兜底路径）。
+    fn reproject(&self, session: &Option<String>) {
+        let log = self.event_log.log();
+        match session {
+            Some(id) => {
+                // 归因事件会物化其会话的上下文句柄（查询/快照可达）。
+                let _ = self.history_or_create(id);
+                self.reproject_one(&log, id);
+            }
+            None => {
+                for entry in self.session_histories.iter() {
+                    let id = entry.key().clone();
+                    self.reproject_one(&log, &id);
+                }
+            }
+        }
+    }
+
+    fn reproject_one(&self, log: &[echo_session::SessionEvent], session_id: &str) {
+        // 先在锁外完成投影（try_lock 语义：竞争时跳过本轮，下轮再投影）。
+        let projected = echo_session::derive::derive_messages_for(
+            log,
+            Some(session_id),
+            self.memory_limit_tokens,
+        );
+        let Some(entry) = self.session_histories.get(session_id) else {
+            return;
+        };
+        let handle = Arc::clone(entry.value());
+        drop(entry);
+        if let Ok(mut guard) = handle.try_lock() {
+            *guard = projected;
+        };
+    }
+
+    /// 全量重投影（加载/压缩后调用）。
+    fn reproject_all(&self) {
+        let log = self.event_log.log();
+        let ids: Vec<String> = self
+            .session_histories
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        for id in ids {
+            self.reproject_one(&log, &id);
+        }
+    }
+
+    /// 为事件里出现的每个会话登记投影句柄（加载期：事件可能引用已删除的
+    /// 身份，仍需可查询的历史）。
+    fn ensure_histories_for_events(&self, events: &[echo_session::SessionEvent]) {
+        for event in events {
+            if let Some(id) = event.session() {
+                self.history_or_create(id);
+            }
+        }
     }
 
     /// The full event log (oldest first) — the durable source of truth.
@@ -947,12 +1128,9 @@ impl TrunkStore {
         sequence: u64,
         event: echo_session::SessionEvent,
     ) {
+        let session = event.session().map(str::to_string);
         self.event_log.insert_after_sequence(sequence, event);
-        let projected =
-            echo_session::derive::derive_messages(&self.event_log.log(), self.memory_limit_tokens);
-        if let Ok(mut trunk) = self.trunk_history.try_lock() {
-            *trunk = projected;
-        }
+        self.reproject(&session);
         self.mark_dirty();
     }
 
@@ -1052,18 +1230,149 @@ fn deserialize_messages(history: &[serde_json::Value]) -> Vec<ChatMessage> {
         .collect()
 }
 
-fn merge_legacy_histories(mut histories: Vec<(i64, Vec<ChatMessage>)>) -> Vec<ChatMessage> {
-    histories.sort_by_key(|(last_active, _)| *last_active);
-    let Some((_, first)) = histories.first() else {
-        return Vec::new();
-    };
-    if histories.iter().all(|(_, history)| history == first) {
-        return first.clone();
+/// 从结构化 hook 内容推导会话 id（旧版事件归因迁移用）。
+///
+/// 支持的封装（见 `input_marker`）：
+/// - `<{platform}_message_hook>{json}</…>`：从载荷解析 platform/channel/sender
+///   （`channel.type == "group"` 时 scope=group，scope_id=群号；`adapter` 为
+///   非默认 QQ 实例名时产生 `@account` 后缀）；
+/// - `<backend_message_hook>`：本地后端消息 → 本地 TUI 会话；
+/// - 其余（timer/后台任务事件等）无归属信息 → None（由调用方粘滞/兜底）。
+fn session_id_from_hook_content(content: &str) -> Option<String> {
+    let trimmed = content.trim_start();
+    let close = trimmed.find('>')?;
+    let marker = trimmed.strip_prefix('<')?;
+    if close == 0 || close > marker.len() {
+        return None;
     }
-    histories
-        .into_iter()
-        .flat_map(|(_, history)| history)
-        .collect()
+    let marker = &marker[..close - 1];
+    let platform_marker = marker.strip_suffix("_message_hook")?;
+    if platform_marker == "backend" {
+        return Some(SessionKey::local_tui().to_session_id());
+    }
+    let body_start = close + 1;
+    let body_end = trimmed[body_start..].find("</")? + body_start;
+    let payload: serde_json::Value =
+        serde_json::from_str(trimmed[body_start..body_end].trim()).ok()?;
+    let platform = payload.get("platform").and_then(|v| v.as_str())?;
+    let adapter = payload
+        .get("adapter")
+        .and_then(|v| v.as_str())
+        .unwrap_or(platform);
+    let channel = payload.get("channel");
+    let (scope, scope_id) = match channel.and_then(|c| c.get("type")).and_then(|t| t.as_str()) {
+        Some("group") => (
+            "group",
+            channel
+                .and_then(|c| c.get("group_id"))
+                .and_then(|g| g.as_str())
+                .unwrap_or(""),
+        ),
+        _ => ("dm", ""),
+    };
+    let user_id = payload
+        .get("sender")
+        .and_then(|s| s.get("user_id"))
+        .and_then(|u| u.as_str())?;
+    let account = (adapter != DEFAULT_QQ_INSTANCE).then(|| adapter.to_string());
+    Some(
+        SessionKey {
+            platform: platform.to_string(),
+            scope: scope.to_string(),
+            scope_id: scope_id.to_string(),
+            user_id: user_id.to_string(),
+            account,
+        }
+        .to_session_id(),
+    )
+}
+
+/// 旧版事件归因迁移（v5 及更早的日志没有会话归属）。
+///
+/// 规则（两遍）：
+/// 1. 用户消息从 hook 内容推导会话（可切换"当前会话"）；assistant/tool
+///    事件继承当前会话（旧日志按会话交错写入，正文应答紧跟其请求）；
+/// 2. 仍未知的事件（如前导的孤儿事件、压缩事件）挂到首个已知会话；
+///    完全没有可推导会话时统一挂本地 TUI 会话。
+///
+/// 返回是否有改动。混合文件（部分已归因）按已有归属继续，保持幂等。
+fn attribute_legacy_events(events: &mut [echo_session::SessionEvent]) -> bool {
+    if events.iter().all(|event| event.session().is_some()) {
+        return false;
+    }
+    let mut changed = false;
+    let mut current: Option<String> = None;
+    for event in events.iter_mut() {
+        if matches!(event, echo_session::SessionEvent::Compaction(_)) {
+            continue;
+        }
+        if let Some(id) = event.session() {
+            current = Some(id.to_string());
+            continue;
+        }
+        if let echo_session::SessionEvent::UserMessage(user) = event {
+            if let Some(derived) = session_id_from_hook_content(&user.content) {
+                current = Some(derived);
+            }
+        }
+        if let Some(id) = &current {
+            *event.session_mut() = Some(id.clone());
+            changed = true;
+        }
+    }
+    let first_known = events
+        .iter()
+        .find_map(|event| event.session().map(str::to_string));
+    let fallback = first_known.unwrap_or_else(|| SessionKey::local_tui().to_session_id());
+    for event in events.iter_mut() {
+        if event.session().is_none() {
+            *event.session_mut() = Some(fallback.clone());
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// 把模型可见消息转回事件（最老格式迁移；归属可选）。
+fn events_from_messages(
+    messages: &[ChatMessage],
+    session: Option<String>,
+) -> Vec<echo_session::SessionEvent> {
+    use crate::llm::ChatRole;
+    let mut events = Vec::new();
+    for message in messages {
+        match message.role {
+            ChatRole::User => events.push(echo_session::SessionEvent::UserMessage(
+                echo_session::event::UserMessage {
+                    content: message.content.clone(),
+                    timestamp: 0,
+                    message_sequence: None,
+                    source: None,
+                    images: message.images.clone(),
+                    session: session.clone(),
+                },
+            )),
+            ChatRole::Assistant => events.push(echo_session::SessionEvent::AssistantMessage(
+                echo_session::event::AssistantMessage {
+                    content: message.content.clone(),
+                    reasoning_content: message.reasoning_content.clone(),
+                    tool_calls: message.tool_calls.clone().unwrap_or_default(),
+                    session: session.clone(),
+                },
+            )),
+            ChatRole::Tool => events.push(echo_session::SessionEvent::ToolResult(
+                echo_session::event::ToolResultEvent {
+                    tool_call_id: message.tool_call_id.clone().unwrap_or_default(),
+                    result: message.content.clone(),
+                    images: message.images.clone(),
+                    session: session.clone(),
+                },
+            )),
+            // 系统提示词不入事件日志（每轮重建）。
+            ChatRole::System => {}
+        }
+    }
+    events
 }
 
 #[cfg(test)]
@@ -1097,6 +1406,164 @@ mod tests {
                 prop_assert_eq!(SessionKey::parse(&key.to_session_id()), Some(key));
             }
         }
+    }
+
+    // ── 多会话上下文（2026-09）──
+
+    /// 旧版事件归因：hook 内容推导 + 粘滞继承 + 兜底。
+    #[test]
+    fn legacy_attribution_splits_interleaved_sessions() {
+        use echo_session::event::{AssistantMessage, ToolCallEvent, ToolResultEvent, UserMessage};
+        let qq_hook = "<qq_message_hook>\n{\n  \"platform\": \"qq\",\n  \"adapter\": \"qq\",\n  \"channel\": {\"type\": \"private\"},\n  \"sender\": {\"user_id\": \"1828980067\"}\n}\n</qq_message_hook>".to_string();
+        let group_hook = "<qq_message_hook>\n{\n  \"platform\": \"qq\",\n  \"adapter\": \"qq\",\n  \"channel\": {\"type\": \"group\", \"group_id\": \"999\"},\n  \"sender\": {\"user_id\": \"42\"}\n}\n</qq_message_hook>".to_string();
+        let backend_hook =
+            "<backend_message_hook>\n{\"content\": \"你好\"}\n</backend_message_hook>".to_string();
+        let mut events = vec![
+            echo_session::SessionEvent::UserMessage(UserMessage {
+                content: qq_hook.clone(),
+                timestamp: 0,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+                session: None,
+            }),
+            echo_session::SessionEvent::ToolCall(ToolCallEvent {
+                id: "c1".into(),
+                name: "send_private_msg".into(),
+                arguments: "{}".into(),
+                session: None,
+            }),
+            echo_session::SessionEvent::ToolResult(ToolResultEvent {
+                tool_call_id: "c1".into(),
+                result: "sent".into(),
+                images: vec![],
+                session: None,
+            }),
+            echo_session::SessionEvent::AssistantMessage(AssistantMessage {
+                content: "已回复。".into(),
+                reasoning_content: None,
+                tool_calls: vec![],
+                session: None,
+            }),
+            echo_session::SessionEvent::UserMessage(UserMessage {
+                content: backend_hook.clone(),
+                timestamp: 0,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+                session: None,
+            }),
+            echo_session::SessionEvent::AssistantMessage(AssistantMessage {
+                content: "你好，本地".into(),
+                reasoning_content: None,
+                tool_calls: vec![],
+                session: None,
+            }),
+            echo_session::SessionEvent::UserMessage(UserMessage {
+                content: group_hook.clone(),
+                timestamp: 0,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+                session: None,
+            }),
+        ];
+        assert!(attribute_legacy_events(&mut events), "changed");
+        let sessions: Vec<Option<&str>> = events.iter().map(|e| e.session()).collect();
+        assert_eq!(
+            sessions,
+            vec![
+                Some("qq:dm::1828980067"),
+                Some("qq:dm::1828980067"),
+                Some("qq:dm::1828980067"),
+                Some("qq:dm::1828980067"),
+                Some("local:tui::local_user"),
+                Some("local:tui::local_user"),
+                Some("qq:group:999:42"),
+            ]
+        );
+        // 幂等：再跑一遍无改动。
+        assert!(!attribute_legacy_events(&mut events));
+    }
+
+    /// 未归因的前导事件挂到首个已知会话；完全无可推导时挂本地。
+    #[test]
+    fn legacy_attribution_falls_back_to_first_known_session() {
+        use echo_session::event::{AssistantMessage, UserMessage};
+        let mut events = vec![
+            echo_session::SessionEvent::AssistantMessage(AssistantMessage {
+                content: "孤儿应答".into(),
+                reasoning_content: None,
+                tool_calls: vec![],
+                session: None,
+            }),
+            echo_session::SessionEvent::UserMessage(UserMessage {
+                content: "<qq_message_hook>\n{\"platform\":\"qq\",\"channel\":{\"type\":\"private\"},\"sender\":{\"user_id\":\"7\"}}\n</qq_message_hook>".into(),
+                timestamp: 0,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+                session: None,
+            }),
+        ];
+        assert!(attribute_legacy_events(&mut events));
+        assert_eq!(
+            events[0].session(),
+            Some("qq:dm::7"),
+            "leading orphan joins first known"
+        );
+
+        // 完全无法推导：统一挂本地 TUI 会话。
+        let mut plain = vec![echo_session::SessionEvent::UserMessage(UserMessage {
+            content: "普通文本（无 hook 标记）".into(),
+            timestamp: 0,
+            message_sequence: None,
+            source: None,
+            images: vec![],
+            session: None,
+        })];
+        assert!(attribute_legacy_events(&mut plain));
+        assert_eq!(plain[0].session(), Some("local:tui::local_user"));
+    }
+
+    /// 同一事件日志交错写入两个会话：各自快照互不可见。
+    #[tokio::test]
+    async fn interleaved_events_project_per_session() {
+        use echo_session::event::{AssistantMessage, UserMessage};
+        let store = TrunkStore::new(10_000);
+        let local = store.get_or_create(&SessionKey::local_tui(), "local".into(), None);
+        let qq_key = SessionKey::parse("qq:dm::9").unwrap();
+        let qq = store.get_or_create(&qq_key, "u".into(), None);
+        let pairs = [
+            (local.id.clone(), "本地一"),
+            (qq.id.clone(), "qq 一"),
+            (local.id.clone(), "本地二"),
+            (qq.id.clone(), "qq 二"),
+        ];
+        for (session_id, content) in pairs {
+            store.append_event(echo_session::SessionEvent::UserMessage(UserMessage {
+                content: content.into(),
+                timestamp: 0,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+                session: Some(session_id.clone()),
+            }));
+            store.append_event(echo_session::SessionEvent::AssistantMessage(
+                AssistantMessage {
+                    content: format!("{content} 的回复"),
+                    reasoning_content: None,
+                    tool_calls: vec![],
+                    session: Some(session_id),
+                },
+            ));
+        }
+        let local_hist = store.snapshot_for(&local.id).await;
+        let qq_hist = store.snapshot_for(&qq.id).await;
+        assert_eq!(local_hist.len(), 4, "local sees only its 4 messages");
+        assert_eq!(qq_hist.len(), 4, "qq sees only its 4 messages");
+        assert!(local_hist.iter().all(|m| !m.content.starts_with("qq")));
+        assert!(qq_hist.iter().all(|m| !m.content.starts_with("本地")));
     }
 
     #[test]
@@ -1155,7 +1622,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn all_identities_share_one_trunk_history_and_turn_lock() {
+    async fn sessions_have_independent_histories_and_shared_turn_lock() {
         let store = TrunkStore::new(1000);
         let local = store.get_or_create(&SessionKey::local_tui(), "local".into(), None);
         let qq = store.get_or_create(
@@ -1164,12 +1631,24 @@ mod tests {
             None,
         );
 
-        local.history.lock().await.push(ChatMessage::user("shared"));
-
-        assert!(Arc::ptr_eq(&local.history, &qq.history));
+        // 多会话（2026-09）：上下文相互独立，只有写入锁共享。
+        assert!(!Arc::ptr_eq(&local.history, &qq.history));
         assert!(Arc::ptr_eq(&local.turn_lock, &qq.turn_lock));
-        assert_eq!(qq.history.lock().await[0].content, "shared");
-        assert_eq!(store.trunk_len(), 1, "trunk holds the single history");
+
+        // 归属 local 的事件只进 local 的上下文，qq 不受影响。
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                content: "local only".into(),
+                timestamp: 0,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+                session: Some("local:tui::local_user".into()),
+            },
+        ));
+        assert_eq!(local.history.lock().await[0].content, "local only");
+        assert!(qq.history.lock().await.is_empty(), "qq context untouched");
+        assert_eq!(store.trunk_len(), 1, "aggregate over sessions");
     }
 
     #[tokio::test]
@@ -1202,6 +1681,7 @@ mod tests {
         let _s = store.get_or_create(&key, "bob".into(), Some("TestGroup".into()));
         store.append_event(echo_session::SessionEvent::UserMessage(
             echo_session::event::UserMessage {
+                session: Some(key.to_session_id()),
                 content: "你好".into(),
                 timestamp: 1700000000,
                 message_sequence: None,
@@ -1211,6 +1691,7 @@ mod tests {
         ));
         store.append_event(echo_session::SessionEvent::AssistantMessage(
             echo_session::event::AssistantMessage {
+                session: Some(key.to_session_id()),
                 content: "回复".into(),
                 reasoning_content: None,
                 tool_calls: vec![],
@@ -1221,7 +1702,11 @@ mod tests {
 
         let root: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(root["version"], 5, "v5 event-sourced format");
+        assert_eq!(root["version"], 6, "v6 multi-session format");
+        assert!(
+            root["trunk_histories"].is_object(),
+            "per-session projections"
+        );
         assert_eq!(root["events"].as_array().unwrap().len(), 2);
         assert!(root["identities"]
             .as_array()
@@ -1244,7 +1729,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persisted_history_is_shared_across_restored_identities() {
+    async fn persisted_history_restores_per_session() {
         let path = temp_sessions_path("shared-roundtrip");
         let _ = std::fs::remove_file(&path);
         let store = TrunkStore::new(1000);
@@ -1254,6 +1739,7 @@ mod tests {
         let _qq = store.get_or_create(&qq_key, "alice".into(), None);
         store.append_event(echo_session::SessionEvent::UserMessage(
             echo_session::event::UserMessage {
+                session: Some("local:tui::local_user".into()),
                 content: "from tui".into(),
                 timestamp: 0,
                 message_sequence: None,
@@ -1263,7 +1749,8 @@ mod tests {
         ));
         store.append_event(echo_session::SessionEvent::AssistantMessage(
             echo_session::event::AssistantMessage {
-                content: "shared reply".into(),
+                session: Some("local:tui::local_user".into()),
+                content: "tui reply".into(),
                 reasoning_content: None,
                 tool_calls: vec![],
             },
@@ -1275,13 +1762,15 @@ mod tests {
         assert_eq!(restored.load_from_file().await, 2);
         let local = restored.get("local:tui::local_user").unwrap();
         let qq = restored.get(&qq_key.to_session_id()).unwrap();
-        assert!(Arc::ptr_eq(&local.history, &qq.history));
+        // 上下文按会话隔离：local 有 2 条，qq 为空。
+        assert!(!Arc::ptr_eq(&local.history, &qq.history));
         assert_eq!(local.history.lock().await.len(), 2);
+        assert!(qq.history.lock().await.is_empty(), "qq context stays empty");
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn v1_array_migrates_distinct_histories_into_one_trunk() {
+    fn v1_array_migrates_distinct_histories_per_session() {
         let store = TrunkStore::new(1000);
         let restored = store.deserialize(
             r#"[
@@ -1291,14 +1780,18 @@ mod tests {
         );
 
         assert_eq!(restored, 2);
-        let history = store.trunk_history.try_lock().unwrap();
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].content, "local");
-        assert_eq!(history[1].content, "qq");
+        // 多会话（2026-09）：v1 的每身份历史归入各自会话的上下文。
+        let local = store
+            .history_for("local:tui::local_user")
+            .expect("local history");
+        assert_eq!(local.try_lock().unwrap()[0].content, "local");
+        let qq = store.history_for("qq:dm::123").expect("qq history");
+        assert_eq!(qq.try_lock().unwrap()[0].content, "qq");
+        assert_eq!(store.trunk_len(), 2, "aggregate over both sessions");
     }
 
     #[test]
-    fn v2_shared_object_migrates_into_trunk() {
+    fn v2_shared_object_migrates_into_first_identity() {
         let store = TrunkStore::new(1000);
         let restored = store.deserialize(
             r#"{
@@ -1313,9 +1806,15 @@ mod tests {
         );
 
         assert_eq!(restored, 2);
-        let history = store.trunk_history.try_lock().unwrap();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].content, "shared");
+        // v2 共享上下文没有归属信息：归入首个身份（local）。
+        let history = store
+            .history_for("local:tui::local_user")
+            .expect("local history");
+        assert_eq!(history.try_lock().unwrap()[0].content, "shared");
+        assert!(store
+            .history_for("qq:dm::123")
+            .map(|h| h.try_lock().unwrap().is_empty())
+            .unwrap_or(true));
         assert_eq!(store.len(), 2, "both identities restored");
     }
 
@@ -1356,6 +1855,7 @@ mod tests {
         store.set_persist_path(&path);
         store.append_event(echo_session::SessionEvent::UserMessage(
             echo_session::event::UserMessage {
+                session: Some("local:tui::local_user".into()),
                 content: "记住我".into(),
                 timestamp: 1700000000,
                 message_sequence: None,
@@ -1433,7 +1933,7 @@ mod tests {
 
         let root: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(root["version"], 5, "timeline persisted as v5");
+        assert_eq!(root["version"], 6, "timeline persisted as v6");
         assert_eq!(root["timeline"].as_array().unwrap().len(), 2);
 
         let restored = TrunkStore::new(1000);
@@ -1730,14 +2230,20 @@ mod tests {
     }
 
     #[test]
-    fn evict_idle_drops_stale_identity_but_keeps_trunk() {
+    fn evict_idle_drops_stale_identity_but_keeps_context() {
         let store = TrunkStore::new(1000);
         let key = SessionKey::parse("qq:dm::111").unwrap();
         let stale = store.get_or_create(&key, "alice".into(), None);
-        stale
-            .history
-            .blocking_lock()
-            .push(ChatMessage::user("kept"));
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some(key.to_session_id()),
+                content: "kept".into(),
+                timestamp: 0,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        ));
         // Force last_active far in the past (2× TTL).
         let past = chrono::Utc::now().timestamp() - (IDENTITY_IDLE_TTL_MS / 1000) * 2;
         stale
@@ -1755,6 +2261,8 @@ mod tests {
             store.get(&key2.to_session_id()).is_some(),
             "recent identity survives"
         );
-        assert_eq!(store.trunk_len(), 1, "trunk history survives eviction");
+        // 身份被回收，但上下文（投影缓存）保留（历史不随身份标签删除）。
+        assert_eq!(store.trunk_len(), 1, "context survives eviction");
+        assert!(store.history_for(&key.to_session_id()).is_some());
     }
 }

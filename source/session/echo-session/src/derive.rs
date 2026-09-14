@@ -126,6 +126,30 @@ pub fn derive_messages(log: &[SessionEvent], token_budget: usize) -> Vec<ChatMes
     messages
 }
 
+/// Per-session variant（多会话上下文，2026-09）：先按归属过滤，再投影。
+///
+/// `session == Some(id)` 只保留归属该会话的事件（其会话的压缩事件同样
+/// 按过滤后的位置计算覆盖区间）；`session == None` 保留未归因事件
+/// （旧版日志按此投影，加载期归因迁移后不再出现）。
+/// 工具调用配对修复在过滤后的子集上运行——不同会话的事件绝不互见，
+/// 这正是每个来源独立上下文的关键。
+pub fn derive_messages_for(
+    log: &[SessionEvent],
+    session: Option<&str>,
+    token_budget: usize,
+) -> Vec<ChatMessage> {
+    let filtered: Vec<SessionEvent> = log
+        .iter()
+        .filter(|event| event.session() == session)
+        .cloned()
+        .collect();
+    let mut messages = project_messages(&filtered);
+    merge_consecutive_assistant_messages(&mut messages);
+    trim_to_budget(&mut messages, token_budget);
+    repair_tool_pairing(&mut messages);
+    messages
+}
+
 /// Repair tool-call pairing on a projected message list.
 ///
 /// Runs on the projected copy, never on the log. A tool message is kept only
@@ -247,6 +271,7 @@ pub fn compact_prefix(
     Some(CompactionEvent {
         replaced_count,
         summary: summary.into(),
+        session: None,
     })
 }
 
@@ -262,6 +287,7 @@ mod tests {
             message_sequence: None,
             source: None,
             images: vec![],
+            session: None,
         })
     }
 
@@ -270,6 +296,7 @@ mod tests {
             content: content.into(),
             reasoning_content: None,
             tool_calls: vec![],
+            session: None,
         })
     }
 
@@ -294,16 +321,19 @@ mod tests {
                     name: "calc".into(),
                     arguments: r#"{"expr":"1+1"}"#.into(),
                 }],
+                session: None,
             }),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "c1".into(),
                 name: "calc".into(),
+                session: None,
                 arguments: r#"{"expr":"1+1"}"#.into(),
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "c1".into(),
                 result: "2".into(),
                 images: vec![],
+                session: None,
             }),
             assistant("结果是 2"),
         ];
@@ -327,12 +357,14 @@ mod tests {
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_00_abc".into(),
                 name: "bash".into(),
+                session: None,
                 arguments: r#"{"command":"ls"}"#.into(),
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_00_abc".into(),
                 result: "a.txt".into(),
                 images: vec![],
+                session: None,
             }),
             assistant("已列出"),
         ];
@@ -368,22 +400,26 @@ mod tests {
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_A".into(),
                 name: "adapter_status".into(),
+                session: None,
                 arguments: "{}".into(),
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_A".into(),
                 result: "ok".into(),
                 images: vec![],
+                session: None,
             }),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_B".into(),
                 name: "bash".into(),
+                session: None,
                 arguments: r#"{"command":"date"}"#.into(),
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_B".into(),
                 result: "now".into(),
                 images: vec![],
+                session: None,
             }),
             assistant("完毕"),
         ];
@@ -410,16 +446,19 @@ mod tests {
                     name: "calc".into(),
                     arguments: r#"{"expr":"1+1"}"#.into(),
                 }],
+                session: None,
             }),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "c1".into(),
                 name: "calc".into(),
+                session: None,
                 arguments: r#"{"expr":"1+1"}"#.into(),
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "c1".into(),
                 result: "2".into(),
                 images: vec![],
+                session: None,
             }),
             assistant("结果是 2"),
         ];
@@ -444,16 +483,19 @@ mod tests {
                 content: "检查结果".into(),
                 reasoning_content: None,
                 tool_calls: vec![],
+                session: None,
             }),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_00_x".into(),
                 name: "bash".into(),
+                session: None,
                 arguments: "{}".into(),
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_00_x".into(),
                 result: "ok".into(),
                 images: vec![],
+                session: None,
             }),
             assistant("完毕"),
         ];
@@ -491,6 +533,7 @@ mod tests {
             SessionEvent::Compaction(CompactionEvent {
                 replaced_count: 3,
                 summary: "前三条已压缩".into(),
+                session: None,
             }),
             assistant("d"),
         ];
@@ -532,11 +575,13 @@ mod tests {
                     name: "calc".into(),
                     arguments: r#"{"expr":"1+1"}"#.into(),
                 }],
+                session: None,
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "c1".into(),
                 result: "2".into(),
                 images: vec![],
+                session: None,
             }),
             assistant("结果是 2"),
         ];
@@ -578,6 +623,7 @@ mod tests {
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_00_dead".into(),
                 name: "bash".into(),
+                session: None,
                 arguments: r#"{"command":"sleep 999"}"#.into(),
             }),
         ];
@@ -602,6 +648,7 @@ mod tests {
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_00_dead".into(),
                 name: "bash".into(),
+                session: None,
                 arguments: "{}".into(),
             }),
             user("先别管了"),
@@ -645,16 +692,19 @@ mod tests {
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_c".into(),
                 name: "bash".into(),
+                session: None,
                 arguments: "{}".into(),
             }),
             SessionEvent::Compaction(CompactionEvent {
                 replaced_count: 2,
                 summary: "已压缩".into(),
+                session: None,
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_c".into(),
                 result: "ok".into(),
                 images: vec![],
+                session: None,
             }),
             assistant("新回复"),
         ];
@@ -675,12 +725,14 @@ mod tests {
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_A".into(),
                 name: "adapter_status".into(),
+                session: None,
                 arguments: "{}".into(),
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_A".into(),
                 result: "ok".into(),
                 images: vec![],
+                session: None,
             }),
             assistant("完毕"),
         ];

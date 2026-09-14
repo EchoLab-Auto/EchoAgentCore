@@ -164,18 +164,22 @@ fn migrate_history(history: &[V4Message]) -> Vec<SessionEvent> {
                 message_sequence: None,
                 source: None,
                 images: vec![],
+                // 旧格式无会话归属：加载期归因迁移（见 agent 侧 attribute 逻辑）。
+                session: None,
             })),
             "assistant" => Some(SessionEvent::AssistantMessage(AssistantMessage {
                 content: message.content.clone(),
                 reasoning_content: message.reasoning_content.clone(),
                 // The old format dropped tool_calls; nothing to restore.
                 tool_calls: vec![],
+                session: None,
             })),
             "tool" => Some(SessionEvent::ToolResult(ToolResultEvent {
                 // The old format dropped tool_call_id; the content is kept.
                 tool_call_id: String::new(),
                 result: message.content.clone(),
                 images: vec![],
+                session: None,
             })),
             _ => None,
         })

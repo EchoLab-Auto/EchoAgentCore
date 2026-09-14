@@ -139,10 +139,15 @@ pub enum BackendCommand {
     /// session.global / chatbot.sessions）的禁用有实际效果。数据插件的
     /// 真实注册卸载随 Phase 2 落地。
     TogglePlugin { id: String, enabled: bool },
-    /// Request a snapshot of the current trunk context (`BackendEvent::ContextSnapshot`).
+    /// Request a snapshot of a conversation context (`BackendEvent::ContextSnapshot`).
+    ///
+    /// 多会话（2026-09）：`session_id` 指定要查看的会话上下文；缺省回退
+    /// 该智能体的本地 TUI 会话（再回退任一已有会话）。
     RequestContext {
         #[serde(default)]
         team_id: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
     },
     /// Cancel running work for a session (agent turns + background tasks).
     /// `all` = true cancels every active turn; false cancels only the newest.

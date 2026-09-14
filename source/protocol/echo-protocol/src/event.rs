@@ -445,9 +445,12 @@ pub enum BackendEvent {
     SessionUpdated {
         session: SessionInfo,
     },
-    /// The current trunk context snapshot (`/context` command response).
+    /// The current conversation context snapshot (`RequestContext` response).
     ContextSnapshot {
-        /// Every message currently in the trunk (oldest first).
+        /// 快照归属的会话 id（多会话，2026-09；None = 旧 Core 的全局口径）。
+        #[serde(default)]
+        session_id: Option<String>,
+        /// Every message currently in the context (oldest first).
         messages: Vec<ContextMessageInfo>,
         /// Decomposed context blocks for visualization (system prompt
         /// sections + per-role history aggregates).

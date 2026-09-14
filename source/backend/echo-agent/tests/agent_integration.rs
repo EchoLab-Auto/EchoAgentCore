@@ -1112,8 +1112,10 @@ async fn event_log_persists_tool_structure_across_reload() {
             .any(|event| matches!(event, echo_session::SessionEvent::ToolCall(_))),
         "tool call event persisted"
     );
-    // The rebuilt trunk history (from the event log) contains the tool result.
-    let history = store2.snapshot().await;
+    // The rebuilt session history (from the event log) contains the tool result.
+    let history = store2
+        .snapshot_for(&SessionKey::parse("qq:dm::123").unwrap().to_session_id())
+        .await;
     assert!(
         history
             .iter()

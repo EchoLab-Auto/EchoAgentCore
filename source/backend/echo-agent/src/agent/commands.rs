@@ -12,12 +12,30 @@ impl Agent {
     /// Emit the current trunk context snapshot (`BackendEvent::ContextSnapshot`).
     /// Public wrapper: forward a context snapshot request to this agent
     /// (used by the management agent for team-routed requests).
+    /// 发出上下文快照（默认会话口径：本地 TUI；不存在时取任一已有会话）。
     pub async fn emit_context_snapshot_for(&self) {
-        self.emit_context_snapshot().await;
+        self.emit_context_snapshot(None).await;
     }
 
-    async fn emit_context_snapshot(&self) {
-        let history = self.trunk.snapshot().await;
+    /// 按会话发出上下文快照（多会话，2026-09）。
+    /// `session_id` 缺省时回退本地 TUI 会话，再回退该智能体的任一已有会话。
+    async fn emit_context_snapshot(&self, session_id: Option<&str>) {
+        let resolved = match session_id {
+            Some(id) if self.trunk.history_for(id).is_some() => Some(id.to_string()),
+            Some(id) => Some(id.to_string()),
+            None => {
+                let local = crate::session::SessionKey::local_tui().to_session_id();
+                if self.trunk.history_for(&local).is_some() {
+                    Some(local)
+                } else {
+                    self.trunk.history_sessions().into_iter().next()
+                }
+            }
+        };
+        let history = match &resolved {
+            Some(id) => self.trunk.snapshot_for(id).await,
+            None => Vec::new(),
+        };
         let total_tokens = crate::llm::estimate_history_tokens(&history);
         let messages = history
             .iter()
@@ -36,6 +54,7 @@ impl Agent {
             .collect();
         let blocks = self.context_blocks(&history).await;
         self.emit(BackendEvent::ContextSnapshot {
+            session_id: resolved,
             messages,
             blocks,
             total_tokens,
@@ -49,7 +68,7 @@ impl Agent {
             BackendCommand::SendMessage { team_id, .. }
             | BackendCommand::CancelRequestedWork { team_id, .. }
             | BackendCommand::RequestTrunkTimeline { team_id, .. }
-            | BackendCommand::RequestContext { team_id }
+            | BackendCommand::RequestContext { team_id, .. }
             | BackendCommand::ClearHistory { team_id }
             | BackendCommand::ArchiveHistory { team_id }
             | BackendCommand::CompactHistory { team_id, .. }
@@ -633,17 +652,21 @@ impl Agent {
                     });
                 }
             }
-            BackendCommand::RequestContext { team_id } => {
-                // 会话隔离：team 指定时返回该成员自己的上下文快照。
+            BackendCommand::RequestContext {
+                team_id,
+                session_id,
+            } => {
+                // 会话隔离：team 指定时返回该成员自己的上下文快照；
+                // session_id 指定时按会话（多会话上下文，2026-09）。
                 if let Some(id) = team_id {
                     let agent =
                         crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(&id)));
                     if let Some(t) = agent {
-                        t.emit_context_snapshot_for().await;
+                        t.emit_context_snapshot(session_id.as_deref()).await;
                         return;
                     }
                 }
-                self.emit_context_snapshot().await;
+                self.emit_context_snapshot(session_id.as_deref()).await;
             }
             BackendCommand::RequestTrunkTimeline { team_id, since_seq } => {
                 // 指定人格时返回该 persona 的独立 timeline（不同记忆）。
@@ -729,7 +752,7 @@ impl Agent {
                         team_id: None,
                         full: true,
                     });
-                    self.emit_context_snapshot().await;
+                    self.emit_context_snapshot(None).await;
                     self.emit(BackendEvent::Error {
                         session_id: None,
                         message: "历史记忆已清理".into(),
