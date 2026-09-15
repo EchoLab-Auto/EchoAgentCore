@@ -1645,10 +1645,7 @@ mod tests {
     #[test]
     fn session_key_local_workspace_roundtrip() {
         let key = SessionKey::local_workspace("echo-agent");
-        assert_eq!(
-            key.to_session_id(),
-            "local:workspace:echo-agent:local_user"
-        );
+        assert_eq!(key.to_session_id(), "local:workspace:echo-agent:local_user");
         // parse 往返：scope=workspace / scope_id=工作区 id
         let parsed = SessionKey::parse("local:workspace:echo-agent:local_user").unwrap();
         assert_eq!(parsed.platform, "local");
@@ -1669,7 +1666,8 @@ mod tests {
     async fn evict_idle_keeps_workspace_channels() {
         let store = TrunkStore::new(1000);
         let channel = store.ensure_workspace_channel("proj", "Proj");
-        let plain = store.get_or_create(&SessionKey::parse("qq:dm::111").unwrap(), "a".into(), None);
+        let plain =
+            store.get_or_create(&SessionKey::parse("qq:dm::111").unwrap(), "a".into(), None);
         let past = chrono::Utc::now().timestamp() - (IDENTITY_IDLE_TTL_MS / 1000) * 2;
         channel
             .last_active

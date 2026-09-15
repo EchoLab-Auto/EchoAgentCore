@@ -6,7 +6,6 @@
 #
 # Rules:
 #   - echo-llm-*        may depend on echo-defs (+ echo-llm-openai for ollama), never echo-agent/echo-adapter/echo-session/echo-loop
-#   - echo-chat-capability may depend on echo-defs only
 #   - echo-session      may depend on echo-defs only
 #   - echo-loop         may depend on echo-defs/echo-context only
 #   - echo-context      may depend on nothing from the harness
@@ -39,7 +38,6 @@ check "defs/echo-defs" ""
 check "context/echo-context" ""
 check "session/echo-session" ""
 check "loop/echo-loop" ""
-check "chat/echo-chat-capability" ""
 check "llm/echo-llm-openai" ""
 check "llm/echo-llm-anthropic" ""
 check "llm/echo-llm-ollama" "echo-llm-openai"

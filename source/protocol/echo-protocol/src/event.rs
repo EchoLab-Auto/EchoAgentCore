@@ -375,8 +375,8 @@ pub enum BackendEvent {
         success: bool,
         completed_at_ms: i64,
     },
-    /// A completed task was committed to the shared context and its delivery
-    /// plan was processed by the parent agent.
+    /// A completed task was committed to the shared context and the parent
+    /// agent was asked to deliver to its declared targets.
     BackgroundTaskIntegrated {
         session_id: String,
         task_id: String,

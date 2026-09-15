@@ -30,8 +30,6 @@ EchoAgentCore/
 │   │   └── echo-loop/            # Agent 循环驱动：TurnRunner turn/step 状态机 + 工具执行管道
 │   ├── llm/
 │   │   ├── echo-llm-openai/      # OpenAI 兼容 provider（Service Provider 角色）
-│   ├── chat/
-│   │   └── echo-chat-capability/ # 平台能力接缝定义：DeliveryPolicy/DeliveryTarget（Service Definition 角色）
 │   │   ├── echo-llm-anthropic/   # Anthropic Messages provider
 │   │   └── echo-llm-ollama/      # Ollama provider（薄包装 OpenAI 兼容端点）
 │   ├── protocol/
@@ -61,7 +59,6 @@ EchoAgentCore/
 | `echo-session` | **事件溯源会话存储**：`SessionEvent` 事件集、`EventLog`（append-only 持久化）、`derive_messages` 投影、compaction、`SessionHeader`（fork/resume）、v1–v4 旧格式兼容迁移 |
 | `echo-loop` | **Agent 循环驱动**：`TurnRunner` turn/step 状态机（`turn/*`/`step/*`/`agent/*` 生命周期事件）、`ToolPipeline` 工具执行管道（pre/execute/post waterfall 中间件） |
 | `echo-llm-openai` / `echo-llm-anthropic` / `echo-llm-ollama` | **LLM provider（Service Provider 角色）**：各自实现 `echo_defs::LlmProvider`,只依赖定义层 |
-| `echo-chat-capability` | **平台能力接缝（Service Definition 角色）**：`DeliveryPolicy`/`DeliveryTarget`（交付策略与目标词汇），核心循环只依赖此定义 |
 | `echo-protocol` | **前后端契约的唯一来源**：`BackendCommand`/`BackendEvent`/`WsMessage`、bridge；`GateMode`/`ThinkingMode`/`ReasoningEffort` 从 `echo-defs` re-export。前端只需依赖它 |
 | `echo-agent` | Agent 框架：agent 循环、LLM provider（OpenAI/Anthropic/Ollama）、工具注册表、技能系统、trunk 记忆、编排（定时器/后台任务/自更新） |
 | `echo-adapter` | 协议无关的适配器抽象：`Adapter` trait、`InboundMessageHook`、过滤管道、`ConfigStore` |

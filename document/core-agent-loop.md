@@ -71,8 +71,9 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
   `RunExtras` 携带工具 schema（模型可见）+ 推理回调（`on_reasoning` → 发
   `AgentReasoning` 事件）；工具执行经 `block_in_place` 同步桥接 `run_tool`
   （ToolCall/ToolResult 事件与事件日志与内置循环同路径）
-- **QQ hook / 定时器 / QQ 会话** → 内置循环：边界与投递语义（QQ 边界块、
-  定时器回投、send 工具声明校验）由内置循环保证，echo-loop 不接管
+- **QQ hook / 定时器 / QQ 会话** → 内置循环：边界语义（QQ 边界块、定时器
+  回投）由内置循环注入；投递纪律由提示词与 qq-transport 技能引导（2026-09
+  移除 send 工具声明校验与纠偏提醒），echo-loop 不接管
 
 两套驱动并行、同一工具路径（`run_tool`）与提示词构建（`build_prompt_blocks`）
 复用；卸载全部循环插件（配置 `disabled_plugins` 或面板 TogglePlugin）即恢复

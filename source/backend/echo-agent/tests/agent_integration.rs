@@ -62,7 +62,7 @@ impl StaticProvider {
 }
 
 /// A provider that replays a fixed script of responses, recording the last
-/// system prompt seen. Used to exercise the delivery-correction loop.
+/// system prompt seen.
 struct ScriptedProvider {
     script: tokio::sync::Mutex<VecDeque<ChatResponse>>,
     calls: AtomicUsize,
@@ -720,47 +720,22 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
 }
 
 #[tokio::test]
-async fn qq_hook_input_enforces_transport_boundary() {
-    // First answer comes without a send tool, forcing a delivery correction;
-    // then the agent calls send_private_msg and finishes with a direct reply.
-    let script = vec![
-        ChatResponse {
-            stop_reason: None,
-            content: Some("backend only".into()),
-            reasoning_content: None,
-            tool_calls: vec![],
-            usage: Usage::default(),
-        },
-        ChatResponse {
-            stop_reason: None,
-            content: None,
-            reasoning_content: None,
-            tool_calls: vec![ToolCall {
-                id: "send_1".into(),
-                name: "send_private_msg".into(),
-                arguments: r#"{"user_id":123,"content":"收到"}"#.into(),
-            }],
-            usage: Usage::default(),
-        },
-        ChatResponse {
-            stop_reason: None,
-            content: Some("delivered".into()),
-            reasoning_content: None,
-            tool_calls: vec![],
-            usage: Usage::default(),
-        },
-    ];
+async fn qq_hook_input_gets_transport_boundary_prompt() {
+    // A backend-only reply is returned as-is: transport discipline lives in
+    // the prompt/skills, not in a forced delivery-correction loop.
+    let script = vec![ChatResponse {
+        stop_reason: None,
+        content: Some("backend only".into()),
+        reasoning_content: None,
+        tool_calls: vec![],
+        usage: Usage::default(),
+    }];
     let provider = Arc::new(ScriptedProvider::new(script));
-    let mut tools = ToolRegistry::new();
-    tools.register(Arc::new(MockTool {
-        name: "send_private_msg",
-        result: "private message sent".into(),
-    }));
     let agent = Arc::new(Agent::new(
         provider.clone(),
         AgentConfig::default(),
         SkillRegistry::new(),
-        tools,
+        ToolRegistry::new(),
         Arc::new(AdapterRegistry::new()),
     ));
     let key = SessionKey::parse("qq:dm::123").unwrap();
@@ -771,7 +746,9 @@ async fn qq_hook_input_enforces_transport_boundary() {
         "</qq_message_hook>"
     );
 
-    agent.process_message(&session, hook).await.unwrap();
+    let reply = agent.process_message(&session, hook).await.unwrap();
+    assert_eq!(reply, "backend only");
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 
     let prompt = provider.last_system_prompt().await;
     assert!(
@@ -780,7 +757,7 @@ async fn qq_hook_input_enforces_transport_boundary() {
     );
     assert!(
         prompt.contains("Answer every <qq_message_hook> exactly once"),
-        "QQ hook must force a send tool reply: {prompt}"
+        "QQ hook must guide a send-tool reply: {prompt}"
     );
     assert!(
         prompt.contains("never send twice"),

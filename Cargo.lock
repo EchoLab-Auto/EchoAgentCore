@@ -405,7 +405,6 @@ dependencies = [
  "chrono",
  "dashmap",
  "echo-adapter",
- "echo-chat-capability",
  "echo-context",
  "echo-defs",
  "echo-llm-anthropic",
@@ -459,15 +458,6 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "echo-chat-capability"
-version = "0.1.0"
-dependencies = [
- "echo-defs",
- "serde",
- "serde_json",
 ]
 
 [[package]]

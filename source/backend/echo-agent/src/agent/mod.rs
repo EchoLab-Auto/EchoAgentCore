@@ -26,7 +26,6 @@ use crate::llm::{create_provider, ChatMessage, ChatRequest, LlmProvider, ToolCal
 use crate::session::{Session, TrunkStore};
 use crate::skill::SkillRegistry;
 use crate::tool::ToolRegistry;
-use echo_chat_capability::{DeliveryPolicy, DeliveryTarget};
 
 const TURN_CANCELLED: &str = "agent turn cancelled by requester";
 /// 一轮内允许的截断自动续跑次数上限：输出被 max_tokens 截断时把残片入栈
@@ -2257,7 +2256,6 @@ impl Agent {
             team_id: None,
         });
 
-        let delivery_plan = DeliveryPlan::from_input(content);
         // Distinguish input origin by content markers, NOT by the session's
         // platform. A QQ session can receive backend/TUI input (no hook), and
         // that must be answered in the backend — never pushed to QQ.
@@ -2302,8 +2300,6 @@ impl Agent {
         let max_iterations = self.config.read().await.max_tool_iterations.max(1);
         // None/0 = 无上限（后端回退 DEFAULT_MAX_TOKENS=128K）。
         let max_tokens = self.config.read().await.effective_max_tokens();
-        let mut delivered_targets = std::collections::HashSet::new();
-        let mut delivery_reminders = 0usize;
         let mut truncation_continues = 0usize;
 
         for _ in 0..max_iterations {
@@ -2376,33 +2372,6 @@ impl Agent {
 
             if response.tool_calls.is_empty() {
                 let reply = response.content.unwrap_or_default();
-                let pending_deliveries = delivery_plan
-                    .as_ref()
-                    .map(|plan| plan.pending(&delivered_targets))
-                    .unwrap_or_default();
-                if !pending_deliveries.is_empty() {
-                    if delivery_reminders >= 2 {
-                        return Err(anyhow!(
-                            "required deliveries were not completed after two corrections: {}",
-                            pending_deliveries
-                                .iter()
-                                .map(|target| echo_chat_capability::target_key(target))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                    }
-                    if !reply.trim().is_empty() {
-                        messages.push(ChatMessage::assistant_with_reasoning(
-                            reply,
-                            response.reasoning_content.clone(),
-                        ));
-                    }
-                    messages.push(ChatMessage::user(
-                        QqDeliveryPolicy.delivery_reminder(&pending_deliveries),
-                    ));
-                    delivery_reminders += 1;
-                    continue;
-                }
                 self.emit(BackendEvent::AgentCompleted {
                     session_id: session_id.clone(),
                 });
@@ -2424,38 +2393,6 @@ impl Agent {
                 &response.reasoning_content,
             ));
             for call in &response.tool_calls {
-                let delivery_key = match QqDeliveryPolicy.validate_delivery_call(
-                    delivery_plan
-                        .as_ref()
-                        .map(|plan| plan.targets.as_slice())
-                        .unwrap_or(&[]),
-                    &mut delivered_targets,
-                    call,
-                ) {
-                    Ok(delivery_key) => delivery_key,
-                    Err(error) => {
-                        let result = format!("error: {error}");
-                        self.emit(BackendEvent::ToolCall {
-                            session_id: session_id.clone(),
-                            team_id: None,
-                            tool_name: call.name.clone(),
-                            arguments: call.arguments.clone(),
-                            tool_call_id: call.id.clone(),
-                            branch_id: branch_id.to_string(),
-                        });
-                        self.emit(BackendEvent::ToolResult {
-                            session_id: session_id.clone(),
-                            team_id: None,
-                            tool_name: call.name.clone(),
-                            result: result.clone(),
-                            tool_call_id: call.id.clone(),
-                            timed_out: false,
-                            branch_id: branch_id.to_string(),
-                        });
-                        messages.push(ChatMessage::tool(result, &call.id));
-                        continue;
-                    }
-                };
                 let tool_started = std::time::Instant::now();
                 tracing::info!(
                     turn_id = %turn_id,
@@ -2552,8 +2489,14 @@ impl Agent {
                     elapsed_ms = tool_started.elapsed().as_millis() as u64,
                     "agent tool call completed"
                 );
-                if let Some(delivery_key) = delivery_key.filter(|_| success) {
-                    delivered_targets.insert(delivery_key);
+                // A successful send tool call is the branch's visible reply;
+                // it suppresses the interim wait-reply for parallel branches.
+                if success
+                    && matches!(
+                        call.name.as_str(),
+                        "send_private_msg" | "send_group_msg" | "send_backend_message"
+                    )
+                {
                     if let Some(visible_reply) = &visible_reply {
                         let _ = visible_reply.send(true);
                     }
@@ -3895,158 +3838,6 @@ fn resolve_probe_config(
     Ok(probe)
 }
 
-#[derive(Debug, Clone)]
-/// The QQ delivery policy: parses deliveries from QQ/background inputs and
-/// validates send tool calls against the declared targets. This is the
-/// platform implementation of the [`DeliveryPolicy`] seam; the loop depends
-/// only on the trait.
-struct QqDeliveryPolicy;
-
-struct DeliveryPlan {
-    targets: Vec<DeliveryTarget>,
-}
-
-impl DeliveryPlan {
-    fn from_input(content: &str) -> Option<Self> {
-        QqDeliveryPolicy
-            .plan_from_input(content)
-            .map(|targets| Self { targets })
-    }
-
-    fn pending<'a>(
-        &'a self,
-        delivered: &std::collections::HashSet<String>,
-    ) -> Vec<&'a DeliveryTarget> {
-        self.targets
-            .iter()
-            .filter(|target| !delivered.contains(&echo_chat_capability::target_key(target)))
-            .collect()
-    }
-}
-
-/// The QQ implementation of the delivery policy seam: parses QQ hooks and
-/// background-task deliveries, and validates `send_*` tool calls against the
-/// declared targets. The loop never imports QQ tool names directly — it
-/// drives deliveries through [`DeliveryPolicy`].
-impl DeliveryPolicy for QqDeliveryPolicy {
-    fn plan_from_input(&self, content: &str) -> Option<Vec<DeliveryTarget>> {
-        if let Some(target) = Self::from_qq_hook(content) {
-            return Some(vec![target]);
-        }
-        let payload = content
-            .trim()
-            .strip_prefix(crate::input_marker::BACKGROUND_EVENT_OPEN)?
-            .strip_suffix("</background_task_event>")?
-            .trim();
-        let value: serde_json::Value = serde_json::from_str(payload).ok()?;
-        let mut targets = Vec::new();
-        for delivery in value["deliveries"].as_array()? {
-            let target = &delivery["target"];
-            let parsed = match target["kind"].as_str()? {
-                "backend" => DeliveryTarget::Backend {
-                    session_id: json_id(&target["session_id"])?,
-                },
-                "qq_private" => DeliveryTarget::Direct {
-                    user_id: json_id(&target["user_id"])?,
-                },
-                "qq_group" => DeliveryTarget::Group {
-                    group_id: json_id(&target["group_id"])?,
-                },
-                _ => return None,
-            };
-            if !targets.contains(&parsed) {
-                targets.push(parsed);
-            }
-        }
-        (!targets.is_empty()).then_some(targets)
-    }
-
-    fn validate_delivery_call(
-        &self,
-        plan: &[DeliveryTarget],
-        delivered: &mut std::collections::HashSet<String>,
-        call: &ToolCall,
-    ) -> Result<Option<String>, String> {
-        if !matches!(
-            call.name.as_str(),
-            "send_private_msg" | "send_group_msg" | "send_backend_message"
-        ) {
-            return Ok(None);
-        }
-        if plan.is_empty() {
-            return Ok(None);
-        }
-        let args: serde_json::Value = serde_json::from_str(&call.arguments)
-            .map_err(|error| format!("invalid delivery arguments: {error}"))?;
-        let target = plan
-            .iter()
-            .find(|target| {
-                if call.name != target_tool_name(target) {
-                    return false;
-                }
-                let (id_name, expected) = target_expected_id(target);
-                json_id(&args[id_name]).as_deref() == Some(expected)
-            })
-            .ok_or_else(|| format!("delivery target is not declared for {}", call.name))?;
-        let key = echo_chat_capability::target_key(target);
-        // 允许同一目标多次投递：回复条数完全由 agent 决定（例如先回
-        // 一条图片说明、再回一条文字）。`delivered` 集合仅用于判定"是否
-        // 已满足至少一次投递"（驱动 delivery reminder），不再拦截重复。
-        delivered.insert(key.clone());
-        Ok(Some(key))
-    }
-
-    fn delivery_reminder(&self, pending: &[&DeliveryTarget]) -> String {
-        let required = pending
-            .iter()
-            .map(|target| {
-                let (id_name, id) = target_expected_id(target);
-                format!("{} with {id_name}={id}", target_tool_name(target))
-            })
-            .collect::<Vec<_>>()
-            .join("; ");
-        format!(
-            "<backend_delivery_correction>The previous response did not complete all declared deliveries. Call these tools now, exactly once per target: {required}. Use the corresponding branch result as content. Do not return another direct answer before every tool succeeds.</backend_delivery_correction>"
-        )
-    }
-}
-
-impl QqDeliveryPolicy {
-    fn from_qq_hook(content: &str) -> Option<DeliveryTarget> {
-        let payload = content
-            .trim()
-            .strip_prefix("<qq_message_hook>")?
-            .strip_suffix("</qq_message_hook>")?
-            .trim();
-        let value: serde_json::Value = serde_json::from_str(payload).ok()?;
-        match value.pointer("/channel/type")?.as_str()? {
-            "private" => Some(DeliveryTarget::Direct {
-                user_id: json_id(value.pointer("/sender/user_id")?)?,
-            }),
-            "group" => Some(DeliveryTarget::Group {
-                group_id: json_id(value.pointer("/channel/group_id")?)?,
-            }),
-            _ => None,
-        }
-    }
-}
-
-fn target_tool_name(target: &DeliveryTarget) -> &'static str {
-    match target {
-        DeliveryTarget::Direct { .. } => "send_private_msg",
-        DeliveryTarget::Group { .. } => "send_group_msg",
-        DeliveryTarget::Backend { .. } => "send_backend_message",
-    }
-}
-
-fn target_expected_id(target: &DeliveryTarget) -> (&'static str, &str) {
-    match target {
-        DeliveryTarget::Direct { user_id } => ("user_id", user_id),
-        DeliveryTarget::Group { group_id } => ("group_id", group_id),
-        DeliveryTarget::Backend { session_id } => ("session_id", session_id),
-    }
-}
-
 /// One named section of the system prompt, kept for token-usage
 /// visualization in the panel.
 #[derive(Debug, Clone)]
@@ -4135,14 +3926,6 @@ fn role_label(role: &str) -> &'static str {
         "tool" => "工具",
         _ => "其他",
     }
-}
-
-fn json_id(value: &serde_json::Value) -> Option<String> {
-    value
-        .as_str()
-        .map(str::to_string)
-        .or_else(|| value.as_i64().map(|id| id.to_string()))
-        .filter(|id| !id.is_empty())
 }
 
 /// Extract the structured `message_sequence` from a marked input, if any.
@@ -6161,89 +5944,6 @@ pub mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn qq_hook_retries_backend_only_reply_until_send_tool_is_called() {
-        let script = vec![
-            ChatResponse {
-                stop_reason: None,
-                content: Some("backend only".into()),
-                reasoning_content: None,
-                tool_calls: vec![],
-                usage: Usage::default(),
-            },
-            ChatResponse {
-                stop_reason: None,
-                content: None,
-                reasoning_content: None,
-                tool_calls: vec![ToolCall {
-                    id: "send_1".into(),
-                    name: "send_private_msg".into(),
-                    arguments: r#"{"user_id":123456,"content":"收到"}"#.into(),
-                }],
-                usage: Usage::default(),
-            },
-            ChatResponse {
-                stop_reason: None,
-                content: Some("delivered".into()),
-                reasoning_content: None,
-                tool_calls: vec![],
-                usage: Usage::default(),
-            },
-        ];
-        let provider = Arc::new(ScriptedProvider::new(script));
-        let mut tools = ToolRegistry::new();
-        tools.register(Arc::new(MockTool {
-            name: "send_private_msg",
-            result: "private message sent".into(),
-        }));
-        let agent = Agent::new(
-            provider.clone(),
-            AgentConfig::default(),
-            SkillRegistry::new(),
-            tools,
-            Arc::new(AdapterRegistry::new()),
-        );
-        let key = SessionKey {
-            platform: "qq".into(),
-            scope: "dm".into(),
-            scope_id: String::new(),
-            user_id: "123456".into(),
-            account: None,
-        };
-        let session = agent.trunk.get_or_create(&key, "tester".into(), None);
-        let hook = r#"<qq_message_hook>
-{"channel":{"type":"private"},"sender":{"user_id":"123456"},"content":"你好"}
-</qq_message_hook>"#;
-
-        let reply = agent.process_message(&session, hook).await.unwrap();
-
-        assert_eq!(reply, "delivered");
-        assert_eq!(provider.call_count(), 3);
-        let requests = provider.requests.lock().await;
-        assert!(requests[1].messages.iter().any(|message| {
-            message.content.contains("<backend_delivery_correction>")
-                && message.content.contains("user_id=123456")
-        }));
-        let history = session.history.lock().await;
-        // Event-sourced history: user hook + synthesized assistant tool_use +
-        // tool result + assistant reply. The tool_use must precede its result
-        // so the provider never sees an orphaned tool_result after a reload.
-        assert_eq!(history.len(), 4);
-        assert_eq!(
-            history[1].role,
-            crate::llm::ChatRole::Assistant,
-            "tool_use is model-visible before its tool_result"
-        );
-        let tool_use = history[1].tool_calls.as_ref().unwrap();
-        assert_eq!(tool_use[0].name, "send_private_msg");
-        assert_eq!(history[2].role, crate::llm::ChatRole::Tool);
-        assert_eq!(
-            history[2].tool_call_id.as_deref(),
-            Some(tool_use[0].id.as_str())
-        );
-        assert_eq!(history[3].content, "delivered");
-    }
-
     #[test]
     fn sequence_parsing_only_accepts_structured_markers() {
         let hook = r#"<qq_message_hook>
@@ -6426,89 +6126,6 @@ pub mod tests {
             err.contains("provider"),
             "error must mention provider: {err}"
         );
-    }
-
-    #[test]
-    fn qq_delivery_rejects_wrong_target_but_allows_repeat_delivery() {
-        let policy = QqDeliveryPolicy;
-        let targets = vec![DeliveryTarget::Direct {
-            user_id: "123456".into(),
-        }];
-        let mut delivered = std::collections::HashSet::new();
-        let wrong = ToolCall {
-            id: "1".into(),
-            name: "send_private_msg".into(),
-            arguments: r#"{"user_id":999,"content":"x"}"#.into(),
-        };
-        assert!(policy
-            .validate_delivery_call(&targets, &mut delivered, &wrong)
-            .unwrap_err()
-            .contains("not declared"));
-
-        let correct = ToolCall {
-            id: "2".into(),
-            name: "send_private_msg".into(),
-            arguments: r#"{"user_id":123456,"content":"x"}"#.into(),
-        };
-        // 第一次投递：声明目标匹配，记录 delivered。
-        let key = policy
-            .validate_delivery_call(&targets, &mut delivered, &correct)
-            .unwrap()
-            .unwrap();
-        assert!(delivered.contains(&key));
-        // 同一目标再次投递：不再拦截（回复条数由 agent 决定）。
-        let again = ToolCall {
-            id: "3".into(),
-            name: "send_private_msg".into(),
-            arguments: r#"{"user_id":123456,"content":"y"}"#.into(),
-        };
-        assert!(policy
-            .validate_delivery_call(&targets, &mut delivered, &again)
-            .is_ok());
-        // pending() 在首次投递后为空：reminder 不再触发。
-        let plan = DeliveryPlan {
-            targets: targets.clone(),
-        };
-        assert!(plan.pending(&delivered).is_empty());
-    }
-
-    #[test]
-    fn background_delivery_plan_tracks_backend_private_and_group_targets() {
-        let input = r#"<background_task_event>{
-            "deliveries": [
-                {"target":{"kind":"backend","session_id":"local:tui::local_user"}},
-                {"target":{"kind":"qq_private","user_id":"100"}},
-                {"target":{"kind":"qq_group","group_id":"200"}}
-            ]
-        }</background_task_event>"#;
-        let plan = DeliveryPlan::from_input(input).unwrap();
-        let mut delivered = std::collections::HashSet::new();
-        let calls = [
-            ToolCall {
-                id: "backend".into(),
-                name: "send_backend_message".into(),
-                arguments: r#"{"session_id":"local:tui::local_user","content":"a"}"#.into(),
-            },
-            ToolCall {
-                id: "private".into(),
-                name: "send_private_msg".into(),
-                arguments: r#"{"user_id":100,"content":"b"}"#.into(),
-            },
-            ToolCall {
-                id: "group".into(),
-                name: "send_group_msg".into(),
-                arguments: r#"{"group_id":"200","content":"c"}"#.into(),
-            },
-        ];
-        let targets = plan.targets.as_slice();
-        for call in &calls {
-            let key = QqDeliveryPolicy
-                .validate_delivery_call(targets, &mut delivered, call)
-                .unwrap()
-                .unwrap();
-            delivered.insert(key);
-        }
-        assert!(plan.pending(&delivered).is_empty());
     }
 
     #[tokio::test]

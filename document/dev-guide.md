@@ -35,7 +35,6 @@ EchoAgentCore/
 │   ├── session/echo-session/  # 事件溯源会话存储（EventLog + derive_messages）
 │   ├── loop/echo-loop/        # TurnRunner 默认驱动 + ToolPipeline
 │   ├── llm/echo-llm-*/        # LLM provider crates（openai/anthropic/ollama）
-│   ├── chat/echo-chat-capability/  # DeliveryPolicy 交付策略接缝
 │   ├── plugin/echo-plugin/    # Plugin trait / PluginManifest / 注册表
 │   ├── protocol/echo-protocol/# 前后端线契约 crate
 │   ├── backend/

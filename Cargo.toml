@@ -8,7 +8,6 @@ members = [
     "source/llm/echo-llm-openai",
     "source/llm/echo-llm-anthropic",
     "source/llm/echo-llm-ollama",
-    "source/chat/echo-chat-capability",
     "source/protocol/echo-protocol",
     "source/backend/echo-core",
     "source/backend/echo-server",
@@ -40,7 +39,6 @@ echo-loop = { path = "source/loop/echo-loop" }
 echo-llm-openai = { path = "source/llm/echo-llm-openai" }
 echo-llm-anthropic = { path = "source/llm/echo-llm-anthropic" }
 echo-llm-ollama = { path = "source/llm/echo-llm-ollama" }
-echo-chat-capability = { path = "source/chat/echo-chat-capability" }
 echo-protocol = { path = "source/protocol/echo-protocol" }
 echo-adapter = { path = "source/backend/echo-adapter" }
 echo-core = { path = "source/backend/echo-core" }

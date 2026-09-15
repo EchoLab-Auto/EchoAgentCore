@@ -27,13 +27,11 @@ graph BT
   Session[echo-session<br>事件溯源]
   Loop[echo-loop<br>TurnRunner]
   LLM[echo-llm-*<br>OpenAI/Anthropic/Ollama]
-  Chat[echo-chat-capability<br>DeliveryPolicy]
   Proto[echo-protocol<br>线契约]
   Adapter[echo-adapter/echo-adapter-qq<br>平台适配]
   Agent[echo-agent<br>agent 框架]
   Bin[echo-agent-core<br>组合根]
   LLM --> Defs
-  Chat --> Defs
   Ctx --> Defs
   Session --> Defs
   Loop --> Defs
@@ -43,7 +41,6 @@ graph BT
   Agent --> Adapter
   Agent --> Session
   Agent --> LLM
-  Agent --> Chat
   Bin --> Agent
   Bin --> Loop
 ```
@@ -55,7 +52,6 @@ graph BT
 | `echo-session` | 事件溯源会话 | `SessionEvent` 事件集、`EventLog` append-only 持久化、`derive_messages` 投影、compaction、`SessionHeader`、v1-v4 兼容迁移 |
 | `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话，见 Agent 循环文档） |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 echo-defs |
-| `echo-chat-capability` | 平台能力定义 | `DeliveryPolicy`/`DeliveryTarget`（交付策略接缝） |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge，Panel 只依赖它 |
 | `echo-agent` | agent 框架 | 循环（旧实现，逐步让位于 echo-loop）、工具注册表、技能、trunk、编排、命令分发 |
 | `echo-adapter`/`echo-adapter-qq` | 平台适配 | `Adapter` trait、过滤管道、ConfigStore；QQ 实现 |
@@ -102,11 +98,8 @@ graph BT
 | LLM | `echo_defs::LlmProvider` | `echo-llm-openai`/`anthropic`/`ollama` | `echo-agent` 工厂 + `echo-loop` runner |
 | 工具 | `echo_defs::Tool` | `echo-agent::ToolRegistry` + builtin + orchestration | agent 循环 |
 | 技能 | `echo_defs::SkillProvider` | `echo-agent::SkillRegistry`（本地文件） | prompt 组装 |
-| 交付策略 | `echo_chat_capability::DeliveryPolicy` | `echo-agent::QqDeliveryPolicy` | agent 循环 |
 | 平台生命周期 | `echo_defs::chat::ChatAdapter` | `echo-adapter-qq`（经 Adapter 收敛中） | agent + 工具 |
 | 默认驱动 | `echo_loop::TurnRunner` | 内置（经 `ctx.loop` 注册） | 组合根 |
-
-交付策略接缝的细节：`DeliveryTarget`（`Direct{user_id}`/`Group{group_id}`/`Backend{session_id}`）平台无关、不含平台工具名；`DeliveryPolicy` 三个方法——`plan_from_input`（从输入解析所需交付）、`validate_delivery_call`（校验工具调用满足一个目标，按 key 去重）、`delivery_reminder`（模型可见的纠正文案）。核心循环经 trait 驱动，不 import 平台工具名；新增平台 = 一个实现该 trait 的 provider。`QqDeliveryPolicy` 现居 echo-agent（QQ 语义待迁 `echo-qq` provider crate）。它与 `ChatAdapter` 互补：后者管生命周期/收发，前者管交付策略。
 
 ## 命令分发
 
@@ -143,7 +136,7 @@ graph BT
 |---|---|
 | 新增 LLM provider | 实现 `echo_defs::LlmProvider`，注册 `ctx.llm` |
 | 新增工具 | 实现 `echo_defs::Tool`，注册进 ToolRegistry |
-| 新增平台 | 实现 `ChatAdapter` + `DeliveryPolicy`，注册 `ctx.chat(platform)` |
+| 新增平台 | 实现 `ChatAdapter`，注册 `ctx.chat(platform)` |
 | 拦截请求/工具/turn | EventBus 上注册 lifecycle 事件监听器 |
 | 工具策略（超时/审批） | `ToolPipeline::push_pre/push_post` |
 | 新增命令 | 命令分发按域拆分（`apply_qq_command` 模式）+ CommandRegistry（开放后） |
