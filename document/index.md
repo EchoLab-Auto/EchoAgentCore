@@ -36,7 +36,9 @@ graph LR
   Core --> Plugins[插件化设计|/core-plugins.md]
   Core --> Tasks[后台任务|/core-background-tasks.md]
   Core --> Persist[配置持久化|/core-config-persistence.md]
+  Core --> Orch[编排插件|/core-orchestration.md]
   Plugins --> Gating[QQ 门控|/adapter-qq-gating.md]
+  Tasks --> QqTasks[QQ 任务|/panel-qq-tasks.md]
   Proto --> Core
   Panel --> Proto
 ```

@@ -1,12 +1,12 @@
 ---
 id: agent-loop
-title: "Agent 循环（插件化）"
+title: "Agent 循环"
 group: 后端模块
 x: 1283
 y: 1512
 ---
 
-# Agent 循环（插件化）
+# Agent 循环
 
 Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥二选一）
 承载的**可插拔驱动**：turn/step 状态机 + 工具管道，经 [插件化设计](./core-plugins.md)
@@ -32,16 +32,16 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 - **工具面**：单会话模式隐藏 `spawn_parallel_task`（一个会话一次只处理一件事，
   并行分支与串行准入冲突）；`run_subagent` / `spawn_background_task` 仍可用。
 - **推导**：`TeamMember::loop_mode()`（单一来源）——白名单含 `loop.parallel`
-  或任一旧编排模式 id → parallel；其余（含白名单为空 = 默认）→ single。
-  插件黑名单已移除（2026-09-11），推导只看白名单。旧 id（`orchestration.{single,chatbot}`、
-  `branch.reply`、`session.global`、`chatbot.sessions`、`loop.runner`）在配置加载
-  与 `SaveTeam` 时归一化为模式插件 id。
+  → parallel；其余（含白名单为空 = 默认）→ single。
+  插件黑名单已移除（2026-09-11），推导只看白名单。旧 id 迁移见
+  [配置持久化](./core-config-persistence.md)。
 - **落地**：两个插件 mount 的是同一个 `TurnRunner`（驱动本体），模式只改策略；
   两个都卸载才回退内置循环。模式只能经面板「循环模式」分段单选修改（写白名单）。
 
 ## Turn 循环
 
-- 每条消息注册一个**临时分支**（可取消），拿历史快照后进入 `process_message_inner`
+- 每条入站消息经[多 Agent 与会话](./core-agents.md)的临时分支机制进入
+  `process_message_inner`；本层只负责循环本身
 - 系统提示词按块构建（[插件化设计](./core-plugins.md) 的能力门控作用于各层）：
   基础提示词、**system 技能层**（system:true，见 [技能系统](./core-skills.md)）、
   技能清单、常驻/触发技能、**后台编排说明（仅该 agent 启用了编排工具时注入**——
@@ -73,7 +73,8 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
   （ToolCall/ToolResult 事件与事件日志与内置循环同路径）
 - **QQ hook / 定时器 / QQ 会话** → 内置循环：边界语义（QQ 边界块、定时器
   回投）由内置循环注入；投递纪律由提示词与 qq-transport 技能引导（2026-09
-  移除 send 工具声明校验与纠偏提醒），echo-loop 不接管
+  移除 send 工具声明校验与纠偏提醒），echo-loop 不接管。QQ 并发回复的细节
+  （分支并发、进度回应、有序合并）见[后台任务与并行分支](./core-background-tasks.md)§QQ 并发回复。
 
 两套驱动并行、同一工具路径（`run_tool`）与提示词构建（`build_prompt_blocks`）
 复用；卸载全部循环插件（配置 `disabled_plugins` 或面板 TogglePlugin）即恢复
@@ -83,7 +84,8 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 
 ## 取消与中断
 
-- 临时分支持有 `CancellationToken`：用户取消（`CancelRequestedWork`）时正在执行的工具被外层 select 中止，turn 以取消收尾
+- 用户取消（`CancelRequestedWork`）时正在执行的工具被外层 select 中止，
+  turn 以取消收尾；分支注册与取消令牌机制见[后台任务与并行分支](./core-background-tasks.md)
 - **按 agent 路由**：`CancelRequestedWork` 携带 `team_id`（`#[serde(default)]` 向后兼容），
   命令泵按 team 路由到对应 persona——self-coding 的消息只有在 self-coding 的 Agent 中才能取消
 - **取消即收尾**：TUI 路径取消同样 emit `AgentCompleted`（与 QQ 路径一致），前端据此把

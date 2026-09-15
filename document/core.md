@@ -4,7 +4,7 @@ title: "Core 后端"
 group: 后端模块
 x: 600
 y: 1759
-link: ["core-agents | 多 Agent 与会话 | r>l", "core-plugins | 插件化设计", "core-background-tasks | 后台任务", "core-config-persistence | 配置持久化 | r>l"]
+link: ["core-agents | 多 Agent 与会话 | r>l", "core-plugins | 插件化设计", "core-agent-loop | Agent 循环", "core-background-tasks | 后台任务", "core-config-persistence | 配置持久化 | r>l"]
 ---
 
 # Core 框架

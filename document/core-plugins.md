@@ -47,7 +47,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.adapter.qq` | Adapter | QQ 适配器（OneBot v11 反向 WS，含 QQ 管理工具） |
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
 | `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`，2026-09-15）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
-| `echo-agent.orchestration` | Orchestration | 后台任务/并行分支/子代理/定时器/框架自更新（名义挂载：重启生效） |
+| `echo-agent.orchestration` | Orchestration | 编排工具入口（后台任务/并行分支/子代理/定时器/自更新的 schema 与调度，名义挂载：重启生效；执行机制见[后台任务与并行分支](./core-background-tasks.md)） |
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂（名义挂载：重启生效） |
 | `echo-agent.loop.single` | Loop | 单会话循环（默认）：mount 启用 echo-loop 驱动；会话内 turn 串行排队、无会话管理 UI |
 | `echo-agent.loop.parallel` | Loop | 并行多会话循环：同一 TurnRunner；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
@@ -111,7 +111,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   整个包（plugin + tools + skills）
 
 **可观测性**：`PluginInfo.package` 随 `PluginsList` 下发（未声明回退为插件
-id），Panel 插件详情展示「包（Package）」字段；设置视图已按包分组展示
+id），Panel 插件详���展示「包（Package）」字段；设置视图已按包分组展示
 工具/技能。
 
 **多插件包（前瞻）**：`PluginManifest.with_package()` 允许一个包绑定多个
