@@ -67,6 +67,7 @@ EchoAgentCore/
 - `ConfigStore` — TOML 原子读改写（Agent + QqAdapter 共享，杜绝并发写覆盖）
 - `GateMode` — 强类型门控枚举（`none`/`allowlist`/`denylist`），echo-defs 定义、echo-protocol 共享
 - `AgentMessageHook` — echo-agent 实现的单向 `InboundMessageHook`；平台输出必须走工具
+- **平台回复指引（2026-09 起）**：QQ 消息回复由系统提示词边界块 + `qq-transport` 技能承担（"每条 hook 必调用一次发送工具"），循环层不再做代码校验/纠偏
 - `FanoutHandle` — 多订阅者事件扇出（自动清理失效订阅者）
 
 ## 关键流程
@@ -78,7 +79,7 @@ EchoAgentCore/
 5. **适配器生命周期**：QqAdapter::start() → 绑定端口 → 服务器任务 → 接受连接 → QqHandler
 6. **技能热重载**：周期扫描 → 发现 SKILL.md → 保留启用状态 → 替换注册表 → 清提示词缓存
 7. **自更新**：授权会话 → 固定 framework_update 工具 → echo-agent-core-update.service → 构建 → 原子替换 → Core 重启（排空优先）
-8. **后台任务**：上下文快照 → 分离分支 → 完成缓冲 → 创建序整合 → 显式目标投递
+8. **后台任务**：上下文快照 → 分离分支 → 完成缓冲 → 创建序整合 → 按声明目标投递（提示词引导，无代码强制）
 
 ## 构建与测试
 
