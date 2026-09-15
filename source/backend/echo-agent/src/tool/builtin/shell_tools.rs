@@ -8,21 +8,13 @@ use serde_json::json;
 
 use crate::shell::shell_manager_global;
 
-pub fn register_shell_tools(
-    registry: &mut crate::tool::ToolRegistry,
-    workspace: std::path::PathBuf,
-) {
-    let dir = workspace.display().to_string();
-    registry.register(std::sync::Arc::new(ShellStartTool {
-        default_workdir: dir,
-    }));
+pub fn register_shell_tools(registry: &mut crate::tool::ToolRegistry) {
+    registry.register(std::sync::Arc::new(ShellStartTool));
     registry.register(std::sync::Arc::new(ShellExecTool));
     registry.register(std::sync::Arc::new(ShellStopTool));
 }
 
-struct ShellStartTool {
-    default_workdir: String,
-}
+struct ShellStartTool;
 
 #[async_trait]
 impl crate::tool::Tool for ShellStartTool {

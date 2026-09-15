@@ -65,16 +65,10 @@ impl QqInstanceSet {
     }
 }
 
-/// Register QQ tools into the agent's `ToolRegistry`.
+/// Register QQ tools into the agent's `ToolRegistry`（该 persona 的实例集合）。
 ///
-/// **多实例**（2026-09）：传入该 persona 的全部 QQ 实例。
 /// - 恰好 1 个实例：行为与旧版一致（不带 `account` 参数，绑定该实例）；
 /// - 多于 1 个：schema 增加可选 `account`（实例名），缺省时报错列出可选实例。
-pub fn register_qq_tools(registry: &mut echo_agent::ToolRegistry, qq_adapter: Arc<QqAdapter>) {
-    register_qq_tools_multi(registry, vec![qq_adapter]);
-}
-
-/// 多实例版本：该 persona 的实例集合。
 pub fn register_qq_tools_multi(
     registry: &mut echo_agent::ToolRegistry,
     adapters: Vec<Arc<QqAdapter>>,
@@ -362,7 +356,7 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools(&mut registry, adapter);
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
 
         assert!(registry
             .names()
@@ -381,7 +375,7 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools(&mut registry, adapter);
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
 
         let definitions = registry.definitions().await;
         for name in ["send_private_msg", "send_group_msg"] {
@@ -401,7 +395,7 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools(&mut registry, adapter);
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
 
         let definitions = registry.definitions().await;
         let definition = definitions

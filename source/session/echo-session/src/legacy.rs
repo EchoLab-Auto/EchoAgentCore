@@ -46,11 +46,8 @@ struct LegacyDocument {
     identities: Vec<V4Identity>,
     #[serde(default)]
     sessions: Vec<V4Identity>,
-    // Parsed for structural compatibility; the event-sourced store does not
-    // persist the display timeline (it is projected from the log).
-    #[serde(default)]
-    #[allow(dead_code)]
-    timeline: Vec<serde_json::Value>,
+    // v4 的 `timeline` 字段不在此建模：serde 默认忽略未知字段，
+    // 事件溯源存储也不持久化展示时间线（由日志投影而来）。
 }
 
 impl LegacyDocument {

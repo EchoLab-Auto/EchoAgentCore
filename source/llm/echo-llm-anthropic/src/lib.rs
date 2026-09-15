@@ -502,7 +502,6 @@ struct MessagesResponse {
 
 #[derive(Deserialize)]
 #[serde(tag = "type")]
-#[allow(dead_code)]
 enum ContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
@@ -546,6 +545,8 @@ enum StreamEvent {
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// serde 在流式解析时构造这些变体；字段有意不读取（start 事件只需
+// 识别 tool_use 的 id/name，其余内容由 delta 事件补齐）。
 #[allow(dead_code)]
 enum ContentBlockStartWire {
     Text {

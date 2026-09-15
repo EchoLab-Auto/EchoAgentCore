@@ -35,33 +35,8 @@ pub struct QqInstance {
     pub ports: QqPorts,
 }
 
-impl QqInstance {
-    /// 容器名（自动实例：`echo-napcat-<id>`；legacy 实例沿用配置里的名字）。
-    pub fn container(&self) -> String {
-        self.config.napcat_container.clone()
-    }
-
-    /// 该实例的 compose 文件路径（多实例自动生成；legacy 用共享配置里的路径）。
-    pub fn compose_file(&self, data_dir: &Path) -> PathBuf {
-        if self.id == DEFAULT_INSTANCE {
-            PathBuf::from(&self.config.napcat_compose_file)
-        } else {
-            data_dir
-                .join("napcat")
-                .join(&self.id)
-                .join("docker-compose.yml")
-        }
-    }
-}
-
-/// 端口分配：优先沿用已配置值；缺省时探测空闲端口。
-///
-/// legacy 实例（`qq`）缺省沿用 3131/3000/6099，保持既有部署零变化。
-pub fn allocate_ports(existing: &QqPorts, id: &str) -> QqPorts {
-    allocate_ports_avoiding(existing, id, &Default::default())
-}
-
-/// 同上，但避开本轮已分配给其他实例的端口（同一次解析里不重复分配）。
+/// 端口分配：优先沿用已配置值；缺省时探测空闲端口，
+/// 并避开本轮已分配给其他实例的端口（同一次解析里不重复分配）。
 pub fn allocate_ports_avoiding(
     existing: &QqPorts,
     id: &str,
@@ -213,18 +188,9 @@ pub fn write_compose(data_dir: &Path, id: &str, ports: &QqPorts) -> Result<PathB
 
 /// 解析实例列表：显式配置的实例 + persona 门控自动创建的实例。
 ///
-/// `enabled_personas` 是启用了 `echo-agent.adapter.qq` 插件的人格 id 列表。
-pub fn resolve_instances(
-    shared: &echo_adapter_qq::QqAdapterConfig,
-    sections: &BTreeMap<String, QqInstanceSection>,
-    enabled_personas: &[String],
-    default_persona: &str,
-) -> Vec<QqInstance> {
-    resolve_instances_in(shared, sections, enabled_personas, default_persona, None)
-}
-
-/// 同 [`resolve_instances`]，但已知数据目录时把自动生成 compose 的路径写进
-/// 实例配置（容器编排据此启停 NapCat）。
+/// `enabled_personas` 是启用了 `echo-agent.adapter.qq` 插件的人格 id 列表；
+/// `data_dir` 已知时把自动生成 compose 的路径写进实例配置（容器编排据此
+/// 启停 NapCat），None 表示不生成 compose 路径。
 pub fn resolve_instances_in(
     shared: &echo_adapter_qq::QqAdapterConfig,
     sections: &BTreeMap<String, QqInstanceSection>,
@@ -362,7 +328,7 @@ mod tests {
         let mut shared = echo_adapter_qq::QqAdapterConfig::default();
         shared.enabled = true;
         shared.napcat_auto_start = false;
-        let instances = resolve_instances(&shared, &BTreeMap::new(), &[], "alix");
+        let instances = resolve_instances_in(&shared, &BTreeMap::new(), &[], "alix", None);
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].id, DEFAULT_INSTANCE);
         assert_eq!(instances[0].persona, "alix");
@@ -372,7 +338,7 @@ mod tests {
         assert_eq!(instances[0].ports.onebot_http, 3000);
         assert_eq!(instances[0].ports.webui, 6099);
         // 容器与地址沿用共享默认（docker 管理必须指向既有容器 `napcat`）。
-        assert_eq!(instances[0].container(), "napcat");
+        assert_eq!(instances[0].config.napcat_container, "napcat");
         assert!(instances[0].config.napcat_onebot_url.contains(":3000"));
         assert!(instances[0].config.napcat_webui_url.contains(":6099"));
     }
@@ -384,9 +350,9 @@ mod tests {
         shared.napcat_auto_start = false;
         shared.napcat_container = "my-napcat".into();
         shared.napcat_onebot_url = "http://10.0.0.5:3000".into();
-        let instances = resolve_instances(&shared, &BTreeMap::new(), &[], "alix");
+        let instances = resolve_instances_in(&shared, &BTreeMap::new(), &[], "alix", None);
         assert_eq!(instances.len(), 1);
-        assert_eq!(instances[0].container(), "my-napcat");
+        assert_eq!(instances[0].config.napcat_container, "my-napcat");
         assert_eq!(
             instances[0].config.napcat_onebot_url,
             "http://10.0.0.5:3000"
@@ -400,12 +366,15 @@ mod tests {
         shared.napcat_auto_start = false;
         // legacy 归属默认人格 a；b 由自动建档覆盖 → 取 b 断言派生值。
         let personas = vec!["a".to_string(), "b".to_string()];
-        let instances = resolve_instances(&shared, &BTreeMap::new(), &personas, "a");
+        let instances = resolve_instances_in(&shared, &BTreeMap::new(), &personas, "a", None);
         let auto = instances
             .iter()
             .find(|i| i.id != DEFAULT_INSTANCE)
             .expect("auto instance exists");
-        assert_eq!(auto.container(), format!("echo-napcat-{}", auto.id));
+        assert_eq!(
+            auto.config.napcat_container,
+            format!("echo-napcat-{}", auto.id)
+        );
         assert!(auto
             .config
             .napcat_onebot_url
@@ -420,7 +389,7 @@ mod tests {
         shared.enabled = true;
         shared.napcat_auto_start = false;
         let personas = vec!["alix".to_string(), "self-coding".to_string()];
-        let instances = resolve_instances(&shared, &BTreeMap::new(), &personas, "alix");
+        let instances = resolve_instances_in(&shared, &BTreeMap::new(), &personas, "alix", None);
         // legacy 实例 + self-coding 自动实例（alix 已被 legacy 覆盖）
         let ids: Vec<&str> = instances.iter().map(|i| i.id.as_str()).collect();
         assert!(ids.contains(&DEFAULT_INSTANCE), "ids: {ids:?}");
@@ -434,12 +403,12 @@ mod tests {
         shared.napcat_auto_start = false;
         // legacy 实例归属 a（默认人格），b 自动建档 → 恰好 2 个实例
         let personas = vec!["a".to_string(), "b".to_string()];
-        let instances = resolve_instances(&shared, &BTreeMap::new(), &personas, "a");
+        let instances = resolve_instances_in(&shared, &BTreeMap::new(), &personas, "a", None);
         assert_eq!(instances.len(), 2, "legacy(a) + auto(b)");
         let (x, y) = (&instances[0], &instances[1]);
         assert_ne!(x.ports.reverse_ws, y.ports.reverse_ws);
         assert_ne!(x.ports.onebot_http, y.ports.onebot_http);
-        assert_ne!(x.container(), y.container());
+        assert_ne!(x.config.napcat_container, y.config.napcat_container);
     }
 
     #[test]
@@ -476,11 +445,12 @@ mod tests {
                 ..Default::default()
             },
         );
-        let instances = resolve_instances(
+        let instances = resolve_instances_in(
             &shared,
             &sections,
             &["Alice".into(), "alix".into()],
             "Alice",
+            None,
         );
         let ids: Vec<&str> = instances.iter().map(|i| i.id.as_str()).collect();
         assert!(
@@ -492,7 +462,10 @@ mod tests {
             .find(|i| i.persona == "Alice")
             .expect("Alice instance exists");
         assert_eq!(default.id, DEFAULT_INSTANCE);
-        assert_eq!(default.container(), "napcat", "shared container kept");
+        assert_eq!(
+            default.config.napcat_container, "napcat",
+            "shared container kept"
+        );
     }
 
     #[test]
@@ -508,7 +481,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let instances = resolve_instances(&shared, &sections, &["alix".to_string()], "x");
+        let instances = resolve_instances_in(&shared, &sections, &["alix".to_string()], "x", None);
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].id, "qq2");
         assert_eq!(instances[0].persona, "alix");

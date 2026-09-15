@@ -136,12 +136,6 @@ pub struct QqPorts {
     pub webui: u16,
 }
 
-impl QqPorts {
-    pub fn is_complete(&self) -> bool {
-        self.reverse_ws > 0 && self.onebot_http > 0 && self.webui > 0
-    }
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ServerSection {

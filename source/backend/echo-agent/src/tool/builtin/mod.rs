@@ -22,7 +22,7 @@ pub fn register_all(
     registry.register(std::sync::Arc::new(checklist::ChecklistTool::new()));
     adapter::register_adapter_tools(registry, adapters);
     coding::register_coding_tools(registry, workspace.clone());
-    shell_tools::register_shell_tools(registry, workspace);
+    shell_tools::register_shell_tools(registry);
     for name in registry.names() {
         registry.set_package(&name, crate::plugins::TOOLS_BUILTIN_PLUGIN_ID);
     }

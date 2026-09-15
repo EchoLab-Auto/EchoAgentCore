@@ -3264,8 +3264,8 @@ impl Agent {
         blocks
     }
 
-    /// System prompt string (kept for tests; the turn loop uses blocks).
-    #[allow(dead_code)]
+    /// System prompt string (tests only; the turn loop uses blocks).
+    #[cfg(test)]
     async fn build_system_prompt(&self, content: &str) -> String {
         let skills = self.skills.lock().await;
         let matched = skills.find_matching(content);

@@ -13,7 +13,7 @@
 //!   [`deserialize_message`]).
 //!
 //! It deliberately depends on nothing agent- or platform-specific so that a
-//! thin frontend (e.g. EchoAgentPanel's `echo-tui`) can depend on this crate
+//! thin frontend (e.g. the standalone EchoAgentTui) can depend on this crate
 //! alone. The serde representation is the wire contract on
 //! `ws://…:3132` — field/variant names must stay stable; new fields need
 //! `#[serde(default)]` to keep old peers decodable.

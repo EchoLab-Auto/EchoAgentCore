@@ -7,8 +7,6 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::tool::{Tool, ToolError, ToolRegistry};
-#[allow(unused_imports)]
-use echo_adapter::traits::Adapter;
 use echo_adapter::AdapterRegistry;
 
 // ── AdapterStatusTool ──

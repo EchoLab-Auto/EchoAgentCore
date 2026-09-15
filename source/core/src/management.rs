@@ -54,17 +54,6 @@ impl EventBroker {
     }
 }
 
-/// Start the management WS server.
-pub async fn serve(
-    addr: &str,
-    bridge: Arc<BackendBridge>,
-    agent: Arc<echo_agent::Agent>,
-    sudo_broker: Arc<echo_agent::SudoBroker>,
-    menu_broker: Arc<echo_agent::MenuBroker>,
-) -> anyhow::Result<()> {
-    serve_with_token(addr, bridge, agent, sudo_broker, menu_broker, String::new()).await
-}
-
 /// Start the management server with an optional bearer token.
 pub async fn serve_with_token(
     addr: &str,
@@ -89,8 +78,9 @@ pub async fn serve_with_token(
     .await
 }
 
-/// Serve on a pre-bound listener (used by tests to pick a free port).
-pub async fn serve_with_listener(
+/// Serve on a pre-bound listener (tests use it to pick a free port).
+#[cfg(test)]
+pub(crate) async fn serve_with_listener(
     listener: TcpListener,
     bridge: Arc<BackendBridge>,
     agent: Arc<echo_agent::Agent>,
