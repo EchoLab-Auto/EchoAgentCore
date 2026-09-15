@@ -520,7 +520,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     {
         use echo_agent::plugins::{
             ToolSink, ADAPTER_QQ_PLUGIN_ID, CHECKLIST_PLUGIN_ID, MANAGEMENT_PANEL_PLUGIN_ID,
-            MENU_PLUGIN_ID, SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
+            SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
         };
         use echo_context::Disposer;
         use echo_plugin::{BuiltinPlugin, MountContext, PluginKind, PluginManifest};
@@ -698,27 +698,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             )?;
         }
 
-        // ── 实化 7：选单（menu 插件）──
-        // 工具本体在 agent 内联派发表中（`present_menu`，需要 session_id），
-        // 门控经 `Agent::menu_plugin_enabled`（persona 白名单 ∧ 全局启停）；
-        // reapply 调用保持与其它实化插件同构（无注册表工具，仅记录状态）。
-        register(
-            &plugin_host,
-            PluginManifest::builtin(
-                MENU_PLUGIN_ID,
-                "选单",
-                version,
-                PluginKind::Interaction,
-                "menu",
-                "向 Panel 用户发起选单（present_menu 工具 + 专用应答通道），选择结果回到模型继续下一步",
-            ),
-            move |_ctx| {
-                for_each_agent(|a| a.reapply_plugin_gating(MENU_PLUGIN_ID, true));
-                Ok(vec![Disposer::from_fn(|| {
-                    for_each_agent(|a| a.reapply_plugin_gating(MENU_PLUGIN_ID, false));
-                })])
-            },
-        )?;
+        // 选单（present_menu）已降级为普通编排工具：无插件注册，
+        // 只受工具级白/黑名单门控；broker 接线在本函数外完成。
 
         // ── 实化 3：QQ 适配器（启停进程 + 工具包启停）──
         {

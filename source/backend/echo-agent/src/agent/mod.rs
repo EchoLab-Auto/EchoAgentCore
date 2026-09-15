@@ -923,13 +923,6 @@ impl Agent {
             .unwrap_or(true)
     }
 
-    /// 选单插件（`echo-agent.menu`）对本 agent 是否生效：
-    /// 全局启用（共享注册表）∧ 本 persona 白名单。
-    fn menu_plugin_enabled(&self) -> bool {
-        self.persona_allows_plugin(crate::plugins::MENU_PLUGIN_ID)
-            && self.plugin_globally_enabled(crate::plugins::MENU_PLUGIN_ID)
-    }
-
     /// 共享注册表中该插件当前是否启用（无全局锚点 = true，以名单为准）。
     fn plugin_globally_enabled(&self, plugin_id: &str) -> bool {
         plugin_host_global()
@@ -1151,10 +1144,6 @@ impl Agent {
     /// 并行分支与串行准入语义冲突（改用另一个会话 = 另一条并行通道）。
     pub fn allows_dynamic_tool(&self, name: &str) -> bool {
         if name == "spawn_parallel_task" && self.loop_mode() == echo_defs::LoopMode::Single {
-            return false;
-        }
-        // 选单工具随 `echo-agent.menu` 插件启停（persona 白名单 ∧ 全局）。
-        if name == "present_menu" && !self.menu_plugin_enabled() {
             return false;
         }
         let guard = self.capabilities.lock().unwrap();
@@ -2862,12 +2851,6 @@ impl Agent {
         session_id: &str,
         args: serde_json::Value,
     ) -> Result<String, String> {
-        if !self.menu_plugin_enabled() {
-            return Err(
-                "present_menu: 选单插件（echo-agent.menu）对本智能体未启用，请在智能体配置中启用后重试"
-                    .into(),
-            );
-        }
         let (title, description, options) = crate::agent::orchestration::parse_menu_args(&args)?;
         let broker = self
             .menu_broker
@@ -2875,7 +2858,6 @@ impl Agent {
             .await
             .clone()
             .ok_or_else(|| "present_menu: menu broker not attached".to_string())?;
-
         let pending = broker.request();
         let request_id = pending.request_id;
         self.emit(BackendEvent::MenuRequest {
@@ -4848,33 +4830,39 @@ pub mod tests {
         assert!(agent.allows_dynamic_tool("spawn_parallel_task"));
     }
 
-    /// 选单工具随 `echo-agent.menu` 插件启停：persona 白名单未列该插件时
-    /// 工具从 schema 中消失（与 spawn_parallel_task 的循环模式门控同层）。
+    /// 选单工具（present_menu）已降级为普通编排工具：只受工具级白/黑名单
+    /// 门控（与其他编排工具同层），不再有独立的插件维度。
     #[tokio::test]
-    async fn present_menu_follows_menu_plugin_whitelist() {
+    async fn present_menu_follows_tool_gating() {
         let provider = Arc::new(MockProvider {
             calls: Arc::new(AtomicUsize::new(0)),
             reply: "ok".into(),
         });
         let agent = Arc::new(test_agent(provider));
-        // 空白名单 = 全部允许。
+        // 默认（无 capability 配置）= 允许。
         assert!(agent.allows_dynamic_tool("present_menu"));
 
-        // 白名单不含 menu 插件 → 门控关闭。
+        // 工具白名单不含 present_menu → 门控关闭。
         agent
             .apply_capabilities(&crate::config::AgentProfile {
-                enabled_plugins: vec![crate::plugins::TOOLS_BUILTIN_PLUGIN_ID.to_string()],
+                enabled_tools: vec!["schedule_timer".to_string()],
                 ..Default::default()
             })
             .await;
         assert!(!agent.allows_dynamic_tool("present_menu"));
 
-        // 白名单显式列出 → 恢复。
+        // 工具黑名单显式禁用 → 关闭。
         agent
             .apply_capabilities(&crate::config::AgentProfile {
-                enabled_plugins: vec![crate::plugins::MENU_PLUGIN_ID.to_string()],
+                disabled_tools: vec!["present_menu".to_string()],
                 ..Default::default()
             })
+            .await;
+        assert!(!agent.allows_dynamic_tool("present_menu"));
+
+        // 恢复默认 → 允许。
+        agent
+            .apply_capabilities(&crate::config::AgentProfile::default())
             .await;
         assert!(agent.allows_dynamic_tool("present_menu"));
     }

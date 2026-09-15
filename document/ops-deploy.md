@@ -42,7 +42,7 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 - 更新器非阻塞文件锁拒绝并发运行；拉取/构建失败时旧二进制不动、不重启
 - Panel 更新包含 `npm run build`（前端产物从 `web/dist` 拷贝到静态目录，需 PATH 中有 npm——nvm 路径）
 - **NapCat 恢复门控**（2026-09-13）：Core 重启后仅当 `[adapters.qq].enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（3131 或 3140-3399，多实例）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
-- **Core 插件感知校验**（`verifying_plugins` 阶段，2026-09 修正）：安装后对二进制逐个核对内置插件 manifest id（11 个：含 `echo-agent.workspace`、`echo-agent.menu`；含互斥循环模式插件 `echo-agent.loop.{single,parallel}`；旧驱动 id `loop.runner`、旧编排模式 id `orchestration.{single,chatbot}` 与旧特性 id branch.reply/session.global/chatbot.sessions 已移除）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
+- **Core 插件感知校验**（`verifying_plugins` 阶段，2026-09 修正）：安装后对二进制逐个核对内置插件 manifest id（10 个：含 `echo-agent.workspace`；含互斥循环模式插件 `echo-agent.loop.{single,parallel}`；`echo-agent.menu` 已移除，present_menu 降级为普通编排工具；旧驱动 id `loop.runner`、旧编排模式 id `orchestration.{single,chatbot}` 与旧特性 id branch.reply/session.global/chatbot.sessions 已移除）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
 
 ### 状态机与轮询契约
 

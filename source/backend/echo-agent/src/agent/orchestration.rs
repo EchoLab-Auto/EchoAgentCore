@@ -966,7 +966,7 @@ pub fn orchestration_tool_meta() -> Vec<(&'static str, &'static str, &'static st
         ),
         (
             "present_menu",
-            "向 Panel 用户发起选单，等其选择后继续（选单插件）",
+            "向 Panel 用户发起选单，等其选择后继续",
             "选单",
         ),
         (

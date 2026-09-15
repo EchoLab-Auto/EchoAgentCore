@@ -31,7 +31,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 - 核心类型：`PluginManifest`（id/name/version/kind/entry/description）+ `BuiltinPlugin` + `MountContext`
 - **插件类型（`PluginKind`，wire 名以 `as_str` 为准）**：`skill` / `tool` / `provider` / `loop` / `adapter` / `orchestration` / `management` / `interaction`。
-  - `interaction`（2026-09-14 新增，选单插件启用）：**人在环交互面**——模型发起、用户在 Panel 应答（Panel 内的问答 UI + 专用应答通道），与 `adapter` / `management` 同属「整类能力开关」，在 Panel「启用插件」勾选区按 kind 即可见（`capabilities.ts::isPluginCheckboxVisible` 的 kind 类判定）
+  - `interaction`（2026-09-14 新增）：**人在环交互面**——模型发起、用户在 Panel 应答（Panel 内的问答 UI + 专用应答通道），与 `adapter` / `management` 同属「整类能力开关」，在 Panel「启用插件」勾选区按 kind 即可见（`capabilities.ts::isPluginCheckboxVisible` 的 kind 类判定）。原选单插件 `echo-agent.menu` 已于 2026-09 移除（present_menu 降级为普通编排工具，只受工具白/黑名单门控），该 kind 目前无内置成员，保留给未来人在环交互插件
   - 新增类型时同步：Core `PluginKind::as_str` 的 wire 名（测试守护）+ Panel `capabilities.ts::PLUGIN_KIND_LABELS` 中文名（测试守护覆盖全部 wire 名）
 - 注册为**可逆**副作用：`register_and_mount` 返回 disposer，禁用即卸载注册
 - 数据插件（skill/tool）支持热重载（插件目录 5s 轮询）；代码插件需二进制重载
@@ -48,14 +48,13 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
 | `echo-agent.checklist` | Tool | 任务清单（checklist 工具包；可按 persona 单独启停，默认启用） |
 | `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
-| `echo-agent.menu` | Interaction | 选单（`present_menu` 工具 + Panel 选单弹层；**人在环的选择**——模型发起选项、用户在 Panel 点选、结果回到同一次 turn 继续，见 [工具系统](./core-tools.md)§present_menu）。kind=interaction = 人在环交互面（Panel 内问答），与 adapter/management 同属「整类能力开关」 |
 | `echo-agent.orchestration` | Orchestration | 后台任务/并行分支/子代理/定时器/框架自更新（名义挂载：重启生效） |
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂（名义挂载：重启生效） |
 | `echo-agent.loop.single` | Loop | 单会话循环（默认）：mount 启用 echo-loop 驱动；会话内 turn 串行排队、无会话管理 UI |
 | `echo-agent.loop.parallel` | Loop | 并行多会话循环：同一 TurnRunner；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
 | `echo-agent.management.panel` | Management | 管理面：management WS 桥接 + sudo 授权与选单应答通道（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
 
-> 以上 11 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单。
+> 以上 10 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单。选单（present_menu）已降级为普通编排工具，无插件 id。
 
 ## 能力开关（per-persona）
 
@@ -65,7 +64,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   设置视图智能体编辑器；判定单一来源 = Panel `capabilities.ts::isPluginCheckboxVisible`）：
   `kind ∈ {adapter, management, interaction}` **∪** 下列包维度门控插件固定清单
   （`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本节 `GATED_PLUGIN_IDS` 逐项镜像）：
-  `tools.builtin` / `skills.dir` / `checklist` / `workspace` / `menu` / `adapter.qq`。
+  `tools.builtin` / `skills.dir` / `checklist` / `workspace` / `adapter.qq`。
   其余插件（`loop.*` 由循环模式分段控件管理、`orchestration` / `provider.llm`
   名义挂载重启生效）**不出现**在该勾选区。保存后写回 TOML
 - ⚠️ **新增包维度门控插件时的同步清单**（缺一即"配置里看不到/门控失效"）：

@@ -184,11 +184,11 @@ kind = "skill"
         // 前端按字符串分派显示分组：wire 名必须稳定。
         assert_eq!(PluginKind::Interaction.as_str(), "interaction");
         let m = PluginManifest::builtin(
-            "echo-agent.menu",
-            "选单",
+            "echo-agent.example.interaction",
+            "交互示例",
             "0.1.0",
             PluginKind::Interaction,
-            "menu",
+            "example",
             "desc",
         );
         let json = serde_json::to_string(&m).unwrap();

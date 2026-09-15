@@ -27,11 +27,9 @@ pub const MANAGEMENT_PANEL_PLUGIN_ID: &str = "echo-agent.management.panel";
 /// 工作区会话管理插件（workspace）：Panel 侧多会话/多目录管理 + git 状态，
 /// 模型侧 `workspace` 工具与激活会话的系统提示注入。
 pub const WORKSPACE_PLUGIN_ID: &str = "echo-agent.workspace";
-/// 选单插件（menu）：模型经 `present_menu` 向 Panel 用户发起选单，
-/// 用户选择后把结果作为工具结果喂回模型继续下一步。
-/// 门控维度是「编排工具 + Panel 应答通道」——工具在 agent 内联派发表中，
-/// 按 persona 白名单 ∧ 全局启停判定（见 `Agent::menu_plugin_enabled`）。
-pub const MENU_PLUGIN_ID: &str = "echo-agent.menu";
+/// 旧选单插件 id（menu 已降级为普通编排工具，插件维度移除）：
+/// 配置加载时从白名单剔除（见 `normalize_mode_plugins`）。
+pub const LEGACY_MENU_PLUGIN_ID: &str = "echo-agent.menu";
 
 /// 循环模式互斥插件（按 persona 二选一，single 为推导兜底，也是默认）：
 /// - `loop.single`：单会话循环（默认）——同一会话内 turn 串行排队，
@@ -67,7 +65,8 @@ pub const PARALLEL_MODE_IDS: [&str; 5] = [
 
 /// 名单归一化（配置加载与 SaveTeam 防御共用）：把旧编排模式 id 与旧驱动
 /// 插件 id 折叠为循环模式插件 id——chatbot/旧特性 id → `loop.parallel`，
-/// orchestration.single → `loop.single`，loop.runner → 剔除（模式插件取代）。
+/// orchestration.single → `loop.single`，loop.runner → 剔除（模式插件取代）；
+/// echo-agent.menu → 剔除（选单降级为普通编排工具，插件维度移除）。
 /// 去重、保序。返回是否有改动。
 pub fn normalize_mode_plugins(list: &mut Vec<String>) -> bool {
     let mut changed = false;
@@ -76,7 +75,8 @@ pub fn normalize_mode_plugins(list: &mut Vec<String>) -> bool {
         let is_parallel = LEGACY_CHATBOT_MODE_IDS.contains(&item.as_str());
         let is_single = item == LEGACY_SINGLE_MODE_ID;
         let is_legacy_runner = item == LEGACY_LOOP_RUNNER_PLUGIN_ID;
-        if !is_parallel && !is_single && !is_legacy_runner {
+        let is_legacy_menu = item == LEGACY_MENU_PLUGIN_ID;
+        if !is_parallel && !is_single && !is_legacy_runner && !is_legacy_menu {
             normalized.push(item.clone());
             continue;
         }
@@ -86,7 +86,7 @@ pub fn normalize_mode_plugins(list: &mut Vec<String>) -> bool {
         } else if is_single {
             Some(SINGLE_LOOP_PLUGIN_ID)
         } else {
-            // 旧驱动插件 id：模式插件取代，配置里不再保留。
+            // 旧驱动插件 id / 旧选单插件 id：已被取代或移除，配置里不再保留。
             None
         };
         if let Some(id) = replacement {
@@ -101,24 +101,22 @@ pub fn normalize_mode_plugins(list: &mut Vec<String>) -> bool {
     changed
 }
 
-pub const GATED_PLUGIN_IDS: [&str; 6] = [
+pub const GATED_PLUGIN_IDS: [&str; 5] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
     CHECKLIST_PLUGIN_ID,
     ADAPTER_QQ_PLUGIN_ID,
     WORKSPACE_PLUGIN_ID,
-    MENU_PLUGIN_ID,
 ];
 
 /// 全部内置插件 id（与 `scripts/update.sh` 的插件校验清单一致）。
 /// 供插件黑名单移除迁移物化白名单时使用。
-pub const BUILTIN_PLUGIN_IDS: [&str; 11] = [
+pub const BUILTIN_PLUGIN_IDS: [&str; 10] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     ADAPTER_QQ_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
     CHECKLIST_PLUGIN_ID,
     WORKSPACE_PLUGIN_ID,
-    MENU_PLUGIN_ID,
     MANAGEMENT_PANEL_PLUGIN_ID,
     SINGLE_LOOP_PLUGIN_ID,
     PARALLEL_LOOP_PLUGIN_ID,
@@ -407,6 +405,17 @@ mod tests {
                 SINGLE_LOOP_PLUGIN_ID.to_string()
             ]
         );
+    }
+
+    #[test]
+    fn normalize_mode_plugins_drops_legacy_menu() {
+        // 旧选单插件 id 被剔除（选单降级为普通编排工具），其余保序
+        let mut list = vec![
+            LEGACY_MENU_PLUGIN_ID.to_string(),
+            "echo-agent.tools.builtin".to_string(),
+        ];
+        assert!(normalize_mode_plugins(&mut list));
+        assert_eq!(list, vec!["echo-agent.tools.builtin".to_string()]);
     }
 
     #[test]
