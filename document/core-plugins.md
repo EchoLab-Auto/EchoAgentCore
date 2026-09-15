@@ -46,7 +46,6 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.tools.builtin` | Tool | 内置工具集（计算/搜索/编码/适配器管理） |
 | `echo-agent.adapter.qq` | Adapter | QQ 适配器（OneBot v11 反向 WS，含 QQ 管理工具） |
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
-| `echo-agent.checklist` | Tool | 任务清单（checklist 工具包；可按 persona 单独启停，默认启用） |
 | `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
 | `echo-agent.orchestration` | Orchestration | 后台任务/并行分支/子代理/定时器/框架自更新（名义挂载：重启生效） |
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂（名义挂载：重启生效） |
@@ -54,7 +53,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.loop.parallel` | Loop | 并行多会话循环：同一 TurnRunner；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
 | `echo-agent.management.panel` | Management | 管理面：management WS 桥接 + sudo 授权与选单应答通道（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
 
-> 以上 10 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单。选单（present_menu）已降级为普通编排工具，无插件 id。
+> 以上 9 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单。选单（present_menu）与任务清单（checklist）已降级为普通工具（2026-09，插件维度移除），无插件 id。
 
 ## 能力开关（per-persona）
 
@@ -64,7 +63,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   设置视图智能体编辑器；判定单一来源 = Panel `capabilities.ts::isPluginCheckboxVisible`）：
   `kind ∈ {adapter, management, interaction}` **∪** 下列包维度门控插件固定清单
   （`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本节 `GATED_PLUGIN_IDS` 逐项镜像）：
-  `tools.builtin` / `skills.dir` / `checklist` / `workspace` / `adapter.qq`。
+  `tools.builtin` / `skills.dir` / `workspace` / `adapter.qq`。
   其余插件（`loop.*` 由循环模式分段控件管理、`orchestration` / `provider.llm`
   名义挂载重启生效）**不出现**在该勾选区。保存后写回 TOML
 - ⚠️ **新增包维度门控插件时的同步清单**（缺一即"配置里看不到/门控失效"）：
@@ -81,14 +80,14 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 - **包级聚合**：白名单里的插件 id 即包 id——一次勾选同时门控该插件的
   生命周期与同名包的工具、技能（QQ 包见下「Package」章节）
 - **其余插件当前生效范围**：
-  - `tools.builtin` / `skills.dir` / `checklist`：禁用 = 该包全部工具（skills.dir 为全部技能）对所有 persona 批量禁用（对 LLM 不可见），启用按各 persona 名单恢复——**仅作用于目标 persona 时用 Agent 配置弹层的勾选**（运行期双向、即时生效）
+  - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具（skills.dir 为全部技能）对所有 persona 批量禁用（对 LLM 不可见），启用按各 persona 名单恢复——**仅作用于目标 persona 时用 Agent 配置弹层的勾选**（运行期双向、即时生效）
   - `menu`：禁用 = 该 persona 的 `present_menu` 从工具 schema 消失（直接调用返回错误）；启用 = 恢复。判定 = persona 白名单 ∧ 全局 TogglePlugin 状态（`Agent::menu_plugin_enabled`），schema 随 turn 重建，改动即时生效
   - `adapter.qq`：禁用 = 停止 QQ 适配器进程 + QQ 工具包禁用；启用 = 启动 + 按名单恢复
   - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）。**防自锁保护**：经 `TogglePlugin` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
   - `loop.single` / `loop.parallel`：**已实化**——mount 注入 TurnRunner 并启用 echo-loop 驱动；两者 mount 同一驱动（模式只改策略），全部卸载才回退内置循环（普通输入走 turn/step 状态机；QQ hook/定时器/QQ 会话仍走内置循环）
   - `provider.llm` / `orchestration`：仍为名义挂载——运行中替换 provider 涉及在途 turn，保持"重启生效"语义（禁用 = 下次重启不装配）
 - **优先级**：全局禁用（`TogglePlugin` 卸载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
-- **内置工具包覆盖**：`echo-agent.checklist` 为独立包（可按 persona 单独启停）；禁用该插件时 Core 逐 persona 卸载 checklist 工具包，Panel 入口行同步移除「清单」入口、关闭已打开浮层并清空徽标状态（热更新，无需重启）；`base` 人格演示了"纯对话"配置（禁用 tools.builtin + skills.dir）
+- **内置工具包覆盖**：任务清单（checklist）已于 2026-09 降级为普通内置工具（随 `tools.builtin` 包，见上表注）；关闭内置工具集 = checklist 一并不可用，单独停用请在「启用工具」里按名勾选（运行期双向、即时生效），Panel 入口行同步移除「清单」入口、关闭已打开浮层并清空徽标状态；`base` 人格演示了"纯对话"配置（禁用 tools.builtin + skills.dir）
 
 ## Package（包）——横跨 plugin + tool + skill 的标签
 

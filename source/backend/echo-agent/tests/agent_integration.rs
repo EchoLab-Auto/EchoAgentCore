@@ -1127,10 +1127,11 @@ async fn event_log_persists_tool_structure_across_reload() {
 
 // ── Persona 级门控热更新（插件/工具/技能勾选即时生效、可恢复、全局优先）──
 
-use echo_agent::plugins::{CHECKLIST_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID};
+use echo_agent::plugins::{TOOLS_BUILTIN_PLUGIN_ID, WORKSPACE_PLUGIN_ID};
 
-/// 构造带"门控工具"的 agent：checklist 属 echo-agent.checklist 包，
+/// 构造带"门控工具"的 agent：workspace 属 echo-agent.workspace 包，
 /// bash 属 echo-agent.tools.builtin 包。
+/// （checklist 已降级为普通内置工具，不再用作包门控示例。）
 fn agent_with_gated_caps() -> Arc<Agent> {
     let provider = Arc::new(StaticProvider {
         reply: "ok",
@@ -1139,14 +1140,14 @@ fn agent_with_gated_caps() -> Arc<Agent> {
     });
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(MockTool {
-        name: "checklist",
+        name: "workspace",
         result: "ok".into(),
     }));
     tools.register(Arc::new(MockTool {
         name: "bash",
         result: "ok".into(),
     }));
-    tools.set_package("checklist", CHECKLIST_PLUGIN_ID);
+    tools.set_package("workspace", WORKSPACE_PLUGIN_ID);
     tools.set_package("bash", TOOLS_BUILTIN_PLUGIN_ID);
     let agent = Arc::new(Agent::new(
         provider,
@@ -1175,18 +1176,18 @@ async fn persona_plugin_checkbox_round_trip_applies_immediately() {
     agent
         .apply_capabilities(&persona_with_plugins(&[
             TOOLS_BUILTIN_PLUGIN_ID,
-            CHECKLIST_PLUGIN_ID,
+            WORKSPACE_PLUGIN_ID,
         ]))
         .await;
-    assert!(!agent.tools.is_disabled("checklist").await);
+    assert!(!agent.tools.is_disabled("workspace").await);
     assert!(!agent.tools.is_disabled("bash").await);
 
-    // 取消勾选 checklist → 立即禁用（无需重启）
+    // 取消勾选 workspace → 立即禁用（无需重启）
     agent
         .apply_capabilities(&persona_with_plugins(&[TOOLS_BUILTIN_PLUGIN_ID]))
         .await;
     assert!(
-        agent.tools.is_disabled("checklist").await,
+        agent.tools.is_disabled("workspace").await,
         "取消勾选应立即禁用该包工具"
     );
     assert!(!agent.tools.is_disabled("bash").await, "其他包不受影响");
@@ -1195,11 +1196,11 @@ async fn persona_plugin_checkbox_round_trip_applies_immediately() {
     agent
         .apply_capabilities(&persona_with_plugins(&[
             TOOLS_BUILTIN_PLUGIN_ID,
-            CHECKLIST_PLUGIN_ID,
+            WORKSPACE_PLUGIN_ID,
         ]))
         .await;
     assert!(
-        !agent.tools.is_disabled("checklist").await,
+        !agent.tools.is_disabled("workspace").await,
         "重新勾选应立即恢复"
     );
 }
@@ -1212,12 +1213,12 @@ async fn global_plugin_gating_respects_persona_allowlist() {
     agent
         .apply_capabilities(&persona_with_plugins(&[TOOLS_BUILTIN_PLUGIN_ID]))
         .await;
-    assert!(agent.tools.is_disabled("checklist").await);
+    assert!(agent.tools.is_disabled("workspace").await);
 
     // 全局 mount（启用）不应把"名单外"的 persona 放开
-    agent.reapply_plugin_gating(CHECKLIST_PLUGIN_ID, true);
+    agent.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, true);
     assert!(
-        agent.tools.is_disabled("checklist").await,
+        agent.tools.is_disabled("workspace").await,
         "名单外 persona 不该被全局 mount 放开"
     );
 
@@ -1225,21 +1226,21 @@ async fn global_plugin_gating_respects_persona_allowlist() {
     agent
         .apply_capabilities(&persona_with_plugins(&[
             TOOLS_BUILTIN_PLUGIN_ID,
-            CHECKLIST_PLUGIN_ID,
+            WORKSPACE_PLUGIN_ID,
         ]))
         .await;
-    assert!(!agent.tools.is_disabled("checklist").await);
+    assert!(!agent.tools.is_disabled("workspace").await);
 
     // 全局 unmount（禁用）对全员生效（即使名单允许）
-    agent.reapply_plugin_gating(CHECKLIST_PLUGIN_ID, false);
+    agent.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, false);
     assert!(
-        agent.tools.is_disabled("checklist").await,
+        agent.tools.is_disabled("workspace").await,
         "全局禁用应优先于 persona 名单"
     );
 
     // 全局重新启用 + 名单允许 → 恢复
-    agent.reapply_plugin_gating(CHECKLIST_PLUGIN_ID, true);
-    assert!(!agent.tools.is_disabled("checklist").await);
+    agent.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, true);
+    assert!(!agent.tools.is_disabled("workspace").await);
 }
 
 /// 全局工具启停逐 persona 重评估：persona 黑名单不被全局启用覆盖；
@@ -1250,15 +1251,15 @@ async fn global_tool_toggle_respects_persona_denylist() {
     agent
         .apply_capabilities(&echo_agent::config::TeamMember {
             name: "t".into(),
-            disabled_tools: vec!["checklist".into()],
+            disabled_tools: vec!["workspace".into()],
             ..Default::default()
         })
         .await;
-    assert!(agent.tools.is_disabled("checklist").await);
+    assert!(agent.tools.is_disabled("workspace").await);
 
-    assert!(agent.reapply_tool_gating("checklist", true).await);
+    assert!(agent.reapply_tool_gating("workspace", true).await);
     assert!(
-        agent.tools.is_disabled("checklist").await,
+        agent.tools.is_disabled("workspace").await,
         "persona 黑名单不被全局启用覆盖"
     );
 

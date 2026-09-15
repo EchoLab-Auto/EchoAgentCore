@@ -358,7 +358,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         t.set_package(&name, "echo-agent.adapter.qq");
                     }
                 }
-                t.set_package("checklist", echo_agent::plugins::CHECKLIST_PLUGIN_ID);
+                // 任务清单（checklist）为普通内置工具：随内置工具集包
+                // （register_all 已打 echo-agent.tools.builtin 标签），
+                // 插件维度已于 2026-09 移除，只受工具级白/黑名单控制。
                 // 工作区会话（workspace 插件）：每 persona 独立存储 + 工具。
                 // 存储文件与配置 TOML 解耦（独立 JSON，绝不同路径互写）；
                 // 插件未列入该 persona 白名单时工具会被门控禁用（GATED_PLUGIN_IDS）。
@@ -519,8 +521,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         use echo_agent::plugins::{
-            ToolSink, ADAPTER_QQ_PLUGIN_ID, CHECKLIST_PLUGIN_ID, MANAGEMENT_PANEL_PLUGIN_ID,
-            SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
+            ToolSink, ADAPTER_QQ_PLUGIN_ID, MANAGEMENT_PANEL_PLUGIN_ID, SKILLS_DIR_PLUGIN_ID,
+            TOOLS_BUILTIN_PLUGIN_ID,
         };
         use echo_context::Disposer;
         use echo_plugin::{BuiltinPlugin, MountContext, PluginKind, PluginManifest};
@@ -657,24 +659,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             )?;
         }
 
-        // ── 实化 3：任务清单（checklist 工具，包维度启停）──
-        register(
-            &plugin_host,
-            PluginManifest::builtin(
-                CHECKLIST_PLUGIN_ID,
-                "任务清单",
-                version,
-                PluginKind::Tool,
-                "checklist",
-                "任务清单工具（清单保存/读取/勾选，可按人格独立启停）",
-            ),
-            move |_ctx| {
-                for_each_agent(|a| a.reapply_plugin_gating(CHECKLIST_PLUGIN_ID, true));
-                Ok(vec![Disposer::from_fn(|| {
-                    for_each_agent(|a| a.reapply_plugin_gating(CHECKLIST_PLUGIN_ID, false));
-                })])
-            },
-        )?;
+        // 任务清单（checklist）已降级为普通内置工具：无插件注册，
+        // 与 calculator / bash 等同层，只受工具级白/黑名单门控。
 
         // ── 实化 6：工作区会话（workspace 插件）──
         {
