@@ -661,6 +661,18 @@ pub enum BackendEvent {
         session_id: String,
         directories: Vec<WorkspaceGitInfo>,
     },
+    /// 某工作区目录下的文件列表（`RequestWorkspaceFiles` 响应；只读浏览）。
+    WorkspaceFiles {
+        #[serde(default)]
+        team_id: Option<String>,
+        session_id: String,
+        /// 被列出的目录绝对路径（回显请求值）。
+        path: String,
+        entries: Vec<WorkspaceFileEntry>,
+        /// 列目录失败的原因（路径越界 / 不存在等；成功时为 None）。
+        #[serde(default)]
+        error: Option<String>,
+    },
 
     // ---- Sudo authorization (human-in-the-loop) ----
     /// The agent requests root privileges for `command`. The Panel must show
@@ -929,6 +941,18 @@ pub struct WorkspaceGitInfo {
     /// 采集失败原因（目录不存在 / git 不可用等；非仓库时为 None）。
     #[serde(default)]
     pub error: Option<String>,
+}
+
+/// 文件浏览器中的一个条目（文件或子目录）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceFileEntry {
+    pub name: String,
+    /// 绝对路径（目录条目可继续下钻）。
+    pub path: String,
+    pub is_dir: bool,
+    /// 文件字节数（目录为 0）。
+    #[serde(default)]
+    pub size: u64,
 }
 
 /// QQ friend info for allowlist/denylist picker.

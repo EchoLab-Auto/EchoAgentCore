@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use echo_protocol::{WorkspaceGitInfo, WorkspaceSessionInfo};
+use echo_protocol::{WorkspaceFileEntry, WorkspaceGitInfo, WorkspaceSessionInfo};
 
 use crate::tool::{Tool, ToolError};
 
@@ -30,6 +30,8 @@ pub const MAX_DIRECTORIES: usize = 32;
 const CHANGED_FILES_CAP: usize = 30;
 /// Bound on every single `git` invocation.
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Cap on file-browser entries returned for a single directory.
+pub const FILES_CAP: usize = 500;
 
 /// The persisted document: sessions + the single active marker.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -457,6 +459,71 @@ pub fn collect_dir_git(directory: &str) -> WorkspaceGitInfo {
     info
 }
 
+/// 把 `path` 解析为会话某个工作区目录内的 canonical 路径。
+///
+/// 文件浏览器只允许浏览会话自己声明的目录（含子孙），其余一律拒绝：
+/// - 先 canonicalize 请求路径（解析符号链接与 `..`）；
+/// - 再要求它等于某个目录的 canonical 路径，或以 `目录路径 + /` 为前缀
+///   （字面前缀而非 `Path::starts_with`，避免 `/a/bc` 被 `/a/b` 误放行）。
+pub fn resolve_within_directories(directories: &[String], path: &str) -> Result<PathBuf, String> {
+    let requested = Path::new(path)
+        .canonicalize()
+        .map_err(|e| format!("路径不存在或不可访问: {e}"))?;
+    for dir in directories {
+        let Ok(root) = Path::new(dir).canonicalize() else {
+            continue; // 目录本身不存在：跳过，由其余目录决定
+        };
+        if requested == root {
+            return Ok(requested);
+        }
+        let mut prefix = root.as_os_str().to_os_string();
+        prefix.push("/");
+        if requested
+            .as_os_str()
+            .as_encoded_bytes()
+            .starts_with(prefix.as_encoded_bytes())
+        {
+            return Ok(requested);
+        }
+    }
+    Err("路径不在该会话的工作区目录内".into())
+}
+
+/// List one directory level for the file browser (blocking; read-only).
+///
+/// 目录在前、文件在后，各自按名称不区分大小写排序；超过 [`FILES_CAP`]
+/// 截断。隐藏文件（`.` 开头）跳过——它们是工具链噪音（.git 等），
+/// 不是用户在浏览器里找的目标。
+pub fn collect_dir_files(directory: &Path) -> Result<Vec<WorkspaceFileEntry>, String> {
+    let reader = std::fs::read_dir(directory).map_err(|e| format!("读取目录失败: {e}"))?;
+    let mut entries: Vec<WorkspaceFileEntry> = Vec::new();
+    for item in reader.flatten() {
+        let name = item.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let is_dir = item.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let size = if is_dir {
+            0
+        } else {
+            item.metadata().map(|m| m.len()).unwrap_or(0)
+        };
+        entries.push(WorkspaceFileEntry {
+            name,
+            path: item.path().to_string_lossy().to_string(),
+            is_dir,
+            size,
+        });
+    }
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    entries.truncate(FILES_CAP);
+    Ok(entries)
+}
+
 // ── LLM tool ─────────────────────────────────────────────────────────────
 
 /// The `workspace` tool: model-facing access to the workspace sessions.
@@ -725,7 +792,11 @@ mod tests {
         store.set_active(Some(s.id.clone())).unwrap();
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2, "激活");
         store.set_active(None).unwrap();
-        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 3, "取消激活");
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "取消激活"
+        );
         // 无效操作（不存在 id / 重复删除）不触发。
         assert!(store.set_active(Some("nope".into())).is_err());
         assert!(!store.delete("nope").unwrap());
@@ -800,6 +871,57 @@ mod tests {
         assert!(info.is_repo, "repo checkout should be detected: {info:?}");
         assert!(info.branch.is_some(), "branch should be read: {info:?}");
         assert!(info.error.is_none(), "no error expected: {info:?}");
+    }
+
+    // ── 文件浏览器（collect_dir_files / resolve_within_directories）──
+
+    #[test]
+    fn collect_dir_files_sorts_dirs_first_and_skips_hidden() {
+        let root = std::env::temp_dir().join(format!("echo-files-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join(".hidden-dir")).unwrap();
+        std::fs::write(root.join("b.txt"), "bb").unwrap();
+        std::fs::write(root.join("A.txt"), "a").unwrap();
+        std::fs::write(root.join(".hidden-file"), "x").unwrap();
+
+        let entries = collect_dir_files(&root).expect("list");
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        // 目录在前（字母序），文件在后（不区分大小写字母序）；隐藏项跳过。
+        assert_eq!(names, vec!["src", "A.txt", "b.txt"], "got: {names:?}");
+        assert!(entries[0].is_dir);
+        assert!(!entries[1].is_dir);
+        assert_eq!(entries[1].size, 1);
+        assert!(entries[1].path.starts_with(root.to_str().unwrap()));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_within_directories_accepts_subtree_rejects_others() {
+        let root = std::env::temp_dir().join(format!("echo-scope-test-{}", std::process::id()));
+        let other = std::env::temp_dir().join(format!("echo-scope-other-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&other);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+
+        let dirs = vec![root.to_string_lossy().to_string()];
+        // 目录本身与其子孙放行。
+        assert!(resolve_within_directories(&dirs, root.to_str().unwrap()).is_ok());
+        assert!(resolve_within_directories(&dirs, root.join("sub").to_str().unwrap()).is_ok());
+        // 会话目录之外拒绝；不存在路径拒绝。
+        assert!(resolve_within_directories(&dirs, other.to_str().unwrap()).is_err());
+        assert!(resolve_within_directories(&dirs, "/nonexistent/echo-scope").is_err());
+        // 形似前缀（sibling 同名扩展）不得误放行。
+        let sibling =
+            std::env::temp_dir().join(format!("echo-scope-test-{}-sibling", std::process::id()));
+        std::fs::create_dir_all(&sibling).unwrap();
+        assert!(resolve_within_directories(&dirs, sibling.to_str().unwrap()).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&other);
+        let _ = std::fs::remove_dir_all(&sibling);
     }
 
     #[test]

@@ -33,6 +33,7 @@ pub use event::{
     AdapterStatus, ApiProfileInfo, BackendEvent, BackendState, ContextBlockInfo,
     ContextMessageInfo, FriendInfo, GroupInfo, MenuOptionInfo, OrchestrationMode, PluginInfo,
     SessionInfo, ShellSessionInfo, SkillInfo, SkillSourceInfo, TeamInfo, TimelineMessage,
-    TimelineSource, TimelineTool, ToolInfo, WorkspaceGitInfo, WorkspaceSessionInfo,
+    TimelineSource, TimelineTool, ToolInfo, WorkspaceFileEntry, WorkspaceGitInfo,
+    WorkspaceSessionInfo,
 };
 pub use mode::{GateMode, LoopMode, ReasoningEffort, ThinkingMode};

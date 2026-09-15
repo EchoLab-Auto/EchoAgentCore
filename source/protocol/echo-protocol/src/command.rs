@@ -275,6 +275,15 @@ pub enum BackendCommand {
         team_id: Option<String>,
         session_id: String,
     },
+    /// 请求列出某工作区目录下的文件与子目录（文件浏览器，只读）。
+    /// `path` 必须是该会话某个工作区目录本身或其后代（服务端以
+    /// canonical 路径前缀校验，越界拒绝）。响应 `BackendEvent::WorkspaceFiles`。
+    RequestWorkspaceFiles {
+        #[serde(default)]
+        team_id: Option<String>,
+        session_id: String,
+        path: String,
+    },
     /// Start all configured adapters.
     StartAllAdapters,
     /// Stop all running adapters.

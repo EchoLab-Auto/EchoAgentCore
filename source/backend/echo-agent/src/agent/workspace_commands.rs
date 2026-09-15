@@ -71,6 +71,49 @@ impl Agent {
                     Err(message) => self.emit_workspace_error(message),
                 }
             }
+            BackendCommand::RequestWorkspaceFiles {
+                session_id, path, ..
+            } => {
+                let Some(store) = self.workspace_store() else {
+                    self.emit_workspace_unavailable();
+                    return;
+                };
+                let Some(session) = store.get(&session_id) else {
+                    self.emit_workspace_error(format!("工作区会话 {session_id} 不存在"));
+                    return;
+                };
+                let directories = session.directories.clone();
+                let requested = path.clone();
+                let collected = tokio::task::spawn_blocking(move || {
+                    let resolved =
+                        crate::workspace::resolve_within_directories(&directories, &requested)?;
+                    crate::workspace::collect_dir_files(&resolved)
+                })
+                .await;
+                match collected {
+                    Ok(Ok(entries)) => {
+                        self.emit(BackendEvent::WorkspaceFiles {
+                            team_id: self.team_id(),
+                            session_id,
+                            path,
+                            entries,
+                            error: None,
+                        });
+                    }
+                    Ok(Err(message)) => {
+                        self.emit(BackendEvent::WorkspaceFiles {
+                            team_id: self.team_id(),
+                            session_id,
+                            path,
+                            entries: Vec::new(),
+                            error: Some(message),
+                        });
+                    }
+                    Err(error) => {
+                        self.emit_workspace_error(format!("文件列表采集失败: {error}"));
+                    }
+                }
+            }
             BackendCommand::RequestWorkspaceGitStatus { session_id, .. } => {
                 let Some(store) = self.workspace_store() else {
                     self.emit_workspace_unavailable();
@@ -109,9 +152,7 @@ impl Agent {
     ///
     /// 返回刷新后的通道会话（昵称 = 最新工作区名），None = 未激活 / 未挂载
     /// 存储。幂等：重复调用只刷昵称与活跃时间。
-    pub(crate) fn ensure_workspace_channel_for_active(
-        &self,
-    ) -> Option<crate::session::Session> {
+    pub(crate) fn ensure_workspace_channel_for_active(&self) -> Option<crate::session::Session> {
         let store = self.workspace_store()?;
         let active = store.active()?;
         Some(

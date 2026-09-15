@@ -6878,6 +6878,93 @@ pub mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// 文件浏览器：列出会话目录（拒绝越界路径，返回条目含目录与文件）。
+    #[tokio::test]
+    async fn workspace_files_command_lists_within_scope() {
+        let agent = Arc::new(test_agent(Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        })));
+        agent.set_team_id(Some("t".into()));
+        let path = std::env::temp_dir().join(format!(
+            "echo-workspace-files-test-{}.json",
+            std::process::id()
+        ));
+        std::fs::remove_file(&path).ok();
+        agent.set_workspace_store(Arc::new(crate::workspace::WorkspaceStore::load(Some(
+            path.clone(),
+        ))));
+
+        let (bridge, handle) = crate::create_bridge();
+        agent.attach(Arc::new(handle));
+
+        let root = env!("CARGO_MANIFEST_DIR").to_string();
+        agent
+            .apply_command(BackendCommand::SaveWorkspaceSession {
+                team_id: Some("t".into()),
+                session: echo_protocol::WorkspaceSessionInfo {
+                    id: "core".into(),
+                    name: "core".into(),
+                    description: String::new(),
+                    directories: vec![root.clone()],
+                },
+            })
+            .await;
+        // 列目录（会话目录本身）。
+        agent
+            .apply_command(BackendCommand::RequestWorkspaceFiles {
+                team_id: Some("t".into()),
+                session_id: "core".into(),
+                path: root.clone(),
+            })
+            .await;
+        // 越界路径（/etc 不在会话目录内）→ 错误事件。
+        agent
+            .apply_command(BackendCommand::RequestWorkspaceFiles {
+                team_id: Some("t".into()),
+                session_id: "core".into(),
+                path: "/etc".into(),
+            })
+            .await;
+
+        let mut events = Vec::new();
+        while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+            events.push(event);
+        }
+        let listings: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::WorkspaceFiles {
+                    path: p,
+                    entries,
+                    error,
+                    ..
+                } => Some((p.clone(), entries.clone(), error.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(listings.len(), 2, "two listings expected");
+        // 第一次：合法目录，条目非空且含 src（本仓库 checkout）。
+        let (_, entries, error) = &listings[0];
+        assert!(error.is_none(), "in-scope listing error: {error:?}");
+        assert!(
+            entries.iter().any(|e| e.name == "src" && e.is_dir),
+            "src/ expected: {entries:?}"
+        );
+        // 第二次：越界拒绝。
+        let (_, entries, error) = &listings[1];
+        assert!(entries.is_empty());
+        assert!(
+            error
+                .as_deref()
+                .unwrap_or("")
+                .contains("不在该会话的工作区目录内"),
+            "unexpected: {error:?}"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
     /// 通道广播唯一入口（store 变更钩子）：
     /// - 重启恢复：装配前 store 已带 active → `set_workspace_store` 补注册通道；
     /// - 模型侧 `workspace` 工具 `use`：与面板命令同一条广播路径

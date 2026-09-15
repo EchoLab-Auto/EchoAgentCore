@@ -46,7 +46,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.tools.builtin` | Tool | 内置工具集（计算/搜索/编码/适配器管理） |
 | `echo-agent.adapter.qq` | Adapter | QQ 适配器（OneBot v11 反向 WS，含 QQ 管理工具） |
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
-| `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
+| `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`，2026-09-15）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
 | `echo-agent.orchestration` | Orchestration | 后台任务/并行分支/子代理/定时器/框架自更新（名义挂载：重启生效） |
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂（名义挂载：重启生效） |
 | `echo-agent.loop.single` | Loop | 单会话循环（默认）：mount 启用 echo-loop 驱动；会话内 turn 串行排队、无会话管理 UI |
