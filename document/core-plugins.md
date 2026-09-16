@@ -4,7 +4,7 @@ title: "插件化设计"
 group: 后端模块
 link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "tools | r>l", "agent-loop | r>l"]
 x: 955
-y: 1899
+y: 1759
 ---
 
 # 插件化设计
@@ -114,7 +114,7 @@ id），Panel 插件详���展示「包（Package）」字段；设置视�
 工具/技能。
 
 **多插件包（前瞻）**：`PluginManifest.with_package()` 允许一个包绑定多个
-插件；当前全部内置插件均为「插件 id = 包 id」的单插件包，门控按插件 id
+插件；当��全部内置插件均为「插件 id = 包 id」的单插件包，门控按插件 id
 传播即可（QQ 包为现行示例）。
 
 ## 动态编排工具

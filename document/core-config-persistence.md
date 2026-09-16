@@ -3,7 +3,7 @@ id: config-persistence
 title: "配置持久化"
 group: 后端模块
 x: 955
-y: 2047
+y: 1899
 ---
 # 配置持久化
 

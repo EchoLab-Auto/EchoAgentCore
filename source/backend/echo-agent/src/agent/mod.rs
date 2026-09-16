@@ -1,7 +1,10 @@
 //! The agent loop: LLM + tools + skills + memory composed into one reply.
 
+mod boundary;
 mod commands;
+mod prompt;
 mod qq_commands;
+mod tool_exec;
 mod workspace_commands;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
