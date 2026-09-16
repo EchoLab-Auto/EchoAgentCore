@@ -512,7 +512,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 以 PluginManifest + mount 闭包挂入 PluginHost。实化插件
     //（tools.builtin / skills.dir / checklist / adapter.qq / management.panel /
     // loop.runner）的 mount 闭包执行真实副作用（禁用即卸载效果）；
-    // orchestration 与 provider.llm 仍为名义挂载（重启生效）。
+    // provider.llm 仍为名义挂载（重启生效）。
     //
     // QQ 适配器的接线（hook/handler/config store）在插件挂载之后才完成；
     // qq_wired 标志保证启动期 mount 不抢跑启动适配器（启动期由接线后的
@@ -565,7 +565,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             Ok(())
         }
 
-        // 名义挂载：provider.llm / orchestration 保持重启生效语义。
+        // 名义挂载：provider.llm 保持重启生效语义。
         let nominal = |entry: String| {
             move |_ctx: &MountContext| {
                 let _ = entry;
@@ -831,7 +831,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         persona.agent.apply_capabilities(&persona.profile).await;
         persona.agent.start_session_save_task();
         persona.agent.start_plugin_reload_task().await;
-        // orchestration 由插件 mount 闭包启动（见上）
+        // orchestration 已删除（2026-09-16）
     }
 
     // ---- Wire agents into QQ instances ----

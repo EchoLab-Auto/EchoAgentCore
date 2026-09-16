@@ -119,7 +119,7 @@ id），Panel 插件详���展示「包（Package）」字段；设置视�
 
 ## 动态编排工具
 
-- 编排类工具（`schedule_timer`、`run_subagent`、`spawn_background_task`、`spawn_parallel_task`、`framework_update`、`run_sudo` 等）由 loop 内联调度，按 persona 白名单过滤（`allows_dynamic_tool`）
+- `framework_update`、`run_sudo` 由 loop 内联调度，按 persona 白名单过滤（`allows_dynamic_tool`）
 - 工具名表 `ORCHESTRATION_TOOL_NAMES` 由单元测试守护与 schema 一致（`framework_update`/`run_sudo` 因另有配置门控不在表内）
 
 ## 用户扩展方式

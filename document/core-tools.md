@@ -67,7 +67,7 @@ y: 2047
 - 链路：`run_sudo` 向 `SudoBroker` 注册 pending 请求 → 发 `SudoRequest` 事件 → 带超时等待 oneshot；management server 收到 `SudoPassword` 帧后**直接** `broker.submit`——不经 agent 命令队列、不进会话日志（结构性带外通道）
 - 拿到密码后 `sudo -S -p '' -- sh -c <command>` 把密码写入 stdin 管道，缓冲区立即零化；只有 stdout/stderr 返回给模型；`PendingSudo` Drop 时取消 broker 条目（外层超时也不泄漏）
 - 密码只在「Panel 输入框 → WS 帧 → broker oneshot → sudo stdin」四个暂存点间流转，随后零化；密码从未 model-visible，"模型可见 ⟺ 已记录"不变量不受影响
-- 配置：`[agent.sudo] enabled`（模板默认开启、代码默认关闭）、`auth_timeout_secs = 120`、`command_timeout_secs = 60`；`run_sudo` 仅在 enabled 时进入 schema，background 分支禁用（脱离交互不应触发 sudo 弹窗）
+- 配置：`[agent.sudo] enabled`（模板默认开启、代码默认关闭）、`auth_timeout_secs = 120`、`command_timeout_secs = 60`；`run_sudo` 仅在 enabled 时进入 schema
 - `bash` 检测到开头 `sudo` 时提示改用 `run_sudo`
 - 已知限制：密码每次请求输入（不做 credential 缓存）；多个并发 sudo 请求时 Panel 只展示最新一个（旧请求超时失败）；无 Panel 在线时请求超时失败（安全降级）
 - 协议帧与打码约定见 [协议与数据流](./protocol.md)；systemd `NoNewPrivileges` 配合见 [部署与自更新](./ops-deploy.md)

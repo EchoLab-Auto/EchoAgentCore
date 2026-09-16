@@ -17,7 +17,7 @@ pub enum PluginKind {
     Loop,
     /// Platform adapter (qq, ...).
     Adapter,
-    /// Built-in orchestration (background/parallel/subagent/timers).
+    /// Built-in orchestration (framework_update / run_sudo).
     Orchestration,
     /// Management surface (Panel bridge, sudo broker).
     Management,

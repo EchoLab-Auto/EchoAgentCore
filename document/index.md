@@ -34,7 +34,6 @@ graph LR
   Core --> Skills[技能系统|/core-skills.md]
   Core --> Agents[多 Agent 与会话|/core-agents.md]
   Core --> Plugins[插件化设计|/core-plugins.md]
-  Core --> Tasks[后台任务|/core-background-tasks.md]
   Core --> Persist[配置持久化|/core-config-persistence.md]
   Plugins --> Gating[QQ 门控|/adapter-qq-gating.md]
   Proto --> Core

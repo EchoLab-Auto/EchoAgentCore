@@ -35,7 +35,7 @@ y: 1301
 | `system` | 系统提示行 |
 | `branch` | ChatBranchMergeBlock 分支合并卡（当前 reducer 已不产生——分支内容实时进主时间线，此角色保留适配） |
 
-补充来源：定时器触发以 system 消息插入主时间线（`⏰ 定时器触发 · {task}`，task 截断 160 字符）；`adapter_name === 'background'` 的消息走 hook 解析、不进时间线（`state.ts:802-807`，`helpers.ts:26-36`）。**选单（menu 插件）期间**在消息流尾部追加一条合成条目（id = `menu:{request_id}`，见 §7.4b）。
+补充来源：定时器触发以 system 消息插入主时间线（`⏰ 定时器触发 · {task}`，task 截断 160 字符）。**选单（menu 插件）期间**在消息流尾部追加一条合成条目（id = `menu:{request_id}`，见 §7.4b）。
 
 ### 7.3 工具卡生命周期
 
