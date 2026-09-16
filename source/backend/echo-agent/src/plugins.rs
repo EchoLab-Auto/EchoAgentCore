@@ -117,6 +117,11 @@ pub const GATED_PLUGIN_IDS: [&str; 4] = [
 ];
 
 /// 全部内置插件 id（与 `scripts/update.sh` 的插件校验清单一致）。
+/// 编排插件 id（实化：mount/unmount 启停编排事件循环）。
+pub const ORCHESTRATION_PLUGIN_ID: &str = "echo-agent.orchestration";
+/// LLM Provider 插件 id（名义挂载，重启生效）。
+pub const PROVIDER_LLM_PLUGIN_ID: &str = "echo-agent.provider.llm";
+
 /// 供插件黑名单移除迁移物化白名单时使用。
 pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
     TOOLS_BUILTIN_PLUGIN_ID,
@@ -126,8 +131,8 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
     MANAGEMENT_PANEL_PLUGIN_ID,
     SINGLE_LOOP_PLUGIN_ID,
     PARALLEL_LOOP_PLUGIN_ID,
-    "echo-agent.orchestration",
-    "echo-agent.provider.llm",
+    ORCHESTRATION_PLUGIN_ID,
+    PROVIDER_LLM_PLUGIN_ID,
 ];
 
 /// 某 persona 的白名单是否允许一个插件 id。

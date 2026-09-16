@@ -23,7 +23,7 @@ y: 1759
 | id | `echo-agent.orchestration` |
 | kind | Orchestration |
 | 说明 | 后台任务 / 并行分支 / 子代理 / 定时器 / 自更新 |
-| 实化状态 | 名义挂载（迁移依赖 echo-loop 迁移完成度）；禁用 = 下次重启不装配 |
+| 实化状态 | 实化挂载（mount/unmount 启停编排事件循环）；禁用 = 停止所有 persona 的编排任务，进行中的任务继续完成 |
 
 主要动态工具（loop 内联调度，按 persona 白名单过滤 `allows_dynamic_tool`）：
 

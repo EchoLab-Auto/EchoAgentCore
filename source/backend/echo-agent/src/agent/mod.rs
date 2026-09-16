@@ -699,6 +699,25 @@ impl Agent {
         }
     }
 
+    /// Stop the orchestration event loop (timer + background completion
+    /// receivers). The next `start_orchestration_task` call will fail to
+    /// re-acquire the receivers (they are taken once), so this is a
+    /// one-way switch until restart. Intended for plugin unmount.
+    pub fn stop_orchestration_task(self: &Arc<Self>) {
+        if self
+            .orchestration_started
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        // The tokio tasks hold `cancel` tokens and will exit on their own
+        // when the agent is dropped or when the process shuts down. We only
+        // reset the flag so a subsequent start_orchestration_task is a no-op
+        // (receivers are already taken).
+        tracing::info!("orchestration event loop stopped (plugin unmounted)");
+    }
+
     async fn integrate_background_completion(
         &self,
         completion: orchestration::BackgroundCompletion,

@@ -544,7 +544,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
         // 遍历全部 persona（运行期 TogglePlugin 时 AgentManager 已就位；
         // 启动期尚未设置，守卫为 no-op，启动期禁用恢复见 persona 循环）。
-        fn for_each_agent(f: impl Fn(&echo_agent::Agent)) {
+        fn for_each_agent(f: impl Fn(&std::sync::Arc<echo_agent::Agent>)) {
             if let Some(mgr) = echo_agent::agent_manager::global_manager() {
                 for running in mgr.all() {
                     f(&running.agent);
@@ -773,29 +773,45 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             )?;
         }
 
-        // ── 名义挂载：orchestration / provider.llm 保持重启生效语义；
-        // orchestration 的模式子插件（single/chatbot）由能力门控推导。──
-        let nominal_manifests: Vec<PluginManifest> = vec![
-            PluginManifest::builtin(
-                "echo-agent.orchestration",
-                "编排",
-                version,
-                PluginKind::Orchestration,
-                "orchestration",
-                "后台任务/并行分支/子代理/定时器/框架自更新",
-            ),
-            PluginManifest::builtin(
-                "echo-agent.provider.llm",
-                "LLM Provider",
-                version,
-                PluginKind::Provider,
-                "llm",
-                "LLM 提供方（deepseek/openai/anthropic/ollama 工厂）",
-            ),
-        ];
-        for manifest in nominal_manifests {
-            let entry = manifest.entry.clone();
-            register(&plugin_host, manifest, nominal(entry))?;
+        // ── 实化：orchestration（编排任务启停）──
+        // mount 启动所有 persona 的编排事件循环（定时器 + 后台任务整合），
+        // unmount 停止。receiver 一次性取走，重启后重建。
+        {
+            use echo_agent::plugins::ORCHESTRATION_PLUGIN_ID;
+            register(
+                &plugin_host,
+                PluginManifest::builtin(
+                    ORCHESTRATION_PLUGIN_ID,
+                    "编排",
+                    version,
+                    PluginKind::Orchestration,
+                    "orchestration",
+                    "后台任务/并行分支/子代理/定时器/框架自更新",
+                ),
+                move |_ctx| {
+                    for_each_agent(|a| a.start_orchestration_task());
+                    Ok(vec![Disposer::from_fn(|| {
+                        for_each_agent(|a| a.stop_orchestration_task());
+                    })])
+                },
+            )?;
+        }
+
+        // ── 名义挂载：provider.llm 保持重启生效语义。──
+        {
+            use echo_agent::plugins::PROVIDER_LLM_PLUGIN_ID;
+            register(
+                &plugin_host,
+                PluginManifest::builtin(
+                    PROVIDER_LLM_PLUGIN_ID,
+                    "LLM Provider",
+                    version,
+                    PluginKind::Provider,
+                    "llm",
+                    "LLM 提供方（deepseek/openai/anthropic/ollama 工厂）",
+                ),
+                nominal("llm".to_string()),
+            )?;
         }
 
         info!(
@@ -839,7 +855,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         persona.agent.apply_capabilities(&persona.profile).await;
         persona.agent.start_session_save_task();
         persona.agent.start_plugin_reload_task().await;
-        persona.agent.start_orchestration_task();
+        // orchestration 由插件 mount 闭包启动（见上）
     }
 
     // ---- Wire agents into QQ instances ----
