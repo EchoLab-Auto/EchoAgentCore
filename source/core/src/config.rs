@@ -200,55 +200,6 @@ impl Default for CoreSection {
 ///    配置的门控与循环模式行为不变；黑名单字段自此不再参与判定。
 ///
 /// 返回迁移/警告说明（load 期打印；纯函数便于测试断言）。
-pub fn migrate_orchestration_mode_plugins(agent: &mut echo_agent::AgentConfig) -> Vec<String> {
-    use echo_agent::plugins::{
-        convert_plugin_blacklist_to_whitelist, normalize_mode_plugins, PARALLEL_LOOP_PLUGIN_ID,
-        SINGLE_LOOP_PLUGIN_ID,
-    };
-    let mut notes = Vec::new();
-    let normalize = |list: &mut Vec<String>, scope: &str, notes: &mut Vec<String>| {
-        if normalize_mode_plugins(list) {
-            notes.push(format!(
-                "migrated legacy orchestration/loop plugin ids → {SINGLE_LOOP_PLUGIN_ID}/{PARALLEL_LOOP_PLUGIN_ID} ({scope})"
-            ));
-        }
-    };
-    for (id, member) in agent.teams.iter_mut() {
-        normalize(
-            &mut member.enabled_plugins,
-            &format!("teams.{id}.enabled_plugins"),
-            &mut notes,
-        );
-        if convert_plugin_blacklist_to_whitelist(
-            &mut member.enabled_plugins,
-            &member.disabled_plugins,
-        ) {
-            notes.push(format!(
-                "migrated teams.{id}.disabled_plugins（插件黑名单已移除）→ enabled_plugins 白名单物化；该字段不再参与门控"
-            ));
-            member.disabled_plugins.clear();
-        }
-        if member
-            .enabled_plugins
-            .iter()
-            .any(|p| p == PARALLEL_LOOP_PLUGIN_ID)
-            && member
-                .enabled_plugins
-                .iter()
-                .any(|p| p == SINGLE_LOOP_PLUGIN_ID)
-        {
-            notes.push(format!(
-                "warning: teams.{id}.enabled_plugins 同时含 single 与 parallel 循环插件，互斥按 parallel 优先"
-            ));
-        }
-    }
-    normalize(
-        &mut agent.disabled_plugins,
-        "agent.disabled_plugins",
-        &mut notes,
-    );
-    notes
-}
 
 impl CoreConfig {
     /// Load the Core config file and apply environment-variable overrides.
@@ -273,13 +224,6 @@ impl CoreConfig {
                 .agent
                 .api_profiles
                 .retain(|p| seen.insert(p.name.clone()));
-        }
-
-        // 编排模式插件迁移：旧三特性 id（branch.reply / session.global /
-        // chatbot.sessions）→ echo-agent.orchestration.chatbot。内存迁移，
-        // 首次 SaveTeam 落盘自愈（与 legacy [server]/[bot] 迁移同范式）。
-        for note in migrate_orchestration_mode_plugins(&mut config.agent) {
-            eprintln!("note: {note}");
         }
 
         // ---- Build QQ adapter config ----
@@ -496,129 +440,5 @@ model = "gpt-4o"
         std::fs::remove_file(&path).ok();
     }
 
-    #[test]
-    fn migrate_orchestration_mode_plugins_maps_legacy_ids() {
-        use echo_agent::config::TeamMember;
-        use echo_agent::plugins::{
-            LEGACY_CHATBOT_MODE_IDS, LEGACY_LOOP_RUNNER_PLUGIN_ID, PARALLEL_LOOP_PLUGIN_ID,
-        };
-        let mut agent = echo_agent::AgentConfig::default();
-        let mut member = TeamMember::default();
-        member.enabled_plugins = vec![
-            "echo-agent.tools.builtin".into(),
-            LEGACY_CHATBOT_MODE_IDS[1].into(),
-            LEGACY_LOOP_RUNNER_PLUGIN_ID.into(),
-        ];
-        member.disabled_plugins = vec![LEGACY_CHATBOT_MODE_IDS[2].into()];
-        agent.teams.insert("bot".into(), member);
-        agent.disabled_plugins = vec![LEGACY_CHATBOT_MODE_IDS[1].into()];
 
-        let notes = migrate_orchestration_mode_plugins(&mut agent);
-
-        let m = &agent.teams["bot"];
-        // 白名单里的旧编排 id → loop.parallel，但黑名单里含有旧并行特性 id
-        // （session.global）：历史上黑名单优先（推导单会话），物化后白名单
-        // 不得再含 parallel，行为保持不变。
-        assert_eq!(
-            m.enabled_plugins,
-            vec!["echo-agent.tools.builtin".to_string()]
-        );
-        // 黑名单已物化并清空（字段不再参与门控，也不再写回）
-        assert!(m.disabled_plugins.is_empty());
-        assert_eq!(m.loop_mode(), echo_agent::config::LoopMode::Single);
-        // 全局层旧 id 同样被清理映射（否则 apply_disabled 静默失效）
-        assert_eq!(
-            agent.disabled_plugins,
-            vec![PARALLEL_LOOP_PLUGIN_ID.to_string()]
-        );
-        // 迁移报告覆盖 teams 与全局层
-        assert!(notes
-            .iter()
-            .any(|n| n.contains("teams.bot.enabled_plugins")));
-        assert!(notes
-            .iter()
-            .any(|n| n.contains("teams.bot.disabled_plugins")));
-        assert!(notes.iter().any(|n| n.contains("agent.disabled_plugins")));
-        // 幂等：二次运行无新报告
-        assert!(migrate_orchestration_mode_plugins(&mut agent).is_empty());
-    }
-
-    /// 插件黑名单移除：空白名单 + 黑名单 → 物化为「全部内置 − 黑名单」，
-    /// 门控行为与循环模式不变（base 人格的真实配置形态）。
-    #[test]
-    fn migrate_converts_plugin_blacklist_to_whitelist() {
-        use echo_agent::config::TeamMember;
-        let mut agent = echo_agent::AgentConfig::default();
-        let mut member = TeamMember::default();
-        member.disabled_plugins = vec![
-            "echo-agent.tools.builtin".into(),
-            "echo-agent.skills.dir".into(),
-        ];
-        agent.teams.insert("base".into(), member);
-
-        let notes = migrate_orchestration_mode_plugins(&mut agent);
-
-        let m = &agent.teams["base"];
-        assert!(m.disabled_plugins.is_empty(), "blacklist must be cleared");
-        assert!(!m
-            .enabled_plugins
-            .iter()
-            .any(|p| p == "echo-agent.tools.builtin"));
-        assert!(!m
-            .enabled_plugins
-            .iter()
-            .any(|p| p == "echo-agent.skills.dir"));
-        assert!(m
-            .enabled_plugins
-            .iter()
-            .any(|p| p == "echo-agent.adapter.qq"));
-        assert_eq!(m.loop_mode(), echo_agent::config::LoopMode::Single);
-        assert!(notes
-            .iter()
-            .any(|n| n.contains("teams.base.disabled_plugins")));
-        // 幂等
-        assert!(migrate_orchestration_mode_plugins(&mut agent).is_empty());
-    }
-
-    #[test]
-    fn migrate_orchestration_mode_plugins_warns_on_conflict() {
-        use echo_agent::config::TeamMember;
-        use echo_agent::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
-        let mut agent = echo_agent::AgentConfig::default();
-        let mut member = TeamMember::default();
-        member.enabled_plugins = vec![SINGLE_LOOP_PLUGIN_ID.into(), PARALLEL_LOOP_PLUGIN_ID.into()];
-        agent.teams.insert("both".into(), member);
-        let notes = migrate_orchestration_mode_plugins(&mut agent);
-        assert!(notes.iter().any(|n| n.contains("parallel 优先")));
-        // 两个模式 id 都不迁移（保持计数），冲突按 parallel 优先推导
-        assert_eq!(
-            agent.teams["both"].enabled_plugins.len(),
-            2,
-            "single/parallel ids must be kept as-is"
-        );
-    }
-
-    /// 旧配置：`loop.runner` + orchestration.single → 折叠为 loop 模式 id。
-    #[test]
-    fn migrate_folds_single_and_drops_runner() {
-        use echo_agent::config::TeamMember;
-        use echo_agent::plugins::{
-            LEGACY_LOOP_RUNNER_PLUGIN_ID, LEGACY_SINGLE_MODE_ID, SINGLE_LOOP_PLUGIN_ID,
-        };
-        let mut agent = echo_agent::AgentConfig::default();
-        let mut member = TeamMember::default();
-        member.enabled_plugins = vec![
-            LEGACY_LOOP_RUNNER_PLUGIN_ID.into(),
-            LEGACY_SINGLE_MODE_ID.into(),
-        ];
-        agent.teams.insert("tui".into(), member);
-        let notes = migrate_orchestration_mode_plugins(&mut agent);
-        assert!(notes
-            .iter()
-            .any(|n| n.contains("teams.tui.enabled_plugins")));
-        assert_eq!(
-            agent.teams["tui"].enabled_plugins,
-            vec![SINGLE_LOOP_PLUGIN_ID.to_string()]
-        );
-    }
 }

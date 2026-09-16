@@ -47,21 +47,18 @@ pub const PARALLEL_LOOP_PLUGIN_ID: &str = "echo-agent.loop.parallel";
 pub const LEGACY_LOOP_RUNNER_PLUGIN_ID: &str = "echo-agent.loop.runner";
 
 /// 旧编排模式 id（已由循环模式插件取代）：仅用于配置迁移映射。
-pub const LEGACY_CHATBOT_MODE_IDS: [&str; 4] = [
-    "echo-agent.orchestration.chatbot",
+pub const LEGACY_CHATBOT_MODE_IDS: [&str; 3] = [
     "echo-agent.branch.reply",
     "echo-agent.session.global",
     "echo-agent.chatbot.sessions",
 ];
-pub const LEGACY_SINGLE_MODE_ID: &str = "echo-agent.orchestration.single";
 
 /// 推导循环模式时视为「并行」的全部 id（新 id + 旧编排模式 id）。
-pub const PARALLEL_MODE_IDS: [&str; 5] = [
+pub const PARALLEL_MODE_IDS: [&str; 4] = [
     PARALLEL_LOOP_PLUGIN_ID,
     LEGACY_CHATBOT_MODE_IDS[0],
     LEGACY_CHATBOT_MODE_IDS[1],
     LEGACY_CHATBOT_MODE_IDS[2],
-    LEGACY_CHATBOT_MODE_IDS[3],
 ];
 
 /// 名单归一化（配置加载与 SaveTeam 防御共用）：把旧编排模式 id 与旧驱动
@@ -75,7 +72,7 @@ pub fn normalize_mode_plugins(list: &mut Vec<String>) -> bool {
     let mut normalized: Vec<String> = Vec::with_capacity(list.len());
     for item in list.iter() {
         let is_parallel = LEGACY_CHATBOT_MODE_IDS.contains(&item.as_str());
-        let is_single = item == LEGACY_SINGLE_MODE_ID;
+        let is_single = false;
         let is_legacy_runner = item == LEGACY_LOOP_RUNNER_PLUGIN_ID;
         let is_legacy_menu = item == LEGACY_MENU_PLUGIN_ID;
         let is_legacy_checklist = item == LEGACY_CHECKLIST_PLUGIN_ID;
@@ -117,13 +114,11 @@ pub const GATED_PLUGIN_IDS: [&str; 4] = [
 ];
 
 /// 全部内置插件 id（与 `scripts/update.sh` 的插件校验清单一致）。
-/// 编排插件 id（实化：mount/unmount 启停编排事件循环）。
-pub const ORCHESTRATION_PLUGIN_ID: &str = "echo-agent.orchestration";
 /// LLM Provider 插件 id（名义挂载，重启生效）。
 pub const PROVIDER_LLM_PLUGIN_ID: &str = "echo-agent.provider.llm";
 
 /// 供插件黑名单移除迁移物化白名单时使用。
-pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
+pub const BUILTIN_PLUGIN_IDS: [&str; 8] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     ADAPTER_QQ_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
@@ -131,7 +126,6 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
     MANAGEMENT_PANEL_PLUGIN_ID,
     SINGLE_LOOP_PLUGIN_ID,
     PARALLEL_LOOP_PLUGIN_ID,
-    ORCHESTRATION_PLUGIN_ID,
     PROVIDER_LLM_PLUGIN_ID,
 ];
 
@@ -375,7 +369,7 @@ mod tests {
             "echo-agent.tools.builtin".to_string(),
             LEGACY_CHATBOT_MODE_IDS[1].to_string(),
             LEGACY_CHATBOT_MODE_IDS[2].to_string(),
-            LEGACY_CHATBOT_MODE_IDS[3].to_string(),
+            
         ];
         assert!(normalize_mode_plugins(&mut list));
         assert_eq!(
@@ -395,28 +389,6 @@ mod tests {
         assert_eq!(list, vec![PARALLEL_LOOP_PLUGIN_ID.to_string()]);
     }
 
-    #[test]
-    fn normalize_mode_plugins_folds_single_and_drops_legacy_runner() {
-        // orchestration.single → loop.single
-        let mut list = vec![LEGACY_SINGLE_MODE_ID.to_string()];
-        assert!(normalize_mode_plugins(&mut list));
-        assert_eq!(list, vec![SINGLE_LOOP_PLUGIN_ID.to_string()]);
-
-        // 旧驱动插件 id 被剔除（模式插件取代），其余保序
-        let mut list = vec![
-            LEGACY_LOOP_RUNNER_PLUGIN_ID.to_string(),
-            "echo-agent.tools.builtin".to_string(),
-            LEGACY_SINGLE_MODE_ID.to_string(),
-        ];
-        assert!(normalize_mode_plugins(&mut list));
-        assert_eq!(
-            list,
-            vec![
-                "echo-agent.tools.builtin".to_string(),
-                SINGLE_LOOP_PLUGIN_ID.to_string()
-            ]
-        );
-    }
 
     #[test]
     fn normalize_mode_plugins_drops_legacy_menu_and_checklist() {

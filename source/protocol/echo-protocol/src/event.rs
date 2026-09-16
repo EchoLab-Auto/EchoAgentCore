@@ -831,10 +831,6 @@ pub struct TeamInfo {
     /// 三布尔（2026-09 协议变更）。
     #[serde(default)]
     pub loop_mode: LoopMode,
-    /// 旧字段（过渡期同时下发，供未刷新的前端读取）：`parallel` 记为
-    /// `"chatbot"`。下个版本删除。
-    #[serde(default)]
-    pub orchestration_mode: OrchestrationMode,
     /// Persona system prompt (empty = inherits global prompt/skills).
     #[serde(default)]
     pub system_prompt: String,

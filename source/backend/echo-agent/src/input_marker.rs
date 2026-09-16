@@ -44,20 +44,9 @@ pub const TIMER_EVENT_OPEN: &str = "<timer_event>";
 /// The timer-event envelope closer.
 pub const TIMER_EVENT_CLOSE: &str = "</timer_event>";
 
-/// The background-task-event envelope opener.
-pub const BACKGROUND_EVENT_OPEN: &str = "<background_task_event>";
-
-/// The background-task-event envelope closer.
-pub const BACKGROUND_EVENT_CLOSE: &str = "</background_task_event>";
-
 /// Wrap a payload in the timer-event envelope.
 pub fn wrap_timer(payload: impl std::fmt::Display) -> String {
     format!("{TIMER_EVENT_OPEN}{payload}{TIMER_EVENT_CLOSE}")
-}
-
-/// Wrap a payload in the background-task-event envelope.
-pub fn wrap_background(payload: impl std::fmt::Display) -> String {
-    format!("{BACKGROUND_EVENT_OPEN}{payload}{BACKGROUND_EVENT_CLOSE}")
 }
 
 /// The known structured input markers that carry a `message_sequence`.
@@ -65,11 +54,10 @@ pub fn wrap_background(payload: impl std::fmt::Display) -> String {
 /// Sequence parsing is deliberately restricted to these markers so ordinary
 /// conversation text that happens to contain braces (JSON snippets, code,
 /// math) can never be misread as structured input.
-pub const STRUCTURED_INPUT_MARKERS: [&str; 4] = [
+pub const STRUCTURED_INPUT_MARKERS: [&str; 3] = [
     "<qq_message_hook>",
     "<backend_message_hook>",
     TIMER_EVENT_OPEN,
-    BACKGROUND_EVENT_OPEN,
 ];
 
 /// Whether `content` starts with any known structured input marker.

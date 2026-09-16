@@ -384,25 +384,4 @@ mod tests {
         assert_eq!(timeline[0].content, "通过总线");
     }
 
-    #[test]
-    fn background_hooks_are_skipped() {
-        let store = trunk();
-        let projector = TimelineProjector::new(store.clone());
-        projector.record(&BackendEvent::MessageReceived {
-            session_id: "s".into(),
-            adapter_name: "background".into(),
-            platform: "local".into(),
-            user_id: "u".into(),
-            user_name: "bg".into(),
-            channel: "direct".into(),
-            group_name: None,
-            content: "<background_task_event>…</background_task_event>".into(),
-            images: vec![],
-            timestamp: 0,
-            received_at_ms: 0,
-            message_sequence: 0,
-            team_id: None,
-        });
-        assert!(store.timeline_snapshot().is_empty());
-    }
 }

@@ -768,8 +768,7 @@ mod tests {
         use echo_defs::LoopMode::*;
 
         use crate::plugins::{
-            LEGACY_CHATBOT_MODE_IDS, LEGACY_SINGLE_MODE_ID, PARALLEL_LOOP_PLUGIN_ID,
-            SINGLE_LOOP_PLUGIN_ID,
+            LEGACY_CHATBOT_MODE_IDS, PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID,
         };
         let parallel = PARALLEL_LOOP_PLUGIN_ID;
         let single = SINGLE_LOOP_PLUGIN_ID;
@@ -788,7 +787,7 @@ mod tests {
         }
         // 旧 single id → Single
         assert_eq!(
-            member_with_plugins(&[LEGACY_SINGLE_MODE_ID], &[]).loop_mode(),
+            member_with_plugins(&["echo-agent.orchestration.single"], &[]).loop_mode(),
             Single
         );
         // single + parallel 并含 → Parallel（互斥优先）

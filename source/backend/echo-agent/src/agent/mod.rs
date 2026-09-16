@@ -1270,8 +1270,7 @@ impl Agent {
 
     pub(crate) async fn cancel_requested_work(&self, session_id: &str, all: bool) -> usize {
         let foreground = self.cancel_inbound_turns(session_id, all);
-        let background = 0;
-        foreground + background
+        foreground
     }
 
     /// Commit an inbound event and capture the branch's point-in-time context
@@ -2314,7 +2313,7 @@ impl Agent {
             )),
             Ok(args) => match call.name.as_str() {
             other => {
-                // Every orchestration tool must live in the single dispatch
+                // Every dynamic tool must live in the single dispatch
                 match self.tool_arguments_error(other, &call.arguments, &args).await {
                     Some(message) => Err(message),
                     None => self
@@ -2393,7 +2392,7 @@ impl Agent {
             ));
     }
 
-    /// Run a command with root privileges (the `run_sudo` orchestration tool).
+    /// Run a command with root privileges (the `run_sudo` tool).
     ///
     /// The password is never seen by the LLM: a pending request is registered
     /// with the [`SudoBroker`](crate::sudo::SudoBroker), a `SudoRequest` event
@@ -3328,7 +3327,7 @@ impl BoundaryKind {
                  tool's content, and do not claim a reply before the send tool \
                  returns success.\n\
                  Inputs wrapped in <backend_message_hook>/<timer_event>/\
-                 <background_task_event> are backend events, not QQ chat: answer \
+                 are backend events, not QQ chat: answer \
                  them in the backend and deliver per their own rules.",
             ),
             Self::Timer => (
@@ -3893,53 +3892,6 @@ pub mod tests {
         assert!(!tool.failed);
     }
 
-    #[tokio::test]
-    async fn timeline_skips_background_hooks_and_timer_summaries_cleanly() {
-        let provider = Arc::new(MockProvider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            reply: "ok".into(),
-        });
-        let agent = test_agent(provider);
-        // Background hook — must NOT appear in the timeline.
-        agent.emit(BackendEvent::MessageReceived {
-            session_id: "local:tui::one".into(),
-            adapter_name: "background".into(),
-            platform: "qq".into(),
-            user_id: "1".into(),
-            user_name: "background task".into(),
-            channel: "direct".into(),
-            group_name: None,
-            content: "<background_task_event>{}</background_task_event>".into(),
-            images: vec![],
-            timestamp: 1,
-            received_at_ms: 1000,
-            message_sequence: 1,
-            team_id: None,
-        });
-        assert!(agent.trunk.timeline_snapshot().is_empty());
-
-        // Timer event — becomes a system summary.
-        agent.emit(BackendEvent::MessageReceived {
-            session_id: "local:tui::one".into(),
-            adapter_name: "timer".into(),
-            platform: "local".into(),
-            user_id: "1".into(),
-            user_name: "timer".into(),
-            channel: "direct".into(),
-            group_name: None,
-            content: r#"<timer_event>{"message_sequence":2,"task":"发送提醒"}</timer_event>"#
-                .into(),
-            images: vec![],
-            timestamp: 2,
-            received_at_ms: 2000,
-            message_sequence: 2,
-            team_id: None,
-        });
-        let timeline = agent.trunk.timeline_snapshot();
-        assert_eq!(timeline.len(), 1);
-        assert_eq!(timeline[0].kind, "system");
-        assert_eq!(timeline[0].content, "定时任务触发 · 发送提醒");
-    }
 
     #[tokio::test]
     async fn timeline_associates_reasoning_with_the_final_output() {
@@ -4899,9 +4851,6 @@ pub mod tests {
         assert_eq!(structured_message_sequence(backend), Some(3));
         let timer = r#"<timer_event>{"message_sequence":9}</timer_event>"#;
         assert_eq!(structured_message_sequence(timer), Some(9));
-        let background =
-            r#"<background_task_event>{"message_sequence":11}</background_task_event>"#;
-        assert_eq!(structured_message_sequence(background), Some(11));
 
         // Ordinary conversation containing braces must NOT be parsed.
         assert_eq!(

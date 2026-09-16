@@ -1205,7 +1205,7 @@ impl Agent {
     }
 
     /// Emit the full tool list (`BackendEvent::ToolsList`), including
-    /// disabled tools and the dynamic orchestration tools, each with their
+    /// disabled tools, each with their
     /// category and (for this agent's perspective) enable state.
     pub async fn emit_tools_list(&self) {
         let defs = self.tools.full_definitions().await;

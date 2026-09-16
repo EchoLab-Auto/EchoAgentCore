@@ -220,7 +220,6 @@ impl AgentManager {
     /// via the factory; persists through the config writer.
     pub fn save_profile(&self, id: &str, profile: TeamMember, enabled: bool) -> Result<(), String> {
         let mut profile = profile;
-        // 循环模式插件 id 归一化：旧编排模式 id（orchestration.{single,chatbot} /
         // branch.reply / session.global / chatbot.sessions）与旧驱动 id（loop.runner）
         // 统一折叠为 loop.{single,parallel}——所有写入路径（含旧 panel 回写旧 id）
         // 在此防御。
@@ -328,7 +327,6 @@ impl AgentManager {
                 // 单一来源 TeamMember::loop_mode；parallel 才展示会话管理 UI
                 // 并发射 ReplyBranch* 可见性事件。旧字段过渡期同时下发。
                 loop_mode: p.loop_mode(),
-                orchestration_mode: p.loop_mode().into(),
                 system_prompt: p.system_prompt.clone(),
                 disabled_tools: p.disabled_tools.clone(),
                 disabled_skills: p.disabled_skills.clone(),
@@ -444,7 +442,6 @@ mod tests {
         let mode_of = |id: &str| {
             let info = infos.iter().find(|t| t.id == id).unwrap();
             // 新字段与旧（过渡）字段必须一致。
-            assert_eq!(info.orchestration_mode, info.loop_mode.into());
             info.loop_mode
         };
         assert_eq!(mode_of("bot"), echo_defs::LoopMode::Parallel);
