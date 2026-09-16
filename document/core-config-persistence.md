@@ -79,7 +79,7 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 
 - legacy `[server]`/`[bot]` → `[adapters.qq]`（有显式值才触发，打印提示）
 - `api_profiles` 按名去重（历史持久化 bug 自愈）
-- **循环模式插件 id**（`migrate_orchestration_mode_plugins`）：teams 各成员白名单与全局
+- **循环模式插件 id**：teams 各成员白名单与全局
   `[agent].disabled_plugins` 中的旧 id 归一化为循环模式插件 id——旧编排模式 id
   （`branch.reply` / `session.global` / `chatbot.sessions`）→ `echo-agent.loop.parallel`；
   `echo-agent.loop.runner` 剔除（模式插件取代）——旧 id

@@ -63,7 +63,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   `kind ∈ {adapter, management, interaction}` **∪** 下列包维度门控插件固定清单
   （`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本节 `GATED_PLUGIN_IDS` 逐项镜像）：
   `tools.builtin` / `skills.dir` / `workspace` / `adapter.qq`。
-  其余插件（`loop.*` 由循环模式分段控件管理、`orchestration` / `provider.llm`
+  其余插件（`loop.*` 由循环模式分段控件管理、`provider.llm`
   名义挂载重启生效）**不出现**在该勾选区。保存后写回 TOML
 - ⚠️ **新增包维度门控插件时的同步清单**（缺一即"配置里看不到/门控失效"）：
   ① Core `plugins.rs` 的 `GATED_PLUGIN_IDS` 与 `BUILTIN_PLUGIN_IDS`；
@@ -84,7 +84,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   - `adapter.qq`：禁用 = 停止 QQ 适配器进程 + QQ 工具包禁用；启用 = 启动 + 按名单恢复
   - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）。**防自锁保护**：经 `TogglePlugin` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
   - `loop.single` / `loop.parallel`：**已实化**——mount 注入 TurnRunner 并启用 echo-loop 驱动；两者 mount 同一驱动（模式只改策略），全部卸载才回退内置循环（普通输入走 turn/step 状态机；QQ hook/定时器/QQ 会话仍走内置循环）
-  - `provider.llm`：仍为名义挂载——运行中替换 provider 涉及在途 turn，保持"重启生效"语义（禁用 = 下次重启不装配）；`orchestration` 已实化（mount/unmount 启停编排事件循环）
+  - `provider.llm`：仍为名义挂载——运行中替换 provider 涉及在途 turn，保持"重启生效"语义（禁用 = 下次重启不装配）
 - **优先级**：全局禁用（`TogglePlugin` 卸载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
 - **内置工具包覆盖**：任务清单（checklist）已于 2026-09 降级为普通内置工具（随 `tools.builtin` 包，见上表注）；关闭内置工具集 = checklist 一并不可用，单独停用请在「启用工具」里按名勾选（运行期双向、即时生效），Panel 入口行同步移除「清单」入口、关闭已打开浮层并清空徽标状态；`base` 人格演示了"纯对话"配置（禁用 tools.builtin + skills.dir）
 

@@ -126,7 +126,7 @@ graph LR
 | `ReasoningEffort` | `"low"` / `"high"` / `"max"` |
 | `OrchestrationMode` | `"single"` / `"chatbot"`（`#[default] = chatbot`；旧字段过渡期下发，`TeamInfo.is_default` 恒 false） |
 
-`LoopMode` 定义在 `echo-defs::mode`（经 `echo-protocol` 再导出）：per-persona 循环模式，由 `enabled_plugins` 对互斥插件 `echo-agent.loop.{single,parallel}` 推导（单会话为默认与兜底；插件黑名单 `disabled_plugins` 已移除，`SaveTeam`/`TeamInfo` 不再携带该字段——旧端帧中的该字段被 serde 忽略，缺省按空表处理）。**2026-09 协议变更**：`TeamInfo` 新增 `loop_mode`（`"single"`/`"parallel"`），旧的 `orchestration_mode`（`"single"`/`"chatbot"`）过渡期同时下发（`parallel` 记为 `"chatbot"`）供未刷新的前端读取，下个版本删除；面板 `loopModeOf()` 优先读 `loop_mode`，缺字段时按旧字段映射（chatbot → parallel），再缺省按 single。
+`LoopMode` 定义在 `echo-defs::mode`（经 `echo-protocol` 再导出）：per-persona 循环模式，由 `enabled_plugins` 对互斥插件 `echo-agent.loop.{single,parallel}` 推导（单会话为默认与兜底；插件黑名单 `disabled_plugins` 已移除，`SaveTeam`/`TeamInfo` 不再携带该字段——旧端帧中的该字段被 serde 忽略，缺省按空表处理）。**2026-09 协议变更**：`TeamInfo` 新增 `loop_mode`（`"single"`/`"parallel"`）；面板 `loopModeOf()` 优先读 `loop_mode`，缺省按 single。
 
 ## 兼容性规则
 

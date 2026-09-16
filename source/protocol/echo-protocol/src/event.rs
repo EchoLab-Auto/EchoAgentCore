@@ -101,12 +101,12 @@ pub struct ContextMessageInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextBlockInfo {
     /// Stable identifier, e.g. "base", "skills", "skill:alix-persona",
-    /// "triggered:web-search", "orchestration", "boundary:qq_hook",
+    /// "triggered:web-search", "boundary:qq_hook",
     /// "history:user".
     pub key: String,
     /// Human-readable label for the block list.
     pub label: String,
-    /// Category: "base" | "skills" | "skill" | "triggered" | "orchestration"
+    /// Category: "base" | "skills" | "skill" | "triggered"
     /// | "boundary" | "history".
     pub kind: String,
     /// Estimated token count of this block.

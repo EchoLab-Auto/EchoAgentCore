@@ -22,7 +22,7 @@ EchoAgentPanel/
 │   └── src/
 │       ├── protocol.ts              # echo-protocol 线格式的 TS 镜像
 │       ├── state.ts                 # 状态 + reducer
-│       ├── state_domains/           # timeline / orchestration / helpers
+│       ├── state_domains/           # timeline / helpers
 │       ├── connection.ts            # WS 连接（重连退避 + Bootstrap）
 │       └── components/              # 聊天（含内联选单）/ 设置 / sudo / QQ / 任务 / 清单
 └── scripts/                         # install.sh / update.sh / uninstall.sh
@@ -41,7 +41,7 @@ EchoAgentPanel/
 
 - `store.ts`：全局响应式单例（Vue `reactive`），`dispatch(event)` 逐事件归约
 - `state.ts`：reducer 按事件类型分派，原地深变异
-- `state_domains/`：timeline（时间线转换/增量/工具配对）、orchestration（分支/任务/活动）、helpers
+- `state_domains/`：timeline（时间线转换/增量/工具配对）、helpers
 - 连接管理 `connection.ts`：WS 自动重连；重连后清空运行期状态与时间线缓存，全量重建
 - 实时事件按 `team_id` 归一化过滤后才进主时间线（跨 agent 不串显）；`TrunkTimeline` 按 `full` 标志区分全量替换/增量追加
 
