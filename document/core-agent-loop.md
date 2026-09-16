@@ -29,8 +29,6 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 - **排队期间可取消**：turn 在等待闸门**之前**就注册进 `active_inbound_turns`，
   取消命令能中断排队（该 turn 不执行、不留残回复）；QQ 入站注册在分支任务内
   完成，适配器入站永不因排队阻塞。
-- **工具面**：单会话模式隐藏 `spawn_parallel_task`（一个会话一次只处理一件事，
-  并行分支与串行准入冲突）；`run_subagent` / `spawn_background_task` 仍可用。
 - **推导**：`TeamMember::loop_mode()`（单一来源）——白名单含 `loop.parallel`
   → parallel；其余（含白名单为空 = 默认）→ single。
   插件黑名单已移除（2026-09-11），推导只看白名单。旧 id 迁移见
@@ -74,18 +72,15 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 - **QQ hook / 定时器 / QQ 会话** → 内置循环：边界语义（QQ 边界块、定时器
   回投）由内置循环注入；投递纪律由提示词与 qq-transport 技能引导（2026-09
   移除 send 工具声明校验与纠偏提醒），echo-loop 不接管。QQ 并发回复的细节
-  （分支并发、进度回应、有序合并）见[后台任务与并行分支](./core-background-tasks.md)§QQ 并发回复。
 
 两套驱动并行、同一工具路径（`run_tool`）与提示词构建（`build_prompt_blocks`）
 复用；卸载全部循环插件（配置 `disabled_plugins` 或面板 TogglePlugin）即恢复
-内置循环。三处形似循环的评估结论：`run_subagent` 与 `generate_wait_reply` 是
-无工具单请求，保持自身实现；`run_background_branch` 收敛到 TurnRunner 需工具
-白名单与独立事件桥，列为后续工作。
+内置循环。`generate_wait_reply` 是无工具单请求，保持自身实现。
 
 ## 取消与中断
 
 - 用户取消（`CancelRequestedWork`）时正在执行的工具被外层 select 中止，
-  turn 以取消收尾；分支注册与取消令牌机制见[后台任务与并行分支](./core-background-tasks.md)
+  turn 以取消收尾
 - **按 agent 路由**：`CancelRequestedWork` 携带 `team_id`（`#[serde(default)]` 向后兼容），
   命令泵按 team 路由到对应 persona——self-coding 的消息只有在 self-coding 的 Agent 中才能取消
 - **取消即收尾**：TUI 路径取消同样 emit `AgentCompleted`（与 QQ 路径一致），前端据此把

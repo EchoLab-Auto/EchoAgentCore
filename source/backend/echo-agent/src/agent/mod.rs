@@ -1,7 +1,6 @@
 //! The agent loop: LLM + tools + skills + memory composed into one reply.
 
 mod commands;
-mod orchestration;
 mod qq_commands;
 mod workspace_commands;
 
@@ -205,14 +204,11 @@ pub struct Agent {
     /// panel can visualize the exact prompt sections sent to the LLM.
     last_prompt_blocks: tokio::sync::Mutex<Option<Vec<PromptBlock>>>,
     plugin_reload_started: AtomicBool,
-    orchestration_started: AtomicBool,
     /// 可插拔循环驱动（echo-loop TurnRunner，由 `echo-agent.loop.{single,parallel}`
     /// 插件 mount 时注入）；启用（use_echo_loop）时普通 TUI turn 经 TurnRunner 的
     /// turn/step 状态机 + ToolPipeline 执行，否则使用内置循环（默认）。
     loop_runner: RwLock<Option<std::sync::Arc<echo_loop::runner::TurnRunner>>>,
     use_echo_loop: AtomicBool,
-    timer_scheduler: orchestration::TimerScheduler,
-    background_tasks: orchestration::BackgroundTaskManager,
     reply_branch_slots: tokio::sync::Semaphore,
     /// Bounds concurrent interim "wait reply" LLM calls (see
     /// [`MAX_CONCURRENT_WAIT_REPLIES`]).
@@ -348,8 +344,6 @@ impl Agent {
         let eviction_trunk = trunk.clone();
         let cancel = tokio_util::sync::CancellationToken::new();
         let eviction_cancel = cancel.clone();
-        let timer_scheduler = orchestration::TimerScheduler::new(cancel.clone());
-        let background_tasks = orchestration::BackgroundTaskManager::new(cancel.clone());
         let event_bus: std::sync::Arc<echo_context::EventBus> =
             std::sync::Arc::new(echo_context::EventBus::default());
         // The display timeline is a projection of emitted events; subscribe
@@ -375,11 +369,8 @@ impl Agent {
             system_prompt_cache: RwLock::new(None),
             last_prompt_blocks: tokio::sync::Mutex::new(None),
             plugin_reload_started: AtomicBool::new(false),
-            orchestration_started: AtomicBool::new(false),
             loop_runner: RwLock::new(None),
             use_echo_loop: AtomicBool::new(false),
-            timer_scheduler,
-            background_tasks,
             reply_branch_slots: tokio::sync::Semaphore::new(MAX_CONCURRENT_REPLY_BRANCHES),
             wait_reply_slots: tokio::sync::Semaphore::new(MAX_CONCURRENT_WAIT_REPLIES),
             active_inbound_turns: DashMap::new(),
@@ -566,255 +557,6 @@ impl Agent {
             }
         }
         Ok(())
-    }
-
-    /// Start delivery of scheduled timer events back into their originating sessions.
-    pub fn start_orchestration_task(self: &Arc<Self>) {
-        if self
-            .orchestration_started
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return;
-        }
-        let timer_receiver = self.timer_scheduler.take_receiver();
-        let background_receiver = self.background_tasks.take_receiver();
-        if timer_receiver.is_none() && background_receiver.is_none() {
-            self.orchestration_started.store(false, Ordering::Release);
-            tracing::warn!("orchestration event receivers unavailable");
-            return;
-        }
-
-        if let Some(mut receiver) = timer_receiver {
-            let agent = Arc::clone(self);
-            let cancel = self.cancel.clone();
-            tokio::spawn(async move {
-                loop {
-                    let event = tokio::select! {
-                        event = receiver.recv() => match event {
-                            Some(event) => event,
-                            None => break,
-                        },
-                        _ = cancel.cancelled() => break,
-                    };
-                    agent.timer_scheduler.mark_delivered(&event.id).await;
-                    let Some(key) = crate::session::SessionKey::parse(&event.session_id) else {
-                        tracing::warn!(timer_id = %event.id, session_id = %event.session_id, "timer session is invalid");
-                        continue;
-                    };
-                    let session = agent
-                        .trunk
-                        .get(&event.session_id)
-                        .unwrap_or_else(|| agent.trunk.get_or_create(&key, "timer".into(), None));
-                    let received_at_ms = chrono::Utc::now().timestamp_millis();
-                    let message_sequence = agent.next_message_sequence();
-                    let input = serde_json::json!({
-                        "event": "timer",
-                        "message_sequence": message_sequence,
-                        "received_at_ms": received_at_ms,
-                        "timer_id": event.id,
-                        "due_at": event.due_at.to_rfc3339(),
-                        "session": {
-                            "id": event.session_id,
-                            "platform": key.platform,
-                            "scope": key.scope,
-                            "scope_id": key.scope_id,
-                            "user_id": key.user_id
-                        },
-                        "task": event.task
-                    });
-                    let input = crate::input_marker::wrap_timer(&input);
-                    agent.emit(BackendEvent::MessageReceived {
-                        session_id: session.id.clone(),
-                        adapter_name: "timer".into(),
-                        platform: session.session_key.platform.clone(),
-                        user_id: session.session_key.user_id.clone(),
-                        user_name: "timer".into(),
-                        channel: if session.session_key.scope == "group" {
-                            format!("group:{}", session.session_key.scope_id)
-                        } else {
-                            "direct".into()
-                        },
-                        group_name: session.group_name.clone(),
-                        content: input.clone(),
-                        images: vec![],
-                        timestamp: received_at_ms / 1000,
-                        received_at_ms,
-                        message_sequence,
-                        team_id: None,
-                    });
-                    let branch_agent = Arc::clone(&agent);
-                    let timer_id = event.id.clone();
-                    tokio::spawn(async move {
-                        match branch_agent.process_message(&session, &input).await {
-                            Ok(content) if !content.trim().is_empty() => {
-                                branch_agent.emit(BackendEvent::AgentOutput {
-                                    session_id: session.id.clone(),
-                                    content,
-                                    branch_id: None,
-                                    team_id: None,
-                                });
-                            }
-                            Ok(_) => {}
-                            Err(error) => {
-                                tracing::warn!(%error, %timer_id, "timer task failed");
-                                branch_agent.emit(BackendEvent::Error {
-                                    session_id: Some(session.id.clone()),
-                                    message: format!("timer {timer_id} failed: {error}"),
-                                });
-                            }
-                        }
-                    });
-                }
-            });
-        }
-
-        if let Some(mut receiver) = background_receiver {
-            let agent = Arc::clone(self);
-            let cancel = self.cancel.clone();
-            tokio::spawn(async move {
-                let mut ordered = orchestration::OrderedCompletionBuffer::new();
-                loop {
-                    let completion = tokio::select! {
-                        completion = receiver.recv() => match completion {
-                            Some(completion) => completion,
-                            None => break,
-                        },
-                        _ = cancel.cancelled() => break,
-                    };
-                    let success = !completion.cancelled
-                        && completion.branches.iter().all(|branch| branch.success);
-                    agent.emit(BackendEvent::BackgroundTaskCompleted {
-                        session_id: completion.session_id.clone(),
-                        task_id: completion.task_id.clone(),
-                        sequence: completion.sequence,
-                        success,
-                        completed_at_ms: completion.completed_at.timestamp_millis(),
-                    });
-                    for completion in ordered.push(completion) {
-                        agent.integrate_background_completion(completion).await;
-                    }
-                }
-            });
-        }
-    }
-
-    /// Stop the orchestration event loop (timer + background completion
-    /// receivers). The next `start_orchestration_task` call will fail to
-    /// re-acquire the receivers (they are taken once), so this is a
-    /// one-way switch until restart. Intended for plugin unmount.
-    pub fn stop_orchestration_task(self: &Arc<Self>) {
-        if self
-            .orchestration_started
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return;
-        }
-        // The tokio tasks hold `cancel` tokens and will exit on their own
-        // when the agent is dropped or when the process shuts down. We only
-        // reset the flag so a subsequent start_orchestration_task is a no-op
-        // (receivers are already taken).
-        tracing::info!("orchestration event loop stopped (plugin unmounted)");
-    }
-
-    async fn integrate_background_completion(
-        &self,
-        completion: orchestration::BackgroundCompletion,
-    ) {
-        let success =
-            !completion.cancelled && completion.branches.iter().all(|branch| branch.success);
-        let Some(key) = crate::session::SessionKey::parse(&completion.session_id) else {
-            tracing::warn!(
-                task_id = %completion.task_id,
-                session = %completion.session_id,
-                "background completion session is invalid"
-            );
-            return;
-        };
-        let session = self.trunk.get(&completion.session_id).unwrap_or_else(|| {
-            self.trunk
-                .get_or_create(&key, "background task".into(), None)
-        });
-        let received_at_ms = chrono::Utc::now().timestamp_millis();
-        let message_sequence = self.next_message_sequence();
-        let deliveries = completion
-            .branches
-            .iter()
-            .map(|branch| serde_json::json!({
-                "branch_id": branch.branch_id,
-                "target": branch.target,
-                "success": branch.success,
-                "result": branch.result,
-                "started_at": branch.started_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                "completed_at": branch.completed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-            }))
-            .collect::<Vec<_>>();
-        let payload = serde_json::json!({
-            "event": "background_task_completed",
-            "message_sequence": message_sequence,
-            "received_at_ms": received_at_ms,
-            "task_id": completion.task_id,
-            "task_sequence": completion.sequence,
-            "objective": completion.objective,
-            "created_at": completion.created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            "completed_at": completion.completed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            "cancelled": completion.cancelled,
-            "origin_session": completion.session_id,
-            "deliveries": deliveries
-        });
-        let input = crate::input_marker::wrap_background(&payload);
-        self.emit(BackendEvent::MessageReceived {
-            session_id: session.id.clone(),
-            adapter_name: "background".into(),
-            platform: key.platform,
-            user_id: key.user_id,
-            user_name: "background task".into(),
-            channel: if key.scope == "group" {
-                format!("group:{}", key.scope_id)
-            } else {
-                "direct".into()
-            },
-            group_name: session.group_name.clone(),
-            content: input.clone(),
-            images: vec![],
-            timestamp: completion.completed_at.timestamp(),
-            received_at_ms,
-            message_sequence,
-            team_id: None,
-        });
-        tracing::info!(
-            task_id = %completion.task_id,
-            task_sequence = completion.sequence,
-            session = %session.id,
-            created_at = %completion.created_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            completed_at = %completion.completed_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-            "integrating background task in creation order"
-        );
-        let integrated = match self.process_message(&session, &input).await {
-            Ok(_) => true,
-            Err(error) => {
-                tracing::warn!(%error, task_id = %completion.task_id, "background integration failed");
-                self.emit(BackendEvent::Error {
-                    session_id: Some(session.id.clone()),
-                    message: format!(
-                        "background task {} integration failed: {error}",
-                        completion.task_id
-                    ),
-                });
-                false
-            }
-        };
-        self.background_tasks
-            .mark_integrated(&completion.task_id)
-            .await;
-        self.emit(BackendEvent::BackgroundTaskIntegrated {
-            session_id: session.id,
-            task_id: completion.task_id,
-            sequence: completion.sequence,
-            success: success && integrated,
-            integrated_at_ms: chrono::Utc::now().timestamp_millis(),
-        });
     }
 
     async fn reload_skills(&self, skills_dir: &str) -> Result<bool, String> {
@@ -1155,7 +897,7 @@ impl Agent {
         }
     }
 
-    /// Whether a dynamic orchestration tool is allowed for this agent
+    /// Whether a dynamic tool is allowed for this agent
     /// (allowlist first, denylist refinement; empty allowlist = all allowed).
     ///
     /// 单会话模式额外隐藏 `spawn_parallel_task`：一个会话一次只处理一件事，
@@ -1528,13 +1270,7 @@ impl Agent {
 
     pub(crate) async fn cancel_requested_work(&self, session_id: &str, all: bool) -> usize {
         let foreground = self.cancel_inbound_turns(session_id, all);
-        let background = if all || foreground == 0 {
-            self.background_tasks
-                .cancel_running_for_session(session_id, all)
-                .await
-        } else {
-            0
-        };
+        let background = 0;
         foreground + background
     }
 
@@ -2173,14 +1909,8 @@ impl Agent {
         // 工具 schema：注册表定义 + 动态编排过滤（与内置循环同源）。
         let mut tools = (*self.tools.definitions().await).clone();
         let config = self.config.read().await;
-        let dynamic =
-            orchestration::tool_definitions(config.self_update.enabled, config.sudo.enabled);
+        let dynamic: Vec<echo_defs::tool::ToolDefinition> = Vec::new();
         drop(config);
-        tools.extend(
-            dynamic
-                .into_iter()
-                .filter(|d| self.allows_dynamic_tool(&d.name)),
-        );
 
         // 推理回调（引用式，生命周期 = run 调用作用域）。
         let reasoning_cb = |sid: String, text: String| {
@@ -2309,12 +2039,6 @@ impl Agent {
         let self_update_enabled = config.self_update.enabled;
         let sudo_enabled = config.sudo.enabled;
         drop(config);
-        let dynamic = orchestration::tool_definitions(self_update_enabled, sudo_enabled);
-        tools.extend(
-            dynamic
-                .into_iter()
-                .filter(|d| self.allows_dynamic_tool(&d.name)),
-        );
         // max_tool_iterations == 0 still allows one direct reply (without tools).
         let max_iterations = self.config.read().await.max_tool_iterations.max(1);
         // None/0 = 无上限（后端回退 DEFAULT_MAX_TOKENS=128K）。
@@ -2589,64 +2313,8 @@ impl Agent {
                 call.name,
             )),
             Ok(args) => match call.name.as_str() {
-            "schedule_timer" => self
-                .timer_scheduler
-                .schedule(session_id, args)
-                .await
-                .map(crate::tool::ToolResult::text),
-            "list_timers" => Ok(crate::tool::ToolResult::text(
-                self.timer_scheduler.list(session_id).await,
-            )),
-            "cancel_timer" => self
-                .timer_scheduler
-                .cancel(session_id, args)
-                .await
-                .map(crate::tool::ToolResult::text),
-            "run_subagent" => self
-                .run_subagent(session_id, branch_id, args)
-                .await
-                .map(crate::tool::ToolResult::text),
-            "spawn_background_task" => self
-                .spawn_background_task(session_id, args, false)
-                .await
-                .map(crate::tool::ToolResult::text),
-            "spawn_parallel_task" => self
-                .spawn_background_task(session_id, args, true)
-                .await
-                .map(crate::tool::ToolResult::text),
-            "list_background_tasks" => Ok(crate::tool::ToolResult::text(
-                self.background_tasks.list(session_id).await,
-            )),
-            "cancel_background_task" => self
-                .background_tasks
-                .cancel(session_id, args)
-                .await
-                .map(crate::tool::ToolResult::text),
-            "send_backend_message" => self
-                .send_backend_message(args)
-                .map(crate::tool::ToolResult::text),
-            "framework_update" => {
-                let config = self.config.read().await.self_update.clone();
-                orchestration::framework_update(&config, session_id, args)
-                    .await
-                    .map(crate::tool::ToolResult::text)
-            }
-            "run_sudo" => self
-                .run_sudo(session_id, args)
-                .await
-                .map(crate::tool::ToolResult::text),
-            "present_menu" => self
-                .present_menu(session_id, args)
-                .await
-                .map(crate::tool::ToolResult::text),
             other => {
                 // Every orchestration tool must live in the single dispatch
-                // table; a name here that is not in the table would silently
-                // bypass schema generation (drift between schema and handler).
-                debug_assert!(
-                    !crate::agent::orchestration::ORCHESTRATION_TOOL_NAMES.contains(&other),
-                    "orchestration tool {other} missing from ORCHESTRATION_TOOL_NAMES"
-                );
                 match self.tool_arguments_error(other, &call.arguments, &args).await {
                     Some(message) => Err(message),
                     None => self
@@ -2799,216 +2467,6 @@ impl Agent {
         .await
     }
 
-    /// 向用户发起选单并等待其选择（`present_menu`，选单插件）。
-    ///
-    /// 与 [`Self::run_sudo`] 同构：向 [`MenuBroker`](crate::menu::MenuBroker)
-    /// 注册未决请求 → 发 `MenuRequest` 事件 → 等待 Panel 经专用通道回传的
-    /// 选择。选单内容与结果都不是秘密，会进入会话日志与 LLM 上下文（模型
-    /// 据此继续下一步），这是它存在的意义。
-    ///
-    /// 返回给模型的文案必须能区分三种结局：选定 / 取消 / 超时——把"取消"
-    /// 当成选择会让模型在用户未表态时继续执行。
-    async fn present_menu(
-        &self,
-        session_id: &str,
-        args: serde_json::Value,
-    ) -> Result<String, String> {
-        let (title, description, options) = crate::agent::orchestration::parse_menu_args(&args)?;
-        let broker = self
-            .menu_broker
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| "present_menu: menu broker not attached".to_string())?;
-        let pending = broker.request();
-        let request_id = pending.request_id;
-        self.emit(BackendEvent::MenuRequest {
-            request_id,
-            session_id: session_id.to_string(),
-            title: title.clone(),
-            description: description.clone(),
-            options: options.clone(),
-            timeout_secs: crate::menu::MENU_WAIT_TIMEOUT_SECS,
-        });
-        // RAII：任何退出路径（含外层工具守卫超时 drop 掉本 future）都恰好
-        // 发一次 MenuResolved 并释放 broker 条目，Panel 的选单弹层不会挂在
-        // 死请求上。
-        let mut resolved = MenuResolvedGuard::new(self, &broker, request_id);
-
-        let receiver = pending.into_receiver();
-        let answer = match tokio::time::timeout(
-            std::time::Duration::from_secs(crate::menu::MENU_WAIT_TIMEOUT_SECS),
-            receiver,
-        )
-        .await
-        {
-            Err(_) => {
-                resolved.resolve(false, "选单超时（用户未选择）");
-                return Err(format!(
-                    "present_menu timed out after {}s — the user did not choose. Do not assume an option; ask in text or continue without the decision.",
-                    crate::menu::MENU_WAIT_TIMEOUT_SECS
-                ));
-            }
-            Ok(Err(_)) => {
-                resolved.resolve(false, "选单通道已关闭");
-                return Err("present_menu: answer channel closed".to_string());
-            }
-            Ok(Ok(answer)) => answer,
-        };
-
-        let Some(option_id) = answer else {
-            resolved.resolve(false, "用户取消了选单");
-            return Ok(
-                "用户取消了选单（未做任何选择）。不要把取消当成选项；可以改为用文字询问，或直接说明你的建议。"
-                    .into(),
-            );
-        };
-        let Some(option) = options.iter().find(|option| option.id == option_id) else {
-            resolved.resolve(false, "选单应答与选项不匹配");
-            return Err(format!(
-                "present_menu: answer carries unknown option id {option_id:?}"
-            ));
-        };
-        resolved.resolve(true, format!("已选择「{}」", option.label));
-        Ok(match option.description.as_deref() {
-            Some(note) => format!(
-                "用户选择了「{}」（id: {}）——{}。请据此继续下一步。",
-                option.label, option.id, note
-            ),
-            None => format!(
-                "用户选择了「{}」（id: {}）。请据此继续下一步。",
-                option.label, option.id
-            ),
-        })
-    }
-
-    async fn spawn_background_task(
-        &self,
-        session_id: &str,
-        arguments: serde_json::Value,
-        parallel: bool,
-    ) -> Result<String, String> {
-        let work = if parallel {
-            orchestration::parse_parallel_task_args(arguments, session_id)?
-        } else {
-            orchestration::parse_background_task_args(arguments, session_id)?
-        };
-        let objective = work.objective.clone();
-        let branch_count = work.branches.len();
-        let history_snapshot = match self.trunk.get(session_id) {
-            Some(session) => session.history.lock().await.clone(),
-            None => return Err("current session no longer exists".into()),
-        };
-        let runtime = orchestration::BackgroundRuntime {
-            provider: self.provider.read().await.clone(),
-            tools: Arc::clone(&self.tools),
-            model: self.active_model().await,
-            max_tool_iterations: self.config.read().await.max_tool_iterations,
-            tool_timeout: self.config.read().await.effective_tool_timeout(),
-            history_snapshot,
-        };
-        let receipt = self
-            .background_tasks
-            .spawn(session_id, work, runtime)
-            .await?;
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&receipt) {
-            self.emit(BackendEvent::BackgroundTaskStarted {
-                session_id: session_id.to_string(),
-                task_id: value["task_id"].as_str().unwrap_or("unknown").to_string(),
-                sequence: value["sequence"].as_u64().unwrap_or_default(),
-                branch_count,
-                objective,
-                created_at_ms: chrono::DateTime::parse_from_rfc3339(
-                    value["created_at"].as_str().unwrap_or(""),
-                )
-                .map(|time| time.timestamp_millis())
-                .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis()),
-            });
-        }
-        Ok(receipt)
-    }
-
-    fn send_backend_message(&self, arguments: serde_json::Value) -> Result<String, String> {
-        let session_id = arguments["session_id"]
-            .as_str()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "send_backend_message requires session_id".to_string())?;
-        let content = arguments["content"]
-            .as_str()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "send_backend_message requires non-empty content".to_string())?;
-        self.emit(BackendEvent::AgentOutput {
-            session_id: session_id.to_string(),
-            content: content.to_string(),
-            branch_id: None,
-            team_id: None,
-        });
-        Ok(serde_json::json!({
-            "status": "delivered",
-            "session_id": session_id,
-            "delivered_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-        })
-        .to_string())
-    }
-
-    async fn run_subagent(
-        &self,
-        session_id: &str,
-        branch_id: &str,
-        arguments: serde_json::Value,
-    ) -> Result<String, String> {
-        let args = orchestration::parse_subagent_args(arguments)?;
-        self.emit(BackendEvent::SubagentStarted {
-            session_id: session_id.to_string(),
-            task: args.task.clone(),
-        });
-        let mut messages = vec![ChatMessage::system(
-            "You are an isolated subagent. Complete the bounded task and return a concise, factual result to the parent agent. You have no tools and must not claim to perform external actions or communicate with users.",
-        )];
-        if let Some(context) = args.context {
-            messages.push(ChatMessage::user(format!("Context:\n{context}")));
-        }
-        messages.push(ChatMessage::user(format!("Task:\n{}", args.task)));
-        let request = ChatRequest {
-            model: self.active_model().await,
-            messages,
-            tools: None,
-            temperature: None,
-            max_tokens: None,
-        };
-        let provider = self.provider.read().await.clone();
-        let response = match provider.chat(&request).await {
-            Ok(response) => response,
-            Err(error) => {
-                self.emit(BackendEvent::SubagentCompleted {
-                    session_id: session_id.to_string(),
-                    success: false,
-                });
-                return Err(format!("subagent request failed: {error}"));
-            }
-        };
-        self.emit_reasoning(session_id, branch_id, &response.reasoning_content);
-        if !response.tool_calls.is_empty() {
-            self.emit(BackendEvent::SubagentCompleted {
-                session_id: session_id.to_string(),
-                success: false,
-            });
-            return Err("subagent attempted a tool call, but subagents have no tools".into());
-        }
-        let content = response.content.unwrap_or_default();
-        if content.trim().is_empty() {
-            self.emit(BackendEvent::SubagentCompleted {
-                session_id: session_id.to_string(),
-                success: false,
-            });
-            return Err("subagent returned an empty result".into());
-        }
-        self.emit(BackendEvent::SubagentCompleted {
-            session_id: session_id.to_string(),
-            success: true,
-        });
-        Ok(content)
-    }
 
     /// System prompt = base prompt + skill metadata + triggered skill instructions.
     /// System prompt = base prompt + skill metadata + triggered skill
@@ -3118,30 +2576,6 @@ impl Agent {
                     });
                 }
             }
-        }
-        // 编排提示词按需注入：仅当该 agent 至少允许一个动态编排工具时描述，
-        // 白名单无编排工具的 agent 不注入描述不可用工具的规则（与动态工具
-        // schema 的过滤同源：ORCHESTRATION_TOOL_NAMES ∩ allows_dynamic_tool）。
-        let orchestration_allowed = orchestration::ORCHESTRATION_TOOL_NAMES
-            .iter()
-            .any(|name| self.allows_dynamic_tool(name));
-        if orchestration_allowed {
-            blocks.push(PromptBlock {
-                key: "orchestration".into(),
-                label: "后台编排".into(),
-                kind: "orchestration".into(),
-                content: "# Background orchestration\n\
-                 Complete the current request normally; do not spawn detached work \
-                 merely to keep the conversation responsive. Use run_subagent for \
-                 bounded delegated reasoning. Use spawn_background_task only when \
-                 the requester explicitly asks for detached work, and \
-                 spawn_parallel_task only for independent work with declared \
-                 delivery targets. After detached work is accepted, do not poll it; \
-                 completion returns as an ordered background_task_event. Use \
-                 list_background_tasks only when status is requested and \
-                 cancel_background_task only on an explicit cancellation."
-                    .into(),
-            });
         }
         if let Some(boundary) = boundary {
             blocks.push(boundary.block());
@@ -4624,8 +4058,6 @@ pub mod tests {
         });
         let agent = Arc::new(test_agent(provider));
         assert!(!agent.allows_dynamic_tool("spawn_parallel_task"));
-        assert!(agent.allows_dynamic_tool("spawn_background_task"));
-        assert!(agent.allows_dynamic_tool("run_subagent"));
         agent
             .set_loop_mode_for_test(echo_defs::LoopMode::Parallel)
             .await;
@@ -4634,40 +4066,6 @@ pub mod tests {
 
     /// 选单工具（present_menu）已降级为普通编排工具：只受工具级白/黑名单
     /// 门控（与其他编排工具同层），不再有独立的插件维度。
-    #[tokio::test]
-    async fn present_menu_follows_tool_gating() {
-        let provider = Arc::new(MockProvider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            reply: "ok".into(),
-        });
-        let agent = Arc::new(test_agent(provider));
-        // 默认（无 capability 配置）= 允许。
-        assert!(agent.allows_dynamic_tool("present_menu"));
-
-        // 工具白名单不含 present_menu → 门控关闭。
-        agent
-            .apply_capabilities(&crate::config::AgentProfile {
-                enabled_tools: vec!["schedule_timer".to_string()],
-                ..Default::default()
-            })
-            .await;
-        assert!(!agent.allows_dynamic_tool("present_menu"));
-
-        // 工具黑名单显式禁用 → 关闭。
-        agent
-            .apply_capabilities(&crate::config::AgentProfile {
-                disabled_tools: vec!["present_menu".to_string()],
-                ..Default::default()
-            })
-            .await;
-        assert!(!agent.allows_dynamic_tool("present_menu"));
-
-        // 恢复默认 → 允许。
-        agent
-            .apply_capabilities(&crate::config::AgentProfile::default())
-            .await;
-        assert!(agent.allows_dynamic_tool("present_menu"));
-    }
 
     /// 单会话模式（默认）：同一会话的 turn 串行排队——第二个 turn 拿到的是
     /// 第一轮结束后的上下文（能看到 reply-1），且不会并发进入模型。
@@ -4815,393 +4213,12 @@ pub mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn present_menu_emits_request_and_returns_selection() {
-        let provider = Arc::new(MockProvider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            reply: "ok".into(),
-        });
-        let agent = Arc::new(test_agent(provider));
-        let (bridge, handle) = crate::create_bridge();
-        agent.attach(Arc::new(handle));
-        let broker = Arc::new(crate::menu::MenuBroker::new());
-        agent.attach_menu_broker(broker.clone());
-        let session_id = "local:tui::one";
-        agent
-            .trunk
-            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
-        let call = ToolCall {
-            id: "menu-1".into(),
-            name: "present_menu".into(),
-            arguments: r#"{"title":"用哪个方案？","options":[{"label":"方案 A","id":"a"},{"label":"方案 B","id":"b","description":"更稳妥"}]}"#.into(),
-        };
-        let agent_for_task = agent.clone();
-        let task =
-            tokio::spawn(
-                async move { agent_for_task.run_tool(session_id, "branch-1", &call).await },
-            );
 
-        // Wait for the MenuRequest event and answer it over the broker.
-        let mut request_id = None;
-        for _ in 0..50 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
-                if let BackendEvent::MenuRequest {
-                    request_id: id,
-                    options,
-                    ..
-                } = event
-                {
-                    assert_eq!(options.len(), 2);
-                    assert_eq!(options[1].id, "b");
-                    request_id = Some(id);
-                    break;
-                }
-            }
-            if request_id.is_some() {
-                break;
-            }
-        }
-        let request_id = request_id.expect("MenuRequest event emitted");
-        assert!(broker.submit(request_id, Some("b".into())));
 
-        let result = task.await.expect("tool completes");
-        assert!(
-            result.text.contains("方案 B") && result.text.contains("更稳妥"),
-            "selection must reach the model: {}",
-            result.text
-        );
-    }
 
-    #[tokio::test]
-    async fn present_menu_cancel_is_not_a_selection() {
-        let provider = Arc::new(MockProvider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            reply: "ok".into(),
-        });
-        let agent = Arc::new(test_agent(provider));
-        let (bridge, handle) = crate::create_bridge();
-        agent.attach(Arc::new(handle));
-        let broker = Arc::new(crate::menu::MenuBroker::new());
-        agent.attach_menu_broker(broker.clone());
-        let session_id = "local:tui::one";
-        agent
-            .trunk
-            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
-        let call = ToolCall {
-            id: "menu-cancel".into(),
-            name: "present_menu".into(),
-            arguments: r#"{"title":"继续吗？","options":[{"label":"继续"},{"label":"停止"}]}"#
-                .into(),
-        };
-        let agent_for_task = agent.clone();
-        let task =
-            tokio::spawn(
-                async move { agent_for_task.run_tool(session_id, "branch-1", &call).await },
-            );
 
-        let mut request_id = None;
-        for _ in 0..50 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
-                if let BackendEvent::MenuRequest { request_id: id, .. } = event {
-                    request_id = Some(id);
-                    break;
-                }
-            }
-            if request_id.is_some() {
-                break;
-            }
-        }
-        let request_id = request_id.expect("MenuRequest event emitted");
-        assert!(
-            broker.submit(request_id, None),
-            "cancel resolves the request"
-        );
 
-        let result = task.await.expect("tool completes");
-        assert!(
-            result.text.contains("取消") && !result.text.contains("error"),
-            "cancel must be reported as a non-choice, not an error: {}",
-            result.text
-        );
-    }
 
-    #[tokio::test]
-    async fn present_menu_aborted_by_outer_guard_still_resolves_exactly_once() {
-        // 外层工具守卫超时/取消会 drop 掉 present_menu future；
-        // MenuResolvedGuard 的 Drop 必须兜底发出恰好一次 MenuResolved 并
-        // 释放 broker 条目，否则 Panel 的选单弹层会永远挂在死请求上。
-        let provider = Arc::new(MockProvider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            reply: "ok".into(),
-        });
-        let agent = Arc::new(test_agent(provider));
-        let (bridge, handle) = crate::create_bridge();
-        agent.attach(Arc::new(handle));
-        let broker = Arc::new(crate::menu::MenuBroker::new());
-        agent.attach_menu_broker(broker.clone());
-        let session_id = "local:tui::one";
-        agent
-            .trunk
-            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
-        let call = ToolCall {
-            id: "menu-abort".into(),
-            name: "present_menu".into(),
-            arguments: r#"{"title":"选一个","options":[{"label":"A"},{"label":"B"}]}"#.into(),
-        };
-        let agent_for_task = agent.clone();
-        let task =
-            tokio::spawn(
-                async move { agent_for_task.run_tool(session_id, "branch-1", &call).await },
-            );
-
-        let mut request_id = None;
-        for _ in 0..50 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
-                if let BackendEvent::MenuRequest { request_id: id, .. } = event {
-                    request_id = Some(id);
-                    break;
-                }
-            }
-            if request_id.is_some() {
-                break;
-            }
-        }
-        let request_id = request_id.expect("MenuRequest event emitted");
-        task.abort();
-        let _ = task.await;
-
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let mut resolved_events = Vec::new();
-        while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
-            if let BackendEvent::MenuResolved { accepted, .. } = event {
-                resolved_events.push(accepted);
-            }
-        }
-        assert_eq!(
-            resolved_events,
-            vec![false],
-            "abort must emit exactly one rejecting MenuResolved"
-        );
-        assert!(
-            !broker.submit(request_id, Some("1".into())),
-            "broker entry must be released"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_sudo_emits_request_and_resolves_with_password() {
-        let provider = Arc::new(MockProvider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            reply: "ok".into(),
-        });
-        let agent = Arc::new(test_agent(provider));
-        let (bridge, handle) = crate::create_bridge();
-        agent.attach(Arc::new(handle));
-        let broker = Arc::new(crate::sudo::SudoBroker::new());
-        agent.attach_sudo_broker(broker.clone());
-        // Enable sudo and use the fake-sudo-friendly `true` (no real root
-        // needed; with a wrong password sudo still exits and returns text).
-        {
-            let mut config = agent.config.write().await;
-            config.sudo.enabled = true;
-            config.sudo.auth_timeout_secs = 30;
-            config.sudo.command_timeout_secs = 30;
-        }
-        let session_id = "local:tui::one";
-        agent
-            .trunk
-            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
-        let call = ToolCall {
-            id: "sudo-1".into(),
-            name: "run_sudo".into(),
-            arguments: r#"{"command":"true"}"#.into(),
-        };
-        let agent_for_task = agent.clone();
-        let task =
-            tokio::spawn(
-                async move { agent_for_task.run_tool(session_id, "branch-1", &call).await },
-            );
-
-        // Wait for the SudoRequest event.
-        let mut request_id = None;
-        for _ in 0..50 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let mut events = Vec::new();
-            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
-                if let BackendEvent::SudoRequest { request_id: id, .. } = event {
-                    request_id = Some(id);
-                    break;
-                }
-                events.push(event);
-            }
-            if request_id.is_some() {
-                break;
-            }
-        }
-        let request_id = request_id.expect("SudoRequest event emitted");
-        assert!(broker.submit(request_id, Some("hunter2".into())));
-
-        let result = task.await.expect("tool completes");
-        assert!(
-            !result.text.contains("hunter2"),
-            "password must never reach the model: {}",
-            result.text
-        );
-        // The command itself ran (or failed with a sudo error) — never a leak.
-        assert!(!result.text.is_empty());
-    }
-
-    #[tokio::test]
-    async fn run_sudo_denied_returns_error() {
-        let provider = Arc::new(MockProvider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            reply: "ok".into(),
-        });
-        let agent = Arc::new(test_agent(provider));
-        let (bridge, handle) = crate::create_bridge();
-        agent.attach(Arc::new(handle));
-        let broker = Arc::new(crate::sudo::SudoBroker::new());
-        agent.attach_sudo_broker(broker.clone());
-        {
-            let mut config = agent.config.write().await;
-            config.sudo.enabled = true;
-            config.sudo.auth_timeout_secs = 30;
-        }
-        let session_id = "local:tui::one";
-        agent
-            .trunk
-            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
-        let call = ToolCall {
-            id: "sudo-2".into(),
-            name: "run_sudo".into(),
-            arguments: r#"{"command":"true"}"#.into(),
-        };
-        let agent_for_task = agent.clone();
-        let task =
-            tokio::spawn(
-                async move { agent_for_task.run_tool(session_id, "branch-1", &call).await },
-            );
-        let mut request_id = None;
-        for _ in 0..50 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
-                if let BackendEvent::SudoRequest { request_id: id, .. } = event {
-                    request_id = Some(id);
-                    break;
-                }
-            }
-            if request_id.is_some() {
-                break;
-            }
-        }
-        let request_id = request_id.expect("SudoRequest event emitted");
-        assert!(broker.submit(request_id, None));
-        let result = task.await.expect("tool completes");
-        assert!(
-            result.text.contains("denied"),
-            "denial must surface to the model: {}",
-            result.text
-        );
-    }
-
-    #[tokio::test]
-    async fn run_sudo_aborted_by_outer_guard_still_resolves_exactly_once() {
-        // 外层工具守卫超时/取消会 drop 掉 run_sudo future；SudoResolvedGuard
-        // 的 Drop 必须兜底发出恰好一次 SudoResolved 并释放 broker 条目，
-        // 否则 Panel 的授权弹窗会永远挂在死请求上。
-        let provider = Arc::new(MockProvider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            reply: "ok".into(),
-        });
-        let agent = Arc::new(test_agent(provider));
-        let (bridge, handle) = crate::create_bridge();
-        agent.attach(Arc::new(handle));
-        let broker = Arc::new(crate::sudo::SudoBroker::new());
-        agent.attach_sudo_broker(broker.clone());
-        {
-            let mut config = agent.config.write().await;
-            config.sudo.enabled = true;
-            config.sudo.auth_timeout_secs = 300;
-        }
-        let session_id = "local:tui::one";
-        agent
-            .trunk
-            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
-        let call = ToolCall {
-            id: "sudo-abort".into(),
-            name: "run_sudo".into(),
-            arguments: r#"{"command":"true"}"#.into(),
-        };
-        let agent_for_task = agent.clone();
-        let task =
-            tokio::spawn(
-                async move { agent_for_task.run_tool(session_id, "branch-1", &call).await },
-            );
-
-        // Wait for the SudoRequest event, then abort mid-wait (simulates the
-        // outer tool guard dropping the future).
-        let mut request_id = None;
-        for _ in 0..50 {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
-                if let BackendEvent::SudoRequest { request_id: id, .. } = event {
-                    request_id = Some(id);
-                    break;
-                }
-            }
-            if request_id.is_some() {
-                break;
-            }
-        }
-        let request_id = request_id.expect("SudoRequest event emitted");
-        task.abort();
-        let _ = task.await;
-
-        // Drain events: exactly one SudoResolved, rejected.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let mut resolved_events = Vec::new();
-        while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
-            if let BackendEvent::SudoResolved { accepted, .. } = event {
-                resolved_events.push(accepted);
-            }
-        }
-        assert_eq!(
-            resolved_events,
-            vec![false],
-            "abort must emit exactly one rejecting SudoResolved"
-        );
-        assert!(
-            !broker.submit(request_id, Some("late".into())),
-            "broker entry must be released"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_sudo_disabled_returns_error_without_broker() {
-        let provider = Arc::new(MockProvider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            reply: "ok".into(),
-        });
-        let agent = Arc::new(test_agent(provider));
-        let session_id = "local:tui::one";
-        agent
-            .trunk
-            .get_or_create(&SessionKey::parse(session_id).unwrap(), "user".into(), None);
-        let call = ToolCall {
-            id: "sudo-3".into(),
-            name: "run_sudo".into(),
-            arguments: r#"{"command":"true"}"#.into(),
-        };
-        let result = agent.run_tool(session_id, "branch-1", &call).await;
-        assert!(
-            result.text.contains("disabled"),
-            "unexpected: {}",
-            result.text
-        );
-    }
 
     #[tokio::test]
     async fn update_api_config_persists() {
@@ -5595,98 +4612,7 @@ pub mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn context_blocks_decompose_prompt_and_history_by_role() {
-        let mut reg = SkillRegistry::new();
-        reg.register(crate::skill::Skill {
-            metadata: crate::skill::SkillMetadata {
-                name: "calc".into(),
-                description: "d".into(),
-                keywords: vec!["calc".into()],
-                always: false,
-                enabled: true,
-                category: String::new(),
-                package: None,
-                system: false,
-            },
-            instructions: "use calculator tool".into(),
-        });
-        let provider = Arc::new(MockProvider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            reply: "ok".into(),
-        });
-        let agent = Agent::new(
-            provider,
-            AgentConfig::default(),
-            reg,
-            ToolRegistry::new(),
-            Arc::new(AdapterRegistry::new()),
-        );
-        let session = agent
-            .trunk
-            .get_or_create(&SessionKey::local_tui(), "user".into(), None);
-        agent
-            .process_message(&session, "help me calc 1+1")
-            .await
-            .unwrap();
-        let history = session.history.lock().await.clone();
-        let blocks = agent.context_blocks(&history).await;
-        let keys: Vec<&str> = blocks.iter().map(|block| block.key.as_str()).collect();
-        assert!(keys.contains(&"base"), "base prompt block: {keys:?}");
-        assert!(keys.contains(&"skills"), "skill metadata block: {keys:?}");
-        assert!(
-            keys.contains(&"triggered:calc"),
-            "triggered skill block: {keys:?}"
-        );
-        assert!(
-            keys.contains(&"orchestration"),
-            "orchestration block: {keys:?}"
-        );
-        assert!(
-            keys.iter().any(|key| key.starts_with("history:user")),
-            "history aggregated per role: {keys:?}"
-        );
-        let total: usize = blocks.iter().map(|block| block.tokens).sum();
-        assert!(total > 0, "blocks carry token estimates");
-        let system = blocks
-            .iter()
-            .find(|block| block.key == "triggered:calc")
-            .expect("triggered block");
-        assert!(system.content.contains("calculator"));
-    }
 
-    #[tokio::test]
-    async fn orchestration_prompt_block_requires_allowed_tool() {
-        let provider = Arc::new(MockProvider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            reply: "ok".into(),
-        });
-        let agent = Agent::new(
-            provider,
-            AgentConfig::default(),
-            SkillRegistry::new(),
-            ToolRegistry::new(),
-            Arc::new(AdapterRegistry::new()),
-        );
-        // 空白名单（= 全部允许）→ 编排提示词注入。
-        let blocks = agent.build_prompt_blocks("", None).await;
-        assert!(
-            blocks.iter().any(|block| block.key == "orchestration"),
-            "default agent keeps the orchestration block"
-        );
-        // 白名单只含非编排工具 → 不注入（不再描述不可用工具）。
-        agent
-            .apply_capabilities(&crate::config::TeamMember {
-                enabled_tools: vec!["read_file".into()],
-                ..Default::default()
-            })
-            .await;
-        let blocks = agent.build_prompt_blocks("", None).await;
-        assert!(
-            !blocks.iter().any(|block| block.key == "orchestration"),
-            "orchestration block hidden without an allowed orchestration tool"
-        );
-    }
 
     #[tokio::test]
     async fn skill_keyword_loads_instructions() {
@@ -6204,197 +5130,8 @@ pub mod tests {
         assert_eq!(reply, "done");
     }
 
-    #[tokio::test]
-    async fn subagent_runs_without_tools_and_returns_to_parent() {
-        let script = vec![
-            ChatResponse {
-                stop_reason: None,
-                content: None,
-                reasoning_content: None,
-                tool_calls: vec![ToolCall {
-                    id: "subagent_1".into(),
-                    name: "run_subagent".into(),
-                    arguments: serde_json::json!({
-                        "task": "Compare two approaches",
-                        "context": "Only use the supplied facts"
-                    })
-                    .to_string(),
-                }],
-                usage: Usage::default(),
-            },
-            ChatResponse {
-                stop_reason: None,
-                content: Some("isolated result".into()),
-                reasoning_content: None,
-                tool_calls: vec![],
-                usage: Usage::default(),
-            },
-            ChatResponse {
-                stop_reason: None,
-                content: Some("parent final".into()),
-                reasoning_content: None,
-                tool_calls: vec![],
-                usage: Usage::default(),
-            },
-        ];
-        let provider = Arc::new(ScriptedProvider::new(script));
-        let agent = test_agent(provider.clone());
-        let session = agent
-            .trunk
-            .get_or_create(&SessionKey::local_tui(), "user".into(), None);
 
-        let reply = agent
-            .process_message(&session, "delegate this")
-            .await
-            .unwrap();
 
-        assert_eq!(reply, "parent final");
-        let requests = provider.requests.lock().await;
-        assert_eq!(requests.len(), 3);
-        assert!(
-            requests[1].tools.is_none(),
-            "subagent must not receive tools"
-        );
-        assert!(requests[1]
-            .messages
-            .iter()
-            .any(|message| message.content.contains("Compare two approaches")));
-        let parent_tools = requests[0].tools.as_ref().unwrap();
-        assert!(parent_tools
-            .iter()
-            .any(|definition| definition.name == "run_subagent"));
-    }
-
-    #[tokio::test]
-    async fn timers_are_scoped_to_the_originating_session_and_can_be_cancelled() {
-        let provider = Arc::new(MockProvider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            reply: "ok".into(),
-        });
-        let agent = test_agent(provider);
-        let schedule = ToolCall {
-            id: "schedule_1".into(),
-            name: "schedule_timer".into(),
-            arguments: serde_json::json!({
-                "delay_seconds": 3600,
-                "task": "send a reminder"
-            })
-            .to_string(),
-        };
-        let scheduled = agent
-            .run_tool("local:tui::one", "test-branch", &schedule)
-            .await;
-        let timer_id = serde_json::from_str::<serde_json::Value>(&scheduled.text).unwrap()
-            ["timer_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        let listed = agent
-            .run_tool(
-                "local:tui::one",
-                "test-branch",
-                &ToolCall {
-                    id: "list_1".into(),
-                    name: "list_timers".into(),
-                    arguments: "{}".into(),
-                },
-            )
-            .await;
-        assert!(listed.text.contains(&timer_id));
-
-        let cancel = ToolCall {
-            id: "cancel_1".into(),
-            name: "cancel_timer".into(),
-            arguments: serde_json::json!({ "timer_id": timer_id }).to_string(),
-        };
-        let rejected = agent
-            .run_tool("local:tui::two", "test-branch", &cancel)
-            .await;
-        assert!(rejected.text.contains("not found in the current session"));
-        let cancelled = agent
-            .run_tool("local:tui::one", "test-branch", &cancel)
-            .await;
-        assert!(cancelled.text.contains("cancelled"));
-        agent.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn due_timer_reenters_the_original_session() {
-        let script = vec![
-            ChatResponse {
-                stop_reason: None,
-                content: None,
-                reasoning_content: None,
-                tool_calls: vec![ToolCall {
-                    id: "schedule_now".into(),
-                    name: "schedule_timer".into(),
-                    arguments: serde_json::json!({
-                        "delay_seconds": 0,
-                        "task": "perform the due task"
-                    })
-                    .to_string(),
-                }],
-                usage: Usage::default(),
-            },
-            ChatResponse {
-                stop_reason: None,
-                content: Some("timer scheduled".into()),
-                reasoning_content: None,
-                tool_calls: vec![],
-                usage: Usage::default(),
-            },
-            ChatResponse {
-                stop_reason: None,
-                content: Some("timer completed".into()),
-                reasoning_content: None,
-                tool_calls: vec![],
-                usage: Usage::default(),
-            },
-        ];
-        let provider = Arc::new(ScriptedProvider::new(script));
-        let agent = Arc::new(test_agent(provider.clone()));
-        agent.start_orchestration_task();
-        let session = agent
-            .trunk
-            .get_or_create(&SessionKey::local_tui(), "user".into(), None);
-
-        let reply = agent
-            .process_message(&session, "remind me now")
-            .await
-            .unwrap();
-        assert_eq!(reply, "timer scheduled");
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if provider.call_count() == 3 {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("due timer should invoke the agent");
-
-        let history = session.history.lock().await;
-        // Event-sourced history: user + synthesized assistant tool_use +
-        // tool result + "timer scheduled" + timer-event user + "timer completed".
-        assert_eq!(history.len(), 6);
-        assert_eq!(history[1].role, crate::llm::ChatRole::Assistant);
-        assert_eq!(
-            history[1].tool_calls.as_ref().unwrap()[0].name,
-            "schedule_timer"
-        );
-        assert_eq!(history[2].role, crate::llm::ChatRole::Tool);
-        assert_eq!(
-            history[2].tool_call_id.as_deref(),
-            Some(history[1].tool_calls.as_ref().unwrap()[0].id.as_str())
-        );
-        assert_eq!(history[3].content, "timer scheduled");
-        assert!(history[4].content.starts_with("<timer_event>"));
-        assert_eq!(history[5].content, "timer completed");
-        drop(history);
-        agent.shutdown().await;
-    }
 
     // ── 工作区会话（workspace 插件）──
 

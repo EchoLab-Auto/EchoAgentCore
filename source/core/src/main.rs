@@ -773,30 +773,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             )?;
         }
 
-        // ── 实化：orchestration（编排任务启停）──
-        // mount 启动所有 persona 的编排事件循环（定时器 + 后台任务整合），
-        // unmount 停止。receiver 一次性取走，重启后重建。
-        {
-            use echo_agent::plugins::ORCHESTRATION_PLUGIN_ID;
-            register(
-                &plugin_host,
-                PluginManifest::builtin(
-                    ORCHESTRATION_PLUGIN_ID,
-                    "编排",
-                    version,
-                    PluginKind::Orchestration,
-                    "orchestration",
-                    "后台任务/并行分支/子代理/定时器/框架自更新",
-                ),
-                move |_ctx| {
-                    for_each_agent(|a| a.start_orchestration_task());
-                    Ok(vec![Disposer::from_fn(|| {
-                        for_each_agent(|a| a.stop_orchestration_task());
-                    })])
-                },
-            )?;
-        }
-
         // ── 名义挂载：provider.llm 保持重启生效语义。──
         {
             use echo_agent::plugins::PROVIDER_LLM_PLUGIN_ID;

@@ -80,7 +80,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 ## 临时分支
 
-每条入站消息 = 一个临时回复分支，生命周期见[后台任务与并行分支](./core-background-tasks.md)§QQ 并发回复。
+每条入站消息 = 一个临时回复分支。
 
 - 分支可见性由**循环模式**控制：并行多会话模式发射 ReplyBranch* 可见性事件、侧边栏有分支卡；单会话模式不发射、无分支卡，但分支照常执行合并（可见性开关而非执行开关）；单会话模式还会排队同一会话的 turn（串行准入，见 [Agent 循环](./core-agent-loop.md)§循环模式）
 - 分支运行期活动实时进主时间线（推理/工具/回答按序穿插），结束仅清理标签
@@ -124,10 +124,10 @@ description = "管理型人格"
 [agent.teams.self-coding]
 name = "self-coding"
 # 显式开启并行多会话循环模式（侧栏分支卡/全局项/可见分支）
-enabled_plugins = ["echo-agent.orchestration", "echo-agent.tools.builtin", "echo-agent.management.panel"]
+enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel"]
 # 可选：persona 级 API（引用全局供应商池 [agent].api_profiles 中的 profile 名）
 # api_profile = "openai"   # 不配置 = 跟随全局默认配置
 # 显式写法（等价）：追加 "echo-agent.loop.single"；并行多会话模式则列
-# "echo-agent.loop.parallel"。旧编排模式 id（orchestration.*/branch.reply 等）
+# "echo-agent.loop.parallel"。旧编排模式 id（branch.reply 等）
 # 与旧驱动 id（loop.runner）在加载期自动迁移。
 ```

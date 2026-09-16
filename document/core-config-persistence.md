@@ -81,9 +81,8 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 - `api_profiles` 按名去重（历史持久化 bug 自愈）
 - **循环模式插件 id**（`migrate_orchestration_mode_plugins`）：teams 各成员白名单与全局
   `[agent].disabled_plugins` 中的旧 id 归一化为循环模式插件 id——旧编排模式 id
-  （`echo-agent.orchestration.chatbot` / `branch.reply` / `session.global` /
-  `chatbot.sessions`）→ `echo-agent.loop.parallel`；`orchestration.single` →
-  `echo-agent.loop.single`；`echo-agent.loop.runner` 剔除（模式插件取代）——旧 id
+  （`branch.reply` / `session.global` / `chatbot.sessions`）→ `echo-agent.loop.parallel`；
+  `echo-agent.loop.runner` 剔除（模式插件取代）——旧 id
   不再注册，不迁移则 `apply_disabled` 静默失效；白名单同时含 single+parallel 记
   warn（parallel 优先）。运行期 `SaveTeam`
   （`AgentManager::save_profile`）入口做同样归一化，防御旧 Panel 回写旧 id

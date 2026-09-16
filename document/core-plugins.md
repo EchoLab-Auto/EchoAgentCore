@@ -2,7 +2,7 @@
 id: plugins
 title: "插件化设计"
 group: 后端模块
-link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "orchestration | r>l", "tools | r>l", "agent-loop | r>l"]
+link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "tools | r>l", "agent-loop | r>l"]
 x: 955
 y: 1899
 ---
@@ -47,7 +47,6 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.adapter.qq` | Adapter | QQ 适配器（OneBot v11 反向 WS，含 QQ 管理工具） |
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
 | `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`，2026-09-15）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
-| `echo-agent.orchestration` | Orchestration | 编排（后台任务/并行分支/子代理/定时器/自更新；实化挂载：mount/unmount 启停编排事件循环；执行机制见[后台任务与并行分支](./core-background-tasks.md)） |
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂（名义挂载：重启生效） |
 | `echo-agent.loop.single` | Loop | 单会话循环（默认）：mount 启用 echo-loop 驱动；会话内 turn 串行排队、无会话管理 UI |
 | `echo-agent.loop.parallel` | Loop | 并行多会话循环：同一 TurnRunner；会话内可并发分支、显示会话管理 UI（与 single 互斥） |

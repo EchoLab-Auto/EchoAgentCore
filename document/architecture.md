@@ -96,7 +96,7 @@ graph BT
 | Seam | Service Definition | Provider | Consumer |
 |---|---|---|---|
 | LLM | `echo_defs::LlmProvider` | `echo-llm-openai`/`anthropic`/`ollama` | `echo-agent` 工厂 + `echo-loop` runner |
-| 工具 | `echo_defs::Tool` | `echo-agent::ToolRegistry` + builtin + orchestration | agent 循环 |
+| 工具 | `echo_defs::Tool` | `echo-agent::ToolRegistry` + builtin | agent 循环 |
 | 技能 | `echo_defs::SkillProvider` | `echo-agent::SkillRegistry`（本地文件） | prompt 组装 |
 | 平台生命周期 | `echo_defs::chat::ChatAdapter` | `echo-adapter-qq`（经 Adapter 收敛中） | agent + 工具 |
 | 默认驱动 | `echo_loop::TurnRunner` | 内置（经 `ctx.loop` 注册） | 组合根 |
@@ -108,7 +108,7 @@ graph BT
 
 ## 结构化输入标记
 
-`<qq_message_hook>`/`<backend_message_hook>`/`<timer_event>`/`<background_task_event>` 四个结构化输入标记的单一事实来源是 echo-agent 的 `input_marker.rs`：构造（`wrap_hook`/`wrap_timer`/`wrap_background`）、判定（`STRUCTURED_INPUT_MARKERS` 常量表 + `is_structured_input`）、解析（`structured_message_sequence`——限制在标记开头，防普通文本误读）集中于此，改格式只改一处。后续演进方向：来源判定从 content 字符串改为 `MessageReceived` 的结构化 origin 字段（跨仓库 wire 变更）。
+`<qq_message_hook>`/`<backend_message_hook>`/`<timer_event>` 三个结构化输入标记的单一事实来源是 echo-agent 的 `input_marker.rs`：构造（`wrap_hook`/`wrap_timer`）、判定（`STRUCTURED_INPUT_MARKERS` 常量表 + `is_structured_input`）、解析（`structured_message_sequence`——限制在标记开头，防普通文本误读）集中于此，改格式只改一处。后续演进方向：来源判定从 content 字符串改为 `MessageReceived` 的结构化 origin 字段（跨仓库 wire 变更）。
 
 ## 事件模型
 

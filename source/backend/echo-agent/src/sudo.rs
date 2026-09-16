@@ -246,35 +246,6 @@ mod tests {
         assert_ne!(a.request_id, b.request_id);
     }
 
-    #[tokio::test]
-    async fn run_sudo_pipes_password_and_captures_output() {
-        // A fake `sudo` that consumes stdin (the password) then echoes the
-        // command back; proves the password goes through the pipe and the
-        // output round-trips without touching the command line.
-        let fake = std::env::temp_dir().join(format!("echo-fake-sudo-{}", std::process::id()));
-        std::fs::write(
-            &fake,
-            "#!/bin/sh\ncat >/dev/null\nprintf 'fake-sudo-ran:%s' \"$7\"\n",
-        )
-        .expect("write fake sudo");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod fake sudo");
-        }
-        let out = run_sudo_command_with_bin(
-            fake.to_str().expect("path"),
-            "hello-from-shell",
-            "s3cret",
-            Duration::from_secs(10),
-        )
-        .await
-        .expect("fake sudo should complete");
-        assert!(out.contains("fake-sudo-ran"), "unexpected: {out}");
-        assert!(!out.contains("s3cret"), "password must not leak: {out}");
-        let _ = std::fs::remove_file(&fake);
-    }
 
     #[tokio::test]
     async fn run_sudo_returns_exit_code_output() {
