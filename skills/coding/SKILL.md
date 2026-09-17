@@ -14,6 +14,21 @@ You can interact with the project's source code using these tools:
 - `write_file` — Create or overwrite a file with new content
 - `edit_file` — Replace specific lines in a file (start_line to end_line)
 - `bash` — Run a terminal command (e.g. `cargo build`, `git status`). Timeout 30s, workspace-restricted, dangerous commands blocked.
+- `shell_start` — Start a persistent background shell session (keeps cwd/env across commands). Returns a session id.
+- `shell_exec` — Run a command inside an existing shell session (long-running servers, watchers, builds).
+- `shell_stop` — Stop and destroy a shell session.
+
+## Long-running processes
+
+要跑常驻进程（文档/开发服务器、watch 构建、本地服务等）时，**必须用
+`shell_start` + `shell_exec`，不要用 `nohup`/`&`/disown 挂野进程**：
+
+- shell 会话有 session_id，会出现在 Shell 视图里（可见、可停止、输出可回读）；
+  nohup 挂的进程脱离框架，只能手动 kill，机器重启即丢失且无人知晓
+- 同一 session 内命令保持 cwd 与环境变量（先 `cd` 再启动，或 `shell_start`
+  传 workdir）
+- 例子：`shell_start(workdir=项目目录)` → `shell_exec(session_id, "echo-prodoc view document/")`
+  → 结束时 `shell_stop(session_id)`
 
 ## When to use
 
