@@ -37,13 +37,18 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
   两个都卸载才回退内置循环。模式只能经面板「循环模式」分段单选修改（写白名单）。
 
 ## Turn 循环
-
 - 每条入站消息经[多 Agent 与会话](./core-agents.md)的临时分支机制进入
   `process_message_inner`；本层只负责循环本身
-- 系统提示词按块构建（[插件化设计](./core-plugins.md) 的能力门控作用于各层）：
+- 系统提示词按块构建（`agent/prompt.rs` 的 `build_prompt_blocks`，
+  [插件化设计](./core-plugins.md) 的能力门控作用于各层）：
   基础提示词、**system 技能层**（system:true，见 [技能系统](./core-skills.md)）、
   技能清单、常驻/触发技能、**后台编排说明（仅该 agent 启用了编排工具时注入**——
-  白名单无编排工具的 agent 不注入描述不可用工具的规则）、输入边界规则
+  白名单无编排工具的 agent 不注入描述不可用工具的规则）、**工作区会话**
+  （workspace 插件启用且有激活会话时注入名称 + 目录清单）、输入边界规则
+  （`agent/boundary.rs` 的 `BoundaryKind`：QQ hook / 定时器 / 后台输入三块文案）
+- 提示词构建的锁纪律（2026-09 修复的并行死锁）：`skills` 的 tokio Mutex guard
+  只在 `build_prompt_blocks` 调用作用域内持有，构建完即 drop——guard 跨过
+  LLM await 会让并行模式的第二个 turn 在 `skills.lock()` 上饿死
 - 循环迭代（`max_tool_iterations`，默认 1024）：发 LLM 请求 → 有工具调用则逐个执行并回填结果 → 直至产出最终回复或达上限
 - 输出预算：`[agent].max_tokens`（0 = 无上限，后端回退 `DEFAULT_MAX_TOKENS = 128K` 实用上限）；响应被 `max_tokens` 掐断（finish_reason = length/max_tokens）时自动续跑（最多 4 次，提示"继续上次输出"喂回模型；半截工具调用丢弃后重发完整调用）
 - 达上限未完成时报错收尾；工具的超时/失败不中断 loop（见 [工具系统](./core-tools.md)）
@@ -73,11 +78,25 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
   回投）由内置循环注入；投递纪律由提示词与 qq-transport 技能引导（2026-09
   移除 send 工具声明校验与纠偏提醒），echo-loop 不接管。QQ 并发回复的细节
 
-两套驱动并行、同一工具路径（`run_tool`）与提示词构建（`build_prompt_blocks`）
+两套驱动并行、同一工具路径（`run_tool`）与提示词构建（`agent/prompt.rs` 的
+`build_prompt_blocks` / `join_prompt_blocks`，`agent/boundary.rs` 的边界块）
 复用；卸载全部循环插件（配置 `disabled_plugins` 或面板 TogglePlugin）即恢复
 内置循环。`generate_wait_reply` 是无工具单请求，保持自身实现。
 
-## 取消与中断
+### agent 模块拆分（2026-09）
+
+内置循环的支撑代码已从 `agent/mod.rs` 抽为独立模块：
+
+- `agent/boundary.rs`：`PromptBlock`（提示词命名块，供面板 token 用量可视化）+
+  `BoundaryKind`（三种输入边界的提示词文案）
+- `agent/prompt.rs`：`build_prompt_blocks`（分层构建：base → system 技能 →
+  persona 技能 → 技能清单 → 常驻/触发技能 → 工作区 → 边界）+ `join_prompt_blocks`
+- `agent/tool_exec.rs`：`tool_arguments_error` / `invalid_tool_arguments`
+  （schema 必需字段预检，错误文案说清"你发了什么、应该发什么"）+ `tool_timeout`
+  （尊重工具自声明 `timeout_hint`，硬上限 600s）
+
+`Agent::build_prompt_blocks`（无参版）保留为 `/context` 在无最近 turn 时的
+代表性回退构建薄封装。
 
 - 用户取消（`CancelRequestedWork`）时正在执行的工具被外层 select 中止，
   turn 以取消收尾

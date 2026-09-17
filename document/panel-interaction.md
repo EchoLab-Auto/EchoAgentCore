@@ -47,7 +47,7 @@ graph TD
   Set --> S4[日志]
   QT --> Q1[QQ 管理]
   QT --> Q2[任务弹层]
-  QT --> Q3[Shell 视图]
+  QT --> Q3[Shell 列表/详情]
   Sys --> Y1[Toast]
   Sys --> Y2[键盘]
   Sys --> Y3[常量速查]
@@ -61,7 +61,7 @@ graph TD
 | [会话视图](./panel-chat.md) | 消息列表、工具卡、推理块、输入区、入口行、内联选单卡片 | 原 §七 |
 | [模态与覆盖层](./panel-modals.md) | Sudo/分支/上下文/Agent 配置、确认形式 | 原 §八 |
 | [设置视图](./panel-settings.md) | API/资源工作区/Git 安装/日志 | 原 §九 |
-| [QQ 管理·任务·Shell](./panel-qq-tasks.md) | QQ 管理、任务弹层（入口行）、Shell 视图 | 原 §十~§十一 |
+| [QQ 管理·任务·Shell](./panel-qq-tasks.md) | QQ 管理、任务弹层（入口行）、Shell 列表（边栏卡）与详情视图 | 原 §十~§十一 |
 | [系统交互](./panel-system.md) | Toast、键盘、设计边界、常量 | 原 §十二~§十五 |
 
 > 2026-09-04 起原「资源」「日志」视图与 API 设置弹窗合并为「设置」视图（见 [设置视图](./panel-settings.md)）；本节点为总入口，子节点间不互相 link（仅经本节点导航）。

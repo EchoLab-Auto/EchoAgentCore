@@ -36,6 +36,7 @@ graph LR
   Core --> Plugins[插件化设计|/core-plugins.md]
   Core --> Persist[配置持久化|/core-config-persistence.md]
   Plugins --> Gating[QQ 门控|/adapter-qq-gating.md]
+  Plugins --> Subagent[Subagent 插件|/core-subagent.md]
   Proto --> Core
   Panel --> Proto
 ```

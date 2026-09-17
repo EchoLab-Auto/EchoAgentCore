@@ -1,7 +1,7 @@
 ---
 id: plugins
 title: "插件化设计"
-group: 后端模块
+link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "tools | r>l", "agent-loop | r>l", "subagent | Subagent 插件"]
 link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "tools | r>l", "agent-loop | r>l"]
 x: 955
 y: 1759
@@ -50,9 +50,10 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂（名义挂载：重启生效） |
 | `echo-agent.loop.single` | Loop | 单会话循环（默认）：mount 启用 echo-loop 驱动；会话内 turn 串行排队、无会话管理 UI |
 | `echo-agent.loop.parallel` | Loop | 并行多会话循环：同一 TurnRunner；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
+| `echo-agent.subagent` | Tool | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./core-subagent.md)） |
 | `echo-agent.management.panel` | Management | 管理面：management WS 桥接 + sudo 授权与选单应答通道（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
 
-> 以上 9 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单。选单（present_menu）与任务清单（checklist）已降级为普通工具（2026-09，插件维度移除），无插件 id。
+> 以上 10 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单。选单（present_menu）与任务清单（checklist）已降级为普通工具（2026-09，插件维度移除），无插件 id。
 
 ## 能力开关（per-persona）
 
@@ -62,7 +63,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   设置视图智能体编辑器；判定单一来源 = Panel `capabilities.ts::isPluginCheckboxVisible`）：
   `kind ∈ {adapter, management, interaction}` **∪** 下列包维度门控插件固定清单
   （`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本节 `GATED_PLUGIN_IDS` 逐项镜像）：
-  `tools.builtin` / `skills.dir` / `workspace` / `adapter.qq`。
+  `tools.builtin` / `skills.dir` / `workspace` / `adapter.qq` / `subagent`。
   其余插件（`loop.*` 由循环模式分段控件管理、`provider.llm`
   名义挂载重启生效）**不出现**在该勾选区。保存后写回 TOML
 - ⚠️ **新增包维度门控插件时的同步清单**（缺一即"配置里看不到/门控失效"）：
