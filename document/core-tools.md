@@ -17,11 +17,17 @@ y: 2047
 ## 参数预检
 
 - 非法 JSON / 缺少必需字段时返回**纠正性错误**（说清"你发了什么、应该发什么"），让模型自我纠正而不是盲目重试
+- 实现在 `agent/tool_exec.rs`：`tool_arguments_error`（注册表 schema 查询 + 判定）/
+  `invalid_tool_arguments`（纯函数：比对 schema `required` 与实参，缺失列表 +
+  原始参数回显 + schema 一并写入文案——只说"command required" 会让模型原样重试，
+  形成空参调用退化循环）
 
 ## 超时治理
 
 - `Tool::timeout_hint`：工具从自己的参数自声明执行超时（如 `bash` 的 `timeout_secs`，默认 120s、上限 300s）
 - 外圈守卫 = `max(tool_timeout_secs（默认 120s）, hint + 15s)`（自声明硬上限 600s；`run_sudo` 特判为授权+执行双超时之和 + 30s，`present_menu` 特判为等待窗口 + 30s——守卫必须长过用户的思考时间，否则会在选择前把 future drop 掉）
+- hint 计算在 `agent/tool_exec.rs` 的 `tool_timeout`（agent 循环只保留
+  `run_sudo`/`present_menu` 两个编排工具特判）
 - 超时只中止单个调用：`bash` 的 `sh -c` 整组进程被 SIGKILL（不留孤儿）；结果以 notice 文本喂回模型，**不中断 turn**，模型可重试或带已有信息继续作答
 
 ## 事件与持久化
@@ -41,6 +47,11 @@ y: 2047
 - **超时**：单条命令超时（默认 120s，最大 300s）只中止读取、**保留会话**；
   超时文本以 notice 语义返回（面板显示"可能仍在运行"）
 - **工具**：`shell_start` / `shell_exec` / `shell_stop`（builtin 注册，按人格白名单）；
+- **常驻进程规范**：agent 需要跑常驻进程（文档/开发服务器、watch 构建、本地服务
+  等）时**必须经 shell 会话启动**（`shell_start` + `shell_exec`），禁止用
+  `nohup`/`&`/disown 挂野进程——野进程脱离会话模型：不在 Shell 视图可见、无停止
+  入口、机器重启即丢失且无人知晓；shell 会话内的常驻进程可见、可停止、输出可回读
+  （技能侧同一约定见 `skills/coding/SKILL.md`「Long-running processes」）
 - **命令**：`RequestShellSessions` / `ShellStart` / `ShellExec` / `ShellStop`（面板直控）
 - **事件**：`ShellSessionsList` / `ShellSessionStarted` / `ShellExecStarted` /
   `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
