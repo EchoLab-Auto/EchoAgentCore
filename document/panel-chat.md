@@ -31,7 +31,7 @@ y: 1301
 | `user` | 用户气泡（含来源元数据：平台/用户/群） |
 | `backend` | Agent 气泡（Markdown） |
 | `reasoning` | **Panel 扩展角色**：`#message` slot 拦截渲染 ReasoningBlock（库的 ChatRole 无此角色，不拦截会被误渲染为 Agent 气泡） |
-| `tool` | ChatToolCallBlock 折叠卡 |
+| `tool` | **连续调用合并**为 `ToolRunGroup`（2026-09-19）：一排圆角矩形图标（§7.3b）；单发调用（前后无相邻 tool）也走同一行渲染 |
 | `system` | 系统提示行 |
 | `branch` | ChatBranchMergeBlock 分支合并卡（当前 reducer 已不产生——分支内容实时进主时间线，此角色保留适配） |
 
@@ -48,9 +48,18 @@ graph LR
   Done -->|否则| Ok[succeeded: success 标签]
 ```
 
-- 输入显示为 `key=value` 摘要（单值截断 120 字符，非 JSON 兜底截 200 字符）；输出上限 4000 字符；输入+输出非空才可展开
+- 输入显示为 `key=value` 摘要（单值截断 120 字符，非 JSON 兜底截 200 字符）；输出上限 4000 字符
 - **配对兜底**：ToolResult 到达时主时间线找不到 running 条目（如恢复后的时间线）——追加一条已完成工具卡而非丢弃（`timeline.ts:44-53`）；增量重投递按 tool_call_id **就地修补**已有工具卡，避免 core 带新 seq 重投完成态时出现重复行（`timeline.ts:131-146`）
 - **中断标记**：历史回放时 `output==null` 且未失败的工具恢复为 running（`timeline.ts:58-61`）；「已中断」标记完全由 core 侧重启清理写入（`session.rs`，output = 「[已中断] Core 服务重启导致本次调用未返回，可重试」），panel 自身不做兜底标记
+
+### 7.3b 工具调用图标行（ToolRunGroup，2026-09-19 起）
+
+消息列表不再把每条 tool 消息单独交给库 `ChatToolCallBlock` 折叠卡：**连续的 tool 消息在 ChatView 合并为一组 `ToolRunGroup`**（其余消息逐条渲染；列表容器改为库 `ChatTray` 自渲染行，吸底滚动契约不变）。
+
+- **折叠态**：一排圆角矩形毛玻璃图标（34×30，flex-wrap——多个工具连续调用时横向扩展，横向空间不足自动下移一行）；图标按工具分派不同 SVG（`ToolIcon.vue`：bash 终端符 / 文件 / 代码括号 / 清单对勾 / 计算器 / 搜索放大镜 / 子代理放射图 / 消息气泡 / 适配器齿轮 / 选单列表 / sudo 锁 / 工作区文件夹 / 编排四宫格 / 默认扳手）；运行中的图标右上角带旋转状态点，整行呼吸动画；失败图标染 error 色
+- **展开态**：点击某个图标，该行下方浮现该调用的具体内容卡片（图标 + 名称 + 时间 + 状态胶囊 + 输入/输出 `<pre>`）；再点或点其他图标切换/收起；一次只展开一项
+- **默认折叠**：运行过程中保持折叠（用户可手动点开查看）；全部完成且均成功 → 保持折叠；**全部完成但存在失败 → 自动展开首个失败项**
+- 打开项消失（会话清空等）时自动收起；`watch` 兜底（`ToolRunGroup.vue`）
 
 ### 7.4 推理块（ReasoningBlock）
 
