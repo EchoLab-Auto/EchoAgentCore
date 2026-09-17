@@ -48,8 +48,26 @@ pub enum ShellEvent {
 
 pub type ShellEmit = Arc<dyn Fn(ShellEvent) + Send + Sync>;
 
+// ── 工具执行期的归属 team ──
+// LLM 的 shell_start 工具经进程级 manager 启动会话，工具本身拿不到 agent
+// 上下文；`Agent::run_tool` 在执行前把本 persona 的 team_id 写入线程本地，
+// 工具读取它给新会话打标（面板按当前 agent 过滤）。
+thread_local! {
+    static TOOL_TEAM_ID: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn set_tool_team_id(team_id: Option<String>) {
+    TOOL_TEAM_ID.with(|slot| *slot.borrow_mut() = team_id);
+}
+
+pub fn current_tool_team_id() -> Option<String> {
+    TOOL_TEAM_ID.with(|slot| slot.borrow().clone())
+}
+
 struct ShellSession {
     session_id: String,
+    /// 归属 team（persona）：面板按当前 agent 过滤；None = 进程级（旧路径）。
+    team_id: Option<String>,
     workdir: String,
     created_at_ms: i64,
     last_active_ms: std::sync::atomic::AtomicI64,
@@ -67,6 +85,7 @@ impl ShellSession {
     fn info(&self) -> ShellSessionInfo {
         ShellSessionInfo {
             session_id: self.session_id.clone(),
+            team_id: self.team_id.clone(),
             workdir: self.workdir.clone(),
             created_at_ms: self.created_at_ms,
             last_active_ms: self
@@ -90,12 +109,16 @@ impl ShellManager {
         Self::default()
     }
 
-    pub fn list(&self) -> Vec<ShellSessionInfo> {
+    /// 列出会话；`team_id` 为 Some 时只返回该 persona 的会话
+    /// （None = 全部，兼容进程级旧路径）。
+    pub fn list(&self, team_id: Option<&str>) -> Vec<ShellSessionInfo> {
         let sessions = self.sessions.lock().unwrap();
         let mut list: Vec<ShellSessionInfo> = sessions
             .values()
+            .filter(|s| team_id.is_none() || s.team_id.as_deref() == team_id)
             .map(|s| ShellSessionInfo {
                 session_id: s.session_id.clone(),
+                team_id: s.team_id.clone(),
                 workdir: s.workdir.clone(),
                 created_at_ms: s.created_at_ms,
                 last_active_ms: s.last_active_ms.load(std::sync::atomic::Ordering::Relaxed),
@@ -112,6 +135,7 @@ impl ShellManager {
     pub async fn start(
         &self,
         workdir: Option<String>,
+        team_id: Option<String>,
         emit: &ShellEmit,
     ) -> Result<ShellSessionInfo, String> {
         let dir = workdir.filter(|d| !d.trim().is_empty()).unwrap_or_else(|| {
@@ -148,6 +172,7 @@ impl ShellManager {
         let now = chrono::Utc::now().timestamp_millis();
         let session = Arc::new(ShellSession {
             session_id: session_id.clone(),
+            team_id,
             workdir: dir,
             created_at_ms: now,
             last_active_ms: std::sync::atomic::AtomicI64::new(now),

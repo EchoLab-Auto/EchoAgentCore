@@ -1,22 +1,26 @@
 //! System prompt construction: named blocks for token-usage visualization.
 //!
 //! Builds the system prompt from layers (base, system skills, persona skills,
-//! skill list, always-on skills, triggered skills, boundary rules) as named
-//! blocks, then joins them for the LLM request.
+//! skill list, always-on skills, triggered skills, workspace, boundary rules)
+//! as named blocks, then joins them for the LLM request.
 
-#[allow(dead_code)]
 use crate::skill::SkillRegistry;
 
 use super::boundary::{BoundaryKind, PromptBlock};
 
 /// Build the system prompt as named blocks so the panel can visualize
 /// token usage per section.
+///
+/// `workspace` is the active workspace session's prompt text (already gated
+/// by the caller against the persona's plugin allowlist); `None` skips the
+/// workspace block.
 pub(crate) async fn build_prompt_blocks(
     skills: &SkillRegistry,
     base_prompt: &str,
     content: &str,
     boundary: Option<BoundaryKind>,
     persona_system_skills: &[String],
+    workspace: Option<String>,
 ) -> Vec<PromptBlock> {
     let matched = skills.find_matching(content);
     let mut blocks = Vec::new();
@@ -67,8 +71,7 @@ pub(crate) async fn build_prompt_blocks(
             key: "skills".into(),
             label: "技能清单".into(),
             kind: "skills".into(),
-            content: format!("# Available skills
-{}", skills.metadata_lines()),
+            content: format!("# Available skills\n{}", skills.metadata_lines()),
         });
     }
     for skill in skills.always_enabled() {
@@ -77,8 +80,7 @@ pub(crate) async fn build_prompt_blocks(
             label: format!("常驻技能 · {}", skill.metadata.name),
             kind: "skill".into(),
             content: format!(
-                "# Active skill: {}
-{}",
+                "# Active skill: {}\n{}",
                 skill.metadata.name, skill.instructions
             ),
         });
@@ -89,10 +91,19 @@ pub(crate) async fn build_prompt_blocks(
             label: format!("触发技能 · {}", matched.metadata.name),
             kind: "triggered".into(),
             content: format!(
-                "# Triggered skill: {}
-{}",
+                "# Triggered skill: {}\n{}",
                 matched.metadata.name, matched.instructions
             ),
+        });
+    }
+    // 工作区会话（workspace 插件）：插件对该 persona 启用且存在激活会话
+    // 时注入——名称 + 工作目录清单，让模型知道在哪些目录内工作。
+    if let Some(content) = workspace {
+        blocks.push(PromptBlock {
+            key: "workspace".into(),
+            label: "工作区会话".into(),
+            kind: "workspace".into(),
+            content,
         });
     }
     if let Some(boundary) = boundary {
@@ -107,7 +118,5 @@ pub(crate) fn join_prompt_blocks(blocks: &[PromptBlock]) -> String {
         .iter()
         .map(|block| block.content.as_str())
         .collect::<Vec<_>>()
-        .join("
-
-")
+        .join("\n\n")
 }

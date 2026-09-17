@@ -372,6 +372,15 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     echo_agent::workspace::WorkspaceTool::new(workspace_store.clone()),
                 ));
                 t.set_package("workspace", echo_agent::plugins::WORKSPACE_PLUGIN_ID);
+                // Subagent 委派（subagent 插件）：每 persona 独立注册表；spawn
+                // 执行闭包由 attach_subagent_runtime 在 agent 创建后接线
+                // （需要 Arc<Agent> 弱引用），此处先注册占位工具 + 打包标签。
+                let subagent_store = echo_agent::subagent::SubagentStore::new();
+                t.register(std::sync::Arc::new(echo_agent::subagent::SpawnSubagentTool::new(
+                    subagent_store.clone(),
+                    std::sync::Arc::new(|_| {}),
+                )));
+                t.set_package("spawn_subagent", echo_agent::plugins::SUBAGENT_PLUGIN_ID);
                 // Persona 级 API：配置了 api_profile 的 persona 在启动时构建
                 // 自己的 provider（从全局池解析，不共享默认 provider）。
                 let mut api_cfg_override: Option<echo_agent::AgentConfig> = None;
@@ -449,6 +458,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     }
                 }
                 agent.set_session_persist_path(file);
+                agent.attach_subagent_runtime(subagent_store);
                 agent
             }
         },
@@ -686,6 +696,28 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
         // 选单（present_menu）已降级为普通编排工具：无插件注册，
         // 只受工具级白/黑名单门控；broker 接线在本函数外完成。
+
+        // ── 实化 7：subagent 委派（隔离上下文子任务 + 完成 hook 回灌）──
+        {
+            use echo_agent::plugins::SUBAGENT_PLUGIN_ID;
+            register(
+                &plugin_host,
+                PluginManifest::builtin(
+                    SUBAGENT_PLUGIN_ID,
+                    "Subagent 委派",
+                    version,
+                    PluginKind::Tool,
+                    "subagent",
+                    "委派独立子任务给隔离上下文的子 agent：spawn_subagent 工具 + 完成后 <subagent_event> hook 回灌主 agent",
+                ),
+                move |_ctx| {
+                    for_each_agent(|a| a.reapply_plugin_gating(SUBAGENT_PLUGIN_ID, true));
+                    Ok(vec![Disposer::from_fn(|| {
+                        for_each_agent(|a| a.reapply_plugin_gating(SUBAGENT_PLUGIN_ID, false));
+                    })])
+                },
+            )?;
+        }
 
         // ── 实化 3：QQ 适配器（启停进程 + 工具包启停）──
         {

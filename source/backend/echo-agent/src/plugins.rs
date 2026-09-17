@@ -28,6 +28,8 @@ pub const MANAGEMENT_PANEL_PLUGIN_ID: &str = "echo-agent.management.panel";
 /// 工作区会话管理插件（workspace）：Panel 侧多会话/多目录管理 + git 状态，
 /// 模型侧 `workspace` 工具与激活会话的系统提示注入。
 pub const WORKSPACE_PLUGIN_ID: &str = "echo-agent.workspace";
+/// Subagent 委派插件 id（包 id 同名：`spawn_subagent` 工具 + subagent 技能随包门控）。
+pub const SUBAGENT_PLUGIN_ID: &str = "echo-agent.subagent";
 /// 旧选单插件 id（menu 已降级为普通编排工具，插件维度移除）：
 /// 配置加载时从白名单剔除（见 `normalize_mode_plugins`）。
 pub const LEGACY_MENU_PLUGIN_ID: &str = "echo-agent.menu";
@@ -106,11 +108,12 @@ pub fn normalize_mode_plugins(list: &mut Vec<String>) -> bool {
     changed
 }
 
-pub const GATED_PLUGIN_IDS: [&str; 4] = [
+pub const GATED_PLUGIN_IDS: [&str; 5] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
     ADAPTER_QQ_PLUGIN_ID,
     WORKSPACE_PLUGIN_ID,
+    SUBAGENT_PLUGIN_ID,
 ];
 
 /// 全部内置插件 id（与 `scripts/update.sh` 的插件校验清单一致）。
@@ -118,11 +121,12 @@ pub const GATED_PLUGIN_IDS: [&str; 4] = [
 pub const PROVIDER_LLM_PLUGIN_ID: &str = "echo-agent.provider.llm";
 
 /// 供插件黑名单移除迁移物化白名单时使用。
-pub const BUILTIN_PLUGIN_IDS: [&str; 8] = [
+pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     ADAPTER_QQ_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
     WORKSPACE_PLUGIN_ID,
+    SUBAGENT_PLUGIN_ID,
     MANAGEMENT_PANEL_PLUGIN_ID,
     SINGLE_LOOP_PLUGIN_ID,
     PARALLEL_LOOP_PLUGIN_ID,

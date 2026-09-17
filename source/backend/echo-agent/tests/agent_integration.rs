@@ -19,6 +19,8 @@ struct StaticProvider {
     reply: &'static str,
     calls: AtomicUsize,
     last_system_prompt: tokio::sync::Mutex<Option<String>>,
+    /// 最近一次请求携带的工具名（schema 发送断言用）。
+    last_tool_names: tokio::sync::Mutex<Vec<String>>,
 }
 
 #[async_trait]
@@ -34,6 +36,11 @@ impl LlmProvider for StaticProvider {
         let system = &request.messages[0];
         assert_eq!(system.role, echo_agent::llm::ChatRole::System);
         *self.last_system_prompt.lock().await = Some(system.content.clone());
+        *self.last_tool_names.lock().await = request
+            .tools
+            .as_ref()
+            .map(|tools| tools.iter().map(|tool| tool.name.clone()).collect())
+            .unwrap_or_default();
         Ok(ChatResponse {
             stop_reason: None,
             content: Some(self.reply.into()),
@@ -58,6 +65,10 @@ impl StaticProvider {
             .await
             .clone()
             .unwrap_or_default()
+    }
+
+    async fn last_tool_names(&self) -> Vec<String> {
+        self.last_tool_names.lock().await.clone()
     }
 }
 
@@ -141,6 +152,7 @@ fn test_agent(reply: &'static str) -> (Arc<Agent>, Arc<StaticProvider>) {
         reply,
         calls: AtomicUsize::new(0),
         last_system_prompt: tokio::sync::Mutex::new(None),
+        last_tool_names: tokio::sync::Mutex::new(Vec::new()),
     });
     let agent = Arc::new(Agent::new(
         provider.clone(),
@@ -1114,6 +1126,7 @@ fn agent_with_gated_caps() -> Arc<Agent> {
         reply: "ok",
         calls: AtomicUsize::new(0),
         last_system_prompt: tokio::sync::Mutex::new(None),
+        last_tool_names: tokio::sync::Mutex::new(Vec::new()),
     });
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(MockTool {
@@ -1306,6 +1319,7 @@ async fn package_gating_spans_tools_and_skills() {
         reply: "ok",
         calls: AtomicUsize::new(0),
         last_system_prompt: tokio::sync::Mutex::new(None),
+        last_tool_names: tokio::sync::Mutex::new(Vec::new()),
     });
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(MockTool {
@@ -1389,4 +1403,269 @@ async fn package_gating_spans_tools_and_skills() {
         );
         assert!(s.get("qq-transport").unwrap().metadata.enabled);
     }
+}
+
+// ── Subagent 委派（echo-agent.subagent 插件）──
+
+/// 装配了 subagent 运行态的 agent（插件 mount 的测试等价物）。
+fn test_agent_with_subagent(reply: &'static str) -> (Arc<Agent>, Arc<StaticProvider>) {
+    let (agent, provider) = test_agent(reply);
+    agent.attach_subagent_runtime(echo_agent::subagent::SubagentStore::new());
+    (agent, provider)
+}
+
+#[tokio::test]
+async fn spawn_subagent_tool_is_visible_only_when_runtime_attached() {
+    // 未装配：工具不可见（schema 不注入、调用按未注册报错）。
+    let (agent, _) = test_agent("ok");
+    assert!(!agent.allows_dynamic_tool("spawn_subagent"));
+    // 装配后：默认 persona（无白名单）可见。
+    let (agent, _) = test_agent_with_subagent("ok");
+    assert!(agent.allows_dynamic_tool("spawn_subagent"));
+}
+
+/// 回归：生产装配（core 组合根）把 spawn_subagent 注册进 persona 注册表；
+/// 模型请求中的工具名必须唯一——重复定义会让 API 直接拒绝整个请求
+///（"Tool names must be unique"）。
+#[tokio::test]
+async fn registered_subagent_tool_is_sent_once_with_unique_names() {
+    let provider = Arc::new(StaticProvider {
+        reply: "ok",
+        calls: AtomicUsize::new(0),
+        last_system_prompt: tokio::sync::Mutex::new(None),
+        last_tool_names: tokio::sync::Mutex::new(Vec::new()),
+    });
+    // main.rs 装配的等价物：工具进注册表 + subagent 包标签 + 运行态接线。
+    let store = echo_agent::subagent::SubagentStore::new();
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(echo_agent::subagent::SpawnSubagentTool::new(
+        store.clone(),
+        Arc::new(|_| {}),
+    )));
+    tools.set_package("spawn_subagent", echo_agent::plugins::SUBAGENT_PLUGIN_ID);
+    let agent = Arc::new(Agent::new(
+        provider.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        tools,
+        Arc::new(AdapterRegistry::new()),
+    ));
+    agent.attach_subagent_runtime(store);
+    agent
+        .apply_capabilities(&echo_agent::TeamMember {
+            enabled_plugins: vec![echo_agent::plugins::SUBAGENT_PLUGIN_ID.into()],
+            ..Default::default()
+        })
+        .await;
+    assert!(agent.allows_dynamic_tool("spawn_subagent"));
+
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    agent.process_message(&session, "hi").await.unwrap();
+
+    let names = provider.last_tool_names().await;
+    assert!(names.contains(&"spawn_subagent".to_string()), "{names:?}");
+    let mut unique = names.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(names.len(), unique.len(), "工具名重复: {names:?}");
+}
+#[tokio::test]
+async fn spawn_subagent_runs_child_and_reports_back_via_hook() {
+    let (agent, provider) = test_agent_with_subagent("子任务结论：共 3 处用法");
+    let (bridge, handle) = echo_agent::create_bridge();
+    agent.attach(Arc::new(handle));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+
+    // 主 agent 的模型直接发 spawn_subagent 调用（不经 LLM：直接走 run_tool）。
+    let call = ToolCall {
+        id: "call-spawn-1".into(),
+        name: "spawn_subagent".into(),
+        arguments: r#"{"task":"找出所有 X 的用法"}"#.into(),
+    };
+    let result = agent.run_tool(&session.id, "branch-main", &call).await;
+    assert!(
+        result.text.contains("子任务已受理"),
+        "receipt: {}",
+        result.text
+    );
+
+    // 子任务在后台执行：等 hook 回灌（子 agent 用同一 provider，回复固定文本）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut saw_started = false;
+    let mut saw_completed = false;
+    let mut saw_hook_message = false;
+    while std::time::Instant::now() < deadline && !(saw_completed && saw_hook_message) {
+        while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+            match event {
+                BackendEvent::SubagentStarted { task, .. } => {
+                    saw_started = true;
+                    assert!(task.contains("找出所有 X"), "{task}");
+                }
+                BackendEvent::SubagentCompleted { success, .. } => {
+                    saw_completed = true;
+                    assert!(success, "child should succeed");
+                }
+                BackendEvent::MessageReceived { adapter_name, content, .. }
+                    if adapter_name == "subagent" =>
+                {
+                    saw_hook_message = true;
+                    assert!(content.contains("<subagent_event>"), "{content}");
+                    assert!(content.contains("子任务结论"), "{content}");
+                }
+                _ => {}
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(saw_started, "SubagentStarted emitted");
+    assert!(saw_completed, "SubagentCompleted emitted");
+    assert!(saw_hook_message, "completion hook injected as new inbound branch");
+    // 主 agent 至少再消化一次 hook（provider 调用 ≥ 2：hook turn + 可能的子任务）。
+    assert!(provider.calls.load(Ordering::SeqCst) >= 1);
+}
+
+#[tokio::test]
+async fn spawn_subagent_missing_task_gets_corrective_error() {
+    let (agent, _) = test_agent_with_subagent("ok");
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    let call = ToolCall {
+        id: "call-bad".into(),
+        name: "spawn_subagent".into(),
+        arguments: "{}".into(),
+    };
+    let result = agent.run_tool(&session.id, "branch-main", &call).await;
+    assert!(
+        result.text.contains("task") && result.text.contains("自含"),
+        "corrective message: {}",
+        result.text
+    );
+}
+
+#[tokio::test]
+async fn spawn_subagent_is_blocked_when_plugin_not_allowed() {
+    let (agent, _) = test_agent_with_subagent("ok");
+    // persona 白名单不含 subagent 插件 → 工具不可见、调用被拒绝。
+    agent
+        .apply_capabilities(&echo_agent::config::TeamMember {
+            enabled_plugins: vec![echo_agent::plugins::TOOLS_BUILTIN_PLUGIN_ID.into()],
+            ..Default::default()
+        })
+        .await;
+    assert!(!agent.allows_dynamic_tool("spawn_subagent"));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    let call = ToolCall {
+        id: "call-denied".into(),
+        name: "spawn_subagent".into(),
+        arguments: r#"{"task":"t"}"#.into(),
+    };
+    let result = agent.run_tool(&session.id, "branch-main", &call).await;
+    assert!(
+        result.text.contains("subagent 插件未启用"),
+        "denied: {}",
+        result.text
+    );
+}
+
+#[tokio::test]
+async fn cancelling_parent_turn_cascades_to_subagent() {
+    // 子任务用一个永不放行的 provider：主 turn 取消必须传播。
+    let entered = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    struct HangingProvider {
+        entered: Arc<AtomicUsize>,
+        gate: Arc<tokio::sync::Semaphore>,
+    }
+    #[async_trait]
+    impl LlmProvider for HangingProvider {
+        fn name(&self) -> &str {
+            "hanging"
+        }
+        fn default_model(&self) -> &str {
+            "hanging"
+        }
+        async fn chat(&self, _request: &ChatRequest) -> Result<ChatResponse, LlmError> {
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            self.gate.acquire().await.expect("gate open").forget();
+            Ok(ChatResponse {
+                stop_reason: None,
+                content: Some("done".into()),
+                reasoning_content: None,
+                tool_calls: vec![],
+                usage: Usage::default(),
+            })
+        }
+        async fn chat_stream(
+            &self,
+            _request: &ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
+        ) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+    let provider = Arc::new(HangingProvider {
+        entered: entered.clone(),
+        gate: gate.clone(),
+    });
+    let agent = Arc::new(Agent::new(
+        provider,
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    ));
+    agent.set_team_id(Some("t".into()));
+    let store = echo_agent::subagent::SubagentStore::new();
+    agent.attach_subagent_runtime(store.clone());
+    let (bridge, handle) = echo_agent::create_bridge();
+    agent.attach(Arc::new(handle));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+
+    // 直接 spawn（同步受理，子任务随即挂起在 provider 上）。
+    let call = ToolCall {
+        id: "call-spawn-hang".into(),
+        name: "spawn_subagent".into(),
+        arguments: r#"{"task":"永远跑不完的任务"}"#.into(),
+    };
+    let result = agent.run_tool(&session.id, "branch-main", &call).await;
+    assert!(result.text.contains("子任务已受理"), "{}", result.text);
+    let task_id = store.snapshot()[0].id.clone();
+
+    // 子任务进入 provider 后取消全局（模拟主 turn 取消传播链末端）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while entered.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(entered.load(Ordering::SeqCst), 1, "child entered provider");
+    store.cancel_all();
+    // 不放行 gate：子任务的 select! 应被 parent_cancel.cancelled() 中止
+    // （entry.cancel 是注册时父令牌的 child_token，cancel_all 经 finish 取消它）。
+
+    // 取消后子任务以 Cancelled 收尾并发 SubagentCompleted(success=false)。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut saw_completed = false;
+    while std::time::Instant::now() < deadline && !saw_completed {
+        while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+            if let BackendEvent::SubagentCompleted { success, .. } = event {
+                saw_completed = true;
+                assert!(!success, "cancelled child reports failure");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(saw_completed, "SubagentCompleted emitted after cancel");
+    assert_eq!(
+        store.snapshot()[0].status,
+        echo_agent::subagent::SubagentStatus::Cancelled,
+        "store records cancellation for {task_id}"
+    );
 }

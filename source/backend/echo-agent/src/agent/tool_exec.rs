@@ -53,22 +53,14 @@ pub(crate) fn invalid_tool_arguments(
     if missing.is_empty() {
         return None;
     }
-    let expected: Vec<String> = required
-        .iter()
-        .map(|field| {
-            let ty = schema["properties"][field]["type"]
-                .as_str()
-                .unwrap_or("any");
-            format!("{field} ({ty})")
-        })
-        .collect();
     Some(format!(
-        "error: 工具 {tool_name} 缺少必需参数: {}。你发送的原始参数: {}。请修正后重新调用。",
+        "工具参数无效: {tool_name} 缺少必需参数 {}（你发送的参数: {}）。\
+         该工具的参数 schema: {}。请按 schema 携带全部必需参数重新调用。",
         missing.join(", "),
         crate::llm::truncate(raw_arguments, 200),
+        schema,
     ))
 }
-
 /// 工具超时计算：尊重工具自声明的 `timeout_hint`，外圈守卫长过 hint + 15s，
 /// 硬上限 600s；用户配置的 base 不受此限。
 pub(crate) async fn tool_timeout(

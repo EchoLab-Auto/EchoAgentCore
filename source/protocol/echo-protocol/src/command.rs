@@ -186,8 +186,11 @@ pub enum BackendCommand {
         #[serde(default)]
         since_seq: u64,
     },
-    /// 请求所有后台 shell 会话列表。
-    RequestShellSessions,
+    /// 请求后台 shell 会话列表（带 team_id 时只返回该 persona 的会话）。
+    RequestShellSessions {
+        #[serde(default)]
+        team_id: Option<String>,
+    },
     /// 新建一个后台 shell 会话（持久 bash，可反复执行命令）。
     ShellStart {
         #[serde(default)]

@@ -24,6 +24,7 @@ pub mod session;
 pub mod shell;
 pub mod skill;
 pub mod skill_install;
+pub mod subagent;
 pub mod sudo;
 pub mod timeline;
 pub mod tool;

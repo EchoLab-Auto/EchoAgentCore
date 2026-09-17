@@ -44,6 +44,9 @@ pub struct AdapterStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellSessionInfo {
     pub session_id: String,
+    /// 归属 team（persona）。面板按当前 agent 过滤，不串显其他 agent 的 shell。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
     /// 启动时的工作目录。
     pub workdir: String,
     /// 创建时间（Unix 毫秒）。
@@ -464,6 +467,9 @@ pub enum BackendEvent {
     /// 后台 shell 会话列表（响应 RequestShellSessions）。
     ShellSessionsList {
         sessions: Vec<crate::event::ShellSessionInfo>,
+        /// 列表归属 team（与请求一致；旧 core 无此字段时前端不过滤）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
     },
     /// 新建 shell 会话成功。
     ShellSessionStarted {

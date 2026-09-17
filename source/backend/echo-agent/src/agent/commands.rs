@@ -432,16 +432,19 @@ impl Agent {
             BackendCommand::DeleteApi { name } => {
                 self.delete_api(&name).await;
             }
-            BackendCommand::RequestShellSessions => {
+            BackendCommand::RequestShellSessions { team_id } => {
                 let sessions = crate::shell::shell_manager_global()
-                    .map(|m| m.list())
+                    .map(|m| m.list(team_id.as_deref()))
                     .unwrap_or_default();
-                self.emit(BackendEvent::ShellSessionsList { sessions });
+                self.emit(BackendEvent::ShellSessionsList {
+                    sessions,
+                    team_id,
+                });
             }
             BackendCommand::ShellStart { workdir } => match crate::shell::shell_manager_global() {
                 Some(m) => {
                     let emit = crate::shell::shell_emit_for_self(self);
-                    match m.start(workdir, &emit).await {
+                    match m.start(workdir, self.team_id(), &emit).await {
                         Ok(info) => {
                             self.emit(BackendEvent::ShellSessionStarted {
                                 session: info.clone(),

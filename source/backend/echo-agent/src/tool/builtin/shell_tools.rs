@@ -40,7 +40,11 @@ impl crate::tool::Tool for ShellStartTool {
             .ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
         let workdir = arguments["workdir"].as_str().map(|s| s.to_string());
         let info = manager
-            .start(workdir, &crate::shell::shell_emit())
+            .start(
+                workdir,
+                crate::shell::current_tool_team_id(),
+                &crate::shell::shell_emit(),
+            )
             .await
             .map_err(crate::tool::ToolError::Execution)?;
         Ok(format!(

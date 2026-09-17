@@ -30,4 +30,4 @@ pub use event::{
     TurnStart, TurnStopping,
 };
 pub use pipeline::{ToolPipeline, ToolPipelineResult};
-pub use runner::{LoopError, LoopOptions, TurnRunner};
+pub use runner::{AsyncToolExecutor, LoopError, LoopOptions, SubagentToolHooks, TurnRunner};

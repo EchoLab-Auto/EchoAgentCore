@@ -7,6 +7,8 @@ mod qq_commands;
 mod tool_exec;
 mod workspace_commands;
 
+use boundary::{BoundaryKind, PromptBlock};
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// 进程级事件汇聚点：任意 persona 的 `emit` 都投递到此，组合根保证
@@ -29,12 +31,12 @@ use crate::session::{Session, TrunkStore};
 use crate::skill::SkillRegistry;
 use crate::tool::ToolRegistry;
 
-const TURN_CANCELLED: &str = "agent turn cancelled by requester";
+pub(crate) const TURN_CANCELLED: &str = "agent turn cancelled by requester";
 /// 一轮内允许的截断自动续跑次数上限：输出被 max_tokens 截断时把残片入栈
 /// 让模型接着写；超过上限按错误上报，不再静默重试。
-const MAX_TRUNCATION_CONTINUES: usize = 4;
+pub(crate) const MAX_TRUNCATION_CONTINUES: usize = 4;
 /// 截断续跑时喂给模型的提示（user 角色，区别于真实用户输入）。
-const TRUNCATION_CONTINUE_PROMPT: &str = "[system notice] Your previous output was cut off by the max token limit before the turn was complete. Continue exactly from where you stopped. If you were composing a tool call, discard the partial call and re-issue it in full.";
+pub(crate) const TRUNCATION_CONTINUE_PROMPT: &str = "[system notice] Your previous output was cut off by the max token limit before the turn was complete. Continue exactly from where you stopped. If you were composing a tool call, discard the partial call and re-issue it in full.";
 /// Graceful-shutdown drain window: how long to wait for in-flight turns to
 /// finish before force-cancelling (self-update interruption guard).
 const SHUTDOWN_DRAIN_SECS: u64 = 120;
@@ -245,6 +247,19 @@ pub struct Agent {
     /// [`Self::apply_persona_api`] 重建本 persona 的 provider，不依赖全局
     /// UpdateApiConfig / SwitchApi 激活路径。
     persona_api: tokio::sync::RwLock<Option<String>>,
+    /// Subagent 插件运行态：子任务注册表 + spawn 执行闭包（组合根装配；
+    /// None = 插件未启用，spawn_subagent 对模型不可见）。
+    subagent: std::sync::RwLock<Option<SubagentRuntime>>,
+}
+
+/// spawn 执行闭包类型（子任务拉起）。
+pub(crate) type SubagentSpawnFn =
+    std::sync::Arc<dyn Fn(crate::subagent::SpawnRequest) + Send + Sync>;
+
+/// Subagent 插件注入 Agent 的运行态（见 [`crate::subagent`]）。
+pub(crate) struct SubagentRuntime {
+    pub store: std::sync::Arc<crate::subagent::SubagentStore>,
+    pub spawn: SubagentSpawnFn,
 }
 
 impl std::fmt::Debug for Agent {
@@ -389,6 +404,7 @@ impl Agent {
             draining: AtomicBool::new(false),
             capabilities: std::sync::Mutex::new(None),
             persona_api: tokio::sync::RwLock::new(None),
+            subagent: std::sync::RwLock::new(None),
         };
         // Spawn periodic identity eviction (every 5 minutes). Only stale
         // source labels are dropped; the trunk history is never evicted.
@@ -419,6 +435,11 @@ impl Agent {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
         self.cancel_all_inbound_turns();
+        if let Ok(guard) = self.subagent.read() {
+            if let Some(runtime) = guard.as_ref() {
+                runtime.store.cancel_all();
+            }
+        }
         self.cancel.cancel();
         self.trunk.save_now().await;
     }
@@ -909,6 +930,12 @@ impl Agent {
         if name == "spawn_parallel_task" && self.loop_mode() == echo_defs::LoopMode::Single {
             return false;
         }
+        // spawn_subagent 由 subagent 插件实化：插件未挂载（未装配运行态）
+        // 或 persona 白名单不含该插件时对模型不可见。
+        if name == crate::subagent::SPAWN_SUBAGENT_TOOL {
+            let attached = self.subagent.read().map(|g| g.is_some()).unwrap_or(false);
+            return attached && self.persona_allows_plugin(crate::plugins::SUBAGENT_PLUGIN_ID);
+        }
         let guard = self.capabilities.lock().unwrap();
         let Some(cap) = guard.as_ref() else {
             return true;
@@ -1024,6 +1051,180 @@ impl Agent {
         } else {
             tracing::warn!("menu broker slot busy, ignoring attach");
         }
+    }
+
+    /// 装配 subagent 插件运行态（插件 mount 时由组合根调用）。
+    ///
+    /// 同时接线 spawn 执行闭包：子任务以隔离上下文后台执行，完成时经
+    /// `<subagent_event>` hook（[`crate::subagent::wrap_subagent_event`]）作为
+    /// 新入站分支通知主 agent——hook 机制由 echo-loop 的
+    /// `SubagentToolHooks` 定义，QQ 消息等入站复用同一「结构化 hook →
+    /// 新 turn」路径。
+    pub fn attach_subagent_runtime(
+        self: &Arc<Self>,
+        store: Arc<crate::subagent::SubagentStore>,
+    ) {
+        let agent = Arc::downgrade(self);
+        let spawn: SubagentSpawnFn = Arc::new(move |request| {
+                if let Some(agent) = agent.upgrade() {
+                    agent.spawn_subagent_execution(request);
+                }
+            });
+        if let Ok(mut slot) = self.subagent.write() {
+            *slot = Some(SubagentRuntime {
+                store: store.clone(),
+                spawn,
+            });
+        } else {
+            tracing::warn!("subagent slot busy, ignoring attach_subagent_runtime");
+            return;
+        }
+        store.spawn_sweeper(self.cancel.clone());
+    }
+
+    /// 卸载 subagent 插件运行态（插件 unmount）：取消运行中子任务并摘下
+    /// 工具可见性（`allows_dynamic_tool` 随即拒绝 spawn_subagent）。
+    pub fn detach_subagent_runtime(&self) {
+        let runtime = self
+            .subagent
+            .write()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(runtime) = runtime {
+            runtime.store.cancel_all();
+        }
+    }
+
+    /// subagent 运行态（None = 插件未启用）。
+    pub(crate) fn subagent_runtime(
+        &self,
+    ) -> Option<(Arc<crate::subagent::SubagentStore>, SubagentSpawnFn)> {
+        let guard = self.subagent.read().ok()?;
+        let runtime = guard.as_ref()?;
+        Some((runtime.store.clone(), runtime.spawn.clone()))
+    }
+
+    /// spawn 执行体：后台以隔离上下文跑子任务，完成/失败/超时/取消都经
+    /// hook 通知主 agent（恰好一次）。
+    fn spawn_subagent_execution(self: &Arc<Self>, request: crate::subagent::SpawnRequest) {
+        let agent = Arc::clone(self);
+        tokio::spawn(async move {
+            let crate::subagent::SpawnRequest {
+                task_id,
+                session_id,
+                task,
+                timeout,
+                parent_cancel,
+                parent_branch_id,
+            } = request;
+            let (store, _) = match agent.subagent_runtime() {
+                Some(runtime) => runtime,
+                None => return,
+            };
+            // 执行体监听**注册表条目的令牌**（store.cancel_all / 逐项 finish 都取消
+            // 它）；它与 parent_cancel 是同一传播链（spawn 时 register 存的就是
+            // parent 的 child_token），主 turn 取消同样经 parent 链传导到该令牌。
+            let cancel = store
+                .cancel_token_of(&task_id)
+                .unwrap_or_else(|| parent_cancel.child_token());
+            agent.emit(BackendEvent::SubagentStarted {
+                session_id: session_id.clone(),
+                task: task.clone(),
+            });
+            // 子 agent 上下文：base 提示词 + 工具集（剥离 spawn_subagent，
+            // 单层委派）。
+            let base = agent.config.read().await.system_prompt.clone();
+            let mut tools = (*agent.tools.definitions().await).clone();
+            tools.retain(|d| d.name != crate::subagent::SPAWN_SUBAGENT_TOOL);
+            let registry = Arc::clone(&agent.tools);
+            let provider = agent.provider.read().await.clone();
+            let max_iterations = agent.config.read().await.max_tool_iterations;
+            let max_tokens = agent.config.read().await.effective_max_tokens();
+            let run = crate::subagent::run_subagent_turn(
+                provider,
+                tools,
+                registry,
+                base,
+                task.clone(),
+                cancel.clone(),
+                max_iterations,
+                max_tokens,
+            );
+            let outcome = tokio::select! {
+                result = run => Ok(result),
+                _ = tokio::time::sleep(timeout) => Err("timeout"),
+                _ = cancel.cancelled() => Err("cancelled"),
+            };
+            let (success, cancelled, detail) = match outcome {
+                Ok(Ok(reply)) => (true, false, crate::subagent::truncate_result(&reply)),
+                Ok(Err(error)) if Agent::is_turn_cancelled(&error) => {
+                    (false, true, "子任务已随主任务取消".into())
+                }
+                Ok(Err(error)) => (false, false, format!("子任务执行失败：{error}")),
+                Err("timeout") => (false, false, format!("子任务超时（{}s）", timeout.as_secs())),
+                Err(_) => (false, true, "子任务已随主任务取消".into()),
+            };
+            let status = if success {
+                crate::subagent::SubagentStatus::Completed
+            } else if cancelled {
+                crate::subagent::SubagentStatus::Cancelled
+            } else {
+                crate::subagent::SubagentStatus::Failed
+            };
+            store.finish(&task_id, status);
+            agent.emit(BackendEvent::SubagentCompleted {
+                session_id: session_id.clone(),
+                success,
+            });
+            // hook 回灌主 agent：作为该会话的全新入站分支（主 turn 已结束，
+            // 结论需要新的 turn 来消化；与 QQ hook / timer 事件同族）。
+            let payload = serde_json::json!({
+                "event": "subagent_event",
+                "subagent_id": task_id,
+                "session_id": session_id,
+                "task": crate::llm::truncate(&task, 500),
+                "success": success,
+                "result": detail,
+                "parent_branch_id": parent_branch_id,
+                "completed_at_ms": chrono::Utc::now().timestamp_millis(),
+            });
+            let hook = crate::subagent::wrap_subagent_event(&payload);
+            agent.dispatch_subagent_hook(&session_id, hook).await;
+        });
+    }
+
+    /// 把子任务完成 hook 作为新入站分支注入主会话（内部复用
+    /// `process_inbound_branch` 的完整生命周期；`group_id=None` = 后台来源，
+    /// 回复只进后台，不推送外部平台）。
+    async fn dispatch_subagent_hook(self: &Arc<Self>, session_id: &str, hook: String) {
+        let Some(session) = self.trunk.get(session_id) else {
+            tracing::warn!(session = %session_id, "subagent hook target session gone");
+            return;
+        };
+        let message_sequence = self.next_message_sequence();
+        self.emit(BackendEvent::MessageReceived {
+            session_id: session_id.to_string(),
+            adapter_name: "subagent".into(),
+            platform: "subagent".into(),
+            user_id: "subagent".into(),
+            user_name: "subagent".into(),
+            channel: "direct".into(),
+            group_name: None,
+            content: hook.clone(),
+            images: vec![],
+            timestamp: chrono::Utc::now().timestamp(),
+            received_at_ms: chrono::Utc::now().timestamp_millis(),
+            message_sequence,
+            team_id: None,
+        });
+        self.process_inbound_branch(
+            &session,
+            &hook,
+            message_sequence,
+            None,
+            std::time::Duration::from_secs(u64::MAX),
+        )
+        .await;
     }
 
     /// 注入该 persona 的工作区会话存储（`echo-agent.workspace` 插件）。
@@ -1905,14 +2106,19 @@ impl Agent {
     ) -> Result<String> {
         let session_id = session.id.clone();
         // 系统提示词（与内置循环一致，按块构建后合并）。
-        let blocks = self.build_prompt_blocks(content, None).await;
-        let system_prompt = join_prompt_blocks(&blocks);
+        let base = self.config.read().await.system_prompt.clone();
+        let blocks = {
+            let skills = self.skills.lock().await;
+            crate::agent::prompt::build_prompt_blocks(&skills, &base, content, None, &[], None)
+                .await
+        };
+        let system_prompt = crate::agent::prompt::join_prompt_blocks(&blocks);
         let history = history_snapshot.unwrap_or_else(|| session.history.blocking_lock().clone());
-        // 工具 schema：注册表定义 + 动态编排过滤（与内置循环同源）。
-        let mut tools = (*self.tools.definitions().await).clone();
-        let config = self.config.read().await;
-        let dynamic: Vec<echo_defs::tool::ToolDefinition> = Vec::new();
-        drop(config);
+        // 工具 schema：注册表是唯一真源（与内置循环同源）。编排工具
+        // （spawn_subagent）同样由注册表提供（组合根装配时注册），这里不得
+        // 再追加同名定义——重复工具名会让 API 拒绝整个请求
+        // （"Tool names must be unique"）。
+        let tools = (*self.tools.definitions().await).clone();
 
         // 推理回调（引用式，生命周期 = run 调用作用域）。
         let reasoning_cb = |sid: String, text: String| {
@@ -1930,9 +2136,55 @@ impl Agent {
                         .text
                 })
             };
+            // Subagent hook（echo-loop 的 hook 注入接口）：spawn_subagent 的
+            // future 不 Send，无法走上面的 block_in_place 同步桥——经
+            // `execute_async` 通道直接进管线（模型可见的 schema 由注册表
+            // 统一提供，不再经 extra_tool_definitions 追加）。
+            // spawn_subagent 本身是同步受理（注册 + 后台拉起），结果立即可得——
+            // 同步 body 内一次性算好文本，再包一个 'static ready future 返回
+            // （AsyncToolExecutor 的设计意图：harness 编排需要 tokio::spawn 时
+            // 经通道把结果带回，这里无需 spawn 因此直接 ready）。
+            let is_async_subagent = |name: &str| name == crate::subagent::SPAWN_SUBAGENT_TOOL;
+            let execute_async_subagent = move |sid: &str,
+                                               _branch: &str,
+                                               call: &crate::llm::ToolCall|
+                  -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>> {
+                let args: serde_json::Value =
+                    serde_json::from_str(&call.arguments).unwrap_or_default();
+                let text = if !self.allows_dynamic_tool(crate::subagent::SPAWN_SUBAGENT_TOOL) {
+                    format!(
+                        "error: tool '{}' is not registered (subagent 插件未启用或不在本 persona 白名单)",
+                        crate::subagent::SPAWN_SUBAGENT_TOOL
+                    )
+                } else {
+                    match self.subagent_runtime() {
+                        None => "error: subagent runtime not attached".to_string(),
+                        Some((store, spawn)) => {
+                            let tool = crate::subagent::SpawnSubagentTool::new(store, spawn);
+                            let cancel = self
+                                .active_inbound_turns
+                                .get(branch_id)
+                                .map(|turn| turn.cancel.clone())
+                                .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+                            match tool.spawn(&args, sid, cancel, branch_id) {
+                                Ok(receipt) => receipt,
+                                Err(error) => format!("error: {error}"),
+                            }
+                        }
+                    }
+                };
+                Box::pin(async move { text })
+            };
+            let subagent_hooks = echo_loop::SubagentToolHooks {
+                is_async_tool: Some(&is_async_subagent),
+                execute_async: Some(&execute_async_subagent),
+                // schema 由注册表提供（见上）；hook 只负责异步执行分派。
+                extra_tool_definitions: None,
+            };
             let extras = echo_loop::runner::RunExtras {
                 tools: Some(tools),
                 on_reasoning: Some(&reasoning_cb),
+                subagent_hooks,
             };
             runner
                 .run(
@@ -2024,8 +2276,26 @@ impl Agent {
         };
         // Build the system prompt as named blocks so the panel can visualize
         // token usage per section; keep the last build for `/context`.
-        let blocks = self.build_prompt_blocks(content, boundary).await;
-        let system_prompt = join_prompt_blocks(&blocks);
+        let (base, persona_skills, workspace) = {
+            let base = self.config.read().await.system_prompt.clone();
+            let persona_skills = self
+                .capabilities
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|c| c.system_skills.clone())
+                .unwrap_or_default();
+            let workspace = self.workspace_prompt_text();
+            (base, persona_skills, workspace)
+        };
+        let blocks = {
+            let skills = self.skills.lock().await;
+            crate::agent::prompt::build_prompt_blocks(
+                &skills, &base, content, boundary, &persona_skills, workspace,
+            )
+            .await
+        };
+        let system_prompt = crate::agent::prompt::join_prompt_blocks(&blocks);
         *self.last_prompt_blocks.lock().await = Some(blocks);
 
         let mut messages = vec![ChatMessage::system(system_prompt)];
@@ -2036,7 +2306,10 @@ impl Agent {
             messages.extend(history.iter().cloned());
         }
 
-        let mut tools = (*self.tools.definitions().await).clone();
+        // 注册表是模型可见工具的唯一真源（spawn_subagent 由组合根装配时注册，
+        // 随 echo-agent.subagent 插件门控）。这里不得再追加同名动态定义：
+        // 同名工具出现两次会让 API 拒绝整个请求（"Tool names must be unique"）。
+        let tools = (*self.tools.definitions().await).clone();
         let config = self.config.read().await;
         let self_update_enabled = config.self_update.enabled;
         let sudo_enabled = config.sudo.enabled;
@@ -2158,40 +2431,21 @@ impl Agent {
                 // run_sudo 是 agent 内置编排工具（不在注册表内），其内部已有
                 // 授权+执行双重超时，外圈只需长过两者之和。
                 let tool_timeout = {
-                    let (base, sudo_bound, menu_bound) = {
+                    let base = self.config.read().await.effective_tool_timeout();
+                    if call.name == "run_sudo" {
                         let config = self.config.read().await;
-                        (
-                            config.effective_tool_timeout(),
-                            std::time::Duration::from_secs(
-                                config.sudo.auth_timeout_secs
-                                    + config.sudo.command_timeout_secs
-                                    + 30,
-                            ),
-                            std::time::Duration::from_secs(
-                                crate::menu::MENU_WAIT_TIMEOUT_SECS + 30,
-                            ),
+                        std::time::Duration::from_secs(
+                            config.sudo.auth_timeout_secs
+                                + config.sudo.command_timeout_secs
+                                + 30,
                         )
-                    };
-                    let hinted = if call.name == "run_sudo" {
-                        Some(sudo_bound)
                     } else if call.name == "present_menu" {
                         // 选单等待用户在 Panel 中选择：外圈守卫必须长过
                         // 等待窗口本身，否则会在用户选择前把 future drop 掉。
-                        Some(menu_bound)
+                        std::time::Duration::from_secs(crate::menu::MENU_WAIT_TIMEOUT_SECS + 30)
                     } else {
-                        match serde_json::from_str::<serde_json::Value>(&call.arguments) {
-                            Ok(args) => self
-                                .tools
-                                .timeout_hint(&call.name, &args)
-                                .await
-                                .map(|h| h + std::time::Duration::from_secs(15)),
-                            Err(_) => None,
-                        }
-                    };
-                    // 工具自声明超时硬上限 600s；用户配置的 base 不受此限。
-                    hinted
-                        .map(|h| base.max(h.min(std::time::Duration::from_secs(600))))
-                        .unwrap_or(base)
+                        crate::agent::tool_exec::tool_timeout(&self.tools, base, call).await
+                    }
                 };
                 let mut timed_out = false;
                 let result = tokio::select! {
@@ -2276,11 +2530,12 @@ impl Agent {
         raw_arguments: &str,
         args: &serde_json::Value,
     ) -> Option<String> {
-        let schema = self.tools.parameters(tool_name).await?;
-        invalid_tool_arguments(tool_name, raw_arguments, args, &schema)
+        crate::agent::tool_exec::tool_arguments_error(&self.tools, tool_name, raw_arguments, args).await
     }
 
-    async fn run_tool(
+    /// 工具统一分派入口（注册表工具 + 编排工具 spawn_subagent 特判）。
+    /// pub：集成测试经此直接驱动分派（不绕 LLM）。
+    pub async fn run_tool(
         &self,
         session_id: &str,
         branch_id: &str,
@@ -2308,6 +2563,7 @@ impl Agent {
         // 参数解析与预检：给模型可纠正的错误反馈。非法 JSON 或缺少必需
         // 字段时，错误文案必须说清"你发了什么、应该发什么"——一句模糊的
         // "command required" 只会让模型原样重试，形成空调用退化循环。
+        crate::shell::set_tool_team_id(self.team_id());
         let result = match serde_json::from_str::<serde_json::Value>(&call.arguments) {
             Err(error) => crate::tool::ToolResult::text(format!(
                 "error: 工具参数不是合法 JSON（{error}）。你发送的原始参数: {}。请修正为合法 JSON 后重新调用 {}。",
@@ -2315,6 +2571,36 @@ impl Agent {
                 call.name,
             )),
             Ok(args) => match call.name.as_str() {
+            crate::subagent::SPAWN_SUBAGENT_TOOL => {
+                // 异步编排工具：插件未挂载 / persona 不允许时按未注册工具报错。
+                if !self.allows_dynamic_tool(crate::subagent::SPAWN_SUBAGENT_TOOL) {
+                    Err(format!(
+                        "tool '{}' is not registered (subagent 插件未启用或不在本 persona 白名单)",
+                        crate::subagent::SPAWN_SUBAGENT_TOOL
+                    ))
+                } else {
+                    match self.tool_arguments_error(
+                        crate::subagent::SPAWN_SUBAGENT_TOOL,
+                        &call.arguments,
+                        &args,
+                    ).await {
+                        Some(message) => Err(message),
+                        None => {
+                            let (store, spawn) = self
+                                .subagent_runtime()
+                                .expect("allows_dynamic_tool checked the runtime is attached");
+                            let tool = crate::subagent::SpawnSubagentTool::new(store, spawn);
+                            let cancel = self
+                                .active_inbound_turns
+                                .get(branch_id)
+                                .map(|turn| turn.cancel.clone())
+                                .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+                            tool.spawn(&args, session_id, cancel, branch_id)
+                                .map(crate::tool::ToolResult::text)
+                        }
+                    }
+                }
+            }
             other => {
                 // Every dynamic tool must live in the single dispatch
                 match self.tool_arguments_error(other, &call.arguments, &args).await {
@@ -2329,6 +2615,7 @@ impl Agent {
         }
         .unwrap_or_else(|error| crate::tool::ToolResult::text(format!("error: {error}"))),
         };
+        crate::shell::set_tool_team_id(None);
         let result_text = result.text.clone();
         let result_images = result.images.clone();
         self.emit(BackendEvent::ToolResult {
@@ -2470,121 +2757,34 @@ impl Agent {
     }
 
 
-    /// System prompt = base prompt + skill metadata + triggered skill instructions.
-    /// System prompt = base prompt + skill metadata + triggered skill
-    /// instructions, decomposed into named blocks for panel visualization.
-    async fn build_prompt_blocks(
-        &self,
-        content: &str,
-        boundary: Option<BoundaryKind>,
-    ) -> Vec<PromptBlock> {
-        let skills = self.skills.lock().await;
-        let matched = skills.find_matching(content);
-        let base = self.config.read().await.system_prompt.clone();
-        let mut blocks = Vec::new();
-        blocks.push(PromptBlock {
-            key: "base".into(),
-            label: "系统提示词".into(),
-            kind: "base".into(),
-            content: base,
-        });
-        // 可插拔系统提示词：所有启用的 system:true skill 注入 base 区
-        //（身份/规则层，任意 SKILL.md 声明 system: true 即参与）。
-        {
-            let mut system_skills: Vec<&crate::skill::Skill> = skills
-                .all()
-                .into_iter()
-                .filter(|sk| sk.metadata.system && sk.metadata.enabled)
-                .collect();
-            system_skills.sort_by(|a, b| a.metadata.name.cmp(&b.metadata.name));
-            for sk in system_skills {
-                blocks.push(PromptBlock {
-                    key: format!("system:{}", sk.metadata.name),
-                    label: format!("系统提示词 · {}", sk.metadata.name),
-                    kind: "system-skill".into(),
-                    content: sk.instructions.clone(),
-                });
-            }
+    /// 工作区会话（workspace 插件）注入提示词的文本：插件对该 persona 启用
+    /// 且存在激活会话时返回 Some（名称 + 工作目录清单），否则 None。
+    fn workspace_prompt_text(&self) -> Option<String> {
+        let store = self.workspace_store()?;
+        let plugin_allowed = self
+            .capabilities
+            .lock()
+            .ok()
+            .and_then(|cap| cap.clone())
+            .map(|cap| {
+                crate::plugins::profile_allows_plugin(&cap, crate::plugins::WORKSPACE_PLUGIN_ID)
+            })
+            .unwrap_or(false);
+        if plugin_allowed {
+            store.prompt_text()
+        } else {
+            None
         }
-        // persona 级系统提示词 skill（TeamMember.system_skills 引用，
-        // 非空时作为该 agent 的额外身份层，追加在全局 system skills 后）。
-        if let Some(cap) = self.capabilities.lock().unwrap().as_ref() {
-            if !cap.system_skills.is_empty() {
-                let mut persona_skills: Vec<&crate::skill::Skill> = skills
-                    .all()
-                    .into_iter()
-                    .filter(|sk| cap.system_skills.iter().any(|n| n == &sk.metadata.name))
-                    .collect();
-                persona_skills.sort_by(|a, b| a.metadata.name.cmp(&b.metadata.name));
-                for sk in persona_skills {
-                    blocks.push(PromptBlock {
-                        key: format!("persona:{}", sk.metadata.name),
-                        label: format!("人格系统提示词 · {}", sk.metadata.name),
-                        kind: "system-skill".into(),
-                        content: sk.instructions.clone(),
-                    });
-                }
-            }
-        }
-        if !skills.is_empty() {
-            blocks.push(PromptBlock {
-                key: "skills".into(),
-                label: "技能清单".into(),
-                kind: "skills".into(),
-                content: format!("# Available skills\n{}", skills.metadata_lines()),
-            });
-        }
-        for skill in skills.always_enabled() {
-            blocks.push(PromptBlock {
-                key: format!("skill:{}", skill.metadata.name),
-                label: format!("常驻技能 · {}", skill.metadata.name),
-                kind: "skill".into(),
-                content: format!(
-                    "# Active skill: {}\n{}",
-                    skill.metadata.name, skill.instructions
-                ),
-            });
-        }
-        if let Some(matched) = matched {
-            blocks.push(PromptBlock {
-                key: format!("triggered:{}", matched.metadata.name),
-                label: format!("触发技能 · {}", matched.metadata.name),
-                kind: "triggered".into(),
-                content: format!(
-                    "# Triggered skill: {}\n{}",
-                    matched.metadata.name, matched.instructions
-                ),
-            });
-        }
-        // 工作区会话（workspace 插件）：插件对该 persona 启用且存在激活会话
-        // 时注入——名称 + 工作目录清单，让模型知道在哪些目录内工作。
-        if let Some(store) = self.workspace_store() {
-            let plugin_allowed = self
-                .capabilities
-                .lock()
-                .ok()
-                .and_then(|cap| cap.clone())
-                .map(|cap| {
-                    crate::plugins::profile_allows_plugin(&cap, crate::plugins::WORKSPACE_PLUGIN_ID)
-                })
-                .unwrap_or(false);
-            if plugin_allowed {
-                if let Some(content) = store.prompt_text() {
-                    blocks.push(PromptBlock {
-                        key: "workspace".into(),
-                        label: "工作区会话".into(),
-                        kind: "workspace".into(),
-                        content,
-                    });
-                }
-            }
-        }
-        if let Some(boundary) = boundary {
-            blocks.push(boundary.block());
-        }
-        blocks
     }
 
+    /// 构建系统提示词块（无输入相关区块的代表性构建，供 `/context` 在无
+    /// 最近 turn 时回退使用）。
+    async fn build_prompt_blocks(&self) -> Vec<PromptBlock> {
+        let base = self.config.read().await.system_prompt.clone();
+        let workspace = self.workspace_prompt_text();
+        let skills = self.skills.lock().await;
+        crate::agent::prompt::build_prompt_blocks(&skills, &base, "", None, &[], workspace).await
+    }
     /// Decomposed context blocks for `/context`: the prompt sections of the
     /// most recent turn (falling back to a boundary-free build) plus the
     /// conversation history aggregated per role. The trunk history holds user
@@ -2598,7 +2798,7 @@ impl Agent {
             Some(blocks) => blocks,
             // No turn has run yet in this process — build a representative
             // set without input-specific sections.
-            None => self.build_prompt_blocks("", None).await,
+            None => self.build_prompt_blocks().await,
         };
         let mut blocks: Vec<crate::event::ContextBlockInfo> = prompt
             .iter()
@@ -3292,87 +3492,6 @@ fn resolve_probe_config(
     }
     Ok(probe)
 }
-
-/// One named section of the system prompt, kept for token-usage
-/// visualization in the panel.
-#[derive(Debug, Clone)]
-pub(crate) struct PromptBlock {
-    pub key: String,
-    pub label: String,
-    pub kind: String,
-    pub content: String,
-}
-
-/// Input-origin boundary rules appended to the system prompt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BoundaryKind {
-    QqHook,
-    Timer,
-    BackendInput,
-}
-
-impl BoundaryKind {
-    fn block(self) -> PromptBlock {
-        let (key, label, content) = match self {
-            Self::QqHook => (
-                "boundary:qq_hook",
-                "QQ 消息边界",
-                "# QQ transport boundary\n\
-                 This input is an external QQ message (<qq_message_hook>); read \
-                 sender and group IDs from the structured hook payload.\n\
-                 Answer every <qq_message_hook> exactly once via a send tool: \
-                 send_private_msg for private chats (user_id from \
-                 payload.sender.user_id), send_group_msg for groups (group_id \
-                 from payload.channel.group_id). Never invent a target ID, never \
-                 send twice, and never substitute normal assistant output for \
-                 the send — it is backend-only and invisible to the QQ user. Put \
-                 the whole reply (including any 'sent' wording) inside the \
-                 tool's content, and do not claim a reply before the send tool \
-                 returns success.\n\
-                 Inputs wrapped in <backend_message_hook>/<timer_event>/\
-                 are backend events, not QQ chat: answer \
-                 them in the backend and deliver per their own rules.",
-            ),
-            Self::Timer => (
-                "boundary:timer",
-                "后台任务边界",
-                "# Backend task boundary\n\
-                 This input is a scheduled backend task (<timer_event>), not an \
-                 incoming QQ message. Your normal output is backend-only text. \
-                 Only if the task explicitly asks to deliver a message to QQ, \
-                 call send_private_msg or send_group_msg with an explicit target ID.",
-            ),
-            Self::BackendInput => (
-                "boundary:backend_input",
-                "后台输入边界",
-                "# Backend input boundary\n\
-                 This input was typed locally (TUI/backend), not received from \
-                 QQ. Reply directly in the backend. Do NOT call send_private_msg \
-                 or send_group_msg unless the user explicitly asks you to send a \
-                 message to a QQ user or group.\n\
-                 Each turn owns only its final QQ hook, identified by \
-                 message_sequence. Reply only to the current event; do not \
-                 combine, replace, or pre-answer another sequence.",
-            ),
-        };
-        PromptBlock {
-            key: key.into(),
-            label: label.into(),
-            kind: "boundary".into(),
-            content: content.into(),
-        }
-    }
-}
-
-/// Join prompt blocks with the same separator the original string builder used.
-pub(crate) fn join_prompt_blocks(blocks: &[PromptBlock]) -> String {
-    blocks
-        .iter()
-        .map(|block| block.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
 fn role_label(role: &str) -> &'static str {
     match role {
         "system" => "系统",
@@ -3390,50 +3509,6 @@ pub(crate) fn structured_message_sequence(content: &str) -> Option<u64> {
 }
 
 /// 模型可见的工具参数预检：schema 声明的必需字段缺失时，返回纠正性错误
-/// 文案（说清"你发了什么、应该发什么"）。返回 None 表示参数通过预检。
-///
-/// 设计动机：模型在长工具循环中可能退化出空参调用（如 bash {}），
-/// 若错误反馈只是模糊的"command required"，模型不知道错在哪，会原样
-/// 重试形成退化循环，烧掉整段上下文预算。
-pub(crate) fn invalid_tool_arguments(
-    tool_name: &str,
-    raw_arguments: &str,
-    args: &serde_json::Value,
-    schema: &serde_json::Value,
-) -> Option<String> {
-    let required: Vec<&str> = schema["required"]
-        .as_array()?
-        .iter()
-        .filter_map(|field| field.as_str())
-        .collect();
-    if required.is_empty() {
-        return None;
-    }
-    // 缺失 = 键不存在或值为 null（空字符串保留给各工具自己判定，
-    // 避免把 write_file content:"" 这类合法调用误判为缺参）。
-    let missing: Vec<&str> = match args.as_object() {
-        Some(obj) => required
-            .iter()
-            .filter(|field| obj.get(**field).map_or(true, |v| v.is_null()))
-            .copied()
-            .collect(),
-        None => required.clone(),
-    };
-    if missing.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "工具参数无效: {tool_name} 缺少必需参数 {}（你发送的参数: {}）。\
-         该工具的参数 schema: {}。请按 schema 携带全部必需参数重新调用。",
-        missing.join(", "),
-        crate::llm::truncate(raw_arguments, 200),
-        schema,
-    ))
-}
-
-/// Extract image URLs / data URIs from a structured hook input.
-///
-/// Hook payloads carry `"images": [...]` (set by
 /// [`crate::adapter_bridge::format_hook_input`]); this pulls them into the
 /// durable `UserMessage` event so session replay keeps the multimodal
 /// content. Returns an empty vec for plain text.
@@ -3573,6 +3648,7 @@ pub mod tests {
     use crate::llm::{ChatChunk, ChatResponse, LlmError, Usage};
     use crate::session::SessionKey;
     use crate::tool::{Tool, ToolError};
+    use super::tool_exec::invalid_tool_arguments;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     pub struct MockProvider {
@@ -4844,6 +4920,75 @@ pub mod tests {
         );
     }
 
+    /// 回归：生产装配（组合根）把 spawn_subagent 注册进注册表并接线运行态后，
+    /// echo-loop 路径发送的工具名必须唯一——重复会让 API 拒绝整个请求
+    ///（"Tool names must be unique"）。
+    #[tokio::test]
+    async fn echo_loop_tool_names_stay_unique_when_spawn_subagent_is_registered() {
+        let provider = Arc::new(ScriptedProvider::new(vec![ChatResponse {
+            stop_reason: None,
+            content: Some("done".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            usage: Usage::default(),
+        }]));
+        let store = crate::subagent::SubagentStore::new();
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(crate::subagent::SpawnSubagentTool::new(
+            store.clone(),
+            Arc::new(|_| {}),
+        )));
+        tools.set_package(
+            crate::subagent::SPAWN_SUBAGENT_TOOL,
+            crate::plugins::SUBAGENT_PLUGIN_ID,
+        );
+        let agent = Arc::new(Agent::new(
+            provider.clone(),
+            AgentConfig::default(),
+            SkillRegistry::new(),
+            tools,
+            Arc::new(AdapterRegistry::new()),
+        ));
+        agent.attach_subagent_runtime(store);
+        assert!(
+            agent.allows_dynamic_tool(crate::subagent::SPAWN_SUBAGENT_TOOL),
+            "插件允许 + 运行态已接线"
+        );
+        let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+            Arc::new(echo_context::EventBus::default()),
+            provider.clone(),
+            Arc::new(echo_loop::ToolPipeline::new()),
+            echo_loop::LoopOptions::default(),
+        ));
+        agent.set_loop_runner(runner);
+        agent.set_use_echo_loop(true);
+
+        let session = agent
+            .trunk
+            .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+        assert_eq!(
+            agent.process_message(&session, "hi").await.unwrap(),
+            "done"
+        );
+
+        let requests = provider.requests.lock().await;
+        let names: Vec<String> = requests[0]
+            .tools
+            .as_ref()
+            .expect("tools sent")
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        assert!(
+            names.contains(&crate::subagent::SPAWN_SUBAGENT_TOOL.to_string()),
+            "schema 应来自注册表: {names:?}"
+        );
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(names.len(), unique.len(), "duplicate tool names: {names:?}");
+    }
+
     #[test]
     fn sequence_parsing_only_accepts_structured_markers() {
         let hook = r#"<qq_message_hook>
@@ -5414,7 +5559,7 @@ pub mod tests {
             .map(|d| d.name.clone())
             .collect();
         assert!(names.contains(&"workspace".to_string()), "tools: {names:?}");
-        let blocks = agent.build_prompt_blocks("", None).await;
+        let blocks = agent.build_prompt_blocks().await;
         assert!(
             blocks.iter().any(|b| b.key == "workspace"),
             "workspace block injected"
@@ -5444,7 +5589,7 @@ pub mod tests {
             !names.contains(&"workspace".to_string()),
             "tools: {names:?}"
         );
-        let blocks = agent.build_prompt_blocks("", None).await;
+        let blocks = agent.build_prompt_blocks().await;
         assert!(
             !blocks.iter().any(|b| b.key == "workspace"),
             "workspace block hidden without the plugin"
