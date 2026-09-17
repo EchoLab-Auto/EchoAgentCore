@@ -39,9 +39,8 @@ graph TD
 graph TD
   App[App.vue 应用壳] --> Layout[NeumorphismLayout 外壳]
   Layout --> Header[顶栏：品牌 · 连接状态 · 导航 · 主题]
-  Layout --> Sider[侧边栏 PanelSidebar]
   Layout --> Main[主区：当前视图组件]
-  Sider --> BranchCard[临时分支卡]
+  ChatView --> Rail[右侧边栏 chat-rail：文件浏览器卡 · 临时分支卡]
   Main --> ChatView[ChatView 会话]
   Main --> SettingsView[SettingsView 设置]
   Main --> ShellPanel[ShellPanel Shell]
@@ -102,13 +101,12 @@ graph LR
 | 顶栏左 | 品牌 "EchoAgent Panel"（`.brand` 字重 700） | 顶栏分左中右三段，右侧操作 `margin-left:auto` 顶齐 |
 | 顶栏中 | 连接状态点 | 状态组 gap 6px、13px 次要色 |
 | 顶栏右 | 三视图导航（聊天/Shell/设置）、主题开关 | 操作组 gap 6px、允许折行 |
-| 侧边栏 | 临时分支卡（会话卡已迁至入口行「会话」切换器，2026-09-14） | 固定 264px，可折叠为 0（`.nm-layout--sider-collapsed` 兜底 `width:0!important` + `overflow:hidden`） |
+| 右侧边栏 | 会话视图内 chat-rail 卡片容器：工作区文件浏览器卡（常驻，有激活工作区会话即出现）+ 临时分支卡（并行多会话模式） | 264px 毛玻璃卡片，顶/右/底 = 入口行上方；左侧边栏已于 2026-09-19 移除（会话卡/清单/工作区均在入口行） |
 | 主区 | 当前视图组件 | `flex:1` + `min-width:0`，纵向 flex，`overflow:hidden`（滚动交给视图内部） |
 
 页面级约束（`styles.css:43-57, 147-154, 581-606`）：
 
 - `html/body/#app` 高 100%、禁止页面级滚动（`overflow:hidden` + `overscroll-behavior:none`）；背景 `var(--nm-bg-color)`
-- sider 槽位去背景/边框/阴影（由卡片自带新拟态）；内容栈 `.panel-sider` 纵向 flex、gap 14px、padding 12px、自身 `overflow-y:auto`
 - 自定义样式层只写类选择器，**禁止裸元素选择器**（`button/input/…` 会污染库组件）——`styles.css` 头注
 
 ### 3.2 层叠秩序（z-index）
