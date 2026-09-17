@@ -30,7 +30,7 @@ graph TD
   Sets --> Logs[日志]
 ```
 
-- 四主视图仅经顶栏导航切换（§二）；设置视图的六个分类走内部一级菜单（§九）
+- 三主视图仅经顶栏导航切换（§二）；设置视图的六个分类走内部一级菜单（§九）；任务视图已并入会话视图入口行「任务」弹层（2026-09-19，§7.7）
 - 模态与覆盖层（Sudo / Branch / Agent 配置 / 上下文）浮于全部视图之上（§八）；侧边栏点选会话强制回会话视图
 
 ### 1.2 布局与组件树
@@ -44,12 +44,11 @@ graph TD
   Sider --> BranchCard[临时分支卡]
   Main --> ChatView[ChatView 会话]
   Main --> SettingsView[SettingsView 设置]
-  Main --> TasksPanel[TasksPanel 任务]
   Main --> ShellPanel[ShellPanel Shell]
   ChatView --> MsgList[消息列表]
   ChatView --> EntryRow[活动浮条 · 入口行]
   ChatView --> Composer[悬浮输入区]
-  ChatView --> Pops[弹出层：清单 · QQ 适配器]
+  ChatView --> Pops[弹出层：清单 · QQ 适配器 · 任务 TasksPanel]
   ChatView --> Overs[会话区内弹层：上下文 · Agent 配置]
   App --> Modals[模态：Sudo · Branch]
   App --> Toasts[ToastProvider 右上]
@@ -74,23 +73,21 @@ graph LR
 
 ## 二、视图与导航
 
-Panel 有四个主视图，仅经顶栏导航按钮切换；地址栏不承载视图状态（无路由）。
+Panel 有三个主视图，仅经顶栏导航按钮切换；地址栏不承载视图状态（无路由）。
 
 ```prodoc-flow
 graph LR
-  Chat[会话视图] -->|顶栏: 任务| Tasks[任务视图]
-  Chat -->|顶栏: Shell| Shell[Shell 视图]
+  Chat[会话视图] -->|顶栏: Shell| Shell[Shell 视图]
   Chat -->|顶栏: 设置| Sets[设置视图]
-  Tasks -->|顶栏: 会话| Chat
   Shell -->|顶栏: 会话| Chat
   Sets -->|顶栏: 会话| Chat
   Side[侧边栏点选会话] -->|强制回到| Chat
 ```
 
-- 当前视图持久化于 `localStorage: echo-panel-view`（非法值回退 `chat`；旧值 `caps`/`logs` 自动迁移为 `settings`），刷新后恢复（`App.vue:31-40, 92-99`）
-- 主区同一时间只渲染一个视图组件（`App.vue:311-323`）
+- 当前视图持久化于 `localStorage: echo-panel-view`（非法值回退 `chat`；旧值 `caps`/`logs` 自动迁移为 `settings`，旧值 `tasks` 迁移为 `chat`），刷新后恢复（`App.vue:31-40, 92-99`）
+- 主区同一时间只渲染一个视图组件
 - 点选会话项（入口行「会话」切换器）**强制切回会话视图**（`App.vue` selectSession）
-- 任务按钮在有运行中任务时显示计数徽标 `任务(N)`（`App.vue:150-152, 278`）
+- 原顶栏「任务」视图已移除（2026-09-19）：任务入口并入会话视图入口行「任务」按钮（徽标 = 当前会话运行中任务数），弹层复用 `TasksPanel` 且只对应当前 agent 的当前会话（§7.7）
 
 > 2026-09-04 起原「资源」「日志」视图与 API 设置弹窗合并为「设置」视图（§九），顶栏设置下拉随之移除。
 
@@ -104,7 +101,7 @@ graph LR
 |---|---|---|
 | 顶栏左 | 品牌 "EchoAgent Panel"（`.brand` 字重 700） | 顶栏分左中右三段，右侧操作 `margin-left:auto` 顶齐 |
 | 顶栏中 | 连接状态点 | 状态组 gap 6px、13px 次要色 |
-| 顶栏右 | 四视图导航（聊天/任务/Shell/设置）、主题开关 | 操作组 gap 6px、允许折行 |
+| 顶栏右 | 三视图导航（聊天/Shell/设置）、主题开关 | 操作组 gap 6px、允许折行 |
 | 侧边栏 | 临时分支卡（会话卡已迁至入口行「会话」切换器，2026-09-14） | 固定 264px，可折叠为 0（`.nm-layout--sider-collapsed` 兜底 `width:0!important` + `overflow:hidden`） |
 | 主区 | 当前视图组件 | `flex:1` + `min-width:0`，纵向 flex，`overflow:hidden`（滚动交给视图内部） |
 

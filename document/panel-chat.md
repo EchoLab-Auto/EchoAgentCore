@@ -89,7 +89,7 @@ graph LR
 
 ### 7.7 入口行按钮与弹出层
 
-入口行位于输入区上方（`bottom = 输入区高度 + 24px`，ResizeObserver 跟踪）。**按钮组件化（2026-09）**：四个入口按钮统一使用 ui-frame `NeumorphismButton`（`variant=glass` 磨砂半透明、`shape=pill` 胶囊、`size=small`）；清单数字徽标使用 `NeumorphismBadge`（右上角、`showZero=false`、0 时隐藏）；模板 ref 取组件实例的 `$el` 定位弹层（`btnElement()` 辅助）。按钮只保留布局微调（图标 14px）；作用域内覆盖玻璃令牌使按钮更透（`.entry-row` 内 `--nm-glass-bg` 降至 45% 不透明度、`--nm-glass-blur` 提至 24px）：
+入口行位于输入区上方（`bottom = 输入区高度 + 24px`，ResizeObserver 跟踪）。**按钮组件化（2026-09）**：入口按钮统一使用 ui-frame `NeumorphismButton`（`variant=glass` 磨砂半透明、`shape=pill` 胶囊、`size=small`）；清单数字徽标使用 `NeumorphismBadge`（右上角、`showZero=false`、0 时隐藏）；模板 ref 取组件实例的 `$el` 定位弹层（`btnElement()` 辅助）。按钮只保留布局微调（图标 14px）；作用域内覆盖玻璃令牌使按钮更透（`.entry-row` 内 `--nm-glass-bg` 降至 45% 不透明度、`--nm-glass-blur` 提至 24px）：
 
 | 按钮 | 行为 |
 |---|---|
@@ -100,6 +100,7 @@ graph LR
 | 工作区 | 弹出工作区会话面板（`WorkspacePanel`，**宽版两栏** `.checklist-pop--wide`）：**左栏文件浏览器**（`WorkspaceFileBrowser`，2026-09-15 新增：只读浏览选中会话的工作区目录——多根切换 chip、面包屑导航、目录下钻/回退、文件大小，`RequestWorkspaceFiles` → `WorkspaceFiles`，服务端 canonical 前缀校验限定在会话目录及子孙内）+ 右栏多会话管理（新建/编辑/删除/激活；每会话多个工作区目录）与各目录 git 状态（分支/领先落后/暂存修改未跟踪计数/最近提交/变更文件）；**激活 = 进入项目对话**（2026-09-14 重定义）：本地对话切换到该工作区专属通道（`local:workspace:<id>:local_user`，独立上下文）+ 系统提示词注入，见 [多 Agent](./core-agents.md)§工作区会话与项目通道；**仅当当前 persona 的 `echo-agent.workspace` 插件与 `workspace` 工具均可用时显示**；命令带 team_id 路由（去主智能体后必填），未选择 Agent 时不发请求；切换 Agent 强制关闭 |
 | 会话 | 弹出 `SessionSwitcher`（多会话切换，2026-09；**取代侧边栏会话卡**）：按平台分组列出当前智能体的会话（Local/QQ 私聊/QQ 群/其他），当前高亮、运行中带忙碌点，点击切换（聊天区按会话过滤；每个群/私聊有独立上下文，见 [多 Agent](./core-agents.md)§会话模型）。**Local 分组含工作区通道**（`local:workspace:<id>:local_user`，昵称 = 工作区名，标签「工作区」）：选通道 = 激活对应工作区、选默认会话 = 取消激活（2026-09-14 起，见 §工作区会话与项目通道）。**>1 个会话或并行多会话模式（含「全局」项）时显示**；切换 Agent 强制关闭 |
 | 适配器 | 弹出 QQ 管理面板（§十）；仅当前 Agent 启用适配器插件时显示；切换 Agent 强制关闭 |
+| 任务 | 弹出 `TasksPanel`（2026-09-19 起替代顶栏任务视图）：**只对应当前 agent 的当前会话**（`sessionId` 过滤，「全局」会话显示全部），徽标 = 当前会话运行中/等待整合任务数；显隐 = `echo-agent.subagent` 插件对当前 persona 启用或当前会话已有任务记录；切换 Agent / 插件禁用强制关闭。卡片/状态/取消语义见 §十一 |
 
-弹出层宽 `min(520px, 82vw)`（**工作区面板为宽版** `min(920px, 92vw)`、上限高 78vh，左缘钳制 ≥8px；宽度常量与 CSS 在 `ChatView.vue` 同处维护），锚定按钮上方 8px、相对输入区水平居中。**清单/适配器弹出层没有全屏遮罩**——是 fixed 定位的内容尺寸面板，仅点到弹层自身 padding 空白（`@click.self`）才关闭，点弹层外的聊天区不关闭（`ChatView.vue`）。**「配置」「上下文」是会话区内锚定的磨砂玻璃弹层**（上/左/右 12px，底边 = 入口行高 + 42px），点弹层外遮罩关闭；上下文弹层无返回按钮（2026-09 起与配置弹层同几何）。
+弹出层宽 `min(520px, 82vw)`（**工作区面板为宽版** `min(920px, 92vw)`、上限高 78vh，左缘钳制 ≥8px；宽度常量与 CSS 在 `ChatView.vue` 同处维护），锚定按钮上方 8px、相对输入区水平居中。**清单/适配器/任务弹出层没有全屏遮罩**——是 fixed 定位的内容尺寸面板，仅点到弹层自身 padding 空白（`@click.self`）才关闭，点弹层外的聊天区不关闭（`ChatView.vue`）。**「配置」「上下文」是会话区内锚定的磨砂玻璃弹层**（上/左/右 12px，底边 = 入口行高 + 42px），点弹层外遮罩关闭；上下文弹层无返回按钮（2026-09 起与配置弹层同几何）。
 

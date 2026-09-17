@@ -25,9 +25,9 @@ y: 637
 - **门控模式**：分段选择 无约束/白名单/黑名单（`SetQqGateMode{adapter}` 即选即生效），每模式附说明
 - **2×2 名单卡**（白名单用户/黑名单用户/白名单群/黑名单群）：计数胶囊 + 已选 id 筹码（点击移除，黑名单染 error 色）+ 候选筹码（好友/群列表，点击切换归属，`UpdateQqAllowlist`/`UpdateQqDenylist` 带 `adapter` 提交）；**黑名单群无候选列表**（提示"群列表仅对白名单开放，黑名单群请在 Core 侧配置"）
 
-## 十一、任务 / Shell 视图
+## 十一、任务弹层 / Shell 视图
 
-- **任务视图**：任务卡片**倒序**（最新在前），kind 四类标签（后台/并行/Subagent/临时回复）+ 状态六态（运行中/已完成/失败/已取消/**等待整合 awaiting**/**已整合 integrated**）+ 目标 + 创建时间 + 耗时；`running` 或 `awaiting` 状态时耗时**每 1s** 跳动；分支状态与结果逐条列出；运行中任务可「取消」——与聊天区同一约定：先本地乐观中断，再发 `CancelRequestedWork{session_id, all:false, team_id}`
+- **任务弹层**（2026-09-19 起替代独立任务视图）：入口行「任务」按钮弹出 `TasksPanel`（徽标 = 当前会话运行中/等待整合任务数），**只对应当前 agent 的当前会话**（按 `sessionId` 过滤；「全局」会话显示全部）；显隐 = `echo-agent.subagent` 插件对当前 persona 启用或当前会话已有任务记录，切换 Agent / 插件禁用后残留弹层强制关闭。任务卡片**倒序**（最新在前），kind 四类标签（后台/并行/Subagent/临时回复）+ 状态六态（运行中/已完成/失败/已取消/**等待整合 awaiting**/**已整合 integrated**）+ 目标 + 创建时间 + 耗时；`running` 或 `awaiting` 状态时耗时**每 1s** 跳动；分支状态与结果逐条列出；运行中任务可「取消」——与聊天区同一约定：先本地乐观中断，再发 `CancelRequestedWork{session_id, all:false, team_id}`
 - **Shell 视图**：新建会话（工作目录 + Enter）；每会话一张终端卡（卡头 = 创建时间 + 命令计数；运行中 spinner，完成/失败/超时 + 耗时（一位小数秒）+ 输出，终端区 max-height 320px）；命令输入 Enter 执行（`ShellExec`）、Esc 清空；新输出自动滚底；可停止会话；「刷新」按钮重拉会话列表
 - **HTTP 通道**：WS 之外的仅有接口（日志 `/api/logs/{panel,core}`）走 `fetchWithTimeout`，超时 10s（`api.ts:4`）；QQ 登录/二维码已全部迁到 WS（Core 代理）
 
