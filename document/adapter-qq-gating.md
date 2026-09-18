@@ -125,6 +125,24 @@ QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的
 - **登录由 Core 代理**：`RequestQqLoginStatus` / `RequestQqQrcode`（二维码以 PNG base64 回推 `QqQrcode` 事件），Panel 不再直连 OneBot HTTP / docker
 - **二维码陈旧自动刷新**：`login_qrcode_png` 先探测容器内 PNG 的 mtime，缺失或 >90s（`QR_MAX_AGE_SECS`）时经 WebUI（`webui.json` token → `sha256(token+".napcat")` → `/api/auth/login` → `/api/QQLogin/RefreshQRcode`）让 NapCat 重新生成、等 2s 落盘再取；刷新失败仅告警并退回读现有文件。NapCat 自身轮换循环停摆时（实测会发生），这是"刷新没反应"的解法；新鲜码（<90s）直接返回，不会作废用户刚扫的码
 
+## 容器生命周期与登录保持（2026-09-18）
+
+- **napcat_auto_start**（默认 true）：适配器启动时确保 NapCat 容器在运行
+  （compose up）；**napcat_auto_stop 默认 false**——适配器停止（含 Core 停机/
+  重启）**不**联动停止容器：容器保持运行则 QQ 始终保持在线（NapCat 自身维持
+  与 QQ 服务器的连接），Core 重启只断反向 WS、重启后自动重连，用户无感知。
+  联动停止会引入两类事故：① 容器重启 = QQ 下线，需重新登录；② 频繁容器重启
+  触发 QQ 安全策略使快速登录凭证失效（"用户身份已失效/登录态已失效"）。
+  需要联动停止时显式配置 `napcat_auto_stop = true`。
+- **启动时自动登录**：适配器监测到 NapCat online 时经 WebUI API 固化登录态
+  （`ensure_quick_login`）——已登录则把当前账号写入容器 `webui.json` 的
+  `autoLoginAccount`（`docker exec sed` 原地写入），此后容器重启 NapCat 直接
+  快速登录；未登录则尝试 `SetQuickLogin`（失败静默回退扫码流程）。
+- **快速登录失效的兜底**：NapCat 快速登录凭证被 QQ 安全策略判失效时日志提示
+  "登录态已失效，请重新登录"——此时到 Panel「适配器」面板重新扫码；
+  CheckLoginStatus 返回 `loginError` 字段携带原因（如"二维码已过期，请刷新"）。
+  二维码约 2 分钟有效，扫旧码会得到 `ErrCode: 3`（授权超时）。
+
 ## 运行时可变性
 
 门控规则分为两类：
