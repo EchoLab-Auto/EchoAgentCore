@@ -548,6 +548,9 @@ impl TrunkStore {
                     self.mark_dirty();
                 }
                 let count = self.restore_identity_labels(&root);
+                // 事件日志里出现但身份元数据缺失的会话也要补建（含归属）——
+                // 否则 Panel 会话列表丢项。
+                self.ensure_identities_for_events(&events);
                 // 按会话重建投影（身份 + 事件中出现的所有会话）。
                 self.ensure_histories_for_events(&events);
                 self.reproject_all();
@@ -696,6 +699,15 @@ impl TrunkStore {
             let nickname = s["nickname"].as_str().unwrap_or("").into();
             let group_name = s["group_name"].as_str().map(|g| g.to_string());
             let session = self.get_or_create(&key, nickname, group_name);
+            // 归属持久化（2026-09-18 起）：旧档无此字段时保持 None，
+            // 由 get_or_create 的补标逻辑或事件归属兜底。
+            if let Some(team_id) = s["team_id"].as_str() {
+                if session.team_id.is_none() {
+                    if let Some(mut entry) = self.identities.get_mut(&session.id) {
+                        entry.team_id = Some(team_id.to_string());
+                    }
+                }
+            }
             if let Some(last_active) = s["last_active"].as_i64() {
                 session.last_active.store(last_active, Ordering::Relaxed);
             }
@@ -1165,6 +1177,36 @@ impl TrunkStore {
         }
     }
 
+    /// 从事件日志里的会话 id 补建缺失的身份条目（含归属）。
+    ///
+    /// 事件是事实来源：identities 元数据可能缺失（旧档/写入失败），但事件
+    /// 里的 `session` 归属足以把会话恢复到注册表——否则 Panel 的会话
+    /// 列表丢失这些会话（入口行「会话」按钮不出现）。
+    fn ensure_identities_for_events(&self, events: &[echo_session::SessionEvent]) {
+        let current_team = self.team_id();
+        for event in events {
+            let Some(id) = event.session() else {
+                continue;
+            };
+            if self.identities.contains_key(id) {
+                continue;
+            }
+            let Some(key) = SessionKey::parse(id) else {
+                continue;
+            };
+            let session = Session::with_trunk(
+                &key,
+                current_team.clone(),
+                String::new(),
+                None,
+                self.history_or_create(id),
+                Arc::clone(&self.trunk_turn_lock),
+                Arc::clone(&self.trunk_turn_queue),
+            );
+            self.identities.insert(id.to_string(), session);
+        }
+    }
+
     /// The full event log (oldest first) — the durable source of truth.
     pub fn event_log(&self) -> Vec<echo_session::SessionEvent> {
         self.event_log.log()
@@ -1222,6 +1264,7 @@ pub fn trim_by_tokens(history: &mut Vec<ChatMessage>, token_limit: usize) {
 fn identity_metadata(session: &Session) -> serde_json::Value {
     serde_json::json!({
         "id": session.id,
+        "team_id": session.team_id,
         "platform": session.session_key.platform,
         "scope": session.session_key.scope,
         "scope_id": session.session_key.scope_id,
