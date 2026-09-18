@@ -255,6 +255,114 @@ impl NapCatClient {
 
     /// Log into the NapCat WebUI with `webui.json`'s token and return the
     /// short-lived credential used by the WebUI API.
+    /// 确保 NapCat「启动时自动登录」已开启：
+    /// 1. WebUI CheckLoginStatus：已登录则把该账号写入 webui.json 的
+    ///    `autoLoginAccount`（容器内 sed 原地改，重启容器后 NapCat 直接快速登录）；
+    /// 2. 未登录则调用 SetQuickLogin 拉快速登录（失败忽略——回退到扫码流程）。
+    ///
+    /// 在适配器启动（NapCat 容器就绪后）调用一次；失败只告警不阻塞启动。
+    pub async fn ensure_quick_login(&self, container_name: &str, webui_token: &str) {
+        let credential = match self.webui_login(webui_token).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(%e, "NapCat webui login failed; skip quick-login ensure");
+                return;
+            }
+        };
+
+        // 已登录？→ 把当前账号固化到 webui.json 的 autoLoginAccount。
+        let status_url = format!("{}/api/QQLogin/CheckLoginStatus", self.base_url);
+        let is_login = self
+            .client
+            .post(&status_url)
+            .bearer_auth(&credential)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .ok()
+            .and_then(|r: reqwest::Response| {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(r.json::<Value>()).ok()
+                })
+            })
+            .and_then(|body: Value| {
+                body.pointer("/data/isLogin").and_then(|v| v.as_bool())
+            })
+            .unwrap_or(false);
+
+        let uin: Option<String> = if is_login {
+            // 登录中：取快速登录列表第一个账号（NapCat 只支持单账号）。
+            let list_url = format!("{}/api/QQLogin/GetQuickLoginList", self.base_url);
+            self.client
+                .post(&list_url)
+                .bearer_auth(&credential)
+                .json(&serde_json::json!({}))
+                .send()
+                .await
+                .ok()
+                .and_then(|r: reqwest::Response| {
+                    tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(r.json::<Value>()).ok()
+                    })
+                })
+                .and_then(|body: Value| {
+                    body.get("data")
+                        .and_then(|d| d.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|u| u.as_str().map(str::to_string).or_else(|| u.as_i64().map(|n| n.to_string())))
+                })
+        } else {
+            None
+        };
+
+        let container = container_name.to_string();
+        if is_login {
+            if let Some(uin) = uin {
+                let uin_for_log = uin.clone();
+                let written = tokio::task::spawn_blocking(move || {
+                    ensure_autologin_in_container(&container, &uin)
+                })
+                .await;
+                match written {
+                    Ok(Ok(())) => {
+                        tracing::info!(uin = %uin_for_log, "NapCat autoLoginAccount ensured")
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, "write autoLoginAccount failed")
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "write autoLoginAccount task failed")
+                    }
+                }
+            }
+            return;
+        }
+
+        // 未登录：尝试快速登录（登录态已失效/被踢时由扫码流程兜底）。
+        let set_url = format!("{}/api/QQLogin/SetQuickLogin", self.base_url);
+        let body = self
+            .client
+            .post(&set_url)
+            .bearer_auth(&credential)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .ok()
+            .and_then(|r: reqwest::Response| {
+                tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(r.json::<Value>()).ok()
+                })
+            });
+        match body {
+            Some(b) if b.get("code").and_then(|c| c.as_i64()) == Some(0) => {
+                tracing::info!("NapCat quick login succeeded");
+            }
+            other => {
+                tracing::info!(?other, "NapCat quick login unavailable; fall back to QR flow");
+            }
+        }
+    }
+
     async fn webui_login(&self, webui_token: &str) -> Result<String, String> {
         use sha2::{Digest, Sha256};
 
@@ -531,6 +639,26 @@ fn sha256_hex(input: &str) -> String {
 }
 
 /// Read the NapCat WebUI token from the container's `webui.json`.
+/// 在容器内把账号写入 webui.json 的 autoLoginAccount（sed 原地替换；
+/// 覆盖空值与旧值两种形态）。
+fn ensure_autologin_in_container(container_name: &str, uin: &str) -> Result<(), String> {
+    let script = format!(
+        "sed -i -E 's/\"autoLoginAccount\": \"[^\"]*\"/\"autoLoginAccount\": \"{uin}\"/' /app/napcat/config/webui.json"
+    );
+    let out = std::process::Command::new("docker")
+        .args(["exec", container_name, "sh", "-c", &script])
+        .output()
+        .map_err(|e| format!("docker exec failed: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "docker exec sed failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ))
+    }
+}
+
 pub fn webui_token_from_container(container_name: &str) -> Result<String, String> {
     use std::process::Command;
     let output = Command::new("docker")

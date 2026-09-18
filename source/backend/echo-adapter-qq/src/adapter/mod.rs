@@ -223,6 +223,14 @@ impl QqAdapter {
                             {
                                 tracing::warn!(error = %e, "NapCat auto-config failed; will retry");
                             }
+                            // 「启动时自动登录」：在线时固化 autoLoginAccount 到
+                            // webui.json；离线时尝试快速登录（失败回退扫码）。
+                            napcat
+                                .ensure_quick_login(
+                                    &inner.config.napcat_container,
+                                    &webui_token,
+                                )
+                                .await;
                         }
                         Err(e) => {
                             tracing::warn!(error = %e, "NapCat WebUI token unavailable; will retry");
