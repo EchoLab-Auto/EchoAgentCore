@@ -52,7 +52,13 @@ pub struct QqAdapterConfig {
     pub napcat_auto_start: bool,
     /// Stop the NapCat Docker container automatically when the QQ adapter
     /// stops. Does not remove the container or its data volumes.
-    #[serde(default = "default_true")]
+    ///
+    /// 默认 **false**（2026-09-18 起）：Core 停机/重启不再联动停止 NapCat——
+    /// 容器保持运行则 QQ 始终保持在线（NapCat 自身维持与 QQ 服务器的连接），
+    /// Core 重启只断反向 WS、重启后自动重连，用户无感知；同时避免频繁容器
+    /// 重启触发 QQ 安全策略导致快速登录凭证失效（"用户身份已失效"）。
+    /// 需要联动停止时显式配置 `napcat_auto_stop = true`。
+    #[serde(default)]
     pub napcat_auto_stop: bool,
     /// Docker Compose file used to start/stop the NapCat service. The file is
     /// relative to the Core working directory when no absolute path is given.
