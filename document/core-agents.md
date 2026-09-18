@@ -22,6 +22,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 ## 会话模型
 
 - 会话（Session）= 对话身份，由 `SessionKey`（platform:scope:user_id，多实例带 `@account`）标识，带昵称/群名/最后活跃/team_id
+- **会话归属的三层保证**（2026-09-18）：① 运行期创建时按 trunk 归属打标（`get_or_create` 取 `TrunkStore::team_id`）；② `get_or_create` 命中既有会话时若 team_id 为空就地补标（persona 组装顺序中 set_team_id 可能晚于会话恢复）；③ 恢复兜底——identities 元数据持久化/恢复 team_id，且事件日志里出现但元数据缺失的会话按事件归属补建注册（`ensure_identities_for_events`：事件是事实来源，元数据只是缓存）。缺任一层的后果：Panel 按 team 过滤会话时该 persona 的持久化会话全部消失（入口行「会话」按钮不出现）
 - **每个会话拥有独立的模型上下文**（多会话，2026-09）：事件日志是唯一事实来源，事件带 `session` 归属；`TrunkStore` 按会话投影出各自的 `history`（token 预算逐会话生效），不同会话的上下文互不可见——QQ 私聊、QQ 群、本地 TUI 是独立对话
 - **本地工作区通道**（2026-09-14）：本地来源（`platform=local`）的工作区专属对话上下文（`local:workspace:<workspace_id>:local_user`）——激活工作区即切换到的对话，见下节
 - 不同 agent 的上下文完全隔离（各自独立的事件日志与投影）
