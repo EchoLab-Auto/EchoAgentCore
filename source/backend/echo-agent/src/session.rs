@@ -835,8 +835,16 @@ impl TrunkStore {
     ) -> Session {
         let session_id = key.to_session_id();
         match self.identities.entry(session_id.clone()) {
-            dashmap::mapref::entry::Entry::Occupied(e) => {
+            dashmap::mapref::entry::Entry::Occupied(mut e) => {
                 e.get().touch();
+                // 旧会话恢复后再调 set_team_id 的场景（persona 组装顺序）：
+                // 既有会话的 team_id 还停留在 None，就地补标当前归属——否则
+                // 该 persona 的持久化会话在 Panel 按 team 过滤时全部消失。
+                if e.get().team_id.is_none() {
+                    if let Some(current) = self.team_id() {
+                        e.get_mut().team_id = Some(current);
+                    }
+                }
                 e.get().clone()
             }
             dashmap::mapref::entry::Entry::Vacant(v) => {
