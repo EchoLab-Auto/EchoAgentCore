@@ -64,6 +64,9 @@ pub struct QqAdapterConfig {
     /// relative to the Core working directory when no absolute path is given.
     #[serde(default = "default_napcat_compose_file")]
     pub napcat_compose_file: String,
+    /// 接收文件（群文件上传 / 私聊文件）的行为配置。
+    #[serde(default)]
+    pub files: QqFilesConfig,
 }
 
 fn default_true() -> bool {
@@ -110,6 +113,7 @@ impl Default for QqAdapterConfig {
             napcat_container: default_napcat_container(),
             napcat_container_data_dir: default_napcat_data_dir(),
             napcat_auto_start: default_true(),
+            files: QqFilesConfig::default(),
             napcat_auto_stop: default_true(),
             napcat_compose_file: default_napcat_compose_file(),
         }
@@ -366,6 +370,45 @@ impl Default for QqTriggerConfig {
             dm_auto_reply: true,
             group_at_reply: true,
         }
+    }
+}
+
+/// 接收文件的行为配置。
+///
+/// 群文件上传（`group_upload` 通知）与私聊文件（message 里的 `file` 段）
+/// 在 NapCat 侧可各自独立开关；下载失败/超限时仍会把条目送达 agent
+/// （`path = null` + `error` 说明），以免用户发了个文件却「石沉大海」。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct QqFilesConfig {
+    /// 接收文件的保存目录；空 = 默认数据目录
+    /// （`~/.local/share/echo-agent-core/downloads`，HOME 不可用时为
+    /// 工作目录下的 `downloads`）。
+    pub dir: String,
+    /// 单文件大小上限（MB）。超过则跳过下载（条目仍送达，带原因）。
+    pub max_mb: u64,
+    /// 是否接收群文件上传通知。
+    pub accept_group_upload: bool,
+    /// 是否接收私聊文件。
+    pub accept_private_file: bool,
+}
+
+impl Default for QqFilesConfig {
+    fn default() -> Self {
+        Self {
+            dir: String::new(),
+            max_mb: 100,
+            accept_group_upload: true,
+            accept_private_file: true,
+        }
+    }
+}
+
+impl QqFilesConfig {
+    /// 单文件大小上限（字节）；`max_mb` 为 0 时回退默认 100MB。
+    pub fn max_bytes(&self) -> u64 {
+        let mb = if self.max_mb == 0 { 100 } else { self.max_mb };
+        mb.saturating_mul(1024 * 1024)
     }
 }
 

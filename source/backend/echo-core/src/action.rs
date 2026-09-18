@@ -98,6 +98,21 @@ pub mod actions {
             json!({ "user_id": user_id, "file": file, "name": name }),
         )
     }
+    /// 获取群文件下载直链（NapCat：参数 group_id/file_id 均为字符串）。
+    ///
+    /// `file_id` 是 NapCat 编码的文件 ID（群文件上传通知或消息 file 段给出）。
+    pub fn get_group_file_url(group_id: i64, file_id: &str) -> ApiRequest {
+        ApiRequest::new(
+            "get_group_file_url",
+            json!({ "group_id": group_id.to_string(), "file_id": file_id }),
+        )
+    }
+
+    /// 获取私聊文件下载直链（NapCat 扩展接口）。
+    pub fn get_private_file_url(file_id: &str) -> ApiRequest {
+        ApiRequest::new("get_private_file_url", json!({ "file_id": file_id }))
+    }
+
     /// Send a message to either a group or a private chat.
     pub fn send_msg(
         message_type: &str,
@@ -270,6 +285,21 @@ mod tests {
         assert_eq!(json["params"]["user_id"], 20001);
         assert_eq!(json["params"]["file"], "/tmp/b.zip");
         assert_eq!(json["params"]["name"], "b.zip");
+    }
+
+    #[test]
+    fn file_url_actions_use_string_params() {
+        // NapCat 的 schema 要求 group_id/file_id 为字符串；数字会被拒或需隐式转换。
+        let group = actions::get_group_file_url(30001, "file-uuid-1");
+        let json = serde_json::to_value(&group).unwrap();
+        assert_eq!(json["action"], "get_group_file_url");
+        assert_eq!(json["params"]["group_id"], "30001");
+        assert_eq!(json["params"]["file_id"], "file-uuid-1");
+
+        let private = actions::get_private_file_url("file-uuid-2");
+        let json = serde_json::to_value(&private).unwrap();
+        assert_eq!(json["action"], "get_private_file_url");
+        assert_eq!(json["params"]["file_id"], "file-uuid-2");
     }
 
     #[test]

@@ -502,6 +502,7 @@ mod tests {
             at_me: true,
             metadata: serde_json::Value::Null,
             images: vec![],
+            files: vec![],
         }
     }
 
@@ -520,6 +521,7 @@ mod tests {
             at_me: true,
             metadata: serde_json::Value::Null,
             images: vec![],
+            files: vec![],
         }
     }
 
@@ -830,6 +832,7 @@ mod tests {
             at_me: true,
             metadata: serde_json::Value::Null,
             images: vec![],
+            files: vec![],
         };
         assert!(matches!(
             f.check(&group_msg("a")).await,

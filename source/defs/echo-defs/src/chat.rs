@@ -52,6 +52,24 @@ impl std::fmt::Display for ChannelType {
     }
 }
 
+/// An inbound file attachment, downloaded to the local machine.
+///
+/// Adapters that can receive files (e.g. QQ group uploads / private files)
+/// download the bytes next to the incoming message and surface them here;
+/// the agent reads `path` with its file/bash tools.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IncomingFile {
+    /// File name as shown on the platform (e.g. `report.pdf`).
+    pub name: String,
+    /// Absolute path of the downloaded file; `None` when the download
+    /// failed (see `error`) or was skipped (e.g. over the size limit).
+    pub path: Option<String>,
+    /// File size in bytes as reported by the platform (0 = unknown).
+    pub size: u64,
+    /// Download failure/skip reason when `path` is `None`.
+    pub error: Option<String>,
+}
+
 /// An inbound message from a platform adapter.
 #[derive(Debug, Clone)]
 pub struct IncomingMessage {
@@ -80,6 +98,11 @@ pub struct IncomingMessage {
     /// Populated by adapters that carry media (e.g. QQ images); the agent
     /// forwards them to vision-capable models. Empty for text-only messages.
     pub images: Vec<String>,
+    /// File attachments already downloaded to this machine.
+    ///
+    /// Empty for messages without files. Populated by adapters that support
+    /// file transfer (e.g. QQ group uploads); see [`IncomingFile`].
+    pub files: Vec<IncomingFile>,
 }
 
 /// Describes where to send a reply message.

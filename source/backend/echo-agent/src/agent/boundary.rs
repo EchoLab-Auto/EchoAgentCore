@@ -32,6 +32,11 @@ impl BoundaryKind {
                 "# QQ transport boundary\n\
                  This input is an external QQ message (<qq_message_hook>); read \
                  sender and group IDs from the structured hook payload.\n\
+                 Files: when payload.files is non-empty, the QQ user attached \
+                 files that were already downloaded to this machine — read each \
+                 entry's local path (files[].path) with read_file or bash. A \
+                 null path means the download failed/skipped; files[].error \
+                 explains why — tell the user concisely instead of guessing.\n\
                  Answer every <qq_message_hook> exactly once via a send tool: \
                  send_private_msg for private chats (user_id from \
                  payload.sender.user_id), send_group_msg for groups (group_id \

@@ -12,6 +12,7 @@
 pub mod adapter;
 pub mod config;
 pub mod file_bridge;
+pub mod files;
 pub mod handler;
 pub mod napcat;
 

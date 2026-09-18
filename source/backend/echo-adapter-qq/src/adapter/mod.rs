@@ -14,7 +14,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use echo_adapter::filter::FilterPipeline;
 use echo_adapter::traits::{Adapter, AdapterConnectionState, AdapterError, AdapterInfo, GateMode};
-use echo_adapter::types::{AdapterEvent, ChannelType, IncomingMessage, MessageTarget, SendResult};
+use echo_adapter::types::{
+    AdapterEvent, ChannelType, IncomingFile, IncomingMessage, MessageTarget, SendResult,
+};
 use echo_core::{Event as OneBotEvent, MessageEvent, Segment};
 use echo_server::{ConnCallback, Context, HandlerRegistry, Server, ServerConfig};
 use tokio::sync::mpsc;
@@ -685,11 +687,11 @@ impl QqAdapter {
                 _ => None,
             })
             .collect();
-        // 纯图片消息（无文本）也要送达：以标记文本承载内容，
-        // 图片 URL 经 images 字段传递，模型可通过视觉能力解读。
-        if content.trim().is_empty() && images.is_empty() {
-            return None;
-        }
+        // 文件段（NapCat 扩展）：**私聊专收**。群聊的文件消息由 group_upload
+        // 通知负责——同一上传会在 NapCat 侧双上报（message + notice），这里
+        // 跳过群聊 file 段，避免重复下载与重复送达。
+        // pending 明细（file_id/url）经 metadata 传给 handler 去换直链并下载；
+        // files 先放占位条目（name/size），两者按顺序一一对应。
         let (channel, group_name) = if let Some(gid) = msg.group_id() {
             (
                 ChannelType::Group {
@@ -699,6 +701,57 @@ impl QqAdapter {
             )
         } else {
             (ChannelType::Direct, None)
+        };
+        let mut files: Vec<IncomingFile> = Vec::new();
+        let mut pending: Vec<serde_json::Value> = Vec::new();
+        if !channel.is_group() {
+            for seg in msg.message() {
+                match seg {
+                    echo_core::segment::Segment::Known(
+                        echo_core::segment::KnownSegment::File { data },
+                    ) => {
+                        let name = if data.file.trim().is_empty() {
+                            "未命名文件".to_string()
+                        } else {
+                            data.file.clone()
+                        };
+                        let size = data
+                            .file_size
+                            .as_deref()
+                            .and_then(|raw| raw.parse::<u64>().ok())
+                            .unwrap_or(0);
+                        files.push(IncomingFile {
+                            name: name.clone(),
+                            path: None,
+                            size,
+                            error: None,
+                        });
+                        pending.push(serde_json::json!({
+                            "name": name,
+                            "size": size,
+                            "file_id": data.file_id,
+                            "url": data.url,
+                        }));
+                    }
+                    echo_core::segment::Segment::Known(
+                        echo_core::segment::KnownSegment::OnlineFile { .. },
+                    ) => {
+                        // 「在线文件」段没有直链也没有可取用的 file_id，暂不支持。
+                        tracing::debug!("onlinefile segment ignored (unsupported)");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // 纯图片/纯文件消息（无文本）也要送达：图片经 images、文件经 files
+        // 字段传递，模型据此解读或读取本地文件。
+        if content.trim().is_empty() && images.is_empty() && files.is_empty() {
+            return None;
+        }
+        let metadata = if pending.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::json!({ "pending_files": pending })
         };
         Some(IncomingMessage {
             adapter_name: "qq".into(),
@@ -710,8 +763,9 @@ impl QqAdapter {
             content,
             timestamp: msg.timestamp(),
             at_me: msg.at_me(),
-            metadata: serde_json::Value::Null,
+            metadata,
             images,
+            files,
         })
     }
 }
@@ -1580,6 +1634,111 @@ mod tests {
         let msg = QqAdapter::convert_message(&event, &names).expect("image message accepted");
         assert!(msg.content.is_empty(), "image-only message has no text");
         assert_eq!(msg.images, vec!["https://example.com/abc.png".to_string()]);
+    }
+
+    #[test]
+    fn converts_private_file_segment_with_pending_metadata() {
+        // 私聊文件消息：files 放占位（name/size），待下载明细（file_id/url）
+        // 走 metadata.pending_files 交给 handler。
+        let event = serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "private",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "friend",
+            "message_id": 43,
+            "user_id": 123456,
+            "message": [{"type": "file", "data": {
+                "file": "report.pdf", "file_id": "uuid-1", "file_size": "2048",
+                "url": "https://cdn.example/report.pdf"
+            }}],
+            "raw_message": "",
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester"}
+        }))
+        .unwrap();
+        let names = dashmap::DashMap::new();
+        let msg = QqAdapter::convert_message(&event, &names).expect("file-only message accepted");
+        assert!(msg.content.is_empty());
+        assert_eq!(msg.files.len(), 1);
+        assert_eq!(msg.files[0].name, "report.pdf");
+        assert_eq!(msg.files[0].size, 2048);
+        assert!(msg.files[0].path.is_none());
+        let pending = &msg.metadata["pending_files"];
+        assert_eq!(pending[0]["file_id"], "uuid-1");
+        assert_eq!(pending[0]["url"], "https://cdn.example/report.pdf");
+    }
+
+    #[test]
+    fn private_file_segment_without_url_keeps_lookup_id() {
+        let event = serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "private",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "friend",
+            "message_id": 44,
+            "user_id": 123456,
+            "message": [{"type": "file", "data": {"file": "a.zip", "file_id": "uuid-2"}}],
+            "raw_message": "",
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester"}
+        }))
+        .unwrap();
+        let names = dashmap::DashMap::new();
+        let msg = QqAdapter::convert_message(&event, &names).expect("accepted");
+        assert_eq!(msg.files[0].size, 0, "unknown size defaults to 0");
+        assert_eq!(msg.metadata["pending_files"][0]["url"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn group_file_segment_is_ignored() {
+        // 群聊文件消息由 group_upload 通知负责：message 里的 file 段被跳过
+        // （NapCat 对同一次上传双上报），纯文件群消息直接丢弃。
+        let event = serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "group",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "normal",
+            "message_id": 45,
+            "group_id": 30001,
+            "user_id": 123456,
+            "message": [{"type": "file", "data": {"file": "a.zip", "file_id": "uuid-3"}}],
+            "raw_message": "",
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester"}
+        }))
+        .unwrap();
+        let names = dashmap::DashMap::new();
+        assert!(QqAdapter::convert_message(&event, &names).is_none());
+    }
+
+    #[test]
+    fn group_file_segment_with_text_keeps_text_only() {
+        let event = serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "group",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "normal",
+            "message_id": 46,
+            "group_id": 30001,
+            "user_id": 123456,
+            "message": [
+                {"type": "text", "data": {"text": "看这个"}},
+                {"type": "file", "data": {"file": "a.zip", "file_id": "uuid-4"}}
+            ],
+            "raw_message": "",
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester"}
+        }))
+        .unwrap();
+        let names = dashmap::DashMap::new();
+        let msg = QqAdapter::convert_message(&event, &names).expect("text kept");
+        assert_eq!(msg.content, "看这个");
+        assert!(msg.files.is_empty(), "group file segments do not populate files");
+        assert_eq!(msg.metadata, serde_json::Value::Null);
     }
 }
 

@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use echo_adapter::types::{AdapterEvent, IncomingMessage};
-use echo_core::Event as OneBotEvent;
+use echo_adapter::types::{AdapterEvent, ChannelType, IncomingFile, IncomingMessage};
+use echo_core::{Event as OneBotEvent, NoticeEvent};
 use echo_server::{Context, HandleResult};
 
 use crate::adapter::{QqAdapter, QqInner};
@@ -40,8 +40,15 @@ impl echo_server::Handler for QqHandler {
         *self.inner.active_context.lock().expect("ctx poisoned") = Some(Arc::new(ctx.clone()));
 
         // Lazily learn group names: OneBot group events carry only group_id,
-        // so query the name once and cache it for later messages.
-        if let Some(gid) = event.as_message().and_then(|msg| msg.group_id()) {
+        // so query the name once and cache it for later messages. Group file
+        // uploads (notice) are covered too — their payload only has the id.
+        let event_group_id = event.as_message().and_then(|msg| msg.group_id()).or_else(|| match event {
+            OneBotEvent::Notice {
+                inner: NoticeEvent::GroupUpload { group_id, .. },
+            } => Some(*group_id),
+            _ => None,
+        });
+        if let Some(gid) = event_group_id {
             if !self.inner.group_names.contains_key(&gid) {
                 let group_names = self.inner.group_names.clone();
                 let ctx = Arc::new(ctx.clone());
@@ -64,6 +71,36 @@ impl echo_server::Handler for QqHandler {
                     }
                 });
             }
+        }
+
+        // ── 群文件上传通知 ──
+        // NapCat 对「群成员上传文件」双上报：`group_upload` 通知 + 一条
+        // 带 file 段的消息。消息侧已在 convert_message 跳过 file 段
+        // （群聊），这里独占处理，避免重复下载与重复送达。
+        if let Some(mut file_msg) = self.group_upload_message(event) {
+            if !self.inner.config.files.accept_group_upload {
+                tracing::debug!(group = %file_msg.channel, "QQ group file dropped: accept_group_upload disabled");
+                return HandleResult::Pass;
+            }
+            // 群文件没有 @ 语义：不受 group_at_reply 控制，但同样走过滤管线
+            // （白/黑名单、限流等与普通消息一致）。
+            let pipeline_opt = self.inner.filter.lock().expect("filter poisoned").clone();
+            if let Some(pipeline) = pipeline_opt {
+                let (accepted, _) = pipeline.should_accept(&file_msg).await;
+                if !accepted {
+                    tracing::info!(user = %file_msg.user_id, channel = %file_msg.channel, "QQ group file blocked by filter pipeline");
+                    return HandleResult::Handled;
+                }
+            }
+            self.resolve_pending_files(&mut file_msg).await;
+            tracing::info!(
+                user = %file_msg.user_id,
+                channel = %file_msg.channel,
+                files = file_msg.files.len(),
+                "QQ group file upload accepted, routing to agent"
+            );
+            self.deliver(file_msg).await;
+            return HandleResult::Handled;
         }
 
         let Some(msg) = QqAdapter::convert_message(event, &self.inner.group_names) else {
@@ -102,14 +139,195 @@ impl echo_server::Handler for QqHandler {
             }
         }
 
+        let mut msg = msg;
+        // 私聊文件（消息 file 段）：在过滤通过后下载，避免被拦截的消息
+        // 白白拉取大文件。
+        self.resolve_pending_files(&mut msg).await;
+
         tracing::info!(
             user = %msg.user_id,
             channel = %msg.channel,
             "QQ message accepted, routing to agent"
         );
 
-        // Deliver to the one-way hook. Agent output can only reach QQ through
-        // an explicit send tool; it is never returned through this boundary.
+        self.deliver(msg).await;
+        HandleResult::Handled
+    }
+}
+
+impl QqHandler {
+    /// 把 `group_upload` 通知转换成内部 IncomingMessage（含待下载登记）。
+    fn group_upload_message(&self, event: &OneBotEvent) -> Option<IncomingMessage> {
+        let OneBotEvent::Notice {
+            inner: NoticeEvent::GroupUpload {
+                time,
+                group_id,
+                user_id,
+                file,
+                ..
+            },
+        } = event
+        else {
+            return None;
+        };
+        let name = if file.name.trim().is_empty() {
+            "未命名文件".to_string()
+        } else {
+            file.name.clone()
+        };
+        let size = file.size.max(0) as u64;
+        let pending = serde_json::json!([{
+            "name": name,
+            "size": size,
+            "file_id": file.id,
+            "url": serde_json::Value::Null,
+            "group_id": group_id,
+        }]);
+        Some(IncomingMessage {
+            adapter_name: "qq".into(),
+            platform: "qq".into(),
+            user_id: user_id.to_string(),
+            user_name: String::new(),
+            channel: ChannelType::Group {
+                group_id: group_id.to_string(),
+            },
+            group_name: self.inner.group_names.get(group_id).map(|n| n.clone()),
+            content: String::new(),
+            timestamp: *time,
+            at_me: false,
+            metadata: serde_json::json!({ "pending_files": pending }),
+            images: vec![],
+            files: vec![IncomingFile {
+                name,
+                path: None,
+                size,
+                error: None,
+            }],
+        })
+    }
+
+    /// 通过 OneBot 接口换文件下载直链：群文件走 `get_group_file_url`，
+    /// 私聊文件走 `get_private_file_url`。
+    async fn fetch_file_url(&self, file_id: &str, group_id: Option<i64>) -> Result<String, String> {
+        let ctx = self
+            .inner
+            .active_context
+            .lock()
+            .expect("ctx poisoned")
+            .clone()
+            .ok_or_else(|| "no QQ connection active".to_string())?;
+        let request = match group_id {
+            Some(gid) => echo_core::action::actions::get_group_file_url(gid, file_id),
+            None => echo_core::action::actions::get_private_file_url(file_id),
+        };
+        let resp = ctx.send_api(request).await.map_err(|e| e.to_string())?;
+        if !resp.is_ok() {
+            return Err(resp
+                .error_message()
+                .unwrap_or_else(|| "get file url failed".to_string()));
+        }
+        resp.data
+            .get("url")
+            .and_then(|v| v.as_str())
+            .filter(|u| !u.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| "file url missing in response".to_string())
+    }
+
+    /// 下载 `metadata.pending_files` 登记的文件（与 `files` 占位按序对应），
+    /// 把结果写回 `files`（path/error），并把人类可读描述拼进 `content`。
+    async fn resolve_pending_files(&self, msg: &mut IncomingMessage) {
+        let pending = match msg.metadata.get("pending_files").and_then(|v| v.as_array()) {
+            Some(list) if !list.is_empty() => list.clone(),
+            _ => return,
+        };
+        let cfg = &self.inner.config.files;
+        let dir = crate::files::resolve_dir(&cfg.dir);
+        let max_bytes = cfg.max_bytes();
+
+        for (index, entry) in pending.iter().enumerate() {
+            if index >= msg.files.len() {
+                break;
+            }
+            let name = entry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let file_id = entry
+                .get("file_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let url = entry
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let group_id = entry.get("group_id").and_then(|v| v.as_i64());
+
+            // 已知大小超限：直接跳过（条目仍送达，带原因）。
+            if msg.files[index].size > max_bytes {
+                msg.files[index].error = Some(format!(
+                    "超过大小上限（{} > {}）",
+                    format_size(msg.files[index].size),
+                    format_size(max_bytes)
+                ));
+                continue;
+            }
+
+            let download_url = match url {
+                Some(u) if !u.is_empty() => u,
+                _ if !file_id.is_empty() => match self.fetch_file_url(&file_id, group_id).await {
+                    Ok(u) => u,
+                    Err(error) => {
+                        tracing::warn!(%error, file = %name, "QQ file url lookup failed");
+                        msg.files[index].error = Some(format!("获取下载链接失败：{error}"));
+                        continue;
+                    }
+                },
+                _ => {
+                    msg.files[index].error = Some("文件缺少下载标识（file_id/url）".into());
+                    continue;
+                }
+            };
+
+            match crate::files::download_file(&download_url, &dir, &name, max_bytes).await {
+                Ok((path, size)) => {
+                    tracing::info!(file = %name, path = %path.display(), %size, "QQ file downloaded");
+                    msg.files[index].path = Some(path.display().to_string());
+                    if msg.files[index].size == 0 {
+                        msg.files[index].size = size;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, file = %name, "QQ file download failed");
+                    msg.files[index].error = Some(error);
+                }
+            }
+        }
+
+        // 清掉内部登记，不把下载细节带进下游 payload。
+        if let Some(obj) = msg.metadata.as_object_mut() {
+            obj.remove("pending_files");
+            if obj.is_empty() {
+                msg.metadata = serde_json::Value::Null;
+            }
+        }
+        // 人类可读描述进 content（面板展示用）；结构化明细在 files 字段。
+        let note = describe_files(&msg.files);
+        if !note.is_empty() {
+            if msg.content.trim().is_empty() {
+                msg.content = note;
+            } else {
+                msg.content.push('\n');
+                msg.content.push_str(&note);
+            }
+        }
+    }
+
+    /// 投递到单向 hook；无 hook 时转发给订阅者。
+    /// Agent 输出只能经显式 send 工具回到 QQ，绝不从这条边界回流。
+    async fn deliver(&self, msg: IncomingMessage) {
         let hook = self
             .inner
             .message_hook
@@ -128,9 +346,45 @@ impl echo_server::Handler for QqHandler {
                 let _ = tx.send(adapter_event.clone());
             }
         }
-
-        HandleResult::Handled
     }
+}
+
+/// 人类可读字节数（content 描述用；files 字段里保留精确值）。
+fn format_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let value = bytes as f64;
+    if bytes == 0 {
+        "大小未知".to_string()
+    } else if value >= GB {
+        format!("{:.1} GB", value / GB)
+    } else if value >= MB {
+        format!("{:.1} MB", value / MB)
+    } else if value >= KB {
+        format!("{:.1} KB", value / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// 文件列表 → content 里的简短描述（人类可读；结构化信息在 files 字段）。
+fn describe_files(files: &[IncomingFile]) -> String {
+    files
+        .iter()
+        .map(|f| {
+            let size = if f.size > 0 {
+                format!("（{}）", format_size(f.size))
+            } else {
+                String::new()
+            };
+            match (&f.path, &f.error) {
+                (None, Some(error)) => format!("（收到文件）{}{}未下载：{}", f.name, size, error),
+                _ => format!("（收到文件）{}{}", f.name, size),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// 单张图片最大内嵌体积（编码前字节数）；超出则保留原 URL。
@@ -258,6 +512,10 @@ mod tests {
             trigger,
             ..Default::default()
         };
+        test_inner_with_config(cfg)
+    }
+
+    fn test_inner_with_config(cfg: QqAdapterConfig) -> Arc<QqInner> {
         Arc::new(QqInner {
             persona: None,
             display_name: "QQ / OneBot".to_string(),
@@ -355,6 +613,228 @@ mod tests {
             "status": {"online": true}
         }))
         .unwrap()
+    }
+
+    fn group_upload_event(file_id: &str, name: &str, size: i64) -> Event {
+        serde_json::from_value(serde_json::json!({
+            "post_type": "notice",
+            "notice_type": "group_upload",
+            "time": 1700000000,
+            "self_id": 10001,
+            "group_id": 999,
+            "user_id": 123456,
+            "file": {"id": file_id, "name": name, "size": size, "busid": 102}
+        }))
+        .unwrap()
+    }
+
+    /// 极简 HTTP 文件服务（group_upload 直链下载测试用）。
+    fn serve_once(body: Vec<u8>) -> std::net::SocketAddr {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        addr
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "echo-qq-handler-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[tokio::test]
+    async fn group_upload_disabled_passes_without_delivery() {
+        let mut cfg = QqAdapterConfig::default();
+        cfg.files.accept_group_upload = false;
+        let inner = test_inner_with_config(cfg);
+        let handler = QqHandler::new(inner.clone());
+        let (ctx, _rx) = test_ctx();
+        assert_eq!(
+            handler.handle(&ctx, &group_upload_event("fid", "a.zip", 1024)).await,
+            HandleResult::Pass
+        );
+    }
+
+    #[tokio::test]
+    async fn group_upload_delivers_failed_entry_when_api_unavailable() {
+        // 连接侧已断开（api 通道关闭）→ 直链获取失败；条目仍送达
+        // （error 说明），避免用户发的文件「石沉大海」。
+        let inner = test_inner(QqTriggerConfig::default());
+        let hook = Arc::new(MockHook::new(Ok(())));
+        *inner.message_hook.lock().unwrap() = Some(hook.clone());
+        let handler = QqHandler::new(inner);
+        let (ctx, rx) = test_ctx();
+        drop(rx); // api 通道关闭：send_api 立即以 ConnectionClosed 失败
+        assert_eq!(
+            handler
+                .handle(&ctx, &group_upload_event("fid-1", "report.pdf", 2048))
+                .await,
+            HandleResult::Handled
+        );
+        let messages = hook.messages.lock().unwrap();
+        assert_eq!(messages.len(), 1, "file notice delivered once");
+        let msg = &messages[0];
+        assert!(msg.channel.is_group());
+        assert_eq!(msg.files.len(), 1);
+        assert_eq!(msg.files[0].name, "report.pdf");
+        assert!(msg.files[0].path.is_none());
+        let error = msg.files[0].error.as_deref().unwrap_or("");
+        assert!(error.contains("获取下载链接失败"), "err: {error}");
+        assert!(error.contains("connection closed"), "err: {error}");
+        assert!(
+            msg.content.contains("（收到文件）report.pdf（2.0 KB）未下载："),
+            "content: {}",
+            msg.content
+        );
+        // 内部登记不进入下游 payload。
+        assert!(msg.metadata.get("pending_files").is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_pending_files_reports_missing_identifier_without_network() {
+        let inner = test_inner(QqTriggerConfig::default());
+        let handler = QqHandler::new(inner);
+        let mut msg = IncomingMessage {
+            adapter_name: "qq".into(),
+            platform: "qq".into(),
+            user_id: "1".into(),
+            user_name: "t".into(),
+            channel: ChannelType::Direct,
+            group_name: None,
+            content: String::new(),
+            timestamp: 0,
+            at_me: false,
+            metadata: serde_json::json!({"pending_files": [{
+                "name": "x.bin", "size": 1, "file_id": "", "url": null
+            }]}),
+            images: vec![],
+            files: vec![IncomingFile {
+                name: "x.bin".into(),
+                path: None,
+                size: 1,
+                error: None,
+            }],
+        };
+        handler.resolve_pending_files(&mut msg).await;
+        let error = msg.files[0].error.as_deref().unwrap_or("");
+        assert!(error.contains("缺少下载标识"), "err: {error}");
+    }
+
+    #[tokio::test]
+    async fn resolve_pending_files_skips_over_limit() {
+        let mut cfg = QqAdapterConfig::default();
+        cfg.files.max_mb = 1;
+        let inner = test_inner_with_config(cfg);
+        let handler = QqHandler::new(inner);
+        let mut msg = IncomingMessage {
+            adapter_name: "qq".into(),
+            platform: "qq".into(),
+            user_id: "1".into(),
+            user_name: "t".into(),
+            channel: ChannelType::Direct,
+            group_name: None,
+            content: String::new(),
+            timestamp: 0,
+            at_me: false,
+            metadata: serde_json::json!({"pending_files": [{
+                "name": "big.bin", "size": 2 * 1024 * 1024u64,
+                "file_id": "fid", "url": "https://example.invalid/x"
+            }]}),
+            images: vec![],
+            files: vec![IncomingFile {
+                name: "big.bin".into(),
+                path: None,
+                size: 2 * 1024 * 1024,
+                error: None,
+            }],
+        };
+        handler.resolve_pending_files(&mut msg).await;
+        assert!(msg.files[0].path.is_none());
+        let error = msg.files[0].error.as_deref().unwrap_or("");
+        assert!(error.contains("超过大小上限"), "err: {error}");
+        assert!(msg.content.contains("未下载"), "content: {}", msg.content);
+        assert!(msg.metadata.get("pending_files").is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_pending_files_downloads_direct_url() {
+        let body = b"pdf-bytes".to_vec();
+        let addr = serve_once(body.clone());
+        let dir = temp_dir("download");
+        let mut cfg = QqAdapterConfig::default();
+        cfg.files.dir = dir.display().to_string();
+        let inner = test_inner_with_config(cfg);
+        let handler = QqHandler::new(inner);
+        let mut msg = IncomingMessage {
+            adapter_name: "qq".into(),
+            platform: "qq".into(),
+            user_id: "1".into(),
+            user_name: "t".into(),
+            channel: ChannelType::Direct,
+            group_name: None,
+            content: "看看这个".into(),
+            timestamp: 0,
+            at_me: false,
+            metadata: serde_json::json!({"pending_files": [{
+                "name": "report.pdf", "size": 9,
+                "file_id": "fid", "url": format!("http://{addr}/f")
+            }]}),
+            images: vec![],
+            files: vec![IncomingFile {
+                name: "report.pdf".into(),
+                path: None,
+                size: 9,
+                error: None,
+            }],
+        };
+        handler.resolve_pending_files(&mut msg).await;
+        let path = msg.files[0].path.as_deref().expect("downloaded path");
+        assert!(path.ends_with("-report.pdf"), "path: {path}");
+        assert_eq!(std::fs::read(path).unwrap(), body);
+        assert!(msg.content.starts_with("看看这个"));
+        assert!(msg.content.contains("（收到文件）report.pdf"), "content: {}", msg.content);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn format_and_describe_helpers() {
+        assert_eq!(format_size(0), "大小未知");
+        assert_eq!(format_size(512), "512 B");
+        assert_eq!(format_size(2048), "2.0 KB");
+        assert_eq!(format_size(5 * 1024 * 1024), "5.0 MB");
+        let files = vec![
+            IncomingFile {
+                name: "a.zip".into(),
+                path: Some("/tmp/a.zip".into()),
+                size: 2048,
+                error: None,
+            },
+            IncomingFile {
+                name: "b.zip".into(),
+                path: None,
+                size: 10,
+                error: Some("boom".into()),
+            },
+        ];
+        let text = describe_files(&files);
+        assert!(text.contains("（收到文件）a.zip（2.0 KB）"), "text: {text}");
+        assert!(text.contains("（收到文件）b.zip（10 B）未下载：boom"), "text: {text}");
     }
 
     #[tokio::test]

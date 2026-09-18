@@ -30,6 +30,15 @@ pub enum KnownSegment {
     Image { data: ImageData },
     /// Voice message. `{"type":"record","data":{"file":"..."}}`
     Record { data: RecordData },
+    /// File attachment (NapCat extension). `file` is the display name,
+    /// `file_id` the NapCat file UUID; `url` is only present when NapCat's
+    /// packet channel could resolve a direct link at conversion time.
+    File { data: FileData },
+    /// Online file / folder (NapCat extension, elementType 23/30):
+    /// no direct link — downloadable only via `get_file` keyed by
+    /// msgId+elementId, which the adapter does not support yet.
+    #[serde(rename = "onlinefile")]
+    OnlineFile { data: OnlineFileData },
     /// Video. `{"type":"video","data":{"file":"..."}}`
     Video { data: VideoData },
     /// @ a user; `qq = "all"` mentions everyone in a group.
@@ -153,6 +162,47 @@ pub struct RecordData {
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub magic: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct FileData {
+    /// Display name of the file (NapCat: `file`).
+    #[serde(default)]
+    pub file: String,
+    /// NapCat file UUID (usable with get_private_file_url / get_group_file_url).
+    #[serde(default)]
+    pub file_id: String,
+    /// Size in bytes; implementations send it as a string or a number.
+    #[serde(
+        default,
+        deserialize_with = "de_opt_string_or_int",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub file_size: Option<String>,
+    /// Direct download link, when available (packet channel online).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OnlineFileData {
+    /// Message id carrying the file element (NapCat uses camelCase keys).
+    #[serde(default, rename = "msgId", deserialize_with = "de_string_or_int")]
+    pub msg_id: String,
+    /// Element id inside that message.
+    #[serde(default, rename = "elementId", deserialize_with = "de_string_or_int")]
+    pub element_id: String,
+    #[serde(default, rename = "fileName")]
+    pub file_name: String,
+    #[serde(
+        default,
+        rename = "fileSize",
+        deserialize_with = "de_opt_string_or_int",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub file_size: Option<String>,
+    #[serde(default, rename = "isDir")]
+    pub is_dir: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -406,6 +456,56 @@ mod tests {
         let json = serde_json::to_value(&seg).unwrap();
         assert_eq!(json["type"], "at");
         assert_eq!(json["data"]["qq"], "all");
+    }
+
+    #[test]
+    fn parses_file_segment_with_url_and_size_as_string() {
+        // NapCat 的 file 段：file=显示名、file_id=UUID、file_size 可能是字符串。
+        let seg: Segment = serde_json::from_str(
+            r#"{"type":"file","data":{"file":"report.pdf","file_id":"abc123","file_size":"2048","url":"https://cdn.example/x"}}"#,
+        )
+        .unwrap();
+        match seg {
+            Segment::Known(KnownSegment::File { data }) => {
+                assert_eq!(data.file, "report.pdf");
+                assert_eq!(data.file_id, "abc123");
+                assert_eq!(data.file_size.as_deref(), Some("2048"));
+                assert_eq!(data.url.as_deref(), Some("https://cdn.example/x"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_file_segment_without_url() {
+        let seg: Segment = serde_json::from_str(
+            r#"{"type":"file","data":{"file":"a.zip","file_id":"u1","file_size":1024}}"#,
+        )
+        .unwrap();
+        match seg {
+            Segment::Known(KnownSegment::File { data }) => {
+                assert_eq!(data.file_size.as_deref(), Some("1024"));
+                assert_eq!(data.url, None);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_online_file_segment() {
+        let seg: Segment = serde_json::from_str(
+            r#"{"type":"onlinefile","data":{"msgId":"7001","elementId":"e2","fileName":"big.bin","fileSize":"99","isDir":false}}"#,
+        )
+        .unwrap();
+        match seg {
+            Segment::Known(KnownSegment::OnlineFile { data }) => {
+                assert_eq!(data.msg_id, "7001");
+                assert_eq!(data.element_id, "e2");
+                assert_eq!(data.file_name, "big.bin");
+                assert_eq!(data.is_dir, false);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     #[test]

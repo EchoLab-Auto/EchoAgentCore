@@ -123,6 +123,17 @@ heartbeat_interval = 30
 dm_auto_reply = true
 group_at_reply = true
 
+[adapters.qq.files]
+# 接收文件：群文件上传（group_upload 通知）与私聊文件（消息 file 段）会在
+# 过滤通过后下载到本机，并以本地路径（files[].path）随消息送达 agent。
+# 单文件大小上限（MB）；超过则跳过下载（消息仍送达并注明原因）。
+max_mb = 100
+# 是否接收群文件上传通知 / 私聊文件。
+accept_group_upload = true
+accept_private_file = true
+# 保存目录；留空 = 默认数据目录（~/.local/share/echo-agent-core/downloads）。
+# dir = ""
+
 [core]
 # Panel 连接用的 management WebSocket 监听地址。
 management_address = "127.0.0.1:3132"

@@ -204,6 +204,20 @@ fn format_hook_input(msg: &IncomingMessage, message_sequence: u64, received_at_m
             "group_name": msg.group_name
         }),
     };
+    // 文件附件（已下载到本机）：path 为绝对路径，工具可直接读；下载失败
+    // 时 path=null 并以 error 说明原因。
+    let files: Vec<serde_json::Value> = msg
+        .files
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "name": f.name,
+                "path": f.path,
+                "size": f.size,
+                "error": f.error,
+            })
+        })
+        .collect();
     let payload = serde_json::json!({
         "event": format!("{}_message", msg.platform),
         "adapter": msg.adapter_name,
@@ -219,7 +233,8 @@ fn format_hook_input(msg: &IncomingMessage, message_sequence: u64, received_at_m
         "message_sequence": message_sequence,
         "content": msg.content,
         "metadata": msg.metadata,
-        "images": msg.images
+        "images": msg.images,
+        "files": files
     });
     crate::input_marker::wrap_hook_value(&msg.platform, &payload)
 }
@@ -512,6 +527,7 @@ mod tests {
             at_me: false,
             metadata: serde_json::Value::Null,
             images: vec![],
+            files: vec![],
         }
     }
 
@@ -753,6 +769,44 @@ mod tests {
         );
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         assert_eq!(model_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn hook_input_includes_downloaded_files() {
+        let mut msg = dm_message("看这个文件");
+        msg.files = vec![
+            echo_defs::IncomingFile {
+                name: "a.zip".into(),
+                path: Some("/tmp/qq/a.zip".into()),
+                size: 10,
+                error: None,
+            },
+            echo_defs::IncomingFile {
+                name: "b.zip".into(),
+                path: None,
+                size: 20,
+                error: Some("获取下载链接失败：boom".into()),
+            },
+        ];
+        let text = format_hook_input(&msg, 7, 123);
+        let payload = crate::input_marker::hook_payload(&text).expect("hook payload");
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["message_sequence"], 7);
+        assert_eq!(value["files"][0]["name"], "a.zip");
+        assert_eq!(value["files"][0]["path"], "/tmp/qq/a.zip");
+        assert_eq!(value["files"][0]["size"], 10);
+        assert_eq!(value["files"][0]["error"], serde_json::Value::Null);
+        assert_eq!(value["files"][1]["path"], serde_json::Value::Null);
+        assert_eq!(value["files"][1]["error"], "获取下载链接失败：boom");
+    }
+
+    #[test]
+    fn hook_input_without_files_has_empty_list() {
+        let msg = dm_message("hi");
+        let text = format_hook_input(&msg, 1, 1);
+        let payload = crate::input_marker::hook_payload(&text).expect("hook payload");
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["files"], serde_json::json!([]));
     }
 
     #[tokio::test]
