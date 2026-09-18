@@ -1,4 +1,5 @@
 ---
+package: chat
 name: concise-dialogue
 description: 保持所有对话简洁、明确、直接；严格按请求量级输出；在 QQ 会话中限制单段消息长度
 metadata:
