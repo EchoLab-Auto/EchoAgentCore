@@ -52,6 +52,23 @@ impl InboundMessageHook for AgentMessageHook {
         let received_at_ms = chrono::Utc::now().timestamp_millis();
         let message_sequence = agent.next_message_sequence();
 
+        // 单会话模式：turn 与展示都在默认本地会话进行——展示层事件
+        // （SessionUpdated/MessageReceived）也要落在默认会话 id 上，否则
+        // 实时消息显示在 QQ 会话、turn 却跑在默认会话（两边都看不到完整
+        // 对话）。消息元数据保留 QQ 来源（平台/发送者/群），Panel 的来源
+        // 标签照常显示。
+        let single_mode = agent.loop_mode() == echo_defs::LoopMode::Single;
+        let display_session = if single_mode {
+            agent.trunk.get_or_create(
+                &crate::session::SessionKey::local_tui(),
+                "local user".into(),
+                None,
+            )
+        } else {
+            session.clone()
+        };
+        let display_session_id = display_session.id.clone();
+
         tracing::info!(
             message_sequence,
             adapter = %msg.adapter_name,
@@ -66,10 +83,10 @@ impl InboundMessageHook for AgentMessageHook {
         );
 
         agent.emit(BackendEvent::SessionUpdated {
-            session: session.info(String::new()),
+            session: display_session.info(String::new()),
         });
         agent.emit(BackendEvent::MessageReceived {
-            session_id: session_id.clone(),
+            session_id: display_session_id.clone(),
             adapter_name: msg.adapter_name.clone(),
             platform: msg.platform.clone(),
             user_id: msg.user_id.clone(),
@@ -134,15 +151,10 @@ impl InboundMessageHook for AgentMessageHook {
         // agent 自行判断是否回复（qq-transport 技能约束回复必须走发送工具）。
         // 不再为每条消息开临时回复分支（ReplyBranch 生命周期是并行模式
         // 专属的可见性机制）。
-        if agent.loop_mode() == echo_defs::LoopMode::Single {
-            let default_session = agent.trunk.get_or_create(
-                &crate::session::SessionKey::local_tui(),
-                "local user".into(),
-                None,
-            );
+        if single_mode {
             Arc::clone(agent)
                 .process_inbound_branch(
-                    &default_session,
+                    &display_session,
                     &hook_input,
                     message_sequence,
                     // group_id=None：后台来源，普通输出不推 QQ（回复只能经
@@ -601,6 +613,8 @@ mod tests {
     async fn single_mode_delivers_to_default_session_without_branch() {
         let hook = AgentMessageHook::new(mock_agent("后台完成"));
         assert_eq!(hook.agent.loop_mode(), echo_defs::LoopMode::Single);
+        let (bridge, handle) = crate::create_bridge();
+        hook.agent.attach(std::sync::Arc::new(handle));
         let result = hook.on_incoming_message(dm_message("hello")).await;
         assert_eq!(result, Ok(()));
         wait_until(|| {
@@ -633,6 +647,24 @@ mod tests {
                 .iter()
                 .any(|s| s.session_key.platform == "qq" && s.session_key.user_id == "123456")
         );
+
+        // 展示事件（SessionUpdated/MessageReceived）落在默认会话 id 上——
+        // 实时消息才会显示在默认会话（与 turn 所在的会话一致）。
+        let mut received = Vec::new();
+        while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+            received.push(event);
+        }
+        let message = received
+            .iter()
+            .find_map(|e| match e {
+                crate::event::BackendEvent::MessageReceived { session_id, content, .. } => {
+                    Some((session_id.clone(), content.clone()))
+                }
+                _ => None,
+            })
+            .expect("MessageReceived emitted");
+        assert_eq!(message.0, "local:tui::local_user");
+        assert_eq!(message.1, "hello");
     }
 
     #[tokio::test]
