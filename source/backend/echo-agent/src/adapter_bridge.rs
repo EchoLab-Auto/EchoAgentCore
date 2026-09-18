@@ -129,8 +129,33 @@ impl InboundMessageHook for AgentMessageHook {
             return Ok(());
         }
 
-        // Every inbound conversation turn runs as an isolated snapshot branch
-        // through the agent's single lifecycle implementation.
+        // 单会话模式（默认）：入站消息投递到该 persona 的**默认本地会话**
+        // （local:tui::local_user）——hook 输入带完整平台/发送者元数据，由
+        // agent 自行判断是否回复（qq-transport 技能约束回复必须走发送工具）。
+        // 不再为每条消息开临时回复分支（ReplyBranch 生命周期是并行模式
+        // 专属的可见性机制）。
+        if agent.loop_mode() == echo_defs::LoopMode::Single {
+            let default_session = agent.trunk.get_or_create(
+                &crate::session::SessionKey::local_tui(),
+                "local user".into(),
+                None,
+            );
+            Arc::clone(agent)
+                .process_inbound_branch(
+                    &default_session,
+                    &hook_input,
+                    message_sequence,
+                    // group_id=None：后台来源，普通输出不推 QQ（回复只能经
+                    // send_* 工具显式发出——agent 自行判断是否回复）。
+                    None,
+                    // 等待回复由主会话承载：投递即排队，不生成临时回复。
+                    std::time::Duration::from_secs(u64::MAX),
+                )
+                .await;
+            return Ok(());
+        }
+
+        // 并行多会话模式：每条消息开临时回复分支（保持原行为）。
         let group_id = msg.channel.group_id().map(str::to_string);
         Arc::clone(agent)
             .process_inbound_branch(
@@ -502,6 +527,8 @@ mod tests {
     #[tokio::test]
     async fn routes_message_through_one_way_hook() {
         let hook = AgentMessageHook::new(mock_agent("后台完成"));
+        // 本用例断言并行模式的分支语义（会话作用域注册在分支内）。
+        use_parallel_mode(&hook.agent).await;
         let result = hook.on_incoming_message(dm_message("hello")).await;
         assert_eq!(result, Ok(()));
         wait_until(|| {
@@ -539,6 +566,8 @@ mod tests {
     #[tokio::test]
     async fn group_message_uses_group_scope() {
         let hook = AgentMessageHook::new(mock_agent("ok"));
+        // 并行模式：会话按群作用域创建（单会话模式消息投递到默认会话）。
+        use_parallel_mode(&hook.agent).await;
         let mut msg = dm_message("hello");
         msg.channel = ChannelType::Group {
             group_id: "999".into(),
@@ -563,6 +592,47 @@ mod tests {
         let history = session.history.lock().await;
         assert!(history[0].content.contains("\"type\": \"group\""));
         assert!(history[0].content.contains("\"group_id\": \"999\""));
+    }
+
+    /// 单会话模式（默认）：QQ 入站消息投递到默认本地会话（hook 输入带
+    /// 完整平台/发送者元数据），不开临时回复分支、不发 QQ 临时回复；
+    /// 是否回复由 agent 自行判断（回复经发送工具）。
+    #[tokio::test]
+    async fn single_mode_delivers_to_default_session_without_branch() {
+        let hook = AgentMessageHook::new(mock_agent("后台完成"));
+        assert_eq!(hook.agent.loop_mode(), echo_defs::LoopMode::Single);
+        let result = hook.on_incoming_message(dm_message("hello")).await;
+        assert_eq!(result, Ok(()));
+        wait_until(|| {
+            hook.agent
+                .trunk
+                .all()
+                .iter()
+                .any(|s| {
+                    s.history
+                        .try_lock()
+                        .ok()
+                        .is_some_and(|h| h.iter().any(|m| m.content.contains("hello")))
+                })
+        })
+        .await;
+
+        // 消息落在默认本地会话，QQ 会话只注册为身份（不开分支、不跑 turn）。
+        let sessions = hook.agent.trunk.all();
+        let default = sessions
+            .iter()
+            .find(|s| s.id == "local:tui::local_user")
+            .expect("default local session");
+        let history = default.history.lock().await;
+        assert!(history[0].content.starts_with("<qq_message_hook>"));
+        assert!(history[0].content.contains("\"user_id\": \"123456\""));
+
+        // 会话键仍按 QQ 作用域注册（供 Panel 会话列表展示）。
+        assert!(
+            sessions
+                .iter()
+                .any(|s| s.session_key.platform == "qq" && s.session_key.user_id == "123456")
+        );
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 ---
 package: echo-agent.adapter.qq
 name: qq-transport
-description: QQ 消息收发闭环 — 收到带 <qq_message_hook> 的 QQ 消息必须通过发送工具回复；后台输入直接在后台回复，禁止误发 QQ
+description: QQ 消息收发闭环 — 收到带 <qq_message_hook> 的 QQ 消息时回复必须走发送工具；是否回复由你判断，不强制每条都回；后台输入直接在后台回复，禁止误发 QQ
 metadata:
   always: true
 ---
@@ -23,7 +23,10 @@ metadata:
 
 1. QQ 用户唯一能看到的是通过 send_private_msg 或 send_group_msg 工具发送的内容。你的普通文本输出只是后台日志，QQ 用户看不到，绝不能当作回复。
 
-2. 每收到一条 `<qq_message_hook>` 输入，必须且只能调用一次发送工具完成回复：
+2. 是否回复由你判断（单会话模式 2026-09-18 起：消息投递到默认会话的连续
+   对话中，不强制每条都回——明显不需要回应的消息（闲聊灌水、与已完成的
+   事务无关的感叹等）可以不回复，后台简短说明即可）。
+   决定回复时，回复必须且只能经发送工具发出：
    - 私聊（channel.type = private）：调用 send_private_msg，user_id 取 payload.sender.user_id
    - 群聊（channel.type = group）：调用 send_group_msg，group_id 取 payload.channel.group_id
 
