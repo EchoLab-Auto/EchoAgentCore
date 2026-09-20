@@ -170,6 +170,39 @@ impl MessageEvent {
         out
     }
 
+    /// 渲染为「人类/模型可读」的文本：文本原样，表情类消息段
+    /// （face / dice / rps / poke）渲染为可读标记，其余段跳过。
+    ///
+    /// 与 [`plain_text`](Self::plain_text) 的分工：命令解析等需要「纯文本」
+    /// 的场景用 `plain_text`（标记不能干扰 `/help` 之类的前缀判断）；
+    /// 把消息交给 agent（QQ 适配器的 content）或展示时用本方法——表情
+    /// 是消息语义的一部分（QQ 的 `face` 段只带数字 id，直接丢弃会让模型
+    /// 「读不到」消息里的表情）。
+    pub fn readable_text(&self) -> String {
+        let mut out = String::new();
+        for seg in self.message() {
+            match seg {
+                Segment::Known(crate::segment::KnownSegment::Text { data }) => {
+                    out.push_str(&data.text);
+                }
+                Segment::Known(crate::segment::KnownSegment::Face { data }) => {
+                    out.push_str(&crate::face::face_marker(&data.id));
+                }
+                Segment::Known(crate::segment::KnownSegment::Dice { data }) => {
+                    out.push_str(&dice_marker(data));
+                }
+                Segment::Known(crate::segment::KnownSegment::Rps { data }) => {
+                    out.push_str(&rps_marker(data));
+                }
+                Segment::Known(crate::segment::KnownSegment::Poke { .. }) => {
+                    out.push_str("[戳一戳]");
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
     pub fn message(&self) -> &[Segment] {
         match self {
             MessageEvent::Private { message, .. } => message,
@@ -448,6 +481,36 @@ impl MetaEvent {
     }
 }
 
+/// 表情类段的 `result` 字段（骰子点数 / 猜拳结果；字符串或数字皆可）。
+fn segment_result(data: &Value) -> Option<String> {
+    let value = data.get("result")?;
+    value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| value.as_i64().map(|n| n.to_string()))
+}
+
+/// `[骰子:4]`；无结果字段时 `[骰子]`。
+fn dice_marker(data: &Value) -> String {
+    match segment_result(data) {
+        Some(result) => format!("[骰子:{result}]"),
+        None => "[骰子]".to_string(),
+    }
+}
+
+/// `[石头剪刀布:剪刀]`（OneBot v11：1 石头、2 剪刀、3 布）；未知结果时回退数字。
+fn rps_marker(data: &Value) -> String {
+    let Some(result) = segment_result(data) else {
+        return "[石头剪刀布]".to_string();
+    };
+    match result.as_str() {
+        "1" => "[石头剪刀布:石头]".to_string(),
+        "2" => "[石头剪刀布:剪刀]".to_string(),
+        "3" => "[石头剪刀布:布]".to_string(),
+        _ => format!("[石头剪刀布:{result}]"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,6 +554,120 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn readable_text_renders_faces_and_keeps_plain_text_pure() {
+        let event: Event = serde_json::from_str(
+            r#"{
+                "post_type": "message",
+                "message_type": "private",
+                "time": 1696352000,
+                "self_id": 10001,
+                "sub_type": "friend",
+                "message_id": 9100,
+                "user_id": 20001,
+                "message": [
+                    {"type": "text", "data": {"text": "你好"}},
+                    {"type": "face", "data": {"id": "13"}},
+                    {"type": "text", "data": {"text": "在吗"}},
+                    {"type": "face", "data": {"id": "99999"}}
+                ],
+                "raw_message": "你好[CQ:face,id=13]在吗",
+                "font": 0,
+                "sender": {"user_id": 20001, "nickname": "Alice"}
+            }"#,
+        )
+        .unwrap();
+        let msg = event.as_message().unwrap();
+        // 可读渲染：文本原样 + 表情标记（未知 id 保留数字，可排查）。
+        assert_eq!(msg.readable_text(), "你好[表情:呲牙]在吗[表情:99999]");
+        // 命令解析等场景仍用纯文本：表情不进入 plain_text。
+        assert_eq!(msg.plain_text(), "你好在吗");
+    }
+
+    #[test]
+    fn readable_text_face_only_message_is_not_empty() {
+        // 纯表情消息此前 content 为空 → 被适配器整条丢弃；可读渲染非空。
+        let event: Event = serde_json::from_str(
+            r#"{
+                "post_type": "message",
+                "message_type": "private",
+                "time": 1696352000,
+                "self_id": 10001,
+                "sub_type": "friend",
+                "message_id": 9101,
+                "user_id": 20001,
+                "message": [{"type": "face", "data": {"id": "14"}}],
+                "raw_message": "[CQ:face,id=14]",
+                "font": 0,
+                "sender": {"user_id": 20001, "nickname": "Alice"}
+            }"#,
+        )
+        .unwrap();
+        let msg = event.as_message().unwrap();
+        assert_eq!(msg.readable_text(), "[表情:微笑]");
+        assert!(msg.plain_text().is_empty());
+    }
+
+    #[test]
+    fn readable_text_renders_dice_rps_and_poke() {
+        let event: Event = serde_json::from_str(
+            r#"{
+                "post_type": "message",
+                "message_type": "group",
+                "time": 1696352000,
+                "self_id": 10001,
+                "sub_type": "normal",
+                "message_id": 9102,
+                "group_id": 30001,
+                "user_id": 20001,
+                "message": [
+                    {"type": "dice", "data": {"result": "4"}},
+                    {"type": "rps", "data": {"result": 2}},
+                    {"type": "poke", "data": {"type": "1", "id": "2"}}
+                ],
+                "raw_message": "",
+                "font": 0,
+                "sender": {"user_id": 20001, "nickname": "Alice"}
+            }"#,
+        )
+        .unwrap();
+        let msg = event.as_message().unwrap();
+        assert_eq!(
+            msg.readable_text(),
+            "[骰子:4][石头剪刀布:剪刀][戳一戳]"
+        );
+    }
+
+    #[test]
+    fn readable_text_skips_media_but_keeps_order() {
+        // 图片/文件等段不进入文本渲染（分别经 images/files 通道），
+        // 但文本顺序不受影响。
+        let event: Event = serde_json::from_str(
+            r#"{
+                "post_type": "message",
+                "message_type": "private",
+                "time": 1696352000,
+                "self_id": 10001,
+                "sub_type": "friend",
+                "message_id": 9103,
+                "user_id": 20001,
+                "message": [
+                    {"type": "text", "data": {"text": "看图 "}},
+                    {"type": "image", "data": {"file": "a.png", "url": "https://example.com/a.png"}},
+                    {"type": "text", "data": {"text": " 表情 "}},
+                    {"type": "face", "data": {"id": "74"}}
+                ],
+                "raw_message": "看图 [CQ:image,file=a.png] 表情 [CQ:face,id=74]",
+                "font": 0,
+                "sender": {"user_id": 20001, "nickname": "Alice"}
+            }"#,
+        )
+        .unwrap();
+        let msg = event.as_message().unwrap();
+        // 74 = 太阳（NapCat sysface id 空间；注意与旧式 CQ 表不同）。
+        assert_eq!(msg.readable_text(), "看图  表情 [表情:太阳]");
     }
 
     #[test]

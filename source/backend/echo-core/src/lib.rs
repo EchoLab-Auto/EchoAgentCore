@@ -6,6 +6,7 @@
 
 pub mod action;
 pub mod event;
+pub mod face;
 pub mod message;
 pub mod model;
 pub mod segment;

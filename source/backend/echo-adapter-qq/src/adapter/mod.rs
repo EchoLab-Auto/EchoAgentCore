@@ -673,7 +673,11 @@ impl QqAdapter {
         if matches!(msg, MessageEvent::Unknown) {
             return None;
         }
-        let content = msg.plain_text();
+        // 内容用「可读渲染」：文本 + 表情类标记（[表情:微笑] / [骰子:4] /
+        // [石头剪刀布:布] / [戳一戳]）。此前用 plain_text()，消息里的 QQ
+        // 表情被整个丢弃——纯表情消息 content 为空还会被整条丢弃，
+        // agent 完全「读不到」表情。
+        let content = msg.readable_text();
         let images: Vec<String> = msg
             .message()
             .iter()
@@ -1773,6 +1777,82 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("在线文件夹"));
+    }
+
+    #[test]
+    fn face_only_message_is_delivered_with_readable_marker() {
+        // 纯表情消息：此前 content 为空且无图 → 整条丢弃（agent 读不到）；
+        // 现在可读渲染产出 [表情:…] 标记，消息正常送达。
+        let event = serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "private",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "friend",
+            "message_id": 60,
+            "user_id": 123456,
+            "message": [{"type": "face", "data": {"id": "13"}}],
+            "raw_message": "[CQ:face,id=13]",
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester"}
+        }))
+        .unwrap();
+        let names = dashmap::DashMap::new();
+        let msg = QqAdapter::convert_message(&event, &names).expect("face-only message accepted");
+        assert_eq!(msg.content, "[表情:呲牙]");
+        assert!(msg.images.is_empty());
+    }
+
+    #[test]
+    fn text_with_faces_keeps_order_and_names() {
+        let event = serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "private",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "friend",
+            "message_id": 61,
+            "user_id": 123456,
+            "message": [
+                {"type": "text", "data": {"text": "今天好累"}},
+                {"type": "face", "data": {"id": "5"}},
+                {"type": "face", "data": {"id": "99999"}}
+            ],
+            "raw_message": "今天好累[CQ:face,id=5]",
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester"}
+        }))
+        .unwrap();
+        let names = dashmap::DashMap::new();
+        let msg = QqAdapter::convert_message(&event, &names).expect("accepted");
+        assert_eq!(msg.content, "今天好累[表情:流泪][表情:99999]");
+    }
+
+    #[test]
+    fn dice_and_rps_messages_are_delivered() {
+        let event = serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "group",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "normal",
+            "message_id": 62,
+            "group_id": 30001,
+            "user_id": 123456,
+            "message": [
+                {"type": "at", "data": {"qq": "10001"}},
+                {"type": "dice", "data": {"result": "6"}}
+            ],
+            "raw_message": "[CQ:at,qq=10001][CQ:dice]",
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester", "card": ""}
+        }))
+        .unwrap();
+        let names = dashmap::DashMap::new();
+        let msg = QqAdapter::convert_message(&event, &names).expect("accepted");
+        assert_eq!(msg.content, "[骰子:6]");
+        // at 段仍被识别（@ 触发条件不受渲染改动影响）。
+        assert!(event.as_message().unwrap().at_me());
     }
 
     #[test]
