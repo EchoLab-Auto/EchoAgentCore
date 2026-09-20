@@ -734,10 +734,30 @@ impl QqAdapter {
                         }));
                     }
                     echo_core::segment::Segment::Known(
-                        echo_core::segment::KnownSegment::OnlineFile { .. },
+                        echo_core::segment::KnownSegment::OnlineFile { data },
                     ) => {
-                        // 「在线文件」段没有直链也没有可取用的 file_id，暂不支持。
-                        tracing::debug!("onlinefile segment ignored (unsupported)");
+                        // 「在线文件/文件夹」（QQ 直传，NapCat elementType 23/30）：
+                        // 不提供直链，必须先经 receive_online_file 触发接收，
+                        // 且接收后字节仍在 NapCat 侧（容器内）无法取回——
+                        // 暂不支持自动接收。但**不静默丢弃**：以显式错误条目
+                        // 送达，让 agent 如实告知用户（用户才能改用其他方式发）。
+                        let kind = if data.is_dir { "在线文件夹" } else { "在线文件" };
+                        let name = if data.file_name.trim().is_empty() {
+                            "未命名文件".to_string()
+                        } else {
+                            data.file_name.clone()
+                        };
+                        let size = data
+                            .file_size
+                            .as_deref()
+                            .and_then(|raw| raw.parse::<u64>().ok())
+                            .unwrap_or(0);
+                        files.push(IncomingFile {
+                            name,
+                            path: None,
+                            size,
+                            error: Some(format!("{kind}（QQ 直传）暂不支持自动接收")),
+                        });
                     }
                     _ => {}
                 }
@@ -1689,6 +1709,70 @@ mod tests {
         let msg = QqAdapter::convert_message(&event, &names).expect("accepted");
         assert_eq!(msg.files[0].size, 0, "unknown size defaults to 0");
         assert_eq!(msg.metadata["pending_files"][0]["url"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn online_file_segment_delivered_as_explicit_error() {
+        // 在线文件（NapCat elementType 23，QQ 直传）：不静默丢弃——
+        // 以显式错误条目送达，agent 可如实告知用户。
+        let event = serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "private",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "friend",
+            "message_id": 47,
+            "user_id": 123456,
+            "message": [{"type": "onlinefile", "data": {
+                "msgId": "7001", "elementId": "e2",
+                "fileName": "big.bin", "fileSize": "2048", "isDir": false
+            }}],
+            "raw_message": "",
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester"}
+        }))
+        .unwrap();
+        let names = dashmap::DashMap::new();
+        let msg = QqAdapter::convert_message(&event, &names).expect("onlinefile message accepted");
+        assert_eq!(msg.files.len(), 1);
+        assert_eq!(msg.files[0].name, "big.bin");
+        assert_eq!(msg.files[0].size, 2048);
+        assert!(msg.files[0].path.is_none());
+        assert!(msg.files[0]
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("暂不支持自动接收"));
+        // 无待下载登记（没有可换的直链）。
+        assert!(msg.metadata.is_null());
+    }
+
+    #[test]
+    fn online_folder_segment_names_folder_in_error() {
+        let event = serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "private",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "friend",
+            "message_id": 48,
+            "user_id": 123456,
+            "message": [{"type": "onlinefile", "data": {
+                "msgId": "7002", "elementId": "e3",
+                "fileName": "proj", "fileSize": "", "isDir": true
+            }}],
+            "raw_message": "",
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester"}
+        }))
+        .unwrap();
+        let names = dashmap::DashMap::new();
+        let msg = QqAdapter::convert_message(&event, &names).expect("accepted");
+        assert!(msg.files[0]
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("在线文件夹"));
     }
 
     #[test]

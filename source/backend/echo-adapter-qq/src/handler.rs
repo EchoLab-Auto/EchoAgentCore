@@ -140,6 +140,21 @@ impl echo_server::Handler for QqHandler {
         }
 
         let mut msg = msg;
+        // 私聊文件接收关闭：剥掉文件段——纯文件消息整体丢弃（与群文件
+        // 接收关闭时丢弃通知的语义一致），文本/图片照常送达。
+        if !self.inner.config.files.accept_private_file && !msg.files.is_empty() {
+            tracing::debug!(user = %msg.user_id, "QQ private file dropped: accept_private_file disabled");
+            msg.files.clear();
+            if let Some(obj) = msg.metadata.as_object_mut() {
+                obj.remove("pending_files");
+                if obj.is_empty() {
+                    msg.metadata = serde_json::Value::Null;
+                }
+            }
+            if msg.content.trim().is_empty() && msg.images.is_empty() {
+                return HandleResult::Pass;
+            }
+        }
         // 私聊文件（消息 file 段）：在过滤通过后下载，避免被拦截的消息
         // 白白拉取大文件。
         self.resolve_pending_files(&mut msg).await;
@@ -237,10 +252,18 @@ impl QqHandler {
     /// 下载 `metadata.pending_files` 登记的文件（与 `files` 占位按序对应），
     /// 把结果写回 `files`（path/error），并把人类可读描述拼进 `content`。
     async fn resolve_pending_files(&self, msg: &mut IncomingMessage) {
-        let pending = match msg.metadata.get("pending_files").and_then(|v| v.as_array()) {
+        let pending: Vec<serde_json::Value> = match msg
+            .metadata
+            .get("pending_files")
+            .and_then(|v| v.as_array())
+        {
             Some(list) if !list.is_empty() => list.clone(),
-            _ => return,
+            _ => Vec::new(),
         };
+        if msg.files.is_empty() {
+            // 无文件（普通文本/图片消息）：无事可做。
+            return;
+        }
         let cfg = &self.inner.config.files;
         let dir = crate::files::resolve_dir(&cfg.dir);
         let max_bytes = cfg.max_bytes();
@@ -707,6 +730,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_file_disabled_drops_file_only_message() {
+        let mut cfg = QqAdapterConfig::default();
+        cfg.files.accept_private_file = false;
+        let inner = test_inner_with_config(cfg);
+        let hook = Arc::new(MockHook::new(Ok(())));
+        *inner.message_hook.lock().unwrap() = Some(hook.clone());
+        let handler = QqHandler::new(inner);
+        let (ctx, _rx) = test_ctx();
+        assert_eq!(
+            handler.handle(&ctx, &private_file_event("test.txt")).await,
+            HandleResult::Pass
+        );
+        assert!(hook.messages.lock().unwrap().is_empty(), "no delivery");
+    }
+
+    #[tokio::test]
+    async fn private_file_disabled_keeps_text_only_message() {
+        let mut cfg = QqAdapterConfig::default();
+        cfg.files.accept_private_file = false;
+        let inner = test_inner_with_config(cfg);
+        let hook = Arc::new(MockHook::new(Ok(())));
+        *inner.message_hook.lock().unwrap() = Some(hook.clone());
+        let handler = QqHandler::new(inner);
+        let (ctx, _rx) = test_ctx();
+        assert_eq!(
+            handler
+                .handle(&ctx, &private_text_and_file_event("看这个"))
+                .await,
+            HandleResult::Handled
+        );
+        let messages = hook.messages.lock().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "看这个");
+        assert!(messages[0].files.is_empty(), "file stripped");
+        assert!(messages[0].metadata.is_null());
+    }
+
+    #[tokio::test]
+    async fn resolve_pending_files_appends_note_for_error_only_files() {
+        // 在线文件（无 pending 登记、仅错误条目）：note 仍应写入 content。
+        let inner = test_inner(QqTriggerConfig::default());
+        let handler = QqHandler::new(inner);
+        let mut msg = IncomingMessage {
+            adapter_name: "qq".into(),
+            platform: "qq".into(),
+            user_id: "1".into(),
+            user_name: "t".into(),
+            channel: ChannelType::Direct,
+            group_name: None,
+            content: String::new(),
+            timestamp: 0,
+            at_me: false,
+            metadata: serde_json::Value::Null,
+            images: vec![],
+            files: vec![IncomingFile {
+                name: "big.bin".into(),
+                path: None,
+                size: 2048,
+                error: Some("在线文件（QQ 直传）暂不支持自动接收".into()),
+            }],
+        };
+        handler.resolve_pending_files(&mut msg).await;
+        assert!(
+            msg.content
+                .contains("（收到文件）big.bin（2.0 KB）未下载：在线文件"),
+            "content: {}",
+            msg.content
+        );
+    }
+
+    #[tokio::test]
     async fn resolve_pending_files_reports_missing_identifier_without_network() {
         let inner = test_inner(QqTriggerConfig::default());
         let handler = QqHandler::new(inner);
@@ -835,6 +929,47 @@ mod tests {
         let text = describe_files(&files);
         assert!(text.contains("（收到文件）a.zip（2.0 KB）"), "text: {text}");
         assert!(text.contains("（收到文件）b.zip（10 B）未下载：boom"), "text: {text}");
+    }
+
+    fn private_file_event(text: &str) -> Event {
+        serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "private",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "friend",
+            "message_id": 51,
+            "user_id": 123456,
+            "message": [{"type": "file", "data": {
+                "file": "test.txt", "file_id": "fid-t", "file_size": "5"
+            }}],
+            "raw_message": text,
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester"}
+        }))
+        .unwrap()
+    }
+
+    fn private_text_and_file_event(text: &str) -> Event {
+        serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "private",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "friend",
+            "message_id": 52,
+            "user_id": 123456,
+            "message": [
+                {"type": "text", "data": {"text": text}},
+                {"type": "file", "data": {
+                    "file": "test.txt", "file_id": "fid-t", "file_size": "5"
+                }}
+            ],
+            "raw_message": text,
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester"}
+        }))
+        .unwrap()
     }
 
     #[tokio::test]

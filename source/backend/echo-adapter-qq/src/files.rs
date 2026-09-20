@@ -106,11 +106,28 @@ pub async fn download_file(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     let file_name = format!("{}-{}", stamp.as_millis(), safe);
-    let path = dir.join(file_name);
+    let mut path = dir.join(&file_name);
 
-    let mut file = tokio::fs::File::create(&path)
-        .await
-        .map_err(|e| format!("create file failed: {e}"))?;
+    // 时间戳毫秒 + 名字仍可能撞车（同毫秒到达的同名文件）：create_new
+    // 保证独占创建，冲突时追加序号重试（上限 100 次后放弃）。
+    let mut attempt = 1u32;
+    let mut file = loop {
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+        {
+            Ok(file) => break file,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists && attempt < 100 =>
+            {
+                attempt += 1;
+                path = dir.join(format!("{file_name}-{attempt}"));
+            }
+            Err(error) => return Err(format!("create file failed: {error}")),
+        }
+    };
     let mut stream = resp.bytes_stream();
     let mut total: u64 = 0;
     while let Some(chunk) = stream.next().await {
@@ -257,6 +274,37 @@ mod tests {
             .map(|it| it.flatten().collect())
             .unwrap_or_default();
         assert!(leftovers.is_empty(), "no partial files: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn same_name_downloads_do_not_overwrite_each_other() {
+        // 同名文件连续下载：即使落毫秒相同，create_new + 序号兜底也保证
+        // 两份文件都保留（不互相覆盖）。
+        let body = b"first".to_vec();
+        let addr = serve_once(body.clone(), None);
+        let dir = std::env::temp_dir().join(format!(
+            "echo-file-test-collision-{}",
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let url = format!("http://{addr}/f");
+        let (first, _) = download_file(&url, &dir, "same.txt", 1024)
+            .await
+            .expect("first ok");
+        // 第二次下载同名文件（同一毫秒也安全）。
+        let addr2 = serve_once(b"second".to_vec(), None);
+        let url2 = format!("http://{addr2}/f");
+        let (second, _) = download_file(&url2, &dir, "same.txt", 1024)
+            .await
+            .expect("second ok");
+        assert_ne!(first, second, "两个路径必须不同: {first:?} vs {second:?}");
+        let files: Vec<_> = std::fs::read_dir(&dir)
+            .map(|it| it.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
+        assert_eq!(files.len(), 2, "两份文件都保留: {files:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
