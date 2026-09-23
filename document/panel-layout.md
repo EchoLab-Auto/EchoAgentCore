@@ -38,7 +38,7 @@ graph TD
 ```prodoc-flow
 graph TD
   App[App.vue 应用壳] --> Layout[NeumorphismLayout 外壳]
-  Layout --> Header[顶栏：品牌 · 连接状态 · 导航 · 主题]
+  Layout --> Header[顶栏：品牌 · 导航 · 主题]
   Layout --> Main[主区：当前视图组件]
   ChatView --> Rail[右侧边栏 chat-rail：文件浏览器卡 · 临时分支卡]
   Main --> ChatView[ChatView 会话]
@@ -99,7 +99,7 @@ graph LR
 | 区域 | 内容 | 几何 |
 |---|---|---|
 | 顶栏左 | 品牌 "EchoAgent Panel"（`.brand` 字重 700） | 顶栏分左中右三段，右侧操作 `margin-left:auto` 顶齐 |
-| 顶栏中 | 连接状态点 | 状态组 gap 6px、13px 次要色 |
+| 顶栏中 | （空；连接状态 2026-09-23 迁入右侧边栏「连接状态」卡，见 [会话视图](./panel-chat.md) §7.8） | 三段结构保留 |
 | 顶栏右 | 三视图导航（聊天/Shell/设置）、主题开关 | 操作组 gap 6px、允许折行 |
 | 右侧边栏 | 会话视图内 chat-rail 常驻卡片栈（RailStack）：文件浏览器 / Shell 列表 / 临时分支，详见 [会话视图](./panel-chat.md) §7.8 | 324px 透明容器层，下界 = 输入框外边框上方 5px；左侧边栏已于 2026-09-19 移除 |
 | 主区 | 当前视图组件 | `flex:1` + `min-width:0`，纵向 flex，`overflow:hidden`（滚动交给视图内部） |
@@ -133,7 +133,7 @@ graph LR
 
 ### 3.4 顶栏交互
 
-- **连接指示**：`已连接`（online 绿点）/ `连接中…`（connecting 呼吸点），驱动源 `state.connected`（`App.vue:249-252`）
+- **连接指示**（2026-09-23 起在右侧边栏）：`已连接`（online 绿点）/ `连接中…`（connecting 呼吸点），驱动源 `state.connected`；卡片同时逐实例列出 QQ 适配器的运行态，详见 [会话视图](./panel-chat.md) §7.8
 - **设置入口**：顶栏导航「设置」直达设置视图（§九）——2026-09-04 起不再有设置下拉与 API 弹窗
 - **主题开关**：三态循环（浅色 → 跟随系统 → 深色），持久化 `localStorage: echo-panel-theme`；外壳默认 `auto`，index.html 内联脚本防闪烁
 
@@ -201,7 +201,7 @@ graph LR
 - **退避**：500ms 起、×2 递增、上限 30s；成功连接后复位 500ms
 - **前台自愈（heal）**：`visibilitychange` 回到前台或 `online` 事件时主动评估连接——已断开则立即重连（复位退避，不等可能被浏览器冻结的退避定时器）；显示 OPEN 也可能半死（设备休眠期间对端已消失而本端未察觉），发 `RequestTeamsList` 探测帧，**5s** 内无任何下行帧则判死、主动关闭走标准重连（`connection.ts`）
 - **中继半死收割**：一侧超过 90s（3 个心跳周期）无任何帧（含 Pong）→ 中继断开整条链路（`proxy.rs`；设备休眠留下的僵尸连接因此被清理，唤醒后重连拿到干净状态）
-- **断连期间**：顶栏显示"连接中…"；输入框禁用（placeholder `未连接到 Core，暂时无法发送`）；`sendCommand` 不发送并弹 error toast；QQ 面板按钮禁用
+- **断连期间**：右侧边栏「连接状态」卡显示"连接中…" + 重连提示（原顶栏状态点，2026-09-23 迁移）；输入框禁用（placeholder `未连接到 Core，暂时无法发送`）；`sendCommand` 不发送并弹 error toast；QQ 面板按钮禁用
 - **兜底对齐**：`AgentCompleted` 时若该会话最后一条不是正式回答，自动补拉 `RequestTrunkTimeline`（带当前 team_id，`state.ts:595-608`）
 - 协议信封 `{type: command|event|sudo_password, payload}`；无法解析的帧静默丢弃（`protocol.ts:437-459`）
 
