@@ -439,6 +439,4 @@ model = "gpt-4o"
         );
         std::fs::remove_file(&path).ok();
     }
-
-
 }

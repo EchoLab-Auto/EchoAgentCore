@@ -634,16 +634,12 @@ mod tests {
         let result = hook.on_incoming_message(dm_message("hello")).await;
         assert_eq!(result, Ok(()));
         wait_until(|| {
-            hook.agent
-                .trunk
-                .all()
-                .iter()
-                .any(|s| {
-                    s.history
-                        .try_lock()
-                        .ok()
-                        .is_some_and(|h| h.iter().any(|m| m.content.contains("hello")))
-                })
+            hook.agent.trunk.all().iter().any(|s| {
+                s.history
+                    .try_lock()
+                    .ok()
+                    .is_some_and(|h| h.iter().any(|m| m.content.contains("hello")))
+            })
         })
         .await;
 
@@ -658,11 +654,9 @@ mod tests {
         assert!(history[0].content.contains("\"user_id\": \"123456\""));
 
         // 会话键仍按 QQ 作用域注册（供 Panel 会话列表展示）。
-        assert!(
-            sessions
-                .iter()
-                .any(|s| s.session_key.platform == "qq" && s.session_key.user_id == "123456")
-        );
+        assert!(sessions
+            .iter()
+            .any(|s| s.session_key.platform == "qq" && s.session_key.user_id == "123456"));
 
         // 展示事件（SessionUpdated/MessageReceived）落在默认会话 id 上——
         // 实时消息才会显示在默认会话（与 turn 所在的会话一致）。
@@ -673,9 +667,11 @@ mod tests {
         let message = received
             .iter()
             .find_map(|e| match e {
-                crate::event::BackendEvent::MessageReceived { session_id, content, .. } => {
-                    Some((session_id.clone(), content.clone()))
-                }
+                crate::event::BackendEvent::MessageReceived {
+                    session_id,
+                    content,
+                    ..
+                } => Some((session_id.clone(), content.clone())),
                 _ => None,
             })
             .expect("MessageReceived emitted");

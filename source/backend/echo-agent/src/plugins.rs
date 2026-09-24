@@ -373,7 +373,6 @@ mod tests {
             "echo-agent.tools.builtin".to_string(),
             LEGACY_CHATBOT_MODE_IDS[1].to_string(),
             LEGACY_CHATBOT_MODE_IDS[2].to_string(),
-            
         ];
         assert!(normalize_mode_plugins(&mut list));
         assert_eq!(
@@ -392,7 +391,6 @@ mod tests {
         assert!(normalize_mode_plugins(&mut list));
         assert_eq!(list, vec![PARALLEL_LOOP_PLUGIN_ID.to_string()]);
     }
-
 
     #[test]
     fn normalize_mode_plugins_drops_legacy_menu_and_checklist() {

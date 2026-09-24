@@ -246,7 +246,6 @@ mod tests {
         assert_ne!(a.request_id, b.request_id);
     }
 
-
     #[tokio::test]
     async fn run_sudo_returns_exit_code_output() {
         // With a wrong password real sudo fails; the error is surfaced as an

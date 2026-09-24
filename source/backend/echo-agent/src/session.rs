@@ -1202,9 +1202,7 @@ impl TrunkStore {
         }
     }
 
-
-
-/// 从事件日志里的会话 id 补建缺失的身份条目（含归属）。
+    /// 从事件日志里的会话 id 补建缺失的身份条目（含归属）。
     ///
     /// 事件是事实来源：identities 元数据可能缺失（旧档/写入失败），但事件
     /// 里的 `session` 归属足以把会话恢复到注册表——否则 Panel 的会话
@@ -1426,14 +1424,18 @@ fn spill_event_media(events: &mut [echo_session::SessionEvent]) -> bool {
                 // 先把 content 里内嵌的 data URI 落盘（QQ hook JSON 原样
                 // 序列化了 images，此前一份图片在日志里存在三份：content
                 // 内嵌 + images 字段 + 时间线 images）。
-                if let Some(rewritten) = echo_defs::media_store::spill_inline_data_uris(&message.content) {
+                if let Some(rewritten) =
+                    echo_defs::media_store::spill_inline_data_uris(&message.content)
+                {
                     message.content = rewritten;
                     changed = true;
                 }
                 Some(&mut message.images)
             }
             echo_session::SessionEvent::ToolResult(result) => {
-                if let Some(rewritten) = echo_defs::media_store::spill_inline_data_uris(&result.result) {
+                if let Some(rewritten) =
+                    echo_defs::media_store::spill_inline_data_uris(&result.result)
+                {
                     result.result = rewritten;
                     changed = true;
                 }

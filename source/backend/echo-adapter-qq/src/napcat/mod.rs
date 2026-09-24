@@ -282,12 +282,12 @@ impl NapCatClient {
             .ok()
             .and_then(|r: reqwest::Response| {
                 tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(r.json::<Value>()).ok()
+                    tokio::runtime::Handle::current()
+                        .block_on(r.json::<Value>())
+                        .ok()
                 })
             })
-            .and_then(|body: Value| {
-                body.pointer("/data/isLogin").and_then(|v| v.as_bool())
-            })
+            .and_then(|body: Value| body.pointer("/data/isLogin").and_then(|v| v.as_bool()))
             .unwrap_or(false);
 
         let uin: Option<String> = if is_login {
@@ -302,14 +302,20 @@ impl NapCatClient {
                 .ok()
                 .and_then(|r: reqwest::Response| {
                     tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(r.json::<Value>()).ok()
+                        tokio::runtime::Handle::current()
+                            .block_on(r.json::<Value>())
+                            .ok()
                     })
                 })
                 .and_then(|body: Value| {
                     body.get("data")
                         .and_then(|d| d.as_array())
                         .and_then(|arr| arr.first())
-                        .and_then(|u| u.as_str().map(str::to_string).or_else(|| u.as_i64().map(|n| n.to_string())))
+                        .and_then(|u| {
+                            u.as_str()
+                                .map(str::to_string)
+                                .or_else(|| u.as_i64().map(|n| n.to_string()))
+                        })
                 })
         } else {
             None
@@ -350,7 +356,9 @@ impl NapCatClient {
             .ok()
             .and_then(|r: reqwest::Response| {
                 tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(r.json::<Value>()).ok()
+                    tokio::runtime::Handle::current()
+                        .block_on(r.json::<Value>())
+                        .ok()
                 })
             });
         match body {
@@ -358,7 +366,10 @@ impl NapCatClient {
                 tracing::info!("NapCat quick login succeeded");
             }
             other => {
-                tracing::info!(?other, "NapCat quick login unavailable; fall back to QR flow");
+                tracing::info!(
+                    ?other,
+                    "NapCat quick login unavailable; fall back to QR flow"
+                );
             }
         }
     }

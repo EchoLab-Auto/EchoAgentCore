@@ -42,11 +42,7 @@ fn resolve_dir_with_home(configured: &str, home: Option<std::ffi::OsString>) -> 
 /// 消毒文件名：剥掉目录成分（防穿越）、控制字符与开头点号（防隐藏文件
 /// 覆盖），并限制长度；全部剥光后用 `unnamed` 兜底。
 pub fn sanitize_file_name(raw: &str) -> String {
-    let base = raw
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(raw)
-        .trim();
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or(raw).trim();
     let cleaned: String = base
         .chars()
         .filter(|ch| !ch.is_control() && *ch != '\0')
@@ -119,9 +115,7 @@ pub async fn download_file(
             .await
         {
             Ok(file) => break file,
-            Err(error)
-                if error.kind() == std::io::ErrorKind::AlreadyExists && attempt < 100 =>
-            {
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempt < 100 => {
                 attempt += 1;
                 path = dir.join(format!("{file_name}-{attempt}"));
             }
@@ -269,7 +263,10 @@ mod tests {
         let err = download_file(&url, &dir, "cut.bin", 1024)
             .await
             .expect_err("must fail");
-        assert!(err.contains("interrupted") || err.contains("failed"), "err: {err}");
+        assert!(
+            err.contains("interrupted") || err.contains("failed"),
+            "err: {err}"
+        );
         let leftovers: Vec<_> = std::fs::read_dir(&dir)
             .map(|it| it.flatten().collect())
             .unwrap_or_default();

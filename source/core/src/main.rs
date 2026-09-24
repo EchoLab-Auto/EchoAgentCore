@@ -376,10 +376,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 执行闭包由 attach_subagent_runtime 在 agent 创建后接线
                 // （需要 Arc<Agent> 弱引用），此处先注册占位工具 + 打包标签。
                 let subagent_store = echo_agent::subagent::SubagentStore::new();
-                t.register(std::sync::Arc::new(echo_agent::subagent::SpawnSubagentTool::new(
-                    subagent_store.clone(),
-                    std::sync::Arc::new(|_| {}),
-                )));
+                t.register(std::sync::Arc::new(
+                    echo_agent::subagent::SpawnSubagentTool::new(
+                        subagent_store.clone(),
+                        std::sync::Arc::new(|_| {}),
+                    ),
+                ));
                 t.set_package("spawn_subagent", echo_agent::plugins::SUBAGENT_PLUGIN_ID);
                 // Persona 级 API：配置了 api_profile 的 persona 在启动时构建
                 // 自己的 provider（从全局池解析，不共享默认 provider）。

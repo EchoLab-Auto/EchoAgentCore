@@ -72,12 +72,12 @@ pub type ToolExecutor<'a> = &'a (dyn Fn(&str, &str, &ToolCall) -> String + Send 
 /// tokio::spawn 一个后台任务，其结果经 oneshot 通道传回——这避免了
 /// `async Fn` 闭包捕获引用时未来生命周期无法表达为 Send 的经典困境。
 pub type AsyncToolExecutor<'a> = &'a (dyn Fn(
-        &str,
-        &str,
-        &ToolCall,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
-    + Send
-    + Sync);
+    &str,
+    &str,
+    &ToolCall,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
+         + Send
+         + Sync);
 
 /// 异步编排工具的内联处理钩子（subagent 等）。
 ///

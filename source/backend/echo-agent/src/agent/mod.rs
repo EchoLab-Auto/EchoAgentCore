@@ -1060,16 +1060,13 @@ impl Agent {
     /// 新入站分支通知主 agent——hook 机制由 echo-loop 的
     /// `SubagentToolHooks` 定义，QQ 消息等入站复用同一「结构化 hook →
     /// 新 turn」路径。
-    pub fn attach_subagent_runtime(
-        self: &Arc<Self>,
-        store: Arc<crate::subagent::SubagentStore>,
-    ) {
+    pub fn attach_subagent_runtime(self: &Arc<Self>, store: Arc<crate::subagent::SubagentStore>) {
         let agent = Arc::downgrade(self);
         let spawn: SubagentSpawnFn = Arc::new(move |request| {
-                if let Some(agent) = agent.upgrade() {
-                    agent.spawn_subagent_execution(request);
-                }
-            });
+            if let Some(agent) = agent.upgrade() {
+                agent.spawn_subagent_execution(request);
+            }
+        });
         if let Ok(mut slot) = self.subagent.write() {
             *slot = Some(SubagentRuntime {
                 store: store.clone(),
@@ -1085,11 +1082,7 @@ impl Agent {
     /// 卸载 subagent 插件运行态（插件 unmount）：取消运行中子任务并摘下
     /// 工具可见性（`allows_dynamic_tool` 随即拒绝 spawn_subagent）。
     pub fn detach_subagent_runtime(&self) {
-        let runtime = self
-            .subagent
-            .write()
-            .ok()
-            .and_then(|mut slot| slot.take());
+        let runtime = self.subagent.write().ok().and_then(|mut slot| slot.take());
         if let Some(runtime) = runtime {
             runtime.store.cancel_all();
         }
@@ -1161,7 +1154,11 @@ impl Agent {
                     (false, true, "子任务已随主任务取消".into())
                 }
                 Ok(Err(error)) => (false, false, format!("子任务执行失败：{error}")),
-                Err("timeout") => (false, false, format!("子任务超时（{}s）", timeout.as_secs())),
+                Err("timeout") => (
+                    false,
+                    false,
+                    format!("子任务超时（{}s）", timeout.as_secs()),
+                ),
                 Err(_) => (false, true, "子任务已随主任务取消".into()),
             };
             let status = if success {
@@ -2148,7 +2145,9 @@ impl Agent {
             let execute_async_subagent = move |sid: &str,
                                                _branch: &str,
                                                call: &crate::llm::ToolCall|
-                  -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>> {
+                  -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = String> + Send>,
+            > {
                 let args: serde_json::Value =
                     serde_json::from_str(&call.arguments).unwrap_or_default();
                 let text = if !self.allows_dynamic_tool(crate::subagent::SPAWN_SUBAGENT_TOOL) {
@@ -2291,7 +2290,12 @@ impl Agent {
         let blocks = {
             let skills = self.skills.lock().await;
             crate::agent::prompt::build_prompt_blocks(
-                &skills, &base, content, boundary, &persona_skills, workspace,
+                &skills,
+                &base,
+                content,
+                boundary,
+                &persona_skills,
+                workspace,
             )
             .await
         };
@@ -2435,9 +2439,7 @@ impl Agent {
                     if call.name == "run_sudo" {
                         let config = self.config.read().await;
                         std::time::Duration::from_secs(
-                            config.sudo.auth_timeout_secs
-                                + config.sudo.command_timeout_secs
-                                + 30,
+                            config.sudo.auth_timeout_secs + config.sudo.command_timeout_secs + 30,
                         )
                     } else if call.name == "present_menu" {
                         // 选单等待用户在 Panel 中选择：外圈守卫必须长过
@@ -2530,7 +2532,8 @@ impl Agent {
         raw_arguments: &str,
         args: &serde_json::Value,
     ) -> Option<String> {
-        crate::agent::tool_exec::tool_arguments_error(&self.tools, tool_name, raw_arguments, args).await
+        crate::agent::tool_exec::tool_arguments_error(&self.tools, tool_name, raw_arguments, args)
+            .await
     }
 
     /// 工具统一分派入口（注册表工具 + 编排工具 spawn_subagent 特判）。
@@ -2755,7 +2758,6 @@ impl Agent {
         )
         .await
     }
-
 
     /// 工作区会话（workspace 插件）注入提示词的文本：插件对该 persona 启用
     /// 且存在激活会话时返回 Some（名称 + 工作目录清单），否则 None。
@@ -3644,11 +3646,11 @@ fn assistant_with_tool_calls(
 
 #[cfg(test)]
 pub mod tests {
+    use super::tool_exec::invalid_tool_arguments;
     use super::*;
     use crate::llm::{ChatChunk, ChatResponse, LlmError, Usage};
     use crate::session::SessionKey;
     use crate::tool::{Tool, ToolError};
-    use super::tool_exec::invalid_tool_arguments;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     pub struct MockProvider {
@@ -3971,7 +3973,6 @@ pub mod tests {
         assert!(!tool.failed);
     }
 
-
     #[tokio::test]
     async fn timeline_associates_reasoning_with_the_final_output() {
         let provider = Arc::new(MockProvider {
@@ -4243,13 +4244,6 @@ pub mod tests {
             "errors must explain the missing team_id: {errors:?}"
         );
     }
-
-
-
-
-
-
-
 
     #[tokio::test]
     async fn update_api_config_persists() {
@@ -4643,8 +4637,6 @@ pub mod tests {
         );
     }
 
-
-
     #[tokio::test]
     async fn skill_keyword_loads_instructions() {
         let mut reg = SkillRegistry::new();
@@ -4966,10 +4958,7 @@ pub mod tests {
         let session = agent
             .trunk
             .get_or_create(&SessionKey::local_tui(), "user".into(), None);
-        assert_eq!(
-            agent.process_message(&session, "hi").await.unwrap(),
-            "done"
-        );
+        assert_eq!(agent.process_message(&session, "hi").await.unwrap(), "done");
 
         let requests = provider.requests.lock().await;
         let names: Vec<String> = requests[0]
@@ -5226,9 +5215,6 @@ pub mod tests {
         let reply = agent.process_message(&session, "hi").await.unwrap();
         assert_eq!(reply, "done");
     }
-
-
-
 
     // ── 工作区会话（workspace 插件）──
 

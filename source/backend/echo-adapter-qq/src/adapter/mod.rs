@@ -228,10 +228,7 @@ impl QqAdapter {
                             // 「启动时自动登录」：在线时固化 autoLoginAccount 到
                             // webui.json；离线时尝试快速登录（失败回退扫码）。
                             napcat
-                                .ensure_quick_login(
-                                    &inner.config.napcat_container,
-                                    &webui_token,
-                                )
+                                .ensure_quick_login(&inner.config.napcat_container, &webui_token)
                                 .await;
                         }
                         Err(e) => {
@@ -745,7 +742,11 @@ impl QqAdapter {
                         // 且接收后字节仍在 NapCat 侧（容器内）无法取回——
                         // 暂不支持自动接收。但**不静默丢弃**：以显式错误条目
                         // 送达，让 agent 如实告知用户（用户才能改用其他方式发）。
-                        let kind = if data.is_dir { "在线文件夹" } else { "在线文件" };
+                        let kind = if data.is_dir {
+                            "在线文件夹"
+                        } else {
+                            "在线文件"
+                        };
                         let name = if data.file_name.trim().is_empty() {
                             "未命名文件".to_string()
                         } else {
@@ -1712,7 +1713,10 @@ mod tests {
         let names = dashmap::DashMap::new();
         let msg = QqAdapter::convert_message(&event, &names).expect("accepted");
         assert_eq!(msg.files[0].size, 0, "unknown size defaults to 0");
-        assert_eq!(msg.metadata["pending_files"][0]["url"], serde_json::Value::Null);
+        assert_eq!(
+            msg.metadata["pending_files"][0]["url"],
+            serde_json::Value::Null
+        );
     }
 
     #[test]
@@ -1901,7 +1905,10 @@ mod tests {
         let names = dashmap::DashMap::new();
         let msg = QqAdapter::convert_message(&event, &names).expect("text kept");
         assert_eq!(msg.content, "看这个");
-        assert!(msg.files.is_empty(), "group file segments do not populate files");
+        assert!(
+            msg.files.is_empty(),
+            "group file segments do not populate files"
+        );
         assert_eq!(msg.metadata, serde_json::Value::Null);
     }
 }

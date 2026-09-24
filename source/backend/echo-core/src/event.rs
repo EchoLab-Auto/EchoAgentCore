@@ -634,10 +634,7 @@ mod tests {
         )
         .unwrap();
         let msg = event.as_message().unwrap();
-        assert_eq!(
-            msg.readable_text(),
-            "[骰子:4][石头剪刀布:剪刀][戳一戳]"
-        );
+        assert_eq!(msg.readable_text(), "[骰子:4][石头剪刀布:剪刀][戳一戳]");
     }
 
     #[test]

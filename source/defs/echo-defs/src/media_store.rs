@@ -43,7 +43,10 @@ pub fn media_dir() -> PathBuf {
     media_dir_with_home(std::env::var_os("ECHO_MEDIA_DIR"), std::env::var_os("HOME"))
 }
 
-fn media_dir_with_home(override_dir: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>) -> PathBuf {
+fn media_dir_with_home(
+    override_dir: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> PathBuf {
     if let Some(dir) = override_dir.filter(|d| !d.is_empty()) {
         return PathBuf::from(dir);
     }
@@ -97,7 +100,12 @@ fn mime_for_ext(ext: &str) -> &'static str {
 
 /// MIME → 扩展名（无法识别时 `bin`，仍可经 `/media/` 取回原字节）。
 fn ext_for_mime(mime: &str) -> &'static str {
-    let mime = mime.split(';').next().unwrap_or(mime).trim().to_ascii_lowercase();
+    let mime = mime
+        .split(';')
+        .next()
+        .unwrap_or(mime)
+        .trim()
+        .to_ascii_lowercase();
     match mime.as_str() {
         "image/gif" => "gif",
         "image/png" => "png",
@@ -399,7 +407,10 @@ mod tests {
             let short = "data:image/png;base64,AAAA";
             assert_eq!(spill_or_keep(short), short);
             // 非 data 值原样
-            assert_eq!(spill_or_keep("https://example.com/a.png"), "https://example.com/a.png");
+            assert_eq!(
+                spill_or_keep("https://example.com/a.png"),
+                "https://example.com/a.png"
+            );
         });
     }
 
@@ -462,10 +473,13 @@ mod tests {
             let id = save_data_uri(&uri).unwrap();
             let mut messages = vec![
                 ChatMessage::user_with_images("看图", vec![media_ref(&id)]),
-                ChatMessage::user_with_images("混合", vec![
-                    "/media/missing-file.png".to_string(),
-                    "data:image/png;base64,AAAA".to_string(),
-                ]),
+                ChatMessage::user_with_images(
+                    "混合",
+                    vec![
+                        "/media/missing-file.png".to_string(),
+                        "data:image/png;base64,AAAA".to_string(),
+                    ],
+                ),
                 ChatMessage::user("无图"),
             ];
             inline_media_refs_in_messages(&mut messages);
@@ -479,7 +493,10 @@ mod tests {
     #[test]
     fn media_dir_defaults_and_override() {
         let default = media_dir_with_home(None, Some("/home/x".into()));
-        assert_eq!(default, PathBuf::from("/home/x/.local/share/echo-agent-core/media"));
+        assert_eq!(
+            default,
+            PathBuf::from("/home/x/.local/share/echo-agent-core/media")
+        );
         let overridden = media_dir_with_home(Some("/custom/media".into()), Some("/home/x".into()));
         assert_eq!(overridden, PathBuf::from("/custom/media"));
         let no_home = media_dir_with_home(None, None);

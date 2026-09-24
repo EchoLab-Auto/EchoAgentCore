@@ -1509,9 +1509,11 @@ async fn spawn_subagent_runs_child_and_reports_back_via_hook() {
                     saw_completed = true;
                     assert!(success, "child should succeed");
                 }
-                BackendEvent::MessageReceived { adapter_name, content, .. }
-                    if adapter_name == "subagent" =>
-                {
+                BackendEvent::MessageReceived {
+                    adapter_name,
+                    content,
+                    ..
+                } if adapter_name == "subagent" => {
                     saw_hook_message = true;
                     assert!(content.contains("<subagent_event>"), "{content}");
                     assert!(content.contains("子任务结论"), "{content}");
@@ -1523,7 +1525,10 @@ async fn spawn_subagent_runs_child_and_reports_back_via_hook() {
     }
     assert!(saw_started, "SubagentStarted emitted");
     assert!(saw_completed, "SubagentCompleted emitted");
-    assert!(saw_hook_message, "completion hook injected as new inbound branch");
+    assert!(
+        saw_hook_message,
+        "completion hook injected as new inbound branch"
+    );
     // 主 agent 至少再消化一次 hook（provider 调用 ≥ 2：hook turn + 可能的子任务）。
     assert!(provider.calls.load(Ordering::SeqCst) >= 1);
 }

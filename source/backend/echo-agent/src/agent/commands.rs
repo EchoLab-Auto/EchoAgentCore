@@ -436,10 +436,7 @@ impl Agent {
                 let sessions = crate::shell::shell_manager_global()
                     .map(|m| m.list(team_id.as_deref()))
                     .unwrap_or_default();
-                self.emit(BackendEvent::ShellSessionsList {
-                    sessions,
-                    team_id,
-                });
+                self.emit(BackendEvent::ShellSessionsList { sessions, team_id });
             }
             BackendCommand::ShellStart { workdir } => match crate::shell::shell_manager_global() {
                 Some(m) => {

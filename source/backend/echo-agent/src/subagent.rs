@@ -97,7 +97,8 @@ impl SubagentStore {
     }
 
     pub fn register(&self, info: SubagentInfo, cancel: tokio_util::sync::CancellationToken) {
-        self.entries.insert(info.id.clone(), SubagentEntry { info, cancel });
+        self.entries
+            .insert(info.id.clone(), SubagentEntry { info, cancel });
     }
 
     /// 标记终态并取消其令牌（幂等）；返回是否存在该条目。
@@ -143,8 +144,7 @@ impl SubagentStore {
 
     /// 当前快照（含已完成条目，按启动时间排序）。
     pub fn snapshot(&self) -> Vec<SubagentInfo> {
-        let mut list: Vec<SubagentInfo> =
-            self.entries.iter().map(|e| e.info.clone()).collect();
+        let mut list: Vec<SubagentInfo> = self.entries.iter().map(|e| e.info.clone()).collect();
         list.sort_by_key(|i| i.started_at_ms);
         list
     }
@@ -244,10 +244,7 @@ impl SpawnSubagentTool {
         })
     }
 
-    pub fn new(
-        store: Arc<SubagentStore>,
-        spawn: Arc<dyn Fn(SpawnRequest) + Send + Sync>,
-    ) -> Self {
+    pub fn new(store: Arc<SubagentStore>, spawn: Arc<dyn Fn(SpawnRequest) + Send + Sync>) -> Self {
         Self { store, spawn }
     }
 
@@ -380,8 +377,8 @@ pub(crate) async fn run_subagent_turn(
             if cancel.is_cancelled() {
                 return Err(anyhow::anyhow!(crate::agent::TURN_CANCELLED));
             }
-            let args: Value = serde_json::from_str(&call.arguments)
-                .unwrap_or(Value::Object(Default::default()));
+            let args: Value =
+                serde_json::from_str(&call.arguments).unwrap_or(Value::Object(Default::default()));
             let result = registry.execute_rich(&call.name, args).await;
             let text = match result {
                 Ok(r) => echo_defs::media::compact_embedded_media(&r.text, &r.images),
@@ -402,14 +399,19 @@ pub(crate) fn truncate_result(text: &str) -> String {
         return text.to_string();
     }
     let kept: String = text.chars().take(MAX_SUBAGENT_RESULT_CHARS).collect();
-    format!("{kept}\n…[结果过长已截断，共 {} 字符]", text.chars().count())
+    format!(
+        "{kept}\n…[结果过长已截断，共 {} 字符]",
+        text.chars().count()
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn tool(spawn: Arc<dyn Fn(SpawnRequest) + Send + Sync>) -> (SpawnSubagentTool, Arc<SubagentStore>) {
+    fn tool(
+        spawn: Arc<dyn Fn(SpawnRequest) + Send + Sync>,
+    ) -> (SpawnSubagentTool, Arc<SubagentStore>) {
         let store = SubagentStore::new();
         (SpawnSubagentTool::new(store.clone(), spawn), store)
     }
@@ -418,7 +420,9 @@ mod tests {
     fn spawn_registers_and_returns_receipt() {
         let spawned = Arc::new(std::sync::Mutex::new(Vec::new()));
         let spawned2 = spawned.clone();
-        let (tool, store) = tool(Arc::new(move |req| spawned2.lock().unwrap().push(req.task_id)));
+        let (tool, store) = tool(Arc::new(move |req| {
+            spawned2.lock().unwrap().push(req.task_id)
+        }));
         let receipt = tool
             .spawn(
                 &json!({"task": "找出所有 X 的用法"}),
@@ -448,7 +452,10 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("task"), "{error}");
         assert!(error.contains("自含"), "{error}");
-        assert!(store.snapshot().is_empty(), "rejected spawn registers nothing");
+        assert!(
+            store.snapshot().is_empty(),
+            "rejected spawn registers nothing"
+        );
     }
 
     #[test]
@@ -459,13 +466,8 @@ mod tests {
             spawned2.lock().unwrap().push(req.task_id);
         }));
         let parent = tokio_util::sync::CancellationToken::new();
-        tool.spawn(
-            &json!({"task": "t"}),
-            "s",
-            parent.clone(),
-            "b",
-        )
-        .unwrap();
+        tool.spawn(&json!({"task": "t"}), "s", parent.clone(), "b")
+            .unwrap();
         // 父令牌取消后，注册表中的子令牌一并取消。
         parent.cancel();
         let id = store.snapshot()[0].id.clone();
@@ -478,7 +480,9 @@ mod tests {
     fn timeout_is_clamped_and_defaulted() {
         let timeouts = Arc::new(std::sync::Mutex::new(Vec::new()));
         let timeouts2 = timeouts.clone();
-        let (tool, _) = tool(Arc::new(move |req| timeouts2.lock().unwrap().push(req.timeout)));
+        let (tool, _) = tool(Arc::new(move |req| {
+            timeouts2.lock().unwrap().push(req.timeout)
+        }));
         tool.spawn(
             &json!({"task": "a"}),
             "s",
@@ -511,7 +515,10 @@ mod tests {
     #[test]
     fn cancel_all_only_cancels_running() {
         let store = SubagentStore::new();
-        for (id, status) in [("a", SubagentStatus::Running), ("b", SubagentStatus::Running)] {
+        for (id, status) in [
+            ("a", SubagentStatus::Running),
+            ("b", SubagentStatus::Running),
+        ] {
             store.register(
                 SubagentInfo {
                     id: id.into(),

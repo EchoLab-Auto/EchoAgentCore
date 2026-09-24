@@ -42,12 +42,15 @@ impl echo_server::Handler for QqHandler {
         // Lazily learn group names: OneBot group events carry only group_id,
         // so query the name once and cache it for later messages. Group file
         // uploads (notice) are covered too — their payload only has the id.
-        let event_group_id = event.as_message().and_then(|msg| msg.group_id()).or_else(|| match event {
-            OneBotEvent::Notice {
-                inner: NoticeEvent::GroupUpload { group_id, .. },
-            } => Some(*group_id),
-            _ => None,
-        });
+        let event_group_id = event
+            .as_message()
+            .and_then(|msg| msg.group_id())
+            .or_else(|| match event {
+                OneBotEvent::Notice {
+                    inner: NoticeEvent::GroupUpload { group_id, .. },
+                } => Some(*group_id),
+                _ => None,
+            });
         if let Some(gid) = event_group_id {
             if !self.inner.group_names.contains_key(&gid) {
                 let group_names = self.inner.group_names.clone();
@@ -176,13 +179,14 @@ impl QqHandler {
     /// 把 `group_upload` 通知转换成内部 IncomingMessage（含待下载登记）。
     fn group_upload_message(&self, event: &OneBotEvent) -> Option<IncomingMessage> {
         let OneBotEvent::Notice {
-            inner: NoticeEvent::GroupUpload {
-                time,
-                group_id,
-                user_id,
-                file,
-                ..
-            },
+            inner:
+                NoticeEvent::GroupUpload {
+                    time,
+                    group_id,
+                    user_id,
+                    file,
+                    ..
+                },
         } = event
         else {
             return None;
@@ -254,14 +258,11 @@ impl QqHandler {
     /// 下载 `metadata.pending_files` 登记的文件（与 `files` 占位按序对应），
     /// 把结果写回 `files`（path/error），并把人类可读描述拼进 `content`。
     async fn resolve_pending_files(&self, msg: &mut IncomingMessage) {
-        let pending: Vec<serde_json::Value> = match msg
-            .metadata
-            .get("pending_files")
-            .and_then(|v| v.as_array())
-        {
-            Some(list) if !list.is_empty() => list.clone(),
-            _ => Vec::new(),
-        };
+        let pending: Vec<serde_json::Value> =
+            match msg.metadata.get("pending_files").and_then(|v| v.as_array()) {
+                Some(list) if !list.is_empty() => list.clone(),
+                _ => Vec::new(),
+            };
         if msg.files.is_empty() {
             // 无文件（普通文本/图片消息）：无事可做。
             return;
@@ -448,7 +449,10 @@ async fn persist_remote_images(mut msg: IncomingMessage) -> IncomingMessage {
 }
 
 async fn persist_remote_image(url: String) -> String {
-    if echo_defs::media_store::is_media_ref(&url) || url.starts_with("data:") || !url.starts_with("http") {
+    if echo_defs::media_store::is_media_ref(&url)
+        || url.starts_with("data:")
+        || !url.starts_with("http")
+    {
         return url;
     }
     match download_and_store(&url).await {
@@ -690,7 +694,9 @@ mod tests {
         let handler = QqHandler::new(inner.clone());
         let (ctx, _rx) = test_ctx();
         assert_eq!(
-            handler.handle(&ctx, &group_upload_event("fid", "a.zip", 1024)).await,
+            handler
+                .handle(&ctx, &group_upload_event("fid", "a.zip", 1024))
+                .await,
             HandleResult::Pass
         );
     }
@@ -722,7 +728,8 @@ mod tests {
         assert!(error.contains("获取下载链接失败"), "err: {error}");
         assert!(error.contains("connection closed"), "err: {error}");
         assert!(
-            msg.content.contains("（收到文件）report.pdf（2.0 KB）未下载："),
+            msg.content
+                .contains("（收到文件）report.pdf（2.0 KB）未下载："),
             "content: {}",
             msg.content
         );
@@ -903,7 +910,11 @@ mod tests {
         assert!(path.ends_with("-report.pdf"), "path: {path}");
         assert_eq!(std::fs::read(path).unwrap(), body);
         assert!(msg.content.starts_with("看看这个"));
-        assert!(msg.content.contains("（收到文件）report.pdf"), "content: {}", msg.content);
+        assert!(
+            msg.content.contains("（收到文件）report.pdf"),
+            "content: {}",
+            msg.content
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -929,7 +940,10 @@ mod tests {
         ];
         let text = describe_files(&files);
         assert!(text.contains("（收到文件）a.zip（2.0 KB）"), "text: {text}");
-        assert!(text.contains("（收到文件）b.zip（10 B）未下载：boom"), "text: {text}");
+        assert!(
+            text.contains("（收到文件）b.zip（10 B）未下载：boom"),
+            "text: {text}"
+        );
     }
 
     fn private_file_event(text: &str) -> Event {

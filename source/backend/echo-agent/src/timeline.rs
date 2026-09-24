@@ -391,5 +391,4 @@ mod tests {
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].content, "通过总线");
     }
-
 }
