@@ -381,6 +381,7 @@ dependencies = [
  "dashmap",
  "echo-adapter",
  "echo-core",
+ "echo-defs",
  "echo-server",
  "echo-test-utils",
  "futures-util",
@@ -483,11 +484,13 @@ name = "echo-defs"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "proptest",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

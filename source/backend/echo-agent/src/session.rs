@@ -537,6 +537,10 @@ impl TrunkStore {
             // 旧版（v5 及更早）事件没有会话归属：加载期归因迁移，否则
             // 多会话投影会把整段历史丢弃（或互相泄漏）。
             let attributed = attribute_legacy_events(&mut events);
+            // 媒体引用迁移（2026-09-24）：历史事件里内嵌的 data URI 图片
+            // 落盘并改写为 `/media/<id>` 引用——不丢图片（模型上下文与
+            // 面板展示都还原），但文件从数十 MB 收缩到 KB 级。
+            let media_migrated = spill_event_media(&mut events);
             let version = root["version"].as_u64();
             if !events.is_empty() || version == Some(5) || version == Some(6) {
                 self.event_log.extend(events.clone());
@@ -547,6 +551,9 @@ impl TrunkStore {
                     );
                     self.mark_dirty();
                 }
+                if media_migrated {
+                    self.mark_dirty();
+                }
                 let count = self.restore_identity_labels(&root);
                 // 事件日志里出现但身份元数据缺失的会话也要补建（含归属）——
                 // 否则 Panel 会话列表丢项。
@@ -554,7 +561,7 @@ impl TrunkStore {
                 // 按会话重建投影（身份 + 事件中出现的所有会话）。
                 self.ensure_histories_for_events(&events);
                 self.reproject_all();
-                let timeline = root["timeline"]
+                let mut timeline = root["timeline"]
                     .as_array()
                     .map(|entries| {
                         entries
@@ -568,6 +575,14 @@ impl TrunkStore {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
+                // 同一迁移作用于显示时间线：内嵌图片落盘 → `/media/<id>`。
+                for entry in timeline.iter_mut() {
+                    if let Some(images) = entry.images.as_mut() {
+                        for image in images.iter_mut() {
+                            *image = echo_defs::media_store::spill_or_keep(image);
+                        }
+                    }
+                }
                 self.restore_timeline(timeline);
                 return count;
             }
@@ -611,7 +626,7 @@ impl TrunkStore {
             let count = self.restore_identity_labels(&root);
             self.ensure_histories_for_events(&all_events);
             self.reproject_all();
-            let restored_timeline = root["timeline"]
+            let mut restored_timeline = root["timeline"]
                 .as_array()
                 .map(|entries| {
                     entries
@@ -623,6 +638,13 @@ impl TrunkStore {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            for entry in restored_timeline.iter_mut() {
+                if let Some(images) = entry.images.as_mut() {
+                    for image in images.iter_mut() {
+                        *image = echo_defs::media_store::spill_or_keep(image);
+                    }
+                }
+            }
             self.restore_timeline(restored_timeline);
             return count;
         }
@@ -1139,11 +1161,14 @@ impl TrunkStore {
 
     fn reproject_one(&self, log: &[echo_session::SessionEvent], session_id: &str) {
         // 先在锁外完成投影（try_lock 语义：竞争时跳过本轮，下轮再投影）。
-        let projected = echo_session::derive::derive_messages_for(
+        let mut projected = echo_session::derive::derive_messages_for(
             log,
             Some(session_id),
             self.memory_limit_tokens,
         );
+        // 媒体引用 → data URI：事件日志/时间线里只存 `/media/<id>`（轻量），
+        // 发往 LLM 的 `ChatMessage` 在这一步（唯一的投影出口）还原图片。
+        echo_defs::media_store::inline_media_refs_in_messages(&mut projected);
         let Some(entry) = self.session_histories.get(session_id) else {
             return;
         };
@@ -1177,7 +1202,9 @@ impl TrunkStore {
         }
     }
 
-    /// 从事件日志里的会话 id 补建缺失的身份条目（含归属）。
+
+
+/// 从事件日志里的会话 id 补建缺失的身份条目（含归属）。
     ///
     /// 事件是事实来源：identities 元数据可能缺失（旧档/写入失败），但事件
     /// 里的 `session` 归属足以把会话恢复到注册表——否则 Panel 的会话
@@ -1387,6 +1414,48 @@ fn session_id_from_hook_content(content: &str) -> Option<String> {
 /// 2. 仍未知的事件（如前导的孤儿事件、压缩事件）挂到首个已知会话；
 ///    完全没有可推导会话时统一挂本地 TUI 会话。
 ///
+/// 加载期媒体迁移：把事件里内嵌的大图落盘并改写为 `/media/<id>` 引用。
+///
+/// 返回是否有改动（改动需 `mark_dirty` 以便下一次持久化收缩文件）。
+/// 落盘失败时省略该图（`ELIDED_IMAGE`），不阻塞加载。
+fn spill_event_media(events: &mut [echo_session::SessionEvent]) -> bool {
+    let mut changed = false;
+    for event in events.iter_mut() {
+        let images = match event {
+            echo_session::SessionEvent::UserMessage(message) => {
+                // 先把 content 里内嵌的 data URI 落盘（QQ hook JSON 原样
+                // 序列化了 images，此前一份图片在日志里存在三份：content
+                // 内嵌 + images 字段 + 时间线 images）。
+                if let Some(rewritten) = echo_defs::media_store::spill_inline_data_uris(&message.content) {
+                    message.content = rewritten;
+                    changed = true;
+                }
+                Some(&mut message.images)
+            }
+            echo_session::SessionEvent::ToolResult(result) => {
+                if let Some(rewritten) = echo_defs::media_store::spill_inline_data_uris(&result.result) {
+                    result.result = rewritten;
+                    changed = true;
+                }
+                Some(&mut result.images)
+            }
+            _ => None,
+        };
+        let Some(images) = images else { continue };
+        for image in images.iter_mut() {
+            if !image.starts_with("data:") {
+                continue;
+            }
+            let migrated = echo_defs::media_store::spill_or_keep(image);
+            if migrated != *image {
+                *image = migrated;
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 /// 返回是否有改动。混合文件（部分已归因）按已有归属继续，保持幂等。
 fn attribute_legacy_events(events: &mut [echo_session::SessionEvent]) -> bool {
     if events.iter().all(|event| event.session().is_some()) {
@@ -1854,6 +1923,116 @@ mod tests {
         assert_eq!(hist[1].content, "回复");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── 媒体落盘迁移（2026-09-24）──
+    //
+    // 这两个用例改的是进程级环境变量 `ECHO_MEDIA_DIR`，必须串行执行。
+    static MEDIA_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn spill_event_media_migrates_inline_images_to_refs() {
+        let _serial = MEDIA_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        use echo_session::event::{ToolResultEvent, UserMessage};
+        let dir = std::env::temp_dir().join(format!(
+            "echo-session-media-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("ECHO_MEDIA_DIR", &dir);
+
+        // 超过落盘阈值的 data URI（~5.4KB base64）
+        let payload = echo_defs::media_store::tests_support_base64(vec![7u8; 4096]);
+        let data_uri = format!("data:image/png;base64,{payload}");
+        // 真实形态：content 是 hook JSON（内嵌 images 的 data URI）+ images 字段
+        let content = format!(
+            "<qq_message_hook>\n{{\"content\":\"看图\",\"images\":[\"{data_uri}\"]}}\n</qq_message_hook>"
+        );
+        let mut events = vec![
+            echo_session::SessionEvent::UserMessage(UserMessage {
+                content,
+                timestamp: 0,
+                message_sequence: None,
+                source: None,
+                images: vec![data_uri.clone(), "https://example.com/a.png".into()],
+                session: Some("local:tui::local_user".into()),
+            }),
+            echo_session::SessionEvent::ToolResult(ToolResultEvent {
+                tool_call_id: "c1".into(),
+                result: "ok".into(),
+                images: vec![data_uri.clone()],
+                session: Some("local:tui::local_user".into()),
+            }),
+        ];
+        let changed = spill_event_media(&mut events);
+        std::env::remove_var("ECHO_MEDIA_DIR");
+
+        assert!(changed, "migration reports change");
+        let (content, images) = match &events[0] {
+            echo_session::SessionEvent::UserMessage(m) => (&m.content, &m.images),
+            other => panic!("unexpected: {other:?}"),
+        };
+        // content 里的内嵌 data URI 也被改写为引用（QQ hook JSON 场景）
+        assert!(content.contains("/media/"), "content: {content}");
+        assert!(!content.contains("data:image"), "content payload gone");
+        assert!(images[0].starts_with("/media/"), "{:?}", images[0]);
+        assert!(images[0].ends_with(".png"));
+        // 远端 URL 原样保留
+        assert_eq!(images[1], "https://example.com/a.png");
+        let tool_images = match &events[1] {
+            echo_session::SessionEvent::ToolResult(r) => &r.images,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert!(tool_images[0].starts_with("/media/"));
+
+        // 幂等：再跑一次没有改动
+        std::env::set_var("ECHO_MEDIA_DIR", &dir);
+        assert!(!spill_event_media(&mut events));
+        std::env::remove_var("ECHO_MEDIA_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn persisted_refs_inline_on_projection_for_model() {
+        let _serial = MEDIA_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // 事件日志里存引用（轻量）；投影（模型上下文）出口还原为 data URI。
+        let dir = std::env::temp_dir().join(format!(
+            "echo-session-inline-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::env::set_var("ECHO_MEDIA_DIR", &dir);
+        let bytes = vec![9u8; 4096];
+        let id = echo_defs::media_store::save_image_bytes(&bytes, "image/png").unwrap();
+        let reference = echo_defs::media_store::media_ref(&id);
+
+        let store = TrunkStore::new(10_000);
+        let _session = store.get_or_create(&SessionKey::local_tui(), "local".into(), None);
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                content: "看图".into(),
+                timestamp: 0,
+                message_sequence: None,
+                source: None,
+                images: vec![reference.clone()],
+                session: Some("local:tui::local_user".into()),
+            },
+        ));
+        let snapshot = store.snapshot_for("local:tui::local_user").await;
+        std::env::remove_var("ECHO_MEDIA_DIR");
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].images.len(), 1, "image survives projection");
+        assert!(
+            snapshot[0].images[0].starts_with("data:image/png;base64,"),
+            "refs inline into data URI for the model: {}",
+            snapshot[0].images[0]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

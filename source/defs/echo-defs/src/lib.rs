@@ -30,6 +30,7 @@
 pub mod chat;
 pub mod llm;
 pub mod media;
+pub mod media_store;
 pub mod message;
 pub mod mode;
 pub mod session;

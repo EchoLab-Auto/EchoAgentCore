@@ -106,9 +106,11 @@ impl echo_server::Handler for QqHandler {
         let Some(msg) = QqAdapter::convert_message(event, &self.inner.group_names) else {
             return HandleResult::Pass;
         };
-        // QQ CDN 图片链接的 rkey 会过期：在入库前下载并内嵌为 data: URI。
-        // 否则历史消息里的过期链接会让视觉端点每次请求都 400（毒化整段历史）。
-        let msg = embed_remote_images(msg).await;
+        // QQ CDN 图片链接的 rkey 会过期：在入库前下载并**落盘为媒体文件**，
+        // 链路上只留 `/media/<id>` 引用（2026-09-24：此前内嵌为 data URI，
+        // 单张数 MB 的图片会把时间线/会话文件拖到几十 MB；模型侧在发往
+        // LLM 前由 `media_store::inline_media_refs_in_messages` 还原）。
+        let msg = persist_remote_images(msg).await;
         // convert_message returns Some only for message events, so this
         // reference is always valid — no unwrap required.
         let message_event = event.as_message();
@@ -410,7 +412,7 @@ fn describe_files(files: &[IncomingFile]) -> String {
         .join("\n")
 }
 
-/// 单张图片最大内嵌体积（编码前字节数）；超出则保留原 URL。
+/// 单张图片最大下载体积；超出则保留原 URL（链路上以文本占位降级）。
 const MAX_EMBEDDED_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 
 /// Shared HTTP client for image downloads (built once).
@@ -430,35 +432,36 @@ fn image_client() -> reqwest::Client {
         .clone()
 }
 
-/// 把消息里的远程图片 URL 逐个下载并改写为 data: URI；下载失败的保留
-/// 原 URL（请求构建侧的占位替换会兜住过期链接，不会再毒化请求）。
-async fn embed_remote_images(mut msg: IncomingMessage) -> IncomingMessage {
+/// 把消息里的远程图片 URL 逐个下载并落盘，改写为 `/media/<id>` 引用；
+/// 下载/落盘失败的保留原 URL（请求构建侧的占位替换会兜住过期链接，
+/// 不会再毒化请求）。
+async fn persist_remote_images(mut msg: IncomingMessage) -> IncomingMessage {
     if msg.images.is_empty() {
         return msg;
     }
     let mut images = Vec::with_capacity(msg.images.len());
     for image in std::mem::take(&mut msg.images) {
-        images.push(embed_remote_image(image).await);
+        images.push(persist_remote_image(image).await);
     }
     msg.images = images;
     msg
 }
 
-async fn embed_remote_image(url: String) -> String {
-    if url.starts_with("data:") || !url.starts_with("http") {
+async fn persist_remote_image(url: String) -> String {
+    if echo_defs::media_store::is_media_ref(&url) || url.starts_with("data:") || !url.starts_with("http") {
         return url;
     }
-    match download_as_data_uri(&url).await {
-        Ok(data_uri) => data_uri,
+    match download_and_store(&url).await {
+        Ok(reference) => reference,
         Err(error) => {
-            tracing::warn!(%error, "image download failed, keeping original URL");
+            tracing::warn!(%error, "image download/store failed, keeping original URL");
             url
         }
     }
 }
 
-async fn download_as_data_uri(url: &str) -> Result<String, String> {
-    use base64::Engine;
+/// 下载远端图片并落盘，返回 `/media/<id>` 引用。
+async fn download_and_store(url: &str) -> Result<String, String> {
     let resp = image_client()
         .get(url)
         .send()
@@ -480,10 +483,8 @@ async fn download_as_data_uri(url: &str) -> Result<String, String> {
     if bytes.len() > MAX_EMBEDDED_IMAGE_BYTES {
         return Err(format!("image too large ({} bytes)", bytes.len()));
     }
-    Ok(format!(
-        "data:{mime};base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    ))
+    let id = echo_defs::media_store::save_image_bytes(&bytes, &mime)?;
+    Ok(echo_defs::media_store::media_ref(&id))
 }
 
 #[cfg(test)]
@@ -1071,8 +1072,19 @@ mod tests {
         ));
     }
 
+    /// 媒体落盘测试共享一个隔离目录（环境变量是进程级，串行化）。
+    fn media_test_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "echo-adapter-qq-media-{tag}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
     #[tokio::test]
-    async fn download_as_data_uri_embeds_bytes_and_mime() {
+    async fn download_and_store_writes_media_file() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1087,14 +1099,23 @@ mod tests {
             .mount(&server)
             .await;
 
-        let uri = download_as_data_uri(&format!("{}/img.png", server.uri()))
+        let dir = media_test_dir("store");
+        std::env::set_var("ECHO_MEDIA_DIR", &dir);
+        let reference = download_and_store(&format!("{}/img.png", server.uri()))
             .await
-            .expect("download succeeds");
-        assert_eq!(uri, "data:image/png;base64,AQID");
+            .expect("download+store succeeds");
+        std::env::remove_var("ECHO_MEDIA_DIR");
+        assert!(reference.starts_with("/media/"), "{reference}");
+        assert!(reference.ends_with(".png"), "{reference}");
+        // 落盘文件的内容与源一致
+        let id = echo_defs::media_store::id_of_ref(&reference).unwrap();
+        let stored = std::fs::read(dir.join(id)).expect("media file exists");
+        assert_eq!(stored, vec![1u8, 2, 3]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
-    async fn embed_remote_image_keeps_url_on_failure() {
+    async fn persist_remote_image_keeps_url_on_failure() {
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1106,15 +1127,17 @@ mod tests {
 
         let url = format!("{}/missing.png", server.uri());
         assert_eq!(
-            embed_remote_image(url.clone()).await,
+            persist_remote_image(url.clone()).await,
             url,
             "failed downloads keep the original URL"
         );
     }
 
     #[tokio::test]
-    async fn embed_remote_image_passes_through_data_uris() {
+    async fn persist_remote_image_passes_through_data_uris_and_refs() {
         let data = "data:image/png;base64,QUJD".to_string();
-        assert_eq!(embed_remote_image(data.clone()).await, data);
+        assert_eq!(persist_remote_image(data.clone()).await, data);
+        let reference = "/media/abc.png".to_string();
+        assert_eq!(persist_remote_image(reference.clone()).await, reference);
     }
 }

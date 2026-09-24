@@ -79,6 +79,14 @@ impl TimelineProjector {
                     ));
                     return;
                 }
+                // 图片规范化（2026-09-24）：媒体引用（`/media/<id>`）原样
+                // 保留（轻量，面板懒加载）；遗留的内嵌 data URI 落盘后改
+                // 写为引用（落盘失败则省略占位）——时间线是"显示历史"，
+                // 不因一张图写不进去而丢整条消息。
+                let images: Vec<String> = images
+                    .iter()
+                    .map(|image| echo_defs::media_store::spill_or_keep(image))
+                    .collect();
                 self.trunk.push_timeline(TimelineMessage::user(
                     content.clone(),
                     session_id.clone(),
@@ -93,7 +101,7 @@ impl TimelineProjector {
                         received_at_ms: *received_at_ms,
                         message_sequence: *message_sequence,
                     }),
-                    images.clone(),
+                    images,
                 ));
             }
             BackendEvent::AgentReasoning {

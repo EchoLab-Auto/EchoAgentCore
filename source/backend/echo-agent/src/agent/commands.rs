@@ -989,6 +989,13 @@ impl Agent {
                 let sid = session.id.clone();
                 let received_at_ms = chrono::Utc::now().timestamp_millis();
                 let message_sequence = self.next_message_sequence();
+                // 面板上传的图片是 data URI（base64 内嵌）：在这里落盘并改
+                // 写为 `/media/<id>` 引用，后续链路（事件/日志/时间线）只带
+                // 引用；发往 LLM 前由投影出口还原为 data URI（2026-09-24）。
+                let images: Vec<String> = images
+                    .iter()
+                    .map(|image| echo_defs::media_store::spill_or_keep(image))
+                    .collect();
                 // Notify TUI that a session exists so it can set active_session_id.
                 self.emit(BackendEvent::SessionUpdated {
                     session: session.info(String::new()),

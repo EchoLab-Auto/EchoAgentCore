@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 echo-adapter = { path = "../echo-adapter" }
 echo-core = { path = "../echo-core" }
+echo-defs = { path = "../../defs/echo-defs" }
 echo-server = { path = "../echo-server" }
 tokio.workspace = true
 futures-util.workspace = true
