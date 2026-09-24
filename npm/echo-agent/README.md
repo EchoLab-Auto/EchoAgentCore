@@ -100,6 +100,15 @@ ECHO_PANEL_IMAGE=echo-agent-panel:local
 echo-agent up
 ```
 
+国内网络构建 Core 镜像时，docker CLI / compose 的下载源可换成镜像：
+
+```bash
+docker build \
+  --build-arg DOCKER_CLI_MIRROR=https://mirrors.aliyun.com/docker-ce \
+  --build-arg COMPOSE_MIRROR=https://ghfast.top/https://github.com/docker/compose/releases/download \
+  -t echo-agent-core:local .
+```
+
 ## 常见问题
 
 - **容器起不来 / 名字冲突**：`echo-agent doctor`（检测已有 `napcat` 等容器），
@@ -109,5 +118,8 @@ echo-agent up
 - **面板图片 404**：`panel.toml` 的 `[server] media_dir` 与 compose 注入的
   `ECHO_MEDIA_DIR` 必须指向同一卷（默认都是 `/data/media`，改一个要同步另一个）。
 - **改了配置没生效**：`echo-agent restart`。
+- **绑定挂载目录出现 root 属主文件**：容器内以 root 运行（便于读写挂载卷），
+  `config/` 下由 Core 写出的文件会是 root 所有；介意的话可在 compose 给
+  core/panel 服务加 `user: "<uid>:<gid>"`（需保证该 uid 对 config/data 有写权限）。
 - **需要宿主侧访问管理面**：把 compose 里 core 的 `3132:3132` 打开，
   并同时在 `core.toml` 设置 `management_access_token`（随机长串）。
