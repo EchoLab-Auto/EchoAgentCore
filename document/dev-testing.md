@@ -7,7 +7,8 @@ y: 53
 ---
 # Testing Strategy
 
-400+ tests across four layers, covering every source file in all crates.
+**Core（cargo）** 690+ 条、**Panel 前端（vitest）** 140+ 条、**部署 CLI（node:test）**
+23 条，覆盖各 crate 的源文件与关键交互契约（计数随开发增长，量级为本文件维护基线）。
 
 ## Layers
 
@@ -44,6 +45,17 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Skill system**: keyword matching (case-insensitive, empty keywords),
   deterministic multi-hit ordering, recursive SKILL.md discovery, runtime
   enable-state preservation, and hot reload for updates/additions/deletions.
+- **Media store** (echo-defs, 2026-09-24): reference validation (charset /
+  `..` / path traversal), content-hash dedup + atomic write, data-URI spill
+  round-trip, failure→elided-placeholder, inline-data-URI text rewrite
+  (hook JSON), ref→data-URI inlining (model side), missing-file drop.
+- **Media migration** (echo-agent session, 2026-09-24): 加载期把历史事件
+  （content 内嵌 + images 字段）与时间线 data URI 落盘改写且幂等；投影出口
+  把 `/media/<id>` 还原为 data URI（`persisted_refs_inline_on_projection_for_model`）。
+- **Media download** (echo-adapter-qq): 远程图下载落盘（文件字节与源一致）、
+  失败保留原 URL、data URI / 已有引用透传。
+- **QQ 表情渲染** (echo-core + adapter): face id → 名称对照表有序性/未知回退、
+  `readable_text` 混合渲染（`[表情:呲牙]`、`[骰子:6]`、纯表情消息不再整条丢弃）。
 
 ### 2. Property tests (proptest)
 Generated inputs that must satisfy invariants:
@@ -71,8 +83,23 @@ Generated inputs that must satisfy invariants:
   login status detection, WebUI fallback, reverse-WS config, QR fetch.
   Multi-instance adapters (`QqAdapter::with_instance(id, persona, cfg)`)
   carry their instance name/display name and persona metadata.
+- `echo-web-server/tests/media.rs`（Panel 仓库）— `/media/{name}` 路由端到端：
+  文件字节与 Content-Type 正确、`immutable` 强缓存头、目录穿越 / 未知文件 404。
+
+### 5. 面板前端与部署 CLI（非 cargo）
+
+- **Panel web（vitest + @vue/test-utils，144 条）**：`ChatView` 图片渲染契约
+  （`/media/<id>` 懒加载 / 空串省略占位 / data URI 兼容）、设置视图技能/工具/插件
+  工作台（筛选、分组维度、详情分区、交叉跳转、脏状态）、右侧栏连接状态卡、
+  智能体编辑器分区、协议编解码回归等。
+- **部署 CLI（`npm/echo-agent`，node:test，23 条）**：PATH 注入假 `docker` 做
+  CLI 端到端（init 幂等 / up 参数拼装与提示 / down/restart/update/logs/status /
+  doctor 分级与阻断码），以及**模板跨文件契约**（compose 注入的 `ECHO_MEDIA_DIR`
+  == panel.toml 的 `media_dir`、NapCat 容器名一致、生效配置行不得出现 localhost、
+  `docker compose config` 语法校验）。无第三方依赖，CI 直接 `npm test`。
 
 ### 4. Concurrency tests
+
 Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
 
 - `SessionManager::get_or_create` — 32 concurrent callers on the same key
@@ -97,9 +124,15 @@ Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
 cargo test --workspace
 cargo clippy --workspace --all-targets   # -D warnings
 cargo fmt --all --check
+# 部署 CLI（core 仓库）：模板契约 + 假 docker 端到端
+(cd npm/echo-agent && npm test)
+# Panel 前端（panel 仓库）：组件契约
+(cd web && npm run test)   # vitest run
 ```
 
-`.github/workflows/ci.yml` runs all three on push/PR, stable + nightly.
+`.github/workflows/ci.yml`（两仓库）on push/PR：core 侧 cargo 三件套（stable + nightly）
++ `npm-cli` 作业；panel 侧 cargo + `web build` + vitest。**Docker 镜像工作流**
+（tag 发布 GHCR）在 PR/main 上只构建不推送，守护 Dockerfile。
 
 > 环境提示：`agent::tests::update_api_config_persists` 断言空 API key 的回退行为，
 > 若 shell 中设置了 `ANTHROPIC_API_KEY` 等环境变量会失败——这是既有行为，
@@ -115,3 +148,8 @@ cargo fmt --all --check
 - OpenID SSE `error` events silently skipped (choices field missing `serde(default)`).
 - Rate-limit per-user bucket isolation — u1 overflow didn't affect u2.
 - Anthropic SSE tool-use content block — only Text was handled, ToolUse was silently dropped.
+- QQ 表情消息被整条丢弃（content 只取 text 段，纯表情消息为空）——`readable_text` 修复。
+- 入站图片内嵌 base64 导致时间线快照 8MB / 会话文件 24.6MB / 面板启动 802ms——媒体库落盘修复。
+- `accept_private_file` 是死配置（定义了但从未被检查）——文件接收 gap 审查发现。
+- 同名同毫秒下载互相覆盖——`create_new` + 序号兜底。
+- 技能编辑中点选同一行静默丢弃未保存改动——先 confirm 修复。

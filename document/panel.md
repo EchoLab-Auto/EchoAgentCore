@@ -47,7 +47,10 @@ EchoAgentPanel/
 
 ## 主视图（聊天）
 
-- `ChatView.vue`：消息列表 + 吸底输入区；`#message` slot 拦截扩展角色渲染
+- `ChatView.vue`：消息列表 + 吸底输入区；`#message` slot 拦截扩展角色渲染。
+  消息图片渲染（2026-09-24）：Core 侧的 `/media/<id>` 引用直接 `<img loading=lazy
+  decoding=async>`（同源、强缓存）；遗留 data URI 兼容；空串（Core 侧"图片已省略"
+  占位）渲染为文字标
 - `ReasoningBlock.vue`：推理打字机动画（实时消息 6 秒封顶；历史回放不播）
 - 活动浮条：思考中 / 调用工具 / 子代理 的 spinner + 动态文案
 - 消息入场动画 0.28s 淡入上移，仅实时消息（`animate` 标记）播放
@@ -55,9 +58,13 @@ EchoAgentPanel/
 
 ## 侧边栏与设置页
 
-- `PanelSidebar.vue`：临时分支卡（仅并行多会话模式；按当前 agent 能力开关显示/隐藏）
+- `PanelSidebar.vue`：右侧边栏卡片栈（RailStack：连接状态 / 文件浏览器 / Shell / 临时分支；
+  上下排列、可折叠、分隔条拖动，详见 [会话视图](./panel-chat.md)§7.8）
+- `ConnectionStatusCard.vue`（2026-09-23 从顶栏迁入）：Core 管理通道状态点 + QQ
+  适配器逐实例运行态（`已连接`/`等待连接`/`已停止`）；断连时附重连提示。
+  紧凑卡（固定高度、不参与 flex 分配）
 - `SessionSwitcher.vue`：入口行「会话」按钮弹出——按平台分组（Local/QQ 私聊/QQ 群/其他）切换会话；并行模式附「全局」项；每个会话独立上下文（2026-09）
-- `SettingsView.vue`：设置视图——API 设置（`ApiSettings.vue`：概览视图 + 点击「编辑」/「添加 API 服务商」时展开表单，默认不常驻）+ 技能/工具/插件/智能体的浏览、启停、编辑、删除（左侧一级菜单 + 右侧工作区；2026-09-04 起取代原资源视图与 API 弹窗）。技能编辑含**「系统提示词」开关**（`system: true`，详见 [技能系统](./core-skills.md)）；智能体编辑含**「系统提示词 skills」勾选**（SaveTeam.system_skills）与 Git 安装表单
+- `SettingsView.vue`：设置视图——API 设置（`ApiSettings.vue`：概览视图 + 点击「编辑」/「添加 API 服务商」时展开表单，默认不常驻）+ **技能/工具/插件三套工作台**（2026-09-23 重排版：筛选栏 + 双行行卡 hover 快速启停 + 分区详情检查器 + 包⇄工具/技能交叉跳转；技能按包分组、工具按包分组、插件按门控语义分组）+ 智能体的浏览、启停、编辑、删除（左侧一级菜单 + 右侧工作区；2026-09-04 起取代原资源视图与 API 弹窗）。技能编辑含**「系统提示词」开关**（`system: true`，详见 [技能系统](./core-skills.md)）；智能体编辑含**「系统提示词 skills」勾选**（SaveTeam.system_skills）与 Git 安装弹层。布局与交互细节见 [设置视图](./panel-settings.md)§9.2
 - `AgentSwitcher.vue`：输入框上方 Agent 切换悬浮卡片；卡片与菜单行显示当前 persona **生效模型**（按 `api_profile` 从全局供应商池解析，未引用 = 全局默认 model）
 - `AgentConfigModal.vue`：聊天区 ⚙「配置」按钮唤起的**会话区内磨砂玻璃弹层**——
   名称/描述/系统提示词/启用/**API 供应商下拉**（`api_profile`，见 [设置视图 §9.1.1](./panel-settings.md)）/插件/工具/技能白名单（表格 + pkg 分组，含"系统提示词 skills"勾选），

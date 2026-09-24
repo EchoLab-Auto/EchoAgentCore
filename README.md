@@ -43,11 +43,13 @@ EchoAgentCore/
 │   │   └── echo-test-utils/      # 共享测试 mock（仅 dev-dependency）
 │   └── core/                     # echo-agent-core 二进制（组合根）
 ├── document/                     # 项目文档群（ProDoc 格式：index.md 入口）
+├── npm/echo-agent/               # 容器化部署 CLI（Docker 编排 core+panel+napcat）
+├── docker/entrypoint.sh          # Core 容器入口（配置解析 / socket 能力探测）
 ├── packaging/systemd/            # 用户级 systemd 单元模板
 ├── scripts/                      # install.sh / update.sh（受控自更新）
-├── napcat/                       # NapCat Docker 配置
-├── docker-compose.yml            # NapCat 容器
-└── Dockerfile                    # Core 服务镜像
+├── napcat/                       # NapCat Docker 配置（宿主安装路径用）
+├── docker-compose.yml            # NapCat 容器（宿主安装路径用）
+└── Dockerfile                    # Core 容器镜像（含 docker CLI；GHCR 发布）
 ```
 
 ### Crate 职责

@@ -45,9 +45,12 @@ EchoAgentCore/
 │   │   └── echo-test-utils/   # 共享测试 mock（仅 dev-dependency）
 │   └── core/                  # echo-agent-core 二进制（组合根）
 ├── document/                  # 本文档群（ProDoc 格式）
+├── npm/echo-agent/            # 容器化部署 CLI（Docker 编排；node:test 测试）
+├── docker/entrypoint.sh       # Core 容器入口
 ├── packaging/systemd/         # 用户服务模板
 ├── scripts/                   # 安装器与受控更新器
-├── napcat/                    # NapCat Docker 配置
+├── napcat/                    # NapCat Docker 配置（宿主安装路径用）
+├── Dockerfile                 # Core 容器镜像
 └── Cargo.toml                 # Workspace 清单
 ```
 
