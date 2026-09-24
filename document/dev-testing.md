@@ -24,9 +24,11 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Filtering** (echo-adapter): allowlist / denylist / rate limit (sliding
   window with real-time expiry + per-user/per-group/global bucket isolation) /
   keyword / content length / admin bypass, pipeline ordering and short-circuit.
-- **Security** (echo-agent tools): path-traversal guards for read/write/edit
-  (canonicalize + workspace containment), dangerous command patterns,
-  absolute-path rejection, 50-result search cap.
+- **Security** (echo-agent tools): 相对路径的穿越防护（read/write/edit 共用
+  `guard_relative_path`：canonicalize 目标或最近已存在祖先，拦 `../..` 与
+  区外符号链接；写工具在创建目录前校验，区外不留空目录）、绝对路径按显式
+  意图放行（多仓库工作流，三个 ops 同一约定，均有正向用例）、危险命令模式、
+  search 的 50 条上限。
 - **Persistence** (echo-agent): session save/load round-trips, lenient
   malformed-entry recovery, idle eviction, ConfigStore atomic patches.
 - **Teamless multi-agent & QQ instances** (echo-agent + core): session

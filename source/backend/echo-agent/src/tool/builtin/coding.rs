@@ -19,6 +19,59 @@ fn workspace_root(workspace: &std::path::Path) -> PathBuf {
         .unwrap_or_else(|_| workspace.to_path_buf())
 }
 
+/// 解析工具 `path` 参数：**绝对路径原样使用**（显式意图），相对路径相对工作区。
+///
+/// 约定对全部文件工具一致（2026-09-24 起 write/edit 与 read 对齐）：多仓库
+/// 工作流里 agent 的工作区只覆盖一个仓库，显式绝对路径允许工作区外的读写
+/// （如 agent 工作在 Core 仓库、同时要改 Panel 仓库）；相对路径必须落在
+/// 工作区内——穿越防护见 [`guard_relative_path`]。
+fn resolve_tool_path(workspace: &std::path::Path, raw: &str) -> PathBuf {
+    if raw.starts_with('/') {
+        PathBuf::from(raw)
+    } else {
+        workspace.join(raw)
+    }
+}
+
+/// 相对路径的穿越防护：路径（或最近的已存在祖先）canonicalize 后必须落在
+/// 工作区内，否则拒绝。**绝对路径不调用本函数**（显式意图，见
+/// [`resolve_tool_path`]）。
+///
+/// 在创建目录**之前**调用：`../..` 逃逸不会在区外留下空目录；同时覆盖
+/// 「既有符号链接指向区外」的情况（目标自身或最近祖先解析到区外即拒绝）。
+fn guard_relative_path(
+    workspace: &std::path::Path,
+    path: &std::path::Path,
+) -> Result<(), ToolError> {
+    let root = workspace_root(workspace);
+    // 目标已存在（含符号链接）：其自身 canonical 必须在工作区内。
+    if let Ok(canonical) = path.canonicalize() {
+        if !canonical.starts_with(&root) {
+            return Err(ToolError::Execution(
+                "access denied: path outside workspace".into(),
+            ));
+        }
+        return Ok(());
+    }
+    // 目标尚不存在：以最近的已存在祖先为准（创建前校验）。
+    let mut probe = path.parent();
+    while let Some(candidate) = probe {
+        if candidate.exists() {
+            let canonical = candidate
+                .canonicalize()
+                .map_err(|e| ToolError::Execution(format!("cannot resolve path: {e}")))?;
+            if !canonical.starts_with(&root) {
+                return Err(ToolError::Execution(
+                    "access denied: path outside workspace".into(),
+                ));
+            }
+            return Ok(());
+        }
+        probe = candidate.parent();
+    }
+    Err(ToolError::Execution("cannot resolve path".into()))
+}
+
 // ── ReadFileTool ──
 
 pub struct ReadFileTool {
@@ -50,22 +103,15 @@ impl Tool for ReadFileTool {
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let path_str = args["path"].as_str().unwrap_or("");
-        let path = if path_str.starts_with('/') {
-            PathBuf::from(path_str)
-        } else {
-            self.workspace.join(path_str)
-        };
+        let path = resolve_tool_path(&self.workspace, path_str);
 
-        // Safety: prevent path traversal outside workspace.
+        // 相对路径的穿越防护；绝对路径是显式意图（与 write/edit 同一约定）。
+        if !path_str.starts_with('/') {
+            guard_relative_path(&self.workspace, &path)?;
+        }
         let canonical = path
             .canonicalize()
             .map_err(|e| ToolError::Execution(format!("file not found: {e}")))?;
-        let root = workspace_root(&self.workspace);
-        if !canonical.starts_with(&root) && !path_str.starts_with('/') {
-            return Err(ToolError::Execution(
-                "access denied: path outside workspace".into(),
-            ));
-        }
 
         let content = std::fs::read_to_string(&canonical)
             .map_err(|e| ToolError::Execution(format!("read error: {e}")))?;
@@ -116,11 +162,7 @@ impl Tool for ListFilesTool {
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let rel = args["path"].as_str().unwrap_or(".");
-        let dir = if rel.starts_with('/') {
-            PathBuf::from(rel)
-        } else {
-            self.workspace.join(rel)
-        };
+        let dir = resolve_tool_path(&self.workspace, rel);
         if !dir.is_dir() {
             return Err(ToolError::Execution(format!("not a directory: {rel}")));
         }
@@ -196,11 +238,7 @@ impl Tool for SearchCodeTool {
             return Err(ToolError::InvalidArguments("pattern required".into()));
         }
         let dir_rel = args["path"].as_str().unwrap_or("source");
-        let dir = if dir_rel.starts_with('/') {
-            PathBuf::from(dir_rel)
-        } else {
-            self.workspace.join(dir_rel)
-        };
+        let dir = resolve_tool_path(&self.workspace, dir_rel);
         if !dir.exists() {
             return Err(ToolError::Execution(format!(
                 "directory not found: {dir_rel}"
@@ -278,7 +316,7 @@ impl Tool for WriteFileTool {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path to the file, relative to project root"},
+                "path": {"type": "string", "description": "Path to the file, relative to project root or absolute"},
                 "content": {"type": "string", "description": "The full new content of the file"}
             },
             "required": ["path", "content"]
@@ -286,27 +324,22 @@ impl Tool for WriteFileTool {
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let path_str = args["path"].as_str().unwrap_or("");
-        if path_str.is_empty() || path_str.starts_with('/') {
-            return Err(ToolError::InvalidArguments("relative path required".into()));
+        if path_str.is_empty() {
+            return Err(ToolError::InvalidArguments("path required".into()));
         }
         let content = args["content"].as_str().unwrap_or("");
-        let path = self.workspace.join(path_str);
+        let path = resolve_tool_path(&self.workspace, path_str);
 
-        // Create parent directories if needed (also makes them canonicalisable).
+        // 相对路径的穿越防护（创建目录**之前**，不在区外留空目录）；
+        // 绝对路径是显式意图（多仓库工作流），不设限。
+        if !path_str.starts_with('/') {
+            guard_relative_path(&self.workspace, &path)?;
+        }
+
+        // Create parent directories if needed.
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| ToolError::Execution(format!("mkdir: {e}")))?;
-        }
-        // Path-traversal guard: the resolved parent must stay inside the
-        // workspace, so `../..` cannot escape it.
-        let canonical_parent = path
-            .parent()
-            .and_then(|p| p.canonicalize().ok())
-            .ok_or_else(|| ToolError::Execution("cannot resolve path parent".into()))?;
-        if !canonical_parent.starts_with(workspace_root(&self.workspace)) {
-            return Err(ToolError::Execution(
-                "access denied: path outside workspace".into(),
-            ));
         }
         std::fs::write(&path, content).map_err(|e| ToolError::Execution(format!("write: {e}")))?;
 
@@ -339,7 +372,7 @@ impl Tool for EditFileTool {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path to the file, relative to project root"},
+                "path": {"type": "string", "description": "Path to the file, relative to project root or absolute"},
                 "start_line": {"type": "integer", "description": "First line to replace (1-indexed)"},
                 "end_line": {"type": "integer", "description": "Last line to replace (1-indexed, inclusive)"},
                 "new_content": {"type": "string", "description": "The replacement text (can be multiple lines)"}
@@ -349,10 +382,10 @@ impl Tool for EditFileTool {
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let path_str = args["path"].as_str().unwrap_or("");
-        if path_str.is_empty() || path_str.starts_with('/') {
-            return Err(ToolError::InvalidArguments("relative path required".into()));
+        if path_str.is_empty() {
+            return Err(ToolError::InvalidArguments("path required".into()));
         }
-        let path = self.workspace.join(path_str);
+        let path = resolve_tool_path(&self.workspace, path_str);
         let start = args["start_line"].as_u64().unwrap_or(0) as usize;
         let end = args["end_line"].as_u64().unwrap_or(0) as usize;
         let new_content = args["new_content"].as_str().unwrap_or("");
@@ -363,16 +396,13 @@ impl Tool for EditFileTool {
             ));
         }
 
-        // Path-traversal guard: the resolved file must stay inside the
-        // workspace, so `../..` cannot escape it.
+        // 相对路径的穿越防护；绝对路径是显式意图（与 read_file 一致）。
+        if !path_str.starts_with('/') {
+            guard_relative_path(&self.workspace, &path)?;
+        }
         let canonical = path
             .canonicalize()
             .map_err(|e| ToolError::Execution(format!("file not found: {e}")))?;
-        if !canonical.starts_with(workspace_root(&self.workspace)) {
-            return Err(ToolError::Execution(
-                "access denied: path outside workspace".into(),
-            ));
-        }
 
         let original = std::fs::read_to_string(&canonical)
             .map_err(|e| ToolError::Execution(format!("read: {e}")))?;
@@ -702,14 +732,108 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_file_rejects_absolute_paths() {
-        let ws = temp_workspace("abs");
+    async fn write_file_supports_absolute_paths() {
+        // 显式绝对路径：允许工作区外（多仓库工作流——agent 工作区在 Core
+        // 仓库、同时要改 Panel 仓库）。
+        let ws = temp_workspace("abs-ws");
+        let outside =
+            std::env::temp_dir().join(format!("echo-coding-abs-out-{}", std::process::id()));
+        let target = outside.join("nested/file.txt");
+        let _ = std::fs::remove_dir_all(&outside);
         let tool = WriteFileTool::new(ws.clone());
+        let result = tool
+            .execute(json!({
+                "path": target.to_string_lossy(),
+                "content": "absolute\nwrite"
+            }))
+            .await
+            .unwrap();
+        assert!(result.contains("wrote"), "result: {result}");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "absolute\nwrite",
+            "file created at the absolute path, parent dirs included"
+        );
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn edit_file_supports_absolute_paths() {
+        let ws = temp_workspace("abs-edit-ws");
+        let outside =
+            std::env::temp_dir().join(format!("echo-coding-abs-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        let target = outside.join("f.txt");
+        std::fs::write(&target, "one\ntwo\nthree\n").unwrap();
+
+        let tool = EditFileTool::new(ws.clone());
+        let result = tool
+            .execute(json!({
+                "path": target.to_string_lossy(),
+                "start_line": 2,
+                "end_line": 2,
+                "new_content": "TWO"
+            }))
+            .await
+            .unwrap();
+        assert!(result.contains("edited"), "result: {result}");
+        let content = std::fs::read_to_string(&target).unwrap();
+        assert!(content.contains("TWO"));
+        assert!(!content.contains("two\n"));
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn write_file_traversal_leaves_no_dirs_outside() {
+        // 穿越路径必须在**创建目录之前**被拦下：目标父目录（区外）不得出现。
+        let ws = temp_workspace("trav-dirs");
+        let escape_dir =
+            std::env::temp_dir().join(format!("echo-coding-trav-escape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&escape_dir);
+        let tool = WriteFileTool::new(ws.clone());
+        let path = format!(
+            "../{}/file.txt",
+            escape_dir.file_name().unwrap().to_string_lossy()
+        );
         let err = tool
-            .execute(json!({"path": "/tmp/abs-escape.txt", "content": "x"}))
+            .execute(json!({"path": path, "content": "x"}))
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("relative path required"));
+        assert!(
+            err.to_string().contains("outside workspace"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !escape_dir.exists(),
+            "escape parent dir must not be created outside the workspace"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn write_file_rejects_symlink_escape() {
+        // 工作区内指向区外的符号链接：相对路径写它必须被拒（canonical 防线）。
+        let ws = temp_workspace("symlink");
+        let outside =
+            std::env::temp_dir().join(format!("echo-coding-symlink-out-{}", std::process::id()));
+        std::fs::write(&outside, "original").unwrap();
+        std::os::unix::fs::symlink(&outside, ws.join("link.txt")).unwrap();
+
+        let tool = WriteFileTool::new(ws.clone());
+        let err = tool
+            .execute(json!({"path": "link.txt", "content": "pwned"}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("outside workspace"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "original");
+        let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir_all(&ws);
     }
 
@@ -758,6 +882,23 @@ mod tests {
             "unexpected error: {err}"
         );
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "original");
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn read_file_supports_absolute_paths() {
+        // 与 write/edit 同一约定：显式绝对路径允许工作区外（多仓库工作流）。
+        let ws = temp_workspace("abs-read-ws");
+        let outside =
+            std::env::temp_dir().join(format!("echo-coding-abs-read-{}", std::process::id()));
+        std::fs::write(&outside, "outside-content").unwrap();
+        let tool = ReadFileTool::new(ws.clone());
+        let result = tool
+            .execute(json!({"path": outside.to_string_lossy()}))
+            .await
+            .unwrap();
+        assert!(result.contains("outside-content"), "result: {result}");
         let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir_all(&ws);
     }

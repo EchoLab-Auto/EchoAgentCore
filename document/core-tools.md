@@ -14,6 +14,21 @@ y: 2047
 - 注册是可逆副作用：`register_reversible` 返回 `Disposer`，插件卸载即撤销
 - `run_tool` 统一分派：编排工具（定时器/子代理/后台任务/自更新/sudo）由 agent 内联处理；普通工具走注册表
 
+## 文件工具的路径约定（2026-09-24）
+
+`read_file` / `list_files` / `search_code` / `write_file` / `edit_file` 共用同一
+套路径解析（`tool/builtin/coding.rs::resolve_tool_path`）：
+
+- **相对路径**：相对工作区（Core 进程 cwd）解析，解析结果必须落在工作区内
+  （`guard_relative_path`：canonicalize 目标或最近的已存在祖先；`../..` 逃逸、
+  指向区外的符号链接都拒绝，且写工具在**创建目录之前**校验，区外不留空目录）
+- **绝对路径**：原样使用（显式意图）——多仓库工作流需要：agent 的工作区落在
+  一个仓库（如 Core），同时要改另一个仓库（如 Panel、ui-frame）。此前
+  write/edit 拒绝绝对路径，只能退回 `bash` 绕行，反而更不透明
+- 相对路径限定是**防误伤**（模型手滑/提示注入导致的越界写），不是权限边界：
+  `bash` 工具本身即可访问整个文件系统；需要强制隔离时应约束 `bash`/`write_file`
+  的工具白名单（persona 级）
+
 ## 参数预检
 
 - 非法 JSON / 缺少必需字段时返回**纠正性错误**（说清"你发了什么、应该发什么"），让模型自我纠正而不是盲目重试

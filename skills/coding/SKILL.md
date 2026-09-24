@@ -39,6 +39,9 @@ You can interact with the project's source code using these tools:
 
 ## Safety
 
-- All file access is restricted to the project workspace
+- **路径约定**：相对路径相对工作区解析且必须落在工作区内（`../..` 逃逸、
+  指向区外的符号链接会被拒绝，写工具在创建目录前就拒绝）；**绝对路径原样
+  使用**——多仓库工作流（如工作区在 Core、同时要改 Panel / ui-frame）用绝对
+  路径直接读写，不必退回 `bash`
 - `read_file` returns content with line numbers for easy reference
 - `search_code` limits to 50 results to avoid overwhelming output
