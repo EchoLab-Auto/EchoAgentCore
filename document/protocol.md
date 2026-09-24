@@ -135,6 +135,14 @@ graph LR
 3. 新增事件/命令变体：旧端遇到未知变体整条帧丢弃（不崩溃），前端应做能力兜底
 4. 进程内 mpsc bridge（`create_bridge` / `BackendBridge` / `BackendHandle` / `FanoutHandle`）与 WS 共享同一组类型，主要用于测试；生产部署一律走 WS
 
+## 媒体引用（2026-09-24）
+
+时间线/事件里的图片是**引用**而非内嵌数据：`/media/<id>`（Core 媒体库，
+Panel web 后端同源提供）。渲染侧（Panel）直接 `<img src="/media/...">` 懒加载；
+模型侧在投影出口还原为 data URI（`echo-defs::media_store`），LLM 请求不变。
+遗留会话的内嵌 data URI 由 Core 加载期迁移落盘（幂等）；落盘失败的图退化为
+空串占位（前端渲染「图片已省略」，保留数组长度以便计数）。
+
 ## 独立通道
 
 - **sudo 通道**：密码经专用帧提交（不进入 LLM 上下文/会话日志），事件为 `SudoRequest/SudoResolved`

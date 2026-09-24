@@ -137,6 +137,15 @@ graph LR
 - **设置入口**：顶栏导航「设置」直达设置视图（§九）——2026-09-04 起不再有设置下拉与 API 弹窗
 - **主题开关**：三态循环（浅色 → 跟随系统 → 深色），持久化 `localStorage: echo-panel-theme`；外壳默认 `auto`，index.html 内联脚本防闪烁
 
+### 媒体文件路由（2026-09-24）
+
+`GET /media/{name}`：Panel web 后端读**媒体库目录**（`[server] media_dir`，
+缺省 `~/.local/share/echo-agent-core/media`，与 Core 的 `$ECHO_MEDIA_DIR` 缺省一致）
+返回 Core 落盘的入站图片。内容哈希命名 → `immutable` 强缓存；id 字符集校验 +
+前缀包含检查防目录穿越（非法/缺失一律 404）。前端消息图片以
+`<img loading=lazy>` 引用（Core 侧协议字段里的 `/media/<id>`）；Core 侧
+"图片已省略"占位（空串）渲染为文字标。协议字段仍为 `images: string[]`。
+
 ### 3.5 持久化的界面状态
 
 | localStorage 键 | 内容 | 缺省 |

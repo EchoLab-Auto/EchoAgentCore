@@ -101,6 +101,20 @@ graph BT
 | 平台生命周期 | `echo_defs::chat::ChatAdapter` | `echo-adapter-qq`（经 Adapter 收敛中） | agent + 工具 |
 | 默认驱动 | `echo_loop::TurnRunner` | 内置（经 `ctx.loop` 注册） | 组合根 |
 
+## 媒体库（2026-09-24）
+
+入站图片（QQ 消息图、面板上传图）**落盘为媒体文件，链路上只传引用**：
+`~/.local/share/echo-agent-core/media/<内容哈希>.<ext>`（`$ECHO_MEDIA_DIR` 可覆盖），
+引用为 `/media/<id>`（Panel web 后端同源提供，浏览器懒加载 + 强缓存）。
+
+- 落盘侧：adapter-qq 下载远端图后落盘；SendMessage（面板上传 data URI）入站落盘；
+  遗留内嵌图由加载期迁移（`spill_event_media` + 时间线遍历）一次性改写（幂等）
+- 模型侧：投影出口（`TrunkStore::reproject_one`）把引用还原为 data URI——
+  发往 LLM 的请求与改造前无差别
+- 背景与实测：单个 GIF 表情包数 MB，内嵌在 hook JSON / 事件日志 / 时间线三处，
+  alix 的时间线快照 8MB → 面板启动 802ms、会话文件 24.6MB；改造后 57KB /
+  299ms / 225KB（图片全保留）
+
 ## 命令分发
 
 - QQ 命令域独立：`apply_qq_command`（`agent/qq_commands.rs`）承载名单/门控/群列表/好友列表等 QQ 变体，主 `apply_command` 的对应分支为一行委托，核心分支原地保留
