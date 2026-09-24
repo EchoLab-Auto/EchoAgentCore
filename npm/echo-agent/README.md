@@ -74,6 +74,18 @@ echo-agent up
 两者共用一个数据模型（同一个 core.toml / panel.toml 语义），但**不要同时跑**：
 容器名（`napcat` 等）与端口（8080/6099）会冲突，`echo-agent doctor` 会给出提示。
 
+## 发布（维护者）
+
+```bash
+cd npm/echo-agent
+npm test                 # 模板契约 + CLI 端到端（node:test，无第三方依赖）
+# 改 package.json 版本号 → 提交 → 打 tag（触发 .github/workflows/npm-publish.yml）
+git tag npm-v0.1.1 && git push origin npm-v0.1.1
+```
+
+工作流用仓库密钥 `NPM_TOKEN`（npmjs Automation Token）发布。也可手动
+`npm publish`（需已 `npm login` 且对 `@echolab-auto` scope 有权限）。
+
 ## 本地构建镜像（无预发布镜像时）
 
 ```bash

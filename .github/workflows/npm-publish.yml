@@ -1,0 +1,34 @@
+# npm 部署 CLI 发布：把 npm/echo-agent 发到 npm registry。
+#
+# 触发：tag `npm-v*`（如 npm-v0.1.0）或手动。需要仓库密钥 NPM_TOKEN
+# （npmjs.com 的 Automation Token，具备该 scope 的发布权限）。
+#
+# 版本号以 npm/echo-agent/package.json 为准：发版流程 = 改版本 → tag → 本工作流发布。
+name: npm-publish
+
+on:
+  push:
+    tags: ["npm-v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: npm/echo-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # 发布前先跑包内测试（模板契约 + CLI 端到端；无第三方依赖）
+      - run: npm test
+
+      - run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
