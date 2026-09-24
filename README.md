@@ -120,12 +120,28 @@ cargo fmt --all --check
 
 ### Docker
 
+**一键部署（npm 编排，推荐）**：
+
 ```bash
-docker build -t echo-agent-core .
-docker run -v "$PWD/config:/app/config" -p 3131:3131 -p 3132:3132 echo-agent-core
+npx @echolab-auto/echo-agent up   # core + panel + napcat 三容器，面板在 :8080
 ```
 
-`docker-compose.yml` 只编排 NapCat（QQ 协议端），Core 本身通常跑在宿主机（systemd）或按上式容器化。
+包源码见 [`npm/echo-agent/`](npm/echo-agent/)（生成 compose + 配置模板并代理
+`docker compose` 的日常操作；镜像发布见 `.github/workflows/docker.yml`）。
+
+**手动构建/运行**（无 registry 镜像时）：
+
+```bash
+docker build -t echo-agent-core .
+docker run -v ./config:/config -v ./data:/data -p 3131:3131 -p 3132:3132 echo-agent-core
+```
+
+镜像内置 docker CLI（可选挂 `/var/run/docker.sock`：QR 取图 / 文件桥 /
+NapCat 容器管理）；容器模式的完整配置模板见
+[`npm/echo-agent/templates/core.toml`](npm/echo-agent/templates/core.toml)。
+
+仓库根目录的 `docker-compose.yml` 只编排 NapCat（QQ 协议端），宿主安装
+（systemd）时由 Core 用来起停 NapCat 容器。
 
 ## 配置
 

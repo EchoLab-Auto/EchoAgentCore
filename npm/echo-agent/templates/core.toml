@@ -1,0 +1,82 @@
+# EchoAgentCore 容器模式配置 — 由 `echo-agent init` 生成（可自由编辑）。
+#
+# 与宿主安装（install.sh）的差异集中在三处，改错会导致容器起不来：
+#   1. [agent] skills_dir       → /app/skills（镜像内置技能目录）
+#   2. [adapters.qq] 寻址       → 全走 compose 网络服务名（core / napcat），
+#                                 不是 localhost / host.docker.internal
+#   3. 数据目录                 → 媒体库走 ECHO_MEDIA_DIR=/data/media（compose 注入），
+#                                 下载目录显式指到 /data/downloads
+#
+# 修改后执行 `echo-agent restart` 生效。
+
+[logging]
+level = "info"
+format = "text"
+log_file = ""            # 留空 = stdout（docker logs 查看）
+
+[agent]
+# 与仓库默认一致（DeepSeek Anthropic 兼容端点）；provider/model/endpoint
+# 也可在 Panel「设置 → API」里改，保存后由 Core 写回本文件。
+provider = "deepseek"
+model = "deepseek-v4-flash"
+base_url = "https://api.deepseek.com/anthropic"
+# ★ 必填：LLM API Key（本文件权限保持 600；也可改用环境变量
+#   DEEPSEEK_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY）
+api_key = ""
+thinking = "enabled"
+reasoning_effort = "max"
+max_tool_iterations = 1024
+memory_limit_tokens = 800000
+skills_dir = "/app/skills"
+
+[plugins.system_prompt]
+text = "请你使用中文"
+
+# 一个默认人格（可在 Panel「设置 → 智能体」里增删改）
+[agent.teams.assistant]
+name = "助手"
+description = "通用助手"
+enabled = true
+enabled_plugins = [
+    "echo-agent.adapter.qq",
+    "echo-agent.management.panel",
+    "echo-agent.tools.builtin",
+    "echo-agent.skills.dir",
+]
+
+[adapters.qq]
+enabled = true
+# NapCat 容器由 compose 管理（见 docker-compose.yml 的 napcat 服务）
+napcat_auto_start = false
+napcat_auto_stop = false
+# 容器名（与 compose 的 container_name 一致；QR 取图 / 文件桥接用）
+napcat_container = "napcat"
+# NapCat 侧看到的 Core 地址（compose 服务名；反向 WS 与文件桥都用它）
+napcat_host = "core"
+# Core 侧访问 NapCat（compose 服务名 + 容器内端口）
+napcat_onebot_url = "http://napcat:3000"
+napcat_webui_url = "http://napcat:6099"
+owner_qq = 0
+command_prefix = "/"
+
+[adapters.qq.server]
+bind_address = "0.0.0.0:3131"
+access_token = ""
+heartbeat_interval = 30
+
+[adapters.qq.trigger]
+dm_auto_reply = true
+group_at_reply = true
+
+[adapters.qq.files]
+# 接收文件保存目录（/data 为 compose 的持久卷挂载点）
+dir = "/data/downloads"
+max_mb = 100
+accept_group_upload = true
+accept_private_file = true
+
+[core]
+# 管理面监听：容器内 0.0.0.0（Panel 容器经 compose 网络接入；默认不映射到宿主）
+management_address = "0.0.0.0:3132"
+# 若把 3132 映射到宿主/局域网，务必设置随机长 token
+management_access_token = ""

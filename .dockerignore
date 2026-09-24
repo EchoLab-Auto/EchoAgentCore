@@ -5,3 +5,9 @@ target/
 logs/
 *.log
 qrcode.png
+# 镜像构建不需要的目录（文档 / 部署 CLI / 打包脚本）
+document/
+docs/
+npm/
+packaging/
+tools/

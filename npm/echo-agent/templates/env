@@ -1,0 +1,4 @@
+# 镜像引用（docker compose 自动读取本文件）。
+# 默认拉取发布镜像；本地构建时改成 <name>:local（见 docker-compose.yml 头注）。
+ECHO_CORE_IMAGE=ghcr.io/echolab-auto/echo-agent-core:latest
+ECHO_PANEL_IMAGE=ghcr.io/echolab-auto/echo-agent-panel:latest

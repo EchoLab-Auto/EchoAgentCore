@@ -34,6 +34,30 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 
 长驻 `echo-agent-core.service` 设 `NoNewPrivileges=false`：`run_sudo` 人机授权流（见 [工具系统](./core-tools.md)）依赖 sudo 的 setuid 提权，`NoNewPrivileges=true` 会阻断。oneshot 更新单元保持 `NoNewPrivileges=true`——它只拉代码、构建、替换用户目录二进制，从不运行 sudo，限制被攻破构建脚本的提权面。
 
+## 容器化部署（npm + Docker，2026-09-24）
+
+除宿主 systemd 安装外的第二条投放路径：**npm 编排 + 官方镜像**——
+`npx @echolab-auto/echo-agent up`（包源码在仓库 `npm/echo-agent/`）。
+
+- 形态：本包只生成 `docker-compose.yml` + 配置模板并代理 `docker compose`
+  （`init / up / down / restart / update / logs / status / doctor`）；
+  运行全部在容器里（core + panel + napcat 三容器，专用网络 `echo-agent`）
+- 互访：容器间一律 compose 服务名——Panel `ws://core:3132`；
+  NapCat 反向 WS `ws://core:3131`、OneBot HTTP `http://napcat:3000`
+  （与宿主安装的 `localhost` / `host.docker.internal` 寻址不同，模板已写好）
+- 数据：`~/.echo-agent/{config,data}` 绑定挂载——config 放 core.toml/panel.toml
+  与会话 JSON，data 放媒体库（`ECHO_MEDIA_DIR=/data/media`，与 Panel 的
+  `[server] media_dir` 必须一致）与文件下载
+- docker socket：compose 默认挂 `/var/run/docker.sock` 进 core 容器，供
+  QR 取图（`docker exec`）与发送文件桥接（`docker cp`）；不挂时自动降级
+  （QR 走 WebUI、文件走 HTTP 桥），NapCat 容器本身由 compose 管理
+  （`core.toml` 里 `napcat_auto_start=false`）
+- 镜像：`ghcr.io/echolab-auto/echo-agent-{core,panel}:latest`（两个仓库根目录
+  各有 `Dockerfile`，`.github/workflows/docker.yml` 在版本 tag 上发布）；
+  无预发布镜像时按仓库 Dockerfile 本地构建，改 `.env` 指向 `:local`
+- 与宿主安装**不要同时跑**：容器名（`napcat`）与端口（8080/6099）冲突，
+  `echo-agent doctor` 会检测并提示
+
 ## 更新流程（update.sh）
 
 - `--local`（默认）：构建当前源码树（含未提交改动，记为 `+dirty`）；`--remote`：先 fetch + fast-forward 再构建（工作树有改动/游离 HEAD/非快进则拒绝）

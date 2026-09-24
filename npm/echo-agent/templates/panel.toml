@@ -1,0 +1,24 @@
+# EchoAgentPanel 容器模式配置 — 由 `echo-agent init` 生成（可自由编辑）。
+#
+# 与宿主安装的差异：
+#   - [core] connect_url  → ws://core:3132（compose 服务名，容器内互访）
+#   - [server] media_dir  → /data/media（与 Core 的 ECHO_MEDIA_DIR 同一卷，
+#     否则消息图片 /media/<id> 会 404）
+#   - static_dir 由镜像内固定（/app/web），此处仅作展示
+#
+# 修改后执行 `echo-agent restart` 生效。
+
+[logging]
+level = "info"
+format = "text"
+log_file = ""
+
+[server]
+bind_address = "0.0.0.0:8080"
+static_dir = "/app/web"
+media_dir = "/data/media"
+
+[core]
+connect_url = "ws://core:3132"
+# 与 core.toml 的 [core] management_access_token 保持一致（默认均为空）
+access_token = ""

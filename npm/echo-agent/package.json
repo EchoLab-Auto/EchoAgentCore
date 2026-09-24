@@ -1,0 +1,36 @@
+{
+  "name": "@echolab-auto/echo-agent",
+  "version": "0.1.0",
+  "description": "EchoAgentCore + Panel + NapCat 的 Docker 一键部署 CLI（up/down/logs/status/update/doctor）",
+  "type": "module",
+  "bin": {
+    "echo-agent": "bin/echo-agent.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "templates",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "echo-agent",
+    "qq-bot",
+    "docker",
+    "deploy"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/EchoLab-Auto/EchoAgentCore.git",
+    "directory": "npm/echo-agent"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

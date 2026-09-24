@@ -1,0 +1,78 @@
+# EchoAgentCore + Panel + NapCat — 由 `echo-agent init` 生成（可自由编辑）。
+#
+# 目录约定（相对本文件）：
+#   ./config  → 容器 /config：core.toml / panel.toml + 会话 JSON（Core 会写这里）
+#   ./data    → 容器 /data：媒体库（图片）、文件下载、NapCat 编排
+#
+# 镜像默认取 ghcr（见同目录 .env）。本地构建改用 :local 镜像：
+#   docker build -t echo-agent-core:local  <EchoAgentCore 仓库>
+#   docker build -t echo-agent-panel:local <EchoAgentPanel 仓库>
+#   然后修改 .env 里的 ECHO_CORE_IMAGE / ECHO_PANEL_IMAGE。
+#
+# 常用：docker compose -f docker-compose.yml logs -f core
+#      （或用 CLI：echo-agent logs core -f）
+
+name: echo-agent
+
+services:
+  core:
+    image: ${ECHO_CORE_IMAGE:-ghcr.io/echolab-auto/echo-agent-core:latest}
+    container_name: echo-agent-core
+    restart: unless-stopped
+    # NapCat 容器由本文件管理（core.toml 里 napcat_auto_start=false），
+    # Core 仅在需要时通过 socket 调 docker：
+    #   - 取 QQ 登录二维码（docker exec 读容器内 PNG）
+    #   - 发送文件桥接（docker cp 进 NapCat 容器）
+    # 不挂 socket 也能跑（上述能力降级），但推荐保留。
+    volumes:
+      - ./config:/config
+      - ./data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # 媒体库（入站图片落盘目录）：与 Panel 的 [server] media_dir 必须一致
+      - ECHO_MEDIA_DIR=/data/media
+    # 默认只在 compose 网络内被 panel / napcat 访问，不映射宿主端口。
+    # 需要让宿主上的程序接入（例如 NapCat 留在宿主跑）时再打开：
+    # ports:
+    #   - "3131:3131"   # OneBot 反向 WS（同时把 core.toml 的 napcat_host 改成宿主可达地址）
+    #   - "3132:3132"   # 管理面（务必同时设置 management_access_token）
+    networks:
+      - echo-agent
+
+  panel:
+    image: ${ECHO_PANEL_IMAGE:-ghcr.io/echolab-auto/echo-agent-panel:latest}
+    container_name: echo-agent-panel
+    restart: unless-stopped
+    depends_on:
+      - core
+    ports:
+      - "8080:8080"     # 面板入口（浏览器访问 http://localhost:8080）
+    volumes:
+      - ./config:/config
+      - ./data:/data
+    networks:
+      - echo-agent
+
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    # 容器名与 config/core.toml 的 [adapters.qq] napcat_container 对应，改动需同步。
+    container_name: napcat
+    restart: unless-stopped
+    ports:
+      - "6099:6099"     # NapCat WebUI（首次扫码登录 QQ）
+    environment:
+      - NAPCAT_UID=0
+      - NAPCAT_GID=0
+    volumes:
+      - napcat-data:/app/napcat/data
+      - napcat-config:/app/napcat/config
+    networks:
+      - echo-agent
+
+volumes:
+  napcat-data:
+  napcat-config:
+
+networks:
+  echo-agent:
+    name: echo-agent
