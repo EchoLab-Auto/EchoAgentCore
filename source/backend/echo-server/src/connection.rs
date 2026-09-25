@@ -215,6 +215,20 @@ fn handle_json(
     };
 
     if value.get("post_type").is_some() {
+        // 原始事件落盘（debug 用）：NapCat 的 debug 开关对上行事件无效，
+        // 在框架侧留一份原文，便于排查 NapCat 吞掉的消息段（如 json 卡片）。
+        {
+            use std::io::Write as _;
+            let mut path = std::env::temp_dir();
+            path.push("echo-onebot-events.jsonl");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = writeln!(f, "{text}");
+            }
+        }
         // An event.
         match serde_json::from_value::<Event>(value) {
             Ok(event) => {

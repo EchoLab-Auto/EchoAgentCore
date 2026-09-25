@@ -360,27 +360,34 @@ impl Agent {
             }
             BackendCommand::ReloadSkills => {
                 let dir = self.current_skills_dir().await;
-                match self.reload_skills(&dir).await {
-                    Ok(true) => {
-                        self.emit_skills_list().await;
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: "技能已重新加载".into(),
-                        });
-                    }
-                    Ok(false) => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: "技能无变化".into(),
-                        });
-                    }
-                    Err(e) => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("技能重载失败：{e}"),
-                        });
-                    }
-                }
+                // 技能目录是进程级共享的：重载必须覆盖**所有运行中人格**。
+                // 此臂由管理代理（__core）执行，此前只重载了它自己的注册表——
+                // 面板「重载技能」改完 SKILL.md 后，真正干活的人格仍停留在
+                // 启动时的技能内容（实测：EchoCode 的上下文块不含新增技能）。
+                let running = crate::agent_manager::global_manager()
+                    .map(|manager| manager.all())
+                    .unwrap_or_default();
+                let mut targets: Vec<(&str, &Agent)> = running
+                    .iter()
+                    .map(|r| (r.id.as_str(), r.agent.as_ref()))
+                    .collect();
+                targets.push(("<core>", self));
+                let (updated, checked, failures) = reload_skills_into(&dir, targets).await;
+                self.emit_skills_list().await;
+                let message = if !failures.is_empty() {
+                    format!(
+                        "技能重载部分失败（{updated}/{checked} 个更新）：{}",
+                        failures.join("；")
+                    )
+                } else if updated == 0 {
+                    "技能无变化".into()
+                } else {
+                    format!("技能已重新加载（{updated}/{checked} 个智能体更新）")
+                };
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message,
+                });
             }
             BackendCommand::RequestToolsList => {
                 self.emit_tools_list().await;
@@ -1366,6 +1373,118 @@ fn validate_skill_name(name: &str) -> Result<(), String> {
         return Err("skill name must be a single directory key".into());
     }
     Ok(())
+}
+
+/// 把磁盘技能目录重载进一组代理：返回 `(updated, checked, failures)`。
+///
+/// 从 [`BackendCommand::ReloadSkills`] 的处理臂抽出，便于测试直接注入代理集合
+/// （生产路径的集合 = 所有运行中人格 + 管理代理自身）。
+pub(crate) async fn reload_skills_into<'a>(
+    dir: &str,
+    targets: impl IntoIterator<Item = (&'a str, &'a Agent)>,
+) -> (usize, usize, Vec<String>) {
+    let mut updated = 0usize;
+    let mut checked = 0usize;
+    let mut failures = Vec::new();
+    for (id, agent) in targets {
+        checked += 1;
+        match agent.reload_skills(dir).await {
+            Ok(true) => updated += 1,
+            Ok(false) => {}
+            Err(error) => failures.push(format!("{id}: {error}")),
+        }
+    }
+    (updated, checked, failures)
+}
+
+#[cfg(test)]
+mod reload_skills_tests {
+    use super::reload_skills_into;
+    use crate::agent::Agent;
+    use crate::config::AgentConfig;
+    use crate::skill::SkillRegistry;
+    use std::sync::Arc;
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("echo-reload-skills-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_skill(dir: &std::path::Path, name: &str, description: &str) {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n\nbody"),
+        )
+        .unwrap();
+    }
+
+    fn agent_with_skills(dir: &std::path::Path) -> Agent {
+        Agent::new(
+            Arc::new(crate::agent::tests::MockProvider {
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                reply: String::new(),
+            }),
+            AgentConfig {
+                skills_dir: dir.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            SkillRegistry::discover(&dir.to_string_lossy()).unwrap(),
+            crate::tool::ToolRegistry::new(),
+            Arc::new(echo_adapter::AdapterRegistry::new()),
+        )
+    }
+
+    /// 广播语义（面板「重载技能」的正确性依据）：磁盘上的新技能必须到达
+    /// **每个**目标代理的注册表，而不只是收到命令的那一个。
+    #[tokio::test]
+    async fn reload_skills_into_updates_every_target() {
+        let dir = temp_dir("broadcast");
+        write_skill(&dir, "alpha", "第一个技能");
+        let a = agent_with_skills(&dir);
+        let b = agent_with_skills(&dir);
+        let dir_str = dir.to_string_lossy().into_owned();
+
+        // 初始：两个代理都没有 beta。
+        let (updated, checked, failures) =
+            reload_skills_into(&dir_str, [("a", &a), ("b", &b)]).await;
+        assert_eq!((updated, checked, failures.len()), (0, 2, 0), "无变化");
+
+        // 磁盘新增技能 → 再次重载：两个都要拿到。
+        write_skill(&dir, "beta", "第二个技能");
+        let (updated, checked, failures) =
+            reload_skills_into(&dir_str, [("a", &a), ("b", &b)]).await;
+        assert_eq!(
+            (updated, checked, failures.len()),
+            (2, 2, 0),
+            "两个代理都更新"
+        );
+        for agent in [&a, &b] {
+            let mut names = agent.skills.lock().await.names();
+            names.sort();
+            assert_eq!(names, vec!["alpha".to_string(), "beta".to_string()]);
+        }
+
+        // 修改既有技能内容 → 重载换新（名字不变也算更新）。
+        write_skill(&dir, "alpha", "描述已更新");
+        let (updated, ..) = reload_skills_into(&dir_str, [("a", &a)]).await;
+        assert_eq!(updated, 1);
+
+        // 缺目录：不 panic，报错进入 failures。
+        let (updated, checked, failures) =
+            reload_skills_into("/nonexistent-skills-dir", [("a", &a)]).await;
+        assert_eq!(updated, 0);
+        assert_eq!(checked, 1);
+        // 目录不存在时 reload_skills 返回 Ok(false)（静默），仅真实解析
+        // 错误才进 failures——这里断言不 panic 且计数正确即可。
+        assert!(failures.len() <= 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

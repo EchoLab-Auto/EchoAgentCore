@@ -64,7 +64,7 @@ graph LR
 - token 仪表盘：`NeumorphismProgress`（≥90% error、≥70% warning），总量/提示词/历史/上限四项统计
 - 上下文块分「系统提示词与注入块」「对话历史」两组折叠（**全部块默认展开**，每块内容区 220px 内滚动；2026-09 修正——此前仅 base 展开，用户反馈「看不到内容」）：kind 徽标（覆盖 Core 全部种类含「工作区会话」「系统提示词」；名称自动剥掉与徽标重复的前缀）+ token 数 + **占当前上下文总量的百分比**（<1% 显式标注；顶部「总占用」同口径，按全部块求和——Core 的 `total_tokens` 只计历史）
 - 逐条消息明细（角色 + token + 内容），默认折叠
-- 操作：**清理历史**（两步确认：首击变为「确认清理？不可恢复」，再击发送 `ClearHistory`）；**归档**（confirm → `ArchiveHistory`）；**压缩**（confirm → `CompactHistory{keep_recent: 40}`，执行前**自动把快照写进 `archives/*-precompact.json`**，摘要由 LLM 生成、失败回退统计文案；结果消息含压缩条数/组数/归档路径）；**重载技能**（`ReloadSkills`）；**刷新**
+- 操作：**清理历史**（两步确认：首击变为「确认清理？不可恢复」，再击发送 `ClearHistory`）；**归档**（confirm → `ArchiveHistory`）；**压缩**（confirm → `CompactHistory{keep_recent: 40}`，执行前**自动把快照写进 `archives/*-precompact.json`**，摘要由 LLM 生成、失败回退统计文案；结果消息含压缩条数/组数/归档路径）；**重载技能**（`ReloadSkills`；重载**所有运行中智能体**的技能注册表，不只是当前查看的——结果消息含更新数/总数）；**刷新**
 
 ### 8.4 AgentConfigModal（当前 Agent 配置）
 
