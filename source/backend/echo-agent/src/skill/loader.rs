@@ -258,4 +258,38 @@ metadata:
         let skill = parse_skill(Path::new("/x/SKILL.md"), text).unwrap();
         assert!(!skill.metadata.always);
     }
+
+    /// 真实技能文件的冒烟校验（人工触发）：
+    ///
+    /// ```text
+    /// ECHO_SKILLS_DIR=<仓库>/skills \
+    ///   cargo test -p echo-agent --lib smoke_skills_dir -- --ignored --nocapture
+    /// ```
+    ///
+    /// 把目录里每个 `SKILL.md` 过一遍真实解析器并打印关键字段——改完技能
+    /// 文件、在面板点「重载技能」之前先跑一次，避免坏 frontmatter 上生产。
+    #[test]
+    #[ignore = "manual: set ECHO_SKILLS_DIR to a skills directory"]
+    fn smoke_skills_dir_parses_real_files() {
+        let dir = std::env::var("ECHO_SKILLS_DIR").expect("set ECHO_SKILLS_DIR");
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(&dir).expect("read skills dir") {
+            let entry = entry.expect("dir entry");
+            let file = entry.path().join("SKILL.md");
+            if !file.exists() {
+                continue;
+            }
+            let skill =
+                load_skill(&file).unwrap_or_else(|error| panic!("{}: {error}", file.display()));
+            eprintln!(
+                "{}: always={} system={} keywords={:?}",
+                skill.metadata.name,
+                skill.metadata.always,
+                skill.metadata.system,
+                skill.metadata.keywords
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no SKILL.md found under {dir}");
+    }
 }
