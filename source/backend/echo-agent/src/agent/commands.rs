@@ -715,6 +715,9 @@ impl Agent {
                         true,
                     )
                 };
+                // 快照瘦身（2026-09 刷新加速）：推理正文占板载快照约七成，
+                // 只给最近若干条保留全文（旧条目截断 + 标注），持久化不改。
+                let messages = crate::timeline::elide_reasoning_for_wire(messages);
                 self.emit(BackendEvent::TrunkTimeline {
                     messages,
                     seq,

@@ -47,6 +47,8 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 | 前台自愈 / 中继收割 | 探测帧 5s 判死；一侧 90s 无帧断链 | connection.ts / proxy.rs |
 | Toast | 6s；队列/同屏 8；≤512 字符；右上 | main.ts:11 / App.vue:222, 344 / state.ts:912-914 |
 | 主时间线容量 | 1024 条 | timeline.ts:6-11 |
+| 时间线磁盘缓存 | 挂载前 hydrate + 10s 周期落盘；总预算 2.2M 字符、单 team 1.8M 字符 | trunk-cache.ts |
+| TrunkTimeline 快照瘦身 | 近 40 条推理全文、更早截 240 字；静态资源 gzip + 弱 ETag（`assets/` 一年 immutable） | timeline.rs / static_files.rs |
 | 推理打字机 | 24ms/tick，约 6s 封顶，≥2 字符/tick；默认折叠 + 推演中限高（180px）滚动钉底 | ReasoningBlock.vue |
 | 消息入场动画 | 0.28s（淡入 + 上移 6px） | ChatView.vue:383, 864-870 |
 | 滚动跟随阈值 / 让位 | 120px；按钮 180px / 内边距 190px | main.ts:10 / ChatView.vue:533-535, 566-568 |

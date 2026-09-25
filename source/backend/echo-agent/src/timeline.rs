@@ -251,6 +251,43 @@ impl TimelineProjector {
     }
 }
 
+/// 推理条目的 wire 瘦身阈值（2026-09，刷新加速）：推理正文占时间线快照的
+/// 约七成（实测 1024 条里 1MB+），而滚动历史里的思维链几乎不回看——
+/// 最近 [`WIRE_REASONING_KEEP_FULL`] 条保留全文，更早的只留开头
+/// [`WIRE_REASONING_HEAD_CHARS`] 字 + 截断标注。持久化/内存中的原文不动，
+/// 只瘦身发往前端的快照（`RequestTrunkTimeline` 的两种路径共用）。
+pub const WIRE_REASONING_KEEP_FULL: usize = 40;
+/// 被截断条目保留的开头字符数。
+pub const WIRE_REASONING_HEAD_CHARS: usize = 240;
+
+/// 按“新近程度”瘦身推理条目（见上方常量说明）。非推理条目原样保留。
+pub fn elide_reasoning_for_wire(messages: Vec<TimelineMessage>) -> Vec<TimelineMessage> {
+    let reasoning: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| message.kind == "reasoning" && !message.content.is_empty())
+        .map(|(index, _)| index)
+        .collect();
+    if reasoning.len() <= WIRE_REASONING_KEEP_FULL {
+        return messages;
+    }
+    let mut messages = messages;
+    let cutoff = reasoning.len() - WIRE_REASONING_KEEP_FULL;
+    for &index in &reasoning[..cutoff] {
+        let total = messages[index].content.chars().count();
+        if total <= WIRE_REASONING_HEAD_CHARS {
+            continue;
+        }
+        let head: String = messages[index]
+            .content
+            .chars()
+            .take(WIRE_REASONING_HEAD_CHARS)
+            .collect();
+        messages[index].content = format!("{head}…\n（较早的推理已截断：原文 {total} 字）");
+    }
+    messages
+}
+
 /// Extract a timer task summary from a `<timer_event>` payload, if parseable.
 fn timeline_timer_task(content: &str) -> Option<String> {
     let body = content
@@ -390,5 +427,88 @@ mod tests {
         let timeline = store.timeline_snapshot();
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].content, "通过总线");
+    }
+
+    // ── 推理条目 wire 瘦身 ──
+
+    fn reasoning_with(len: usize) -> TimelineMessage {
+        TimelineMessage {
+            kind: "reasoning".into(),
+            content: "思".repeat(len),
+            session_id: "local:tui::local_user".into(),
+            time: 1,
+            source: None,
+            reasoning: None,
+            tool: None,
+            images: None,
+            seq: 0,
+        }
+    }
+
+    #[test]
+    fn elide_keeps_recent_reasoning_untouched() {
+        let mut messages: Vec<TimelineMessage> = (0..WIRE_REASONING_KEEP_FULL)
+            .map(|_| reasoning_with(1000))
+            .collect();
+        let before = messages
+            .iter()
+            .map(|m| m.content.clone())
+            .collect::<Vec<_>>();
+        messages = elide_reasoning_for_wire(messages);
+        let after = messages
+            .iter()
+            .map(|m| m.content.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(before, after, "<= keep_full entries pass through unchanged");
+    }
+
+    #[test]
+    fn elide_truncates_older_reasoning_with_marker() {
+        // 10 条旧的 + 40 条新的：仅最旧的 10 条被截断。
+        let mut messages: Vec<TimelineMessage> = (0..50).map(|_| reasoning_with(1200)).collect();
+        messages = elide_reasoning_for_wire(messages);
+        for (index, message) in messages.iter().enumerate() {
+            let total = message.content.chars().count();
+            if index < 10 {
+                assert!(
+                    message
+                        .content
+                        .ends_with("（较早的推理已截断：原文 1200 字）"),
+                    "old entry {index} must carry the marker"
+                );
+                assert!(total < 1200, "old entry {index} is truncated");
+            } else {
+                assert_eq!(total, 1200, "recent entry {index} stays intact");
+            }
+        }
+    }
+
+    #[test]
+    fn elide_leaves_short_and_non_reasoning_entries_alone() {
+        let mut messages = vec![
+            TimelineMessage::user("你说", "s", 1, None, vec![]),
+            reasoning_with(50), // 旧且本身很短 → 不动
+            TimelineMessage::user("我说", "s", 2, None, vec![]),
+        ];
+        for _ in 0..WIRE_REASONING_KEEP_FULL {
+            messages.push(reasoning_with(800));
+        }
+        let original_user: Vec<String> = messages
+            .iter()
+            .filter(|m| m.kind == "user")
+            .map(|m| m.content.clone())
+            .collect();
+        let elided = elide_reasoning_for_wire(messages);
+        let user_after: Vec<String> = elided
+            .iter()
+            .filter(|m| m.kind == "user")
+            .map(|m| m.content.clone())
+            .collect();
+        assert_eq!(original_user, user_after, "non-reasoning entries untouched");
+        assert_eq!(
+            elided[1].content.chars().count(),
+            50,
+            "short old reasoning stays as-is"
+        );
     }
 }
