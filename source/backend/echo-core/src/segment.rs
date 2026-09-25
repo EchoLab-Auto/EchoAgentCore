@@ -123,6 +123,13 @@ impl Segment {
             },
         })
     }
+
+    /// Rich JSON card. `data` is the card payload as a JSON string.
+    pub fn json(data: impl Into<String>) -> Self {
+        Segment::Known(KnownSegment::Json {
+            data: JsonData { data: data.into() },
+        })
+    }
 }
 
 // -- data payloads ----------------------------------------------------------

@@ -176,6 +176,29 @@ pub fn register_qq_tools_multi(
             "required": ["target_type", "target_id", "file_path", "file_name"]
         }),
     );
+    register(
+        "send_json_card",
+        "Send a rich JSON card (OneBot json segment) to a QQ chat — this is how structured shares like a Bilibili video mini-app card are sent. The 'json' argument must be the complete card payload as a JSON string (e.g. {\"app\":\"com.tencent.miniapp_01\",\"config\":{...},\"meta\":{...}}). Requires target_type (group|private), target_id and json.",
+        json!({
+            "type": "object",
+            "properties": {
+                "target_type": {
+                    "type": "string",
+                    "enum": ["group", "private"],
+                    "description": "Where to send: 'group' or 'private'"
+                },
+                "target_id": {
+                    "type": "integer",
+                    "description": "QQ group ID (when target_type=group) or QQ user ID (when private)"
+                },
+                "json": {
+                    "type": "string",
+                    "description": "Complete card payload as a JSON string"
+                }
+            },
+            "required": ["target_type", "target_id", "json"]
+        }),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +365,55 @@ impl echo_agent::Tool for QqToolWrapper {
                     ))),
                 }
             }
+            "send_json_card" => {
+                let target_type = arguments["target_type"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments("target_type required".into()))?;
+                let target_id = arguments["target_id"]
+                    .as_i64()
+                    .ok_or_else(|| ToolError::InvalidArguments("target_id required".into()))?;
+                let json_payload = arguments["json"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments("json required".into()))?;
+                // 发送前先校验是合法 JSON，避免 NapCat 侧报难懂的错。
+                serde_json::from_str::<Value>(json_payload).map_err(|e| {
+                    ToolError::InvalidArguments(format!("json is not valid JSON: {e}"))
+                })?;
+                let target = match target_type {
+                    "group" => MessageTarget {
+                        adapter_name: adapter.name().to_string(),
+                        channel: ChannelType::Group {
+                            group_id: target_id.to_string(),
+                        },
+                        user_id: String::new(),
+                    },
+                    "private" => MessageTarget {
+                        adapter_name: adapter.name().to_string(),
+                        channel: ChannelType::Direct,
+                        user_id: target_id.to_string(),
+                    },
+                    other => {
+                        return Err(ToolError::InvalidArguments(format!(
+                            "target_type must be 'group' or 'private', got '{other}'"
+                        )))
+                    }
+                };
+                match adapter.send_json_card(&target, json_payload).await {
+                    Ok(result) => {
+                        if result.success {
+                            Ok(format!(
+                                "json card sent, message_id={}",
+                                result.message_id.as_deref().unwrap_or("?")
+                            ))
+                        } else {
+                            Err(ToolError::Execution(
+                                result.error.unwrap_or_else(|| "unknown error".into()),
+                            ))
+                        }
+                    }
+                    Err(e) => Err(ToolError::Execution(e.to_string())),
+                }
+            }
             other => Err(ToolError::Execution(format!("unknown QQ tool: {other}"))),
         }
     }
@@ -406,6 +478,27 @@ mod tests {
         assert!(definition.description.contains("NapCat"));
         let params = definition.parameters.as_ref().expect("parameters present");
         assert!(params["properties"]["target_type"]["enum"][0] == "group");
+        assert!(params["properties"]["target_type"]["enum"][0] == "group");
         assert!(params["properties"]["target_type"]["enum"][1] == "private");
+    }
+
+    #[tokio::test]
+    async fn registers_send_json_card_tool() {
+        let mut registry = echo_agent::ToolRegistry::new();
+        let adapter = Arc::new(QqAdapter::new(Default::default()));
+
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
+
+        let definitions = registry.definitions().await;
+        let definition = definitions
+            .iter()
+            .find(|definition| definition.name == "send_json_card")
+            .expect("send_json_card tool registered");
+        assert!(definition.description.contains("json"));
+        let params = definition.parameters.as_ref().expect("parameters present");
+        assert!(params["properties"]["target_type"]["enum"][0] == "group");
+        assert!(params["properties"]["target_type"]["enum"][1] == "private");
+        let required = params["required"].as_array().expect("required list");
+        assert!(required.iter().any(|v| v == "json"));
     }
 }

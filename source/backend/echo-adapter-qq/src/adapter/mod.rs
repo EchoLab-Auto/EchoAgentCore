@@ -662,6 +662,145 @@ impl QqAdapter {
         Err(last_error.unwrap_or_else(|| "upload failed".into()))
     }
 
+    /// Outbound gate-mode check shared by `send_message` and
+    /// `send_json_card`. Returns `Err(reason)` when the target is blocked.
+    pub(crate) fn check_outbound_gate(&self, target: &MessageTarget) -> Result<(), String> {
+        let mode = self.get_gate_mode();
+        if mode == QqGateMode::None {
+            return Ok(());
+        }
+        let cfg = self.get_filter_config();
+        let user_id: i64 = target.user_id.parse().unwrap_or(0);
+        let group_id: Option<i64> = match &target.channel {
+            ChannelType::Group { group_id } => group_id.parse().ok(),
+            ChannelType::Direct => None,
+        };
+        // The owner is always exempt from outbound gating.
+        let owner = *self.inner.owner_qq.lock().expect("poisoned");
+        let is_owner = user_id != 0 && user_id == owner;
+
+        match mode {
+            QqGateMode::Allowlist => {
+                let allow_users: std::collections::HashSet<i64> =
+                    cfg.allowlist.user_ids.iter().cloned().collect();
+                let allow_groups: std::collections::HashSet<i64> =
+                    cfg.allowlist.group_ids.iter().cloned().collect();
+                if !allow_users.is_empty()
+                    && user_id != 0
+                    && !is_owner
+                    && !allow_users.contains(&user_id)
+                {
+                    tracing::info!(%user_id, "outbound blocked: user not allowlisted");
+                    return Err(format!("user {user_id} is not allowlisted"));
+                }
+                if !allow_groups.is_empty() {
+                    if let Some(gid) = group_id {
+                        if !allow_groups.contains(&gid) {
+                            tracing::info!(%gid, "outbound blocked: group not allowlisted");
+                            return Err(format!("group {gid} is not allowlisted"));
+                        }
+                    }
+                }
+            }
+            QqGateMode::Denylist => {
+                let deny_users: std::collections::HashSet<i64> =
+                    cfg.denylist.user_ids.iter().cloned().collect();
+                let deny_groups: std::collections::HashSet<i64> =
+                    cfg.denylist.group_ids.iter().cloned().collect();
+                if !deny_users.is_empty()
+                    && user_id != 0
+                    && !is_owner
+                    && deny_users.contains(&user_id)
+                {
+                    tracing::info!(%user_id, "outbound blocked: user denylisted");
+                    return Err(format!("user {user_id} is denylisted"));
+                }
+                if !deny_groups.is_empty() {
+                    if let Some(gid) = group_id {
+                        if deny_groups.contains(&gid) {
+                            tracing::info!(%gid, "outbound blocked: group denylisted");
+                            return Err(format!("group {gid} is denylisted"));
+                        }
+                    }
+                }
+            }
+            QqGateMode::None => {}
+        }
+        Ok(())
+    }
+
+    /// Send a rich JSON card segment (OneBot `json` segment, e.g. a Bilibili
+    /// mini-app share card). Applies the same outbound gate as text messages.
+    pub async fn send_json_card(
+        &self,
+        target: &MessageTarget,
+        json_payload: &str,
+    ) -> Result<SendResult, AdapterError> {
+        if target.adapter_name != self.name {
+            return Ok(SendResult {
+                message_id: None,
+                success: false,
+                error: Some(format!(
+                    "wrong adapter: expected '{}', got '{}'",
+                    self.name, target.adapter_name
+                )),
+            });
+        }
+
+        if let Err(reason) = self.check_outbound_gate(target) {
+            return Ok(SendResult {
+                message_id: None,
+                success: false,
+                error: Some(reason),
+            });
+        }
+
+        let ctx = self
+            .inner
+            .active_context
+            .lock()
+            .map_err(|e| AdapterError::Internal(e.to_string()))?
+            .clone()
+            .ok_or_else(|| AdapterError::SendFailed("no QQ connection active".into()))?;
+
+        let segment = Segment::json(json_payload);
+        let result = match &target.channel {
+            ChannelType::Direct => {
+                let user_id: i64 = target
+                    .user_id
+                    .parse()
+                    .map_err(|_| AdapterError::SendFailed("invalid user_id".into()))?;
+                ctx.send_private_msg(user_id, vec![segment]).await
+            }
+            ChannelType::Group { group_id } => {
+                let gid: i64 = group_id
+                    .parse()
+                    .map_err(|_| AdapterError::SendFailed("invalid group_id".into()))?;
+                ctx.send_group_msg(gid, vec![segment]).await
+            }
+        };
+
+        match result {
+            Ok(resp) => {
+                let message_id = resp
+                    .data
+                    .get("message_id")
+                    .and_then(|v| v.as_i64())
+                    .map(|id| id.to_string());
+                Ok(SendResult {
+                    message_id,
+                    success: resp.is_ok(),
+                    error: resp.error_message(),
+                })
+            }
+            Err(e) => Ok(SendResult {
+                message_id: None,
+                success: false,
+                error: Some(e.to_string()),
+            }),
+        }
+    }
+
     pub(crate) fn convert_message(
         event: &OneBotEvent,
         group_names: &dashmap::DashMap<i64, String>,
@@ -1049,85 +1188,12 @@ impl Adapter for QqAdapter {
         }
 
         // ── Gate mode check ──
-        {
-            let mode = self.get_gate_mode();
-            if mode != QqGateMode::None {
-                let cfg = self.get_filter_config();
-                let user_id: i64 = target.user_id.parse().unwrap_or(0);
-                let group_id: Option<i64> = match &target.channel {
-                    ChannelType::Group { group_id } => group_id.parse().ok(),
-                    ChannelType::Direct => None,
-                };
-                // The owner is always exempt from outbound gating.
-                let owner = *self.inner.owner_qq.lock().expect("poisoned");
-                let is_owner = user_id != 0 && user_id == owner;
-
-                match mode {
-                    QqGateMode::Allowlist => {
-                        let allow_users: std::collections::HashSet<i64> =
-                            cfg.allowlist.user_ids.iter().cloned().collect();
-                        let allow_groups: std::collections::HashSet<i64> =
-                            cfg.allowlist.group_ids.iter().cloned().collect();
-                        if !allow_users.is_empty()
-                            && user_id != 0
-                            && !is_owner
-                            && !allow_users.contains(&user_id)
-                        {
-                            tracing::info!(%user_id, "send_message blocked: user not allowlisted");
-                            return Ok(SendResult {
-                                message_id: None,
-                                success: false,
-                                error: Some(format!("user {user_id} is not allowlisted")),
-                            });
-                        }
-                        if !allow_groups.is_empty() {
-                            if let Some(gid) = group_id {
-                                if !allow_groups.contains(&gid) {
-                                    tracing::info!(%gid, "send_message blocked: group not allowlisted");
-                                    return Ok(SendResult {
-                                        message_id: None,
-                                        success: false,
-                                        error: Some(format!("group {gid} is not allowlisted")),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    QqGateMode::Denylist => {
-                        let deny_users: std::collections::HashSet<i64> =
-                            cfg.denylist.user_ids.iter().cloned().collect();
-                        let deny_groups: std::collections::HashSet<i64> =
-                            cfg.denylist.group_ids.iter().cloned().collect();
-                        if !deny_users.is_empty()
-                            && user_id != 0
-                            && !is_owner
-                            && deny_users.contains(&user_id)
-                        {
-                            tracing::info!(%user_id, "send_message blocked: user denylisted");
-                            return Ok(SendResult {
-                                message_id: None,
-                                success: false,
-                                error: Some(format!("user {user_id} is denylisted")),
-                            });
-                        }
-                        if !deny_groups.is_empty() {
-                            if let Some(gid) = group_id {
-                                if deny_groups.contains(&gid) {
-                                    tracing::info!(%gid, "send_message blocked: group denylisted");
-                                    return Ok(SendResult {
-                                        message_id: None,
-                                        success: false,
-                                        error: Some(format!("group {gid} is denylisted")),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    // Never reached: the outer guard filters out None. A
-                    // fallback arm keeps this robust if a new mode is added.
-                    _ => {}
-                }
-            }
+        if let Err(reason) = self.check_outbound_gate(target) {
+            return Ok(SendResult {
+                message_id: None,
+                success: false,
+                error: Some(reason),
+            });
         }
 
         let ctx = self
