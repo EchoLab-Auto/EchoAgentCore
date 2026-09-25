@@ -58,7 +58,7 @@ pub enum WsMessage {
 
 `BackendCommand` 主要分三类：
 
-- **会话类**：`SendMessage`、`CancelRequestedWork`、`ClearHistory`、`ArchiveHistory`、`CompactHistory`、`RequestTrunkTimeline`（支持 `since_seq` 增量）——**`team_id` 必填**（2026-09-13 破坏性变更：无"主/默认智能体"，缺失直接回 `Error`）；`RequestContext` 增 `session_id`（多会话，2026-09：返回该会话的上下文快照，缺省回退本地 TUI 会话；`ContextSnapshot` 回带 `session_id`）
+- **会话类**：`SendMessage`、`CancelRequestedWork`、`ClearHistory`、`ArchiveHistory`、`CompactHistory`（协议不变：`keep_recent` 默认 40、clamp 10–500；2026-09 起服务端自动先归档再按会话生成 LLM 摘要，失败回退统计文案，见 [架构 §会话与持久化](./architecture.md)）、`RequestTrunkTimeline`（支持 `since_seq` 增量）——**`team_id` 必填**（2026-09-13 破坏性变更：无"主/默认智能体"，缺失直接回 `Error`）；`RequestContext` 增 `session_id`（多会话，2026-09：返回该会话的上下文快照，缺省回退本地 TUI 会话；`ContextSnapshot` 回带 `session_id`）
 - **Shell 类**：`RequestShellSessions` / `ShellStart` / `ShellExec` / `ShellStop`（后台持久 bash，见 [工具系统](./core-tools.md)）
 - **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`（`SaveSkill.system` 声明系统提示词技能）、`InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource`（Git 来源技能，见 [技能系统](./core-skills.md)）、`SaveTeam/DeleteTeam/ToggleTeam`（`SaveTeam.system_skills` 声明人格系统提示词技能；`TeamInfo.system_skills` / `SkillInfo.system` 随列表事件下发；`SaveTeam.api_profile` / `TeamInfo.api_profile` 声明与回推人格级 API 供应商引用；`PluginInfo.package` 回推插件所属包——横跨 plugin+tool+skill 的组合标签）
 - **运维类**：

@@ -2,6 +2,7 @@
 
 mod boundary;
 mod commands;
+mod compact;
 mod prompt;
 mod qq_commands;
 mod tool_exec;

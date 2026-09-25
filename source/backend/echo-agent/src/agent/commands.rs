@@ -815,11 +815,11 @@ impl Agent {
                 let result = if let Some(id) = team_id {
                     match crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(&id)))
                     {
-                        Some(agent) => agent.trunk.compact_history(keep).await,
+                        Some(agent) => agent.compact_history(keep).await,
                         None => Err(format!("team {id} 不存在")),
                     }
                 } else {
-                    self.trunk.compact_history(keep).await
+                    self.compact_history(keep).await
                 };
                 match result {
                     Ok(msg) => self.emit(BackendEvent::Error {

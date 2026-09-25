@@ -290,6 +290,75 @@ const PERSIST_VERSION: u32 = 6;
 /// Upper bound on persisted display timeline entries.
 const TRUNK_TIMELINE_MAX: usize = 1024;
 
+/// One session's share of a compaction plan: the events that a compaction
+/// would replace, in log order, plus counts for the fallback summary.
+#[derive(Debug, Clone)]
+pub struct CompactGroup {
+    /// Owning session (None = unattributed legacy events).
+    pub session: Option<String>,
+    /// Leading events this group would replace (already sliced).
+    pub replaced: Vec<echo_session::SessionEvent>,
+    /// `replaced.len()`, kept for convenience.
+    pub replaced_count: usize,
+    /// User messages inside `replaced`.
+    pub users: usize,
+    /// Tool calls inside `replaced`.
+    pub tools: usize,
+}
+
+/// What [`TrunkStore::compact_preview`] would do — computed without mutating
+/// anything so the caller can archive and summarize before committing.
+#[derive(Debug, Clone)]
+pub struct CompactPreview {
+    /// Groups that would be compacted (at least one replaced event each).
+    pub groups: Vec<CompactGroup>,
+    /// Total events across those groups' replaced prefixes.
+    pub total_replaced: usize,
+    /// Total events in the log at preview time (for reporting).
+    pub total_events: usize,
+}
+
+/// One prepared summary to install, keyed by session.
+#[derive(Debug, Clone)]
+pub struct CompactionSummary {
+    /// Owning session this summary stands in for (must match a preview group).
+    pub session: Option<String>,
+    /// Summary **body** — no `[历史摘要]` marker (added at projection time).
+    pub summary: String,
+}
+
+/// Result of [`TrunkStore::apply_compaction`].
+#[derive(Debug, Clone)]
+pub struct CompactionApplied {
+    /// Total events replaced.
+    pub total_replaced: usize,
+    /// Number of session groups compacted.
+    pub groups: usize,
+    /// Events left untouched behind each summary.
+    pub kept: usize,
+}
+
+/// Group events by owning session, preserving first-appearance order
+/// (unattributed legacy events form their own group, in place).
+fn group_events_by_session(
+    events: &[echo_session::SessionEvent],
+) -> Vec<(Option<String>, Vec<echo_session::SessionEvent>)> {
+    let mut order: Vec<Option<String>> = Vec::new();
+    let mut groups: std::collections::HashMap<Option<String>, Vec<echo_session::SessionEvent>> =
+        std::collections::HashMap::new();
+    for event in events {
+        let key = event.session().map(str::to_string);
+        if !groups.contains_key(&key) {
+            order.push(key.clone());
+        }
+        groups.entry(key).or_default().push(event.clone());
+    }
+    order
+        .into_iter()
+        .filter_map(|key| groups.remove(&key).map(|group| (key, group)))
+        .collect()
+}
+
 impl TrunkStore {
     /// Create a store owning the single global conversation trunk.
     pub fn new(memory_limit_tokens: usize) -> Self {
@@ -1047,59 +1116,118 @@ impl TrunkStore {
         Err("没有可归档的会话文件".into())
     }
 
-    /// 压缩历史（多会话，2026-09）：**按会话分别**把该会话前
-    /// `keep_recent` 条之外的事件替换为一条规则摘要（Compaction 事件，
-    /// 带会话归属），投影随之更新并立即持久化。未归因的旧事件单独成组。
-    pub async fn compact_history(&self, keep_recent: usize) -> Result<String, String> {
+    /// 压缩计划（多会话，2026-09）：**按会话分别**计算该会话前
+    /// `keep_recent` 条之外、将被 Compaction 摘要替换的事件——纯只读，
+    /// 不改动日志。调用方据此先归档、再逐组生成摘要，最后
+    /// [`Self::apply_compaction`] 落地。
+    ///
+    /// 未归因的旧事件单独成组（None 键，与日志同序）。
+    pub fn compact_preview(&self, keep_recent: usize) -> Result<CompactPreview, String> {
         let events = self.event_log.log();
         if events.len() <= keep_recent + 1 {
             return Err(format!("历史不足（{} 条事件，无需压缩）", events.len()));
         }
-        // 按会话分组：保持会话首次出现顺序（None 组排在末尾）。
-        let mut order: Vec<Option<String>> = Vec::new();
-        let mut groups: std::collections::HashMap<Option<String>, Vec<echo_session::SessionEvent>> =
-            std::collections::HashMap::new();
-        for event in events {
-            let key = event.session().map(str::to_string);
-            if !groups.contains_key(&key) {
-                order.push(key.clone());
-            }
-            groups.entry(key).or_default().push(event);
-        }
-        let mut new_log: Vec<echo_session::SessionEvent> = Vec::new();
+        let total_events = events.len();
+        let mut groups = Vec::new();
         let mut total_replaced = 0usize;
-        for key in order {
-            let Some(group) = groups.remove(&key) else {
-                continue;
-            };
+        for (key, group) in group_events_by_session(&events) {
             if group.len() <= keep_recent + 1 {
-                new_log.extend(group);
                 continue;
             }
             let replaced_count = group.len() - keep_recent;
-            let (tools, users) = {
-                let tools = group[..replaced_count]
-                    .iter()
-                    .filter(|e| matches!(e, echo_session::SessionEvent::ToolCall(_)))
-                    .count();
-                let users = group[..replaced_count]
-                    .iter()
-                    .filter(|e| matches!(e, echo_session::SessionEvent::UserMessage(_)))
-                    .count();
-                (tools, users)
+            let replaced = group[..replaced_count].to_vec();
+            let tools = replaced
+                .iter()
+                .filter(|e| matches!(e, echo_session::SessionEvent::ToolCall(_)))
+                .count();
+            let users = replaced
+                .iter()
+                .filter(|e| matches!(e, echo_session::SessionEvent::UserMessage(_)))
+                .count();
+            total_replaced += replaced_count;
+            groups.push(CompactGroup {
+                session: key,
+                replaced,
+                replaced_count,
+                users,
+                tools,
+            });
+        }
+        if total_replaced == 0 {
+            return Err(format!("历史不足（{total_events} 条事件，无需压缩）"));
+        }
+        Ok(CompactPreview {
+            groups,
+            total_replaced,
+            total_events,
+        })
+    }
+
+    /// 归档当前会话文件的**内存快照**到 `archives/{stem}-{ts}-{reason}.json`。
+    ///
+    /// 压缩前调用：快照用序列化出的当前态（比直接复制磁盘文件准——磁盘
+    /// 可能落后一次 tick）。未配置持久化路径时返回 Err（纯内存部署无档
+    /// 可归，调用方继续压缩、只在结果里注明）。
+    pub async fn archive_snapshot(&self, reason: &str) -> Result<String, String> {
+        let path = self
+            .persist_path
+            .lock()
+            .expect("persist path poisoned")
+            .clone()
+            .ok_or_else(|| "没有可归档的会话文件（未启用持久化）".to_string())?;
+        let data = self
+            .serialize()
+            .ok_or_else(|| "会话快照序列化失败（时间线锁被占用）".to_string())?;
+        let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let archive_dir = dir.join("archives");
+        std::fs::create_dir_all(&archive_dir)
+            .map_err(|e| format!("create archives dir failed: {e}"))?;
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("session");
+        let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        let archive = archive_dir.join(format!("{stem}-{ts}-{reason}.json"));
+        if let Err(e) = std::fs::write(&archive, data) {
+            return Err(format!("write archive failed: {e}"));
+        }
+        Ok(archive.display().to_string())
+    }
+
+    /// 落地压缩：把各组前缀替换为其摘要（Compaction 事件带会话归属与
+    /// 归档路径），投影随之更新并立即持久化。
+    ///
+    /// `summaries` 按会话键匹配预览分组；缺失的组**保持原样**（不压缩），
+    /// 多出的条目忽略。应用期重新分组统计，容忍压缩等待期间的并发写
+    /// （replaced_count 以应用时点为准）。
+    pub async fn apply_compaction(
+        &self,
+        keep_recent: usize,
+        summaries: &[CompactionSummary],
+        archive: Option<&str>,
+    ) -> Result<CompactionApplied, String> {
+        let events = self.event_log.log();
+        let mut new_log: Vec<echo_session::SessionEvent> = Vec::new();
+        let mut total_replaced = 0usize;
+        let mut groups_done = 0usize;
+        for (key, group) in group_events_by_session(&events) {
+            let prepared = summaries.iter().find(|s| s.session == key);
+            let (Some(prepared), true) = (prepared, group.len() > keep_recent + 1) else {
+                new_log.extend(group);
+                continue;
             };
-            let summary = format!(
-                "[历史摘要] 已压缩 {replaced_count} 条历史事件（{users} 条用户消息，{tools} 次工具调用），保留最近 {keep_recent} 条。"
-            );
+            let replaced_count = group.len() - keep_recent;
             new_log.push(echo_session::SessionEvent::Compaction(
                 echo_session::CompactionEvent {
                     replaced_count,
-                    summary,
+                    summary: prepared.summary.clone(),
+                    archive: archive.map(str::to_string),
                     session: key.clone(),
                 },
             ));
             new_log.extend(group[replaced_count..].to_vec());
             total_replaced += replaced_count;
+            groups_done += 1;
         }
         if total_replaced == 0 {
             return Err(format!(
@@ -1110,19 +1238,26 @@ impl TrunkStore {
         self.event_log.clear();
         self.event_log.extend(new_log);
         self.reproject_all();
+        let archive_note = archive
+            .map(|p| format!("，原事件已归档：{p}"))
+            .unwrap_or_default();
         self.timeline
             .lock()
             .await
             .push(crate::event::TimelineMessage::system(
-                format!("历史已压缩：{total_replaced} 条事件 → 摘要（保留最近 {keep_recent} 条）"),
+                format!(
+                    "历史已压缩：{total_replaced} 条事件 → {groups_done} 条摘要（保留最近 {keep_recent} 条）{archive_note}"
+                ),
                 String::new(),
                 chrono::Utc::now().timestamp(),
             ));
         self.mark_dirty();
         self.save_now().await;
-        Ok(format!(
-            "已压缩 {total_replaced} 条历史事件，保留最近 {keep_recent} 条"
-        ))
+        Ok(CompactionApplied {
+            total_replaced,
+            groups: groups_done,
+            kept: keep_recent,
+        })
     }
 
     // ── Event-sourced session log (Phase 3) ────────────────────────────────
@@ -2573,5 +2708,271 @@ mod tests {
         // 身份被回收，但上下文（投影缓存）保留（历史不随身份标签删除）。
         assert_eq!(store.trunk_len(), 1, "context survives eviction");
         assert!(store.history_for(&key.to_session_id()).is_some());
+    }
+
+    // ── 压缩计划 / 归档快照 / 落地（2026-09 LLM 摘要改造）──
+
+    fn ev_user(session: &str, content: &str) -> echo_session::SessionEvent {
+        echo_session::SessionEvent::UserMessage(echo_session::event::UserMessage {
+            session: Some(session.into()),
+            content: content.into(),
+            timestamp: 1700000000,
+            message_sequence: None,
+            source: None,
+            images: vec![],
+        })
+    }
+
+    fn ev_tool(session: &str, id: &str) -> echo_session::SessionEvent {
+        echo_session::SessionEvent::ToolCall(echo_session::event::ToolCallEvent {
+            id: id.into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+            session: Some(session.into()),
+        })
+    }
+
+    #[tokio::test]
+    async fn compact_preview_groups_by_session_and_counts() {
+        let store = TrunkStore::new(100_000);
+        // 会话 A：5 条（将被压前 3 条），会话 B：1 条（不动）。
+        let a = store.ensure_workspace_channel("proj", "Proj");
+        let a_id = a.id.clone();
+        let b_id = "local:tui::local_user".to_string();
+        for i in 0..5 {
+            store.append_event(ev_user(&a_id, &format!("a{i}")));
+            if i < 3 {
+                store.append_event(ev_tool(&a_id, &format!("c{i}")));
+            }
+        }
+        store.append_event(ev_user(&b_id, "b0"));
+
+        // keep=3 → A 组 8 条事件压 5 留 3；B 组只有 1 条不动。
+        let preview = store.compact_preview(3).expect("preview");
+        assert_eq!(preview.groups.len(), 1, "only session A compacts");
+        assert_eq!(preview.total_events, 9);
+        let g = &preview.groups[0];
+        assert_eq!(g.session.as_deref(), Some(a_id.as_str()));
+        assert_eq!(g.replaced_count, 5);
+        assert_eq!(g.users, 3, "a0,a1,a2 are the first three user messages");
+        assert_eq!(g.tools, 2);
+
+        // keep=10 → 两组都不足（A=8, B=1 ≤ 11）→ 无需压缩。
+        assert!(store.compact_preview(10).is_err());
+    }
+
+    #[tokio::test]
+    async fn compact_preview_rejects_short_log() {
+        let store = TrunkStore::new(1000);
+        store.append_event(ev_user("local:tui::local_user", "唯一一条"));
+        let err = store.compact_preview(40).unwrap_err();
+        assert!(err.contains("历史不足"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn apply_compaction_installs_body_summary_and_archive_path() {
+        let path = temp_sessions_path("apply-compact");
+        let _ = std::fs::remove_file(&path);
+        let store = TrunkStore::new(100_000);
+        store.set_persist_path(&path);
+        let sid = "local:tui::local_user";
+        for i in 0..6 {
+            store.append_event(ev_user(sid, &format!("m{i}")));
+        }
+        store.save_now().await;
+
+        let preview = store.compact_preview(2).expect("preview");
+        assert_eq!(preview.total_replaced, 4);
+        let summaries = vec![CompactionSummary {
+            session: Some(sid.into()),
+            summary: "用户先问了 m0、m1，随后推进到 m2、m3。".into(),
+        }];
+        let applied = store
+            .apply_compaction(2, &summaries, Some("/tmp/archives/x-precompact.json"))
+            .await
+            .expect("apply");
+        assert_eq!(applied.total_replaced, 4);
+        assert_eq!(applied.groups, 1);
+
+        // 事件日志：Compaction（正文无前缀 + 归档路径）+ 尾部 2 条。
+        let events = store.event_log();
+        assert_eq!(events.len(), 3, "1 compaction + 2 kept");
+        match &events[0] {
+            echo_session::SessionEvent::Compaction(c) => {
+                assert_eq!(c.replaced_count, 4);
+                assert!(
+                    !c.summary.contains("[历史摘要]"),
+                    "body must not embed the marker"
+                );
+                assert_eq!(
+                    c.archive.as_deref(),
+                    Some("/tmp/archives/x-precompact.json")
+                );
+                assert_eq!(c.session.as_deref(), Some(sid));
+            }
+            other => panic!("expected compaction, got {other:?}"),
+        }
+
+        // 投影：唯一前缀 + 保留的尾部。
+        let history = store.snapshot_for(sid).await;
+        assert_eq!(history.len(), 3);
+        assert!(
+            history[0].content.starts_with("[历史摘要] "),
+            "got: {}",
+            history[0].content
+        );
+        assert!(!history[0].content.contains("[历史摘要] [历史摘要]"));
+        assert!(history[1].content.contains("m4"));
+        assert!(history[2].content.contains("m5"));
+
+        // 立即持久化：磁盘文件里能找到归档路径。
+        let disk = std::fs::read_to_string(&path).unwrap();
+        assert!(disk.contains("x-precompact.json"));
+        assert!(disk.contains("m0") || disk.contains("replaced_count"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn apply_compaction_keeps_groups_without_a_summary() {
+        let store = TrunkStore::new(100_000);
+        let a_id = store.ensure_workspace_channel("proj", "Proj").id.clone();
+        let b_id = "local:tui::local_user".to_string();
+        for i in 0..6 {
+            store.append_event(ev_user(&a_id, &format!("a{i}")));
+        }
+        for i in 0..6 {
+            store.append_event(ev_user(&b_id, &format!("b{i}")));
+        }
+        let preview = store.compact_preview(2).expect("preview");
+        assert_eq!(preview.groups.len(), 2);
+
+        // 只为 A 组准备摘要：B 组必须原样保留（不能换出无摘要的 Compaction）。
+        let summaries = vec![CompactionSummary {
+            session: Some(a_id.clone()),
+            summary: "A 组摘要".into(),
+        }];
+        let applied = store
+            .apply_compaction(2, &summaries, None)
+            .await
+            .expect("apply");
+        assert_eq!(applied.groups, 1, "only the summarized group compacts");
+        assert_eq!(applied.total_replaced, 4);
+
+        let events = store.event_log();
+        let compactions = events
+            .iter()
+            .filter(|e| matches!(e, echo_session::SessionEvent::Compaction(_)))
+            .count();
+        assert_eq!(compactions, 1);
+        // B 组全部 6 条仍在。
+        let b_left = events
+            .iter()
+            .filter(|e| e.session() == Some(b_id.as_str()))
+            .count();
+        assert_eq!(b_left, 6);
+    }
+
+    #[tokio::test]
+    async fn archive_snapshot_writes_memory_state_with_reason() {
+        let path = temp_sessions_path("archive-snapshot");
+        let _ = std::fs::remove_file(&path);
+        let store = TrunkStore::new(1000);
+        store.set_persist_path(&path);
+        store.append_event(ev_user("local:tui::local_user", "未落盘的最新消息"));
+        // 故意不 save_now()：快照必须来自内存，而不是落后的磁盘文件。
+
+        let archive = store.archive_snapshot("precompact").await.expect("archive");
+        assert!(archive.contains("precompact"), "reason in name: {archive}");
+        let data = std::fs::read_to_string(&archive).unwrap();
+        assert!(
+            data.contains("未落盘的最新消息"),
+            "snapshot must serialize the in-memory state"
+        );
+        assert!(data.contains("\"events\""));
+        let _ = std::fs::remove_file(&archive);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 真实会话文件离线体检（人工触发，不进 CI）：
+    ///
+    /// ```text
+    /// ECHO_COMPACTION_LIVE_FILE=~/.config/echo-agent-core/echo-sessions-EchoCode.json \
+    ///   cargo test -p echo-agent --lib live_compaction_on_real_session_file -- --ignored
+    /// ```
+    ///
+    /// 在**文件副本**上走完整链路（载入 → 预览 → 归档 → 应用），验证真实
+    /// 数据的分组/统计与归档产物；绝不触碰原文件。
+    #[tokio::test]
+    #[ignore = "manual: needs a real session file via ECHO_COMPACTION_LIVE_FILE"]
+    async fn live_compaction_on_real_session_file() {
+        let source = std::env::var("ECHO_COMPACTION_LIVE_FILE")
+            .expect("set ECHO_COMPACTION_LIVE_FILE to a sessions JSON file");
+        let dir = std::env::temp_dir().join(format!("echo-live-compact-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let copy = dir.join("sessions.json");
+        std::fs::copy(&source, &copy).expect("copy session file");
+
+        let store = TrunkStore::new(800_000);
+        store.set_persist_path(&copy);
+        let restored = store.load_from_file().await;
+        assert!(restored > 0, "sessions restored");
+        let preview = store.compact_preview(40).expect("preview");
+        eprintln!(
+            "预览：共 {} 条事件 → 压缩 {} 条，{} 组",
+            preview.total_events,
+            preview.total_replaced,
+            preview.groups.len()
+        );
+        for group in &preview.groups {
+            eprintln!(
+                "  - {}: {} 条（{} 用户 / {} 工具调用）",
+                group.session.as_deref().unwrap_or("<legacy>"),
+                group.replaced_count,
+                group.users,
+                group.tools
+            );
+        }
+        let archive = store
+            .archive_snapshot("precompact-live")
+            .await
+            .expect("archive");
+        eprintln!("归档：{archive}");
+        assert!(std::path::Path::new(&archive).exists());
+
+        // 以规则回退文案落地（离线无 LLM；真实链路里这里是模型摘要）。
+        let summaries: Vec<CompactionSummary> = preview
+            .groups
+            .iter()
+            .map(|g| CompactionSummary {
+                session: g.session.clone(),
+                summary: format!("[offline-体检] {} 条事件", g.replaced_count),
+            })
+            .collect();
+        let applied = store
+            .apply_compaction(40, &summaries, Some(&archive))
+            .await
+            .expect("apply");
+        eprintln!(
+            "已应用：{} 条 → {} 组（保留 {}）",
+            applied.total_replaced, applied.groups, applied.kept
+        );
+        // 每个受影响会话的投影第一条应是唯一前缀的摘要。
+        for group in &preview.groups {
+            let Some(sid) = &group.session else { continue };
+            let history = store.snapshot_for(sid).await;
+            assert!(
+                history[0].content.starts_with("[历史摘要] "),
+                "session {sid} projection should lead with the summary"
+            );
+            assert!(!history[0].content.contains("[历史摘要] [历史摘要]"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn archive_snapshot_without_persistence_errors() {
+        let store = TrunkStore::new(1000);
+        let err = store.archive_snapshot("precompact").await.unwrap_err();
+        assert!(err.contains("未启用持久化"), "got: {err}");
     }
 }

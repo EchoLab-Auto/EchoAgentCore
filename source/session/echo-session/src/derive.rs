@@ -70,7 +70,9 @@ pub fn project_messages(log: &[SessionEvent]) -> Vec<ChatMessage> {
             }
             SessionEvent::Compaction(CompactionEvent { summary, .. }) => {
                 flush_tool_calls(&mut messages, &mut pending_tool_calls, &covered_call_ids);
-                messages.push(ChatMessage::user(format!("[历史摘要] {summary}")));
+                messages.push(ChatMessage::user(crate::event::render_compaction_summary(
+                    summary,
+                )));
             }
         }
     }
@@ -271,6 +273,7 @@ pub fn compact_prefix(
     Some(CompactionEvent {
         replaced_count,
         summary: summary.into(),
+        archive: None,
         session: None,
     })
 }
@@ -533,6 +536,7 @@ mod tests {
             SessionEvent::Compaction(CompactionEvent {
                 replaced_count: 3,
                 summary: "前三条已压缩".into(),
+                archive: None,
                 session: None,
             }),
             assistant("d"),
@@ -541,6 +545,36 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert!(messages[0].content.contains("前三条已压缩"));
         assert_eq!(messages[1].content, "d");
+    }
+
+    #[test]
+    fn compaction_marker_is_not_doubled_in_projection() {
+        // Body-only summaries gain exactly one marker...
+        let log = vec![
+            user("a"),
+            SessionEvent::Compaction(CompactionEvent {
+                replaced_count: 1,
+                summary: "已压缩 1 条".into(),
+                archive: None,
+                session: None,
+            }),
+        ];
+        let messages = project_messages(&log);
+        assert_eq!(messages[0].content, "[历史摘要] 已压缩 1 条");
+
+        // ...and legacy summaries that embed it keep exactly one.
+        let log = vec![
+            user("a"),
+            SessionEvent::Compaction(CompactionEvent {
+                replaced_count: 1,
+                summary: "[历史摘要] 已压缩 1 条".into(),
+                archive: None,
+                session: None,
+            }),
+        ];
+        let messages = project_messages(&log);
+        assert_eq!(messages[0].content, "[历史摘要] 已压缩 1 条");
+        assert!(!messages[0].content.contains("[历史摘要] [历史摘要]"));
     }
 
     #[test]
@@ -698,6 +732,7 @@ mod tests {
             SessionEvent::Compaction(CompactionEvent {
                 replaced_count: 2,
                 summary: "已压缩".into(),
+                archive: None,
                 session: None,
             }),
             SessionEvent::ToolResult(ToolResultEvent {
