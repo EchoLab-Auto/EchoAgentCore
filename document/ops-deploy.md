@@ -30,9 +30,9 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 - 服务默认挂在 `default.target`；开机免登录自启需 `sudo loginctl enable-linger "$USER"`
 - 卸载：`./scripts/uninstall.sh`（保留配置）/ `--purge`（连配置目录一起删）
 
-### 服务加固与 sudo
+### 服务加固
 
-长驻 `echo-agent-core.service` 设 `NoNewPrivileges=false`：`run_sudo` 人机授权流（见 [工具系统](./core-tools.md)）依赖 sudo 的 setuid 提权，`NoNewPrivileges=true` 会阻断。oneshot 更新单元保持 `NoNewPrivileges=true`——它只拉代码、构建、替换用户目录二进制，从不运行 sudo，限制被攻破构建脚本的提权面。
+长驻 `echo-agent-core.service` 与 oneshot 更新单元均设 `NoNewPrivileges=true`——2026-09 起 agent 不再提供 setuid 提权（`run_sudo` 已废弃移除），两个单元都限制被攻破进程/构建脚本的提权面。
 
 ## 容器化部署（npm + Docker，2026-09-24）
 
@@ -66,7 +66,7 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 - 更新器非阻塞文件锁拒绝并发运行；拉取/构建失败时旧二进制不动、不重启
 - Panel 更新包含 `npm run build`（前端产物从 `web/dist` 拷贝到静态目录，需 PATH 中有 npm——nvm 路径）
 - **NapCat 恢复门控**（2026-09-13）：Core 重启后仅当 `[adapters.qq].enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（3131 或 3140-3399，多实例）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
-- **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制逐个核对内置插件 manifest id（9 个：`tools.builtin` / `adapter.qq` / `skills.dir` / `workspace` / `subagent` / `provider.llm` / `management.panel` / 互斥循环模式 `loop.{single,parallel}`）。清单与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` 一致，由 `source/core/tests/update_script_plugins.rs` 守护（2026-09-26 新增——此前 `echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`menu`/`checklist`/旧驱动 `loop.runner` 等 id 已移除（present_menu 与 checklist 均降级为普通工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
+- **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制逐个核对内置插件 manifest id（9 个：`tools.builtin` / `adapter.qq` / `skills.dir` / `workspace` / `subagent` / `provider.llm` / `management.panel` / 互斥循环模式 `loop.{single,parallel}`）。清单与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` 一致，由 `source/core/tests/update_script_plugins.rs` 守护（2026-09-26 新增——此前 `echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`menu`/`checklist`/旧驱动 `loop.runner` 等 id 已移除（present_menu 已废弃移除；checklist 为普通内置工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
 
 ### 状态机与轮询契约
 
@@ -76,17 +76,6 @@ state=running → state=restarting → state=updated（失败时停在 failed / 
 
 - `state=restarting` 在 **systemctl restart 之前**写入（"构建完成、即将重启"）；`updated` 在重启 + QQ 恢复之后才写入（恢复段仅 QQ 启用时执行：自动重连窗口 40s + 兜底重启窗口 90s，最长约 2 分钟；未启用则直接跳过）
 - **self-update 轮询契约**：agent 轮询到 `restarting` 就应立即收尾结束当前 turn（不要等 `updated`——等它的 turn 会被自己的重启杀死，时间线留下僵尸 running 工具条目）；重连后的新 turn 再验证 `updated`
-
-### Agent 自更新授权（framework_update 工具）
-
-Agent 不能向工具传递命令/仓库/路径/分支/服务名——仅接受 `status` 与 `apply` 两个动作，`apply` 还需 `confirm=true`；服务名编译期固定为 `echo-agent-core-update.service`。授权按真实会话 ID 判定：local 平台会话（TUI 与本机工作区通道 `local:workspace:*`）需 `allow_local = true`；QQ 会话需匹配 `[adapters.qq].owner_qq` 或 `allowed_qq_users`；其他平台一律拒绝。
-
-```toml
-[agent.self_update]
-enabled = true
-allow_local = true
-allowed_qq_users = [123456789]
-```
 
 ## 自更新注意事项
 

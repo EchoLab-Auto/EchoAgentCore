@@ -18,14 +18,12 @@ pub mod config;
 pub mod event;
 pub mod input_marker;
 pub mod llm;
-pub mod menu;
 pub mod plugins;
 pub mod session;
 pub mod shell;
 pub mod skill;
 pub mod skill_install;
 pub mod subagent;
-pub mod sudo;
 pub mod timeline;
 pub mod tool;
 pub mod workspace;
@@ -35,16 +33,12 @@ pub use agent::{Agent, EventSink};
 pub use agent_manager::AgentManager;
 pub use bridge::{create_bridge, BackendBridge, BackendHandle, FanoutHandle};
 pub use command::BackendCommand;
-pub use config::{
-    AgentConfig, AgentProfile, ReasoningEffort, SelfUpdateConfig, TeamMember, ThinkingMode,
-};
+pub use config::{AgentConfig, AgentProfile, ReasoningEffort, TeamMember, ThinkingMode};
 pub use event::{
-    ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, GroupInfo, MenuOptionInfo,
-    SessionInfo, TimelineMessage, TimelineSource, TimelineTool,
+    ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, GroupInfo, SessionInfo,
+    TimelineMessage, TimelineSource, TimelineTool,
 };
 pub use llm::LlmProvider;
-pub use menu::{MenuBroker, PendingMenu, MENU_WAIT_TIMEOUT_SECS};
 pub use session::{Session, SessionKey, TrunkStore};
 pub use skill::{Skill, SkillRegistry};
-pub use sudo::{PendingSudo, SudoBroker};
 pub use tool::{Tool, ToolRegistry};

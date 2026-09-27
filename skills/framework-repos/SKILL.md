@@ -38,7 +38,7 @@ EchoAgent 框架由两个 Git 仓库组成，所有框架相关的修改、构�
 
 - Core 改动需要重启服务：`systemctl --user restart echo-agent-core.service`
 - Panel 改动构建后刷新浏览器即可（服务托管静态目录）
-- 框架自更新（framework_update 工具）也只会在这两个受管仓库的指定目录下工作
+- 框架自更新（`update.sh` / `echo-agent-core-update.service`）也只会在这两个受管仓库的指定目录下工作
 
 ## ⛔ 绝对禁止：stop Core 服务
 

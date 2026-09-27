@@ -135,68 +135,18 @@ impl FanoutHandle {
 
 // ── WebSocket message types ────────────────────────────────────────────────
 
-/// Sudo password submission, Panel → Core, carried on a **dedicated channel**.
-///
-/// The password never transits the agent command queue, the session log, or
-/// the LLM context: the management server routes `WsMessage::SudoPassword`
-/// straight to the sudo broker, and `Debug` redacts the password so a stray
-/// `{:?}` cannot leak it into logs.
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SudoPasswordSubmit {
-    pub request_id: u64,
-    /// `Some(password)` authorizes; `None` denies the request.
-    pub password: Option<String>,
-}
-
-impl std::fmt::Debug for SudoPasswordSubmit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SudoPasswordSubmit")
-            .field("request_id", &self.request_id)
-            .field(
-                "password",
-                &if self.password.is_some() {
-                    "***"
-                } else {
-                    "None"
-                },
-            )
-            .finish()
-    }
-}
-
-/// 选单应答，Panel → Core（专用通道，与 sudo 密码同机制）。
-///
-/// 选单内容与选择结果都不是秘密（会进入会话日志与 LLM 上下文——这正是它
-/// 存在的意义），因此无需像密码那样打码；但它同样不经 agent 命令队列——
-/// 命令队列是"用户输入"语义（会开启新 turn），而选单应答只是对等待中的那次
-/// 工具调用的应答，由管理面服务器直接路由到 menu broker。
-#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
-pub struct MenuAnswerSubmit {
-    pub request_id: u64,
-    /// `Some(option_id)` 选定该项；`None` 表示取消选单（不给模型任何选择）。
-    pub option_id: Option<String>,
-}
-
 /// Top-level WS message envelope.
 ///
 /// Serialises as:
 /// ```json
 /// {"type":"command","payload":{"SendMessage":{"session_id":"...","content":"..."}}}
 /// {"type":"event","payload":{"AgentOutput":{"session_id":"...","content":"..."}}}
-/// {"type":"sudo_password","payload":{"request_id":1,"password":"***"}}
-/// {"type":"menu_answer","payload":{"request_id":1,"option_id":"b"}}
 /// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum WsMessage {
     Command(BackendCommand),
     Event(BackendEvent),
-    /// Panel → Core only. Routed directly to the sudo broker by the
-    /// management server; never enters the agent command queue.
-    SudoPassword(SudoPasswordSubmit),
-    /// Panel → Core only. Routed directly to the menu broker by the
-    /// management server; never enters the agent command queue.
-    MenuAnswer(MenuAnswerSubmit),
 }
 
 /// Serialise a command for WS transport.
@@ -227,58 +177,6 @@ pub fn deserialize_message(text: &str) -> Option<WsMessage> {
         Err(e) => {
             let snippet: String = text.chars().take(200).collect();
             tracing::warn!(error = %e, "failed to deserialize WS message: {snippet}");
-            None
-        }
-    }
-}
-
-/// Serialise a sudo password submission for WS transport.
-///
-/// This is a **secret-carrying frame**: on failure only the error is logged,
-/// never the payload (the password must not appear in logs).
-pub fn serialize_sudo_password(submit: &SudoPasswordSubmit) -> String {
-    match serde_json::to_string(&WsMessage::SudoPassword(submit.clone())) {
-        Ok(text) => text,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to serialize sudo password frame");
-            String::new()
-        }
-    }
-}
-
-/// Deserialise a sudo password submission from a WS text message.
-///
-/// On failure only the error is logged — never the raw text, which may
-/// contain the password.
-pub fn deserialize_sudo_password(text: &str) -> Option<SudoPasswordSubmit> {
-    match serde_json::from_str::<WsMessage>(text) {
-        Ok(WsMessage::SudoPassword(submit)) => Some(submit),
-        Ok(_) => None,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to deserialize sudo password frame");
-            None
-        }
-    }
-}
-
-/// Serialise a menu answer for WS transport.
-pub fn serialize_menu_answer(answer: &MenuAnswerSubmit) -> String {
-    match serde_json::to_string(&WsMessage::MenuAnswer(answer.clone())) {
-        Ok(text) => text,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to serialize menu answer frame");
-            String::new()
-        }
-    }
-}
-
-/// Deserialise a menu answer from a WS text message.
-pub fn deserialize_menu_answer(text: &str) -> Option<MenuAnswerSubmit> {
-    match serde_json::from_str::<WsMessage>(text) {
-        Ok(WsMessage::MenuAnswer(answer)) => Some(answer),
-        Ok(_) => None,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to deserialize menu answer frame");
             None
         }
     }
@@ -463,106 +361,6 @@ mod tests {
     fn malformed_message_returns_none() {
         assert!(deserialize_message("not json").is_none());
         assert!(deserialize_message("{\"type\":\"unknown\"}").is_none());
-    }
-
-    #[test]
-    fn sudo_password_frame_roundtrips() {
-        let submit = SudoPasswordSubmit {
-            request_id: 7,
-            password: Some("s3cret".into()),
-        };
-        let text = serialize_sudo_password(&submit);
-        assert!(text.contains("\"type\":\"sudo_password\""));
-        let decoded = deserialize_sudo_password(&text).expect("sudo frame decodes");
-        assert_eq!(decoded.request_id, 7);
-        assert_eq!(decoded.password.as_deref(), Some("s3cret"));
-        // The password never appears in Debug output.
-        let debug = format!("{decoded:?}");
-        assert!(
-            !debug.contains("s3cret"),
-            "Debug must redact the password: {debug}"
-        );
-    }
-
-    #[test]
-    fn sudo_password_deny_roundtrips() {
-        let submit = SudoPasswordSubmit {
-            request_id: 9,
-            password: None,
-        };
-        let text = serialize_sudo_password(&submit);
-        let decoded = deserialize_sudo_password(&text).expect("deny frame decodes");
-        assert_eq!(decoded.password, None);
-    }
-
-    #[test]
-    fn sudo_password_frame_parses_as_sudo_variant_only() {
-        let submit = SudoPasswordSubmit {
-            request_id: 1,
-            password: Some("x".into()),
-        };
-        let text = serialize_sudo_password(&submit);
-        // The generic parser yields the sudo variant; the dedicated parser
-        // extracts the submission.
-        match deserialize_message(&text) {
-            Some(WsMessage::SudoPassword(parsed)) => assert_eq!(parsed.request_id, 1),
-            other => panic!("expected SudoPassword variant, got {other:?}"),
-        }
-        assert_eq!(
-            deserialize_sudo_password(&text).map(|s| s.request_id),
-            Some(1)
-        );
-        assert!(deserialize_sudo_password("not json").is_none());
-        assert!(deserialize_sudo_password("{\"type\":\"command\"}").is_none());
-    }
-
-    #[test]
-    fn menu_answer_frame_roundtrips() {
-        let answer = MenuAnswerSubmit {
-            request_id: 3,
-            option_id: Some("option-b".into()),
-        };
-        let text = serialize_menu_answer(&answer);
-        assert!(text.contains("\"type\":\"menu_answer\""));
-        let decoded = deserialize_menu_answer(&text).expect("menu frame decodes");
-        assert_eq!(decoded.request_id, 3);
-        assert_eq!(decoded.option_id.as_deref(), Some("option-b"));
-    }
-
-    #[test]
-    fn menu_answer_cancel_roundtrips() {
-        let answer = MenuAnswerSubmit {
-            request_id: 4,
-            option_id: None,
-        };
-        let text = serialize_menu_answer(&answer);
-        let decoded = deserialize_menu_answer(&text).expect("cancel frame decodes");
-        assert_eq!(decoded.option_id, None);
-    }
-
-    #[test]
-    fn menu_answer_frame_parses_as_menu_variant_only() {
-        let answer = MenuAnswerSubmit {
-            request_id: 5,
-            option_id: Some("a".into()),
-        };
-        let text = serialize_menu_answer(&answer);
-        match deserialize_message(&text) {
-            Some(WsMessage::MenuAnswer(parsed)) => assert_eq!(parsed.request_id, 5),
-            other => panic!("expected MenuAnswer variant, got {other:?}"),
-        }
-        assert_eq!(
-            deserialize_menu_answer(&text).map(|m| m.request_id),
-            Some(5)
-        );
-        assert!(deserialize_menu_answer("not json").is_none());
-        assert!(deserialize_menu_answer("{\"type\":\"command\"}").is_none());
-        // sudo 帧不会被误判成 menu 帧。
-        let sudo = serialize_sudo_password(&SudoPasswordSubmit {
-            request_id: 1,
-            password: Some("x".into()),
-        });
-        assert!(deserialize_menu_answer(&sudo).is_none());
     }
 
     #[tokio::test]

@@ -1,15 +1,7 @@
-//! Management WebSocket server for Panel (TUI) connections.
+//! Management WebSocket server for Panel connections.
 //!
 //! Listens on a configurable address, accepts WS connections from Panel
 //! instances, and bridges commands/events between the Panel and the Agent.
-//!
-//! Sudo password frames (`WsMessage::SudoPassword`) are routed **directly to
-//! the sudo broker** — they never enter the agent command queue, the session
-//! log, or the LLM context, and their payload is never logged.
-//!
-//! 选单应答帧（`WsMessage::MenuAnswer`）同样直连 menu broker：它不是秘密，
-//! 但与命令队列语义不同——应答只回填等待中的那次 `present_menu` 调用，
-//! 不应开启新的 turn。
 
 use std::sync::Arc;
 
@@ -59,23 +51,13 @@ pub async fn serve_with_token(
     addr: &str,
     bridge: Arc<BackendBridge>,
     agent: Arc<echo_agent::Agent>,
-    sudo_broker: Arc<echo_agent::SudoBroker>,
-    menu_broker: Arc<echo_agent::MenuBroker>,
     access_token: String,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("bind management address {addr}"))?;
     info!("Panel management WS server listening on {addr}");
-    serve_with_listener_and_token(
-        listener,
-        bridge,
-        agent,
-        sudo_broker,
-        menu_broker,
-        access_token,
-    )
-    .await
+    serve_with_listener_and_token(listener, bridge, agent, access_token).await
 }
 
 /// Serve on a pre-bound listener (tests use it to pick a free port).
@@ -84,26 +66,14 @@ pub(crate) async fn serve_with_listener(
     listener: TcpListener,
     bridge: Arc<BackendBridge>,
     agent: Arc<echo_agent::Agent>,
-    sudo_broker: Arc<echo_agent::SudoBroker>,
-    menu_broker: Arc<echo_agent::MenuBroker>,
 ) -> anyhow::Result<()> {
-    serve_with_listener_and_token(
-        listener,
-        bridge,
-        agent,
-        sudo_broker,
-        menu_broker,
-        String::new(),
-    )
-    .await
+    serve_with_listener_and_token(listener, bridge, agent, String::new()).await
 }
 
 async fn serve_with_listener_and_token(
     listener: TcpListener,
     bridge: Arc<BackendBridge>,
     agent: Arc<echo_agent::Agent>,
-    sudo_broker: Arc<echo_agent::SudoBroker>,
-    menu_broker: Arc<echo_agent::MenuBroker>,
     access_token: String,
 ) -> anyhow::Result<()> {
     let events = Arc::new(EventBroker::new(bridge.clone()));
@@ -125,21 +95,9 @@ async fn serve_with_listener_and_token(
         let events = events.clone();
         let bridge = bridge.clone();
         let agent = agent.clone();
-        let sudo_broker = sudo_broker.clone();
-        let menu_broker = menu_broker.clone();
         let access_token = access_token.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(
-                stream,
-                events,
-                bridge,
-                agent,
-                sudo_broker,
-                menu_broker,
-                &access_token,
-            )
-            .await
-            {
+            if let Err(e) = handle_connection(stream, events, bridge, agent, &access_token).await {
                 warn!(error = %e, "Panel connection error");
             }
         });
@@ -151,8 +109,6 @@ async fn handle_connection(
     events: Arc<EventBroker>,
     bridge: Arc<BackendBridge>,
     _agent: Arc<echo_agent::Agent>,
-    sudo_broker: Arc<echo_agent::SudoBroker>,
-    menu_broker: Arc<echo_agent::MenuBroker>,
     access_token: &str,
 ) -> anyhow::Result<()> {
     let ws = if access_token.is_empty() {
@@ -212,7 +168,7 @@ async fn handle_connection(
                     None => break, // bridge closed
                 }
             }
-            // Panel → Agent 命令，以及 sudo 密码 → broker。
+            // Panel → Agent 命令。
             msg = read.next() => {
                 match msg {
                     Some(Ok(msg)) => {
@@ -222,32 +178,6 @@ async fn handle_connection(
                                 match handle_inbound_text(&text) {
                                     Some(InboundFrame::Command(cmd)) => {
                                         let _ = bridge.send_command(cmd);
-                                    }
-                                    Some(InboundFrame::SudoPassword(submit)) => {
-                                        // The password resolves the pending run_sudo
-                                        // oneshot directly; it is never logged or
-                                        // serialized into an event, and it never
-                                        // enters the agent command queue.
-                                        let accepted =
-                                            sudo_broker.submit(submit.request_id, submit.password);
-                                        if !accepted {
-                                            warn!(
-                                                request_id = submit.request_id,
-                                                "sudo password submitted for unknown/expired request"
-                                            );
-                                        }
-                                    }
-                                    Some(InboundFrame::MenuAnswer(answer)) => {
-                                        // 选单应答回填等待中的 present_menu；不经
-                                        // 命令队列（应答不是新输入），也不成事件。
-                                        let accepted = menu_broker
-                                            .submit(answer.request_id, answer.option_id.clone());
-                                        if !accepted {
-                                            warn!(
-                                                request_id = answer.request_id,
-                                                "menu answer submitted for unknown/expired request"
-                                            );
-                                        }
                                     }
                                     None => {}
                                 }
@@ -281,23 +211,13 @@ async fn handle_connection(
 #[derive(Debug)]
 pub(crate) enum InboundFrame {
     Command(echo_agent::BackendCommand),
-    SudoPassword(echo_agent::bridge::SudoPasswordSubmit),
-    MenuAnswer(echo_agent::bridge::MenuAnswerSubmit),
 }
 
 /// Parse one inbound WS text frame.
 ///
 /// Returns `None` for non-command frames (events, malformed payloads) —
-/// those are ignored by the management channel. Sudo password frames are
-/// parsed with the redacted deserializer so a malformed frame cannot leak
-/// the password into logs.
+/// those are ignored by the management channel.
 pub(crate) fn handle_inbound_text(text: &str) -> Option<InboundFrame> {
-    if let Some(submit) = echo_agent::bridge::deserialize_sudo_password(text) {
-        return Some(InboundFrame::SudoPassword(submit));
-    }
-    if let Some(answer) = echo_agent::bridge::deserialize_menu_answer(text) {
-        return Some(InboundFrame::MenuAnswer(answer));
-    }
     match echo_agent::bridge::deserialize_message(text) {
         Some(echo_agent::bridge::WsMessage::Command(cmd)) => Some(InboundFrame::Command(cmd)),
         _ => None,
@@ -340,52 +260,6 @@ mod tests {
     fn ignores_malformed_frames() {
         assert!(handle_inbound_text("not json").is_none());
         assert!(handle_inbound_text("").is_none());
-    }
-
-    #[test]
-    fn parses_sudo_password_frame() {
-        let text = r#"{"type":"sudo_password","payload":{"request_id":42,"password":"hunter2"}}"#;
-        match handle_inbound_text(text) {
-            Some(InboundFrame::SudoPassword(submit)) => {
-                assert_eq!(submit.request_id, 42);
-                assert_eq!(submit.password.as_deref(), Some("hunter2"));
-            }
-            other => panic!("expected sudo frame, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn sudo_password_debug_redacts_payload() {
-        let text = r#"{"type":"sudo_password","payload":{"request_id":7,"password":"hunter2"}}"#;
-        let Some(InboundFrame::SudoPassword(submit)) = handle_inbound_text(text) else {
-            panic!("expected sudo frame");
-        };
-        let debug = format!("{submit:?}");
-        assert!(!debug.contains("hunter2"), "Debug must redact: {debug}");
-    }
-
-    #[test]
-    fn parses_menu_answer_frame() {
-        let text = r#"{"type":"menu_answer","payload":{"request_id":42,"option_id":"b"}}"#;
-        match handle_inbound_text(text) {
-            Some(InboundFrame::MenuAnswer(answer)) => {
-                assert_eq!(answer.request_id, 42);
-                assert_eq!(answer.option_id.as_deref(), Some("b"));
-            }
-            other => panic!("expected menu frame, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn menu_answer_cancel_frame_parses() {
-        let text = r#"{"type":"menu_answer","payload":{"request_id":7,"option_id":null}}"#;
-        match handle_inbound_text(text) {
-            Some(InboundFrame::MenuAnswer(answer)) => {
-                assert_eq!(answer.request_id, 7);
-                assert_eq!(answer.option_id, None);
-            }
-            other => panic!("expected menu frame, got {other:?}"),
-        }
     }
 
     #[test]
@@ -444,32 +318,22 @@ mod tests {
         ))
     }
 
-    async fn start_test_server() -> (
-        Arc<BackendBridge>,
-        echo_agent::BackendHandle,
-        String,
-        Arc<echo_agent::SudoBroker>,
-        Arc<echo_agent::MenuBroker>,
-    ) {
+    async fn start_test_server() -> (Arc<BackendBridge>, echo_agent::BackendHandle, String) {
         let (bridge, handle) = echo_agent::create_bridge();
         let bridge = Arc::new(bridge);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let agent = dummy_agent();
-        let sudo_broker = Arc::new(echo_agent::SudoBroker::new());
-        let menu_broker = Arc::new(echo_agent::MenuBroker::new());
         let b = bridge.clone();
-        let sb = sudo_broker.clone();
-        let mb = menu_broker.clone();
         tokio::spawn(async move {
-            let _ = serve_with_listener(listener, b, agent, sb, mb).await;
+            let _ = serve_with_listener(listener, b, agent).await;
         });
-        (bridge, handle, addr, sudo_broker, menu_broker)
+        (bridge, handle, addr)
     }
 
     #[tokio::test]
     async fn panel_command_reaches_agent_backend() {
-        let (bridge, handle, addr, _sb, _mb) = start_test_server().await;
+        let (bridge, handle, addr) = start_test_server().await;
         let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
             .await
             .expect("connect");
@@ -500,7 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_events_reach_panel() {
-        let (bridge, handle, addr, _sb, _mb) = start_test_server().await;
+        let (bridge, handle, addr) = start_test_server().await;
         let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
             .await
             .expect("connect");
@@ -532,58 +396,6 @@ mod tests {
             other => panic!("wrong event: {other:?}"),
         }
         let _ = bridge;
-        ws.close(None).await.ok();
-    }
-
-    #[tokio::test]
-    async fn sudo_password_frame_resolves_broker_request() {
-        let (_bridge, _handle, addr, sudo_broker, _mb) = start_test_server().await;
-        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
-            .await
-            .expect("connect");
-
-        // Register a pending request and submit the password over the wire.
-        let pending = sudo_broker.request();
-        let text =
-            echo_agent::bridge::serialize_sudo_password(&echo_agent::bridge::SudoPasswordSubmit {
-                request_id: pending.request_id,
-                password: Some("s3cret".into()),
-            });
-        ws.send(tokio_tungstenite::tungstenite::Message::Text(text))
-            .await
-            .expect("send");
-
-        let password = pending
-            .into_receiver()
-            .await
-            .expect("broker request resolved via WS");
-        assert_eq!(password.as_deref(), Some("s3cret"));
-        ws.close(None).await.ok();
-    }
-
-    #[tokio::test]
-    async fn menu_answer_frame_resolves_broker_request() {
-        let (_bridge, _handle, addr, _sb, menu_broker) = start_test_server().await;
-        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
-            .await
-            .expect("connect");
-
-        // Register a pending 选单 and answer it over the wire.
-        let pending = menu_broker.request();
-        let text =
-            echo_agent::bridge::serialize_menu_answer(&echo_agent::bridge::MenuAnswerSubmit {
-                request_id: pending.request_id,
-                option_id: Some("b".into()),
-            });
-        ws.send(tokio_tungstenite::tungstenite::Message::Text(text))
-            .await
-            .expect("send");
-
-        let answer = pending
-            .into_receiver()
-            .await
-            .expect("broker request resolved via WS");
-        assert_eq!(answer.as_deref(), Some("b"));
         ws.close(None).await.ok();
     }
 }

@@ -80,27 +80,14 @@ pub(crate) async fn tool_timeout(
 }
 
 impl crate::agent::Agent {
-    /// 工具外圈超时守卫的统一口径：内置特判（`run_sudo` / `present_menu`）
-    /// + 配置 base + 工具自声明 `timeout_hint`（见 [`tool_timeout`]）。
+    /// 工具外圈超时守卫：配置 base + 工具自声明 `timeout_hint`
+    /// （见 [`tool_timeout`]）。
     ///
     /// 内置循环与 echo-loop 两条驱动路径共用——口径必须一致，否则同一请求
     /// 换驱动后行为不同。2026-09-26 前 echo-loop 路径没有守卫，挂死的工具
     /// 会永久拖住 turn（内置循环的守卫在这条路径上不生效）。
     pub(crate) async fn tool_guard_timeout(&self, call: &ToolCall) -> std::time::Duration {
         let base = self.config.read().await.effective_tool_timeout();
-        if call.name == "run_sudo" {
-            // run_sudo 是 agent 内置编排工具（不在注册表内），其内部已有
-            // 授权 + 执行双重超时，外圈只需长过两者之和。
-            let config = self.config.read().await;
-            std::time::Duration::from_secs(
-                config.sudo.auth_timeout_secs + config.sudo.command_timeout_secs + 30,
-            )
-        } else if call.name == "present_menu" {
-            // 选单等待用户在 Panel 中选择：外圈守卫必须长过等待窗口本身，
-            // 否则会在用户选择前把 future drop 掉。
-            std::time::Duration::from_secs(crate::menu::MENU_WAIT_TIMEOUT_SECS + 30)
-        } else {
-            tool_timeout(&self.tools, base, call).await
-        }
+        tool_timeout(&self.tools, base, call).await
     }
 }

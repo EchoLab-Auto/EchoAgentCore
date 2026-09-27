@@ -61,7 +61,6 @@ Core（EchoAgentCore）是 Agent 后端核心服务，Rust 实现。组合根在
 - `[agent.teams.*]`：多 agent 人格定义（name、description、system_prompt、能力白名单、api_profile 供应商引用）
 - `[adapters.qq]`：QQ 适配器（OneBot v11 反向 WS :3131）
 - `[plugins.system_prompt]`：全局系统提示词
-- `[agent.self_update]` / `[agent.sudo]`：自更新与 sudo 授权策略
 
 ## 常用运维命令
 

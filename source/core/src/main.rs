@@ -255,17 +255,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
     let adapters = Arc::new(adapter_registry);
 
-    // The configured QQ owner is also an update administrator. Additional
-    // administrators can be listed under `[agent.self_update]`.
     let mut agent_config = cfg.agent.clone();
     // System prompt is owned by the Core plugin, not the API config.
     agent_config.system_prompt = cfg.plugins.system_prompt.text.clone();
-    if cfg.qq_adapter.owner_qq > 0 {
-        let owner = cfg.qq_adapter.owner_qq as u64;
-        if !agent_config.self_update.allowed_qq_users.contains(&owner) {
-            agent_config.self_update.allowed_qq_users.push(owner);
-        }
-    }
     info!(
         memory_limit_tokens = agent_config.effective_memory_limit_tokens(),
         "agent context policy: single global trunk (token-budget trimmed)"
@@ -492,27 +484,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let agent: Arc<echo_agent::Agent> = core_agent.clone();
     info!(agents = ?supervisor.ids(), "agent supervisor ready");
 
-    // ---- Sudo authorization broker ----
-    // The broker is shared between the agent (run_sudo awaits a password
-    // here) and the management server (sudo password frames are routed here
-    // directly, bypassing the agent command queue, session log and LLM
-    // context).
-    let sudo_broker = Arc::new(echo_agent::SudoBroker::new());
-    // 所有人格共享 sudo 授权通道。
-    for persona in supervisor.personas() {
-        persona.agent.attach_sudo_broker(sudo_broker.clone());
-    }
-    // 核心服务代理同样接入（它承接全局命令，需要 sudo/事件通路）。
-    core_agent.attach_sudo_broker(sudo_broker.clone());
-
-    // ---- 选单（menu）broker ----
-    // 与 sudo 同构：`present_menu` 在 broker 上挂未决选单，管理面服务器把
-    // Panel 的 menu_answer 帧直连到 broker（不经命令队列）。
-    let menu_broker = Arc::new(echo_agent::MenuBroker::new());
-    for persona in supervisor.personas() {
-        persona.agent.attach_menu_broker(menu_broker.clone());
-    }
-    core_agent.attach_menu_broker(menu_broker.clone());
     core_agent
         .apply_capabilities(&echo_agent::AgentProfile {
             enabled: true,
@@ -697,8 +668,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             )?;
         }
 
-        // 选单（present_menu）已降级为普通编排工具：无插件注册，
-        // 只受工具级白/黑名单门控；broker 接线在本函数外完成。
+        // 选单（present_menu）已于 2026-09 废弃移除（无插件、无 broker）。
 
         // ── 实化 7：subagent 委派（隔离上下文子任务 + 完成 hook 回灌）──
         {
@@ -774,8 +744,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let mgmt_token = cfg.core.management_access_token.clone();
             let mgmt_agent = core_agent.clone();
             let mgmt_bridge = bridge.clone();
-            let mgmt_sudo = sudo_broker.clone();
-            let mgmt_menu = menu_broker.clone();
             register(
                 &plugin_host,
                 PluginManifest::builtin(
@@ -784,21 +752,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     version,
                     PluginKind::Management,
                     "panel",
-                    "Panel management WS 桥接 / sudo 授权与选单应答通道",
+                    "Panel management WS 桥接",
                 ),
                 move |_ctx| {
-                    let (addr, br, ag, sudo, menu) = (
-                        mgmt_addr.clone(),
-                        mgmt_bridge.clone(),
-                        mgmt_agent.clone(),
-                        mgmt_sudo.clone(),
-                        mgmt_menu.clone(),
-                    );
+                    let (addr, br, ag) =
+                        (mgmt_addr.clone(), mgmt_bridge.clone(), mgmt_agent.clone());
                     let token = mgmt_token.clone();
                     let server = tokio::spawn(async move {
-                        if let Err(e) =
-                            management::serve_with_token(&addr, br, ag, sudo, menu, token).await
-                        {
+                        if let Err(e) = management::serve_with_token(&addr, br, ag, token).await {
                             warn!(error = %e, "management WS server stopped");
                         }
                     });
@@ -844,8 +805,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         info!("background shell manager ready");
     }
 
-    // 供编排工具（framework_update status）读取插件摘要的进程级锚点：
-    // 直接指向进程级共享宿主（与各 persona 注入的是同一实例）。
+    // 进程级插件宿主锚点：供插件门控判定读取全局注册表
+    // （与各 persona 注入的是同一实例）。
     echo_agent::agent::set_plugin_host_global(plugin_host.clone());
     // Restore persisted sessions and start periodic save (all personas).
     for persona in supervisor.personas() {

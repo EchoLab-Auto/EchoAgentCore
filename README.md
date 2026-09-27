@@ -116,9 +116,9 @@ cargo fmt --all --check
 详见 [document/ops-deploy.md](document/ops-deploy.md)。卸载：`./scripts/uninstall.sh`
 （保留配置与会话历史；`--purge` 连配置一起删，`--dry-run` 先预览）。
 
-> 注意：为了让 `run_sudo` 能提权，常驻 `echo-agent-core.service` 关闭了
-> `NoNewPrivileges`（sudo 依赖 setuid）；一次性更新器服务保留
-> `NoNewPrivileges=true`（不运行 sudo，仅构建并替换本地二进制）。
+> 注意：长驻 `echo-agent-core.service` 与一次性更新器服务均设
+> `NoNewPrivileges=true`——agent 不再提供 setuid 提权（`run_sudo` 已废弃移除），
+> 两个单元都限制被攻破进程/构建脚本的提权面。
 
 ### Docker
 
@@ -151,8 +151,6 @@ NapCat 容器管理）；容器模式的完整配置模板见
 
 - `[agent]`：LLM provider/model/base_url/api_key（env 覆盖：`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`）、`memory_limit_tokens`（trunk token 预算）、`skills_dir`、多 API profile。
 - `[plugins.system_prompt]`：全局系统提示词（Panel 中编辑保存的基础提示词层）。
-- `[agent.self_update]`：受控自更新授权（`allow_local`、`allowed_qq_users`）。
-- `[agent.sudo]`：`run_sudo` 工具（LLM 以 root 执行命令）。每次执行都需要你在 Panel 输入 sudo 密码授权；密码只走专用通道（不进入 LLM 上下文/会话日志/命令队列），输入后立即零化。`enabled` 默认开启，`auth_timeout_secs`/`command_timeout_secs` 可调。
 - `[adapters.qq]`：QQ 适配器开关、NapCat HTTP API、owner_qq、命令前缀；`[adapters.qq.server]` 反向 WS 监听 `:3131` 与访问令牌（`ECHO_ACCESS_TOKEN` env 可覆盖）。
 - `[core] management_address`：前端连接地址（默认 `127.0.0.1:3132`）。
 

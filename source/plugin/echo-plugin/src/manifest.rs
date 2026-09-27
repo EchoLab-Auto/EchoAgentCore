@@ -17,12 +17,13 @@ pub enum PluginKind {
     Loop,
     /// Platform adapter (qq, ...).
     Adapter,
-    /// Built-in orchestration (framework_update / run_sudo).
+    /// Built-in orchestration（保留类型；原 run_sudo/framework_update 工具已于
+    /// 2026-09 废弃，当前无内置成员）。
     Orchestration,
-    /// Management surface (Panel bridge, sudo broker).
+    /// Management surface (Panel bridge).
     Management,
     /// Interaction surface: human-in-the-loop UI driven from the agent
-    /// (menus/prompts answered in the Panel on a dedicated channel).
+    /// （保留类型；原选单（menu）已于 2026-09 废弃，当前无内置成员）。
     Interaction,
 }
 

@@ -14,7 +14,7 @@ Panel 的系统级交互：Toast 通知、键盘清单、设计边界（协议�
 
 - 三类：`info / success / error`；位置右上；单条 **6s** 自动消失；同屏上限 8 条（`ToastProvider :max-count="8"`，溢出挤掉最旧）；队列 cap 8、文本截断 512 字符（`App.vue:270, 346`，`state.ts:1132-1136`）
 - `state.toasts` 仅作转发队列：watcher 逐条泵入组件库 ToastProvider 后清空（`App.vue:265-275`）
-- 来源与类型：断连提示「与后端断开，正在重连…」（error）、断连时发送命令（error）、`SudoResolved`（授权 success / 拒绝或中断 error）、`MenuResolved` 取消/超时（info）、Core `Error` 事件（**按 info 展示**，`state.ts:983-987`——Git 安装等异步操作的失败也经此通道呈现）
+- 来源与类型：断连提示「与后端断开，正在重连…」（error）、断连时发送命令（error）、Core `Error` 事件（**按 info 展示**，`state.ts:983-987`——Git 安装等异步操作的失败也经此通道呈现）
 
 ## 十三、键盘清单
 
@@ -24,8 +24,6 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 |---|---|---|
 | Enter | 输入区 | 发送消息（IME 组合中不触发） |
 | Shift+Enter | 输入区 | 换行 |
-| Enter | SudoModal | 授权（提交密码） |
-| Esc | SudoModal | 拒绝（提交 null） |
 | Enter | Shell 命令行 | 执行命令 |
 | Esc | Shell 命令行 | 清空输入 |
 

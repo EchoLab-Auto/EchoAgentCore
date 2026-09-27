@@ -81,7 +81,7 @@ EchoAgentCore/
 4. **API 配置**：Panel /api → `UpdateApiConfig` → 应用 + ConfigStore 持久化 → `ApiConfigUpdated` 广播
 5. **适配器生命周期**：QqAdapter::start() → 绑定端口 → 服务器任务 → 接受连接 → QqHandler
 6. **技能重载**：按需触发（`ReloadSkills` 命令 / 保存·删除技能后）→ 发现 SKILL.md → 保留启用状态 → 替换注册表（**覆盖全部运行人格**）→ 清提示词缓存（周期扫描已于 2026-08 移除）
-7. **自更新**：授权会话 → 固定 framework_update 工具 → echo-agent-core-update.service → 构建 → 原子替换 → Core 重启（排空优先）
+7. **自更新**：agent 经 bash 运行受管更新器（`update.sh` → echo-agent-core-update.service）→ 构建 → 原子替换 → Core 重启（排空优先）
 8. **异步子任务**（`spawn_subagent`）：受理即返回子任务 id → 子 agent 隔离上下文执行 → 完成后经 `<subagent_event>` 钩子以新 turn 回报主 agent（见 [Subagent 插件](./core-subagent.md)；旧「后台任务/并行分支」体系已于 2026-09-16 删除）
 
 ## 构建与测试

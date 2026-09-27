@@ -540,13 +540,13 @@ impl Tool for RunCommandTool {
             }
         }
 
-        // sudo needs an interactive password; the user must authorize it via
-        // the run_sudo tool instead. Detect a leading `sudo` token so the
-        // model learns the right tool rather than hitting a tty-less failure.
+        // sudo 需要交互式密码输入，bash 工具无法提供 tty；而提权执行
+        // 已不再提供（run_sudo 工具于 2026-09 废弃移除）。检测行首 `sudo`
+        // 并给出明确拒绝，避免模型反复尝试无 tty 的 sudo 命令。
         if let Some(rest) = cmd.trim_start().strip_prefix("sudo") {
             if rest.is_empty() || rest.starts_with(char::is_whitespace) {
                 return Err(ToolError::Execution(
-                    "sudo 需要交互授权：请改用 run_sudo 工具（用户会在 Panel 中输入密码，密码不会出现在上下文中）"
+                    "sudo 不受支持：bash 工具无交互 tty，且提权执行（run_sudo）已废弃移除。请改用无需 root 的替代方案"
                         .into(),
                 ));
             }

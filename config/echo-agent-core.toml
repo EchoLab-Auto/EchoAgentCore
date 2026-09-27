@@ -64,23 +64,6 @@ skills_dir = "skills"                    # 递归发现 SKILL.md，运行时自�
 # 留空表示不注入基础系统提示词。
 text = "请你使用中文"
 
-[agent.self_update]
-# 仅一键安装后的 systemd 服务环境支持。源码运行时保持关闭。
-enabled = false
-# 本机 Panel 会话（TUI / 工作区通道）可请求更新；QQ 仅允许下方列表及 [adapters.qq].owner_qq。
-allow_local = true
-allowed_qq_users = []
-
-[agent.sudo]
-# run_sudo 工具：LLM 可请求以 root 执行命令，但每次都需要你在 Panel 中输入
-# sudo 密码授权。密码只走专用通道（不进入 LLM 上下文、会话日志或命令队列），
-# 输入后立即零化，agent 永远不会看到密码内容。
-enabled = true
-# 等待用户在 Panel 输入密码的秒数，超时则该次请求失败。
-auth_timeout_secs = 120
-# 授权后 sudo 命令本身的执行超时（秒）。
-command_timeout_secs = 60
-
 [adapters.qq]
 # 是否启用 QQ 适配器（启动时自动连接 NapCat）。
 enabled = false

@@ -679,64 +679,6 @@ pub enum BackendEvent {
         #[serde(default)]
         error: Option<String>,
     },
-
-    // ---- Sudo authorization (human-in-the-loop) ----
-    /// The agent requests root privileges for `command`. The Panel must show
-    /// the user a masked password prompt and answer with
-    /// [`SudoPasswordSubmit`](crate::bridge::SudoPasswordSubmit) on the
-    /// dedicated sudo channel (never through the agent command queue). The
-    /// password itself never appears in any event.
-    SudoRequest {
-        request_id: u64,
-        command: String,
-        session_id: String,
-    },
-    /// A sudo authorization request was resolved (password submitted,
-    /// denied, or the tool timed out). `message` is a short human-readable
-    /// outcome for the Panel toast; it never contains the password.
-    SudoResolved {
-        request_id: u64,
-        accepted: bool,
-        message: String,
-    },
-
-    // ---- 选单（menu 插件，human-in-the-loop 选择）----
-    /// 智能体请求用户在 Panel 中选择一项（`present_menu` 工具）。
-    /// Panel 渲染选项列表，用户的选择经专用通道
-    /// （[`MenuAnswerSubmit`](crate::bridge::MenuAnswerSubmit)）回传。
-    MenuRequest {
-        request_id: u64,
-        session_id: String,
-        /// 选单标题（一句话说明这次选择要决定什么）。
-        title: String,
-        /// 补充说明（可空）。
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        /// 可选项（1-10 项，后端保证非空）。
-        options: Vec<MenuOptionInfo>,
-        /// 等待用户选择的超时秒数（用于 Panel 文案）。
-        #[serde(default)]
-        timeout_secs: u64,
-    },
-    /// 选单已结束（用户选择、取消或超时）——Panel 据此关闭选单弹层；
-    /// `message` 是给用户看的一句话结果。
-    MenuResolved {
-        request_id: u64,
-        accepted: bool,
-        message: String,
-    },
-}
-
-/// 选单的一项（`MenuRequest` 载荷，纯展示数据）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MenuOptionInfo {
-    /// 稳定 id（用户选择回传的就是它）。
-    pub id: String,
-    /// 显示文案（短）。
-    pub label: String,
-    /// 该项的补充说明（可空）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
 }
 
 /// One discovered skill with its full instructions (for panel display).

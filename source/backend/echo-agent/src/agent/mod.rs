@@ -60,107 +60,6 @@ struct ActiveInboundTurn {
     cancel: tokio_util::sync::CancellationToken,
 }
 
-/// `run_sudo` 的 SudoResolved 恰好一次保证。
-///
-/// 正常路径调用 [`SudoResolvedGuard::resolve`] 发出授权结果；其余退出
-/// 路径（包括外层工具守卫超时 drop 掉 `run_sudo` future）由 Drop 兜底：
-/// 取消 broker 条目并发出拒绝事件，Panel 的授权弹窗因此总能关闭。
-struct SudoResolvedGuard<'a> {
-    agent: &'a Agent,
-    broker: Arc<crate::sudo::SudoBroker>,
-    request_id: u64,
-    resolved: bool,
-}
-
-impl<'a> SudoResolvedGuard<'a> {
-    fn new(agent: &'a Agent, broker: &Arc<crate::sudo::SudoBroker>, request_id: u64) -> Self {
-        Self {
-            agent,
-            broker: Arc::clone(broker),
-            request_id,
-            resolved: false,
-        }
-    }
-
-    fn resolve(&mut self, accepted: bool, message: impl Into<String>) {
-        if self.resolved {
-            return;
-        }
-        self.resolved = true;
-        // 幂等：已 submit/取消的条目 remove 返回 None，无副作用。
-        self.broker.cancel(self.request_id);
-        self.agent.emit(BackendEvent::SudoResolved {
-            request_id: self.request_id,
-            accepted,
-            message: message.into(),
-        });
-    }
-}
-
-impl Drop for SudoResolvedGuard<'_> {
-    fn drop(&mut self) {
-        if !self.resolved {
-            self.broker.cancel(self.request_id);
-            self.agent.emit(BackendEvent::SudoResolved {
-                request_id: self.request_id,
-                accepted: false,
-                message: "sudo 授权已取消（执行被中断）".into(),
-            });
-        }
-    }
-}
-
-/// `present_menu` 的 MenuResolved 恰好一次保证。
-///
-/// 与 [`SudoResolvedGuard`] 同语义：正常路径调用 [`MenuResolvedGuard::resolve`]
-/// 发出选单结果；其余退出路径（含外层工具守卫超时 drop 掉 `present_menu`
-/// future）由 Drop 兜底——取消 broker 条目并发出"已取消"事件，Panel 的选单
-/// 弹层因此总能关闭。
-struct MenuResolvedGuard<'a> {
-    agent: &'a Agent,
-    broker: Arc<crate::menu::MenuBroker>,
-    request_id: u64,
-    resolved: bool,
-}
-
-impl<'a> MenuResolvedGuard<'a> {
-    fn new(agent: &'a Agent, broker: &Arc<crate::menu::MenuBroker>, request_id: u64) -> Self {
-        Self {
-            agent,
-            broker: Arc::clone(broker),
-            request_id,
-            resolved: false,
-        }
-    }
-
-    fn resolve(&mut self, accepted: bool, message: impl Into<String>) {
-        if self.resolved {
-            return;
-        }
-        self.resolved = true;
-        // 幂等：已被 submit/取消的条目 remove 返回 None，无副作用。
-        self.broker.cancel(self.request_id);
-        self.agent.emit(BackendEvent::MenuResolved {
-            request_id: self.request_id,
-            accepted,
-            message: message.into(),
-        });
-    }
-}
-
-impl Drop for MenuResolvedGuard<'_> {
-    fn drop(&mut self) {
-        if !self.resolved {
-            self.broker.cancel(self.request_id);
-            self.agent.emit(BackendEvent::MenuResolved {
-                request_id: self.request_id,
-                accepted: false,
-                message: "选单已取消（执行被中断）".into(),
-            });
-        }
-    }
-}
-
 pub(crate) struct InboundTurnRegistration {
     pub id: String,
     pub cancel: tokio_util::sync::CancellationToken,
@@ -197,14 +96,6 @@ pub struct Agent {
     /// 汇聚点，Panel 单连接即可看到所有人格活动，无需求助"默认人格"镜像。
     /// 设置后优先于 `handle`（`handle` 保留给单 agent 测试与旧路径）。
     event_sink: std::sync::RwLock<Option<EventSink>>,
-    /// Human-in-the-loop sudo authorization broker (set by the composition
-    /// root). `run_sudo` awaits a password submitted on the dedicated sudo
-    /// channel; see [`crate::sudo`].
-    pub sudo_broker: tokio::sync::RwLock<Option<Arc<crate::sudo::SudoBroker>>>,
-    /// Human-in-the-loop 选单 broker（组合根注入）。`present_menu` 在此
-    /// 注册未决选单并等待用户在 Panel 中选择；应答走专用 menu 通道，
-    /// 见 [`crate::menu`]。
-    pub menu_broker: tokio::sync::RwLock<Option<Arc<crate::menu::MenuBroker>>>,
     system_prompt_cache: RwLock<Option<String>>,
     /// Decomposed system-prompt blocks of the most recent turn, kept so the
     /// panel can visualize the exact prompt sections sent to the LLM.
@@ -273,8 +164,8 @@ impl std::fmt::Debug for Agent {
 }
 
 /// Process-wide plugin host (best-effort): set once by the composition root.
-/// Used by utility code (e.g. framework_update status summary) that runs
-/// inside the agent but outside a `&Agent` scope.
+/// Lets gating checks resolve the global registry from code that runs inside
+/// the agent but outside a `&Agent` scope (see `plugin_globally_enabled`).
 static GLOBAL_PLUGIN_HOST: std::sync::OnceLock<std::sync::Arc<crate::plugins::PluginHost>> =
     std::sync::OnceLock::new();
 
@@ -383,8 +274,6 @@ impl Agent {
             adapters,
             handle: tokio::sync::RwLock::new(None),
             event_sink: std::sync::RwLock::new(None),
-            sudo_broker: tokio::sync::RwLock::new(None),
-            menu_broker: tokio::sync::RwLock::new(None),
             system_prompt_cache: RwLock::new(None),
             last_prompt_blocks: tokio::sync::Mutex::new(None),
             plugin_reload_started: AtomicBool::new(false),
@@ -1023,34 +912,6 @@ impl Agent {
             *slot = Some(sink);
         } else {
             tracing::warn!("event sink slot busy, ignoring attach_event_sink");
-        }
-    }
-
-    /// Attach the sudo authorization broker (called once by the composition
-    /// root). No-op when a broker is already attached.
-    pub fn attach_sudo_broker(&self, broker: Arc<crate::sudo::SudoBroker>) {
-        if let Ok(mut slot) = self.sudo_broker.try_write() {
-            if slot.is_none() {
-                *slot = Some(broker);
-            } else {
-                tracing::warn!("sudo broker slot busy, ignoring attach");
-            }
-        } else {
-            tracing::warn!("sudo broker slot busy, ignoring attach");
-        }
-    }
-
-    /// Attach the 选单 broker (called once by the composition root).
-    /// No-op when a broker is already attached.
-    pub fn attach_menu_broker(&self, broker: Arc<crate::menu::MenuBroker>) {
-        if let Ok(mut slot) = self.menu_broker.try_write() {
-            if slot.is_none() {
-                *slot = Some(broker);
-            } else {
-                tracing::warn!("menu broker slot busy, ignoring attach");
-            }
-        } else {
-            tracing::warn!("menu broker slot busy, ignoring attach");
         }
     }
 
@@ -2332,9 +2193,6 @@ impl Agent {
         // 随 echo-agent.subagent 插件门控）。这里不得再追加同名动态定义：
         // 同名工具出现两次会让 API 拒绝整个请求（"Tool names must be unique"）。
         let tools = (*self.tools.definitions().await).clone();
-        // （原 self_update_enabled / sudo_enabled 快照随动态工具 schema 注入
-        // 一并删除：工具清单唯一真源 = 注册表；sudo / 自更新的开关判定在各自
-        // 处理点内做，这里不再预热。——2026-09-26 审计清理）
         // max_tool_iterations == 0 still allows one direct reply (without tools).
         let max_iterations = self.config.read().await.max_tool_iterations.max(1);
         // None/0 = 无上限（后端回退 DEFAULT_MAX_TOKENS=128K）。
@@ -2682,80 +2540,6 @@ impl Agent {
                     session: Some(session_id.to_string()),
                 },
             ));
-    }
-
-    /// Run a command with root privileges (the `run_sudo` tool).
-    ///
-    /// The password is never seen by the LLM: a pending request is registered
-    /// with the [`SudoBroker`](crate::sudo::SudoBroker), a `SudoRequest` event
-    /// tells the Panel to prompt the user, and the Panel answers on the
-    /// dedicated sudo channel (bypassing the agent command queue and the
-    /// session log). The command's stdout/stderr are returned; the password
-    /// itself never enters the context.
-    async fn run_sudo(&self, session_id: &str, args: serde_json::Value) -> Result<String, String> {
-        let command = args["command"]
-            .as_str()
-            .ok_or_else(|| "run_sudo: `command` (string) is required".to_string())?
-            .to_string();
-        if command.trim().is_empty() {
-            return Err("run_sudo: command must not be empty".into());
-        }
-
-        let config = self.config.read().await.sudo.clone();
-        if !config.enabled {
-            return Err("run_sudo: sudo is disabled (set [agent.sudo] enabled = true)".into());
-        }
-        let broker = self
-            .sudo_broker
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| "run_sudo: sudo broker not attached".to_string())?;
-
-        let pending = broker.request();
-        let request_id = pending.request_id;
-        self.emit(BackendEvent::SudoRequest {
-            request_id,
-            command: command.clone(),
-            session_id: session_id.to_string(),
-        });
-        // RAII：任何退出路径（含外层工具守卫超时 drop 掉本 future）都恰好
-        // 发一次 SudoResolved 并释放 broker 条目，Panel 的授权弹窗不会挂在
-        // 死请求上。
-        let mut resolved = SudoResolvedGuard::new(self, &broker, request_id);
-
-        let receiver = pending.into_receiver();
-        let password = match tokio::time::timeout(
-            std::time::Duration::from_secs(config.auth_timeout_secs.max(1)),
-            receiver,
-        )
-        .await
-        {
-            Err(_) => {
-                resolved.resolve(false, "sudo 授权超时");
-                return Err(format!(
-                    "sudo authorization timed out after {}s — no password was submitted",
-                    config.auth_timeout_secs
-                ));
-            }
-            Ok(Err(_)) => {
-                resolved.resolve(false, "sudo 授权通道关闭");
-                return Err("sudo authorization channel closed".to_string());
-            }
-            Ok(Ok(None)) => {
-                resolved.resolve(false, "sudo 授权被拒绝");
-                return Err("sudo authorization denied by the user".to_string());
-            }
-            Ok(Ok(Some(password))) => password,
-        };
-
-        resolved.resolve(true, "sudo 已授权，正在执行");
-        crate::sudo::run_sudo_command(
-            &command,
-            &password,
-            std::time::Duration::from_secs(config.command_timeout_secs.max(1)),
-        )
-        .await
     }
 
     /// 工作区会话（workspace 插件）注入提示词的文本：插件对该 persona 启用
@@ -4094,9 +3878,6 @@ pub mod tests {
             .await;
         assert!(agent.allows_dynamic_tool("spawn_parallel_task"));
     }
-
-    /// 选单工具（present_menu）已降级为普通编排工具：只受工具级白/黑名单
-    /// 门控（与其他编排工具同层），不再有独立的插件维度。
 
     /// 单会话模式（默认）：同一会话的 turn 串行排队——第二个 turn 拿到的是
     /// 第一轮结束后的上下文（能看到 reply-1），且不会并发进入模型。

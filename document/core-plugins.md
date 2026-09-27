@@ -30,7 +30,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 - 核心类型：`PluginManifest`（id/name/version/kind/entry/description）+ `BuiltinPlugin` + `MountContext`
 - **插件类型（`PluginKind`，wire 名以 `as_str` 为准）**：`skill` / `tool` / `provider` / `loop` / `adapter` / `orchestration` / `management` / `interaction`。
-  - `interaction`（2026-09-14 新增）：**人在环交互面**——模型发起、用户在 Panel 应答（Panel 内的问答 UI + 专用应答通道），与 `adapter` / `management` 同属「整类能力开关」，在 Panel「启用插件」勾选区按 kind 即可见（`capabilities.ts::isPluginCheckboxVisible` 的 kind 类判定）。原选单插件 `echo-agent.menu` 已于 2026-09 移除（present_menu 降级为普通编排工具，只受工具白/黑名单门控），该 kind 目前无内置成员，保留给未来人在环交互插件
+  - `interaction`（2026-09-14 新增）：**人在环交互面**——模型发起、用户在 Panel 应答（Panel 内的问答 UI + 专用应答通道），与 `adapter` / `management` 同属「整类能力开关」，在 Panel「启用插件」勾选区按 kind 即可见（`capabilities.ts::isPluginCheckboxVisible` 的 kind 类判定）。原选单（`present_menu`）已于 2026-09 整体废弃移除，该 kind 目前无内置成员，保留给未来人在环交互插件
   - 新增类型时同步：Core `PluginKind::as_str` 的 wire 名（测试守护）+ Panel `capabilities.ts::PLUGIN_KIND_LABELS` 中文名（测试守护覆盖全部 wire 名）
 - 注册为**可逆**副作用：`register_and_mount` 返回 disposer，禁用即卸载注册
 - 数据插件（skill/tool）支持热重载（插件目录 5s 轮询）；代码插件需二进制重载
@@ -50,9 +50,9 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.loop.single` | Loop | 单会话循环（默认）：mount 启用 echo-loop 驱动；会话内 turn 串行排队、无会话管理 UI |
 | `echo-agent.loop.parallel` | Loop | 并行多会话循环：同一 TurnRunner；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
 | `echo-agent.subagent` | Tool | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./core-subagent.md)） |
-| `echo-agent.management.panel` | Management | 管理面：management WS 桥接 + sudo 授权与选单应答通道（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
+| `echo-agent.management.panel` | Management | 管理面：management WS 桥接（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
 
-> 以上 9 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单（`BUILTIN_PLUGIN_IDS` 为 `[&str; 9]`）。选单（present_menu）与任务清单（checklist）已降级为普通工具（2026-09，插件维度移除），无插件 id。
+> 以上 9 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单（`BUILTIN_PLUGIN_IDS` 为 `[&str; 9]`）。选单（present_menu）已废弃移除（2026-09）；任务清单（checklist）为普通内置工具。
 
 ## 能力开关（per-persona）
 
@@ -116,17 +116,15 @@ id），Panel 插件详���展示「包（Package）」字段；设置视�
 插件；当��全部内置插件均为「插件 id = 包 id」的单插件包，门控按插件 id
 传播即可（QQ 包为现行示例）。
 
-## 动态编排工具
+## 内联分派工具
 
-- `framework_update`、`run_sudo` 由 loop 内联调度，按 persona 白名单过滤（`allows_dynamic_tool`）
-- 工具名表 `ORCHESTRATION_TOOL_NAMES` 由单元测试守护与 schema 一致（`framework_update`/`run_sudo` 因另有配置门控不在表内）
+- `spawn_subagent` 由 loop 内联分派（异步受理），按 persona 白名单过滤
+  （`allows_dynamic_tool`）；schema 由注册表提供（组合根装配时注册）。
+  原 `run_sudo` / `present_menu` / `framework_update` 三个内联工具已于
+  2026-09 废弃移除（见 [工具系统](./core-tools.md)「已废弃工具」）。
 
 ## 用户扩展方式
 
 - **技能**：在 skills_dir 放置 `SKILL.md`（带 frontmatter：name/description/keywords/always/category/package），运行时自动发现、热重载
 - **数据插件**：在 plugins_dir 放置 `plugins/{kind}/{id}/plugin.toml`（skill/tool kind），5s 轮询热加载；记录 manifest 哈希做内容 diff，变化即 unmount+remount；启用状态持久化于 `[agent].disabled_plugins`
 - **代码插件**（provider/loop/adapter）：需修改源码并走自更新流程
-
-## 待办
-
-- `framework_update` 补 `action=plugins`（列出/启停插件，复用 TogglePlugin 授权语义，与 status 的插件摘要共用 `gather_plugin_summary`）

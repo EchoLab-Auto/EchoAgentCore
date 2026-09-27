@@ -29,55 +29,6 @@ pub struct ApiProfile {
     pub reasoning_effort: ReasoningEffort,
 }
 
-/// Policy for the privileged framework self-update tool.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct SelfUpdateConfig {
-    /// Register the `framework_update` tool. Disabled for source/dev runs.
-    pub enabled: bool,
-    /// Allow requests originating from local sessions (TUI and the local
-    /// workspace channel — 本机来源一律同权).
-    pub allow_local: bool,
-    /// Additional QQ user IDs allowed to request an update.
-    pub allowed_qq_users: Vec<u64>,
-}
-
-impl Default for SelfUpdateConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            allow_local: true,
-            allowed_qq_users: Vec::new(),
-        }
-    }
-}
-
-/// Policy for the human-in-the-loop `run_sudo` tool.
-///
-/// When enabled, the LLM can request privileged commands; the user authorizes
-/// each one by entering the sudo password in the Panel. The password never
-/// reaches the LLM context, the session log, or the agent command queue.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct SudoConfig {
-    /// Register the `run_sudo` tool. Disabled by default for safety.
-    pub enabled: bool,
-    /// How long the tool waits for the user to submit the password (seconds).
-    pub auth_timeout_secs: u64,
-    /// Maximum runtime of the privileged command itself (seconds).
-    pub command_timeout_secs: u64,
-}
-
-impl Default for SudoConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            auth_timeout_secs: 120,
-            command_timeout_secs: 60,
-        }
-    }
-}
-
 impl ApiProfile {
     pub fn new(
         name: impl Into<String>,
@@ -130,7 +81,7 @@ pub struct TeamMember {
     /// 白名单，既有配置行为不变）。
     #[serde(default, skip_serializing)]
     pub disabled_plugins: Vec<String>,
-    /// Per-persona disabled tools (by tool name, e.g. "framework_update").
+    /// Per-persona disabled tools (by tool name, e.g. "bash").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_tools: Vec<String>,
     /// Per-persona disabled skills (by skill name).
@@ -277,10 +228,6 @@ pub struct AgentConfig {
     /// the trunk budget unclamped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<usize>,
-    /// Privileged framework update policy.
-    pub self_update: SelfUpdateConfig,
-    /// Human-in-the-loop sudo authorization policy.
-    pub sudo: SudoConfig,
 }
 
 impl Default for AgentConfig {
@@ -309,8 +256,6 @@ impl Default for AgentConfig {
             memory_limit: 40,
             memory_limit_tokens: None,
             context_window_tokens: None,
-            self_update: SelfUpdateConfig::default(),
-            sudo: SudoConfig::default(),
         }
     }
 }
@@ -590,14 +535,6 @@ mod tests {
         assert_eq!(parsed.api_profiles[0].name, "p1");
         // api_key is skipped in serialisation but defaults to empty on load.
         assert!(parsed.api_key.is_empty());
-    }
-
-    #[test]
-    fn self_update_is_disabled_by_default() {
-        let config = AgentConfig::default();
-        assert!(!config.self_update.enabled);
-        assert!(config.self_update.allow_local);
-        assert!(config.self_update.allowed_qq_users.is_empty());
     }
 
     #[test]

@@ -7,7 +7,7 @@ y: 53
 ---
 # Testing Strategy
 
-**Core（cargo）** 720+ 条、**Panel 前端（vitest）** 170+ 条、**部署 CLI（node:test）**
+**Core（cargo）** 700+ 条、**Panel 前端（vitest）** 170+ 条、**部署 CLI（node:test）**
 23 条，覆盖各 crate 的源文件与关键交互契约（计数随开发增长，量级为本文件维护基线）。
 
 ## Layers
@@ -162,5 +162,6 @@ cargo fmt --all --check
 - 「重载技能」只作用于管理代理、人格侧不生效——广播全部运行人格修复（`reload_skills_into` 测试锁定）。
 - 更新器 `expected_ids` 与 `BUILTIN_PLUGIN_IDS` 漂移（`orchestration` 移除后残留、更新误报缺 manifest）——`update_script_plugins` 守护测试补齐。
 - echo-loop 驱动路径缺工具超时守卫（挂死工具可永久拖住 turn）——`Agent::tool_guard_timeout` 统一两条路径口径，`echo_loop_path_guards_hung_tools_with_timeout` 测试锁定。
+- run_sudo / present_menu / framework_update 三个内联工具在此前清理中丢失派发入口（配套 broker/协议/配置仍在但工具不可达）——2026-09 正式废弃：全配套移除、服务加固收紧（`NoNewPrivileges=true`）。
 - `QqAdapterConfig::Default` 与 serde 字段默认分裂（`napcat_auto_stop` 一条 false 一条 true）——`default_matches_serde_field_defaults` 锁定两条默认路径一致。
 - `list_files`/`search_code` 缺相对路径穿越防护（六个文件工具中只有四个有 guard）——补齐并测试（`list_and_search_reject_relative_traversal`）。

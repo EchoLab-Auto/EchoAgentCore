@@ -30,7 +30,7 @@ graph TD
 ```
 
 - 三主视图（会话 / Shell 详情 / 设置）；顶栏导航为「聊天」「设置」（Shell 详情经边栏「Shell」卡「详情」进入，§二）；设置视图的六个分类走内部一级菜单（§九）；任务视图已并入会话视图入口行「任务」弹层（2026-09-19，§7.7）
-- 模态与覆盖层（Sudo / Branch / Agent 配置 / 上下文）浮于全部视图之上（§八）；侧边栏点选会话强制回会话视图
+- 模态与覆盖层（Branch / Agent 配置 / 上下文）浮于全部视图之上（§八）；侧边栏点选会话强制回会话视图
 
 ### 1.2 布局与组件树
 
@@ -48,7 +48,7 @@ graph TD
   ChatView --> Composer[悬浮输入区]
   ChatView --> Pops[弹出层：清单 · QQ 适配器 · 任务 TasksPanel]
   ChatView --> Overs[会话区内弹层：上下文 · Agent 配置]
-  App --> Modals[模态：Sudo · Branch]
+  App --> Modals[模态：Branch]
   App --> Toasts[ToastProvider 右上]
 ```
 
@@ -115,7 +115,7 @@ graph LR
 | 基础视图 | 0 | 当前视图组件 |
 | 清单浮层 | 3 | 会话视图内清单卡（`.checklist-float`） |
 | Agent 菜单 | 30 | AgentSwitcher 上弹菜单 |
-| 模态 / Toast | 库管理 | SudoModal、BranchModal、ToastProvider 等由 ui-frame 统一分配，始终高于应用层 |
+| 模态 / Toast | 库管理 | BranchModal、ToastProvider 等由 ui-frame 统一分配，始终高于应用层 |
 
 会话视图内的悬浮元素（输入区、入口行、弹出层）不参与全局 z-index 竞争，靠 DOM 顺序与定位叠放，详见 §7.6/§7.7。
 会话视图内的悬浮元素按层内 z-index 叠放（边栏 4 / 输入区 5 / 入口行 6 / 弹出层 25 / 会话区覆盖层 50），不参与全局竞争，详见 §7.6/§7.7。
@@ -210,5 +210,5 @@ graph LR
 - **中继半死收割**：一侧超过 90s（3 个心跳周期）无任何帧（含 Pong）→ 中继断开整条链路；另有 **10s 写超时**——转发一帧时对端写阻塞超过 10s 即断链（冻结标签页不再挂起中继、Core 发送缓冲不再无界积压）（`proxy.rs`；设备休眠留下的僵尸连接因此被清理，唤醒后重连拿到干净状态）
 - **断连期间**：边栏「连接状态」卡显示"连接中…" + 重连提示（原顶栏状态点，2026-09-23 迁移）；输入框禁用（placeholder `未连接到 Core，暂时无法发送`）；`sendCommand` 不发送并弹 error toast；QQ 面板按钮禁用
 - **兜底对齐**：`AgentCompleted` 时若该会话最后一条不是正式回答，自动补拉 `RequestTrunkTimeline`（带当前 team_id，`state.ts:710-724`）
-- 协议信封 `{type: command|event|sudo_password|menu_answer, payload}`；无法解析的帧静默丢弃（`protocol.ts:607-637`）
+- 协议信封 `{type: command|event, payload}`；无法解析的帧静默丢弃（`protocol.ts:607-637`）
 

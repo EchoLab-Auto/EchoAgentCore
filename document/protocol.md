@@ -26,10 +26,8 @@ y: 442
 ```rust
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum WsMessage {
-    Command(BackendCommand),          // Panel → Core
-    Event(BackendEvent),              // Core → Panel
-    SudoPassword(SudoPasswordSubmit), // Panel → Core（专用 sudo 通道）
-    MenuAnswer(MenuAnswerSubmit),     // Panel → Core（专用选单通道）
+    Command(BackendCommand), // Panel → Core
+    Event(BackendEvent),     // Core → Panel
 }
 ```
 
@@ -38,17 +36,9 @@ pub enum WsMessage {
 {"type":"command","payload":{"SendMessage":{"session_id":"...","content":"..."}}}
 // Core → Panel
 {"type":"event","payload":{"AgentOutput":{"session_id":"...","content":"...","branch_id":null}}}
-// Panel → Core（sudo 密码；仅此通道，绝不走 Command）
-{"type":"sudo_password","payload":{"request_id":1,"password":"***"}}
-// Panel → Core（选单应答；仅此通道，不开启新 turn）
-{"type":"menu_answer","payload":{"request_id":1,"option_id":"b"}}
 ```
 
 序列化助手：`serialize_command` / `serialize_event` / `deserialize_message`（`echo_protocol::bridge`）；无法解析的帧记日志后丢弃。
-
-> **sudo 密码安全约定**：`SudoPasswordSubmit.password` 是 `Option<String>`（`Some` 授权 / `None` 拒绝）。密码帧由 management server **直接路由到 sudo broker**，不经过 agent 命令队列、会话日志与 LLM 上下文；专用反序列化器失败时只记错误、不记原始文本，`Debug` 输出打码。
-
-> **选单应答约定**：`MenuAnswerSubmit.option_id` 是 `Option<String>`（`Some(id)` 选定 / `None` 取消）。选单内容与选择都不是秘密，但**同样不走命令队列**——命令队列是"用户输入"语义（会开启新 turn），而选单应答只是回填等待中的那次 `present_menu` 工具调用（复用同一次模型上下文继续下一步）。帧由 management server 直连 menu broker（`serialize_menu_answer` / `deserialize_menu_answer`）。
 
 ## 连接与 Bootstrap
 
@@ -94,8 +84,6 @@ graph LR
 - **状态快照**：`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`、`Error`（也用于信息性 toast）
 - **QQ 管理**：`GroupList`、`FriendList`、`QqFilterConfig`、`QqGateMode`、`QqLoginStatus`、`QqQrcode`（二维码 PNG base64）、`QqOwner`（owner 查询回推，frontend-only；均带 `adapter` 实例名）
 - **工作区会话**：`WorkspaceSessions`（列表 + 激活标记，`team_id` 归属；**`active` 是项目通道的单一事实来源**——面板/工具 `use` 等所有激活来源都必须广播，前端据此切换本地对话投影，2026-09-14）、`WorkspaceGitStatus`（某会话各目录的 git 快照：分支 / 领先落后 / 暂存·修改·未跟踪计数 / 最近提交 / 变更文件列表 / 错误）、`WorkspaceFiles`（某目录一层文件列表：条目含 name/path/is_dir/size，目录在前；隐藏项跳过、超 500 条截断；失败经 `error` 回传——文件浏览器数据源）
-- **sudo 授权**：`SudoRequest`（请用户输入密码）/ `SudoResolved`（关闭弹窗/toast；所有退出路径恰好一次，由 run_sudo guard 保证——工具侧链路见 [工具系统](./core-tools.md)）
-- **选单（menu 插件）**：`MenuRequest`（`title` / `description?` / `options[{id,label,description?}]` / `timeout_secs`，Panel 在会话区渲染内联选单卡片）/ `MenuResolved`（`accepted` + 一句话 `message`；选定/取消/超时/中断全部恰好一次，由 present_menu guard 保证——Panel 选单卡片不会挂在死请求上）
 
 ## 工具事件的精确配对
 
@@ -145,5 +133,4 @@ Panel web 后端同源提供）。渲染侧（Panel）直接 `<img src="/media/.
 
 ## 独立通道
 
-- **sudo 通道**：密码经专用帧提交（不进入 LLM 上下文/会话日志），事件为 `SudoRequest/SudoResolved`
 - **QQ OneBot**：每个 QQ 实例一条反向 WS（legacy `:3131`；多实例自动分配 `3140-3399`，与 management WS 独立），QQ 消息以 `<qq_message_hook>` 标记进入**实例归属人格**

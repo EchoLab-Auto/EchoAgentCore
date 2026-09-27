@@ -25,18 +25,18 @@ EchoAgentPanel/
 │       ├── state.ts                 # 状态 + reducer
 │       ├── state_domains/           # timeline / helpers
 │       ├── connection.ts            # WS 连接（重连退避 + Bootstrap）
-│       └── components/              # 聊天（含内联选单）/ 设置 / sudo / QQ / 任务 / 清单
+│       └── components/              # 聊天 / 设置 / QQ / 任务 / 清单
 └── scripts/                         # install.sh / update.sh / uninstall.sh
 ```
 
 ## 后端：无状态字节级中继
 
-每个浏览器 WS 连接对应一条到 Core management WS 的专用连接；帧按原文转发，**不解析、不记录负载**——sudo 密码帧因此与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积；转发另有 **10s 写超时**（`SEND_TIMEOUT`）——对端写阻塞超时即断链，冻结标签页不会挂住中继、Core 发送缓冲不再无界积压。
+每个浏览器 WS 连接对应一条到 Core management WS 的专用连接；帧按原文转发，**不解析、不记录负载**——协议细节与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积；转发另有 **10s 写超时**（`SEND_TIMEOUT`）——对端写阻塞超时即断链，冻结标签页不会挂住中继、Core 发送缓冲不再无界积压。
 
-- 中继极薄（一个 crate、约 200 行），可独立测试（`tests/proxy.rs` 用假 Core 验证双向帧透传，含 sudo 帧）
+- 中继极薄（一个 crate、约 200 行），可独立测试（`tests/proxy.rs` 用假 Core 验证双向帧透传）
 - 多标签页 = 多条 Core 连接（Core 的 management 支持多 Panel）
 - 已知限制：无会话恢复——刷新页面先由磁盘缓存（`trunk-cache.ts`）立即可渲染，再经 `RequestState` / `RequestTrunkTimeline{since_seq}` 增量 Bootstrap
-- 否决的备选：后端做协议层转发/会话管理（等于重写 Core 桥接层且 sudo 帧需额外安全处理）；浏览器直连 Core :3132（跨域 + 暴露 management 端口）
+- 否决的备选：后端做协议层转发/会话管理（等于重写 Core 桥接层）；浏览器直连 Core :3132（跨域 + 暴露 management 端口）
 
 ## 状态管理与数据流
 
@@ -48,14 +48,13 @@ EchoAgentPanel/
 
 ## 主视图（聊天）
 
-- `ChatView.vue`：消息列表 + 吸底输入区；自渲染消息行（库 `ChatTray` 容器）拦截扩展角色（reasoning / 内联选单）渲染。
+- `ChatView.vue`：消息列表 + 吸底输入区；自渲染消息行（库 `ChatTray` 容器）拦截扩展角色（reasoning）渲染。
   消息图片渲染（2026-09-24）：Core 侧的 `/media/<id>` 引用直接 `<img loading=lazy
   decoding=async>`（同源、强缓存）；遗留 data URI 兼容；空串（Core 侧"图片已省略"
   占位）渲染为文字标
 - `ReasoningBlock.vue`：推理打字机动画（实时消息 6 秒封顶；历史回放不播）
 - 活动浮条：思考中 / 调用工具 / 子代理 的 spinner + 动态文案
 - 消息入场动画 0.28s 淡入上移，仅实时消息（`animate` 标记）播放
-- `MenuCard.vue`：选单（menu 插件）**内联在会话区消息流尾部**（合成条目，按会话归属过滤；非弹窗）——模型发起选项、用户点选/取消作答，见 [会话视图](./panel-chat.md)§7.4b
 
 ## 侧边栏与设置页
 

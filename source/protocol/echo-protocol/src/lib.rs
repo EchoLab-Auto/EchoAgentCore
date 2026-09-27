@@ -24,16 +24,14 @@ pub mod event;
 pub mod mode;
 
 pub use bridge::{
-    create_bridge, deserialize_menu_answer, deserialize_message, deserialize_sudo_password,
-    serialize_command, serialize_event, serialize_menu_answer, serialize_sudo_password,
-    BackendBridge, BackendHandle, FanoutHandle, MenuAnswerSubmit, SudoPasswordSubmit, WsMessage,
+    create_bridge, deserialize_message, serialize_command, serialize_event, BackendBridge,
+    BackendHandle, FanoutHandle, WsMessage,
 };
 pub use command::{command_clearance, BackendCommand, CommandClearance};
 pub use event::{
     AdapterStatus, ApiProfileInfo, BackendEvent, BackendState, ContextBlockInfo,
-    ContextMessageInfo, FriendInfo, GroupInfo, MenuOptionInfo, OrchestrationMode, PluginInfo,
-    SessionInfo, ShellSessionInfo, SkillInfo, SkillSourceInfo, TeamInfo, TimelineMessage,
-    TimelineSource, TimelineTool, ToolInfo, WorkspaceFileEntry, WorkspaceGitInfo,
-    WorkspaceSessionInfo,
+    ContextMessageInfo, FriendInfo, GroupInfo, OrchestrationMode, PluginInfo, SessionInfo,
+    ShellSessionInfo, SkillInfo, SkillSourceInfo, TeamInfo, TimelineMessage, TimelineSource,
+    TimelineTool, ToolInfo, WorkspaceFileEntry, WorkspaceGitInfo, WorkspaceSessionInfo,
 };
 pub use mode::{GateMode, LoopMode, ReasoningEffort, ThinkingMode};
