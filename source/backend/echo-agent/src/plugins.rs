@@ -116,7 +116,8 @@ pub const GATED_PLUGIN_IDS: [&str; 5] = [
     SUBAGENT_PLUGIN_ID,
 ];
 
-/// 全部内置插件 id（与 `scripts/update.sh` 的插件校验清单一致）。
+/// 全部内置插件 id（与 `scripts/update.sh` 的插件校验清单一致；
+/// 由 `source/core/tests/update_script_plugins.rs` 守护两者不漂移）。
 /// LLM Provider 插件 id（名义挂载，重启生效）。
 pub const PROVIDER_LLM_PLUGIN_ID: &str = "echo-agent.provider.llm";
 
