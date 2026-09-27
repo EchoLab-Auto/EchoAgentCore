@@ -66,7 +66,7 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 - 更新器非阻塞文件锁拒绝并发运行；拉取/构建失败时旧二进制不动、不重启
 - Panel 更新包含 `npm run build`（前端产物从 `web/dist` 拷贝到静态目录，需 PATH 中有 npm——nvm 路径）
 - **NapCat 恢复门控**（2026-09-13）：Core 重启后仅当 `[adapters.qq].enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（3131 或 3140-3399，多实例）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
-- **Core 插件感知校验**（`verifying_plugins` 阶段，2026-09 修正）：安装后对二进制逐个核对内置插件 manifest id（8 个：含 `echo-agent.workspace`；含互斥循环模式插件 `echo-agent.loop.{single,parallel}`；`echo-agent.menu` 与 `echo-agent.checklist` 已移除——present_menu 降级为普通编排工具、checklist 降级为普通内置工具；旧驱动 id `loop.runner` 与旧特性 id branch.reply/session.global/chatbot.sessions 已移除）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
+- **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制逐个核对内置插件 manifest id（9 个：`tools.builtin` / `adapter.qq` / `skills.dir` / `workspace` / `subagent` / `provider.llm` / `management.panel` / 互斥循环模式 `loop.{single,parallel}`）。清单与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` 一致，由 `source/core/tests/update_script_plugins.rs` 守护（2026-09-26 新增——此前 `echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`menu`/`checklist`/旧驱动 `loop.runner` 等 id 已移除（present_menu 与 checklist 均降级为普通工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
 
 ### 状态机与轮询契约
 
@@ -92,7 +92,7 @@ allowed_qq_users = [123456789]
 
 - **绝不** `systemctl --user stop echo-agent-core.service`：agent 本身运行在 core 进程内，stop 会杀死当前会话，后续 start 永远执行不到（已实际发生）
 - 安全替代：`systemctl --user restart echo-agent-core.service`（原子操作）；确需先停后启时用 `systemd-run --user` 脱离会话执行
-- **优雅排空（drain-then-exit）**：Core 收到 SIGTERM 后先进入排空模式——拒绝新消息（Panel 主动发送会收到"Core 正在重启"错误提示，重试即可）、等待进行中的回复完成（最多 `DRAIN_TIMEOUT_SECS = 120s`，期间回复继续实时 emit 到 Panel）再退出；超时仍未完成才强制取消该 turn；`TimeoutStopSec=180s` 兜底保证 drain 窗口内不被 SIGKILL。停机顺序：`pump.abort()`（停命令泵）→ `qq_adapter.stop()`（QQ 停收）→ `agent.shutdown()`（drain）。后台任务/定时器不在 `active_inbound_turns` 计数内，drain 不等待它们；其持久化结果在重启后仍会投递（事件溯源）
+- **优雅排空（drain-then-exit）**：Core 收到 SIGTERM 后先进入排空模式——拒绝新消息（Panel 主动发送会收到"Core 正在重启"错误提示，重试即可）、等待进行中的回复完成（最多 `SHUTDOWN_DRAIN_SECS = 120s`，期间回复继续实时 emit 到 Panel）再退出；超时仍未完成才强制取消该 turn；`TimeoutStopSec=180s` 兜底保证 drain 窗口内不被 SIGKILL。停机顺序：`pump.abort()`（停命令泵）→ `qq_adapter.stop()`（QQ 停收）→ `agent.shutdown()`（drain）。异步子任务（`spawn_subagent`）不在 `active_inbound_turns` 计数内，drain 不等待它们；其注册表在内存中、完成回报以新 turn 注入——进程退出即终止，未完成子任务的结果不会补投递（重启后需重新委派）
 - Core 重启后恢复时间线时，进程被杀导致的悬空 running 工具条目会被标注为"已中断"，不再永远显示"运行中"
 
 ## 日常体检

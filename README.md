@@ -18,7 +18,7 @@
 ```
 EchoAgentCore/
 ├── config/echo-agent-core.toml   # Core 配置模板
-├── skills/                       # SKILL.md 技能定义（Core 独占消费，热重载）
+├── skills/                       # SKILL.md 技能定义（Core 独占消费，按需重载）
 ├── source/
 │   ├── defs/
 │   │   └── echo-defs/            # Service Definition 层：词汇类型 + trait，零实现
@@ -62,7 +62,7 @@ EchoAgentCore/
 | `echo-loop` | **Agent 循环驱动**：`TurnRunner` turn/step 状态机（`turn/*`/`step/*`/`agent/*` 生命周期事件）、`ToolPipeline` 工具执行管道（pre/execute/post waterfall 中间件） |
 | `echo-llm-openai` / `echo-llm-anthropic` / `echo-llm-ollama` | **LLM provider（Service Provider 角色）**：各自实现 `echo_defs::LlmProvider`,只依赖定义层 |
 | `echo-protocol` | **前后端契约的唯一来源**：`BackendCommand`/`BackendEvent`/`WsMessage`、bridge；`GateMode`/`ThinkingMode`/`ReasoningEffort` 从 `echo-defs` re-export。前端只需依赖它 |
-| `echo-agent` | Agent 框架：agent 循环、LLM provider（OpenAI/Anthropic/Ollama）、工具注册表、技能系统、trunk 记忆、编排（定时器/后台任务/自更新） |
+| `echo-agent` | Agent 框架：agent 循环、LLM provider（OpenAI/Anthropic/Ollama）、工具注册表、技能系统、trunk 记忆、编排（异步子任务 `spawn_subagent` / 自更新） |
 | `echo-adapter` | 协议无关的适配器抽象：`Adapter` trait、`InboundMessageHook`、过滤管道、`ConfigStore` |
 | `echo-adapter-qq` | QQ 适配器：反向 WS 接入、5 层门控、NapCat HTTP 客户端 |
 | `echo-core` / `echo-server` | OneBot v11 类型 / 反向 WS 服务器（仅供 echo-adapter-qq 使用） |
@@ -173,7 +173,7 @@ Core 与前端之间是 `ws://<management_address>` 上的 JSON 文本帧协议�
 | [document/ops-deploy.md](document/ops-deploy.md) | 一键安装、systemd 服务、受控自更新 |
 | [document/core.md](document/core.md) | Core 框架（进程结构、会话记忆、配置） |
 | [document/panel.md](document/panel.md) | Panel 前端（仓库布局、数据流、视图规范） |
-| [document/core-background-tasks.md](document/core-background-tasks.md) | 后台任务、并行分支、有序整合 |
+| [document/core-subagent.md](document/core-subagent.md) | Subagent 插件（异步委派、隔离上下文、完成回报） |
 | [document/core-config-persistence.md](document/core-config-persistence.md) | ConfigStore 原子持久化 |
 | [document/adapter-qq-gating.md](document/adapter-qq-gating.md) | QQ 5 层门控管道 |
 | [document/dev-testing.md](document/dev-testing.md) | 测试策略 |

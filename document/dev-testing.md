@@ -7,7 +7,7 @@ y: 53
 ---
 # Testing Strategy
 
-**Core（cargo）** 690+ 条、**Panel 前端（vitest）** 140+ 条、**部署 CLI（node:test）**
+**Core（cargo）** 720+ 条、**Panel 前端（vitest）** 170+ 条、**部署 CLI（node:test）**
 23 条，覆盖各 crate 的源文件与关键交互契约（计数随开发增长，量级为本文件维护基线）。
 
 ## Layers
@@ -46,7 +46,9 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
   floating-point, unary minus, whitespace, 8 malformed patterns.
 - **Skill system**: keyword matching (case-insensitive, empty keywords),
   deterministic multi-hit ordering, recursive SKILL.md discovery, runtime
-  enable-state preservation, and hot reload for updates/additions/deletions.
+  enable-state preservation, on-demand reload for updates/additions/deletions
+  (broadcast to every running persona — `reload_skills_into`), and real-file
+  parse smoke over the shipped `skills/` directory (`#[ignore]` manual).
 - **Media store** (echo-defs, 2026-09-24): reference validation (charset /
   `..` / path traversal), content-hash dedup + atomic write, data-URI spill
   round-trip, failure→elided-placeholder, inline-data-URI text rewrite
@@ -132,9 +134,10 @@ cargo fmt --all --check
 (cd web && npm run test)   # vitest run
 ```
 
-`.github/workflows/ci.yml`（两仓库）on push/PR：core 侧 cargo 三件套（stable + nightly）
-+ `npm-cli` 作业；panel 侧 cargo + `web build` + vitest。**Docker 镜像工作流**
-（tag 发布 GHCR）在 PR/main 上只构建不推送，守护 Dockerfile。
+`.github/workflows/ci.yml`（两仓库）on push/PR：core 侧 fmt / clippy / deps-lint / 测试
+（stable + nightly 矩阵）+ `npm-cli` 作业；panel 侧 fmt / clippy / cargo test + `web` 作业
+（`npm run build` + `npm test` = vitest）。**Docker 镜像工作流**：PR 只构建
+（守护 Dockerfile），main 推送 `latest`、版本 tag 推送该 tag。
 
 > 环境提示：`agent::tests::update_api_config_persists` 断言空 API key 的回退行为，
 > 若 shell 中设置了 `ANTHROPIC_API_KEY` 等环境变量会失败——这是既有行为，
@@ -155,3 +158,6 @@ cargo fmt --all --check
 - `accept_private_file` 是死配置（定义了但从未被检查）——文件接收 gap 审查发现。
 - 同名同毫秒下载互相覆盖——`create_new` + 序号兜底。
 - 技能编辑中点选同一行静默丢弃未保存改动——先 confirm 修复。
+- 压缩摘要前缀双写（`[历史摘要] [历史摘要]`）——投影期幂等渲染，测试锁定。
+- 「重载技能」只作用于管理代理、人格侧不生效——广播全部运行人格修复（`reload_skills_into` 测试锁定）。
+- 更新器 `expected_ids` 与 `BUILTIN_PLUGIN_IDS` 漂移（`orchestration` 移除后残留、更新误报缺 manifest）——`update_script_plugins` 守护测试补齐。

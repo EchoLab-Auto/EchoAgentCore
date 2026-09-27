@@ -1,6 +1,6 @@
 # 容器镜像：构建并发布 ghcr.io/echolab-auto/echo-agent-core。
 #
-# 触发：版本 tag（v*）发布 latest + 该 tag；PR/main 上只构建不推送（守护 Dockerfile）。
+# 触发：PR 只构建（守护 Dockerfile）；main 推送 latest；版本 tag（v*）推送对应版本 tag。
 # 镜像被 npm 部署 CLI 使用（npm/echo-agent 的 compose 模板默认引用本镜像）。
 name: Docker
 

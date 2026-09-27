@@ -45,6 +45,7 @@ EchoAgentCore/
 │   │   └── echo-test-utils/   # 共享测试 mock（仅 dev-dependency）
 │   └── core/                  # echo-agent-core 二进制（组合根）
 ├── document/                  # 本文档群（ProDoc 格式）
+├── docs/                      # 附加设计笔记（agent-humanlike-style.md）
 ├── npm/echo-agent/            # 容器化部署 CLI（Docker 编排；node:test 测试）
 ├── docker/entrypoint.sh       # Core 容器入口
 ├── packaging/systemd/         # 用户服务模板
@@ -79,9 +80,9 @@ EchoAgentCore/
 3. **前端输入**：WS 命令帧 → `BackendCommand::SendMessage` → agent.process_message → `BackendEvent::AgentOutput`
 4. **API 配置**：Panel /api → `UpdateApiConfig` → 应用 + ConfigStore 持久化 → `ApiConfigUpdated` 广播
 5. **适配器生命周期**：QqAdapter::start() → 绑定端口 → 服务器任务 → 接受连接 → QqHandler
-6. **技能热重载**：周期扫描 → 发现 SKILL.md → 保留启用状态 → 替换注册表 → 清提示词缓存
+6. **技能重载**：按需触发（`ReloadSkills` 命令 / 保存·删除技能后）→ 发现 SKILL.md → 保留启用状态 → 替换注册表（**覆盖全部运行人格**）→ 清提示词缓存（周期扫描已于 2026-08 移除）
 7. **自更新**：授权会话 → 固定 framework_update 工具 → echo-agent-core-update.service → 构建 → 原子替换 → Core 重启（排空优先）
-8. **后台任务**：上下文快照 → 分离分支 → 完成缓冲 → 创建序整合 → 按声明目标投递（提示词引导，无代码强制）
+8. **异步子任务**（`spawn_subagent`）：受理即返回子任务 id → 子 agent 隔离上下文执行 → 完成后经 `<subagent_event>` 钩子以新 turn 回报主 agent（见 [Subagent 插件](./core-subagent.md)；旧「后台任务/并行分支」体系已于 2026-09-16 删除）
 
 ## 构建与测试
 
@@ -105,4 +106,4 @@ cargo test -p echo-agent
 - **依赖方向 lint**（`scripts/check-deps.sh`，CI `deps-lint` job）：扩展/provider crate 只依赖定义层（echo-defs/echo-context/echo-protocol）；`echo-llm-*` 不得依赖 agent 框架。违规即 CI 失败，不靠人肉 review
 - **config 模板测试**（`source/core/tests/config_template.rs`）：`config/echo-agent-core.toml` 必须是合法 TOML 且含运行时依赖的 section，防模板漂移；并入 `cargo test`
 - **Panel CI 钉版**：Panel 仓库 CI 以 `ECHO_CORE_REF` 变量钉住 echo-protocol 兼容 commit（协议变更验证后钉到 commit），消除跨仓库克隆 master 的版本漂移
-- **跨仓库清单同步**（人工核对 + 测试守护）：新增/移除插件时四处清单必须同改——Core `GATED_PLUGIN_IDS` / `BUILTIN_PLUGIN_IDS`、更新器 `expected_ids`、Panel `PACKAGE_GATED_PLUGIN_IDS` / `PACKAGE_DISPLAY_NAMES`；新增**插件类型**（`PluginKind`）时 Core `as_str` wire 名与 Panel `PLUGIN_KIND_LABELS` 同改；协议新增命令/事件时 echo-protocol ⇄ `web/src/protocol.ts` 同改。守护测试：`capabilities.test.ts`（Panel 清单对齐）、`update.sh` 插件感知校验（安装后核对二进制）、协议往返测试。详见 [插件化设计](./core-plugins.md)「新增包维度门控插件时的同步清单」
+- **跨仓库清单同步**（人工核对 + 测试守护）：新增/移除插件时四处清单必须同改——Core `GATED_PLUGIN_IDS` / `BUILTIN_PLUGIN_IDS`、更新器 `expected_ids`、Panel `PACKAGE_GATED_PLUGIN_IDS` / `PACKAGE_DISPLAY_NAMES`；新增**插件类型**（`PluginKind`）时 Core `as_str` wire 名与 Panel `PLUGIN_KIND_LABELS` 同改；协议新增命令/事件时 echo-protocol ⇄ `web/src/protocol.ts` 同改。守护测试：`capabilities.test.ts`（Panel 清单对齐）、`update_script_plugins.rs`（Core `BUILTIN_PLUGIN_IDS` ⇄ 更新器 `expected_ids`，2026-09-26 新增——此前 `orchestration` 移除后清单残留、每次更新误报缺 manifest）、`update.sh` 插件感知校验（安装后核对二进制）、协议往返测试。详见 [插件化设计](./core-plugins.md)「新增包维度门控插件时的同步清单」
