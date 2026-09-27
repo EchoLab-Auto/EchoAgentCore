@@ -114,7 +114,11 @@ impl Default for QqAdapterConfig {
             napcat_container_data_dir: default_napcat_data_dir(),
             napcat_auto_start: default_true(),
             files: QqFilesConfig::default(),
-            napcat_auto_stop: default_true(),
+            // 与字段级 `#[serde(default)]` 保持一致：**false**（见字段注释）。
+            // 0f9c9a1 修正了 serde 路径，但漏了这里的 Default impl——无
+            // `[adapters.qq]` 段的配置走 CoreConfig::default() 时仍会拿到
+            // true（2026-09-26 审计发现并修复）。
+            napcat_auto_stop: false,
             napcat_compose_file: default_napcat_compose_file(),
         }
     }
@@ -602,5 +606,22 @@ mode = "allowlist"
         cfg.filter.allowlist.user_ids = vec![111];
         let pipeline = cfg.build_filter_pipeline_gated("bogus-mode");
         assert_eq!(pipeline.len(), 0);
+    }
+
+    /// 两条默认路径必须一致：`Default` impl（程序化构造 / 无 `[adapters.qq]`
+    /// 段的配置）与 serde 字段默认（TOML 缺字段）。`napcat_auto_stop` 曾因
+    /// `Default` impl 残留 `default_true()` 而与 serde 的 false 矛盾。
+    #[test]
+    fn default_matches_serde_field_defaults() {
+        let programmatic = QqAdapterConfig::default();
+        assert!(
+            !programmatic.napcat_auto_stop,
+            "Default::default() must not auto-stop NapCat"
+        );
+
+        let from_toml: QqAdapterConfig = toml::from_str("enabled = true").expect("parse");
+        assert!(!from_toml.napcat_auto_stop, "serde default must stay false");
+
+        assert_eq!(programmatic.napcat_auto_stop, from_toml.napcat_auto_stop);
     }
 }

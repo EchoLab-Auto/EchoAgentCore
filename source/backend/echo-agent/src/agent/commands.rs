@@ -1237,9 +1237,8 @@ impl Agent {
                 package: pkg,
             })
             .collect();
-        // 动态编排工具（timers/subagents/background/framework_update/run_sudo）
-        // 属于 agent 循环内联定义，不在 ToolRegistry；作为"编排"类补进列表，
-        // 勾选后通过 allows_dynamic_tool 在循环层过滤。
+        // 工具清单直接来自注册表（模型可见工具的唯一真源；spawn_subagent
+        // 由组合根装配时注册、按包标签随 subagent 插件门控）。
         list.sort_by_key(|t| t.name.clone());
         self.emit(BackendEvent::ToolsList { tools: list });
     }

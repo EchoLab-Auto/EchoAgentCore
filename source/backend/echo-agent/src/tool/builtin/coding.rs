@@ -163,6 +163,11 @@ impl Tool for ListFilesTool {
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let rel = args["path"].as_str().unwrap_or(".");
         let dir = resolve_tool_path(&self.workspace, rel);
+        // 相对路径穿越防护（与 read/write/edit 同一约定；绝对路径是显式
+        // 意图放行）。此前 list/search 漏了这一步——`../..` 能列出区外目录。
+        if !rel.starts_with('/') {
+            guard_relative_path(&self.workspace, &dir)?;
+        }
         if !dir.is_dir() {
             return Err(ToolError::Execution(format!("not a directory: {rel}")));
         }
@@ -239,6 +244,10 @@ impl Tool for SearchCodeTool {
         }
         let dir_rel = args["path"].as_str().unwrap_or("source");
         let dir = resolve_tool_path(&self.workspace, dir_rel);
+        // 同 list_files：相对路径穿越防护（绝对路径按显式意图放行）。
+        if !dir_rel.starts_with('/') {
+            guard_relative_path(&self.workspace, &dir)?;
+        }
         if !dir.exists() {
             return Err(ToolError::Execution(format!(
                 "directory not found: {dir_rel}"
@@ -784,6 +793,43 @@ mod tests {
         assert!(!content.contains("two\n"));
         let _ = std::fs::remove_dir_all(&outside);
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// list_files / search_code 的相对路径穿越防护（2026-09-26 补齐；
+    /// 此前四个文件操作里只有 read/write/edit 有 guard，list/search 漏了）。
+    #[tokio::test]
+    async fn list_and_search_reject_relative_traversal() {
+        let ws = temp_workspace("list-search-trav");
+        let sibling =
+            std::env::temp_dir().join(format!("echo-coding-trav-neighbor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sibling);
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(sibling.join("secret.txt"), "outside").unwrap();
+
+        let list = ListFilesTool::new(ws.clone());
+        let err = list
+            .execute(json!({"path": "../echo-coding-trav-neighbor-XXXX"}))
+            .await
+            .expect_err("relative traversal must be rejected");
+        assert!(
+            matches!(&err, ToolError::Execution(m) if m.contains("access denied")),
+            "unexpected error: {err:?}"
+        );
+
+        let search = SearchCodeTool::new(ws.clone());
+        let err = search
+            .execute(json!({"pattern": "outside", "path": "../echo-coding-trav-neighbor-XXXX"}))
+            .await
+            .expect_err("relative traversal must be rejected");
+        assert!(matches!(err, ToolError::Execution(_)), "got {err:?}");
+
+        // 绝对路径仍是显式意图：放行（能找到区外目录，若存在）。
+        let abs = sibling.to_string_lossy().into_owned();
+        let ok = list.execute(json!({"path": abs})).await;
+        assert!(ok.is_ok(), "explicit absolute path must pass: {ok:?}");
+
+        let _ = std::fs::remove_dir_all(&ws);
+        let _ = std::fs::remove_dir_all(&sibling);
     }
 
     #[tokio::test]
