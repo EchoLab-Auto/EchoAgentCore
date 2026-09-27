@@ -13,18 +13,18 @@ y: 1899
 ## SKILL.md 与发现
 
 - `[agent].skills_dir` 目录下**递归发现**所有 `SKILL.md`（仓库内为 `skills/`）
-- 文件 = YAML-ish frontmatter + Markdown 正文：`name` / `description` / `keywords` / `always` / `category` / `package`（**Package 标签**：声明后技能属于该包，随包级门控与工具一起启停——见 [插件化设计](./core-plugins.md)「Package」章节；QQ 包示例 `package: echo-agent.adapter.qq`）
+- 文件 = YAML-ish frontmatter + Markdown 正文：`name` / `description` / `keywords` / `always`（**须写在 `metadata:` 块内、带缩进**——顶层 `always` 被忽略；`SaveSkill` 写回时自动生成该块）/ `category` / `package`（**Package 标签**：声明后技能属于该包，随包级门控与工具一起启停——见 [插件化设计](./core-plugins.md)「Package」章节；QQ 包示例 `package: echo-agent.adapter.qq`）
 - **渐进披露**：名称与描述进入系统提示词的技能清单，正文仅在常驻或触发时注入——控制提示词体积
 
 ## 常驻与触发
 
-- **常驻技能**（`always: true` 且启用）：每轮对话都注入正文（`always_enabled`）
+- **常驻技能**（`metadata.always: true` 且启用）：每轮对话都注入正文（`always_enabled`；实例：`subagent-delegation` 2026-09 由关键词触发升级为常驻）
 - **触发技能**：消息命中 `keywords` 时注入（`find_matching`；多命中时按名称排序取第一个，保证确定性）
 - 注入位置：系统提示词的"常驻/触发技能"块（见 [Agent 循环](./core-agent-loop.md) 的提示词按块构建）
 
 ## 热重载与启停
 
-- `ReloadSkills` 命令手动重载 skills_dir——**覆盖所有运行中人格 + 管理代理**（技能目录进程级共享；2026-09 修复：此前只重载收到命令的管理代理，面板按钮对人格不生效）；`plugins_dir` 数据插件目录 5s 轮询自动热挂载（技能/工具皆可热插拔）
+- `ReloadSkills` 命令手动重载 skills_dir——**覆盖所有运行中人格 + 管理代理**（`reload_skills_into` 广播；技能目录进程级共享；2026-09 修复：此前只重载收到命令的管理代理，面板按钮对人格不生效）。结果经 `Error` 事件 toast 回推：全成功「技能已重新加载（N/M 个智能体更新）」、无变化「技能无变化」、失败逐个列 id；`plugins_dir` 数据插件目录 5s 轮询自动热挂载（技能/工具皆可热插拔）
 - 重载**继承运行时启停状态**（`inherit_enabled_from`）：文件更新/新增/删除不丢失用户在面板的启停选择
 - 启停持久化于 `[agent].disabled_skills`，重启后保持；Panel 设置视图可浏览/启停/编辑/删除技能（含正文）
 

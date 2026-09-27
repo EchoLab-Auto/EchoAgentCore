@@ -15,8 +15,9 @@ Panel（EchoAgentPanel）是 Web 管理面板：Rust 后端（axum）托管 Vue 
 EchoAgentPanel/
 ├── config/echo-agent-panel.toml     # 面板配置模板
 ├── source/echo-web-server/          # Rust 后端（axum + WS 中继）
-│   ├── src/main.rs                  # 服务入口（静态托管 + /ws 路由）
-│   ├── src/proxy.rs                 # 浏览器 ↔ Core 帧中继（不解析负载）
+│   ├── src/main.rs                  # 服务入口（路由装配：/ws、/media、/api/logs + 静态兜底）
+│   ├── src/static_files.rs          # 静态资源（gzip 协商 / 弱 ETag-304 / 分级缓存）
+│   ├── src/proxy.rs                 # 浏览器 ↔ Core 帧中继（不解析负载、10s 写超时）
 │   └── src/config.rs                # 面板配置加载
 ├── web/                             # Vue 3 + TypeScript + Vite 前端
 │   └── src/
@@ -30,11 +31,11 @@ EchoAgentPanel/
 
 ## 后端：无状态字节级中继
 
-每个浏览器 WS 连接对应一条到 Core management WS 的专用连接；帧按原文转发，**不解析、不记录负载**——sudo 密码帧因此与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积。
+每个浏览器 WS 连接对应一条到 Core management WS 的专用连接；帧按原文转发，**不解析、不记录负载**——sudo 密码帧因此与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积；转发另有 **10s 写超时**（`SEND_TIMEOUT`）——对端写阻塞超时即断链，冻结标签页不会挂住中继、Core 发送缓冲不再无界积压。
 
 - 中继极薄（一个 crate、约 200 行），可独立测试（`tests/proxy.rs` 用假 Core 验证双向帧透传，含 sudo 帧）
 - 多标签页 = 多条 Core 连接（Core 的 management 支持多 Panel）
-- 已知限制：无会话恢复——刷新页面后从 `RequestState` / `RequestTrunkTimeline` 重新 Bootstrap
+- 已知限制：无会话恢复——刷新页面先由磁盘缓存（`trunk-cache.ts`）立即可渲染，再经 `RequestState` / `RequestTrunkTimeline{since_seq}` 增量 Bootstrap
 - 否决的备选：后端做协议层转发/会话管理（等于重写 Core 桥接层且 sudo 帧需额外安全处理）；浏览器直连 Core :3132（跨域 + 暴露 management 端口）
 
 ## 状态管理与数据流
@@ -42,12 +43,12 @@ EchoAgentPanel/
 - `store.ts`：全局响应式单例（Vue `reactive`），`dispatch(event)` 逐事件归约
 - `state.ts`：reducer 按事件类型分派，原地深变异
 - `state_domains/`：timeline（时间线转换/增量/工具配对）、helpers
-- 连接管理 `connection.ts`：WS 自动重连；重连后清空运行期状态与时间线缓存，全量重建
+- 连接管理 `connection.ts`：WS 自动重连；重连后清空运行期状态（分支/任务/活动），时间线保留（内存 + `trunk-cache.ts` 磁盘缓存）并按游标 `since_seq` 增量补齐（响应 `full` 标志时整体替换）
 - 实时事件按 `team_id` 归一化过滤后才进主时间线（跨 agent 不串显）；`TrunkTimeline` 按 `full` 标志区分全量替换/增量追加
 
 ## 主视图（聊天）
 
-- `ChatView.vue`：消息列表 + 吸底输入区；`#message` slot 拦截扩展角色渲染。
+- `ChatView.vue`：消息列表 + 吸底输入区；自渲染消息行（库 `ChatTray` 容器）拦截扩展角色（reasoning / 内联选单）渲染。
   消息图片渲染（2026-09-24）：Core 侧的 `/media/<id>` 引用直接 `<img loading=lazy
   decoding=async>`（同源、强缓存）；遗留 data URI 兼容；空串（Core 侧"图片已省略"
   占位）渲染为文字标
@@ -72,7 +73,7 @@ EchoAgentPanel/
   名称/描述/系统提示词/启用/**API 供应商下拉**（`api_profile`，见 [设置视图 §9.1.1](./panel-settings.md)）/插件/工具/技能白名单（表格 + pkg 分组，含"系统提示词 skills"勾选），
   保存走 SaveTeam；上/左/右距会话框 12px、底部距配置按钮 12px
 - `ContextView`（ChatView 内）：入口行「上下文」唤起的弹层——**几何与配置弹层一致**（上/左/右 12px、底部距入口行 12px），点遮罩关闭、无返回按钮
-- `ShellPanel.vue`：顶栏 Shell 视图——持久 bash 会话终端可视化
+- `ShellPanel.vue`：Shell 详情视图（无顶栏入口，经边栏「Shell」卡「详情」进入）——持久 bash 会话终端可视化
   （新建/停止会话、命令回显 + 流式输出自动吸底、运行态 spinner、
   完成/失败/超时状态、Enter 执行 Esc 清空、工作目录指定）
 
@@ -105,7 +106,7 @@ EchoAgentPanel/
 
 - 打字机/入场动画**仅**对实时消息（`DisplayMessage.animate === true`）播放；历史回放、刷新加载不播动画
 - 动画为纯视觉层：`animate` 是展示元数据，不进入任何数据/逻辑判断
-- 实现要点：ui-frame `ChatRole` 不含 `reasoning`，必须在 `ChatView` 的 `#message` slot 层拦截（否则未知角色会被渲染成 Agent 气泡）；`pendingReasoning`/`completedReasoning` 保留给分支合并块消费，主时间线不再读取
+- 实现要点：ui-frame `ChatRole` 不含 `reasoning`，必须在 `ChatView` 的消息行渲染层拦截（自渲染行循环，见 [会话视图](./panel-chat.md)§7.3b；否则未知角色会被渲染成 Agent 气泡）；`pendingReasoning`/`completedReasoning` 保留给分支合并块消费，主时间线不再读取
 
 ## 主题
 

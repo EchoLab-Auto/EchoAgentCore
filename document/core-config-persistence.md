@@ -18,7 +18,7 @@ EchoAgentCore 的配置通过一个共享的 `ConfigStore` 进行原子化读写
 | QQ 门控配置（gate mode、白名单、黑名单） | `ConfigStore::patch()` 替换 `[adapters.qq]` | `[adapters.qq.gate]` + `[adapters.qq.filter]` |
 
 `ConfigStore` 内部使用 `std::sync::Mutex` 序列化所有写入，读写一次全文件，
-两个调用者（Agent 和 QqAdapter）共享同一实例，**杜绝并发写互相覆盖**。
+各调用者（各 persona 的 Agent 与 QqAdapter）共享同一实例，**杜绝并发写互相覆盖**。
 
 写入流程：`read TOML → apply patch → write to .tmp → rename`（原子替换）。
 

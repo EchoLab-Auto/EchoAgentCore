@@ -137,10 +137,10 @@ graph BT
 
 ## 会话与持久化
 
-- 事件溯源：`echo-session` 的 `EventLog` 是权威（append-only，整档 JSON 持久化 version=5，tmp+rename 原子写）；`TrunkStore` 持 `EventLog`，`trunk_history` 降级为内存投影缓存（`append_event` 在锁内 append 并重新投影）；持久化 v5 以 `events` 为权威
+- 事件溯源：`echo-session` 的 `EventLog` 是权威（append-only，整档 JSON 持久化 v6，tmp+rename 原子写）；`TrunkStore` 持 `EventLog`，`trunk_histories`（按会话投影映射）降级为内存投影缓存（`append_event` 在锁内 append 并重新投影）；持久化 v6 以 `events` 为权威（多会话：每事件带 `session` 归属）
 - `SessionEvent` 五类：`UserMessage`（含 `message_sequence` 供并发分支按请求序合并）、`AssistantMessage`（完整保留 `reasoning_content` 与 `tool_calls`）、`ToolCall`、`ToolResult`（带 `tool_call_id` 回链）、`Compaction`（摘要替换前缀的显式压缩事件，日志保持 append-only 可重放）。`CompactionEvent` 三要素：`replaced_count`（替换了前多少条）+ `summary`（**正文，不含前缀**）+ `archive`（压缩前快照路径，可选）；`[历史摘要]` 前缀在投影期由 `render_compaction_summary` 恰好加一次——旧数据带前缀则透传，不再出现「`[历史摘要] [历史摘要]`」叠加（2026-09 修正）
 - **压缩三件套**（2026-09）：`compact_preview`（只读：按会话分组算出将替换的事件块与统计）→ `archive_snapshot`（把当前会话的**内存快照**写入 `archives/{stem}-{ts}-precompact.json`；无持久化配置时不阻塞压缩）→ `apply_compaction`（按会话键装配合适的摘要落地为 Compaction 事件；应用期重新分组，容忍摘要等待期间的并发写）。编排在 `Agent::compact_history`（`agent/compact.rs`）：逐会话组调 LLM 生成**交接摘要**（转录渲染自动降档 ≤50k tokens；输出 ≤1500 tokens/组，180s 超时；提示词固定四节【当前目标】【已完成】【进行中】【关键信息】）；任一组失败（未配置/超时/报错/空输出）回退规则统计文案，压缩不因 LLM 不可用而失败
-- `derive_messages` / `project_messages` 是唯一的模型上下文投影：裁剪只在投影期（`trim_to_budget`），绝不破坏日志；`insert_after_sequence` 把并发分支回复插入对应请求事件之后，投影顺序 = 请求到达顺序
+- `derive_messages` / `project_messages` 是唯一的模型上下文投影（多会话经 `derive_messages_for` 按 `session` 归属过滤后逐会话投影）：裁剪只在投影期（`trim_to_budget`），绝不破坏日志；`insert_after_sequence` 把并发分支回复插入对应请求事件之后，投影顺序 = 请求到达顺序
 - 兼容：v1-v4 旧格式（`echo-sessions.json`）经 `migrate_v4_document` 读入并迁移进事件日志；旧格式的工具结构缺失如实保留（迁移后的工具消息降级为纯文本，新写日志保留完整结构）
 - 每个 persona 独立会话文件（`echo-sessions-{id}.json`）；显示时间线带条目级 `seq` 支持增量同步（前端按 team 缓存快照到 localStorage，引导/重连只拉缺口）。发往前端的 `TrunkTimeline` 快照做**推理瘦身**：近 40 条保全文、更早截 240 字 + 标注（`timeline.rs::elide_reasoning_for_wire`；持久化不改，单帧 1.46MB → ~0.68MB）
 - `SessionHeader` 携带 fork/resume 元数据（parent/seed_length/origin/delegation_depth），随日志持久化
@@ -155,7 +155,7 @@ graph BT
 | 拦截请求/工具/turn | EventBus 上注册 lifecycle 事件监听器 |
 | 工具策略（超时/审批） | `ToolPipeline::push_pre/push_post` |
 | 新增命令 | 命令分发按域拆分（`apply_qq_command` 模式）+ CommandRegistry（开放后） |
-| 会话状态扩展 | 扩展 `SessionEventMap`（echo-session），从日志渲染 |
+| 会话状态扩展 | 扩展 `SessionEvent` 枚举（echo-session），从日志渲染 |
 
 ## 关键文档
 

@@ -2,7 +2,6 @@
 id: plugins
 title: "插件化设计"
 link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "tools | r>l", "agent-loop | r>l", "subagent | Subagent 插件"]
-link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "tools | r>l", "agent-loop | r>l"]
 x: 955
 y: 1759
 ---
@@ -53,7 +52,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.subagent` | Tool | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./core-subagent.md)） |
 | `echo-agent.management.panel` | Management | 管理面：management WS 桥接 + sudo 授权与选单应答通道（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
 
-> 以上 10 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单。选单（present_menu）与任务清单（checklist）已降级为普通工具（2026-09，插件维度移除），无插件 id。
+> 以上 9 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单（`BUILTIN_PLUGIN_IDS` 为 `[&str; 9]`）。选单（present_menu）与任务清单（checklist）已降级为普通工具（2026-09，插件维度移除），无插件 id。
 
 ## 能力开关（per-persona）
 
@@ -81,7 +80,6 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   生命周期与同名包的工具、技能（QQ 包见下「Package」章节）
 - **其余插件当前生效范围**：
   - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具（skills.dir 为全部技能）对所有 persona 批量禁用（对 LLM 不可见），启用按各 persona 名单恢复——**仅作用于目标 persona 时用 Agent 配置弹层的勾选**（运行期双向、即时生效）
-  - `menu`：禁用 = 该 persona 的 `present_menu` 从工具 schema 消失（直接调用返回错误）；启用 = 恢复。判定 = persona 白名单 ∧ 全局 TogglePlugin 状态（`Agent::menu_plugin_enabled`），schema 随 turn 重建，改动即时生效
   - `adapter.qq`：禁用 = 停止 QQ 适配器进程 + QQ 工具包禁用；启用 = 启动 + 按名单恢复
   - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）。**防自锁保护**：经 `TogglePlugin` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
   - `loop.single` / `loop.parallel`：**已实化**——mount 注入 TurnRunner 并启用 echo-loop 驱动；两者 mount 同一驱动（模式只改策略），全部卸载才回退内置循环（普通输入走 turn/step 状态机；QQ hook/定时器/QQ 会话仍走内置循环）

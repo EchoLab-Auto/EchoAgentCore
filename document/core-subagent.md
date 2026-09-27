@@ -82,7 +82,7 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
 
 | 技能 | 触发 | 内容 |
 | --- | --- | --- |
-| `subagent-delegation` | 关键词：subagent/子任务/委派/delegate/spawn_subagent | 委派指南：何时该委派、task 必须自含、单层委派、异步回报节奏、结果截断 |
+| `subagent-delegation` | 常驻（`metadata.always: true`，每轮注入；2026-09 由关键词触发升级） | 委派与并行化指南：开工前扫"可委派块"、何时该委派、并行手法（`spawn_subagent` 是唯一真并行）、task 必须自含、单层委派、等回报期间不空转、结果截断 |
 
 技能 frontmatter 声明 `package: echo-agent.subagent`，随包级门控与工具一起
 启停（见 [插件化设计](./core-plugins.md)「Package」章节）。

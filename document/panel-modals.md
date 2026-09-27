@@ -59,16 +59,16 @@ graph LR
 
 ### 8.3 ContextView（上下文弹层）
 
-入口行「上下文」进入，弹层几何与 AgentConfigModal 一致（上/左/右 12px、底边 = 入口行高 + 42px，磨砂玻璃卡片，`ChatView.vue` `ctxBottomOffsetCss`）；**无独立返回按钮，点弹层外遮罩即关闭**。打开时按当前 Agent 发送 `RequestContext{team_id: 当前 Agent id}`（按人格定向取上下文快照；无 active agent 时为 `null`）：
+入口行「上下文」进入，弹层几何与 AgentConfigModal 一致（上/左/右 12px、底边 = 入口行高 + 42px，磨砂玻璃卡片，`ChatView.vue` `ctxBottomOffsetCss`）；**无独立返回按钮，点弹层外遮罩即关闭**。打开时按当前（Agent, 会话）发送 `RequestContext{team_id, session_id}`（按人格+会话定向取上下文快照，切换会话自动重拉、忽略他属陈旧快照；无 active agent 时为 `null`）：
 
 - token 仪表盘：`NeumorphismProgress`（≥90% error、≥70% warning），总量/提示词/历史/上限四项统计
 - 上下文块分「系统提示词与注入块」「对话历史」两组折叠（**全部块默认展开**，每块内容区 220px 内滚动；2026-09 修正——此前仅 base 展开，用户反馈「看不到内容」）：kind 徽标（覆盖 Core 全部种类含「工作区会话」「系统提示词」；名称自动剥掉与徽标重复的前缀）+ token 数 + **占当前上下文总量的百分比**（<1% 显式标注；顶部「总占用」同口径，按全部块求和——Core 的 `total_tokens` 只计历史）
 - 逐条消息明细（角色 + token + 内容），默认折叠
-- 操作：**清理历史**（两步确认：首击变为「确认清理？不可恢复」，再击发送 `ClearHistory`）；**归档**（confirm → `ArchiveHistory`）；**压缩**（confirm → `CompactHistory{keep_recent: 40}`，执行前**自动把快照写进 `archives/*-precompact.json`**，摘要由 LLM 生成、失败回退统计文案；结果消息含压缩条数/组数/归档路径）；**重载技能**（`ReloadSkills`；重载**所有运行中智能体**的技能注册表，不只是当前查看的——结果消息含更新数/总数）；**刷新**
+- 操作：**清理历史**（两步确认：首击变为「确认清理？不可恢复」，再击发送 `ClearHistory`）；**归档**（confirm → `ArchiveHistory`）；**压缩**（confirm → `CompactHistory{keep_recent: 40}`，执行前**自动把快照写进 `archives/*-precompact.json`**，摘要由 LLM 生成、失败回退统计文案；结果消息含压缩条数/组数/归档路径）；**重载技能**（`ReloadSkills`；重载**所有运行中智能体+管理代理**的技能注册表，不只是当前查看的——回执「技能已重新加载（N/M 个智能体更新）」、无变化时「技能无变化」、部分失败逐个人格报错）；**刷新**
 
 ### 8.4 AgentConfigModal（当前 Agent 配置）
 
-锚定会话区上方的磨砂覆盖层（底边 = 入口行高 + 42px，`ChatView.vue:152-157, 399-405`）；点遮罩/✕/取消/保存后关闭。打开时拉取技能/工具/插件清单：
+锚定会话区上方的磨砂覆盖层（底边 = 入口行高 + 42px，`ChatView.vue:395-402, 874-880`）；点遮罩/✕/取消/保存后关闭。打开时拉取技能/工具/插件清单：
 
 - 字段：名称、描述、系统提示词（留空继承全局）、启用开关（**禁用即卸载记忆**，重启用重新挂载）
 - **API 供应商下拉**（2026-09 新增）：选项 = 「跟随全局默认配置」+ 全局供应商池各 profile（`name（provider / model · key 状态）`）；保存写入 `SaveTeam.api_profile`，运行期立即重建该 persona 的 provider（见 [设置视图 §9.1.1](./panel-settings.md)）

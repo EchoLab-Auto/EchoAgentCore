@@ -106,7 +106,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 - **多实例而非单实例多上下文**（对人而言）：每个人格一辆"车"（独立 `Agent::new` + 事件溯源日志），复用现有结构、互不干扰
 - **人格内多会话上下文**（2026-09 落地）：同一人格内再按来源（本地/QQ 私聊/QQ 群）分区上下文——单份事件日志 + `session` 归属字段 + 按会话投影（`derive_messages_for`），避免"每个聊天一份完整 Agent"的内存与调度开销
-- **配置驱动**：人格在配置文件中定义，`enabled=false` 跳过实例化；运行时可通过 `ToggleTeam` 启停，但不动态增删（改配置重启生效）
+- **配置驱动**：人格在配置文件中定义，`enabled=false` 跳过实例化；运行时可通过 `ToggleTeam` 启停、`SaveTeam`/`DeleteTeam` 新建/删除（写回 `[agent.teams]`，立即生效）
 - **兼容性**：无 `[agent.teams]` 的旧配置 = 单 agent（id 仍可为 `default`，但**无特权**）；旧协议 `SendMessage`/会话类命令若无 `team_id` 会被明确拒绝（破坏性变更，2026-09-13），旧 Panel 需同步升级
 - **删除保护**：仅"至少保留一个智能体"；不再有受保护成员
 - ~~所有 persona 共享同一 provider/模型~~（2026-09 起支持 persona 级引用，见上「装配」）；运行期 `SaveTeam` 改 `api_profile` 立即经 `apply_persona_api` 重建该人格 provider（全局 `UpdateApiConfig`/`SwitchApi` 只作用于管理面/全局默认，不再自动广播到其他人格）

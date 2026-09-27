@@ -56,13 +56,13 @@ pub enum WsMessage {
 
 ## 命令（Client → Core）
 
-`BackendCommand` 主要分三类：
+`BackendCommand` 主要分四类：
 
 - **会话类**：`SendMessage`、`CancelRequestedWork`、`ClearHistory`、`ArchiveHistory`、`CompactHistory`（协议不变：`keep_recent` 默认 40、clamp 10–500；2026-09 起服务端自动先归档再按会话生成 LLM 摘要，失败回退统计文案，见 [架构 §会话与持久化](./architecture.md)）、`RequestTrunkTimeline`（支持 `since_seq` 增量）——**`team_id` 必填**（2026-09-13 破坏性变更：无"主/默认智能体"，缺失直接回 `Error`）；`RequestContext` 增 `session_id`（多会话，2026-09：返回该会话的上下文快照，缺省回退本地 TUI 会话；`ContextSnapshot` 回带 `session_id`）
-- **Shell 类**：`RequestShellSessions` / `ShellStart` / `ShellExec` / `ShellStop`（后台持久 bash，见 [工具系统](./core-tools.md)）
-- **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`（`SaveSkill.system` 声明系统提示词技能）、`InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource`（Git 来源技能，见 [技能系统](./core-skills.md)）、`SaveTeam/DeleteTeam/ToggleTeam`（`SaveTeam.system_skills` 声明人格系统提示词技能；`TeamInfo.system_skills` / `SkillInfo.system` 随列表事件下发；`SaveTeam.api_profile` / `TeamInfo.api_profile` 声明与回推人格级 API 供应商引用；`PluginInfo.package` 回推插件所属包——横跨 plugin+tool+skill 的组合标签）
+- **Shell 类**：`RequestShellSessions`（可选 `team_id` = 只看该 persona 的会话）/ `ShellStart` / `ShellExec` / `ShellStop`（后台持久 bash，见 [工具系统](./core-tools.md)；会话按 persona 归属，列表事件回带 `team_id`）
+- **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`（`SaveSkill.system` 声明系统提示词技能）、`ReloadSkills`（重载技能目录——广播所有运行中人格 + 管理代理，见 [技能系统](./core-skills.md)）、`InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource`（Git 来源技能，见 [技能系统](./core-skills.md)）、`SaveTeam/DeleteTeam/ToggleTeam`（`SaveTeam.system_skills` 声明人格系统提示词技能；`TeamInfo.system_skills` / `SkillInfo.system` 随列表事件下发；`SaveTeam.api_profile` / `TeamInfo.api_profile` 声明与回推人格级 API 供应商引用；`PluginInfo.package` 回推插件所属包——横跨 plugin+tool+skill 的组合标签）
 - **运维类**：
-  - QQ：`Start/Stop/RestartAdapter`、`UpdateQqAllowlist/Denylist`、`SetQqGateMode`、`SetQqOwner`、`RequestQqLoginStatus`、`RequestQqQrcode`——**均带可选 `adapter`（实例名，`#[serde(default)]`）**：给定 = 精确寻址该实例；缺省 = 唯一 QQ 实例时回退，多实例时报错要求显式指定（旧 Panel 单实例部署行为不变）。登录由 Core 代理（`QqLoginStatus`/`QqQrcode` 事件回推）
+  - QQ：`Start/Stop/RestartAdapter`（按 `name` = 适配器/实例名寻址）、`StartAllAdapters`/`StopAllAdapters`（全部适配器）；门控/名单/owner/登录类 `UpdateQqAllowlist/Denylist`、`SetQqGateMode`、`SetQqOwner`、`RequestQqOwner`、`RequestQqLoginStatus`、`RequestQqQrcode`——**均带可选 `adapter`（实例名，`#[serde(default)]`）**：给定 = 精确寻址该实例；缺省 = 唯一 QQ 实例时回退，多实例时报错要求显式指定（旧 Panel 单实例部署行为不变）。登录由 Core 代理（`QqLoginStatus`/`QqQrcode` 事件回推）
   - 工作区：`RequestWorkspaceSessions` / `SaveWorkspaceSession` / `DeleteWorkspaceSession` / `ActivateWorkspaceSession` / `RequestWorkspaceGitStatus` / `RequestWorkspaceFiles`——会话类命令，**`team_id` 必填**并按 persona 路由；状态即改即存（`echo-workspaces-{id}.json`），git 与文件列表为只读采集（`RequestWorkspaceFiles.path` 以 canonical 前缀校验限定在会话目录及其子孙内，越界返回 `WorkspaceFiles.error`）。**激活 = 进入项目对话通道**（2026-09-14 重定义）：前端「本地当前对话」按 `active` 投影——选通道 = 激活、选默认本地会话 = 取消激活；`active` 变化必须广播 `WorkspaceSessions`
   - API：`UpdateApiConfig/SwitchApi/TestApi/QueryApiBalance/DeleteApi`（2026-09：`SwitchApi` 全局激活已被 persona 级选用取代——`SaveTeam.api_profile` 引用供应商池；协议字段保留兼容，UI 不再暴露；`QueryApiBalance` 查 DeepSeek 官方 `/user/balance`，回 `ApiBalanceResult`）
 
@@ -89,10 +89,10 @@ graph LR
 其他事件分组（字段详见 `echo-protocol/src/event.rs`）：
 
 - **适配器生命周期**：`AdapterStateChanged`、`AdapterList`
-- **编排**：`SubagentStarted/Completed`、`ReplyBranchStarted/Content/Completed`、`BackgroundTaskStarted/Completed/Integrated`
+- **编排**：`SubagentStarted/Completed`、`ReplyBranchStarted/Content/Completed`、`BackgroundTaskStarted/Completed/Integrated`、`AgentCompleted`（turn 收尾——含空输出的完成信号）
 - **Shell**：`ShellSessionsList` / `ShellSessionStarted` / `ShellExecStarted` / `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
 - **状态快照**：`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`、`Error`（也用于信息性 toast）
-- **QQ 管理**：`GroupList`、`FriendList`、`QqFilterConfig`、`QqGateMode`、`QqLoginStatus`、`QqQrcode`（二维码 PNG base64；均带 `adapter` 实例名）
+- **QQ 管理**：`GroupList`、`FriendList`、`QqFilterConfig`、`QqGateMode`、`QqLoginStatus`、`QqQrcode`（二维码 PNG base64）、`QqOwner`（owner 查询回推，frontend-only；均带 `adapter` 实例名）
 - **工作区会话**：`WorkspaceSessions`（列表 + 激活标记，`team_id` 归属；**`active` 是项目通道的单一事实来源**——面板/工具 `use` 等所有激活来源都必须广播，前端据此切换本地对话投影，2026-09-14）、`WorkspaceGitStatus`（某会话各目录的 git 快照：分支 / 领先落后 / 暂存·修改·未跟踪计数 / 最近提交 / 变更文件列表 / 错误）、`WorkspaceFiles`（某目录一层文件列表：条目含 name/path/is_dir/size，目录在前；隐藏项跳过、超 500 条截断；失败经 `error` 回传——文件浏览器数据源）
 - **sudo 授权**：`SudoRequest`（请用户输入密码）/ `SudoResolved`（关闭弹窗/toast；所有退出路径恰好一次，由 run_sudo guard 保证——工具侧链路见 [工具系统](./core-tools.md)）
 - **选单（menu 插件）**：`MenuRequest`（`title` / `description?` / `options[{id,label,description?}]` / `timeout_secs`，Panel 在会话区渲染内联选单卡片）/ `MenuResolved`（`accepted` + 一句话 `message`；选定/取消/超时/中断全部恰好一次，由 present_menu guard 保证——Panel 选单卡片不会挂在死请求上）
@@ -117,14 +117,14 @@ graph LR
 
 ## 共享枚举
 
-三者定义在 `echo-defs::mode`（Service Definition 层），`echo-protocol` re-export 保持 wire 路径：
+`GateMode` / `ThinkingMode` / `ReasoningEffort` / `LoopMode` 定义在 `echo-defs::mode`（Service Definition 层），`echo-protocol` re-export 保持 wire 路径（`OrchestrationMode` 定义在 echo-protocol 自身，见 `event.rs`）：
 
 | 类型 | 取值（线格式，snake_case） |
 |---|---|
 | `GateMode` | `"none"` / `"allowlist"` / `"denylist"` |
 | `ThinkingMode` | `"enabled"` / `"disabled"` |
 | `ReasoningEffort` | `"low"` / `"high"` / `"max"` |
-| `OrchestrationMode` | `"single"` / `"chatbot"`（`#[default] = chatbot`；旧字段过渡期下发，`TeamInfo.is_default` 恒 false） |
+| `OrchestrationMode` | `"single"` / `"chatbot"`（`#[default] = chatbot`；旧编排模式兼容名——`TeamInfo.orchestration_mode` 字段已移除、不再下发） |
 
 `LoopMode` 定义在 `echo-defs::mode`（经 `echo-protocol` 再导出）：per-persona 循环模式，由 `enabled_plugins` 对互斥插件 `echo-agent.loop.{single,parallel}` 推导（单会话为默认与兜底；插件黑名单 `disabled_plugins` 已移除，`SaveTeam`/`TeamInfo` 不再携带该字段——旧端帧中的该字段被 serde 忽略，缺省按空表处理）。**2026-09 协议变更**：`TeamInfo` 新增 `loop_mode`（`"single"`/`"parallel"`）；面板 `loopModeOf()` 优先读 `loop_mode`，缺省按 single。
 

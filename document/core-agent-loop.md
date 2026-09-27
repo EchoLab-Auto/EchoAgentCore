@@ -42,8 +42,8 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 - 系统提示词按块构建（`agent/prompt.rs` 的 `build_prompt_blocks`，
   [插件化设计](./core-plugins.md) 的能力门控作用于各层）：
   基础提示词、**system 技能层**（system:true，见 [技能系统](./core-skills.md)）、
-  技能清单、常驻/触发技能、**后台编排说明（仅该 agent 启用了编排工具时注入**——
-  白名单无编排工具的 agent 不注入描述不可用工具的规则）、**工作区会话**
+  **persona 级系统技能**（`TeamMember.system_skills` 引用）、技能清单、
+  常驻/触发技能、**工作区会话**
   （workspace 插件启用且有激活会话时注入名称 + 目录清单）、输入边界规则
   （`agent/boundary.rs` 的 `BoundaryKind`：QQ hook / 定时器 / 后台输入三块文案）
 - 提示词构建的锁纪律（2026-09 修复的并行死锁）：`skills` 的 tokio Mutex guard
@@ -55,7 +55,7 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 
 ## echo-loop：可替换的默认驱动（TurnRunner）
 
-`echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。组合根经 `ctx.loop` 注册 `TurnRunner`（`LoopOptions`：`max_tool_iterations`/`tool_timeout` 来自配置），挂载不同实现即可改变驱动行为；消费方（agent、UI、hook）只依赖生命周期事件。
+`echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。组合根经 `ctx.loop` 注册 `TurnRunner`（`LoopOptions`：`max_tokens` 来自配置；`max_tool_iterations`/`tool_timeout` 目前取默认值 1024 / 120s），挂载不同实现即可改变驱动行为；消费方（agent、UI、hook）只依赖生命周期事件。
 
 - **生命周期事件**（全部经 `EventBus` 分发）：`TurnStart` / `AgentPreStep`（waterfall，可改写消息或拒绝 step）/ `StepStart` / `AgentRequest`（waterfall，可改写请求）/ `ToolCallRequested` / `ToolResult` / `StepEnd` / `TurnStopping`（serial）/ `TurnEnd`
 - **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。超时、审批、审计、限流都是注册进管道的中间件，不是循环代码——新策略 = 一次 `push_pre`/`push_post`
@@ -76,7 +76,8 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
   （ToolCall/ToolResult 事件与事件日志与内置循环同路径）
 - **QQ hook / 定时器 / QQ 会话** → 内置循环：边界语义（QQ 边界块、定时器
   回投）由内置循环注入；投递纪律由提示词与 qq-transport 技能引导（2026-09
-  移除 send 工具声明校验与纠偏提醒），echo-loop 不接管。QQ 并发回复的细节
+  移除 send 工具声明校验与纠偏提醒），echo-loop 不接管。QQ 并发回复的细节见
+  [多 Agent 与会话](./core-agents.md)（单会话投递默认会话排队 / 并行多会话临时分支）。
 
 两套驱动并行、同一工具路径（`run_tool`）与提示词构建（`agent/prompt.rs` 的
 `build_prompt_blocks` / `join_prompt_blocks`，`agent/boundary.rs` 的边界块）

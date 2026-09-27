@@ -67,8 +67,8 @@ y: 2047
   `nohup`/`&`/disown 挂野进程——野进程脱离会话模型：不在 Shell 视图可见、无停止
   入口、机器重启即丢失且无人知晓；shell 会话内的常驻进程可见、可停止、输出可回读
   （技能侧同一约定见 `skills/coding/SKILL.md`「Long-running processes」）
-- **命令**：`RequestShellSessions` / `ShellStart` / `ShellExec` / `ShellStop`（面板直控）
-- **事件**：`ShellSessionsList` / `ShellSessionStarted` / `ShellExecStarted` /
+- **命令**：`RequestShellSessions`（可选 `team_id` = 只看该 persona 的会话）/ `ShellStart` / `ShellExec` / `ShellStop`（面板直控）
+- **事件**：`ShellSessionsList`（回带会话 `team_id` 归属）/ `ShellSessionStarted` / `ShellExecStarted` /
   `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
 - **生命周期**：`ShellStop` 销毁；进程意外退出（try_wait）自动清理并广播关闭事件；
   Core 重启后会话不保留（一次性的运行期资源）

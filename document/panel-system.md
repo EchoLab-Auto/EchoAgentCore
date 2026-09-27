@@ -12,9 +12,9 @@ Panel 的系统级交互：Toast 通知、键盘清单、设计边界（协议�
 
 ## 十二、Toast 系统
 
-- 三类：`info / success / error`；位置右上；单条 **6s** 自动消失；同屏上限 8 条（`ToastProvider :max-count="8"`，溢出挤掉最旧）；队列 cap 8、文本截断 512 字符（`App.vue:233, 367`，`state.ts:912-914`）
-- `state.toasts` 仅作转发队列：watcher 逐条泵入组件库 ToastProvider 后清空（`App.vue:226-235`）
-- 来源与类型：断连/重连提示（info）、断连时发送命令（error）、`SudoResolved`（授权 success / 拒绝或中断 error）、Core `Error` 事件（**按 info 展示**，`state.ts:762-765`——Git 安装等异步操作的失败也经此通道呈现）
+- 三类：`info / success / error`；位置右上；单条 **6s** 自动消失；同屏上限 8 条（`ToastProvider :max-count="8"`，溢出挤掉最旧）；队列 cap 8、文本截断 512 字符（`App.vue:270, 346`，`state.ts:1132-1136`）
+- `state.toasts` 仅作转发队列：watcher 逐条泵入组件库 ToastProvider 后清空（`App.vue:265-275`）
+- 来源与类型：断连提示「与后端断开，正在重连…」（error）、断连时发送命令（error）、`SudoResolved`（授权 success / 拒绝或中断 error）、`MenuResolved` 取消/超时（info）、Core `Error` 事件（**按 info 展示**，`state.ts:983-987`——Git 安装等异步操作的失败也经此通道呈现）
 
 ## 十三、键盘清单
 
@@ -44,24 +44,24 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 | 常量 | 值 | 位置 |
 |---|---|---|
 | WS 重连退避 | 500ms ×2，上限 30s | connection.ts |
-| 前台自愈 / 中继收割 | 探测帧 5s 判死；一侧 90s 无帧断链 | connection.ts / proxy.rs |
-| Toast | 6s；队列/同屏 8；≤512 字符；右上 | main.ts:11 / App.vue:222, 344 / state.ts:912-914 |
+| 前台自愈 / 中继收割 | 探测帧 5s 判死；一侧 90s 无帧断链；转发写阻塞 10s 断链 | connection.ts / proxy.rs |
+| Toast | 6s；队列/同屏 8；≤512 字符；右上 | main.ts:17 / App.vue:270, 346 / state.ts:1132-1136 |
 | 主时间线容量 | 1024 条 | timeline.ts:6-11 |
 | 时间线磁盘缓存 | 挂载前 hydrate + 10s 周期落盘；总预算 2.2M 字符、单 team 1.8M 字符 | trunk-cache.ts |
-| TrunkTimeline 快照瘦身 | 近 40 条推理全文、更早截 240 字；静态资源 gzip + 弱 ETag（`assets/` 一年 immutable） | timeline.rs / static_files.rs |
+| TrunkTimeline 快照瘦身 | 近 40 条推理全文、更早截 240 字；静态资源 gzip 协商（≥1KB 文本）+ 弱 ETag/304（HTML no-store、`assets/` 一年 immutable） | timeline.rs / static_files.rs |
 | 推理打字机 | 24ms/tick，约 6s 封顶，≥2 字符/tick；默认折叠 + 推演中限高（180px）滚动钉底 | ReasoningBlock.vue |
-| 消息入场动画 | 0.28s（淡入 + 上移 6px） | ChatView.vue:383, 864-870 |
-| 滚动跟随阈值 / 让位 | 120px；按钮 180px / 内边距 190px | main.ts:10 / ChatView.vue:533-535, 566-568 |
-| 图片附件 | 最长边 1600px；JPEG q0.85 / PNG 保格式；待发缩略图 64×64；历史图最大 260×200 | ChatView.vue:202-214, 634-642 |
-| 工具输出上限 / 输入摘要截断 | 4000 字符；120 字符（非 JSON 兜底 200） | state.ts:497 / helpers.ts:11-24 |
-| 输入区最大高度 | `calc(8em + 20px)` | ChatView.vue:739-742 |
-| 侧边栏宽度 | 264px（折叠 0） | App.vue:236-238 |
-| 设置视图 | 一级菜单 168px；条目列表 250px；API 概览 ≤720px（表单按需展开）；智能体编辑器 = 头部卡 + 4 折叠分区 | SettingsView.vue / ApiSettings.vue |
+| 消息入场动画 | 0.28s（淡入 + 上移 6px） | ChatView.vue:1449-1456 |
+| 滚动跟随阈值 / 让位 | 120px；按钮 180px / 内边距 190px | main.ts:16 / ChatView.vue:1084-1089, 1149-1151 |
+| 图片附件 | 最长边 1600px；JPEG q0.85 / PNG 保格式；待发缩略图 64×64；历史图最大 260×200 | ChatView.vue:524-568, 1226-1257 |
+| 工具输出上限 / 输入摘要截断 | 4000 字符；120 字符（非 JSON 兜底 200） | timeline.ts:47-70 / helpers.ts:11-24 |
+| 输入区最大高度 | `calc(8em + 20px)` | ChatView.vue:1331-1333 |
+| 边栏列宽（chat-rail） | 324px（左右两列；容器底 = `entryBottom + 45px`） | ChatView.vue:333, 1046-1048 |
+| 设置视图 | 一级菜单 168px；条目列表 250px；API 概览 ≤720px（表单按需展开）；智能体编辑器 = 头部卡 + 3 折叠分区（默认展开前两个） | SettingsView.vue / ApiSettings.vue |
 | 入口行弹出层 | 宽 `min(520px, 82vw)`；无全屏遮罩 | ChatView.vue |
 | 入口行按钮 | ui-frame `NeumorphismButton`（glass/pill/small；`--nm-glass-bg` 45% 更透 + blur 24px）；清单徽标 `NeumorphismBadge` | ChatView.vue |
-| z-index | 清单浮层 3；Agent 菜单 30；模态/Toast 库管理 | styles.css:352 / AgentSwitcher.vue:188 |
-| Agent 切换器 | 卡片高 34px；菜单 min-width 220px、max-height `min(60vh, 100vh-200px)` | AgentSwitcher.vue:120-199 |
-| 轮询：日志 / 任务耗时 | 5s / 1s | LogView:48 / TasksPanel:63-66（QQ 登录状态为 WS 事件驱动，无轮询） |
+| z-index | 清单浮层 3；Agent 菜单 30；模态/Toast 库管理 | styles.css:339 / AgentSwitcher.vue:217 |
+| Agent 切换器 | 卡片高 34px；菜单 min-width 220px、max-height `min(60vh, 100vh-200px)` | AgentSwitcher.vue:140-233 |
+| 轮询：日志 / 任务耗时 | 5s / 1s | LogView:48 / TasksPanel:70-84（QQ 登录状态为 WS 事件驱动，无轮询） |
 | HTTP 超时 | 10s | api.ts:4 |
-| 二维码有效期 / 定时器摘要截断 | 约 2 分钟；160 字符 | QqLoginSection.vue / state.ts:802-805 |
+| 二维码有效期 / 定时器摘要截断 | 约 2 分钟；160 字符 | QqLoginSection.vue:124 / helpers.ts:27-35 |
 
