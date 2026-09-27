@@ -123,6 +123,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         provider_arc.clone(),
         Arc::new(echo_loop::ToolPipeline::new()),
         echo_loop::LoopOptions {
+            max_tool_iterations: cfg.agent.max_tool_iterations.max(1),
             max_tokens: cfg.agent.effective_max_tokens(),
             ..Default::default()
         },

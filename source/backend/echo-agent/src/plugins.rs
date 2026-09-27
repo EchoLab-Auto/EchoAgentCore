@@ -65,7 +65,8 @@ pub const PARALLEL_MODE_IDS: [&str; 4] = [
 
 /// 名单归一化（配置加载与 SaveTeam 防御共用）：把旧编排模式 id 与旧驱动
 /// 插件 id 折叠为循环模式插件 id——chatbot/旧特性 id → `loop.parallel`，
-/// orchestration.single → `loop.single`，loop.runner → 剔除（模式插件取代）；
+/// loop.runner → 剔除（模式插件取代；「单会话」旧 id `orchestration.single`
+/// 已随插件退役不再映射——单会话本为缺省，残留 id 为无害未知项）；
 /// echo-agent.menu / echo-agent.checklist → 剔除（均降级为普通工具，
 /// 插件维度移除，能力保留在工具级白/黑名单）。
 /// 去重、保序。返回是否有改动。
@@ -74,24 +75,16 @@ pub fn normalize_mode_plugins(list: &mut Vec<String>) -> bool {
     let mut normalized: Vec<String> = Vec::with_capacity(list.len());
     for item in list.iter() {
         let is_parallel = LEGACY_CHATBOT_MODE_IDS.contains(&item.as_str());
-        let is_single = false;
         let is_legacy_runner = item == LEGACY_LOOP_RUNNER_PLUGIN_ID;
         let is_legacy_menu = item == LEGACY_MENU_PLUGIN_ID;
         let is_legacy_checklist = item == LEGACY_CHECKLIST_PLUGIN_ID;
-        if !is_parallel
-            && !is_single
-            && !is_legacy_runner
-            && !is_legacy_menu
-            && !is_legacy_checklist
-        {
+        if !is_parallel && !is_legacy_runner && !is_legacy_menu && !is_legacy_checklist {
             normalized.push(item.clone());
             continue;
         }
         changed = true;
         let replacement = if is_parallel {
             Some(PARALLEL_LOOP_PLUGIN_ID)
-        } else if is_single {
-            Some(SINGLE_LOOP_PLUGIN_ID)
         } else {
             // 旧驱动 / 旧选单 / 旧任务清单插件 id：已被取代或移除，不再保留。
             None

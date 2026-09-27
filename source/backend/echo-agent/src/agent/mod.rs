@@ -2125,13 +2125,30 @@ impl Agent {
 
         // 工具执行：同步闭包内用 block_in_place + 当前运行时 block_on 执行
         // run_tool（run_tool 内部已发 ToolCall/ToolResult 事件并写事件日志）。
+        // 外圈超时守卫与内置循环同一口径（`tool_guard_timeout`）——超时只中止
+        // 单个工具、不中断 turn，结果以 notice 喂回模型；被 drop 的 future 已
+        // 记录 ToolCall 事件，补记中断结果保持事件日志成对。
         let result = {
             let this = self;
             let executor = |sid: &str, _branch: &str, call: &crate::llm::ToolCall| {
                 tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current()
-                        .block_on(this.run_tool(sid, branch_id, call))
-                        .text
+                    let handle = tokio::runtime::Handle::current();
+                    let guard = handle.block_on(this.tool_guard_timeout(call));
+                    match handle.block_on(tokio::time::timeout(
+                        guard,
+                        this.run_tool(sid, branch_id, call),
+                    )) {
+                        Ok(result) => result.text,
+                        Err(_) => {
+                            let text = format!(
+                                "notice: tool '{}' timed out after {}s and its execution was aborted. You may retry this tool (e.g. with a shorter command) or continue the answer directly with the information you already have; do not treat this timeout as a fatal failure.",
+                                call.name,
+                                guard.as_secs(),
+                            );
+                            this.record_interrupted_tool_result(sid, branch_id, call, &text, true);
+                            text
+                        }
+                    }
                 })
             };
             // Subagent hook（echo-loop 的 hook 注入接口）：spawn_subagent 的
@@ -2315,10 +2332,9 @@ impl Agent {
         // 随 echo-agent.subagent 插件门控）。这里不得再追加同名动态定义：
         // 同名工具出现两次会让 API 拒绝整个请求（"Tool names must be unique"）。
         let tools = (*self.tools.definitions().await).clone();
-        let config = self.config.read().await;
-        let self_update_enabled = config.self_update.enabled;
-        let sudo_enabled = config.sudo.enabled;
-        drop(config);
+        // （原 self_update_enabled / sudo_enabled 快照随动态工具 schema 注入
+        // 一并删除：工具清单唯一真源 = 注册表；sudo / 自更新的开关判定在各自
+        // 处理点内做，这里不再预热。——2026-09-26 审计清理）
         // max_tool_iterations == 0 still allows one direct reply (without tools).
         let max_iterations = self.config.read().await.max_tool_iterations.max(1);
         // None/0 = 无上限（后端回退 DEFAULT_MAX_TOKENS=128K）。
@@ -2429,27 +2445,9 @@ impl Agent {
                 // unresponsive HTTP call) cannot stall the branch forever.
                 // 超时只是中止单个工具调用，**不中断 turn**：结果以 notice
                 // 形式喂回模型（非 error 前缀），loop 继续，模型可重试或
-                // 直接继续作答。
-                //
-                // 外圈超时尊重工具自声明的超时（Tool::timeout_hint），否则
-                // bash 的 timeout_secs=300 会被默认 120s 的守卫截断。
-                // run_sudo 是 agent 内置编排工具（不在注册表内），其内部已有
-                // 授权+执行双重超时，外圈只需长过两者之和。
-                let tool_timeout = {
-                    let base = self.config.read().await.effective_tool_timeout();
-                    if call.name == "run_sudo" {
-                        let config = self.config.read().await;
-                        std::time::Duration::from_secs(
-                            config.sudo.auth_timeout_secs + config.sudo.command_timeout_secs + 30,
-                        )
-                    } else if call.name == "present_menu" {
-                        // 选单等待用户在 Panel 中选择：外圈守卫必须长过
-                        // 等待窗口本身，否则会在用户选择前把 future drop 掉。
-                        std::time::Duration::from_secs(crate::menu::MENU_WAIT_TIMEOUT_SECS + 30)
-                    } else {
-                        crate::agent::tool_exec::tool_timeout(&self.tools, base, call).await
-                    }
-                };
+                // 直接继续作答。守卫口径与 echo-loop 路径共用，见
+                // `tool_guard_timeout`（配置 base + 工具 timeout_hint + 特判）。
+                let tool_timeout = self.tool_guard_timeout(call).await;
                 let mut timed_out = false;
                 let result = tokio::select! {
                     result = self.run_tool(&session_id, branch_id, call) => result,
@@ -4977,6 +4975,110 @@ pub mod tests {
         unique.sort();
         unique.dedup();
         assert_eq!(names.len(), unique.len(), "duplicate tool names: {names:?}");
+    }
+
+    /// echo-loop 路径的工具超时守卫（2026-09-26 补：此前该路径没有守卫，
+    /// 挂死的工具会永久拖住 turn——内置循环的外圈守卫在 echo-loop 上不生效）。
+    /// 超时后 turn 继续（notice 喂回模型），事件日志补记中断结果、不留悬空调用。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn echo_loop_path_guards_hung_tools_with_timeout() {
+        struct HungTool;
+        #[async_trait::async_trait]
+        impl crate::tool::Tool for HungTool {
+            fn name(&self) -> &str {
+                "hung_tool"
+            }
+            fn description(&self) -> &str {
+                "sleeps far beyond the guard (test)"
+            }
+            async fn execute(
+                &self,
+                _arguments: serde_json::Value,
+            ) -> Result<String, crate::tool::ToolError> {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok("never".into())
+            }
+        }
+
+        let provider = Arc::new(ScriptedProvider::new(vec![
+            ChatResponse {
+                stop_reason: Some("tool_calls".into()),
+                content: None,
+                reasoning_content: None,
+                tool_calls: vec![crate::llm::ToolCall {
+                    id: "call_hung_1".into(),
+                    name: "hung_tool".into(),
+                    arguments: "{}".into(),
+                }],
+                usage: Usage::default(),
+            },
+            ChatResponse {
+                stop_reason: None,
+                content: Some("done".into()),
+                reasoning_content: None,
+                tool_calls: vec![],
+                usage: Usage::default(),
+            },
+        ]));
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(HungTool));
+        let agent = Arc::new(Agent::new(
+            provider.clone(),
+            AgentConfig {
+                // 1s 守卫：挂死工具（60s）必须被中止。
+                tool_timeout_secs: Some(1),
+                ..Default::default()
+            },
+            SkillRegistry::new(),
+            tools,
+            Arc::new(AdapterRegistry::new()),
+        ));
+        let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+            Arc::new(echo_context::EventBus::default()),
+            provider.clone(),
+            Arc::new(echo_loop::ToolPipeline::new()),
+            echo_loop::LoopOptions::default(),
+        ));
+        agent.set_loop_runner(runner);
+        agent.set_use_echo_loop(true);
+
+        let session = agent
+            .trunk
+            .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+        let started = std::time::Instant::now();
+        let reply = agent
+            .process_message(&session, "run the slow tool")
+            .await
+            .unwrap();
+        assert_eq!(reply, "done", "turn must continue after a tool timeout");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "guard must abort the 60s tool long before it finishes: {:?}",
+            started.elapsed()
+        );
+
+        // 模型可见的下一次请求里带超时 notice（turn 未中断）。
+        let requests = provider.requests.lock().await;
+        assert!(requests.len() >= 2, "expected a second model request");
+        let saw_notice = requests[1].messages.iter().any(|message| {
+            message.role == crate::llm::ChatRole::Tool
+                && message.content.contains("timed out after")
+        });
+        assert!(saw_notice, "tool message must carry the timeout notice");
+
+        // 事件日志成对：ToolCall 有对应的（中断）ToolResult，不留悬空调用。
+        let paired = agent.trunk.event_log().iter().any(|event| {
+            matches!(
+                event,
+                echo_session::SessionEvent::ToolResult(result)
+                    if result.tool_call_id == "call_hung_1"
+                        && result.result.contains("timed out after")
+            )
+        });
+        assert!(
+            paired,
+            "interrupted result must be recorded for log pairing"
+        );
     }
 
     #[test]

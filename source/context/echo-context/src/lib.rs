@@ -9,7 +9,7 @@
 //! - [`EventBus`] — typed events with dispatch modes: [`DispatchMode::Observe`]
 //!   (fan-out), [`DispatchMode::Waterfall`] (around-middleware with `next()`
 //!   delegation), [`DispatchMode::Parallel`] (all listeners concurrently),
-//!   [`DispatchMode::Serial`] (in order, first refusal stops). Events are
+//!   [`DispatchMode::Serial`] (in order; currently identical to `Observe` — no short-circuit, no production emitter yet). Events are
 //!   merge-extensible via the [`Event`] trait (the Rust analogue of dsh's
 //!   declaration merging): any new event type is a new `Event` implementor.
 //! - [`ScopedRegistry`] — name-keyed registrations with per-scope shadowing:

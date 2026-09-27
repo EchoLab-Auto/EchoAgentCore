@@ -25,6 +25,9 @@ pub enum DispatchMode {
     /// Run all listeners concurrently, each on its own copy of the event.
     Parallel,
     /// Run listeners in registration order.
+    ///
+    /// 当前实现与 [`Self::Observe`] 行为相同（按序调用、不可短路）；本变体
+    /// 保留给未来需要"首个拒绝即停止"语义的场景（尚无生产发射方）。
     Serial,
 }
 

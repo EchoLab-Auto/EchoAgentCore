@@ -36,6 +36,9 @@ pub struct LoopOptions {
     /// direct reply without tools).
     pub max_tool_iterations: usize,
     /// Per-tool execution timeout.
+    ///
+    /// 注意：工具超时守卫当前由 harness（Agent 侧 `tool_guard_timeout`，
+    /// 内置循环与 echo-loop 共用）统一实施；本字段保留未用。
     pub tool_timeout: std::time::Duration,
     /// 单次模型请求的 completion 预算（max_tokens）。`None` = 无上限
     /// （后端回退到 echo_defs::message::DEFAULT_MAX_TOKENS，128K）。

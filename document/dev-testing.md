@@ -161,3 +161,6 @@ cargo fmt --all --check
 - 压缩摘要前缀双写（`[历史摘要] [历史摘要]`）——投影期幂等渲染，测试锁定。
 - 「重载技能」只作用于管理代理、人格侧不生效——广播全部运行人格修复（`reload_skills_into` 测试锁定）。
 - 更新器 `expected_ids` 与 `BUILTIN_PLUGIN_IDS` 漂移（`orchestration` 移除后残留、更新误报缺 manifest）——`update_script_plugins` 守护测试补齐。
+- echo-loop 驱动路径缺工具超时守卫（挂死工具可永久拖住 turn）——`Agent::tool_guard_timeout` 统一两条路径口径，`echo_loop_path_guards_hung_tools_with_timeout` 测试锁定。
+- `QqAdapterConfig::Default` 与 serde 字段默认分裂（`napcat_auto_stop` 一条 false 一条 true）——`default_matches_serde_field_defaults` 锁定两条默认路径一致。
+- `list_files`/`search_code` 缺相对路径穿越防护（六个文件工具中只有四个有 guard）——补齐并测试（`list_and_search_reject_relative_traversal`）。

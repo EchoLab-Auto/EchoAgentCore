@@ -55,10 +55,10 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 
 ## echo-loop：可替换的默认驱动（TurnRunner）
 
-`echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。组合根经 `ctx.loop` 注册 `TurnRunner`（`LoopOptions`：`max_tokens` 来自配置；`max_tool_iterations`/`tool_timeout` 目前取默认值 1024 / 120s），挂载不同实现即可改变驱动行为；消费方（agent、UI、hook）只依赖生命周期事件。
+`echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。组合根经 `ctx.loop` 注册 `TurnRunner`（`LoopOptions`：`max_tokens` 与 `max_tool_iterations` 来自配置），挂载不同实现即可改变驱动行为；消费方（agent、UI、hook）只依赖生命周期事件。
 
 - **生命周期事件**（全部经 `EventBus` 分发）：`TurnStart` / `AgentPreStep`（waterfall，可改写消息或拒绝 step）/ `StepStart` / `AgentRequest`（waterfall，可改写请求）/ `ToolCallRequested` / `ToolResult` / `StepEnd` / `TurnStopping`（serial）/ `TurnEnd`
-- **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。超时、审批、审计、限流都是注册进管道的中间件，不是循环代码——新策略 = 一次 `push_pre`/`push_post`
+- **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。审批、审计、限流等策略以中间件注册进管道（非循环代码，新策略 = 一次 `push_pre`/`push_post`）；**工具超时守卫**由 harness 侧统一实施（`Agent::tool_guard_timeout`：配置 `tool_timeout_secs` base + 工具自声明 `timeout_hint` + 内置特判），两条驱动路径（内置循环 / echo-loop）同一口径——超时只中止该工具、不中断 turn，结果以 notice 喂回模型，事件日志补记中断结果保持成对
 - 工具经 harness 提供的 `ToolExecutor` 闭包执行，runner 本身不含任何策略代码
 
 ### 实化与分派（插件的运行期效果）
