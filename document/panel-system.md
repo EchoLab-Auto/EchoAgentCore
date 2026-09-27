@@ -48,7 +48,9 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 | 时间线磁盘缓存 | 挂载前 hydrate + 10s 周期落盘；总预算 2.2M 字符、单 team 1.8M 字符 | trunk-cache.ts |
 | TrunkTimeline 快照瘦身 | 近 40 条推理全文、更早截 240 字；静态资源 gzip 协商（≥1KB 文本）+ 弱 ETag/304（HTML no-store、`assets/` 一年 immutable） | timeline.rs / static_files.rs |
 | 推理打字机 | 24ms/tick，约 6s 封顶，≥2 字符/tick；默认折叠 + 推演中限高（180px）滚动钉底 | ReasoningBlock.vue |
-| 消息入场动画 | 0.28s（淡入 + 上移 6px） | ChatView.vue:1449-1456 |
+| 消息入场动画 | 0.28s（淡入 + 上移 6px） | ChatView.vue |
+| 消息列表行距 | 容器 gap 6px；消息气泡另加 3px 边距（气泡间约 12px）；工作行（推理/工具/子代理）紧排 6px | ChatView.vue |
+| 工作行尺寸 | 推理块折叠态 23px / 工具图标行 30×26（间距 4px）/ 子代理委派行 22px | ReasoningBlock.vue / ToolRunGroup.vue / SubagentEventBlock.vue |
 | 滚动跟随阈值 / 让位 | 120px；按钮 180px / 内边距 190px | main.ts:16 / ChatView.vue:1084-1089, 1149-1151 |
 | 图片附件 | 最长边 1600px；JPEG q0.85 / PNG 保格式；待发缩略图 64×64；历史图最大 260×200 | ChatView.vue:524-568, 1226-1257 |
 | 工具输出上限 / 输入摘要截断 | 4000 字符；120 字符（非 JSON 兜底 200） | timeline.ts:47-70 / helpers.ts:11-24 |

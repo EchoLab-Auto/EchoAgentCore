@@ -49,6 +49,7 @@ EchoAgentPanel/
 ## 主视图（聊天）
 
 - `ChatView.vue`：消息列表 + 吸底输入区；自渲染消息行（库 `ChatTray` 容器）拦截扩展角色（reasoning）渲染。
+- `SubagentEventBlock.vue`：子代理委派行（运行中/完成/失败 + 任务摘要，点击展开结论），见 [会话视图](./panel-chat.md)§7.3c。
   消息图片渲染（2026-09-24）：Core 侧的 `/media/<id>` 引用直接 `<img loading=lazy
   decoding=async>`（同源、强缓存）；遗留 data URI 兼容；空串（Core 侧"图片已省略"
   占位）渲染为文字标
