@@ -360,8 +360,8 @@ impl AgentConfig {
     ///   message-count field is deprecated and no longer participates.
     /// - When `context_window_tokens` is set, the result is capped at
     ///   `window × 0.8` so the prompt never exceeds the model window.
-    /// 单次请求输出预算：0 = 无上限（None）；否则 Some(value)。
-    /// 与 Anthropic/OpenAI 兼容端点的默认行为对齐（None 时后端回退 128K）。
+    ///   单次请求输出预算：0 = 无上限（None）；否则 Some(value)。
+    ///   与 Anthropic/OpenAI 兼容端点的默认行为对齐（None 时后端回退 128K）。
     pub fn effective_max_tokens(&self) -> Option<u32> {
         if self.max_tokens == 0 {
             None
@@ -387,6 +387,9 @@ impl AgentConfig {
         std::time::Duration::from_secs(self.tool_timeout_secs.unwrap_or(120))
     }
 }
+
+/// Back-compat alias: TeamMember was previously named AgentProfile.
+pub type AgentProfile = TeamMember;
 
 #[cfg(test)]
 mod tests {
@@ -770,6 +773,3 @@ enabled_plugins = ["echo-agent.adapter.qq"]
         assert!(!out.contains("disabled_plugins"), "serialized: {out}");
     }
 }
-
-/// Back-compat alias: TeamMember was previously named AgentProfile.
-pub type AgentProfile = TeamMember;

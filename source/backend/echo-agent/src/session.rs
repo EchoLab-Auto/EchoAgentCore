@@ -2065,11 +2065,13 @@ mod tests {
     // ── 媒体落盘迁移（2026-09-24）──
     //
     // 这两个用例改的是进程级环境变量 `ECHO_MEDIA_DIR`，必须串行执行。
-    static MEDIA_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // tokio Mutex：其中一个用例是 async（持锁跨 await），std 锁会触发
+    // clippy::await_holding_lock；两者语义一致（仍按进程级环境变量串行）。
+    static MEDIA_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[test]
     fn spill_event_media_migrates_inline_images_to_refs() {
-        let _serial = MEDIA_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = MEDIA_ENV_LOCK.blocking_lock();
         use echo_session::event::{ToolResultEvent, UserMessage};
         let dir = std::env::temp_dir().join(format!(
             "echo-session-media-{}",
@@ -2133,7 +2135,7 @@ mod tests {
 
     #[tokio::test]
     async fn persisted_refs_inline_on_projection_for_model() {
-        let _serial = MEDIA_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = MEDIA_ENV_LOCK.lock().await;
         // 事件日志里存引用（轻量）；投影（模型上下文）出口还原为 data URI。
         let dir = std::env::temp_dir().join(format!(
             "echo-session-inline-{}",

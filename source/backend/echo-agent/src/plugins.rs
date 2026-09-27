@@ -40,8 +40,8 @@ pub const LEGACY_MENU_PLUGIN_ID: &str = "echo-agent.menu";
 ///   `ReplyBranch*` 事件，分支照常执行合并）；
 /// - `loop.parallel`：并行多会话循环——同一会话可并发分支，
 ///   会话列表/全局会话/可见回执分支全套。
-/// 两者 mount 的是同一个 TurnRunner（驱动本体），真实效果是 per-persona
-/// 白名单推导出的 `LoopMode`（见 `TeamMember::loop_mode`）。
+///   两者 mount 的是同一个 TurnRunner（驱动本体），真实效果是 per-persona
+///   白名单推导出的 `LoopMode`（见 `TeamMember::loop_mode`）。
 pub const SINGLE_LOOP_PLUGIN_ID: &str = "echo-agent.loop.single";
 pub const PARALLEL_LOOP_PLUGIN_ID: &str = "echo-agent.loop.parallel";
 

@@ -509,7 +509,7 @@ mod tests {
                 assert_eq!(data.msg_id, "7001");
                 assert_eq!(data.element_id, "e2");
                 assert_eq!(data.file_name, "big.bin");
-                assert_eq!(data.is_dir, false);
+                assert!(!data.is_dir);
             }
             other => panic!("unexpected: {other:?}"),
         }

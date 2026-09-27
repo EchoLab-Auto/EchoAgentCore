@@ -377,6 +377,10 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
     }
 }
 
+fn default_true_agent() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,8 +444,4 @@ mod tests {
             CommandClearance::Agent
         );
     }
-}
-
-fn default_true_agent() -> bool {
-    true
 }

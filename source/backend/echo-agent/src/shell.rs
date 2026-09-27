@@ -127,7 +127,7 @@ impl ShellManager {
                 last_output: None,
             })
             .collect();
-        list.sort_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms));
+        list.sort_by_key(|a| a.created_at_ms);
         list
     }
 
@@ -407,8 +407,7 @@ pub fn shell_emit_for_self(agent: &crate::agent::Agent) -> ShellEmit {
     let agent = unsafe {
         // 调用方持有 agent 引用，且回调在命令处理期间使用——生命周期与
         // apply_command 一致，此处通过原始指针延长（Arc 由组合根持有）。
-        let ptr: *const crate::agent::Agent =
-            std::mem::transmute(agent as *const crate::agent::Agent);
+        let ptr: *const crate::agent::Agent = agent as *const crate::agent::Agent;
         &*ptr
     };
     shell_emit_for(move |event: ShellEvent| {

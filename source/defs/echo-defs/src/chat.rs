@@ -131,7 +131,9 @@ pub struct SendResult {
 #[derive(Debug, Clone)]
 pub enum AdapterEvent {
     /// A new message was received from the platform.
-    MessageReceived(IncomingMessage),
+    ///
+    /// Boxed: `IncomingMessage` is much larger than the other variants.
+    MessageReceived(Box<IncomingMessage>),
     /// Connection state changed.
     ConnectionState {
         adapter_name: String,

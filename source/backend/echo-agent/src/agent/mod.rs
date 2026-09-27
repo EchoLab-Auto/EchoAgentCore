@@ -1332,8 +1332,7 @@ impl Agent {
     }
 
     pub(crate) async fn cancel_requested_work(&self, session_id: &str, all: bool) -> usize {
-        let foreground = self.cancel_inbound_turns(session_id, all);
-        foreground
+        self.cancel_inbound_turns(session_id, all)
     }
 
     /// Commit an inbound event and capture the branch's point-in-time context
@@ -2043,7 +2042,7 @@ impl Agent {
                                 .active_inbound_turns
                                 .get(branch_id)
                                 .map(|turn| turn.cancel.clone())
-                                .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+                                .unwrap_or_default();
                             match tool.spawn(&args, sid, cancel, branch_id) {
                                 Ok(receipt) => receipt,
                                 Err(error) => format!("error: {error}"),
@@ -2454,7 +2453,7 @@ impl Agent {
                                 .active_inbound_turns
                                 .get(branch_id)
                                 .map(|turn| turn.cancel.clone())
-                                .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+                                .unwrap_or_default();
                             tool.spawn(&args, session_id, cancel, branch_id)
                                 .map(crate::tool::ToolResult::text)
                         }
@@ -4969,12 +4968,14 @@ pub mod tests {
     #[test]
     fn probe_config_resolves_active_profile_and_named_profiles() {
         use crate::config::ApiProfile;
-        let mut cfg = crate::config::AgentConfig::default();
-        cfg.provider = "deepseek".into();
-        cfg.model = "deepseek-v4-flash".into();
-        cfg.base_url = "https://api.deepseek.com/anthropic".into();
-        cfg.api_key = "sk-xxx".into();
-        cfg.active_api = "deepseek".into();
+        let mut cfg = crate::config::AgentConfig {
+            provider: "deepseek".into(),
+            model: "deepseek-v4-flash".into(),
+            base_url: "https://api.deepseek.com/anthropic".into(),
+            api_key: "sk-xxx".into(),
+            active_api: "deepseek".into(),
+            ..Default::default()
+        };
         cfg.api_profiles.push(ApiProfile {
             name: "deepseek".into(),
             provider: "deepseek".into(),

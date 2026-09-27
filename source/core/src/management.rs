@@ -104,6 +104,9 @@ async fn serve_with_listener_and_token(
     }
 }
 
+// 回调签名由 tokio-tungstenite 的 `accept_hdr_async` 固定：Err 侧是库的
+// `ErrorResponse`（`http::Response<Option<String>>`），无法装箱缩小。
+#[allow(clippy::result_large_err)]
 async fn handle_connection(
     stream: tokio::net::TcpStream,
     events: Arc<EventBroker>,

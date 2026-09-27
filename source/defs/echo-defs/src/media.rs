@@ -111,7 +111,7 @@ mod tests {
         let payload = "A".repeat(400);
         let uri = data_uri(&payload);
         let text = format!("{{\"content\":\"看图\",\"images\":[\"{uri}\"]}}");
-        let compacted = compact_embedded_media(&text, &[uri.clone()]);
+        let compacted = compact_embedded_media(&text, std::slice::from_ref(&uri));
         assert!(compacted.contains("[图片#1]"), "{compacted}");
         assert!(!compacted.contains("AAAAAAAA"), "payload removed");
         // 结构其余部分保持不变，仍是可读 JSON。
@@ -146,7 +146,7 @@ mod tests {
     fn compaction_is_idempotent() {
         let uri = data_uri(&"D".repeat(500));
         let text = format!("x {uri} y");
-        let once = compact_embedded_media(&text, &[uri.clone()]);
+        let once = compact_embedded_media(&text, std::slice::from_ref(&uri));
         let twice = compact_embedded_media(&once, &[uri]);
         assert_eq!(once, twice);
     }

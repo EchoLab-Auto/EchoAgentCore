@@ -684,7 +684,7 @@ impl Agent {
                 // 大小猜测（全量误当增量会整段重复，空增量误当全量会清空聊天）。
                 let (messages, seq, full) = if let Some(ref id) = team_id {
                     match crate::agent_manager::global_manager() {
-                        Some(mgr) => match mgr.resolve(Some(&id)) {
+                        Some(mgr) => match mgr.resolve(Some(id)) {
                             Some(agent) => {
                                 if since_seq > 0 {
                                     match agent.trunk.timeline_snapshot_since(since_seq) {
@@ -860,7 +860,7 @@ impl Agent {
             } => match crate::agent_manager::global_manager() {
                 Some(mgr) => {
                     let profile = crate::config::AgentProfile {
-                        system_skills: system_skills,
+                        system_skills,
                         name,
                         description,
                         system_prompt,

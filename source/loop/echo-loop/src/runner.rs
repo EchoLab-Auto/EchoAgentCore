@@ -87,6 +87,7 @@ pub type AsyncToolExecutor<'a> = &'a (dyn Fn(
 /// loop 拥有"先管线拦截、后回退注册表"的分派点——不在 agent 层的
 /// `run_tool` 里硬编码特判；其他异步编排工具将来复用同一组钩子。
 /// 默认实现全部 no-op（无异步编排工具时零成本）。
+#[derive(Default)]
 pub struct SubagentToolHooks<'a> {
     /// 判断某工具是否应由异步通道处理（如 `spawn_subagent`）。
     pub is_async_tool: Option<&'a (dyn Fn(&str) -> bool + Send + Sync)>,
@@ -107,16 +108,6 @@ impl std::fmt::Debug for SubagentToolHooks<'_> {
                 &self.extra_tool_definitions.is_some(),
             )
             .finish()
-    }
-}
-
-impl Default for SubagentToolHooks<'_> {
-    fn default() -> Self {
-        Self {
-            is_async_tool: None,
-            execute_async: None,
-            extra_tool_definitions: None,
-        }
     }
 }
 
@@ -178,6 +169,9 @@ impl TurnRunner {
     /// `execute_tool` is the harness's tool executor (called through the
     /// pipeline). `history` is the point-in-time model context; the runner
     /// appends assistant/tool messages to it as steps progress.
+    // 8 个参数：turn 的入参就是这么多；合并成新结构体属于公共 API 重构，
+    // 不在本次 clippy 清理范围内（行为不变）。
+    #[allow(clippy::too_many_arguments)]
     pub async fn run(
         &self,
         session_id: &str,
@@ -342,7 +336,6 @@ impl TurnRunner {
                 );
                 let session_id_owned = session_id.to_string();
                 let call_for_executor = call.clone();
-                let execute_tool = execute_tool.clone();
                 let is_async_tool = extras.subagent_hooks.is_async_tool;
                 let execute_async = extras.subagent_hooks.execute_async;
                 let result = self
@@ -350,7 +343,6 @@ impl TurnRunner {
                     .run(call, move || {
                         let session_id = session_id_owned.clone();
                         let call = call_for_executor.clone();
-                        let execute_tool = execute_tool.clone();
                         Box::pin(async move {
                             if is_async_tool.is_some_and(|f| f(&call.name)) {
                                 if let Some(exec) = execute_async {

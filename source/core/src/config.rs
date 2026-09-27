@@ -200,7 +200,6 @@ impl Default for CoreSection {
 ///    配置的门控与循环模式行为不变；黑名单字段自此不再参与判定。
 ///
 /// 返回迁移/警告说明（load 期打印；纯函数便于测试断言）。
-
 impl CoreConfig {
     /// Load the Core config file and apply environment-variable overrides.
     pub fn load(path: &Path) -> Result<Self> {

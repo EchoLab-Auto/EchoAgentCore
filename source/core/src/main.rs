@@ -876,12 +876,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         loop {
             interval.tick().await;
             while let Some(cmd) = pump_handle.try_recv_command() {
-                let target = match &cmd {
-                    // 所有命令统一交核心服务代理；聊天/取消类由它在
-                    // `apply_command` 内按 team_id 路由（缺失 → 明确报错，
-                    // 不再有"默认人格"兜底）。
-                    _ => Arc::clone(&pump_core),
-                };
+                // 所有命令统一交核心服务代理；聊天/取消类由它在
+                // `apply_command` 内按 team_id 路由（缺失 → 明确报错，
+                // 不再有"默认人格"兜底）。
+                let target = Arc::clone(&pump_core);
                 let branch_target = Arc::clone(&target);
                 tokio::spawn(async move {
                     branch_target.apply_command(cmd).await;

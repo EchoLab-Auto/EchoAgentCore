@@ -325,9 +325,11 @@ mod tests {
 
     #[test]
     fn legacy_single_instance_keeps_ports_and_id() {
-        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
-        shared.enabled = true;
-        shared.napcat_auto_start = false;
+        let shared = echo_adapter_qq::QqAdapterConfig {
+            enabled: true,
+            napcat_auto_start: false,
+            ..Default::default()
+        };
         let instances = resolve_instances_in(&shared, &BTreeMap::new(), &[], "alix", None);
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].id, DEFAULT_INSTANCE);
@@ -345,11 +347,13 @@ mod tests {
 
     #[test]
     fn legacy_instance_keeps_shared_container_and_urls() {
-        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
-        shared.enabled = true;
-        shared.napcat_auto_start = false;
-        shared.napcat_container = "my-napcat".into();
-        shared.napcat_onebot_url = "http://10.0.0.5:3000".into();
+        let shared = echo_adapter_qq::QqAdapterConfig {
+            enabled: true,
+            napcat_auto_start: false,
+            napcat_container: "my-napcat".into(),
+            napcat_onebot_url: "http://10.0.0.5:3000".into(),
+            ..Default::default()
+        };
         let instances = resolve_instances_in(&shared, &BTreeMap::new(), &[], "alix", None);
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].config.napcat_container, "my-napcat");
@@ -361,9 +365,11 @@ mod tests {
 
     #[test]
     fn auto_instance_derives_container_and_urls_from_ports() {
-        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
-        shared.enabled = true;
-        shared.napcat_auto_start = false;
+        let shared = echo_adapter_qq::QqAdapterConfig {
+            enabled: true,
+            napcat_auto_start: false,
+            ..Default::default()
+        };
         // legacy 归属默认人格 a；b 由自动建档覆盖 → 取 b 断言派生值。
         let personas = vec!["a".to_string(), "b".to_string()];
         let instances = resolve_instances_in(&shared, &BTreeMap::new(), &personas, "a", None);
@@ -385,9 +391,11 @@ mod tests {
 
     #[test]
     fn auto_creates_instance_per_enabled_persona() {
-        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
-        shared.enabled = true;
-        shared.napcat_auto_start = false;
+        let shared = echo_adapter_qq::QqAdapterConfig {
+            enabled: true,
+            napcat_auto_start: false,
+            ..Default::default()
+        };
         let personas = vec!["alix".to_string(), "self-coding".to_string()];
         let instances = resolve_instances_in(&shared, &BTreeMap::new(), &personas, "alix", None);
         // legacy 实例 + self-coding 自动实例（alix 已被 legacy 覆盖）
@@ -398,9 +406,11 @@ mod tests {
 
     #[test]
     fn two_personas_get_distinct_ports_and_containers() {
-        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
-        shared.enabled = true;
-        shared.napcat_auto_start = false;
+        let shared = echo_adapter_qq::QqAdapterConfig {
+            enabled: true,
+            napcat_auto_start: false,
+            ..Default::default()
+        };
         // legacy 实例归属 a（默认人格），b 自动建档 → 恰好 2 个实例
         let personas = vec!["a".to_string(), "b".to_string()];
         let instances = resolve_instances_in(&shared, &BTreeMap::new(), &personas, "a", None);
@@ -429,9 +439,11 @@ mod tests {
     /// id `qq` 与共享容器/端口——否则"首个实例被挤出配置表"后归属会漂移。
     #[test]
     fn default_persona_keeps_legacy_id_when_other_instances_persisted() {
-        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
-        shared.enabled = true;
-        shared.napcat_auto_start = false;
+        let shared = echo_adapter_qq::QqAdapterConfig {
+            enabled: true,
+            napcat_auto_start: false,
+            ..Default::default()
+        };
         let mut sections = BTreeMap::new();
         sections.insert(
             "alix".to_string(),
@@ -470,9 +482,11 @@ mod tests {
 
     #[test]
     fn explicit_instance_wins_over_auto_creation() {
-        let mut shared = echo_adapter_qq::QqAdapterConfig::default();
-        shared.enabled = true;
-        shared.napcat_auto_start = false;
+        let shared = echo_adapter_qq::QqAdapterConfig {
+            enabled: true,
+            napcat_auto_start: false,
+            ..Default::default()
+        };
         let mut sections = BTreeMap::new();
         sections.insert(
             "qq2".to_string(),

@@ -45,7 +45,7 @@ impl echo_server::Handler for QqHandler {
         let event_group_id = event
             .as_message()
             .and_then(|msg| msg.group_id())
-            .or_else(|| match event {
+            .or(match event {
                 OneBotEvent::Notice {
                     inner: NoticeEvent::GroupUpload { group_id, .. },
                 } => Some(*group_id),
@@ -366,7 +366,7 @@ impl QqHandler {
             }
         } else {
             // No hook — forward to subscribers.
-            let adapter_event = AdapterEvent::MessageReceived(msg);
+            let adapter_event = AdapterEvent::MessageReceived(Box::new(msg));
             let subs = self.inner.subscribers.lock().expect("subs poisoned");
             for tx in subs.iter() {
                 let _ = tx.send(adapter_event.clone());
