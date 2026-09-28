@@ -160,7 +160,7 @@ async fn read_loop(
                 missed_heartbeats = 0;
                 handle_message(message, api_tx, pending, event_tx, conn_id);
             }
-            Ok(Some(Err(e))) => return Err(EchoServerError::WebSocket(e)),
+            Ok(Some(Err(e))) => return Err(EchoServerError::WebSocket(Box::new(e))),
             Ok(None) => {
                 info!(conn = %conn_id, "connection closed by peer");
                 return Ok(());

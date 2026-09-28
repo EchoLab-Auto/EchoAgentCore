@@ -44,7 +44,7 @@ pub(crate) fn invalid_tool_arguments(
     let missing: Vec<&str> = match args.as_object() {
         Some(obj) => required
             .iter()
-            .filter(|field| obj.get(**field).map_or(true, |v| v.is_null()))
+            .filter(|field| obj.get(**field).is_none_or(|v| v.is_null()))
             .copied()
             .collect(),
         None => required.clone(),

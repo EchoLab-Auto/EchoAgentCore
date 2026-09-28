@@ -5,7 +5,7 @@ pub enum EchoServerError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("WebSocket error: {0}")]
-    WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
+    WebSocket(Box<tokio_tungstenite::tungstenite::Error>),
     #[error("invalid handshake: {0}")]
     Handshake(&'static str),
     #[error("authentication failed")]
@@ -18,6 +18,14 @@ pub enum EchoServerError {
     ApiTimeout,
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+}
+
+impl From<tokio_tungstenite::tungstenite::Error> for EchoServerError {
+    fn from(error: tokio_tungstenite::tungstenite::Error) -> Self {
+        // 装箱：tungstenite::Error 变体 >128B，直接内联会让 Result 过大
+        // （clippy::result_large_err，rust 1.98 起默认拒绝）。
+        Self::WebSocket(Box::new(error))
+    }
 }
 
 #[cfg(test)]

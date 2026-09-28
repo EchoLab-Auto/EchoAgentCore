@@ -756,9 +756,7 @@ impl Agent {
                 // 技能目录插件：整表启停。启用时只放开名单内的技能。
                 let names = skills.names();
                 for name in &names {
-                    let ok = cap
-                        .as_ref()
-                        .map_or(true, |p| persona_skill_allowed(p, name));
+                    let ok = cap.as_ref().is_none_or(|p| persona_skill_allowed(p, name));
                     skills.set_enabled(name, enabled && ok);
                 }
                 names.len()

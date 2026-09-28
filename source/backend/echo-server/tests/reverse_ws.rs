@@ -58,6 +58,9 @@ async fn start_server(
 }
 
 /// Connect a mock NapCat with the given self id.
+// Err 类型由 tokio-tungstenite 固定（`tungstenite::Error`，>128B，无法装箱——
+// 调用方要匹配 `Error::Http(_)` 变体）；clippy 1.98 的 result_large_err 在此豁免。
+#[allow(clippy::result_large_err)]
 async fn connect_mock_napcat(
     addr: std::net::SocketAddr,
     self_id: &str,

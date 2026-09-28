@@ -1297,7 +1297,7 @@ impl Adapter for QqAdapter {
         let age = tokio::task::spawn_blocking(move || NapCatClient::qrcode_age_secs(&probe))
             .await
             .map_err(|e| format!("qrcode probe task failed: {e}"))?;
-        let stale = age.map_or(true, |age| age > QR_MAX_AGE_SECS);
+        let stale = age.is_none_or(|age| age > QR_MAX_AGE_SECS);
         if stale {
             let client = NapCatClient::new(&webui_url);
             match client.refresh_qrcode(&container).await {

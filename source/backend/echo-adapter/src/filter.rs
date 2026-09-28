@@ -295,7 +295,7 @@ impl MessageFilter for RateLimitFilter {
         {
             use std::sync::atomic::{AtomicUsize, Ordering};
             static CLEANUP: AtomicUsize = AtomicUsize::new(0);
-            if CLEANUP.fetch_add(1, Ordering::Relaxed) % 200 == 0 {
+            if CLEANUP.fetch_add(1, Ordering::Relaxed).is_multiple_of(200) {
                 state.users.retain(|_, v| !v.is_empty());
                 state.groups.retain(|_, v| !v.is_empty());
             }

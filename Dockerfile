@@ -16,7 +16,7 @@
 # The Panel frontend is not part of this image; it lives in the
 # EchoAgentPanel repository（同样有 Dockerfile）并以 WebSocket :3132 连接本服务。
 
-FROM rust:1.92-bookworm AS builder
+FROM rust:1.98-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY source ./source

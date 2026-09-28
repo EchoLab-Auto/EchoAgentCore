@@ -212,7 +212,7 @@ async fn handle_connection(
             TungsteniteError::Http(resp) if resp.status() == StatusCode::UNAUTHORIZED => {
                 EchoServerError::AuthFailed
             }
-            other => EchoServerError::WebSocket(other),
+            other => EchoServerError::WebSocket(Box::new(other)),
         })?;
 
     let (self_id, role) = captured.ok_or(EchoServerError::Handshake("missing request headers"))?;
