@@ -10,7 +10,7 @@ y: 2047
 
 ## 注册与分发
 
-- `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（echo-agent）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
+- `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（echo-agent，`packages/tool/`）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
 - 注册是可逆副作用：`register_reversible` 返回 `Disposer`，插件卸载即撤销
 - `run_tool` 统一分派：`spawn_subagent`（异步委派受理）由 agent 内联分派；其余工具走注册表
 

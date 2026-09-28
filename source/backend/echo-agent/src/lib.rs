@@ -22,7 +22,6 @@ pub mod plugins;
 pub mod session;
 pub mod shell;
 pub mod timeline;
-pub mod tool;
 
 /// 各「包」（插件）实现的聚合目录（按插件名分目录，2026-09-28 重组；
 /// 物理组织，不新增公开路径——见下方兼容 re-export 与模块自身文档）。
@@ -35,6 +34,7 @@ pub use packages::provider_llm as llm;
 pub use packages::skills_dir as skill;
 pub use packages::skills_dir::install as skill_install;
 pub use packages::subagent;
+pub use packages::tool;
 pub use packages::workspace;
 
 pub use agent::{Agent, EventSink};

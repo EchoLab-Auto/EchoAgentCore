@@ -38,7 +38,7 @@ EchoAgentCore/
 │   │   ├── echo-core/            # OneBot v11 协议类型（纯类型，无 I/O）
 │   │   ├── echo-server/          # 反向 WebSocket 服务器（NapCat 接入）
 │   │   ├── echo-adapter/         # 适配器抽象 + 过滤管道 + ConfigStore
-│   │   ├── echo-agent/           # Agent 框架（LLM、工具、技能、会话/trunk 记忆；packages/ 按插件分包）
+│   │   ├── echo-agent/           # Agent 框架（packages/ 第一层按插件分包；packages/tool/ 为工具注册表机制）
 │   │   ├── echo-adapter-qq/      # QQ/OneBot 适配器（门控、NapCat 客户端）
 │   │   └── echo-test-utils/      # 共享测试 mock（仅 dev-dependency）
 │   └── core/                     # echo-agent-core 二进制（组合根）
