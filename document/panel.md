@@ -62,6 +62,8 @@ EchoAgentPanel/
 - `PanelSidebar.vue`：边栏卡片栈（RailStack：连接状态 / 文件浏览器 / Shell / 临时分支；
   `side` 区分左右两列、上下排列、可折叠、分隔条拖动、**卡片可拖到另一列**（拖动机制
   与动画见 [会话视图](./panel-chat.md)§7.8；归属与顺序持久化在 `rail-layout.ts`））
+- `WorkspaceFileBrowser.vue`：文件浏览器卡内容（只读；多根切换 chip 悬停**速览绝对
+  路径**——Teleport 到 body 的 fixed 速览，绕开卡体滚动容器裁剪，见 [会话视图](./panel-chat.md)§7.8）
 - `RailDragGhost.vue`：拖动拖影（Teleport 到 body，跟随指针 + 落位飞行）
 - `ConnectionStatusCard.vue`（2026-09-23 从顶栏迁入）：Core 管理通道状态点 + QQ
   适配器逐实例运行态（`已连接`/`等待连接`/`已停止`）；断连时附重连提示。

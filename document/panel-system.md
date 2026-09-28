@@ -59,7 +59,7 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 | 设置视图 | 一级菜单 168px；条目列表 250px；API 概览 ≤720px（表单按需展开）；智能体编辑器 = 头部卡 + 3 折叠分区（默认展开前两个） | SettingsView.vue / ApiSettings.vue |
 | 入口行弹出层 | 宽 `min(520px, 82vw)`；无全屏遮罩 | ChatView.vue |
 | 入口行按钮 | ui-frame `NeumorphismButton`（glass/pill/small；`--nm-glass-bg` 45% 更透 + blur 24px）；清单徽标 `NeumorphismBadge` | ChatView.vue |
-| z-index | 清单浮层 3；Agent 菜单 30；模态/Toast 库管理 | styles.css:339 / AgentSwitcher.vue:217 |
+| z-index 阶梯 | 边栏列 4 / 输入区与「回到底部」5 / 入口行 6 / 清单浮层 25 / Agent 菜单 30（设置视图同段 30–31）/ 根 chip 速览 40 / 浮层遮罩 50 / 拖动幽灵 200；模态与 Toast 由库统一分配 | ChatView.vue / WorkspaceFileBrowser.vue / AgentSwitcher.vue / RailDragGhost.vue |
 | Agent 切换器 | 卡片高 34px；菜单 min-width 220px、max-height `min(60vh, 100vh-200px)` | AgentSwitcher.vue:140-233 |
 | 轮询：日志 / 任务耗时 | 5s / 1s | LogView:48 / TasksPanel:70-84（QQ 登录状态为 WS 事件驱动，无轮询） |
 | HTTP 超时 | 10s | api.ts:4 |

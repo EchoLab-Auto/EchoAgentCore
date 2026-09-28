@@ -176,7 +176,7 @@ graph LR
 | 卡片 | 内容 | 门控 |
 |---|---|---|
 | 连接状态 | `ConnectionStatusCard`：Core 管理通道状态点（`已连接` / `连接中…`，断连时附「与 Core 断开，正在自动重连（期间命令不会发送）」）+「QQ 适配器」分组逐实例列出显示名 / 自登号 / 运行态（`已连接` / `等待连接` / `已停止`）——实例连接态顶栏一行放不下，故随卡片迁入；**紧凑卡**（`compact: true`：固定高度、不参与 flex 分配，也不参与分隔条拖动比例） | 常驻（2026-09-23 从顶栏中段迁入） |
-| 文件浏览器 | `WorkspaceFileBrowser`（只读浏览激活工作区会话的目录：多根切换 chip、面包屑导航、目录下钻/回退、文件大小；`RequestWorkspaceFiles` → `WorkspaceFiles`，服务端 canonical 前缀校验限定在会话目录及子孙内）+「会话管理与 git 状态 →」链接（打开 §7.7 工作区弹层） | `echo-agent.workspace` 插件与 `workspace` 工具均可用，且存在激活的工作区会话 |
+| 文件浏览器 | `WorkspaceFileBrowser`（只读浏览激活工作区会话的目录：多根切换 chip、面包屑导航、目录下钻/回退、文件大小；`RequestWorkspaceFiles` → `WorkspaceFiles`，服务端 canonical 前缀校验限定在会话目录及子孙内）+「会话管理与 git 状态 →」链接（打开 §7.7 工作区弹层）。**根 chip 悬停速览（2026-09-28）**：chip 只显示 basename（多根同名如两个 `source/` 时无法区分），悬停即显示**绝对路径**——自绘速览经 `Teleport` 到 `body` + `position: fixed`（绕开 rail 卡体 `overflow-y: auto` 的裁剪；不用原生 `title`，约 1s 延迟且长路径被系统截断）；视口内夹取 + 顶部空间不足时翻到 chip 下方，滚动/缩放即收起；`z-index 40`（高于边栏 4/入口行 6/清单浮层 25，低于浮层遮罩 50） | `echo-agent.workspace` 插件与 `workspace` 工具均可用，且存在激活的工作区会话 |
 | Shell | `ShellList` 会话列表：状态点 + 会话 id + 目录 + 命令数 +「详情」按钮，附新建/刷新；**不内嵌终端**——点「详情」经 `openShellDetail` 事件链进入 Shell 详情视图（`ShellPanel`：仅目标会话的终端 + 输入行 + 返回列表/停止会话；无顶栏导航入口） | 常驻 |
 | 临时分支 | 运行中的回执分支列表（点选打开 BranchModal） | 仅并行多会话模式（单会话模式 Core 不发 ReplyBranch* 事件） |
 
