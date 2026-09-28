@@ -51,7 +51,7 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 | 消息入场动画 | 0.28s（淡入 + 上移 6px） | ChatView.vue |
 | 消息列表行距 | 容器 gap 6px；消息气泡另加 3px 边距（气泡间约 12px）；工作行（推理/工具/子代理）紧排 6px | ChatView.vue |
 | 工作行尺寸 | 推理块折叠态 23px / 工具图标行 30×26（间距 4px）/ 子代理委派行 22px | ReasoningBlock.vue / ToolRunGroup.vue / SubagentEventBlock.vue |
-| 滚动跟随阈值 / 让位 | 120px；按钮 180px / 内边距 190px | main.ts:16 / ChatView.vue:1084-1089, 1149-1151 |
+| 滚动跟随阈值 / 让位 | 120px；「回到底部」按钮 `right = trayPadRight + 16 / bottom = entryBottom + 45`（浮层打开时隐藏）；内边距 190px | main.ts / ChatView.vue |
 | 图片附件 | 最长边 1600px；JPEG q0.85 / PNG 保格式；待发缩略图 64×64；历史图最大 260×200 | ChatView.vue:524-568, 1226-1257 |
 | 工具输出上限 / 输入摘要截断 | 4000 字符；120 字符（非 JSON 兜底 200） | timeline.ts:47-70 / helpers.ts:11-24 |
 | 输入区最大高度 | `calc(8em + 20px)` | ChatView.vue:1331-1333 |
