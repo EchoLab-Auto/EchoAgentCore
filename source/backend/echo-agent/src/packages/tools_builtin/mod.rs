@@ -11,7 +11,7 @@ pub mod websearch;
 ///
 /// 每个工具打上 `echo-agent.tools.builtin` 包标签：插件
 /// `echo-agent.tools.builtin` 的启停按包批量生效（见
-/// [`ToolRegistry::set_package_enabled`]）。
+/// [`crate::tool::ToolRegistry::set_package_enabled`]）。
 pub fn register_all(
     registry: &mut crate::tool::ToolRegistry,
     adapters: std::sync::Arc<echo_adapter::AdapterRegistry>,

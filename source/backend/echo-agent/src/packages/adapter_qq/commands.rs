@@ -245,7 +245,8 @@ impl Agent {
                         let name = ad.name().to_string();
                         match ad.login_qrcode_png().await {
                             Ok(png) => {
-                                let encoded = crate::agent::qq_commands::encode_base64(&png);
+                                let encoded =
+                                    crate::packages::adapter_qq::commands::encode_base64(&png);
                                 self.emit(BackendEvent::QqQrcode {
                                     adapter: name,
                                     png_base64: encoded,

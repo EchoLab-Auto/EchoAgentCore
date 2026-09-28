@@ -30,7 +30,7 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
 1. 模型调用 `spawn_subagent`（task + 可选 timeout_secs）——**同步受理**：
    注册进 `SubagentStore`（携带主 turn 的取消令牌子令牌）并立即返回
    子任务 id 回执；子任务在后台以隔离上下文执行
-2. 子 turn 走独立循环（`subagent.rs::run_subagent_turn`：与主循环同源的
+2. 子 turn 走独立循环（`packages/subagent/mod.rs::run_subagent_turn`：与主循环同源的
    迭代/截断续跑/取消语义，但**不回写 trunk**、不发会话级 LLM 事件）
 3. 完成/失败/超时/取消 → 发射 `SubagentCompleted`，并把结论包进
    `<subagent_event>` hook 经 `dispatch_subagent_hook` 注入主会话——
@@ -63,7 +63,7 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
 
 子任务完成通知与 QQ 消息/定时器同族：**结构化 hook → 新入站 turn**。
 `<subagent_event>` 包装与解析由 `input_marker` 同族的
-`subagent.rs::wrap_subagent_event` 承担。
+`packages/subagent/mod.rs::wrap_subagent_event` 承担。
 
 异步编排工具接入 echo-loop 的接口是 `SubagentToolHooks`
 （`source/loop/echo-loop/src/runner.rs`，由 `process_via_echo_loop` 装配进
@@ -115,7 +115,7 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
 
 ## 测试守护
 
-- 单元（`subagent.rs`）：受理注册/回执、空任务纠正性拒绝、超时钳制、
+- 单元（`packages/subagent/mod.rs`）：受理注册/回执、空任务纠正性拒绝、超时钳制、
   结果截断、cancel_all 幂等、hook 信封结构
 - 集成（`tests/agent_integration.rs`）：装配前后工具可见性、端到端
   「spawn → 子任务执行 → SubagentStarted/Completed → hook 入站」、

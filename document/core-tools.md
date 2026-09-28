@@ -17,7 +17,7 @@ y: 2047
 ## 文件工具的路径约定（2026-09-24）
 
 `read_file` / `list_files` / `search_code` / `write_file` / `edit_file` 共用同一
-套路径解析（`tool/builtin/coding.rs::resolve_tool_path`）：
+套路径解析（`packages/tools_builtin/coding.rs::resolve_tool_path`）：
 
 - **相对路径**：相对工作区（Core 进程 cwd）解析，解析结果必须落在工作区内
   （`guard_relative_path`：canonicalize 目标或最近的已存在祖先；`../..` 逃逸、

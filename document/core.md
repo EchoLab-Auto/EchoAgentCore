@@ -9,7 +9,7 @@ link: ["core-agents | 多 Agent 与会话 | r>l", "core-plugins | 插件化设�
 
 # Core 框架
 
-Core（EchoAgentCore）是 Agent 后端核心服务，Rust 实现。组合根在 `source/core/src/main.rs`，核心库为 `source/backend/echo-agent`，协议定义在 `source/protocol/echo-protocol`。
+Core（EchoAgentCore）是 Agent 后端核心服务，Rust 实现。组合根在 `source/core/src/main.rs`，核心库为 `source/backend/echo-agent`（框架核心在 `agent/`，各插件实现按包分目录在 `packages/`，见 [插件化设计](./core-plugins.md)），协议定义在 `source/protocol/echo-protocol`。
 
 ## 进程结构
 

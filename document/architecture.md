@@ -117,7 +117,7 @@ graph BT
 
 ## 命令分发
 
-- QQ 命令域独立：`apply_qq_command`（`agent/qq_commands.rs`）承载名单/门控/群列表/好友列表等 QQ 变体，主 `apply_command` 的对应分支为一行委托，核心分支原地保留
+- QQ 命令域独立：`apply_qq_command`（`packages/adapter_qq/commands.rs`）承载名单/门控/群列表/好友列表等 QQ 变体，主 `apply_command` 的对应分支为一行委托，核心分支原地保留
 - `CommandRegistry` + `CommandHandler` trait（dyn-compatible，async）是开放命令扩展点的基础设施：封闭枚举 `BackendCommand` 下编译器 match 完备性仍由主分发器承担，注册表留待协议开放后承载外部命令插件
 
 ## 结构化输入标记

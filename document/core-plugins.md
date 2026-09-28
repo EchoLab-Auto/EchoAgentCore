@@ -52,6 +52,15 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.subagent` | Tool | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./core-subagent.md)） |
 | `echo-agent.management.panel` | Management | 管理面：management WS 桥接（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
 
+> **框架侧实现位置（2026-09-28 重组）**：echo-agent crate 内按插件分包到
+> `src/packages/<name>/`——`tools_builtin`（内置工具）/ `skills_dir`（技能注册表 +
+> Git 安装）/ `adapter_qq`（入站 hook 桥 + QQ 命令域）/ `workspace`（会话存储/工具 +
+> 命令域）/ `subagent` / `provider_llm`（provider 工厂）。`loop.{single,parallel}` 的
+> 实现是 `echo-loop` crate（echo-agent 只做驱动接线）；`management.panel` 是
+> echo-protocol（线协议，见 [协议与数据流](./protocol.md)）+ echo-agent-core
+> （`source/core/src/management.rs`）。目录只服务物理区分，公开路径保持原样
+> （`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export）。
+
 > 以上 9 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单（`BUILTIN_PLUGIN_IDS` 为 `[&str; 9]`）。选单（present_menu）已废弃移除（2026-09）；任务清单（checklist）为普通内置工具。
 
 ## 能力开关（per-persona）

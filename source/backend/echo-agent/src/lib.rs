@@ -1,15 +1,16 @@
 //! EchoAgentCore agent framework.
 //!
-//! Core abstractions: [`LlmProvider`](llm::LlmProvider), [`Tool`](tool::Tool),
-//! [`Skill`](skill::Skill), and the [`Agent`](agent::Agent) loop that composes
-//! them.
+//! Core abstractions: [`LlmProvider`], [`Tool`], [`Skill`], and the [`Agent`]
+//! loop that composes them.
+//!
+//! 物理布局：框架核心在 `agent/` 等顶层模块；各「包」（插件）的实现按插件名
+//! 收拢在 `packages/`（见该模块文档的目录 ↔ 插件 id 映射表）。
 //!
 //! Communicates with the outside world (TUI, API) through the
 //! [`BackendBridge`] / [`BackendHandle`] mpsc channel pair.
 //!
 //! Platform adapters are managed through [`echo_adapter::AdapterRegistry`].
 
-pub mod adapter_bridge;
 pub mod agent;
 pub mod agent_manager;
 pub mod bridge;
@@ -17,18 +18,25 @@ pub mod command;
 pub mod config;
 pub mod event;
 pub mod input_marker;
-pub mod llm;
 pub mod plugins;
 pub mod session;
 pub mod shell;
-pub mod skill;
-pub mod skill_install;
-pub mod subagent;
 pub mod timeline;
 pub mod tool;
-pub mod workspace;
 
-pub use adapter_bridge::AgentMessageHook;
+/// 各「包」（插件）实现的聚合目录（按插件名分目录，2026-09-28 重组；
+/// 物理组织，不新增公开路径——见下方兼容 re-export 与模块自身文档）。
+mod packages;
+
+// ── 包（插件）实现的兼容 re-export：公开路径保持重组前原样，避免破坏
+//    core 组合根与既有引用（`echo_agent::subagent::…` 等）。──
+pub use packages::adapter_qq::bridge as adapter_bridge;
+pub use packages::provider_llm as llm;
+pub use packages::skills_dir as skill;
+pub use packages::skills_dir::install as skill_install;
+pub use packages::subagent;
+pub use packages::workspace;
+
 pub use agent::{Agent, EventSink};
 pub use agent_manager::AgentManager;
 pub use bridge::{create_bridge, BackendBridge, BackendHandle, FanoutHandle};
@@ -38,7 +46,8 @@ pub use event::{
     ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, GroupInfo, SessionInfo,
     TimelineMessage, TimelineSource, TimelineTool,
 };
-pub use llm::LlmProvider;
+pub use packages::adapter_qq::bridge::AgentMessageHook;
+pub use packages::provider_llm::LlmProvider;
+pub use packages::skills_dir::{Skill, SkillRegistry};
 pub use session::{Session, SessionKey, TrunkStore};
-pub use skill::{Skill, SkillRegistry};
 pub use tool::{Tool, ToolRegistry};

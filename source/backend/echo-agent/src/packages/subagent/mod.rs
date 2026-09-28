@@ -10,7 +10,7 @@
 //! 模块构成：
 //! - [`SubagentStore`]：运行中子任务注册表（取消句柄 + 任务快照，TTL 清扫）
 //! - [`SpawnSubagentTool`]：模型可见工具（异步拉起，立即返回 id）
-//! - [`crate::agent::Agent::run_subagent_hook`]：完成 hook 的注入入口
+//! - `crate::agent::Agent::dispatch_subagent_hook`：完成 hook 的注入入口
 //!
 //! 设计文档见 `document/core-subagent.md`。
 
@@ -174,7 +174,7 @@ impl SubagentStore {
 ///
 /// 异步语义：调用立即返回子任务 id；子任务在后台以隔离上下文执行，完成时
 /// 经 `<subagent_event>` hook 作为**新的入站分支**通知主 agent（见
-/// [`crate::agent::Agent::run_subagent_hook`]）——主 turn 不等待，也不会因
+/// `crate::agent::Agent::dispatch_subagent_hook`）——主 turn 不等待，也不会因
 /// 子任务的中间过程消耗上下文。
 pub struct SpawnSubagentTool {
     store: Arc<SubagentStore>,

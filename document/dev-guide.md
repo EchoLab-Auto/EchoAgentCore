@@ -40,7 +40,11 @@ EchoAgentCore/
 │   │   ├── echo-core/         # OneBot v11 协议类型
 │   │   ├── echo-server/       # 反向 WebSocket 服务器
 │   │   ├── echo-adapter/      # Adapter trait + 过滤管道 + ConfigStore
-│   │   ├── echo-agent/        # Agent 框架（agent/commands、adapter_bridge）
+│   │   ├── echo-agent/        # Agent 框架
+│   │   │   ├── agent/         # 循环/命令分派/边界/提示词/压缩（框架核心）
+│   │   │   └── packages/      # 各插件实现按包分目录（2026-09-28 重组）
+│   │   │       ├── tools_builtin/   skills_dir/   adapter_qq/
+│   │   │       ├── workspace/       subagent/     provider_llm/
 │   │   ├── echo-adapter-qq/   # QQ/OneBot 适配器
 │   │   └── echo-test-utils/   # 共享测试 mock（仅 dev-dependency）
 │   └── core/                  # echo-agent-core 二进制（组合根）

@@ -1,6 +1,6 @@
 //! Tool system: named, described, executable capabilities the LLM can call.
 //!
-//! The `Tool` trait and vocabulary live in [`echo_defs`](echo_defs); this
+//! The `Tool` trait and vocabulary live in [`echo_defs`]; this
 //! module re-exports them (keeping the `echo_agent::tool::…` paths) and owns
 //! the concrete [`ToolRegistry`].
 //!
@@ -10,7 +10,10 @@
 
 pub use echo_defs::tool::{Tool, ToolDefinition, ToolError, ToolResult};
 
-pub mod builtin;
+/// 内置工具集（包 `echo-agent.tools.builtin`；实现位于
+/// [`crate::packages::tools_builtin`]——此处为兼容既有 `tool::builtin`
+/// 路径保留 re-export）。
+pub use crate::packages::tools_builtin as builtin;
 
 use std::collections::HashMap;
 use std::sync::Arc;

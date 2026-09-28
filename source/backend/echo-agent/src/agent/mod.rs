@@ -4,9 +4,9 @@ mod boundary;
 mod commands;
 mod compact;
 mod prompt;
-mod qq_commands;
 mod tool_exec;
-mod workspace_commands;
+// `qq_commands` / `workspace_commands` 已按包归位：
+// 见 `crate::packages::adapter_qq::commands` / `crate::packages::workspace::commands`。
 
 use boundary::{BoundaryKind, PromptBlock};
 
@@ -916,7 +916,7 @@ impl Agent {
     /// 装配 subagent 插件运行态（插件 mount 时由组合根调用）。
     ///
     /// 同时接线 spawn 执行闭包：子任务以隔离上下文后台执行，完成时经
-    /// `<subagent_event>` hook（[`crate::subagent::wrap_subagent_event`]）作为
+    /// `<subagent_event>` hook（`crate::subagent::wrap_subagent_event`）作为
     /// 新入站分支通知主 agent——hook 机制由 echo-loop 的
     /// `SubagentToolHooks` 定义，QQ 消息等入站复用同一「结构化 hook →
     /// 新 turn」路径。
@@ -1132,7 +1132,7 @@ impl Agent {
 
     /// Emit an event to subscribers (TUI, ...). No-op when unattached.
     ///
-    /// The event is broadcast through the [`EventBus`] first (observe mode):
+    /// The event is broadcast through the [`EventBus`](echo_context::EventBus) first (observe mode):
     /// the timeline projector and any other listeners consume it before the
     /// frontend hand-off, so the persisted display timeline and the wire both
     /// derive from the same emission.

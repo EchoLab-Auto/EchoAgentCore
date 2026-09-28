@@ -24,6 +24,10 @@ use echo_protocol::{WorkspaceFileEntry, WorkspaceGitInfo, WorkspaceSessionInfo};
 
 use crate::tool::{Tool, ToolError};
 
+/// 工作区命令域（`SaveWorkspaceSession` / `RequestWorkspaceFiles` 等）——
+/// 由主 `apply_command` 一行委托进来（见 `agent/commands.rs`）。
+pub(crate) mod commands;
+
 /// Cap on directories per session (protects the prompt/tool output size).
 pub const MAX_DIRECTORIES: usize = 32;
 /// Cap on reported changed-file paths per directory.

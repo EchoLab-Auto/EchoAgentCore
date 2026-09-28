@@ -7,6 +7,9 @@
 
 pub use echo_defs::skill::{Skill, SkillMetadata};
 
+/// 外部 Git 来源技能的安装/更新/移除（`.sources.json` 来源记录）。
+pub mod install;
+/// SKILL.md 解析/热重载加载器。
 pub mod loader;
 
 use std::collections::HashMap;
