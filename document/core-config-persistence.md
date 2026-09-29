@@ -43,13 +43,12 @@ Panel 操作 (/api ...)
   → Core 的 Agent::apply_command()
     → 更新内存中的 AgentConfig
     → Agent::persist_config(&cfg)
-      → tom_l::Value::try_from(cfg)
+      → toml::Value::try_from(cfg)
       → ConfigStore::patch(|root| root.insert("agent", value))
         → 读取全文件 → 修改 [agent] → 写入 .tmp → rename
 ```
 
-Agent 始终使用单一全局 Trunk（每个 persona 独立一份）。各平台会话只保留独立的来源身份、投递目标和授权
-范围，共享一份受 token 预算限制的历史记录及轮次锁。
+Agent 始终使用单一全局 Trunk（每个 persona 独立一份事件日志）；各平台会话按 `session` 归属投影出各自的模型上下文（token 预算逐会话生效、turn 串行闸门也按会话独立），见 [多 Agent 与会话](./core-agents.md)§会话模型。
 
 ### 写入的文件位置
 
@@ -85,7 +84,7 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
   `echo-agent.loop.runner` 剔除（模式插件取代）——旧 id
   不再注册，不迁移则 `apply_disabled` 静默失效；白名单同时含 single+parallel 记
   warn（parallel 优先）。运行期 `SaveTeam`
-  （`AgentManager::save_profile`）入口做同样归一化，防御旧 Panel 回写旧 id
+  （`AgentManager::save_profile`）入口对白名单做同样 id 归一化（`normalize_mode_plugins`），防御旧 Panel 回写旧 id
 - **per-persona 插件黑名单移除**（2026-09-11，同函数内）：`[agent.teams.*].disabled_plugins`
   的语义物化进 `enabled_plugins` 白名单（`convert_plugin_blacklist_to_whitelist`）——
   空白名单 + 黑名单 → 「全部内置插件 − 黑名单 − parallel 模式 id」；非空白名单 → 剔除

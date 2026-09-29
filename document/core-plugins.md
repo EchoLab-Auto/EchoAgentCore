@@ -19,7 +19,7 @@ y: 1759
 
 ### 为什么不用动态库（.so）插件
 
-Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" 桥，维护成本高、崩溃诊断难。因此采用**源码级插件 + 进程级热替换**：��件以 crate/目录形式存在，更新 = 重新构建二进制 + restart（复用自更新的原子替换机制）；热重载范畴限定为数据类插件。
+Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" 桥，维护成本高、崩溃诊断难。因此采用**源码级插件 + 进程级热替换**：插件以 crate/目录形式存在，更新 = 重新构建二进制 + restart（复用自更新的原子替换机制）；热重载范畴限定为数据类插件。
 
 ### 边界与不做
 
@@ -35,7 +35,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 - 注册为**可逆**副作用：`register_and_mount` 返回 disposer，禁用即卸载注册
 - 数据插件（skill/tool）支持热重载（插件目录 5s 轮询）；代码插件需二进制重载
 - **启动顺序**：`apply_disabled` 先于挂载——禁用插件启动时只注册不挂载；persona 白名单的门控**启动期与运行期统一**由 `Agent::apply_capabilities` 承担（`GATED_PLUGIN_IDS` 表逐人格计算：全局启用 ∧ 白名单）；插件宿主由组合根注入为**进程级单例**（所有人格共享，不再寄居某个“默认人格”）
-- **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / adapter.qq / skills.dir）已把组合根装配搬进 mount 闭包，`TogglePlugin` 对它们有真实运行效果；`adapter.qq` 的启动期 mount 不抢跑（wired 标志在适配器接线完成后才置位），启动受 `[adapters.qq].enabled` 与插��状态双重门控
+- **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / adapter.qq / skills.dir）已把组合根装配搬进 mount 闭包，`TogglePlugin` 对它们有真实运行效果；`adapter.qq` 的启动期 mount 不抢跑（wired 标志在适配器接线完成后才置位），启动受 `[adapters.qq].enabled` 与插件状态双重门控
 - **运行期热更新（2026-09）**：插件/工具/技能勾选在 `SaveTeam` 保存后**立即生效**，无需重启——工具/技能逐名双向应用（取消勾选即禁用、重新勾选即恢复）；全局 `TogglePlugin` 经 mount/unmount 闭包逐 persona 重评估（`reapply_plugin_gating`：全局启用 ∧ persona 名单，名单外不放开、unmount 对全员生效）；`ToggleTool`/`ToggleSkill` 同样逐 persona 重算（`reapply_tool_gating` / `reapply_skill_gating`：persona 黑名单不被全局启用覆盖）
 
 ## 内置插件清单
@@ -120,11 +120,11 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   整个包（plugin + tools + skills）
 
 **可观测性**：`PluginInfo.package` 随 `PluginsList` 下发（未声明回退为插件
-id），Panel 插件详���展示「包（Package）」字段；设置视图已按包分组展示
+id），Panel 插件详情展示「包（Package）」字段；设置视图已按包分组展示
 工具/技能。
 
 **多插件包（前瞻）**：`PluginManifest.with_package()` 允许一个包绑定多个
-插件；当��全部内置插件均为「插件 id = 包 id」的单插件包，门控按插件 id
+插件；当前全部内置插件均为「插件 id = 包 id」的单插件包，门控按插件 id
 传播即可（QQ 包为现行示例）。
 
 ## 内联分派工具
@@ -137,5 +137,5 @@ id），Panel 插件详���展示「包（Package）」字段；设置视�
 ## 用户扩展方式
 
 - **技能**：在 skills_dir 放置 `SKILL.md`（带 frontmatter：name/description/keywords/always/category/package），运行时自动发现、热重载
-- **数据插件**：在 plugins_dir 放置 `plugins/{kind}/{id}/plugin.toml`（skill/tool kind），5s 轮询热加载；记录 manifest 哈希做内容 diff，变化即 unmount+remount；启用状态持久化于 `[agent].disabled_plugins`
+- **数据插件**：在 plugins_dir 放置 `plugins/{kind}/{id}/plugin.toml`（skill/tool kind），5s 轮询热加载（按插件 id 挂载/卸载；manifest 内容 diff 重挂载为规划项、尚未实现）；启用状态持久化于 `[agent].disabled_plugins`
 - **代码插件**（provider/loop/adapter）：需修改源码并走自更新流程

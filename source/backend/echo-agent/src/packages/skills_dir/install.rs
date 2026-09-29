@@ -59,7 +59,7 @@ fn repo_name(url: &str) -> String {
 }
 
 /// 在 git 仓库目录中定位 SKILL.md 根：根目录有则用根；否则第一个
-/// 含 SKILL.md 的子目录（深度 ≤ 2）。
+/// 含 SKILL.md 的**直接子目录**（仅扫描一层 read_dir）。
 fn find_skill_root(repo: &Path) -> Option<PathBuf> {
     if repo.join("SKILL.md").exists() {
         return Some(repo.to_path_buf());

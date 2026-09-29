@@ -227,18 +227,6 @@ else
     echo "==> Preserved existing Core config: $CORE_CONFIG"
 fi
 
-if ! grep -q '^\[agent\.self_update\]$' "$CORE_CONFIG"; then
-    cat >>"$CORE_CONFIG" <<'EOF'
-
-[agent.self_update]
-enabled = true
-allow_local = true
-allowed_qq_users = []
-EOF
-else
-    sed -i '/^\[agent\.self_update\]$/,/^\[.*\]$/{s/^enabled = false$/enabled = true/;}' "$CORE_CONFIG"
-fi
-
 INSTALL_PHASE=launcher
 launcher_temporary=$(mktemp "$BIN_DIR/echo-agent-core.new.XXXXXX")
 cat >"$launcher_temporary" <<EOF

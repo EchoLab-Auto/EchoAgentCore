@@ -189,17 +189,77 @@ impl Default for CoreSection {
     }
 }
 
-/// 加载期插件名单迁移（内存迁移，保存自愈）：
-/// 1. 循环模式插件 id 归一化（旧编排模式 id / 旧驱动插件 id →
-///    `loop.{single,parallel}`），覆盖 per-persona 白名单与全局
-///    `[agent].disabled_plugins`（后者是 apply_disabled 的输入，旧 id 不清理
-///    会因插件不再注册而静默失效）；
+/// 加载期插件名单迁移（内存迁移，保存自愈）：在 `CoreConfig::load` 反序列化后
+/// 调用，覆盖 per-persona 白名单/黑名单与全局 `[agent].disabled_plugins`。
+///
+/// 1. **循环模式插件 id 归一化**：旧编排模式 id（`branch.reply` /
+///    `session.global` / `chatbot.sessions`）→ `echo-agent.loop.parallel`；
+///    旧驱动 id `loop.runner` 与已移除的 `menu` / `checklist` 插件 id 剔除
+///    （见 [`echo_agent::plugins::normalize_mode_plugins`]）——旧 id 不再注册，
+///    不迁移则 `apply_disabled` 静默失效；
 /// 2. **per-persona 插件黑名单移除**（2026-09-11）：`disabled_plugins` 的
 ///    语义物化进 `enabled_plugins` 白名单（见
 ///    [`echo_agent::plugins::convert_plugin_blacklist_to_whitelist`]），既有
 ///    配置的门控与循环模式行为不变；黑名单字段自此不再参与判定。
 ///
 /// 返回迁移/警告说明（load 期打印；纯函数便于测试断言）。
+///
+/// 历史：本函数曾名 `migrate_orchestration_mode_plugins`，于 54f1bb3
+/// （删除后台任务/并行分支）连同调用点被误删——加载期迁移自此缺失，
+/// 旧配置的名单归一化与黑名单物化静默失效（2026-09-29 恢复并改名）。
+pub fn migrate_plugin_lists(agent: &mut echo_agent::AgentConfig) -> Vec<String> {
+    use echo_agent::plugins::{
+        convert_plugin_blacklist_to_whitelist, normalize_mode_plugins, PARALLEL_LOOP_PLUGIN_ID,
+        SINGLE_LOOP_PLUGIN_ID,
+    };
+    let mut notes = Vec::new();
+
+    let normalize = |list: &mut Vec<String>, scope: &str, notes: &mut Vec<String>| {
+        if normalize_mode_plugins(list) {
+            notes.push(format!(
+                "migrated legacy loop plugin ids → {SINGLE_LOOP_PLUGIN_ID}/{PARALLEL_LOOP_PLUGIN_ID} ({scope})"
+            ));
+        }
+    };
+
+    for (id, member) in agent.teams.iter_mut() {
+        normalize(
+            &mut member.enabled_plugins,
+            &format!("teams.{id}.enabled_plugins"),
+            &mut notes,
+        );
+        if convert_plugin_blacklist_to_whitelist(
+            &mut member.enabled_plugins,
+            &member.disabled_plugins,
+        ) {
+            notes.push(format!(
+                "migrated teams.{id}.disabled_plugins（插件黑名单已移除）→ enabled_plugins 白名单物化；该字段不再参与门控"
+            ));
+            member.disabled_plugins.clear();
+        }
+        // 白名单同时含 single + parallel：互斥循环模式按 parallel 优先（推导单一来源）。
+        if member
+            .enabled_plugins
+            .iter()
+            .any(|p| p == PARALLEL_LOOP_PLUGIN_ID)
+            && member
+                .enabled_plugins
+                .iter()
+                .any(|p| p == SINGLE_LOOP_PLUGIN_ID)
+        {
+            notes.push(format!(
+                "warning: teams.{id}.enabled_plugins 同时含 single 与 parallel 循环插件，互斥按 parallel 优先"
+            ));
+        }
+    }
+    normalize(
+        &mut agent.disabled_plugins,
+        "agent.disabled_plugins",
+        &mut notes,
+    );
+    notes
+}
+
 impl CoreConfig {
     /// Load the Core config file and apply environment-variable overrides.
     pub fn load(path: &Path) -> Result<Self> {
@@ -223,6 +283,13 @@ impl CoreConfig {
                 .agent
                 .api_profiles
                 .retain(|p| seen.insert(p.name.clone()));
+        }
+
+        // 插件名单迁移：旧编排模式 id → 循环模式插件 id、per-persona 黑名单
+        // 物化进白名单。内存迁移，首次 SaveTeam 落盘自愈（与 legacy
+        // [server]/[bot] 迁移同范式）。
+        for note in migrate_plugin_lists(&mut config.agent) {
+            eprintln!("note: {note}");
         }
 
         // ---- Build QQ adapter config ----
@@ -347,6 +414,56 @@ api_key = ""
         );
         assert_eq!(config.agent.api_profiles[0].name, "deepseek");
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn migrate_plugin_lists_normalizes_legacy_ids_and_materializes_blacklists() {
+        use echo_agent::config::TeamMember;
+        use echo_agent::plugins::{
+            LEGACY_CHATBOT_MODE_IDS, LEGACY_LOOP_RUNNER_PLUGIN_ID, PARALLEL_LOOP_PLUGIN_ID,
+        };
+
+        let mut agent = echo_agent::AgentConfig::default();
+        let member = TeamMember {
+            enabled_plugins: vec![
+                "echo-agent.tools.builtin".into(),
+                LEGACY_CHATBOT_MODE_IDS[1].into(),
+                LEGACY_LOOP_RUNNER_PLUGIN_ID.into(),
+            ],
+            disabled_plugins: vec![LEGACY_CHATBOT_MODE_IDS[2].into()],
+            ..Default::default()
+        };
+        agent.teams.insert("bot".into(), member);
+        agent.disabled_plugins = vec![LEGACY_CHATBOT_MODE_IDS[1].into()];
+
+        let notes = super::migrate_plugin_lists(&mut agent);
+
+        let m = &agent.teams["bot"];
+        // 白名单里的旧编排 id → loop.parallel；但黑名单含旧并行特性 id
+        // （session.global）：历史上黑名单优先（推导单会话），物化后白名单
+        // 不得再含 parallel，行为保持不变。
+        assert_eq!(
+            m.enabled_plugins,
+            vec!["echo-agent.tools.builtin".to_string()]
+        );
+        // 黑名单已物化并清空（字段不再参与门控，也不再写回）
+        assert!(m.disabled_plugins.is_empty());
+        assert_eq!(m.loop_mode(), echo_agent::config::LoopMode::Single);
+        // 全局层旧 id 同样被清理映射（否则 apply_disabled 静默失效）
+        assert_eq!(
+            agent.disabled_plugins,
+            vec![PARALLEL_LOOP_PLUGIN_ID.to_string()]
+        );
+        // 迁移报告覆盖 teams 与全局层
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("teams.bot.enabled_plugins")));
+        assert!(notes
+            .iter()
+            .any(|n| n.contains("teams.bot.disabled_plugins")));
+        assert!(notes.iter().any(|n| n.contains("agent.disabled_plugins")));
+        // 幂等：二次运行无新报告
+        assert!(super::migrate_plugin_lists(&mut agent).is_empty());
     }
 
     #[test]

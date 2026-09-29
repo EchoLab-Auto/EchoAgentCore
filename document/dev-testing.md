@@ -7,7 +7,7 @@ y: 53
 ---
 # Testing Strategy
 
-**Core（cargo）** 700+ 条、**Panel 前端（vitest）** 170+ 条、**部署 CLI（node:test）**
+**Core（cargo）** 700+ 条、**Panel 前端（vitest）** 190+ 条、**部署 CLI（node:test）**
 23 条，覆盖各 crate 的源文件与关键交互契约（计数随开发增长，量级为本文件维护基线）。
 
 ## Layers
@@ -34,7 +34,7 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Teamless multi-agent & QQ instances** (echo-agent + core): session
   commands reject a missing `team_id` (no default agent), the process-level
   `EventSink` fans in every persona's events without double delivery, and
-  `core/src/qq_instances.rs` covers instance resolution — legacy ports
+  `source/core/src/qq_instances.rs` covers instance resolution — legacy ports
   (3131/3000/6099) + shared container kept, auto-provisioning per QQ-enabled
   persona, distinct ports/containers per instance, compose rendering.
 - **LLM providers** (OpenAI / Anthropic): request body builders (tool-call
@@ -90,9 +90,19 @@ Generated inputs that must satisfy invariants:
 - `echo-web-server/tests/media.rs`（Panel 仓库）— `/media/{name}` 路由端到端：
   文件字节与 Content-Type 正确、`immutable` 强缓存头、目录穿越 / 未知文件 404。
 
+### 4. Concurrency tests
+
+Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
+
+- `TrunkStore::get_or_create` — 32 concurrent callers on the same key
+  produce exactly 1 session (DashMap entry API).
+- `Agent::process_message` — two concurrent messages to the same session
+  with a slow (50 ms) provider produce non-interleaved history
+  (single 模式 `turn_queue` 排队闸门串行化，按 role order 验证).
+
 ### 5. 面板前端与部署 CLI（非 cargo）
 
-- **Panel web（vitest + @vue/test-utils，144 条）**：`ChatView` 图片渲染契约
+- **Panel web（vitest + @vue/test-utils，192 条）**：`ChatView` 图片渲染契约
   （`/media/<id>` 懒加载 / 空串省略占位 / data URI 兼容）、设置视图技能/工具/插件
   工作台（筛选、分组维度、详情分区、交叉跳转、脏状态）、右侧栏连接状态卡、
   智能体编辑器分区、协议编解码回归等。
@@ -101,16 +111,6 @@ Generated inputs that must satisfy invariants:
   doctor 分级与阻断码），以及**模板跨文件契约**（compose 注入的 `ECHO_MEDIA_DIR`
   == panel.toml 的 `media_dir`、NapCat 容器名一致、生效配置行不得出现 localhost、
   `docker compose config` 语法校验）。无第三方依赖，CI 直接 `npm test`。
-
-### 4. Concurrency tests
-
-Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
-
-- `SessionManager::get_or_create` — 32 concurrent callers on the same key
-  produce exactly 1 session (DashMap entry API).
-- `Agent::process_message` — two concurrent messages to the same session
-  with a slow (50 ms) provider produce non-interleaved history
-  (turn_lock serialization verified by role order).
 
 ## Mocks & fixtures
 

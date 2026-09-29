@@ -2301,7 +2301,7 @@ impl Agent {
                 // 超时只是中止单个工具调用，**不中断 turn**：结果以 notice
                 // 形式喂回模型（非 error 前缀），loop 继续，模型可重试或
                 // 直接继续作答。守卫口径与 echo-loop 路径共用，见
-                // `tool_guard_timeout`（配置 base + 工具 timeout_hint + 特判）。
+                // `tool_guard_timeout`（配置 base + 工具 timeout_hint）。
                 let tool_timeout = self.tool_guard_timeout(call).await;
                 let mut timed_out = false;
                 let result = tokio::select! {

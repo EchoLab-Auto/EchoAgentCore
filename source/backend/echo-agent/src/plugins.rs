@@ -145,7 +145,8 @@ pub fn profile_allows_plugin(profile: &crate::config::TeamMember, plugin_id: &st
 /// - 白名单非空：剔除黑名单项；黑名单含 parallel id 时同时剔除白名单里的
 ///   parallel id（历史上黑名单优先，避免物化后循环模式翻成并行）
 ///
-/// 返回是否有改动。仅由加载期迁移调用（`migrate_orchestration_mode_plugins`）。
+/// 返回是否有改动。仅由加载期迁移调用（组合根 `CoreConfig::load` →
+/// `migrate_plugin_lists`，见 `source/core/src/config.rs`）。
 pub fn convert_plugin_blacklist_to_whitelist(
     enabled: &mut Vec<String>,
     disabled: &[String],

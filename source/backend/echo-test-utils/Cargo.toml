@@ -1,6 +1,6 @@
 [package]
 name = "echo-test-utils"
-description = "Shared mocks and test helpers for the EchoAgentPanel workspace"
+description = "Shared mocks and test helpers for the EchoAgentCore workspace"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

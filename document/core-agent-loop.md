@@ -58,7 +58,7 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 `echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。组合根经 `ctx.loop` 注册 `TurnRunner`（`LoopOptions`：`max_tokens` 与 `max_tool_iterations` 来自配置），挂载不同实现即可改变驱动行为；消费方（agent、UI、hook）只依赖生命周期事件。
 
 - **生命周期事件**（全部经 `EventBus` 分发）：`TurnStart` / `AgentPreStep`（waterfall，可改写消息或拒绝 step）/ `StepStart` / `AgentRequest`（waterfall，可改写请求）/ `ToolCallRequested` / `ToolResult` / `StepEnd` / `TurnStopping`（serial）/ `TurnEnd`
-- **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。审批、审计、限流等策略以中间件注册进管道（非循环代码，新策略 = 一次 `push_pre`/`push_post`）；**工具超时守卫**由 harness 侧统一实施（`Agent::tool_guard_timeout`：配置 `tool_timeout_secs` base + 工具自声明 `timeout_hint` + 内置特判），两条驱动路径（内置循环 / echo-loop）同一口径——超时只中止该工具、不中断 turn，结果以 notice 喂回模型，事件日志补记中断结果保持成对
+- **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。审批、审计、限流等策略以中间件注册进管道（非循环代码，新策略 = 一次 `push_pre`/`push_post`）；**工具超时守卫**由 harness 侧统一实施（`Agent::tool_guard_timeout`：配置 `tool_timeout_secs` base + 工具自声明 `timeout_hint`），两条驱动路径（内置循环 / echo-loop）同一口径——超时只中止该工具、不中断 turn，结果以 notice 喂回模型，事件日志补记中断结果保持成对
 - 工具经 harness 提供的 `ToolExecutor` 闭包执行，runner 本身不含任何策略代码
 
 ### 实化与分派（插件的运行期效果）
@@ -106,4 +106,4 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 - **取消即收尾**：TUI 路径取消同样 emit `AgentCompleted`（与 QQ 路径一致），前端据此把
   activity phase 置 completed；前端同时做乐观中断（见 [Panel 前端](./panel.md)）
 - 优雅排空（见 [部署与自更新](./ops-deploy.md)）：收到 SIGTERM 后排空模式拒绝新消息、等待活跃 turn 完成（最多 120s）
-- 重启后 turn 不恢复；事件日志的悬空调用在加载时由 `repair_tool_pairing` 补合成结果，显示时间线的悬空 running 条目标注为"已中断"
+- 重启后 turn 不恢复；悬空工具调用在投影时由 `repair_tool_pairing` 补合成结果（只作用于投影副本，不回写事件日志），显示时间线的悬空 running 条目标注为"已中断"

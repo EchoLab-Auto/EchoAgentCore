@@ -62,7 +62,7 @@ EchoAgentCore/
 | `echo-loop` | **Agent 循环驱动**：`TurnRunner` turn/step 状态机（`turn/*`/`step/*`/`agent/*` 生命周期事件）、`ToolPipeline` 工具执行管道（pre/execute/post waterfall 中间件） |
 | `echo-llm-openai` / `echo-llm-anthropic` / `echo-llm-ollama` | **LLM provider（Service Provider 角色）**：各自实现 `echo_defs::LlmProvider`,只依赖定义层 |
 | `echo-protocol` | **前后端契约的唯一来源**：`BackendCommand`/`BackendEvent`/`WsMessage`、bridge；`GateMode`/`ThinkingMode`/`ReasoningEffort` 从 `echo-defs` re-export。前端只需依赖它 |
-| `echo-agent` | Agent 框架：agent 循环、LLM provider（OpenAI/Anthropic/Ollama）、工具注册表、技能系统、trunk 记忆、编排（异步子任务 `spawn_subagent` / 自更新） |
+| `echo-agent` | Agent 框架：agent 循环、LLM provider 工厂、工具注册表与各包（`packages/`）、技能系统、trunk 记忆、异步子任务（`spawn_subagent`） |
 | `echo-adapter` | 协议无关的适配器抽象：`Adapter` trait、`InboundMessageHook`、过滤管道、`ConfigStore` |
 | `echo-adapter-qq` | QQ 适配器：反向 WS 接入、5 层门控、NapCat HTTP 客户端 |
 | `echo-core` / `echo-server` | OneBot v11 类型 / 反向 WS 服务器（仅供 echo-adapter-qq 使用） |

@@ -73,7 +73,7 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
 - `execute_async`：**同步返回 future 句柄**的执行器——编排侧需要 tokio::spawn
   后台任务时经通道把结果带回（避免 async 闭包捕获引用的 Send 生命周期困境）；
   `spawn_subagent` 本身是同步受理，直接包 ready future
-- `extra_tool_definitions`：模型可见 schema 追加（仅当本 persona 允许时）
+- `extra_tool_definitions`：模型可见 schema 追加接口（当前装配为 `None`——`spawn_subagent` 的 schema 由注册表统一提供，避免重复工具名）
 
 内置循环不经 hook 接口：`run_tool` 直接特判分派 `spawn_subagent`（schema
 在构建工具列表时按 `allows_dynamic_tool` 注入）——两条路径语义一致。
@@ -111,7 +111,6 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
 | --- | --- | --- | --- |
 | 回复分支（loop.parallel） | 主上下文快照 fork | 是（按请求序号合并） | 并发回答多条入站消息 |
 | **subagent** | 全新隔离上下文 | 否（结论作为 hook 事件入站） | 委派独立子任务 |
-| 定时任务 | 无上下文后台执行 | 否 | 定时触发 |
 
 ## 测试守护
 

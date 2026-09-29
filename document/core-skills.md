@@ -54,7 +54,7 @@ y: 1899
 
 1. **目录名**：缺省取仓库名（URL 末段去 `/` 与 `.git` 后缀）；`name` 参数显式指定；`.` 开头或含路径分隔符的名字拒绝；目标目录已存在拒绝（提示先卸载或换名）
 2. **克隆**：`git clone --depth 1 [--branch X] url skills_dir/<name>`（shallow clone，shell 调系统 `git`——支持 https/ssh/本地路径，鉴权依赖本机 git 凭证/ssh agent）
-3. **目录提升**：clone 后根目录无 `SKILL.md` 时，取第一个含 `SKILL.md` 的子目录（深度 ≤ 2）内容提升到安装根；找不到则清理半成品目录并报错「仓库中未找到 SKILL.md」
+3. **目录提升**：clone 后根目录无 `SKILL.md` 时，取第一个含 `SKILL.md` 的直接子目录内容提升到安装根；找不到则清理半成品目录并报错「仓库中未找到 SKILL.md」
 4. **来源记录**：写入 `skills_dir/.sources.json`（`{name: {url, rev, branch, installed_at}}`，rev = clone 后 `rev-parse HEAD`）
 5. **生效**：`reload_skills` 热重载 + `emit_skills_list` 回推（SkillInfo.source 注入来源信息，前端显示 Git 徽标）+ Error 事件通知结果
 

@@ -53,7 +53,7 @@ graph BT
 | `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话，见 Agent 循环文档） |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 echo-defs |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge，Panel 只依赖它 |
-| `echo-agent` | agent 框架 | 循环（旧实现，逐步让位于 echo-loop）、工具注册表、技能、trunk、编排、命令分发 |
+| `echo-agent` | agent 框架 | 循环（内建实现；插件挂载后由 echo-loop 接管普通输入）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
 | `echo-adapter`/`echo-adapter-qq` | 平台适配 | `Adapter` trait、过滤管道、ConfigStore；QQ 实现 |
 | `echo-core`/`echo-server` | OneBot 类型/反向 WS | 仅供 QQ 适配器 |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、启动 |
@@ -80,7 +80,7 @@ graph BT
 
 - **`Ctx` 服务定位**：按字符串 key 注册/解析；注册 `Arc<dyn Trait>`（trait 对象存入 `Box<dyn Any>`，resolve 时 downcast 回同一类型）或具体 `Clone + 'static` 值。字符串键便于配置与诊断，且允许同一 trait 多实例按名共存
 - **`Disposer` 可逆注册**：`Ctx::register` / `EventBus::subscribe` / 注册表方法都返回 `Disposer`；注册必须持有 disposer 才生效（组合根持有 `ctx` 注册），装配方需明确管理生命周期
-- **`EventBus` 类型化事件**：`Event` trait（Any + Clone + Debug + Send + Sync），按事件 `TypeId` 分组注册监听器；四种分发——`Observe`（扇出）/ `Waterfall`（around-middleware，`next()` 委托、不调即短路）/ `Parallel`（每监听器一份事件副本并发，故要求 `Event: Clone`）/ `Serial`（按序，首个拒绝停止）。`emit_sync` 覆盖同步热路径（Observe/Waterfall），`emit` 支持全部模式。`echo-protocol` 为 `BackendEvent` 实现 `Event`（声明成员资格），依赖方向仍为 context ◄ protocol
+- **`EventBus` 类型化事件**：`Event` trait（Any + Clone + Debug + Send + Sync），按事件 `TypeId` 分组注册监听器；四种分发——`Observe`（扇出）/ `Waterfall`（around-middleware，`next()` 委托、不调即短路）/ `Parallel`（每监听器一份事件副本并发，故要求 `Event: Clone`）/ `Serial`（按序；**当前实现与 `Observe` 等价**——「首个拒绝即停止」为预留语义，尚无生产发射方）。`emit_sync` 覆盖同步热路径（Observe/Waterfall），`emit` 支持全部模式。`echo-protocol` 为 `BackendEvent` 实现 `Event`（声明成员资格），依赖方向仍为 context ◄ protocol
 - **`ScopedRegistry` 作用域注册**：全局条目 + per-scope 条目，lookup 先 scoped 后 global（shadowing），scope 卸载时条目随 disposer 撤销
 - 显示时间线投影（`TimelineProjector`）是 EventBus 的 observe 监听器：`Agent` 不直接写 timeline，timeline 是事件的投影消费者，可独立演进/测试
 

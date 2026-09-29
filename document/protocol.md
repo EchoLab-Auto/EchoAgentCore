@@ -6,14 +6,14 @@ y: 442
 
 # 协议与数据流
 
-前后端通过 **management WebSocket**（默认 `127.0.0.1:3132`）通信，消息为 JSON 文本帧。命令与事件定义在 `source/protocol/echo-protocol`（Core 与 Panel 共用同一 crate/类型）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
+前后端通过 **management WebSocket**（默认 `127.0.0.1:3132`）通信，消息为 JSON 文本帧。命令与事件定义在 `source/protocol/echo-protocol`（Core 侧直接使用该 crate；Panel 以 `web/src/protocol.ts` 镜像线格式）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
 
 ## 仓库拆分与契约归属
 
 - 仓库拆分为 **EchoAgentCore**（后端 agent 服务）与 **EchoAgentPanel**（前端）两个独立仓库，两端可独立构建、发布、演进，仅通过 `echo-protocol` 契约耦合
 - `echo-protocol` 是前端 ⇄ Core **线契约的唯一来源**：只定义 `BackendCommand` / `BackendEvent` / `WsMessage` / bridge / 共享枚举（`GateMode` / `ThinkingMode` / `ReasoningEffort`），不依赖任何 agent、平台或 UI 代码；serde 表示即线格式
-- Panel 是纯粹的「协议客户端」：仅依赖 `echo-protocol` 中的类型，不包含任何 agent 或 QQ 逻辑；后端各 crate 通过 re-export 保持 `echo_agent::…` 路径兼容
-- Panel 以相对路径依赖 `echo-protocol`（要求两个仓库并排克隆，CI 须将 EchoAgentCore 作为 sibling 检出），或改指 git 依赖
+- Panel 是纯粹的「协议客户端」：不包含任何 agent 或 QQ 逻辑（Rust 中继按原文转发帧、不解析负载；线格式以 `web/src/protocol.ts` 镜像）；后端各 crate 通过 re-export 保持 `echo_agent::…` 路径兼容
+- TUI（EchoAgentTui）以相对路径依赖 `echo-protocol`（要求两个仓库并排克隆，CI 须将 EchoAgentCore 作为 sibling 检出），或改指 git 依赖
 - 协议演进必须两端同步：新增字段向后兼容（见文末「兼容性规则」）；语义变更需双端协同合入
 
 ## 传输与信封
@@ -79,7 +79,7 @@ graph LR
 其他事件分组（字段详见 `echo-protocol/src/event.rs`）：
 
 - **适配器生命周期**：`AdapterStateChanged`、`AdapterList`
-- **编排**：`SubagentStarted/Completed`、`ReplyBranchStarted/Content/Completed`、`BackgroundTaskStarted/Completed/Integrated`、`AgentCompleted`（turn 收尾——含空输出的完成信号）
+- **编排**：`SubagentStarted/Completed`、`ReplyBranchStarted/Content/Completed`、`AgentCompleted`（turn 收尾——含空输出的完成信号）；`BackgroundTaskStarted/Completed/Integrated` 为**保留事件**（Core 侧后台任务体系已于 2026-09-16 移除、当前无发射方；TUI 仍在消费，故枚举保留不删）
 - **Shell**：`ShellSessionsList` / `ShellSessionStarted` / `ShellExecStarted` / `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
 - **状态快照**：`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`、`Error`（也用于信息性 toast）
 - **QQ 管理**：`GroupList`、`FriendList`、`QqFilterConfig`、`QqGateMode`、`QqLoginStatus`、`QqQrcode`（二维码 PNG base64）、`QqOwner`（owner 查询回推，frontend-only；均带 `adapter` 实例名）

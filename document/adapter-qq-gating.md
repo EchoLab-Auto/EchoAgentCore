@@ -237,7 +237,7 @@ owner 与门控/名单一样有运行时更新路径，无需重启：
 
 ### 门控模式类型
 
-`GateMode` 是定义在 `echo-adapter` 中的强类型枚举，跨层使用：
+`GateMode` 定义在 `echo-defs`（经 `echo-adapter` / `echo-protocol` 再导出），跨层使用：
 
 | 枚举值 | TOML 序列化 | 行为 |
 |---|---|---|
@@ -255,6 +255,6 @@ owner 与门控/名单一样有运行时更新路径，无需重启：
 3. **管理员全局绕过**：确保机器人 owner 始终可控，不会把自己锁在外面
 4. **群列表门控与消息门控共用规则**：保持 agent 看到的世界与它能交互的世界一致
 5. **管道可重建不阻塞消息处理**：Mutex 锁仅持有一瞬间（克隆 Arc），不影响消息吞吐
-6. **强类型门控枚举**：`GateMode` 枚举在 echo-adapter 定义，全栈类型安全，WebSocket JSON 层用 snake_case 保持兼容
+6. **强类型门控枚举**：`GateMode` 在 `echo-defs` 定义（`echo-adapter` / `echo-protocol` 再导出），全栈类型安全，WebSocket JSON 层用 snake_case 保持兼容
 7. **统一配置持久化**：门控配置和 agent 配置共享同一个 `ConfigStore` 实例（main.rs 创建一次分发），并发安全由内部 Mutex 保证
 8. **门控模式互斥**：`build_filter_pipeline_gated()` 只加入 allowlist 或 denylist 之一——两者永远不会同时存在于运行中的过滤管道
