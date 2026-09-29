@@ -1961,12 +1961,34 @@ impl Agent {
         runner: std::sync::Arc<echo_loop::runner::TurnRunner>,
     ) -> Result<String> {
         let session_id = session.id.clone();
-        // 系统提示词（与内置循环一致，按块构建后合并）。
-        let base = self.config.read().await.system_prompt.clone();
+        // 系统提示词（与内置循环同源同层，2026-09-30 补齐）：base（persona
+        // system_prompt 覆盖值）→ 全局 system 技能 → persona 系统技能
+        // （capabilities.system_skills）→ … → 工作区会话注入。
+        // boundary 传 None 是正确语义：本路径不承接 QQ hook/定时器/QQ 会话
+        // （分派处已排除），与内置循环的 else 分支一致。
+        let (base, persona_skills, workspace) = {
+            let base = self.config.read().await.system_prompt.clone();
+            let persona_skills = self
+                .capabilities
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|c| c.system_skills.clone())
+                .unwrap_or_default();
+            let workspace = self.workspace_prompt_text();
+            (base, persona_skills, workspace)
+        };
         let blocks = {
             let skills = self.skills.lock().await;
-            crate::agent::prompt::build_prompt_blocks(&skills, &base, content, None, &[], None)
-                .await
+            crate::agent::prompt::build_prompt_blocks(
+                &skills,
+                &base,
+                content,
+                None,
+                &persona_skills,
+                workspace,
+            )
+            .await
         };
         let system_prompt = crate::agent::prompt::join_prompt_blocks(&blocks);
         let history = history_snapshot.unwrap_or_else(|| session.history.blocking_lock().clone());
@@ -4856,6 +4878,79 @@ pub mod tests {
         assert!(
             paired,
             "interrupted result must be recorded for log pairing"
+        );
+    }
+
+    /// echo-loop 路径的提示词分层与内置循环一致（2026-09-30 修复回归）：
+    /// persona 系统技能与工作区会话注入在 echo-loop 路径同样生效——此前
+    /// `build_prompt_blocks` 传 `&[]`/None，两层在普通输入上静默丢失。
+    #[tokio::test]
+    async fn echo_loop_path_injects_persona_skills_and_workspace() {
+        let mut skills = SkillRegistry::new();
+        skills.register(crate::skill::Skill::direct(
+            "persona-style",
+            "人格语气规则",
+            vec![],
+            false,
+            "",
+            "PERSONA_SKILL_MARKER",
+        ));
+        let provider = Arc::new(ScriptedProvider::new(vec![ChatResponse {
+            stop_reason: None,
+            content: Some("done".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            usage: Usage::default(),
+        }]));
+        let agent = Arc::new(Agent::new(
+            provider.clone(),
+            AgentConfig::default(),
+            skills,
+            ToolRegistry::new(),
+            Arc::new(AdapterRegistry::new()),
+        ));
+        // persona 系统技能 + 工作区插件允许（空白名单 = 全部启用）。
+        agent
+            .apply_capabilities(&crate::config::TeamMember {
+                system_skills: vec!["persona-style".into()],
+                ..Default::default()
+            })
+            .await;
+        let store = Arc::new(crate::workspace::WorkspaceStore::load(None));
+        store
+            .upsert(echo_protocol::WorkspaceSessionInfo {
+                id: "proj".into(),
+                name: "Proj".into(),
+                description: String::new(),
+                directories: vec!["/srv/proj".into()],
+            })
+            .unwrap();
+        store.set_active(Some("proj".into())).unwrap();
+        agent.set_workspace_store(store);
+
+        let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+            Arc::new(echo_context::EventBus::default()),
+            provider.clone(),
+            Arc::new(echo_loop::ToolPipeline::new()),
+            echo_loop::LoopOptions::default(),
+        ));
+        agent.set_loop_runner(runner);
+        agent.set_use_echo_loop(true);
+
+        let session = agent
+            .trunk
+            .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+        assert_eq!(agent.process_message(&session, "hi").await.unwrap(), "done");
+
+        let requests = provider.requests.lock().await;
+        let system = requests[0].messages[0].content.clone();
+        assert!(
+            system.contains("PERSONA_SKILL_MARKER"),
+            "persona 系统技能必须注入（echo-loop 路径）: {system}"
+        );
+        assert!(
+            system.contains("# 当前工作区会话"),
+            "工作区会话必须注入（echo-loop 路径）: {system}"
         );
     }
 

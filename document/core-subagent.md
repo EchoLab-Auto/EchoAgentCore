@@ -41,8 +41,10 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
 
 并发与取消：子 turn 不占用 `reply_branch_slots`（异步任务，主 turn 已结束）；
 主 turn 取消经令牌链传导到子任务（`parent_cancel.child_token()`），
-`Agent::shutdown` / 插件卸载经 `SubagentStore::cancel_all` 兜底取消全部
-运行中子任务。
+`Agent::shutdown` 经 `SubagentStore::cancel_all` 兜底取消全部运行中子任务。
+（2026-09-30 审计注：插件卸载路径当前仅停用工具，运行中子任务不随之取消——
+`Agent::detach_subagent_runtime`（取消并摘除运行态）已备但尚无调用方，
+待与 mount 侧的回挂一并接线。）
 
 ## 工具（`echo-agent.subagent` 包）
 

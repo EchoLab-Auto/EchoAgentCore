@@ -37,8 +37,9 @@ y: 1899
   （`PromptBlock` kind = `system-skill`，标签"系统提示词 · 名称"，按名称排序）；
   `always`/关键词与否**不影响** system 注入——只要启用就注入
 - **人格级引用**：`TeamMember.system_skills`（名字列表）非空时，这些 skill 追加为
-  该 agent 的人格系统提示词层；为空回退 `system_prompt` 文本（旧配置兼容）。
-  注入层级：全局 system skills → 人格 system_skills → 人格 system_prompt 字段
+  该 agent 的人格系统提示词层（与 `system_prompt` 字段**并存**：字段覆盖 base 层
+  文本、技能列表追加在其后；空列表 = 不追加，不是回退关系）。
+  注入层级：base（人格 `system_prompt` 覆盖全局默认）→ 全局 system skills → 人格 system_skills
 - **生命周期完全复用技能系统**：可新建/编辑/启停（`[agent].disabled_skills`）/删除/
   Git 安装/热重载——身份规则与业务知识同样可插拔，默认全局启用、可按 agent 白名单关闭
 - **保存入口**：`SaveSkill.system` 字段（写入 SKILL.md frontmatter `system: true`）；

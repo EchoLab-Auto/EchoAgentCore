@@ -30,10 +30,10 @@ Core（EchoAgentCore）是 Agent 后端核心服务，Rust 实现。组合根在
 
 约定与主流多模态 API 一致：**图片只走独立的 image 内容块**（Anthropic `image` block / OpenAI `image_url` part），文本块里只留占位符。**链路上图片一律是引用、不是内嵌数据**（2026-09-24 媒体库改造）：
 
-- **落盘（媒体库，`echo-defs::media_store`）**：入口处即写盘
+- **落盘（媒体库，`echo-defs::media_store`）**：入口即写盘（QQ 图例外：在**门控与过滤通过后**才下载，见下）
   `~/.local/share/echo-agent-core/media/`（`$ECHO_MEDIA_DIR` 可覆盖；内容哈希命名
   = 同图去重 + 天然防穿越 + 强缓存），链路与日志只留 `/media/<id>` 引用：
-  - QQ 适配器下载远程图（单图 ≤10MB 解码字节）后落盘（原为内嵌 data URI）；
+  - QQ 适配器在门控与过滤管道**通过后**下载远程图（单图 ≤10MB 解码字节）并落盘——被丢弃的消息不白存图（2026-09-29 修正；原为入口即下载，内嵌 data URI）；
   - Panel 附图（最长边 1600px，超 1.5M 字符转 JPEG 逐级缩小）进 `SendMessage`
     时由 Core 落盘；
   - 面板展示：Panel 后端 `GET /media/<id>` 同源提供，浏览器懒加载 + 强缓存

@@ -126,7 +126,7 @@ description = "管理型人格"
 [agent.teams.self-coding]
 name = "self-coding"
 # 显式开启并行多会话循环模式（侧栏分支卡/全局项/可见分支）
-enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel"]
+enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel", "echo-agent.loop.parallel"]
 # 可选：persona 级 API（引用全局供应商池 [agent].api_profiles 中的 profile 名）
 # api_profile = "openai"   # 不配置 = 跟随全局默认配置
 # 显式写法（等价）：追加 "echo-agent.loop.single"；并行多会话模式则列

@@ -49,7 +49,7 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 - 提示词构建的锁纪律（2026-09 修复的并行死锁）：`skills` 的 tokio Mutex guard
   只在 `build_prompt_blocks` 调用作用域内持有，构建完即 drop——guard 跨过
   LLM await 会让并行模式的第二个 turn 在 `skills.lock()` 上饿死
-- 循环迭代（`max_tool_iterations`，默认 1024）：发 LLM 请求 → 有工具调用则逐个执行并回填结果 → 直至产出最终回复或达上限
+- 循环迭代（`max_tool_iterations`，随附配置缺省 1024；`AgentConfig::default` 代码缺省为 5）：发 LLM 请求 → 有工具调用则逐个执行并回填结果 → 直至产出最终回复或达上限
 - 输出预算：`[agent].max_tokens`（0 = 无上限，后端回退 `DEFAULT_MAX_TOKENS = 128K` 实用上限）；响应被 `max_tokens` 掐断（finish_reason = length/max_tokens）时自动续跑（最多 4 次，提示"继续上次输出"喂回模型；半截工具调用丢弃后重发完整调用）
 - 达上限未完成时报错收尾；工具的超时/失败不中断 loop（见 [工具系统](./core-tools.md)）
 
@@ -68,6 +68,14 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 注入各 agent（`set_loop_runner`）并置位 `use_echo_loop` 开关——两者 mount 同一
 驱动，差异只在循环模式（策略）；全部卸载才复位（回退内置循环）。分派规则
 （`process_message_inner` 开头）：
+
+> **接线现状（2026-09-30 审计实测）**：启动期插件 mount 时组合根的
+> `AgentManager` 尚未注册（在其之后才 `set_global_manager`），mount 闭包的
+> `for_each_agent` 为 no-op——启动人格的 `use_echo_loop` 保持 false，普通输入
+> **实际仍走内置循环**；echo-loop 驱动仅在运行期 TogglePlugin（面板全局
+> 停/启循环插件）后才注入生效（生产日志无 `echo-loop turn driver toggled`
+> 记录），运行期新建人格亦不会自动接线。回填位置建议：组合根 persona 循环
+> （`apply_capabilities` 之后）按注册表启用态补挂。
 
 - **普通输入**（非 QQ hook / 定时器 / QQ 会话）→ `process_via_echo_loop`：
   经 TurnRunner 的 turn/step 状态机 + `ToolPipeline` 执行；
