@@ -34,6 +34,8 @@ EchoAgentCore/
 │   │   └── echo-llm-ollama/      # Ollama provider（薄包装 OpenAI 兼容端点）
 │   ├── protocol/
 │   │   └── echo-protocol/        # 前后端线协议 crate（BackendCommand/BackendEvent/bridge）
+│   ├── plugin/
+│   │   └── echo-plugin/          # 插件接缝：PluginManifest + 生命周期 + 注册表
 │   ├── backend/
 │   │   ├── echo-core/            # OneBot v11 协议类型（纯类型，无 I/O）
 │   │   ├── echo-server/          # 反向 WebSocket 服务器（NapCat 接入）
@@ -62,20 +64,20 @@ EchoAgentCore/
 | `echo-loop` | **Agent 循环驱动**：`TurnRunner` turn/step 状态机（`turn/*`/`step/*`/`agent/*` 生命周期事件）、`ToolPipeline` 工具执行管道（pre/execute/post waterfall 中间件） |
 | `echo-llm-openai` / `echo-llm-anthropic` / `echo-llm-ollama` | **LLM provider（Service Provider 角色）**：各自实现 `echo_defs::LlmProvider`,只依赖定义层 |
 | `echo-protocol` | **前后端契约的唯一来源**：`BackendCommand`/`BackendEvent`/`WsMessage`、bridge；`GateMode`/`ThinkingMode`/`ReasoningEffort` 从 `echo-defs` re-export。前端只需依赖它 |
+| `echo-plugin` | **插件接缝**：`PluginManifest` + 生命周期钩子（mount/unmount）+ `PluginRegistry`；插件只依赖定义层与机制层（`echo-defs`/`echo-context`/`echo-plugin` 三个 crate），不依赖 `echo-agent` |
 | `echo-agent` | Agent 框架：agent 循环、LLM provider 工厂、工具注册表与各包（`packages/`）、技能系统、trunk 记忆、异步子任务（`spawn_subagent`） |
 | `echo-adapter` | 协议无关的适配器抽象：`Adapter` trait、`InboundMessageHook`、过滤管道、`ConfigStore` |
 | `echo-adapter-qq` | QQ 适配器：反向 WS 接入、5 层门控、NapCat HTTP 客户端 |
-| `echo-core` / `echo-server` | OneBot v11 类型 / 反向 WS 服务器（仅供 echo-adapter-qq 使用） |
+| `echo-core` / `echo-server` | OneBot v11 协议类型 / 反向 WS 服务器（NapCat 接入；组合根与 QQ 适配器使用） |
 | `echo-agent-core`（bin） | 组合根：加载配置、装配 Agent + QQ 适配器、对外提供 management WS |
 
 依赖方向（单向，无环，扩展只依赖定义层）：
 
-```
-echo-defs ◄── echo-protocol ◄── echo-adapter ◄── echo-agent ◄── echo-agent-core (bin)
-    ▲              ▲                ▲   ▲                          ▲
-    └── echo-context ◄──────────────┴───┴── echo-adapter-qq ◄──────┘
-                                          (→ echo-core, echo-server)
-```
+- **底座**（零 echo-* 依赖）：`echo-defs`（定义层）、`echo-context`（机制层）
+- **中间层**（只依赖底座）：`echo-protocol`、`echo-loop`、`echo-session`、`echo-llm-*`（`echo-llm-ollama` 另复用 `echo-llm-openai`）、`echo-adapter`、`echo-plugin`、`echo-core`、`echo-server`
+- **框架层**：`echo-agent`（依赖 `echo-defs`/`echo-context`/`echo-loop`/`echo-session`/`echo-llm-openai`/`echo-llm-anthropic`/`echo-llm-ollama`/`echo-protocol`/`echo-adapter`/`echo-plugin`）
+- **适配层**：`echo-adapter-qq`（依赖 `echo-adapter`/`echo-core`/`echo-server`/`echo-defs`）
+- **组合根**：`echo-agent-core`（bin，装配以上全部）
 
 ## 构建与运行
 

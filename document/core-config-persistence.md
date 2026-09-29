@@ -5,11 +5,12 @@ group: 后端模块
 x: 955
 y: 1899
 ---
+
 # 配置持久化
 
 ## 概述
 
-EchoAgentCore 的配置通过一个共享的 `ConfigStore` 进行原子化读写。
+EchoAgentCore 的运行期配置写入通过共享 `ConfigStore` 原子化落盘；启动加载不经它（`CoreConfig::load` 直接读文件）。
 
 | 类型 | 机制 | 写入 section |
 |---|---|---|

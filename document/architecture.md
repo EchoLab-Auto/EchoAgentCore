@@ -37,7 +37,7 @@ graph BT
   Loop --> Defs
   Proto --> Defs
   Proto --> Ctx
-  Adapter --> Proto
+  Adapter --> Defs
   Agent --> Adapter
   Agent --> Session
   Agent --> LLM
@@ -60,7 +60,7 @@ graph BT
 
 ### echo-defs 模块清单与约束
 
-定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（仅 serde/async-trait/tokio 基础依赖），可独立测试：
+定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（依赖仅 serde/serde_json/async-trait/tokio/thiserror/base64/tracing 基础 crate，不含 reqwest/其它 echo-* crate），可独立测试：
 
 | 模块 | 内容 |
 |---|---|
@@ -70,9 +70,11 @@ graph BT
 | `chat` | 平台无关 `ChannelType`/`IncomingMessage`/`MessageTarget`/`SendResult`/`AdapterEvent` + `ChatAdapter` trait；门控词不在此层 |
 | `mode` | `GateMode`/`ThinkingMode`/`ReasoningEffort`（自 `echo-protocol` 移入，`echo-protocol` re-export 保持 wire 路径；`echo-adapter` 不依赖 `echo-protocol`） |
 | `token` | 纯 token 估算/截断函数 |
+| `media` | 多模态负载卫生：历史文本里内嵌的 base64 → 轻量占位符（不进入模型文本块），图片只走独立 image 内容块 |
+| `media_store` | 入站图片落盘缓存（媒体库）：`/media/<id>` 引用模型、`save_image_bytes`/`save_data_uri`（见本文§媒体库） |
 | `session` | `SessionEvent` + `SessionStore` trait（事件溯源会话契约） |
 
-依赖方向收敛为 `echo-defs ◄ echo-protocol ◄ echo-adapter ◄ echo-agent`，扩展插件只依赖定义层；旧 crate（`echo-agent`/`echo-adapter`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
+依赖方向收敛为单向下游：`echo-defs` / `echo-context`（底座，零 echo-* 依赖）◄ `echo-protocol` / `echo-adapter` / `echo-session` / `echo-llm-*`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）——`echo-adapter` 只依赖定义层、不依赖 `echo-protocol`；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-adapter`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
 
 ### echo-context 机制
 
@@ -151,9 +153,9 @@ graph BT
 |---|---|
 | 新增 LLM provider | 实现 `echo_defs::LlmProvider`，注册 `ctx.llm` |
 | 新增工具 | 实现 `echo_defs::Tool`，注册进 ToolRegistry |
-| 新增平台 | 实现 `ChatAdapter`，注册 `ctx.chat(platform)` |
+| 新增平台 | 实现 `ChatAdapter`，经 `AdapterRegistry` 接入（`ctx.chat` 服务键为规划） |
 | 拦截请求/工具/turn | EventBus 上注册 lifecycle 事件监听器 |
-| 工具策略（超时/审批） | `ToolPipeline::push_pre/push_post` |
+| 工具策略 | 超时已由 harness `tool_guard_timeout` 守卫（`agent/tool_exec.rs`）；`ToolPipeline` 中间件机制已备、生产路径未接线 |
 | 新增命令 | 命令分发按域拆分（`apply_qq_command` 模式）+ CommandRegistry（开放后） |
 | 会话状态扩展 | 扩展 `SessionEvent` 枚举（echo-session），从日志渲染 |
 

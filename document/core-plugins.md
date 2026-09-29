@@ -1,6 +1,7 @@
 ---
 id: plugins
 title: "插件化设计"
+group: 后端模块
 link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "tools | r>l", "agent-loop | r>l", "subagent | Subagent 插件"]
 x: 955
 y: 1759
@@ -32,7 +33,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 - **插件类型（`PluginKind`，wire 名以 `as_str` 为准）**：`skill` / `tool` / `provider` / `loop` / `adapter` / `orchestration` / `management` / `interaction`。
   - `interaction`（2026-09-14 新增）：**人在环交互面**——模型发起、用户在 Panel 应答（Panel 内的问答 UI + 专用应答通道），与 `adapter` / `management` 同属「整类能力开关」，在 Panel「启用插件」勾选区按 kind 即可见（`capabilities.ts::isPluginCheckboxVisible` 的 kind 类判定）。原选单（`present_menu`）已于 2026-09 整体废弃移除，该 kind 目前无内置成员，保留给未来人在环交互插件
   - 新增类型时同步：Core `PluginKind::as_str` 的 wire 名（测试守护）+ Panel `capabilities.ts::PLUGIN_KIND_LABELS` 中文名（测试守护覆盖全部 wire 名）
-- 注册为**可逆**副作用：`register_and_mount` 返回 disposer，禁用即卸载注册
+- 注册为**可逆**副作用：`Plugin::mount` 返回 disposer（`PluginMountResult`，注册表持有、卸载时调用）；`register_and_mount` 注册并按启用态挂载（禁用插件只注册不挂载）
 - 数据插件（skill/tool）支持热重载（插件目录 5s 轮询）；代码插件需二进制重载
 - **启动顺序**：`apply_disabled` 先于挂载——禁用插件启动时只注册不挂载；persona 白名单的门控**启动期与运行期统一**由 `Agent::apply_capabilities` 承担（`GATED_PLUGIN_IDS` 表逐人格计算：全局启用 ∧ 白名单）；插件宿主由组合根注入为**进程级单例**（所有人格共享，不再寄居某个“默认人格”）
 - **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / adapter.qq / skills.dir）已把组合根装配搬进 mount 闭包，`TogglePlugin` 对它们有真实运行效果；`adapter.qq` 的启动期 mount 不抢跑（wired 标志在适配器接线完成后才置位），启动受 `[adapters.qq].enabled` 与插件状态双重门控
@@ -62,6 +63,9 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 > echo-protocol（线协议，见 [协议与数据流](./protocol.md)）+ echo-agent-core
 > （`source/core/src/management.rs`）。目录只服务物理区分，公开路径保持原样
 > （`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export）。
+>
+> QQ 工具（`send_*`/`get_*`）例外地实现于组合根 `source/core/src/qq_tools.rs`——
+> 工具须实现 `echo_agent::Tool`，而适配器 crate 刻意不依赖 echo-agent。
 
 > 以上 9 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单（`BUILTIN_PLUGIN_IDS` 为 `[&str; 9]`）。选单（present_menu）已废弃移除（2026-09）；任务清单（checklist）为普通内置工具。
 

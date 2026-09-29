@@ -102,7 +102,7 @@ Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
 
 ### 5. 面板前端与部署 CLI（非 cargo）
 
-- **Panel web（vitest + @vue/test-utils，192 条）**：`ChatView` 图片渲染契约
+- **Panel web（vitest + @vue/test-utils，198 条）**：`ChatView` 图片渲染契约
   （`/media/<id>` 懒加载 / 空串省略占位 / data URI 兼容）、设置视图技能/工具/插件
   工作台（筛选、分组维度、详情分区、交叉跳转、脏状态）、右侧栏连接状态卡、
   智能体编辑器分区、协议编解码回归等。
