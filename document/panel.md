@@ -61,6 +61,7 @@ EchoAgentPanel/
   decoding=async>`（同源、强缓存）；遗留 data URI 兼容；空串（Core 侧"图片已省略"
   占位）渲染为文字标
 - `SubagentEventBlock.vue`：子代理委派行（运行中/完成/失败 + 任务摘要，点击展开结论），见 [会话视图](./panel-chat.md)§7.3c。
+- `MessageItem.vue`：消息行（user/agent/system）——库 `ChatBubble` + doc `MarkdownRenderer` 自组（2026-09-30，库 chat 组合件移除后）。
 - `ReasoningBlock.vue`：推理打字机动画（实时消息 6 秒封顶；历史回放不播）
 - 活动浮条：思考中 / 调用工具 / 子代理 的 spinner + 动态文案
 - 消息入场动画 0.28s 淡入上移，仅实时消息（`animate` 标记）播放

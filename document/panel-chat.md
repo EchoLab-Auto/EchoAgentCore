@@ -39,9 +39,11 @@ y: 1301
 | `tool` | **连续调用合并**为 `ToolRunGroup`（2026-09-19）：一排圆角矩形图标（§7.3b）；单发调用（前后无相邻 tool）也走同一行渲染 |
 | `subagent` | **Panel 扩展角色**（2026-09-28）：子代理委派行——派发位置一行「子代理运行中/完成/失败 + 任务摘要」，点击展开结论（§7.3c） |
 | `system` | 系统提示行 |
-| `branch` | ChatBranchMergeBlock 分支合并卡（当前 reducer 已不产生——分支内容实时进主时间线，此角色保留适配） |
+| `branch` | 分支合并卡角色（当前 reducer 已不产生——分支内容实时进主时间线；此角色仅为适配保留，面板无对应渲染） |
 
 补充来源：定时器触发以 system 消息插入主时间线（`⏰ 定时器触发 · {task}`，task 截断 160 字符）。
+
+**渲染分工（2026-09-30）**：行模型与组合归面板——消息行 `MessageItem`（库 `ChatBubble` + doc `MarkdownRenderer` 自组）、工具行 `ToolRunGroup`、推理 `ReasoningBlock`、子代理 `SubagentEventBlock`；ui-frame 只提供机制原语（`ChatTray` / `ChatComposer` / `ChatBubble` / `ChatFold` / `ChatCopyButton`）。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义），`ChatMessage` 数据契约保留。
 
 ### 7.3 工具卡生命周期
 
@@ -60,7 +62,7 @@ graph LR
 
 ### 7.3b 工具调用图标行（ToolRunGroup，2026-09-19 起）
 
-消息列表不再把每条 tool 消息单独交给库 `ChatToolCallBlock` 折叠卡：**连续的 tool 消息在 ChatView 合并为一组 `ToolRunGroup`**（其余消息逐条渲染；列表容器改为库 `ChatTray` 自渲染行，吸底滚动契约不变）。
+**连续的 tool 消息在 ChatView 合并为一组 `ToolRunGroup`**（2026-09-19 起；此前为库 `ChatToolCallBlock` 折叠卡，2026-09-30 组合权归面板后该库组件已移除）；其余消息逐条渲染；列表容器为库 `ChatTray` 自渲染行，吸底滚动契约不变。
 
 - **折叠态**：一排圆角矩形毛玻璃图标（30×26，间距 4px；2026-09-28 紧凑化，原 34×30 / 6px；flex-wrap——多个工具连续调用时横向扩展，横向空间不足自动下移一行）；图标按工具分派不同 SVG（`ToolIcon.vue`：bash 终端符 / 文件 / 代码括号 / 清单对勾 / 计算器 / 搜索放大镜 / 子代理放射图 / 消息气泡 / 适配器齿轮 / 工作区文件夹 / 默认扳手）；失败图标染 error 色
 - **加载/运行动画**（任一图标 status=running 时整组进入运行态）：
