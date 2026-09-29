@@ -45,6 +45,8 @@ y: 1301
 
 **渲染分工（2026-09-30）**：行模型与组合归面板——消息行 `MessageItem`（库 `ChatBubble` + doc `MarkdownRenderer` 自组）、工具行 `ToolRunGroup`、推理 `ReasoningBlock`、子代理 `SubagentEventBlock`；ui-frame 只提供机制原语（`ChatTray` / `ChatComposer` / `ChatBubble` / `ChatFold` / `ChatCopyButton`）。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义），`ChatMessage` 数据契约保留。
 
+**气泡宽度（2026-09-30）**：宽度完全动态——短消息贴内容收紧（实测最短 186px），长消息/代码/表格撑满消息列可用宽度（随左右侧栏卡片显隐变化，实测 1600px 窗口下 1276px）；`.chat-view__item--msg` 为 flex 列容器（user 靠右 / agent 靠左 / system 居中，依赖库 `align-self`）。面板覆盖库默认 `max-width: min(78%, 640px)`（`MessageItem.vue` 双写类名提权），并隐藏 Markdown 标题锚点（其 -22px 绝对定位会撑出横向溢出）。
+
 ### 7.3 工具卡生命周期
 
 ```prodoc-flow
