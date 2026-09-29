@@ -195,7 +195,7 @@ echo-core）：
 | `face`（QQ 内置表情） | `[表情:微笑]`；未知 id 回退 `[表情:123]`（对照表 `echo-core/src/face.rs`，取自 NapCat `face_config.json`，329 条） |
 | `dice` / `rps` | `[骰子:4]` / `[石头剪刀布:剪刀]`（OneBot v11：1 石头、2 剪刀、3 布） |
 | `poke` | `[戳一戳]` |
-| `image` | 不进 content，经 `images` 通道——下载后**落盘媒体库**、传递 `/media/<id>` 引用（见 [Core 框架](./core.md)§多模态输入） |
+| `image` | 不进 content，经 `images` 通道——**触发门控与过滤管道通过后**下载、**落盘媒体库**、传递 `/media/<id>` 引用（被丢弃的消息不触发下载，2026-09-29 修正；见 [Core 框架](./core.md)§多模态输入） |
 | `file` / `onlinefile` | 不进 content，经 `files` 通道（见 §文件接收） |
 | 其它（`record`/`video`/`xml`/`json`/`forward`…） | 不渲染 |
 

@@ -107,7 +107,7 @@ graph BT
 `~/.local/share/echo-agent-core/media/<内容哈希>.<ext>`（`$ECHO_MEDIA_DIR` 可覆盖），
 引用为 `/media/<id>`（Panel web 后端同源提供，浏览器懒加载 + 强缓存）。
 
-- 落盘侧：adapter-qq 下载远端图后落盘；SendMessage（面板上传 data URI）入站落盘；
+- 落盘侧：adapter-qq 在**触发门控与过滤通过后**下载远端图并落盘（被丢弃的消息不白存图，2026-09-29 修正）；SendMessage（面板上传 data URI）入站落盘；
   遗留内嵌图由加载期迁移（`spill_event_media` + 时间线遍历）一次性改写（幂等）
 - 模型侧：投影出口（`TrunkStore::reproject_one`）把引用还原为 data URI——
   发往 LLM 的请求与改造前无差别

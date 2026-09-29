@@ -109,11 +109,6 @@ impl echo_server::Handler for QqHandler {
         let Some(msg) = QqAdapter::convert_message(event, &self.inner.group_names) else {
             return HandleResult::Pass;
         };
-        // QQ CDN 图片链接的 rkey 会过期：在入库前下载并**落盘为媒体文件**，
-        // 链路上只留 `/media/<id>` 引用（2026-09-24：此前内嵌为 data URI，
-        // 单张数 MB 的图片会把时间线/会话文件拖到几十 MB；模型侧在发往
-        // LLM 前由 `media_store::inline_media_refs_in_messages` 还原）。
-        let msg = persist_remote_images(msg).await;
         // convert_message returns Some only for message events, so this
         // reference is always valid — no unwrap required.
         let message_event = event.as_message();
@@ -160,6 +155,14 @@ impl echo_server::Handler for QqHandler {
                 return HandleResult::Pass;
             }
         }
+        // QQ CDN 图片链接的 rkey 会过期：下载并**落盘为媒体文件**，链路上只留
+        // `/media/<id>` 引用（2026-09-24 改造：此前内嵌 data URI，单张数 MB
+        // 的图片会把时间线/会话文件拖到几十 MB）。必须在触发门控与过滤管道
+        // **通过之后**才下载（2026-09-29 下移）：此前紧跟 convert_message，
+        // 被门控（群聊非 @我 / dm_auto_reply=false）或过滤拦截的消息也会白存
+        // 图片，媒体库积累无主文件。模型侧在发往 LLM 前由
+        // `media_store::inline_media_refs_in_messages` 还原。
+        msg = persist_remote_images(msg).await;
         // 私聊文件（消息 file 段）：在过滤通过后下载，避免被拦截的消息
         // 白白拉取大文件。
         self.resolve_pending_files(&mut msg).await;
@@ -631,6 +634,51 @@ mod tests {
         .unwrap()
     }
 
+    /// 私聊图片事件（image 段带远程 URL，content 为空）。
+    fn private_image_event(url: &str) -> Event {
+        serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "private",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "friend",
+            "message_id": 44,
+            "user_id": 123456,
+            "message": [{"type": "image", "data": {"file": "x.png", "url": url}}],
+            "raw_message": "",
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester"}
+        }))
+        .unwrap()
+    }
+
+    /// 群聊图片事件（`at_me` 控制是否 @ 机器人）。
+    fn group_image_event(url: &str, at_me: bool) -> Event {
+        let mut segments =
+            vec![serde_json::json!({"type": "image", "data": {"file": "x.png", "url": url}})];
+        if at_me {
+            segments.insert(
+                0,
+                serde_json::json!({"type": "at", "data": {"qq": "10001"}}),
+            );
+        }
+        serde_json::from_value(serde_json::json!({
+            "post_type": "message",
+            "message_type": "group",
+            "time": 1700000000,
+            "self_id": 10001,
+            "sub_type": "normal",
+            "message_id": 45,
+            "group_id": 999,
+            "user_id": 123456,
+            "message": segments,
+            "raw_message": "",
+            "font": 0,
+            "sender": {"user_id": 123456, "nickname": "tester", "card": ""}
+        }))
+        .unwrap()
+    }
+
     fn heartbeat_event() -> Event {
         serde_json::from_value(serde_json::json!({
             "post_type": "meta_event",
@@ -1086,6 +1134,11 @@ mod tests {
         ));
     }
 
+    /// 媒体落盘测试的进程级环境变量锁：`ECHO_MEDIA_DIR` 是进程级，多个测试
+    /// 并行设置/清除会互相踩（tokio Mutex：跨 await 持有不触发
+    /// clippy::await_holding_lock）。
+    static MEDIA_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// 媒体落盘测试共享一个隔离目录（环境变量是进程级，串行化）。
     fn media_test_dir(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -1113,6 +1166,7 @@ mod tests {
             .mount(&server)
             .await;
 
+        let _serial = MEDIA_ENV_LOCK.lock().await;
         let dir = media_test_dir("store");
         std::env::set_var("ECHO_MEDIA_DIR", &dir);
         let reference = download_and_store(&format!("{}/img.png", server.uri()))
@@ -1153,5 +1207,99 @@ mod tests {
         assert_eq!(persist_remote_image(data.clone()).await, data);
         let reference = "/media/abc.png".to_string();
         assert_eq!(persist_remote_image(reference.clone()).await, reference);
+    }
+
+    /// 回归（2026-09-29）：被触发门控丢弃的消息（群聊非 @我）**不得**预下载
+    /// 图片——此前 `persist_remote_images` 紧跟 convert_message，丢弃的消息也
+    /// 会把图片落盘，媒体库积累无主文件（2026-09-29 实测清理出 37 张）。
+    #[tokio::test]
+    async fn gated_drop_does_not_download_images() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _serial = MEDIA_ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(vec![1u8, 2, 3])
+                    .insert_header("content-type", "image/png"),
+            )
+            .mount(&server)
+            .await;
+
+        let dir = media_test_dir("gate-skip");
+        std::env::set_var("ECHO_MEDIA_DIR", &dir);
+        let handler = QqHandler::new(test_inner(QqTriggerConfig::default()));
+        let (ctx, _rx) = test_ctx();
+        let image_url = format!("{}/img.png", server.uri());
+        assert_eq!(
+            handler
+                .handle(&ctx, &group_image_event(&image_url, false))
+                .await,
+            HandleResult::Pass
+        );
+        std::env::remove_var("ECHO_MEDIA_DIR");
+
+        let received = server.received_requests().await.unwrap_or_default();
+        assert!(
+            received.is_empty(),
+            "gated-drop message must not fetch images: {received:?}"
+        );
+        assert!(
+            !dir.exists(),
+            "gated-drop message must not create media files"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 门控与过滤通过的消息：图片在投递前落盘为 `/media/<id>` 引用。
+    #[tokio::test]
+    async fn delivered_message_persists_images_before_hook() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let _serial = MEDIA_ENV_LOCK.lock().await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/img.png"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(vec![9u8, 8, 7])
+                    .insert_header("content-type", "image/png"),
+            )
+            .mount(&server)
+            .await;
+
+        let dir = media_test_dir("deliver-store");
+        std::env::set_var("ECHO_MEDIA_DIR", &dir);
+        let hook = Arc::new(MockHook::new(Ok(())));
+        let inner = test_inner(QqTriggerConfig::default());
+        *inner.message_hook.lock().unwrap() = Some(hook.clone());
+        let handler = QqHandler::new(inner);
+        let (ctx, _rx) = test_ctx();
+
+        let image_url = format!("{}/img.png", server.uri());
+        assert_eq!(
+            handler.handle(&ctx, &private_image_event(&image_url)).await,
+            HandleResult::Handled
+        );
+        std::env::remove_var("ECHO_MEDIA_DIR");
+
+        let messages = hook.messages.lock().unwrap();
+        assert_eq!(messages.len(), 1, "hook receives the message");
+        let images = &messages[0].images;
+        assert_eq!(images.len(), 1);
+        assert!(
+            images[0].starts_with("/media/"),
+            "image must be persisted as a ref before delivery: {}",
+            images[0]
+        );
+        let id = echo_defs::media_store::id_of_ref(&images[0]).expect("valid ref");
+        assert_eq!(
+            std::fs::read(dir.join(id)).expect("stored bytes"),
+            vec![9u8, 8, 7]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

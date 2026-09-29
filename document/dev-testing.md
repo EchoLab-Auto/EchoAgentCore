@@ -161,6 +161,7 @@ cargo fmt --all --check
 - 压缩摘要前缀双写（`[历史摘要] [历史摘要]`）——投影期幂等渲染，测试锁定。
 - 「重载技能」只作用于管理代理、人格侧不生效——广播全部运行人格修复（`reload_skills_into` 测试锁定）。
 - 更新器 `expected_ids` 与 `BUILTIN_PLUGIN_IDS` 漂移（`orchestration` 移除后残留、更新误报缺 manifest）——`update_script_plugins` 守护测试补齐。
+- QQ 图片预下载发生在触发门控之前（被丢弃的消息也白存图，媒体库积累无主文件）——下载下移至「门控与过滤通过后」，`gated_drop_does_not_download_images` 回归测试锁定（wiremock 断言零请求）。
 - echo-loop 驱动路径缺工具超时守卫（挂死工具可永久拖住 turn）——`Agent::tool_guard_timeout` 统一两条路径口径，`echo_loop_path_guards_hung_tools_with_timeout` 测试锁定。
 - run_sudo / present_menu / framework_update 三个内联工具在此前清理中丢失派发入口（配套 broker/协议/配置仍在但工具不可达）——2026-09 正式废弃：全配套移除、服务加固收紧（`NoNewPrivileges=true`）。
 - `QqAdapterConfig::Default` 与 serde 字段默认分裂（`napcat_auto_stop` 一条 false 一条 true）——`default_matches_serde_field_defaults` 锁定两条默认路径一致。
