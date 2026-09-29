@@ -20,6 +20,8 @@ EchoAgentPanel/
 │   ├── src/proxy.rs                 # 浏览器 ↔ Core 帧中继（不解析负载、10s 写超时）
 │   └── src/config.rs                # 面板配置加载
 ├── web/                             # Vue 3 + TypeScript + Vite 前端
+│   ├── vendor/ui-frame/             # ui-frame 组件库本地快照（dist + package.json，入库）
+│   ├── scripts/use-ui-frame.mjs     # 引用方式切换（本地快照 ⇄ npm 包，见下）
 │   └── src/
 │       ├── protocol.ts              # echo-protocol 线格式的 TS 镜像
 │       ├── state.ts                 # 状态 + reducer
@@ -28,6 +30,12 @@ EchoAgentPanel/
 │       └── components/              # 聊天 / 设置 / QQ / 任务 / 清单
 └── scripts/                         # install.sh / update.sh / uninstall.sh
 ```
+
+**ui-frame 引用方式**：默认以 `file:./vendor/ui-frame`（仓库内提交的本地快照）引用；
+`web/scripts/use-ui-frame.mjs` 提供 `ui-frame:local` / `ui-frame:npm` / `ui-frame:sync`
+/ `ui-frame:diff` 命令，在本地快照与 npm 已发布包之间切换（依赖行是唯一事实来源，
+切换会体现在 git diff）；`sync` 支持从 ui-frame 源码仓库重建快照，`diff` 列出
+快照中尚未发版的改动。日常开发/CI 无需切换（CI 用 `npm ci` + 提交的快照）。
 
 ## 后端：无状态字节级中继
 
