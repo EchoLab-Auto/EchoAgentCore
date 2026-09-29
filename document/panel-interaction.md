@@ -50,6 +50,7 @@ graph TD
   Sys --> Y1[Toast]
   Sys --> Y2[键盘]
   Sys --> Y3[常量速查]
+  Sys --> Y4[设计边界]
 ```
 
 ## 模块索引

@@ -50,7 +50,7 @@ EchoAgentPanel/
 
 - `store.ts`：全局响应式单例（Vue `reactive`），`dispatch(event)` 逐事件归约
 - `state.ts`：reducer 按事件类型分派，原地深变异
-- `state_domains/`：timeline（时间线转换/增量/工具配对）、helpers
+- `state_domains/`：timeline（时间线转换/增量/工具配对）、orchestration（活动相位、子代理/后台任务、临时回复分支）、helpers
 - 连接管理 `connection.ts`：WS 自动重连；重连后清空运行期状态（分支/任务/活动），时间线保留（内存 + `trunk-cache.ts` 磁盘缓存）并按游标 `since_seq` 增量补齐（响应 `full` 标志时整体替换）
 - 实时事件按 `team_id` 归一化过滤后才进主时间线（跨 agent 不串显）；`TrunkTimeline` 按 `full` 标志区分全量替换/增量追加
 
@@ -81,12 +81,13 @@ EchoAgentPanel/
 - `SettingsView.vue`：设置视图——API 设置（`ApiSettings.vue`：概览视图 + 点击「编辑」/「添加 API 服务商」时展开表单，默认不常驻）+ **技能/工具/插件三套工作台**（2026-09-23 重排版：筛选栏 + 双行行卡 hover 快速启停 + 分区详情检查器 + 包⇄工具/技能交叉跳转；技能按包分组、工具按包分组、插件按门控语义分组）+ 智能体的浏览、启停、编辑、删除（左侧一级菜单 + 右侧工作区；2026-09-04 起取代原资源视图与 API 弹窗）。技能编辑含**「系统提示词」开关**（`system: true`，详见 [技能系统](./core-skills.md)）；智能体编辑含**「系统提示词 skills」勾选**（SaveTeam.system_skills）与 Git 安装弹层。布局与交互细节见 [设置视图](./panel-settings.md)§9.2
 - `AgentSwitcher.vue`：输入框上方 Agent 切换悬浮卡片；卡片与菜单行显示当前 persona **生效模型**（按 `api_profile` 从全局供应商池解析，未引用 = 全局默认 model）
 - `AgentConfigModal.vue`：聊天区 ⚙「配置」按钮唤起的**会话区内磨砂玻璃弹层**——
-  名称/描述/系统提示词/启用/**API 供应商下拉**（`api_profile`，见 [设置视图 §9.1.1](./panel-settings.md)）/插件/工具/技能白名单（表格 + pkg 分组，含"系统提示词 skills"勾选），
+  名称/描述/系统提示词/启用/**API 供应商下拉**（`api_profile`，见 [设置视图 §9.1.1](./panel-settings.md)）/插件/工具/技能白名单（表格 + pkg 分组；"系统提示词 skills"勾选**不在此弹层**——仅设置页智能体编辑提供），
   保存走 SaveTeam；上/左/右距会话框 12px、底部距配置按钮 12px
 - `ContextView`（ChatView 内）：入口行「上下文」唤起的弹层——**几何与配置弹层一致**（上/左/右 12px、底部距入口行 12px），点遮罩关闭、无返回按钮
 - `ShellPanel.vue`：Shell 详情视图（无顶栏入口，经边栏「Shell」卡「详情」进入）——持久 bash 会话终端可视化
-  （新建/停止会话、命令回显 + 流式输出自动吸底、运行态 spinner、
-  完成/失败/超时状态、Enter 执行 Esc 清空、工作目录指定）
+  （停止会话、命令回显 + 流式输出自动吸底、运行态 spinner、
+  完成/失败/超时状态、Enter 执行 Esc 清空；**新建会话在边栏「Shell」卡**（`ShellList.vue`，
+  workdir 缺省），详情头部显示该会话 workdir——本视图无工作目录输入）
 
 ## 取消任务的即时反馈
 
@@ -117,7 +118,7 @@ EchoAgentPanel/
 
 - 打字机/入场动画**仅**对实时消息（`DisplayMessage.animate === true`）播放；历史回放、刷新加载不播动画
 - 动画为纯视觉层：`animate` 是展示元数据，不进入任何数据/逻辑判断
-- 实现要点：ui-frame `ChatRole` 不含 `reasoning`，必须在 `ChatView` 的消息行渲染层拦截（自渲染行循环，见 [会话视图](./panel-chat.md)§7.3b；否则未知角色会被渲染成 Agent 气泡）；`pendingReasoning`/`completedReasoning` 保留给分支合并块消费，主时间线不再读取
+- 实现要点：ui-frame `ChatRole` 不含 `reasoning`，必须在 `ChatView` 的消息行渲染层拦截（自渲染行循环，见 [会话视图](./panel-chat.md)§7.3b；否则未知角色会被渲染成 Agent 气泡）；`pendingReasoning`/`completedReasoning` 为**历史遗留字段**（分支合并块已随 ui-frame 移除，现无任何读取方，仅声明与初始化）
 
 ## 主题
 
