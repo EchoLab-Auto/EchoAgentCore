@@ -26,7 +26,7 @@ y: 637
 
 ## 十一、任务弹层 / Shell
 
-- **任务弹层**（2026-09-19 起替代独立任务视图）：入口行「任务」按钮弹出 `TasksPanel`（徽标 = 当前会话运行中/等待整合任务数），**只对应当前 agent 的当前会话**（按 `sessionId` 过滤；「全局」会话显示全部）；显隐 = `echo-agent.subagent` 插件对当前 persona 启用或当前会话已有任务记录，切换 Agent / 插件禁用后残留弹层强制关闭。任务卡片**倒序**（最新在前），kind 四类标签（后台/并行/Subagent/临时回复）+ 状态六态（运行中/已完成/失败/已取消/**等待整合 awaiting**/**已整合 integrated**）+ 目标 + 创建时间 + 耗时（**当前运行期**：Core 侧后台/并行编排体系已移除，实际只有 Subagent 与临时回复两类产生；后台/并行标签与 awaiting/integrated 状态为保留适配）；`running` 或 `awaiting` 状态时耗时**每 1s** 跳动；分支状态与结果逐条列出；运行中任务可「取消」——与聊天区同一约定：先本地乐观中断，再发 `CancelRequestedWork{session_id, all:false, team_id}`
+- **任务弹层**（2026-09-19 起替代独立任务视图）：入口行「任务」按钮弹出 `TasksPanel`（徽标 = 当前会话运行中/等待整合任务数），**只对应当前 agent 的当前会话**（按 `sessionId` 过滤；「全局」会话显示全部）；显隐 = `echo-agent.subagent` 插件对当前 persona 启用或当前会话已有任务记录，切换 Agent / 插件禁用后残留弹层强制关闭。任务卡片**倒序**（最新在前），kind 四类标签（后台/并行/Subagent/临时回复）+ 状态六态（运行中/已完成/失败/已取消/**等待整合 awaiting**/**已整合 integrated**）+ 目标 + 耗时（由 `createdAtMs` 现算，**当前运行期**：Core 侧后台/并行编排体系已移除，实际只有 Subagent 与临时回复两类产生；后台/并行标签与 awaiting/integrated 状态为保留适配）；`running` 或 `awaiting` 状态时耗时**每 1s** 跳动；分支状态与结果逐条列出；运行中任务可「取消」——与聊天区同一约定：先本地乐观中断，再发 `CancelRequestedWork{session_id, all:false, team_id}`
 - **Shell**（2026-09-19 起拆为两层）：边栏「Shell」卡 = 会话列表（`ShellList`：状态点 + 会话 id + 目录 + 命令数 + 「详情」按钮，附新建/刷新；不内嵌终端）；点「详情」进入 **Shell 详情视图**（`ShellPanel`，经 `openShellDetail` 事件链切换视图，无顶栏导航入口）——仅目标会话的终端卡（运行中 spinner，完成/失败/超时 + 耗时（一位小数秒）+ 输出，终端区 max-height 320px）+ 命令输入（Enter 执行 `ShellExec`、Esc 清空）+ 返回列表/停止会话；新输出自动滚底
 - **HTTP 通道**：WS 之外的仅有接口（日志 `/api/logs/{panel,core}`）走 `fetchWithTimeout`，超时 10s（`api.ts:4`）；QQ 登录/二维码已全部迁到 WS（Core 代理）
 

@@ -21,7 +21,7 @@ y: 442
 - Core 监听 `[core] management_address`（默认 `127.0.0.1:3132`），由 `source/core/src/management.rs` 提供；每个前端建立一条 WS 连接
 - Core 侧事件经 `EventBroker` 扇出到每条连接的独立订阅通道；命令由各连接独立注入
 - 服务端 30s Ping 心跳（90s 无任何入站活动判死断开）；Panel 转发层对双向心跳做透传，空闲连接不会被中间层悄悄断开
-- 断线自动重连（500ms 起、指数退避、上限 30s）；重连后清空运行期状态与时间线缓存再 Bootstrap
+- 断线自动重连（500ms 起、指数退避、上限 30s）；重连后清空运行期状态（分支/任务/活动/工作区缓存）再 Bootstrap——**时间线刻意保留**（2026-09 刷新加速：内存 + 磁盘缓存按游标 `since_seq` 增量续拉，Core 缺口检测兜底、响应 `full` 时整体替换）
 
 ```rust
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
@@ -114,7 +114,7 @@ graph LR
 | `ReasoningEffort` | `"low"` / `"high"` / `"max"` |
 | `OrchestrationMode` | `"single"` / `"chatbot"`（`#[default] = chatbot`；旧编排模式兼容名——`TeamInfo.orchestration_mode` 字段已移除、不再下发） |
 
-`LoopMode` 定义在 `echo-defs::mode`（经 `echo-protocol` 再导出）：per-persona 循环模式，由 `enabled_plugins` 对互斥插件 `echo-agent.loop.{single,parallel}` 推导（单会话为默认与兜底；插件黑名单 `disabled_plugins` 已移除，`SaveTeam`/`TeamInfo` 不再携带该字段——旧端帧中的该字段被 serde 忽略，缺省按空表处理）。**2026-09 协议变更**：`TeamInfo` 新增 `loop_mode`（`"single"`/`"parallel"`）；面板 `loopModeOf()` 优先读 `loop_mode`，缺省按 single。
+`LoopMode` 定义在 `echo-defs::mode`（经 `echo-protocol` 再导出）：per-persona 循环模式，由 `enabled_plugins` 对互斥插件 `echo-agent.loop.{single,parallel}` 推导（单会话为默认与兜底；插件黑名单 `disabled_plugins` 已移除，`SaveTeam`/`TeamInfo` 不再携带该字段——旧端帧中的该字段被 serde 忽略，缺省按空表处理）。**2026-09 协议变更**：`TeamInfo` 新增 `loop_mode`（`"single"`/`"parallel"`）；面板 `loopModeOf()` 优先读 `loop_mode`，缺省按 single；为兼容旧 Core 还兜底旧字段 `orchestration_mode`（`chatbot` → `parallel`，防御性映射）。
 
 ## 兼容性规则
 

@@ -15,7 +15,7 @@ y: 1025
 2026-09-04 起，原「资源」「日志」视图与 API 设置弹窗合并为统一的设置视图：**左栏一级菜单 + 右侧分类工作区**。
 
 - **一级菜单**（168px）：`API 设置`（徽标 = Profile 数）/ `技能` / `工具` / `插件` / `智能体`（徽标 = 条目数）/ `日志`（无徽标）；菜单项 9px/12px 内边距、圆角 8px，选中 = 主色左边框 + `--panel-accent-soft` 底、徽标反白；底部「刷新」拉取四类清单（Skills/Tools/Plugins/Teams，`SettingsView.vue:1290-1296`）。切换分类**丢弃未保存的编辑态**；各分类的选中条目独立保持，切回时恢复
-- **工具条**：标题 + 副标题（API = 全局默认 `provider / model`；日志 = 来源说明；资源类 = `共 N 项 · K 已禁用`）+ 分类级操作（技能：Git 安装 / 新建技能；智能体：新建智能体）
+- **工具条**：标题 + 副标题（API = `当前：{provider} / {model}`（有激活 profile 时附 ` · Profile「{name}」`）；日志 = 来源说明；资源类 = `共 N 项 · K 已禁用`）+ 分类级操作（技能：Git 安装 / 新建技能；智能体：新建智能体）
 - 打开视图时自动拉取四类清单（onMounted）；条目消失时选中态自动置空
 
 ### 9.1 API 设置（概览视图 + 按需展开表单，max-width 720px）
@@ -33,9 +33,9 @@ y: 1025
 
 1. **编辑表单**（仅展开态，插入在列表上方）：标题栏（「编辑 Profile · {name}」+ 编辑中标签 /「新增 API 服务商」+ 收起按钮）→ 快速模板（6 个，点击填充）→ 表单字段 → 操作行（测试连接 / 保存 / 取消）
 2. **API Profiles 卡片网格**（常驻，`repeat(auto-fill, minmax(240px, 1fr))`）：卡片本体用 **ui-frame `NeumorphismCard`**（elevation=2、radius=large、hoverable=bulge、no-padding），按槽位排版——header = 名称 +（编辑中标签）；body = `provider / model` + base_url + key/思考/推理摘要（min-height 62px 对齐）；footer = 余额行（DeepSeek）+ **操作行（测试 / 编辑 / 删除 三按钮等宽网格 `repeat(3, 1fr)`**，`DeleteApi` **无确认，立即生效**）；**编辑中的卡主色 outline 高亮**。**默认标记已移除**（2026-09-14）：卡片不再有「默认」标签与「设为默认」按钮——profiles 只是可供 persona 引用的供应商池，不再有"哪个是默认"的概念；模型选用在 persona 级（Agent 配置弹层）完成，API 设置页不提供「激活」「切换」
-3. **DeepSeek 余额**（2026-09）：provider=deepseek 或 base_url 含 `deepseek.com` 的卡片（含默认配置卡）显示「查余额」按钮——发 `QueryApiBalance{name}` 查官方 `/user/balance`（Anthropic/OpenAI/beta 端点自动归一到 `{root}/user/balance`），结果显示为 `¥110.00`（CNY；USD 用 `$`，其他币种后缀显示），失败显示错误文本；查询加载态互斥、一次一个目标
-4. **测试失败复制**（2026-09）：测试连接结果为失败（✗）时，结果行末尾附 **ui-frame `ChatCopyButton`**（`@echolab-auto/ui-frame/chat`，24px `nm-chat-copy` 图标钮，点击复制完整错误文本到剪贴板，复制定时反馈 ✓）——摘要卡与 profile 卡两处结果行均适用；结果文本整句 `title` 悬停可见（行内 ellipsis 截断时）。**非安全上下文兜底**：Panel 经局域网 IP 以 HTTP 访问时 `navigator.clipboard` 不可用（原本静默失败），`useClipboard` 已补 `textarea + document.execCommand('copy')` 兜底（已合入 ui-frame 上游 `4808f8b`，未发版期间由本地快照携带；安全上下文仍优先 Clipboard API）
-6. **HTML 端点诊断**（2026-09）：base_url 指向网页根域而非 API 前缀时（响应 `text/html`），测试连接错误消息自动追加提示「该地址返回网页而非 JSON——请检查 Base URL 是否为 API 前缀（OpenAI 兼容端点通常以 /v1 结尾）」（OpenAI/Anthropic 两个客户端均实现，解析错误与 HTTP 错误均适用）
+3. **DeepSeek 余额**（2026-09）：provider=deepseek 或 base_url 含 `deepseek.com` 的卡片显示「查余额」按钮——发 `QueryApiBalance{name}` 查官方 `/user/balance`（Anthropic/OpenAI/beta 端点自动归一到 `{root}/user/balance`），结果显示为 `¥110.00`（CNY；USD 用 `$`，其他币种后缀显示），失败显示错误文本；查询加载态互斥、一次一个目标
+4. **测试失败复制**（2026-09）：测试连接结果为失败（✗）时，结果行末尾附 **ui-frame `ChatCopyButton`**（`@echolab-auto/ui-frame/chat`，24px `nm-chat-copy` 图标钮，点击复制完整错误文本到剪贴板，复制定时反馈 ✓）——**仅 profile 卡**结果行（API 摘要卡已不存在，`.api-summary-*` 为残留样式）；结果文本整句 `title` 悬停可见（行内 ellipsis 截断时）。**非安全上下文兜底**：Panel 经局域网 IP 以 HTTP 访问时 `navigator.clipboard` 不可用（原本静默失败），`useClipboard` 已补 `textarea + document.execCommand('copy')` 兜底（已合入 ui-frame 上游 `4808f8b`，未发版期间由本地快照携带；安全上下文仍优先 Clipboard API）
+6. **HTML 端点诊断**（2026-09）：base_url 指向网页根域而非 API 前缀时（响应 `text/html`），测试连接错误消息自动追加提示「该地址返回网页而非 JSON——请检查 Base URL 是否为 API 前缀（OpenAI 兼容端点通常以 /v1 结尾）」（OpenAI 客户端）；Anthropic 客户端文案为「…请检查 Base URL 是否正确（Anthropic 兼容端点通常以 /anthropic 结尾）」；解析错误与 HTTP 错误均适用
 5. **「+ 添加 API 服务商」按钮**（卡片网格底部常驻，primary）
 
 **表单字段**（展开态与字段规则同原设计）：
@@ -98,7 +98,7 @@ y: 1025
 - **智能体编辑器（2026-09 分区化重排）**：顶部**头部信息卡**（ui-frame `NeumorphismCard`：首字头像 + 名称 + 启用状态标签 + `ID · 启用态·循环模式` 摘要行；**无「主 Agent」标签**），下方用 `NeumorphismCollapse` 分三个折叠分区（原第四个「禁用的能力」随插件黑名单移除），**默认展开前两个**（避免超长滚动），标题行右侧带实时摘要：
   1. **基础信息**（摘要 `启用 · 单会话`）：ID 必填 + `/^[A-Za-z0-9_-]+$/`（编辑时锁定，留空回退为名称）、名称必填、描述、启用开关、**循环模式分段单选**（单会话（默认）/ 并行多会话，互斥——写入 `enabled_plugins` 白名单的 `echo-agent.loop.{single,parallel}` 插件 id；空表即单会话）
   2. **系统提示词**（摘要 `自定义提示词/继承全局 · N 个系统技能`）：提示词文本域 + 系统提示词 skills 复选（双列网格）
-  3. **启用的能力**（摘要 `N 插件 · N 工具 · N 技能`，空表显示「不限制（全部可用）」）：四个子块以 `NeumorphismDivider` 分隔——**插件**（`kind ∈ {adapter, management, interaction}` ∪ 包维度门控插件固定清单 tools.builtin / skills.dir / workspace / adapter.qq，判定单一来源 = `capabilities.ts::isPluginCheckboxVisible`；两者之外的插件如 loop.* 不出现；标签显示中文 kind 名，单一来源 `capabilities.ts::PLUGIN_KIND_LABELS`）、**包（Package）**（一次切换整包工具+技能，附成员清单与项数徽标；显示名单一来源 = `capabilities.ts::PACKAGE_DISPLAY_NAMES`）、**工具**（按分类分组，自适应多列）、**技能**
+  3. **启用的能力**（摘要 `N 插件 · N 工具 · N 技能`，空表显示「不限制（全部可用）」）：四个子块以 `NeumorphismDivider` 分隔——**插件**（`kind ∈ {adapter, management, interaction}` ∪ 包维度门控插件固定清单 tools.builtin / skills.dir / workspace / adapter.qq / subagent（与 `capabilities.ts::PACKAGE_GATED_PLUGIN_IDS` 逐项镜像），判定单一来源 = `capabilities.ts::isPluginCheckboxVisible`；两者之外的插件如 loop.* 不出现；标签显示中文 kind 名，单一来源 `capabilities.ts::PLUGIN_KIND_LABELS`）、**包（Package）**（一次切换整包工具+技能，附成员清单与项数徽标；显示名单一来源 = `capabilities.ts::PACKAGE_DISPLAY_NAMES`）、**工具**（按分类分组，自适应多列）、**技能**
   > 原「禁用的能力」（插件黑名单复选）分区已移除（2026-09-11）——插件维度只保留白名单（空表 = 全部启用，取消勾选即物化），既有黑名单配置由 Core 加载期物化进白名单。
   粘性页脚 删除/放弃更改/保存（`SaveTeam`）
 - **详情视图**：取消编辑后回到只读详情；头部新增「编辑」按钮（重新进入编辑器，无需再点列表项）
