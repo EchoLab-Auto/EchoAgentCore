@@ -168,3 +168,4 @@ cargo fmt --all --check
 - run_sudo / present_menu / framework_update 三个内联工具在此前清理中丢失派发入口（配套 broker/协议/配置仍在但工具不可达）——2026-09 正式废弃：全配套移除、服务加固收紧（`NoNewPrivileges=true`）。
 - `QqAdapterConfig::Default` 与 serde 字段默认分裂（`napcat_auto_stop` 一条 false 一条 true）——`default_matches_serde_field_defaults` 锁定两条默认路径一致。
 - `list_files`/`search_code` 缺相对路径穿越防护（六个文件工具中只有四个有 guard）——补齐并测试（`list_and_search_reject_relative_traversal`）。
+- shell 会话读循环交替顺序读 stdout/stderr——任一流空闲即死锁，**每条命令都假超时**（仅 stderr 持续输出才可能完成）；且 `ShellStop` 只杀 bash 本身、后台任务变孤儿续存。重写为两路专职读取任务 + 通道汇聚 + 哨兵 stdout/stderr 双写收齐语义；spawn 建独立进程组、`ShellStop`/意外退出 killpg 整组终止（`exec_returns_promptly_when_stderr_silent`、`large_stderr_burst_is_fully_captured`、`stop_kills_entire_process_group` 等 8 条测试锁定）。

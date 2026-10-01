@@ -23,12 +23,17 @@ You can interact with the project's source code using these tools:
 要跑常驻进程（文档/开发服务器、watch 构建、本地服务等）时，**必须用
 `shell_start` + `shell_exec`，不要用 `nohup`/`&`/disown 挂野进程**：
 
-- shell 会话有 session_id，会出现在 Shell 视图里（可见、可停止、输出可回读）；
+- shell 会话有 session_id，会出现在 Shell 视图里（可见、输出可回读）；
+  `shell_stop` 终止整个会话进程组（bash 及其全部子孙，含后台任务）；
   nohup 挂的进程脱离框架，只能手动 kill，机器重启即丢失且无人知晓
 - 同一 session 内命令保持 cwd 与环境变量（先 `cd` 再启动，或 `shell_start`
   传 workdir）
 - 例子：`shell_start(workdir=项目目录)` → `shell_exec(session_id, "echo-prodoc view document/")`
   → 结束时 `shell_stop(session_id)`
+- **需要跨 Core 重启存活 / 开机自启 / 对外长期可达**的服务（文档站点、长期
+  服务等）**不属于 shell 会话模型**：用 `systemd-run --user --unit=<名称>` 交给
+  用户级 systemd 托管（`systemctl --user status/stop <名称>` 管理）——shell 会话
+  是运行期资源，Core 重启即回收，刻意不承担跨重启职责
 
 ## When to use
 
