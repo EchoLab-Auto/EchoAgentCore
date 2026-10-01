@@ -53,7 +53,7 @@ graph BT
 | `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话，见 Agent 循环文档） |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 echo-defs |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge，Panel 只依赖它 |
-| `echo-agent` | agent 框架 | 循环（内建实现；插件挂载后由 echo-loop 接管普通输入）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
+| `echo-agent` | agent 框架 | 循环（内建实现；echo-loop 驱动注入后接管普通输入——生效口径见 [Agent 循环](./core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
 | `echo-adapter`/`echo-adapter-qq` | 平台适配 | `Adapter` trait、过滤管道、ConfigStore；QQ 实现 |
 | `echo-core`/`echo-server` | OneBot 类型/反向 WS | 仅供 QQ 适配器 |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、启动 |
@@ -135,7 +135,7 @@ graph BT
 
 ## Turn/Step 循环
 
-`TurnRunner` 驱动：`turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。工具策略（超时/审批/审计/限流）是 `ToolPipeline` 中间件，不是循环代码。`Agent::process_message_inner` 为既有实现，逐步由 `ctx.loop` 取代。
+`TurnRunner` 驱动：`turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。工具策略（超时/审批/审计/限流）的设计位置是 `ToolPipeline` 中间件（非循环代码；当前生产路径未注册任何中间件——超时由 harness 的 `tool_guard_timeout` 守卫，见 [Agent 循环](./core-agent-loop.md)）。`Agent::process_message_inner`（内置循环）为当前默认路径；echo-loop 驱动注入后普通输入改经上述状态机执行。
 
 ## 会话与持久化
 

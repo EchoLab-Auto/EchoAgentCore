@@ -35,6 +35,7 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
   [配置持久化](./core-config-persistence.md)。
 - **落地**：两个插件 mount 的是同一个 `TurnRunner`（驱动本体），模式只改策略；
   两个都卸载才回退内置循环。模式只能经面板「循环模式」分段单选修改（写白名单）。
+  注入的实际生效口径（启动期为 no-op、运行期停/再启后生效）见下「实化与分派」。
 
 ## Turn 循环
 - 每条入站消息经[多 Agent 与会话](./core-agents.md)的临时分支机制进入
@@ -58,24 +59,28 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 `echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。组合根经 `ctx.loop` 注册 `TurnRunner`（`LoopOptions`：`max_tokens` 与 `max_tool_iterations` 来自配置），挂载不同实现即可改变驱动行为；消费方（agent、UI、hook）只依赖生命周期事件。
 
 - **生命周期事件**（全部经 `EventBus` 分发）：`TurnStart` / `AgentPreStep`（waterfall，可改写消息或拒绝 step）/ `StepStart` / `AgentRequest`（waterfall，可改写请求）/ `ToolCallRequested` / `ToolResult` / `StepEnd` / `TurnStopping`（serial）/ `TurnEnd`
-- **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。审批、审计、限流等策略以中间件注册进管道（非循环代码，新策略 = 一次 `push_pre`/`push_post`）；**工具超时守卫**由 harness 侧统一实施（`Agent::tool_guard_timeout`：配置 `tool_timeout_secs` base + 工具自声明 `timeout_hint`），两条驱动路径（内置循环 / echo-loop）同一口径——超时只中止该工具、不中断 turn，结果以 notice 喂回模型，事件日志补记中断结果保持成对
+- **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。审批、审计、限流等策略的设计接入方式为管道中间件（非循环代码，新策略 = 一次 `push_pre`/`push_post`；机制已备，当前生产路径未注册任何中间件）；**工具超时守卫**由 harness 侧统一实施（`Agent::tool_guard_timeout`：配置 `tool_timeout_secs` base + 工具自声明 `timeout_hint`），两条驱动路径（内置循环 / echo-loop）同一口径——超时只中止该工具、不中断 turn，结果以 notice 喂回模型，事件日志补记中断结果保持成对
 - 工具经 harness 提供的 `ToolExecutor` 闭包执行，runner 本身不含任何策略代码
 
 ### 实化与分派（插件的运行期效果）
 
 `echo-agent.loop.single` / `echo-agent.loop.parallel` 是**实化插件**（见
-[插件化设计](./core-plugins.md)「能力开关」）：mount 把组合根共享的 `TurnRunner`
-注入各 agent（`set_loop_runner`）并置位 `use_echo_loop` 开关——两者 mount 同一
-驱动，差异只在循环模式（策略）；全部卸载才复位（回退内置循环）。分派规则
-（`process_message_inner` 开头）：
+[插件化设计](./core-plugins.md)「能力开关」）：两插件共享同一个组合根
+`TurnRunner`，差异只在循环模式（策略）；mount 向各 agent 注入
+（`set_loop_runner` + `set_use_echo_loop`），全部卸载才复位（回退内置循环）。
 
-> **接线现状（2026-09-30 审计实测）**：启动期插件 mount 时组合根的
-> `AgentManager` 尚未注册（在其之后才 `set_global_manager`），mount 闭包的
-> `for_each_agent` 为 no-op——启动人格的 `use_echo_loop` 保持 false，普通输入
-> **实际仍走内置循环**；echo-loop 驱动仅在运行期 TogglePlugin（面板全局
-> 停/启循环插件）后才注入生效（生产日志无 `echo-loop turn driver toggled`
-> 记录），运行期新建人格亦不会自动接线。回填位置建议：组合根 persona 循环
-> （`apply_capabilities` 之后）按注册表启用态补挂。
+**注入的生效口径**（按当前实现）：组合根按人格分发依赖进程级 `AgentManager`，
+而它注册于插件挂载**之后**——
+
+- **启动期**：挂载闭包的按人格注入无对象可及（`for_each_agent` 为 no-op），
+  启动加载的人格 `use_echo_loop` 保持 false——普通输入由内置循环处理；
+- **运行期**：对循环插件停/再启（`TogglePlugin`；已启用状态下重复启用为
+  幂等 no-op）触发挂载闭包，对全部运行中人格注入生效；运行期新建人格不经
+  该路径（保持内置循环）。
+
+（注：启动期即注入尚未接线。）
+
+**注入生效后**的分派规则（`process_message_inner` 开头）：
 
 - **普通输入**（非 QQ hook / 定时器 / QQ 会话）→ `process_via_echo_loop`：
   经 TurnRunner 的 turn/step 状态机 + `ToolPipeline` 执行；
