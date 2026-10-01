@@ -102,10 +102,12 @@ Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
 
 ### 5. 面板前端与部署 CLI（非 cargo）
 
-- **Panel web（vitest + @vue/test-utils，198 条）**：`ChatView` 图片渲染契约
+- **Panel web（vitest + @vue/test-utils，208 条）**：`ChatView` 图片渲染契约
   （`/media/<id>` 懒加载 / 空串省略占位 / data URI 兼容）、设置视图技能/工具/插件
   工作台（筛选、分组维度、详情分区、交叉跳转、脏状态）、右侧栏连接状态卡、
-  智能体编辑器分区、协议编解码回归等。
+  智能体编辑器分区、协议编解码回归等。**加载态跟踪契约（2026-09-30）**：
+  `pending.ts` 三态推进（150ms 延迟显示 / 6s 慢 / 20s 超时 / 可见后最短 400ms）、
+  响应事件销账、动态 key 切换（`pending.test.ts`，10 用例）
 - **部署 CLI（`npm/echo-agent`，node:test，23 条）**：PATH 注入假 `docker` 做
   CLI 端到端（init 幂等 / up 参数拼装与提示 / down/restart/update/logs/status /
   doctor 分级与阻断码），以及**模板跨文件契约**（compose 注入的 `ECHO_MEDIA_DIR`

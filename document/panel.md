@@ -27,6 +27,7 @@ EchoAgentPanel/
 │       ├── state.ts                 # 状态 + reducer
 │       ├── state_domains/           # timeline / helpers
 │       ├── connection.ts            # WS 连接（重连退避 + Bootstrap）
+│       ├── pending.ts               # 请求-响应跟踪（加载三态：150ms/6s/20s）
 │       └── components/              # 聊天 / 设置 / QQ / 任务 / 清单
 └── scripts/                         # install.sh / update.sh / uninstall.sh
 ```
@@ -52,6 +53,7 @@ EchoAgentPanel/
 - `state.ts`：reducer 按事件类型分派，原地深变异
 - `state_domains/`：timeline（时间线转换/增量/工具配对）、orchestration（活动相位、子代理/后台任务、临时回复分支）、helpers
 - 连接管理 `connection.ts`：WS 自动重连；重连后清空运行期状态（分支/任务/活动），时间线保留（内存 + `trunk-cache.ts` 磁盘缓存）并按游标 `since_seq` 增量补齐（响应 `full` 标志时整体替换）
+- **加载态跟踪 `pending.ts`（2026-09-30）**：面板是 fire-and-forget 命令模型（无请求 id），等待态由「请求命令→响应事件」关联表统一登记与销账——`sendPending(cmd, key)` 发命令并登记（key 为视图本地命名，重复发送即覆盖=重试语义）；`dispatch` 收到响应事件自动销账；阶段按时间推进：**0–150ms 不显示**（快请求不闪）→ `pending`（骨架/转圈）→ **>6s `slow`**（附「Core 可能正在重启」提示）→ **>20s `timeout`**（错误 + 重试；请求幂等、重发安全），已显示的加载态保证**最短可见 400ms**。视图以 `usePending(key)` 读取（key 可传 getter，动态键如 QQ 多实例 `qq:filter:<实例>`），以 `LoadHint` 组件渲染；聊天区时间线用状态标志判定（`state.timelineArrivedOnce`）不走本表
 - 实时事件按 `team_id` 归一化过滤后才进主时间线（跨 agent 不串显）；`TrunkTimeline` 按 `full` 标志区分全量替换/增量追加
 
 ## 主视图（聊天）

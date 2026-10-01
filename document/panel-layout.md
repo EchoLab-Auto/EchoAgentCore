@@ -214,6 +214,7 @@ graph LR
 - **前台自愈（heal）**：`visibilitychange` 回到前台或 `online` 事件时主动评估连接——已断开则立即重连（复位退避，不等可能被浏览器冻结的退避定时器）；显示 OPEN 也可能半死（设备休眠期间对端已消失而本端未察觉），发 `RequestTeamsList` 探测帧，**5s** 内无任何下行帧则判死、主动关闭走标准重连（`connection.ts`）
 - **中继半死收割**：一侧超过 90s（3 个心跳周期）无任何帧（含 Pong）→ 中继断开整条链路；另有 **10s 写超时**——转发一帧时对端写阻塞超过 10s 即断链（冻结标签页不再挂起中继、Core 发送缓冲不再无界积压）（`proxy.rs`；设备休眠留下的僵尸连接因此被清理，唤醒后重连拿到干净状态）
 - **断连期间**：边栏「连接状态」卡显示"连接中…" + 重连提示（原顶栏状态点，2026-09-23 迁移）；输入框禁用（placeholder `未连接到 Core，暂时无法发送`）；`sendCommand` 不发送并弹 error toast；QQ 面板按钮禁用
+- **首屏与重连的加载反馈（2026-09-30）**：聊天区消息列为空时三态区分——未连接 → 居中 spinner +「正在连接 Core…」；已连接但本次连接尚未收到 `TrunkTimeline` → 「正在加载时间线…」；收到过快照（哪怕为空）才显示「（暂无消息…）」。判定标志 `state.timelineArrivedOnce`（`onopen` 重置、任一 `TrunkTimeline` 置位）；有磁盘缓存时挂载即渲染缓存，无加载闪屏
 - **兜底对齐**：`AgentCompleted` 时若该会话最后一条不是正式回答，自动补拉 `RequestTrunkTimeline`（带当前 team_id，`state.ts:710-724`）
 - 协议信封 `{type: command|event, payload}`；无法解析的帧静默丢弃（`protocol.ts:607-637`）
 
