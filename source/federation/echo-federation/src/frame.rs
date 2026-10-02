@@ -6,7 +6,7 @@
 //! - externally-tagged enum（`{"type": ..., "payload": ...}`），变体/字段名为
 //!   线上契约，只增不改
 //! - 新增字段一律 `#[serde(default)]`——新旧节点混部时旧端点可解码新帧
-//! - `call_id = <origin_node>:<ulid>`：全局唯一 + 因果溯源，跨机回环可检测
+//! - `call_id = <origin_node>:<毫秒时间戳>-<进程内序号>`：全局唯一 + 因果溯源，跨机回环可检测
 
 use serde::{Deserialize, Serialize};
 
@@ -221,8 +221,8 @@ pub enum FedError {
 
 /// 生成全局唯一 call_id：`<origin_node>:<时间戳ms>-<进程内序号>`。
 ///
-/// ULID 语义等价（时间序 + 唯一），但复用 NodeId 的生成器过重——call_id
-/// 只需「节点内唯一 + 可读」，时间戳 + 原子序号足够。
+/// 只需「节点内唯一 + 可读 + 大致时间序」——时间戳 + 原子序号足够（不复用
+/// NodeId 的 ULID 生成器）。
 pub fn new_call_id(origin_node: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);

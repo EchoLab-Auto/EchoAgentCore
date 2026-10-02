@@ -137,7 +137,7 @@ Panel web 后端同源提供）。渲染侧（Panel）直接 `<img src="/media/.
 
 ## 联邦管理（2026-10）
 
-Core↔Core 联邦（`echo-federation` crate，默认 :3133）是**独立链路**——与
+Core↔Core 联邦（`echo-federation` crate，惯例端口 :3133、缺省不监听）是**独立链路**——与
 Panel 的 management WS 并存，帧类型为 `FedFrame`（工具调用 Invoke 三段式、
 委派 SubagentSpawn/Event、只读查询 Query/QueryResult）。契约见
 [联邦](./federation.md)；演进规则与本协议一致（externally-tagged +

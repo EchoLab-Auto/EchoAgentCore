@@ -1654,7 +1654,8 @@ async fn handle_federation_query(
 }
 
 /// 配对成功的邀请占位清理：`invite-*` 占位 peer 的 token 已有活跃链路
-/// （= 对端已用该邀请串连入）→ 运行时移除 + 配置删除。
+/// （= 对端已用该邀请串连入）→ 运行时移除（占位本就不落配置，一次性
+/// 邀请语义）。
 async fn cleanup_paired_invite_placeholders(rt: &FederationRuntime) {
     let configs = rt.federation.peer_configs().await;
     // 配对判定：占位 token 已有活跃链路，**且**链路对端的 node_id 已知

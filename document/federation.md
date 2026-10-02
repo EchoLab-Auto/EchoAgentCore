@@ -43,7 +43,7 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 
 ## 链路与协议（`echo-federation` crate）
 
-每节点同时监听（`[federation] listen`，默认 :3133）与按 peers 连出；
+每节点同时监听（`[federation] listen`，惯例端口 :3133；缺省空 = 不监听，纯连出）与按 peers 连出；
 连接后角色对称。
 
 - **握手**：Hello/Welcome（NodeId + 能力 `NodeCaps{tools, subagent,
@@ -85,6 +85,8 @@ node_name = "workstation"
 url = "ws://192.168.1.20:3133"
 token = "shared-secret"
 allow_tools = ["*"]
+allow_subagent = true       # 接受对端远程委派（Phase 3）
+require_confirm = []        # 命中列表的调用拒绝并提示需确认（v1 简化为拒绝）
 allow_queries = []          # 敏感查询需显式开启
 ```
 
