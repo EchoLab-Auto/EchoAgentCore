@@ -299,6 +299,7 @@ impl InvokeRouter {
         request: InvokeRequest,
         registry: Arc<ToolRegistry>,
         send_result: mpsc::Sender<(String, FedFrame)>,
+        workspace_roots: &[std::path::PathBuf],
     ) -> FedFrame {
         let call_id = request.call_id.clone();
         // 回环帧：origin 是本机（跨机回环，恶意或误配）——拒绝。
@@ -324,6 +325,30 @@ impl InvokeRouter {
                 call_id: request.call_id,
                 verdict,
             };
+        }
+        // 沙箱裁决（2026-10 安全收紧）：联邦路径的文件类工具，绝对路径
+        // 必须落在执行端工作区根并集内——否则获授 read_file 的 peer 可读
+        // ~/.ssh 等任意路径，allow_tools 白名单形同虚设。本地多仓库工作流
+        // 的"绝对路径显式意图"例外不适用于跨机远程调用。
+        const FILE_TOOLS: &[&str] = &["read_file", "write_file", "edit_file"];
+        if FILE_TOOLS.contains(&request.tool.as_str()) {
+            if let Some(raw) = request.args.get("path").and_then(|v| v.as_str()) {
+                if raw.starts_with('/')
+                    && !crate::federation::path_within_roots(raw, workspace_roots)
+                {
+                    tracing::warn!(
+                        target: "federation",
+                        from = %from, call_id = %call_id, tool = %request.tool, path = %raw,
+                        "federation absolute path outside workspace roots — rejected"
+                    );
+                    return FedFrame::Error {
+                        call_id: Some(call_id),
+                        code: echo_federation::FedError::Forbidden,
+                        message: "absolute path outside workspace roots (federation sandbox)"
+                            .into(),
+                    };
+                }
+            }
         }
         // 接受：先回执，再 spawn 执行；结果经 send_result 通道回传组合根发送。
         let started = Instant::now();
@@ -501,6 +526,7 @@ mod tests {
             },
             registry,
             tx,
+            &[],
         );
         assert!(matches!(
             reply,
@@ -528,6 +554,7 @@ mod tests {
             },
             registry,
             tx,
+            &[],
         );
         assert!(matches!(
             reply,

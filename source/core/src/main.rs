@@ -106,24 +106,28 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         };
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
         let router = echo_agent::federation::InvokeRouter::new(node_doc.node_id.clone());
-        let peer_policies: std::collections::HashMap<
-            String,
-            echo_agent::federation::ExecutorPolicy,
-        > = cfg
-            .federation
-            .peers
-            .iter()
-            .map(|(name, p)| {
-                (
-                    name.clone(),
-                    echo_agent::federation::ExecutorPolicy {
-                        allow_tools: p.allow_tools.clone(),
-                        require_confirm: p.require_confirm.clone(),
-                        allow_queries: p.allow_queries.clone(),
-                    },
-                )
-            })
-            .collect();
+        // 策略表共享可变——SaveFederationPeer 运行时更新即生效（此前
+        // 启动期冻结的 HashMap 会让 Panel 配的白名单静默失效到重启）。
+        let peer_policies: std::sync::Arc<
+            tokio::sync::RwLock<
+                std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
+            >,
+        > = std::sync::Arc::new(tokio::sync::RwLock::new(
+            cfg.federation
+                .peers
+                .iter()
+                .map(|(name, p)| {
+                    (
+                        name.clone(),
+                        echo_agent::federation::ExecutorPolicy {
+                            allow_tools: p.allow_tools.clone(),
+                            require_confirm: p.require_confirm.clone(),
+                            allow_queries: p.allow_queries.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        ));
         let fed = echo_federation::Federation::new(
             node_doc.node_id.clone(),
             cfg.federation
@@ -162,6 +166,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .node_name
                 .clone()
                 .or(node_doc.node_name.clone()),
+            peer_policies: peer_policies.clone(),
+            remote_tool_keepers: std::sync::Mutex::new(Vec::new()),
         });
         // 远程 subagent 观测出口（Phase 3）：大脑侧 spawn_subagent
         // node=... 受理/完成时经 Federation 通知对端（帧：
@@ -1194,6 +1200,16 @@ struct FederationRuntime {
     config_store: echo_adapter::ConfigStore,
     listen: String,
     node_name: Option<String>,
+    /// per-peer 执行策略（allow_tools/queries 等）——SaveFederationPeer
+    /// 运行时更新即生效（此前启动期冻结会让白名单静默失效到重启）。
+    peer_policies: std::sync::Arc<
+        tokio::sync::RwLock<
+            std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
+        >,
+    >,
+    /// 远程代理工具的注册保活句柄（Disposer drop 即注销——必须持有到
+    /// 进程结束；Down 整包禁用不注销，Up 重注册前先清空旧句柄）。
+    remote_tool_keepers: std::sync::Mutex<Vec<echo_context::Disposer>>,
 }
 
 impl FederationRuntime {
@@ -1260,7 +1276,11 @@ async fn federation_router_pump(
     mut rx: tokio::sync::mpsc::Receiver<echo_federation::LinkEvent>,
     rt: Arc<FederationRuntime>,
     personas: Arc<agent_supervisor::AgentSupervisor>,
-    peer_policies: std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
+    peer_policies: std::sync::Arc<
+        tokio::sync::RwLock<
+            std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
+        >,
+    >,
 ) {
     // 执行端结果回传通道：handle_invoke spawn 的执行任务 → 本泵统一发送。
     let (outbound_tx, mut outbound_rx) =
@@ -1286,6 +1306,8 @@ async fn federation_router_pump(
                             .await
                             .insert(info.node_id.clone(), info.peer_name.clone());
                         let policy = peer_policies
+                            .read()
+                            .await
                             .get(&info.peer_name)
                             .cloned()
                             .unwrap_or_default();
@@ -1322,8 +1344,23 @@ async fn federation_router_pump(
                                 tracing::warn!(target: "federation", "no persona registry for invoke");
                                 continue;
                             };
+                            // 沙箱根并集：全部 persona 工作区目录（本地
+                            // 目录取 path；远程目录标注占位不参战）。
+                            let mut roots: Vec<std::path::PathBuf> = Vec::new();
+                            for persona in personas.personas() {
+                                if let Some(store) = persona.agent.workspace_store() {
+                                    let (sessions, _) = store.snapshot();
+                                    for s in sessions {
+                                        for d in s.directories {
+                                            if !d.is_remote() {
+                                                roots.push(std::path::PathBuf::from(d.path()));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             let reply = rt.router.handle_invoke(
-                                &from, request, registry, outbound_tx.clone(),
+                                &from, request, registry, outbound_tx.clone(), &roots,
                             );
                             if rt.federation.send_to(&from, reply).await.is_err() {
                                 tracing::warn!(target: "federation", peer = %from, "invoke reply send failed");
@@ -1709,6 +1746,7 @@ async fn register_remote_tools(
     }
     let package = format!("echo-agent.federation.{}", info.peer_name);
     let mut registered = 0usize;
+    let mut keepers: Vec<echo_context::Disposer> = Vec::new();
     for persona in personas.personas() {
         let definitions = persona.agent.tools.definitions().await;
         for remote_name in &candidates {
@@ -1723,7 +1761,8 @@ async fn register_remote_tools(
                 rt.federation.clone(),
                 rt.router.clone(),
             ));
-            persona.agent.tools.register_reversible(tool);
+            let disposer = persona.agent.tools.register_reversible(tool);
+            keepers.push(disposer); // 保活：drop 即注销，绝不能当临时值
             persona
                 .agent
                 .tools
@@ -1733,6 +1772,12 @@ async fn register_remote_tools(
         // 重连语义：Down 时整包禁用，Up 必须整包重新启用（首次注册时
         // 包不在禁用集，本调用无害幂等）。
         persona.agent.tools.set_package_enabled(&package, true);
+    }
+    // 保活句柄入库：先清旧（重注册场景），再存新。
+    {
+        let mut slot = rt.remote_tool_keepers.lock().expect("keepers poisoned");
+        slot.clear();
+        slot.extend(keepers);
     }
     tracing::info!(
         target: "federation",

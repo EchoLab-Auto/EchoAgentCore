@@ -49,3 +49,26 @@ pub fn notify_remote_subagent(
         notify(peer, call_id, task, timeout_secs, status, result);
     }
 }
+
+/// 联邦沙箱：绝对路径是否落在给定工作区根并集内（canonicalize 后按
+/// 路径分量前缀判定；不存在的路径退回其父链最近已存在祖先）。
+/// 用于执行端拒绝"工作区外绝对路径"的远程文件调用（防 ~/.ssh 等读取）。
+pub fn path_within_roots(raw: &str, roots: &[std::path::PathBuf]) -> bool {
+    let target = std::path::Path::new(raw);
+    // canonicalize 目标或其最近已存在祖先（防符号链接逃逸 + 新建文件场景）。
+    let mut probe = target;
+    let canonical_target = loop {
+        match probe.canonicalize() {
+            Ok(c) => break c,
+            Err(_) => match probe.parent() {
+                Some(p) => probe = p,
+                None => return false,
+            },
+        }
+    };
+    roots.iter().any(|root| {
+        root.canonicalize()
+            .map(|r| canonical_target.starts_with(r))
+            .unwrap_or(false)
+    })
+}

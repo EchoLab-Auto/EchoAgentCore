@@ -82,6 +82,9 @@ pub struct LinkHandle {
     tx: mpsc::Sender<FedFrame>,
     /// 本链路使用的共享密钥（状态判定/占位 peer 匹配用）。
     token: String,
+    /// 链路代际标识：进程内单调递增，摘除时比对——仅当注册的还是
+    /// 本链路才移除（否则旧链路 loop 退出会误删重连后的新链路）。
+    generation: u64,
 }
 
 impl LinkHandle {
@@ -106,6 +109,8 @@ pub struct Federation {
     peers: RwLock<Vec<PeerConfig>>,
     /// node_id → 链路句柄（活跃链路）。
     links: Arc<RwLock<HashMap<String, LinkHandle>>>,
+    /// 链路代际计数（见 LinkHandle::generation）。
+    link_generation: std::sync::atomic::AtomicU64,
     /// 事件出口（路由层订阅）。
     event_tx: mpsc::Sender<LinkEvent>,
     shutdown: watch::Sender<bool>,
@@ -128,6 +133,7 @@ impl Federation {
             caps,
             peers: RwLock::new(peers),
             links: Arc::new(RwLock::new(HashMap::new())),
+            link_generation: std::sync::atomic::AtomicU64::new(0),
             event_tx,
             shutdown,
         })
@@ -389,9 +395,13 @@ impl Federation {
         // 顶掉前先显式 Down：否则路由层会保留旧链路注册的代理工具（新
         // Up 与之并存导致重复注册/旧裁决残留）。
         let (out_tx, mut out_rx) = mpsc::channel::<FedFrame>(OUTBOUND_CAP);
+        let generation = self
+            .link_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let handle = LinkHandle {
             tx: out_tx,
             token: link_token.clone(),
+            generation,
         };
         let replaced = self
             .links
@@ -415,17 +425,30 @@ impl Federation {
             .link_loop(&mut read, &mut write, &mut out_rx, &info)
             .await;
 
-        // 仅当注册的还是本链路时摘除（避免误删重连后的新链路）。
-        self.links.write().await.remove(&info.node_id);
+        // 仅当注册的还是本链路时摘除（避免误删重连后的新链路）——
+        // 代际不匹配说明本链路已被顶掉，新链路仍活跃：不摘注册、
+        // 不发 Down（顶掉时已为新链路补过旧链路的 Down）。
+        let still_mine = {
+            let mut links = self.links.write().await;
+            match links.get(&info.node_id) {
+                Some(h) if h.generation == generation => {
+                    links.remove(&info.node_id);
+                    true
+                }
+                _ => false,
+            }
+        };
         let reason = format!("{result:?}");
-        let _ = self
-            .event_tx
-            .send(LinkEvent::Down {
-                peer_node_id: info.node_id.clone(),
-                reason: reason.clone(),
-            })
-            .await;
-        tracing::info!(peer = %info.node_id, %reason, "federation link down");
+        if still_mine {
+            let _ = self
+                .event_tx
+                .send(LinkEvent::Down {
+                    peer_node_id: info.node_id.clone(),
+                    reason: reason.clone(),
+                })
+                .await;
+            tracing::info!(peer = %info.node_id, %reason, "federation link down");
+        }
         result
     }
 
