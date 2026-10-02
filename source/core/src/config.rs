@@ -68,6 +68,8 @@ pub struct CoreConfig {
     pub agent: echo_agent::AgentConfig,
     pub plugins: PluginsSection,
     pub core: CoreSection,
+    /// Core↔Core 联邦链路（Phase 1；缺省关闭）。
+    pub federation: FederationSection,
     /// Legacy server section — auto-migrated to `[adapters.qq.server]`.
     pub server: ServerSection,
     /// Legacy bot section — auto-migrated to `[adapters.qq]`.
@@ -187,6 +189,49 @@ impl Default for CoreSection {
             management_access_token: String::new(),
         }
     }
+}
+
+/// `[federation]` 段（federation Phase 1）：Core↔Core 对等链路。
+///
+/// 缺省整段关闭——单节点部署行为与此前完全一致。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct FederationSection {
+    /// 联邦开关（true 才监听/连出）。
+    pub enabled: bool,
+    /// 联邦监听地址（如 `0.0.0.0:3133`）；空 = 不监听（纯连出）。
+    pub listen: String,
+    /// 人类可读节点别名（Hello 中携带；缺省仅 node_id）。
+    pub node_name: Option<String>,
+    /// 静态对等节点表。
+    pub peers: std::collections::BTreeMap<String, FederationPeerSection>,
+}
+
+/// `[federation.peers.<name>]` 条目。
+///
+/// `allow_tools`/`allow_subagent`/`require_confirm` 为 Phase 2/3 的工具路由
+/// 与委派门控预留——Phase 1 仅链路，字段先行冻结进配置 schema。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+#[allow(dead_code)] // Phase 2/3 门控字段先行冻结 schema，消费方落地后移除
+pub struct FederationPeerSection {
+    /// `ws://host:3133`；空 = 仅接受该 peer 连入（纯被动）。
+    pub url: String,
+    /// per-peer 共享密钥（Bearer；双向相同）。
+    pub token: String,
+    /// 允许对端调用的本机工具白名单（`*` = 全部；Phase 2 消费）。
+    #[serde(default)]
+    pub allow_tools: Vec<String>,
+    /// 是否接受对端的 subagent 委派（Phase 3 消费）。
+    #[serde(default)]
+    pub allow_subagent: bool,
+    /// 命中列表的调用需人工/门控确认（Phase 2 消费）。
+    #[serde(default)]
+    pub require_confirm: Vec<String>,
+    /// 允许对端的只读查询种类（Phase 5）：node_status 默认允许；
+    /// session_snapshot / workspace_files 需显式开启（会话内容敏感）。
+    #[serde(default)]
+    pub allow_queries: Vec<String>,
 }
 
 /// 加载期插件名单迁移（内存迁移，保存自愈）：在 `CoreConfig::load` 反序列化后

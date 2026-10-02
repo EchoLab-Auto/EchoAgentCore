@@ -12,7 +12,8 @@ Environment="ECHO_UPDATE_STATUS_FILE=@STATUS_FILE@"
 Environment="PATH=@SERVICE_PATH@"
 Restart=on-failure
 RestartSec=5s
-TimeoutStopSec=180s  # graceful drain window (in-flight reply finishes before restart)
+# graceful drain window (in-flight reply finishes before restart)
+TimeoutStopSec=180s
 KillSignal=SIGTERM
 # agent 不再提供 setuid 提权（run_sudo 已于 2026-09 废弃移除）；打开加固，
 # 限制被攻破进程的提权面。

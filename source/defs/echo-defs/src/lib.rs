@@ -33,6 +33,7 @@ pub mod media;
 pub mod media_store;
 pub mod message;
 pub mod mode;
+pub mod node;
 pub mod session;
 pub mod skill;
 pub mod token;
@@ -48,8 +49,8 @@ pub use message::{
     ChatChunk, ChatMessage, ChatRequest, ChatResponse, ChatRole, ToolCall, ToolCallDelta, Usage,
 };
 pub use mode::{GateMode, LoopMode, ReasoningEffort, ThinkingMode};
+pub use node::NodeId;
 pub use session::{SessionEvent, SessionStore};
-pub use skill::{Skill, SkillMetadata, SkillProvider};
 pub use token::{
     estimate_history_tokens, estimate_image_tokens, estimate_message_tokens, estimate_tokens,
     truncate, truncate_message_to_tokens, truncate_text_to_tokens,

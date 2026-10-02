@@ -193,6 +193,8 @@ pub struct SpawnRequest {
     pub parent_cancel: tokio_util::sync::CancellationToken,
     /// 主 turn 的分支 id（子任务事件归属渲染用）。
     pub parent_branch_id: String,
+    /// 目标联邦节点（federation Phase 3；None = 本机）。
+    pub node: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -282,6 +284,12 @@ impl SpawnSubagentTool {
             },
             parent_cancel.child_token(),
         );
+        let node = arguments
+            .get("node")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         (self.spawn)(SpawnRequest {
             task_id: task_id.clone(),
             session_id: session_id.to_string(),
@@ -289,9 +297,14 @@ impl SpawnSubagentTool {
             timeout: std::time::Duration::from_secs(timeout_secs),
             parent_cancel,
             parent_branch_id: parent_branch_id.to_string(),
+            node: node.clone(),
         });
+        let target = node
+            .as_deref()
+            .map(|n| format!("（远程节点 {n}）"))
+            .unwrap_or_default();
         Ok(format!(
-            "子任务已受理（id: {task_id}），正在后台以隔离上下文执行。完成后会以 <subagent_event> 事件回报结论；你可以继续当前回复或处理其他事项。任务摘要：{}",
+            "子任务已受理（id: {task_id}）{target}，正在后台以隔离上下文执行。完成后会以 <subagent_event> 事件回报结论；你可以继续当前回复或处理其他事项。任务摘要：{}",
             crate::llm::truncate(&task, 120),
         ))
     }
@@ -316,6 +329,9 @@ pub(crate) async fn run_subagent_turn(
     cancel: tokio_util::sync::CancellationToken,
     max_iterations: usize,
     max_tokens: Option<u32>,
+    // federation Phase 3：远程目标节点（peer 名）；Some 时工具调用名
+    // 在执行前还原为 `<peer>:<tool>`。
+    remote_peer: Option<&str>,
 ) -> Result<String> {
     let system_prompt = format!(
         "{base}\n\n# Subagent boundary\nYou are a subagent executing one delegated task in an isolated context. You cannot see the parent conversation and cannot message users directly. Work the task with the available tools, then answer with the final, self-contained result for the parent agent. Do not ask follow-up questions (nobody can answer); make reasonable assumptions and state them in the result.\n\n# Delegated task\n{task}",
@@ -379,7 +395,15 @@ pub(crate) async fn run_subagent_turn(
             }
             let args: Value =
                 serde_json::from_str(&call.arguments).unwrap_or(Value::Object(Default::default()));
-            let result = registry.execute_rich(&call.name, args).await;
+            // federation Phase 3：远程子任务（remote_peer 指定）的工具名
+            // 还原为 `<peer>:<tool>`——模型看到的是剥前缀的远程语境名称。
+            let tool_name = match remote_peer {
+                Some(peer) if !call.name.starts_with(&format!("{peer}:")) => {
+                    format!("{peer}:{}", call.name)
+                }
+                _ => call.name.clone(),
+            };
+            let result = registry.execute_rich(&tool_name, args).await;
             let text = match result {
                 Ok(r) => echo_defs::media::compact_embedded_media(&r.text, &r.images),
                 Err(e) => format!("error: {e}"),
@@ -407,6 +431,40 @@ pub(crate) fn truncate_result(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn spawn_parses_optional_node() {
+        let store = SubagentStore::new();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured2 = captured.clone();
+        let tool = SpawnSubagentTool::new(
+            store,
+            std::sync::Arc::new(move |req: SpawnRequest| {
+                *captured2.lock().unwrap() = Some(req.node);
+            }),
+        );
+        // 无 node：Some(None)（被调用过、node 为 None）
+        tool.spawn(
+            &serde_json::json!({"task": "t"}),
+            "s",
+            tokio_util::sync::CancellationToken::new(),
+            "b",
+        )
+        .unwrap();
+        assert_eq!(captured.lock().unwrap().clone(), Some(None));
+        // 有 node：透传
+        tool.spawn(
+            &serde_json::json!({"task": "t", "node": "gpu-box"}),
+            "s",
+            tokio_util::sync::CancellationToken::new(),
+            "b",
+        )
+        .unwrap();
+        assert_eq!(
+            captured.lock().unwrap().clone().flatten(),
+            Some("gpu-box".to_string())
+        );
+    }
+
     use super::*;
 
     fn tool(

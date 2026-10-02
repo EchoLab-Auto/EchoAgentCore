@@ -30,8 +30,9 @@ pub use bridge::{
 pub use command::{command_clearance, BackendCommand, CommandClearance};
 pub use event::{
     AdapterStatus, ApiProfileInfo, BackendEvent, BackendState, ContextBlockInfo,
-    ContextMessageInfo, FriendInfo, GroupInfo, OrchestrationMode, PluginInfo, SessionInfo,
-    ShellSessionInfo, SkillInfo, SkillSourceInfo, TeamInfo, TimelineMessage, TimelineSource,
-    TimelineTool, ToolInfo, WorkspaceFileEntry, WorkspaceGitInfo, WorkspaceSessionInfo,
+    ContextMessageInfo, FederationLinkState, FederationPeerInfo, FriendInfo, GroupInfo,
+    OrchestrationMode, PluginInfo, SessionInfo, ShellSessionInfo, SkillInfo, SkillSourceInfo,
+    TeamInfo, TimelineMessage, TimelineSource, TimelineTool, ToolInfo, WorkspaceDirectory,
+    WorkspaceFileEntry, WorkspaceGitInfo, WorkspaceSessionInfo,
 };
 pub use mode::{GateMode, LoopMode, ReasoningEffort, ThinkingMode};

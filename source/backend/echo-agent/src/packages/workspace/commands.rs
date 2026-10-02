@@ -123,11 +123,27 @@ impl Agent {
                     self.emit_workspace_error(format!("工作区会话 {session_id} 不存在"));
                     return;
                 };
+                // federation Phase 0：远程目录跳过本机采集，以占位条目呈现。
                 let directories = session.directories.clone();
                 let collected = tokio::task::spawn_blocking(move || {
                     directories
                         .iter()
-                        .map(|dir| crate::workspace::collect_dir_git(dir))
+                        .map(|dir| match dir.node() {
+                            Some(node) => echo_protocol::WorkspaceGitInfo {
+                                directory: format!("node://{node}/{}", dir.path()),
+                                is_repo: false,
+                                branch: None,
+                                ahead: 0,
+                                behind: 0,
+                                staged: 0,
+                                modified: 0,
+                                untracked: 0,
+                                changed_files: Vec::new(),
+                                last_commit: None,
+                                error: Some("远程目录：本机不可采集".into()),
+                            },
+                            None => crate::workspace::collect_dir_git(dir.path()),
+                        })
                         .collect::<Vec<_>>()
                 })
                 .await;

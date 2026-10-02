@@ -30,6 +30,7 @@ mod packages;
 // ── 包（插件）实现的兼容 re-export：公开路径保持重组前原样，避免破坏
 //    core 组合根与既有引用（`echo_agent::subagent::…` 等）。──
 pub use packages::adapter_qq::bridge as adapter_bridge;
+pub use packages::federation;
 pub use packages::provider_llm as llm;
 pub use packages::skills_dir as skill;
 pub use packages::skills_dir::install as skill_install;

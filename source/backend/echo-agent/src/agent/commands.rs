@@ -731,6 +731,21 @@ impl Agent {
                     team_id: team_id.clone(),
                     full,
                 });
+                // 活跃 turn 快照（刷新恢复，2026-10）：运行状态本是瞬时事件
+                // 流，前端刷新重连后仅靠 TrunkTimeline 看不到正在运行的会话
+                // （活动浮条/取消按钮丢失）。timeline 之后立刻补发——增量与
+                // 全量都发，前端按快照重建 running 集合。
+                let session_ids = match team_id.as_deref() {
+                    Some(id) => crate::agent_manager::global_manager()
+                        .and_then(|m| m.resolve(Some(id)))
+                        .map(|a| a.active_turn_session_ids())
+                        .unwrap_or_default(),
+                    None => self.active_turn_session_ids(),
+                };
+                self.emit(BackendEvent::ActiveTurnsSnapshot {
+                    session_ids,
+                    team_id: team_id.clone(),
+                });
             }
             BackendCommand::ClearHistory { team_id } => {
                 if let Some(id) = team_id {
@@ -1182,6 +1197,24 @@ impl Agent {
             | BackendCommand::RequestWorkspaceGitStatus { .. }
             | BackendCommand::RequestWorkspaceFiles { .. } => {
                 self.apply_workspace_command(cmd).await;
+            }
+            // 联邦管理（Phase 4）：处理函数注册在组合根（需要 Federation
+            // 句柄与 ConfigStore），经进程级注册表分发；未接线（联邦关闭
+            // 或旧 Core）时明确报错而非静默吞掉。
+            BackendCommand::SaveFederationPeer { .. }
+            | BackendCommand::DeleteFederationPeer { .. }
+            | BackendCommand::RequestFederationStatus
+            | BackendCommand::RequestFederationInvite => {
+                let handler = crate::agent::federation_command_handler();
+                match handler {
+                    Some(h) => h(self, cmd).await,
+                    None => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: "联邦未启用（[federation] enabled = false）".into(),
+                        });
+                    }
+                }
             }
         }
     }

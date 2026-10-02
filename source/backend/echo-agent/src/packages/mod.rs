@@ -12,6 +12,7 @@
 //! | [`adapter_qq`] | `echo-agent.adapter.qq` | QQ 入站 hook 桥 + QQ 命令域 |
 //! | [`workspace`] | `echo-agent.workspace` | 工作区会话存储/工具 + 命令域 |
 //! | [`subagent`] | `echo-agent.subagent` | 异步子任务委派 |
+//! | [`federation`] | `echo-agent.federation.<peer>` | 远程代理工具 + Invoke 调度/裁决（federation Phase 2） |
 //! | [`provider_llm`] | `echo-agent.provider.llm` | provider 工厂（名义挂载，重启生效） |
 //!
 //! **特例：[`tool`] 不是包**——它是工具子系统的**跨包机制**
@@ -36,6 +37,7 @@
 //! `agent_manager.rs`、`input_marker.rs`（结构化输入标记）。
 
 pub mod adapter_qq;
+pub mod federation;
 pub mod provider_llm;
 pub mod skills_dir;
 pub mod subagent;

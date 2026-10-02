@@ -85,6 +85,7 @@ impl crate::tool::Tool for ShellExecTool {
         let command = arguments["command"]
             .as_str()
             .ok_or_else(|| crate::tool::ToolError::InvalidArguments("command required".into()))?;
+        super::reject_core_self_stop(command)?;
         let timeout = arguments["timeout_secs"].as_u64().map(|t| t.min(300));
         let manager = shell_manager_global()
             .ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;

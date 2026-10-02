@@ -144,15 +144,30 @@ impl WorkspaceStore {
             return Err("会话名称不能为空".into());
         }
         session.description = session.description.trim().to_string();
-        // 规范化目录：去首尾空白/尾随斜杠；重复项去重。允许暂时不存在的
-        // 目录（项目可能还没克隆），存在性由 git 采集时呈现。
-        let mut dirs: Vec<String> = Vec::new();
+        // 规范化目录：去首尾空白/尾随斜杠；重复项去重（节点 + 路径联合判重）。
+        // 允许暂时不存在的目录（项目可能还没克隆），存在性由 git 采集时呈现。
+        // federation Phase 0：远程目录（带 node 归属）仅解析与保留，git/文件
+        // 浏览/工具执行仍只作用于本机目录。
+        let mut dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
         for raw in &session.directories {
-            let normalized = normalize_directory(raw);
-            if normalized.is_empty() || dirs.iter().any(|d| d == &normalized) {
+            let normalized = normalize_directory(raw.path());
+            if normalized.is_empty() {
                 continue;
             }
-            dirs.push(normalized);
+            let entry = match raw.node() {
+                Some(node) => echo_protocol::WorkspaceDirectory::Qualified {
+                    path: normalized,
+                    node: Some(node.to_string()),
+                },
+                None => echo_protocol::WorkspaceDirectory::Local(normalized),
+            };
+            if dirs
+                .iter()
+                .any(|d| d.node() == entry.node() && d.path() == entry.path())
+            {
+                continue;
+            }
+            dirs.push(entry);
         }
         if dirs.len() > MAX_DIRECTORIES {
             return Err(format!("工作区目录最多 {MAX_DIRECTORIES} 个"));
@@ -234,9 +249,16 @@ impl WorkspaceStore {
         if !session.directories.is_empty() {
             text.push_str("\n工作区目录：\n");
             for dir in &session.directories {
-                text.push_str(&format!("- {dir}\n"));
+                match dir.node() {
+                    // federation Phase 0：远程目录仅展示标注，工具执行尚不可用。
+                    Some(node) => text.push_str(&format!(
+                        "- node://{node}/{}（远程节点，暂不可直接操作）\n",
+                        dir.path()
+                    )),
+                    None => text.push_str(&format!("- {}\n", dir.path())),
+                }
             }
-            text.push_str("在这些目录范围内工作；git 状态与其它会话可用 workspace 工具查询/切换。");
+            text.push_str("在本机目录范围内工作；git 状态与其它会话可用 workspace 工具查询/切换。");
         } else {
             text.push_str("\n（尚未配置工作区目录，可用 workspace 工具或面板添加）");
         }
@@ -469,12 +491,18 @@ pub fn collect_dir_git(directory: &str) -> WorkspaceGitInfo {
 /// - 先 canonicalize 请求路径（解析符号链接与 `..`）；
 /// - 再要求它等于某个目录的 canonical 路径，或以 `目录路径 + /` 为前缀
 ///   （字面前缀而非 `Path::starts_with`，避免 `/a/bc` 被 `/a/b` 误放行）。
-pub fn resolve_within_directories(directories: &[String], path: &str) -> Result<PathBuf, String> {
+pub fn resolve_within_directories(
+    directories: &[echo_protocol::WorkspaceDirectory],
+    path: &str,
+) -> Result<PathBuf, String> {
     let requested = Path::new(path)
         .canonicalize()
         .map_err(|e| format!("路径不存在或不可访问: {e}"))?;
     for dir in directories {
-        let Ok(root) = Path::new(dir).canonicalize() else {
+        if dir.is_remote() {
+            continue; // federation Phase 0：远程目录不参与本机路径解析
+        }
+        let Ok(root) = Path::new(dir.path()).canonicalize() else {
             continue; // 目录本身不存在：跳过，由其余目录决定
         };
         if requested == root {
@@ -603,11 +631,28 @@ impl Tool for WorkspaceTool {
                         .active()
                         .ok_or_else(|| ToolError::Execution("没有激活的工作区会话".into()))?,
                 };
+                // federation Phase 0：远程目录跳过本机 git 采集（Phase 2 经
+                // 联邦链路查询对端），以占位条目呈现。
                 let directories = session.directories.clone();
                 let results = tokio::task::spawn_blocking(move || {
                     directories
                         .iter()
-                        .map(|dir| collect_dir_git(dir))
+                        .map(|dir| match dir.node() {
+                            Some(node) => WorkspaceGitInfo {
+                                directory: format!("node://{node}/{}", dir.path()),
+                                is_repo: false,
+                                branch: None,
+                                ahead: 0,
+                                behind: 0,
+                                staged: 0,
+                                modified: 0,
+                                untracked: 0,
+                                changed_files: Vec::new(),
+                                last_commit: None,
+                                error: Some("远程目录：本机不可采集".into()),
+                            },
+                            None => collect_dir_git(dir.path()),
+                        })
                         .collect::<Vec<_>>()
                 })
                 .await
@@ -640,7 +685,9 @@ impl Tool for WorkspaceTool {
                     .and_then(|v| v.as_array())
                     .map(|arr| {
                         arr.iter()
-                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .filter_map(|v| {
+                                v.as_str().map(echo_protocol::WorkspaceDirectory::local)
+                            })
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
@@ -708,7 +755,8 @@ mod tests {
         assert_eq!(session.id, "my-project");
         assert_eq!(session.description, "desc");
         // 归一化 + 去重
-        assert_eq!(session.directories, vec!["/tmp/proj"]);
+        assert_eq!(session.directories, vec!["/tmp/proj".into()]);
+        assert_eq!(session.directories[0].path(), "/tmp/proj");
 
         // 重新加载（模拟重启）
         let reloaded = WorkspaceStore::load(Some(path.clone()));
@@ -853,8 +901,8 @@ mod tests {
                 directories: vec![],
             })
             .is_err());
-        let many: Vec<String> = (0..(MAX_DIRECTORIES + 5))
-            .map(|i| format!("/tmp/dir-{i}"))
+        let many: Vec<echo_protocol::WorkspaceDirectory> = (0..(MAX_DIRECTORIES + 5))
+            .map(|i| echo_protocol::WorkspaceDirectory::local(format!("/tmp/dir-{i}")))
             .collect();
         assert!(store
             .upsert(WorkspaceSessionInfo {
@@ -910,7 +958,9 @@ mod tests {
         std::fs::create_dir_all(root.join("sub")).unwrap();
         std::fs::create_dir_all(&other).unwrap();
 
-        let dirs = vec![root.to_string_lossy().to_string()];
+        let dirs = vec![echo_protocol::WorkspaceDirectory::local(
+            root.to_string_lossy().to_string(),
+        )];
         // 目录本身与其子孙放行。
         assert!(resolve_within_directories(&dirs, root.to_str().unwrap()).is_ok());
         assert!(resolve_within_directories(&dirs, root.join("sub").to_str().unwrap()).is_ok());

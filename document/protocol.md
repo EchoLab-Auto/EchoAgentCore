@@ -134,3 +134,24 @@ Panel web 后端同源提供）。渲染侧（Panel）直接 `<img src="/media/.
 ## 独立通道
 
 - **QQ OneBot**：每个 QQ 实例一条反向 WS（legacy `:3131`；多实例自动分配 `3140-3399`，与 management WS 独立），QQ 消息以 `<qq_message_hook>` 标记进入**实例归属人格**
+
+## 联邦管理（2026-10）
+
+Core↔Core 联邦（`echo-federation` crate，默认 :3133）是**独立链路**——与
+Panel 的 management WS 并存，帧类型为 `FedFrame`（工具调用 Invoke 三段式、
+委派 SubagentSpawn/Event、只读查询 Query/QueryResult）。契约见
+[联邦](./federation.md)；演进规则与本协议一致（externally-tagged +
+`#[serde(default)]`）。
+
+Panel 侧的联邦管理命令（Frontend-only）：`SaveFederationPeer` /
+`DeleteFederationPeer` / `RequestFederationStatus` /
+`RequestFederationInvite`；事件 `FederationStatus`（token 脱敏为
+`token_set`）/ `FederationInvite`。邀请串格式 `echofed://host:port?name=
+<别名>#<token>`（一次性，配对成功自动清理）。
+
+## 刷新恢复快照（2026-10）
+
+运行状态（thinking/tool/subagent）本是瞬时事件流，刷新重连后前端只靠
+`TrunkTimeline` 看不到正在运行的会话。Core 在响应
+`RequestTrunkTimeline` 后立即补发 `ActiveTurnsSnapshot { session_ids,
+team_id }`——前端清空本地 activity 按列表重建 running 集合。

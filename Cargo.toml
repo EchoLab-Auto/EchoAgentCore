@@ -9,6 +9,7 @@ members = [
     "source/llm/echo-llm-anthropic",
     "source/llm/echo-llm-ollama",
     "source/protocol/echo-protocol",
+    "source/federation/echo-federation",
     "source/backend/echo-core",
     "source/backend/echo-server",
     "source/backend/echo-agent",
@@ -47,6 +48,7 @@ echo-agent = { path = "source/backend/echo-agent" }
 echo-adapter-qq = { path = "source/backend/echo-adapter-qq" }
 echo-test-utils = { path = "source/backend/echo-test-utils" }
 echo-plugin = { path = "source/plugin/echo-plugin" }
+echo-federation = { path = "source/federation/echo-federation" }
 
 # async runtime
 tokio = { version = "1", features = ["full"] }

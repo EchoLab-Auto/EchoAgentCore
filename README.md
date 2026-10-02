@@ -34,6 +34,8 @@ EchoAgentCore/
 │   │   └── echo-llm-ollama/      # Ollama provider（薄包装 OpenAI 兼容端点）
 │   ├── protocol/
 │   │   └── echo-protocol/        # 前后端线协议 crate（BackendCommand/BackendEvent/bridge）
+│   ├── federation/
+│   │   └── echo-federation/      # Core↔Core 联邦链路（FedFrame/握手/认证/邀请串）
 │   ├── plugin/
 │   │   └── echo-plugin/          # 插件接缝：PluginManifest + 生命周期 + 注册表
 │   ├── backend/
@@ -69,13 +71,14 @@ EchoAgentCore/
 | `echo-adapter` | 协议无关的适配器抽象：`Adapter` trait、`InboundMessageHook`、过滤管道、`ConfigStore` |
 | `echo-adapter-qq` | QQ 适配器：反向 WS 接入、5 层门控、NapCat HTTP 客户端 |
 | `echo-core` / `echo-server` | OneBot v11 协议类型 / 反向 WS 服务器（NapCat 接入；组合根与 QQ 适配器使用） |
-| `echo-agent-core`（bin） | 组合根：加载配置、装配 Agent + QQ 适配器、对外提供 management WS |
+| `echo-federation` | **联邦链路（Core↔Core）**：`FedFrame` 线协议（工具调用/委派/只读查询）、Hello/Welcome 握手、per-peer Bearer 认证、心跳/重连/回环防护、邀请串（`echofed://`） |
+| `echo-agent-core`（bin） | 组合根：加载配置、装配 Agent + QQ 适配器 + 联邦路由泵（代理工具注册/执行端裁决/查询处理）、对外提供 management WS |
 
 依赖方向（单向，无环，扩展只依赖定义层）：
 
 - **底座**（零 echo-* 依赖）：`echo-defs`（定义层）、`echo-context`（机制层）
-- **中间层**（只依赖底座）：`echo-protocol`、`echo-loop`、`echo-session`、`echo-llm-*`（`echo-llm-ollama` 另复用 `echo-llm-openai`）、`echo-adapter`、`echo-plugin`、`echo-core`、`echo-server`
-- **框架层**：`echo-agent`（依赖 `echo-defs`/`echo-context`/`echo-loop`/`echo-session`/`echo-llm-openai`/`echo-llm-anthropic`/`echo-llm-ollama`/`echo-protocol`/`echo-adapter`/`echo-plugin`）
+- **中间层**（只依赖底座）：`echo-protocol`、`echo-loop`、`echo-session`、`echo-llm-*`（`echo-llm-ollama` 另复用 `echo-llm-openai`）、`echo-adapter`、`echo-plugin`、`echo-core`、`echo-server`、`echo-federation`
+- **框架层**：`echo-agent`（依赖 `echo-defs`/`echo-context`/`echo-loop`/`echo-session`/`echo-llm-openai`/`echo-llm-anthropic`/`echo-llm-ollama`/`echo-protocol`/`echo-adapter`/`echo-plugin`/`echo-federation`）
 - **适配层**：`echo-adapter-qq`（依赖 `echo-adapter`/`echo-core`/`echo-server`/`echo-defs`）
 - **组合根**：`echo-agent-core`（bin，装配以上全部）
 
@@ -155,6 +158,7 @@ NapCat 容器管理）；容器模式的完整配置模板见
 - `[plugins.system_prompt]`：全局系统提示词（Panel 中编辑保存的基础提示词层）。
 - `[adapters.qq]`：QQ 适配器开关、NapCat HTTP API、owner_qq、命令前缀；`[adapters.qq.server]` 反向 WS 监听 `:3131` 与访问令牌（`ECHO_ACCESS_TOKEN` env 可覆盖）。
 - `[core] management_address`：前端连接地址（默认 `127.0.0.1:3132`）。
+- `[federation]`：Core↔Core 联邦（多机去中心化；缺省关闭）——`listen`（默认 :3133）、`node_name`、`[federation.peers.*]`（url/token/allow_tools/allow_queries）。配对推荐用 Panel 设置·联邦页的**邀请串**（`echofed://`），见 [document/federation.md](document/federation.md)。
 
 前端通过设置视图（API/技能/工具/插件/智能体）与 QQ 管理面板发起的修改，由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core-config-persistence.md](document/core-config-persistence.md)）。
 
@@ -174,6 +178,7 @@ Core 与前端之间是 `ws://<management_address>` 上的 JSON 文本帧协议�
 | [document/core.md](document/core.md) | Core 框架（进程结构、会话记忆、配置） |
 | [document/panel.md](document/panel.md) | Panel 前端（仓库布局、数据流、视图规范） |
 | [document/core-subagent.md](document/core-subagent.md) | Subagent 插件（异步委派、隔离上下文、完成回报） |
+| [document/federation.md](document/federation.md) | 联邦（多机去中心化：链路/远程工具/委派/查询/安全模型） |
 | [document/core-config-persistence.md](document/core-config-persistence.md) | ConfigStore 原子持久化 |
 | [document/adapter-qq-gating.md](document/adapter-qq-gating.md) | QQ 5 层门控管道 |
 | [document/dev-testing.md](document/dev-testing.md) | 测试策略 |

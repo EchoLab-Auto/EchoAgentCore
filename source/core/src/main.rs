@@ -18,6 +18,7 @@ mod agent_supervisor;
 mod config;
 mod handlers;
 mod management;
+mod node;
 mod qq_instances;
 mod qq_tools;
 
@@ -57,7 +58,174 @@ async fn main() -> Result<()> {
 async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     init_tracing(&cfg.logging)?;
 
+    // 节点身份（federation Phase 0）：加载或生成持久化 NodeId。
+    // 与配置 TOML 同目录（echo-node.json）；Phase 1 联邦链路消费。
+    let node_doc = node::load_or_create(
+        &args
+            .config_path()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(".")),
+    )?;
+    info!(node_id = %node_doc.node_id, "node identity ready");
+
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // ---- federation link（Phase 1：仅链路；工具路由 Phase 2 消费）----
+    // 缺省整段关闭（[federation] enabled 缺省 false），单节点零行为变化。
+    let federation = if cfg.federation.enabled {
+        let peers = cfg
+            .federation
+            .peers
+            .iter()
+            .map(|(name, p)| echo_federation::PeerConfig {
+                name: name.clone(),
+                url: p.url.clone(),
+                token: p.token.clone(),
+            })
+            .collect::<Vec<_>>();
+        // 能力声明：本机可被远程调用的工具集合（Phase 2 由注册表实际驱动；
+        // v1 先宣告内置编码工具族 + shell，与 RFC §2.2 一致）。
+        let caps = echo_federation::NodeCaps {
+            tools: [
+                "bash",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "search_code",
+                "list_files",
+                "shell_start",
+                "shell_exec",
+                "shell_stop",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+            subagent: true,
+            workspaces: Vec::new(),
+        };
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
+        let router = echo_agent::federation::InvokeRouter::new(node_doc.node_id.clone());
+        let peer_policies: std::collections::HashMap<
+            String,
+            echo_agent::federation::ExecutorPolicy,
+        > = cfg
+            .federation
+            .peers
+            .iter()
+            .map(|(name, p)| {
+                (
+                    name.clone(),
+                    echo_agent::federation::ExecutorPolicy {
+                        allow_tools: p.allow_tools.clone(),
+                        require_confirm: p.require_confirm.clone(),
+                        allow_queries: p.allow_queries.clone(),
+                    },
+                )
+            })
+            .collect();
+        let fed = echo_federation::Federation::new(
+            node_doc.node_id.clone(),
+            cfg.federation
+                .node_name
+                .clone()
+                .or(node_doc.node_name.clone()),
+            caps,
+            peers,
+            event_tx,
+            shutdown_tx.clone(),
+        );
+        let listen = if cfg.federation.listen.trim().is_empty() {
+            None
+        } else {
+            Some(cfg.federation.listen.clone())
+        };
+        let fed_runner = fed.clone();
+        tokio::spawn(async move {
+            if let Err(e) = fed_runner.run(listen).await {
+                warn!(error = %e, "federation run exited");
+            }
+        });
+        let rt = Arc::new(FederationRuntime {
+            federation: fed.clone(),
+            router,
+            peer_names: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            node_to_peer: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            config_store: echo_adapter::ConfigStore::new(args.config_path()),
+            listen: cfg.federation.listen.clone(),
+            node_name: cfg
+                .federation
+                .node_name
+                .clone()
+                .or(node_doc.node_name.clone()),
+        });
+        // 远程 subagent 观测出口（Phase 3）：大脑侧 spawn_subagent
+        // node=... 受理/完成时经 Federation 通知对端（帧：
+        // SubagentSpawn 受理 / SubagentEvent 终态）。peer 名 → node_id
+        // 反查走 rt.peer_names（链路 Up 时登记）。
+        {
+            let rt_notify = rt.clone();
+            echo_agent::federation::set_remote_subagent_notifier(std::sync::Arc::new(
+                move |peer, call_id, task, timeout_secs, status, result| {
+                    let rt = rt_notify.clone();
+                    let peer = peer.to_string();
+                    let call_id = call_id.to_string();
+                    let task = task.to_string();
+                    tokio::spawn(async move {
+                        let node_id = rt.peer_names.read().await.get(&peer).cloned();
+                        let Some(node_id) = node_id else {
+                            tracing::warn!(
+                                target: "federation",
+                                peer = %peer, "remote subagent notify: peer offline"
+                            );
+                            return;
+                        };
+                        let frame = if matches!(status, echo_federation::SubagentStatus::Running) {
+                            echo_federation::FedFrame::SubagentSpawn(
+                                echo_federation::SubagentSpawnRequest {
+                                    call_id,
+                                    task,
+                                    timeout_secs,
+                                },
+                            )
+                        } else {
+                            echo_federation::FedFrame::SubagentEvent(
+                                echo_federation::SubagentEventFrame {
+                                    call_id,
+                                    status,
+                                    result,
+                                },
+                            )
+                        };
+                        let _ = rt.federation.send_to(&node_id, frame).await;
+                    });
+                },
+            ));
+        }
+        // 联邦管理命令处理器（SaveFederationPeer 等）注入进程级注册表，
+        // agent 命令域据此分发（联邦关闭时未注入 → 明确报错）。
+        {
+            let rt_handler = rt.clone();
+            echo_agent::agent::set_federation_command_handler(std::sync::Arc::new(
+                move |agent, cmd| {
+                    let rt = rt_handler.clone();
+                    let emit = agent.emit_handle();
+                    Box::pin(async move {
+                        handle_federation_command(emit, cmd, rt).await;
+                    })
+                },
+            ));
+        }
+        Some((rt, event_rx, peer_policies))
+    } else {
+        None
+    };
+    info!(enabled = federation.is_some(), "federation link configured");
+    // Keep one sender alive for the whole `run_core` scope. The admin handler
     // Keep one sender alive for the whole `run_core` scope. The admin handler
     // (the only other sender) is stored inside the QQ adapter's handler
     // registry; if that registry is dropped during an adapter restart,
@@ -483,6 +651,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 显式路由到具体人格。
     let agent: Arc<echo_agent::Agent> = core_agent.clone();
     info!(agents = ?supervisor.ids(), "agent supervisor ready");
+
+    // 联邦路由泵（Phase 2）：supervisor 就绪后启动（代理工具注册需要全部
+    // persona 的注册表）。
+    if let Some((rt, event_rx, peer_policies)) = federation {
+        tokio::spawn(federation_router_pump(
+            event_rx,
+            rt,
+            supervisor.clone(),
+            peer_policies,
+        ));
+    }
 
     core_agent
         .apply_capabilities(&echo_agent::AgentProfile {
@@ -1003,8 +1182,564 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     Ok(())
 }
 
-/// persona 能力白名单语义（与 `Agent::allows_reply_branches` 等一致）：
-/// 白名单非空时只允许名单内插件；黑名单再收紧。
+/// 联邦路由上下文（Phase 2）：路由泵与代理工具注册共用的句柄束。
+struct FederationRuntime {
+    federation: Arc<echo_federation::Federation>,
+    router: Arc<echo_agent::federation::InvokeRouter>,
+    /// peer 配置名 → node_id（Link Up 时登记；代理工具命名用配置名）。
+    peer_names: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
+    /// 反向映射：node_id → peer 配置名（remove_peer 断链用）。
+    node_to_peer: std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
+    /// 联邦管理命令所需的配置写回与本机信息。
+    config_store: echo_adapter::ConfigStore,
+    listen: String,
+    node_name: Option<String>,
+}
+
+impl FederationRuntime {
+    /// 组装 `FederationStatus` 事件（token 脱敏为 token_set 标记）。
+    async fn status_event(&self) -> echo_protocol::BackendEvent {
+        let active: std::collections::HashSet<String> =
+            self.federation.active_peers().await.into_iter().collect();
+        let configs = self.federation.peer_configs().await;
+        let mut peers = Vec::with_capacity(configs.len());
+        for p in configs {
+            {
+                // 在线判定：dial 侧按配置名反查 node_id；连入侧（占位
+                // peer / 仅接受连入条目）链路 peer_name = 对端 node_id，
+                // 其 token 与该占位一致——按 token 匹配活跃链路的
+                // node_id（链路表 token 不可查，退而求其次：该 peer 的
+                // token 与任一活跃链路 token 匹配即在线）。
+                let online = self
+                    .node_to_peer
+                    .try_read()
+                    .map(|m| {
+                        m.iter()
+                            .any(|(node, name)| name == &p.name && active.contains(node))
+                    })
+                    .unwrap_or(false)
+                    || self.federation.is_link_token_online(&p.token).await;
+                peers.push(echo_protocol::FederationPeerInfo {
+                    name: p.name,
+                    url: p.url,
+                    token: String::new(),
+                    token_set: !p.token.is_empty(),
+                    allow_tools: Vec::new(),
+                    allow_subagent: false,
+                    require_confirm: Vec::new(),
+                    allow_queries: Vec::new(),
+                    link: if online {
+                        echo_protocol::FederationLinkState::Online
+                    } else {
+                        echo_protocol::FederationLinkState::Offline
+                    },
+                });
+            }
+        }
+        echo_protocol::BackendEvent::FederationStatus {
+            enabled: true,
+            node_id: self.federation.local_node_id().to_string(),
+            node_name: self.node_name.clone(),
+            listen: self.listen.clone(),
+            peers,
+        }
+    }
+}
+
+/// 联邦路由泵（Phase 2）：链路事件 → InvokeRouter 派发 + 代理工具注册/摘除
+/// + 执行端裁决。
+///
+/// - `Up`：登记 per-peer 白名单策略；按对端 caps ∩ 首批支持集（6 个无状态
+///   工具）给**所有 persona** 注册 `<peer名>:<工具>` 代理（per-peer package
+///   标签，插件门控可整包启停）
+/// - `Down`：整包禁用该 peer 代理工具 + 使在飞调用失败
+/// - `Frame`：`Invoke` 走执行端（白名单裁决 → 本机注册表执行 → 结果经
+///   outbound 通道回传）；其余帧派发给出站等待表
+#[allow(clippy::too_many_arguments)]
+async fn federation_router_pump(
+    mut rx: tokio::sync::mpsc::Receiver<echo_federation::LinkEvent>,
+    rt: Arc<FederationRuntime>,
+    personas: Arc<agent_supervisor::AgentSupervisor>,
+    peer_policies: std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
+) {
+    // 执行端结果回传通道：handle_invoke spawn 的执行任务 → 本泵统一发送。
+    let (outbound_tx, mut outbound_rx) =
+        tokio::sync::mpsc::channel::<(String, echo_federation::FedFrame)>(64);
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                let Some(event) = event else { break };
+                match event {
+                    echo_federation::LinkEvent::Up(info) => {
+                        tracing::info!(
+                            target: "federation",
+                            peer = %info.node_id, name = %info.peer_name,
+                            version = %info.version, tools = ?info.caps.tools,
+                            "link up"
+                        );
+                        rt.peer_names
+                            .write()
+                            .await
+                            .insert(info.peer_name.clone(), info.node_id.clone());
+                        rt.node_to_peer
+                            .write()
+                            .await
+                            .insert(info.node_id.clone(), info.peer_name.clone());
+                        let policy = peer_policies
+                            .get(&info.peer_name)
+                            .cloned()
+                            .unwrap_or_default();
+                        rt.router.set_policy(&info.node_id, policy);
+                        // 邀请占位配对成功即清理：占位条目（invite-*）的
+                        // token 与任一活跃链路匹配 → 该占位使命完成。
+                        cleanup_paired_invite_placeholders(&rt).await;
+                        register_remote_tools(&rt, &personas, &info).await;
+                        broadcast_federation_status(&rt, &personas).await;
+                    }
+                    echo_federation::LinkEvent::Down { peer_node_id, reason } => {
+                        tracing::info!(target: "federation", peer = %peer_node_id, %reason, "link down");
+                        rt.router.drop_peer(&peer_node_id);
+                        let package = peer_package(&rt, &peer_node_id).await;
+                        for persona in personas.personas() {
+                            persona.agent.tools.set_package_enabled(&package, false);
+                        }
+                        if let Some(name) = rt.node_to_peer.write().await.remove(&peer_node_id) {
+                            rt.peer_names.write().await.remove(&name);
+                        }
+                        // 链路状态变化 → 面板联邦页实时刷新。
+                        broadcast_federation_status(&rt, &personas).await;
+                    }
+                    echo_federation::LinkEvent::Frame { from, frame } => {
+                        if let echo_federation::FedFrame::Invoke(request) = frame {
+                            // 执行端：逐个 persona 注册表找工具（工具集按人格
+                            // 装配略有差异；取第一个能解析到的）。
+                            let registry = personas
+                                .personas()
+                                .into_iter()
+                                .map(|p| p.agent.tools.clone())
+                                .next();
+                            let Some(registry) = registry else {
+                                tracing::warn!(target: "federation", "no persona registry for invoke");
+                                continue;
+                            };
+                            let reply = rt.router.handle_invoke(
+                                &from, request, registry, outbound_tx.clone(),
+                            );
+                            if rt.federation.send_to(&from, reply).await.is_err() {
+                                tracing::warn!(target: "federation", peer = %from, "invoke reply send failed");
+                            }
+                        } else if let echo_federation::FedFrame::Query(req) = frame {
+                            // 只读查询执行端（Phase 5）：白名单裁决 → 本机采集 →
+                            // QueryResult 回传。
+                            let reply = handle_federation_query(&rt, &personas, &from, req).await;
+                            if rt.federation.send_to(&from, reply).await.is_err() {
+                                tracing::warn!(target: "federation", peer = %from, "query reply send failed");
+                            }
+                        } else if let echo_federation::FedFrame::SubagentSpawn(req) = &frame {
+                            // 执行端观测（Phase 3）：对端大脑委派的远程
+                            // 子任务在本机开始——记审计（Panel 后台任务
+                            // 列表的远程条目展示留待后续迭代）。
+                            tracing::info!(
+                                target: "federation",
+                                from = %from, call_id = %req.call_id,
+                                task = %req.task.chars().take(120).collect::<String>(),
+                                "remote subagent spawned on this node"
+                            );
+                        } else if let echo_federation::FedFrame::SubagentEvent(ev) = &frame {
+                            tracing::info!(
+                                target: "federation",
+                                from = %from, call_id = %ev.call_id, status = ?ev.status,
+                                "remote subagent event"
+                            );
+                        } else {
+                            rt.router.dispatch_frame(&from, &frame);
+                        }
+                    }
+                }
+            }
+            // 执行端完成帧回传。
+            Some((peer, frame)) = outbound_rx.recv() => {
+                if rt.federation.send_to(&peer, frame).await.is_err() {
+                    tracing::warn!(target: "federation", peer = %peer, "invoke result send failed");
+                }
+            }
+        }
+    }
+}
+
+/// per-peer 代理工具的 package 标签（整包启停键）。
+async fn peer_package(rt: &FederationRuntime, peer_node: &str) -> String {
+    let name = rt
+        .node_to_peer
+        .read()
+        .await
+        .get(peer_node)
+        .cloned()
+        .unwrap_or_else(|| peer_node.to_string());
+    format!("echo-agent.federation.{name}")
+}
+
+/// 经进程级汇聚点广播联邦状态（任一人格的 emit 都到 Panel；用第一个
+/// persona 出口，无 persona 时跳过——核心服务代理装配早于泵启动）。
+async fn broadcast_federation_status(
+    rt: &FederationRuntime,
+    personas: &agent_supervisor::AgentSupervisor,
+) {
+    if let Some(persona) = personas.personas().into_iter().next() {
+        persona.agent.emit(rt.status_event().await);
+    }
+}
+
+/// 联邦管理命令处理（SaveFederationPeer / DeleteFederationPeer /
+/// RequestFederationStatus / RequestFederationInvite）。
+async fn handle_federation_command(
+    emit: std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>,
+    cmd: echo_protocol::BackendCommand,
+    rt: Arc<FederationRuntime>,
+) {
+    match cmd {
+        echo_protocol::BackendCommand::RequestFederationStatus => {
+            emit(rt.status_event().await);
+        }
+        echo_protocol::BackendCommand::SaveFederationPeer { peer } => {
+            let name = peer.name.trim().to_string();
+            if name.is_empty() {
+                emit(echo_protocol::BackendEvent::Error {
+                    session_id: None,
+                    message: "peer 名称不能为空".into(),
+                });
+                return;
+            }
+            // 运行时生效（更新场景 token 为空 = 保留旧值）。
+            let existing = rt
+                .federation
+                .peer_configs()
+                .await
+                .into_iter()
+                .find(|p| p.name == name);
+            let token = if peer.token.is_empty() {
+                existing.map(|p| p.token).unwrap_or_default()
+            } else {
+                peer.token.clone()
+            };
+            rt.federation
+                .add_peer(echo_federation::PeerConfig {
+                    name: name.clone(),
+                    url: peer.url.trim().to_string(),
+                    token: token.clone(),
+                })
+                .await;
+            // 配置原子写回。
+            let (url, allow_tools, allow_subagent, require_confirm, allow_queries) = (
+                peer.url.trim().to_string(),
+                peer.allow_tools.clone(),
+                peer.allow_subagent,
+                peer.require_confirm.clone(),
+                peer.allow_queries.clone(),
+            );
+            let write_name = name.clone();
+            if let Err(e) = rt.config_store.patch(move |root| {
+                let federation = echo_adapter::ensure_table(root, "federation");
+                let peers = echo_adapter::ensure_table(federation, "peers");
+                let entry = echo_adapter::ensure_table(peers, &write_name);
+                entry.insert("url".into(), toml::Value::String(url));
+                entry.insert("token".into(), toml::Value::String(token));
+                entry.insert(
+                    "allow_tools".into(),
+                    toml::Value::Array(allow_tools.into_iter().map(toml::Value::String).collect()),
+                );
+                entry.insert(
+                    "allow_subagent".into(),
+                    toml::Value::Boolean(allow_subagent),
+                );
+                entry.insert(
+                    "require_confirm".into(),
+                    toml::Value::Array(
+                        require_confirm
+                            .into_iter()
+                            .map(toml::Value::String)
+                            .collect(),
+                    ),
+                );
+                entry.insert(
+                    "allow_queries".into(),
+                    toml::Value::Array(
+                        allow_queries.into_iter().map(toml::Value::String).collect(),
+                    ),
+                );
+                Ok(())
+            }) {
+                emit(echo_protocol::BackendEvent::Error {
+                    session_id: None,
+                    message: format!("联邦 peer 配置写回失败: {e}"),
+                });
+                return;
+            }
+            emit(rt.status_event().await);
+        }
+        echo_protocol::BackendCommand::DeleteFederationPeer { name } => {
+            // 断链（node_id 反查）→ 运行时移除 → 配置移除。
+            let node_id = rt.peer_names.read().await.get(&name).cloned();
+            rt.federation.remove_peer(&name).await;
+            if let Some(node) = node_id {
+                rt.federation.drop_link(&node).await;
+            }
+            let write_name = name.clone();
+            if let Err(e) = rt.config_store.patch(move |root| {
+                if let Some(peers) = root
+                    .get_mut("federation")
+                    .and_then(|f| f.get_mut("peers"))
+                    .and_then(|p| p.as_table_mut())
+                {
+                    peers.remove(&write_name);
+                }
+                Ok(())
+            }) {
+                emit(echo_protocol::BackendEvent::Error {
+                    session_id: None,
+                    message: format!("联邦 peer 配置移除失败: {e}"),
+                });
+                return;
+            }
+            emit(rt.status_event().await);
+        }
+        echo_protocol::BackendCommand::RequestFederationInvite => {
+            // 邀请串 = 本机 listen 地址 + 新随机 token。token 不落配置——
+            // 对端保存后由**对端**作为其 peer 条目的 token；本端需接受
+            // 该 token 的连入：写入一个「仅接受连入」的 peer 条目（url 空）。
+            let host = advertise_host(&rt.listen);
+            let Some(host_port) = host else {
+                emit(echo_protocol::BackendEvent::Error {
+                    session_id: None,
+                    message: "联邦 listen 未配置或不可用于邀请（需非 0.0.0.0 地址；请先在配置中写本机可达地址）".into(),
+                });
+                return;
+            };
+            let token = echo_federation::generate_token();
+            let invite =
+                echo_federation::encode_invite(&host_port, &token, rt.node_name.as_deref());
+            // 待对端回连：占位 peer 仅注册进运行时，**不写配置**——配对
+            // 成功即清理；未配对的邀请在重启后自然失效（一次性邀请语义），
+            // 避免配置文件堆积垃圾占位条目。
+            let placeholder = format!("invite-{}", &token[..8]);
+            rt.federation
+                .add_peer(echo_federation::PeerConfig {
+                    name: placeholder.clone(),
+                    url: String::new(),
+                    token: token.clone(),
+                })
+                .await;
+            emit(echo_protocol::BackendEvent::FederationInvite { invite });
+        }
+        _ => {}
+    }
+}
+
+/// 只读查询执行端（Phase 5）。
+///
+/// - `NodeStatus`：恒允许（无害遥测）
+/// - `WorkspaceFiles`：`subject` = 绝对路径；复用 workspace 插件的
+///   canonical 前缀校验（**限本机各 persona 工作区目录的并集**）后
+///   `collect_dir_files` 采集
+/// - `SessionSnapshot`：`subject` = 会话 id（可带 `node://` 前缀——剥离
+///   按本机处理）；复用 trunk 时间线快照 + since_seq/limit 分页
+async fn handle_federation_query(
+    rt: &FederationRuntime,
+    personas: &agent_supervisor::AgentSupervisor,
+    from: &str,
+    req: echo_federation::QueryRequest,
+) -> echo_federation::FedFrame {
+    use echo_federation::{FedFrame, QueryKind, QueryResultFrame};
+    let call_id = req.call_id.clone();
+    let ok = |payload: serde_json::Value| {
+        FedFrame::QueryResult(QueryResultFrame {
+            call_id: call_id.clone(),
+            success: true,
+            payload,
+        })
+    };
+    let err = |message: &str| {
+        FedFrame::QueryResult(QueryResultFrame {
+            call_id: call_id.clone(),
+            success: false,
+            payload: serde_json::json!({"error": message}),
+        })
+    };
+    // 授权（无配置 peer = 仅 NodeStatus）
+    let allowed = rt
+        .router
+        .policy_of(from)
+        .map(|p| p.query_allowed(req.kind))
+        .unwrap_or(matches!(req.kind, QueryKind::NodeStatus));
+    if !allowed {
+        tracing::info!(target: "federation", from = %from, kind = ?req.kind, "query rejected by policy");
+        return err("该查询种类未被对端白名单允许");
+    }
+    match req.kind {
+        QueryKind::NodeStatus => {
+            let agents = personas.personas();
+            let active_turns: usize = agents
+                .iter()
+                .map(|p| p.agent.active_turn_session_ids().len())
+                .sum();
+            ok(serde_json::json!({
+                "node_id": rt.federation.local_node_id(),
+                "version": env!("CARGO_PKG_VERSION"),
+                "peers_online": rt.federation.active_peers().await.len(),
+                "personas": agents.len(),
+                "active_turns": active_turns,
+            }))
+        }
+        QueryKind::WorkspaceFiles => {
+            // 本机全部 persona 工作区目录并集内的 canonical 校验。
+            let dir = req.subject.trim().to_string();
+            let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
+            for persona in personas.personas() {
+                if let Some(store) = persona.agent.workspace_store() {
+                    let (sessions, _) = store.snapshot();
+                    for s in sessions {
+                        all_dirs.extend(s.directories);
+                    }
+                }
+            }
+            let collected = tokio::task::spawn_blocking(move || {
+                let resolved = echo_agent::workspace::resolve_within_directories(&all_dirs, &dir)?;
+                echo_agent::workspace::collect_dir_files(&resolved)
+            })
+            .await;
+            match collected {
+                Ok(Ok(entries)) => ok(serde_json::json!({"entries": entries})),
+                Ok(Err(message)) => err(&message),
+                Err(e) => err(&format!("采集失败: {e}")),
+            }
+        }
+        QueryKind::SessionSnapshot => {
+            // 会话归属解析：`node://` 前缀剥离按本机处理；team 维度经
+            // manager 逐 persona 查找。
+            let (_, key) = echo_defs::NodeId::split_ref(&req.subject);
+            let session_id = key;
+            for persona in personas.personas() {
+                let agent = &persona.agent;
+                if let Some(session) = agent.trunk.get(session_id) {
+                    let (messages, seq) = if req.since_seq > 0 {
+                        agent
+                            .trunk
+                            .timeline_snapshot_since(req.since_seq)
+                            .unwrap_or_else(|| {
+                                (agent.trunk.timeline_snapshot(), agent.trunk.timeline_seq())
+                            })
+                    } else {
+                        (agent.trunk.timeline_snapshot(), agent.trunk.timeline_seq())
+                    };
+                    let limit = if req.limit == 0 {
+                        50
+                    } else {
+                        req.limit as usize
+                    };
+                    let mut messages = messages;
+                    if messages.len() > limit {
+                        messages = messages.split_off(messages.len() - limit);
+                    }
+                    return ok(serde_json::json!({
+                        "session_id": session.id,
+                        "team_id": persona.id,
+                        "seq": seq,
+                        "messages": messages,
+                    }));
+                }
+            }
+            err(&format!("会话 {session_id} 不存在"))
+        }
+    }
+}
+
+/// 配对成功的邀请占位清理：`invite-*` 占位 peer 的 token 已有活跃链路
+/// （= 对端已用该邀请串连入）→ 运行时移除 + 配置删除。
+async fn cleanup_paired_invite_placeholders(rt: &FederationRuntime) {
+    let configs = rt.federation.peer_configs().await;
+    // 配对判定：占位 token 已有活跃链路，**且**链路对端的 node_id 已知
+    // （连入握手完成）——仅凭 token 在线会误清「同一 token 被多个占位复用」
+    // 场景；此处 token 是一次性的，token 在线即配对成功。
+    let mut paired: Vec<String> = Vec::new();
+    for p in &configs {
+        if !p.name.starts_with("invite-") {
+            continue;
+        }
+        if rt.federation.is_link_token_online(&p.token).await {
+            paired.push(p.name.clone());
+        }
+    }
+    for name in paired {
+        rt.federation.remove_peer(&name).await;
+        tracing::info!(target: "federation", %name, "invite placeholder paired and removed");
+    }
+}
+
+/// 邀请用的对外地址：listen 为具体 IP/主机名时直接用；`0.0.0.0` 不可取
+/// 首个非回环 IPv4（无则 None 提示手工配置）。
+fn advertise_host(listen: &str) -> Option<String> {
+    let (host, port) = listen.rsplit_once(':')?;
+    if host != "0.0.0.0" && host != "[::]" && !host.is_empty() {
+        return Some(format!("{host}:{port}"));
+    }
+    // 枚举本机非回环 IPv4（无第三方依赖：读 /proc/net/fib_trie 复杂，
+    // 用 `hostname -I` 最稳）。
+    let output = std::process::Command::new("hostname")
+        .arg("-I")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let ip = text
+        .split_whitespace()
+        .find(|s| s.parse::<std::net::Ipv4Addr>().is_ok())?;
+    Some(format!("{ip}:{port}"))
+}
+
+/// 按对端 caps 给全部 persona 注册代理工具（本机 schema 复制；注册即
+/// 启用——包级禁用只在 Down 时发生，重连 Up 负责整包重新启用）。
+async fn register_remote_tools(
+    rt: &FederationRuntime,
+    personas: &agent_supervisor::AgentSupervisor,
+    info: &echo_federation::PeerInfo,
+) {
+    let candidates = echo_agent::federation::remote_tool_candidates(&info.caps);
+    if candidates.is_empty() {
+        return;
+    }
+    let package = format!("echo-agent.federation.{}", info.peer_name);
+    let mut registered = 0usize;
+    for persona in personas.personas() {
+        let definitions = persona.agent.tools.definitions().await;
+        for remote_name in &candidates {
+            let (description, parameters) =
+                echo_agent::federation::proxy_schema(&definitions, remote_name, &info.peer_name);
+            let tool = std::sync::Arc::new(echo_agent::federation::RemoteTool::new(
+                &info.peer_name,
+                &info.node_id,
+                remote_name,
+                description,
+                parameters,
+                rt.federation.clone(),
+                rt.router.clone(),
+            ));
+            persona.agent.tools.register_reversible(tool);
+            persona
+                .agent
+                .tools
+                .set_package(&format!("{}:{remote_name}", info.peer_name), &package);
+        }
+        registered = candidates.len();
+        // 重连语义：Down 时整包禁用，Up 必须整包重新启用（首次注册时
+        // 包不在禁用集，本调用无害幂等）。
+        persona.agent.tools.set_package_enabled(&package, true);
+    }
+    tracing::info!(
+        target: "federation",
+        peer = %info.node_id, package = %package, tools = registered,
+        "remote proxy tools registered"
+    );
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()

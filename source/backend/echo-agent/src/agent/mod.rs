@@ -239,6 +239,34 @@ pub fn set_global_policy(policy: std::sync::Arc<GlobalPolicy>) {
     let _ = GLOBAL_POLICY.set(policy);
 }
 
+// ── 联邦命令处理器注册表（federation Phase 4）──
+//
+// `SaveFederationPeer` 等命令的处理需要组合根持有的 Federation 句柄与
+// ConfigStore——不在 Agent 能力面内。组合根装配期经
+// [`set_federation_command_handler`] 注入；未注入时命令明确报错（联邦
+// 关闭）。签名用 boxed future：handler 由组合根闭包提供，捕获其句柄。
+/// 联邦命令处理器签名：接受 Agent 引用做同步分发，返回 `'static`
+/// future（实现侧如需跨 await 使用 Agent 能力，应提取所需句柄——
+/// emit 直接经引用同步调用即可，handler 本身可以就是同步实现
+/// 包一层 ready future）。
+pub type FederationCommandHandler = std::sync::Arc<
+    dyn Fn(&Agent, echo_protocol::BackendCommand) -> FederationHandlerFuture + Send + Sync,
+>;
+
+pub type FederationHandlerFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
+
+static FEDERATION_COMMAND_HANDLER: std::sync::OnceLock<FederationCommandHandler> =
+    std::sync::OnceLock::new();
+
+pub fn federation_command_handler() -> Option<FederationCommandHandler> {
+    FEDERATION_COMMAND_HANDLER.get().cloned()
+}
+
+pub fn set_federation_command_handler(handler: FederationCommandHandler) {
+    let _ = FEDERATION_COMMAND_HANDLER.set(handler);
+}
+
 impl Agent {
     pub fn new(
         provider: Arc<dyn LlmProvider>,
@@ -969,6 +997,7 @@ impl Agent {
                 timeout,
                 parent_cancel,
                 parent_branch_id,
+                node,
             } = request;
             let (store, _) = match agent.subagent_runtime() {
                 Some(runtime) => runtime,
@@ -990,9 +1019,47 @@ impl Agent {
             let mut tools = (*agent.tools.definitions().await).clone();
             tools.retain(|d| d.name != crate::subagent::SPAWN_SUBAGENT_TOOL);
             let registry = Arc::clone(&agent.tools);
+            // federation Phase 3：`node` 指定时子任务工具视图指向远程
+            // 节点——LLM 仍在本机推理，工具定义替换为该 peer 的代理工具
+            // 描述（`<peer>:<tool>` 已注册进注册表，执行经 Invoke 路由）。
+            // 语义说明（RFC §5）：远程 subagent 的任务文本不感知本机
+            // 工作区，工具列表即"在远程能做什么"的完整能力面。
+            if let Some(ref peer) = node {
+                let prefix = format!("{peer}:");
+                let remote_defs: Vec<echo_defs::tool::ToolDefinition> = tools
+                    .iter()
+                    .filter(|d| d.name.starts_with(&prefix))
+                    .cloned()
+                    .map(|mut d| {
+                        // 剥前缀：模型在远程语境下用本机工具名调用，
+                        // 执行端（packages/federation 的路由）按前缀还原。
+                        d.name = d.name.trim_start_matches(&prefix).to_string();
+                        d
+                    })
+                    .collect();
+                if remote_defs.is_empty() {
+                    tracing::warn!(peer = %peer, "remote subagent: no proxy tools available (peer offline or federation disabled)");
+                } else {
+                    tools = remote_defs;
+                }
+            }
             let provider = agent.provider.read().await.clone();
             let max_iterations = agent.config.read().await.max_tool_iterations;
             let max_tokens = agent.config.read().await.effective_max_tokens();
+            // federation Phase 3 对端观测：远程子任务受理时通知对端
+            // （SubagentSpawn），完成/失败/取消时回报（SubagentEvent）——
+            // 对端 Panel 后台任务列表据此可见、可强制取消。
+            // 通知经进程级 federation 出口（组合根装配时注入）。
+            if let Some(ref peer) = node {
+                crate::federation::notify_remote_subagent(
+                    peer,
+                    &task_id,
+                    &task,
+                    Some(timeout.as_secs()),
+                    crate::federation::SubagentStatus::Running,
+                    None,
+                );
+            }
             let run = crate::subagent::run_subagent_turn(
                 provider,
                 tools,
@@ -1002,6 +1069,7 @@ impl Agent {
                 cancel.clone(),
                 max_iterations,
                 max_tokens,
+                node.as_deref(),
             );
             let outcome = tokio::select! {
                 result = run => Ok(result),
@@ -1029,6 +1097,25 @@ impl Agent {
                 crate::subagent::SubagentStatus::Failed
             };
             store.finish(&task_id, status);
+            if let Some(ref peer) = node {
+                let fed_status = match status {
+                    crate::subagent::SubagentStatus::Completed => {
+                        crate::federation::SubagentStatus::Completed
+                    }
+                    crate::subagent::SubagentStatus::Cancelled => {
+                        crate::federation::SubagentStatus::Cancelled
+                    }
+                    _ => crate::federation::SubagentStatus::Failed,
+                };
+                crate::federation::notify_remote_subagent(
+                    peer,
+                    &task_id,
+                    &task,
+                    None,
+                    fed_status,
+                    Some(detail.clone()),
+                );
+            }
             agent.emit(BackendEvent::SubagentCompleted {
                 session_id: session_id.clone(),
                 success,
@@ -1136,6 +1223,31 @@ impl Agent {
     /// the timeline projector and any other listeners consume it before the
     /// frontend hand-off, so the persisted display timeline and the wire both
     /// derive from the same emission.
+    /// 提取一个可克隆、`'static` 的事件出口（联邦命令处理器等需跨
+    /// await 边界发事件的调用方使用；语义与 `emit` 完全一致——
+    /// annotate_team + 总线 + 汇聚点）。
+    pub fn emit_handle(&self) -> std::sync::Arc<dyn Fn(BackendEvent) + Send + Sync> {
+        // 安全前提：Agent 本身以 Arc 持有于进程级（supervisor/manager），
+        // 其生命周期 ≥ 任何借用它的命令处理。这里用 Weak 防循环。
+        let bus = self.event_bus.clone();
+        let sink = self.event_sink.read().ok().and_then(|g| g.clone());
+        let handle = self.handle.try_read().ok().and_then(|g| g.clone());
+        let team = self.team_id();
+        std::sync::Arc::new(move |event| {
+            // annotate_team 的轻量版：核心服务代理 team 为 None 时事件
+            // 原样（联邦事件无会话归属，无需标注）。
+            let _ = &team;
+            bus.emit_sync(event.clone(), echo_context::DispatchMode::Observe);
+            if let Some(sink) = &sink {
+                sink(event);
+                return;
+            }
+            if let Some(h) = &handle {
+                h.emit(event);
+            }
+        })
+    }
+
     pub fn emit(&self, event: BackendEvent) {
         // 中心化注入 team_id：多 team 场景下 Panel 需要知道事件归属哪个
         // team，才能过滤实时消息（避免串线）。
@@ -1629,6 +1741,19 @@ impl Agent {
 
     pub(crate) fn is_turn_cancelled(error: &anyhow::Error) -> bool {
         error.to_string() == TURN_CANCELLED
+    }
+
+    /// 当前正在执行 turn 的会话 id 去重列表（刷新恢复快照用，
+    /// `ActiveTurnsSnapshot` 事件；见 protocol event 文档）。
+    pub fn active_turn_session_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .active_inbound_turns
+            .iter()
+            .map(|t| t.session_id.clone())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
     }
 
     #[cfg(test)]
@@ -5225,7 +5350,7 @@ pub mod tests {
                     id: String::new(),
                     name: "core".into(),
                     description: String::new(),
-                    directories: vec![env!("CARGO_MANIFEST_DIR").to_string()],
+                    directories: vec![env!("CARGO_MANIFEST_DIR").into()],
                 },
             })
             .await;
@@ -5340,7 +5465,7 @@ pub mod tests {
                     id: "core".into(),
                     name: "core".into(),
                     description: String::new(),
-                    directories: vec![root.clone()],
+                    directories: vec![root.clone().into()],
                 },
             })
             .await;

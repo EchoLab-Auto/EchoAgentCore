@@ -123,3 +123,21 @@ management_address = "127.0.0.1:3132"
 # Panel 连接 Core 时使用的 Bearer token；留空表示仅依赖监听地址隔离。
 # 若 management_address 暴露到局域网/公网，请务必设置随机长 token。
 management_access_token = ""
+
+[federation]
+# Core↔Core 联邦链路（多机去中心化；详见 document/federation.md）。
+# 缺省关闭——单节点部署无需本节。
+enabled = false
+# 联邦监听地址（接受其他节点连入）；留空 = 仅连出。
+# listen = "0.0.0.0:3133"
+# 人类可读节点别名（可选；缺省仅 node_id，见配置同目录 echo-node.json）。
+# node_name = "workstation"
+
+# 静态对等节点（每个一节；url 留空 = 仅接受该 peer 连入）。
+# 警告：联邦互信 ≈ SSH 免密——对端可按 allow_tools 白名单在本机执行工具。
+# [federation.peers.gpu-box]
+# url = "ws://192.168.1.20:3133"
+# token = "shared-secret"
+# allow_tools = ["*"]        # 允许对端调用的本机工具（Phase 2 生效）
+# allow_subagent = true      # 接受对端 subagent 委派（Phase 3 生效）
+# require_confirm = []       # 命中列表的调用需人工确认（Phase 2 生效）

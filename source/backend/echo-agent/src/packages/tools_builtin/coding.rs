@@ -530,6 +530,8 @@ impl Tool for RunCommandTool {
         let timeout = Self::requested_timeout(&args);
         let timeout_secs = timeout.as_secs();
 
+        super::reject_core_self_stop(cmd)?;
+
         // Block dangerous patterns.
         let lower = cmd.to_lowercase();
         for dangerous in &["rm -rf /", "mkfs.", "dd if=", ":(){ :|:& };:", "> /dev/sda"] {
@@ -964,6 +966,23 @@ mod tests {
             "unexpected error: {err}"
         );
         let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn bash_blocks_core_self_stop() {
+        let ws = temp_workspace("cmd-self-stop");
+        let tool = RunCommandTool::new(ws.clone());
+        let err = tool
+            .execute(json!({
+                "command": "systemctl --user stop echo-agent-core.service && cp binary installed && systemctl --user start echo-agent-core.service"
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("blocked command"),
+            "self-stop not blocked: {err}"
+        );
         let _ = std::fs::remove_dir_all(&ws);
     }
 

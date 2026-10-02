@@ -102,6 +102,11 @@ impl SessionKey {
     /// Parse a session ID string back into a key. Returns `None` on legacy
     /// `user_{id}` format (falls back to `local:tui:`) or malformed strings.
     pub fn parse(session_id: &str) -> Option<Self> {
+        // federation Phase 0：`node://<node>/<local>` 全局引用——剥离节点
+        // 前缀按本机格式解析，节点归属由 [`SessionKey::parse_qualified`]
+        // 保留（Phase 1 联邦路由消费）。
+        let (_node, local) = echo_defs::NodeId::split_ref(session_id);
+        let session_id = local;
         // Legacy format: user_{digits}
         if session_id.starts_with("user_") {
             let user_id = session_id.strip_prefix("user_")?;
@@ -129,6 +134,17 @@ impl SessionKey {
             user_id: user_id.to_string(),
             account,
         })
+    }
+
+    /// 解析一条可能带 `node://` 前缀的会话引用，保留节点归属。
+    ///
+    /// 返回 `(node, key)`：`node = None` 表示本机会话（既有一切 id 不变）；
+    /// `Some(node)` 表示远程节点上的会话——Phase 0 仅解析，Core 内所有
+    /// 现存调用方仍用 [`SessionKey::parse`]（节点前缀被剥离、按本机处理，
+    /// 行为与此前一致）。
+    pub fn parse_qualified(reference: &str) -> Option<(Option<String>, Self)> {
+        let (node, local) = echo_defs::NodeId::split_ref(reference);
+        Self::parse(local).map(|key| (node.map(str::to_string), key))
     }
 }
 
@@ -1706,7 +1722,33 @@ mod tests {
         }
     }
 
-    // ── 多会话上下文（2026-09）──
+    // ── federation Phase 0：node:// 命名空间 ──
+
+    #[test]
+    fn parse_strips_node_prefix_for_local_handling() {
+        let key =
+            SessionKey::parse("node://node-abc/qq:group:987:123").expect("qualified id parses");
+        assert_eq!(key.platform, "qq");
+        assert_eq!(key.scope, "group");
+        assert_eq!(key.scope_id, "987");
+        assert_eq!(key.user_id, "123");
+        // 本机 id 完全不受新前缀逻辑影响
+        let plain = SessionKey::parse("qq:group:987:123").unwrap();
+        assert_eq!(key, plain);
+    }
+
+    #[test]
+    fn parse_qualified_preserves_node_attribution() {
+        let (node, key) =
+            SessionKey::parse_qualified("node://node-abc/local:workspace:ws1:local_user")
+                .expect("qualified parse");
+        assert_eq!(node.as_deref(), Some("node-abc"));
+        assert_eq!(key.scope, "workspace");
+
+        let (node, key) = SessionKey::parse_qualified("local:tui::local_user").unwrap();
+        assert!(node.is_none());
+        assert_eq!(key, SessionKey::local_tui());
+    }
 
     /// 旧版事件归因：hook 内容推导 + 粘滞继承 + 兜底。
     #[test]

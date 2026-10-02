@@ -44,6 +44,7 @@ graph LR
   Core --> Persist[配置持久化|/core-config-persistence.md]
   Plugins --> Gating[QQ 门控|/adapter-qq-gating.md]
   Plugins --> Subagent[Subagent 插件|/core-subagent.md]
+  Arch --> Federation[联邦（多机）|/federation.md]
   Proto --> Core
   Panel --> Proto
 ```

@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 echo-defs = { path = "../../defs/echo-defs" }
+echo-federation = { path = "../../federation/echo-federation" }
 echo-context = { path = "../../context/echo-context" }
 echo-loop = { path = "../../loop/echo-loop" }
 echo-session = { path = "../../session/echo-session" }

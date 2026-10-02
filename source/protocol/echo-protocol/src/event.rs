@@ -448,6 +448,36 @@ pub enum BackendEvent {
     SessionUpdated {
         session: SessionInfo,
     },
+    /// 活跃 turn 快照（刷新恢复用，2026-10）：Core 在响应
+    /// `RequestTrunkTimeline` 之后补发——运行状态（thinking/tool/subagent）
+    /// 本是瞬时事件流，前端刷新重连后只能拿到历史快照，若无本事件，
+    /// 正在运行的会话的活动浮条/取消按钮会丢失直到下一个瞬时事件。
+    /// 前端处理：清空本地全部 activity，按本列表重建 running 集合。
+    ActiveTurnsSnapshot {
+        /// 当前正在执行 turn 的会话 id 列表。
+        session_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
+    },
+
+    // ── 联邦管理（federation Phase 4）──
+    /// 联邦状态快照（`RequestFederationStatus` 响应；peer 增删/链路
+    /// Up/Down 时主动刷新广播）。
+    FederationStatus {
+        enabled: bool,
+        #[serde(default)]
+        node_id: String,
+        #[serde(default)]
+        node_name: Option<String>,
+        #[serde(default)]
+        listen: String,
+        #[serde(default)]
+        peers: Vec<FederationPeerInfo>,
+    },
+    /// 本机邀请串（`RequestFederationInvite` 响应）。
+    FederationInvite {
+        invite: String,
+    },
     /// The current conversation context snapshot (`RequestContext` response).
     ContextSnapshot {
         /// 快照归属的会话 id（多会话，2026-09；None = 旧 Core 的全局口径）。
@@ -839,6 +869,43 @@ pub struct GroupInfo {
     pub group_name: String,
 }
 
+/// 联邦 peer 配置与链路状态（`FederationStatus` 列表元素；
+/// `SaveFederationPeer` 的载荷——保存时 link 字段忽略）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FederationPeerInfo {
+    /// peer 配置名（`[federation.peers.<name>]`）。
+    pub name: String,
+    /// `ws://host:port`；空 = 仅接受连入。
+    #[serde(default)]
+    pub url: String,
+    /// per-peer 共享密钥。**状态快照中不回传明文**（`token_set` 标记）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub token: String,
+    /// 状态快照用：是否已配置 token（代替明文）。
+    #[serde(default)]
+    pub token_set: bool,
+    #[serde(default)]
+    pub allow_tools: Vec<String>,
+    #[serde(default)]
+    pub allow_subagent: bool,
+    #[serde(default)]
+    pub require_confirm: Vec<String>,
+    /// 允许的只读查询种类（Phase 5；node_status 恒允许不在此列）。
+    #[serde(default)]
+    pub allow_queries: Vec<String>,
+    /// 链路状态（状态快照填充；保存请求中忽略）。
+    #[serde(default)]
+    pub link: FederationLinkState,
+}
+
+/// peer 链路状态。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FederationLinkState {
+    #[default]
+    Offline,
+    Online,
+}
+
 /// 一个工作区会话（workspace 插件）：名称 + 多个工作区目录。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSessionInfo {
@@ -849,10 +916,82 @@ pub struct WorkspaceSessionInfo {
     #[serde(default)]
     pub description: String,
     /// 工作区目录（绝对路径列表，一个会话可含多个）。
+    ///
+    /// federation Phase 0：元素从纯字符串升级为 [`WorkspaceDirectory`]
+    /// （untagged：线格式与持久化仍接受纯字符串数组，读旧写新自动迁移）。
     #[serde(default)]
-    pub directories: Vec<String>,
+    pub directories: Vec<WorkspaceDirectory>,
 }
 
+/// 工作区目录条目（federation Phase 0）。
+///
+/// serde untagged：旧格式 `"\/abs\/path"`（本机）与新格式
+/// `{ "path": "...", "node": "node-..." }`（声明远程归属）均可反序列化；
+/// 序列化时本机条目仍写纯字符串（线格式对旧前端零变化），仅带 `node`
+/// 的条目写表形式。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WorkspaceDirectory {
+    /// 本机目录（线格式：纯字符串）。
+    Local(String),
+    /// 带节点归属的目录；`node: None` 等价于本机。
+    Qualified {
+        path: String,
+        /// 归属节点（federation Phase 0 仅解析与保留；远程目录在
+        /// Phase 2 之前不可用于工具执行）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<String>,
+    },
+}
+
+impl WorkspaceDirectory {
+    /// 本机目录条目。
+    pub fn local(path: impl Into<String>) -> Self {
+        Self::Local(path.into())
+    }
+
+    /// 目录路径（不含节点维度）。
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Local(p) => p,
+            Self::Qualified { path, .. } => path,
+        }
+    }
+
+    /// 归属节点；`None` = 本机。
+    pub fn node(&self) -> Option<&str> {
+        match self {
+            Self::Local(_) => None,
+            Self::Qualified { node, .. } => node.as_deref(),
+        }
+    }
+
+    /// 是否声明了远程归属。
+    pub fn is_remote(&self) -> bool {
+        self.node().is_some()
+    }
+}
+
+impl From<String> for WorkspaceDirectory {
+    fn from(path: String) -> Self {
+        Self::Local(path)
+    }
+}
+
+impl From<&str> for WorkspaceDirectory {
+    fn from(path: &str) -> Self {
+        Self::Local(path.to_string())
+    }
+}
+
+impl std::fmt::Display for WorkspaceDirectory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.node() {
+            Some(node) => write!(f, "node://{node}/{}", self.path()),
+            None => f.write_str(self.path()),
+        }
+    }
+}
 /// 一个工作区目录的 git 状态快照（只读采集）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceGitInfo {
@@ -936,3 +1075,70 @@ pub struct BackendState {
 /// Clone + Debug + Send + Sync, this impl declares the membership so
 /// listeners can subscribe by event type (dsh typed events).
 impl echo_context::Event for BackendEvent {}
+
+#[cfg(test)]
+mod workspace_directory_tests {
+    use super::*;
+
+    /// 旧格式（纯字符串数组）与新格式（表数组）均可反序列化（untagged）。
+    #[test]
+    fn directories_accept_legacy_strings_and_qualified_tables() {
+        let legacy = r#"{
+            "name": "proj",
+            "directories": ["/srv/a", "/srv/b/"]
+        }"#;
+        let info: WorkspaceSessionInfo = serde_json::from_str(legacy).unwrap();
+        assert_eq!(info.directories.len(), 2);
+        assert!(info.directories.iter().all(|d| !d.is_remote()));
+        assert_eq!(info.directories[0].path(), "/srv/a");
+
+        let qualified = r#"{
+            "name": "proj",
+            "directories": [
+                "/srv/local",
+                {"path": "/srv/remote", "node": "node-abc"}
+            ]
+        }"#;
+        let info: WorkspaceSessionInfo = serde_json::from_str(qualified).unwrap();
+        assert_eq!(info.directories[0].node(), None);
+        assert_eq!(info.directories[1].node(), Some("node-abc"));
+        assert!(info.directories[1].is_remote());
+    }
+
+    /// 序列化：本机条目仍写纯字符串（线格式对旧前端零变化）；带 node 的
+    /// 条目写表形式。
+    #[test]
+    fn directories_serialize_local_as_string_remote_as_table() {
+        let info = WorkspaceSessionInfo {
+            id: "p".into(),
+            name: "proj".into(),
+            description: String::new(),
+            directories: vec![
+                WorkspaceDirectory::local("/srv/local"),
+                WorkspaceDirectory::Qualified {
+                    path: "/srv/remote".into(),
+                    node: Some("node-abc".into()),
+                },
+            ],
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["directories"][0], serde_json::json!("/srv/local"));
+        assert_eq!(
+            v["directories"][1],
+            serde_json::json!({"path": "/srv/remote", "node": "node-abc"})
+        );
+    }
+
+    #[test]
+    fn display_qualifies_remote_paths() {
+        assert_eq!(WorkspaceDirectory::local("/srv/a").to_string(), "/srv/a");
+        assert_eq!(
+            WorkspaceDirectory::Qualified {
+                path: "/srv/r".into(),
+                node: Some("node-x".into()),
+            }
+            .to_string(),
+            "node://node-x//srv/r"
+        );
+    }
+}

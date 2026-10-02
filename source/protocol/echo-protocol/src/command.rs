@@ -341,6 +341,20 @@ pub enum BackendCommand {
         #[serde(default)]
         adapter: Option<String>,
     },
+
+    // ── 联邦管理（federation Phase 4，**Frontend-only**）──
+    /// 新增/更新一个联邦 peer（运行时生效 + ConfigStore 原子写回）。
+    /// 响应为刷新后的 `FederationStatus`。
+    SaveFederationPeer {
+        peer: crate::event::FederationPeerInfo,
+    },
+    /// 删除一个联邦 peer（断链 + 配置移除）。
+    DeleteFederationPeer { name: String },
+    /// 请求联邦状态（开关/监听/node_id/peers + 各 peer 链路状态）。
+    RequestFederationStatus,
+    /// 生成本机邀请串（`echofed://`；对端粘贴后自动填 url/token）。
+    /// 邀请串含一次性之外的静态 token——按「互信 ≈ SSH 免密」对待其分发。
+    RequestFederationInvite,
 }
 
 /// Who is allowed to issue a given command.
@@ -372,6 +386,10 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
         | BackendCommand::SaveWorkspaceSession { .. }
         | BackendCommand::DeleteWorkspaceSession { .. }
         | BackendCommand::ActivateWorkspaceSession { .. }
+        | BackendCommand::SaveFederationPeer { .. }
+        | BackendCommand::DeleteFederationPeer { .. }
+        | BackendCommand::RequestFederationStatus
+        | BackendCommand::RequestFederationInvite
         | BackendCommand::ClearHistory { .. } => CommandClearance::Frontend,
         _ => CommandClearance::Agent,
     }
