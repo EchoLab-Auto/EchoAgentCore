@@ -1802,6 +1802,7 @@ async fn read_self_update_status(rt: &FederationRuntime) -> echo_protocol::Backe
             .get("state")
             .cloned()
             .unwrap_or_else(|| "idle".into()),
+        phase: fields.get("phase").cloned(),
         revision: fields.get("revision").cloned(),
         message: fields.get("message").cloned(),
         updated_at: fields.get("updated_at").cloned(),

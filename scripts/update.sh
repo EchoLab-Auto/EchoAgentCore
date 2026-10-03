@@ -108,6 +108,7 @@ write_status() {
     local temporary="$STATUS_FILE.tmp"
     {
         printf 'state=%s\n' "$state"
+        printf 'phase=%s\n' "${PHASE:-unknown}"
         printf 'revision=%s\n' "$revision"
         printf 'message=%s\n' "$message"
         printf 'pid=%s\n' "$$"

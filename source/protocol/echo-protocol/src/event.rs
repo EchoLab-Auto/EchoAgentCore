@@ -480,6 +480,10 @@ pub enum BackendEvent {
     SelfUpdateStatus {
         /// 当前状态（`update-status` 文件的 state 字段；无文件 = `idle`）。
         state: String,
+        /// 当前阶段（update-status 的 phase：initializing/building/
+        /// installing/restarting/verifying；细粒度进度反馈）。
+        #[serde(default)]
+        phase: Option<String>,
         /// 目标版本/说明（update-status 的 revision/message，原样透传）。
         #[serde(default)]
         revision: Option<String>,
