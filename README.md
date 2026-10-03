@@ -101,6 +101,18 @@ cargo fmt --all --check
 
 ## 安装部署（systemd 用户服务）
 
+**一键安装（curl | bash，无需先 clone）**：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install.sh | bash
+```
+
+（引导脚本会浅克隆仓库到临时目录、接力完整安装流程：前置依赖自动
+安装 → 受管检出 → 构建 → systemd 服务。指定分支/仓库可用
+`ECHO_REPOSITORY_URL`/`BRANCH` 环境变量。）
+
+**本地（已 clone 仓库）**：
+
 ```bash
 ./scripts/install.sh [--no-start] [--no-deps]
 # 先检查路径：./scripts/install.sh --dry-run

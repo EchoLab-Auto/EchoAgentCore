@@ -2,6 +2,25 @@
 set -Eeuo pipefail
 
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+
+# ── curl|bash 一键安装引导（2026-10）────────────────────────────────
+# 用法：curl -fsSL <raw-url>/scripts/install.sh | bash
+# 通过管道运行时，脚本所在目录不是 git 检出——此时先把仓库浅克隆到
+# 临时 bootstrap 目录，再 exec 克隆里的 install.sh 接力（后续流程与
+# 本地运行完全一致：依赖自动安装 → 受管检出 → 构建 → systemd 服务）。
+DEFAULT_REPO="https://github.com/EchoLab-Auto/EchoAgentCore.git"
+if [[ ! -d "$PROJECT_ROOT/.git" ]] && [[ -z "${ECHO_BOOTSTRAPPED:-}" ]]; then
+    echo "==> curl|bash bootstrap: cloning repository for installer assets"
+    if ! command -v git >/dev/null 2>&1; then
+        echo "error: bootstrap 需要 git（请先安装 git 再重跑本命令）" >&2
+        exit 1
+    fi
+    BOOTSTRAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/echo-agent-bootstrap.XXXXXX")
+    trap 'rm -rf "$BOOTSTRAP_DIR"' EXIT
+    git clone --depth 1 "${ECHO_REPOSITORY_URL:-$DEFAULT_REPO}" "$BOOTSTRAP_DIR/repo"
+    export ECHO_BOOTSTRAPPED=1
+    exec bash "$BOOTSTRAP_DIR/repo/scripts/install.sh" "$@"
+fi
 PREFIX=${ECHO_PREFIX:-"$HOME/.local"}
 CONFIG_HOME=${XDG_CONFIG_HOME:-"$HOME/.config"}
 DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
@@ -248,7 +267,14 @@ install -d -m 755 "$BIN_DIR" "$LIBEXEC_DIR" "$CONFIG_DIR" "$DATA_DIR" "$STATE_DI
 
 if [[ ! -d "$SOURCE_DIR/.git" ]]; then
     echo "==> Creating managed source checkout"
-    git clone --local --no-hardlinks --branch "$BRANCH" "$PROJECT_ROOT" "$SOURCE_DIR"
+    if [[ -d "$PROJECT_ROOT/.git" ]]; then
+        # 本地检出：--local 硬链接加速（同机）。
+        git clone --local --no-hardlinks --branch "$BRANCH" "$PROJECT_ROOT" "$SOURCE_DIR"
+    else
+        # bootstrap 浅克隆（无 --local 意义）：完整克隆受管检出（自更新
+        # 需要历史与远端跟踪）。
+        git clone --branch "$BRANCH" "$REPOSITORY_URL" "$SOURCE_DIR"
+    fi
     git -C "$SOURCE_DIR" remote set-url origin "$REPOSITORY_URL"
 else
     echo "==> Reusing managed source checkout: $SOURCE_DIR"
