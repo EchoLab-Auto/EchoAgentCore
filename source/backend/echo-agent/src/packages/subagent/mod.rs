@@ -299,6 +299,17 @@ impl SpawnSubagentTool {
             parent_branch_id: parent_branch_id.to_string(),
             node: node.clone(),
         });
+        // P3-3 聚合登记：远程委派进父 turn 分组（全部终态后组合根
+        // 产出聚合摘要投递父会话）。
+        if let Some(ref peer) = node {
+            crate::federation::aggregator::register_remote_subagent(
+                session_id,
+                parent_branch_id,
+                &task_id,
+                peer,
+                &task,
+            );
+        }
         let target = node
             .as_deref()
             .map(|n| format!("（远程节点 {n}）"))

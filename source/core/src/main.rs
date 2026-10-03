@@ -1429,6 +1429,17 @@ async fn federation_router_pump(
                                 from = %from, call_id = %ev.call_id, status = ?ev.status,
                                 "remote subagent event"
                             );
+                            // P3-3 聚合销账：组内全部终态时，聚合摘要
+                            // 投递父会话 timeline（assistant 系统消息）。
+                            if let Some(summary) =
+                                echo_agent::federation::aggregator::settle_remote_subagent(
+                                    &ev.call_id,
+                                    ev.status.clone(),
+                                    ev.result.clone(),
+                                )
+                            {
+                                deliver_aggregate_summary(&personas, summary).await;
+                            }
                         } else {
                             rt.router.dispatch_frame(&from, &frame);
                         }
@@ -1871,6 +1882,37 @@ async fn handle_self_update(
 /// 推送会话到目标 peer（目标侧经 Invoke 调 workspace 的保存路径导入）。
 /// v1 语义：**复制式迁移**——目标侧得到带全部历史的新会话；源会话
 /// 保留但标注 migrated（提示后续到目标侧继续）。
+/// P3-3 聚合摘要投递：向父会话 timeline 追加一条 assistant 系统消息
+/// （各 peer 状态 + 结果摘要 + 成败统计）。
+async fn deliver_aggregate_summary(
+    supervisor: &agent_supervisor::AgentSupervisor,
+    summary: echo_agent::federation::aggregator::AggregateSummary,
+) {
+    for persona in supervisor.personas() {
+        if persona.agent.trunk.get(&summary.session_id).is_some() {
+            persona
+                .agent
+                .trunk
+                .push_timeline(echo_protocol::TimelineMessage {
+                    seq: 0, // push_timeline 内部分配
+                    kind: "system".into(),
+                    content: summary.text.clone(),
+                    session_id: summary.session_id.clone(),
+                    time: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0),
+                    source: None,
+                    reasoning: None,
+                    tool: None,
+                    images: None,
+                });
+            return;
+        }
+    }
+    tracing::warn!(session = %summary.session_id, "aggregate summary: parent session not found");
+}
+
 async fn handle_migrate_session(
     emit: std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>,
     rt: &FederationRuntime,

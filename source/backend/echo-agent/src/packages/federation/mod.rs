@@ -10,6 +10,7 @@
 //! 设计约束（RFC §4）：不改 `Tool` trait；远程工具以 `<peer>:<tool>` 命名
 //! 显式注册；路径校验由执行端在本机工作区根内完成；取消/超时尽力送达。
 
+pub mod aggregator;
 pub mod remote_tool;
 pub mod router;
 

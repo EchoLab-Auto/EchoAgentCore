@@ -192,8 +192,7 @@ impl RemoteSubagentAggregator {
 // 经懒初始化的全局句柄解耦；联邦关闭时登记仍发生，但远程 spawn 本身
 // 就依赖联邦（无代理工具时子任务立即失败 → 终态销账 → 聚合照常闭合）。
 
-static AGGREGATOR: std::sync::OnceLock<Arc<RemoteSubagentAggregator>> =
-    std::sync::OnceLock::new();
+static AGGREGATOR: std::sync::OnceLock<Arc<RemoteSubagentAggregator>> = std::sync::OnceLock::new();
 
 /// 进程级聚合器句柄（首次调用惰性创建）。
 pub fn remote_aggregator() -> Arc<RemoteSubagentAggregator> {
@@ -270,9 +269,7 @@ mod tests {
         );
         assert!(summary.text.contains('✅') && summary.text.contains('❌'));
         // 组已移除：重复销账不再聚合。
-        assert!(agg
-            .settle("call-b", SubagentStatus::Failed, None)
-            .is_none());
+        assert!(agg.settle("call-b", SubagentStatus::Failed, None).is_none());
         assert_eq!(agg.pending_groups(), 0);
     }
 
