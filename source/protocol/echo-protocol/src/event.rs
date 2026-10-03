@@ -474,6 +474,21 @@ pub enum BackendEvent {
         #[serde(default)]
         peers: Vec<FederationPeerInfo>,
     },
+    /// 自更新状态（`RequestSelfUpdate` 受理回执 / `RequestSelfUpdateStatus`
+    /// 查询响应 / 状态变更广播）。`state` 取自 update-status 文件
+    /// （running/restarting/updated/failed/rolled_back/idle）。
+    SelfUpdateStatus {
+        /// 当前状态（`update-status` 文件的 state 字段；无文件 = `idle`）。
+        state: String,
+        /// 目标版本/说明（update-status 的 revision/message，原样透传）。
+        #[serde(default)]
+        revision: Option<String>,
+        #[serde(default)]
+        message: Option<String>,
+        /// 时间戳（update-status 的 updated_at，原样透传）。
+        #[serde(default)]
+        updated_at: Option<String>,
+    },
     /// 本机邀请串（`RequestFederationInvite` 响应）。
     FederationInvite {
         invite: String,

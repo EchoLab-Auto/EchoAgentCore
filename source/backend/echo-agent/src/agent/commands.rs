@@ -1224,7 +1224,9 @@ impl Agent {
             BackendCommand::SaveFederationPeer { .. }
             | BackendCommand::DeleteFederationPeer { .. }
             | BackendCommand::RequestFederationStatus
-            | BackendCommand::RequestFederationInvite => {
+            | BackendCommand::RequestFederationInvite
+            | BackendCommand::RequestSelfUpdate
+            | BackendCommand::RequestSelfUpdateStatus => {
                 let handler = crate::agent::federation_command_handler();
                 match handler {
                     Some(h) => h(self, cmd).await,

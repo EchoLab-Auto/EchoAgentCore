@@ -1479,6 +1479,12 @@ async fn handle_federation_command(
         echo_protocol::BackendCommand::RequestFederationStatus => {
             emit(rt.status_event().await);
         }
+        echo_protocol::BackendCommand::RequestSelfUpdate => {
+            handle_self_update(emit.clone(), &rt).await;
+        }
+        echo_protocol::BackendCommand::RequestSelfUpdateStatus => {
+            emit(read_self_update_status(&rt).await);
+        }
         echo_protocol::BackendCommand::SaveFederationPeer { peer } => {
             let name = peer.name.trim().to_string();
             if name.is_empty() {
@@ -1765,6 +1771,91 @@ async fn handle_federation_query(
                 }
             }
             err(&format!("会话 {session_id} 不存在"))
+        }
+    }
+}
+
+/// 自更新状态文件路径（与 install.sh/update.sh 布局一致）。
+fn self_update_status_path(rt: &FederationRuntime) -> std::path::PathBuf {
+    let _ = rt; // 状态路径不依赖联邦——从 XDG/默认布局解析
+    let state_home = std::env::var("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state")
+        });
+    state_home.join("echo-agent-core/update-status")
+}
+
+/// 读自更新状态文件 → `SelfUpdateStatus` 事件（无文件 = idle）。
+async fn read_self_update_status(rt: &FederationRuntime) -> echo_protocol::BackendEvent {
+    let path = self_update_status_path(rt);
+    let mut fields = std::collections::HashMap::new();
+    if let Ok(text) = tokio::fs::read_to_string(&path).await {
+        for line in text.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                fields.insert(k.trim().to_string(), v.trim().to_string());
+            }
+        }
+    }
+    echo_protocol::BackendEvent::SelfUpdateStatus {
+        state: fields
+            .get("state")
+            .cloned()
+            .unwrap_or_else(|| "idle".into()),
+        revision: fields.get("revision").cloned(),
+        message: fields.get("message").cloned(),
+        updated_at: fields.get("updated_at").cloned(),
+    }
+}
+
+/// 触发自更新：启动 `echo-agent-core-update.service`（oneshot，脱离本
+/// 进程执行 构建→替换→重启——agent 自杀不了它）。Graceful Drain 由
+/// core 的 SIGTERM 处理保证（当前回复完整生成后再退）。
+async fn handle_self_update(
+    emit: std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>,
+    rt: &FederationRuntime,
+) {
+    // 防重入：已有 update service 在跑就不重复启动。
+    let check = tokio::process::Command::new("systemctl")
+        .args([
+            "--user",
+            "is-active",
+            "--quiet",
+            "echo-agent-core-update.service",
+        ])
+        .status()
+        .await;
+    if matches!(check, Ok(s) if s.success()) {
+        emit(echo_protocol::BackendEvent::Error {
+            session_id: None,
+            message: "自更新已在进行中（echo-agent-core-update.service active）".into(),
+        });
+        return;
+    }
+    let result = tokio::process::Command::new("systemctl")
+        .args(["--user", "start", "echo-agent-core-update.service"])
+        .status()
+        .await;
+    match result {
+        Ok(s) if s.success() => {
+            // 受理回执：状态文件很快会被 updater 写 running——前端
+            // 轮询 SelfUpdateStatus 观察进度；看到 restarting 即停止
+            // 轮询（服务即将重启，后续验证属新 turn）。
+            emit(read_self_update_status(rt).await);
+        }
+        Ok(s) => {
+            emit(echo_protocol::BackendEvent::Error {
+                session_id: None,
+                message: format!(
+                    "自更新启动失败（systemctl exit {s}）——请检查 echo-agent-core-update.service"
+                ),
+            });
+        }
+        Err(e) => {
+            emit(echo_protocol::BackendEvent::Error {
+                session_id: None,
+                message: format!("自更新启动失败: {e}"),
+            });
         }
     }
 }

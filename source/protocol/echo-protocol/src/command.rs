@@ -355,6 +355,15 @@ pub enum BackendCommand {
     /// 生成本机邀请串（`echofed://`；对端粘贴后自动填 url/token）。
     /// 邀请串含一次性之外的静态 token——按「互信 ≈ SSH 免密」对待其分发。
     RequestFederationInvite,
+
+    // ── 自更新（2026-10，**Frontend-only**）──
+    /// 触发框架自更新：启动 `echo-agent-core-update.service`（oneshot，
+    /// 脱离本进程执行 构建→替换→重启）。Graceful Drain 保证当前回复
+    /// 完整生成后再重启；面板短暂重连后会话自动恢复。响应为
+    /// `SelfUpdateStatus` 事件（状态轮询由前端继续）。
+    RequestSelfUpdate,
+    /// 查询自更新状态（读 `update-status` 文件 → `SelfUpdateStatus`）。
+    RequestSelfUpdateStatus,
 }
 
 /// Who is allowed to issue a given command.
@@ -390,6 +399,8 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
         | BackendCommand::DeleteFederationPeer { .. }
         | BackendCommand::RequestFederationStatus
         | BackendCommand::RequestFederationInvite
+        | BackendCommand::RequestSelfUpdate
+        | BackendCommand::RequestSelfUpdateStatus
         | BackendCommand::ClearHistory { .. } => CommandClearance::Frontend,
         _ => CommandClearance::Agent,
     }
