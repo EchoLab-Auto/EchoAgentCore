@@ -83,7 +83,7 @@ node_name = "workstation"
 
 [federation.peers.gpu-box]
 url = "ws://192.168.1.20:3133"
-token = "shared-secret"
+token = "<openssl rand -hex 32>"
 allow_tools = ["*"]
 allow_subagent = true       # 接受对端远程委派（Phase 3）
 require_confirm = []        # 命中列表的调用拒绝并提示需确认（v1 简化为拒绝）

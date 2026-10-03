@@ -137,7 +137,7 @@ enabled = false
 # 警告：联邦互信 ≈ SSH 免密——对端可按 allow_tools 白名单在本机执行工具。
 # [federation.peers.gpu-box]
 # url = "ws://192.168.1.20:3133"
-# token = "shared-secret"
+# token = "<生成随机长串：openssl rand -hex 32>"
 # allow_tools = ["*"]        # 允许对端调用的本机工具（Phase 2 生效）
 # allow_subagent = true      # 接受对端 subagent 委派（Phase 3 生效）
 # require_confirm = []       # 命中列表的调用需人工确认（Phase 2 生效）
