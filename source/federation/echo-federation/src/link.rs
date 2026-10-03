@@ -111,6 +111,10 @@ pub struct Federation {
     links: Arc<RwLock<HashMap<String, LinkHandle>>>,
     /// 链路代际计数（见 LinkHandle::generation）。
     link_generation: std::sync::atomic::AtomicU64,
+    /// per-peer 连出循环取消表（peer 配置名 → 取消哨）：
+    /// remove_peer 即停重连；add_peer 更新时先停旧循环再起新的
+    /// （此前删除的 peer 永远重连、重复 add 起重复 dial_loop）。
+    dial_cancels: RwLock<std::collections::HashMap<String, watch::Sender<bool>>>,
     /// 事件出口（路由层订阅）。
     event_tx: mpsc::Sender<LinkEvent>,
     shutdown: watch::Sender<bool>,
@@ -134,6 +138,7 @@ impl Federation {
             peers: RwLock::new(peers),
             links: Arc::new(RwLock::new(HashMap::new())),
             link_generation: std::sync::atomic::AtomicU64::new(0),
+            dial_cancels: RwLock::new(std::collections::HashMap::new()),
             event_tx,
             shutdown,
         })
@@ -158,14 +163,27 @@ impl Federation {
                 None => peers.push(peer.clone()),
             }
         }
+        // 取消该 peer 的旧连出循环（更新场景），再视 url 起新循环。
+        if let Some(cancel) = self.dial_cancels.write().await.remove(&peer.name) {
+            let _ = cancel.send(true);
+        }
         if !peer.url.is_empty() {
             let fed = self.clone();
-            tokio::spawn(async move { fed.dial_loop(peer).await });
+            let (cancel_tx, cancel_rx) = watch::channel(false);
+            self.dial_cancels
+                .write()
+                .await
+                .insert(peer.name.clone(), cancel_tx);
+            tokio::spawn(async move { fed.dial_loop(peer, cancel_rx).await });
         }
     }
 
-    /// 运行时删除 peer：断其链路（若有）并移出配置表。
+    /// 运行时删除 peer：停连出循环 + 断其链路（若有）并移出配置表。
     pub async fn remove_peer(&self, name: &str) -> bool {
+        // 先停重连循环——否则删除后 peer 仍会无限重连（🔴 修复）。
+        if let Some(cancel) = self.dial_cancels.write().await.remove(name) {
+            let _ = cancel.send(true);
+        }
         let removed = {
             let mut peers = self.peers.write().await;
             let before = peers.len();
@@ -222,7 +240,12 @@ impl Federation {
             }
             let fed = self.clone();
             let peer = peer.clone();
-            tokio::spawn(async move { fed.dial_loop(peer).await });
+            let (cancel_tx, cancel_rx) = watch::channel(false);
+            self.dial_cancels
+                .write()
+                .await
+                .insert(peer.name.clone(), cancel_tx);
+            tokio::spawn(async move { fed.dial_loop(peer, cancel_rx).await });
         }
         if let Some(addr) = listen {
             let listener = TcpListener::bind(&addr)
@@ -261,11 +284,16 @@ impl Federation {
         }
     }
 
-    /// 连出 + 断线重连（指数退避，上限 30s）。
-    async fn dial_loop(&self, peer: PeerConfig) {
+    /// 连出 + 断线重连（指数退避，上限 30s）。`cancel` 为该 peer 专属
+    /// 取消哨（remove_peer/更新时触发），与全局 shutdown 并列。
+    async fn dial_loop(&self, peer: PeerConfig, mut cancel: watch::Receiver<bool>) {
         let mut backoff = Duration::from_secs(1);
         let mut shutdown_rx = self.shutdown.subscribe();
         loop {
+            if *cancel.borrow() {
+                tracing::info!(peer = %peer.name, "federation dial loop cancelled (peer removed/updated)");
+                return;
+            }
             let request = match bearer_request(&peer.url, &peer.token) {
                 Ok(r) => r,
                 Err(e) => {
@@ -273,6 +301,7 @@ impl Federation {
                     tokio::select! {
                         _ = tokio::time::sleep(backoff) => {}
                         _ = shutdown_rx.changed() => return,
+                        _ = cancel.changed() => return,
                     }
                     backoff = (backoff * 2).min(Duration::from_secs(30));
                     continue;
@@ -301,6 +330,7 @@ impl Federation {
             tokio::select! {
                 _ = tokio::time::sleep(backoff) => {}
                 _ = shutdown_rx.changed() => return,
+                _ = cancel.changed() => return,
             }
             backoff = (backoff * 2).min(Duration::from_secs(30));
         }

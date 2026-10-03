@@ -1659,14 +1659,20 @@ async fn handle_federation_query(
                 let agent = &persona.agent;
                 if let Some(session) = agent.trunk.get(session_id) {
                     let (messages, seq) = if req.since_seq > 0 {
-                        agent
-                            .trunk
-                            .timeline_snapshot_since(req.since_seq)
-                            .unwrap_or_else(|| {
-                                (agent.trunk.timeline_snapshot(), agent.trunk.timeline_seq())
-                            })
+                        match agent.trunk.timeline_snapshot_since(req.since_seq) {
+                            Some(snap) => snap,
+                            None => match agent.trunk.timeline_snapshot() {
+                                Some(m) => (m, agent.trunk.timeline_seq()),
+                                // 快照降级（锁竞争超时）：回错误让对端重试，
+                                // 不发空数据（防止对端误当空全量）。
+                                None => return err("timeline snapshot busy, retry later"),
+                            },
+                        }
                     } else {
-                        (agent.trunk.timeline_snapshot(), agent.trunk.timeline_seq())
+                        match agent.trunk.timeline_snapshot() {
+                            Some(m) => (m, agent.trunk.timeline_seq()),
+                            None => return err("timeline snapshot busy, retry later"),
+                        }
                     };
                     let limit = if req.limit == 0 {
                         50

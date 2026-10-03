@@ -3854,7 +3854,7 @@ pub mod tests {
         });
         assert_eq!(reply, "Hello!");
 
-        let timeline = agent.trunk.timeline_snapshot();
+        let timeline = agent.trunk.timeline_snapshot().unwrap_or_default();
         // user entry + backend reply entry.
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[0].kind, "user");
@@ -3890,7 +3890,7 @@ pub mod tests {
         let result = agent.run_tool("local:tui::one", "branch-1", &call).await;
         assert_eq!(result.text, "found");
 
-        let timeline = agent.trunk.timeline_snapshot();
+        let timeline = agent.trunk.timeline_snapshot().unwrap_or_default();
         assert_eq!(timeline.len(), 1);
         let tool = timeline[0].tool.as_ref().expect("tool entry");
         assert_eq!(tool.name, "mock_tool");
@@ -3929,7 +3929,7 @@ pub mod tests {
             branch_id: Some(branch_id.into()),
             team_id: None,
         });
-        let timeline = agent.trunk.timeline_snapshot();
+        let timeline = agent.trunk.timeline_snapshot().unwrap_or_default();
         // 新语义：推理按到达顺序落为独立 reasoning 条目，backend 输出不再附加。
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[0].kind, "reasoning");

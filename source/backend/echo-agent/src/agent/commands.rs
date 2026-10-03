@@ -682,45 +682,65 @@ impl Agent {
                 // since_seq > 0 时走增量快照；增量窗口不完整（None）回退全量。
                 // full 标志告知前端本次是替换还是追加/修补，前端不再凭 seq
                 // 大小猜测（全量误当增量会整段重复，空增量误当全量会清空聊天）。
+                // 快照降级语义（2026-10）：timeline 锁被周期保存短暂
+                // 持有时 timeline_snapshot 短重试后可能回 None——此时
+                // **跳过本次同步**（不发空全量清前端），下轮请求自然重试。
+                let snapshot_or_skip = |trunk: &crate::session::TrunkStore,
+                                        since: u64|
+                 -> Option<(
+                    Vec<crate::event::TimelineMessage>,
+                    u64,
+                    bool,
+                )> {
+                    if since > 0 {
+                        match trunk.timeline_snapshot_since(since) {
+                            Some((m, s)) => Some((m, s, false)),
+                            None => trunk
+                                .timeline_snapshot()
+                                .map(|m| (m, trunk.timeline_seq(), true)),
+                        }
+                    } else {
+                        trunk
+                            .timeline_snapshot()
+                            .map(|m| (m, trunk.timeline_seq(), true))
+                    }
+                };
                 let (messages, seq, full) = if let Some(ref id) = team_id {
                     match crate::agent_manager::global_manager() {
                         Some(mgr) => match mgr.resolve(Some(id)) {
                             Some(agent) => {
-                                if since_seq > 0 {
-                                    match agent.trunk.timeline_snapshot_since(since_seq) {
-                                        Some((messages, seq)) => (messages, seq, false),
-                                        None => (
-                                            agent.trunk.timeline_snapshot(),
-                                            agent.trunk.timeline_seq(),
-                                            true,
-                                        ),
-                                    }
-                                } else {
-                                    (
-                                        agent.trunk.timeline_snapshot(),
-                                        agent.trunk.timeline_seq(),
-                                        true,
-                                    )
-                                }
+                                let Some(snap) = snapshot_or_skip(&agent.trunk, since_seq) else {
+                                    tracing::warn!(
+                                        "timeline snapshot degraded; skip this sync round"
+                                    );
+                                    return;
+                                };
+                                snap
                             }
-                            None => (
-                                self.trunk.timeline_snapshot(),
-                                self.trunk.timeline_seq(),
-                                true,
-                            ),
+                            None => {
+                                let Some(snap) = snapshot_or_skip(&self.trunk, since_seq) else {
+                                    tracing::warn!(
+                                        "timeline snapshot degraded; skip this sync round"
+                                    );
+                                    return;
+                                };
+                                snap
+                            }
                         },
-                        None => (
-                            self.trunk.timeline_snapshot(),
-                            self.trunk.timeline_seq(),
-                            true,
-                        ),
+                        None => {
+                            let Some(snap) = snapshot_or_skip(&self.trunk, since_seq) else {
+                                tracing::warn!("timeline snapshot degraded; skip this sync round");
+                                return;
+                            };
+                            snap
+                        }
                     }
                 } else {
-                    (
-                        self.trunk.timeline_snapshot(),
-                        self.trunk.timeline_seq(),
-                        true,
-                    )
+                    let Some(snap) = snapshot_or_skip(&self.trunk, since_seq) else {
+                        tracing::warn!("timeline snapshot degraded; skip this sync round");
+                        return;
+                    };
+                    snap
                 };
                 // 快照瘦身（2026-09 刷新加速）：推理正文占板载快照约七成，
                 // 只给最近若干条保留全文（旧条目截断 + 标注），持久化不改。

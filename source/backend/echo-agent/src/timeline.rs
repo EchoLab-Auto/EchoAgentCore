@@ -398,7 +398,7 @@ mod tests {
             content: "回复".into(),
             branch_id: None,
         });
-        let timeline = store.timeline_snapshot();
+        let timeline = store.timeline_snapshot().unwrap_or_default();
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[0].kind, "user");
         assert_eq!(timeline[0].content, "你好");
@@ -424,7 +424,7 @@ mod tests {
             },
             DispatchMode::Observe,
         );
-        let timeline = store.timeline_snapshot();
+        let timeline = store.timeline_snapshot().unwrap_or_default();
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].content, "通过总线");
     }

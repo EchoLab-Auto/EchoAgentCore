@@ -439,11 +439,19 @@ impl TrunkStore {
     }
 
     /// Point-in-time snapshot of the display timeline (oldest first).
-    pub fn timeline_snapshot(&self) -> Vec<crate::event::TimelineMessage> {
-        self.timeline
-            .try_lock()
-            .map(|timeline| timeline.clone())
-            .unwrap_or_default()
+    /// 全量快照。锁被周期保存短暂持有时**短重试**（每次 10ms、至多
+    /// 50 次 ≈ 0.5s）而非立即返回空——空快照曾被调用方当"空全量"
+    /// 发给前端，直接清空本地聊天缓存（🔴 修复）。重试耗尽返回
+    /// `None`，由调用方决定降级（跳过本次同步/下轮再试）。
+    pub fn timeline_snapshot(&self) -> Option<Vec<crate::event::TimelineMessage>> {
+        for _ in 0..50 {
+            if let Ok(timeline) = self.timeline.try_lock() {
+                return Some(timeline.clone());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        tracing::warn!("timeline_snapshot: lock contention exceeded 500ms, degraded to None");
+        None
     }
 
     /// 当前 timeline 单调序号（增量同步游标）。
@@ -2322,7 +2330,7 @@ mod tests {
                 seq: 0,
             });
         }
-        let timeline = store.timeline_snapshot();
+        let timeline = store.timeline_snapshot().unwrap_or_default();
         assert_eq!(timeline.len(), TRUNK_TIMELINE_MAX, "capped at the max");
         assert_eq!(
             timeline.first().unwrap().content,
@@ -2364,19 +2372,22 @@ mod tests {
         });
         store.save_now().await;
         assert_eq!(store.trunk_len(), 1);
-        assert_eq!(store.timeline_snapshot().len(), 1);
+        assert_eq!(store.timeline_snapshot().map(|t| t.len()), Some(1));
 
         store.clear_history().await;
 
         assert_eq!(store.trunk_len(), 0, "trunk projection cleared");
         assert!(store.event_log().is_empty(), "event log cleared");
-        assert!(store.timeline_snapshot().is_empty(), "timeline cleared");
+        assert!(
+            store.timeline_snapshot().is_none_or(|t| t.is_empty()),
+            "timeline cleared"
+        );
         // The persisted file must already reflect the wipe.
         let restored = TrunkStore::new(1000);
         restored.set_persist_path(&path);
         restored.load_from_file().await;
         assert_eq!(restored.trunk_len(), 0, "cleared history survives restart");
-        assert!(restored.timeline_snapshot().is_empty());
+        assert!(restored.timeline_snapshot().is_none_or(|t| t.is_empty()));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -2427,7 +2438,7 @@ mod tests {
         let restored = TrunkStore::new(1000);
         restored.set_persist_path(&path);
         restored.load_from_file().await;
-        let timeline = restored.timeline_snapshot();
+        let timeline = restored.timeline_snapshot().unwrap_or_default();
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[0].kind, "user");
         assert_eq!(timeline[0].content, "你好");
@@ -2455,7 +2466,10 @@ mod tests {
             }"#,
         );
         assert_eq!(restored, 0);
-        assert!(store.timeline_snapshot().is_empty(), "no timeline → empty");
+        assert!(
+            store.timeline_snapshot().is_none_or(|t| t.is_empty()),
+            "no timeline → empty"
+        );
     }
 
     fn push_user(store: &TrunkStore, content: &str) {
@@ -2519,7 +2533,13 @@ mod tests {
             "gap → full fallback"
         );
         // 恰好贴着现存最老条目（seq 11 的前一个）仍可增量。
-        let cursor = store.timeline_snapshot().first().unwrap().seq - 1;
+        let cursor = store
+            .timeline_snapshot()
+            .unwrap_or_default()
+            .first()
+            .unwrap()
+            .seq
+            - 1;
         assert!(store.timeline_snapshot_since(cursor).is_some());
         // 游标超前于当前序号（来自 core 重启前）→ None。
         let current = store.timeline_seq();
@@ -2544,7 +2564,7 @@ mod tests {
                 ]
             }"#,
         );
-        let timeline = store.timeline_snapshot();
+        let timeline = store.timeline_snapshot().unwrap_or_default();
         let zombie = timeline[0].tool.as_ref().unwrap();
         assert!(zombie.failed, "dangling entry marked failed");
         assert!(
