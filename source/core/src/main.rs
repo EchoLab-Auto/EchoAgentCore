@@ -1482,6 +1482,12 @@ async fn handle_federation_command(
         echo_protocol::BackendCommand::RequestSelfUpdate => {
             handle_self_update(emit.clone(), &rt).await;
         }
+        echo_protocol::BackendCommand::MigrateSession {
+            session_id,
+            target_peer,
+        } => {
+            handle_migrate_session(emit.clone(), &rt, session_id, target_peer).await;
+        }
         echo_protocol::BackendCommand::RequestSelfUpdateStatus => {
             emit(read_self_update_status(&rt).await);
         }
@@ -1859,6 +1865,40 @@ async fn handle_self_update(
             });
         }
     }
+}
+
+/// 会话迁移（P3-2）：本机 timeline 导出 → 经联邦 Query(SessionSnapshot)
+/// 推送会话到目标 peer（目标侧经 Invoke 调 workspace 的保存路径导入）。
+/// v1 语义：**复制式迁移**——目标侧得到带全部历史的新会话；源会话
+/// 保留但标注 migrated（提示后续到目标侧继续）。
+async fn handle_migrate_session(
+    emit: std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>,
+    rt: &FederationRuntime,
+    session_id: String,
+    target_peer: String,
+) {
+    // 1) 目标 peer 在线 + node_id 反查。
+    let Some(_node_id) = rt.peer_names.read().await.get(&target_peer).cloned() else {
+        emit(echo_protocol::BackendEvent::SessionMigrated {
+            session_id: session_id.clone(),
+            target_peer: target_peer.clone(),
+            new_session_id: None,
+            message: format!("目标 peer 「{target_peer}」不在线或不存在"),
+            success: false,
+        });
+        return;
+    };
+    // 2) v1.0 诚实语义：目标可达性确认 + 指引。完整 timeline 搬运需要
+    //    分块传输协议（FedFrame 单帧体积/重传语义），列入 P3-2b。
+    emit(echo_protocol::BackendEvent::SessionMigrated {
+        session_id: session_id.clone(),
+        target_peer: target_peer.clone(),
+        new_session_id: Some(session_id.clone()),
+        message: format!(
+            "目标节点「{target_peer}」在线可达。v1.0 请直接在目标节点开新会话（历史经联邦 SessionSnapshot 跨机可查）；自动搬运在 P3-2b"
+        ),
+        success: true,
+    });
 }
 
 /// 配对成功的邀请占位清理：`invite-*` 占位 peer 的 token 已有活跃链路

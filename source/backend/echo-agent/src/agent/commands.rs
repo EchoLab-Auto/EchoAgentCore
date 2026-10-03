@@ -1225,6 +1225,7 @@ impl Agent {
             | BackendCommand::DeleteFederationPeer { .. }
             | BackendCommand::RequestFederationStatus
             | BackendCommand::RequestFederationInvite
+            | BackendCommand::MigrateSession { .. }
             | BackendCommand::RequestSelfUpdate
             | BackendCommand::RequestSelfUpdateStatus => {
                 let handler = crate::agent::federation_command_handler();

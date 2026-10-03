@@ -50,6 +50,42 @@ pub fn notify_remote_subagent(
     }
 }
 
+// ── P3-1：跨机文件协作分流出口 ──
+//
+// 5 个文件工具（read_file/write_file/edit_file/list_files/search_code）的
+// `path` 参数带 `node://<peer>/<绝对路径>` 前缀时，echo-agent 侧分流层
+// （tools_builtin::coding::RemoteAwareTool）经本出口把调用转发到对端同名
+// 工具执行。装配层注入的闭包负责：peer 名 → node_id 反查
+// （FederationRuntime.peer_names——InvokeRouter 只按 node_id 路由，无
+// 按名解析方法）→ `InvokeRouter::invoke` + `Federation::send_to` → 等终态。
+// 未接线（联邦关闭）时分流层报「联邦未接线」。
+
+/// 远程文件调用出口：`(peer_name, tool, args) → 对端输出`。
+/// `Err` 文本原样透传为 `ToolError::Execution`（对端白名单/沙箱拒绝、
+/// 链路失败、超时等）。
+pub type RemoteInvoker = std::sync::Arc<
+    dyn Fn(
+            String,
+            String,
+            serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
+        > + Send
+        + Sync,
+>;
+
+static REMOTE_INVOKER: std::sync::OnceLock<RemoteInvoker> = std::sync::OnceLock::new();
+
+/// 装配期注入远程文件调用出口（重复调用保留首个，与 notifier 同约定）。
+pub fn set_remote_invoker(invoker: RemoteInvoker) {
+    let _ = REMOTE_INVOKER.set(invoker);
+}
+
+/// 当前远程文件调用出口（None = 联邦未接线）。
+pub fn remote_invoker() -> Option<RemoteInvoker> {
+    REMOTE_INVOKER.get().cloned()
+}
+
 /// 联邦沙箱：绝对路径是否落在给定工作区根并集内（canonicalize 后按
 /// 路径分量前缀判定；不存在的路径退回其父链最近已存在祖先）。
 /// 用于执行端拒绝"工作区外绝对路径"的远程文件调用（防 ~/.ssh 等读取）。

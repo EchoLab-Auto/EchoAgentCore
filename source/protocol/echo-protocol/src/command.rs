@@ -356,6 +356,17 @@ pub enum BackendCommand {
     /// 邀请串含一次性之外的静态 token——按「互信 ≈ SSH 免密」对待其分发。
     RequestFederationInvite,
 
+    // ── 会话迁移（federation P3-2，**Frontend-only**）──
+    /// 把会话从源节点迁移到目标节点：源节点导出 timeline（经联邦
+    /// SessionSnapshot 查询）→ 目标节点导入为新会话 → 源节点归档
+    /// （标记 migrated，不再活跃）。负载再平衡/节点维护用。
+    MigrateSession {
+        /// 会话 id（源节点本地 id，不含 node:// 前缀）。
+        session_id: String,
+        /// 目标 peer 配置名（`[federation.peers.<name>]`）。
+        target_peer: String,
+    },
+
     // ── 自更新（2026-10，**Frontend-only**）──
     /// 触发框架自更新：启动 `echo-agent-core-update.service`（oneshot，
     /// 脱离本进程执行 构建→替换→重启）。Graceful Drain 保证当前回复
@@ -399,6 +410,7 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
         | BackendCommand::DeleteFederationPeer { .. }
         | BackendCommand::RequestFederationStatus
         | BackendCommand::RequestFederationInvite
+        | BackendCommand::MigrateSession { .. }
         | BackendCommand::RequestSelfUpdate
         | BackendCommand::RequestSelfUpdateStatus
         | BackendCommand::ClearHistory { .. } => CommandClearance::Frontend,

@@ -474,6 +474,20 @@ pub enum BackendEvent {
         #[serde(default)]
         peers: Vec<FederationPeerInfo>,
     },
+    /// 会话迁移结果（`MigrateSession` 响应）。
+    SessionMigrated {
+        /// 源会话 id。
+        session_id: String,
+        /// 目标 peer 名。
+        target_peer: String,
+        /// 目标侧新会话 id（成功时 Some）。
+        #[serde(default)]
+        new_session_id: Option<String>,
+        /// 成功/失败说明。
+        message: String,
+        #[serde(default)]
+        success: bool,
+    },
     /// 自更新状态（`RequestSelfUpdate` 受理回执 / `RequestSelfUpdateStatus`
     /// 查询响应 / 状态变更广播）。`state` 取自 update-status 文件
     /// （running/restarting/updated/failed/rolled_back/idle）。
