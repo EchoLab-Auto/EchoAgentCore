@@ -1307,16 +1307,23 @@ impl FederationRuntime {
                 // 策略字段回传运行时值（此前恒空/false——前端基于状态
                 // 回写保存会抹掉已配置的白名单）。
                 let policy = self.peer_policies.read().await.get(&p.name).cloned();
-                // 负载回传（P2 调度器输入）：经联邦 Query(NodeStatus)
-                // 实时拉取开销大且握手时才有链路——退而求其次：回传
-                // 链路对端握手时宣告的 active_turns（NodeCaps），
-                // 无该数据时为 0。
-                let active_turns = self
+                // 负载回传（P2 调度器输入）：在线 peer 经联邦
+                // Query(NodeStatus) 实时拉取（3s 短超时，失败/离线退
+                // 握手快照）——链路存活期负载不再失真到重连。
+                let snapshot = self
                     .federation
                     .peer_caps(&p.name)
                     .await
                     .map(|c| c.active_turns)
                     .unwrap_or(0);
+                let active_turns = if online {
+                    match self.fetch_live_load(&p.name).await {
+                        Some(live) => live,
+                        None => snapshot,
+                    }
+                } else {
+                    snapshot
+                };
                 peers.push(echo_protocol::FederationPeerInfo {
                     name: p.name.clone(),
                     url: p.url,
@@ -1995,6 +2002,33 @@ async fn handle_migrate_session(
         ),
         success: true,
     });
+}
+
+impl FederationRuntime {
+    /// 实时拉取对端负载（Query(NodeStatus) 3s 短超时；失败 None 退快照）。
+    async fn fetch_live_load(&self, peer_name: &str) -> Option<u32> {
+        let node_id = self.peer_names.read().await.get(peer_name).cloned()?;
+        let (request, pending) = self.router.query(
+            &node_id,
+            echo_federation::QueryKind::NodeStatus,
+            String::new(),
+            0,
+            0,
+        );
+        self.federation
+            .send_to(&node_id, echo_federation::FedFrame::Query(request))
+            .await
+            .ok()?;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), pending.wait())
+            .await
+            .ok()?
+            .ok()?;
+        serde_json::from_str::<serde_json::Value>(&result.output)
+            .ok()?
+            .get("active_turns")?
+            .as_u64()
+            .map(|n| n as u32)
+    }
 }
 
 /// 配对成功的邀请占位清理：`invite-*` 占位 peer 的 token 已有活跃链路
