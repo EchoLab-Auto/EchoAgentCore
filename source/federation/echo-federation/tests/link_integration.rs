@@ -12,6 +12,7 @@ fn caps(tools: &[&str]) -> NodeCaps {
         tools: tools.iter().map(|s| s.to_string()).collect(),
         subagent: true,
         workspaces: vec![],
+        active_turns: 0,
     }
 }
 

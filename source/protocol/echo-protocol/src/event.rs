@@ -896,6 +896,10 @@ pub struct FederationPeerInfo {
     /// 链路状态（状态快照填充；保存请求中忽略）。
     #[serde(default)]
     pub link: FederationLinkState,
+    /// 对端负载（活跃 turn 数；2026-10 P2 调度器输入——来自对端握手
+    /// 时宣告的 NodeCaps.active_turns，无数据时为 0）。
+    #[serde(default)]
+    pub active_turns: u32,
 }
 
 /// peer 链路状态。

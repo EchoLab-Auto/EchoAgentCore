@@ -115,6 +115,12 @@ pub struct Federation {
     /// remove_peer 即停重连；add_peer 更新时先停旧循环再起新的
     /// （此前删除的 peer 永远重连、重复 add 起重复 dial_loop）。
     dial_cancels: RwLock<std::collections::HashMap<String, watch::Sender<bool>>>,
+    /// 最近链路的 PeerInfo（peer 配置名 → 信息；Up 登记，Down 清除）。
+    last_peer_infos: RwLock<std::collections::HashMap<String, PeerInfo>>,
+    /// 负载上报句柄（P2 调度器）：握手 hello 时调用取当前活跃 turn
+    /// 数——对端调度器拿到的是**实时**负载而非启动快照。由装配层
+    /// （core/main.rs，持有 supervisor）注入；未注入时 hello 报 0。
+    load_reporter: RwLock<Option<std::sync::Arc<dyn Fn() -> u32 + Send + Sync>>>,
     /// 事件出口（路由层订阅）。
     event_tx: mpsc::Sender<LinkEvent>,
     shutdown: watch::Sender<bool>,
@@ -139,19 +145,34 @@ impl Federation {
             links: Arc::new(RwLock::new(HashMap::new())),
             link_generation: std::sync::atomic::AtomicU64::new(0),
             dial_cancels: RwLock::new(std::collections::HashMap::new()),
+            last_peer_infos: RwLock::new(std::collections::HashMap::new()),
+            load_reporter: RwLock::new(None),
             event_tx,
             shutdown,
         })
     }
 
     fn hello(&self) -> NodeHello {
+        let mut caps = self.caps.clone();
+        // 实时负载注入（P2 调度器）：装配层已注入 reporter 时，握手
+        // 宣告当前活跃 turn 数（try_read 失败=注入中，用启动快照 0）。
+        if let Ok(guard) = self.load_reporter.try_read() {
+            if let Some(reporter) = guard.as_ref() {
+                caps.active_turns = reporter();
+            }
+        }
         NodeHello {
             node_id: self.node_id.clone(),
             node_name: self.node_name.clone(),
             protocol_version: PROTOCOL_VERSION,
             version: self.version.clone(),
-            caps: self.caps.clone(),
+            caps,
         }
+    }
+
+    /// 注入负载上报句柄（装配层：core/main.rs 持 supervisor 后调用）。
+    pub async fn set_load_reporter(&self, reporter: std::sync::Arc<dyn Fn() -> u32 + Send + Sync>) {
+        *self.load_reporter.write().await = Some(reporter);
     }
 
     /// 运行时新增/更新 peer（Phase 4）：配置写表；有 url 即补起连出循环。
@@ -219,6 +240,13 @@ impl Federation {
     /// 活跃链路快照（node_id 列表）。
     pub async fn active_peers(&self) -> Vec<String> {
         self.links.read().await.keys().cloned().collect()
+    }
+
+    /// 按 **peer 配置名**查最近链路的对端能力（Up 时登记于
+    /// PeerInfo；2026-10 P2 调度器负载输入）。链路断开/未知时 None。
+    pub async fn peer_caps(&self, peer_name: &str) -> Option<NodeCaps> {
+        let infos = self.last_peer_infos.read().await;
+        infos.get(peer_name).map(|i| i.caps.clone())
     }
 
     /// 向指定节点发帧。
@@ -457,6 +485,10 @@ impl Federation {
                 })
                 .await;
         }
+        self.last_peer_infos
+            .write()
+            .await
+            .insert(info.peer_name.clone(), info.clone());
         let _ = self.event_tx.send(LinkEvent::Up(info.clone())).await;
 
         let result = self
@@ -485,6 +517,7 @@ impl Federation {
                     reason: reason.clone(),
                 })
                 .await;
+            self.last_peer_infos.write().await.remove(&info.peer_name);
             tracing::info!(peer = %info.node_id, %reason, "federation link down");
         }
         result

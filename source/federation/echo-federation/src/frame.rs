@@ -95,6 +95,10 @@ pub struct NodeCaps {
     /// 声明开放的工作区目录（本机绝对路径）。
     #[serde(default)]
     pub workspaces: Vec<String>,
+    /// 当前活跃 turn 数（调度负载指标；2026-10 P2 调度器）。
+    /// 握手时快照——负载随时间变化，精确值经 Query(NodeStatus) 拉取。
+    #[serde(default)]
+    pub active_turns: u32,
 }
 
 /// 工具调用请求。`args` 为该工具本机 schema 的 JSON。
@@ -280,6 +284,7 @@ mod tests {
                 tools: vec!["bash".into(), "read_file".into()],
                 subagent: true,
                 workspaces: vec!["/srv/proj".into()],
+                active_turns: 0,
             },
         };
         let frame = FedFrame::Hello(hello.clone());

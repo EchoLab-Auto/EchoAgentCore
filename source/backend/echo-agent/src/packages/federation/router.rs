@@ -682,6 +682,7 @@ mod tests {
             tools: vec!["bash".into(), "shell_start".into(), "read_file".into()],
             subagent: true,
             workspaces: vec![],
+            active_turns: 0,
         };
         let names = remote_tool_candidates(&caps);
         // shell_start 不在首批支持集；交集保序

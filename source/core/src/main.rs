@@ -103,6 +103,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             .collect(),
             subagent: true,
             workspaces: Vec::new(),
+            // 启动时无活跃 turn；调度器应经 Query(NodeStatus) 拉实时值。
+            active_turns: 0,
         };
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
         let router = echo_agent::federation::InvokeRouter::new(node_doc.node_id.clone());
@@ -662,6 +664,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 联邦路由泵（Phase 2）：supervisor 就绪后启动（代理工具注册需要全部
     // persona 的注册表）。
     if let Some((rt, event_rx, peer_policies)) = federation {
+        // 负载上报注入（P2 调度器）：握手 hello 时实时取全部 persona
+        // 的活跃 turn 总数——对端调度器拿到实时负载而非启动快照。
+        let load_supervisor = supervisor.clone();
+        rt.federation
+            .set_load_reporter(std::sync::Arc::new(move || {
+                load_supervisor
+                    .personas()
+                    .iter()
+                    .map(|p| p.agent.active_turn_session_ids().len() as u32)
+                    .sum()
+            }))
+            .await;
         tokio::spawn(federation_router_pump(
             event_rx,
             rt,
@@ -1239,6 +1253,16 @@ impl FederationRuntime {
                 // 策略字段回传运行时值（此前恒空/false——前端基于状态
                 // 回写保存会抹掉已配置的白名单）。
                 let policy = self.peer_policies.read().await.get(&p.name).cloned();
+                // 负载回传（P2 调度器输入）：经联邦 Query(NodeStatus)
+                // 实时拉取开销大且握手时才有链路——退而求其次：回传
+                // 链路对端握手时宣告的 active_turns（NodeCaps），
+                // 无该数据时为 0。
+                let active_turns = self
+                    .federation
+                    .peer_caps(&p.name)
+                    .await
+                    .map(|c| c.active_turns)
+                    .unwrap_or(0);
                 peers.push(echo_protocol::FederationPeerInfo {
                     name: p.name.clone(),
                     url: p.url,
@@ -1265,6 +1289,7 @@ impl FederationRuntime {
                     } else {
                         echo_protocol::FederationLinkState::Offline
                     },
+                    active_turns,
                 });
             }
         }
