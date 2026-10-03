@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+# BASH_SOURCE 兜底：sh/dash 管道执行时不可用——退回 $0；两者都没有
+# （纯 stdin）时 PROJECT_ROOT 定位失败会走 bootstrap 分支（按设计）。
+_SCRIPT_PATH="${BASH_SOURCE[0]:-${0:-}}"
+PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$_SCRIPT_PATH")/.." 2>/dev/null && pwd -P || true)
+PROJECT_ROOT=${PROJECT_ROOT:-/nonexistent}
 
 # ── curl|bash 一键安装引导（2026-10）────────────────────────────────
 # 用法：curl -fsSL <raw-url>/scripts/install.sh | bash
