@@ -215,6 +215,48 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 },
             ));
         }
+        // 远程文件调用出口（P3-1 node:// 分流）：peer 名 → node_id 反查
+        // → InvokeRouter::invoke + Federation::send_to → 等终态。
+        {
+            let rt_invoke = rt.clone();
+            echo_agent::federation::set_remote_invoker(std::sync::Arc::new(
+                move |peer, tool, args| {
+                    let rt = rt_invoke.clone();
+                    Box::pin(async move {
+                        let Some(node_id) = rt.peer_names.read().await.get(&peer).cloned() else {
+                            return Err(format!(
+                                "远程节点「{peer}」不在线或不存在（node:// 分流）"
+                            ));
+                        };
+                        let (request, pending) = rt.router.invoke(
+                            &node_id,
+                            &tool,
+                            args,
+                            Some(std::time::Duration::from_secs(120)),
+                        );
+                        if rt
+                            .federation
+                            .send_to(&node_id, echo_federation::FedFrame::Invoke(request))
+                            .await
+                            .is_err()
+                        {
+                            return Err(format!("远程节点「{peer}」链路不可用"));
+                        }
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(180),
+                            pending.wait(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(result)) if result.success => Ok(result.output),
+                            Ok(Ok(result)) => Err(result.output),
+                            Ok(Err(e)) => Err(e),
+                            Err(_) => Err(format!("远程节点「{peer}」响应超时")),
+                        }
+                    })
+                },
+            ));
+        }
         // 联邦管理命令处理器（SaveFederationPeer 等）注入进程级注册表，
         // agent 命令域据此分发（联邦关闭时未注入 → 明确报错）。
         {
@@ -676,6 +718,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     .sum()
             }))
             .await;
+        // P3-3 聚合投递出口：大脑侧 settle 产出的摘要经此向父会话
+        // timeline 追加 system 消息（supervisor 句柄在 echo-agent crate
+        // 不可达，组合根注入）。
+        {
+            let deliver_supervisor = supervisor.clone();
+            echo_agent::federation::set_aggregate_deliver(std::sync::Arc::new(move |summary| {
+                let sup = deliver_supervisor.clone();
+                tokio::spawn(async move {
+                    deliver_aggregate_summary(&sup, summary).await;
+                });
+            }));
+        }
         tokio::spawn(federation_router_pump(
             event_rx,
             rt,

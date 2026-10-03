@@ -46,9 +46,39 @@ pub fn notify_remote_subagent(
     status: SubagentStatus,
     result: Option<String>,
 ) {
+    // P3-3 聚合销账（大脑侧）：终态时本组销账——登记在本机（spawn
+    // 受理处），对端收帧方的 settle 是另一条路径（执行端真正执行并
+    // 回报的场景）。终态判定排除 Running（受理通知）。
+    if !matches!(status, SubagentStatus::Running) {
+        if let Some(summary) =
+            aggregator::settle_remote_subagent(call_id, status.clone(), result.clone())
+        {
+            // 聚合摘要投递经组合根出口（进程级；未装配时摘要仅记日志）。
+            if let Some(deliver) = AGGREGATE_DELIVER.get() {
+                deliver(summary);
+            } else {
+                tracing::info!(
+                    target: "federation",
+                    group = %summary.group_key, "aggregate summary (no deliver wired)"
+                );
+            }
+        }
+    }
     if let Some(notify) = REMOTE_SUBAGENT_NOTIFIER.get() {
         notify(peer, call_id, task, timeout_secs, status, result);
     }
+}
+
+/// 聚合摘要投递出口（组合根 core/main.rs 装配时注入；向父会话
+/// timeline 追加 system 消息需要 supervisor 句柄——echo-agent crate
+/// 不可达）。
+pub type AggregateDeliver = std::sync::Arc<dyn Fn(aggregator::AggregateSummary) + Send + Sync>;
+
+static AGGREGATE_DELIVER: std::sync::OnceLock<AggregateDeliver> = std::sync::OnceLock::new();
+
+/// 装配期注入聚合摘要投递出口（重复调用保留首个）。
+pub fn set_aggregate_deliver(deliver: AggregateDeliver) {
+    let _ = AGGREGATE_DELIVER.set(deliver);
 }
 
 // ── P3-1：跨机文件协作分流出口 ──

@@ -227,7 +227,7 @@ impl crate::tool::Tool for SpawnSubagentTool {
 }
 
 impl SpawnSubagentTool {
-    const DESCRIPTION: &'static str = "把独立子任务委派给一个隔离上下文的子 agent 执行。子 agent 看不到当前对话，task 必须自含全部背景与目标。子任务在后台执行，完成后会作为新事件回报结论；不要在同一轮里重复委派同一任务。适用于探索性检索、批量分析、需要大量中间步骤但只需结论的任务。参数: task(必填, 子任务的完整自含描述), timeout_secs(可选, 默认 600)。";
+    const DESCRIPTION: &'static str = "把独立子任务委派给一个隔离上下文的子 agent 执行。子 agent 看不到当前对话，task 必须自含全部背景与目标。子任务在后台执行，完成后会作为新事件回报结论；不要在同一轮里重复委派同一任务。适用于探索性检索、批量分析、需要大量中间步骤但只需结论的任务。参数: task(必填, 子任务的完整自含描述), timeout_secs(可选, 默认 600), node(可选, 联邦远程节点名——填入后子任务在该节点执行，多节点并行委派时结果会自动聚合汇报)。";
 
     fn schema() -> Value {
         json!({
@@ -240,6 +240,10 @@ impl SpawnSubagentTool {
                 "timeout_secs": {
                     "type": "integer",
                     "description": "执行超时秒数（默认 600）"
+                },
+                "node": {
+                    "type": "string",
+                    "description": "联邦远程节点名（peer 配置名，如 \"gpu-box\"）。填入后子任务在该节点执行；多节点并行委派时结果自动聚合汇报"
                 }
             },
             "required": ["task"]
