@@ -18,18 +18,19 @@ STATUS_FILE="$STATE_DIR/update-status"
 REPOSITORY_URL=${ECHO_REPOSITORY_URL:-}
 START_SERVICE=1
 DRY_RUN=0
+# 前置依赖策略（2026-10）：默认自动安装缺失项（可识别包管理器 + sudo
+# 可用时）；--no-deps 跳过，只做检查并提示。
+INSTALL_DEPS=1
 
 usage() {
     cat <<'EOF'
 Usage: scripts/install.sh [options]
 
-Install EchoAgentCore for the current user and run Core as a systemd service.
-The Panel (TUI) frontend lives in the separate EchoAgentPanel repository and
-is installed by its own installer.
-
 Options:
   --repository <url>    Upstream Git repository used by self-update
   --no-start            Install and enable units without starting Core
+  --no-deps             Skip automatic installation of missing prerequisites
+                        (only check and report)
   --dry-run             Print resolved paths without changing the system
   -h, --help            Show this help
 EOF
@@ -43,6 +44,10 @@ while (($#)); do
             ;;
         --no-start)
             START_SERVICE=0
+            shift
+            ;;
+        --no-deps)
+            INSTALL_DEPS=0
             shift
             ;;
         --dry-run)
@@ -90,12 +95,145 @@ EOF
     exit 0
 fi
 
-for command in cargo git install sed systemctl flock cp stat; do
-    if ! command -v "$command" >/dev/null 2>&1; then
-        echo "error: required command not found: $command" >&2
+# ── 前置依赖：检查 + 自动安装（2026-10）──────────────────────────────
+# 依赖分两类：
+#   系统命令：git / cc（编译器，部分 crate 用 cc 编译 C 段）/ pkg-config
+#     以及 util-linux（flock）等基础工具——走发行版包管理器安装；
+#   Rust 工具链：cargo——走官方 rustup（用户级，无需 root）。
+# 已识别的包管理器：apt / dnf / yum / pacman / zypper；识别不到则只报
+# 缺失清单让用户手动装。
+
+SUDO=""
+if [[ "$(id -u)" -ne 0 ]]; then
+    if command -v sudo >/dev/null 2>&1; then
+        SUDO="sudo"
+    fi
+fi
+
+detect_pkg_manager() {
+    for pm in apt-get dnf yum pacman zypper; do
+        if command -v "$pm" >/dev/null 2>&1; then
+            echo "$pm"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 系统包安装：传入包名列表（按检测到的包管理器翻译）。
+pkg_install() {
+    local pm
+    pm=$(detect_pkg_manager) || return 1
+    local pkgs=("$@")
+    echo "==> Installing system packages via $pm: ${pkgs[*]}"
+    case "$pm" in
+        apt-get)
+            $SUDO apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y "${pkgs[@]}"
+            ;;
+        dnf)    $SUDO dnf install -y "${pkgs[@]}" ;;
+        yum)    $SUDO yum install -y "${pkgs[@]}" ;;
+        pacman) $SUDO pacman -Sy --noconfirm --needed "${pkgs[@]}" ;;
+        zypper) $SUDO zypper --non-interactive install "${pkgs[@]}" ;;
+    esac
+}
+
+# 命令 → 各包管理器下的包名（多数同名；差异项单独映射）。
+pkg_name_for() {
+    local pm=$1 cmd=$2
+    case "$cmd" in
+        cc|gcc)
+            case "$pm" in
+                apt-get) echo "build-essential" ;;
+                dnf|yum) echo "gcc" ;;
+                pacman)  echo "base-devel" ;;
+                zypper)  echo "gcc" ;;
+            esac
+            ;;
+        pkg-config)
+            case "$pm" in
+                apt-get|dnf|yum|zypper) echo "pkg-config" ;;
+                pacman) echo "pkgconf" ;;
+            esac
+            ;;
+        flock)
+            case "$pm" in
+                pacman|apt-get|dnf|yum|zypper) echo "util-linux" ;;
+            esac
+            ;;
+        *) echo "$cmd" ;;
+    esac
+}
+
+missing_report=()
+
+ensure_command() {
+    local cmd=$1
+    if command -v "$cmd" >/dev/null 2>&1; then
+        return 0
+    fi
+    if ((INSTALL_DEPS == 0)); then
+        missing_report+=("$cmd")
+        return 1
+    fi
+    local pm
+    if ! pm=$(detect_pkg_manager); then
+        missing_report+=("$cmd (无可识别的包管理器，请手动安装)")
+        return 1
+    fi
+    if [[ -z "$SUDO" && "$(id -u)" -ne 0 ]]; then
+        missing_report+=("$cmd (需要 root/sudo 安装，当前不可用)")
+        return 1
+    fi
+    pkg_install "$(pkg_name_for "$pm" "$cmd")"
+    command -v "$cmd" >/dev/null 2>&1
+}
+
+ensure_rust_toolchain() {
+    if command -v cargo >/dev/null 2>&1; then
+        return 0
+    fi
+    # 常见位置兜底（rustup 装了但 PATH 未加载——非交互 SSH 常见）。
+    if [[ -x "$HOME/.cargo/bin/cargo" ]]; then
+        export PATH="$HOME/.cargo/bin:$PATH"
+        return 0
+    fi
+    if ((INSTALL_DEPS == 0)); then
+        missing_report+=("cargo (Rust 工具链；https://rustup.rs)")
+        return 1
+    fi
+    echo "==> Installing Rust toolchain via rustup (user-level, no root)"
+    if ! command -v curl >/dev/null 2>&1; then
+        ensure_command curl || {
+            missing_report+=("curl (rustup 安装需要)")
+            return 1
+        }
+    fi
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet
+    export PATH="$HOME/.cargo/bin:$PATH"
+    command -v cargo >/dev/null 2>&1
+}
+
+check_and_install_deps() {
+    local failed=0
+    # 编译期：cc（crate `cc` 编译 C 段）；运行期/安装期基础工具。
+    for cmd in git cc pkg-config install sed flock cp stat; do
+        ensure_command "$cmd" || failed=1
+    done
+    ensure_rust_toolchain || failed=1
+    if ((failed)); then
+        if ((${#missing_report[@]})); then
+            echo "error: 以下前置依赖缺失且未能自动安装：" >&2
+            printf '  - %s\n' "${missing_report[@]}" >&2
+            echo "请手动安装后重试，或去掉 --no-deps 让脚本自动安装。" >&2
+        else
+            echo "error: 前置依赖自动安装失败（详见上方输出）。" >&2
+        fi
         exit 1
     fi
-done
+}
+
+check_and_install_deps
 
 if [[ "$(uname -s)" != "Linux" ]]; then
     echo "error: the service installer currently supports Linux/systemd only" >&2

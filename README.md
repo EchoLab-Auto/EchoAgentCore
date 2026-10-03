@@ -102,9 +102,14 @@ cargo fmt --all --check
 ## 安装部署（systemd 用户服务）
 
 ```bash
-./scripts/install.sh [--no-start]
+./scripts/install.sh [--no-start] [--no-deps]
 # 先检查路径：./scripts/install.sh --dry-run
 ```
+
+脚本会先**检查并自动安装前置依赖**（可识别包管理器 + sudo 可用时）：
+系统命令（git / cc 编译器 / pkg-config 等，走 apt/dnf/pacman/zypper）与
+Rust 工具链（缺失时走官方 rustup 用户级安装，无需 root）。`--no-deps`
+跳过自动安装、只做检查并列出缺失清单。
 
 安装后：
 
