@@ -113,20 +113,45 @@ impl Tool for ReadFileTool {
             .canonicalize()
             .map_err(|e| ToolError::Execution(format!("file not found: {e}")))?;
 
+        // 大小上限：先查 metadata，超大文件直接拒绝，避免一次性读入
+        // 撑爆内存与 LLM 上下文。
+        const MAX_READ_BYTES: u64 = 10 * 1024 * 1024; // 10MB
+        let size = std::fs::metadata(&canonical)
+            .map_err(|e| ToolError::Execution(format!("stat error: {e}")))?
+            .len();
+        if size > MAX_READ_BYTES {
+            return Err(ToolError::Execution(format!(
+                "文件过大（{} 字节，超过 10MB 上限），请用 search_code 或分段读取",
+                size
+            )));
+        }
+
         let content = std::fs::read_to_string(&canonical)
             .map_err(|e| ToolError::Execution(format!("read error: {e}")))?;
 
-        let lines: Vec<String> = content
+        // 行数上限：超长内容截断并标注，防止 LLM 上下文爆炸。
+        const MAX_LINES: usize = 100_000;
+        let total_lines = content.lines().count();
+        let truncated = total_lines > MAX_LINES;
+        let mut lines: Vec<String> = content
             .lines()
+            .take(MAX_LINES)
             .enumerate()
             .map(|(i, line)| format!("{:>5} │ {}", i + 1, line))
             .collect();
+        if truncated {
+            lines.push(format!(
+                "… [内容已截断：共 {} 行，仅显示前 {} 行，请用 search_code 定位或分段读取]",
+                total_lines, MAX_LINES
+            ));
+        }
 
         let summary = format!(
-            "{} ({}) {} lines",
+            "{} ({}) {} lines{}",
             path_str,
             canonical.display(),
-            lines.len()
+            total_lines,
+            if truncated { " (truncated)" } else { "" }
         );
         Ok(format!("{summary}\n{}", lines.join("\n")))
     }

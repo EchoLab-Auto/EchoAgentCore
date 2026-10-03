@@ -29,6 +29,8 @@ struct PendingCall {
     #[allow(dead_code)] // 观测/审计预留（v1 仅日志未消费）
     tool: String,
     started: Instant,
+    /// 存活上限：`sweep` 据此判定条目是否已泄漏（见 [`InvokeRouter::sweep`]）。
+    ttl: Duration,
     chunks: mpsc::Sender<String>,
     done: oneshot::Sender<InvokeResult>,
 }
@@ -72,6 +74,8 @@ pub struct ExecutorPolicy {
     /// （无害遥测），其余（`session_snapshot`/`workspace_files`）需
     /// 显式列出——会话内容与文件系统敏感。
     pub allow_queries: Vec<String>,
+    /// 允许对端远程委派子代理（Phase 3 spawn_subagent node=<peer>）。
+    pub allow_subagent: bool,
 }
 
 impl ExecutorPolicy {
@@ -102,6 +106,21 @@ impl ExecutorPolicy {
             InvokeVerdict::Rejected
         }
     }
+}
+
+/// pending 条目的最小存活时间：短于此绝不清扫；带显式超时的调用按
+/// pending 条目的最小存活时间：短于此绝不清扫；带显式超时的调用按
+/// `timeout + 网络余量` 延长，避免清扫误杀仍在飞行的长调用（远程 bash
+/// 可跑 300s+）。
+const PENDING_MIN_TTL: Duration = Duration::from_secs(120);
+
+/// 由调用方声明的超时推导 pending 存活上限。
+fn pending_ttl(timeout: Option<Duration>) -> Duration {
+    PENDING_MIN_TTL.max(
+        timeout
+            .map(|t| t + Duration::from_secs(60))
+            .unwrap_or(PENDING_MIN_TTL),
+    )
 }
 
 /// 联邦调用调度器（组合根持有一份）。
@@ -149,6 +168,45 @@ impl InvokeRouter {
             }
         }
     }
+    /// 清扫已泄漏的 pending 条目（send_to 失败未清理、等待方已放弃、
+    /// 对端永不回复等）：条目超过其 ttl，或等待端 receiver 已 drop
+    /// （`done.is_closed()`）。DashMap 逐桶扫描，无需额外全局锁；
+    /// 在 `invoke`/`query` 入口顺手调用，O(在飞调用数)。
+    pub fn sweep(&self) {
+        let now = Instant::now();
+        let stale: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|e| now.duration_since(e.started) > e.ttl || e.done.is_closed())
+            .map(|e| e.key().clone())
+            .collect();
+        for call_id in stale {
+            if let Some((_, pending)) = self.pending.remove(&call_id) {
+                tracing::warn!(
+                    target: "federation",
+                    call_id = %call_id,
+                    peer = %pending.peer,
+                    age_ms = pending.started.elapsed().as_millis() as u64,
+                    "sweeping stale pending invoke"
+                );
+                // drop done/chunks：若等待方仍在，wait() 以「链路断开」失败。
+                drop(pending);
+            }
+        }
+    }
+
+    /// 出站失败快速清理（如 `send_to` 失败）：显式以失败终态唤醒等待方
+    /// 并移除条目，避免等待方干等超时、条目滞留到下一次 sweep。
+    pub fn fail_pending(&self, call_id: &str, reason: &str) {
+        if let Some((_, pending)) = self.pending.remove(call_id) {
+            let _ = pending.done.send(InvokeResult {
+                call_id: call_id.to_string(),
+                success: false,
+                output: reason.to_string(),
+                elapsed_ms: pending.started.elapsed().as_millis() as u64,
+            });
+        }
+    }
 
     /// 出站：注册调用并返回 `(call_id, 等待句柄)`——`RemoteTool` 随后经
     /// `Federation::send_to` 发 `Invoke` 帧。
@@ -159,6 +217,7 @@ impl InvokeRouter {
         args: serde_json::Value,
         timeout: Option<Duration>,
     ) -> (InvokeRequest, PendingInvoke) {
+        self.sweep();
         let call_id = new_call_id(&self.local_node);
         let (chunk_tx, chunk_rx) = mpsc::channel(64);
         let (done_tx, done_rx) = oneshot::channel();
@@ -168,6 +227,7 @@ impl InvokeRouter {
                 peer: peer_node.to_string(),
                 tool: tool.to_string(),
                 started: Instant::now(),
+                ttl: pending_ttl(timeout),
                 chunks: chunk_tx,
                 done: done_tx,
             },
@@ -204,6 +264,7 @@ impl InvokeRouter {
         since_seq: u64,
         limit: u32,
     ) -> (echo_federation::QueryRequest, PendingInvoke) {
+        self.sweep();
         let call_id = new_call_id(&self.local_node);
         let (chunk_tx, chunk_rx) = mpsc::channel(64);
         let (done_tx, done_rx) = oneshot::channel();
@@ -213,6 +274,7 @@ impl InvokeRouter {
                 peer: peer_node.to_string(),
                 tool: format!("query:{kind:?}"),
                 started: Instant::now(),
+                ttl: pending_ttl(None),
                 chunks: chunk_tx,
                 done: done_tx,
             },
@@ -417,6 +479,7 @@ mod tests {
             allow_tools: tools.iter().map(|s| s.to_string()).collect(),
             require_confirm: Vec::new(),
             allow_queries: Vec::new(),
+            allow_subagent: false,
         }
     }
 
@@ -435,6 +498,7 @@ mod tests {
             allow_tools: vec!["*".into()],
             require_confirm: vec!["bash".into()],
             allow_queries: Vec::new(),
+            allow_subagent: false,
         };
         assert_eq!(p.verdict_for("bash"), InvokeVerdict::Rejected);
         assert_eq!(p.verdict_for("read_file"), InvokeVerdict::Accepted);
@@ -576,6 +640,7 @@ mod tests {
             allow_tools: vec![],
             require_confirm: vec![],
             allow_queries: vec!["session_snapshot".into()],
+            allow_subagent: false,
         };
         assert!(open.query_allowed(QueryKind::SessionSnapshot));
         assert!(!open.query_allowed(QueryKind::WorkspaceFiles));
@@ -583,6 +648,7 @@ mod tests {
             allow_tools: vec![],
             require_confirm: vec![],
             allow_queries: vec!["*".into()],
+            allow_subagent: false,
         };
         assert!(all.query_allowed(QueryKind::WorkspaceFiles));
     }

@@ -80,17 +80,30 @@ impl Tool for RemoteTool {
 
     async fn execute(&self, arguments: Value) -> Result<String, ToolError> {
         // 1. 注册等待句柄（先注册再发帧，杜绝结果先于注册的竞态）。
-        let (request, pending) =
-            self.router
-                .invoke(&self.peer_node, &self.remote_name, arguments, None);
+        //    显式传入硬超时，router 的 sweep 据此推导 pending 存活上限，
+        //    避免误杀仍在飞行的长调用。
+        let (request, pending) = self.router.invoke(
+            &self.peer_node,
+            &self.remote_name,
+            arguments,
+            Some(REMOTE_TIMEOUT),
+        );
 
-        // 2. 经链路发 Invoke；链路断开 → 立刻失败（pending 已由 drop_peer
-        //    或本分支的显式失败覆盖）。
-        self.federation
+        // 2. 经链路发 Invoke；链路断开 → 显式终结 pending（否则条目滞留
+        //    到下一次 sweep，等待方还会干等超时）。
+        let call_id = pending.call_id.clone();
+        if self
+            .federation
             .send_to(&self.peer_node, FedFrame::Invoke(request))
             .await
-            .map_err(|_| ToolError::Execution(format!("联邦链路不可用（{}）", self.peer_node)))?;
-
+            .is_err()
+        {
+            self.router.fail_pending(&call_id, "联邦链路发送失败");
+            return Err(ToolError::Execution(format!(
+                "联邦链路不可用（{}）",
+                self.peer_node
+            )));
+        }
         // 3. 等终态（硬超时兜底；正常情况下 echo-loop 的工具守卫先触发）。
         match tokio::time::timeout(REMOTE_TIMEOUT, pending.wait()).await {
             Ok(Ok(result)) if result.success => Ok(result.output),

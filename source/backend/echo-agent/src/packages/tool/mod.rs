@@ -25,6 +25,30 @@ use std::sync::Arc;
 use echo_context::Disposer;
 use serde_json::Value;
 
+/// 阻塞段防护：`tokio::task::block_in_place` 在 current_thread runtime 上
+/// 直接 panic。multi_thread runtime 走 `block_in_place`（把执行线程让回
+/// 调度器）；current_thread runtime 直接就地执行闭包——这些调用点本就处于
+/// 同步/阻塞上下文（组装期、插件 mount/unmount），可接受，附 warn 以便定位；
+/// 无 runtime（纯同步测试等）直接执行。
+fn blocking_section<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        Ok(_) => {
+            tracing::warn!(
+                "blocking_section on current_thread runtime — running inline \
+                 (block_in_place would panic)"
+            );
+            f()
+        }
+        Err(_) => f(),
+    }
+}
+
 /// Registry of tools, keyed by name.
 ///
 /// The map is `tokio::sync::RwLock`-protected so reversible registrations can
@@ -100,7 +124,7 @@ impl ToolRegistry {
             tools.insert(name.clone(), tool);
         } else {
             let name_for_blocking = name.clone();
-            tokio::task::block_in_place(move || {
+            blocking_section(move || {
                 self.tools.blocking_write().insert(name_for_blocking, tool);
             });
         }
@@ -112,7 +136,7 @@ impl ToolRegistry {
                 Err(_) => {
                     let registry = registry.clone();
                     let name = name.clone();
-                    return tokio::task::block_in_place(move || {
+                    return blocking_section(move || {
                         registry.tools.blocking_write().remove(&name);
                         registry.invalidate_definitions();
                     });
@@ -275,9 +299,7 @@ impl ToolRegistry {
     pub fn names(&self) -> Vec<String> {
         match self.tools.try_read() {
             Ok(tools) => tools.keys().cloned().collect(),
-            Err(_) => {
-                tokio::task::block_in_place(|| self.tools.blocking_read().keys().cloned().collect())
-            }
+            Err(_) => blocking_section(|| self.tools.blocking_read().keys().cloned().collect()),
         }
     }
 
@@ -285,7 +307,7 @@ impl ToolRegistry {
     pub fn snapshot(&self, name: &str) -> Option<Value> {
         match self.tools.try_read() {
             Ok(tools) => tools.get(name).and_then(|tool| tool.snapshot()),
-            Err(_) => tokio::task::block_in_place(|| {
+            Err(_) => blocking_section(|| {
                 self.tools
                     .blocking_read()
                     .get(name)
@@ -375,7 +397,7 @@ impl ToolRegistry {
         }
         // 锁竞争路径：退到 blocking pool（与 register_reversible 同模式）。
         // block_in_place 在当前线程执行闭包，可直接借用 self。
-        tokio::task::block_in_place(|| {
+        blocking_section(|| {
             let packages = self.packages.blocking_read();
             let mut disabled = self.disabled.blocking_write();
             let names: Vec<String> = packages
@@ -401,14 +423,14 @@ impl ToolRegistry {
     pub fn len(&self) -> usize {
         match self.tools.try_read() {
             Ok(tools) => tools.len(),
-            Err(_) => tokio::task::block_in_place(|| self.tools.blocking_read().len()),
+            Err(_) => blocking_section(|| self.tools.blocking_read().len()),
         }
     }
 
     pub fn is_empty(&self) -> bool {
         match self.tools.try_read() {
             Ok(tools) => tools.is_empty(),
-            Err(_) => tokio::task::block_in_place(|| self.tools.blocking_read().is_empty()),
+            Err(_) => blocking_section(|| self.tools.blocking_read().is_empty()),
         }
     }
 }

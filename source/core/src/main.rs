@@ -123,6 +123,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                             allow_tools: p.allow_tools.clone(),
                             require_confirm: p.require_confirm.clone(),
                             allow_queries: p.allow_queries.clone(),
+                            allow_subagent: p.allow_subagent,
                         },
                     )
                 })
@@ -1235,15 +1236,30 @@ impl FederationRuntime {
                     })
                     .unwrap_or(false)
                     || self.federation.is_link_token_online(&p.token).await;
+                // 策略字段回传运行时值（此前恒空/false——前端基于状态
+                // 回写保存会抹掉已配置的白名单）。
+                let policy = self.peer_policies.read().await.get(&p.name).cloned();
                 peers.push(echo_protocol::FederationPeerInfo {
-                    name: p.name,
+                    name: p.name.clone(),
                     url: p.url,
                     token: String::new(),
                     token_set: !p.token.is_empty(),
-                    allow_tools: Vec::new(),
-                    allow_subagent: false,
-                    require_confirm: Vec::new(),
-                    allow_queries: Vec::new(),
+                    allow_tools: policy
+                        .as_ref()
+                        .map(|x| x.allow_tools.clone())
+                        .unwrap_or_default(),
+                    allow_subagent: policy
+                        .as_ref()
+                        .map(|x| x.allow_subagent)
+                        .unwrap_or_default(),
+                    require_confirm: policy
+                        .as_ref()
+                        .map(|x| x.require_confirm.clone())
+                        .unwrap_or_default(),
+                    allow_queries: policy
+                        .as_ref()
+                        .map(|x| x.allow_queries.clone())
+                        .unwrap_or_default(),
                     link: if online {
                         echo_protocol::FederationLinkState::Online
                     } else {
@@ -1459,6 +1475,16 @@ async fn handle_federation_command(
             } else {
                 peer.token.clone()
             };
+            // 空 token 校验：新建 peer 无 token 时 accept 侧
+            // `!known.is_empty()` 永远拒绝、dial 侧不发头——静默无法
+            // 连接且无提示（🟡 修复：直接报错）。
+            if token.is_empty() {
+                emit(echo_protocol::BackendEvent::Error {
+                    session_id: None,
+                    message: "联邦 peer token 不能为空（新建时必须提供共享密钥）".into(),
+                });
+                return;
+            }
             rt.federation
                 .add_peer(echo_federation::PeerConfig {
                     name: name.clone(),
@@ -1511,6 +1537,28 @@ async fn handle_federation_command(
                     message: format!("联邦 peer 配置写回失败: {e}"),
                 });
                 return;
+            }
+            // 运行时策略同步（allow_tools/queries/subagent 立即生效，无需
+            // 重启）——此前仅启动装配期填充，Panel 保存的白名单静默失效。
+            rt.peer_policies.write().await.insert(
+                name.clone(),
+                echo_agent::federation::ExecutorPolicy {
+                    allow_tools: peer.allow_tools.clone(),
+                    require_confirm: peer.require_confirm.clone(),
+                    allow_queries: peer.allow_queries.clone(),
+                    allow_subagent: peer.allow_subagent,
+                },
+            );
+            // 链路已 Up 时立即刷新路由策略。
+            if let Some(node) = rt.peer_names.read().await.get(&name).cloned() {
+                let policy = rt
+                    .peer_policies
+                    .read()
+                    .await
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_default();
+                rt.router.set_policy(&node, policy);
             }
             emit(rt.status_event().await);
         }

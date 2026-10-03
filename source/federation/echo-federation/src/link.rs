@@ -314,10 +314,18 @@ impl Federation {
             .await
             {
                 Ok(Ok((ws, _))) => {
-                    backoff = Duration::from_secs(1);
                     let link_token = peer.token.clone();
+                    let connected_at = Instant::now();
                     if let Err(e) = self.run_link(ws, Some(peer.clone()), link_token).await {
                         tracing::warn!(peer = %peer.name, error = %e, "federation link down");
+                        // 仅当链路曾正常存活（>5s = 握手成功且跑过一段）
+                        // 才重置退避；握手失败（版本/token 不符秒断）保持
+                        // 退避递增——否则以 ~1s 间隔无限重连刷日志（🟡 修复）。
+                        if connected_at.elapsed() > Duration::from_secs(5) {
+                            backoff = Duration::from_secs(1);
+                        }
+                    } else {
+                        backoff = Duration::from_secs(1);
                     }
                 }
                 Ok(Err(e)) => {

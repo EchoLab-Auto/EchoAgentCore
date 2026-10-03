@@ -56,9 +56,43 @@ pub async fn serve_with_token(
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("bind management address {addr}"))?;
+    // 裸奔提醒：无 token 且绑定在非回环地址时，任何能到达该端口的人
+    // 都能以管理权限控制 Agent——启动时明确 warn。
+    if access_token.is_empty() && !is_loopback_addr(addr) {
+        warn!(
+            addr,
+            "management_access_token 为空且管理 WS 绑定在非回环地址—— \
+             任何可访问该端口的客户端都可全权控制 Agent（建议配置 token 或改绑 127.0.0.1）"
+        );
+    }
     info!("Panel management WS server listening on {addr}");
     serve_with_listener_and_token(listener, bridge, agent, access_token).await
 }
+
+/// 绑定地址是否为回环（`127.0.0.1`/`localhost`/`::1`）。
+fn is_loopback_addr(addr: &str) -> bool {
+    let host = addr
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(addr)
+        .trim_matches(['[', ']']);
+    host == "127.0.0.1" || host == "localhost" || host == "::1"
+}
+
+/// 常量时间字符串相等：逐字节 XOR 累积，长度不等也走完全程再判，
+/// 避免时序侧信道逐字节探测 token。
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut diff = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= (x ^ y) as usize;
+    }
+    diff == 0
+}
+
+/// Serve on a pre-bound listener (tests use it to pick a free port).
 
 /// Serve on a pre-bound listener (tests use it to pick a free port).
 #[cfg(test)]
@@ -124,7 +158,7 @@ async fn handle_connection(
                     .headers()
                     .get("authorization")
                     .and_then(|value| value.to_str().ok())
-                    .map(|value| value == format!("Bearer {access_token}"))
+                    .map(|value| constant_time_eq(value, &format!("Bearer {access_token}")))
                     .unwrap_or(false);
                 if authorized {
                     Ok(response)
