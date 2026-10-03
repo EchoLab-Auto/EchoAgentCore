@@ -68,9 +68,9 @@ pub type RemoteInvoker = std::sync::Arc<
             String,
             String,
             serde_json::Value,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
-        > + Send
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
+        + Send
         + Sync,
 >;
 

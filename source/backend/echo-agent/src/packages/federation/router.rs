@@ -388,11 +388,18 @@ impl InvokeRouter {
                 verdict,
             };
         }
-        // 沙箱裁决（2026-10 安全收紧）：联邦路径的文件类工具，绝对路径
-        // 必须落在执行端工作区根并集内——否则获授 read_file 的 peer 可读
-        // ~/.ssh 等任意路径，allow_tools 白名单形同虚设。本地多仓库工作流
-        // 的"绝对路径显式意图"例外不适用于跨机远程调用。
-        const FILE_TOOLS: &[&str] = &["read_file", "write_file", "edit_file"];
+        // 沙箱裁决（2026-10 安全收紧；P3-1 扩展到全部 5 个文件工具）：
+        // 联邦路径的文件类工具，绝对路径必须落在执行端工作区根并集内——
+        // 否则获授 read_file/list_files 的 peer 可读 ~/.ssh 等任意路径，
+        // allow_tools 白名单形同虚设。本地多仓库工作流的"绝对路径显式意图"
+        // 例外不适用于跨机远程调用。
+        const FILE_TOOLS: &[&str] = &[
+            "read_file",
+            "write_file",
+            "edit_file",
+            "list_files",
+            "search_code",
+        ];
         if FILE_TOOLS.contains(&request.tool.as_str()) {
             if let Some(raw) = request.args.get("path").and_then(|v| v.as_str()) {
                 if raw.starts_with('/')
@@ -628,7 +635,74 @@ mod tests {
             }
         ));
     }
+    /// P3-1：执行端沙箱——5 个文件工具的绝对路径落在工作区根并集外时拒绝
+    /// （FedError::Forbidden），调用侧透传为 ToolError。
+    #[tokio::test]
+    async fn executor_rejects_absolute_path_outside_roots() {
+        let router = InvokeRouter::new("node-a".into());
+        router.set_policy("node-b", policy(&["*"]));
+        let registry = Arc::new(ToolRegistry::new());
+        let (tx, _rx) = mpsc::channel(1);
+        let root = std::env::temp_dir().join(format!("echo-fed-roots-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for tool in [
+            "read_file",
+            "write_file",
+            "edit_file",
+            "list_files",
+            "search_code",
+        ] {
+            let reply = router.handle_invoke(
+                "node-b",
+                InvokeRequest {
+                    call_id: format!("node-c:1-{tool}"),
+                    tool: tool.into(),
+                    args: serde_json::json!({"path": "/etc/shadow"}),
+                    workdir: None,
+                    timeout_secs: None,
+                },
+                registry.clone(),
+                tx.clone(),
+                std::slice::from_ref(&root),
+            );
+            assert!(
+                matches!(
+                    reply,
+                    FedFrame::Error {
+                        code: echo_federation::FedError::Forbidden,
+                        ..
+                    }
+                ),
+                "{tool} outside roots must be Forbidden: {reply:?}"
+            );
+        }
+        // 根内绝对路径放行（裁决通过 → InvokeAccepted）。
+        let inside = root.join("ok.txt");
+        std::fs::write(&inside, "x").unwrap();
+        let reply = router.handle_invoke(
+            "node-b",
+            InvokeRequest {
+                call_id: "node-c:2-0".into(),
+                tool: "read_file".into(),
+                args: serde_json::json!({"path": inside.to_string_lossy()}),
+                workdir: None,
+                timeout_secs: None,
+            },
+            registry,
+            tx,
+            std::slice::from_ref(&root),
+        );
+        assert!(matches!(
+            reply,
+            FedFrame::InvokeAccepted {
+                verdict: InvokeVerdict::Accepted,
+                ..
+            }
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
+    #[test]
     #[test]
     fn query_authorization_defaults() {
         use echo_federation::QueryKind;

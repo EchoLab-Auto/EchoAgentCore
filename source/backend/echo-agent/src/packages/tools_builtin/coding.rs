@@ -464,6 +464,105 @@ impl Tool for EditFileTool {
     }
 }
 
+// ── RemoteAwareTool（P3-1 跨机文件分流层）──
+
+/// 远程调用的超时提示（与 federation::remote_tool::REMOTE_TIMEOUT 一致：
+/// 本地工具守卫上限 300s × 1.5 网络余量，封顶 460s）。
+const REMOTE_TIMEOUT_HINT: std::time::Duration = std::time::Duration::from_secs(460);
+
+/// 解析 `node://<peer>/<绝对路径>` → `(peer, 绝对路径)`。
+///
+/// - 非 `node://` 前缀：`None`（本地路径，走原逻辑）；
+/// - 前缀存在但形态非法（缺 `/`、空 peer 名）：`Some(Err(..))`；
+/// - 余部一律规范为以 `/` 开头的绝对路径——对端执行端的联邦沙箱
+///   （`InvokeRouter::handle_invoke` 的 path_within_roots 裁决）只接受
+///   落在对端工作区根并集内的绝对路径。
+fn parse_node_path(raw: &str) -> Option<Result<(String, String), String>> {
+    let rest = raw.strip_prefix("node://")?;
+    Some(match rest.split_once('/') {
+        Some((peer, path)) if !peer.is_empty() => Ok((peer.to_string(), format!("/{path}"))),
+        _ => Err("node:// 路径需形如 node://<peer>/<绝对路径>".into()),
+    })
+}
+
+/// 远程路径分流层：包在 5 个文件工具外，对 agent 透明（同名同 schema）。
+///
+/// `path` 参数带 `node://<peer>/…` 前缀时，经联邦 Invoke 把调用转发到
+/// 对端同名工具执行（出口见 [`crate::federation::remote_invoker`]，装配层
+/// 注入；对端拒绝——白名单/路径沙箱——原样透传为 `ToolError`）；其余路径
+/// 原样走本地逻辑。`RunCommandTool` 不包：远程 bash 已有 `<peer>:bash`
+/// 代理工具，且 shell 无单一路径参数可分流。
+pub struct RemoteAwareTool {
+    inner: Arc<dyn Tool>,
+    /// 装配期快照；`None` 时 execute 再回查全局出口（联邦后接线场景）。
+    invoker: Option<crate::federation::RemoteInvoker>,
+    /// inner 描述 + node:// 用法说明（清单生成）。
+    description: String,
+}
+
+impl RemoteAwareTool {
+    pub fn wrap(inner: Arc<dyn Tool>) -> Arc<dyn Tool> {
+        let description = format!(
+            "{} Path may carry a `node://<peer>/<绝对路径>` prefix to operate on a remote federated node's workspace files directly (executed on the peer inside its sandbox).",
+            inner.description()
+        );
+        Arc::new(Self {
+            inner,
+            invoker: crate::federation::remote_invoker(),
+            description,
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for RemoteAwareTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn category(&self) -> &'static str {
+        self.inner.category()
+    }
+    fn parameters(&self) -> Value {
+        self.inner.parameters()
+    }
+    fn timeout_hint(&self, arguments: &Value) -> Option<std::time::Duration> {
+        let is_remote = arguments
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|p| p.starts_with("node://"))
+            .unwrap_or(false);
+        if is_remote {
+            Some(REMOTE_TIMEOUT_HINT)
+        } else {
+            self.inner.timeout_hint(arguments)
+        }
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(parsed) = parse_node_path(raw_path) else {
+            return self.inner.execute(args).await;
+        };
+        let (peer, remote_path) = parsed.map_err(ToolError::InvalidArguments)?;
+        let invoker = self
+            .invoker
+            .clone()
+            .or_else(crate::federation::remote_invoker)
+            .ok_or_else(|| {
+                ToolError::Execution(
+                    "联邦未接线：node:// 远程文件操作不可用（需联邦启用且 peer 在线）".into(),
+                )
+            })?;
+        let mut remote_args = args;
+        remote_args["path"] = json!(remote_path);
+        invoker(peer, self.inner.name().to_string(), remote_args)
+            .await
+            .map_err(ToolError::Execution)
+    }
+}
+
 // ── RunCommandTool ──
 
 pub struct RunCommandTool {
@@ -654,11 +753,23 @@ fn human_size(bytes: u64) -> String {
 // ── Registration ──
 
 pub fn register_coding_tools(registry: &mut ToolRegistry, workspace: PathBuf) {
-    registry.register(Arc::new(ReadFileTool::new(workspace.clone())));
-    registry.register(Arc::new(ListFilesTool::new(workspace.clone())));
-    registry.register(Arc::new(SearchCodeTool::new(workspace.clone())));
-    registry.register(Arc::new(WriteFileTool::new(workspace.clone())));
-    registry.register(Arc::new(EditFileTool::new(workspace.clone())));
+    // P3-1：5 个文件工具包远程分流层（node:// 前缀 → 联邦 Invoke）；
+    // bash 不包（远程 shell 走 <peer>:bash 代理工具）。
+    registry.register(RemoteAwareTool::wrap(Arc::new(ReadFileTool::new(
+        workspace.clone(),
+    ))));
+    registry.register(RemoteAwareTool::wrap(Arc::new(ListFilesTool::new(
+        workspace.clone(),
+    ))));
+    registry.register(RemoteAwareTool::wrap(Arc::new(SearchCodeTool::new(
+        workspace.clone(),
+    ))));
+    registry.register(RemoteAwareTool::wrap(Arc::new(WriteFileTool::new(
+        workspace.clone(),
+    ))));
+    registry.register(RemoteAwareTool::wrap(Arc::new(EditFileTool::new(
+        workspace.clone(),
+    ))));
     registry.register(Arc::new(RunCommandTool::new(workspace)));
 }
 
@@ -666,7 +777,6 @@ pub fn register_coding_tools(registry: &mut ToolRegistry, workspace: PathBuf) {
 mod tests {
     use super::*;
 
-    /// A temp workspace dir that is cleaned up on drop.
     fn temp_workspace(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("echo-coding-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1121,5 +1231,124 @@ mod tests {
         );
         assert!(out.starts_with("50 matches"), "summary: {out}");
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    // ── P3-1：远程路径分流层（RemoteAwareTool）──
+
+    /// 同步闭包 → RemoteInvoker（测试用：结果立即就绪）。
+    fn test_invoker(
+        f: impl Fn(String, String, Value) -> Result<String, String> + Send + Sync + 'static,
+    ) -> crate::federation::RemoteInvoker {
+        std::sync::Arc::new(move |peer, tool, args| {
+            let result = f(peer, tool, args);
+            Box::pin(async move { result })
+        })
+    }
+
+    fn wrapped(
+        inner: Arc<dyn Tool>,
+        invoker: Option<crate::federation::RemoteInvoker>,
+    ) -> Arc<dyn Tool> {
+        Arc::new(RemoteAwareTool {
+            inner,
+            invoker,
+            description: String::new(),
+        })
+    }
+
+    #[test]
+    fn node_path_parsing() {
+        // 本地路径：不分流。
+        assert!(parse_node_path("/abs/local.rs").is_none());
+        assert!(parse_node_path("relative/x.rs").is_none());
+        // node://<peer>/<绝对路径>：解析出 peer 与绝对路径。
+        let (peer, path) = parse_node_path("node://gpu-box/srv/repo/src/main.rs")
+            .expect("node:// detected")
+            .expect("valid form");
+        assert_eq!(peer, "gpu-box");
+        assert_eq!(path, "/srv/repo/src/main.rs");
+        // 形态非法：缺路径段 / 空 peer 名。
+        assert!(parse_node_path("node://gpu-box").unwrap().is_err());
+        assert!(parse_node_path("node:///x").unwrap().is_err());
+    }
+
+    /// ① node://peer/x 路径解析与分流：转发对端同名工具，路径改写为绝对路径。
+    #[tokio::test]
+    async fn remote_node_path_routed_to_peer() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let tool = wrapped(
+            Arc::new(ReadFileTool::new(PathBuf::from("/nonexistent-ws"))),
+            Some(test_invoker(move |peer, tool, args| {
+                seen2.lock().unwrap().push((peer, tool, args));
+                Ok("remote-content".into())
+            })),
+        );
+        let out = tool
+            .execute(json!({"path": "node://gpu-box/srv/repo/a.rs"}))
+            .await
+            .unwrap();
+        assert_eq!(out, "remote-content", "对端输出透明返回");
+        let log = seen.lock().unwrap();
+        assert_eq!(log.len(), 1, "恰好一次远程调用");
+        assert_eq!(log[0].0, "gpu-box");
+        assert_eq!(log[0].1, "read_file", "对端同名工具");
+        assert_eq!(log[0].2["path"], json!("/srv/repo/a.rs"), "路径去前缀");
+    }
+
+    /// ② 对端拒绝（沙箱外路径）：Err 文本原样透传为 ToolError::Execution。
+    #[tokio::test]
+    async fn remote_rejection_passthrough_as_tool_error() {
+        let tool = wrapped(
+            Arc::new(WriteFileTool::new(PathBuf::from("/nonexistent-ws"))),
+            Some(test_invoker(|_, _, _| {
+                Err("absolute path outside workspace roots (federation sandbox)".into())
+            })),
+        );
+        let err = tool
+            .execute(json!({"path": "node://core-b/etc/shadow", "content": "x"}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, ToolError::Execution(m) if m.contains("outside workspace roots")),
+            "拒绝原因透传: {err:?}"
+        );
+    }
+
+    /// ③ 本地路径不受影响：不触发 invoker；未接线时 node:// 报明确错误。
+    #[tokio::test]
+    async fn local_paths_unaffected_by_remote_layer() {
+        let ws = temp_workspace("remote-wrap");
+        std::fs::write(ws.join("f.txt"), "local").unwrap();
+        let tool = wrapped(
+            Arc::new(ReadFileTool::new(ws.clone())),
+            Some(test_invoker(|_, _, _| panic!("本地路径不得触发远程分流"))),
+        );
+        let out = tool.execute(json!({"path": "f.txt"})).await.unwrap();
+        assert!(out.contains("local"), "result: {out}");
+        // 绝对本地路径同样不触发。
+        let abs = ws.join("f.txt").to_string_lossy().into_owned();
+        assert!(tool.execute(json!({"path": abs})).await.is_ok());
+
+        // 联邦未接线 + node:// → 明确错误（而非静默落到本地）。
+        let bare = wrapped(Arc::new(ReadFileTool::new(ws.clone())), None);
+        let err = bare
+            .execute(json!({"path": "node://peer/x"}))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("联邦未接线"), "unexpected: {err}");
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// 清单生成：包装后的工具同名，描述带 node:// 用法说明。
+    #[test]
+    fn remote_aware_tool_advertises_node_prefix() {
+        let tool = RemoteAwareTool::wrap(Arc::new(ReadFileTool::new(PathBuf::from("/tmp"))));
+        assert_eq!(tool.name(), "read_file");
+        assert!(
+            tool.description().contains("node://"),
+            "description: {}",
+            tool.description()
+        );
     }
 }

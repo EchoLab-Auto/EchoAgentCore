@@ -146,8 +146,8 @@ impl WorkspaceStore {
         session.description = session.description.trim().to_string();
         // 规范化目录：去首尾空白/尾随斜杠；重复项去重（节点 + 路径联合判重）。
         // 允许暂时不存在的目录（项目可能还没克隆），存在性由 git 采集时呈现。
-        // federation Phase 0：远程目录（带 node 归属）仅解析与保留，git/文件
-        // 浏览/工具执行仍只作用于本机目录。
+        // federation Phase 0：远程目录（带 node 归属）解析与保留；P3-1 起
+        // 文件工具可经 node:// 前缀操作远程目录，git/文件浏览仍只作用于本机。
         let mut dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
         for raw in &session.directories {
             let normalized = normalize_directory(raw.path());
@@ -250,15 +250,18 @@ impl WorkspaceStore {
             text.push_str("\n工作区目录：\n");
             for dir in &session.directories {
                 match dir.node() {
-                    // federation Phase 0：远程目录仅展示标注，工具执行尚不可用。
+                    // P3-1 跨机文件协作：远程目录可操作——5 个文件工具
+                    // （read_file/write_file/edit_file/list_files/search_code）
+                    // 的 path 参数用 `node://<peer>/<绝对路径>` 前缀，经联邦
+                    // Invoke 在对端沙箱内执行。
                     Some(node) => text.push_str(&format!(
-                        "- node://{node}/{}（远程节点，暂不可直接操作）\n",
-                        dir.path()
+                        "- node://{node}/{} [remote:{node}]（远程节点：文件工具路径用 node://{node}/<绝对路径> 前缀直接读写/列目录/搜索）\n",
+                        dir.path().trim_start_matches('/')
                     )),
                     None => text.push_str(&format!("- {}\n", dir.path())),
                 }
             }
-            text.push_str("在本机目录范围内工作；git 状态与其它会话可用 workspace 工具查询/切换。");
+            text.push_str("在本机目录范围内工作；标注 [remote:<peer>] 的远程目录以 node:// 前缀路径直接操作（对端白名单/沙箱裁决，拒绝会原样返回）；git 状态与其它会话可用 workspace 工具查询/切换。");
         } else {
             text.push_str("\n（尚未配置工作区目录，可用 workspace 工具或面板添加）");
         }
@@ -500,7 +503,8 @@ pub fn resolve_within_directories(
         .map_err(|e| format!("路径不存在或不可访问: {e}"))?;
     for dir in directories {
         if dir.is_remote() {
-            continue; // federation Phase 0：远程目录不参与本机路径解析
+            continue; // 远程目录不参与本机路径解析（文件浏览器限本机；
+                      // 远程文件操作走 node:// 前缀 + 联邦 Invoke，P3-1）
         }
         let Ok(root) = Path::new(dir.path()).canonicalize() else {
             continue; // 目录本身不存在：跳过，由其余目录决定
@@ -639,7 +643,10 @@ impl Tool for WorkspaceTool {
                         .iter()
                         .map(|dir| match dir.node() {
                             Some(node) => WorkspaceGitInfo {
-                                directory: format!("node://{node}/{}", dir.path()),
+                                directory: format!(
+                                    "node://{node}/{}",
+                                    dir.path().trim_start_matches('/')
+                                ),
                                 is_repo: false,
                                 branch: None,
                                 ahead: 0,
@@ -735,6 +742,7 @@ mod tests {
             std::process::id()
         ));
         std::fs::remove_file(&path).ok();
+        let _ = &path; // 静默清理竞态（持久化写与删文件的时序）
         (
             std::sync::Arc::new(WorkspaceStore::load(Some(path.clone()))),
             path,
@@ -976,6 +984,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&other);
         let _ = std::fs::remove_dir_all(&sibling);
+    }
+
+    /// P3-1：远程目录在提示词中标注 [remote:<peer>] 且说明 node:// 可操作。
+    #[test]
+    fn prompt_marks_remote_dirs_as_operable() {
+        let (store, path) = temp_store("remote-prompt");
+        let session = store
+            .upsert(WorkspaceSessionInfo {
+                id: "r".into(),
+                name: "R".into(),
+                description: String::new(),
+                directories: vec![
+                    echo_protocol::WorkspaceDirectory::local("/srv/local"),
+                    echo_protocol::WorkspaceDirectory::Qualified {
+                        path: "/srv/repo".into(),
+                        node: Some("gpu-box".into()),
+                    },
+                ],
+            })
+            .unwrap();
+        store.set_active(Some(session.id)).unwrap();
+        let text = store.prompt_text().expect("active prompt");
+        assert!(text.contains("[remote:gpu-box]"), "text: {text}");
+        assert!(text.contains("node://gpu-box/srv/repo"), "text: {text}");
+        assert!(
+            text.contains("node://gpu-box/<绝对路径>"),
+            "操作说明: {text}"
+        );
+        // 本机目录不带 remote 标注。
+        assert!(text.contains("- /srv/local\n"), "text: {text}");
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
