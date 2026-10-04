@@ -115,3 +115,54 @@ allow_queries = []          # 敏感查询需显式开启
 默认拒绝，需 `[federation.peers.*] allow_queries = ["session_snapshot",
 "workspace_files"]`（或 `*`）显式开启——对方能看到会话内容，安全
 优先于便利。
+
+## 跨机文件协作（P3-1）
+
+文件工具（read_file/write_file/edit_file/list_files/search_code）的
+`path` 参数支持 `node://<peer>/<绝对路径>` 前缀——agent 可直接操作
+对端工作区文件，调用经联邦 Invoke 在对端沙箱内执行（沙箱裁决见
+「安全模型」），结果透明返回。
+
+- 工作区会话的远程目录（`{path, node}` 表条目）在提示词中标注
+  `[remote:<peer>]` 并附 `node://` 操作说明——agent 据此知晓可操作
+- 装配出口：`set_remote_invoker`（组合根注入；联邦关闭时调用报
+  「联邦未接线」）
+- 失败路径：peer 离线/不存在、链路不可用、对端拒绝（白名单/沙箱）、
+  超时（180s）均原样透传为 ToolError
+
+## 会话迁移（P3-2，v1.0）
+
+`MigrateSession { session_id, target_peer }`（Frontend-only）→
+`SessionMigrated` 事件。v1.0 语义：目标 peer 在线可达性确认 + 指引
+（历史经 `SessionSnapshot` 跨机可查，新对话在目标侧继续）；完整
+timeline 搬运需要分块传输协议（单帧体积/重传语义），列入 P3-2b。
+
+## 跨机子代理结果聚合（P3-3）
+
+并行 `spawn_subagent node=A + node=B` 时，大脑侧
+`RemoteSubagentAggregator` 按父 turn 分组（session_id +
+parent_branch_id → 挂起 call_id 集合）：受理时登记、终态时销账，
+组内全部终态后产出一条聚合摘要（各节点状态 + 结果前 500 字 +
+成功 x/y）投递父会话 timeline（system 消息）。
+
+- 登记：`SpawnSubagentTool::spawn` 受理远程委派（node=Some）时
+- 销账双路径：大脑侧本地完成（`notify_remote_subagent` 终态）+
+  联邦泵收到对端 `SubagentEvent`（幂等——组销账后即移除，重复
+  销账返回 None）
+- 投递出口：`set_aggregate_deliver`（组合根注入；未装配时仅记日志）
+
+## 分布式调度（P2）
+
+Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
+选节点：
+
+- `least_busy`（默认）：按 `active_turns` 取负载最低（平局让远程
+  空闲节点）；本机读 activities、peer 经 `FederationStatus` 回传
+  （在线 peer 由 Core 侧 `Query(NodeStatus)` 3s 短超时实时拉取，
+  失败退握手快照）
+- `round_robin`：在线节点轮转
+- `prefer:<name>`：亲和定向（离线退 least_busy）
+
+策略存 localStorage（`echo-schedule-policy`），面板「设置 → 系统 →
+节点调度」可切换并查看全节点负载一览。已有归属的会话经 P1 的
+`coreForCommand` 按归属自动路由，调度不参与。

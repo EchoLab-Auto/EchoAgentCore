@@ -145,9 +145,22 @@ Panel 的 management WS 并存，帧类型为 `FedFrame`（工具调用 Invoke �
 
 Panel 侧的联邦管理命令（Frontend-only）：`SaveFederationPeer` /
 `DeleteFederationPeer` / `RequestFederationStatus` /
-`RequestFederationInvite`；事件 `FederationStatus`（token 脱敏为
-`token_set`）/ `FederationInvite`。邀请串格式 `echofed://host:port?name=
-<别名>#<token>`（一次性，配对成功自动清理）。
+`RequestFederationInvite` / `MigrateSession { session_id, target_peer }`；
+事件 `FederationStatus`（token 脱敏为 `token_set`；含 per-peer
+`active_turns` 负载，在线 peer 实时拉取）/ `FederationInvite` /
+`SessionMigrated { session_id, target_peer, new_session_id?, message,
+success }`。邀请串格式 `echofed://host:port?name=<别名>#<token>`
+（一次性，配对成功自动清理）。
+
+## 自更新（2026-10）
+
+Panel 侧的框架自更新命令（Frontend-only）：`RequestSelfUpdate`（触发——
+启动 `echo-agent-core-update.service` oneshot 单元，脱离 agent 进程执行
+构建→替换→重启；Graceful Drain 保当前回复完整）/
+`RequestSelfUpdateStatus`（查询）；事件 `SelfUpdateStatus { state, phase?,
+revision?, message?, updated_at? }`（state: idle/running/restarting/updated/
+failed/rolled_back；phase: initializing/building/installing/restarting/
+verifying）。
 
 ## 刷新恢复快照（2026-10）
 
