@@ -142,6 +142,8 @@ Rust 工具链（缺失时走官方 rustup 用户级安装，无需 root）。`-
 ./scripts/uninstall.sh
 # 或免 clone 一键卸载：
 curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/uninstall-remote.sh | bash
+# 重装（保留配置，二进制/服务全换新）：
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/reinstall.sh | bash
 ```
 
 > 首装自动生成 `management_access_token`（32 字节随机 hex）——暴露
