@@ -66,6 +66,11 @@ pub struct ShellSessionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: String,
+    /// 来源节点身份（federation NodeId，`node-<ulid>`）。多节点聚合客户端据此
+    /// 区分同名会话（`local:tui::local_user` 在每个 Core 上都相同）；单节点 /
+    /// 旧 Core 缺省 None。中继聚合视图另有来源 core 名（信封），两者可对照。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
     /// Owning team id (None = default/legacy single agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
@@ -820,6 +825,9 @@ impl From<LoopMode> for OrchestrationMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamInfo {
     pub id: String,
+    /// 来源节点身份（federation NodeId）。多节点聚合时人格身份 = (node_id, id)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
     pub name: String,
     /// Whether this agent is the primary/default agent (protected from deletion).
     #[serde(default)]

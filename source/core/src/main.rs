@@ -155,6 +155,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             .unwrap_or_else(|| PathBuf::from(".")),
     )?;
     info!(node_id = %node_doc.node_id, "node identity ready");
+    // 注入进程级节点身份：SessionInfo/TeamInfo 等线格式携带它，供多节点聚合
+    // 客户端区分同名会话/人格（中继信封的 core 名是本机配置，非稳定身份）。
+    echo_agent::set_node_id(node_doc.node_id.clone());
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 

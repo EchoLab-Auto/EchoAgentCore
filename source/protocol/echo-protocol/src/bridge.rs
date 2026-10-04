@@ -335,6 +335,7 @@ mod tests {
     fn session_updated_event_roundtrip() {
         let session = SessionInfo {
             id: "qq:group:123:456".into(),
+            node_id: Some("node-test".into()),
             team_id: None,
             platform: "qq".into(),
             scope: "group".into(),
@@ -350,11 +351,30 @@ mod tests {
         match msg {
             WsMessage::Event(BackendEvent::SessionUpdated { session }) => {
                 assert_eq!(session.id, "qq:group:123:456");
+                assert_eq!(session.node_id.as_deref(), Some("node-test"));
                 assert_eq!(session.nickname, "alice");
                 assert_eq!(session.group_name.as_deref(), Some("测试群"));
             }
             other => panic!("wrong event: {other:?}"),
         }
+    }
+
+    /// 向后兼容：旧 Core 的 SessionInfo JSON 没有 node_id → 反序列化为 None。
+    #[test]
+    fn session_info_without_node_id_deserializes() {
+        let session: SessionInfo = serde_json::from_value(serde_json::json!({
+            "id": "local:tui::local_user",
+            "team_id": null,
+            "platform": "local",
+            "scope": "tui",
+            "user_id": "u",
+            "nickname": "",
+            "group_name": null,
+            "last_active": 0,
+            "last_message": ""
+        }))
+        .expect("legacy SessionInfo must deserialize");
+        assert_eq!(session.node_id, None);
     }
 
     #[test]

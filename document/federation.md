@@ -177,6 +177,12 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   trunk 缓存都必须用复合键（`core 为空时退化为裸 id`，单上游零变化）；同名
   跨 core 不再互相覆盖/串显。引导期裸广播的只读命令白名单（中继
   `is_readonly_command`）须与 Panel 引导命令对齐，否则多上游下被静默拒收。
+- **身份内建 `node_id` + 复合键收尾**（2026-10 Phase 2）：`SessionInfo` /
+  `TeamInfo` 线上新增可选 `node_id`（进程级 NodeId，`echo_agent::set_node_id`
+  由组合根注入；旧 Core 缺省 None，serde 默认兼容）——多节点聚合客户端不再
+  只靠中继信封区分同名会话/人格。Panel 学习 `core → NodeId` 映射并在选择器
+  展示；`branchTabs` 按 `(core, branch_id)` 键；等待态（pending）登记时记录
+  目标 core，响应只销账同 core 的等待。
 - **管理目标 core**（2026-10 Phase 1）：`store.dispatch` 给**每个**事件载荷
   注入来源 core；无 team/session 的管理事件（`ApiConfigUpdated` / `SkillsList`
   / `ToolsList` / `PluginsList` / `SystemPrompt` / `Adapter*` / `Federation*`

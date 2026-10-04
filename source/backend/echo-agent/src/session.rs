@@ -212,6 +212,7 @@ impl Session {
     pub fn info(&self, last_message: String) -> SessionInfo {
         SessionInfo {
             id: self.id.clone(),
+            node_id: crate::node_id().map(str::to_string),
             team_id: self.team_id.clone(),
             platform: self.session_key.platform.clone(),
             scope: self.session_key.scope.clone(),
