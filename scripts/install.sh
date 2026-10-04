@@ -390,6 +390,16 @@ if [[ ! -f "$CORE_CONFIG" ]]; then
     install -m 600 "$PROJECT_ROOT/config/echo-agent-core.toml" "$CORE_CONFIG"
     escaped_source=${SOURCE_DIR//&/\\&}
     sed -i "s|^skills_dir = .*|skills_dir = \"$escaped_source/skills\"|" "$CORE_CONFIG"
+    # 自动生成 management_access_token（2026-10）：32 字节随机 hex——
+    # 暴露 management WS 到局域网时开箱即有认证（仅首装生成；已存在
+    # 的配置不动，重装卸载不丢）。
+    if grep -q '^management_access_token = ""' "$CORE_CONFIG"; then
+        generated_token=$(openssl rand -hex 32 2>/dev/null \
+            || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        escaped_token=${generated_token//&/\&}
+        sed -i "s|^management_access_token = \"\"|management_access_token = \"$escaped_token\"|" "$CORE_CONFIG"
+        echo "==> Generated management_access_token (see $CORE_CONFIG)"
+    fi
     echo "==> Installed Core config: $CORE_CONFIG"
 else
     echo "==> Preserved existing Core config: $CORE_CONFIG"

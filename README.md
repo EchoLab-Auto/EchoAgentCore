@@ -135,8 +135,18 @@ Rust 工具链（缺失时走官方 rustup 用户级安装，无需 root）。`-
 | `echo-agent-core.service` | 常驻 Core 服务 |
 | `echo-agent-core-update.service` | 一次性更新器（agent 自更新工具触发） |
 
-详见 [document/ops-deploy.md](document/ops-deploy.md)。卸载：`./scripts/uninstall.sh`
-（保留配置与会话历史；`--purge` 连配置一起删，`--dry-run` 先预览）。
+详见 [document/ops-deploy.md](document/ops-deploy.md)。卸载（保留配置与会话
+历史；`--purge` 连配置一起删，`--dry-run` 先预览）：
+
+```bash
+./scripts/uninstall.sh
+# 或免 clone 一键卸载：
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/uninstall-remote.sh | bash
+```
+
+> 首装自动生成 `management_access_token`（32 字节随机 hex）——暴露
+> management WS 到局域网开箱即有认证；token 在 `core.toml` 可查，
+> 重装卸载不丢。
 
 > 注意：长驻 `echo-agent-core.service` 与一次性更新器服务均设
 > `NoNewPrivileges=true`——agent 不再提供 setuid 提权（`run_sudo` 已废弃移除），
