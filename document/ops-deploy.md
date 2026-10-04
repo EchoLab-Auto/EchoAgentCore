@@ -30,6 +30,26 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 - 服务默认挂在 `default.target`；开机免登录自启需 `sudo loginctl enable-linger "$USER"`
 - 卸载：`./scripts/uninstall.sh`（保留配置）/ `--purge`（连配置目录一起删）
 
+### curl | bash 一键安装/卸载（2026-10，免 clone）
+
+```bash
+# 安装（Core）
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install.sh | bash
+
+# 卸载（保留配置与会话历史）
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/uninstall-remote.sh | bash
+# 连配置一起删
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/uninstall-remote.sh | bash -s -- --purge
+```
+
+机制与要点：
+
+- **bootstrap 接力**：非 git 检出环境（curl 管道）运行时，脚本先把仓库浅克隆到临时目录、exec 其中的 install/uninstall 脚本接力——后续流程与本地运行完全一致（前置依赖自动安装 → 受管检出 → 构建 → systemd 服务）
+- **前置依赖自动装**：git/cc/pkg-config 等系统命令经发行版包管理器（apt/dnf/pacman/zypper）自动补齐；cargo 缺失时走官方 rustup 用户级安装（无需 root）；`--no-deps` 只检查不安装
+- **首装自动生成 `management_access_token`**（32 字节随机 hex）——暴露 management WS 到局域网开箱即有认证；token 在 `core.toml` 可查，重装/卸载（不带 `--purge`）不丢
+- **私有仓库**：`ECHO_REPOSITORY_URL` 指定 SSH 或镜像地址（`ECHO_REPOSITORY_URL=git@github.com:... curl ... | bash`）；公开仓库匿名可直接跑
+- 全程约 10-20 分钟（rustup + release 构建）；构建期不影响现有服务
+
 ### 服务加固
 
 长驻 `echo-agent-core.service` 与 oneshot 更新单元均设 `NoNewPrivileges=true`——2026-09 起 agent 不再提供 setuid 提权（`run_sudo` 已废弃移除），两个单元都限制被攻破进程/构建脚本的提权面。
