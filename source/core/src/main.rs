@@ -172,6 +172,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         } else {
             std::env::var("HOSTNAME")
                 .ok()
+                .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
                 .map(|name| name.trim().to_string())
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| node_doc.node_id.chars().take(14).collect())
