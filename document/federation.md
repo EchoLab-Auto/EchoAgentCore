@@ -242,8 +242,9 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   （按当前 profile 部署/更新）+ 源区域 `DeleteTeam`，两条命令都带**显式
   targetCore**，不依赖任何全局路由变量。会话历史属于原区域，不随 agent
   迁移（跨区搬历史是 `MigrateSession`，需两区域已建联邦链路）。
-- **连接状态卡**：逐区域列出全部已配置上游（`/api/upstreams` 轮询），
-  高亮当前区域；不再有"管理目标"选择器。
+- **连接状态卡**：逐区域列出全部已配置上游（`/api/upstreams` 轮询）；不再有
+  "管理目标"选择器，也不再标记"当前区域"——当前 agent 所属区域已在 **agent
+  菜单**（AgentSwitcher 的区域徽标）中展示，避免重复。
 - `round_robin`：在线节点轮转
 - `prefer:<name>`：亲和定向（离线退 least_busy）
 
