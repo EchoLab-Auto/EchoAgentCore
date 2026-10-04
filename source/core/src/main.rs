@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -35,6 +35,20 @@ struct Args {
     /// Default: config/echo-agent-core.toml
     #[arg(short, long)]
     config: Option<PathBuf>,
+    /// 管理子命令（缺省 = 启动服务）。
+    #[command(subcommand)]
+    command: Option<SubCommand>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum SubCommand {
+    /// 打印当前 management_access_token（Panel 连接 Core 的 Bearer
+    /// token；--rotate 重新生成并写回，下次重启生效）。
+    Token {
+        /// 重新生成随机 token（32 字节 hex）并写回配置文件。
+        #[arg(long)]
+        rotate: bool,
+    },
 }
 
 impl Args {
@@ -45,9 +59,82 @@ impl Args {
     }
 }
 
+/// `echo-agent-core token [--rotate]`：读/生成 management_access_token。
+/// 直接操作 TOML 文本（保留注释与其他段）——不加载完整配置。
+fn token_command(config_path: &std::path::Path, rotate: bool) -> Result<()> {
+    let text = std::fs::read_to_string(config_path)
+        .with_context(|| format!("read config {}", config_path.display()))?;
+    let current = text
+        .lines()
+        .find_map(|line| {
+            line.trim_start()
+                .strip_prefix("management_access_token")
+                .and_then(|rest| rest.trim_start_matches(['=', ' ']).trim().strip_prefix('"'))
+                .and_then(|v| v.strip_suffix('"'))
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    if !rotate {
+        if current.is_empty() {
+            println!("# management_access_token 为空（无认证——仅本机回环监听场景安全）");
+        } else {
+            println!("{current}");
+        }
+        return Ok(());
+    }
+    // --rotate：生成 32 字节随机 hex 并写回（原地替换该行；行不存在则
+    // 追加到 [core] 段尾）。
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).context("generate random token")?;
+    let token = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let new_line = format!("management_access_token = \"{token}\"");
+    let mut out = String::with_capacity(text.len() + 96);
+    let mut replaced = false;
+    let mut in_core = false;
+    let mut appended = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            if in_core && !replaced && !appended {
+                out.push_str(&new_line);
+                out.push('\n');
+                appended = true;
+            }
+            in_core = trimmed == "[core]";
+        }
+        if in_core && trimmed.starts_with("management_access_token") {
+            out.push_str(&new_line);
+            replaced = true;
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    if !replaced && !appended {
+        if !in_core {
+            out.push_str("\n[core]\n");
+        }
+        out.push_str(&new_line);
+        out.push('\n');
+    }
+    // tmp+rename 原子写（与配置写回其他路径同约定）。
+    let tmp = config_path.with_extension("toml.token-tmp");
+    std::fs::write(&tmp, &out)?;
+    std::fs::rename(&tmp, config_path)?;
+    println!("{token}");
+    eprintln!(
+        "# 已写回 {}——下次重启 echo-agent-core 生效",
+        config_path.display()
+    );
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if let Some(SubCommand::Token { rotate }) = args.command {
+        return token_command(&args.config_path(), rotate);
+    }
     let path = args.config_path();
     let cfg = CoreConfig::load(&path)?;
     run_core(args, cfg).await

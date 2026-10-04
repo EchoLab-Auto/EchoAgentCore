@@ -24,6 +24,7 @@ echo-adapter.workspace = true
 echo-adapter-qq.workspace = true
 echo-plugin = { path = "../plugin/echo-plugin" }
 echo-federation = { path = "../federation/echo-federation" }
+getrandom = "0.2"
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

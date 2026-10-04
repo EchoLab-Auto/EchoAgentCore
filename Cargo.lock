@@ -455,6 +455,7 @@ dependencies = [
  "echo-session",
  "echo-test-utils",
  "futures-util",
+ "getrandom 0.2.17",
  "serde",
  "serde_json",
  "tokio",
