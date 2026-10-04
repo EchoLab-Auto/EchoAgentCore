@@ -430,6 +430,29 @@ fn validate_logging_level(logging: &LoggingSection) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// 联邦已取消 `enabled` 开关：旧配置里的 `enabled = false` 必须被**忽略**
+    /// 而不是解析失败（否则升级后 Core 起不来）。
+    #[test]
+    fn legacy_federation_enabled_field_is_ignored() {
+        let path = std::env::temp_dir().join("echo-agent-federation-legacy-test.toml");
+        std::fs::write(
+            &path,
+            r#"
+[federation]
+enabled = false
+listen = "0.0.0.0:3133"
+
+[federation.peers.gpu]
+url = "ws://localhost:3999"
+token = "t"
+"#,
+        )
+        .unwrap();
+        let config = CoreConfig::load(&path).expect("legacy enabled field must be ignored");
+        assert_eq!(config.federation.listen, "0.0.0.0:3133");
+        assert!(config.federation.peers.contains_key("gpu"));
+    }
+
     #[test]
     fn load_dedupes_duplicate_profiles() {
         let dir = std::env::temp_dir();
