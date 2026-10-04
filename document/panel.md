@@ -15,9 +15,10 @@ Panel（EchoAgentPanel）是 Web 管理面板：Rust 后端（axum）托管 Vue 
 EchoAgentPanel/
 ├── config/echo-agent-panel.toml     # 面板配置模板
 ├── source/echo-web-server/          # Rust 后端（axum + WS 中继）
-│   ├── src/main.rs                  # 服务入口（路由装配：/ws、/media、/api/logs + 静态兜底）
+│   ├── src/main.rs                  # 服务入口（路由装配：/ws、/media、/api/logs、/api/upstreams + 静态兜底）
 │   ├── src/static_files.rs          # 静态资源（gzip 协商 / 弱 ETag-304 / 分级缓存）
-│   ├── src/proxy.rs                 # 浏览器 ↔ Core 帧中继（不解析负载、10s 写超时）
+│   ├── src/proxy.rs                 # 浏览器 ↔ 上游 Core 帧中继（多上游 {core, frame} 信封、10s 写超时）
+│   ├── src/upstreams_api.rs         # 上游管理 API（/api/upstreams 增删查）+ Bearer 认证中间件
 │   └── src/config.rs                # 面板配置加载
 ├── web/                             # Vue 3 + TypeScript + Vite 前端
 │   ├── vendor/ui-frame/             # ui-frame 组件库本地快照（dist + package.json，入库）
@@ -40,13 +41,18 @@ EchoAgentPanel/
 
 ## 后端：无状态字节级中继
 
-每个浏览器 WS 连接对应一条到 Core management WS 的专用连接；帧按原文转发，**不解析、不记录负载**——协议细节与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积；转发另有 **10s 写超时**（`SEND_TIMEOUT`）——对端写阻塞超时即断链，冻结标签页不会挂住中继、Core 发送缓冲不再无界积压。
+每个浏览器 WS 连接同时中继到**全部**上游 Core 的 management WS（`[[cores]]`，单上游 = 一条）；**单上游时帧按原文转发，不解析、不记录负载**；多上游时事件按来源加壳 `{core, frame}` 信封、命令按信封路由到目标上游（仅信封层，不触碰负载）——协议细节与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积；转发另有 **10s 写超时**（`SEND_TIMEOUT`）——对端写阻塞超时即断链，冻结标签页不会挂住中继、Core 发送缓冲不再无界积压。
 
-- 中继极薄（一个 crate、约 200 行），可独立测试（`tests/proxy.rs` 用假 Core 验证双向帧透传）
+- 中继仍无状态（proxy.rs 约 800 行，含多上游聚合、信封路由与令牌校验），可独立测试（`tests/proxy.rs` 用假 Core 验证双向帧透传）
 - 多标签页 = 多条 Core 连接（Core 的 management 支持多 Panel）
 - 已知限制：无会话恢复——刷新页面先由磁盘缓存（`trunk-cache.ts`）立即可渲染，再经 `RequestState` / `RequestTrunkTimeline{since_seq}` 增量 Bootstrap
 - 否决的备选：后端做协议层转发/会话管理（等于重写 Core 桥接层）；浏览器直连 Core :3132（跨域 + 暴露 management 端口）
 
+## 多上游聚合、访问令牌与调度（2026-10）
+
+- **多上游 `[[cores]]`**：浏览器单连接同时中继到全部上游，事件按来源带 `{core, frame}` 信封、会话列表带来源徽标；命令按当前会话所属上游路由（`connection.ts::resolveTargetCore`），未选中会话时全局类只读命令（如 `RequestTeamsList`）裸广播全部上游、各端各回一份聚合。上游可在设置·Core 连接页在线增删（写回 `[[cores]]` 段持久化，中继动态并入/摘除，无需重启）；单上游（`[core]` 或一条 `[[cores]]`）行为与此前完全一致（无壳）
+- **Bearer 访问令牌**：`[server].access_token` 非空时全站（WS 握手 / `/api/*` / `/media`）要求 `Authorization: Bearer <token>` 或 `?token=` 查询参数，静态前端豁免以加载登录页（`proxy.rs::authorized`、`upstreams_api.rs::require_auth`）；前端 URL `?token=` 播种一次后存 localStorage `echo-panel-token`，后续 HTTP 经 `panelFetch` 自动带 Bearer 头（`connection.ts:328-345`）。另有 `[core].access_token` 是连 Core management WS 的认证头，须与 Core 侧配置一致
+- **分布式调度器 `scheduler.ts`**：新建会话（或向无归属新对话发首条消息）时的目标节点选择，策略持久化于 localStorage `echo-schedule-policy`：`least_busy`（默认，按 FederationStatus 各 peer 活跃 turn 数取最小，本机参与比较）/ `round_robin` / `prefer:<name>`（亲和，离线退 least_busy）；只做建议，最终路由仍走 connection.ts 的 coreForCommand 链
 ## 状态管理与数据流
 
 - `store.ts`：全局响应式单例（Vue `reactive`），`dispatch(event)` 逐事件归约
@@ -137,6 +143,6 @@ cd web && npm run dev           # 前端热更新（/ws 代理到 :8080）
 
 ## 配置与运维
 
-- `~/.config/echo-agent-panel/panel.toml`：`[server]`（bind_address、static_dir）、`[core].connect_url`（连 Core 的 WS 地址）
+- `~/.config/echo-agent-panel/panel.toml`：`[server]`（bind_address、static_dir、media_dir 媒体库目录、access_token 面板访问令牌）、`[core]`（connect_url 连 Core 的 WS 地址、access_token 认证头；单上游兜底——`[[cores]]` 键出现过即以在线管理为准）、`[[cores]]`（多上游 name/url/access_token，可空，设置·Core 连接页在线增删并写回）、`[logging]`（level/format/log_file 滚动）
 - `systemctl --user restart echo-agent-panel.service` 重启；静态资源在 `~/.local/libexec/echo-agent-panel/web`
 - 更新走 `echo-agent-panel-update.service`（构建 Rust 服务 + `npm run build` + 替换静态目录 + 重启），详见 [部署与自更新](./ops-deploy.md)

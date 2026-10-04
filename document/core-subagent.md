@@ -27,7 +27,7 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
 
 ## 生命周期
 
-1. 模型调用 `spawn_subagent`（task + 可选 timeout_secs）——**同步受理**：
+1. 模型调用 `spawn_subagent`（task + 可选 timeout_secs + 可选 node）——**同步受理**：
    注册进 `SubagentStore`（携带主 turn 的取消令牌子令牌）并立即返回
    子任务 id 回执；子任务在后台以隔离上下文执行
 2. 子 turn 走独立循环（`packages/subagent/mod.rs::run_subagent_turn`：与主循环同源的
@@ -50,7 +50,7 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
 
 | 工具 | 说明 |
 | --- | --- |
-| `spawn_subagent` | 委派子任务（同步受理、异步执行）。参数：`task`（必填，完整自含描述——子上下文看不到主对话）、`timeout_secs`（可选，默认 600，钳制 30..=3600）。返回受理回执（含子任务 id） |
+| `spawn_subagent` | 委派子任务（同步受理、异步执行）。参数：`task`（必填，完整自含描述——子上下文看不到主对话）、`timeout_secs`（可选，默认 600，钳制 30..=3600）、`node`（可选，联邦远程节点名/peer 配置名——填入后子任务在该节点执行；来源：工具列表中 `<peer>:<tool>` 代理工具前缀名，或工作区会话的 `[remote:<peer>]` 标注；填错/离线会立即失败，fail-closed 不会静默回本机；多节点并行委派时结果自动聚合汇报）。返回受理回执（含子任务 id） |
 
 设计要点：
 

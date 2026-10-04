@@ -12,8 +12,8 @@ Panel 的系统级交互：Toast 通知、键盘清单、设计边界（协议�
 
 ## 十二、Toast 系统
 
-- 三类：`info / success / error`；位置右上；单条 **6s** 自动消失；同屏上限 8 条（`ToastProvider :max-count="8"`，溢出挤掉最旧）；队列 cap 8、文本截断 512 字符（`App.vue:268-271, 343`，`state.ts:1077-1081`）
-- `state.toasts` 仅作转发队列：watcher 逐条泵入组件库 ToastProvider 后清空（`App.vue:262-272`）
+- 三类：`info / success / error`；位置右上；单条 **6s** 自动消失；同屏上限 8 条（`ToastProvider :max-count="8"`，溢出挤掉最旧）；队列 cap 8、文本截断 512 字符（`App.vue:399, 477`，`state.ts:1483-1489`）
+- `state.toasts` 仅作转发队列：watcher 逐条泵入组件库 ToastProvider 后清空（`App.vue:394-402`）
 - 来源与类型：断连提示「与后端断开，正在重连…」（error）、断连时发送命令（error）、Core `Error` 事件（**按 info 展示**，`state.ts:917-920`——Git 安装等异步操作的失败也经此通道呈现）
 
 ## 十三、键盘清单
@@ -32,21 +32,22 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 ## 十四、设计边界（协议已定义但 UI 未接线）
 
 以下 `BackendCommand` 在协议层存在，但当前 UI 无任何入口——属有意留白而非缺陷，新增入口时按本文档规范补充：
-
-- `SwitchModel` / `SwitchProvider` / `SetSystemPrompt` / `RequestSystemPrompt`（模型与提示词经 API 设置/AgentConfig 覆盖）
+- `SwitchModel` / `SwitchProvider` / `SetSystemPrompt`（模型与提示词经 API 设置/AgentConfig 覆盖）
 - `StartAllAdapters` / `StopAllAdapters`（逐个适配器控制已覆盖）
 - `SetQqOwner`（管理员显示为只读）
 
-> 2026-09-03 起 `InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 已接线（§9.3），不再属于本清单。
+> `RequestSystemPrompt` 已接线（2026-10 多上游起）：切 core 时随"单值管理面"重拉发送（`connection.ts:262`，`requestActiveRegionManagement`），`pending.ts:60` 登记 `SystemPrompt` 响应销账，`state.ts:1206` 消费写入 `state.systemPrompt`；`InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 自 2026-09-03 起接线（§9.3），均不再属于本清单。
 
 ## 十五、关键常量速查
 
 | 常量 | 值 | 位置 |
 |---|---|---|
+| 多上游复合键 | `(core, id)`，`<core>\u0000<id>`；core 为空退化为裸 id（单 core 行为与磁盘缓存零变化） | keys.ts |
+| 命令目标路由 | 显式 targetCore > 会话归属 > 人格归属 > activeRegion；解析不出且 knownCores>1 时拒发提示 | connection.ts:275-326 |
 | WS 重连退避 | 500ms ×2，上限 30s | connection.ts |
 | 加载态阈值 | 显示延迟 150ms；最短可见 400ms；慢 6s；超时 20s | pending.ts |
 | 前台自愈 / 中继收割 | 探测帧 5s 判死；一侧 90s 无帧断链；转发写阻塞 10s 断链 | connection.ts / proxy.rs |
-| Toast | 6s；队列/同屏 8；≤512 字符；右上 | main.ts:17 / App.vue:268-271, 343 / state.ts:1077-1081 |
+| Toast | 6s；队列/同屏 8；≤512 字符；右上 | main.ts:20 / App.vue:399, 477 / state.ts:1483-1489 |
 | 主时间线容量 | 1024 条 | timeline.ts:6-11 |
 | 时间线磁盘缓存 | 挂载前 hydrate + 10s 周期落盘；总预算 2.2M 字符、单 team 1.8M 字符 | trunk-cache.ts |
 | TrunkTimeline 快照瘦身 | 近 40 条推理全文、更早截 240 字；静态资源 gzip 协商（≥1KB 文本）+ 弱 ETag/304（HTML no-store、`assets/` 一年 immutable） | timeline.rs / static_files.rs |

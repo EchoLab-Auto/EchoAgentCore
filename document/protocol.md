@@ -6,7 +6,7 @@ y: 442
 
 # 协议与数据流
 
-前后端通过 **management WebSocket**（默认 `127.0.0.1:3132`）通信，消息为 JSON 文本帧。命令与事件定义在 `source/protocol/echo-protocol`（Core 侧直接使用该 crate；Panel 以 `web/src/protocol.ts` 镜像线格式）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
+前后端通过 **management WebSocket**（默认 `0.0.0.0:3132`，开箱即可被局域网连接；`[core] management_access_token` 提供 Bearer 认证，首装自动生成）通信，消息为 JSON 文本帧。命令与事件定义在 `source/protocol/echo-protocol`（Core 侧直接使用该 crate；Panel 以 `web/src/protocol.ts` 镜像线格式）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
 
 ## 仓库拆分与契约归属
 
@@ -18,7 +18,7 @@ y: 442
 
 ## 传输与信封
 
-- Core 监听 `[core] management_address`（默认 `127.0.0.1:3132`），由 `source/core/src/management.rs` 提供；每个前端建立一条 WS 连接
+- Core 监听 `[core] management_address`（默认 `0.0.0.0:3132`），由 `source/core/src/management.rs` 提供；每个前端建立一条 WS 连接
 - Core 侧事件经 `EventBroker` 扇出到每条连接的独立订阅通道；命令由各连接独立注入
 - 服务端 30s Ping 心跳（90s 无任何入站活动判死断开）；Panel 转发层对双向心跳做透传，空闲连接不会被中间层悄悄断开
 - 断线自动重连（500ms 起、指数退避、上限 30s）；重连后清空运行期状态（分支/任务/活动/工作区缓存）再 Bootstrap——**时间线刻意保留**（2026-09 刷新加速：内存 + 磁盘缓存按游标 `since_seq` 增量续拉，Core 缺口检测兜底、响应 `full` 时整体替换）
@@ -48,15 +48,19 @@ pub enum WsMessage {
 
 `BackendCommand` 主要分四类：
 
-- **会话类**：`SendMessage`、`CancelRequestedWork`、`ClearHistory`、`ArchiveHistory`、`CompactHistory`（协议不变：`keep_recent` 默认 40、clamp 10–500；2026-09 起服务端自动先归档再按会话生成 LLM 摘要，失败回退统计文案，见 [架构 §会话与持久化](./architecture.md)）、`RequestTrunkTimeline`（支持 `since_seq` 增量）——**`team_id` 必填**（2026-09-13 破坏性变更：无"主/默认智能体"，缺失直接回 `Error`）；`RequestContext` 增 `session_id`（多会话，2026-09：返回该会话的上下文快照，缺省回退本地 TUI 会话；`ContextSnapshot` 回带 `session_id`）
+- **会话类**：`SendMessage`、`CancelRequestedWork`、`ClearHistory`、`ArchiveHistory`、`CompactHistory`（协议不变：`keep_recent` 默认 40、clamp 10–500；2026-09 起服务端自动先归档再按会话生成 LLM 摘要，失败回退统计文案，见 [架构 §会话与持久化](./architecture.md)）、`RequestTrunkTimeline`（支持 `since_seq` 增量）——**`team_id` 语义必填**（2026-09-13 破坏性变更：无"主/默认智能体"；线格式上为 `Option<String>` + `#[serde(default)]`，缺失时由服务端运行期校验回 `Error`，协议层不做反序列化拒绝）；`RequestContext` 增 `session_id`（多会话，2026-09：返回该会话的上下文快照，缺省回退本地 TUI 会话；`ContextSnapshot` 回带 `session_id`）
 - **Shell 类**：`RequestShellSessions`（可选 `team_id` = 只看该 persona 的会话）/ `ShellStart` / `ShellExec` / `ShellStop`（后台持久 bash，见 [工具系统](./core-tools.md)；会话按 persona 归属，列表事件回带 `team_id`）
 - **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`（`SaveSkill.system` 声明系统提示词技能）、`ReloadSkills`（重载技能目录——广播所有运行中人格 + 管理代理，见 [技能系统](./core-skills.md)）、`InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource`（Git 来源技能，见 [技能系统](./core-skills.md)）、`SaveTeam/DeleteTeam/ToggleTeam`（`SaveTeam.system_skills` 声明人格系统提示词技能；`TeamInfo.system_skills` / `SkillInfo.system` 随列表事件下发；`SaveTeam.api_profile` / `TeamInfo.api_profile` 声明与回推人格级 API 供应商引用；`PluginInfo.package` 回推插件所属包——横跨 plugin+tool+skill 的组合标签）
 - **运维类**：
   - QQ：`Start/Stop/RestartAdapter`（按 `name` = 适配器/实例名寻址）、`StartAllAdapters`/`StopAllAdapters`（全部适配器）；门控/名单/owner/登录类 `UpdateQqAllowlist/Denylist`、`SetQqGateMode`、`SetQqOwner`、`RequestQqOwner`、`RequestQqLoginStatus`、`RequestQqQrcode`——**均带可选 `adapter`（实例名，`#[serde(default)]`）**：给定 = 精确寻址该实例；缺省 = 唯一 QQ 实例时回退，多实例时报错要求显式指定（旧 Panel 单实例部署行为不变）。登录由 Core 代理（`QqLoginStatus`/`QqQrcode` 事件回推）
-  - 工作区：`RequestWorkspaceSessions` / `SaveWorkspaceSession` / `DeleteWorkspaceSession` / `ActivateWorkspaceSession` / `RequestWorkspaceGitStatus` / `RequestWorkspaceFiles`——会话类命令，**`team_id` 必填**并按 persona 路由；状态即改即存（`echo-workspaces-{id}.json`），git 与文件列表为只读采集（`RequestWorkspaceFiles.path` 以 canonical 前缀校验限定在会话目录及其子孙内，越界返回 `WorkspaceFiles.error`）。**激活 = 进入项目对话通道**（2026-09-14 重定义）：前端「本地当前对话」按 `active` 投影——选通道 = 激活、选默认本地会话 = 取消激活；`active` 变化必须广播 `WorkspaceSessions`
+  - 工作区：`RequestWorkspaceSessions` / `SaveWorkspaceSession` / `DeleteWorkspaceSession` / `ActivateWorkspaceSession` / `RequestWorkspaceGitStatus` / `RequestWorkspaceFiles`——会话类命令，**`team_id` 语义必填**（线格式同为 `Option<String>` + 服务端校验）并按 persona 路由；状态即改即存（`echo-workspaces-{id}.json`），git 与文件列表为只读采集（`RequestWorkspaceFiles.path` 以 canonical 前缀校验限定在会话目录及其子孙内，越界返回 `WorkspaceFiles.error`）。**激活 = 进入项目对话通道**（2026-09-14 重定义）：前端「本地当前对话」按 `active` 投影——选通道 = 激活、选默认本地会话 = 取消激活；`active` 变化必须广播 `WorkspaceSessions`
   - API：`UpdateApiConfig/SwitchApi/TestApi/QueryApiBalance/DeleteApi`（2026-09：`SwitchApi` 全局激活已被 persona 级选用取代——`SaveTeam.api_profile` 引用供应商池；协议字段保留兼容，UI 不再暴露；`QueryApiBalance` 查 DeepSeek 官方 `/user/balance`，回 `ApiBalanceResult`）
 
 完整变体与载荷见 `echo-protocol/src/command.rs`；QQ 管理类还有 `RequestGroupList` / `RequestFriendList` / `RequestQqFilterConfig` 等查询命令。
+
+### 多上游聚合：可广播只读命令（2026-10）
+
+`BROADCAST_READONLY_COMMANDS` / `is_broadcast_readonly()`（`echo-protocol/src/command.rs`）定义了**中继（Panel 多上游聚合模式）在未指定目标 core 时允许"无壳广播"的只读命令白名单**（`RequestTeamsList` / `RequestAdapterStatus` / `RequestState` / `RequestTrunkTimeline` / `RequestFederationStatus` / `Ping` 等）；其余命令必须显式指定目标 core，避免一次点击扇出到全部上游。该列表是契约：中继端维护同一列表（其 `is_readonly_command`），**改动必须两端同步**，两边各有一致性测试守护。
 
 ## 事件（Core → Client）
 
@@ -102,6 +106,7 @@ graph LR
 - **无「主智能体」**（2026-09-13）：所有智能体平等；进程级职责（管理面、全局命令、插件宿主）由**核心服务代理**（非人格）承担，会话类命令必须显式 `team_id`
 - `TrunkTimeline` 响应携带 `team_id`（= 请求值），前端按响应归属路由缓存/视图，**不用当前 activeTeamId 猜测**
 - 所有人格的实时事件直投进程级事件汇聚点（`EventSink`），Panel 单连接收到全部；`MessageReceived` / `AgentReasoning` / `AgentOutput` / `ToolCall` / `ToolResult` / `AgentThinking` 均由 `annotate_team` 注入 `team_id`，前端按当前 team 过滤实时事件（跨 agent 不串显）
+- **多上游 core 归属（2026-10，Panel 中继侧）**：多上游时每个 Core 的事件经中继加壳 `{core, frame}`——**core 归属是 Panel 中继信封层的概念，不在本协议帧内**（Core 自身不感知多上游，帧格式与单上游完全一致）；身份因此升级为 `(core, id)`：会话 id（`local:tui::local_user`）与人格 id 在每个 core 上可重复，前端一律按复合键路由（详见 [Panel 概览](./panel.md) §多上游聚合）
 
 ## 共享枚举
 

@@ -53,6 +53,7 @@ graph BT
 | `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话，见 Agent 循环文档） |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 echo-defs |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge，Panel 只依赖它 |
+| `echo-plugin` | 插件契约 | `Plugin` trait 生命周期钩子、`PluginManifest`、`PluginRegistry`；挂载为可逆副作用（返回 disposer），插件只依赖定义层 |
 | `echo-agent` | agent 框架 | 循环（内建实现；echo-loop 驱动注入后接管普通输入——生效口径见 [Agent 循环](./core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
 | `echo-adapter`/`echo-adapter-qq` | 平台适配 | `Adapter` trait、过滤管道、ConfigStore；QQ 实现 |
 | `echo-core`/`echo-server` | OneBot 类型/反向 WS | 仅供 QQ 适配器 |
@@ -74,6 +75,7 @@ graph BT
 | `media` | 多模态负载卫生：历史文本里内嵌的 base64 → 轻量占位符（不进入模型文本块），图片只走独立 image 内容块 |
 | `media_store` | 入站图片落盘缓存（媒体库）：`/media/<id>` 引用模型、`save_image_bytes`/`save_data_uri`（见本文§媒体库） |
 | `session` | `SessionEvent` + `SessionStore` trait（事件溯源会话契约） |
+| `node` | 联邦词汇：`NodeId`（`node-<ULID>`，持久化于 `echo-node.json`）与跨机引用的 `node://<node_id>/<local-ref>` 命名空间（federation Phase 0） |
 
 依赖方向收敛为单向下游：`echo-defs` / `echo-context`（底座，零 echo-* 依赖）◄ `echo-protocol` / `echo-adapter` / `echo-session` / `echo-llm-*`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）——`echo-adapter` 只依赖定义层、不依赖 `echo-protocol`；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-adapter`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
 

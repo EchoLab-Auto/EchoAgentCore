@@ -19,6 +19,7 @@ EchoAgentCore 开发速查：仓库结构、关键抽象、关键流程、构建
 | [core-config-persistence.md](./core-config-persistence.md) | ConfigStore、配置/门控/会话持久化 |
 | [adapter-qq-gating.md](./adapter-qq-gating.md) | QQ 消息门控管道（五层）、运行时可变 |
 | [dev-testing.md](./dev-testing.md) | 测试策略：单元 / proptest / 集成 / 并发 |
+| [federation.md](./federation.md) | Core↔Core 联邦（链路、握手、帧协议） |
 
 > 架构/Agent/Adapter/Config 的通用细节通过源码注释（`//! module doc`）和 README 维护，避免文档与代码分叉。
 
@@ -36,6 +37,7 @@ EchoAgentCore/
 │   ├── llm/echo-llm-*/        # LLM provider crates（openai/anthropic/ollama）
 │   ├── plugin/echo-plugin/    # Plugin trait / PluginManifest / 注册表
 │   ├── protocol/echo-protocol/# 前后端线契约 crate
+│   ├── federation/echo-federation/  # 联邦层：Core↔Core 对等链路（frame/invite/link）
 │   ├── backend/
 │   │   ├── echo-core/         # OneBot v11 协议类型
 │   │   ├── echo-server/       # 反向 WebSocket 服务器
@@ -44,7 +46,7 @@ EchoAgentCore/
 │   │   │   ├── agent/         # 循环/命令分派/边界/提示词/压缩（框架核心）
 │   │   │   └── packages/      # 第一层 = 包归属（2026-09-28 重组）
 │   │   │       ├── tools_builtin/   skills_dir/   adapter_qq/   workspace/
-│   │   │       ├── subagent/        provider_llm/
+│   │   │       ├── subagent/        provider_llm/ federation/
 │   │   │       └── tool/      # 特例：工具子系统跨包机制（ToolRegistry，非包）
 │   │   ├── echo-adapter-qq/   # QQ/OneBot 适配器
 │   │   └── echo-test-utils/   # 共享测试 mock（仅 dev-dependency）

@@ -141,5 +141,5 @@ id），Panel 插件详情展示「包（Package）」字段；设置视图已�
 ## 用户扩展方式
 
 - **技能**：在 skills_dir 放置 `SKILL.md`（带 frontmatter：name/description/keywords/always/category/package），运行时自动发现、热重载
-- **数据插件**：在 plugins_dir 放置 `plugins/{kind}/{id}/plugin.toml`（skill/tool kind），5s 轮询热加载（按插件 id 挂载/卸载；manifest 内容 diff 重挂载为规划项、尚未实现）；启用状态持久化于 `[agent].disabled_plugins`
+- **数据插件**：在 plugins_dir 放置 `plugin.toml`（skill/tool kind）——`plugins/{kind}/{id}/plugin.toml` 只是约定布局，实现实际是 WalkDir 递归扫描 plugins_dir 下任意 `plugin.toml`（`agent/mod.rs` `reload_data_plugins`），不限三层；5s 轮询热加载（按插件 id 挂载/卸载；manifest 内容 diff 重挂载为规划项、尚未实现）；启用状态持久化于 `[agent].disabled_plugins`
 - **代码插件**（provider/loop/adapter）：需修改源码并走自更新流程

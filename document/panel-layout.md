@@ -8,7 +8,7 @@ y: 1164
 
 # Panel 布局与导航
 
-Panel 的布局骨架与导航形态：视图层级（三主视图 + 设置六分类）、应用外壳几何与层叠秩序、侧边栏（临时分支卡）、Agent 切换器与会话切换（入口行），以及连接生命周期（重连/自愈）。实现位置以 `web/src/` 相对路径标注。
+Panel 的布局骨架与导航形态：视图层级（三主视图 + 设置九分类）、应用外壳几何与层叠秩序、侧边栏（临时分支卡）、Agent 切换器与会话切换（入口行），以及连接生命周期（重连/自愈）。实现位置以 `web/src/` 相对路径标注。
 
 ## 一、结构总览（层级图）
 
@@ -29,7 +29,7 @@ graph TD
   Sets --> Logs[日志]
 ```
 
-- 三主视图（会话 / Shell 详情 / 设置）；顶栏导航为「聊天」「设置」（Shell 详情经边栏「Shell」卡「详情」进入，§二）；设置视图的六个分类走内部一级菜单（§九）；任务视图已并入会话视图入口行「任务」弹层（2026-09-19，§7.7）
+- 三主视图（会话 / Shell 详情 / 设置）；顶栏导航为「聊天」「设置」（Shell 详情经边栏「Shell」卡「详情」进入，§二）；设置视图的九个分类走内部一级菜单（§九）；任务视图已并入会话视图入口行「任务」弹层（2026-09-19，§7.7）
 - 模态与覆盖层（Branch / Agent 配置 / 上下文）浮于全部视图之上（§八）；侧边栏点选会话强制回会话视图
 
 ### 1.2 布局与组件树
@@ -67,7 +67,7 @@ graph LR
 ```
 
 - Core 是状态唯一事实来源；断连重连后凭缓存游标增量补齐、缓存失效时由 Core 回退全量（§四）；唯一乐观例外 = 取消任务（§7.6、§十一）
-- HTTP 旁路仅两条日志接口（`/api/logs/{panel,core}`）与媒体文件路由（`GET /media/{name}`，§3.4），其余全部走 WS（§十一）——QQ 登录/二维码已于 2026-09-13 迁到 WS（Core 代理）
+- HTTP 旁路仅两条日志接口（`/api/logs/{panel,core}`）、上游管理接口（`/api/upstreams` 增删查，多上游聚合 2026-10，见 [Panel 概览](./panel.md) §多上游聚合）与媒体文件路由（`GET /media/{name}`，§3.4），其余全部走 WS（§十一）——QQ 登录/二维码已于 2026-09-13 迁到 WS（Core 代理）
 
 ## 二、视图与导航
 
@@ -156,6 +156,9 @@ graph LR
 |---|---|---|
 | `echo-panel-view` | 当前视图 | `chat` |
 | `echo-panel-active-team` | 当前 Agent（刷新/重连后停留原 Agent） | 列表首个 |
+| `echo-panel-active-team-core` | 当前 Agent 所属上游 core（多上游聚合，2026-10） | 无（单上游） |
+| `echo-panel-token` | Bearer 访问令牌（`[server].access_token` 非空时；URL `?token=` 播种一次后持久化） | 无 |
+| `echo-schedule-policy` | 分布式调度策略（`least_busy` / `round_robin` / `prefer:<name>`，scheduler.ts） | `least_busy` |
 | `echo-panel-theme` | 主题三态 | `auto` |
 
 所有读写包 try/catch（隐私模式降级为不持久化）。边栏卡片栈的展开/折叠与高度比例持久化于 `echo-panel-rail-cards`、归属与顺序于 `echo-panel-rail-layout`（见 [会话视图](./panel-chat.md) §7.8；本表只列应用级键）。
@@ -206,8 +209,9 @@ graph LR
 ```
 
 - WS 地址 `ws(s)://{host}/ws`（随页面协议）；单例连接（`connection.ts`）
-- **Bootstrap 命令组**（每次 onopen 按序发送）：`RequestState` →（有保存的 Agent 时）`RequestTrunkTimeline{team_id: 上次Agent, since_seq: 缓存游标}` → `RequestAdapterStatus` → `RequestTeamsList` → `RequestShellSessions`。
+- **Bootstrap 命令组**（每次 onopen 按序发送）：`RequestState` → `RequestTeamsList`（这两条为只读发现命令，**裸广播全部在线上游**，中继白名单放行）→ `RequestAdapterStatus` → `RequestShellSessions` →（有保存的 Agent 时）`RequestTrunkTimeline{team_id: 上次Agent, since_seq: 缓存游标}`（经 `sendCommand` 统一路由；多上游下 core 未知时兜底裸广播，TeamsList 到达后 App watcher 定向补拉覆盖竞态，`connection.ts:88-116`）。
   - 去主智能体后 `team_id` 必填：没有保存过 Agent 时**跳过**时间线请求（发了必被 Core 拒绝），等 `TeamsList` 到达后由 App watcher 用列表首个发起（有缓存则同样带 `since_seq`）
+  - **切换 core 时重拉"单值管理面"**（`requestActiveRegionManagement`，2026-10）：`RequestState` / `RequestSystemPrompt` / `RequestAdapterStatus` / `RequestSkillsList` / `RequestToolsList` / `RequestPluginsList` / `RequestShellSessions` / `RequestFederationStatus`——响应被 `managementCoreCurrent` 过滤到 activeRegion，不重拉会短暂显示上一个 core 的值（`connection.ts:257-268`）
   - QQ 过滤配置**不预取**（QqPanel/QqLoginSection 打开时按实例自行刷新；无 QQ 或多实例未指定实例时预取必被拒，产生无意义的"QQ 适配器未找到"提示）
 - **重连保留时间线（2026-09 刷新加速）**：只清空运行期状态（`branchTabs`、`tasks`、`activities`、工作区 git/文件浏览器缓存）；时间线（`trunk`、`teamTimelines`、`trunkTeamId`）**不再清空**——按缓存游标带 `since_seq` 增量补齐，响应 `full` 标志（首载/窗口滚出/游标超前）时整体替换（`connection.ts:65-95`）
 - **退避**：500ms 起、×2 递增、上限 30s；成功连接后复位 500ms

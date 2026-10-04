@@ -32,7 +32,7 @@ y: 1759
 
 - NapCat 以反向 WebSocket 客户端身份连接
 - 可选的 access_token 验证
-- 连接状态实时同步至 TUI
+- 连接状态实时同步至 Panel
 
 ### 第二层：触发条件
 
@@ -78,7 +78,7 @@ y: 1759
 - 黑名单启用时，`get_group_list()` 排除黑名单中的群
 - `get_friend_list` tool 使用相同的用户门控：非空白名单仅返回已放行用户，黑名单模式排除已拒绝用户
 - `owner_qq` 保留管理员绕过权限；用户白名单为空时，与消息门控一致，不限制私聊好友
-- TUI 管理界面使用有权限的全量列表；LLM tool 不能通过该接口绕过 gate
+- Panel 管理界面使用有权限的全量列表；LLM tool 不能通过该接口绕过 gate
 
 ## 多实例（2026-09-13）
 
@@ -216,14 +216,14 @@ echo-core）：
 | 类别 | 变更方式 | 生效时机 |
 |---|---|---|
 | 连接/触发条件 | 修改配置文件 + 重启 | 下次启动 |
-| 白名单/黑名单 | TUI 交互式命令 | 立即生效 |
+| 白名单/黑名单 | Panel 交互式命令 | 立即生效 |
 | 门控模式 | `/qq setting` 单选切换 | 立即生效 + 持久化 |
 | 管理员 owner | `SetQqOwner` 协议命令 | 立即生效 + 持久化 |
 
 白名单/黑名单的运行时修改路径：
 
 ```text
-TUI 表单选择 → BackendCommand (携带 GateMode 枚举)
+Panel 表单选择 → BackendCommand (携带 GateMode 枚举)
   → Agent 分发 → 适配器更新 → rebuild_filter_pipeline() → persist_filter()
     (通过共享的 ConfigStore 原子写入)
 ```

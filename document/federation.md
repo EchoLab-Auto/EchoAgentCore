@@ -59,7 +59,8 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 连接后角色对称。
 
 - **握手**：Hello/Welcome（NodeId + 能力 `NodeCaps{tools, subagent,
-  workspaces}` + `protocol_version`）——版本不符拒绝、自连回环拒绝、
+  workspaces}` + `protocol_version`）——`PROTOCOL_VERSION` 不相等即拒绝
+  （单一 `u32` 精确匹配，无主次版本结构）、自连回环拒绝、
   双向同时 dial 按 node_id 字典序让路（顶掉旧链路前显式 Down）
 - **认证**：per-peer 共享密钥（Bearer；双向相同）。**联邦互信 ≈ SSH
   免密**——对端拿到链路即可按白名单执行工具

@@ -1,6 +1,6 @@
 # EchoAgentCore
 
-可独立部署的 Agent 核心服务：LLM agent 循环 + 工具/技能系统 + 会话记忆 + QQ（OneBot v11）适配器，通过 management WebSocket（默认 `127.0.0.1:3132`）向前端提供统一的命令/事件协议。
+可独立部署的 Agent 核心服务：LLM agent 循环 + 工具/技能系统 + 会话记忆 + QQ（OneBot v11）适配器，通过 management WebSocket（默认 `0.0.0.0:3132`，开箱即可被局域网连接；首装自动生成 `management_access_token` 兜底认证）向前端提供统一的命令/事件协议。
 
 本仓库是 **Core（后端）**。Web 面板前端在独立仓库 [EchoAgentPanel](../EchoAgentPanel)（`echo-agent-panel` 二进制，Rust 中继 + Vue 3），任何实现了协议的前端都可以连接本服务。
 
@@ -186,7 +186,7 @@ NapCat 容器管理）；容器模式的完整配置模板见
 - `[agent]`：LLM provider/model/base_url/api_key（env 覆盖：`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`）、`memory_limit_tokens`（trunk token 预算）、`skills_dir`、多 API profile。
 - `[plugins.system_prompt]`：全局系统提示词（Panel 中编辑保存的基础提示词层）。
 - `[adapters.qq]`：QQ 适配器开关、NapCat HTTP API、owner_qq、命令前缀；`[adapters.qq.server]` 反向 WS 监听 `:3131` 与访问令牌（`ECHO_ACCESS_TOKEN` env 可覆盖）。
-- `[core] management_address`：前端连接地址（默认 `127.0.0.1:3132`）。
+- `[core] management_address`：前端连接地址（默认 `0.0.0.0:3132`，开箱即可被局域网 Panel 连接；`management_access_token` 提供 Bearer 认证，首装自动生成）。
 - `[federation]`：Core↔Core 联邦（多机去中心化；**始终开启，无开关**，不配 `listen`/peer 时为空转、无网络暴露）——`listen`（惯例端口 :3133，缺省空 = 不监听）、`node_name`、`[federation.peers.*]`（url/token/allow_tools/allow_queries）。配对推荐用 Panel 设置·联邦页的**邀请串**（`echofed://`），见 [document/federation.md](document/federation.md)。
 
 前端通过设置视图（API/技能/工具/插件/智能体）与 QQ 管理面板发起的修改，由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core-config-persistence.md](document/core-config-persistence.md)）。

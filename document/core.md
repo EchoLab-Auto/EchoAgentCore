@@ -13,7 +13,7 @@ Core（EchoAgentCore）是 Agent 后端核心服务，Rust 实现。组合根在
 
 ## 进程结构
 
-- `echo-agent-core-bin` 是唯一二进制，由 systemd 用户服务运行
+- Cargo 二进制名为 `echo-agent-core`（`source/core/Cargo.toml`），由 systemd 用户服务运行；`install.sh` 安装后落盘为 `$LIBEXEC_DIR/echo-agent-core-bin`（libexec 文件名，非 Cargo bin 名）
 - 组合根负责：加载配置、构建 LLM provider、装配工具/技能/插件、创建多 agent 监督器、启动 QQ 适配器与 management WS
 - 所有人格事件直投进程级事件汇聚点（`EventSink`），Panel 单连接即可看到全部活动；进程级职责由核心服务代理（非人格）承担（无「主智能体」，2026-09-13）
 

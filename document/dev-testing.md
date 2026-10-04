@@ -7,8 +7,8 @@ y: 53
 ---
 # Testing Strategy
 
-**Core（cargo）** 700+ 条、**Panel 前端（vitest）** 190+ 条、**部署 CLI（node:test）**
-23 条，覆盖各 crate 的源文件与关键交互契约（计数随开发增长，量级为本文件维护基线）。
+**Core（cargo）** 700+ 条、**Panel 前端（vitest）** 200+ 条、**部署 CLI（node:test）**
+27 条，覆盖各 crate 的源文件与关键交互契约（计数随开发增长，量级为本文件维护基线）。
 
 ## Layers
 
@@ -83,7 +83,9 @@ Generated inputs that must satisfy invariants:
 - `source/core/src/management.rs` (inline integration tests) — management WS
   server on ephemeral port: Panel command → agent backend, agent event → Panel
   forward.
-- `echo-adapter-qq` — NapCat client against a `wiremock` HTTP server:
+- `echo-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`、
+  `napcat/mod.rs`、`handler.rs`；`tests/` 目录仅 `owner_qq.rs`）— NapCat client
+  against a `wiremock` HTTP server:
   login status detection, WebUI fallback, reverse-WS config, QR fetch.
   Multi-instance adapters (`QqAdapter::with_instance(id, persona, cfg)`)
   carry their instance name/display name and persona metadata.
@@ -108,7 +110,7 @@ Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
   智能体编辑器分区、协议编解码回归等。**加载态跟踪契约（2026-09-30）**：
   `pending.ts` 三态推进（150ms 延迟显示 / 6s 慢 / 20s 超时 / 可见后最短 400ms）、
   响应事件销账、动态 key 切换（`pending.test.ts`，10 用例）
-- **部署 CLI（`npm/echo-agent`，node:test，23 条）**：PATH 注入假 `docker` 做
+- **部署 CLI（`npm/echo-agent`，node:test，27 条）**：PATH 注入假 `docker` 做
   CLI 端到端（init 幂等 / up 参数拼装与提示 / down/restart/update/logs/status /
   doctor 分级与阻断码），以及**模板跨文件契约**（compose 注入的 `ECHO_MEDIA_DIR`
   == panel.toml 的 `media_dir`、NapCat 容器名一致、生效配置行不得出现 localhost、
