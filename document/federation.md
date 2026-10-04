@@ -90,6 +90,7 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 
 ```toml
 [federation]
+# 缺省即 true；不配 listen / peer 时为空转（无监听、无连出、无网络暴露）
 enabled = true
 listen = "0.0.0.0:3133"
 node_name = "workstation"

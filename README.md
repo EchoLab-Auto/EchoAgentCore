@@ -187,7 +187,7 @@ NapCat 容器管理）；容器模式的完整配置模板见
 - `[plugins.system_prompt]`：全局系统提示词（Panel 中编辑保存的基础提示词层）。
 - `[adapters.qq]`：QQ 适配器开关、NapCat HTTP API、owner_qq、命令前缀；`[adapters.qq.server]` 反向 WS 监听 `:3131` 与访问令牌（`ECHO_ACCESS_TOKEN` env 可覆盖）。
 - `[core] management_address`：前端连接地址（默认 `127.0.0.1:3132`）。
-- `[federation]`：Core↔Core 联邦（多机去中心化；缺省关闭）——`listen`（惯例端口 :3133，缺省空 = 不监听）、`node_name`、`[federation.peers.*]`（url/token/allow_tools/allow_queries）。配对推荐用 Panel 设置·联邦页的**邀请串**（`echofed://`），见 [document/federation.md](document/federation.md)。
+- `[federation]`：Core↔Core 联邦（多机去中心化；**缺省启用**，不配 `listen`/peer 时为空转、无网络暴露）——`listen`（惯例端口 :3133，缺省空 = 不监听）、`node_name`、`[federation.peers.*]`（url/token/allow_tools/allow_queries）。配对推荐用 Panel 设置·联邦页的**邀请串**（`echofed://`），见 [document/federation.md](document/federation.md)。
 
 前端通过设置视图（API/技能/工具/插件/智能体）与 QQ 管理面板发起的修改，由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core-config-persistence.md](document/core-config-persistence.md)）。
 

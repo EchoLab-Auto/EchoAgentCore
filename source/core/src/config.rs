@@ -198,8 +198,11 @@ impl Default for CoreSection {
 
 /// `[federation]` 段（federation Phase 1）：Core↔Core 对等链路。
 ///
-/// 缺省整段关闭——单节点部署行为与此前完全一致。
-#[derive(Debug, Clone, Default, Deserialize)]
+/// **缺省启用**（`enabled = true`）：不配 `listen` 时不监听、无 peer 时不连出，
+/// 因此单节点部署没有网络暴露；但联邦管理面（状态/邀请/添加 peer）开箱可用。
+/// 一旦配置 `listen` 或 `[federation.peers.*]`，互信边界即生效（≈ SSH 免密），
+/// 务必用 per-peer token 并限制 `allow_tools`/`allow_queries`。
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct FederationSection {
     /// 联邦开关（true 才监听/连出）。
@@ -210,6 +213,19 @@ pub struct FederationSection {
     pub node_name: Option<String>,
     /// 静态对等节点表。
     pub peers: std::collections::BTreeMap<String, FederationPeerSection>,
+}
+
+impl Default for FederationSection {
+    fn default() -> Self {
+        Self {
+            // 默认启用：无 listen / 无 peer 时是安全的空转（无网络暴露），
+            // 但让 Panel 的联邦页（状态/邀请/添加 peer）开箱可用。
+            enabled: true,
+            listen: String::new(),
+            node_name: None,
+            peers: std::collections::BTreeMap::new(),
+        }
+    }
 }
 
 /// `[federation.peers.<name>]` 条目。
