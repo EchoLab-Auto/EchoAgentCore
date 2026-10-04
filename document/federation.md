@@ -165,6 +165,11 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   空闲节点）；本机读 activities、peer 经 `FederationStatus` 回传
   （在线 peer 由 Core 侧 `Query(NodeStatus)` 3s 短超时实时拉取，
   失败退握手快照）
+- **人格身份 `(core, team_id)`**（2026-10 修复）：`RequestTeamsList` 无壳时
+  会广播给全部在线上游，Panel 必须**按 core 合并**（不能整体覆盖），且命令
+  路由按「会话归属 > 人格归属 > activeCore」并带一致性守卫——目标 core 不
+  拥有人格时重定向到拥有人格的 core。否则会把 A core 的 `default` 发给
+  B core，得到「智能体 default 不存在」。
 - `round_robin`：在线节点轮转
 - `prefer:<name>`：亲和定向（离线退 least_busy）
 

@@ -1227,33 +1227,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             }
         }
     });
-    // 进程级 AgentManager 锚点（RequestAgentsList 使用）：把 supervisor 的
-    // 人格注册表镜像成 echo_agent::AgentManager（共享同一 Agent 实例）。
+    // 进程级 AgentManager 锚点（RequestAgentsList / 命令路由 / 运行期启停）：
+    // supervisor 的**同一个**注册表——单一真源，不再镜像第二份。
+    // 此前 supervisor 与 manager 各持一份、对"全部人格被禁用时是否合成
+    // default"处理不一致，导致 Panel 报「智能体 default 不存在」。
     {
-        // Keep disabled profiles in the manager registry so the Panel can
-        // display and re-enable them; AgentManager itself skips instantiation
-        // for `enabled=false` / `disabled_teams` entries.
-        let raw = agent_config.clone();
-        let mgr_arc = std::sync::Arc::new(echo_agent::AgentManager::build(&raw, |id, p| {
-            // 返回 supervisor 中对应人格的 Agent（共享实例）。
-            supervisor
-                .get(&id)
-                .map(|x| Arc::clone(&x.agent))
-                .unwrap_or_else(|| {
-                    // 兜底：不应发生（新人格通过 factory 创建，见下）
-                    let _ = p;
-                    agent.clone()
-                })
-        }));
-        // 进程级 agent factory：运行时新增/重启人格时重建实例。
+        let mgr_arc = supervisor.manager();
+        // 进程级 agent factory：运行时新增/重启人格时重建实例。与启动期
+        // 使用同一装配闭包（make_agent），实例接线完全一致。
         {
-            let supervisor2 = Arc::clone(&supervisor);
+            let f = make_agent.clone();
             echo_agent::agent_manager::set_agent_factory(move |id: String, p: AgentProfile| {
-                if let Some(existing) = supervisor2.get(&id) {
-                    return Arc::clone(&existing.agent);
-                }
-                // 新建人格：用保存的 make_agent 闭包（supervisor 提供）
-                supervisor2.create(&id, p)
+                f(id, p)
             });
         }
         // 配置写回：SaveAgent/DeleteAgent 持久化到 core.toml。

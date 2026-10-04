@@ -12,6 +12,15 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 > **无「主智能体」**（2026-09-13）：所有智能体一律平等，没有受保护的"主/默认"角色。进程级职责（管理面、插件宿主、全局策略、Shell、适配器）由组合根的**核心服务代理**（`__core`，非人格、不出现在 TeamsList）承担；会话类命令必须显式携带 `team_id`，缺失直接报错。
 
+> **单一注册表 + `(core, team_id)` 身份**（2026-10 修复）：persona 注册表由
+> `echo_agent::AgentManager` **独占持有**（单一真源），`AgentSupervisor` 只是它的
+> 薄适配（`get`/`personas`），不再维护第二份 HashMap——此前两套注册表对「teams
+> 非空但全部被禁用时是否合成 `default`」处理不一致，会让命令按 `team_id=default`
+> 路由时解析不到，Panel 报「智能体 default 不存在」。多上游（联邦/多 core 聚合）
+> 下人格身份是 **`(core, team_id)`**：Panel 的 `TeamsList` 按 core 合并、命令按
+> 人格归属 core 路由（会话归属优先，其次人格归属，最后 `activeCore`），并带一致
+> 性守卫（目标 core 不拥有该人格时重定向）——详见 [联邦](./federation.md)。
+
 ## Persona 装配
 
 - `AgentSupervisor` 按配置创建所有人格；`make_agent` 闭包为每人格独立组装工具注册表（内置工具 + QQ 工具 + 包元数据）
