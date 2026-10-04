@@ -1581,16 +1581,51 @@ async fn federation_router_pump(
                                 deliver_aggregate_summary(&personas, summary).await;
                             }
                         } else if let echo_federation::FedFrame::SessionImport(import) = &frame {
-                            // 目标侧（P3-2b）：聚合分块，凑齐后导入目标 persona。
-                            if let Some(reply) = handle_session_import(&personas, import, &mut imports)
-                            {
-                                if rt.federation.send_to(&from, reply).await.is_err() {
-                                    tracing::warn!(
-                                        target: "federation", peer = %from,
-                                        "session import reply send failed"
+                            // 目标侧（P3-2b）：聚合分块 + 每块 ack（流控/重发）；
+                            // 凑齐后 spawn_blocking 导入，终态经 Result 回源。
+                            let (acked, outcome) =
+                                handle_session_import(&personas, import, &mut imports);
+                            let ack = echo_federation::FedFrame::SessionImportAck(
+                                echo_federation::SessionImportAckFrame {
+                                    transfer_id: import.transfer_id.clone(),
+                                    acked_upto: acked,
+                                },
+                            );
+                            if rt.federation.send_to(&from, ack).await.is_err() {
+                                tracing::warn!(
+                                    target: "federation", peer = %from,
+                                    "session import ack send failed"
+                                );
+                            }
+                            match outcome {
+                                ImportOutcome::Pending => {}
+                                ImportOutcome::Failed(reason) => {
+                                    let reply = session_import_result(
+                                        &import.transfer_id,
+                                        &import.session_id,
+                                        &import.target_peer,
+                                        false,
+                                        0,
+                                        reason,
                                     );
+                                    if rt.federation.send_to(&from, reply).await.is_err() {
+                                        tracing::warn!(
+                                            target: "federation", peer = %from,
+                                            "session import failure reply send failed"
+                                        );
+                                    }
+                                }
+                                ImportOutcome::Ready(ready) => {
+                                    let rt2 = rt.clone();
+                                    let from2 = from.clone();
+                                    tokio::spawn(async move {
+                                        run_session_import(rt2, from2, ready).await;
+                                    });
                                 }
                             }
+                        } else if let echo_federation::FedFrame::SessionImportAck(ack) = &frame {
+                            // 源侧（P3-2b）：目标 ack → 推进本任务窗口。
+                            note_session_import_ack(&ack.transfer_id, ack.acked_upto);
                         } else if let echo_federation::FedFrame::SessionImportResult(result) = &frame
                         {
                             // 源侧（P3-2b）：目标终态回执 → 面板结果事件。
@@ -2114,6 +2149,13 @@ async fn deliver_aggregate_summary(
 const SESSION_IMPORT_CHUNK_BYTES: usize = 192 * 1024;
 /// 迁移分块数上限（防御：192KB × 4096 ≈ 768MB，超限拒绝）。
 const SESSION_IMPORT_MAX_CHUNKS: usize = 4096;
+/// 发送窗口：目标每块回 ack，源最多领先窗口块（联邦出站队列 256 帧上限的
+/// 安全余量，避免 try_send 满载失败）。
+const SESSION_IMPORT_WINDOW: u32 = 32;
+/// 未收到 ack 推进时的重发等待。
+const SESSION_IMPORT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// 整次迁移总时限（防御挂死）。
+const SESSION_IMPORT_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(900);
 
 /// 按 UTF-8 字符边界把文本切成长度 ≤ `max_bytes` 的块（末块可为空串）。
 fn chunk_utf8(text: &str, max_bytes: usize) -> Vec<String> {
@@ -2163,26 +2205,49 @@ struct ImportBuffer {
     team_id: String,
 }
 
-/// 目标侧处理一个 `SessionImport` 分块：凑齐后反序列化并导入目标 persona。
-/// 非终块返回 None（继续等待）；终块返回给源侧的回执帧。
+/// 凑齐后的导入任务：由泵 spawn 到阻塞线程执行（大日志投影不阻塞联邦泵）。
+struct ImportReady {
+    trunk: echo_agent::TrunkStore,
+    session_id: String,
+    transfer_id: String,
+    target_peer: String,
+    team_id: String,
+    events: Vec<echo_session::SessionEvent>,
+}
+
+/// 一个分块的处理结果。
+enum ImportOutcome {
+    /// 还没凑齐：继续等待后续分块。
+    Pending,
+    /// 终态失败（非法头 / 解析失败 / 人格不存在）。
+    Failed(String),
+    /// 全部到齐：交给调用方 spawn 导入并回终态。
+    Ready(ImportReady),
+}
+
+/// 连续收到的块数（前缀）；重发块幂等覆盖，不影响该值。
+fn contiguous_acked(chunks: &[Option<String>]) -> u32 {
+    let mut acked = 0u32;
+    for chunk in chunks {
+        if chunk.is_some() {
+            acked += 1;
+        } else {
+            break;
+        }
+    }
+    acked
+}
+
+/// 目标侧处理一个 `SessionImport` 分块。返回 `(acked_upto, outcome)`：
+/// `acked_upto` 是连续收到的块数（回 ack 推进源窗口 / 触发重发）。
 fn handle_session_import(
     personas: &agent_supervisor::AgentSupervisor,
     frame: &echo_federation::SessionImportFrame,
     imports: &mut std::collections::HashMap<String, ImportBuffer>,
-) -> Option<echo_federation::FedFrame> {
+) -> (u32, ImportOutcome) {
     let total = frame.chunk_total as usize;
-    if total == 0
-        || frame.chunk_index as usize >= total
-        || total > SESSION_IMPORT_MAX_CHUNKS
-    {
-        return Some(session_import_result(
-            &frame.transfer_id,
-            &frame.session_id,
-            &frame.target_peer,
-            false,
-            0,
-            "非法分块头".into(),
-        ));
+    if total == 0 || frame.chunk_index as usize >= total || total > SESSION_IMPORT_MAX_CHUNKS {
+        return (0, ImportOutcome::Failed("非法分块头".into()));
     }
     let entry = imports
         .entry(frame.transfer_id.clone())
@@ -2196,8 +2261,9 @@ fn handle_session_import(
         entry.chunks = vec![None; total];
     }
     entry.chunks[frame.chunk_index as usize] = Some(frame.data.clone());
-    if (frame.chunk_index as usize) + 1 < total {
-        return None;
+    let acked = contiguous_acked(&entry.chunks);
+    if acked as usize != total {
+        return (acked, ImportOutcome::Pending);
     }
     let entry = imports.remove(&frame.transfer_id).expect("entry present");
     let json: String = entry
@@ -2208,39 +2274,79 @@ fn handle_session_import(
     let events: Vec<echo_session::SessionEvent> = match serde_json::from_str(&json) {
         Ok(events) => events,
         Err(error) => {
-            return Some(session_import_result(
-                &frame.transfer_id,
-                &frame.session_id,
-                &frame.target_peer,
-                false,
-                0,
-                format!("解析事件日志失败：{error}"),
-            ));
+            return (total as u32, ImportOutcome::Failed(format!("解析事件日志失败：{error}")));
         }
     };
     let Some(persona) = personas.get_exact(&entry.team_id) else {
-        return Some(session_import_result(
-            &frame.transfer_id,
-            &frame.session_id,
-            &frame.target_peer,
-            false,
-            0,
-            format!("人格 {} 不存在或未运行", entry.team_id),
-        ));
+        return (
+            total as u32,
+            ImportOutcome::Failed(format!("人格 {} 不存在或未运行", entry.team_id)),
+        );
     };
-    let imported = events.len();
-    persona
-        .agent
-        .trunk
-        .import_session_events(&entry.session_id, events);
-    Some(session_import_result(
-        &frame.transfer_id,
-        &frame.session_id,
-        &frame.target_peer,
-        true,
-        imported,
-        format!("已导入至人格 {}", entry.team_id),
-    ))
+    (
+        total as u32,
+        ImportOutcome::Ready(ImportReady {
+            trunk: persona.agent.trunk.clone(),
+            session_id: entry.session_id,
+            transfer_id: frame.transfer_id.clone(),
+            target_peer: frame.target_peer.clone(),
+            team_id: entry.team_id,
+            events,
+        }),
+    )
+}
+
+/// 在阻塞线程执行导入并回终态（避免大日志投影卡住联邦泵）。
+async fn run_session_import(
+    rt: Arc<FederationRuntime>,
+    from: String,
+    ready: ImportReady,
+) {
+    let ImportReady {
+        trunk,
+        session_id,
+        transfer_id,
+        target_peer,
+        team_id,
+        events,
+    } = ready;
+    let index = events.len();
+    let sid = session_id.clone();
+    let imported = tokio::task::spawn_blocking(move || trunk.import_session_events(&sid, events)).await;
+    let (success, imported_events, message) = match imported {
+        Ok(()) => (true, index, format!("已导入至人格 {team_id}")),
+        Err(error) => (false, 0, format!("导入任务失败：{error}")),
+    };
+    let frame = session_import_result(
+        &transfer_id,
+        &session_id,
+        &target_peer,
+        success,
+        imported_events,
+        message,
+    );
+    let _ = rt.federation.send_to(&from, frame).await;
+}
+
+/// 进行中的迁移 ack 通道：transfer_id → 已确认块数。
+/// 源侧 `handle_migrate_session` 注册，泵收到 `SessionImportAck` 时推进。
+static SESSION_IMPORT_ACKS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<u32>>>,
+> = std::sync::OnceLock::new();
+
+fn session_import_acks(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<u32>>>
+{
+    SESSION_IMPORT_ACKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 泵收到目标 ack：推进对应迁移的已确认游标（无接收者时忽略）。
+fn note_session_import_ack(transfer_id: &str, acked_upto: u32) {
+    if let Ok(map) = session_import_acks().lock() {
+        if let Some(tx) = map.get(transfer_id) {
+            let _ = tx.send(acked_upto);
+        }
+    }
 }
 
 /// 会话迁移（P3-2b）：源侧导出会话事件日志 → 按块经联邦送到目标节点 →
@@ -2318,21 +2424,59 @@ async fn handle_migrate_session(
     }
     let transfer_id = echo_federation::new_call_id(rt.federation.local_node_id());
     let total = chunks.len() as u32;
-    for (index, data) in chunks.into_iter().enumerate() {
-        let frame =
-            echo_federation::FedFrame::SessionImport(echo_federation::SessionImportFrame {
-                transfer_id: transfer_id.clone(),
-                session_id: session_id.clone(),
-                team_id: persona.id.clone(),
-                target_peer: target_peer.clone(),
-                chunk_index: index as u32,
-                chunk_total: total,
-                data,
-            });
-        if rt.federation.send_to(&node_id, frame).await.is_err() {
-            fail(format!("向「{target_peer}」发送分块 {index}/{total} 失败"));
-            return;
+    let source_team = persona.id.clone();
+    // 注册 ack 通道（泵收到目标 SessionImportAck 时推进）。
+    let (ack_tx, mut ack_rx) = tokio::sync::watch::channel(0u32);
+    {
+        let mut map = session_import_acks().lock().expect("ack registry poisoned");
+        map.insert(transfer_id.clone(), ack_tx);
+    }
+    // 窗口流控 + 超时重发：目标每收一块回 ack（acked_upto）。联邦出站队列
+    // 只有 256 帧且 `try_send` 满载即错——无流控时大日志必然中途失败。
+    let send_result: Result<(), String> = {
+        let started = tokio::time::Instant::now();
+        let mut acked = 0u32;
+        let mut next = 0u32;
+        loop {
+            if acked >= total {
+                break Ok(());
+            }
+            if next < total && next < acked.saturating_add(SESSION_IMPORT_WINDOW) {
+                let frame = echo_federation::FedFrame::SessionImport(
+                    echo_federation::SessionImportFrame {
+                        transfer_id: transfer_id.clone(),
+                        session_id: session_id.clone(),
+                        team_id: source_team.clone(),
+                        target_peer: target_peer.clone(),
+                        chunk_index: next,
+                        chunk_total: total,
+                        data: chunks[next as usize].clone(),
+                    },
+                );
+                match rt.federation.send_to(&node_id, frame).await {
+                    Ok(()) => next += 1,
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+                }
+            } else {
+                match tokio::time::timeout(SESSION_IMPORT_ACK_TIMEOUT, ack_rx.changed()).await {
+                    Ok(Ok(())) => acked = *ack_rx.borrow(),
+                    Ok(Err(_)) => break Err("迁移确认通道关闭".into()),
+                    // 超时：从已确认处重发（目标对重复块幂等）。
+                    Err(_) => next = acked,
+                }
+            }
+            if started.elapsed() > SESSION_IMPORT_TOTAL_TIMEOUT {
+                break Err(format!("迁移超时（已确认 {acked}/{total} 块）"));
+            }
         }
+    };
+    session_import_acks()
+        .lock()
+        .expect("ack registry poisoned")
+        .remove(&transfer_id);
+    if let Err(error) = send_result {
+        fail(error);
+        return;
     }
     let message = format!(
         "已向「{target_peer}」发送 {total} 个分块（{} 条事件），等待目标确认",
@@ -2681,7 +2825,7 @@ mod logging_tests {
 
 #[cfg(test)]
 mod core_util_tests {
-    use super::{chunk_utf8, handle_session_import};
+    use super::{chunk_utf8, handle_session_import, ImportOutcome};
     use crate::agent_supervisor::AgentSupervisor;
     use echo_agent::{AgentConfig, TeamMember};
 
@@ -2729,23 +2873,37 @@ mod core_util_tests {
         }
     }
 
-    /// P3-2b：非终块返回 None（继续等待），终块才产出回执；目标无该人格 → 失败。
+    /// P3-2b：非终块 ack 推进但不产出终态；终块 ack=total 且目标无该人格 → 失败。
     #[test]
     fn session_import_buffers_chunks_then_reports_missing_persona() {
         let supervisor = disabled_supervisor();
         let mut imports = std::collections::HashMap::new();
-        assert!(handle_session_import(&supervisor, &import_frame(0, 2, "[]"), &mut imports).is_none());
-        let reply = handle_session_import(&supervisor, &import_frame(1, 2, ""), &mut imports)
-            .expect("terminal reply");
-        match reply {
-            echo_federation::FedFrame::SessionImportResult(result) => {
-                assert!(!result.success);
-                assert!(result.message.contains("不存在"));
-                assert_eq!(result.session_id, "local:tui::local_user");
-                assert_eq!(result.target_peer, "gpu-box");
-            }
-            other => panic!("unexpected reply: {other:?}"),
+        let (acked, outcome) =
+            handle_session_import(&supervisor, &import_frame(0, 2, "[]"), &mut imports);
+        assert_eq!(acked, 1);
+        assert!(matches!(outcome, ImportOutcome::Pending));
+        let (acked, outcome) =
+            handle_session_import(&supervisor, &import_frame(1, 2, ""), &mut imports);
+        assert_eq!(acked, 2);
+        match outcome {
+            ImportOutcome::Failed(message) => assert!(message.contains("不存在")),
+            _ => panic!("expected terminal failure"),
         }
+    }
+
+    /// 重复块（重发）幂等：已确认前缀不因重复而倒退。
+    #[test]
+    fn session_import_duplicate_chunks_are_idempotent() {
+        let supervisor = disabled_supervisor();
+        let mut imports = std::collections::HashMap::new();
+        let (acked, _) = handle_session_import(&supervisor, &import_frame(0, 3, "[]"), &mut imports);
+        assert_eq!(acked, 1);
+        // 重发第 0 块：ack 仍为 1，不倒退。
+        let (acked, _) = handle_session_import(&supervisor, &import_frame(0, 3, "[]"), &mut imports);
+        assert_eq!(acked, 1);
+        // 乱序：先到第 2 块不推进前缀（ack 仍 1）。
+        let (acked, _) = handle_session_import(&supervisor, &import_frame(2, 3, ""), &mut imports);
+        assert_eq!(acked, 1);
     }
 
     /// 防御：非法分块头（total=0）立即回失败，不污染缓冲。
@@ -2753,12 +2911,10 @@ mod core_util_tests {
     fn session_import_rejects_bad_header() {
         let supervisor = disabled_supervisor();
         let mut imports = std::collections::HashMap::new();
-        let reply = handle_session_import(&supervisor, &import_frame(0, 0, "[]"), &mut imports)
-            .expect("terminal reply");
-        assert!(matches!(
-            reply,
-            echo_federation::FedFrame::SessionImportResult(r) if !r.success
-        ));
+        let (acked, outcome) =
+            handle_session_import(&supervisor, &import_frame(0, 0, "[]"), &mut imports);
+        assert_eq!(acked, 0);
+        assert!(matches!(outcome, ImportOutcome::Failed(_)));
         assert!(imports.is_empty());
     }
 }

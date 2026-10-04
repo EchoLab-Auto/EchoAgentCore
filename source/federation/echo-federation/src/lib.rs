@@ -14,7 +14,8 @@ pub mod link;
 pub use frame::{
     call_origin, new_call_id, FedError, FedFrame, InvokeRequest, InvokeResult, InvokeVerdict,
     NodeCaps, NodeHello, OutputStream, QueryKind, QueryRequest, QueryResultFrame,
-    SessionImportFrame, SessionImportResultFrame, SubagentEventFrame, SubagentSpawnRequest,
+    SessionImportAckFrame, SessionImportFrame, SessionImportResultFrame, SubagentEventFrame,
+    SubagentSpawnRequest,
     SubagentStatus, PROTOCOL_VERSION,
 };
 pub use invite::{decode_invite, encode_invite, generate_token, InvitePayload, INVITE_SCHEME};

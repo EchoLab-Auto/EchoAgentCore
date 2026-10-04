@@ -63,6 +63,8 @@ pub enum FedFrame {
     // ── 会话迁移分块导入（P3-2b 消费） ──
     /// 源 → 目标：会话事件日志文本的分块。
     SessionImport(SessionImportFrame),
+    /// 目标 → 源：按序确认（流控 + 超时重发用）。
+    SessionImportAck(SessionImportAckFrame),
     /// 目标 → 源：导入结果（终态）。
     SessionImportResult(SessionImportResultFrame),
 
@@ -240,6 +242,15 @@ pub struct SessionImportFrame {
     pub data: String,
 }
 
+/// 会话迁移按序确认（目标 → 源）：`acked_upto` = 连续收到的块数
+/// （0..=chunk_total）。源据此推进窗口；源超时未收到推进则从 `acked_upto`
+/// 起重发（目标对重复块幂等覆盖）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionImportAckFrame {
+    pub transfer_id: String,
+    pub acked_upto: u32,
+}
+
 /// 会话迁移导入结果（目标 → 源）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionImportResultFrame {
@@ -326,6 +337,14 @@ mod tests {
         let text = serde_json::to_string(&frame).unwrap();
         let back: FedFrame = serde_json::from_str(&text).unwrap();
         assert_eq!(back, frame);
+
+        let ack = FedFrame::SessionImportAck(SessionImportAckFrame {
+            transfer_id: "mig-1".into(),
+            acked_upto: 2,
+        });
+        let text = serde_json::to_string(&ack).unwrap();
+        let back: FedFrame = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, ack);
 
         let result = FedFrame::SessionImportResult(SessionImportResultFrame {
             transfer_id: "mig-1".into(),

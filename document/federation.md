@@ -142,15 +142,18 @@ allow_queries = []          # 敏感查询需显式开启
 
 1. 源侧定位该 `(team_id, session_id)` 的事件日志，序列化为 JSON 文本；
 2. 按 UTF-8 边界切成 ≤192KB 的块（上限 4096 块），经
-   `FedFrame::SessionImport` 依次送达目标（WebSocket 有序可靠）；
-3. 目标按 `transfer_id` 聚合分块，凑齐后**导入同名 persona 的事实来源
-   日志**（`TrunkStore::import_session_events`，物化历史句柄），回
-   `FedFrame::SessionImportResult`；
-4. 源侧收到回执后发终态 `SessionMigrated`（成功给出导入事件数）。
+   `FedFrame::SessionImport` 送达目标；
+3. 目标按 `transfer_id` 聚合分块，**每块回 `SessionImportAck`**（`acked_upto`
+   = 连续收到的块数），重复块幂等覆盖；凑齐后在 `spawn_blocking` 里
+   **导入同名 persona 的事实来源日志**（`TrunkStore::import_session_events`，
+   物化历史句柄），回 `FedFrame::SessionImportResult`；
+4. 源侧以 **32 块窗口**发送（联邦出站队列仅 256 帧且 `try_send` 满载即错，
+   无流控大日志必失败）；窗口填满/队列满即等待 ack，超时（15s）从
+   `acked_upto` 重发；总时限 900s。收到终态回执后发 `SessionMigrated`。
 
 失败语义（fail-closed，源侧明确报错，不静默）：peer 离线、persona/会话
-不存在、无事件、序列化/传输失败、目标无该 persona、事件解析失败。分块
-超限拒绝。链路中断则整次迁移失败、可重试（v1 不做块级重传）。
+不存在、无事件、序列化/传输失败、目标无该 persona、事件解析失败、分块
+超限、迁移超时。
 
 > `MigrateSession.team_id` 为 `#[serde(default)]` 可选，兼容旧前端（缺省时
 > 源侧逐 persona 查找会话）。
@@ -161,13 +164,24 @@ allow_queries = []          # 敏感查询需显式开启
 查该 persona**——同名会话（`local:tui::local_user` 在每个 persona 上都存在）
 逐 persona 取首个会返回任意人格的历史，是此前的歧义来源；为空时退旧行为。
 
-## 可广播只读命令（契约）
+Panel 侧：设置 → 联邦页提供「迁移当前会话」（列出生效 peer，带当前会话 /
+人格），点击即发 `MigrateSession`；受理与终态两条 `SessionMigrated` 以 toast
+呈现（成功/失败不同语气）。
 
-中继在不指定目标 core 时只放行只读白名单；权威定义在
-`echo_protocol::BROADCAST_READONLY_COMMANDS`（Core 侧
-`broadcast_readonly_contract_snapshot` 测试锁定），中继本地副本由其
-`readonly_whitelist_snapshot` 测试锁定——**改动必须两边同步**（Panel 是
-纯透传中继，不依赖 echo-protocol crate，无法共享同一常量）。
+## 中继投递意图（不再按命令名猜语义）
+
+中继是**纯透传**，命令投递范围由客户端显式声明：
+
+- `{"core": "<name>", "frame": {...}}` → 定向该上游；
+- `{"broadcast": true, "frame": {...}}` → 广播给全部在线上游（仅只读发现
+  命令：`RequestState` / `RequestTeamsList` / 探活 `Ping` + 重连探测）；
+- 无壳 → 仅单上游语义下直接转发；多上游下拒绝（不猜测命令语义）。
+
+此前中继维护一份"只读命令白名单"，与 Core 的
+`echo_protocol::BROADCAST_READONLY_COMMANDS` 手动同步——已删除。现在**语义
+分类不再重复**：中继只认投递意图，前端 `sendCommand` 在多上游下总是解析出
+具体 core（`resolveTargetCore` 兜底首个已知上游），需要广播的少数发现命令走
+`broadcastEnvelope()` 显式声明。
 
 ## 跨机子代理结果聚合（P3-3）
 
