@@ -243,7 +243,7 @@ impl SpawnSubagentTool {
                 },
                 "node": {
                     "type": "string",
-                    "description": "联邦远程节点名（peer 配置名，如 \"gpu-box\"）。填入后子任务在该节点执行；多节点并行委派时结果自动聚合汇报"
+                    "description": "联邦远程节点名（peer 配置名）。来源：工具列表中 <peer>:<tool> 代理工具的前缀名，或工作区会话的 [remote:<peer>] 标注。填入后子任务在该节点执行；填错/离线会立即失败（fail-closed，不会静默回本机）"
                 }
             },
             "required": ["task"]

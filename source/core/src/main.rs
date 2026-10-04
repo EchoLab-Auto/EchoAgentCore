@@ -94,9 +94,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 "edit_file",
                 "search_code",
                 "list_files",
-                "shell_start",
-                "shell_exec",
-                "shell_stop",
+                // shell 三件套与进程级 ShellManager 耦合深，远程化留待后续
+                // ——不宣告（对端按 caps 预期会落空）。
             ]
             .iter()
             .map(|s| s.to_string())

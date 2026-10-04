@@ -104,6 +104,10 @@ allow_queries = []          # 敏感查询需显式开启
   `<peer>:<tool>`（per-peer package 标签 `echo-agent.federation.<peer>`，
   Down 整包禁用、Up 幂等恢复）；shell 三件套与进程级 ShellManager
   耦合深，远程化留待后续
+- **远程 subagent 失败语义（fail-closed）**：node 指定的 peer 离线/
+  名称错误时，子任务**立即以 Failed 终态回报**（不会静默回本机执行
+  造成错机操作）；聚合组同步闭合。peer 名来源：工具列表的
+  `<peer>:<tool>` 前缀或工作区会话的 [remote:<peer>] 标注
 - **远程 subagent**：`spawn_subagent({task, node})`——LLM 仍在大脑侧，
   tools 过滤为该 peer 代理工具并剥前缀呈现（子任务不感知"远程"），
   执行时还原前缀经 Invoke 路由；结果回灌完全复用本地
@@ -128,7 +132,8 @@ allow_queries = []          # 敏感查询需显式开启
 - 装配出口：`set_remote_invoker`（组合根注入；联邦关闭时调用报
   「联邦未接线」）
 - 失败路径：peer 离线/不存在、链路不可用、对端拒绝（白名单/沙箱）、
-  超时（180s）均原样透传为 ToolError
+  超时均原样透传为 ToolError。超时链：路由 invoke 120s → 外层 wait
+  180s → 工具守卫 460s（timeout_hint）
 
 ## 会话迁移（P3-2，v1.0）
 

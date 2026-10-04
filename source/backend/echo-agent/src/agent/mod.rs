@@ -1038,10 +1038,27 @@ impl Agent {
                     })
                     .collect();
                 if remote_defs.is_empty() {
-                    tracing::warn!(peer = %peer, "remote subagent: no proxy tools available (peer offline or federation disabled)");
-                } else {
-                    tools = remote_defs;
+                    // fail-closed（2026-10 审查修复）：peer 离线/错名时
+                    // **不**静默回本机执行（错机操作风险）——立即以
+                    // Failed 终态回报并销账（聚合组同步闭合）。
+                    let reason = format!(
+                        "远程节点「{peer}」无可用代理工具（peer 离线、名称错误或联邦未启用）"
+                    );
+                    tracing::warn!(peer = %peer, "remote subagent rejected: {reason}");
+                    crate::federation::notify_remote_subagent(
+                        peer,
+                        &task_id,
+                        &task,
+                        None,
+                        crate::federation::SubagentStatus::Failed,
+                        Some(reason.clone()),
+                    );
+                    if let Some((store, _)) = agent.subagent_runtime() {
+                        store.finish(&task_id, crate::subagent::SubagentStatus::Failed);
+                    }
+                    return;
                 }
+                tools = remote_defs;
             }
             let provider = agent.provider.read().await.clone();
             let max_iterations = agent.config.read().await.max_tool_iterations;
