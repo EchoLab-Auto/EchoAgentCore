@@ -224,14 +224,26 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   只靠中继信封区分同名会话/人格。Panel 学习 `core → NodeId` 映射并在选择器
   展示；`branchTabs` 按 `(core, branch_id)` 键；等待态（pending）登记时记录
   目标 core，响应只销账同 core 的等待。
-- **管理目标 core**（2026-10 Phase 1）：`store.dispatch` 给**每个**事件载荷
-  注入来源 core；无 team/session 的管理事件（`ApiConfigUpdated` / `SkillsList`
-  / `ToolsList` / `PluginsList` / `SystemPrompt` / `Adapter*` / `Federation*`
-  / `SelfUpdateStatus`）只接受 `activeCore` 的响应（`managementCoreCurrent`），
-  避免广播/竞态响应里其他 core 的配置覆盖当前视图。Panel 侧栏「连接状态」
-  卡提供**管理目标选择器**（`state.knownCores`）；切换时 `resetManagementState`
-  + `requestActiveCoreManagement` 定向重拉。QQ 管理态按 `(core, adapter)`
-  存放（实例名跨 core 可重复，默认都叫 `qq`）。
+- **运行区域（agent 自带属性，Plan B，2026-10）**：不存在"管理目标 core"
+  这种自由变量。每个 agent 自带**运行区域**——区域 = 承载它的 Core，id 为
+  `NodeId`（稳定），展示名取 `[core].region_name` → `[federation].node_name`
+  → 主机名 → NodeId 短码；`TeamInfo` / `SessionInfo` 线上携带
+  `node_id`（= 区域 id）+ `region_name`，所以 agent/会话是**自描述**的。
+  Panel 的 `activeRegion` 是**派生量**（只在选 agent / 会话归属 / TeamsList
+  校正时写入），所有命令路由、事件过滤、设置/QQ/联邦等管理面归属都由它决定
+  ——**选 agent 即选区域**。无 team/session 的管理事件（`ApiConfigUpdated` /
+  `SkillsList` / `ToolsList` / `PluginsList` / `SystemPrompt` / `Adapter*` /
+  `Federation*` / `SelfUpdateStatus`）只接受当前区域（`activeRegion`）的响应，
+  避免广播/竞态响应串台；区域切换时 `resetManagementState` +
+  `requestActiveRegionManagement` 定向重拉。QQ 管理态按 `(region, adapter)`
+  存放（实例名跨区域可重复，默认都叫 `qq`）。
+- **区域放置（Panel 统一管理）**：设置 → 智能体 详情展示该 agent 的
+  「运行区域」，并可**迁移到其他区域**——Panel 编排 目标区域 `SaveTeam`
+  （按当前 profile 部署/更新）+ 源区域 `DeleteTeam`，两条命令都带**显式
+  targetCore**，不依赖任何全局路由变量。会话历史属于原区域，不随 agent
+  迁移（跨区搬历史是 `MigrateSession`，需两区域已建联邦链路）。
+- **连接状态卡**：逐区域列出全部已配置上游（`/api/upstreams` 轮询），
+  高亮当前区域；不再有"管理目标"选择器。
 - `round_robin`：在线节点轮转
 - `prefer:<name>`：亲和定向（离线退 least_busy）
 

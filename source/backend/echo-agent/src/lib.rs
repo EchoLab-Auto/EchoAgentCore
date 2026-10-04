@@ -11,19 +11,33 @@
 //!
 //! Platform adapters are managed through [`echo_adapter::AdapterRegistry`].
 
-/// 进程级节点身份（federation NodeId，`node-<ulid>`）。组合根启动时注入；
-/// `SessionInfo`/`TeamInfo` 等线格式携带它，供多节点聚合客户端区分同名
-/// 会话/人格（每个 Core 的 `local:tui::local_user`、`default` 都可能相同）。
+/// 进程级节点身份（federation NodeId，`node-<ulid>`）与"运行区域"名。
+/// 组合根启动时注入；`SessionInfo`/`TeamInfo` 等线格式携带它们，供多节点
+/// 聚合客户端区分同名会话/人格（每个 Core 的 `local:tui::local_user`、
+/// `default` 都可能相同），并把"agent 运行在哪个区域"作为一等属性。
 static NODE_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static REGION_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-/// 注入本进程的节点身份（幂等；仅首次生效）。
-pub fn set_node_id(id: String) {
-    let _ = NODE_ID.set(id);
+/// 注入本进程的节点身份与区域名（幂等；仅首次生效）。`region_id` 恒为
+/// NodeId；`region_name` 是人类可读展示名（可为空串）。
+pub fn set_region(node_id: String, region_name: String) {
+    let _ = NODE_ID.set(node_id);
+    let _ = REGION_NAME.set(region_name);
 }
 
-/// 本进程的节点身份（未注入 = None，旧/嵌入式用法）。
+/// 注入本进程的节点身份（等价 `set_region(id, "")`）。
+pub fn set_node_id(id: String) {
+    set_region(id, String::new());
+}
+
+/// 本进程的节点身份 / 区域 id（未注入 = None，旧/嵌入式用法）。
 pub fn node_id() -> Option<&'static str> {
     NODE_ID.get().map(|s| s.as_str())
+}
+
+/// 本进程的"运行区域"展示名（未注入或为空 = None）。
+pub fn region_name() -> Option<&'static str> {
+    REGION_NAME.get().map(|s| s.as_str()).filter(|s| !s.is_empty())
 }
 
 pub mod agent;

@@ -336,6 +336,7 @@ mod tests {
         let session = SessionInfo {
             id: "qq:group:123:456".into(),
             node_id: Some("node-test".into()),
+            region_name: Some("workstation".into()),
             team_id: None,
             platform: "qq".into(),
             scope: "group".into(),

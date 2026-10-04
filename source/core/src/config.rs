@@ -181,6 +181,9 @@ pub struct CoreSection {
     /// Optional bearer token for the management WebSocket. Empty preserves
     /// localhost-only legacy behavior; set this when exposing Core remotely.
     pub management_access_token: String,
+    /// 运行区域的人类可读名（agent 的「运行区域」属性）。留空 = 回退
+    /// `[federation].node_name` → 主机名 → `NodeId` 短码。区域 id 恒为 NodeId。
+    pub region_name: String,
 }
 
 impl Default for CoreSection {
@@ -188,6 +191,7 @@ impl Default for CoreSection {
         Self {
             management_address: "0.0.0.0:3132".into(),
             management_access_token: String::new(),
+            region_name: String::new(),
         }
     }
 }

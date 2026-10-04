@@ -80,3 +80,7 @@ accept_private_file = true
 management_address = "0.0.0.0:3132"
 # 若把 3132 映射到宿主/局域网，务必设置随机长 token
 management_access_token = ""
+# 运行区域名（agent 的「运行区域」展示名；agent 自带该属性，Panel 据此分组/
+# 放置）。留空 = 回退 [federation].node_name → 主机名 → NodeId 短码。
+# 区域 id 恒为本机 NodeId（echo-node.json），与显示名无关。
+region_name = ""

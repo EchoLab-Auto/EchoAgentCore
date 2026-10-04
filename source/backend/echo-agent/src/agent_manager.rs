@@ -316,6 +316,7 @@ impl AgentManager {
             .map(|(id, p)| TeamInfo {
                 id: id.clone(),
                 node_id: crate::node_id().map(str::to_string),
+                region_name: crate::region_name().map(str::to_string),
                 name: p.name.clone(),
                 // 去主智能体（2026-09）：不再有"主"角色；字段过渡期保留恒 false，
                 // 下个协议版本删除。

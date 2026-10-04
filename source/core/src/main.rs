@@ -154,10 +154,33 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from(".")),
     )?;
-    info!(node_id = %node_doc.node_id, "node identity ready");
-    // 注入进程级节点身份：SessionInfo/TeamInfo 等线格式携带它，供多节点聚合
-    // 客户端区分同名会话/人格（中继信封的 core 名是本机配置，非稳定身份）。
-    echo_agent::set_node_id(node_doc.node_id.clone());
+    // 「运行区域」名：显式 [core].region_name → [federation].node_name →
+    // 主机名 → NodeId 短码。区域 id 恒为 NodeId（稳定）；名字仅用于展示与
+    // Panel 的 agent 分组/放置。
+    let region_name = {
+        let configured = cfg.core.region_name.trim();
+        if !configured.is_empty() {
+            configured.to_string()
+        } else if let Some(name) = cfg
+            .federation
+            .node_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            name.to_string()
+        } else {
+            std::env::var("HOSTNAME")
+                .ok()
+                .map(|name| name.trim().to_string())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| node_doc.node_id.chars().take(14).collect())
+        }
+    };
+    info!(node_id = %node_doc.node_id, region = %region_name, "node identity ready");
+    // 注入进程级区域身份：SessionInfo/TeamInfo 等线格式携带它（agent 的
+    // 「运行区域」属性），供多节点聚合客户端区分同名会话/人格。
+    echo_agent::set_region(node_doc.node_id.clone(), region_name);
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 

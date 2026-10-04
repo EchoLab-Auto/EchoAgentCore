@@ -124,6 +124,10 @@ management_address = "0.0.0.0:3132"
 # Panel 连接 Core 的 Bearer token（首装自动生成 32 字节随机 hex；
 # 留空且绑非回环地址时启动会 warn 裸奔提醒）。
 management_access_token = ""
+# 运行区域名（agent 的「运行区域」展示名；agent 自带该属性，Panel 据此分组/
+# 放置）。留空 = 回退 [federation].node_name → 主机名 → NodeId 短码。
+# 区域 id 恒为本机 NodeId（echo-node.json），与显示名无关。
+region_name = ""
 
 [federation]
 # Core↔Core 联邦链路（多机去中心化；详见 document/federation.md）。

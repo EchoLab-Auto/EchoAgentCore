@@ -71,6 +71,10 @@ pub struct SessionInfo {
     /// 旧 Core 缺省 None。中继聚合视图另有来源 core 名（信封），两者可对照。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
+    /// 运行区域展示名（`[core].region_name`；空 = 回退 NodeId）。与 node_id
+    /// 共同构成 agent 的「运行区域」属性。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_name: Option<String>,
     /// Owning team id (None = default/legacy single agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_id: Option<String>,
@@ -828,6 +832,9 @@ pub struct TeamInfo {
     /// 来源节点身份（federation NodeId）。多节点聚合时人格身份 = (node_id, id)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
+    /// 运行区域展示名（`[core].region_name`；空 = 回退 NodeId）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region_name: Option<String>,
     pub name: String,
     /// Whether this agent is the primary/default agent (protected from deletion).
     #[serde(default)]

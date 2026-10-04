@@ -213,6 +213,7 @@ impl Session {
         SessionInfo {
             id: self.id.clone(),
             node_id: crate::node_id().map(str::to_string),
+            region_name: crate::region_name().map(str::to_string),
             team_id: self.team_id.clone(),
             platform: self.session_key.platform.clone(),
             scope: self.session_key.scope.clone(),
