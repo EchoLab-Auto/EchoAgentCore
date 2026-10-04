@@ -16,6 +16,19 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 `source/backend/echo-agent/src/packages/federation`（执行层）+
 `source/core/src/main.rs`（组合根装配与路由泵）。
 
+## 未启用时的行为（`enabled = false`）
+
+- `RequestFederationStatus` 仍回一个**正常快照**（`enabled: false` + 本机
+  `node_id`/`node_name`，peers 为空），而不是 Error——Panel 据此显示"未启用"，
+  无需靠"没有响应"去推断；也不会在联邦页弹错误提示。
+- 联邦**写操作**（`SaveFederationPeer` / `DeleteFederationPeer` /
+  `RequestFederationInvite` / `MigrateSession`）仍明确报错"联邦未启用
+  （[federation] enabled = false）"。
+- **自更新与联邦无关**：`RequestSelfUpdate` / `RequestSelfUpdateStatus`
+  在未启用联邦时照常工作（曾因共用同一处理器而被误报为"联邦未启用"）。
+- 启用：在 `core.toml` 添加 `[federation] enabled = true`（+ `listen`/`node_name`/
+  `[federation.peers.*]`）后重启该节点。
+
 ## 设计原则
 
 1. **节点对等**：无主从。任何 Core 都能扮演「大脑」（持有 agent 循环与
