@@ -177,6 +177,14 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   trunk 缓存都必须用复合键（`core 为空时退化为裸 id`，单上游零变化）；同名
   跨 core 不再互相覆盖/串显。引导期裸广播的只读命令白名单（中继
   `is_readonly_command`）须与 Panel 引导命令对齐，否则多上游下被静默拒收。
+- **管理目标 core**（2026-10 Phase 1）：`store.dispatch` 给**每个**事件载荷
+  注入来源 core；无 team/session 的管理事件（`ApiConfigUpdated` / `SkillsList`
+  / `ToolsList` / `PluginsList` / `SystemPrompt` / `Adapter*` / `Federation*`
+  / `SelfUpdateStatus`）只接受 `activeCore` 的响应（`managementCoreCurrent`），
+  避免广播/竞态响应里其他 core 的配置覆盖当前视图。Panel 侧栏「连接状态」
+  卡提供**管理目标选择器**（`state.knownCores`）；切换时 `resetManagementState`
+  + `requestActiveCoreManagement` 定向重拉。QQ 管理态按 `(core, adapter)`
+  存放（实例名跨 core 可重复，默认都叫 `qq`）。
 - `round_robin`：在线节点轮转
 - `prefer:<name>`：亲和定向（离线退 least_busy）
 
