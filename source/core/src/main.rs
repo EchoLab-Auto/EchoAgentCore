@@ -823,6 +823,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             event_rx,
             rt,
             supervisor.clone(),
+            core_agent.clone(),
             peer_policies,
         ));
     }
@@ -1452,6 +1453,7 @@ async fn federation_router_pump(
     mut rx: tokio::sync::mpsc::Receiver<echo_federation::LinkEvent>,
     rt: Arc<FederationRuntime>,
     personas: Arc<agent_supervisor::AgentSupervisor>,
+    core_agent: Arc<echo_agent::Agent>,
     peer_policies: std::sync::Arc<
         tokio::sync::RwLock<
             std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
@@ -1461,6 +1463,9 @@ async fn federation_router_pump(
     // 执行端结果回传通道：handle_invoke spawn 的执行任务 → 本泵统一发送。
     let (outbound_tx, mut outbound_rx) =
         tokio::sync::mpsc::channel::<(String, echo_federation::FedFrame)>(64);
+    // 目标侧会话导入缓冲（P3-2b）：transfer_id → 有序分块。
+    let mut imports: std::collections::HashMap<String, ImportBuffer> =
+        std::collections::HashMap::new();
     loop {
         tokio::select! {
             event = rx.recv() => {
@@ -1492,7 +1497,7 @@ async fn federation_router_pump(
                         // token 与任一活跃链路匹配 → 该占位使命完成。
                         cleanup_paired_invite_placeholders(&rt).await;
                         register_remote_tools(&rt, &personas, &info).await;
-                        broadcast_federation_status(&rt, &personas).await;
+                        broadcast_federation_status(&rt, &personas, &core_agent).await;
                     }
                     echo_federation::LinkEvent::Down { peer_node_id, reason } => {
                         tracing::info!(target: "federation", peer = %peer_node_id, %reason, "link down");
@@ -1505,7 +1510,7 @@ async fn federation_router_pump(
                             rt.peer_names.write().await.remove(&name);
                         }
                         // 链路状态变化 → 面板联邦页实时刷新。
-                        broadcast_federation_status(&rt, &personas).await;
+                        broadcast_federation_status(&rt, &personas, &core_agent).await;
                     }
                     echo_federation::LinkEvent::Frame { from, frame } => {
                         if let echo_federation::FedFrame::Invoke(request) = frame {
@@ -1575,6 +1580,42 @@ async fn federation_router_pump(
                             {
                                 deliver_aggregate_summary(&personas, summary).await;
                             }
+                        } else if let echo_federation::FedFrame::SessionImport(import) = &frame {
+                            // 目标侧（P3-2b）：聚合分块，凑齐后导入目标 persona。
+                            if let Some(reply) = handle_session_import(&personas, import, &mut imports)
+                            {
+                                if rt.federation.send_to(&from, reply).await.is_err() {
+                                    tracing::warn!(
+                                        target: "federation", peer = %from,
+                                        "session import reply send failed"
+                                    );
+                                }
+                            }
+                        } else if let echo_federation::FedFrame::SessionImportResult(result) = &frame
+                        {
+                            // 源侧（P3-2b）：目标终态回执 → 面板结果事件。
+                            let message = if result.success {
+                                format!(
+                                    "迁移完成：导入 {} 条事件（{}）",
+                                    result.imported_events, result.message
+                                )
+                            } else {
+                                format!("迁移失败：{}", result.message)
+                            };
+                            let event = echo_protocol::BackendEvent::SessionMigrated {
+                                session_id: result.session_id.clone(),
+                                target_peer: result.target_peer.clone(),
+                                new_session_id: result
+                                    .success
+                                    .then(|| result.session_id.clone()),
+                                message,
+                                success: result.success,
+                            };
+                            if let Some(persona) = personas.personas().into_iter().next() {
+                                persona.agent.emit(event);
+                            } else {
+                                core_agent.emit(event);
+                            }
                         } else {
                             rt.router.dispatch_frame(&from, &frame);
                         }
@@ -1608,9 +1649,15 @@ async fn peer_package(rt: &FederationRuntime, peer_node: &str) -> String {
 async fn broadcast_federation_status(
     rt: &FederationRuntime,
     personas: &agent_supervisor::AgentSupervisor,
+    core_agent: &Arc<echo_agent::Agent>,
 ) {
+    // 进程级事件汇聚点：任一人格都到 Panel。无人格（全部被禁用）时回退到
+    // 进程级核心服务代理 `__core`——否则联邦状态变化静默丢失。
+    let event = rt.status_event().await;
     if let Some(persona) = personas.personas().into_iter().next() {
-        persona.agent.emit(rt.status_event().await);
+        persona.agent.emit(event);
+    } else {
+        core_agent.emit(event);
     }
 }
 
@@ -1630,9 +1677,10 @@ async fn handle_federation_command(
         }
         echo_protocol::BackendCommand::MigrateSession {
             session_id,
+            team_id,
             target_peer,
         } => {
-            handle_migrate_session(emit.clone(), &rt, session_id, target_peer).await;
+            handle_migrate_session(emit.clone(), &rt, session_id, team_id, target_peer).await;
         }
         echo_protocol::BackendCommand::RequestSelfUpdateStatus => {
             emit(read_self_update_status(&rt).await);
@@ -1882,11 +1930,25 @@ async fn handle_federation_query(
             }
         }
         QueryKind::SessionSnapshot => {
-            // 会话归属解析：`node://` 前缀剥离按本机处理；team 维度经
-            // manager 逐 persona 查找。
+            // 会话归属解析：`node://` 前缀剥离按本机处理。
+            // team_id 非空时**只查该 persona**（同名会话如
+            // `local:tui::local_user` 每个 persona 都有，逐 persona 取首个会歧义）；
+            // 为空时退旧行为（逐 persona 取首个命中），兼容旧大脑。
             let (_, key) = echo_defs::NodeId::split_ref(&req.subject);
             let session_id = key;
-            for persona in personas.personas() {
+            let candidates: Vec<_> = if req.team_id.is_empty() {
+                personas.personas()
+            } else {
+                personas
+                    .personas()
+                    .into_iter()
+                    .filter(|p| p.id == req.team_id)
+                    .collect()
+            };
+            if !req.team_id.is_empty() && candidates.is_empty() {
+                return err(&format!("人格 {} 不存在", req.team_id));
+            }
+            for persona in candidates {
                 let agent = &persona.agent;
                 if let Some(session) = agent.trunk.get(session_id) {
                     let (messages, seq) = if req.since_seq > 0 {
@@ -2048,32 +2110,239 @@ async fn deliver_aggregate_summary(
     tracing::warn!(session = %summary.session_id, "aggregate summary: parent session not found");
 }
 
+/// 单次迁移分块上限（字节，UTF-8 边界对齐）。
+const SESSION_IMPORT_CHUNK_BYTES: usize = 192 * 1024;
+/// 迁移分块数上限（防御：192KB × 4096 ≈ 768MB，超限拒绝）。
+const SESSION_IMPORT_MAX_CHUNKS: usize = 4096;
+
+/// 按 UTF-8 字符边界把文本切成长度 ≤ `max_bytes` 的块（末块可为空串）。
+fn chunk_utf8(text: &str, max_bytes: usize) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    while start < bytes.len() {
+        let mut end = (start + max_bytes).min(bytes.len());
+        while end > start && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == start {
+            end = bytes.len(); // 防御：单字符超限时整段送出
+        }
+        out.push(text[start..end].to_string());
+        start = end;
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+/// 组装迁移回执帧。
+fn session_import_result(
+    transfer_id: &str,
+    session_id: &str,
+    target_peer: &str,
+    success: bool,
+    imported_events: usize,
+    message: String,
+) -> echo_federation::FedFrame {
+    echo_federation::FedFrame::SessionImportResult(echo_federation::SessionImportResultFrame {
+        transfer_id: transfer_id.to_string(),
+        session_id: session_id.to_string(),
+        target_peer: target_peer.to_string(),
+        success,
+        imported_events,
+        message,
+    })
+}
+
+/// 目标侧会话导入缓冲：transfer_id → 有序分块 + 回执标签。
+struct ImportBuffer {
+    chunks: Vec<Option<String>>,
+    session_id: String,
+    team_id: String,
+}
+
+/// 目标侧处理一个 `SessionImport` 分块：凑齐后反序列化并导入目标 persona。
+/// 非终块返回 None（继续等待）；终块返回给源侧的回执帧。
+fn handle_session_import(
+    personas: &agent_supervisor::AgentSupervisor,
+    frame: &echo_federation::SessionImportFrame,
+    imports: &mut std::collections::HashMap<String, ImportBuffer>,
+) -> Option<echo_federation::FedFrame> {
+    let total = frame.chunk_total as usize;
+    if total == 0
+        || frame.chunk_index as usize >= total
+        || total > SESSION_IMPORT_MAX_CHUNKS
+    {
+        return Some(session_import_result(
+            &frame.transfer_id,
+            &frame.session_id,
+            &frame.target_peer,
+            false,
+            0,
+            "非法分块头".into(),
+        ));
+    }
+    let entry = imports
+        .entry(frame.transfer_id.clone())
+        .or_insert_with(|| ImportBuffer {
+            chunks: vec![None; total],
+            session_id: frame.session_id.clone(),
+            team_id: frame.team_id.clone(),
+        });
+    if entry.chunks.len() != total {
+        // 同一 transfer_id 分块总数变化 → 协议错误，按新头重置。
+        entry.chunks = vec![None; total];
+    }
+    entry.chunks[frame.chunk_index as usize] = Some(frame.data.clone());
+    if (frame.chunk_index as usize) + 1 < total {
+        return None;
+    }
+    let entry = imports.remove(&frame.transfer_id).expect("entry present");
+    let json: String = entry
+        .chunks
+        .into_iter()
+        .map(|c| c.unwrap_or_default())
+        .collect();
+    let events: Vec<echo_session::SessionEvent> = match serde_json::from_str(&json) {
+        Ok(events) => events,
+        Err(error) => {
+            return Some(session_import_result(
+                &frame.transfer_id,
+                &frame.session_id,
+                &frame.target_peer,
+                false,
+                0,
+                format!("解析事件日志失败：{error}"),
+            ));
+        }
+    };
+    let Some(persona) = personas.get_exact(&entry.team_id) else {
+        return Some(session_import_result(
+            &frame.transfer_id,
+            &frame.session_id,
+            &frame.target_peer,
+            false,
+            0,
+            format!("人格 {} 不存在或未运行", entry.team_id),
+        ));
+    };
+    let imported = events.len();
+    persona
+        .agent
+        .trunk
+        .import_session_events(&entry.session_id, events);
+    Some(session_import_result(
+        &frame.transfer_id,
+        &frame.session_id,
+        &frame.target_peer,
+        true,
+        imported,
+        format!("已导入至人格 {}", entry.team_id),
+    ))
+}
+
+/// 会话迁移（P3-2b）：源侧导出会话事件日志 → 按块经联邦送到目标节点 →
+/// 目标导入到同名 persona 的事实来源日志 → 回执驱动结果事件。
 async fn handle_migrate_session(
     emit: std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>,
     rt: &FederationRuntime,
     session_id: String,
+    team_id: Option<String>,
     target_peer: String,
 ) {
-    // 1) 目标 peer 在线 + node_id 反查。
-    let Some(_node_id) = rt.peer_names.read().await.get(&target_peer).cloned() else {
-        emit(echo_protocol::BackendEvent::SessionMigrated {
-            session_id: session_id.clone(),
-            target_peer: target_peer.clone(),
+    let emit_fail = emit.clone();
+    let sid = session_id.clone();
+    let tp = target_peer.clone();
+    let fail = move |message: String| {
+        emit_fail(echo_protocol::BackendEvent::SessionMigrated {
+            session_id: sid.clone(),
+            target_peer: tp.clone(),
             new_session_id: None,
-            message: format!("目标 peer 「{target_peer}」不在线或不存在"),
+            message,
             success: false,
+        });
+    };
+    // 1) 目标 peer 在线 + node_id 反查。
+    let Some(node_id) = rt.peer_names.read().await.get(&target_peer).cloned() else {
+        fail(format!("目标 peer 「{target_peer}」不在线或不存在"));
+        return;
+    };
+    // 2) 定位源 persona + 该会话的事件（事实来源日志按 session 过滤）。
+    let Some(mgr) = echo_agent::agent_manager::global_manager() else {
+        fail("agent manager unavailable".into());
+        return;
+    };
+    let personas = mgr.all();
+    let persona = match team_id.as_deref() {
+        Some(team) => personas.iter().find(|p| p.id == team),
+        None => personas.iter().find(|p| p.agent.trunk.get(&session_id).is_some()),
+    };
+    let Some(persona) = persona else {
+        fail(match team_id.as_deref() {
+            Some(team) => format!("人格 {team} 不存在或未运行"),
+            None => format!("会话 {session_id} 不存在"),
         });
         return;
     };
-    // 2) v1.0 诚实语义：目标可达性确认 + 指引。完整 timeline 搬运需要
-    //    分块传输协议（FedFrame 单帧体积/重传语义），列入 P3-2b。
+    if persona.agent.trunk.get(&session_id).is_none() {
+        fail(format!("会话 {session_id} 在人格 {} 下不存在", persona.id));
+        return;
+    }
+    let events: Vec<echo_session::SessionEvent> = persona
+        .agent
+        .trunk
+        .event_log()
+        .into_iter()
+        .filter(|event| event.session() == Some(session_id.as_str()))
+        .collect();
+    if events.is_empty() {
+        fail(format!("会话 {session_id} 无可迁移事件"));
+        return;
+    }
+    let json = match serde_json::to_string(&events) {
+        Ok(json) => json,
+        Err(error) => {
+            fail(format!("序列化会话失败：{error}"));
+            return;
+        }
+    };
+    let chunks = chunk_utf8(&json, SESSION_IMPORT_CHUNK_BYTES);
+    if chunks.len() > SESSION_IMPORT_MAX_CHUNKS {
+        fail(format!(
+            "会话过大（{} 块 > 上限 {SESSION_IMPORT_MAX_CHUNKS}）",
+            chunks.len()
+        ));
+        return;
+    }
+    let transfer_id = echo_federation::new_call_id(rt.federation.local_node_id());
+    let total = chunks.len() as u32;
+    for (index, data) in chunks.into_iter().enumerate() {
+        let frame =
+            echo_federation::FedFrame::SessionImport(echo_federation::SessionImportFrame {
+                transfer_id: transfer_id.clone(),
+                session_id: session_id.clone(),
+                team_id: persona.id.clone(),
+                target_peer: target_peer.clone(),
+                chunk_index: index as u32,
+                chunk_total: total,
+                data,
+            });
+        if rt.federation.send_to(&node_id, frame).await.is_err() {
+            fail(format!("向「{target_peer}」发送分块 {index}/{total} 失败"));
+            return;
+        }
+    }
+    let message = format!(
+        "已向「{target_peer}」发送 {total} 个分块（{} 条事件），等待目标确认",
+        events.len()
+    );
     emit(echo_protocol::BackendEvent::SessionMigrated {
-        session_id: session_id.clone(),
-        target_peer: target_peer.clone(),
-        new_session_id: Some(session_id.clone()),
-        message: format!(
-            "目标节点「{target_peer}」在线可达。v1.0 请直接在目标节点开新会话（历史经联邦 SessionSnapshot 跨机可查）；自动搬运在 P3-2b"
-        ),
+        session_id,
+        target_peer,
+        new_session_id: None, // 待目标 SessionImportResult 回执确认
+        message,
         success: true,
     });
 }
@@ -2085,6 +2354,7 @@ impl FederationRuntime {
         let (request, pending) = self.router.query(
             &node_id,
             echo_federation::QueryKind::NodeStatus,
+            String::new(),
             String::new(),
             0,
             0,
@@ -2405,5 +2675,90 @@ mod logging_tests {
         drop(writer);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(rotated_log_path(&path, 1));
+    }
+}
+
+
+#[cfg(test)]
+mod core_util_tests {
+    use super::{chunk_utf8, handle_session_import};
+    use crate::agent_supervisor::AgentSupervisor;
+    use echo_agent::{AgentConfig, TeamMember};
+
+    /// P3-2b：分块必须落在 UTF-8 字符边界，拼接后与原文一致。
+    #[test]
+    fn chunk_utf8_respects_char_boundaries() {
+        let text = "你好世界abcdef";
+        let chunks = chunk_utf8(text, 4);
+        assert_eq!(chunks.concat(), text);
+        for chunk in &chunks {
+            assert!(chunk.len() <= 4, "chunk over budget: {chunk:?}");
+            assert!(text.contains(chunk.as_str()));
+        }
+    }
+
+    #[test]
+    fn chunk_utf8_empty_and_small_inputs() {
+        assert_eq!(chunk_utf8("", 8), vec![String::new()]);
+        assert_eq!(chunk_utf8("abc", 8), vec!["abc".to_string()]);
+    }
+
+    fn disabled_supervisor() -> AgentSupervisor {
+        let mut raw = AgentConfig::default();
+        raw.teams.insert(
+            "alix".into(),
+            TeamMember {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        AgentSupervisor::build(&raw, |_id, _profile| {
+            panic!("disabled personas must not be instantiated")
+        })
+    }
+
+    fn import_frame(index: u32, total: u32, data: &str) -> echo_federation::SessionImportFrame {
+        echo_federation::SessionImportFrame {
+            transfer_id: "mig-1".into(),
+            session_id: "local:tui::local_user".into(),
+            team_id: "alix".into(),
+            target_peer: "gpu-box".into(),
+            chunk_index: index,
+            chunk_total: total,
+            data: data.into(),
+        }
+    }
+
+    /// P3-2b：非终块返回 None（继续等待），终块才产出回执；目标无该人格 → 失败。
+    #[test]
+    fn session_import_buffers_chunks_then_reports_missing_persona() {
+        let supervisor = disabled_supervisor();
+        let mut imports = std::collections::HashMap::new();
+        assert!(handle_session_import(&supervisor, &import_frame(0, 2, "[]"), &mut imports).is_none());
+        let reply = handle_session_import(&supervisor, &import_frame(1, 2, ""), &mut imports)
+            .expect("terminal reply");
+        match reply {
+            echo_federation::FedFrame::SessionImportResult(result) => {
+                assert!(!result.success);
+                assert!(result.message.contains("不存在"));
+                assert_eq!(result.session_id, "local:tui::local_user");
+                assert_eq!(result.target_peer, "gpu-box");
+            }
+            other => panic!("unexpected reply: {other:?}"),
+        }
+    }
+
+    /// 防御：非法分块头（total=0）立即回失败，不污染缓冲。
+    #[test]
+    fn session_import_rejects_bad_header() {
+        let supervisor = disabled_supervisor();
+        let mut imports = std::collections::HashMap::new();
+        let reply = handle_session_import(&supervisor, &import_frame(0, 0, "[]"), &mut imports)
+            .expect("terminal reply");
+        assert!(matches!(
+            reply,
+            echo_federation::FedFrame::SessionImportResult(r) if !r.success
+        ));
+        assert!(imports.is_empty());
     }
 }

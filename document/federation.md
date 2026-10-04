@@ -135,12 +135,39 @@ allow_queries = []          # 敏感查询需显式开启
   超时均原样透传为 ToolError。超时链：路由 invoke 120s → 外层 wait
   180s → 工具守卫 460s（timeout_hint）
 
-## 会话迁移（P3-2，v1.0）
+## 会话迁移（P3-2，v1.1 分块搬运）
 
-`MigrateSession { session_id, target_peer }`（Frontend-only）→
-`SessionMigrated` 事件。v1.0 语义：目标 peer 在线可达性确认 + 指引
-（历史经 `SessionSnapshot` 跨机可查，新对话在目标侧继续）；完整
-timeline 搬运需要分块传输协议（单帧体积/重传语义），列入 P3-2b。
+`MigrateSession { session_id, team_id, target_peer }`（Frontend-only）→
+两条 `SessionMigrated` 事件（受理 + 终态）。语义：
+
+1. 源侧定位该 `(team_id, session_id)` 的事件日志，序列化为 JSON 文本；
+2. 按 UTF-8 边界切成 ≤192KB 的块（上限 4096 块），经
+   `FedFrame::SessionImport` 依次送达目标（WebSocket 有序可靠）；
+3. 目标按 `transfer_id` 聚合分块，凑齐后**导入同名 persona 的事实来源
+   日志**（`TrunkStore::import_session_events`，物化历史句柄），回
+   `FedFrame::SessionImportResult`；
+4. 源侧收到回执后发终态 `SessionMigrated`（成功给出导入事件数）。
+
+失败语义（fail-closed，源侧明确报错，不静默）：peer 离线、persona/会话
+不存在、无事件、序列化/传输失败、目标无该 persona、事件解析失败。分块
+超限拒绝。链路中断则整次迁移失败、可重试（v1 不做块级重传）。
+
+> `MigrateSession.team_id` 为 `#[serde(default)]` 可选，兼容旧前端（缺省时
+> 源侧逐 persona 查找会话）。
+
+## 跨机只读查询的 team 维度
+
+`QueryRequest.team_id`（`#[serde(default)]`）：`SessionSnapshot` 非空时**只
+查该 persona**——同名会话（`local:tui::local_user` 在每个 persona 上都存在）
+逐 persona 取首个会返回任意人格的历史，是此前的歧义来源；为空时退旧行为。
+
+## 可广播只读命令（契约）
+
+中继在不指定目标 core 时只放行只读白名单；权威定义在
+`echo_protocol::BROADCAST_READONLY_COMMANDS`（Core 侧
+`broadcast_readonly_contract_snapshot` 测试锁定），中继本地副本由其
+`readonly_whitelist_snapshot` 测试锁定——**改动必须两边同步**（Panel 是
+纯透传中继，不依赖 echo-protocol crate，无法共享同一常量）。
 
 ## 跨机子代理结果聚合（P3-3）
 

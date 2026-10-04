@@ -261,6 +261,7 @@ impl InvokeRouter {
         peer_node: &str,
         kind: echo_federation::QueryKind,
         subject: String,
+        team_id: String,
         since_seq: u64,
         limit: u32,
     ) -> (echo_federation::QueryRequest, PendingInvoke) {
@@ -284,6 +285,7 @@ impl InvokeRouter {
                 call_id: call_id.clone(),
                 kind,
                 subject,
+                team_id,
                 since_seq,
                 limit,
             },
@@ -733,6 +735,7 @@ mod tests {
         let (req, pending) = router.query(
             "node-b",
             echo_federation::QueryKind::NodeStatus,
+            String::new(),
             String::new(),
             0,
             0,

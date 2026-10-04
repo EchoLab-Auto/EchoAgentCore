@@ -1397,6 +1397,22 @@ impl TrunkStore {
         self.event_log.log()
     }
 
+    /// 导入某会话的完整事件集（会话迁移 P3-2b）：追加到事实来源日志并重投影
+    /// 该会话（物化其历史句柄）。调用方保证事件已归因到 `session_id` 且不重复
+    /// （重复导入会重复追加——幂等性由迁移层的 transfer_id 去重负责）。
+    pub fn import_session_events(
+        &self,
+        session_id: &str,
+        events: Vec<echo_session::SessionEvent>,
+    ) {
+        if !events.is_empty() {
+            self.event_log.extend(events);
+        }
+        let _ = self.history_or_create(session_id);
+        self.reproject(&Some(session_id.to_string()));
+        self.mark_dirty();
+    }
+
     /// Insert an event after the last user event carrying `sequence`
     /// (concurrent-branch merge), then re-project the trunk cache.
     pub(crate) fn insert_event_after_sequence(
@@ -1729,6 +1745,24 @@ mod tests {
                 prop_assert_eq!(SessionKey::parse(&key.to_session_id()), Some(key));
             }
         }
+    }
+
+    /// P3-2b：迁移导入把事件追加进事实来源日志并物化历史句柄。
+    #[test]
+    fn import_session_events_appends_to_fact_log() {
+        let store = TrunkStore::new(100_000);
+        let sid = "local:tui::local_user";
+        let event = echo_session::SessionEvent::UserMessage(echo_session::UserMessage {
+            content: "hello".into(),
+            timestamp: 1,
+            message_sequence: Some(1),
+            source: None,
+            images: Vec::new(),
+            session: Some(sid.into()),
+        });
+        store.import_session_events(sid, vec![event.clone()]);
+        assert_eq!(store.event_log(), vec![event]);
+        assert!(store.history_for(sid).is_some());
     }
 
     // ── federation Phase 0：node:// 命名空间 ──

@@ -60,6 +60,12 @@ pub enum FedFrame {
     Query(QueryRequest),
     QueryResult(QueryResultFrame),
 
+    // ── 会话迁移分块导入（P3-2b 消费） ──
+    /// 源 → 目标：会话事件日志文本的分块。
+    SessionImport(SessionImportFrame),
+    /// 目标 → 源：导入结果（终态）。
+    SessionImportResult(SessionImportResultFrame),
+
     /// 通用错误（无法归入某个 call_id 时 call_id 为 None）。
     Error {
         #[serde(default)]
@@ -183,6 +189,10 @@ pub struct QueryRequest {
     /// 查询目标（如 session_id / 工作区目录路径）；含义按 kind 定。
     #[serde(default)]
     pub subject: String,
+    /// 人格维度（`SessionSnapshot` 用）：空 = 不限定（旧行为，逐 persona 取
+    /// 首个命中——每个 persona 都有 `local:tui::local_user`，会歧义）。
+    #[serde(default)]
+    pub team_id: String,
     /// 快照分页（Phase 5）：只回 seq 大于该值的条目（0 = 最近窗口）。
     #[serde(default)]
     pub since_seq: u64,
@@ -204,6 +214,45 @@ pub struct QueryResultFrame {
     pub success: bool,
     #[serde(default)]
     pub payload: serde_json::Value,
+}
+
+/// 会话迁移分块导入（P3-2b）：把源会话的事件日志文本按块送到目标节点。
+///
+/// 迁移保持同一 `session_id`；目标按 `team_id` 找到 persona 后把事件追加进
+/// 该 persona 的事实来源日志（`import_session_events`）。WebSocket 链路有序
+/// 可靠，块按 `chunk_index` 顺序送达；链路中断则整次迁移失败可重试。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionImportFrame {
+    /// 一次迁移的关联 id（源生成；用于目标侧聚合分块与回执）。
+    pub transfer_id: String,
+    /// 会话 id（迁移前后一致）。
+    pub session_id: String,
+    /// 目标人格 id（目标节点必须存在该 persona）。
+    pub team_id: String,
+    /// 源侧对目标的 peer 配置名（目标原样回执，便于源侧发结果事件）。
+    #[serde(default)]
+    pub target_peer: String,
+    /// 分块序号（从 0 起，按序）。
+    pub chunk_index: u32,
+    /// 总分块数（`chunk_index + 1 == chunk_total` 即最后一块）。
+    pub chunk_total: u32,
+    /// 事件日志 JSON（`Vec<SessionEvent>`）的 UTF-8 文本块。
+    pub data: String,
+}
+
+/// 会话迁移导入结果（目标 → 源）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionImportResultFrame {
+    pub transfer_id: String,
+    /// 原样回带导入的会话/目标标签，源侧无需本地 pending 表即可发结果事件。
+    pub session_id: String,
+    #[serde(default)]
+    pub target_peer: String,
+    pub success: bool,
+    #[serde(default)]
+    pub imported_events: usize,
+    #[serde(default)]
+    pub message: String,
 }
 
 /// 联邦错误码。
@@ -262,6 +311,35 @@ mod tests {
         assert_eq!(back, frame);
     }
 
+    /// P3-2b：会话迁移分块帧往返 + 旧大脑缺 team_id 的查询可解码。
+    #[test]
+    fn session_import_frames_roundtrip() {
+        let frame = FedFrame::SessionImport(SessionImportFrame {
+            transfer_id: "mig-1".into(),
+            session_id: "local:tui::local_user".into(),
+            team_id: "alix".into(),
+            target_peer: "gpu-box".into(),
+            chunk_index: 1,
+            chunk_total: 3,
+            data: "\"events\"".into(),
+        });
+        let text = serde_json::to_string(&frame).unwrap();
+        let back: FedFrame = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, frame);
+
+        let result = FedFrame::SessionImportResult(SessionImportResultFrame {
+            transfer_id: "mig-1".into(),
+            session_id: "local:tui::local_user".into(),
+            target_peer: "gpu-box".into(),
+            success: true,
+            imported_events: 42,
+            message: "ok".into(),
+        });
+        let text = serde_json::to_string(&result).unwrap();
+        let back: FedFrame = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, result);
+    }
+
     /// 兼容策略：新字段带 serde(default) 时，旧端点（缺字段的 JSON）可解码。
     #[test]
     fn invoke_request_decodes_without_new_fields() {
@@ -271,6 +349,17 @@ mod tests {
         assert!(req.args.is_null());
         assert!(req.workdir.is_none());
         assert!(req.timeout_secs.is_none());
+    }
+
+    /// QueryRequest 新增 team_id 带 serde(default)：旧 JSON 缺字段可解码。
+    #[test]
+    fn query_request_decodes_without_team_id() {
+        let q: QueryRequest = serde_json::from_str(
+            r#"{"call_id":"n:1-0","kind":"SessionSnapshot","subject":"local:tui::local_user"}"#,
+        )
+        .unwrap();
+        assert_eq!(q.team_id, "");
+        assert_eq!(q.subject, "local:tui::local_user");
     }
 
     #[test]

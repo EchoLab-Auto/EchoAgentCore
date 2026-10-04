@@ -363,6 +363,9 @@ pub enum BackendCommand {
     MigrateSession {
         /// 会话 id（源节点本地 id，不含 node:// 前缀）。
         session_id: String,
+        /// 会话归属人格（多 agent；None = 逐 persona 查找，兼容旧前端）。
+        #[serde(default)]
+        team_id: Option<String>,
         /// 目标 peer 配置名（`[federation.peers.<name>]`）。
         target_peer: String,
     },
@@ -375,6 +378,34 @@ pub enum BackendCommand {
     RequestSelfUpdate,
     /// 查询自更新状态（读 `update-status` 文件 → `SelfUpdateStatus`）。
     RequestSelfUpdateStatus,
+}
+
+/// 多上游聚合下可"无壳广播"的只读命令名集合（**契约**）。
+///
+/// 中继（EchoAgentPanel 的 `echo-web-server`）在不指定目标 core 时只放行这些
+/// 命令；其余命令必须显式指定 core，避免一次点击扇出到全部上游。中继端维护
+/// 同一列表（其 `is_readonly_command`）——**改动此处必须同步**，两边各有
+/// 一致性测试（中继 `bootstrap_readonly_commands_are_whitelisted`）。
+pub const BROADCAST_READONLY_COMMANDS: &[&str] = &[
+    "RequestTeamsList",
+    "RequestAdapterList",
+    "RequestAdapterStatus",
+    "RequestState",
+    "RequestConfig",
+    "RequestShellSessions",
+    "RequestWorkspaces",
+    "RequestSessions",
+    "RequestTrunkTimeline",
+    "RequestActiveTurns",
+    "RequestFederationStatus",
+    "RequestFederationInvite",
+    "RequestNodeStatus",
+    "Ping",
+];
+
+/// 命令名是否属于可广播只读集合（中继白名单的权威定义）。
+pub fn is_broadcast_readonly(command_name: &str) -> bool {
+    BROADCAST_READONLY_COMMANDS.contains(&command_name)
 }
 
 /// Who is allowed to issue a given command.
@@ -425,6 +456,34 @@ fn default_true_agent() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 可广播只读集合的契约快照：改动必须与中继 `is_readonly_command` 同步。
+    #[test]
+    fn broadcast_readonly_contract_snapshot() {
+        let mut names = super::BROADCAST_READONLY_COMMANDS.to_vec();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "Ping",
+                "RequestActiveTurns",
+                "RequestAdapterList",
+                "RequestAdapterStatus",
+                "RequestConfig",
+                "RequestFederationInvite",
+                "RequestFederationStatus",
+                "RequestNodeStatus",
+                "RequestSessions",
+                "RequestShellSessions",
+                "RequestState",
+                "RequestTeamsList",
+                "RequestTrunkTimeline",
+                "RequestWorkspaces",
+            ]
+        );
+        assert!(super::is_broadcast_readonly("RequestState"));
+        assert!(!super::is_broadcast_readonly("SendMessage"));
+    }
 
     #[test]
     fn qq_admin_commands_are_frontend_only() {
