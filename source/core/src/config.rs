@@ -175,7 +175,8 @@ impl Default for BotSection {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct CoreSection {
-    /// WebSocket address for Panel connections (default: 127.0.0.1:3132).
+    /// WebSocket address for Panel connections (default: 0.0.0.0:3132——
+    /// 开箱即可被局域网 panel 连接；token 认证（首装自动生成）兜底安全。
     pub management_address: String,
     /// Optional bearer token for the management WebSocket. Empty preserves
     /// localhost-only legacy behavior; set this when exposing Core remotely.
@@ -185,7 +186,7 @@ pub struct CoreSection {
 impl Default for CoreSection {
     fn default() -> Self {
         Self {
-            management_address: "127.0.0.1:3132".into(),
+            management_address: "0.0.0.0:3132".into(),
             management_access_token: String::new(),
         }
     }
