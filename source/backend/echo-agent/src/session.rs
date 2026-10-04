@@ -1401,11 +1401,7 @@ impl TrunkStore {
     /// 导入某会话的完整事件集（会话迁移 P3-2b）：追加到事实来源日志并重投影
     /// 该会话（物化其历史句柄）。调用方保证事件已归因到 `session_id` 且不重复
     /// （重复导入会重复追加——幂等性由迁移层的 transfer_id 去重负责）。
-    pub fn import_session_events(
-        &self,
-        session_id: &str,
-        events: Vec<echo_session::SessionEvent>,
-    ) {
+    pub fn import_session_events(&self, session_id: &str, events: Vec<echo_session::SessionEvent>) {
         if !events.is_empty() {
             self.event_log.extend(events);
         }

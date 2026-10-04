@@ -1597,7 +1597,7 @@ async fn federation_router_pump(
                             if let Some(summary) =
                                 echo_agent::federation::aggregator::settle_remote_subagent(
                                     &ev.call_id,
-                                    ev.status.clone(),
+                                    ev.status,
                                     ev.result.clone(),
                                 )
                             {
@@ -1642,7 +1642,7 @@ async fn federation_router_pump(
                                     let rt2 = rt.clone();
                                     let from2 = from.clone();
                                     tokio::spawn(async move {
-                                        run_session_import(rt2, from2, ready).await;
+                                        run_session_import(rt2, from2, *ready).await;
                                     });
                                 }
                             }
@@ -2245,8 +2245,8 @@ enum ImportOutcome {
     Pending,
     /// 终态失败（非法头 / 解析失败 / 人格不存在）。
     Failed(String),
-    /// 全部到齐：交给调用方 spawn 导入并回终态。
-    Ready(ImportReady),
+    /// 全部到齐：交给调用方 spawn 导入并回终态（Box 收敛 enum 大小差异）。
+    Ready(Box<ImportReady>),
 }
 
 /// 连续收到的块数（前缀）；重发块幂等覆盖，不影响该值。
@@ -2298,7 +2298,10 @@ fn handle_session_import(
     let events: Vec<echo_session::SessionEvent> = match serde_json::from_str(&json) {
         Ok(events) => events,
         Err(error) => {
-            return (total as u32, ImportOutcome::Failed(format!("解析事件日志失败：{error}")));
+            return (
+                total as u32,
+                ImportOutcome::Failed(format!("解析事件日志失败：{error}")),
+            );
         }
     };
     let Some(persona) = personas.get_exact(&entry.team_id) else {
@@ -2309,23 +2312,19 @@ fn handle_session_import(
     };
     (
         total as u32,
-        ImportOutcome::Ready(ImportReady {
+        ImportOutcome::Ready(Box::new(ImportReady {
             trunk: persona.agent.trunk.clone(),
             session_id: entry.session_id,
             transfer_id: frame.transfer_id.clone(),
             target_peer: frame.target_peer.clone(),
             team_id: entry.team_id,
             events,
-        }),
+        })),
     )
 }
 
 /// 在阻塞线程执行导入并回终态（避免大日志投影卡住联邦泵）。
-async fn run_session_import(
-    rt: Arc<FederationRuntime>,
-    from: String,
-    ready: ImportReady,
-) {
+async fn run_session_import(rt: Arc<FederationRuntime>, from: String, ready: ImportReady) {
     let ImportReady {
         trunk,
         session_id,
@@ -2336,7 +2335,8 @@ async fn run_session_import(
     } = ready;
     let index = events.len();
     let sid = session_id.clone();
-    let imported = tokio::task::spawn_blocking(move || trunk.import_session_events(&sid, events)).await;
+    let imported =
+        tokio::task::spawn_blocking(move || trunk.import_session_events(&sid, events)).await;
     let (success, imported_events, message) = match imported {
         Ok(()) => (true, index, format!("已导入至人格 {team_id}")),
         Err(error) => (false, 0, format!("导入任务失败：{error}")),
@@ -2359,8 +2359,7 @@ static SESSION_IMPORT_ACKS: std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 
 fn session_import_acks(
-) -> &'static std::sync::Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<u32>>>
-{
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<u32>>> {
     SESSION_IMPORT_ACKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -2407,7 +2406,9 @@ async fn handle_migrate_session(
     let personas = mgr.all();
     let persona = match team_id.as_deref() {
         Some(team) => personas.iter().find(|p| p.id == team),
-        None => personas.iter().find(|p| p.agent.trunk.get(&session_id).is_some()),
+        None => personas
+            .iter()
+            .find(|p| p.agent.trunk.get(&session_id).is_some()),
     };
     let Some(persona) = persona else {
         fail(match team_id.as_deref() {
@@ -2466,8 +2467,8 @@ async fn handle_migrate_session(
                 break Ok(());
             }
             if next < total && next < acked.saturating_add(SESSION_IMPORT_WINDOW) {
-                let frame = echo_federation::FedFrame::SessionImport(
-                    echo_federation::SessionImportFrame {
+                let frame =
+                    echo_federation::FedFrame::SessionImport(echo_federation::SessionImportFrame {
                         transfer_id: transfer_id.clone(),
                         session_id: session_id.clone(),
                         team_id: source_team.clone(),
@@ -2475,8 +2476,7 @@ async fn handle_migrate_session(
                         chunk_index: next,
                         chunk_total: total,
                         data: chunks[next as usize].clone(),
-                    },
-                );
+                    });
                 match rt.federation.send_to(&node_id, frame).await {
                     Ok(()) => next += 1,
                     Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
@@ -2846,7 +2846,6 @@ mod logging_tests {
     }
 }
 
-
 #[cfg(test)]
 mod core_util_tests {
     use super::{chunk_utf8, handle_session_import, ImportOutcome};
@@ -2920,10 +2919,12 @@ mod core_util_tests {
     fn session_import_duplicate_chunks_are_idempotent() {
         let supervisor = disabled_supervisor();
         let mut imports = std::collections::HashMap::new();
-        let (acked, _) = handle_session_import(&supervisor, &import_frame(0, 3, "[]"), &mut imports);
+        let (acked, _) =
+            handle_session_import(&supervisor, &import_frame(0, 3, "[]"), &mut imports);
         assert_eq!(acked, 1);
         // 重发第 0 块：ack 仍为 1，不倒退。
-        let (acked, _) = handle_session_import(&supervisor, &import_frame(0, 3, "[]"), &mut imports);
+        let (acked, _) =
+            handle_session_import(&supervisor, &import_frame(0, 3, "[]"), &mut imports);
         assert_eq!(acked, 1);
         // 乱序：先到第 2 块不推进前缀（ack 仍 1）。
         let (acked, _) = handle_session_import(&supervisor, &import_frame(2, 3, ""), &mut imports);

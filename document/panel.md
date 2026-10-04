@@ -53,6 +53,7 @@ EchoAgentPanel/
 - **多上游 `[[cores]]`**：浏览器单连接同时中继到全部上游，事件按来源带 `{core, frame}` 信封、会话列表带来源徽标；命令按当前会话所属上游路由（`connection.ts::resolveTargetCore`），未选中会话时全局类只读命令（如 `RequestTeamsList`）裸广播全部上游、各端各回一份聚合。上游可在设置·Core 连接页在线增删（写回 `[[cores]]` 段持久化，中继动态并入/摘除，无需重启）；单上游（`[core]` 或一条 `[[cores]]`）行为与此前完全一致（无壳）
 - **Bearer 访问令牌**：`[server].access_token` 非空时全站（WS 握手 / `/api/*` / `/media`）要求 `Authorization: Bearer <token>` 或 `?token=` 查询参数，静态前端豁免以加载登录页（`proxy.rs::authorized`、`upstreams_api.rs::require_auth`）；前端 URL `?token=` 播种一次后存 localStorage `echo-panel-token`，后续 HTTP 经 `panelFetch` 自动带 Bearer 头（`connection.ts:328-345`）。另有 `[core].access_token` 是连 Core management WS 的认证头，须与 Core 侧配置一致
 - **分布式调度器 `scheduler.ts`**：新建会话（或向无归属新对话发首条消息）时的目标节点选择，策略持久化于 localStorage `echo-schedule-policy`：`least_busy`（默认，按 FederationStatus 各 peer 活跃 turn 数取最小，本机参与比较）/ `round_robin` / `prefer:<name>`（亲和，离线退 least_busy）；只做建议，最终路由仍走 connection.ts 的 coreForCommand 链
+  - **⚠️ 边界：两套节点命名空间**——调度器的"节点"来自**联邦**（`FederationStatus`：本机 `local` + 联邦 peers，是 Core↔Core 的横向对等关系）；上游聚合的"core"来自 **`[[cores]]`**（Panel→Core 的纵向连接配置）。两者名字**不互通**：`scheduleNode()` 返回的联邦 peer 名不会自动等于某个上游 core 名，调度结果只在 `targetSession?.core` 为空（新会话尚无归属）时作为建议注入（`App.vue:170`），随后仍由 `resolveTargetCore` 按会话/人格归属裁决。换言之：调度器目前只在"联邦 peer 恰好也是上游 core"（名字一致）时才真正生效，否则调度结果被路由层忽略。统一模型（联邦 peer 即上游候选）是明确的演进方向，落地前部署时**应保持联邦 peer 名与上游 core 名一致**以让调度生效
 ## 状态管理与数据流
 
 - `store.ts`：全局响应式单例（Vue `reactive`），`dispatch(event)` 逐事件归约

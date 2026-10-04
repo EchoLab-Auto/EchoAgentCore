@@ -50,9 +50,7 @@ pub fn notify_remote_subagent(
     // 受理处），对端收帧方的 settle 是另一条路径（执行端真正执行并
     // 回报的场景）。终态判定排除 Running（受理通知）。
     if !matches!(status, SubagentStatus::Running) {
-        if let Some(summary) =
-            aggregator::settle_remote_subagent(call_id, status.clone(), result.clone())
-        {
+        if let Some(summary) = aggregator::settle_remote_subagent(call_id, status, result.clone()) {
             // 聚合摘要投递经组合根出口（进程级；未装配时摘要仅记日志）。
             if let Some(deliver) = AGGREGATE_DELIVER.get() {
                 deliver(summary);

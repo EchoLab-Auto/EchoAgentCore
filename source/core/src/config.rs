@@ -202,7 +202,7 @@ impl Default for CoreSection {
 /// 因此单节点部署没有网络暴露；但联邦管理面（状态/邀请/添加 peer）开箱可用。
 /// 一旦配置 `listen` 或 `[federation.peers.*]`，互信边界即生效（≈ SSH 免密），
 /// 务必用 per-peer token 并限制 `allow_tools`/`allow_queries`。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct FederationSection {
     /// 联邦监听地址（如 `0.0.0.0:3133`）；空 = 不监听（纯连出）。
@@ -211,16 +211,6 @@ pub struct FederationSection {
     pub node_name: Option<String>,
     /// 静态对等节点表。
     pub peers: std::collections::BTreeMap<String, FederationPeerSection>,
-}
-
-impl Default for FederationSection {
-    fn default() -> Self {
-        Self {
-            listen: String::new(),
-            node_name: None,
-            peers: std::collections::BTreeMap::new(),
-        }
-    }
 }
 
 /// `[federation.peers.<name>]` 条目。

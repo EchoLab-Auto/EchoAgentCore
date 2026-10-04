@@ -93,8 +93,6 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 }
 
 /// Serve on a pre-bound listener (tests use it to pick a free port).
-
-/// Serve on a pre-bound listener (tests use it to pick a free port).
 #[cfg(test)]
 pub(crate) async fn serve_with_listener(
     listener: TcpListener,

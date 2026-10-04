@@ -15,8 +15,7 @@ pub use frame::{
     call_origin, new_call_id, FedError, FedFrame, InvokeRequest, InvokeResult, InvokeVerdict,
     NodeCaps, NodeHello, OutputStream, QueryKind, QueryRequest, QueryResultFrame,
     SessionImportAckFrame, SessionImportFrame, SessionImportResultFrame, SubagentEventFrame,
-    SubagentSpawnRequest,
-    SubagentStatus, PROTOCOL_VERSION,
+    SubagentSpawnRequest, SubagentStatus, PROTOCOL_VERSION,
 };
 pub use invite::{decode_invite, encode_invite, generate_token, InvitePayload, INVITE_SCHEME};
 pub use link::{error_frame, Federation, LinkEvent, LinkHandle, PeerConfig, PeerInfo};

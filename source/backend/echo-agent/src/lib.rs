@@ -37,7 +37,10 @@ pub fn node_id() -> Option<&'static str> {
 
 /// 本进程的"运行区域"展示名（未注入或为空 = None）。
 pub fn region_name() -> Option<&'static str> {
-    REGION_NAME.get().map(|s| s.as_str()).filter(|s| !s.is_empty())
+    REGION_NAME
+        .get()
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty())
 }
 
 pub mod agent;

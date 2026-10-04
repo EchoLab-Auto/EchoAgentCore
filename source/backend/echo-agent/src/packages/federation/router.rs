@@ -705,7 +705,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn query_authorization_defaults() {
         use echo_federation::QueryKind;
         let default = ExecutorPolicy::default();

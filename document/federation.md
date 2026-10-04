@@ -219,7 +219,17 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   空闲节点）；本机读 activities、peer 经 `FederationStatus` 回传
   （在线 peer 由 Core 侧 `Query(NodeStatus)` 3s 短超时实时拉取，
   失败退握手快照）
-- **人格身份 `(core, team_id)`**（2026-10 修复）：`RequestTeamsList` 无壳时
+- `least_busy`（默认）：按 `active_turns` 取负载最低（平局让远程
+  空闲节点）；本机读 activities、peer 经 `FederationStatus` 回传
+  （在线 peer 由 Core 侧 `Query(NodeStatus)` 3s 短超时实时拉取，
+  失败退握手快照）
+- **⚠️ 与上游聚合的命名空间边界（2026-10 明确）**：调度器的"节点"=
+  联邦节点（本机 `local` + peers，Core↔Core 横向对等）；Panel 上游聚合的
+  "core" = `[[cores]]` 连接配置（Panel→Core 纵向）。两套名字**不互通**——
+  `scheduleNode()` 返回的联邦 peer 名只在恰好等于某上游 core 名时才让调度
+  真正生效，否则调度建议被路由层（`resolveTargetCore`）忽略。部署时应保持
+  联邦 peer 名与上游 core 名一致；"联邦 peer 即上游候选"的统一模型是演进
+  方向（详见 [Panel 概览](./panel.md) §多上游聚合）。
   会广播给全部在线上游，Panel 必须**按 core 合并**（不能整体覆盖），且命令
   路由按「会话归属 > 人格归属 > activeCore」并带一致性守卫——目标 core 不
   拥有人格时重定向到拥有人格的 core。否则会把 A core 的 `default` 发给

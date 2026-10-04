@@ -476,17 +476,28 @@ impl Agent {
                 let _ = host.registry.unmount(&desc.id);
             }
         }
-        // Mount newly seen data plugins (skill/tool kinds).
+        // Mount newly seen data plugins (skill/tool kinds); manifests whose
+        // content changed since the last scan are remounted (diff reload).
         for manifest in manifests {
-            if desc_exists(host, &manifest.id) {
-                continue;
-            }
             let kind = manifest.kind;
             if !matches!(
                 kind,
                 echo_plugin::PluginKind::Skill | echo_plugin::PluginKind::Tool
             ) {
                 continue; // code plugins need binary reload
+            }
+            if desc_exists(host, &manifest.id) {
+                // 已挂载：manifest 内容 diff → 重挂载（unmount + 重注册 + mount）。
+                // 此前改 plugin.toml 不会有任何效果（除非删掉再放回），面板
+                // 上显示的版本/描述/包归属也一直停留在首次挂载的快照。
+                let current = host.descriptors().into_iter().find(|d| d.id == manifest.id);
+                let stale = current.is_some_and(|d| data_plugin_stale(&d, &manifest));
+                if !stale {
+                    continue;
+                }
+                tracing::info!(id = %manifest.id, "data plugin manifest changed, remounting");
+                let _ = host.registry.unmount(&manifest.id);
+                let _ = host.registry.unregister(&manifest.id);
             }
             let manifest2 = manifest.clone();
             let plugin =
@@ -3504,6 +3515,20 @@ fn desc_exists(host: &crate::plugins::PluginHost, id: &str) -> bool {
     host.descriptors().iter().any(|d| d.id == id)
 }
 
+/// 已挂载的描述符与磁盘 manifest 是否有内容 diff（name/version/description/
+/// author/package 任一变化都算 stale）——stale 的数据插件需要重挂载。
+/// 挂在函数级便于单测（`reload_data_plugins` 本体依赖完整 Agent）。
+fn data_plugin_stale(
+    current: &echo_plugin::PluginDescriptor,
+    manifest: &echo_plugin::PluginManifest,
+) -> bool {
+    current.name != manifest.name
+        || current.version != manifest.version
+        || current.description != manifest.description
+        || current.author != manifest.author
+        || current.package != manifest.package_id()
+}
+
 /// After a delay, generate and send one interim reply for a still-running
 /// branch, unless the branch already produced a visible reply or finished.
 #[allow(clippy::too_many_arguments)]
@@ -4439,6 +4464,41 @@ pub mod tests {
             message.contains("请求失败") || message.contains("请求超时"),
             "unexpected message: {message}"
         );
+    }
+
+    #[test]
+    fn data_plugin_stale_detects_manifest_diff() {
+        use echo_plugin::{PluginDescriptor, PluginKind, PluginManifest};
+        let manifest = PluginManifest::builtin(
+            "acme.tools.weather",
+            "Weather",
+            "1.0.0",
+            PluginKind::Tool,
+            "weather",
+            "old desc",
+        );
+        let desc = PluginDescriptor::from(&manifest);
+
+        // 完全一致：不 stale
+        assert!(!super::data_plugin_stale(&desc, &manifest));
+
+        // version 变化 → stale
+        let mut v2 = manifest.clone();
+        v2.version = "1.1.0".into();
+        assert!(super::data_plugin_stale(&desc, &v2));
+
+        // description 变化 → stale
+        let mut d2 = manifest.clone();
+        d2.description = "new desc".into();
+        assert!(super::data_plugin_stale(&desc, &d2));
+
+        // 包归属变化（声明 package）→ stale
+        let p2 = manifest.clone().with_package("acme.weather-suite");
+        assert!(super::data_plugin_stale(&desc, &p2));
+
+        // 未声明 package 时 package_id = 插件 id，不算 stale
+        let same = manifest.clone();
+        assert!(!super::data_plugin_stale(&desc, &same));
     }
 
     #[test]
