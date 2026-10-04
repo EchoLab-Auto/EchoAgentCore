@@ -170,6 +170,13 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   路由按「会话归属 > 人格归属 > activeCore」并带一致性守卫——目标 core 不
   拥有人格时重定向到拥有人格的 core。否则会把 A core 的 `default` 发给
   B core，得到「智能体 default 不存在」。
+- **运行态复合键 `(core, id)`**（2026-10 Phase 0）：会话 id
+  （`local:tui::local_user`）、shell 会话 id（每 core 都从 `sh-1` 起）、人格
+  id 在各 core 上可相同，因此 Panel 的 `activities` / `tasks` / `shellTerminals`
+  / `teamTimelines` / `workspaceGitBySession` / `workspaceFiles` 及磁盘
+  trunk 缓存都必须用复合键（`core 为空时退化为裸 id`，单上游零变化）；同名
+  跨 core 不再互相覆盖/串显。引导期裸广播的只读命令白名单（中继
+  `is_readonly_command`）须与 Panel 引导命令对齐，否则多上游下被静默拒收。
 - `round_robin`：在线节点轮转
 - `prefer:<name>`：亲和定向（离线退 least_busy）
 
