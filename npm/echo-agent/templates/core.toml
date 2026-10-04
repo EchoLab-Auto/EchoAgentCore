@@ -86,8 +86,7 @@ management_access_token = ""
 region_name = ""
 
 [federation]
-# Core↔Core 联邦链路（多机去中心化）：缺省启用；不配 listen / peer 时为空转，
+# Core↔Core 联邦链路（多机去中心化）：**始终开启**；不配 listen / peer 时为空转，
 # 无网络暴露。跨容器/跨机配对再填 listen 与 [federation.peers.*]。
-enabled = true
 # listen = "0.0.0.0:3133"
 # node_name = "workstation"

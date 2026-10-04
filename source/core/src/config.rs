@@ -205,8 +205,6 @@ impl Default for CoreSection {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct FederationSection {
-    /// 联邦开关（true 才监听/连出）。
-    pub enabled: bool,
     /// 联邦监听地址（如 `0.0.0.0:3133`）；空 = 不监听（纯连出）。
     pub listen: String,
     /// 人类可读节点别名（Hello 中携带；缺省仅 node_id）。
@@ -218,9 +216,6 @@ pub struct FederationSection {
 impl Default for FederationSection {
     fn default() -> Self {
         Self {
-            // 默认启用：无 listen / 无 peer 时是安全的空转（无网络暴露），
-            // 但让 Panel 的联邦页（状态/邀请/添加 peer）开箱可用。
-            enabled: true,
             listen: String::new(),
             node_name: None,
             peers: std::collections::BTreeMap::new(),

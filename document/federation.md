@@ -16,18 +16,17 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 `source/backend/echo-agent/src/packages/federation`（执行层）+
 `source/core/src/main.rs`（组合根装配与路由泵）。
 
-## 未启用时的行为（`enabled = false`）
+## 始终开启（无 `enabled` 开关）
 
-- `RequestFederationStatus` 仍回一个**正常快照**（`enabled: false` + 本机
-  `node_id`/`node_name`，peers 为空），而不是 Error——Panel 据此显示"未启用"，
-  无需靠"没有响应"去推断；也不会在联邦页弹错误提示。
-- 联邦**写操作**（`SaveFederationPeer` / `DeleteFederationPeer` /
-  `RequestFederationInvite` / `MigrateSession`）仍明确报错"联邦未启用
-  （[federation] enabled = false）"。
-- **自更新与联邦无关**：`RequestSelfUpdate` / `RequestSelfUpdateStatus`
-  在未启用联邦时照常工作（曾因共用同一处理器而被误报为"联邦未启用"）。
-- 启用：在 `core.toml` 添加 `[federation] enabled = true`（+ `listen`/`node_name`/
-  `[federation.peers.*]`）后重启该节点。
+联邦已**取消开关、恒定开启**：
+
+- 不配 `listen` → 不监听；无 `[federation.peers.*]` → 不连出。单节点部署因此
+  **零网络暴露**，但联邦管理面（状态查询 / 邀请串 / 添加 peer）始终可用。
+- `RequestFederationStatus` 恒回 `enabled: true` 的正常快照。
+- 一旦配置 `listen` 或 peer，互信边界即生效（≈ SSH 免密）——务必 per-peer
+  token + `allow_tools`/`allow_queries` 收敛。
+- **自更新与联邦独立**（曾共用处理器，已解耦）。
+- 旧配置里的 `enabled = false` 会被忽略（字段已移除）。
 
 ## 设计原则
 
@@ -90,8 +89,7 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 
 ```toml
 [federation]
-# 缺省即 true；不配 listen / peer 时为空转（无监听、无连出、无网络暴露）
-enabled = true
+# 始终开启（无 enabled 开关）；不配 listen / peer 时为空转（无网络暴露）
 listen = "0.0.0.0:3133"
 node_name = "workstation"
 

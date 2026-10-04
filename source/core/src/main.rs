@@ -186,8 +186,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     // ---- federation link（Phase 1：仅链路；工具路由 Phase 2 消费）----
-    // 缺省整段关闭（[federation] enabled 缺省 false），单节点零行为变化。
-    let federation = if cfg.federation.enabled {
+    // 联邦**始终开启**（已取消 enabled 开关）：不配 listen 则不监听，无 peer
+    // 则不连出——单节点无网络暴露，但联邦管理面永远可用。
+    let federation = {
         let peers = cfg
             .federation
             .peers
@@ -370,26 +371,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 },
             ));
         }
-        Some((rt, event_rx, peer_policies))
-    } else {
-        None
+        (rt, event_rx, peer_policies)
     };
-    info!(enabled = federation.is_some(), "federation link configured");
-    // 联邦 / 自更新命令处理器：**无条件注册**。`rt = None`（未启用联邦）时，
-    // 自更新照常可用、联邦状态查询回 enabled=false 快照，其余联邦写操作报错。
+    info!("federation link configured (always on)");
+    // 联邦 / 自更新命令处理器（联邦始终开启，无需条件注册）。
     {
-        let rt_handler: Option<Arc<FederationRuntime>> =
-            federation.as_ref().map(|(rt, _, _)| Arc::clone(rt));
-        let node_id = node_doc.node_id.clone();
-        let node_name = cfg.federation.node_name.clone();
+        let rt_handler = Arc::clone(&federation.0);
         echo_agent::agent::set_federation_command_handler(std::sync::Arc::new(
             move |agent, cmd| {
                 let rt = rt_handler.clone();
-                let node_id = node_id.clone();
-                let node_name = node_name.clone();
                 let emit = agent.emit_handle();
                 Box::pin(async move {
-                    handle_federation_command(emit, cmd, rt, node_id, node_name).await;
+                    handle_federation_command(emit, cmd, rt).await;
                 })
             },
         ));
@@ -823,7 +816,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
     // 联邦路由泵（Phase 2）：supervisor 就绪后启动（代理工具注册需要全部
     // persona 的注册表）。
-    if let Some((rt, event_rx, peer_policies)) = federation {
+    {
+        let (rt, event_rx, peer_policies) = federation;
         // 负载上报注入（P2 调度器）：握手 hello 时实时取全部 persona
         // 的活跃 turn 总数——对端调度器拿到实时负载而非启动快照。
         let load_supervisor = supervisor.clone();
@@ -1727,47 +1721,13 @@ async fn broadcast_federation_status(
 
 /// 联邦管理命令处理（SaveFederationPeer / DeleteFederationPeer /
 /// RequestFederationStatus / RequestFederationInvite）。
-/// 联邦 / 自更新命令处理器（**无条件注册**）。
-///
-/// `rt = None` = 本节点未启用联邦。此时：
-/// - **自更新照常工作**（自更新与联邦无关——曾经被错误地绑在一起，导致非
-///   联邦部署点「自更新」也报"联邦未启用"）；
-/// - `RequestFederationStatus` 回一个 `enabled=false` 的正常快照（而不是
-///   Error），Panel 据此显示"未启用"，无需靠"没有响应"去猜；
-/// - 其余联邦写操作（Save/Delete peer、Invite、Migrate）明确报错。
+/// 联邦 / 自更新命令处理器（联邦始终开启；自更新与联邦共用此入口，但彼此
+/// 独立——曾因"联邦关闭时整段不注册"导致自更新也被报"联邦未启用"）。
 async fn handle_federation_command(
     emit: std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>,
     cmd: echo_protocol::BackendCommand,
-    rt: Option<Arc<FederationRuntime>>,
-    node_id: String,
-    node_name: Option<String>,
+    rt: Arc<FederationRuntime>,
 ) {
-    let Some(rt) = rt else {
-        match cmd {
-            echo_protocol::BackendCommand::RequestSelfUpdate => {
-                handle_self_update(emit.clone()).await;
-            }
-            echo_protocol::BackendCommand::RequestSelfUpdateStatus => {
-                emit(read_self_update_status().await);
-            }
-            echo_protocol::BackendCommand::RequestFederationStatus => {
-                emit(echo_protocol::BackendEvent::FederationStatus {
-                    enabled: false,
-                    node_id,
-                    node_name,
-                    listen: String::new(),
-                    peers: Vec::new(),
-                });
-            }
-            _ => {
-                emit(echo_protocol::BackendEvent::Error {
-                    session_id: None,
-                    message: "联邦未启用（[federation] enabled = false）".into(),
-                });
-            }
-        }
-        return;
-    };
     match cmd {
         echo_protocol::BackendCommand::RequestFederationStatus => {
             emit(rt.status_event().await);
@@ -2889,7 +2849,7 @@ mod logging_tests {
 
 #[cfg(test)]
 mod core_util_tests {
-    use super::{chunk_utf8, handle_federation_command, handle_session_import, ImportOutcome};
+    use super::{chunk_utf8, handle_session_import, ImportOutcome};
     use crate::agent_supervisor::AgentSupervisor;
     use echo_agent::{AgentConfig, TeamMember};
 
@@ -2968,56 +2928,6 @@ mod core_util_tests {
         // 乱序：先到第 2 块不推进前缀（ack 仍 1）。
         let (acked, _) = handle_session_import(&supervisor, &import_frame(2, 3, ""), &mut imports);
         assert_eq!(acked, 1);
-    }
-
-    fn capture_sink() -> (
-        std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>,
-        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    ) {
-        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink = log.clone();
-        let emit: std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync> =
-            std::sync::Arc::new(move |event| {
-                sink.lock().unwrap().push(format!("{event:?}"));
-            });
-        (emit, log)
-    }
-
-    /// 未启用联邦时：`RequestFederationStatus` 回**正常快照**（enabled=false），
-    /// 而不是 Error —— Panel 据此显示"未启用"，无需靠"没有响应"去猜。
-    #[tokio::test]
-    async fn federation_status_disabled_returns_snapshot() {
-        let (emit, log) = capture_sink();
-        handle_federation_command(
-            emit,
-            echo_protocol::BackendCommand::RequestFederationStatus,
-            None,
-            "node-x".into(),
-            Some("本机".into()),
-        )
-        .await;
-        let captured = log.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert!(captured[0].contains("FederationStatus"));
-        assert!(captured[0].contains("enabled: false"));
-        assert!(captured[0].contains("node-x"));
-    }
-
-    /// 未启用联邦时：联邦写操作仍明确报错。
-    #[tokio::test]
-    async fn federation_write_disabled_reports_error() {
-        let (emit, log) = capture_sink();
-        handle_federation_command(
-            emit,
-            echo_protocol::BackendCommand::RequestFederationInvite,
-            None,
-            "node-x".into(),
-            None,
-        )
-        .await;
-        let captured = log.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert!(captured[0].contains("联邦未启用"));
     }
 
     /// 防御：非法分块头（total=0）立即回失败，不污染缓冲。
