@@ -45,6 +45,29 @@ impl Agent {
 
     /// Handle the QQ-specific command variants. Called by `apply_command`
     /// when the command is one of the QQ domain.
+    /// 把名单/模式同步到**其余 QQ 实例**（多实例广播，2026-10 巡检 P1）。
+    ///
+    /// 名单/模式持久化在共享 `[adapters.qq]` 段——只寻址单实例应用会让
+    /// 其余实例的内存名单与磁盘配置分叉到重启。广播后各实例行为一致；
+    /// `skip` 为已应用的实例（避免重复 emit/重复持久化）。逐实例失败
+    /// 仅记日志（目标实例的命令已成功，广播是 best-effort 对齐）。
+    fn broadcast_to_other_qq_adapters(
+        &self,
+        skip: &str,
+        apply: impl Fn(&dyn echo_adapter::traits::Adapter),
+    ) {
+        for name in self.adapters.names() {
+            if name == skip {
+                continue;
+            }
+            if let Some(other) = self.adapters.get(&name) {
+                if other.platform() == "qq" {
+                    apply(other.as_ref());
+                }
+            }
+        }
+    }
+
     pub(crate) async fn apply_qq_command(&self, cmd: BackendCommand) {
         match cmd {
             BackendCommand::UpdateQqAllowlist {
@@ -59,7 +82,10 @@ impl Agent {
                             user_ids.iter().map(|id| id.to_string()).collect();
                         let group_strs: Vec<String> =
                             group_ids.iter().map(|id| id.to_string()).collect();
-                        ad.update_allowlist(user_strs, group_strs);
+                        ad.update_allowlist(user_strs.clone(), group_strs.clone());
+                        self.broadcast_to_other_qq_adapters(ad.name(), move |other| {
+                            other.update_allowlist(user_strs.clone(), group_strs.clone());
+                        });
                         self.emit_qq_filter_config(&ad, adapter.clone());
                         self.emit(BackendEvent::Error {
                             session_id: None,
@@ -84,7 +110,10 @@ impl Agent {
                             user_ids.iter().map(|id| id.to_string()).collect();
                         let group_strs: Vec<String> =
                             group_ids.iter().map(|id| id.to_string()).collect();
-                        ad.update_denylist(user_strs, group_strs);
+                        ad.update_denylist(user_strs.clone(), group_strs.clone());
+                        self.broadcast_to_other_qq_adapters(ad.name(), move |other| {
+                            other.update_denylist(user_strs.clone(), group_strs.clone());
+                        });
                         self.emit_qq_filter_config(&ad, adapter.clone());
                         self.emit(BackendEvent::Error {
                             session_id: None,

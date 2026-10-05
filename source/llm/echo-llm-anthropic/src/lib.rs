@@ -20,6 +20,26 @@ pub struct AnthropicProvider {
     reasoning_effort: echo_defs::ReasoningEffort,
 }
 
+/// 读空闲超时（2026-10 巡检 P1）：上游连接建立后慢速滴流（每秒 1 字节）
+/// 可以挂住 turn 数小时——connect_timeout 管不到已建立的连接。只杀
+/// "无字节流动"：send 等首字节 / text 读体各自的空闲窗口；总时长仍
+/// 不设限（合法长响应不受误伤）。
+const READ_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// 包装一个 await：超过 READ_IDLE_TIMEOUT 无进展判为空闲超时。
+async fn with_idle_timeout<F, T>(future: F) -> Result<T, LlmError>
+where
+    F: std::future::Future<Output = Result<T, reqwest::Error>>,
+{
+    match tokio::time::timeout(READ_IDLE_TIMEOUT, future).await {
+        Ok(result) => result.map_err(|e| LlmError::Http(e.to_string())),
+        Err(_) => Err(LlmError::Http(format!(
+            "read idle timeout: no bytes from upstream for {}s",
+            READ_IDLE_TIMEOUT.as_secs()
+        ))),
+    }
+}
+
 impl AnthropicProvider {
     pub fn new(base_url: &str, api_key: &str, model: &str) -> Self {
         Self {
@@ -70,21 +90,16 @@ impl LlmProvider for AnthropicProvider {
     async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError> {
         let body =
             build_request_body_with_reasoning(request, false, self.thinking, self.reasoning_effort);
-        let resp = self
+        let req = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             // Anthropic 官方与 DeepSeek /anthropic 端点均用 x-api-key 认证
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError::Http(e.to_string()))?;
+            .json(&body);
+        let resp = with_idle_timeout(req.send()).await?;
         let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::Http(e.to_string()))?;
+        let text = with_idle_timeout(resp.text()).await?;
         if !status.is_success() {
             return Err(LlmError::Api(format!(
                 "HTTP {status}: {}{}",
@@ -148,15 +163,13 @@ impl LlmProvider for AnthropicProvider {
     ) -> Result<(), LlmError> {
         let body =
             build_request_body_with_reasoning(request, true, self.thinking, self.reasoning_effort);
-        let resp = self
+        let req = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| LlmError::Http(e.to_string()))?;
+            .json(&body);
+        let resp = with_idle_timeout(req.send()).await?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp
