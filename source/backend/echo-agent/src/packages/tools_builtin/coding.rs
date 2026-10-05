@@ -487,11 +487,11 @@ fn parse_node_path(raw: &str) -> Option<Result<(String, String), String>> {
 
 /// 远程路径分流层：包在 5 个文件工具外，对 agent 透明（同名同 schema）。
 ///
-/// `path` 参数带 `node://<peer>/…` 前缀时，经联邦 Invoke 把调用转发到
+/// `path` 参数带 `node://<peer>/…` 前缀、或 `command` 参数带
+/// `node://<peer>/<命令>` 前缀（bash）时，经联邦 Invoke 把调用转发到
 /// 对端同名工具执行（出口见 [`crate::federation::remote_invoker`]，装配层
-/// 注入；对端拒绝——白名单/路径沙箱——原样透传为 `ToolError`）；其余路径
-/// 原样走本地逻辑。`RunCommandTool` 不包：远程 bash 已有 `<peer>:bash`
-/// 代理工具，且 shell 无单一路径参数可分流。
+/// 注入；对端拒绝——白名单/路径沙箱——原样透传为 `ToolError`）；其余
+/// 原样走本地逻辑。
 pub struct RemoteAwareTool {
     inner: Arc<dyn Tool>,
     /// 装配期快照；`None` 时 execute 再回查全局出口（联邦后接线场景）。
@@ -533,7 +533,12 @@ impl Tool for RemoteAwareTool {
             .get("path")
             .and_then(|v| v.as_str())
             .map(|p| p.starts_with("node://"))
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || arguments
+                .get("command")
+                .and_then(|v| v.as_str())
+                .map(|c| c.starts_with("node://"))
+                .unwrap_or(false);
         if is_remote {
             Some(REMOTE_TIMEOUT_HINT)
         } else {
@@ -541,22 +546,44 @@ impl Tool for RemoteAwareTool {
         }
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-        let Some(parsed) = parse_node_path(raw_path) else {
+        // 分流判定：文件工具看 `path` 参数；bash 看 `command` 前缀
+        // （`node://<peer>/<命令>`——把整条命令发到对端执行）。
+        let node_target: Option<Result<(String, String), String>> =
+            if let Some(raw_path) = args.get("path").and_then(|v| v.as_str()) {
+                parse_node_path(raw_path)
+            } else if let Some(raw_cmd) = args.get("command").and_then(|v| v.as_str()) {
+                // 命令语义：node://<peer>/<命令>——命令本身不以 / 开头
+                // （与路径语义区分；`node://<peer>/` 前缀剥掉后去前导斜杠）。
+                raw_cmd
+                    .strip_prefix("node://")
+                    .map(|rest| match rest.split_once('/') {
+                        Some((peer, cmd)) if !peer.is_empty() && !cmd.is_empty() => {
+                            Ok((peer.to_string(), cmd.to_string()))
+                        }
+                        _ => Err("node:// 命令需形如 node://<peer>/<命令>".into()),
+                    })
+            } else {
+                None
+            };
+        let Some(parsed) = node_target else {
             return self.inner.execute(args).await;
         };
-        let (peer, remote_path) = parsed.map_err(ToolError::InvalidArguments)?;
+        let (peer, remote) = parsed.map_err(ToolError::InvalidArguments)?;
         let invoker = self
             .invoker
             .clone()
             .or_else(crate::federation::remote_invoker)
             .ok_or_else(|| {
                 ToolError::Execution(
-                    "联邦未接线：node:// 远程文件操作不可用（需联邦启用且 peer 在线）".into(),
+                    "联邦未接线：node:// 远程操作不可用（需联邦启用且 peer 在线）".into(),
                 )
             })?;
         let mut remote_args = args;
-        remote_args["path"] = json!(remote_path);
+        if remote_args.get("path").is_some() {
+            remote_args["path"] = json!(remote);
+        } else {
+            remote_args["command"] = json!(remote);
+        }
         invoker(peer, self.inner.name().to_string(), remote_args)
             .await
             .map_err(ToolError::Execution)
@@ -770,9 +797,12 @@ pub fn register_coding_tools(registry: &mut ToolRegistry, workspace: PathBuf) {
     registry.register(RemoteAwareTool::wrap(Arc::new(EditFileTool::new(
         workspace.clone(),
     ))));
-    registry.register(Arc::new(RunCommandTool::new(workspace)));
+    registry.register(RemoteAwareTool::wrap(Arc::new(RunCommandTool::new(
+        workspace,
+    ))));
 }
 
+#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1231,6 +1261,44 @@ mod tests {
         );
         assert!(out.starts_with("50 matches"), "summary: {out}");
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn remote_aware_bash_command_prefix_dispatches_to_invoker() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let invoker: crate::federation::RemoteInvoker = Arc::new(move |peer, tool, args| {
+            calls2.fetch_add(1, Ordering::SeqCst);
+            let peer = peer.to_string();
+            let tool = tool.to_string();
+            Box::pin(async move {
+                assert_eq!(peer, "gpu-box");
+                assert_eq!(tool, "bash");
+                let cmd = args["command"].as_str().unwrap_or("").to_string();
+                assert_eq!(cmd, "cargo build", "node:// 前缀应被剥离: {cmd}");
+                Ok(format!("remote-ok:{cmd}"))
+            })
+        });
+        let tool = RemoteAwareTool {
+            inner: Arc::new(RunCommandTool::new(PathBuf::from("/tmp"))),
+            invoker: Some(invoker),
+            description: "t".into(),
+        };
+        let out = tool
+            .execute(json!({"command": "node://gpu-box/cargo build"}))
+            .await
+            .expect("remote bash");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(out.contains("remote-ok:cargo build"), "{out}");
+
+        // 本地命令不触发 invoker（走本机执行）。
+        let out = tool
+            .execute(json!({"command": "echo local-ok"}))
+            .await
+            .expect("local bash");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "local must not invoke");
+        assert!(out.contains("local-ok"), "{out}");
     }
 
     // ── P3-1：远程路径分流层（RemoteAwareTool）──
