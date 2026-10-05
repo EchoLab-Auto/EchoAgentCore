@@ -1,15 +1,20 @@
 # ============================================================
-# EchoAgentPanel + NapCat (QQ) 一键部署
+# NapCat（QQ 协议端）容器编排——**仅 NapCat，不含 Core/Panel**
 #
-# 启动:   docker compose up -d
-# 停止:   docker compose down
-# 日志:   docker compose logs -f napcat
+# 本文件供宿主安装（systemd）路径使用：Core 经 `docker compose -f
+# docker-compose.yml` 起停 NapCat 容器（[adapters.qq].napcat_auto_start）。
+# 容器化一键部署（core+panel+napcat 三容器）请走 npm 编排：
+#   npx @echolab-auto/echo-agent up   （见 npm/echo-agent/）
+#
+# 手动操作:
+#   启动:   docker compose up -d
+#   停止:   docker compose down
+#   日志:   docker compose logs -f napcat
 #
 # 首次使用:
 #   1. docker compose up -d
 #   2. 浏览器打开 http://localhost:6099 扫码登录 QQ
-#   3. 运行配置脚本: bash napcat/setup.sh
-#   4. 启动 EchoAgentPanel: cargo run --release
+#   3. （通常免配——Core 会自动配置反向 WS；手动配置见 napcat/setup.sh）
 # ============================================================
 
 services:
