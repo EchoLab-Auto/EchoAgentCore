@@ -5,6 +5,27 @@
 //! [`WorkspaceStore`](crate::workspace::WorkspaceStore) 持有并即时持久化；
 //! git 状态是只读采集（`spawn_blocking` + 超时保护）。
 
+/// 远程 git 状态占位（对端离线/旧版/失败降级）：保留 `node://` 目录
+/// 标注与错误说明，Panel 显示为不可采集条目（与旧硬编码占位同形态）。
+fn remote_git_placeholder(
+    qualified_directory: &str,
+    message: String,
+) -> echo_protocol::WorkspaceGitInfo {
+    echo_protocol::WorkspaceGitInfo {
+        directory: qualified_directory.to_string(),
+        is_repo: false,
+        branch: None,
+        ahead: 0,
+        behind: 0,
+        staged: 0,
+        modified: 0,
+        untracked: 0,
+        changed_files: Vec::new(),
+        last_commit: None,
+        error: Some(message),
+    }
+}
+
 use crate::agent::Agent;
 use crate::command::BackendCommand;
 use crate::event::BackendEvent;
@@ -84,6 +105,61 @@ impl Agent {
                 };
                 let directories = session.directories.clone();
                 let requested = path.clone();
+                // 跨机工作区（2026-10）：`node://<peer>/<绝对路径>` 前缀的
+                // 路径经联邦 Query(WorkspaceFiles) 拉对端目录——文件浏览器
+                // 因此能翻远程目录（此前远程目录只能本机占位）。
+                if let Some(rest) = requested.strip_prefix("node://") {
+                    let (peer, remote_path) = match rest.split_once('/') {
+                        Some((p, r)) if !p.is_empty() => (p.to_string(), format!("/{r}")),
+                        _ => {
+                            self.emit(BackendEvent::WorkspaceFiles {
+                                team_id: self.team_id(),
+                                session_id,
+                                path,
+                                entries: Vec::new(),
+                                error: Some("node:// 路径需形如 node://<peer>/<绝对路径>".into()),
+                            });
+                            return;
+                        }
+                    };
+                    let result = match crate::federation::remote_querier() {
+                        Some(querier) => {
+                            querier(
+                                peer.clone(),
+                                echo_federation::QueryKind::WorkspaceFiles,
+                                remote_path,
+                            )
+                            .await
+                        }
+                        None => Err("联邦未接线：远程文件浏览不可用".into()),
+                    };
+                    match result {
+                        Ok(payload) => {
+                            let entries =
+                                serde_json::from_value::<Vec<echo_protocol::WorkspaceFileEntry>>(
+                                    payload.get("entries").cloned().unwrap_or_default(),
+                                )
+                                .unwrap_or_default();
+                            self.emit(BackendEvent::WorkspaceFiles {
+                                team_id: self.team_id(),
+                                session_id,
+                                path,
+                                entries,
+                                error: None,
+                            });
+                        }
+                        Err(message) => {
+                            self.emit(BackendEvent::WorkspaceFiles {
+                                team_id: self.team_id(),
+                                session_id,
+                                path,
+                                entries: Vec::new(),
+                                error: Some(message),
+                            });
+                        }
+                    }
+                    return;
+                }
                 let collected = tokio::task::spawn_blocking(move || {
                     let resolved =
                         crate::workspace::resolve_within_directories(&directories, &requested)?;
@@ -123,42 +199,76 @@ impl Agent {
                     self.emit_workspace_error(format!("工作区会话 {session_id} 不存在"));
                     return;
                 };
-                // federation Phase 0：远程目录跳过本机采集，以占位条目呈现。
+                // 跨机工作区（2026-10）：远程目录经联邦
+                // Query(WorkspaceGitStatus) 拉取对端 git 状态；本机目录照旧
+                // spawn_blocking 采集。对端离线/旧版不认识该查询种类时降级
+                // 为占位条目（与原行为一致，error 注明原因）。
                 let directories = session.directories.clone();
-                let collected = tokio::task::spawn_blocking(move || {
-                    directories
-                        .iter()
-                        .map(|dir| match dir.node() {
-                            Some(node) => echo_protocol::WorkspaceGitInfo {
-                                directory: format!("node://{node}/{}", dir.path()),
-                                is_repo: false,
-                                branch: None,
-                                ahead: 0,
-                                behind: 0,
-                                staged: 0,
-                                modified: 0,
-                                untracked: 0,
-                                changed_files: Vec::new(),
-                                last_commit: None,
-                                error: Some("远程目录：本机不可采集".into()),
-                            },
-                            None => crate::workspace::collect_dir_git(dir.path()),
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .await;
-                match collected {
-                    Ok(directories) => {
-                        self.emit(BackendEvent::WorkspaceGitStatus {
-                            team_id: self.team_id(),
-                            session_id,
-                            directories,
-                        });
-                    }
-                    Err(error) => {
-                        self.emit_workspace_error(format!("git 状态采集失败: {error}"));
+                let mut infos: Vec<echo_protocol::WorkspaceGitInfo> = Vec::new();
+                let mut local_paths: Vec<String> = Vec::new();
+                for dir in &directories {
+                    match dir.node() {
+                        Some(node) => {
+                            let qualified = format!("node://{node}/{}", dir.path());
+                            let info = match crate::federation::remote_querier() {
+                                Some(querier) => {
+                                    match querier(
+                                        node.to_string(),
+                                        echo_federation::QueryKind::WorkspaceGitStatus,
+                                        dir.path().to_string(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(payload) => {
+                                            match serde_json::from_value::<
+                                                echo_protocol::WorkspaceGitInfo,
+                                            >(
+                                                payload.get("git").cloned().unwrap_or_default()
+                                            ) {
+                                                Ok(mut info) => {
+                                                    info.directory = qualified.clone();
+                                                    info
+                                                }
+                                                Err(e) => remote_git_placeholder(
+                                                    &qualified,
+                                                    format!("远程结果解析失败: {e}"),
+                                                ),
+                                            }
+                                        }
+                                        Err(message) => remote_git_placeholder(&qualified, message),
+                                    }
+                                }
+                                None => remote_git_placeholder(
+                                    &qualified,
+                                    "联邦未接线：远程 git 状态不可用".into(),
+                                ),
+                            };
+                            infos.push(info);
+                        }
+                        None => local_paths.push(dir.path().to_string()),
                     }
                 }
+                if !local_paths.is_empty() {
+                    let collected = tokio::task::spawn_blocking(move || {
+                        local_paths
+                            .iter()
+                            .map(|p| crate::workspace::collect_dir_git(p))
+                            .collect::<Vec<_>>()
+                    })
+                    .await;
+                    match collected {
+                        Ok(mut local_infos) => infos.append(&mut local_infos),
+                        Err(error) => {
+                            self.emit_workspace_error(format!("git 状态采集失败: {error}"));
+                            return;
+                        }
+                    }
+                }
+                self.emit(BackendEvent::WorkspaceGitStatus {
+                    team_id: self.team_id(),
+                    session_id,
+                    directories: infos,
+                });
             }
             _ => {}
         }

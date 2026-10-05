@@ -334,6 +334,46 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // → InvokeRouter::invoke + Federation::send_to → 等终态。
         {
             let rt_invoke = rt.clone();
+            // 远程只读查询出口（跨机工作区 git/文件浏览用）：与
+            // remote_invoker 同生命周期（peer 离线即失败，fail-closed）。
+            {
+                let rt_query = rt.clone();
+                echo_agent::federation::set_remote_querier(std::sync::Arc::new(
+                    move |peer, kind, subject| {
+                        let rt = rt_query.clone();
+                        Box::pin(async move {
+                            let Some(node_id) = rt.peer_names.read().await.get(&peer).cloned()
+                            else {
+                                return Err(format!(
+                                    "远程节点「{peer}」不在线或不存在（跨机工作区查询）"
+                                ));
+                            };
+                            let (request, pending) =
+                                rt.router
+                                    .query(&node_id, kind, subject, String::new(), 0, 0);
+                            if rt
+                                .federation
+                                .send_to(&node_id, echo_federation::FedFrame::Query(request))
+                                .await
+                                .is_err()
+                            {
+                                return Err(format!("远程节点「{peer}」链路发送失败"));
+                            }
+                            let result = tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                pending.wait(),
+                            )
+                            .await
+                            .map_err(|_| format!("远程节点「{peer}」查询超时"))??;
+                            if !result.success {
+                                return Err(result.output);
+                            }
+                            serde_json::from_str(&result.output)
+                                .map_err(|e| format!("远程查询结果解析失败: {e}"))
+                        })
+                    },
+                ));
+            }
             echo_agent::federation::set_remote_invoker(std::sync::Arc::new(
                 move |peer, tool, args| {
                     let rt = rt_invoke.clone();
@@ -2076,6 +2116,32 @@ async fn handle_federation_query(
             .await;
             match collected {
                 Ok(Ok(entries)) => ok(serde_json::json!({"entries": entries})),
+                Ok(Err(message)) => err(&message),
+                Err(e) => err(&format!("采集失败: {e}")),
+            }
+        }
+        QueryKind::WorkspaceGitStatus => {
+            // 远程 git 状态（跨机工作区）：subject = 目录绝对路径；与
+            // WorkspaceFiles 同一沙箱（限本机各 persona 工作区目录并集）。
+            let dir = req.subject.trim().to_string();
+            let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
+            for persona in personas.personas() {
+                if let Some(store) = persona.agent.workspace_store() {
+                    let (sessions, _) = store.snapshot();
+                    for s in sessions {
+                        all_dirs.extend(s.directories);
+                    }
+                }
+            }
+            let collected = tokio::task::spawn_blocking(move || {
+                let resolved = echo_agent::workspace::resolve_within_directories(&all_dirs, &dir)?;
+                Ok::<_, String>(echo_agent::workspace::collect_dir_git(
+                    &resolved.to_string_lossy(),
+                ))
+            })
+            .await;
+            match collected {
+                Ok(Ok(info)) => ok(serde_json::json!({"git": info})),
                 Ok(Err(message)) => err(&message),
                 Err(e) => err(&format!("采集失败: {e}")),
             }

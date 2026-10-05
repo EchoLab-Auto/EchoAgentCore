@@ -115,6 +115,32 @@ pub fn remote_invoker() -> Option<RemoteInvoker> {
     REMOTE_INVOKER.get().cloned()
 }
 
+/// 远程**只读查询**发起函数（Query 版 RemoteInvoker，跨机工作区用）：
+/// `(peer, kind, subject) → Result<payload_json, err>`。由组合根注入
+/// （需要 Federation + InvokeRouter 句柄与在线 peer 反查）。
+pub type RemoteQuerier = std::sync::Arc<
+    dyn Fn(
+            String,
+            echo_federation::QueryKind,
+            String,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
+        > + Send
+        + Sync,
+>;
+
+static REMOTE_QUERIER: std::sync::OnceLock<RemoteQuerier> = std::sync::OnceLock::new();
+
+/// 组合根装配联邦时注入一次（与 [`set_remote_invoker`] 同装配点）。
+pub fn set_remote_querier(querier: RemoteQuerier) {
+    let _ = REMOTE_QUERIER.set(querier);
+}
+
+/// 取当前远程查询出口（None = 联邦未接线）。
+pub fn remote_querier() -> Option<RemoteQuerier> {
+    REMOTE_QUERIER.get().cloned()
+}
+
 /// 联邦沙箱：绝对路径是否落在给定工作区根并集内（canonicalize 后按
 /// 路径分量前缀判定；不存在的路径退回其父链最近已存在祖先）。
 /// 用于执行端拒绝"工作区外绝对路径"的远程文件调用（防 ~/.ssh 等读取）。

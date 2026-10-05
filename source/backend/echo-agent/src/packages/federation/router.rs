@@ -88,6 +88,7 @@ impl ExecutorPolicy {
         let key = match kind {
             QueryKind::SessionSnapshot => "session_snapshot",
             QueryKind::WorkspaceFiles => "workspace_files",
+            QueryKind::WorkspaceGitStatus => "workspace_git_status",
             QueryKind::NodeStatus => unreachable!(),
         };
         self.allow_queries.iter().any(|q| q == "*" || q == key)

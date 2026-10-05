@@ -150,14 +150,25 @@ impl WorkspaceStore {
         // 文件工具可经 node:// 前缀操作远程目录，git/文件浏览仍只作用于本机。
         let mut dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
         for raw in &session.directories {
-            let normalized = normalize_directory(raw.path());
+            // 跨机工作区（2026-10）：目录字符串支持 `node://<peer>/<绝对路径>`
+            // 写法——untagged 线格式下 Panel 仍发纯字符串数组，Core 在这里
+            // 解析为 Qualified 远程目录（此前远程目录无从经 Panel 录入，
+            // 只能手写配置文件）。
+            let (node, path_raw) = match raw.path().strip_prefix("node://") {
+                Some(rest) => match rest.split_once('/') {
+                    Some((p, r)) if !p.is_empty() => (Some(p.to_string()), format!("/{r}")),
+                    _ => (None, raw.path().to_string()),
+                },
+                None => (raw.node().map(str::to_string), raw.path().to_string()),
+            };
+            let normalized = normalize_directory(&path_raw);
             if normalized.is_empty() {
                 continue;
             }
-            let entry = match raw.node() {
+            let entry = match node {
                 Some(node) => echo_protocol::WorkspaceDirectory::Qualified {
                     path: normalized,
-                    node: Some(node.to_string()),
+                    node: Some(node),
                 },
                 None => echo_protocol::WorkspaceDirectory::Local(normalized),
             };
@@ -984,6 +995,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&other);
         let _ = std::fs::remove_dir_all(&sibling);
+    }
+
+    #[test]
+    fn upsert_parses_node_qualified_directory_strings() {
+        let (store, _path) = temp_store("node-dirs");
+        let session = store
+            .upsert(echo_protocol::WorkspaceSessionInfo {
+                id: String::new(),
+                name: "cross-machine".into(),
+                description: String::new(),
+                directories: vec![
+                    echo_protocol::WorkspaceDirectory::from("/srv/local-repo"),
+                    echo_protocol::WorkspaceDirectory::from("node://gpu-box/srv/remote-repo"),
+                ],
+            })
+            .expect("upsert");
+        assert_eq!(session.directories.len(), 2);
+        let remote = &session.directories[1];
+        assert!(remote.is_remote(), "node:// 字符串应解析为远程目录");
+        assert_eq!(remote.node(), Some("gpu-box"));
+        assert_eq!(remote.path(), "/srv/remote-repo");
+        // 本机目录不受影响
+        assert!(!session.directories[0].is_remote());
+        // 持久化后重载仍保留远程归属
+        let reloaded = crate::workspace::WorkspaceStore::load(Some(_path.clone()));
+        let (sessions, _) = reloaded.snapshot();
+        assert!(sessions[0].directories[1].is_remote());
     }
 
     /// P3-1：远程目录在提示词中标注 [remote:<peer>] 且说明 node:// 可操作。
