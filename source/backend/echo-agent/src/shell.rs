@@ -31,9 +31,13 @@ pub const DEFAULT_EXEC_TIMEOUT_SECS: u64 = 120;
 const OUTPUT_BUFFER_LINES: usize = 4096;
 /// 哨兵双写 stdout/stderr；收到其一后，为等待另一路允许的静默时长
 /// （毫秒）。另一路迟迟不来（如 stderr 被重定向出会话管道）时按此兜底。
-const SENTINEL_QUIET_MS: u64 = 500;
+const SENTINEL_QUIET_MS: u64 = 100;
 /// 等待另一路哨兵的宽限上限（毫秒）；期间持续有新输出会延长，封顶此值。
-const SENTINEL_GRACE_CAP_MS: u64 = 3000;
+const SENTINEL_GRACE_CAP_MS: u64 = 500;
+/// stderr 静默快路径：stdout 哨兵先到、且 stderr **从头无任何输出**时，
+/// 为该路额外等待的静默窗口（毫秒）。这类命令占绝大多数（成功时 stderr
+/// 通常为空），无需走完整宽限逻辑——100ms 内 stderr 仍无任何字节即收尾。
+const STDERR_SILENT_FAST_PATH_MS: u64 = 100;
 
 /// 广播给面板的事件载荷（由 [`shell_event_to_backend`] 翻译成 BackendEvent）。
 pub enum ShellEvent {
@@ -380,6 +384,9 @@ impl ShellManager {
         let mut timed_out = false;
         let mut seen_out = false;
         let mut seen_err = false;
+        // stderr 是否曾收到**非哨兵**输出（快路径判定：从头静默的
+        // stderr 不等完整宽限）。
+        let mut err_had_output = false;
         let mut grace_start: Option<tokio::time::Instant> = None;
         let mut grace_deadline: Option<tokio::time::Instant> = None;
         {
@@ -430,6 +437,9 @@ impl ShellManager {
                             text = Some(&line.text);
                         }
                         if let Some(text) = text {
+                            if matches!(line.stream, StreamKind::Stderr) && !text.is_empty() {
+                                err_had_output = true;
+                            }
                             let chunk = match line.stream {
                                 StreamKind::Stdout => format!("{text}\n"),
                                 StreamKind::Stderr => format!("[stderr] {text}\n"),
@@ -453,9 +463,22 @@ impl ShellManager {
                         if seen_out || seen_err {
                             let now = tokio::time::Instant::now();
                             let start = *grace_start.get_or_insert(now);
+                            // stderr 静默快路径：stdout 哨兵先到且 stderr
+                            // 从头无输出——只留快路径窗口（不等完整宽限）。
+                            let fast_path = seen_out && !seen_err && !err_had_output;
+                            let quiet_ms = if fast_path {
+                                STDERR_SILENT_FAST_PATH_MS
+                            } else {
+                                SENTINEL_QUIET_MS
+                            };
+                            let cap_ms = if fast_path {
+                                STDERR_SILENT_FAST_PATH_MS
+                            } else {
+                                SENTINEL_GRACE_CAP_MS
+                            };
                             grace_deadline = Some(
-                                (now + Duration::from_millis(SENTINEL_QUIET_MS))
-                                    .min(start + Duration::from_millis(SENTINEL_GRACE_CAP_MS)),
+                                (now + Duration::from_millis(quiet_ms))
+                                    .min(start + Duration::from_millis(cap_ms)),
                             );
                         }
                     }
@@ -604,6 +627,13 @@ mod tests {
         assert!(
             t0.elapsed() < Duration::from_secs(10),
             "echo 应立即返回，实际 {:?}",
+            t0.elapsed()
+        );
+        // stderr 静默快路径（2026-10 工具延迟优化）：收尾延迟 ≈ 快路径
+        // 窗口 100ms + 调度余量——此前宽限 500ms 起、顺延封顶 3s。
+        assert!(
+            t0.elapsed() < Duration::from_millis(1500),
+            "stderr 静默命令应在 ~1s 内收尾（快路径 ~100ms），实际 {:?}",
             t0.elapsed()
         );
         mgr.stop(&sid, &quiet_emit()).await.expect("stop");
