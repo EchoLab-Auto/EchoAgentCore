@@ -41,6 +41,7 @@ tokio-util.workspace = true
 libc = "0.2"
 
 [dev-dependencies]
+filetime = "0.2"
 echo-test-utils = { path = "../echo-test-utils" }
 proptest = "1"
 

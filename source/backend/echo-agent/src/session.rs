@@ -1106,6 +1106,46 @@ impl TrunkStore {
         self.save_now().await;
     }
 
+    /// 归档保留上限（archives/ 下本 stem 的归档文件数，最旧先删；
+    /// 2026-10 议题：此前归档只增不减，一年可达数百 MB）。
+    pub const DEFAULT_ARCHIVE_MAX_FILES: usize = 20;
+
+    /// 归档保留清理：`archives/` 下文件名以 `{stem}-` 开头者按 mtime 保留
+    /// 最新 `max` 份，多余的最旧先删（删除失败仅记日志不阻塞归档）。
+    pub fn prune_archives(archive_dir: &std::path::Path, stem: &str, max: usize) {
+        if max == 0 || !archive_dir.is_dir() {
+            return;
+        }
+        let prefix = format!("{stem}-");
+        let mut entries: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+        if let Ok(read) = std::fs::read_dir(archive_dir) {
+            for entry in read.flatten() {
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { continue };
+                if !name.starts_with(&prefix) || !name.ends_with(".json") {
+                    continue;
+                }
+                let mtime = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                entries.push((mtime, entry.path()));
+            }
+        }
+        if entries.len() <= max {
+            return;
+        }
+        entries.sort_by_key(|(mtime, _)| *mtime);
+        let doomed = entries.len() - max;
+        for (_, path) in entries.into_iter().take(doomed) {
+            if let Err(e) = std::fs::remove_file(&path) {
+                tracing::warn!(path = %path.display(), %e, "archive prune failed");
+            } else {
+                tracing::info!(path = %path.display(), "old archive pruned");
+            }
+        }
+    }
+
     /// 归档会话：先把当前持久化文件复制到 `archives/`，再清空历史
     /// （归档后从头开始）。返回归档文件路径。
     pub async fn archive_history(&self) -> Result<String, String> {
@@ -1127,6 +1167,7 @@ impl TrunkStore {
                 let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
                 let archive = archive_dir.join(format!("{stem}-{ts}.json"));
                 std::fs::write(&archive, data).map_err(|e| format!("write archive failed: {e}"))?;
+                Self::prune_archives(&archive_dir, stem, Self::DEFAULT_ARCHIVE_MAX_FILES);
                 self.clear_history().await;
                 self.timeline
                     .lock()
@@ -1136,6 +1177,10 @@ impl TrunkStore {
                         String::new(),
                         chrono::Utc::now().timestamp(),
                     ));
+                // 提示行落盘：clear_history 内部 save_now 先于 push 完成，
+                // 不落盘则重启后提示行消失（2026-10 归档巡检发现的生产 bug）。
+                self.mark_dirty();
+                self.save_now().await;
                 return Ok(archive.display().to_string());
             }
         }
@@ -1217,6 +1262,7 @@ impl TrunkStore {
         if let Err(e) = std::fs::write(&archive, data) {
             return Err(format!("write archive failed: {e}"));
         }
+        Self::prune_archives(&archive_dir, stem, Self::DEFAULT_ARCHIVE_MAX_FILES);
         Ok(archive.display().to_string())
     }
 
@@ -2987,6 +3033,99 @@ mod tests {
         assert!(data.contains("\"events\""));
         let _ = std::fs::remove_file(&archive);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn archive_history_copies_file_clears_and_marks_timeline() {
+        let path = temp_sessions_path("archive-history");
+        let _ = std::fs::remove_file(&path);
+        let store = TrunkStore::new(1000);
+        store.set_persist_path(&path);
+        store.append_event(ev_user("local:tui::local_user", "归档前的消息"));
+        store.save_now().await;
+        assert!(path.exists());
+
+        let archive = store.archive_history().await.expect("archive path");
+        // 归档文件可读且含原消息
+        let data = std::fs::read_to_string(&archive).unwrap();
+        assert!(data.contains("归档前的消息"));
+        assert!(std::path::Path::new(&archive).starts_with(path.parent().unwrap().join("archives")));
+        // 归档返回后（clear + 重新 push 之后）内存 timeline 即带系统提示行
+        {
+            let timeline = store.timeline.lock().await;
+            assert!(
+                timeline.iter().any(|m| m.content.contains("历史已归档")),
+                "timeline carries the archive notice, got: {:?}",
+                timeline.iter().map(|m| &m.content).collect::<Vec<_>>()
+            );
+        }
+        // 历史已清空：重载为 0 条事件，但提示行随 clear 后的落盘持久化——
+        // 磁盘上的 timeline 保留归档提示（用户下次打开能看到"历史已归档"）。
+        let restored = store.load_from_file().await;
+        assert_eq!(restored, 0, "history cleared after archive");
+        {
+            let timeline = store.timeline.lock().await;
+            assert!(
+                timeline.iter().any(|m| m.content.contains("历史已归档")),
+                "archive notice persists across reload"
+            );
+        }
+        let _ = std::fs::remove_file(&archive);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn archive_history_without_persist_path_errors() {
+        let store = TrunkStore::new(1000);
+        store.append_event(ev_user("local:tui::local_user", "内存消息"));
+        let err = store.archive_history().await.expect_err("no persist path");
+        assert!(err.contains("没有可归档"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn archive_history_without_existing_file_errors() {
+        let path = temp_sessions_path("archive-missing");
+        let _ = std::fs::remove_file(&path);
+        let store = TrunkStore::new(1000);
+        store.set_persist_path(&path); // 路径已配但文件尚未写过
+        let err = store.archive_history().await.expect_err("no file yet");
+        assert!(err.contains("没有可归档"), "{err}");
+    }
+
+    #[test]
+    fn prune_archives_keeps_newest_and_ignores_foreign_stems() {
+        let dir = std::env::temp_dir().join(format!("echo-prune-{}", std::process::id()));
+        let archives = dir.join("archives");
+        std::fs::create_dir_all(&archives).unwrap();
+        // 6 份本 stem 归档（mtime 递增）+ 1 份别的 stem + 1 个非 json
+        for i in 0..6 {
+            let f = archives.join(format!("echo-sessions-x-2026100{i}-000000-precompact.json"));
+            std::fs::write(&f, "{}").unwrap();
+            let mtime = filetime::FileTime::from_unix_time(1_700_000_000 + i as i64, 0);
+            filetime::set_file_mtime(&f, mtime).unwrap();
+        }
+        std::fs::write(archives.join("other-stem-20261001-000000.json"), "{}").unwrap();
+        std::fs::write(archives.join("echo-sessions-x-note.txt"), "x").unwrap();
+
+        TrunkStore::prune_archives(&archives, "echo-sessions-x", 2);
+
+        let left: Vec<String> = std::fs::read_dir(&archives)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        // 本 stem 只剩最新 2 份
+        let own: Vec<&String> = left
+            .iter()
+            .filter(|n| n.starts_with("echo-sessions-x-") && n.ends_with(".json"))
+            .collect();
+        assert_eq!(own.len(), 2, "left: {left:?}");
+        assert!(left.contains(&"echo-sessions-x-20261004-000000-precompact.json".to_string()));
+        assert!(left.contains(&"echo-sessions-x-20261005-000000-precompact.json".to_string()));
+        // 别的 stem 与非 json 不受影响
+        assert!(left.contains(&"other-stem-20261001-000000.json".to_string()));
+        assert!(left.contains(&"echo-sessions-x-note.txt".to_string()));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// 真实会话文件离线体检（人工触发，不进 CI）：
