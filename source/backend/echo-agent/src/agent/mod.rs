@@ -2,6 +2,7 @@
 
 mod api_admin;
 mod boundary;
+pub mod builder;
 mod commands;
 mod compact;
 mod gating;

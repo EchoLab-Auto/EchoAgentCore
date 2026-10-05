@@ -738,25 +738,30 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 } else {
                     None
                 };
-                let agent = Arc::new(echo_agent::Agent::new(
+                // 声明式装配（AgentBuilder，框架优化议题 2）：必填槽
+                // （plugin_host/event_sink）缺失即装配 bug 直接 panic；
+                // 工作区会话存储（命令处理 + 系统提示注入共用同一实例）、
+                // 进程级事件汇聚点与共享插件宿主（运行期新建人格同样走这里）、
+                // Persona 级 API 引用（None = 跟随全局默认；运行期重建走
+                // apply_persona_api）一次声明完成。
+                let mut builder = echo_agent::agent::builder::AgentBuilder::new(
                     persona_provider.unwrap_or_else(|| Arc::clone(&provider_arc2)),
                     cfg.clone(),
                     skills2.clone(),
                     t,
                     adapters2.clone(),
-                ));
-                agent.set_team_id(Some(id.clone()));
-                // 工作区会话存储（命令处理 + 系统提示注入共用同一实例）。
-                agent.set_workspace_store(workspace_store);
-                // 接入进程级事件汇聚点与共享插件宿主（运行期新建人格同样走这里）。
-                agent.attach_event_sink(event_sink.clone());
-                agent.set_plugin_host(shared_plugin_host.clone());
-                // Persona 级 API 引用（None = 跟随全局默认；运行期重建走 apply_persona_api）。
-                agent.set_persona_api_now(profile.api_profile.clone());
+                )
+                .plugin_host(shared_plugin_host.clone())
+                .event_sink(event_sink.clone())
+                .team_id(Some(id.clone()))
+                .workspace_store(workspace_store)
+                .persona_api(profile.api_profile.clone())
+                .config_store(agents_config_store.clone())
+                .subagent_store(subagent_store.clone());
                 if let Some(api_cfg) = api_cfg_override {
                     // 启动期已按 persona profile 解析好：把生效 model 同步给
                     // active_model（provider 已独立构建，无需重建）。
-                    agent.set_model_now(api_cfg.model);
+                    builder = builder.active_model(api_cfg.model);
                 }
                 // 能力配置在 make_agent 之后的启动阶段应用（见 start loop）。
                 //
@@ -765,7 +770,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // - 会话路径：独立 JSON 文件 echo-sessions-{id}.json（统一命名；
                 //   旧的 default 专用 echo-sessions.json 首次启动自动改名迁移）
                 // 两者文件格式不同，绝不可共用同一路径（JSON 会让 TOML parse 失败）。
-                agent.set_config_store(agents_config_store.clone());
                 let file = config_store_path.with_file_name(format!("echo-sessions-{id}.json"));
                 if id == "default" {
                     let legacy = config_store_path.with_file_name("echo-sessions.json");
@@ -783,9 +787,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         }
                     }
                 }
-                agent.set_session_persist_path(file);
-                agent.attach_subagent_runtime(subagent_store);
-                agent
+                builder.session_persist_path(file).build()
             }
         },
     );
