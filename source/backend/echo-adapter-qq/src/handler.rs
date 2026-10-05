@@ -11,7 +11,8 @@ use echo_adapter::types::{AdapterEvent, ChannelType, IncomingFile, IncomingMessa
 use echo_core::{Event as OneBotEvent, NoticeEvent};
 use echo_server::{Context, HandleResult};
 
-use crate::adapter::{QqAdapter, QqInner};
+use crate::adapter::qq::QqInner;
+use crate::adapter::QqAdapter;
 
 /// Primary handler: converts OneBot events into inbound messages, applies
 /// trigger gating and the filter pipeline, then routes to the agent bridge.
