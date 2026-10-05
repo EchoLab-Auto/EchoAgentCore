@@ -1380,6 +1380,17 @@ struct FederationRuntime {
 }
 
 impl FederationRuntime {
+    /// 读某 peer 配置名的执行策略（`peer_policies` 按配置名存；
+    /// 启动装配与 `SaveFederationPeer` 运行时同步同键）。异步上下文里
+    /// 这只是对 RwLock 的一次 read——独立成方法是为让调用点（如
+    /// SubagentSpawn 门控）意图清晰、便于单测挂载点。
+    async fn peer_policy_for(
+        &self,
+        peer_name: &str,
+    ) -> Option<echo_agent::federation::ExecutorPolicy> {
+        self.peer_policies.read().await.get(peer_name).cloned()
+    }
+
     /// 组装 `FederationStatus` 事件（token 脱敏为 token_set 标记）。
     async fn status_event(&self) -> echo_protocol::BackendEvent {
         let active: std::collections::HashSet<String> =
@@ -1577,9 +1588,49 @@ async fn federation_router_pump(
                                 tracing::warn!(target: "federation", peer = %from, "query reply send failed");
                             }
                         } else if let echo_federation::FedFrame::SubagentSpawn(req) = &frame {
-                            // 执行端观测（Phase 3）：对端大脑委派的远程
-                            // 子任务在本机开始——记审计（Panel 后台任务
-                            // 列表的远程条目展示留待后续迭代）。
+                            // 执行端门控（Phase 3 消费）：peer 未授
+                            // allow_subagent 时拒绝受理——此前只记审计就放行，
+                            // 配置的 allow_subagent = false 形同虚设。拒绝以
+                            // SubagentEvent(Failed) 回执，调用方聚合器按失败
+                            // 终态销账（不会悬挂等待）。
+                            let peer_name = rt
+                                .node_to_peer
+                                .read()
+                                .await
+                                .get(&from)
+                                .cloned();
+                            let allowed = match peer_name.as_ref() {
+                                Some(n) => rt
+                                    .peer_policy_for(n)
+                                    .await
+                                    .map(|p| p.allow_subagent)
+                                    .unwrap_or(false),
+                                None => false, // 未知 peer：fail-closed
+                            };
+                            if !allowed {
+                                tracing::warn!(
+                                    target: "federation",
+                                    from = %from, call_id = %req.call_id,
+                                    "remote subagent rejected (allow_subagent not granted)"
+                                );
+                                let reply = echo_federation::FedFrame::SubagentEvent(
+                                    echo_federation::SubagentEventFrame {
+                                        call_id: req.call_id.clone(),
+                                        status: echo_federation::SubagentStatus::Failed,
+                                        result: Some(format!(
+                                            "peer {} 未授予远程委派（allow_subagent = false）",
+                                            peer_name.as_deref().unwrap_or(&from)
+                                        )),
+                                    },
+                                );
+                                if rt.federation.send_to(&from, reply).await.is_err() {
+                                    tracing::warn!(target: "federation", peer = %from, "subagent reject reply send failed");
+                                }
+                                continue;
+                            }
+                            // 执行端观测：对端大脑委派的远程子任务在本机
+                            // 开始——记审计（Panel 后台任务列表的远程条目
+                            // 展示留待后续迭代）。
                             tracing::info!(
                                 target: "federation",
                                 from = %from, call_id = %req.call_id,

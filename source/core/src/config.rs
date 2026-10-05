@@ -215,23 +215,27 @@ pub struct FederationSection {
 
 /// `[federation.peers.<name>]` 条目。
 ///
-/// `allow_tools`/`allow_subagent`/`require_confirm` 为 Phase 2/3 的工具路由
-/// 与委派门控预留——Phase 1 仅链路，字段先行冻结进配置 schema。
+/// `allow_tools`/`require_confirm`/`allow_queries`/`allow_subagent` 均已在
+/// 执行端消费（Phase 2/3/5 落地）：Invoke 按 allow_tools/require_confirm
+/// 裁决（InvokeRouter::verdict_for）、Query 按 allow_queries 授权、
+/// SubagentSpawn 按 allow_subagent 门控（未授予即拒并回 Failed 终态）。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-#[allow(dead_code)] // Phase 2/3 门控字段先行冻结 schema，消费方落地后移除
+#[allow(dead_code)] // peers 表保留完整 schema（部分字段经 ExecutorPolicy 物化消费）
 pub struct FederationPeerSection {
     /// `ws://host:3133`；空 = 仅接受该 peer 连入（纯被动）。
     pub url: String,
     /// per-peer 共享密钥（Bearer；双向相同）。
     pub token: String,
-    /// 允许对端调用的本机工具白名单（`*` = 全部；Phase 2 消费）。
+    /// 允许对端调用的本机工具白名单（`*` = 全部；Invoke 执行端裁决消费）。
     #[serde(default)]
     pub allow_tools: Vec<String>,
-    /// 是否接受对端的 subagent 委派（Phase 3 消费）。
+    /// 是否接受对端的 subagent 委派（SubagentSpawn 执行端门控消费，
+    /// false 即拒并回 `SubagentEvent(Failed)`）。
     #[serde(default)]
     pub allow_subagent: bool,
-    /// 命中列表的调用需人工/门控确认（Phase 2 消费）。
+    /// 命中列表的调用需人工/门控确认（v1 简化为直接拒绝；确认通道
+    /// （Panel 弹层）留待后续迭代）。
     #[serde(default)]
     pub require_confirm: Vec<String>,
     /// 允许对端的只读查询种类（Phase 5）：node_status 默认允许；

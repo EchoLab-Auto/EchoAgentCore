@@ -75,7 +75,7 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 | 类别 | 帧 | 语义 |
 |---|---|---|
 | 工具调用 | Invoke → InvokeAccepted（裁决）→ InvokeOutput*（流式）→ InvokeResult（终态）/ Cancel | 大脑侧 `RemoteTool` 代理；执行端 per-peer 白名单裁决后经本机 `ToolRegistry` 执行；断链使在飞调用失败，重连整包恢复 |
-| 委派 | SubagentSpawn / SubagentEvent | `spawn_subagent node=...`：大脑侧跑 LLM，工具视图剥前缀替换为该 peer 代理工具（执行时还原 `<peer>:` 前缀）；对端记审计观测 |
+| 委派 | SubagentSpawn / SubagentEvent | `spawn_subagent node=...`：大脑侧跑 LLM，工具视图剥前缀替换为该 peer 代理工具（执行时还原 `<peer>:` 前缀）；**执行端按 per-peer `allow_subagent` 门控**（2026-10 接线——未授予时拒绝受理并回 `SubagentEvent(Failed)` 终态，调用方聚合器按失败销账不悬挂；此前仅记审计放行，配置形同虚设） |
 | 只读查询 | Query / QueryResult | `NodeStatus`（恒允许）/ `WorkspaceFiles`（工作区并集 canonical 校验）/ `SessionSnapshot`（trunk 快照 + since_seq/limit 分页）；per-peer `allow_queries` 白名单，默认仅 node_status |
 
 ## 安全模型
@@ -98,7 +98,7 @@ node_name = "workstation"
 url = "ws://192.168.1.20:3133"
 token = "<openssl rand -hex 32>"
 allow_tools = ["*"]
-allow_subagent = true       # 接受对端远程委派（Phase 3）
+allow_subagent = true       # 接受对端远程委派（Phase 3，执行端门控已接线：false 时 SubagentSpawn 被拒并回 Failed 终态）
 require_confirm = []        # 命中列表的调用拒绝并提示需确认（v1 简化为拒绝）
 allow_queries = []          # 敏感查询需显式开启
 ```
