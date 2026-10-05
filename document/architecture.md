@@ -152,7 +152,14 @@ graph BT
   仅记日志不阻塞归档）。**恢复方法**：把归档文件复制回原会话文件名
   （`archives/echo-sessions-{id}-*.json` → `echo-sessions-{id}.json`）
   重启 Core 即可——归档就是 v6 完整快照（事件日志 + timeline + 身份）。
-- **压缩三件套**（2026-09）：`compact_preview`（只读：按会话分组算出将替换的事件块与统计）→ `archive_snapshot`（把当前会话的**内存快照**写入 `archives/{stem}-{ts}-precompact.json`；无持久化配置时不阻塞压缩）→ `apply_compaction`（按会话键装配合适的摘要落地为 Compaction 事件；应用期重新分组，容忍摘要等待期间的并发写）。编排在 `Agent::compact_history`（`agent/compact.rs`）：逐会话组调 LLM 生成**交接摘要**（转录渲染自动降档 ≤50k tokens；输出 ≤1500 tokens/组，180s 超时；提示词固定四节【当前目标】【已完成】【进行中】【关键信息】）；任一组失败（未配置/超时/报错/空输出）回退规则统计文案，压缩不因 LLM 不可用而失败
+- **压缩三件套**（2026-09）：`compact_preview`（只读：按会话分组算出将替换的事件块与统计）→ `archive_snapshot`（把当前会话的**内存快照**写入 `archives/{stem}-{ts}-precompact.json`；无持久化配置时不阻塞压缩）→ `apply_compaction`（按会话键装配合适的摘要落地为 Compaction 事件；应用期重新分组，容忍摘要等待期间的并发写）。应用侧原子化与漂移语义（2026-10 压缩巡检 🔴 修复）：落地经
+`EventLog::replace_all` 单次取锁整体替换（此前 clear+extend 中间
+窗口并发读者看到空日志）；保留尾按**应用时点**的组尾部取——摘要
+生成窗口内新到的事件自然落在保留尾部，不会被挤出丢档（此前按
+组长度机械切 replaced_count，窗口期新事件既不在摘要也不在保留
+尾）；压缩编排经 `TrunkStore::compact_lock` 全程互斥（double
+compact / compact 与 clear 竞争）。编排在
+`Agent::compact_history`（`agent/compact.rs`）：逐会话组调 LLM 生成**交接摘要**（转录渲染自动降档 ≤50k tokens；输出 ≤1500 tokens/组，180s 超时；提示词固定四节【当前目标】【已完成】【进行中】【关键信息】）；任一组失败（未配置/超时/报错/空输出）回退规则统计文案，压缩不因 LLM 不可用而失败
 - `derive_messages` / `project_messages` 是唯一的模型上下文投影（多会话经 `derive_messages_for` 按 `session` 归属过滤后逐会话投影）：裁剪只在投影期（`trim_to_budget`），绝不破坏日志；`insert_after_sequence` 把并发分支回复插入对应请求事件之后，投影顺序 = 请求到达顺序
 - 兼容：v1-v4 旧格式（`echo-sessions.json`）经 `migrate_v4_document` 读入并迁移进事件日志；旧格式的工具结构缺失如实保留（迁移后的工具消息降级为纯文本，新写日志保留完整结构）
 - 每个 persona 独立会话文件（`echo-sessions-{id}.json`）；显示时间线带条目级 `seq` 支持增量同步（前端按 team 缓存快照到 localStorage，引导/重连只拉缺口）。发往前端的 `TrunkTimeline` 快照做**推理瘦身**：近 40 条保全文、更早截 240 字 + 标注（`timeline.rs::elide_reasoning_for_wire`；持久化不改，单帧 1.46MB → ~0.68MB）

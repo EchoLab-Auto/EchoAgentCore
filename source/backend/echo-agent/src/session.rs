@@ -238,6 +238,11 @@ pub struct TrunkStore {
     trunk_turn_lock: Arc<tokio::sync::Mutex<()>>,
     /// 单会话模式的 turn 排队闸门（见 [`Session::turn_queue`]）。
     trunk_turn_queue: Arc<tokio::sync::Mutex<()>>,
+    /// 压缩编排互斥（2026-10 巡检 🔴）：double compact / compact 与
+    /// clear_history 竞争会按过时摘要重写日志、统计错乱——压缩全程
+    /// 持有（预览→归档→摘要→落地），与 turn 写路径解耦（不阻塞正常
+    /// 消息，只互斥压缩类操作）。
+    compact_lock: Arc<tokio::sync::Mutex<()>>,
     /// Display timeline (persisted, survives TUI restarts). Independent of the
     /// token-bounded LLM trunk: bounded by entry count, keeps richer metadata
     /// (source provenance, tool calls, reasoning) for the TUI history view.
@@ -267,6 +272,7 @@ impl Clone for TrunkStore {
             session_histories: Arc::clone(&self.session_histories),
             trunk_turn_lock: Arc::clone(&self.trunk_turn_lock),
             trunk_turn_queue: Arc::clone(&self.trunk_turn_queue),
+            compact_lock: Arc::clone(&self.compact_lock),
             timeline: Arc::clone(&self.timeline),
             timeline_seq: Arc::clone(&self.timeline_seq),
             event_log: self.event_log.clone(),
@@ -386,6 +392,7 @@ impl TrunkStore {
             memory_limit_tokens,
             session_histories: Arc::new(DashMap::new()),
             trunk_turn_lock: Arc::new(tokio::sync::Mutex::new(())),
+            compact_lock: Arc::new(tokio::sync::Mutex::new(())),
             trunk_turn_queue: Arc::new(tokio::sync::Mutex::new(())),
             timeline: Arc::new(Mutex::new(Vec::new())),
             timeline_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -402,6 +409,11 @@ impl TrunkStore {
     }
 
     /// Mark sessions as needing save.
+    /// 压缩编排互斥锁（见字段注释）。`compact_history` 全程持有。
+    pub async fn compact_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.compact_lock.lock().await
+    }
+
     pub fn mark_dirty(&self) {
         self.dirty.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1288,7 +1300,13 @@ impl TrunkStore {
                 new_log.extend(group);
                 continue;
             };
-            let replaced_count = group.len() - keep_recent;
+            // 保留尾按**应用时点**的组尾部取（而非按组长度机械切
+            // replaced_count）——摘要生成窗口内新到的事件自然落在保留
+            // 尾部，不会被挤出丢档（2026-10 压缩巡检 🔴 摘要空洞修复）。
+            // 代价：窗口期新事件不进摘要正文（它们在保留尾里，本就可见）；
+            // 被压缩的前缀仍是"预览时的旧事件 + 摘要"——归档兜底完整。
+            let keep_from = group.len().saturating_sub(keep_recent);
+            let replaced_count = keep_from;
             new_log.push(echo_session::SessionEvent::Compaction(
                 echo_session::CompactionEvent {
                     replaced_count,
@@ -1297,7 +1315,7 @@ impl TrunkStore {
                     session: key.clone(),
                 },
             ));
-            new_log.extend(group[replaced_count..].to_vec());
+            new_log.extend(group[keep_from..].to_vec());
             total_replaced += replaced_count;
             groups_done += 1;
         }
@@ -1307,8 +1325,9 @@ impl TrunkStore {
                 self.event_log.len()
             ));
         }
-        self.event_log.clear();
-        self.event_log.extend(new_log);
+        // 原子整体替换（单次取锁）：clear+extend 的中间窗口里并发读者
+        // 会看到空日志（同巡检 🔴）。replace_all 后投影重建。
+        self.event_log.replace_all(new_log);
         self.reproject_all();
         let archive_note = archive
             .map(|p| format!("，原事件已归档：{p}"))
@@ -3126,6 +3145,74 @@ mod tests {
         assert!(left.contains(&"other-stem-20261001-000000.json".to_string()));
         assert!(left.contains(&"echo-sessions-x-note.txt".to_string()));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn apply_compaction_keeps_events_arriving_after_preview() {
+        let path = temp_sessions_path("compact-drift");
+        let _ = std::fs::remove_file(&path);
+        let store = TrunkStore::new(100_000);
+        store.set_persist_path(&path);
+        let sid = "local:tui::local_user";
+        // 预览口径：10 条事件，keep_recent=3 → 压缩前 7 条
+        for i in 0..10 {
+            store.append_event(ev_user(sid, &format!("消息 {i}")));
+        }
+        let preview = store.compact_preview(3).expect("preview");
+        assert_eq!(preview.total_replaced, 7);
+        // 摘要生成窗口内新到 2 条（漂移）——旧实现会把它们挤出保留尾
+        store.append_event(ev_user(sid, "窗口期新消息 A"));
+        store.append_event(ev_user(sid, "窗口期新消息 B"));
+
+        let summaries = vec![crate::session::CompactionSummary {
+            session: Some(sid.to_string()),
+            summary: "[历史摘要] 前 7 条的摘要".into(),
+        }];
+        let applied = store
+            .apply_compaction(3, &summaries, None)
+            .await
+            .expect("apply");
+
+        let events = store.event_log.log();
+        let texts: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                echo_session::SessionEvent::UserMessage(m) => Some(m.content.clone()),
+                _ => None,
+            })
+            .collect();
+        // 窗口期新消息必须仍在（保留尾按应用时点尾部取，不被挤出）
+        assert!(
+            texts.iter().any(|t| t.contains("窗口期新消息 A")),
+            "drift event A must survive: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("窗口期新消息 B")),
+            "drift event B must survive: {texts:?}"
+        );
+        // 保留尾 = 应用时点的最后 3 条（9, A, B）
+        let tail = &texts[texts.len().saturating_sub(3)..];
+        assert!(tail.iter().any(|t| t.contains("消息 9")));
+        // 压缩事件确实落了
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, echo_session::SessionEvent::Compaction(_))));
+        assert!(applied.total_replaced > 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn compact_history_is_serialized_by_compact_lock() {
+        use std::sync::Arc;
+        let store = Arc::new(TrunkStore::new(1000));
+        let guard1 = store.compact_lock().await;
+        // 第二把锁必须等——try_lock 立即失败证明互斥
+        assert!(
+            store.compact_lock.try_lock().is_err(),
+            "compact_lock must be exclusive while held"
+        );
+        drop(guard1);
+        let _guard2 = store.compact_lock().await;
     }
 
     /// 真实会话文件离线体检（人工触发，不进 CI）：

@@ -105,6 +105,14 @@ impl EventLog {
         self.events.lock().expect("event log poisoned").clear();
     }
 
+    /// 原子整体替换（单次取锁）——压缩落地等「读-改-写」场景的
+    /// 正确姿势：调用方先按当前 `log()` 计算新日志，再一次性替换。
+    /// 此前 `clear()` + `extend()` 分两次取锁，中间窗口里并发读者
+    /// 会看到空日志（2026-10 压缩巡检 🔴）。
+    pub fn replace_all(&self, events: Vec<SessionEvent>) {
+        *self.events.lock().expect("event log poisoned") = events;
+    }
+
     pub fn is_empty(&self) -> bool {
         self.events.lock().expect("event log poisoned").is_empty()
     }

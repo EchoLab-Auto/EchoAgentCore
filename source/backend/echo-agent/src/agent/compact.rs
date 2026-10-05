@@ -282,6 +282,9 @@ impl crate::agent::Agent {
     /// 当前会话整体快照归档到 `archives/`（失败不阻塞，仅在结果注明）。
     /// 返回面向用户的一行结果。
     pub async fn compact_history(&self, keep_recent: usize) -> Result<String, String> {
+        // 压缩互斥（2026-10 巡检 🔴）：double compact / compact 与
+        // clear_history 竞争会按过时摘要重写日志、统计错乱。
+        let _compact_guard = self.trunk.compact_lock().await;
         let preview = self.trunk.compact_preview(keep_recent)?;
         let provider = self.provider.read().await.clone();
         let archive = match self.trunk.archive_snapshot("precompact").await {
