@@ -979,15 +979,6 @@ impl Agent {
         store.spawn_sweeper(self.cancel.clone());
     }
 
-    /// 卸载 subagent 插件运行态（插件 unmount）：取消运行中子任务并摘下
-    /// 工具可见性（`allows_dynamic_tool` 随即拒绝 spawn_subagent）。
-    pub fn detach_subagent_runtime(&self) {
-        let runtime = self.subagent.write().ok().and_then(|mut slot| slot.take());
-        if let Some(runtime) = runtime {
-            runtime.store.cancel_all();
-        }
-    }
-
     /// subagent 运行态（None = 插件未启用）。
     pub(crate) fn subagent_runtime(
         &self,

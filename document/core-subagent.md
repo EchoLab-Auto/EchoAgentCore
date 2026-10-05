@@ -43,8 +43,8 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
 主 turn 取消经令牌链传导到子任务（`parent_cancel.child_token()`），
 `Agent::shutdown` 经 `SubagentStore::cancel_all` 兜底取消全部运行中子任务。
 插件停用（`TogglePlugin`）当前只停用 `spawn_subagent` 工具（包门控）；已受理的
-运行中子任务不随之取消——`Agent::detach_subagent_runtime`（取消并摘除运行态）
-尚无调用方（unmount 侧未接线）。
+运行中子任务不随之取消（`Agent::shutdown` 时由 `SubagentStore::cancel_all`
+统一兜底；按需的单独 detach 入口已随死代码清理移除，2026-10）。
 
 ## 工具（`echo-agent.subagent` 包）
 
