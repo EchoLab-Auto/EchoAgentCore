@@ -11,6 +11,10 @@ impl QqAdapter {
     pub(crate) fn rebuild_filter_pipeline(&self) {
         // Merge runtime overrides into config.
         let mut cfg = self.inner.config.clone();
+        // 运行时 owner 优先（文档「门控豁免一律读运行时值」）：set_owner_qq
+        // 只写 runtime 槽 + 持久化，启动值 config.owner_qq 不再反映当前
+        // owner——不 merge 则管道里的 AdminBypassFilter 永远停在启动值。
+        cfg.owner_qq = *self.inner.owner_qq.lock().expect("poisoned");
         cfg.filter.allowlist.user_ids = self
             .inner
             .runtime_allowlist_users
@@ -152,6 +156,10 @@ impl QqAdapter {
     /// shared ConfigStore, so the change survives a restart.
     pub fn set_owner_qq(&self, owner_qq: i64) {
         *self.inner.owner_qq.lock().expect("poisoned") = owner_qq;
+        // 管理员绕过读运行时值（文档语义）：owner 变更必须重建过滤管道——
+        // 此前 rebuild 只在名单/模式变更时触发，新 owner 重启前照常被拦
+        // （2026-10 巡检发现的 🔴）。rebuild 内部会读取最新 runtime owner。
+        self.rebuild_filter_pipeline();
         let store = match self.inner.config_store.lock().expect("poisoned").clone() {
             Some(s) => s,
             None => {

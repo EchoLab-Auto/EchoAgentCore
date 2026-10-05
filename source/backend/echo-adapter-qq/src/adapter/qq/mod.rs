@@ -50,6 +50,10 @@ pub enum QqGateMode {
 /// Shared inner state — lives in an Arc so the server task can reference it.
 /// Fields are `pub(crate)` so the message handler (handler.rs) can use them.
 pub(crate) struct QqInner {
+    /// 实例名（= 适配器名；多实例入站消息/连接事件的归属维度）。
+    /// 此前入站链路硬编码 "qq"，非默认实例的会话与连接事件全部串台
+    /// （2026-10 巡检发现的 🔴）。
+    pub(crate) instance_name: String,
     /// 归属人格 id（多实例；None = legacy 单实例未指定）。
     pub(crate) persona: Option<String>,
     /// 实例化显示名（"QQ / OneBot" 或 "QQ（<persona> / <实例>）"）。
@@ -158,8 +162,9 @@ impl QqAdapter {
             None => "QQ / OneBot".to_string(),
         };
         let adapter = Self {
-            name,
+            name: name.clone(),
             inner: Arc::new(QqInner {
+                instance_name: name,
                 persona,
                 display_name,
                 config,
@@ -684,13 +689,13 @@ impl Adapter for QqAdapter {
         target: &MessageTarget,
         content: &str,
     ) -> Result<SendResult, AdapterError> {
-        if target.adapter_name != "qq" {
+        if target.adapter_name != self.name {
             return Ok(SendResult {
                 message_id: None,
                 success: false,
                 error: Some(format!(
-                    "wrong adapter: expected 'qq', got '{}'",
-                    target.adapter_name
+                    "wrong adapter: expected '{}', got '{}'",
+                    self.name, target.adapter_name
                 )),
             });
         }
@@ -1076,6 +1081,93 @@ mod tests {
             adapter.get_gated_friend_list().await.unwrap(),
             vec![(111, "allowed".into())]
         );
+    }
+
+    #[test]
+    fn convert_message_for_carries_instance_name() {
+        let names = dashmap::DashMap::new();
+        let msg = QqAdapter::convert_message_for("alix-two", &private_event("hello"), &names)
+            .expect("converted");
+        assert_eq!(
+            msg.adapter_name, "alix-two",
+            "multi-instance adapter_name propagates to inbound messages"
+        );
+        // 默认实例兼容路径仍为 qq
+        let legacy = QqAdapter::convert_message(&private_event("hi"), &names).expect("converted");
+        assert_eq!(legacy.adapter_name, "qq");
+    }
+
+    #[tokio::test]
+    async fn send_message_accepts_own_instance_name_and_rejects_others() {
+        let adapter =
+            QqAdapter::with_instance("alix-two", None, crate::config::QqAdapterConfig::default());
+        // 本实例名通过名校验（后续因无连接失败属预期）——错误绝不能是
+        // Ok 包装里的 "wrong adapter"。
+        let own = adapter
+            .send_message(
+                &echo_defs::chat::MessageTarget {
+                    adapter_name: "alix-two".into(),
+                    channel: echo_defs::chat::ChannelType::Direct,
+                    user_id: "10001".into(),
+                },
+                "ping",
+            )
+            .await;
+        match own {
+            Ok(result) => {
+                let err = result.error.unwrap_or_default();
+                assert!(
+                    !err.contains("wrong adapter"),
+                    "own instance must not be rejected as wrong adapter: {err}"
+                );
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    !msg.contains("wrong adapter"),
+                    "own instance must not fail with wrong adapter: {msg}"
+                );
+            }
+        }
+        let other = adapter
+            .send_message(
+                &echo_defs::chat::MessageTarget {
+                    adapter_name: "qq".into(),
+                    channel: echo_defs::chat::ChannelType::Direct,
+                    user_id: "10001".into(),
+                },
+                "ping",
+            )
+            .await
+            .expect("send result");
+        assert!(!other.success);
+        assert!(
+            other.error.unwrap_or_default().contains("wrong adapter"),
+            "foreign instance must be rejected"
+        );
+    }
+
+    #[test]
+    fn set_owner_qq_rebuilds_pipeline_with_runtime_owner() {
+        let mut cfg = crate::config::QqAdapterConfig::default();
+        cfg.gate.mode = "allowlist".into();
+        cfg.filter.allowlist.user_ids = vec![10001];
+        let adapter = QqAdapter::with_instance("qq", None, cfg);
+        // 出站门控（同步，与入站管道共享同一份 runtime 配置）：10002 被白名单拦
+        let blocked = echo_defs::chat::MessageTarget {
+            adapter_name: "qq".into(),
+            channel: echo_defs::chat::ChannelType::Direct,
+            user_id: "10002".into(),
+        };
+        assert!(
+            adapter.check_outbound_gate(&blocked).is_err(),
+            "10002 blocked by allowlist at startup owner=0"
+        );
+        // 运行时把 owner 改成 10002：门控立即放行（管理员绕过读运行时值）
+        adapter.set_owner_qq(10002);
+        adapter
+            .check_outbound_gate(&blocked)
+            .expect("runtime owner must take effect immediately (admin bypass)");
     }
 
     fn private_event(text: &str) -> Event {

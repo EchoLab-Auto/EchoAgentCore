@@ -107,7 +107,11 @@ impl echo_server::Handler for QqHandler {
             return HandleResult::Handled;
         }
 
-        let Some(msg) = QqAdapter::convert_message(event, &self.inner.group_names) else {
+        let Some(msg) = QqAdapter::convert_message_for(
+            &self.inner.instance_name,
+            event,
+            &self.inner.group_names,
+        ) else {
             return HandleResult::Pass;
         };
         // convert_message returns Some only for message events, so this
@@ -209,7 +213,7 @@ impl QqHandler {
             "group_id": group_id,
         }]);
         Some(IncomingMessage {
-            adapter_name: "qq".into(),
+            adapter_name: self.inner.instance_name.clone(),
             platform: "qq".into(),
             user_id: user_id.to_string(),
             user_name: String::new(),
@@ -549,6 +553,7 @@ mod tests {
 
     fn test_inner_with_config(cfg: QqAdapterConfig) -> Arc<QqInner> {
         Arc::new(QqInner {
+            instance_name: crate::adapter::DEFAULT_INSTANCE_NAME.to_string(),
             persona: None,
             display_name: "QQ / OneBot".to_string(),
             config: cfg,

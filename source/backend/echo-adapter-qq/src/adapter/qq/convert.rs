@@ -7,7 +7,21 @@
 use super::*;
 
 impl QqAdapter {
+    /// Legacy/测试兼容入口（默认实例 `qq`）；生产 handler 走
+    /// [`Self::convert_message_for`] 传实例名。
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn convert_message(
+        event: &OneBotEvent,
+        group_names: &dashmap::DashMap<i64, String>,
+    ) -> Option<IncomingMessage> {
+        Self::convert_message_for(crate::adapter::DEFAULT_INSTANCE_NAME, event, group_names)
+    }
+
+    /// 多实例变体：归属实例名由调用方传入（入站会话/连接事件的
+    /// `@<实例>` 维度）。`convert_message` 保留默认实例兼容（测试与
+    /// legacy 路径）；生产 handler 一律走本方法传 `inner.instance_name`。
+    pub(crate) fn convert_message_for(
+        adapter_name: &str,
         event: &OneBotEvent,
         group_names: &dashmap::DashMap<i64, String>,
     ) -> Option<IncomingMessage> {
@@ -124,7 +138,7 @@ impl QqAdapter {
             serde_json::json!({ "pending_files": pending })
         };
         Some(IncomingMessage {
-            adapter_name: "qq".into(),
+            adapter_name: adapter_name.to_string(),
             platform: "qq".into(),
             user_id: msg.user_id().to_string(),
             user_name: msg.sender_nickname().to_string(),
