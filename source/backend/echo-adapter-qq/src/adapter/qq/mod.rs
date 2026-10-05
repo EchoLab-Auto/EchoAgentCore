@@ -211,7 +211,18 @@ impl QqAdapter {
         tokio::time::sleep(initial_delay).await;
 
         let mut last_state = None;
-        while inner.running.load(Ordering::SeqCst) && !inner.connected.load(Ordering::SeqCst) {
+        // 已连接后的守护模式（2026-10 巡检遗留）：此前 connected=true 即
+        // 退出循环——NapCat 容器**重建**（compose 文件由 Core 多实例流程
+        // 重新生成时会重置网络配置）后反向 WS 配置丢失，裸奔到下次重启
+        // Core。改为连接后降频守护：每 GUARD_INTERVAL 复查一次在线态，
+        // 断开（connected=false）自动回到正常重试间隔并重新配置（重配
+        // 幂等：同名 EchoAgentCore 条目先删后加）。
+        const GUARD_INTERVAL: Duration = Duration::from_secs(60);
+        loop {
+            if !inner.running.load(Ordering::SeqCst) {
+                break;
+            }
+            let guarding = inner.connected.load(Ordering::SeqCst);
             match napcat.check().await {
                 NapCatState::Online { user_id, nickname } => {
                     if last_state != Some("online") {
@@ -258,7 +269,13 @@ impl QqAdapter {
                 }
             }
 
-            tokio::time::sleep(retry_interval).await;
+            // 守护模式降频；断开后回到正常重试间隔。
+            tokio::time::sleep(if guarding {
+                GUARD_INTERVAL
+            } else {
+                retry_interval
+            })
+            .await;
         }
     }
 
@@ -981,8 +998,14 @@ mod tests {
         .await
         .expect("reverse WebSocket configuration was not requested");
 
+        // 守护模式（2026-10）：connected 后任务**不再退出**（降频复查）——
+        // 测试主动停 running 让循环退出。
         adapter.inner.connected.store(true, Ordering::SeqCst);
-        task.await.expect("maintenance task failed");
+        adapter.inner.running.store(false, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("maintenance task should exit after running=false")
+            .expect("maintenance task failed");
     }
 
     #[tokio::test]
