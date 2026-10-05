@@ -482,6 +482,13 @@ async fn download_and_store(url: &str) -> Result<String, String> {
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
+    // 边下边检（2026-10 巡检 P2）：先信 Content-Length（超限直接拒，
+    // 不读体），再流式读体、累计超 MAX 即中断——超限图不再整载入内存。
+    if let Some(len) = resp.content_length() {
+        if len > MAX_EMBEDDED_IMAGE_BYTES as u64 {
+            return Err(format!("image too large (content-length {len})"));
+        }
+    }
     let mime = resp
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -491,9 +498,17 @@ async fn download_and_store(url: &str) -> Result<String, String> {
         .filter(|value| value.starts_with("image/"))
         .unwrap_or("image/jpeg")
         .to_string();
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
-    if bytes.len() > MAX_EMBEDDED_IMAGE_BYTES {
-        return Err(format!("image too large ({} bytes)", bytes.len()));
+    let mut bytes = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        if bytes.len() + chunk.len() > MAX_EMBEDDED_IMAGE_BYTES {
+            return Err(format!(
+                "image too large (> {} bytes while streaming)",
+                MAX_EMBEDDED_IMAGE_BYTES
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     let id = echo_defs::media_store::save_image_bytes(&bytes, &mime)?;
     Ok(echo_defs::media_store::media_ref(&id))

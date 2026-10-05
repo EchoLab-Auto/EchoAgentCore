@@ -186,6 +186,15 @@ impl FileBridge {
         }
         let server = self.ensure_http_server().await?;
         let token = uuid::Uuid::new_v4().simple().to_string();
+        // 上限保护（2026-10 巡检 P2 附带）：注册超上限先强制 prune 再插
+        // ——TTL 常扫后 512 不再是扫描触发条件，但注册表本身仍需要
+        // 一个硬上限防内存膨胀（极端场景：高频 send_file 打满）。
+        if server.files.len() >= MAX_REGISTERED_FILES {
+            let now = Instant::now();
+            server
+                .files
+                .retain(|_, (_, registered)| now.duration_since(*registered) < FILE_TTL);
+        }
         server.files.insert(token.clone(), (local, Instant::now()));
 
         let mut hosts: Vec<String> = Vec::new();
@@ -303,17 +312,34 @@ async fn handle_client(
     };
 
     let file_path = match files.get(token) {
-        Some(entry) => entry.value().0.clone(),
+        Some(entry) => {
+            let (path, registered) = entry.value();
+            if Instant::now().duration_since(*registered) >= FILE_TTL {
+                // 已过期：即时移除并 404（不依赖 cleanup 的扫描时机）。
+                drop(entry);
+                files.remove(token);
+                return write_response(&mut socket, 404, b"not found").await;
+            }
+            path.clone()
+        }
         None => return write_response(&mut socket, 404, b"not found").await,
     };
     // Registrations are garbage-collected by TTL (see cleanup_expired), so a
     // download can be retried if NapCat needs to re-fetch the file.
-    match tokio::fs::read(&file_path).await {
-        Ok(data) => write_response(&mut socket, 200, &data).await,
-        Err(e) => {
-            tracing::warn!(error = %e, path = %file_path.display(), "file server read failed");
+    // serve 上限（2026-10 巡检 P2）：此前整文件读内存无限制。
+    const MAX_SERVED_FILE_BYTES: u64 = 64 * 1024 * 1024;
+    match tokio::fs::metadata(&file_path).await {
+        Ok(meta) if meta.len() > MAX_SERVED_FILE_BYTES => {
+            tracing::warn!(path = %file_path.display(), len = meta.len(), "file server: too large");
             write_response(&mut socket, 404, b"not found").await
         }
+        _ => match tokio::fs::read(&file_path).await {
+            Ok(data) => write_response(&mut socket, 200, &data).await,
+            Err(e) => {
+                tracing::warn!(error = %e, path = %file_path.display(), "file server read failed");
+                write_response(&mut socket, 404, b"not found").await
+            }
+        },
     }
 }
 
@@ -334,10 +360,9 @@ async fn write_response(socket: &mut TcpStream, status: u16, body: &[u8]) -> std
 }
 
 fn cleanup_expired(files: &DashMap<String, (PathBuf, Instant)>) {
-    if files.len() <= MAX_REGISTERED_FILES {
-        // Only bother scanning when we are near the cap.
-        return;
-    }
+    // TTL 必须常扫（2026-10 巡检 P2）：此前只在接近 512 上限时才扫描，
+    // 少量文件**永远不过期**、token 可无限期下载。每次请求都扫的成本
+    // 可忽略（注册数通常 < 几十），上限不再是扫描的触发条件。
     let now = Instant::now();
     files.retain(|_, (_, registered)| now.duration_since(*registered) < FILE_TTL);
 }

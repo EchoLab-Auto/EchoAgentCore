@@ -71,6 +71,18 @@ pub enum NapCatState {
     Unreachable,
 }
 
+/// `send().await.ok()` 响应体的 JSON 解析（async 版）。
+///
+/// 此前用 `block_in_place + Handle::block_on` 在 and_then 闭包里同步
+/// 等 JSON——current_thread runtime 直接 panic，multi_thread 也是反
+/// 模式（2026-10 巡检 P2）。本函数等价纯 async：None → None。
+async fn json_body(resp: Option<reqwest::Response>) -> Option<serde_json::Value> {
+    match resp {
+        Some(r) => r.json::<serde_json::Value>().await.ok(),
+        None => None,
+    }
+}
+
 impl NapCatClient {
     /// Create a new NapCat API client.
     /// `webui_url` is the NapCat WebUI address, e.g. `http://localhost:6099`.
@@ -272,51 +284,42 @@ impl NapCatClient {
 
         // 已登录？→ 把当前账号固化到 webui.json 的 autoLoginAccount。
         let status_url = format!("{}/api/QQLogin/CheckLoginStatus", self.base_url);
-        let is_login = self
+        let resp = self
             .client
             .post(&status_url)
             .bearer_auth(&credential)
             .json(&serde_json::json!({}))
             .send()
             .await
-            .ok()
-            .and_then(|r: reqwest::Response| {
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current()
-                        .block_on(r.json::<Value>())
-                        .ok()
-                })
-            })
+            .ok();
+        let is_login = json_body(resp)
+            .await
             .and_then(|body: Value| body.pointer("/data/isLogin").and_then(|v| v.as_bool()))
             .unwrap_or(false);
 
         let uin: Option<String> = if is_login {
             // 登录中：取快速登录列表第一个账号（NapCat 只支持单账号）。
             let list_url = format!("{}/api/QQLogin/GetQuickLoginList", self.base_url);
-            self.client
-                .post(&list_url)
-                .bearer_auth(&credential)
-                .json(&serde_json::json!({}))
-                .send()
-                .await
-                .ok()
-                .and_then(|r: reqwest::Response| {
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(r.json::<Value>())
-                            .ok()
+            json_body(
+                self.client
+                    .post(&list_url)
+                    .bearer_auth(&credential)
+                    .json(&serde_json::json!({}))
+                    .send()
+                    .await
+                    .ok(),
+            )
+            .await
+            .and_then(|body: Value| {
+                body.get("data")
+                    .and_then(|d| d.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|u| {
+                        u.as_str()
+                            .map(str::to_string)
+                            .or_else(|| u.as_i64().map(|n| n.to_string()))
                     })
-                })
-                .and_then(|body: Value| {
-                    body.get("data")
-                        .and_then(|d| d.as_array())
-                        .and_then(|arr| arr.first())
-                        .and_then(|u| {
-                            u.as_str()
-                                .map(str::to_string)
-                                .or_else(|| u.as_i64().map(|n| n.to_string()))
-                        })
-                })
+            })
         } else {
             None
         };
@@ -346,21 +349,16 @@ impl NapCatClient {
 
         // 未登录：尝试快速登录（登录态已失效/被踢时由扫码流程兜底）。
         let set_url = format!("{}/api/QQLogin/SetQuickLogin", self.base_url);
-        let body = self
-            .client
-            .post(&set_url)
-            .bearer_auth(&credential)
-            .json(&serde_json::json!({}))
-            .send()
-            .await
-            .ok()
-            .and_then(|r: reqwest::Response| {
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current()
-                        .block_on(r.json::<Value>())
-                        .ok()
-                })
-            });
+        let body = json_body(
+            self.client
+                .post(&set_url)
+                .bearer_auth(&credential)
+                .json(&serde_json::json!({}))
+                .send()
+                .await
+                .ok(),
+        )
+        .await;
         match body {
             Some(b) if b.get("code").and_then(|c| c.as_i64()) == Some(0) => {
                 tracing::info!("NapCat quick login succeeded");
