@@ -516,13 +516,20 @@ impl Agent {
         Ok(())
     }
 
-    async fn reload_skills(&self, skills_dir: &str) -> Result<bool, String> {
-        if !std::path::Path::new(skills_dir).exists() {
+    /// 热重载技能：合并发现「出厂层（skills_dirs）+ 用户层（skills_dir，
+    /// 同名覆盖）」。传入的 `write_dir` 仅用于判断用户层是否存在（不存在
+    /// 只意味着没有用户技能，出厂层仍照常加载）。
+    pub(crate) async fn reload_skills(&self, write_dir: &str) -> Result<bool, String> {
+        let mut dirs = self.config.read().await.skills_dirs.clone();
+        dirs.push(write_dir.to_string());
+        if dirs
+            .iter()
+            .all(|d| d.is_empty() || !std::path::Path::new(d).exists())
+        {
             return Ok(false);
         }
 
-        let dir = skills_dir.to_string();
-        let mut reloaded = tokio::task::spawn_blocking(move || SkillRegistry::discover(&dir))
+        let mut reloaded = tokio::task::spawn_blocking(move || SkillRegistry::discover_many(&dirs))
             .await
             .map_err(|error| format!("skill reload task failed: {error}"))?
             .map_err(|error| error.to_string())?;
@@ -537,7 +544,7 @@ impl Agent {
         *current = reloaded;
         drop(current);
         *self.system_prompt_cache.write().await = None;
-        tracing::info!(skills = ?names, path = %skills_dir, "skills hot reloaded");
+        tracing::info!(skills = ?names, user_dir = %write_dir, "skills hot reloaded");
         Ok(true)
     }
 

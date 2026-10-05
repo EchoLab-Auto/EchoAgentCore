@@ -398,7 +398,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let tracker = ConnectionTracker::default();
 
     // ---- agent framework ----
-    let mut skills = echo_agent::SkillRegistry::discover(&cfg.agent.skills_dir)
+    // 技能分层（2026-10）：出厂层（skills_dirs，只读）在前、用户层
+    // （skills_dir，读写）在后——同名技能用户层覆盖出厂版本。
+    let mut skill_dirs = cfg.agent.skills_dirs.clone();
+    skill_dirs.push(cfg.agent.skills_dir.clone());
+    let mut skills = echo_agent::SkillRegistry::discover_many(&skill_dirs)
         .map_err(|e| anyhow::anyhow!("failed to load skills: {e}"))?;
     // Apply persisted runtime disable state (survives restarts).
     for name in &cfg.agent.disabled_skills {

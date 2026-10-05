@@ -50,6 +50,33 @@ impl SkillRegistry {
         Ok(registry)
     }
 
+    /// 多目录合并发现（技能分层，2026-10）：按目录顺序依次扫描，
+    /// **后出现的目录同名覆盖**——调用方应按「出厂层在前、用户层在后」
+    /// 的顺序传参，使用户目录的同名技能覆盖出厂版本。每个目录的语义
+    /// 与 [`Self::discover`] 相同（空串/不存在跳过，错误立即返回并
+    /// 标注目录）。
+    pub fn discover_many(dirs: &[String]) -> Result<Self, SkillError> {
+        let mut registry = Self::new();
+        for dir in dirs {
+            if dir.is_empty() || !std::path::Path::new(dir).exists() {
+                continue;
+            }
+            let layer = Self::discover(dir).map_err(|e| {
+                // SkillError::Load 是唯一变体——直接改写路径标注目录来源。
+                match e {
+                    SkillError::Load { path, err } => SkillError::Load {
+                        path: format!("{dir}（{path}）"),
+                        err,
+                    },
+                }
+            })?;
+            for skill in layer.all() {
+                registry.register(skill.clone());
+            }
+        }
+        Ok(registry)
+    }
+
     pub fn register(&mut self, skill: Skill) {
         self.skills.insert(skill.metadata.name.clone(), skill);
     }
@@ -183,6 +210,64 @@ impl SkillRegistry {
 pub enum SkillError {
     #[error("SKILL.md 加载失败 {path}: {err}")]
     Load { path: String, err: String },
+}
+
+#[cfg(test)]
+mod discover_many_tests {
+    use super::*;
+
+    fn write_skill(dir: &std::path::Path, name: &str, desc: &str) {
+        let skill_dir = dir.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {desc}\n---\n\n# {name}\n"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn discover_many_merges_layers_and_later_dir_wins() {
+        let root = std::env::temp_dir().join(format!("echo-skills-layers-{}", std::process::id()));
+        let builtin = root.join("builtin");
+        let user = root.join("user");
+        std::fs::create_dir_all(&builtin).unwrap();
+        std::fs::create_dir_all(&user).unwrap();
+        // 出厂层：coding + web-search；用户层：同名 coding（覆盖）+ 私有 persona
+        write_skill(&builtin, "coding", "builtin coding");
+        write_skill(&builtin, "web-search", "builtin web search");
+        write_skill(&user, "coding", "user overridden coding");
+        write_skill(&user, "alix-persona", "private persona");
+
+        let registry = SkillRegistry::discover_many(&[
+            builtin.to_string_lossy().into_owned(),
+            user.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+
+        let names = registry.names();
+        assert_eq!(names.len(), 3);
+        // 同名以后出现的目录（用户层）为准
+        let coding = registry
+            .all()
+            .into_iter()
+            .find(|s| s.metadata.name == "coding")
+            .unwrap();
+        assert_eq!(coding.metadata.description, "user overridden coding");
+        // 出厂层独有与用户层独有都在
+        assert!(names.contains(&"web-search".to_string()));
+        assert!(names.contains(&"alix-persona".to_string()));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn discover_many_skips_missing_and_empty_dirs() {
+        let registry =
+            SkillRegistry::discover_many(&[String::new(), "/nonexistent/skills-dir".into()])
+                .unwrap();
+        assert!(registry.names().is_empty());
+    }
 }
 
 #[cfg(test)]

@@ -193,7 +193,15 @@ pub struct AgentConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_timeout_secs: Option<u64>,
     /// Directory containing `SKILL.md` definitions.
+    /// 技能**写入目录**：Save/DeleteSkill 与 Git 安装技能都落在这里
+    /// （用户数据目录，自更新不触碰）。
     pub skills_dir: String,
+    /// 附加的**只读技能目录**（出厂技能层，如安装流程拷出的
+    /// `~/.local/share/echo-agent-core/skills-builtin/`）。发现时与本目录
+    /// 合并：同名技能以 `skills_dir`（用户层）覆盖——用户可以对出厂
+    /// 技能做同名替换，升级后仍以自己的版本为准（2026-10 技能分层）。
+    #[serde(default)]
+    pub skills_dirs: Vec<String>,
     /// Directory containing external plugin manifests (`plugin.toml`).
     /// Discovered data plugins (skills/tools) hot-reload here.
     #[serde(default)]
@@ -247,6 +255,7 @@ impl Default for AgentConfig {
             max_tokens: 0,
             tool_timeout_secs: Some(120),
             skills_dir: "skills".into(),
+            skills_dirs: Vec::new(),
             plugins_dir: "plugins".into(),
             disabled_skills: Vec::new(),
             disabled_tools: Vec::new(),

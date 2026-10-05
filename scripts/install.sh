@@ -386,10 +386,26 @@ updater_temporary=$(mktemp "$LIBEXEC_DIR/update.sh.new.XXXXXX")
 install -m 755 "$PROJECT_ROOT/scripts/update.sh" "$updater_temporary"
 mv -f "$updater_temporary" "$LIBEXEC_DIR/update.sh"
 
+# 技能分层（2026-10 议题 5）：出厂技能 = 框架资产，从受管检出拷到
+# $DATA_DIR/skills-builtin/（只读层；update.sh 同步刷新——自更新只滚出厂
+# 技能）；用户技能目录 = $DATA_DIR/skills/（读写层：Save/DeleteSkill 与
+# Git 安装技能落这里，自更新不触碰）。同名技能用户层覆盖出厂版本。
+BUILTIN_SKILLS_DIR="$DATA_DIR/skills-builtin"
+USER_SKILLS_DIR="$DATA_DIR/skills"
+install -d -m 755 "$BUILTIN_SKILLS_DIR" "$USER_SKILLS_DIR"
+cp -a "$SOURCE_DIR/skills/." "$BUILTIN_SKILLS_DIR/"
+
 if [[ ! -f "$CORE_CONFIG" ]]; then
     install -m 600 "$PROJECT_ROOT/config/echo-agent-core.toml" "$CORE_CONFIG"
-    escaped_source=${SOURCE_DIR//&/\\&}
-    sed -i "s|^skills_dir = .*|skills_dir = \"$escaped_source/skills\"|" "$CORE_CONFIG"
+    escaped_builtin=${BUILTIN_SKILLS_DIR//&/\\&}
+    escaped_user=${USER_SKILLS_DIR//&/\\&}
+    sed -i "s|^skills_dir = .*|skills_dir = \"$escaped_user\"|" "$CORE_CONFIG"
+    # 出厂层作为只读附加目录写入（skills_dirs 数组）。
+    if grep -q '^skills_dirs' "$CORE_CONFIG"; then
+        sed -i "s|^skills_dirs = .*|skills_dirs = [\"$escaped_builtin\"]|" "$CORE_CONFIG"
+    else
+        sed -i "/^skills_dir = /a skills_dirs = [\"$escaped_builtin\"]" "$CORE_CONFIG"
+    fi
     # 自动生成 management_access_token（2026-10）：32 字节随机 hex——
     # 暴露 management WS 到局域网时开箱即有认证（仅首装生成；已存在
     # 的配置不动，重装卸载不丢）。

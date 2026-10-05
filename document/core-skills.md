@@ -10,6 +10,20 @@ y: 1899
 
 技能是 SKILL.md 驱动的能力包，为模型注入特定领域的指令与流程知识。`Skill`/`SkillMetadata` 词汇与 `SkillProvider` 接缝在 echo-defs；具体实现 `SkillRegistry`（文件发现 + 热重载）在 echo-agent。
 
+## 技能分层（2026-10 议题 5）
+
+`skills_dir`（读写，用户层）+ `skills_dirs`（只读附加层，出厂技能）双目录：
+
+- **发现合并**：`SkillRegistry::discover_many` 按「出厂层在前、用户层在后」
+  扫描，同名技能**用户层覆盖**——用户可对出厂技能做同名替换，升级后仍以
+  自己的版本为准
+- **写入只走用户层**：`SaveSkill` / `DeleteSkill` / Git 安装技能
+  （`.sources.json`）都落在 `skills_dir`——出厂层永不被运行期写
+- **安装/自更新**：install.sh 把出厂技能从受管检出拷到
+  `$DATA_DIR/skills-builtin/`（配置写入两层）；update.sh 只刷新出厂层，
+  用户层（`$DATA_DIR/skills/`）不受自更新影响——用户自定义技能不再被
+  update 冲掉，框架出厂技能也不再需要寄居受管 git 检出
+
 ## SKILL.md 与发现
 
 - `[agent].skills_dir` 目录下**递归发现**所有 `SKILL.md`（仓库内为 `skills/`）
