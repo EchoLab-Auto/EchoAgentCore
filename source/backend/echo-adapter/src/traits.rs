@@ -134,6 +134,15 @@ pub trait Adapter: Send + Sync {
     /// Stop the adapter gracefully.
     async fn stop(&self) -> Result<(), AdapterError>;
 
+    /// 彻底移除实例资源（实例**删除**语义，2026-10 巡检遗留）。
+    ///
+    /// 与 `stop`（临时停用，保留数据/登录态）不同：实现方应停止适配器
+    /// 并回收外部资源（QQ/NapCat：容器 + 数据卷 + compose 文件）。
+    /// 默认 no-op（无外部资源的适配器无需实现）。幂等：重复调用安全。
+    async fn remove_instance(&self) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
     /// Send a text message to a specific platform target.
     async fn send_message(
         &self,

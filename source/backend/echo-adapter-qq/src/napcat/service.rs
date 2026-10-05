@@ -125,6 +125,64 @@ impl NapCatService {
         wait_for(container_name, true)
     }
 
+    /// 彻底移除实例资源（实例删除路径，2026-10 巡检遗留）：容器 + 数据卷
+    /// + compose 文件。幂等：资源不存在时静默成功。
+    ///
+    /// 步骤：`compose down --volumes`（存在 compose 文件时，连容器带卷）
+    /// → `docker rm -f`（无 compose 或 down 失败的兜底）→ `docker volume rm`
+    /// （compose 没清掉的命名卷兜底）→ 删 compose 文件与实例目录。
+    pub async fn remove(&self) -> Result<(), String> {
+        let compose_file = self.compose_file.clone();
+        let container_name = self.container_name.clone();
+        tokio::task::spawn_blocking(move || Self::remove_sync(&compose_file, &container_name))
+            .await
+            .map_err(|e| format!("remove task failed: {e}"))?
+    }
+
+    fn remove_sync(compose_file: &str, container_name: &str) -> Result<(), String> {
+        ensure_docker()?;
+        let mut notes: Vec<String> = Vec::new();
+        // 1) compose down --volumes（最干净的路径）
+        if Path::new(compose_file).exists() && docker_compose_available()? {
+            if run_docker(&["compose", "-f", compose_file, "down", "--volumes"]).is_ok() {
+                tracing::info!(container = %container_name, "napcat instance removed via compose down");
+            } else {
+                notes.push("compose down failed".into());
+            }
+        }
+        // 2) 容器兜底（compose 缺失或 down 失败）
+        if inspect_container(container_name)?.is_some() {
+            if let Err(e) = run_docker(&["rm", "-f", container_name]) {
+                notes.push(format!("docker rm failed: {e}"));
+            }
+        }
+        // 3) 命名卷兜底（compose down --volumes 未覆盖的场景）
+        for volume in [
+            format!("{container_name}-data"),
+            format!("{container_name}-config"),
+        ] {
+            // 卷名按 compose 项目名前缀可能与容器名不同——尝试两种命名。
+            for candidate in [volume.clone(), format!("napcat_{volume}")] {
+                let _ = run_docker(&["volume", "rm", "-f", &candidate]);
+            }
+        }
+        // 4) compose 文件与实例目录
+        let compose_path = Path::new(compose_file);
+        if compose_path.exists() {
+            if let Err(e) = std::fs::remove_file(compose_path) {
+                notes.push(format!("remove compose file failed: {e}"));
+            }
+            if let Some(dir) = compose_path.parent() {
+                let _ = std::fs::remove_dir(dir); // 空目录才成功，非空静默跳过
+            }
+        }
+        if notes.is_empty() {
+            Ok(())
+        } else {
+            Err(notes.join("; "))
+        }
+    }
+
     fn stop_sync(compose_file: &str, container_name: &str) -> Result<(), String> {
         ensure_docker()?;
 

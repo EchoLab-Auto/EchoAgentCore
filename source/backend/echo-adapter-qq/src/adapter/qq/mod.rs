@@ -641,6 +641,21 @@ impl Adapter for QqAdapter {
         Ok(())
     }
 
+    async fn remove_instance(&self) -> Result<(), AdapterError> {
+        // 先停（保留 stop 的全部清理语义；未运行时不报错——remove 幂等）。
+        if self.inner.running.load(Ordering::SeqCst) {
+            self.stop().await?;
+        }
+        // 彻底移除 NapCat 实例资源（容器 + 数据卷 + compose 文件）。
+        let service = NapCatService::new(
+            self.inner.config.napcat_compose_file.clone(),
+            self.inner.config.napcat_container.clone(),
+        );
+        service.remove().await.map_err(AdapterError::Internal)?;
+        tracing::info!(instance = %self.name, "QQ instance resources removed");
+        Ok(())
+    }
+
     async fn stop(&self) -> Result<(), AdapterError> {
         if !self.inner.running.load(Ordering::SeqCst) {
             return Err(AdapterError::NotRunning("qq".into()));
