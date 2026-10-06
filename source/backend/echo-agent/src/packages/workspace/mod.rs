@@ -266,13 +266,13 @@ impl WorkspaceStore {
                     // 的 path 参数用 `node://<peer>/<绝对路径>` 前缀，经联邦
                     // Invoke 在对端沙箱内执行。
                     Some(node) => text.push_str(&format!(
-                        "- node://{node}/{} [remote:{node}]（远程节点：文件工具路径用 node://{node}/<绝对路径> 前缀直接读写/列目录/搜索）\n",
+                        "- node://{node}/{} [remote:{node}]（远程节点：文件工具的 path 用 node://{node}/<绝对路径> 前缀直接读写/列目录/搜索；bash 工具可用 node://{node}/<命令> 在对端执行，如 node://{node}/cargo test）\n",
                         dir.path().trim_start_matches('/')
                     )),
                     None => text.push_str(&format!("- {}\n", dir.path())),
                 }
             }
-            text.push_str("在本机目录范围内工作；标注 [remote:<peer>] 的远程目录以 node:// 前缀路径直接操作（对端白名单/沙箱裁决，拒绝会原样返回）；git 状态与其它会话可用 workspace 工具查询/切换。");
+            text.push_str("在本机目录范围内工作；标注 [remote:<peer>] 的远程目录以 node:// 前缀路径直接操作（文件工具用 path 前缀，bash 用命令前缀；对端白名单/沙箱裁决，拒绝会原样返回）；git 状态与其它会话可用 workspace 工具查询/切换。");
         } else {
             text.push_str("\n（尚未配置工作区目录，可用 workspace 工具或面板添加）");
         }
@@ -295,6 +295,24 @@ impl WorkspaceStore {
 }
 
 /// Trim + strip trailing separators (`/`); keeps the path otherwise verbatim.
+/// 远程 git 状态占位（对端离线/未接线/失败降级）：保留 `node://` 目录
+/// 标注与错误说明。
+fn remote_git_placeholder(qualified_directory: &str, message: String) -> WorkspaceGitInfo {
+    WorkspaceGitInfo {
+        directory: qualified_directory.to_string(),
+        is_repo: false,
+        branch: None,
+        ahead: 0,
+        behind: 0,
+        staged: 0,
+        modified: 0,
+        untracked: 0,
+        changed_files: Vec::new(),
+        last_commit: None,
+        error: Some(message),
+    }
+}
+
 fn normalize_directory(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -614,7 +632,7 @@ impl Tool for WorkspaceTool {
                 "directories": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "工作区目录绝对路径列表（operation=create 时可选）"
+                    "description": "工作区目录列表（operation=create 时可选）：本机绝对路径，或跨机目录 `node://<联邦peer>/<绝对路径>`"
                 }
             },
             "required": ["operation"]
@@ -646,35 +664,63 @@ impl Tool for WorkspaceTool {
                         .active()
                         .ok_or_else(|| ToolError::Execution("没有激活的工作区会话".into()))?,
                 };
-                // federation Phase 0：远程目录跳过本机 git 采集（Phase 2 经
-                // 联邦链路查询对端），以占位条目呈现。
-                let directories = session.directories.clone();
-                let results = tokio::task::spawn_blocking(move || {
-                    directories
-                        .iter()
-                        .map(|dir| match dir.node() {
-                            Some(node) => WorkspaceGitInfo {
-                                directory: format!(
-                                    "node://{node}/{}",
-                                    dir.path().trim_start_matches('/')
+                // 跨机工作区（2026-10）：远程目录经联邦
+                // Query(WorkspaceGitStatus) 拉对端 git 状态（与 Panel 命令
+                // 路径同一逻辑）；对端离线/未接线时降级为占位条目。
+                let mut results: Vec<WorkspaceGitInfo> = Vec::new();
+                let mut local_paths: Vec<String> = Vec::new();
+                for dir in &session.directories {
+                    match dir.node() {
+                        Some(node) => {
+                            let qualified =
+                                format!("node://{node}/{}", dir.path().trim_start_matches('/'));
+                            let info = match crate::federation::remote_querier() {
+                                Some(querier) => {
+                                    match querier(
+                                        node.to_string(),
+                                        echo_federation::QueryKind::WorkspaceGitStatus,
+                                        dir.path().to_string(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(payload) => {
+                                            match serde_json::from_value::<WorkspaceGitInfo>(
+                                                payload.get("git").cloned().unwrap_or_default(),
+                                            ) {
+                                                Ok(mut info) => {
+                                                    info.directory = qualified;
+                                                    info
+                                                }
+                                                Err(e) => remote_git_placeholder(
+                                                    &qualified,
+                                                    format!("远程结果解析失败: {e}"),
+                                                ),
+                                            }
+                                        }
+                                        Err(message) => remote_git_placeholder(&qualified, message),
+                                    }
+                                }
+                                None => remote_git_placeholder(
+                                    &qualified,
+                                    "联邦未接线：远程 git 状态不可用".into(),
                                 ),
-                                is_repo: false,
-                                branch: None,
-                                ahead: 0,
-                                behind: 0,
-                                staged: 0,
-                                modified: 0,
-                                untracked: 0,
-                                changed_files: Vec::new(),
-                                last_commit: None,
-                                error: Some("远程目录：本机不可采集".into()),
-                            },
-                            None => collect_dir_git(dir.path()),
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .await
-                .map_err(|e| ToolError::Execution(format!("git 采集失败: {e}")))?;
+                            };
+                            results.push(info);
+                        }
+                        None => local_paths.push(dir.path().to_string()),
+                    }
+                }
+                if !local_paths.is_empty() {
+                    let collected = tokio::task::spawn_blocking(move || {
+                        local_paths
+                            .iter()
+                            .map(|p| collect_dir_git(p))
+                            .collect::<Vec<_>>()
+                    })
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("git 采集失败: {e}")))?;
+                    results.extend(collected);
+                }
                 Ok(serde_json::to_string_pretty(&json!({
                     "session": session.id,
                     "name": session.name,

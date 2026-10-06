@@ -1050,7 +1050,12 @@ impl From<&str> for WorkspaceDirectory {
 impl std::fmt::Display for WorkspaceDirectory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.node() {
-            Some(node) => write!(f, "node://{node}/{}", self.path()),
+            // 单斜杠统一（2026-10）：`node://<peer>/<绝对路径>`——与提示词
+            // 教模型的写法、coding 工具解析器（`node://<peer>/<路径>`）
+            // 及 git 状态标注完全一致。path 以 `/` 开头，故这里去掉前导
+            // 斜杠再拼（此前产生 `node://peer//srv` 双斜杠，解析侧会得到
+            // `//srv` 路径）。
+            Some(node) => write!(f, "node://{node}/{}", self.path().trim_start_matches('/')),
             None => f.write_str(self.path()),
         }
     }
@@ -1195,13 +1200,14 @@ mod workspace_directory_tests {
     #[test]
     fn display_qualifies_remote_paths() {
         assert_eq!(WorkspaceDirectory::local("/srv/a").to_string(), "/srv/a");
+        // 单斜杠统一：与提示词/工具解析器一致（2026-10）
         assert_eq!(
             WorkspaceDirectory::Qualified {
                 path: "/srv/r".into(),
                 node: Some("node-x".into()),
             }
             .to_string(),
-            "node://node-x//srv/r"
+            "node://node-x/srv/r"
         );
     }
 }

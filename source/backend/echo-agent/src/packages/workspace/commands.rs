@@ -209,7 +209,8 @@ impl Agent {
                 for dir in &directories {
                     match dir.node() {
                         Some(node) => {
-                            let qualified = format!("node://{node}/{}", dir.path());
+                            let qualified =
+                                format!("node://{node}/{}", dir.path().trim_start_matches('/'));
                             let info = match crate::federation::remote_querier() {
                                 Some(querier) => {
                                     match querier(
