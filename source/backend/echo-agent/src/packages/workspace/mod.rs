@@ -671,9 +671,11 @@ impl Tool for WorkspaceTool {
                 // 跨机工作区（2026-10）：远程目录经联邦
                 // Query(WorkspaceGitStatus) 拉对端 git 状态（与 Panel 命令
                 // 路径同一逻辑）；对端离线/未接线时降级为占位条目。
-                let mut results: Vec<WorkspaceGitInfo> = Vec::new();
-                let mut local_paths: Vec<String> = Vec::new();
-                for dir in &session.directories {
+                // 索引回填保持声明顺序（远程/本机混合时不被重排，2026-10）。
+                let mut results: Vec<Option<WorkspaceGitInfo>> =
+                    vec![None; session.directories.len()];
+                let mut local: Vec<(usize, String)> = Vec::new();
+                for (index, dir) in session.directories.iter().enumerate() {
                     match dir.node() {
                         Some(node) => {
                             let qualified =
@@ -709,26 +711,26 @@ impl Tool for WorkspaceTool {
                                     "联邦未接线：远程 git 状态不可用".into(),
                                 ),
                             };
-                            results.push(info);
+                            results[index] = Some(info);
                         }
-                        None => local_paths.push(dir.path().to_string()),
+                        None => local.push((index, dir.path().to_string())),
                     }
                 }
-                if !local_paths.is_empty() {
+                if !local.is_empty() {
+                    let paths: Vec<String> = local.iter().map(|(_, p)| p.clone()).collect();
                     let collected = tokio::task::spawn_blocking(move || {
-                        local_paths
-                            .iter()
-                            .map(|p| collect_dir_git(p))
-                            .collect::<Vec<_>>()
+                        paths.iter().map(|p| collect_dir_git(p)).collect::<Vec<_>>()
                     })
                     .await
                     .map_err(|e| ToolError::Execution(format!("git 采集失败: {e}")))?;
-                    results.extend(collected);
+                    for ((index, _), info) in local.into_iter().zip(collected) {
+                        results[index] = Some(info);
+                    }
                 }
                 Ok(serde_json::to_string_pretty(&json!({
                     "session": session.id,
                     "name": session.name,
-                    "directories": results,
+                    "directories": results.into_iter().flatten().collect::<Vec<_>>(),
                 }))
                 .unwrap_or_else(|_| "{}".into()))
             }

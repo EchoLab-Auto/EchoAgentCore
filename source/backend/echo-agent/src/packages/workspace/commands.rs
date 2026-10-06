@@ -222,9 +222,11 @@ impl Agent {
                 // spawn_blocking 采集。对端离线/旧版不认识该查询种类时降级
                 // 为占位条目（与原行为一致，error 注明原因）。
                 let directories = session.directories.clone();
-                let mut infos: Vec<echo_protocol::WorkspaceGitInfo> = Vec::new();
-                let mut local_paths: Vec<String> = Vec::new();
-                for dir in &directories {
+                // 索引回填保持声明顺序（远程/本机混合时不被重排，2026-10）。
+                let mut infos: Vec<Option<echo_protocol::WorkspaceGitInfo>> =
+                    vec![None; directories.len()];
+                let mut local: Vec<(usize, String)> = Vec::new();
+                for (index, dir) in directories.iter().enumerate() {
                     match dir.node() {
                         Some(node) => {
                             let qualified =
@@ -262,21 +264,26 @@ impl Agent {
                                     "联邦未接线：远程 git 状态不可用".into(),
                                 ),
                             };
-                            infos.push(info);
+                            infos[index] = Some(info);
                         }
-                        None => local_paths.push(dir.path().to_string()),
+                        None => local.push((index, dir.path().to_string())),
                     }
                 }
-                if !local_paths.is_empty() {
+                if !local.is_empty() {
+                    let paths: Vec<String> = local.iter().map(|(_, p)| p.clone()).collect();
                     let collected = tokio::task::spawn_blocking(move || {
-                        local_paths
+                        paths
                             .iter()
                             .map(|p| crate::workspace::collect_dir_git(p))
                             .collect::<Vec<_>>()
                     })
                     .await;
                     match collected {
-                        Ok(mut local_infos) => infos.append(&mut local_infos),
+                        Ok(local_infos) => {
+                            for ((index, _), info) in local.into_iter().zip(local_infos) {
+                                infos[index] = Some(info);
+                            }
+                        }
                         Err(error) => {
                             self.emit_workspace_error(format!("git 状态采集失败: {error}"));
                             return;
@@ -286,7 +293,7 @@ impl Agent {
                 self.emit(BackendEvent::WorkspaceGitStatus {
                     team_id: self.team_id(),
                     session_id,
-                    directories: infos,
+                    directories: infos.into_iter().flatten().collect(),
                 });
             }
             _ => {}
