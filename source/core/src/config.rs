@@ -198,19 +198,31 @@ impl Default for CoreSection {
 
 /// `[federation]` 段（federation Phase 1）：Core↔Core 对等链路。
 ///
-/// **缺省启用**（`enabled = true`）：不配 `listen` 时不监听、无 peer 时不连出，
-/// 因此单节点部署没有网络暴露；但联邦管理面（状态/邀请/添加 peer）开箱可用。
-/// 一旦配置 `listen` 或 `[federation.peers.*]`，互信边界即生效（≈ SSH 免密），
-/// 务必用 per-peer token 并限制 `allow_tools`/`allow_queries`。
-#[derive(Debug, Clone, Default, Deserialize)]
+/// **零配置默认开启**（2026-10）：缺省监听 `0.0.0.0:3133`——任何 Core 开箱
+/// 即可连出也可被连入（邀请串配对开箱可用，无需先手写 listen）；未配
+/// peer 时不接受任何已知链路（accept 侧靠 per-peer token 认证）。显式
+/// `listen = ""` 退回纯连出。一旦配置 `[federation.peers.*]`，互信边界即
+/// 生效（≈ SSH 免密），务必用 per-peer token 并限制
+/// `allow_tools`/`allow_queries`。
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct FederationSection {
-    /// 联邦监听地址（如 `0.0.0.0:3133`）；空 = 不监听（纯连出）。
+    /// 联邦监听地址（缺省 `0.0.0.0:3133`；显式 `""` = 不监听纯连出）。
     pub listen: String,
     /// 人类可读节点别名（Hello 中携带；缺省仅 node_id）。
     pub node_name: Option<String>,
     /// 静态对等节点表。
     pub peers: std::collections::BTreeMap<String, FederationPeerSection>,
+}
+
+impl Default for FederationSection {
+    fn default() -> Self {
+        Self {
+            listen: "0.0.0.0:3133".into(),
+            node_name: None,
+            peers: std::collections::BTreeMap::new(),
+        }
+    }
 }
 
 /// `[federation.peers.<name>]` 条目。
@@ -447,6 +459,21 @@ token = "t"
         assert!(config.federation.peers.contains_key("gpu"));
     }
 
+    #[test]
+    fn federation_defaults_to_listen_3133_without_config() {
+        let path = std::env::temp_dir().join("echo-agent-federation-default-test.toml");
+        std::fs::write(
+            &path,
+            "[agent]\nprovider = \"openai\"\nmodel = \"gpt-4o\"\n",
+        )
+        .unwrap();
+        let config = CoreConfig::load(&path).unwrap();
+        assert_eq!(
+            config.federation.listen, "0.0.0.0:3133",
+            "federation zero-config default: listen must default to 0.0.0.0:3133"
+        );
+        std::fs::remove_file(&path).ok();
+    }
     #[test]
     fn load_dedupes_duplicate_profiles() {
         let dir = std::env::temp_dir();

@@ -132,11 +132,12 @@ region_name = ""
 
 [federation]
 # Core↔Core 联邦链路（多机去中心化；详见 document/federation.md）。
-# 联邦**始终开启**（无 enabled 开关）：不配 listen 时不监听、无 peer 时不连出
-# （单机无网络暴露），但联邦管理面（状态/邀请/添加 peer）开箱可用。
+# 联邦**零配置默认开启**（2026-10）：listen 缺省 0.0.0.0:3133——开箱即可
+# 连出也可被连入（邀请串配对开箱可用）；未配 peer 时 accept 侧靠
+# per-peer token 认证，不放行任何已知链路。
 # ⚠️ 一旦配置 listen 或 [federation.peers.*]，互信边界即生效（≈ SSH 免密）：
 #    必须用 per-peer token，并用 allow_tools / allow_queries 收敛权限。
-# 联邦监听地址（接受其他节点连入）；留空 = 仅连出。
+# 联邦监听地址（接受其他节点连入）；缺省 0.0.0.0:3133，显式 "" = 仅连出。
 # listen = "0.0.0.0:3133"
 # 人类可读节点别名（可选；缺省仅 node_id，见配置同目录 echo-node.json）。
 # node_name = "workstation"

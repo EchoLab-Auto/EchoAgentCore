@@ -16,12 +16,15 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 `source/backend/echo-agent/src/packages/federation`（执行层）+
 `source/core/src/main.rs`（组合根装配与路由泵）。
 
-## 始终开启（无 `enabled` 开关）
+## 零配置默认开启
 
-联邦已**取消开关、恒定开启**：
+联邦已**取消开关、零配置默认开启**（2026-10）：
 
-- 不配 `listen` → 不监听；无 `[federation.peers.*]` → 不连出。单节点部署因此
-  **零网络暴露**，但联邦管理面（状态查询 / 邀请串 / 添加 peer）始终可用。
+- `listen` 缺省 `0.0.0.0:3133`——任何 Core **开箱即可连出也可被连入**
+  （邀请串配对开箱可用，无需先手写 listen）；显式 `listen = ""` 退回
+  纯连出。未配 `[federation.peers.*]` 时 accept 侧靠 per-peer token 认证，
+  **不放行任何已知链路**——单向暴露不等于可被滥用。
+- 联邦管理面（状态查询 / 邀请串 / 添加 peer）始终可用。
 - `RequestFederationStatus` 恒回 `enabled: true` 的正常快照。
 - 一旦配置 `listen` 或 peer，互信边界即生效（≈ SSH 免密）——务必 per-peer
   token + `allow_tools`/`allow_queries` 收敛。
@@ -90,7 +93,9 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 
 ```toml
 [federation]
-# 始终开启（无 enabled 开关）；不配 listen / peer 时为空转（无网络暴露）
+# 零配置默认开启：listen 缺省 0.0.0.0:3133——开箱即可连出也可被
+# 连入（邀请串配对开箱可用）；未配 peer 时 accept 侧靠 per-peer
+# token 认证，不放行任何已知链路；显式 listen = "" 退回纯连出
 listen = "0.0.0.0:3133"
 node_name = "workstation"
 
