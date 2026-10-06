@@ -16,7 +16,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 > `echo_agent::AgentManager` **独占持有**（单一真源），`AgentSupervisor` 只是它的
 > 薄适配（`get`/`personas`），不再维护第二份 HashMap——此前两套注册表对「teams
 > 非空但全部被禁用时是否合成 `default`」处理不一致，会让命令按 `team_id=default`
-> 路由时解析不到，Panel 报「智能体 default 不存在」。多上游（联邦/多 core 聚合）
+> 路由时解析不到，Panel 报「智能体 default 不存在」。多接入点（联邦网络多节点）
 > 下人格身份是 **`(core, team_id)`**：Panel 的 `TeamsList` 按 core 合并、命令按
 > 人格归属 core 路由（会话归属优先，其次人格归属，最后 `activeCore`），并带一致
 > 性守卫（目标 core 不拥有该人格时重定向）——详见 [联邦](./federation.md)。

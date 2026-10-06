@@ -190,15 +190,15 @@ Panel 侧：设置 → 联邦页提供「迁移当前会话」（列出生效 pe
 
 中继是**纯透传**，命令投递范围由客户端显式声明：
 
-- `{"core": "<name>", "frame": {...}}` → 定向该上游；
-- `{"broadcast": true, "frame": {...}}` → 广播给全部在线上游（仅只读发现
+- `{"core": "<name>", "frame": {...}}` → 定向该接入点（联邦节点）；
+- `{"broadcast": true, "frame": {...}}` → 广播给全部在线接入点（仅只读发现
   命令：`RequestState` / `RequestTeamsList` / 探活 `Ping` + 重连探测）；
-- 无壳 → 仅单上游语义下直接转发；多上游下拒绝（不猜测命令语义）。
+- 无壳 → 仅单接入点语义下直接转发；多接入点下拒绝（不猜测命令语义）。
 
 此前中继维护一份"只读命令白名单"，与 Core 的
 `echo_protocol::BROADCAST_READONLY_COMMANDS` 手动同步——已删除。现在**语义
-分类不再重复**：中继只认投递意图，前端 `sendCommand` 在多上游下总是解析出
-具体 core（`resolveTargetCore` 兜底首个已知上游），需要广播的少数发现命令走
+分类不再重复**：中继只认投递意图，前端 `sendCommand` 在多接入点下总是解析出
+具体节点（`resolveTargetCore` 兜底首个已知接入点），需要广播的少数发现命令走
 `broadcastEnvelope()` 显式声明。
 
 ## 跨机子代理结果聚合（P3-3）
@@ -228,13 +228,15 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   空闲节点）；本机读 activities、peer 经 `FederationStatus` 回传
   （在线 peer 由 Core 侧 `Query(NodeStatus)` 3s 短超时实时拉取，
   失败退握手快照）
-- **⚠️ 与上游聚合的命名空间边界（2026-10 明确）**：调度器的"节点"=
-  联邦节点（本机 `local` + peers，Core↔Core 横向对等）；Panel 上游聚合的
-  "core" = `[[cores]]` 连接配置（Panel→Core 纵向）。两套名字**不互通**——
-  `scheduleNode()` 返回的联邦 peer 名只在恰好等于某上游 core 名时才让调度
-  真正生效，否则调度建议被路由层（`resolveTargetCore`）忽略。部署时应保持
-  联邦 peer 名与上游 core 名一致；"联邦 peer 即上游候选"的统一模型是演进
-  方向（详见 [Panel 概览](./panel.md) §多上游聚合）。
+- **一套架构，Panel 只是用户入口（2026-10 澄清）**：联邦网络是唯一
+  实体——所有 Core 节点（不管在哪台机器上）都是网络里的对等节点；
+  Panel 是接入这个网络的**用户面板/客户端**（接在哪个节点是部署细节）。
+  Panel 的 `[[cores]]` 不是"另一套架构的上游"，而是**接入点配置**——
+  它连哪些节点以看到/操作联邦。调度器选出的"节点"与路由层认的"core"
+  是**同一个**联邦节点身份；`scheduleNode()` 返回 null = 本机（local），
+  非 null = 联邦 peer 名——路由层（`resolveTargetCore`）按会话/人格归属
+  把命令路由到该节点（该节点必须在 Panel 的接入点配置里可达，否则
+  调度建议落空——所以接入点应覆盖联邦网络里要用的节点）。
   会广播给全部在线上游，Panel 必须**按 core 合并**（不能整体覆盖），且命令
   路由按「会话归属 > 人格归属 > activeCore」并带一致性守卫——目标 core 不
   拥有人格时重定向到拥有人格的 core。否则会把 A core 的 `default` 发给
@@ -243,9 +245,9 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   （`local:tui::local_user`）、shell 会话 id（每 core 都从 `sh-1` 起）、人格
   id 在各 core 上可相同，因此 Panel 的 `activities` / `tasks` / `shellTerminals`
   / `teamTimelines` / `workspaceGitBySession` / `workspaceFiles` 及磁盘
-  trunk 缓存都必须用复合键（`core 为空时退化为裸 id`，单上游零变化）；同名
+  trunk 缓存都必须用复合键（`core 为空时退化为裸 id`，单接入点零变化）；同名
   跨 core 不再互相覆盖/串显。引导期裸广播的只读命令白名单（中继
-  `is_readonly_command`）须与 Panel 引导命令对齐，否则多上游下被静默拒收。
+  `is_readonly_command`）须与 Panel 引导命令对齐，否则多接入点下被静默拒收。
 - **身份内建 `node_id` + 复合键收尾**（2026-10 Phase 2）：`SessionInfo` /
   `TeamInfo` 线上新增可选 `node_id`（进程级 NodeId，`echo_agent::set_node_id`
   由组合根注入；旧 Core 缺省 None，serde 默认兼容）——多节点聚合客户端不再

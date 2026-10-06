@@ -58,9 +58,9 @@ pub enum WsMessage {
 
 完整变体与载荷见 `echo-protocol/src/command.rs`；QQ 管理类还有 `RequestGroupList` / `RequestFriendList` / `RequestQqFilterConfig` 等查询命令。
 
-### 多上游聚合：可广播只读命令（2026-10）
+### 多接入点聚合：可广播只读命令（2026-10）
 
-`BROADCAST_READONLY_COMMANDS` / `is_broadcast_readonly()`（`echo-protocol/src/command.rs`）定义了**中继（Panel 多上游聚合模式）在未指定目标 core 时允许"无壳广播"的只读命令白名单**（`RequestTeamsList` / `RequestAdapterStatus` / `RequestState` / `RequestTrunkTimeline` / `RequestFederationStatus` / `Ping` 等）；其余命令必须显式指定目标 core，避免一次点击扇出到全部上游。该列表是契约：中继端维护同一列表（其 `is_readonly_command`），**改动必须两端同步**，两边各有一致性测试守护。
+`BROADCAST_READONLY_COMMANDS` / `is_broadcast_readonly()`（`echo-protocol/src/command.rs`）定义了**中继（Panel 多接入点聚合模式）在未指定目标节点时允许"无壳广播"的只读命令白名单**（`RequestTeamsList` / `RequestAdapterStatus` / `RequestState` / `RequestTrunkTimeline` / `RequestFederationStatus` / `Ping` 等）；其余命令必须显式指定目标节点，避免一次点击扇出到全部接入点。该列表是契约：中继端维护同一列表（其 `is_readonly_command`），**改动必须两端同步**，两边各有一致性测试守护。
 
 ## 事件（Core → Client）
 
@@ -106,7 +106,7 @@ graph LR
 - **无「主智能体」**（2026-09-13）：所有智能体平等；进程级职责（管理面、全局命令、插件宿主）由**核心服务代理**（非人格）承担，会话类命令必须显式 `team_id`
 - `TrunkTimeline` 响应携带 `team_id`（= 请求值），前端按响应归属路由缓存/视图，**不用当前 activeTeamId 猜测**
 - 所有人格的实时事件直投进程级事件汇聚点（`EventSink`），Panel 单连接收到全部；`MessageReceived` / `AgentReasoning` / `AgentOutput` / `ToolCall` / `ToolResult` / `AgentThinking` 均由 `annotate_team` 注入 `team_id`，前端按当前 team 过滤实时事件（跨 agent 不串显）
-- **多上游 core 归属（2026-10，Panel 中继侧）**：多上游时每个 Core 的事件经中继加壳 `{core, frame}`——**core 归属是 Panel 中继信封层的概念，不在本协议帧内**（Core 自身不感知多上游，帧格式与单上游完全一致）；身份因此升级为 `(core, id)`：会话 id（`local:tui::local_user`）与人格 id 在每个 core 上可重复，前端一律按复合键路由（详见 [Panel 概览](./panel.md) §多上游聚合）
+- **接入点 core 归属（2026-10，Panel 中继侧）**：多接入点时每个 Core 节点的事件经中继加壳 `{core, frame}`——**core 归属是 Panel 中继信封层的概念，不在本协议帧内**（Core 自身不感知接入点数量，帧格式与单接入点完全一致）；身份因此升级为 `(core, id)`：会话 id（`local:tui::local_user`）与人格 id 在每个节点上可重复，前端一律按复合键路由（详见 [Panel 概览](./panel.md) §接入联邦网络）
 
 ## 共享枚举
 

@@ -17,8 +17,8 @@ EchoAgentPanel/
 ├── source/echo-web-server/          # Rust 后端（axum + WS 中继）
 │   ├── src/main.rs                  # 服务入口（路由装配：/ws、/media、/api/logs、/api/upstreams + 静态兜底）
 │   ├── src/static_files.rs          # 静态资源（gzip 协商 / 弱 ETag-304 / 分级缓存）
-│   ├── src/proxy.rs                 # 浏览器 ↔ 上游 Core 帧中继（多上游 {core, frame} 信封、10s 写超时）
-│   ├── src/upstreams_api.rs         # 上游管理 API（/api/upstreams 增删查）+ Bearer 认证中间件
+│   ├── src/proxy.rs                 # 浏览器 ↔ 接入点 Core 帧中继（多接入点 {core, frame} 信封、10s 写超时）
+│   ├── src/upstreams_api.rs         # 接入点管理 API（/api/upstreams 增删查）+ Bearer 认证中间件
 │   └── src/config.rs                # 面板配置加载
 ├── web/                             # Vue 3 + TypeScript + Vite 前端
 │   ├── vendor/ui-frame/             # ui-frame 组件库本地快照（dist + package.json，入库）
@@ -41,19 +41,19 @@ EchoAgentPanel/
 
 ## 后端：无状态字节级中继
 
-每个浏览器 WS 连接同时中继到**全部**上游 Core 的 management WS（`[[cores]]`，单上游 = 一条）；**单上游时帧按原文转发，不解析、不记录负载**；多上游时事件按来源加壳 `{core, frame}` 信封、命令按信封路由到目标上游（仅信封层，不触碰负载）——协议细节与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积；转发另有 **10s 写超时**（`SEND_TIMEOUT`）——对端写阻塞超时即断链，冻结标签页不会挂住中继、Core 发送缓冲不再无界积压。
+每个浏览器 WS 连接同时中继到**全部**接入点 Core 的 management WS（`[[cores]]`，单接入点 = 一条）；**单接入点时帧按原文转发，不解析、不记录负载**；多接入点时事件按来源节点加壳 `{core, frame}` 信封、命令按信封路由到目标节点（仅信封层，不触碰负载）——协议细节与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积；转发另有 **10s 写超时**（`SEND_TIMEOUT`）——对端写阻塞超时即断链，冻结标签页不会挂住中继、Core 发送缓冲不再无界积压。
 
-- 中继仍无状态（proxy.rs 约 800 行，含多上游聚合、信封路由与令牌校验），可独立测试（`tests/proxy.rs` 用假 Core 验证双向帧透传）
+- 中继仍无状态（proxy.rs 约 800 行，含接入点聚合、信封路由与令牌校验），可独立测试（`tests/proxy.rs` 用假 Core 验证双向帧透传）
 - 多标签页 = 多条 Core 连接（Core 的 management 支持多 Panel）
 - 已知限制：无会话恢复——刷新页面先由磁盘缓存（`trunk-cache.ts`）立即可渲染，再经 `RequestState` / `RequestTrunkTimeline{since_seq}` 增量 Bootstrap
 - 否决的备选：后端做协议层转发/会话管理（等于重写 Core 桥接层）；浏览器直连 Core :3132（跨域 + 暴露 management 端口）
 
-## 多上游聚合、访问令牌与调度（2026-10）
+## 接入联邦网络、访问令牌与调度（2026-10）
 
-- **多上游 `[[cores]]`**：浏览器单连接同时中继到全部上游，事件按来源带 `{core, frame}` 信封、会话列表带来源徽标；命令按当前会话所属上游路由（`connection.ts::resolveTargetCore`），未选中会话时全局类只读命令（如 `RequestTeamsList`）裸广播全部上游、各端各回一份聚合。上游可在设置·Core 连接页在线增删（写回 `[[cores]]` 段持久化，中继动态并入/摘除，无需重启）；单上游（`[core]` 或一条 `[[cores]]`）行为与此前完全一致（无壳）
+**一套架构，Panel 只是用户入口**：联邦网络是唯一实体（所有 Core 节点对等互联，见 [联邦](./federation.md)）；Panel 是接入这个网络的**用户面板/客户端**。`[[cores]]` 不是"另一套架构的上游"，而是 **Panel 的接入点配置**——它连哪些 Core 节点以看到/操作联邦网络。中继把浏览器单连接复用到全部接入点：事件按来源节点带 `{core, frame}` 信封、会话列表带来源徽标；命令按当前会话所属节点路由（`connection.ts::resolveTargetCore`），未选中会话时全局类只读命令（如 `RequestTeamsList`）裸广播全部接入点、各端各回一份聚合。接入点可在设置·Core 连接页在线增删（写回 `[[cores]]` 段持久化，中继动态并入/摘除，无需重启）；单接入点（`[core]` 或一条 `[[cores]]`）行为与此前完全一致（无壳）。
 - **Bearer 访问令牌**：`[server].access_token` 非空时全站（WS 握手 / `/api/*` / `/media`）要求 `Authorization: Bearer <token>` 或 `?token=` 查询参数，静态前端豁免以加载登录页（`proxy.rs::authorized`、`upstreams_api.rs::require_auth`）；前端 URL `?token=` 播种一次后存 localStorage `echo-panel-token`，后续 HTTP 经 `panelFetch` 自动带 Bearer 头（`connection.ts:328-345`）。另有 `[core].access_token` 是连 Core management WS 的认证头，须与 Core 侧配置一致
 - **分布式调度器 `scheduler.ts`**：新建会话（或向无归属新对话发首条消息）时的目标节点选择，策略持久化于 localStorage `echo-schedule-policy`：`least_busy`（默认，按 FederationStatus 各 peer 活跃 turn 数取最小，本机参与比较）/ `round_robin` / `prefer:<name>`（亲和，离线退 least_busy）；只做建议，最终路由仍走 connection.ts 的 coreForCommand 链
-  - **⚠️ 边界：两套节点命名空间**——调度器的"节点"来自**联邦**（`FederationStatus`：本机 `local` + 联邦 peers，是 Core↔Core 的横向对等关系）；上游聚合的"core"来自 **`[[cores]]`**（Panel→Core 的纵向连接配置）。两者名字**不互通**：`scheduleNode()` 返回的联邦 peer 名不会自动等于某个上游 core 名，调度结果只在 `targetSession?.core` 为空（新会话尚无归属）时作为建议注入（`App.vue:170`），随后仍由 `resolveTargetCore` 按会话/人格归属裁决。换言之：调度器目前只在"联邦 peer 恰好也是上游 core"（名字一致）时才真正生效，否则调度结果被路由层忽略。统一模型（联邦 peer 即上游候选）是明确的演进方向，落地前部署时**应保持联邦 peer 名与上游 core 名一致**以让调度生效
+  - **节点身份统一**：调度器选出的"节点"与路由层认的"core"是**同一个**联邦节点身份（`local` = 本机 = null；联邦 peer 名 = 该节点）。`scheduleNode()` 在 `targetSession?.core` 为空（新会话尚无归属）时给出建议节点（`App.vue:170`），随后 `resolveTargetCore` 按会话/人格归属把命令路由到该节点——该节点必须在 Panel 的接入点配置（`[[cores]]`）里可达，否则调度建议落空。因此**接入点应覆盖联邦网络里要承载工作的节点**（通常 = 全部在线 peer）。
 ## 状态管理与数据流
 
 - `store.ts`：全局响应式单例（Vue `reactive`），`dispatch(event)` 逐事件归约
@@ -144,6 +144,6 @@ cd web && npm run dev           # 前端热更新（/ws 代理到 :8080）
 
 ## 配置与运维
 
-- `~/.config/echo-agent-panel/panel.toml`：`[server]`（bind_address、static_dir、media_dir 媒体库目录、access_token 面板访问令牌）、`[core]`（connect_url 连 Core 的 WS 地址、access_token 认证头；单上游兜底——`[[cores]]` 键出现过即以在线管理为准）、`[[cores]]`（多上游 name/url/access_token，可空，设置·Core 连接页在线增删并写回）、`[logging]`（level/format/log_file 滚动）
+- `~/.config/echo-agent-panel/panel.toml`：`[server]`（bind_address、static_dir、media_dir 媒体库目录、access_token 面板访问令牌）、`[core]`（connect_url 连 Core 的 WS 地址、access_token 认证头；单上游兜底——`[[cores]]` 键出现过即以在线管理为准）、`[[cores]]`（接入点 name/url/access_token，可空，设置·Core 连接页在线增删并写回）、`[logging]`（level/format/log_file 滚动）
 - `systemctl --user restart echo-agent-panel.service` 重启；静态资源在 `~/.local/libexec/echo-agent-panel/web`
 - 更新走 `echo-agent-panel-update.service`（构建 Rust 服务 + `npm run build` + 替换静态目录 + 重启），详见 [部署与自更新](./ops-deploy.md)

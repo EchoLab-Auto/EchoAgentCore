@@ -36,13 +36,13 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 - `StartAllAdapters` / `StopAllAdapters`（逐个适配器控制已覆盖）
 - `SetQqOwner`（管理员显示为只读）
 
-> `RequestSystemPrompt` 已接线（2026-10 多上游起）：切 core 时随"单值管理面"重拉发送（`connection.ts:262`，`requestActiveRegionManagement`），`pending.ts:60` 登记 `SystemPrompt` 响应销账，`state.ts:1206` 消费写入 `state.systemPrompt`；`InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 自 2026-09-03 起接线（§9.3），均不再属于本清单。
+> `RequestSystemPrompt` 已接线（2026-10 多接入点起）：切 core 时随"单值管理面"重拉发送（`connection.ts:262`，`requestActiveRegionManagement`），`pending.ts:60` 登记 `SystemPrompt` 响应销账，`state.ts:1206` 消费写入 `state.systemPrompt`；`InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 自 2026-09-03 起接线（§9.3），均不再属于本清单。
 
 ## 十五、关键常量速查
 
 | 常量 | 值 | 位置 |
 |---|---|---|
-| 多上游复合键 | `(core, id)`，`<core>\u0000<id>`；core 为空退化为裸 id（单 core 行为与磁盘缓存零变化） | keys.ts |
+| 多接入点复合键 | `(core, id)`，`<core>\u0000<id>`；core 为空退化为裸 id（单 core 行为与磁盘缓存零变化） | keys.ts |
 | 命令目标路由 | 显式 targetCore > 会话归属 > 人格归属 > activeRegion；解析不出且 knownCores>1 时拒发提示 | connection.ts:275-326 |
 | WS 重连退避 | 500ms ×2，上限 30s | connection.ts |
 | 加载态阈值 | 显示延迟 150ms；最短可见 400ms；慢 6s；超时 20s | pending.ts |

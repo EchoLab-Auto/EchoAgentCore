@@ -67,7 +67,7 @@ graph LR
 ```
 
 - Core 是状态唯一事实来源；断连重连后凭缓存游标增量补齐、缓存失效时由 Core 回退全量（§四）；唯一乐观例外 = 取消任务（§7.6、§十一）
-- HTTP 旁路仅两条日志接口（`/api/logs/{panel,core}`）、上游管理接口（`/api/upstreams` 增删查，多上游聚合 2026-10，见 [Panel 概览](./panel.md) §多上游聚合）与媒体文件路由（`GET /media/{name}`，§3.4），其余全部走 WS（§十一）——QQ 登录/二维码已于 2026-09-13 迁到 WS（Core 代理）
+- HTTP 旁路仅两条日志接口（`/api/logs/{panel,core}`）、接入点管理接口（`/api/upstreams` 增删查，多接入点聚合 2026-10，见 [Panel 概览](./panel.md) §多接入点聚合）与媒体文件路由（`GET /media/{name}`，§3.4），其余全部走 WS（§十一）——QQ 登录/二维码已于 2026-09-13 迁到 WS（Core 代理）
 
 ## 二、视图与导航
 
@@ -156,7 +156,7 @@ graph LR
 |---|---|---|
 | `echo-panel-view` | 当前视图 | `chat` |
 | `echo-panel-active-team` | 当前 Agent（刷新/重连后停留原 Agent） | 列表首个 |
-| `echo-panel-active-team-core` | 当前 Agent 所属上游 core（多上游聚合，2026-10） | 无（单上游） |
+| `echo-panel-active-team-core` | 当前 Agent 所属接入点 core（多接入点聚合，2026-10） | 无（单接入点） |
 | `echo-panel-token` | Bearer 访问令牌（`[server].access_token` 非空时；URL `?token=` 播种一次后持久化） | 无 |
 | `echo-schedule-policy` | 分布式调度策略（`least_busy` / `round_robin` / `prefer:<name>`，scheduler.ts） | `least_busy` |
 | `echo-panel-theme` | 主题三态 | `auto` |
@@ -209,7 +209,7 @@ graph LR
 ```
 
 - WS 地址 `ws(s)://{host}/ws`（随页面协议）；单例连接（`connection.ts`）
-- **Bootstrap 命令组**（每次 onopen 按序发送）：`RequestState` → `RequestTeamsList`（这两条为只读发现命令，**裸广播全部在线上游**，中继白名单放行）→ `RequestAdapterStatus` → `RequestShellSessions` →（有保存的 Agent 时）`RequestTrunkTimeline{team_id: 上次Agent, since_seq: 缓存游标}`（经 `sendCommand` 统一路由；多上游下 core 未知时兜底裸广播，TeamsList 到达后 App watcher 定向补拉覆盖竞态，`connection.ts:88-116`）。
+- **Bootstrap 命令组**（每次 onopen 按序发送）：`RequestState` → `RequestTeamsList`（这两条为只读发现命令，**裸广播全部在线接入点**，中继白名单放行）→ `RequestAdapterStatus` → `RequestShellSessions` →（有保存的 Agent 时）`RequestTrunkTimeline{team_id: 上次Agent, since_seq: 缓存游标}`（经 `sendCommand` 统一路由；多接入点下 core 未知时兜底裸广播，TeamsList 到达后 App watcher 定向补拉覆盖竞态，`connection.ts:88-116`）。
   - 去主智能体后 `team_id` 必填：没有保存过 Agent 时**跳过**时间线请求（发了必被 Core 拒绝），等 `TeamsList` 到达后由 App watcher 用列表首个发起（有缓存则同样带 `since_seq`）
   - **切换 core 时重拉"单值管理面"**（`requestActiveRegionManagement`，2026-10）：`RequestState` / `RequestSystemPrompt` / `RequestAdapterStatus` / `RequestSkillsList` / `RequestToolsList` / `RequestPluginsList` / `RequestShellSessions` / `RequestFederationStatus`——响应被 `managementCoreCurrent` 过滤到 activeRegion，不重拉会短暂显示上一个 core 的值（`connection.ts:257-268`）
   - QQ 过滤配置**不预取**（QqPanel/QqLoginSection 打开时按实例自行刷新；无 QQ 或多实例未指定实例时预取必被拒，产生无意义的"QQ 适配器未找到"提示）

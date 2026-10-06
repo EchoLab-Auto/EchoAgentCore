@@ -10,7 +10,7 @@ y: 1301
 
 会话（聊天）视图的全部交互契约：消息列表与角色渲染、工具卡生命周期、推理块与活动浮条、输入区（发送/图片/取消任务）、入口行按钮与弹出层。
 
-> **多上游（2026-10）**：会话/人格身份是 `(core, id)`——同名会话（每个 core 都有 `local:tui::local_user`）与同名人格跨 core 可重复。会话视图内所有运行态（activities / branchTabs / 时间线缓存 / 忙碌点）一律按复合键（`keys.ts::sessionKey/teamKey`，`\u0000` 分隔，单上游退化为裸 id）索引；会话列表与 Agent 菜单在跨 core 同名时显示 core 徽标消歧（`SessionSwitcher` / `AgentSwitcher`，见 [Panel 概览](./panel.md) §多上游聚合）。
+> **多接入点（2026-10）**：会话/人格身份是 `(core, id)`——同名会话（每个 core 都有 `local:tui::local_user`）与同名人格跨 core 可重复。会话视图内所有运行态（activities / branchTabs / 时间线缓存 / 忙碌点）一律按复合键（`keys.ts::sessionKey/teamKey`，`\u0000` 分隔，单接入点退化为裸 id）索引；会话列表与 Agent 菜单在跨 core 同名时显示 core 徽标消歧（`SessionSwitcher` / `AgentSwitcher`，见 [Panel 概览](./panel.md) §多接入点聚合）。
 
 ## 七、会话视图（聊天）
 

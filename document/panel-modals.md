@@ -10,7 +10,7 @@ y: 766
 
 全部模态与覆盖层行为：分支详情、上下文弹层、Agent 配置弹层，以及各危险操作的确认形式（原生 confirm / 两步确认）。（原 Sudo 授权弹窗与内联选单卡片随 `run_sudo` / `present_menu` 工具于 2026-09 废弃移除。）
 
-> **多上游（2026-10）**：`RequestContext` 等按（人格, 会话）定向的请求经 `sendPending` 统一路由到会话/人格所属 core（`connection.ts::resolveTargetCore`）；响应快照在 ContextView 侧按 `(session_id, core)` 匹配后才展示，忽略他属 core 的陈旧快照（`ContextView.vue:93-98`）。AgentConfigModal 的保存（`SaveTeam`）同理按人格归属 core 路由。
+> **多接入点（2026-10）**：`RequestContext` 等按（人格, 会话）定向的请求经 `sendPending` 统一路由到会话/人格所属 core（`connection.ts::resolveTargetCore`）；响应快照在 ContextView 侧按 `(session_id, core)` 匹配后才展示，忽略他属 core 的陈旧快照（`ContextView.vue:93-98`）。AgentConfigModal 的保存（`SaveTeam`）同理按人格归属 core 路由。
 
 ## 八、模态与覆盖层
 
