@@ -103,6 +103,9 @@ impl Agent {
                     Err(message) => self.emit_workspace_error(message),
                 }
             }
+            BackendCommand::RequestBrowseDirectories { path } => {
+                self.handle_browse_directories(path).await;
+            }
             BackendCommand::RequestWorkspaceFiles {
                 session_id, path, ..
             } => {
@@ -328,6 +331,144 @@ impl Agent {
             });
         }
         self.emit_workspace_sessions();
+    }
+
+    /// 目录选择器浏览（2026-10）：本机浏览根 / 根内列举；`node://` 前缀
+    /// 经联邦拉对端（同浏览根语义）。
+    pub(crate) async fn handle_browse_directories(&self, path: Option<String>) {
+        // 远程：node://<peer>（根列表）或 node://<peer>/<abs>（列举）。
+        if let Some(raw) = path.as_deref() {
+            if let Some(rest) = raw.strip_prefix("node://") {
+                let (peer, remote_path) = match rest.split_once('/') {
+                    Some((p, r)) if !p.is_empty() => (
+                        p.to_string(),
+                        Some(format!("/{}", r.trim_start_matches('/'))),
+                    ),
+                    _ => (rest.to_string(), None),
+                };
+                if peer.is_empty() {
+                    self.emit(BackendEvent::BrowseDirectories {
+                        path,
+                        roots: Vec::new(),
+                        entries: Vec::new(),
+                        error: Some("node:// 需形如 node://<peer>[/<绝对路径>]".into()),
+                    });
+                    return;
+                }
+                let result = match crate::federation::remote_querier() {
+                    Some(querier) => {
+                        querier(
+                            peer.clone(),
+                            echo_federation::QueryKind::BrowseDirectories,
+                            remote_path.clone().unwrap_or_default(),
+                        )
+                        .await
+                    }
+                    None => Err("联邦未接线：远程目录浏览不可用".into()),
+                };
+                match result {
+                    Ok(payload) => {
+                        // 对端返回的 roots/entries 路径是**对端机器**上的
+                        // 绝对路径——补 `node://<peer>/` 前缀（Panel 显示与
+                        // 选择都直接用，2026-10）。
+                        let mut roots: Vec<echo_protocol::BrowseRoot> = serde_json::from_value(
+                            payload.get("roots").cloned().unwrap_or_default(),
+                        )
+                        .unwrap_or_default();
+                        for root in &mut roots {
+                            root.path =
+                                format!("node://{peer}/{}", root.path.trim_start_matches('/'));
+                        }
+                        let mut entries: Vec<echo_protocol::WorkspaceFileEntry> =
+                            serde_json::from_value(
+                                payload.get("entries").cloned().unwrap_or_default(),
+                            )
+                            .unwrap_or_default();
+                        qualify_remote_entries(&peer, &mut entries);
+                        self.emit(BackendEvent::BrowseDirectories {
+                            path,
+                            roots,
+                            entries,
+                            error: None,
+                        });
+                    }
+                    Err(message) => {
+                        self.emit(BackendEvent::BrowseDirectories {
+                            path,
+                            roots: Vec::new(),
+                            entries: Vec::new(),
+                            error: Some(message),
+                        });
+                    }
+                }
+                return;
+            }
+        }
+        // 本机：浏览根 = 全部运行中 persona 的工作区目录并集 ∪ HOME。
+        let roots = self.core_browse_roots();
+        match path {
+            None => {
+                self.emit(BackendEvent::BrowseDirectories {
+                    path: None,
+                    roots,
+                    entries: Vec::new(),
+                    error: None,
+                });
+            }
+            Some(requested) => {
+                let for_closure = requested.clone();
+                let collected = tokio::task::spawn_blocking(move || {
+                    let resolved =
+                        crate::workspace::resolve_within_browse_roots(&roots, &for_closure)?;
+                    crate::workspace::collect_child_dirs(&resolved)
+                })
+                .await;
+                match collected {
+                    Ok(Ok(entries)) => {
+                        self.emit(BackendEvent::BrowseDirectories {
+                            path: Some(requested),
+                            roots: Vec::new(),
+                            entries,
+                            error: None,
+                        });
+                    }
+                    Ok(Err(message)) => {
+                        self.emit(BackendEvent::BrowseDirectories {
+                            path: Some(requested),
+                            roots: Vec::new(),
+                            entries: Vec::new(),
+                            error: Some(message),
+                        });
+                    }
+                    Err(error) => {
+                        self.emit_workspace_error(format!("目录浏览失败: {error}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// 本 core 的浏览根：全部运行中 persona 的工作区目录并集 ∪ HOME。
+    fn core_browse_roots(&self) -> Vec<echo_protocol::BrowseRoot> {
+        let mut dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
+        let mut labels: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        if let Some(manager) = crate::agent_manager::global_manager() {
+            for running in manager.all() {
+                if let Some(store) = running.agent.workspace_store() {
+                    let (sessions, _) = store.snapshot();
+                    for session in sessions {
+                        for dir in &session.directories {
+                            labels
+                                .entry(dir.path().to_string())
+                                .or_insert_with(|| session.name.clone());
+                            dirs.push(dir.clone());
+                        }
+                    }
+                }
+            }
+        }
+        crate::workspace::browse_roots(&dirs, &labels)
     }
 
     /// Emit the current workspace session list snapshot.

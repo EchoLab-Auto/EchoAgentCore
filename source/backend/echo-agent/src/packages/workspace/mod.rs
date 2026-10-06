@@ -558,6 +558,87 @@ pub fn resolve_within_directories(
     Err("路径不在该会话的工作区目录内".into())
 }
 
+/// 目录选择器的**浏览根**（2026-10）：返回可进入浏览的位置列表。
+///
+/// - 各工作区目录（label = 会话名/目录名，去重）；
+/// - HOME 家目录（label = 「家目录 (~)」）——新项目常在家目录下，
+///   且比根目录 `/` 安全得多。
+///
+/// 与文件浏览器的区别：文件浏览器限「会话已声明的目录内」；浏览根
+/// 面向"选择新目录"，必须能在**未声明**的路径里浏览（否则鸡生蛋）。
+pub fn browse_roots(
+    directories: &[echo_protocol::WorkspaceDirectory],
+    labels: &std::collections::HashMap<String, String>,
+) -> Vec<echo_protocol::BrowseRoot> {
+    let mut out: Vec<echo_protocol::BrowseRoot> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 1) 家目录在首位（最常用）
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            seen.insert(home.clone());
+            out.push(echo_protocol::BrowseRoot {
+                label: "家目录 (~)".into(),
+                path: home,
+            });
+        }
+    }
+    // 2) 各工作区目录（本机；远程由调用方追加带 node:// 的条目）
+    for dir in directories {
+        if dir.is_remote() {
+            continue;
+        }
+        let path = dir.path().to_string();
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let label = labels.get(&path).cloned().unwrap_or_else(|| path.clone());
+        out.push(echo_protocol::BrowseRoot { label, path });
+    }
+    out
+}
+
+/// 浏览根内校验：`path` 的 canonical 形式必须落在任一浏览根的 canonical
+/// 前缀内（字面前缀 + `/`，避免 `/a/bc` 被 `/a/b` 误放行）。返回
+/// canonical 路径。
+pub fn resolve_within_browse_roots(
+    roots: &[echo_protocol::BrowseRoot],
+    path: &str,
+) -> Result<PathBuf, String> {
+    let requested = Path::new(path)
+        .canonicalize()
+        .map_err(|e| format!("路径不存在或不可访问: {e}"))?;
+    for root in roots {
+        if root.path.starts_with("node://") {
+            continue; // 远程根不参与本机解析
+        }
+        let Ok(root_canonical) = Path::new(&root.path).canonicalize() else {
+            continue;
+        };
+        if requested == root_canonical {
+            return Ok(requested);
+        }
+        let mut prefix = root_canonical.as_os_str().to_os_string();
+        prefix.push("/");
+        if requested
+            .as_os_str()
+            .as_encoded_bytes()
+            .starts_with(prefix.as_encoded_bytes())
+        {
+            return Ok(requested);
+        }
+    }
+    Err("路径不在浏览根内（可浏览：家目录与各工作区目录）".into())
+}
+
+/// 列出一级子目录（目录选择器用；文件被过滤——选择器只选目录）。
+pub fn collect_child_dirs(
+    directory: &Path,
+) -> Result<Vec<echo_protocol::WorkspaceFileEntry>, String> {
+    let mut entries = collect_dir_files(directory)?;
+    entries.retain(|e| e.is_dir);
+    Ok(entries)
+}
+
 /// List one directory level for the file browser (blocking; read-only).
 ///
 /// 目录在前、文件在后，各自按名称不区分大小写排序；超过 [`FILES_CAP`]
@@ -1047,6 +1128,72 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&other);
         let _ = std::fs::remove_dir_all(&sibling);
+    }
+
+    #[test]
+    fn browse_roots_include_home_and_workspace_dirs_deduped() {
+        let mut labels = std::collections::HashMap::new();
+        labels.insert("/srv/proj".to_string(), "Proj".to_string());
+        let dirs = vec![
+            echo_protocol::WorkspaceDirectory::local("/srv/proj"),
+            // 与上一条重复（去重）
+            echo_protocol::WorkspaceDirectory::local("/srv/proj"),
+            // 远程目录不进本机浏览根
+            echo_protocol::WorkspaceDirectory::Qualified {
+                path: "/srv/remote".into(),
+                node: Some("gpu-box".into()),
+            },
+        ];
+        let roots = browse_roots(&dirs, &labels);
+        // HOME 在首位（测试环境必有 HOME）
+        assert!(roots[0].path.starts_with('/'), "roots[0]: {:?}", roots[0]);
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.label == "Proj" && r.path == "/srv/proj"),
+            "roots: {roots:?}"
+        );
+        // 远程目录不在本机浏览根
+        assert!(!roots.iter().any(|r| r.path.contains("node://")));
+        // 去重：/srv/proj 只出现一次
+        assert_eq!(roots.iter().filter(|r| r.path == "/srv/proj").count(), 1);
+    }
+
+    #[test]
+    fn resolve_within_browse_roots_rejects_outside() {
+        let tmp = std::env::temp_dir();
+        let inside = tmp.join(format!("echo-browse-{}", std::process::id()));
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::write(inside.join("keep.txt"), "x").unwrap();
+        let roots = vec![echo_protocol::BrowseRoot {
+            label: "tmp".into(),
+            path: tmp.to_string_lossy().into_owned(),
+        }];
+        // 根内：放行（canonical）
+        let resolved =
+            resolve_within_browse_roots(&roots, &inside.to_string_lossy()).expect("inside root");
+        assert!(resolved.starts_with(tmp.canonicalize().unwrap()));
+        // 根外（/etc 不在浏览根内）：拒绝
+        if std::path::Path::new("/etc").exists() {
+            let err = resolve_within_browse_roots(&roots, "/etc").expect_err("outside");
+            assert!(err.contains("不在浏览根内"), "{err}");
+        }
+        std::fs::remove_file(inside.join("keep.txt")).ok();
+        std::fs::remove_dir(&inside).ok();
+    }
+
+    #[test]
+    fn collect_child_dirs_filters_files() {
+        let dir = std::env::temp_dir().join(format!("echo-childdirs-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("file.txt"), "x").unwrap();
+        let entries = collect_child_dirs(&dir).expect("list");
+        assert_eq!(entries.len(), 1, "entries: {entries:?}");
+        assert_eq!(entries[0].name, "sub");
+        assert!(entries[0].is_dir);
+        std::fs::remove_file(dir.join("file.txt")).ok();
+        std::fs::remove_dir(dir.join("sub")).ok();
+        std::fs::remove_dir(&dir).ok();
     }
 
     #[test]

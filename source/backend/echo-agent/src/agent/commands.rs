@@ -1251,7 +1251,8 @@ impl Agent {
             | BackendCommand::DeleteWorkspaceSession { .. }
             | BackendCommand::ActivateWorkspaceSession { .. }
             | BackendCommand::RequestWorkspaceGitStatus { .. }
-            | BackendCommand::RequestWorkspaceFiles { .. } => {
+            | BackendCommand::RequestWorkspaceFiles { .. }
+            | BackendCommand::RequestBrowseDirectories { .. } => {
                 self.apply_workspace_command(cmd).await;
             }
             // 联邦管理（Phase 4）：处理函数注册在组合根（需要 Federation

@@ -148,5 +148,8 @@ region_name = ""
 # url = "ws://192.168.1.20:3133"
 # token = "<生成随机长串：openssl rand -hex 32>"
 # allow_tools = ["*"]        # 允许对端调用的本机工具（Phase 2 生效）
+# allow_queries = ["workspace_files", "workspace_git_status", "browse_directories"]
+#                             # 允许对端的只读查询（会话/工作区结构敏感，默认全拒；
+#                             # node_status 恒允许、api_profiles 脱敏恒允许）
 # allow_subagent = true      # 接受对端 subagent 委派（Phase 3 生效）
 # require_confirm = []       # 命中列表的调用需人工确认（Phase 2 生效）

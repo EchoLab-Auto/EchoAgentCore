@@ -2188,6 +2188,47 @@ async fn handle_federation_query(
                 "profiles": profiles,
             }))
         }
+        QueryKind::BrowseDirectories => {
+            // 目录选择器浏览（2026-10）：与 ApiProfiles 同级的只读结构查询。
+            // `subject` 空 = 根列表请求；否则列出该目录子目录（限浏览根）。
+            let requested = req.subject.trim().to_string();
+            // 浏览根 = 全部 persona 工作区目录并集 ∪ HOME（与大脑侧本机
+            // 浏览同一逻辑——browse_roots helper）。
+            let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
+            let mut labels: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            for persona in personas.personas() {
+                if let Some(store) = persona.agent.workspace_store() {
+                    let (sessions, _) = store.snapshot();
+                    for s in sessions {
+                        for dir in &s.directories {
+                            labels
+                                .entry(dir.path().to_string())
+                                .or_insert_with(|| s.name.clone());
+                            all_dirs.push(dir.clone());
+                        }
+                    }
+                }
+            }
+            let roots = echo_agent::workspace::browse_roots(&all_dirs, &labels);
+            if requested.is_empty() {
+                return ok(serde_json::json!({
+                    "roots": roots,
+                    "entries": [],
+                }));
+            }
+            let collected = tokio::task::spawn_blocking(move || {
+                let resolved =
+                    echo_agent::workspace::resolve_within_browse_roots(&roots, &requested)?;
+                echo_agent::workspace::collect_child_dirs(&resolved)
+            })
+            .await;
+            match collected {
+                Ok(Ok(entries)) => ok(serde_json::json!({"roots": [], "entries": entries})),
+                Ok(Err(message)) => err(&message),
+                Err(e) => err(&format!("采集失败: {e}")),
+            }
+        }
         QueryKind::SessionSnapshot => {
             // 会话归属解析：`node://` 前缀剥离按本机处理。
             // team_id 非空时**只查该 persona**（同名会话如

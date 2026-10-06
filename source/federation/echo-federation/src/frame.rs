@@ -218,6 +218,11 @@ pub enum QueryKind {
     /// **api_key 明文永不过线**，导入端需手动补填）。默认放行
     /// （脱敏后无敏感信息），无需 allow_queries 显式开启。
     ApiProfiles,
+    /// 目录选择器浏览（2026-10）：`subject` = 目录绝对路径（空 = 根列表
+    /// 请求）；执行端限"浏览根"（工作区目录并集 ∪ HOME），返回子目录
+    /// 或根列表。授权走 `allow_queries` 的 `browse_directories` 项
+    /// （目录结构隐私敏感，默认不放行——与 workspace_files 同级）。
+    BrowseDirectories,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -762,6 +762,31 @@ pub enum BackendEvent {
         #[serde(default)]
         error: Option<String>,
     },
+    /// 目录选择器浏览结果（`RequestBrowseDirectories` 响应，2026-10）。
+    BrowseDirectories {
+        /// 被浏览的位置（回显请求值；None = 根列表）。
+        #[serde(default)]
+        path: Option<String>,
+        /// 浏览根（path=None 时列出）：label（展示名，如「家目录 (~)」）+
+        /// path。远程节点浏览时 roots 来自对端。
+        #[serde(default)]
+        roots: Vec<BrowseRoot>,
+        /// 目录条目（`path` 非空时；已过滤为子目录——选择器只选目录）。
+        #[serde(default)]
+        entries: Vec<WorkspaceFileEntry>,
+        /// 失败原因（越界 / 不存在 / 对端离线等；成功为 None）。
+        #[serde(default)]
+        error: Option<String>,
+    },
+}
+
+/// 目录选择器的浏览根（可进入浏览的位置）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BrowseRoot {
+    /// 展示名（Panel 主标签），如「家目录」「<工作区名>」。
+    pub label: String,
+    /// 绝对路径（本机）或 `node://<peer>/<abs>`（远程）。
+    pub path: String,
 }
 
 /// One discovered skill with its full instructions (for panel display).

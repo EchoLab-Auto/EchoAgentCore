@@ -292,6 +292,22 @@ pub enum BackendCommand {
         session_id: String,
         path: String,
     },
+    /// 目录选择器浏览（2026-10）：列出「浏览根」内的子目录，供新建/
+    /// 编辑工作区时**选择**目录（与文件浏览器不同：不依赖会话已声明的
+    /// 工作区目录——解决"要浏览才能选、要选才能浏览"的鸡生蛋问题）。
+    ///
+    /// `path` 形态：
+    /// - `None` → 返回浏览根列表（roots：工作区目录并集 ∪ HOME）；
+    /// - `Some("/abs")` → 列出该本机目录的子条目（限浏览根内）；
+    /// - `Some("node://<peer>")` → 拉取对端浏览根（经联邦）；
+    /// - `Some("node://<peer>/<abs>")` → 列出对端该目录的子条目。
+    ///
+    /// 浏览根内校验在服务端（canonical 前缀）。响应
+    /// `BackendEvent::BrowseDirectories`。
+    RequestBrowseDirectories {
+        #[serde(default)]
+        path: Option<String>,
+    },
     /// Start all configured adapters.
     StartAllAdapters,
     /// Stop all running adapters.

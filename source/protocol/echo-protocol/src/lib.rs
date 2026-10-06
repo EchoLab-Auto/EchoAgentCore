@@ -29,7 +29,7 @@ pub use bridge::{
 };
 pub use command::{command_clearance, BackendCommand, CommandClearance};
 pub use event::{
-    AdapterStatus, ApiProfileInfo, BackendEvent, BackendState, ContextBlockInfo,
+    AdapterStatus, ApiProfileInfo, BackendEvent, BackendState, BrowseRoot, ContextBlockInfo,
     ContextMessageInfo, FederationLinkState, FederationPeerInfo, FriendInfo, GroupInfo,
     OrchestrationMode, PluginInfo, SessionInfo, ShellSessionInfo, SkillInfo, SkillSourceInfo,
     TeamInfo, TimelineMessage, TimelineSource, TimelineTool, ToolInfo, WorkspaceDirectory,

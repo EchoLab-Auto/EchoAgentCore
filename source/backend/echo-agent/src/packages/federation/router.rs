@@ -92,6 +92,7 @@ impl ExecutorPolicy {
             QueryKind::SessionSnapshot => "session_snapshot",
             QueryKind::WorkspaceFiles => "workspace_files",
             QueryKind::WorkspaceGitStatus => "workspace_git_status",
+            QueryKind::BrowseDirectories => "browse_directories",
             QueryKind::NodeStatus | QueryKind::ApiProfiles => unreachable!(),
         };
         self.allow_queries.iter().any(|q| q == "*" || q == key)
