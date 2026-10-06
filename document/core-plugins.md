@@ -100,6 +100,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   - `loop.single` / `loop.parallel`：**已实化**——mount 注入 TurnRunner 并置位 echo-loop 驱动；两者 mount 同一驱动（模式只改策略），全部卸载才回退内置循环。**注入的生效口径**：按人格注入依赖进程级 `AgentManager`（注册于插件挂载之后），启动期 mount 为 no-op——启动加载与运行期新建的人格普通输入由内置循环处理；运行期对循环插件停/再启后注入生效（此后普通输入走 turn/step 状态机；QQ hook/定时器/QQ 会话仍走内置循环）。详见 [Agent 循环](./core-agent-loop.md)「实化与分派」
   - `provider.llm`：仍为名义挂载——运行中替换 provider 涉及在途 turn，保持"重启生效"语义（禁用 = 下次重启不装配）
 - **优先级**：全局禁用（`TogglePlugin` 卸载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
+- **任务清单的会话隔离（2026-10）**：`ChecklistTool` 状态按**会话**隔离（session_id → 清单名 → 项）——同一 persona 的不同会话（local:tui / qq:group:…）的清单互不可见、互不覆盖；会话键由 `Agent::run_tool` 在参数校验后注入 `__session_id`（联邦远程/无会话上下文调用落 `__global` 兜底键）。事件 `ChecklistUpdated` 带 `team_id`，Panel 按 `(core, team_id, session_id)` 复合键存储并显示。此前状态是进程内单实例（不分会话），A 会话的条目会被 B 会话看到并覆盖。
 - **内置工具包覆盖**：任务清单（checklist）已于 2026-09 降级为普通内置工具（随 `tools.builtin` 包，见上表注）；关闭内置工具集 = checklist 一并不可用，单独停用请在「启用工具」里按名勾选（运行期双向、即时生效），Panel 入口行同步移除「清单」入口、关闭已打开浮层并清空徽标状态；`base` 人格演示了"纯对话"配置（禁用 tools.builtin + skills.dir）
 
 ## Package（包）——横跨 plugin + tool + skill 的标签

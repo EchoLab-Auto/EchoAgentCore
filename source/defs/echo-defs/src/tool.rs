@@ -110,4 +110,12 @@ pub trait Tool: Send + Sync {
     fn snapshot(&self) -> Option<Value> {
         None
     }
+
+    /// 按**会话**过滤的 UI 投影快照（2026-10）。工具状态带会话维度时
+    /// 覆盖此方法（checklist）；默认退化为 [`Self::snapshot`]——无会话
+    /// 维度的工具不受影响。事件侧（`ChecklistUpdated`）用本方法，避免把
+    /// 其他会话的状态挂到当前会话上广播。
+    fn snapshot_for_session(&self, _session_id: &str) -> Option<Value> {
+        self.snapshot()
+    }
 }

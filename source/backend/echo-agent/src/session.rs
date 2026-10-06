@@ -171,8 +171,9 @@ pub struct Session {
     pub turn_lock: Arc<tokio::sync::Mutex<()>>,
     /// 单会话模式的 turn 排队闸门（FIFO，tokio Mutex 保证公平）：
     /// 同一会话同一时刻只跑一个 turn，其余 turn 在获得许可后才取上下文
-    /// 快照（因此排队的 turn 能看到前一轮的回复）。并行多会话模式下不使
-    /// 用（`Agent::loop_mode` = `Parallel`）。按会话共享。
+    /// 快照（因此排队的 turn 能看到前一轮的回复）。**每会话一把独立锁**
+    /// （2026-10 修复：此前误为 agent 全局共享，跨会话也被串行）；并行
+    /// 多会话模式下不使用（`Agent::loop_mode` = `Parallel`）。
     pub turn_queue: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -236,8 +237,6 @@ pub struct TrunkStore {
     /// 事实来源，这里只是它的按会话投影（见 `reproject_session`）。
     session_histories: Arc<DashMap<String, Arc<Mutex<Vec<ChatMessage>>>>>,
     trunk_turn_lock: Arc<tokio::sync::Mutex<()>>,
-    /// 单会话模式的 turn 排队闸门（见 [`Session::turn_queue`]）。
-    trunk_turn_queue: Arc<tokio::sync::Mutex<()>>,
     /// 压缩编排互斥（2026-10 巡检 🔴）：double compact / compact 与
     /// clear_history 竞争会按过时摘要重写日志、统计错乱——压缩全程
     /// 持有（预览→归档→摘要→落地），与 turn 写路径解耦（不阻塞正常
@@ -271,7 +270,6 @@ impl Clone for TrunkStore {
             memory_limit_tokens: self.memory_limit_tokens,
             session_histories: Arc::clone(&self.session_histories),
             trunk_turn_lock: Arc::clone(&self.trunk_turn_lock),
-            trunk_turn_queue: Arc::clone(&self.trunk_turn_queue),
             compact_lock: Arc::clone(&self.compact_lock),
             timeline: Arc::clone(&self.timeline),
             timeline_seq: Arc::clone(&self.timeline_seq),
@@ -393,7 +391,6 @@ impl TrunkStore {
             session_histories: Arc::new(DashMap::new()),
             trunk_turn_lock: Arc::new(tokio::sync::Mutex::new(())),
             compact_lock: Arc::new(tokio::sync::Mutex::new(())),
-            trunk_turn_queue: Arc::new(tokio::sync::Mutex::new(())),
             timeline: Arc::new(Mutex::new(Vec::new())),
             timeline_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             event_log: echo_session::EventLog::new(),
@@ -996,7 +993,13 @@ impl TrunkStore {
                     group_name,
                     self.history_or_create(&session_id),
                     Arc::clone(&self.trunk_turn_lock),
-                    Arc::clone(&self.trunk_turn_queue),
+                    // 每会话一把新锁（2026-10 修复）：同一 **agent 的
+                    // `trunk_turn_queue` 曾被克隆给所有会话——所谓"按会话
+                    // 排队"实际是 agent 全局串行，默认模式下 local:tui 的
+                    // 长任务会阻塞 QQ 回复。现改为每会话独立闸门：同会话
+                    // 串行（保持「后到的 turn 看到前一轮回复」语义），
+                    // 跨会话并行（与文档承诺一致）。
+                    std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 );
                 v.insert(session.clone());
                 session
@@ -1452,7 +1455,8 @@ impl TrunkStore {
                 None,
                 self.history_or_create(id),
                 Arc::clone(&self.trunk_turn_lock),
-                Arc::clone(&self.trunk_turn_queue),
+                // 每会话独立闸门（同上）。
+                std::sync::Arc::new(tokio::sync::Mutex::new(())),
             );
             self.identities.insert(id.to_string(), session);
         }

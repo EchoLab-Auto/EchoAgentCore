@@ -39,12 +39,14 @@ impl crate::tool::Tool for ShellStartTool {
         let manager = shell_manager_global()
             .ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
         let workdir = arguments["workdir"].as_str().map(|s| s.to_string());
+        // 归属 team：由 `Agent::run_tool` 注入 `__team_id`（2026-10 起；
+        // 替代此前跨 await 不可靠的线程本地方案）。
+        let team_id = arguments
+            .get("__team_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let info = manager
-            .start(
-                workdir,
-                crate::shell::current_tool_team_id(),
-                &crate::shell::shell_emit(),
-            )
+            .start(workdir, team_id, &crate::shell::shell_emit())
             .await
             .map_err(crate::tool::ToolError::Execution)?;
         Ok(format!(
@@ -89,6 +91,11 @@ impl crate::tool::Tool for ShellExecTool {
         let timeout = arguments["timeout_secs"].as_u64().map(|t| t.min(300));
         let manager = shell_manager_global()
             .ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
+        // 归属校验（2026-10）：不得操作其他智能体的 shell 会话。
+        let requester = arguments.get("__team_id").and_then(|v| v.as_str());
+        manager
+            .ensure_owned_by(session_id, requester)
+            .map_err(crate::tool::ToolError::Execution)?;
         let (output, success, timed_out) = manager
             .exec(session_id, command, timeout, &crate::shell::shell_emit())
             .await
@@ -134,6 +141,11 @@ impl crate::tool::Tool for ShellStopTool {
         })?;
         let manager = shell_manager_global()
             .ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
+        // 归属校验（2026-10）：不得停止其他智能体的 shell 会话。
+        let requester = arguments.get("__team_id").and_then(|v| v.as_str());
+        manager
+            .ensure_owned_by(session_id, requester)
+            .map_err(crate::tool::ToolError::Execution)?;
         manager
             .stop(session_id, &crate::shell::shell_emit())
             .await

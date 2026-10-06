@@ -512,6 +512,57 @@ async fn single_mode_serialises_turns_and_second_turn_sees_the_first_reply() {
 }
 
 #[tokio::test]
+async fn single_mode_runs_cross_session_turns_in_parallel() {
+    // 2026-10 修复回归：Single 模式的 turn 闸门必须**按会话**——此前是
+    // agent 全局共享，跨会话也串行（local:tui 的长任务阻塞 QQ 回复）。
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(SnapshotProvider {
+        calls: Arc::clone(&calls),
+        seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+        gate: Arc::new(tokio::sync::Semaphore::new(0)),
+    });
+    let agent = Arc::new(test_agent(provider.clone()));
+    assert_eq!(agent.loop_mode(), echo_defs::LoopMode::Single);
+    let session_a = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    let session_b = agent.trunk.get_or_create(
+        &SessionKey::local_workspace("other-ws"),
+        "user".into(),
+        None,
+    );
+    let first =
+        r#"<backend_message_hook>{"message_sequence":1,"content":"first"}</backend_message_hook>"#;
+    let other =
+        r#"<backend_message_hook>{"message_sequence":1,"content":"other"}</backend_message_hook>"#;
+
+    let first_task = {
+        let agent = Arc::clone(&agent);
+        let session = session_a.clone();
+        tokio::spawn(async move { agent.process_message(&session, first).await })
+    };
+    // 第一轮（A 会话）进入模型并挂住闸门。
+    provider.wait_entered().await;
+    // B 会话投递：**不同会话不排队**——第二个模型调用应直接进入。
+    let other_task = {
+        let agent = Arc::clone(&agent);
+        let session = session_b.clone();
+        tokio::spawn(async move { agent.process_message(&session, other).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while calls.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cross-session turn must not wait for the first session's gate");
+
+    provider.release();
+    first_task.await.unwrap().unwrap();
+    other_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn request_trunk_timeline_returns_the_persisted_history() {
     let provider = Arc::new(MockProvider {
         calls: Arc::new(AtomicUsize::new(0)),

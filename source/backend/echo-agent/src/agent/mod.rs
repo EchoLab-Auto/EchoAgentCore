@@ -830,6 +830,13 @@ impl Agent {
                 session_id,
                 team_id,
             },
+            BackendEvent::ChecklistUpdated {
+                session_id, state, ..
+            } => BackendEvent::ChecklistUpdated {
+                session_id,
+                state,
+                team_id,
+            },
             BackendEvent::AgentReasoning {
                 session_id,
                 branch_id,
@@ -1393,10 +1400,20 @@ impl Agent {
             });
             return;
         }
-        let (registration, history_snapshot, slot) = self
+        // 运行期可能从 Parallel 切回 Single（能力热更新），且排队期间可被
+        // 取消——`register_incoming_branch` 此时返回 None，不再 expect
+        // （2026-10：TOCTOU panic 修复）。
+        let Some((registration, history_snapshot, slot)) = self
             .register_incoming_branch(&session, &content, message_sequence)
             .await
-            .expect("parallel mode never cancels before the branch starts");
+        else {
+            tracing::info!(
+                session = %session.id,
+                message_sequence,
+                "queued inbound branch cancelled before it started"
+            );
+            return;
+        };
         let agent = Arc::clone(self);
         tokio::spawn(async move {
             agent
@@ -2046,7 +2063,6 @@ impl Agent {
         // 参数解析与预检：给模型可纠正的错误反馈。非法 JSON 或缺少必需
         // 字段时，错误文案必须说清"你发了什么、应该发什么"——一句模糊的
         // "command required" 只会让模型原样重试，形成空调用退化循环。
-        crate::shell::set_tool_team_id(self.team_id());
         let result = match serde_json::from_str::<serde_json::Value>(&call.arguments) {
             Err(error) => crate::tool::ToolResult::text(format!(
                 "error: 工具参数不是合法 JSON（{error}）。你发送的原始参数: {}。请修正为合法 JSON 后重新调用 {}。",
@@ -2088,17 +2104,33 @@ impl Agent {
                 // Every dynamic tool must live in the single dispatch
                 match self.tool_arguments_error(other, &call.arguments, &args).await {
                     Some(message) => Err(message),
-                    None => self
-                        .tools
-                        .execute_rich(other, args)
-                        .await
-                        .map_err(|error| error.to_string()),
+                    None => {
+                        // 会话/归属上下文注入（2026-10）：在 schema 校验
+                        // 之后、执行之前——checklist 按会话隔离状态（P0
+                        // 修复：此前全局共享，跨会话互看互覆）；shell
+                        // 三件套按归属校验（替代线程本地方案，跨 await
+                        // 不可靠问题顺带消除）。不进 ToolCall 事件（事件
+                        // 用原始参数）。
+                        let mut args = args;
+                        match other {
+                            "checklist" => {
+                                args["__session_id"] = serde_json::json!(session_id);
+                            }
+                            "shell_start" | "shell_exec" | "shell_stop" => {
+                                args["__team_id"] = serde_json::json!(self.team_id());
+                            }
+                            _ => {}
+                        }
+                        self.tools
+                            .execute_rich(other, args)
+                            .await
+                            .map_err(|error| error.to_string())
+                    }
                 }
             }
         }
         .unwrap_or_else(|error| crate::tool::ToolResult::text(format!("error: {error}"))),
         };
-        crate::shell::set_tool_team_id(None);
         let result_text = result.text.clone();
         let result_images = result.images.clone();
         self.emit(BackendEvent::ToolResult {
@@ -2120,10 +2152,13 @@ impl Agent {
                 },
             ));
         if call.name == "checklist" {
-            if let Some(state) = self.tools.snapshot(&call.name) {
+            // 按会话过滤（2026-10 P0 修复）：此前取全量状态挂当前会话广播
+            // ——A 会话触发时 B 会话的数据也会挂到 A 上（面板按会话显示必串）。
+            if let Some(state) = self.tools.snapshot_for_session(&call.name, session_id) {
                 self.emit(BackendEvent::ChecklistUpdated {
                     session_id: session_id.to_string(),
                     state,
+                    team_id: None, // annotate_team 统一补
                 });
             }
         }

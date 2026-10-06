@@ -316,6 +316,22 @@ impl ToolRegistry {
         }
     }
 
+    /// 按会话过滤的状态快照（2026-10，带会话维度的工具用；默认同
+    /// [`Self::snapshot`]）。
+    pub fn snapshot_for_session(&self, name: &str, session_id: &str) -> Option<Value> {
+        match self.tools.try_read() {
+            Ok(tools) => tools
+                .get(name)
+                .and_then(|tool| tool.snapshot_for_session(session_id)),
+            Err(_) => blocking_section(|| {
+                self.tools
+                    .blocking_read()
+                    .get(name)
+                    .and_then(|tool| tool.snapshot_for_session(session_id))
+            }),
+        }
+    }
+
     /// Parameter JSON schema of a registered tool, if present.
     pub async fn parameters(&self, name: &str) -> Option<Value> {
         self.tools

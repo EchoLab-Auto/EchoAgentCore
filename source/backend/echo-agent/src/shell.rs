@@ -66,22 +66,6 @@ pub enum ShellEvent {
 
 pub type ShellEmit = Arc<dyn Fn(ShellEvent) + Send + Sync>;
 
-// ── 工具执行期的归属 team ──
-// LLM 的 shell_start 工具经进程级 manager 启动会话，工具本身拿不到 agent
-// 上下文；`Agent::run_tool` 在执行前把本 persona 的 team_id 写入线程本地，
-// 工具读取它给新会话打标（面板按当前 agent 过滤）。
-thread_local! {
-    static TOOL_TEAM_ID: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
-}
-
-pub fn set_tool_team_id(team_id: Option<String>) {
-    TOOL_TEAM_ID.with(|slot| *slot.borrow_mut() = team_id);
-}
-
-pub fn current_tool_team_id() -> Option<String> {
-    TOOL_TEAM_ID.with(|slot| slot.borrow().clone())
-}
-
 /// 输出行来源流。
 #[derive(Clone, Copy, Debug)]
 enum StreamKind {
@@ -309,6 +293,41 @@ impl ShellManager {
                 reason: reason.into(),
             });
         }
+    }
+
+    /// 会话信息（归属校验/面板展示用；不存在 → None）。
+    pub fn session_info(&self, session_id: &str) -> Option<ShellSessionInfo> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|s| s.info())
+    }
+
+    /// 会话归属校验（2026-10 修复）：LLM 工具路径要求请求者与被操作
+    /// 会话同属一个 persona——此前 exec/stop 只查存在性，任意会话知道
+    /// id（如 `sh-1`）即可操作其他智能体的 shell。Panel 管理路径
+    /// （按 team 路由的命令）不经过本校验（用户本就按 agent 操作）。
+    ///
+    /// 双方都有 team 且不同 → 拒绝；会话无归属（面板 legacy 会话）或
+    /// 请求者无归属（旧路径）→ 放行（保守兼容）。
+    pub fn ensure_owned_by(
+        &self,
+        session_id: &str,
+        requester_team: Option<&str>,
+    ) -> Result<(), String> {
+        let sessions = self.sessions.lock().unwrap();
+        let Some(session) = sessions.get(session_id) else {
+            return Ok(()); // 不存在：交给后续操作报"找不到"（错误信息更准确）
+        };
+        if let (Some(owner), Some(requester)) = (session.team_id.as_deref(), requester_team) {
+            if owner != requester {
+                return Err(format!(
+                    "shell 会话 {session_id} 属于智能体「{owner}」，当前智能体无权操作"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// 在会话中执行一条命令：写命令 + 哨兵，从输出通道读行直到哨兵或超时。
@@ -601,6 +620,33 @@ mod tests {
             .await
             .expect("start session")
             .session_id
+    }
+
+    /// 归属校验（2026-10）：他 persona 不得操作本 persona 的 shell 会话。
+    #[tokio::test]
+    async fn ensure_owned_by_rejects_cross_team_access() {
+        let mgr = ShellManager::new();
+        let info = mgr
+            .start(Some("/tmp".into()), Some("EchoCode".into()), &quiet_emit())
+            .await
+            .expect("start");
+        // 同 team：放行
+        mgr.ensure_owned_by(&info.session_id, Some("EchoCode"))
+            .expect("same team");
+        // 无请求者（旧路径/面板）：保守放行
+        mgr.ensure_owned_by(&info.session_id, None)
+            .expect("no requester");
+        // 他 team：拒绝
+        let err = mgr
+            .ensure_owned_by(&info.session_id, Some("alix"))
+            .expect_err("cross team");
+        assert!(err.contains("无权操作"), "{err}");
+        // 不存在的会话：放行（交给后续操作报"找不到"）
+        mgr.ensure_owned_by("sh-999", Some("alix"))
+            .expect("missing session");
+        mgr.stop(&info.session_id, &quiet_emit())
+            .await
+            .expect("stop");
     }
 
     /// 进程存在性检查（信号 0，不实际发送信号）。

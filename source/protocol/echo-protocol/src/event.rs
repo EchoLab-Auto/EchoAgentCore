@@ -435,6 +435,11 @@ pub enum BackendEvent {
     ChecklistUpdated {
         session_id: String,
         state: serde_json::Value,
+        /// 归属人格（2026-10）：同一 core 内多 persona 的同名会话（各自
+        /// 的 `local:tui::local_user`）此前在消费端（core+session_id）键
+        /// 冲突——补 team 维度供消费端消歧。
+        #[serde(default)]
+        team_id: Option<String>,
     },
     /// Agent generated backend output. This is never sent to a platform
     /// automatically; platform delivery requires an explicit tool call.
