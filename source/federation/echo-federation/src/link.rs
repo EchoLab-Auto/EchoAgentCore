@@ -58,7 +58,9 @@ pub struct PeerInfo {
     pub node_name: Option<String>,
     pub version: String,
     pub caps: NodeCaps,
-    /// 来自哪个配置（连入侧为对端 node_id 匹配到的 peer 名）。
+    /// 本机配置里的 peer 名：连出侧 = dial 配置名；连入侧 = 按链路
+    /// token 反查的配置名（2026-10 起；此前为对端 node_id——导致策略
+    /// 查找/映射全键错，见 `resolve_accept_peer_name`）。
     pub peer_name: String,
 }
 
@@ -247,6 +249,24 @@ impl Federation {
     pub async fn peer_caps(&self, peer_name: &str) -> Option<NodeCaps> {
         let infos = self.last_peer_infos.read().await;
         infos.get(peer_name).map(|i| i.caps.clone())
+    }
+
+    /// 按 **peer 配置名**查最近链路的完整对端信息（Up 登记/Down 清除）。
+    pub async fn peer_info(&self, peer_name: &str) -> Option<PeerInfo> {
+        self.last_peer_infos.read().await.get(peer_name).cloned()
+    }
+
+    /// 接受侧 peer 名解析（2026-10）：按链路呈现的 token 反查运行时
+    /// peer 表（配置 + 邀请占位）的**配置名**。认证已要求 token 匹配，
+    /// 因而总能命中；仅 token 为空（理论不可达）退回 node_id。
+    pub async fn resolve_accept_peer_name(&self, token: &str, node_id: &str) -> String {
+        if !token.is_empty() {
+            let peers = self.peers.read().await;
+            if let Some(p) = peers.iter().find(|p| p.token == token) {
+                return p.name.clone();
+            }
+        }
+        node_id.to_string()
     }
 
     /// 向指定节点发帧。
@@ -444,10 +464,20 @@ impl Federation {
             }
         }
 
-        let peer_name = dial_peer
-            .as_ref()
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| peer_hello.node_id.clone());
+        let peer_name = match &dial_peer {
+            Some(p) => p.name.clone(),
+            // 接受侧（2026-10 修复）：peer_name 必须解析为**本机配置名**——
+            // 此前直接用对端 node_id，导致三条链路全断：
+            // 1. 策略查找（peer_policies 按配置名存）静默落空 → 连入方向
+            //    全部按默认（全拒）裁决，Panel 配的权限对连入链路无效；
+            // 2. peer_names / node_to_peer 映射键错（远程调用/迁移反查不到）；
+            // 3. 占位提升（见 main.rs）拿不到配置名。
+            // 认证已校验 token 匹配，故按 token 反查运行时 peer 表即可。
+            None => {
+                self.resolve_accept_peer_name(&link_token, &peer_hello.node_id)
+                    .await
+            }
+        };
         let info = PeerInfo {
             node_id: peer_hello.node_id.clone(),
             node_name: peer_hello.node_name,

@@ -102,18 +102,35 @@ node_name = "workstation"
 [federation.peers.gpu-box]
 url = "ws://192.168.1.20:3133"
 token = "<openssl rand -hex 32>"
-allow_tools = ["*"]
-allow_subagent = true       # 接受对端远程委派（Phase 3，执行端门控已接线：false 时 SubagentSpawn 被拒并回 Failed 终态）
-require_confirm = []        # 命中列表的调用拒绝并提示需确认（v1 简化为拒绝）
-allow_queries = []          # 敏感查询需显式开启
+allow_tools = ["*"]           # Panel 可配；默认满权限（添加 peer 时）
+allow_subagent = true         # 接受对端远程委派（false 时 SubagentSpawn 被拒并回 Failed 终态）
+require_confirm = []          # 命中列表的调用拒绝并提示需确认（v1 简化为拒绝）
+allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspace_git_status/browse_directories/session_snapshot；"*" = 全部）
 ```
 
 **Panel 管理**（设置·联邦页）：`SaveFederationPeer` /
 `DeleteFederationPeer` / `RequestFederationStatus` /
 `RequestFederationInvite`（Frontend-only 命令）——peers 列表与在线
-状态、在线增删（运行时生效 + ConfigStore 原子写回）、**邀请串配对**：
-`echofed://host:port?name=<别名>#<token>`，A 机生成 → B 机粘贴自动
-填充；占位 peer（`invite-*`）配对成功自动清理、不落配置（一次性邀请）。
+状态、在线增删（运行时生效 + ConfigStore 原子写回）、**授权逐项可配**
+（全部工具 / 自定义工具白名单 / 只读查询逐类勾选 / 接受委派 / 需确认列表；
+**添加 peer 默认满权限**）、**邀请串配对**：
+`echofed://host:port?name=<别名>#<token>`，在 Panel 上生成 → 切到另一
+个运行区域粘贴自动填充（一套 Panel 管全联邦，详见 panel.md）。
+
+**邀请配对的占位提升（2026-10）**：`invite-*` 占位（运行时-only）配对
+成功时**提升为配置条目**——写 `[federation.peers.<名字>]`（名字取对端
+`node_name`，缺省 `node-<node_id 前 8>`；url 空 = 仅接受连入、token 保留
+以支持对端重连），**默认满权限**（`allow_tools = ["*"]`、
+`allow_queries = ["*"]`、`allow_subagent = true`）——邀请串即一次性凭证，
+接收方按互信对待（与「SSH 免密」同语义），之后可在 Panel 逐项收紧。
+此前配对即删除占位：连入方向既无配置（Panel 不可见/不可编辑、无策略 →
+静默全拒），对端重启后还因 token 消失无法重连。
+
+**连入侧策略解析（2026-10 🔴 修复）**：接受侧链路的 `peer_name` 此前
+取对端 node_id，而 `peer_policies` 按配置名存储——策略查找静默落空，
+**Panel 配置的授权对连入方向完全无效**（全部按默认裁决）。现在链路
+建立时按呈现的 token 反查运行时 peer 表解析出配置名
+（`resolve_accept_peer_name`），连入/连出两个方向策略一致生效。
 
 ## 代理工具与远程委派
 

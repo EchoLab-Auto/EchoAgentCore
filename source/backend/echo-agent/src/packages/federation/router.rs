@@ -79,6 +79,18 @@ pub struct ExecutorPolicy {
 }
 
 impl ExecutorPolicy {
+    /// 满权限策略（`*` 全部工具/查询 + 接受委派）——邀请配对提升时的
+    /// **默认值**（2026-10）：邀请串本身即一次性凭证，接收方按互信对待
+    /// （与「SSH 免密」同语义）；提升后落配置、可在 Panel 按需收紧。
+    pub fn full() -> Self {
+        Self {
+            allow_tools: vec!["*".into()],
+            require_confirm: Vec::new(),
+            allow_queries: vec!["*".into()],
+            allow_subagent: true,
+        }
+    }
+
     /// 查询授权：`node_status` 恒允许；其余需显式列出（`*` 全放行）。
     pub fn query_allowed(&self, kind: echo_federation::QueryKind) -> bool {
         use echo_federation::QueryKind;

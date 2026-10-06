@@ -1593,16 +1593,33 @@ async fn federation_router_pump(
                             .write()
                             .await
                             .insert(info.node_id.clone(), info.peer_name.clone());
+                        // 邀请占位提升（2026-10）：本链路若来自占位 token，
+                        // 把占位**提升为配置条目**（满权限默认 + 落配置 +
+                        // 可在 Panel 编辑）——此前配对即删除占位，导致
+                        // 连入方向既无配置也无策略（全部静默按默认全拒）、
+                        // 对端重启后还因 token 消失无法重连。
+                        promote_paired_invite_placeholders(
+                            &rt,
+                            &mut *peer_policies.write().await,
+                        )
+                        .await;
+                        // 策略按**解析后的配置名**取（提升后为新配置名；
+                        // 普通配对为对端在本机配置里的名字——接受侧
+                        // peer_name 已由 link.rs 按 token 解析为配置名）。
+                        let resolved_name = rt
+                            .node_to_peer
+                            .read()
+                            .await
+                            .get(&info.node_id)
+                            .cloned()
+                            .unwrap_or_else(|| info.peer_name.clone());
                         let policy = peer_policies
                             .read()
                             .await
-                            .get(&info.peer_name)
+                            .get(&resolved_name)
                             .cloned()
                             .unwrap_or_default();
                         rt.router.set_policy(&info.node_id, policy);
-                        // 邀请占位配对成功即清理：占位条目（invite-*）的
-                        // token 与任一活跃链路匹配 → 该占位使命完成。
-                        cleanup_paired_invite_placeholders(&rt).await;
                         register_remote_tools(&rt, &personas, &info).await;
                         broadcast_federation_status(&rt, &personas, &core_agent).await;
                     }
@@ -2374,27 +2391,126 @@ async fn handle_self_update(
     }
 }
 
-/// 配对成功的邀请占位清理：`invite-*` 占位 peer 的 token 已有活跃链路
-/// （= 对端已用该邀请串连入）→ 运行时移除（占位本就不落配置，一次性
-/// 邀请语义）。
-async fn cleanup_paired_invite_placeholders(rt: &FederationRuntime) {
+/// 配对成功的邀请占位**提升为配置条目**（2026-10）：
+///
+/// 此前占位（`invite-*`，运行时-only）配对即被删除——但删除后本机对已
+/// 配对链路既无配置（Panel 不可见/不可编辑、无策略 → 连入方向静默全拒），
+/// 对端重启后还因 token 消失（认证要求 token 匹配）**无法重连**。
+///
+/// 现在改为三步（幂等；仅对"token 已有活跃链路的占位"生效）：
+/// 1. 写配置 `[federation.peers.<name>]`：url 空（仅接受连入）、保留
+///    token、**默认满权限**（`ExecutorPolicy::full()`）——邀请串即凭证，
+///    接收方按互信对待（与「SSH 免密」同语义）；之后可在 Panel 收紧。
+/// 2. 运行时登记：`add_peer`（接受重连）+ 策略表写入满权限 +
+///    刷新该 node 的路由策略（本函数返回后由调用方复核）。
+/// 3. 映射更新（peer_names / node_to_peer）为新配置名 + 移除占位。
+///
+/// 名字选取：对端 Hello 的 `node_name` 优先（人类可读，如 `gpu-box`），
+/// 冲突或缺失时退 `node-<node_id 前 8 位>`，仍冲突追加序号。
+async fn promote_paired_invite_placeholders(
+    rt: &FederationRuntime,
+    policies: &mut std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
+) {
     let configs = rt.federation.peer_configs().await;
-    // 配对判定：占位 token 已有活跃链路，**且**链路对端的 node_id 已知
-    // （连入握手完成）——仅凭 token 在线会误清「同一 token 被多个占位复用」
-    // 场景；此处 token 是一次性的，token 在线即配对成功。
-    let mut paired: Vec<String> = Vec::new();
+    let mut paired: Vec<(String, String)> = Vec::new(); // (placeholder 名, token)
     for p in &configs {
         if !p.name.starts_with("invite-") {
             continue;
         }
         if rt.federation.is_link_token_online(&p.token).await {
-            paired.push(p.name.clone());
+            paired.push((p.name.clone(), p.token.clone()));
         }
     }
-    for name in paired {
-        rt.federation.remove_peer(&name).await;
-        tracing::info!(target: "federation", %name, "invite placeholder paired and removed");
+    if paired.is_empty() {
+        return;
     }
+    let existing: Vec<String> = configs.iter().map(|p| p.name.clone()).collect();
+    for (placeholder, token) in paired {
+        // 每个占位从**自己的链路信息**取对端 node_id/node_name（接受侧
+        // peer_name 已由 link.rs 按 token 解析为占位名，peer_info 可查）——
+        // 多占位并发配对时不能都用"当前链路"的身份。
+        let Some(info) = rt.federation.peer_info(&placeholder).await else {
+            continue;
+        };
+        let node_id = info.node_id.as_str();
+        let node_name = info.node_name.as_deref();
+        let promoted = pick_promoted_peer_name(&existing, node_name, node_id);
+        // 1. 落配置（满权限默认）。
+        let write_name = promoted.clone();
+        let write_token = token.clone();
+        if let Err(e) = rt.config_store.patch(move |root| {
+            let federation = echo_adapter::ensure_table(root, "federation");
+            let peers = echo_adapter::ensure_table(federation, "peers");
+            let entry = echo_adapter::ensure_table(peers, &write_name);
+            entry.insert("url".into(), toml::Value::String(String::new()));
+            entry.insert("token".into(), toml::Value::String(write_token));
+            entry.insert(
+                "allow_tools".into(),
+                toml::Value::Array(vec![toml::Value::String("*".into())]),
+            );
+            entry.insert(
+                "allow_queries".into(),
+                toml::Value::Array(vec![toml::Value::String("*".into())]),
+            );
+            entry.insert("allow_subagent".into(), toml::Value::Boolean(true));
+            entry.insert("require_confirm".into(), toml::Value::Array(Vec::new()));
+            Ok(())
+        }) {
+            tracing::warn!(target: "federation", %placeholder, error = %e, "promote placeholder: config write failed");
+        }
+        // 2. 运行时：登记 peer（url 空 = 仅接受连入）+ 满权限策略。
+        rt.federation
+            .add_peer(echo_federation::PeerConfig {
+                name: promoted.clone(),
+                url: String::new(),
+                token: token.clone(),
+            })
+            .await;
+        policies.insert(
+            promoted.clone(),
+            echo_agent::federation::ExecutorPolicy::full(),
+        );
+        rt.router
+            .set_policy(node_id, echo_agent::federation::ExecutorPolicy::full());
+        // 3. 映射替换 + 移除占位。
+        rt.peer_names.write().await.remove(&placeholder);
+        rt.peer_names
+            .write()
+            .await
+            .insert(promoted.clone(), node_id.to_string());
+        rt.node_to_peer
+            .write()
+            .await
+            .insert(node_id.to_string(), promoted.clone());
+        rt.federation.remove_peer(&placeholder).await;
+        tracing::info!(
+            target: "federation",
+            %placeholder, promoted = %promoted, node = %node_id,
+            "invite placeholder promoted to full-permission config entry"
+        );
+    }
+}
+
+/// 提升后的配置名选取（纯函数，便于单测）：
+/// node_name 优先（非空且未占用）；否则 `node-<id 前 8>`；仍冲突追加 `-2`…
+fn pick_promoted_peer_name(existing: &[String], node_name: Option<&str>, node_id: &str) -> String {
+    let base = match node_name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => name.to_string(),
+        None => {
+            let short: String = node_id.chars().take(8).collect();
+            format!("node-{short}")
+        }
+    };
+    if !existing.iter().any(|n| n == &base) {
+        return base;
+    }
+    for i in 2..100 {
+        let candidate = format!("{base}-{i}");
+        if !existing.iter().any(|n| n == &candidate) {
+            return candidate;
+        }
+    }
+    base
 }
 
 /// 邀请用的对外地址：listen 为具体 IP/主机名时直接用；`0.0.0.0` 不可取
@@ -2681,7 +2797,36 @@ mod logging_tests {
 mod core_util_tests {
     use crate::agent_supervisor::AgentSupervisor;
     use crate::federation_import::{chunk_utf8, handle_session_import, ImportOutcome};
+    use crate::pick_promoted_peer_name;
     use echo_agent::{AgentConfig, TeamMember};
+
+    /// 邀请占位提升的命名规则（2026-10）：node_name 优先、缺失退
+    /// node-<id 前 8>、冲突追加序号。
+    #[test]
+    fn pick_promoted_peer_name_prefers_node_name_and_dedupes() {
+        assert_eq!(
+            pick_promoted_peer_name(&[], Some("gpu-box"), "abcdef012345"),
+            "gpu-box"
+        );
+        assert_eq!(
+            pick_promoted_peer_name(&[], Some("  "), "abcdef012345"),
+            "node-abcdef01"
+        );
+        assert_eq!(
+            pick_promoted_peer_name(&[], None, "abcdef012345"),
+            "node-abcdef01"
+        );
+        let existing = vec!["gpu-box".to_string()];
+        assert_eq!(
+            pick_promoted_peer_name(&existing, Some("gpu-box"), "abcdef012345"),
+            "gpu-box-2"
+        );
+        let existing2 = vec!["gpu-box".to_string(), "gpu-box-2".to_string()];
+        assert_eq!(
+            pick_promoted_peer_name(&existing2, Some("gpu-box"), "abcdef012345"),
+            "gpu-box-3"
+        );
+    }
 
     /// P3-2b：分块必须落在 UTF-8 字符边界，拼接后与原文一致。
     #[test]
