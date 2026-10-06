@@ -156,7 +156,11 @@ impl WorkspaceStore {
             // 只能手写配置文件）。
             let (node, path_raw) = match raw.path().strip_prefix("node://") {
                 Some(rest) => match rest.split_once('/') {
-                    Some((p, r)) if !p.is_empty() => (Some(p.to_string()), format!("/{r}")),
+                    // 重复斜杠归一（`node://peer//srv` → `/srv`，2026-10）
+                    Some((p, r)) if !p.is_empty() => (
+                        Some(p.to_string()),
+                        format!("/{}", r.trim_start_matches('/')),
+                    ),
                     _ => (None, raw.path().to_string()),
                 },
                 None => (raw.node().map(str::to_string), raw.path().to_string()),

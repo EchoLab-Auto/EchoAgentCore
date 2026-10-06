@@ -5,6 +5,17 @@
 //! [`WorkspaceStore`](crate::workspace::WorkspaceStore) 持有并即时持久化；
 //! git 状态是只读采集（`spawn_blocking` + 超时保护）。
 
+/// 远程浏览条目路径补全：`node://<peer>/<对端绝对路径>`（单斜杠规范）。
+///
+/// 对端 `collect_dir_files` 返回的是对端机器的绝对路径；面板文件浏览器
+/// 下钻用 `entry.path` 继续发起请求，必须带 `node://` 限定才能路由回
+/// 对端（2026-10 修复：此前远程下钻被当成本机路径）。
+fn qualify_remote_entries(peer: &str, entries: &mut [echo_protocol::WorkspaceFileEntry]) {
+    for entry in entries {
+        entry.path = format!("node://{peer}/{}", entry.path.trim_start_matches('/'));
+    }
+}
+
 /// 远程 git 状态占位（对端离线/旧版/失败降级）：保留 `node://` 目录
 /// 标注与错误说明，Panel 显示为不可采集条目（与旧硬编码占位同形态）。
 fn remote_git_placeholder(
@@ -110,7 +121,9 @@ impl Agent {
                 // 因此能翻远程目录（此前远程目录只能本机占位）。
                 if let Some(rest) = requested.strip_prefix("node://") {
                     let (peer, remote_path) = match rest.split_once('/') {
-                        Some((p, r)) if !p.is_empty() => (p.to_string(), format!("/{r}")),
+                        Some((p, r)) if !p.is_empty() => {
+                            (p.to_string(), format!("/{}", r.trim_start_matches('/')))
+                        }
                         _ => {
                             self.emit(BackendEvent::WorkspaceFiles {
                                 team_id: self.team_id(),
@@ -135,11 +148,16 @@ impl Agent {
                     };
                     match result {
                         Ok(payload) => {
-                            let entries =
+                            let mut entries =
                                 serde_json::from_value::<Vec<echo_protocol::WorkspaceFileEntry>>(
                                     payload.get("entries").cloned().unwrap_or_default(),
                                 )
                                 .unwrap_or_default();
+                            // 条目路径补全（2026-10 修复）：对端返回的是**对端
+                            // 机器上的绝对路径**（如 `/srv/repo/src`），面板下钻
+                            // 会用 entry.path 继续发请求——不补 `node://<peer>/`
+                            // 前缀会被当成本机路径（下钻远程子目录直接失效）。
+                            qualify_remote_entries(&peer, &mut entries);
                             self.emit(BackendEvent::WorkspaceFiles {
                                 team_id: self.team_id(),
                                 session_id,
@@ -328,5 +346,36 @@ impl Agent {
 
     fn emit_workspace_unavailable(&self) {
         self.emit_workspace_error("workspace 插件未启用（该智能体未挂载工作区会话管理）".into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::qualify_remote_entries;
+    use echo_protocol::WorkspaceFileEntry;
+
+    fn entry(name: &str, path: &str, is_dir: bool) -> WorkspaceFileEntry {
+        WorkspaceFileEntry {
+            name: name.into(),
+            path: path.into(),
+            is_dir,
+            size: 0,
+        }
+    }
+
+    #[test]
+    fn qualify_remote_entries_prefixes_peer_single_slash() {
+        let mut entries = vec![
+            entry("src", "/srv/repo/src", true),
+            entry("main.rs", "/srv/repo/src/main.rs", false),
+            // 对端路径异常带前导双斜杠：归一为单斜杠
+            entry("odd", "//srv/repo/odd", false),
+        ];
+        qualify_remote_entries("gpu-box", &mut entries);
+        assert_eq!(entries[0].path, "node://gpu-box/srv/repo/src");
+        assert_eq!(entries[1].path, "node://gpu-box/srv/repo/src/main.rs");
+        assert_eq!(entries[2].path, "node://gpu-box/srv/repo/odd");
+        // name 不受影响（浏览器 label 用）
+        assert_eq!(entries[0].name, "src");
     }
 }
