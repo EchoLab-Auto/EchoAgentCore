@@ -29,6 +29,16 @@ pub enum LlmError {
     StreamClosed,
 }
 
+/// 一轮内允许的截断自动续跑次数上限：输出被 max_tokens 截断时把残片
+/// 入栈让模型接着写；超过上限按错误上报，不再静默重试。
+///
+/// **口径单源**（2026-10 巡检）：内置循环（echo-agent）与 echo-loop 曾各
+/// 持一份（已漂移）——统一在此定义，两处引用同一常量。
+pub const MAX_TRUNCATION_CONTINUES: usize = 4;
+
+/// 截断续跑时喂给模型的提示（user 角色，区别于真实用户输入）。
+pub const TRUNCATION_CONTINUE_PROMPT: &str = "[system notice] Your previous output was cut off by the max token limit before the turn was complete. Continue exactly from where you stopped. If you were composing a tool call, discard the partial call and re-issue it in full.";
+
 /// Abstraction over a chat-completion backend.
 #[async_trait]
 pub trait LlmProvider: Send + Sync {

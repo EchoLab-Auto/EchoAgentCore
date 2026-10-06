@@ -36,7 +36,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 - 注册为**可逆**副作用：`Plugin::mount` 返回 disposer（`PluginMountResult`，注册表持有、卸载时调用）；`register_and_mount` 注册并按启用态挂载（禁用插件只注册不挂载）
 - 数据插件（skill/tool）支持热重载（插件目录 5s 轮询）；代码插件需二进制重载
 - **启动顺序**：`apply_disabled` 先于挂载——禁用插件启动时只注册不挂载；persona 白名单的门控**启动期与运行期统一**由 `Agent::apply_capabilities` 承担（`GATED_PLUGIN_IDS` 表逐人格计算：全局启用 ∧ 白名单）；插件宿主由组合根注入为**进程级单例**（所有人格共享，不再寄居某个“默认人格”）
-- **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / skills.dir / adapter.qq / workspace / subagent）已把组合根装配搬进 mount 闭包，运行期 `TogglePlugin` 停/再启对它们有真实运行效果；`adapter.qq` 的启动期 mount 不抢跑（wired 标志在适配器接线完成后才置位），启动受 `[adapters.qq].enabled` 与插件状态双重门控；`loop.{single,parallel}` 的按人格注入依赖 `AgentManager`（注册于挂载之后），启动期 mount 为 no-op——注入在运行期停/再启后生效（见 [Agent 循环](./core-agent-loop.md)「实化与分派」）
+- **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / skills.dir / adapter.qq / workspace / subagent）已把组合根装配搬进 mount 闭包，运行期 `TogglePlugin` 停/再启对它们有真实运行效果；`adapter.qq` 的启动期 mount 不抢跑（wired 标志在适配器接线完成后才置位），启动受 `[adapters.qq].enabled` 与插件状态双重门控；`loop.{single,parallel}` 的按人格注入依赖 `AgentManager`（注册于挂载之后），启动期 mount 为 no-op——由人格启动循环**回填注入**（2026-10 接线；见 [Agent 循环](./core-agent-loop.md)「实化与分派」）
 - **运行期热更新（2026-09）**：插件/工具/技能勾选在 `SaveTeam` 保存后**立即生效**，无需重启——工具/技能逐名双向应用（取消勾选即禁用、重新勾选即恢复）；全局 `TogglePlugin` 经 mount/unmount 闭包逐 persona 重评估（`reapply_plugin_gating`：全局启用 ∧ persona 名单，名单外不放开、unmount 对全员生效）；`ToggleTool`/`ToggleSkill` 同样逐 persona 重算（`reapply_tool_gating` / `reapply_skill_gating`：persona 黑名单不被全局启用覆盖）
 
 ## 内置插件清单
@@ -48,7 +48,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
 | `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`，2026-09-15）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂（名义挂载：重启生效） |
-| `echo-agent.loop.single` | Loop | 单会话循环（默认）：mount 注入 echo-loop 驱动（生效口径见 [Agent 循环](./core-agent-loop.md)）；会话内 turn 串行排队、无会话管理 UI |
+| `echo-agent.loop.single` | Loop | 单会话循环（默认）：启用时 echo-loop 驱动接管普通输入（启动期回填；生效口径见 [Agent 循环](./core-agent-loop.md)）；会话内 turn 串行排队、无会话管理 UI |
 | `echo-agent.loop.parallel` | Loop | 并行多会话循环：同一 `TurnRunner`（生效口径同 `loop.single`）；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
 | `echo-agent.subagent` | Tool | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./core-subagent.md)） |
 | `echo-agent.management.panel` | Management | 管理面：management WS 桥接（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
@@ -97,7 +97,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具（skills.dir 为全部技能）对所有 persona 批量禁用（对 LLM 不可见），启用按各 persona 名单恢复——**仅作用于目标 persona 时用 Agent 配置弹层的勾选**（运行期双向、即时生效）
   - `adapter.qq`：禁用 = 停止 QQ 适配器进程 + QQ 工具包禁用；启用 = 启动 + 按名单恢复
   - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）。**防自锁保护**：经 `TogglePlugin` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
-  - `loop.single` / `loop.parallel`：**已实化**——mount 注入 TurnRunner 并置位 echo-loop 驱动；两者 mount 同一驱动（模式只改策略），全部卸载才回退内置循环。**注入的生效口径**：按人格注入依赖进程级 `AgentManager`（注册于插件挂载之后），启动期 mount 为 no-op——启动加载与运行期新建的人格普通输入由内置循环处理；运行期对循环插件停/再启后注入生效（此后普通输入走 turn/step 状态机；QQ hook/定时器/QQ 会话仍走内置循环）。详见 [Agent 循环](./core-agent-loop.md)「实化与分派」
+  - `loop.single` / `loop.parallel`：**已实化**——mount 注入 TurnRunner 并置位 echo-loop 驱动；两者 mount 同一驱动（模式只改策略），全部卸载才回退内置循环。**注入的生效口径**（2026-10 接线后）：启动期由人格启动循环按注册表启用态**回填注入**（mount 闭包依赖的 `AgentManager` 在挂载时尚未注册，故 mount 为 no-op）；运行期新建人格由 `set_agent_factory` 包装同口径注入；插件停/再启按原 mount/Disposer 联动（全部卸载回退内置循环）。注入生效后普通输入走 turn/step 状态机（QQ hook/定时器/QQ 会话仍走内置循环）。详见 [Agent 循环](./core-agent-loop.md)「实化与分派」
   - `provider.llm`：仍为名义挂载——运行中替换 provider 涉及在途 turn，保持"重启生效"语义（禁用 = 下次重启不装配）
 - **优先级**：全局禁用（`TogglePlugin` 卸载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
 - **任务清单的会话隔离（2026-10）**：`ChecklistTool` 状态按**会话**隔离（session_id → 清单名 → 项）——同一 persona 的不同会话（local:tui / qq:group:…）的清单互不可见、互不覆盖；会话键由 `Agent::run_tool` 在参数校验后注入 `__session_id`（联邦远程/无会话上下文调用落 `__global` 兜底键）。事件 `ChecklistUpdated` 带 `team_id`，Panel 按 `(core, team_id, session_id)` 复合键存储并显示。此前状态是进程内单实例（不分会话），A 会话的条目会被 B 会话看到并覆盖。

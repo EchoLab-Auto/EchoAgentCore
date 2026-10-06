@@ -1645,6 +1645,321 @@ async fn echo_loop_path_injects_persona_skills_and_workspace() {
     );
 }
 
+/// echo-loop 路径 UI 事件对齐（2026-10 巡检）：与内置循环同屏同字段——
+/// AgentThinking 起、LlmRequest/LlmResponse（经 runner 总线翻译）、
+/// AgentReasoning（回调）、AgentCompleted 收；并写 last_prompt_blocks
+/// （/context 视图）。
+#[tokio::test]
+async fn echo_loop_path_emits_panel_lifecycle_events() {
+    let provider = Arc::new(ScriptedProvider::new(vec![ChatResponse {
+        stop_reason: None,
+        content: Some("done".into()),
+        reasoning_content: Some("先想一想".into()),
+        tool_calls: vec![],
+        usage: Usage {
+            prompt_tokens: 11,
+            completion_tokens: 22,
+        },
+    }]));
+    let agent = Arc::new(Agent::new(
+        provider.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    ));
+    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+        Arc::new(echo_context::EventBus::default()),
+        provider.clone(),
+        Arc::new(echo_loop::ToolPipeline::new()),
+        echo_loop::LoopOptions::default(),
+    ));
+    agent.set_loop_runner(runner);
+    agent.set_use_echo_loop(true);
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+
+    assert_eq!(agent.process_message(&session, "hi").await.unwrap(), "done");
+
+    let mut events = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        events.push(event);
+    }
+    let has = |pred: &dyn Fn(&BackendEvent) -> bool| events.iter().any(pred);
+    assert!(
+        has(&|e| matches!(e, BackendEvent::AgentThinking { .. })),
+        "AgentThinking 缺失（busy 不会启动）: {events:?}"
+    );
+    assert!(
+        has(&|e| matches!(
+            e,
+            BackendEvent::LlmRequest { model, .. } if model == "mock-model"
+        )),
+        "LlmRequest 缺失（模型指示不显示）: {events:?}"
+    );
+    assert!(
+        has(&|e| matches!(
+            e,
+            BackendEvent::LlmResponse {
+                prompt_tokens: 11,
+                completion_tokens: 22,
+                ..
+            }
+        )),
+        "LlmResponse 缺失（用量不显示）: {events:?}"
+    );
+    assert!(
+        has(&|e| matches!(
+            e,
+            BackendEvent::AgentReasoning { content, .. } if content == "先想一想"
+        )),
+        "AgentReasoning 缺失: {events:?}"
+    );
+    assert!(
+        has(&|e| matches!(e, BackendEvent::AgentCompleted { .. })),
+        "AgentCompleted 缺失（busy 永不结束）: {events:?}"
+    );
+    // 顺序：Thinking 在 Completed 之前。
+    let pos = |pred: &dyn Fn(&BackendEvent) -> bool| events.iter().position(pred);
+    let thinking = pos(&|e| matches!(e, BackendEvent::AgentThinking { .. })).unwrap();
+    let completed = pos(&|e| matches!(e, BackendEvent::AgentCompleted { .. })).unwrap();
+    assert!(thinking < completed, "Thinking 应先于 Completed");
+    // /context 视图数据（与内置循环同口径）。
+    assert!(
+        agent.last_prompt_blocks.lock().await.is_some(),
+        "last_prompt_blocks 必须写入（/context 视图）"
+    );
+}
+
+/// echo-loop 路径动态模型（2026-10 巡检）：runner 构造期固化改为每 turn
+/// 解析——运行期 set_model 在下一 turn 的请求与 LlmRequest 事件中生效。
+#[tokio::test]
+async fn echo_loop_path_uses_active_model_per_turn() {
+    let provider = Arc::new(ScriptedProvider::new(vec![ChatResponse {
+        stop_reason: None,
+        content: Some("done".into()),
+        reasoning_content: None,
+        tool_calls: vec![],
+        usage: Usage::default(),
+    }]));
+    let agent = Arc::new(Agent::new(
+        provider.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    ));
+    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+        Arc::new(echo_context::EventBus::default()),
+        provider.clone(),
+        Arc::new(echo_loop::ToolPipeline::new()),
+        echo_loop::LoopOptions::default(),
+    ));
+    agent.set_loop_runner(runner);
+    agent.set_use_echo_loop(true);
+    agent.set_model("runtime-model".into()).await;
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+
+    assert_eq!(agent.process_message(&session, "hi").await.unwrap(), "done");
+    let requests = provider.requests.lock().await;
+    assert_eq!(
+        requests[0].model, "runtime-model",
+        "echo 路径必须用运行期模型（此前构造期固化）"
+    );
+}
+
+/// echo-loop 路径工具图片透传（2026-10 巡检）：execute_rich 产出的图片
+/// 必须进入下一轮请求的工具消息（此前只取 text——多模态链路上丢失）。
+#[tokio::test]
+async fn echo_loop_path_carries_tool_images_into_next_request() {
+    struct ImageTool;
+    #[async_trait::async_trait]
+    impl Tool for ImageTool {
+        fn name(&self) -> &str {
+            "image_tool"
+        }
+        fn description(&self) -> &str {
+            "returns an image (test)"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        async fn execute(&self, _arguments: serde_json::Value) -> Result<String, ToolError> {
+            Ok("should not be used".into())
+        }
+        async fn execute_rich(
+            &self,
+            _arguments: serde_json::Value,
+        ) -> Result<crate::tool::ToolResult, ToolError> {
+            Ok(crate::tool::ToolResult::with_images(
+                "see image",
+                vec!["data:image/png;base64,AAAA".into()],
+            ))
+        }
+    }
+
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        ChatResponse {
+            stop_reason: Some("tool_calls".into()),
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![crate::llm::ToolCall {
+                id: "call_img_1".into(),
+                name: "image_tool".into(),
+                arguments: "{}".into(),
+            }],
+            usage: Usage::default(),
+        },
+        ChatResponse {
+            stop_reason: None,
+            content: Some("done".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            usage: Usage::default(),
+        },
+    ]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(ImageTool));
+    let agent = Arc::new(Agent::new(
+        provider.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        tools,
+        Arc::new(AdapterRegistry::new()),
+    ));
+    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+        Arc::new(echo_context::EventBus::default()),
+        provider.clone(),
+        Arc::new(echo_loop::ToolPipeline::new()),
+        echo_loop::LoopOptions::default(),
+    ));
+    agent.set_loop_runner(runner);
+    agent.set_use_echo_loop(true);
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+
+    assert_eq!(
+        agent.process_message(&session, "run").await.unwrap(),
+        "done"
+    );
+    let requests = provider.requests.lock().await;
+    let tool_message = requests[1]
+        .messages
+        .iter()
+        .find(|message| message.role == crate::llm::ChatRole::Tool)
+        .expect("second request must carry the tool message");
+    assert_eq!(
+        tool_message.images,
+        vec!["data:image/png;base64,AAAA".to_string()],
+        "工具产出的图片必须透传（此前只取 text）"
+    );
+}
+
+/// echo-loop 路径在途工具取消（2026-10 巡检）：turn 取消后挂起的工具执行
+/// 必须立即中止（此前取消延迟至工具自然结束），事件日志补记中断结果
+/// 保持成对。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn echo_loop_path_cancels_in_flight_tool() {
+    struct GatedHungTool {
+        started: Arc<tokio::sync::Notify>,
+    }
+    #[async_trait::async_trait]
+    impl Tool for GatedHungTool {
+        fn name(&self) -> &str {
+            "hung_tool"
+        }
+        fn description(&self) -> &str {
+            "sleeps far beyond the guard (test)"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        async fn execute(&self, _arguments: serde_json::Value) -> Result<String, ToolError> {
+            self.started.notify_one();
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            Ok("never".into())
+        }
+    }
+
+    let started = Arc::new(tokio::sync::Notify::new());
+    let provider = Arc::new(ScriptedProvider::new(vec![ChatResponse {
+        stop_reason: Some("tool_calls".into()),
+        content: None,
+        reasoning_content: None,
+        tool_calls: vec![crate::llm::ToolCall {
+            id: "call_hung_cancel".into(),
+            name: "hung_tool".into(),
+            arguments: "{}".into(),
+        }],
+        usage: Usage::default(),
+    }]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(GatedHungTool {
+        started: started.clone(),
+    }));
+    let agent = Arc::new(Agent::new(
+        provider.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        tools,
+        Arc::new(AdapterRegistry::new()),
+    ));
+    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+        Arc::new(echo_context::EventBus::default()),
+        provider.clone(),
+        Arc::new(echo_loop::ToolPipeline::new()),
+        echo_loop::LoopOptions::default(),
+    ));
+    agent.set_loop_runner(runner);
+    agent.set_use_echo_loop(true);
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    let session_id = session.id.clone();
+
+    let turn = {
+        let agent = Arc::clone(&agent);
+        let session = session.clone();
+        tokio::spawn(async move { agent.process_message(&session, "run").await })
+    };
+    // 等工具真的开始执行，再取消。
+    tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+        .await
+        .expect("tool should start");
+    let started_at = std::time::Instant::now();
+    let cancelled = agent.cancel_inbound_turns(&session_id, true);
+    assert_eq!(cancelled, 1, "one active turn to cancel");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), turn)
+        .await
+        .expect("turn must end promptly after cancel (in-flight tool aborted)")
+        .unwrap();
+    assert!(result.is_err(), "cancelled turn returns error");
+    assert!(
+        result.unwrap_err().to_string().contains("cancel"),
+        "error must be TURN_CANCELLED"
+    );
+    assert!(
+        started_at.elapsed() < std::time::Duration::from_secs(10),
+        "cancel must not wait for the 60s tool"
+    );
+    // 事件日志成对：ToolCall 对应的（中断）ToolResult 已补记。
+    let log = agent.trunk.event_log();
+    let interrupted = log.iter().any(|event| {
+        matches!(
+            event,
+            echo_session::SessionEvent::ToolResult(result)
+                if result.result.contains("cancelled")
+        )
+    });
+    assert!(interrupted, "interrupted tool result must be recorded");
+}
+
 #[test]
 fn sequence_parsing_only_accepts_structured_markers() {
     let hook = r#"<qq_message_hook>

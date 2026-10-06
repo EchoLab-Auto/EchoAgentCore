@@ -37,11 +37,9 @@ use crate::skill::SkillRegistry;
 use crate::tool::ToolRegistry;
 
 pub(crate) const TURN_CANCELLED: &str = "agent turn cancelled by requester";
-/// 一轮内允许的截断自动续跑次数上限：输出被 max_tokens 截断时把残片入栈
-/// 让模型接着写；超过上限按错误上报，不再静默重试。
-pub(crate) const MAX_TRUNCATION_CONTINUES: usize = 4;
-/// 截断续跑时喂给模型的提示（user 角色，区别于真实用户输入）。
-pub(crate) const TRUNCATION_CONTINUE_PROMPT: &str = "[system notice] Your previous output was cut off by the max token limit before the turn was complete. Continue exactly from where you stopped. If you were composing a tool call, discard the partial call and re-issue it in full.";
+/// 截断续跑常量（口径单源 = `echo_defs::llm`，2026-10 巡检：与
+/// echo-loop 双写已漂移过——统一后两处引用同一常量）。
+pub(crate) use echo_defs::llm::{MAX_TRUNCATION_CONTINUES, TRUNCATION_CONTINUE_PROMPT};
 /// Graceful-shutdown drain window: how long to wait for in-flight turns to
 /// finish before force-cancelling (self-update interruption guard).
 const SHUTDOWN_DRAIN_SECS: u64 = 120;
@@ -1579,16 +1577,41 @@ impl Agent {
 
     /// 经 echo-loop TurnRunner 驱动一轮（仅普通输入；`history_snapshot` 由
     /// 调用方提供——与内置循环同语义：以点切快照为基准，不重复读取）。
+    ///
+    /// 2026-10 巡检补齐（与内置循环逐项对齐，接线前完成）：
+    /// - **UI 事件**：`AgentThinking` 起、`LlmRequest`/`LlmResponse`（经 runner
+    ///   总线翻译）、`AgentReasoning`（回调）、`AgentCompleted` 收；
+    /// - **/context 视图**：写 `last_prompt_blocks`（与内置循环同口径）；
+    /// - **动态模型/provider**：模型每 turn 解析、provider 每 step 由
+    ///   `ChatExecutor` 解析——运行期 persona API 切换即时生效；
+    /// - **在途取消**：模型请求与工具执行均与 turn 取消竞速；
+    /// - **工具产出**：图片透传（`ToolOutcome`）、成功 `send_*` 触发
+    ///   visible_reply 抑制；
+    /// - **超时守卫**：与内置循环同口径（`tool_guard_timeout` + 共享 notice）。
+    // 8 个参数：turn 的入参就是这么多（与内置循环 process_message_inner
+    // 同构）；合并成结构体属重构，不在本次修复范围内。
+    #[allow(clippy::too_many_arguments)]
     async fn process_via_echo_loop(
         &self,
         session: &Session,
         content: &str,
         history_snapshot: Option<Vec<ChatMessage>>,
         turn_cancel: tokio_util::sync::CancellationToken,
+        visible_reply: Option<tokio::sync::watch::Sender<bool>>,
         branch_id: &str,
         runner: std::sync::Arc<echo_loop::runner::TurnRunner>,
     ) -> Result<String> {
         let session_id = session.id.clone();
+        // turn 开始（与内置循环同口径）：busy 启动 + 思考动画。
+        tracing::info!(
+            session = %session_id,
+            driver = "echo-loop",
+            "agent turn started (echo-loop)"
+        );
+        self.emit(BackendEvent::AgentThinking {
+            session_id: session_id.clone(),
+            team_id: None,
+        });
         // 系统提示词（与内置循环同源同层，2026-09-30 补齐）：base（persona
         // system_prompt 覆盖值）→ 全局 system 技能 → persona 系统技能
         // （capabilities.system_skills）→ … → 工作区会话注入。
@@ -1619,6 +1642,9 @@ impl Agent {
             .await
         };
         let system_prompt = crate::agent::prompt::join_prompt_blocks(&blocks);
+        // `/context` 视图（2026-10 巡检）：与内置循环同口径保存最近一次
+        // 提示词块——此前 echo 路径不写，切到 /context 显示陈旧数据。
+        *self.last_prompt_blocks.lock().await = Some(blocks);
         let history = history_snapshot.unwrap_or_else(|| session.history.blocking_lock().clone());
         // 工具 schema：注册表是唯一真源（与内置循环同源）。编排工具
         // （spawn_subagent）同样由注册表提供（组合根装配时注册），这里不得
@@ -1626,80 +1652,172 @@ impl Agent {
         // （"Tool names must be unique"）。
         let tools = (*self.tools.definitions().await).clone();
 
+        // 模型名（2026-10 巡检：每 turn 解析——运行期模型/provider 切换在
+        // 下一 turn 生效；此前 runner 构造期固化，切换完全失效）。
+        let model = self.active_model().await;
+
         // 推理回调（引用式，生命周期 = run 调用作用域）。
         let reasoning_cb = |sid: String, text: String| {
             self.emit_reasoning(&sid, branch_id, &Some(text));
         };
 
-        // 工具执行：同步闭包内用 block_in_place + 当前运行时 block_on 执行
-        // run_tool（run_tool 内部已发 ToolCall/ToolResult 事件并写事件日志）。
-        // 外圈超时守卫与内置循环同一口径（`tool_guard_timeout`）——超时只中止
-        // 单个工具、不中断 turn，结果以 notice 喂回模型；被 drop 的 future 已
-        // 记录 ToolCall 事件，补记中断结果保持事件日志成对。
-        let result = {
+        // ── 生命周期事件翻译（2026-10 巡检）──
+        // 订阅 runner 的事件总线，把 turn/step 事件转发为 Panel 事件
+        // （与内置循环同屏同字段）。订阅按 session_id 过滤——runner 可被
+        // 多会话并发共享；Disposer 随本作用域保管，函数返回即注销。
+        let emit_handle = self.emit_handle();
+        let _subscriptions = {
+            let bus = runner.bus().clone();
+            let mut disposers: Vec<echo_context::Disposer> = Vec::new();
+            {
+                let emit = emit_handle.clone();
+                let sid = session_id.clone();
+                let turn = branch_id.to_string();
+                disposers.push(bus.observe::<echo_loop::AgentRequest, _>(move |evt| {
+                    // session + turn 双过滤：并行模式同会话并发分支时
+                    // 各 turn 的订阅互不串收（2026-10 巡检）。
+                    if evt.session_id == sid && evt.turn_id.as_deref() == Some(turn.as_str()) {
+                        emit(BackendEvent::LlmRequest {
+                            session_id: evt.session_id.clone(),
+                            model: evt.request.model.clone(),
+                        });
+                    }
+                }));
+            }
+            {
+                let emit = emit_handle.clone();
+                let sid = session_id.clone();
+                let turn = branch_id.to_string();
+                disposers.push(bus.observe::<echo_loop::ModelResponse, _>(move |evt| {
+                    if evt.session_id == sid && evt.turn_id.as_deref() == Some(turn.as_str()) {
+                        emit(BackendEvent::LlmResponse {
+                            session_id: evt.session_id.clone(),
+                            model: evt.model.clone(),
+                            prompt_tokens: evt.prompt_tokens,
+                            completion_tokens: evt.completion_tokens,
+                        });
+                    }
+                }));
+            }
+            disposers
+        };
+
+        // 动态 chat 出口（2026-10 巡检）：每 step 解析**当前** provider 与
+        // 预算（persona API 切换即时生效）；参数转 owned、future 仅借 self。
+        let chat_executor: echo_loop::ChatExecutor<'_> = &|mut request: ChatRequest| {
             let this = self;
-            let executor = |sid: &str, _branch: &str, call: &crate::llm::ToolCall| {
-                tokio::task::block_in_place(|| {
-                    let handle = tokio::runtime::Handle::current();
-                    let guard = handle.block_on(this.tool_guard_timeout(call));
-                    match handle.block_on(tokio::time::timeout(
-                        guard,
-                        this.run_tool(sid, branch_id, call),
-                    )) {
-                        Ok(result) => result.text,
-                        Err(_) => {
-                            let text = format!(
-                                "notice: tool '{}' timed out after {}s and its execution was aborted. You may retry this tool (e.g. with a shorter command) or continue the answer directly with the information you already have; do not treat this timeout as a fatal failure.",
-                                call.name,
-                                guard.as_secs(),
+            Box::pin(async move {
+                request.max_tokens = this.config.read().await.effective_max_tokens();
+                let provider = this.provider.read().await.clone();
+                provider.chat(&request).await
+            })
+        };
+
+        // 工具执行器（异步版，2026-10 巡检）：超时守卫（与内置循环同一口径）
+        // + turn 取消竞速（在途工具可立即中止）+ visible_reply 抑制。
+        // run_tool 内部已发 ToolCall/ToolResult 事件并写事件日志；被 drop 的
+        // future 已记录 ToolCall 事件，补记中断结果保持事件日志成对。
+        // 取消令牌的克隆副本（executor 闭包持有其引用；原令牌稍后 move 进
+        // runner.run，#[E0505] 的规避——两者语义一致，同源取消）。
+        let cancel_for_tools = turn_cancel.clone();
+        let executor: echo_loop::ToolExecutor<'_> =
+            &|sid: &str, _branch: &str, call: &crate::llm::ToolCall| {
+                let this = self;
+                let call = call.clone();
+                let sid = sid.to_string();
+                let branch = branch_id.to_string();
+                let cancel = cancel_for_tools.clone();
+                let visible = visible_reply.clone();
+                Box::pin(async move {
+                    let guard = this.tool_guard_timeout(&call).await;
+                    tokio::select! {
+                        result = tokio::time::timeout(guard, this.run_tool(&sid, &branch, &call)) => {
+                            match result {
+                                Ok(tool_result) => {
+                                    // 成功的 send_* 即该分支的可见回复：抑制
+                                    // 并行的临时等待回复（与内置循环同口径）。
+                                    let failed =
+                                        tool_result.text.trim_start().starts_with("error:");
+                                    if !failed
+                                        && matches!(
+                                            call.name.as_str(),
+                                            "send_private_msg" | "send_group_msg" | "send_backend_message"
+                                        )
+                                    {
+                                        if let Some(visible) = &visible {
+                                            let _ = visible.send(true);
+                                        }
+                                    }
+                                    echo_loop::ToolOutcome::with_images(
+                                        tool_result.text.clone(),
+                                        tool_result.images.clone(),
+                                    )
+                                }
+                                Err(_) => {
+                                    let text = tool_timeout_notice(&call.name, guard.as_secs());
+                                    this.record_interrupted_tool_result(
+                                        &sid, &branch, &call, &text, true,
+                                    );
+                                    echo_loop::ToolOutcome::text(text)
+                                }
+                            }
+                        }
+                        _ = cancel.cancelled() => {
+                            this.record_interrupted_tool_result(
+                                &sid,
+                                &branch,
+                                &call,
+                                "error: tool execution cancelled",
+                                false,
                             );
-                            this.record_interrupted_tool_result(sid, branch_id, call, &text, true);
-                            text
+                            echo_loop::ToolOutcome::text("error: tool execution cancelled")
                         }
                     }
                 })
             };
-            // Subagent hook（echo-loop 的 hook 注入接口）：spawn_subagent 的
-            // future 不 Send，无法走上面的 block_in_place 同步桥——经
-            // `execute_async` 通道直接进管线（模型可见的 schema 由注册表
-            // 统一提供，不再经 extra_tool_definitions 追加）。
-            // spawn_subagent 本身是同步受理（注册 + 后台拉起），结果立即可得——
-            // 同步 body 内一次性算好文本，再包一个 'static ready future 返回
-            // （AsyncToolExecutor 的设计意图：harness 编排需要 tokio::spawn 时
-            // 经通道把结果带回，这里无需 spawn 因此直接 ready）。
-            let is_async_subagent = |name: &str| name == crate::subagent::SPAWN_SUBAGENT_TOOL;
-            let execute_async_subagent = move |sid: &str,
-                                               _branch: &str,
-                                               call: &crate::llm::ToolCall|
-                  -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = String> + Send>,
-            > {
-                let args: serde_json::Value =
-                    serde_json::from_str(&call.arguments).unwrap_or_default();
-                let text = if !self.allows_dynamic_tool(crate::subagent::SPAWN_SUBAGENT_TOOL) {
-                    format!(
-                        "error: tool '{}' is not registered (subagent 插件未启用或不在本 persona 白名单)",
-                        crate::subagent::SPAWN_SUBAGENT_TOOL
-                    )
-                } else {
-                    match self.subagent_runtime() {
-                        None => "error: subagent runtime not attached".to_string(),
-                        Some((store, spawn)) => {
-                            let tool = crate::subagent::SpawnSubagentTool::new(store, spawn);
-                            let cancel = self
-                                .active_inbound_turns
-                                .get(branch_id)
-                                .map(|turn| turn.cancel.clone())
-                                .unwrap_or_default();
-                            match tool.spawn(&args, sid, cancel, branch_id) {
-                                Ok(receipt) => receipt,
-                                Err(error) => format!("error: {error}"),
-                            }
+
+        // Subagent hook（echo-loop 的 hook 注入接口）：spawn_subagent 的
+        // future 不 Send，无法走普通执行器——经 `execute_async` 通道直接进
+        // 管线（模型可见的 schema 由注册表统一提供，不再经
+        // extra_tool_definitions 追加）。spawn_subagent 本身是同步受理
+        // （注册 + 后台拉起），结果立即可得——同步 body 内一次性算好文本，
+        // 再包一个 'static ready future 返回（AsyncToolExecutor 的设计意图：
+        // harness 编排需要 tokio::spawn 时经通道把结果带回，这里无需 spawn
+        // 因此直接 ready）。
+        let is_async_subagent = |name: &str| name == crate::subagent::SPAWN_SUBAGENT_TOOL;
+        let execute_async_subagent = move |sid: &str,
+                                           _branch: &str,
+                                           call: &crate::llm::ToolCall|
+              -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = echo_loop::ToolOutcome> + Send>,
+        > {
+            let args: serde_json::Value = serde_json::from_str(&call.arguments).unwrap_or_default();
+            let text = if !self.allows_dynamic_tool(crate::subagent::SPAWN_SUBAGENT_TOOL) {
+                format!(
+                    "error: tool '{}' is not registered (subagent 插件未启用或不在本 persona 白名单)",
+                    crate::subagent::SPAWN_SUBAGENT_TOOL
+                )
+            } else {
+                match self.subagent_runtime() {
+                    None => "error: subagent runtime not attached".to_string(),
+                    Some((store, spawn)) => {
+                        let tool = crate::subagent::SpawnSubagentTool::new(store, spawn);
+                        let cancel = self
+                            .active_inbound_turns
+                            .get(branch_id)
+                            .map(|turn| turn.cancel.clone())
+                            .unwrap_or_default();
+                        match tool.spawn(&args, sid, cancel, branch_id) {
+                            Ok(receipt) => receipt,
+                            Err(error) => format!("error: {error}"),
                         }
                     }
-                };
-                Box::pin(async move { text })
+                }
             };
+            Box::pin(async move { echo_loop::ToolOutcome::text(text) })
+        };
+
+        let result = {
             let subagent_hooks = echo_loop::SubagentToolHooks {
                 is_async_tool: Some(&is_async_subagent),
                 execute_async: Some(&execute_async_subagent),
@@ -1710,6 +1828,9 @@ impl Agent {
                 tools: Some(tools),
                 on_reasoning: Some(&reasoning_cb),
                 subagent_hooks,
+                model: Some(model),
+                chat: Some(chat_executor),
+                turn_id: Some(branch_id.to_string()),
             };
             runner
                 .run(
@@ -1718,14 +1839,20 @@ impl Agent {
                     system_prompt,
                     history,
                     turn_cancel,
-                    &executor,
+                    executor,
                     extras,
                 )
                 .await
         };
 
         match result {
-            Ok(reply) => Ok(reply),
+            Ok(reply) => {
+                // turn 完成（与内置循环同口径）：busy 收尾。
+                self.emit(BackendEvent::AgentCompleted {
+                    session_id: session_id.clone(),
+                });
+                Ok(reply)
+            }
             Err(echo_loop::runner::LoopError::Cancelled) => Err(anyhow!(TURN_CANCELLED)),
             Err(other) => Err(anyhow!(other.to_string())),
         }
@@ -1759,6 +1886,7 @@ impl Agent {
                             content,
                             history_snapshot,
                             turn_cancel,
+                            visible_reply.clone(),
                             branch_id,
                             runner,
                         )
@@ -1958,11 +2086,7 @@ impl Agent {
                     result = self.run_tool(&session_id, branch_id, call) => result,
                     _ = tokio::time::sleep(tool_timeout) => {
                         timed_out = true;
-                        let text = format!(
-                            "notice: tool '{}' timed out after {}s and its execution was aborted. You may retry this tool (e.g. with a shorter command) or continue the answer directly with the information you already have; do not treat this timeout as a fatal failure.",
-                            call.name,
-                            tool_timeout.as_secs(),
-                        );
+                        let text = tool_timeout_notice(&call.name, tool_timeout.as_secs());
                         // run_tool was dropped mid-flight: it already recorded
                         // the ToolCall event, so record the matching ToolResult
                         // or the durable log keeps a dangling call.
@@ -2503,6 +2627,14 @@ pub(crate) fn spawn_contextual_wait_reply(
             _ = branch_completed.cancelled() => {}
         }
     });
+}
+
+/// 工具超时提示文案（内置循环与 echo 路径**共用同一文案**，2026-10 巡检：
+/// 此前双写、易漂移）。
+fn tool_timeout_notice(tool: &str, secs: u64) -> String {
+    format!(
+        "notice: tool '{tool}' timed out after {secs}s and its execution was aborted. You may retry this tool (e.g. with a shorter command) or continue the answer directly with the information you already have; do not treat this timeout as a fatal failure."
+    )
 }
 
 fn assistant_with_tool_calls(

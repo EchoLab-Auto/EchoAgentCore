@@ -54,7 +54,7 @@ graph BT
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 echo-defs |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge，Panel 只依赖它 |
 | `echo-plugin` | 插件契约 | `Plugin` trait 生命周期钩子、`PluginManifest`、`PluginRegistry`；挂载为可逆副作用（返回 disposer），插件只依赖定义层 |
-| `echo-agent` | agent 框架 | 循环（内建实现；echo-loop 驱动注入后接管普通输入——生效口径见 [Agent 循环](./core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
+| `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入，启动期回填——生效口径见 [Agent 循环](./core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
 | `echo-adapter`/`echo-adapter-qq` | 平台适配 | `Adapter` trait、过滤管道、ConfigStore；QQ 实现 |
 | `echo-core`/`echo-server` | OneBot 类型/反向 WS | 仅供 QQ 适配器 |
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](./federation.md) |
@@ -138,7 +138,7 @@ graph BT
 
 ## Turn/Step 循环
 
-`TurnRunner` 驱动：`turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。工具策略（超时/审批/审计/限流）的设计位置是 `ToolPipeline` 中间件（非循环代码；当前生产路径未注册任何中间件——超时由 harness 的 `tool_guard_timeout` 守卫，见 [Agent 循环](./core-agent-loop.md)）。`Agent::process_message_inner`（内置循环）为当前默认路径；echo-loop 驱动注入后普通输入改经上述状态机执行。
+`TurnRunner` 驱动：`turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。工具策略（超时/审批/审计/限流）的设计位置是 `ToolPipeline` 中间件（非循环代码；当前生产路径未注册任何中间件——超时由 harness 的 `tool_guard_timeout` 守卫，见 [Agent 循环](./core-agent-loop.md)）。`Agent::process_message_inner` 的调度：loop.* 插件启用（任一）时普通输入经上述状态机执行（启动期人格循环回填注入 + 运行期工厂覆盖 + 插件停/再启联动）；QQ hook/定时器/QQ 会话始终走内置循环（边界语义见 [Agent 循环](./core-agent-loop.md)）。
 
 ## 会话与持久化
 

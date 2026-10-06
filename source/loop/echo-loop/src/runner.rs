@@ -9,8 +9,8 @@ use echo_defs::LlmProvider;
 use thiserror::Error;
 
 use crate::event::{
-    AgentPreStep, AgentRequest, StepEnd, StepStart, ToolCallRequested, ToolResult, TurnEnd,
-    TurnStart, TurnStopping,
+    AgentPreStep, AgentRequest, ModelResponse, StepEnd, StepStart, ToolCallRequested, ToolResult,
+    TurnEnd, TurnStart, TurnStopping,
 };
 use crate::pipeline::ToolPipeline;
 
@@ -35,13 +35,11 @@ pub struct LoopOptions {
     /// Upper bound on model-request iterations per turn (0 still allows one
     /// direct reply without tools).
     pub max_tool_iterations: usize,
-    /// Per-tool execution timeout.
-    ///
-    /// 注意：工具超时守卫当前由 harness（Agent 侧 `tool_guard_timeout`，
-    /// 内置循环与 echo-loop 共用）统一实施；本字段保留未用。
-    pub tool_timeout: std::time::Duration,
     /// 单次模型请求的 completion 预算（max_tokens）。`None` = 无上限
     /// （后端回退到 echo_defs::message::DEFAULT_MAX_TOKENS，128K）。
+    ///
+    /// 运行期预算变更：harness 的 [`ChatExecutor`] 在每步可自行改写
+    /// 请求的 `max_tokens`（本字段仅作缺省值）。
     pub max_tokens: Option<u32>,
 }
 
@@ -49,25 +47,58 @@ impl Default for LoopOptions {
     fn default() -> Self {
         Self {
             max_tool_iterations: 1024,
-            tool_timeout: std::time::Duration::from_secs(120),
             max_tokens: None,
         }
     }
 }
 
-/// 一轮内允许的自动续跑次数上限：输出被 max_tokens 截断时把残片入栈并
-/// 让模型接着写。超过上限说明模型陷入"每轮都写满预算"的循环，按错误上报，
-/// 不再静默重试。
-const MAX_TRUNCATION_CONTINUES: usize = 4;
+// 截断续跑常量：口径单源 = echo_defs::llm（2026-10 巡检：与内置循环
+// 双写已漂移过——统一后两处引用同一常量）。
+use echo_defs::llm::{MAX_TRUNCATION_CONTINUES, TRUNCATION_CONTINUE_PROMPT};
 
-/// 截断续跑时喂给模型的提示（user 角色，区别于真实用户输入）。
-const TRUNCATION_CONTINUE_PROMPT: &str = "[system notice] Your previous output was cut off by the max token limit before the turn was complete. Continue exactly from where you stopped. If you were composing a tool call, discard the partial call and re-issue it in full.";
+/// 工具执行输出：模型可见文本 + 附加图片（多模态）。
+///
+/// 与 `echo_defs::tool::ToolResult` 同构（echo-loop 不依赖 echo-agent，
+/// 故在此独立定义；harness 侧负责转换）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolOutcome {
+    /// 模型可见文本。
+    pub text: String,
+    /// 附加图片（URL 或 data URI；透传到工具消息的 image 块）。
+    pub images: Vec<String>,
+}
+
+impl ToolOutcome {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            images: Vec::new(),
+        }
+    }
+
+    pub fn with_images(text: impl Into<String>, images: Vec<String>) -> Self {
+        Self {
+            text: text.into(),
+            images,
+        }
+    }
+}
 
 /// How the runner executes one tool call. The harness owns the concrete
 /// executor (registry lookup + orchestration tools); the runner only drives
-/// the lifecycle around it. 引用式（非 Arc/`'static`）：executor 可与调用方
-/// 的会话状态绑定（由 agent 提供 &self 闭包）。
-pub type ToolExecutor<'a> = &'a (dyn Fn(&str, &str, &ToolCall) -> String + Send + Sync);
+/// the lifecycle around it.
+///
+/// **异步签名**（2026-10 巡检）：此前为同步闭包（内部 block_in_place +
+/// block_on 桥接）——无法在途取消、current_thread runtime 下 panic。现与
+/// chat 出口一样返回 boxed future，harness 可在内部与 turn 取消竞速。
+/// 引用式（非 Arc/`'static`）：executor 可与调用方的会话状态绑定。
+pub type ToolExecutor<'a> = &'a (dyn Fn(
+    &str,
+    &str,
+    &ToolCall,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>>
+         + Send
+         + Sync);
 
 /// 异步版工具执行器：异步编排工具（如 `spawn_subagent`）经此通道进入管线。
 ///
@@ -78,8 +109,21 @@ pub type AsyncToolExecutor<'a> = &'a (dyn Fn(
     &str,
     &str,
     &ToolCall,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send>>
          + Send
+         + Sync);
+
+/// 每 step 的模型出口（2026-10 巡检新增）：harness 在此解析**当前**
+/// provider 并执行请求——运行期 provider/预算切换（persona API 切换、
+/// 配置更新）对 echo-loop 即时生效，不再固化于 runner 构造期。
+///
+/// 返回 boxed future（`'a` 绑定 harness 借用）；runner 以 `tokio::select!`
+/// 与 turn 取消竞速。
+pub type ChatExecutor<'a> = &'a (dyn Fn(
+    ChatRequest,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<ChatResponse, echo_defs::LlmError>> + Send + 'a>,
+> + Send
          + Sync);
 
 /// 异步编排工具的内联处理钩子（subagent 等）。
@@ -111,7 +155,8 @@ impl std::fmt::Debug for SubagentToolHooks<'_> {
     }
 }
 
-/// run 的扩展参数：工具 schema（发给模型）与推理回调（转发至 UI）。
+/// run 的扩展参数：工具 schema（发给模型）、推理回调（转发至 UI）、
+/// 动态模型名与 chat 出口。
 #[derive(Default)]
 pub struct RunExtras<'a> {
     /// 模型可见的工具定义（None = 无工具请求，纯对话）。
@@ -121,6 +166,19 @@ pub struct RunExtras<'a> {
     pub on_reasoning: Option<&'a (dyn Fn(String, String) + Send + Sync)>,
     /// 异步编排工具钩子（subagent 等；默认无）。
     pub subagent_hooks: SubagentToolHooks<'a>,
+    /// 本 turn 的模型名（harness 每 turn 解析一次；None = 构造期
+    /// `llm.default_model()`）。
+    ///
+    /// 粒度说明（2026-10 巡检）：内置循环每 step 读取 active_model；
+    /// echo-loop 按 **turn** 解析——运行期切换在下一 turn 生效（同一
+    /// turn 内切换模型属极端边缘场景）。
+    pub model: Option<String>,
+    /// 每 step 的 chat 出口（None = 构造期 `llm`）。harness 在此解析
+    /// 当前 provider 与预算（见 [`ChatExecutor`]）。
+    pub chat: Option<ChatExecutor<'a>>,
+    /// 本 turn 的调用方标识（如分支 id）：随 `AgentRequest`/`ModelResponse`
+    /// 事件回传，供多分支并发场景区分事件归属（2026-10 巡检）。
+    pub turn_id: Option<String>,
 }
 
 /// The default agent-loop driver.
@@ -162,6 +220,13 @@ impl TurnRunner {
             pipeline,
             options,
         }
+    }
+
+    /// 生命周期事件总线（2026-10 巡检新增）：消费方（agent 侧的事件翻译、
+    /// UI 转发、hook）订阅 turn/step 事件；订阅按会话 id 过滤（runner 可
+    /// 被多会话并发共享）。
+    pub fn bus(&self) -> &Arc<EventBus> {
+        &self.bus
     }
 
     /// Drive one turn: admitted input → final reply (or error).
@@ -212,7 +277,11 @@ impl TurnRunner {
         }
         let mut messages = pre_step.messages;
 
-        let model = self.llm.default_model().to_string();
+        // 模型名：harness 每 turn 解析（None = 构造期 llm 缺省）。
+        let model = extras
+            .model
+            .clone()
+            .unwrap_or_else(|| self.llm.default_model().to_string());
         let max_iterations = self.options.max_tool_iterations.max(1);
         let mut truncation_continues = 0usize;
 
@@ -246,6 +315,7 @@ impl TurnRunner {
             };
             let request = AgentRequest {
                 session_id: session_id.into(),
+                turn_id: extras.turn_id.clone(),
                 request: ChatRequest {
                     model: model.clone(),
                     messages: messages.clone(),
@@ -256,11 +326,36 @@ impl TurnRunner {
             };
             let request = self.bus.emit_sync(request, DispatchMode::Waterfall);
 
-            let response = self
-                .llm
-                .chat(&request.request)
-                .await
-                .map_err(|e| LoopError::Model(e.to_string()))?;
+            // chat 出口（2026-10 巡检）：harness 的 ChatExecutor 每步解析
+            // **当前** provider 与预算；缺省回退构造期 llm。外层 select 与
+            // turn 取消竞速——在途模型请求可被立即中止。
+            let response = {
+                let fut: std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = Result<ChatResponse, echo_defs::LlmError>>
+                            + Send
+                            + '_,
+                    >,
+                > = match extras.chat {
+                    Some(chat) => chat(request.request.clone()),
+                    None => Box::pin(self.llm.chat(&request.request)),
+                };
+                tokio::select! {
+                    response = fut => response.map_err(|e| LoopError::Model(e.to_string()))?,
+                    _ = cancel.cancelled() => return Err(LoopError::Cancelled),
+                }
+            };
+            // 用量回传（step/model）：消费方据此转发 UI（LlmResponse）与记账。
+            self.bus.emit_sync(
+                ModelResponse {
+                    session_id: session_id.into(),
+                    turn_id: extras.turn_id.clone(),
+                    model: request.request.model.clone(),
+                    prompt_tokens: response.usage.prompt_tokens,
+                    completion_tokens: response.usage.completion_tokens,
+                },
+                DispatchMode::Observe,
+            );
             if let Some(ref cb) = extras.on_reasoning {
                 if let Some(ref text) = response.reasoning_content {
                     if !text.trim().is_empty() {
@@ -322,7 +417,11 @@ impl TurnRunner {
 
             // The model wants tools: record the assistant turn, execute each
             // call through the pipeline, feed results back.
-            messages.push(assistant_with_tool_calls(&response));
+            messages.push(ChatMessage::assistant_with_tool_calls(
+                response.content.clone().unwrap_or_default(),
+                response.reasoning_content.clone(),
+                response.tool_calls.clone(),
+            ));
             for call in &response.tool_calls {
                 if cancel.is_cancelled() {
                     return Err(LoopError::Cancelled);
@@ -349,24 +448,30 @@ impl TurnRunner {
                                     return exec(&session_id, "", &call).await;
                                 }
                             }
-                            execute_tool(&session_id, "", &call)
+                            execute_tool(&session_id, "", &call).await
                         })
                     })
                     .await;
-                let result_text = match result {
-                    crate::pipeline::ToolPipelineResult::ShortCircuit(text) => text,
-                    crate::pipeline::ToolPipelineResult::Continue => String::new(),
+                let outcome = match result {
+                    crate::pipeline::ToolPipelineResult::ShortCircuit(outcome) => outcome,
+                    crate::pipeline::ToolPipelineResult::Continue => ToolOutcome::text(""),
                 };
                 self.bus.emit_sync(
                     ToolResult {
                         session_id: session_id.into(),
                         call_id: call.id.clone(),
                         tool_name: call.name.clone(),
-                        result: result_text.clone(),
+                        result: outcome.text.clone(),
                     },
                     DispatchMode::Observe,
                 );
-                messages.push(ChatMessage::tool(result_text, &call.id));
+                // 工具消息携带图片（与内置循环同口径，2026-10 巡检：
+                // 此前只取 text——工具产出的图片在多模态链路上丢失）。
+                messages.push(ChatMessage::tool_with_images(
+                    echo_defs::media::compact_embedded_media(&outcome.text, &outcome.images),
+                    &call.id,
+                    outcome.images.clone(),
+                ));
             }
             self.bus.emit_sync(
                 StepEnd {
@@ -391,16 +496,4 @@ impl TurnRunner {
         );
         Err(LoopError::MaxIterations(max_iterations))
     }
-}
-
-/// Build the assistant message carrying tool calls (content + reasoning).
-fn assistant_with_tool_calls(response: &ChatResponse) -> ChatMessage {
-    let mut message = ChatMessage::assistant_with_reasoning(
-        response.content.clone().unwrap_or_default(),
-        response.reasoning_content.clone(),
-    );
-    if !response.tool_calls.is_empty() {
-        message.tool_calls = Some(response.tool_calls.clone());
-    }
-    message
 }

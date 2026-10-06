@@ -26,8 +26,11 @@ pub mod pipeline;
 pub mod runner;
 
 pub use event::{
-    AgentPreStep, AgentRequest, StepEnd, StepStart, ToolCallRequested, ToolResult, TurnEnd,
-    TurnStart, TurnStopping,
+    AgentPreStep, AgentRequest, ModelResponse, StepEnd, StepStart, ToolCallRequested, ToolResult,
+    TurnEnd, TurnStart, TurnStopping,
 };
 pub use pipeline::{ToolPipeline, ToolPipelineResult};
-pub use runner::{AsyncToolExecutor, LoopError, LoopOptions, SubagentToolHooks, TurnRunner};
+pub use runner::{
+    AsyncToolExecutor, ChatExecutor, LoopError, LoopOptions, SubagentToolHooks, ToolExecutor,
+    ToolOutcome, TurnRunner,
+};

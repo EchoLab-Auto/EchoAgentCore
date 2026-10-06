@@ -39,6 +39,9 @@ pub struct StepStart {
 #[derive(Debug, Clone)]
 pub struct AgentRequest {
     pub session_id: String,
+    /// 本 turn 的调用方标识（harness 提供，如分支 id）——多分支并发同一
+    /// 会话时，消费方凭它区分事件归属（2026-10 巡检）。
+    pub turn_id: Option<String>,
     pub request: echo_defs::message::ChatRequest,
 }
 
@@ -56,6 +59,21 @@ pub struct ToolResult {
     pub call_id: String,
     pub tool_name: String,
     pub result: String,
+}
+
+/// A model response arrived for a step: `step/model`.
+///
+/// Carries the usage counters so consumers (UI/usage accounting) can render
+/// token spend without reaching into the runner. Emitted after `agent/request`
+/// and before any tool calls of the same step.
+#[derive(Debug, Clone)]
+pub struct ModelResponse {
+    pub session_id: String,
+    /// 本 turn 的调用方标识（见 [`AgentRequest::turn_id`]）。
+    pub turn_id: Option<String>,
+    pub model: String,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
 }
 
 /// A step ended: `step/end`.
@@ -83,6 +101,7 @@ impl Event for StepStart {}
 impl Event for AgentRequest {}
 impl Event for ToolCallRequested {}
 impl Event for ToolResult {}
+impl Event for ModelResponse {}
 impl Event for StepEnd {}
 impl Event for TurnStopping {}
 impl Event for TurnEnd {}

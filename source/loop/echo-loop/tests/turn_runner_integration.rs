@@ -101,7 +101,13 @@ async fn turn_emits_lifecycle_events_in_order() {
             "系统提示".into(),
             vec![],
             tokio_util::sync::CancellationToken::new(),
-            &|_s, _b, call| format!("执行了 {}", call.name),
+            &|_s: &str, _b: &str, call: &ToolCall| {
+                let text = format!("执行了 {}", call.name);
+                Box::pin(async move { echo_loop::ToolOutcome::text(text) })
+                    as std::pin::Pin<
+                        Box<dyn std::future::Future<Output = echo_loop::ToolOutcome> + Send>,
+                    >
+            },
             Default::default(),
         )
         .await
@@ -150,7 +156,12 @@ async fn pre_step_rejection_closes_turn_without_request() {
             "sys".into(),
             vec![],
             tokio_util::sync::CancellationToken::new(),
-            &|_, _, _| String::new(),
+            &|_: &str, _: &str, _: &ToolCall| {
+                Box::pin(async { echo_loop::ToolOutcome::text("") })
+                    as std::pin::Pin<
+                        Box<dyn std::future::Future<Output = echo_loop::ToolOutcome> + Send>,
+                    >
+            },
             Default::default(),
         )
         .await;
@@ -197,9 +208,12 @@ async fn truncated_output_continues_instead_of_empty_reply() {
             "sys".into(),
             vec![],
             tokio_util::sync::CancellationToken::new(),
-            &move |_s, _b, call| {
+            &move |_s: &str, _b: &str, call: &ToolCall| {
                 seen.lock().unwrap().push(call.name.clone());
-                String::new()
+                Box::pin(async { echo_loop::ToolOutcome::text("") })
+                    as std::pin::Pin<
+                        Box<dyn std::future::Future<Output = echo_loop::ToolOutcome> + Send>,
+                    >
             },
             Default::default(),
         )
@@ -236,7 +250,12 @@ async fn repeated_truncation_gives_up_with_error() {
             "sys".into(),
             vec![],
             tokio_util::sync::CancellationToken::new(),
-            &|_, _, _| String::new(),
+            &|_: &str, _: &str, _: &ToolCall| {
+                Box::pin(async { echo_loop::ToolOutcome::text("") })
+                    as std::pin::Pin<
+                        Box<dyn std::future::Future<Output = echo_loop::ToolOutcome> + Send>,
+                    >
+            },
             Default::default(),
         )
         .await;

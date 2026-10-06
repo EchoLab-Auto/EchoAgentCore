@@ -500,7 +500,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         echo_loop::LoopOptions {
             max_tool_iterations: cfg.agent.max_tool_iterations.max(1),
             max_tokens: cfg.agent.effective_max_tokens(),
-            ..Default::default()
         },
     ));
     let _runner_keep = ctx.register::<Arc<echo_loop::TurnRunner>>("loop", runner.clone());
@@ -1222,6 +1221,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 进程级插件宿主锚点：供插件门控判定读取全局注册表
     // （与各 persona 注入的是同一实例）。
     echo_agent::agent::set_plugin_host_global(plugin_host.clone());
+    // echo-loop 驱动回填（2026-10 接线）：loop.* 插件的 mount 闭包在启动期
+    // 执行时 AgentManager 尚未注册（for_each_agent 为 no-op），启动加载的
+    // 人格不会自动获得 echo-loop 驱动——**在这里按注册表启用态补挂**。
+    // 口径与 mount 闭包一致：任一 loop 插件启用即注入；两者都卸载时由
+    // mount disposer 统一回退内置循环（回退路径不受影响）。
+    // 运行期新建人格由 set_agent_factory 的包装覆盖（见下）。
+    let loop_driver_enabled = {
+        use echo_agent::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
+        plugin_host.registry.is_enabled(SINGLE_LOOP_PLUGIN_ID)
+            || plugin_host.registry.is_enabled(PARALLEL_LOOP_PLUGIN_ID)
+    };
     // Restore persisted sessions and start periodic save (all personas).
     for persona in supervisor.personas() {
         let restored = persona.agent.load_sessions().await;
@@ -1239,6 +1249,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // [agent].disabled_tools / disabled_skills、以及共享注册表里被
         // TogglePlugin 卸载的插件。
         persona.agent.apply_capabilities(&persona.profile).await;
+        if loop_driver_enabled {
+            persona.agent.set_loop_runner(runner.clone());
+            persona.agent.set_use_echo_loop(true);
+        }
         persona.agent.start_session_save_task();
         persona.agent.start_plugin_reload_task().await;
         // orchestration 已删除（2026-09-16）
@@ -1311,8 +1325,20 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 使用同一装配闭包（make_agent），实例接线完全一致。
         {
             let f = make_agent.clone();
+            let runner = runner.clone();
+            let plugin_host = plugin_host.clone();
             echo_agent::agent_manager::set_agent_factory(move |id: String, p: AgentProfile| {
-                f(id, p)
+                let agent = f(id, p);
+                // 运行期新建人格的 echo-loop 驱动注入（2026-10 接线）：
+                // 与启动期回填同口径（注册表启用态；禁用时保持内置循环）。
+                use echo_agent::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
+                if plugin_host.registry.is_enabled(SINGLE_LOOP_PLUGIN_ID)
+                    || plugin_host.registry.is_enabled(PARALLEL_LOOP_PLUGIN_ID)
+                {
+                    agent.set_loop_runner(runner.clone());
+                    agent.set_use_echo_loop(true);
+                }
+                agent
             });
         }
         // 配置写回：SaveAgent/DeleteAgent 持久化到 core.toml。

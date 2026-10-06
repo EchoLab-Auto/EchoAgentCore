@@ -92,6 +92,25 @@ impl ChatMessage {
             images: vec![],
         }
     }
+    /// Build the assistant message that carries tool calls (content + reasoning).
+    ///
+    /// 规范构造器（2026-10 巡检）：内置循环与 echo-loop 曾各写一份等价
+    /// 构造（存在漂移风险）——统一在此。
+    pub fn assistant_with_tool_calls(
+        content: impl Into<String>,
+        reasoning_content: Option<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Self {
+        Self {
+            role: ChatRole::Assistant,
+            content: content.into(),
+            reasoning_content,
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
+            images: vec![],
+        }
+    }
+
     pub fn tool(content: impl Into<String>, tool_call_id: impl Into<String>) -> Self {
         Self {
             role: ChatRole::Tool,

@@ -69,24 +69,34 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 `TurnRunner`，差异只在循环模式（策略）；mount 向各 agent 注入
 （`set_loop_runner` + `set_use_echo_loop`），全部卸载才复位（回退内置循环）。
 
-**注入的生效口径**（按当前实现）：组合根按人格分发依赖进程级 `AgentManager`，
-而它注册于插件挂载**之后**——
+**注入的生效口径**（2026-10 接线后）：三条路径覆盖全部人格生命周期——
 
-- **启动期**：挂载闭包的按人格注入无对象可及（`for_each_agent` 为 no-op），
-  启动加载的人格 `use_echo_loop` 保持 false——普通输入由内置循环处理；
-- **运行期**：对循环插件停/再启（`TogglePlugin`；已启用状态下重复启用为
-  幂等 no-op）触发挂载闭包，对全部运行中人格注入生效；运行期新建人格不经
-  该路径（保持内置循环）。
+- **启动期**：loop.* 插件的 mount 闭包依赖的进程级 `AgentManager` 在挂载时
+  尚未注册（`for_each_agent` 为 no-op），因此组合根在**人格启动循环**
+  （`apply_capabilities` 之后）按注册表启用态**回填注入**——任一 loop 插件
+  启用即注入；供 `disabled_plugins` 禁用的部署保持内置循环；
+- **运行期开关**：对循环插件停/再启（`TogglePlugin`）触发挂载闭包/卸载
+  Disposer——停用（两者都卸载）时统一回退内置循环；
+- **运行期新建人格**：`set_agent_factory` 的包装按同一注册表启用态注入
+  （此前新建人格不经该路径）。
 
-（注：启动期即注入尚未接线。）
+**注入生效后**的分派规则（`process_message_inner` 开头）：
 
 **注入生效后**的分派规则（`process_message_inner` 开头）：
 
 - **普通输入**（非 QQ hook / 定时器 / QQ 会话）→ `process_via_echo_loop`：
   经 TurnRunner 的 turn/step 状态机 + `ToolPipeline` 执行；
-  `RunExtras` 携带工具 schema（模型可见）+ 推理回调（`on_reasoning` → 发
-  `AgentReasoning` 事件）；工具执行经 `block_in_place` 同步桥接 `run_tool`
-  （ToolCall/ToolResult 事件与事件日志与内置循环同路径）
+  `RunExtras` 携带工具 schema（模型可见）、推理回调（`on_reasoning` → 发
+  `AgentReasoning` 事件）、**每 turn 模型名**与 **ChatExecutor**（每 step
+  解析当前 provider/预算——运行期 persona API 切换即时生效）、turn 标识
+  （多分支并发时的事件归属）；工具执行经异步 `ToolExecutor` 直连 `run_tool`
+  （ToolCall/ToolResult 事件与事件日志与内置循环同路径），**超时守卫 +
+  turn 取消竞速**（在途工具可立即中止）、工具产出图片透传、成功 `send_*`
+  触发 visible_reply 抑制——与内置循环逐项同口径；
+  **UI 事件翻译**：`process_via_echo_loop` 订阅 runner 总线把
+  `AgentRequest`/`ModelResponse` 转发为 `LlmRequest`/`LlmResponse`，并直接
+  发 `AgentThinking`/`AgentCompleted`，写 `last_prompt_blocks`（/context
+  视图）——两条驱动对上屏事件完全同构
 - **QQ hook / 定时器 / QQ 会话** → 内置循环：边界语义（QQ 边界块、定时器
   回投）由内置循环注入；投递纪律由提示词与 qq-transport 技能引导（2026-09
   移除 send 工具声明校验与纠偏提醒），echo-loop 不接管。QQ 并发回复的细节见

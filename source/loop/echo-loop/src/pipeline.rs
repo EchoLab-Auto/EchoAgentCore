@@ -10,18 +10,26 @@ use std::sync::Arc;
 
 use echo_defs::message::ToolCall;
 
+use crate::runner::ToolOutcome;
+
 /// Outcome of a pipeline stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolPipelineResult {
     /// Continue to the next stage (or execute the tool).
     Continue,
     /// Stop the pipeline; the result as set by this listener is final.
-    ShortCircuit(String),
+    ShortCircuit(ToolOutcome),
 }
 
 /// One pipeline stage: sees the call, may rewrite/deny, delegates via
 /// `next()`. `next` returns the outcome of the remainder of the pipeline
 /// (including the tool execution itself for the last pre/post listener).
+///
+/// 当前实现注记（2026-10 巡检）：`next()` 为**同步决策句柄**——pre 阶段
+/// 调 `next()` 即"放行到后续阶段/执行"，但拿不到执行结果本身；post 阶段
+/// 调 `next()` 可取到工具结果并改写。审批/拒绝/审计/限流等典型中间件
+/// 语义完整；"pre 阶段内后处理执行结果"的完整 around 语义需要 async 管线
+/// 重设计——待有中间件真正需要时再动（机制已备，生产零中间件）。
 pub type PipelineStage =
     Arc<dyn Fn(&ToolCall, &dyn Fn() -> ToolPipelineResult) -> ToolPipelineResult + Send + Sync>;
 
@@ -61,8 +69,9 @@ impl ToolPipeline {
     pub async fn run<'a>(
         &self,
         call: &ToolCall,
-        execute: impl FnOnce()
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + 'a>>,
+        execute: impl FnOnce() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>,
+        >,
     ) -> ToolPipelineResult {
         // Pre stages: each may short-circuit before execution.
         let mut index = 0usize;
@@ -113,6 +122,7 @@ impl ToolPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runner::ToolOutcome;
 
     #[test]
     fn empty_pipeline_executes_tool() {
@@ -124,15 +134,18 @@ mod tests {
         };
         let result = tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(pipeline.run(&call, || Box::pin(async { "executed".to_string() })));
-        assert_eq!(result, ToolPipelineResult::ShortCircuit("executed".into()));
+            .block_on(pipeline.run(&call, || Box::pin(async { ToolOutcome::text("executed") })));
+        assert_eq!(
+            result,
+            ToolPipelineResult::ShortCircuit(ToolOutcome::text("executed"))
+        );
     }
 
     #[tokio::test]
     async fn pre_stage_can_short_circuit_before_execution() {
         let mut pipeline = ToolPipeline::new();
         pipeline.push_pre(Arc::new(|_call, _next| {
-            ToolPipelineResult::ShortCircuit("denied".into())
+            ToolPipelineResult::ShortCircuit(ToolOutcome::text("denied"))
         }));
         let call = ToolCall {
             id: "c1".into(),
@@ -140,11 +153,11 @@ mod tests {
             arguments: "{}".into(),
         };
         let result = pipeline
-            .run(&call, || Box::pin(async { "executed".to_string() }))
+            .run(&call, || Box::pin(async { ToolOutcome::text("executed") }))
             .await;
         assert_eq!(
             result,
-            ToolPipelineResult::ShortCircuit("denied".into()),
+            ToolPipelineResult::ShortCircuit(ToolOutcome::text("denied")),
             "pre stage short-circuits; tool never runs"
         );
     }
@@ -164,9 +177,12 @@ mod tests {
             arguments: "{}".into(),
         };
         let result = pipeline
-            .run(&call, || Box::pin(async { "executed".to_string() }))
+            .run(&call, || Box::pin(async { ToolOutcome::text("executed") }))
             .await;
-        assert_eq!(result, ToolPipelineResult::ShortCircuit("executed".into()));
+        assert_eq!(
+            result,
+            ToolPipelineResult::ShortCircuit(ToolOutcome::text("executed"))
+        );
         assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
     }
 
@@ -175,7 +191,7 @@ mod tests {
         let mut pipeline = ToolPipeline::new();
         pipeline.push_post(Arc::new(|_call, _| {
             // Rewrite: replace whatever the tool produced.
-            ToolPipelineResult::ShortCircuit("post-processed".into())
+            ToolPipelineResult::ShortCircuit(ToolOutcome::text("post-processed"))
         }));
         let call = ToolCall {
             id: "c1".into(),
@@ -183,11 +199,11 @@ mod tests {
             arguments: "{}".into(),
         };
         let result = pipeline
-            .run(&call, || Box::pin(async { "raw".to_string() }))
+            .run(&call, || Box::pin(async { ToolOutcome::text("raw") }))
             .await;
         assert_eq!(
             result,
-            ToolPipelineResult::ShortCircuit("post-processed".into())
+            ToolPipelineResult::ShortCircuit(ToolOutcome::text("post-processed"))
         );
     }
 
@@ -213,7 +229,7 @@ mod tests {
         let _ = pipeline
             .run(&call, || {
                 order.lock().unwrap().push("execute");
-                Box::pin(async { "result".to_string() })
+                Box::pin(async { ToolOutcome::text("result") })
             })
             .await;
         assert_eq!(*order.lock().unwrap(), vec!["pre", "execute", "post"]);
