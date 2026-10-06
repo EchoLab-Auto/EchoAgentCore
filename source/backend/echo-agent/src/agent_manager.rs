@@ -259,6 +259,14 @@ impl AgentManager {
             );
         } else if !enabled && running {
             self.agents.write().unwrap().remove(id);
+        } else if enabled && running {
+            // 运行中保存：同步 RunningAgent.profile（2026-10 修复）。
+            // SaveTeam 已把新能力应用到运行中 agent，但这里此前不同步——
+            // 后续 ToggleTeam(id, true)（already running 分支跳过重建）
+            // 会用**旧 profile** 重应用能力，把新能力回滚掉（profile 漂移）。
+            if let Some(entry) = self.agents.write().unwrap().get_mut(id) {
+                entry.profile = profile;
+            }
         }
         self.persist_profiles()?;
         Ok(())

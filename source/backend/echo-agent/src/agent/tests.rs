@@ -511,6 +511,64 @@ async fn single_mode_serialises_turns_and_second_turn_sees_the_first_reply() {
     assert_eq!(history[3].content, "reply-2");
 }
 
+/// annotate_team 覆盖（2026-10 巡检）：带 team_id 字段的变体被标注；
+/// 无 team_id 字段的变体原样透传（不 panic、不变形）。
+#[test]
+fn annotate_team_stamps_covered_variants() {
+    use crate::event::BackendEvent;
+    let stamped = Agent::annotate_team_for(
+        BackendEvent::AgentThinking {
+            session_id: "local:tui::local_user".into(),
+            team_id: None,
+        },
+        Some("EchoCode".into()),
+    );
+    match stamped {
+        BackendEvent::AgentThinking { team_id, .. } => {
+            assert_eq!(
+                team_id.as_deref(),
+                Some("EchoCode"),
+                "AgentThinking 应被标注"
+            )
+        }
+        other => panic!("变体保持: {other:?}"),
+    }
+
+    // 无 team_id 字段的变体：原样透传。
+    let passthrough = Agent::annotate_team_for(
+        BackendEvent::FederationInvite {
+            invite: "echofed://x#t".into(),
+        },
+        Some("EchoCode".into()),
+    );
+    match passthrough {
+        BackendEvent::FederationInvite { invite } => {
+            assert_eq!(invite, "echofed://x#t")
+        }
+        other => panic!("变体保持: {other:?}"),
+    }
+
+    // team 为 None（__core 服务代理）时：显式置 None（与 emit 同口径）。
+    let none_team = Agent::annotate_team_for(
+        BackendEvent::ToolResult {
+            session_id: "s".into(),
+            team_id: Some("stale".into()),
+            tool_name: "t".into(),
+            result: "r".into(),
+            tool_call_id: String::new(),
+            timed_out: false,
+            branch_id: String::new(),
+        },
+        None,
+    );
+    match none_team {
+        BackendEvent::ToolResult { team_id, .. } => {
+            assert_eq!(team_id, None, "None team 覆盖旧值")
+        }
+        other => panic!("变体保持: {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn single_mode_runs_cross_session_turns_in_parallel() {
     // 2026-10 修复回归：Single 模式的 turn 闸门必须**按会话**——此前是

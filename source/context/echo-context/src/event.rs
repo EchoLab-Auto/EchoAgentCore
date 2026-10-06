@@ -100,22 +100,24 @@ impl EventBus {
             + 'static,
     {
         let key = TypeId::of::<E>();
-        let mut guard = self.listeners.write().expect("event bus poisoned");
-        let listeners = guard.entry(key).or_default();
-        let index = listeners.len();
-        listeners.push(Arc::new(Listener {
+        let listener: Arc<dyn ErasedListener> = Arc::new(Listener {
             f,
             _marker: std::marker::PhantomData,
-        }));
+        });
+        let registered = Arc::clone(&listener);
+        let mut guard = self.listeners.write().expect("event bus poisoned");
+        let listeners = guard.entry(key).or_default();
+        listeners.push(listener);
         drop(guard);
 
         let bus = self.clone();
         Disposer::from_fn(move || {
             let mut guard = bus.listeners.write().expect("event bus poisoned");
             if let Some(listeners) = guard.get_mut(&key) {
-                if index < listeners.len() {
-                    listeners.remove(index);
-                }
+                // 按**指针相等**删除（2026-10 修复）：此前按注册时 index——
+                // 先 dispose 前项会让后续项 index 位移，导致后项删不掉
+                // （泄漏）或误删他项（A 删后 B 的旧 index 恰好指向 C）。
+                listeners.retain(|l| !Arc::ptr_eq(l, &registered));
                 if listeners.is_empty() {
                     guard.remove(&key);
                 }
@@ -337,5 +339,55 @@ mod tests {
         }
         let event = bus.emit(Ping { hits: 0 }, DispatchMode::Observe).await;
         assert_eq!(event.hits, 0);
+    }
+
+    /// 乱序 dispose（2026-10 修复回归）：先删前项后，后项的 Disposer 必须
+    /// 仍删掉**自己**——此前按注册时 index 删除会删不掉（泄漏）或误删他项。
+    #[tokio::test]
+    async fn listeners_dispose_correctly_out_of_order() {
+        let bus = bus();
+        let d1 = bus.observe::<Ping, _>(|e| e.hits += 1);
+        let d2 = bus.observe::<Ping, _>(|e| e.hits += 10);
+        let d3 = bus.observe::<Ping, _>(|e| e.hits += 100);
+
+        // 逆序 dispose：先删 d3（末项），再删 d1（首项），再删 d2。
+        drop(d3);
+        let mid = bus.emit(Ping { hits: 0 }, DispatchMode::Observe).await;
+        assert_eq!(mid.hits, 11, "d3 gone, d1+d2 remain");
+
+        drop(d1);
+        let after_d1 = bus.emit(Ping { hits: 0 }, DispatchMode::Observe).await;
+        assert_eq!(
+            after_d1.hits, 10,
+            "d1 gone; d2 must still fire (previously mis-removed d3-shifted slot)"
+        );
+
+        drop(d2);
+        let empty = bus.emit(Ping { hits: 0 }, DispatchMode::Observe).await;
+        assert_eq!(
+            empty.hits, 0,
+            "all disposers must remove exactly their own listener"
+        );
+    }
+
+    /// 错位形态（A 删后 B 的旧 index 指向 C）：三个监听器删中间与首项的组合。
+    #[tokio::test]
+    async fn listener_index_shift_does_not_misremove() {
+        let bus = bus();
+        let d1 = bus.observe::<Ping, _>(|e| e.hits += 1);
+        let d2 = bus.observe::<Ping, _>(|e| e.hits += 10);
+        let d3 = bus.observe::<Ping, _>(|e| e.hits += 100);
+
+        // 删首项（此前会让 d2 的 index=1 转而指向 d3）。
+        drop(d1);
+        // 此刻 d2/d3 都应存活。
+        let mid = bus.emit(Ping { hits: 0 }, DispatchMode::Observe).await;
+        assert_eq!(mid.hits, 110, "d2+d3 remain after removing d1");
+
+        // 再删中间项（此前 d3 会被 d2 的旧 index 误删）。
+        drop(d2);
+        let tail = bus.emit(Ping { hits: 0 }, DispatchMode::Observe).await;
+        assert_eq!(tail.hits, 100, "d3 must survive d2's disposal");
+        drop(d3);
     }
 }

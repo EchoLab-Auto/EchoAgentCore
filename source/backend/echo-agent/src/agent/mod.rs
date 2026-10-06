@@ -707,15 +707,17 @@ impl Agent {
     /// annotate_team + 总线 + 汇聚点）。
     pub fn emit_handle(&self) -> std::sync::Arc<dyn Fn(BackendEvent) + Send + Sync> {
         // 安全前提：Agent 本身以 Arc 持有于进程级（supervisor/manager），
-        // 其生命周期 ≥ 任何借用它的命令处理。这里用 Weak 防循环。
+        // 其生命周期 ≥ 任何借用它的命令处理。在创建时快照出口。
         let bus = self.event_bus.clone();
         let sink = self.event_sink.read().ok().and_then(|g| g.clone());
         let handle = self.handle.try_read().ok().and_then(|g| g.clone());
         let team = self.team_id();
         std::sync::Arc::new(move |event| {
-            // annotate_team 的轻量版：核心服务代理 team 为 None 时事件
-            // 原样（联邦事件无会话归属，无需标注）。
-            let _ = &team;
+            // 与 emit 同口径（2026-10 修复）：此前本路径绕过 annotate_team
+            // 且留了 `let _ = &team` 死代码——经它发射的事件若携带会话归属
+            // 会静默漏标 team（Panel 按 team 过滤时串显）。现共享
+            // annotate_team_for（team 快照于创建时，与 sink/handle 一致）。
+            let event = Self::annotate_team_for(event, team.clone());
             bus.emit_sync(event.clone(), echo_context::DispatchMode::Observe);
             if let Some(sink) = &sink {
                 sink(event);
@@ -752,7 +754,12 @@ impl Agent {
 
     /// 为携带 session 的实时事件标注 team_id（本 agent 的 team id）。
     fn annotate_team(&self, event: BackendEvent) -> BackendEvent {
-        let team_id = self.team_id();
+        Self::annotate_team_for(event, self.team_id())
+    }
+
+    /// 把 `team_id` 标注进带会话归属的事件变体（emit 与 emit_handle
+    /// 共用；2026-10：emit_handle 此前绕过标注且有死代码）。
+    fn annotate_team_for(event: BackendEvent, team_id: Option<String>) -> BackendEvent {
         match event {
             BackendEvent::MessageReceived {
                 session_id,
