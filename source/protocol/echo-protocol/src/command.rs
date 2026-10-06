@@ -40,6 +40,11 @@ pub enum BackendCommand {
     },
     /// Switch to an API profile by name (empty = top-level default).
     SwitchApi { name: String },
+    /// 查询联邦远端节点的**脱敏**供应商池（分布式供应商共享，2026-10）：
+    /// 经 `Query(ApiProfiles)` 拉取，回 `RemoteApiProfiles` 事件
+    /// （provider/model/base_url/key_set——api_key 明文永不过线）。
+    /// Frontend-only 管理命令。
+    RequestRemoteApiProfiles { peer: String },
     /// Test connectivity of an API config: `name` empty = top-level default,
     /// otherwise that profile. Replies with `BackendEvent::ApiTestResult`.
     TestApi { name: String },

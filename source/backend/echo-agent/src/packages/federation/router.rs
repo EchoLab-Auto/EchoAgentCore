@@ -82,14 +82,17 @@ impl ExecutorPolicy {
     /// 查询授权：`node_status` 恒允许；其余需显式列出（`*` 全放行）。
     pub fn query_allowed(&self, kind: echo_federation::QueryKind) -> bool {
         use echo_federation::QueryKind;
-        if matches!(kind, QueryKind::NodeStatus) {
+        // NodeStatus 与 ApiProfiles 恒允许：前者无害遥测，后者只回脱敏
+        // 供应商元数据（key 明文永不过线）——分布式供应商发现需要
+        // 开箱可用（2026-10 分布式供应商共享设计）。
+        if matches!(kind, QueryKind::NodeStatus | QueryKind::ApiProfiles) {
             return true;
         }
         let key = match kind {
             QueryKind::SessionSnapshot => "session_snapshot",
             QueryKind::WorkspaceFiles => "workspace_files",
             QueryKind::WorkspaceGitStatus => "workspace_git_status",
-            QueryKind::NodeStatus => unreachable!(),
+            QueryKind::NodeStatus | QueryKind::ApiProfiles => unreachable!(),
         };
         self.allow_queries.iter().any(|q| q == "*" || q == key)
     }

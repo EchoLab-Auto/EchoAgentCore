@@ -213,6 +213,11 @@ pub enum QueryKind {
     /// 沙箱）。旧对端不认识本变体——externally-tagged 反序列化失败整帧
     /// 丢弃，大脑侧按「远程不可采集」降级（与旧行为一致）。
     WorkspaceGitStatus,
+    /// 供应商池查询（分布式共享，2026-10）：返回**脱敏**的
+    /// `[agent.api_profiles]`（provider/model/base_url/key_set 布尔——
+    /// **api_key 明文永不过线**，导入端需手动补填）。默认放行
+    /// （脱敏后无敏感信息），无需 allow_queries 显式开启。
+    ApiProfiles,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

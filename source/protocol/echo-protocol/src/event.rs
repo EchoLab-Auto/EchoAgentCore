@@ -607,6 +607,17 @@ pub enum BackendEvent {
         profiles: Vec<ApiProfileInfo>,
     },
     /// API profile list changed (emitted together with ApiConfigUpdated).
+    /// 联邦远端节点的脱敏供应商池（`RequestRemoteApiProfiles` 响应；
+    /// 失败时 `profiles` 为空、`error` 带原因——peer 离线/旧版不识查询）。
+    RemoteApiProfiles {
+        peer: String,
+        #[serde(default)]
+        active: Option<serde_json::Value>,
+        #[serde(default)]
+        profiles: Vec<serde_json::Value>,
+        #[serde(default)]
+        error: Option<String>,
+    },
     ApiProfilesUpdated {
         active_api: String,
         profiles: Vec<ApiProfileInfo>,

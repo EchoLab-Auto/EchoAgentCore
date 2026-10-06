@@ -2146,6 +2146,48 @@ async fn handle_federation_query(
                 Err(e) => err(&format!("采集失败: {e}")),
             }
         }
+        QueryKind::ApiProfiles => {
+            // 供应商池**脱敏**返回（api_key 明文永不过线）：分布式
+            // 供应商发现/导入（2026-10）。含全局默认配置（active_api
+            // 视角）与各 profile；key_set 布尔指示该条目是否已配 key
+            // ——「哪个节点有什么供应商、哪个没配 key」开箱可见。
+            let agents = personas.personas();
+            let core_agent = agents.iter().find(|p| p.id == "__core").or(agents.first());
+            let Some(core_agent) = core_agent else {
+                return err("无可用 agent 读取供应商配置");
+            };
+            let cfg = core_agent.agent.api_config().await;
+            let mut resolved = cfg.clone();
+            resolved.apply_active_profile();
+            let active = serde_json::json!({
+                "name": cfg.active_api,
+                "provider": resolved.provider,
+                "model": resolved.model,
+                "base_url": resolved.base_url,
+                "key_set": !resolved.effective_api_key().is_empty(),
+                "thinking": resolved.thinking,
+                "reasoning_effort": resolved.reasoning_effort,
+            });
+            let profiles: Vec<serde_json::Value> = cfg
+                .api_profiles
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "name": p.name,
+                        "provider": p.provider,
+                        "model": p.model,
+                        "base_url": p.base_url,
+                        "key_set": !p.api_key.is_empty(),
+                        "thinking": p.thinking,
+                        "reasoning_effort": p.reasoning_effort,
+                    })
+                })
+                .collect();
+            ok(serde_json::json!({
+                "active": active,
+                "profiles": profiles,
+            }))
+        }
         QueryKind::SessionSnapshot => {
             // 会话归属解析：`node://` 前缀剥离按本机处理。
             // team_id 非空时**只查该 persona**（同名会话如

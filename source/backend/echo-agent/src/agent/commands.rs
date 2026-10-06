@@ -349,6 +349,42 @@ impl Agent {
             BackendCommand::SwitchApi { name } => {
                 self.switch_api(&name).await;
             }
+            BackendCommand::RequestRemoteApiProfiles { peer } => {
+                // 分布式供应商共享（2026-10）：经联邦拉远端**脱敏**供应商
+                // 池回传前端；peer 离线/旧版不识查询时 error 带原因。
+                let result = match crate::federation::remote_querier() {
+                    Some(querier) => {
+                        querier(
+                            peer.clone(),
+                            echo_federation::QueryKind::ApiProfiles,
+                            String::new(),
+                        )
+                        .await
+                    }
+                    None => Err("联邦未接线：远程供应商查询不可用".into()),
+                };
+                match result {
+                    Ok(payload) => {
+                        self.emit(BackendEvent::RemoteApiProfiles {
+                            peer,
+                            active: payload.get("active").cloned(),
+                            profiles: payload
+                                .get("profiles")
+                                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                                .unwrap_or_default(),
+                            error: None,
+                        });
+                    }
+                    Err(message) => {
+                        self.emit(BackendEvent::RemoteApiProfiles {
+                            peer,
+                            active: None,
+                            profiles: Vec::new(),
+                            error: Some(message),
+                        });
+                    }
+                }
+            }
             BackendCommand::TestApi { name } => {
                 self.test_api_config(&name).await;
             }
