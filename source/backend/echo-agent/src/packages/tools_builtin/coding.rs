@@ -480,7 +480,11 @@ const REMOTE_TIMEOUT_HINT: std::time::Duration = std::time::Duration::from_secs(
 fn parse_node_path(raw: &str) -> Option<Result<(String, String), String>> {
     let rest = raw.strip_prefix("node://")?;
     Some(match rest.split_once('/') {
-        Some((peer, path)) if !peer.is_empty() => Ok((peer.to_string(), format!("/{path}"))),
+        // 重复斜杠归一（`node://peer//srv` → `/srv`，2026-10）。
+        Some((peer, path)) if !peer.is_empty() => Ok((
+            peer.to_string(),
+            format!("/{}", path.trim_start_matches('/')),
+        )),
         _ => Err("node:// 路径需形如 node://<peer>/<绝对路径>".into()),
     })
 }
@@ -1335,6 +1339,11 @@ mod tests {
             .expect("valid form");
         assert_eq!(peer, "gpu-box");
         assert_eq!(path, "/srv/repo/src/main.rs");
+        // 重复斜杠归一：node://peer//srv → /srv（2026-10）
+        let (_, path) = parse_node_path("node://gpu-box//srv/repo")
+            .expect("node:// detected")
+            .expect("valid form");
+        assert_eq!(path, "/srv/repo");
         // 形态非法：缺路径段 / 空 peer 名。
         assert!(parse_node_path("node://gpu-box").unwrap().is_err());
         assert!(parse_node_path("node:///x").unwrap().is_err());
