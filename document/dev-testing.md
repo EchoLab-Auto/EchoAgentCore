@@ -14,9 +14,9 @@ y: 1000
 **Core（cargo）** 700+ 条、**Panel 前端（vitest）** 200+ 条、**部署 CLI（node:test）**
 27 条，覆盖各 crate 的源文件与关键交互契约（计数随开发增长，量级为本文件维护基线）。
 
-## Layers
+## 测试分层
 
-### 1. Unit tests (`#[test]` / `#[tokio::test]`)
+### 单元测试（`#[test]` / `#[tokio::test]`）
 Located next to the code in `#[cfg(test)] mod tests` blocks.
 
 - **Protocol** (echo-core): OneBot event parsing for every variant family
@@ -65,7 +65,7 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **QQ 表情渲染** (echo-core + adapter): face id → 名称对照表有序性/未知回退、
   `readable_text` 混合渲染（`[表情:呲牙]`、`[骰子:6]`、纯表情消息不再整条丢弃）。
 
-### 2. Property tests (proptest)
+### 属性测试（proptest）
 Generated inputs that must satisfy invariants:
 
 - `SessionKey` round-trip for arbitrary field values.
@@ -74,7 +74,7 @@ Generated inputs that must satisfy invariants:
   Unicode text (quotes, control chars, CJK).
 - Rich segment (multi-message) round-trips.
 
-### 3. Integration tests (`tests/` dirs)
+### 集成测试（`tests/` 目录）
 
 - `echo-server/tests/reverse_ws.rs` — real WS server + raw WebSocket client:
   event dispatch → handler → action → response correlation, token rejection,
@@ -96,7 +96,7 @@ Generated inputs that must satisfy invariants:
 - `echo-web-server/tests/media.rs`（Panel 仓库）— `/media/{name}` 路由端到端：
   文件字节与 Content-Type 正确、`immutable` 强缓存头、目录穿越 / 未知文件 404。
 
-### 4. Concurrency tests
+### 并发测试
 
 Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
 
@@ -106,7 +106,7 @@ Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
   with a slow (50 ms) provider produce non-interleaved history
   (single 模式 `turn_queue` 排队闸门串行化，按 role order 验证).
 
-### 5. 面板前端与部署 CLI（非 cargo）
+### 面板前端与部署 CLI（非 cargo）
 
 - **Panel web（vitest + @vue/test-utils，208 条）**：`ChatView` 图片渲染契约
   （`/media/<id>` 懒加载 / 空串省略占位 / data URI 兼容）、设置视图技能/工具/插件
@@ -120,7 +120,7 @@ Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
   == panel.toml 的 `media_dir`、NapCat 容器名一致、生效配置行不得出现 localhost、
   `docker compose config` 语法校验）。无第三方依赖，CI 直接 `npm test`。
 
-## Mocks & fixtures
+## Mock 与夹具
 
 - `echo-test-utils` crate (dev-only): `MockAdapter` for registry/tool tests,
   `temp_config_file` helper. Deliberately does **not** depend on echo-agent
@@ -130,7 +130,7 @@ Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
   `ScriptedProvider`) live inside echo-agent's test module and the agent
   integration tests.
 
-## Quality gates (CI)
+## 质量门禁（CI）
 
 ```bash
 cargo test --workspace
