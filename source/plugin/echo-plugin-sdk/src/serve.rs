@@ -107,6 +107,13 @@ where
     }
 
     // 3) Welcome + Register + Ready（顺序入队；单写者保证线上顺序）。
+    //    实例 id：显式选项非空则覆盖；否则回显宿主 Hello 的 plugin_id
+    //    （实例身份由宿主掌握，插件零配置）。
+    let effective_plugin_id = if options.plugin_id.is_empty() {
+        hello.plugin_id.clone()
+    } else {
+        options.plugin_id.clone()
+    };
     let contributions = handler.contributions();
     let registered: Arc<HashSet<String>> = Arc::new(
         contributions
@@ -119,14 +126,14 @@ where
         &PluginToHost::Welcome(Welcome {
             protocol: PROTOCOL_NAME.to_string(),
             version: PROTOCOL_VERSION,
-            plugin_id: options.plugin_id.clone(),
+            plugin_id: effective_plugin_id.clone(),
             capabilities: options.capabilities.clone(),
         }),
     )?;
     enqueue(&tx, &PluginToHost::Register(Register { contributions }))?;
     enqueue(&tx, &PluginToHost::Ready)?;
     tracing::debug!(
-        plugin_id = %options.plugin_id,
+        plugin_id = %effective_plugin_id,
         contributions = registered.len(),
         "handshake complete"
     );

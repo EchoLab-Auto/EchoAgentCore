@@ -113,7 +113,12 @@ pub fn plugin_id() -> String {
 /// 服务选项（[`serve_stdio_with`] / [`serve_io_with`]）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServeOptions {
-    /// `Welcome` 自报插件 id；缺省 [`plugin_id()`]。
+    /// `Welcome` 自报插件 id。
+    ///
+    /// **缺省空串 = 回显宿主 Hello 的 `plugin_id`**（实例身份由宿主掌握，
+    /// 插件零配置即可）；非空 = 显式覆盖（与宿主不一致会被宿主拒绝，
+    /// 该检查用于抓配置错误）。`ECHO_PLUGIN_ID` 环境变量提供 `plugin_id()`
+    /// 辅助值，供需要自主身份的插件使用。
     pub plugin_id: String,
     /// `Welcome` 能力列表；缺省 `["tools", "cancel"]`（双方都声明才可用）。
     pub capabilities: Vec<String>,
@@ -122,7 +127,8 @@ pub struct ServeOptions {
 impl Default for ServeOptions {
     fn default() -> Self {
         Self {
-            plugin_id: plugin_id(),
+            // 空 = 回显宿主 Hello 的 plugin_id（见字段文档）。
+            plugin_id: String::new(),
             capabilities: vec![
                 capabilities::TOOLS.to_string(),
                 capabilities::CANCEL.to_string(),

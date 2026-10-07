@@ -399,3 +399,26 @@ async fn serve_options_override_id_and_capabilities() {
     let _ = recv(&mut session).await; // Ready
     shutdown_and_assert_clean(session).await;
 }
+
+/// 缺省选项（plugin_id 为空）= 回显宿主 Hello 的 plugin_id——插件零配置，
+/// 实例身份由宿主掌握（与 supervisor 的 plugin_id 一致性校验天然吻合）。
+#[tokio::test]
+async fn default_options_echo_host_assigned_plugin_id() {
+    let mut session = start_session(); // ServeOptions::default()：plugin_id 为空
+    let mut custom_hello = hello(PROTOCOL_VERSION);
+    if let HostToPlugin::Hello(ref mut h) = custom_hello {
+        h.plugin_id = "host-assigned-id".to_string();
+    }
+    send(&mut session, custom_hello).await;
+
+    match recv(&mut session).await {
+        PluginToHost::Welcome(welcome) => {
+            assert_eq!(welcome.plugin_id, "host-assigned-id");
+        }
+        other => panic!("expected Welcome, got {other:?}"),
+    }
+
+    let _ = recv(&mut session).await; // Register
+    let _ = recv(&mut session).await; // Ready
+    shutdown_and_assert_clean(session).await;
+}
