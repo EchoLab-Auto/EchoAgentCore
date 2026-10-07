@@ -355,23 +355,19 @@ impl AgentManager {
 
 /// Process-wide manager & factory slots.
 ///
-/// ⚠️ MUST be module-level statics: function-local `static` items in Rust are
-/// **per-function instances**, so a setter and a getter declared in separate
-/// functions would refer to different statics and the value would never be
-/// visible. (This exact bug made SaveAgent report "agent manager unavailable".)
-static GLOBAL_MANAGER: std::sync::OnceLock<std::sync::Arc<AgentManager>> =
-    std::sync::OnceLock::new();
-static AGENT_FACTORY: std::sync::OnceLock<AgentFactory> = std::sync::OnceLock::new();
-
+/// 存储收敛于 `echo_context::kernel`（P1 唯一引导单元；原为模块级
+/// 静态槽位）。注意：函数局部项在 Rust 中是**每函数一份**的独立实例，
+/// setter/getter 分处两个函数时会互不可见（历史 bug：SaveAgent 报
+/// "agent manager unavailable"）——单例必须走 kernel cell。
 /// Process-wide AgentManager (best-effort): set once by the composition root.
 /// Lets any Agent read the persona list (e.g. RequestAgentsList) without a
 /// direct dependency on the manager instance.
 pub fn global_manager() -> Option<std::sync::Arc<AgentManager>> {
-    GLOBAL_MANAGER.get().cloned()
+    echo_context::kernel::get::<std::sync::Arc<AgentManager>>()
 }
 
 pub fn set_global_manager(manager: std::sync::Arc<AgentManager>) {
-    let _ = GLOBAL_MANAGER.set(manager);
+    let _ = echo_context::kernel::set(manager);
 }
 
 /// Process-wide agent factory (set once by the composition root). Used by
@@ -379,7 +375,7 @@ pub fn set_global_manager(manager: std::sync::Arc<AgentManager>) {
 pub fn set_agent_factory(
     factory: impl Fn(String, TeamMember) -> Arc<Agent> + Send + Sync + 'static,
 ) {
-    let _ = AGENT_FACTORY.set(AgentFactory {
+    let _ = echo_context::kernel::set(AgentFactory {
         inner: std::sync::Arc::new(factory),
     });
 }
@@ -400,9 +396,7 @@ impl AgentFactory {
 
 /// Retrieve the registered factory (panics with a clear message when unset).
 pub fn agent_factory_for_toggle() -> AgentFactory {
-    AGENT_FACTORY
-        .get()
-        .cloned()
+    echo_context::kernel::get::<AgentFactory>()
         .unwrap_or_else(|| panic!("agent factory not set by composition root"))
 }
 

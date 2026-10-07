@@ -30,11 +30,8 @@ pub type RemoteSubagentNotifier = std::sync::Arc<
     dyn Fn(&str, &str, &str, Option<u64>, SubagentStatus, Option<String>) + Send + Sync,
 >;
 
-static REMOTE_SUBAGENT_NOTIFIER: std::sync::OnceLock<RemoteSubagentNotifier> =
-    std::sync::OnceLock::new();
-
 pub fn set_remote_subagent_notifier(notifier: RemoteSubagentNotifier) {
-    let _ = REMOTE_SUBAGENT_NOTIFIER.set(notifier);
+    let _ = echo_context::kernel::set(notifier);
 }
 
 /// 通知对端远程子任务状态（联邦关闭时 no-op）。
@@ -52,7 +49,7 @@ pub fn notify_remote_subagent(
     if !matches!(status, SubagentStatus::Running) {
         if let Some(summary) = aggregator::settle_remote_subagent(call_id, status, result.clone()) {
             // 聚合摘要投递经组合根出口（进程级；未装配时摘要仅记日志）。
-            if let Some(deliver) = AGGREGATE_DELIVER.get() {
+            if let Some(deliver) = echo_context::kernel::get::<AggregateDeliver>() {
                 deliver(summary);
             } else {
                 tracing::info!(
@@ -62,7 +59,7 @@ pub fn notify_remote_subagent(
             }
         }
     }
-    if let Some(notify) = REMOTE_SUBAGENT_NOTIFIER.get() {
+    if let Some(notify) = echo_context::kernel::get::<RemoteSubagentNotifier>() {
         notify(peer, call_id, task, timeout_secs, status, result);
     }
 }
@@ -72,11 +69,9 @@ pub fn notify_remote_subagent(
 /// 不可达）。
 pub type AggregateDeliver = std::sync::Arc<dyn Fn(aggregator::AggregateSummary) + Send + Sync>;
 
-static AGGREGATE_DELIVER: std::sync::OnceLock<AggregateDeliver> = std::sync::OnceLock::new();
-
 /// 装配期注入聚合摘要投递出口（重复调用保留首个）。
 pub fn set_aggregate_deliver(deliver: AggregateDeliver) {
-    let _ = AGGREGATE_DELIVER.set(deliver);
+    let _ = echo_context::kernel::set(deliver);
 }
 
 // ── P3-1：跨机文件协作分流出口 ──
@@ -103,16 +98,14 @@ pub type RemoteInvoker = std::sync::Arc<
         + Sync,
 >;
 
-static REMOTE_INVOKER: std::sync::OnceLock<RemoteInvoker> = std::sync::OnceLock::new();
-
 /// 装配期注入远程文件调用出口（重复调用保留首个，与 notifier 同约定）。
 pub fn set_remote_invoker(invoker: RemoteInvoker) {
-    let _ = REMOTE_INVOKER.set(invoker);
+    let _ = echo_context::kernel::set(invoker);
 }
 
 /// 当前远程文件调用出口（None = 联邦未接线）。
 pub fn remote_invoker() -> Option<RemoteInvoker> {
-    REMOTE_INVOKER.get().cloned()
+    echo_context::kernel::get::<RemoteInvoker>()
 }
 
 /// 远程**只读查询**发起函数（Query 版 RemoteInvoker，跨机工作区用）：
@@ -129,16 +122,14 @@ pub type RemoteQuerier = std::sync::Arc<
         + Sync,
 >;
 
-static REMOTE_QUERIER: std::sync::OnceLock<RemoteQuerier> = std::sync::OnceLock::new();
-
 /// 组合根装配联邦时注入一次（与 [`set_remote_invoker`] 同装配点）。
 pub fn set_remote_querier(querier: RemoteQuerier) {
-    let _ = REMOTE_QUERIER.set(querier);
+    let _ = echo_context::kernel::set(querier);
 }
 
 /// 取当前远程查询出口（None = 联邦未接线）。
 pub fn remote_querier() -> Option<RemoteQuerier> {
-    REMOTE_QUERIER.get().cloned()
+    echo_context::kernel::get::<RemoteQuerier>()
 }
 
 /// 联邦沙箱：绝对路径是否落在给定工作区根并集内（canonicalize 后按

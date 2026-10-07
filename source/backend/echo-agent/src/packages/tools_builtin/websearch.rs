@@ -3,8 +3,6 @@
 //! Uses the public `cn.bing.com/search?format=rss` endpoint (reachable from
 //! mainland networks) and parses the returned RSS items.
 
-use std::sync::OnceLock;
-
 use async_trait::async_trait;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -83,14 +81,17 @@ struct SearchResult {
 }
 
 fn client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
+    // 进程级单例存储收敛于 kernel cell（唯一引导单元）；初值只构造一次
+    // （Box::leak 一次，生命周期与旧的进程级存储一致）。
+    echo_context::kernel::get_or_init(|| {
+        let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::limited(5))
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
             .build()
-            .expect("failed to build reqwest client for web_search")
+            .expect("failed to build reqwest client for web_search");
+        let leaked: &'static reqwest::Client = Box::leak(Box::new(client));
+        leaked
     })
 }
 

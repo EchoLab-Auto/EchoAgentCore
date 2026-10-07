@@ -15,14 +15,23 @@
 /// 组合根启动时注入；`SessionInfo`/`TeamInfo` 等线格式携带它们，供多节点
 /// 聚合客户端区分同名会话/人格（每个 Core 的 `local:tui::local_user`、
 /// `default` 都可能相同），并把"agent 运行在哪个区域"作为一等属性。
-static NODE_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-static REGION_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+///
+/// 存储收敛于 [`echo_context::kernel`]（P1 唯一引导单元）：身份两字段
+/// 合并为单一 [`NodeIdentity`]，首次写入生效。
+#[derive(Clone)]
+struct NodeIdentity {
+    id: &'static str,
+    region: &'static str,
+}
 
 /// 注入本进程的节点身份与区域名（幂等；仅首次生效）。`region_id` 恒为
 /// NodeId；`region_name` 是人类可读展示名（可为空串）。
 pub fn set_region(node_id: String, region_name: String) {
-    let _ = NODE_ID.set(node_id);
-    let _ = REGION_NAME.set(region_name);
+    // 进程级存储要求 'static：两个 String 每次调用各泄漏一次，生命周期
+    // 与旧的一次性静态槽位一致。
+    let id: &'static str = Box::leak(node_id.into_boxed_str());
+    let region: &'static str = Box::leak(region_name.into_boxed_str());
+    let _ = echo_context::kernel::set(NodeIdentity { id, region });
 }
 
 /// 注入本进程的节点身份（等价 `set_region(id, "")`）。
@@ -32,15 +41,14 @@ pub fn set_node_id(id: String) {
 
 /// 本进程的节点身份 / 区域 id（未注入 = None，旧/嵌入式用法）。
 pub fn node_id() -> Option<&'static str> {
-    NODE_ID.get().map(|s| s.as_str())
+    echo_context::kernel::get::<NodeIdentity>().map(|identity| identity.id)
 }
 
 /// 本进程的"运行区域"展示名（未注入或为空 = None）。
 pub fn region_name() -> Option<&'static str> {
-    REGION_NAME
-        .get()
-        .map(|s| s.as_str())
-        .filter(|s| !s.is_empty())
+    echo_context::kernel::get::<NodeIdentity>()
+        .map(|identity| identity.region)
+        .filter(|region| !region.is_empty())
 }
 
 pub mod agent;

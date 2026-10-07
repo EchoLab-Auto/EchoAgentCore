@@ -21,6 +21,7 @@
 
 mod ctx;
 mod event;
+pub mod kernel;
 mod scope;
 mod service_key;
 

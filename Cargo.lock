@@ -380,6 +380,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "echo-adapter",
+ "echo-context",
  "echo-core",
  "echo-defs",
  "echo-server",

@@ -424,21 +424,19 @@ fn describe_files(files: &[IncomingFile]) -> String {
 /// 单张图片最大下载体积；超出则保留原 URL（链路上以文本占位降级）。
 const MAX_EMBEDDED_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 
-/// Shared HTTP client for image downloads (built once).
+/// Shared HTTP client for image downloads (built once；存储收敛于
+/// [`echo_context::kernel`]）。
 fn image_client() -> reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .build()
-                .unwrap_or_else(|error| {
-                    tracing::warn!(%error, "reqwest builder failed, using client without timeouts");
-                    reqwest::Client::new()
-                })
-        })
-        .clone()
+    echo_context::kernel::get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "reqwest builder failed, using client without timeouts");
+                reqwest::Client::new()
+            })
+    })
 }
 
 /// 把消息里的远程图片 URL 逐个下载并落盘，改写为 `/media/<id>` 引用；

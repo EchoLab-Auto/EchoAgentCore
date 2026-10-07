@@ -1,7 +1,5 @@
 //! Built-in tools (platform-independent).
 
-use std::sync::OnceLock;
-
 use regex::Regex;
 
 use crate::tool::ToolError;
@@ -22,8 +20,7 @@ pub mod websearch;
 /// `systemctl restart` is safe because systemd owns the restart job even if the
 /// caller is terminated.
 pub(crate) fn reject_core_self_stop(command: &str) -> Result<(), ToolError> {
-    static SELF_STOP_RE: OnceLock<Regex> = OnceLock::new();
-    let regex = SELF_STOP_RE.get_or_init(|| {
+    let regex = echo_context::kernel::get_or_init::<Regex>(|| {
         Regex::new(
             r#"(?im)(?:^|[;&|]\s*|(?:ba)?sh\s+-[A-Za-z]*c\b\s*['\"]?\s*)\s*(?:sudo\s+)?(?:command\s+)?(?:/usr/bin/)?systemctl\b[^\n;&|]*\b(?:stop|kill)\b[^\n;&|]*\becho-agent-core(?:\.service)?\b"#,
         )

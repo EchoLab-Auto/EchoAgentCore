@@ -523,29 +523,23 @@ impl ShellManager {
     }
 }
 
-/// 进程级 ShellManager 锚点（组合根设置一次）。
-static GLOBAL_SHELL: std::sync::OnceLock<Arc<ShellManager>> = std::sync::OnceLock::new();
-
+/// 进程级 ShellManager 锚点（组合根设置一次；存储收敛于
+/// [`echo_context::kernel`]）。
 pub fn shell_manager_global() -> Option<Arc<ShellManager>> {
-    GLOBAL_SHELL.get().cloned()
+    echo_context::kernel::get::<Arc<ShellManager>>()
 }
 
 pub fn set_shell_manager_global(mgr: Arc<ShellManager>) {
-    let _ = GLOBAL_SHELL.set(mgr);
+    let _ = echo_context::kernel::set(mgr);
 }
 
 /// 组合根注入的 emit 回调（接到默认 agent 的 handle，广播到 Panel）。
-static SHELL_EMIT: std::sync::OnceLock<ShellEmit> = std::sync::OnceLock::new();
-
 pub fn set_shell_emit(emit: ShellEmit) {
-    let _ = SHELL_EMIT.set(emit);
+    let _ = echo_context::kernel::set(emit);
 }
 
 pub fn shell_emit() -> ShellEmit {
-    SHELL_EMIT
-        .get()
-        .cloned()
-        .unwrap_or_else(|| Arc::new(|_| {}))
+    echo_context::kernel::get::<ShellEmit>().unwrap_or_else(|| Arc::new(|_| {}))
 }
 
 /// 由调用方提供翻译回调的工厂。

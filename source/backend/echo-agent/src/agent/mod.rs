@@ -168,15 +168,13 @@ impl std::fmt::Debug for Agent {
 /// Process-wide plugin host (best-effort): set once by the composition root.
 /// Lets gating checks resolve the global registry from code that runs inside
 /// the agent but outside a `&Agent` scope (see `plugin_globally_enabled`).
-static GLOBAL_PLUGIN_HOST: std::sync::OnceLock<std::sync::Arc<crate::plugins::PluginHost>> =
-    std::sync::OnceLock::new();
-
+/// 存储收敛于 [`echo_context::kernel`]（P1 唯一引导单元）。
 pub fn plugin_host_global() -> Option<std::sync::Arc<crate::plugins::PluginHost>> {
-    GLOBAL_PLUGIN_HOST.get().cloned()
+    echo_context::kernel::get::<std::sync::Arc<crate::plugins::PluginHost>>()
 }
 
 pub fn set_plugin_host_global(host: std::sync::Arc<crate::plugins::PluginHost>) {
-    let _ = GLOBAL_PLUGIN_HOST.set(host);
+    let _ = echo_context::kernel::set(host);
 }
 
 /// 进程级全局策略（`[agent]` 层的工具/技能启停）：全局开关不属于任何人格，
@@ -230,15 +228,12 @@ impl GlobalPolicy {
     }
 }
 
-static GLOBAL_POLICY: std::sync::OnceLock<std::sync::Arc<GlobalPolicy>> =
-    std::sync::OnceLock::new();
-
 pub fn global_policy() -> Option<std::sync::Arc<GlobalPolicy>> {
-    GLOBAL_POLICY.get().cloned()
+    echo_context::kernel::get::<std::sync::Arc<GlobalPolicy>>()
 }
 
 pub fn set_global_policy(policy: std::sync::Arc<GlobalPolicy>) {
-    let _ = GLOBAL_POLICY.set(policy);
+    let _ = echo_context::kernel::set(policy);
 }
 
 // ── 联邦命令处理器注册表（federation Phase 4）──
@@ -258,15 +253,12 @@ pub type FederationCommandHandler = std::sync::Arc<
 pub type FederationHandlerFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
 
-static FEDERATION_COMMAND_HANDLER: std::sync::OnceLock<FederationCommandHandler> =
-    std::sync::OnceLock::new();
-
 pub fn federation_command_handler() -> Option<FederationCommandHandler> {
-    FEDERATION_COMMAND_HANDLER.get().cloned()
+    echo_context::kernel::get::<FederationCommandHandler>()
 }
 
 pub fn set_federation_command_handler(handler: FederationCommandHandler) {
-    let _ = FEDERATION_COMMAND_HANDLER.set(handler);
+    let _ = echo_context::kernel::set(handler);
 }
 
 impl Agent {

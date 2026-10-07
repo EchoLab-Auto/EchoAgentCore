@@ -191,14 +191,11 @@ impl RemoteSubagentAggregator {
 // 登记点（subagent 包）与销账/投递点（core 组合根）分属不同 crate 层，
 // 经懒初始化的全局句柄解耦；联邦关闭时登记仍发生，但远程 spawn 本身
 // 就依赖联邦（无代理工具时子任务立即失败 → 终态销账 → 聚合照常闭合）。
-
-static AGGREGATOR: std::sync::OnceLock<Arc<RemoteSubagentAggregator>> = std::sync::OnceLock::new();
+// 存储收敛于 [`echo_context::kernel`]（P1 唯一引导单元）。
 
 /// 进程级聚合器句柄（首次调用惰性创建）。
 pub fn remote_aggregator() -> Arc<RemoteSubagentAggregator> {
-    AGGREGATOR
-        .get_or_init(RemoteSubagentAggregator::new)
-        .clone()
+    echo_context::kernel::get_or_init(RemoteSubagentAggregator::new)
 }
 
 /// 登记远程委派（`SpawnSubagentTool::spawn` 受理 `node=Some` 时调用）。
