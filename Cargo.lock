@@ -472,6 +472,7 @@ version = "0.1.0"
 dependencies = [
  "dashmap",
  "proptest",
+ "thiserror 2.0.20",
  "tokio",
 ]
 
@@ -581,6 +582,26 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "toml",
+]
+
+[[package]]
+name = "echo-plugin-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "echo-plugin-host"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "echo-plugin-api",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
