@@ -6,6 +6,8 @@
 //! - `Hello` → 回 `Welcome`（回显 protocol / version / plugin_id）+ `Register`
 //!   （注册名为 `echo` 的工具）+ `Ready`；
 //! - `Invoke` → 回 `InvokeResult`（文本 = `payload["text"]`，缺省回显整个 payload）；
+//!   - `payload = {"show_config": true}` → 回显最近一次 `Hello.config` 的 JSON
+//!     （供热替换用例断言「新实例已接管」）；
 //!   - `payload = {"crash": true}` → `std::process::exit(1)`（模拟崩溃）；
 //!   - `payload = {"hang": true}` → 不回结果（超时 / 取消用例）；
 //! - `Cancel` → 回 `Emit` 事件 `peer/cancel`（附 call_id），供宿主侧断言取消已送达；
@@ -39,6 +41,8 @@ fn main() {
     let split = std::env::args().any(|arg| arg == "--split-frames");
     let stay_alive = std::env::args().any(|arg| arg == "--stay-alive");
     let env_tag = std::env::var("ECHO_PLUGIN_TEST_PEER_TAG").ok();
+    // 最近一次 `Hello` 的 config（`show_config` 回显用）。
+    let mut config = Value::Null;
 
     let stdin = io::stdin();
     let mut reader = stdin.lock();
@@ -58,6 +62,7 @@ fn main() {
         };
         match msg {
             HostToPlugin::Hello(hello) => {
+                config = hello.config.clone();
                 on_hello(&mut writer, &hello, split);
                 if let Some(tag) = &env_tag {
                     let payload = json!({
@@ -82,6 +87,21 @@ fn main() {
                 }
                 if invoke.payload.get("hang").and_then(Value::as_bool) == Some(true) {
                     continue; // 挂起：不回结果（等待宿主 Cancel）
+                }
+                if invoke.payload.get("show_config").and_then(Value::as_bool) == Some(true) {
+                    // 回显最近一次 Hello.config：热替换用例据此区分新旧实例。
+                    send(
+                        &mut writer,
+                        &PluginToHost::InvokeResult(InvokeResult {
+                            call_id: invoke.call_id.clone(),
+                            outcome: InvokeOutcome::Ok {
+                                text: config.to_string(),
+                                images: vec![],
+                            },
+                        }),
+                        split,
+                    );
+                    continue;
                 }
                 let text = invoke
                     .payload
@@ -174,6 +194,7 @@ fn echo_tool() -> ToolContribution {
             "type": "object",
             "properties": {
                 "text": {"type": "string"},
+                "show_config": {"type": "boolean"},
                 "crash": {"type": "boolean"},
                 "hang": {"type": "boolean"},
             },
