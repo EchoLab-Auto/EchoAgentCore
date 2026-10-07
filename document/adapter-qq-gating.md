@@ -8,16 +8,17 @@ y: 1600
 
 # QQ 适配器门控设计
 
+> **定位**：本文是 `echo-agent.adapter.qq` 插件的机制文档——QQ 消息与会话列表信息在到达 agent 之前经过的五层门控、运行时可变性、多实例与容器生命周期、文件接收与消息渲染。读者：QQ 适配器的使用者与维护者。插件的装载与 persona 门控见 [插件化设计](./core-plugins.md)；多实例涉及的会话/人格模型见 [多 Agent 与会话](./core-agents.md)。
+
 ## 设计目标
 
-
-在 QQ 消息/以及会话列表相关的信息 到达 agent 之前，通过多层门控机制决定：
+在 QQ 消息以及会话列表相关信息到达 agent 之前，通过多层门控机制决定：
 
 1. **哪些消息**进入 agent 处理
 2. **哪些群/用户**对 agent 可见
 3. 门控规则可**运行时动态调整**，无需重启
 
-* 注意：tools的调用也包含在内，都需要通过这个门控进行过滤
+- 注意：工具的调用也包含在内，都需要通过这个门控进行过滤
 
 ## 门控管道
 
@@ -68,8 +69,7 @@ y: 1600
 - 私聊：`qq:dm::QQ号`
 
 这些身份用于区分消息来源、投递目标和授权范围；消息按会话归属写入同一份 append-only
-事件日志，模型上下文经 2026-09 多会话改造后**按来源会话独立投影**（各来源上下文相互隔离，
-不再共享单一全局 Trunk 上下文）。
+事件日志，模型上下文**按来源会话独立投影**（各来源上下文相互隔离）。
 
 ### 第五层：群/用户列表门控
 
@@ -81,10 +81,54 @@ y: 1600
 - `owner_qq` 保留管理员绕过权限；用户白名单为空时，与消息门控一致，不限制私聊好友
 - Panel 管理界面使用有权限的全量列表；LLM tool 不能通过该接口绕过 gate
 
-## 多实例（2026-09-13）
+## 运行时可变性
+
+门控规则分为两类：
+
+| 类别 | 变更方式 | 生效时机 |
+|---|---|---|
+| 连接/触发条件 | 修改配置文件 + 重启 | 下次启动 |
+| 白名单/黑名单 | Panel 交互式命令 | 立即生效 |
+| 门控模式 | `/qq setting` 单选切换 | 立即生效 + 持久化 |
+| 管理员 owner | `SetQqOwner` 协议命令 | 立即生效 + 持久化 |
+
+白名单/黑名单的运行时修改路径：
+
+```text
+Panel 表单选择 → BackendCommand (携带 GateMode 枚举)
+  → Agent 分发 → 适配器更新 → rebuild_filter_pipeline() → persist_filter()
+    (通过共享的 ConfigStore 原子写入)
+```
+
+### 管理员（owner_qq）运行时设置
+
+owner 与门控/名单一样有运行时更新路径，无需重启：
+
+- 经 `BackendCommand::SetQqOwner { owner_qq }` 设置（`0` = 清除）；`QqInner` 持运行时值（初始化自配置），`set_owner_qq` 更新运行时值并经共享 ConfigStore 原子写回 `[adapters.qq] owner_qq`，`get_owner_qq` 读运行时值
+- 门控豁免一律读运行时值：过滤管道的「管理员绕过」、`get_gated_friend_list`、出站门控
+- `Adapter` trait 提供 `set_owner_qq`/`get_owner_qq` 默认 no-op 方法，QQ 实现覆盖
+- **语义边界**：运行时设置的 owner 仅影响门控豁免，不联动其它授权（原自更新授权联动已随 `framework_update` 工具废弃移除）
+- `install.sh --owner-qq` 已移除：设置入口为协议命令或直接编辑 `[adapters.qq]`（当前 Web Panel 仅只读显示 owner，未接设置 UI）
+
+### 门控模式类型
+
+`GateMode` 定义在 `echo-defs`（经 `echo-adapter` / `echo-protocol` 再导出），跨层使用：
+
+| 枚举值 | TOML 序列化 | 行为 |
+|---|---|---|
+| `GateMode::None` | `"none"` | 不启用任何过滤 |
+| `GateMode::Allowlist` | `"allowlist"` | 仅启用 allowlist 过滤器 |
+| `GateMode::Denylist` | `"denylist"` | 仅启用 denylist 过滤器 |
+
+枚举值在 WebSocket JSON 层自动序列化为 snake_case 字符串，与旧版 wire 格式完全兼容。
+管道重建时，`build_filter_pipeline_gated(mode)` 根据门控模式**互斥**地只加入 allowlist 或 denylist（不会同时启用两个）。
+
+## 多实例与容器生命周期
 
 QQ 适配器支持**多实例**：一个实例 = 一个 NapCat 容器 + 一条反向 WS 通道 + 一个账号，
 互不冲突；实例归属某个人格（**一个人格可挂多个实例**）。
+
+### 多实例模型
 
 | 概念 | 说明 |
 | --- | --- |
@@ -118,16 +162,16 @@ QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的
 命中），默认人格也会经自动建档拿到同一份 legacy 语义（id `qq`、共享容器/端口、不写回）
 ——保证从单实例演进到多 persona 时，首个实例的容器与端口不漂移。
 
-**路由与隔离**：
+### 路由与隔离
 
 - 入站：每实例把消息投给**归属人格**（`AgentMessageHook` 按实例接线），事件带实例名
 - 会话键：`qq:group:<gid>:<uid>@<实例>`；实例名为默认 `qq` 时不加后缀（单实例部署零迁移）
 - 出站工具：每人格注册**自己实例集合**的 `send_*`/`get_*`；多实例时 schema 增加可选 `account`（实例名），缺省在多实例下报错列出可选值
 - 管理面（门控/名单/owner/登录）：命令与事件均带 `adapter` 字段；缺省时若只有唯一实例则回退（旧 Panel 兼容）
-- **登录由 Core 代理**：`RequestQqLoginStatus` / `RequestQqQrcode`（二维码以 PNG base64 回推 `QqQrcode` 事件），Panel 不再直连 OneBot HTTP / docker
+- **登录由 Core 代理**：`RequestQqLoginStatus` / `RequestQqQrcode`（二维码以 PNG base64 回推 `QqQrcode` 事件），Panel 不直连 OneBot HTTP / docker
 - **二维码陈旧自动刷新**：`login_qrcode_png` 先探测容器内 PNG 的 mtime，缺失或 >90s（`QR_MAX_AGE_SECS`）时经 WebUI（`webui.json` token → `sha256(token+".napcat")` → `/api/auth/login` → `/api/QQLogin/RefreshQRcode`）让 NapCat 重新生成、等 2s 落盘再取；刷新失败仅告警并退回读现有文件。NapCat 自身轮换循环停摆时（实测会发生），这是"刷新没反应"的解法；新鲜码（<90s）直接返回，不会作废用户刚扫的码
 
-## 容器生命周期与登录保持（2026-09-18）
+### 容器生命周期与登录保持
 
 - **napcat_auto_start**（默认 true）：适配器启动时确保 NapCat 容器在运行
   （compose up）；**napcat_auto_stop 默认 false**——适配器停止（含 Core 停机/
@@ -147,10 +191,12 @@ QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的
   NapCat 二维码」）。二维码约 2 分钟有效（Core 侧 90s 新鲜度阈值，超龄先让 NapCat
   刷新再取），扫旧码会得到 `ErrCode: 3`（授权超时）。
 
-## 文件接收（2026-09-18）
+## 文件接收与消息渲染
 
 QQ 用户发来的文件会**自动下载到本机**，以本地路径随消息送达 agent（hook payload
 `files[]`，agent 用文件/命令工具直接读）。
+
+### 文件接收
 
 **来源渠道与去重**（NapCat 对同一份文件可能双上报，按通道去重）：
 
@@ -183,12 +229,12 @@ QQ 用户发来的文件会**自动下载到本机**，以本地路径随消息�
 **已知限制**：
 
 - 「在线文件/文件夹」（QQ 直传。NapCat elementType 23/30）与「闪传」不支持接收；
-  前者以显式失败条目送达（不再静默丢弃），后者段类型未识别、整条消息丢弃
+  前者以显式失败条目送达，后者段类型未识别、整条消息丢弃
 - 下载在适配器事件分发的串行链路上执行：大文件下载期间该 QQ 实例的后继事件排队
   等待（图片内嵌下载同理，但文件体积上限更大）
 - 下载文件不做自动清理，长期运行需自行管理磁盘（目录见配置 `dir`）
 
-## 消息内容渲染（2026-09-20）
+### 消息内容渲染
 
 QQ 消息转成 agent 输入时，`content` 走「可读渲染」（`MessageEvent::readable_text`，
 echo-core）：
@@ -199,66 +245,23 @@ echo-core）：
 | `face`（QQ 内置表情） | `[表情:微笑]`；未知 id 回退 `[表情:123]`（对照表 `echo-core/src/face.rs`，取自 NapCat `face_config.json`，329 条） |
 | `dice` / `rps` | `[骰子:4]` / `[石头剪刀布:剪刀]`（OneBot v11：1 石头、2 剪刀、3 布） |
 | `poke` | `[戳一戳]` |
-| `image` | 不进 content，经 `images` 通道——**触发门控与过滤管道通过后**下载、**落盘媒体库**、传递 `/media/<id>` 引用（被丢弃的消息不触发下载，2026-09-29 修正；见 [Core 框架](./core.md)§多模态输入） |
+| `image` | 不进 content，经 `images` 通道——**触发门控与过滤管道通过后**下载、**落盘媒体库**、传递 `/media/<id>` 引用（被丢弃的消息不触发下载；见 [Core 框架](./core.md)§多模态输入） |
 | `file` / `onlinefile` | 不进 content，经 `files` 通道（见 §文件接收） |
 | 其它（`record`/`video`/`xml`/`json`/`forward`…） | 不渲染 |
 
 - **与 `plain_text()` 的分工**：命令解析（`/help` 等）继续读 `plain_text`
   （纯文本，标记不能干扰前缀判断）；只有交给 agent 的 content 用可读渲染。
 - 表情此前被整体丢弃：带表情的消息「读不到」表情，**纯表情消息因 content
-  为空被整条丢弃**（agent 完全不知道用户发过消息）。渲染后这类消息正常送达。
+  为空被整条丢弃**（agent 完全不知道用户发过消息）；渲染后这类消息正常送达。
 - 已知限制：纯语音/视频/富卡片（xml/json）消息仍会被整条丢弃（content 为空）；
   如需「至少让对方的话被看到」，可再补 `[语音]`/`[视频]` 占位标记。
-
-## 运行时可变性
-
-门控规则分为两类：
-
-| 类别 | 变更方式 | 生效时机 |
-|---|---|---|
-| 连接/触发条件 | 修改配置文件 + 重启 | 下次启动 |
-| 白名单/黑名单 | Panel 交互式命令 | 立即生效 |
-| 门控模式 | `/qq setting` 单选切换 | 立即生效 + 持久化 |
-| 管理员 owner | `SetQqOwner` 协议命令 | 立即生效 + 持久化 |
-
-白名单/黑名单的运行时修改路径：
-
-```text
-Panel 表单选择 → BackendCommand (携带 GateMode 枚举)
-  → Agent 分发 → 适配器更新 → rebuild_filter_pipeline() → persist_filter()
-    (通过共享的 ConfigStore 原子写入)
-```
-
-### 管理员（owner_qq）运行时设置
-
-owner 与门控/名单一样有运行时更新路径，无需重启：
-
-- 经 `BackendCommand::SetQqOwner { owner_qq }` 设置（`0` = 清除）；`QqInner` 持运行时值（初始化自配置），`set_owner_qq` 更新运行时值并经共享 ConfigStore 原子写回 `[adapters.qq] owner_qq`，`get_owner_qq` 读运行时值
-- 门控豁免一律读运行时值：过滤管道的「管理员绕过」、`get_gated_friend_list`、出站门控
-- `Adapter` trait 提供 `set_owner_qq`/`get_owner_qq` 默认 no-op 方法，QQ 实现覆盖
-- **语义边界**：运行时设置的 owner 仅影响门控豁免，不联动其它授权（原自更新授权联动随 `framework_update` 工具于 2026-09 废弃移除）
-- `install.sh --owner-qq` 已移除：设置入口为协议命令或直接编辑 `[adapters.qq]`（当前 Web Panel 仅只读显示 owner，未接设置 UI）
-
-### 门控模式类型
-
-`GateMode` 定义在 `echo-defs`（经 `echo-adapter` / `echo-protocol` 再导出），跨层使用：
-
-| 枚举值 | TOML 序列化 | 行为 |
-|---|---|---|
-| `GateMode::None` | `"none"` | 不启用任何过滤 |
-| `GateMode::Allowlist` | `"allowlist"` | 仅启用 allowlist 过滤器 |
-| `GateMode::Denylist` | `"denylist"` | 仅启用 denylist 过滤器 |
-
-枚举值在 WebSocket JSON 层自动序列化为 snake_case 字符串，与旧版 wire 格式完全兼容。
-管道重建时，`build_filter_pipeline_gated(mode)` 根据门控模式**互斥**地只加入 allowlist 或  denylist（不会同时启用两个）。
 
 ## 关键设计决策
 
 1. **白名单空 = 全放行**：避免初始配置时意外阻止所有消息，符合最小惊讶原则
-2. **allowlist / denylist 互斥**：由门控模式二选一（`build_filter_pipeline_gated`，不会同时启用）——「大部分允许、少数禁止」用 denylist 模式，「严格白名单」用 allowlist 模式
+2. **allowlist / denylist 互斥**：由门控模式二选一（`build_filter_pipeline_gated` 只加入 allowlist 或 denylist 之一，两者永远不会同时存在于运行中的过滤管道）——「大部分允许、少数禁止」用 denylist 模式，「严格白名单」用 allowlist 模式
 3. **管理员全局绕过**：确保机器人 owner 始终可控，不会把自己锁在外面
 4. **群列表门控与消息门控共用规则**：保持 agent 看到的世界与它能交互的世界一致
 5. **管道可重建不阻塞消息处理**：Mutex 锁仅持有一瞬间（克隆 Arc），不影响消息吞吐
 6. **强类型门控枚举**：`GateMode` 在 `echo-defs` 定义（`echo-adapter` / `echo-protocol` 再导出），全栈类型安全，WebSocket JSON 层用 snake_case 保持兼容
 7. **统一配置持久化**：门控配置和 agent 配置共享同一个 `ConfigStore` 实例（main.rs 创建一次分发），并发安全由内部 Mutex 保证
-8. **门控模式互斥**：`build_filter_pipeline_gated()` 只加入 allowlist 或 denylist 之一——两者永远不会同时存在于运行中的过滤管道

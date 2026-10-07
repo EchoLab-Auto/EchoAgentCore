@@ -9,7 +9,8 @@ link: ["panel-interaction | 交互定义 | r>l"]
 
 # Panel 前端
 
-Panel（EchoAgentPanel）是 Web 管理面板：Rust 后端（axum）托管 Vue 3 + TypeScript 前端（`@echolab-auto/ui-frame` 新拟态组件库），并把浏览器 WebSocket 中继到 Core 的 management WS。默认 `:8080` 提供服务，Core 连不上时页面照常加载并显示"连接中…"（指数退避自动重连）。
+> **定位**：Panel（EchoAgentPanel）是 EchoAgent 的 Web 管理面板——Rust 后端（axum）托管 Vue 3 + TypeScript 前端（`@echolab-auto/ui-frame` 新拟态组件库），并把浏览器 WebSocket 中继到 Core 的 management WS。默认 `:8080` 提供服务；Core 连不上时页面照常加载并显示「连接中…」（指数退避自动重连）。读者：需要了解 Panel 前后端结构、中继模型与配置运维的开发者。
+> 交互与视图契约见 [交互定义](./panel-interaction.md) 及其 6 篇子文档（见「延伸阅读」）。
 
 ## 仓库布局
 
@@ -41,7 +42,7 @@ EchoAgentPanel/
 切换会体现在 git diff）；`sync` 支持从 ui-frame 源码仓库重建快照，`diff` 列出
 快照中尚未发版的改动。日常开发/CI 无需切换（CI 用 `npm ci` + 提交的快照）。
 
-## 后端：无状态字节级中继
+## 中继模型
 
 每个浏览器 WS 连接同时中继到**全部**接入点 Core 的 management WS（`[[cores]]`，单接入点 = 一条）；**单接入点时帧按原文转发，不解析、不记录负载**；多接入点时事件按来源节点加壳 `{core, frame}` 信封、命令按信封路由到目标节点（仅信封层，不触碰负载）——协议细节与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积；转发另有 **10s 写超时**（`SEND_TIMEOUT`）——对端写阻塞超时即断链，冻结标签页不会挂住中继、Core 发送缓冲不再无界积压。
 
@@ -50,91 +51,34 @@ EchoAgentPanel/
 - 已知限制：无会话恢复——刷新页面先由磁盘缓存（`trunk-cache.ts`）立即可渲染，再经 `RequestState` / `RequestTrunkTimeline{since_seq}` 增量 Bootstrap
 - 否决的备选：后端做协议层转发/会话管理（等于重写 Core 桥接层）；浏览器直连 Core :3132（跨域 + 暴露 management 端口）
 
-## 接入联邦网络、访问令牌与调度（2026-10）
+前端连接 / 重连与加载态的视图侧细节见 [布局与导航](./panel-layout.md)「连接生命周期」。
 
-**一套架构，Panel 只是用户入口**：联邦网络是唯一实体（所有 Core 节点对等互联，见 [联邦](./federation.md)）；Panel 是接入这个网络的**用户面板/客户端**。`[[cores]]` 不是"另一套架构的上游"，而是 **Panel 的接入点配置**——它连哪些 Core 节点以看到/操作联邦网络。中继把浏览器单连接复用到全部接入点：事件按来源节点带 `{core, frame}` 信封、会话列表带来源徽标；命令按当前会话所属节点路由（`connection.ts::resolveTargetCore`），未选中会话时全局类只读命令（如 `RequestTeamsList`）裸广播全部接入点、各端各回一份聚合。接入点可在设置·Core 连接页在线增删（写回 `[[cores]]` 段持久化，中继动态并入/摘除，无需重启）；单接入点（`[core]` 或一条 `[[cores]]`）行为与此前完全一致（无壳）。
-- **Bearer 访问令牌**：`[server].access_token` 非空时全站（WS 握手 / `/api/*` / `/media`）要求 `Authorization: Bearer <token>` 或 `?token=` 查询参数，静态前端豁免以加载登录页（`proxy.rs::authorized`、`upstreams_api.rs::require_auth`）；前端 URL `?token=` 播种一次后存 localStorage `echo-panel-token`，后续 HTTP 经 `panelFetch` 自动带 Bearer 头（`connection.ts:328-345`）。另有 `[core].access_token` 是连 Core management WS 的认证头，须与 Core 侧配置一致
-- **分布式调度器 `scheduler.ts`**：新建会话（或向无归属新对话发首条消息）时的目标节点选择，策略持久化于 localStorage `echo-schedule-policy`：`least_busy`（默认，按 FederationStatus 各 peer 活跃 turn 数取最小，本机参与比较）/ `round_robin` / `prefer:<name>`（亲和，离线退 least_busy）；只做建议，最终路由仍走 connection.ts 的 coreForCommand 链
-  - **节点身份统一**：调度器选出的"节点"与路由层认的"core"是**同一个**联邦节点身份（`local` = 本机 = null；联邦 peer 名 = 该节点）。`scheduleNode()` 在 `targetSession?.core` 为空（新会话尚无归属）时给出建议节点（`App.vue:170`），随后 `resolveTargetCore` 按会话/人格归属把命令路由到该节点——该节点必须在 Panel 的接入点配置（`[[cores]]`）里可达，否则调度建议落空。因此**接入点应覆盖联邦网络里要承载工作的节点**（通常 = 全部在线 peer）。
 ## 状态管理与数据流
 
 - `store.ts`：全局响应式单例（Vue `reactive`），`dispatch(event)` 逐事件归约
 - `state.ts`：reducer 按事件类型分派，原地深变异
 - `state_domains/`：timeline（时间线转换/增量/工具配对）、orchestration（活动相位、子代理/后台任务、临时回复分支）、helpers
 - 连接管理 `connection.ts`：WS 自动重连；重连后清空运行期状态（分支/任务/活动），时间线保留（内存 + `trunk-cache.ts` 磁盘缓存）并按游标 `since_seq` 增量补齐（响应 `full` 标志时整体替换）
-- **加载态跟踪 `pending.ts`（2026-09-30）**：面板是 fire-and-forget 命令模型（无请求 id），等待态由「请求命令→响应事件」关联表统一登记与销账——`sendPending(cmd, key)` 发命令并登记（key 为视图本地命名，重复发送即覆盖=重试语义）；`dispatch` 收到响应事件自动销账；阶段按时间推进：**0–150ms 不显示**（快请求不闪）→ `pending`（骨架/转圈）→ **>6s `slow`**（附「Core 可能正在重启」提示）→ **>20s `timeout`**（错误 + 重试；请求幂等、重发安全），已显示的加载态保证**最短可见 400ms**。视图以 `usePending(key)` 读取（key 可传 getter，动态键如 QQ 多实例 `qq:filter:<实例>`），以 `LoadHint` 组件渲染；聊天区时间线用状态标志判定（`state.timelineArrivedOnce`）不走本表
+- **加载态跟踪 `pending.ts`**：面板是 fire-and-forget 命令模型（无请求 id），等待态由「请求命令→响应事件」关联表统一登记与销账——`sendPending(cmd, key)` 发命令并登记（key 为视图本地命名，重复发送即覆盖=重试语义）；`dispatch` 收到响应事件自动销账；阶段按时间推进：**0–150ms 不显示**（快请求不闪）→ `pending`（骨架/转圈）→ **>6s `slow`**（附「Core 可能正在重启」提示）→ **>20s `timeout`**（错误 + 重试；请求幂等、重发安全），已显示的加载态保证**最短可见 400ms**。视图以 `usePending(key)` 读取（key 可传 getter，动态键如 QQ 多实例 `qq:filter:<实例>`），以 `LoadHint` 组件渲染；聊天区时间线用状态标志判定（`state.timelineArrivedOnce`）不走本表
 - 实时事件按 `team_id` 归一化过滤后才进主时间线（跨 agent 不串显）；`TrunkTimeline` 按 `full` 标志区分全量替换/增量追加
 
-## 主视图（聊天）
+视图渲染与交互细节见 [会话视图](./panel-chat.md)、[布局与导航](./panel-layout.md)。
 
-- `ChatView.vue`：消息列表 + 吸底输入区；自渲染消息行（库 `ChatTray` 容器）拦截扩展角色（reasoning）渲染。
-  消息图片渲染（2026-09-24）：Core 侧的 `/media/<id>` 引用直接 `<img loading=lazy
-  decoding=async>`（同源、强缓存）；遗留 data URI 兼容；空串（Core 侧"图片已省略"
-  占位）渲染为文字标
-- `SubagentEventBlock.vue`：子代理委派行（运行中/完成/失败 + 任务摘要，点击展开结论），见 [会话视图](./panel-chat.md)§7.3c。
-- `MessageItem.vue`：消息行（user/agent/system）——库 `ChatBubble` + doc `MarkdownRenderer` 自组（2026-09-30，库 chat 组合件移除后）。
-- `ReasoningBlock.vue`：推理打字机动画（实时消息 6 秒封顶；历史回放不播）
-- 活动浮条：思考中 / 调用工具 / 子代理 的 spinner + 动态文案
-- 消息入场动画 0.28s 淡入上移，仅实时消息（`animate` 标记）播放
+## 配置与运维
 
-## 侧边栏与设置页
+### 接入点、访问令牌与调度
 
-- `PanelSidebar.vue`：边栏卡片栈（RailStack：连接状态 / 文件浏览器 / Shell / 临时分支；
-  `side` 区分左右两列、上下排列、可折叠、分隔条拖动、**卡片可拖到另一列**（拖动机制
-  与动画见 [会话视图](./panel-chat.md)§7.8；归属与顺序持久化在 `rail-layout.ts`））
-- `WorkspaceFileBrowser.vue`：文件浏览器卡内容（只读；多根切换 chip 悬停**速览绝对
-  路径**——Teleport 到 body 的 fixed 速览，绕开卡体滚动容器裁剪，见 [会话视图](./panel-chat.md)§7.8）
-- `RailDragGhost.vue`：拖动拖影（Teleport 到 body，跟随指针 + 落位飞行）
-- `ConnectionStatusCard.vue`（2026-09-23 从顶栏迁入）：Core 管理通道状态点 + QQ
-  适配器逐实例运行态（`已连接`/`等待连接`/`已停止`）；断连时附重连提示。
-  紧凑卡（固定高度、不参与 flex 分配）
-- `SessionSwitcher.vue`：入口行「会话」按钮弹出——按平台分组（Local/QQ 私聊/QQ 群/其他）切换会话；并行模式附「全局」项；每个会话独立上下文（2026-09）
-- `SettingsView.vue`：设置视图——API 设置（`ApiSettings.vue`：概览视图 + 点击「编辑」/「添加 API 服务商」时展开表单，默认不常驻）+ **技能/工具/插件三套工作台**（2026-09-23 重排版：筛选栏 + 双行行卡 hover 快速启停 + 分区详情检查器 + 包⇄工具/技能交叉跳转；技能按包分组、工具按包分组、插件按门控语义分组）+ 智能体的浏览、启停、编辑、删除（左侧一级菜单 + 右侧工作区；2026-09-04 起取代原资源视图与 API 弹窗）。技能编辑含**「系统提示词」开关**（`system: true`，详见 [技能系统](./core-skills.md)）；智能体编辑含**「系统提示词 skills」勾选**（SaveTeam.system_skills）与 Git 安装弹层。布局与交互细节见 [设置视图](./panel-settings.md)§9.2
-- `AgentSwitcher.vue`：输入框上方 Agent 切换悬浮卡片；卡片与菜单行显示当前 persona **生效模型**（按 `api_profile` 从全局供应商池解析，未引用 = 全局默认 model）
-- `AgentConfigModal.vue`：聊天区 ⚙「配置」按钮唤起的**会话区内磨砂玻璃弹层**——
-  名称/描述/系统提示词/启用/**API 供应商下拉**（`api_profile`，见 [设置视图 §9.1.1](./panel-settings.md)）/插件/工具/技能白名单（表格 + pkg 分组；"系统提示词 skills"勾选**不在此弹层**——仅设置页智能体编辑提供），
-  保存走 SaveTeam；上/左/右距会话框 12px、底部距配置按钮 12px
-- `ContextView`（ChatView 内）：入口行「上下文」唤起的弹层——**几何与配置弹层一致**（上/左/右 12px、底部距入口行 12px），点遮罩关闭、无返回按钮
-- `ShellPanel.vue`：Shell 详情视图（无顶栏入口，经边栏「Shell」卡「详情」进入）——持久 bash 会话终端可视化
-  （停止会话、命令回显 + 流式输出自动吸底、运行态 spinner、
-  完成/失败/超时状态、Enter 执行 Esc 清空；**新建会话在边栏「Shell」卡**（`ShellList.vue`，
-  workdir 缺省），详情头部显示该会话 workdir——本视图无工作目录输入）
+**一套架构，Panel 只是用户入口**：联邦网络是唯一实体（所有 Core 节点对等互联，见 [联邦](./federation.md)）；Panel 是接入这个网络的**用户面板 / 客户端**。`[[cores]]` 不是「另一套架构的上游」，而是 **Panel 的接入点配置**——它连哪些 Core 节点以看到 / 操作联邦网络。中继把浏览器单连接复用到全部接入点：事件按来源节点带 `{core, frame}` 信封、会话列表带来源徽标；命令按当前会话所属节点路由（`connection.ts::resolveTargetCore`），未选中会话时全局类只读命令（如 `RequestTeamsList`）裸广播全部接入点、各端各回一份聚合。接入点可在设置·Core 连接页在线增删（写回 `[[cores]]` 段持久化，中继动态并入 / 摘除，无需重启）；单接入点（`[core]` 或一条 `[[cores]]`）无信封、按原文转发，行为与单上游模式一致。
 
-## 取消任务的即时反馈
+- **Bearer 访问令牌**：`[server].access_token` 非空时全站（WS 握手 / `/api/*` / `/media`）要求 `Authorization: Bearer <token>` 或 `?token=` 查询参数，静态前端豁免以加载登录页（`proxy.rs::authorized`、`upstreams_api.rs::require_auth`）；前端 URL `?token=` 播种一次后存 localStorage `echo-panel-token`，后续 HTTP 经 `panelFetch` 自动带 Bearer 头（`connection.ts:328-345`）。另有 `[core].access_token` 是连 Core management WS 的认证头，须与 Core 侧配置一致
+- **分布式调度器 `scheduler.ts`**：新建会话（或向无归属新对话发首条消息）时的目标节点选择，策略持久化于 localStorage `echo-schedule-policy`：`least_busy`（默认，按 FederationStatus 各 peer 活跃 turn 数取最小，本机参与比较）/ `round_robin` / `prefer:<name>`（亲和，离线退 least_busy）；只做建议，最终路由仍走 connection.ts 的 coreForCommand 链
+  - **节点身份统一**：调度器选出的「节点」与路由层认的「core」是**同一个**联邦节点身份（`local` = 本机 = null；联邦 peer 名 = 该节点）。`scheduleNode()` 在 `targetSession?.core` 为空（新会话尚无归属）时给出建议节点（`App.vue:170`），随后 `resolveTargetCore` 按会话/人格归属把命令路由到该节点——该节点必须在 Panel 的接入点配置（`[[cores]]`）里可达，否则调度建议落空。因此**接入点应覆盖联邦网络里要承载工作的节点**（通常 = 全部在线 peer）。
 
-- 前端 `cancelSessionWork`（state.ts）**乐观中断**：点击取消后立即
-  活动浮条/取消按钮消失（phase → completed）、running 任务/分支 tab → cancelled、
-  running 工具卡 → failed（"已取消"），不等后端确认
-- 取消命令带 `team_id`（当前 agent）——多 agent 下按 persona 路由；
-  后端取消成功即回 `AgentCompleted` 对齐状态
-- 入口：聊天区"取消任务"按钮（busy 时显示）与任务页取消按钮，共用同一逻辑
+### 面板配置与运维
 
-## 时序与动画规范
-
-主时间线对 Agent 运行过程的展示规范（一致性基线，改动需保持三条规则）：
-
-**1. 及时性（实时渲染，不缓冲）**：`AgentReasoning` / `ToolCall` / `ToolResult` / `AgentOutput` 事件到达即渲染进主时间线，**不得**等回复完成后一次性写入；推理是独立 `reasoning` 角色消息按序插入，不缓冲到回复尾部。
-
-**2. 时序表现（还原真实顺序）**：主时间线顺序 = 事件到达顺序（`用户消息 → 推理 → 工具调用 → 工具结果 → … → 正式回答`），推理真实穿插在工具调用之间，正式回答始终最后；历史回放（`loadTimeline`）同样把 `backend.reasoning` 拆分为独立 reasoning 消息、插在回答之前，与实时路径时序一致；侧边栏临时分支详情继承同一规则（仅做连续 reasoning 的合并展示）。
-
-**3. 动画反馈（对应位置对应动画）**：
-
-| 阶段 | 位置 | 动画 |
-| --- | --- | --- |
-| 连接中 | 边栏「连接状态」卡（2026-09-23 起；原顶栏状态点，可拖到任一列） | 状态点呼吸 + 重连提示 |
-| 思考 / 调用工具 / 子代理 | 输入框上方活动浮条 | 旋转 spinner + 动态文案 |
-| 推理输出 | 推理块 | 打字机逐字显示（自适应速度，约 6s 封顶）+ 光标/呼吸点 |
-| 工具执行中 | 工具卡 | running 状态 spinner |
-| 消息到达 | 每条实时消息 | 0.28s 淡入上移入场动画 |
-
-- 打字机/入场动画**仅**对实时消息（`DisplayMessage.animate === true`）播放；历史回放、刷新加载不播动画
-- 动画为纯视觉层：`animate` 是展示元数据，不进入任何数据/逻辑判断
-- 实现要点：ui-frame `ChatRole` 不含 `reasoning`，必须在 `ChatView` 的消息行渲染层拦截（自渲染行循环，见 [会话视图](./panel-chat.md)§7.3b；否则未知角色会被渲染成 Agent 气泡）；`pendingReasoning`/`completedReasoning` 为**历史遗留字段**（分支合并块已随 ui-frame 移除，现无任何读取方，仅声明与初始化）
-
-## 主题
-
-- `ThemeProvider` + `NeumorphismThemeToggle` 三态开关（浅色/自动跟随系统/深色）
-- 偏好持久化于 localStorage（`echo-panel-theme`），index.html 防闪烁脚本同步初始化
+- `~/.config/echo-agent-panel/panel.toml`：`[server]`（bind_address、static_dir、media_dir 媒体库目录、access_token 面板访问令牌）、`[core]`（connect_url 连 Core 的 WS 地址、access_token 认证头；单上游兜底——`[[cores]]` 键出现过即以在线管理为准）、`[[cores]]`（接入点 name/url/access_token，可空，设置·Core 连接页在线增删并写回）、`[logging]`（level/format/log_file 滚动）
+- `systemctl --user restart echo-agent-panel.service` 重启；静态资源在 `~/.local/libexec/echo-agent-panel/web`
+- 更新走 `echo-agent-panel-update.service`（构建 Rust 服务 + `npm run build` + 替换静态目录 + 重启），详见 [部署与自更新](./ops-deploy.md)
 
 ## 开发与构建
 
@@ -144,8 +88,7 @@ cd web && npm run build         # 前端类型检查 + 构建
 cd web && npm run dev           # 前端热更新（/ws 代理到 :8080）
 ```
 
-## 配置与运维
+## 延伸阅读
 
-- `~/.config/echo-agent-panel/panel.toml`：`[server]`（bind_address、static_dir、media_dir 媒体库目录、access_token 面板访问令牌）、`[core]`（connect_url 连 Core 的 WS 地址、access_token 认证头；单上游兜底——`[[cores]]` 键出现过即以在线管理为准）、`[[cores]]`（接入点 name/url/access_token，可空，设置·Core 连接页在线增删并写回）、`[logging]`（level/format/log_file 滚动）
-- `systemctl --user restart echo-agent-panel.service` 重启；静态资源在 `~/.local/libexec/echo-agent-panel/web`
-- 更新走 `echo-agent-panel-update.service`（构建 Rust 服务 + `npm run build` + 替换静态目录 + 重启），详见 [部署与自更新](./ops-deploy.md)
+- 前端文档群：[交互定义](./panel-interaction.md)（总入口）→ [布局与导航](./panel-layout.md)、[会话视图](./panel-chat.md)、[模态与覆盖层](./panel-modals.md)、[设置视图](./panel-settings.md)、[QQ 管理·任务·Shell](./panel-qq-tasks.md)、[系统交互](./panel-system.md)
+- 相关：[协议与数据流](./protocol.md)（WS 帧格式、命令与事件）、[部署与自更新](./ops-deploy.md)、[联邦（多机）](./federation.md)

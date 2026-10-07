@@ -8,48 +8,72 @@ y: 280
 
 # Panel 会话视图
 
-会话（聊天）视图的全部交互契约：消息列表与角色渲染、工具卡生命周期、推理块与活动浮条、输入区（发送/图片/取消任务）、入口行按钮与弹出层。
+> **定位**：会话（聊天）视图的完整交互契约：消息列表与角色渲染、工具卡生命周期、推理块与活动浮条、输入区（发送 / 图片 / 取消任务）、入口行按钮与弹出层、侧栏与多接入点。读者：维护 ChatView 及其组件的开发者；实现位置以 `web/src/` 相对路径标注。相关：[交互定义](./panel-interaction.md)、[布局与导航](./panel-layout.md)、[模态与覆盖层](./panel-modals.md)。
 
-> **多接入点（2026-10）**：会话/人格身份是 `(core, id)`——同名会话（每个 core 都有 `local:tui::local_user`）与同名人格跨 core 可重复。会话视图内所有运行态（activities / branchTabs / 时间线缓存 / 忙碌点）一律按复合键（`keys.ts::sessionKey/teamKey`，`\u0000` 分隔，单接入点退化为裸 id）索引；会话列表与 Agent 菜单在跨 core 同名时显示 core 徽标消歧（`SessionSwitcher` / `AgentSwitcher`，见 [Panel 概览](./panel.md) §多接入点聚合）。
+> **多接入点**：会话/人格身份是 `(core, id)`——同名会话（每个 core 都有 `local:tui::local_user`）与同名人格跨 core 可重复。会话视图内所有运行态（activities / branchTabs / 时间线缓存 / 忙碌点）一律按复合键（`keys.ts::sessionKey/teamKey`，`\u0000` 分隔，单接入点退化为裸 id）索引；会话列表与 Agent 菜单在跨 core 同名时显示 core 徽标消歧（`SessionSwitcher` / `AgentSwitcher`，见 [Panel 概览](./panel.md)「配置与运维」）。
 
-## 七、会话视图（聊天）
+## 会话视图结构与消息列表
 
-### 7.1 消息列表
+会话视图由消息列表 + 吸底输入区构成；消息行由面板自渲染（库 `ChatTray` 容器），以拦截扩展角色（`reasoning` / `subagent`）的渲染。
 
-- **hook 输入展示剥离**（2026-09-18）：`<xxx_hook>{json}</xxx_hook>` 结构化输入在会话里只显示 payload 的 `content` 字段（`displayContentOf`，实时事件与历史回放共用同一剥离；非法 JSON/非 hook 原样兜底）——QQ 消息投递到默认会话后显示干净正文而非整段 hook JSON
+### 消息列表
 
-
-- **自动滚动**：仅当用户处于底部 120px 阈值内时跟随新内容；上翻后出现「回到底部 ↓」按钮（平滑滚动，500ms 后解除锁定）。滚动区内 padding-bottom 190px。**按钮落位（2026-09-28 重排）**：`right = trayPadRight + 16px`、`bottom = entryBottom + 45px`（消息列右缘、右侧栏列左侧 16px，纵向与边栏列底对齐——原先贴右下角被右侧栏卡片完全压住，hit test 命中 rail 卡片）；入口行浮层 / Agent 配置 / 上下文弹层打开时按钮隐藏（浮层从入口行向上展开、最高 68vh，窄视口下必盖住）
+- **hook 输入展示剥离**：`<xxx_hook>{json}</xxx_hook>` 结构化输入在会话里只显示 payload 的 `content` 字段（`displayContentOf`，实时事件与历史回放共用同一剥离；非法 JSON/非 hook 原样兜底）——QQ 消息投递到默认会话后显示干净正文而非整段 hook JSON
+- **自动滚动**：仅当用户处于底部 120px 阈值内时跟随新内容；上翻后出现「回到底部 ↓」按钮（平滑滚动，500ms 后解除锁定）。滚动区内 padding-bottom 190px。**按钮落位**：`right = trayPadRight + 16px`、`bottom = entryBottom + 45px`（消息列右缘、右侧栏列左侧 16px，纵向与边栏列底对齐；贴右下角会被右侧栏卡片完全压住、hit test 命中 rail 卡片，故移至此处）；入口行浮层 / Agent 配置 / 上下文弹层打开时按钮隐藏（浮层从入口行向上展开、最高 68vh，窄视口下必盖住）
 - **入场动画**：0.28s 淡入 + 上移 6px，仅实时消息（`animate: true`）播放；历史回放不播
 - **容量**：主时间线上限 1024 条，溢出裁最旧
-- **行距（2026-09-28 紧凑化）**：滚动容器 `gap` 12px → **6px**；消息气泡用 `chat-view__item--msg` 的 3px 边距补回呼吸（气泡间仍约 12px），工作行（推理块 / 工具行 / 子代理行）保持 6px 紧排且自身不再带外边距——一回合里推理与工具交替十几次，屏幕不再被空白吃掉
-- **刷新首屏（2026-09 网络瘦身）**：页面加载先还原磁盘缓存（`trunk-cache.ts`，挂载前 hydrate——`state.teamTimelines` 按 team 快照 + 条目级游标），引导请求带 `since_seq` 只拉缺口（无缓存/窗口滚出/游标超前时 Core 自动回退全量）；缓存 10s 周期 + 页面隐藏/卸载时落盘（配额满静默放弃）；**还原时就格式升级**（2026-09-28：旧缓存里 `<subagent_event>` 用户气泡 → 子代理委派行，避免「刷新后仍是旧样式」）；**重连不再清空时间线**——保留缓存并按 `since_seq` 增量补齐，响应 `full` 标志时整体替换。配套 Core 侧对发往前端的快照做**推理瘦身**：仅最近 40 条推理保留全文，更早的截断到 240 字 + 标注（持久化不改，`timeline.rs::elide_reasoning_for_wire`）
+- **行距**：滚动容器 `gap` 6px；消息气泡用 `chat-view__item--msg` 的 3px 边距补回呼吸（气泡间仍约 12px），工作行（推理块 / 工具行 / 子代理行）保持 6px 紧排且自身不再带外边距——一回合里推理与工具交替十几次，屏幕不被空白吃掉
+- **刷新首屏**：页面加载先还原磁盘缓存（`trunk-cache.ts`，挂载前 hydrate——`state.teamTimelines` 按 team 快照 + 条目级游标），引导请求带 `since_seq` 只拉缺口（无缓存/窗口滚出/游标超前时 Core 自动回退全量）；缓存 10s 周期 + 页面隐藏/卸载时落盘（配额满静默放弃）；**还原时就格式升级**（旧缓存里 `<subagent_event>` 用户气泡 → 子代理委派行，避免「刷新后仍是旧样式」）；**重连不清空时间线**——保留缓存并按 `since_seq` 增量补齐，响应 `full` 标志时整体替换。配套 Core 侧对发往前端的快照做**推理瘦身**：仅最近 40 条推理保留全文，更早的截断到 240 字 + 标注（持久化不改，`timeline.rs::elide_reasoning_for_wire`）
 - **会话过滤**：「全部消息」（global）显示当前 Agent 全部会话的消息；具体会话仅显示该会话；从全局视图发送会路由到本地会话 `local:tui::local_user`（`App.vue:126`）
-- **空列表占位与加载三态（2026-09-30）**：消息列为空时区分——未连接（居中 spinner +「正在连接 Core…」）/ 已连接但本次连接尚未收到时间线（「正在加载时间线…」）/ 收到过快照后的真空白（全局视图与具体会话两种文案，`ChatView.vue:536-560`）。判定标志 `state.timelineArrivedOnce`（onopen 重置；见 [连接生命周期](./panel-layout.md)§四）
-- **图片**：历史消息中的图片渲染在气泡上方，最大 260×200px（`ChatView.vue:874-886, 1274-1285`）；正文经 `chat-adapter.ts::compactForDisplay` 压过——附带的 data URI → `[图片#n]`、其余长内联 base64 → `[图片数据已省略]`，与 Core 侧占位符一致，避免整屏 base64
+- **空列表占位与加载三态**：消息列为空时区分——未连接（居中 spinner +「正在连接 Core…」）/ 已连接但本次连接尚未收到时间线（「正在加载时间线…」）/ 收到过快照后的真空白（全局视图与具体会话两种文案，`ChatView.vue:536-560`）。判定标志 `state.timelineArrivedOnce`（`onopen` 重置；见 [布局与导航](./panel-layout.md)§四）
+- **图片**：历史消息中的图片渲染在气泡上方，最大 260×200px（`ChatView.vue:874-886, 1274-1285`）；Core 侧 `/media/<id>` 引用直接 `<img loading=lazy decoding=async>` 渲染（同源、强缓存），遗留 data URI 仍兼容；正文经 `chat-adapter.ts::compactForDisplay` 压过——附带的 data URI → `[图片#n]`、其余长内联 base64 → `[图片数据已省略]`，与 Core 侧占位符一致，避免整屏 base64
 - **复制**：消息气泡有复制按钮（库内置，悬停出现）；工具行与工具输出**无**复制按钮；无任何右键菜单
 - **Markdown**：仅 Agent 消息渲染 Markdown
 - **时间格式**：zh-CN 24 小时制
 
-### 7.2 消息角色与渲染
+### 消息角色与渲染
 
 | 角色 | 渲染 |
 |---|---|
 | `user` | 用户气泡（含来源元数据：平台/用户/群） |
 | `backend` | Agent 气泡（Markdown） |
-| `reasoning` | **Panel 扩展角色**：消息行循环拦截渲染 ReasoningBlock（库的 ChatRole 无此角色，不拦截会被误渲染为 Agent 气泡；2026-09-19 起列表自渲染行） |
-| `tool` | **连续调用合并**为 `ToolRunGroup`（2026-09-19）：一排圆角矩形图标（§7.3b）；单发调用（前后无相邻 tool）也走同一行渲染 |
-| `subagent` | **Panel 扩展角色**（2026-09-28）：子代理委派行——派发位置一行「子代理运行中/完成/失败 + 任务摘要」，点击展开结论（§7.3c） |
+| `reasoning` | **Panel 扩展角色**：消息行循环拦截渲染 ReasoningBlock（库的 ChatRole 无此角色，不拦截会被误渲染为 Agent 气泡；列表自渲染行） |
+| `tool` | **连续调用合并**为 `ToolRunGroup`（一排圆角矩形图标）；单发调用（前后无相邻 tool）也走同一行渲染 |
+| `subagent` | **Panel 扩展角色**：子代理委派行——派发位置一行「子代理运行中/完成/失败 + 任务摘要」，点击展开结论 |
 | `system` | 系统提示行 |
 | `branch` | 分支合并卡角色（当前 reducer 已不产生——分支内容实时进主时间线；此角色仅为适配保留，面板无对应渲染） |
 
 补充来源：定时器触发以 system 消息插入主时间线（`⏰ 定时器触发 · {task}`，task 截断 160 字符）。
 
-**渲染分工（2026-09-30）**：行模型与组合归面板——消息行 `MessageItem`（库 `ChatBubble` + doc `MarkdownRenderer` 自组）、工具行 `ToolRunGroup`、推理 `ReasoningBlock`、子代理 `SubagentEventBlock`；ui-frame 只提供机制原语（`ChatTray` / `ChatComposer` / `ChatBubble` / `ChatFold` / `ChatCopyButton`）。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义），`ChatMessage` 数据契约保留。
+**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（库 `ChatBubble` + doc `MarkdownRenderer` 自组）、工具行 `ToolRunGroup`、推理 `ReasoningBlock`、子代理 `SubagentEventBlock`；ui-frame 只提供机制原语（`ChatTray` / `ChatComposer` / `ChatBubble` / `ChatFold` / `ChatCopyButton`）。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义），`ChatMessage` 数据契约保留。
 
-**气泡宽度（2026-09-30）**：宽度完全动态——短消息贴内容收紧（实测最短 186px），长消息/代码/表格撑满消息列可用宽度（随左右侧栏卡片显隐变化，实测 1600px 窗口下 1276px）；`.chat-view__item--msg` 为 flex 列容器（user 靠右 / agent 靠左 / system 居中，依赖库 `align-self`）。面板覆盖库默认 `max-width: min(78%, 640px)`（`MessageItem.vue` 双写类名提权），并隐藏 Markdown 标题锚点（其 -22px 绝对定位会撑出横向溢出）。
+**气泡宽度**：宽度完全动态——短消息贴内容收紧（实测最短 186px），长消息/代码/表格撑满消息列可用宽度（随左右侧栏卡片显隐变化，实测 1600px 窗口下 1276px）；`.chat-view__item--msg` 为 flex 列容器（user 靠右 / agent 靠左 / system 居中，依赖库 `align-self`）。面板覆盖库默认 `max-width: min(78%, 640px)`（`MessageItem.vue` 双写类名提权），并隐藏 Markdown 标题锚点（其 -22px 绝对定位会撑出横向溢出）。
 
-### 7.3 工具卡生命周期
+### 主时间线时序与动画规范
+
+主时间线对 Agent 运行过程的展示规范（一致性基线，改动需保持三条规则）：
+
+**1. 及时性（实时渲染，不缓冲）**：`AgentReasoning` / `ToolCall` / `ToolResult` / `AgentOutput` 事件到达即渲染进主时间线，**不得**等回复完成后一次性写入；推理是独立 `reasoning` 角色消息按序插入，不缓冲到回复尾部。
+
+**2. 时序表现（还原真实顺序）**：主时间线顺序 = 事件到达顺序（`用户消息 → 推理 → 工具调用 → 工具结果 → … → 正式回答`），推理真实穿插在工具调用之间，正式回答始终最后；历史回放（`loadTimeline`）同样把 `backend.reasoning` 拆分为独立 reasoning 消息、插在回答之前，与实时路径时序一致；侧边栏临时分支详情继承同一规则（仅做连续 reasoning 的合并展示）。
+
+**3. 动画反馈（对应位置对应动画）**：
+
+| 阶段 | 位置 | 动画 |
+| --- | --- | --- |
+| 连接中 | 边栏「连接状态」卡（由原顶栏状态点迁入，可拖到任一列） | 状态点呼吸 + 重连提示 |
+| 思考 / 调用工具 / 子代理 | 输入框上方活动浮条 | 旋转 spinner + 动态文案 |
+| 推理输出 | 推理块 | 打字机逐字显示（自适应速度，约 6s 封顶）+ 光标/呼吸点 |
+| 工具执行中 | 工具卡 | running 状态 spinner |
+| 消息到达 | 每条实时消息 | 0.28s 淡入上移入场动画 |
+
+- 打字机/入场动画**仅**对实时消息（`DisplayMessage.animate === true`）播放；历史回放、刷新加载不播动画
+- 动画为纯视觉层：`animate` 是展示元数据，不进入任何数据/逻辑判断
+- 实现要点：ui-frame `ChatRole` 不含 `reasoning`，必须在 `ChatView` 的消息行渲染层拦截（自渲染行循环；否则未知角色会被渲染成 Agent 气泡）；`pendingReasoning`/`completedReasoning` 为**历史遗留字段**（分支合并块已随 ui-frame 移除，现无任何读取方，仅声明与初始化）
+
+## 工具卡生命周期
+
+### 工具卡与配对
 
 ```prodoc-flow
 graph LR
@@ -64,26 +88,24 @@ graph LR
 - **配对兜底**：ToolResult 到达时主时间线找不到 running 条目（如恢复后的时间线）——追加一条已完成工具卡而非丢弃（`timeline.ts:136-161`）；增量重投递按 tool_call_id **就地修补**已有工具卡，避免 core 带新 seq 重投完成态时出现重复行（`timeline.ts:241-256`）
 - **中断标记**：历史回放时 `output==null` 且未失败的工具恢复为 running（`timeline.ts:163-167`）；「已中断」标记完全由 core 侧重启清理写入（`session.rs`，output = 「[已中断] Core 服务重启导致本次调用未返回，可重试」），panel 自身不做兜底标记
 
-### 7.3b 工具调用图标行（ToolRunGroup，2026-09-19 起）
+### 工具调用图标行（ToolRunGroup）
 
-**连续的 tool 消息在 ChatView 合并为一组 `ToolRunGroup`**（2026-09-19 起；此前为库 `ChatToolCallBlock` 折叠卡，2026-09-30 组合权归面板后该库组件已移除）；其余消息逐条渲染；列表容器为库 `ChatTray` 自渲染行，吸底滚动契约不变。
+**连续的 tool 消息在 ChatView 合并为一组 `ToolRunGroup`**（原为库 `ChatToolCallBlock` 折叠卡，ui-frame 的 chat 组合组件移除后归面板自绘）；其余消息逐条渲染；列表容器为库 `ChatTray` 自渲染行，吸底滚动契约不变。
 
-- **折叠态**：一排圆角矩形毛玻璃图标（30×26，间距 4px；2026-09-28 紧凑化，原 34×30 / 6px；flex-wrap——多个工具连续调用时横向扩展，横向空间不足自动下移一行）；图标按工具分派不同 SVG（`ToolIcon.vue`：bash 终端符 / 文件 / 代码括号 / 清单对勾 / 计算器 / 搜索放大镜 / 子代理放射图 / 编排（后台·并行任务） / 消息气泡 / 适配器齿轮 / 工作区文件夹 / 默认扳手）；失败图标染 error 色
+- **折叠态**：一排圆角矩形毛玻璃图标（30×26，间距 4px；flex-wrap——多个工具连续调用时横向扩展，横向空间不足自动下移一行）；图标按工具分派不同 SVG（`ToolIcon.vue`：bash 终端符 / 文件 / 代码括号 / 清单对勾 / 计算器 / 搜索放大镜 / 子代理放射图 / 编排（后台·并行任务） / 消息气泡 / 适配器齿轮 / 工作区文件夹 / 默认扳手）；失败图标染 error 色
 - **加载/运行动画**（任一图标 status=running 时整组进入运行态）：
   - **工具专属 SVG 动画**：运行中的图标播放该工具图标本体路径的专属动画（`ToolIcon` 的 `loading` prop，只动既有路径元素、不叠加任何轨道元素）——bash 下划线光标闪烁 / 文件折角透明度脉动 / 代码尖括号交替内收 / 清单对勾反复描画 / 计算器按键波浪点亮 / 搜索放大镜小幅巡游 / 子代理两条连线依次描画（任务下发感）/ 消息气泡弹出回弹（发送感）/ 设置齿轮匀速转动 / 工作区文件夹呼吸 / 默认扳手小幅拧动；位移/旋转类动画均用 `transform-box: view-box` 锁定以图标中心为原点
   - **整行呼吸**：整组图标播放 1.6s 呼吸脉冲（`.tool-run-group--running` → `tool-run-pulse`），仅 box-shadow 在常态与 `var(--panel-accent)` 24% 发光之间往复，不位移、不缩放——运行感来自光晕而非抖动，避免图标行在消息流里"跳动"
   - **展开反馈**：点击展开详情卡时卡片以 0.18s `tool-run-enter`（透明度 0→1 + 上移 4px）浮现；图标本体 hover 上浮 1px
   - 运行态动画纯视觉（`status` 驱动），不参与逻辑；减少动态偏好（`prefers-reduced-motion`）暂未单独降级
 - **展开态**：点击某个图标，该行下方浮现该调用的具体内容卡片（图标 + 名称 + 时间 + 状态胶囊 + 输入/输出 `<pre>`）；再点或点其他图标切换/收起；一次只展开一项
-- **委派标签**（2026-09-28）：`spawn_subagent` 图标行/详情头部显示**任务摘要**而非工具名（解析 Core 时间线摘要串 `{task=… · timeout_secs=…}` 与原始 JSON 两种形态，80 字符截断）——「这次派了什么活」一眼可见
+- **委派标签**：`spawn_subagent` 图标行/详情头部显示**任务摘要**而非工具名（解析 Core 时间线摘要串 `{task=… · timeout_secs=…}` 与原始 JSON 两种形态，80 字符截断）——「这次派了什么活」一眼可见
 - **默认折叠**：运行过程中保持折叠（用户可手动点开，但任一条目状态/数量变化时 `watch` 会重新收起）；全部完成且均成功 → 保持折叠；**全部完成但存在失败 → 自动展开首个失败项**
 - 打开项消失（会话清空等）时自动收起；`watch` 兜底（`ToolRunGroup.vue`）
 
-### 7.3c 子代理委派行（SubagentEventBlock，2026-09-28）
+### 子代理委派行（SubagentEventBlock）
 
-子代理（`spawn_subagent`）此前在会话里几乎不可见：派发后只有一个工具图标，
-完成回报（`<subagent_event>` 钩子）更是以**原始 JSON** 直接渲染成 user 气泡
-——一条动辄数千字符、占满半屏。现在一份委派对应**一行**、全程可见：
+子代理（`spawn_subagent`）一份委派对应**一行**、全程可见（此前完成回报以原始 JSON 直接渲染成 user 气泡——一条动辄数千字符、占满半屏）：
 
 - **运行中**：`SubagentStarted` → 在派发位置插入一行「子代理运行中 + 任务摘要」（呼吸点 + 单行省略的任务；22px 高）
 - **完成合并**：`<subagent_event>` 钩子到达 → **就地改写该行**为「子代理完成/失败 + 任务摘要」，点击展开结论全文（限高 260px 内滚动）；未命中（行已滚出窗口/刷新后先到钩子）则追加一行兜底——刷新后的历史视图里该行落在钩子位置
@@ -91,19 +113,21 @@ graph LR
 - **失败态**：红色左边框 + 「子代理失败」，结论体同可展开
 - 实现：`state_domains/timeline.ts::parseSubagentEvent`（实时与历史回放共用解析）、`startSubagentRun`/`finishSubagentRun`；组件 `SubagentEventBlock.vue`
 
-### 7.4 推理块（ReasoningBlock）
+## 推理块与活动浮条
+
+### 推理块（ReasoningBlock）
 
 - **实时**：打字机逐字——24ms/tick，每 tick ≥2 字符，总时长约 6s 封顶（按文本长度自适应提速）；紫色左边框 + 「思考」标签 + 输入中提示「正在推演…」+ 闪烁光标 + 呼吸点
 - **历史**：一次性全量显示，无动画
 - 动画纯视觉层（`animate` 元数据不参与逻辑）
-- **折叠（2026-09，默认折叠）**：头部可点击开合（`aria-expanded` + 标题提示 + 折叠态字数徽标「N 字」）——静止态（历史回放 / 推演结束）折叠为一行头部；**推演中自动展开**（用户手动操作过则尊重其选择，不再自动开合）
+- **折叠（默认折叠）**：头部可点击开合（`aria-expanded` + 标题提示 + 折叠态字数徽标「N 字」）——静止态（历史回放 / 推演结束）折叠为一行头部；**推演中自动展开**（用户手动操作过则尊重其选择，不再自动开合）
 - **推演滚动跟随**：思考框体为**限高滚动窗口**（max-height 180px），打字机每次推进后（`flush: 'post'`）滚动钉底（`scrollTop = scrollHeight`）——推演中始终可见最后一行，不撑爆时间线；推演结束后手动展开时滚动复位到顶部（从头阅读）
 
-### 7.5 活动浮条
+### 活动浮条
 
 输入区上方的胶囊浮条（仅当前会话忙碌时可见）：旋转 spinner（0.8s）+ 相位文案——`正在思考：{detail}…` / `正在调用工具 {detail}…` / `子代理工作中…`（320px 省略截断）。
 
-### 7.6 输入区
+## 输入区（发送 / 图片 / 取消任务）
 
 - **发送**：Enter（IME 组合输入守卫，`isComposing`/229 不触发）；Shift+Enter 换行；空文本（trim 后）不发送；发送后清空
 - **文本域**：1 行起自适应撑高，上限 `calc(8em + 20px)` 后内部滚动
@@ -111,28 +135,32 @@ graph LR
 - **图片**：粘贴监听挂在整个会话视图容器（剪贴板带文件即 `preventDefault`，`image/*` 过滤在入队时，`ChatView.vue:607, 629`）或附件按钮多选；统一 canvas 缩放至最长边 1600px 后重编码——PNG 仅在源码体积 ≤1.1MB 时保持 `image/png`（保透明），其余转 JPEG q0.85，编码结果超 `MAX_ATTACHMENT_CHARS`（1.5M 字符）则逐级缩小（×0.65，下限 320px；多模态端点的请求体积与文本 token 都受不了数 MB 的无损 PNG）；待发附件 64×64 缩略图 + `×` 移除；随 `SendMessage.images` 发送，发后清空
 - **取消任务**：仅当前会话忙碌时出现在操作区。点击 = **先本地乐观中断、再下发命令**（`App.vue:138-151`）：
   1. 本地 `cancelSessionWork`（`state.ts:1036-1075`）立即生效——活动相位 → completed（浮条/取消按钮即时消失）；该会话 running 任务及其分支 → cancelled；主时间线与分支 tab 内 running 工具卡 → failed 并写入「（已取消）」
-  2. 下发 `CancelRequestedWork{session_id, all:false, team_id: 当前Agent}`——`team_id` 必须携带，否则命令路由到默认 Agent，self-coding 场景下"取消 0 个任务"（2026-09-02 修复）
+  2. 下发 `CancelRequestedWork{session_id, all:false, team_id: 当前Agent}`——`team_id` 必须携带，否则命令路由到默认 Agent，self-coding 场景下"取消 0 个任务"；后端取消成功即回 `AgentCompleted` 对齐状态
   3. 库组件自带的取消按钮不渲染（`cancelable: false`，`@cancel` 仅作转发）
 - 发送按钮为库 `#actions` slot 自绘（替换默认按钮，保持与输入区新拟态风格一致）
 
-### 7.7 入口行按钮与弹出层
+## 入口行按钮与弹出层
 
-入口行位于输入区上方（`bottom = 输入区高度 + 24px`，ResizeObserver 跟踪）。**按钮组件化（2026-09）**：入口按钮统一使用 ui-frame `NeumorphismButton`（`variant=glass` 磨砂半透明、`shape=pill` 胶囊、`size=small`）；清单数字徽标使用 `NeumorphismBadge`（右上角、`showZero=false`、0 时隐藏）；模板 ref 取组件实例的 `$el` 定位弹层（`btnElement()` 辅助）。按钮只保留布局微调（图标 14px）；作用域内覆盖玻璃令牌使按钮更透（`.entry-row` 内 `--nm-glass-bg` 降至 45% 不透明度、`--nm-glass-blur` 提至 24px）：
+入口行位于输入区上方（`bottom = 输入区高度 + 24px`，ResizeObserver 跟踪）。**按钮组件化**：入口按钮统一使用 ui-frame `NeumorphismButton`（`variant=glass` 磨砂半透明、`shape=pill` 胶囊、`size=small`）；清单数字徽标使用 `NeumorphismBadge`（右上角、`showZero=false`、0 时隐藏）；模板 ref 取组件实例的 `$el` 定位弹层（`btnElement()` 辅助）。按钮只保留布局微调（图标 14px）；作用域内覆盖玻璃令牌使按钮更透（`.entry-row` 内 `--nm-glass-bg` 降至 45% 不透明度、`--nm-glass-blur` 提至 24px）：
 
 | 按钮 | 行为 |
 |---|---|
-| Agent 切换 | 见 §六 |
+| Agent 切换 | 见 [布局与导航](./panel-layout.md)§六 |
 | 配置 | 打开 AgentConfigModal（当前 Agent 的能力配置）；无激活 Agent 时回退 teams[0]（`ChatView.vue:412-417`） |
-| 上下文 | 打开 ContextView 弹层（**当前会话**的上下文明细；请求带 `session_id`，切换会话自动重拉、忽略他属陈旧快照；几何与「配置」弹层一致，点遮罩关闭，无返回按钮）。**面板默认展开全部块**（此前仅 base 展开，用户「看不到内容」——2026-09-24 修正）；每块头部 = 种类徽标 + 名称 + token 数 + **占当前上下文总量的百分比**（<1% 显示 `<1%`；此前是相对最大块的比例，如小技能块显示 1%、大块显示 100%，误读率高）；种类徽标覆盖 Core 全部 kind（含 `workspace`/`system-skill`，缺项会裸显英文）；名称自动剥掉与徽标重复的前缀（「常驻技能 · xx」→ 徽标「常驻技能」+ 名称「xx」）；**入口受 `echo-agent.management.panel` 插件对当前 Agent 门控**（`ChatView.vue:200-203`） |
-| 清单 | **仅当 `checklist` 工具对当前 persona 可用时显示**（2026-09 起插件维度已移除，只受工具级白/黑名单与内置工具集包门控，见 [插件化设计](./core-plugins.md)）；弹出清单卡（徽标 = 清单数）：内嵌 SidebarCard 折叠卡（默认展开、计数徽标），各清单进度条 + ☑/☐ 项（完成项加粗），只读；工具禁用后入口、浮层与徽标立即移除并清空本地清单状态；空态「（暂无清单）」 |
-| 工作区 | 弹出工作区会话面板（`WorkspacePanel`，普通宽度）：多会话管理（新建/编辑/删除/激活；每会话多个工作区目录）与各目录 git 状态（分支/领先落后/暂存修改未跟踪计数/最近提交/变更文件）；**文件浏览器已迁至边栏**（§7.8，2026-09-19）；**激活 = 进入项目对话**（2026-09-14 重定义）：本地对话切换到该工作区专属通道（`local:workspace:<id>:local_user`，独立上下文）+ 系统提示词注入，见 [多 Agent](./core-agents.md)§工作区会话与项目通道；**仅当当前 persona 的 `echo-agent.workspace` 插件与 `workspace` 工具均可用时显示**；命令带 team_id 路由（去主智能体后必填），未选择 Agent 时不发请求；切换 Agent 强制关闭；**加载三态（2026-09-30）**：打开拉取会话清单（`workspace:sessions`）——「（暂无工作区会话…）」空态让位于加载跟踪（转圈 / 超时重试），git 状态区保留自身「正在读取 git 状态…」文案 |
-| 会话 | 弹出 `SessionSwitcher`（多会话切换，2026-09；**取代侧边栏会话卡**。显隐依赖会话归属完整——Core 侧三层保证见 [多 Agent](./core-agents.md)§会话模型）：按平台分组列出当前智能体的会话（Local/QQ 私聊/QQ 群/其他），当前高亮、运行中带忙碌点，点击切换（聊天区按会话过滤；每个群/私聊有独立上下文，见 [多 Agent](./core-agents.md)§会话模型）。**Local 分组含工作区通道**（`local:workspace:<id>:local_user`，昵称 = 工作区名，标签「工作区」）：选通道 = 激活对应工作区、选默认会话 = 取消激活（2026-09-14 起，见 §工作区会话与项目通道）。**>1 个会话或并行多会话模式（含「全局」项）时显示**；切换 Agent 强制关闭 |
-| 适配器 | 弹出 QQ 管理面板（§十）；仅当前 Agent 启用适配器插件时显示；切换 Agent 强制关闭 |
-| 任务 | 弹出 `TasksPanel`（2026-09-19 起替代顶栏任务视图）：**只对应当前 agent 的当前会话**（`sessionId` 过滤，「全局」会话显示全部），徽标 = 当前会话运行中/等待整合任务数；显隐 = `echo-agent.subagent` 插件对当前 persona 启用或当前会话已有任务记录；切换 Agent / 插件禁用强制关闭。卡片/状态/取消语义见 §十一 |
+| 上下文 | 打开 ContextView 弹层（**当前会话**的上下文明细；请求带 `session_id`，切换会话自动重拉、忽略他属陈旧快照；几何与「配置」弹层一致，点遮罩关闭，无返回按钮）。**面板默认展开全部块**（修正此前仅 base 展开、用户「看不到内容」的问题）；每块头部 = 种类徽标 + 名称 + token 数 + **占当前上下文总量的百分比**（<1% 显示 `<1%`；修正此前「相对最大块」口径的误读——小技能块显示 1%、大块显示 100%）；种类徽标覆盖 Core 全部 kind（含 `workspace`/`system-skill`，缺项会裸显英文）；名称自动剥掉与徽标重复的前缀（「常驻技能 · xx」→ 徽标「常驻技能」+ 名称「xx」）；**入口受 `echo-agent.management.panel` 插件对当前 Agent 门控**（`ChatView.vue:200-203`） |
+| 清单 | **仅当 `checklist` 工具对当前 persona 可用时显示**（插件维度已移除，只受工具级白/黑名单与内置工具集包门控，见 [插件化设计](./core-plugins.md)）；弹出清单卡（徽标 = 清单数）：内嵌 SidebarCard 折叠卡（默认展开、计数徽标），各清单进度条 + ☑/☐ 项（完成项加粗），只读；工具禁用后入口、浮层与徽标立即移除并清空本地清单状态；空态「（暂无清单）」 |
+| 工作区 | 弹出工作区会话面板（`WorkspacePanel`，普通宽度）：多会话管理（新建/编辑/删除/激活；每会话多个工作区目录）与各目录 git 状态（分支/领先落后/暂存修改未跟踪计数/最近提交/变更文件）；**文件浏览器已迁至侧栏**（见「侧栏与多接入点」）；**激活 = 进入项目对话**：本地对话切换到该工作区专属通道（`local:workspace:<id>:local_user`，独立上下文）+ 系统提示词注入，见 [多 Agent](./core-agents.md)「工作区会话与项目通道」；**仅当当前 persona 的 `echo-agent.workspace` 插件与 `workspace` 工具均可用时显示**；命令带 team_id 路由（去主智能体后必填），未选择 Agent 时不发请求；切换 Agent 强制关闭；**加载三态**：打开拉取会话清单（`workspace:sessions`）——「（暂无工作区会话…）」空态让位于加载跟踪（转圈 / 超时重试），git 状态区保留自身「正在读取 git 状态…」文案 |
+| 会话 | 弹出 `SessionSwitcher`（多会话切换；**取代侧边栏会话卡**。显隐依赖会话归属完整——Core 侧三层保证见 [多 Agent](./core-agents.md)「会话模型」）：按平台分组列出当前智能体的会话（Local/QQ 私聊/QQ 群/其他），当前高亮、运行中带忙碌点，点击切换（聊天区按会话过滤；每个群/私聊有独立上下文，见 [多 Agent](./core-agents.md)「会话模型」）。**Local 分组含工作区通道**（`local:workspace:<id>:local_user`，昵称 = 工作区名，标签「工作区」）：选通道 = 激活对应工作区、选默认会话 = 取消激活（见 [多 Agent](./core-agents.md)「工作区会话与项目通道」）。**>1 个会话或并行多会话模式（含「全局」项）时显示**；切换 Agent 强制关闭 |
+| 适配器 | 弹出 QQ 管理面板（见 [QQ 管理·任务·Shell](./panel-qq-tasks.md)）；仅当前 Agent 启用适配器插件时显示；切换 Agent 强制关闭 |
+| 任务 | 弹出 `TasksPanel`（替代原顶栏任务视图）：**只对应当前 agent 的当前会话**（`sessionId` 过滤，「全局」会话显示全部），徽标 = 当前会话运行中/等待整合任务数；显隐 = `echo-agent.subagent` 插件对当前 persona 启用或当前会话已有任务记录；切换 Agent / 插件禁用强制关闭。卡片/状态/取消语义见 [QQ 管理·任务·Shell](./panel-qq-tasks.md) |
 
-弹出层宽 `min(520px, 82vw)`，锚定按钮上方 8px、相对输入区水平居中。**清单/适配器/任务弹出层没有全屏遮罩**——是 fixed 定位的内容尺寸面板，仅点到弹层自身 padding 空白（`@click.self`）才关闭，点弹层外的聊天区不关闭（`ChatView.vue`）。**「配置」「上下文」是会话区内锚定的磨砂玻璃弹层**（上/左/右 12px，底边 = 入口行高 + 42px），点弹层外遮罩关闭；上下文弹层无返回按钮（2026-09 起与配置弹层同几何）。
+弹出层宽 `min(520px, 82vw)`，锚定按钮上方 8px、相对输入区水平居中。**清单/适配器/任务弹出层没有全屏遮罩**——是 fixed 定位的内容尺寸面板，仅点到弹层自身 padding 空白（`@click.self`）才关闭，点弹层外的聊天区不关闭（`ChatView.vue`）。**「配置」「上下文」是会话区内锚定的磨砂玻璃弹层**（上/左/右 12px，底边 = 入口行高 + 42px），点弹层外遮罩关闭；上下文弹层无返回按钮。
 
-### 7.8 双侧边栏（chat-rail，2026-09-19 起；2026-09-24 起左右两列）
+## 侧栏与多接入点
+
+多接入点下的会话/人格身份与消歧约定见文首「多接入点」块引；本区描述会话视图左右两侧的常驻侧栏（chat-rail）。
+
+### 双侧边栏（chat-rail）
 
 会话视图**左右两侧**的常驻悬浮区：透明容器层（无底色无描边），宽度各 324px，
 顶部贴视图上缘，**下界 = 入口行上方 8px**（`bottom: calc(entryBottom + 45px)`，
@@ -161,7 +189,7 @@ graph LR
 留白不变**（按「有可见卡片」判定；被拖卡片已从源列摘除、尚未落入目标列，若让
 留白跟随「列是否渲染」会因空列临时出现而反复跳变），落位后再一次性过渡。
 
-**底部避让（2026-09-24 检查后修正）**：
+**底部避让**：
 
 | 约束 | 数值 | 说明 |
 | --- | --- | --- |
@@ -172,8 +200,7 @@ graph LR
 **卡片间距**：槽位间距 12px（`rail-stack__list` 的 `gap`）。分隔条位于槽位内、
 卡片之前，`margin: -8px 8px 3px`——负上边距把把手抬进卡间空隙（视觉中线贴
 空隙中心），下边距 3px 抵消自身 5px 高度，使「分隔条 + 卡片」净占位 = 0：
-**卡间距严格等于槽位间距 12px**（漏掉 3px 会把间距压成 1px，2026-09-24 实测
-修复）。落点指示线为**绝对定位**（`top: -7px`，不参与布局）：占位式实现会在
+**卡间距严格等于槽位间距 12px**（漏掉 3px 会把间距压成 1px）。落点指示线为**绝对定位**（`top: -7px`，不参与布局）：占位式实现会在
 出现/消失时推挤相邻卡片（实测跳动 8px）。
 
 **卡片**（门控不满足的卡不出现；**归属哪一列与列内顺序由用户拖动决定**，
@@ -181,8 +208,8 @@ graph LR
 
 | 卡片 | 内容 | 门控 |
 |---|---|---|
-| 连接状态 | `ConnectionStatusCard`：Core 管理通道状态点（`已连接` / `连接中…`，断连时附「与 Core 断开，正在自动重连（期间命令不会发送）」）+「QQ 适配器」分组逐实例列出显示名 / 自登号 / 运行态（`已连接` / `等待连接` / `已停止`）——实例连接态顶栏一行放不下，故随卡片迁入；**紧凑卡**（`compact: true`：固定高度、不参与 flex 分配，也不参与分隔条拖动比例） | 常驻（2026-09-23 从顶栏中段迁入） |
-| 文件浏览器 | `WorkspaceFileBrowser`（只读浏览激活工作区会话的目录：多根切换 chip、面包屑导航、目录下钻/回退、文件大小；`RequestWorkspaceFiles` → `WorkspaceFiles`，服务端 canonical 前缀校验限定在会话目录及子孙内）+「会话管理与 git 状态 →」链接（打开 §7.7 工作区弹层）。**根 chip 悬停速览（2026-09-28）**：chip 只显示 basename（多根同名如两个 `source/` 时无法区分），悬停即显示**绝对路径**——自绘速览经 `Teleport` 到 `body` + `position: fixed`（绕开 rail 卡体 `overflow-y: auto` 的裁剪；不用原生 `title`，约 1s 延迟且长路径被系统截断）；视口内夹取 + 顶部空间不足时翻到 chip 下方，滚动/缩放即收起；`z-index 40`（高于边栏 4/入口行 6/清单浮层 25，低于浮层遮罩 50） | `echo-agent.workspace` 插件与 `workspace` 工具均可用，且存在激活的工作区会话 |
+| 连接状态 | `ConnectionStatusCard`：Core 管理通道状态点（`已连接` / `连接中…`，断连时附「与 Core 断开，正在自动重连（期间命令不会发送）」）+「QQ 适配器」分组逐实例列出显示名 / 自登号 / 运行态（`已连接` / `等待连接` / `已停止`）——实例连接态顶栏一行放不下，故随卡片迁入；**紧凑卡**（`compact: true`：固定高度、不参与 flex 分配，也不参与分隔条拖动比例） | 常驻（自顶栏中段迁入） |
+| 文件浏览器 | `WorkspaceFileBrowser`（只读浏览激活工作区会话的目录：多根切换 chip、面包屑导航、目录下钻/回退、文件大小；`RequestWorkspaceFiles` → `WorkspaceFiles`，服务端 canonical 前缀校验限定在会话目录及子孙内）+「会话管理与 git 状态 →」链接（打开工作区弹层，见「入口行按钮与弹出层」）。**根 chip 悬停速览**：chip 只显示 basename（多根同名如两个 `source/` 时无法区分），悬停即显示**绝对路径**——自绘速览经 `Teleport` 到 `body` + `position: fixed`（绕开 rail 卡体 `overflow-y: auto` 的裁剪；不用原生 `title`，约 1s 延迟且长路径被系统截断）；视口内夹取 + 顶部空间不足时翻到 chip 下方，滚动/缩放即收起；`z-index 40`（高于边栏 4/入口行 6/清单浮层 25，低于浮层遮罩 50） | `echo-agent.workspace` 插件与 `workspace` 工具均可用，且存在激活的工作区会话 |
 | Shell | `ShellList` 会话列表：状态点 + 会话 id + 目录 + 命令数 +「详情」按钮，附新建/刷新；**不内嵌终端**——点「详情」经 `openShellDetail` 事件链进入 Shell 详情视图（`ShellPanel`：仅目标会话的终端 + 输入行 + 返回列表/停止会话；无顶栏导航入口） | 常驻 |
 | 临时分支 | 运行中的回执分支列表（点选打开 BranchModal） | 仅并行多会话模式（单会话模式 Core 不发 ReplyBranch* 事件） |
 
@@ -195,8 +222,6 @@ graph LR
   与折叠态一并持久化；任一相邻卡折叠、或任一侧为**紧凑卡**时该分隔条不可拖
   （紧凑卡固定高度，拖动比例对它无意义）
 
-> 历史：原「左侧边栏」（会话卡/清单/工作区入口）已于 2026-09-19 移除，其内容
-> 归入口行；Shell/任务原为顶栏独立视图，同日分别迁入右侧容器与入口行弹层；
-> 连接状态 2026-09-23 从顶栏中段迁入右侧容器（面板级信息与业务导航分离）；
-> **2026-09-24 起该容器泛化为左右两列**——卡片可自由拖动换列（拖动机制见上表），
-> 左列默认空置。
+> 沿革：原「左侧边栏」（会话卡/清单/工作区入口）已移除，其内容归入口行；Shell/任务原为顶栏
+> 独立视图，分别迁入右侧容器与入口行弹层；连接状态自顶栏中段迁入右侧容器（面板级信息与
+> 业务导航分离）；该容器已泛化为左右两列——卡片可自由拖动换列（拖动机制见上表），左列默认空置。

@@ -8,6 +8,8 @@ y: 1760
 
 # 联邦（多机去中心化 Agent）
 
+> **定位**：本文描述联邦（多机去中心化）——Core↔Core 对等链路的设计原则、协议与安全模型、配置与管理面、跨机工具调用/委派/查询/文件协作/会话迁移，以及 Panel 侧的多节点调度。读者：多机部署的使用者与联邦功能的维护者。联邦的装载与门控见 [插件化设计](./core-plugins.md)；节点内的会话与工作区模型见 [多 Agent 与会话](./core-agents.md)。
+
 Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，agent 可以
 跨机器的工作区执行工具、委派子任务、做只读查询。典型场景：联合调试
 （A 机改代码、B 机起服务）、跨机部署验证、能力互补（GPU/专有环境）。
@@ -15,21 +17,6 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 实现分布：`source/federation/echo-federation`（帧与链路）+
 `source/backend/echo-agent/src/packages/federation`（执行层）+
 `source/core/src/main.rs`（组合根装配与路由泵）。
-
-## 零配置默认开启
-
-联邦已**取消开关、零配置默认开启**（2026-10）：
-
-- `listen` 缺省 `0.0.0.0:3133`——任何 Core **开箱即可连出也可被连入**
-  （邀请串配对开箱可用，无需先手写 listen）；显式 `listen = ""` 退回
-  纯连出。未配 `[federation.peers.*]` 时 accept 侧靠 per-peer token 认证，
-  **不放行任何已知链路**——单向暴露不等于可被滥用。
-- 联邦管理面（状态查询 / 邀请串 / 添加 peer）始终可用。
-- `RequestFederationStatus` 恒回 `enabled: true` 的正常快照。
-- 一旦配置 `listen` 或 peer，互信边界即生效（≈ SSH 免密）——务必 per-peer
-  token + `allow_tools`/`allow_queries` 收敛。
-- **自更新与联邦独立**（曾共用处理器，已解耦）。
-- 旧配置里的 `enabled = false` 会被忽略（字段已移除）。
 
 ## 设计原则
 
@@ -58,7 +45,8 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 
 ## 链路与协议（`echo-federation` crate）
 
-每节点同时监听（`[federation] listen`，惯例端口 :3133；缺省空 = 不监听，纯连出）与按 peers 连出；
+每节点同时监听（`[federation] listen`，惯例端口 :3133；缺省
+`0.0.0.0:3133`，显式 `listen = ""` 退回纯连出）与按 peers 连出；
 连接后角色对称。
 
 - **握手**：Hello/Welcome（NodeId + 能力 `NodeCaps{tools, subagent,
@@ -78,10 +66,10 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 | 类别 | 帧 | 语义 |
 |---|---|---|
 | 工具调用 | Invoke → InvokeAccepted（裁决）→ InvokeOutput*（流式）→ InvokeResult（终态）/ Cancel | 大脑侧 `RemoteTool` 代理；执行端 per-peer 白名单裁决后经本机 `ToolRegistry` 执行；断链使在飞调用失败，重连整包恢复 |
-| 委派 | SubagentSpawn / SubagentEvent | `spawn_subagent node=...`：大脑侧跑 LLM，工具视图剥前缀替换为该 peer 代理工具（执行时还原 `<peer>:` 前缀）；**执行端按 per-peer `allow_subagent` 门控**（2026-10 接线——未授予时拒绝受理并回 `SubagentEvent(Failed)` 终态，调用方聚合器按失败销账不悬挂；此前仅记审计放行，配置形同虚设） |
-| 只读查询 | Query / QueryResult | `NodeStatus`（恒允许）/ `WorkspaceFiles`（会话已声明目录内 canonical 校验）/ `SessionSnapshot`（trunk 快照 + since_seq/limit 分页）/ `WorkspaceGitStatus`（跨机工作区 git 采集，2026-10——远程目录不再硬编码「本机不可采集」占位，改经联邦拉对端 `collect_dir_git`）/ `BrowseDirectories`（目录选择器浏览，2026-10——限**浏览根**：工作区目录并集 ∪ HOME，供新建工作区时跨机挑选目录，解决"要浏览才能选、要选才能浏览"的鸡生蛋问题）/ `ApiProfiles`（脱敏供应商池，恒允许）；per-peer `allow_queries` 白名单项：`workspace_files` / `workspace_git_status` / `browse_directories` / `session_snapshot`，默认仅 node_status |
+| 委派 | SubagentSpawn / SubagentEvent | `spawn_subagent node=...`：大脑侧跑 LLM，工具视图剥前缀替换为该 peer 代理工具（执行时还原 `<peer>:` 前缀）；**执行端按 per-peer `allow_subagent` 门控**（未授予时拒绝受理并回 `SubagentEvent(Failed)` 终态，调用方聚合器按失败销账不悬挂） |
+| 只读查询 | Query / QueryResult | `NodeStatus`（恒允许）/ `WorkspaceFiles`（会话已声明目录内 canonical 校验）/ `SessionSnapshot`（trunk 快照 + since_seq/limit 分页）/ `WorkspaceGitStatus`（跨机工作区 git 采集——远程目录经联邦拉对端 `collect_dir_git` 实时采集）/ `BrowseDirectories`（目录选择器浏览——限**浏览根**：工作区目录并集 ∪ HOME，供新建工作区时跨机挑选目录，解决"要浏览才能选、要选才能浏览"的鸡生蛋问题）/ `ApiProfiles`（脱敏供应商池，恒允许）；per-peer `allow_queries` 白名单项：`workspace_files` / `workspace_git_status` / `browse_directories` / `session_snapshot`，默认仅 node_status |
 
-## 安全模型
+## 安全模型与授权
 
 - per-peer 白名单：`allow_tools`（`*` 或显式列表）、`require_confirm`
   （v1 简化为拒绝）、`allow_queries`（敏感查询默认拒绝）
@@ -89,7 +77,27 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
   大脑侧不做也不可能做远程 fs 校验
 - 全部联邦调用记 `federation` 审计日志（tracing target）
 
+### 只读查询授权
+
+`NodeStatus` 恒允许（无害遥测）；`WorkspaceFiles`/`SessionSnapshot`/`BrowseDirectories`
+默认拒绝，需 `[federation.peers.*] allow_queries = ["session_snapshot",
+"workspace_files"]`（或 `*`）显式开启——对方能看到会话内容，安全
+优先于便利。
+
 ## 配置与管理面
+
+联邦**零配置默认开启**（独立开关已取消）：
+
+- `listen` 缺省 `0.0.0.0:3133`——任何 Core **开箱即可连出也可被连入**
+  （邀请串配对开箱可用，无需先手写 listen）；显式 `listen = ""` 退回
+  纯连出。未配 `[federation.peers.*]` 时 accept 侧靠 per-peer token 认证，
+  **不放行任何已知链路**——单向暴露不等于可被滥用。
+- 联邦管理面（状态查询 / 邀请串 / 添加 peer）始终可用。
+- `RequestFederationStatus` 恒回 `enabled: true` 的正常快照。
+- 一旦配置 `listen` 或 peer，互信边界即生效（≈ SSH 免密）——务必 per-peer
+  token + `allow_tools`/`allow_queries` 收敛。
+- **自更新与联邦独立**：命令处理已解耦。
+- 旧配置里的 `enabled = false` 会被忽略（字段已移除）。
 
 ```toml
 [federation]
@@ -115,22 +123,21 @@ allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspac
 （全部工具 / 自定义工具白名单 / 只读查询逐类勾选 / 接受委派 / 需确认列表；
 **添加 peer 默认满权限**）、**邀请串配对**：
 `echofed://host:port?name=<别名>#<token>`，在 Panel 上生成 → 切到另一
-个运行区域粘贴自动填充（一套 Panel 管全联邦，详见 panel.md）。
+个运行区域粘贴自动填充（一套 Panel 管全联邦，见 [Panel](./panel.md)）。
 
-**邀请配对的占位提升（2026-10）**：`invite-*` 占位（运行时-only）配对
+**邀请配对的占位提升**：`invite-*` 占位（运行时-only）配对
 成功时**提升为配置条目**——写 `[federation.peers.<名字>]`（名字取对端
 `node_name`，缺省 `node-<node_id 前 8>`；url 空 = 仅接受连入、token 保留
 以支持对端重连），**默认满权限**（`allow_tools = ["*"]`、
 `allow_queries = ["*"]`、`allow_subagent = true`）——邀请串即一次性凭证，
 接收方按互信对待（与「SSH 免密」同语义），之后可在 Panel 逐项收紧。
-此前配对即删除占位：连入方向既无配置（Panel 不可见/不可编辑、无策略 →
+占位若不落盘：连入方向无配置（Panel 不可见/不可编辑、无策略 →
 静默全拒），对端重启后还因 token 消失无法重连。
 
-**连入侧策略解析（2026-10 🔴 修复）**：接受侧链路的 `peer_name` 此前
-取对端 node_id，而 `peer_policies` 按配置名存储——策略查找静默落空，
-**Panel 配置的授权对连入方向完全无效**（全部按默认裁决）。现在链路
-建立时按呈现的 token 反查运行时 peer 表解析出配置名
-（`resolve_accept_peer_name`），连入/连出两个方向策略一致生效。
+**连入侧策略解析**：接受侧链路建立时按呈现的 token 反查运行时 peer 表，
+把对端解析为**配置名**（`resolve_accept_peer_name`）——`peer_policies`
+按配置名存储，若直接用对端 node_id 查找会静默落空，导致 Panel 配置的
+授权对连入方向无效；解析后连入/连出两个方向策略一致生效。
 
 ## 代理工具与远程委派
 
@@ -148,14 +155,23 @@ allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspac
   执行时还原前缀经 Invoke 路由；结果回灌完全复用本地
   `<subagent_event>` hook（8K 截断、单层委派）
 
-## 只读查询授权姿势
+### 跨机子代理结果聚合
 
-`NodeStatus` 恒允许（无害遥测）；`WorkspaceFiles`/`SessionSnapshot`/`BrowseDirectories`
-默认拒绝，需 `[federation.peers.*] allow_queries = ["session_snapshot",
-"workspace_files"]`（或 `*`）显式开启——对方能看到会话内容，安全
-优先于便利。
+并行 `spawn_subagent node=A + node=B` 时，大脑侧
+`RemoteSubagentAggregator` 按父 turn 分组（session_id +
+parent_branch_id → 挂起 call_id 集合）：受理时登记、终态时销账，
+组内全部终态后产出一条聚合摘要（各节点状态 + 结果前 500 字 +
+成功 x/y）投递父会话 timeline（system 消息）。
 
-## 跨机文件协作（P3-1）
+- 登记：`SpawnSubagentTool::spawn` 受理远程委派（node=Some）时
+- 销账双路径：大脑侧本地完成（`notify_remote_subagent` 终态）+
+  联邦泵收到对端 `SubagentEvent`（幂等——组销账后即移除，重复
+  销账返回 None）
+- 投递出口：`set_aggregate_deliver`（组合根注入；未装配时仅记日志）
+
+## 跨机协作
+
+### 跨机文件协作
 
 文件工具（read_file/write_file/edit_file/list_files/search_code）的
 `path` 参数支持 `node://<peer>/<绝对路径>` 前缀——agent 可直接操作
@@ -170,7 +186,7 @@ allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspac
   超时均原样透传为 ToolError。超时链：路由 invoke 120s → 外层 wait
   180s → 工具守卫 460s（timeout_hint）
 
-## 会话迁移（P3-2，v1.1 分块搬运）
+### 会话迁移
 
 `MigrateSession { session_id, team_id, target_peer }`（Frontend-only）→
 两条 `SessionMigrated` 事件（受理 + 终态）。语义：
@@ -193,46 +209,17 @@ allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspac
 > `MigrateSession.team_id` 为 `#[serde(default)]` 可选，兼容旧前端（缺省时
 > 源侧逐 persona 查找会话）。
 
-## 跨机只读查询的 team 维度
-
-`QueryRequest.team_id`（`#[serde(default)]`）：`SessionSnapshot` 非空时**只
-查该 persona**——同名会话（`local:tui::local_user` 在每个 persona 上都存在）
-逐 persona 取首个会返回任意人格的历史，是此前的歧义来源；为空时退旧行为。
-
 Panel 侧：设置 → 联邦页提供「迁移当前会话」（列出生效 peer，带当前会话 /
 人格），点击即发 `MigrateSession`；受理与终态两条 `SessionMigrated` 以 toast
 呈现（成功/失败不同语气）。
 
-## 中继投递意图（不再按命令名猜语义）
+### 只读查询的 team 维度
 
-中继是**纯透传**，命令投递范围由客户端显式声明：
+`QueryRequest.team_id`（`#[serde(default)]`）：`SessionSnapshot` 非空时**只
+查该 persona**——同名会话（`local:tui::local_user` 在每个 persona 上都存在）
+若逐 persona 取首个会命中任意人格的历史，故需要该维度消歧；为空时保持旧行为。
 
-- `{"core": "<name>", "frame": {...}}` → 定向该接入点（联邦节点）；
-- `{"broadcast": true, "frame": {...}}` → 广播给全部在线接入点（仅只读发现
-  命令：`RequestState` / `RequestTeamsList` / 探活 `Ping` + 重连探测）；
-- 无壳 → 仅单接入点语义下直接转发；多接入点下拒绝（不猜测命令语义）。
-
-此前中继维护一份"只读命令白名单"，与 Core 的
-`echo_protocol::BROADCAST_READONLY_COMMANDS` 手动同步——已删除。现在**语义
-分类不再重复**：中继只认投递意图，前端 `sendCommand` 在多接入点下总是解析出
-具体节点（`resolveTargetCore` 兜底首个已知接入点），需要广播的少数发现命令走
-`broadcastEnvelope()` 显式声明。
-
-## 跨机子代理结果聚合（P3-3）
-
-并行 `spawn_subagent node=A + node=B` 时，大脑侧
-`RemoteSubagentAggregator` 按父 turn 分组（session_id +
-parent_branch_id → 挂起 call_id 集合）：受理时登记、终态时销账，
-组内全部终态后产出一条聚合摘要（各节点状态 + 结果前 500 字 +
-成功 x/y）投递父会话 timeline（system 消息）。
-
-- 登记：`SpawnSubagentTool::spawn` 受理远程委派（node=Some）时
-- 销账双路径：大脑侧本地完成（`notify_remote_subagent` 终态）+
-  联邦泵收到对端 `SubagentEvent`（幂等——组销账后即移除，重复
-  销账返回 None）
-- 投递出口：`set_aggregate_deliver`（组合根注入；未装配时仅记日志）
-
-## 分布式调度（P2）
+## 分布式调度
 
 Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
 选节点：
@@ -241,11 +228,16 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   空闲节点）；本机读 activities、peer 经 `FederationStatus` 回传
   （在线 peer 由 Core 侧 `Query(NodeStatus)` 3s 短超时实时拉取，
   失败退握手快照）
-- `least_busy`（默认）：按 `active_turns` 取负载最低（平局让远程
-  空闲节点）；本机读 activities、peer 经 `FederationStatus` 回传
-  （在线 peer 由 Core 侧 `Query(NodeStatus)` 3s 短超时实时拉取，
-  失败退握手快照）
-- **一套架构，Panel 只是用户入口（2026-10 澄清）**：联邦网络是唯一
+- `round_robin`：在线节点轮转
+- `prefer:<name>`：亲和定向（离线退 least_busy）
+
+策略存 localStorage（`echo-schedule-policy`），面板「设置 → 系统 →
+节点调度」可切换并查看全节点负载一览。已有归属的会话经
+`coreForCommand` 按归属自动路由，调度不参与。
+
+### Panel 接入架构（联邦网络是唯一实体）
+
+- **一套架构：Panel 只是用户入口**：联邦网络是唯一
   实体——所有 Core 节点（不管在哪台机器上）都是网络里的对等节点；
   Panel 是接入这个网络的**用户面板/客户端**（接在哪个节点是部署细节）。
   Panel 的 `[[cores]]` 不是"另一套架构的上游"，而是**接入点配置**——
@@ -258,20 +250,20 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   路由按「会话归属 > 人格归属 > activeCore」并带一致性守卫——目标 core 不
   拥有人格时重定向到拥有人格的 core。否则会把 A core 的 `default` 发给
   B core，得到「智能体 default 不存在」。
-- **运行态复合键 `(core, id)`**（2026-10 Phase 0）：会话 id
+- **运行态复合键 `(core, id)`**：会话 id
   （`local:tui::local_user`）、shell 会话 id（每 core 都从 `sh-1` 起）、人格
   id 在各 core 上可相同，因此 Panel 的 `activities` / `tasks` / `shellTerminals`
   / `teamTimelines` / `workspaceGitBySession` / `workspaceFiles` 及磁盘
   trunk 缓存都必须用复合键（`core 为空时退化为裸 id`，单接入点零变化）；同名
   跨 core 不再互相覆盖/串显。引导期裸广播的只读命令白名单（中继
   `is_readonly_command`）须与 Panel 引导命令对齐，否则多接入点下被静默拒收。
-- **身份内建 `node_id` + 复合键收尾**（2026-10 Phase 2）：`SessionInfo` /
+- **身份内建 `node_id`**：`SessionInfo` /
   `TeamInfo` 线上新增可选 `node_id`（进程级 NodeId，`echo_agent::set_node_id`
   由组合根注入；旧 Core 缺省 None，serde 默认兼容）——多节点聚合客户端不再
   只靠中继信封区分同名会话/人格。Panel 学习 `core → NodeId` 映射并在选择器
   展示；`branchTabs` 按 `(core, branch_id)` 键；等待态（pending）登记时记录
   目标 core，响应只销账同 core 的等待。
-- **运行区域（agent 自带属性，Plan B，2026-10）**：不存在"管理目标 core"
+- **运行区域（agent 自带属性）**：不存在"管理目标 core"
   这种自由变量。每个 agent 自带**运行区域**——区域 = 承载它的 Core，id 为
   `NodeId`（稳定），展示名取 `[core].region_name` → `[federation].node_name`
   → 主机名 → NodeId 短码；`TeamInfo` / `SessionInfo` 线上携带
@@ -289,12 +281,19 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   （按当前 profile 部署/更新）+ 源区域 `DeleteTeam`，两条命令都带**显式
   targetCore**，不依赖任何全局路由变量。会话历史属于原区域，不随 agent
   迁移（跨区搬历史是 `MigrateSession`，需两区域已建联邦链路）。
-- **连接状态卡**：逐区域列出全部已配置上游（`/api/upstreams` 轮询）；不再有
-  "管理目标"选择器，也不再标记"当前区域"——当前 agent 所属区域已在 **agent
+- **连接状态卡**：逐区域列出全部已配置上游（`/api/upstreams` 轮询）；不设
+  "管理目标"选择器，也不标记"当前区域"——当前 agent 所属区域已在 **agent
   菜单**（AgentSwitcher 的区域徽标）中展示，避免重复。
-- `round_robin`：在线节点轮转
-- `prefer:<name>`：亲和定向（离线退 least_busy）
 
-策略存 localStorage（`echo-schedule-policy`），面板「设置 → 系统 →
-节点调度」可切换并查看全节点负载一览。已有归属的会话经 P1 的
-`coreForCommand` 按归属自动路由，调度不参与。
+### 中继投递意图
+
+中继是**纯透传**，命令投递范围由客户端显式声明：
+
+- `{"core": "<name>", "frame": {...}}` → 定向该接入点（联邦节点）；
+- `{"broadcast": true, "frame": {...}}` → 广播给全部在线接入点（仅只读发现
+  命令：`RequestState` / `RequestTeamsList` / 探活 `Ping` + 重连探测）；
+- 无壳 → 仅单接入点语义下直接转发；多接入点下拒绝（不猜测命令语义）。
+
+语义分类不在中继与 Core 间重复：中继只认投递意图，前端 `sendCommand` 在
+多接入点下总是解析出具体节点（`resolveTargetCore` 兜底首个已知接入点），
+需要广播的少数发现命令走 `broadcastEnvelope()` 显式声明。

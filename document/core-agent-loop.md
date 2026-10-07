@@ -8,6 +8,9 @@ y: 320
 
 # Agent 循环
 
+> **定位**：本文描述 **Agent 循环**——可插拔驱动（echo-loop `TurnRunner`）的 turn/step 状态机、循环模式（单会话 / 并行多会话）、工具管道与两套驱动（echo-loop / 内置循环）的生效与分派口径。读者：需要理解消息如何被循环执行的开发者。
+> 相关：[多 Agent 与会话](./core-agents.md)（分支与会话准入）、[插件化设计](./core-plugins.md)（loop 插件治理）、[工具系统](./core-tools.md)（工具执行与超时）。
+
 Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥二选一）
 承载的**可插拔驱动**：turn/step 状态机 + 工具管道，经 [插件化设计](./core-plugins.md)
 节点统一治理（启用/禁用/挂载可逆）。本文档描述其机制细节与当前实化状态。
@@ -31,7 +34,7 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
   完成，适配器入站永不因排队阻塞。
 - **推导**：`TeamMember::loop_mode()`（单一来源）——白名单含 `loop.parallel`
   → parallel；其余（含白名单为空 = 默认）→ single。
-  插件黑名单已移除（2026-09-11），推导只看白名单。旧 id 迁移见
+  插件黑名单已移除，推导只看白名单。旧 id 迁移见
   [配置持久化](./core-config-persistence.md)。
 - **落地**：两个插件 mount 的是同一个 `TurnRunner`（驱动本体），模式只改策略；
   两个都卸载才回退内置循环。模式只能经面板「循环模式」分段单选修改（写白名单）。
@@ -47,7 +50,7 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
   常驻/触发技能、**工作区会话**
   （workspace 插件启用且有激活会话时注入名称 + 目录清单）、输入边界规则
   （`agent/boundary.rs` 的 `BoundaryKind`：QQ hook / 定时器 / 后台输入三块文案）
-- 提示词构建的锁纪律（2026-09 修复的并行死锁）：`skills` 的 tokio Mutex guard
+- 提示词构建的锁纪律：`skills` 的 tokio Mutex guard
   只在 `build_prompt_blocks` 调用作用域内持有，构建完即 drop——guard 跨过
   LLM await 会让并行模式的第二个 turn 在 `skills.lock()` 上饿死
 - 循环迭代（`max_tool_iterations`，随附配置缺省 1024；`AgentConfig::default` 代码缺省为 5）：发 LLM 请求 → 有工具调用则逐个执行并回填结果 → 直至产出最终回复或达上限
@@ -69,7 +72,7 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 `TurnRunner`，差异只在循环模式（策略）；mount 向各 agent 注入
 （`set_loop_runner` + `set_use_echo_loop`），全部卸载才复位（回退内置循环）。
 
-**注入的生效口径**（2026-10 接线后）：三条路径覆盖全部人格生命周期——
+**注入的生效口径**：三条路径覆盖全部人格生命周期——
 
 - **启动期**：loop.* 插件的 mount 闭包依赖的进程级 `AgentManager` 在挂载时
   尚未注册（`for_each_agent` 为 no-op），因此组合根在**人格启动循环**
@@ -79,8 +82,6 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
   Disposer——停用（两者都卸载）时统一回退内置循环；
 - **运行期新建人格**：`set_agent_factory` 的包装按同一注册表启用态注入
   （此前新建人格不经该路径）。
-
-**注入生效后**的分派规则（`process_message_inner` 开头）：
 
 **注入生效后**的分派规则（`process_message_inner` 开头）：
 
@@ -98,8 +99,7 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
   发 `AgentThinking`/`AgentCompleted`，写 `last_prompt_blocks`（/context
   视图）——两条驱动对上屏事件完全同构
 - **QQ hook / 定时器 / QQ 会话** → 内置循环：边界语义（QQ 边界块、定时器
-  回投）由内置循环注入；投递纪律由提示词与 qq-transport 技能引导（2026-09
-  移除 send 工具声明校验与纠偏提醒），echo-loop 不接管。QQ 并发回复的细节见
+  回投）由内置循环注入；投递纪律由提示词与 qq-transport 技能引导（send 工具声明校验与纠偏提醒已移除），echo-loop 不接管。QQ 并发回复的细节见
   [多 Agent 与会话](./core-agents.md)（单会话投递默认会话排队 / 并行多会话临时分支）。
 
 两套驱动并行、同一工具路径（`run_tool`）与提示词构建（`agent/prompt.rs` 的
@@ -107,7 +107,7 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 复用；卸载全部循环插件（配置 `disabled_plugins` 或面板 TogglePlugin）即恢复
 内置循环。`generate_wait_reply` 是无工具单请求，保持自身实现。
 
-### agent 模块拆分（2026-09）
+### agent 模块拆分
 
 内置循环的支撑代码已从 `agent/mod.rs` 抽为独立模块：
 

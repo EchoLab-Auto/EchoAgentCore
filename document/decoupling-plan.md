@@ -8,7 +8,7 @@ y: 2240
 
 # 完全解耦推进计划（动态库 / 子进程）
 
-> 状态：**规划**（2026-10-07 立项）。本页是路线图，不是当前实现的描述；实施进度以本页清单为准。
+> **定位**：本页是「完全解耦」的推进路线图——验收口径、方案研究（动态库 / 子进程 / wasm）、目标架构、分阶段清单与执行附注。读者：内核与插件体系的规划 / 实施者。**状态：规划**——本页不是当前实现的描述，实施进度以本页清单为准。
 > 前置阅读：[架构总览](./architecture.md)（现状与五条原则）、[插件化设计](./core-plugins.md)。
 
 ## 一、验收标准（"完全解耦"的可测口径）
@@ -22,7 +22,7 @@ y: 2240
 5. **配置化组合**：`--dump-config` 输出分层合成树（profile / bundle / patch 三层）；改组合不改代码。
 6. **协议一致性**：同一套 conformance 用例覆盖全部运输层（inproc / subprocess；可选 dylib / wasm）。
 
-## 二、方案研究：动态库 / 子进程 / wasm（2026-10 生态核查）
+## 二、方案研究：动态库 / 子进程 / wasm（生态核查）
 
 ### 2.1 动态库（dlopen）——生态核查后的现实
 
@@ -154,6 +154,7 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [x] **冻结**：协议变更需过 conformance + bump 版本；纳入 CI（`PROTOCOL_VERSION` + `compatible()` 契约测试）
 
 **验收**：✅ conformance 在 inproc 参考实现上全绿（14/14）。
+
 ### Phase 1：内核化——激活 Ctx、杀死全局态（1-2 周）
 
 目标：17 处全局静态归零；启动由"服务可用性"驱动。
@@ -194,7 +195,6 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 **验收**：✅ 示例插件工具经 inproc / subprocess 两运输均可用（dylib / wasm 可选）；杀死进程后自动重启（backoff 测试覆盖）、内核无感。
 
 ### Phase 3：内置插件外迁（2-3 周，逐个）
-### Phase 3：内置插件外迁（2-3 周，逐个）
 
 - [ ] ① provider-llm（已单点装配，最易）→ 协议化
 - [x] ② 工具子集试点：websearch + calculator → **独立二进制**（已提交 `65c1c2a`：`echo-plugin-sdk` + `echo-plugin-example` + 5 项 e2e；内核 `plugins.toml` 装配集成进行中）
@@ -204,8 +204,6 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [ ] ⑥ subagent（hook 接入改经协议事件）
 - [ ] ⑦ loop.single / loop.parallel → inproc（保持内联；注入改经协议挂载）
 - [ ] ⑧ management-panel → **协议化 inproc 插件**（对齐 dsh：webserver 也是插件；同进程、经服务键装载；"禁用即自锁"守卫留内核）
-- [ ] 每插件模板：独立 crate 化 → 贡献声明 → 状态归属审计 → 双跑对照（新旧路径 diff）→ 删旧路径
-- [ ] 每插件模板：独立 crate 化 → 贡献声明 → 状态归属审计 → 双跑对照（新旧路径 diff）→ 删旧路径
 - [ ] 每插件模板：独立 crate 化 → 贡献声明 → 状态归属审计 → 双跑对照（新旧路径 diff）→ 删旧路径
 
 **验收**：每个插件可独立禁用/启用/替换；禁用后内核正常降级。
@@ -221,6 +219,7 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [ ] self-update 扩展：更新同步插件二进制（保留回滚）
 
 **验收（进行中）**：子进程插件经配置可达并注册工具；删除编译期 register 调用（全量替换为后续工作）。
+
 ### Phase 5：热重载与版本治理（1-2 周）
 
 - [x] 统一"重载 = 卸载 + 装载"语义（数据/代码插件同模型；inproc 挂载/卸载 + subprocess 重启式均就绪）
@@ -231,7 +230,7 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [ ] （远期可选）蓝绿双实例切换
 
 **验收（进行中）**：升级流程已可测（新实例 Ready → 切流量 → 老实例 Drain）；"改源码 → 重构建插件 → 热替换 → 会话不中断"的端到端演示随 P3 全量外迁收尾。
-**验收**：演示"改源码 → 重构建插件 → 热替换 → 会话不中断"全流程。
+
 ### Phase 6：安全与生态（持续）
 
 - [ ] 消息大小/频率上限（**帧上限 16 MiB 已落地**；频率/数量限额待做）、调用超时强制（已落地：invoke 超时=deadline）、插件资源限额（rlimit / cgroup，待做）
@@ -240,12 +239,15 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [ ] 文档生成门禁（对齐 dsh 做法）：模块图 / 能力图 / 事件矩阵 / 工具目录自动生成 + 新鲜度校验
 - [x] CI：fmt / clippy `-D warnings` / 全量测试（stable+nightly）/ **依赖方向门禁已扩展到插件分层**（api→零依赖、sdk→api、host→api+loader、loader→零、example→sdk；已提交 `65c1c2a` 起）
 - [x] 无全局态门禁（`no_global_state.rs`，随 workspace 测试自动纳入 CI）
-3. **subprocess 开销可忽略但非零**：实测往返 20-60µs/次（含调度与解析，~2-5 万次/秒）；~10 进程 × 几 MB；LLM 流式按帧批量发送（或 provider 留 inproc）。对 agent 场景（工具调用秒级间隔）富余。
-4. **破坏性改动**：`packages/` 全拆、`plugins.rs` / `main.rs` 装配重写、Panel 协议扩展——已获授权；以 357+ 测试为安全网 + 双跑对照降回归。
-5. **工作量**：单人 6-10 周（Phase 0-5；协议层单项调研口径：全子进程 3-6 人周、混合 8-15 人周）；Phase 6 持续。可并行：协议/宿主（内核侧）与插件迁移（插件侧）分线。
-6. **回退策略**：每阶段独立可回滚；每插件迁移保留开关直至验收。
 
-## 六、改造前基线（2026-10-07 盘点）
+## 五、风险、工作量与回退
+
+- **subprocess 开销可忽略但非零**：实测往返 20-60µs/次（含调度与解析，~2-5 万次/秒）；~10 进程 × 几 MB；LLM 流式按帧批量发送（或 provider 留 inproc）。对 agent 场景（工具调用秒级间隔）富余。
+- **破坏性改动**：`packages/` 全拆、`plugins.rs` / `main.rs` 装配重写、Panel 协议扩展——已获授权；以 357+ 测试为安全网 + 双跑对照降回归。
+- **工作量**：单人 6-10 周（Phase 0-5；协议层单项调研口径：全子进程 3-6 人周、混合 8-15 人周）；Phase 6 持续。可并行：协议/宿主（内核侧）与插件迁移（插件侧）分线。
+- **回退策略**：每阶段独立可回滚；每插件迁移保留开关直至验收。
+
+## 六、改造前基线
 
 | 项 | 数值 |
 |---|---|
@@ -276,7 +278,7 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 
 **结论（写入验收口径）**：本计划可保证达成 #1-#9——即 **dsh 架构意义上的完全解耦**（可替换、装配化、无特权内核、配置组合、服务定位），并在崩溃隔离与跨语言两点**超出 dsh**；#10-#12 是语言本质差异，以"功能等价、体验不同"为验收（替换能力达成；"编辑即生效/零构建"不承诺）。若这 12 项判定中任何 ⚠️ 项被要求"必须 1:1"，则该目标在 Rust 上**不可达成**——这是需要在立项时明确的边界。
 
-## 八、P1 迁移架构（执行附注，2026-10-07）
+## 八、P1 迁移架构（执行附注）
 
 ### 8.1 静态 → 服务键映射（17 个进程级静态单元；全 source 扫描口径）
 

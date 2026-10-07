@@ -8,14 +8,15 @@ y: 0
 
 # 架构总览
 
-重构后（Phase 0-6）的架构脊柱：组合、核心 crate、能力接缝、事件、会话、扩展点。修改 `source/` 前先读此文档（治理门禁见 [开发指南](./dev-guide.md)）。
+> **定位**：本文是 EchoAgent 的**架构脊柱**——设计原则、crate 布局与依赖方向、能力接缝、运行时一览、扩展点地图。读者：需要理解系统骨架、准备修改 `source/` 的开发者（治理门禁见 [开发指南](./dev-guide.md)）。
+> 阅读入口：[Core 后端](./core.md)；内核机制见 [框架（内核）](./frame.md) 与 [插件化设计](./core-plugins.md)；运行时子系统见 [多 Agent 与会话](./core-agents.md)、[Agent 循环](./core-agent-loop.md) 等（各见正文链接）。
 
 ## 设计原则（dsh 模式）
 
-本仓库按 DeepSeek Harness 的设计模式重构，五条核心原则：
+本仓库按 DeepSeek Harness 的设计模式组织，五条核心原则：
 
 1. **一切皆插件、无特权核心**：agent 循环、模型适配器、工具、技能、平台适配器都可挂载/替换；注册是可逆副作用（返回 disposer）。
-2. **服务定位 + 依赖注入**：服务通过稳定键从 `Ctx` 解析（`ctx.llm`/`ctx.loop`），加载顺序由服务可用性驱动，扩展插件只依赖定义层。
+2. **服务定位 + 依赖注入**：服务通过稳定键从 `Ctx` 解析（`ctx.llm` / `ctx.loop`），加载顺序由服务可用性驱动，扩展插件只依赖定义层。
 3. **类型化事件 = 扩展点**：`EventBus` 的 Observe/Waterfall/Parallel/Serial 四种分发；waterfall 是 around-middleware（`next()` 委托、不调即短路）。
 4. **能力接缝**：Service Definition / Service Provider / Consumer 三角独立演进、独立成 crate；依赖方向单向无环。
 5. **事件溯源会话日志**：日志是唯一事实来源，模型上下文由日志投影，"模型可见 ⟺ 已记录"；compaction 是显式事件。
@@ -49,54 +50,36 @@ graph BT
 
 | Crate | 角色 | 职责 |
 |---|---|---|
-| `echo-defs` | Service Definition 层 | LLM/工具/技能/平台消息词汇与 trait，零实现、零 harness 依赖 |
+| `echo-defs` | Service Definition 层 | 全部词汇与 trait：LLM/工具/技能/平台消息/媒体/会话事件/联邦节点；零实现、零 harness 依赖 |
 | `echo-context` | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry` |
 | `echo-session` | 事件溯源会话 | `SessionEvent` 事件集、`EventLog` append-only 持久化、`derive_messages` 投影、compaction、`SessionHeader`、v1-v4 兼容迁移 |
-| `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话，见 Agent 循环文档） |
-| `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 echo-defs |
+| `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话）见 [Agent 循环](./core-agent-loop.md) |
+| `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 `echo-defs` |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge，Panel 只依赖它 |
-| `echo-plugin` | 插件契约 | `Plugin` trait 生命周期钩子、`PluginManifest`、`PluginRegistry`；挂载为可逆副作用（返回 disposer），插件只依赖定义层 |
-| `echo-plugin-api` | 插件协议契约（P0 冻结） | 宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型（工具/技能/服务/事件订阅）、版本协商；同一组消息覆盖全部运输层（见 [完全解耦推进计划](./decoupling-plan.md)） |
-| `echo-plugin-host` | 插件宿主（P0-P2） | Transport 抽象（inproc / stdio 子进程）、PluginSupervisor（握手/注册/调用/取消/排空/崩溃重启）、conformance 测试套件 |
-| `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入，启动期回填——生效口径见 [Agent 循环](./core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
-| `echo-adapter`/`echo-adapter-qq` | 平台适配 | `Adapter` trait、过滤管道、ConfigStore；QQ 实现 |
-| `echo-core`/`echo-server` | OneBot 类型/反向 WS | 仅供 QQ 适配器 |
+| `echo-plugin` / `-api` / `-host` | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；Transport（inproc/stdio）、监督与崩溃重启、conformance 测试（见 [完全解耦推进计划](./decoupling-plan.md)） |
+| `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入——生效口径见 [Agent 循环](./core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
+| `echo-adapter` / `echo-adapter-qq` | 平台适配 | `Adapter` trait、过滤管道、ConfigStore、QQ 实现（OneBot 类型/反向 WS 在 `echo-core`/`echo-server`，仅供 QQ 适配器） |
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](./federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、联邦路由泵、启动 |
 
-### echo-defs 模块清单与约束
-
-定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（依赖仅 serde/serde_json/async-trait/tokio/thiserror/base64/tracing 基础 crate，不含 reqwest/其它 echo-* crate），可独立测试：
-
-| 模块 | 内容 |
-|---|---|
-| `message` / `llm` | `ChatMessage`/`ChatRequest`/`ChatResponse`/`ToolCall`/`ChatChunk`/`Usage` + `LlmProvider` trait + 传输无关的 `LlmError`（携带字符串，provider 自行 `map_err`，定义层不依赖 reqwest） |
-| `tool` | `Tool` trait、`ToolError`、`ToolDefinition`（工具 schema 归工具域，`ChatRequest` 引用它） |
-| `skill` | `Skill`/`SkillMetadata` + `SkillProvider` trait；文件发现/热重载留在 `echo-agent` 的具体 `SkillRegistry` |
-| `chat` | 平台无关 `ChannelType`/`IncomingMessage`/`MessageTarget`/`SendResult`/`AdapterEvent` + `ChatAdapter` trait；门控词不在此层 |
-| `mode` | `GateMode`/`ThinkingMode`/`ReasoningEffort`（自 `echo-protocol` 移入，`echo-protocol` re-export 保持 wire 路径；`echo-adapter` 不依赖 `echo-protocol`） |
-| `token` | 纯 token 估算/截断函数 |
-| `media` | 多模态负载卫生：历史文本里内嵌的 base64 → 轻量占位符（不进入模型文本块），图片只走独立 image 内容块 |
-| `media_store` | 入站图片落盘缓存（媒体库）：`/media/<id>` 引用模型、`save_image_bytes`/`save_data_uri`（见本文§媒体库） |
-| `session` | `SessionEvent` + `SessionStore` trait（事件溯源会话契约） |
-| `node` | 联邦词汇：`NodeId`（`node-<ULID>`，持久化于 `echo-node.json`）与跨机引用的 `node://<node_id>/<local-ref>` 命名空间（federation Phase 0） |
-
 依赖方向收敛为单向下游：`echo-defs` / `echo-context`（底座，零 echo-* 依赖）◄ `echo-protocol` / `echo-adapter` / `echo-session` / `echo-llm-*`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）——`echo-adapter` 只依赖定义层、不依赖 `echo-protocol`；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-adapter`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
 
-### echo-context 机制
+### 定义层（echo-defs）
+
+定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（依赖仅 serde/serde_json/async-trait/tokio/thiserror/base64/tracing 基础 crate，不含 reqwest 与其它 echo-* crate），可独立测试。模块覆盖：消息/LLM（`ChatMessage`/`ChatRequest`/`LlmProvider` 等）、工具、技能、聊天（平台消息词汇与 `ChatAdapter`）、门控与思考模式、token 纯函数、媒体卫生（文本内嵌 base64 → 占位符、图片只走独立 image 块）与入站图片落盘缓存（`/media/<id>` 引用）、会话事件契约、联邦节点词汇（`NodeId`、`node://` 跨机命名空间）。
+
+### 机制底座（echo-context）
 
 最底层机制 crate（仅依赖 tokio/dashmap，不依赖任何 echo-* crate）：
 
-- **`Ctx` 服务定位**：按字符串 key 注册/解析；注册 `Arc<dyn Trait>`（trait 对象存入 `Box<dyn Any>`，resolve 时 downcast 回同一类型）或具体 `Clone + 'static` 值。字符串键便于配置与诊断，且允许同一 trait 多实例按名共存
+- **`Ctx` 服务定位**：按字符串 key 注册/解析；注册 `Arc<dyn Trait>`（trait 对象存入 `Box<dyn Any>`，resolve 时 downcast 回同一类型）或具体 `Clone + 'static` 值——字符串键便于配置与诊断，且允许同一 trait 多实例按名共存
 - **`Disposer` 可逆注册**：`Ctx::register` / `EventBus::subscribe` / 注册表方法都返回 `Disposer`；注册必须持有 disposer 才生效（组合根持有 `ctx` 注册），装配方需明确管理生命周期
-- **`EventBus` 类型化事件**：`Event` trait（Any + Clone + Debug + Send + Sync），按事件 `TypeId` 分组注册监听器；四种分发——`Observe`（扇出）/ `Waterfall`（around-middleware，`next()` 委托、不调即短路）/ `Parallel`（每监听器一份事件副本并发，故要求 `Event: Clone`）/ `Serial`（按序；**当前实现与 `Observe` 等价**——「首个拒绝即停止」为预留语义，尚无生产发射方）。`emit_sync` 覆盖同步热路径（Observe/Waterfall），`emit` 支持全部模式。`echo-protocol` 为 `BackendEvent` 实现 `Event`（声明成员资格），依赖方向仍为 context ◄ protocol
+- **`EventBus` 类型化事件**：`Event` trait（Any + Clone + Debug + Send + Sync），按事件 `TypeId` 分组监听器；四种分发——`Observe`（扇出）/ `Waterfall`（around-middleware，不调 `next()` 即短路）/ `Parallel`（每监听器一份事件副本并发）/ `Serial`（按序；**当前实现与 `Observe` 等价**，「首个拒绝即停止」为预留语义）。`emit_sync` 覆盖同步热路径（Observe/Waterfall），`emit` 支持全部模式；`echo-protocol` 为 `BackendEvent` 实现 `Event`（依赖方向仍为 context ◄ protocol）
 - **`ScopedRegistry` 作用域注册**：全局条目 + per-scope 条目，lookup 先 scoped 后 global（shadowing），scope 卸载时条目随 disposer 撤销
-- 显示时间线投影（`TimelineProjector`）是 EventBus 的 observe 监听器：`Agent` 不直接写 timeline，timeline 是事件的投影消费者，可独立演进/测试
 
-### LLM provider crates（echo-llm-*）
+### LLM provider crates
 
-- 三个 provider 各自独立成 crate，只依赖 `echo-defs`（词汇/trait/策略枚举/token 纯函数）+ 传输依赖（reqwest/futures/tokio），可独立演进与测试；`echo-llm-ollama` 是薄包装，复用 `echo-llm-openai` 指向 `{base}/v1`
-- `echo-agent` 只保留 `create_provider` 工厂与装配，不承载 provider 实现；新增 provider = 一个新 crate 实现 `echo_defs::LlmProvider` + 注册（后续以 `ctx.llm` 注册表查找替代工厂字符串 match，即可运行期热替换）
+三个 provider 各自独立成 crate，只依赖 `echo-defs`（词汇/trait/策略枚举/token 纯函数）+ 传输依赖（reqwest/futures/tokio），可独立演进与测试；`echo-llm-ollama` 是薄包装，复用 `echo-llm-openai` 指向 `{base}/v1`。`echo-agent` 只保留 `create_provider` 工厂与装配，不承载 provider 实现；新增 provider = 一个新 crate 实现 `echo_defs::LlmProvider` + 注册（演进方向：以 `ctx.llm` 注册表查找替代工厂字符串 match，支持运行期热替换）。
 
 ## 能力接缝
 
@@ -110,68 +93,33 @@ graph BT
 | 平台生命周期 | `echo_defs::chat::ChatAdapter` | `echo-adapter-qq`（经 Adapter 收敛中） | agent + 工具 |
 | 默认驱动 | `echo_loop::TurnRunner` | 内置（经 `ctx.loop` 注册） | 组合根 |
 
-## 媒体库（2026-09-24）
+## 运行时一览
 
-> 模块视角（入口落盘 / 模型侧还原 / token 卫生全链路）见 [多模态输入](./core-multimodal.md)。
+内核之上的运行时子系统综述——每节只留要点，细节见对应子系统文档。
 
-入站图片（QQ 消息图、面板上传图）**落盘为媒体文件，链路上只传引用**：
-`~/.local/share/echo-agent-core/media/<内容哈希>.<ext>`（`$ECHO_MEDIA_DIR` 可覆盖），
-引用为 `/media/<id>`（Panel web 后端同源提供，浏览器懒加载 + 强缓存）。
+### 事件模型
 
-- 落盘侧：adapter-qq 在**触发门控与过滤通过后**下载远端图并落盘（被丢弃的消息不白存图，2026-09-29 修正）；SendMessage（面板上传 data URI）入站落盘；
-  遗留内嵌图由加载期迁移（`spill_event_media` + 时间线遍历）一次性改写（幂等）
-- 模型侧：投影出口（`TrunkStore::reproject_one`）把引用还原为 data URI——
-  发往 LLM 的请求与改造前无差别
-- 背景与实测：单个 GIF 表情包数 MB，内嵌在 hook JSON / 事件日志 / 时间线三处，
-  alix 的时间线快照 8MB → 面板启动 802ms、会话文件 24.6MB；改造后 57KB /
-  299ms / 225KB（图片全保留）
+事件分四类：**生命周期事件**（echo-loop 经 EventBus 分发——`TurnStart`/`AgentPreStep`/`StepStart`/`AgentRequest`/`ToolCallRequested`/`ToolResult`/`StepEnd`/`TurnStopping`/`TurnEnd`）；**会话事件**（echo-session append-only 日志——`UserMessage`/`AssistantMessage`/`ToolCall`/`ToolResult`/`Compaction`，模型上下文由 `derive_messages` 投影，加载时 `repair_tool_pairing` 修复悬空调用）；**协议事件**（echo-protocol 的 `BackendEvent`，经 management WS 供 Panel 消费，见 [协议与数据流](./protocol.md)）；**能力事件**（timeline 投影作为 EventBus observe 监听器——`Agent` 不直接写 timeline，显示历史是事件的投影消费者，可独立演进/测试）。
 
-## 命令分发
+### Turn/Step 循环
 
-- QQ 命令域独立：`apply_qq_command`（`packages/adapter_qq/commands.rs`）承载名单/门控/群列表/好友列表等 QQ 变体，主 `apply_command` 的对应分支为一行委托，核心分支原地保留
-- `CommandRegistry` + `CommandHandler` trait（dyn-compatible，async）是开放命令扩展点的基础设施：封闭枚举 `BackendCommand` 下编译器 match 完备性仍由主分发器承担，注册表留待协议开放后承载外部命令插件
+`TurnRunner` 驱动 `turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。调度口径：loop.* 插件启用时普通输入经该状态机执行（启动期回填注入 + 运行期工厂覆盖 + 插件停/再启联动），QQ hook/定时器/QQ 会话始终走内置循环；工具策略（超时/审批/审计/限流）的设计位置是 `ToolPipeline` 中间件（当前生产路径未注册任何中间件，超时由 harness `tool_guard_timeout` 守卫）。细节与边界见 [Agent 循环](./core-agent-loop.md)。
 
-## 结构化输入标记
+### 会话与持久化
 
-`<qq_message_hook>`/`<backend_message_hook>`/`<timer_event>` 三个结构化输入标记的单一事实来源是 echo-agent 的 `input_marker.rs`：构造（`wrap_hook`/`wrap_timer`）、判定（`STRUCTURED_INPUT_MARKERS` 常量表 + `is_structured_input`）、解析（`structured_message_sequence`——限制在标记开头，防普通文本误读）集中于此，改格式只改一处。后续演进方向：来源判定从 content 字符串改为 `MessageReceived` 的结构化 origin 字段（跨仓库 wire 变更）。
+事件溯源：`EventLog` 是权威（append-only，整档 JSON v6，tmp+rename 原子写）；`SessionEvent` 五类（`UserMessage`/`AssistantMessage`/`ToolCall`/`ToolResult`/`Compaction`），压缩落地为显式 `Compaction` 事件（被替换条数 + 摘要 + 可选归档快照），日志保持可重放。投影：`derive_messages` 是唯一的模型上下文出口——多会话按 `session` 归属逐会话投影，裁剪只在投影期、绝不破坏日志；显示时间线带条目级 `seq` 支持增量同步。归档与保留：手动 `ArchiveHistory` 与压缩前自动快照写入 `archives/`（v6 完整快照，保留最新 20 份）；v1-v4 旧格式加载期自动迁移，每个 persona 独立会话文件。细节见 [会话记忆](./core-memory.md)（日志/投影/压缩）与 [配置持久化](./core-config-persistence.md)（文件布局）。
 
-## 事件模型
+### 媒体库
 
-- **生命周期事件**（echo-loop，经 EventBus）：`TurnStart`/`AgentPreStep`（waterfall，可改写/拒绝）/`StepStart`/`AgentRequest`（waterfall）/`ToolCallRequested`/`ToolResult`/`StepEnd`/`TurnStopping`/`TurnEnd`。
-- **会话事件**（echo-session，append-only 日志）：`UserMessage`/`AssistantMessage`/`ToolCall`/`ToolResult`/`Compaction`——模型上下文由 `derive_messages` 投影，加载时 `repair_tool_pairing` 修复悬空调用。
-- **协议事件**（echo-protocol，经 management WS）：`BackendEvent`，Panel 消费（详见 [协议与数据流](./protocol.md)）。
-- **能力事件**：timeline 投影（`TimelineProjector`）作为 EventBus observe 监听器，从事件流记录显示历史。
+入站图片（QQ 消息图、面板上传图）**落盘为媒体文件，链路上只传引用**：`~/.local/share/echo-agent-core/media/`（`$ECHO_MEDIA_DIR` 可覆盖），引用为 `/media/<id>`（Panel 后端同源提供，浏览器懒加载 + 强缓存）。落盘侧：QQ 适配器在**触发门控与过滤通过后**才下载远端图（被丢弃的消息不白存图），SendMessage（面板上传 data URI）入站落盘；遗留内嵌图由加载期迁移一次性改写（幂等）。模型侧：投影出口把引用还原为 data URI——发往 LLM 的请求与内嵌时代无差别。细节见 [多模态输入](./core-multimodal.md)。
 
-## Turn/Step 循环
+### 命令分发
 
-`TurnRunner` 驱动：`turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。工具策略（超时/审批/审计/限流）的设计位置是 `ToolPipeline` 中间件（非循环代码；当前生产路径未注册任何中间件——超时由 harness 的 `tool_guard_timeout` 守卫，见 [Agent 循环](./core-agent-loop.md)）。`Agent::process_message_inner` 的调度：loop.* 插件启用（任一）时普通输入经上述状态机执行（启动期人格循环回填注入 + 运行期工厂覆盖 + 插件停/再启联动）；QQ hook/定时器/QQ 会话始终走内置循环（边界语义见 [Agent 循环](./core-agent-loop.md)）。
+QQ 命令域独立：`apply_qq_command`（`packages/adapter_qq/commands.rs`）承载名单/门控/群列表/好友列表等 QQ 变体，主 `apply_command` 的对应分支为一行委托，核心分支原地保留。`CommandRegistry` + `CommandHandler` trait（dyn-compatible，async）是开放命令扩展点的基础设施：封闭枚举 `BackendCommand` 下编译器 match 完备性仍由主分发器承担，注册表留待协议开放后承载外部命令插件。
 
-## 会话与持久化
+### 结构化输入标记
 
-> 模块视角（日志 / 投影 / 时间线 / 压缩归档）见 [会话记忆](./core-memory.md)；本节保留架构脊柱的不变量与实现细节。
-
-- 事件溯源：`echo-session` 的 `EventLog` 是权威（append-only，整档 JSON 持久化 v6，tmp+rename 原子写）；`TrunkStore` 持 `EventLog`，`trunk_histories`（按会话投影映射）降级为内存投影缓存（`append_event` 在锁内 append 并重新投影）；持久化 v6 以 `events` 为权威（多会话：每事件带 `session` 归属）
-- `SessionEvent` 五类：`UserMessage`（含 `message_sequence` 供并发分支按请求序合并）、`AssistantMessage`（完整保留 `reasoning_content` 与 `tool_calls`）、`ToolCall`、`ToolResult`（带 `tool_call_id` 回链）、`Compaction`（摘要替换前缀的显式压缩事件，日志保持 append-only 可重放）。`CompactionEvent` 三要素：`replaced_count`（替换了前多少条）+ `summary`（**正文，不含前缀**）+ `archive`（压缩前快照路径，可选）；`[历史摘要]` 前缀在投影期由 `render_compaction_summary` 恰好加一次——旧数据带前缀则透传，不再出现「`[历史摘要] [历史摘要]`」叠加（2026-09 修正）
-- **归档与保留**（2026-10 补齐）：两条归档路径——手动 `ArchiveHistory`
-  （Panel 上下文弹层「归档」：复制持久化文件到 `archives/{stem}-{ts}.json`
-  → 清空历史 → timeline 写「历史已归档」系统行**并落盘**）与压缩前自动
-  `archive_snapshot("precompact")`。保留策略：`TrunkStore::prune_archives`
-  按 stem 保留最新 `DEFAULT_ARCHIVE_MAX_FILES`（20）份、最旧先删（失败
-  仅记日志不阻塞归档）。**恢复方法**：把归档文件复制回原会话文件名
-  （`archives/echo-sessions-{id}-*.json` → `echo-sessions-{id}.json`）
-  重启 Core 即可——归档就是 v6 完整快照（事件日志 + timeline + 身份）。
-- **压缩三件套**（2026-09）：`compact_preview`（只读：按会话分组算出将替换的事件块与统计）→ `archive_snapshot`（把当前会话的**内存快照**写入 `archives/{stem}-{ts}-precompact.json`；无持久化配置时不阻塞压缩）→ `apply_compaction`（按会话键装配合适的摘要落地为 Compaction 事件；应用期重新分组，容忍摘要等待期间的并发写）。应用侧原子化与漂移语义（2026-10 压缩巡检 🔴 修复）：落地经
-`EventLog::replace_all` 单次取锁整体替换（此前 clear+extend 中间
-窗口并发读者看到空日志）；保留尾按**应用时点**的组尾部取——摘要
-生成窗口内新到的事件自然落在保留尾部，不会被挤出丢档（此前按
-组长度机械切 replaced_count，窗口期新事件既不在摘要也不在保留
-尾）；压缩编排经 `TrunkStore::compact_lock` 全程互斥（double
-compact / compact 与 clear 竞争）。编排在
-`Agent::compact_history`（`agent/compact.rs`）：逐会话组调 LLM 生成**交接摘要**（转录渲染自动降档 ≤50k tokens；输出 ≤1500 tokens/组，180s 超时；提示词固定四节【当前目标】【已完成】【进行中】【关键信息】）；任一组失败（未配置/超时/报错/空输出）回退规则统计文案，压缩不因 LLM 不可用而失败
-- `derive_messages` / `project_messages` 是唯一的模型上下文投影（多会话经 `derive_messages_for` 按 `session` 归属过滤后逐会话投影）：裁剪只在投影期（`trim_to_budget`），绝不破坏日志；`insert_after_sequence` 把并发分支回复插入对应请求事件之后，投影顺序 = 请求到达顺序
-- 兼容：v1-v4 旧格式（`echo-sessions.json`）经 `migrate_v4_document` 读入并迁移进事件日志；旧格式的工具结构缺失如实保留（迁移后的工具消息降级为纯文本，新写日志保留完整结构）
-- 每个 persona 独立会话文件（`echo-sessions-{id}.json`）；显示时间线带条目级 `seq` 支持增量同步（前端按 team 缓存快照到 localStorage，引导/重连只拉缺口）。发往前端的 `TrunkTimeline` 快照做**推理瘦身**：近 40 条保全文、更早截 240 字 + 标注（`timeline.rs::elide_reasoning_for_wire`；持久化不改，单帧 1.46MB → ~0.68MB）
-- `SessionHeader` 携带 fork/resume 元数据（parent/seed_length/origin/delegation_depth），随日志持久化
+`<qq_message_hook>`/`<backend_message_hook>`/`<timer_event>` 三个结构化输入标记的单一事实来源是 echo-agent 的 `input_marker.rs`：构造（`wrap_hook`/`wrap_timer`）、判定（`STRUCTURED_INPUT_MARKERS` 常量表）、解析（`structured_message_sequence`，限制在标记开头、防普通文本误读）集中一处，改格式只改一处。演进方向：来源判定从 content 字符串改为 `MessageReceived` 的结构化 origin 字段（跨仓库 wire 变更）。
 
 ## 扩展点地图
 
@@ -187,4 +135,7 @@ compact / compact 与 clear 竞争）。编排在
 
 ## 关键文档
 
-- [开发指南](./dev-guide.md)：仓库结构、关键抽象、构建与测试、治理门禁
+- [文档总览](./index.md)：文档群入口与阅读路径；[开发指南](./dev-guide.md)：仓库结构、关键抽象、构建与测试、治理门禁
+- [Core 后端](./core.md) → [框架（内核）](./frame.md) / [插件化设计](./core-plugins.md)：框架与插件两支主线
+- 运行时子系统：[多 Agent 与会话](./core-agents.md)、[Agent 循环](./core-agent-loop.md)、[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)
+- 数据流与部署：[协议与数据流](./protocol.md)、[部署与自更新](./ops-deploy.md)

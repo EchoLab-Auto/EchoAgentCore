@@ -8,13 +8,11 @@ y: 1920
 
 # 插件开发指南（外部进程插件）
 
-本指南面向**外部插件作者**：如何写一个独立进程插件、如何用 `plugins.toml` 装载、以及协议与生命周期约定。
-系统设计与路线图见 [完全解耦推进计划](./decoupling-plan.md)；现有内置插件（插件化设计）见 [插件化设计](./core-plugins.md)。
+> **定位**：本指南面向**外部插件作者**——如何写一个独立进程插件、如何用 `plugins.toml` 装载、以及协议与生命周期约定。读者：插件作者与 Core 宿主侧维护者。系统设计与路线图见 [完全解耦推进计划](./decoupling-plan.md)；内置插件体系（清单、能力开关）见 [插件化设计](./core-plugins.md)。
 
-> 状态（2026-10）：P0-P4 已落地——协议冻结、宿主（inproc/stdio）、插件 SDK、试点插件、`plugins.toml` 装载**全部可用**；
-> 热替换（P5）与安全限额（P6）进行中。工具贡献已端到端；技能/服务贡献为后续阶段。
+> **状态**：P0-P4 已落地——协议冻结、宿主（inproc/stdio）、插件 SDK、试点插件、`plugins.toml` 装载**全部可用**；热替换（P5）与安全限额（P6）进行中。工具贡献已端到端；技能/服务贡献为后续阶段。
 
-## 一、五分钟上手
+## 五分钟上手
 
 新建一个 crate（依赖 `echo-plugin-sdk`），实现 `PluginHandler` 并交给 `serve_stdio`：
 
@@ -73,7 +71,7 @@ async fn main() {
 - 插件 id 用环境变量 `ECHO_PLUGIN_ID` 覆盖（缺省 `stdio-plugin`）；与 `plugins.toml` 的条目 id 一致最省事。
 - `contributions()` 在握手时**全量上报**（`Register` 为整体替换语义）。
 
-## 二、装载：`plugins.toml`
+## 装载：`plugins.toml`
 
 Core 启动时读取 **core.toml 同目录**的 `plugins.toml`；**文件不存在 = 特性休眠**（零行为变化）。
 格式（三层组合，dsh 式"按 id 定位、整行替换"）：
@@ -112,7 +110,7 @@ mode = "fast"
 
 改完 `plugins.toml` **重启 Core 生效**（热替换 P5 进行中，届时免重启）。
 
-## 三、协议约定（宿主 ↔ 插件）
+## 协议约定（宿主 ↔ 插件）
 
 同一组消息覆盖全部运输层；插件作者只需理解这些语义（类型定义见 `echo-plugin-api`）：
 
@@ -129,7 +127,7 @@ mode = "fast"
 崩溃语义：插件进程退出（panic/segfault/exit）→ 宿主视为崩溃，按 backoff（200ms×2、上限 2s、最多 5 次）自动重启；
 在途调用以 `Error{code:"plugin_crashed"}` 收尾。
 
-## 四、模式与参考
+## 模式与参考
 
 - **最小报错即修正**：`InvokeOutcome::Error{code, message}` 的 `message` 是模型可见文本——写清"发生了什么、应该怎么做"（与内置工具的错误口径一致）。
 - **超时自声明**：`ToolContribution.timeout_hint_secs` 与内置工具 `timeout_hint` 同义——宿主守卫取 `max(配置 base, hint + 宽限)`。
@@ -137,7 +135,7 @@ mode = "fast"
 - **零全局态纪律**：插件进程内不要持有进程级可变单例（`static OnceLock` 等）——用实例字段（见试点插件的 `WebSearch` 持 client 的做法）。
 - **参考实现**：`source/plugin/echo-plugin-example/`（websearch + calculator，含 e2e）；协议全消息测试对端 `echo-plugin-host/src/bin/echo-plugin-test-peer.rs`。
 
-## 五、本地验证
+## 本地验证
 
 ```bash
 # 1) 构建插件
@@ -147,7 +145,7 @@ cargo build --release -p echo-plugin-example
 install -Dm755 target/release/echo-plugin-example \
   ~/.local/libexec/echo-agent-core/plugins/echo-plugin-example/echo-plugin-example
 
-# 3) 写 plugins.toml（core.toml 同目录，见第二节）
+# 3) 写 plugins.toml（core.toml 同目录，格式见「装载」节）
 # 4) 重启 Core：systemctl --user restart echo-agent-core.service
 # 5) 在 Panel 里检查工具列表（分类"插件"）并调用
 ```

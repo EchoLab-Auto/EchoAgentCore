@@ -6,7 +6,10 @@ x: 2240
 y: 1000
 ---
 
-# Testing Strategy
+# 测试策略
+
+> **定位**：本仓库的测试体系说明与质量门禁清单——单元 / property / 集成 / 并发 / 前端与 CLI 各层覆盖哪些契约。读者：贡献代码的开发者与 Agent。
+> 相关文档：[开发指南](./dev-guide.md)（构建与测试入口）、[文档规范](./documentation-guide.md)。
 
 **Core（cargo）** 700+ 条、**Panel 前端（vitest）** 200+ 条、**部署 CLI（node:test）**
 27 条，覆盖各 crate 的源文件与关键交互契约（计数随开发增长，量级为本文件维护基线）。
@@ -50,11 +53,11 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
   enable-state preservation, on-demand reload for updates/additions/deletions
   (broadcast to every running persona — `reload_skills_into`), and real-file
   parse smoke over the shipped `skills/` directory (`#[ignore]` manual).
-- **Media store** (echo-defs, 2026-09-24): reference validation (charset /
+- **Media store** (echo-defs): reference validation (charset /
   `..` / path traversal), content-hash dedup + atomic write, data-URI spill
   round-trip, failure→elided-placeholder, inline-data-URI text rewrite
   (hook JSON), ref→data-URI inlining (model side), missing-file drop.
-- **Media migration** (echo-agent session, 2026-09-24): 加载期把历史事件
+- **Media migration** (echo-agent session): 加载期把历史事件
   （content 内嵌 + images 字段）与时间线 data URI 落盘改写且幂等；投影出口
   把 `/media/<id>` 还原为 data URI（`persisted_refs_inline_on_projection_for_model`）。
 - **Media download** (echo-adapter-qq): 远程图下载落盘（文件字节与源一致）、
@@ -108,7 +111,7 @@ Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
 - **Panel web（vitest + @vue/test-utils，208 条）**：`ChatView` 图片渲染契约
   （`/media/<id>` 懒加载 / 空串省略占位 / data URI 兼容）、设置视图技能/工具/插件
   工作台（筛选、分组维度、详情分区、交叉跳转、脏状态）、右侧栏连接状态卡、
-  智能体编辑器分区、协议编解码回归等。**加载态跟踪契约（2026-09-30）**：
+  智能体编辑器分区、协议编解码回归等。**加载态跟踪契约**：
   `pending.ts` 三态推进（150ms 延迟显示 / 6s 慢 / 20s 超时 / 可见后最短 400ms）、
   响应事件销账、动态 key 切换（`pending.test.ts`，10 用例）
 - **部署 CLI（`npm/echo-agent`，node:test，27 条）**：PATH 注入假 `docker` 做
@@ -144,31 +147,8 @@ cargo fmt --all --check
 （`npm run build` + `npm test` = vitest）。**Docker 镜像工作流**：PR 只构建
 （守护 Dockerfile），main 推送 `latest`、版本 tag 推送该 tag。
 
+这套测试曾捕获多起真实回归（迁移幂等、锁竞争、发布事务、路径穿越防护、工具超时守卫等），是后续重构与迁移的安全网。
+
 > 环境提示：`agent::tests::update_api_config_persists` 断言空 API key 的回退行为，
 > 若 shell 中设置了 `ANTHROPIC_API_KEY` 等环境变量会失败——这是既有行为，
 > CI（干净环境）不受影响。
-
-## History of notable fixes caught by tests
-
-- Path traversal in `write_file` / `edit_file` (could escape workspace).
-- NapCat `user_id` arriving as integer instead of string.
-- OneBot `notify` notice type parsed as `Unknown` (wrong serde tag).
-- Session dirty flag cleared before a successful write (data loss).
-- Silent serialization / teardown failures now logged.
-- OpenID SSE `error` events silently skipped (choices field missing `serde(default)`).
-- Rate-limit per-user bucket isolation — u1 overflow didn't affect u2.
-- Anthropic SSE tool-use content block — only Text was handled, ToolUse was silently dropped.
-- QQ 表情消息被整条丢弃（content 只取 text 段，纯表情消息为空）——`readable_text` 修复。
-- 入站图片内嵌 base64 导致时间线快照 8MB / 会话文件 24.6MB / 面板启动 802ms——媒体库落盘修复。
-- `accept_private_file` 是死配置（定义了但从未被检查）——文件接收 gap 审查发现。
-- 同名同毫秒下载互相覆盖——`create_new` + 序号兜底。
-- 技能编辑中点选同一行静默丢弃未保存改动——先 confirm 修复。
-- 压缩摘要前缀双写（`[历史摘要] [历史摘要]`）——投影期幂等渲染，测试锁定。
-- 「重载技能」只作用于管理代理、人格侧不生效——广播全部运行人格修复（`reload_skills_into` 测试锁定）。
-- 更新器 `expected_ids` 与 `BUILTIN_PLUGIN_IDS` 漂移（`orchestration` 移除后残留、更新误报缺 manifest）——`update_script_plugins` 守护测试补齐。
-- QQ 图片预下载发生在触发门控之前（被丢弃的消息也白存图，媒体库积累无主文件）——下载下移至「门控与过滤通过后」，`gated_drop_does_not_download_images` 回归测试锁定（wiremock 断言零请求）。
-- echo-loop 驱动路径缺工具超时守卫（挂死工具可永久拖住 turn）——`Agent::tool_guard_timeout` 统一两条路径口径，`echo_loop_path_guards_hung_tools_with_timeout` 测试锁定。
-- run_sudo / present_menu / framework_update 三个内联工具在此前清理中丢失派发入口（配套 broker/协议/配置仍在但工具不可达）——2026-09 正式废弃：全配套移除、服务加固收紧（`NoNewPrivileges=true`）。
-- `QqAdapterConfig::Default` 与 serde 字段默认分裂（`napcat_auto_stop` 一条 false 一条 true）——`default_matches_serde_field_defaults` 锁定两条默认路径一致。
-- `list_files`/`search_code` 缺相对路径穿越防护（六个文件工具中只有四个有 guard）——补齐并测试（`list_and_search_reject_relative_traversal`）。
-- shell 会话读循环交替顺序读 stdout/stderr——任一流空闲即死锁，**每条命令都假超时**（仅 stderr 持续输出才可能完成）；且 `ShellStop` 只杀 bash 本身、后台任务变孤儿续存。重写为两路专职读取任务 + 通道汇聚 + 哨兵 stdout/stderr 双写收齐语义；spawn 建独立进程组、`ShellStop`/意外退出 killpg 整组终止（`exec_returns_promptly_when_stderr_silent`、`large_stderr_burst_is_fully_captured`、`stop_kills_entire_process_group` 等 8 条测试锁定）。

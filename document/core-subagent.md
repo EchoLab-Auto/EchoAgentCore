@@ -8,12 +8,7 @@ y: 1440
 
 # Subagent 插件
 
-Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任务**委派给
-一个隔离上下文的子 agent 执行**：子任务拥有自己的系统提示词与工具循环，
-完成后经结构化 hook 把结论**作为新入站分支**回灌主会话。与
-[Agent 循环](./core-agent-loop.md)的临时回复分支（同一上下文 fork/合并）
-不同，subagent 的上下文**不回合并**——主上下文只看到一次工具调用（受理
-回执）与稍后的结论事件。
+> **定位**：本文描述 `echo-agent.subagent` 插件（kind=Tool）——让模型把独立子任务**委派给隔离上下文的子 agent 执行**（子任务有自己的系统提示词与工具循环），结论经结构化 hook **作为新入站分支**回灌主会话、子上下文不回合并。覆盖动机与边界、生命周期、工具与技能、hook 机制、包门控与测试守护。读者：Agent 使用者与插件维护者。与 [Agent 循环](./core-agent-loop.md) 的回复分支（同上下文 fork/合并）互为对照；装载与包门控见 [插件化设计](./core-plugins.md)。
 
 ## 动机与边界
 
@@ -24,6 +19,13 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
   历史为空，不受主会话已触发技能的干扰
 - **不做**：子 agent 的工具集**剥离 `spawn_subagent`**（单层委派，防递归失控）；
   子任务不能投递外部平台——结论经 hook 回灌后由主 agent 转述
+
+与既有概念的对照：
+
+| 概念 | 上下文 | 回写 trunk | 用途 |
+| --- | --- | --- | --- |
+| 回复分支（loop.parallel） | 主上下文快照 fork | 是（按请求序号合并） | 并发回答多条入站消息 |
+| **subagent** | 全新隔离上下文 | 否（结论作为 hook 事件入站） | 委派独立子任务 |
 
 ## 生命周期
 
@@ -44,9 +46,9 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
 `Agent::shutdown` 经 `SubagentStore::cancel_all` 兜底取消全部运行中子任务。
 插件停用（`TogglePlugin`）当前只停用 `spawn_subagent` 工具（包门控）；已受理的
 运行中子任务不随之取消（`Agent::shutdown` 时由 `SubagentStore::cancel_all`
-统一兜底；按需的单独 detach 入口已随死代码清理移除，2026-10）。
+统一兜底；按需的单独 detach 入口已随死代码清理移除）。
 
-## 工具（`echo-agent.subagent` 包）
+## 工具与技能（`echo-agent.subagent` 包）
 
 | 工具 | 说明 |
 | --- | --- |
@@ -60,6 +62,15 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
   记为 `Cancelled` 并同样发 hook（主 agent 感知"没有结论会来"）
 - **结果截断**：子任务回复超过 8K 字符时截断并标注，防单个结论反过来烧掉
   主上下文
+
+### 同包技能
+
+| 技能 | 触发 | 内容 |
+| --- | --- | --- |
+| `subagent-delegation` | 常驻（`metadata.always: true`，每轮注入） | 委派与并行化指南：开工前扫"可委派块"、何时该委派、并行手法（`spawn_subagent` 是唯一真并行）、task 必须自含、单层委派、等回报期间不空转、结果截断 |
+
+技能 frontmatter 声明 `package: echo-agent.subagent`，随包级门控与工具一起
+启停（见 [插件化设计](./core-plugins.md)「Package」章节）。
 
 ## Hook 机制（echo-loop 注入接口）
 
@@ -80,20 +91,11 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
 内置循环不经 hook 接口：`run_tool` 直接特判分派 `spawn_subagent`（schema
 在构建工具列表时按 `allows_dynamic_tool` 注入）——两条路径语义一致。
 
-## 技能（同包）
-
-| 技能 | 触发 | 内容 |
-| --- | --- | --- |
-| `subagent-delegation` | 常驻（`metadata.always: true`，每轮注入；2026-09 由关键词触发升级） | 委派与并行化指南：开工前扫"可委派块"、何时该委派、并行手法（`spawn_subagent` 是唯一真并行）、task 必须自含、单层委派、等回报期间不空转、结果截断 |
-
-技能 frontmatter 声明 `package: echo-agent.subagent`，随包级门控与工具一起
-启停（见 [插件化设计](./core-plugins.md)「Package」章节）。
-
 ## 事件与观测
 
 - `SubagentStarted { session_id, task }` / `SubagentCompleted { session_id, success }`
-  （`echo-protocol` 事件，Panel 据此渲染子任务状态——2026-09-19 起在会话视图
-  入口行「任务」弹层中按当前会话过滤展示，替代原顶栏任务视图）
+  （`echo-protocol` 事件，Panel 据此渲染子任务状态；入口：会话视图入口行
+  「任务」弹层，按当前会话过滤展示）
 - 完成 hook 作为 `MessageReceived { adapter_name: "subagent" }` 进入显示时间线
   与 trunk（会话历史含完整委派轨迹：调用 → 回执 → 结论事件）
 
@@ -106,13 +108,6 @@ Subagent 插件（`echo-agent.subagent`，kind=Tool）让模型把独立子任�
   兜底）+ `attach_subagent_runtime` 注入 store 与 spawn 闭包（弱引用 agent，
   不构成循环）；插件 mount/unmount 经 `reapply_plugin_gating` 逐 persona
   启停（`allows_dynamic_tool` 双重判定：运行态已装配 ∧ persona 白名单允许）
-
-## 与既有概念的关系
-
-| 概念 | 上下文 | 回写 trunk | 用途 |
-| --- | --- | --- | --- |
-| 回复分支（loop.parallel） | 主上下文快照 fork | 是（按请求序号合并） | 并发回答多条入站消息 |
-| **subagent** | 全新隔离上下文 | 否（结论作为 hook 事件入站） | 委派独立子任务 |
 
 ## 测试守护
 

@@ -8,6 +8,9 @@ y: 480
 
 # 会话记忆
 
+> **定位**：本文描述**会话记忆**——事件溯源日志（`echo-session`）、模型上下文投影、压缩与归档、显示时间线。读者：需要理解"模型看到了什么、为什么"的开发者。
+> 相关：[多 Agent 与会话](./core-agents.md)（会话模型与工作区通道）、[Agent 循环](./core-agent-loop.md)（上下文的消费方）、[配置持久化](./core-config-persistence.md)（会话文件布局）、[多模态输入](./core-multimodal.md)（媒体引用还原）。
+
 每个 agent 的"记忆"由**事件溯源会话日志**（`echo-session`）承担：日志是唯一事实来源，
 模型上下文与显示时间线都是它的投影——**"模型可见 ⟺ 已记录"**。
 
@@ -17,7 +20,7 @@ y: 480
   会话持久化文件（`echo-sessions-{id}.json`，每个 persona 一份）
 - `SessionEvent` 五类：`UserMessage`（带 `message_sequence`，并发分支按请求序合并）、
   `AssistantMessage`（保留 `reasoning_content` / `tool_calls`）、`ToolCall`、
-  `ToolResult`（`tool_call_id` 回链；带 `started_at_ms`/`elapsed_ms` 执行计时，2026-10）、
+  `ToolResult`（`tool_call_id` 回链；带 `started_at_ms`/`elapsed_ms` 执行计时）、
   `Compaction`（压缩是显式事件，日志保持可重放；`[历史摘要]` 前缀在投影期恰好渲染一次）
 - `SessionHeader` 携带 fork/resume 元数据（parent/seed_length/origin/delegation_depth），随日志持久化
 - 持久化：v6 整档 JSON（`events` 为权威，每事件带 `session` 归属；
@@ -54,4 +57,4 @@ y: 480
   （近 40 条保全文、更早截断），持久化不动
 - 加载恢复：`timeline_seq` 从条目最大 seq 重建；悬空 running 工具条目标注"已中断"
 
-> 机制全景与不变量见 [架构总览](./architecture.md)§会话与持久化；持久化文件布局见 [配置持久化](./core-config-persistence.md)§Session 持久化。
+> 在架构中的位置见 [架构总览](./architecture.md)§会话与持久化；持久化文件布局见 [配置持久化](./core-config-persistence.md)§Session 持久化。

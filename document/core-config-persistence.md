@@ -8,6 +8,9 @@ y: 800
 
 # 配置持久化
 
+> **定位**：本文描述 **Core 的配置持久化**——ConfigStore 原子落盘、Agent 配置与 QQ 门控配置的写入路径、加载期迁移，以及会话/工作区文件布局。读者：需要理解"Panel 上改的东西存到哪、怎么存"的开发者。
+> 相关：[Core 后端](./core.md)（配置入口）、[会话记忆](./core-memory.md)（日志与投影机制）、[多 Agent 与会话](./core-agents.md)（人格与会话模型）。
+
 ## 概述
 
 EchoAgentCore 的运行期配置写入通过共享 `ConfigStore` 原子化落盘；启动加载不经它（`CoreConfig::load` 直接读文件）。
@@ -61,13 +64,12 @@ ConfigStore 由 main.rs 创建一次，分发给各 persona 的 Agent 与 QqAdap
   qq_adapter.set_config_store(config_store.clone());
   // make_agent 内：每个 persona 共享同一个 config_store（agents_config_store.clone()），
   // 会话文件路径独立设置（JSON，见下）。
-
-⚠️ **会话持久化与配置持久化解耦**（2026-09 修复）：`Agent::set_config_store` 只接管 TOML 配置，
-不再连带把 trunk 会话路径设成同一文件；会话路径由 `Agent::set_session_persist_path` 单独设置
-（`echo-sessions-{id}.json`）。历史上二者曾共用 ConfigStore 路径——patch 读 JSON 文件时
-TOML 解析失败，所有 `/api` 与 Panel API 保存静默丢失（日志 `failed to persist agent config:
-config parse failed ... line 1, column 1 ... invalid key`）。
 ```
+
+⚠️ **会话持久化与配置持久化解耦**：`Agent::set_config_store` 只接管 TOML 配置，
+不连带设置 trunk 会话路径；会话路径由 `Agent::set_session_persist_path` 单独设置
+（`echo-sessions-{id}.json`）——两者绝不可同路径互写（曾因共用路径导致 TOML 解析
+失败、配置保存静默丢失）。
 
 Panel 自身不读写 Core 配置文件——所有配置操作都通过 Core 的 management
 WebSocket API 下发，持久化统一在 Core 进程内完成。
@@ -86,7 +88,7 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
   不再注册，不迁移则 `apply_disabled` 静默失效；白名单同时含 single+parallel 记
   warn（parallel 优先）。运行期 `SaveTeam`
   （`AgentManager::save_profile`）入口对白名单做同样 id 归一化（`normalize_mode_plugins`），防御旧 Panel 回写旧 id
-- **per-persona 插件黑名单移除**（2026-09-11，同函数内）：`[agent.teams.*].disabled_plugins`
+- **per-persona 插件黑名单移除**：`[agent.teams.*].disabled_plugins`
   的语义物化进 `enabled_plugins` 白名单（`convert_plugin_blacklist_to_whitelist`）——
   空白名单 + 黑名单 → 「全部内置插件 − 黑名单 − parallel 模式 id」；非空白名单 → 剔除
   黑名单项（黑名单含 parallel id 时同时剔除白名单的 parallel id，保持单会话推导）。
@@ -98,6 +100,10 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 - `[adapters.qq.server]`（bind_address、access_token、heartbeat_interval）
 - `[adapters.qq.trigger]`（dm_auto_reply、group_at_reply）
 - `[logging]`
+
+### provider 取值
+
+`[agent].provider` 取值：`openai` / `deepseek` / `third-party`（OpenAI 兼容，base_url 以 `/anthropic` 结尾时自动走 Messages 协议）、`anthropic` / `claude`、`kimi`（Kimi Code 订阅：Anthropic 兼容端点 `https://api.kimi.com/coding`，`x-api-key` 在 Kimi Code Console 创建，推理档位 `output_config.effort` low/high/max）、`ollama`。
 
 ## QQ 门控配置持久化
 
@@ -176,14 +182,7 @@ group_ids = []
 
 ## Session 持久化
 
-会话（消息历史）的持久化由 `TrunkStore` 管理，与上述配置持久化是独立的子系统（机制全景见 [会话记忆](./core-memory.md)）。
-
-| 属性 | 说明 |
-|---|---|
-| 文件 | `~/.config/echo-agent-core/echo-sessions-{id}.json`（每个 persona 独立文件，严禁合并；旧默认专用的 `echo-sessions.json` 仅当存在 `default` 人格时于首次启动自动改名迁移，配置里没有 `default` 时旧文件保持原样不动） |
-| 格式 | **v6**（2026-09 多会话）：`events`（append-only 事件日志）为权威，每事件带 `session` 归属；`trunk_histories`（按会话投影映射）/`identities`/`timeline` 为持久化投影。v5 及更旧格式加载时自动迁移（无归属事件按 hook 内容归因：QQ 私聊/群/backend 推导 + 粘滞继承 + 兜底本地会话），下次保存写回 v6；v1-v4 旧格式先经事件化迁移再归因 |
-| 触发 | 30s 周期保存（dirty 时）+ 关闭时 flush |
-| 加载 | 启动时自动恢复；显示时间线的 `timeline_seq` 从条目最大 seq 重建，悬空 running 工具条目标注为"已中断" |
+会话（消息历史）的持久化由 `TrunkStore` 管理，与上述配置持久化是独立子系统——格式、保存触发与加载恢复机制见 [会话记忆](./core-memory.md)。文件层面：每 persona 独立 `~/.config/echo-agent-core/echo-sessions-{id}.json`（严禁合并）——旧默认专用的 `echo-sessions.json` 仅当存在 `default` 人格时于首次启动自动改名迁移，配置里没有 `default` 时旧文件保持原样不动；v5 及更旧格式加载时自动迁移（无归属事件按 hook 内容归因：QQ 私聊/群/backend 推导 + 粘滞继承 + 兜底本地会话，下次保存写回 v6；v1-v4 旧格式先经事件化迁移再归因）。
 
 工作区会话（`echo-agent.workspace` 插件）独立持久化于
 `~/.config/echo-agent-core/echo-workspaces-{id}.json`（每 persona 一份；

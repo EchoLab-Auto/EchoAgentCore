@@ -8,9 +8,11 @@ y: 1280
 
 # 技能系统
 
+> **定位**：本文描述技能系统——SKILL.md 能力包的分层发现、注入与热重载，系统提示词技能，以及外部 Git 来源技能的安装/更新。技能目录作为插件（`echo-agent.skills.dir`）的装载与包门控见 [插件化设计](./core-plugins.md)；技能正文的注入位置见 [Agent 循环](./core-agent-loop.md)。读者：技能作者与系统维护者。
+
 技能是 SKILL.md 驱动的能力包，为模型注入特定领域的指令与流程知识。`Skill`/`SkillMetadata` 词汇与 `SkillProvider` 接缝在 echo-defs；具体实现 `SkillRegistry`（文件发现 + 热重载）在 echo-agent。
 
-## 技能分层（2026-10 议题 5）
+## 技能分层
 
 `skills_dir`（读写，用户层）+ `skills_dirs`（只读附加层，出厂技能）双目录：
 
@@ -21,8 +23,8 @@ y: 1280
   （`.sources.json`）都落在 `skills_dir`——出厂层永不被运行期写
 - **安装/自更新**：install.sh 把出厂技能从受管检出拷到
   `$DATA_DIR/skills-builtin/`（配置写入两层）；update.sh 只刷新出厂层，
-  用户层（`$DATA_DIR/skills/`）不受自更新影响——用户自定义技能不再被
-  update 冲掉，框架出厂技能也不再需要寄居受管 git 检出
+  用户层（`$DATA_DIR/skills/`）不受自更新影响——用户自定义技能不会被
+  update 冲掉，出厂技能也无需寄居受管 git 检出
 
 ## SKILL.md 与发现
 
@@ -32,13 +34,13 @@ y: 1280
 
 ## 常驻与触发
 
-- **常驻技能**（`metadata.always: true` 且启用）：每轮对话都注入正文（`always_enabled`；实例：`subagent-delegation` 2026-09 由关键词触发升级为常驻）
+- **常驻技能**（`metadata.always: true` 且启用）：每轮对话都注入正文（`always_enabled`；实例：`subagent-delegation`）
 - **触发技能**：消息命中 `keywords` 时注入（`find_matching`；多命中时按名称排序取第一个，保证确定性）
 - 注入位置：系统提示词的"常驻/触发技能"块（见 [Agent 循环](./core-agent-loop.md) 的提示词按块构建）
 
 ## 热重载与启停
 
-- `ReloadSkills` 命令手动重载 skills_dir——**覆盖所有运行中人格 + 管理代理**（`reload_skills_into` 广播；技能目录进程级共享；2026-09 修复：此前只重载收到命令的管理代理，面板按钮对人格不生效）。结果经 `Error` 事件 toast 回推：全成功「技能已重新加载（N/M 个智能体更新）」、无变化「技能无变化」、失败逐个列 id；`plugins_dir` 数据插件目录 5s 轮询自动热挂载（技能/工具皆可热插拔）
+- `ReloadSkills` 命令手动重载 skills_dir——**覆盖所有运行中人格 + 管理代理**（`reload_skills_into` 广播；技能目录进程级共享）。结果经 `Error` 事件 toast 回推：全成功「技能已重新加载（N/M 个智能体更新）」、无变化「技能无变化」、失败逐个列 id；`plugins_dir` 数据插件目录 5s 轮询自动热挂载（技能/工具皆可热插拔）
 - 重载**继承运行时启停状态**（`inherit_enabled_from`）：文件更新/新增/删除不丢失用户在面板的启停选择
 - 启停持久化于 `[agent].disabled_skills`，重启后保持；Panel 设置视图可浏览/启停/编辑/删除技能（含正文）
 

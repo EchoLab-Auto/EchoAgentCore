@@ -7,7 +7,7 @@ y: 320
 link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "multimodal | 多模态输入 | r>l", "config-persistence | 配置持久化 | r>l"]
 ---
 
-# 框架（内核机制）
+# 框架（内核）
 
 > **定位**：本文描述 EchoAgent 的**内核**——插件化软件体系里"让一切插件都能挂上去"的最小机制集：组合与装配、服务定位、事件总线、插件宿主、进程结构。读者：需要理解系统骨架的开发者。
 > 姊妹篇：[插件化设计](./core-plugins.md)（插件体系与装载清单）；运行时子系统见 [多 Agent 与会话](./core-agents.md)、[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)。

@@ -8,6 +8,9 @@ y: 800
 
 # 部署与自更新
 
+> **定位**：本文是部署与运维手册——安装（install.sh 与 curl | bash 一键路径）、容器化部署（npm + Docker）、systemd 服务布局、受控自更新与回滚、日常体检。读者：部署与运维 EchoAgent 的操作者。
+> 相关文档：[协议与数据流](./protocol.md)、[框架（内核机制）](./frame.md)（进程结构）、[开发指南](./dev-guide.md)。
+
 EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。源码托管于受管 git 仓库，更新走 oneshot 更新单元（构建 → 原子替换 → 重启）。
 
 ## 服务与文件布局
@@ -31,9 +34,9 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 - 安装是事务性的：release 构建完成后快照现有文件，健康检查失败自动恢复并重启旧 Core
 - 服务默认挂在 `default.target`；开机免登录自启需 `sudo loginctl enable-linger "$USER"`
 - 卸载：`./scripts/uninstall.sh`（保留配置与用户数据——媒体库 `media/`、用户技能层 `skills/`）/ `--purge`（连配置目录与数据一起删）
-- 重装：`./scripts/reinstall.sh`（2026-10 新增）——uninstall（保留配置与用户数据）→ install 一步接力，二进制/服务单元全部换新而 core.toml、会话历史、媒体库与用户技能不动；同样兼容 curl | bash 运行
+- 重装：`./scripts/reinstall.sh`——uninstall（保留配置与用户数据）→ install 一步接力，二进制/服务单元全部换新而 core.toml、会话历史、媒体库与用户技能不动；同样兼容 curl | bash 运行
 
-### curl | bash 一键安装/卸载（2026-10，免 clone）
+### curl | bash 一键安装/卸载（免 clone）
 
 ```bash
 # 安装（Core）
@@ -55,9 +58,9 @@ curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scr
 
 ### 服务加固
 
-长驻 `echo-agent-core.service` 与 oneshot 更新单元均设 `NoNewPrivileges=true`——2026-09 起 agent 不再提供 setuid 提权（`run_sudo` 已废弃移除），两个单元都限制被攻破进程/构建脚本的提权面。
+长驻 `echo-agent-core.service` 与 oneshot 更新单元均设 `NoNewPrivileges=true`——agent 不再提供 setuid 提权（`run_sudo` 已废弃移除），两个单元都限制被攻破进程/构建脚本的提权面。
 
-## 容器化部署（npm + Docker，2026-09-24）
+## 容器化部署
 
 除宿主 systemd 安装外的第二条投放路径：**npm 编排 + 官方镜像**——
 `npx @echolab-auto/echo-agent up`（包源码在仓库 `npm/echo-agent/`）。
@@ -88,8 +91,8 @@ curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scr
 - 失败自动回滚（恢复备份 + 重启）；状态写入 `~/.local/state/echo-agent-*/update-status`
 - 更新器非阻塞文件锁拒绝并发运行；拉取/构建失败时旧二进制不动、不重启
 - Panel 更新包含 `npm run build`（前端产物从 `web/dist` 拷贝到静态目录，需 PATH 中有 npm——nvm 路径）
-- **NapCat 恢复门控**（2026-09-13）：Core 重启后仅当 `[adapters.qq].enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（3131 或 3140-3399，多实例）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
-- **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制逐个核对内置插件 manifest id（9 个：`echo-agent.tools.builtin` / `echo-agent.adapter.qq` / `echo-agent.skills.dir` / `echo-agent.workspace` / `echo-agent.subagent` / `echo-agent.provider.llm` / `echo-agent.management.panel` / 互斥循环模式 `echo-agent.loop.{single,parallel}`）。清单与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` 一致，由 `source/core/tests/update_script_plugins.rs` 守护（2026-09-26 新增——此前 `echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`echo-agent.menu`/`echo-agent.checklist`/旧驱动 `echo-agent.loop.runner` 等 id 已移除（present_menu 已废弃移除；checklist 为普通内置工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
+- **NapCat 恢复门控**：Core 重启后仅当 `[adapters.qq].enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（3131 或 3140-3399，多实例）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
+- **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制逐个核对内置插件 manifest id（9 个：`echo-agent.tools.builtin` / `echo-agent.adapter.qq` / `echo-agent.skills.dir` / `echo-agent.workspace` / `echo-agent.subagent` / `echo-agent.provider.llm` / `echo-agent.management.panel` / 互斥循环模式 `echo-agent.loop.{single,parallel}`）。清单与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` 一致，由 `source/core/tests/update_script_plugins.rs` 守护（修复背景：`echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`echo-agent.menu`/`echo-agent.checklist`/旧驱动 `echo-agent.loop.runner` 等 id 已移除（present_menu 已废弃移除；checklist 为普通内置工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
 
 ### 状态机与轮询契约
 
