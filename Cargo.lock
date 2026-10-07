@@ -594,11 +594,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-plugin-example"
+version = "0.1.0"
+dependencies = [
+ "echo-plugin-host",
+ "echo-plugin-sdk",
+ "regex",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "echo-plugin-host"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "echo-defs",
  "echo-plugin-api",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "echo-plugin-loader"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "toml",
+]
+
+[[package]]
+name = "echo-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "echo-plugin-api",
+ "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",

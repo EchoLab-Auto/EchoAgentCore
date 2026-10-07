@@ -20,6 +20,9 @@ members = [
     "source/plugin/echo-plugin",
     "source/plugin/echo-plugin-api",
     "source/plugin/echo-plugin-host",
+    "source/plugin/echo-plugin-sdk",
+    "source/plugin/echo-plugin-example",
+    "source/plugin/echo-plugin-loader",
 ]
 
 [workspace.package]
@@ -52,6 +55,9 @@ echo-test-utils = { path = "source/backend/echo-test-utils" }
 echo-plugin = { path = "source/plugin/echo-plugin" }
 echo-plugin-api = { path = "source/plugin/echo-plugin-api" }
 echo-plugin-host = { path = "source/plugin/echo-plugin-host" }
+echo-plugin-sdk = { path = "source/plugin/echo-plugin-sdk" }
+echo-plugin-example = { path = "source/plugin/echo-plugin-example" }
+echo-plugin-loader = { path = "source/plugin/echo-plugin-loader" }
 echo-federation = { path = "source/federation/echo-federation" }
 
 # async runtime

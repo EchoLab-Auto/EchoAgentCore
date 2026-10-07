@@ -10,6 +10,11 @@
 #   - echo-loop         may depend on echo-defs/echo-context only
 #   - echo-context      may depend on nothing from the harness
 #   - echo-defs         may depend on nothing from the harness
+#   - plugin/echo-plugin-api      zero harness deps (frozen contract)
+#   - plugin/echo-plugin-sdk      may depend on echo-plugin-api only
+#   - plugin/echo-plugin-host     may depend on echo-plugin-api (+ echo-defs for the Tool adapter)
+#   - plugin/echo-plugin-loader   zero harness deps (pure config composition)
+#   - plugin/echo-plugin-example  may depend on echo-plugin-sdk only
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -20,10 +25,11 @@ check() {
   local allowed="$2" # space-separated allowed harness deps (may be empty)
   local manifest="$ROOT/source/$crate/Cargo.toml"
   [ -f "$manifest" ] || return 0
-  # Extract harness deps referenced in [dependencies]
+  # Extract harness deps from the [dependencies] section. Keys at line start
+  # only: comments and binary names inside the section range must not count.
   local deps
   deps=$(sed -n '/^\[dependencies\]/,/^\[/p' "$manifest" \
-    | grep -oE 'echo-[a-z-]+' | sort -u || true)
+    | grep -oE '^echo-[a-z-]+' | sort -u || true)
   for dep in $deps; do
     if [ "$dep" != "echo-defs" ] && [ "$dep" != "echo-context" ] \
        && [ "$dep" != "echo-protocol" ] \
@@ -41,6 +47,13 @@ check "loop/echo-loop" ""
 check "llm/echo-llm-openai" ""
 check "llm/echo-llm-anthropic" ""
 check "llm/echo-llm-ollama" "echo-llm-openai"
+
+# Plugin system layering (decoupling plan P0-P4).
+check "plugin/echo-plugin-api" ""
+check "plugin/echo-plugin-sdk" "echo-plugin-api"
+check "plugin/echo-plugin-host" "echo-plugin-api"
+check "plugin/echo-plugin-loader" ""
+check "plugin/echo-plugin-example" "echo-plugin-sdk"
 
 if [ "$FAIL" -ne 0 ]; then
   echo "Dependency-direction lint FAILED" >&2

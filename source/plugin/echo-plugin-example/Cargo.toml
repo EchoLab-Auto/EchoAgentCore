@@ -1,0 +1,23 @@
+[package]
+name = "echo-plugin-example"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Phase-3 pilot plugin (websearch + calculator) for EchoAgentCore, built on echo-plugin-sdk"
+
+[[bin]]
+name = "echo-plugin-example"
+path = "src/main.rs"
+
+[dependencies]
+echo-plugin-sdk = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+regex = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+echo-plugin-host = { workspace = true }
+tokio = { workspace = true }
