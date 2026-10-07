@@ -27,6 +27,14 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 - 不做动态库加载、不做插件沙箱（源码级插件即本仓库内代码，信任边界 = 仓库）
 - 不做插件市场/远程安装（需签名与供应链考虑）
 
+> **外部进程插件（2026-10 起）**：除上述源码级内置插件外，系统现已支持
+> **独立进程插件**——插件以任意语言实现、经 stdio 帧协议与宿主通信，由
+> `plugins.toml` 配置装载（缺省休眠），崩溃自动重启（进程级隔离）。
+> 协议、SDK 与部署方式见 [插件开发指南](./plugin-authoring.md)；系统设计
+> 与路线图见 [完全解耦推进计划](./decoupling-plan.md)。两者关系：内置
+> 插件 = 编译期内联（性能零开销、随二进制更新）；外部插件 = 运行期装载
+> （隔离、独立演进、免重编译 Core）。
+
 ## 插件模型
 
 - 核心类型：`PluginManifest`（id/name/version/kind/entry/description）+ `BuiltinPlugin` + `MountContext`
