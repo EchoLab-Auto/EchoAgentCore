@@ -38,7 +38,8 @@ EchoAgentCore/
 │   ├── loop/echo-loop/        # TurnRunner 默认驱动 + ToolPipeline
 │   ├── llm/echo-llm-*/        # LLM provider crates（openai/anthropic/ollama）
 │   ├── plugin/echo-plugin/    # Plugin trait / PluginManifest / 注册表
-│   ├── protocol/echo-protocol/# 前后端线契约 crate
+│   ├── plugin/echo-plugin-api/ # 插件协议契约（消息/贡献类型，冻结；P0）
+│   ├── plugin/echo-plugin-host/# 插件宿主（Transport/Supervisor/conformance；P0-P2）
 │   ├── federation/echo-federation/  # 联邦层：Core↔Core 对等链路（frame/invite/link）
 │   ├── backend/
 │   │   ├── echo-core/         # OneBot v11 协议类型

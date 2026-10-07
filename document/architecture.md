@@ -54,6 +54,8 @@ graph BT
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 echo-defs |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge，Panel 只依赖它 |
 | `echo-plugin` | 插件契约 | `Plugin` trait 生命周期钩子、`PluginManifest`、`PluginRegistry`；挂载为可逆副作用（返回 disposer），插件只依赖定义层 |
+| `echo-plugin-api` | 插件协议契约（P0 冻结） | 宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型（工具/技能/服务/事件订阅）、版本协商；同一组消息覆盖全部运输层（见 [完全解耦推进计划](./decoupling-plan.md)） |
+| `echo-plugin-host` | 插件宿主（P0-P2） | Transport 抽象（inproc / stdio 子进程）、PluginSupervisor（握手/注册/调用/取消/排空/崩溃重启）、conformance 测试套件 |
 | `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入，启动期回填——生效口径见 [Agent 循环](./core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
 | `echo-adapter`/`echo-adapter-qq` | 平台适配 | `Adapter` trait、过滤管道、ConfigStore；QQ 实现 |
 | `echo-core`/`echo-server` | OneBot 类型/反向 WS | 仅供 QQ 适配器 |
