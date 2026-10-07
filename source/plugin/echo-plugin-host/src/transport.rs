@@ -1,10 +1,11 @@
 //! 运输层抽象：宿主经 [`Transport`] 启动插件实例，经 [`PluginConnection`]
 //! 交换协议消息（[`HostToPlugin`] / [`PluginToHost`]）。
 //!
-//! 计划中的实现：
+//! 已实现：
 //! - [`crate::inproc::InprocTransport`]：类型直连（零序列化）；
-//! - `StdioTransport`：4 字节 LE 长度前缀 + JSON / msgpack（`LengthDelimitedCodec`）；
-//! - `DylibTransport`（实验轨）；`WasmTransport`（可选沙箱轨）。
+//! - [`crate::stdio::StdioTransport`]：4 字节小端长度前缀 + JSON（手工帧读写，见模块文档）。
+//!
+//! 计划中：`DylibTransport`（实验轨）；`WasmTransport`（可选沙箱轨）。
 
 use std::time::Duration;
 

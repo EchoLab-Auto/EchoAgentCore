@@ -14,3 +14,9 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+# 测试对端插件（stdio 运输层 conformance 用；integration test 经
+# `env!("CARGO_BIN_EXE_echo-plugin-test-peer")` 定位）。
+[[bin]]
+name = "echo-plugin-test-peer"
+path = "src/bin/echo-plugin-test-peer.rs"
