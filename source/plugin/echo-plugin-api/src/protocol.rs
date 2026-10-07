@@ -1,0 +1,192 @@
+//! 协议消息（Host ↔ Plugin）与版本协商。
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::contribution::Contribution;
+
+/// 协议名（Hello/Welcome 握手比对；防串线）。
+pub const PROTOCOL_NAME: &str = "echo-plugin";
+
+/// 当前协议主版本。Hello 握手时比对：不一致拒绝连接。
+///
+/// 变更规则：只增字段/只增变体 = 不 bump；语义变更/移除字段 = bump 并同时
+/// 更新全部运输层与 conformance。
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// 版本兼容判定：主版本一致即可（v1 阶段即严格相等）。
+pub fn compatible(host: u32, plugin: u32) -> bool {
+    host == plugin
+}
+
+// ── Host → Plugin ─────────────────────────────────────────────────────────
+
+/// 宿主 → 插件消息。线上编码为 adjacently-tagged：`{"type": …, "payload": …}`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+pub enum HostToPlugin {
+    /// 握手第一步：宣告协议版本与插件配置。
+    Hello(Hello),
+    /// 调用一个贡献（工具调用 / 服务方法）。
+    Invoke(Invoke),
+    /// 取消在途调用（尽力送达；对端可能已完成）。
+    Cancel(Cancel),
+    /// 宿主 → 插件事件通知（仅已订阅的事件会送达）。
+    Event(EventNotification),
+    /// 排空：不再接受新 Invoke，等待在途完成后退出（deadline 后强杀）。
+    Drain(Drain),
+    /// 终止：立即释放并退出（宿主已确保无在途）。
+    Dispose,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Hello {
+    pub protocol: String,
+    pub version: u32,
+    /// 宿主侧的插件实例 id（与配置行 id 一致）。
+    pub plugin_id: String,
+    /// 插件配置（行 config 原样透传）。
+    #[serde(default)]
+    pub config: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Invoke {
+    /// 调用 id：`<plugin_id>:<序号>`，配对 InvokeResult / Cancel。
+    pub call_id: String,
+    /// 目标贡献名（工具名 / 服务方法名）。
+    pub contribution: String,
+    /// 调用上下文（会话归属等；替代旧的参数注入 `__session_id` / `__team_id`）。
+    #[serde(default)]
+    pub ctx: InvokeContext,
+    /// 调用参数（JSON Schema 由贡献注册时的 schema 声明）。
+    #[serde(default)]
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct InvokeContext {
+    /// 归属会话 id（checklist / shell 类工具的按会话隔离依据）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// 归属人格（多 persona 消歧）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    /// 归属回复分支（临时分支可见性）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_id: Option<String>,
+    /// 剩余时限（毫秒）；None = 由宿主外层守卫兜底。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cancel {
+    pub call_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventNotification {
+    pub event: String,
+    #[serde(default)]
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Drain {
+    /// 排空期限（毫秒）；超时后宿主强杀（子进程 SIGKILL）。
+    pub deadline_ms: u64,
+}
+
+// ── Plugin → Host ─────────────────────────────────────────────────────────
+
+/// 插件 → 宿主消息。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+pub enum PluginToHost {
+    /// 握手应答（协议版本 / 能力）。
+    Welcome(Welcome),
+    /// 贡献注册（可多次；每次**整体替换**该插件的贡献集合——绝不保留部分集合）。
+    Register(Register),
+    /// 调用结果（终态；之后该 call_id 的消息一律忽略）。
+    InvokeResult(InvokeResult),
+    /// 插件 → 宿主事件（宿主按订阅路由；subagent 完成回灌等）。
+    Emit(Emit),
+    /// 日志（宿主转发到 tracing，带插件前缀）。
+    Log(LogRecord),
+    /// 初始化完成（Welcome 后、可选 Register 后）。
+    Ready,
+    /// 初始化失败（宿主按策略处理：报错 / 重启 / 熔断）。
+    Failed(Failure),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Welcome {
+    pub protocol: String,
+    pub version: u32,
+    /// 插件自报 id（与 Hello.plugin_id 应一致；不一致宿主拒绝）。
+    pub plugin_id: String,
+    /// 能力 / feature 列表（如 `"tools"`、`"events"`、`"cancel"`）；双方都声明才可用。
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Register {
+    pub contributions: Vec<Contribution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvokeResult {
+    pub call_id: String,
+    pub outcome: InvokeOutcome,
+}
+
+/// 调用终态：成功（文本 + 可选图片）或错误。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum InvokeOutcome {
+    Ok {
+        #[serde(default)]
+        text: String,
+        /// 多模态产物（图片 URL / data URI）；与内置工具 `execute_rich` 同口径。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<String>,
+    },
+    Error {
+        /// 机器可读错误码（如 `timeout` / `cancelled` / `plugin_crashed` / `internal`）。
+        code: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Emit {
+    pub event: String,
+    #[serde(default)]
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LogRecord {
+    pub level: LogLevel,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Failure {
+    pub code: String,
+    pub message: String,
+}

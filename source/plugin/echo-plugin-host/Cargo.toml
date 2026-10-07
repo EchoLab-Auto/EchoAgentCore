@@ -1,0 +1,16 @@
+[package]
+name = "echo-plugin-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Plugin host for EchoAgentCore — transports (inproc/stdio), supervisor lifecycle, conformance suite"
+
+[dependencies]
+echo-plugin-api = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
