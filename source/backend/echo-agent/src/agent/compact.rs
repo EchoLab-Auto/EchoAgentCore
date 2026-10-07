@@ -374,12 +374,14 @@ mod tests {
                 name: "bash".into(),
                 arguments: "{}".into(),
                 session: Some("s".into()),
+                started_at_ms: None,
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "c1".into(),
                 result: "done".into(),
                 images: vec![],
                 session: Some("s".into()),
+                elapsed_ms: None,
             }),
             assistant("两处都改完了"),
         ];
@@ -414,6 +416,7 @@ mod tests {
                 name: "bash".into(),
                 arguments: "{}".into(),
                 session: Some("s".into()),
+                started_at_ms: None,
             }),
         ];
         let text = render_transcript(&events);
@@ -431,6 +434,7 @@ mod tests {
             result: huge,
             images: vec![],
             session: Some("s".into()),
+            elapsed_ms: None,
         })];
         let text = render_transcript(&events);
         assert!(estimate_tokens(&text) <= TRANSCRIPT_TOKEN_BUDGET);

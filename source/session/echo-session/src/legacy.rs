@@ -177,6 +177,8 @@ fn migrate_history(history: &[V4Message]) -> Vec<SessionEvent> {
                 result: message.content.clone(),
                 images: vec![],
                 session: None,
+                // 旧格式没有耗时信息。
+                elapsed_ms: None,
             })),
             _ => None,
         })

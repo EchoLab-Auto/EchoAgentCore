@@ -157,6 +157,12 @@ pub struct TimelineTool {
     /// 执行被外圈超时守卫中止。
     #[serde(default)]
     pub timed_out: bool,
+    /// 工具开始执行的 epoch 毫秒时间戳（面板「运行中实时计时」用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    /// 工具执行总耗时（毫秒；中断场景 = 开始到中断判定为止）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
 /// One persisted trunk timeline entry. The timeline is a *display* history
@@ -410,6 +416,9 @@ pub enum BackendEvent {
         /// Owning reply branch (empty for pre-branch legacy paths).
         #[serde(default)]
         branch_id: String,
+        /// 工具开始执行的 epoch 毫秒时间戳（面板「运行中实时计时」用）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_at_ms: Option<i64>,
     },
     /// Tool execution completed.
     ToolResult {
@@ -428,6 +437,9 @@ pub enum BackendEvent {
         /// Owning reply branch (empty for pre-branch legacy paths).
         #[serde(default)]
         branch_id: String,
+        /// 工具执行总耗时（毫秒；中断场景 = 开始到中断判定为止）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        elapsed_ms: Option<u64>,
     },
     /// A tool published a structured state snapshot for TUI visualization
     /// (e.g. the checklist tool → checklist panel). `state` is tool-specific;

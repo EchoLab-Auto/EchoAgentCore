@@ -147,6 +147,7 @@ impl TimelineProjector {
                 tool_name,
                 arguments,
                 tool_call_id,
+                started_at_ms,
                 ..
             } => {
                 self.trunk.push_timeline(TimelineMessage::tool(
@@ -160,6 +161,8 @@ impl TimelineProjector {
                         failed: false,
                         tool_call_id: tool_call_id.clone(),
                         timed_out: false,
+                        started_at_ms: *started_at_ms,
+                        elapsed_ms: None,
                     },
                 ));
             }
@@ -169,6 +172,7 @@ impl TimelineProjector {
                 result,
                 tool_call_id,
                 timed_out,
+                elapsed_ms,
                 ..
             } => {
                 let failed = *timed_out || result.trim_start().starts_with("error:");
@@ -179,6 +183,7 @@ impl TimelineProjector {
                     result,
                     failed,
                     *timed_out,
+                    *elapsed_ms,
                 );
             }
             _ => {}
@@ -190,6 +195,7 @@ impl TimelineProjector {
     /// （tool_call_id 为空）回退为按名字匹配（mirrors the TUI's
     /// `finish_tool_entry`）。就地更新会推进条目 seq，已同步过的前端可在
     /// 下次增量窗口中收到该条目的完成态。
+    #[allow(clippy::too_many_arguments)]
     fn update_timeline_tool(
         &self,
         session_id: &str,
@@ -198,6 +204,7 @@ impl TimelineProjector {
         result: &str,
         failed: bool,
         timed_out: bool,
+        elapsed_ms: Option<u64>,
     ) {
         let mut timeline = match self.trunk.timeline_mut() {
             Some(guard) => guard,
@@ -226,6 +233,7 @@ impl TimelineProjector {
                 tool.output = Some(summarize_timeline_value(result, 200));
                 tool.failed = failed;
                 tool.timed_out = timed_out;
+                tool.elapsed_ms = elapsed_ms;
             }
             // 就地更新也推进条目 seq，否则增量同步（since_seq）永远看不到
             // 这次完成态，前端会一直显示 running。
@@ -246,6 +254,8 @@ impl TimelineProjector {
                 failed,
                 tool_call_id: tool_call_id.to_string(),
                 timed_out,
+                started_at_ms: None,
+                elapsed_ms,
             },
         ));
     }

@@ -217,12 +217,14 @@ mod tests {
             id: "call_1".into(),
             name: "bash".into(),
             arguments: "{}".into(),
+            started_at_ms: None,
         }));
         log.append(SessionEvent::ToolResult(ToolResultEvent {
             session: None,
             tool_call_id: "call_1".into(),
             result: "ok".into(),
             images: vec![],
+            elapsed_ms: None,
         }));
         // The final reply must land after the turn's own tool events, not
         // between the user event and them.

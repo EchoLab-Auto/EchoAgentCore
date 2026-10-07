@@ -89,6 +89,9 @@ pub struct ToolCallEvent {
     /// 归属会话 id（多会话上下文投影分区；None = 旧版事件）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// 工具开始执行的 epoch 毫秒时间戳（面板「运行中实时计时」用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
 }
 
 /// The result of a tool call, fed back to the model.
@@ -104,6 +107,9 @@ pub struct ToolResultEvent {
     /// 归属会话 id（多会话上下文投影分区；None = 旧版事件）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// 工具执行总耗时（毫秒；中断场景 = 开始到中断判定为止）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
 /// A compaction replaced a prefix of the log with a summary.
@@ -288,6 +294,7 @@ mod tests {
             tool_call_id: "call_1".into(),
             result: format!("screenshot: {uri}"),
             images: vec![uri.clone()],
+            elapsed_ms: None,
         };
         let message = tool_result_message(&event);
         assert_eq!(message.images, vec![uri]);
@@ -341,6 +348,7 @@ mod tests {
                     id: "c".into(),
                     name: "t".into(),
                     arguments: "{}".into(),
+                    started_at_ms: None,
                 }),
                 "tool/call",
             ),
@@ -350,6 +358,7 @@ mod tests {
                     tool_call_id: "c".into(),
                     result: "r".into(),
                     images: vec![],
+                    elapsed_ms: None,
                 }),
                 "tool/result",
             ),

@@ -331,12 +331,14 @@ mod tests {
                 name: "calc".into(),
                 session: None,
                 arguments: r#"{"expr":"1+1"}"#.into(),
+                started_at_ms: None,
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "c1".into(),
                 result: "2".into(),
                 images: vec![],
                 session: None,
+                elapsed_ms: None,
             }),
             assistant("结果是 2"),
         ];
@@ -362,12 +364,14 @@ mod tests {
                 name: "bash".into(),
                 session: None,
                 arguments: r#"{"command":"ls"}"#.into(),
+                started_at_ms: None,
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_00_abc".into(),
                 result: "a.txt".into(),
                 images: vec![],
                 session: None,
+                elapsed_ms: None,
             }),
             assistant("已列出"),
         ];
@@ -405,24 +409,28 @@ mod tests {
                 name: "adapter_status".into(),
                 session: None,
                 arguments: "{}".into(),
+                started_at_ms: None,
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_A".into(),
                 result: "ok".into(),
                 images: vec![],
                 session: None,
+                elapsed_ms: None,
             }),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_B".into(),
                 name: "bash".into(),
                 session: None,
                 arguments: r#"{"command":"date"}"#.into(),
+                started_at_ms: None,
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_B".into(),
                 result: "now".into(),
                 images: vec![],
                 session: None,
+                elapsed_ms: None,
             }),
             assistant("完毕"),
         ];
@@ -456,12 +464,14 @@ mod tests {
                 name: "calc".into(),
                 session: None,
                 arguments: r#"{"expr":"1+1"}"#.into(),
+                started_at_ms: None,
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "c1".into(),
                 result: "2".into(),
                 images: vec![],
                 session: None,
+                elapsed_ms: None,
             }),
             assistant("结果是 2"),
         ];
@@ -493,12 +503,14 @@ mod tests {
                 name: "bash".into(),
                 session: None,
                 arguments: "{}".into(),
+                started_at_ms: None,
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_00_x".into(),
                 result: "ok".into(),
                 images: vec![],
                 session: None,
+                elapsed_ms: None,
             }),
             assistant("完毕"),
         ];
@@ -616,6 +628,7 @@ mod tests {
                 result: "2".into(),
                 images: vec![],
                 session: None,
+                elapsed_ms: None,
             }),
             assistant("结果是 2"),
         ];
@@ -659,6 +672,7 @@ mod tests {
                 name: "bash".into(),
                 session: None,
                 arguments: r#"{"command":"sleep 999"}"#.into(),
+                started_at_ms: None,
             }),
         ];
         let messages = derive_messages(&log, 100_000);
@@ -684,6 +698,7 @@ mod tests {
                 name: "bash".into(),
                 session: None,
                 arguments: "{}".into(),
+                started_at_ms: None,
             }),
             user("先别管了"),
         ];
@@ -728,6 +743,7 @@ mod tests {
                 name: "bash".into(),
                 session: None,
                 arguments: "{}".into(),
+                started_at_ms: None,
             }),
             SessionEvent::Compaction(CompactionEvent {
                 replaced_count: 2,
@@ -740,6 +756,7 @@ mod tests {
                 result: "ok".into(),
                 images: vec![],
                 session: None,
+                elapsed_ms: None,
             }),
             assistant("新回复"),
         ];
@@ -762,12 +779,14 @@ mod tests {
                 name: "adapter_status".into(),
                 session: None,
                 arguments: "{}".into(),
+                started_at_ms: None,
             }),
             SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "call_A".into(),
                 result: "ok".into(),
                 images: vec![],
                 session: None,
+                elapsed_ms: None,
             }),
             assistant("完毕"),
         ];

@@ -558,6 +558,7 @@ fn annotate_team_stamps_covered_variants() {
             tool_call_id: String::new(),
             timed_out: false,
             branch_id: String::new(),
+            elapsed_ms: None,
         },
         None,
     );

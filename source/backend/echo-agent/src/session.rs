@@ -1771,6 +1771,7 @@ fn events_from_messages(
                     result: message.content.clone(),
                     images: message.images.clone(),
                     session: session.clone(),
+                    elapsed_ms: None,
                 },
             )),
             // 系统提示词不入事件日志（每轮重建）。
@@ -1881,12 +1882,14 @@ mod tests {
                 name: "send_private_msg".into(),
                 arguments: "{}".into(),
                 session: None,
+                started_at_ms: None,
             }),
             echo_session::SessionEvent::ToolResult(ToolResultEvent {
                 tool_call_id: "c1".into(),
                 result: "sent".into(),
                 images: vec![],
                 session: None,
+                elapsed_ms: None,
             }),
             echo_session::SessionEvent::AssistantMessage(AssistantMessage {
                 content: "已回复。".into(),
@@ -2254,6 +2257,7 @@ mod tests {
                 result: "ok".into(),
                 images: vec![data_uri.clone()],
                 session: Some("local:tui::local_user".into()),
+                elapsed_ms: None,
             }),
         ];
         let changed = spill_event_media(&mut events);
@@ -2894,6 +2898,7 @@ mod tests {
             name: "bash".into(),
             arguments: "{}".into(),
             session: Some(session.into()),
+            started_at_ms: None,
         })
     }
 

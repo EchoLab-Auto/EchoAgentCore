@@ -805,6 +805,7 @@ impl Agent {
                 arguments,
                 tool_call_id,
                 branch_id,
+                started_at_ms,
                 ..
             } => BackendEvent::ToolCall {
                 session_id,
@@ -813,6 +814,7 @@ impl Agent {
                 arguments,
                 tool_call_id,
                 branch_id,
+                started_at_ms,
             },
             BackendEvent::ToolResult {
                 session_id,
@@ -821,6 +823,7 @@ impl Agent {
                 tool_call_id,
                 timed_out,
                 branch_id,
+                elapsed_ms,
                 ..
             } => BackendEvent::ToolResult {
                 session_id,
@@ -830,6 +833,7 @@ impl Agent {
                 tool_call_id,
                 timed_out,
                 branch_id,
+                elapsed_ms,
             },
             BackendEvent::AgentThinking { session_id, .. } => BackendEvent::AgentThinking {
                 session_id,
@@ -1729,6 +1733,8 @@ impl Agent {
                 let cancel = cancel_for_tools.clone();
                 let visible = visible_reply.clone();
                 Box::pin(async move {
+                    // 工具开始执行时刻（中断补记 elapsed_ms 用；语义 = 开始到中断判定）。
+                    let tool_started = std::time::Instant::now();
                     let guard = this.tool_guard_timeout(&call).await;
                     tokio::select! {
                         result = tokio::time::timeout(guard, this.run_tool(&sid, &branch, &call)) => {
@@ -1756,7 +1762,12 @@ impl Agent {
                                 Err(_) => {
                                     let text = tool_timeout_notice(&call.name, guard.as_secs());
                                     this.record_interrupted_tool_result(
-                                        &sid, &branch, &call, &text, true,
+                                        &sid,
+                                        &branch,
+                                        &call,
+                                        &text,
+                                        true,
+                                        tool_started.elapsed().as_millis() as u64,
                                     );
                                     echo_loop::ToolOutcome::text(text)
                                 }
@@ -1769,6 +1780,7 @@ impl Agent {
                                 &call,
                                 "error: tool execution cancelled",
                                 false,
+                                tool_started.elapsed().as_millis() as u64,
                             );
                             echo_loop::ToolOutcome::text("error: tool execution cancelled")
                         }
@@ -2090,7 +2102,14 @@ impl Agent {
                         // run_tool was dropped mid-flight: it already recorded
                         // the ToolCall event, so record the matching ToolResult
                         // or the durable log keeps a dangling call.
-                        self.record_interrupted_tool_result(&session_id, branch_id, call, &text, true);
+                        self.record_interrupted_tool_result(
+                            &session_id,
+                            branch_id,
+                            call,
+                            &text,
+                            true,
+                            tool_started.elapsed().as_millis() as u64,
+                        );
                         crate::tool::ToolResult::text(text)
                     }
                     _ = turn_cancel.cancelled() => {
@@ -2100,6 +2119,7 @@ impl Agent {
                             call,
                             "error: tool execution cancelled",
                             false,
+                            tool_started.elapsed().as_millis() as u64,
                         );
                         return Err(anyhow!(TURN_CANCELLED));
                     }
@@ -2172,6 +2192,10 @@ impl Agent {
         branch_id: &str,
         call: &ToolCall,
     ) -> crate::tool::ToolResult {
+        // 执行开始时刻：epoch 毫秒进事件（面板「运行中实时计时」用），
+        // Instant 用于本地测「结束减开始」的耗时。
+        let started = std::time::Instant::now();
+        let started_at_ms = chrono::Utc::now().timestamp_millis();
         self.emit(BackendEvent::ToolCall {
             session_id: session_id.to_string(),
             team_id: None,
@@ -2179,6 +2203,7 @@ impl Agent {
             arguments: call.arguments.clone(),
             tool_call_id: call.id.clone(),
             branch_id: branch_id.to_string(),
+            started_at_ms: Some(started_at_ms),
         });
         // The tool call is a durable event: the model-visible loop (call +
         // result) must be reconstructable from the log after a reload.
@@ -2189,6 +2214,7 @@ impl Agent {
                     name: call.name.clone(),
                     arguments: call.arguments.clone(),
                     session: Some(session_id.to_string()),
+                    started_at_ms: Some(started_at_ms),
                 },
             ));
         // 参数解析与预检：给模型可纠正的错误反馈。非法 JSON 或缺少必需
@@ -2264,6 +2290,7 @@ impl Agent {
         };
         let result_text = result.text.clone();
         let result_images = result.images.clone();
+        let elapsed_ms = started.elapsed().as_millis() as u64;
         self.emit(BackendEvent::ToolResult {
             session_id: session_id.to_string(),
             team_id: None,
@@ -2272,6 +2299,7 @@ impl Agent {
             tool_call_id: call.id.clone(),
             timed_out: false,
             branch_id: branch_id.to_string(),
+            elapsed_ms: Some(elapsed_ms),
         });
         self.trunk
             .append_event(echo_session::SessionEvent::ToolResult(
@@ -2280,6 +2308,7 @@ impl Agent {
                     result: result_text.clone(),
                     images: result_images.clone(),
                     session: Some(session_id.to_string()),
+                    elapsed_ms: Some(elapsed_ms),
                 },
             ));
         if call.name == "checklist" {
@@ -2302,7 +2331,7 @@ impl Agent {
     /// dangling call: after a reload the projection synthesizes an assistant
     /// tool_use no result answers, and the provider rejects the request
     /// (HTTP 400). Also emits the backend event so the UI can close out the
-    /// pending tool row.
+    /// pending tool row. `elapsed_ms` = 开始执行到中断判定为止的耗时。
     fn record_interrupted_tool_result(
         &self,
         session_id: &str,
@@ -2310,6 +2339,7 @@ impl Agent {
         call: &ToolCall,
         result: &str,
         timed_out: bool,
+        elapsed_ms: u64,
     ) {
         self.emit(BackendEvent::ToolResult {
             session_id: session_id.to_string(),
@@ -2319,6 +2349,7 @@ impl Agent {
             tool_call_id: call.id.clone(),
             timed_out,
             branch_id: branch_id.to_string(),
+            elapsed_ms: Some(elapsed_ms),
         });
         self.trunk
             .append_event(echo_session::SessionEvent::ToolResult(
@@ -2327,6 +2358,7 @@ impl Agent {
                     result: result.to_string(),
                     images: vec![],
                     session: Some(session_id.to_string()),
+                    elapsed_ms: Some(elapsed_ms),
                 },
             ));
     }
