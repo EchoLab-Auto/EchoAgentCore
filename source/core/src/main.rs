@@ -20,6 +20,7 @@ mod federation_import;
 mod handlers;
 mod management;
 mod node;
+mod plugins_runtime;
 mod qq_instances;
 mod qq_tools;
 
@@ -664,6 +665,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         ),
     ));
 
+    // ── 子进程插件（解耦计划 P3/P4）：plugins.toml 缺省休眠 ──
+    let plugin_runtime = plugins_runtime::start_if_configured(&args.config_path()).await;
+    let plugin_tools: std::sync::Arc<Vec<std::sync::Arc<echo_plugin_host::RemoteTool>>> =
+        std::sync::Arc::new(
+            plugin_runtime
+                .as_ref()
+                .map(|r| r.tools())
+                .unwrap_or_default(),
+        );
+    let factory_plugin_tools = plugin_tools.clone();
+
     // 多人格装配闭包：persona id + profile -> 独立 Agent 实例。
     // 用 Arc 包一层：supervisor 与"进程级核心服务代理"共用同一装配逻辑；
     // 装配所需的共享件预先 clone 好，闭包按需再 clone（Fn 语义）。
@@ -688,6 +700,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let shared_plugin_host = factory_plugin_host.clone();
             let config_store_path = factory_config_path.clone();
             let agents_config_store = factory_config_store.clone();
+            let pt = factory_plugin_tools.clone();
             let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             {
                 let mut cfg = base_cfg.clone();
@@ -750,6 +763,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     ),
                 ));
                 t.set_package("spawn_subagent", echo_agent::plugins::SUBAGENT_PLUGIN_ID);
+                // 子进程插件工具（plugins.toml；RemoteTool 已实现 Tool trait）。
+                for tool in pt.iter() {
+                    let name = tool.tool_name().to_string();
+                    t.register(tool.clone());
+                    if let Some(pkg) = tool.package() {
+                        t.set_package(&name, pkg);
+                    }
+                }
                 // Persona 级 API：配置了 api_profile 的 persona 在启动时构建
                 // 自己的 provider（从全局池解析，不共享默认 provider）。
                 let mut api_cfg_override: Option<echo_agent::AgentConfig> = None;
@@ -1424,6 +1445,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         .collect();
     for task in shutdown_tasks {
         let _ = task.await;
+    }
+    // 子进程插件优雅关停（在人格 shutdown 之后、最终返回之前）。
+    if let Some(rt) = &plugin_runtime {
+        rt.shutdown().await;
     }
     Ok(())
 }

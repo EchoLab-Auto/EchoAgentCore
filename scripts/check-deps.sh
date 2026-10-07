@@ -51,7 +51,7 @@ check "llm/echo-llm-ollama" "echo-llm-openai"
 # Plugin system layering (decoupling plan P0-P4).
 check "plugin/echo-plugin-api" ""
 check "plugin/echo-plugin-sdk" "echo-plugin-api"
-check "plugin/echo-plugin-host" "echo-plugin-api"
+check "plugin/echo-plugin-host" "echo-plugin-api echo-plugin-loader"
 check "plugin/echo-plugin-loader" ""
 check "plugin/echo-plugin-example" "echo-plugin-sdk"
 
