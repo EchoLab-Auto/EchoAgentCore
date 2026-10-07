@@ -35,7 +35,9 @@ fn host_messages_roundtrip() {
         },
         payload: json!({"query": "rust"}),
     }));
-    roundtrip_host(HostToPlugin::Cancel(Cancel { call_id: "websearch:1".into() }));
+    roundtrip_host(HostToPlugin::Cancel(Cancel {
+        call_id: "websearch:1".into(),
+    }));
     roundtrip_host(HostToPlugin::Event(EventNotification {
         event: "session/start".into(),
         payload: json!({"id": "s1"}),
@@ -64,20 +66,32 @@ fn plugin_messages_roundtrip() {
     }));
     roundtrip_plugin(PluginToHost::InvokeResult(InvokeResult {
         call_id: "websearch:1".into(),
-        outcome: InvokeOutcome::Ok { text: "ok".into(), images: vec![] },
+        outcome: InvokeOutcome::Ok {
+            text: "ok".into(),
+            images: vec![],
+        },
     }));
     roundtrip_plugin(PluginToHost::InvokeResult(InvokeResult {
         call_id: "websearch:2".into(),
-        outcome: InvokeOutcome::Error { code: "timeout".into(), message: "deadline".into() },
+        outcome: InvokeOutcome::Error {
+            code: "timeout".into(),
+            message: "deadline".into(),
+        },
     }));
-    roundtrip_plugin(PluginToHost::Emit(Emit { event: "tool/result".into(), payload: json!({}) }));
+    roundtrip_plugin(PluginToHost::Emit(Emit {
+        event: "tool/result".into(),
+        payload: json!({}),
+    }));
     roundtrip_plugin(PluginToHost::Log(LogRecord {
         level: LogLevel::Warn,
         message: "slow upstream".into(),
         fields: None,
     }));
     roundtrip_plugin(PluginToHost::Ready);
-    roundtrip_plugin(PluginToHost::Failed(Failure { code: "init".into(), message: "boom".into() }));
+    roundtrip_plugin(PluginToHost::Failed(Failure {
+        code: "init".into(),
+        message: "boom".into(),
+    }));
 }
 
 #[test]
