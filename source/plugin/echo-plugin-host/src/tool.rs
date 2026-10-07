@@ -34,10 +34,14 @@ impl RemoteTool {
             contribution,
         }
     }
-
     /// 该贡献对应的工具名。
     pub fn tool_name(&self) -> &str {
         &self.contribution.name
+    }
+
+    /// 贡献声明的所属包 id（注册进 `ToolRegistry` 时用于前端按包分组）。
+    pub fn package(&self) -> Option<&str> {
+        self.contribution.package.as_deref()
     }
 }
 
