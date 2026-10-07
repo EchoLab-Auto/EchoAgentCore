@@ -77,9 +77,24 @@ bash ~/.local/libexec/echo-agent-panel/update.sh \
 5. 启动日志：`journalctl --user -u echo-agent-core --no-pager -n 40`
    - 应看到 `agent supervisor ready agents=[...]`、
      `plugins mounted plugins=[...]`、`sessions restored` 等行
-6. 若 update-status 停在 state=running/restarting 且服务已重启：人工补写
-   state=updated（构建脚本可能在超时中断，但二进制已替换、服务已重启，
-   仅为状态残留）。
+6. 若 update-status 停在 state=running/restarting 且服务已重启：人工补写。
+   背景（已实际发生）：从 agent 的 shell 启动 update.sh 时，脚本身处
+   echo-agent-core.service 的 cgroup——`systemctl restart` 清理 cgroup 会
+   连带杀死 update.sh 自身（restart 阻塞期间被 SIGTERM），后续阶段
+   （restoring_qq / committing / verifying_plugins / 收尾写 updated）全部
+   不执行。二进制已替换、服务已重启、QQ 自行重连，仅状态与收尾残留。
+   人工补写清单（按成功收尾的实际格式）：
+   - `installed-revision` ← `local:<HEAD 短 sha>`（有未提交改动时加 `+dirty`）
+   - `update-status` ← state=updated / phase=verifying_plugins /
+     revision 同上 / message=installed successfully from local source /
+     pid=<原 update.sh PID> / updated_at=<当前 UTC>
+   - 手动跑 verifying_plugins 等价校验：`strings <二进制>` 后逐个 grep 9 个
+     内置插件 id（清单见 ops-deploy.md）
+   - 删除残留 `<binary>.rollback`（成功路径会删）
+   - 同步核查：`diff scripts/update.sh ~/.local/libexec/echo-agent-core/update.sh`
+     （refreshing_updater 阶段未执行的替代检查）
+7. 状态文件为纯文本、非机器锁——重启后的新 turn 读到 state=restarting 的
+   进程内缓存也属正常；以磁盘文件为准做上述补写即可。
 
 ## 硬性红线（来自实际事故）
 
