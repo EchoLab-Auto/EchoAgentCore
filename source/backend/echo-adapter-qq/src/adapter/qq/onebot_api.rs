@@ -288,6 +288,49 @@ impl QqAdapter {
     /// is transparently bridged to a location NapCat can read: container paths
     /// pass through, `docker cp` is attempted when available, and otherwise a
     /// local HTTP file server hands the file to NapCat via URL.
+    /// Fetch a group's recent message history (NapCat `get_group_msg_history`),
+    /// rendered as a readable transcript.
+    ///
+    /// - **Gated** by group visibility ([`visible_group_check`]): the agent can
+    ///   only read history of groups it may interact with.
+    /// - `count` is clamped to `1..=`[`HISTORY_COUNT_MAX`].
+    /// - `since_minutes` keeps only messages within the last N minutes.
+    ///
+    /// Unlike the inbound pipeline, this includes messages that did not
+    /// mention the bot (and messages the gate filtered out) — it is the
+    /// "catch up on group context" path.
+    pub async fn get_group_msg_history(
+        &self,
+        group_id: i64,
+        count: i64,
+        since_minutes: Option<u64>,
+    ) -> Result<String, String> {
+        self.visible_group_check(group_id)?;
+
+        let ctx = self
+            .inner
+            .active_context
+            .lock()
+            .map_err(|e| format!("lock poisoned: {e}"))?
+            .clone()
+            .ok_or("no QQ connection active")?;
+
+        let count = count.clamp(1, HISTORY_COUNT_MAX as i64);
+        let request = echo_core::action::actions::get_group_msg_history(group_id, None, count);
+        let resp = ctx.send_api(request).await.map_err(|e| e.to_string())?;
+        if !resp.is_ok() {
+            return Err(resp
+                .error_message()
+                .unwrap_or_else(|| "get_group_msg_history failed".into()));
+        }
+        render_group_msg_history(
+            &resp.data,
+            group_id,
+            since_minutes,
+            chrono::Utc::now().timestamp(),
+        )
+    }
+
     /// `file_name` is the display name shown in QQ.
     pub async fn upload_group_file(
         &self,
@@ -385,5 +428,207 @@ impl QqAdapter {
             tracing::debug!(%remote, error = last_error.as_deref().unwrap_or(""), "upload candidate failed; trying next");
         }
         Err(last_error.unwrap_or_else(|| "upload failed".into()))
+    }
+}
+
+/// `get_group_msg_history` 的拉取上限：NapCat 本地数据窗口本就有限，
+/// 封顶防止超大请求（也是给 LLM 输出的体量上限）。
+pub(crate) const HISTORY_COUNT_MAX: usize = 500;
+
+/// 把 `get_group_msg_history` 响应渲染为可读转写文本（纯函数，便于单测）。
+///
+/// 每条：`[MM-DD HH:MM:SS] 昵称(QQ号): 正文`；正文用
+/// [`echo_core::segment::render_transcript`]（[图片]/[语音]/@提及等标记）。
+/// 段解析失败时回退 `raw_message`。`since_minutes` 为 `Some` 时只保留
+/// `now_ts - n*60` 之后的消息。
+pub(crate) fn render_group_msg_history(
+    data: &serde_json::Value,
+    group_id: i64,
+    since_minutes: Option<u64>,
+    now_ts: i64,
+) -> Result<String, String> {
+    let messages = data
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .ok_or("unexpected response format (missing messages)")?;
+
+    let cutoff = since_minutes.map(|n| now_ts.saturating_sub((n as i64).saturating_mul(60)));
+    let mut lines: Vec<String> = Vec::new();
+    let mut first_ts: Option<i64> = None;
+    let mut last_ts: Option<i64> = None;
+
+    for m in messages {
+        let ts = m.get("time").and_then(|t| t.as_i64()).unwrap_or(0);
+        if let Some(cutoff) = cutoff {
+            if ts < cutoff {
+                continue;
+            }
+        }
+        first_ts.get_or_insert(ts);
+        last_ts = Some(ts);
+
+        let uid = m.get("user_id").and_then(|u| u.as_i64()).unwrap_or(0);
+        let sender = m.get("sender");
+        let nickname = sender
+            .and_then(|s| s.get("nickname"))
+            .and_then(|n| n.as_str())
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or("(unknown)");
+        // 群名片优先（与入站 sender_nickname 口径一致）。
+        let card = sender
+            .and_then(|s| s.get("card"))
+            .and_then(|c| c.as_str())
+            .map(str::trim)
+            .filter(|c| !c.is_empty());
+        let display = card.unwrap_or(nickname);
+
+        let body = m
+            .get("message")
+            .and_then(|msg| serde_json::from_value::<Vec<echo_core::Segment>>(msg.clone()).ok())
+            .map(|segs| echo_core::segment::render_transcript(&segs))
+            .filter(|text| !text.trim().is_empty())
+            .or_else(|| {
+                m.get("raw_message")
+                    .and_then(|r| r.as_str())
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+
+        lines.push(format!(
+            "[{}] {}({}): {}",
+            format_history_ts(ts),
+            display,
+            uid,
+            body
+        ));
+    }
+
+    if lines.is_empty() {
+        return Ok(format!(
+            "group {group_id}: no messages found in the requested window"
+        ));
+    }
+
+    let range = match (first_ts, last_ts) {
+        (Some(a), Some(b)) => format!(", {} .. {}", format_history_ts(a), format_history_ts(b)),
+        _ => String::new(),
+    };
+    Ok(format!(
+        "group {group_id}: {} message(s){range}\n{}",
+        lines.len(),
+        lines.join("\n")
+    ))
+}
+
+/// `[MM-DD HH:MM:SS]`（本地时区）；越界时间戳回退原始数字。
+fn format_history_ts(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%m-%d %H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| ts.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 样例取自 NapCat 真实响应（精简），含文本/@/图片/语音各一段。
+    fn sample_data(now: i64) -> serde_json::Value {
+        json!({
+            "messages": [
+                {
+                    "time": now - 300,
+                    "user_id": 1828980067,
+                    "sender": {"nickname": "Evence", "card": ""},
+                    "message": [
+                        {"type": "at", "data": {"qq": "2911759808"}},
+                        {"type": "text", "data": {"text": " 笑一个"}}
+                    ],
+                    "raw_message": "[CQ:at,qq=2911759808] 笑一个"
+                },
+                {
+                    "time": now - 200,
+                    "user_id": 2911759808i64,
+                    "sender": {"nickname": "Alix", "card": "Alix2"},
+                    "message": [
+                        {"type": "record", "data": {"file": "x.amr"}}
+                    ],
+                    "raw_message": "[CQ:record,file=x.amr]"
+                },
+                {
+                    "time": now - 100,
+                    "user_id": 478974252,
+                    "sender": {"nickname": "一只坚果。"},
+                    "message": [
+                        {"type": "image", "data": {"file": "a.jpg"}},
+                        {"type": "text", "data": {"text": "看图"}}
+                    ],
+                    "raw_message": "[CQ:image,file=a.jpg]看图"
+                },
+                {
+                    "time": now - 86400,
+                    "user_id": 123,
+                    "sender": {"nickname": "旧消息"},
+                    "message": [
+                        {"type": "text", "data": {"text": "昨天的"}}
+                    ],
+                    "raw_message": "昨天的"
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn renders_transcript_with_markers_and_card_name() {
+        let now = 1_800_000_000;
+        let text = render_group_msg_history(&sample_data(now), 1094762376, None, now).unwrap();
+        assert!(text.starts_with("group 1094762376: 4 message(s)"), "{text}");
+        assert!(text.contains("@2911759808 笑一个"), "{text}");
+        assert!(
+            text.contains("Alix2(2911759808): [语音]"),
+            "群名片优先: {text}"
+        );
+        assert!(text.contains("一只坚果。(478974252): [图片]看图"), "{text}");
+        assert!(text.contains("旧消息(123): 昨天的"), "{text}");
+    }
+
+    #[test]
+    fn since_minutes_filters_older_messages() {
+        let now = 1_800_000_000;
+        let text = render_group_msg_history(&sample_data(now), 1094762376, Some(10), now).unwrap();
+        assert!(text.starts_with("group 1094762376: 3 message(s)"), "{text}");
+        assert!(!text.contains("昨天的"), "{text}");
+    }
+
+    #[test]
+    fn empty_window_and_missing_field_are_distinct() {
+        let now = 1_800_000_000;
+        let text = render_group_msg_history(&sample_data(now), 1094762376, Some(1), now).unwrap();
+        assert!(text.contains("no messages found"), "{text}");
+
+        let err = render_group_msg_history(&json!({}), 1, None, now).unwrap_err();
+        assert!(err.contains("missing messages"), "{err}");
+    }
+
+    #[test]
+    fn falls_back_to_raw_message_when_segments_unparsable() {
+        let now = 1_800_000_000;
+        let data = json!({
+            "messages": [{
+                "time": now,
+                "user_id": 1,
+                "sender": {"nickname": "n"},
+                "message": "not-an-array",
+                "raw_message": "[CQ:unknown,x=1] 兜底文本"
+            }]
+        });
+        let text = render_group_msg_history(&data, 42, None, now).unwrap();
+        assert!(text.contains("兜底文本"), "{text}");
     }
 }

@@ -154,6 +154,23 @@ pub mod actions {
         ApiRequest::new("get_group_list", json!({}))
     }
 
+    /// Fetch a group's recent message history (NapCat extension).
+    ///
+    /// `message_seq` anchors the window (messages from that seq onward);
+    /// `None` returns the latest `count` messages. Returns
+    /// `{"messages": [...]}` on success.
+    pub fn get_group_msg_history(
+        group_id: i64,
+        message_seq: Option<i64>,
+        count: i64,
+    ) -> ApiRequest {
+        let mut params = json!({ "group_id": group_id, "count": count });
+        if let Some(seq) = message_seq {
+            params["message_seq"] = json!(seq);
+        }
+        ApiRequest::new("get_group_msg_history", params)
+    }
+
     pub fn get_group_member_info(group_id: i64, user_id: i64) -> ApiRequest {
         ApiRequest::new(
             "get_group_member_info",

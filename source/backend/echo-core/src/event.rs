@@ -491,7 +491,7 @@ fn segment_result(data: &Value) -> Option<String> {
 }
 
 /// `[骰子:4]`；无结果字段时 `[骰子]`。
-fn dice_marker(data: &Value) -> String {
+pub(crate) fn dice_marker(data: &Value) -> String {
     match segment_result(data) {
         Some(result) => format!("[骰子:{result}]"),
         None => "[骰子]".to_string(),
@@ -499,7 +499,7 @@ fn dice_marker(data: &Value) -> String {
 }
 
 /// `[石头剪刀布:剪刀]`（OneBot v11：1 石头、2 剪刀、3 布）；未知结果时回退数字。
-fn rps_marker(data: &Value) -> String {
+pub(crate) fn rps_marker(data: &Value) -> String {
     let Some(result) = segment_result(data) else {
         return "[石头剪刀布]".to_string();
     };

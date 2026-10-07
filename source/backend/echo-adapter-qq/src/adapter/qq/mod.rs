@@ -1452,6 +1452,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn history_query_is_gated_by_group_visibility() {
+        // allowlist 模式：白名单外的群不可读（错误里带 allowlist），
+        // 名单内的群通过门控（错误退化为「无连接」，证明不是被门控拒绝）。
+        let mut cfg = crate::config::QqAdapterConfig::default();
+        cfg.gate.mode = "allowlist".into();
+        cfg.filter.allowlist.group_ids = vec![1094762376];
+        let adapter = QqAdapter::with_instance("qq", None, cfg);
+
+        let blocked = adapter.get_group_msg_history(999999999, 10, None).await;
+        let err = blocked.expect_err("non-whitelisted group must be refused");
+        assert!(err.contains("allowlist"), "{err}");
+
+        let allowed = adapter.get_group_msg_history(1094762376, 10, None).await;
+        match allowed {
+            Ok(text) => panic!("no connection — expected Err, got Ok: {text}"),
+            Err(err) => assert!(
+                !err.contains("allowlist"),
+                "whitelisted group must pass the gate: {err}"
+            ),
+        }
+
+        // 空白名单 = 不限制（与消息门控语义一致）。
+        let mut cfg_open = crate::config::QqAdapterConfig::default();
+        cfg_open.gate.mode = "allowlist".into();
+        let open = QqAdapter::with_instance("qq", None, cfg_open);
+        match open.get_group_msg_history(999999999, 10, None).await {
+            Ok(text) => panic!("no connection — expected Err, got Ok: {text}"),
+            Err(err) => assert!(
+                !err.contains("allowlist"),
+                "empty allowlist = unrestricted: {err}"
+            ),
+        }
+
+        // denylist 模式：名单内的群被拒。
+        let mut cfg_deny = crate::config::QqAdapterConfig::default();
+        cfg_deny.gate.mode = "denylist".into();
+        cfg_deny.filter.denylist.group_ids = vec![5];
+        let deny = QqAdapter::with_instance("qq", None, cfg_deny);
+        let denied = deny.get_group_msg_history(5, 10, None).await;
+        let err = denied.expect_err("denylisted group must be refused");
+        assert!(err.contains("denylisted"), "{err}");
+    }
+
+    #[tokio::test]
     async fn send_voice_rejects_wrong_adapter_and_validates_file() {
         let adapter =
             QqAdapter::with_instance("alix-two", None, crate::config::QqAdapterConfig::default());

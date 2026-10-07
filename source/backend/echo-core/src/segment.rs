@@ -145,6 +145,68 @@ impl Segment {
     }
 }
 
+/// Render a segment list as a readable **transcript** body — richer than
+/// [`MessageEvent::readable_text`](crate::event::MessageEvent::readable_text):
+/// media segments become compact markers (`[图片]` / `[语音]` / `[文件:名]`),
+/// @-mentions render as `@name`/`@qq`, and card/forward/reply segments get
+/// markers too. Used to present fetched message history (e.g. NapCat's
+/// `get_group_msg_history`) without binary payloads.
+pub fn render_transcript(segments: &[Segment]) -> String {
+    let mut out = String::new();
+    for seg in segments {
+        match seg {
+            Segment::Known(KnownSegment::Text { data }) => out.push_str(&data.text),
+            Segment::Known(KnownSegment::Face { data }) => {
+                out.push_str(&crate::face::face_marker(&data.id));
+            }
+            Segment::Known(KnownSegment::Image { .. })
+            | Segment::Known(KnownSegment::CardImage { .. }) => out.push_str("[图片]"),
+            Segment::Known(KnownSegment::Record { .. }) => out.push_str("[语音]"),
+            Segment::Known(KnownSegment::Video { .. }) => out.push_str("[视频]"),
+            Segment::Known(KnownSegment::File { data }) => {
+                let name = data.file.trim();
+                if name.is_empty() {
+                    out.push_str("[文件]");
+                } else {
+                    out.push_str(&format!("[文件:{name}]"));
+                }
+            }
+            Segment::Known(KnownSegment::OnlineFile { data }) => {
+                let name = data.file_name.trim();
+                if name.is_empty() {
+                    out.push_str("[在线文件]");
+                } else {
+                    out.push_str(&format!("[在线文件:{name}]"));
+                }
+            }
+            Segment::Known(KnownSegment::At { data }) => {
+                if data.qq == "all" {
+                    out.push_str("@全体成员");
+                } else if let Some(name) = data.name.as_deref().filter(|n| !n.trim().is_empty()) {
+                    out.push_str(&format!("@{}", name.trim()));
+                } else {
+                    out.push_str(&format!("@{}", data.qq));
+                }
+            }
+            Segment::Known(KnownSegment::Reply { .. }) => out.push_str("[回复]"),
+            Segment::Known(KnownSegment::Forward { .. })
+            | Segment::Known(KnownSegment::Node { .. }) => out.push_str("[转发消息]"),
+            Segment::Known(KnownSegment::Xml { .. })
+            | Segment::Known(KnownSegment::Json { .. }) => out.push_str("[卡片]"),
+            Segment::Known(KnownSegment::Poke { .. }) => out.push_str("[戳一戳]"),
+            Segment::Known(KnownSegment::Dice { data }) => {
+                out.push_str(&crate::event::dice_marker(data));
+            }
+            Segment::Known(KnownSegment::Rps { data }) => {
+                out.push_str(&crate::event::rps_marker(data));
+            }
+            Segment::Known(KnownSegment::Shake { .. }) => out.push_str("[窗口抖动]"),
+            Segment::Unknown(_) => {}
+        }
+    }
+    out
+}
+
 // -- data payloads ----------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -416,6 +478,37 @@ mod tests {
         );
         let back: Vec<Segment> = serde_json::from_value(json).unwrap();
         assert_eq!(segs, back);
+    }
+
+    #[test]
+    fn render_transcript_marks_media_mentions_and_text() {
+        let segs: Vec<Segment> = serde_json::from_value(serde_json::json!([
+            {"type": "at", "data": {"qq": "2911759808"}},
+            {"type": "text", "data": {"text": " 笑一个 "}},
+            {"type": "image", "data": {"file": "a.jpg"}},
+            {"type": "face", "data": {"id": "14"}},
+            {"type": "record", "data": {"file": "b.amr"}},
+            {"type": "file", "data": {"file": "report.pdf"}},
+            {"type": "reply", "data": {"id": "9001"}},
+            {"type": "json", "data": {"data": "{}"}},
+            {"type": "at", "data": {"qq": "all"}},
+        ]))
+        .unwrap();
+        assert_eq!(
+            render_transcript(&segs),
+            "@2911759808 笑一个 [图片][表情:微笑][语音][文件:report.pdf][回复][卡片]@全体成员"
+        );
+    }
+
+    #[test]
+    fn render_transcript_prefers_at_name_and_skips_unknown() {
+        let segs: Vec<Segment> = serde_json::from_value(serde_json::json!([
+            {"type": "at", "data": {"qq": "123", "name": "Evence"}},
+            {"type": "custom_ext", "data": {"some": 1}},
+            {"type": "text", "data": {"text": " hi"}},
+        ]))
+        .unwrap();
+        assert_eq!(render_transcript(&segs), "@Evence hi");
     }
 
     #[test]

@@ -150,6 +150,19 @@ pub fn register_qq_tools_multi(
         json!({ "type": "object", "properties": {} }),
     );
     register(
+        "get_group_msg_history",
+        "Fetch a QQ group's recent message history as a readable transcript. Unlike normal inbound messages, this includes messages that did NOT mention you and messages the inbound gate filtered out — use it to catch up on group context when asked what was discussed recently, or when you need background for a reply. Gated: only groups visible under the current gate mode are readable. Requires group_id; optional count (default 50, max 500) and since_minutes (keep only messages from the last N minutes).",
+        json!({
+            "type": "object",
+            "properties": {
+                "group_id": {"type": "integer", "description": "QQ group ID"},
+                "count": {"type": "integer", "description": "Max messages to fetch (default 50, max 500)"},
+                "since_minutes": {"type": "integer", "description": "Only keep messages from the last N minutes"}
+            },
+            "required": ["group_id"]
+        }),
+    );
+    register(
         "send_file",
         "Upload a local file to a QQ chat (group or private).          file_path is an absolute path on THIS machine (where the agent          runs) — the framework transparently bridges it to NapCat          (docker cp when possible, otherwise a local HTTP URL that NapCat          pulls from). file_name is the display name in QQ. Requires          target_type (group|private), target_id, file_path and file_name.",
         json!({
@@ -381,6 +394,17 @@ impl echo_agent::Tool for QqToolWrapper {
                 }
                 Err(e) => Err(ToolError::Execution(e)),
             },
+            "get_group_msg_history" => {
+                let group_id = arguments["group_id"]
+                    .as_i64()
+                    .ok_or_else(|| ToolError::InvalidArguments("group_id required".into()))?;
+                let count = arguments["count"].as_i64().unwrap_or(50);
+                let since_minutes = arguments["since_minutes"].as_u64();
+                adapter
+                    .get_group_msg_history(group_id, count, since_minutes)
+                    .await
+                    .map_err(ToolError::Execution)
+            }
             "send_file" => {
                 let target_type = arguments["target_type"]
                     .as_str()
@@ -663,6 +687,30 @@ mod tests {
                 "missing required: {field}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn registers_get_group_msg_history_tool() {
+        let mut registry = echo_agent::ToolRegistry::new();
+        let adapter = Arc::new(QqAdapter::new(Default::default()));
+
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
+
+        let definitions = registry.definitions().await;
+        let definition = definitions
+            .iter()
+            .find(|definition| definition.name == "get_group_msg_history")
+            .expect("get_group_msg_history tool registered");
+        // 语义：历史包含未 @ 的消息；受群门控约束。
+        assert!(definition.description.contains("did NOT mention"));
+        assert!(definition.description.contains("Gated"));
+        let params = definition.parameters.as_ref().expect("parameters present");
+        assert!(params["properties"]["group_id"]["type"] == "integer");
+        assert!(params["properties"]["count"]["type"] == "integer");
+        assert!(params["properties"]["since_minutes"]["type"] == "integer");
+        let required = params["required"].as_array().expect("required list");
+        assert_eq!(required.len(), 1);
+        assert!(required.iter().any(|v| v == "group_id"));
     }
 
     #[tokio::test]

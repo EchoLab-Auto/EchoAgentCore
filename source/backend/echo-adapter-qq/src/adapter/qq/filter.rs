@@ -72,6 +72,33 @@ impl QqAdapter {
         tracing::info!("QQ denylist updated");
     }
 
+    /// 群可见性门控（历史查询等「读」工具用）：群必须处于当前门控模式的
+    /// 可见范围内。语义与**消息门控**一致（白名单为空 = 不限制；黑名单只
+    /// 排除名单内）——「agent 读得到的世界 = 它能交互的世界」。
+    pub(crate) fn visible_group_check(&self, group_id: i64) -> Result<(), String> {
+        match self.get_gate_mode() {
+            QqGateMode::None => Ok(()),
+            QqGateMode::Allowlist => {
+                let allow = &self.get_filter_config().allowlist.group_ids;
+                if allow.is_empty() || allow.contains(&group_id) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "group {group_id} is not in the allowlist; its history is not readable"
+                    ))
+                }
+            }
+            QqGateMode::Denylist => {
+                let deny = &self.get_filter_config().denylist.group_ids;
+                if deny.contains(&group_id) {
+                    Err(format!("group {group_id} is denylisted"))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
     /// Set the path to the config file for persisting gate changes.
     pub fn set_config_path(&self, path: String) {
         self.set_config_store(echo_adapter::ConfigStore::new(path));
