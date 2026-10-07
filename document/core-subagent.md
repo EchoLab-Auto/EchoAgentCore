@@ -1,9 +1,9 @@
 ---
 id: subagent
 title: "Subagent 插件"
-group: 后端模块
+group: 扩展系统
 x: 955
-y: 2047
+y: 2048
 ---
 
 # Subagent 插件

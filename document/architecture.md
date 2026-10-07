@@ -108,6 +108,8 @@ graph BT
 
 ## 媒体库（2026-09-24）
 
+> 模块视角（入口落盘 / 模型侧还原 / token 卫生全链路）见 [多模态输入](./core-multimodal.md)。
+
 入站图片（QQ 消息图、面板上传图）**落盘为媒体文件，链路上只传引用**：
 `~/.local/share/echo-agent-core/media/<内容哈希>.<ext>`（`$ECHO_MEDIA_DIR` 可覆盖），
 引用为 `/media/<id>`（Panel web 后端同源提供，浏览器懒加载 + 强缓存）。
@@ -141,6 +143,8 @@ graph BT
 `TurnRunner` 驱动：`turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。工具策略（超时/审批/审计/限流）的设计位置是 `ToolPipeline` 中间件（非循环代码；当前生产路径未注册任何中间件——超时由 harness 的 `tool_guard_timeout` 守卫，见 [Agent 循环](./core-agent-loop.md)）。`Agent::process_message_inner` 的调度：loop.* 插件启用（任一）时普通输入经上述状态机执行（启动期人格循环回填注入 + 运行期工厂覆盖 + 插件停/再启联动）；QQ hook/定时器/QQ 会话始终走内置循环（边界语义见 [Agent 循环](./core-agent-loop.md)）。
 
 ## 会话与持久化
+
+> 模块视角（日志 / 投影 / 时间线 / 压缩归档）见 [会话记忆](./core-memory.md)；本节保留架构脊柱的不变量与实现细节。
 
 - 事件溯源：`echo-session` 的 `EventLog` 是权威（append-only，整档 JSON 持久化 v6，tmp+rename 原子写）；`TrunkStore` 持 `EventLog`，`trunk_histories`（按会话投影映射）降级为内存投影缓存（`append_event` 在锁内 append 并重新投影）；持久化 v6 以 `events` 为权威（多会话：每事件带 `session` 归属）
 - `SessionEvent` 五类：`UserMessage`（含 `message_sequence` 供并发分支按请求序合并）、`AssistantMessage`（完整保留 `reasoning_content` 与 `tool_calls`）、`ToolCall`、`ToolResult`（带 `tool_call_id` 回链）、`Compaction`（摘要替换前缀的显式压缩事件，日志保持 append-only 可重放）。`CompactionEvent` 三要素：`replaced_count`（替换了前多少条）+ `summary`（**正文，不含前缀**）+ `archive`（压缩前快照路径，可选）；`[历史摘要]` 前缀在投影期由 `render_compaction_summary` 恰好加一次——旧数据带前缀则透传，不再出现「`[历史摘要] [历史摘要]`」叠加（2026-09 修正）

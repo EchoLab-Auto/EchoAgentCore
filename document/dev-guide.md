@@ -16,6 +16,8 @@ EchoAgentCore 开发速查：仓库结构、关键抽象、关键流程、构建
 | [architecture.md](./architecture.md) | 架构脊柱：组合、crate、接缝、事件、会话、扩展点 |
 | [protocol.md](./protocol.md) | 前后端线协议（management WS 契约） |
 | [ops-deploy.md](./ops-deploy.md) | 安装、systemd 服务、受控自更新 |
+| [core-memory.md](./core-memory.md) | 会话记忆：事件溯源日志、投影、时间线、压缩归档 |
+| [core-multimodal.md](./core-multimodal.md) | 多模态输入：媒体库、图片块、token 卫生 |
 | [core-config-persistence.md](./core-config-persistence.md) | ConfigStore、配置/门控/会话持久化 |
 | [adapter-qq-gating.md](./adapter-qq-gating.md) | QQ 消息门控管道（五层）、运行时可变 |
 | [dev-testing.md](./dev-testing.md) | 测试策略：单元 / proptest / 集成 / 并发 |
@@ -51,8 +53,7 @@ EchoAgentCore/
 │   │   ├── echo-adapter-qq/   # QQ/OneBot 适配器
 │   │   └── echo-test-utils/   # 共享测试 mock（仅 dev-dependency）
 │   └── core/                  # echo-agent-core 二进制（组合根）
-├── document/                  # 本文档群（ProDoc 格式）
-├── docs/                      # 附加设计笔记（agent-humanlike-style.md）
+├── document/                  # 本文档群（ProDoc 格式；含附加设计笔记）
 ├── npm/echo-agent/            # 容器化部署 CLI（Docker 编排；node:test 测试）
 ├── docker/entrypoint.sh       # Core 容器入口
 ├── packaging/systemd/         # 用户服务模板

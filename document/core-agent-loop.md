@@ -1,9 +1,9 @@
 ---
 id: agent-loop
 title: "Agent 循环"
-group: 后端模块
+group: Agent 运行时
 x: 1283
-y: 1526
+y: 1512
 ---
 
 # Agent 循环

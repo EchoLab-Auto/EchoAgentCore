@@ -1,9 +1,10 @@
 ---
 id: agents
 title: "多 Agent 与会话"
-group: 后端模块
+group: Agent 运行时
 x: 955
 y: 1512
+link: ["core-memory | 会话记忆"]
 ---
 
 # 多 Agent 与会话
@@ -32,10 +33,10 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 - 会话（Session）= 对话身份，由 `SessionKey`（platform:scope:user_id，多实例带 `@account`）标识，带昵称/群名/最后活跃/team_id
 - **会话归属的三层保证**（2026-09-18）：① 运行期创建时按 trunk 归属打标（`get_or_create` 取 `TrunkStore::team_id`）；② `get_or_create` 命中既有会话时若 team_id 为空就地补标（persona 组装顺序中 set_team_id 可能晚于会话恢复）；③ 恢复兜底——identities 元数据持久化/恢复 team_id，且事件日志里出现但元数据缺失的会话按事件归属补建注册（`ensure_identities_for_events`：事件是事实来源，元数据只是缓存）。缺任一层的后果：Panel 按 team 过滤会话时该 persona 的持久化会话全部消失（入口行「会话」按钮不出现）
-- **每个会话拥有独立的模型上下文**（多会话，2026-09）：事件日志是唯一事实来源，事件带 `session` 归属；`TrunkStore` 按会话投影出各自的 `history`（token 预算逐会话生效），不同会话的上下文互不可见——QQ 私聊、QQ 群、本地 TUI 是独立对话
+- **每个会话拥有独立的模型上下文**（多会话，2026-09）：事件日志是唯一事实来源，事件带 `session` 归属；`TrunkStore` 按会话投影出各自的 `history`（token 预算逐会话生效），不同会话的上下文互不可见——QQ 私聊、QQ 群、本地 TUI 是独立对话（投影机制详见 [会话记忆](./core-memory.md)）
 - **本地工作区通道**（2026-09-14）：本地来源（`platform=local`）的工作区专属对话上下文（`local:workspace:<workspace_id>:local_user`）——激活工作区即切换到的对话，见下节
 - 不同 agent 的上下文完全隔离（各自独立的事件日志与投影）
-- 上下文快照（`RequestContext`）按会话返回（`session_id`；`ContextSnapshot` 回带归属）；`CompactHistory` 按会话分别压缩——**预览 → 归档快照（`archives/*-precompact.json`）→ LLM 交接摘要（失败按组回退规则统计文案）→ 落地**，来源与统计见 [架构 §会话与持久化](./architecture.md)；`ClearHistory` 清空该智能体全部会话
+- 上下文快照（`RequestContext`）按会话返回（`session_id`；`ContextSnapshot` 回带归属）；`CompactHistory` 按会话分别压缩——**预览 → 归档快照（`archives/*-precompact.json`）→ LLM 交接摘要（失败按组回退规则统计文案）→ 落地**（机制与统计见 [会话记忆](./core-memory.md)§压缩与归档）；`ClearHistory` 清空该智能体全部会话
 - `RequestState` 返回**所有人格**的会话（各会话携带自身 team_id），Panel 按当前 agent 过滤展示
 - **单会话模式下的 QQ 入站投递**（2026-09-18）：hook 格式化的消息（`<qq_message_hook>`，带完整平台/发送者元数据）投递到该 persona 的**默认本地会话**（`local:tui::local_user`）排队跑 turn——不开临时回复分支（ReplyBranch 是并行模式专属可见性机制）、不发 QQ 临时回复；`group_id=None` 保证普通输出不推 QQ，**是否回复由 agent 自行判断**（qq-transport 技能：回复必须走 send_* 工具，明显无需回应的消息可不回复）。QQ 会话键仍按作用域注册（Panel 会话列表可见），并行多会话模式保持原临时回复分支行为
 

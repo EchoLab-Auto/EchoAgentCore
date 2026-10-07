@@ -1,10 +1,10 @@
 ---
 id: plugins
 title: "插件化设计"
-group: 后端模块
+group: 扩展系统
 link: ["adapter-qq-gating | QQ 适配器（插件）", "core-skills | 技能系统 | r>l", "tools | r>l", "agent-loop | r>l", "subagent | Subagent 插件"]
 x: 955
-y: 1759
+y: 1900
 ---
 
 # 插件化设计

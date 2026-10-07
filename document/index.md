@@ -14,6 +14,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板** 框架
 ## 阅读入口
 
 - **新人起步**：本页 → [架构总览](./architecture.md) → [协议与数据流](./protocol.md)
+- **Agent 子系统**：[Agent 循环](./core-agent-loop.md) → [多 Agent 与会话](./core-agents.md) → [会话记忆](./core-memory.md) / [多模态输入](./core-multimodal.md)
 - **日常开发**：[Core 框架](./core.md) / [Panel 前端](./panel.md) / [开发指南](./dev-guide.md)
 - **排障运维**：[部署与自更新](./ops-deploy.md)
 
@@ -24,6 +25,17 @@ graph LR
   Home[文档总览|/index.md]
   Home --> Arch[架构总览|/architecture.md]
   Home --> Core[Core 框架|/core.md]
+  Core --> Agents[多 Agent 与会话|/core-agents.md]
+  Core --> Loop[Agent 循环|/core-agent-loop.md]
+  Core --> Memory[会话记忆|/core-memory.md]
+  Core --> Multimodal[多模态输入|/core-multimodal.md]
+  Core --> Plugins[插件化设计|/core-plugins.md]
+  Core --> Persist[配置持久化|/core-config-persistence.md]
+  Plugins --> Tools[工具系统|/core-tools.md]
+  Plugins --> Skills[技能系统|/core-skills.md]
+  Plugins --> Subagent[Subagent 插件|/core-subagent.md]
+  Plugins --> Gating[QQ 门控|/adapter-qq-gating.md]
+  Arch --> Federation[联邦（多机）|/federation.md]
   Home --> Panel[Panel 前端|/panel.md]
   Panel --> Interaction[交互定义|/panel-interaction.md]
   Interaction --> Layout[布局与导航|/panel-layout.md]
@@ -33,23 +45,23 @@ graph LR
   Interaction --> QQTasks[QQ管理·任务·Shell|/panel-qq-tasks.md]
   Interaction --> Sys[系统交互|/panel-system.md]
   Home --> Proto[协议与数据流|/protocol.md]
+  Proto --> Core
+  Panel --> Proto
   Home --> Ops[部署与自更新|/ops-deploy.md]
   Home --> Dev[开发指南|/dev-guide.md]
   Dev --> Testing[测试策略|/dev-testing.md]
-  Core --> Loop[Agent 循环|/core-agent-loop.md]
-  Core --> Tools[工具系统|/core-tools.md]
-  Core --> Skills[技能系统|/core-skills.md]
-  Core --> Agents[多 Agent 与会话|/core-agents.md]
-  Core --> Plugins[插件化设计|/core-plugins.md]
-  Core --> Persist[配置持久化|/core-config-persistence.md]
-  Plugins --> Gating[QQ 门控|/adapter-qq-gating.md]
-  Plugins --> Subagent[Subagent 插件|/core-subagent.md]
-  Arch --> Federation[联邦（多机）|/federation.md]
-  Proto --> Core
-  Panel --> Proto
 ```
 
-## 文档分层约定
+## 文档分类
+
+Core 框架文档按**子系统域**分四组（与画布分组一致）：
+
+- **Agent 运行时**——agent 本身如何运转：[多 Agent 与会话](./core-agents.md) / [Agent 循环](./core-agent-loop.md) / [会话记忆](./core-memory.md) / [多模态输入](./core-multimodal.md)
+- **扩展系统**——如何扩展 agent 能力：[插件化设计](./core-plugins.md) / [工具系统](./core-tools.md) / [技能系统](./core-skills.md) / [Subagent 插件](./core-subagent.md)
+- **核心设施**——进程级基础：[Core 框架](./core.md) / [配置持久化](./core-config-persistence.md)
+- **集成与适配**——对外连接：[QQ 适配器门控](./adapter-qq-gating.md) / [联邦（多机）](./federation.md)
+
+其余分组：**前端**（panel-*）、**协议**（protocol）、**运维**（ops-deploy）、**开发指南**（dev-*）。
 
 - **模块文档**（core-* / panel / protocol / ops-deploy）：**当前实现**的权威描述，与代码同步更新
 - **开发指南**（dev-*）：面向开发者的速查与测试策略
