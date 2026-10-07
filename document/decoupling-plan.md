@@ -144,12 +144,13 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 
 目标：把插件协议定义为可独立演进的 crate；后续一切以其为准。
 
-- [ ] 新建 `source/plugin/echo-plugin-api`：消息类型 / 贡献类型 / 错误 / 协议版本常量 / 协议文档
-- [ ] 新建 `source/plugin/echo-plugin-host`：`Transport` trait + `PluginSupervisor` 骨架
-- [ ] 编码决策落地：**4 字节 LE 长度前缀 + JSON（默认）/ msgpack（feature）**，经 tokio-util `LengthDelimitedCodec`；inproc 类型直连（零拷贝）
+- [x] 新建 `source/plugin/echo-plugin-api`：消息类型 / 贡献类型 / 版本协商（已提交 `4e2f82e`；7 项契约测试全绿）
+- [x] 新建 `source/plugin/echo-plugin-host` 骨架（Transport trait 占位；实现进行中）
+- [x] 全局态棘轮门禁 `source/core/tests/no_global_state.rs`（基线 17 个静态单元；全 source 扫描、`static` 行含 `OnceLock`/`LazyLock` 口径，只减不增）
+- [x] 编码决策落地：**4 字节 LE 长度前缀 + JSON（默认）/ msgpack（feature）**，经 tokio-util `LengthDelimitedCodec`；inproc 类型直连（零拷贝）
 - [ ] 协议选型决策：自研统一协议为基线；评估 **MCP（rmcp 3.5.1）** 作为工具类插件的兼容导入通道（可省 2-4 人周 + 免费获得 MCP 生态）
 - [ ] 协议语义对齐 nushell 蓝本：CallId 并发/流式/中断、Hello semver + features 协商、空闲回收
-- [ ] conformance 测试套件骨架（握手 / 注册 / 调用 / 结果 / 取消 / 超时 / 事件 / 崩溃 / 卸载 九组用例，按 transport 参数化）
+- [ ] conformance 测试套件（进行中：inproc 参考实现；九组用例）
 - [ ] **冻结**：协议变更需过 conformance + bump 版本；纳入 CI
 
 **验收**：conformance 在 inproc 参考实现上全绿。
@@ -277,3 +278,42 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 | 12 | **跨插件编译期类型安全**（TS declaration merging） | **语言** | inproc 保持强类型；跨进程边界降为协议 schema + conformance 测试 | ⚠️ 边界处弱化 |
 
 **结论（写入验收口径）**：本计划可保证达成 #1-#9——即 **dsh 架构意义上的完全解耦**（可替换、装配化、无特权内核、配置组合、服务定位），并在崩溃隔离与跨语言两点**超出 dsh**；#10-#12 是语言本质差异，以"功能等价、体验不同"为验收（替换能力达成；"编辑即生效/零构建"不承诺）。若这 12 项判定中任何 ⚠️ 项被要求"必须 1:1"，则该目标在 Rust 上**不可达成**——这是需要在立项时明确的边界。
+
+## 八、P1 迁移架构（执行附注，2026-10-07）
+
+### 8.1 静态 → 服务键映射（17 个进程级静态单元；全 source 扫描口径）
+
+| 静态 | 位置 | 读取点（约） | 目标 |
+|---|---|---|---|
+| `GLOBAL_PLUGIN_HOST` | agent/mod.rs | 4 | `ctx.plugin_host` |
+| `GLOBAL_POLICY` | agent/mod.rs | 6 | `ctx.global_policy` |
+| `FEDERATION_COMMAND_HANDLER` | agent/mod.rs | 5 | `ctx.federation.command_handler` |
+| `GLOBAL_MANAGER` | agent_manager.rs | 22 | `ctx.agent_manager` |
+| `AGENT_FACTORY` | agent_manager.rs | 3 | `ctx.agent_factory` |
+| `NODE_ID` / `REGION_NAME` | lib.rs | 132 / 18 | `ctx.node_identity`（`NodeIdentity { id, region }`） |
+| `REMOTE_SUBAGENT_NOTIFIER` / `AGGREGATE_DELIVER` / `REMOTE_INVOKER` / `REMOTE_QUERIER` | packages/federation/mod.rs | 2 / 2 / 3 / 2 | `ctx.federation.*`（随联邦包整体迁移） |
+| `GLOBAL_SHELL` / `SHELL_EMIT` | shell.rs | 若干 | `ctx.shell`（管理器 + 发射句柄） |
+| `SESSION_IMPORT_ACKS` | core/federation_import.rs | 4 | 随联邦插件（`ctx.federation.import_acks`） |
+| `SELF_STOP_RE` / `CLIENT` | tools_builtin | — | 降级为**实例级**惰性态（不再进程全局） |
+| `CLIENT`（图片下载） | echo-adapter-qq/handler.rs | — | 同上（纯缓存，实例级） |
+
+### 8.2 无 ctx 调用点的两条路径
+
+getter 调用点（合计 ~200 处）多在深层代码、不持有 ctx：
+
+- **A. 参数线程化（目标态，零静态）**：窄接口随构造期注入（联邦子系统装配时拿
+  `NodeIdentity` 句柄、帧构造函数从参数取）。node_id 的 132 处集中在联邦包与状态上报，
+  **随 P3 联邦外迁一并线程化**，不在 P1 内强推。
+- **B. KernelCell 过渡（单一白名单，P5 消除）**：`echo-context` 增设唯一引导单元
+  `kernel() -> Option<Arc<Ctx>>`（写一次 + `Arc` 持有）；其余 getter 过渡期经
+  `kernel().resolve(KEY)` 读取。棘轮门禁对 `echo-context/src/kernel.rs` 单独白名单；
+  其余文件恒为 0。终态以 A 消除本单元。
+
+### 8.3 执行顺序（每步独立提交 + 棘轮下调）
+
+1. Ctx v2（typed keys / conflict / `service_or_wait`）——进行中
+2. KernelCell 引导单元 + 门禁白名单
+3. setter 侧：组合根全部 `provide`（旧 setter 兼容期双写）
+4. getter 侧逐个迁移：plugin_host → policy → manager/factory → shell → federation 组 → node_identity
+5. 删除旧 static 与 setter（一次到位，破坏性）；棘轮 34 → 白名单级
+6. 终态跟踪：node_identity / federation 的线程化（随 P3/P5）
