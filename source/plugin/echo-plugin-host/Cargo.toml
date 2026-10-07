@@ -9,6 +9,7 @@ description = "Plugin host for EchoAgentCore — transports (inproc/stdio), supe
 
 [dependencies]
 echo-plugin-api = { workspace = true }
+echo-defs = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
