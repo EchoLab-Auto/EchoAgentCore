@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use echo_plugin_host::api::protocol::InvokeResult;
+use echo_plugin_host::api::InvokeResult;
 use echo_plugin_host::api::*;
 use echo_plugin_host::inproc::{InprocIo, InprocPlugin, InprocTransport};
 use echo_plugin_host::supervisor::{PluginHandle, PluginState, PluginSupervisor};

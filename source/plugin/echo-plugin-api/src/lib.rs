@@ -4,17 +4,21 @@
 //! 与插件之间的**唯一线上契约**：同一组消息覆盖全部运输层——
 //!
 //! - **inproc**：类型直连（零序列化，插件与宿主同进程编译）；
-//! - **subprocess**：4 字节 LE 长度前缀 + JSON（默认）/ msgpack（feature），
-//!   经 `tokio-util::LengthDelimitedCodec` 编解码；
+//! - **subprocess**：4 字节 LE 长度前缀 + JSON（默认；编解码实现位于
+//!   `echo-plugin-host` 的 stdio 运输层，Phase 2），msgpack 留 feature；
 //! - dylib / wasm（实验/可选轨）：JSON 载荷。
 //!
 //! ## 兼容性规则（对齐 `echo-federation::FedFrame` 既有惯例）
 //!
 //! - adjacently-tagged enum（`{"type": …, "payload": …}`）；变体名与字段名是
-//!   线上契约，**只增不改**；
+//!   线上契约，**只增不改**。注：无载荷变体（`Ready` / `Dispose`）序列化为
+//!   仅含 `"type"` 的单键对象（无 `payload` 键），已由契约测试固化；
 //! - 新增字段一律 `#[serde(default)]`（旧端点可解码新帧、新端点可解码旧帧）；
 //! - Hello/Welcome 握手时比对 [`PROTOCOL_NAME`] 与 [`PROTOCOL_VERSION`]：
 //!   主版本不一致拒绝连接；
+//! - [`HostToPlugin::Dispose`] 与崩溃在运输层同形（连接关闭）——宿主在主动
+//!   Dispose 前必须**先停用重启**（supervisor 侧语义），否则会被误判为崩溃
+//!   触发重启；当前 supervisor 以 Drain 收尾、不发送 Dispose；
 //! - 协议变更必须过 conformance 测试套件（`echo-plugin-host/tests/conformance.rs`）
 //!   并按需 bump `PROTOCOL_VERSION`。
 
@@ -26,9 +30,25 @@ pub use contribution::{
 };
 pub use protocol::{
     compatible, Cancel, Drain, Emit, EventNotification, Failure, Hello, HostToPlugin, Invoke,
-    InvokeContext, InvokeOutcome, LogLevel, LogRecord, PluginToHost, Register, Welcome,
-    PROTOCOL_NAME, PROTOCOL_VERSION,
+    InvokeContext, InvokeOutcome, InvokeResult, LogLevel, LogRecord, PluginToHost, Register,
+    Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
 };
+
+/// 能力 / feature 名单常量（`Welcome.capabilities` 用的稳定字符串）。
+///
+/// 双方都声明才可用；宿主与插件勿硬编码字面量。
+pub mod capabilities {
+    /// 插件提供面向模型的工具贡献。
+    pub const TOOLS: &str = "tools";
+    /// 插件提供技能贡献。
+    pub const SKILLS: &str = "skills";
+    /// 插件提供以键注册的服务贡献。
+    pub const SERVICES: &str = "services";
+    /// 插件订阅宿主事件（`HostToPlugin::Event` 才会送达）。
+    pub const EVENTS: &str = "events";
+    /// 插件支持取消语义（Cancel 送达 + `Error{code:"cancelled"}` 回发）。
+    pub const CANCEL: &str = "cancel";
+}
 
 #[cfg(test)]
 mod tests;
