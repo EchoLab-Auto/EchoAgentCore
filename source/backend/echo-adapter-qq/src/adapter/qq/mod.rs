@@ -505,7 +505,7 @@ impl QqAdapter {
             });
         }
 
-        let candidates = match self.resolve_voice_file(file).await {
+        let candidates = match self.resolve_media_file(file).await {
             Ok(candidates) => candidates,
             Err(reason) => {
                 return Ok(SendResult {
@@ -579,12 +579,118 @@ impl QqAdapter {
         })
     }
 
-    /// Resolve a `send_voice` file argument into ordered NapCat candidates.
+    /// Send an image (OneBot `image` segment) to a chat.
+    ///
+    /// `file` accepts the same forms as [`send_voice`](Self::send_voice):
+    /// explicit `http(s)://` / `base64://` / `file://` references (handed to
+    /// NapCat verbatim), absolute container paths, bare names resolved from
+    /// NapCat's data directory, or host paths bridged into the container.
+    pub async fn send_image(
+        &self,
+        target: &MessageTarget,
+        file: &str,
+    ) -> Result<SendResult, AdapterError> {
+        if target.adapter_name != self.name {
+            return Ok(SendResult {
+                message_id: None,
+                success: false,
+                error: Some(format!(
+                    "wrong adapter: expected '{}', got '{}'",
+                    self.name, target.adapter_name
+                )),
+            });
+        }
+
+        if let Err(reason) = self.check_outbound_gate(target) {
+            return Ok(SendResult {
+                message_id: None,
+                success: false,
+                error: Some(reason),
+            });
+        }
+
+        let candidates = match self.resolve_media_file(file).await {
+            Ok(candidates) => candidates,
+            Err(reason) => {
+                return Ok(SendResult {
+                    message_id: None,
+                    success: false,
+                    error: Some(reason),
+                })
+            }
+        };
+
+        let ctx = self
+            .inner
+            .active_context
+            .lock()
+            .map_err(|e| AdapterError::Internal(e.to_string()))?
+            .clone()
+            .ok_or_else(|| AdapterError::SendFailed("no QQ connection active".into()))?;
+
+        let mut last_error: Option<String> = None;
+        for candidate in candidates {
+            let segment = Segment::image(candidate.clone());
+            let result = match &target.channel {
+                ChannelType::Direct => {
+                    let user_id: i64 = target
+                        .user_id
+                        .parse()
+                        .map_err(|_| AdapterError::SendFailed("invalid user_id".into()))?;
+                    ctx.send_private_msg(user_id, vec![segment]).await
+                }
+                ChannelType::Group { group_id } => {
+                    let gid: i64 = group_id
+                        .parse()
+                        .map_err(|_| AdapterError::SendFailed("invalid group_id".into()))?;
+                    ctx.send_group_msg(gid, vec![segment]).await
+                }
+            };
+            match result {
+                Ok(resp) if resp.is_ok() => {
+                    let message_id = resp
+                        .data
+                        .get("message_id")
+                        .and_then(|v| v.as_i64())
+                        .map(|id| id.to_string());
+                    tracing::info!(%candidate, "image message sent");
+                    return Ok(SendResult {
+                        message_id,
+                        success: true,
+                        error: None,
+                    });
+                }
+                Ok(resp) => {
+                    last_error = Some(
+                        resp.error_message()
+                            .unwrap_or_else(|| "image send failed".into()),
+                    );
+                    tracing::debug!(%candidate, error = last_error.as_deref().unwrap_or(""), "image candidate rejected; trying next");
+                }
+                Err(e) => {
+                    last_error = Some(e.to_string());
+                    tracing::debug!(%candidate, error = last_error.as_deref().unwrap_or(""), "image candidate errored; trying next");
+                }
+            }
+        }
+
+        Ok(SendResult {
+            message_id: None,
+            success: false,
+            error: Some(
+                last_error.unwrap_or_else(|| format!("no candidate could resolve '{file}'")),
+            ),
+        })
+    }
+
+    /// Resolve a `send_voice`/`send_image` file argument into ordered NapCat
+    /// Resolve a `send_voice`/`send_image` file argument into ordered NapCat
+    /// candidates.
     ///
     /// See [`send_voice`](Self::send_voice) for the accepted forms. Returns
     /// `Err(reason)` when nothing can be tried at all (e.g. a bare name that
     /// exists neither in the NapCat data dir nor as a host path).
-    async fn resolve_voice_file(&self, file: &str) -> Result<Vec<String>, String> {
+    async fn resolve_media_file(&self, file: &str) -> Result<Vec<String>, String> {
         let trimmed = file.trim();
         if trimmed.is_empty() {
             return Err("file is required".into());
