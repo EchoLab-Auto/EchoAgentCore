@@ -98,11 +98,12 @@ call_id 关联、Hello/Welcome 版本握手、显式 Cancel。
         ▼
 ┌── 插件（每个独立 crate；可内联编译或独立二进制）──────────────┐
 │ provider-llm  tools-*  skills-dir  workspace  adapter-qq   │
-│ subagent  loop-*  federation  …（management.panel 留内核）  │
+│ subagent  loop-*  federation  management-panel*             │
 └──────────────────────────────────────────────────────────┘
 ```
 
-※ 会话/trunk 归属：**先留内核骨架、按插件语义管理**（dsh 将 session 也做成插件；我方投影/压缩与 agent 深度互锁，本期留内核、接口按服务键暴露，后续可再迁）。
+※ 会话/trunk 归属：**物理内联的协议化插件**，而非出进程。dsh 的 `ctx.sessions` 本身就是 in-process 插件（Cordis 插件全部同进程）；对齐点是"以服务键暴露、可被替换/包装"，不是"必须跨进程"。我方投影/压缩与 agent 深度互锁，跨进程（或跨 dylib 边界）会引入每事件 RPC 与序列化——**不采纳**；Phase 5 后评估是否把 `SessionStore` 提炼为独立 inproc 插件 crate（契约边界不变，仍留进程内）。
+※ management-panel*：**协议化 inproc 插件**（对齐 dsh 的 webserver 亦为插件），与内核同进程但经服务键与贡献注册表装载；仅"禁用后自锁"的开关语义保留在内核守卫（TogglePlugin 拒绝禁用）。
 
 协议核心消息（草案，Phase 0 冻结）：
 
@@ -178,7 +179,7 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [ ] ④ adapter-qq → subprocess（崩溃隔离收益最大）
 - [ ] ⑤ workspace
 - [ ] ⑥ subagent（hook 接入改经协议事件）
-- [ ] ⑦ loop.single / loop.parallel → inproc（保持内联；注入改经协议挂载）
+- [ ] ⑧ management-panel → **协议化 inproc 插件**（对齐 dsh：webserver 也是插件；同进程、经服务键装载；"禁用即自锁"守卫留内核）
 - [ ] ⑧ management.panel：**留内核**（控制平面，自锁风险）
 - [ ] 每插件模板：独立 crate 化 → 贡献声明 → 状态归属审计 → 双跑对照（新旧路径 diff）→ 删旧路径
 
@@ -228,8 +229,27 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 |---|---|
 | crate 数 | 17（单向无环，已核） |
 | `Ctx` 实际使用 | 2 次注册（llm / loop）；resolve 几乎未用 |
-| 全局 static | 24 处（8 文件） |
 | 测试 | echo-agent 325（lib）+ 33（集成）；echo-session 38；echo-loop 9；echo-context 23 |
 | 工具 / 技能 | 内置工具约 20 个；技能 9 个 |
-| 测试 | echo-agent 357 + echo-session 38 + echo-loop 9 + echo-context 23 |
 | packages 体量（行） | tools_builtin 3079 / workspace 1806 / federation 1427 / adapter_qq 1289 / skills_dir 990 / subagent 622 / tool 582 / provider_llm 171 |
+
+## 七、与 DeepSeek Harness 的对照（达成度边界）
+
+"像 dsh 一样完全解耦"需要拆成两层看——dsh 的解耦一半来自**架构设计**（可移植），一半来自 **TypeScript/Node 动态语言**（不可移植，需要替代机制）：
+
+| # | dsh 的解耦要素 | 来源 | 本计划 | 判定 |
+|---|---|---|---|---|
+| 1 | 一切皆插件、无特权内核 | 架构（Cordis） | P1-P3 全量插件化（session/panel 亦 inproc 协议化） | ✅ 可对齐 |
+| 2 | 服务注册表 `ctx.<key>` | 架构 | Ctx v2 强类型键（P1） | ✅ 可对齐 |
+| 3 | 可逆注册（Disposer / effect） | 架构 | 已有 Disposer，P2 统一 | ✅ 可对齐 |
+| 4 | 类型化事件 + 4 种分发 | 架构 | EventBus 四模式已存在，扩展事件面 | ✅ 可对齐 |
+| 5 | 配置化组合（profile/bundle/patch） | 架构 | P4（plugins.toml 三层合成） | ✅ 可对齐 |
+| 6 | 运行期替换组件（不改代码） | 架构 | inproc 挂载/卸载 + subprocess 重启式 | ✅ 可对齐 |
+| 7 | 零全局态 | 架构 | P1（24 处 → 0 + 门禁） | ✅ 可对齐 |
+| 8 | 插件崩溃隔离 | 机制 | subprocess 轨（dsh 自身**没有**此项，同进程插件崩溃拖垮整个 Node 进程） | ✅ 超越 |
+| 9 | 跨语言插件 | 机制 | 协议即 ABI（dsh 锁定 TS/JS 生态） | ✅ 超越 |
+| 10 | **源码级 HMR**（编辑 .ts 即生效） | **语言**（动态 import） | ❌ Rust 静态编译无此能力；替代：subprocess 重启式替换（百毫秒级）、dylib 重编译+重载（秒级）、实验性函数级热补丁方案（如 hot-lib-reloader / Dioxus subsecond 一类，不进生产） | ⚠️ 功能等价、体验不同 |
+| 11 | **零构建插件创作**（npm 包即插件） | **语言** | ❌ 需编译（Rust crate）或写独立进程（任意语言 + 协议，反而更开放） | ⚠️ 门槛略高 |
+| 12 | **跨插件编译期类型安全**（TS declaration merging） | **语言** | inproc 保持强类型；跨进程边界降为协议 schema + conformance 测试 | ⚠️ 边界处弱化 |
+
+**结论（写入验收口径）**：本计划可保证达成 #1-#9——即 **dsh 架构意义上的完全解耦**（可替换、装配化、无特权内核、配置组合、服务定位），并在崩溃隔离与跨语言两点**超出 dsh**；#10-#12 是语言本质差异，以"功能等价、体验不同"为验收（替换能力达成；"编辑即生效/零构建"不承诺）。若这 12 项判定中任何 ⚠️ 项被要求"必须 1:1"，则该目标在 Rust 上**不可达成**——这是需要在立项时明确的边界。
