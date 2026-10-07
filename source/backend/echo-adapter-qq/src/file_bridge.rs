@@ -133,6 +133,37 @@ impl FileBridge {
             .map(|mut c| c.remove(0))
     }
 
+    /// In-container path for a file name (`<container_data_dir>/<name>`).
+    pub fn container_data_path(&self, name: &str) -> String {
+        format!("{}/{}", self.container_data_dir.trim_end_matches('/'), name)
+    }
+
+    /// Whether a **bare file name** already exists in the NapCat container's
+    /// data directory (i.e. a file that was previously sent/received and thus
+    /// already sits where NapCat can read it — no re-copy needed).
+    ///
+    /// Only bare names are probed (a name containing path separators is not a
+    /// data-dir lookup); requires the Docker CLI and the container to exist.
+    pub fn container_file_exists(&self, name: &str) -> bool {
+        if name.is_empty() || name.contains('/') || name.contains('\\') {
+            return false;
+        }
+        if !self.docker_available() {
+            return false;
+        }
+        Command::new("docker")
+            .args([
+                "exec",
+                &self.container_name,
+                "test",
+                "-f",
+                &self.container_data_path(name),
+            ])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
     // ---- strategy 2: docker cp ----
 
     async fn try_docker_cp(&self, local: &Path, file_name: &str) -> Option<String> {

@@ -462,6 +462,166 @@ impl QqAdapter {
             }),
         }
     }
+
+    /// Send a voice message (OneBot `record` segment) — a native voice bubble
+    /// played inline, as opposed to a downloadable file.
+    ///
+    /// `file` accepts, in resolution order:
+    ///
+    /// 1. Explicit references passed to NapCat verbatim: `http(s)://`,
+    ///    `base64://`, `file://` (NapCat resolves/downloads them itself);
+    /// 2. absolute paths already visible inside the NapCat container
+    ///    (e.g. `/app/napcat/data/x.mp3`) — pass-through;
+    /// 3. bare file names — looked up in NapCat's data directory first
+    ///    (where previously sent/received files live), then bridged as a
+    ///    host path;
+    /// 4. any other host path — bridged to NapCat via `docker cp` / one-shot
+    ///    HTTP URL (same strategies as file upload).
+    ///
+    /// NapCat auto-converts common audio formats (mp3/wav/amr/…) to the QQ
+    /// voice format; candidates are tried in order until one is accepted.
+    /// Applies the same outbound gate as text messages.
+    pub async fn send_voice(
+        &self,
+        target: &MessageTarget,
+        file: &str,
+    ) -> Result<SendResult, AdapterError> {
+        if target.adapter_name != self.name {
+            return Ok(SendResult {
+                message_id: None,
+                success: false,
+                error: Some(format!(
+                    "wrong adapter: expected '{}', got '{}'",
+                    self.name, target.adapter_name
+                )),
+            });
+        }
+
+        if let Err(reason) = self.check_outbound_gate(target) {
+            return Ok(SendResult {
+                message_id: None,
+                success: false,
+                error: Some(reason),
+            });
+        }
+
+        let candidates = match self.resolve_voice_file(file).await {
+            Ok(candidates) => candidates,
+            Err(reason) => {
+                return Ok(SendResult {
+                    message_id: None,
+                    success: false,
+                    error: Some(reason),
+                })
+            }
+        };
+
+        let ctx = self
+            .inner
+            .active_context
+            .lock()
+            .map_err(|e| AdapterError::Internal(e.to_string()))?
+            .clone()
+            .ok_or_else(|| AdapterError::SendFailed("no QQ connection active".into()))?;
+
+        let mut last_error: Option<String> = None;
+        for candidate in candidates {
+            let segment = Segment::record(candidate.clone());
+            let result = match &target.channel {
+                ChannelType::Direct => {
+                    let user_id: i64 = target
+                        .user_id
+                        .parse()
+                        .map_err(|_| AdapterError::SendFailed("invalid user_id".into()))?;
+                    ctx.send_private_msg(user_id, vec![segment]).await
+                }
+                ChannelType::Group { group_id } => {
+                    let gid: i64 = group_id
+                        .parse()
+                        .map_err(|_| AdapterError::SendFailed("invalid group_id".into()))?;
+                    ctx.send_group_msg(gid, vec![segment]).await
+                }
+            };
+            match result {
+                Ok(resp) if resp.is_ok() => {
+                    let message_id = resp
+                        .data
+                        .get("message_id")
+                        .and_then(|v| v.as_i64())
+                        .map(|id| id.to_string());
+                    tracing::info!(%candidate, "voice message sent");
+                    return Ok(SendResult {
+                        message_id,
+                        success: true,
+                        error: None,
+                    });
+                }
+                Ok(resp) => {
+                    last_error = Some(
+                        resp.error_message()
+                            .unwrap_or_else(|| "voice send failed".into()),
+                    );
+                    tracing::debug!(%candidate, error = last_error.as_deref().unwrap_or(""), "voice candidate rejected; trying next");
+                }
+                Err(e) => {
+                    last_error = Some(e.to_string());
+                    tracing::debug!(%candidate, error = last_error.as_deref().unwrap_or(""), "voice candidate errored; trying next");
+                }
+            }
+        }
+
+        Ok(SendResult {
+            message_id: None,
+            success: false,
+            error: Some(
+                last_error.unwrap_or_else(|| format!("no candidate could resolve '{file}'")),
+            ),
+        })
+    }
+
+    /// Resolve a `send_voice` file argument into ordered NapCat candidates.
+    ///
+    /// See [`send_voice`](Self::send_voice) for the accepted forms. Returns
+    /// `Err(reason)` when nothing can be tried at all (e.g. a bare name that
+    /// exists neither in the NapCat data dir nor as a host path).
+    async fn resolve_voice_file(&self, file: &str) -> Result<Vec<String>, String> {
+        let trimmed = file.trim();
+        if trimmed.is_empty() {
+            return Err("file is required".into());
+        }
+
+        // 1. Explicit references: hand to NapCat verbatim.
+        for prefix in ["http://", "https://", "base64://", "file://"] {
+            if trimmed.starts_with(prefix) {
+                return Ok(vec![trimmed.to_string()]);
+            }
+        }
+
+        // 2. Absolute paths: container-visible pass through, host paths bridge.
+        if trimmed.starts_with('/') {
+            return self.inner.file_bridge.resolve_all(trimmed, trimmed).await;
+        }
+
+        // 3. Bare names: prefer the copy already inside the container's data
+        //    directory (no re-copy, and it works even if the host original is
+        //    gone), then fall back to the host path bridge.
+        let mut candidates = Vec::new();
+        if !trimmed.contains('/') && !trimmed.contains('\\') {
+            let bridge = &self.inner.file_bridge;
+            if bridge.container_file_exists(trimmed) {
+                candidates.push(bridge.container_data_path(trimmed));
+            }
+        }
+        match self.inner.file_bridge.resolve_all(trimmed, trimmed).await {
+            Ok(mut more) => candidates.append(&mut more),
+            Err(reason) => {
+                if candidates.is_empty() {
+                    return Err(reason);
+                }
+            }
+        }
+        Ok(candidates)
+    }
 }
 
 #[async_trait]
@@ -1183,6 +1343,68 @@ mod tests {
             other.error.unwrap_or_default().contains("wrong adapter"),
             "foreign instance must be rejected"
         );
+    }
+
+    #[tokio::test]
+    async fn send_voice_rejects_wrong_adapter_and_validates_file() {
+        let adapter =
+            QqAdapter::with_instance("alix-two", None, crate::config::QqAdapterConfig::default());
+        // 非本实例名 → 拒绝（success=false，错误带 wrong adapter）。
+        let wrong = adapter
+            .send_voice(
+                &echo_defs::chat::MessageTarget {
+                    adapter_name: "qq".into(),
+                    channel: echo_defs::chat::ChannelType::Direct,
+                    user_id: "10001".into(),
+                },
+                "x.mp3",
+            )
+            .await
+            .expect("send_voice returns Ok for wrong-adapter rejections");
+        assert!(!wrong.success);
+        assert!(wrong.error.unwrap_or_default().contains("wrong adapter"));
+
+        // 本实例 + 空 file：解析期即拒绝（success=false，不 panic）。
+        let empty = adapter
+            .send_voice(
+                &echo_defs::chat::MessageTarget {
+                    adapter_name: "alix-two".into(),
+                    channel: echo_defs::chat::ChannelType::Direct,
+                    user_id: "10001".into(),
+                },
+                "   ",
+            )
+            .await
+            .expect("send_voice handles blank file gracefully");
+        assert!(!empty.success);
+
+        // 本实例 + 合法 file：无连接时错误绝不能是 "wrong adapter"。
+        let own = adapter
+            .send_voice(
+                &echo_defs::chat::MessageTarget {
+                    adapter_name: "alix-two".into(),
+                    channel: echo_defs::chat::ChannelType::Direct,
+                    user_id: "10001".into(),
+                },
+                "https://example.com/voice.mp3",
+            )
+            .await;
+        match own {
+            Ok(result) => {
+                let err = result.error.unwrap_or_default();
+                assert!(
+                    !err.contains("wrong adapter"),
+                    "own instance must not be rejected as wrong adapter: {err}"
+                );
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    !msg.contains("wrong adapter"),
+                    "own instance must not fail with wrong adapter: {msg}"
+                );
+            }
+        }
     }
 
     #[test]

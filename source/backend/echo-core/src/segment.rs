@@ -130,6 +130,19 @@ impl Segment {
             data: JsonData { data: data.into() },
         })
     }
+
+    /// Voice message. `file` may be a path (host/container), an `http(s)://`
+    /// URL, or a `base64://` payload — the OneBot implementation resolves and
+    /// converts it (NapCat: mp3/amr/wav/silk…, auto-converted to QQ voice).
+    pub fn record(file: impl Into<String>) -> Self {
+        Segment::Known(KnownSegment::Record {
+            data: RecordData {
+                file: file.into(),
+                url: None,
+                magic: None,
+            },
+        })
+    }
 }
 
 // -- data payloads ----------------------------------------------------------
@@ -393,8 +406,14 @@ mod tests {
             Segment::image("https://example.com/a.png"),
             Segment::face("1"),
             Segment::reply("9001"),
+            Segment::record("/app/napcat/data/hello.mp3"),
         ];
         let json = serde_json::to_value(&segs).unwrap();
+        // record 段线格式：只带 file 字段（url/magic 缺省省略）。
+        assert_eq!(
+            json[6],
+            serde_json::json!({"type": "record", "data": {"file": "/app/napcat/data/hello.mp3"}})
+        );
         let back: Vec<Segment> = serde_json::from_value(json).unwrap();
         assert_eq!(segs, back);
     }

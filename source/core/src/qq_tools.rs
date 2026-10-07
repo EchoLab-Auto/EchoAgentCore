@@ -199,10 +199,30 @@ pub fn register_qq_tools_multi(
             "required": ["target_type", "target_id", "json"]
         }),
     );
+    register(
+        "send_voice",
+        "Send a QQ voice message (a native voice bubble played inline), not a downloadable file — use send_file when the user wants to save the file. file accepts: an http(s):// URL, base64:// data, a path inside the NapCat container (e.g. /app/napcat/data/x.mp3), or a path on THIS machine (the framework bridges it to NapCat automatically). A bare file name is looked up in NapCat's data directory first (where files exchanged in chat live). Common audio formats (mp3/wav/amr/silk) are converted automatically. Requires target_type (group|private), target_id and file.",
+        json!({
+            "type": "object",
+            "properties": {
+                "target_type": {
+                    "type": "string",
+                    "enum": ["group", "private"],
+                    "description": "Where to send: 'group' or 'private'"
+                },
+                "target_id": {
+                    "type": "integer",
+                    "description": "QQ group ID (when target_type=group) or QQ user ID (when private)"
+                },
+                "file": {
+                    "type": "string",
+                    "description": "Voice source: URL (http/https), base64:// data, an in-container path, a path on THIS machine, or a bare file name found in NapCat's data directory"
+                }
+            },
+            "required": ["target_type", "target_id", "file"]
+        }),
+    );
 }
-
-// ---------------------------------------------------------------------------
-// Internal wrapper
 
 // ---------------------------------------------------------------------------
 // Internal wrapper
@@ -414,6 +434,52 @@ impl echo_agent::Tool for QqToolWrapper {
                     Err(e) => Err(ToolError::Execution(e.to_string())),
                 }
             }
+            "send_voice" => {
+                let target_type = arguments["target_type"]
+                    .as_str()
+                    .ok_or_else(|| ToolError::InvalidArguments("target_type required".into()))?;
+                let target_id = arguments["target_id"]
+                    .as_i64()
+                    .ok_or_else(|| ToolError::InvalidArguments("target_id required".into()))?;
+                let file = arguments["file"]
+                    .as_str()
+                    .filter(|f| !f.trim().is_empty())
+                    .ok_or_else(|| ToolError::InvalidArguments("file required".into()))?;
+                let target = match target_type {
+                    "group" => MessageTarget {
+                        adapter_name: adapter.name().to_string(),
+                        channel: ChannelType::Group {
+                            group_id: target_id.to_string(),
+                        },
+                        user_id: String::new(),
+                    },
+                    "private" => MessageTarget {
+                        adapter_name: adapter.name().to_string(),
+                        channel: ChannelType::Direct,
+                        user_id: target_id.to_string(),
+                    },
+                    other => {
+                        return Err(ToolError::InvalidArguments(format!(
+                            "target_type must be 'group' or 'private', got '{other}'"
+                        )))
+                    }
+                };
+                match adapter.send_voice(&target, file).await {
+                    Ok(result) => {
+                        if result.success {
+                            Ok(format!(
+                                "voice message sent, message_id={}",
+                                result.message_id.as_deref().unwrap_or("?")
+                            ))
+                        } else {
+                            Err(ToolError::Execution(
+                                result.error.unwrap_or_else(|| "unknown error".into()),
+                            ))
+                        }
+                    }
+                    Err(e) => Err(ToolError::Execution(e.to_string())),
+                }
+            }
             other => Err(ToolError::Execution(format!("unknown QQ tool: {other}"))),
         }
     }
@@ -500,5 +566,33 @@ mod tests {
         assert!(params["properties"]["target_type"]["enum"][1] == "private");
         let required = params["required"].as_array().expect("required list");
         assert!(required.iter().any(|v| v == "json"));
+    }
+
+    #[tokio::test]
+    async fn registers_send_voice_tool() {
+        let mut registry = echo_agent::ToolRegistry::new();
+        let adapter = Arc::new(QqAdapter::new(Default::default()));
+
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
+
+        let definitions = registry.definitions().await;
+        let definition = definitions
+            .iter()
+            .find(|definition| definition.name == "send_voice")
+            .expect("send_voice tool registered");
+        // 语义边界：语音气泡（非文件）且注明与 send_file 的分工。
+        assert!(definition.description.contains("voice message"));
+        assert!(definition.description.contains("send_file"));
+        let params = definition.parameters.as_ref().expect("parameters present");
+        assert!(params["properties"]["target_type"]["enum"][0] == "group");
+        assert!(params["properties"]["target_type"]["enum"][1] == "private");
+        assert!(params["properties"]["file"]["type"] == "string");
+        let required = params["required"].as_array().expect("required list");
+        for field in ["target_type", "target_id", "file"] {
+            assert!(
+                required.iter().any(|v| v == field),
+                "missing required: {field}"
+            );
+        }
     }
 }
