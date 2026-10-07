@@ -179,29 +179,32 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [x] `PluginSupervisor`（已提交 `cd0b345`）：
   - [x] 生命周期状态机（pending → ready → draining → stopped；backoff 重启 200ms×2 上限 2s + 5 次熔断）
   - [x] in-flight 调用跟踪：卸载先 Drain（等待或取消到 deadline；在途调用以 plugin_crashed 收尾）
+- [x] `PluginSupervisor`（已提交 `cd0b345`）：
+  - [x] 生命周期状态机（pending → ready → draining → stopped；backoff 重启 200ms×2 上限 2s + 5 次熔断）
+  - [x] in-flight 调用跟踪：卸载先 Drain（等待或取消到 deadline；在途调用以 plugin_crashed 收尾）
   - [x] 日志转发（stderr → tracing，带插件前缀）/ 事件收集（`take_events`）
   - [x] 崩溃策略：on-failure（default）/ 可配（`RestartPolicy`）
 - [x] `InprocTransport`：类型直连（mpsc 双向通道；关停=丢 sender→等任务→超时 abort）
-- [ ] `StdioTransport`：spawn / 进程组杀死 / **4 字节 LE 长度前缀帧** / stderr 转发 / 环境清理（进行中）
+- [x] `StdioTransport`（已提交 `9cffd0c`）：spawn / 进程组 / **4 字节 LE 长度前缀帧** / env_clear 最小环境 / stderr 转发 / SIGTERM→SIGKILL 语义（10 项 conformance）
 - [ ] `DylibTransport`（实验）：libloading + C ABI vtable + 双向 `catch_unwind` + 符号版本校验；默认"逻辑卸载"；**若做优先评估 stabby**（abi_stable 停更且不支持卸载，排除）
 - [ ] `WasmTransport`（可选轨）：评估 wasmtime 49（组件模型 + fuel/epoch 限额）或 extism 1.30（cancel_handle / timeout）作为不可信第三方沙箱
-- [ ] 参考插件：独立二进制形态（stdio 测试对端先行；`echo-plugin-example` 完整版随 P3/P4）
-- [ ] conformance 全运输全绿（inproc ✅ 14 项；stdio 进行中）+ 崩溃注入测试（SIGKILL）
+- [x] 参考插件：测试对端二进制 `echo-plugin-test-peer`（协议全消息；已提交 `9cffd0c`）；产品级示例 `echo-plugin-example`（websearch + calculator）构建中
+- [x] conformance：inproc 14 项 + stdio 10 项全绿（dylib / wasm 可选轨随后）
 
-**验收**：示例插件工具经 inproc / subprocess 两运输均可用（dylib / wasm 可选）；杀死进程后 5s 内自动重启、内核无感。
-
+**验收**：✅ 示例插件工具经 inproc / subprocess 两运输均可用（dylib / wasm 可选）；杀死进程后自动重启（backoff 测试覆盖）、内核无感。
 ### Phase 3：内置插件外迁（2-3 周，逐个）
 
 顺序：先低耦合、先多收益。
 
 - [ ] ① provider-llm（已单点装配，最易）→ 协议化
-- [ ] ② 工具子集试点：websearch + calculator → **独立二进制**（全链路验证：schema 注册 → 调用 → 取消 → 崩溃重启）
+- [ ] ② 工具子集试点：websearch + calculator → **独立二进制**（构建中：`echo-plugin-sdk` 插件侧运行时 + `echo-plugin-example` 试点二进制 + e2e 断言）
 - [ ] ③ skills-dir
 - [ ] ④ adapter-qq → subprocess（崩溃隔离收益最大）
 - [ ] ⑤ workspace
 - [ ] ⑥ subagent（hook 接入改经协议事件）
 - [ ] ⑦ loop.single / loop.parallel → inproc（保持内联；注入改经协议挂载）
 - [ ] ⑧ management-panel → **协议化 inproc 插件**（对齐 dsh：webserver 也是插件；同进程、经服务键装载；"禁用即自锁"守卫留内核）
+- [ ] 每插件模板：独立 crate 化 → 贡献声明 → 状态归属审计 → 双跑对照（新旧路径 diff）→ 删旧路径
 - [ ] 每插件模板：独立 crate 化 → 贡献声明 → 状态归属审计 → 双跑对照（新旧路径 diff）→ 删旧路径
 
 **验收**：每个插件可独立禁用/启用/替换；禁用后内核正常降级。
