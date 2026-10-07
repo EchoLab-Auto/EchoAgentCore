@@ -573,6 +573,45 @@ mod tests {
         ));
     }
 
+    /// 组合语义契约（群消息的白名单口径）：`user_ids` 与 `group_ids` 都非空时，
+    /// 群消息必须**同时**命中两者——即「群里只有白名单用户的消息能进来」，
+    /// 名单内群里的其他成员 @ 机器人也会被拦截；名单用户在不属于名单的群里
+    /// 同样被拦截。DM 不受 group 维度影响（但受 user 维度约束）。
+    #[tokio::test]
+    async fn allowlist_group_message_requires_both_user_and_group() {
+        let f = AllowlistFilter::new(vec!["u1".into()], vec!["g1".into()]);
+
+        // 名单用户 + 名单群 → 放行
+        assert!(matches!(
+            f.check(&group_msg("u1", "g1", "hi")).await,
+            FilterResult::Allow
+        ));
+        // 非名单用户 + 名单群 → 拦截（关键：群成员身份不能替代用户名单）
+        assert!(matches!(
+            f.check(&group_msg("u2", "g1", "hi")).await,
+            FilterResult::Block
+        ));
+        // 名单用户 + 非名单群 → 拦截
+        assert!(matches!(
+            f.check(&group_msg("u1", "g2", "hi")).await,
+            FilterResult::Block
+        ));
+        // 非名单用户 + 非名单群 → 拦截
+        assert!(matches!(
+            f.check(&group_msg("u2", "g2", "hi")).await,
+            FilterResult::Block
+        ));
+        // DM：不受 group 维度约束；非名单用户 → 拦截
+        assert!(matches!(
+            f.check(&dm("u1", "hi")).await,
+            FilterResult::Allow
+        ));
+        assert!(matches!(
+            f.check(&dm("u2", "hi")).await,
+            FilterResult::Block
+        ));
+    }
+
     // ---- DenylistFilter ----
 
     #[tokio::test]

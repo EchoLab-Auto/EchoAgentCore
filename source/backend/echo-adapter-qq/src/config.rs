@@ -608,6 +608,80 @@ mode = "allowlist"
         assert_eq!(pipeline.len(), 0);
     }
 
+    /// 端到端契约（群消息白名单口径）：allowlist 模式下 user_ids 与
+    /// group_ids **都非空**时，群消息必须同时命中两者——「群里只有白名单
+    /// 用户的消息能进来」。用消息实际穿过 gated 管线（include admin bypass
+    /// 与共享过滤器）验证，而不仅是单过滤器单测。
+    #[tokio::test]
+    async fn allowlist_pipeline_limits_group_messages_to_whitelisted_users() {
+        let mut cfg = QqAdapterConfig::default();
+        cfg.gate.mode = "allowlist".into();
+        cfg.filter.allowlist.user_ids = vec![1828980067];
+        cfg.filter.allowlist.group_ids = vec![1094762376, 1091798103];
+        let pipeline = cfg.build_filter_pipeline_gated("allowlist");
+
+        let msg = |user: &str, group: Option<&str>| echo_adapter::types::IncomingMessage {
+            adapter_name: "qq".into(),
+            platform: "qq".into(),
+            user_id: user.into(),
+            user_name: "tester".into(),
+            channel: match group {
+                Some(gid) => echo_adapter::types::ChannelType::Group {
+                    group_id: gid.into(),
+                },
+                None => echo_adapter::types::ChannelType::Direct,
+            },
+            group_name: None,
+            content: "hi".into(),
+            timestamp: 0,
+            at_me: true,
+            metadata: serde_json::Value::Null,
+            images: vec![],
+            files: vec![],
+        };
+
+        // 白名单用户 + 白名单群 → 放行
+        let (ok, _) = pipeline
+            .should_accept(&msg("1828980067", Some("1094762376")))
+            .await;
+        assert!(ok, "whitelisted user in whitelisted group must pass");
+        let (ok, _) = pipeline
+            .should_accept(&msg("1828980067", Some("1091798103")))
+            .await;
+        assert!(ok, "whitelisted user in second whitelisted group must pass");
+
+        // 非白名单用户 + 白名单群 → 拦截（关键：群成员身份 ≠ 用户白名单）
+        let (ok, _) = pipeline
+            .should_accept(&msg("1945079185", Some("1091798103")))
+            .await;
+        assert!(
+            !ok,
+            "non-whitelisted user in whitelisted group must be blocked"
+        );
+        let (ok, _) = pipeline
+            .should_accept(&msg("1945079185", Some("1094762376")))
+            .await;
+        assert!(
+            !ok,
+            "non-whitelisted user in whitelisted group must be blocked"
+        );
+
+        // 白名单用户 + 非白名单群 → 拦截
+        let (ok, _) = pipeline
+            .should_accept(&msg("1828980067", Some("999999999")))
+            .await;
+        assert!(
+            !ok,
+            "whitelisted user outside whitelisted groups must be blocked"
+        );
+
+        // DM：不受群维度约束；用户必须在白名单
+        let (ok, _) = pipeline.should_accept(&msg("1828980067", None)).await;
+        assert!(ok, "whitelisted user DM must pass");
+        let (ok, _) = pipeline.should_accept(&msg("1945079185", None)).await;
+        assert!(!ok, "non-whitelisted user DM must be blocked");
+    }
+
     /// 两条默认路径必须一致：`Default` impl（程序化构造 / 无 `[adapters.qq]`
     /// 段的配置）与 serde 字段默认（TOML 缺字段）。`napcat_auto_stop` 曾因
     /// `Default` impl 残留 `default_true()` 而与 serde 的 false 矛盾。
