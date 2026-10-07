@@ -1,9 +1,9 @@
 ---
 id: panel-system
 title: "Panel 系统交互"
-group: 前端模块
-x: 1186
-y: 894
+group: 前端
+x: 3520
+y: 280
 ---
 
 # Panel 系统交互

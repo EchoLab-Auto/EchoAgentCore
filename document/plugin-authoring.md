@@ -1,10 +1,9 @@
 ---
 id: plugin-authoring
 title: "插件开发指南"
-group: 规划
-x: -900
-y: 1800
-link: ["decoupling-plan | 完全解耦推进计划"]
+group: 插件
+x: 960
+y: 1920
 ---
 
 # 插件开发指南（外部进程插件）

@@ -1,9 +1,9 @@
 ---
 id: config-persistence
 title: "配置持久化"
-group: "核心设施 @ 576, 1478, 268, 666"
-x: 600
-y: 1708
+group: 框架
+x: 960
+y: 800
 ---
 
 # 配置持久化

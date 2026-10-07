@@ -1,8 +1,10 @@
 ---
-group: 开发指南
-x: 606
-y: 53
-link: ["dev-testing | 测试策略"]
+id: dev-guide
+title: "开发指南"
+group: 工程
+x: 1920
+y: 1000
+link: ["dev-testing | 测试策略 | r>l", "documentation-guide | 文档规范 | r>l"]
 ---
 
 # 开发指南

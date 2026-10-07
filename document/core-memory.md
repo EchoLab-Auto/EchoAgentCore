@@ -1,10 +1,9 @@
 ---
 id: memory
 title: "会话记忆"
-group: Agent 运行时
-x: 955
-y: 1708
-link: ["config-persistence | 配置持久化"]
+group: 框架
+x: 960
+y: 480
 ---
 
 # 会话记忆

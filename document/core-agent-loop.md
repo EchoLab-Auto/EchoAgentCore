@@ -1,9 +1,9 @@
 ---
 id: agent-loop
 title: "Agent 循环"
-group: Agent 运行时
-x: 1283
-y: 1512
+group: 框架
+x: 1280
+y: 320
 ---
 
 # Agent 循环

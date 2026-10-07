@@ -1,7 +1,9 @@
 ---
+id: architecture
+title: "架构总览"
 group: 总览
-x: -53
-y: 805
+x: 320
+y: 0
 ---
 
 # 架构总览

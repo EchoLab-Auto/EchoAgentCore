@@ -1,10 +1,10 @@
 ---
 id: panel-interaction
 title: "Panel 布局 & 交互定义"
-group: 前端模块
-x: 873
-y: 894
-link: ["panel-layout | 布局与导航 | r>l", "panel-chat | 会话视图 | r>l", "panel-modals | 模态与覆盖层", "panel-settings | 设置视图 | r>l", "panel-qq-tasks | QQ管理·任务·Shell", "panel-system | 系统交互", "protocol | 协议命令"]
+group: 前端
+x: 2720
+y: 0
+link: ["panel-layout | 布局与导航 | b>t", "panel-chat | 会话视图 | b>t", "panel-modals | 模态与覆盖层 | b>t", "panel-settings | 设置视图 | b>t", "panel-qq-tasks | QQ管理·任务·Shell | b>t", "panel-system | 系统交互 | b>t"]
 ---
 
 # Panel 布局 & 交互定义

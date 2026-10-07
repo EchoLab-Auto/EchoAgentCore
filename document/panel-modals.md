@@ -1,9 +1,9 @@
 ---
 id: panel-modals
 title: "Panel 模态与覆盖层"
-group: 前端模块
-x: 1186
-y: 766
+group: 前端
+x: 2560
+y: 280
 ---
 
 # Panel 模态与覆盖层

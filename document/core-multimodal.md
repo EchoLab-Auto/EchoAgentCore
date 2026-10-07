@@ -1,10 +1,9 @@
 ---
 id: multimodal
 title: "多模态输入"
-group: Agent 运行时
-x: 1283
-y: 1660
-link: ["core-memory | 会话记忆"]
+group: 框架
+x: 960
+y: 640
 ---
 
 # 多模态输入（图片）

@@ -1,10 +1,10 @@
 ---
 id: core
 title: "Core 后端"
-group: 核心设施
-x: 600
-y: 1512
-link: ["core-agents | 多 Agent 与会话 | r>l", "core-agent-loop | Agent 循环", "core-memory | 会话记忆", "core-multimodal | 多模态输入", "core-plugins | 插件化设计", "core-config-persistence | 配置持久化"]
+group: 框架
+x: 320
+y: 320
+link: ["frame | 框架（内核） | r>l", "plugins | 插件化设计 | b>t"]
 ---
 
 # Core 框架

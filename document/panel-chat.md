@@ -1,9 +1,9 @@
 ---
 id: panel-chat
 title: "Panel 会话视图"
-group: 前端模块
-x: 1186
-y: 1301
+group: 前端
+x: 2240
+y: 280
 ---
 
 # Panel 会话视图

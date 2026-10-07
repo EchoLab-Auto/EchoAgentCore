@@ -1,9 +1,9 @@
 ---
 id: federation
 title: "联邦（多机去中心化）"
-group: 集成与适配
-x: 1600
-y: 1512
+group: 插件
+x: 960
+y: 1760
 ---
 
 # 联邦（多机去中心化 Agent）

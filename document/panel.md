@@ -1,8 +1,10 @@
 ---
-group: 前端模块
-x: 591
-y: 894
-link: ["panel-interaction | 布局与交互定义"]
+id: panel
+title: "Panel 前端"
+group: 前端
+x: 1920
+y: 0
+link: ["panel-interaction | 交互定义 | r>l"]
 ---
 
 # Panel 前端

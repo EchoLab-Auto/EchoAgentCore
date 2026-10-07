@@ -1,10 +1,11 @@
 ---
 id: dev-testing
 title: "测试策略"
-group: 开发指南
-x: 873
-y: 53
+group: 工程
+x: 2240
+y: 1000
 ---
+
 # Testing Strategy
 
 **Core（cargo）** 700+ 条、**Panel 前端（vitest）** 200+ 条、**部署 CLI（node:test）**

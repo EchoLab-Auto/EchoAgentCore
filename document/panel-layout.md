@@ -1,9 +1,9 @@
 ---
 id: panel-layout
 title: "Panel 布局与导航"
-group: 前端模块
-x: 1186
-y: 1164
+group: 前端
+x: 1920
+y: 280
 ---
 
 # Panel 布局与导航

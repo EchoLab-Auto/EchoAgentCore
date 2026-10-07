@@ -1,9 +1,9 @@
 ---
 id: panel-settings
 title: "Panel 设置视图"
-group: 前端模块
-x: 1186
-y: 1025
+group: 前端
+x: 2880
+y: 280
 ---
 
 # Panel 设置视图
