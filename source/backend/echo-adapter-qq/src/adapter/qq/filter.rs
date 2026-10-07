@@ -116,13 +116,18 @@ impl QqAdapter {
             );
 
             let filter = echo_adapter::ensure_table(qq, "filter");
-            filter.insert(
-                "allowlist".into(),
-                toml::Value::Table(build_list_table(
-                    &filter_cfg.allowlist.user_ids,
-                    &filter_cfg.allowlist.group_ids,
-                )),
+            // 白名单表是**整表替换**写入：`group_members_open` 必须随名单
+            // 一起带回，否则用户设置的群成员放行开关会被 Panel 的任一名单
+            // 编辑（UpdateQqAllowlist → persist）静默清掉。
+            let mut allowlist_table = build_list_table(
+                &filter_cfg.allowlist.user_ids,
+                &filter_cfg.allowlist.group_ids,
             );
+            allowlist_table.insert(
+                "group_members_open".into(),
+                toml::Value::Boolean(filter_cfg.allowlist.group_members_open),
+            );
+            filter.insert("allowlist".into(), toml::Value::Table(allowlist_table));
             filter.insert(
                 "denylist".into(),
                 toml::Value::Table(build_list_table(

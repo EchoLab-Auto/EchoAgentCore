@@ -154,7 +154,8 @@ impl QqAdapterConfig {
                 .iter()
                 .map(|id| id.to_string())
                 .collect(),
-        );
+        )
+        .with_group_members_open(self.filter.allowlist.group_members_open);
         if allowlist.is_active() {
             pipeline.push(Box::new(allowlist));
         }
@@ -261,8 +262,17 @@ impl QqAdapterConfig {
                         .iter()
                         .map(|id| id.to_string())
                         .collect(),
-                );
+                )
+                .with_group_members_open(self.filter.allowlist.group_members_open);
                 if f.is_active() {
+                    // 启动/重建时的白名单口径留痕（含群成员放行开关）——
+                    // 排障时一眼确认线上生效的名单与开关。
+                    tracing::info!(
+                        users = ?self.filter.allowlist.user_ids,
+                        groups = ?self.filter.allowlist.group_ids,
+                        group_members_open = self.filter.allowlist.group_members_open,
+                        "QQ allowlist filter built"
+                    );
                     pipeline.push(Box::new(f));
                 }
             }
@@ -435,6 +445,11 @@ pub struct QqFilterConfig {
 pub struct AllowlistConfig {
     pub user_ids: Vec<i64>,
     pub group_ids: Vec<i64>,
+    /// 群成员放行：`true` 时**群消息只校验 `group_ids`**——白名单群内
+    /// 全体成员可交互，`user_ids` 此时仅约束私聊；`false`（默认）时群消息
+    /// 需同时命中 `user_ids` 与 `group_ids`（“群里只有名单用户能触发”）。
+    /// 启动期开关（修改配置文件 + 重启生效）。
+    pub group_members_open: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -680,6 +695,64 @@ mode = "allowlist"
         assert!(ok, "whitelisted user DM must pass");
         let (ok, _) = pipeline.should_accept(&msg("1945079185", None)).await;
         assert!(!ok, "non-whitelisted user DM must be blocked");
+    }
+
+    /// 群成员放行开关的端到端口径（实际部署 ID）：`group_members_open =
+    /// true` 时白名单群内任何成员可触发（不再要求 sender 在 `user_ids` 中），
+    /// 私聊仍只有 `user_ids` 中的用户可触发，群名单之外照常拦截。
+    #[tokio::test]
+    async fn group_members_open_pipeline_admits_any_member_in_whitelisted_groups() {
+        let mut cfg = QqAdapterConfig::default();
+        cfg.gate.mode = "allowlist".into();
+        cfg.filter.allowlist.user_ids = vec![1828980067];
+        cfg.filter.allowlist.group_ids = vec![1094762376, 1091798103];
+        cfg.filter.allowlist.group_members_open = true;
+        let pipeline = cfg.build_filter_pipeline_gated("allowlist");
+
+        let msg = |user: &str, group: Option<&str>| echo_adapter::types::IncomingMessage {
+            adapter_name: "qq".into(),
+            platform: "qq".into(),
+            user_id: user.into(),
+            user_name: "tester".into(),
+            channel: match group {
+                Some(gid) => echo_adapter::types::ChannelType::Group {
+                    group_id: gid.into(),
+                },
+                None => echo_adapter::types::ChannelType::Direct,
+            },
+            group_name: None,
+            content: "hi".into(),
+            timestamp: 0,
+            at_me: true,
+            metadata: serde_json::Value::Null,
+            images: vec![],
+            files: vec![],
+        };
+
+        // 非白名单用户（此前被拦的真实用户）在白名单群 → 放行
+        let (ok, _) = pipeline
+            .should_accept(&msg("1945079185", Some("1091798103")))
+            .await;
+        assert!(
+            ok,
+            "any member in a whitelisted group must pass when group_members_open"
+        );
+        let (ok, _) = pipeline
+            .should_accept(&msg("1945079185", Some("1094762376")))
+            .await;
+        assert!(ok, "same in the second whitelisted group");
+
+        // 非白名单群 → 仍拦截（群名单照常生效）
+        let (ok, _) = pipeline
+            .should_accept(&msg("1945079185", Some("999999999")))
+            .await;
+        assert!(!ok, "groups outside the whitelist stay blocked");
+
+        // 私聊仍受用户名单约束：非白名单用户拦截、白名单用户放行
+        let (ok, _) = pipeline.should_accept(&msg("1945079185", None)).await;
+        assert!(!ok, "DM from a non-whitelisted user stays blocked");
+        let (ok, _) = pipeline.should_accept(&msg("1828980067", None)).await;
+        assert!(ok, "whitelisted user DM still passes");
     }
 
     /// 两条默认路径必须一致：`Default` impl（程序化构造 / 无 `[adapters.qq]`

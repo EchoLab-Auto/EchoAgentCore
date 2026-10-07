@@ -107,6 +107,21 @@ heartbeat_interval = 30
 dm_auto_reply = true
 group_at_reply = true
 
+# ── QQ 门控与过滤（可在 Panel「适配器」面板交互式维护名单；也可在此配置）──
+# gate.mode：none / allowlist / denylist。allowlist 模式下：
+#   - 白名单为空 = 不限制；user_ids（非空）约束私聊；
+#   - 群消息按 group_ids 校验；是否同时要求发送者在 user_ids 中，
+#     由 group_members_open 决定。
+# [adapters.qq.gate]
+# mode = "allowlist"
+#
+# [adapters.qq.filter.allowlist]
+# user_ids = []
+# group_ids = []
+# # 群成员放行：true = 白名单群内全体成员可交互（群消息只校验群名单，
+# # user_ids 仅约束私聊）；false（缺省）= 群消息需同时命中 user_ids 与 group_ids。
+# group_members_open = false
+
 [adapters.qq.files]
 # 接收文件：群文件上传（group_upload 通知）与私聊文件（消息 file 段）会在
 # 过滤通过后下载到本机，并以本地路径（files[].path）随消息送达 agent。

@@ -130,6 +130,10 @@ impl FilterPipeline {
 pub struct AllowlistFilter {
     pub user_ids: std::collections::HashSet<String>,
     pub group_ids: std::collections::HashSet<String>,
+    /// 群成员放行：`true` 时群消息只校验 `group_ids`（白名单群内全体成员
+    /// 可交互），`user_ids` 仅约束私聊；`false`（默认）时群消息需同时命中
+    /// `user_ids` 与 `group_ids`。见 `AllowlistConfig::group_members_open`。
+    pub group_members_open: bool,
 }
 
 impl AllowlistFilter {
@@ -137,7 +141,15 @@ impl AllowlistFilter {
         Self {
             user_ids: user_ids.into_iter().collect(),
             group_ids: group_ids.into_iter().collect(),
+            group_members_open: false,
         }
+    }
+
+    /// 群成员放行开关（builder 形态，语义见字段说明与
+    /// `AllowlistConfig::group_members_open`）。
+    pub fn with_group_members_open(mut self, open: bool) -> Self {
+        self.group_members_open = open;
+        self
     }
 
     /// Whether this filter is active (has entries).
@@ -156,7 +168,12 @@ impl MessageFilter for AllowlistFilter {
         if !self.is_active() {
             return FilterResult::Allow;
         }
-        let user_ok = self.user_ids.is_empty() || self.user_ids.contains(&msg.user_id);
+        // 群成员放行开关：白名单群内不再校验用户名单（群内全体成员可交互）；
+        // 私聊仍受 `user_ids` 约束。
+        let in_group = msg.channel.group_id().is_some();
+        let user_ok = (self.group_members_open && in_group)
+            || self.user_ids.is_empty()
+            || self.user_ids.contains(&msg.user_id);
         let group_ok = self.group_ids.is_empty()
             || match msg.channel.group_id() {
                 Some(gid) => self.group_ids.contains(gid),
@@ -609,6 +626,38 @@ mod tests {
         assert!(matches!(
             f.check(&dm("u2", "hi")).await,
             FilterResult::Block
+        ));
+    }
+
+    /// 群成员放行开关：开启后群消息不再受用户名单约束（白名单群内全体
+    /// 成员可交互），私聊仍受 `user_ids` 约束；群名单照常生效。
+    #[tokio::test]
+    async fn allowlist_group_members_open_skips_user_check_in_groups() {
+        let f = AllowlistFilter::new(vec!["u1".into()], vec!["g1".into()])
+            .with_group_members_open(true);
+        // 非名单用户 + 名单群 → 放行（开关生效）
+        assert!(matches!(
+            f.check(&group_msg("u2", "g1", "hi")).await,
+            FilterResult::Allow
+        ));
+        // 名单用户 + 名单群 → 照常放行
+        assert!(matches!(
+            f.check(&group_msg("u1", "g1", "hi")).await,
+            FilterResult::Allow
+        ));
+        // 非名单群 → 仍拦截（群名单照常生效）
+        assert!(matches!(
+            f.check(&group_msg("u2", "g2", "hi")).await,
+            FilterResult::Block
+        ));
+        // 私聊不受开关影响：非名单用户仍拦截、名单用户放行
+        assert!(matches!(
+            f.check(&dm("u2", "hi")).await,
+            FilterResult::Block
+        ));
+        assert!(matches!(
+            f.check(&dm("u1", "hi")).await,
+            FilterResult::Allow
         ));
     }
 
