@@ -28,8 +28,8 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 - 已存在的配置文件保留；重复执行 = 刷新二进制、updater 与服务单元
 - 安装是事务性的：release 构建完成后快照现有文件，健康检查失败自动恢复并重启旧 Core
 - 服务默认挂在 `default.target`；开机免登录自启需 `sudo loginctl enable-linger "$USER"`
-- 卸载：`./scripts/uninstall.sh`（保留配置）/ `--purge`（连配置目录一起删）
-- 重装：`./scripts/reinstall.sh`（2026-10 新增）——uninstall（保留配置）→ install 一步接力，二进制/服务单元全部换新而 core.toml 与会话历史不动；同样兼容 curl | bash 运行
+- 卸载：`./scripts/uninstall.sh`（保留配置与用户数据——媒体库 `media/`、用户技能层 `skills/`）/ `--purge`（连配置目录与数据一起删）
+- 重装：`./scripts/reinstall.sh`（2026-10 新增）——uninstall（保留配置与用户数据）→ install 一步接力，二进制/服务单元全部换新而 core.toml、会话历史、媒体库与用户技能不动；同样兼容 curl | bash 运行
 
 ### curl | bash 一键安装/卸载（2026-10，免 clone）
 

@@ -24,7 +24,8 @@ Remove the EchoAgentCore installation for the current user: the systemd units,
 the launcher and the runtime binary, the managed source checkout, and the
 update state. The configuration directory (core.toml and session history) is
 kept by default so a reinstall restores everything; pass --purge to remove it
-as well.
+as well. User data under the data directory (media library, user skills layer)
+is always preserved unless --purge.
 
 Options:
   --purge      Also remove the config directory ($CONFIG_HOME/echo-agent-core)
@@ -71,7 +72,7 @@ EchoAgentCore uninstall plan
   systemd:   $units
   launcher:  $BIN_DIR/echo-agent-core
   libexec:   $LIBEXEC_DIR
-  data:      $DATA_DIR
+  data:      $DATA_DIR ($( ((PURGE)) && echo "will be removed" || echo "kept: media, skills — removed: source, skills-builtin" ))
   state:     $STATE_DIR
   config:    $CONFIG_DIR ($( ((PURGE)) && echo "will be removed" || echo "kept — use --purge to remove" ))
 EOF
@@ -113,8 +114,21 @@ remove_file() {
 
 remove_file "$BIN_DIR/echo-agent-core" "launcher"
 remove_dir "$LIBEXEC_DIR" "runtime libexec"
-remove_dir "$DATA_DIR" "managed source checkout"
 remove_dir "$STATE_DIR" "update state"
+
+# 数据目录（2026-10 修复）：只删受管产物（源码检出 + 出厂技能层）。
+# 用户数据——媒体库 media/ 与用户技能层 skills/——即使不带 --purge 也绝不
+# 触碰（uninstall 的契约是"保留配置"，用户数据同理；此前 rm -rf 整个
+# DATA_DIR 会连带清除它们，且 install 不会恢复）。--purge 才整体移除。
+if ((PURGE)); then
+    remove_dir "$DATA_DIR" "data directory (checkout, skills, media)"
+else
+    remove_dir "$DATA_DIR/source" "managed source checkout"
+    remove_dir "$DATA_DIR/skills-builtin" "factory skills layer"
+    if [[ -d "$DATA_DIR" ]]; then
+        echo "==> Keeping user data: $DATA_DIR (media / skills; use --purge to remove)"
+    fi
+fi
 
 if ((systemd_available)); then
     remove_file "$SYSTEMD_DIR/echo-agent-core.service" "systemd unit"
@@ -132,5 +146,6 @@ echo
 echo "Uninstall complete."
 if ((!PURGE)); then
     echo "  Config and session history kept at: $CONFIG_DIR"
+    echo "  User data (media, skills) kept at:  $DATA_DIR"
 fi
 echo "  Reinstall with: scripts/install.sh"
