@@ -20,13 +20,22 @@ y: 1600
 3. **运行期热替换**：任一代码插件可"卸载 → 替换 → 重挂载"，无进程重启；与数据插件热重载语义统一。
 4. **进程外插件端到端**：至少一个示例插件以**独立二进制**交付、经配置装载；`SIGKILL` 其进程后内核无感（该插件工具报错并按策略自动重启）。
 5. **配置化组合**：`--dump-config` 输出分层合成树（profile / bundle / patch 三层）；改组合不改代码。
-6. **协议一致性**：同一套 conformance 用例覆盖全部运输层（inproc / subprocess / dylib）。
+6. **协议一致性**：同一套 conformance 用例覆盖全部运输层（inproc / subprocess；可选 dylib / wasm）。
 
-## 二、方案研究：动态库 vs 子进程
+## 二、方案研究：动态库 / 子进程 / wasm（2026-10 生态核查）
 
-### 2.1 动态库（dlopen）
+### 2.1 动态库（dlopen）——生态核查后的现实
 
-Rust **没有稳定 ABI**——跨 `dlopen` 边界只能走 C ABI（`extern "C"` + `#[repr(C)]`），或引入稳定 ABI 库（`abi_stable` 的 `StableAbi`/`RootModule`、较新的 `stabby`）。技术路线：
+Rust **至今无官方稳定 ABI**（rust-project-goals 2026 清单中**无任何 ABI 稳定化目标**；社区 crABI 实验未落地）。跨 `dlopen` 只能走 C ABI（`extern "C"` + `#[repr(C)]`）或稳定 ABI 库。生态现状：
+
+| 库 | 最新版本 | 维护状态 | 关键限制 |
+|---|---|---|---|
+| libloading | 0.9.0（2025-11） | 活跃 | 裸 dlopen，无隔离；`close()` 可能 no-op / 泄漏 |
+| abi_stable | 0.11.3 | **2023-10 起停更** | README 明示**不支持卸载**（"without support for unloading"） |
+| stabby | 72.1.16（2026-07） | 活跃 | 同进程限制仍在；**有 async 支持**（`stabby::future`）；**生产案例：Zenoh**（zenoh-plugin-trait 1.10.1） |
+| hot-lib-reloader | 0.8.2（2025-08） | 开发工具 | 类型变更即 UB、`TypeId` 失效（README 明示）；**非生产方案** |
+
+技术路线（若做）：
 
 ```text
 插件编译为 cdylib → 宿主 libloading::Library::new + 取单一入口符号：
@@ -37,50 +46,62 @@ HostApiV1 / PluginVtableV1 = #[repr(C)] 函数指针表；数据过界一律 JSO
 
 关键风险（决定了它只能当实验轨）：
 
-- **unsafe 面积大**：每处跨界调用都是 unsafe；panic 过 FFI 是 UB（`extern "C"` abort-on-unwind），必须**双向 `catch_unwind`**；要求 `panic=unwind`（当前 workspace 已是默认 unwind，兼容）。
-- **卸载不安全**：`dlclose` 时若插件仍有线程/任务/TLS 存活 → UB/崩溃。安全卸载需要插件完全静默（quiesce）+ 引用计数归零；生产通常只做"逻辑卸载"（停流量，不 dlclose）。
-- **版本地狱**：宿主与插件必须同工具链、同依赖图编译，否则类型布局漂移 = 崩溃；CI 必须锁死。
-- **异步不可跨 FFI**：只能改成"双向消息 + call_id"（与子进程协议同构）——即消息化是前提，不是选择。
+- **panic = 全进程陪葬**：Rust 1.81 起，`extern "C"` 中未捕获 unwinding 一律 **abort**；`catch_unwind` 捕不到 abort，`panic=abort` 下完全失效——插件 panic 杀掉整个宿主。
+- **卸载不安全（官方印证）**：abi_stable 明确不提供卸载；`dlclose` 时残留线程/任务/TLS → UB。安全卸载需插件完全静默 + 引用计数归零；生产只能"逻辑卸载"（停流量，不 dlclose）。
+- **重复 crate 实例**使 `Any`/`TypeId` downcast 失效（hot-lib-reloader 同警告）。
+- **版本地狱**：宿主与插件必须同工具链同依赖图编译；rustc/依赖图每次升级需重编全部插件。
+- **异步只能消息化**（回调 + 取消令牌 + 插件侧 runtime，或 stabby::future）——即消息化是前提，不是选择。
 
-### 2.2 子进程（stdio 协议）
+### 2.2 子进程（stdio 协议）——现成先例最丰富
 
 - **协议即 ABI**：跨进程无 ABI 问题，天然稳定，且语言无关。
-- **崩溃隔离**：插件 panic / segfault / OOM 只死自己，宿主监督重启——装载外部代码的最大可靠性收益。
-- **热替换简单**：停旧进程 → 起新进程；状态迁移显式化（可选 `export_state/import_state`）。
+- **崩溃隔离**：插件 panic / segfault / OOM 只死自己，宿主监督重启——装载外部代码的最大可靠性收益；**这是同进程方案（含 dsh 本身）做不到的**。
+- **热替换简单**：新进程 Ready → 切流量 → 老进程 Drain → 退出（失败保老，可回滚）；状态迁移显式化（可选 `export_state/import_state`）。
 - **异步天然**：插件是普通进程，自带运行时；宿主用 `tokio::process` 管理即可。
-- **代价**：序列化（JSON 微秒级）、进程开销（空载数 MB × ~10 进程）、管道延迟（本地百微秒级）。对 agent 场景（工具调用秒级间隔）可忽略；LLM 流式按帧批量发送。
-- **工程先例**：nushell 插件（全部 out-of-process）、MCP stdio 服务器（JSON-RPC，dsh 的 `mcp-client` 即"外部进程提供工具"的一等公民）、LSP。dsh 自身即用此模式装载外部能力。
+- **现成先例（协议语义直接借鉴）**：
+  - **nushell**（`nu-plugin` 0.116.1）：启动先发 1 字节长度 + 编码名（`\x07msgpack` / `\x04json`）；双向 `Hello`（协议名 + semver + features 协商）；消息带 CallId，支持并发/流式/中断；插件→宿主 `EngineCall`；空闲 GC 回收。
+  - **MCP**（官方 Rust SDK `rmcp` 3.5.1）：JSON-RPC 2.0 + stdio 换行分帧；已有 `#[tool]` 宏 + schemars schema 生成 + 取消通知——工具类插件复用可省 2-4 人周（见 §2.4 选型）。
+  - **LSP**（rust-analyzer `lsp-server` 0.10.0 / `tower-lsp-server` 0.23.0）：Content-Length 分帧，长期生产验证。
+- **开销实测量级**（本机 20 次实测中位，2026-10）：
+  - 序列化单次：serde_json 1.24µs / msgpack 1.07µs / protobuf 0.85µs / bincode 0.09µs——**均纳秒~微秒级，序列化不是瓶颈**；
+  - IPC 纯转发往返：stdio 5.3µs / Unix socket 3.2µs；计入 tokio 调度 + 解析 + 插件工作 ≈ **20-60µs/次**（~2-5 万次/秒）——对 agent 场景（工具调用秒级间隔）完全富余。
 
 技术路线：
 
 ```text
 插件 = 独立二进制；宿主 tokio::process spawn，管道 stdio。
-帧编码：NDJSON（serde_json 至多产生转义换行，天然安全）+ 单行大小上限；
-大消息优化（LSP 式 Content-Length 头）与二进制编码（MessagePack）留 feature。
-帧协议沿用 FedFrame 既有惯例：externally-tagged enum、#[serde(default)] 前向兼容、
-call_id 关联、Hello/Welcome 版本握手、显式 Cancel。
+帧编码：4 字节 LE 长度前缀 + JSON（默认）/ msgpack（feature），
+  经 tokio-util LengthDelimitedCodec（成熟、防帧粘连、背压友好）；
+  与 MCP 生态互通时用换行分帧 JSON 兼容模式。
+帧协议沿用 FedFrame 惯例：externally-tagged enum、#[serde(default)] 前向兼容、
+call_id 关联、Hello/Welcome 版本握手（semver + features，对齐 nushell）、显式 Cancel。
 生命周期：握手（超时）→ Ready → 服务；SIGTERM 优雅退出（drain deadline）→ 超时 SIGKILL；
 进程组整体清理；stderr → tracing 转发；环境白名单 + cwd 受控 +（可选）rlimit。
 ```
 
 ### 2.3 对比总表
 
-| 维度 | inproc（协议化内联） | 子进程（stdio 协议） | 动态库（C ABI） | wasm（远期） |
+| 维度 | inproc（协议化内联） | 子进程（stdio 协议） | 动态库（C ABI / stabby） | wasm（wasmtime / extism） |
 |---|---|---|---|---|
-| ABI 稳定性 | 同编译单元，无问题 | **协议=ABI，完全稳定** | 需 C ABI/稳定库，脆弱 | 稳定（组件模型） |
-| 崩溃隔离 | 无 | **完全** | 无（同进程） | 完全（沙箱） |
-| 热替换 | 挂载/卸载（已支持） | **重启式，最简** | 需安全卸载，难 | 实例重建，易 |
-| 性能开销 | 零（channel） | µs~ms 级 | ~ns | µs 级 |
+| ABI 稳定性 | 同编译单元，无问题 | **协议=ABI，完全稳定** | 脆弱（无官方 ABI；stabby 有类型校验） | 稳定（组件模型 / WIT） |
+| 崩溃隔离 | 无 | **完全（进程级）** | 无（panic=abort 全进程陪葬） | **完全（沙箱 + fuel/epoch 限额）** |
+| 热替换 | 挂载/卸载（已支持） | **重启式，最简** | 不安全卸载（abi_stable 官方不支持） | 实例重建（旧实例可丢） |
+| 性能开销 | 零（channel） | **20-60µs/次（实测）** | ~ns | µs 级 |
 | unsafe 面积 | 零 | 零 | 大 | 宿主零 |
-| 语言无关 | 否 | **是** | 否 | 是 |
-| 推荐用途 | 内核伴生 / 热路径 | **外部插件主路径** | 开发期热重载（实验） | 未来不可信沙箱 |
+| 语言无关 | 否 | **是（任意语言）** | 否 | 是（WIT 多语言） |
+| 生态成熟度 | — | nushell / MCP / LSP | Zenoh（stabby 生产案例） | wasmtime 49 / extism 1.30（Spin、Fastly） |
+| 推荐用途 | 内核伴生 / 热路径 | **外部插件主路径** | 实验轨（不卸载）/ 可信快路径 | 不可信第三方沙箱（可选轨） |
 
-### 2.4 结论：三轨制 + 一套协议
+### 2.4 结论：四轨制 + 一套协议
 
 1. **inproc（主基座）**——现有内置插件迁移为"协议化内联插件"：接口按消息定义、物理编译内联，性能零损失；
-2. **subprocess（扩展主路径）**——任何插件可无改动"提升"为独立进程；第三方/外部插件一律走此轨；
-3. **dylib（实验轨，可选）**——仅用于开发期快速热重载，C ABI + JSON 载荷，明确标注 unstable，不进生产默认；
-4. wasm 作为远期"不可信插件沙箱"预留（不在本期）。
+2. **subprocess（扩展主路径 / 默认后端）**——任何插件可无改动"提升"为独立进程；第三方/外部插件一律走此轨；协议语义以 **nushell 为蓝本**（CallId 并发/流式/中断、Hello semver + features 协商、空闲 GC）；
+3. **dylib（实验轨，可选，不卸载）**——开发期重编译重载；若做选 **stabby**（活跃 + async + Zenoh 生产验证），明确"加新不卸旧"，不进生产默认；
+4. **wasm（可选沙箱轨，升级自"远期"）**——wasmtime 49.0.2 / extism 1.30.0 已具备 fuel/epoch 超时、跨线程取消、内存上限等生产级能力（Spin、Fastly 等案例）；适合不可信第三方插件，Phase 6 评估。
+
+**协议选型补充（Phase 0 决策项）**：倾向**自研统一协议**保证一致性（工具/服务/事件/loop 贡献统一建模），并将 **MCP（rmcp 3.5.1）作为工具类插件的兼容导入通道**——任何 MCP 服务器即插件，等价于免费获得 MCP 生态。二者共享传输层（stdio + 长度前缀 / 换行分帧）。
+
+> 本节数据来源（2026-10）：crates.io API 版本核查、rust-project-goals 2026 目标清单、nushell 贡献者书 Plugin protocol reference、MCP 规范与 rmcp README、wasmtime/extism/stabby/hot-lib-reloader/abi_stable 仓库文档；序列化与 IPC 基准为本机 20 次实测中位。
 
 ## 三、目标架构
 
@@ -90,12 +111,11 @@ call_id 关联、Hello/Welcome 版本握手、显式 Cancel。
 │ EventBus（emit / waterfall / parallel / serial，已有）       │
 │ PluginSupervisor（加载 / 卸载 / 健康 / 重启 / 限额 / 日志）   │
 │ echo-plugin-api（协议类型：冻结契约）                        │
-│ Transport：Inproc / Stdio / [Dylib]                        │
+│ Transport：Inproc / Stdio / [Dylib] / [Wasm]               │
 │ 贡献注册表（工具 / 技能 / 服务 / 事件——全部可逆）             │
 │ 会话编排骨架（事件日志 + 投影 + 压缩编排）※                   │
 └──────────────────────────────────────────────────────────┘
-        ▲ 协议（同一组消息，三种载体）
-        ▼
+        ▲ 协议（同一组消息，多载体）
 ┌── 插件（每个独立 crate；可内联编译或独立二进制）──────────────┐
 │ provider-llm  tools-*  skills-dir  workspace  adapter-qq   │
 │ subagent  loop-*  federation  management-panel*             │
@@ -126,7 +146,9 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 
 - [ ] 新建 `source/plugin/echo-plugin-api`：消息类型 / 贡献类型 / 错误 / 协议版本常量 / 协议文档
 - [ ] 新建 `source/plugin/echo-plugin-host`：`Transport` trait + `PluginSupervisor` 骨架
-- [ ] 编码决策落地：跨进程 NDJSON + inproc 类型直连；Content-Length / MessagePack 留 feature
+- [ ] 编码决策落地：**4 字节 LE 长度前缀 + JSON（默认）/ msgpack（feature）**，经 tokio-util `LengthDelimitedCodec`；inproc 类型直连（零拷贝）
+- [ ] 协议选型决策：自研统一协议为基线；评估 **MCP（rmcp 3.5.1）** 作为工具类插件的兼容导入通道（可省 2-4 人周 + 免费获得 MCP 生态）
+- [ ] 协议语义对齐 nushell 蓝本：CallId 并发/流式/中断、Hello semver + features 协商、空闲回收
 - [ ] conformance 测试套件骨架（握手 / 注册 / 调用 / 结果 / 取消 / 超时 / 事件 / 崩溃 / 卸载 九组用例，按 transport 参数化）
 - [ ] **冻结**：协议变更需过 conformance + bump 版本；纳入 CI
 
@@ -162,12 +184,13 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
   - [ ] 日志转发（stderr → tracing，带插件前缀）/ 指标
   - [ ] 崩溃策略按插件配置：always / on-failure / never
 - [ ] `InprocTransport`：现有 `BuiltinPlugin` 挂载闭包升级为协议消息循环
-- [ ] `StdioTransport`：spawn / 进程组杀死 / NDJSON 读写 / 背压 / 环境清理 /（可选）rlimit
-- [ ] `DylibTransport`（实验）：libloading + C ABI vtable + 双向 `catch_unwind` + 符号版本校验；默认"逻辑卸载"
+- [ ] `StdioTransport`：spawn / 进程组杀死 / **长度前缀帧**（tokio-util `LengthDelimitedCodec`）/ 背压 / 环境清理 /（可选）rlimit
+- [ ] `DylibTransport`（实验）：libloading + C ABI vtable + 双向 `catch_unwind` + 符号版本校验；默认"逻辑卸载"；**若做优先评估 stabby**（abi_stable 停更且不支持卸载，排除）
+- [ ] `WasmTransport`（可选轨）：评估 wasmtime 49（组件模型 + fuel/epoch 限额）或 extism 1.30（cancel_handle / timeout）作为不可信第三方沙箱
 - [ ] 参考插件：`echo-plugin-example`（独立二进制 + inproc 双形态）
-- [ ] conformance ×3 全绿 + 崩溃注入测试（SIGKILL）
+- [ ] conformance 全运输全绿 + 崩溃注入测试（SIGKILL）
 
-**验收**：示例插件工具经三种运输均可用；杀死进程后 5s 内自动重启、内核无感。
+**验收**：示例插件工具经 inproc / subprocess 两运输均可用（dylib / wasm 可选）；杀死进程后 5s 内自动重启、内核无感。
 
 ### Phase 3：内置插件外迁（2-3 周，逐个）
 
@@ -179,8 +202,8 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [ ] ④ adapter-qq → subprocess（崩溃隔离收益最大）
 - [ ] ⑤ workspace
 - [ ] ⑥ subagent（hook 接入改经协议事件）
+- [ ] ⑦ loop.single / loop.parallel → inproc（保持内联；注入改经协议挂载）
 - [ ] ⑧ management-panel → **协议化 inproc 插件**（对齐 dsh：webserver 也是插件；同进程、经服务键装载；"禁用即自锁"守卫留内核）
-- [ ] ⑧ management.panel：**留内核**（控制平面，自锁风险）
 - [ ] 每插件模板：独立 crate 化 → 贡献声明 → 状态归属审计 → 双跑对照（新旧路径 diff）→ 删旧路径
 
 **验收**：每个插件可独立禁用/启用/替换；禁用后内核正常降级。
@@ -217,11 +240,12 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 
 ## 五、风险与取舍（诚实清单）
 
-1. **dylib 不是银弹**：Rust 无 ABI 承诺是本质约束；本计划将其限制在实验轨与开发期热重载，生产主路径为 inproc / subprocess。
-2. **subprocess 开销**：~10 进程 × 几 MB；LLM 流式需批量帧优化（或 provider 留 inproc）。可接受。
-3. **破坏性改动**：`packages/` 全拆、`plugins.rs` / `main.rs` 装配重写、Panel 协议扩展——已获授权；以 357+ 测试为安全网 + 双跑对照降回归。
-4. **工作量**：单人 6-10 周（Phase 0-5）；Phase 6 持续。可并行：协议/宿主（内核侧）与插件迁移（插件侧）分线。
-5. **回退策略**：每阶段独立可回滚；每插件迁移保留开关直至验收。
+1. **dylib 不是银弹（2026-10 生态核查）**：Rust 无官方稳定 ABI（rust-project-goals 2026 无 ABI 稳定化目标）；`abi_stable` **2023-10 起停更、官方明示不支持卸载**；`hot-lib-reloader` 仅开发期工具（类型变更即 UB）。若做 dylib 轨选 **stabby**（活跃 + async 支持 + Zenoh 生产验证），且默认"加新不卸旧"。生产主路径为 inproc / subprocess。
+2. **同进程插件 panic = 全进程陪葬**：Rust 1.81+ 下 `extern "C"` 未捕获 panic 直接 **abort**（`catch_unwind` 捕不到 abort）；dylib 轨的隔离能力实质为零——进一步支撑"subprocess 为默认后端"的结论。
+3. **subprocess 开销可忽略但非零**：实测往返 20-60µs/次（含调度与解析，~2-5 万次/秒）；~10 进程 × 几 MB；LLM 流式按帧批量发送（或 provider 留 inproc）。对 agent 场景（工具调用秒级间隔）富余。
+4. **破坏性改动**：`packages/` 全拆、`plugins.rs` / `main.rs` 装配重写、Panel 协议扩展——已获授权；以 357+ 测试为安全网 + 双跑对照降回归。
+5. **工作量**：单人 6-10 周（Phase 0-5；协议层单项调研口径：全子进程 3-6 人周、混合 8-15 人周）；Phase 6 持续。可并行：协议/宿主（内核侧）与插件迁移（插件侧）分线。
+6. **回退策略**：每阶段独立可回滚；每插件迁移保留开关直至验收。
 
 ## 六、改造前基线（2026-10-07 盘点）
 
