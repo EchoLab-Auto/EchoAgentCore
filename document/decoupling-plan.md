@@ -221,30 +221,25 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [ ] self-update 扩展：更新同步插件二进制（保留回滚）
 
 **验收（进行中）**：子进程插件经配置可达并注册工具；删除编译期 register 调用（全量替换为后续工作）。
-
 ### Phase 5：热重载与版本治理（1-2 周）
 
-- [ ] 统一"重载 = 卸载 + 装载"语义（数据/代码插件同模型）
-- [ ] subprocess 热替换：新进程 Ready → 切流量 → 老进程 Drain → 退出（失败保老，可回滚）
-- [ ] dylib 热重载（实验）：quiesce 检查 + 引用归零；不安全场景禁止卸载
-- [ ] 协议版本治理：semver 协商 + capability 列表 + 不兼容的可读拒绝
+- [x] 统一"重载 = 卸载 + 装载"语义（数据/代码插件同模型；inproc 挂载/卸载 + subprocess 重启式均就绪）
+- [x] subprocess 热替换（已提交 `df83fdb`）：`PluginHandle::upgrade(config, timeout)`——新进程 Ready → 原子切流量 → 老进程 Drain → 退出（失败保老，可回滚）；5 项测试（含配置代际验证）
+- [ ] dylib 热重载（实验；轨本身为可选，暂缓）
+- [x] 协议版本治理：`compatible()` 版本协商 + capabilities 常量与双方声明（已提交 `4e2f82e`/`11c40fc`）；不兼容的可读拒绝
 - [ ] 状态迁移协议（可选实现）：`export_state` / `import_state`
 - [ ] （远期可选）蓝绿双实例切换
 
+**验收（进行中）**：升级流程已可测（新实例 Ready → 切流量 → 老实例 Drain）；"改源码 → 重构建插件 → 热替换 → 会话不中断"的端到端演示随 P3 全量外迁收尾。
 **验收**：演示"改源码 → 重构建插件 → 热替换 → 会话不中断"全流程。
-
 ### Phase 6：安全与生态（持续）
 
-- [ ] 消息大小/频率上限、调用超时强制、插件资源限额（rlimit / cgroup）
-- [ ] 权限声明（capabilities：fs / net / proc）与宿主中介（远期）
-- [ ] SDK 与脚手架：crate 模板、示例、协议 JSON Schema
+- [ ] 消息大小/频率上限（**帧上限 16 MiB 已落地**；频率/数量限额待做）、调用超时强制（已落地：invoke 超时=deadline）、插件资源限额（rlimit / cgroup，待做）
+- [ ] 权限声明（capabilities：fs / net / proc）与宿主中介（远期）；**环境隔离已落地**（env_clear + 仅 PATH + 显式 env）
+- [x] SDK 与脚手架：插件侧运行时（echo-plugin-sdk）+ 试点示例 + [插件开发指南](./plugin-authoring.md)（协议文档含在上手指南内；JSON Schema 导出待做）
 - [ ] 文档生成门禁（对齐 dsh 做法）：模块图 / 能力图 / 事件矩阵 / 工具目录自动生成 + 新鲜度校验
-- [ ] CI 矩阵：conformance × transport、无全局态门禁、协议兼容守护
-
-## 五、风险与取舍（诚实清单）
-
-1. **dylib 不是银弹（2026-10 生态核查）**：Rust 无官方稳定 ABI（rust-project-goals 2026 无 ABI 稳定化目标）；`abi_stable` **2023-10 起停更、官方明示不支持卸载**；`hot-lib-reloader` 仅开发期工具（类型变更即 UB）。若做 dylib 轨选 **stabby**（活跃 + async 支持 + Zenoh 生产验证），且默认"加新不卸旧"。生产主路径为 inproc / subprocess。
-2. **同进程插件 panic = 全进程陪葬**：Rust 1.81+ 下 `extern "C"` 未捕获 panic 直接 **abort**（`catch_unwind` 捕不到 abort）；dylib 轨的隔离能力实质为零——进一步支撑"subprocess 为默认后端"的结论。
+- [x] CI：fmt / clippy `-D warnings` / 全量测试（stable+nightly）/ **依赖方向门禁已扩展到插件分层**（api→零依赖、sdk→api、host→api+loader、loader→零、example→sdk；已提交 `65c1c2a` 起）
+- [x] 无全局态门禁（`no_global_state.rs`，随 workspace 测试自动纳入 CI）
 3. **subprocess 开销可忽略但非零**：实测往返 20-60µs/次（含调度与解析，~2-5 万次/秒）；~10 进程 × 几 MB；LLM 流式按帧批量发送（或 provider 留 inproc）。对 agent 场景（工具调用秒级间隔）富余。
 4. **破坏性改动**：`packages/` 全拆、`plugins.rs` / `main.rs` 装配重写、Panel 协议扩展——已获授权；以 357+ 测试为安全网 + 双跑对照降回归。
 5. **工作量**：单人 6-10 周（Phase 0-5；协议层单项调研口径：全子进程 3-6 人周、混合 8-15 人周）；Phase 6 持续。可并行：协议/宿主（内核侧）与插件迁移（插件侧）分线。
