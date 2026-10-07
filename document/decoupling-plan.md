@@ -145,15 +145,15 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 目标：把插件协议定义为可独立演进的 crate；后续一切以其为准。
 
 - [x] 新建 `source/plugin/echo-plugin-api`：消息类型 / 贡献类型 / 版本协商（已提交 `4e2f82e`；7 项契约测试全绿）
-- [x] 新建 `source/plugin/echo-plugin-host` 骨架（Transport trait 占位；实现进行中）
+- [x] 新建 `source/plugin/echo-plugin-host` 完整落地（已提交 `cd0b345`）：Transport 抽象 + InprocTransport + PluginSupervisor（握手/注册/调用/取消/超时/排空/崩溃重启）+ 14 项 conformance 全绿
 - [x] 全局态棘轮门禁 `source/core/tests/no_global_state.rs`（基线 17 个静态单元；全 source 扫描、`static` 行含 `OnceLock`/`LazyLock` 口径，只减不增）
-- [x] 编码决策落地：**4 字节 LE 长度前缀 + JSON（默认）/ msgpack（feature）**，经 tokio-util `LengthDelimitedCodec`；inproc 类型直连（零拷贝）
+- [x] 编码决策落地：**4 字节 LE 长度前缀 + JSON**（inproc 类型直连零序列化；stdio 实现进行中，见 Phase 2）
 - [ ] 协议选型决策：自研统一协议为基线；评估 **MCP（rmcp 3.5.1）** 作为工具类插件的兼容导入通道（可省 2-4 人周 + 免费获得 MCP 生态）
-- [ ] 协议语义对齐 nushell 蓝本：CallId 并发/流式/中断、Hello semver + features 协商、空闲回收
-- [ ] conformance 测试套件（进行中：inproc 参考实现；九组用例）
-- [ ] **冻结**：协议变更需过 conformance + bump 版本；纳入 CI
+- [x] 协议语义对齐 nushell 蓝本：CallId 并发/流式/中断、Hello 版本 + capabilities 协商（空闲回收随 P2 监督者完善）
+- [x] conformance 测试套件：inproc 14 项全绿（stdio 参数化随 Phase 2）
+- [x] **冻结**：协议变更需过 conformance + bump 版本；纳入 CI（`PROTOCOL_VERSION` + `compatible()` 契约测试）
 
-**验收**：conformance 在 inproc 参考实现上全绿。
+**验收**：✅ conformance 在 inproc 参考实现上全绿（14/14）。
 
 ### Phase 1：内核化——激活 Ctx、杀死全局态（1-2 周）
 
@@ -177,19 +177,17 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 
 **验收**：门禁绿 + 既有 357/38/9/23 项测试全绿；`echo-agent` 对具体实现的依赖收敛到定义层。
 
-### Phase 2：插件宿主与运输层（2 周）
-
-- [ ] `PluginSupervisor`：
-  - [ ] 生命周期状态机（pending → ready → draining → stopped；backoff 重启 + N 次熔断）
-  - [ ] in-flight 调用跟踪：卸载先 Drain（等待或取消到 deadline）
-  - [ ] 日志转发（stderr → tracing，带插件前缀）/ 指标
-  - [ ] 崩溃策略按插件配置：always / on-failure / never
-- [ ] `InprocTransport`：现有 `BuiltinPlugin` 挂载闭包升级为协议消息循环
-- [ ] `StdioTransport`：spawn / 进程组杀死 / **长度前缀帧**（tokio-util `LengthDelimitedCodec`）/ 背压 / 环境清理 /（可选）rlimit
+- [x] `PluginSupervisor`（已提交 `cd0b345`）：
+  - [x] 生命周期状态机（pending → ready → draining → stopped；backoff 重启 200ms×2 上限 2s + 5 次熔断）
+  - [x] in-flight 调用跟踪：卸载先 Drain（等待或取消到 deadline；在途调用以 plugin_crashed 收尾）
+  - [x] 日志转发（stderr → tracing，带插件前缀）/ 事件收集（`take_events`）
+  - [x] 崩溃策略：on-failure（default）/ 可配（`RestartPolicy`）
+- [x] `InprocTransport`：类型直连（mpsc 双向通道；关停=丢 sender→等任务→超时 abort）
+- [ ] `StdioTransport`：spawn / 进程组杀死 / **4 字节 LE 长度前缀帧** / stderr 转发 / 环境清理（进行中）
 - [ ] `DylibTransport`（实验）：libloading + C ABI vtable + 双向 `catch_unwind` + 符号版本校验；默认"逻辑卸载"；**若做优先评估 stabby**（abi_stable 停更且不支持卸载，排除）
 - [ ] `WasmTransport`（可选轨）：评估 wasmtime 49（组件模型 + fuel/epoch 限额）或 extism 1.30（cancel_handle / timeout）作为不可信第三方沙箱
-- [ ] 参考插件：`echo-plugin-example`（独立二进制 + inproc 双形态）
-- [ ] conformance 全运输全绿 + 崩溃注入测试（SIGKILL）
+- [ ] 参考插件：独立二进制形态（stdio 测试对端先行；`echo-plugin-example` 完整版随 P3/P4）
+- [ ] conformance 全运输全绿（inproc ✅ 14 项；stdio 进行中）+ 崩溃注入测试（SIGKILL）
 
 **验收**：示例插件工具经 inproc / subprocess 两运输均可用（dylib / wasm 可选）；杀死进程后 5s 内自动重启、内核无感。
 
