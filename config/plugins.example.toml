@@ -1,0 +1,24 @@
+# plugins.toml —— 外部插件配置示例（完整注释版）
+#
+# 放置位置：与 core.toml 同目录（如 ~/.config/echo-agent-core/plugins.toml）。
+# 文件不存在 = 外部插件特性休眠（Core 行为与不启用完全一致）。
+# 详见 document/plugin-authoring.md。
+
+[profile]
+name = "default"
+# 分层组合：先按序应用每个 bundle，再按序应用 patch，最后应用本文件的行内条目。
+# 同名 id 的行会被"整体替换"（不做字段级合并）。
+bundles = []
+patches = []
+
+# ── 行内条目示例：echo-plugin-example（websearch + calculator 试点） ──
+#
+# [[plugin]]
+# id = "example"
+# kind = "stdio"
+# name = "echo-plugin-example"
+# command = "/home/me/.local/libexec/echo-agent-core/plugins/echo-plugin-example/echo-plugin-example"
+# enabled = true
+# [plugin.config]
+# # 原样透传给插件（Hello.config）
+# mode = "default"
