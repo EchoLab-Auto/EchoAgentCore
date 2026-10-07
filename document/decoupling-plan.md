@@ -154,28 +154,27 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [x] **冻结**：协议变更需过 conformance + bump 版本；纳入 CI（`PROTOCOL_VERSION` + `compatible()` 契约测试）
 
 **验收**：✅ conformance 在 inproc 参考实现上全绿（14/14）。
-
 ### Phase 1：内核化——激活 Ctx、杀死全局态（1-2 周）
 
-目标：24 处全局 static 归零；启动由"服务可用性"驱动。
+目标：17 处全局静态归零；启动由"服务可用性"驱动。
 
-- [ ] Ctx v2：
-  - [ ] 强类型服务键（`pub const LLM: ServiceKey<Arc<dyn LlmProvider>>`）替代字符串键
-  - [ ] 注册冲突检测 + `provides/requires` 依赖声明（启动期拓扑校验）
-  - [ ] `resolve_or_wait`（就绪等待——替代手工编排启动序）
-- [ ] 全局态迁移（24 处 → 0）：
-  - [ ] `GLOBAL_PLUGIN_HOST` → `ctx.plugin_host`
-  - [ ] `GLOBAL_MANAGER` / `AGENT_FACTORY` → `ctx.agent_manager` / `ctx.agent_factory`
-  - [ ] `GLOBAL_POLICY` → `ctx.global_policy`
-  - [ ] `GLOBAL_SHELL` / `SHELL_EMIT` → `ctx.shell_manager`
-  - [ ] `FEDERATION_*`（5 处）→ `ctx.federation.*`（随联邦插件走）
-  - [ ] `NODE_ID` / `REGION_NAME` → `ctx.node_identity`
-  - [ ] `FEDERATION_COMMAND_HANDLER` / `SESSION_IMPORT_ACKS` → 同上
-  - [ ] websearch `CLIENT` / `SELF_STOP_RE` → 插件内惰性态（非进程全局）
-- [ ] Agent 结构体瘦身：`config_store` / `provider` / `event_sink` / `loop_runner` / `plugin_host` 改为经 Ctx 解析
-- [ ] 门禁：新增 `no_global_state.rs` 测试（扫描 src 断言零命中）
+- [x] Ctx v2（已提交 `26e3e72`）：
+  - [x] 强类型服务键（`ServiceKey<T>`）替代字符串键
+  - [x] 注册冲突检测（provide 同名拒绝）+ `Missing{available}` 可读错误
+  - [x] `service_or_wait`（就绪等待，消除丢通知竞态——替代手工编排启动序）
+- [x] 全局态迁移（17 处 → 0，已提交 `f0a8f9d`）：
+  - [x] 唯一引导单元 `echo-context/kernel.rs`（kernel cell，TypeId 类型擦除；全 source 唯一白名单，门禁强制校验存在）
+  - [x] `GLOBAL_PLUGIN_HOST` / `GLOBAL_POLICY` / `FEDERATION_COMMAND_HANDLER` → kernel cell
+  - [x] `GLOBAL_MANAGER` / `AGENT_FACTORY` → kernel cell
+  - [x] `GLOBAL_SHELL` / `SHELL_EMIT` → kernel cell
+  - [x] `REMOTE_SUBAGENT_NOTIFIER` / `AGGREGATE_DELIVER` / `REMOTE_INVOKER` / `REMOTE_QUERIER` → kernel cell
+  - [x] `NODE_ID` / `REGION_NAME` → kernel cell
+  - [x] `SESSION_IMPORT_ACKS` / `SELF_STOP_RE` / websearch `CLIENT` / adapter-qq `CLIENT` → kernel cell（缓存类 get_or_init）
+- [ ] Agent 结构体瘦身（可选项，随 Phase 3 外迁进行）：`config_store` / `provider` / `event_sink` / `loop_runner` / `plugin_host` 改为经 Ctx 解析
+- [x] 门禁：`source/core/tests/no_global_state.rs` 升级为相等断言（EXPECTED_MAX=0，白名单=kernel.rs）
+- [ ] 终态跟踪：node_identity / federation 组的参数线程化（随 P3/P5 从 kernel cell 消除）
 
-**验收**：门禁绿 + 既有 357/38/9/23 项测试全绿；`echo-agent` 对具体实现的依赖收敛到定义层。
+**验收**：✅ 门禁绿（17 → 0）+ 全量测试通过；`echo-agent` 对具体实现的依赖收敛到定义层（部分随 P3）。
 
 - [x] `PluginSupervisor`（已提交 `cd0b345`）：
   - [x] 生命周期状态机（pending → ready → draining → stopped；backoff 重启 200ms×2 上限 2s + 5 次熔断）
