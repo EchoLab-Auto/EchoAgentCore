@@ -22,9 +22,9 @@ y: 780
 
 | 项 | 桌面 | 移动端 |
 |---|---|---|
-| 视口高度 | `height: 100%` 链 | `100dvh`（iOS 地址栏伸缩不溢出/抖动） |
+| 视口高度 | `height: 100%` 链 | 三层兜底：`100dvh` → `--app-h`（内联脚本实测 `innerHeight`）→ `100%`；并压掉库的 `min-height: 100vh`（见下「工具条遮挡修复」） |
 | 安全区 | — | `index.html` 的 `viewport-fit=cover` + 顶栏 `padding-top: env(safe-area-inset-top)`、输入区 `env(safe-area-inset-bottom)` |
-| 顶栏 | 品牌 + 聊天/设置 + 全屏 + 主题 | 品牌字号收敛；**全屏按钮隐藏**（触摸端意义低）；新增「卡片」入口（仅会话视图，见 §四） |
+| 顶栏 | 品牌 + 聊天/设置 + 全屏 + 主题 | 品牌字号收敛且**可收缩为省略号**；**全屏按钮隐藏**（触摸端意义低，类随组件根按钮——见「顶栏可达性修复」）；新增「卡片」入口（仅会话视图，见 §四） |
 | 触控目标 | — | `@media (pointer: coarse)`：顶栏与入口行按钮 `min-height: 44px` |
 | Toast | `top-right` | `top-center`（窄屏右上角贴近拇指区，易遮挡） |
 | 库 Modal | — | mask 补 `padding: 8px`（库 mask 无内边距，375px 屏上贴边） |
@@ -34,6 +34,19 @@ y: 780
 - **冲突**：ui-frame 在 `<768px` 给布局挂 `nm-layout--mobile` 并把它切成"整页滚动"模式（`.nm-layout--mobile` `height: auto` / `.nm-layout__body` `min-height: auto` / `.nm-layout__content` `overflow-y: visible`）——期望由**document 滚动**消费溢出。但 Panel 是固定视口 SPA（`html, body, #app` 均 `overflow: hidden`，滚动在各视图内部），溢出被直接裁掉：**小屏（375×667 / 360×640，可用高 < 内容固有高 733px）时输入区被裁出视口，且页面上不存在任何可滚动容器**（用户症状：无法下滑、看不到输入框；宽度 ≥768 或高度足够 844 时恰好掩盖）。
 - **修复**：`styles.css` 移动段以 `#app` 前缀（特异性 1,1,0 > 库 scoped 的 `[data-v-*]`（0,3,0）——不能只写两段类名，会输给 scoped 属性选择器）把布局拉回定高 + 恢复收缩：`#app .nm-layout--mobile { height: 100dvh; overflow: hidden }`、`…__body { min-height: 0; overflow: hidden }`、`…__content { overflow-y: hidden }`。
 - **验证口径**：320×568 / 360×640 / 375×667 / 390×844 输入区均在视口内且消息区可滚动（触摸下滑看历史 / 上滑回底）；设置页 master-detail 的 `caps-detail-pane` 内滚动可达底部；桌面 ≥768px 无 `--mobile` 类、样式零变化。守护测试：`web/src/__tests__/mobile-shell-layout.test.ts`（源码契约，4 断言）。
+
+**工具条遮挡修复（2026-10）**
+
+- **症状**：手机浏览器上输入框被浏览器底部工具条遮住——固定视口 SPA 的底部内容落在可见区之下。
+- **两个叠加根因**：① ui-frame 的 `.nm-layout--mobile` 自带 `min-height: 100vh`（库移动模式为「整页滚动」站点设计）——移动浏览器里 `vh` 是「大视口」（按工具条隐藏时算），比可见区高 ~工具条高；`min-height` 会顶穿 Panel 的 `height` 覆盖，把底部输入区推到工具条之下。② 个别浏览器 `dvh` 不可靠（iOS 非滚动页不动态更新 / 老 WebView 不支持）——高度偏大产生同样偏移。
+- **修复**：`#app .nm-layout--mobile { min-height: 0 }` 压掉库地板；高度链改为 `var(--app-h, 100dvh)`，`--app-h` 由 `index.html` 内联脚本实测 `window.innerHeight`（px），随 `resize` / `orientationchange` / `pageshow` 更新——`innerHeight` 在主流移动浏览器均为「排除工具条的可见高度」，键盘弹出不改变它（键盘偏移仍由 visualViewport 逻辑处理，互不干扰）。
+- **验证口径**：模拟「工具条遮挡 60px」（覆盖 `innerHeight` 报告值）在 320/360/375/390/430 五档下输入框完整可见；正常场景无回归。
+
+**顶栏可达性修复（2026-10）**
+
+- **症状**：375px 屏上右侧「主题切换」被推出屏外、不可达；「全屏」按钮本应按设计隐藏却仍在占位。
+- **根因**：① 隐藏规则 `.topbar-actions .fullscreen-toggle` 的类从未落在 `FullscreenToggleButton` 根按钮上（规则空转）；② 库 `header-left` 为 `flex: 0 0 auto` 不可收缩 + 品牌固定宽，右组固定 ~354px 必然溢出。
+- **修复**：`FullscreenToggleButton.vue` 根按钮补 `fullscreen-toggle` 类；移动段品牌 `min-width: 0` + 省略号、`#app .nm-layout__header-left { flex: 0 1 auto }`、头部左右内边距 `max(12px, env(safe-area-inset-*))`。效果：320–430px 全尺寸右组按钮全可达，品牌按余宽自适应（超窄屏收为 0）。
 
 ## 三、会话视图（ChatView）
 
@@ -95,5 +108,5 @@ iOS/Android 弹键盘不改变 layout viewport，`overflow: hidden` 的 SPA 里�
 - **单测**：
   - `ChatViewMobile.test.ts`（4）：rail 移动不渲染/桌面渲染、抽屉开关路径、移动样式契约（入口行横滚/安全区/键盘偏移/16px）、visualViewport 挂载清理；
   - `SettingsViewMobile.test.ts`（3）：master-detail 类切换、返回按钮行为、桌面不挂类；
-  - `mobile-shell-layout.test.ts`（4）：外壳布局契约（§二 修复）——`#app` 前缀覆盖库"整页滚动"模式的定高/收缩/滚动归属断言 + 固定视口地基守护。
+  - `mobile-shell-layout.test.ts`（6）：外壳布局契约（§二 修复）——`#app` 前缀覆盖库"整页滚动"模式的定高/收缩/滚动归属断言 + 固定视口地基守护 + `--app-h` 视口高度兜底契约 + 顶栏可达性契约（全屏类匹配/品牌可缩/header-left 放开收缩）。
 - 交互走查清单：入口行 7 按钮全部可达（横滚到底）；5 个弹出层开/关；设置 9 分类可达、工作台可进详情可返回；输入框聚焦不缩放；键盘弹出输入区可见；**消息区触摸下滑可看历史、上滑回底、顶部/底部可达**（§二 修复的验收项）。
