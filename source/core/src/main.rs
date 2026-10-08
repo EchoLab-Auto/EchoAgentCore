@@ -783,6 +783,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     &mut t,
                     adapters2.clone(),
                     workspace.clone(),
+                    agents_config_store.clone(),
                 );
                 // 工具结果出口卡口（2026-10 安全）：本 persona 注册表注入
                 // 脱敏器——所有工具（内置 / 插件 / 远程 / 子代理直呼）的

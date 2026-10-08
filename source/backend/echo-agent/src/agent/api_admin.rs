@@ -104,6 +104,73 @@ impl Agent {
         }
     }
 
+    /// 供应商池快照：共享 ConfigStore（core.toml，管理面每次变更都会写回）
+    /// 优先，读不到时回退本 agent 的配置快照（单元测试 / 未接线场景）。
+    ///
+    /// 为什么读共享文件而不是 `self.config`：配置变更命令（UpdateApiConfig /
+    /// DeleteApi）在**管理面** agent 上执行，各 persona 持有的配置克隆可能
+    /// 落后——而池是全局的（见 [`crate::api_pool`] 模块文档）。
+    pub(crate) async fn api_pool_snapshot(&self) -> Vec<ApiProfile> {
+        if let Some(store) = self.config_store.lock().await.clone() {
+            if let Ok(snapshot) = crate::api_pool::read_snapshot(&store) {
+                return snapshot.profiles;
+            }
+        }
+        self.config.read().await.api_profiles.clone()
+    }
+
+    /// 子代理单次委派的 provider（`spawn_subagent` 的 `profile` 参数）：
+    /// 按名从供应商池解析 → 构建 → 计量 + 脱敏装饰（与主 provider 同标准）。
+    ///
+    /// fail-closed：profile 不存在 / 缺 key / 构建失败都返回 Err（附可用
+    /// 清单），由调用方经 `<subagent_event>` 回报——**不静默回退主模型**，
+    /// 避免"指定了便宜模型实际烧了贵模型"的意外。
+    pub(crate) async fn subagent_provider_for(
+        &self,
+        name: &str,
+    ) -> Result<Arc<dyn LlmProvider>, String> {
+        let mut config = self.config.read().await.clone();
+        config.api_profiles = self.api_pool_snapshot().await;
+        if !config.api_profiles.iter().any(|p| p.name == name) {
+            let available: Vec<&str> = config
+                .api_profiles
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect();
+            return Err(if available.is_empty() {
+                format!(
+                    "模型 profile「{name}」不存在（当前未配置任何供应商 profile，可在 Panel「API 设置」添加）"
+                )
+            } else {
+                format!(
+                    "模型 profile「{name}」不存在（可用: {}）",
+                    available.join(", ")
+                )
+            });
+        }
+        let probe = resolve_probe_config(&config, name)?;
+        if probe.api_key.trim().is_empty() {
+            return Err(format!(
+                "模型 profile「{name}」未配置 API Key（可在 Panel「API 设置」补填，或设置对应环境变量）"
+            ));
+        }
+        // 安全：新 provider 登记该 profile 的密钥（幂等）；计量归属 = profile
+        // 名（余额/用量图表的命名空间一致）。
+        self.register_config_secrets(&probe);
+        let built = crate::llm::create_provider(&probe)
+            .map_err(|e| format!("模型 profile「{name}」provider 构建失败: {e}"))?;
+        let provider: Arc<dyn LlmProvider> = Arc::from(built);
+        let provider = match self.metrics() {
+            Some(store) => crate::llm::wrap_metering(provider, store, name.to_string()),
+            None => provider,
+        };
+        let provider = match self.redactor() {
+            Some(redactor) => crate::llm::wrap_redacting(provider, redactor),
+            None => provider,
+        };
+        Ok(provider)
+    }
+
     /// Save an API profile (or the top-level default when `name` is empty),
     /// activate it, rebuild the provider, and persist.
     #[allow(clippy::too_many_arguments)]

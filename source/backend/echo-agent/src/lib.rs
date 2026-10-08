@@ -53,6 +53,7 @@ pub fn region_name() -> Option<&'static str> {
 
 pub mod agent;
 pub mod agent_manager;
+pub mod api_pool;
 pub mod bridge;
 pub mod command;
 pub mod config;

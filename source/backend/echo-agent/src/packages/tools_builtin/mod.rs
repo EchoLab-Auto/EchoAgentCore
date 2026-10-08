@@ -5,6 +5,7 @@ use regex::Regex;
 use crate::tool::ToolError;
 
 pub mod adapter;
+pub mod api_profiles;
 pub mod calculator;
 pub mod checklist;
 pub mod coding;
@@ -43,10 +44,14 @@ pub fn register_all(
     registry: &mut crate::tool::ToolRegistry,
     adapters: std::sync::Arc<echo_adapter::AdapterRegistry>,
     workspace: std::path::PathBuf,
+    config_store: echo_adapter::ConfigStore,
 ) {
     registry.register(std::sync::Arc::new(calculator::CalculatorTool));
     registry.register(std::sync::Arc::new(websearch::WebSearchTool));
     registry.register(std::sync::Arc::new(checklist::ChecklistTool::new()));
+    registry.register(std::sync::Arc::new(api_profiles::ListApiProfilesTool::new(
+        config_store,
+    )));
     adapter::register_adapter_tools(registry, adapters);
     coding::register_coding_tools(registry, workspace.clone());
     shell_tools::register_shell_tools(registry);

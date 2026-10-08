@@ -195,6 +195,11 @@ pub struct SpawnRequest {
     pub parent_branch_id: String,
     /// 目标联邦节点（federation Phase 3；None = 本机）。
     pub node: Option<String>,
+    /// 子代理使用的 API profile 名（供应商池；None = 继承本 agent 的模型）。
+    ///
+    /// fail-closed 语义：名字不存在 / 缺 key / 构建失败时子任务**立即失败**
+    /// 并以 `<subagent_event>` 回报（附可用清单），绝不静默回退主模型。
+    pub profile: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -227,7 +232,7 @@ impl crate::tool::Tool for SpawnSubagentTool {
 }
 
 impl SpawnSubagentTool {
-    const DESCRIPTION: &'static str = "把独立子任务委派给一个隔离上下文的子 agent 执行。子 agent 看不到当前对话，task 必须自含全部背景与目标。子任务在后台执行，完成后会作为新事件回报结论；不要在同一轮里重复委派同一任务。适用于探索性检索、批量分析、需要大量中间步骤但只需结论的任务。参数: task(必填, 子任务的完整自含描述), timeout_secs(可选, 默认 600), node(可选, 联邦远程节点名——填入后子任务在该节点执行，多节点并行委派时结果会自动聚合汇报)。";
+    const DESCRIPTION: &'static str = "把独立子任务委派给一个隔离上下文的子 agent 执行。子 agent 看不到当前对话，task 必须自含全部背景与目标。子任务在后台执行，完成后会作为新事件回报结论；不要在同一轮里重复委派同一任务。适用于探索性检索、批量分析、需要大量中间步骤但只需结论的任务。参数: task(必填, 子任务的完整自含描述), timeout_secs(可选, 默认 600), node(可选, 联邦远程节点名——填入后子任务在该节点执行，多节点并行委派时结果会自动聚合汇报), profile(可选, 指定子代理使用的模型供应商 profile——如 \"kimi\"；可用名单见 list_api_profiles 工具，模型选择规范见 model-profiles 技能；不填 = 继承当前模型)。";
 
     fn schema() -> Value {
         json!({
@@ -244,6 +249,10 @@ impl SpawnSubagentTool {
                 "node": {
                     "type": "string",
                     "description": "联邦远程节点名（peer 配置名）。来源：工具列表中 <peer>:<tool> 代理工具的前缀名，或工作区会话的 [remote:<peer>] 标注。填入后子任务在该节点执行；填错/离线会立即失败（fail-closed，不会静默回本机）"
+                },
+                "profile": {
+                    "type": "string",
+                    "description": "子代理使用的 API profile 名（供应商池中的名称，如 \"kimi\"）。用于为本次委派换用不同模型；名字不存在/缺 key 时子任务立即失败并回报可用清单（fail-closed，不会静默回退主模型）。不填 = 继承当前 agent 模型。可用名单见 list_api_profiles 工具"
                 }
             },
             "required": ["task"]
@@ -294,6 +303,13 @@ impl SpawnSubagentTool {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
+        // 子代理模型覆盖（供应商池 profile 名；执行体侧 fail-closed 解析）。
+        let profile = arguments
+            .get("profile")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         (self.spawn)(SpawnRequest {
             task_id: task_id.clone(),
             session_id: session_id.to_string(),
@@ -302,6 +318,7 @@ impl SpawnSubagentTool {
             parent_cancel,
             parent_branch_id: parent_branch_id.to_string(),
             node: node.clone(),
+            profile: profile.clone(),
         });
         // P3-3 聚合登记：远程委派进父 turn 分组（全部终态后组合根
         // 产出聚合摘要投递父会话）。
@@ -318,8 +335,12 @@ impl SpawnSubagentTool {
             .as_deref()
             .map(|n| format!("（远程节点 {n}）"))
             .unwrap_or_default();
+        let model_note = profile
+            .as_deref()
+            .map(|p| format!("（模型 profile: {p}）"))
+            .unwrap_or_default();
         Ok(format!(
-            "子任务已受理（id: {task_id}）{target}，正在后台以隔离上下文执行。完成后会以 <subagent_event> 事件回报结论；你可以继续当前回复或处理其他事项。任务摘要：{}",
+            "子任务已受理（id: {task_id}）{target}{model_note}，正在后台以隔离上下文执行。完成后会以 <subagent_event> 事件回报结论；你可以继续当前回复或处理其他事项。任务摘要：{}",
             crate::llm::truncate(&task, 120),
         ))
     }
@@ -478,6 +499,49 @@ mod tests {
             captured.lock().unwrap().clone().flatten(),
             Some("gpu-box".to_string())
         );
+    }
+
+    #[test]
+    fn spawn_parses_optional_profile() {
+        let store = SubagentStore::new();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured2 = captured.clone();
+        let tool = SpawnSubagentTool::new(
+            store,
+            std::sync::Arc::new(move |req: SpawnRequest| {
+                *captured2.lock().unwrap() = Some(req.profile);
+            }),
+        );
+        // 无 profile：Some(None)（被调用过、profile 为 None）
+        tool.spawn(
+            &serde_json::json!({"task": "t"}),
+            "s",
+            tokio_util::sync::CancellationToken::new(),
+            "b",
+        )
+        .unwrap();
+        assert_eq!(captured.lock().unwrap().clone(), Some(None));
+        // 有 profile：trim 后透传
+        tool.spawn(
+            &serde_json::json!({"task": "t", "profile": "  kimi "}),
+            "s",
+            tokio_util::sync::CancellationToken::new(),
+            "b",
+        )
+        .unwrap();
+        assert_eq!(
+            captured.lock().unwrap().clone().flatten(),
+            Some("kimi".to_string())
+        );
+        // 空串 = 未指定
+        tool.spawn(
+            &serde_json::json!({"task": "t", "profile": "   "}),
+            "s",
+            tokio_util::sync::CancellationToken::new(),
+            "b",
+        )
+        .unwrap();
+        assert_eq!(captured.lock().unwrap().clone().flatten(), None);
     }
 
     use super::*;

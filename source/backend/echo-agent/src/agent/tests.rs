@@ -2659,3 +2659,136 @@ async fn run_tool_redacts_secrets_from_real_bash_output_and_log() {
 
     std::fs::remove_file(&file).ok();
 }
+
+// ── 子代理模型覆盖（spawn_subagent profile 参数；2026-10）──
+
+fn profile_cfg() -> crate::config::AgentConfig {
+    use crate::config::ApiProfile;
+    crate::config::AgentConfig {
+        provider: "deepseek".into(),
+        model: "deepseek-flash".into(),
+        base_url: "https://api.deepseek.com/anthropic".into(),
+        api_key: "sk-top-secret".into(),
+        api_profiles: vec![ApiProfile {
+            name: "kimi".into(),
+            provider: "kimi".into(),
+            model: "k3".into(),
+            base_url: "https://api.kimi.com/coding".into(),
+            api_key: "sk-kimi-secret".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+fn mock() -> Arc<dyn LlmProvider> {
+    Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })
+}
+
+/// 按名解析成功（构建新 provider，不依赖网络）；未知名与缺 key 均
+/// fail-closed（错误信息附可用清单），**不回退主模型**。
+#[tokio::test]
+async fn subagent_provider_resolves_named_profile_and_fails_closed() {
+    use crate::config::ApiProfile;
+    let agent = Agent::new(
+        mock(),
+        profile_cfg(),
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    );
+    // 命中池中 profile → 构建成功
+    assert!(agent.subagent_provider_for("kimi").await.is_ok());
+    // 未知名 → 报错并列出可用清单
+    let err = agent
+        .subagent_provider_for("nope")
+        .await
+        .err()
+        .expect("unknown profile must fail-closed");
+    assert!(err.contains("不存在"), "{err}");
+    assert!(err.contains("kimi"), "must list available profiles: {err}");
+    // 宽松回退语义（与 apply_named_profile / probe 同口径）：profile 未配
+    // key 时沿用顶层生效 key，不视为错误。
+    let mut cfg = profile_cfg();
+    cfg.api_profiles.push(ApiProfile {
+        name: "keyless".into(),
+        provider: "ollama".into(),
+        model: "llama3".into(),
+        base_url: "http://localhost:11434/v1".into(),
+        api_key: String::new(),
+        ..Default::default()
+    });
+    let agent = Agent::new(
+        mock(),
+        cfg,
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    );
+    assert!(agent.subagent_provider_for("keyless").await.is_ok());
+
+    // 全链路无 key（顶层与 profile 均空、provider=ollama 无 env 回退）
+    // → fail-closed 明确报错。
+    let mut cfg = profile_cfg();
+    cfg.api_key = String::new();
+    cfg.api_profiles.push(ApiProfile {
+        name: "keyless".into(),
+        provider: "ollama".into(),
+        model: "llama3".into(),
+        base_url: "http://localhost:11434/v1".into(),
+        api_key: String::new(),
+        ..Default::default()
+    });
+    let agent = Agent::new(
+        mock(),
+        cfg,
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    );
+    let err = agent
+        .subagent_provider_for("keyless")
+        .await
+        .err()
+        .expect("utterly keyless profile must fail-closed");
+    assert!(err.contains("API Key"), "{err}");
+}
+
+/// 池以共享 ConfigStore（core.toml）为首选事实源：文件里新加的 profile
+/// 对 persona 侧解析立即可见（不受 persona 启动快照过期影响）。
+#[tokio::test]
+async fn subagent_provider_prefers_shared_config_store_pool() {
+    let path = std::env::temp_dir().join(format!(
+        "echo-subagent-pool-{}-{}.toml",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(
+        &path,
+        "[agent]\nprovider = \"deepseek\"\nmodel = \"deepseek-flash\"\napi_key = \"sk-top\"\n\n\
+         [[agent.api_profiles]]\nname = \"kimi\"\nprovider = \"kimi\"\nmodel = \"k3\"\n\
+         base_url = \"https://api.kimi.com/coding\"\napi_key = \"sk-kimi\"\n",
+    )
+    .unwrap();
+    let agent = Agent::new(
+        mock(),
+        // 内存快照为空池——文件才是事实源
+        crate::config::AgentConfig {
+            provider: "deepseek".into(),
+            model: "deepseek-flash".into(),
+            base_url: "https://api.deepseek.com/anthropic".into(),
+            api_key: "sk-top".into(),
+            ..Default::default()
+        },
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    );
+    agent.set_config_store(echo_adapter::ConfigStore::new(path.clone()));
+    // 文件里的 kimi 可见（否则会报"不存在（当前未配置任何…）"）
+    assert!(agent.subagent_provider_for("kimi").await.is_ok());
+    std::fs::remove_file(&path).ok();
+}

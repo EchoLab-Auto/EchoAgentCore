@@ -57,6 +57,7 @@ impl Agent {
                 parent_cancel,
                 parent_branch_id,
                 node,
+                profile,
             } = request;
             let (store, _) = match agent.subagent_runtime() {
                 Some(runtime) => runtime,
@@ -103,23 +104,42 @@ impl Agent {
                     let reason = format!(
                         "远程节点「{peer}」无可用代理工具（peer 离线、名称错误或联邦未启用）"
                     );
-                    tracing::warn!(peer = %peer, "remote subagent rejected: {reason}");
-                    crate::federation::notify_remote_subagent(
-                        peer,
-                        &task_id,
-                        &task,
-                        None,
-                        crate::federation::SubagentStatus::Failed,
-                        Some(reason.clone()),
-                    );
-                    if let Some((store, _)) = agent.subagent_runtime() {
-                        store.finish(&task_id, crate::subagent::SubagentStatus::Failed);
-                    }
+                    agent
+                        .reject_subagent(
+                            &task_id,
+                            &session_id,
+                            &task,
+                            &parent_branch_id,
+                            Some(peer),
+                            reason,
+                        )
+                        .await;
                     return;
                 }
                 tools = remote_defs;
             }
-            let provider = agent.provider.read().await.clone();
+            // 子代理模型：`profile` 指定时按名从供应商池解析（fail-closed——
+            // 解析失败立即以 Failed 终态 + hook 回报，不回退主模型）；
+            // 未指定 = 继承本 agent 的 provider（原有语义）。
+            let provider = match profile.as_deref() {
+                Some(name) => match agent.subagent_provider_for(name).await {
+                    Ok(provider) => provider,
+                    Err(reason) => {
+                        agent
+                            .reject_subagent(
+                                &task_id,
+                                &session_id,
+                                &task,
+                                &parent_branch_id,
+                                node.as_deref(),
+                                reason,
+                            )
+                            .await;
+                        return;
+                    }
+                },
+                None => agent.provider.read().await.clone(),
+            };
             let max_iterations = agent.config.read().await.max_tool_iterations;
             let max_tokens = agent.config.read().await.effective_max_tokens();
             // federation Phase 3 对端观测：远程子任务受理时通知对端
@@ -211,6 +231,58 @@ impl Agent {
             let hook = crate::subagent::wrap_subagent_event(&payload);
             agent.dispatch_subagent_hook(&session_id, hook).await;
         });
+    }
+
+    /// 子任务在**开始执行之前**被拒绝的收尾（profile 解析失败 / 远程节点
+    /// 无可用工具）：store 落 `Failed`、通知对端（联邦下同时为本机聚合组
+    /// 销账）、emit `SubagentCompleted{success:false}`、经 `<subagent_event>`
+    /// hook 回报主 agent——与正常完成路径同一条收尾链，**绝不静默**：
+    /// 模型据此纠错重试（如 profile 名写错时按回报的可用清单重发），
+    /// 面板的委派行也不会悬挂在"运行中"。
+    async fn reject_subagent(
+        self: &Arc<Self>,
+        task_id: &str,
+        session_id: &str,
+        task: &str,
+        parent_branch_id: &str,
+        node: Option<&str>,
+        reason: String,
+    ) {
+        tracing::warn!(
+            task_id = %task_id,
+            node = ?node,
+            %reason,
+            "subagent rejected before start"
+        );
+        if let Some((store, _)) = self.subagent_runtime() {
+            store.finish(task_id, crate::subagent::SubagentStatus::Failed);
+        }
+        if let Some(peer) = node {
+            crate::federation::notify_remote_subagent(
+                peer,
+                task_id,
+                task,
+                None,
+                crate::federation::SubagentStatus::Failed,
+                Some(reason.clone()),
+            );
+        }
+        self.emit(BackendEvent::SubagentCompleted {
+            session_id: session_id.to_string(),
+            success: false,
+        });
+        let payload = serde_json::json!({
+            "event": "subagent_event",
+            "subagent_id": task_id,
+            "session_id": session_id,
+            "task": crate::llm::truncate(task, 500),
+            "success": false,
+            "result": format!("子任务受理失败：{reason}"),
+            "parent_branch_id": parent_branch_id,
+            "completed_at_ms": chrono::Utc::now().timestamp_millis(),
+        });
+        let hook = crate::subagent::wrap_subagent_event(&payload);
+        self.dispatch_subagent_hook(session_id, hook).await;
     }
 
     /// 把子任务完成 hook 作为新入站分支注入主会话（内部复用
