@@ -1,4 +1,5 @@
 ---
+package: chat
 name: alix-persona
 description: Alix 的个人身份信息：名字、角色定位、所属团队与职责
 metadata:
