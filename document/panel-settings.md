@@ -33,10 +33,14 @@ y: 280
 
 1. **编辑表单**（仅展开态，插入在列表上方）：标题栏（「编辑 Profile · {name}」+ 编辑中标签 /「新增 API 服务商」+ 收起按钮）→ 快速模板（6 个，点击填充）→ 表单字段 → 操作行（测试连接 / 保存 / 取消）
 2. **API Profiles 卡片网格**（常驻，`repeat(auto-fill, minmax(240px, 1fr))`）：卡片本体用 **ui-frame `NeumorphismCard`**（elevation=2、radius=large、hoverable=bulge、no-padding），按槽位排版——header = 名称 +（编辑中标签）；body = `provider / model` + base_url + key/思考/推理摘要（min-height 62px 对齐）；footer = 余额行（DeepSeek）+ **操作行（测试 / 编辑 / 删除 三按钮等宽网格 `repeat(3, 1fr)`**，`DeleteApi` **无确认，立即生效**）；**编辑中的卡主色 outline 高亮**。**默认标记已移除**：卡片不再有「默认」标签与「设为默认」按钮——profiles 只是可供 persona 引用的供应商池，不再有"哪个是默认"的概念；模型选用在 persona 级（Agent 配置弹层）完成，API 设置页不提供「激活」「切换」
-3. **DeepSeek 余额**：provider=deepseek 或 base_url 含 `deepseek.com` 的卡片显示「查余额」按钮——发 `QueryApiBalance{name}` 查官方 `/user/balance`（Anthropic/OpenAI/beta 端点自动归一到 `{root}/user/balance`），结果显示为 `¥110.00`（CNY；USD 用 `$`，其他币种后缀显示），失败显示错误文本；查询加载态互斥、一次一个目标
-4. **测试失败复制**：测试连接结果为失败（✗）时，结果行末尾附 **ui-frame `ChatCopyButton`**（`@echolab-auto/ui-frame/chat`，24px `nm-chat-copy` 图标钮，点击复制完整错误文本到剪贴板，复制定时反馈 ✓）——**仅 profile 卡**结果行（API 摘要卡已不存在，`.api-summary-*` 为残留样式）；结果文本整句 `title` 悬停可见（行内 ellipsis 截断时）。**非安全上下文兜底**：Panel 经局域网 IP 以 HTTP 访问时 `navigator.clipboard` 不可用（原本静默失败），`useClipboard` 已补 `textarea + document.execCommand('copy')` 兜底（已合入 ui-frame 上游 `4808f8b`，未发版期间由本地快照携带；安全上下文仍优先 Clipboard API）
-5. **「+ 添加 API 服务商」按钮**（卡片网格底部常驻，primary）
-6. **HTML 端点诊断**：base_url 指向网页根域而非 API 前缀时（响应 `text/html`），测试连接错误消息自动追加提示「该地址返回网页而非 JSON——请检查 Base URL 是否为 API 前缀（OpenAI 兼容端点通常以 /v1 结尾）」（OpenAI 客户端）；Anthropic 客户端文案为「…请检查 Base URL 是否正确（Anthropic 兼容端点通常以 /anthropic 结尾）」；解析错误与 HTTP 错误均适用
+3. **DeepSeek 余额**：provider=deepseek 或 base_url 含 `deepseek.com` 的卡片显示「查余额」按钮——发 `QueryApiBalance{name}` 查官方 `/user/balance`（Anthropic/OpenAI/beta 端点自动归一到 `{root}/user/balance`），主金额下方附**分账行**（`充值 ¥xx · 赠送 ¥xx`，随 `granted`/`topped_up` 回推），结果显示为 `¥110.00`（CNY；USD 用 `$`，其他币种后缀显示），失败显示错误文本；查询加载态互斥、一次一个目标；查询成功即刷新该目标指标（新快照即时进图）
+4. **余额与用量图表**（2026-10，`ApiMetrics` 事件）：数据由 Core 本地积累——**余额快照**（周期任务默认 10 分钟采样；手动「查余额」成功也落一条）与 **token 用量**（每次 LLM 调用经计量装饰器记录，小时 × 模型聚合）；面板取**近 7 天**窗口，可视化三层：
+   - **总览对比图**（Profiles 网格上方常驻，`formMode==='none'` 且有 profile 时显示）：「余额」与「用量（tokens / 小时）」两张 `NeumorphismChartLine`（height 170、smooth + area、无轴无网格、legend 开），多 profile 经**公共小时桶对齐**（余额前向填充、用量空桶补 0）；下方一行估算费用摘要（`近 7 天估算费用：<profile> 约 ¥x.xx …（按 [agent.pricing] 定价估算，未计缓存优惠）`）
+   - **卡片小图**：每张 profile 卡内嵌两张 sparkline（height 56、无轴无网格无点、legend 关）——「余额 · 近 7 天」曲线 + 「用量 · 近 7 天 N tokens · 约 ¥x」曲线；余额 ≥2 个采样点 / 有用量数据才显示；tooltip 金额与 token 缩写（K/M）格式化经 ui-frame `NeumorphismChartLine` 的 `valueFormatter` prop（本次新增，`(value, seriesName) => string`）
+   - **刷新**：总览标题行「刷新」按钮（`QueryApiMetrics{name:''}` 全量）+ 每 5 分钟自动刷新；空数据显示「数据积累中」提示（说明采样周期）。工具函数与对齐算法在 `web/src/api-metrics.ts`（含单测）
+5. **测试失败复制**：测试连接结果为失败（✗）时，结果行末尾附 **ui-frame `ChatCopyButton`**（`@echolab-auto/ui-frame/chat`，24px `nm-chat-copy` 图标钮，点击复制完整错误文本到剪贴板，复制定时反馈 ✓）——**仅 profile 卡**结果行（API 摘要卡已不存在，`.api-summary-*` 为残留样式）；结果文本整句 `title` 悬停可见（行内 ellipsis 截断时）。**非安全上下文兜底**：Panel 经局域网 IP 以 HTTP 访问时 `navigator.clipboard` 不可用（原本静默失败），`useClipboard` 已补 `textarea + document.execCommand('copy')` 兜底（已合入 ui-frame 上游 `4808f8b`，未发版期间由本地快照携带；安全上下文仍优先 Clipboard API）
+6. **「+ 添加 API 服务商」按钮**（卡片网格底部常驻，primary）
+7. **HTML 端点诊断**：base_url 指向网页根域而非 API 前缀时（响应 `text/html`），测试连接错误消息自动追加提示「该地址返回网页而非 JSON——请检查 Base URL 是否为 API 前缀（OpenAI 兼容端点通常以 /v1 结尾）」（OpenAI 客户端）；Anthropic 客户端文案为「…请检查 Base URL 是否正确（Anthropic 兼容端点通常以 /anthropic 结尾）」；解析错误与 HTTP 错误均适用
 
 **表单字段**（展开态与字段规则同原设计）：
 
@@ -54,7 +58,7 @@ y: 280
 - 「取消/收起」→ 丢弃表单修改，回到概览
 - 测试连接：`TestApi`（表单目标 = 编辑中的 profile 名，添加模式为空 = 默认配置）；加载态互斥（一次仅测一个）；**每次表单展开时清空上次测试结果**
 
-后端命令映射：`UpdateApiConfig`（name 空 = 全局默认配置；非空 = 供应商池增改）/ `TestApi` / `DeleteApi`；`SwitchApi` 保留协议但 UI 不再暴露（persona 级选用取代全局激活）。数据流见 [配置持久化](./core-config-persistence.md)。
+后端命令映射：`UpdateApiConfig`（name 空 = 全局默认配置；非空 = 供应商池增改）/ `TestApi` / `DeleteApi` / `QueryApiBalance`（余额查询 + 快照落盘）/ `QueryApiMetrics`（余额/用量时间序列，回 `ApiMetrics`）；`SwitchApi` 保留协议但 UI 不再暴露（persona 级选用取代全局激活）。数据流见 [配置持久化](./core-config-persistence.md)。
 
 ### Persona 级 API（`api_profile` 引用）
 

@@ -187,6 +187,35 @@ group_ids = []
 工作区会话（`echo-agent.workspace` 插件）独立持久化于
 `~/.config/echo-agent-core/echo-workspaces-{id}.json`（每 persona 一份；
 `{active, sessions[]}` 文档，任何变更即时原子写回）——与配置 TOML、会话
-JSON 均不共用路径。`active` 同时是「项目通道」的单一事实来源（激活 = 本地
-对话切换 + 提示词注入，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道）；
 **所有激活来源（面板/工具 `use`）都必须广播 `WorkspaceSessions`**。
+
+## API 指标数据（余额 / 用量，2026-10）
+
+余额与 token 用量由 Core 本地积累为**只增不改的 JSONL 时间序列**（与 core.toml
+同目录）——面板「余额与用量」图表的唯一数据源（DeepSeek 无账单/历史 API，
+图表必须本地积累）：
+
+```text
+~/.config/echo-agent-core/echo-balances.jsonl   # 余额快照：{ts_ms, name, currency, total, granted, topped_up}
+~/.config/echo-agent-core/echo-usage.jsonl      # 每次 LLM 调用：{ts_ms, name, model, prompt_tokens, completion_tokens}
+```
+
+- **记录来源**：① 余额——周期任务 `[agent].balance_snapshot_secs`（默认 600s /
+  10 分钟；0 = 关闭；下限 30s，启动即采首条）+ 手动「查余额」成功；② 用量——
+  **计量 provider 装饰器**（`llm::wrap_metering`，与脱敏装饰器同一装配点，
+  覆盖内置循环 / echo-loop / 等待回复 / 压缩 / 子代理的全部 LLM 出口，
+  记录成功后 `usage`）。
+- **归属命名**：`name` 与 `QueryApiBalance` 同命名空间——空 = 顶层默认配置，
+  否则 profile 名（provider 构建时快照 `active_api` / persona 引用名；模型名取
+  每次请求 `request.model`，模型切换即时生效）。
+- **保留与剪枝**：余额保留 30 天、用量 90 天（每 512 次追加触发一次过期行
+  重写剪枝）；**面板读取窗口 = 近 7 天**。文件删除即重置图表（无其他副作用）。
+- **费用估算**：`[agent.pricing]` 定价表（缺省 = 内置 DeepSeek 公开价；
+  长度前缀匹配模型名、区分高峰/空闲时段；含 `offpeak_*` 档位豁免）。输入按
+  「缓存未命中」口径计（框架不区分缓存命中 → 估值是**上界**）；价格可随配置
+  覆盖或清空（`pricing = []` = 禁用估算）。估算由 Core 在 `QueryApiMetrics`
+  响应时现算（`est_cost` 字段），不落盘。
+- **协议**：`QueryApiMetrics{name}`（空 = 默认 + 全部 profile）→ `ApiMetrics`
+  事件（`entries: [{name, balance[], usage[], cost_currency}]`；`usage` 按
+  小时 × 模型聚合）。实现：`echo-agent/src/metrics.rs`（存储/剪枝/定价）+
+  `agent/api_admin.rs`（查询响应 / 周期任务）。
