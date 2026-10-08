@@ -49,7 +49,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 | id | kind | 说明 |
 | --- | --- | --- |
-| `echo-agent.tools.builtin` | Tool | 内置工具集（计算/搜索/编码/适配器管理） |
+| `echo-agent.tools.builtin` | Tool | 内置工具集（计算/搜索/编码/适配器管理/供应商清单查询 `list_api_profiles`） |
 | `echo-agent.adapter.qq` | Adapter | QQ 适配器（OneBot v11 反向 WS，含 QQ 管理工具；门控机制见 [QQ 适配器门控](./adapter-qq-gating.md)） |
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
 | `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |

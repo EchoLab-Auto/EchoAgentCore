@@ -52,7 +52,7 @@ y: 1440
 
 | 工具 | 说明 |
 | --- | --- |
-| `spawn_subagent` | 委派子任务（同步受理、异步执行）。参数：`task`（必填，完整自含描述——子上下文看不到主对话）、`timeout_secs`（可选，默认 600，钳制 30..=3600）、`node`（可选，联邦远程节点名/peer 配置名——填入后子任务在该节点执行；来源：工具列表中 `<peer>:<tool>` 代理工具前缀名，或工作区会话的 `[remote:<peer>]` 标注；填错/离线会立即失败，fail-closed 不会静默回本机；多节点并行委派时结果自动聚合汇报）。返回受理回执（含子任务 id） |
+| `spawn_subagent` | 委派子任务（同步受理、异步执行）。参数：`task`（必填，完整自含描述——子上下文看不到主对话）、`timeout_secs`（可选，默认 600，钳制 30..=3600）、`node`（可选，联邦远程节点名/peer 配置名——填入后子任务在该节点执行；来源：工具列表中 `<peer>:<tool>` 代理工具前缀名，或工作区会话的 `[remote:<peer>]` 标注；填错/离线会立即失败，fail-closed 不会静默回本机；多节点并行委派时结果自动聚合汇报）、`profile`（可选，子代理模型——填全局供应商池 `[agent].api_profiles` 中的名称，如 `"kimi"`；单次生效，不改父 agent 模型；名字不存在/缺 key 时**立即失败**并回报可用清单，fail-closed 不会静默回退主模型；缺省 = 继承父 agent 模型）。返回受理回执（含子任务 id；指定 profile 时回执标注模型） |
 
 设计要点：
 
@@ -62,12 +62,24 @@ y: 1440
   记为 `Cancelled` 并同样发 hook（主 agent 感知"没有结论会来"）
 - **结果截断**：子任务回复超过 8K 字符时截断并标注，防单个结论反过来烧掉
   主上下文
+- **子代理模型覆盖（`profile`，2026-10）**：执行体按名从供应商池解析并
+  构建独立 provider（经计量 + 脱敏装饰，与主 provider 同标准；计量归属 =
+  profile 名，余额/用量图表可直接看到子代理消耗）。池以**共享 ConfigStore
+  （core.toml）为首选事实源**读取（管理面每次变更都会写回；persona 侧
+  启动快照可能过期——见 `echo-agent/src/api_pool.rs` 模块文档），文件读不到
+  时回退本 agent 配置快照。解析失败在**执行前**被拒绝：store 落 `Failed`、
+  通知对端（联邦下同时销账聚合组）、emit `SubagentCompleted{success:false}`、
+  经 `<subagent_event>` 回报——与正常完成同一条收尾链，面板委派行不会悬挂
+- **可用供应商查询**：`list_api_profiles` 工具（`echo-agent.tools.builtin`
+  包）列出供应商池（名称/服务商/模型/端点/密钥就绪状态 + 顶层默认），
+  输出不含明文密钥；数据源同为共享 ConfigStore（`api_pool::read_snapshot`）
 
 ### 同包技能
 
 | 技能 | 触发 | 内容 |
 | --- | --- | --- |
 | `subagent-delegation` | 常驻（`metadata.always: true`，每轮注入） | 委派与并行化指南：开工前扫"可委派块"、何时该委派、并行手法（`spawn_subagent` 是唯一真并行）、task 必须自含、单层委派、等回报期间不空转、结果截断 |
+| `model-profiles` | 常驻（`metadata.always: true`，每轮注入） | 模型供应商与子代理模型选择规范：通常情况用 deepseek-flash（不传 profile）；UI 前端图形与视觉闭环作业推荐 `profile: "kimi"`（K3）；`list_api_profiles` 查询可用供应商；fail-closed 行为说明（2026-10 用户设定，可直接编辑文件调整） |
 
 技能 frontmatter 声明 `package: echo-agent.subagent`，随包级门控与工具一起
 启停（见 [插件化设计](./core-plugins.md)「Package」章节）。
