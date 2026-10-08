@@ -18,6 +18,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 - **理解系统怎么组成**：本页 → [架构总览](./architecture.md) → [Core 后端](./core.md) → [框架（内核）](./frame.md) → [插件化设计](./core-plugins.md)
 - **运行时子系统**：[多 Agent 与会话](./core-agents.md) → [Agent 循环](./core-agent-loop.md)；[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)
 - **扩展系统**：[插件化设计](./core-plugins.md) → [工具系统](./core-tools.md) / [技能系统](./core-skills.md) / [Subagent 插件](./core-subagent.md)；外部插件作者读 [插件开发指南](./plugin-authoring.md)
+- **安全**：[敏感信息隔离（脱敏服务）](./security-redaction-design.md)——出口卡口与保证边界
 - **前端**：[Panel 前端](./panel.md) → [交互定义](./panel-interaction.md) → 各视图文档
 - **运维排障**：[部署与自更新](./ops-deploy.md)、[协议与数据流](./protocol.md)
 
@@ -39,6 +40,7 @@ graph LR
   Frame --> Memory[会话记忆|/core-memory.md]
   Frame --> MModal[多模态输入|/core-multimodal.md]
   Frame --> Persist[配置持久化|/core-config-persistence.md]
+  Frame --> Security[敏感信息隔离|/security-redaction-design.md]
   Plugins --> Tools[工具系统|/core-tools.md]
   Plugins --> Skills[技能系统|/core-skills.md]
   Plugins --> Subagent[Subagent 插件|/core-subagent.md]

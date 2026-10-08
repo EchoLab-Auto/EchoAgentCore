@@ -19,7 +19,8 @@
 //! | [`token`] | pure token-estimation/truncation helpers |
 //! | [`media`] | multimodal payload hygiene: embedded base64 → placeholder text |
 //! | [`session`] | the event-sourced session seam: `SessionEvent` + `SessionStore` traits |
-//!
+//! | [`session`] | the event-sourced session seam: `SessionEvent` + `SessionStore` traits |
+//! | [`sanitize`] | the sensitive-data seam: `Redactor` trait (scan / redact / register) |
 //! # Dependency rules
 //!
 //! - This crate depends on nothing from the harness (no echo-* crates).
@@ -34,6 +35,7 @@ pub mod media_store;
 pub mod message;
 pub mod mode;
 pub mod node;
+pub mod sanitize;
 pub mod session;
 pub mod skill;
 pub mod token;

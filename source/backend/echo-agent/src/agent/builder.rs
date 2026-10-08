@@ -51,6 +51,8 @@ pub struct AgentBuilder {
     config_store: Option<ConfigStore>,
     session_persist_path: Option<std::path::PathBuf>,
     subagent_store: Option<Arc<crate::subagent::SubagentStore>>,
+    /// 敏感信息脱敏器（可选；注入后 Agent 各出口统一脱敏）。
+    redactor: Option<Arc<dyn echo_defs::sanitize::Redactor>>,
 }
 
 impl AgentBuilder {
@@ -77,6 +79,7 @@ impl AgentBuilder {
             config_store: None,
             session_persist_path: None,
             subagent_store: None,
+            redactor: None,
         }
     }
 
@@ -134,6 +137,13 @@ impl AgentBuilder {
         self
     }
 
+    /// 敏感信息脱敏器（可选；组合根注入后 Agent 的入站内容、工具事件 /
+    /// 结果、错误消息等出口统一脱敏——见 `document/security-redaction-design.md`）。
+    pub fn redactor(mut self, redactor: Arc<dyn echo_defs::sanitize::Redactor>) -> Self {
+        self.redactor = Some(redactor);
+        self
+    }
+
     /// 完成装配，返回 `Arc<Agent>`（组合根本来就以 Arc 持有；subagent
     /// 运行态装配需要 `&Arc<Self>`）。必填槽缺失 = 装配 bug，fail-fast
     /// panic（消息指明缺哪个）。
@@ -176,6 +186,9 @@ impl AgentBuilder {
         }
         if let Some(store) = self.subagent_store {
             agent.attach_subagent_runtime(store);
+        }
+        if let Some(redactor) = self.redactor {
+            agent.set_redactor(redactor);
         }
         agent
     }

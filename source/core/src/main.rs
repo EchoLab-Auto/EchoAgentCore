@@ -23,6 +23,7 @@ mod node;
 mod plugins_runtime;
 mod qq_instances;
 mod qq_tools;
+mod security;
 
 use config::CoreConfig;
 use echo_adapter::traits::Adapter;
@@ -482,6 +483,22 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         );
     }
 
+    // ---- 敏感信息脱敏（sanitize 服务，2026-10）----
+    // 先于 provider 构建：provider 以脱敏装饰器包装后分发给全部下游
+    //（LLM 请求出口卡口）；同时把脱敏器注册进服务定位器（"sanitizer"），
+    // 供进程内插件与消费者解析。关闭需编辑 core.toml + 重启（无运行期开关）。
+    let redactor: Option<Arc<dyn echo_defs::sanitize::Redactor>> = if cfg.security.sanitize.enabled
+    {
+        Some(crate::security::build_redactor(&cfg))
+    } else {
+        warn!(
+                "security.sanitize.enabled=false — 敏感信息脱敏已关闭（不推荐；编辑 core.toml 后重启生效）"
+            );
+        None
+    };
+    // 敏感目录（QQ 外发文件闸门用；core.toml / 会话 / 凭据目录）。
+    let sensitive_dirs = crate::security::sensitive_dirs(&args.config_path());
+
     let provider = echo_agent::llm::create_provider(&provider_cfg)?;
     info!(provider = %provider_cfg.provider, model = %provider_cfg.model, "llm provider ready");
 
@@ -489,8 +506,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // Core services are registered under stable keys; extension plugins and
     // consumers resolve by key instead of importing concrete providers.
     let ctx: Arc<echo_context::Ctx> = Arc::new(echo_context::Ctx::default());
-    let provider_arc: Arc<dyn echo_agent::LlmProvider> = Arc::from(provider);
+    // LLM 出口卡口：provider 以脱敏装饰器包装后再分发给一切下游
+    //（runner / agent / subagent 拿到的都是包装后的 provider）。
+    let base_provider: Arc<dyn echo_agent::LlmProvider> = Arc::from(provider);
+    let provider_arc: Arc<dyn echo_agent::LlmProvider> = match &redactor {
+        Some(redactor) => echo_agent::llm::wrap_redacting(base_provider, redactor.clone()),
+        None => base_provider,
+    };
     let _ctx_keep = ctx.register::<Arc<dyn echo_agent::LlmProvider>>("llm", provider_arc.clone());
+    // 脱敏服务（"sanitizer" 键；进程内插件经 MountContext.ctx 解析）。
+    let _sanitizer_keep: Option<echo_context::Disposer> = redactor.as_ref().map(|redactor| {
+        ctx.register::<Arc<dyn echo_defs::sanitize::Redactor>>("sanitizer", redactor.clone())
+    });
 
     // The default turn runner (dsh: the loop is a swappable plugin, resolved
     // by key). Register it now; consumers (the agent driver) resolve it.
@@ -666,7 +693,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     ));
 
     // ── 子进程插件（解耦计划 P3/P4）：plugins.toml 缺省休眠 ──
-    let plugin_runtime = plugins_runtime::start_if_configured(&args.config_path()).await;
+    // P2：插件启动前注册宿主服务——子进程插件经 HostCall 回呼
+    // `"sanitizer"`（redact / scan / register_secret），与进程内插件
+    // 共用同一脱敏器实例。
+    let plugin_runtime = plugins_runtime::start_if_configured(&args.config_path(), |services| {
+        if let Some(redactor) = &redactor {
+            services.register(
+                "sanitizer",
+                std::sync::Arc::new(crate::security::SanitizerHostService::new(redactor.clone())),
+            );
+        }
+    })
+    .await;
     let plugin_tools: std::sync::Arc<Vec<std::sync::Arc<echo_plugin_host::RemoteTool>>> =
         std::sync::Arc::new(
             plugin_runtime
@@ -688,6 +726,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let factory_event_sink = event_sink.clone();
     let factory_plugin_host = plugin_host.clone();
     let factory_config_store = config_store.clone();
+    let factory_redactor = redactor.clone();
+    let factory_sensitive_dirs = sensitive_dirs.clone();
+    let factory_outbound_policy =
+        crate::security::OutboundPolicy::from_config(&cfg.security.sanitize.outbound);
     let factory_config_path = args.config_path();
     let make_agent: Arc<dyn Fn(String, AgentProfile) -> Arc<Agent> + Send + Sync> = Arc::new(
         move |id: String, profile: AgentProfile| -> Arc<Agent> {
@@ -698,6 +740,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let base_cfg = factory_base_cfg.clone();
             let event_sink = factory_event_sink.clone();
             let shared_plugin_host = factory_plugin_host.clone();
+            let redactor2 = factory_redactor.clone();
+            let sensitive_dirs2 = factory_sensitive_dirs.clone();
+            let outbound_policy = factory_outbound_policy;
             let config_store_path = factory_config_path.clone();
             let agents_config_store = factory_config_store.clone();
             let pt = factory_plugin_tools.clone();
@@ -722,6 +767,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     adapters2.clone(),
                     workspace.clone(),
                 );
+                // 工具结果出口卡口（2026-10 安全）：本 persona 注册表注入
+                // 脱敏器——所有工具（内置 / 插件 / 远程 / 子代理直呼）的
+                // 结果与错误消息统一脱敏后再交给任何消费者。
+                t.set_redactor(redactor2.clone());
                 // 平台（QQ）工具同样必须注册到每个 persona：QQ 消息的发送/查询
                 // 都依赖 send_private_msg / send_group_msg 等工具，缺少它们时
                 // persona 收到 QQ hook 后无法完成声明目标的投递。
@@ -730,7 +779,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     .get(&id)
                     .cloned()
                     .unwrap_or_else(|| vec![qq_adapter2.clone()]);
-                crate::qq_tools::register_qq_tools_multi(&mut t, persona_instances);
+                // QQ 出站闸门（2026-10 安全）：send_* 的文本命中密钥按策略
+                // 阻断/替换；文件参数落在敏感目录（配置 / 凭据目录）直接拒发。
+                let outbound_gate =
+                    redactor2
+                        .as_ref()
+                        .map(|redactor| crate::qq_tools::OutboundGate {
+                            redactor: redactor.clone(),
+                            protected_paths: sensitive_dirs2.clone(),
+                            policy: outbound_policy,
+                        });
+                crate::qq_tools::register_qq_tools_multi(&mut t, persona_instances, outbound_gate);
                 // 包元数据：QQ 工具属于 "echo-agent.adapter.qq"（与对应技能同包）。
                 for name in t.names() {
                     if name.starts_with("send_") || name.contains("qq") || name.starts_with("get_")
@@ -786,7 +845,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         match echo_agent::llm::create_provider(&resolved) {
                             Ok(p) => {
                                 api_cfg_override = Some(resolved.clone());
-                                Some(Arc::from(p) as Arc<dyn echo_agent::LlmProvider>)
+                                let provider: Arc<dyn echo_agent::LlmProvider> = Arc::from(p);
+                                let provider = match &redactor2 {
+                                    Some(redactor) => {
+                                        echo_agent::llm::wrap_redacting(provider, redactor.clone())
+                                    }
+                                    None => provider,
+                                };
+                                Some(provider)
                             }
                             Err(e) => {
                                 tracing::warn!(agent = %id, profile = %name, error = %e,
@@ -822,6 +888,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .persona_api(profile.api_profile.clone())
                 .config_store(agents_config_store.clone())
                 .subagent_store(subagent_store.clone());
+                // 敏感信息脱敏器（2026-10 安全）：Agent 侧入站 / 事件 /
+                // 结果出口统一脱敏。
+                if let Some(redactor) = &redactor2 {
+                    builder = builder.redactor(redactor.clone());
+                }
                 if let Some(api_cfg) = api_cfg_override {
                     // 启动期已按 persona profile 解析好：把生效 model 同步给
                     // active_model（provider 已独立构建，无需重建）。

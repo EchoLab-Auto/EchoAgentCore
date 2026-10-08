@@ -14,8 +14,10 @@
 //!   交由**单写者任务**串行写出——帧不会交错；
 //! - **控制**：`Cancel` → [`PluginHandler::on_cancel`]；`Drain` →
 //!   [`PluginHandler::on_drain`] 后等待在途调用完成并退出（0）；`Dispose` /
-//!   stdin EOF → 中止在途任务并退出。
-//!
+//!   stdin EOF → 中止在途任务并退出；
+//! - **回呼**（P2）：`Ready` 后经 [`PluginHandler::on_ready`] 交付
+//!   [`HostClient`]，插件可随时向宿主注册的服务发起 `HostCall`
+//!   （默认 30s 超时；连接断开时在途调用以 [`HostCallError::Closed`] 结束）。
 //! 最小插件：
 //!
 //! ```no_run
@@ -63,9 +65,11 @@ pub use echo_plugin_api::{
     capabilities, Contribution, InvokeContext, InvokeOutcome, ToolContribution,
 };
 pub use frame::MAX_FRAME_BYTES;
-pub use serde;
 pub use serde_json;
-pub use serve::{serve_io, serve_io_with, serve_stdio, serve_stdio_with};
+pub use serve::{
+    serve_io, serve_io_with, serve_stdio, serve_stdio_with, HostCallError, HostClient,
+    DEFAULT_HOST_CALL_TIMEOUT,
+};
 
 use serde_json::Value;
 
@@ -80,6 +84,14 @@ pub trait PluginHandler: Send + Sync + 'static {
     /// SDK 已校验贡献名在 [`contributions`](Self::contributions) 之内；返回
     /// [`InvokeOutcome`] 即终结该 `call_id`（结果原样回发宿主）。
     async fn invoke(&self, req: InvokeRequest) -> InvokeOutcome;
+
+    /// `Ready` 发出后的初始化完成通知（P2 新增；缺省空实现，老插件零改动）。
+    ///
+    /// SDK 在 `Welcome` + `Register` + `Ready` 入队后调用一次；插件借此保存
+    /// [`HostClient`] 句柄，后续用它向宿主注册的服务发起回呼（`HostCall`）。
+    /// 本方法在消息循环开始前被 await——如需在其中立即发起回呼，请自行
+    /// spawn 到后台任务（直接 await 会等到读循环运行后才可能收到结果）。
+    async fn on_ready(&self, _host: HostClient) {}
 
     /// `Cancel` 通知（尽力送达；对端可能已完成）。缺省空实现。
     async fn on_cancel(&self, _call_id: &str) {}
@@ -120,7 +132,7 @@ pub struct ServeOptions {
     /// 该检查用于抓配置错误）。`ECHO_PLUGIN_ID` 环境变量提供 `plugin_id()`
     /// 辅助值，供需要自主身份的插件使用。
     pub plugin_id: String,
-    /// `Welcome` 能力列表；缺省 `["tools", "cancel"]`（双方都声明才可用）。
+    /// `Welcome` 能力列表；缺省 `["tools", "cancel", "host_call"]`（双方都声明才可用）。
     pub capabilities: Vec<String>,
 }
 
@@ -132,6 +144,7 @@ impl Default for ServeOptions {
             capabilities: vec![
                 capabilities::TOOLS.to_string(),
                 capabilities::CANCEL.to_string(),
+                capabilities::HOST_CALL.to_string(),
             ],
         }
     }

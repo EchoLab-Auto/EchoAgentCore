@@ -98,6 +98,14 @@ pub struct Agent {
     /// 汇聚点，Panel 单连接即可看到所有人格活动，无需求助"默认人格"镜像。
     /// 设置后优先于 `handle`（`handle` 保留给单 agent 测试与旧路径）。
     event_sink: std::sync::RwLock<Option<EventSink>>,
+    /// 敏感信息脱敏器（组合根注入；None = 透传）。
+    ///
+    /// 覆盖：入站内容（`process_message` / `process_inbound_branch` /
+    /// `record_incoming_and_snapshot`）、工具事件与会话落盘的参数、工具结果
+    /// （经 `ToolRegistry` 出口与 `run_tool` 双保险）、LLM 请求出口（经
+    /// `llm::wrap_redacting` 装饰 provider，见组合根装配）、QQ 出站
+    /// （`core::qq_tools` 闸门）。设计见 `document/security-redaction-design.md`。
+    redactor: std::sync::RwLock<Option<Arc<dyn echo_defs::sanitize::Redactor>>>,
     system_prompt_cache: RwLock<Option<String>>,
     /// Decomposed system-prompt blocks of the most recent turn, kept so the
     /// panel can visualize the exact prompt sections sent to the LLM.
@@ -296,6 +304,7 @@ impl Agent {
             adapters,
             handle: tokio::sync::RwLock::new(None),
             event_sink: std::sync::RwLock::new(None),
+            redactor: std::sync::RwLock::new(None),
             system_prompt_cache: RwLock::new(None),
             last_prompt_blocks: tokio::sync::Mutex::new(None),
             plugin_reload_started: AtomicBool::new(false),
@@ -377,6 +386,44 @@ impl Agent {
             *slot = Some(store);
         } else {
             tracing::warn!("config store slot busy, ignoring set_config_store");
+        }
+    }
+
+    /// 注入脱敏器（组合根装配期；`AgentBuilder::redactor` 调用）。
+    ///
+    /// 只写一次（装配期无并发）；重复调用以最后一次为准。
+    pub(crate) fn set_redactor(&self, redactor: Arc<dyn echo_defs::sanitize::Redactor>) {
+        if let Ok(mut slot) = self.redactor.write() {
+            *slot = Some(redactor);
+        } else {
+            tracing::warn!("redactor slot poisoned, ignoring set_redactor");
+        }
+    }
+
+    /// 当前脱敏器（未注入 / 锁中毒 = None，全部脱敏路径按透传处理）。
+    pub(crate) fn redactor(&self) -> Option<Arc<dyn echo_defs::sanitize::Redactor>> {
+        self.redactor.read().ok().and_then(|slot| slot.clone())
+    }
+
+    /// 文本脱敏：无脱敏器或未命中时返回原文副本。
+    ///
+    /// 性能：脱敏器内部为 Aho-Corasick 单遍扫描；未注入时仅一次锁读。
+    pub(crate) fn redact_text(&self, text: &str) -> String {
+        match self.redactor() {
+            Some(redactor) => redactor.redact(text).text,
+            None => text.to_string(),
+        }
+    }
+
+    /// 带命中计数的脱敏（审计日志用）：返回（脱敏后文本，命中数）。
+    pub(crate) fn redact_text_tracked(&self, text: &str) -> (String, usize) {
+        match self.redactor() {
+            Some(redactor) => {
+                let report = redactor.redact(text);
+                let count = report.hits.len();
+                (report.text, count)
+            }
+            None => (text.to_string(), 0),
         }
     }
 
@@ -941,14 +988,17 @@ impl Agent {
         content: &str,
     ) -> Vec<ChatMessage> {
         let _turn = session.turn_lock.lock().await;
+        // 入站内容脱敏（2026-10 安全）：会话事件（及其投影出的历史）
+        // 永不落明文——用户粘贴的密钥不得进会话日志 / 归档 / 模型上下文。
+        let content = self.redact_text(content);
         self.trunk
             .append_event(echo_session::SessionEvent::UserMessage(
                 echo_session::event::UserMessage {
-                    content: content.to_string(),
+                    content: content.clone(),
                     timestamp: chrono::Utc::now().timestamp(),
-                    message_sequence: structured_message_sequence(content),
+                    message_sequence: structured_message_sequence(&content),
                     source: None,
-                    images: extract_input_images(content),
+                    images: extract_input_images(&content),
                     session: Some(session.id.clone()),
                 },
             ));
@@ -1280,11 +1330,14 @@ impl Agent {
         }
     }
 
-    /// Process one user message through the agent loop and return the reply.
     pub async fn process_message(&self, session: &Session, content: &str) -> Result<String> {
         if self.draining.load(Ordering::Acquire) {
             return Err(anyhow!("Core 正在重启，消息暂未处理，请稍后重试"));
         }
+        // 入站内容脱敏（2026-10 安全）：本 turn 及后续记录 / 模型上下文
+        // 只使用脱敏后的文本（原 content 的调用方不受影响）。
+        let content = self.redact_text(content);
+        let content = content.as_str();
         let message_sequence =
             structured_message_sequence(content).unwrap_or_else(|| self.next_message_sequence());
         // `_serial`：单会话模式的排队闸门，持有到本轮结束（drop 即让位）。
@@ -1366,7 +1419,9 @@ impl Agent {
             tracing::info!(session = %session.id, "inbound message dropped: core draining for restart");
             return;
         }
-        let content = content.to_string();
+        // 入站内容脱敏（2026-10 安全）：QQ hook 等外部输入先脱敏再进入
+        // 记录 / 模型上下文（覆盖单会话与并行两条路径）。
+        let content = self.redact_text(content);
         let session = session.clone();
         // 能力开关：禁用时跳过 ReplyBranch* 可见性事件（分支照常执行）。
         let show_branch = self.shows_reply_branches();
@@ -2188,11 +2243,15 @@ impl Agent {
         // Instant 用于本地测「结束减开始」的耗时。
         let started = std::time::Instant::now();
         let started_at_ms = chrono::Utc::now().timestamp_millis();
+        // 参数出口脱敏（2026-10 安全）：事件 / 会话落盘 / 面板都不得出现
+        // 明文秘密。执行仍用原始参数（功能正确性不受影响）——被替换的
+        // 只有"记录面"。
+        let logged_arguments = self.redact_text(&call.arguments);
         self.emit(BackendEvent::ToolCall {
             session_id: session_id.to_string(),
             team_id: None,
             tool_name: call.name.clone(),
-            arguments: call.arguments.clone(),
+            arguments: logged_arguments.clone(),
             tool_call_id: call.id.clone(),
             branch_id: branch_id.to_string(),
             started_at_ms: Some(started_at_ms),
@@ -2204,7 +2263,7 @@ impl Agent {
                 echo_session::event::ToolCallEvent {
                     id: call.id.clone(),
                     name: call.name.clone(),
-                    arguments: call.arguments.clone(),
+                    arguments: logged_arguments,
                     session: Some(session_id.to_string()),
                     started_at_ms: Some(started_at_ms),
                 },
@@ -2280,7 +2339,17 @@ impl Agent {
         }
         .unwrap_or_else(|error| crate::tool::ToolResult::text(format!("error: {error}"))),
         };
-        let result_text = result.text.clone();
+        let mut result = result;
+        let (result_text, hit_count) = self.redact_text_tracked(&result.text);
+        if hit_count > 0 {
+            tracing::warn!(
+                session = %session_id,
+                tool = %call.name,
+                hits = hit_count,
+                "tool result contained sensitive data; redacted at exit"
+            );
+        }
+        result.text = result_text.clone();
         let result_images = result.images.clone();
         let elapsed_ms = started.elapsed().as_millis() as u64;
         self.emit(BackendEvent::ToolResult {

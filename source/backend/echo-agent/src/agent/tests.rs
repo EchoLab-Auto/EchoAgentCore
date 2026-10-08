@@ -2596,3 +2596,66 @@ async fn workspace_commands_require_team_id() {
         .expect("error emitted");
     assert!(message.contains("team_id"), "unexpected: {message}");
 }
+
+/// 端到端（演练口径）：bash 读取含密钥的文件 → 工具结果与会话日志零明文；
+/// 参数本身含密钥时日志记占位符、执行仍按原始参数（功能不受影响）。
+#[tokio::test]
+async fn run_tool_redacts_secrets_from_real_bash_output_and_log() {
+    use echo_defs::sanitize::Redactor;
+    const KEY: &str = "sk-runtoole2eruntoole2e0001";
+    let provider = Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    });
+    let mut tools = ToolRegistry::new();
+    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir());
+    let agent = Agent::new(
+        provider,
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        tools,
+        Arc::new(AdapterRegistry::new()),
+    );
+    let redactor = Arc::new(echo_sanitize::RegistryRedactor::new());
+    redactor.register_secret(KEY, "api_key:test");
+    agent.set_redactor(redactor);
+
+    // 真实文件 + 真实 bash：模拟"读 core.toml"的主泄漏通道。
+    let file = std::env::temp_dir().join(format!("echo-redact-e2e-{}.txt", std::process::id()));
+    std::fs::write(&file, format!("api_key = \"{KEY}\"\n")).expect("write fixture");
+
+    let call = ToolCall {
+        id: "redact-1".into(),
+        name: "bash".into(),
+        arguments: serde_json::json!({"command": format!("cat {}", file.display())}).to_string(),
+    };
+    let result = agent
+        .run_tool("local:tui::redact-e2e", "branch-1", &call)
+        .await;
+    assert!(
+        !result.text.contains(KEY),
+        "tool result must be redacted: {}",
+        result.text
+    );
+    assert!(result.text.contains("【已隐藏:api_key:test】"));
+
+    // 会话事件日志（ToolCall 参数 + ToolResult）零明文。
+    let rendered = format!("{:?}", agent.trunk.event_log());
+    assert!(!rendered.contains(KEY), "session event log must be clean");
+
+    // 参数本身含密钥：执行按原始参数（输出即密钥），日志只记占位符。
+    let call2 = ToolCall {
+        id: "redact-2".into(),
+        name: "bash".into(),
+        arguments: serde_json::json!({"command": format!("printf '%s' {KEY}")}).to_string(),
+    };
+    let result2 = agent
+        .run_tool("local:tui::redact-e2e", "branch-1", &call2)
+        .await;
+    assert!(!result2.text.contains(KEY));
+    assert!(result2.text.contains("【已隐藏:api_key:test】"));
+    let rendered = format!("{:?}", agent.trunk.event_log());
+    assert!(!rendered.contains(KEY), "logged arguments must be redacted");
+
+    std::fs::remove_file(&file).ok();
+}

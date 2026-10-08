@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 echo-defs.workspace = true
+echo-sanitize.workspace = true
 echo-protocol.workspace = true
 echo-context.workspace = true
 echo-session.workspace = true

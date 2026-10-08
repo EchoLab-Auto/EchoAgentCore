@@ -10,9 +10,26 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use echo_adapter::traits::Adapter;
 use echo_adapter::types::{ChannelType, MessageTarget};
+use echo_adapter_qq::QqAdapter;
 use serde_json::{json, Value};
 
-use echo_adapter_qq::QqAdapter;
+use crate::security::OutboundPolicy;
+
+/// QQ 出站闸门（2026-10 安全）：QQ 是消息出本的直接通道，发送前统一检查。
+///
+/// - 文本命中脱敏器 → 按 [`OutboundPolicy`] 阻断（默认）或替换后照发；
+/// - 文件类参数（`file_path` / `file` / `image`）落在敏感目录（配置目录 /
+///   `~/.ssh` 等）→ 一律拒发（防"整文件打包外发"）。
+///
+/// `pattern` 命中来自脱敏器：注册密钥（精确值）+ 保守模式集。
+pub struct OutboundGate {
+    /// 脱敏器（进程级共享实例）。
+    pub redactor: Arc<dyn echo_defs::sanitize::Redactor>,
+    /// 受保护目录（文件外发直接拒发；命中判定含符号链接解析）。
+    pub protected_paths: Vec<std::path::PathBuf>,
+    /// 文本命中策略。
+    pub policy: OutboundPolicy,
+}
 
 /// 该 persona 的 QQ 实例集合（多实例寻址）。
 #[derive(Clone)]
@@ -72,10 +89,12 @@ impl QqInstanceSet {
 pub fn register_qq_tools_multi(
     registry: &mut echo_agent::ToolRegistry,
     adapters: Vec<Arc<QqAdapter>>,
+    gate: Option<OutboundGate>,
 ) {
     let set = QqInstanceSet::new(adapters);
     let multi = set.multi();
-
+    // 闸门实例由全部 QQ 工具共享（Arc，注册闭包与运行期执行各持一份）。
+    let gate = gate.map(Arc::new);
     /// 多实例时在 schema 上补 `account` 字段。
     fn with_account(params: Value, multi: bool) -> Value {
         if !multi {
@@ -100,6 +119,7 @@ pub fn register_qq_tools_multi(
             description: description.to_string(),
             parameters: with_account(params, multi),
             instances: set.clone(),
+            gate: gate.clone(),
         }));
     };
 
@@ -270,6 +290,8 @@ struct QqToolWrapper {
     parameters: Value,
     /// 该 persona 的 QQ 实例集合（多实例经 `account` 参数寻址）。
     instances: QqInstanceSet,
+    /// 出站闸门（None = 未启用脱敏，行为与旧版一致）。
+    gate: Option<Arc<OutboundGate>>,
 }
 
 #[async_trait]
@@ -285,6 +307,13 @@ impl echo_agent::Tool for QqToolWrapper {
     }
     async fn execute(&self, arguments: Value) -> Result<String, echo_agent::tool::ToolError> {
         use echo_agent::tool::ToolError;
+
+        // 出站闸门（2026-10 安全）：send_* 先过敏感信息检查（文本命中
+        // 按策略阻断/替换；文件参数命中敏感目录直接拒发）。
+        let arguments = match &self.gate {
+            Some(gate) => gate_outbound(&self.name, arguments, gate)?,
+            None => arguments,
+        };
 
         // 多实例寻址：account 指定；单实例缺省即唯一实例。
         let adapter = self
@@ -578,6 +607,93 @@ impl echo_agent::Tool for QqToolWrapper {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 出站闸门（2026-10 安全）
+// ---------------------------------------------------------------------------
+
+/// `send_*` 出站检查：文件路径 → 敏感目录拒发；文本 → 命中按策略处理。
+///
+/// 返回（可能被脱敏后的）参数；`Block` 策略命中时返回错误（不回显任何
+/// 敏感片段）。非 `send_` 名称透传（防御性；`get_*` 只读工具不在此闸门）。
+fn gate_outbound(
+    name: &str,
+    arguments: Value,
+    gate: &OutboundGate,
+) -> Result<Value, echo_agent::tool::ToolError> {
+    use echo_agent::tool::ToolError;
+    if !name.starts_with("send") {
+        return Ok(arguments);
+    }
+    // 1) 文件参数：落在敏感目录（配置 / 凭据目录）→ 直接拒发。
+    for key in ["file_path", "file", "image"] {
+        if let Some(raw) = arguments.get(key).and_then(|value| value.as_str()) {
+            if let Some(path) = crate::security::sensitive_local_path(raw, &gate.protected_paths) {
+                tracing::warn!(
+                    tool = name,
+                    path = %path.display(),
+                    "QQ outbound blocked: protected path"
+                );
+                return Err(ToolError::Execution(format!(
+                    "blocked: 文件位于受保护目录（{}），禁止外发。该目录包含本机配置/凭据，请改用其他文件。",
+                    path.display()
+                )));
+            }
+        }
+    }
+    // 2) 文本扫描（递归全部字符串值）：命中即按策略处理。
+    let hits = scan_json_strings(&arguments, gate.redactor.as_ref());
+    if hits == 0 {
+        return Ok(arguments);
+    }
+    match gate.policy {
+        OutboundPolicy::Block => {
+            tracing::warn!(tool = name, hits, "QQ outbound blocked: sensitive content");
+            Err(ToolError::Execution(format!(
+                "blocked: 消息内容命中敏感信息（{hits} 处，已阻止发送）。请移除密钥/令牌后重试。"
+            )))
+        }
+        OutboundPolicy::Redact => {
+            tracing::warn!(tool = name, hits, "QQ outbound redacted: sensitive content");
+            Ok(redact_json_strings(arguments, gate.redactor.as_ref()))
+        }
+    }
+}
+
+/// 递归统计 JSON 中全部字符串值的命中数（对象键不扫描——键是协议字段名）。
+fn scan_json_strings(value: &Value, redactor: &dyn echo_defs::sanitize::Redactor) -> usize {
+    match value {
+        Value::String(text) => redactor.scan(text).len(),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| scan_json_strings(item, redactor))
+            .sum(),
+        Value::Object(map) => map
+            .values()
+            .map(|item| scan_json_strings(item, redactor))
+            .sum(),
+        _ => 0,
+    }
+}
+
+/// 递归改写 JSON 中全部字符串值（对象键不动——键是协议字段名）。
+fn redact_json_strings(value: Value, redactor: &dyn echo_defs::sanitize::Redactor) -> Value {
+    match value {
+        Value::String(text) => Value::String(redactor.redact(&text).text),
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|item| redact_json_strings(item, redactor))
+                .collect(),
+        ),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, item)| (key, redact_json_strings(item, redactor)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,7 +703,7 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
 
         assert!(registry
             .names()
@@ -606,7 +722,7 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
 
         let definitions = registry.definitions().await;
         for name in ["send_private_msg", "send_group_msg"] {
@@ -626,7 +742,7 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -646,7 +762,7 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -666,7 +782,7 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -694,7 +810,7 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -718,7 +834,7 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()]);
+        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -737,5 +853,109 @@ mod tests {
                 "missing required: {field}"
             );
         }
+    }
+
+    /// 出站闸门：命中注册密钥 → 阻断（错误不回显敏感片段）。
+    #[tokio::test]
+    async fn outbound_gate_blocks_secret_content() {
+        use echo_defs::sanitize::Redactor;
+        const KEY: &str = "sk-gateblockgateblock0001";
+        let mut registry = echo_agent::ToolRegistry::new();
+        let adapter = Arc::new(QqAdapter::new(Default::default()));
+        let redactor = Arc::new(echo_sanitize::RegistryRedactor::new());
+        redactor.register_secret(KEY, "api_key:test");
+        let gate = OutboundGate {
+            redactor,
+            protected_paths: vec![std::path::PathBuf::from("/tmp/echo-gate-protected")],
+            policy: OutboundPolicy::Block,
+        };
+        register_qq_tools_multi(&mut registry, vec![adapter], Some(gate));
+
+        let error = registry
+            .execute(
+                "send_group_msg",
+                json!({"group_id": 1, "content": format!("here you go {KEY}")}),
+            )
+            .await
+            .expect_err("send must be blocked");
+        let text = error.to_string();
+        assert!(text.contains("blocked"), "got: {text}");
+        assert!(!text.contains(KEY), "error must not echo the secret");
+    }
+
+    /// 出站闸门：文件参数落在敏感目录 → 拒发（不触达 adapter）。
+    #[tokio::test]
+    async fn outbound_gate_blocks_protected_path() {
+        let mut registry = echo_agent::ToolRegistry::new();
+        let adapter = Arc::new(QqAdapter::new(Default::default()));
+        let redactor = Arc::new(echo_sanitize::RegistryRedactor::new());
+        let gate = OutboundGate {
+            redactor,
+            protected_paths: vec![std::path::PathBuf::from("/tmp/echo-gate-protected")],
+            policy: OutboundPolicy::Block,
+        };
+        register_qq_tools_multi(&mut registry, vec![adapter], Some(gate));
+
+        let error = registry
+            .execute(
+                "send_file",
+                json!({
+                    "target_type": "group",
+                    "target_id": 1,
+                    "file_path": "/tmp/echo-gate-protected/core.toml",
+                    "file_name": "core.toml"
+                }),
+            )
+            .await
+            .expect_err("protected file must be blocked");
+        assert!(error.to_string().contains("blocked"));
+    }
+
+    /// redact 策略：内容被替换后放行（闸门函数级验证，不依赖网络）。
+    #[test]
+    fn outbound_gate_redact_policy_rewrites_strings() {
+        use echo_defs::sanitize::Redactor;
+        const KEY: &str = "sk-gateredactgateredact01";
+        let redactor = Arc::new(echo_sanitize::RegistryRedactor::new());
+        redactor.register_secret(KEY, "api_key:test");
+        let gate = OutboundGate {
+            redactor,
+            protected_paths: vec![],
+            policy: OutboundPolicy::Redact,
+        };
+        let out = gate_outbound(
+            "send_group_msg",
+            json!({
+                "group_id": 1,
+                "content": format!("key {KEY} end"),
+                "nested": [format!("x {KEY}")]
+            }),
+            &gate,
+        )
+        .expect("redact mode must pass");
+        let rendered = out.to_string();
+        assert!(!rendered.contains(KEY));
+        assert!(rendered.contains("【已隐藏:api_key:test】"));
+    }
+
+    /// 无命中 / 非 send 工具：原样透传。
+    #[test]
+    fn outbound_gate_passthrough_without_hits() {
+        let redactor = Arc::new(echo_sanitize::RegistryRedactor::new());
+        let gate = OutboundGate {
+            redactor,
+            protected_paths: vec![],
+            policy: OutboundPolicy::Block,
+        };
+        let args = json!({"group_id": 1, "content": "hello world"});
+        assert_eq!(
+            gate_outbound("send_group_msg", args.clone(), &gate).unwrap(),
+            args
+        );
+        let get = json!({"group_id": 1});
+        assert_eq!(
+            gate_outbound("get_group_list", get.clone(), &gate).unwrap(),
+            get
+        );
     }
 }

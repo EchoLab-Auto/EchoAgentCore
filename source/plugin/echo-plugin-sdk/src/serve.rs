@@ -1,19 +1,130 @@
 //! 服务循环：握手 + 消息分发 + 单写者帧输出。
 
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use echo_plugin_api::{
-    compatible, Contribution, Failure, HostToPlugin, InvokeOutcome, InvokeResult, PluginToHost,
-    Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
+    compatible, Contribution, Failure, HostCall, HostCallOutcome, HostToPlugin, InvokeOutcome,
+    InvokeResult, PluginToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
 };
+use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 
 use crate::error::SdkError;
 use crate::frame::{encode_frame, read_frame};
 use crate::{InvokeRequest, PluginHandler, ServeOptions};
+
+/// HostCall 默认超时（[`HostClient::call`]）。
+pub const DEFAULT_HOST_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 宿主服务回呼错误（[`HostClient`]）。
+#[derive(Debug, thiserror::Error)]
+pub enum HostCallError {
+    /// 等待结果超时（默认 [`DEFAULT_HOST_CALL_TIMEOUT`]，或显式传给
+    /// [`HostClient::call_with_timeout`] 的值）。
+    #[error("host call timed out")]
+    Timeout,
+    /// 连接已关闭（宿主断开 / serve 循环已结束，在途调用被丢弃）。
+    #[error("plugin connection is closed")]
+    Closed,
+    /// 宿主服务返回错误（机器可读码 + 人类可读消息）。
+    #[error("host service error [{code}]: {message}")]
+    Service {
+        /// 机器可读错误码（如 `service_not_found` / `method_not_found`）。
+        code: String,
+        /// 人类可读消息。
+        message: String,
+    },
+    /// 请求帧编码失败（JSON 序列化 / 超限）。
+    #[error("failed to encode host call: {0}")]
+    Encode(String),
+}
+
+/// 插件 → 宿主服务回呼客户端（可 Clone）。
+///
+/// 由 SDK 在 `Ready` 发出后经 [`PluginHandler::on_ready`] 交付；插件保存
+/// 句柄后即可随时向宿主注册的服务发起回呼。`call_id` 形如 `host:<序号>`
+/// （插件侧自增），与 `HostCallResult` 一一配对。
+#[derive(Clone)]
+pub struct HostClient {
+    /// 写侧帧通道（弱引用）：serve 循环结束时自动失效（此后调用返回
+    /// [`HostCallError::Closed`]，且不阻塞写者任务收口）。
+    tx: mpsc::WeakUnboundedSender<Vec<u8>>,
+    /// 在途调用表（`call_id` → 结果通道）；读到 `HostCallResult` 时唤醒。
+    pending: Arc<Mutex<HashMap<String, oneshot::Sender<HostCallOutcome>>>>,
+    /// `call_id` 序号（从 1 开始）。
+    seq: Arc<AtomicU64>,
+}
+
+impl HostClient {
+    /// 调用宿主服务（默认超时 [`DEFAULT_HOST_CALL_TIMEOUT`]）。
+    ///
+    /// 成功返回服务结果 JSON；服务错误 → [`HostCallError::Service`]。
+    pub async fn call(
+        &self,
+        service: &str,
+        method: &str,
+        payload: Value,
+    ) -> Result<Value, HostCallError> {
+        self.call_with_timeout(service, method, payload, DEFAULT_HOST_CALL_TIMEOUT)
+            .await
+    }
+
+    /// 调用宿主服务（显式超时）。
+    pub async fn call_with_timeout(
+        &self,
+        service: &str,
+        method: &str,
+        payload: Value,
+        timeout: Duration,
+    ) -> Result<Value, HostCallError> {
+        let call_id = format!("host:{}", self.seq.fetch_add(1, Ordering::SeqCst) + 1);
+        let (result_tx, result_rx) = oneshot::channel();
+        self.pending
+            .lock()
+            .expect("host call pending lock poisoned")
+            .insert(call_id.clone(), result_tx);
+
+        let sent = match self.tx.upgrade() {
+            Some(tx) => encode_frame(&PluginToHost::HostCall(HostCall {
+                call_id: call_id.clone(),
+                service: service.to_string(),
+                method: method.to_string(),
+                payload,
+            }))
+            .map_err(|error| HostCallError::Encode(error.to_string()))
+            .and_then(|frame| tx.send(frame).map_err(|_| HostCallError::Closed)),
+            None => Err(HostCallError::Closed),
+        };
+        if let Err(error) = sent {
+            self.pending
+                .lock()
+                .expect("host call pending lock poisoned")
+                .remove(&call_id);
+            return Err(error);
+        }
+
+        match tokio::time::timeout(timeout, result_rx).await {
+            Ok(Ok(HostCallOutcome::Ok { result })) => Ok(result),
+            Ok(Ok(HostCallOutcome::Error { code, message })) => {
+                Err(HostCallError::Service { code, message })
+            }
+            // 结果通道被丢弃（serve 结束 / 连接断开时清空在途表）。
+            Ok(Err(_)) => Err(HostCallError::Closed),
+            Err(_) => {
+                self.pending
+                    .lock()
+                    .expect("host call pending lock poisoned")
+                    .remove(&call_id);
+                Err(HostCallError::Timeout)
+            }
+        }
+    }
+}
 
 /// 在 stdio 上运行插件（读 stdin、写 stdout），直到排空 / 终止 / EOF 退出。
 pub async fn serve_stdio(handler: impl PluginHandler) -> std::io::Result<()> {
@@ -138,13 +249,34 @@ where
         "handshake complete"
     );
 
+    // 3.5) P2 HostCall 客户端：`Ready` 已入队（单写者保证其先于后续帧写出），
+    //      在此构造并交给插件保存（on_ready）。在途表与读循环共享。
+    let host_calls: Arc<Mutex<HashMap<String, oneshot::Sender<HostCallOutcome>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let host_client = HostClient {
+        tx: tx.downgrade(),
+        pending: Arc::clone(&host_calls),
+        seq: Arc::new(AtomicU64::new(0)),
+    };
+    handler.on_ready(host_client).await;
+
     // 4) 消息循环：Invoke 并发处理（结果经 mpsc 单写者串行写回）。
     let mut tasks: JoinSet<()> = JoinSet::new();
+    let mut read_error: Option<SdkError> = None;
     loop {
-        let Some(msg) = read_frame(&mut reader).await? else {
+        let msg = match read_frame(&mut reader).await {
+            Ok(Some(msg)) => msg,
             // stdin EOF：宿主关停；中止在途调用后退出。
-            tasks.abort_all();
-            break;
+            Ok(None) => {
+                tasks.abort_all();
+                break;
+            }
+            // 读错误（帧损坏 / IO）：同样走收尾路径，避免在途 HostCall 挂死。
+            Err(error) => {
+                tasks.abort_all();
+                read_error = Some(error);
+                break;
+            }
         };
         match msg {
             HostToPlugin::Invoke(invoke) => {
@@ -195,13 +327,37 @@ where
             HostToPlugin::Hello(_) => {
                 tracing::warn!("ignoring duplicate Hello");
             }
+            HostToPlugin::HostCallResult(result) => {
+                let waiter = host_calls
+                    .lock()
+                    .expect("host call pending lock poisoned")
+                    .remove(&result.call_id);
+                match waiter {
+                    Some(waiter) => {
+                        let _ = waiter.send(result.outcome);
+                    }
+                    None => tracing::debug!(
+                        call_id = %result.call_id,
+                        "ignoring HostCallResult for unknown/finished call"
+                    ),
+                }
+            }
         }
     }
 
     // 5) 收尾：Drain 等待在途任务完成；Dispose / EOF 已中止。写者最后收口。
+    //    丢弃全部在途 HostCall（等待者得到 Closed，而非挂到超时）。
+    host_calls
+        .lock()
+        .expect("host call pending lock poisoned")
+        .clear();
     drop(tx);
     while tasks.join_next().await.is_some() {}
-    finish_writer(writer_task).await
+    let writer_result = finish_writer(writer_task).await;
+    match read_error {
+        Some(error) => Err(error),
+        None => writer_result,
+    }
 }
 
 /// 贡献名（`Invoke` 的寻址目标）：Tool / Skill 用 name，Service 用 key；

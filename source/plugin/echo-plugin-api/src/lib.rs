@@ -29,9 +29,9 @@ pub use contribution::{
     Contribution, EventContribution, ServiceContribution, SkillContribution, ToolContribution,
 };
 pub use protocol::{
-    compatible, Cancel, Drain, Emit, EventNotification, Failure, Hello, HostToPlugin, Invoke,
-    InvokeContext, InvokeOutcome, InvokeResult, LogLevel, LogRecord, PluginToHost, Register,
-    Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
+    compatible, Cancel, Drain, Emit, EventNotification, Failure, Hello, HostCall, HostCallOutcome,
+    HostCallResult, HostToPlugin, Invoke, InvokeContext, InvokeOutcome, InvokeResult, LogLevel,
+    LogRecord, PluginToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
 };
 
 /// 能力 / feature 名单常量（`Welcome.capabilities` 用的稳定字符串）。
@@ -48,6 +48,8 @@ pub mod capabilities {
     pub const EVENTS: &str = "events";
     /// 插件支持取消语义（Cancel 送达 + `Error{code:"cancelled"}` 回发）。
     pub const CANCEL: &str = "cancel";
+    /// 插件支持宿主服务回呼（`HostCall` / `HostCallResult`；P2 新增）。
+    pub const HOST_CALL: &str = "host_call";
 }
 
 #[cfg(test)]

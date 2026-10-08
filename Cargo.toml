@@ -8,6 +8,7 @@ members = [
     "source/llm/echo-llm-openai",
     "source/llm/echo-llm-anthropic",
     "source/llm/echo-llm-ollama",
+    "source/security/echo-sanitize",
     "source/protocol/echo-protocol",
     "source/federation/echo-federation",
     "source/backend/echo-core",
@@ -37,9 +38,9 @@ repository = "https://gitlab.com/echo_tech/EchoAgentCore"
 opt-level = 1
 
 [workspace.dependencies]
-# internal
 echo-defs = { path = "source/defs/echo-defs" }
 echo-context = { path = "source/context/echo-context" }
+echo-sanitize = { path = "source/security/echo-sanitize" }
 echo-session = { path = "source/session/echo-session" }
 echo-loop = { path = "source/loop/echo-loop" }
 echo-llm-openai = { path = "source/llm/echo-llm-openai" }
@@ -94,3 +95,4 @@ chrono = "0.4"
 sha2 = "0.10"
 walkdir = "2"
 regex = "1"
+aho-corasick = "1"

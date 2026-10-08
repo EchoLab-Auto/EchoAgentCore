@@ -93,7 +93,9 @@ impl InboundMessageHook for AgentMessageHook {
             user_name: msg.user_name.clone(),
             channel: format!("{}", msg.channel),
             group_name: msg.group_name.clone(),
-            content: msg.content.clone(),
+            // 面板展示同过脱敏（2026-10 安全）：与入站漏斗同口径——
+            // 群成员粘贴的密钥不得经展示事件露出（无脱敏器 = 原样）。
+            content: agent.redact_text(&msg.content),
             images: msg.images.clone(),
             timestamp: msg.timestamp,
             received_at_ms,

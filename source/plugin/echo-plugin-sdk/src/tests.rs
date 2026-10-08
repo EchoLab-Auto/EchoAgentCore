@@ -2,20 +2,20 @@
 //!
 //! 覆盖：Hello 握手（Welcome + Register + Ready）/ invoke 往返 / 未知贡献
 //! error outcome / 并发 invoke 帧不交错 / Drain 退出 / 版本不兼容拒绝 /
-//! ServeOptions 覆盖。
+//! ServeOptions 覆盖 / HostCall 回呼（往返 / 服务错误 / 超时 / 断开 Closed）。
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use echo_plugin_api::{
-    Contribution, Drain, Hello, HostToPlugin, Invoke, InvokeContext, InvokeOutcome, PluginToHost,
-    ToolContribution, PROTOCOL_NAME, PROTOCOL_VERSION,
+    Contribution, Drain, Hello, HostCall, HostCallOutcome, HostCallResult, HostToPlugin, Invoke,
+    InvokeContext, InvokeOutcome, PluginToHost, ToolContribution, PROTOCOL_NAME, PROTOCOL_VERSION,
 };
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
-use crate::{plugin_id, serve_io_with, InvokeRequest, PluginHandler, ServeOptions};
+use crate::{plugin_id, serve_io_with, HostClient, InvokeRequest, PluginHandler, ServeOptions};
 
 /// 会话超时（防用例挂死）。
 const TIMEOUT: Duration = Duration::from_secs(2);
@@ -187,7 +187,11 @@ async fn hello_handshake_produces_welcome_register_ready() {
             assert_eq!(welcome.plugin_id, plugin_id());
             assert_eq!(
                 welcome.capabilities,
-                vec!["tools".to_string(), "cancel".to_string()]
+                vec![
+                    "tools".to_string(),
+                    "cancel".to_string(),
+                    "host_call".to_string()
+                ]
             );
         }
         other => panic!("expected Welcome, got {other:?}"),
@@ -421,4 +425,262 @@ async fn default_options_echo_host_assigned_plugin_id() {
     let _ = recv(&mut session).await; // Register
     let _ = recv(&mut session).await; // Ready
     shutdown_and_assert_clean(session).await;
+}
+
+// ── HostCall（P2）：插件 → 宿主服务回呼 ──────────────────────────────────────
+
+/// HostCall 测试处理器：`on_ready` 保存句柄；`invoke` 用保存的句柄发起回呼。
+struct HostCallHandler {
+    /// `on_ready` 交付的句柄（测试侧共享；会话结束后仍可复用验证 Closed）。
+    client: Arc<Mutex<Option<HostClient>>>,
+}
+
+impl HostCallHandler {
+    fn new() -> (Self, Arc<Mutex<Option<HostClient>>>) {
+        let client = Arc::new(Mutex::new(None));
+        (
+            Self {
+                client: Arc::clone(&client),
+            },
+            client,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl PluginHandler for HostCallHandler {
+    fn contributions(&self) -> Vec<Contribution> {
+        vec![Contribution::Tool(ToolContribution {
+            name: "call_host".to_string(),
+            description: "发起 HostCall（SDK 测试）".to_string(),
+            parameters: json!({"type": "object"}),
+            category: "plugin".to_string(),
+            timeout_hint_secs: None,
+            package: Some("echo-plugin-sdk.tests".to_string()),
+        })]
+    }
+
+    async fn invoke(&self, req: InvokeRequest) -> InvokeOutcome {
+        let Some(client) = self.client.lock().expect("client lock poisoned").clone() else {
+            return InvokeOutcome::Error {
+                code: "no_client".to_string(),
+                message: "on_ready did not deliver a client".to_string(),
+            };
+        };
+        let call = match req
+            .payload
+            .get("timeout_ms")
+            .and_then(serde_json::Value::as_u64)
+        {
+            Some(ms) => {
+                client
+                    .call_with_timeout(
+                        "sanitizer",
+                        "redact",
+                        json!({"text": "secret"}),
+                        Duration::from_millis(ms),
+                    )
+                    .await
+            }
+            None => {
+                client
+                    .call("sanitizer", "redact", json!({"text": "secret"}))
+                    .await
+            }
+        };
+        let text = match call {
+            Ok(result) => format!("ok:{result}"),
+            Err(error) => format!("err:{error}"),
+        };
+        InvokeOutcome::Ok {
+            text,
+            images: vec![],
+        }
+    }
+
+    async fn on_ready(&self, host: HostClient) {
+        *self.client.lock().expect("client lock poisoned") = Some(host);
+    }
+}
+
+/// 启动一个使用 [`HostCallHandler`] 的 SDK 会话（返回已保存句柄的共享位）。
+fn start_host_call_session() -> (Session, Arc<Mutex<Option<HostClient>>>) {
+    let (server, client) = tokio::io::duplex(64 * 1024);
+    let (reader, writer) = tokio::io::split(server);
+    let (handler, stored) = HostCallHandler::new();
+    let task = tokio::spawn(serve_io_with(
+        handler,
+        ServeOptions::default(),
+        reader,
+        writer,
+    ));
+    (
+        Session {
+            client,
+            drained: Arc::new(AtomicBool::new(false)),
+            task,
+        },
+        stored,
+    )
+}
+
+/// 读一帧并断言是 `HostCall`（字段与测试约定一致），返回之。
+async fn recv_host_call(session: &mut Session, expected_call_id: &str) -> HostCall {
+    match recv(session).await {
+        PluginToHost::HostCall(call) => {
+            assert_eq!(call.call_id, expected_call_id);
+            assert_eq!(call.service, "sanitizer");
+            assert_eq!(call.method, "redact");
+            assert_eq!(call.payload, json!({"text": "secret"}));
+            call
+        }
+        other => panic!("expected HostCall, got {other:?}"),
+    }
+}
+
+fn invoke_call_host(call_id: &str, payload: serde_json::Value) -> HostToPlugin {
+    HostToPlugin::Invoke(Invoke {
+        call_id: call_id.to_string(),
+        contribution: "call_host".to_string(),
+        ctx: InvokeContext::default(),
+        payload,
+    })
+}
+
+/// HostCall 往返：`on_ready` 保存句柄 → invoke 中回呼 → 响应 HostCallResult
+/// → `call()` 返回结果 → InvokeResult 带回。
+#[tokio::test]
+async fn host_call_roundtrip_via_on_ready_client() {
+    let (mut session, _stored) = start_host_call_session();
+    handshake(&mut session).await;
+
+    send(&mut session, invoke_call_host("p:1", json!({}))).await;
+    let call = recv_host_call(&mut session, "host:1").await;
+
+    send(
+        &mut session,
+        HostToPlugin::HostCallResult(HostCallResult {
+            call_id: call.call_id,
+            outcome: HostCallOutcome::Ok {
+                result: json!({"redacted": "***"}),
+            },
+        }),
+    )
+    .await;
+
+    match recv(&mut session).await {
+        PluginToHost::InvokeResult(result) => {
+            assert_eq!(result.call_id, "p:1");
+            assert_eq!(
+                result.outcome,
+                InvokeOutcome::Ok {
+                    text: "ok:{\"redacted\":\"***\"}".to_string(),
+                    images: vec![],
+                }
+            );
+        }
+        other => panic!("expected InvokeResult, got {other:?}"),
+    }
+
+    shutdown_and_assert_clean(session).await;
+}
+
+/// 宿主服务错误 → `HostCallError::Service`（错误码原样带回）。
+#[tokio::test]
+async fn host_call_service_error_maps_to_service_error() {
+    let (mut session, _stored) = start_host_call_session();
+    handshake(&mut session).await;
+
+    send(&mut session, invoke_call_host("p:1", json!({}))).await;
+    let call = recv_host_call(&mut session, "host:1").await;
+    send(
+        &mut session,
+        HostToPlugin::HostCallResult(HostCallResult {
+            call_id: call.call_id,
+            outcome: HostCallOutcome::Error {
+                code: "service_not_found".to_string(),
+                message: "unknown host service: sanitizer".to_string(),
+            },
+        }),
+    )
+    .await;
+
+    match recv(&mut session).await {
+        PluginToHost::InvokeResult(result) => match result.outcome {
+            InvokeOutcome::Ok { text, .. } => {
+                assert!(
+                    text.contains("service_not_found"),
+                    "unexpected text: {text}"
+                );
+            }
+            other => panic!("expected Ok outcome, got {other:?}"),
+        },
+        other => panic!("expected InvokeResult, got {other:?}"),
+    }
+
+    shutdown_and_assert_clean(session).await;
+}
+
+/// 宿主不响应 → `call_with_timeout` 超时（不挂死）。
+#[tokio::test]
+async fn host_call_without_response_times_out() {
+    let (mut session, _stored) = start_host_call_session();
+    handshake(&mut session).await;
+
+    let started = std::time::Instant::now();
+    send(
+        &mut session,
+        invoke_call_host("p:1", json!({"timeout_ms": 150})),
+    )
+    .await;
+    let _call = recv_host_call(&mut session, "host:1").await; // 故意不回结果
+
+    match recv(&mut session).await {
+        PluginToHost::InvokeResult(result) => match result.outcome {
+            InvokeOutcome::Ok { text, .. } => {
+                assert!(text.contains("timed out"), "unexpected text: {text}");
+            }
+            other => panic!("expected Ok outcome, got {other:?}"),
+        },
+        other => panic!("expected InvokeResult, got {other:?}"),
+    }
+    assert!(
+        started.elapsed() >= Duration::from_millis(140),
+        "timeout returned too early: {:?}",
+        started.elapsed()
+    );
+
+    shutdown_and_assert_clean(session).await;
+}
+
+/// 会话结束后（连接断开）调用 → `HostCallError::Closed`（而非挂到超时）。
+#[tokio::test]
+async fn host_call_after_disconnect_is_closed() {
+    let (mut session, stored) = start_host_call_session();
+    handshake(&mut session).await;
+
+    // 关闭客户端流（stdin EOF）→ serve 结束（写者收口、在途表清空）。
+    let Session { client, task, .. } = session;
+    drop(client);
+    tokio::time::timeout(TIMEOUT, task)
+        .await
+        .expect("session should finish after client EOF")
+        .expect("session task should not panic")
+        .expect("session should exit cleanly on EOF");
+
+    let client = stored
+        .lock()
+        .expect("client lock poisoned")
+        .clone()
+        .expect("on_ready should have delivered a client");
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        client.call("sanitizer", "redact", json!({"text": "secret"})),
+    )
+    .await
+    .expect("call after disconnect should not hang");
+    assert!(
+        matches!(result, Err(crate::HostCallError::Closed)),
+        "expected Closed, got {result:?}"
+    );
 }

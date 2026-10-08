@@ -49,14 +49,24 @@ impl Agent {
     }
 
     /// Rebuild the LLM provider from the current config snapshot.
+    ///
+    /// 重建时统一包一层脱敏装饰器（`llm::wrap_redacting`，2026-10 安全：
+    /// LLM 请求出口卡口）；同时把快照中的密钥登记进脱敏器——热更新后
+    /// 新密钥立即纳入全部出口的拦截范围（幂等）。
     pub(crate) async fn rebuild_provider(&self, cfg: &AgentConfig) -> bool {
         let mut resolved = cfg.clone();
         resolved.apply_active_profile();
         resolved.api_key = resolved.effective_api_key();
         resolved.base_url = resolved.effective_base_url();
+        self.register_config_secrets(&resolved);
         match crate::llm::create_provider(&resolved) {
             Ok(p) => {
-                *self.provider.write().await = Arc::from(p);
+                let provider: Arc<dyn LlmProvider> = Arc::from(p);
+                let provider = match self.redactor() {
+                    Some(redactor) => crate::llm::wrap_redacting(provider, redactor),
+                    None => provider,
+                };
+                *self.provider.write().await = provider;
                 true
             }
             Err(e) => {
@@ -65,6 +75,24 @@ impl Agent {
                     message: format!("failed to build provider: {e}"),
                 });
                 false
+            }
+        }
+    }
+
+    /// 把配置快照中的全部密钥登记进脱敏器（幂等；未注入脱敏器 = no-op）。
+    ///
+    /// 覆盖顶层 `api_key`（已含 env 回退后的生效值）与 `api_profiles[*]`。
+    /// 旧密钥保留登记——它同样敏感（例如切换 profile 后被替换的旧 key）。
+    pub(crate) fn register_config_secrets(&self, cfg: &AgentConfig) {
+        let Some(redactor) = self.redactor() else {
+            return;
+        };
+        if !cfg.api_key.trim().is_empty() {
+            redactor.register_secret(&cfg.api_key, "api_key");
+        }
+        for profile in &cfg.api_profiles {
+            if !profile.api_key.trim().is_empty() {
+                redactor.register_secret(&profile.api_key, &format!("api_key:{}", profile.name));
             }
         }
     }

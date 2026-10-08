@@ -1,0 +1,15 @@
+[package]
+name = "echo-sanitize"
+description = "Sensitive-data isolation service for EchoAgentCore — registry-based redactor (default Redactor implementation)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+echo-defs = { path = "../../defs/echo-defs" }
+echo-context = { path = "../../context/echo-context" }
+aho-corasick.workspace = true
+regex.workspace = true
+tracing.workspace = true

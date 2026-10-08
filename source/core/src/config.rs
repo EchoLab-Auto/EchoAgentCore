@@ -83,6 +83,46 @@ pub struct CoreConfig {
     /// QQ 实例表（多实例；缺省 = 单实例 `qq`）。
     #[serde(skip)]
     pub qq_instances: std::collections::BTreeMap<String, QqInstanceSection>,
+    /// `[security]`：敏感信息防护（脱敏服务，2026-10）。
+    pub security: SecuritySection,
+}
+
+/// `[security]`：敏感信息防护总节。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct SecuritySection {
+    pub sanitize: SanitizeSection,
+}
+
+/// `[security.sanitize]`：脱敏服务（默认开启）。
+///
+/// 三层出口卡口（工具结果 / LLM 请求 / QQ 外发）+ 入站与事件落盘脱敏，
+/// 详见 `document/security-redaction-design.md`。`enabled=false` 需要重启
+/// 生效，且**不再提供运行期一键开关**（安全不变量：脱敏器不可被模型或
+/// 误操作禁用）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct SanitizeSection {
+    /// 是否启用脱敏（缺省 true）。
+    pub enabled: bool,
+    /// QQ 出站命中策略：`"block"`（缺省，拒绝发送 + 报错）或
+    /// `"redact"`（替换为占位符后照发）。
+    pub outbound: String,
+    /// 追加登记的精确值（label 自动编号 `extra:<序号>`）。
+    pub extra_secrets: Vec<String>,
+    /// 追加检测正则：名字 → regex（命中替换为 `【已隐藏:pattern:<名字>】`）。
+    pub extra_patterns: std::collections::BTreeMap<String, String>,
+}
+
+impl Default for SanitizeSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            outbound: "block".to_string(),
+            extra_secrets: Vec::new(),
+            extra_patterns: std::collections::BTreeMap::new(),
+        }
+    }
 }
 
 /// Container for the `[adapters]` TOML section.

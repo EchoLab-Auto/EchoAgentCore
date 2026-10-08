@@ -37,6 +37,8 @@ pub enum HostToPlugin {
     Drain(Drain),
     /// 终止：立即释放并退出（宿主已确保无在途）。
     Dispose,
+    /// 对插件 `HostCall` 的回执（`call_id` 由插件生成、原样带回）。
+    HostCallResult(HostCallResult),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,6 +120,8 @@ pub enum PluginToHost {
     Ready,
     /// 初始化失败（宿主按策略处理：报错 / 重启 / 熔断）。
     Failed(Failure),
+    /// 插件 → 宿主服务回呼（宿主按注册表路由，结果回执为 `HostCallResult`）。
+    HostCall(HostCall),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -189,4 +193,40 @@ pub struct LogRecord {
 pub struct Failure {
     pub code: String,
     pub message: String,
+}
+
+/// 插件 → 宿主服务回呼（`PluginToHost::HostCall` 载荷；P2 新增）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HostCall {
+    /// 调用 id：插件生成、配对结果用（约定 `"host:<序号>"`）。
+    pub call_id: String,
+    /// 宿主注册表键（如 `"sanitizer"`）。
+    pub service: String,
+    /// 服务方法名（如 `"redact"` / `"scan"`）。
+    pub method: String,
+    #[serde(default)]
+    pub payload: Value,
+}
+
+/// 宿主对 [`HostCall`] 的回执（`HostToPlugin::HostCallResult` 载荷）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HostCallResult {
+    /// 对应 [`HostCall::call_id`]（插件生成、原样带回）。
+    pub call_id: String,
+    pub outcome: HostCallOutcome,
+}
+
+/// 服务回呼终态：成功（JSON 结果）或错误。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum HostCallOutcome {
+    Ok {
+        #[serde(default)]
+        result: Value,
+    },
+    Error {
+        /// 机器可读错误码（如 `service_not_found` / `method_not_found` / `timeout`）。
+        code: String,
+        message: String,
+    },
 }

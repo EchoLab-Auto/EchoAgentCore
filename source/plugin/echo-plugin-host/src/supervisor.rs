@@ -39,9 +39,11 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::api::{
-    compatible, Cancel, Contribution, Drain, Hello, HostToPlugin, Invoke, InvokeContext,
-    InvokeOutcome, LogLevel, LogRecord, PluginToHost, PROTOCOL_NAME, PROTOCOL_VERSION,
+    compatible, Cancel, Contribution, Drain, Hello, HostCallOutcome, HostCallResult, HostToPlugin,
+    Invoke, InvokeContext, InvokeOutcome, LogLevel, LogRecord, PluginToHost, PROTOCOL_NAME,
+    PROTOCOL_VERSION,
 };
+use crate::host_service::HostServiceRegistry;
 use crate::transport::{PluginConnection, PluginSpec, Transport, TransportError};
 
 /// 握手总超时（Hello → Welcome → Register → Ready）。
@@ -96,11 +98,18 @@ impl Default for RestartPolicy {
 #[derive(Clone, Default)]
 pub struct PluginSupervisor {
     policy: RestartPolicy,
+    /// 宿主服务注册表（P2 HostCall）；`new()` 时创建，Clone 共享同一注册表。
+    host_services: Arc<HostServiceRegistry>,
 }
 
 impl PluginSupervisor {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 宿主服务注册表（供外部在插件启动前后注册 [`crate::host_service::HostService`]）。
+    pub fn host_services(&self) -> Arc<HostServiceRegistry> {
+        Arc::clone(&self.host_services)
     }
 
     /// 覆盖默认重启策略。
@@ -129,6 +138,7 @@ impl PluginSupervisor {
             spec.plugin_id.clone(),
             self.policy.clone(),
             ctl_tx,
+            self.host_services.clone(),
         ));
         let (init_tx, init_rx) = oneshot::channel();
         let task_shared = shared.clone();
@@ -324,6 +334,8 @@ struct Shared {
     conn: Mutex<Option<Arc<dyn PluginConnection>>>,
     /// 控制通道（drain / upgrade 请求）。
     ctl: mpsc::Sender<Control>,
+    /// 宿主服务注册表（P2 HostCall 回呼路由）。
+    host_services: Arc<HostServiceRegistry>,
 }
 
 /// 在途调用。
@@ -365,7 +377,12 @@ enum Restart {
 }
 
 impl Shared {
-    fn new(plugin_id: String, policy: RestartPolicy, ctl: mpsc::Sender<Control>) -> Self {
+    fn new(
+        plugin_id: String,
+        policy: RestartPolicy,
+        ctl: mpsc::Sender<Control>,
+        host_services: Arc<HostServiceRegistry>,
+    ) -> Self {
         Self {
             plugin_id,
             policy,
@@ -378,6 +395,7 @@ impl Shared {
             events: Mutex::new(Vec::new()),
             conn: Mutex::new(None),
             ctl,
+            host_services,
         }
     }
 
@@ -734,6 +752,9 @@ async fn run_handshake(
                 PluginToHost::InvokeResult(r) => {
                     tracing::debug!(plugin = %plugin_id, call_id = %r.call_id, "ignoring InvokeResult during handshake");
                 }
+                PluginToHost::HostCall(call) => {
+                    tracing::debug!(plugin = %plugin_id, call_id = %call.call_id, "ignoring HostCall during handshake");
+                }
             }
         }
     };
@@ -746,7 +767,7 @@ async fn run_handshake(
 
 /// 崩溃后的重启循环（backoff 等待可被排空请求打断）。
 async fn restart_after_crash(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     transport: &dyn Transport,
     spec: &PluginSpec,
     ctl_rx: &mut mpsc::Receiver<Control>,
@@ -821,7 +842,7 @@ async fn restart_after_crash(
 }
 
 /// 排空：发 Drain → 等通道关闭（或 deadline）→ shutdown。
-async fn drain_connection(shared: &Shared, deadline: Duration) -> Result<(), TransportError> {
+async fn drain_connection(shared: &Arc<Shared>, deadline: Duration) -> Result<(), TransportError> {
     let Some(conn) = shared.current_conn() else {
         return Ok(()); // 重启中等：无连接可排空
     };
@@ -864,7 +885,7 @@ async fn drain_connection(shared: &Shared, deadline: Duration) -> Result<(), Tra
 ///   贡献 → `hot_replaces` +1 → 排空旧实例
 ///   （`Drain{deadline_ms: timeout}` → 等其退出 → `shutdown` 兜底强杀）。
 async fn upgrade_instance(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     transport: &dyn Transport,
     spec: &PluginSpec,
     config: Value,
@@ -936,7 +957,7 @@ async fn upgrade_instance(
 /// `shutdown(剩余时间)` 兜底强杀。
 ///
 /// 旧实例的退出结果（优雅 / 强杀）不影响热替换结果：流量已在新实例上。
-async fn drain_retired(shared: &Shared, conn: &Arc<dyn PluginConnection>, timeout: Duration) {
+async fn drain_retired(shared: &Arc<Shared>, conn: &Arc<dyn PluginConnection>, timeout: Duration) {
     let started = tokio::time::Instant::now();
     if let Err(e) = conn
         .send(HostToPlugin::Drain(Drain {
@@ -995,7 +1016,10 @@ fn not_ready_error(state: &PluginState) -> TransportError {
 }
 
 /// 分发插件 → 宿主消息。
-fn dispatch(shared: &Shared, msg: PluginToHost) {
+///
+/// `shared: &Arc<Shared>`：`HostCall` 分支需要把 `Arc` 移入后台任务
+/// （服务调用 + 回发结果），不阻塞监督循环。
+fn dispatch(shared: &Arc<Shared>, msg: PluginToHost) {
     match msg {
         PluginToHost::InvokeResult(r) => match shared.remove_pending(&r.call_id) {
             Some(call) => {
@@ -1017,6 +1041,43 @@ fn dispatch(shared: &Shared, msg: PluginToHost) {
         }
         PluginToHost::Log(l) => log_record(&shared.plugin_id, &l),
         PluginToHost::Register(r) => shared.set_contributions(r.contributions),
+        PluginToHost::HostCall(call) => {
+            // P2：宿主服务回呼。在后台任务中查表调用并回发结果；连接已不存在 /
+            // 发送失败仅 debug（插件可能已退出 / 崩溃重启中）。
+            let shared = Arc::clone(shared);
+            tokio::spawn(async move {
+                let outcome =
+                    match shared
+                        .host_services
+                        .call(&call.service, &call.method, call.payload)
+                    {
+                        Ok(result) => HostCallOutcome::Ok { result },
+                        Err((code, message)) => HostCallOutcome::Error { code, message },
+                    };
+                let Some(conn) = shared.current_conn() else {
+                    tracing::debug!(
+                        plugin = %shared.plugin_id,
+                        call_id = %call.call_id,
+                        "dropping HostCallResult: plugin connection is gone"
+                    );
+                    return;
+                };
+                if let Err(e) = conn
+                    .send(HostToPlugin::HostCallResult(HostCallResult {
+                        call_id: call.call_id.clone(),
+                        outcome,
+                    }))
+                    .await
+                {
+                    tracing::debug!(
+                        plugin = %shared.plugin_id,
+                        call_id = %call.call_id,
+                        error = %e,
+                        "failed to deliver HostCallResult"
+                    );
+                }
+            });
+        }
         PluginToHost::Welcome(w) => tracing::warn!(
             plugin = %shared.plugin_id,
             version = w.version,

@@ -200,7 +200,15 @@ impl Agent {
                 return false;
             }
         };
-        *self.provider.write().await = Arc::from(provider);
+        // 安全（2026-10）：provider 重建一律经脱敏装饰器包装（LLM 请求
+        // 出口卡口），并登记该 persona 生效密钥。
+        self.register_config_secrets(&resolved);
+        let provider: Arc<dyn LlmProvider> = Arc::from(provider);
+        let provider = match self.redactor() {
+            Some(redactor) => crate::llm::wrap_redacting(provider, redactor),
+            None => provider,
+        };
+        *self.provider.write().await = provider;
         self.set_model(resolved.model.clone()).await;
         true
     }

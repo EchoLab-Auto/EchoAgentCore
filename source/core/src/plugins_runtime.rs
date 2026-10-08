@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use echo_plugin_host::bootstrap::StartedPlugins;
-use echo_plugin_host::{PluginSupervisor, RemoteTool};
+use echo_plugin_host::{HostServiceRegistry, PluginSupervisor, RemoteTool};
 
 /// 已装载并启动的子进程插件运行时。
 pub struct PluginRuntime {
@@ -31,7 +31,15 @@ pub struct PluginRuntime {
 }
 
 /// 若 `<config_path 同目录>/plugins.toml` 存在则装载并启动；否则休眠。
-pub async fn start_if_configured(config_path: &Path) -> Option<PluginRuntime> {
+///
+/// `register_host_services`：插件启动**前**的宿主服务注册钩子（P2）——
+/// 组合根在此把可回呼服务（如 `"sanitizer"`）注册进
+/// [`HostServiceRegistry`]；插件随后经 `HostCall` 调用。无
+/// plugins.toml（特性休眠）时钩子不执行（注册表无消费者，无副作用）。
+pub async fn start_if_configured(
+    config_path: &Path,
+    register_host_services: impl FnOnce(&HostServiceRegistry),
+) -> Option<PluginRuntime> {
     let path = config_path.with_file_name("plugins.toml");
     if !path.exists() {
         tracing::debug!(
@@ -53,6 +61,7 @@ pub async fn start_if_configured(config_path: &Path) -> Option<PluginRuntime> {
     };
     let (specs, skipped) = echo_plugin_host::bootstrap::launch_specs(&tree);
     let supervisor = PluginSupervisor::new();
+    register_host_services(&supervisor.host_services());
     let started = echo_plugin_host::bootstrap::start_plugins(&supervisor, specs).await;
     for (plugin_id, error) in &started.errors {
         tracing::warn!(plugin = %plugin_id, %error, "subprocess plugin start failed");
@@ -105,7 +114,7 @@ mod tests {
         let dir = unique_dir("missing");
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let config_path = dir.join("echo-agent-core.toml");
-        assert!(start_if_configured(&config_path).await.is_none());
+        assert!(start_if_configured(&config_path, |_| {}).await.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -116,7 +125,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp dir");
         std::fs::write(dir.join("plugins.toml"), "not = valid = toml [[[").expect("write toml");
         let config_path = dir.join("echo-agent-core.toml");
-        assert!(start_if_configured(&config_path).await.is_none());
+        assert!(start_if_configured(&config_path, |_| {}).await.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

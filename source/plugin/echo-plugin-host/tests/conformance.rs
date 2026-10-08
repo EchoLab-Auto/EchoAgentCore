@@ -237,6 +237,7 @@ impl InprocPlugin for TestPlugin {
                     }
                     HostToPlugin::Dispose => return,
                     HostToPlugin::Event(_) | HostToPlugin::Hello(_) => {}
+                    HostToPlugin::HostCallResult(_) => {} // 测试插件不发起 HostCall：忽略
                 }
             }
         })

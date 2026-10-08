@@ -16,6 +16,7 @@
 pub use echo_plugin_api as api;
 
 pub mod bootstrap;
+pub mod host_service;
 pub mod inproc;
 pub mod stdio;
 pub mod supervisor;
@@ -23,6 +24,7 @@ pub mod tool;
 pub mod transport;
 
 pub use bootstrap::{launch_specs, start_from_file, start_plugins, LaunchSpec, StartedPlugins};
+pub use host_service::{HostService, HostServiceRegistry};
 pub use inproc::{InprocIo, InprocPlugin, InprocTransport};
 pub use stdio::{StdioConnection, StdioTransport};
 pub use supervisor::{PluginHandle, PluginState, PluginSupervisor, RestartPolicy};

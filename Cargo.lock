@@ -416,6 +416,7 @@ dependencies = [
  "echo-loop",
  "echo-plugin",
  "echo-protocol",
+ "echo-sanitize",
  "echo-session",
  "echo-test-utils",
  "filetime",
@@ -455,6 +456,7 @@ dependencies = [
  "echo-plugin-host",
  "echo-plugin-loader",
  "echo-protocol",
+ "echo-sanitize",
  "echo-server",
  "echo-session",
  "echo-test-utils",
@@ -653,6 +655,17 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "echo-sanitize"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+ "echo-context",
+ "echo-defs",
+ "regex",
  "tracing",
 ]
 

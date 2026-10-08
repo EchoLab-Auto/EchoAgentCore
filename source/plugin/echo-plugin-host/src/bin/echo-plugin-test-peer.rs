@@ -149,6 +149,7 @@ fn main() {
             }
             HostToPlugin::Dispose => return,
             HostToPlugin::Event(_) => {} // 测试插件不订阅事件：忽略
+            HostToPlugin::HostCallResult(_) => {} // 测试插件不发起 HostCall：忽略
         }
     }
 }

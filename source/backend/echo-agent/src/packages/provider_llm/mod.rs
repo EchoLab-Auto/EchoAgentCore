@@ -15,6 +15,10 @@ pub use echo_defs::token::{
 };
 pub use echo_defs::tool::ToolDefinition;
 
+mod redacting;
+
+pub use redacting::wrap_redacting;
+
 /// Build a provider from configuration.
 ///
 /// base_url 以 `/anthropic` 结尾时（如 DeepSeek 的 Anthropic 兼容端点

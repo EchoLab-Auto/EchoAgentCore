@@ -66,6 +66,10 @@ pub struct ToolRegistry {
     /// composition root when assembling; the frontend uses it to group
     /// checkboxes so a whole package (tools + skills) can be toggled at once.
     packages: tokio::sync::RwLock<std::collections::HashMap<String, String>>,
+    /// 结果脱敏器（安全服务注入；`None` = 透传，行为与旧版一致）。
+    /// 出口统一处理：所有工具（内置 / 插件 / 远程 / 子代理直呼 / 联邦）
+    /// 的结果文本经此处脱敏后才交给任何消费者（2026-10 敏感信息隔离）。
+    redactor: tokio::sync::RwLock<Option<Arc<dyn echo_defs::sanitize::Redactor>>>,
 }
 
 impl std::fmt::Debug for ToolRegistry {
@@ -89,7 +93,26 @@ impl ToolRegistry {
             cached_definitions: tokio::sync::RwLock::new(None),
             disabled: tokio::sync::RwLock::new(std::collections::HashSet::new()),
             packages: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            redactor: tokio::sync::RwLock::new(None),
         }
+    }
+
+    /// 注入结果脱敏器（组合根装配期调用；`None` = 关闭）。
+    ///
+    /// 生效范围：本注册表的**全部**执行出口（`execute` / `execute_rich`）。
+    /// 装配期无竞争（`try_write` 直通）；意外竞争时退到阻塞段落。
+    pub fn set_redactor(&self, redactor: Option<Arc<dyn echo_defs::sanitize::Redactor>>) {
+        match self.redactor.try_write() {
+            Ok(mut slot) => *slot = redactor,
+            Err(_) => blocking_section(|| {
+                *self.redactor.blocking_write() = redactor;
+            }),
+        }
+    }
+
+    /// 当前脱敏器（未注入 = None）。
+    async fn redactor(&self) -> Option<Arc<dyn echo_defs::sanitize::Redactor>> {
+        self.redactor.read().await.clone()
     }
 
     /// Register a tool during static assembly.
@@ -360,10 +383,11 @@ impl ToolRegistry {
         if disabled {
             return Err(ToolError::NotFound(name.to_string()));
         }
-        match tool {
+        let result = match tool {
             Some(tool) => tool.execute(arguments).await,
             None => Err(ToolError::NotFound(name.to_string())),
-        }
+        };
+        self.redact_text_outcome(result).await
     }
 
     /// Execute a tool with multimodal output support (text + images).
@@ -380,12 +404,50 @@ impl ToolRegistry {
         if disabled {
             return Err(ToolError::NotFound(name.to_string()));
         }
-        match tool {
+        let result = match tool {
             Some(tool) => tool.execute_rich(arguments).await,
             None => Err(ToolError::NotFound(name.to_string())),
+        };
+        self.redact_rich_outcome(result).await
+    }
+
+    /// 出口脱敏（文本版）：结果与错误消息都经脱敏器处理后返回。
+    /// 未注入脱敏器 = 原样透传。
+    async fn redact_text_outcome(
+        &self,
+        result: Result<String, ToolError>,
+    ) -> Result<String, ToolError> {
+        let Some(redactor) = self.redactor().await else {
+            return result;
+        };
+        match result {
+            Ok(text) => {
+                let report = redactor.redact(&text);
+                Ok(if report.changed { report.text } else { text })
+            }
+            Err(error) => Err(redact_error(redactor.as_ref(), error)),
         }
     }
 
+    /// 出口脱敏（多模态版）：仅改写文本通道，图片原样。
+    async fn redact_rich_outcome(
+        &self,
+        result: Result<echo_defs::tool::ToolResult, ToolError>,
+    ) -> Result<echo_defs::tool::ToolResult, ToolError> {
+        let Some(redactor) = self.redactor().await else {
+            return result;
+        };
+        match result {
+            Ok(mut rich) => {
+                let report = redactor.redact(&rich.text);
+                if report.changed {
+                    rich.text = report.text;
+                }
+                Ok(rich)
+            }
+            Err(error) => Err(redact_error(redactor.as_ref(), error)),
+        }
+    }
     /// Bulk enable/disable every tool owned by a package (package id = 插件 id，
     /// 装配时打标）。同步接口：插件 mount/unmount 闭包是同步上下文，锁竞争
     /// 时退到 blocking pool。返回受影响的工具数。
@@ -442,7 +504,6 @@ impl ToolRegistry {
             Err(_) => blocking_section(|| self.tools.blocking_read().len()),
         }
     }
-
     pub fn is_empty(&self) -> bool {
         match self.tools.try_read() {
             Ok(tools) => tools.is_empty(),
@@ -451,15 +512,37 @@ impl ToolRegistry {
     }
 }
 
+/// 工具错误消息的出口脱敏：保持原变体形态（Display 前缀不重复），
+/// 只改写变体内的文本。
+fn redact_error(redactor: &dyn echo_defs::sanitize::Redactor, error: ToolError) -> ToolError {
+    fn redact_inner(redactor: &dyn echo_defs::sanitize::Redactor, inner: String) -> String {
+        let report = redactor.redact(&inner);
+        if report.changed {
+            report.text
+        } else {
+            inner
+        }
+    }
+    match error {
+        ToolError::InvalidArguments(inner) => {
+            ToolError::InvalidArguments(redact_inner(redactor, inner))
+        }
+        ToolError::Execution(inner) => ToolError::Execution(redact_inner(redactor, inner)),
+        ToolError::NotFound(inner) => ToolError::NotFound(redact_inner(redactor, inner)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use echo_defs::sanitize::Redactor;
 
     struct StubTool {
         name: &'static str,
     }
 
+    #[async_trait]
     #[async_trait]
     impl Tool for StubTool {
         fn name(&self) -> &str {
@@ -578,5 +661,79 @@ mod tests {
             "stub"
         );
         assert!(registry.execute("missing", Value::Null).await.is_err());
+    }
+
+    /// 工具结果出口卡口：注册的秘密从结果文本中被替换（2026-10 安全）。
+    #[tokio::test]
+    async fn execute_redacts_registered_secret_from_result() {
+        const KEY: &str = "sk-executeexecuteredact01";
+        struct LeakyTool;
+        #[async_trait]
+        impl Tool for LeakyTool {
+            fn name(&self) -> &str {
+                "leaky"
+            }
+            fn description(&self) -> &str {
+                "leaky"
+            }
+            async fn execute(&self, _arguments: Value) -> Result<String, ToolError> {
+                Ok(format!(
+                    "file contains {KEY}; also pattern sk-abcdefghijklmnopqrstuvwxy"
+                ))
+            }
+        }
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(LeakyTool));
+        let redactor = Arc::new(echo_sanitize::RegistryRedactor::with_builtin_patterns());
+        redactor.register_secret(KEY, "api_key:test");
+        registry.set_redactor(Some(redactor));
+
+        let text = registry.execute("leaky", Value::Null).await.unwrap();
+        assert!(!text.contains(KEY), "registered secret must be redacted");
+        assert!(!text.contains("sk-abcdefghijklmnopqrstuvwxy"));
+        assert!(text.contains("【已隐藏:api_key:test】"));
+        assert!(text.contains("【已隐藏:pattern:openai_key】"));
+
+        // execute_rich 同一出口。
+        let rich = registry.execute_rich("leaky", Value::Null).await.unwrap();
+        assert!(!rich.text.contains(KEY));
+    }
+
+    /// 错误消息同样过脱敏（结果出口对 Ok/Err 一视同仁）。
+    #[tokio::test]
+    async fn execute_redacts_tool_error_message() {
+        const KEY: &str = "sk-errortoolerrortool0001";
+        struct ErrTool;
+        #[async_trait]
+        impl Tool for ErrTool {
+            fn name(&self) -> &str {
+                "err-tool"
+            }
+            fn description(&self) -> &str {
+                "err"
+            }
+            async fn execute(&self, _arguments: Value) -> Result<String, ToolError> {
+                Err(ToolError::Execution(format!("connect failed for {KEY}")))
+            }
+        }
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(ErrTool));
+        let redactor = Arc::new(echo_sanitize::RegistryRedactor::new());
+        redactor.register_secret(KEY, "api_key:test");
+        registry.set_redactor(Some(redactor));
+
+        let error = registry.execute("err-tool", Value::Null).await.unwrap_err();
+        let text = error.to_string();
+        assert!(!text.contains(KEY));
+        assert!(text.contains("【已隐藏:api_key:test】"));
+    }
+
+    /// 未注入脱敏器 = 旧行为（透传）。
+    #[tokio::test]
+    async fn execute_passes_through_without_redactor() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(StubTool { name: "stub" }));
+        registry.set_redactor(None);
+        assert_eq!(registry.execute("stub", Value::Null).await.unwrap(), "stub");
     }
 }
