@@ -4,12 +4,12 @@ title: "Panel 布局 & 交互定义"
 group: 前端
 x: 2720
 y: 0
-link: ["panel-layout | 布局与导航 | b>t", "panel-chat | 会话视图 | b>t", "panel-modals | 模态与覆盖层 | b>t", "panel-settings | 设置视图 | b>t", "panel-qq-tasks | QQ管理·任务·Shell | b>t", "panel-system | 系统交互 | b>t"]
+link: ["panel-layout | 布局与导航 | b>t", "panel-chat | 会话视图 | b>t", "panel-modals | 模态与覆盖层 | b>t", "panel-settings | 设置视图 | b>t", "panel-qq-tasks | QQ管理·任务·Shell | b>t", "panel-mobile | 移动端适配 | b>t", "panel-system | 系统交互 | b>t"]
 ---
 
 # Panel 布局 & 交互定义
 
-> **定位**：Panel 前端全部交互行为的**总入口**——核心原则与交互模块树（总览）；每个模块节点描述一个子系统的交互与布局设计，详情见下文 6 篇视图文档。读者：需要查阅 Panel 交互契约的开发者；实现位置以 `web/src/` 相对路径标注；渲染基元来自 `@echolab-auto/ui-frame`。
+> **定位**：Panel 前端全部交互行为的**总入口**——核心原则与交互模块树（总览）；每个模块节点描述一个子系统的交互与布局设计，详情见下文 7 篇视图文档。读者：需要查阅 Panel 交互契约的开发者；实现位置以 `web/src/` 相对路径标注；渲染基元来自 `@echolab-auto/ui-frame`。
 
 **核心原则**：
 
@@ -32,6 +32,7 @@ graph TD
   Root --> M[模态与覆盖层|/panel-modals.md]
   Root --> Set[设置视图|/panel-settings.md]
   Root --> QT[QQ管理·任务·Shell|/panel-qq-tasks.md]
+  Root --> Mobile[移动端适配|/panel-mobile.md]
   Root --> Sys[系统交互|/panel-system.md]
   L --> L1[视图层级与导航]
   L --> L2[应用外壳布局]
@@ -70,6 +71,7 @@ graph TD
 | [模态与覆盖层](./panel-modals.md) | 分支详情、上下文弹层、Agent 配置弹层、确认形式 |
 | [设置视图](./panel-settings.md) | API 设置、资源工作区、Git 安装、Core 连接与联邦、日志与系统 |
 | [QQ 管理·任务·Shell](./panel-qq-tasks.md) | QQ 管理、任务弹层（入口行）、Shell 列表（边栏卡）与详情视图、HTTP 通道 |
+| [移动端适配](./panel-mobile.md) | 断点口径、全局壳约束（安全区/动态视口）、会话/设置窄屏形态、软键盘适配、桌面零回归 |
 | [系统交互](./panel-system.md) | Toast、键盘、设计边界、常量 |
 
 > 本节点为前端文档群总入口；子节点间不互相 link（仅经本节点导航）。

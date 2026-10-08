@@ -66,7 +66,7 @@ graph LR
 画布分为六组，阅读距离从左到右（框架 → 细节）：
 
 - **总览**——入口与骨架：本页、[架构总览](./architecture.md)
-- **框架**——内核机制与运行时子系统：[Core 后端](./core.md)、[框架（内核）](./frame.md)、[多 Agent 与会话](./core-agents.md)、[Agent 循环](./core-agent-loop.md)、[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)
+- **框架**——内核机制与运行时子系统：[Core 后端](./core.md)、[框架（内核）](./frame.md)、[多 Agent 与会话](./core-agents.md)、[Agent 循环](./core-agent-loop.md)、[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)、[敏感信息隔离（脱敏服务）](./security-redaction-design.md)
 - **插件**——插件体系与各插件机制文档：[插件化设计](./core-plugins.md)、[工具系统](./core-tools.md)、[技能系统](./core-skills.md)、[Subagent 插件](./core-subagent.md)、[QQ 适配器门控](./adapter-qq-gating.md)、[联邦（多机）](./federation.md)、[插件开发指南](./plugin-authoring.md)
 - **前端**——Panel 与各视图交互契约：`panel.md`、`panel-interaction.md` 及各 `panel-*` 视图文档
 - **工程**——协议、运维与开发规范：[协议与数据流](./protocol.md)、[部署与自更新](./ops-deploy.md)、[开发指南](./dev-guide.md)、[测试策略](./dev-testing.md)、[文档规范](./documentation-guide.md)

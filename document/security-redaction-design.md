@@ -2,7 +2,7 @@
 id: security-redaction
 title: "敏感信息隔离（脱敏服务）"
 group: 框架
-x: 1840
+x: 640
 y: 480
 ---
 

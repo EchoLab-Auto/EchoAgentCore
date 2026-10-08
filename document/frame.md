@@ -4,7 +4,7 @@ title: "框架（内核）"
 group: 框架
 x: 640
 y: 320
-link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "multimodal | 多模态输入 | r>l", "config-persistence | 配置持久化 | r>l"]
+link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "multimodal | 多模态输入 | r>l", "config-persistence | 配置持久化 | r>l", "security-redaction | 敏感信息隔离 | b>t"]
 ---
 
 # 框架（内核）
@@ -61,3 +61,4 @@ link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "mul
 
 - 运行时子系统：[多 Agent 与会话](./core-agents.md)（Persona 装配、会话模型、工作区通道）、[Agent 循环](./core-agent-loop.md)、[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)
 - 插件体系：[插件化设计](./core-plugins.md)——内置插件清单、能力开关、外部进程插件
+- 安全：[敏感信息隔离（脱敏服务）](./security-redaction-design.md)——出口卡口与保证边界
