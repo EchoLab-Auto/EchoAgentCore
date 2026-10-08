@@ -50,9 +50,10 @@ impl Agent {
 
     /// Rebuild the LLM provider from the current config snapshot.
     ///
-    /// 重建时统一包一层脱敏装饰器（`llm::wrap_redacting`，2026-10 安全：
-    /// LLM 请求出口卡口）；同时把快照中的密钥登记进脱敏器——热更新后
-    /// 新密钥立即纳入全部出口的拦截范围（幂等）。
+    /// 重建时统一包两层装饰器：计量（`llm::wrap_metering`——token 用量记录，
+    /// 覆盖全部 LLM 出口，供余额/用量图表）+ 脱敏（`llm::wrap_redacting`——
+    /// LLM 请求出口卡口）；同时把快照中的密钥登记进脱敏器——热更新后新密钥
+    /// 立即纳入全部出口的拦截范围（幂等）。
     pub(crate) async fn rebuild_provider(&self, cfg: &AgentConfig) -> bool {
         let mut resolved = cfg.clone();
         resolved.apply_active_profile();
@@ -62,6 +63,12 @@ impl Agent {
         match crate::llm::create_provider(&resolved) {
             Ok(p) => {
                 let provider: Arc<dyn LlmProvider> = Arc::from(p);
+                let provider = match self.metrics() {
+                    Some(store) => {
+                        crate::llm::wrap_metering(provider, store, cfg.active_api.clone())
+                    }
+                    None => provider,
+                };
                 let provider = match self.redactor() {
                     Some(redactor) => crate::llm::wrap_redacting(provider, redactor),
                     None => provider,
@@ -353,8 +360,7 @@ impl Agent {
     /// 查询 API 账户余额（目前仅 DeepSeek 官方端点支持 `/user/balance`）。
     ///
     /// `name` 空 = 全局默认配置，非空 = 该 profile；用 profile 自身的
-    /// api_key / base_url 请求。响应示例：
-    /// `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"110.00",...}]}`
+    /// api_key / base_url 请求。成功时同时落一条本地余额快照（图表数据源）。
     pub(crate) async fn query_api_balance(&self, name: &str) {
         let config = self.config.read().await.clone();
         let probe = match resolve_probe_config(&config, name) {
@@ -364,92 +370,34 @@ impl Agent {
                 return;
             }
         };
-        let Some(endpoint) = deepseek_balance_endpoint(&probe.base_url) else {
-            self.emit_balance_fail(
-                name,
-                format!(
-                    "余额查询仅支持 DeepSeek 官方端点（当前 base_url: {}）",
-                    probe.base_url
-                ),
-            )
-            .await;
-            return;
-        };
-        let api_key = probe.effective_api_key();
-        if api_key.is_empty() {
-            self.emit_balance_fail(name, "缺少 API Key，无法查询余额".into())
-                .await;
-            return;
-        }
-
-        #[derive(serde::Deserialize)]
-        struct BalanceResponse {
-            #[serde(default)]
-            is_available: bool,
-            #[serde(default)]
-            balance_infos: Vec<BalanceInfo>,
-        }
-        #[derive(serde::Deserialize)]
-        struct BalanceInfo {
-            #[serde(default)]
-            currency: String,
-            #[serde(default)]
-            total_balance: String,
-        }
-
-        let result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            let client = reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .build()
-                .map_err(|e| format!("HTTP client build failed: {e}"))?;
-            let response = client
-                .get(&endpoint)
-                .bearer_auth(&api_key)
-                .send()
-                .await
-                .map_err(|e| format!("请求失败: {e}"))?;
-            let status = response.status();
-            let text = response
-                .text()
-                .await
-                .map_err(|e| format!("读取响应失败: {e}"))?;
-            if !status.is_success() {
-                return Err(format!(
-                    "HTTP {status}: {}",
-                    echo_defs::token::truncate(&text, 200)
-                ));
-            }
-            let parsed: BalanceResponse = serde_json::from_str(&text).map_err(|e| {
-                format!(
-                    "响应解析失败: {e} — body: {}",
-                    echo_defs::token::truncate(&text, 200)
-                )
-            })?;
-            Ok::<BalanceResponse, String>(parsed)
-        })
-        .await;
-
-        match result {
-            Ok(Ok(parsed)) => {
-                let info = parsed.balance_infos.first();
+        match fetch_balance(&probe).await {
+            Ok(fetched) => {
+                // 成功即落快照：手动查询与周期任务共享同一数据源。
+                if let Some(store) = self.metrics() {
+                    store.record_balance(
+                        name,
+                        &fetched.currency,
+                        parse_amount(&fetched.total),
+                        parse_amount(&fetched.granted),
+                        parse_amount(&fetched.topped_up),
+                    );
+                }
                 self.emit(BackendEvent::ApiBalanceResult {
                     name: name.into(),
                     ok: true,
-                    available: parsed.is_available,
-                    total: info.map(|i| i.total_balance.clone()).unwrap_or_default(),
-                    currency: info.map(|i| i.currency.clone()).unwrap_or_default(),
-                    message: if parsed.is_available {
+                    available: fetched.available,
+                    total: fetched.total,
+                    granted: fetched.granted,
+                    topped_up: fetched.topped_up,
+                    currency: fetched.currency,
+                    message: if fetched.available {
                         "余额已更新".into()
                     } else {
                         "账户当前不可用（余额不足或已停用）".into()
                     },
                 });
             }
-            Ok(Err(message)) => self.emit_balance_fail(name, message).await,
-            Err(_) => {
-                self.emit_balance_fail(name, "请求超时（>15s）".into())
-                    .await
-            }
+            Err(message) => self.emit_balance_fail(name, message).await,
         }
     }
 
@@ -460,9 +408,138 @@ impl Agent {
             ok: false,
             available: false,
             total: String::new(),
+            granted: String::new(),
+            topped_up: String::new(),
             currency: String::new(),
             message,
         });
+    }
+
+    /// 响应 `QueryApiMetrics`：返回本地积累的余额/用量序列（近 7 天窗口）。
+    ///
+    /// `name` 空 = 默认配置 + 全部 profile；非空 = 指定 profile。每个目标
+    /// 一条 entry（暂无数据 = 空序列）。费用估算按 `[agent.pricing]` 定价表。
+    pub(crate) async fn query_api_metrics(&self, name: &str) {
+        let Some(store) = self.metrics() else {
+            // 未接线（测试 / 旧装配）：回空表，面板按"数据积累中"处理。
+            self.emit(BackendEvent::ApiMetrics {
+                entries: Vec::new(),
+            });
+            return;
+        };
+        let config = self.config.read().await.clone();
+        let names: Vec<String> = if name.is_empty() {
+            metrics_targets(&config)
+        } else {
+            vec![name.to_string()]
+        };
+        let since = crate::metrics::now_ms() - crate::metrics::METRICS_WINDOW_MS;
+        let mut entries = Vec::with_capacity(names.len());
+        for target in names {
+            let balance = store
+                .balance_points(&target, since)
+                .into_iter()
+                .map(|point| crate::event::ApiBalancePoint {
+                    ts_ms: point.ts_ms,
+                    total: point.total,
+                    granted: point.granted,
+                    topped_up: point.topped_up,
+                    currency: point.currency,
+                })
+                .collect();
+            let mut cost_currency = String::new();
+            let usage = store
+                .usage_slices(&target, since)
+                .into_iter()
+                .map(|slice| {
+                    let cost = crate::metrics::estimate_cost(
+                        &config.pricing,
+                        &slice.model,
+                        slice.ts_ms,
+                        slice.prompt_tokens,
+                        slice.completion_tokens,
+                    );
+                    if cost_currency.is_empty() {
+                        if let Some((_, currency)) = &cost {
+                            cost_currency = currency.clone();
+                        }
+                    }
+                    crate::event::ApiUsagePoint {
+                        ts_ms: slice.ts_ms,
+                        model: slice.model,
+                        prompt_tokens: slice.prompt_tokens,
+                        completion_tokens: slice.completion_tokens,
+                        calls: slice.calls,
+                        est_cost: cost.map(|(value, _)| value),
+                    }
+                })
+                .collect();
+            entries.push(crate::event::ApiMetricsEntry {
+                name: target,
+                balance,
+                usage,
+                cost_currency,
+            });
+        }
+        self.emit(BackendEvent::ApiMetrics { entries });
+    }
+
+    /// 启动周期余额快照任务（组合根对全局管理 Agent 调用一次）。
+    ///
+    /// 每 `[agent].balance_snapshot_secs` 秒（默认 600；0 = 关闭；下限 30s）
+    /// 对所有可查询目标（顶层默认 + 各 profile，要求 DeepSeek 端点且有 key）
+    /// 调一次 `/user/balance` 落快照。失败静默（debug 日志）——面向用户的
+    /// 报错由手动「查余额」路径呈现。
+    pub fn start_balance_snapshot_task(self: &Arc<Self>) {
+        let agent = Arc::clone(self);
+        let cancel = self.cancel.clone();
+        tokio::spawn(async move {
+            let period_secs = agent.config.read().await.balance_snapshot_secs;
+            if period_secs == 0 {
+                tracing::info!("balance snapshot task disabled (balance_snapshot_secs = 0)");
+                return;
+            }
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(period_secs.max(30)));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => agent.snapshot_balances_once().await,
+                    _ = cancel.cancelled() => break,
+                }
+            }
+        });
+    }
+
+    /// 单次快照：给所有可查询目标记录一条余额快照。
+    async fn snapshot_balances_once(&self) {
+        let Some(store) = self.metrics() else {
+            return;
+        };
+        let config = self.config.read().await.clone();
+        let targets = metrics_targets(&config);
+        for target in targets {
+            let probe = match resolve_probe_config(&config, &target) {
+                Ok(probe) => probe,
+                Err(_) => continue,
+            };
+            if deepseek_balance_endpoint(&probe.base_url).is_none()
+                || probe.effective_api_key().is_empty()
+            {
+                continue;
+            }
+            match fetch_balance(&probe).await {
+                Ok(fetched) => store.record_balance(
+                    &target,
+                    &fetched.currency,
+                    parse_amount(&fetched.total),
+                    parse_amount(&fetched.granted),
+                    parse_amount(&fetched.topped_up),
+                ),
+                Err(error) => {
+                    tracing::debug!(target = %target, %error, "balance snapshot failed");
+                }
+            }
+        }
     }
 
     /// Persist the system prompt plugin text to `[plugins.system_prompt]`
@@ -540,6 +617,118 @@ impl Agent {
         }
         tracing::info!(path = %store.path().display(), "agent config persisted");
     }
+}
+
+/// 一次余额查询的结果（金额为原始字符串，如 "1287.91"）。
+pub(crate) struct BalanceFetch {
+    pub available: bool,
+    pub total: String,
+    pub granted: String,
+    pub topped_up: String,
+    pub currency: String,
+}
+
+/// 请求 DeepSeek `/user/balance`（15s 超时；无事件 / 记录副作用——供手动
+/// 查询与周期快照共用）。
+pub(crate) async fn fetch_balance(probe: &AgentConfig) -> Result<BalanceFetch, String> {
+    #[derive(serde::Deserialize)]
+    struct BalanceResponse {
+        #[serde(default)]
+        is_available: bool,
+        #[serde(default)]
+        balance_infos: Vec<BalanceInfo>,
+    }
+    #[derive(serde::Deserialize)]
+    struct BalanceInfo {
+        #[serde(default)]
+        currency: String,
+        #[serde(default)]
+        total_balance: String,
+        #[serde(default)]
+        granted_balance: String,
+        #[serde(default)]
+        topped_up_balance: String,
+    }
+
+    let Some(endpoint) = deepseek_balance_endpoint(&probe.base_url) else {
+        return Err(format!(
+            "余额查询仅支持 DeepSeek 官方端点（当前 base_url: {}）",
+            probe.base_url
+        ));
+    };
+    let api_key = probe.effective_api_key();
+    if api_key.is_empty() {
+        return Err("缺少 API Key，无法查询余额".into());
+    }
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| format!("HTTP client build failed: {e}"))?;
+        let response = client
+            .get(&endpoint)
+            .bearer_auth(&api_key)
+            .send()
+            .await
+            .map_err(|e| format!("请求失败: {e}"))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|e| format!("读取响应失败: {e}"))?;
+        if !status.is_success() {
+            return Err(format!(
+                "HTTP {status}: {}",
+                echo_defs::token::truncate(&text, 200)
+            ));
+        }
+        let parsed: BalanceResponse = serde_json::from_str(&text).map_err(|e| {
+            format!(
+                "响应解析失败: {e} — body: {}",
+                echo_defs::token::truncate(&text, 200)
+            )
+        })?;
+        Ok::<BalanceResponse, String>(parsed)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(parsed)) => {
+            let info = parsed.balance_infos.first();
+            Ok(BalanceFetch {
+                available: parsed.is_available,
+                total: info.map(|i| i.total_balance.clone()).unwrap_or_default(),
+                granted: info.map(|i| i.granted_balance.clone()).unwrap_or_default(),
+                topped_up: info
+                    .map(|i| i.topped_up_balance.clone())
+                    .unwrap_or_default(),
+                currency: info.map(|i| i.currency.clone()).unwrap_or_default(),
+            })
+        }
+        Ok(Err(message)) => Err(message),
+        Err(_) => Err("请求超时（>15s）".into()),
+    }
+}
+
+/// 宽松解析金额字符串（失败 = 0.0；不阻断快照记录）。
+pub(crate) fn parse_amount(text: &str) -> f64 {
+    text.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+/// 「全部目标」列表：顶层默认（`""`）+ 全部 profile 名。
+///
+/// 顶层默认与 active profile 指向同一配置时（`active_api` 命中池中某
+/// profile——空名的解析会合入该 profile），去重跳过空名，避免同一账户
+/// 产生双份序列。
+fn metrics_targets(config: &AgentConfig) -> Vec<String> {
+    let active = config.active_api.trim();
+    let mut targets = Vec::with_capacity(config.api_profiles.len() + 1);
+    if active.is_empty() || !config.api_profiles.iter().any(|p| p.name == active) {
+        targets.push(String::new());
+    }
+    targets.extend(config.api_profiles.iter().map(|p| p.name.clone()));
+    targets
 }
 
 /// Build the config snapshot used for a connectivity probe.

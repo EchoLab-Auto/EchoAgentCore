@@ -15,8 +15,10 @@ pub use echo_defs::token::{
 };
 pub use echo_defs::tool::ToolDefinition;
 
+mod metering;
 mod redacting;
 
+pub use metering::wrap_metering;
 pub use redacting::wrap_redacting;
 
 /// Build a provider from configuration.
@@ -25,8 +27,6 @@ pub use redacting::wrap_redacting;
 /// `https://api.deepseek.com/anthropic`）自动走 Anthropic Messages 格式客户端，
 /// 即使 provider 名为 openai/deepseek。
 pub fn create_provider(cfg: &crate::config::AgentConfig) -> Result<Box<dyn LlmProvider>, LlmError> {
-    // 空 provider = 未配置 API，按 OpenAI 兼容处理（请求会因无 key 失败，
-    // 等用户在 TUI /api 中配置后生效）。
     let provider_kind = if cfg.provider.is_empty() {
         return Err(LlmError::Config(
             "no LLM provider configured — use /api in TUI or set [agent] provider in config".into(),

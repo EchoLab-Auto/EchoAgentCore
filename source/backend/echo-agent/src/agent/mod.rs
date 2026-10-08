@@ -106,6 +106,9 @@ pub struct Agent {
     /// `llm::wrap_redacting` 装饰 provider，见组合根装配）、QQ 出站
     /// （`core::qq_tools` 闸门）。设计见 `document/security-redaction-design.md`。
     redactor: std::sync::RwLock<Option<Arc<dyn echo_defs::sanitize::Redactor>>>,
+    /// API 指标存储（余额快照 / token 用量；组合根装配期注入）。
+    /// None = 不记录（测试 / 未接线的旧路径）。
+    metrics: std::sync::RwLock<Option<Arc<crate::metrics::MetricsStore>>>,
     system_prompt_cache: RwLock<Option<String>>,
     /// Decomposed system-prompt blocks of the most recent turn, kept so the
     /// panel can visualize the exact prompt sections sent to the LLM.
@@ -305,6 +308,7 @@ impl Agent {
             handle: tokio::sync::RwLock::new(None),
             event_sink: std::sync::RwLock::new(None),
             redactor: std::sync::RwLock::new(None),
+            metrics: std::sync::RwLock::new(None),
             system_prompt_cache: RwLock::new(None),
             last_prompt_blocks: tokio::sync::Mutex::new(None),
             plugin_reload_started: AtomicBool::new(false),
@@ -403,6 +407,22 @@ impl Agent {
     /// 当前脱敏器（未注入 / 锁中毒 = None，全部脱敏路径按透传处理）。
     pub(crate) fn redactor(&self) -> Option<Arc<dyn echo_defs::sanitize::Redactor>> {
         self.redactor.read().ok().and_then(|slot| slot.clone())
+    }
+
+    /// 注入指标存储（组合根装配期；`AgentBuilder::metrics` 调用）。
+    ///
+    /// 只写一次（装配期无并发）；重复调用以最后一次为准。
+    pub(crate) fn set_metrics(&self, store: Arc<crate::metrics::MetricsStore>) {
+        if let Ok(mut slot) = self.metrics.write() {
+            *slot = Some(store);
+        } else {
+            tracing::warn!("metrics slot poisoned, ignoring set_metrics");
+        }
+    }
+
+    /// 当前指标存储（未注入 / 锁中毒 = None，记录与查询路径按跳过处理）。
+    pub(crate) fn metrics(&self) -> Option<Arc<crate::metrics::MetricsStore>> {
+        self.metrics.read().ok().and_then(|slot| slot.clone())
     }
 
     /// 文本脱敏：无脱敏器或未命中时返回原文副本。

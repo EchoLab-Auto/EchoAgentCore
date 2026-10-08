@@ -58,6 +58,7 @@ pub mod command;
 pub mod config;
 pub mod event;
 pub mod input_marker;
+pub mod metrics;
 pub mod plugins;
 pub mod session;
 pub mod shell;

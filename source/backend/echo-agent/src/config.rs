@@ -50,6 +50,82 @@ impl ApiProfile {
 /// Default trunk token budget: 1M × 0.8 = 800,000 tokens.
 pub const DEFAULT_MEMORY_LIMIT_TOKENS: usize = 1_000_000 * 8 / 10;
 
+/// 模型价格（`[agent.pricing]` 条目；费用估算用，单位 = 每百万 tokens）。
+///
+/// - `model` 以**最长前缀**匹配请求模型名（大小写不敏感）；
+/// - 输入价按"缓存未命中"口径（框架不区分缓存命中，估值是上界）；
+/// - 高峰 / 空闲两档：`offpeak_*` 缺省 = 无空闲折扣。DeepSeek 口径为
+///   北京时间周一至周五 9:00–12:00、14:00–18:00 高峰，其余时段（含周末）
+///   半价；法定节假日的空闲计价未纳入估算（近似）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelPrice {
+    /// 模型名（前缀匹配；大小写不敏感）。
+    pub model: String,
+    /// 高峰时段输入价（缓存未命中；每百万 tokens）。
+    pub input_per_million: f64,
+    /// 高峰时段输出价（每百万 tokens）。
+    pub output_per_million: f64,
+    /// 空闲时段输入价（None = 与高峰同价）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offpeak_input_per_million: Option<f64>,
+    /// 空闲时段输出价（None = 与高峰同价）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offpeak_output_per_million: Option<f64>,
+    /// 币种（默认 "CNY"）。
+    pub currency: String,
+}
+
+impl Default for ModelPrice {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            input_per_million: 0.0,
+            output_per_million: 0.0,
+            offpeak_input_per_million: None,
+            offpeak_output_per_million: None,
+            currency: "CNY".into(),
+        }
+    }
+}
+
+/// 缺省定价表（DeepSeek 官方公开价，2026-10 摘自 api-docs；可被
+/// `[agent.pricing]` 覆盖或清空）。旧模型名 `deepseek-v4-flash` /
+/// `-vision-exp` 按 Flash 价计费——前缀匹配天然覆盖（更具体的条目优先）。
+pub fn default_pricing() -> Vec<ModelPrice> {
+    let flash = |model: &str| ModelPrice {
+        model: model.into(),
+        input_per_million: 2.0,
+        output_per_million: 8.0,
+        offpeak_input_per_million: Some(1.0),
+        offpeak_output_per_million: Some(4.0),
+        currency: "CNY".into(),
+    };
+    vec![
+        flash("deepseek-flash"),
+        flash("deepseek-v4-flash"),
+        ModelPrice {
+            model: "deepseek-v4-pro".into(),
+            input_per_million: 9.0,
+            output_per_million: 27.0,
+            offpeak_input_per_million: Some(4.5),
+            offpeak_output_per_million: Some(13.5),
+            currency: "CNY".into(),
+        },
+    ]
+}
+
+fn is_default_pricing(pricing: &[ModelPrice]) -> bool {
+    pricing == default_pricing()
+}
+
+/// 余额快照周期默认值（秒；= 10 分钟）。
+pub const DEFAULT_BALANCE_SNAPSHOT_SECS: u64 = 600;
+
+fn default_balance_snapshot_secs() -> u64 {
+    DEFAULT_BALANCE_SNAPSHOT_SECS
+}
+
 /// A team member (`[agent.teams.{id}]`, legacy `[agent.profiles.{id}]`).
 ///
 /// Each member is instantiated as an independent `Agent` with its own
@@ -236,6 +312,17 @@ pub struct AgentConfig {
     /// the trunk budget unclamped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window_tokens: Option<usize>,
+    /// 余额快照周期（秒；0 = 关闭）。默认 600（10 分钟）——周期任务把每个
+    /// 可查询（DeepSeek 端点）profile 的余额写入本地 `echo-balances.jsonl`。
+    #[serde(default = "default_balance_snapshot_secs")]
+    pub balance_snapshot_secs: u64,
+    /// 模型定价表（费用估算用；缺省 = 内置默认价 [`default_pricing`]）。
+    /// 自定义后（含显式清空 `pricing = []` 禁用估算）会随配置持久化。
+    #[serde(
+        default = "default_pricing",
+        skip_serializing_if = "is_default_pricing"
+    )]
+    pub pricing: Vec<ModelPrice>,
 }
 
 impl Default for AgentConfig {
@@ -265,6 +352,8 @@ impl Default for AgentConfig {
             memory_limit: 40,
             memory_limit_tokens: None,
             context_window_tokens: None,
+            balance_snapshot_secs: default_balance_snapshot_secs(),
+            pricing: default_pricing(),
         }
     }
 }

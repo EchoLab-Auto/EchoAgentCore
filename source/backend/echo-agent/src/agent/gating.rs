@@ -173,11 +173,17 @@ impl Agent {
                 session_id: None,
                 message: format!(
                     "persona API profile not found in pool: {} — falling back to global default",
-                    reference.unwrap_or_default()
+                    reference.as_deref().unwrap_or_default()
                 ),
             });
             resolved.apply_active_profile();
         }
+        // 计量归属：persona 引用命中 → 该 profile 名；否则跟随全局默认
+        // （与 `QueryApiMetrics` / 面板 profile 卡片的命名空间一致）。
+        let profile_key = match reference.as_deref().filter(|n| !n.is_empty()) {
+            Some(name) if ok => name.to_string(),
+            _ => global.active_api.clone(),
+        };
         resolved.api_key = resolved.effective_api_key();
         resolved.base_url = resolved.effective_base_url();
         // 本 persona 的 config 只更新 API 相关字段（保留权限、预算等其余项）。
@@ -201,9 +207,14 @@ impl Agent {
             }
         };
         // 安全（2026-10）：provider 重建一律经脱敏装饰器包装（LLM 请求
-        // 出口卡口），并登记该 persona 生效密钥。
+        // 出口卡口），并登记该 persona 生效密钥；计量装饰器（token 用量）
+        // 一并装配，供余额/用量图表。
         self.register_config_secrets(&resolved);
         let provider: Arc<dyn LlmProvider> = Arc::from(provider);
+        let provider = match self.metrics() {
+            Some(store) => crate::llm::wrap_metering(provider, store, profile_key),
+            None => provider,
+        };
         let provider = match self.redactor() {
             Some(redactor) => crate::llm::wrap_redacting(provider, redactor),
             None => provider,

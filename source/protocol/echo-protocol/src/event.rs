@@ -677,12 +677,26 @@ pub enum BackendEvent {
         /// 总余额（含赠送），如 "110.00"；失败时为空串。
         #[serde(default)]
         total: String,
+        /// 赠送余额（granted_balance），如 "0.00"；失败时为空串。
+        #[serde(default)]
+        granted: String,
+        /// 充值余额（topped_up_balance），如 "110.00"；失败时为空串。
+        #[serde(default)]
+        topped_up: String,
         /// 币种，如 "CNY"；失败时为空串。
         #[serde(default)]
         currency: String,
         /// Human-readable message (error detail or success note).
         #[serde(default)]
         message: String,
+    },
+    /// API profile 指标时间序列（响应 `QueryApiMetrics`）：Core 本地积累的
+    /// 余额快照（`balance_snapshot_secs` 周期采样）与 token 用量（每次 LLM
+    /// 调用记录、按小时 × 模型聚合）。窗口 = 近 7 天。
+    ApiMetrics {
+        /// 每个被查询目标一条（默认配置 + 全部 profile 或指定 profile）。
+        #[serde(default)]
+        entries: Vec<ApiMetricsEntry>,
     },
     /// Current system prompt plugin text.
     SystemPrompt {
@@ -1168,6 +1182,56 @@ pub struct ApiProfileInfo {
     pub thinking: crate::mode::ThinkingMode,
     #[serde(default)]
     pub reasoning_effort: crate::mode::ReasoningEffort,
+}
+
+/// 单个 API profile 的指标序列（[`BackendEvent::ApiMetrics`] 元素）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiMetricsEntry {
+    /// 配置名（空 = 顶层默认配置）。
+    pub name: String,
+    /// 余额快照序列（成功快照；近 7 天，时间升序）。
+    #[serde(default)]
+    pub balance: Vec<ApiBalancePoint>,
+    /// token 用量序列（按小时 × 模型聚合；近 7 天，时间升序）。
+    #[serde(default)]
+    pub usage: Vec<ApiUsagePoint>,
+    /// 费用估算币种（如 "CNY"；无任何可估算用量时为空串）。
+    #[serde(default)]
+    pub cost_currency: String,
+}
+
+/// 单条余额快照（金额单位 = `currency`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiBalancePoint {
+    /// 采样时间戳（Unix 毫秒）。
+    pub ts_ms: i64,
+    /// 总余额（含赠送）。
+    pub total: f64,
+    /// 赠送余额。
+    pub granted: f64,
+    /// 充值余额。
+    pub topped_up: f64,
+    /// 币种，如 "CNY"。
+    #[serde(default)]
+    pub currency: String,
+}
+
+/// 单条 token 用量（小时桶 × 模型）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiUsagePoint {
+    /// 小时桶起点（Unix 毫秒）。
+    pub ts_ms: i64,
+    /// 模型名（请求所用 model）。
+    pub model: String,
+    /// 输入（prompt）token 数。
+    pub prompt_tokens: u64,
+    /// 输出（completion）token 数。
+    pub completion_tokens: u64,
+    /// 该桶内调用次数。
+    pub calls: u64,
+    /// 估算费用（按 `[agent.pricing]` 定价表；无匹配价格 = None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub est_cost: Option<f64>,
 }
 
 /// Full state snapshot sent to the TUI on connect.

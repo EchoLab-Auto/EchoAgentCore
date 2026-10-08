@@ -53,6 +53,8 @@ pub struct AgentBuilder {
     subagent_store: Option<Arc<crate::subagent::SubagentStore>>,
     /// 敏感信息脱敏器（可选；注入后 Agent 各出口统一脱敏）。
     redactor: Option<Arc<dyn echo_defs::sanitize::Redactor>>,
+    /// API 指标存储（可选；余额/用量时间序列的记录与查询）。
+    metrics: Option<Arc<crate::metrics::MetricsStore>>,
 }
 
 impl AgentBuilder {
@@ -80,6 +82,7 @@ impl AgentBuilder {
             session_persist_path: None,
             subagent_store: None,
             redactor: None,
+            metrics: None,
         }
     }
 
@@ -144,6 +147,12 @@ impl AgentBuilder {
         self
     }
 
+    /// API 指标存储（可选；余额快照 / token 用量的记录与查询）。
+    pub fn metrics(mut self, store: Arc<crate::metrics::MetricsStore>) -> Self {
+        self.metrics = Some(store);
+        self
+    }
+
     /// 完成装配，返回 `Arc<Agent>`（组合根本来就以 Arc 持有；subagent
     /// 运行态装配需要 `&Arc<Self>`）。必填槽缺失 = 装配 bug，fail-fast
     /// panic（消息指明缺哪个）。
@@ -189,6 +198,9 @@ impl AgentBuilder {
         }
         if let Some(redactor) = self.redactor {
             agent.set_redactor(redactor);
+        }
+        if let Some(store) = self.metrics {
+            agent.set_metrics(store);
         }
         agent
     }

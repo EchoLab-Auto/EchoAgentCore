@@ -52,6 +52,10 @@ pub enum BackendCommand {
     /// `name` empty = top-level default, otherwise that profile.
     /// Replies with `BackendEvent::ApiBalanceResult`.
     QueryApiBalance { name: String },
+    /// 请求 API profile 的**本地积累指标**（余额快照 + token 用量时间序列）：
+    /// `name` 空 = 默认配置 + 全部 profile；非空 = 指定 profile。
+    /// 回 `BackendEvent::ApiMetrics`（单事件，每个请求目标一条 entry）。
+    QueryApiMetrics { name: String },
     /// Delete an API profile by name.
     DeleteApi { name: String },
     /// Request a full state snapshot (responded with `BackendEvent::SessionUpdated`

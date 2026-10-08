@@ -456,6 +456,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
     let mut provider_cfg = cfg.agent.clone();
     provider_cfg.apply_active_profile();
+    // 指标归属：base provider 对应生效配置名（与 QueryApiBalance /
+    // QueryApiMetrics 的命名空间一致；fallback 分支 = 首个 profile 名）。
+    let mut base_profile_key = provider_cfg.active_api.clone();
     // Fallback: if top-level provider is still empty but profiles exist, use the first one.
     if provider_cfg.provider.is_empty() {
         if let Some(first) = provider_cfg.api_profiles.first() {
@@ -463,6 +466,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             provider_cfg.model = first.model.clone();
             provider_cfg.base_url = first.base_url.clone();
             provider_cfg.api_key = first.api_key.clone();
+            base_profile_key = first.name.clone();
             info!(name = %first.name, "auto-applied first API profile");
         }
     }
@@ -499,6 +503,15 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 敏感目录（QQ 外发文件闸门用；core.toml / 会话 / 凭据目录）。
     let sensitive_dirs = crate::security::sensitive_dirs(&args.config_path());
 
+    // ---- API 指标存储（余额快照 / token 用量；面板图表数据源）----
+    // 文件与 core.toml 同目录：echo-balances.jsonl / echo-usage.jsonl。
+    let metrics_store = std::sync::Arc::new(echo_agent::metrics::MetricsStore::new(
+        args.config_path()
+            .parent()
+            .map(|path| path.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from(".")),
+    ));
+
     let provider = echo_agent::llm::create_provider(&provider_cfg)?;
     info!(provider = %provider_cfg.provider, model = %provider_cfg.model, "llm provider ready");
 
@@ -506,9 +519,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // Core services are registered under stable keys; extension plugins and
     // consumers resolve by key instead of importing concrete providers.
     let ctx: Arc<echo_context::Ctx> = Arc::new(echo_context::Ctx::default());
-    // LLM 出口卡口：provider 以脱敏装饰器包装后再分发给一切下游
-    //（runner / agent / subagent 拿到的都是包装后的 provider）。
+    // LLM 出口装饰：先包计量（token 用量记录），再包脱敏（请求出口卡口），
+    // 之后才分发给一切下游（runner / agent / subagent）。
     let base_provider: Arc<dyn echo_agent::LlmProvider> = Arc::from(provider);
+    let base_provider =
+        echo_agent::llm::wrap_metering(base_provider, metrics_store.clone(), base_profile_key);
     let provider_arc: Arc<dyn echo_agent::LlmProvider> = match &redactor {
         Some(redactor) => echo_agent::llm::wrap_redacting(base_provider, redactor.clone()),
         None => base_provider,
@@ -727,6 +742,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let factory_plugin_host = plugin_host.clone();
     let factory_config_store = config_store.clone();
     let factory_redactor = redactor.clone();
+    let factory_metrics = metrics_store.clone();
     let factory_sensitive_dirs = sensitive_dirs.clone();
     let factory_outbound_policy =
         crate::security::OutboundPolicy::from_config(&cfg.security.sanitize.outbound);
@@ -741,6 +757,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let event_sink = factory_event_sink.clone();
             let shared_plugin_host = factory_plugin_host.clone();
             let redactor2 = factory_redactor.clone();
+            let metrics2 = factory_metrics.clone();
             let sensitive_dirs2 = factory_sensitive_dirs.clone();
             let outbound_policy = factory_outbound_policy;
             let config_store_path = factory_config_path.clone();
@@ -846,6 +863,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                             Ok(p) => {
                                 api_cfg_override = Some(resolved.clone());
                                 let provider: Arc<dyn echo_agent::LlmProvider> = Arc::from(p);
+                                let provider = echo_agent::llm::wrap_metering(
+                                    provider,
+                                    metrics2.clone(),
+                                    name.clone(),
+                                );
                                 let provider = match &redactor2 {
                                     Some(redactor) => {
                                         echo_agent::llm::wrap_redacting(provider, redactor.clone())
@@ -887,7 +909,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .workspace_store(workspace_store)
                 .persona_api(profile.api_profile.clone())
                 .config_store(agents_config_store.clone())
-                .subagent_store(subagent_store.clone());
+                .subagent_store(subagent_store.clone())
+                .metrics(metrics2.clone());
                 // 敏感信息脱敏器（2026-10 安全）：Agent 侧入站 / 事件 /
                 // 结果出口统一脱敏。
                 if let Some(redactor) = &redactor2 {
@@ -1348,6 +1371,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         persona.agent.start_session_save_task();
         persona.agent.start_plugin_reload_task().await;
         // orchestration 已删除（2026-09-16）
+    }
+
+    // 余额快照周期任务（全局管理代理，只此一份）：按
+    // `[agent].balance_snapshot_secs`（默认 600s）采样每个可查询 profile，
+    // 写入本地 echo-balances.jsonl（面板余额/用量图表的数据源）。
+    if cfg.agent.balance_snapshot_secs > 0 {
+        core_agent.start_balance_snapshot_task();
     }
 
     // ---- Wire agents into QQ instances ----

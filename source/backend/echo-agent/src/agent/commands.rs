@@ -391,6 +391,9 @@ impl Agent {
             BackendCommand::QueryApiBalance { name } => {
                 self.query_api_balance(&name).await;
             }
+            BackendCommand::QueryApiMetrics { name } => {
+                self.query_api_metrics(&name).await;
+            }
             BackendCommand::RequestSkillsList => {
                 self.emit_skills_list().await;
             }

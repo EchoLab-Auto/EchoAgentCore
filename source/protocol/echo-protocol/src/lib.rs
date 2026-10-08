@@ -27,12 +27,14 @@ pub use bridge::{
     create_bridge, deserialize_message, serialize_command, serialize_event, BackendBridge,
     BackendHandle, FanoutHandle, WsMessage,
 };
+
 pub use command::{command_clearance, BackendCommand, CommandClearance};
 pub use event::{
-    AdapterStatus, ApiProfileInfo, BackendEvent, BackendState, BrowseRoot, ContextBlockInfo,
-    ContextMessageInfo, FederationLinkState, FederationPeerInfo, FriendInfo, GroupInfo,
-    OrchestrationMode, PluginInfo, SessionInfo, ShellSessionInfo, SkillInfo, SkillSourceInfo,
-    TeamInfo, TimelineMessage, TimelineSource, TimelineTool, ToolInfo, WorkspaceDirectory,
-    WorkspaceFileEntry, WorkspaceGitInfo, WorkspaceSessionInfo,
+    AdapterStatus, ApiBalancePoint, ApiMetricsEntry, ApiProfileInfo, ApiUsagePoint, BackendEvent,
+    BackendState, BrowseRoot, ContextBlockInfo, ContextMessageInfo, FederationLinkState,
+    FederationPeerInfo, FriendInfo, GroupInfo, OrchestrationMode, PluginInfo, SessionInfo,
+    ShellSessionInfo, SkillInfo, SkillSourceInfo, TeamInfo, TimelineMessage, TimelineSource,
+    TimelineTool, ToolInfo, WorkspaceDirectory, WorkspaceFileEntry, WorkspaceGitInfo,
+    WorkspaceSessionInfo,
 };
 pub use mode::{GateMode, LoopMode, ReasoningEffort, ThinkingMode};
