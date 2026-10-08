@@ -55,6 +55,7 @@ graph LR
   Inter --> Modals[模态与覆盖层|/panel-modals.md]
   Inter --> Set[设置视图|/panel-settings.md]
   Inter --> Tasks[QQ管理·任务·Shell|/panel-qq-tasks.md]
+  Inter --> Mobile[移动端适配|/panel-mobile.md]
   Inter --> Sys[系统交互|/panel-system.md]
   Dev --> Test[测试策略|/dev-testing.md]
   Dev --> DocGuide[文档规范|/documentation-guide.md]
