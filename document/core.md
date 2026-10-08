@@ -3,7 +3,7 @@ id: core
 title: "Core 后端"
 group: 框架
 x: 320
-y: 320
+y: 820
 link: ["frame | 框架（内核） | r>l", "plugins | 插件化设计 | b>t"]
 ---
 

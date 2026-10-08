@@ -3,7 +3,7 @@ id: frame
 title: "框架（内核）"
 group: 框架
 x: 640
-y: 320
+y: 820
 link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "multimodal | 多模态输入 | r>l", "config-persistence | 配置持久化 | r>l", "security-redaction | 敏感信息隔离 | b>t"]
 ---
 

@@ -3,8 +3,8 @@ id: index
 title: "EchoAgent 文档总览"
 group: 总览
 x: 1520
-y: -400
-link: ["architecture | 架构总览 | l>r", "core | Core 后端 | l>r", "panel | Panel 前端 | r>l", "protocol | 协议与数据流 | r>l", "ops-deploy | 部署与自更新 | r>l", "dev-guide | 开发指南 | r>l"]
+y: 100
+link: ["architecture | 架构总览 | l>r", "core | Core 后端 | l>r", "panel | Panel 前端 | r>l", "protocol | 协议与数据流 | b>l", "ops-deploy | 部署与自更新 | b>l", "dev-guide | 开发指南 | b>l"]
 ---
 
 # EchoAgent 文档总览

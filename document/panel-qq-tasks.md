@@ -3,7 +3,7 @@ id: panel-qq-tasks
 title: "Panel QQ 管理 · 任务 · Shell"
 group: 前端
 x: 3200
-y: 280
+y: 780
 ---
 
 # Panel QQ 管理 · 任务 · Shell

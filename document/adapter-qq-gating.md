@@ -3,7 +3,7 @@ id: qq-gating
 title: "QQ 适配器门控"
 group: 插件
 x: 960
-y: 1600
+y: 2220
 ---
 
 # QQ 适配器门控设计

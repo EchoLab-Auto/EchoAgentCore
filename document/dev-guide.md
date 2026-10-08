@@ -3,7 +3,7 @@ id: dev-guide
 title: "开发指南"
 group: 工程
 x: 1920
-y: 1000
+y: 2050
 link: ["dev-testing | 测试策略 | r>l", "documentation-guide | 文档规范 | r>l"]
 ---
 

@@ -3,7 +3,7 @@ id: panel-settings
 title: "Panel 设置视图"
 group: 前端
 x: 2880
-y: 280
+y: 780
 ---
 
 # Panel 设置视图

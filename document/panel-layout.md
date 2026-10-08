@@ -3,7 +3,7 @@ id: panel-layout
 title: "Panel 布局与导航"
 group: 前端
 x: 1920
-y: 280
+y: 780
 ---
 
 # Panel 布局与导航

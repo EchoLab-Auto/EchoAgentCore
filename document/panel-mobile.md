@@ -3,7 +3,7 @@ id: panel-mobile
 title: "移动端适配（竖屏）"
 group: 前端
 x: 3520
-y: 280
+y: 780
 ---
 
 # 移动端适配（竖屏）

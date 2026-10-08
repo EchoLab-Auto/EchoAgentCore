@@ -3,7 +3,7 @@ id: multimodal
 title: "多模态输入"
 group: 框架
 x: 960
-y: 640
+y: 1140
 ---
 
 # 多模态输入（图片）

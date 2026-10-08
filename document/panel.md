@@ -3,7 +3,7 @@ id: panel
 title: "Panel 前端"
 group: 前端
 x: 1920
-y: 0
+y: 500
 link: ["panel-interaction | 交互定义 | r>l"]
 ---
 

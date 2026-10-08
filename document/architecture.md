@@ -3,7 +3,7 @@ id: architecture
 title: "架构总览"
 group: 总览
 x: 320
-y: 0
+y: 500
 ---
 
 # 架构总览

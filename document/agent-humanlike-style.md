@@ -2,8 +2,8 @@
 id: agent-humanlike-style
 title: "拟人化方案（规划）"
 group: 规划
-x: 1280
-y: 2240
+x: 1440
+y: 2860
 ---
 
 # 拟人化方案（规划）

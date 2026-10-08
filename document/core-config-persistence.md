@@ -3,7 +3,7 @@ id: config-persistence
 title: "配置持久化"
 group: 框架
 x: 960
-y: 800
+y: 1300
 ---
 
 # 配置持久化

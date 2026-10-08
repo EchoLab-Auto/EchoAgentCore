@@ -3,7 +3,7 @@ id: panel-chat
 title: "Panel 会话视图"
 group: 前端
 x: 2240
-y: 280
+y: 780
 ---
 
 # Panel 会话视图
