@@ -2134,7 +2134,7 @@ impl Agent {
                 );
                 let result = tokio::select! {
                     response = provider.chat_stream(&request, delta_tx) => {
-                        response.map_err(&log_model_error)?
+                        response.map_err(log_model_error)?
                     }
                     _ = turn_cancel.cancelled() => return Err(anyhow!(TURN_CANCELLED)),
                 };
@@ -2142,7 +2142,7 @@ impl Agent {
                 result
             } else {
                 tokio::select! {
-                    response = provider.chat(&request) => response.map_err(&log_model_error)?,
+                    response = provider.chat(&request) => response.map_err(log_model_error)?,
                     _ = turn_cancel.cancelled() => return Err(anyhow!(TURN_CANCELLED)),
                 }
             };
