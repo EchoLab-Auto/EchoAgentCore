@@ -30,6 +30,20 @@ use crate::NapCatClient;
 
 const NAPCAT_INITIAL_CHECK_DELAY: Duration = Duration::from_secs(2);
 const NAPCAT_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+/// 已连接后的守护复查间隔：守护态不再重配，仅做轻量在线检查。
+const NAPCAT_GUARD_INTERVAL: Duration = Duration::from_secs(60);
+/// 未连接时两次完整重配（WebUI 登录 + SetConfig + 快速登录固化）的最小间隔。
+/// NapCat WebUI 有登录限流（实测 ~20s 内 8–10 次登录即触发 `login rate limit`），
+/// 启动/重连窗口若按 retry 间隔（5s）重配会直接打满——节流防登录风暴。
+const NAPCAT_DANCE_MIN_INTERVAL: Duration = Duration::from_secs(30);
+
+/// `maintain_napcat_connection` 的节奏参数（生产用模块常量，测试注入小值）。
+struct NapCatMaintainTiming {
+    initial_delay: Duration,
+    retry_interval: Duration,
+    guard_interval: Duration,
+    dance_min_interval: Duration,
+}
 
 /// 二维码新鲜度阈值（秒）：超过则先让 NapCat 重新生成再取。
 /// NapCat 二维码约 2 分钟有效，这里取 90s——既不频繁作废用户刚扫的码，
@@ -205,19 +219,26 @@ impl QqAdapter {
         napcat: NapCatClient,
         ws_url: String,
         token: String,
-        initial_delay: Duration,
-        retry_interval: Duration,
+        timing: NapCatMaintainTiming,
+        webui_token_source: Arc<dyn Fn() -> Result<String, String> + Send + Sync>,
     ) {
-        tokio::time::sleep(initial_delay).await;
+        tokio::time::sleep(timing.initial_delay).await;
 
         let mut last_state = None;
         // 已连接后的守护模式（2026-10 巡检遗留）：此前 connected=true 即
         // 退出循环——NapCat 容器**重建**（compose 文件由 Core 多实例流程
         // 重新生成时会重置网络配置）后反向 WS 配置丢失，裸奔到下次重启
-        // Core。改为连接后降频守护：每 GUARD_INTERVAL 复查一次在线态，
+        // Core。改为连接后降频守护：每 guard_interval 复查一次在线态，
         // 断开（connected=false）自动回到正常重试间隔并重新配置（重配
         // 幂等：同名 EchoAgentCore 条目先删后加）。
-        const GUARD_INTERVAL: Duration = Duration::from_secs(60);
+        //
+        // 2026-10 修复：守护态不再每次复查都完整重配——connected=true 本身
+        // 即证明反向 WS 配置有效；旧实现每分钟仍做 WebUI 登录 ×2 + SetConfig
+        // + docker exec，实测触发 NapCat WebUI 登录限流（日志 `login rate
+        // limit`）。现在：已连接 → 跳过重配（快速登录固化每进程至多补一
+        // 次）；未连接 → 重配，且两次重配至少间隔 dance_min_interval。
+        let mut ensured_quick_login = false;
+        let mut last_dance: Option<std::time::Instant> = None;
         loop {
             if !inner.running.load(Ordering::SeqCst) {
                 break;
@@ -226,31 +247,55 @@ impl QqAdapter {
             match napcat.check().await {
                 NapCatState::Online { user_id, nickname } => {
                     if last_state != Some("online") {
-                        tracing::info!(
-                            %user_id,
-                            %nickname,
-                            %ws_url,
-                            "NapCat online - configuring reverse WebSocket"
-                        );
+                        tracing::info!(%user_id, %nickname, %ws_url, "NapCat online");
                     }
-                    let webui_token =
-                        crate::napcat::webui_token_from_container(&inner.config.napcat_container);
-                    match webui_token {
-                        Ok(webui_token) => {
-                            if let Err(e) = napcat
-                                .configure_reverse_ws(&ws_url, &token, &webui_token)
-                                .await
-                            {
-                                tracing::warn!(error = %e, "NapCat auto-config failed; will retry");
+                    if guarding {
+                        // 已连接：配置在线生效，不再重复 WebUI 登录/重配。
+                        // 快速登录固化（写 webui.json 的 autoLoginAccount，
+                        // 幂等）每进程至多补一次。
+                        if !ensured_quick_login {
+                            if let Ok(webui_token) = webui_token_source() {
+                                napcat
+                                    .ensure_quick_login(
+                                        &inner.config.napcat_container,
+                                        &webui_token,
+                                    )
+                                    .await;
+                                ensured_quick_login = true;
                             }
-                            // 「启动时自动登录」：在线时固化 autoLoginAccount 到
-                            // webui.json；离线时尝试快速登录（失败回退扫码）。
-                            napcat
-                                .ensure_quick_login(&inner.config.napcat_container, &webui_token)
-                                .await;
                         }
-                        Err(e) => {
-                            tracing::warn!(error = %e, "NapCat WebUI token unavailable; will retry");
+                        // 断开后立即允许重配：连接期无重配记录，节流无需残留。
+                        last_dance = None;
+                    } else if last_dance.is_none_or(|t| t.elapsed() >= timing.dance_min_interval) {
+                        // 未连接：完整（重）配置 + 快速登录固化；节流防登录风暴。
+                        last_dance = Some(std::time::Instant::now());
+                        match webui_token_source() {
+                            Ok(webui_token) => {
+                                if let Err(e) = napcat
+                                    .configure_reverse_ws(&ws_url, &token, &webui_token)
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "NapCat auto-config failed; will retry"
+                                    );
+                                }
+                                // 「启动时自动登录」：在线时固化 autoLoginAccount
+                                // 到 webui.json；离线时尝试快速登录（失败回退扫码）。
+                                napcat
+                                    .ensure_quick_login(
+                                        &inner.config.napcat_container,
+                                        &webui_token,
+                                    )
+                                    .await;
+                                ensured_quick_login = true;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "NapCat WebUI token unavailable; will retry"
+                                );
+                            }
                         }
                     }
                     last_state = Some("online");
@@ -271,9 +316,9 @@ impl QqAdapter {
 
             // 守护模式降频；断开后回到正常重试间隔。
             tokio::time::sleep(if guarding {
-                GUARD_INTERVAL
+                timing.guard_interval
             } else {
-                retry_interval
+                timing.retry_interval
             })
             .await;
         }
@@ -889,13 +934,22 @@ impl Adapter for QqAdapter {
         let port = bind_addr.split(':').next_back().unwrap_or("3131");
         let ws_url = format!("ws://{napcat_host}:{port}");
         let token = self.inner.config.server.access_token.clone();
+        let napcat_container = self.inner.config.napcat_container.clone();
+        let timing = NapCatMaintainTiming {
+            initial_delay: NAPCAT_INITIAL_CHECK_DELAY,
+            retry_interval: NAPCAT_RETRY_INTERVAL,
+            guard_interval: NAPCAT_GUARD_INTERVAL,
+            dance_min_interval: NAPCAT_DANCE_MIN_INTERVAL,
+        };
+        let webui_token_source: Arc<dyn Fn() -> Result<String, String> + Send + Sync> =
+            Arc::new(move || crate::napcat::webui_token_from_container(&napcat_container));
         let config_task = tokio::spawn(Self::maintain_napcat_connection(
             self.inner.clone(),
             NapCatClient::with_onebot_url(&napcat_url, &onebot_url),
             ws_url,
             token,
-            NAPCAT_INITIAL_CHECK_DELAY,
-            NAPCAT_RETRY_INTERVAL,
+            timing,
+            webui_token_source,
         ));
         *self
             .inner
@@ -1238,28 +1292,92 @@ mod tests {
             .await;
     }
 
+    /// 挂载 WebUI mock 的登录与 OB11 配置读写端点。
+    async fn mount_webui_config_endpoints(webui: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/api/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "data": {"Credential": "test-cred"}
+            })))
+            .mount(webui)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/OB11Config/GetConfig"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "data": {"network": {"websocketClients": []}}
+            })))
+            .mount(webui)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/OB11Config/SetConfig"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"code": 0})))
+            .mount(webui)
+            .await;
+    }
+
+    /// 维护任务测试用适配器：容器名指向不存在的容器——即便流程走到
+    /// autoLoginAccount 固化（docker exec），也碰不到真实 NapCat 容器。
+    fn maintain_test_adapter() -> QqAdapter {
+        let adapter = QqAdapter::new(QqAdapterConfig {
+            napcat_container: "no-such-container-for-tests".into(),
+            ..QqAdapterConfig::default()
+        });
+        adapter.inner.running.store(true, Ordering::SeqCst);
+        adapter
+    }
+
+    fn maintain_test_timing(dance_min: Duration) -> NapCatMaintainTiming {
+        NapCatMaintainTiming {
+            initial_delay: Duration::ZERO,
+            retry_interval: Duration::from_millis(10),
+            guard_interval: Duration::from_millis(20),
+            dance_min_interval: dance_min,
+        }
+    }
+
+    async fn webui_requests_with_path(webui: &MockServer, target: &str) -> usize {
+        webui
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == target)
+            .count()
+    }
+
+    async fn wait_for_webui_path(webui: &MockServer, target: &str) {
+        let target = target.to_string();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if webui_requests_with_path(webui, &target).await > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("expected WebUI request did not arrive");
+    }
+
     #[tokio::test]
     async fn configures_reverse_ws_when_login_completes_after_startup() {
         let onebot = MockServer::start().await;
         mount_login_info(&onebot, 0).await;
 
         let webui = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/network/wsReverse"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&webui)
-            .await;
+        mount_webui_config_endpoints(&webui).await;
 
-        let adapter = QqAdapter::new(QqAdapterConfig::default());
-        adapter.inner.running.store(true, Ordering::SeqCst);
+        let adapter = maintain_test_adapter();
         let client = NapCatClient::with_onebot_url(&webui.uri(), &onebot.uri());
         let task = tokio::spawn(QqAdapter::maintain_napcat_connection(
             adapter.inner.clone(),
             client,
             "ws://host.docker.internal:3131".into(),
             String::new(),
-            Duration::ZERO,
-            Duration::from_millis(10),
+            maintain_test_timing(Duration::ZERO),
+            Arc::new(|| Ok("webui-test-token".to_string())),
         ));
 
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -1268,20 +1386,98 @@ mod tests {
         onebot.reset().await;
         mount_login_info(&onebot, 10001).await;
 
-        tokio::time::timeout(Duration::from_secs(1), async {
+        // 登录完成后应触发反向 WS 重配（登录 → GetConfig → SetConfig）。
+        wait_for_webui_path(&webui, "/api/OB11Config/SetConfig").await;
+
+        // 守护模式（2026-10）：connected 后任务**不再退出**（降频复查）——
+        // 测试主动停 running 让循环退出。
+        adapter.inner.connected.store(true, Ordering::SeqCst);
+        adapter.inner.running.store(false, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("maintenance task should exit after running=false")
+            .expect("maintenance task failed");
+    }
+
+    /// 守护态（已连接）不再重复打 WebUI：旧实现对每次 60s 复查都做
+    /// WebUI 登录 ×2 + SetConfig + docker exec，实测触发 NapCat 登录限流
+    /// （`login rate limit`）——回归防线：连接后的 WebUI 流量必须归零。
+    #[tokio::test]
+    async fn maintain_stops_webui_churn_once_connected() {
+        let onebot = MockServer::start().await;
+        mount_login_info(&onebot, 10001).await;
+        let webui = MockServer::start().await;
+        mount_webui_config_endpoints(&webui).await;
+
+        let adapter = maintain_test_adapter();
+        let client = NapCatClient::with_onebot_url(&webui.uri(), &onebot.uri());
+        let task = tokio::spawn(QqAdapter::maintain_napcat_connection(
+            adapter.inner.clone(),
+            client,
+            "ws://x:3131".into(),
+            String::new(),
+            maintain_test_timing(Duration::ZERO),
+            Arc::new(|| Ok("webui-test-token".to_string())),
+        ));
+
+        // 未连接阶段：应发生重配（SetConfig 出现）。
+        wait_for_webui_path(&webui, "/api/OB11Config/SetConfig").await;
+
+        // 切到守护态：第一拍内可能补写一次快速登录；此后流量应归零。
+        adapter.inner.connected.store(true, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let settled = webui.received_requests().await.unwrap().len();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let after = webui.received_requests().await.unwrap().len();
+        assert_eq!(after, settled, "守护态仍在打 WebUI（重复重配未停止）");
+
+        adapter.inner.running.store(false, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("maintenance task should exit after running=false")
+            .expect("maintenance task failed");
+    }
+
+    /// 未连接时两次完整重配之间应满足最小间隔（WebUI 登录限流防护）。
+    #[tokio::test]
+    async fn maintain_throttles_reconfigure_while_disconnected() {
+        let onebot = MockServer::start().await;
+        mount_login_info(&onebot, 10001).await;
+        let webui = MockServer::start().await;
+        mount_webui_config_endpoints(&webui).await;
+
+        let adapter = maintain_test_adapter();
+        let client = NapCatClient::with_onebot_url(&webui.uri(), &onebot.uri());
+        let task = tokio::spawn(QqAdapter::maintain_napcat_connection(
+            adapter.inner.clone(),
+            client,
+            "ws://x:3131".into(),
+            String::new(),
+            maintain_test_timing(Duration::from_millis(500)),
+            Arc::new(|| Ok("webui-test-token".to_string())),
+        ));
+
+        // 第一次重配立即发生。
+        wait_for_webui_path(&webui, "/api/OB11Config/SetConfig").await;
+        let first = webui_requests_with_path(&webui, "/api/OB11Config/SetConfig").await;
+
+        // 节流窗口内（250ms < 500ms）不应出现第二次 SetConfig。
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let within = webui_requests_with_path(&webui, "/api/OB11Config/SetConfig").await;
+        assert_eq!(within, first, "节流窗口内发生了第二次重配");
+
+        // 节流窗过后应恢复重试。
+        tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                if !webui.received_requests().await.unwrap().is_empty() {
+                if webui_requests_with_path(&webui, "/api/OB11Config/SetConfig").await > first {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("reverse WebSocket configuration was not requested");
+        .expect("节流窗后未恢复重配尝试");
 
-        // 守护模式（2026-10）：connected 后任务**不再退出**（降频复查）——
-        // 测试主动停 running 让循环退出。
-        adapter.inner.connected.store(true, Ordering::SeqCst);
         adapter.inner.running.store(false, Ordering::SeqCst);
         tokio::time::timeout(Duration::from_secs(2), task)
             .await
