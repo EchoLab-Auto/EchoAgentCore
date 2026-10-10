@@ -5,7 +5,9 @@
 //!
 //! - externally-tagged enum（`{"type": ..., "payload": ...}`），变体/字段名为
 //!   线上契约，只增不改
-//! - 新增字段一律 `#[serde(default)]`——新旧节点混部时旧端点可解码新帧
+//! - 全网同步更新（无旧版本兼容）：字段变更直接收紧；`serde(default)` 仅用于
+//!   语义上真正可省略的字段（如 `Option` 且带 `skip_serializing_if`），
+//!   不再为「旧端点缺字段」保留容忍
 //! - `call_id = <origin_node>:<毫秒时间戳>-<进程内序号>`：全局唯一 + 因果溯源，跨机回环可检测
 
 use serde::{Deserialize, Serialize};
@@ -86,9 +88,7 @@ pub struct NodeHello {
     pub node_name: Option<String>,
     pub protocol_version: u32,
     /// Core 版本（`env!("CARGO_PKG_VERSION")`），观测用。
-    #[serde(default)]
     pub version: String,
-    #[serde(default)]
     pub caps: NodeCaps,
     /// 本机**对外可拨地址**（`ws://host:port`；None = 未监听/不宣告）。
     ///
@@ -199,9 +199,8 @@ pub struct QueryRequest {
     /// 查询目标（如 session_id / 工作区目录路径）；含义按 kind 定。
     #[serde(default)]
     pub subject: String,
-    /// 人格维度（`SessionSnapshot` 用）：空 = 不限定（旧行为，逐 persona 取
-    /// 首个命中——每个 persona 都有 `local:tui::local_user`，会歧义）。
-    #[serde(default)]
+    /// 人格维度（`SessionSnapshot` 必填）：同名会话（每个 persona 都有
+    /// `local:tui::local_user`）必须按人格限定，不限定即歧义。
     pub team_id: String,
     /// 快照分页（Phase 5）：只回 seq 大于该值的条目（0 = 最近窗口）。
     #[serde(default)]
@@ -382,26 +381,16 @@ mod tests {
         assert_eq!(back, result);
     }
 
-    /// 兼容策略：新字段带 serde(default) 时，旧端点（缺字段的 JSON）可解码。
+    /// Invoke 可省略字段：`workdir`/`timeout_secs` 为 None 时发送方省略
+    ///（`skip_serializing_if`），接收方按缺省解码；`args` 缺省 = 空参数。
     #[test]
-    fn invoke_request_decodes_without_new_fields() {
+    fn invoke_request_optional_fields_decode() {
         let minimal = r#"{"call_id": "n:1-0", "tool": "bash"}"#;
         let req: InvokeRequest = serde_json::from_str(minimal).unwrap();
         assert_eq!(req.tool, "bash");
         assert!(req.args.is_null());
         assert!(req.workdir.is_none());
         assert!(req.timeout_secs.is_none());
-    }
-
-    /// QueryRequest 新增 team_id 带 serde(default)：旧 JSON 缺字段可解码。
-    #[test]
-    fn query_request_decodes_without_team_id() {
-        let q: QueryRequest = serde_json::from_str(
-            r#"{"call_id":"n:1-0","kind":"SessionSnapshot","subject":"local:tui::local_user"}"#,
-        )
-        .unwrap();
-        assert_eq!(q.team_id, "");
-        assert_eq!(q.subject, "local:tui::local_user");
     }
 
     #[test]
@@ -424,11 +413,6 @@ mod tests {
         assert!(text.contains("advertise"));
         let back: FedFrame = serde_json::from_str(&text).unwrap();
         assert_eq!(back, frame);
-        // 老端点缺 caps/version/node_name/advertise 也可解码
-        let legacy = r#"{"node_id": "node-abc", "protocol_version": 1}"#;
-        let parsed: NodeHello = serde_json::from_str(legacy).unwrap();
-        assert!(parsed.caps.tools.is_empty());
-        assert_eq!(parsed.advertise, None);
     }
 
     #[test]

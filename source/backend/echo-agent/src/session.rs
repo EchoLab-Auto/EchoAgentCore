@@ -303,10 +303,8 @@ const IDENTITY_IDLE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 /// - v5 = event-sourced: the session event log is the source of truth;
 ///   `trunk_history`/`identities`/`timeline` are projections.
 /// - v6（2026-09）= **multi-session contexts**: every event carries a
-///   `session` attribution; per-session projections are persisted as
-///   `trunk_histories` (map) instead of the old flat `trunk_history`.
-///   v5 files load fine — events are attributed on load (migration) and the
-///   next save writes v6.
+///   `session` attribution; per-session histories are re-projected from the
+///   event log on load (v6 文件不再持久化 `trunk_histories` 投影）。
 const PERSIST_VERSION: u32 = 6;
 
 /// Upper bound on persisted display timeline entries.
@@ -587,24 +585,13 @@ impl TrunkStore {
         let timeline = self.timeline.try_lock().ok()?;
         let identities = self.all().iter().map(identity_metadata).collect::<Vec<_>>();
         let events = self.event_log.log();
-        // 每会话投影（v6）：调试/兼容读者可读；事件日志仍是唯一事实来源。
-        let mut trunk_histories = serde_json::Map::new();
-        for entry in self.session_histories.iter() {
-            if let Ok(history) = entry.value().try_lock() {
-                trunk_histories.insert(
-                    entry.key().clone(),
-                    serde_json::Value::Array(serialize_messages(&history)),
-                );
-            }
-        }
         let header = self.header.lock().expect("header poisoned").clone();
         serde_json::to_string_pretty(&serde_json::json!({
             "version": PERSIST_VERSION,
-            // The event log is the source of truth; the projection fields are
-            // persisted for forward compatibility with older readers.
+            // The event log is the source of truth; per-session histories are
+            // re-projected from it on load.
             "header": header,
             "events": events,
-            "trunk_histories": trunk_histories,
             "identities": identities,
             "timeline": &*timeline,
         }))
@@ -1542,6 +1529,8 @@ fn identity_metadata(session: &Session) -> serde_json::Value {
     })
 }
 
+/// v4 legacy 序列化对照（仅测试用；v6 持久化不再写 per-session 投影）。
+#[cfg(test)]
 fn serialize_messages(history: &[ChatMessage]) -> Vec<serde_json::Value> {
     history
         .iter()
@@ -2192,8 +2181,8 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(root["version"], 6, "v6 multi-session format");
         assert!(
-            root["trunk_histories"].is_object(),
-            "per-session projections"
+            root.get("trunk_histories").is_none(),
+            "per-session projections are derived from the event log, not persisted"
         );
         assert_eq!(root["events"].as_array().unwrap().len(), 2);
         assert!(root["identities"]

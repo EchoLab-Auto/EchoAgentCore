@@ -315,13 +315,7 @@ impl Agent {
 
     /// Whether a dynamic tool is allowed for this agent
     /// (allowlist first, denylist refinement; empty allowlist = all allowed).
-    ///
-    /// 单会话模式额外隐藏 `spawn_parallel_task`：一个会话一次只处理一件事，
-    /// 并行分支与串行准入语义冲突（改用另一个会话 = 另一条并行通道）。
     pub fn allows_dynamic_tool(&self, name: &str) -> bool {
-        if name == "spawn_parallel_task" && self.loop_mode() == echo_defs::LoopMode::Single {
-            return false;
-        }
         // spawn_subagent 由 subagent 插件实化：插件未挂载（未装配运行态）
         // 或 persona 白名单不含该插件时对模型不可见。
         if name == crate::subagent::SPAWN_SUBAGENT_TOOL {

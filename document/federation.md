@@ -103,7 +103,7 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 - 一旦配置 `listen` 或 peer，互信边界即生效（≈ SSH 免密）——务必 per-peer
   token + `allow_tools`/`allow_queries` 收敛。
 - **自更新与联邦独立**：命令处理已解耦。
-- 旧配置里的 `enabled = false` 会被忽略（字段已移除）。
+- 联邦无独立开关字段：`listen = ""` 即纯连出（其余能力恒开）。
 
 ```toml
 [federation]
@@ -151,8 +151,7 @@ allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspac
 双向同时对拆的两道保险：①连出循环在已有活跃链路时**停车**（链路消失才
 重拨）；②双向竞争时**node_id 较小的一方拨出的连接为优选**（两端独立
 计算即得同一结果，非优选连接主动让位）。被顶掉的旧链路会立即关闭
-（不留僵尸连接）。不含 `advertise` 的旧版对端不受影响：字段可选，
-未宣告则退回单向语义。
+（不留僵尸连接；携带对方地址的 Hello 为全网同步更新后的线格式）。
 
 **连入侧策略解析**：接受侧链路建立时按呈现的 token 反查运行时 peer 表，
 把对端解析为**配置名**（`resolve_accept_peer_name`）——`peer_policies`
@@ -226,8 +225,8 @@ parent_branch_id → 挂起 call_id 集合）：受理时登记、终态时销�
 不存在、无事件、序列化/传输失败、目标无该 persona、事件解析失败、分块
 超限、迁移超时。
 
-> `MigrateSession.team_id` 为 `#[serde(default)]` 可选，兼容旧前端（缺省时
-> 源侧逐 persona 查找会话）。
+> `MigrateSession.team_id` 为可选（`null` = 无活动人格时，源侧逐 persona
+> 查找会话）。
 
 Panel 侧：设置 → 联邦页提供「迁移当前会话」（列出生效 peer，带当前会话 /
 人格），点击即发 `MigrateSession`；受理与终态两条 `SessionMigrated` 以 toast
@@ -235,9 +234,9 @@ Panel 侧：设置 → 联邦页提供「迁移当前会话」（列出生效 pe
 
 ### 只读查询的 team 维度
 
-`QueryRequest.team_id`（`#[serde(default)]`）：`SessionSnapshot` 非空时**只
-查该 persona**——同名会话（`local:tui::local_user` 在每个 persona 上都存在）
-若逐 persona 取首个会命中任意人格的历史，故需要该维度消歧；为空时保持旧行为。
+`QueryRequest.team_id`（`SessionSnapshot` 必填）：**只查该 persona**——
+同名会话（`local:tui::local_user` 在每个 persona 上都存在）若不限定人格会
+命中任意人格的历史，故该维度必填、空值即拒绝。
 
 ## 分布式调度
 
@@ -275,12 +274,10 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   id 在各 core 上可相同，因此 Panel 的 `activities` / `tasks` / `shellTerminals`
   / `teamTimelines` / `workspaceGitBySession` / `workspaceFiles` 及磁盘
   trunk 缓存都必须用复合键（`core 为空时退化为裸 id`，单接入点零变化）；同名
-  跨 core 不再互相覆盖/串显。引导期裸广播的只读命令白名单（中继
-  `is_readonly_command`）须与 Panel 引导命令对齐，否则多接入点下被静默拒收。
+  跨 core 不再互相覆盖/串显。
 - **身份内建 `node_id`**：`SessionInfo` /
-  `TeamInfo` 线上新增可选 `node_id`（进程级 NodeId，`echo_agent::set_node_id`
-  由组合根注入；旧 Core 缺省 None，serde 默认兼容）——多节点聚合客户端不再
-  只靠中继信封区分同名会话/人格。Panel 学习 `core → NodeId` 映射并在选择器
+  `TeamInfo` 线上携带可选 `node_id`（进程级 NodeId，`echo_agent::set_node_id`
+  由组合根注入）——多节点聚合客户端不再只靠中继信封区分同名会话/人格。Panel 学习 `core → NodeId` 映射并在选择器
   展示；`branchTabs` 按 `(core, branch_id)` 键；等待态（pending）登记时记录
   目标 core，响应只销账同 core 的等待。
 - **运行区域（agent 自带属性）**：不存在"管理目标 core"

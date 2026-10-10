@@ -2413,21 +2413,19 @@ async fn handle_federation_query(
         }
         QueryKind::SessionSnapshot => {
             // 会话归属解析：`node://` 前缀剥离按本机处理。
-            // team_id 非空时**只查该 persona**（同名会话如
-            // `local:tui::local_user` 每个 persona 都有，逐 persona 取首个会歧义）；
-            // 为空时退旧行为（逐 persona 取首个命中），兼容旧大脑。
+            // team_id 必填：同名会话如 `local:tui::local_user` 每个 persona
+            // 都有，不限定人格的查询有歧义。
             let (_, key) = echo_defs::NodeId::split_ref(&req.subject);
             let session_id = key;
-            let candidates: Vec<_> = if req.team_id.is_empty() {
-                personas.personas()
-            } else {
-                personas
-                    .personas()
-                    .into_iter()
-                    .filter(|p| p.id == req.team_id)
-                    .collect()
-            };
-            if !req.team_id.is_empty() && candidates.is_empty() {
+            if req.team_id.is_empty() {
+                return err("team_id 必填（会话快照按人格限定）");
+            }
+            let candidates: Vec<_> = personas
+                .personas()
+                .into_iter()
+                .filter(|p| p.id == req.team_id)
+                .collect();
+            if candidates.is_empty() {
                 return err(&format!("人格 {} 不存在", req.team_id));
             }
             for persona in candidates {

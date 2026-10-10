@@ -435,21 +435,6 @@ async fn parallel_mode_runs_turns_concurrently_and_merges_by_request_sequence() 
     assert_eq!(history[3].content, "reply-2");
 }
 
-/// 单会话模式隐藏并行分支工具；并行模式恢复（工具 schema 与提示词同源）。
-#[tokio::test]
-async fn spawn_parallel_task_is_hidden_in_single_mode() {
-    let provider = Arc::new(MockProvider {
-        calls: Arc::new(AtomicUsize::new(0)),
-        reply: "ok".into(),
-    });
-    let agent = Arc::new(test_agent(provider));
-    assert!(!agent.allows_dynamic_tool("spawn_parallel_task"));
-    agent
-        .set_loop_mode_for_test(echo_defs::LoopMode::Parallel)
-        .await;
-    assert!(agent.allows_dynamic_tool("spawn_parallel_task"));
-}
-
 /// 单会话模式（默认）：同一会话的 turn 串行排队——第二个 turn 拿到的是
 /// 第一轮结束后的上下文（能看到 reply-1），且不会并发进入模型。
 #[tokio::test]

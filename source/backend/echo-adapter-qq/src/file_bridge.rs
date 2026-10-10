@@ -125,14 +125,6 @@ impl FileBridge {
         Ok(candidates)
     }
 
-    /// Backwards-compatible single-shot resolution: returns the first
-    /// candidate (the most preferred one).
-    pub async fn resolve(&self, local_path: &str, file_name: &str) -> Result<String, String> {
-        self.resolve_all(local_path, file_name)
-            .await
-            .map(|mut c| c.remove(0))
-    }
-
     /// In-container path for a file name (`<container_data_dir>/<name>`).
     pub fn container_data_path(&self, name: &str) -> String {
         format!("{}/{}", self.container_data_dir.trim_end_matches('/'), name)
@@ -424,10 +416,13 @@ mod tests {
             "/app/napcat/data",
         );
         let remote = bridge
-            .resolve("/app/napcat/data/x.pdf", "x.pdf")
+            .resolve_all("/app/napcat/data/x.pdf", "x.pdf")
             .await
             .unwrap();
-        assert_eq!(remote, "/app/napcat/data/x.pdf");
+        assert_eq!(
+            remote.first().map(String::as_str),
+            Some("/app/napcat/data/x.pdf")
+        );
     }
 
     #[test]
@@ -504,7 +499,8 @@ mod tests {
             "/app/napcat/data",
         );
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(bridge.resolve("/nonexistent/definitely-missing.bin", "m.bin"));
+        let result =
+            rt.block_on(bridge.resolve_all("/nonexistent/definitely-missing.bin", "m.bin"));
         assert!(result.is_err());
     }
 }
