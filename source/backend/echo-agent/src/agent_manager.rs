@@ -89,7 +89,6 @@ impl AgentManager {
                     memory_limit_tokens: None,
                     context_window_tokens: None,
                     api_profile: None,
-                    disabled_plugins: Vec::new(),
                 },
             );
         }
@@ -220,10 +219,6 @@ impl AgentManager {
     /// via the factory; persists through the config writer.
     pub fn save_profile(&self, id: &str, profile: TeamMember, enabled: bool) -> Result<(), String> {
         let mut profile = profile;
-        // branch.reply / session.global / chatbot.sessions）与旧驱动 id（loop.runner）
-        // 统一折叠为 loop.{single,parallel}——所有写入路径（含旧 panel 回写旧 id）
-        // 在此防御。
-        crate::plugins::normalize_mode_plugins(&mut profile.enabled_plugins);
         // 合并语义：传入 profile 的 per-agent 预算为 None 且旧 profile 已有值时
         // 保留旧值，避免前端（未编辑该字段）保存时擦除手工写入 TOML 的预算。
         if let Some(old) = self.teams.read().unwrap().get(id) {
@@ -326,16 +321,13 @@ impl AgentManager {
                 node_id: crate::node_id().map(str::to_string),
                 region_name: crate::region_name().map(str::to_string),
                 name: p.name.clone(),
-                // 去主智能体（2026-09）：不再有"主"角色；字段过渡期保留恒 false，
-                // 下个协议版本删除。
-                is_default: false,
                 description: p.description.clone(),
                 enabled: agents.contains_key(id),
                 system_skills: p.system_skills.clone(),
                 sessions: agents.get(id).map(|r| r.agent.session_count()).unwrap_or(0),
                 // 循环模式：互斥循环插件推导（single 为兜底，也是默认），
                 // 单一来源 TeamMember::loop_mode；parallel 才展示会话管理 UI
-                // 并发射 ReplyBranch* 可见性事件。旧字段过渡期同时下发。
+                // 并发射 ReplyBranch* 可见性事件。
                 loop_mode: p.loop_mode(),
                 system_prompt: p.system_prompt.clone(),
                 disabled_tools: p.disabled_tools.clone(),
@@ -445,55 +437,12 @@ mod tests {
         let infos = mgr.infos();
         let mode_of = |id: &str| {
             let info = infos.iter().find(|t| t.id == id).unwrap();
-            // 新字段与旧（过渡）字段必须一致。
             info.loop_mode
         };
         assert_eq!(mode_of("bot"), echo_defs::LoopMode::Parallel);
         assert_eq!(mode_of("coder"), echo_defs::LoopMode::Single);
         // 非空白名单无模式 id → Single（兜底）
         assert_eq!(mode_of("bare"), echo_defs::LoopMode::Single);
-    }
-
-    #[test]
-    fn save_profile_normalizes_legacy_mode_plugin_ids() {
-        use crate::plugins::{
-            LEGACY_CHATBOT_MODE_IDS, LEGACY_LOOP_RUNNER_PLUGIN_ID, PARALLEL_LOOP_PLUGIN_ID,
-        };
-        let mgr = manager_with(AgentConfig::default());
-        let profile = member_with_plugins(&[
-            "echo-agent.tools.builtin",
-            LEGACY_CHATBOT_MODE_IDS[1],
-            LEGACY_LOOP_RUNNER_PLUGIN_ID,
-        ]);
-        // enabled=false：跳过 factory 实例化；无 config_writer 时 persist 为 Ok。
-        mgr.save_profile("legacy", profile, false).unwrap();
-        let teams = mgr.teams.read().unwrap();
-        let saved = teams.get("legacy").unwrap();
-        assert!(saved
-            .enabled_plugins
-            .contains(&PARALLEL_LOOP_PLUGIN_ID.to_string()));
-        assert!(!saved
-            .enabled_plugins
-            .iter()
-            .any(|p| p == LEGACY_CHATBOT_MODE_IDS[1] || p == LEGACY_LOOP_RUNNER_PLUGIN_ID));
-        // infos 同步反映归一化后的模式（白名单含 parallel → Parallel）
-        let info = mgr.infos().into_iter().find(|t| t.id == "legacy").unwrap();
-        assert_eq!(info.loop_mode, echo_defs::LoopMode::Parallel);
-    }
-
-    #[test]
-    fn saved_profile_ignores_deprecated_plugin_blacklist() {
-        // 插件黑名单已移除：旧端回写的 blacklist 不影响循环模式推导
-        //（推导只看白名单），也不再被归一化写回。
-        use crate::plugins::{LEGACY_CHATBOT_MODE_IDS, PARALLEL_LOOP_PLUGIN_ID};
-        let mgr = manager_with(AgentConfig::default());
-        let mut profile = member_with_plugins(&[PARALLEL_LOOP_PLUGIN_ID]);
-        profile
-            .disabled_plugins
-            .push(LEGACY_CHATBOT_MODE_IDS[2].to_string());
-        mgr.save_profile("legacy", profile, false).unwrap();
-        let info = mgr.infos().into_iter().find(|t| t.id == "legacy").unwrap();
-        assert_eq!(info.loop_mode, echo_defs::LoopMode::Parallel);
     }
 
     #[test]

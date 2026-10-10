@@ -32,9 +32,8 @@ pub use command::{command_clearance, BackendCommand, CommandClearance};
 pub use event::{
     AdapterStatus, ApiBalancePoint, ApiMetricsEntry, ApiProfileInfo, ApiUsagePoint, BackendEvent,
     BackendState, BrowseRoot, ContextBlockInfo, ContextMessageInfo, FederationLinkState,
-    FederationPeerInfo, FriendInfo, GroupInfo, OrchestrationMode, PluginInfo, SessionInfo,
-    ShellSessionInfo, SkillInfo, SkillSourceInfo, TeamInfo, TimelineMessage, TimelineSource,
-    TimelineTool, ToolInfo, WorkspaceDirectory, WorkspaceFileEntry, WorkspaceGitInfo,
-    WorkspaceSessionInfo,
+    FederationPeerInfo, FriendInfo, GroupInfo, PluginInfo, SessionInfo, ShellSessionInfo,
+    SkillInfo, SkillSourceInfo, TeamInfo, TimelineMessage, TimelineSource, TimelineTool, ToolInfo,
+    WorkspaceDirectory, WorkspaceFileEntry, WorkspaceGitInfo, WorkspaceSessionInfo,
 };
 pub use mode::{GateMode, LoopMode, ReasoningEffort, ThinkingMode};

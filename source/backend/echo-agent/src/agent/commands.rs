@@ -947,7 +947,6 @@ impl Agent {
                         memory_limit_tokens,
                         context_window_tokens,
                         api_profile,
-                        disabled_plugins: Vec::new(),
                     };
                     match mgr.save_profile(&id, profile.clone(), enabled) {
                         Ok(()) => {

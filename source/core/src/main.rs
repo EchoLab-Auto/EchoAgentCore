@@ -1402,25 +1402,24 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // QQ events enter through a one-way hook. Outbound messages require tools.
         adapter.set_message_hook(Arc::new(echo_agent::AgentMessageHook::new(target)));
         adapter.add_handler(Box::new(handlers::EchoHandler::new(
-            &cfg.bot.command_prefix,
+            &cfg.qq_adapter.command_prefix,
         )));
         adapter.add_handler(Box::new(handlers::HelpHandler::new(
-            &cfg.bot.command_prefix,
+            &cfg.qq_adapter.command_prefix,
         )));
         let owner = adapter.get_owner_qq();
         adapter.add_handler(Box::new(handlers::AdminHandler::new(
-            &cfg.bot.command_prefix,
-            if owner > 0 { owner } else { cfg.bot.owner_qq },
+            &cfg.qq_adapter.command_prefix,
+            if owner > 0 {
+                owner
+            } else {
+                cfg.qq_adapter.owner_qq
+            },
             shutdown_tx.clone(),
             tracker.clone(),
         )));
         tracing::info!(instance = %instance_id, persona = %persona_id, "QQ instance wired to persona");
     }
-    // legacy 变量（下方自动启动/停止路径仍按第一个实例语义使用）。
-    if let Some((_, _, first)) = qq_adapters.first() {
-        let _ = first;
-    }
-
     // ---- Command pump（多 persona 路由）----
     // 命令从进程级通道读取（不再是"默认人格"的 mailbox）：
     // - 聊天/取消：按 team_id 路由到目标人格；

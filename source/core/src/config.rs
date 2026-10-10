@@ -70,10 +70,6 @@ pub struct CoreConfig {
     pub core: CoreSection,
     /// Core↔Core 联邦链路（Phase 1；缺省关闭）。
     pub federation: FederationSection,
-    /// Legacy server section — auto-migrated to `[adapters.qq.server]`.
-    pub server: ServerSection,
-    /// Legacy bot section — auto-migrated to `[adapters.qq]`.
-    pub bot: BotSection,
     /// New adapter configuration.
     #[serde(alias = "adapters")]
     pub adapters_section: Option<AdaptersSection>,
@@ -180,40 +176,6 @@ pub struct QqPorts {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct ServerSection {
-    pub bind_address: String,
-    pub access_token: String,
-    pub heartbeat_interval: u64,
-}
-
-impl Default for ServerSection {
-    fn default() -> Self {
-        Self {
-            bind_address: "0.0.0.0:3131".to_string(),
-            access_token: String::new(),
-            heartbeat_interval: 30,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct BotSection {
-    pub owner_qq: i64,
-    pub command_prefix: String,
-}
-
-impl Default for BotSection {
-    fn default() -> Self {
-        Self {
-            owner_qq: 0,
-            command_prefix: "/".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
 pub struct CoreSection {
     /// WebSocket address for Panel connections (default: 0.0.0.0:3132——
     /// 开箱即可被局域网 panel 连接；token 认证（首装自动生成）兜底安全。
@@ -305,77 +267,6 @@ pub struct FederationPeerSection {
     pub allow_queries: Vec<String>,
 }
 
-/// 加载期插件名单迁移（内存迁移，保存自愈）：在 `CoreConfig::load` 反序列化后
-/// 调用，覆盖 per-persona 白名单/黑名单与全局 `[agent].disabled_plugins`。
-///
-/// 1. **循环模式插件 id 归一化**：旧编排模式 id（`branch.reply` /
-///    `session.global` / `chatbot.sessions`）→ `echo-agent.loop.parallel`；
-///    旧驱动 id `loop.runner` 与已移除的 `menu` / `checklist` 插件 id 剔除
-///    （见 [`echo_agent::plugins::normalize_mode_plugins`]）——旧 id 不再注册，
-///    不迁移则 `apply_disabled` 静默失效；
-/// 2. **per-persona 插件黑名单移除**（2026-09-11）：`disabled_plugins` 的
-///    语义物化进 `enabled_plugins` 白名单（见
-///    [`echo_agent::plugins::convert_plugin_blacklist_to_whitelist`]），既有
-///    配置的门控与循环模式行为不变；黑名单字段自此不再参与判定。
-///
-/// 返回迁移/警告说明（load 期打印；纯函数便于测试断言）。
-///
-/// 历史：本函数曾名 `migrate_orchestration_mode_plugins`，于 54f1bb3
-/// （删除后台任务/并行分支）连同调用点被误删——加载期迁移自此缺失，
-/// 旧配置的名单归一化与黑名单物化静默失效（2026-09-29 恢复并改名）。
-pub fn migrate_plugin_lists(agent: &mut echo_agent::AgentConfig) -> Vec<String> {
-    use echo_agent::plugins::{
-        convert_plugin_blacklist_to_whitelist, normalize_mode_plugins, PARALLEL_LOOP_PLUGIN_ID,
-        SINGLE_LOOP_PLUGIN_ID,
-    };
-    let mut notes = Vec::new();
-
-    let normalize = |list: &mut Vec<String>, scope: &str, notes: &mut Vec<String>| {
-        if normalize_mode_plugins(list) {
-            notes.push(format!(
-                "migrated legacy loop plugin ids → {SINGLE_LOOP_PLUGIN_ID}/{PARALLEL_LOOP_PLUGIN_ID} ({scope})"
-            ));
-        }
-    };
-
-    for (id, member) in agent.teams.iter_mut() {
-        normalize(
-            &mut member.enabled_plugins,
-            &format!("teams.{id}.enabled_plugins"),
-            &mut notes,
-        );
-        if convert_plugin_blacklist_to_whitelist(
-            &mut member.enabled_plugins,
-            &member.disabled_plugins,
-        ) {
-            notes.push(format!(
-                "migrated teams.{id}.disabled_plugins（插件黑名单已移除）→ enabled_plugins 白名单物化；该字段不再参与门控"
-            ));
-            member.disabled_plugins.clear();
-        }
-        // 白名单同时含 single + parallel：互斥循环模式按 parallel 优先（推导单一来源）。
-        if member
-            .enabled_plugins
-            .iter()
-            .any(|p| p == PARALLEL_LOOP_PLUGIN_ID)
-            && member
-                .enabled_plugins
-                .iter()
-                .any(|p| p == SINGLE_LOOP_PLUGIN_ID)
-        {
-            notes.push(format!(
-                "warning: teams.{id}.enabled_plugins 同时含 single 与 parallel 循环插件，互斥按 parallel 优先"
-            ));
-        }
-    }
-    normalize(
-        &mut agent.disabled_plugins,
-        "agent.disabled_plugins",
-        &mut notes,
-    );
-    notes
-}
-
 impl CoreConfig {
     /// Load the Core config file and apply environment-variable overrides.
     pub fn load(path: &Path) -> Result<Self> {
@@ -386,12 +277,6 @@ impl CoreConfig {
 
         validate_logging_level(&config.logging)?;
 
-        // Empty command prefix would make bare words trigger command handlers unexpectedly.
-        if config.bot.command_prefix.is_empty() {
-            eprintln!("warning: [bot] command_prefix is empty, falling back to \"/\"");
-            config.bot.command_prefix = "/".to_string();
-        }
-
         // Deduplicate api_profiles by name (self-healing for a historical persistence bug).
         {
             let mut seen = std::collections::HashSet::new();
@@ -399,13 +284,6 @@ impl CoreConfig {
                 .agent
                 .api_profiles
                 .retain(|p| seen.insert(p.name.clone()));
-        }
-
-        // 插件名单迁移：旧编排模式 id → 循环模式插件 id、per-persona 黑名单
-        // 物化进白名单。内存迁移，首次 SaveTeam 落盘自愈（与 legacy
-        // [server]/[bot] 迁移同范式）。
-        for note in migrate_plugin_lists(&mut config.agent) {
-            eprintln!("note: {note}");
         }
 
         // ---- Build QQ adapter config ----
@@ -417,35 +295,17 @@ impl CoreConfig {
             }
         }
 
-        // Backward compat: if [adapters.qq] is not enabled, try old [server]/[bot].
-        // We only migrate if at least one explicit (non-default) value is present:
-        // a non-empty access_token, a non-default heartbeat, or a non-zero owner_qq.
-        // bind_address always has a default so it alone is not a sufficient signal.
-        let has_explicit_server =
-            !config.server.access_token.is_empty() || config.server.heartbeat_interval != 30;
-        let has_explicit_bot = config.bot.owner_qq != 0;
-
-        if !config.qq_adapter.enabled && (has_explicit_server || has_explicit_bot) {
-            if has_explicit_server {
-                eprintln!(
-                    "note: using legacy [server] config — consider migrating to [adapters.qq.server]"
-                );
-            }
-            config.qq_adapter.enabled = true;
-            config.qq_adapter.server.bind_address = config.server.bind_address.clone();
-            config.qq_adapter.server.access_token = config.server.access_token.clone();
-            config.qq_adapter.server.heartbeat_interval = config.server.heartbeat_interval;
-            config.qq_adapter.owner_qq = config.bot.owner_qq;
-            config.qq_adapter.command_prefix = config.bot.command_prefix.clone();
+        // Empty command prefix would make bare words trigger command handlers unexpectedly.
+        if config.qq_adapter.command_prefix.is_empty() {
+            eprintln!("warning: [adapters.qq] command_prefix is empty, falling back to \"/\"");
+            config.qq_adapter.command_prefix = "/".to_string();
         }
 
         // ECHO_ACCESS_TOKEN env override.
         if let Ok(token) = std::env::var("ECHO_ACCESS_TOKEN") {
             if config.qq_adapter.enabled {
-                config.qq_adapter.server.access_token = token.clone();
+                config.qq_adapter.server.access_token = token;
             }
-            // Also apply to legacy for consistency.
-            config.server.access_token = token;
         }
 
         // Agent API key overrides: explicit config wins, otherwise env var.
@@ -484,29 +344,6 @@ fn validate_logging_level(logging: &LoggingSection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 联邦已取消 `enabled` 开关：旧配置里的 `enabled = false` 必须被**忽略**
-    /// 而不是解析失败（否则升级后 Core 起不来）。
-    #[test]
-    fn legacy_federation_enabled_field_is_ignored() {
-        let path = std::env::temp_dir().join("echo-agent-federation-legacy-test.toml");
-        std::fs::write(
-            &path,
-            r#"
-[federation]
-enabled = false
-listen = "0.0.0.0:3133"
-
-[federation.peers.gpu]
-url = "ws://localhost:3999"
-token = "t"
-"#,
-        )
-        .unwrap();
-        let config = CoreConfig::load(&path).expect("legacy enabled field must be ignored");
-        assert_eq!(config.federation.listen, "0.0.0.0:3133");
-        assert!(config.federation.peers.contains_key("gpu"));
-    }
 
     #[test]
     fn federation_defaults_to_listen_3133_without_config() {
@@ -571,98 +408,12 @@ api_key = ""
     }
 
     #[test]
-    fn migrate_plugin_lists_normalizes_legacy_ids_and_materializes_blacklists() {
-        use echo_agent::config::TeamMember;
-        use echo_agent::plugins::{
-            LEGACY_CHATBOT_MODE_IDS, LEGACY_LOOP_RUNNER_PLUGIN_ID, PARALLEL_LOOP_PLUGIN_ID,
-        };
-
-        let mut agent = echo_agent::AgentConfig::default();
-        let member = TeamMember {
-            enabled_plugins: vec![
-                "echo-agent.tools.builtin".into(),
-                LEGACY_CHATBOT_MODE_IDS[1].into(),
-                LEGACY_LOOP_RUNNER_PLUGIN_ID.into(),
-            ],
-            disabled_plugins: vec![LEGACY_CHATBOT_MODE_IDS[2].into()],
-            ..Default::default()
-        };
-        agent.teams.insert("bot".into(), member);
-        agent.disabled_plugins = vec![LEGACY_CHATBOT_MODE_IDS[1].into()];
-
-        let notes = super::migrate_plugin_lists(&mut agent);
-
-        let m = &agent.teams["bot"];
-        // 白名单里的旧编排 id → loop.parallel；但黑名单含旧并行特性 id
-        // （session.global）：历史上黑名单优先（推导单会话），物化后白名单
-        // 不得再含 parallel，行为保持不变。
-        assert_eq!(
-            m.enabled_plugins,
-            vec!["echo-agent.tools.builtin".to_string()]
-        );
-        // 黑名单已物化并清空（字段不再参与门控，也不再写回）
-        assert!(m.disabled_plugins.is_empty());
-        assert_eq!(m.loop_mode(), echo_agent::config::LoopMode::Single);
-        // 全局层旧 id 同样被清理映射（否则 apply_disabled 静默失效）
-        assert_eq!(
-            agent.disabled_plugins,
-            vec![PARALLEL_LOOP_PLUGIN_ID.to_string()]
-        );
-        // 迁移报告覆盖 teams 与全局层
-        assert!(notes
-            .iter()
-            .any(|n| n.contains("teams.bot.enabled_plugins")));
-        assert!(notes
-            .iter()
-            .any(|n| n.contains("teams.bot.disabled_plugins")));
-        assert!(notes.iter().any(|n| n.contains("agent.disabled_plugins")));
-        // 幂等：二次运行无新报告
-        assert!(super::migrate_plugin_lists(&mut agent).is_empty());
-    }
-
-    #[test]
-    fn legacy_config_migrates_to_qq_adapter() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("echo-legacy-test.toml");
-        std::fs::write(
-            &path,
-            r#"
-[server]
-bind_address = "0.0.0.0:8080"
-access_token = "secret"
-
-[bot]
-owner_qq = 12345
-command_prefix = "!"
-
-[agent]
-provider = "openai"
-model = "gpt-4o"
-"#,
-        )
-        .unwrap();
-        let config = CoreConfig::load(&path).unwrap();
-        assert!(config.qq_adapter.enabled);
-        assert_eq!(config.qq_adapter.server.bind_address, "0.0.0.0:8080");
-        assert_eq!(config.qq_adapter.server.access_token, "secret");
-        assert_eq!(config.qq_adapter.owner_qq, 12345);
-        assert_eq!(config.qq_adapter.command_prefix, "!");
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn new_adapter_config_takes_priority() {
+    fn adapter_config_parses_and_overrides_defaults() {
         let dir = std::env::temp_dir();
         let path = dir.join("echo-new-adapter-test.toml");
         std::fs::write(
             &path,
             r#"
-[server]
-bind_address = "0.0.0.0:3131"
-
-[bot]
-owner_qq = 111
-
 [agent]
 provider = "openai"
 model = "gpt-4o"

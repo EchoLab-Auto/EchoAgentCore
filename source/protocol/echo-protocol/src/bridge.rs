@@ -249,29 +249,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_agent_output_without_branch_id_still_decodes() {
-        // Old Core versions serialised AgentOutput without the branch_id field.
-        // The field is #[serde(default)], so old payloads must decode to None.
-        let text =
-            r#"{"type":"event","payload":{"AgentOutput":{"session_id":"s1","content":"hi"}}}"#;
-        let msg = deserialize_message(text).expect("legacy payload must decode");
-        match msg {
-            WsMessage::Event(BackendEvent::AgentOutput {
-                session_id,
-                team_id,
-                content,
-                branch_id,
-            }) => {
-                assert!(team_id.is_none());
-                assert_eq!(session_id, "s1");
-                assert_eq!(content, "hi");
-                assert_eq!(branch_id, None);
-            }
-            other => panic!("wrong event: {other:?}"),
-        }
-    }
-
-    #[test]
     fn execution_lifecycle_events_roundtrip_via_ws() {
         let events = [
             BackendEvent::SubagentStarted {
@@ -358,24 +335,6 @@ mod tests {
             }
             other => panic!("wrong event: {other:?}"),
         }
-    }
-
-    /// 向后兼容：旧 Core 的 SessionInfo JSON 没有 node_id → 反序列化为 None。
-    #[test]
-    fn session_info_without_node_id_deserializes() {
-        let session: SessionInfo = serde_json::from_value(serde_json::json!({
-            "id": "local:tui::local_user",
-            "team_id": null,
-            "platform": "local",
-            "scope": "tui",
-            "user_id": "u",
-            "nickname": "",
-            "group_name": null,
-            "last_active": 0,
-            "last_message": ""
-        }))
-        .expect("legacy SessionInfo must deserialize");
-        assert_eq!(session.node_id, None);
     }
 
     #[test]

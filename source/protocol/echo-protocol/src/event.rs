@@ -375,33 +375,6 @@ pub enum BackendEvent {
         cancelled: bool,
         completed_at_ms: i64,
     },
-    /// A detached background task was accepted. It does not keep the parent
-    /// conversation in a busy state.
-    BackgroundTaskStarted {
-        session_id: String,
-        task_id: String,
-        sequence: u64,
-        branch_count: usize,
-        objective: String,
-        created_at_ms: i64,
-    },
-    /// All branches finished. Integration may still wait for an earlier task.
-    BackgroundTaskCompleted {
-        session_id: String,
-        task_id: String,
-        sequence: u64,
-        success: bool,
-        completed_at_ms: i64,
-    },
-    /// A completed task was committed to the shared context and the parent
-    /// agent was asked to deliver to its declared targets.
-    BackgroundTaskIntegrated {
-        session_id: String,
-        task_id: String,
-        sequence: u64,
-        success: bool,
-        integrated_at_ms: i64,
-    },
     /// Agent invoked a tool.
     ToolCall {
         session_id: String,
@@ -870,28 +843,6 @@ pub struct ToolInfo {
     pub package: Option<String>,
 }
 
-/// 已退役的编排模式（兼容旧前端）：新字段是 [`LoopMode`]。
-///
-/// 该枚举只用于 `TeamInfo.orchestration_mode` 的过渡期兼容——`Parallel`
-/// 序列化为 `"chatbot"`（旧名），`Single` 为 `"single"`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OrchestrationMode {
-    Single,
-    #[default]
-    Chatbot,
-}
-
-impl From<LoopMode> for OrchestrationMode {
-    /// 循环模式 → 旧的编排模式名（`parallel` 即旧 `chatbot`）。
-    fn from(value: LoopMode) -> Self {
-        match value {
-            LoopMode::Single => OrchestrationMode::Single,
-            LoopMode::Parallel => OrchestrationMode::Chatbot,
-        }
-    }
-}
-
 /// One team member (frontend display).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamInfo {
@@ -903,9 +854,6 @@ pub struct TeamInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region_name: Option<String>,
     pub name: String,
-    /// Whether this agent is the primary/default agent (protected from deletion).
-    #[serde(default)]
-    pub is_default: bool,
     #[serde(default)]
     pub description: String,
     #[serde(default = "default_true")]

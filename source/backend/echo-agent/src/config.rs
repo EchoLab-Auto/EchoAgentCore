@@ -149,14 +149,6 @@ pub struct TeamMember {
     /// 非空时优先于 system_prompt 字段；为空回退 system_prompt（兼容）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub system_skills: Vec<String>,
-    /// DEPRECATED（2026-09-11 移除）：per-persona 插件黑名单。
-    /// 白名单（`enabled_plugins`）已能表达全部语义（空表 = 全部启用，前端
-    /// 首次取消勾选即物化全量），黑名单不再参与任何门控判定、也不再写回
-    /// 配置；字段仅保留反序列化能力，供加载期迁移
-    /// （[`crate::plugins::convert_plugin_blacklist_to_whitelist`] 把它物化进
-    /// 白名单，既有配置行为不变）。
-    #[serde(default, skip_serializing)]
-    pub disabled_plugins: Vec<String>,
     /// Per-persona disabled tools (by tool name, e.g. "bash").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_tools: Vec<String>,
@@ -196,15 +188,13 @@ pub struct TeamMember {
 impl TeamMember {
     /// 循环模式推导（互斥插件 `echo-agent.loop.{single,parallel}`，
     /// single 为兜底，也是默认）：
-    /// - 白名单含 `loop.parallel`（或旧编排模式 id）→ Parallel
+    /// - 白名单含 `loop.parallel` → Parallel
     /// - 其余（含白名单为空 = 默认）→ Single
-    ///
-    /// 插件黑名单已移除（2026-09-11），本推导只看白名单。
     pub fn loop_mode(&self) -> echo_defs::LoopMode {
         let listed = self
             .enabled_plugins
             .iter()
-            .any(|p| crate::plugins::PARALLEL_MODE_IDS.iter().any(|id| p == id));
+            .any(|p| p == crate::plugins::PARALLEL_LOOP_PLUGIN_ID);
         if listed {
             echo_defs::LoopMode::Parallel
         } else {
@@ -221,7 +211,6 @@ impl Default for TeamMember {
             system_prompt: String::new(),
             enabled: true,
             system_skills: Vec::new(),
-            disabled_plugins: Vec::new(),
             disabled_tools: Vec::new(),
             disabled_skills: Vec::new(),
             enabled_plugins: Vec::new(),
@@ -297,10 +286,6 @@ pub struct AgentConfig {
     /// Team members disabled at runtime (survives restarts).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_teams: Vec<String>,
-    /// DEPRECATED — legacy message-count limit. Kept only for config
-    /// compatibility (deserialization); no longer participates in any
-    /// calculation. Use `memory_limit_tokens` instead.
-    pub memory_limit: usize,
     /// Token budget for the global conversation trunk (the context fed to the
     /// LLM). `None` falls back to [`DEFAULT_MEMORY_LIMIT_TOKENS`]
     /// (1M × 0.8 = 800,000 tokens).
@@ -349,7 +334,6 @@ impl Default for AgentConfig {
             disabled_plugins: Vec::new(),
             teams: std::collections::BTreeMap::new(),
             disabled_teams: Vec::new(),
-            memory_limit: 40,
             memory_limit_tokens: None,
             context_window_tokens: None,
             balance_snapshot_secs: default_balance_snapshot_secs(),
@@ -639,30 +623,16 @@ mod tests {
     }
 
     #[test]
-    fn legacy_shared_context_is_ignored_and_not_serialized() {
-        let config: AgentConfig = toml::from_str("shared_context = true").unwrap();
-        let serialized = toml::to_string(&config).unwrap();
-        assert!(!serialized.contains("shared_context"));
-    }
-
-    #[test]
     fn effective_tokens_default_is_1m_times_0_8() {
         assert_eq!(DEFAULT_MEMORY_LIMIT_TOKENS, 800_000);
         assert_eq!(DEFAULT_MEMORY_LIMIT_TOKENS, 1_000_000 * 8 / 10);
         let default = AgentConfig::default();
         assert_eq!(default.effective_memory_limit_tokens(), 800_000);
-        // Legacy message-count field no longer participates in the calculation.
-        let legacy = AgentConfig {
-            memory_limit: 20,
-            ..Default::default()
-        };
-        assert_eq!(legacy.effective_memory_limit_tokens(), 800_000);
     }
 
     #[test]
     fn effective_tokens_floor_is_200() {
         let cfg = AgentConfig {
-            memory_limit: 0,
             memory_limit_tokens: Some(0),
             ..Default::default()
         };
@@ -793,10 +763,9 @@ mod tests {
 
     // ── 循环模式推导（loop_mode）──
 
-    fn member_with_plugins(enabled: &[&str], disabled: &[&str]) -> TeamMember {
+    fn member_with_plugins(enabled: &[&str]) -> TeamMember {
         TeamMember {
             enabled_plugins: enabled.iter().map(|s| s.to_string()).collect(),
-            disabled_plugins: disabled.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }
     }
@@ -805,69 +774,23 @@ mod tests {
     fn loop_mode_matrix() {
         use echo_defs::LoopMode::*;
 
-        use crate::plugins::{
-            LEGACY_CHATBOT_MODE_IDS, PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID,
-        };
+        use crate::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
         let parallel = PARALLEL_LOOP_PLUGIN_ID;
         let single = SINGLE_LOOP_PLUGIN_ID;
         // 空白名单（=默认）→ Single（单会话是默认，非"全部启用"）
-        assert_eq!(member_with_plugins(&[], &[]).loop_mode(), Single);
+        assert_eq!(member_with_plugins(&[]).loop_mode(), Single);
         // 仅 parallel → Parallel；仅 single → Single
-        assert_eq!(member_with_plugins(&[parallel], &[]).loop_mode(), Parallel);
-        assert_eq!(member_with_plugins(&[single], &[]).loop_mode(), Single);
-        // 任一旧编排模式 id → Parallel（向后兼容推导）
-        for id in LEGACY_CHATBOT_MODE_IDS {
-            assert_eq!(
-                member_with_plugins(&[id], &[]).loop_mode(),
-                Parallel,
-                "legacy id {id} should derive parallel"
-            );
-        }
-        // 旧 single id → Single
-        assert_eq!(
-            member_with_plugins(&["echo-agent.orchestration.single"], &[]).loop_mode(),
-            Single
-        );
+        assert_eq!(member_with_plugins(&[parallel]).loop_mode(), Parallel);
+        assert_eq!(member_with_plugins(&[single]).loop_mode(), Single);
         // single + parallel 并含 → Parallel（互斥优先）
         assert_eq!(
-            member_with_plugins(&[single, parallel], &[]).loop_mode(),
+            member_with_plugins(&[single, parallel]).loop_mode(),
             Parallel
         );
-        // 非空白名单但无任何模式 id → Single（兜底）
+        // 非空白名单但无模式 id → Single（兜底）
         assert_eq!(
-            member_with_plugins(
-                &["echo-agent.tools.builtin", "echo-agent.orchestration"],
-                &[]
-            )
-            .loop_mode(),
+            member_with_plugins(&["echo-agent.tools.builtin"]).loop_mode(),
             Single
         );
-        // 已废弃的插件黑名单字段不再影响推导（2026-09-11 移除，白名单单轨）：
-        // 黑名单即使含 parallel/旧 id，也只看白名单。
-        assert_eq!(member_with_plugins(&[], &[parallel]).loop_mode(), Single);
-        assert_eq!(
-            member_with_plugins(&[parallel], &[parallel]).loop_mode(),
-            Parallel
-        );
-        assert_eq!(
-            member_with_plugins(&[parallel], &[LEGACY_CHATBOT_MODE_IDS[1]]).loop_mode(),
-            Parallel
-        );
-    }
-
-    #[test]
-    fn team_member_blacklist_is_deserialization_only() {
-        // 反序列化仍接受旧字段（供加载期迁移读取），但序列化不再写回。
-        let toml_str = r#"
-disabled_plugins = ["echo-agent.tools.builtin"]
-enabled_plugins = ["echo-agent.adapter.qq"]
-"#;
-        let member: TeamMember = toml::from_str(toml_str).unwrap();
-        assert_eq!(
-            member.disabled_plugins,
-            vec!["echo-agent.tools.builtin".to_string()]
-        );
-        let out = toml::to_string(&member).unwrap();
-        assert!(!out.contains("disabled_plugins"), "serialized: {out}");
     }
 }
