@@ -259,8 +259,15 @@ fn parse_anthropic_event(event: &str) -> Vec<AnthropicOutcome> {
     let mut data = None;
     for line in event.lines() {
         let line = line.trim();
-        if let Some(d) = line.strip_prefix("data: ") {
-            data = Some(d.to_string());
+        // 前缀宽松（2026-10 修复）：SSE 规定 `data:` 后空格可省——Kimi 的
+        // Anthropic 兼容端是 `event:message_start\ndata:{...}`（无空格），
+        // DeepSeek 是 `data: {...}`（带空格）。此前只认带空格形态，导致
+        // Kimi 流式全丢（空回复且无报错）。
+        if let Some(d) = line.strip_prefix("data:") {
+            let d = d.trim_start();
+            if !d.is_empty() {
+                data = Some(d.to_string());
+            }
         }
     }
     let Some(data) = data else {
@@ -1021,6 +1028,40 @@ mod tests {
         assert_eq!(response.usage.prompt_tokens, 42);
         assert_eq!(response.usage.completion_tokens, 9);
         assert_eq!(response.stop_reason.as_deref(), Some("tool_use"));
+    }
+
+    /// 前缀宽松（2026-10 修复）：Kimi 的 Anthropic 兼容端省略 `data:` 后
+    /// 空格（`event:message_start\ndata:{...}` 形态）——两种形态都必须能解析。
+    #[test]
+    fn kimi_style_events_without_space_after_colon_parse() {
+        // 无空格形态（Kimi）：text_delta / message_delta stop_reason + usage
+        let text = "event:content_block_delta\ndata:{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}";
+        let outcomes = parse_anthropic_event(text);
+        assert_eq!(outcomes.len(), 1);
+        match &outcomes[0] {
+            AnthropicOutcome::Chunk(c) => assert_eq!(c.content_delta.as_deref(), Some("你好")),
+            other => panic!("expected Chunk, got {other:?}"),
+        }
+        let delta = "event:message_delta\ndata:{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":49}}";
+        let outcomes = parse_anthropic_event(delta);
+        assert!(
+            outcomes
+                .iter()
+                .any(|o| matches!(o, AnthropicOutcome::StopReason(r) if r == "end_turn")),
+            "stop_reason 缺失: {outcomes:?}"
+        );
+        assert!(
+            outcomes
+                .iter()
+                .any(|o| matches!(o, AnthropicOutcome::Usage(u) if u.output_tokens == Some(49))),
+            "usage 缺失: {outcomes:?}"
+        );
+        // 带空格形态（DeepSeek）与既有测试一致，不受影响。
+        let spaced = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}";
+        assert!(matches!(
+            &parse_anthropic_event(spaced)[0],
+            AnthropicOutcome::Chunk(c) if c.content_delta.as_deref() == Some("ok")
+        ));
     }
 
     /// usage 分属两事件（input 在 message_start / output 在 message_delta）
