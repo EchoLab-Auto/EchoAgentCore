@@ -92,6 +92,12 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
   （邀请串配对开箱可用，无需先手写 listen）；显式 `listen = ""` 退回
   纯连出。未配 `[federation.peers.*]` 时 accept 侧靠 per-peer token 认证，
   **不放行任何已知链路**——单向暴露不等于可被滥用。
+- `advertise`（可选）：邀请串**对外宣告**的地址（`host:port`，可省端口 →
+  采用 listen 端口）。多网卡 / VPN 叠加场景（内网口 + tun0/WireGuard）下
+  `listen = 0.0.0.0` 无法推导"对端该连哪个地址"——缺省取 `hostname -I`
+  首个非回环 IPv4，**可能正是对端不可达的那个网卡**；此时显式指定对端
+  可达地址（如 tun0 的 `10.10.10.100:3133`）。纯对外连出（`listen = ""`）
+  时忽略。
 - 联邦管理面（状态查询 / 邀请串 / 添加 peer）始终可用。
 - `RequestFederationStatus` 恒回 `enabled: true` 的正常快照。
 - 一旦配置 `listen` 或 peer，互信边界即生效（≈ SSH 免密）——务必 per-peer
@@ -105,6 +111,9 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 # 连入（邀请串配对开箱可用）；未配 peer 时 accept 侧靠 per-peer
 # token 认证，不放行任何已知链路；显式 listen = "" 退回纯连出
 listen = "0.0.0.0:3133"
+# 可选：邀请串对外宣告地址（多网卡/VPN 场景指定对端可达地址；空 = 自动取
+# hostname -I 首个非回环 IPv4）
+# advertise = "10.10.10.100:3133"
 node_name = "workstation"
 
 [federation.peers.gpu-box]
@@ -122,8 +131,9 @@ allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspac
 状态、在线增删（运行时生效 + ConfigStore 原子写回）、**授权逐项可配**
 （全部工具 / 自定义工具白名单 / 只读查询逐类勾选 / 接受委派 / 需确认列表；
 **添加 peer 默认满权限**）、**邀请串配对**：
-`echofed://host:port?name=<别名>#<token>`，在 Panel 上生成 → 切到另一
-个运行区域粘贴自动填充（一套 Panel 管全联邦，见 [Panel](./panel.md)）。
+`echofed://host:port?name=<别名>#<token>`，在 Panel 联邦页对应 Core 的
+卡片上生成 → 在另一 Core 的卡片上粘贴自动填充（「跨 Core 配对」亦可
+一键完成；一套 Panel 管全联邦，见 [Panel](./panel.md)）。
 
 **邀请配对的占位提升**：`invite-*` 占位（运行时-only）配对
 成功时**提升为配置条目**——写 `[federation.peers.<名字>]`（名字取对端

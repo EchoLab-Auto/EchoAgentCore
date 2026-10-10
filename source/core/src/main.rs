@@ -281,6 +281,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             )),
             config_store: echo_adapter::ConfigStore::new(args.config_path()),
             listen: cfg.federation.listen.clone(),
+            advertise: cfg.federation.advertise.clone(),
             node_name: cfg
                 .federation
                 .node_name
@@ -1566,6 +1567,8 @@ struct FederationRuntime {
     /// 联邦管理命令所需的配置写回与本机信息。
     config_store: echo_adapter::ConfigStore,
     listen: String,
+    /// 邀请串对外宣告地址（`[federation] advertise`；空 = 从 listen 推导）。
+    advertise: String,
     node_name: Option<String>,
     /// per-peer 执行策略（allow_tools/queries 等）——SaveFederationPeer
     /// 运行时更新即生效（此前启动期冻结会让白名单静默失效到重启）。
@@ -2184,11 +2187,11 @@ async fn handle_federation_command(
             // 邀请串 = 本机 listen 地址 + 新随机 token。token 不落配置——
             // 对端保存后由**对端**作为其 peer 条目的 token；本端需接受
             // 该 token 的连入：写入一个「仅接受连入」的 peer 条目（url 空）。
-            let host = advertise_host(&rt.listen);
+            let host = invite_host(&rt.listen, &rt.advertise);
             let Some(host_port) = host else {
                 emit(echo_protocol::BackendEvent::Error {
                     session_id: None,
-                    message: "联邦 listen 未配置或不可用于邀请（需非 0.0.0.0 地址；请先在配置中写本机可达地址）".into(),
+                    message: "联邦未监听（listen 为空）或无法推导对外地址；请在配置 [federation] 写 listen / advertise（对端可达地址）".into(),
                 });
                 return;
             };
@@ -2666,8 +2669,38 @@ fn pick_promoted_peer_name(existing: &[String], node_name: Option<&str>, node_id
     base
 }
 
-/// 邀请用的对外地址：listen 为具体 IP/主机名时直接用；`0.0.0.0` 不可取
-/// 首个非回环 IPv4（无则 None 提示手工配置）。
+/// 邀请用的对外地址（优先显式 `advertise` 配置）：
+///
+/// - `listen` 为空（纯连出）→ None（无监听，邀请无意义）
+/// - `advertise` 非空 → 含端口（末段可解析为端口）直接用；否则补 listen
+///   端口。多网卡 / VPN 场景下指定"对端可达的那个地址"（如 tun0 地址）。
+/// - `advertise` 为空 → 沿用推导（listen 非 0.0.0.0 直接用；否则取本机
+///   首个非回环 IPv4——见 [`advertise_host`]）。
+fn invite_host(listen: &str, advertise: &str) -> Option<String> {
+    if listen.trim().is_empty() {
+        return None;
+    }
+    let adv = advertise.trim();
+    if !adv.is_empty() {
+        let has_port = adv
+            .rsplit_once(':')
+            .map(|(_, p)| p.parse::<u16>().is_ok())
+            .unwrap_or(false);
+        if has_port {
+            return Some(adv.to_string());
+        }
+        let port = listen
+            .rsplit_once(':')
+            .map(|(_, p)| p)
+            .filter(|p| !p.is_empty())
+            .unwrap_or("3133");
+        return Some(format!("{adv}:{port}"));
+    }
+    advertise_host(listen)
+}
+
+/// 邀请用的对外地址：listen 为具体 IP/主机名时直接用；`0.0.0.0` / `[::]`
+/// 时退化为"首个非回环 IPv4"（无则 None，提示手工配置 advertise）。
 fn advertise_host(listen: &str) -> Option<String> {
     let (host, port) = listen.rsplit_once(':')?;
     if host != "0.0.0.0" && host != "[::]" && !host.is_empty() {
@@ -2951,7 +2984,54 @@ mod core_util_tests {
     use crate::agent_supervisor::AgentSupervisor;
     use crate::federation_import::{chunk_utf8, handle_session_import, ImportOutcome};
     use crate::pick_promoted_peer_name;
+    use crate::{advertise_host, invite_host};
     use echo_agent::{AgentConfig, TeamMember};
+
+    /// 邀请对外地址（2026-10）：显式 `[federation] advertise` 优先——多网卡/
+    /// VPN 叠加场景指定"对端可达地址"（如 tun0），不再赌 hostname -I 顺序。
+    #[test]
+    fn invite_host_prefers_explicit_advertise() {
+        // 显式 host:port：原样使用
+        assert_eq!(
+            invite_host("0.0.0.0:3133", "10.10.10.100:3133"),
+            Some("10.10.10.100:3133".to_string())
+        );
+        // 仅 host：补 listen 端口（含自定义端口与首尾空白）
+        assert_eq!(
+            invite_host("0.0.0.0:4000", "10.10.10.100"),
+            Some("10.10.10.100:4000".to_string())
+        );
+        assert_eq!(
+            invite_host("0.0.0.0:3133", " vpn.example.net "),
+            Some("vpn.example.net:3133".to_string())
+        );
+        // IPv6 全写（[addr]:port）：直接使用
+        assert_eq!(
+            invite_host("0.0.0.0:3133", "[fd00::1]:3133"),
+            Some("[fd00::1]:3133".to_string())
+        );
+    }
+
+    /// advertise 为空：沿用旧推导；listen 为空（纯连出）：邀请无意义 → None。
+    #[test]
+    fn invite_host_fallback_and_empty_listen() {
+        assert_eq!(
+            invite_host("192.168.1.5:3133", ""),
+            Some("192.168.1.5:3133".to_string())
+        );
+        assert_eq!(
+            invite_host("192.168.1.5:3134", "   "),
+            Some("192.168.1.5:3134".to_string())
+        );
+        // 纯连出（无监听）：即便配了 advertise 也不生成邀请地址
+        assert_eq!(invite_host("", "10.10.10.100"), None);
+        assert_eq!(invite_host("   ", "10.10.10.100:3133"), None);
+        // listen 为具体地址时 advertise_host 本身直接回显（确定性分支）
+        assert_eq!(
+            advertise_host("10.0.0.7:3133"),
+            Some("10.0.0.7:3133".to_string())
+        );
+    }
 
     /// 邀请占位提升的命名规则（2026-10）：node_name 优先、缺失退
     /// node-<id 前 8>、冲突追加序号。

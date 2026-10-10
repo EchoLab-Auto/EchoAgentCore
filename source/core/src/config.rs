@@ -249,6 +249,14 @@ impl Default for CoreSection {
 pub struct FederationSection {
     /// 联邦监听地址（缺省 `0.0.0.0:3133`；显式 `""` = 不监听纯连出）。
     pub listen: String,
+    /// 邀请串**对外宣告**的地址（`host:port`；缺省 `""`）。
+    ///
+    /// 多网卡 / VPN 场景（如内网网卡 + tun0/WireGuard 叠加）下，`listen`
+    /// 为 `0.0.0.0` 时无法推导"对端该连哪个地址"——缺省会取 `hostname -I`
+    /// 首个非回环 IPv4，可能正是对端不可达的那个网卡。此处显式指定对端
+    /// 可达地址（可省略端口 → 采用 `listen` 端口；IPv6 用 `[addr]:port`）。
+    /// 纯对外连出（`listen = ""`）时忽略（无监听则邀请无意义）。
+    pub advertise: String,
     /// 人类可读节点别名（Hello 中携带；缺省仅 node_id）。
     pub node_name: Option<String>,
     /// 静态对等节点表。
@@ -259,6 +267,7 @@ impl Default for FederationSection {
     fn default() -> Self {
         Self {
             listen: "0.0.0.0:3133".into(),
+            advertise: String::new(),
             node_name: None,
             peers: std::collections::BTreeMap::new(),
         }
