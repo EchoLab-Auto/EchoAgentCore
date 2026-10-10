@@ -18,6 +18,7 @@
 //! - **回呼**（P2）：`Ready` 后经 [`PluginHandler::on_ready`] 交付
 //!   [`HostClient`]，插件可随时向宿主注册的服务发起 `HostCall`
 //!   （默认 30s 超时；连接断开时在途调用以 [`HostCallError::Closed`] 结束）。
+//!
 //! 最小插件：
 //!
 //! ```no_run

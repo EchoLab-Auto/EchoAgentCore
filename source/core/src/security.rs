@@ -219,10 +219,7 @@ pub fn sensitive_local_path(raw: &str, protected: &[PathBuf]) -> Option<PathBuf>
         return None;
     }
     let path = if let Some(rest) = trimmed.strip_prefix("~/") {
-        match std::env::var_os("HOME") {
-            Some(home) => PathBuf::from(home).join(rest),
-            None => return None,
-        }
+        PathBuf::from(std::env::var_os("HOME")?).join(rest)
     } else {
         PathBuf::from(trimmed)
     };
@@ -287,9 +284,7 @@ mod tests {
         assert_eq!(redacted["changed"], true);
         assert!(!redacted["text"].as_str().unwrap().contains(KEY));
 
-        let scanned = service
-            .call("scan", json!({"text": format!("{KEY}")}))
-            .expect("scan ok");
+        let scanned = service.call("scan", json!({"text": KEY})).expect("scan ok");
         assert_eq!(scanned["count"], 1);
         assert_eq!(scanned["hits"][0]["kind"], "registered");
 

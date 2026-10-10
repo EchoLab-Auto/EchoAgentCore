@@ -60,7 +60,11 @@ jobs:
         toolchain: [stable, nightly]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@${{ matrix.toolchain }}
+      # `uses` 字段不支持任何表达式（曾导致整个 workflow 被判无效、从未运行）：
+      # 用 @master 固定 action 引用，工具链经 `with.toolchain` 注入 matrix。
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
       # Release mode catches debug-only assertions and optimizes the test profile.
