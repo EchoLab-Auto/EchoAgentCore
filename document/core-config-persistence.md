@@ -79,21 +79,6 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 `CoreConfig::load()` 在反序列化后做一次性修正，**不回写文件**；下次
 `persist_config()`/`ConfigStore::patch` 时自然落盘。现有迁移：
 
-- legacy `[server]`/`[bot]` → `[adapters.qq]`（有显式值才触发，打印提示）
-- `api_profiles` 按名去重（历史持久化 bug 自愈）
-- **循环模式插件 id**：teams 各成员白名单与全局
-  `[agent].disabled_plugins` 中的旧 id 归一化为循环模式插件 id——旧编排模式 id
-  （`branch.reply` / `session.global` / `chatbot.sessions`）→ `echo-agent.loop.parallel`；
-  `echo-agent.loop.runner` 剔除（模式插件取代）——旧 id
-  不再注册，不迁移则 `apply_disabled` 静默失效；白名单同时含 single+parallel 记
-  warn（parallel 优先）。运行期 `SaveTeam`
-  （`AgentManager::save_profile`）入口对白名单做同样 id 归一化（`normalize_mode_plugins`），防御旧 Panel 回写旧 id
-- **per-persona 插件黑名单移除**：`[agent.teams.*].disabled_plugins`
-  的语义物化进 `enabled_plugins` 白名单（`convert_plugin_blacklist_to_whitelist`）——
-  空白名单 + 黑名单 → 「全部内置插件 − 黑名单 − parallel 模式 id」；非空白名单 → 剔除
-  黑名单项（黑名单含 parallel id 时同时剔除白名单的 parallel id，保持单会话推导）。
-  迁移后字段清空、序列化不再写回（`#[serde(default, skip_serializing)]`），下次保存自愈
-
 ### 不持久化的内容
 
 以下配置只在启动时从文件读取，运行时修改不持久化：

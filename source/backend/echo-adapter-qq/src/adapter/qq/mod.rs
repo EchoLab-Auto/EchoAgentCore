@@ -1113,7 +1113,7 @@ impl Adapter for QqAdapter {
             let client = NapCatClient::new(&webui_url);
             match client.refresh_qrcode(&container).await {
                 Ok(()) => {
-                    // 给 NapCat 落盘新 PNG 留出时间（旧 Panel 直连实现同样等待 2s）。
+                    // 给 NapCat 落盘新 PNG 留出时间（2s 实测余量）。
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
                 Err(error) => {

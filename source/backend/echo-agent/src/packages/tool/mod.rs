@@ -66,7 +66,7 @@ pub struct ToolRegistry {
     /// composition root when assembling; the frontend uses it to group
     /// checkboxes so a whole package (tools + skills) can be toggled at once.
     packages: tokio::sync::RwLock<std::collections::HashMap<String, String>>,
-    /// 结果脱敏器（安全服务注入；`None` = 透传，行为与旧版一致）。
+    /// 结果脱敏器（安全服务注入；`None` = 透传）。
     /// 出口统一处理：所有工具（内置 / 插件 / 远程 / 子代理直呼 / 联邦）
     /// 的结果文本经此处脱敏后才交给任何消费者（2026-10 敏感信息隔离）。
     redactor: tokio::sync::RwLock<Option<Arc<dyn echo_defs::sanitize::Redactor>>>,

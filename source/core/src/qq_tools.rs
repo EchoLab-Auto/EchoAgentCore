@@ -84,7 +84,7 @@ impl QqInstanceSet {
 
 /// Register QQ tools into the agent's `ToolRegistry`（该 persona 的实例集合）。
 ///
-/// - 恰好 1 个实例：行为与旧版一致（不带 `account` 参数，绑定该实例）；
+/// - 恰好 1 个实例：不带 `account` 参数，绑定该实例；
 /// - 多于 1 个：schema 增加可选 `account`（实例名），缺省时报错列出可选实例。
 pub fn register_qq_tools_multi(
     registry: &mut echo_agent::ToolRegistry,
@@ -290,7 +290,7 @@ struct QqToolWrapper {
     parameters: Value,
     /// 该 persona 的 QQ 实例集合（多实例经 `account` 参数寻址）。
     instances: QqInstanceSet,
-    /// 出站闸门（None = 未启用脱敏，行为与旧版一致）。
+    /// 出站闸门（None = 未启用脱敏，出站直投）。
     gate: Option<Arc<OutboundGate>>,
 }
 

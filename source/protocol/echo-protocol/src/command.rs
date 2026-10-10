@@ -388,7 +388,7 @@ pub enum BackendCommand {
     MigrateSession {
         /// 会话 id（源节点本地 id，不含 node:// 前缀）。
         session_id: String,
-        /// 会话归属人格（多 agent；None = 逐 persona 查找，兼容旧前端）。
+        /// 会话归属人格（多 agent；None = 无活动人格时逐 persona 查找）。
         #[serde(default)]
         team_id: Option<String>,
         /// 目标 peer 配置名（`[federation.peers.<name>]`）。

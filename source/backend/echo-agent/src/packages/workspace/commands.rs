@@ -16,7 +16,7 @@ fn qualify_remote_entries(peer: &str, entries: &mut [echo_protocol::WorkspaceFil
     }
 }
 
-/// 远程 git 状态占位（对端离线/旧版/失败降级）：保留 `node://` 目录
+/// 远程 git 状态占位（对端离线/未实现查询/失败降级）：保留 `node://` 目录
 /// 标注与错误说明，Panel 显示为不可采集条目（与旧硬编码占位同形态）。
 fn remote_git_placeholder(
     qualified_directory: &str,
@@ -222,7 +222,7 @@ impl Agent {
                 };
                 // 跨机工作区（2026-10）：远程目录经联邦
                 // Query(WorkspaceGitStatus) 拉取对端 git 状态；本机目录照旧
-                // spawn_blocking 采集。对端离线/旧版不认识该查询种类时降级
+                // spawn_blocking 采集。对端离线/未实现该查询种类时降级
                 // 为占位条目（与原行为一致，error 注明原因）。
                 let directories = session.directories.clone();
                 // 索引回填保持声明顺序（远程/本机混合时不被重排，2026-10）。

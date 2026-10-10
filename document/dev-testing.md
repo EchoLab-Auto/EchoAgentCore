@@ -22,9 +22,8 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Protocol** (echo-core): OneBot event parsing for every variant family
   (message / notice / request / meta), message segments, action builders,
   unknown-type preservation, sender nickname (card vs nickname fallback).
-- **Wire protocol** (echo-protocol): command/event WS round-trips, legacy
-  payload decoding (missing `branch_id`), malformed frame handling, FanoutHandle
-  subscriber pruning.
+- **Wire protocol** (echo-protocol): command/event WS round-trips,
+  malformed frame handling, FanoutHandle subscriber pruning.
 - **Filtering** (echo-adapter): allowlist / denylist / rate limit (sliding
   window with real-time expiry + per-user/per-group/global bucket isolation) /
   keyword / content length / admin bypass, pipeline ordering and short-circuit.

@@ -351,7 +351,7 @@ impl Agent {
             }
             BackendCommand::RequestRemoteApiProfiles { peer } => {
                 // 分布式供应商共享（2026-10）：经联邦拉远端**脱敏**供应商
-                // 池回传前端；peer 离线/旧版不识查询时 error 带原因。
+                // 池回传前端；peer 离线/未实现该查询时 error 带原因。
                 let result = match crate::federation::remote_querier() {
                     Some(querier) => {
                         querier(
@@ -1258,8 +1258,8 @@ impl Agent {
                 self.apply_workspace_command(cmd).await;
             }
             // 联邦管理（Phase 4）：处理函数注册在组合根（需要 Federation
-            // 句柄与 ConfigStore），经进程级注册表分发；未接线（联邦关闭
-            // 或旧 Core）时明确报错而非静默吞掉。
+            // 句柄与 ConfigStore），经进程级注册表分发；未接线（组合根未
+            // 注册处理函数）时明确报错而非静默吞掉。
             BackendCommand::SaveFederationPeer { .. }
             | BackendCommand::DeleteFederationPeer { .. }
             | BackendCommand::RequestFederationStatus

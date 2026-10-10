@@ -79,7 +79,7 @@ y: 780
 graph LR
   Call[ToolCall 事件] -->|按 tool_call_id 建档| Running[running: spinner]
   Running -->|ToolResult 同 id 配对| Done{succeeded / failed}
-  Running -->|旧 core 无 id: 按名回填最新 running| Done
+  Running -->|按 toolCallId 精确回填| Done
   Done -->|timed_out 或 error: 前缀| Failed[failed: error 标签]
   Done -->|否则| Ok[succeeded: success 标签]
 ```

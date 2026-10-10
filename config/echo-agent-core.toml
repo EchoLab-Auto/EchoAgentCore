@@ -27,8 +27,8 @@ max_tool_iterations = 1024
 # 工具自声明的超时优先（如 bash 的 timeout_secs，最长 300s），
 # 此处配置仅作为无自声明超时工具的保护上限。
 # tool_timeout_secs = 120
-# 上下文 token 预算（trunk 按 token 裁剪）：1M × 0.8 = 800,000。
-# 旧字段 memory_limit（按消息条数）已废弃，不再参与计算。
+# 上下文 token 预算（trunk 按 token 裁剪；缺省 1M × 0.8 = 800,000）：
+# 实际预算 = min(memory_limit_tokens, context_window_tokens × 0.8)。
 memory_limit_tokens = 800000
 skills_dir = "skills"                    # 用户技能目录（读写：Save/DeleteSkill 与 Git 安装技能落这里；递归发现 SKILL.md，运行时自动热重载）
 # skills_dirs = ["/path/to/skills-builtin"]  # 附加只读技能层（出厂技能；发现时与本目录合并，同名以 skills_dir 覆盖——2026-10 技能分层）
@@ -36,7 +36,7 @@ skills_dir = "skills"                    # 用户技能目录（读写：Save/De
 
 # ── 多 agent 人格（可选）───────────────────────────────────────────────
 # 每个 profile = 一个独立 Agent（独立记忆/会话文件/系统提示词）。
-# 不配置此项 = 单默认 agent，行为与旧版一致。
+# 不配置此项 = 单默认 agent。
 # 前端"资源 → 插件"可浏览人格；运行时启停通过 Panel。
 # [agent.teams.assistant]
 # name = "通用助手"

@@ -85,7 +85,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - 插件/工具/技能三个维度独立配置；未配置白名单时默认全部启用
 - **保存即热生效**：`SaveTeam` 后目标人格立即重算门控（工具/技能逐名双向：取消勾选禁用、重新勾选恢复；插件包维度按 `GATED_PLUGIN_IDS`）；`ToggleTeam` 重新启用的人格也会补应用门控。全局禁用（`ToggleTool`/`ToggleSkill`/`TogglePlugin` 卸载）优先级高于 persona 名单，且这些全局开关会逐 persona 重算而不是只作用于管理面
 - **Package 跨维度**：勾选/取消勾选一个门控插件 = 启停整个包（plugin + 同名包工具 + 同名包技能，QQ 包示例：send_* 工具与 qq-management/qq-transport 一起开关）；详见 [插件化设计](./core-plugins.md)「Package」章节
-- **循环模式**（互斥插件 `echo-agent.loop.{single,parallel}`）由白名单推导：空表 = single（默认）；含 `loop.parallel`（或旧编排模式 id）= parallel。推导单一来源 `TeamMember::loop_mode()`（只看白名单）
+- **循环模式**（互斥插件 `echo-agent.loop.{single,parallel}`）由白名单推导：空表 = single（默认）；含 `loop.parallel` = parallel。推导单一来源 `TeamMember::loop_mode()`（只看白名单）
 - 全局 `[agent].disabled_tools`（Panel ToggleTool 持久化）启动时逐人格应用
 
 ## 典型配置
@@ -105,8 +105,7 @@ enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel", "e
 # 可选：persona 级 API（引用全局供应商池 [agent].api_profiles 中的 profile 名）
 # api_profile = "openai"   # 不配置 = 跟随全局默认配置
 # 显式写法（等价）：追加 "echo-agent.loop.single"；并行多会话模式则列
-# "echo-agent.loop.parallel"。旧编排模式 id（branch.reply 等）
-# 与旧驱动 id（loop.runner）在加载期自动迁移。
+# "echo-agent.loop.parallel"。
 ```
 
 ## 设计取舍与边界
@@ -114,7 +113,7 @@ enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel", "e
 - **多实例而非单实例多上下文**（对人而言）：每个人格一辆"车"（独立 `Agent::new` + 事件溯源日志），复用现有结构、互不干扰
 - **人格内多会话上下文**：同一人格内再按来源（本地/QQ 私聊/QQ 群）分区上下文——单份事件日志 + `session` 归属字段 + 按会话投影（`derive_messages_for`），避免"每个聊天一份完整 Agent"的内存与调度开销
 - **配置驱动**：人格在配置文件中定义，`enabled=false` 跳过实例化；运行时可通过 `ToggleTeam` 启停、`SaveTeam`/`DeleteTeam` 新建/删除（写回 `[agent.teams]`，立即生效）
-- **兼容性**：无 `[agent.teams]` 的旧配置 = 单 agent（id 仍可为 `default`，但**无特权**）；旧协议 `SendMessage`/会话类命令若无 `team_id` 会被明确拒绝，旧 Panel 需同步升级
+- **兼容性**：无 `[agent.teams]` 配置 = 单 agent（id 仍可为 `default`，但**无特权**）；`SendMessage`/会话类命令缺少 `team_id` 会被明确拒绝（Panel 与 Core 同版本部署）
 - **删除保护**：仅"至少保留一个智能体"；不再有受保护成员
 - **Provider 粒度**：支持 persona 级 API 引用（见上「Persona 装配」）；运行期 `SaveTeam` 改 `api_profile` 立即经 `apply_persona_api` 重建该人格 provider（全局 `UpdateApiConfig`/`SwitchApi` 只作用于管理面/全局默认，不自动广播到其他人格）
 - QQ/平台消息按**实例归属人格**路由：每个启用 `echo-agent.adapter.qq` 的人格拥有自己的 QQ 实例（容器 + 反向 WS 通道），见 [QQ 适配器门控](./adapter-qq-gating.md)「多实例」

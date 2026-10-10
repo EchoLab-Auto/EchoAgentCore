@@ -217,7 +217,7 @@ pub enum QueryKind {
     NodeStatus,
     /// 远程 git 状态采集（跨机工作区，2026-10）：`subject` = 目录绝对路径，
     /// 执行端复用 workspace 插件的 `collect_dir_git`（限本机工作区目录并集
-    /// 沙箱）。旧对端不认识本变体——externally-tagged 反序列化失败整帧
+    /// 沙箱）。对端未实现本变体时 externally-tagged 反序列化失败整帧
     /// 丢弃，大脑侧按「远程不可采集」降级（与旧行为一致）。
     WorkspaceGitStatus,
     /// 供应商池查询（分布式共享，2026-10）：返回**脱敏**的

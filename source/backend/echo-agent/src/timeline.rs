@@ -191,10 +191,9 @@ impl TimelineProjector {
     }
 
     /// Attach the outcome to the newest still-running timeline tool entry.
-    /// 优先按 tool_call_id 精确配对（同名并行调用不再配错对）；旧版对端
-    /// （tool_call_id 为空）回退为按名字匹配（mirrors the TUI's
-    /// `finish_tool_entry`）。就地更新会推进条目 seq，已同步过的前端可在
-    /// 下次增量窗口中收到该条目的完成态。
+    /// 按 tool_call_id 精确配对（同名并行调用不再配错对）；id 为空
+    /// （理论不出现）时回退按名字匹配。就地更新会推进条目 seq，已同步过
+    /// 的前端可在下次增量窗口中收到该条目的完成态。
     #[allow(clippy::too_many_arguments)]
     fn update_timeline_tool(
         &self,

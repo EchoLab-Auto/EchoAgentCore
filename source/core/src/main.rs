@@ -189,8 +189,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     // ---- federation link（Phase 1：仅链路；工具路由 Phase 2 消费）----
-    // 联邦**始终开启**（已取消 enabled 开关）：不配 listen 则不监听，无 peer
-    // 则不连出——单节点无网络暴露，但联邦管理面永远可用。
+    // 联邦**无独立开关**：不配 listen 则不监听，无 peer 则不连出——单节点
+    // 无网络暴露，但联邦管理面永远可用。
     let federation = {
         let peers = cfg
             .federation
@@ -606,7 +606,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let ids: Vec<&str> = qq_instances.iter().map(|i| i.id.as_str()).collect();
         info!(instances = ?ids, "QQ instances registered");
     }
-    // 兼容旧单实例路径：第一个实例（通常是 `qq`）。
+    // 进程级默认句柄：第一个实例（通常是 `qq`；自动启动/停机与登录兜底用）。
     let qq_adapter: Arc<echo_adapter_qq::QqAdapter> = qq_adapters
         .first()
         .map(|(_, _, a)| a.clone())

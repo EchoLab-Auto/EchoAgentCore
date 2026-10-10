@@ -67,8 +67,8 @@ pub struct ShellSessionInfo {
 pub struct SessionInfo {
     pub id: String,
     /// 来源节点身份（federation NodeId，`node-<ulid>`）。多节点聚合客户端据此
-    /// 区分同名会话（`local:tui::local_user` 在每个 Core 上都相同）；单节点 /
-    /// 旧 Core 缺省 None。中继聚合视图另有来源 core 名（信封），两者可对照。
+    /// 区分同名会话（`local:tui::local_user` 在每个 Core 上都相同）。中继
+    /// 聚合视图另有来源 core 名（信封），两者可对照。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
     /// 运行区域展示名（`[core].region_name`；空 = 回退 NodeId）。与 node_id
@@ -512,7 +512,7 @@ pub enum BackendEvent {
     },
     /// The current conversation context snapshot (`RequestContext` response).
     ContextSnapshot {
-        /// 快照归属的会话 id（多会话，2026-09；None = 旧 Core 的全局口径）。
+        /// 快照归属的会话 id（多会话，2026-09；None = 未指定会话的回退口径）。
         #[serde(default)]
         session_id: Option<String>,
         /// Every message currently in the context (oldest first).
@@ -529,7 +529,7 @@ pub enum BackendEvent {
     /// 后台 shell 会话列表（响应 RequestShellSessions）。
     ShellSessionsList {
         sessions: Vec<crate::event::ShellSessionInfo>,
-        /// 列表归属 team（与请求一致；旧 core 无此字段时前端不过滤）。
+        /// 列表归属 team（与请求一致；无归属（缺省）时前端不过滤）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         team_id: Option<String>,
     },
@@ -598,7 +598,7 @@ pub enum BackendEvent {
     },
     /// API profile list changed (emitted together with ApiConfigUpdated).
     /// 联邦远端节点的脱敏供应商池（`RequestRemoteApiProfiles` 响应；
-    /// 失败时 `profiles` 为空、`error` 带原因——peer 离线/旧版不识查询）。
+    /// 失败时 `profiles` 为空、`error` 带原因——peer 离线/未实现查询）。
     RemoteApiProfiles {
         peer: String,
         #[serde(default)]
@@ -994,7 +994,7 @@ pub struct WorkspaceSessionInfo {
 ///
 /// serde untagged：旧格式 `"\/abs\/path"`（本机）与新格式
 /// `{ "path": "...", "node": "node-..." }`（声明远程归属）均可反序列化；
-/// 序列化时本机条目仍写纯字符串（线格式对旧前端零变化），仅带 `node`
+/// 序列化时本机条目仍写纯字符串（线格式不变），仅带 `node`
 /// 的条目写表形式。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -1227,7 +1227,7 @@ mod workspace_directory_tests {
         assert!(info.directories[1].is_remote());
     }
 
-    /// 序列化：本机条目仍写纯字符串（线格式对旧前端零变化）；带 node 的
+    /// 序列化：本机条目仍写纯字符串（线格式不变）；带 node 的
     /// 条目写表形式。
     #[test]
     fn directories_serialize_local_as_string_remote_as_table() {
