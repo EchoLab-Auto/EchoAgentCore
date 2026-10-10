@@ -11,7 +11,9 @@ use tokio::sync::mpsc;
 
 use echo_defs::llm::LlmError;
 use echo_defs::llm::LlmProvider;
-use echo_defs::message::{ChatChunk, ChatRequest, ChatResponse, ToolCall, ToolCallDelta, Usage};
+use echo_defs::message::{
+    ChatChunk, ChatRequest, ChatResponse, ChatStreamAccumulator, ToolCall, ToolCallDelta, Usage,
+};
 
 #[derive(Debug, Clone)]
 pub struct OpenAiProvider {
@@ -147,15 +149,37 @@ impl LlmProvider for OpenAiProvider {
         &self,
         request: &ChatRequest,
         tx: mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         let body =
             build_request_body_with_reasoning(request, true, self.thinking, self.reasoning_effort);
-        let req = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body);
-        let resp = with_idle_timeout(req.send()).await?;
+        let endpoint = format!("{}/chat/completions", self.base_url);
+        let send = |body: &serde_json::Value| {
+            self.client
+                .post(&endpoint)
+                .bearer_auth(&self.api_key)
+                .json(body)
+        };
+        let mut resp = with_idle_timeout(send(&body).send()).await?;
+        // 兼容不接受 `stream_options` 的网关：400 且原因指向该字段时去掉重试
+        // 一次（OpenAI/DeepSeek/Kimi 官方端点均支持；此为第三方代理保险）。
+        if resp.status().as_u16() == 400 {
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| LlmError::Http(e.to_string()))?;
+            if text.contains("stream_options") {
+                let mut retry = body.clone();
+                if let Some(obj) = retry.as_object_mut() {
+                    obj.remove("stream_options");
+                }
+                resp = with_idle_timeout(send(&retry).send()).await?;
+            } else {
+                return Err(LlmError::Api(format!(
+                    "HTTP 400: {}",
+                    echo_defs::token::truncate(&text, 300)
+                )));
+            }
+        }
         let status = resp.status();
         if !status.is_success() {
             let text = resp
@@ -169,7 +193,8 @@ impl LlmProvider for OpenAiProvider {
         }
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
-        while let Some(chunk) = stream.next().await {
+        let mut acc = ChatStreamAccumulator::new();
+        'outer: while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| LlmError::Http(e.to_string()))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
             // 规范化 CRLF 与多余空白，兼容不同实现的行结尾
@@ -180,17 +205,13 @@ impl LlmProvider for OpenAiProvider {
                 buffer.drain(..pos + 2);
                 for outcome in parse_sse_event(&event) {
                     match outcome {
-                        SseOutcome::Done => {
-                            let _ = tx.send(ChatChunk {
-                                content_delta: None,
-                                reasoning_delta: None,
-                                tool_call_delta: None,
-                            });
-                            return Ok(());
-                        }
+                        SseOutcome::Done => break 'outer,
                         SseOutcome::Chunk(chunk) => {
+                            acc.push(&chunk);
                             let _ = tx.send(chunk);
                         }
+                        SseOutcome::Usage(usage) => acc.set_usage(usage),
+                        SseOutcome::StopReason(reason) => acc.set_stop_reason(reason),
                         SseOutcome::ApiError(msg) => {
                             return Err(LlmError::Api(format!(
                                 "流式响应错误: {}",
@@ -201,12 +222,7 @@ impl LlmProvider for OpenAiProvider {
                 }
             }
         }
-        let _ = tx.send(ChatChunk {
-            content_delta: None,
-            reasoning_delta: None,
-            tool_call_delta: None,
-        });
-        Ok(())
+        Ok(acc.finish())
     }
 }
 
@@ -219,6 +235,10 @@ enum SseOutcome {
     Chunk(ChatChunk),
     /// In-stream error payload (HTTP 200 + `data:{"error":...}`).
     ApiError(String),
+    /// 末帧 usage（`stream_options.include_usage=true` 时携带）。
+    Usage(Usage),
+    /// 该 choice 的 finish_reason（"stop"/"length"/"tool_calls"，末块携带）。
+    StopReason(String),
 }
 
 /// Parse one complete SSE event block (already CRLF-normalised).
@@ -249,9 +269,19 @@ fn parse_sse_event(event: &str) -> Vec<SseOutcome> {
             outcomes.push(SseOutcome::ApiError(err.message.clone()));
             continue;
         }
+        // usage 帧（choices 为空）先于 choices 处理
+        if let Some(usage) = parsed.usage {
+            outcomes.push(SseOutcome::Usage(Usage {
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+            }));
+        }
         let Some(choice) = parsed.choices.first() else {
             continue;
         };
+        if let Some(reason) = &choice.finish_reason {
+            outcomes.push(SseOutcome::StopReason(reason.clone()));
+        }
         let delta = &choice.delta;
         // 并行工具调用：逐个转发所有 delta，而不是只取第一个
         if let Some(tcs) = &delta.tool_calls {
@@ -329,6 +359,11 @@ fn build_request_body_with_reasoning(
         "messages": messages,
         "stream": stream,
     });
+    if stream {
+        // 流式 usage：OpenAI/DeepSeek 兼容端点经 `stream_options.include_usage`
+        // 在末帧回报 token 用量；不带则流式路径 usage 恒零（计量/面板归零）。
+        body["stream_options"] = json!({"include_usage": true});
+    }
     if let Some(tools) = &request.tools {
         body["tools"] = json!(tools.iter().map(|t| json!({
             "type": "function",
@@ -467,6 +502,9 @@ struct StreamChunk {
     /// HTTP 200 + SSE error 事件时出现。
     #[serde(default)]
     error: Option<StreamErrorWire>,
+    /// `stream_options.include_usage` 时末帧携带（choices 为空）。
+    #[serde(default)]
+    usage: Option<UsageWire>,
 }
 
 #[derive(Deserialize)]
@@ -477,6 +515,9 @@ struct StreamErrorWire {
 #[derive(Deserialize)]
 struct StreamChoice {
     delta: DeltaWire,
+    /// 末块携带："stop"/"length"/"tool_calls"（截断检测信号）。
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -624,6 +665,77 @@ mod tests {
         );
         assert_eq!(body["thinking"]["type"], "disabled");
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    /// 流式请求携带 `stream_options.include_usage`（usage 上报）；非流式不携带。
+    #[test]
+    fn stream_requests_include_usage_option() {
+        let request = ChatRequest {
+            model: "m".into(),
+            messages: vec![ChatMessage::user("hi")],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+        };
+        let streaming = build_request_body(&request, true);
+        assert_eq!(streaming["stream_options"]["include_usage"], true);
+        let plain = build_request_body(&request, false);
+        assert!(plain.get("stream_options").is_none());
+    }
+
+    /// 端到端组装：解析真实形态的 SSE 序列（正文/推理/工具调用/usage/
+    /// finish_reason/[DONE]）→ 累加器产出完整响应。
+    #[test]
+    fn stream_sequence_assembles_full_response() {
+        use echo_defs::message::{ChatStreamAccumulator, ToolCallDelta};
+        let events = [
+            r#"data: {"choices":[{"delta":{"reasoning_content":"让我想想"},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"你"},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"好"},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"bash","arguments":"{\"cmd\""}}]},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"ls\"}"}}]},"finish_reason":null}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+            r#"data: {"choices":[],"usage":{"prompt_tokens":30,"completion_tokens":12}}"#,
+            "data: [DONE]",
+        ];
+        let mut acc = ChatStreamAccumulator::new();
+        let mut done = false;
+        for event in events {
+            for outcome in parse_sse_event(event) {
+                match outcome {
+                    SseOutcome::Done => done = true,
+                    SseOutcome::Chunk(chunk) => acc.push(&chunk),
+                    SseOutcome::Usage(usage) => acc.set_usage(usage),
+                    SseOutcome::StopReason(reason) => acc.set_stop_reason(reason),
+                    SseOutcome::ApiError(msg) => panic!("unexpected error: {msg}"),
+                }
+            }
+        }
+        assert!(done, "stream must terminate with [DONE]");
+        let response = acc.finish();
+        assert_eq!(response.content.as_deref(), Some("你好"));
+        assert_eq!(response.reasoning_content.as_deref(), Some("让我想想"));
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "c1");
+        assert_eq!(response.tool_calls[0].name, "bash");
+        assert_eq!(response.tool_calls[0].arguments, r#"{"cmd":"ls"}"#);
+        assert_eq!(response.usage.prompt_tokens, 30);
+        assert_eq!(response.usage.completion_tokens, 12);
+        assert_eq!(response.stop_reason.as_deref(), Some("tool_calls"));
+        assert!(!response.truncated());
+        // 增量自身仍逐条可见（转发语义不受组装影响）
+        let forwards = parse_sse_event(
+            r#"data: {"choices":[{"delta":{"content":"片段"},"finish_reason":null}]}"#,
+        );
+        assert!(
+            matches!(&forwards[0], SseOutcome::Chunk(c) if c.content_delta.as_deref() == Some("片段"))
+        );
+        let _ = ToolCallDelta {
+            index: 0,
+            id: None,
+            name: None,
+            arguments: None,
+        };
     }
 
     #[test]

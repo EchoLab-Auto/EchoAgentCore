@@ -46,7 +46,7 @@ impl LlmProvider for OllamaProvider {
         &self,
         request: &ChatRequest,
         tx: mpsc::UnboundedSender<echo_defs::message::ChatChunk>,
-    ) -> Result<(), LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         self.inner.chat_stream(request, tx).await
     }
 }

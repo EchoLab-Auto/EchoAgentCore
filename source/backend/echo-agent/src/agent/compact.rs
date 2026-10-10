@@ -509,7 +509,7 @@ mod tests {
             &self,
             _request: &ChatRequest,
             _tx: tokio::sync::mpsc::UnboundedSender<crate::llm::ChatChunk>,
-        ) -> Result<(), crate::llm::LlmError> {
+        ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
             Err(crate::llm::LlmError::Config("stream unsupported".into()))
         }
     }

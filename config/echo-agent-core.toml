@@ -30,6 +30,9 @@ max_tool_iterations = 1024
 # 上下文 token 预算（trunk 按 token 裁剪；缺省 1M × 0.8 = 800,000）：
 # 实际预算 = min(memory_limit_tokens, context_window_tokens × 0.8)。
 memory_limit_tokens = 800000
+# 主对话流式输出（缺省 true）：回复/推理逐段实时显示（AgentContentDelta /
+# AgentReasoningDelta，终值全量收敛）；关闭则整段到达（客户端动画）。
+# stream_output = true
 skills_dir = "skills"                    # 用户技能目录（读写：Save/DeleteSkill 与 Git 安装技能落这里；递归发现 SKILL.md，运行时自动热重载）
 # skills_dirs = ["/path/to/skills-builtin"]  # 附加只读技能层（出厂技能；发现时与本目录合并，同名以 skills_dir 覆盖——2026-10 技能分层）
 # plugins_dir = "plugins"                  # plugin.toml 插件目录（5s 热重载）

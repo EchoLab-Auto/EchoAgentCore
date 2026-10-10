@@ -88,6 +88,7 @@ graph LR
 
 - **适配器生命周期**：`AdapterStateChanged`、`AdapterList`
 - **编排**：`SubagentStarted/Completed`、`ReplyBranchStarted/Content/Completed`、`AgentCompleted`（turn 收尾——含空输出的完成信号）
+- **流式输出（2026-10）**：`AgentContentDelta` / `AgentReasoningDelta`（逐段增量，~40ms 合并批；终值仍以 `AgentOutput` / `AgentReasoning` 全量收敛——消费端按 (core, session, branch) 对账，全量到达替换流式内容）。受 `[agent].stream_output` 控制（缺省开）。
 - **Shell**：`ShellSessionsList` / `ShellSessionStarted` / `ShellExecStarted` / `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
 - **状态快照**：`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`（`granted`/`topped_up` 分账字段恒下发，失败时为空串）、`ApiMetrics`（余额/用量时间序列——`entries: [{name, balance, usage, cost_currency}]`，见 `event.rs` 的 `ApiMetricsEntry`）、`Error`（也用于信息性 toast）
 - **QQ 管理**：`GroupList`、`FriendList`、`QqFilterConfig`、`QqGateMode`、`QqLoginStatus`、`QqQrcode`（二维码 PNG base64）、`QqOwner`（owner 查询回推，frontend-only；均带 `adapter` 实例名）

@@ -338,7 +338,7 @@ mod tests {
             &self,
             _request: &echo_agent::llm::ChatRequest,
             _tx: tokio::sync::mpsc::UnboundedSender<echo_agent::llm::ChatChunk>,
-        ) -> Result<(), echo_agent::llm::LlmError> {
+        ) -> Result<echo_agent::llm::ChatResponse, echo_agent::llm::LlmError> {
             unimplemented!()
         }
     }

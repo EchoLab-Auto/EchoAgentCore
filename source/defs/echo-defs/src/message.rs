@@ -140,7 +140,7 @@ impl ChatMessage {
 }
 
 /// A tool call requested by the LLM.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
@@ -166,10 +166,79 @@ pub struct ChatChunk {
 }
 
 /// Token usage reported by the provider.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+}
+
+/// 流式增量 → 完整响应的组装器（provider 共用）。
+///
+/// provider 在转发每个 [`ChatChunk`] 给消费方的同时 `push` 进本组装器，
+/// 流结束时 `finish()` 得到与 [`LlmProvider::chat`] 同型的 [`ChatResponse`]
+/// ——流式与非流式对调用方透明（usage / stop_reason / tool_calls 由本器
+/// 在流内累积）。
+///
+/// [`LlmProvider::chat`]: crate::llm::LlmProvider::chat
+#[derive(Debug, Clone, Default)]
+pub struct ChatStreamAccumulator {
+    content: String,
+    reasoning: String,
+    /// 工具调用按 provider 的增量 `index` 归并（OpenAI `tool_calls[].index`
+    /// 与 Anthropic 内容块 index 同语义）：id/name 以首个非空为准（重复
+    /// 发送同值幂等），arguments 逐段拼接。
+    tool_calls: std::collections::BTreeMap<usize, ToolCall>,
+    usage: Usage,
+    stop_reason: Option<String>,
+}
+
+impl ChatStreamAccumulator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 吸收一个增量。
+    pub fn push(&mut self, chunk: &ChatChunk) {
+        if let Some(delta) = chunk.content_delta.as_deref() {
+            self.content.push_str(delta);
+        }
+        if let Some(delta) = chunk.reasoning_delta.as_deref() {
+            self.reasoning.push_str(delta);
+        }
+        if let Some(delta) = &chunk.tool_call_delta {
+            let entry = self.tool_calls.entry(delta.index).or_default();
+            if let Some(id) = &delta.id {
+                entry.id = id.clone();
+            }
+            if let Some(name) = &delta.name {
+                entry.name = name.clone();
+            }
+            if let Some(arguments) = &delta.arguments {
+                entry.arguments.push_str(arguments);
+            }
+        }
+    }
+
+    /// 记录 provider 上报的 usage（可多次调用，后者覆盖前者）。
+    pub fn set_usage(&mut self, usage: Usage) {
+        self.usage = usage;
+    }
+
+    /// 记录 provider 上报的停止原因（如 `end_turn` / `max_tokens`）。
+    pub fn set_stop_reason(&mut self, reason: impl Into<String>) {
+        self.stop_reason = Some(reason.into());
+    }
+
+    /// 产出完整响应；空字段归一为 `None` / 空 vec。
+    pub fn finish(self) -> ChatResponse {
+        ChatResponse {
+            content: (!self.content.is_empty()).then_some(self.content),
+            reasoning_content: (!self.reasoning.is_empty()).then_some(self.reasoning),
+            tool_calls: self.tool_calls.into_values().collect(),
+            usage: self.usage,
+            stop_reason: self.stop_reason,
+        }
+    }
 }
 
 /// Default completion budget when a request doesn't pin `max_tokens`.
@@ -196,6 +265,17 @@ pub struct ChatResponse {
 }
 
 impl ChatResponse {
+    /// 空响应（测试桩 / 流式无增量场景）。
+    pub fn empty() -> Self {
+        Self {
+            content: None,
+            reasoning_content: None,
+            tool_calls: Vec::new(),
+            usage: Usage::default(),
+            stop_reason: None,
+        }
+    }
+
     /// 输出是否被 token 上限截断（Anthropic "max_tokens" / OpenAI "length"）。
     /// 截断时 content/tool_calls 可能只是残片，调用方应续跑而非收工。
     pub fn truncated(&self) -> bool {
@@ -214,4 +294,82 @@ pub struct ChatRequest {
     pub tools: Option<Vec<ToolDefinition>>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+}
+
+#[cfg(test)]
+mod stream_accumulator_tests {
+    use super::*;
+
+    fn chunk(content: Option<&str>, reasoning: Option<&str>) -> ChatChunk {
+        ChatChunk {
+            content_delta: content.map(str::to_string),
+            reasoning_delta: reasoning.map(str::to_string),
+            tool_call_delta: None,
+        }
+    }
+
+    /// 正文/推理逐段拼接；空流产出空响应字段。
+    #[test]
+    fn accumulates_content_and_reasoning() {
+        let mut acc = ChatStreamAccumulator::new();
+        acc.push(&chunk(Some("你"), None));
+        acc.push(&chunk(None, Some("想")));
+        acc.push(&chunk(Some("好"), Some("想")));
+        let out = acc.finish();
+        assert_eq!(out.content.as_deref(), Some("你好"));
+        assert_eq!(out.reasoning_content.as_deref(), Some("想想"));
+        assert!(out.tool_calls.is_empty());
+        assert!(!out.truncated());
+    }
+
+    /// 工具调用按 index 归并：id/name 首个非空生效，arguments 逐段拼接；
+    /// 多 index 按 index 升序输出（并行调用不乱序）。
+    #[test]
+    fn merges_tool_calls_by_index() {
+        let mut acc = ChatStreamAccumulator::new();
+        let mut push_tool =
+            |index: usize, id: Option<&str>, name: Option<&str>, args: Option<&str>| {
+                acc.push(&ChatChunk {
+                    content_delta: None,
+                    reasoning_delta: None,
+                    tool_call_delta: Some(ToolCallDelta {
+                        index,
+                        id: id.map(str::to_string),
+                        name: name.map(str::to_string),
+                        arguments: args.map(str::to_string),
+                    }),
+                });
+            };
+        push_tool(1, Some("c2"), Some("read"), None);
+        push_tool(0, Some("c1"), Some("bash"), Some("{\"a\""));
+        push_tool(1, None, None, Some("{\"b\""));
+        push_tool(0, None, None, Some(":1}"));
+        push_tool(1, None, None, Some(":2}"));
+        let out = acc.finish();
+        assert_eq!(out.tool_calls.len(), 2);
+        assert_eq!(out.tool_calls[0].id, "c1");
+        assert_eq!(out.tool_calls[0].name, "bash");
+        assert_eq!(out.tool_calls[0].arguments, "{\"a\":1}");
+        assert_eq!(out.tool_calls[1].id, "c2");
+        assert_eq!(out.tool_calls[1].arguments, "{\"b\":2}");
+    }
+
+    /// usage / stop_reason 注入：后者覆盖前者；截断语义随 stop_reason 透传。
+    #[test]
+    fn usage_and_stop_reason_flow_through() {
+        let mut acc = ChatStreamAccumulator::new();
+        acc.set_usage(Usage {
+            prompt_tokens: 10,
+            completion_tokens: 2,
+        });
+        acc.set_usage(Usage {
+            prompt_tokens: 10,
+            completion_tokens: 7,
+        });
+        acc.set_stop_reason("length");
+        let out = acc.finish();
+        assert_eq!(out.usage.prompt_tokens, 10);
+        assert_eq!(out.usage.completion_tokens, 7);
+        assert!(out.truncated());
+    }
 }

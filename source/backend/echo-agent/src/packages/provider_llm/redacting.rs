@@ -56,7 +56,7 @@ impl LlmProvider for RedactingProvider {
         &self,
         request: &ChatRequest,
         tx: mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         let clean = redact_request(self.redactor.as_ref(), request);
         self.inner.chat_stream(&clean, tx).await
     }
@@ -143,9 +143,9 @@ mod tests {
             &self,
             request: &ChatRequest,
             _tx: mpsc::UnboundedSender<ChatChunk>,
-        ) -> Result<(), LlmError> {
+        ) -> Result<ChatResponse, LlmError> {
             self.seen.lock().unwrap().push(request.clone());
-            Ok(())
+            Ok(ChatResponse::empty())
         }
     }
 

@@ -8,7 +8,9 @@ use tokio::sync::mpsc;
 
 use echo_defs::llm::LlmError;
 use echo_defs::llm::LlmProvider;
-use echo_defs::message::{ChatChunk, ChatRequest, ChatResponse, ToolCall, ToolCallDelta, Usage};
+use echo_defs::message::{
+    ChatChunk, ChatRequest, ChatResponse, ChatStreamAccumulator, ToolCall, ToolCallDelta, Usage,
+};
 
 #[derive(Debug, Clone)]
 pub struct AnthropicProvider {
@@ -160,7 +162,7 @@ impl LlmProvider for AnthropicProvider {
         &self,
         request: &ChatRequest,
         tx: mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError> {
+    ) -> Result<ChatResponse, LlmError> {
         let body =
             build_request_body_with_reasoning(request, true, self.thinking, self.reasoning_effort);
         let req = self
@@ -183,6 +185,8 @@ impl LlmProvider for AnthropicProvider {
         }
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
+        let mut acc = ChatStreamAccumulator::new();
+        let mut usage = StreamUsage::default();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| LlmError::Http(e.to_string()))?;
             buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -192,8 +196,11 @@ impl LlmProvider for AnthropicProvider {
                 for outcome in parse_anthropic_event(&event) {
                     match outcome {
                         AnthropicOutcome::Chunk(chunk) => {
+                            acc.push(&chunk);
                             let _ = tx.send(chunk);
                         }
+                        AnthropicOutcome::Usage(update) => usage.merge(update),
+                        AnthropicOutcome::StopReason(reason) => acc.set_stop_reason(reason),
                         AnthropicOutcome::ApiError(msg) => {
                             return Err(LlmError::Api(format!(
                                 "流式响应错误: {}",
@@ -204,12 +211,11 @@ impl LlmProvider for AnthropicProvider {
                 }
             }
         }
-        let _ = tx.send(ChatChunk {
-            content_delta: None,
-            reasoning_delta: None,
-            tool_call_delta: None,
+        acc.set_usage(Usage {
+            prompt_tokens: usage.input_tokens.unwrap_or(0),
+            completion_tokens: usage.output_tokens.unwrap_or(0),
         });
-        Ok(())
+        Ok(acc.finish())
     }
 }
 
@@ -220,6 +226,29 @@ enum AnthropicOutcome {
     Chunk(ChatChunk),
     /// In-stream `event: error` payload.
     ApiError(String),
+    /// 流式 usage 片段（`message_start.input_tokens` /
+    /// `message_delta.usage.output_tokens` 可能分属不同事件）。
+    Usage(StreamUsage),
+    /// `message_delta.delta.stop_reason`（"end_turn"/"max_tokens"/"tool_use"）。
+    StopReason(String),
+}
+
+/// 流式 usage 片段：字段可缺省，多次事件按"非空覆盖"合并。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct StreamUsage {
+    input_tokens: Option<u32>,
+    output_tokens: Option<u32>,
+}
+
+impl StreamUsage {
+    fn merge(&mut self, update: StreamUsage) {
+        if update.input_tokens.is_some() {
+            self.input_tokens = update.input_tokens;
+        }
+        if update.output_tokens.is_some() {
+            self.output_tokens = update.output_tokens;
+        }
+    }
 }
 
 /// Parse one complete Anthropic SSE event block.
@@ -290,6 +319,25 @@ fn parse_anthropic_event(event: &str) -> Vec<AnthropicOutcome> {
         },
         // 流中段错误不能静默当作成功
         StreamEvent::Error => outcomes.push(AnthropicOutcome::ApiError(data)),
+        StreamEvent::MessageStart { message } => {
+            if let Some(usage) = message.and_then(|m| m.usage) {
+                outcomes.push(AnthropicOutcome::Usage(StreamUsage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                }));
+            }
+        }
+        StreamEvent::MessageDelta { delta, usage } => {
+            if let Some(reason) = delta.and_then(|d| d.stop_reason) {
+                outcomes.push(AnthropicOutcome::StopReason(reason));
+            }
+            if let Some(usage) = usage {
+                outcomes.push(AnthropicOutcome::Usage(StreamUsage {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                }));
+            }
+        }
         _ => {}
     }
     outcomes
@@ -548,12 +596,33 @@ enum StreamEvent {
         index: usize,
         delta: DeltaWire,
     },
-    MessageStart,
-    MessageDelta,
+    MessageStart {
+        message: Option<MessageStartWire>,
+    },
+    MessageDelta {
+        delta: Option<MessageDeltaWire>,
+        usage: Option<StreamUsageWire>,
+    },
     ContentBlockStop,
     MessageStop,
     Ping,
     Error,
+}
+
+#[derive(Deserialize)]
+struct MessageStartWire {
+    usage: Option<StreamUsageWire>,
+}
+
+#[derive(Deserialize)]
+struct MessageDeltaWire {
+    stop_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StreamUsageWire {
+    input_tokens: Option<u32>,
+    output_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -907,6 +976,74 @@ mod tests {
             }
             other => panic!("expected Chunk, got {other:?}"),
         }
+    }
+
+    /// 端到端组装：真实形态的 Anthropic SSE 序列（message_start usage /
+    /// thinking / text / tool_use / message_delta stop_reason+usage）→
+    /// 累加器产出完整响应。
+    #[test]
+    fn stream_sequence_assembles_full_response() {
+        use echo_defs::message::ChatStreamAccumulator;
+        let events = [
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":42}}}",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"分析中\"}}",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"bash\",\"input\":{}}}",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cmd\\\":\"}}",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"ls\\\"}\"}}",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":9}}",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}",
+        ];
+        let mut acc = ChatStreamAccumulator::new();
+        let mut usage = StreamUsage::default();
+        for event in events {
+            for outcome in parse_anthropic_event(event) {
+                match outcome {
+                    AnthropicOutcome::Chunk(chunk) => acc.push(&chunk),
+                    AnthropicOutcome::Usage(update) => usage.merge(update),
+                    AnthropicOutcome::StopReason(reason) => acc.set_stop_reason(reason),
+                    AnthropicOutcome::ApiError(msg) => panic!("unexpected error: {msg}"),
+                }
+            }
+        }
+        acc.set_usage(echo_defs::message::Usage {
+            prompt_tokens: usage.input_tokens.unwrap_or(0),
+            completion_tokens: usage.output_tokens.unwrap_or(0),
+        });
+        let response = acc.finish();
+        assert_eq!(response.content.as_deref(), Some("你好"));
+        assert_eq!(response.reasoning_content.as_deref(), Some("分析中"));
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "toolu_1");
+        assert_eq!(response.tool_calls[0].name, "bash");
+        assert_eq!(response.tool_calls[0].arguments, "{\"cmd\":\"ls\"}");
+        assert_eq!(response.usage.prompt_tokens, 42);
+        assert_eq!(response.usage.completion_tokens, 9);
+        assert_eq!(response.stop_reason.as_deref(), Some("tool_use"));
+    }
+
+    /// usage 分属两事件（input 在 message_start / output 在 message_delta）
+    /// 时按"非空覆盖"合并。
+    #[test]
+    fn stream_usage_merges_across_events() {
+        let mut usage = StreamUsage::default();
+        for outcome in parse_anthropic_event(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}",
+        ) {
+            if let AnthropicOutcome::Usage(update) = outcome {
+                usage.merge(update);
+            }
+        }
+        for outcome in parse_anthropic_event(
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}",
+        ) {
+            if let AnthropicOutcome::Usage(update) = outcome {
+                usage.merge(update);
+            }
+        }
+        assert_eq!(usage.input_tokens, Some(10));
+        assert_eq!(usage.output_tokens, Some(5));
     }
 
     #[test]

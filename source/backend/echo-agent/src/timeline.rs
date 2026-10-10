@@ -186,6 +186,9 @@ impl TimelineProjector {
                     *elapsed_ms,
                 );
             }
+            // AgentContentDelta / AgentReasoningDelta（流式增量）等瞬时事件
+            // 仅实时转发到前端（面板流式渲染），不落显示时间线——终值
+            // AgentOutput / AgentReasoning 才是持久化事实。
             _ => {}
         }
     }

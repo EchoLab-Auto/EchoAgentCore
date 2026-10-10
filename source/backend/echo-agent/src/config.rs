@@ -126,6 +126,11 @@ fn default_balance_snapshot_secs() -> u64 {
     DEFAULT_BALANCE_SNAPSHOT_SECS
 }
 
+/// 流式输出缺省开：出问题时可在配置中关闭（重启生效）快速回退整段路径。
+fn default_stream_output() -> bool {
+    true
+}
+
 /// A team member (`[agent.teams.{id}]`, legacy `[agent.profiles.{id}]`).
 ///
 /// Each member is instantiated as an independent `Agent` with its own
@@ -301,6 +306,13 @@ pub struct AgentConfig {
     /// 可查询（DeepSeek 端点）profile 的余额写入本地 `echo-balances.jsonl`。
     #[serde(default = "default_balance_snapshot_secs")]
     pub balance_snapshot_secs: u64,
+    /// 主对话流式输出（2026-10，缺省 true）：模型增量经
+    /// `AgentContentDelta` / `AgentReasoningDelta` 实时转发（~40ms 合并批），
+    /// 终值仍以 `AgentOutput` / `AgentReasoning` 全量收敛（消费端做对账）。
+    /// 关闭则退回整段到达（客户端动画）。仅主对话 turn 生效——子代理 /
+    /// 上下文摘要等内部调用始终非流式。
+    #[serde(default = "default_stream_output")]
+    pub stream_output: bool,
     /// 模型定价表（费用估算用；缺省 = 内置默认价 [`default_pricing`]）。
     /// 自定义后（含显式清空 `pricing = []` 禁用估算）会随配置持久化。
     #[serde(
@@ -337,6 +349,7 @@ impl Default for AgentConfig {
             memory_limit_tokens: None,
             context_window_tokens: None,
             balance_snapshot_secs: default_balance_snapshot_secs(),
+            stream_output: true,
             pricing: default_pricing(),
         }
     }

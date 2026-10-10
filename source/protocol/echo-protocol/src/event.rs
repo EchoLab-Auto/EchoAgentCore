@@ -414,6 +414,32 @@ pub enum BackendEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         elapsed_ms: Option<u64>,
     },
+    /// 流式回复正文增量（`AgentOutput` 的逐段版本）。
+    ///
+    /// provider 在生成过程中实时发出（合并节流后每 ~40ms 一批）；终值仍以
+    /// `AgentOutput`（全量）收敛——消费端按 (core, session, branch) 对账，
+    /// 全量到达时用其替换流式消息内容（丢帧/乱序可自愈）。
+    AgentContentDelta {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
+        /// 归属分支（与本 turn 的 `AgentReasoning` 同值）。
+        #[serde(default)]
+        branch_id: String,
+        /// 本段增量文本（上游已脱敏）。
+        delta: String,
+    },
+    /// 流式推理增量（`AgentReasoning` 的逐段版本）。
+    ///
+    /// 与正文增量同构；终值以 `AgentReasoning`（全量）收敛。
+    AgentReasoningDelta {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
+        #[serde(default)]
+        branch_id: String,
+        delta: String,
+    },
     /// A tool published a structured state snapshot for TUI visualization
     /// (e.g. the checklist tool → checklist panel). `state` is tool-specific;
     /// the checklist tool emits `{"lists": [{name, done, total, items}]}`.

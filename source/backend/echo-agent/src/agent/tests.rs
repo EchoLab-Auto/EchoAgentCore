@@ -36,10 +36,11 @@ impl LlmProvider for MockProvider {
     }
     async fn chat_stream(
         &self,
-        _request: &ChatRequest,
+        request: &ChatRequest,
         _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError> {
-        Ok(())
+    ) -> Result<ChatResponse, LlmError> {
+        // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
+        self.chat(request).await
     }
 }
 
@@ -77,10 +78,11 @@ impl LlmProvider for ConcurrentProvider {
 
     async fn chat_stream(
         &self,
-        _request: &ChatRequest,
+        request: &ChatRequest,
         _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError> {
-        Ok(())
+    ) -> Result<ChatResponse, LlmError> {
+        // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
+        self.chat(request).await
     }
 }
 
@@ -149,10 +151,11 @@ impl LlmProvider for SnapshotProvider {
 
     async fn chat_stream(
         &self,
-        _request: &ChatRequest,
+        request: &ChatRequest,
         _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError> {
-        Ok(())
+    ) -> Result<ChatResponse, LlmError> {
+        // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
+        self.chat(request).await
     }
 }
 
@@ -514,6 +517,47 @@ fn annotate_team_stamps_covered_variants() {
                 team_id.as_deref(),
                 Some("EchoCode"),
                 "AgentThinking 应被标注"
+            )
+        }
+        other => panic!("变体保持: {other:?}"),
+    }
+
+    // 流式增量变体（2026-10）：同样标注 team（面板流式消息按 team 过滤）。
+    let content_delta = Agent::annotate_team_for(
+        BackendEvent::AgentContentDelta {
+            session_id: "local:tui::local_user".into(),
+            team_id: None,
+            branch_id: "b1".into(),
+            delta: "片段".into(),
+        },
+        Some("EchoCode".into()),
+    );
+    match content_delta {
+        BackendEvent::AgentContentDelta { team_id, delta, .. } => {
+            assert_eq!(
+                team_id.as_deref(),
+                Some("EchoCode"),
+                "AgentContentDelta 应被标注"
+            );
+            assert_eq!(delta, "片段");
+        }
+        other => panic!("变体保持: {other:?}"),
+    }
+    let reasoning_delta = Agent::annotate_team_for(
+        BackendEvent::AgentReasoningDelta {
+            session_id: "s".into(),
+            team_id: None,
+            branch_id: "b1".into(),
+            delta: "想想".into(),
+        },
+        Some("EchoCode".into()),
+    );
+    match reasoning_delta {
+        BackendEvent::AgentReasoningDelta { team_id, .. } => {
+            assert_eq!(
+                team_id.as_deref(),
+                Some("EchoCode"),
+                "AgentReasoningDelta 应被标注"
             )
         }
         other => panic!("变体保持: {other:?}"),
@@ -1264,10 +1308,11 @@ impl LlmProvider for ScriptedProvider {
     }
     async fn chat_stream(
         &self,
-        _request: &ChatRequest,
+        request: &ChatRequest,
         _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError> {
-        Ok(())
+    ) -> Result<ChatResponse, LlmError> {
+        // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
+        self.chat(request).await
     }
 }
 
@@ -2776,4 +2821,341 @@ async fn subagent_provider_prefers_shared_config_store_pool() {
     // 文件里的 kimi 可见（否则会报"不存在（当前未配置任何…）"）
     assert!(agent.subagent_provider_for("kimi").await.is_ok());
     std::fs::remove_file(&path).ok();
+}
+
+// ── 流式输出（2026-10）──────────────────────────────────────────────
+
+/// 流式桩：`chat_stream` 逐段发送增量并返回组装后的全量响应；
+/// `chat` 返回同一份全量（用于 stream_output=false 对照）。
+struct StreamingProvider {
+    full: ChatResponse,
+    chunks: Vec<ChatChunk>,
+    stream_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for StreamingProvider {
+    fn name(&self) -> &str {
+        "streaming"
+    }
+    fn default_model(&self) -> &str {
+        "streaming-model"
+    }
+    async fn chat(&self, _request: &ChatRequest) -> Result<ChatResponse, LlmError> {
+        Ok(self.full.clone())
+    }
+    async fn chat_stream(
+        &self,
+        _request: &ChatRequest,
+        tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
+    ) -> Result<ChatResponse, LlmError> {
+        self.stream_calls.fetch_add(1, Ordering::SeqCst);
+        for chunk in &self.chunks {
+            let _ = tx.send(chunk.clone());
+        }
+        Ok(self.full.clone())
+    }
+}
+
+fn streaming_agent(provider: Arc<StreamingProvider>) -> Arc<Agent> {
+    Arc::new(Agent::new(
+        provider,
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    ))
+}
+
+/// 主对话流式（内置循环路径）：增量经 `AgentContentDelta` /
+/// `AgentReasoningDelta` 到达，且**先于**终值 `AgentReasoning`/`AgentOutput`；
+/// 终值为全量（与增量拼接一致，供前端对账）。
+#[tokio::test]
+async fn builtin_loop_forwards_streaming_deltas_before_final_events() {
+    let provider = Arc::new(StreamingProvider {
+        full: ChatResponse {
+            content: Some("你好世界".into()),
+            reasoning_content: Some("先想一想".into()),
+            tool_calls: vec![],
+            usage: Usage {
+                prompt_tokens: 3,
+                completion_tokens: 4,
+            },
+            stop_reason: None,
+        },
+        chunks: vec![
+            ChatChunk {
+                content_delta: None,
+                reasoning_delta: Some("先想".into()),
+                tool_call_delta: None,
+            },
+            ChatChunk {
+                content_delta: None,
+                reasoning_delta: Some("一想".into()),
+                tool_call_delta: None,
+            },
+            ChatChunk {
+                content_delta: Some("你好".into()),
+                reasoning_delta: None,
+                tool_call_delta: None,
+            },
+            ChatChunk {
+                content_delta: Some("世界".into()),
+                reasoning_delta: None,
+                tool_call_delta: None,
+            },
+        ],
+        stream_calls: Arc::new(AtomicUsize::new(0)),
+    });
+    let agent = streaming_agent(provider.clone());
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+
+    assert_eq!(
+        agent.process_message(&session, "hi").await.unwrap(),
+        "你好世界"
+    );
+    assert_eq!(
+        provider.stream_calls.load(Ordering::SeqCst),
+        1,
+        "主对话应走 chat_stream"
+    );
+
+    let mut events = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        events.push(event);
+    }
+    let content_deltas: String = events
+        .iter()
+        .filter_map(|e| match e {
+            BackendEvent::AgentContentDelta { delta, .. } => Some(delta.clone()),
+            _ => None,
+        })
+        .collect();
+    let reasoning_deltas: String = events
+        .iter()
+        .filter_map(|e| match e {
+            BackendEvent::AgentReasoningDelta { delta, .. } => Some(delta.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        content_deltas, "你好世界",
+        "正文增量拼接应与全量一致: {events:?}"
+    );
+    assert_eq!(reasoning_deltas, "先想一想", "推理增量拼接应与全量一致");
+
+    let pos = |pred: &dyn Fn(&BackendEvent) -> bool| events.iter().position(pred);
+    let last_content_delta = events
+        .iter()
+        .rposition(|e| matches!(e, BackendEvent::AgentContentDelta { .. }))
+        .expect("AgentContentDelta 缺失");
+    let reasoning_full =
+        pos(&|e| matches!(e, BackendEvent::AgentReasoning { .. })).expect("AgentReasoning 缺失");
+    // process_message 内部以 AgentCompleted 收尾（AgentOutput 由命令层在
+    // 其后发射；本测试验证 turn 内顺序：增量先于终值事件）。
+    let completed =
+        pos(&|e| matches!(e, BackendEvent::AgentCompleted { .. })).expect("AgentCompleted 缺失");
+    let first_delta = pos(&|e| {
+        matches!(
+            e,
+            BackendEvent::AgentContentDelta { .. } | BackendEvent::AgentReasoningDelta { .. }
+        )
+    })
+    .expect("增量事件缺失");
+    assert!(
+        first_delta < reasoning_full && last_content_delta < completed,
+        "增量必须先于终值（对账语义）: {events:?}"
+    );
+}
+
+/// `stream_output=false`：主对话退回整段 `chat`——无增量事件、终值照常。
+#[tokio::test]
+async fn stream_output_disabled_skips_chat_stream_and_deltas() {
+    let provider = Arc::new(StreamingProvider {
+        full: ChatResponse {
+            content: Some("整段回复".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            usage: Usage::default(),
+            stop_reason: None,
+        },
+        chunks: vec![ChatChunk {
+            content_delta: Some("整段".into()),
+            reasoning_delta: None,
+            tool_call_delta: None,
+        }],
+        stream_calls: Arc::new(AtomicUsize::new(0)),
+    });
+    let config = AgentConfig {
+        stream_output: false,
+        ..AgentConfig::default()
+    };
+    let agent = Arc::new(Agent::new(
+        provider.clone(),
+        config,
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    ));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+
+    assert_eq!(
+        agent.process_message(&session, "hi").await.unwrap(),
+        "整段回复"
+    );
+    assert_eq!(
+        provider.stream_calls.load(Ordering::SeqCst),
+        0,
+        "stream_output=false 不得调用 chat_stream"
+    );
+    let mut has_delta = false;
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        if matches!(
+            event,
+            BackendEvent::AgentContentDelta { .. } | BackendEvent::AgentReasoningDelta { .. }
+        ) {
+            has_delta = true;
+        }
+    }
+    assert!(!has_delta, "关闭流式后不应有增量事件");
+}
+
+/// 主对话流式（echo-loop 路径，生产路径）：ChatExecutor 的增量转发与内置
+/// 循环同口径（增量先于终值；拼接与全量一致）。
+#[tokio::test]
+async fn echo_loop_path_forwards_streaming_deltas() {
+    let provider = Arc::new(StreamingProvider {
+        full: ChatResponse {
+            content: Some("流式回复".into()),
+            reasoning_content: Some("推理".into()),
+            tool_calls: vec![],
+            usage: Usage::default(),
+            stop_reason: None,
+        },
+        chunks: vec![
+            ChatChunk {
+                content_delta: None,
+                reasoning_delta: Some("推".into()),
+                tool_call_delta: None,
+            },
+            ChatChunk {
+                content_delta: Some("流式".into()),
+                reasoning_delta: None,
+                tool_call_delta: None,
+            },
+            ChatChunk {
+                content_delta: Some("回复".into()),
+                reasoning_delta: None,
+                tool_call_delta: None,
+            },
+        ],
+        stream_calls: Arc::new(AtomicUsize::new(0)),
+    });
+    let agent = Arc::new(Agent::new(
+        provider.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    ));
+    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+        Arc::new(echo_context::EventBus::default()),
+        provider.clone(),
+        Arc::new(echo_loop::ToolPipeline::new()),
+        echo_loop::LoopOptions::default(),
+    ));
+    agent.set_loop_runner(runner);
+    agent.set_use_echo_loop(true);
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+
+    assert_eq!(
+        agent.process_message(&session, "hi").await.unwrap(),
+        "流式回复"
+    );
+    assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
+
+    let mut events = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        events.push(event);
+    }
+    let content_deltas: String = events
+        .iter()
+        .filter_map(|e| match e {
+            BackendEvent::AgentContentDelta { delta, .. } => Some(delta.clone()),
+            _ => None,
+        })
+        .collect();
+    let reasoning_deltas: String = events
+        .iter()
+        .filter_map(|e| match e {
+            BackendEvent::AgentReasoningDelta { delta, .. } => Some(delta.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        content_deltas, "流式回复",
+        "echo-loop 路径正文增量: {events:?}"
+    );
+    assert_eq!(reasoning_deltas, "推", "echo-loop 路径推理增量");
+    let last_delta = events
+        .iter()
+        .rposition(|e| {
+            matches!(
+                e,
+                BackendEvent::AgentContentDelta { .. } | BackendEvent::AgentReasoningDelta { .. }
+            )
+        })
+        .unwrap();
+    let reasoning_full = events
+        .iter()
+        .position(|e| matches!(e, BackendEvent::AgentReasoning { .. }))
+        .expect("AgentReasoning 缺失");
+    assert!(
+        last_delta < reasoning_full,
+        "增量应先于全量推理: {events:?}"
+    );
+}
+
+/// 转发任务合并语义：达阈值立即分片、余量在关闭时 flush；拼接无损。
+#[tokio::test]
+async fn delta_forwarder_batches_and_flushes_on_close() {
+    let received: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = received.clone();
+    let emit: Arc<dyn Fn(BackendEvent) + Send + Sync> = Arc::new(move |event: BackendEvent| {
+        if let BackendEvent::AgentContentDelta { delta, .. } = event {
+            sink.lock().unwrap().push(delta);
+        }
+    });
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ChatChunk>();
+    let task = spawn_delta_forwarder(rx, emit, "s".into(), "b".into());
+    tx.send(ChatChunk {
+        content_delta: Some("abc".into()),
+        reasoning_delta: None,
+        tool_call_delta: None,
+    })
+    .unwrap();
+    tx.send(ChatChunk {
+        content_delta: Some("x".repeat(300)),
+        reasoning_delta: None,
+        tool_call_delta: None,
+    })
+    .unwrap();
+    drop(tx);
+    task.await.unwrap();
+    let events = received.lock().unwrap().clone();
+    let total: String = events.concat();
+    assert_eq!(total, format!("abc{}", "x".repeat(300)));
+    assert!(events.len() <= 2, "窗口合并应有界: {}", events.len());
 }

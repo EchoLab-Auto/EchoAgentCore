@@ -36,8 +36,8 @@ impl LlmProvider for ScriptedProvider {
         &self,
         _request: &ChatRequest,
         _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError> {
-        Ok(())
+    ) -> Result<ChatResponse, LlmError> {
+        Ok(ChatResponse::empty())
     }
 }
 

@@ -340,10 +340,11 @@ mod tests {
 
         async fn chat_stream(
             &self,
-            _request: &ChatRequest,
+            request: &ChatRequest,
             _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-        ) -> Result<(), LlmError> {
-            Ok(())
+        ) -> Result<ChatResponse, LlmError> {
+            // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
+            self.chat(request).await
         }
     }
 
@@ -399,10 +400,11 @@ mod tests {
 
         async fn chat_stream(
             &self,
-            _request: &ChatRequest,
+            request: &ChatRequest,
             _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-        ) -> Result<(), LlmError> {
-            Ok(())
+        ) -> Result<ChatResponse, LlmError> {
+            // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
+            self.chat(request).await
         }
     }
 
@@ -443,10 +445,11 @@ mod tests {
 
         async fn chat_stream(
             &self,
-            _request: &ChatRequest,
+            request: &ChatRequest,
             _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-        ) -> Result<(), LlmError> {
-            Ok(())
+        ) -> Result<ChatResponse, LlmError> {
+            // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
+            self.chat(request).await
         }
     }
 

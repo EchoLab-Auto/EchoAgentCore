@@ -51,11 +51,21 @@ pub trait LlmProvider: Send + Sync {
     /// Complete a chat without streaming.
     async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError>;
 
-    /// Stream a chat response, sending chunks into `tx`. The stream ends when
-    /// the channel is dropped by the consumer or the provider finishes.
+    /// Stream a chat response, forwarding deltas into `tx` **and returning
+    /// the assembled full response** once the stream ends.
+    ///
+    /// - `tx`：增量出口（正文/推理/工具调用按到达顺序）。**本层不做节流
+    ///   合并**——消费方负责按窗口合并后转投 UI。
+    /// - 返回值与 [`Self::chat`] 同型：调用方无需改动装配即可在
+    ///   流式/非流式间切换（usage / stop_reason / tool_calls 由 provider
+    ///   内部经 [`crate::message::ChatStreamAccumulator`] 累积）。
+    /// - 流中途出错返回 `Err`；已送入 `tx` 的增量由消费方自行处置
+    ///   （本层不重发、不回滚）。
+    /// - 常规终止（`[DONE]` / 流自然关闭）按 `Ok` 返回，与 `chat` 的
+    ///   "成功响应"口径一致。
     async fn chat_stream(
         &self,
         request: &ChatRequest,
         tx: mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError>;
+    ) -> Result<ChatResponse, LlmError>;
 }

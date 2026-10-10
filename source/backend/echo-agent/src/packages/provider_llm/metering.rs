@@ -63,10 +63,17 @@ impl LlmProvider for MeteringProvider {
         &self,
         request: &ChatRequest,
         tx: mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError> {
-        // 流式路径不做计量：chunk 协议不携带收尾总账，核心调用路径统一走
-        // `chat`（与脱敏装饰器的流式透传口径一致）。
-        self.inner.chat_stream(request, tx).await
+    ) -> Result<ChatResponse, LlmError> {
+        // 流式路径同样计量：provider 在流内累积 usage，随组装响应返回
+        // （`stream_options.include_usage` / message_start+delta）。
+        let response = self.inner.chat_stream(request, tx).await?;
+        self.store.record_usage(
+            &self.profile,
+            &request.model,
+            response.usage.prompt_tokens,
+            response.usage.completion_tokens,
+        );
+        Ok(response)
     }
 }
 
@@ -116,8 +123,8 @@ mod tests {
             &self,
             _request: &ChatRequest,
             _tx: mpsc::UnboundedSender<ChatChunk>,
-        ) -> Result<(), LlmError> {
-            Ok(())
+        ) -> Result<ChatResponse, LlmError> {
+            Ok(ChatResponse::empty())
         }
     }
 

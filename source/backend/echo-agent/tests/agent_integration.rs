@@ -51,10 +51,11 @@ impl LlmProvider for StaticProvider {
     }
     async fn chat_stream(
         &self,
-        _request: &ChatRequest,
+        request: &ChatRequest,
         _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError> {
-        Ok(())
+    ) -> Result<ChatResponse, LlmError> {
+        // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
+        self.chat(request).await
     }
 }
 
@@ -101,10 +102,11 @@ impl LlmProvider for ScriptedProvider {
     }
     async fn chat_stream(
         &self,
-        _request: &ChatRequest,
+        request: &ChatRequest,
         _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError> {
-        Ok(())
+    ) -> Result<ChatResponse, LlmError> {
+        // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
+        self.chat(request).await
     }
 }
 
@@ -385,10 +387,11 @@ impl LlmProvider for SlowProvider {
     }
     async fn chat_stream(
         &self,
-        _request: &ChatRequest,
+        request: &ChatRequest,
         _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<(), LlmError> {
-        Ok(())
+    ) -> Result<ChatResponse, LlmError> {
+        // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
+        self.chat(request).await
     }
 }
 
@@ -1609,10 +1612,11 @@ async fn cancelling_parent_turn_cascades_to_subagent() {
         }
         async fn chat_stream(
             &self,
-            _request: &ChatRequest,
+            request: &ChatRequest,
             _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-        ) -> Result<(), LlmError> {
-            Ok(())
+        ) -> Result<ChatResponse, LlmError> {
+            // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
+            self.chat(request).await
         }
     }
     let provider = Arc::new(HangingProvider {

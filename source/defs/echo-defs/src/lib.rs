@@ -48,7 +48,8 @@ pub use chat::{
 pub use llm::{LlmError, LlmProvider};
 pub use media::{compact_embedded_media, elide_inline_data_uris, image_placeholder};
 pub use message::{
-    ChatChunk, ChatMessage, ChatRequest, ChatResponse, ChatRole, ToolCall, ToolCallDelta, Usage,
+    ChatChunk, ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatStreamAccumulator, ToolCall,
+    ToolCallDelta, Usage,
 };
 pub use mode::{GateMode, LoopMode, ReasoningEffort, ThinkingMode};
 pub use node::NodeId;

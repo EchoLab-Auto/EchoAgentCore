@@ -31,7 +31,7 @@ use crate::bridge::BackendHandle;
 use crate::command::BackendCommand;
 use crate::config::{AgentConfig, ApiProfile};
 use crate::event::{AdapterStatus, BackendEvent};
-use crate::llm::{create_provider, ChatMessage, ChatRequest, LlmProvider, ToolCall};
+use crate::llm::{create_provider, ChatChunk, ChatMessage, ChatRequest, LlmProvider, ToolCall};
 use crate::session::{Session, TrunkStore};
 use crate::skill::SkillRegistry;
 use crate::tool::ToolRegistry;
@@ -916,6 +916,28 @@ impl Agent {
                 branch_id,
                 content,
             },
+            BackendEvent::AgentContentDelta {
+                session_id,
+                branch_id,
+                delta,
+                ..
+            } => BackendEvent::AgentContentDelta {
+                session_id,
+                team_id,
+                branch_id,
+                delta,
+            },
+            BackendEvent::AgentReasoningDelta {
+                session_id,
+                branch_id,
+                delta,
+                ..
+            } => BackendEvent::AgentReasoningDelta {
+                session_id,
+                team_id,
+                branch_id,
+                delta,
+            },
             other => other,
         }
     }
@@ -1775,12 +1797,30 @@ impl Agent {
 
         // 动态 chat 出口（2026-10 巡检）：每 step 解析**当前** provider 与
         // 预算（persona API 切换即时生效）；参数转 owned、future 仅借 self。
+        //
+        // 流式接线（2026-10）：主对话 turn 经 `chat_stream` + 增量转发
+        // （`AgentContentDelta` / `AgentReasoningDelta`，~40ms 合并批）；
+        // `stream_output=false` 时退回整段 `chat`。每 step 一个转发任务，
+        // 返回前 flush 收尾（增量先于后续事件到达）。
+        let stream_emitter = self.emit_handle();
+        let stream_session = session_id.clone();
+        let stream_branch = branch_id.to_string();
         let chat_executor: echo_loop::ChatExecutor<'_> = &|mut request: ChatRequest| {
             let this = self;
+            let emitter = stream_emitter.clone();
+            let sid = stream_session.clone();
+            let bid = stream_branch.clone();
             Box::pin(async move {
                 request.max_tokens = this.config.read().await.effective_max_tokens();
                 let provider = this.provider.read().await.clone();
-                provider.chat(&request).await
+                if !this.config.read().await.stream_output {
+                    return provider.chat(&request).await;
+                }
+                let (delta_tx, delta_rx) = tokio::sync::mpsc::unbounded_channel();
+                let forwarder = spawn_delta_forwarder(delta_rx, emitter, sid, bid);
+                let result = provider.chat_stream(&request, delta_tx).await;
+                let _ = forwarder.await;
+                result
             })
         };
 
@@ -2070,19 +2110,41 @@ impl Agent {
                 max_tokens,
             };
             let provider = self.provider.read().await.clone();
-            let response = tokio::select! {
-                response = provider.chat(&request) => response.map_err(|error| {
-                    tracing::warn!(
-                        turn_id = %turn_id,
-                        message_sequence = message_sequence.unwrap_or_default(),
-                        session = %session_id,
-                        %error,
-                        elapsed_ms = queued_at.elapsed().as_millis() as u64,
-                        "agent turn model request failed"
-                    );
-                    error
-                })?,
-                _ = turn_cancel.cancelled() => return Err(anyhow!(TURN_CANCELLED)),
+            let log_model_error = |error: crate::llm::LlmError| -> crate::llm::LlmError {
+                tracing::warn!(
+                    turn_id = %turn_id,
+                    message_sequence = message_sequence.unwrap_or_default(),
+                    session = %session_id,
+                    %error,
+                    elapsed_ms = queued_at.elapsed().as_millis() as u64,
+                    "agent turn model request failed"
+                );
+                error
+            };
+            // 流式接线（2026-10）：与 echo-loop 路径同口径（增量转发 +
+            // 返回前 flush 收尾）；`stream_output=false` 时退回整段。
+            let stream_enabled = self.config.read().await.stream_output;
+            let response = if stream_enabled {
+                let (delta_tx, delta_rx) = tokio::sync::mpsc::unbounded_channel();
+                let forwarder = spawn_delta_forwarder(
+                    delta_rx,
+                    self.emit_handle(),
+                    session_id.clone(),
+                    branch_id.to_string(),
+                );
+                let result = tokio::select! {
+                    response = provider.chat_stream(&request, delta_tx) => {
+                        response.map_err(&log_model_error)?
+                    }
+                    _ = turn_cancel.cancelled() => return Err(anyhow!(TURN_CANCELLED)),
+                };
+                let _ = forwarder.await;
+                result
+            } else {
+                tokio::select! {
+                    response = provider.chat(&request) => response.map_err(&log_model_error)?,
+                    _ = turn_cancel.cancelled() => return Err(anyhow!(TURN_CANCELLED)),
+                }
             };
             self.emit_reasoning(&session_id, branch_id, &response.reasoning_content);
             self.emit(BackendEvent::LlmResponse {
@@ -2744,6 +2806,79 @@ pub(crate) fn spawn_contextual_wait_reply(
 
 /// 工具超时提示文案（内置循环与 echo 路径**共用同一文案**，2026-10 巡检：
 /// 此前双写、易漂移）。
+/// 流式增量转发任务（每 step 一个；`AgentContentDelta` / `AgentReasoningDelta`）。
+///
+/// provider 的 `chat_stream` 把 token 级增量送入 `rx`；本任务按 ~40ms 窗口
+/// （或累计 ≥256 字符）合并成批再发射——token 级直发会产生每步几十上百个
+/// WS 帧。`rx` 关闭（provider 结束、或调用方 future 被取消丢弃）后做最终
+/// flush 并退出；调用方在成功路径上先 `await` 本任务再返回，保证增量先于
+/// 本 step 的后续事件（工具卡 / 终值 `AgentOutput`/`AgentReasoning`）送达。
+///
+/// 事件构造不带 `team_id`（由 emit handle 内的 `annotate_team_for` 统一注入）。
+fn spawn_delta_forwarder(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<ChatChunk>,
+    emit: std::sync::Arc<dyn Fn(BackendEvent) + Send + Sync>,
+    session_id: String,
+    branch_id: String,
+) -> tokio::task::JoinHandle<()> {
+    /// 合并窗口：每次至多一个批（前一批未满窗口也送出，保实时观感）。
+    const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(40);
+    /// 单批字符上限触发条件：大段输出（长句/代码块）免受窗口节流。
+    const FLUSH_CHARS: usize = 256;
+    tokio::spawn(async move {
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let flush = |content: &mut String, reasoning: &mut String| {
+            // 推理先于正文（上游时序：thinking → text）。
+            if !reasoning.is_empty() {
+                emit(BackendEvent::AgentReasoningDelta {
+                    session_id: session_id.clone(),
+                    team_id: None,
+                    branch_id: branch_id.clone(),
+                    delta: std::mem::take(reasoning),
+                });
+            }
+            if !content.is_empty() {
+                emit(BackendEvent::AgentContentDelta {
+                    session_id: session_id.clone(),
+                    team_id: None,
+                    branch_id: branch_id.clone(),
+                    delta: std::mem::take(content),
+                });
+            }
+        };
+        let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticker.tick().await; // 跳过立即触发的第一拍
+        loop {
+            tokio::select! {
+                chunk = rx.recv() => match chunk {
+                    Some(chunk) => {
+                        if let Some(delta) = chunk.content_delta {
+                            content.push_str(&delta);
+                        }
+                        if let Some(delta) = chunk.reasoning_delta {
+                            reasoning.push_str(&delta);
+                        }
+                        if content.len() + reasoning.len() >= FLUSH_CHARS {
+                            flush(&mut content, &mut reasoning);
+                        }
+                    }
+                    None => {
+                        flush(&mut content, &mut reasoning);
+                        break;
+                    }
+                },
+                _ = ticker.tick() => {
+                    if !content.is_empty() || !reasoning.is_empty() {
+                        flush(&mut content, &mut reasoning);
+                    }
+                }
+            }
+        }
+    })
+}
+
 fn tool_timeout_notice(tool: &str, secs: u64) -> String {
     format!(
         "notice: tool '{tool}' timed out after {secs}s and its execution was aborted. You may retry this tool (e.g. with a shorter command) or continue the answer directly with the information you already have; do not treat this timeout as a fatal failure."
