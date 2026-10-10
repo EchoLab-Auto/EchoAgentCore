@@ -78,6 +78,7 @@ pub enum FedFrame {
 }
 
 /// 握手载荷：节点身份 + 能力声明。
+/// 握手载荷：节点身份 + 能力声明。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeHello {
     pub node_id: String,
@@ -89,6 +90,13 @@ pub struct NodeHello {
     pub version: String,
     #[serde(default)]
     pub caps: NodeCaps,
+    /// 本机**对外可拨地址**（`ws://host:port`；None = 未监听/不宣告）。
+    ///
+    /// 配对无方向性（2026-10）：链路建立后对端据此学习本机地址，
+    /// 由此双方都能主动重连——不再只有"接入方"单向保持。
+    /// 取值与邀请串同源（`[federation] listen/advertise` 推导）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advertise: Option<String>,
 }
 
 /// 节点能力声明（供大脑侧路由决策与代理工具注册）。
@@ -409,15 +417,18 @@ mod tests {
                 workspaces: vec!["/srv/proj".into()],
                 active_turns: 0,
             },
+            advertise: Some("ws://10.0.0.5:3133".into()),
         };
         let frame = FedFrame::Hello(hello.clone());
         let text = serde_json::to_string(&frame).unwrap();
+        assert!(text.contains("advertise"));
         let back: FedFrame = serde_json::from_str(&text).unwrap();
         assert_eq!(back, frame);
-        // 老端点缺 caps/version/node_name 也可解码
+        // 老端点缺 caps/version/node_name/advertise 也可解码
         let legacy = r#"{"node_id": "node-abc", "protocol_version": 1}"#;
         let parsed: NodeHello = serde_json::from_str(legacy).unwrap();
         assert!(parsed.caps.tools.is_empty());
+        assert_eq!(parsed.advertise, None);
     }
 
     #[test]

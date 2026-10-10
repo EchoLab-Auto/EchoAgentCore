@@ -248,6 +248,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 })
                 .collect(),
         ));
+        // 本机对外可拨地址（ws://host:port）：与邀请串同源推导
+        // （listen/advertise）。握手 Hello 携带——对端学习后双方都能
+        // 主动重连（配对无方向性，2026-10）。
+        let local_advertise = invite_host(&cfg.federation.listen, &cfg.federation.advertise)
+            .map(|host_port| format!("ws://{host_port}"));
         let fed = echo_federation::Federation::new(
             node_doc.node_id.clone(),
             cfg.federation
@@ -256,6 +261,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .or(node_doc.node_name.clone()),
             caps,
             peers,
+            local_advertise,
             event_tx,
             shutdown_tx.clone(),
         );
@@ -1777,6 +1783,10 @@ async fn federation_router_pump(
                             .unwrap_or_default();
                         rt.router.set_policy(&info.node_id, policy);
                         register_remote_tools(&rt, &personas, &info).await;
+                        // 学习对端宣告的拨号地址（配对无方向性，2026-10）：
+                        // 对端 Hello 携带其对外地址 → 本机若无该 peer 地址
+                        // 则补上（运行时 + 落配置）→ 双方都会主动重连。
+                        learn_peer_dial_address(&rt, &info).await;
                         broadcast_federation_status(&rt, &personas, &core_agent).await;
                     }
                     echo_federation::LinkEvent::Down { peer_node_id, reason } => {
@@ -2563,6 +2573,70 @@ async fn handle_self_update(
 ///
 /// 名字选取：对端 Hello 的 `node_name` 优先（人类可读，如 `gpu-box`），
 /// 冲突或缺失时退 `node-<node_id 前 8 位>`，仍冲突追加序号。
+/// 学习对端 Hello 宣告的**可拨地址**（2026-10，配对无方向性）：
+///
+/// 邀请配对之初只有一根方向（接入方 → 邀请方）被系统配置；链路建立后，
+/// 对端 Hello 携带其 `[federation] listen/advertise` 推导的对外地址。本机
+/// 据此把自己这边的 peer 条目补全（运行时 + 落配置）——此后**双方都会
+/// 主动重连**（谁先恢复链路都行），配对不再有方向语义。仅填空，不覆盖
+/// 已配置/已学习的地址；对端呼叫本机地址（同机双节点等）时跳过。
+async fn learn_peer_dial_address(rt: &FederationRuntime, info: &echo_federation::PeerInfo) {
+    // 解析后的配置名（邀请占位已提升为最终名）。
+    let name = rt
+        .node_to_peer
+        .read()
+        .await
+        .get(&info.node_id)
+        .cloned()
+        .unwrap_or_else(|| info.peer_name.clone());
+    let configs = rt.federation.peer_configs().await;
+    let Some(cfg) = configs.into_iter().find(|p| p.name == name) else {
+        return;
+    };
+    let Some(url) = learnable_peer_url(&cfg.url, info.advertise.as_deref()) else {
+        return;
+    };
+    // 自指防护：对端宣告的竟是本机地址 → 学习只会导致自拨回环。
+    let own = invite_host(&rt.listen, &rt.advertise).map(|host_port| format!("ws://{host_port}"));
+    if own.as_deref() == Some(url.as_str()) {
+        return;
+    }
+    let write_name = name.clone();
+    let write_url = url.clone();
+    if let Err(e) = rt.config_store.patch(move |root| {
+        let federation = echo_adapter::ensure_table(root, "federation");
+        let peers = echo_adapter::ensure_table(federation, "peers");
+        let entry = echo_adapter::ensure_table(peers, &write_name);
+        entry.insert("url".into(), toml::Value::String(write_url));
+        Ok(())
+    }) {
+        tracing::warn!(target: "federation", %name, error = %e, "learn peer url: config write failed");
+    }
+    rt.federation
+        .add_peer(echo_federation::PeerConfig {
+            name: name.clone(),
+            url: url.clone(),
+            token: cfg.token.clone(),
+        })
+        .await;
+    tracing::info!(
+        target: "federation",
+        peer = %name, url = %url,
+        "learned peer dial address (bidirectional reconnect)"
+    );
+}
+
+/// 学习决策（纯函数）：仅当本机尚无该 peer 地址、且对端宣告了非空地址。
+fn learnable_peer_url(existing_url: &str, advertised: Option<&str>) -> Option<String> {
+    if !existing_url.trim().is_empty() {
+        return None;
+    }
+    advertised
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+}
+
 async fn promote_paired_invite_placeholders(
     rt: &FederationRuntime,
     policies: &mut std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
@@ -2638,6 +2712,12 @@ async fn promote_paired_invite_placeholders(
             .write()
             .await
             .insert(node_id.to_string(), promoted.clone());
+        // 最近链路信息同步重键（invite-* → 配置名）：dial 停车判定与
+        // 远程反查继续按新名命中（否则学习地址后的连出循环会无视当前
+        // 活跃链路、立刻对拆）。
+        rt.federation
+            .rename_peer_info(&placeholder, &promoted)
+            .await;
         rt.federation.remove_peer(&placeholder).await;
         tracing::info!(
             target: "federation",
@@ -2984,8 +3064,31 @@ mod core_util_tests {
     use crate::agent_supervisor::AgentSupervisor;
     use crate::federation_import::{chunk_utf8, handle_session_import, ImportOutcome};
     use crate::pick_promoted_peer_name;
-    use crate::{advertise_host, invite_host};
+    use crate::{advertise_host, invite_host, learnable_peer_url};
     use echo_agent::{AgentConfig, TeamMember};
+
+    /// 对端地址学习决策（配对无方向性）：仅填空，不覆盖；空宣告不学习。
+    #[test]
+    fn learnable_peer_url_fills_only_empty_slots() {
+        // 空 url + 对端宣告 → 学习。
+        assert_eq!(
+            learnable_peer_url("", Some("ws://10.0.0.9:3133")),
+            Some("ws://10.0.0.9:3133".to_string())
+        );
+        // 已配置 url → 不覆盖（操作员配置 / 历史学习优先）。
+        assert_eq!(
+            learnable_peer_url("ws://old:3133", Some("ws://new:3133")),
+            None
+        );
+        // 对端未宣告 / 空白宣告 → 不学习。
+        assert_eq!(learnable_peer_url("", None), None);
+        assert_eq!(learnable_peer_url("", Some("  ")), None);
+        // 首尾空白清理。
+        assert_eq!(
+            learnable_peer_url("", Some(" ws://a:1 ")),
+            Some("ws://a:1".to_string())
+        );
+    }
 
     /// 邀请对外地址（2026-10）：显式 `[federation] advertise` 优先——多网卡/
     /// VPN 叠加场景指定"对端可达地址"（如 tun0），不再赌 hostname -I 顺序。

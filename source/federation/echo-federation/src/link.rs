@@ -39,6 +39,8 @@ const DEAD_AFTER: Duration = Duration::from_secs(90);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// 出站帧通道容量（慢对端背压上限；满则断链）。
 const OUTBOUND_CAP: usize = 256;
+/// dial 停车轮询间隔（已有活跃链路时等待其消失的检查周期）。
+const LINK_WAIT_POLL: Duration = Duration::from_secs(2);
 
 /// 一个 peer 的静态配置（`[federation.peers.<name>]`）。
 #[derive(Debug, Clone)]
@@ -58,6 +60,9 @@ pub struct PeerInfo {
     pub node_name: Option<String>,
     pub version: String,
     pub caps: NodeCaps,
+    /// 对端宣告的可拨地址（`ws://host:port`；None = 对端未宣告/未监听）。
+    /// 装配层（core/main.rs）据此学习对端地址 → 双向重连（配对无方向性）。
+    pub advertise: Option<String>,
     /// 本机配置里的 peer 名：连出侧 = dial 配置名；连入侧 = 按链路
     /// token 反查的配置名（2026-10 起；此前为对端 node_id——导致策略
     /// 查找/映射全键错，见 `resolve_accept_peer_name`）。
@@ -81,6 +86,9 @@ pub enum LinkEvent {
 /// 链路句柄：向对端发帧。
 #[derive(Debug, Clone)]
 pub struct LinkHandle {
+    /// 本链路是否属于"优选连接"（由 node_id 较小的一方拨出；见
+    /// `run_link` 的双向 dial 去重规则）。优选连接不被非优选连接顶掉。
+    preferred: bool,
     tx: mpsc::Sender<FedFrame>,
     /// 本链路使用的共享密钥（状态判定/占位 peer 匹配用）。
     token: String,
@@ -107,6 +115,9 @@ pub struct Federation {
     node_name: Option<String>,
     version: String,
     caps: NodeCaps,
+    /// 本机对外宣告的可拨地址（`ws://host:port`；None = 未监听/不宣告）。
+    /// 握手 Hello/Welcome 携带；对端学习后即可反向连入本机（2026-10）。
+    local_advertise: Option<String>,
     /// peer 表（Phase 4 起运行时可变：Save/DeleteFederationPeer）。
     peers: RwLock<Vec<PeerConfig>>,
     /// node_id → 链路句柄（活跃链路）。
@@ -130,11 +141,13 @@ pub struct Federation {
 
 impl Federation {
     /// 创建管理器；`event_tx` 由调用方提供（缓冲即背压边界）。
+    /// `advertise` = 本机对外可拨地址（`ws://host:port`；None = 不宣告）。
     pub fn new(
         node_id: String,
         node_name: Option<String>,
         caps: NodeCaps,
         peers: Vec<PeerConfig>,
+        advertise: Option<String>,
         event_tx: mpsc::Sender<LinkEvent>,
         shutdown: watch::Sender<bool>,
     ) -> Arc<Self> {
@@ -143,6 +156,7 @@ impl Federation {
             node_name,
             version: env!("CARGO_PKG_VERSION").to_string(),
             caps,
+            local_advertise: advertise,
             peers: RwLock::new(peers),
             links: Arc::new(RwLock::new(HashMap::new())),
             link_generation: std::sync::atomic::AtomicU64::new(0),
@@ -169,7 +183,35 @@ impl Federation {
             protocol_version: PROTOCOL_VERSION,
             version: self.version.clone(),
             caps,
+            advertise: self.local_advertise.clone(),
         }
+    }
+
+    /// 重键最近链路信息（邀请占位提升：`invite-*` → 配置名）——dial
+    /// 停车判定（`has_active_link`）与远程调用反查按新名继续工作。
+    pub async fn rename_peer_info(&self, from: &str, to: &str) {
+        let mut infos = self.last_peer_infos.write().await;
+        if let Some(mut info) = infos.remove(from) {
+            info.peer_name = to.to_string();
+            infos.insert(to.to_string(), info);
+        }
+    }
+
+    /// 到某 peer（配置名）是否已有活跃链路：以最近链路信息的 node_id
+    /// 在 links 表核对（Down 时 last_peer_infos 已清除，双条件防陈旧）。
+    /// 先取 node_id 再释放读锁、后锁 links，避免与注册路径（links→infos
+    /// 加锁序）死锁。
+    async fn has_active_link(&self, peer_name: &str) -> bool {
+        let node_id = self
+            .last_peer_infos
+            .read()
+            .await
+            .get(peer_name)
+            .map(|info| info.node_id.clone());
+        let Some(node_id) = node_id else {
+            return false;
+        };
+        self.links.read().await.contains_key(&node_id)
     }
 
     /// 注入负载上报句柄（装配层：core/main.rs 持 supervisor 后调用）。
@@ -342,6 +384,20 @@ impl Federation {
                 tracing::info!(peer = %peer.name, "federation dial loop cancelled (peer removed/updated)");
                 return;
             }
+            // 已有到该 peer 的活跃链路时停车等待（配对无方向性的关键）：
+            // 双方互知地址后都持有连出循环，若不停车，后拨到的连接会顶掉
+            // 先建的链路 → 对方触发重连 → 两边无限对拆。链路消失或取消
+            // 哨/关闭信号触发即醒。
+            while self.has_active_link(&peer.name).await {
+                tokio::select! {
+                    _ = tokio::time::sleep(LINK_WAIT_POLL) => {}
+                    _ = shutdown_rx.changed() => return,
+                    _ = cancel.changed() => return,
+                }
+                if *cancel.borrow() {
+                    return;
+                }
+            }
             let request = match bearer_request(&peer.url, &peer.token) {
                 Ok(r) => r,
                 Err(e) => {
@@ -483,13 +539,25 @@ impl Federation {
             node_name: peer_hello.node_name,
             version: peer_hello.version,
             caps: peer_hello.caps,
+            advertise: peer_hello.advertise.clone(),
             peer_name,
         };
         tracing::info!(peer = %info.node_id, name = %info.peer_name, "federation link up");
 
-        // 注册链路（同 node_id 的旧链路被顶掉——重连/双向同时 dial 场景）。
-        // 顶掉前先显式 Down：否则路由层会保留旧链路注册的代理工具（新
-        // Up 与之并存导致重复注册/旧裁决残留）。
+        // 双向 dial 去重（2026-10，配对无方向性）：双方互知地址后会同时
+        // 从两端拨号，可能并存两条连接。确定性规则——**由 node_id 较小
+        // 的一方拨出的连接为"优选"**（两端各自独立计算即得同一结论）：
+        // - 优选连接：顶掉存量（存量可能是非优选，或已死的旧链路——
+        //   重连速度不受影响）；被顶链路主动退出（见 link_loop 分支）
+        // - 非优选连接：若存量是优选 → 放弃本连接（bail，保留优选）；
+        //   否则照常顶掉（存量陈旧/同为救援链路）
+        // - 无存量：无论优劣先建（对端可能根本拨不进来——非优选方先
+        //   行成链，等优选方拨入后自然接管）。
+        let preferred = if dial_peer.is_some() {
+            self.node_id < info.node_id
+        } else {
+            info.node_id < self.node_id
+        };
         let (out_tx, mut out_rx) = mpsc::channel::<FedFrame>(OUTBOUND_CAP);
         let generation = self
             .link_generation
@@ -498,15 +566,23 @@ impl Federation {
             tx: out_tx,
             token: link_token.clone(),
             generation,
+            preferred,
         };
-        let replaced = self
-            .links
-            .write()
-            .await
-            .insert(info.node_id.clone(), handle)
-            .is_some();
+        let replaced = {
+            let mut links = self.links.write().await;
+            if let Some(existing) = links.get(&info.node_id) {
+                if existing.preferred && !preferred {
+                    drop(links);
+                    anyhow::bail!(
+                        "duplicate non-preferred link to {} (peer's dial wins)",
+                        info.node_id
+                    );
+                }
+            }
+            links.insert(info.node_id.clone(), handle).is_some()
+        };
         if replaced {
-            tracing::info!(peer = %info.node_id, "federation link replaced (simultaneous dial or reconnect)");
+            tracing::info!(peer = %info.node_id, preferred, "federation link replaced (bidirectional dial or reconnect)");
             let _ = self
                 .event_tx
                 .send(LinkEvent::Down {
@@ -587,9 +663,17 @@ impl Federation {
         loop {
             tokio::select! {
                 // 出站：业务帧 → 对端
-                Some(frame) = out_rx.recv() => {
-                    let text = serde_json::to_string(&frame)?;
-                    write.send(Message::Text(text)).await?;
+                frame = out_rx.recv() => {
+                    match frame {
+                        Some(frame) => {
+                            let text = serde_json::to_string(&frame)?;
+                            write.send(Message::Text(text)).await?;
+                        }
+                        // 通道关闭 = 本链路已被顶掉（replace）/被移除：主动
+                        // 退出并关闭连接——否则旧连接会成为"僵尸"一直心跳
+                        // 存活（双向 dial 场景下持续堆积任务与 socket）。
+                        None => anyhow::bail!("outbound channel closed (link replaced/removed)"),
+                    }
                 }
                 // 入站
                 inbound = read.next() => {

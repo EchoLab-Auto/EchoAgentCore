@@ -44,6 +44,7 @@ async fn two_nodes_handshake_and_exchange_frames() {
         None,
         caps(&["bash"]),
         peers(&[("a", "", "secret")]),
+        None,
         b_events,
         sd_b.clone(),
     );
@@ -62,6 +63,7 @@ async fn two_nodes_handshake_and_exchange_frames() {
         Some("alpha".into()),
         caps(&["read_file"]),
         peers(&[("b", &addr, "secret")]),
+        None,
         a_events,
         sd_a.clone(),
     );
@@ -122,6 +124,7 @@ async fn wrong_token_is_rejected() {
         None,
         NodeCaps::default(),
         peers(&[("a", "", "right-token")]),
+        None,
         b_events,
         sd_b.clone(),
     );
@@ -138,6 +141,7 @@ async fn wrong_token_is_rejected() {
         None,
         NodeCaps::default(),
         peers(&[("b", &addr, "wrong-token")]),
+        None,
         a_events,
         sd_a.clone(),
     );
@@ -169,6 +173,7 @@ async fn self_dial_is_rejected_as_loop() {
         None,
         NodeCaps::default(),
         peers(&[("self", &addr, "secret")]),
+        None,
         events,
         sd.clone(),
     );
@@ -198,13 +203,22 @@ async fn protocol_version_mismatch_is_rejected() {
     // 直接测 check_peer 逻辑（走真实链路意义相同但需伪造帧，成本高）。
     let (tx, _rx) = mpsc::channel(1);
     let (sd, _) = shutdown_pair();
-    let fed = Federation::new("node-a".into(), None, NodeCaps::default(), vec![], tx, sd);
+    let fed = Federation::new(
+        "node-a".into(),
+        None,
+        NodeCaps::default(),
+        vec![],
+        None,
+        tx,
+        sd,
+    );
     let mut hello = echo_federation::NodeHello {
         node_id: "node-b".into(),
         node_name: None,
         protocol_version: PROTOCOL_VERSION + 1,
         version: String::new(),
         caps: NodeCaps::default(),
+        advertise: None,
     };
     assert!(fed.check_peer_pub(&hello).is_err());
     hello.protocol_version = PROTOCOL_VERSION;
@@ -240,3 +254,182 @@ async fn wait_up_opt(
 
 #[allow(dead_code)]
 fn assert_fed_arc(_: Arc<Federation>) {}
+
+/// 地址互告（配对无方向性基础）：Hello 携带本机 `advertise`，对端在
+/// 链路 Up 的 PeerInfo 里可见——装配层据此学习对端地址、双方皆可重连。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hello_advertises_dial_address() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = format!("ws://{}", listener.local_addr().unwrap());
+    let (b_events, mut b_rx) = mpsc::channel::<LinkEvent>(16);
+    let (a_events, mut a_rx) = mpsc::channel::<LinkEvent>(16);
+    let (sd_a, sd_b) = shutdown_pair();
+
+    let fed_b = Federation::new(
+        "node-b".into(),
+        None,
+        NodeCaps::default(),
+        peers(&[("a", "", "secret")]),
+        None,
+        b_events,
+        sd_b.clone(),
+    );
+    tokio::spawn({
+        let fed = fed_b.clone();
+        async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let fed = fed.clone();
+                tokio::spawn(async move { fed.accept_one_pub(stream).await });
+            }
+        }
+    });
+
+    let fed_a = Federation::new(
+        "node-a".into(),
+        None,
+        NodeCaps::default(),
+        peers(&[("b", &addr, "secret")]),
+        Some("ws://a.example:3133".into()),
+        a_events,
+        sd_a.clone(),
+    );
+    tokio::spawn({
+        let fed = fed_a.clone();
+        async move { fed.run(None).await }
+    });
+
+    let up_b = wait_up(&mut b_rx, Duration::from_secs(5)).await;
+    let up_a = wait_up(&mut a_rx, Duration::from_secs(5)).await;
+    // A 宣告 → B 看到 A 的地址；B 未宣告 → A 看到 None。
+    assert_eq!(up_b.advertise.as_deref(), Some("ws://a.example:3133"));
+    assert_eq!(up_a.advertise, None);
+
+    let _ = sd_a.send(true);
+    let _ = sd_b.send(true);
+}
+
+/// 双向 dial（配对无方向性稳态）：双方互配对方地址——连接收敛为**单条**
+/// 且**静止**（无"互相顶掉 → 对方重连"的无限对拆），帧双向可达。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bidirectional_dial_converges_and_quiesces() {
+    let la = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let lb = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addra = format!("ws://{}", la.local_addr().unwrap());
+    let addrb = format!("ws://{}", lb.local_addr().unwrap());
+    let (a_events, mut a_rx) = mpsc::channel::<LinkEvent>(64);
+    let (b_events, mut b_rx) = mpsc::channel::<LinkEvent>(64);
+    let (sd_a, sd_b) = shutdown_pair();
+
+    // 双方都监听 + 都配对方地址（双向学习的稳态）。
+    let fed_a = Federation::new(
+        "node-a".into(),
+        None,
+        NodeCaps::default(),
+        peers(&[("b", &addrb, "secret")]),
+        None,
+        a_events,
+        sd_a.clone(),
+    );
+    let fed_b = Federation::new(
+        "node-b".into(),
+        None,
+        NodeCaps::default(),
+        peers(&[("a", &addra, "secret")]),
+        None,
+        b_events,
+        sd_b.clone(),
+    );
+    tokio::spawn({
+        let fed = fed_a.clone();
+        async move {
+            loop {
+                let (stream, _) = la.accept().await.unwrap();
+                let fed = fed.clone();
+                tokio::spawn(async move { fed.accept_one_pub(stream).await });
+            }
+        }
+    });
+    tokio::spawn({
+        let fed = fed_b.clone();
+        async move {
+            loop {
+                let (stream, _) = lb.accept().await.unwrap();
+                let fed = fed.clone();
+                tokio::spawn(async move { fed.accept_one_pub(stream).await });
+            }
+        }
+    });
+    tokio::spawn({
+        let fed = fed_a.clone();
+        async move { fed.run(None).await }
+    });
+    tokio::spawn({
+        let fed = fed_b.clone();
+        async move { fed.run(None).await }
+    });
+
+    // 收敛：双方各自 Up（可能伴随一次"被顶掉"型 Down——双向竞争）。
+    let up_b = wait_up(&mut b_rx, Duration::from_secs(6)).await;
+    let up_a = wait_up(&mut a_rx, Duration::from_secs(6)).await;
+    assert_eq!(up_a.node_id, "node-b");
+    assert_eq!(up_b.node_id, "node-a");
+
+    // 静止断言：固定 8s 观察窗内 Down ≤ 2。正常收敛最多一次"被顶掉"
+    // 替换（双向竞争）；若停车/优选去重失效发生无限对拆，两侧会交替
+    // 顶掉对方链路，Down 在窗口内持续出现（退避 1→2→4s 仍 ≥4 次）。
+    let mut downs = 0usize;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    while tokio::time::Instant::now() < deadline {
+        tokio::select! {
+            ev = a_rx.recv() => {
+                if let Some(LinkEvent::Down { .. }) = ev {
+                    downs += 1;
+                }
+            }
+            ev = b_rx.recv() => {
+                if let Some(LinkEvent::Down { .. }) = ev {
+                    downs += 1;
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+    }
+    assert!(
+        downs <= 2,
+        "link churn detected: {downs} Down events in 8s (bidirectional takeover loop)"
+    );
+
+    // 单链路稳态：双方各持一条活跃链路。
+    assert_eq!(fed_a.active_peers().await, vec!["node-b".to_string()]);
+    assert_eq!(fed_b.active_peers().await, vec!["node-a".to_string()]);
+
+    // 帧双向可达（幸存链路可用）。
+    fed_a
+        .send_to(
+            "node-b",
+            FedFrame::Cancel {
+                call_id: "probe-a".into(),
+            },
+        )
+        .await
+        .map_err(|_| "A→B send failed")
+        .unwrap();
+    let got = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let LinkEvent::Frame {
+                frame: FedFrame::Cancel { call_id },
+                ..
+            } = b_rx.recv().await.unwrap()
+            {
+                break call_id;
+            }
+        }
+    })
+    .await
+    .expect("B should receive A frame");
+    assert_eq!(got, "probe-a");
+
+    let _ = sd_a.send(true);
+    let _ = sd_b.send(true);
+}
