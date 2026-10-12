@@ -345,7 +345,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .clone()
                 .or(node_doc.node_name.clone()),
             peer_policies: peer_policies.clone(),
-            remote_tool_keepers: std::sync::Mutex::new(Vec::new()),
+            remote_tool_keepers: std::sync::Mutex::new(std::collections::HashMap::new()),
             merged_management_token: if merged {
                 Some(cfg.core.management_access_token.clone())
             } else {
@@ -1654,9 +1654,16 @@ struct FederationRuntime {
             std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
         >,
     >,
-    /// 远程代理工具的注册保活句柄（Disposer drop 即注销——必须持有到
-    /// 进程结束；Down 整包禁用不注销，Up 重注册前先清空旧句柄）。
-    remote_tool_keepers: std::sync::Mutex<Vec<echo_context::Disposer>>,
+    /// 远程代理工具的注册保活句柄：node_id → 该 peer 的全部 Disposer
+    /// （drop 即按名注销——必须持有到进程结束；Down 整包禁用不注销）。
+    ///
+    /// **按 peer 分桶**（2026-10 修复）：此前为单一全局 Vec、每次注册
+    /// 整体 clear——多 peer 场景下任一对端注册/重连都会把其他对端的工具
+    /// 一并注销；且「先插后删」时旧句柄按名移除会把同名的**新**注册条目
+    /// 顶掉（连续重连后所有对端的远程工具全部消失，spawn_subagent node=
+    /// 报「无可用代理工具」——活证据见当日日志）。
+    remote_tool_keepers:
+        std::sync::Mutex<std::collections::HashMap<String, Vec<echo_context::Disposer>>>,
     /// 端口合并（2026-10）：Some(management_access_token) = 合并模式——
     /// `SaveFederationPeer` 拒绝与之一致的 peer token（升级回调无法区分
     /// 管理/联邦连接）；None = 独立模式（无此校验）。
@@ -2925,6 +2932,13 @@ async fn register_remote_tools(
         return;
     }
     let package = format!("echo-agent.federation.{}", info.peer_name);
+    // 先清本 peer 旧句柄（重注册/重连场景）：**先删后插**——Disposer
+    // 按名移除，若先插后删，旧句柄会把同名的**新**注册条目一并删掉
+    // （2026-10 修复；旧实现为全局 clear 后 extend，多 peer 下互杀）。
+    {
+        let mut slot = rt.remote_tool_keepers.lock().expect("keepers poisoned");
+        slot.remove(&info.node_id);
+    }
     let mut registered = 0usize;
     let mut keepers: Vec<echo_context::Disposer> = Vec::new();
     for persona in personas.personas() {
@@ -2953,11 +2967,10 @@ async fn register_remote_tools(
         // 包不在禁用集，本调用无害幂等）。
         persona.agent.tools.set_package_enabled(&package, true);
     }
-    // 保活句柄入库：先清旧（重注册场景），再存新。
+    // 保活句柄入库（本 peer 分桶；旧桶已在上方清空）。
     {
         let mut slot = rt.remote_tool_keepers.lock().expect("keepers poisoned");
-        slot.clear();
-        slot.extend(keepers);
+        slot.insert(info.node_id.clone(), keepers);
     }
     tracing::info!(
         target: "federation",

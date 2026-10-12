@@ -736,4 +736,30 @@ mod tests {
         registry.set_redactor(None);
         assert_eq!(registry.execute("stub", Value::Null).await.unwrap(), "stub");
     }
+
+    /// 反向注册的 Disposer 按**名**注销——同名重注册必须先删旧再插新
+    /// （联邦远程代理工具保活句柄「先删后插」模式的行为契约；2026-10
+    /// 修复：旧句柄若在重注册之后才 drop，会把同名的**新**条目一并顶掉，
+    /// 多 peer 连续重连后远程工具全部消失）。
+    #[tokio::test]
+    async fn drop_before_reregister_keeps_same_name_alive() {
+        let registry: Arc<ToolRegistry> = Arc::new(ToolRegistry::new());
+        // 首次注册 + 保活句柄。
+        let d1 = registry.register_reversible(Arc::new(StubTool {
+            name: "A100-40g__bash",
+        }));
+        assert_eq!(registry.names(), vec!["A100-40g__bash"]);
+        // 重注册（对端重连）：先删旧（drop d1）再插新——条目必须存活。
+        drop(d1);
+        let _d2 = registry.register_reversible(Arc::new(StubTool {
+            name: "A100-40g__bash",
+        }));
+        assert_eq!(
+            registry.names(),
+            vec!["A100-40g__bash"],
+            "先删后插：重注册条目必须存活"
+        );
+        let defs = registry.definitions().await;
+        assert!(defs.iter().any(|d| d.name == "A100-40g__bash"));
+    }
 }
