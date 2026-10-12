@@ -58,7 +58,7 @@ EchoAgentPanel/
 - 多标签页 = 多条 Core 连接（Core 的 management 支持多 Panel）
 ## SSH 接入（2026-10 末）
 
-接入点可配「**SSH 隧道**」接入方式（`[[cores]]` 内 `[cores.ssh]` 段）——针对只开 SSH 端口的云服务器：Panel 后端以 [russh](https://crates.io/crates/russh) 直连 SSH 并复用同一条连接做两件事（`source/echo-web-server/src/ssh.rs`，Core 零改动）：
+接入点可配「**SSH 隧道**」接入方式（`[[cores]]` 内 `[cores.ssh]` 段）——针对只开 SSH 端口的云服务器：Panel 后端以 [russh](https://crates.io/crates/russh) 直连 SSH 并复用同一条连接做两件事（Panel 仓 `source/echo-web-server/src/ssh.rs`，Core 零改动）：
 
 1. **本地端口转发**（direct-tcpip）：每条隧道在 `127.0.0.1` 上监听一个**进程生命周期内稳定**的本地端口，转发到远端 `127.0.0.1:<remote_port>`（默认 3132）；中继把 `ws://127.0.0.1:<本地端口>` 当普通接入点拨号——协议、Bearer 认证、退避重连全部复用既有路径。隧道断线自动指数退避重连（1s→30s，15s keepalive × 3 判死）；配置变更（主机/端口/密钥…）＝ 重建（新端口）。
 2. **远程 exec**：远端 Core 日志（日志页 `?core=<上游名>` → journalctl，两代单元名合并取最新 N 行）与**媒体文件回源**（`/media/<id>` 本地未命中时经隧道 `cat` 拉取 → 落 `media_cache_dir` 缓存 → 同源返回；`?core=` 提示优先，其余 SSH 接入点顺序兜底）。
