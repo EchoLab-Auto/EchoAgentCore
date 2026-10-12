@@ -1638,15 +1638,18 @@ impl FederationRuntime {
                 // 其 token 与该占位一致——按 token 匹配活跃链路的
                 // node_id（链路表 token 不可查，退而求其次：该 peer 的
                 // token 与任一活跃链路 token 匹配即在线）。
-                let online = self
+                //
+                // 2026-10 联邦组建向导：同一遍历顺带取出对端 node_id
+                // （在线时映射必然存在——node_to_peer 在链路 Up 登记、
+                // Down 移除）——回传 Panel 做「两节点是否已互联」的
+                // 精确判定与拓扑渲染。
+                let matched_node: Option<String> = self
                     .node_to_peer
                     .try_read()
-                    .map(|m| {
-                        m.iter()
-                            .any(|(node, name)| name == &p.name && active.contains(node))
-                    })
-                    .unwrap_or(false)
-                    || self.federation.is_link_token_online(&p.token).await;
+                    .ok()
+                    .and_then(|m| online_node_for_peer(&m, &active, &p.name));
+                let online =
+                    matched_node.is_some() || self.federation.is_link_token_online(&p.token).await;
                 // 策略字段回传运行时值（此前恒空/false——前端基于状态
                 // 回写保存会抹掉已配置的白名单）。
                 let policy = self.peer_policies.read().await.get(&p.name).cloned();
@@ -1694,6 +1697,7 @@ impl FederationRuntime {
                         echo_protocol::FederationLinkState::Offline
                     },
                     active_turns,
+                    node_id: matched_node,
                 });
             }
         }
@@ -2724,13 +2728,37 @@ async fn promote_paired_invite_placeholders(
     }
 }
 
+/// 反查某 peer 配置名对应的**在线**对端 node_id（联邦状态快照的
+/// `node_id` 字段来源，2026-10 组建向导）。
+///
+/// 数据源：`node_to_peer`（链路 Up 时登记 node_id → 配置名、Down 移除）
+/// + 活跃链路 node_id 集合——双条件防陈旧映射（表在、链路已死不选）。
+fn online_node_for_peer(
+    node_to_peer: &std::collections::HashMap<String, String>,
+    active: &std::collections::HashSet<String>,
+    peer_name: &str,
+) -> Option<String> {
+    node_to_peer
+        .iter()
+        .find(|(node, name)| name.as_str() == peer_name && active.contains(node.as_str()))
+        .map(|(node, _)| node.clone())
+}
+
 /// 提升后的配置名选取（纯函数，便于单测）：
 /// node_name 优先（非空且未占用）；否则 `node-<id 前 8>`；仍冲突追加 `-2`…
 fn pick_promoted_peer_name(existing: &[String], node_name: Option<&str>, node_id: &str) -> String {
     let base = match node_name.map(str::trim).filter(|n| !n.is_empty()) {
         Some(name) => name.to_string(),
         None => {
-            let short: String = node_id.chars().take(8).collect();
+            // node_id 形如 `node-<ulid>`：**剥前缀**再取前 8 位——直接截取
+            // 会产出 `node-node-…` 双前缀（2026-10 修复；原测试用无前缀
+            // 输入掩盖了这一点）。
+            let short: String = node_id
+                .strip_prefix("node-")
+                .unwrap_or(node_id)
+                .chars()
+                .take(8)
+                .collect();
             format!("node-{short}")
         }
     };
@@ -3060,6 +3088,7 @@ mod logging_tests {
 mod core_util_tests {
     use crate::agent_supervisor::AgentSupervisor;
     use crate::federation_import::{chunk_utf8, handle_session_import, ImportOutcome};
+    use crate::online_node_for_peer;
     use crate::pick_promoted_peer_name;
     use crate::{advertise_host, invite_host, learnable_peer_url};
     use echo_agent::{AgentConfig, TeamMember};
@@ -3087,6 +3116,35 @@ mod core_util_tests {
         );
     }
 
+    /// 在线对端 node_id 反查（联邦状态快照 `node_id` 字段来源）：
+    /// 双条件（名字匹配 + node 在活跃集合），防陈旧映射；空表/不匹配 None。
+    #[test]
+    fn online_node_for_peer_matches_name_and_active() {
+        use std::collections::{HashMap, HashSet};
+        let map: HashMap<String, String> = [
+            ("node-abc".to_string(), "gpu-box".to_string()),
+            ("node-def".to_string(), "invite-deadbeef".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let active: HashSet<String> = ["node-abc".to_string(), "node-def".to_string()]
+            .into_iter()
+            .collect();
+
+        // 名字匹配 + 活跃 → Some(node_id)。
+        assert_eq!(
+            online_node_for_peer(&map, &active, "gpu-box").as_deref(),
+            Some("node-abc")
+        );
+        // 名字不存在 → None。
+        assert_eq!(online_node_for_peer(&map, &active, "other"), None);
+        // 映射在但链路已死（不在活跃集合）→ None（防陈旧）。
+        let empty: HashSet<String> = HashSet::new();
+        assert_eq!(online_node_for_peer(&map, &empty, "gpu-box"), None);
+        // 空表 → None。
+        let none: HashMap<String, String> = HashMap::new();
+        assert_eq!(online_node_for_peer(&none, &active, "gpu-box"), None);
+    }
     /// 邀请对外地址（2026-10）：显式 `[federation] advertise` 优先——多网卡/
     /// VPN 叠加场景指定"对端可达地址"（如 tun0），不再赌 hostname -I 顺序。
     #[test]
@@ -3134,7 +3192,8 @@ mod core_util_tests {
     }
 
     /// 邀请占位提升的命名规则（2026-10）：node_name 优先、缺失退
-    /// node-<id 前 8>、冲突追加序号。
+    /// node-<id 前 8>、冲突追加序号；node_id 带 `node-` 前缀时剥前缀
+    /// 再截（防 `node-node-…` 双前缀，2026-10 修复）。
     #[test]
     fn pick_promoted_peer_name_prefers_node_name_and_dedupes() {
         assert_eq!(
@@ -3147,6 +3206,15 @@ mod core_util_tests {
         );
         assert_eq!(
             pick_promoted_peer_name(&[], None, "abcdef012345"),
+            "node-abcdef01"
+        );
+        // 真实格式 `node-<ulid>`：剥前缀后截取，不得出现双前缀。
+        assert_eq!(
+            pick_promoted_peer_name(&[], None, "node-01m3yevthc03jf599zj7avx4m8"),
+            "node-01m3yevt"
+        );
+        assert_eq!(
+            pick_promoted_peer_name(&[], Some(" "), "node-abcdef012345"),
             "node-abcdef01"
         );
         let existing = vec!["gpu-box".to_string()];

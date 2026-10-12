@@ -989,6 +989,13 @@ pub struct FederationPeerInfo {
     /// 时宣告的 NodeCaps.active_turns，无数据时为 0）。
     #[serde(default)]
     pub active_turns: u32,
+    /// 对端 node_id（链路在线时由运行时映射填充；离线/未学习时为空）。
+    ///
+    /// 2026-10 联邦组建向导：Panel 以此精确判定「两节点是否已互联」
+    /// （不依赖 peer 名启发式）、构建拓扑视图。旧 Core 不发该字段
+    /// （serde default = None）——消费方需按缺失兜底。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
 }
 
 /// peer 链路状态。
