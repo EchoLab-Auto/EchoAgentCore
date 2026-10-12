@@ -11,7 +11,7 @@ y: 1650
 > **定位**：本文是前后端线协议（management WebSocket 契约）的参考——仓库拆分与契约归属、传输与信封、命令、事件、时间线增量同步、归属与路由、共享枚举与兼容性规则。读者：Core / Panel 双端开发者与协议维护者。
 > 相关文档：[架构总览](./architecture.md)、[Panel 布局与导航](./panel-layout.md)、[联邦](./federation.md)、[部署与自更新](./ops-deploy.md)。
 
-前后端通过 **management WebSocket**（默认 `0.0.0.0:3132`，开箱即可被局域网连接；`[core] management_access_token` 提供 Bearer 认证，首装自动生成）通信，消息为 JSON 文本帧。命令与事件定义在 `source/protocol/echo-protocol`（Core 侧直接使用该 crate；Panel 以 `web/src/protocol.ts` 镜像线格式）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
+前后端通过 **management WebSocket**（默认 `0.0.0.0:3132`，开箱即可被局域网连接；`[core] management_access_token` 提供 Bearer 认证，首装自动生成）通信，消息为 JSON 文本帧。令牌缺失/不匹配时在握手阶段返回**标准 HTTP 401**（客户端据此归类为认证失败并提示排查令牌；2026-10 修复——此前该拒绝路径因响应状态默认 200 被 tungstenite 静默丢弃，客户端只能看到「握手未完成」，令牌问题极难排查）。命令与事件定义在 `source/protocol/echo-protocol`（Core 侧直接使用该 crate；Panel 以 `web/src/protocol.ts` 镜像线格式）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
 
 ## 仓库拆分与契约归属
 
