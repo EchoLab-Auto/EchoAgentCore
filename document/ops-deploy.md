@@ -33,6 +33,7 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 - 已存在的配置文件保留；重复执行 = 刷新二进制、updater 与服务单元
 - 安装是事务性的：release 构建完成后快照现有文件，健康检查失败自动恢复并重启旧 Core
 - 服务默认挂在 `default.target`；开机免登录自启需 `sudo loginctl enable-linger "$USER"`
+- **CLI 入口（launcher）**：`~/.local/bin/echo-agent-core`（包装脚本自动注入 `--config`，即上方「管理子命令」的入口）——该目录必须在 PATH 中。安装脚本结束时会检测、缺失即打印修复命令；首装后**同一会话**里若提示 `command not found`：`export PATH="$HOME/.local/bin:$PATH"` 或重开终端/重新登录即可（登录 shell 经 `~/.profile` 自动加入；注意 `~/.profile` 的 PATH 片段只在登录时加载，且要求目录当时已存在）。若重新登录后仍找不到，把该 export 一行加进 `~/.profile`；也始终可用绝对路径 `~/.local/bin/echo-agent-core`
 - 卸载：`./scripts/uninstall.sh`（保留配置与用户数据——媒体库 `media/`、用户技能层 `skills/`）/ `--purge`（连配置目录与数据一起删）
 - 重装：`./scripts/reinstall.sh`——uninstall（保留配置与用户数据）→ install 一步接力，二进制/服务单元全部换新而 core.toml、会话历史、媒体库与用户技能不动；同样兼容 curl | bash 运行
 

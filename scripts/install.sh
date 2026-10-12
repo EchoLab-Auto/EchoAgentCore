@@ -521,3 +521,20 @@ Installation complete.
 
 Install the Panel (TUI) frontend separately from the EchoAgentPanel repository.
 EOF
+
+# PATH 提示（2026-10）：launcher 装在 $BIN_DIR；若当前会话的 PATH 不含该
+# 目录，装完直接敲 `echo-agent-core` 会 command not found——安装后最常见的
+# 困惑（~/.profile 里的 PATH 片段只在**登录时**加载、且要求目录登录时已
+# 存在，同一会话不会自动刷新）。这里显式检测并给出一行修复。
+case ":${PATH:-}:" in
+    *":$BIN_DIR:"*) ;;
+    *)
+        echo
+        echo "note: $BIN_DIR is not in PATH for this shell session —"
+        echo "      'echo-agent-core' will not resolve until you do one of:"
+        echo "        export PATH=\"$BIN_DIR:\$PATH\"     # current session, immediately"
+        echo "        exec bash -l                      # or open a new terminal / re-login"
+        echo "      or call it directly: $BIN_DIR/echo-agent-core"
+        echo "      If it still fails after re-login, add the export line to ~/.profile."
+        ;;
+esac
