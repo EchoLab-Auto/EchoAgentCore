@@ -631,7 +631,7 @@ fn resolve_listen_display(root: &toml::Table) -> ListenDisplay {
         .unwrap_or_default();
     let (merged, effective, fallback) = crate::management::plan_federation_listen(
         &management,
-        &token,
+        token, // get_str 返回 &str；直接传（&token 是 &&str，clippy 1.99 needless_borrow）
         &federation,
         listen_explicit,
         |t| peer_tokens.iter().any(|known| known == t),
