@@ -41,6 +41,10 @@ STATUS_FILE="$STATE_DIR/update-status"
 REPOSITORY_URL=${ECHO_REPOSITORY_URL:-}
 START_SERVICE=1
 DRY_RUN=0
+# 配置文件策略（2026-10）：默认保留已有 core.toml；--overwrite-config
+# 以最新模板重写（旧文件先备份为 core.toml.bak-<epoch>；
+# management_access_token 沿用旧值——重写配置不应顺带换掉 Panel/对端凭证）。
+OVERWRITE_CONFIG=0
 # 前置依赖策略（2026-10）：默认自动安装缺失项（可识别包管理器 + sudo
 # 可用时）；--no-deps 跳过，只做检查并提示。
 INSTALL_DEPS=1
@@ -54,6 +58,9 @@ Options:
   --no-start            Install and enable units without starting Core
   --no-deps             Skip automatic installation of missing prerequisites
                         (only check and report)
+  --overwrite-config    Replace an existing core.toml with the shipped template
+                        (the previous file is kept as core.toml.bak-<epoch>;
+                        an existing management_access_token is carried over)
   --dry-run             Print resolved paths without changing the system
   -h, --help            Show this help
 EOF
@@ -71,6 +78,10 @@ while (($#)); do
             ;;
         --no-deps)
             INSTALL_DEPS=0
+            shift
+            ;;
+        --overwrite-config)
+            OVERWRITE_CONFIG=1
             shift
             ;;
         --dry-run)
@@ -114,6 +125,7 @@ EchoAgentCore install plan
   repository: $REPOSITORY_URL
   branch:     $BRANCH
   start Core: $START_SERVICE
+  overwrite config: $( ((OVERWRITE_CONFIG)) && echo "yes (backup kept)" || echo no )
 EOF
     exit 0
 fi
@@ -395,7 +407,20 @@ USER_SKILLS_DIR="$DATA_DIR/skills"
 install -d -m 755 "$BUILTIN_SKILLS_DIR" "$USER_SKILLS_DIR"
 cp -a "$SOURCE_DIR/skills/." "$BUILTIN_SKILLS_DIR/"
 
-if [[ ! -f "$CORE_CONFIG" ]]; then
+# 旧配置的 management_access_token（--overwrite-config 重写时沿用——
+# 换令牌会让 Panel/对端全部失联，重写配置不应顺带换凭证）。
+previous_token=""
+if [[ -f "$CORE_CONFIG" ]]; then
+    previous_token=$(awk -F'"' '/^management_access_token/{print $2; exit}' "$CORE_CONFIG")
+fi
+
+if [[ -f "$CORE_CONFIG" ]] && ((OVERWRITE_CONFIG)); then
+    config_backup="$CORE_CONFIG.bak-$(date +%s)"
+    cp -p -- "$CORE_CONFIG" "$config_backup"
+    echo "==> Overwriting Core config (previous copy kept at $config_backup)"
+fi
+
+if [[ ! -f "$CORE_CONFIG" ]] || ((OVERWRITE_CONFIG)); then
     install -m 600 "$PROJECT_ROOT/config/echo-agent-core.toml" "$CORE_CONFIG"
     escaped_builtin=${BUILTIN_SKILLS_DIR//&/\\&}
     escaped_user=${USER_SKILLS_DIR//&/\\&}
@@ -406,10 +431,14 @@ if [[ ! -f "$CORE_CONFIG" ]]; then
     else
         sed -i "/^skills_dir = /a skills_dirs = [\"$escaped_builtin\"]" "$CORE_CONFIG"
     fi
-    # 自动生成 management_access_token（2026-10）：32 字节随机 hex——
-    # 暴露 management WS 到局域网时开箱即有认证（仅首装生成；已存在
-    # 的配置不动，重装卸载不丢）。
-    if grep -q '^management_access_token = ""' "$CORE_CONFIG"; then
+    # management_access_token：有旧值优先沿用（重写配置不换凭证）；无
+    # 旧值（首装）时生成 32 字节随机 hex——暴露 management WS 到局域网
+    # 时开箱即有认证。
+    if [[ -n "$previous_token" ]]; then
+        escaped_token=${previous_token//&/\&}
+        sed -i "s|^management_access_token = \"\"|management_access_token = \"$escaped_token\"|" "$CORE_CONFIG"
+        echo "==> Kept existing management_access_token (see $CORE_CONFIG)"
+    elif grep -q '^management_access_token = ""' "$CORE_CONFIG"; then
         generated_token=$(openssl rand -hex 32 2>/dev/null \
             || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
         escaped_token=${generated_token//&/\&}
@@ -418,7 +447,7 @@ if [[ ! -f "$CORE_CONFIG" ]]; then
     fi
     echo "==> Installed Core config: $CORE_CONFIG"
 else
-    echo "==> Preserved existing Core config: $CORE_CONFIG"
+    echo "==> Preserved existing Core config: $CORE_CONFIG (pass --overwrite-config to replace it)"
 fi
 
 INSTALL_PHASE=launcher
