@@ -110,6 +110,34 @@ state=running → state=restarting → state=updated（失败时停在 failed / 
 - **优雅排空（drain-then-exit）**：Core 收到 SIGTERM 后先进入排空模式——拒绝新消息（Panel 主动发送会收到"Core 正在重启"错误提示，重试即可）、等待进行中的回复完成（最多 `SHUTDOWN_DRAIN_SECS = 120s`，期间回复继续实时 emit 到 Panel）再退出；超时仍未完成才强制取消该 turn；`TimeoutStopSec=180s` 兜底保证 drain 窗口内不被 SIGKILL。停机顺序：`pump.abort()`（停命令泵）→ `qq_adapter.stop()`（QQ 停收）→ `agent.shutdown()`（drain）。异步子任务（`spawn_subagent`）不在 `active_inbound_turns` 计数内，drain 不等待它们；其注册表在内存中、完成回报以新 turn 注入——进程退出即终止，未完成子任务的结果不会补投递（重启后需重新委派）
 - Core 重启后恢复时间线时，进程被杀导致的悬空 running 工具条目会被标注为"已中断"，不再永远显示"运行中"
 
+## 管理子命令（CLI）
+
+`echo-agent-core`（包装脚本自动注入 `--config`，缺省 `core.toml`）内置管理子命令，**直接操作 TOML 文本**（保留注释与其他段）——免手工编辑配置文件：
+
+```bash
+# 端口：查看 / 修改（写回后重启生效）
+echo-agent-core port                          # 列出全部端口（键 = 可直接复制给 set）
+echo-agent-core port set management 4000      # 改端口（沿用现有 host → 127.0.0.1:4000）
+echo-agent-core port set management 0.0.0.0:4000   # 改完整监听地址
+echo-agent-core port set federation 4001      # 联邦监听端口
+echo-agent-core port set federation none      # 仅连出（listen = ""）
+echo-agent-core port set federation-advertise 10.0.0.5:4001   # 邀请串对外宣告
+echo-agent-core port set qq 3141              # 默认 QQ 实例反向 WS
+echo-agent-core port set qq-instance:<id>:webui 6105          # 实例宿主端口（auto = 重新自动分配）
+
+# management_access_token：查看 / 轮换
+echo-agent-core token                         # 打印当前 token（空 = 无认证）
+echo-agent-core token --rotate                # 重新生成并写回（32 字节 hex）
+```
+
+要点：
+
+- `port` 目标键与配置键一一对应：`management`→`[core].management_address`、`federation`→`[federation].listen`、`federation-advertise`→`[federation].advertise`、`qq`/`qq-instance:<id>:<字段>`→`[adapters.qq.instances.<id>.ports]`；`[adapters.qq.server].bind_address` 在运行时被实例端口分配覆盖（`merge_instance`），**实际监听以 ports 三元组为准**，CLI 只写权威键
+- 缺省值与显式值语义区分（如 `listen` 缺省 = 监听 3133、显式空串 = 仅连出）；非默认实例端口修改前要求实例已存在于配置（防误建实例及其容器）
+- 编辑后做 TOML 合法性与**目标值类型复读**自检；`tmp + rename` 原子写
+- 端口变更重启 Core 生效；改 management 端口后 Panel 的 `[[cores]].url` 需同步
+- 相应配置解析与编辑逻辑见 [配置持久化](./core-config-persistence.md)；QQ 实例端口分配见 [QQ 门控](./adapter-qq-gating.md)
+
 ## 日常体检
 
 ```bash

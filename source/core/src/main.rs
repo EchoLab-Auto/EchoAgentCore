@@ -21,6 +21,7 @@ mod handlers;
 mod management;
 mod node;
 mod plugins_runtime;
+mod port_cmd;
 mod qq_instances;
 mod qq_tools;
 mod security;
@@ -51,6 +52,12 @@ enum SubCommand {
         /// 重新生成随机 token（32 字节 hex）并写回配置文件。
         #[arg(long)]
         rotate: bool,
+    },
+    /// 查看 / 修改各监听端口（写回配置文件，重启生效）。
+    /// 不带子命令 = 列出全部端口。
+    Port {
+        #[command(subcommand)]
+        action: Option<port_cmd::PortSubCommand>,
     },
 }
 
@@ -134,9 +141,12 @@ fn token_command(config_path: &std::path::Path, rotate: bool) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
-    if let Some(SubCommand::Token { rotate }) = args.command {
-        return token_command(&args.config_path(), rotate);
+    let mut args = Args::parse();
+    if let Some(command) = args.command.take() {
+        match command {
+            SubCommand::Token { rotate } => return token_command(&args.config_path(), rotate),
+            SubCommand::Port { action } => return port_cmd::run(&args.config_path(), action),
+        }
     }
     let path = args.config_path();
     let cfg = CoreConfig::load(&path)?;
