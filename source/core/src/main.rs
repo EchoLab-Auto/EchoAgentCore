@@ -198,16 +198,22 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // ── 端口合并判定（2026-10）──
-    // `[core].management_address` == `[federation].listen`（均非空）→
-    // 单监听按令牌命名空间分流（管理/联邦共用；见文档
-    // federation-port-merge.md）。联邦自身不再绑定监听——入站由管理面
-    // 监听端承接；安全条件 fail-closed 校验在联邦装配块内执行。
-    let merged = {
-        let mgmt = cfg.core.management_address.trim();
-        let fed_listen = cfg.federation.listen.trim();
-        !mgmt.is_empty() && !fed_listen.is_empty() && mgmt == fed_listen
-    };
+    // ── 端口合并判定（2026-10；「缺省合并」——联邦默认不再有独立端口）──
+    // 缺省（未显式配置 [federation].listen）：联邦监听自动跟随管理地址
+    // （单监听按令牌命名空间分流；见 federation-port-merge.md）。保守回退
+    // 独立监听：管理地址回环 / 空令牌且非回环 / 令牌与 peer 冲突（供回退
+    // 判定的 peer 闭包用配置表——启动期与 fed 运行时表同源）。显式配置
+    // listen = 按显式值（同址 = 合并；空串 = 纯连出）。
+    let (merged, fed_listen_effective, merged_fallback) = management::plan_federation_listen(
+        &cfg.core.management_address,
+        &cfg.core.management_access_token,
+        &cfg.federation.listen,
+        cfg.federation.listen_explicit,
+        |t| cfg.federation.peers.values().any(|p| p.token == t),
+    );
+    if let Some(reason) = merged_fallback {
+        warn!("联邦缺省合并已回退为独立监听：{reason}");
+    }
 
     // ---- federation link（工具路由 / 远程委派 / 只读查询均已接线）----
     // 联邦**无独立开关**：零配置缺省监听 `0.0.0.0:3133`（显式
@@ -273,7 +279,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 本机对外可拨地址（ws://host:port）：与邀请串同源推导
         // （listen/advertise）。握手 Hello 携带——对端学习后双方都能
         // 主动重连（配对无方向性，2026-10）。
-        let local_advertise = invite_host(&cfg.federation.listen, &cfg.federation.advertise)
+        // 合并时监听地址即管理地址（advertise 推导与邀请串同源）。
+        let listen_for_advertise = fed_listen_effective.as_deref().unwrap_or("");
+        let local_advertise = invite_host(listen_for_advertise, &cfg.federation.advertise)
             .map(|host_port| format!("ws://{host_port}"));
         let fed = echo_federation::Federation::new(
             node_doc.node_id.clone(),
@@ -301,16 +309,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .any(|p| p == echo_agent::plugins::MANAGEMENT_PANEL_PLUGIN_ID)
             {
                 warn!(
-                    "端口合并已配置（management_address == federation.listen），但管理面插件被禁用——\
+                    "端口合并已生效（联邦与管理面共用监听端口），但管理面插件被禁用——\
                      管理通道与联邦入站均不会启动（仅出站联邦继续工作）"
                 );
             }
         }
-        // 合并模式下联邦不自行监听（入站挂在管理面监听端）。
-        let listen = if merged || cfg.federation.listen.trim().is_empty() {
+        // 合并模式下联邦不自行监听（入站挂在管理面监听端）；独立模式按
+        // 规划值监听；纯连出（显式空串）为 None。
+        let listen = if merged {
             None
         } else {
-            Some(cfg.federation.listen.clone())
+            fed_listen_effective.clone()
         };
         let fed_runner = fed.clone();
         tokio::spawn(async move {
@@ -328,7 +337,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 std::collections::HashMap::new(),
             )),
             config_store: echo_adapter::ConfigStore::new(args.config_path()),
-            listen: cfg.federation.listen.clone(),
+            listen: fed_listen_effective.clone().unwrap_or_default(),
             advertise: cfg.federation.advertise.clone(),
             node_name: cfg
                 .federation

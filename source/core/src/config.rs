@@ -200,17 +200,24 @@ impl Default for CoreSection {
 
 /// `[federation]` 段（federation Phase 1）：Core↔Core 对等链路。
 ///
-/// **零配置默认开启**（2026-10）：缺省监听 `0.0.0.0:3133`——任何 Core 开箱
-/// 即可连出也可被连入（邀请串配对开箱可用，无需先手写 listen）；未配
-/// peer 时不接受任何已知链路（accept 侧靠 per-peer token 认证）。显式
+/// **零配置默认开启**（2026-10）：缺省监听——**与管理面合并**（单端口按
+/// 令牌命名空间分流，见 federation.md 端口合并；2026-10 缺省合并语义）。
+/// 任何 Core 开箱即可连出也可被连入（邀请串配对开箱可用）；未配 peer 时
+/// 不接受任何已知链路（accept 侧靠 per-peer token 认证）。显式
 /// `listen = ""` 退回纯连出。一旦配置 `[federation.peers.*]`，互信边界即
 /// 生效（≈ SSH 免密），务必用 per-peer token 并限制
 /// `allow_tools`/`allow_queries`。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct FederationSection {
-    /// 联邦监听地址（缺省 `0.0.0.0:3133`；显式 `""` = 不监听纯连出）。
+    /// 联邦监听地址（**缺省 = 跟随管理地址合并**，显式地址 = 独立监听，
+    /// 显式 `""` = 不监听纯连出；`listen_explicit` 区分缺省与显式）。
     pub listen: String,
+    /// `listen` 是否为配置文件中**显式书写**（serde 缺省填充后二者无法
+    /// 区分，而「缺省合并」与「显式独立」语义不同；`load()` 从原始 TOML
+    /// 探测填充，直接构造的结构体为 `false` = 按缺省处理）。
+    #[serde(skip)]
+    pub listen_explicit: bool,
     /// 邀请串**对外宣告**的地址（`host:port`；缺省 `""`）。
     ///
     /// 多网卡 / VPN 场景（如内网网卡 + tun0/WireGuard 叠加）下，`listen`
@@ -229,6 +236,7 @@ impl Default for FederationSection {
     fn default() -> Self {
         Self {
             listen: "0.0.0.0:3133".into(),
+            listen_explicit: false,
             advertise: String::new(),
             node_name: None,
             peers: std::collections::BTreeMap::new(),
@@ -274,6 +282,17 @@ impl CoreConfig {
             .with_context(|| format!("failed to read config file {}", path.display()))?;
         let mut config: CoreConfig = toml::from_str(&raw)
             .with_context(|| format!("invalid config in {}", path.display()))?;
+
+        // 端口合并「缺省 vs 显式」判定：原始 TOML 里是否写有
+        // [federation].listen 键（serde 填充后无法区分「缺省」与「显式
+        // 同值」；两者语义不同——缺省=自动合并管理端口、显式=按值独立/
+        // 合并）。raw 已成功解析为 CoreConfig，此处的二次解析不会失败。
+        if let Ok(table) = raw.parse::<toml::Table>() {
+            config.federation.listen_explicit = table
+                .get("federation")
+                .and_then(|section| section.get("listen"))
+                .is_some();
+        }
 
         validate_logging_level(&config.logging)?;
 

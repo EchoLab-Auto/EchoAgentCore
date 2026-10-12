@@ -138,6 +138,76 @@ fn unauthorized_response() -> tokio_tungstenite::tungstenite::handshake::server:
     response
 }
 
+/// 联邦监听的最终布局规划（2026-10「缺省合并」语义）：
+///
+/// | `[federation].listen` | 结果 |
+/// |---|---|
+/// | **未配置**（常见） | **缺省合并**：联邦监听 = 管理地址（单监听按令牌分流）；下列保守场景**回退**独立监听：① 管理地址为回环（合并会把联邦拉进回环、外部 peer 不可达）；② 管理令牌为空且非回环（不在无认证端口上同时开管理+联邦）；③ 管理令牌与某 peer 令牌相同（升级回调无法区分两类连接） |
+/// | 显式地址 | 按显式值（与管理同址 = 合并；其余 = 独立监听） |
+/// | 显式空串 | 纯连出（不监听） |
+///
+/// 返回 `(merged, effective_listen, fallback_reason)`：
+/// - `merged == true`：联邦入站合并在管理监听端（`effective` = 管理地址）；
+/// - `merged == false`：`effective` = 联邦独立监听地址；`None` = 不监听；
+/// - `fallback_reason`：缺省合并被回退时的可读原因（启动期 warning /
+///   `port` 清单注脚用）。
+///
+/// `has_peer_token`：管理令牌是否与某 peer 令牌相同（保守回退条件 ③；
+/// 显式合并的对应场景由 [`validate_merged`] fail-closed 拒绝启动）。
+pub fn plan_federation_listen(
+    management_address: &str,
+    management_token: &str,
+    federation_listen: &str,
+    listen_explicit: bool,
+    has_peer_token: impl Fn(&str) -> bool,
+) -> (bool, Option<String>, Option<&'static str>) {
+    let management = management_address.trim();
+    if listen_explicit {
+        let listen = federation_listen.trim();
+        if listen.is_empty() {
+            return (false, None, None); // 显式空串 = 纯连出
+        }
+        if !management.is_empty() && listen == management {
+            return (true, Some(management.to_string()), None); // 显式同址 = 合并
+        }
+        return (false, Some(listen.to_string()), None); // 显式独立
+    }
+    // 未配置：缺省合并（联邦跟随管理端口）；以下保守场景回退独立监听。
+    let independent = || {
+        (
+            false,
+            Some(crate::port_cmd::DEFAULT_FEDERATION_LISTEN.to_string()),
+        )
+    };
+    // ① 管理地址为空/回环：合并会把联邦监听拉进回环（或地址无效），外部
+    //    peer 再也连不进来（联邦需要对外可达）。
+    if management.is_empty() || is_loopback_addr(management) {
+        let (m, l) = independent();
+        return (m, l, None);
+    }
+    // ② 空令牌 + 非回环：合并会把管理通道与联邦入站一起放在无认证端口上
+    //    （显式合并会被 fail-closed 校验拒绝）——缺省场景不拒绝启动。
+    if management_token.is_empty() {
+        let (m, l) = independent();
+        return (
+            m,
+            l,
+            Some("management_access_token 为空且管理地址非回环——缺省合并回退独立监听（配置令牌后自动合并）"),
+        );
+    }
+    // ③ 管理令牌与某 peer 令牌相同：合并监听无法区分两类连接（显式合并
+    //    同样会被 fail-closed 校验拒绝）。
+    if has_peer_token(management_token) {
+        let (m, l) = independent();
+        return (
+            m,
+            l,
+            Some("management_access_token 与某 peer 令牌相同——缺省合并回退独立监听（合并监听无法区分管理/联邦连接；换用不同令牌后自动合并）"),
+        );
+    }
+    (true, Some(management.to_string()), None)
+}
+
 /// 端口合并的启动校验（安全条件 fail-closed）：
 /// - 合并 + 管理令牌为空 + 绑定非回环 → 拒绝启动——合并把管理通道暴露
 ///   在联邦端口上，空令牌 = 任何可达者全权控制 Agent；
@@ -234,10 +304,15 @@ async fn handle_connection(
             let (ws, role, presented) = accept_merged_ws(stream, access_token, fed.clone()).await?;
             match role {
                 ConnRole::Management => serve_management_ws(ws, events, bridge, true).await,
-                ConnRole::Federation => fed
-                    .accept_ws_pub(ws, presented)
-                    .await
-                    .context("federation link on merged port"),
+                ConnRole::Federation => {
+                    let result = fed.accept_ws_pub(ws, presented).await;
+                    if let Err(ref e) = result {
+                        // anyhow 的 `%e`（Display）只打印最外层 context——合并
+                        // 端口上链路失败排查需要完整链（含根因），用 `?e`。
+                        warn!(error = ?e, "federation link on merged port failed");
+                    }
+                    result.context("federation link on merged port")
+                }
             }
         }
     }
@@ -743,6 +818,56 @@ mod tests {
         assert_eq!(classify_token("", "", has), Some(ConnRole::Management));
         // #6 无令牌 + 管理令牌非空 → 401。
         assert_eq!(classify_token("", "mgmt-tok", has), None);
+    }
+
+    /// 联邦监听规划（「缺省合并」语义）全分支：
+    #[test]
+    fn federation_listen_plan_default_merge() {
+        let no_peers = |_: &str| false;
+        // ① 缺省 + 非回环 + 令牌 → 合并（effective = 管理地址）。
+        assert_eq!(
+            plan_federation_listen("0.0.0.0:3132", "tok", "0.0.0.0:3133", false, no_peers),
+            (true, Some("0.0.0.0:3132".to_string()), None)
+        );
+        // ② 缺省 + 非回环 + 空令牌 → 回退独立（保守），带原因。
+        let (merged, listen, reason) =
+            plan_federation_listen("0.0.0.0:3132", "", "0.0.0.0:3133", false, no_peers);
+        assert!(!merged);
+        assert_eq!(listen.as_deref(), Some("0.0.0.0:3133"));
+        assert!(reason.is_some());
+        // ③ 缺省 + 回环管理地址 → 独立监听（不合并、非回退）。
+        assert_eq!(
+            plan_federation_listen("127.0.0.1:3132", "tok", "0.0.0.0:3133", false, no_peers),
+            (false, Some("0.0.0.0:3133".to_string()), None)
+        );
+        // ③b 缺省 + 令牌与某 peer 令牌相同 → 回退独立（保守），带原因。
+        let (merged, listen, reason) =
+            plan_federation_listen("0.0.0.0:3132", "same-tok", "0.0.0.0:3133", false, |t| {
+                t == "same-tok"
+            });
+        assert!(!merged);
+        assert_eq!(listen.as_deref(), Some("0.0.0.0:3133"));
+        assert!(reason.is_some());
+        // ④ 显式同址 → 合并（空令牌/冲突交给 fail-closed 校验把关）。
+        assert_eq!(
+            plan_federation_listen("0.0.0.0:3132", "", "0.0.0.0:3132", true, no_peers),
+            (true, Some("0.0.0.0:3132".to_string()), None)
+        );
+        // ⑤ 显式独立 → 按显式值。
+        assert_eq!(
+            plan_federation_listen("0.0.0.0:3132", "tok", "0.0.0.0:3199", true, no_peers),
+            (false, Some("0.0.0.0:3199".to_string()), None)
+        );
+        // ⑥ 显式空串 → 纯连出。
+        assert_eq!(
+            plan_federation_listen("0.0.0.0:3132", "tok", "", true, no_peers),
+            (false, None, None)
+        );
+        // ⑦ 缺省 + 管理地址为空 → 独立缺省。
+        assert_eq!(
+            plan_federation_listen("", "tok", "0.0.0.0:3133", false, no_peers),
+            (false, Some("0.0.0.0:3133".to_string()), None)
+        );
     }
 
     /// 合并启动校验（安全条件 fail-closed）。

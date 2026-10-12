@@ -47,9 +47,9 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 
 ## 链路与协议（`echo-federation` crate）
 
-每节点同时监听（`[federation] listen`，惯例端口 :3133；缺省
-`0.0.0.0:3133`，显式 `listen = ""` 退回纯连出）与按 peers 连出；
-连接后角色对称。
+每节点同时监听（`[federation] listen`；**缺省跟随管理地址合并**，见
+下文「端口合并」；显式地址 = 独立监听、惯例端口 :3133，显式
+`listen = ""` 退回纯连出）与按 peers 连出；连接后角色对称。
 
 - **握手**：Hello/Welcome（NodeId + 能力 `NodeCaps{tools, subagent,
   workspaces}` + `protocol_version`）——`PROTOCOL_VERSION` 不相等即拒绝
@@ -92,10 +92,11 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 
 联邦**零配置默认开启**（独立开关已取消）：
 
-- `listen` 缺省 `0.0.0.0:3133`——任何 Core **开箱即可连出也可被连入**
-  （邀请串配对开箱可用，无需先手写 listen）；显式 `listen = ""` 退回
-  纯连出。未配 `[federation.peers.*]` 时 accept 侧靠 per-peer token 认证，
-  **不放行任何已知链路**——单向暴露不等于可被滥用。
+- `listen` **缺省跟随管理地址合并**（见「端口合并」）——任何 Core **开箱
+  即可连出也可被连入**（邀请串配对开箱可用，无需先手写 listen）；显式
+  写地址 = 独立监听、显式 `listen = ""` 退回纯连出。未配
+  `[federation.peers.*]` 时 accept 侧靠 per-peer token 认证，**不放行
+  任何已知链路**——单向暴露不等于可被滥用。
 - `advertise`（可选）：邀请串**对外宣告**的地址（`host:port`，可省端口 →
   采用 listen 端口）。多网卡 / VPN 叠加场景（内网口 + tun0/WireGuard）下
   `listen = 0.0.0.0` 无法推导"对端该连哪个地址"——缺省取 `hostname -I`
@@ -111,10 +112,11 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 
 ```toml
 [federation]
-# 零配置默认开启：listen 缺省 0.0.0.0:3133——开箱即可连出也可被
-# 连入（邀请串配对开箱可用）；未配 peer 时 accept 侧靠 per-peer
-# token 认证，不放行任何已知链路；显式 listen = "" 退回纯连出
-listen = "0.0.0.0:3133"
+# 零配置默认开启：listen 缺省跟随管理地址合并（不独立监听）——开箱
+# 即可连出也可被连入（邀请串配对开箱可用）；未配 peer 时 accept 侧靠
+# per-peer token 认证，不放行任何已知链路；显式地址 = 独立监听；
+# 显式 listen = "" 退回纯连出
+# listen = "0.0.0.0:3133"
 # 可选：邀请串对外宣告地址（多网卡/VPN 场景指定对端可达地址；空 = 自动取
 # hostname -I 首个非回环 IPv4）
 # advertise = "10.10.10.100:3133"
@@ -129,16 +131,25 @@ require_confirm = []          # 命中列表的调用拒绝并提示需确认（
 allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspace_git_status/browse_directories/session_snapshot；"*" = 全部）
 ```
 
-**端口合并（管理 WS 同址）**：`[core].management_address` 与
-`[federation].listen` 配成**同一地址**（均非空）即启用——单监听按令牌
-命名空间分流：管理令牌 → 管理 WS、per-peer 令牌 → 联邦链路、其余 →
-标准 401。**一条 NAT/防火墙映射同时服务面板与联邦**（NAT 后的节点不必
-维护两条映射）；invite 串、dial 侧、面板配置与线格式全部不变，旧版本
-对端零感知。安全条件 fail-closed：合并 + 管理令牌为空 + 绑定非回环
-**拒绝启动**（`echo-agent-core token --rotate` 补救）；管理令牌与任一
-peer 令牌相同**拒绝启动/保存**（路由歧义）。合并监听挂**管理面插件
-生命周期**（禁用管理面 = 联邦入站同停，出站连出不受影响）；联邦不再
-自行绑定该端口。设计全案见 [联邦·管理端口合并（设计记录）](./federation-port-merge.md)。
+**端口合并（缺省）**：联邦监听**缺省与管理面合并**——单监听按令牌命名
+空间分流：管理令牌 → 管理 WS、per-peer 令牌 → 联邦链路、其余 → 标准
+401。**一条 NAT/防火墙映射同时服务面板与联邦**（NAT 后的节点不必维护
+两条映射）；invite 串、dial 侧、面板配置与线格式全部不变，旧版本对端
+零感知。`[federation].listen` 配置语义：
+
+- **未配置（缺省）**：联邦跟随管理地址合并。三个保守场景自动**回退**
+  独立监听 `0.0.0.0:3133`（启动警告注明原因）：① 管理地址为回环（合并
+  会把联邦拉进回环、外部 peer 不可达）；② 管理令牌为空且非回环（不在
+  无认证端口上同时开管理+联邦）；③ 管理令牌与某 peer 令牌相同（升级
+  回调无法区分两类连接）。
+- **显式地址**：按值独立监听；与管理同址 = 合并。
+- **显式 `""`**：纯连出（不监听）。
+
+安全条件（**显式合并** fail-closed 拒绝启动）：合并 + 管理令牌为空 +
+绑定非回环（`echo-agent-core token --rotate` 补救）；管理令牌与任一
+peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲突令牌。
+合并监听挂**管理面插件生命周期**（禁用管理面 = 联邦入站同停，出站连出
+不受影响）。设计全案见 [联邦·管理端口合并（设计记录）](./federation-port-merge.md)。
 
 **Panel 管理**（设置·Core 连接页·联邦区块）：`SaveFederationPeer` /
 `DeleteFederationPeer` / `RequestFederationStatus` /

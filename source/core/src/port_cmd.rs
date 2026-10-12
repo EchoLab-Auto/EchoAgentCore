@@ -8,7 +8,7 @@
 //! | target | 配置键 | 说明 |
 //! |---|---|---|
 //! | `management` | `[core].management_address` | Panel management WS 监听（host:port） |
-//! | `federation` | `[federation].listen` | 联邦监听（host:port；`none` = 仅连出） |
+//! | `federation` | `[federation].listen` | 联邦监听（host:port；**缺省 = 合并至管理端口**；`none` = 仅连出） |
 //! | `federation-advertise` | `[federation].advertise` | 邀请串对外宣告地址（host[:port]） |
 //! | `qq` | `[adapters.qq.instances.qq.ports].reverse_ws` | 默认 QQ 实例反向 WS（Core 自绑定） |
 //! | `qq-instance:<id>:<字段>` | `[adapters.qq.instances.<id>.ports].<字段>` | 多实例宿主端口三元组 |
@@ -476,9 +476,14 @@ fn list(config_path: &Path) -> Result<()> {
     let root = read_root(config_path)?;
     let mut rows: Vec<(String, String, &'static str)> = Vec::new();
 
-    // 端口合并判定（运行期语义：management_address == federation.listen
-    // 且均非空 → 单监听按令牌分流；见文档 federation-port-merge.md）。
-    let merged = merged_display_value(&root);
+    // 联邦监听布局（与运行期 `management::plan_federation_listen` 同口径：
+    // 缺省合并 / 显式独立 / 纯连出 / 缺省回退；见 federation-port-merge.md）。
+    let ListenDisplay {
+        merged,
+        effective,
+        fallback,
+    } = resolve_listen_display(&root);
+    let listen_explicit = get_str(&root, &["federation", "listen"]).is_some();
 
     // management
     let management = get_str(&root, &["core", "management_address"]).unwrap_or_default();
@@ -497,20 +502,22 @@ fn list(config_path: &Path) -> Result<()> {
     });
 
     // federation listen / advertise
-    match get_str(&root, &["federation", "listen"]) {
-        Some(v) if v.trim().is_empty() => {
-            rows.push(("federation".into(), "\"\"（仅连出）".into(), "配置"))
+    match effective {
+        None => rows.push(("federation".into(), "\"\"（仅连出）".into(), "配置")),
+        Some(addr) => {
+            let tag = if merged {
+                if listen_explicit {
+                    "配置·合并"
+                } else {
+                    "缺省·合并"
+                }
+            } else if listen_explicit {
+                "配置"
+            } else {
+                "缺省"
+            };
+            rows.push(("federation".into(), addr, tag));
         }
-        Some(v) => rows.push((
-            "federation".into(),
-            v.trim().to_string(),
-            if merged { "配置·合并" } else { "配置" },
-        )),
-        None => rows.push((
-            "federation".into(),
-            DEFAULT_FEDERATION_LISTEN.to_string(),
-            if merged { "缺省·合并" } else { "缺省" },
-        )),
     }
     match get_str(&root, &["federation", "advertise"]) {
         Some(v) if !v.trim().is_empty() => {
@@ -576,31 +583,64 @@ fn list(config_path: &Path) -> Result<()> {
     println!();
     if merged {
         println!(
-            "注: 端口合并已启用（management == federation.listen）——单监听按令牌分流服务面板与联邦；\
+            "注: 端口合并已启用——联邦不独立监听，与管理面共用同一端口按令牌分流；\
              联邦入站随管理面插件启停"
         );
+    } else if let Some(reason) = fallback {
+        println!("注: 联邦缺省合并已回退为独立监听：{reason}");
     }
     println!("修改: echo-agent-core port set <键> <值>（复制第一列作为键）");
     println!("提示: 变更写回配置文件后，重启 echo-agent-core 生效");
     Ok(())
 }
 
-/// 端口合并判定（列表展示用；与运行期判定同口径——字符串精确相等，
-/// 均非空。management 未配置时按缺省值 `0.0.0.0:3132` 参与比较，
-/// federation.listen 显式空串 = 仅连出，不参与合并）。
-fn merged_display_value(root: &toml::Table) -> bool {
-    let management = get_str(root, &["core", "management_address"]).unwrap_or_default();
-    let management = if management.trim().is_empty() {
+/// 列表展示的联邦监听布局（字段含义同 `management::plan_federation_listen`
+/// 返回值；经同名规划函数计算，保证与运行期零口径差）。
+struct ListenDisplay {
+    merged: bool,
+    effective: Option<String>,
+    fallback: Option<&'static str>,
+}
+
+fn resolve_listen_display(root: &toml::Table) -> ListenDisplay {
+    let raw_management = get_str(root, &["core", "management_address"]).unwrap_or_default();
+    let management = if raw_management.trim().is_empty() {
         DEFAULT_MANAGEMENT.to_string()
     } else {
-        management.trim().to_string()
+        raw_management.trim().to_string()
     };
-    let federation = match get_str(root, &["federation", "listen"]) {
-        Some(v) if v.trim().is_empty() => return false,
-        Some(v) => v.trim().to_string(),
-        None => DEFAULT_FEDERATION_LISTEN.to_string(),
-    };
-    federation == management
+    let token = get_str(root, &["core", "management_access_token"]).unwrap_or_default();
+    let listen_raw = get_str(root, &["federation", "listen"]);
+    let listen_explicit = listen_raw.is_some();
+    let federation = listen_raw
+        .map(str::to_string)
+        .unwrap_or_else(|| DEFAULT_FEDERATION_LISTEN.to_string());
+    // peer 令牌集合（[federation.peers.<name>].token；供缺省合并的冲突
+    // 回退判定——与运行期 `fed.has_peer_token_sync` 同口径）。
+    let peer_tokens: Vec<String> = root
+        .get("federation")
+        .and_then(|f| f.get("peers"))
+        .and_then(|p| p.as_table())
+        .map(|peers| {
+            peers
+                .values()
+                .filter_map(|v| v.get("token").and_then(|t| t.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let (merged, effective, fallback) = crate::management::plan_federation_listen(
+        &management,
+        &token,
+        &federation,
+        listen_explicit,
+        |t| peer_tokens.iter().any(|known| known == t),
+    );
+    ListenDisplay {
+        merged,
+        effective,
+        fallback,
+    }
 }
 
 /// 执行修改并写回。
@@ -1162,36 +1202,59 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-    /// 端口合并判定（列表标记）：同址（字符串精确相等、均非空）才算合并；
-    /// 缺省值参与比较；显式空串（仅连出）不参与。
+    /// 联邦监听布局（列表展示，与运行期同口径）。覆盖「缺省合并」语义的
+    /// 全部分支：缺省+令牌→合并；缺省+空令牌→回退；缺省+回环→独立；
+    /// 显式同址→合并；显式独立；显式空串→纯连出。
     #[test]
-    fn merged_display_value_boundaries() {
+    fn listen_display_boundaries() {
         let parse = |s: &str| s.parse::<toml::Table>().unwrap();
 
-        // 同址（显式配置）→ 合并。
-        assert!(merged_display_value(&parse(
+        // ① 缺省 + 非回环 + 令牌 → 缺省合并（联邦跟随管理端口）。
+        let d = resolve_listen_display(&parse(
             "[core]\nmanagement_address = \"0.0.0.0:3132\"\n\
-             [federation]\nlisten = \"0.0.0.0:3132\"\n"
-        )));
+             management_access_token = \"tok\"\n",
+        ));
+        assert!(d.merged, "缺省 + 令牌应为合并");
+        assert_eq!(d.effective.as_deref(), Some("0.0.0.0:3132"));
+        assert!(d.fallback.is_none());
 
-        // 全缺省：management 0.0.0.0:3132 vs federation 0.0.0.0:3133 → 独立。
-        assert!(!merged_display_value(&parse("")));
+        // ② 缺省 + 非回环 + 空令牌 → 回退独立监听（保守），带原因。
+        let d = resolve_listen_display(&parse("[core]\nmanagement_address = \"0.0.0.0:3132\"\n"));
+        assert!(!d.merged);
+        assert_eq!(d.effective.as_deref(), Some(DEFAULT_FEDERATION_LISTEN));
+        assert!(d.fallback.is_some());
 
-        // management 显式 3133、federation 缺省（3133）→ 合并。
-        assert!(merged_display_value(&parse(
-            "[core]\nmanagement_address = \"0.0.0.0:3133\"\n"
-        )));
+        // ③ 缺省 + 回环管理地址 → 独立监听（合并会让联邦不可被连入）。
+        let d = resolve_listen_display(&parse(
+            "[core]\nmanagement_address = \"127.0.0.1:3132\"\n\
+             management_access_token = \"tok\"\n",
+        ));
+        assert!(!d.merged);
+        assert_eq!(d.effective.as_deref(), Some(DEFAULT_FEDERATION_LISTEN));
+        assert!(d.fallback.is_none(), "回环是正常不合并而非回退");
 
-        // 端口相同但 host 不同 → 精确匹配，不合并。
-        assert!(!merged_display_value(&parse(
+        // ④ 显式同址 → 合并。
+        let d = resolve_listen_display(&parse(
+            "[core]\nmanagement_address = \"0.0.0.0:3132\"\n\
+             [federation]\nlisten = \"0.0.0.0:3132\"\n",
+        ));
+        assert!(d.merged);
+        assert_eq!(d.effective.as_deref(), Some("0.0.0.0:3132"));
+
+        // ⑤ 显式独立（含 host 不同不合并——精确匹配）。
+        let d = resolve_listen_display(&parse(
             "[core]\nmanagement_address = \"127.0.0.1:9000\"\n\
-             [federation]\nlisten = \"0.0.0.0:9000\"\n"
-        )));
+             [federation]\nlisten = \"0.0.0.0:9000\"\n",
+        ));
+        assert!(!d.merged);
+        assert_eq!(d.effective.as_deref(), Some("0.0.0.0:9000"));
 
-        // federation.listen 显式空串（仅连出）→ 不合并。
-        assert!(!merged_display_value(&parse(
+        // ⑥ 显式空串 → 纯连出（不监听）。
+        let d = resolve_listen_display(&parse(
             "[core]\nmanagement_address = \"0.0.0.0:3132\"\n\
-             [federation]\nlisten = \"\"\n"
-        )));
+             [federation]\nlisten = \"\"\n",
+        ));
+        assert!(!d.merged);
+        assert!(d.effective.is_none());
     }
 }
