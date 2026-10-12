@@ -82,16 +82,69 @@ fn find_skill_root(repo: &Path) -> Option<PathBuf> {
     found
 }
 
+/// git 子进程硬超时（网络挂起/clone 大仓库的护栏）。
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// 慢速中止：下载速率低于 1KB/s 持续 30s 时中止（git 内建护栏，覆盖
+/// 建连后停滞的场景；硬超时兜底其余情形）。
+const GIT_LOW_SPEED_LIMIT: &str = "1000";
+const GIT_LOW_SPEED_TIME: &str = "30";
+
+/// 运行 git 并捕获输出；带硬超时（超时 kill）与慢速中止环境变量。
+///
+/// 输出重定向到临时文件而非管道：`try_wait` 轮询期间无人读管，若 git
+/// 输出超过内核 pipe 缓冲会自锁（写满 → 子进程阻塞 → 轮询永不结束）。
 fn sh(args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .output()
-        .map_err(|e| format!("git 执行失败: {e}"))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(format!("git {} 失败: {}", args[0], err));
+    fn run(args: &[&str]) -> Result<(std::process::ExitStatus, String, String), String> {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let out_path = std::env::temp_dir().join(format!("echo-git-out-{id}"));
+        let err_path = std::env::temp_dir().join(format!("echo-git-err-{id}"));
+        let out_file =
+            std::fs::File::create(&out_path).map_err(|e| format!("git 输出临时文件失败: {e}"))?;
+        let err_file =
+            std::fs::File::create(&err_path).map_err(|e| format!("git 输出临时文件失败: {e}"))?;
+        let mut child = std::process::Command::new("git")
+            .args(args)
+            .env("GIT_HTTP_LOW_SPEED_LIMIT", GIT_LOW_SPEED_LIMIT)
+            .env("GIT_HTTP_LOW_SPEED_TIME", GIT_LOW_SPEED_TIME)
+            .stdin(std::process::Stdio::null())
+            .stdout(out_file)
+            .stderr(err_file)
+            .spawn()
+            .map_err(|e| format!("git 执行失败: {e}"))?;
+        let start = std::time::Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if start.elapsed() >= GIT_TIMEOUT => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = std::fs::remove_file(&out_path);
+                    let _ = std::fs::remove_file(&err_path);
+                    return Err(format!(
+                        "git {} 超时（{}s，已中止）",
+                        args.first().copied().unwrap_or(""),
+                        GIT_TIMEOUT.as_secs()
+                    ));
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(150)),
+                Err(e) => {
+                    let _ = std::fs::remove_file(&out_path);
+                    let _ = std::fs::remove_file(&err_path);
+                    return Err(format!("git 等待失败: {e}"));
+                }
+            }
+        };
+        let stdout = std::fs::read_to_string(&out_path).unwrap_or_default();
+        let stderr = std::fs::read_to_string(&err_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&out_path);
+        let _ = std::fs::remove_file(&err_path);
+        Ok((status, stdout, stderr))
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    let (status, stdout, stderr) = run(args)?;
+    if !status.success() {
+        return Err(format!("git {} 失败: {}", args[0], stderr.trim()));
+    }
+    Ok(stdout.trim().to_string())
 }
 
 /// 安装：`git clone [--branch X] url skills_dir/name`。

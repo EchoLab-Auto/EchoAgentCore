@@ -759,7 +759,7 @@ impl QqAdapter {
         let mut candidates = Vec::new();
         if !trimmed.contains('/') && !trimmed.contains('\\') {
             let bridge = &self.inner.file_bridge;
-            if bridge.container_file_exists(trimmed) {
+            if bridge.container_file_exists(trimmed).await {
                 candidates.push(bridge.container_data_path(trimmed));
             }
         }
@@ -879,7 +879,14 @@ impl Adapter for QqAdapter {
             }
             inner_cb.connected.store(connected, Ordering::SeqCst);
             if let Some(ref hook) = *inner_cb.message_hook.lock().expect("message hook poisoned") {
-                hook.on_connection_state("qq", connected, Some(self_id.to_string()));
+                // 实例名（非硬编码 "qq"）：多实例下 AdapterStateChanged 按实例
+                // 上报，Panel 的连接状态卡才能区分实例（2026-10 巡检；与入站
+                // 链路同批修复，此前仅入站侧改了、连接事件漏网）。
+                hook.on_connection_state(
+                    &inner_cb.instance_name,
+                    connected,
+                    Some(self_id.to_string()),
+                );
             }
         });
 

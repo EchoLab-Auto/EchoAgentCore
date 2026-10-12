@@ -55,8 +55,6 @@ pub struct FileBridge {
     container_name: String,
     /// In-container writable directory (e.g. `/app/napcat/data`).
     container_data_dir: String,
-    /// Cached result of the Docker CLI availability probe.
-    docker_ok: OnceLock<bool>,
     /// Lazily-started local HTTP file server (strategy 3).
     http_server: OnceLock<Arc<HttpFileServer>>,
 }
@@ -81,7 +79,6 @@ impl FileBridge {
             napcat_host: napcat_host.to_string(),
             container_name: container_name.to_string(),
             container_data_dir: container_data_dir.to_string(),
-            docker_ok: OnceLock::new(),
             http_server: OnceLock::new(),
         }
     }
@@ -136,32 +133,31 @@ impl FileBridge {
     ///
     /// Only bare names are probed (a name containing path separators is not a
     /// data-dir lookup); requires the Docker CLI and the container to exist.
-    pub fn container_file_exists(&self, name: &str) -> bool {
+    pub async fn container_file_exists(&self, name: &str) -> bool {
         if name.is_empty() || name.contains('/') || name.contains('\\') {
             return false;
         }
-        if !self.docker_available() {
-            return false;
-        }
-        Command::new("docker")
-            .args([
-                "exec",
-                &self.container_name,
-                "test",
-                "-f",
-                &self.container_data_path(name),
-            ])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        let container_name = self.container_name.clone();
+        let path = self.container_data_path(name);
+        // docker 探测 + exec 均为子进程往返（可达数百 ms），放 blocking 池，
+        // 避免卡住 async 调度线程（2026-10 巡检：async 路径直接跑 Command）。
+        tokio::task::spawn_blocking(move || {
+            if !docker_cli_available() {
+                return false;
+            }
+            Command::new("docker")
+                .args(["exec", &container_name, "test", "-f", &path])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        })
+        .await
+        .unwrap_or(false)
     }
 
     // ---- strategy 2: docker cp ----
 
     async fn try_docker_cp(&self, local: &Path, file_name: &str) -> Option<String> {
-        if !self.docker_available() {
-            return None;
-        }
         let name = sanitize_file_name(file_name).unwrap_or_else(|| {
             local
                 .file_name()
@@ -170,30 +166,31 @@ impl FileBridge {
         });
         let dest = format!("{}/{}", self.container_data_dir.trim_end_matches('/'), name);
         let target = format!("{}:{dest}", self.container_name);
-        let output = Command::new("docker")
-            .args(["cp", local.to_str().unwrap_or_default(), &target])
-            .output()
-            .ok()?;
-        if output.status.success() {
-            Some(dest)
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::debug!(%stderr, "docker cp failed — falling back to HTTP");
-            None
-        }
+        let local = local.to_str().unwrap_or_default().to_string();
+        // `docker cp` 大文件可达秒级——必须走 blocking 池（见 container_file_exists）。
+        tokio::task::spawn_blocking(move || {
+            if !docker_cli_available() {
+                return None;
+            }
+            let output = Command::new("docker")
+                .args(["cp", &local, &target])
+                .output()
+                .ok()?;
+            if output.status.success() {
+                Some(dest)
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                tracing::debug!(%stderr, "docker cp failed — falling back to HTTP");
+                None
+            }
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
-    /// Probe whether the Docker CLI is usable. The result is cached because
-    /// probing requires a subprocess round-trip.
-    fn docker_available(&self) -> bool {
-        *self.docker_ok.get_or_init(|| {
-            Command::new("docker")
-                .args(["info"])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        })
-    }
+    // （docker 可用性探测已提为自由函数 `docker_cli_available`：主机级一次
+    //  缓存 + 只在 blocking 上下文调用。）
 
     // ---- strategy 3: local HTTP server ----
 
@@ -223,7 +220,12 @@ impl FileBridge {
         let mut hosts: Vec<String> = Vec::new();
         // 1. Docker bridge gateway — reachable from containers even when
         //    `host.docker.internal` is not mapped (common docker-compose miss).
-        if let Some(gw) = detect_docker_gateway() {
+        //    `ip` 为子进程调用：放 blocking 池（本函数每次调用都会探测）。
+        if let Some(gw) = tokio::task::spawn_blocking(detect_docker_gateway)
+            .await
+            .ok()
+            .flatten()
+        {
             hosts.push(gw);
         }
         // 2. Explicitly configured host (default host.docker.internal).
@@ -281,6 +283,19 @@ impl FileBridge {
         tracing::info!(port = addr.port(), "local file server listening for NapCat");
         Ok(server)
     }
+}
+
+/// 主机级 Docker CLI 可用性探测（进程内一次缓存；`docker info` 为子进程
+/// 往返）。**只应在 blocking 上下文调用**（spawn_blocking 闭包内）。
+fn docker_cli_available() -> bool {
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        Command::new("docker")
+            .args(["info"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    })
 }
 
 /// Best-effort detection of the docker0 bridge gateway IP (e.g. `172.17.0.1`)

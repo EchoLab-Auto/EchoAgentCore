@@ -573,12 +573,21 @@ impl Agent {
             }
             BackendCommand::InstallSkillFromGit { url, name, branch } => {
                 let dir = self.current_skills_dir().await;
-                match crate::skill_install::install(
-                    std::path::Path::new(&dir),
-                    &url,
-                    name.as_deref(),
-                    branch.as_deref(),
-                ) {
+                // git 子进程（clone/fetch）可达秒级至分钟级：整段放
+                // blocking 池，不阻塞 async 调度线程（2026-10 巡检）。
+                let (dir_c, url_c) = (dir.clone(), url.clone());
+                let (name_c, branch_c) = (name.clone(), branch.clone());
+                let install_res = tokio::task::spawn_blocking(move || {
+                    crate::skill_install::install(
+                        std::path::Path::new(&dir_c),
+                        &url_c,
+                        name_c.as_deref(),
+                        branch_c.as_deref(),
+                    )
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("install task join failed: {e}")));
+                match install_res {
                     Ok(_) => {
                         if let Err(e) = self.reload_skills(&dir).await {
                             tracing::warn!(error = %e, "skill reload after install failed");
@@ -599,7 +608,13 @@ impl Agent {
             }
             BackendCommand::UpdateSkillFromGit { name } => {
                 let dir = self.current_skills_dir().await;
-                match crate::skill_install::update(std::path::Path::new(&dir), &name) {
+                let (dir_c, name_c) = (dir.clone(), name.clone());
+                let update_res = tokio::task::spawn_blocking(move || {
+                    crate::skill_install::update(std::path::Path::new(&dir_c), &name_c)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("update task join failed: {e}")));
+                match update_res {
                     Ok(src) => {
                         if let Err(e) = self.reload_skills(&dir).await {
                             tracing::warn!(error = %e, "skill reload after update failed");

@@ -131,6 +131,12 @@ impl Agent {
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
                         ad.set_gate_mode(mode);
+                        // 多实例对齐：模式持久化在共享 `[adapters.qq]` 段，
+                        // 只应用单实例会让其余实例内存值与磁盘分叉到重启
+                        // （名单已广播，模式此前漏网——2026-10 巡检 P1）。
+                        self.broadcast_to_other_qq_adapters(ad.name(), move |other| {
+                            other.set_gate_mode(mode);
+                        });
                         self.emit(BackendEvent::QqGateMode {
                             mode: ad.get_gate_mode(),
                             adapter: adapter.clone(),
@@ -156,6 +162,11 @@ impl Agent {
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
                         ad.set_owner_qq(owner_qq);
+                        // 同模式/名单：owner 持久化在共享段，需向其余实例对齐
+                        // （管理员绕过读 gate，各实例行为必须一致）。
+                        self.broadcast_to_other_qq_adapters(ad.name(), move |other| {
+                            other.set_owner_qq(owner_qq);
+                        });
                         self.emit(BackendEvent::Error {
                             session_id: None,
                             message: if owner_qq > 0 {
