@@ -55,6 +55,9 @@ pub struct FileBridge {
     container_name: String,
     /// In-container writable directory (e.g. `/app/napcat/data`).
     container_data_dir: String,
+    /// Docker CLI 可用性探测缓存（`Arc` 以便克隆进 `spawn_blocking` 闭包；
+    /// 进程级 static 被 `no_global_state` 测试禁止——缓存必须挂在实例上）。
+    docker_ok: Arc<OnceLock<bool>>,
     /// Lazily-started local HTTP file server (strategy 3).
     http_server: OnceLock<Arc<HttpFileServer>>,
 }
@@ -79,6 +82,7 @@ impl FileBridge {
             napcat_host: napcat_host.to_string(),
             container_name: container_name.to_string(),
             container_data_dir: container_data_dir.to_string(),
+            docker_ok: Arc::new(OnceLock::new()),
             http_server: OnceLock::new(),
         }
     }
@@ -139,10 +143,11 @@ impl FileBridge {
         }
         let container_name = self.container_name.clone();
         let path = self.container_data_path(name);
+        let docker_ok = self.docker_ok.clone();
         // docker 探测 + exec 均为子进程往返（可达数百 ms），放 blocking 池，
         // 避免卡住 async 调度线程（2026-10 巡检：async 路径直接跑 Command）。
         tokio::task::spawn_blocking(move || {
-            if !docker_cli_available() {
+            if !*docker_ok.get_or_init(probe_docker_cli) {
                 return false;
             }
             Command::new("docker")
@@ -167,9 +172,10 @@ impl FileBridge {
         let dest = format!("{}/{}", self.container_data_dir.trim_end_matches('/'), name);
         let target = format!("{}:{dest}", self.container_name);
         let local = local.to_str().unwrap_or_default().to_string();
+        let docker_ok = self.docker_ok.clone();
         // `docker cp` 大文件可达秒级——必须走 blocking 池（见 container_file_exists）。
         tokio::task::spawn_blocking(move || {
-            if !docker_cli_available() {
+            if !*docker_ok.get_or_init(probe_docker_cli) {
                 return None;
             }
             let output = Command::new("docker")
@@ -285,17 +291,14 @@ impl FileBridge {
     }
 }
 
-/// 主机级 Docker CLI 可用性探测（进程内一次缓存；`docker info` 为子进程
-/// 往返）。**只应在 blocking 上下文调用**（spawn_blocking 闭包内）。
-fn docker_cli_available() -> bool {
-    static CACHE: OnceLock<bool> = OnceLock::new();
-    *CACHE.get_or_init(|| {
-        Command::new("docker")
-            .args(["info"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    })
+/// 探测 Docker CLI 可用性（`docker info` 子进程往返）。**只应在 blocking
+/// 上下文调用**（spawn_blocking 闭包内）；结果由调用方的实例级缓存持有。
+fn probe_docker_cli() -> bool {
+    Command::new("docker")
+        .args(["info"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Best-effort detection of the docker0 bridge gateway IP (e.g. `172.17.0.1`)
