@@ -121,7 +121,7 @@ mode = "fast"
 | 取消 | `Cancel{call_id}` | （结果仍以 `InvokeResult` 为准） | 尽力送达；建议快回 `Error{code:"cancelled"}` |
 | 排空 | `Drain{deadline_ms}` | （进程退出） | 停止收新调用，等在途完成，超时被强杀 |
 | 终止 | `Dispose` | （进程退出） | 立即退出 |
-| 主动上报 | — | `Emit{event, payload}` / `Log{level, message}` | 事件订阅（后续）/ 日志 |
+| 主动上报 | — | `Emit{event, payload}` / `Log{level, message}` | 事件订阅（后续——宿主侧缓冲封顶 1024，超限丢新并计数告警）/ 日志 |
 | 服务回呼 | `HostCallResult{call_id, outcome}` | `HostCall{call_id, service, method, payload}` | 插件回呼宿主注册服务（如 `"sanitizer"`）；未知服务/超时以 `Error` 收尾 |
 
 帧编码（stdio）：**4 字节小端 u32 长度前缀 + JSON 帧体**；单帧上限 16 MiB。

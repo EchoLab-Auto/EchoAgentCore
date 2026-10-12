@@ -55,12 +55,16 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
   workspaces}` + `protocol_version`）——`PROTOCOL_VERSION` 不相等即拒绝
   （单一 `u32` 精确匹配，无主次版本结构）、自连回环拒绝、
   双向同时 dial 按 node_id 字典序让路（顶掉旧链路前显式 Down）
-- **认证**：per-peer 共享密钥（Bearer；双向相同）。令牌缺失/不匹配时在
+- **认证**：per-peer 共享密钥（Bearer；双向相同）。邀请串生成用
+  加密级随机（`Uuid::new_v4()` / getrandom，244 bit）——配对即落全权限，
+  token 是唯一门禁凭据。令牌缺失/不匹配时在
   握手阶段返回**标准 HTTP 401**（客户端可归类为认证失败；2026-10 修复
   ——此前静默断开，把「令牌不对」误诊为网络/协议故障）。**联邦互信 ≈
   SSH 免密**——对端拿到链路即可按白名单执行工具
 - **保活**：30s 心跳 / 90s 判死；断线指数退避重连（1s→30s 封顶）；
-  出站背压（256 帧上限）
+  出站背压（256 帧上限）；**出站写 30s 超时**（对端不读时 TCP 写阻塞会
+  冻结整个链路 select 循环——读/心跳/判死全停摆，链路成僵尸；超时即
+  断链交重连收敛，与 management WS 的写超时口径一致）
 - **帧（`FedFrame`）**：externally-tagged + `#[serde(default)]` 演进；
   `call_id = <origin_node>:<ts>-<seq>`（因果溯源，origin 本机帧即
   `LoopDetected` 拒绝）
