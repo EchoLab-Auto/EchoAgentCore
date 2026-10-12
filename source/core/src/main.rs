@@ -198,6 +198,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
+    // ── 端口合并判定（2026-10）──
+    // `[core].management_address` == `[federation].listen`（均非空）→
+    // 单监听按令牌命名空间分流（管理/联邦共用；见文档
+    // federation-port-merge.md）。联邦自身不再绑定监听——入站由管理面
+    // 监听端承接；安全条件 fail-closed 校验在联邦装配块内执行。
+    let merged = {
+        let mgmt = cfg.core.management_address.trim();
+        let fed_listen = cfg.federation.listen.trim();
+        !mgmt.is_empty() && !fed_listen.is_empty() && mgmt == fed_listen
+    };
+
     // ---- federation link（工具路由 / 远程委派 / 只读查询均已接线）----
     // 联邦**无独立开关**：零配置缺省监听 `0.0.0.0:3133`（显式
     // `listen = ""` 才退回纯连出）；无 peer 则不连出、且 accept 侧靠
@@ -276,7 +287,27 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             event_tx,
             shutdown_tx.clone(),
         );
-        let listen = if cfg.federation.listen.trim().is_empty() {
+        // ── 端口合并安全校验（判定在块外；fail-closed，非法拒绝启动）──
+        if merged {
+            management::validate_merged(
+                cfg.core.management_address.trim(),
+                &cfg.core.management_access_token,
+                |t| fed.has_peer_token_sync(t),
+            )?;
+            if cfg
+                .agent
+                .disabled_plugins
+                .iter()
+                .any(|p| p == echo_agent::plugins::MANAGEMENT_PANEL_PLUGIN_ID)
+            {
+                warn!(
+                    "端口合并已配置（management_address == federation.listen），但管理面插件被禁用——\
+                     管理通道与联邦入站均不会启动（仅出站联邦继续工作）"
+                );
+            }
+        }
+        // 合并模式下联邦不自行监听（入站挂在管理面监听端）。
+        let listen = if merged || cfg.federation.listen.trim().is_empty() {
             None
         } else {
             Some(cfg.federation.listen.clone())
@@ -306,6 +337,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .or(node_doc.node_name.clone()),
             peer_policies: peer_policies.clone(),
             remote_tool_keepers: std::sync::Mutex::new(Vec::new()),
+            merged_management_token: if merged {
+                Some(cfg.core.management_access_token.clone())
+            } else {
+                None
+            },
         });
         // 远程 subagent 观测出口（Phase 3）：大脑侧 spawn_subagent
         // node=... 受理/完成时经 Federation 通知对端（帧：
@@ -435,6 +471,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         (rt, event_rx, peer_policies)
     };
     info!("federation link configured (always on)");
+    // 端口合并用联邦句柄（rt 随后被路由泵消费；此处预克隆——仅合并
+    // 模式下由管理面插件消费）。
+    let merge_fed = federation.0.federation.clone();
     // 联邦 / 自更新命令处理器（联邦始终开启，无需条件注册）。
     {
         let rt_handler = Arc::clone(&federation.0);
@@ -1291,6 +1330,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let mgmt_token = cfg.core.management_access_token.clone();
             let mgmt_agent = core_agent.clone();
             let mgmt_bridge = bridge.clone();
+            // 合并模式：监听端承接联邦入站（令牌分流）；独立模式：None。
+            let mgmt_fed = if merged {
+                Some(merge_fed.clone())
+            } else {
+                None
+            };
             register(
                 &plugin_host,
                 PluginManifest::builtin(
@@ -1299,14 +1344,21 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     version,
                     PluginKind::Management,
                     "panel",
-                    "Panel management WS 桥接",
+                    "Panel management WS 桥接（合并模式下同时承接联邦入站）",
                 ),
                 move |_ctx| {
                     let (addr, br, ag) =
                         (mgmt_addr.clone(), mgmt_bridge.clone(), mgmt_agent.clone());
                     let token = mgmt_token.clone();
+                    let fed_opt = mgmt_fed.clone();
                     let server = tokio::spawn(async move {
-                        if let Err(e) = management::serve_with_token(&addr, br, ag, token).await {
+                        let result = match fed_opt {
+                            Some(fed) => {
+                                management::serve_with_federation(&addr, br, ag, token, fed).await
+                            }
+                            None => management::serve_with_token(&addr, br, ag, token).await,
+                        };
+                        if let Err(e) = result {
                             warn!(error = %e, "management WS server stopped");
                         }
                     });
@@ -1596,6 +1648,10 @@ struct FederationRuntime {
     /// 远程代理工具的注册保活句柄（Disposer drop 即注销——必须持有到
     /// 进程结束；Down 整包禁用不注销，Up 重注册前先清空旧句柄）。
     remote_tool_keepers: std::sync::Mutex<Vec<echo_context::Disposer>>,
+    /// 端口合并（2026-10）：Some(management_access_token) = 合并模式——
+    /// `SaveFederationPeer` 拒绝与之一致的 peer token（升级回调无法区分
+    /// 管理/联邦连接）；None = 独立模式（无此校验）。
+    merged_management_token: Option<String>,
 }
 
 impl FederationRuntime {
@@ -2103,6 +2159,19 @@ async fn handle_federation_command(
                     message: "联邦 peer token 不能为空（新建时必须提供共享密钥）".into(),
                 });
                 return;
+            }
+            // 端口合并：peer token 不得与 management_access_token 相同
+            // （合并监听端升级回调无法区分两类连接；启动期已校存量，
+            // 此处拦运行时新增/更新）。
+            if let Some(mgmt_token) = rt.merged_management_token.as_deref() {
+                if !mgmt_token.is_empty() && token == mgmt_token {
+                    emit(echo_protocol::BackendEvent::Error {
+                        session_id: None,
+                        message: "该 token 与 management_access_token 相同——端口合并下无法区分管理/联邦连接，                                  请使用不同令牌（改 peer token 或 `echo-agent-core token --rotate`）"
+                            .into(),
+                    });
+                    return;
+                }
             }
             rt.federation
                 .add_peer(echo_federation::PeerConfig {

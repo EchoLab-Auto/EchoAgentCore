@@ -136,6 +136,7 @@ echo-agent-core token --rotate                # 重新生成并写回（32 字�
 - `port` 目标键与配置键一一对应：`management`→`[core].management_address`、`federation`→`[federation].listen`、`federation-advertise`→`[federation].advertise`、`qq`/`qq-instance:<id>:<字段>`→`[adapters.qq.instances.<id>.ports]`；`[adapters.qq.server].bind_address` 在运行时被实例端口分配覆盖（`merge_instance`），**实际监听以 ports 三元组为准**，CLI 只写权威键
 - 缺省值与显式值语义区分（如 `listen` 缺省 = 监听 3133、显式空串 = 仅连出）；非默认实例端口修改前要求实例已存在于配置（防误建实例及其容器）
 - 编辑后做 TOML 合法性与**目标值类型复读**自检；`tmp + rename` 原子写
+- **端口合并**：`management_address` 与 `federation.listen` 配成同址（均非空）即启用单监听按令牌分流——NAT 场景**一条映射同时服务面板与联邦**（见 [联邦](./federation.md#配置与管理面)）；management 绑非回环时必须先配 `management_access_token`，否则合并配置**拒绝启动**（fail-closed）
 - 端口变更重启 Core 生效；改 management 端口后 Panel 的 `[[cores]].url` 需同步
 - 相应配置解析与编辑逻辑见 [配置持久化](./core-config-persistence.md)；QQ 实例端口分配见 [QQ 门控](./adapter-qq-gating.md)
 

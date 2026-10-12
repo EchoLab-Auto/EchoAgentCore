@@ -53,11 +53,35 @@ pub async fn serve_with_token(
     agent: Arc<echo_agent::Agent>,
     access_token: String,
 ) -> anyhow::Result<()> {
+    serve_internal(addr, bridge, agent, access_token, None).await
+}
+
+/// 端口合并监听端（`[core].management_address` == `[federation].listen`，
+/// 见 `document/federation-port-merge.md`）：单监听按令牌命名空间分类——
+/// 管理令牌 → 管理 WS；peer 令牌 → 联邦链路；其余 → 标准 HTTP 401。
+pub async fn serve_with_federation(
+    addr: &str,
+    bridge: Arc<BackendBridge>,
+    agent: Arc<echo_agent::Agent>,
+    access_token: String,
+    federation: Arc<echo_federation::Federation>,
+) -> anyhow::Result<()> {
+    serve_internal(addr, bridge, agent, access_token, Some(federation)).await
+}
+
+async fn serve_internal(
+    addr: &str,
+    bridge: Arc<BackendBridge>,
+    agent: Arc<echo_agent::Agent>,
+    access_token: String,
+    federation: Option<Arc<echo_federation::Federation>>,
+) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("bind management address {addr}"))?;
     // 裸奔提醒：无 token 且绑定在非回环地址时，任何能到达该端口的人
-    // 都能以管理权限控制 Agent——启动时明确 warn。
+    // 都能以管理权限控制 Agent——启动时明确 warn。（合并模式在装配层
+    // 已 fail-closed 拒绝该组合；此处保留 warn 作为防御兜底。）
     if access_token.is_empty() && !is_loopback_addr(addr) {
         warn!(
             addr,
@@ -65,8 +89,14 @@ pub async fn serve_with_token(
              任何可访问该端口的客户端都可全权控制 Agent（建议配置 token 或改绑 127.0.0.1）"
         );
     }
-    info!("Panel management WS server listening on {addr}");
-    serve_with_listener_and_token(listener, bridge, agent, access_token).await
+    if federation.is_some() {
+        info!(
+            "Panel management WS server listening on {addr}（端口合并：管理 + 联邦，按令牌分流）"
+        );
+    } else {
+        info!("Panel management WS server listening on {addr}");
+    }
+    serve_with_listener_and_token(listener, bridge, agent, access_token, federation).await
 }
 
 /// 绑定地址是否为回环（`127.0.0.1`/`localhost`/`::1`）。
@@ -108,6 +138,32 @@ fn unauthorized_response() -> tokio_tungstenite::tungstenite::handshake::server:
     response
 }
 
+/// 端口合并的启动校验（安全条件 fail-closed）：
+/// - 合并 + 管理令牌为空 + 绑定非回环 → 拒绝启动——合并把管理通道暴露
+///   在联邦端口上，空令牌 = 任何可达者全权控制 Agent；
+/// - 管理令牌与某 peer 令牌相同 → 拒绝启动——升级回调无法区分两类
+///   连接（路由歧义）。
+pub fn validate_merged(
+    management_address: &str,
+    management_token: &str,
+    has_peer_token: impl Fn(&str) -> bool,
+) -> anyhow::Result<()> {
+    if management_token.is_empty() && !is_loopback_addr(management_address) {
+        anyhow::bail!(
+            "端口合并配置非法：management_address = {management_address} 与 federation.listen 同址（合并模式），\
+             但 management_access_token 为空且绑定非回环地址——任何可达该端口的客户端都可全权控制 Agent。\
+             补救：运行 `echo-agent-core token --rotate` 生成令牌后重启；或改绑 127.0.0.1；或让两地址不同（回退独立模式）。"
+        );
+    }
+    if !management_token.is_empty() && has_peer_token(management_token) {
+        anyhow::bail!(
+            "端口合并配置非法：management_access_token 与某个 [federation.peers.*] token 相同——\
+             升级回调无法区分管理/联邦连接。请为两者使用不同令牌（改 peer token 或 `echo-agent-core token --rotate`）。"
+        );
+    }
+    Ok(())
+}
+
 /// Serve on a pre-bound listener (tests use it to pick a free port).
 #[cfg(test)]
 pub(crate) async fn serve_with_listener(
@@ -115,7 +171,7 @@ pub(crate) async fn serve_with_listener(
     bridge: Arc<BackendBridge>,
     agent: Arc<echo_agent::Agent>,
 ) -> anyhow::Result<()> {
-    serve_with_listener_and_token(listener, bridge, agent, String::new()).await
+    serve_with_listener_and_token(listener, bridge, agent, String::new(), None).await
 }
 
 async fn serve_with_listener_and_token(
@@ -123,6 +179,7 @@ async fn serve_with_listener_and_token(
     bridge: Arc<BackendBridge>,
     agent: Arc<echo_agent::Agent>,
     access_token: String,
+    federation: Option<Arc<echo_federation::Federation>>,
 ) -> anyhow::Result<()> {
     let events = Arc::new(EventBroker::new(bridge.clone()));
     let event_runner = events.clone();
@@ -144,8 +201,11 @@ async fn serve_with_listener_and_token(
         let bridge = bridge.clone();
         let agent = agent.clone();
         let access_token = access_token.clone();
+        let federation = federation.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, events, bridge, agent, &access_token).await {
+            if let Err(e) =
+                handle_connection(stream, events, bridge, agent, &access_token, federation).await
+            {
                 warn!(error = %e, "Panel connection error");
             }
         });
@@ -161,8 +221,66 @@ async fn handle_connection(
     bridge: Arc<BackendBridge>,
     _agent: Arc<echo_agent::Agent>,
     access_token: &str,
+    federation: Option<Arc<echo_federation::Federation>>,
 ) -> anyhow::Result<()> {
-    let ws = if access_token.is_empty() {
+    match federation {
+        // 独立模式：管理通道（原行为不变）。
+        None => {
+            let ws = accept_management_ws(stream, access_token).await?;
+            serve_management_ws(ws, events, bridge, false).await
+        }
+        // 合并模式：升级回调按令牌分类，升级后按角色分派。
+        Some(fed) => {
+            let (ws, role, presented) = accept_merged_ws(stream, access_token, fed.clone()).await?;
+            match role {
+                ConnRole::Management => serve_management_ws(ws, events, bridge, true).await,
+                ConnRole::Federation => fed
+                    .accept_ws_pub(ws, presented)
+                    .await
+                    .context("federation link on merged port"),
+            }
+        }
+    }
+}
+
+/// 合并监听端的连接角色。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnRole {
+    Management,
+    Federation,
+}
+
+/// 合并监听端的令牌分类（决策表见 `document/federation-port-merge.md`）：
+/// 1. == 管理令牌（非空）→ 管理；2. ∈ peer 令牌表 → 联邦；
+/// 3. 管理令牌为空 → 管理（兼容旧监听行为；非回环合并已在启动期拒绝）；
+/// 4. 其余（未知令牌 / 缺令牌且管理令牌非空）→ `None`（401）。
+///
+/// `has_peer_token("")` 必须为 false（`Federation::has_peer_token_sync`
+/// 已保证）；判定顺序即决策表自上而下，管理/联邦令牌相等已在启动期校验。
+fn classify_token(
+    presented: &str,
+    management_token: &str,
+    has_peer_token: impl Fn(&str) -> bool,
+) -> Option<ConnRole> {
+    if !management_token.is_empty() && constant_time_eq(presented, management_token) {
+        return Some(ConnRole::Management);
+    }
+    if has_peer_token(presented) {
+        return Some(ConnRole::Federation);
+    }
+    if management_token.is_empty() {
+        return Some(ConnRole::Management);
+    }
+    None
+}
+
+/// 独立模式升级：无令牌 = 不校验（旧行为）；有令牌 = Bearer 断言。
+#[allow(clippy::result_large_err)]
+async fn accept_management_ws(
+    stream: tokio::net::TcpStream,
+    access_token: &str,
+) -> anyhow::Result<tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>> {
+    Ok(if access_token.is_empty() {
         tokio_tungstenite::accept_async(stream).await?
     } else {
         tokio_tungstenite::accept_hdr_async(
@@ -182,7 +300,67 @@ async fn handle_connection(
             },
         )
         .await?
-    };
+    })
+}
+
+/// 合并模式升级：按令牌命名空间分类；未命中即标准 401（非静默断开）。
+/// 返回（已升级连接, 角色, 呈现的 Bearer）。
+#[allow(clippy::result_large_err)]
+async fn accept_merged_ws(
+    stream: tokio::net::TcpStream,
+    management_token: &str,
+    federation: Arc<echo_federation::Federation>,
+) -> anyhow::Result<(
+    tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ConnRole,
+    String,
+)> {
+    let management_token = management_token.to_string();
+    let role_out = Arc::new(std::sync::Mutex::new(None));
+    let token_out = Arc::new(std::sync::Mutex::new(String::new()));
+    let role_out2 = role_out.clone();
+    let token_out2 = token_out.clone();
+    let ws = tokio_tungstenite::accept_hdr_async(
+        stream,
+        move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            let presented = request
+                .headers()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+                .unwrap_or("");
+            match classify_token(presented, &management_token, |t| {
+                federation.has_peer_token_sync(t)
+            }) {
+                Some(role) => {
+                    *role_out2.lock().unwrap() = Some(role);
+                    *token_out2.lock().unwrap() = presented.to_string();
+                    Ok(response)
+                }
+                None => Err(unauthorized_response()),
+            }
+        },
+    )
+    .await?;
+    let role = role_out
+        .lock()
+        .unwrap()
+        .expect("merged classifier sets role before upgrade succeeds");
+    let presented = token_out.lock().unwrap().clone();
+    Ok((ws, role, presented))
+}
+
+/// 管理通道连接主体（升级后；独立/合并模式共用）。
+///
+/// `merged_hint` = 该连接来自合并监听端（用于联邦帧误连的诊断增强：
+/// 管理令牌为空的核心上，未知 peer 令牌的连接会经兼容分支被归为管理，
+/// 若其首帧是联邦帧则明确记录并断开，避免对端黑盒等超时）。
+async fn serve_management_ws(
+    ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    events: Arc<EventBroker>,
+    bridge: Arc<BackendBridge>,
+    merged_hint: bool,
+) -> anyhow::Result<()> {
     let (mut write, mut read) = ws.split();
 
     // Each connection has its own subscription channel, so one Panel can no
@@ -226,7 +404,24 @@ async fn handle_connection(
                                     Some(InboundFrame::Command(cmd)) => {
                                         let _ = bridge.send_command(cmd);
                                     }
-                                    None => {}
+                                    None => {
+                                        // 合并端诊断增强：疑似联邦帧到达管理
+                                        // 连接（未知 peer 令牌 + 空管理令牌的
+                                        // 兼容分支）——明确记录并断开。
+                                        if merged_hint
+                                            && serde_json::from_str::<echo_federation::FedFrame>(
+                                                &text,
+                                            )
+                                            .is_ok()
+                                        {
+                                            warn!(
+                                                "merged port: federation frame on a management \
+                                                 connection — likely a peer with an unknown token; \
+                                                 closing (check [federation.peers.*] token)"
+                                            );
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                             tokio_tungstenite::tungstenite::Message::Close(_) => break,
@@ -460,7 +655,8 @@ mod tests {
         let agent = dummy_agent();
         tokio::spawn(async move {
             let _ =
-                serve_with_listener_and_token(listener, bridge, agent, "secret-token".into()).await;
+                serve_with_listener_and_token(listener, bridge, agent, "secret-token".into(), None)
+                    .await;
         });
 
         // 1) 不带令牌：必须收到 HTTP 401（而非 0 字节静默断开）。
@@ -512,5 +708,197 @@ mod tests {
             .await
             .expect("authorized handshake must succeed");
         drop(ws);
+    }
+
+    // ── 端口合并（合并监听端：令牌分类 / 启动校验 / 端到端路由）──────
+
+    /// 分类决策表六行 + 联邦优先于“空管理令牌”兼容分支。
+    #[test]
+    fn merged_classification_decision_table() {
+        let peers = ["peer-token-1".to_string()];
+        let has = |t: &str| peers.iter().any(|p| p == t);
+
+        // #1 管理令牌命中 → 管理。
+        assert_eq!(
+            classify_token("mgmt-tok", "mgmt-tok", has),
+            Some(ConnRole::Management)
+        );
+        // #2 peer 令牌命中 → 联邦（管理令牌空/非空皆然）。
+        assert_eq!(
+            classify_token("peer-token-1", "mgmt-tok", has),
+            Some(ConnRole::Federation)
+        );
+        assert_eq!(
+            classify_token("peer-token-1", "", has),
+            Some(ConnRole::Federation)
+        );
+        // #3 未知令牌 + 管理令牌非空 → 401。
+        assert_eq!(classify_token("unknown", "mgmt-tok", has), None);
+        // #4 未知令牌 + 管理令牌为空 → 管理（兼容旧监听行为）。
+        assert_eq!(
+            classify_token("unknown", "", has),
+            Some(ConnRole::Management)
+        );
+        // #5 无令牌 + 管理令牌为空 → 管理。
+        assert_eq!(classify_token("", "", has), Some(ConnRole::Management));
+        // #6 无令牌 + 管理令牌非空 → 401。
+        assert_eq!(classify_token("", "mgmt-tok", has), None);
+    }
+
+    /// 合并启动校验（安全条件 fail-closed）。
+    #[test]
+    fn merged_validation_fail_closed() {
+        // 非回环 + 空令牌 → 拒绝，信息含补救命令。
+        let err = validate_merged("0.0.0.0:3132", "", |_| false).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("端口合并配置非法"), "unexpected: {msg}");
+        assert!(
+            msg.contains("token --rotate"),
+            "error must hint remedy: {msg}"
+        );
+
+        // 回环 + 空令牌 → 放行（同机信任模型与现状一致）。
+        assert!(validate_merged("127.0.0.1:3132", "", |_| false).is_ok());
+
+        // 管理令牌 == 某 peer 令牌 → 拒绝（路由歧义）。
+        let err = validate_merged("0.0.0.0:3132", "same-tok", |t| t == "same-tok").unwrap_err();
+        assert!(
+            format!("{err}").contains("无法区分"),
+            "conflict error should explain ambiguity"
+        );
+
+        // 有令牌且无冲突 → 放行。
+        assert!(validate_merged("0.0.0.0:3132", "mgmt-tok", |t| t == "peer-tok").is_ok());
+    }
+
+    /// 合并监听端端到端（真 WS）：同一端口——
+    /// ① 管理令牌 → 管理通道（命令送达后端）；
+    /// ② peer 令牌 → 联邦链路（Hello → Welcome）；
+    /// ③ 未知令牌 → 标准 HTTP 401。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn merged_port_routes_by_token_namespace() {
+        let (bridge, handle) = echo_agent::create_bridge();
+        let bridge = Arc::new(bridge);
+
+        // 假“核心”的联邦实例：含一个已知 peer（token = "peer-tok"）。
+        let (fed_events, _fed_rx) = tokio::sync::mpsc::channel(16);
+        let (fed_shutdown, _fed_sd) = tokio::sync::watch::channel(false);
+        let fed = echo_federation::Federation::new(
+            "node-merged-host".into(),
+            None,
+            echo_federation::NodeCaps {
+                tools: vec![],
+                subagent: false,
+                workspaces: vec![],
+                active_turns: 0,
+            },
+            vec![echo_federation::PeerConfig {
+                name: "remote".into(),
+                url: String::new(),
+                token: "peer-tok".into(),
+            }],
+            None,
+            fed_events,
+            fed_shutdown,
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let agent = dummy_agent();
+        let fed_for_server = fed.clone();
+        tokio::spawn(async move {
+            let _ = serve_with_listener_and_token(
+                listener,
+                bridge,
+                agent,
+                "mgmt-tok".into(),
+                Some(fed_for_server),
+            )
+            .await;
+        });
+
+        let client_request = |token: Option<&str>| {
+            let mut request =
+                tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+                    format!("ws://{addr}").as_str(),
+                )
+                .unwrap();
+            if let Some(token) = token {
+                request
+                    .headers_mut()
+                    .insert("authorization", format!("Bearer {token}").parse().unwrap());
+            }
+            request
+        };
+
+        // ① 管理令牌 → 管理通道：命令送达后端。
+        let (mut mgmt_ws, _) = tokio_tungstenite::connect_async(client_request(Some("mgmt-tok")))
+            .await
+            .expect("management token must upgrade");
+        let text = echo_agent::bridge::serialize_command(&BackendCommand::SwitchModel {
+            model: "m".into(),
+        });
+        mgmt_ws
+            .send(tokio_tungstenite::tungstenite::Message::Text(text))
+            .await
+            .unwrap();
+        let received = handle
+            .command_rx
+            .lock()
+            .await
+            .recv()
+            .await
+            .expect("command delivered through merged port");
+        assert!(matches!(received, BackendCommand::SwitchModel { .. }));
+        mgmt_ws.close(None).await.ok();
+
+        // ② peer 令牌 → 联邦链路：Hello → Welcome（真握手）。
+        let (mut fed_ws, _) = tokio_tungstenite::connect_async(client_request(Some("peer-tok")))
+            .await
+            .expect("peer token must upgrade");
+        let hello = echo_federation::FedFrame::Hello(echo_federation::NodeHello {
+            node_id: "node-remote".into(),
+            node_name: None,
+            protocol_version: echo_federation::PROTOCOL_VERSION,
+            version: "test".into(),
+            caps: echo_federation::NodeCaps {
+                tools: vec![],
+                subagent: false,
+                workspaces: vec![],
+                active_turns: 0,
+            },
+            advertise: None,
+        });
+        fed_ws
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                serde_json::to_string(&hello).unwrap(),
+            ))
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), fed_ws.next())
+            .await
+            .expect("welcome timeout")
+            .expect("welcome frame")
+            .expect("welcome ok");
+        let frame: echo_federation::FedFrame =
+            serde_json::from_str(&reply.into_text().unwrap()).unwrap();
+        assert!(
+            matches!(frame, echo_federation::FedFrame::Welcome(_)),
+            "expected Welcome on merged port, got {frame:?}"
+        );
+        fed_ws.close(None).await.ok();
+
+        // ③ 未知令牌 → 标准 401（非静默断开）。
+        let error = tokio_tungstenite::connect_async(client_request(Some("wrong-token")))
+            .await
+            .expect_err("unknown token must fail");
+        assert!(
+            matches!(
+                error,
+                tokio_tungstenite::tungstenite::Error::Http(ref resp)
+                    if resp.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED
+            ),
+            "unknown token on merged port must be HTTP 401, got {error:?}"
+        );
     }
 }

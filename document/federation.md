@@ -4,7 +4,7 @@ title: "联邦（多机去中心化）"
 group: 插件
 x: 960
 y: 2420
-link: ["federation-port-merge | 端口合并（规划） | b>l"]
+link: ["federation-port-merge | 端口合并（设计记录） | b>l"]
 ---
 
 # 联邦（多机去中心化 Agent）
@@ -125,6 +125,17 @@ allow_subagent = true         # 接受对端远程委派（false 时 SubagentSpa
 require_confirm = []          # 命中列表的调用拒绝并提示需确认（v1 简化为拒绝）
 allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspace_git_status/browse_directories/session_snapshot；"*" = 全部）
 ```
+
+**端口合并（管理 WS 同址）**：`[core].management_address` 与
+`[federation].listen` 配成**同一地址**（均非空）即启用——单监听按令牌
+命名空间分流：管理令牌 → 管理 WS、per-peer 令牌 → 联邦链路、其余 →
+标准 401。**一条 NAT/防火墙映射同时服务面板与联邦**（NAT 后的节点不必
+维护两条映射）；invite 串、dial 侧、面板配置与线格式全部不变，旧版本
+对端零感知。安全条件 fail-closed：合并 + 管理令牌为空 + 绑定非回环
+**拒绝启动**（`echo-agent-core token --rotate` 补救）；管理令牌与任一
+peer 令牌相同**拒绝启动/保存**（路由歧义）。合并监听挂**管理面插件
+生命周期**（禁用管理面 = 联邦入站同停，出站连出不受影响）；联邦不再
+自行绑定该端口。设计全案见 [联邦·管理端口合并（设计记录）](./federation-port-merge.md)。
 
 **Panel 管理**（设置·Core 连接页·联邦区块）：`SaveFederationPeer` /
 `DeleteFederationPeer` / `RequestFederationStatus` /

@@ -476,12 +476,24 @@ fn list(config_path: &Path) -> Result<()> {
     let root = read_root(config_path)?;
     let mut rows: Vec<(String, String, &'static str)> = Vec::new();
 
+    // 端口合并判定（运行期语义：management_address == federation.listen
+    // 且均非空 → 单监听按令牌分流；见文档 federation-port-merge.md）。
+    let merged = merged_display_value(&root);
+
     // management
     let management = get_str(&root, &["core", "management_address"]).unwrap_or_default();
     rows.push(if management.trim().is_empty() {
-        ("management".into(), DEFAULT_MANAGEMENT.to_string(), "缺省")
+        (
+            "management".into(),
+            DEFAULT_MANAGEMENT.to_string(),
+            if merged { "缺省·合并" } else { "缺省" },
+        )
     } else {
-        ("management".into(), management.trim().to_string(), "配置")
+        (
+            "management".into(),
+            management.trim().to_string(),
+            if merged { "配置·合并" } else { "配置" },
+        )
     });
 
     // federation listen / advertise
@@ -489,11 +501,15 @@ fn list(config_path: &Path) -> Result<()> {
         Some(v) if v.trim().is_empty() => {
             rows.push(("federation".into(), "\"\"（仅连出）".into(), "配置"))
         }
-        Some(v) => rows.push(("federation".into(), v.trim().to_string(), "配置")),
+        Some(v) => rows.push((
+            "federation".into(),
+            v.trim().to_string(),
+            if merged { "配置·合并" } else { "配置" },
+        )),
         None => rows.push((
             "federation".into(),
             DEFAULT_FEDERATION_LISTEN.to_string(),
-            "缺省",
+            if merged { "缺省·合并" } else { "缺省" },
         )),
     }
     match get_str(&root, &["federation", "advertise"]) {
@@ -558,9 +574,33 @@ fn list(config_path: &Path) -> Result<()> {
         );
     }
     println!();
+    if merged {
+        println!(
+            "注: 端口合并已启用（management == federation.listen）——单监听按令牌分流服务面板与联邦；\
+             联邦入站随管理面插件启停"
+        );
+    }
     println!("修改: echo-agent-core port set <键> <值>（复制第一列作为键）");
     println!("提示: 变更写回配置文件后，重启 echo-agent-core 生效");
     Ok(())
+}
+
+/// 端口合并判定（列表展示用；与运行期判定同口径——字符串精确相等，
+/// 均非空。management 未配置时按缺省值 `0.0.0.0:3132` 参与比较，
+/// federation.listen 显式空串 = 仅连出，不参与合并）。
+fn merged_display_value(root: &toml::Table) -> bool {
+    let management = get_str(root, &["core", "management_address"]).unwrap_or_default();
+    let management = if management.trim().is_empty() {
+        DEFAULT_MANAGEMENT.to_string()
+    } else {
+        management.trim().to_string()
+    };
+    let federation = match get_str(root, &["federation", "listen"]) {
+        Some(v) if v.trim().is_empty() => return false,
+        Some(v) => v.trim().to_string(),
+        None => DEFAULT_FEDERATION_LISTEN.to_string(),
+    };
+    federation == management
 }
 
 /// 执行修改并写回。
@@ -1120,5 +1160,38 @@ mod tests {
         // 列表函数手跑不 panic。
         list(&path).unwrap();
         std::fs::remove_file(&path).ok();
+    }
+
+    /// 端口合并判定（列表标记）：同址（字符串精确相等、均非空）才算合并；
+    /// 缺省值参与比较；显式空串（仅连出）不参与。
+    #[test]
+    fn merged_display_value_boundaries() {
+        let parse = |s: &str| s.parse::<toml::Table>().unwrap();
+
+        // 同址（显式配置）→ 合并。
+        assert!(merged_display_value(&parse(
+            "[core]\nmanagement_address = \"0.0.0.0:3132\"\n\
+             [federation]\nlisten = \"0.0.0.0:3132\"\n"
+        )));
+
+        // 全缺省：management 0.0.0.0:3132 vs federation 0.0.0.0:3133 → 独立。
+        assert!(!merged_display_value(&parse("")));
+
+        // management 显式 3133、federation 缺省（3133）→ 合并。
+        assert!(merged_display_value(&parse(
+            "[core]\nmanagement_address = \"0.0.0.0:3133\"\n"
+        )));
+
+        // 端口相同但 host 不同 → 精确匹配，不合并。
+        assert!(!merged_display_value(&parse(
+            "[core]\nmanagement_address = \"127.0.0.1:9000\"\n\
+             [federation]\nlisten = \"0.0.0.0:9000\"\n"
+        )));
+
+        // federation.listen 显式空串（仅连出）→ 不合并。
+        assert!(!merged_display_value(&parse(
+            "[core]\nmanagement_address = \"0.0.0.0:3132\"\n\
+             [federation]\nlisten = \"\"\n"
+        )));
     }
 }

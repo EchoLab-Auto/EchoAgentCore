@@ -433,3 +433,53 @@ async fn bidirectional_dial_converges_and_quiesces() {
     let _ = sd_a.send(true);
     let _ = sd_b.send(true);
 }
+
+/// 同步令牌镜像（端口合并的升级回调数据源）：与运行时 peer 表
+/// （add/update/remove）始终一致；空令牌恒不命中。
+#[tokio::test]
+async fn synced_token_mirror_tracks_peer_lifecycle() {
+    let (events, _rx) = mpsc::channel::<LinkEvent>(16);
+    let (shutdown, _sd) = watch::channel(false);
+    let fed = Federation::new(
+        "node-mirror".into(),
+        None,
+        caps(&[]),
+        peers(&[("a", "", "tok-a")]),
+        None,
+        events,
+        shutdown,
+    );
+
+    // 初始镜像来自构造时的 peers 表。
+    assert!(fed.has_peer_token_sync("tok-a"));
+    assert!(!fed.has_peer_token_sync("tok-unknown"));
+    assert!(!fed.has_peer_token_sync(""), "空令牌永不算命中");
+
+    // add_peer 更新（改名/换 token 场景）。
+    fed.add_peer(PeerConfig {
+        name: "a".into(),
+        url: String::new(),
+        token: "tok-b".into(),
+    })
+    .await;
+    assert!(!fed.has_peer_token_sync("tok-a"), "旧 token 应随更新失效");
+    assert!(fed.has_peer_token_sync("tok-b"));
+
+    // 新增第二条。
+    fed.add_peer(PeerConfig {
+        name: "c".into(),
+        url: String::new(),
+        token: "tok-c".into(),
+    })
+    .await;
+    assert!(fed.has_peer_token_sync("tok-b"));
+    assert!(fed.has_peer_token_sync("tok-c"));
+
+    // 删除后镜像同步移除。
+    assert!(fed.remove_peer("a").await);
+    assert!(!fed.has_peer_token_sync("tok-b"));
+    assert!(fed.has_peer_token_sync("tok-c"));
+    // 删除不存在的 peer：镜像保持。
+    assert!(!fed.remove_peer("nope").await);
+    assert!(fed.has_peer_token_sync("tok-c"));
+}

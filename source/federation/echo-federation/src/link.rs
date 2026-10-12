@@ -120,6 +120,11 @@ pub struct Federation {
     local_advertise: Option<String>,
     /// peer 表（Phase 4 起运行时可变：Save/DeleteFederationPeer）。
     peers: RwLock<Vec<PeerConfig>>,
+    /// **同步**令牌镜像（端口合并用）：管理和联邦共用一个监听端口时，
+    /// WS 升级回调（同步闭包）需要同步读取 per-peer 令牌来分类连接——
+    /// 异步 `peers` 表在升级回调里不可用。`new`/`add_peer`/`remove_peer`
+    /// 同步维护（只含非空令牌；比较走常时）。
+    synced_tokens: std::sync::RwLock<Vec<String>>,
     /// node_id → 链路句柄（活跃链路）。
     links: Arc<RwLock<HashMap<String, LinkHandle>>>,
     /// 链路代际计数（见 LinkHandle::generation）。
@@ -151,6 +156,13 @@ impl Federation {
         event_tx: mpsc::Sender<LinkEvent>,
         shutdown: watch::Sender<bool>,
     ) -> Arc<Self> {
+        let synced_tokens = std::sync::RwLock::new(
+            peers
+                .iter()
+                .map(|p| p.token.clone())
+                .filter(|t| !t.is_empty())
+                .collect(),
+        );
         Arc::new(Self {
             node_id,
             node_name,
@@ -158,6 +170,7 @@ impl Federation {
             caps,
             local_advertise: advertise,
             peers: RwLock::new(peers),
+            synced_tokens,
             links: Arc::new(RwLock::new(HashMap::new())),
             link_generation: std::sync::atomic::AtomicU64::new(0),
             dial_cancels: RwLock::new(std::collections::HashMap::new()),
@@ -228,6 +241,8 @@ impl Federation {
                 None => peers.push(peer.clone()),
             }
         }
+        // 同步令牌镜像（端口合并分类器读；见字段注释）。
+        self.refresh_synced_tokens().await;
         // 取消该 peer 的旧连出循环（更新场景），再视 url 起新循环。
         if let Some(cancel) = self.dial_cancels.write().await.remove(&peer.name) {
             let _ = cancel.send(true);
@@ -243,6 +258,48 @@ impl Federation {
         }
     }
 
+    /// 从异步 `peers` 表刷新同步令牌镜像（仅 `add_peer`/`remove_peer`
+    /// 调用，且调用时必然持有过 peers 写锁之外的时机——短临界区、无 await）。
+    async fn refresh_synced_tokens(&self) {
+        let tokens: Vec<String> = self
+            .peers
+            .read()
+            .await
+            .iter()
+            .map(|p| p.token.clone())
+            .filter(|t| !t.is_empty())
+            .collect();
+        *self.synced_tokens.write().unwrap() = tokens;
+    }
+
+    /// 同步版 per-peer 令牌判定（端口合并的升级回调专用；空令牌恒不
+    /// 命中）。命中即该连接应归为联邦链路。
+    pub fn has_peer_token_sync(&self, token: &str) -> bool {
+        if token.is_empty() {
+            return false;
+        }
+        self.synced_tokens
+            .read()
+            .unwrap()
+            .iter()
+            .any(|known| constant_time_eq(known, token))
+    }
+
+    /// 在**已完成**认证与 WS 升级的连接上跑联邦链路（端口合并模式：
+    /// 认证与分类由合并监听端完成，`presented_token` = 对端呈现的
+    /// Bearer，用于按 token 反查 peer 配置名）。
+    #[doc(hidden)]
+    pub async fn accept_ws_pub<S>(
+        &self,
+        ws: tokio_tungstenite::WebSocketStream<S>,
+        presented_token: String,
+    ) -> Result<()>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        self.run_link(ws, None, presented_token).await
+    }
+
     /// 运行时删除 peer：停连出循环 + 断其链路（若有）并移出配置表。
     pub async fn remove_peer(&self, name: &str) -> bool {
         // 先停重连循环——否则删除后 peer 仍会无限重连（🔴 修复）。
@@ -255,6 +312,9 @@ impl Federation {
             peers.retain(|p| p.name != name);
             peers.len() != before
         };
+        if removed {
+            self.refresh_synced_tokens().await;
+        }
         // 注：链路表按 node_id 索引、不存 peer 配置名；断链由调用方
         // （装配层 FederationRuntime.peer_names 维护 name↔node 映射）
         // 经 [`Federation::drop_link`] 显式完成。
@@ -719,6 +779,21 @@ impl Federation {
     }
 }
 
+/// 常量时间字符串相等：逐字节 XOR 累积，长度不等也走完全程再判，
+/// 避免时序侧信道逐字节探测 token（与 `core/src/management.rs` 同款；
+/// 联邦侧此前用 `==`，对齐统一——端口合并后两命名空间在同一监听端口
+/// 上分类，比较必须同为常时）。
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut diff = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= (x ^ y) as usize;
+    }
+    diff == 0
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -747,7 +822,11 @@ async fn accept_with_auth(
                 .map(str::to_string);
             let ok = token
                 .as_ref()
-                .map(|t| tokens.iter().any(|known| !known.is_empty() && known == t))
+                .map(|t| {
+                    tokens
+                        .iter()
+                        .any(|known| !known.is_empty() && constant_time_eq(known, t))
+                })
                 .unwrap_or(false);
             if ok {
                 *presented2.lock().unwrap() = token.unwrap_or_default();
