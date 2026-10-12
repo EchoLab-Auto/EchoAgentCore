@@ -782,7 +782,14 @@ fn set(config_path: &Path, target: &str, value: &str) -> Result<()> {
 
     println!("已更新 {} → {}", target_label(&target), new_value_display);
     println!("写回 {}（注释与其他段保留）", config_path.display());
-    for hint in hints(&target, &new_value_display) {
+    // 合并状态按**编辑后**的配置判定（用户意图的终态）：改 management 时
+    // 若与 federation.listen 同址（或 listen 缺省跟随），联邦入站端口随
+    // 之变化——提示里要提醒对端同步（2026-10 缺省合并语义）。
+    let merged_after = updated
+        .parse::<toml::Table>()
+        .map(|t| resolve_listen_display(&t).merged)
+        .unwrap_or(false);
+    for hint in hints(&target, &new_value_display, merged_after) {
         println!("提示: {hint}");
     }
     println!("提示: 重启 echo-agent-core 生效（systemctl --user restart echo-agent-core）");
@@ -827,17 +834,31 @@ fn format_instance_port(port: u16) -> String {
     }
 }
 
-fn hints(target: &Target, value: &str) -> Vec<String> {
+fn hints(target: &Target, value: &str, merged: bool) -> Vec<String> {
     match target {
         Target::Management => {
             let port = split_host_port(value).map(|(_, p)| p).unwrap_or(0);
-            vec![format!(
+            let mut out = vec![format!(
                 "Panel 端 [[cores]].url 需同步指向新端口（ws://<本机可达地址>:{port}）"
-            )]
+            )];
+            if merged {
+                // 缺省合并（或显式同址）：管理端口 = 联邦入站端口，对端
+                // 拨号地址一并变化。
+                out.push(format!(
+                    "联邦与本端共址（端口合并）：对端 [federation.peers.*] 的 url 若指向本机也需同步（ws://<本机地址>:{port}）"
+                ));
+                out.push(
+                    "端口映射（NAT）：外网映射指向的新端口与 [federation].advertise 一并核对"
+                        .to_string(),
+                );
+            }
+            out
         }
         Target::FederationListen => vec![
             "对端 peers 的 url 若指向本机端口需同步更新".to_string(),
             "本机 [federation].advertise 含端口时也需核对".to_string(),
+            "独立监听为显式配置的逃生舱口；删除 listen 键（或与 management 同址）= 端口合并"
+                .to_string(),
         ],
         Target::FederationAdvertise => {
             vec!["邀请串与对端学习的地址将按新值对外宣告".to_string()]
@@ -1200,6 +1221,31 @@ mod tests {
         // 列表函数手跑不 panic。
         list(&path).unwrap();
         std::fs::remove_file(&path).ok();
+    }
+
+    /// 变更提示（`port set`）：合并态下改 management 要提醒对端联邦
+    /// 拨号地址与 NAT 映射同步；独立监听时不出现联邦句（2026-10）。
+    #[test]
+    fn set_hints_cover_merged_federation() {
+        let merged_hints = hints(&Target::Management, "0.0.0.0:8800", true);
+        assert!(merged_hints.iter().any(|h| h.contains("Panel 端")));
+        assert!(
+            merged_hints
+                .iter()
+                .any(|h| h.contains("对端 [federation.peers.*]")),
+            "合并态需提醒对端联邦地址同步: {merged_hints:?}"
+        );
+        assert!(merged_hints.iter().any(|h| h.contains("端口映射")));
+
+        let standalone_hints = hints(&Target::Management, "0.0.0.0:8800", false);
+        assert!(
+            !standalone_hints.iter().any(|h| h.contains("对端")),
+            "独立模式不应出现联邦同步提醒: {standalone_hints:?}"
+        );
+
+        // federation 显式配置的逃生舱口说明。
+        let fed_hints = hints(&Target::FederationListen, "0.0.0.0:3133", false);
+        assert!(fed_hints.iter().any(|h| h.contains("端口合并")));
     }
 
     /// 联邦监听布局（列表展示，与运行期同口径）。覆盖「缺省合并」语义的
