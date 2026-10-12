@@ -483,3 +483,54 @@ async fn synced_token_mirror_tracks_peer_lifecycle() {
     assert!(!fed.remove_peer("nope").await);
     assert!(fed.has_peer_token_sync("tok-c"));
 }
+
+/// 错误 token 的拒绝必须是标准 HTTP 401（而非静默断开）——与管理面的
+/// 同类修复对齐（2026-10）：此前 `ErrorResponse::new` 默认状态 200 被
+/// tungstenite 放弃写出，客户端只见「Handshake not finished」，令牌问题
+/// 被误诊为网络/协议故障。
+#[tokio::test]
+async fn wrong_token_gets_http_401() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = format!("ws://{}", listener.local_addr().unwrap());
+    let (b_events, _b_rx) = mpsc::channel::<LinkEvent>(16);
+    let (sd_b, _sd) = shutdown_pair();
+    let fed_b = Federation::new(
+        "node-401-b".into(),
+        None,
+        NodeCaps::default(),
+        peers(&[("a", "", "right-token")]),
+        None,
+        b_events,
+        sd_b,
+    );
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let fed = fed_b.clone();
+            tokio::spawn(async move { fed.accept_one_pub(stream).await });
+        }
+    });
+
+    // 1) 错误 token：标准 HTTP 401。
+    let request = echo_federation::bearer_request(&addr, "wrong-token").unwrap();
+    let error = tokio_tungstenite::connect_async(request)
+        .await
+        .expect_err("wrong token must be rejected");
+    match error {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            assert_eq!(
+                response.status(),
+                tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED,
+                "wrong-token rejection must be standard HTTP 401"
+            );
+        }
+        other => panic!("expected HTTP 401, got {other:?}"),
+    }
+
+    // 2) 正确 token：正常升级（101）。
+    let request = echo_federation::bearer_request(&addr, "right-token").unwrap();
+    let ws = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("authorized handshake must succeed");
+    drop(ws);
+}

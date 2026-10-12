@@ -248,7 +248,7 @@ impl SpawnSubagentTool {
                 },
                 "node": {
                     "type": "string",
-                    "description": "联邦远程节点名（peer 配置名）。来源：工具列表中 <peer>:<tool> 代理工具的前缀名，或工作区会话的 [remote:<peer>] 标注。填入后子任务在该节点执行；填错/离线会立即失败（fail-closed，不会静默回本机）"
+                    "description": "联邦远程节点名（peer 配置名）。来源：工具列表中 <peer>__<tool> 代理工具的前缀名（如 A100-40g__bash → A100-40g），或工作区会话的 [remote:<peer>] 标注。填入后子任务在该节点执行；填错/离线会立即失败（fail-closed，不会静默回本机）"
                 },
                 "profile": {
                     "type": "string",
@@ -366,7 +366,7 @@ pub(crate) async fn run_subagent_turn(
     max_iterations: usize,
     max_tokens: Option<u32>,
     // federation Phase 3：远程目标节点（peer 名）；Some 时工具调用名
-    // 在执行前还原为 `<peer>:<tool>`。
+    // 在执行前还原为注册名 `<peer>__<tool>`（见 `remote_tool_name`）。
     remote_peer: Option<&str>,
 ) -> Result<String> {
     let system_prompt = format!(
@@ -432,12 +432,18 @@ pub(crate) async fn run_subagent_turn(
             let args: Value =
                 serde_json::from_str(&call.arguments).unwrap_or(Value::Object(Default::default()));
             // federation Phase 3：远程子任务（remote_peer 指定）的工具名
-            // 还原为 `<peer>:<tool>`——模型看到的是剥前缀的远程语境名称。
+            // 还原为注册名 `<peer>__<tool>`——模型看到的是剥前缀的远程
+            // 语境名称（2026-10 起分隔符为双下划线，与注册端同源）。
             let tool_name = match remote_peer {
-                Some(peer) if !call.name.starts_with(&format!("{peer}:")) => {
-                    format!("{peer}:{}", call.name)
+                Some(peer) => {
+                    let prefix = crate::federation::remote_tool_prefix(peer);
+                    if call.name.starts_with(&prefix) {
+                        call.name.clone()
+                    } else {
+                        crate::federation::remote_tool_name(peer, &call.name)
+                    }
                 }
-                _ => call.name.clone(),
+                None => call.name.clone(),
             };
             let result = registry.execute_rich(&tool_name, args).await;
             let text = match result {

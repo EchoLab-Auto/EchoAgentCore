@@ -7,14 +7,14 @@
 //! - [`remote_tool`]：`RemoteTool` 代理工具——`Tool` trait 实现，`execute()`
 //!   内发 `FedFrame::Invoke` 并等待终态。
 //!
-//! 设计约束（RFC §4）：不改 `Tool` trait；远程工具以 `<peer>:<tool>` 命名
+//! 设计约束（RFC §4）：不改 `Tool` trait；远程工具以 `<peer>__<tool>` 命名
 //! 显式注册；路径校验由执行端在本机工作区根内完成；取消/超时尽力送达。
 
 pub mod aggregator;
 pub mod remote_tool;
 pub mod router;
 
-pub use remote_tool::{proxy_schema, RemoteTool};
+pub use remote_tool::{proxy_schema, remote_tool_name, remote_tool_prefix, RemoteTool};
 pub use router::{remote_tool_candidates, ExecutorPolicy, InvokeRouter, PendingInvoke};
 
 // ── Phase 3：远程 subagent 对端观测出口 ──

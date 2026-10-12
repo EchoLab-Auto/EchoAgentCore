@@ -785,7 +785,7 @@ fn human_size(bytes: u64) -> String {
 
 pub fn register_coding_tools(registry: &mut ToolRegistry, workspace: PathBuf) {
     // P3-1：5 个文件工具包远程分流层（node:// 前缀 → 联邦 Invoke）；
-    // bash 不包（远程 shell 走 <peer>:bash 代理工具）。
+    // bash 不包（远程 shell 走 <peer>__bash 代理工具）。
     registry.register(RemoteAwareTool::wrap(Arc::new(ReadFileTool::new(
         workspace.clone(),
     ))));

@@ -801,6 +801,22 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 未授权（令牌缺失/不匹配）的握手拒绝响应。
+///
+/// 状态**必须是 4xx**（这里用 401）：`ErrorResponse::new` 的默认状态是
+/// 200 OK，而 tungstenite 对「成功状态」的握手错误会直接放弃写出任何
+/// 字节、静默断开——客户端只见「Handshake not finished」，把「令牌
+/// 不对」误诊为网络/协议故障（与 `core/src/management.rs` 的同类修复
+/// 对齐，2026-10）。
+#[allow(clippy::result_large_err)]
+fn unauthorized_response() -> tokio_tungstenite::tungstenite::handshake::server::ErrorResponse {
+    let mut response = tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(Some(
+        "unauthorized".into(),
+    ));
+    *response.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED;
+    response
+}
+
 /// 连入侧认证 + WS upgrade。回调签名由 tungstenite 固定（Err 侧
 /// `ErrorResponse` 体积大，与 `core/src/management.rs` 同款容忍）。
 #[allow(clippy::result_large_err)]
@@ -832,11 +848,7 @@ async fn accept_with_auth(
                 *presented2.lock().unwrap() = token.unwrap_or_default();
                 Ok(response)
             } else {
-                Err(
-                    tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(Some(
-                        "unauthorized".into(),
-                    )),
-                )
+                Err(unauthorized_response())
             }
         },
     )

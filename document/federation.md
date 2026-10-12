@@ -28,8 +28,9 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
    只有**工具调用**、**子任务委派**、**只读查询**三类 RPC
 3. **边界上线，内核留进程内**：Ctx/EventBus/CancellationToken 等进程内
    基元不网络化；联邦协议只存在于边界（工具路由、委派、查询、扇出）
-4. **显式命名**：远程工具以 `<peer>:<tool>` 注册，模型显式选择目标
-   节点；同名本机工具不做隐式路由
+4. **显式命名**：远程工具以 `<peer>__<tool>` 注册（双下划线；LLM
+   function name 仅允许 `[a-zA-Z0-9_-]`，peer 名中其余字符以 `_` 替代），
+   模型显式选择目标节点；同名本机工具不做隐式路由
 
 ## 命名空间
 
@@ -54,8 +55,10 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
   workspaces}` + `protocol_version`）——`PROTOCOL_VERSION` 不相等即拒绝
   （单一 `u32` 精确匹配，无主次版本结构）、自连回环拒绝、
   双向同时 dial 按 node_id 字典序让路（顶掉旧链路前显式 Down）
-- **认证**：per-peer 共享密钥（Bearer；双向相同）。**联邦互信 ≈ SSH
-  免密**——对端拿到链路即可按白名单执行工具
+- **认证**：per-peer 共享密钥（Bearer；双向相同）。令牌缺失/不匹配时在
+  握手阶段返回**标准 HTTP 401**（客户端可归类为认证失败；2026-10 修复
+  ——此前静默断开，把「令牌不对」误诊为网络/协议故障）。**联邦互信 ≈
+  SSH 免密**——对端拿到链路即可按白名单执行工具
 - **保活**：30s 心跳 / 90s 判死；断线指数退避重连（1s→30s 封顶）；
   出站背压（256 帧上限）
 - **帧（`FedFrame`）**：externally-tagged + `#[serde(default)]` 演进；
@@ -184,13 +187,13 @@ peer 令牌相同**拒绝启动/保存**（路由歧义）。合并监听挂**�
 
 - **代理注册**：链路 Up 时按对端 caps ∩ 首批支持集（bash/read_file/
   write_file/edit_file/search_code/list_files）给全部 persona 注册
-  `<peer>:<tool>`（per-peer package 标签 `echo-agent.federation.<peer>`，
+  `<peer>__<tool>`（per-peer package 标签 `echo-agent.federation.<peer>`，
   Down 整包禁用、Up 幂等恢复）；shell 三件套与进程级 ShellManager
   耦合深，远程化留待后续
 - **远程 subagent 失败语义（fail-closed）**：node 指定的 peer 离线/
   名称错误时，子任务**立即以 Failed 终态回报**（不会静默回本机执行
   造成错机操作）；聚合组同步闭合。peer 名来源：工具列表的
-  `<peer>:<tool>` 前缀或工作区会话的 [remote:<peer>] 标注
+  `<peer>__<tool>` 前缀或工作区会话的 [remote:<peer>] 标注
 - **远程 subagent**：`spawn_subagent({task, node})`——LLM 仍在大脑侧，
   tools 过滤为该 peer 代理工具并剥前缀呈现（子任务不感知"远程"），
   执行时还原前缀经 Invoke 路由；结果回灌完全复用本地

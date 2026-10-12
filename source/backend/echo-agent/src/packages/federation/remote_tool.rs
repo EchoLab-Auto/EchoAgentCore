@@ -1,9 +1,14 @@
 //! 远程代理工具（federation Phase 2）：`Tool` trait 实现，把调用路由到
 //! 对端节点执行。
 //!
-//! 大脑侧视角：`<peer>:<tool>`（如 `gpu-box:bash`）就是一个普通注册工具，
-//! `execute()` 内发 `FedFrame::Invoke` 并等终态；模型显式选择目标节点，
-//! 同名本机工具不受影响（RFC §4.1「不做隐式路由」）。
+//! 大脑侧视角：`<peer>__<tool>`（如 `gpu-box__bash`）就是一个普通注册
+//! 工具，`execute()` 内发 `FedFrame::Invoke` 并等终态；模型显式选择目标
+//! 节点，同名本机工具不受影响（RFC §4.1「不做隐式路由」）。
+//!
+//! 命名规范（2026-10 修复）：注册名必须满足 LLM function name 约束
+//! `^[a-zA-Z0-9_-]{1,64}$`（OpenAI/Anthropic 系 provider 均校验）——
+//! 此前以冒号分隔（`peer:tool`），严格 provider 会直接 400 拒绝整个
+//! 请求；现改为双下划线分隔，peer 名中的非法字符统一替换为 `_`。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,9 +21,35 @@ use echo_federation::{FedFrame, Federation};
 use crate::federation::router::InvokeRouter;
 use crate::tool::{Tool, ToolError};
 
-/// 一个远程工具代理（大脑侧注册名为 `<peer_name>:<tool>`）。
+/// 远程工具注册名的 peer 组件清洗：LLM function name 仅允许
+/// `[a-zA-Z0-9_-]`，其余字符（含此前用作分隔的冒号）统一替换为 `_`。
+pub fn sanitize_peer_component(peer: &str) -> String {
+    peer.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// 远程工具对 LLM 暴露的注册名：`<peer>__<tool>`（双下划线，与 MCP
+/// 生态的 `server__tool` 命名惯例一致；见模块头「命名规范」）。
+pub fn remote_tool_name(peer: &str, tool: &str) -> String {
+    format!("{}__{}", sanitize_peer_component(peer), tool)
+}
+
+/// 远程工具注册名前缀（远程子代理工具视图的过滤/剥前缀用；与
+/// [`remote_tool_name`] 同源，保证还原端一致）。
+pub fn remote_tool_prefix(peer: &str) -> String {
+    format!("{}__", sanitize_peer_component(peer))
+}
+
+/// 一个远程工具代理（大脑侧注册名为 `<peer_name>__<tool>`）。
 pub struct RemoteTool {
-    /// 注册名（`<peer_name>:<tool>`）。
+    /// 注册名（`<peer_name>__<tool>`，经 [`remote_tool_name`] 构造）。
     registration_name: String,
     /// 对端本机工具名（`bash` 等，Invoke 帧携带）。
     remote_name: String,
@@ -41,7 +72,7 @@ impl RemoteTool {
         router: Arc<InvokeRouter>,
     ) -> Self {
         Self {
-            registration_name: format!("{peer_name}:{remote_name}"),
+            registration_name: remote_tool_name(peer_name, remote_name),
             remote_name: remote_name.to_string(),
             peer_node: peer_node.to_string(),
             description,
@@ -143,4 +174,47 @@ pub fn proxy_schema(
         .and_then(|d| d.parameters.clone())
         .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
     (description, parameters)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 注册名/前缀必须满足 LLM function name 约束（`^[a-zA-Z0-9_-]{1,64}$`）。
+    fn assert_function_name_safe(name: &str) {
+        assert!(!name.is_empty(), "empty name");
+        assert!(name.len() <= 64, "too long: {name}");
+        assert!(
+            name.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "invalid char in: {name}"
+        );
+    }
+
+    /// 注册名规范（2026-10 修复）：冒号绝不出现在对 LLM 暴露的名字里。
+    #[test]
+    fn remote_tool_names_are_llm_function_name_safe() {
+        // 常规 peer。
+        assert_eq!(remote_tool_name("A100-40g", "bash"), "A100-40g__bash");
+        assert_eq!(remote_tool_prefix("A100-40g"), "A100-40g__");
+        assert_function_name_safe(&remote_tool_name("A100-40g", "search_code"));
+
+        // 非法字符（冒号/点/空格）→ `_`。
+        assert_eq!(sanitize_peer_component("gpu:box"), "gpu_box");
+        assert_eq!(sanitize_peer_component("a.b c"), "a_b_c");
+        assert_eq!(remote_tool_name("gpu:box", "bash"), "gpu_box__bash");
+
+        // 各类非法 peer 名：不出现冒号、满足 function name 约束。
+        for peer in ["a:b", "x y", "节点-1"] {
+            let name = remote_tool_name(peer, "read_file");
+            assert!(!name.contains(':'), "{name}");
+            assert_function_name_safe(&name);
+        }
+
+        // 不同 peer 的同一工具不互相覆盖。
+        assert_ne!(
+            remote_tool_name("core", "bash"),
+            remote_tool_name("A100-40g", "bash")
+        );
+    }
 }

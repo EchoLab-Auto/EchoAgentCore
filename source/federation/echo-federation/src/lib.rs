@@ -18,4 +18,6 @@ pub use frame::{
     SubagentSpawnRequest, SubagentStatus, PROTOCOL_VERSION,
 };
 pub use invite::{decode_invite, encode_invite, generate_token, InvitePayload, INVITE_SCHEME};
-pub use link::{error_frame, Federation, LinkEvent, LinkHandle, PeerConfig, PeerInfo};
+pub use link::{
+    bearer_request, error_frame, Federation, LinkEvent, LinkHandle, PeerConfig, PeerInfo,
+};

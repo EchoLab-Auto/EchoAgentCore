@@ -81,11 +81,11 @@ impl Agent {
             let registry = Arc::clone(&agent.tools);
             // federation Phase 3：`node` 指定时子任务工具视图指向远程
             // 节点——LLM 仍在本机推理，工具定义替换为该 peer 的代理工具
-            // 描述（`<peer>:<tool>` 已注册进注册表，执行经 Invoke 路由）。
+            // 描述（`<peer>__<tool>` 已注册进注册表，执行经 Invoke 路由）。
             // 语义说明（RFC §5）：远程 subagent 的任务文本不感知本机
             // 工作区，工具列表即"在远程能做什么"的完整能力面。
             if let Some(ref peer) = node {
-                let prefix = format!("{peer}:");
+                let prefix = crate::federation::remote_tool_prefix(peer);
                 let remote_defs: Vec<echo_defs::tool::ToolDefinition> = tools
                     .iter()
                     .filter(|d| d.name.starts_with(&prefix))

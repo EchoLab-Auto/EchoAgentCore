@@ -2934,10 +2934,10 @@ async fn register_remote_tools(
             ));
             let disposer = persona.agent.tools.register_reversible(tool);
             keepers.push(disposer); // 保活：drop 即注销，绝不能当临时值
-            persona
-                .agent
-                .tools
-                .set_package(&format!("{}:{remote_name}", info.peer_name), &package);
+            persona.agent.tools.set_package(
+                &echo_agent::federation::remote_tool_name(&info.peer_name, remote_name),
+                &package,
+            );
         }
         registered = candidates.len();
         // 重连语义：Down 时整包禁用，Up 必须整包重新启用（首次注册时
