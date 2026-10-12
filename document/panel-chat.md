@@ -23,7 +23,7 @@ y: 780
 - **入场动画**：0.28s 淡入 + 上移 6px，仅实时消息（`animate: true`）播放；历史回放不播
 - **容量**：主时间线上限 1024 条，溢出裁最旧
 - **行距**：滚动容器 `gap` 6px；消息气泡用 `chat-view__item--msg` 的 3px 边距补回呼吸（气泡间仍约 12px），工作行（推理块 / 工具行 / 子代理行）保持 6px 紧排且自身不再带外边距——一回合里推理与工具交替十几次，屏幕不被空白吃掉
-- **刷新首屏**：页面加载先还原磁盘缓存（`trunk-cache.ts`，挂载前 hydrate——`state.teamTimelines` 按 team 快照 + 条目级游标），引导请求带 `since_seq` 只拉缺口（无缓存/窗口滚出/游标超前时 Core 自动回退全量）；缓存 10s 周期 + 页面隐藏/卸载时落盘（配额满静默放弃）；**还原时就格式升级**（旧缓存里 `<subagent_event>` 用户气泡 → 子代理委派行，避免「刷新后仍是旧样式」）；**重连不清空时间线**——保留缓存并按 `since_seq` 增量补齐，响应 `full` 标志时整体替换。配套 Core 侧对发往前端的快照做**推理瘦身**：仅最近 40 条推理保留全文，更早的截断到 240 字 + 标注（持久化不改，`timeline.rs::elide_reasoning_for_wire`）
+- **刷新首屏**：页面加载先还原磁盘缓存（`trunk-cache.ts`，挂载前 hydrate——`state.teamTimelines` 按 team 快照 + 条目级游标），引导请求带 `since_seq` 只拉缺口（无缓存/窗口滚出/游标超前时 Core 自动回退全量）；缓存 10s 周期检查（写盘放 `requestIdleCallback`，不挤占渲染帧）+ 页面隐藏/卸载时立即落盘（配额满静默放弃）；**还原时就格式升级**（旧缓存里 `<subagent_event>` 用户气泡 → 子代理委派行，避免「刷新后仍是旧样式」）；**重连不清空时间线**——保留缓存并按 `since_seq` 增量补齐，响应 `full` 标志时整体替换。配套 Core 侧对发往前端的快照做**推理瘦身**：仅最近 40 条推理保留全文，更早的截断到 240 字 + 标注（持久化不改，`timeline.rs::elide_reasoning_for_wire`）
 - **会话过滤**：「全部消息」（global）显示当前 Agent 全部会话的消息；具体会话仅显示该会话；从全局视图发送会路由到本地会话 `local:tui::local_user`（`App.vue:126`）
 - **空列表占位与加载三态**：消息列为空时区分——未连接（居中 spinner +「正在连接 Core…」）/ 已连接但本次连接尚未收到时间线（「正在加载时间线…」）/ 收到过快照后的真空白（全局视图与具体会话两种文案，`ChatView.vue:536-560`）。判定标志 `state.timelineArrivedOnce`（`onopen` 重置；见 [布局与导航](./panel-layout.md)§四）
 - **图片**：历史消息中的图片渲染在气泡上方，最大 260×200px（`ChatView.vue:874-886, 1274-1285`）；Core 侧 `/media/<id>` 引用直接 `<img loading=lazy decoding=async>` 渲染（同源、强缓存），遗留 data URI 仍兼容；正文经 `chat-adapter.ts::compactForDisplay` 压过——附带的 data URI → `[图片#n]`、其余长内联 base64 → `[图片数据已省略]`，与 Core 侧占位符一致，避免整屏 base64
@@ -45,7 +45,7 @@ y: 780
 
 补充来源：定时器触发以 system 消息插入主时间线（`⏰ 定时器触发 · {task}`，task 截断 160 字符）。
 
-**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（库 `ChatBubble` + doc `MarkdownRenderer` 自组）、工具行 `ToolRunGroup`、推理 `ReasoningBlock`、子代理 `SubagentEventBlock`；ui-frame 只提供机制原语（`ChatTray` / `ChatComposer` / `ChatBubble` / `ChatFold` / `ChatCopyButton`）。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义），`ChatMessage` 数据契约保留。
+**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（库 `ChatBubble` + `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）、工具行 `ToolRunGroup`、推理 `ReasoningBlock`、子代理 `SubagentEventBlock`；ui-frame 只提供机制原语（`ChatTray` / `ChatComposer` / `ChatBubble` / `ChatFold` / `ChatCopyButton`）。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义），`ChatMessage` 数据契约保留。
 
 **气泡宽度**：宽度完全动态——短消息贴内容收紧（实测最短 186px），长消息/代码/表格撑满消息列可用宽度（随左右侧栏卡片显隐变化，实测 1600px 窗口下 1276px）；`.chat-view__item--msg` 为 flex 列容器（user 靠右 / agent 靠左 / system 居中，依赖库 `align-self`）。面板覆盖库默认 `max-width: min(78%, 640px)`（`MessageItem.vue` 双写类名提权），并隐藏 Markdown 标题锚点（其 -22px 绝对定位会撑出横向溢出）。
 

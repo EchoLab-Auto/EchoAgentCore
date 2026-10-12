@@ -43,6 +43,13 @@ EchoAgentPanel/
 切换会体现在 git diff）；`sync` 支持从 ui-frame 源码仓库重建快照，`diff` 列出
 快照中尚未发版的改动。日常开发/CI 无需切换（CI 用 `npm ci` + 提交的快照）。
 
+**前端分包与首屏**：ui-frame 组件按**子路径按需导入**（`components/<Name>` /
+`composables/<useXxx>`，不使用全量 `app.use` 注册）——首屏只含实际使用的
+组件；设置视图 / 分支弹窗 / 右栏卡片 / Markdown 渲染（`MarkdownLazy`）等
+按 import 边界自然分包、按需加载。`index.html` 内联骨架屏（纯内联样式、
+主题跟随）在 JS/CSS 传输期间即给出首帧反馈，挂载后被应用替换。慢网实测
+（1.5 Mbps / RTT 150ms）首屏传输约 180KB、1.2s 内可交互。
+
 ## 中继模型
 
 每个浏览器 WS 连接同时中继到**全部**接入点 Core 的 management WS（`[[cores]]`，单接入点 = 一条）；**单接入点时帧按原文转发，不解析、不记录负载**；多接入点时事件按来源节点加壳 `{core, frame}` 信封、命令按信封路由到目标节点（仅信封层，不触碰负载）——协议细节与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积；转发另有 **10s 写超时**（`SEND_TIMEOUT`）——对端写阻塞超时即断链，冻结标签页不会挂住中继、Core 发送缓冲不再无界积压。

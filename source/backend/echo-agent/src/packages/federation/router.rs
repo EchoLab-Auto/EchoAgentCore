@@ -201,7 +201,7 @@ impl InvokeRouter {
             if let Some((_, pending)) = self.pending.remove(&call_id) {
                 // 清理原因分级（2026-10 日志修复）：等待方已放弃（receiver
                 // 被 drop——如 `fetch_live_load` 的 3s 短超时查询，属**常规**
-                // 行为）记 debug；ttl 超时（对端���期无响应 / 发送后未清理，
+                // 行为）记 debug；ttl 超时（对端长期无响应 / 发送后未清理，
                 // 属异常）保持 warn。此前两者共用 warn——每次对端响应慢于
                 // 短超时都会留一条「stale pending」告警，把常规行为渲染成
                 // 故障（重启后首屏即两连 WARN 的实况）。

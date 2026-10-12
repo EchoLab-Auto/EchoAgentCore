@@ -137,7 +137,7 @@ echo-agent-core token --rotate                # 重新生成并写回（32 字�
 - 缺省值与显式值语义区分（如 `listen` 缺省 = 跟随管理地址合并、显式空串 = 仅连出）；非默认实例端口修改前要求实例已存在于配置（防误建实例及其容器）
 - 编辑后做 TOML 合法性与**目标值类型复读**自检；`tmp + rename` 原子写
 - **端口合并（缺省）**：联邦监听**缺省合并至管理端口**——NAT 场景**一条映射同时服务面板与联邦**（见 [联邦](./federation.md#配置与管理面)）；管理地址回环 / 空令牌且非回环 / 令牌与 peer 冲突时自动回退独立监听（启动警告）；**显式**同址合并 + 空令牌 + 非回环仍 fail-closed **拒绝启动**
-- 端口变更重启 Core 生效；改 management 端口后 Panel 的 `[[cores]].url` 需同步
+- 端口变更重启 Core 生效；`port set` 的提示按**编辑后**的合并状态自适应——合并态下改 `management` 会同时提醒 Panel `[[cores]].url`、对端 `[federation.peers.*]` 的 url 与端口映射/`advertise` 三处同步（独立监听只提醒 Panel）
 - 相应配置解析与编辑逻辑见 [配置持久化](./core-config-persistence.md)；QQ 实例端口分配见 [QQ 门控](./adapter-qq-gating.md)
 
 ## 日常体检

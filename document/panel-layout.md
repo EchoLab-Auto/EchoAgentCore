@@ -179,15 +179,17 @@ graph LR
 
 - WS 地址 `ws(s)://{host}/ws`（随页面协议）；单例连接（`connection.ts`）
 - **Bootstrap 命令组**（每次 onopen 按序发送）：`RequestState` → `RequestTeamsList`（这两条为只读发现命令，**裸广播全部在线接入点**，中继白名单放行）→ `RequestAdapterStatus` → `RequestShellSessions` →（有保存的 Agent 时）`RequestTrunkTimeline{team_id: 上次Agent, since_seq: 缓存游标}`（经 `sendCommand` 统一路由；多接入点下 core 未知时兜底裸广播，TeamsList 到达后 App watcher 定向补拉覆盖竞态，`connection.ts:88-116`）。
+  - **首屏优先级**：`RequestAdapterStatus` / `RequestShellSessions` 两条单值管理面命令**仅当目标区域已解析**（刷新/重连场景，activeRegion 自 localStorage 还原）时发送；首访区域未定时跳过——多接入点下会因解析不出目标被拒并误弹「尚未选择 agent」，随后区域解析完成由 activeRegion watcher 统一拉取（含这两条）
   - 去主智能体后 `team_id` 必填：没有保存过 Agent 时**跳过**时间线请求（发了必被 Core 拒绝），等 `TeamsList` 到达后由 App watcher 用列表首个发起（有缓存则同样带 `since_seq`）
-  - **切换 core 时重拉「单值管理面」**（`requestActiveRegionManagement`）：`RequestState` / `RequestSystemPrompt` / `RequestAdapterStatus` / `RequestSkillsList` / `RequestToolsList` / `RequestPluginsList` / `RequestShellSessions` / `RequestFederationStatus`——响应被 `managementCoreCurrent` 过滤到 activeRegion，不重拉会短暂显示上一个 core 的值（`connection.ts:257-268`）
+  - **切换 core 时重拉「单值管理面」**（`requestActiveRegionManagement`）：`RequestState` / `RequestSystemPrompt` / `RequestAdapterStatus` / `RequestSkillsList` / `RequestToolsList` / `RequestPluginsList` / `RequestShellSessions` / `RequestFederationStatus`——响应被 `managementCoreCurrent` 过滤到 activeRegion，不重拉会短暂显示上一个 core 的值（`connection.ts:257-268`）。**首屏首次区域确定**（prev=null）时跳过技能/工具目录（`includeCatalogs:false`）——二者合计约 36KB 且首屏无消费方（设置页/Agent 配置弹窗打开时自拉），切换区域保留全量
   - QQ 过滤配置**不预取**（QqPanel/QqLoginSection 打开时按实例自行刷新；无 QQ 或多实例未指定实例时预取必被拒，产生无意义的「QQ 适配器未找到」提示）
 - **重连保留时间线**：只清空运行期状态（`branchTabs`、`tasks`、`activities`、工作区 git/文件浏览器缓存）；时间线（`trunk`、`teamTimelines`、`trunkTeamId`）**不清空**——按缓存游标带 `since_seq` 增量补齐，响应 `full` 标志（首载/窗口滚出/游标超前）时整体替换（`connection.ts:65-95`）
 - **退避**：500ms 起、×2 递增、上限 30s；成功连接后复位 500ms
 - **前台自愈（heal）**：`visibilitychange` 回到前台或 `online` 事件时主动评估连接——已断开则立即重连（复位退避，不等可能被浏览器冻结的退避定时器）；显示 OPEN 也可能半死（设备休眠期间对端已消失而本端未察觉），发 `RequestTeamsList` 探测帧，**5s** 内无任何下行帧则判死、主动关闭走标准重连（`connection.ts`）
+- **上游状态轮询暂停**（`upstreams.ts`）：`/api/upstreams` 每 8s 一次；标签页隐藏时跳过轮询、回到前台立即补一次（省后台流量，回前台即最新）
 - **中继半死收割**：一侧超过 90s（3 个心跳周期）无任何帧（含 Pong）→ 中继断开整条链路；另有 **10s 写超时**——转发一帧时对端写阻塞超过 10s 即断链（冻结标签页不再挂起中继、Core 发送缓冲不再无界积压）（`proxy.rs`；设备休眠留下的僵尸连接因此被清理，唤醒后重连拿到干净状态）
 - **断连期间**：边栏「连接状态」卡显示"连接中…" + 重连提示（由原顶栏状态点迁入）；输入框禁用（placeholder `未连接到 Core，暂时无法发送`）；`sendCommand` 不发送并弹 error toast；QQ 面板按钮禁用
-- **首屏与重连的加载反馈**：聊天区消息列为空时三态区分——未连接 → 居中 spinner +「正在连接 Core…」；已连接但本次连接尚未收到 `TrunkTimeline` → 「正在加载时间线…」；收到过快照（哪怕为空）才显示「（暂无消息…）」。判定标志 `state.timelineArrivedOnce`（`onopen` 重置、任一 `TrunkTimeline` 置位）；有磁盘缓存时挂载即渲染缓存，无加载闪屏
+- **首屏与重连的加载反馈**：聊天区消息列为空时三态区分——未连接 → 居中 spinner +「正在连接 Core…」；已连接但本次连接尚未收到 `TrunkTimeline` → 「正在加载时间线…」；收到过快照（哪怕为空）才显示「（暂无消息…）」。判定标志 `state.timelineArrivedOnce`（`onopen` 重置、任一 `TrunkTimeline` 置位）；有磁盘缓存时挂载即渲染缓存，无加载闪屏；**JS/CSS 传输期间**（挂载前）由 `index.html` 内联骨架屏给出首帧反馈（纯内联样式、主题跟随，8s 后浮出慢网提示；见 [Panel 前端](./panel.md)「前端分包与首屏」）
 - **兜底对齐**：`AgentCompleted` 时若该会话最后一条不是正式回答，自动补拉 `RequestTrunkTimeline`（带当前 team_id，`state.ts:710-724`）
 - 协议信封 `{type: command|event, payload}`；无法解析的帧静默丢弃（`protocol.ts:607-637`）
 

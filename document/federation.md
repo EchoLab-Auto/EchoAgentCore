@@ -158,7 +158,9 @@ peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲�
 （全部工具 / 自定义工具白名单 / 只读查询逐类勾选 / 接受委派 / 需确认列表；
 **添加 peer 默认满权限**）、手动**邀请串配对**：
 `echofed://host:port?name=<别名>#<token>`，在对应 Core 的卡片上生成 →
-在另一 Core 的卡片上粘贴自动填充。
+在另一 Core 的卡片上粘贴自动填充。保存前**校验**：peer URL 须为
+`ws://host:port`（空 = 仅接受连入）；同一 token 不得跨 peer 复用——
+在线判定与连入侧名字解析按 token 匹配，复用即歧义（直接拒绝保存）。
 
 **联邦组建向导（2026-10）**：面板以「创建联邦 / 添加节点」向导替代
 逐对手动配对——勾选节点（已接入的 Core，默认全选在线者）后按**全互联
@@ -203,8 +205,12 @@ peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲�
 - **代理注册**：链路 Up 时按对端 caps ∩ 首批支持集（bash/read_file/
   write_file/edit_file/search_code/list_files）给全部 persona 注册
   `<peer>__<tool>`（per-peer package 标签 `echo-agent.federation.<peer>`，
-  Down 整包禁用、Up 幂等恢复）；shell 三件套与进程级 ShellManager
-  耦合深，远程化留待后续
+  Down 整包禁用、Up 幂等恢复）——注册名与包标签取**解析后的配置名**
+  （邀请占位配对提升后即为提升后的名字，与 Down 的整包禁用键一致）；
+  `<peer>__<tool>` 的 peer 段经 LLM function-name 清洗（非
+  `[a-zA-Z0-9_-]` 字符 → `_`），模型/标注回传的清洗形会被**回查解析**为
+  原始配置名（`node://` 分流、子代理通知、只读查询三个出口）；
+  shell 三件套与进程级 ShellManager 耦合深，远程化留待后续
 - **远程 subagent 失败语义（fail-closed）**：node 指定的 peer 离线/
   名称错误时，子任务**立即以 Failed 终态回报**（不会静默回本机执行
   造成错机操作）；聚合组同步闭合。peer 名来源：工具列表的
