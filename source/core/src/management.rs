@@ -92,6 +92,22 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     diff == 0
 }
 
+/// 未授权（令牌缺失/不匹配）的握手拒绝响应。
+///
+/// 状态**必须是 4xx**（这里用 401）：`ErrorResponse::new` 的默认状态是
+/// 200 OK，而 tungstenite 对「成功状态」的握手错误会直接放弃写出任何字节
+/// （`CustomResponseSuccessful`），连接被静默关闭——客户端（Panel/TUI）
+/// 只能看到「Handshake not finished」，把「令牌不对」误诊为协议/网络故障
+/// （2026-10 云机接入实况：端口映射 + 令牌缺失时极难排查）。显式 401 后，
+/// 客户端收到标准 HTTP 响应并归类为认证失败、给出明确原因。
+fn unauthorized_response() -> tokio_tungstenite::tungstenite::handshake::server::ErrorResponse {
+    let mut response = tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(Some(
+        "unauthorized".into(),
+    ));
+    *response.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED;
+    response
+}
+
 /// Serve on a pre-bound listener (tests use it to pick a free port).
 #[cfg(test)]
 pub(crate) async fn serve_with_listener(
@@ -161,11 +177,7 @@ async fn handle_connection(
                 if authorized {
                     Ok(response)
                 } else {
-                    Err(
-                        tokio_tungstenite::tungstenite::handshake::server::ErrorResponse::new(
-                            Some("unauthorized".into()),
-                        ),
-                    )
+                    Err(unauthorized_response())
                 }
             },
         )
@@ -432,5 +444,73 @@ mod tests {
         }
         let _ = bridge;
         ws.close(None).await.ok();
+    }
+
+    /// 未授权拒绝必须是标准 HTTP 401 响应（回归，2026-10）：
+    /// 此前 `ErrorResponse::new(Some("unauthorized"))` 的默认状态是 200，
+    /// tungstenite 对成功状态直接放弃写出（CustomResponseSuccessful）——
+    /// 客户端只看到连接被静默关闭（"Handshake not finished"），把「令牌
+    /// 缺失/不匹配」误诊为协议或网络故障（云机端口映射场景实况）。
+    #[tokio::test]
+    async fn unauthorized_panel_gets_http_401_not_silent_close() {
+        let (bridge, _handle) = echo_agent::create_bridge();
+        let bridge = Arc::new(bridge);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let agent = dummy_agent();
+        tokio::spawn(async move {
+            let _ =
+                serve_with_listener_and_token(listener, bridge, agent, "secret-token".into()).await;
+        });
+
+        // 1) 不带令牌：必须收到 HTTP 401（而非 0 字节静默断开）。
+        let error = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+            .await
+            .expect_err("unauthorized handshake must fail");
+        match error {
+            tokio_tungstenite::tungstenite::Error::Http(response) => {
+                assert_eq!(
+                    response.status(),
+                    tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED,
+                    "unauthorized rejection must be an explicit HTTP 401"
+                );
+            }
+            other => panic!("expected HTTP 401 error, got {other:?}"),
+        }
+
+        // 2) 令牌错误：同样是 401（可归类为认证失败）。
+        let mut request =
+            tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+                format!("ws://{addr}").as_str(),
+            )
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("authorization", "Bearer wrong-token".parse().unwrap());
+        let error = tokio_tungstenite::connect_async(request)
+            .await
+            .expect_err("wrong token must fail");
+        assert!(
+            matches!(
+                error,
+                tokio_tungstenite::tungstenite::Error::Http(ref resp)
+                    if resp.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED
+            ),
+            "wrong-token rejection must be HTTP 401 too"
+        );
+
+        // 3) 正确令牌：正常升级（101）。
+        let mut request =
+            tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+                format!("ws://{addr}").as_str(),
+            )
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("authorization", "Bearer secret-token".parse().unwrap());
+        let ws = tokio_tungstenite::connect_async(request)
+            .await
+            .expect("authorized handshake must succeed");
+        drop(ws);
     }
 }
