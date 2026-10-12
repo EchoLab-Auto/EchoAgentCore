@@ -198,9 +198,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // ---- federation link（Phase 1：仅链路；工具路由 Phase 2 消费）----
-    // 联邦**无独立开关**：不配 listen 则不监听，无 peer 则不连出——单节点
-    // 无网络暴露，但联邦管理面永远可用。
+    // ---- federation link（工具路由 / 远程委派 / 只读查询均已接线）----
+    // 联邦**无独立开关**：零配置缺省监听 `0.0.0.0:3133`（显式
+    // `listen = ""` 才退回纯连出）；无 peer 则不连出、且 accept 侧靠
+    // per-peer token 认证不放行任何已知链路；联邦管理面永远可用。
     let federation = {
         let peers = cfg
             .federation

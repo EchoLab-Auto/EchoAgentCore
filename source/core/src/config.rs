@@ -68,7 +68,7 @@ pub struct CoreConfig {
     pub agent: echo_agent::AgentConfig,
     pub plugins: PluginsSection,
     pub core: CoreSection,
-    /// Core↔Core 联邦链路（Phase 1；缺省关闭）。
+    /// Core↔Core 联邦链路（零配置缺省开启：缺省监听 `0.0.0.0:3133`，详见 [`FederationSection`]）。
     pub federation: FederationSection,
     /// New adapter configuration.
     #[serde(alias = "adapters")]
