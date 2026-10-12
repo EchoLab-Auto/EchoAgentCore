@@ -22,6 +22,7 @@ EchoAgentPanel/
 │   ├── src/static_files.rs          # 静态资源（gzip 协商 / 弱 ETag-304 / 分级缓存）
 │   ├── src/proxy.rs                 # 浏览器 ↔ 接入点 Core 帧中继（多接入点 {core, frame} 信封、10s 写超时）
 │   ├── src/upstreams_api.rs         # 接入点管理 API（/api/upstreams 增删查）+ Bearer 认证中间件
+│   ├── src/ssh.rs                   # SSH 接入（russh 隧道 direct-tcpip + 远程 exec：日志/媒体回源）
 │   └── src/config.rs                # 面板配置加载
 ├── web/                             # Vue 3 + TypeScript + Vite 前端
 │   ├── vendor/ui-frame/             # ui-frame 组件库本地快照（dist + package.json，入库）
@@ -48,6 +49,14 @@ EchoAgentPanel/
 
 - 中继仍无状态（proxy.rs 约 800 行，含接入点聚合、信封路由与令牌校验），可独立测试（`tests/proxy.rs` 用假 Core 验证双向帧透传）
 - 多标签页 = 多条 Core 连接（Core 的 management 支持多 Panel）
+## SSH 接入（2026-10 末）
+
+接入点可配「**SSH 隧道**」接入方式（`[[cores]]` 内 `[cores.ssh]` 段）——针对只开 SSH 端口的云服务器：Panel 后端以 [russh](https://crates.io/crates/russh) 直连 SSH 并复用同一条连接做两件事（`source/echo-web-server/src/ssh.rs`，Core 零改动）：
+
+1. **本地端口转发**（direct-tcpip）：每条隧道在 `127.0.0.1` 上监听一个**进程生命周期内稳定**的本地端口，转发到远端 `127.0.0.1:<remote_port>`（默认 3132）；中继把 `ws://127.0.0.1:<本地端口>` 当普通接入点拨号——协议、Bearer 认证、退避重连全部复用既有路径。隧道断线自动指数退避重连（1s→30s，15s keepalive × 3 判死）；配置变更（主机/端口/密钥…）＝ 重建（新端口）。
+2. **远程 exec**：远端 Core 日志（日志页 `?core=<上游名>` → journalctl，两代单元名合并取最新 N 行）与**媒体文件回源**（`/media/<id>` 本地未命中时经隧道 `cat` 拉取 → 落 `media_cache_dir` 缓存 → 同源返回；`?core=` 提示优先，其余 SSH 接入点顺序兜底）。
+
+主机密钥默认 TOFU（首连写入 `~/.ssh/known_hosts`；之后变更一律拒绝，防 MITM；`accept_new_host_key = false` 关闭自动接受）。认证顺序：私钥文件 → ssh-agent → `~/.ssh/id_ed25519`、`~/.ssh/id_rsa` → 密码（全部可选；失败原因分类上报 UI）。隧道阶段（连接中/已连接/离线 + 原因）与固定本地端口经 `/api/upstreams` 的 `ssh` 字段回传（凭据仅 `password_set` 标记）；测试面：`tests/ssh.rs` 用**进程内假 sshd**（russh server）端到端验证转发/exec/媒体/TOFU/认证失败。
 - 已知限制：无会话恢复——刷新页面先由磁盘缓存（`trunk-cache.ts`）立即可渲染，再经 `RequestState` / `RequestTrunkTimeline{since_seq}` 增量 Bootstrap
 - 否决的备选：后端做协议层转发/会话管理（等于重写 Core 桥接层）；浏览器直连 Core :3132（跨域 + 暴露 management 端口）
 
@@ -76,7 +85,7 @@ EchoAgentPanel/
 
 ### 面板配置与运维
 
-- `~/.config/echo-agent-panel/panel.toml`：`[server]`（bind_address、static_dir、media_dir 媒体库目录、access_token 面板访问令牌）、`[core]`（connect_url 连 Core 的 WS 地址、access_token 认证头；单上游兜底——`[[cores]]` 键出现过即以在线管理为准）、`[[cores]]`（接入点 name/url/access_token，可空，设置·Core 连接页在线增删并写回）、`[logging]`（level/format/log_file 滚动）
+- `~/.config/echo-agent-panel/panel.toml`：`[server]`（bind_address、static_dir、media_dir 媒体库目录、media_cache_dir 远端媒体缓存目录、access_token 面板访问令牌）、`[core]`（connect_url 连 Core 的 WS 地址、access_token 认证头；单上游兜底——`[[cores]]` 键出现过即以在线管理为准）、`[[cores]]`（接入点 name/url/access_token/可选 `[cores.ssh]` SSH 段，可空，设置·Core 连接页在线增删并写回）、`[logging]`（level/format/log_file 滚动）
 - `systemctl --user restart echo-agent-panel.service` 重启；静态资源在 `~/.local/libexec/echo-agent-panel/web`
 - 更新走 `echo-agent-panel-update.service`（构建 Rust 服务 + `npm run build` + 替换静态目录 + 重启），详见 [部署与自更新](./ops-deploy.md)
 
