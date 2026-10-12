@@ -49,6 +49,7 @@ graph LR
   Plugins --> Author[插件开发指南|/plugin-authoring.md]
   Plugins --> Plan[完全解耦推进计划|/decoupling-plan.md]
   Agents --> Style[拟人化方案（规划）|/agent-humanlike-style.md]
+  Fed --> FedMerge[联邦·管理端口合并（规划）|/federation-port-merge.md]
   Panel --> Inter[Panel 交互定义|/panel-interaction.md]
   Inter --> Layout[布局与导航|/panel-layout.md]
   Inter --> Chat[会话视图|/panel-chat.md]
@@ -70,7 +71,7 @@ graph LR
 - **插件**——插件体系与各插件机制文档：[插件化设计](./core-plugins.md)、[工具系统](./core-tools.md)、[技能系统](./core-skills.md)、[Subagent 插件](./core-subagent.md)、[QQ 适配器门控](./adapter-qq-gating.md)、[联邦（多机）](./federation.md)、[插件开发指南](./plugin-authoring.md)
 - **前端**——Panel 与各视图交互契约：`panel.md`、`panel-interaction.md` 及各 `panel-*` 视图文档
 - **工程**——协议、运维与开发规范：[协议与数据流](./protocol.md)、[部署与自更新](./ops-deploy.md)、[开发指南](./dev-guide.md)、[测试策略](./dev-testing.md)、[文档规范](./documentation-guide.md)
-- **规划**——路线图与提案：[完全解耦推进计划](./decoupling-plan.md)、[拟人化方案](./agent-humanlike-style.md)
+- **规划**——路线图与提案：[完全解耦推进计划](./decoupling-plan.md)、[拟人化方案](./agent-humanlike-style.md)、[联邦·管理端口合并](./federation-port-merge.md)
 
 ### 文档约定（速览）
 

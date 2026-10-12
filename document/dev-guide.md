@@ -29,6 +29,7 @@ link: ["dev-testing | 测试策略 | r>l", "documentation-guide | 文档规范 |
 | [federation.md](./federation.md) | Core↔Core 联邦（链路、握手、帧协议） |
 | [decoupling-plan.md](./decoupling-plan.md) | 规划：完全解耦推进计划（动态库 / 子进程） |
 | [agent-humanlike-style.md](./agent-humanlike-style.md) | 规划：拟人化方案（语气 / 节奏 / 落地建议） |
+| [federation-port-merge.md](./federation-port-merge.md) | 规划：联邦·管理端口合并（单端口提案） |
 
 > 架构/Agent/Adapter/Config 的通用细节通过源码注释（`//! module doc`）和 README 维护，避免文档与代码分叉。
 
