@@ -317,6 +317,13 @@ impl PluginHandle {
     }
 }
 
+/// 插件事件（`Emit`）缓冲上限。
+///
+/// 事件当前**无生产消费方**（仅测试经 `take_events` 取用）——不封顶则
+/// 插件持续 `Emit` 会无界堆积。封顶后丢新事件并计数（保留先到语义，
+/// 避免 Vec 头部移除的 O(n) 搬移）；接线消费方后可评估放宽。
+const MAX_PENDING_EVENTS: usize = 1024;
+
 /// 监督任务与句柄共享的状态。
 struct Shared {
     plugin_id: String,
@@ -330,6 +337,8 @@ struct Shared {
     seq: AtomicU64,
     pending: Mutex<HashMap<String, PendingCall>>,
     events: Mutex<Vec<(String, Value)>>,
+    /// 事件缓冲满后丢弃的事件数（封顶保护的可观测性）。
+    dropped_events: AtomicU64,
     /// 当前连接（None = 未启动 / 重启中 / 已停）。
     conn: Mutex<Option<Arc<dyn PluginConnection>>>,
     /// 控制通道（drain / upgrade 请求）。
@@ -393,6 +402,7 @@ impl Shared {
             seq: AtomicU64::new(0),
             pending: Mutex::new(HashMap::new()),
             events: Mutex::new(Vec::new()),
+            dropped_events: AtomicU64::new(0),
             conn: Mutex::new(None),
             ctl,
             host_services,
@@ -423,10 +433,20 @@ impl Shared {
     }
 
     fn push_event(&self, event: String, payload: Value) {
-        self.events
-            .lock()
-            .expect("events lock poisoned")
-            .push((event, payload));
+        let mut events = self.events.lock().expect("events lock poisoned");
+        if events.len() >= MAX_PENDING_EVENTS {
+            let dropped = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
+            // 首次与每满 1024 次告警一次（防刷屏）；计数不受日志节流影响。
+            if dropped == 1 || dropped.is_multiple_of(1024) {
+                tracing::warn!(
+                    plugin = %self.plugin_id,
+                    dropped,
+                    "plugin event buffer full ({MAX_PENDING_EVENTS}) — dropping events"
+                );
+            }
+            return;
+        }
+        events.push((event, payload));
     }
 
     fn take_events(&self) -> Vec<(String, Value)> {
@@ -1110,5 +1130,37 @@ fn log_record(plugin_id: &str, rec: &LogRecord) {
         LogLevel::Error => {
             tracing::error!(plugin = %plugin_id, fields = ?fields, "{}", rec.message)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 事件缓冲封顶：超限丢新并计数，消费端取走的是先到的事件。
+    #[test]
+    fn event_buffer_is_capped_with_drop_count() {
+        let (ctl_tx, _ctl_rx) = mpsc::channel::<Control>(1);
+        let shared = Shared::new(
+            "test-plugin".into(),
+            RestartPolicy::default(),
+            ctl_tx,
+            Arc::new(HostServiceRegistry::new()),
+        );
+        let overflow = 50;
+        for i in 0..(MAX_PENDING_EVENTS + overflow) {
+            shared.push_event(format!("e{i}"), Value::Null);
+        }
+        let taken = shared.take_events();
+        assert_eq!(taken.len(), MAX_PENDING_EVENTS, "缓冲未封顶");
+        assert_eq!(taken[0].0, "e0", "应保留先到事件（丢新语义）");
+        assert_eq!(
+            shared.dropped_events.load(Ordering::Relaxed),
+            overflow as u64,
+            "丢弃计数不符"
+        );
+        // 再压一轮：消费后缓冲清空，恢复收纳。
+        shared.push_event("after".into(), Value::Null);
+        assert_eq!(shared.take_events().len(), 1);
     }
 }

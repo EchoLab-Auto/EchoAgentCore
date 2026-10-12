@@ -71,23 +71,17 @@ pub fn decode_invite(invite: &str) -> Result<InvitePayload> {
 }
 
 /// 生成随机共享密钥（32 字节 → 64 位十六进制）。
+///
+/// 熵源：`Uuid::new_v4()`（由 getrandom 提供加密级随机；两个拼接共
+/// 244 bit）。**不使用**自制的非加密熵源（xorshift / 时间戳混合可预测）
+/// ——配对（占位提升）即落全权限（`allow_tools` = `*`），token 是唯一
+/// 的门禁凭据，必须按密钥强度生成。
 pub fn generate_token() -> String {
-    // 复用 NodeId 的熵源思路：时间 + 计数 + 地址混合（非安全级——联邦
-    // token 强度依赖分发渠道保密性，与 RFC §2.3 模型一致）。如需加密级
-    // 随机，后续接 getrandom。
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let mut out = String::with_capacity(64);
-    let mut x = now.as_nanos() as u64 ^ (&now as *const _ as u64);
-    for _ in 0..4 {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        out.push_str(&format!("{x:016x}"));
-    }
-    out
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
 fn urlencoding_encode(s: &str) -> String {

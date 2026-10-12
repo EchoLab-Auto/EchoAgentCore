@@ -41,6 +41,36 @@ const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const OUTBOUND_CAP: usize = 256;
 /// dial 停车轮询间隔（已有活跃链路时等待其消失的检查周期）。
 const LINK_WAIT_POLL: Duration = Duration::from_secs(2);
+/// 出站写超时：对端不读时 TCP 发送缓冲写满，裸 `write.send().await` 会
+/// 永久阻塞——select 循环随之冻结（读/心跳/判死分支全部停摆），链路成
+/// 僵尸而 `has_active_link` 仍为真、拨号环也不再重连。超时即断链，交给
+/// 重连收敛（与 management WS 的判死/写超时口径一致）。
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 带超时的出站写（语义见 [`WRITE_TIMEOUT`]）。
+async fn send_with_timeout<S>(write: &mut S, msg: Message) -> Result<()>
+where
+    S: futures_util::Sink<Message> + Unpin,
+    <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+{
+    send_with_timeout_for(write, msg, WRITE_TIMEOUT).await
+}
+
+/// 带自定义超时的出站写（测试注入短超时；生产一律走 [`send_with_timeout`]）。
+async fn send_with_timeout_for<S>(write: &mut S, msg: Message, timeout: Duration) -> Result<()>
+where
+    S: futures_util::Sink<Message> + Unpin,
+    <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+{
+    match tokio::time::timeout(timeout, write.send(msg)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.into()),
+        Err(_) => anyhow::bail!(
+            "federation write timed out ({}s) — peer not reading",
+            timeout.as_secs()
+        ),
+    }
+}
 
 /// 一个 peer 的静态配置（`[federation.peers.<name>]`）。
 #[derive(Debug, Clone)]
@@ -559,7 +589,7 @@ impl Federation {
         // 主动方（Bearer 已在 connect 请求头完成）先发 Hello；被动方先收 Hello。
         if dial_peer.is_some() {
             let text = serde_json::to_string(&hello)?;
-            write.send(Message::Text(text)).await?;
+            send_with_timeout(&mut write, Message::Text(text)).await?;
         }
 
         // 等对方 Hello（被动方）或作为主动方已发 Hello 后等 Welcome。
@@ -576,7 +606,7 @@ impl Federation {
         if dial_peer.is_none() {
             // 被动方回握。
             let text = serde_json::to_string(&FedFrame::Welcome(self.hello()))?;
-            write.send(Message::Text(text)).await?;
+            send_with_timeout(&mut write, Message::Text(text)).await?;
         } else {
             // 主动方应收到 Welcome；若收到的是 Hello（双方同时 dial），按
             // node_id 字典序小的一方断开重连（天然防撞）。
@@ -736,7 +766,7 @@ impl Federation {
                     match frame {
                         Some(frame) => {
                             let text = serde_json::to_string(&frame)?;
-                            write.send(Message::Text(text)).await?;
+                            send_with_timeout(&mut *write, Message::Text(text)).await?;
                         }
                         // 通道关闭 = 本链路已被顶掉（replace）/被移除：主动
                         // 退出并关闭连接——否则旧连接会成为"僵尸"一直心跳
@@ -752,7 +782,7 @@ impl Federation {
                             match serde_json::from_str::<FedFrame>(&text) {
                                 Ok(FedFrame::Ping { sent_at_ms }) => {
                                     let pong = FedFrame::Pong { sent_at_ms: now_ms(), echo_ms: sent_at_ms };
-                                    write.send(Message::Text(serde_json::to_string(&pong)?)).await?;
+                                    send_with_timeout(&mut *write, Message::Text(serde_json::to_string(&pong)?)).await?;
                                 }
                                 Ok(FedFrame::Pong { .. }) => { /* 存活证据已刷新 */ }
                                 Ok(frame) => {
@@ -780,7 +810,7 @@ impl Federation {
                         anyhow::bail!("peer silent for >{}s", DEAD_AFTER.as_secs());
                     }
                     let ping = FedFrame::Ping { sent_at_ms: now_ms() };
-                    write.send(Message::Text(serde_json::to_string(&ping)?)).await?;
+                    send_with_timeout(&mut *write, Message::Text(serde_json::to_string(&ping)?)).await?;
                 }
                 _ = shutdown_rx.changed() => anyhow::bail!("shutdown"),
             }
@@ -894,5 +924,59 @@ pub fn error_frame(
         call_id,
         code,
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    /// 永不就绪的 Sink：模拟对端不读（TCP 发送缓冲写满后的挂起写）。
+    struct StallingSink;
+
+    impl futures_util::Sink<Message> for StallingSink {
+        type Error = tokio_tungstenite::tungstenite::Error;
+
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+        fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+            unreachable!("poll_ready 永不就绪，不应走到 start_send")
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+    }
+
+    /// 写超时必须生效：对端不读时裸 send 永久挂起会冻结整个 select 循环。
+    #[tokio::test]
+    async fn write_timeout_fires_when_peer_stalls() {
+        let mut sink = StallingSink;
+        let err = send_with_timeout_for(
+            &mut sink,
+            Message::Text("x".to_string()),
+            Duration::from_millis(30),
+        )
+        .await
+        .expect_err("写超时未触发");
+        assert!(err.to_string().contains("timed out"), "错误信息不符: {err}");
+    }
+
+    /// 正常路径：可立即写出的 Sink 不受超时影响。
+    #[tokio::test]
+    async fn write_passes_through_when_ready() {
+        let mut sink = futures_util::sink::drain::<Message>();
+        send_with_timeout_for(
+            &mut sink,
+            Message::Text("ok".to_string()),
+            Duration::from_millis(30),
+        )
+        .await
+        .expect("就绪 Sink 不应超时");
     }
 }
