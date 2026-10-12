@@ -549,14 +549,13 @@ pub fn shell_emit_for(translate: impl Fn(ShellEvent) + Send + Sync + 'static) ->
 
 /// 面向命令处理层：把事件通到指定 Agent 的 emit（同一 crate，无循环依赖）。
 pub fn shell_emit_for_self(agent: &crate::agent::Agent) -> ShellEmit {
-    let agent = unsafe {
-        // 调用方持有 agent 引用，且回调在命令处理期间使用——生命周期与
-        // apply_command 一致，此处通过原始指针延长（Arc 由组合根持有）。
-        let ptr: *const crate::agent::Agent = agent as *const crate::agent::Agent;
-        &*ptr
-    };
+    // 走 `Agent::emit_handle`（快照式安全出口，语义与 emit 一致：team 标注
+    // + 事件总线 + 汇聚点）。2026-10 巡检：此前用 unsafe 原始指针给 `&Agent`
+    // 延寿，安全依赖「Arc 由组合根持有」的人工约定；emit_handle 是编译器
+    // 见证的 `'static` 出口，正好为此类跨 await 边界调用方而设。
+    let emit = agent.emit_handle();
     shell_emit_for(move |event: ShellEvent| {
-        agent.emit(shell_event_to_backend(event));
+        emit(shell_event_to_backend(event));
     })
 }
 

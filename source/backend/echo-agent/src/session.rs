@@ -1099,6 +1099,13 @@ impl TrunkStore {
     /// (provenance metadata) and the session header are kept — they carry no
     /// message content.
     pub async fn clear_history(&self) {
+        // 压缩互斥（2026-10 巡检 P1）：compact_history 全程持有 compact_lock
+        // （预览→归档→LLM 摘要→replace_all 落地，秒级窗口）。不取锁的话，
+        // 清理落在压缩窗口内时，压缩的 replace_all 会把**清理前**的旧事件
+        // 重新灌回日志——「清空」被静默复活（清空发生在压缩落地之后才正确）。
+        // 与 compact_history 同锁互斥；无嵌套调用（compact 流程不调
+        // clear_history），取锁无死锁风险。
+        let _compact_guard = self.compact_lock().await;
         self.event_log.clear();
         for entry in self.session_histories.iter() {
             entry.value().lock().await.clear();

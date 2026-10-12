@@ -405,12 +405,15 @@ pub enum BackendCommand {
     RequestSelfUpdateStatus,
 }
 
-/// 多上游聚合下可"无壳广播"的只读命令名集合（**契约**）。
+/// 多上游聚合下**适合广播**的幂等只读命令名集合（参考清单）。
 ///
-/// 中继（EchoAgentPanel 的 `echo-web-server`）在不指定目标 core 时只放行这些
-/// 命令；其余命令必须显式指定 core，避免一次点击扇出到全部上游。中继端维护
-/// 同一列表（其 `is_readonly_command`）——**改动此处必须同步**，两边各有
-/// 一致性测试（中继 `bootstrap_readonly_commands_are_whitelisted`）。
+/// 历史（准确性校准 2026-10 巡检）：中继曾按命令名白名单判别"能否无壳
+/// 广播"，后已改为**纯意图透传**——投递范围由客户端显式声明
+/// （`{"core": <name>}` 定向 / `{"broadcast": true}` 广播 / 无壳仅单上游
+/// 直发），中继不做命令名分类，原镜像列表与其一致性测试均已移除。
+/// 本清单保留价值：定义"哪些命令是幂等只读、可安全广播"的权威参考
+/// （前端引导命令即从此类命令中选取），无跨仓强制同步义务；
+/// 契约快照测试见本文件 `broadcast_readonly_contract_snapshot`。
 pub const BROADCAST_READONLY_COMMANDS: &[&str] = &[
     "RequestTeamsList",
     "RequestAdapterList",

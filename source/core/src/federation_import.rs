@@ -52,6 +52,14 @@ pub(crate) async fn deliver_aggregate_summary(
 const SESSION_IMPORT_CHUNK_BYTES: usize = 192 * 1024;
 /// 迁移分块数上限（防御：192KB × 4096 ≈ 768MB，超限拒绝）。
 const SESSION_IMPORT_MAX_CHUNKS: usize = 4096;
+/// 单块字节硬上限（接收侧校验：发送侧按 [`SESSION_IMPORT_CHUNK_BYTES`]
+/// 切块，超限块即协议违规——拒收防对端过大块撑爆内存）。
+const SESSION_IMPORT_MAX_CHUNK_BYTES: usize = SESSION_IMPORT_CHUNK_BYTES;
+/// 并发迁移上限（防御：多 transfer_id 同时缓冲；正常语义下并发为个位数）。
+const SESSION_IMPORT_MAX_TRANSFERS: usize = 32;
+/// 缓冲无新块的可容忍时长：对端断链/中途放弃的残片超时回收
+/// （2026-10 巡检 P1：此前仅在凑齐时移除，弃单永久驻留）。
+const SESSION_IMPORT_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
 /// 发送窗口：目标每块回 ack，源最多领先窗口块（联邦出站队列 256 帧上限的
 /// 安全余量，避免 try_send 满载失败）。
 const SESSION_IMPORT_WINDOW: u32 = 32;
@@ -106,6 +114,8 @@ pub(crate) struct ImportBuffer {
     chunks: Vec<Option<String>>,
     session_id: String,
     team_id: String,
+    /// 最近一次收到分块的时间（弃单清扫依据；每块到达即刷新）。
+    last_activity: std::time::Instant,
 }
 
 /// 凑齐后的导入任务：由泵 spawn 到阻塞线程执行（大日志投影不阻塞联邦泵）。
@@ -126,6 +136,17 @@ pub(crate) enum ImportOutcome {
     Failed(String),
     /// 全部到齐：交给调用方 spawn 导入并回终态（Box 收敛 enum 大小差异）。
     Ready(Box<ImportReady>),
+}
+
+/// 清扫超时无活动的导入缓冲（对端断链/中途放弃的残片），返回清扫条数。
+pub(crate) fn sweep_stale_imports(
+    imports: &mut std::collections::HashMap<String, ImportBuffer>,
+) -> usize {
+    let before = imports.len();
+    let now = std::time::Instant::now();
+    imports
+        .retain(|_, buffer| now.duration_since(buffer.last_activity) < SESSION_IMPORT_STALE_AFTER);
+    before - imports.len()
 }
 
 /// 连续收到的块数（前缀）；重发块幂等覆盖，不影响该值。
@@ -152,17 +173,28 @@ pub(crate) fn handle_session_import(
     if total == 0 || frame.chunk_index as usize >= total || total > SESSION_IMPORT_MAX_CHUNKS {
         return (0, ImportOutcome::Failed("非法分块头".into()));
     }
+    if frame.data.len() > SESSION_IMPORT_MAX_CHUNK_BYTES {
+        return (0, ImportOutcome::Failed("分块超限".into()));
+    }
+    if !imports.contains_key(&frame.transfer_id) && imports.len() >= SESSION_IMPORT_MAX_TRANSFERS {
+        return (
+            0,
+            ImportOutcome::Failed("并发会话导入过多，稍后重试".into()),
+        );
+    }
     let entry = imports
         .entry(frame.transfer_id.clone())
         .or_insert_with(|| ImportBuffer {
             chunks: vec![None; total],
             session_id: frame.session_id.clone(),
             team_id: frame.team_id.clone(),
+            last_activity: std::time::Instant::now(),
         });
     if entry.chunks.len() != total {
         // 同一 transfer_id 分块总数变化 → 协议错误，按新头重置。
         entry.chunks = vec![None; total];
     }
+    entry.last_activity = std::time::Instant::now();
     entry.chunks[frame.chunk_index as usize] = Some(frame.data.clone());
     let acked = contiguous_acked(&entry.chunks);
     if acked as usize != total {
@@ -402,4 +434,51 @@ pub(crate) async fn handle_migrate_session(
         message,
         success: true,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buffer_with_age(age: std::time::Duration) -> ImportBuffer {
+        ImportBuffer {
+            chunks: vec![None; 1],
+            session_id: "s".into(),
+            team_id: "t".into(),
+            last_activity: std::time::Instant::now()
+                .checked_sub(age)
+                .unwrap_or_else(std::time::Instant::now),
+        }
+    }
+
+    /// 弃单清扫：超时无活动的缓冲被移除，活跃的保留。
+    #[test]
+    fn stale_imports_are_swept_but_fresh_kept() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "old".to_string(),
+            buffer_with_age(SESSION_IMPORT_STALE_AFTER + std::time::Duration::from_secs(1)),
+        );
+        map.insert(
+            "fresh".to_string(),
+            buffer_with_age(std::time::Duration::from_secs(5)),
+        );
+        let swept = sweep_stale_imports(&mut map);
+        assert_eq!(swept, 1, "应只清扫一条");
+        assert!(map.contains_key("fresh"), "活跃缓冲不应被清扫");
+        assert!(!map.contains_key("old"), "超时缓冲应被清扫");
+    }
+
+    /// 无超时缓冲时清扫为零且幂等。
+    #[test]
+    fn sweep_is_noop_when_all_fresh() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "a".to_string(),
+            buffer_with_age(std::time::Duration::from_secs(1)),
+        );
+        assert_eq!(sweep_stale_imports(&mut map), 0);
+        assert_eq!(sweep_stale_imports(&mut map), 0);
+        assert_eq!(map.len(), 1);
+    }
 }

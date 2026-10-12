@@ -1863,8 +1863,22 @@ async fn federation_router_pump(
     // 目标侧会话导入缓冲（P3-2b）：transfer_id → 有序分块。
     let mut imports: std::collections::HashMap<String, federation_import::ImportBuffer> =
         std::collections::HashMap::new();
+    // 导入缓冲过期清扫（2026-10 巡检 P1）：对端断链/中途放弃的残片定期回收
+    // （此前仅在凑齐时移除，残片永久驻留）。
+    let mut import_sweep = tokio::time::interval(std::time::Duration::from_secs(60));
+    import_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            _ = import_sweep.tick() => {
+                let dropped = federation_import::sweep_stale_imports(&mut imports);
+                if dropped > 0 {
+                    tracing::warn!(
+                        target: "federation",
+                        dropped,
+                        "stale session imports swept (peer disconnected or abandoned)"
+                    );
+                }
+            }
             event = rx.recv() => {
                 let Some(event) = event else { break };
                 match event {
@@ -3608,6 +3622,22 @@ mod core_util_tests {
         // 乱序：先到第 2 块不推进前缀（ack 仍 1）。
         let (acked, _) = handle_session_import(&supervisor, &import_frame(2, 3, ""), &mut imports);
         assert_eq!(acked, 1);
+    }
+
+    /// 防御：超限单块（>192KB）拒收，不进入缓冲（接收侧尺寸校验）。
+    #[test]
+    fn session_import_rejects_oversized_chunk() {
+        let supervisor = disabled_supervisor();
+        let mut imports = std::collections::HashMap::new();
+        let oversized = "x".repeat(192 * 1024 + 1);
+        let (acked, outcome) =
+            handle_session_import(&supervisor, &import_frame(0, 1, &oversized), &mut imports);
+        assert_eq!(acked, 0);
+        match outcome {
+            ImportOutcome::Failed(message) => assert!(message.contains("超限"), "消息: {message}"),
+            _ => panic!("expected oversized chunk rejection"),
+        }
+        assert!(imports.is_empty(), "超限块不应进入缓冲");
     }
 
     /// 防御：非法分块头（total=0）立即回失败，不污染缓冲。
