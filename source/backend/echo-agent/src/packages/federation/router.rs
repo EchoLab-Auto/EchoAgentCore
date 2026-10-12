@@ -199,13 +199,29 @@ impl InvokeRouter {
             .collect();
         for call_id in stale {
             if let Some((_, pending)) = self.pending.remove(&call_id) {
-                tracing::warn!(
-                    target: "federation",
-                    call_id = %call_id,
-                    peer = %pending.peer,
-                    age_ms = pending.started.elapsed().as_millis() as u64,
-                    "sweeping stale pending invoke"
-                );
+                // 清理原因分级（2026-10 日志修复）：等待方已放弃（receiver
+                // 被 drop——如 `fetch_live_load` 的 3s 短超时查询，属**常规**
+                // 行为）记 debug；ttl 超时（对端���期无响应 / 发送后未清理，
+                // 属异常）保持 warn。此前两者共用 warn——每次对端响应慢于
+                // 短超时都会留一条「stale pending」告警，把常规行为渲染成
+                // 故障（重启后首屏即两连 WARN 的实况）。
+                if pending.done.is_closed() {
+                    tracing::debug!(
+                        target: "federation",
+                        call_id = %call_id,
+                        peer = %pending.peer,
+                        age_ms = pending.started.elapsed().as_millis() as u64,
+                        "sweeping abandoned pending invoke (caller gone)"
+                    );
+                } else {
+                    tracing::warn!(
+                        target: "federation",
+                        call_id = %call_id,
+                        peer = %pending.peer,
+                        age_ms = pending.started.elapsed().as_millis() as u64,
+                        "sweeping stale pending invoke (ttl exceeded)"
+                    );
+                }
                 // drop done/chunks：若等待方仍在，wait() 以「链路断开」失败。
                 drop(pending);
             }
@@ -546,6 +562,28 @@ mod tests {
         let got = pending.wait().await.expect("result");
         assert!(got.success);
         assert_eq!(got.output, "done");
+        assert_eq!(router.pending_count(), 0);
+    }
+
+    /// 等待方放弃（receiver 被 drop，如短超时查询）的条目：sweep 清理、
+    /// 不 panic、不泄漏——且与 ttl 超时走不同日志路径（debug vs warn，
+    /// 2026-10 日志分级修复的行为契约）。
+    #[tokio::test]
+    async fn sweep_clears_abandoned_pending() {
+        let router = InvokeRouter::new("node-a".into());
+        let (_req, pending) = router.invoke("node-b", "bash", serde_json::json!({}), None);
+        assert_eq!(router.pending_count(), 1);
+        // 模拟 3s 短超时的查询：把等待句柄丢掉（receiver closed）。
+        drop(pending);
+        // 下一次 invoke 入口顺手 sweep（对端尚未回复，条目为 abandoned）。
+        let (_req2, pending2) = router.invoke("node-b", "bash", serde_json::json!({}), None);
+        assert_eq!(
+            router.pending_count(),
+            1,
+            "abandoned 条目应被清理，只剩新注册的一条"
+        );
+        drop(pending2);
+        router.sweep();
         assert_eq!(router.pending_count(), 0);
     }
 
