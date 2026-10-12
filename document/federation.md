@@ -125,15 +125,25 @@ require_confirm = []          # 命中列表的调用拒绝并提示需确认（
 allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspace_git_status/browse_directories/session_snapshot；"*" = 全部）
 ```
 
-**Panel 管理**（设置·联邦页）：`SaveFederationPeer` /
+**Panel 管理**（设置·Core 连接页·联邦区块）：`SaveFederationPeer` /
 `DeleteFederationPeer` / `RequestFederationStatus` /
 `RequestFederationInvite`（Frontend-only 命令）——peers 列表与在线
 状态、在线增删（运行时生效 + ConfigStore 原子写回）、**授权逐项可配**
 （全部工具 / 自定义工具白名单 / 只读查询逐类勾选 / 接受委派 / 需确认列表；
-**添加 peer 默认满权限**）、**邀请串配对**：
-`echofed://host:port?name=<别名>#<token>`，在 Panel 联邦页对应 Core 的
-卡片上生成 → 在另一 Core 的卡片上粘贴自动填充（「跨 Core 配对」亦可
-一键完成；一套 Panel 管全联邦，见 [Panel](./panel.md)）。
+**添加 peer 默认满权限**）、手动**邀请串配对**：
+`echofed://host:port?name=<别名>#<token>`，在对应 Core 的卡片上生成 →
+在另一 Core 的卡片上粘贴自动填充。
+
+**联邦组建向导（2026-10）**：面板以「创建联邦 / 添加节点」向导替代
+逐对手动配对——勾选节点（已接入的 Core，默认全选在线者）后按**全互联
+补全**语义逐对自动执行（已配置的对跳过；离线链路不重复配对——重连是
+链路自身行为）：一侧生成邀请 → 另一侧登记接入（满权限默认）→ 等链路
+在线；默认方向失败**自动换向重试一次**（NAT / 多网卡场景常见），两方向
+均失败则清理已登记条目并标记失败（可手动重试）。拓扑视图从各 Core 的
+`FederationStatus` 推导互联边——链路在线时按状态快照回传的**对端
+`node_id`** 精确匹配（`FederationPeerInfo.node_id`，2026-10 新增字段；
+离线/旧 Core 缺失时按 peer 名兜底：Panel 配置名 / node_name /
+`node-<id 前 8>`）。一套 Panel 管全联邦，见 [Panel](./panel.md)。
 
 **邀请配对的占位提升**：`invite-*` 占位（运行时-only）配对
 成功时**提升为配置条目**——写 `[federation.peers.<名字>]`（名字取对端
