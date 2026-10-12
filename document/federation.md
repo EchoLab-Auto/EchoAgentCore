@@ -171,14 +171,18 @@ peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲�
 离线/旧 Core 缺失时按 peer 名兜底：Panel 配置名 / node_name /
 `node-<id 前 8>`）。一套 Panel 管全联邦，见 [Panel](./panel.md)。
 
-**邀请配对的占位提升**：`invite-*` 占位（运行时-only）配对
+**邀请配对的占位提升**：`invite-*` 占位（运行时-only；**显式登记表**记账
+——不靠名字前缀猜测，用户配置名含 `invite-` 前缀不会被误提升）配对
 成功时**提升为配置条目**——写 `[federation.peers.<名字>]`（名字取对端
 `node_name`，缺省 `node-<node_id 前 8>`；url 空 = 仅接受连入、token 保留
 以支持对端重连），**默认满权限**（`allow_tools = ["*"]`、
 `allow_queries = ["*"]`、`allow_subagent = true`）——邀请串即一次性凭证，
 接收方按互信对待（与「SSH 免密」同语义），之后可在 Panel 逐项收紧。
 占位若不落盘：连入方向无配置（Panel 不可见/不可编辑、无策略 →
-静默全拒），对端重启后还因 token 消失无法重连。
+静默全拒），对端重启后还因 token 消失无法重连。未配对的占位超过 1 小时
+会在生成新邀请时自动清扫（避免幽灵 peer 堆积）；删除 peer
+（`DeleteFederationPeer`）会同步完成全量清理：在飞调用以失败终结、
+远程工具注销、映射与占位登记移除（即使对端当时在线）。
 
 **配对无方向性（2026-10）**：握手 Hello/Welcome 携带各自的**对外可拨
 地址**（与邀请串同源：`[federation] listen/advertise` 推导）——链路建立

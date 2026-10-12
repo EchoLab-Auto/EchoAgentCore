@@ -216,9 +216,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     }
 
     // ---- federation link（工具路由 / 远程委派 / 只读查询均已接线）----
-    // 联邦**无独立开关**：零配置缺省监听 `0.0.0.0:3133`（显式
-    // `listen = ""` 才退回纯连出）；无 peer 则不连出、且 accept 侧靠
-    // per-peer token 认证不放行任何已知链路；联邦管理面永远可用。
+    // 联邦**无独立开关**：零配置**缺省合并至管理地址**（保守场景回退
+    // `0.0.0.0:3133`，见 plan_federation_listen；显式 `listen = ""` 才
+    // 退回纯连出）；无 peer 则不连出、且 accept 侧靠 per-peer token 认证
+    // 不放行任何已知链路；联邦管理面永远可用。
     let federation = {
         let peers = cfg
             .federation
@@ -324,7 +325,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let fed_runner = fed.clone();
         tokio::spawn(async move {
             if let Err(e) = fed_runner.run(listen).await {
-                warn!(error = %e, "federation run exited");
+                // 独立监听退出（bind 失败如端口占用、或运行期错误）＝入站
+                // 静默失效；此前仅 warn（2026-10 审计 P1-5b），升级为
+                // error 并给出排查线索。
+                tracing::error!(
+                    error = %e,
+                    "federation listener exited — inbound links will NOT be accepted;                      check the listen port is free (ss -tlnp) and not used by another Core"
+                );
             }
         });
         let rt = Arc::new(FederationRuntime {
@@ -351,6 +358,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             } else {
                 None
             },
+            invite_placeholders: std::sync::Mutex::new(std::collections::HashMap::new()),
         });
         // 远程 subagent 观测出口（Phase 3）：大脑侧 spawn_subagent
         // node=... 受理/完成时经 Federation 通知对端（帧：
@@ -365,7 +373,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     let call_id = call_id.to_string();
                     let task = task.to_string();
                     tokio::spawn(async move {
-                        let node_id = rt.peer_names.read().await.get(&peer).cloned();
+                        let node_id = rt.resolve_peer_node(&peer).await;
                         let Some(node_id) = node_id else {
                             tracing::warn!(
                                 target: "federation",
@@ -407,8 +415,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     move |peer, kind, subject| {
                         let rt = rt_query.clone();
                         Box::pin(async move {
-                            let Some(node_id) = rt.peer_names.read().await.get(&peer).cloned()
-                            else {
+                            let Some(node_id) = rt.resolve_peer_node(&peer).await else {
                                 return Err(format!(
                                     "远程节点「{peer}」不在线或不存在（跨机工作区查询）"
                                 ));
@@ -416,12 +423,16 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                             let (request, pending) =
                                 rt.router
                                     .query(&node_id, kind, subject, String::new(), 0, 0);
+                            let call_id = pending.call_id.clone();
                             if rt
                                 .federation
                                 .send_to(&node_id, echo_federation::FedFrame::Query(request))
                                 .await
                                 .is_err()
                             {
+                                // 显式终结等待条目（2026-10 审计 P1-5）：
+                                // 此前仅返回错误，pending 滞留至 sweep/超时。
+                                rt.router.fail_pending(&call_id, "联邦链路发送失败");
                                 return Err(format!("远程节点「{peer}」链路发送失败"));
                             }
                             let result = tokio::time::timeout(
@@ -443,7 +454,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 move |peer, tool, args| {
                     let rt = rt_invoke.clone();
                     Box::pin(async move {
-                        let Some(node_id) = rt.peer_names.read().await.get(&peer).cloned() else {
+                        let Some(node_id) = rt.resolve_peer_node(&peer).await else {
                             return Err(format!(
                                 "远程节点「{peer}」不在线或不存在（node:// 分流）"
                             ));
@@ -454,12 +465,16 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                             args,
                             Some(std::time::Duration::from_secs(120)),
                         );
+                        let call_id = pending.call_id.clone();
                         if rt
                             .federation
                             .send_to(&node_id, echo_federation::FedFrame::Invoke(request))
                             .await
                             .is_err()
                         {
+                            // 显式终结等待条目（2026-10 审计 P1-5；与
+                            // remote_tool.rs 的同类处理对齐）。
+                            rt.router.fail_pending(&call_id, "联邦链路发送失败");
                             return Err(format!("远程节点「{peer}」链路不可用"));
                         }
                         match tokio::time::timeout(
@@ -479,7 +494,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         }
         (rt, event_rx, peer_policies)
     };
-    info!("federation link configured (always on)");
+    info!("federation link configured (no switch; zero peers = passive listen)");
     // 端口合并用联邦句柄（rt 随后被路由泵消费；此处预克隆——仅合并
     // 模式下由管理面插件消费）。
     let merge_fed = federation.0.federation.clone();
@@ -1360,6 +1375,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         (mgmt_addr.clone(), mgmt_bridge.clone(), mgmt_agent.clone());
                     let token = mgmt_token.clone();
                     let fed_opt = mgmt_fed.clone();
+                    let fed_merged = fed_opt.is_some();
                     let server = tokio::spawn(async move {
                         let result = match fed_opt {
                             Some(fed) => {
@@ -1368,7 +1384,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                             None => management::serve_with_token(&addr, br, ag, token).await,
                         };
                         if let Err(e) = result {
-                            warn!(error = %e, "management WS server stopped");
+                            // 管理面监听退出 = Panel 通道失效（合并模式下联邦
+                            // 入站一并失效）；升级为 error 并给出排查线索
+                            // （2026-10 审计：此前仅 warn，运行期静默）。
+                            tracing::error!(
+                                error = %e,
+                                "management WS server stopped — Panel channel{} down;                                  check the bind address is free (ss -tlnp)",
+                                if fed_merged { " and federation inbound" } else { "" }
+                            );
                         }
                     });
                     let abort = server.abort_handle();
@@ -1668,9 +1691,28 @@ struct FederationRuntime {
     /// `SaveFederationPeer` 拒绝与之一致的 peer token（升级回调无法区分
     /// 管理/联邦连接）；None = 独立模式（无此校验）。
     merged_management_token: Option<String>,
+    /// 邀请占位登记表（占位名 → 创建时刻，运行时-only；2026-10 审计）：
+    /// 显式记账替代「名字前缀 invite-」猜测——用户配置名含该前缀时不再被
+    /// 误提升/误覆盖权限；超时（1h）未配对的占位在生成新邀请时顺带清扫
+    /// （此前只增不减，面板出现无法取消的幽灵 peer）。
+    invite_placeholders: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
 
 impl FederationRuntime {
+    /// 按名字解析 node_id（2026-10 审计 P2-③）：模型/标注回传的 peer 名
+    /// 可能是**工具名清洗形**（空格/点/中文 → `_`，如 `my_node`），而
+    /// `peer_names` 键是原始配置名（`my node`）——直接 get 会失配、通知
+    /// 静默丢弃。先精确匹配，再按清洗规则反查原始配置名。
+    async fn resolve_peer_node(&self, peer: &str) -> Option<String> {
+        let map = self.peer_names.read().await;
+        if let Some(id) = map.get(peer) {
+            return Some(id.clone());
+        }
+        map.iter()
+            .find(|(name, _)| echo_agent::federation::sanitize_peer_component(name) == peer)
+            .map(|(_, id)| id.clone())
+    }
+
     /// 实时拉取对端负载（Query(NodeStatus) 3s 短超时；失败 None 退快照）。
     async fn fetch_live_load(&self, peer_name: &str) -> Option<u32> {
         let node_id = self.peer_names.read().await.get(peer_name).cloned()?;
@@ -1868,7 +1910,11 @@ async fn federation_router_pump(
                             .cloned()
                             .unwrap_or_default();
                         rt.router.set_policy(&info.node_id, policy);
-                        register_remote_tools(&rt, &personas, &info).await;
+                        // 传**解析后的配置名**（非 info.peer_name）：占位提升后
+                        // 两者不同——此前按旧占位名注册工具/包，而 Down 按新名
+                        // 禁用（set_package_enabled 命中 0），对端离线后 LLM 仍见
+                        // invite-xxxx__* 且包未禁（2026-10 审计 P0-1）。
+                        register_remote_tools(&rt, &personas, &info, &resolved_name).await;
                         // 学习对端宣告的拨号地址（配对无方向性，2026-10）：
                         // 对端 Hello 携带其对外地址 → 本机若无该 peer 地址
                         // 则补上（运行时 + 落配置）→ 双方都会主动重连。
@@ -2183,8 +2229,40 @@ async fn handle_federation_command(
                 if !mgmt_token.is_empty() && token == mgmt_token {
                     emit(echo_protocol::BackendEvent::Error {
                         session_id: None,
-                        message: "该 token 与 management_access_token 相同——端口合并下无法区分管理/联邦连接，                                  请使用不同令牌（改 peer token 或 `echo-agent-core token --rotate`）"
+                        message: "该 token 与 management_access_token 相同——端口合并下无法区分管理/联邦连接，请使用不同令牌（改 peer token 或 `echo-agent-core token --rotate`）"
                             .into(),
+                    });
+                    return;
+                }
+            }
+            // URL 形状校验（2026-10 审计 P1-4）：坏地址保存成功但 dial 反复
+            // 失败（仅 debug 日志），面板看不出配置错误——保存时直接拒绝。
+            // 空 = 仅接受连入（合法）。
+            if let Err(reason) = validate_federation_peer_url(&peer.url) {
+                emit(echo_protocol::BackendEvent::Error {
+                    session_id: None,
+                    message: reason,
+                });
+                return;
+            }
+            // 同 token 双 peer 拒绝（2026-10 审计 P2-④）：在线判定
+            // （is_link_token_online）与连入侧名字解析按 token 匹配——
+            // 两个 peer 共用 token 会让二者歧义（在线状态互相串、连入
+            // 解析到错误配置名）。
+            {
+                let conflict = rt
+                    .federation
+                    .peer_configs()
+                    .await
+                    .into_iter()
+                    .find(|p| p.name != name && !p.token.is_empty() && p.token == token);
+                if let Some(other) = conflict {
+                    emit(echo_protocol::BackendEvent::Error {
+                        session_id: None,
+                        message: format!(
+                            "该 token 已被 peer「{}」使用——同一 token 只能属于一个 peer（在线判定与连入名解析按 token 匹配）",
+                            other.name
+                        ),
                     });
                     return;
                 }
@@ -2271,7 +2349,35 @@ async fn handle_federation_command(
             let node_id = rt.peer_names.read().await.get(&name).cloned();
             rt.federation.remove_peer(&name).await;
             if let Some(node) = node_id {
+                // Down 等价清理（2026-10 审计 P0-2）：drop_link 移除链路句柄
+                // 后，链路自身退出时 still_mine=false **不再发 Down**——此前
+                // 这里仅 drop_link，导致 router 在飞调用、工具包禁用、映射
+                // 与保活桶全部跳过（删除在线 peer 后工具残留可调用、
+                // spawn/node:// 反查文案错、在飞调用悬挂至超时）。
+                rt.router.drop_peer(&node);
+                // 保活桶移除 = 注销该 peer 全部远程工具（Disposer drop 按名
+                // 移除；删除语义强于 Down 的"整包禁用"——peer 已从配置消失，
+                // 不设重新启用路径）。
+                {
+                    let mut slot = rt.remote_tool_keepers.lock().expect("keepers poisoned");
+                    slot.remove(&node);
+                }
+                rt.node_to_peer.write().await.remove(&node);
+                rt.peer_names.write().await.remove(&name);
                 rt.federation.drop_link(&node).await;
+                tracing::info!(
+                    target: "federation",
+                    peer = %node, name = %name,
+                    "federation peer deleted (router pending failed; remote tools unregistered; mappings cleaned)"
+                );
+            }
+            // 邀请占位登记表同步移除（运行时-only；2026-10）。
+            {
+                let mut reg = rt
+                    .invite_placeholders
+                    .lock()
+                    .expect("invite registry poisoned");
+                reg.remove(&name);
             }
             let write_name = name.clone();
             if let Err(e) = rt.config_store.patch(move |root| {
@@ -2318,10 +2424,59 @@ async fn handle_federation_command(
                     token: token.clone(),
                 })
                 .await;
+            // 占位登记 + 存量清扫（2026-10 审计 P1-2）：未配对占位此前
+            // 只增不减（面板幽灵 peer、无取消入口）——生成新邀请时顺带
+            // 清理超过 1 小时且未配对的旧占位。
+            let stale: Vec<String> = {
+                let mut reg = rt
+                    .invite_placeholders
+                    .lock()
+                    .expect("invite registry poisoned");
+                let stale: Vec<String> = reg
+                    .iter()
+                    .filter(|(_, created)| created.elapsed() > std::time::Duration::from_secs(3600))
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                for name in &stale {
+                    reg.remove(name);
+                }
+                stale
+            }; // 锁在 await 前释放（MutexGuard 非 Send）
+            for name in stale {
+                // 同步从运行时 peer 表移除（若仍在）。
+                rt.federation.remove_peer(&name).await;
+            }
+            rt.invite_placeholders
+                .lock()
+                .expect("invite registry poisoned")
+                .insert(placeholder.clone(), std::time::Instant::now());
             emit(echo_protocol::BackendEvent::FederationInvite { invite });
         }
         _ => {}
     }
+}
+
+/// 联邦 peer URL 形状校验（`SaveFederationPeer` 保存前判；2026-10 审计）。
+/// 空 = 仅接受连入（合法）；否则必须 `ws://host[:port]`（wss 同）。
+fn validate_federation_peer_url(url: &str) -> Result<(), String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Ok(());
+    }
+    let rest = url
+        .strip_prefix("ws://")
+        .or_else(|| url.strip_prefix("wss://"))
+        .ok_or_else(|| {
+            format!("联邦 peer 地址必须以 ws:// 或 wss:// 开头（空 = 仅接受连入）：{url}")
+        })?;
+    let hostport = rest.split('/').next().unwrap_or("");
+    let (host, port) = hostport
+        .rsplit_once(':')
+        .ok_or_else(|| format!("联邦 peer 地址缺少端口（应为 ws://host:port）：{url}"))?;
+    if host.is_empty() || port.parse::<u16>().is_err() {
+        return Err(format!("联邦 peer 地址的主机或端口无效：{url}"));
+    }
+    Ok(())
 }
 
 /// 只读查询执行端（Phase 5）。
@@ -2739,9 +2894,22 @@ async fn promote_paired_invite_placeholders(
     policies: &mut std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
 ) {
     let configs = rt.federation.peer_configs().await;
+    // 占位判定走**登记表**（2026-10 审计 P1-1）：此前按「名字前缀 invite-」
+    // 猜测——用户配置名含该前缀的 peer 一旦 Up 即被当占位提升（改名、
+    // 写配置、权限强制覆盖为 full 且原配置段残留）。登记表为显式记账。
+    let placeholders: std::collections::HashSet<String> = {
+        let reg = rt
+            .invite_placeholders
+            .lock()
+            .expect("invite registry poisoned");
+        reg.keys().cloned().collect()
+    };
+    if placeholders.is_empty() {
+        return;
+    }
     let mut paired: Vec<(String, String)> = Vec::new(); // (placeholder 名, token)
     for p in &configs {
-        if !p.name.starts_with("invite-") {
+        if !placeholders.contains(&p.name) {
             continue;
         }
         if rt.federation.is_link_token_online(&p.token).await {
@@ -2816,6 +2984,14 @@ async fn promote_paired_invite_placeholders(
             .rename_peer_info(&placeholder, &promoted)
             .await;
         rt.federation.remove_peer(&placeholder).await;
+        // 登记表移除（已提升为正式配置条目）。
+        {
+            let mut reg = rt
+                .invite_placeholders
+                .lock()
+                .expect("invite registry poisoned");
+            reg.remove(&placeholder);
+        }
         tracing::info!(
             target: "federation",
             %placeholder, promoted = %promoted, node = %node_id,
@@ -2926,12 +3102,15 @@ async fn register_remote_tools(
     rt: &FederationRuntime,
     personas: &agent_supervisor::AgentSupervisor,
     info: &echo_federation::PeerInfo,
+    peer_name: &str,
 ) {
     let candidates = echo_agent::federation::remote_tool_candidates(&info.caps);
     if candidates.is_empty() {
         return;
     }
-    let package = format!("echo-agent.federation.{}", info.peer_name);
+    // `peer_name` 为解析后的配置名（占位提升后 = 新名）；工具注册名与包
+    // 标签都以它为准，保证与 Down 的 peer_package（node_to_peer 反查）一致。
+    let package = format!("echo-agent.federation.{peer_name}");
     // 先清本 peer 旧句柄（重注册/重连场景）：**先删后插**——Disposer
     // 按名移除，若先插后删，旧句柄会把同名的**新**注册条目一并删掉
     // （2026-10 修复；旧实现为全局 clear 后 extend，多 peer 下互杀）。
@@ -2945,9 +3124,9 @@ async fn register_remote_tools(
         let definitions = persona.agent.tools.definitions().await;
         for remote_name in &candidates {
             let (description, parameters) =
-                echo_agent::federation::proxy_schema(&definitions, remote_name, &info.peer_name);
+                echo_agent::federation::proxy_schema(&definitions, remote_name, peer_name);
             let tool = std::sync::Arc::new(echo_agent::federation::RemoteTool::new(
-                &info.peer_name,
+                peer_name,
                 &info.node_id,
                 remote_name,
                 description,
@@ -2958,7 +3137,7 @@ async fn register_remote_tools(
             let disposer = persona.agent.tools.register_reversible(tool);
             keepers.push(disposer); // 保活：drop 即注销，绝不能当临时值
             persona.agent.tools.set_package(
-                &echo_agent::federation::remote_tool_name(&info.peer_name, remote_name),
+                &echo_agent::federation::remote_tool_name(peer_name, remote_name),
                 &package,
             );
         }
@@ -2974,7 +3153,7 @@ async fn register_remote_tools(
     }
     tracing::info!(
         target: "federation",
-        peer = %info.node_id, package = %package, tools = registered,
+        peer = %info.node_id, name = %peer_name, package = %package, tools = registered,
         "remote proxy tools registered"
     );
 }
@@ -3188,6 +3367,7 @@ mod logging_tests {
 
 #[cfg(test)]
 mod core_util_tests {
+    use super::validate_federation_peer_url;
     use crate::agent_supervisor::AgentSupervisor;
     use crate::federation_import::{chunk_utf8, handle_session_import, ImportOutcome};
     use crate::online_node_for_peer;
@@ -3249,6 +3429,26 @@ mod core_util_tests {
     }
     /// 邀请对外地址（2026-10）：显式 `[federation] advertise` 优先——多网卡/
     /// VPN 叠加场景指定"对端可达地址"（如 tun0），不再赌 hostname -I 顺序。
+    /// peer URL 形状校验（SaveFederationPeer 前置；2026-10 审计）：
+    /// 空 = 仅接受连入（合法）；ws/wss + host:port 合法；其余拒绝。
+    #[test]
+    fn federation_peer_url_validation() {
+        // 合法：空（被动）、ws、wss、路径尾缀、IPv6。
+        assert!(validate_federation_peer_url("").is_ok());
+        assert!(validate_federation_peer_url("  ").is_ok());
+        assert!(validate_federation_peer_url("ws://10.10.2.250:3133").is_ok());
+        assert!(validate_federation_peer_url("wss://example.com:443").is_ok());
+        assert!(validate_federation_peer_url("ws://example.com:3133/ws").is_ok());
+        assert!(validate_federation_peer_url("ws://[::1]:3133").is_ok());
+
+        // 非法：缺 scheme、缺端口、端口非数字、空主机。
+        assert!(validate_federation_peer_url("10.10.2.250:3133").is_err());
+        assert!(validate_federation_peer_url("http://x:1").is_err());
+        assert!(validate_federation_peer_url("ws://10.10.2.250").is_err());
+        assert!(validate_federation_peer_url("ws://host:notaport").is_err());
+        assert!(validate_federation_peer_url("ws://:3133").is_err());
+    }
+
     #[test]
     fn invite_host_prefers_explicit_advertise() {
         // 显式 host:port：原样使用

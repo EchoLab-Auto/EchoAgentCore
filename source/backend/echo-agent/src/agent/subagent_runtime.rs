@@ -102,7 +102,7 @@ impl Agent {
                     // **不**静默回本机执行（错机操作风险）——立即以
                     // Failed 终态回报并销账（聚合组同步闭合）。
                     let reason = format!(
-                        "远程节点「{peer}」无可用代理工具（peer 离线、名称错误或联邦未启用）"
+                        "远程节点「{peer}」无可用代理工具（peer 离线、名称错误或联邦链路未建立）"
                     );
                     agent
                         .reject_subagent(

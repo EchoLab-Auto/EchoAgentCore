@@ -364,6 +364,9 @@ fn validate_logging_level(logging: &LoggingSection) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// listen 字段的**缺省值**（回退地址）——零配置实际生效地址由
+    /// `management::plan_federation_listen` 决定（缺省合并至管理地址；
+    /// 保守场景才回退为这里的 0.0.0.0:3133）。
     #[test]
     fn federation_defaults_to_listen_3133_without_config() {
         let path = std::env::temp_dir().join("echo-agent-federation-default-test.toml");
@@ -375,7 +378,7 @@ mod tests {
         let config = CoreConfig::load(&path).unwrap();
         assert_eq!(
             config.federation.listen, "0.0.0.0:3133",
-            "federation zero-config default: listen must default to 0.0.0.0:3133"
+            "listen 字段缺省 = 回退地址 0.0.0.0:3133（缺省合并由 plan_federation_listen 决定）"
         );
         std::fs::remove_file(&path).ok();
     }

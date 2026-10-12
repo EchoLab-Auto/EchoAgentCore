@@ -407,11 +407,20 @@ impl Federation {
                     accepted = listener.accept() => {
                         match accepted {
                             Ok((stream, peer_addr)) => {
-                                tracing::info!(%peer_addr, "federation inbound");
+                                // 连接接受/关闭日志（2026-10 审计 P2-②）：
+                                // 未认证拒绝（标准 401——探测/扫描/错 token）
+                                // 属常规，降为 debug；其余错误保持 warn。
+                                // 此前两者都 info+warn，被扫描时日志刷屏。
+                                tracing::debug!(%peer_addr, "federation inbound");
                                 let fed = self.clone();
                                 tokio::spawn(async move {
                                     if let Err(e) = fed.accept_one(stream).await {
-                                        tracing::warn!(%peer_addr, error = %e, "federation inbound closed");
+                                        let text = e.to_string();
+                                        if text.contains("401") || text.contains("Unauthorized") {
+                                            tracing::debug!(%peer_addr, error = %text, "federation inbound rejected (unauthorized)");
+                                        } else {
+                                            tracing::warn!(%peer_addr, error = %text, "federation inbound closed");
+                                        }
                                     }
                                 });
                             }
