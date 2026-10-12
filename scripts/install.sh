@@ -107,7 +107,7 @@ if [[ "$REPOSITORY_URL" =~ ^git@([^:]+):(.+)$ ]]; then
     REPOSITORY_URL="https://${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
 fi
 if [[ -z "$REPOSITORY_URL" ]]; then
-    REPOSITORY_URL="https://gitlab.com/echo_tech/EchoAgentCore.git"
+    REPOSITORY_URL="$DEFAULT_REPO"
 fi
 
 BRANCH=$(git -C "$PROJECT_ROOT" branch --show-current 2>/dev/null || true)

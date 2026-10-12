@@ -1,6 +1,6 @@
 [Unit]
 Description=Update EchoAgentCore from its managed source checkout
-Documentation=https://gitlab.com/echo_tech/EchoAgentCore
+Documentation=https://github.com/EchoLab-Auto/EchoAgentCore
 Wants=network-online.target
 After=network-online.target
 

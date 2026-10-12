@@ -151,4 +151,4 @@ journalctl --user -u echo-agent-core-update.service
 
 ## 回滚
 
-更新失败时 update.sh 自动回滚；人工回滚可从保留的 rollback 文件恢复（`~/.local/libexec/echo-agent-*/` 下的 `.rollback`），或从 git 仓库构建旧提交。
+更新失败时 update.sh **自动回滚**（无需人工介入）。`.rollback` 备份只在单次更新事务内存在——成功即删除、失败即被回滚消费，**从不长期留存**；需要人工回到更早版本时，从 git 仓库构建旧提交后 `reinstall` 重装。
