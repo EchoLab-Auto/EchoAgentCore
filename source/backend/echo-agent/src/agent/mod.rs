@@ -466,9 +466,19 @@ impl Agent {
         let cancel = self.cancel.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            let mut ticks: u64 = 0;
             loop {
                 tokio::select! {
-                    _ = interval.tick() => agent.trunk.maybe_save().await,
+                    _ = interval.tick() => {
+                        agent.trunk.maybe_save().await;
+                        // 时间线探针（2026-10）：每 10 分钟采样一次时间线窗口
+                        // 状态，供"面板历史无声消失"类事故定位——见
+                        // `TrunkStore::probe_timeline`。
+                        if ticks.is_multiple_of(20) {
+                            agent.trunk.probe_timeline();
+                        }
+                        ticks += 1;
+                    }
                     _ = cancel.cancelled() => break,
                 }
             }

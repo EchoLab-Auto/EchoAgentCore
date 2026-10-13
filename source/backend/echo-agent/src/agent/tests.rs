@@ -699,6 +699,60 @@ async fn request_trunk_timeline_returns_the_persisted_history() {
     assert_eq!(timeline[0].content, "你好");
 }
 
+/// 2026-10 用户报告回归：清理会话历史后向面板重发的全量时间线必须是
+/// **实际剩余条目**（其他会话仍在），而不是空快照——"空全量"会被面板
+/// 当权威数据、清掉整个本地聊天缓存（含未被清理的会话）。
+#[tokio::test]
+async fn clear_history_resends_remaining_timeline_not_empty() {
+    let provider = Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    });
+    let agent = Arc::new(test_agent(provider));
+    agent.set_team_id(Some("t".into()));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+
+    let entry = |session: &str, content: &str| crate::event::TimelineMessage {
+        kind: "user".into(),
+        content: content.into(),
+        session_id: session.into(),
+        time: 1700000000,
+        source: None,
+        reasoning: None,
+        tool: None,
+        images: None,
+        seq: 0,
+    };
+    agent.trunk.push_timeline(entry("sA", "A 的消息"));
+    agent.trunk.push_timeline(entry("sB", "B 的消息"));
+
+    agent
+        .apply_command(BackendCommand::ClearHistory {
+            team_id: Some("t".into()),
+            session_id: Some("sA".into()),
+        })
+        .await;
+
+    let mut news = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        news.push(event);
+    }
+    let (messages, full) = news
+        .into_iter()
+        .find_map(|event| match event {
+            BackendEvent::TrunkTimeline { messages, full, .. } => Some((messages, full)),
+            _ => None,
+        })
+        .expect("TrunkTimeline emitted after clear");
+    assert!(full, "resync snapshot must be full");
+    assert_eq!(
+        messages.len(),
+        1,
+        "only the sibling session's entry remains: {messages:?}"
+    );
+    assert_eq!(messages[0].session_id, "sB");
+}
 /// 去主智能体：会话类命令缺少 team_id 时必须明确报错（无默认人格兜底）。
 #[tokio::test]
 async fn session_commands_require_explicit_team_id() {

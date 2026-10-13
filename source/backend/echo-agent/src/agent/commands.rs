@@ -118,6 +118,26 @@ impl Agent {
         }
     }
 
+    /// 清理历史后向面板重发**实际剩余**的显示时间线（全量重建语义）。
+    ///
+    /// 2026-10 用户报告修复：此前无条件发 `messages: Vec::new()`——面板把
+    /// "空全量"当权威数据，会清掉**整个本地聊天缓存**（含未被清理的其他
+    /// 会话），且本地游标被推进到最新、刷新也拉不回来（增量=空）。改为发
+    /// 清理后的真实剩余条目；快照因锁竞争降级时**跳过本轮**（绝不以空快照
+    /// 顶替），由面板的下一次请求/重连自然收敛。
+    fn emit_timeline_after_clear(agent: &Agent, team_id: Option<String>) {
+        let Some(messages) = agent.trunk.timeline_snapshot() else {
+            tracing::warn!("clear history: timeline snapshot degraded; skip this sync round");
+            return;
+        };
+        let messages = crate::timeline::elide_reasoning_for_wire(messages);
+        agent.emit(BackendEvent::TrunkTimeline {
+            messages,
+            seq: agent.trunk.timeline_seq(),
+            team_id,
+            full: true,
+        });
+    }
     pub async fn apply_command(&self, cmd: BackendCommand) {
         // ---- 去主智能体：会话类命令按显式 team_id 路由 ----
         // 每个智能体一律平等；没有"默认人格"兜底，缺失 team_id 直接报错。
@@ -851,17 +871,35 @@ impl Agent {
                     match target {
                         Some(agent) => {
                             Self::clear_agent_history(&agent, session_id.as_deref()).await;
-                            // TrunkTimeline 为整人格的显示时间线——清理后全量
-                            // 重发（session_id 限定后剩余会话的消息仍在，full
-                            // 重建语义简单且不易错）。
-                            agent.emit(BackendEvent::TrunkTimeline {
-                                messages: Vec::new(),
-                                seq: agent.trunk.timeline_seq(),
-                                team_id: Some(id),
-                                full: true,
-                            });
+                            tracing::info!(
+                                team = %id,
+                                session = session_id.as_deref().unwrap_or("<all>"),
+                                "clear history command applied"
+                            );
+                            // 清理后重发**实际剩余**的显示时间线（全量）——绝不
+                            // 发空快照：面板把"空全量"当权威数据，会清掉整个本地
+                            // 聊天缓存（含未被清理的其他会话），且游标推到最新后
+                            // 增量=空、刷新也拉不回（2026-10 用户报告修复）。
+                            Self::emit_timeline_after_clear(&agent, Some(id));
                             agent.emit_context_snapshot_for().await;
                             agent.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: Self::clear_history_message(session_id.as_deref()),
+                            });
+                        }
+                        // 无管理器（嵌入式/测试）或解析落空，但消息已送达目标
+                        // 人格本体（team 匹配）时，按转发语义直接处理自身——
+                        // 与 RequestTrunkTimeline 的 self 兜底保持一致。
+                        None if self.team_id().as_deref() == Some(id.as_str()) => {
+                            Self::clear_agent_history(self, session_id.as_deref()).await;
+                            tracing::info!(
+                                team = %id,
+                                session = session_id.as_deref().unwrap_or("<all>"),
+                                "clear history command applied (self)"
+                            );
+                            Self::emit_timeline_after_clear(self, Some(id));
+                            self.emit_context_snapshot_for().await;
+                            self.emit(BackendEvent::Error {
                                 session_id: None,
                                 message: Self::clear_history_message(session_id.as_deref()),
                             });
@@ -873,12 +911,11 @@ impl Agent {
                     }
                 } else {
                     Self::clear_agent_history(self, session_id.as_deref()).await;
-                    self.emit(BackendEvent::TrunkTimeline {
-                        messages: Vec::new(),
-                        seq: self.trunk.timeline_seq(),
-                        team_id: None,
-                        full: true,
-                    });
+                    tracing::info!(
+                        session = session_id.as_deref().unwrap_or("<all>"),
+                        "clear history command applied (no team scope)"
+                    );
+                    Self::emit_timeline_after_clear(self, None);
                     self.emit_context_snapshot(None).await;
                     self.emit(BackendEvent::Error {
                         session_id: None,

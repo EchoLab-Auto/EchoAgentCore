@@ -250,6 +250,16 @@ pub struct TrunkStore {
     ///（RequestTrunkTimeline.since_seq + TrunkTimeline.seq），避免切换
     /// agent 时全量重传。
     timeline_seq: Arc<std::sync::atomic::AtomicU64>,
+    /// 时间线写路径计数（探针，2026-10 面板"历史无声消失"事故定位）——
+    /// push / cap-drain / 其余删除三个单调计数用于相邻采样对账。
+    timeline_pushed: Arc<std::sync::atomic::AtomicU64>,
+    timeline_drained: Arc<std::sync::atomic::AtomicU64>,
+    timeline_removed: Arc<std::sync::atomic::AtomicU64>,
+    /// 整表替换（restore / 旧格式加载）后置位：下一轮探针只重设基线，
+    /// 不做跨表对账。
+    timeline_rebaseline: Arc<std::sync::atomic::AtomicBool>,
+    /// 探针上次采样快照（对账基准）。
+    timeline_probe_state: Arc<std::sync::Mutex<Option<TimelineProbeSample>>>,
     /// The append-only session event log — the **single source of truth** for
     /// the model-facing context. `trunk_history` is its in-memory projection
     /// cache (see `append_event`); persistence writes this log, and older
@@ -273,6 +283,11 @@ impl Clone for TrunkStore {
             compact_lock: Arc::clone(&self.compact_lock),
             timeline: Arc::clone(&self.timeline),
             timeline_seq: Arc::clone(&self.timeline_seq),
+            timeline_pushed: Arc::clone(&self.timeline_pushed),
+            timeline_drained: Arc::clone(&self.timeline_drained),
+            timeline_removed: Arc::clone(&self.timeline_removed),
+            timeline_rebaseline: Arc::clone(&self.timeline_rebaseline),
+            timeline_probe_state: Arc::clone(&self.timeline_probe_state),
             event_log: self.event_log.clone(),
             header: std::sync::Mutex::new(self.header.lock().expect("header poisoned").clone()),
             persist_path: std::sync::Mutex::new(
@@ -358,6 +373,52 @@ pub struct CompactionApplied {
     pub kept: usize,
 }
 
+/// 时间线探针的采样快照（见 [`TrunkStore::probe_timeline`]）。
+#[derive(Debug, Clone, Copy)]
+struct TimelineProbeSample {
+    /// 采样时的条目数。
+    count: usize,
+    /// 时间线头部条目的 seq（头部前移 = 有删除发生）。
+    head_seq: u64,
+    /// 三个单调写计数：成功入列的 push / cap-drain 滚出 / 其余删除。
+    pushed: u64,
+    drained: u64,
+    removed: u64,
+}
+
+impl TimelineProbeSample {
+    /// 相邻采样之间按写计数推导的**期望**条目数（探针对账恒等式）。
+    fn expected_count_after(&self, now: &TimelineProbeSample) -> i64 {
+        self.count as i64 + now.pushed.saturating_sub(self.pushed) as i64
+            - now.drained.saturating_sub(self.drained) as i64
+            - now.removed.saturating_sub(self.removed) as i64
+    }
+}
+
+/// 时间线条目的会话分布（探针日志用；Top 6，`,` 连接）。
+fn timeline_sessions_summary(timeline: &[crate::event::TimelineMessage]) -> String {
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for message in timeline {
+        *counts.entry(message.session_id.as_str()).or_default() += 1;
+    }
+    let mut entries: Vec<(&str, usize)> = counts.into_iter().collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    entries.truncate(6);
+    entries
+        .into_iter()
+        .map(|(session, count)| format!("{}={count}", short_timeline_session(session)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// `local:workspace:<id>:local_user` → `<id>`；其余原样（截到 24 字符）。
+fn short_timeline_session(session_id: &str) -> String {
+    let short = session_id
+        .strip_prefix("local:workspace:")
+        .and_then(|rest| rest.split(':').next())
+        .unwrap_or(session_id);
+    short.chars().take(24).collect()
+}
 /// Group events by owning session, preserving first-appearance order
 /// (unattributed legacy events form their own group, in place).
 fn group_events_by_session(
@@ -391,6 +452,11 @@ impl TrunkStore {
             compact_lock: Arc::new(tokio::sync::Mutex::new(())),
             timeline: Arc::new(Mutex::new(Vec::new())),
             timeline_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            timeline_pushed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            timeline_drained: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            timeline_removed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            timeline_rebaseline: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            timeline_probe_state: Arc::new(std::sync::Mutex::new(None)),
             event_log: echo_session::EventLog::new(),
             header: std::sync::Mutex::new(None),
             persist_path: std::sync::Mutex::new(None),
@@ -430,9 +496,21 @@ impl TrunkStore {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
         timeline.push(message);
+        self.timeline_pushed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if timeline.len() > TRUNK_TIMELINE_MAX {
             let excess = timeline.len() - TRUNK_TIMELINE_MAX;
             timeline.drain(..excess);
+            self.timeline_drained
+                .fetch_add(excess as u64, std::sync::atomic::Ordering::Relaxed);
+            if excess > 1 {
+                // 正常路径单次 push 只滚出一条；一次滚出多条意味着异常批量
+                // 插入（探针：定位"时间线头部无声前移"事故，2026-10）。
+                tracing::warn!(
+                    excess,
+                    "timeline drained more than one entry in a single push"
+                );
+            }
         }
         drop(timeline);
         self.mark_dirty();
@@ -777,11 +855,128 @@ impl TrunkStore {
             );
             self.mark_dirty();
         }
+        let entries = timeline.len();
+        let head_seq = timeline.first().map(|entry| entry.seq).unwrap_or(0);
+        let tail_seq = timeline.last().map(|entry| entry.seq).unwrap_or(0);
         if let Ok(mut guard) = self.timeline.try_lock() {
             *guard = timeline;
         }
         self.timeline_seq
             .store(max_seq, std::sync::atomic::Ordering::Relaxed);
+        // 整表替换：置位探针重基线标志（跨表差值对账对替换无意义）。
+        self.timeline_rebaseline
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        tracing::info!(
+            entries,
+            head_seq,
+            tail_seq,
+            max_seq,
+            interrupted,
+            "display timeline restored from persisted file"
+        );
+    }
+
+    /// 时间线探针（2026-10："面板看不到历史"事故定位用）。
+    ///
+    /// 背景：显示时间线头部曾两次在**没有任何**清理/归档/压缩/重启日志的
+    /// 情况下被整体前移（10-01、10-13 各一次，近千条无声消失），事后无法
+    /// 指认元凶。本探针做**对账式监控**：周期采样 条目数 + 头/尾 seq 与
+    /// 时间 + 各会话分布 + 三个单调写计数（push / cap-drain / 其余删除），
+    /// 并对相邻采样验证恒等式
+    ///
+    /// ```text
+    /// count(now) == count(last) + Δpushed − Δdrained − Δremoved
+    /// ```
+    ///
+    /// 失衡即当场 warn（附全部差值）——把事故窗口压到 ≤ 采样周期；配合
+    /// clear / restore / drain 各写路径自身的日志即可指认来源，任何绕过
+    /// 这些写路径的整表替换（即使来自当前代码之外的机制）都会触发失衡。
+    pub fn probe_timeline(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        // 计数器前后各读一次，一致才算样本（避免与并发写交错造成假失衡；
+        // 不一致就跳过本轮，下轮再采）。
+        let pushed = self.timeline_pushed.load(Relaxed);
+        let drained = self.timeline_drained.load(Relaxed);
+        let removed = self.timeline_removed.load(Relaxed);
+        let sampled = match self.timeline.try_lock() {
+            Ok(timeline) => {
+                let count = timeline.len();
+                let head_seq = timeline.first().map(|m| m.seq).unwrap_or(0);
+                let head_time = timeline.first().map(|m| m.time).unwrap_or(0);
+                let tail_seq = timeline.last().map(|m| m.seq).unwrap_or(0);
+                let sessions = timeline_sessions_summary(&timeline);
+                (count, head_seq, head_time, tail_seq, sessions)
+            }
+            // 锁被占用：跳过本轮，下轮再采。
+            Err(_) => return,
+        };
+        let (count, head_seq, head_time, tail_seq, sessions) = sampled;
+        if self.timeline_pushed.load(Relaxed) != pushed
+            || self.timeline_drained.load(Relaxed) != drained
+            || self.timeline_removed.load(Relaxed) != removed
+        {
+            return;
+        }
+        let rebaseline = self.timeline_rebaseline.swap(false, Relaxed);
+        let now = TimelineProbeSample {
+            count,
+            pushed,
+            drained,
+            removed,
+            head_seq,
+        };
+        let mut state = self
+            .timeline_probe_state
+            .lock()
+            .expect("timeline probe state poisoned");
+        let Some(last) = *state else {
+            tracing::info!(
+                count,
+                head_seq,
+                head_time,
+                tail_seq,
+                sessions = %sessions,
+                "timeline probe: baseline established"
+            );
+            *state = Some(now);
+            return;
+        };
+        if rebaseline {
+            tracing::info!(
+                count,
+                head_seq,
+                head_time,
+                tail_seq,
+                "timeline probe: baseline re-established after full replace"
+            );
+            *state = Some(now);
+            return;
+        }
+        let expected = last.expected_count_after(&now);
+        if expected != count as i64 {
+            tracing::warn!(
+                expected,
+                actual = count,
+                last_count = last.count,
+                pushed_delta = now.pushed.saturating_sub(last.pushed),
+                drained_delta = now.drained.saturating_sub(last.drained),
+                removed_delta = now.removed.saturating_sub(last.removed),
+                head_seq,
+                head_time,
+                sessions = %sessions,
+                "timeline probe: entry count mismatch — timeline changed outside tracked write paths"
+            );
+        } else if count != last.count || head_seq != last.head_seq {
+            tracing::info!(
+                count,
+                head_seq,
+                head_time,
+                tail_seq,
+                sessions = %sessions,
+                "timeline probe: sample"
+            );
+        }
+        *state = Some(now);
     }
 
     /// Restore identity labels from a v4/v5 document root.
@@ -918,9 +1113,17 @@ impl TrunkStore {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let timeline_entries = restored_timeline.len();
         if let Ok(mut timeline) = self.timeline.try_lock() {
             *timeline = restored_timeline;
         }
+        // 整表替换（旧格式迁移）：置位探针重基线标志（见 `probe_timeline`）。
+        self.timeline_rebaseline
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        tracing::info!(
+            entries = timeline_entries,
+            "display timeline replaced from legacy document"
+        );
         count
     }
 
@@ -1106,13 +1309,28 @@ impl TrunkStore {
         // 与 compact_history 同锁互斥；无嵌套调用（compact 流程不调
         // clear_history），取锁无死锁风险。
         let _compact_guard = self.compact_lock().await;
+        let events_cleared = self.event_log.len();
         self.event_log.clear();
         for entry in self.session_histories.iter() {
             entry.value().lock().await.clear();
         }
-        self.timeline.lock().await.clear();
+        let timeline_cleared = {
+            let mut timeline = self.timeline.lock().await;
+            let count = timeline.len();
+            timeline.clear();
+            count
+        };
+        self.timeline_removed.fetch_add(
+            timeline_cleared as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         self.mark_dirty();
         self.save_now().await;
+        tracing::info!(
+            events_cleared,
+            timeline_cleared,
+            "clear_history: all sessions wiped (events + projections + timeline)"
+        );
     }
 
     /// 清理**单个会话**的记忆：事件日志中该会话的事件、该会话的上下文
@@ -1130,15 +1348,23 @@ impl TrunkStore {
         let _compact_guard = self.compact_lock().await;
         let removed = self.event_log.retain_excluding_session(session_id);
         self.session_histories.remove(session_id);
-        self.timeline
-            .lock()
-            .await
-            .retain(|entry| entry.session_id != session_id);
+        let (timeline_removed, timeline_remaining) = {
+            let mut timeline = self.timeline.lock().await;
+            let before = timeline.len();
+            timeline.retain(|entry| entry.session_id != session_id);
+            (before - timeline.len(), timeline.len())
+        };
+        self.timeline_removed.fetch_add(
+            timeline_removed as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         self.mark_dirty();
         self.save_now().await;
         tracing::info!(
             session = %session_id,
             removed_events = removed,
+            timeline_removed,
+            timeline_remaining,
             "session memory cleared (scoped)"
         );
     }
@@ -2638,6 +2864,69 @@ mod tests {
         assert_eq!(log.len(), 1, "仅删该会话事件，旧版无归属事件保留: {log:?}");
         assert_eq!(log[0].session(), None);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// 时间线写路径计数（探针基础设施）：push / cap-drain / 会话级删除三个
+    /// 单调计数与真实变化一致——[`TrunkStore::probe_timeline`] 的对账恒等式
+    /// 依赖它们。
+    #[tokio::test]
+    async fn timeline_probe_counters_track_writes() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let store = TrunkStore::new(1000);
+        let message = |session: &str| crate::event::TimelineMessage {
+            kind: "user".into(),
+            content: "x".into(),
+            session_id: session.into(),
+            time: 1,
+            source: None,
+            reasoning: None,
+            tool: None,
+            images: None,
+            seq: 0,
+        };
+        for i in 0..(TRUNK_TIMELINE_MAX + 3) {
+            store.push_timeline(message(if i % 2 == 0 { "sA" } else { "sB" }));
+        }
+        assert_eq!(
+            store.timeline_pushed.load(Relaxed),
+            (TRUNK_TIMELINE_MAX + 3) as u64
+        );
+        assert_eq!(store.timeline_drained.load(Relaxed), 3, "cap-drain counted");
+        store.clear_session("sA").await;
+        assert!(
+            store.timeline_removed.load(Relaxed) > 0,
+            "session-scoped timeline removal counted"
+        );
+        // 冒烟：探针可执行、不 panic（是否告警由日志观察）。
+        store.probe_timeline();
+    }
+
+    /// 探针对账恒等式：期望条目数 = 上次 + Δpush − Δdrain − Δremove；
+    /// 条目"绕过写路径"地减少时恒等式失衡（探针据此告警，2026-10 时间线
+    /// 无声消失事故定位基建）。
+    #[test]
+    fn timeline_probe_accounting_identity() {
+        let last = TimelineProbeSample {
+            count: 10,
+            head_seq: 5,
+            pushed: 10,
+            drained: 0,
+            removed: 0,
+        };
+        let now = TimelineProbeSample {
+            count: 10,
+            head_seq: 5,
+            pushed: 13,
+            drained: 1,
+            removed: 2,
+        };
+        assert_eq!(last.expected_count_after(&now), 10, "10 + 3 − 1 − 2");
+        let vanished = TimelineProbeSample { count: 3, ..now };
+        assert_ne!(
+            last.expected_count_after(&vanished),
+            3,
+            "无声减少必须被对账检出"
+        );
     }
 
     #[tokio::test]
