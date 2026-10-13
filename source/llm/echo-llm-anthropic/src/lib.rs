@@ -197,7 +197,15 @@ impl LlmProvider for AnthropicProvider {
                     match outcome {
                         AnthropicOutcome::Chunk(chunk) => {
                             acc.push(&chunk);
-                            let _ = tx.send(chunk);
+                            // 接收端已关闭（消费方取消/退出）：继续读流只会
+                            // 白烧 token 且结果无人接收——中止并回错误
+                            //（trait 约定：已送入 tx 的增量由消费方处置）。
+                            // 2026-10 巡检：此前忽略 send 失败静默读完整流。
+                            if tx.send(chunk).is_err() {
+                                return Err(LlmError::Api(
+                                    "stream consumer closed (cancelled?)".into(),
+                                ));
+                            }
                         }
                         AnthropicOutcome::Usage(update) => usage.merge(update),
                         AnthropicOutcome::StopReason(reason) => acc.set_stop_reason(reason),
@@ -983,6 +991,79 @@ mod tests {
             }
             other => panic!("expected Chunk, got {other:?}"),
         }
+    }
+
+    /// 假 SSE 服务器：接受一次连接，回 200 + chunked 事件流，发完仍悬挂
+    /// 连接（模拟上游长流未结束）——未中止的实现会一直等流收尾。
+    async fn spawn_sse_server(events: Vec<String>, linger: std::time::Duration) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            // 读掉请求头（到 \r\n\r\n 为止）。
+            let mut buf = [0u8; 4096];
+            let mut req = Vec::new();
+            loop {
+                let Ok(n) = socket.read(&mut buf).await else {
+                    return;
+                };
+                if n == 0 {
+                    return;
+                }
+                req.extend_from_slice(&buf[..n]);
+                if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+            if socket.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            for ev in events {
+                let body = format!("{ev}\n\n");
+                let chunk = format!("{:x}\r\n{body}\r\n", body.len());
+                if socket.write_all(chunk.as_bytes()).await.is_err() {
+                    return; // 客户端已中止（期望路径）
+                }
+            }
+            tokio::time::sleep(linger).await;
+        });
+        format!("http://{addr}")
+    }
+
+    /// 接收端关闭（drop rx）后：chat_stream 必须**立即中止**而非读完整流。
+    ///
+    /// 未修复行为：`let _ = tx.send()` 吞掉失败，循环继续消费上游事件——
+    /// 服务器悬挂 30s 时函数会一直卡（测试会超时失败）。修复后第一个事件
+    /// 送达即返回 Err。
+    #[tokio::test]
+    async fn stream_aborts_when_consumer_drops_receiver() {
+        let event = "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}".to_string();
+        let base = spawn_sse_server(vec![event], std::time::Duration::from_secs(30)).await;
+        let provider = AnthropicProvider::new(&base, "test-key", "claude-test");
+        let request = ChatRequest {
+            model: "claude-test".into(),
+            messages: vec![echo_defs::message::ChatMessage::user("hi")],
+            tools: None,
+            temperature: None,
+            max_tokens: Some(64),
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(rx);
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.chat_stream(&request, tx),
+        )
+        .await;
+        assert!(
+            matches!(result, Ok(Err(_))),
+            "接收端关闭时应快速返回错误（而非等待流结束）: {result:?}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     /// 端到端组装：真实形态的 Anthropic SSE 序列（message_start usage /

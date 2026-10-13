@@ -208,7 +208,15 @@ impl LlmProvider for OpenAiProvider {
                         SseOutcome::Done => break 'outer,
                         SseOutcome::Chunk(chunk) => {
                             acc.push(&chunk);
-                            let _ = tx.send(chunk);
+                            // 接收端已关闭（消费方取消/退出）：继续读流只会
+                            // 白烧 token 且结果无人接收——中止并回错误
+                            //（trait 约定：已送入 tx 的增量由消费方处置）。
+                            // 2026-10 巡检：此前忽略 send 失败静默读完整流。
+                            if tx.send(chunk).is_err() {
+                                return Err(LlmError::Api(
+                                    "stream consumer closed (cancelled?)".into(),
+                                ));
+                            }
                         }
                         SseOutcome::Usage(usage) => acc.set_usage(usage),
                         SseOutcome::StopReason(reason) => acc.set_stop_reason(reason),
@@ -560,6 +568,75 @@ mod tests {
 
     use super::*;
     use echo_defs::message::ChatMessage;
+
+    /// 假 SSE 服务器（与 echo-llm-anthropic 测试同款）：接受一次连接，
+    /// 回 200 + chunked 事件流，发完仍悬挂连接（模拟上游长流未结束）。
+    async fn spawn_sse_server(events: Vec<String>, linger: std::time::Duration) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 4096];
+            let mut req = Vec::new();
+            loop {
+                let Ok(n) = socket.read(&mut buf).await else {
+                    return;
+                };
+                if n == 0 {
+                    return;
+                }
+                req.extend_from_slice(&buf[..n]);
+                if req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+            if socket.write_all(head.as_bytes()).await.is_err() {
+                return;
+            }
+            for ev in events {
+                let body = format!("{ev}\n\n");
+                let chunk = format!("{:x}\r\n{body}\r\n", body.len());
+                if socket.write_all(chunk.as_bytes()).await.is_err() {
+                    return; // 客户端已中止（期望路径）
+                }
+            }
+            tokio::time::sleep(linger).await;
+        });
+        format!("http://{addr}")
+    }
+
+    /// 接收端关闭（drop rx）后：chat_stream 必须**立即中止**而非读完整流。
+    #[tokio::test]
+    async fn stream_aborts_when_consumer_drops_receiver() {
+        let event =
+            r#"data: {"choices":[{"delta":{"content":"你好"},"finish_reason":null}]}"#.to_string();
+        let base = spawn_sse_server(vec![event], std::time::Duration::from_secs(30)).await;
+        let provider = OpenAiProvider::new(&base, "test-key", "gpt-test");
+        let request = ChatRequest {
+            model: "gpt-test".into(),
+            messages: vec![ChatMessage::user("hi")],
+            tools: None,
+            temperature: None,
+            max_tokens: Some(64),
+        };
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(rx);
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            provider.chat_stream(&request, tx),
+        )
+        .await;
+        assert!(
+            matches!(result, Ok(Err(_))),
+            "接收端关闭时应快速返回错误（而非等待流结束）: {result:?}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
 
     #[tokio::test]
     async fn chat_parses_response() {
