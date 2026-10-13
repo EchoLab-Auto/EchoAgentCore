@@ -151,7 +151,10 @@ Panel 的 management WS 并存，帧类型为 `FedFrame`（工具调用 Invoke �
 
 Panel 侧的联邦管理命令（Frontend-only）：`SaveFederationPeer` /
 `DeleteFederationPeer` / `RequestFederationStatus` /
-`RequestFederationInvite` / `MigrateSession { session_id, target_peer }`；
+`RequestFederationInvite` / `MigrateSession { session_id, target_peer }`
+——Panel 侧全部镜像进 `web/src/protocol.ts`（2026-10 补齐；unit 变体
+字符串形态，双侧各有形态契约测试：Core 本仓 `management.rs`、Panel
+`protocol-sync` 守护「禁止双重断言绕过」）；
 事件 `FederationStatus`（token 脱敏为 `token_set`；含 per-peer
 `active_turns` 负载，在线 peer 实时拉取）/ `FederationInvite` /
 `SessionMigrated { session_id, target_peer, new_session_id?, message,

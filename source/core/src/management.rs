@@ -579,6 +579,35 @@ mod tests {
         assert!(handle_inbound_text("").is_none());
     }
 
+    /// unit 变体的标准线格式：裸字符串。
+    ///
+    /// 与 Panel 的 protocol-sync 契约测试成对（`serializeCommand(
+    /// 'RequestFederationStatus')` → `{"payload":"RequestFederationStatus"}`）
+    /// ——2026-10 Panel 补齐 4 条联邦命令类型时，unit 变体统一改字符串形态。
+    #[test]
+    fn unit_command_parses_from_bare_string() {
+        let text = r#"{"type":"command","payload":"RequestFederationStatus"}"#;
+        match handle_inbound_text(text) {
+            Some(InboundFrame::Command(cmd)) => {
+                assert_eq!(cmd, BackendCommand::RequestFederationStatus);
+            }
+            other => panic!("expected command frame, got {other:?}"),
+        }
+    }
+
+    /// 历史兼容：旧 Panel 曾以 `{"X": null}` 对象形态发 unit 命令（绕类型
+    /// 系统的产物）；serde 宽容继续接受，不因 Panel 升级而破坏混布。
+    #[test]
+    fn unit_command_object_null_form_stays_compatible() {
+        let text = r#"{"type":"command","payload":{"RequestFederationStatus":null}}"#;
+        match handle_inbound_text(text) {
+            Some(InboundFrame::Command(cmd)) => {
+                assert_eq!(cmd, BackendCommand::RequestFederationStatus);
+            }
+            other => panic!("expected command frame, got {other:?}"),
+        }
+    }
+
     #[test]
     fn gate_mode_command_roundtrips_with_enum() {
         // Wire format stays snake_case strings for GateMode.
