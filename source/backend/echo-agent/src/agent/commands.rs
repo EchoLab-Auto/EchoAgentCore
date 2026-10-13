@@ -70,7 +70,7 @@ impl Agent {
             | BackendCommand::RequestTrunkTimeline { team_id, .. }
             | BackendCommand::RequestContext { team_id, .. }
             | BackendCommand::ClearHistory { team_id, .. }
-            | BackendCommand::ArchiveHistory { team_id }
+            | BackendCommand::ArchiveHistory { team_id, .. }
             | BackendCommand::CompactHistory { team_id, .. }
             | BackendCommand::RequestWorkspaceSessions { team_id }
             | BackendCommand::SaveWorkspaceSession { team_id, .. }
@@ -937,31 +937,94 @@ impl Agent {
             BackendCommand::RequestTeamsList => {
                 self.emit_teams_list().await;
             }
-            BackendCommand::ArchiveHistory { team_id } => {
+            BackendCommand::ArchiveHistory {
+                team_id,
+                session_id,
+            } => {
+                // 迁移期 fail-closed（2026-10 审计）：无 session_id 的归档在
+                // 旧语义下是"整档归档 + **全量清空**"——误清代价不可恢复，
+                // 且没有任何 UI 入口需要它（唯一客户端面板已升级为必带
+                // session_id）。缺失即视为过旧客户端：拒绝，而非降级执行
+                // 全量清空。
+                let Some(session) = session_id.filter(|s| !s.is_empty()) else {
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message:
+                            "归档需要指定会话（session_id 缺失——客户端过旧，请升级面板后重试）"
+                                .into(),
+                    });
+                    return;
+                };
+                // 会话级归档（2026-10 审计）：只归档并清空该会话，其他会话
+                // 不受影响——与面板「归档当前会话」的承诺对齐。此前该命令
+                // 无会话维度，点一次清掉同人格全部会话（「清理历史记忆」
+                // 同类漏网）。
                 if let Some(id) = team_id {
                     match crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(&id)))
                     {
-                        Some(agent) => match agent.trunk.archive_history().await {
-                            Ok(path) => self.emit(BackendEvent::Error {
-                                session_id: None,
-                                message: format!("历史已归档：{path}"),
-                            }),
-                            Err(e) => self.emit(BackendEvent::Error {
-                                session_id: None,
-                                message: format!("归档失败：{e}"),
-                            }),
-                        },
+                        Some(agent) => {
+                            match agent.trunk.archive_session(&session).await {
+                                Ok(path) => {
+                                    tracing::info!(
+                                        team = %id,
+                                        session = %session,
+                                        "archive history command applied"
+                                    );
+                                    // 归档后重发**实际剩余**的显示时间线（全量）——
+                                    // 与会话级清理同一闭环（2026-10 审计：此前不重发，
+                                    // 面板残留被归档会话的旧聊天）。
+                                    Self::emit_timeline_after_clear(&agent, Some(id));
+                                    agent.emit_context_snapshot_for().await;
+                                    agent.emit(BackendEvent::Error {
+                                        session_id: None,
+                                        message: format!("历史已归档：{path}"),
+                                    });
+                                }
+                                Err(e) => agent.emit(BackendEvent::Error {
+                                    session_id: None,
+                                    message: format!("归档失败：{e}"),
+                                }),
+                            }
+                        }
+                        // 无管理器（嵌入式/测试）但消息已送达目标人格本体
+                        // （team 匹配）时，按转发语义直接处理自身——与
+                        // ClearHistory 的兜底保持一致。
+                        None if self.team_id().as_deref() == Some(id.as_str()) => {
+                            match self.trunk.archive_session(&session).await {
+                                Ok(path) => {
+                                    tracing::info!(
+                                        team = %id,
+                                        session = %session,
+                                        "archive history command applied (self)"
+                                    );
+                                    Self::emit_timeline_after_clear(self, Some(id));
+                                    self.emit_context_snapshot_for().await;
+                                    self.emit(BackendEvent::Error {
+                                        session_id: None,
+                                        message: format!("历史已归档：{path}"),
+                                    });
+                                }
+                                Err(e) => self.emit(BackendEvent::Error {
+                                    session_id: None,
+                                    message: format!("归档失败：{e}"),
+                                }),
+                            }
+                        }
                         None => self.emit(BackendEvent::Error {
                             session_id: None,
                             message: format!("team {id} 不存在"),
                         }),
                     }
                 } else {
-                    match self.trunk.archive_history().await {
-                        Ok(path) => self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("历史已归档：{path}"),
-                        }),
+                    match self.trunk.archive_session(&session).await {
+                        Ok(path) => {
+                            Self::emit_timeline_after_clear(self, None);
+                            self.emit_context_snapshot_for().await;
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("历史已归档：{path}"),
+                            });
+                        }
                         Err(e) => self.emit(BackendEvent::Error {
                             session_id: None,
                             message: format!("归档失败：{e}"),

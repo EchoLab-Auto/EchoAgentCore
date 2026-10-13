@@ -242,6 +242,11 @@ pub struct TrunkStore {
     /// 持有（预览→归档→摘要→落地），与 turn 写路径解耦（不阻塞正常
     /// 消息，只互斥压缩类操作）。
     compact_lock: Arc<tokio::sync::Mutex<()>>,
+    /// 落盘互斥（2026-10 审计）：周期保存与各 save_now（清空 / 压缩 /
+    /// 归档后）共用 `{path}.tmp`——并发写时旧快照可能**后** rename，
+    /// 覆盖较新状态（重启后"压缩丢失 / 清空复活"）。所有写盘路径经此
+    /// 串行：序列化在锁内完成，后到的写者一定写出 ≥ 前者的状态。
+    save_lock: Arc<tokio::sync::Mutex<()>>,
     /// Display timeline (persisted, survives TUI restarts). Independent of the
     /// token-bounded LLM trunk: bounded by entry count, keeps richer metadata
     /// (source provenance, tool calls, reasoning) for the TUI history view.
@@ -281,6 +286,7 @@ impl Clone for TrunkStore {
             session_histories: Arc::clone(&self.session_histories),
             trunk_turn_lock: Arc::clone(&self.trunk_turn_lock),
             compact_lock: Arc::clone(&self.compact_lock),
+            save_lock: Arc::clone(&self.save_lock),
             timeline: Arc::clone(&self.timeline),
             timeline_seq: Arc::clone(&self.timeline_seq),
             timeline_pushed: Arc::clone(&self.timeline_pushed),
@@ -360,6 +366,11 @@ pub struct CompactionSummary {
     pub session: Option<String>,
     /// Summary **body** — no `[历史摘要]` marker (added at projection time).
     pub summary: String,
+    /// 预览时该组被替换的前缀长度（事件条数）。落地切片用它——见
+    /// [`TrunkStore::apply_compaction`]（2026-10 审计：不再按应用时点
+    /// `len - keep_recent` 重算，防窗口期新事件把保留尾最老条目挤成
+    /// 无摘要丢弃）。
+    pub replaced_count: usize,
 }
 
 /// Result of [`TrunkStore::apply_compaction`].
@@ -450,6 +461,7 @@ impl TrunkStore {
             session_histories: Arc::new(DashMap::new()),
             trunk_turn_lock: Arc::new(tokio::sync::Mutex::new(())),
             compact_lock: Arc::new(tokio::sync::Mutex::new(())),
+            save_lock: Arc::new(tokio::sync::Mutex::new(())),
             timeline: Arc::new(Mutex::new(Vec::new())),
             timeline_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             timeline_pushed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -484,13 +496,39 @@ impl TrunkStore {
     ///
     /// 条目 seq 在锁内赋值并与计数器同步推进（仅在条目真正入列时递增），
     /// 保证 `timeline_snapshot_since` 的按 seq 过滤语义成立。
-    pub fn push_timeline(&self, mut message: crate::event::TimelineMessage) {
+    pub fn push_timeline(&self, message: crate::event::TimelineMessage) {
         let mut timeline = match self.timeline.try_lock() {
             Ok(guard) => guard,
             // A concurrent save/record is holding the lock; skip rather than
             // block the event loop (emit runs on the hot path).
             Err(_) => return,
         };
+        self.push_timeline_locked(&mut timeline, message);
+        drop(timeline);
+        self.mark_dirty();
+    }
+
+    /// 同 [`Self::push_timeline`]，但**阻塞等待锁**——供异步控制路径
+    /// （归档 / 压缩的 system 提示行等）使用：这些行必须入列，且要经
+    /// 统一路径赋 seq / 计数 / 执行上限裁剪。
+    ///
+    /// 2026-10 审计修复：此前归档 / 压缩直接 `timeline.lock().await.push(…)`，
+    /// 绕过 seq 与 pushed 计数、也不裁剪——(a) 提示行 seq=0，增量同步
+    /// （since_seq）永远看不到它；(b) 探针对账恒等式在下一采样点误报
+    /// 失衡（差一条未计数的插入）。
+    pub async fn push_timeline_blocking(&self, message: crate::event::TimelineMessage) {
+        let mut timeline = self.timeline.lock().await;
+        self.push_timeline_locked(&mut timeline, message);
+        drop(timeline);
+        self.mark_dirty();
+    }
+
+    /// 入列共享实现（调用方持锁）：赋 seq、推进 pushed、执行 cap 裁剪。
+    fn push_timeline_locked(
+        &self,
+        timeline: &mut Vec<crate::event::TimelineMessage>,
+        mut message: crate::event::TimelineMessage,
+    ) {
         message.seq = self
             .timeline_seq
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -512,8 +550,6 @@ impl TrunkStore {
                 );
             }
         }
-        drop(timeline);
-        self.mark_dirty();
     }
 
     /// 推进 timeline 序号并返回新值（就地更新场景：条目内容变化但位置
@@ -585,12 +621,26 @@ impl TrunkStore {
     }
 
     /// Mutable access to the display timeline for in-place updates (e.g.
-    /// attaching a tool result to its running entry). Returns `None` when the
-    /// lock is contended — callers must then fall back to an append.
+    /// attaching a tool result to its running entry).
+    ///
+    /// 锁被周期保存/快照短暂持有时**短重试**（每次 10ms、至多 10 次
+    /// ≈ 100ms）。2026-10 审计：此前 try_lock 失败即返回 None——工具
+    /// 完成更新（"运行中"→ 终值、附带输出）在竞争窗口被直接丢失，条目
+    /// 永远停在运行态；该更新发生在计数之前，探针对账恒等式也测不到。
+    /// 重试耗尽（>100ms）仍在日志留 warn，便于事后定位。
     pub fn timeline_mut(
         &self,
     ) -> Option<tokio::sync::MutexGuard<'_, Vec<crate::event::TimelineMessage>>> {
-        self.timeline.try_lock().ok()
+        for attempt in 0..10 {
+            if let Ok(guard) = self.timeline.try_lock() {
+                return Some(guard);
+            }
+            if attempt < 9 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        tracing::warn!("timeline_mut: lock contention exceeded 100ms; in-place update dropped");
+        None
     }
 
     /// Save sessions to JSON file if dirty.
@@ -609,6 +659,10 @@ impl TrunkStore {
     /// Write sessions to disk. On failure the dirty flag stays set so the
     /// periodic task retries; failures are logged, not silently dropped.
     async fn write_to_disk(&self) {
+        // 落盘互斥（2026-10 审计）：与周期保存 / 其它 save_now 串行。
+        // 串行化后不存在"旧快照后 rename 覆盖新快照"的窗口——等待者在
+        // 锁内重新序列化，写出的永远是最新（或更新）状态。
+        let _save_guard = self.save_lock.lock().await;
         let path = {
             self.persist_path
                 .lock()
@@ -1373,19 +1427,43 @@ impl TrunkStore {
     /// 2026-10 议题：此前归档只增不减，一年可达数百 MB）。
     pub const DEFAULT_ARCHIVE_MAX_FILES: usize = 20;
 
-    /// 归档保留清理：`archives/` 下文件名以 `{stem}-` 开头者按 mtime 保留
-    /// 最新 `max` 份，多余的最旧先删（删除失败仅记日志不阻塞归档）。
+    /// 归档文件名是否属于本 stem：`{stem}-{8位日期}-{6位时间}[-{reason}].json`。
+    ///
+    /// 2026-10 审计：前缀匹配必须**锚定时间戳段**——`starts_with("{stem}-")`
+    /// 会让 stem `x` 误统计/删除 `x-y` 的归档（改名/新增 agent 后旧 stem
+    /// 归档被连带清理）。
+    fn is_own_archive_name(name: &str, stem: &str) -> bool {
+        let Some(rest) = name.strip_prefix(stem) else {
+            return false;
+        };
+        let Some(rest) = rest.strip_prefix('-') else {
+            return false;
+        };
+        let Some(stamp) = rest.strip_suffix(".json") else {
+            return false;
+        };
+        // stamp: `20261013-074421` 或 `20261013-074421-precompact`
+        let bytes = stamp.as_bytes();
+        if bytes.len() < 15 || bytes[8] != b'-' {
+            return false;
+        }
+        bytes[..8].iter().all(u8::is_ascii_digit)
+            && bytes[9..15].iter().all(u8::is_ascii_digit)
+            && (stamp.len() == 15 || stamp.as_bytes()[15] == b'-')
+    }
+
+    /// 归档保留清理：`archives/` 下**本 stem**（时间戳锚定）的归档按
+    /// mtime 保留最新 `max` 份，多余的最旧先删（删除失败仅记日志不阻塞归档）。
     pub fn prune_archives(archive_dir: &std::path::Path, stem: &str, max: usize) {
         if max == 0 || !archive_dir.is_dir() {
             return;
         }
-        let prefix = format!("{stem}-");
         let mut entries: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
         if let Ok(read) = std::fs::read_dir(archive_dir) {
             for entry in read.flatten() {
                 let name = entry.file_name();
                 let Some(name) = name.to_str() else { continue };
-                if !name.starts_with(&prefix) || !name.ends_with(".json") {
+                if !Self::is_own_archive_name(name, stem) {
                     continue;
                 }
                 let mtime = entry
@@ -1409,45 +1487,62 @@ impl TrunkStore {
         }
     }
 
-    /// 归档会话：先把当前持久化文件复制到 `archives/`，再清空历史
-    /// （归档后从头开始）。返回归档文件路径。
+    /// 归档会话（整档）：把**内存快照**（序列化当前态）复制到
+    /// `archives/{stem}-{ts}.json`，再清空全部历史（归档后从头开始）。
+    /// 返回归档文件路径。
+    ///
+    /// 2026-10 审计修复两处：
+    /// - 归档源从"复制磁盘文件"改为内存快照——磁盘最多落后 30s 保存
+    ///   周期，窗口内已接收的事件此前"未归档即被清"，归档与日志双失；
+    /// - 提示行走统一 `push_timeline_blocking`（seq / 计数 / 上限），
+    ///   不再绕过探针对账（见 [`Self::push_timeline_blocking`]）。
     pub async fn archive_history(&self) -> Result<String, String> {
-        let path = {
-            self.persist_path
-                .lock()
-                .expect("persist path poisoned")
-                .clone()
-        };
-        if let Some(ref p) = path {
-            if p.exists() {
-                let data = std::fs::read_to_string(p)
-                    .map_err(|e| format!("read session file failed: {e}"))?;
-                let dir = p.parent().unwrap_or_else(|| std::path::Path::new("."));
-                let archive_dir = dir.join("archives");
-                std::fs::create_dir_all(&archive_dir)
-                    .map_err(|e| format!("create archives dir failed: {e}"))?;
-                let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("session");
-                let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-                let archive = archive_dir.join(format!("{stem}-{ts}.json"));
-                std::fs::write(&archive, data).map_err(|e| format!("write archive failed: {e}"))?;
-                Self::prune_archives(&archive_dir, stem, Self::DEFAULT_ARCHIVE_MAX_FILES);
-                self.clear_history().await;
-                self.timeline
-                    .lock()
-                    .await
-                    .push(crate::event::TimelineMessage::system(
-                        format!("历史已归档：{}", archive.display()),
-                        String::new(),
-                        chrono::Utc::now().timestamp(),
-                    ));
-                // 提示行落盘：clear_history 内部 save_now 先于 push 完成，
-                // 不落盘则重启后提示行消失（2026-10 归档巡检发现的生产 bug）。
-                self.mark_dirty();
-                self.save_now().await;
-                return Ok(archive.display().to_string());
-            }
+        if !self.has_archivable_content() {
+            return Err("没有可归档的历史（会话为空）".into());
         }
-        Err("没有可归档的会话文件".into())
+        let data = self
+            .serialize()
+            .ok_or_else(|| "会话快照序列化失败（时间线锁被占用）".to_string())?;
+        let archive = self.write_archive_file(&data, None)?;
+        self.clear_history().await;
+        self.push_timeline_blocking(crate::event::TimelineMessage::system(
+            format!("历史已归档：{archive}"),
+            String::new(),
+            chrono::Utc::now().timestamp(),
+        ))
+        .await;
+        // 提示行落盘：clear_history 内部 save_now 先于 push 完成，
+        // 不落盘则重启后提示行消失（2026-10 归档巡检发现的生产 bug）。
+        self.mark_dirty();
+        self.save_now().await;
+        Ok(archive)
+    }
+
+    /// 归档**单个会话**：先写整档快照（与 [`Self::archive_history`] 同一
+    /// 文件形态——恢复时可直接作为会话文件手工换回），再只清空该会话的
+    /// 历史；其他会话不受影响。
+    ///
+    /// 面板「归档」按钮的会话级语义（2026-10 审计：此前该命令无 session
+    /// 维度，点一次把同人格**所有**会话一并清空——与面板"归档当前会话"
+    /// 的承诺不符，属「清理历史记忆」同类漏网的误清）。
+    pub async fn archive_session(&self, session_id: &str) -> Result<String, String> {
+        if !self.has_archivable_content() {
+            return Err("没有可归档的历史（会话为空）".into());
+        }
+        let data = self
+            .serialize()
+            .ok_or_else(|| "会话快照序列化失败（时间线锁被占用）".to_string())?;
+        let archive = self.write_archive_file(&data, None)?;
+        self.clear_session(session_id).await;
+        self.push_timeline_blocking(crate::event::TimelineMessage::system(
+            format!("会话历史已归档：{archive}（会话 {session_id}）"),
+            String::new(),
+            chrono::Utc::now().timestamp(),
+        ))
+        .await;
+        self.mark_dirty();
+        self.save_now().await;
+        Ok(archive)
     }
 
     /// 压缩计划（多会话，2026-09）：**按会话分别**计算该会话前
@@ -1497,21 +1592,32 @@ impl TrunkStore {
         })
     }
 
-    /// 归档当前会话文件的**内存快照**到 `archives/{stem}-{ts}-{reason}.json`。
+    /// 归档前的空档防守：事件日志与显示时间线都为空时无可归档内容。
+    /// （时间线锁被占用时保守放行——宁可行，不误拦。）
+    fn has_archivable_content(&self) -> bool {
+        if !self.event_log.is_empty() {
+            return true;
+        }
+        self.timeline
+            .try_lock()
+            .map(|timeline| !timeline.is_empty())
+            .unwrap_or(true)
+    }
+
+    /// 把序列化数据写入 `archives/{stem}-{ts}[-{suffix}].json`，并按
+    /// [`Self::DEFAULT_ARCHIVE_MAX_FILES`] 做保留清理。返回归档文件路径。
     ///
-    /// 压缩前调用：快照用序列化出的当前态（比直接复制磁盘文件准——磁盘
-    /// 可能落后一次 tick）。未配置持久化路径时返回 Err（纯内存部署无档
-    /// 可归，调用方继续压缩、只在结果里注明）。
-    pub async fn archive_snapshot(&self, reason: &str) -> Result<String, String> {
+    /// 2026-10 审计：归档数据统一**来自内存快照**（调用方先 `serialize()`），
+    /// 不再复制磁盘文件——磁盘最多落后 30s 保存周期，此前 ArchiveHistory
+    /// 走磁盘会在"归档后立即清空"时让窗口内已接收事件"未归档即被清"，
+    /// 归档与日志双失。
+    fn write_archive_file(&self, data: &str, suffix: Option<&str>) -> Result<String, String> {
         let path = self
             .persist_path
             .lock()
             .expect("persist path poisoned")
             .clone()
             .ok_or_else(|| "没有可归档的会话文件（未启用持久化）".to_string())?;
-        let data = self
-            .serialize()
-            .ok_or_else(|| "会话快照序列化失败（时间线锁被占用）".to_string())?;
         let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
         let archive_dir = dir.join("archives");
         std::fs::create_dir_all(&archive_dir)
@@ -1521,78 +1627,107 @@ impl TrunkStore {
             .and_then(|s| s.to_str())
             .unwrap_or("session");
         let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-        let archive = archive_dir.join(format!("{stem}-{ts}-{reason}.json"));
-        if let Err(e) = std::fs::write(&archive, data) {
-            return Err(format!("write archive failed: {e}"));
-        }
+        let name = match suffix {
+            Some(suffix) => format!("{stem}-{ts}-{suffix}.json"),
+            None => format!("{stem}-{ts}.json"),
+        };
+        let archive = archive_dir.join(name);
+        std::fs::write(&archive, data).map_err(|e| format!("write archive failed: {e}"))?;
         Self::prune_archives(&archive_dir, stem, Self::DEFAULT_ARCHIVE_MAX_FILES);
         Ok(archive.display().to_string())
+    }
+
+    /// 归档当前会话文件的**内存快照**到 `archives/{stem}-{ts}-{reason}.json`。
+    ///
+    /// 压缩前调用：快照用序列化出的当前态（比直接复制磁盘文件准——磁盘
+    /// 可能落后一次 tick）。未配置持久化路径时返回 Err（纯内存部署无档
+    /// 可归，调用方继续压缩、只在结果里注明）。
+    pub async fn archive_snapshot(&self, reason: &str) -> Result<String, String> {
+        let data = self
+            .serialize()
+            .ok_or_else(|| "会话快照序列化失败（时间线锁被占用）".to_string())?;
+        self.write_archive_file(&data, Some(reason))
     }
 
     /// 落地压缩：把各组前缀替换为其摘要（Compaction 事件带会话归属与
     /// 归档路径），投影随之更新并立即持久化。
     ///
-    /// `summaries` 按会话键匹配预览分组；缺失的组**保持原样**（不压缩），
-    /// 多出的条目忽略。应用期重新分组统计，容忍压缩等待期间的并发写
-    /// （replaced_count 以应用时点为准）。
+    /// 切片口径（2026-10 审计 🔴 修复两处读-改-写问题）：
+    /// - 每组替换**预览时算好的前缀长度**（[`CompactionSummary::replaced_count`]），
+    ///   不再按"应用时点 `len - keep_recent`"重算——摘要生成窗口内新到的
+    ///   k 条事件会把旧保留尾最老 k 条挤进被替换前缀而**无摘要**（静默
+    ///   丢档，仅归档可救）；改用预览切片后，窗口期事件全部留在保留尾。
+    /// - 整个读-改-写在 [`echo_session::EventLog::transform`] 的单次取锁内
+    ///   完成——"克隆 → 替换"两步之间并发 append 被整体覆盖丢弃的窗口
+    ///   （含整日志克隆 + 按会话重排，长会话可达数十 ms）随之关闭。
+    ///
+    /// `summaries` 按会话键匹配预览分组；缺失的组保持原样（不压缩）。
+    /// `keep_recent` 仅用于结果文案（保留尾实际 ≥ 该值）。
     pub async fn apply_compaction(
         &self,
         keep_recent: usize,
         summaries: &[CompactionSummary],
         archive: Option<&str>,
     ) -> Result<CompactionApplied, String> {
-        let events = self.event_log.log();
-        let mut new_log: Vec<echo_session::SessionEvent> = Vec::new();
-        let mut total_replaced = 0usize;
-        let mut groups_done = 0usize;
-        for (key, group) in group_events_by_session(&events) {
-            let prepared = summaries.iter().find(|s| s.session == key);
-            let (Some(prepared), true) = (prepared, group.len() > keep_recent + 1) else {
-                new_log.extend(group);
-                continue;
-            };
-            // 保留尾按**应用时点**的组尾部取（而非按组长度机械切
-            // replaced_count）——摘要生成窗口内新到的事件自然落在保留
-            // 尾部，不会被挤出丢档（2026-10 压缩巡检 🔴 摘要空洞修复）。
-            // 代价：窗口期新事件不进摘要正文（它们在保留尾里，本就可见）；
-            // 被压缩的前缀仍是"预览时的旧事件 + 摘要"——归档兜底完整。
-            let keep_from = group.len().saturating_sub(keep_recent);
-            let replaced_count = keep_from;
-            new_log.push(echo_session::SessionEvent::Compaction(
-                echo_session::CompactionEvent {
-                    replaced_count,
-                    summary: prepared.summary.clone(),
-                    archive: archive.map(str::to_string),
-                    session: key.clone(),
-                },
-            ));
-            new_log.extend(group[keep_from..].to_vec());
-            total_replaced += replaced_count;
-            groups_done += 1;
-        }
-        if total_replaced == 0 {
+        let outcome = self.event_log.transform(|events| {
+            let mut new_log: Vec<echo_session::SessionEvent> = Vec::new();
+            let mut total_replaced = 0usize;
+            let mut groups_done = 0usize;
+            for (key, group) in group_events_by_session(events) {
+                let prepared = summaries.iter().find(|s| s.session == key);
+                let Some(prepared) = prepared else {
+                    new_log.extend(group);
+                    continue;
+                };
+                let replace = prepared.replaced_count;
+                if replace == 0 || replace >= group.len() {
+                    // 组在预览后被外部改动（append-only 下理论不会收缩）：
+                    // 保守跳过——宁可不压缩，也不把无摘要内容换出。
+                    tracing::warn!(
+                        session = ?key,
+                        preview_replaced = replace,
+                        group_len = group.len(),
+                        "compaction: group changed since preview; skipping group"
+                    );
+                    new_log.extend(group);
+                    continue;
+                }
+                new_log.push(echo_session::SessionEvent::Compaction(
+                    echo_session::CompactionEvent {
+                        replaced_count: replace,
+                        summary: prepared.summary.clone(),
+                        archive: archive.map(str::to_string),
+                        session: key.clone(),
+                    },
+                ));
+                new_log.extend(group[replace..].to_vec());
+                total_replaced += replace;
+                groups_done += 1;
+            }
+            if total_replaced == 0 {
+                return None;
+            }
+            Some((new_log, (total_replaced, groups_done)))
+        });
+        let Some((total_replaced, groups_done)) = outcome else {
             return Err(format!(
                 "历史不足（{} 条事件，无需压缩）",
                 self.event_log.len()
             ));
-        }
-        // 原子整体替换（单次取锁）：clear+extend 的中间窗口里并发读者
-        // 会看到空日志（同巡检 🔴）。replace_all 后投影重建。
-        self.event_log.replace_all(new_log);
+        };
+        // 变换已原子提交；投影重建并立即持久化。
         self.reproject_all();
         let archive_note = archive
             .map(|p| format!("，原事件已归档：{p}"))
             .unwrap_or_default();
-        self.timeline
-            .lock()
-            .await
-            .push(crate::event::TimelineMessage::system(
-                format!(
-                    "历史已压缩：{total_replaced} 条事件 → {groups_done} 条摘要（保留最近 {keep_recent} 条）{archive_note}"
-                ),
-                String::new(),
-                chrono::Utc::now().timestamp(),
-            ));
+        self.push_timeline_blocking(crate::event::TimelineMessage::system(
+            format!(
+                "历史已压缩：{total_replaced} 条事件 → {groups_done} 条摘要（各会话保留最近 ≥{keep_recent} 条）{archive_note}"
+            ),
+            String::new(),
+            chrono::Utc::now().timestamp(),
+        ))
+        .await;
         self.mark_dirty();
         self.save_now().await;
         Ok(CompactionApplied {
@@ -3389,6 +3524,7 @@ mod tests {
         let summaries = vec![CompactionSummary {
             session: Some(sid.into()),
             summary: "用户先问了 m0、m1，随后推进到 m2、m3。".into(),
+            replaced_count: preview.total_replaced,
         }];
         let applied = store
             .apply_compaction(2, &summaries, Some("/tmp/archives/x-precompact.json"))
@@ -3453,6 +3589,7 @@ mod tests {
         let summaries = vec![CompactionSummary {
             session: Some(a_id.clone()),
             summary: "A 组摘要".into(),
+            replaced_count: 4,
         }];
         let applied = store
             .apply_compaction(2, &summaries, None)
@@ -3589,6 +3726,51 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn prune_archives_does_not_swallow_longer_stems() {
+        // 2026-10 审计回归：前缀匹配锚定时间戳段——stem `echo-sessions-x`
+        // 不得统计/删除 `echo-sessions-x-y` 的归档（旧 starts_with 会命中）。
+        let dir =
+            std::env::temp_dir().join(format!("echo-prune-anchor-{}", std::process::id()));
+        let archives = dir.join("archives");
+        std::fs::create_dir_all(&archives).unwrap();
+        let long_stem = archives.join("echo-sessions-x-y-20261001-000000.json");
+        std::fs::write(&long_stem, "{}").unwrap();
+        filetime::set_file_mtime(&long_stem, filetime::FileTime::from_unix_time(1_700_000_000, 0))
+            .unwrap();
+        for (i, ts) in ["20261002-000000", "20261003-000000"].iter().enumerate() {
+            let f = archives.join(format!("echo-sessions-x-{ts}.json"));
+            std::fs::write(&f, "{}").unwrap();
+            filetime::set_file_mtime(
+                &f,
+                filetime::FileTime::from_unix_time(1_700_000_100 + i as i64, 0),
+            )
+            .unwrap();
+        }
+
+        TrunkStore::prune_archives(&archives, "echo-sessions-x", 1);
+
+        let left: Vec<String> = std::fs::read_dir(&archives)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        // 本 stem 只保留最新 1 份；更长 stem 的文件不受影响。
+        assert!(
+            left.contains(&"echo-sessions-x-20261003-000000.json".to_string()),
+            "newest own kept: {left:?}"
+        );
+        assert!(
+            !left.contains(&"echo-sessions-x-20261002-000000.json".to_string()),
+            "older own pruned: {left:?}"
+        );
+        assert!(
+            left.contains(&"echo-sessions-x-y-20261001-000000.json".to_string()),
+            "longer stem untouched: {left:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn apply_compaction_keeps_events_arriving_after_preview() {
         let path = temp_sessions_path("compact-drift");
@@ -3609,6 +3791,7 @@ mod tests {
         let summaries = vec![crate::session::CompactionSummary {
             session: Some(sid.to_string()),
             summary: "[历史摘要] 前 7 条的摘要".into(),
+            replaced_count: preview.total_replaced,
         }];
         let applied = store
             .apply_compaction(3, &summaries, None)
@@ -3616,6 +3799,20 @@ mod tests {
             .expect("apply");
 
         let events = store.event_log.log();
+        // 修复后的切片语义：替换 = **预览切片**（前 7 条），窗口期新到的
+        // A/B 与旧保留尾（消息 7/8/9）全部留在保留尾——不再有"按应用时点
+        // len-keep 重算"把旧尾最老 a 条挤进无摘要前缀的静默丢档。
+        let compaction = events
+            .iter()
+            .find_map(|e| match e {
+                echo_session::SessionEvent::Compaction(c) => Some(c),
+                _ => None,
+            })
+            .expect("compaction event");
+        assert_eq!(
+            compaction.replaced_count, 7,
+            "replaced slice must be the preview count, not runtime drift"
+        );
         let texts: Vec<String> = events
             .iter()
             .filter_map(|e| match e {
@@ -3623,23 +3820,98 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // 窗口期新消息必须仍在（保留尾按应用时点尾部取，不被挤出）
+        for expected in [
+            "消息 7",
+            "消息 8",
+            "消息 9",
+            "窗口期新消息 A",
+            "窗口期新消息 B",
+        ] {
+            assert!(
+                texts.iter().any(|t| t.contains(expected)),
+                "{expected} must survive: {texts:?}"
+            );
+        }
+        assert_eq!(texts.len(), 5, "5 kept user messages: {texts:?}");
+        assert_eq!(applied.total_replaced, 7);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn archive_history_uses_memory_snapshot_not_stale_disk_file() {
+        // 2026-10 审计回归：归档源必须是**内存快照**——磁盘最多落后
+        // 30s 保存周期，窗口内新到的事件此前"未归档即被清"（归档与
+        // 日志双失，仅剩内存里的残影）。
+        let path = temp_sessions_path("archive-memory");
+        let _ = std::fs::remove_file(&path);
+        let store = TrunkStore::new(100_000);
+        store.set_persist_path(&path);
+        store.append_event(ev_user("local:tui::local_user", "已落盘的消息"));
+        store.save_now().await;
+        // 保存之后又到一条（窗口期事件，磁盘上没有）。
+        store.append_event(ev_user("local:tui::local_user", "未落盘的窗口期消息"));
+
+        let archive = store.archive_history().await.expect("archive");
+        let data = std::fs::read_to_string(&archive).unwrap();
         assert!(
-            texts.iter().any(|t| t.contains("窗口期新消息 A")),
-            "drift event A must survive: {texts:?}"
+            data.contains("未落盘的窗口期消息"),
+            "archive must contain the in-memory event disk has not saved yet"
         );
+        assert!(data.contains("已落盘的消息"));
+        let _ = std::fs::remove_file(&archive);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn archive_session_clears_only_the_target_session() {
+        // 2026-10 审计回归：会话级归档——A 被归档并清空，B 原样保留；
+        // 归档文件是整档快照（恢复时可直接作为会话文件手工换回）。
+        let path = temp_sessions_path("archive-scoped");
+        let _ = std::fs::remove_file(&path);
+        let store = TrunkStore::new(100_000);
+        store.set_persist_path(&path);
+        let a_id = store.ensure_workspace_channel("proj", "Proj").id.clone();
+        let b_id = "local:tui::local_user".to_string();
+        for i in 0..3 {
+            store.append_event(ev_user(&a_id, &format!("A{i}")));
+        }
+        for i in 0..3 {
+            store.append_event(ev_user(&b_id, &format!("B{i}")));
+        }
+
+        let archive = store.archive_session(&a_id).await.expect("archive");
+        let data = std::fs::read_to_string(&archive).unwrap();
         assert!(
-            texts.iter().any(|t| t.contains("窗口期新消息 B")),
-            "drift event B must survive: {texts:?}"
+            data.contains("A0") && data.contains("B0"),
+            "snapshot is the whole-file archive"
         );
-        // 保留尾 = 应用时点的最后 3 条（9, A, B）
-        let tail = &texts[texts.len().saturating_sub(3)..];
-        assert!(tail.iter().any(|t| t.contains("消息 9")));
-        // 压缩事件确实落了
-        assert!(events
+
+        // 只剩 B 的 3 条事件；A 被清空。
+        let events = store.event_log();
+        let a_left = events
             .iter()
-            .any(|e| matches!(e, echo_session::SessionEvent::Compaction(_))));
-        assert!(applied.total_replaced > 0);
+            .filter(|e| e.session() == Some(a_id.as_str()))
+            .count();
+        let b_left = events
+            .iter()
+            .filter(|e| e.session() == Some(b_id.as_str()))
+            .count();
+        assert_eq!(a_left, 0, "target session cleared");
+        assert_eq!(b_left, 3, "other sessions untouched");
+        // timeline 里 A 的条目被清、B 保留；提示行走统一入列路径（带 seq）。
+        {
+            let timeline = store.timeline.lock().await;
+            assert!(
+                timeline.iter().all(|m| m.session_id != a_id),
+                "timeline for the archived session is cleared"
+            );
+            assert!(timeline.iter().any(|m| m.content.contains("会话历史已归档")));
+            assert!(
+                timeline.last().is_some_and(|m| m.seq > 0),
+                "archive notice went through the counted push path (seq assigned)"
+            );
+        }
+        let _ = std::fs::remove_file(&archive);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -3710,6 +3982,7 @@ mod tests {
             .map(|g| CompactionSummary {
                 session: g.session.clone(),
                 summary: format!("[offline-体检] {} 条事件", g.replaced_count),
+                replaced_count: g.replaced_count,
             })
             .collect();
         let applied = store

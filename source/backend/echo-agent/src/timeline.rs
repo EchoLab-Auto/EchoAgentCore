@@ -330,11 +330,7 @@ fn summarize_timeline_value(value: &str, max_chars: usize) -> String {
                     let rendered = if is_sensitive_timeline_key(key) {
                         "[已隐藏]".into()
                     } else {
-                        match value {
-                            serde_json::Value::String(s) => truncate_one_line(s, 48),
-                            serde_json::Value::Array(items) => format!("[{}]", items.len()),
-                            other => other.to_string(),
-                        }
+                        summarize_json_leaf(value)
                     };
                     format!("{key}={rendered}")
                 })
@@ -342,17 +338,62 @@ fn summarize_timeline_value(value: &str, max_chars: usize) -> String {
                 .join(" · ");
             format!("{{{summarized}}}")
         }
+        Ok(serde_json::Value::Array(items)) => format!("[{}]", items.len()),
         Ok(other) => other.to_string(),
         Err(_) => truncate_one_line(value, max_chars),
     };
     truncate_one_line(&compact, max_chars)
 }
 
+/// 渲染一个 JSON 值用于工具行概要：字符串截断、数组给长度、**嵌套对象
+/// 展开一层**（敏感键在嵌套层同样遮蔽；再深的层级收缩为 `{…}`）。
+///
+/// 2026-10 审计：此前顶层值里的嵌套对象直接 `to_string()` 原样输出——
+/// `{"env": {"API_KEY": "sk-…"}}` 这类载荷会把嵌套层的密钥整段带上
+/// 时间线（"只查顶层键"的遮蔽形同虚设）。
+fn summarize_json_leaf(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => truncate_one_line(s, 48),
+        serde_json::Value::Array(items) => format!("[{}]", items.len()),
+        serde_json::Value::Object(map) => {
+            let inner = map
+                .iter()
+                .take(6)
+                .map(|(key, value)| {
+                    let rendered = if is_sensitive_timeline_key(key) {
+                        "[已隐藏]".into()
+                    } else {
+                        match value {
+                            serde_json::Value::String(s) => truncate_one_line(s, 24),
+                            serde_json::Value::Array(items) => format!("[{}]", items.len()),
+                            // 第三层起收缩，防显示爆炸（也无从泄露）。
+                            serde_json::Value::Object(_) => "{…}".into(),
+                            other => other.to_string(),
+                        }
+                    };
+                    format!("{key}={rendered}")
+                })
+                .collect::<Vec<_>>()
+                .join(" · ");
+            truncate_one_line(&format!("{{{inner}}}"), 96)
+        }
+        other => other.to_string(),
+    }
+}
+
 fn is_sensitive_timeline_key(key: &str) -> bool {
     let key = key.to_ascii_lowercase();
-    ["token", "secret", "password", "api_key", "access_key"]
-        .iter()
-        .any(|needle| key.contains(needle))
+    [
+        "token",
+        "secret",
+        "password",
+        "api_key",
+        "access_key",
+        "authorization",
+        "credential",
+    ]
+    .iter()
+    .any(|needle| key.contains(needle))
 }
 
 #[cfg(test)]
@@ -383,6 +424,30 @@ mod tests {
         let cut = truncate_one_line("一二三四五六七八九十", 5);
         assert_eq!(cut.chars().count(), 6, "5 chars + ellipsis");
         assert!(cut.ends_with('…'));
+    }
+
+    #[test]
+    fn summarize_hides_nested_sensitive_keys() {
+        // 顶层敏感键
+        let top = summarize_timeline_value(r#"{"api_key":"sk-top","cmd":"ls"}"#, 200);
+        assert!(!top.contains("sk-top"), "top-level secret leaked: {top}");
+        assert!(top.contains("[已隐藏]"));
+        // 嵌套一层（2026-10 审计修复：此前原样输出）
+        let nested = summarize_timeline_value(
+            r#"{"cmd":"env","env":{"API_KEY":"sk-nested","PATH":"/usr/bin"}}"#,
+            200,
+        );
+        assert!(
+            !nested.contains("sk-nested"),
+            "nested secret leaked: {nested}"
+        );
+        assert!(nested.contains("[已隐藏]"), "nested marker: {nested}");
+        // 第三层收缩为 {…}，同样不泄露
+        let deep = summarize_timeline_value(
+            r#"{"a":{"b":{"c":"deep-secret-value"}}}"#,
+            200,
+        );
+        assert!(!deep.contains("deep-secret-value"), "deep leak: {deep}");
     }
 
     #[tokio::test]

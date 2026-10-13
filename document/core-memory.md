@@ -42,10 +42,18 @@ y: 980
 - 压缩三件套：`compact_preview`（只读预览）→ `archive_snapshot`（压缩前快照）→
   `apply_compaction`（落地为 `Compaction` 事件）
 - 摘要为 LLM 交接摘要（逐会话组生成，固定四节；失败回退规则统计文案）；
-  应用期单次取锁整体替换 + 压缩互斥锁（double compact / 与 clear 竞争均被排除）
+  落地在单次取锁内完成读-改-写（`EventLog::transform`——窗口期并发 append
+  要么并入保留尾、要么落在替换之后，不再被克隆快照整体覆盖丢弃），且
+  **替换切片 = 预览值**（窗口期新到事件全部保留在尾部，不产生无摘要的
+  静默丢档）；外加压缩互斥锁（double compact / 与 clear 竞争均被排除）
 - 归档：手动 `ArchiveHistory` 与压缩前自动快照都写入
-  `archives/{stem}-{ts}[-precompact].json`（v6 完整快照）；保留最新 20 份（最旧先删）；
+  `archives/{stem}-{ts}[-precompact].json`（v6 完整快照；数据来自**内存
+  快照**——不复制可能落后一个保存周期的磁盘文件）；保留最新 20 份
+  （最旧先删；文件名匹配锚定时间戳段，防跨 stem 误删）；
   **恢复** = 把归档文件复制回原会话文件名并重启 Core
+- `ArchiveHistory` 要求 `session_id`（2026-10）：仅归档并清空该会话
+  （其他会话不受影响）；缺失 = **拒绝**（迁移期 fail-closed——旧语义的
+  降级执行是"整档归档 + 全量清空"，误清代价不可恢复）
 - 命令入口：`RequestContext`（快照）/ `CompactHistory`（按会话压缩）/
   `ClearHistory`（按会话清理；`session_id` 缺省 = 全部会话）/ `ArchiveHistory`（归档）
 

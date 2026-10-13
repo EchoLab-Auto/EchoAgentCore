@@ -113,6 +113,25 @@ impl EventLog {
         *self.events.lock().expect("event log poisoned") = events;
     }
 
+    /// Atomically read-modify-write the whole log under the internal lock.
+    ///
+    /// The closure receives the current events; return `Some((replacement,
+    /// outcome))` to commit `replacement` as the new log (returning `outcome`
+    /// to the caller) or `None` to leave the log untouched. Concurrent
+    /// appends are ordered against the transform: they either land before it
+    /// (visible to the closure) or after it (appended to the replacement) —
+    /// an update can never be lost between a separate read and a later write
+    /// (the window that a clone-then-`replace_all` pair leaves open).
+    pub fn transform<F, T>(&self, f: F) -> Option<T>
+    where
+        F: FnOnce(&[SessionEvent]) -> Option<(Vec<SessionEvent>, T)>,
+    {
+        let mut events = self.events.lock().expect("event log poisoned");
+        let (replacement, outcome) = f(&events)?;
+        *events = replacement;
+        Some(outcome)
+    }
+
     /// 原子删除**归属指定会话**的全部事件（单次取锁），返回删除条数。
     ///
     /// 用于「清理当前会话记忆」——绝不动其他会话（2026-10 用户报告：
@@ -211,6 +230,22 @@ mod tests {
         let events = log.log();
         assert_eq!(events[0].kind(), "user/message");
         assert_eq!(events[1].kind(), "assistant/message");
+    }
+
+    #[test]
+    fn transform_commits_or_keeps_atomically() {
+        let log = sample_log();
+        // Some: 提交替换并返回 outcome。
+        let seen = log.transform(|events| {
+            assert_eq!(events.len(), 2);
+            Some((events.iter().take(1).cloned().collect(), events.len()))
+        });
+        assert_eq!(seen, Some(2));
+        assert_eq!(log.len(), 1, "replacement committed");
+        // None: 日志保持不变。
+        let untouched = log.transform(|_| None::<(Vec<SessionEvent>, ())>);
+        assert_eq!(untouched, None);
+        assert_eq!(log.len(), 1, "None leaves the log untouched");
     }
 
     #[test]

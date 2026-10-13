@@ -753,6 +753,66 @@ async fn clear_history_resends_remaining_timeline_not_empty() {
     );
     assert_eq!(messages[0].session_id, "sB");
 }
+
+/// 2026-10 审计回归：无 session_id 的 ArchiveHistory 必须**拒绝**——
+/// 旧语义是"整档归档 + 全量清空"，缺失 session 时降级执行等于误清整个
+/// 人格；唯一客户端（面板）已升级为必带 session_id，此路径按过旧客户端
+/// fail-closed 处理。
+#[tokio::test]
+async fn archive_history_without_session_id_is_rejected_fail_closed() {
+    let provider = Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    });
+    let agent = Arc::new(test_agent(provider));
+    agent.set_team_id(Some("t".into()));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+
+    // 先放一条时间线：拒绝路径不得清空、也不得重发快照。
+    agent.trunk.push_timeline(crate::event::TimelineMessage {
+        kind: "user".into(),
+        content: "必须保留".into(),
+        session_id: "sA".into(),
+        time: 1700000000,
+        source: None,
+        reasoning: None,
+        tool: None,
+        images: None,
+        seq: 0,
+    });
+
+    agent
+        .apply_command(BackendCommand::ArchiveHistory {
+            team_id: Some("t".into()),
+            session_id: None,
+        })
+        .await;
+
+    let mut errors = Vec::new();
+    let mut timeline_broadcasts = 0usize;
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        match event {
+            BackendEvent::Error { message, .. } => errors.push(message),
+            BackendEvent::TrunkTimeline { .. } => timeline_broadcasts += 1,
+            _ => {}
+        }
+    }
+    assert!(
+        errors.iter().any(|m| m.contains("session_id")),
+        "missing session_id must be rejected with a clear message: {errors:?}"
+    );
+    assert_eq!(
+        timeline_broadcasts, 0,
+        "rejection must not resync the timeline"
+    );
+    let kept = agent.trunk.timeline_snapshot().expect("snapshot");
+    assert!(
+        kept.iter().any(|m| m.content == "必须保留"),
+        "rejection must not clear anything: {kept:?}"
+    );
+}
+
 /// 去主智能体：会话类命令缺少 team_id 时必须明确报错（无默认人格兜底）。
 #[tokio::test]
 async fn session_commands_require_explicit_team_id() {

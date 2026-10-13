@@ -107,7 +107,7 @@ graph BT
 
 ### 会话与持久化
 
-事件溯源：`EventLog` 是权威（append-only，整档 JSON v6，tmp+rename 原子写）；`SessionEvent` 五类（`UserMessage`/`AssistantMessage`/`ToolCall`/`ToolResult`/`Compaction`），压缩落地为显式 `Compaction` 事件（被替换条数 + 摘要 + 可选归档快照），日志保持可重放。投影：`derive_messages` 是唯一的模型上下文出口——多会话按 `session` 归属逐会话投影，裁剪只在投影期、绝不破坏日志；显示时间线带条目级 `seq` 支持增量同步。归档与保留：手动 `ArchiveHistory` 与压缩前自动快照写入 `archives/`（v6 完整快照，保留最新 20 份）；v1-v4 旧格式加载期自动迁移，每个 persona 独立会话文件。细节见 [会话记忆](./core-memory.md)（日志/投影/压缩）与 [配置持久化](./core-config-persistence.md)（文件布局）。
+事件溯源：`EventLog` 是权威（append-only，整档 JSON v6，tmp+rename 原子写）；`SessionEvent` 五类（`UserMessage`/`AssistantMessage`/`ToolCall`/`ToolResult`/`Compaction`），压缩落地为显式 `Compaction` 事件（被替换条数 + 摘要 + 可选归档快照），日志保持可重放。投影：`derive_messages` 是唯一的模型上下文出口——多会话按 `session` 归属逐会话投影，裁剪只在投影期、绝不破坏日志；显示时间线带条目级 `seq` 支持增量同步。归档与保留：手动 `ArchiveHistory`（支持 `session_id` 会话级；数据为内存快照）与压缩前自动快照写入 `archives/`（v6 完整快照，保留最新 20 份）；v1-v4 旧格式加载期自动迁移，每个 persona 独立会话文件。细节见 [会话记忆](./core-memory.md)（日志/投影/压缩）与 [配置持久化](./core-config-persistence.md)（文件布局）。
 
 ### 媒体库
 

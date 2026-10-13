@@ -85,9 +85,15 @@ pub enum BackendCommand {
     /// Delete a skill directory under the configured skills directory.
     DeleteSkill { name: String },
     /// 归档某个 team 的历史会话（快照到 archives/ 并清空当前历史）。
+    ///
+    /// `session_id` 存在时**会话级**：只归档并清空该会话（2026-10 审计
+    /// 修复——此前无会话维度，点一次误清同人格全部会话）；缺失时保持
+    /// 旧语义（整档归档 + 全量清空），向后兼容旧面板。
     ArchiveHistory {
         #[serde(default)]
         team_id: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
     },
     /// 压缩某个 team 的历史：旧事件替换为规则摘要（保留最近 keep_recent 条）。
     CompactHistory {

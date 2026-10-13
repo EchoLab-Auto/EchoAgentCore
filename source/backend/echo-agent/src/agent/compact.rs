@@ -313,6 +313,14 @@ impl crate::agent::Agent {
                     .map(|s| CompactionSummary {
                         session: s.session.clone(),
                         summary: s.summary.clone(),
+                        // 预览切片（事件条数）：落地只替换这批前缀，窗口期
+                        // 新到事件全部留在保留尾（2026-10 审计 🔴 修复）。
+                        replaced_count: preview
+                            .groups
+                            .iter()
+                            .find(|group| group.session == s.session)
+                            .map(|group| group.replaced_count)
+                            .unwrap_or(0),
                     })
                     .collect::<Vec<_>>(),
                 archive.as_deref(),
