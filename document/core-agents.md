@@ -15,6 +15,8 @@ link: ["agent-loop | Agent 循环 | r>l", "agent-humanlike-style | 拟人化方�
 Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent（独立 trunk、会话文件、系统提示词、能力白名单）。
 
 > **无「主智能体」**：所有智能体一律平等，没有受保护的"主/默认"角色。进程级职责（管理面、插件宿主、全局策略、Shell、适配器）由组合根的**核心服务代理**（`__core`，非人格、不出现在 TeamsList）承担；会话类命令必须显式携带 `team_id`，缺失直接报错。
+>
+> **未配置 `[agent.teams.*]` = 零人格**（2026-10 用户请求）：新建/新装 Core **不再自动合成 "default" 人格**（此前每台新节点都会凭空多出一个"默认" agent）。空配置启动即零智能体，由 Panel「设置 → 智能体 → 新建智能体」按需创建。
 
 > **单一注册表 + `(core, team_id)` 身份**：persona 注册表由 `echo_agent::AgentManager` **独占持有**（单一真源），`AgentSupervisor` 只是它的薄适配（`get`/`personas`，不另持第二份 HashMap）。多接入点（联邦网络多节点）下人格身份是 **`(core, team_id)`**：Panel 的 `TeamsList` 按 core 合并、命令按人格归属 core 路由（会话归属优先，其次人格归属，最后 `activeCore`），并带一致性守卫（目标 core 不拥有该人格时重定向）——详见 [联邦](./federation.md)。
 
@@ -113,7 +115,7 @@ enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel", "e
 - **多实例而非单实例多上下文**（对人而言）：每个人格一辆"车"（独立 `Agent::new` + 事件溯源日志），复用现有结构、互不干扰
 - **人格内多会话上下文**：同一人格内再按来源（本地/QQ 私聊/QQ 群）分区上下文——单份事件日志 + `session` 归属字段 + 按会话投影（`derive_messages_for`），避免"每个聊天一份完整 Agent"的内存与调度开销
 - **配置驱动**：人格在配置文件中定义，`enabled=false` 跳过实例化；运行时可通过 `ToggleTeam` 启停、`SaveTeam`/`DeleteTeam` 新建/删除（写回 `[agent.teams]`，立即生效）
-- **兼容性**：无 `[agent.teams]` 配置 = 单 agent（id 仍可为 `default`，但**无特权**）；`SendMessage`/会话类命令缺少 `team_id` 会被明确拒绝（Panel 与 Core 同版本部署）
+- **兼容性**：无 `[agent.teams]` 配置 = **零 agent**（2026-10 用户请求：不再自动合成 `default` 人格；显式配置 `[agent.teams.default]` 时它也只是普通 id、无特权）；`SendMessage`/会话类命令缺少 `team_id` 会被明确拒绝（Panel 与 Core 同版本部署）
 - **删除保护**：仅"至少保留一个智能体"；不再有受保护成员
 - **Provider 粒度**：支持 persona 级 API 引用（见上「Persona 装配」）；运行期 `SaveTeam` 改 `api_profile` 立即经 `apply_persona_api` 重建该人格 provider（全局 `UpdateApiConfig`/`SwitchApi` 只作用于管理面/全局默认，不自动广播到其他人格）
 - QQ/平台消息按**实例归属人格**路由：每个启用 `echo-agent.adapter.qq` 的人格拥有自己的 QQ 实例（容器 + 反向 WS 通道），见 [QQ 适配器门控](./adapter-qq-gating.md)「多实例」

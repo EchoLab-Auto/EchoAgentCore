@@ -71,27 +71,12 @@ impl AgentManager {
             }
             profiles.insert(id.clone(), p);
         }
-        // No profiles configured -> legacy single default agent.
-        if profiles.is_empty() {
-            profiles.insert(
-                "default".into(),
-                TeamMember {
-                    name: "默认".into(),
-                    description: "默认助手（配置文件未定义人格）".into(),
-                    system_prompt: raw.system_prompt.clone(),
-                    enabled: true,
-                    system_skills: Vec::new(),
-                    disabled_tools: raw.disabled_tools.clone(),
-                    disabled_skills: raw.disabled_skills.clone(),
-                    enabled_plugins: Vec::new(),
-                    enabled_tools: Vec::new(),
-                    enabled_skills: Vec::new(),
-                    memory_limit_tokens: None,
-                    context_window_tokens: None,
-                    api_profile: None,
-                },
-            );
-        }
+        // 未配置人格 = 零人格（2026-10 用户请求）：此前 `teams` 为空会合成
+        // 一个 legacy "default" 人格——每台新节点/新装 Core 都会凭空多出
+        // 一个"默认" agent（`agents=["default"]`），与"去主智能体"语义
+        // （无默认兜底、命令须显式 team_id）相悖。现在空配置就是没有智能体，
+        // 由 Panel「设置 → 智能体 → 新建智能体」（或手写 `[agent.teams.<id>]`）
+        // 按需创建。
         let teams = std::sync::RwLock::new(profiles);
         let disabled: Vec<String> = raw.disabled_teams.clone();
         let mut agents = HashMap::new();
@@ -406,11 +391,7 @@ mod tests {
 
     /// 构造 manager：测试成员全部放进 disabled_teams，build 不调 factory
     ///（factory 缺失会 panic——确保测试不触碰实例化路径）。
-    /// 空 teams 会合成 "default" persona，同样需要屏蔽。
-    fn manager_with(mut raw: AgentConfig) -> AgentManager {
-        if !raw.disabled_teams.iter().any(|d| d == "default") {
-            raw.disabled_teams.push("default".into());
-        }
+    fn manager_with(raw: AgentConfig) -> AgentManager {
         AgentManager::build(&raw, |_id, _p| {
             panic!("factory must not be called in tests")
         })
@@ -461,5 +442,27 @@ mod tests {
         assert!(manager.agent_ids().is_empty());
         assert_eq!(manager.team_ids(), vec!["disabled"]);
         assert!(!manager.infos()[0].enabled);
+    }
+
+    /// 2026-10 用户请求回归：**未配置任何 `[agent.teams.*]` 时不得合成
+    /// "default" 人格**——此前每台新节点/新装 Core 都会凭空多出一个
+    /// "默认" agent（`agents=["default"]`）；空配置现在就是零人格，
+    /// 由 Panel 按需新建。
+    #[test]
+    fn empty_teams_create_no_personas() {
+        let raw = AgentConfig::default();
+        let manager = AgentManager::build(&raw, |_id, _profile| {
+            panic!("empty teams must not instantiate any Agent")
+        });
+        assert!(
+            manager.agent_ids().is_empty(),
+            "unconfigured Core must start with zero personas: {:?}",
+            manager.agent_ids()
+        );
+        assert!(manager.team_ids().is_empty());
+        assert!(manager.infos().is_empty());
+        // 无兜底解析：None / "default" 都必须落空（去主智能体语义）。
+        assert!(manager.resolve(None).is_none(), "no default fallback");
+        assert!(manager.resolve(Some("default")).is_none());
     }
 }
