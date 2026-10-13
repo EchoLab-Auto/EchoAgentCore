@@ -27,6 +27,7 @@ Panel 前端 / 工程化），主线程逐条核验（file:line 抽查 + serde/�
 | --- | --- |
 | `76ff48e` | 联邦 4 命令类型补齐（9 处双重断言清零）+ protocol-sync 三条守护（命令存在性 / 序列化形态契约 / 归零棘轮） |
 | `41c2f09` | 智能体编辑补脏检查（快照 + 四接入点确认 + 底栏脏状态；+3 测试） |
+| `5b7a65c` | 死状态清理（state.model/systemPrompt）+ PanelSidebar 异步等待修 flaky（全量 3 轮连过） |
 | `41f8007` `7221f4a` `0c58848` `e83cca6` | 损坏字符、LICENSE、CI 补 lint:styles、测试计数校准 |
 
 ### ui-frame
@@ -61,7 +62,7 @@ Panel 前端 / 工程化），主线程逐条核验（file:line 抽查 + serde/�
 - `napcat/service.rs` 盲删猜测卷名（应从 compose 解析）
 - `command.rs::command_clearance` 默认 `_ => Agent`（当前无执行强制点）
 - Panel：`ApiSettings` 删除 profile 无二次确认；
-  握手队列满 128 静默丢弃；`state.model`/`systemPrompt` 死状态；
+  握手队列满 128 静默丢弃；
   ChatView 无虚拟化（库自带 VirtualList 未用）；SettingsView 3654 行待拆
 - Core：`main.rs::run_core` 1500 行、`apply_command` 1180 行待拆；
   dev-testing 无 nextest/flaky 治理；CI 无 concurrency/timeout/audit/MSRV
