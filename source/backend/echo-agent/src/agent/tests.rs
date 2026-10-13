@@ -1797,6 +1797,94 @@ async fn echo_loop_path_injects_persona_skills_and_workspace() {
 /// AgentThinking 起、LlmRequest/LlmResponse（经 runner 总线翻译）、
 /// AgentReasoning（回调）、AgentCompleted 收；并写 last_prompt_blocks
 /// （/context 视图）。
+/// 回归（2026-10 生产事故）：DeepSeek 402/余额不足时，echo-loop 路径
+/// 必须在**收尾时**发 `AgentCompleted` + `Error` 事件——此前 `Err(other)`
+/// 分支静默吞掉，用户在面板看到的是"转了圈后什么都没发生"、busy 浮条
+/// 永久挂着。本测试模拟"provider 返回错误"（如 402 余额不足）。
+#[tokio::test]
+async fn echo_loop_model_error_surfaces_completed_and_error_events() {
+    use crate::llm::LlmError;
+    // 模拟 provider 返回错误（402/余额不足）。
+    struct FailingProvider;
+    #[async_trait::async_trait]
+    impl LlmProvider for FailingProvider {
+        fn name(&self) -> &str {
+            "fail"
+        }
+        fn default_model(&self) -> &str {
+            "fail-model"
+        }
+        async fn chat(&self, _: &ChatRequest) -> Result<ChatResponse, LlmError> {
+            Err(LlmError::Api("HTTP 402: Insufficient Balance".into()))
+        }
+        async fn chat_stream(
+            &self,
+            _: &ChatRequest,
+            _: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
+        ) -> Result<ChatResponse, LlmError> {
+            Err(LlmError::Api("HTTP 402: Insufficient Balance".into()))
+        }
+    }
+    let agent = Arc::new(Agent::new(
+        Arc::new(FailingProvider),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    ));
+    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+        Arc::new(echo_context::EventBus::default()),
+        Arc::new(FailingProvider),
+        Arc::new(echo_loop::ToolPipeline::new()),
+        echo_loop::LoopOptions::default(),
+    ));
+    agent.set_loop_runner(runner);
+    agent.set_use_echo_loop(true);
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+
+    let err = agent.process_message(&session, "你好").await;
+    assert!(err.is_err(), "402 必然失败: {err:?}");
+
+    let events: Vec<_> = {
+        let mut out = Vec::new();
+        while let Ok(ev) = bridge.event_rx.lock().await.try_recv() {
+            out.push(ev);
+        }
+        out
+    };
+    // 关键断言：AgentCompleted（busy 收尾）+ Error（错误可见）必须都发
+    let has_completed = events
+        .iter()
+        .any(|e| matches!(e, BackendEvent::AgentCompleted { .. }));
+    let has_error = events
+        .iter()
+        .any(|e| matches!(e, BackendEvent::Error { .. }));
+    assert!(
+        has_completed,
+        "缺 AgentCompleted（busy 浮条会永远挂着）: {events:?}"
+    );
+    assert!(has_error, "缺 Error（错误对用户不可见）: {events:?}");
+    // 错误消息必须包含 provider 的 402 提示（而非静默的 LoopError::Model）
+    let error_msg = events
+        .iter()
+        .find_map(|e| {
+            if let BackendEvent::Error { message, .. } = e {
+                Some(message.clone())
+            } else {
+                None
+            }
+        })
+        .expect("Error event missing");
+    assert!(
+        error_msg.contains("402") || error_msg.contains("Insufficient"),
+        "错误消息未携带 provider 错误: {error_msg}"
+    );
+}
+
 #[tokio::test]
 async fn echo_loop_path_emits_panel_lifecycle_events() {
     let provider = Arc::new(ScriptedProvider::new(vec![ChatResponse {

@@ -1987,7 +1987,26 @@ impl Agent {
                 Ok(reply)
             }
             Err(echo_loop::runner::LoopError::Cancelled) => Err(anyhow!(TURN_CANCELLED)),
-            Err(other) => Err(anyhow!(other.to_string())),
+            Err(other) => {
+                // 模型错误（含 provider 返回的 402/余额不足）按内置循环同
+                // 口径：发 AgentCompleted 收尾 busy 状态 + 把错误事件给
+                // 前端（否则用户在面板上看到的是"转了圈后什么都没发生"，
+                // 且持续挂着"正在思考"的活动浮条）。
+                self.emit(BackendEvent::AgentCompleted {
+                    session_id: session_id.clone(),
+                });
+                self.emit(BackendEvent::Error {
+                    session_id: Some(session_id.clone()),
+                    message: other.to_string(),
+                });
+                tracing::warn!(
+                    session = %session_id,
+                    branch_id = %branch_id,
+                    %other,
+                    "echo-loop turn failed"
+                );
+                Err(anyhow!(other.to_string()))
+            }
         }
     }
 
