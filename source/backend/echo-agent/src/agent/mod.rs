@@ -152,6 +152,9 @@ pub struct Agent {
     /// [`Self::apply_persona_api`] 重建本 persona 的 provider，不依赖全局
     /// UpdateApiConfig / SwitchApi 激活路径。
     persona_api: tokio::sync::RwLock<Option<String>>,
+    /// 余额快照/查询互斥（2026-10 审计 P2）：周期任务与手动「查余额」
+    /// 共用——防止慢查询（15s 超时）叠加本轮周期 tick、导致同秒重复采样。
+    balance_snapshot_lock: tokio::sync::Mutex<()>,
     /// Subagent 插件运行态：子任务注册表 + spawn 执行闭包（组合根装配；
     /// None = 插件未启用，spawn_subagent 对模型不可见）。
     subagent: std::sync::RwLock<Option<SubagentRuntime>>,
@@ -329,6 +332,7 @@ impl Agent {
             draining: AtomicBool::new(false),
             capabilities: std::sync::Mutex::new(None),
             persona_api: tokio::sync::RwLock::new(None),
+            balance_snapshot_lock: tokio::sync::Mutex::new(()),
             subagent: std::sync::RwLock::new(None),
         };
         // Spawn periodic identity eviction (every 5 minutes). Only stale

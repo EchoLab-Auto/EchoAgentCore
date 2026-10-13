@@ -95,6 +95,8 @@ mod tests {
                 usage: Usage {
                     prompt_tokens: prompt,
                     completion_tokens: completion,
+                    prompt_cache_hit_tokens: None,
+                    prompt_cache_creation_tokens: None,
                 },
                 seen_models: Mutex::new(Vec::new()),
             }

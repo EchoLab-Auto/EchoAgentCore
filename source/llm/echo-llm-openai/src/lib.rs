@@ -140,6 +140,8 @@ impl LlmProvider for OpenAiProvider {
                 .map(|u| Usage {
                     prompt_tokens: u.prompt_tokens,
                     completion_tokens: u.completion_tokens,
+                    prompt_cache_hit_tokens: Some(u.prompt_cache_hit_tokens),
+                    prompt_cache_creation_tokens: Some(u.prompt_cache_creation_tokens),
                 })
                 .unwrap_or_default(),
         })
@@ -282,6 +284,8 @@ fn parse_sse_event(event: &str) -> Vec<SseOutcome> {
             outcomes.push(SseOutcome::Usage(Usage {
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
+                prompt_cache_hit_tokens: Some(usage.prompt_cache_hit_tokens),
+                prompt_cache_creation_tokens: Some(usage.prompt_cache_creation_tokens),
             }));
         }
         let Some(choice) = parsed.choices.first() else {
@@ -498,6 +502,13 @@ struct FunctionWire {
 struct UsageWire {
     prompt_tokens: u32,
     completion_tokens: u32,
+    /// DeepSeek prompt 缓存命中 tokens（`/anthropic` 兼容端点透传；非缓存
+    /// 端点不返回——默认 0）。`prompt_tokens` **包含**该部分。
+    #[serde(default)]
+    prompt_cache_hit_tokens: u32,
+    /// 缓存写入 tokens（按输入价计；默认 0）。
+    #[serde(default)]
+    prompt_cache_creation_tokens: u32,
 }
 
 #[derive(Deserialize)]

@@ -153,6 +153,8 @@ impl LlmProvider for AnthropicProvider {
                 .map(|u| Usage {
                     prompt_tokens: u.input_tokens,
                     completion_tokens: u.output_tokens,
+                    prompt_cache_hit_tokens: Some(u.prompt_cache_hit_tokens),
+                    prompt_cache_creation_tokens: Some(u.prompt_cache_creation_tokens),
                 })
                 .unwrap_or_default(),
         })
@@ -222,6 +224,8 @@ impl LlmProvider for AnthropicProvider {
         acc.set_usage(Usage {
             prompt_tokens: usage.input_tokens.unwrap_or(0),
             completion_tokens: usage.output_tokens.unwrap_or(0),
+            prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
+            prompt_cache_creation_tokens: usage.prompt_cache_creation_tokens,
         });
         Ok(acc.finish())
     }
@@ -246,6 +250,8 @@ enum AnthropicOutcome {
 struct StreamUsage {
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
+    prompt_cache_hit_tokens: Option<u32>,
+    prompt_cache_creation_tokens: Option<u32>,
 }
 
 impl StreamUsage {
@@ -255,6 +261,12 @@ impl StreamUsage {
         }
         if update.output_tokens.is_some() {
             self.output_tokens = update.output_tokens;
+        }
+        if update.prompt_cache_hit_tokens.is_some() {
+            self.prompt_cache_hit_tokens = update.prompt_cache_hit_tokens;
+        }
+        if update.prompt_cache_creation_tokens.is_some() {
+            self.prompt_cache_creation_tokens = update.prompt_cache_creation_tokens;
         }
     }
 }
@@ -339,6 +351,8 @@ fn parse_anthropic_event(event: &str) -> Vec<AnthropicOutcome> {
                 outcomes.push(AnthropicOutcome::Usage(StreamUsage {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
+                    prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
+                    prompt_cache_creation_tokens: usage.prompt_cache_creation_tokens,
                 }));
             }
         }
@@ -350,6 +364,8 @@ fn parse_anthropic_event(event: &str) -> Vec<AnthropicOutcome> {
                 outcomes.push(AnthropicOutcome::Usage(StreamUsage {
                     input_tokens: usage.input_tokens,
                     output_tokens: usage.output_tokens,
+                    prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
+                    prompt_cache_creation_tokens: usage.prompt_cache_creation_tokens,
                 }));
             }
         }
@@ -598,6 +614,13 @@ enum ContentBlock {
 struct UsageWire {
     input_tokens: u32,
     output_tokens: u32,
+    /// DeepSeek prompt 缓存命中 tokens（Anthropic 兼容端点透传；非缓存
+    /// 端点不返回该字段——默认 0）。`input_tokens` **包含**该部分。
+    #[serde(default)]
+    prompt_cache_hit_tokens: u32,
+    /// 缓存写入 tokens（按输入价计；默认 0）。
+    #[serde(default)]
+    prompt_cache_creation_tokens: u32,
 }
 
 #[derive(Deserialize)]
@@ -638,6 +661,10 @@ struct MessageDeltaWire {
 struct StreamUsageWire {
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default)]
+    prompt_cache_creation_tokens: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -1098,6 +1125,8 @@ mod tests {
         acc.set_usage(echo_defs::message::Usage {
             prompt_tokens: usage.input_tokens.unwrap_or(0),
             completion_tokens: usage.output_tokens.unwrap_or(0),
+            prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
+            prompt_cache_creation_tokens: usage.prompt_cache_creation_tokens,
         });
         let response = acc.finish();
         assert_eq!(response.content.as_deref(), Some("你好"));

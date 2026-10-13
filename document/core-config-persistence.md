@@ -196,11 +196,15 @@ group_ids = []
   每次请求 `request.model`，模型切换即时生效）。
 - **保留与剪枝**：余额保留 30 天、用量 90 天（每 512 次追加触发一次过期行
   重写剪枝）；**面板读取窗口 = 近 7 天**。文件删除即重置图表（无其他副作用）。
-- **费用估算**：`[agent.pricing]` 定价表（缺省 = 内置 DeepSeek 公开价；
-  长度前缀匹配模型名、区分高峰/空闲时段；含 `offpeak_*` 档位豁免）。输入按
-  「缓存未命中」口径计（框架不区分缓存命中 → 估值是**上界**）；价格可随配置
+- **费用估算**：`[agent.pricing]` 定价表（缺省 = 内置 DeepSeek 公开价 + Kimi k3
+  （约 ¥12/¥32 每百万——2026-10 审计：k3 的 4.5M tokens 此前零估算）；
+  长度前缀匹配模型名、区分高峰/空闲时段；含 `offpeak_*` 档位豁免）。价格可随配置
   覆盖或清空（`pricing = []` = 禁用估算）。估算由 Core 在 `QueryApiMetrics`
   响应时现算（`est_cost` 字段），不落盘。
+- **缓存命中口径（2026-10）**：`Usage` 携带 `prompt_cache_hit_tokens` /
+  `prompt_cache_creation_tokens`（DeepSeek 的 `input_tokens` **包含**缓存命中
+  部分，此前按"未命中"价估算是刻意上界；非缓存端点 = 0/None）。命中价折扣
+  的计价下沉在 providers 透传之后由估算侧消费。
 - **协议**：`QueryApiMetrics{name}`（空 = 默认 + 全部 profile）→ `ApiMetrics`
   事件（`entries: [{name, balance[], usage[], cost_currency}]`；`usage` 按
   小时 × 模型聚合）。实现：`echo-agent/src/metrics.rs`（存储/剪枝/定价）+

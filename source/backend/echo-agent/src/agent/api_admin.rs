@@ -429,6 +429,9 @@ impl Agent {
     /// `name` 空 = 全局默认配置，非空 = 该 profile；用 profile 自身的
     /// api_key / base_url 请求。成功时同时落一条本地余额快照（图表数据源）。
     pub(crate) async fn query_api_balance(&self, name: &str) {
+        // 手动「查余额」与周期快照共用同一把锁（2026-10 审计 P2）：慢查询
+        // 叠加本轮周期 tick 会造成同秒重复采样。
+        let _snapshot_guard = self.balance_snapshot_lock.lock().await;
         let config = self.config.read().await.clone();
         let probe = match resolve_probe_config(&config, name) {
             Ok(probe) => probe,
@@ -582,21 +585,38 @@ impl Agent {
         let Some(store) = self.metrics() else {
             return;
         };
+        // 周期任务与手动「查余额」共用锁（2026-10 审计 P2）：慢查询叠加
+        // 本轮周期 tick 会造成同秒重复采样——try_lock 失败（手动查询正在
+        // 进行）时跳过本轮，下个 tick 再采。
+        let Ok(_snapshot_guard) = self.balance_snapshot_lock.try_lock() else {
+            tracing::debug!("balance snapshot skipped (manual balance query in flight)");
+            return;
+        };
         let config = self.config.read().await.clone();
         let targets = metrics_targets(&config);
-        for target in targets {
-            let probe = match resolve_probe_config(&config, &target) {
-                Ok(probe) => probe,
-                Err(_) => continue,
-            };
-            if deepseek_balance_endpoint(&probe.base_url).is_none()
-                || probe.effective_api_key().is_empty()
-            {
-                continue;
-            }
-            match fetch_balance(&probe).await {
+        // 多个 profile 时并发查询（tokio::join!）——此前串行，多 profile
+        // 时一轮总耗时 = Σ（逐条查询 + 网络延迟），反而拉长本轮窗口。
+        let probes: Vec<_> = targets
+            .iter()
+            .filter_map(|target| {
+                let probe = resolve_probe_config(&config, target).ok()?;
+                if deepseek_balance_endpoint(&probe.base_url).is_none()
+                    || probe.effective_api_key().is_empty()
+                {
+                    return None;
+                }
+                Some((target, probe))
+            })
+            .collect();
+        let futures = probes
+            .iter()
+            .map(|(_, probe)| fetch_balance(probe))
+            .collect::<Vec<_>>();
+        for ((target, _), result) in probes.iter().zip(futures) {
+            let fetched = result.await;
+            match fetched {
                 Ok(fetched) => store.record_balance(
-                    &target,
+                    target,
                     &fetched.currency,
                     parse_amount(&fetched.total),
                     parse_amount(&fetched.granted),

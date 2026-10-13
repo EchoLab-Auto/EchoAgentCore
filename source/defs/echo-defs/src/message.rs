@@ -166,10 +166,20 @@ pub struct ChatChunk {
 }
 
 /// Token usage reported by the provider.
+///
+/// `prompt_tokens` / `completion_tokens` 是 provider 直接回报的口径
+///（DeepSeek/Anthropic：`input_tokens` **包含**缓存命中部分；OpenAI：
+/// 不区分）。`prompt_cache_hit_tokens` / `prompt_cache_creation_tokens`
+/// 在 provider 有返回时携带（2026-10 审计 P3：此前按"未命中"价估算
+/// 是刻意上界——有了该字段可按命中价折扣；None = 未知/不支持）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_creation_tokens: Option<u32>,
 }
 
 /// 流式增量 → 完整响应的组装器（provider 共用）。
@@ -361,10 +371,14 @@ mod stream_accumulator_tests {
         acc.set_usage(Usage {
             prompt_tokens: 10,
             completion_tokens: 2,
+            prompt_cache_hit_tokens: None,
+            prompt_cache_creation_tokens: None,
         });
         acc.set_usage(Usage {
             prompt_tokens: 10,
             completion_tokens: 7,
+            prompt_cache_hit_tokens: None,
+            prompt_cache_creation_tokens: None,
         });
         acc.set_stop_reason("length");
         let out = acc.finish();

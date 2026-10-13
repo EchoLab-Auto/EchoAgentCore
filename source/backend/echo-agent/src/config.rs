@@ -112,6 +112,16 @@ pub fn default_pricing() -> Vec<ModelPrice> {
             offpeak_output_per_million: Some(13.5),
             currency: "CNY".into(),
         },
+        // Kimi K3（2026-10 审计：未计价条目——k3 的 4.5M tokens 此前零估算）。
+        // 按官方页面（约 ¥12/¥32 每百万），不含空闲折扣。
+        ModelPrice {
+            model: "k3".into(),
+            input_per_million: 12.0,
+            output_per_million: 32.0,
+            offpeak_input_per_million: None,
+            offpeak_output_per_million: None,
+            currency: "CNY".into(),
+        },
     ]
 }
 
