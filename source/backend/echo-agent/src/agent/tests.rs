@@ -719,7 +719,10 @@ async fn session_commands_require_explicit_team_id() {
             team_id: None,
             session_id: None,
         },
-        BackendCommand::ClearHistory { team_id: None },
+        BackendCommand::ClearHistory {
+            team_id: None,
+            session_id: None,
+        },
     ] {
         agent.apply_command(cmd).await;
     }

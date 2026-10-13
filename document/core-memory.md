@@ -47,7 +47,7 @@ y: 980
   `archives/{stem}-{ts}[-precompact].json`（v6 完整快照）；保留最新 20 份（最旧先删）；
   **恢复** = 把归档文件复制回原会话文件名并重启 Core
 - 命令入口：`RequestContext`（快照）/ `CompactHistory`（按会话压缩）/
-  `ClearHistory`（清空该 agent 全部会话）/ `ArchiveHistory`（归档）
+  `ClearHistory`（按会话清理；`session_id` 缺省 = 全部会话）/ `ArchiveHistory`（归档）
 
 ## 显示时间线
 

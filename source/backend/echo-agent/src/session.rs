@@ -1115,6 +1115,34 @@ impl TrunkStore {
         self.save_now().await;
     }
 
+    /// 清理**单个会话**的记忆：事件日志中该会话的事件、该会话的上下文
+    /// 投影、时间线中该会话的条目。
+    ///
+    /// 2026-10 用户报告修复：面板「清理历史记忆」此前映射到
+    /// [`Self::clear_history`]（全量）——同一人格下其他会话（QQ 群/私聊、
+    /// 其他 workspace 会话）的记忆被一并抹掉。现在 UI 走本方法按
+    /// `session_id` 精确清理；全量版本保留（显式全清的管理语义）。
+    ///
+    /// - `session == None` 的旧版事件不删（无归属信息，宁保守不误删）；
+    /// - 压缩互斥同 [`Self::clear_history`]（清理与压缩落地竞争同样会
+    ///   让旧事件被 replace_all 复活）。
+    pub async fn clear_session(&self, session_id: &str) {
+        let _compact_guard = self.compact_lock().await;
+        let removed = self.event_log.retain_excluding_session(session_id);
+        self.session_histories.remove(session_id);
+        self.timeline
+            .lock()
+            .await
+            .retain(|entry| entry.session_id != session_id);
+        self.mark_dirty();
+        self.save_now().await;
+        tracing::info!(
+            session = %session_id,
+            removed_events = removed,
+            "session memory cleared (scoped)"
+        );
+    }
+
     /// 归档保留上限（archives/ 下本 stem 的归档文件数，最旧先删；
     /// 2026-10 议题：此前归档只增不减，一年可达数百 MB）。
     pub const DEFAULT_ARCHIVE_MAX_FILES: usize = 20;
@@ -2489,6 +2517,126 @@ mod tests {
         restored.load_from_file().await;
         assert_eq!(restored.trunk_len(), 0, "cleared history survives restart");
         assert!(restored.timeline_snapshot().is_none_or(|t| t.is_empty()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 会话级清理（2026-10 用户报告回归）：清一个会话，**另一会话完好**。
+    ///
+    /// 背景：面板「清理历史记忆」此前映射到全量 `clear_history()`——
+    /// 同一人格下其他会话（QQ 群/私聊、其他 workspace 会话）的记忆被一并
+    /// 抹掉。本测试钉住 `clear_session` 的精确性：事件日志、上下文投影、
+    /// 显示时间线三面都只清目标会话，且磁盘持久化一致。
+    #[tokio::test]
+    async fn clear_session_only_wipes_target_and_keeps_siblings() {
+        let path = temp_sessions_path("clear-session");
+        let _ = std::fs::remove_file(&path);
+        let store = TrunkStore::new(1000);
+        store.set_persist_path(&path);
+
+        let user_event = |session: &str, content: &str, ts: i64| {
+            echo_session::SessionEvent::UserMessage(echo_session::event::UserMessage {
+                session: Some(session.into()),
+                content: content.into(),
+                timestamp: ts,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            })
+        };
+        let timeline_msg = |session: &str, content: &str, ts: i64| crate::event::TimelineMessage {
+            kind: "user".into(),
+            content: content.into(),
+            session_id: session.into(),
+            time: ts,
+            source: None,
+            reasoning: None,
+            tool: None,
+            images: None,
+            seq: 0,
+        };
+
+        // 会话 A（待清理）与 B（必须完好）各写事件 + 时间线条目。
+        store.append_event(user_event(
+            "local:workspace:proj:alice",
+            "A-记忆",
+            1700000001,
+        ));
+        store.append_event(user_event("qq:group:123:456", "B-记忆", 1700000002));
+        store.push_timeline(timeline_msg(
+            "local:workspace:proj:alice",
+            "A-线",
+            1700000001,
+        ));
+        store.push_timeline(timeline_msg("qq:group:123:456", "B-线", 1700000002));
+        store.save_now().await;
+        assert_eq!(store.event_log().len(), 2);
+
+        store.clear_session("local:workspace:proj:alice").await;
+
+        // ① 事件日志：只剩 B。
+        let log = store.event_log();
+        assert_eq!(log.len(), 1, "只应保留另一会话的事件: {log:?}");
+        assert_eq!(log[0].session(), Some("qq:group:123:456"));
+        // ② 上下文投影：A 的投影条目已删、B 的保留。
+        let a_cleared = match store.history_for("local:workspace:proj:alice") {
+            Some(h) => h.lock().await.is_empty(),
+            None => true,
+        };
+        assert!(a_cleared, "目标会话投影应清空");
+        // ③ 时间线：只剩 B 的条目。
+        let timeline = store.timeline_snapshot().unwrap_or_default();
+        assert_eq!(timeline.len(), 1, "时间线只应保留另一会话条目");
+        assert_eq!(timeline[0].session_id, "qq:group:123:456");
+
+        // ④ 持久化：重启加载后同样只有 B（清理落盘）。
+        let restored = TrunkStore::new(1000);
+        restored.set_persist_path(&path);
+        restored.load_from_file().await;
+        let restored_log = restored.event_log();
+        assert_eq!(restored_log.len(), 1, "磁盘应只存另一会话");
+        assert!(
+            restored
+                .timeline_snapshot()
+                .is_some_and(|t| t.iter().all(|m| m.session_id == "qq:group:123:456")),
+            "重启后时间线也不含被清会话"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 旧版无归属事件（session=None）在会话级清理中**不被误删**（保守语义）。
+    #[tokio::test]
+    async fn clear_session_keeps_legacy_unattributed_events() {
+        let path = temp_sessions_path("clear-session-legacy");
+        let _ = std::fs::remove_file(&path);
+        let store = TrunkStore::new(1000);
+        store.set_persist_path(&path);
+
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some("s1".into()),
+                content: "归属 s1".into(),
+                timestamp: 1,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        ));
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: None, // 旧版事件：无归属
+                content: "无归属".into(),
+                timestamp: 2,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        ));
+
+        store.clear_session("s1").await;
+
+        let log = store.event_log();
+        assert_eq!(log.len(), 1, "仅删该会话事件，旧版无归属事件保留: {log:?}");
+        assert_eq!(log[0].session(), None);
         let _ = std::fs::remove_file(&path);
     }
 

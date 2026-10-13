@@ -214,14 +214,24 @@ pub enum BackendCommand {
     },
     /// 停止（销毁）一个后台 shell 会话。
     ShellStop { session_id: String },
-    /// Erase all agent conversation memory: the durable session event log,
-    /// the in-memory trunk context and the persisted display timeline.
-    /// Responds with a fresh (empty) `TrunkTimeline` + `ContextSnapshot`.
+    /// Erase agent conversation memory. Scope:
+    /// - `session_id = Some(id)`：仅清理该会话（事件日志中归属该会话的
+    ///   事件 + 该会话上下文投影 + 时间线中该会话条目）；
+    /// - `session_id = None`：清空该人格全部会话（显式全清的管理语义）。
+    ///
+    /// Responds with a fresh `TrunkTimeline` + `ContextSnapshot`.
+    ///
     /// **Frontend-only** — destructive, human-in-the-loop action; the agent
     /// must never wipe its own memory.
+    ///
+    /// 2026-10 用户报告修复：`session_id` 为新增维度——此前只有 team 维度，
+    /// 面板「清理历史记忆」把同人格下**所有会话**（QQ 群/私聊、其他
+    /// workspace 会话）的记忆一并清掉。
     ClearHistory {
         #[serde(default)]
         team_id: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
     },
     /// Start an adapter by name.
     StartAdapter { name: String },
@@ -554,7 +564,10 @@ mod tests {
             CommandClearance::Frontend
         );
         assert_eq!(
-            command_clearance(&BackendCommand::ClearHistory { team_id: None }),
+            command_clearance(&BackendCommand::ClearHistory {
+                team_id: None,
+                session_id: None,
+            }),
             CommandClearance::Frontend,
             "wiping memory is a human decision, never agent-originated"
         );

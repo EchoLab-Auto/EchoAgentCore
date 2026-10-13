@@ -69,7 +69,7 @@ impl Agent {
             | BackendCommand::CancelRequestedWork { team_id, .. }
             | BackendCommand::RequestTrunkTimeline { team_id, .. }
             | BackendCommand::RequestContext { team_id, .. }
-            | BackendCommand::ClearHistory { team_id }
+            | BackendCommand::ClearHistory { team_id, .. }
             | BackendCommand::ArchiveHistory { team_id }
             | BackendCommand::CompactHistory { team_id, .. }
             | BackendCommand::RequestWorkspaceSessions { team_id }
@@ -100,6 +100,22 @@ impl Agent {
                 | BackendCommand::RequestWorkspaceGitStatus { .. }
                 | BackendCommand::RequestWorkspaceFiles { .. }
         )
+    }
+
+    /// 按范围清理人格记忆：`Some(session)` = 仅该会话；`None` = 全部会话。
+    async fn clear_agent_history(agent: &Agent, session_id: Option<&str>) {
+        match session_id.filter(|s| !s.is_empty()) {
+            Some(session) => agent.trunk.clear_session(session).await,
+            None => agent.trunk.clear_history().await,
+        }
+    }
+
+    /// 清理完成的用户提示文案（区分会话级与全量）。
+    fn clear_history_message(session_id: Option<&str>) -> String {
+        match session_id.filter(|s| !s.is_empty()) {
+            Some(session) => format!("会话历史已清理（{session}）"),
+            None => "全部会话的历史记忆已清理".into(),
+        }
     }
 
     pub async fn apply_command(&self, cmd: BackendCommand) {
@@ -822,13 +838,22 @@ impl Agent {
                     team_id: team_id.clone(),
                 });
             }
-            BackendCommand::ClearHistory { team_id } => {
+            BackendCommand::ClearHistory {
+                team_id,
+                session_id,
+            } => {
+                // 会话级清理（2026-10 用户报告修复）：`session_id` 存在时只清
+                // 该会话——此前只有 team 维度，面板「清理历史记忆」会把同人格
+                // 下所有会话（QQ 群/私聊等）的记忆一并抹掉。
                 if let Some(id) = team_id {
                     let target =
                         crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(&id)));
                     match target {
                         Some(agent) => {
-                            agent.trunk.clear_history().await;
+                            Self::clear_agent_history(&agent, session_id.as_deref()).await;
+                            // TrunkTimeline 为整人格的显示时间线——清理后全量
+                            // 重发（session_id 限定后剩余会话的消息仍在，full
+                            // 重建语义简单且不易错）。
                             agent.emit(BackendEvent::TrunkTimeline {
                                 messages: Vec::new(),
                                 seq: agent.trunk.timeline_seq(),
@@ -838,7 +863,7 @@ impl Agent {
                             agent.emit_context_snapshot_for().await;
                             agent.emit(BackendEvent::Error {
                                 session_id: None,
-                                message: "历史记忆已清理".into(),
+                                message: Self::clear_history_message(session_id.as_deref()),
                             });
                         }
                         None => self.emit(BackendEvent::Error {
@@ -847,7 +872,7 @@ impl Agent {
                         }),
                     }
                 } else {
-                    self.trunk.clear_history().await;
+                    Self::clear_agent_history(self, session_id.as_deref()).await;
                     self.emit(BackendEvent::TrunkTimeline {
                         messages: Vec::new(),
                         seq: self.trunk.timeline_seq(),
@@ -857,7 +882,7 @@ impl Agent {
                     self.emit_context_snapshot(None).await;
                     self.emit(BackendEvent::Error {
                         session_id: None,
-                        message: "历史记忆已清理".into(),
+                        message: Self::clear_history_message(session_id.as_deref()),
                     });
                 }
             }

@@ -113,6 +113,19 @@ impl EventLog {
         *self.events.lock().expect("event log poisoned") = events;
     }
 
+    /// 原子删除**归属指定会话**的全部事件（单次取锁），返回删除条数。
+    ///
+    /// 用于「清理当前会话记忆」——绝不动其他会话（2026-10 用户报告：
+    /// 面板「清理历史记忆」实为全量清空，同人格下其他会话记忆一并被
+    /// 抹掉）。`session == None` 的旧版事件**不删**（无归属信息，
+    /// 宁保守不误删）；调用方语义上应配合 `session_id` 精确传入。
+    pub fn retain_excluding_session(&self, session_id: &str) -> usize {
+        let mut events = self.events.lock().expect("event log poisoned");
+        let before = events.len();
+        events.retain(|event| event.session() != Some(session_id));
+        before - events.len()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.events.lock().expect("event log poisoned").is_empty()
     }
