@@ -18,6 +18,7 @@ Panel 前端 / 工程化），主线程逐条核验（file:line 抽查 + serde/�
 | `ad33da4` | — | docker 探测缓存改实例级（修上一笔引入的进程级 static——被 `no_global_state` 棘轮守护拦下，治理有效性实证） |
 | `871882b` | P1×3 | `clear_history` 补取 `compact_lock`（压缩窗口内清空被 replace_all 复活）；`shell_emit_for_self` 去 unsafe（改 `emit_handle` 安全出口）；会话导入缓冲三防线（TTL 清扫 / 并发上限 32 / 单块 192KB 校验） |
 | `ac2aa1a` | P1 | LLM 流式接收端关闭即中止（不再静默读完整流烧 token；两 provider + 假 SSE 服务器回归测试；protocol.md 同步） |
+| `a6eeb64` | P1 | QQ 管理能力下沉为扩展 trait（`QqManagement`+`QqInstanceInfo`；Adapter 面 -14 方法 -2 死方法 +1 访问器；命令层不再静默 no-op；bind_address 顺带修复；能力契约测试 ×2） |
 | `ad35015` | — | unit 命令两形态解析契约测试（与 Panel 镜像升级成对） |
 | `3c0192b` `796b22f` `4fabd77` `64d2f54` `7af76a1` | — | 治理与文档：仓库地址统一 GitHub、MIT LICENSE、测试计数校准、回滚文档校准、写超时/token 熵源口径同步 |
 
@@ -38,9 +39,9 @@ Panel 前端 / 工程化），主线程逐条核验（file:line 抽查 + serde/�
 | `e243d21` | NeumorphismPixelFont 组件收尾提交 |
 
 ### 修复统计
-- **P1 级真实缺陷 14 项**（写超时僵尸链路、token 弱熵、事件无界、多实例串台/分叉、
+- **P1 级真实缺陷 15 项**（写超时僵尸链路、token 弱熵、事件无界、多实例串台/分叉、
   async 阻塞、git 无超时、压缩竞态、unsafe 延寿、导入缓冲三防线、连接事件硬编码、
-  LLM 流式白烧 token、协议镜像漂移）
+  LLM 流式白烧 token、协议镜像漂移、适配器抽象泄漏）
 - P2 / 治理 / 文档 12+ 项（含 team 编辑脏检查）
 - 全部附回归测试或行为验证；`no_global_state` 棘轮实战拦截 agent 违规一次
 
@@ -52,8 +53,6 @@ Panel 前端 / 工程化），主线程逐条核验（file:line 抽查 + serde/�
    approve pull requests" 或 NPM_TOKEN 失效——需仓库设置侧操作后重跑。
 2. **QQ hook 失败即丢消息**（echo-adapter-qq/src/handler.rs::deliver）：
    `on_incoming_message` 失败仅 warn；无死信/重试，至少一次语义未定义。
-3. **echo-adapter/traits.rs 抽象泄漏**：AdapterInfo/Adapter 内嵌 QQ 专属字段
-   （owner/gate/filter/二维码）；建议下沉为能力扩展 trait。
 
 ### P2（选摘）
 - `router.rs` InvokeOutput 满 64 容量静默丢帧（建议丢帧计数/日志）
