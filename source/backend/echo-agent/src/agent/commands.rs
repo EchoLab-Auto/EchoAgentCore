@@ -697,11 +697,12 @@ impl Agent {
                     let Some(adapter) = self.adapters.get(&name) else {
                         continue;
                     };
-                    if adapter.platform() != "qq" {
+                    // QQ 管理能力取用（2026-10 能力扩展）：非 QQ / 缺能力跳过。
+                    let Some(qq) = adapter.qq_management() else {
                         continue;
-                    }
+                    };
                     let instance = Some(name.clone());
-                    let (au, ag, du, dg) = adapter.get_filter_info();
+                    let (au, ag, du, dg) = qq.get_filter_info();
                     self.emit(BackendEvent::QqFilterConfig {
                         allowlist_users: au.iter().filter_map(|s| s.parse().ok()).collect(),
                         allowlist_groups: ag.iter().filter_map(|s| s.parse().ok()).collect(),
@@ -710,7 +711,7 @@ impl Agent {
                         adapter: instance.clone(),
                     });
                     self.emit(BackendEvent::QqGateMode {
-                        mode: adapter.get_gate_mode(),
+                        mode: qq.get_gate_mode(),
                         adapter: instance,
                     });
                 }

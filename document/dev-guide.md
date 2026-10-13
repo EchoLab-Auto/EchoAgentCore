@@ -78,7 +78,7 @@ EchoAgentCore/
 - `Tool`（echo-defs）— LLM 可调用函数；`timeout_hint` 自声明执行超时
 - `SkillProvider` / `Skill`（echo-defs）— 技能接缝；`SkillRegistry` 在 echo-agent
 - `ChatAdapter`（echo-defs）— 平台接缝（Message/Target/Channel 词汇）
-- `Adapter`（echo-adapter）— 平台集成 trait（QQ/OneBot），逐步收敛到 `ChatAdapter`
+- `Adapter`（echo-adapter）— 平台集成 trait（平台中立的生命周期/收发/状态面）；平台专属管理能力经**能力扩展 trait**（如 `QqManagement`：门控/名单/管理员/二维码）由 `Adapter::qq_management()` 取用，`None` = 显式不支持（2026-10 抽象泄漏重构）
 - `MessageFilter` — 入站消息过滤器（白名单、黑名单、频率、关键词、长度）
 - `Handler` — OneBot 事件处理器（优先级链、panic 隔离）
 

@@ -43,6 +43,20 @@ impl Agent {
         }
     }
 
+    /// 取 QQ 管理能力（门控/名单/管理员/二维码/群友，2026-10 能力扩展）。
+    ///
+    /// `resolve_qq_adapter` 已按 `platform() == "qq"` 过滤，能力缺失在该
+    /// 契约下是实现缺陷——仍以 `Err(message)` 返回（命令层照常回错误），
+    /// 不 panic 也不静默降级。调用方拿到 `Err` 时 `emit` 后即可 `return`
+    ///（`apply_qq_command` 一次只处理一条命令，提前返回无副作用）。
+    fn qq_capability<'a>(
+        &self,
+        ad: &'a std::sync::Arc<dyn echo_adapter::traits::Adapter>,
+    ) -> Result<&'a dyn echo_adapter::capabilities::QqManagement, String> {
+        ad.qq_management()
+            .ok_or_else(|| format!("适配器 {} 缺少 QQ 管理能力实现", ad.name()))
+    }
+
     /// Handle the QQ-specific command variants. Called by `apply_command`
     /// when the command is one of the QQ domain.
     /// 把名单/模式同步到**其余 QQ 实例**（多实例广播，2026-10 巡检 P1）。
@@ -78,13 +92,22 @@ impl Agent {
                 tracing::info!(users = ?user_ids, groups = ?group_ids, adapter = ?adapter, "Agent: UpdateQqAllowlist");
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
+                        let Ok(qq) = self.qq_capability(&ad) else {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("适配器 {} 缺少 QQ 管理能力实现", ad.name()),
+                            });
+                            return;
+                        };
                         let user_strs: Vec<String> =
                             user_ids.iter().map(|id| id.to_string()).collect();
                         let group_strs: Vec<String> =
                             group_ids.iter().map(|id| id.to_string()).collect();
-                        ad.update_allowlist(user_strs.clone(), group_strs.clone());
+                        qq.update_allowlist(user_strs.clone(), group_strs.clone());
                         self.broadcast_to_other_qq_adapters(ad.name(), move |other| {
-                            other.update_allowlist(user_strs.clone(), group_strs.clone());
+                            if let Some(qq) = other.qq_management() {
+                                qq.update_allowlist(user_strs.clone(), group_strs.clone());
+                            }
                         });
                         self.emit_qq_filter_config(&ad, adapter.clone());
                         self.emit(BackendEvent::Error {
@@ -106,13 +129,22 @@ impl Agent {
                 tracing::info!(users = ?user_ids, groups = ?group_ids, adapter = ?adapter, "Agent: UpdateQqDenylist");
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
+                        let Ok(qq) = self.qq_capability(&ad) else {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("适配器 {} 缺少 QQ 管理能力实现", ad.name()),
+                            });
+                            return;
+                        };
                         let user_strs: Vec<String> =
                             user_ids.iter().map(|id| id.to_string()).collect();
                         let group_strs: Vec<String> =
                             group_ids.iter().map(|id| id.to_string()).collect();
-                        ad.update_denylist(user_strs.clone(), group_strs.clone());
+                        qq.update_denylist(user_strs.clone(), group_strs.clone());
                         self.broadcast_to_other_qq_adapters(ad.name(), move |other| {
-                            other.update_denylist(user_strs.clone(), group_strs.clone());
+                            if let Some(qq) = other.qq_management() {
+                                qq.update_denylist(user_strs.clone(), group_strs.clone());
+                            }
                         });
                         self.emit_qq_filter_config(&ad, adapter.clone());
                         self.emit(BackendEvent::Error {
@@ -130,15 +162,24 @@ impl Agent {
                 tracing::info!(mode = %mode.as_str(), adapter = ?adapter, "Agent: SetQqGateMode");
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
-                        ad.set_gate_mode(mode);
+                        let Ok(qq) = self.qq_capability(&ad) else {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("适配器 {} 缺少 QQ 管理能力实现", ad.name()),
+                            });
+                            return;
+                        };
+                        qq.set_gate_mode(mode);
                         // 多实例对齐：模式持久化在共享 `[adapters.qq]` 段，
                         // 只应用单实例会让其余实例内存值与磁盘分叉到重启
                         // （名单已广播，模式此前漏网——2026-10 巡检 P1）。
                         self.broadcast_to_other_qq_adapters(ad.name(), move |other| {
-                            other.set_gate_mode(mode);
+                            if let Some(qq) = other.qq_management() {
+                                qq.set_gate_mode(mode);
+                            }
                         });
                         self.emit(BackendEvent::QqGateMode {
-                            mode: ad.get_gate_mode(),
+                            mode: qq.get_gate_mode(),
                             adapter: adapter.clone(),
                         });
                         let label = match mode {
@@ -161,11 +202,20 @@ impl Agent {
                 tracing::info!(owner_qq, adapter = ?adapter, "Agent: SetQqOwner");
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
-                        ad.set_owner_qq(owner_qq);
+                        let Ok(qq) = self.qq_capability(&ad) else {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("适配器 {} 缺少 QQ 管理能力实现", ad.name()),
+                            });
+                            return;
+                        };
+                        qq.set_owner_qq(owner_qq);
                         // 同模式/名单：owner 持久化在共享段，需向其余实例对齐
                         // （管理员绕过读 gate，各实例行为必须一致）。
                         self.broadcast_to_other_qq_adapters(ad.name(), move |other| {
-                            other.set_owner_qq(owner_qq);
+                            if let Some(qq) = other.qq_management() {
+                                qq.set_owner_qq(owner_qq);
+                            }
                         });
                         self.emit(BackendEvent::Error {
                             session_id: None,
@@ -184,7 +234,14 @@ impl Agent {
             }
             BackendCommand::RequestQqOwner { adapter } => match self.resolve_qq_adapter(&adapter) {
                 Ok(ad) => {
-                    let owner_qq = ad.get_owner_qq();
+                    let Ok(qq) = self.qq_capability(&ad) else {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("适配器 {} 缺少 QQ 管理能力实现", ad.name()),
+                        });
+                        return;
+                    };
+                    let owner_qq = qq.get_owner_qq();
                     self.emit(BackendEvent::QqOwner {
                         owner_qq,
                         adapter: adapter.clone(),
@@ -198,9 +255,16 @@ impl Agent {
             BackendCommand::RequestQqFilterConfig { adapter } => {
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
+                        let Ok(qq) = self.qq_capability(&ad) else {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("适配器 {} 缺少 QQ 管理能力实现", ad.name()),
+                            });
+                            return;
+                        };
                         self.emit_qq_filter_config(&ad, adapter.clone());
                         self.emit(BackendEvent::QqGateMode {
-                            mode: ad.get_gate_mode(),
+                            mode: qq.get_gate_mode(),
                             adapter: adapter.clone(),
                         });
                     }
@@ -212,22 +276,31 @@ impl Agent {
             }
             BackendCommand::RequestGroupList { adapter } => {
                 match self.resolve_qq_adapter(&adapter) {
-                    Ok(ad) => match ad.get_all_groups().await {
-                        Ok(groups) => self.emit(BackendEvent::GroupList {
-                            groups: groups
-                                .into_iter()
-                                .map(|(id, name)| crate::event::GroupInfo {
-                                    group_id: id,
-                                    group_name: name,
-                                })
-                                .collect(),
-                            adapter: adapter.clone(),
-                        }),
-                        Err(error) => self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("获取群列表失败: {error}"),
-                        }),
-                    },
+                    Ok(ad) => {
+                        let Ok(qq) = self.qq_capability(&ad) else {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("适配器 {} 缺少 QQ 管理能力实现", ad.name()),
+                            });
+                            return;
+                        };
+                        match qq.get_all_groups().await {
+                            Ok(groups) => self.emit(BackendEvent::GroupList {
+                                groups: groups
+                                    .into_iter()
+                                    .map(|(id, name)| crate::event::GroupInfo {
+                                        group_id: id,
+                                        group_name: name,
+                                    })
+                                    .collect(),
+                                adapter: adapter.clone(),
+                            }),
+                            Err(error) => self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("获取群列表失败: {error}"),
+                            }),
+                        }
+                    }
                     Err(message) => self.emit(BackendEvent::Error {
                         session_id: None,
                         message,
@@ -236,22 +309,31 @@ impl Agent {
             }
             BackendCommand::RequestFriendList { adapter } => {
                 match self.resolve_qq_adapter(&adapter) {
-                    Ok(ad) => match ad.get_all_friends().await {
-                        Ok(friends) => self.emit(BackendEvent::FriendList {
-                            friends: friends
-                                .into_iter()
-                                .map(|(id, name)| crate::event::FriendInfo {
-                                    user_id: id,
-                                    nickname: name,
-                                })
-                                .collect(),
-                            adapter: adapter.clone(),
-                        }),
-                        Err(error) => self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("获取好友列表失败: {error}"),
-                        }),
-                    },
+                    Ok(ad) => {
+                        let Ok(qq) = self.qq_capability(&ad) else {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("适配器 {} 缺少 QQ 管理能力实现", ad.name()),
+                            });
+                            return;
+                        };
+                        match qq.get_all_friends().await {
+                            Ok(friends) => self.emit(BackendEvent::FriendList {
+                                friends: friends
+                                    .into_iter()
+                                    .map(|(id, name)| crate::event::FriendInfo {
+                                        user_id: id,
+                                        nickname: name,
+                                    })
+                                    .collect(),
+                                adapter: adapter.clone(),
+                            }),
+                            Err(error) => self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("获取好友列表失败: {error}"),
+                            }),
+                        }
+                    }
                     Err(message) => self.emit(BackendEvent::Error {
                         session_id: None,
                         message,
@@ -280,10 +362,16 @@ impl Agent {
             BackendCommand::RequestQqQrcode { adapter } => {
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
-                        // Core 代理取二维码：Adapter trait 提供默认 no-op 实现，
-                        // QQ 适配器覆盖（docker exec 取 PNG）。
+                        // Core 代理取二维码（QQ 管理能力；docker exec 取 PNG）。
+                        let Ok(qq) = self.qq_capability(&ad) else {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("适配器 {} 缺少 QQ 管理能力实现", ad.name()),
+                            });
+                            return;
+                        };
                         let name = ad.name().to_string();
-                        match ad.login_qrcode_png().await {
+                        match qq.login_qrcode_png().await {
                             Ok(png) => {
                                 let encoded =
                                     crate::packages::adapter_qq::commands::encode_base64(&png);
@@ -312,12 +400,18 @@ impl Agent {
     }
 
     /// Emit the current QQ filter configuration from the adapter's live state.
+    ///
+    /// 能力缺失（非 QQ 适配器误入）时静默跳过——本函数只做 UI 回推，
+    /// 命令层的成功/失败已由各自臂给出明确反馈。
     fn emit_qq_filter_config(
         &self,
         adapter: &std::sync::Arc<dyn echo_adapter::traits::Adapter>,
         instance: Option<String>,
     ) {
-        let (au, ag, du, dg) = adapter.get_filter_info();
+        let Some(qq) = adapter.qq_management() else {
+            return;
+        };
+        let (au, ag, du, dg) = qq.get_filter_info();
         self.emit(BackendEvent::QqFilterConfig {
             allowlist_users: au.iter().filter_map(|s| s.parse().ok()).collect(),
             allowlist_groups: ag.iter().filter_map(|s| s.parse().ok()).collect(),

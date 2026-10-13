@@ -2653,18 +2653,33 @@ impl Agent {
             .adapters
             .list_info()
             .into_iter()
-            .map(|info| AdapterStatus {
-                name: info.name,
-                display_name: info.display_name,
-                connected: matches!(info.status, echo_adapter::AdapterConnectionState::Connected),
-                running: !matches!(info.status, echo_adapter::AdapterConnectionState::Stopped),
-                self_id: info.self_id,
-                bind_address: String::new(), // populated by QqAdapter
-                started_at: info.started_at,
-                persona: info.persona,
-                container: info.container,
-                webui_url: info.webui_url,
-                onebot_url: info.onebot_url,
+            .map(|info| {
+                // QQ 实例附加信息（persona/容器/URL/绑定地址）经能力扩展取
+                // （2026-10 重构：原为 AdapterInfo 内嵌字段；是 QQ 概念却
+                // 占用通用快照）。非 QQ 适配器留空——wire 字段本就是
+                // Option / 可空，面板按缺省处理。`bind_address` 顺带修复：
+                // 此前恒为空串且注释谎称"populated by QqAdapter"。
+                let qq = self
+                    .adapters
+                    .get(&info.name)
+                    .and_then(|a| a.qq_management().map(|q| q.instance_info()))
+                    .unwrap_or_default();
+                AdapterStatus {
+                    name: info.name,
+                    display_name: info.display_name,
+                    connected: matches!(
+                        info.status,
+                        echo_adapter::AdapterConnectionState::Connected
+                    ),
+                    running: !matches!(info.status, echo_adapter::AdapterConnectionState::Stopped),
+                    self_id: info.self_id,
+                    bind_address: qq.bind_address,
+                    started_at: info.started_at,
+                    persona: qq.persona,
+                    container: qq.container,
+                    webui_url: qq.webui_url,
+                    onebot_url: qq.onebot_url,
+                }
             })
             .collect();
         self.emit(BackendEvent::AdapterList { adapters });

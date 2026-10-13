@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::filter::FilterPipeline;
 use crate::types::{AdapterEvent, IncomingMessage, MessageTarget, SendResult};
 
 /// Connection state of an adapter.
@@ -41,14 +40,11 @@ pub struct AdapterInfo {
     pub platform: String,
     /// Whether this adapter is configured and enabled.
     pub configured: bool,
-    /// QQ 实例：归属人格 id（多实例；其他平台为空）。
-    pub persona: Option<String>,
-    /// QQ 实例：NapCat 容器名。
-    pub container: Option<String>,
-    /// QQ 实例：NapCat WebUI 地址。
-    pub webui_url: Option<String>,
-    /// QQ 实例：OneBot HTTP API 地址。
-    pub onebot_url: Option<String>,
+    // 平台专属附加信息不在此（2026-10 抽象泄漏重构）：QQ 实例的
+    // persona/容器/URL/绑定地址经 [`QqManagement::instance_info`]
+    // （能力扩展 trait）暴露，通用快照保持平台中立。
+    //
+    // [`QqManagement::instance_info`]: crate::capabilities::QqManagement::instance_info
 }
 
 /// Hook that platform adapters use to deliver inbound messages into the
@@ -102,7 +98,7 @@ pub enum AdapterError {
 /// An abstraction over a messaging platform (QQ, Telegram, Discord, etc.).
 ///
 /// Adapters translate platform-specific events into platform-agnostic
-/// [`IncomingMessage`](crate::types::IncomingMessage) values, and
+/// [`IncomingMessage`] values, and
 /// accept [`MessageTarget`] values to send replies.
 ///
 /// # Lifecycle
@@ -153,71 +149,12 @@ pub trait Adapter: Send + Sync {
     /// Subscribe to adapter events. May be called multiple times.
     fn subscribe(&self, tx: mpsc::UnboundedSender<AdapterEvent>);
 
-    /// Return the filter pipeline that gates inbound messages for this adapter.
-    /// Default: empty pipeline (no filtering).
-    fn filter_pipeline(&self) -> Option<&FilterPipeline> {
+    /// QQ（OneBot）平台管理能力（门控/名单/管理员/二维码/群友列表）。
+    ///
+    /// 非 QQ 适配器返回 `None`（2026-10 能力扩展重构：QQ 专属方法与
+    /// 默认 no-op 曾内嵌在本 trait 上——抽象泄漏 + 静默假成功）。
+    /// QQ 实现返回 `Some(self)`。
+    fn qq_management(&self) -> Option<&dyn crate::capabilities::QqManagement> {
         None
-    }
-
-    /// Get the group list for this platform. Default: empty.
-    async fn get_groups(&self) -> Result<Vec<(i64, String)>, AdapterError> {
-        let _ = self;
-        Ok(Vec::new())
-    }
-    fn has_group_list(&self) -> bool {
-        false
-    }
-
-    /// Get the friend list for this platform. Default: empty.
-    async fn get_friend_list(&self) -> Result<Vec<(i64, String)>, AdapterError> {
-        let _ = self;
-        Ok(Vec::new())
-    }
-
-    /// Get ALL groups without gate-mode filtering (privileged — used by TUI).
-    /// Default: same as [`get_groups`](Self::get_groups).
-    async fn get_all_groups(&self) -> Result<Vec<(i64, String)>, AdapterError> {
-        self.get_groups().await
-    }
-
-    /// Get ALL friends without any filtering (privileged — used by TUI).
-    /// Default: same as [`get_friend_list`](Self::get_friend_list).
-    async fn get_all_friends(&self) -> Result<Vec<(i64, String)>, AdapterError> {
-        self.get_friend_list().await
-    }
-
-    /// 取登录二维码 PNG（多实例/代理登录：Core 代 Panel 从平台容器取回）。
-    /// 默认不支持（非 QQ 平台适配器无需实现）。
-    async fn login_qrcode_png(&self) -> Result<Vec<u8>, String> {
-        Err("该适配器不支持二维码登录".into())
-    }
-
-    /// Update the adapter's runtime allowlist.  Default: no-op.
-    fn update_allowlist(&self, _user_ids: Vec<String>, _group_ids: Vec<String>) {}
-
-    /// Update the adapter's runtime denylist.  Default: no-op.
-    fn update_denylist(&self, _user_ids: Vec<String>, _group_ids: Vec<String>) {}
-
-    /// Return the current filter config (allowlist_users, allowlist_groups,
-    /// denylist_users, denylist_groups).  All IDs are strings.
-    /// Default: empty.
-    fn get_filter_info(&self) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
-        (vec![], vec![], vec![], vec![])
-    }
-
-    /// Set the gating mode.  Default: no-op.
-    fn set_gate_mode(&self, _mode: GateMode) {}
-
-    /// Get the current gating mode.  Default: [`GateMode::None`].
-    fn get_gate_mode(&self) -> GateMode {
-        GateMode::None
-    }
-
-    /// Set the platform owner (admin) at runtime. Default: no-op.
-    fn set_owner_qq(&self, _owner_qq: i64) {}
-
-    /// Get the current platform owner (admin). Default: 0 (unset).
-    fn get_owner_qq(&self) -> i64 {
-        0
     }
 }

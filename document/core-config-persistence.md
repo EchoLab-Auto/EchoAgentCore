@@ -107,7 +107,8 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 Panel 操作 (/qq setting)（经 management WS）
   → BackendCommand::SetQqGateMode / UpdateQqAllowlist / UpdateQqDenylist
   → Agent::apply_command()
-    → Adapter::set_gate_mode() / update_allowlist() / update_denylist()
+    → QqManagement::set_gate_mode() / update_allowlist() / update_denylist()
+      （能力扩展 trait；经 Adapter::qq_management() 取用，2026-10 重构）
     → 更新内存中的 runtime 字段
     → rebuild_filter_pipeline()（立即生效）
     → persist_filter()

@@ -137,11 +137,6 @@ mod tests {
                 started_at: None,
                 platform: "mock".into(),
                 configured: self.configured,
-                // 多实例元数据（QQ 适配器使用；mock 无容器归属）。
-                persona: None,
-                container: None,
-                webui_url: None,
-                onebot_url: None,
             }
         }
         async fn start(&self) -> Result<(), AdapterError> {
@@ -187,6 +182,22 @@ mod tests {
 
         let configured = reg.configured();
         assert_eq!(configured.len(), 1);
+    }
+
+    /// 能力扩展默认：未实现 `qq_management` 的适配器返回 `None`
+    ///（2026-10 重构：QQ 方法不再以默认 no-op 内嵌在 `Adapter` 上——
+    /// 非 QQ 适配器上不再存在"调用成功但什么也没发生"的假接口）。
+    #[test]
+    fn non_qq_adapter_exposes_no_qq_capability() {
+        let mock = MockAdapter {
+            name: "tg".into(),
+            configured: true,
+            started: std::sync::atomic::AtomicBool::new(false),
+        };
+        assert!(
+            mock.qq_management().is_none(),
+            "未实现 QqManagement 的适配器必须返回 None（显式不支持）"
+        );
     }
 
     #[tokio::test]

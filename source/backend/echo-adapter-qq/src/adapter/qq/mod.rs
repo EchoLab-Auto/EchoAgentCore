@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use echo_adapter::capabilities::{QqInstanceInfo, QqManagement};
 use echo_adapter::filter::FilterPipeline;
 use echo_adapter::traits::{Adapter, AdapterConnectionState, AdapterError, AdapterInfo, GateMode};
 use echo_adapter::types::{
@@ -812,10 +813,8 @@ impl Adapter for QqAdapter {
             started_at: self.inner.started_at.lock().ok().and_then(|g| *g),
             platform: "qq".into(),
             configured: self.is_configured(),
-            persona: self.inner.persona.clone(),
-            container: Some(self.inner.config.napcat_container.clone()),
-            webui_url: Some(self.inner.config.napcat_webui_url.clone()),
-            onebot_url: Some(self.inner.config.napcat_onebot_url.clone()),
+            // QQ 附加信息（persona/容器/URL/绑定地址）经能力扩展
+            // `QqManagement::instance_info` 暴露（2026-10 重构）。
         }
     }
 
@@ -1135,19 +1134,29 @@ impl Adapter for QqAdapter {
         }
     }
 
-    fn filter_pipeline(&self) -> Option<&FilterPipeline> {
-        // The filter pipeline is behind a mutex for runtime updates and can't
-        // be borrowed through this trait method.  Return None — the real
-        // filtering happens inside QqHandler::handle().
-        None
+    fn qq_management(&self) -> Option<&dyn QqManagement> {
+        // QQ 适配器恒实现管理能力（2026-10 能力扩展重构：QQ 专属方法
+        // 自此经 `QqManagement` 取用，不再内嵌在 `Adapter` 面上）。
+        Some(self)
     }
+}
 
-    async fn get_groups(&self) -> Result<Vec<(i64, String)>, AdapterError> {
-        self.get_group_list().await.map_err(AdapterError::Internal)
-    }
-
-    async fn get_friend_list(&self) -> Result<Vec<(i64, String)>, AdapterError> {
-        self.get_friend_list().await.map_err(AdapterError::Internal)
+/// QQ 平台管理能力（能力扩展 trait，2026-10 抽象泄漏重构）。
+///
+/// 原实现内嵌在 `impl Adapter`（带默认 no-op）——非 QQ 适配器上
+/// 「调用成功但什么也没发生」，且把 QQ 概念焊进了通用 trait。
+#[async_trait]
+impl QqManagement for QqAdapter {
+    fn instance_info(&self) -> QqInstanceInfo {
+        QqInstanceInfo {
+            persona: self.inner.persona.clone(),
+            container: Some(self.inner.config.napcat_container.clone()),
+            webui_url: Some(self.inner.config.napcat_webui_url.clone()),
+            onebot_url: Some(self.inner.config.napcat_onebot_url.clone()),
+            // 实例端口分配（`resolve_instances_in`）已把实际反向 WS
+            // 监听地址合并进 config，直接复读即为真实绑定值。
+            bind_address: self.inner.config.server.bind_address.clone(),
+        }
     }
 
     async fn get_all_groups(&self) -> Result<Vec<(i64, String)>, AdapterError> {
@@ -1190,10 +1199,6 @@ impl Adapter for QqAdapter {
 
     async fn get_all_friends(&self) -> Result<Vec<(i64, String)>, AdapterError> {
         self.get_friend_list().await.map_err(AdapterError::Internal)
-    }
-
-    fn has_group_list(&self) -> bool {
-        true
     }
 
     fn update_allowlist(&self, user_ids: Vec<String>, group_ids: Vec<String>) {
@@ -1284,7 +1289,43 @@ mod tests {
         let multi =
             QqAdapter::with_instance("alix-two", Some("alix".into()), QqAdapterConfig::default());
         assert_eq!(multi.status_info().display_name, "QQ（alix / alix-two）");
-        assert_eq!(multi.status_info().persona.as_deref(), Some("alix"));
+        // 实例附加信息经能力扩展取（2026-10 重构，原在 AdapterInfo 上）。
+        assert_eq!(
+            multi
+                .qq_management()
+                .unwrap()
+                .instance_info()
+                .persona
+                .as_deref(),
+            Some("alix")
+        );
+    }
+
+    /// 能力扩展契约（2026-10）：QQ 适配器必须暴露 `QqManagement`，
+    /// `instance_info` 反映实例配置，且能力面与固有方法操作同一份状态。
+    #[test]
+    fn qq_adapter_exposes_management_capability() {
+        let cfg = QqAdapterConfig {
+            napcat_container: "napcat-x".into(),
+            ..Default::default()
+        };
+        let adapter = QqAdapter::with_instance("alix-two", Some("alix".into()), cfg);
+        // `Adapter::qq_management` 恒定 Some（QQ 实现契约）。
+        let cap = adapter
+            .qq_management()
+            .expect("QQ 适配器必须暴露 QqManagement 能力");
+        let info = cap.instance_info();
+        assert_eq!(info.persona.as_deref(), Some("alix"));
+        assert_eq!(info.container.as_deref(), Some("napcat-x"));
+        assert!(
+            !info.bind_address.is_empty(),
+            "绑定地址应非空（配置默认 0.0.0.0:3131）"
+        );
+        // 能力面与固有方法同源：经能力面切门控 → 固有读取可见。
+        cap.set_gate_mode(GateMode::Allowlist);
+        assert_eq!(adapter.get_gate_mode(), QqGateMode::Allowlist);
+        cap.set_gate_mode(GateMode::None);
+        assert_eq!(adapter.get_gate_mode(), QqGateMode::None);
     }
 
     async fn mount_login_info(server: &MockServer, user_id: i64) {
