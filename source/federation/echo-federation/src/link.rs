@@ -99,6 +99,23 @@ pub struct PeerInfo {
     pub peer_name: String,
 }
 
+/// 单个 peer 的连出健康诊断（2026-10 地址漂移事故后新增）：面板据此
+/// 把「持续连不上」显性化——此前拨号失败只有 debug 日志，节点对端映射
+/// 变了（NAT 端口变化）后两边都在对死地址空转、界面却看不到任何原因。
+#[derive(Debug, Clone, Default)]
+pub struct PeerDiagnostics {
+    /// 连续拨号失败次数（成功建链即清零）。
+    pub consecutive_failures: u32,
+    /// 最近一次拨号失败原因（成功建链即清空）。
+    pub last_error: Option<String>,
+    /// 最近一次成功建链时间（unix 秒；从未成功 = None）。
+    pub last_online_at: Option<i64>,
+    /// 最近一次从对端 Hello 学到的可拨地址（**跨断链保留**——地址漂移
+    /// 提示与人工修复的数据源：配置 url 拨不通而此值不同时，面板可提示
+    /// "对端最近宣告了 X，一键改用"）。
+    pub last_advertise: Option<String>,
+}
+
 /// 链路事件（路由层/装配层消费）。
 #[derive(Debug, Clone)]
 pub enum LinkEvent {
@@ -165,6 +182,13 @@ pub struct Federation {
     dial_cancels: RwLock<std::collections::HashMap<String, watch::Sender<bool>>>,
     /// 最近链路的 PeerInfo（peer 配置名 → 信息；Up 登记，Down 清除）。
     last_peer_infos: RwLock<std::collections::HashMap<String, PeerInfo>>,
+    /// 每 peer 的连出健康（peer 配置名 → 诊断；2026-10 地址漂移事故）：
+    /// 失败计数/最后错误/最后在线时刻——`peer_diagnostics` 供装配层填充
+    /// FederationStatus；跨断链保留（诊断价值恰在断链时）。
+    dial_health: RwLock<std::collections::HashMap<String, PeerDiagnostics>>,
+    /// 最近一次从对端 Hello 学到的可拨地址（peer 配置名 → url；跨断链
+    /// 保留，peer 删除时清理）——地址漂移的"一键修复"数据源。
+    known_advertise: RwLock<std::collections::HashMap<String, String>>,
     /// 负载上报句柄（P2 调度器）：握手 hello 时调用取当前活跃 turn
     /// 数——对端调度器拿到的是**实时**负载而非启动快照。由装配层
     /// （core/main.rs，持有 supervisor）注入；未注入时 hello 报 0。
@@ -205,6 +229,8 @@ impl Federation {
             link_generation: std::sync::atomic::AtomicU64::new(0),
             dial_cancels: RwLock::new(std::collections::HashMap::new()),
             last_peer_infos: RwLock::new(std::collections::HashMap::new()),
+            dial_health: RwLock::new(std::collections::HashMap::new()),
+            known_advertise: RwLock::new(std::collections::HashMap::new()),
             load_reporter: RwLock::new(None),
             event_tx,
             shutdown,
@@ -238,6 +264,49 @@ impl Federation {
             info.peer_name = to.to_string();
             infos.insert(to.to_string(), info);
         }
+    }
+
+    /// 记录一次拨号失败（返回累计连续失败次数）。装配层/日志据此把
+    /// "持续连不上"从静默 debug 变为可观测（2026-10 地址漂移事故）。
+    pub async fn note_dial_failure(&self, peer: &str, reason: &str) -> u32 {
+        let mut map = self.dial_health.write().await;
+        let health = map.entry(peer.to_string()).or_default();
+        health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+        health.last_error = Some(reason.to_string());
+        health.consecutive_failures
+    }
+
+    /// 链路建立（握手成功、登记入表）= 在线：清零失败计数、记录时刻。
+    pub async fn mark_peer_online(&self, peer: &str) {
+        let mut map = self.dial_health.write().await;
+        let health = map.entry(peer.to_string()).or_default();
+        health.consecutive_failures = 0;
+        health.last_error = None;
+        health.last_online_at = Some(now_ms() / 1000);
+    }
+
+    /// 记录对端 Hello 宣告的可拨地址（跨断链保留）——地址漂移提示 /
+    /// 人工一键修复的数据源。
+    pub async fn note_peer_advertise(&self, peer: &str, advertise: Option<&str>) {
+        if let Some(adv) = advertise.map(str::trim).filter(|a| !a.is_empty()) {
+            self.known_advertise
+                .write()
+                .await
+                .insert(peer.to_string(), adv.to_string());
+        }
+    }
+
+    /// 某 peer 的诊断快照（连出健康 + 最近宣告地址；状态面板用）。
+    pub async fn peer_diagnostics(&self, peer: &str) -> PeerDiagnostics {
+        let mut diag = self
+            .dial_health
+            .read()
+            .await
+            .get(peer)
+            .cloned()
+            .unwrap_or_default();
+        diag.last_advertise = self.known_advertise.read().await.get(peer).cloned();
+        diag
     }
 
     /// 到某 peer（配置名）是否已有活跃链路：以最近链路信息的 node_id
@@ -345,6 +414,9 @@ impl Federation {
         if removed {
             self.refresh_synced_tokens().await;
         }
+        // 诊断表清理（peer 已从配置消失——历史失败/宣告地址一并移除）。
+        self.dial_health.write().await.remove(name);
+        self.known_advertise.write().await.remove(name);
         // 注：链路表按 node_id 索引、不存 peer 配置名；断链由调用方
         // （装配层 FederationRuntime.peer_names 维护 name↔node 映射）
         // 经 [`Federation::drop_link`] 显式完成。
@@ -500,7 +572,9 @@ impl Federation {
             let request = match bearer_request(&peer.url, &peer.token) {
                 Ok(r) => r,
                 Err(e) => {
-                    tracing::warn!(peer = %peer.name, error = %e, "federation request build failed");
+                    let reason = format!("request build failed: {e}");
+                    let failures = self.note_dial_failure(&peer.name, &reason).await;
+                    tracing::warn!(peer = %peer.name, failures, error = %e, "federation request build failed");
                     tokio::select! {
                         _ = tokio::time::sleep(backoff) => {}
                         _ = shutdown_rx.changed() => return,
@@ -526,16 +600,47 @@ impl Federation {
                         // 退避递增——否则以 ~1s 间隔无限重连刷日志（🟡 修复）。
                         if connected_at.elapsed() > Duration::from_secs(5) {
                             backoff = Duration::from_secs(1);
+                        } else {
+                            // 秒断 = 从未真正可用（认证/版本/对端立即关闭）：
+                            // 计入拨号失败，让诊断面板可见（2026-10）。
+                            let reason = format!("connection failed after connect: {e}");
+                            self.note_dial_failure(&peer.name, &reason).await;
                         }
                     } else {
                         backoff = Duration::from_secs(1);
                     }
                 }
                 Ok(Err(e)) => {
-                    tracing::debug!(peer = %peer.name, error = %e, "federation dial failed");
+                    let reason = e.to_string();
+                    let failures = self.note_dial_failure(&peer.name, &reason).await;
+                    // 失败显性化（2026-10 地址漂移事故）：首次与每 10 次
+                    // （退避上限 30s ≈ 5 分钟）warn 一次——此前恒 debug，
+                    // 对端地址变了之后"两边空转"在日志里完全不可见。
+                    if failures == 1 || failures % 10 == 0 {
+                        tracing::warn!(
+                            peer = %peer.name,
+                            url = %peer.url,
+                            failures,
+                            error = %reason,
+                            "federation dial failing (will keep retrying)"
+                        );
+                    } else {
+                        tracing::debug!(peer = %peer.name, error = %reason, "federation dial failed");
+                    }
                 }
                 Err(_) => {
-                    tracing::debug!(peer = %peer.name, "federation dial timeout");
+                    let reason = "dial timeout".to_string();
+                    let failures = self.note_dial_failure(&peer.name, &reason).await;
+                    if failures == 1 || failures % 10 == 0 {
+                        tracing::warn!(
+                            peer = %peer.name,
+                            url = %peer.url,
+                            failures,
+                            "federation dial timing out (will keep retrying)"
+                        );
+                    } else {
+                        tracing::debug!(peer = %peer.name, "federation dial timeout");
+                    }
                 }
             }
             tokio::select! {
@@ -695,6 +800,11 @@ impl Federation {
             .await
             .insert(info.peer_name.clone(), info.clone());
         let _ = self.event_tx.send(LinkEvent::Up(info.clone())).await;
+        // 诊断登记（2026-10）：在线清零失败计数；记住对端宣告的可拨地址
+        // （跨断链保留——地址漂移提示/一键修复的数据源）。
+        self.mark_peer_online(&info.peer_name).await;
+        self.note_peer_advertise(&info.peer_name, info.advertise.as_deref())
+            .await;
 
         let result = self
             .link_loop(&mut read, &mut write, &mut out_rx, &info)
@@ -978,5 +1088,61 @@ mod tests {
         )
         .await
         .expect("就绪 Sink 不应超时");
+    }
+
+    fn test_fed() -> Arc<Federation> {
+        let (tx, _rx) = mpsc::channel(8);
+        let (shutdown, _) = watch::channel(false);
+        Federation::new(
+            "node-test".into(),
+            Some("test".into()),
+            NodeCaps::default(),
+            Vec::new(),
+            None,
+            tx,
+            shutdown,
+        )
+    }
+
+    /// 诊断计数（2026-10 地址漂移事故）：失败累计 → 在线清零；宣告地址
+    /// 跨断链保留（诊断价值恰在断链时）；remove_peer 清理两张表。
+    #[tokio::test]
+    async fn diagnostics_track_failures_recovery_and_advertise() {
+        let fed = test_fed();
+        // 初始：全零/空。
+        let d = fed.peer_diagnostics("p1").await;
+        assert_eq!(d.consecutive_failures, 0);
+        assert!(d.last_error.is_none() && d.last_online_at.is_none() && d.last_advertise.is_none());
+
+        // 连续失败累计，最后错误刷新。
+        assert_eq!(fed.note_dial_failure("p1", "conn refused").await, 1);
+        assert_eq!(fed.note_dial_failure("p1", "timeout").await, 2);
+        let d = fed.peer_diagnostics("p1").await;
+        assert_eq!(d.consecutive_failures, 2);
+        assert_eq!(d.last_error.as_deref(), Some("timeout"));
+
+        // 学到对端宣告地址（跨断链保留）。
+        fed.note_peer_advertise("p1", Some(" ws://10.0.0.9:3133 "))
+            .await;
+        fed.note_peer_advertise("p1", Some("")).await; // 空宣告不覆盖
+        assert_eq!(
+            fed.peer_diagnostics("p1").await.last_advertise.as_deref(),
+            Some("ws://10.0.0.9:3133")
+        );
+
+        // 在线：清零失败、记录在线时刻；宣告地址保留。
+        fed.mark_peer_online("p1").await;
+        let d = fed.peer_diagnostics("p1").await;
+        assert_eq!(d.consecutive_failures, 0);
+        assert!(d.last_error.is_none());
+        assert!(d.last_online_at.is_some());
+        assert_eq!(d.last_advertise.as_deref(), Some("ws://10.0.0.9:3133"));
+
+        // remove_peer 清理诊断（即便该 peer 从未在配置表里也要幂等）。
+        fed.note_dial_failure("p1", "x").await;
+        fed.remove_peer("p1").await;
+        let d = fed.peer_diagnostics("p1").await;
+        assert_eq!(d.consecutive_failures, 0);
+        assert!(d.last_advertise.is_none());
     }
 }

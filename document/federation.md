@@ -65,6 +65,17 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
   出站背压（256 帧上限）；**出站写 30s 超时**（对端不读时 TCP 写阻塞会
   冻结整个链路 select 循环——读/心跳/判死全停摆，链路成僵尸；超时即
   断链交重连收敛，与 management WS 的写超时口径一致）
+- **拨号失败显性化（2026-10 地址漂移事故）**：持续拨不通不再静默
+  （此前失败只有 debug 日志——对端外部地址变化后两边对死地址空转、
+  界面无可观测信号）。现在：连续失败数/最近错误/最后在线时刻记入
+  `PeerDiagnostics`（跨断链保留），**首次失败与每 10 次失败**（≈5 分钟
+  一档）各打一条 warn（带 peer 名与 url）；`FederationStatus.peers[]`
+  携带 `consecutive_failures` / `last_error` / `last_online_at` /
+  `last_advertise`，Panel 在 peer 卡片上直接显示。
+- **地址漂移提示与一键修复**：链路握手时学到的对端可拨地址
+  （`last_advertise`）跨断链保留；当 peer 离线且**宣告地址与配置 url
+  不同**时，Panel 显示「对端最近宣告地址 X —— 改用此地址」一键更新
+  （人工确认路径——不做自动覆盖，防多网卡/手工配置被误改）。
 - **帧（`FedFrame`）**：externally-tagged + `#[serde(default)]` 演进；
   `call_id = <origin_node>:<ts>-<seq>`（因果溯源，origin 本机帧即
   `LoopDetected` 拒绝）

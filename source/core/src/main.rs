@@ -1795,6 +1795,10 @@ impl FederationRuntime {
                 } else {
                     snapshot
                 };
+                // 连出健康诊断（2026-10 地址漂移事故）：失败计数/最后错误/
+                // 最后在线时刻 + 最近学到的对端宣告地址——Panel 把"持续
+                // 连不上"显性化并给出"改用对端宣告地址"的修复路径。
+                let diag = self.federation.peer_diagnostics(&p.name).await;
                 peers.push(echo_protocol::FederationPeerInfo {
                     name: p.name.clone(),
                     url: p.url,
@@ -1823,6 +1827,10 @@ impl FederationRuntime {
                     },
                     active_turns,
                     node_id: matched_node,
+                    consecutive_failures: diag.consecutive_failures,
+                    last_error: diag.last_error,
+                    last_online_at: diag.last_online_at,
+                    last_advertise: diag.last_advertise,
                 });
             }
         }

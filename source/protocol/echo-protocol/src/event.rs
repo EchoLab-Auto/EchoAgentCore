@@ -996,6 +996,26 @@ pub struct FederationPeerInfo {
     /// （serde default = None）——消费方需按缺失兜底。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
+    /// 连续拨号失败次数（成功建链清零；0 = 正常/无记录）。
+    ///
+    /// 2026-10 地址漂移事故新增：对端外部地址变化（NAT 映射更换）后，
+    /// 本机对旧地址持续拨号失败、界面毫无提示（失败只有 debug 日志）。
+    /// 该计数 + `last_error` 供 Panel 把"持续连不上"显性化。
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    /// 最近一次拨号失败原因（在线或从未失败时为空）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// 最近一次成功建链时间（unix 秒；从未成功 = None）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_online_at: Option<i64>,
+    /// 最近一次从对端 Hello 学到的可拨地址（**跨断链保留**）。
+    ///
+    /// 地址漂移诊断：与配置 `url` 不同且离线时，Panel 提示"对端最近
+    /// 宣告了 X，一键改用"（人工修复路径——不做自动覆盖，防误改
+    /// 多网卡/手工配置场景）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_advertise: Option<String>,
 }
 
 /// peer 链路状态。

@@ -3730,14 +3730,16 @@ mod tests {
     fn prune_archives_does_not_swallow_longer_stems() {
         // 2026-10 审计回归：前缀匹配锚定时间戳段——stem `echo-sessions-x`
         // 不得统计/删除 `echo-sessions-x-y` 的归档（旧 starts_with 会命中）。
-        let dir =
-            std::env::temp_dir().join(format!("echo-prune-anchor-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("echo-prune-anchor-{}", std::process::id()));
         let archives = dir.join("archives");
         std::fs::create_dir_all(&archives).unwrap();
         let long_stem = archives.join("echo-sessions-x-y-20261001-000000.json");
         std::fs::write(&long_stem, "{}").unwrap();
-        filetime::set_file_mtime(&long_stem, filetime::FileTime::from_unix_time(1_700_000_000, 0))
-            .unwrap();
+        filetime::set_file_mtime(
+            &long_stem,
+            filetime::FileTime::from_unix_time(1_700_000_000, 0),
+        )
+        .unwrap();
         for (i, ts) in ["20261002-000000", "20261003-000000"].iter().enumerate() {
             let f = archives.join(format!("echo-sessions-x-{ts}.json"));
             std::fs::write(&f, "{}").unwrap();
@@ -3905,7 +3907,9 @@ mod tests {
                 timeline.iter().all(|m| m.session_id != a_id),
                 "timeline for the archived session is cleared"
             );
-            assert!(timeline.iter().any(|m| m.content.contains("会话历史已归档")));
+            assert!(timeline
+                .iter()
+                .any(|m| m.content.contains("会话历史已归档")));
             assert!(
                 timeline.last().is_some_and(|m| m.seq > 0),
                 "archive notice went through the counted push path (seq assigned)"

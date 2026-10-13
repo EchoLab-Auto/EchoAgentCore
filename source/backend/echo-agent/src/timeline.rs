@@ -443,10 +443,7 @@ mod tests {
         );
         assert!(nested.contains("[已隐藏]"), "nested marker: {nested}");
         // 第三层收缩为 {…}，同样不泄露
-        let deep = summarize_timeline_value(
-            r#"{"a":{"b":{"c":"deep-secret-value"}}}"#,
-            200,
-        );
+        let deep = summarize_timeline_value(r#"{"a":{"b":{"c":"deep-secret-value"}}}"#, 200);
         assert!(!deep.contains("deep-secret-value"), "deep leak: {deep}");
     }
 
