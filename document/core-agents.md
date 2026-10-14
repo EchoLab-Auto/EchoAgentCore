@@ -48,18 +48,20 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 | 形态 | id | 说明 |
 | --- | --- | --- |
 | 默认本地会话 | `local:tui::local_user` | 未进入任何项目时的本地对话（原状） |
-| 工作区通道 | `local:workspace:<workspace_id>:local_user` | 工作区会话的专属本地对话；昵称 = 工作区名；**惰性注册**（首次激活时注册并广播 `SessionUpdated`，此后常驻） |
+| 工作区通道（存量主对话） | `local:workspace:<workspace_id>:local_user` | 工作区主对话的专属本地对话；昵称 = 工作区名；**惰性注册**（首次激活时注册并广播 `SessionUpdated`，此后常驻） |
+| 工作区通道（多对话，2026-10） | `local:workspace:<workspace_id>/<conv_id>:local_user` | 工作区内其余对话的通道；昵称 = 「工作区名 · 对话名」；同样惰性注册 |
 
-通道与其他会话完全平等：独立上下文投影、独立 token 预算、出现在会话列表 Local 分组，同样受压缩/清理等现有手段管理。`<workspace_id>` 为工作区 id（创建时由名称 slug 派生、改名不变），通道 id 因此永久稳定。
+通道与其他会话完全平等：独立上下文投影、独立 token 预算、出现在会话列表 Local 分组，同样受压缩/清理等现有手段管理。`<workspace_id>` 为工作区 id（创建时由名称 slug 派生、改名不变），`<conv_id>` 为对话 id（slug、工作区内唯一、不含 `/`），通道 id 因此永久稳定。**存量通道 id 原样保留**（事件日志 append-only 不可改写）：每个工作区的首条对话（含旧数据的主对话）`legacy = true`、通道 id 为裸 ws 格式，唯一例外收敛在 `channel_scope_id()` 一个函数。
 
-**② 工作区会话 = 项目上下文**，三要素：**目录组**（多目录 + git 状态）、**专属对话通道**（见上表）、**激活状态**（per-persona 单例 `active` 标记）。
+**② 工作区会话 = 项目上下文 + 多对话**。项目上下文三要素：**目录组**（多目录 + git 状态）、**激活状态**（per-persona 单例 `active` 标记）、**对话清单**（`conversations`，读取期惰性补位存量主对话、不落盘）。**每条对话 = 一条独立通道会话**（独立上下文/预算/压缩清理；`workspace` 工具 `conversations` 子命令可 list/create/rename/delete，模型可自主开任务线）。全对话平等：任何对话可建/改/删；删除对话经 store 钩子清空其通道历史；删空合法（读取视图惰性回到存量主对话）。
 
-**③ 激活 = 进入项目对话**：
-- 本地对话切换到该工作区的专属通道——上下文随之切换，通道历史从激活起独立积累；
-- 系统提示词注入目录信息（对 persona 的**全部来源会话**生效：本地与 QQ 都会看到）；
-- `workspace` 工具默认操作该工作区。
+**③ 激活 = 进入项目对话**（激活单位 = `(工作区, 对话)`）：
+- 激活工作区（不带对话）= 进入其 `last_conversation`（无有效值取首条；列表为空物化存量主对话）；激活指定对话 = 同时激活所属工作区；
+- 本地对话切换到该对话的专属通道——上下文随之切换，通道历史从激活起独立积累；
+- 系统提示词注入目录信息 + 当前对话名（对 persona 的**全部来源会话**生效：本地与 QQ 都会看到）；
+- `workspace` 工具默认操作该工作区；`use` 支持可选 `conversation` 直接激活某对话。
 
-**④ 单一事实来源 = `active` 标记**（`echo-workspaces-{id}.json`）。所有激活来源——面板按钮、会话切换器、模型 `use` 工具——共用**同一条广播路径**：store 变更钩子（`WorkspaceStore::set_on_change`，由 `Agent::set_workspace_store` 装配期接线，弱引用不构成循环）。任何成功变更（新建/重命名/删除/激活）→ 确保通道会话注册 + `SessionUpdated`（active 存在时）→ 广播 `WorkspaceSessions`；面板的「本地当前对话」是 active 的**投影**（active 空 → 默认会话；active=W → W 通道），不是独立状态。重启恢复：装配时持久化的 `active` 直接补注册通道（幂等，不广播）。
+**④ 单一事实来源 = `active` + `active_conversation` 标记**（`echo-workspaces-{id}.json`）。所有激活来源——面板按钮、会话切换器、模型 `use` 工具——共用**同一条广播路径**：store 变更钩子（`WorkspaceStore::set_on_change`，由 `Agent::set_workspace_store` 装配期接线，弱引用不构成循环）。任何成功变更（新建/重命名/删除/激活）→ 确保通道会话注册 + `SessionUpdated`（active 存在时）→ 广播 `WorkspaceSessions`；面板的「本地当前对话」是 active 的**投影**（active 空 → 默认会话；active=W → W 通道），不是独立状态。重启恢复：装配时持久化的 `active` 直接补注册通道（幂等，不广播）。
 
 **⑤ 前端联动规则**：
 - 会话切换器 Local 分组 = 默认会话 + 已注册通道：**选通道 = 激活对应工作区；选默认会话 = 取消激活**；
@@ -70,7 +72,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 **⑦ 边界**：
 - 既有历史留在默认会话，**不自动迁移**；通道历史从激活起从头积累；
-- 删除工作区**不删除**其对话历史（通道会话保留在列表）；
+- 删除工作区**不删除**其对话历史（通道会话保留在列表）；删除**对话**则清空其通道历史（store 删除钩子 → `clear_session`）；
 - 未激活时本地新消息落默认会话；
 - 通道机制与循环模式（single/parallel）无关；会话切换器可见性 = 存在可切换会话（含通道）。
 
