@@ -21,7 +21,6 @@ impl Agent {
     /// `session_id` 缺省时回退本地 TUI 会话，再回退该智能体的任一已有会话。
     async fn emit_context_snapshot(&self, session_id: Option<&str>) {
         let resolved = match session_id {
-            Some(id) if self.trunk.history_for(id).is_some() => Some(id.to_string()),
             Some(id) => Some(id.to_string()),
             None => {
                 let local = crate::session::SessionKey::local_tui().to_session_id();
@@ -52,7 +51,7 @@ impl Agent {
                 sequence: crate::agent::structured_message_sequence(&message.content),
             })
             .collect();
-        let blocks = self.context_blocks(&history).await;
+        let blocks = self.context_blocks(resolved.as_deref(), &history).await;
         self.emit(BackendEvent::ContextSnapshot {
             session_id: resolved,
             messages,
@@ -1130,6 +1129,22 @@ impl Agent {
                                 target.set_persona_api(profile.api_profile.clone()).await;
                                 let global_cfg = self.config.read().await.clone();
                                 target.apply_persona_api(&global_cfg).await;
+                                // token 预算热更（2026-10 审计 🔴 修复）：
+                                // 此前只在构造 TrunkStore 时取一次，保存后
+                                // 运行中 agent 仍用旧预算直到重启。与工厂
+                                // （main.rs 装配）同口径：per-persona 覆盖
+                                // 全局 cfg 后再算有效预算（None = 继承）。
+                                let mut budget_cfg = global_cfg.clone();
+                                if profile.memory_limit_tokens.is_some() {
+                                    budget_cfg.memory_limit_tokens = profile.memory_limit_tokens;
+                                }
+                                if profile.context_window_tokens.is_some() {
+                                    budget_cfg.context_window_tokens =
+                                        profile.context_window_tokens;
+                                }
+                                target.trunk.set_memory_limit_tokens(
+                                    budget_cfg.effective_memory_limit_tokens(),
+                                );
                                 self.emit_teams_list().await;
                             }
                             self.emit(BackendEvent::Error {

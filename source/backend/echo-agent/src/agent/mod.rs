@@ -110,9 +110,11 @@ pub struct Agent {
     /// None = 不记录（测试 / 未接线的旧路径）。
     metrics: std::sync::RwLock<Option<Arc<crate::metrics::MetricsStore>>>,
     system_prompt_cache: RwLock<Option<String>>,
-    /// Decomposed system-prompt blocks of the most recent turn, kept so the
-    /// panel can visualize the exact prompt sections sent to the LLM.
-    last_prompt_blocks: tokio::sync::Mutex<Option<Vec<PromptBlock>>>,
+    /// Decomposed system-prompt blocks of the most recent turn **per
+    /// session**, kept so the panel can visualize the exact prompt sections
+    /// sent to the LLM. 2026-10 上下文审计 🟡 修复：此前为 agent 级单槽，
+    /// 多会话时 /context 展示的是另一会话最近 turn 的提示词块（串会话）。
+    last_prompt_blocks: DashMap<String, Vec<PromptBlock>>,
     plugin_reload_started: AtomicBool,
     /// 可插拔循环驱动（echo-loop TurnRunner，由 `echo-agent.loop.{single,parallel}`
     /// 插件 mount 时注入）；启用（use_echo_loop）时普通 TUI turn 经 TurnRunner 的
@@ -313,7 +315,7 @@ impl Agent {
             redactor: std::sync::RwLock::new(None),
             metrics: std::sync::RwLock::new(None),
             system_prompt_cache: RwLock::new(None),
-            last_prompt_blocks: tokio::sync::Mutex::new(None),
+            last_prompt_blocks: DashMap::new(),
             plugin_reload_started: AtomicBool::new(false),
             loop_runner: RwLock::new(None),
             use_echo_loop: AtomicBool::new(false),
@@ -1751,7 +1753,8 @@ impl Agent {
         let system_prompt = crate::agent::prompt::join_prompt_blocks(&blocks);
         // `/context` 视图（2026-10 巡检）：与内置循环同口径保存最近一次
         // 提示词块——此前 echo 路径不写，切到 /context 显示陈旧数据。
-        *self.last_prompt_blocks.lock().await = Some(blocks);
+        // 按会话记录（2026-10 审计）：多会话互不覆盖。
+        self.last_prompt_blocks.insert(session_id.clone(), blocks);
         let history = history_snapshot.unwrap_or_else(|| session.history.lock().clone());
         // 工具 schema：注册表是唯一真源（与内置循环同源）。编排工具
         // （spawn_subagent）同样由注册表提供（组合根装配时注册），这里不得
@@ -2106,7 +2109,9 @@ impl Agent {
             .await
         };
         let system_prompt = crate::agent::prompt::join_prompt_blocks(&blocks);
-        *self.last_prompt_blocks.lock().await = Some(blocks);
+        // 按会话记录（2026-10 审计 🟡 修复）：多会话时 /context 不再串显
+        // 另一会话的提示词块。
+        self.last_prompt_blocks.insert(session.id.clone(), blocks);
 
         let mut messages = vec![ChatMessage::system(system_prompt)];
         if let Some(history_snapshot) = history_snapshot {
@@ -2574,12 +2579,13 @@ impl Agent {
     /// turn and is represented by the prompt blocks above.
     pub async fn context_blocks(
         &self,
+        session_id: Option<&str>,
         history: &[ChatMessage],
     ) -> Vec<crate::event::ContextBlockInfo> {
-        let prompt = match self.last_prompt_blocks.lock().await.clone() {
-            Some(blocks) => blocks,
-            // No turn has run yet in this process — build a representative
-            // set without input-specific sections.
+        let prompt = match session_id.and_then(|id| self.last_prompt_blocks.get(id)) {
+            Some(blocks) => blocks.clone(),
+            // No turn has run yet for this session in this process — build a
+            // representative set without input-specific sections.
             None => self.build_prompt_blocks().await,
         };
         let mut blocks: Vec<crate::event::ContextBlockInfo> = prompt

@@ -9,7 +9,7 @@
 //! 展示时间线（timeline）仍是全部会话的合并视图（条目自带 session 归属），
 //! 由前端按当前选中会话过滤。
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -232,7 +232,8 @@ pub struct TrunkStore {
     /// Owning team id (None = default). Set once by the Agent.
     team_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     identities: Arc<DashMap<String, Session>>,
-    memory_limit_tokens: usize,
+    /// token 预算（可热更：SaveTeam 保存后运行期生效，2026-10 审计 🔴）。
+    memory_limit_tokens: AtomicUsize,
     /// 每会话的上下文投影缓存（session_id → history）。事件日志是唯一
     /// 事实来源，这里只是它的按会话投影（见 `reproject_session`）。
     session_histories: Arc<DashMap<String, Arc<parking_lot::Mutex<Vec<ChatMessage>>>>>,
@@ -282,7 +283,7 @@ impl Clone for TrunkStore {
         Self {
             team_id: Arc::clone(&self.team_id),
             identities: Arc::clone(&self.identities),
-            memory_limit_tokens: self.memory_limit_tokens,
+            memory_limit_tokens: AtomicUsize::new(self.memory_limit_tokens.load(Ordering::Relaxed)),
             session_histories: Arc::clone(&self.session_histories),
             trunk_turn_lock: Arc::clone(&self.trunk_turn_lock),
             compact_lock: Arc::clone(&self.compact_lock),
@@ -457,7 +458,7 @@ impl TrunkStore {
         Self {
             team_id: std::sync::Arc::new(std::sync::Mutex::new(None)),
             identities: Arc::new(DashMap::new()),
-            memory_limit_tokens,
+            memory_limit_tokens: AtomicUsize::new(memory_limit_tokens),
             session_histories: Arc::new(DashMap::new()),
             trunk_turn_lock: Arc::new(tokio::sync::Mutex::new(())),
             compact_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -1319,7 +1320,19 @@ impl TrunkStore {
     }
 
     pub fn memory_limit_tokens(&self) -> usize {
-        self.memory_limit_tokens
+        self.memory_limit_tokens.load(Ordering::Relaxed)
+    }
+
+    /// 热更 token 预算（2026-10 上下文审计 🔴 修复）：SaveTeam 保存运行中
+    /// persona 时同步——此前预算只在 `TrunkStore::new` 取一次，配置变更要
+    /// 重启 agent 才生效。收窄立即重投影裁剪生效；放宽在下一条事件或
+    /// 压缩后的重投影自然生效（已被裁掉的旧事件不可恢复——与重启语义一致）。
+    pub fn set_memory_limit_tokens(&self, tokens: usize) {
+        let old = self.memory_limit_tokens.swap(tokens, Ordering::Relaxed);
+        if old != tokens {
+            tracing::info!(old, new = tokens, "memory_limit_tokens hot-updated");
+            self.reproject_all();
+        }
     }
 
     /// 全部会话投影的条目总数（调试/监控聚合口径）。
@@ -1804,11 +1817,11 @@ impl TrunkStore {
     }
 
     fn reproject_one(&self, log: &[echo_session::SessionEvent], session_id: &str) {
-        // 先在锁外完成投影（try_lock 语义：竞争时跳过本轮，下轮再投影）。
+        // 先在锁外完成投影。
         let mut projected = echo_session::derive::derive_messages_for(
             log,
             Some(session_id),
-            self.memory_limit_tokens,
+            self.memory_limit_tokens.load(Ordering::Relaxed),
         );
         // 媒体引用 → data URI：事件日志/时间线里只存 `/media/<id>`（轻量），
         // 发往 LLM 的 `ChatMessage` 在这一步（唯一的投影出口）还原图片。
@@ -3000,6 +3013,58 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// 2026-10 上下文审计 🔴 回归：会话级清理后，身份对象持有的**同一
+    /// Arc** 必须同步清空——否则 `get_or_create` 命中的旧 `Session.history`
+    /// 把已清理的内容带进下一次 LLM 请求（清理"复活"），且新投影写进新
+    /// Arc 与旧 Arc 永久脱节（新消息"失忆"）。
+    #[tokio::test]
+    async fn clear_session_empties_the_shared_history_arc() {
+        let store = TrunkStore::new(1000);
+        let key = SessionKey::parse("local:workspace:proj:alice").unwrap();
+        // 身份 + 事件 + 投影就位；`session` 持有 history Arc 的一份拷贝。
+        let session = store.get_or_create(&key, "alice".into(), None);
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some(session.id.clone()),
+                content: "被清理的记忆".into(),
+                timestamp: 1700000001,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        ));
+        assert!(!session.history.lock().is_empty(), "投影已物化");
+
+        store.clear_session(&session.id).await;
+
+        // 身份持有的旧 Arc 已原地清空（复活路径切断）。
+        assert!(
+            session.history.lock().is_empty(),
+            "clear_session 必须清空身份持有的共享 Arc"
+        );
+        // 新事件写入后：投影重新物化且只含新内容（新旧 Arc 未脱节）。
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some(session.id.clone()),
+                content: "清理后的新消息".into(),
+                timestamp: 1700000002,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        ));
+        let history = store.history_for(&session.id).expect("投影重建");
+        let contents: Vec<String> = history.lock().iter().map(|m| m.content.clone()).collect();
+        assert!(
+            contents.iter().all(|c| !c.contains("被清理的记忆")),
+            "旧内容不得复活: {contents:?}"
+        );
+        assert!(
+            contents.iter().any(|c| c.contains("清理后的新消息")),
+            "新消息应进投影: {contents:?}"
+        );
+    }
+
     /// 旧版无归属事件（session=None）在会话级清理中**不被误删**（保守语义）。
     #[tokio::test]
     async fn clear_session_keeps_legacy_unattributed_events() {
@@ -3807,6 +3872,55 @@ mod tests {
             "longer stem untouched: {left:?}"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 2026-10 上下文审计 🔴 回归：token 预算热更——收窄立即重投影裁剪
+    /// 生效；getter 反映新值（此前预算构造时固化，保存后要重启才生效）。
+    #[tokio::test]
+    async fn set_memory_limit_tokens_reprojects_immediately() {
+        let store = TrunkStore::new(10_000);
+        let key = SessionKey::local_tui();
+        let session = store.get_or_create(&key, "user".into(), None);
+        for i in 0..10 {
+            store.append_event(echo_session::SessionEvent::UserMessage(
+                echo_session::event::UserMessage {
+                    session: Some(session.id.clone()),
+                    content: format!("消息{i}-{}", "长".repeat(200)),
+                    timestamp: 1700000000 + i,
+                    message_sequence: None,
+                    source: None,
+                    images: vec![],
+                },
+            ));
+        }
+        let before = session.history.lock().len();
+        assert_eq!(before, 10, "宽预算下全部保留");
+
+        // 收窄到约 1 条消息的预算：立即重投影生效。
+        store.set_memory_limit_tokens(200);
+        assert_eq!(store.memory_limit_tokens(), 200);
+        let after = session.history.lock().len();
+        assert!(after < before, "收窄后投影应被裁剪: {after} !< {before}");
+
+        // 放宽回大预算：下一条事件后投影按新预算容纳（旧事件不可恢复）。
+        store.set_memory_limit_tokens(10_000);
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some(session.id.clone()),
+                content: "新消息".into(),
+                timestamp: 1700000100,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        ));
+        let contents: Vec<String> = session
+            .history
+            .lock()
+            .iter()
+            .map(|m| m.content.clone())
+            .collect();
+        assert!(contents.iter().any(|c| c.contains("新消息")));
     }
 
     /// 2026-10 上下文审计回归：归档名带毫秒段——同秒两次归档不得同名

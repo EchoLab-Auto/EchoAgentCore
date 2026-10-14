@@ -1967,8 +1967,85 @@ async fn echo_loop_path_emits_panel_lifecycle_events() {
     assert!(thinking < completed, "Thinking 应先于 Completed");
     // /context 视图数据（与内置循环同口径）。
     assert!(
-        agent.last_prompt_blocks.lock().await.is_some(),
-        "last_prompt_blocks 必须写入（/context 视图）"
+        agent.last_prompt_blocks.contains_key(&session.id),
+        "last_prompt_blocks 必须按会话写入（/context 视图）"
+    );
+}
+
+/// 2026-10 上下文审计 🟡 回归：/context 的提示词块按会话隔离——会话 A
+/// 的 turn 不得覆盖会话 B 的 `last_prompt_blocks`（此前 agent 级单槽，
+/// 多会话时面板切到 B 看到的却是 A 的提示词块）。
+#[tokio::test]
+async fn last_prompt_blocks_are_scoped_per_session() {
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        ChatResponse {
+            stop_reason: None,
+            content: Some("reply-a".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            usage: Usage::default(),
+        },
+        ChatResponse {
+            stop_reason: None,
+            content: Some("reply-b".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            usage: Usage::default(),
+        },
+    ]));
+    let agent = test_agent(provider);
+    // 注册一个触发式技能（关键词 alpha）：命中会话 A 的输入、不命中 B，
+    // 使两会话的提示词块内容可区分。
+    agent
+        .skills
+        .lock()
+        .await
+        .register(echo_defs::skill::Skill::direct(
+            "scoped-probe",
+            "probe",
+            vec!["alpha".into()],
+            false,
+            "probe",
+            "ALPHA 技能正文",
+        ));
+    let session_a = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    let session_b = agent.trunk.get_or_create(
+        &SessionKey::parse("qq:dm::42").unwrap(),
+        "qq-user".into(),
+        None,
+    );
+
+    agent.process_message(&session_a, "alpha").await.unwrap();
+    agent.process_message(&session_b, "beta").await.unwrap();
+
+    let blocks_a = agent
+        .last_prompt_blocks
+        .get(&session_a.id)
+        .map(|b| b.clone());
+    let blocks_b = agent
+        .last_prompt_blocks
+        .get(&session_b.id)
+        .map(|b| b.clone());
+    let text_of = |blocks: Option<Vec<super::boundary::PromptBlock>>| {
+        blocks
+            .expect("提示词块")
+            .iter()
+            .map(|b| b.content.clone())
+            .collect::<String>()
+    };
+    let text_a = text_of(blocks_a);
+    let text_b = text_of(blocks_b);
+    // A 的输入命中触发词 alpha → 含技能正文；B 未命中 → 不含。若仍是
+    // agent 级单槽，B 的 turn 会覆盖 A（text_a 不再含技能正文），本断言失败。
+    assert!(
+        text_a.contains("ALPHA 技能正文"),
+        "A 块含触发技能: {text_a}"
+    );
+    assert!(
+        !text_b.contains("ALPHA 技能正文"),
+        "B 块不含 A 的触发技能（串会话）"
     );
 }
 
