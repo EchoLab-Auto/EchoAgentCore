@@ -1036,20 +1036,45 @@ impl Agent {
                 keep_recent,
             } => {
                 let keep = keep_recent.unwrap_or(40).clamp(10, 500);
-                let result = if let Some(id) = team_id {
-                    match crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(&id)))
-                    {
-                        Some(agent) => agent.compact_history(keep).await,
-                        None => Err(format!("team {id} 不存在")),
+                // team 路由：解析目标 agent；无 team_id 或解析落空时在本
+                // agent 上执行（`target` 即压缩落地方）。
+                let target = match team_id.as_deref() {
+                    Some(id) => {
+                        crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(id)))
                     }
-                } else {
-                    self.compact_history(keep).await
+                    None => None,
+                };
+                let result = match &target {
+                    Some(agent) => agent.compact_history(keep).await,
+                    None => match team_id.as_deref() {
+                        Some(id) if self.team_id().as_deref() != Some(id) => {
+                            Err(format!("team {id} 不存在"))
+                        }
+                        _ => self.compact_history(keep).await,
+                    },
                 };
                 match result {
-                    Ok(msg) => self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: msg,
-                    }),
+                    Ok(msg) => {
+                        // 2026-10 上下文审计 🟡 修复：压缩落地后重发**实际
+                        // 剩余**时间线 + 上下文快照——此前 CompactHistory 是
+                        // 唯一不重发的会话命令（Clear/Archive 都有），面板要
+                        // 等下次主动同步才看到「历史已压缩」提示行与新的
+                        // token 占用。team 路由时以目标 agent 为事件源。
+                        match &target {
+                            Some(agent) => {
+                                Self::emit_timeline_after_clear(agent, team_id.clone());
+                                agent.emit_context_snapshot_for().await;
+                            }
+                            None => {
+                                Self::emit_timeline_after_clear(self, team_id.clone());
+                                self.emit_context_snapshot_for().await;
+                            }
+                        }
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: msg,
+                        });
+                    }
                     Err(e) => self.emit(BackendEvent::Error {
                         session_id: None,
                         message: format!("压缩失败：{e}"),

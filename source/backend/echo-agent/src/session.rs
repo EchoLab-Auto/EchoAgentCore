@@ -1483,12 +1483,13 @@ impl TrunkStore {
     }
 
     /// 归档保留清理：`archives/` 下**本 stem**（时间戳锚定）的归档按
-    /// mtime 保留最新 `max` 份，多余的最旧先删（删除失败仅记日志不阻塞归档）。
+    /// 文件名内嵌时间戳（字典序 = 时间序）保留最新 `max` 份，多余的最旧
+    /// 先删（删除失败仅记日志不阻塞归档）。
     pub fn prune_archives(archive_dir: &std::path::Path, stem: &str, max: usize) {
         if max == 0 || !archive_dir.is_dir() {
             return;
         }
-        let mut entries: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+        let mut entries: Vec<(String, std::path::PathBuf)> = Vec::new();
         if let Ok(read) = std::fs::read_dir(archive_dir) {
             for entry in read.flatten() {
                 let name = entry.file_name();
@@ -1496,17 +1497,16 @@ impl TrunkStore {
                 if !Self::is_own_archive_name(name, stem) {
                     continue;
                 }
-                let mtime = entry
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                entries.push((mtime, entry.path()));
+                entries.push((name.to_string(), entry.path()));
             }
         }
         if entries.len() <= max {
             return;
         }
-        entries.sort_by_key(|(mtime, _)| *mtime);
+        // 2026-10 上下文审计 🔵 修复：按文件名排序而非 mtime——归档名内嵌
+        // 时间戳（字典序 = 时间序），文件被复制/恢复后 mtime 失真会淘汰错
+        // 目标。
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
         let doomed = entries.len() - max;
         for (_, path) in entries.into_iter().take(doomed) {
             if let Err(e) = std::fs::remove_file(&path) {
@@ -1656,7 +1656,9 @@ impl TrunkStore {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("session");
-        let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+        // 2026-10 上下文审计 🟡 修复：时间戳补毫秒段——秒级精度下同秒两次
+        // 归档（压缩前自动归档 + 手动归档连点）会同名覆盖、静默丢一份。
+        let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S-%3f");
         let name = match suffix {
             Some(suffix) => format!("{stem}-{ts}-{suffix}.json"),
             None => format!("{stem}-{ts}.json"),
@@ -3804,6 +3806,68 @@ mod tests {
             left.contains(&"echo-sessions-x-y-20261001-000000.json".to_string()),
             "longer stem untouched: {left:?}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 2026-10 上下文审计回归：归档名带毫秒段——同秒两次归档不得同名
+    /// 覆盖；新旧格式（含 -precompact）都被茎匹配识别。
+    #[test]
+    fn archive_name_with_millis_never_collides_within_a_second() {
+        // 新格式（带毫秒）茎匹配
+        for name in [
+            "echo-sessions-x-20261013-074421-123.json",
+            "echo-sessions-x-20261013-074421-123-precompact.json",
+            // 旧格式（无毫秒）向后兼容
+            "echo-sessions-x-20261013-074421.json",
+            "echo-sessions-x-20261013-074421-precompact.json",
+        ] {
+            assert!(
+                TrunkStore::is_own_archive_name(name, "echo-sessions-x"),
+                "recognized: {name}"
+            );
+        }
+        // 非本 stem / 非归档名不误识
+        for name in [
+            "echo-sessions-x-y-20261013-074421-123.json",
+            "echo-sessions-x-note.txt",
+            "echo-sessions-x-2026101X-074421-123.json",
+            "echo-sessions-x-20261013-07442112.json", // 时间戳连写无分隔
+        ] {
+            assert!(
+                !TrunkStore::is_own_archive_name(name, "echo-sessions-x"),
+                "rejected: {name}"
+            );
+        }
+    }
+
+    /// 2026-10 上下文审计回归：淘汰按文件名内嵌时间戳排序——mtime 失真
+    /// （文件被复制/恢复）不影响"保留最新"。
+    #[test]
+    fn prune_archives_orders_by_filename_timestamp_not_mtime() {
+        let dir = std::env::temp_dir().join(format!("echo-prune-name-{}", std::process::id()));
+        let archives = dir.join("archives");
+        std::fs::create_dir_all(&archives).unwrap();
+        // 文件名时间戳递增，但 mtime 故意**倒置**（最新文件 mtime 最旧）。
+        for i in 0..4 {
+            let f = archives.join(format!("echo-sessions-x-2026101{i}-000000-001.json"));
+            std::fs::write(&f, "{}").unwrap();
+            let mtime = filetime::FileTime::from_unix_time(1_700_000_000 - i as i64 * 100, 0);
+            filetime::set_file_mtime(&f, mtime).unwrap();
+        }
+
+        TrunkStore::prune_archives(&archives, "echo-sessions-x", 2);
+
+        let left: Vec<String> = std::fs::read_dir(&archives)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            left.contains(&"echo-sessions-x-20261012-000000-001.json".to_string())
+                && left.contains(&"echo-sessions-x-20261013-000000-001.json".to_string()),
+            "filename-newest kept despite inverted mtimes: {left:?}"
+        );
+        assert_eq!(left.len(), 2, "left: {left:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
