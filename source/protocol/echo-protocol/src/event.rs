@@ -772,6 +772,9 @@ pub enum BackendEvent {
         /// 当前激活会话 id（None = 未激活）。
         #[serde(default)]
         active: Option<String>,
+        /// 当前激活对话 id（2026-10 多对话；`active` 仍为工作区 id）。
+        #[serde(default)]
+        active_conversation: Option<String>,
     },
     /// 某会话各工作区目录的 git 状态（`RequestWorkspaceGitStatus` 响应）。
     WorkspaceGitStatus {
@@ -1026,8 +1029,25 @@ pub enum FederationLinkState {
     Online,
 }
 
+/// 工作区内的一条对话（2026-10 多对话）：名称 + 通道 id 派生标记。
+///
+/// 每条对话对应一条独立的本地通道会话（独立上下文/预算/压缩清理）：
+/// - `legacy = true`：存量通道 id `local:workspace:<ws>:local_user`（每工作区
+///   至多一条；旧数据的首条对话——事件日志 append-only，id 不可改写）；
+/// - 其余对话：`local:workspace:<ws>/<conv>:local_user`。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceConversationInfo {
+    /// 稳定 id（slug；工作区内唯一，不含 `/`）。
+    #[serde(default)]
+    pub id: String,
+    pub name: String,
+    /// 通道 id 是否为存量裸 ws 格式（见类型注释）。
+    #[serde(default)]
+    pub legacy: bool,
+}
+
 /// 一个工作区会话（workspace 插件）：名称 + 多个工作区目录。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceSessionInfo {
     /// 稳定 id（空 = 由 Core 依名称生成）。
     #[serde(default)]
@@ -1041,6 +1061,13 @@ pub struct WorkspaceSessionInfo {
     /// （untagged：线格式与持久化仍接受纯字符串数组，读旧写新自动迁移）。
     #[serde(default)]
     pub directories: Vec<WorkspaceDirectory>,
+    /// 工作区内的对话列表（2026-10 多对话）。空 = 仅存量主对话
+    /// （读取期惰性补位 `{id:"main", legacy:true}`，不落盘）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conversations: Vec<WorkspaceConversationInfo>,
+    /// 最后使用的对话 id（激活工作区不带对话时进入它）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_conversation: Option<String>,
 }
 
 /// 工作区目录条目（federation Phase 0）。
@@ -1298,6 +1325,8 @@ mod workspace_directory_tests {
                     node: Some("node-abc".into()),
                 },
             ],
+            conversations: vec![],
+            last_conversation: None,
         };
         let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["directories"][0], serde_json::json!("/srv/local"));

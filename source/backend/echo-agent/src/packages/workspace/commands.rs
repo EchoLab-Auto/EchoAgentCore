@@ -87,7 +87,7 @@ impl Agent {
                     self.emit_workspace_unavailable();
                     return;
                 };
-                match store.set_active(id.clone()) {
+                match store.set_active(id.clone(), None) {
                     Ok(()) => {
                         // 激活 = 进入项目对话：通道会话注册 + 列表广播都走
                         // store 变更钩子（workspace_after_change）。
@@ -478,10 +478,12 @@ impl Agent {
             return;
         };
         let (sessions, active) = store.snapshot();
+        let active_conversation = store.active_pair().map(|(_, conv)| conv.id);
         self.emit(BackendEvent::WorkspaceSessions {
             team_id: self.team_id(),
             sessions,
             active,
+            active_conversation,
         });
     }
 

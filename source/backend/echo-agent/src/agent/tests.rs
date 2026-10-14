@@ -1762,9 +1762,12 @@ async fn echo_loop_path_injects_persona_skills_and_workspace() {
             name: "Proj".into(),
             description: String::new(),
             directories: vec!["/srv/proj".into()],
+
+            conversations: vec![],
+            last_conversation: None,
         })
         .unwrap();
-    store.set_active(Some("proj".into())).unwrap();
+    store.set_active(Some("proj".into()), None).unwrap();
     agent.set_workspace_store(store);
 
     let runner = Arc::new(echo_loop::runner::TurnRunner::new(
@@ -2551,6 +2554,9 @@ async fn workspace_commands_lifecycle() {
                 name: "core".into(),
                 description: String::new(),
                 directories: vec![env!("CARGO_MANIFEST_DIR").into()],
+
+                conversations: vec![],
+                last_conversation: None,
             },
         })
         .await;
@@ -2666,6 +2672,9 @@ async fn workspace_files_command_lists_within_scope() {
                 name: "core".into(),
                 description: String::new(),
                 directories: vec![root.clone().into()],
+
+                conversations: vec![],
+                last_conversation: None,
             },
         })
         .await;
@@ -2738,11 +2747,14 @@ async fn workspace_channel_tool_use_broadcasts() {
                 name: name.into(),
                 description: String::new(),
                 directories: vec!["/srv/x".into()],
+
+                conversations: vec![],
+                last_conversation: None,
             })
             .unwrap();
     }
     // 模拟持久化恢复：激活发生在进程装配之前。
-    store.set_active(Some("core".into())).unwrap();
+    store.set_active(Some("core".into()), None).unwrap();
 
     let agent = Arc::new(test_agent(Arc::new(MockProvider {
         calls: Arc::new(AtomicUsize::new(0)),
@@ -2811,9 +2823,12 @@ async fn workspace_plugin_gates_tool_and_prompt_block() {
             name: "Proj".into(),
             description: String::new(),
             directories: vec!["/srv/proj".into()],
+
+            conversations: vec![],
+            last_conversation: None,
         })
         .unwrap();
-    store.set_active(Some("proj".into())).unwrap();
+    store.set_active(Some("proj".into()), None).unwrap();
     tools.register(Arc::new(crate::workspace::WorkspaceTool::new(
         store.clone(),
     )));

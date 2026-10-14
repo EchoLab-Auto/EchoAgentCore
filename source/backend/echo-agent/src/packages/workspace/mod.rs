@@ -20,7 +20,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use echo_protocol::{WorkspaceFileEntry, WorkspaceGitInfo, WorkspaceSessionInfo};
+use echo_protocol::{
+    WorkspaceConversationInfo, WorkspaceFileEntry, WorkspaceGitInfo, WorkspaceSessionInfo,
+};
 
 use crate::tool::{Tool, ToolError};
 
@@ -42,6 +44,9 @@ pub const FILES_CAP: usize = 500;
 struct WorkspaceDocument {
     #[serde(default)]
     active: Option<String>,
+    /// 当前激活对话 id（2026-10 多对话；`active` 仍为工作区 id）。
+    #[serde(default)]
+    active_conversation: Option<String>,
     #[serde(default)]
     sessions: Vec<WorkspaceSessionInfo>,
 }
@@ -236,24 +241,177 @@ impl WorkspaceStore {
     }
 
     /// Activate a session (`None` clears the marker). The id must exist.
-    pub fn set_active(&self, id: Option<String>) -> Result<(), String> {
+    ///
+    /// 2026-10 多对话：`conversation` 指定工作区内的对话；`None` = 进入
+    /// `last_conversation`（无有效值时取首条；对话列表为空时物化存量主
+    /// 对话 `main`）。激活即更新 `last_conversation`。
+    pub fn set_active(
+        &self,
+        id: Option<String>,
+        conversation: Option<String>,
+    ) -> Result<(), String> {
         {
             let mut doc = self.doc.write().unwrap_or_else(|e| e.into_inner());
-            if let Some(ref id) = id {
-                if !doc.sessions.iter().any(|s| &s.id == id) {
-                    return Err(format!("工作区会话 {id} 不存在"));
+            match id {
+                None => {
+                    if conversation.is_some() {
+                        return Err("指定对话时必须同时指定工作区".into());
+                    }
+                    doc.active = None;
+                    doc.active_conversation = None;
+                }
+                Some(ref ws_id) => {
+                    let Some(session) = doc.sessions.iter_mut().find(|s| &s.id == ws_id) else {
+                        return Err(format!("工作区会话 {ws_id} 不存在"));
+                    };
+                    materialize_conversations(session);
+                    let conv_id = match conversation {
+                        Some(conv) => {
+                            if !session.conversations.iter().any(|c| c.id == conv) {
+                                return Err(format!("工作区 {ws_id} 不存在对话 {conv}"));
+                            }
+                            conv
+                        }
+                        None => session
+                            .last_conversation
+                            .as_deref()
+                            .filter(|last| session.conversations.iter().any(|c| &c.id == last))
+                            .unwrap_or(&session.conversations[0].id)
+                            .to_string(),
+                    };
+                    session.last_conversation = Some(conv_id.clone());
+                    doc.active = Some(ws_id.clone());
+                    doc.active_conversation = Some(conv_id);
                 }
             }
-            doc.active = id;
             self.save_locked(&doc)?;
         }
         self.notify_change();
         Ok(())
     }
 
+    /// 当前激活的 `(工作区, 对话)`（读取期惰性补位：激活工作区但
+    /// `active_conversation` 无效时回退首条对话 / 存量主对话）。
+    pub fn active_pair(&self) -> Option<(WorkspaceSessionInfo, WorkspaceConversationInfo)> {
+        let doc = self.doc.read().unwrap_or_else(|e| e.into_inner());
+        let ws_id = doc.active.as_deref()?;
+        let session = doc.sessions.iter().find(|s| s.id == ws_id)?;
+        let convs = conversations_view(session);
+        let conv = doc
+            .active_conversation
+            .as_deref()
+            .and_then(|id| convs.iter().find(|c| c.id == id))
+            .or_else(|| convs.first())?;
+        Some((session.clone(), conv.clone()))
+    }
+
+    /// 某工作区的对话列表（读取视图：空列表 = 存量主对话惰性补位，
+    /// 不落盘）。
+    pub fn conversations_of(&self, ws_id: &str) -> Vec<WorkspaceConversationInfo> {
+        let doc = self.doc.read().unwrap_or_else(|e| e.into_inner());
+        match doc.sessions.iter().find(|s| s.id == ws_id) {
+            Some(session) => conversations_view(session),
+            None => Vec::new(),
+        }
+    }
+
+    /// 新建/重命名一条对话（`conv.id` 空 = 依名称生成 slug，工作区内去重；
+    /// 既有 id = 重命名，`legacy` 以既有条目为准——不可由输入伪造）。
+    pub fn upsert_conversation(
+        &self,
+        ws_id: &str,
+        mut conv: WorkspaceConversationInfo,
+    ) -> Result<WorkspaceConversationInfo, String> {
+        conv.name = conv.name.trim().to_string();
+        if conv.name.is_empty() {
+            return Err("对话名称不能为空".into());
+        }
+        let result = {
+            let mut doc = self.doc.write().unwrap_or_else(|e| e.into_inner());
+            let Some(session) = doc.sessions.iter_mut().find(|s| s.id == ws_id) else {
+                return Err(format!("工作区会话 {ws_id} 不存在"));
+            };
+            materialize_conversations(session);
+            match session.conversations.iter_mut().find(|c| c.id == conv.id) {
+                Some(existing) => {
+                    existing.name = conv.name.clone();
+                    conv.legacy = existing.legacy;
+                }
+                None => {
+                    if conv.id.trim().is_empty() {
+                        let base = slugify_conv(&conv.name);
+                        let mut candidate = base.clone();
+                        let mut n = 2;
+                        while session.conversations.iter().any(|c| c.id == candidate) {
+                            candidate = format!("{base}-{n}");
+                            n += 1;
+                        }
+                        conv.id = candidate;
+                    } else if session.conversations.iter().any(|c| c.id == conv.id) {
+                        return Err(format!("对话 id {} 已存在", conv.id));
+                    }
+                    // 存量裸通道 id（legacy）每工作区至多一条：列表中已有
+                    // legacy 对话时新对话一律走 `<ws>/<conv>` 格式；legacy
+                    // 对话被删除后新对话可再次占用裸通道（其历史已在删除时
+                    // 清空）。
+                    conv.legacy = !session.conversations.iter().any(|c| c.legacy);
+                    session.conversations.push(conv.clone());
+                }
+            }
+            self.save_locked(&doc)?;
+            conv
+        };
+        self.notify_change();
+        Ok(result)
+    }
+
+    /// 删除一条对话；返回被删对话（含 `legacy`，调用方据此定位通道并清空
+    /// 其历史）。删除当前激活对话时切换到同工作区其余对话（列表清空则
+    /// 取消激活对话标记；下次激活该工作区时自动新建）。
+    pub fn delete_conversation(
+        &self,
+        ws_id: &str,
+        conv_id: &str,
+    ) -> Result<Option<WorkspaceConversationInfo>, String> {
+        let removed = {
+            let mut doc = self.doc.write().unwrap_or_else(|e| e.into_inner());
+            let was_active = doc.active.as_deref() == Some(ws_id)
+                && doc.active_conversation.as_deref() == Some(conv_id);
+            let Some(session) = doc.sessions.iter_mut().find(|s| s.id == ws_id) else {
+                return Err(format!("工作区会话 {ws_id} 不存在"));
+            };
+            materialize_conversations(session);
+            match session
+                .conversations
+                .iter()
+                .find(|c| c.id == conv_id)
+                .cloned()
+            {
+                None => None,
+                Some(removed_conv) => {
+                    session.conversations.retain(|c| c.id != conv_id);
+                    if session.last_conversation.as_deref() == Some(conv_id) {
+                        session.last_conversation =
+                            session.conversations.first().map(|c| c.id.clone());
+                    }
+                    if was_active {
+                        doc.active_conversation =
+                            session.conversations.first().map(|c| c.id.clone());
+                    }
+                    self.save_locked(&doc)?;
+                    Some(removed_conv)
+                }
+            }
+        };
+        if removed.is_some() {
+            self.notify_change();
+        }
+        Ok(removed)
+    }
+
     /// System-prompt text for the active session (`None` = nothing to inject).
     pub fn prompt_text(&self) -> Option<String> {
-        let session = self.active()?;
+        let (session, conv) = self.active_pair()?;
         if session.directories.is_empty() && session.name.is_empty() {
             return None;
         }
@@ -261,6 +419,9 @@ impl WorkspaceStore {
         if !session.description.is_empty() {
             text.push_str(&format!("（{}）", session.description));
         }
+        // 多对话（2026-10）：标注当前对话名——各对话上下文独立，
+        // 名称帮助模型区分任务线。
+        text.push_str(&format!("\n当前对话：{}（id: {}）", conv.name, conv.id));
         if !session.directories.is_empty() {
             text.push_str("\n工作区目录：\n");
             for dir in &session.directories {
@@ -327,6 +488,47 @@ fn normalize_directory(raw: &str) -> String {
         end -= 1;
     }
     trimmed[..end].to_string()
+}
+
+/// 对话读取视图：空列表（旧档/新建工作区）惰性补位存量主对话——
+/// `legacy: true` 表示其通道 id 为裸 ws 格式 `local:workspace:<ws>:local_user`
+///（旧数据的历史挂在该 id 下，事件日志 append-only 不可改写）。
+fn conversations_view(session: &WorkspaceSessionInfo) -> Vec<WorkspaceConversationInfo> {
+    if session.conversations.is_empty() {
+        vec![WorkspaceConversationInfo {
+            id: "main".into(),
+            name: "主对话".into(),
+            legacy: true,
+        }]
+    } else {
+        session.conversations.clone()
+    }
+}
+
+/// 写入路径物化：把读取视图的惰性主对话落进列表（之后随 doc 持久化）。
+fn materialize_conversations(session: &mut WorkspaceSessionInfo) {
+    if session.conversations.is_empty() {
+        session.conversations = conversations_view(session);
+    }
+}
+
+/// 对话通道的 `scope_id`：legacy 对话 = 裸 ws_id；其余 = `<ws_id>/<conv_id>`。
+pub fn channel_scope_id(ws_id: &str, conv: &WorkspaceConversationInfo) -> String {
+    if conv.legacy {
+        ws_id.to_string()
+    } else {
+        format!("{ws_id}/{}", conv.id)
+    }
+}
+
+/// 对话 id slug（slugify 的 CJK 回退改为 `conv`）。
+fn slugify_conv(name: &str) -> String {
+    let slug = slugify(name);
+    if slug == "ws" {
+        "conv".into()
+    } else {
+        slug
+    }
 }
 
 /// ASCII slug from a display name; CJK-only names fall back to `ws`.
@@ -822,7 +1024,7 @@ impl Tool for WorkspaceTool {
                     .filter(|v| !v.trim().is_empty())
                     .ok_or_else(|| ToolError::InvalidArguments("use 需要 id".into()))?;
                 self.store
-                    .set_active(Some(id.to_string()))
+                    .set_active(Some(id.to_string()), None)
                     .map_err(ToolError::Execution)?;
                 Ok(format!("已激活工作区会话 {id}"))
             }
@@ -849,6 +1051,7 @@ impl Tool for WorkspaceTool {
                         name: name.to_string(),
                         description: String::new(),
                         directories,
+                        ..Default::default()
                     })
                     .map_err(ToolError::Execution)?;
                 Ok(format!(
@@ -902,6 +1105,9 @@ mod tests {
                 name: "My Project".into(),
                 description: "  desc  ".into(),
                 directories: vec!["/tmp/proj/".into(), "/tmp/proj".into()],
+
+                conversations: vec![],
+                last_conversation: None,
             })
             .expect("upsert");
         assert_eq!(session.id, "my-project");
@@ -929,6 +1135,9 @@ mod tests {
                 name: "项目".into(),
                 description: String::new(),
                 directories: vec![],
+
+                conversations: vec![],
+                last_conversation: None,
             })
             .unwrap();
         assert_eq!(a.id, "ws"); // CJK-only name → fallback slug
@@ -938,6 +1147,9 @@ mod tests {
                 name: "项目 2".into(),
                 description: String::new(),
                 directories: vec![],
+
+                conversations: vec![],
+                last_conversation: None,
             })
             .unwrap();
         assert_eq!(b.id, "ws-2");
@@ -953,20 +1165,213 @@ mod tests {
                 name: "Proj".into(),
                 description: "主项目".into(),
                 directories: vec!["/srv/a".into(), "/srv/b".into()],
+
+                conversations: vec![],
+                last_conversation: None,
             })
             .unwrap();
         assert!(store.prompt_text().is_none(), "未激活不进提示词");
 
-        store.set_active(Some(session.id.clone())).unwrap();
+        store.set_active(Some(session.id.clone()), None).unwrap();
         let text = store.prompt_text().expect("active prompt");
         assert!(text.contains("Proj"));
         assert!(text.contains("/srv/a"));
         assert!(text.contains("/srv/b"));
 
-        assert!(store.set_active(Some("nope".into())).is_err());
+        assert!(store.set_active(Some("nope".into()), None).is_err());
         assert!(store.delete("proj").unwrap());
         assert!(store.active().is_none(), "删除激活会话后清除激活标记");
         assert!(store.prompt_text().is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 2026-10 多对话：旧档（无 conversations 字段）惰性补位存量主对话——
+    /// legacy 通道 id 为裸 ws 格式，不落盘；新建对话走 `<ws>/<conv>` 格式。
+    #[test]
+    fn conversations_lazy_legacy_main_and_channel_ids() {
+        let (store, path) = temp_store("convs");
+        store
+            .upsert(WorkspaceSessionInfo {
+                id: "proj".into(),
+                name: "Proj".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        // 读取视图：空列表 → 惰性主对话（不落盘）。
+        let convs = store.conversations_of("proj");
+        assert_eq!(convs.len(), 1);
+        assert!(convs[0].legacy);
+        assert_eq!(convs[0].id, "main");
+        assert_eq!(channel_scope_id("proj", &convs[0]), "proj");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("conversations"), "惰性补位不落盘: {raw}");
+
+        // 新建第二条对话：主对话物化 + 新对话非 legacy。
+        let conv = store
+            .upsert_conversation(
+                "proj",
+                WorkspaceConversationInfo {
+                    id: String::new(),
+                    name: "支线任务".into(),
+                    legacy: false,
+                },
+            )
+            .unwrap();
+        assert!(!conv.legacy);
+        assert_eq!(channel_scope_id("proj", &conv), format!("proj/{}", conv.id));
+        let convs = store.conversations_of("proj");
+        assert_eq!(convs.len(), 2);
+        assert!(convs.iter().any(|c| c.legacy), "存量主对话已物化");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 对话 id slug 去重 + 重命名保留 legacy。
+    #[test]
+    fn conversation_upsert_dedupes_and_preserves_legacy_on_rename() {
+        let (store, path) = temp_store("conv-dedupe");
+        store
+            .upsert(WorkspaceSessionInfo {
+                id: "w".into(),
+                name: "W".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let a = store
+            .upsert_conversation(
+                "w",
+                WorkspaceConversationInfo {
+                    id: String::new(),
+                    name: "Task".into(),
+                    legacy: false,
+                },
+            )
+            .unwrap();
+        let b = store
+            .upsert_conversation(
+                "w",
+                WorkspaceConversationInfo {
+                    id: String::new(),
+                    name: "Task".into(),
+                    legacy: false,
+                },
+            )
+            .unwrap();
+        assert_ne!(a.id, b.id, "同名对话 id 去重");
+
+        // 重命名存量主对话（legacy 不可由输入伪造）。
+        let renamed = store
+            .upsert_conversation(
+                "w",
+                WorkspaceConversationInfo {
+                    id: "main".into(),
+                    name: "主线".into(),
+                    legacy: false,
+                },
+            )
+            .unwrap();
+        assert!(renamed.legacy, "legacy 以既有条目为准");
+        assert_eq!(renamed.name, "主线");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 激活解析：不带对话 → last_conversation；删除激活对话 → 切到其余；
+    /// 删空 → active_conversation 清空；全部持久化可恢复。
+    #[test]
+    fn conversation_activation_resolution_and_delete_switch() {
+        let (store, path) = temp_store("conv-active");
+        store
+            .upsert(WorkspaceSessionInfo {
+                id: "proj".into(),
+                name: "Proj".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let c2 = store
+            .upsert_conversation(
+                "proj",
+                WorkspaceConversationInfo {
+                    id: String::new(),
+                    name: "支线".into(),
+                    legacy: false,
+                },
+            )
+            .unwrap();
+
+        // 激活工作区（不带对话）→ 首条（main）。
+        store.set_active(Some("proj".into()), None).unwrap();
+        let (_, conv) = store.active_pair().unwrap();
+        assert_eq!(conv.id, "main");
+
+        // 激活指定对话 → last_conversation 更新。
+        store
+            .set_active(Some("proj".into()), Some(c2.id.clone()))
+            .unwrap();
+        let (_, conv) = store.active_pair().unwrap();
+        assert_eq!(conv.id, c2.id);
+
+        // 再激活不带对话 → 回到 last_conversation（c2）。
+        store.set_active(None, None).unwrap();
+        store.set_active(Some("proj".into()), None).unwrap();
+        let (_, conv) = store.active_pair().unwrap();
+        assert_eq!(conv.id, c2.id, "last_conversation 生效");
+
+        // 删除当前激活对话 → 切到 main。
+        let removed = store.delete_conversation("proj", &c2.id).unwrap();
+        assert!(removed.is_some());
+        let (_, conv) = store.active_pair().unwrap();
+        assert_eq!(conv.id, "main", "删除激活对话后切换");
+
+        // 删除 main → 对话列表清空；工作区仍激活，读取视图惰性回到存量
+        // 主对话（裸通道 id 是工作区的不灭通道——历史已在删除时清空，
+        // 继续在该通道对话是安全的）。
+        store.delete_conversation("proj", "main").unwrap();
+        let (_, conv) = store.active_pair().unwrap();
+        assert!(conv.legacy && conv.id == "main", "删空后惰性回到存量主对话");
+
+        // 持久化往返（空列表不落盘，重载后仍是惰性视图）。
+        let reloaded = WorkspaceStore::load(Some(path.clone()));
+        assert_eq!(reloaded.snapshot().1.as_deref(), Some("proj"));
+        let convs = reloaded.conversations_of("proj");
+        assert_eq!(convs.len(), 1);
+        assert!(convs[0].legacy);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 多对话提示词：当前对话名注入；对话独立通道 id 可解析往返。
+    #[test]
+    fn prompt_text_names_active_conversation() {
+        let (store, path) = temp_store("conv-prompt");
+        store
+            .upsert(WorkspaceSessionInfo {
+                id: "proj".into(),
+                name: "Proj".into(),
+                directories: vec!["/srv/a".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        let conv = store
+            .upsert_conversation(
+                "proj",
+                WorkspaceConversationInfo {
+                    id: String::new(),
+                    name: "支线任务".into(),
+                    legacy: false,
+                },
+            )
+            .unwrap();
+        store
+            .set_active(Some("proj".into()), Some(conv.id.clone()))
+            .unwrap();
+        let text = store.prompt_text().expect("prompt");
+        assert!(text.contains("支线任务"), "提示词含对话名: {text}");
+        assert!(text.contains("Proj"));
+
+        // 通道 id 往返：scope_id = "proj/<conv>" 经 SessionKey 解析不丢。
+        let scope = channel_scope_id("proj", &conv);
+        let key = crate::session::SessionKey::local_workspace(&scope);
+        let parsed = crate::session::SessionKey::parse(&key.to_session_id()).unwrap();
+        assert_eq!(parsed.scope_id, scope);
+        assert_eq!(parsed.platform, "local");
         std::fs::remove_file(&path).ok();
     }
 
@@ -986,6 +1391,9 @@ mod tests {
                 name: "P".into(),
                 description: String::new(),
                 directories: vec![],
+
+                conversations: vec![],
+                last_conversation: None,
             })
             .unwrap();
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "upsert");
@@ -993,16 +1401,16 @@ mod tests {
         let _ = store.snapshot();
         let _ = store.prompt_text();
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
-        store.set_active(Some(s.id.clone())).unwrap();
+        store.set_active(Some(s.id.clone()), None).unwrap();
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2, "激活");
-        store.set_active(None).unwrap();
+        store.set_active(None, None).unwrap();
         assert_eq!(
             hits.load(std::sync::atomic::Ordering::SeqCst),
             3,
             "取消激活"
         );
         // 无效操作（不存在 id / 重复删除）不触发。
-        assert!(store.set_active(Some("nope".into())).is_err());
+        assert!(store.set_active(Some("nope".into()), None).is_err());
         assert!(!store.delete("nope").unwrap());
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 3);
         store.delete("p").unwrap();
@@ -1034,9 +1442,12 @@ mod tests {
                 name: "P".into(),
                 description: String::new(),
                 directories: vec![],
+
+                conversations: vec![],
+                last_conversation: None,
             })
             .unwrap();
-        store.set_active(Some("p".into())).unwrap();
+        store.set_active(Some("p".into()), None).unwrap();
         let log = observed.lock().unwrap().clone();
         assert_eq!(log, vec![Some("1 sessions".into()), Some("p".into())]);
         std::fs::remove_file(&path).ok();
@@ -1051,6 +1462,9 @@ mod tests {
                 name: "   ".into(),
                 description: String::new(),
                 directories: vec![],
+
+                conversations: vec![],
+                last_conversation: None,
             })
             .is_err());
         let many: Vec<echo_protocol::WorkspaceDirectory> = (0..(MAX_DIRECTORIES + 5))
@@ -1062,6 +1476,9 @@ mod tests {
                 name: "Big".into(),
                 description: String::new(),
                 directories: many,
+
+                conversations: vec![],
+                last_conversation: None,
             })
             .is_err());
         std::fs::remove_file(&path).ok();
@@ -1208,6 +1625,9 @@ mod tests {
                     echo_protocol::WorkspaceDirectory::from("/srv/local-repo"),
                     echo_protocol::WorkspaceDirectory::from("node://gpu-box/srv/remote-repo"),
                 ],
+
+                conversations: vec![],
+                last_conversation: None,
             })
             .expect("upsert");
         assert_eq!(session.directories.len(), 2);
@@ -1239,9 +1659,12 @@ mod tests {
                         node: Some("gpu-box".into()),
                     },
                 ],
+
+                conversations: vec![],
+                last_conversation: None,
             })
             .unwrap();
-        store.set_active(Some(session.id)).unwrap();
+        store.set_active(Some(session.id), None).unwrap();
         let text = store.prompt_text().expect("active prompt");
         assert!(text.contains("[remote:gpu-box]"), "text: {text}");
         assert!(text.contains("node://gpu-box/srv/repo"), "text: {text}");

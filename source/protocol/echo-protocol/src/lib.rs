@@ -34,6 +34,7 @@ pub use event::{
     BackendState, BrowseRoot, ContextBlockInfo, ContextMessageInfo, FederationLinkState,
     FederationPeerInfo, FriendInfo, GroupInfo, PluginInfo, SessionInfo, ShellSessionInfo,
     SkillInfo, SkillSourceInfo, TeamInfo, TimelineMessage, TimelineSource, TimelineTool, ToolInfo,
-    WorkspaceDirectory, WorkspaceFileEntry, WorkspaceGitInfo, WorkspaceSessionInfo,
+    WorkspaceConversationInfo, WorkspaceDirectory, WorkspaceFileEntry, WorkspaceGitInfo,
+    WorkspaceSessionInfo,
 };
 pub use mode::{GateMode, LoopMode, ReasoningEffort, ThinkingMode};
