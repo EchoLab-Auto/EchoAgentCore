@@ -2557,8 +2557,16 @@ async fn handle_federation_query(
             }))
         }
         QueryKind::WorkspaceFiles => {
-            // 本机全部 persona 工作区目录并集内的 canonical 校验。
+            // 本机全部 persona 工作区目录并集内的 canonical 校验；
+            // **完全开放（allow_queries = ["*"]）豁免沙箱**（2026-10
+            // 设计演进）：互信对端可浏览本机任意可读目录（「SSH 免密」
+            // 同语义），只需路径存在。
             let dir = req.subject.trim().to_string();
+            let full_access = rt
+                .router
+                .policy_of(from)
+                .map(|p| p.is_full_access())
+                .unwrap_or(false);
             let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
             for persona in personas.personas() {
                 if let Some(store) = persona.agent.workspace_store() {
@@ -2569,7 +2577,17 @@ async fn handle_federation_query(
                 }
             }
             let collected = tokio::task::spawn_blocking(move || {
-                let resolved = echo_agent::workspace::resolve_within_directories(&all_dirs, &dir)?;
+                let resolved = if full_access {
+                    let p = std::path::Path::new(&dir)
+                        .canonicalize()
+                        .map_err(|e| format!("路径不存在或不可访问: {e}"))?;
+                    if !p.is_dir() {
+                        return Err("路径不是目录".to_string());
+                    }
+                    Ok(p)
+                } else {
+                    echo_agent::workspace::resolve_within_directories(&all_dirs, &dir)
+                }?;
                 echo_agent::workspace::collect_dir_files(&resolved)
             })
             .await;
@@ -2581,8 +2599,14 @@ async fn handle_federation_query(
         }
         QueryKind::WorkspaceGitStatus => {
             // 远程 git 状态（跨机工作区）：subject = 目录绝对路径；与
-            // WorkspaceFiles 同一沙箱（限本机各 persona 工作区目录并集）。
+            // WorkspaceFiles 同一沙箱（限本机各 persona 工作区目录并集），
+            // 同样在 allow_queries = ["*"] 完全开放时豁免（2026-10）。
             let dir = req.subject.trim().to_string();
+            let full_access = rt
+                .router
+                .policy_of(from)
+                .map(|p| p.is_full_access())
+                .unwrap_or(false);
             let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
             for persona in personas.personas() {
                 if let Some(store) = persona.agent.workspace_store() {
@@ -2593,7 +2617,17 @@ async fn handle_federation_query(
                 }
             }
             let collected = tokio::task::spawn_blocking(move || {
-                let resolved = echo_agent::workspace::resolve_within_directories(&all_dirs, &dir)?;
+                let resolved = if full_access {
+                    let p = std::path::Path::new(&dir)
+                        .canonicalize()
+                        .map_err(|e| format!("路径不存在或不可访问: {e}"))?;
+                    if !p.is_dir() {
+                        return Err("路径不是目录".to_string());
+                    }
+                    p
+                } else {
+                    echo_agent::workspace::resolve_within_directories(&all_dirs, &dir)?
+                };
                 Ok::<_, String>(echo_agent::workspace::collect_dir_git(
                     &resolved.to_string_lossy(),
                 ))

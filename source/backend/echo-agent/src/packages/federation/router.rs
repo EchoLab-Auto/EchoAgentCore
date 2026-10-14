@@ -72,7 +72,10 @@ pub struct ExecutorPolicy {
     pub require_confirm: Vec<String>,
     /// 允许对端的只读查询种类（Phase 5）：`node_status` 恒允许
     /// （无害遥测），其余（`session_snapshot`/`workspace_files`）需
-    /// 显式列出——会话内容与文件系统敏感。
+    /// 显式列出——会话内容与文件系统敏感。**`*` = 完全开放**：
+    /// 除放行全部查询种类外，执行端同时豁免**文件系统沙箱**（文件
+    /// 工具调用的工作区根裁决 + WorkspaceFiles/GitStatus 的目录
+    /// canonical 校验）——与「SSH 免密」同语义（2026-10 设计演进）。
     pub allow_queries: Vec<String>,
     /// 允许对端远程委派子代理（Phase 3 spawn_subagent node=<peer>）。
     pub allow_subagent: bool,
@@ -108,6 +111,14 @@ impl ExecutorPolicy {
             QueryKind::NodeStatus | QueryKind::ApiProfiles => unreachable!(),
         };
         self.allow_queries.iter().any(|q| q == "*" || q == key)
+    }
+
+    /// 是否完全开放（`*` 全权）：执行端据此豁免文件系统沙箱（Invoke
+    /// 文件工具的工作区根裁决 + WorkspaceFiles/GitStatus 的目录
+    /// canonical 校验）——`allow_queries = ["*"]` 即「SSH 免密」语义，
+    /// 对端可访问本机任意可读路径（2026-10 设计演进，用户要求）。
+    pub fn is_full_access(&self) -> bool {
+        self.allow_queries.iter().any(|q| q == "*")
     }
 }
 
@@ -435,7 +446,15 @@ impl InvokeRouter {
             "list_files",
             "search_code",
         ];
-        if FILE_TOOLS.contains(&request.tool.as_str()) {
+        // **豁免（2026-10 设计演进）**：peer 策略为完全开放
+        // （allow_queries = ["*"]，邀请配对提升的默认互信档）时跳过沙箱——
+        // 「SSH 免密」同语义：完全互信的对端不受目录边界约束。
+        let full_access = self
+            .policies
+            .get(from)
+            .map(|p| p.is_full_access())
+            .unwrap_or(false);
+        if !full_access && FILE_TOOLS.contains(&request.tool.as_str()) {
             if let Some(raw) = request.args.get("path").and_then(|v| v.as_str()) {
                 if raw.starts_with('/')
                     && !crate::federation::path_within_roots(raw, workspace_roots)
@@ -693,11 +712,17 @@ mod tests {
         ));
     }
     /// P3-1：执行端沙箱——5 个文件工具的绝对路径落在工作区根并集外时拒绝
-    /// （FedError::Forbidden），调用侧透传为 ToolError。
+    /// （FedError::Forbidden），调用侧透传为 ToolError。**仅限受限策略**：
+    /// 完全开放（allow_queries = ["*"]）豁免沙箱（见下方测试）。
     #[tokio::test]
     async fn executor_rejects_absolute_path_outside_roots() {
         let router = InvokeRouter::new("node-a".into());
-        router.set_policy("node-b", policy(&["*"]));
+        router.set_policy("node-b", ExecutorPolicy {
+            allow_tools: vec!["*".into()],
+            require_confirm: vec![],
+            allow_queries: vec!["workspace_files".into()],
+            allow_subagent: false,
+        });
         let registry = Arc::new(ToolRegistry::new());
         let (tx, _rx) = mpsc::channel(1);
         let root = std::env::temp_dir().join(format!("echo-fed-roots-{}", std::process::id()));
@@ -759,6 +784,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 完全开放豁免（2026-10 设计演进）：`allow_queries = ["*"]` 的 peer
+    /// 调用文件工具时不做工作区根裁决——任意绝对路径直达本机工具实现
+    /// （「SSH 免密」同语义）。
+    #[tokio::test]
+    async fn executor_full_access_skips_workspace_sandbox() {
+        let router = InvokeRouter::new("node-a".into());
+        router.set_policy("node-b", ExecutorPolicy::full());
+        let registry = Arc::new(ToolRegistry::new());
+        let (tx, _rx) = mpsc::channel(1);
+        let reply = router.handle_invoke(
+            "node-b",
+            InvokeRequest {
+                call_id: "node-c:3-0".into(),
+                tool: "read_file".into(),
+                args: serde_json::json!({"path": "/etc/hostname"}),
+                workdir: None,
+                timeout_secs: None,
+            },
+            registry,
+            tx,
+            &[], // 工作区根为空也不拦截
+        );
+        assert!(
+            matches!(
+                reply,
+                FedFrame::InvokeAccepted {
+                    verdict: InvokeVerdict::Accepted,
+                    ..
+                }
+            ),
+            "full-access peer must bypass sandbox: {reply:?}"
+        );
+    }
+
     #[test]
     fn query_authorization_defaults() {
         use echo_federation::QueryKind;
@@ -781,6 +840,19 @@ mod tests {
             allow_subagent: false,
         };
         assert!(all.query_allowed(QueryKind::WorkspaceFiles));
+    }
+
+    #[test]
+    fn full_access_flag_follows_allow_queries_wildcard() {
+        assert!(!ExecutorPolicy::default().is_full_access());
+        assert!(ExecutorPolicy::full().is_full_access());
+        let explicit_only = ExecutorPolicy {
+            allow_tools: vec![],
+            require_confirm: vec![],
+            allow_queries: vec!["workspace_files".into()],
+            allow_subagent: false,
+        };
+        assert!(!explicit_only.is_full_access());
     }
 
     #[tokio::test]

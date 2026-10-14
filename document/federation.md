@@ -94,14 +94,20 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
   （v1 简化为拒绝）、`allow_queries`（敏感查询默认拒绝）
 - 执行端裁决复用本机工具实现的安全边界（工作区根内 canonical 校验），
   大脑侧不做也不可能做远程 fs 校验
+- **完全开放豁免（2026-10 设计演进）**：`allow_queries = ["*"]` 的 peer
+  被视为完全互信（「SSH 免密」同语义），执行端**跳过全部文件系统沙箱**
+  （Invoke 文件工具的工作区根裁决 + WorkspaceFiles/GitStatus 的目录
+  canonical 校验）——对端可访问本机任意可读路径。显式列出查询种类的
+  受限策略仍受沙箱约束。
 - 全部联邦调用记 `federation` 审计日志（tracing target）
 
 ### 只读查询授权
 
 `NodeStatus` 恒允许（无害遥测）；`WorkspaceFiles`/`SessionSnapshot`/`BrowseDirectories`
 默认拒绝，需 `[federation.peers.*] allow_queries = ["session_snapshot",
-"workspace_files"]`（或 `*`）显式开启——对方能看到会话内容，安全
-优先于便利。
+"workspace_files"]` 显式开启——对方能看到会话内容，安全
+优先于便利。**`allow_queries = ["*"]`（邀请配对默认）= 完全开放**：
+除放行全部查询种类外，执行端同时豁免文件系统沙箱（见上）。
 
 ## 配置与管理面
 
@@ -255,15 +261,15 @@ parent_branch_id → 挂起 call_id 集合）：受理时登记、终态时销�
 
 文件工具（read_file/write_file/edit_file/list_files/search_code）的
 `path` 参数支持 `node://<peer>/<绝对路径>` 前缀——agent 可直接操作
-对端工作区文件，调用经联邦 Invoke 在对端沙箱内执行（沙箱裁决见
-「安全模型」），结果透明返回。
+对端工作区文件，调用经联邦 Invoke 在对端执行（受限策略经沙箱裁决、
+完全开放策略直达本机工具——见「安全模型」），结果透明返回。
 
 - 工作区会话的远程目录（`{path, node}` 表条目）在提示词中标注
   `[remote:<peer>]` 并附 `node://` 操作说明——agent 据此知晓可操作
 - 装配出口：`set_remote_invoker`（组合根注入；联邦关闭时调用报
   「联邦未接线」）
-- 失败路径：peer 离线/不存在、链路不可用、对端拒绝（白名单/沙箱）、
-  超时均原样透传为 ToolError。超时链：路由 invoke 120s → 外层 wait
+- 失败路径：peer 离线/不存在、链路不可用、对端拒绝（白名单/沙箱——
+  完全开放策略无沙箱）、超时均原样透传为 ToolError。超时链：路由 invoke 120s → 外层 wait
   180s → 工具守卫 460s（timeout_hint）
 
 ### 会话迁移
