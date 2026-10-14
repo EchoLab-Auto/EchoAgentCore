@@ -295,6 +295,10 @@ pub enum BackendCommand {
         team_id: Option<String>,
         #[serde(default)]
         id: Option<String>,
+        /// 工作区内的对话 id（2026-10 多对话；None = 进入该工作区的
+        /// `last_conversation` / 首条对话）。`id = None`（取消激活）时忽略。
+        #[serde(default)]
+        conversation: Option<String>,
     },
     /// 请求某会话各工作区目录的 git 状态（`git` CLI 采集，只读）。
     /// 响应 `BackendEvent::WorkspaceGitStatus`。

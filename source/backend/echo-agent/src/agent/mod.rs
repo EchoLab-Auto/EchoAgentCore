@@ -748,6 +748,23 @@ impl Agent {
                 agent.workspace_after_change();
             }
         }));
+        // 多对话（2026-10）：删除对话 → 清空其通道历史（会话级清理语义，
+        // 与面板 ClearHistory 同路径；面板命令与模型工具都经 store 钩子）。
+        let weak2 = std::sync::Arc::downgrade(self);
+        store.set_on_conversation_deleted(std::sync::Arc::new(move |ws_id, conv| {
+            let Some(agent) = weak2.upgrade() else {
+                return;
+            };
+            let scope = crate::workspace::channel_scope_id(ws_id, conv);
+            let session_id = crate::session::SessionKey::local_workspace(&scope).to_session_id();
+            let trunk = agent.trunk.clone();
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    trunk.clear_session(&session_id).await;
+                    tracing::info!(%session_id, "workspace conversation channel cleared on delete");
+                });
+            }
+        }));
         // 启动补注册：active 持久化 → 通道会话常驻（幂等）。
         self.ensure_workspace_channel_for_active();
     }

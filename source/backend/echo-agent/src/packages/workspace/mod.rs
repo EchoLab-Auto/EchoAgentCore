@@ -56,6 +56,12 @@ struct WorkspaceDocument {
 /// 的唯一入口（面板命令与模型 `use` 工具共用同一条广播路径）。
 pub type ChangeHook = std::sync::Arc<dyn Fn() + Send + Sync + 'static>;
 
+/// 对话删除钩子（2026-10 多对话）：删除成功后触发，参数 = (工作区 id,
+/// 被删对话)。组合根注入——清空该对话的通道历史（事件日志/投影/时间线），
+/// 面板命令与模型 `workspace` 工具共用同一路径。
+pub type ConversationDeleteHook =
+    std::sync::Arc<dyn Fn(&str, &WorkspaceConversationInfo) + Send + Sync + 'static>;
+
 /// Per-persona workspace store (shared between command handlers, the tool and
 /// the system-prompt builder). All mutations persist atomically.
 pub struct WorkspaceStore {
@@ -63,6 +69,8 @@ pub struct WorkspaceStore {
     persist: Option<PathBuf>,
     /// 变更钩子（见 [`WorkspaceStore::set_on_change`]）；None = 未接线。
     on_change: RwLock<Option<ChangeHook>>,
+    /// 对话删除钩子（见 [`WorkspaceStore::set_on_conversation_deleted`]）。
+    on_conversation_deleted: RwLock<Option<ConversationDeleteHook>>,
 }
 
 impl std::fmt::Debug for WorkspaceStore {
@@ -82,6 +90,7 @@ impl Default for WorkspaceStore {
             doc: RwLock::new(WorkspaceDocument::default()),
             persist: None,
             on_change: RwLock::new(None),
+            on_conversation_deleted: RwLock::new(None),
         }
     }
 }
@@ -99,12 +108,21 @@ impl WorkspaceStore {
             doc: RwLock::new(doc),
             persist,
             on_change: RwLock::new(None),
+            on_conversation_deleted: RwLock::new(None),
         }
     }
 
     /// 注册变更钩子（组合根装配期注入一次；重复调用替换旧钩子）。
     pub fn set_on_change(&self, hook: ChangeHook) {
         if let Ok(mut slot) = self.on_change.write() {
+            *slot = Some(hook);
+        }
+    }
+
+    /// 注册对话删除钩子（组合根装配期注入一次；用于清空被删对话的通道
+    /// 历史）。钩子在 doc 锁释放后触发。
+    pub fn set_on_conversation_deleted(&self, hook: ConversationDeleteHook) {
+        if let Ok(mut slot) = self.on_conversation_deleted.write() {
             *slot = Some(hook);
         }
     }
@@ -403,6 +421,16 @@ impl WorkspaceStore {
                 }
             }
         };
+        if let Some(ref conv) = removed {
+            let hook = self
+                .on_conversation_deleted
+                .read()
+                .ok()
+                .and_then(|slot| slot.clone());
+            if let Some(hook) = hook {
+                hook(ws_id, conv);
+            }
+        }
         if removed.is_some() {
             self.notify_change();
         }
@@ -896,7 +924,7 @@ impl Tool for WorkspaceTool {
     }
 
     fn description(&self) -> &str {
-        "工作区会话管理。操作: list 列出全部会话与激活状态, status 查看某会话各目录的 git 状态(默认激活会话), use 激活会话(需要 id), create 新建会话(需要 name，可选 directories), delete 删除会话(需要 id)。目录为绝对路径。"
+        "工作区会话管理。操作: list 列出全部会话与激活状态, status 查看某会话各目录的 git 状态(默认激活会话), use 激活会话(需要 id，可选 conversation 指定工作区内对话), create 新建会话(需要 name，可选 directories), delete 删除会话(需要 id), conversations 管理工作区内对话(需要 conversation_action: list/create/rename/delete；id 缺省 = 激活工作区；create/rename 需要 name；rename/delete 需要 conversation_id)。目录为绝对路径。"
     }
 
     fn parameters(&self) -> Value {
@@ -905,12 +933,25 @@ impl Tool for WorkspaceTool {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["list", "status", "use", "create", "delete"],
+                    "enum": ["list", "status", "use", "create", "delete", "conversations"],
                     "description": "要执行的操作"
                 },
                 "id": {
                     "type": "string",
-                    "description": "会话 id（status/use/delete 使用；status 缺省 = 激活会话）"
+                    "description": "会话 id（status/use/delete/conversations 使用；status/conversations 缺省 = 激活会话）"
+                },
+                "conversation": {
+                    "type": "string",
+                    "description": "对话 id（operation=use 时可选：激活该工作区的指定对话；缺省 = 最近使用的对话）"
+                },
+                "conversation_action": {
+                    "type": "string",
+                    "enum": ["list", "create", "rename", "delete"],
+                    "description": "对话操作（operation=conversations 时使用；缺省 = list）"
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": "对话 id（conversation_action=rename/delete 时必填）"
                 },
                 "name": {
                     "type": "string",
@@ -1023,10 +1064,121 @@ impl Tool for WorkspaceTool {
                     .and_then(|v| v.as_str())
                     .filter(|v| !v.trim().is_empty())
                     .ok_or_else(|| ToolError::InvalidArguments("use 需要 id".into()))?;
+                let conversation = arguments
+                    .get("conversation")
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.trim().is_empty())
+                    .map(str::to_string);
                 self.store
-                    .set_active(Some(id.to_string()), None)
+                    .set_active(Some(id.to_string()), conversation.clone())
                     .map_err(ToolError::Execution)?;
-                Ok(format!("已激活工作区会话 {id}"))
+                match conversation {
+                    Some(conv) => Ok(format!("已激活工作区会话 {id}（对话 {conv}）")),
+                    None => Ok(format!("已激活工作区会话 {id}")),
+                }
+            }
+            "conversations" => {
+                let action = arguments
+                    .get("conversation_action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("list");
+                // 目标工作区：id 缺省 = 当前激活工作区。
+                let ws_id = match arguments.get("id").and_then(|v| v.as_str()) {
+                    Some(id) if !id.trim().is_empty() => id.to_string(),
+                    _ => self.store.active().map(|s| s.id).ok_or_else(|| {
+                        ToolError::InvalidArguments(
+                            "conversations 需要 id（当前无激活工作区）".into(),
+                        )
+                    })?,
+                };
+                match action {
+                    "list" => {
+                        let convs = self.store.conversations_of(&ws_id);
+                        if convs.is_empty() {
+                            return Err(ToolError::Execution(format!("工作区会话 {ws_id} 不存在")));
+                        }
+                        let active = self
+                            .store
+                            .active_pair()
+                            .filter(|(ws, _)| ws.id == ws_id)
+                            .map(|(_, c)| c.id);
+                        Ok(serde_json::to_string_pretty(&json!({
+                            "workspace": ws_id,
+                            "active_conversation": active,
+                            "conversations": convs,
+                        }))
+                        .unwrap_or_else(|_| "{}".into()))
+                    }
+                    "create" => {
+                        let name =
+                            arguments
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .ok_or_else(|| {
+                                    ToolError::InvalidArguments("create 需要 name".into())
+                                })?;
+                        let conv = self
+                            .store
+                            .upsert_conversation(
+                                &ws_id,
+                                WorkspaceConversationInfo {
+                                    id: String::new(),
+                                    name: name.to_string(),
+                                    legacy: false,
+                                },
+                            )
+                            .map_err(ToolError::Execution)?;
+                        Ok(format!("已创建对话 {}（{}）", conv.id, conv.name))
+                    }
+                    "rename" => {
+                        let conv_id = arguments
+                            .get("conversation_id")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| {
+                                ToolError::InvalidArguments("rename 需要 conversation_id".into())
+                            })?;
+                        let name =
+                            arguments
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .ok_or_else(|| {
+                                    ToolError::InvalidArguments("rename 需要 name".into())
+                                })?;
+                        let conv = self
+                            .store
+                            .upsert_conversation(
+                                &ws_id,
+                                WorkspaceConversationInfo {
+                                    id: conv_id.to_string(),
+                                    name: name.to_string(),
+                                    legacy: false,
+                                },
+                            )
+                            .map_err(ToolError::Execution)?;
+                        Ok(format!("已重命名对话 {}（{}）", conv.id, conv.name))
+                    }
+                    "delete" => {
+                        let conv_id = arguments
+                            .get("conversation_id")
+                            .and_then(|v| v.as_str())
+                            .ok_or_else(|| {
+                                ToolError::InvalidArguments("delete 需要 conversation_id".into())
+                            })?;
+                        match self
+                            .store
+                            .delete_conversation(&ws_id, conv_id)
+                            .map_err(ToolError::Execution)?
+                        {
+                            Some(_) => Ok(format!("已删除对话 {conv_id}（其通道历史已清空）")),
+                            None => Err(ToolError::Execution(format!(
+                                "工作区 {ws_id} 不存在对话 {conv_id}"
+                            ))),
+                        }
+                    }
+                    other => Err(ToolError::InvalidArguments(format!(
+                        "未知 conversation_action: {other}"
+                    ))),
+                }
             }
             "create" => {
                 let name = arguments

@@ -82,17 +82,22 @@ impl Agent {
                     Err(message) => self.emit_workspace_error(message),
                 }
             }
-            BackendCommand::ActivateWorkspaceSession { id, .. } => {
+            BackendCommand::ActivateWorkspaceSession {
+                id, conversation, ..
+            } => {
                 let Some(store) = self.workspace_store() else {
                     self.emit_workspace_unavailable();
                     return;
                 };
-                match store.set_active(id.clone(), None) {
+                match store.set_active(id.clone(), conversation.clone()) {
                     Ok(()) => {
                         // 激活 = 进入项目对话：通道会话注册 + 列表广播都走
                         // store 变更钩子（workspace_after_change）。
                         let message = match id {
-                            Some(id) => format!("已激活工作区会话：{id}"),
+                            Some(id) => match conversation {
+                                Some(conv) => format!("已激活工作区会话：{id}（对话 {conv}）"),
+                                None => format!("已激活工作区会话：{id}"),
+                            },
                             None => "已取消工作区会话激活".into(),
                         };
                         self.emit(BackendEvent::Error {
@@ -309,11 +314,17 @@ impl Agent {
     /// 存储。幂等：重复调用只刷昵称与活跃时间。
     pub(crate) fn ensure_workspace_channel_for_active(&self) -> Option<crate::session::Session> {
         let store = self.workspace_store()?;
-        let active = store.active()?;
-        Some(
-            self.trunk
-                .ensure_workspace_channel(&active.id, &active.name),
-        )
+        let (active, conv) = store.active_pair()?;
+        // 多对话（2026-10）：通道 scope_id 由 (工作区, 对话) 派生——存量
+        // 主对话 = 裸 ws id，其余对话 = `<ws>/<conv>`。
+        let scope = crate::workspace::channel_scope_id(&active.id, &conv);
+        // 通道昵称：工作区名 + 对话名（多对话时在会话列表可区分）。
+        let name = if conv.legacy {
+            active.name.clone()
+        } else {
+            format!("{} · {}", active.name, conv.name)
+        };
+        Some(self.trunk.ensure_workspace_channel(&scope, &name))
     }
 
     /// 工作区状态变更后的统一广播（store 变更钩子的唯一落点）：

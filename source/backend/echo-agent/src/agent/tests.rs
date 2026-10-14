@@ -2565,6 +2565,7 @@ async fn workspace_commands_lifecycle() {
         .apply_command(BackendCommand::ActivateWorkspaceSession {
             team_id: Some("t".into()),
             id: Some("core".into()),
+            conversation: None,
         })
         .await;
     // 列表。
@@ -2808,6 +2809,96 @@ async fn workspace_channel_tool_use_broadcasts() {
             .iter()
             .any(|s| s.id == "local:workspace:docs:local_user"),
         "tool use registers the channel"
+    );
+}
+
+/// 多对话（2026-10）：激活指定对话 → 通道按 `<ws>/<conv>` 派生注册并广播；
+/// 删除对话 → 通道历史经 store 钩子清空。
+#[tokio::test]
+async fn workspace_conversation_channels_and_delete_cleanup() {
+    let store = Arc::new(crate::workspace::WorkspaceStore::load(None));
+    store
+        .upsert(echo_protocol::WorkspaceSessionInfo {
+            id: "proj".into(),
+            name: "Proj".into(),
+            directories: vec!["/srv/proj".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    let conv = store
+        .upsert_conversation(
+            "proj",
+            echo_protocol::WorkspaceConversationInfo {
+                id: String::new(),
+                name: "支线".into(),
+                legacy: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(conv.id, "conv", "CJK 名 slug 回退 conv");
+
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    agent.set_workspace_store(store.clone());
+
+    // 激活指定对话 → 通道 id 带对话段，昵称 = 工作区 · 对话。
+    store
+        .set_active(Some("proj".into()), Some(conv.id.clone()))
+        .unwrap();
+    let channel = agent
+        .trunk
+        .all()
+        .into_iter()
+        .find(|s| s.id == "local:workspace:proj/conv:local_user")
+        .expect("conversation channel registered");
+    assert_eq!(channel.nickname, "Proj · 支线");
+
+    // 该通道写一条事件（模拟对话历史），删除对话后必须清空。
+    agent
+        .trunk
+        .append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some(channel.id.clone()),
+                content: "支线记忆".into(),
+                timestamp: 1700000001,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        ));
+    assert!(agent
+        .trunk
+        .event_log()
+        .iter()
+        .any(|e| e.session() == Some(channel.id.as_str())));
+
+    store.delete_conversation("proj", &conv.id).unwrap();
+    // 清空经 tokio::spawn 异步执行——等待其落地。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let cleared = agent
+            .trunk
+            .event_log()
+            .iter()
+            .all(|e| e.session() != Some(channel.id.as_str()));
+        if cleared || std::time::Instant::now() > deadline {
+            assert!(cleared, "删除对话后通道历史已清空");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    // 激活工作区（不带对话）→ 惰性存量主对话走裸通道 id。
+    store.set_active(Some("proj".into()), None).unwrap();
+    assert!(
+        agent
+            .trunk
+            .all()
+            .iter()
+            .any(|s| s.id == "local:workspace:proj:local_user"),
+        "legacy main channel keeps the bare id"
     );
 }
 
