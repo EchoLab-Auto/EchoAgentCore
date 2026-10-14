@@ -1228,6 +1228,9 @@ pub struct ApiUsagePoint {
     pub prompt_tokens: u64,
     /// 输出（completion）token 数。
     pub completion_tokens: u64,
+    /// 缓存命中 tokens（prompt 内子集；DeepSeek 口径；旧数据缺省 0）。
+    #[serde(default)]
+    pub cache_hit_tokens: u64,
     /// 该桶内调用次数。
     pub calls: u64,
     /// 估算费用（按 `[agent.pricing]` 定价表；无匹配价格 = None）。

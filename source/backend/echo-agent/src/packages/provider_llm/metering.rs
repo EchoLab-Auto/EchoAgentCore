@@ -55,6 +55,7 @@ impl LlmProvider for MeteringProvider {
             &request.model,
             response.usage.prompt_tokens,
             response.usage.completion_tokens,
+            response.usage.prompt_cache_hit_tokens.unwrap_or(0),
         );
         Ok(response)
     }
@@ -72,6 +73,7 @@ impl LlmProvider for MeteringProvider {
             &request.model,
             response.usage.prompt_tokens,
             response.usage.completion_tokens,
+            response.usage.prompt_cache_hit_tokens.unwrap_or(0),
         );
         Ok(response)
     }
@@ -96,6 +98,7 @@ mod tests {
                     prompt_tokens: prompt,
                     completion_tokens: completion,
                     prompt_cache_hit_tokens: None,
+                    prompt_cache_miss_tokens: None,
                     prompt_cache_creation_tokens: None,
                 },
                 seen_models: Mutex::new(Vec::new()),
@@ -158,6 +161,66 @@ mod tests {
         assert_eq!(slices[0].completion_tokens, 340);
         assert_eq!(slices[0].calls, 1);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn chat_records_cache_hit_tokens() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-metering-cache-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = Arc::new(MetricsStore::new(&dir));
+        struct CacheUsageProvider;
+        #[async_trait::async_trait]
+        impl LlmProvider for CacheUsageProvider {
+            fn name(&self) -> &str {
+                "cache"
+            }
+            fn default_model(&self) -> &str {
+                "cache-model"
+            }
+            async fn chat(&self, _request: &ChatRequest) -> Result<ChatResponse, LlmError> {
+                Ok(ChatResponse {
+                    content: Some("ok".into()),
+                    reasoning_content: None,
+                    tool_calls: vec![],
+                    usage: echo_defs::message::Usage {
+                        prompt_tokens: 1000,
+                        completion_tokens: 100,
+                        prompt_cache_hit_tokens: Some(400),
+                        prompt_cache_miss_tokens: Some(600),
+                        prompt_cache_creation_tokens: None,
+                    },
+                    stop_reason: None,
+                })
+            }
+            async fn chat_stream(
+                &self,
+                _request: &ChatRequest,
+                _tx: mpsc::UnboundedSender<ChatChunk>,
+            ) -> Result<ChatResponse, LlmError> {
+                Ok(ChatResponse::empty())
+            }
+        }
+        let provider = wrap_metering(
+            Arc::new(CacheUsageProvider),
+            store.clone(),
+            "deepseek".into(),
+        );
+        let request = ChatRequest {
+            model: "deepseek-flash".into(),
+            messages: vec![],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+        };
+        provider.chat(&request).await.expect("chat ok");
+        let slices = store.usage_slices("deepseek", 0);
+        assert_eq!(slices.len(), 1);
+        assert_eq!(slices[0].prompt_tokens, 1000);
+        assert_eq!(slices[0].cache_hit_tokens, 400);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -141,6 +141,7 @@ impl LlmProvider for OpenAiProvider {
                     prompt_tokens: u.prompt_tokens,
                     completion_tokens: u.completion_tokens,
                     prompt_cache_hit_tokens: Some(u.prompt_cache_hit_tokens),
+                    prompt_cache_miss_tokens: Some(u.prompt_cache_miss_tokens),
                     prompt_cache_creation_tokens: Some(u.prompt_cache_creation_tokens),
                 })
                 .unwrap_or_default(),
@@ -285,6 +286,7 @@ fn parse_sse_event(event: &str) -> Vec<SseOutcome> {
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
                 prompt_cache_hit_tokens: Some(usage.prompt_cache_hit_tokens),
+                prompt_cache_miss_tokens: Some(usage.prompt_cache_miss_tokens),
                 prompt_cache_creation_tokens: Some(usage.prompt_cache_creation_tokens),
             }));
         }
@@ -502,11 +504,16 @@ struct FunctionWire {
 struct UsageWire {
     prompt_tokens: u32,
     completion_tokens: u32,
-    /// DeepSeek prompt 缓存命中 tokens（`/anthropic` 兼容端点透传；非缓存
-    /// 端点不返回——默认 0）。`prompt_tokens` **包含**该部分。
+    /// DeepSeek prompt 缓存命中 tokens（`prompt_tokens` **包含**该部分）。
+    /// DeepSeek 官方字段名即 `prompt_cache_hit_tokens`；Anthropic 原生端点
+    /// 为 `cache_read_input_tokens`（此处不解析，见 Anthropic provider）。
     #[serde(default)]
     prompt_cache_hit_tokens: u32,
-    /// 缓存写入 tokens（按输入价计；默认 0）。
+    /// DeepSeek 缓存未命中 tokens（`prompt_cache_miss_tokens`）。缺省 = 0。
+    #[serde(default)]
+    prompt_cache_miss_tokens: u32,
+    /// Anthropic 写缓存计量（`cache_creation_input_tokens`），DeepSeek 无
+    /// 独立缓存写入价，该字段对 DeepSeek 恒为 0。
     #[serde(default)]
     prompt_cache_creation_tokens: u32,
 }

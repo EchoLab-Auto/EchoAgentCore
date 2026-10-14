@@ -528,6 +528,7 @@ impl Agent {
                         slice.ts_ms,
                         slice.prompt_tokens,
                         slice.completion_tokens,
+                        slice.cache_hit_tokens,
                     );
                     if cost_currency.is_empty() {
                         if let Some((_, currency)) = &cost {
@@ -539,6 +540,7 @@ impl Agent {
                         model: slice.model,
                         prompt_tokens: slice.prompt_tokens,
                         completion_tokens: slice.completion_tokens,
+                        cache_hit_tokens: slice.cache_hit_tokens,
                         calls: slice.calls,
                         est_cost: cost.map(|(value, _)| value),
                     }

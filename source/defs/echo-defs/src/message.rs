@@ -168,16 +168,21 @@ pub struct ChatChunk {
 /// Token usage reported by the provider.
 ///
 /// `prompt_tokens` / `completion_tokens` 是 provider 直接回报的口径
-///（DeepSeek/Anthropic：`input_tokens` **包含**缓存命中部分；OpenAI：
-/// 不区分）。`prompt_cache_hit_tokens` / `prompt_cache_creation_tokens`
-/// 在 provider 有返回时携带（2026-10 审计 P3：此前按"未命中"价估算
-/// 是刻意上界——有了该字段可按命中价折扣；None = 未知/不支持）。
+///（DeepSeek：`prompt_tokens` **包含**缓存命中部分；Anthropic 官方口径
+/// `input_tokens` 与 cache_read/cache_creation 分列，DeepSeek /anthropic
+/// 兼容端点按 DeepSeek 文档返回 `prompt_cache_hit_tokens` /
+/// `prompt_cache_miss_tokens`，命中包含在 prompt 内）。
+/// `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` 在 provider 有
+/// 返回时携带；`prompt_cache_creation_tokens` 保留给 Anthropic 写缓存
+/// 计量（DeepSeek 无独立缓存写入价）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_hit_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_miss_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_creation_tokens: Option<u32>,
 }
@@ -372,12 +377,14 @@ mod stream_accumulator_tests {
             prompt_tokens: 10,
             completion_tokens: 2,
             prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: None,
             prompt_cache_creation_tokens: None,
         });
         acc.set_usage(Usage {
             prompt_tokens: 10,
             completion_tokens: 7,
             prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: None,
             prompt_cache_creation_tokens: None,
         });
         acc.set_stop_reason("length");

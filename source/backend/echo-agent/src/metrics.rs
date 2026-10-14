@@ -52,6 +52,9 @@ pub struct UsageSlice {
     pub model: String,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// 缓存命中 tokens（prompt 内子集；DeepSeek 返回 `prompt_cache_hit_tokens`）。
+    /// 旧 JSONL 行缺省为 0（保守按未命中计价）。
+    pub cache_hit_tokens: u64,
     pub calls: u64,
 }
 
@@ -82,6 +85,9 @@ struct UsageRecord {
     prompt_tokens: u64,
     #[serde(default)]
     completion_tokens: u64,
+    /// 缓存命中 tokens（prompt 内子集；旧行缺省 0）。
+    #[serde(default)]
+    cache_hit_tokens: u64,
 }
 
 /// 剪枝扫描用的最小行（只取时间戳）。
@@ -236,6 +242,7 @@ impl MetricsStore {
         model: &str,
         prompt_tokens: u32,
         completion_tokens: u32,
+        cache_hit_tokens: u32,
     ) {
         let record = UsageRecord {
             ts_ms: now_ms(),
@@ -243,6 +250,7 @@ impl MetricsStore {
             model: model.to_string(),
             prompt_tokens: u64::from(prompt_tokens),
             completion_tokens: u64::from(completion_tokens),
+            cache_hit_tokens: u64::from(cache_hit_tokens),
         };
         match serde_json::to_string(&record) {
             Ok(line) => Self::lock(&self.usage).append_line(&line),
@@ -300,10 +308,12 @@ impl MetricsStore {
                             model: rec.model.clone(),
                             prompt_tokens: 0,
                             completion_tokens: 0,
+                            cache_hit_tokens: 0,
                             calls: 0,
                         });
                     entry.prompt_tokens += rec.prompt_tokens;
                     entry.completion_tokens += rec.completion_tokens;
+                    entry.cache_hit_tokens += rec.cache_hit_tokens;
                     entry.calls += 1;
                 }
                 _ => {}
@@ -352,10 +362,11 @@ pub fn estimate_cost(
     ts_ms: i64,
     prompt_tokens: u64,
     completion_tokens: u64,
+    cache_hit_tokens: u64,
 ) -> Option<(f64, String)> {
     let price = price_for(pricing, model)?;
     let peak = is_peak_time(ts_ms);
-    let input = if peak {
+    let miss_input = if peak {
         price.input_per_million
     } else {
         price
@@ -369,7 +380,22 @@ pub fn estimate_cost(
             .offpeak_output_per_million
             .unwrap_or(price.output_per_million)
     };
-    let cost = prompt_tokens as f64 / 1_000_000.0 * input
+    // 缓存命中价：None（模型不支持 / 旧数据无命中记录）按未命中价（保守上界）。
+    let hit_input = if peak {
+        price
+            .cache_hit_input_per_million
+            .unwrap_or(price.input_per_million)
+    } else {
+        price
+            .offpeak_cache_hit_input_per_million
+            .or(price.cache_hit_input_per_million)
+            .unwrap_or(miss_input)
+    };
+    // 钳制：命中数不可能超过 prompt 总量（端点口径差异防负数 miss）。
+    let hit = cache_hit_tokens.min(prompt_tokens);
+    let miss = prompt_tokens.saturating_sub(hit);
+    let cost = hit as f64 / 1_000_000.0 * hit_input
+        + miss as f64 / 1_000_000.0 * miss_input
         + completion_tokens as f64 / 1_000_000.0 * output;
     Some((cost, price.currency.clone()))
 }
@@ -425,10 +451,10 @@ mod tests {
     fn usage_aggregates_by_hour_and_model() {
         let dir = temp_dir("usage");
         let store = MetricsStore::new(&dir);
-        store.record_usage("deepseek", "deepseek-flash", 1000, 100);
-        store.record_usage("deepseek", "deepseek-flash", 500, 50);
-        store.record_usage("deepseek", "deepseek-v4-pro", 700, 70);
-        store.record_usage("kimi", "k3", 999, 99);
+        store.record_usage("deepseek", "deepseek-flash", 1000, 100, 0);
+        store.record_usage("deepseek", "deepseek-flash", 500, 50, 0);
+        store.record_usage("deepseek", "deepseek-v4-pro", 700, 70, 0);
+        store.record_usage("kimi", "k3", 999, 99, 0);
 
         let slices = store.usage_slices("deepseek", 0);
         // 同一小时：flash 合并为 1 条、pro 1 条
@@ -549,8 +575,15 @@ mod tests {
             .timestamp_millis();
 
         // deepseek-flash 高峰：1M in + 1M out = 2 + 8 = 10 元
-        let (cost, currency) =
-            estimate_cost(&pricing, "deepseek-v4-flash", peak_ms, 1_000_000, 1_000_000).unwrap();
+        let (cost, currency) = estimate_cost(
+            &pricing,
+            "deepseek-v4-flash",
+            peak_ms,
+            1_000_000,
+            1_000_000,
+            0,
+        )
+        .unwrap();
         assert!((cost - 10.0).abs() < 1e-9, "peak cost = {cost}");
         assert_eq!(currency, "CNY");
         // 空闲半价：1 + 4 = 5 元
@@ -560,10 +593,59 @@ mod tests {
             offpeak_ms,
             1_000_000,
             1_000_000,
+            0,
         )
         .unwrap();
         assert!((cost - 5.0).abs() < 1e-9, "offpeak cost = {cost}");
         // 无匹配价格
-        assert!(estimate_cost(&pricing, "gpt-6-astra", peak_ms, 1, 1).is_none());
+        assert!(estimate_cost(&pricing, "gpt-6-astra", peak_ms, 1, 1, 0).is_none());
+    }
+
+    #[test]
+    fn cost_estimation_is_cache_aware() {
+        let pricing = default_pricing();
+        use chrono::TimeZone;
+        let off = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        let peak_ms = off
+            .with_ymd_and_hms(2026, 10, 5, 10, 0, 0)
+            .single()
+            .unwrap()
+            .timestamp_millis();
+
+        // deepseek-flash 高峰：500k 命中 + 500k 未命中 + 1M 输出
+        // = 0.5×0.04 + 0.5×2 + 8 = 0.02 + 1 + 8 = 9.02 元
+        let (cost, _) = estimate_cost(
+            &pricing,
+            "deepseek-v4-flash",
+            peak_ms,
+            1_000_000,
+            1_000_000,
+            500_000,
+        )
+        .unwrap();
+        assert!((cost - 9.02).abs() < 1e-9, "cache-aware peak cost = {cost}");
+
+        // 全命中：1M×0.04 + 1M×8 = 8.04 元
+        let (cost, _) = estimate_cost(
+            &pricing,
+            "deepseek-v4-flash",
+            peak_ms,
+            1_000_000,
+            1_000_000,
+            1_000_000,
+        )
+        .unwrap();
+        assert!((cost - 8.04).abs() < 1e-9, "all-cache-hit cost = {cost}");
+
+        // hit 超过 prompt 时钳制为全命中（防端点口径差异产生负 miss）。
+        let (cost, _) =
+            estimate_cost(&pricing, "deepseek-v4-flash", peak_ms, 100, 0, 1_000).unwrap();
+        let (all_hit, _) =
+            estimate_cost(&pricing, "deepseek-v4-flash", peak_ms, 100, 0, 100).unwrap();
+        assert_eq!(cost, all_hit);
+
+        // 不支持缓存计价的模型（k3）：hit 记录存在时按未命中价（保守）。
+        let (cost, _) = estimate_cost(&pricing, "k3", peak_ms, 1_000_000, 0, 1_000_000).unwrap();
+        assert!((cost - 12.0).abs() < 1e-9, "k3 no cache discount: {cost}");
     }
 }

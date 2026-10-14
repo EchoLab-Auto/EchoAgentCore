@@ -72,6 +72,13 @@ pub struct ModelPrice {
     /// 空闲时段输出价（None = 与高峰同价）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offpeak_output_per_million: Option<f64>,
+    /// 高峰时段缓存命中输入价（None = 不支持缓存命中计价，按未命中价）。
+    /// DeepSeek 官方价：deepseek-flash 0.04 / deepseek-v4-pro 0.30。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_hit_input_per_million: Option<f64>,
+    /// 空闲时段缓存命中输入价（None = 与高峰同价）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offpeak_cache_hit_input_per_million: Option<f64>,
     /// 币种（默认 "CNY"）。
     pub currency: String,
 }
@@ -84,6 +91,8 @@ impl Default for ModelPrice {
             output_per_million: 0.0,
             offpeak_input_per_million: None,
             offpeak_output_per_million: None,
+            cache_hit_input_per_million: None,
+            offpeak_cache_hit_input_per_million: None,
             currency: "CNY".into(),
         }
     }
@@ -99,6 +108,8 @@ pub fn default_pricing() -> Vec<ModelPrice> {
         output_per_million: 8.0,
         offpeak_input_per_million: Some(1.0),
         offpeak_output_per_million: Some(4.0),
+        cache_hit_input_per_million: Some(0.04),
+        offpeak_cache_hit_input_per_million: Some(0.02),
         currency: "CNY".into(),
     };
     vec![
@@ -110,16 +121,20 @@ pub fn default_pricing() -> Vec<ModelPrice> {
             output_per_million: 27.0,
             offpeak_input_per_million: Some(4.5),
             offpeak_output_per_million: Some(13.5),
+            cache_hit_input_per_million: Some(0.30),
+            offpeak_cache_hit_input_per_million: Some(0.15),
             currency: "CNY".into(),
         },
         // Kimi K3（2026-10 审计：未计价条目——k3 的 4.5M tokens 此前零估算）。
-        // 按官方页面（约 ¥12/¥32 每百万），不含空闲折扣。
+        // 按官方页面（约 ¥12/¥32 每百万），不含空闲折扣，也未公开缓存命中价。
         ModelPrice {
             model: "k3".into(),
             input_per_million: 12.0,
             output_per_million: 32.0,
             offpeak_input_per_million: None,
             offpeak_output_per_million: None,
+            cache_hit_input_per_million: None,
+            offpeak_cache_hit_input_per_million: None,
             currency: "CNY".into(),
         },
     ]

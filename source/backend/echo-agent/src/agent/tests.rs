@@ -1896,6 +1896,7 @@ async fn echo_loop_path_emits_panel_lifecycle_events() {
             prompt_tokens: 11,
             completion_tokens: 22,
             prompt_cache_hit_tokens: None,
+            prompt_cache_miss_tokens: None,
             prompt_cache_creation_tokens: None,
         },
     }]));
@@ -3165,6 +3166,7 @@ async fn builtin_loop_forwards_streaming_deltas_before_final_events() {
                 prompt_tokens: 3,
                 completion_tokens: 4,
                 prompt_cache_hit_tokens: None,
+                prompt_cache_miss_tokens: None,
                 prompt_cache_creation_tokens: None,
             },
             stop_reason: None,
