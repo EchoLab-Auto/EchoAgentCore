@@ -445,7 +445,7 @@ async fn concurrent_messages_merge_by_request_sequence() {
     let (r1, r2) = tokio::join!(t1, t2);
     // Both requests are committed before either branch completes, then each
     // reply is merged directly after its own request.
-    let hist = session.history.lock().await.clone();
+    let hist = session.history.lock().clone();
     let roles: Vec<&str> = hist
         .iter()
         .map(|m| match m.role {

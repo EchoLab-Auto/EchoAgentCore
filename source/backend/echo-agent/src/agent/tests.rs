@@ -381,9 +381,9 @@ async fn agent_replies_and_remembers() {
     let session = agent.trunk.get_or_create(&key, "user".into(), None);
     let reply = agent.process_message(&session, "hi").await.unwrap();
     assert_eq!(reply, "Hello!");
-    assert_eq!(session.history.lock().await.len(), 2);
+    assert_eq!(session.history.lock().len(), 2);
     let _ = agent.process_message(&session, "again").await.unwrap();
-    assert_eq!(session.history.lock().await.len(), 4);
+    assert_eq!(session.history.lock().len(), 4);
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
 }
 
@@ -430,7 +430,7 @@ async fn parallel_mode_runs_turns_concurrently_and_merges_by_request_sequence() 
     first_task.await.unwrap().unwrap();
     second_task.await.unwrap().unwrap();
 
-    let history = session.history.lock().await;
+    let history = session.history.lock();
     assert_eq!(history.len(), 4);
     assert_eq!(structured_message_sequence(&history[0].content), Some(1));
     assert_eq!(history[1].content, "reply-1");
@@ -491,7 +491,7 @@ async fn single_mode_serialises_turns_and_second_turn_sees_the_first_reply() {
         "the queued turn must see the first reply: {:?}",
         seen[1]
     );
-    let history = session.history.lock().await;
+    let history = session.history.lock();
     assert_eq!(history.len(), 4);
     assert_eq!(structured_message_sequence(&history[0].content), Some(1));
     assert_eq!(history[1].content, "reply-1");

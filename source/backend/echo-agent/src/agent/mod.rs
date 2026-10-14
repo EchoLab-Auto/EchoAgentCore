@@ -1058,7 +1058,7 @@ impl Agent {
                     session: Some(session.id.clone()),
                 },
             ));
-        let snapshot = session.history.lock().await.clone();
+        let snapshot = session.history.lock().clone();
         snapshot
     }
 
@@ -1138,7 +1138,7 @@ impl Agent {
                     session: Some(session.id.clone()),
                 },
             ));
-        let snapshot = session.history.lock().await.clone();
+        let snapshot = session.history.lock().clone();
         Some((registration, snapshot, slot))
     }
 
@@ -1752,7 +1752,7 @@ impl Agent {
         // `/context` 视图（2026-10 巡检）：与内置循环同口径保存最近一次
         // 提示词块——此前 echo 路径不写，切到 /context 显示陈旧数据。
         *self.last_prompt_blocks.lock().await = Some(blocks);
-        let history = history_snapshot.unwrap_or_else(|| session.history.blocking_lock().clone());
+        let history = history_snapshot.unwrap_or_else(|| session.history.lock().clone());
         // 工具 schema：注册表是唯一真源（与内置循环同源）。编排工具
         // （spawn_subagent）同样由注册表提供（组合根装配时注册），这里不得
         // 再追加同名定义——重复工具名会让 API 拒绝整个请求
@@ -2112,7 +2112,7 @@ impl Agent {
         if let Some(history_snapshot) = history_snapshot {
             messages.extend(history_snapshot);
         } else {
-            let history = session.history.lock().await;
+            let history = session.history.lock();
             messages.extend(history.iter().cloned());
         }
 

@@ -569,7 +569,7 @@ mod tests {
                 .trunk
                 .all()
                 .first()
-                .and_then(|session| session.history.try_lock().ok())
+                .and_then(|session| session.history.try_lock())
                 .is_some_and(|history| history.len() >= 4)
         })
         .await;
@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(session.session_key.platform, "qq");
         assert_eq!(session.session_key.scope, "dm");
         assert_eq!(session.session_key.user_id, "123456");
-        let history = session.history.lock().await;
+        let history = session.history.lock();
         assert!(history[0].content.starts_with("<qq_message_hook>"));
         assert!(history[0].content.contains("\"event\": \"qq_message\""));
         assert!(history[0].content.contains("\"user_id\": \"123456\""));
@@ -613,7 +613,7 @@ mod tests {
                 .trunk
                 .all()
                 .first()
-                .and_then(|session| session.history.try_lock().ok())
+                .and_then(|session| session.history.try_lock())
                 .is_some_and(|history| !history.is_empty())
         })
         .await;
@@ -622,7 +622,7 @@ mod tests {
         let session = &sessions[0];
         assert_eq!(session.session_key.scope, "group");
         assert_eq!(session.session_key.scope_id, "999");
-        let history = session.history.lock().await;
+        let history = session.history.lock();
         assert!(history[0].content.contains("\"type\": \"group\""));
         assert!(history[0].content.contains("\"group_id\": \"999\""));
     }
@@ -642,7 +642,6 @@ mod tests {
             hook.agent.trunk.all().iter().any(|s| {
                 s.history
                     .try_lock()
-                    .ok()
                     .is_some_and(|h| h.iter().any(|m| m.content.contains("hello")))
             })
         })
@@ -654,7 +653,7 @@ mod tests {
             .iter()
             .find(|s| s.id == "local:tui::local_user")
             .expect("default local session");
-        let history = default.history.lock().await;
+        let history = default.history.lock();
         assert!(history[0].content.starts_with("<qq_message_hook>"));
         assert!(history[0].content.contains("\"user_id\": \"123456\""));
 
@@ -890,7 +889,7 @@ mod tests {
         wait_until(|| sends.load(Ordering::SeqCst) == 1).await;
 
         let session = agent.trunk.all().pop().unwrap();
-        let history = session.history.lock().await;
+        let history = session.history.lock();
         let user_sequences = history
             .iter()
             .filter_map(|message| crate::agent::structured_message_sequence(&message.content))

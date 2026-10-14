@@ -698,7 +698,6 @@ impl Agent {
                         let last = s
                             .history
                             .lock()
-                            .await
                             .last()
                             .cloned()
                             .map(|m| m.content)

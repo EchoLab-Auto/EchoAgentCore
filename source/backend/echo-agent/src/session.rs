@@ -166,7 +166,7 @@ pub struct Session {
     last_active: Arc<AtomicI64>,
     /// 本会话的模型上下文投影（由事件日志按 `session` 归属过滤导出，
     /// 受 token 预算 `memory_limit_tokens` 约束）。
-    pub history: Arc<Mutex<Vec<ChatMessage>>>,
+    pub history: Arc<parking_lot::Mutex<Vec<ChatMessage>>>,
     /// Serialises trunk snapshot creation and result merges; branch execution never holds this lock.
     pub turn_lock: Arc<tokio::sync::Mutex<()>>,
     /// 单会话模式的 turn 排队闸门（FIFO，tokio Mutex 保证公平）：
@@ -183,7 +183,7 @@ impl Session {
         team_id: Option<String>,
         nickname: String,
         group_name: Option<String>,
-        history: Arc<Mutex<Vec<ChatMessage>>>,
+        history: Arc<parking_lot::Mutex<Vec<ChatMessage>>>,
         turn_lock: Arc<tokio::sync::Mutex<()>>,
         turn_queue: Arc<tokio::sync::Mutex<()>>,
     ) -> Self {
@@ -235,7 +235,7 @@ pub struct TrunkStore {
     memory_limit_tokens: usize,
     /// 每会话的上下文投影缓存（session_id → history）。事件日志是唯一
     /// 事实来源，这里只是它的按会话投影（见 `reproject_session`）。
-    session_histories: Arc<DashMap<String, Arc<Mutex<Vec<ChatMessage>>>>>,
+    session_histories: Arc<DashMap<String, Arc<parking_lot::Mutex<Vec<ChatMessage>>>>>,
     trunk_turn_lock: Arc<tokio::sync::Mutex<()>>,
     /// 压缩编排互斥（2026-10 巡检 🔴）：double compact / compact 与
     /// clear_history 竞争会按过时摘要重写日志、统计错乱——压缩全程
@@ -1273,19 +1273,22 @@ impl TrunkStore {
     }
 
     /// 某会话的上下文投影句柄（不存在时惰性创建空投影）。
-    pub fn history_or_create(&self, session_id: &str) -> Arc<Mutex<Vec<ChatMessage>>> {
+    pub fn history_or_create(&self, session_id: &str) -> Arc<parking_lot::Mutex<Vec<ChatMessage>>> {
         if let Some(existing) = self.session_histories.get(session_id) {
             return Arc::clone(existing.value());
         }
         self.session_histories
             .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(Vec::new())))
+            .or_insert_with(|| Arc::new(parking_lot::Mutex::new(Vec::new())))
             .value()
             .clone()
     }
 
     /// 某会话的上下文投影句柄（只读；None = 该会话从未有过历史）。
-    pub fn history_for(&self, session_id: &str) -> Option<Arc<Mutex<Vec<ChatMessage>>>> {
+    pub fn history_for(
+        &self,
+        session_id: &str,
+    ) -> Option<Arc<parking_lot::Mutex<Vec<ChatMessage>>>> {
         self.session_histories
             .get(session_id)
             .map(|entry| Arc::clone(entry.value()))
@@ -1345,7 +1348,7 @@ impl TrunkStore {
     /// 会话不存在（从未收发过消息）时返回空列表。
     pub async fn snapshot_for(&self, session_id: &str) -> Vec<ChatMessage> {
         match self.history_for(session_id) {
-            Some(history) => history.lock().await.clone(),
+            Some(history) => history.lock().clone(),
             None => Vec::new(),
         }
     }
@@ -1366,7 +1369,7 @@ impl TrunkStore {
         let events_cleared = self.event_log.len();
         self.event_log.clear();
         for entry in self.session_histories.iter() {
-            entry.value().lock().await.clear();
+            entry.value().lock().clear();
         }
         let timeline_cleared = {
             let mut timeline = self.timeline.lock().await;
@@ -1401,7 +1404,15 @@ impl TrunkStore {
     pub async fn clear_session(&self, session_id: &str) {
         let _compact_guard = self.compact_lock().await;
         let removed = self.event_log.retain_excluding_session(session_id);
-        self.session_histories.remove(session_id);
+        // 2026-10 上下文审计 🔴 修复：不能只 remove 映射——身份对象
+        // `Session.history` 仍持有同一 Vec 的 Arc（`get_or_create` 命中既有
+        // 身份时原样返回，`process_message` 读的也是它）。仅 remove 会让
+        // 清理后的旧内容继续进下一次 LLM 请求，且此后 `history_or_create`
+        // 新建的空投影与旧 Arc 永久脱节（新消息"失忆"）。与全量
+        // `clear_history` 的原地 `clear()` 语义对齐：先清空既有 Arc 再摘映射。
+        if let Some((_, history)) = self.session_histories.remove(session_id) {
+            history.lock().clear();
+        }
         let (timeline_removed, timeline_remaining) = {
             let mut timeline = self.timeline.lock().await;
             let before = timeline.len();
@@ -1442,14 +1453,33 @@ impl TrunkStore {
         let Some(stamp) = rest.strip_suffix(".json") else {
             return false;
         };
-        // stamp: `20261013-074421` 或 `20261013-074421-precompact`
+        // stamp: `20261013-074421` / `20261013-074421-123`（2026-10 起带毫秒）
+        // 或追加 `-{reason}`（如 `-precompact`）。
         let bytes = stamp.as_bytes();
         if bytes.len() < 15 || bytes[8] != b'-' {
             return false;
         }
-        bytes[..8].iter().all(u8::is_ascii_digit)
-            && bytes[9..15].iter().all(u8::is_ascii_digit)
-            && (stamp.len() == 15 || stamp.as_bytes()[15] == b'-')
+        if !bytes[..8].iter().all(u8::is_ascii_digit)
+            || !bytes[9..15].iter().all(u8::is_ascii_digit)
+        {
+            return false;
+        }
+        // 第 15 位之后：直接结尾（旧格式）/ `-{reason}`（旧）/
+        // `-{3位毫秒}`（新）/ `-{3位毫秒}-{reason}`（新）。
+        match stamp.len() {
+            15 => true,
+            19 => bytes[15] == b'-' && bytes[16..19].iter().all(u8::is_ascii_digit),
+            _ if bytes[15] == b'-' => {
+                // 新格式带 reason：`…-{3位毫秒}-{reason}`
+                if bytes[16..19].iter().all(u8::is_ascii_digit) {
+                    bytes.len() > 19 && bytes[19] == b'-'
+                } else {
+                    // 旧格式带 reason：`…-{reason}`
+                    true
+                }
+            }
+            _ => false,
+        }
     }
 
     /// 归档保留清理：`archives/` 下**本 stem**（时间戳锚定）的归档按
@@ -1786,9 +1816,13 @@ impl TrunkStore {
         };
         let handle = Arc::clone(entry.value());
         drop(entry);
-        if let Ok(mut guard) = handle.try_lock() {
-            *guard = projected;
-        };
+        // 2026-10 上下文审计 🟡 修复：此前 `try_lock` 竞争失败即静默跳过，
+        // 压缩后的 `reproject_all` 若撞上读锁（`process_message` 正持有快照），
+        // 该会话投影会停留在压缩前、直到下一条事件或重启才自愈。history 锁
+        // 已改为 `parking_lot::Mutex`（临界区均为纯内存克隆/赋值、无跨 await
+        // 持锁），同步阻塞取锁保证投影收敛。
+        let mut guard = handle.lock();
+        *guard = projected;
     }
 
     /// 全量重投影（加载/压缩后调用）。
@@ -2519,8 +2553,8 @@ mod tests {
                 session: Some("local:tui::local_user".into()),
             },
         ));
-        assert_eq!(local.history.lock().await[0].content, "local only");
-        assert!(qq.history.lock().await.is_empty(), "qq context untouched");
+        assert_eq!(local.history.lock()[0].content, "local only");
+        assert!(qq.history.lock().is_empty(), "qq context untouched");
         assert_eq!(store.trunk_len(), 1, "aggregate over sessions");
     }
 
@@ -2593,7 +2627,7 @@ mod tests {
         let restored = store2.load_from_file().await;
         assert_eq!(restored, 1, "one identity restored");
         let s2 = store2.get_or_create(&key, "bob".into(), Some("TestGroup".into()));
-        let hist = s2.history.lock().await.clone();
+        let hist = s2.history.lock().clone();
         assert_eq!(hist.len(), 2);
         assert_eq!(hist[0].content, "你好");
         assert_eq!(hist[1].content, "回复");
@@ -2750,8 +2784,8 @@ mod tests {
         let qq = restored.get(&qq_key.to_session_id()).unwrap();
         // 上下文按会话隔离：local 有 2 条，qq 为空。
         assert!(!Arc::ptr_eq(&local.history, &qq.history));
-        assert_eq!(local.history.lock().await.len(), 2);
-        assert!(qq.history.lock().await.is_empty(), "qq context stays empty");
+        assert_eq!(local.history.lock().len(), 2);
+        assert!(qq.history.lock().is_empty(), "qq context stays empty");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -2940,7 +2974,7 @@ mod tests {
         assert_eq!(log[0].session(), Some("qq:group:123:456"));
         // ② 上下文投影：A 的投影条目已删、B 的保留。
         let a_cleared = match store.history_for("local:workspace:proj:alice") {
-            Some(h) => h.lock().await.is_empty(),
+            Some(h) => h.lock().is_empty(),
             None => true,
         };
         assert!(a_cleared, "目标会话投影应清空");

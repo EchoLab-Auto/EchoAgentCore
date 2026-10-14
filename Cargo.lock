@@ -422,6 +422,7 @@ dependencies = [
  "filetime",
  "futures-util",
  "libc",
+ "parking_lot",
  "proptest",
  "regex",
  "reqwest",
