@@ -8,12 +8,17 @@ y: 820
 
 # Agent 循环
 
-> **定位**：本文描述 **Agent 循环**——可插拔驱动（echo-loop `TurnRunner`）的 turn/step 状态机、循环模式（单会话 / 并行多会话）、工具管道与两套驱动（echo-loop / 内置循环）的生效与分派口径。读者：需要理解消息如何被循环执行的开发者。
+> **定位**：本文描述 **Agent 循环**——可插拔驱动（echo-loop `TurnRunner`）的 turn/step 状态机、循环模式（单会话 / 并行多会话）、工具管道，以及 harness（`agent/turn.rs`）如何把一条输入交给唯一的循环驱动执行。读者：需要理解消息如何被循环执行的开发者。
 > 相关：[多 Agent 与会话](./core-agents.md)（分支与会话准入）、[插件化设计](./core-plugins.md)（loop 插件治理）、[工具系统](./core-tools.md)（工具执行与超时）。
 
-Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥二选一）
-承载的**可插拔驱动**：turn/step 状态机 + 工具管道，经 [插件化设计](./core-plugins.md)
-节点统一治理（启用/禁用/挂载可逆）。本文档描述其机制细节与当前实化状态。
+Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态机 + 工具
+管道）。`echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥二选一）只表达
+**循环模式**（会话内准入策略），不切换驱动。
+
+> 2026-10 架构评审单轨化：此前存在第二套"内置循环"（`process_message_inner`
+> 内联实现），QQ hook / 定时器 / QQ 会话输入走它、普通输入走 echo-loop；两者
+> 靠"逐项同口径"维持一致并多次漂移。内置循环已删除，边界输入的唯一差异
+> （提示词边界块）由 harness 统一注入。
 
 ## 循环模式（单会话 / 并行多会话）
 
@@ -36,9 +41,8 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
   → parallel；其余（含白名单为空 = 默认）→ single。
   插件黑名单已移除，推导只看白名单。相关机制见
   [配置持久化](./core-config-persistence.md)。
-- **落地**：两个插件 mount 的是同一个 `TurnRunner`（驱动本体），模式只改策略；
-  两个都卸载才回退内置循环。模式只能经面板「循环模式」分段单选修改（写白名单）。
-  注入的实际生效口径（启动期为 no-op、运行期停/再启后生效）见下「实化与分派」。
+- **落地**：两个插件是纯策略插件（mount 无运行期资源）；驱动本体与插件启用态
+  无关，始终注入。模式只能经面板「循环模式」分段单选修改（写白名单）。
 
 ## Turn 循环
 - 每条入站消息经[多 Agent 与会话](./core-agents.md)的临时分支机制进入
@@ -62,54 +66,54 @@ Agent 循环是 `echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥�
 `echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。组合根经 `ctx.loop` 注册 `TurnRunner`（`LoopOptions`：`max_tokens` 与 `max_tool_iterations` 来自配置），挂载不同实现即可改变驱动行为；消费方（agent、UI、hook）只依赖生命周期事件。
 
 - **生命周期事件**（全部经 `EventBus` 分发）：`TurnStart` / `AgentPreStep`（waterfall，可改写消息或拒绝 step）/ `StepStart` / `AgentRequest`（waterfall，可改写请求）/ `ToolCallRequested` / `ToolResult` / `StepEnd` / `TurnStopping`（serial）/ `TurnEnd`
-- **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。审批、审计、限流等策略的设计接入方式为管道中间件（非循环代码，新策略 = 一次 `push_pre`/`push_post`；机制已备，当前生产路径未注册任何中间件）；**工具超时守卫**由 harness 侧统一实施（`Agent::tool_guard_timeout`：配置 `tool_timeout_secs` base + 工具自声明 `timeout_hint`），两条驱动路径（内置循环 / echo-loop）同一口径——超时只中止该工具、不中断 turn，结果以 notice 喂回模型，事件日志补记中断结果保持成对
+- **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。审批、审计、限流等策略的设计接入方式为管道中间件（非循环代码，新策略 = 一次 `push_pre`/`push_post`；机制已备，当前生产路径未注册任何中间件）；**工具超时守卫**由 harness 侧统一实施（`Agent::tool_guard_timeout`：配置 `tool_timeout_secs` base + 工具自声明 `timeout_hint`）——超时只中止该工具、不中断 turn，结果以 notice 喂回模型，事件日志补记中断结果保持成对
 - 工具经 harness 提供的 `ToolExecutor` 闭包执行，runner 本身不含任何策略代码
 
-### 实化与分派（插件的运行期效果）
+### 注入与分派
 
-`echo-agent.loop.single` / `echo-agent.loop.parallel` 是**实化插件**（见
-[插件化设计](./core-plugins.md)「能力开关」）：两插件共享同一个组合根
-`TurnRunner`，差异只在循环模式（策略）；mount 向各 agent 注入
-（`set_loop_runner` + `set_use_echo_loop`），全部卸载才复位（回退内置循环）。
+**注入**：组合根构建唯一的共享 `TurnRunner`（provider 已包计量 + 脱敏装饰；
+`LoopOptions` 来自配置），并在两处无条件注入（`Agent::set_loop_runner`）：
 
-**注入的生效口径**：三条路径覆盖全部人格生命周期——
+- **启动期**：人格启动循环（`apply_capabilities` 之后）；
+- **运行期新建人格**：`set_agent_factory` 的包装。
 
-- **启动期**：loop.* 插件的 mount 闭包依赖的进程级 `AgentManager` 在挂载时
-  尚未注册（`for_each_agent` 为 no-op），因此组合根在**人格启动循环**
-  （`apply_capabilities` 之后）按注册表启用态**回填注入**——任一 loop 插件
-  启用即注入；供 `disabled_plugins` 禁用的部署保持内置循环；
-- **运行期开关**：对循环插件停/再启（`TogglePlugin`）触发挂载闭包/卸载
-  Disposer——停用（两者都卸载）时统一回退内置循环；
-- **运行期新建人格**：`set_agent_factory` 的包装按同一注册表启用态注入
-  （此前新建人格不经该路径）。
+未注入 runner 的 `Agent`（单元测试 / 独立嵌入）在首个 turn 按自身 provider
+与配置惰性构建一个默认 runner（`turn::turn_runner`）。
 
-**注入生效后**的分派规则（`process_message_inner` 开头）：
+**分派**：所有输入（普通 / QQ hook / 定时器 / QQ 会话后台输入）都经
+`process_message_inner`（`agent/turn.rs`）进入 runner：
 
-- **普通输入**（非 QQ hook / 定时器 / QQ 会话）→ `process_via_echo_loop`：
-  经 TurnRunner 的 turn/step 状态机 + `ToolPipeline` 执行；
-  `RunExtras` 携带工具 schema（模型可见）、推理回调（`on_reasoning` → 发
-  `AgentReasoning` 事件）、**每 turn 模型名**与 **ChatExecutor**（每 step
+- **输入边界**：`input_boundary` 按**内容标记**（而非会话平台）判定
+  `BoundaryKind`（QQ hook / 定时器 / QQ 会话的后台输入），作为提示词边界块
+  注入；普通输入不注入。投递纪律由提示词与 qq-transport 技能引导。QQ 并发
+  回复的细节见 [多 Agent 与会话](./core-agents.md)。
+- `RunExtras` 携带工具 schema（模型可见）、推理回调（`on_reasoning` → 发
+  `AgentReasoning` 事件）、**每 turn 模型名**、**每 turn 迭代上限**
+  （`max_iterations`，运行期调整下一 turn 生效）与 **ChatExecutor**（每 step
   解析当前 provider/预算——运行期 persona API 切换即时生效）、turn 标识
-  （多分支并发时的事件归属）；工具执行经异步 `ToolExecutor` 直连 `run_tool`
-  （ToolCall/ToolResult 事件与事件日志与内置循环同路径），**超时守卫 +
-  turn 取消竞速**（在途工具可立即中止）、工具产出图片透传、成功 `send_*`
-  触发 visible_reply 抑制——与内置循环逐项同口径；
-  **UI 事件翻译**：`process_via_echo_loop` 订阅 runner 总线把
-  `AgentRequest`/`ModelResponse` 转发为 `LlmRequest`/`LlmResponse`，并直接
-  发 `AgentThinking`/`AgentCompleted`，写 `last_prompt_blocks`（/context
-  视图）——两条驱动对上屏事件完全同构
-- **QQ hook / 定时器 / QQ 会话** → 内置循环：边界语义（QQ 边界块、定时器
-  回投）由内置循环注入；投递纪律由提示词与 qq-transport 技能引导（send 工具声明校验与纠偏提醒已移除），echo-loop 不接管。QQ 并发回复的细节见
-  [多 Agent 与会话](./core-agents.md)（单会话投递默认会话排队 / 并行多会话临时分支）。
+  （多分支并发时的事件归属）；
+- 工具执行经异步 `ToolExecutor` 直连 `run_tool`（ToolCall/ToolResult 事件与
+  事件日志），**超时守卫 + turn 取消竞速**（在途工具可立即中止）、工具产出
+  图片透传、成功 `send_*` 触发 visible_reply 抑制；
+- **UI 事件翻译**：订阅 runner 总线把 `AgentRequest`/`ModelResponse` 转发为
+  `LlmRequest`/`LlmResponse`，并直接发 `AgentThinking`/`AgentCompleted`、
+  失败时发 `Error`，写 `last_prompt_blocks`（/context 视图）。
 
-两套驱动并行、同一工具路径（`run_tool`）与提示词构建（`agent/prompt.rs` 的
-`build_prompt_blocks` / `join_prompt_blocks`，`agent/boundary.rs` 的边界块）
-复用；卸载全部循环插件（配置 `disabled_plugins` 或面板 TogglePlugin）即恢复
-内置循环。`generate_wait_reply` 是无工具单请求，保持自身实现。
+工具路径（`run_tool`）与提示词构建（`agent/prompt.rs` 的 `build_prompt_blocks` /
+`join_prompt_blocks`，`agent/boundary.rs` 的边界块）只有一份。
+`generate_wait_reply` 是无工具单请求，保持自身实现。
 
 ### agent 模块拆分
 
-内置循环的支撑代码已从 `agent/mod.rs` 抽为独立模块：
+`agent/mod.rs` 只保留 `Agent` 结构体、装配与运行期接线；按职责拆出的子模块
+（2026-10 架构评审，`impl Agent` 分布在各文件）：
+
+- `agent/turn.rs`：turn 驱动（上文「注入与分派」）+ `input_boundary`
+- `agent/inbound.rs`：入站 turn 生命周期（分支登记 / 串行闸门 / 取消 / 合并、
+  `process_message`、适配器入站 `process_inbound_branch` → `run_inbound_turn`）
+- `agent/tool_dispatch.rs`：`run_tool` 统一分派、参数预检、中断结果补记
+- `agent/streaming.rs`：流式增量转发（`AgentContentDelta` / `AgentReasoningDelta`）
+- `agent/plugin_reload.rs`：数据插件热重载
 
 - `agent/boundary.rs`：`PromptBlock`（提示词命名块，供面板 token 用量可视化）+
   `BoundaryKind`（三种输入边界的提示词文案）

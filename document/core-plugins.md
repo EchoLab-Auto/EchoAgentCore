@@ -78,7 +78,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
   - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具（skills.dir 为全部技能）对所有 persona 批量禁用（对 LLM 不可见），启用按各 persona 名单恢复——**仅作用于目标 persona 时用 Agent 配置弹层的勾选**（运行期双向、即时生效）
   - `adapter.qq`：禁用 = 停止 QQ 适配器进程 + QQ 工具包禁用；启用 = 启动 + 按名单恢复
   - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）。**防自锁保护**：经 `TogglePlugin` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
-  - `loop.single` / `loop.parallel`：**已实化**——mount 注入 TurnRunner 并置位 echo-loop 驱动；两者 mount 同一驱动（模式只改策略），全部卸载才回退内置循环。**注入的生效口径**：启动期由人格启动循环按注册表启用态**回填注入**（mount 闭包依赖的 `AgentManager` 在挂载时尚未注册，故 mount 为 no-op）；运行期新建人格由 `set_agent_factory` 包装同口径注入；插件停/再启按原 mount/Disposer 联动（全部卸载回退内置循环）。注入生效后普通输入走 turn/step 状态机（QQ hook/定时器/QQ 会话仍走内置循环）。详见 [Agent 循环](./core-agent-loop.md)「实化与分派」
+  - `loop.single` / `loop.parallel`：**纯策略插件**——只表达循环模式（单会话串行 / 并行多会话，由白名单推导 `LoopMode`），mount 无运行期资源。驱动本体（echo-loop `TurnRunner`）是唯一循环实现，组合根在人格启动与运行期新建时无条件注入，不随插件启停切换（2026-10 单轨化，内置循环已删除）。详见 [Agent 循环](./core-agent-loop.md)「注入与分派」
   - `provider.llm`：仍为名义挂载——运行中替换 provider 涉及在途 turn，保持"重启生效"语义（禁用 = 下次重启不装配）
 - **优先级**：全局禁用（`TogglePlugin` 卸载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
 - **任务清单的会话隔离**：`ChecklistTool` 状态按**会话**隔离（session_id → 清单名 → 项）——同一 persona 的不同会话（local:tui / qq:group:…）的清单互不可见、互不覆盖；会话键由 `Agent::run_tool` 在参数校验后注入 `__session_id`（联邦远程/无会话上下文调用落 `__global` 兜底键）。事件 `ChecklistUpdated` 带 `team_id`，Panel 按 `(core, team_id, session_id)` 复合键存储并显示

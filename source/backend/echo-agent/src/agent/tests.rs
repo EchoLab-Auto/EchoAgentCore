@@ -282,7 +282,7 @@ async fn emitted_events_are_recorded_into_the_display_timeline() {
     });
     assert_eq!(reply, "Hello!");
 
-    let timeline = agent.trunk.timeline_snapshot().unwrap_or_default();
+    let timeline = agent.trunk.timeline_snapshot();
     // user entry + backend reply entry.
     assert_eq!(timeline.len(), 2);
     assert_eq!(timeline[0].kind, "user");
@@ -318,7 +318,7 @@ async fn timeline_records_tools_and_attaches_outcomes() {
     let result = agent.run_tool("local:tui::one", "branch-1", &call).await;
     assert_eq!(result.text, "found");
 
-    let timeline = agent.trunk.timeline_snapshot().unwrap_or_default();
+    let timeline = agent.trunk.timeline_snapshot();
     assert_eq!(timeline.len(), 1);
     let tool = timeline[0].tool.as_ref().expect("tool entry");
     assert_eq!(tool.name, "mock_tool");
@@ -357,7 +357,7 @@ async fn timeline_associates_reasoning_with_the_final_output() {
         branch_id: Some(branch_id.into()),
         team_id: None,
     });
-    let timeline = agent.trunk.timeline_snapshot().unwrap_or_default();
+    let timeline = agent.trunk.timeline_snapshot();
     // 新语义：推理按到达顺序落为独立 reasoning 条目，backend 输出不再附加。
     assert_eq!(timeline.len(), 2);
     assert_eq!(timeline[0].kind, "reasoning");
@@ -806,7 +806,7 @@ async fn archive_history_without_session_id_is_rejected_fail_closed() {
         timeline_broadcasts, 0,
         "rejection must not resync the timeline"
     );
-    let kept = agent.trunk.timeline_snapshot().expect("snapshot");
+    let kept = agent.trunk.timeline_snapshot();
     assert!(
         kept.iter().any(|m| m.content == "必须保留"),
         "rejection must not clear anything: {kept:?}"
@@ -912,11 +912,8 @@ async fn session_provider_override_resolves_and_clears() {
     // 预置一个 profile（池）——set_session_provider 按名解析。
     {
         let mut cfg = agent.config.write().await;
-        cfg.api_profiles.push(crate::config::ApiProfile::new(
-            "kimi",
-            "openai",
-            "kimi-k3",
-        ));
+        cfg.api_profiles
+            .push(crate::config::ApiProfile::new("kimi", "openai", "kimi-k3"));
         cfg.api_profiles[0].api_key = "sk-kimi-test".into();
         cfg.api_profiles[0].base_url = "http://kimi.test".into();
     }
@@ -976,7 +973,10 @@ async fn session_provider_override_is_scoped() {
     // sess-1 有覆盖，sess-2 无。
     let p1 = agent.resolve_session_provider("sess-1").await;
     let p2 = agent.resolve_session_provider("sess-2").await;
-    assert!(!Arc::ptr_eq(&p1, &p2), "sess-1 overridden, sess-2 follows persona");
+    assert!(
+        !Arc::ptr_eq(&p1, &p2),
+        "sess-1 overridden, sess-2 follows persona"
+    );
     assert!(Arc::ptr_eq(&p2, &persona_provider));
 }
 
@@ -1021,7 +1021,11 @@ async fn session_provider_prefers_shared_config_store_pool() {
     assert!(ok, "store-only profile must resolve for session override");
     let p = agent.resolve_session_provider("sess-store").await;
     // provider="kimi" 走 Anthropic 兼容实现（name = "anthropic"）。
-    assert_eq!(p.name(), "anthropic", "session override built from store profile");
+    assert_eq!(
+        p.name(),
+        "anthropic",
+        "session override built from store profile"
+    );
     std::fs::remove_file(&path).ok();
 }
 
@@ -1110,7 +1114,6 @@ async fn echo_loop_turn_uses_session_override_model() {
         echo_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
-    agent.set_use_echo_loop(true);
 
     // turn 因覆盖端点连接失败而报错——LlmRequest 已在模型调用前发出。
     let _ = agent.process_message(&session, "hi").await;
@@ -1162,7 +1165,7 @@ async fn builtin_loop_turn_uses_session_override_model() {
         .get_or_create(&SessionKey::local_tui(), "user".into(), None);
     assert!(agent.set_session_provider(&session.id, "gemini").await);
 
-    // 默认（use_echo_loop = false）走内置循环；连接失败不影响事件断言。
+    // 未注入 runner：首个 turn 惰性构建默认 runner；连接失败不影响事件断言。
     let _ = agent.process_message(&session, "hi").await;
 
     let models = seen.lock().unwrap().clone();
@@ -1395,25 +1398,25 @@ fn data_plugin_stale_detects_manifest_diff() {
     let desc = PluginDescriptor::from(&manifest);
 
     // 完全一致：不 stale
-    assert!(!super::data_plugin_stale(&desc, &manifest));
+    assert!(!super::plugin_reload::data_plugin_stale(&desc, &manifest));
 
     // version 变化 → stale
     let mut v2 = manifest.clone();
     v2.version = "1.1.0".into();
-    assert!(super::data_plugin_stale(&desc, &v2));
+    assert!(super::plugin_reload::data_plugin_stale(&desc, &v2));
 
     // description 变化 → stale
     let mut d2 = manifest.clone();
     d2.description = "new desc".into();
-    assert!(super::data_plugin_stale(&desc, &d2));
+    assert!(super::plugin_reload::data_plugin_stale(&desc, &d2));
 
     // 包归属变化（声明 package）→ stale
     let p2 = manifest.clone().with_package("acme.weather-suite");
-    assert!(super::data_plugin_stale(&desc, &p2));
+    assert!(super::plugin_reload::data_plugin_stale(&desc, &p2));
 
     // 未声明 package 时 package_id = 插件 id，不算 stale
     let same = manifest.clone();
-    assert!(!super::data_plugin_stale(&desc, &same));
+    assert!(!super::plugin_reload::data_plugin_stale(&desc, &same));
 }
 
 #[test]
@@ -1867,7 +1870,6 @@ async fn echo_loop_tool_names_stay_unique_when_spawn_subagent_is_registered() {
         echo_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
-    agent.set_use_echo_loop(true);
 
     let session = agent
         .trunk
@@ -1955,7 +1957,6 @@ async fn echo_loop_path_guards_hung_tools_with_timeout() {
         echo_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
-    agent.set_use_echo_loop(true);
 
     let session = agent
         .trunk
@@ -2052,7 +2053,6 @@ async fn echo_loop_path_injects_persona_skills_and_workspace() {
         echo_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
-    agent.set_use_echo_loop(true);
 
     let session = agent
         .trunk
@@ -2117,7 +2117,6 @@ async fn echo_loop_model_error_surfaces_completed_and_error_events() {
         echo_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
-    agent.set_use_echo_loop(true);
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
     let session = agent
@@ -2192,7 +2191,6 @@ async fn echo_loop_path_emits_panel_lifecycle_events() {
         echo_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
-    agent.set_use_echo_loop(true);
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
     let session = agent
@@ -2353,7 +2351,6 @@ async fn echo_loop_path_uses_active_model_per_turn() {
         echo_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
-    agent.set_use_echo_loop(true);
     agent.set_model("runtime-model".into()).await;
     let session = agent
         .trunk
@@ -2433,7 +2430,6 @@ async fn echo_loop_path_carries_tool_images_into_next_request() {
         echo_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
-    agent.set_use_echo_loop(true);
     let session = agent
         .trunk
         .get_or_create(&SessionKey::local_tui(), "user".into(), None);
@@ -2511,7 +2507,6 @@ async fn echo_loop_path_cancels_in_flight_tool() {
         echo_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
-    agent.set_use_echo_loop(true);
     let session = agent
         .trunk
         .get_or_create(&SessionKey::local_tui(), "user".into(), None);
@@ -3749,7 +3744,6 @@ async fn echo_loop_path_forwards_streaming_deltas() {
         echo_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
-    agent.set_use_echo_loop(true);
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
     let session = agent
@@ -3815,7 +3809,7 @@ async fn delta_forwarder_batches_and_flushes_on_close() {
         }
     });
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ChatChunk>();
-    let task = spawn_delta_forwarder(rx, emit, "s".into(), "b".into());
+    let task = super::streaming::spawn_delta_forwarder(rx, emit, "s".into(), "b".into());
     tx.send(ChatChunk {
         content_delta: Some("abc".into()),
         reasoning_delta: None,
@@ -3834,4 +3828,68 @@ async fn delta_forwarder_batches_and_flushes_on_close() {
     let total: String = events.concat();
     assert_eq!(total, format!("abc{}", "x".repeat(300)));
     assert!(events.len() <= 2, "窗口合并应有界: {}", events.len());
+}
+
+/// 2026-10 单轨化回归：QQ hook / 定时器 / QQ 会话后台输入原走内置循环，
+/// 现与普通输入同经 echo-loop——提示词边界块必须照常注入，普通输入不注入。
+#[tokio::test]
+async fn single_track_loop_injects_input_boundary_blocks() {
+    let final_reply = || ChatResponse {
+        stop_reason: None,
+        content: Some("ok".into()),
+        reasoning_content: None,
+        tool_calls: vec![],
+        usage: Usage::default(),
+    };
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        final_reply(),
+        final_reply(),
+        final_reply(),
+    ]));
+    let agent = Arc::new(Agent::new(
+        provider.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    ));
+    let local = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    let qq = agent.trunk.get_or_create(
+        &SessionKey::parse("qq:dm::123456").unwrap(),
+        "tester".into(),
+        None,
+    );
+
+    agent.process_message(&local, "普通输入").await.unwrap();
+    agent
+        .process_message(
+            &local,
+            r#"<qq_message_hook>{"message_sequence":7,"content":"hi","images":[]}</qq_message_hook>"#,
+        )
+        .await
+        .unwrap();
+    agent
+        .process_message(&qq, "后台对 QQ 会话说话")
+        .await
+        .unwrap();
+
+    let requests = provider.requests.lock().await.clone();
+    assert_eq!(requests.len(), 3, "三条输入都经 echo-loop 各请求一次");
+    let system = |i: usize| requests[i].messages[0].content.clone();
+    assert!(
+        !system(0).contains("# QQ transport boundary"),
+        "普通输入不注入 QQ 边界"
+    );
+    assert!(
+        system(1).contains("# QQ transport boundary"),
+        "QQ hook 输入必须注入 QQ 边界块: {}",
+        system(1)
+    );
+    let backend_block = super::boundary::BoundaryKind::BackendInput.block().content;
+    assert!(
+        system(2).contains(backend_block.lines().next().unwrap_or_default()),
+        "QQ 会话的后台输入必须注入后台边界块"
+    );
 }

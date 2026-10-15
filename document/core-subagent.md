@@ -100,8 +100,8 @@ y: 2020
   `spawn_subagent` 本身是同步受理，直接包 ready future
 - `extra_tool_definitions`：模型可见 schema 追加接口（当前装配为 `None`——`spawn_subagent` 的 schema 由注册表统一提供，避免重复工具名）
 
-内置循环不经 hook 接口：`run_tool` 直接特判分派 `spawn_subagent`（schema
-在构建工具列表时按 `allows_dynamic_tool` 注入）——两条路径语义一致。
+`run_tool`（集成测试与直接分派入口）同样特判 `spawn_subagent`，与 hook 路径
+语义一致（2026-10 单轨化后 turn 只经 echo-loop 的 hook 通道）。
 
 ## 事件与观测
 

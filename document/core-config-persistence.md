@@ -189,7 +189,7 @@ group_ids = []
 - **记录来源**：① 余额——周期任务 `[agent].balance_snapshot_secs`（默认 600s /
   10 分钟；0 = 关闭；下限 30s，启动即采首条）+ 手动「查余额」成功；② 用量——
   **计量 provider 装饰器**（`llm::wrap_metering`，与脱敏装饰器同一装配点，
-  覆盖内置循环 / echo-loop / 等待回复 / 压缩 / 子代理的全部 LLM 出口，
+  覆盖 turn 循环（echo-loop）/ 等待回复 / 压缩 / 子代理的全部 LLM 出口，
   记录成功后 `usage`）。
 - **归属命名**：`name` 与 `QueryApiBalance` 同命名空间——空 = 顶层默认配置，
   否则 profile 名（provider 构建时快照 `active_api` / persona 引用名；模型名取

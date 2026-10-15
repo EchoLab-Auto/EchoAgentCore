@@ -42,7 +42,7 @@ y: 1620
 ## 超时治理
 
 - `Tool::timeout_hint`：工具从自己的参数自声明执行超时（如 `bash` 的 `timeout_secs`，默认 120s、上限 300s）
-- 外圈守卫 = `max(tool_timeout_secs（默认 120s）, hint + 15s)`（自声明硬上限 600s）；内置循环与 echo-loop 两条驱动路径同一口径（`Agent::tool_guard_timeout`）
+- 外圈守卫 = `max(tool_timeout_secs（默认 120s）, hint + 15s)`（自声明硬上限 600s）；由 turn harness 的工具执行器统一实施（`Agent::tool_guard_timeout`）
 - hint 计算在 `agent/tool_exec.rs` 的 `tool_timeout`
 - 超时只中止单个调用：`bash` 的 `sh -c` 整组进程被 SIGKILL（不留孤儿）；结果以 notice 文本喂回模型，**不中断 turn**，模型可重试或带已有信息继续作答
 

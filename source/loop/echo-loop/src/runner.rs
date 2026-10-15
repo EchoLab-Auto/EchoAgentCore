@@ -179,6 +179,10 @@ pub struct RunExtras<'a> {
     /// 本 turn 的调用方标识（如分支 id）：随 `AgentRequest`/`ModelResponse`
     /// 事件回传，供多分支并发场景区分事件归属（2026-10 巡检）。
     pub turn_id: Option<String>,
+    /// 本 turn 的最大 step 数（None = 构造期 [`LoopOptions::max_tool_iterations`]）。
+    /// harness 每 turn 从配置解析——运行期调整 `max_tool_iterations` 下一
+    /// turn 即生效（2026-10 单轨化：原内置循环每 turn 读配置的语义）。
+    pub max_iterations: Option<usize>,
 }
 
 /// The default agent-loop driver.
@@ -282,7 +286,10 @@ impl TurnRunner {
             .model
             .clone()
             .unwrap_or_else(|| self.llm.default_model().to_string());
-        let max_iterations = self.options.max_tool_iterations.max(1);
+        let max_iterations = extras
+            .max_iterations
+            .unwrap_or(self.options.max_tool_iterations)
+            .max(1);
         let mut truncation_continues = 0usize;
 
         for step_index in 0..max_iterations {
