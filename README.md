@@ -39,12 +39,11 @@ EchoAgentCore/
 │   ├── plugin/
 │   │   └── echo-plugin/          # 插件接缝：PluginManifest + 生命周期 + 注册表
 │   ├── backend/
-│   │   ├── echo-core/            # OneBot v11 协议类型（纯类型，无 I/O）
-│   │   ├── echo-server/          # 反向 WebSocket 服务器（NapCat 接入）
 │   │   ├── echo-adapter/         # 适配器抽象 + 过滤管道 + ConfigStore
 │   │   ├── echo-agent/           # Agent 框架（packages/ 第一层按插件分包；packages/tool/ 为工具注册表机制）
-│   │   ├── echo-adapter-qq/      # QQ/OneBot 适配器（门控、NapCat 客户端）
 │   │   └── echo-test-utils/      # 共享测试 mock（仅 dev-dependency）
+│   # 注：QQ 适配器（含 OneBot 协议类型与反向 WS 服务器）已迁出为独立进程
+│   # 插件（见 document/adapter-plugin.md；独立仓库 echo-adapter-qq）。
 │   └── core/                     # echo-agent-core 二进制（组合根）
 ├── document/                     # 项目文档群（ProDoc 格式：index.md 入口）
 ├── npm/echo-agent/               # 容器化部署 CLI（Docker 编排 core+panel+napcat）
@@ -69,17 +68,16 @@ EchoAgentCore/
 | `echo-plugin` | **插件接缝**：`PluginManifest` + 生命周期钩子（mount/unmount）+ `PluginRegistry`；插件只依赖定义层与机制层（`echo-defs`/`echo-context`/`echo-plugin` 三个 crate），不依赖 `echo-agent` |
 | `echo-agent` | Agent 框架：agent 循环、LLM provider 工厂、工具注册表与各包（`packages/`）、技能系统、trunk 记忆、异步子任务（`spawn_subagent`） |
 | `echo-adapter` | 协议无关的适配器抽象：`Adapter` trait、`InboundMessageHook`、过滤管道、`ConfigStore` |
-| `echo-adapter-qq` | QQ 适配器：反向 WS 接入、5 层门控、NapCat HTTP 客户端 |
-| `echo-core` / `echo-server` | OneBot v11 协议类型 / 反向 WS 服务器（NapCat 接入；组合根与 QQ 适配器使用） |
+| （QQ 适配器插件） | **已迁出**为独立进程插件（stdio 协议）交付：反向 WS 接入、5 层门控、NapCat 管理、OneBot 协议类型；见 `document/adapter-plugin.md` |
 | `echo-federation` | **联邦链路（Core↔Core）**：`FedFrame` 线协议（工具调用/委派/只读查询）、Hello/Welcome 握手、per-peer Bearer 认证、心跳/重连/回环防护、邀请串（`echofed://`） |
 | `echo-agent-core`（bin） | 组合根：加载配置、装配 Agent + QQ 适配器 + 联邦路由泵（代理工具注册/执行端裁决/查询处理）、对外提供 management WS |
 
 依赖方向（单向，无环，扩展只依赖定义层）：
 
 - **底座**（零 echo-* 依赖）：`echo-defs`（定义层）、`echo-context`（机制层）
-- **中间层**（只依赖底座）：`echo-protocol`、`echo-loop`、`echo-session`、`echo-llm-*`（`echo-llm-ollama` 另复用 `echo-llm-openai`）、`echo-adapter`、`echo-plugin`、`echo-core`、`echo-server`、`echo-federation`
+- **中间层**（只依赖底座）：`echo-protocol`、`echo-loop`、`echo-session`、`echo-llm-*`（`echo-llm-ollama` 另复用 `echo-llm-openai`）、`echo-adapter`、`echo-plugin`、`echo-federation`
 - **框架层**：`echo-agent`（依赖 `echo-defs`/`echo-context`/`echo-loop`/`echo-session`/`echo-llm-openai`/`echo-llm-anthropic`/`echo-llm-ollama`/`echo-protocol`/`echo-adapter`/`echo-plugin`/`echo-federation`）
-- **适配层**：`echo-adapter-qq`（依赖 `echo-adapter`/`echo-core`/`echo-server`/`echo-defs`）
+- **适配器插件**（独立仓库，非本工作区成员）：`echo-adapter-qq`（依赖 `echo-plugin-sdk` + 自带 OneBot 传输层）
 - **组合根**：`echo-agent-core`（bin，装配以上全部）
 
 ## 构建与运行

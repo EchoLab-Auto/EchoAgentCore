@@ -19,7 +19,7 @@ y: 2050
 ### 单元测试（`#[test]` / `#[tokio::test]`）
 Located next to the code in `#[cfg(test)] mod tests` blocks.
 
-- **Protocol** (echo-core): OneBot event parsing for every variant family
+- **Protocol** (QQ 插件仓库 `crates/echo-core`): OneBot event parsing for every variant family
   (message / notice / request / meta), message segments, action builders,
   unknown-type preservation, sender nickname (card vs nickname fallback).
 - **Wire protocol** (echo-protocol): command/event WS round-trips,
@@ -59,9 +59,9 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Media migration** (echo-agent session): 加载期把历史事件
   （content 内嵌 + images 字段）与时间线 data URI 落盘改写且幂等；投影出口
   把 `/media/<id>` 还原为 data URI（`persisted_refs_inline_on_projection_for_model`）。
-- **Media download** (echo-adapter-qq): 远程图下载落盘（文件字节与源一致）、
-  失败保留原 URL、data URI / 已有引用透传。
-- **QQ 表情渲染** (echo-core + adapter): face id → 名称对照表有序性/未知回退、
+- **Media download** (QQ 插件仓库 `crates/echo-adapter-qq`): 远程图下载经
+  `store_media` 登记（字节/MIME 与源一致）、失败保留原 URL、data URI / 已有引用透传。
+- **QQ 表情渲染** (QQ 插件仓库 echo-core + adapter): face id → 名称对照表有序性/未知回退、
   `readable_text` 混合渲染（`[表情:呲牙]`、`[骰子:6]`、纯表情消息不再整条丢弃）。
 
 ### 属性测试（proptest）
@@ -75,7 +75,7 @@ Generated inputs that must satisfy invariants:
 
 ### 集成测试（`tests/` 目录）
 
-- `echo-server/tests/reverse_ws.rs` — real WS server + raw WebSocket client:
+- （QQ 插件仓库）`crates/echo-server/tests/reverse_ws.rs` — real WS server + raw WebSocket client:
   event dispatch → handler → action → response correlation, token rejection,
   handler-priority chain fall-through, connection lifecycle (tracker insert/remove).
 - `echo-agent/tests/agent_integration.rs` — real Agent driven through the backend:
@@ -86,7 +86,7 @@ Generated inputs that must satisfy invariants:
 - `source/core/src/management.rs` (inline integration tests) — management WS
   server on ephemeral port: Panel command → agent backend, agent event → Panel
   forward.
-- `echo-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`、
+- （QQ 插件仓库）`crates/echo-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`、
   `napcat/mod.rs`、`handler.rs`；`tests/` 目录仅 `owner_qq.rs`）— NapCat client
   against a `wiremock` HTTP server:
   login status detection, WebUI fallback, reverse-WS config, QR fetch.

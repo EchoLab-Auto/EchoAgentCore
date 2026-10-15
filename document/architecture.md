@@ -31,7 +31,7 @@ graph BT
   Loop[echo-loop<br>TurnRunner]
   LLM[echo-llm-*<br>OpenAI/Anthropic/Ollama]
   Proto[echo-protocol<br>线契约]
-  Adapter[echo-adapter/echo-adapter-qq<br>平台适配]
+  Adapter[echo-adapter<br>平台适配<br>（QQ 已迁出为插件）]
   Agent[echo-agent<br>agent 框架]
   Bin[echo-agent-core<br>组合根]
   LLM --> Defs
@@ -58,7 +58,7 @@ graph BT
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge，Panel 只依赖它 |
 | `echo-plugin` / `-api` / `-host` | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；Transport（inproc/stdio）、监督与崩溃重启、conformance 测试（见 [完全解耦推进计划](./decoupling-plan.md)） |
 | `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入——生效口径见 [Agent 循环](./core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
-| `echo-adapter` / `echo-adapter-qq` | 平台适配 | `Adapter` trait、过滤管道、ConfigStore、QQ 实现（OneBot 类型/反向 WS 在 `echo-core`/`echo-server`，仅供 QQ 适配器） |
+| `echo-adapter` | 平台适配 | `Adapter` trait、过滤管道、ConfigStore（平台无关）；QQ 实现已迁出为**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteAdapter` 接入——见 [适配器插件化](./adapter-plugin.md)） |
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](./federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、联邦路由泵、启动 |
 
@@ -90,7 +90,7 @@ graph BT
 | LLM | `echo_defs::LlmProvider` | `echo-llm-openai`/`anthropic`/`ollama` | `echo-agent` 工厂 + `echo-loop` runner |
 | 工具 | `echo_defs::Tool` | `echo-agent::ToolRegistry` + builtin | agent 循环 |
 | 技能 | `echo_defs::SkillProvider` | `echo-agent::SkillRegistry`（本地文件） | prompt 组装 |
-| 平台生命周期 | `echo_defs::chat::ChatAdapter` | `echo-adapter-qq`（经 Adapter 收敛中） | agent + 工具 |
+| 平台生命周期 | `echo_defs::chat::ChatAdapter` | QQ 适配器插件（远程 `RemoteAdapter`）/ 内置实现 | agent + 工具 |
 | 默认驱动 | `echo_loop::TurnRunner` | 内置（经 `ctx.loop` 注册） | 组合根 |
 
 ## 运行时一览

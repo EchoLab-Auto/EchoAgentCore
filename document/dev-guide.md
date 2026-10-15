@@ -50,8 +50,6 @@ EchoAgentCore/
 │   ├── plugin/echo-plugin-host/# 插件宿主（Transport/Supervisor/conformance；P0-P2）
 │   ├── federation/echo-federation/  # 联邦层：Core↔Core 对等链路（frame/invite/link）
 │   ├── backend/
-│   │   ├── echo-core/         # OneBot v11 协议类型
-│   │   ├── echo-server/       # 反向 WebSocket 服务器
 │   │   ├── echo-adapter/      # Adapter trait + 过滤管道 + ConfigStore
 │   │   ├── echo-agent/        # Agent 框架
 │   │   │   ├── agent/         # 循环/命令分派/边界/提示词/压缩（框架核心）
@@ -59,8 +57,9 @@ EchoAgentCore/
 │   │   │       ├── tools_builtin/   skills_dir/   adapter_qq/   workspace/
 │   │   │       ├── subagent/        provider_llm/ federation/
 │   │   │       └── tool/      # 特例：工具子系统跨包机制（ToolRegistry，非包）
-│   │   ├── echo-adapter-qq/   # QQ/OneBot 适配器
 │   │   └── echo-test-utils/   # 共享测试 mock（仅 dev-dependency）
+│   # QQ 适配器（OneBot 类型 / 反向 WS / NapCat 管理）已迁出为独立进程插件
+│   # （独立仓库；宿主经 echo-plugin-host 的 RemoteAdapter 接入）
 │   └── core/                  # echo-agent-core 二进制（组合根）
 ├── document/                  # 本文档群（ProDoc 格式；含附加设计笔记）
 ├── npm/echo-agent/            # 容器化部署 CLI（Docker 编排；node:test 测试）
