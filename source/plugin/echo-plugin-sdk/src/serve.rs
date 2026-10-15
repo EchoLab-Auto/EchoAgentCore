@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use echo_plugin_api::{
-    compatible, Contribution, Failure, HostCall, HostCallOutcome, HostToPlugin, InvokeOutcome,
-    InvokeResult, PluginToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
+    compatible, Contribution, Failure, HostCall, HostCallOutcome, HostToPlugin,
+    InvokeOutcome, InvokeResult, PluginToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
 };
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -225,6 +225,15 @@ where
     } else {
         options.plugin_id.clone()
     };
+    // 宿主下发配置（`Hello.config`）先于贡献收集：适配器实例名 / 端口等
+    // 可由配置决定。配置非法 = Failed 帧 + 退出（宿主按启动失败处理）。
+    if let Err(message) = handler.configure(hello.config.clone()).await {
+        tracing::warn!(%message, "plugin rejected host config");
+        write_failure(&tx, "invalid_config", &message);
+        drop(tx);
+        let _ = finish_writer(writer_task).await;
+        return Err(SdkError::Protocol(message));
+    }
     let contributions = handler.contributions();
     let registered: Arc<HashSet<String>> = Arc::new(
         contributions
@@ -284,8 +293,13 @@ where
                 let registered = Arc::clone(&registered);
                 let tx = tx.clone();
                 tasks.spawn(async move {
-                    let call_id = invoke.call_id;
-                    let known = registered.contains(&invoke.contribution);
+                    let call_id = invoke.call_id.clone();
+                    // 可路由 = 精确命中已注册贡献；或 `"<name>:<op>"` 适配器寻址
+                    // 且 `<name>` 是已注册的适配器实例（P1.2）。贡献名原样交给
+                    // handler（`AdapterHandler` 负责剥离实例名前缀）。
+                    let known = registered.contains(&invoke.contribution)
+                        || split_adapter_op(&invoke.contribution)
+                            .is_some_and(|(name, _)| registered.contains(&name));
                     let outcome = if known {
                         handler
                             .invoke(InvokeRequest {
@@ -360,6 +374,16 @@ where
     }
 }
 
+/// 适配器方法寻址拆分（P1.2）：`"<name>:<op>"` → `(<name>, <op>)`；
+/// 无冒号 = 非适配器调用（None）。
+pub(crate) fn split_adapter_op(contribution: &str) -> Option<(String, String)> {
+    let (name, op) = contribution.split_once(':')?;
+    if name.is_empty() || op.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), op.to_string()))
+}
+
 /// 贡献名（`Invoke` 的寻址目标）：Tool / Skill 用 name，Service 用 key；
 /// 事件订阅不参与寻址。
 fn contribution_target(contribution: &Contribution) -> Option<String> {
@@ -368,6 +392,8 @@ fn contribution_target(contribution: &Contribution) -> Option<String> {
         Contribution::Skill(skill) => Some(skill.name.clone()),
         Contribution::Service(service) => Some(service.key.clone()),
         Contribution::Events(_) => None,
+        // 适配器贡献的寻址名 = 实例名（宿主按 `Invoke("<name>:<op>")` 寻址）。
+        Contribution::Adapter(adapter) => Some(adapter.name.clone()),
     }
 }
 

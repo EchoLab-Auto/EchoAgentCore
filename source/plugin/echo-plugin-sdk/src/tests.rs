@@ -669,3 +669,135 @@ async fn host_call_after_disconnect_is_closed() {
         "expected Closed, got {result:?}"
     );
 }
+
+// ---- 适配器插件（P1.2）：`"<name>:<op>"` 寻址剥离前缀后路由到 invoke_op ----
+
+struct TestAdapter;
+
+#[async_trait::async_trait]
+impl crate::AdapterPlugin for TestAdapter {
+    fn adapter(&self) -> echo_plugin_api::AdapterContribution {
+        echo_plugin_api::AdapterContribution {
+            name: "qq-test".to_string(),
+            platform: "qq".to_string(),
+            display_name: "QQ test".to_string(),
+            capabilities: echo_plugin_api::AdapterCapabilities {
+                send_text: true,
+                ..Default::default()
+            },
+            config_schema: None,
+            ui: None,
+            session_labels: None,
+        }
+    }
+
+    async fn invoke_op(&self, op: &str, payload: serde_json::Value) -> InvokeOutcome {
+        match op {
+            "send_text" => InvokeOutcome::ok(format!(
+                "sent:{}",
+                payload["text"].as_str().unwrap_or_default()
+            )),
+            other => InvokeOutcome::Error {
+                code: "unknown_contribution".to_string(),
+                message: format!("unknown op {other}"),
+            },
+        }
+    }
+}
+
+fn start_adapter_session() -> Session {
+    let (server, client) = tokio::io::duplex(64 * 1024);
+    let (reader, writer) = tokio::io::split(server);
+    let handler = crate::AdapterHandler::new(TestAdapter);
+    let task = tokio::spawn(serve_io_with(handler, ServeOptions::default(), reader, writer));
+    Session {
+        client,
+        drained: Arc::new(AtomicBool::new(false)),
+        task,
+    }
+}
+
+fn adapter_invoke(call_id: &str, contribution: &str) -> HostToPlugin {
+    HostToPlugin::Invoke(Invoke {
+        call_id: call_id.to_string(),
+        contribution: contribution.to_string(),
+        ctx: InvokeContext::default(),
+        payload: json!({"text": "hi"}),
+    })
+}
+
+async fn expect_error_code(session: &mut Session) -> String {
+    match recv(session).await {
+        PluginToHost::InvokeResult(result) => match result.outcome {
+            InvokeOutcome::Error { code, .. } => code,
+            other => panic!("expected error outcome, got {other:?}"),
+        },
+        other => panic!("expected InvokeResult, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn adapter_op_routes_to_invoke_op_with_prefix_stripped() {
+    let mut session = start_adapter_session();
+    send(&mut session, hello(PROTOCOL_VERSION)).await;
+    assert!(matches!(recv(&mut session).await, PluginToHost::Welcome(_)));
+    match recv(&mut session).await {
+        PluginToHost::Register(reg) => assert!(matches!(
+            reg.contributions.as_slice(),
+            [Contribution::Adapter(a)] if a.name == "qq-test" && a.capabilities.send_text
+        )),
+        other => panic!("expected Register, got {other:?}"),
+    }
+    assert_eq!(recv(&mut session).await, PluginToHost::Ready);
+
+    send(&mut session, adapter_invoke("c1", "qq-test:send_text")).await;
+    assert_eq!(
+        expect_ok_result(&mut session).await,
+        ("c1".to_string(), "sent:hi".to_string())
+    );
+
+    // 实例名不匹配 / 未知 op：均为可读错误。
+    send(&mut session, adapter_invoke("c2", "other:send_text")).await;
+    assert_eq!(expect_error_code(&mut session).await, "unknown_contribution");
+    send(&mut session, adapter_invoke("c3", "qq-test:nope")).await;
+    assert_eq!(expect_error_code(&mut session).await, "unknown_contribution");
+
+    shutdown_and_assert_clean(session).await;
+}
+
+/// `configure` 拒绝宿主配置 → `Failed{invalid_config}`，会话以错误退出。
+#[tokio::test]
+async fn configure_rejection_fails_handshake() {
+    struct Picky;
+    #[async_trait::async_trait]
+    impl PluginHandler for Picky {
+        async fn configure(&self, config: serde_json::Value) -> Result<(), String> {
+            config.get("port").map(|_| ()).ok_or_else(|| "port required".to_string())
+        }
+        fn contributions(&self) -> Vec<Contribution> {
+            Vec::new()
+        }
+        async fn invoke(&self, _req: InvokeRequest) -> InvokeOutcome {
+            InvokeOutcome::ok("")
+        }
+    }
+
+    let (server, client) = tokio::io::duplex(64 * 1024);
+    let (reader, writer) = tokio::io::split(server);
+    let task = tokio::spawn(serve_io_with(Picky, ServeOptions::default(), reader, writer));
+    let mut session = Session {
+        client,
+        drained: Arc::new(AtomicBool::new(false)),
+        task,
+    };
+    send(&mut session, hello(PROTOCOL_VERSION)).await;
+    match recv(&mut session).await {
+        PluginToHost::Failed(f) => assert_eq!(f.code, "invalid_config"),
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    let result = tokio::time::timeout(TIMEOUT, session.task)
+        .await
+        .expect("session should finish")
+        .expect("no panic");
+    assert!(result.is_err());
+}

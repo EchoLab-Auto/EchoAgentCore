@@ -188,12 +188,12 @@ BackendEvent::AdapterState    { adapter, state: Value }           // 插件主�
 
 1. **`echo-plugin-api`**：`AdapterContribution` + 能力位 + 消息 / 目标 JSON 结构；`Register` / 消息体改「逐项容错解析」（未知项降级 `Unknown(Value)` 并 warn，见「版本与兼容」）。
 2. **`echo-plugin-host`**：
-   - `RemoteAdapter`（实现 `echo_adapter::Adapter`）：异步方法 → `Invoke`；`status_info()` 读缓存但**合并 PluginSupervisor 进程状态**（进程 Pending/Failed 时绝不显示缓存 Connected，见 op 表仲裁）；
+   - `RemoteAdapter`（实现 `echo_adapter::Adapter`）：异步方法 → `Invoke`；`status_info()` 读缓存但**合并 PluginSupervisor 进程状态**（进程 Pending/Failed 时绝不显示缓存 Connected，见 op 表仲裁）；**管理面生命周期（实施决策）**：`RemoteAdapterManagement` 挂为 `RemoteAdapter` 的字段，持对宿主的 `Weak` 弱引用（避免循环强引用；宿主销毁后调用方拿到可读 `internal error` 而非悬垂指针）——零 unsafe、无占位指针；
    - **`QqManagement` / `qq_management()` 从 `echo-adapter` 删除**（评审升级）：置换为平台中立的 `AdapterManagement`——`cached_state() -> Option<Value>`（读 epoch 缓存）+ `async invoke_custom(method, payload)`（异步写）；远程化后「同步 setter」只剩乐观缓存假象，收敛为「缓存读 + 异步写」，不再提供假同步面；
    - **缓存失效 = epoch 语义**：连接态 / 门控缓存挂在 `PluginHandle` 的**重启 / 升级计数**上——插件崩溃重启后运行时状态（名单 / gate_mode）全丢，缓存不刷新即**安全相关漂移**（denylist 丢失 = 被拦用户恢复通行）；epoch 变化 → 缓存置脏、按需重拉；
    - `AdapterHostService`（实现 `HostService`）：按 name fan-out 到各 `RemoteAdapter` 的**有界入站队列 + 每实例串行 worker**（回执 = 已入队；满 → `backpressure`，见 HostCall 表）；
    - `StartedPlugins::adapters()`（与 `tools()` 平行）汇总远程适配器。
-3. **组合根（`core/src/main.rs`）**：早期注册 `adapter_host` 服务；插件启动后把 `RemoteAdapter` 注册进 `AdapterRegistry`（与内置实例按配置二选一）；persona 绑定 / `set_message_hook` / `qq_tools` / `apply_qq_command` 适配（工具泛化为 `Arc<dyn Adapter>`；命令走 `<name>:custom`）。
+3. **组合根（`core/src/main.rs`）**：早期注册 `adapter_host` 服务；插件启动后把 `RemoteAdapter` 注册进 `AdapterRegistry`（与内置实例按配置二选一）；persona 绑定 / `set_message_hook` / `qq_tools` / `apply_qq_command` 适配（工具泛化为 `Arc<dyn Adapter>`；命令走 `<name>:custom`）。**注册表前置依赖（P1.6）**：`AdapterRegistry` 改内部可变性（`RwLock<HashMap>` + `register(&self)` + `get` 按值克隆）——运行期远程适配器注册需 `Arc` 下可写；
 4. **平台命令处理链归位**：`/echo`、`/help`、`/admin` 从「适配器注册表（OneBot Event）」迁到「宿主送达入口（平台中立词汇）」——处理器本就依赖宿主控制面（`shutdown_tx` / `tracker`），迁移同时使其平台中立；**内置适配器一并切换**（单一路径），语义用双跑测试锁定。
 5. **Panel**：线协议**同步通用化**（§适配器管理通道）；Panel 两阶段迁移——先换通道（P2）、后换 UI（schema 渲染器，见 §Panel UI 解耦）；「零前端改动」口径已废弃（评审判定：翻译层会把平台残留永久固化）。
 
@@ -204,11 +204,15 @@ BackendEvent::AdapterState    { adapter, state: Value }           // 插件主�
 ```rust
 #[async_trait]
 impl AdapterPlugin for QqPlugin {
-    fn adapter(&self) -> AdapterContribution { … }
-    async fn op(&self, method: &str, payload: Value) -> Result<Value, (String, String)>;
-    // 脚手架提供：self.deliver(message).await / self.report_state(…) —— HostCall 封装
+    async fn configure(&self, config: Value) -> Result<(), String>; // Hello.config（实例名 / 端口分配）
+    fn adapter(&self) -> AdapterContribution { … }                   // configure 之后调用
+    async fn invoke_op(&self, op: &str, payload: Value) -> InvokeOutcome; // 前缀 "<name>:" 已剥离
+    async fn on_ready(&self, host: HostClient);                      // 自存，用于 deliver_message / report_state
 }
+// main: serve_adapter_stdio(QqPlugin::default()).await
 ```
+
+已落地（P1.2）：`AdapterHandler<A>` 把 `AdapterPlugin` 包装为 `PluginHandler`（注册单个 `Contribution::Adapter`，按实例名匹配寻址）；SDK 读循环对 `"<name>:<op>"` 按已注册实例名放行；`PluginHandler::configure` 为通用钩子（缺省忽略，拒绝 = `Failed{invalid_config}`）。
 
 **QQ 插件仓库（首个样本）**——现状代码整体迁出 + 适配层：
 
@@ -222,6 +226,18 @@ echo-adapter-qq/（独立仓库）
 ```
 
 依赖 `echo-plugin-sdk`（git tag / 发布通道）+ 传输依赖；**不再依赖 `echo-adapter`**（trait 词汇经 SDK 镜像）。
+
+**P1.1 迁出方案（依赖面实测，2026-10）**：现 `echo-adapter-qq` 共 7.8k 行，对 echo-* 的引用按 crate 分五类：
+
+| 依赖 | 实际用到 | 处置 |
+|---|---|---|
+| `echo-core`（OneBot 事件 / 段 / action，零 echo 依赖） | `Event`/`Segment`/`actions::*` 共 23 处 | **随插件迁出**（vendor 进插件仓库 `src/onebot/`）；宿主侧仅 `core/handlers/` 3 个 handler 引用，随 handler 平台中立化一并移除 |
+| `echo-server`（反向 WS 服务端，仅依赖 echo-core） | `Server`/`Handler`/`ConnectionTracker` 共 14 处 | **随插件迁出**（`src/transport/`）；宿主无其他使用者 |
+| `echo-adapter` | `filter::*`（门控 / 名单，957 行）、`ConfigStore`、`ensure_table`、`Adapter`/`AdapterManagement` trait、`IncomingMessage` | filter 与 ConfigStore **复制进插件**（宿主侧 `echo-agent` 仍用，不能删）；trait 换成 `AdapterPlugin`；`IncomingMessage` → `AdapterMessage` |
+| `echo-defs` | `MessageTarget`/`ChannelType`（15 处）、`media_store::*`（5 处） | 前者 → `AdapterTarget`/`AdapterChannel`；**`media_store` 改走 `adapter_host.store_media` HostCall**（宿主侧该方法尚未实现，列为 P1.7 前置） |
+| `echo-context` | `kernel::get_or_init`（缓存 reqwest Client，1 处） | 换 `OnceLock` |
+
+插件仓库最终只依赖 `echo-plugin-sdk`。宿主侧收尾（P1.9）：删除 `echo-adapter-qq`/`echo-core`/`echo-server` 三个 crate 与 `core/src/main.rs` 中的内置 QQ 装配（`QqAdapter::with_instance`、`set_message_hook`/`add_handler` 接线），`core/handlers/` 改为挂在 `AdapterHostService` 入站 worker 之后。迁出期以 `[adapters.qq] mode = "builtin" | "plugin"` 二选一，切换前两条路径并存。
 
 **迁移映射**：
 
@@ -332,7 +348,7 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 
 > 产出物 = **一个参考实现**（inproc QQ 适配器全程经 `AdapterManagement` 运行）+ 协议三件套（`InvokeAdapterOp` / `AdapterOpResult` / `AdapterState`）+ 三项前置修复。**P1 外迁插件对照本参考实现实现同一接口；P2 远程适配器必须过同一组 conformance**（参考实现先行 = 接口在真实负载下先验证，再外迁）。
 >
-> **实施进度（2026-10 开工）**：W1.1 / W1.2 / W1.3 / W2.2 / W3.1 / W3.2 **已完成**（测试绿：插件四 crate 全量 + `echo-adapter-qq` 97 项 + 负向验证确认 W1.2 回归用例能抓旧缺陷）；W2.4 随 Panel 阶段 1 推迟（breaking，见其条目注）；W2.1 / W2.3 / W3.3–W3.6 / W4 为下一步。
+> **实施进度（2026-10 开工）**：**P0 全部完成**（`grep qq_management|QqManagement` 归零、双跑 diff 为空、全仓 63 组测试全绿）；W2.4 随 Panel 阶段 1 推迟（breaking，见其条目注）。**P1 进行中**：宿主侧骨架已落地（`AdapterHostService` + `RemoteAdapter` + `RemoteAdapterManagement` + 组合根注册），组合根接线与状态落盘推进中——下一批 = P1.7（QQ 插件本体）。
 
 **W1 前置修复（既有缺陷，先于骨架动工）**
 
@@ -342,28 +358,28 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 
 **W2 线协议通用化（`echo-protocol`）**
 
-- [ ] W2.1 新增 `InvokeAdapterOp { adapter, method, payload }` / `AdapterOpResult { adapter, method, result }` / `AdapterState { adapter, state }`
+- [x] W2.1 新增 `InvokeAdapterOp { adapter, method, payload }` / `AdapterOpResult { adapter, method, result, error? }` / `AdapterState { adapter, state }`（result 空时线上省略）
 - [x] W2.2 `AdapterStatus` 增 `metadata: Vec<AdapterMetadataEntry>`（`persona` 保留；`container` / `webui_url` / `onebot_url` 标 deprecated，随 Panel 阶段 1 删除；发射端 `emit_adapter_list` 同源派生，无双事实来源）
-- [ ] W2.3 `command_clearance`：`InvokeAdapterOp` 入 Frontend-only（**类别判定**）；`command.rs:537-575` 逐变体测试改写为类别测试
+- [x] W2.3 `command_clearance`：`InvokeAdapterOp` 入 Frontend-only（**类别判定**，含未知方法 fail-closed）；逐变体测试改为类别测试（`adapter_management_commands_are_frontend_only_by_category`）
 - [ ] W2.4 `GroupInfo.group_id` / `FriendInfo.user_id`：`i64` → `String`（breaking；与 Panel 阶段 1 同批发布 + 升级指南记录）。**注**：本轮核实 Panel 侧（`protocol.ts` / `QqPanel.vue` 的比较与 toggle 链路）依赖 number 形态，单侧改动会破坏面板交互——按约定推迟，不拆碎进行
 
 **W3 管理面置换（核心：`QqManagement` → `AdapterManagement`）**
 
 - [x] W3.1 `echo-adapter`：定义平台中立 `AdapterManagement`——`cached_state() -> Option<Value>`（**同步读、零 IO**）+ `async invoke_custom(method, payload) -> Result<Value, AdapterError>`（写）；`Adapter` 面新增 `management()` 访问器（`qq_management()` 标迁移期保留，随 W3.5 删除）
 - [x] W3.2 `echo-adapter-qq`：`QqAdapter` 实现 `AdapterManagement`——12 method 路由表（`set_gate_mode` / `get_gate_mode` / `update_allowlist` / `update_denylist` / `get_filter_config` / `set_owner` / `get_owner` / `login_status` / `login_qrcode`（base64）/ `get_groups` / `get_friends` / `instance_info`；未知方法可读错误 fail-closed）+ `cached_state` 状态文档；二维码逻辑抽为固有方法（双管理面共用）；契约测试入库（含「双面同源」断言）
-- [ ] W3.3 `echo-agent`：`apply_qq_command` → `apply_adapter_op`（`InvokeAdapterOp` → `invoke_custom`）；`broadcast_to_other_qq_adapters`（`adapter_qq/commands.rs:68`）泛化为按 method 广播
-- [ ] W3.4 **状态下发单源化**：`emit_adapter_list`（`agent/mod.rs:2707`）/ `emit_qq_filter_config`（`adapter_qq/commands.rs:406`）/ `RequestAdapterList` 臂（`agent/commands.rs:735`）统一改读 `cached_state()`；旧 QQ 事件由该**单一状态投影**产出（**防双源漂移**）
-- [ ] W3.5 **删除** `QqManagement` / `QqInstanceInfo`（`echo-adapter/src/capabilities.rs:31-82`）/ `qq_management()`（`traits.rs:157`）/ re-export（`lib.rs:24`）；8 处产品消费点（`adapter_qq/commands.rs` ×6、`agent/mod.rs:2721`、`agent/commands.rs:735`）全部迁移
-- [ ] W3.6 测试更新：`echo-adapter` mock 断言改 `management()`（`registry.rs:198`）；门控测试改经 custom 面；命令域测试改经 `InvokeAdapterOp`；conformance 新增「custom op 路由 / 未知 method 可读错误」
+- [x] W3.3 `echo-agent`：新增 `InvokeAdapterOp` 处理臂（经 `invoke_adapter_method` → `invoke_custom`；写类方法对齐其余实例）；**全部 9 个旧 QQ 臂也统一改走管理面**（invoke_custom）；旧 `broadcast_to_other_qq_adapters` 已删除（`broadcast_adapter_op_to_others` 替代）
+- [x] W3.4 **状态下发单源化**：`emit_adapter_state_events`（`cached_state` 一次性读 → 派生 `AdapterState` + 全部旧 QQ 事件）统一三处发射点（写臂 / 读臂 / `RequestAdapterList`）；`emit_adapter_list` 的实例信息也改读同一状态文档；旧 QQ 事件全部由**单一状态投影**产出
+- [x] W3.5 **删除** `QqManagement` / `QqInstanceInfo` / `qq_management()` / re-export（`echo-adapter`）；**8 处产品消费点全部迁移**（命令域 6 + `agent/mod.rs` 实例信息 + `agent/commands.rs` 状态臂）；`grep qq_management|QqManagement` = 0
+- [x] W3.6 测试更新：`echo-adapter` mock 断言改 `management()`；`echo-adapter-qq` 管理面契约测试（含「读路径与固有同源」）；命令域测试经 `InvokeAdapterOp`（含双跑）；conformance 用例就绪（custom op 路由 / 未知方法可读错误已在契约测试覆盖）
 - **验收**：grep `qq_management` / `QqManagement` 归零（测试名与迁移注释除外）；QQ 管理功能经新通道与旧路径**行为一致**（W4.2 双跑锁定）
 
 **W4 双跑与兼容（迁移期）**
 
-- [ ] W4.1 旧 10 命令 / 7 事件保留标 deprecated（Panel 阶段 1 前继续可用）；发射源 = `AdapterState` 投影（不新增第二事实来源）
-- [ ] W4.2 双跑对照：同一操作经旧命令与 `InvokeAdapterOp` 产生**等价状态**（内置适配器）
-- [ ] W4.3 升级指南：线协议 breaking 清单 + 废弃时间表（两版本周期）
-- [ ] W4.4 loopback 测试适配器端到端：`InvokeAdapterOp` 全链路（Core → custom → `AdapterOpResult` → `AdapterState`）
-- **验收**：Panel 现状功能零回归；双跑 diff 为空；`cargo test` 全量绿 + conformance 扩展项全绿
+- [x] W4.1 旧 10 命令 / 7 事件保留（deprecated 保留，发射源 = `AdapterState` 投影，不新增第二事实来源）
+- [x] W4.2 双跑对照入库：`dual_run_old_and_new_gate_commands_produce_equivalent_state`（同一操作经 `SetQqGateMode` 与 `InvokeAdapterOp` 产生**等价状态**与同一事件形态；多实例广播对齐已断言）
+- [ ] W4.3 升级指南：线协议 breaking 清单 + 废弃时间表（两版本周期）——随 Panel 阶段 1（W2.4 同批）编写
+- [x] W4.4 loopback 端到端（mock 适配器全链路：`InvokeAdapterOp` → `invoke_custom` → `AdapterOpResult` + `AdapterState` + 派生旧事件；写方法广播断言）
+- **验收（已达成）**：Panel 现状功能零回归（全仓 63 组测试全绿）；双跑 diff 为空（双跑测试入库）；`cargo test --workspace` 全量绿
 
 **风险与开放问题**：
 

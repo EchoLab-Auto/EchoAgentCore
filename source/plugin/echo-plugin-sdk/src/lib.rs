@@ -72,11 +72,115 @@ pub use serve::{
     DEFAULT_HOST_CALL_TIMEOUT,
 };
 
+/// 适配器插件（P1.2，2026-10 适配器插件化）：[`PluginHandler`] 的适配器
+/// 形态——注册 `Contribution::Adapter`（宿主据此把 `RemoteAdapter` 注册进
+/// `AdapterRegistry`），`Invoke("<name>:<op>")` 寻址到 [`AdapterPlugin::invoke_op`]
+/// 的 method 路由（实例名前缀由 SDK 剥离）。作者实现本 trait 后仍交给
+/// [`serve_stdio`]——协议握手 / 帧 / 回呼全部由 SDK 承担。
+#[async_trait::async_trait]
+pub trait AdapterPlugin: Send + Sync + 'static {
+    /// 接收宿主下发配置（`Hello.config`），先于 [`adapter`](Self::adapter)
+    /// 调用；`Err` = 拒绝启动。缺省忽略。
+    async fn configure(&self, _config: Value) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// 适配器贡献（`Contribution::Adapter`；实例名 / 平台 / 能力位 / UI 描述符）。
+    /// 在 [`configure`](Self::configure) 之后调用。
+    fn adapter(&self) -> echo_plugin_api::AdapterContribution;
+
+    /// 处理一次适配器方法调用（`Invoke("<name>:<op>")` 的 `op` 部分；
+    /// SDK 已剥离实例名前缀）。
+    ///
+    /// 生命周期 `start` / `stop`、出站 `send_text` / `send_media`、目录
+    /// `get_groups` / `get_friends`、管理 `custom`（`{method, payload}`）
+    /// 都走本方法路由；未知方法返回 `Error{code:"unknown_contribution"}`。
+    async fn invoke_op(&self, op: &str, payload: Value) -> InvokeOutcome;
+
+    /// 握手完成后交付宿主客户端（调用一次）。插件自存（如
+    /// `OnceLock<HostClient>`），后续 `deliver_message` / `report_state`
+    /// 等回呼经它发起（见 `document/adapter-plugin.md` §插件动作 表）。
+    async fn on_ready(&self, _host: HostClient) {}
+
+    /// `Drain` 排空通知（随后进程退出）；缺省空实现。
+    async fn on_drain(&self, _deadline_ms: u64) {}
+}
+
+/// 把 [`AdapterPlugin`] 包装成 [`PluginHandler`]：注册单个
+/// `Contribution::Adapter`，剥离 `"<name>:"` 前缀后路由到
+/// [`AdapterPlugin::invoke_op`]。通常经 [`serve_adapter_stdio`] 使用。
+pub struct AdapterHandler<A: AdapterPlugin> {
+    plugin: A,
+    /// 实例名：注册时（`configure` 之后）锁定，寻址按它匹配。
+    name: std::sync::OnceLock<String>,
+}
+
+impl<A: AdapterPlugin> AdapterHandler<A> {
+    /// 包装适配器插件（实例名在注册时取自 [`AdapterPlugin::adapter`]）。
+    pub fn new(plugin: A) -> Self {
+        Self {
+            plugin,
+            name: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// 取内层插件。
+    pub fn inner(&self) -> &A {
+        &self.plugin
+    }
+}
+
+#[async_trait::async_trait]
+impl<A: AdapterPlugin> PluginHandler for AdapterHandler<A> {
+    async fn configure(&self, config: Value) -> Result<(), String> {
+        self.plugin.configure(config).await
+    }
+
+    fn contributions(&self) -> Vec<Contribution> {
+        let adapter = self.plugin.adapter();
+        let _ = self.name.set(adapter.name.clone());
+        vec![Contribution::Adapter(adapter)]
+    }
+
+    async fn invoke(&self, req: InvokeRequest) -> InvokeOutcome {
+        match serve::split_adapter_op(&req.contribution) {
+            Some((name, op)) if self.name.get() == Some(&name) => {
+                self.plugin.invoke_op(&op, req.payload).await
+            }
+            _ => InvokeOutcome::Error {
+                code: "unknown_contribution".to_string(),
+                message: format!("unknown adapter contribution: {}", req.contribution),
+            },
+        }
+    }
+
+    async fn on_ready(&self, host: HostClient) {
+        self.plugin.on_ready(host).await;
+    }
+
+    async fn on_drain(&self, deadline_ms: u64) {
+        self.plugin.on_drain(deadline_ms).await;
+    }
+}
+
+/// 以 stdio 服务一个适配器插件（= `serve_stdio(AdapterHandler::new(plugin))`）。
+pub async fn serve_adapter_stdio(plugin: impl AdapterPlugin) -> std::io::Result<()> {
+    serve_stdio(AdapterHandler::new(plugin)).await
+}
+
 use serde_json::Value;
 
 /// 插件处理器：插件作者实现本 trait，[`serve_stdio`] 完成全部协议工作。
 #[async_trait::async_trait]
 pub trait PluginHandler: Send + Sync + 'static {
+    /// 接收宿主下发配置（`Hello.config`；`plugins.toml [plugin.config]` 或
+    /// 宿主组装的实例分配结果）。在 [`contributions`](Self::contributions)
+    /// 之前调用一次；返回 `Err` = 拒绝启动（宿主收到 `Failed{invalid_config}`）。
+    /// 缺省忽略配置。
+    async fn configure(&self, _config: Value) -> Result<(), String> {
+        Ok(())
+    }
+
     /// 要注册的贡献集合（Hello 后经 `Register` 全量上报）。
     fn contributions(&self) -> Vec<Contribution>;
 
