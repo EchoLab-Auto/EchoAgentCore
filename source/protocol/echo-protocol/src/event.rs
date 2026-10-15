@@ -1086,6 +1086,10 @@ pub struct WorkspaceConversationInfo {
     /// 通道 id 是否为存量裸 ws 格式（见类型注释）。
     #[serde(default)]
     pub legacy: bool,
+    /// 会话级 API 覆盖（2026-10）：`Some(name)` = 该对话的 LLM 请求走
+    /// 全局供应商池中该 profile 的 provider；`None` = 跟随 persona 级。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_profile: Option<String>,
 }
 
 /// 一个工作区会话（workspace 插件）：名称 + 多个工作区目录。

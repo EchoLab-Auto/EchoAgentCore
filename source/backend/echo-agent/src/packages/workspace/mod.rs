@@ -527,6 +527,7 @@ fn conversations_view(session: &WorkspaceSessionInfo) -> Vec<WorkspaceConversati
             id: "main".into(),
             name: "主对话".into(),
             legacy: true,
+            api_profile: None,
         }]
     } else {
         session.conversations.clone()
@@ -1125,6 +1126,7 @@ impl Tool for WorkspaceTool {
                                     id: String::new(),
                                     name: name.to_string(),
                                     legacy: false,
+                                    api_profile: None,
                                 },
                             )
                             .map_err(ToolError::Execution)?;
@@ -1152,6 +1154,7 @@ impl Tool for WorkspaceTool {
                                     id: conv_id.to_string(),
                                     name: name.to_string(),
                                     legacy: false,
+                                    api_profile: None,
                                 },
                             )
                             .map_err(ToolError::Execution)?;
@@ -1366,6 +1369,7 @@ mod tests {
                     id: String::new(),
                     name: "支线任务".into(),
                     legacy: false,
+                    api_profile: None,
                 },
             )
             .unwrap();
@@ -1395,6 +1399,7 @@ mod tests {
                     id: String::new(),
                     name: "Task".into(),
                     legacy: false,
+                    api_profile: None,
                 },
             )
             .unwrap();
@@ -1405,6 +1410,7 @@ mod tests {
                     id: String::new(),
                     name: "Task".into(),
                     legacy: false,
+                    api_profile: None,
                 },
             )
             .unwrap();
@@ -1418,6 +1424,7 @@ mod tests {
                     id: "main".into(),
                     name: "主线".into(),
                     legacy: false,
+                    api_profile: None,
                 },
             )
             .unwrap();
@@ -1445,6 +1452,7 @@ mod tests {
                     id: String::new(),
                     name: "支线".into(),
                     legacy: false,
+                    api_profile: None,
                 },
             )
             .unwrap();
@@ -1508,6 +1516,7 @@ mod tests {
                     id: String::new(),
                     name: "支线任务".into(),
                     legacy: false,
+                    api_profile: None,
                 },
             )
             .unwrap();

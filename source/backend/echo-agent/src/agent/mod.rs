@@ -756,7 +756,12 @@ impl Agent {
         let weak = std::sync::Arc::downgrade(self);
         store.set_on_change(std::sync::Arc::new(move || {
             if let Some(agent) = weak.upgrade() {
-                agent.workspace_after_change();
+                let handle = tokio::runtime::Handle::try_current();
+                if let Ok(handle) = handle {
+                    handle.spawn(async move {
+                        agent.workspace_after_change().await;
+                    });
+                }
             }
         }));
         // 多对话（2026-10）：删除对话 → 清空其通道历史（会话级清理语义，

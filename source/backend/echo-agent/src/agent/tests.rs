@@ -2875,6 +2875,9 @@ async fn workspace_channel_tool_use_broadcasts() {
     crate::tool::Tool::execute(&tool, serde_json::json!({"operation": "use", "id": "docs"}))
         .await
         .expect("tool use");
+    // workspace_after_change 是异步 spawn（2026-10 会话级 API 恢复）——
+    // 等一拍让钩子完成。
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let mut events = Vec::new();
     while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
@@ -2927,6 +2930,7 @@ async fn workspace_conversation_channels_and_delete_cleanup() {
                 id: String::new(),
                 name: "支线".into(),
                 legacy: false,
+                api_profile: None,
             },
         )
         .unwrap();
@@ -2942,6 +2946,9 @@ async fn workspace_conversation_channels_and_delete_cleanup() {
     store
         .set_active(Some("proj".into()), Some(conv.id.clone()))
         .unwrap();
+    // workspace_after_change 是异步 spawn（2026-10 会话级 API 恢复）——
+    // 等一拍让钩子完成。
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let channel = agent
         .trunk
         .all()

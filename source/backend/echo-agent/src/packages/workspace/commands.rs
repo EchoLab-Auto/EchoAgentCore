@@ -335,8 +335,21 @@ impl Agent {
     ///    对话」按 active 投影切换（见文档 §工作区会话与项目通道）。
     ///
     /// 面板命令与模型侧 `workspace` 工具（use/create/delete）共用本路径。
-    pub(crate) fn workspace_after_change(&self) {
+    pub(crate) async fn workspace_after_change(&self) {
         if let Some(session) = self.ensure_workspace_channel_for_active() {
+            // 会话级 API 恢复（2026-10 持久化）：激活对话时若该对话有
+            // `api_profile` 覆盖，重建会话级 provider；无覆盖时清除
+            // （避免残留旧覆盖——例如从有覆盖的对话切到无覆盖的）。
+            let session_id = session.id.clone();
+            if let Some(store) = self.workspace_store() {
+                if let Some((_, conv)) = store.active_pair() {
+                    if let Some(profile) = conv.api_profile.as_deref().filter(|p| !p.is_empty()) {
+                        let _ = self.set_session_provider(&session_id, profile).await;
+                    } else {
+                        let _ = self.set_session_provider(&session_id, "").await;
+                    }
+                }
+            }
             self.emit(BackendEvent::SessionUpdated {
                 session: session.info(String::new()),
             });

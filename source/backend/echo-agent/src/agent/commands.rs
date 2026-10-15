@@ -396,6 +396,36 @@ impl Agent {
                 // 会话级 API 覆盖（2026-10）：该会话的 LLM 请求走指定
                 // profile 的 provider；其余会话不受影响。team_id 已由
                 // requires_explicit_team 保证非空。
+                //
+                // 持久化（2026-10 拓展）：同时写入工作区对话的
+                // `api_profile`（`WorkspaceConversationInfo.api_profile`），
+                // 重启后激活该对话时恢复。
+                if let Some(rest) = session_id.strip_prefix("local:workspace:") {
+                    // 解析 ws_id 与 conv_id：legacy = "ws_id:local_user"，
+                    // 多对话 = "ws_id/conv_id:local_user"。
+                    let ws_id = rest
+                        .split('/')
+                        .next()
+                        .map(|s| s.strip_suffix(":local_user").unwrap_or(s))
+                        .unwrap_or(rest);
+                    let conv_id = rest
+                        .split('/')
+                        .nth(1)
+                        .map(|s| s.strip_suffix(":local_user").unwrap_or(s))
+                        .unwrap_or("main");
+                    if let Some(store) = self.workspace_store() {
+                        if let Some(mut ws) = store.get(ws_id) {
+                            if let Some(conv) = ws.conversations.iter_mut().find(|c| c.id == conv_id) {
+                                conv.api_profile = if profile.is_empty() {
+                                    None
+                                } else {
+                                    Some(profile.clone())
+                                };
+                                let _ = store.upsert(ws);
+                            }
+                        }
+                    }
+                }
                 let ok = self.set_session_provider(&session_id, &profile).await;
                 let message = if ok {
                     if profile.is_empty() {
@@ -414,6 +444,29 @@ impl Agent {
             }
             BackendCommand::ClearSessionApi { team_id: _, session_id } => {
                 // 清除会话级覆盖（回到跟随 persona 级）。
+                // 同步清除工作区对话的持久化 api_profile。
+                if let Some(rest) = session_id.strip_prefix("local:workspace:") {
+                    // 解析 ws_id 与 conv_id：legacy = "ws_id:local_user"，
+                    // 多对话 = "ws_id/conv_id:local_user"。
+                    let ws_id = rest
+                        .split('/')
+                        .next()
+                        .map(|s| s.strip_suffix(":local_user").unwrap_or(s))
+                        .unwrap_or(rest);
+                    let conv_id = rest
+                        .split('/')
+                        .nth(1)
+                        .map(|s| s.strip_suffix(":local_user").unwrap_or(s))
+                        .unwrap_or("main");
+                    if let Some(store) = self.workspace_store() {
+                        if let Some(mut ws) = store.get(ws_id) {
+                            if let Some(conv) = ws.conversations.iter_mut().find(|c| c.id == conv_id) {
+                                conv.api_profile = None;
+                                let _ = store.upsert(ws);
+                            }
+                        }
+                    }
+                }
                 self.set_session_provider(&session_id, "").await;
                 self.emit(BackendEvent::Error {
                     session_id: Some(session_id.clone()),
@@ -891,6 +944,11 @@ impl Agent {
                     match target {
                         Some(agent) => {
                             Self::clear_agent_history(&agent, session_id.as_deref()).await;
+                            // 同步清除该会话的 provider 覆盖（2026-10 会话级
+                            // API 清理一致性：历史清空时覆盖一并移除）。
+                            if let Some(sid) = session_id.as_deref().filter(|s| !s.is_empty()) {
+                                agent.session_providers.remove(sid);
+                            }
                             tracing::info!(
                                 team = %id,
                                 session = session_id.as_deref().unwrap_or("<all>"),
@@ -912,6 +970,9 @@ impl Agent {
                         // 与 RequestTrunkTimeline 的 self 兜底保持一致。
                         None if self.team_id().as_deref() == Some(id.as_str()) => {
                             Self::clear_agent_history(self, session_id.as_deref()).await;
+                            if let Some(sid) = session_id.as_deref().filter(|s| !s.is_empty()) {
+                                self.session_providers.remove(sid);
+                            }
                             tracing::info!(
                                 team = %id,
                                 session = session_id.as_deref().unwrap_or("<all>"),
