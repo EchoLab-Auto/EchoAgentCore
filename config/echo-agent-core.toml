@@ -72,6 +72,16 @@ text = "请你使用中文"
 [adapters.qq]
 # 是否启用 QQ 适配器（启动时自动连接 NapCat）。
 enabled = false
+# 适配器宿主模式（2026-10 适配器插件化）：
+# - "builtin"（缺省）：进程内适配器，零行为变化；
+# - "plugin"：独立进程的适配器插件（stdio 协议，按实例拉起）。
+#   plugin 模式下启用下面的 [adapters.qq.plugin]（示例）：
+#     [adapters.qq.plugin]
+#     command = "echo-adapter-qq"   # 插件二进制（绝对路径 / PATH 名；缺省同名）
+#     args = []
+#   运行期状态（门控 / 名单 / owner）落盘在配置目录的 qq-<实例>.toml，
+#   重启自动回灌；入站消息 / 连接态经 stdio 协议回呼 Core。
+# mode = "plugin"
 # NapCat OneBot HTTP API，用于读取完整群和好友列表。
 napcat_onebot_url = "http://localhost:3000"
 # NapCat Docker 容器由 QQ 适配器托管：启动 QQ 适配器时自动启动 NapCat，

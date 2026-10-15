@@ -11,6 +11,18 @@ name = "default"
 bundles = []
 patches = []
 
+# ── 适配器插件（2026-10 适配器插件化） ──
+#
+# 适配器插件（如 echo-adapter-qq）不走本文件的静态条目：Core 按 QQ 实例
+# 组装其 Hello.config（实例名 / persona / 端口分配 / 状态文件），在
+# core.toml 的 [adapters.qq] 里声明：
+#
+#   mode = "plugin"
+#   [adapters.qq.plugin]
+#   command = "/path/to/echo-adapter-qq"
+#
+# 本文件面向普通（工具 / 服务）插件。
+
 # ── 行内条目示例：echo-plugin-example（websearch + calculator 试点） ──
 #
 # [[plugin]]
