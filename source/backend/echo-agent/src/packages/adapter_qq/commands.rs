@@ -24,7 +24,6 @@ impl Agent {
             return self
                 .adapters
                 .get(name)
-                
                 .ok_or_else(|| format!("QQ 实例 {name} 未找到"));
         }
         let qq: Vec<std::sync::Arc<dyn echo_adapter::traits::Adapter>> = self
@@ -60,7 +59,8 @@ impl Agent {
                             "group_ids": group_ids,
                         });
                         if let Err(message) =
-                            invoke_adapter_method(ad.clone(), "update_allowlist", payload.clone()).await
+                            invoke_adapter_method(ad.clone(), "update_allowlist", payload.clone())
+                                .await
                         {
                             self.emit(BackendEvent::Error {
                                 session_id: None,
@@ -96,7 +96,8 @@ impl Agent {
                             "group_ids": group_ids,
                         });
                         if let Err(message) =
-                            invoke_adapter_method(ad.clone(), "update_denylist", payload.clone()).await
+                            invoke_adapter_method(ad.clone(), "update_denylist", payload.clone())
+                                .await
                         {
                             self.emit(BackendEvent::Error {
                                 session_id: None,
@@ -275,7 +276,8 @@ impl Agent {
             BackendCommand::RequestGroupList { adapter } => {
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
-                        match invoke_adapter_method(ad.clone(), "get_groups", serde_json::json!({})).await
+                        match invoke_adapter_method(ad.clone(), "get_groups", serde_json::json!({}))
+                            .await
                         {
                             Ok(result) => {
                                 let groups = id_name_list(&result, "groups");
@@ -305,7 +307,12 @@ impl Agent {
             BackendCommand::RequestFriendList { adapter } => {
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
-                        match invoke_adapter_method(ad.clone(), "get_friends", serde_json::json!({})).await
+                        match invoke_adapter_method(
+                            ad.clone(),
+                            "get_friends",
+                            serde_json::json!({}),
+                        )
+                        .await
                         {
                             Ok(result) => {
                                 let friends = id_name_list(&result, "friends");
@@ -356,8 +363,12 @@ impl Agent {
                     Ok(ad) => {
                         // Core 代理取二维码（适配器管理通道；管理面内置 base64 编码）。
                         let name = ad.name().to_string();
-                        match invoke_adapter_method(ad.clone(), "login_qrcode", serde_json::json!({}))
-                            .await
+                        match invoke_adapter_method(
+                            ad.clone(),
+                            "login_qrcode",
+                            serde_json::json!({}),
+                        )
+                        .await
                         {
                             Ok(result) => {
                                 let encoded =

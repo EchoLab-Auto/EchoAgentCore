@@ -89,6 +89,13 @@ EchoAgentCore/
 - **平台回复指引**：QQ 消息回复由系统提示词边界块 + `qq-transport` 技能承担（"每条 hook 必调用一次发送工具"），循环层不再做代码校验/纠偏
 - `FanoutHandle` — 多订阅者事件扇出（自动清理失效订阅者）
 
+## 编码约定（2026-10 架构评审）
+
+- **错误处理**：库 crate 用 `thiserror` 定义具体错误类型（如 `echo_federation::FederationError`）；`anyhow` 只用于应用层（`echo-agent` 的 harness 与 `echo-agent-core` 组合根）。库错误经 `?` 自动转为 `anyhow::Error`
+- **锁**：持锁期间不 `.await` 的同步锁优先用 `parking_lot`（无中毒、`lock()` 直接返回 guard）；必须用 `std::sync` 锁的 crate 一律 `.lock().unwrap_or_else(std::sync::PoisonError::into_inner)`，生产代码不 `unwrap()` / `expect()` 锁（测试代码不限）
+- **异步路径不阻塞**：async 函数及其同步调用链里不 `std::thread::sleep` / 自旋重试；阻塞 IO（git、子进程）经 `tokio::task::spawn_blocking`
+- **文件规模**：单个源文件超过 ~1500 行（测试文件除外）即按职责拆子模块（`impl` 可分布在多个文件）
+
 ## 关键流程
 
 1. **QQ 输入 hook**：QqHandler → 触发门控 → 过滤管道 → AgentMessageHook → 结构化 `qq_message` 输入

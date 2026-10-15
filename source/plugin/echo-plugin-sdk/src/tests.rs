@@ -709,7 +709,12 @@ fn start_adapter_session() -> Session {
     let (server, client) = tokio::io::duplex(64 * 1024);
     let (reader, writer) = tokio::io::split(server);
     let handler = crate::AdapterHandler::new(TestAdapter);
-    let task = tokio::spawn(serve_io_with(handler, ServeOptions::default(), reader, writer));
+    let task = tokio::spawn(serve_io_with(
+        handler,
+        ServeOptions::default(),
+        reader,
+        writer,
+    ));
     Session {
         client,
         drained: Arc::new(AtomicBool::new(false)),
@@ -758,9 +763,15 @@ async fn adapter_op_routes_to_invoke_op_with_prefix_stripped() {
 
     // 实例名不匹配 / 未知 op：均为可读错误。
     send(&mut session, adapter_invoke("c2", "other:send_text")).await;
-    assert_eq!(expect_error_code(&mut session).await, "unknown_contribution");
+    assert_eq!(
+        expect_error_code(&mut session).await,
+        "unknown_contribution"
+    );
     send(&mut session, adapter_invoke("c3", "qq-test:nope")).await;
-    assert_eq!(expect_error_code(&mut session).await, "unknown_contribution");
+    assert_eq!(
+        expect_error_code(&mut session).await,
+        "unknown_contribution"
+    );
 
     shutdown_and_assert_clean(session).await;
 }
@@ -772,7 +783,10 @@ async fn configure_rejection_fails_handshake() {
     #[async_trait::async_trait]
     impl PluginHandler for Picky {
         async fn configure(&self, config: serde_json::Value) -> Result<(), String> {
-            config.get("port").map(|_| ()).ok_or_else(|| "port required".to_string())
+            config
+                .get("port")
+                .map(|_| ())
+                .ok_or_else(|| "port required".to_string())
         }
         fn contributions(&self) -> Vec<Contribution> {
             Vec::new()
@@ -784,7 +798,12 @@ async fn configure_rejection_fails_handshake() {
 
     let (server, client) = tokio::io::duplex(64 * 1024);
     let (reader, writer) = tokio::io::split(server);
-    let task = tokio::spawn(serve_io_with(Picky, ServeOptions::default(), reader, writer));
+    let task = tokio::spawn(serve_io_with(
+        Picky,
+        ServeOptions::default(),
+        reader,
+        writer,
+    ));
     let mut session = Session {
         client,
         drained: Arc::new(AtomicBool::new(false)),

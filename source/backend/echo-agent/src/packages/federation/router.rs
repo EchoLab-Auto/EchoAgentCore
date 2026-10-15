@@ -717,12 +717,15 @@ mod tests {
     #[tokio::test]
     async fn executor_rejects_absolute_path_outside_roots() {
         let router = InvokeRouter::new("node-a".into());
-        router.set_policy("node-b", ExecutorPolicy {
-            allow_tools: vec!["*".into()],
-            require_confirm: vec![],
-            allow_queries: vec!["workspace_files".into()],
-            allow_subagent: false,
-        });
+        router.set_policy(
+            "node-b",
+            ExecutorPolicy {
+                allow_tools: vec!["*".into()],
+                require_confirm: vec![],
+                allow_queries: vec!["workspace_files".into()],
+                allow_subagent: false,
+            },
+        );
         let registry = Arc::new(ToolRegistry::new());
         let (tx, _rx) = mpsc::channel(1);
         let root = std::env::temp_dir().join(format!("echo-fed-roots-{}", std::process::id()));

@@ -653,9 +653,11 @@ mod tests {
             .iter()
             .find(|s| s.id == "local:tui::local_user")
             .expect("default local session");
-        let history = default.history.lock();
-        assert!(history[0].content.starts_with("<qq_message_hook>"));
-        assert!(history[0].content.contains("\"user_id\": \"123456\""));
+        {
+            let history = default.history.lock();
+            assert!(history[0].content.starts_with("<qq_message_hook>"));
+            assert!(history[0].content.contains("\"user_id\": \"123456\""));
+        }
 
         // 会话键仍按 QQ 作用域注册（供 Panel 会话列表展示）。
         assert!(sessions

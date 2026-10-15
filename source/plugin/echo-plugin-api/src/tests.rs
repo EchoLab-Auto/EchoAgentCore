@@ -218,8 +218,7 @@ fn adapter_contribution_roundtrip_and_capabilities() {
     assert_eq!(adapter, back);
 
     // 缺省能力位全 false（fail-closed：宿主只调用声明过的方法）。
-    let caps: AdapterCapabilities =
-        serde_json::from_value(json!({})).expect("defaults");
+    let caps: AdapterCapabilities = serde_json::from_value(json!({})).expect("defaults");
     assert!(!caps.send_text && !caps.gating && !caps.login);
 
     // 词汇结构：通道与消息线格式。
@@ -251,7 +250,7 @@ fn adapter_contribution_roundtrip_and_capabilities() {
     }))
     .expect("minimal message tolerated");
     assert_eq!(minimal.channel, AdapterChannel::Dm);
-    assert!(minimal.at_me == false && minimal.images.is_empty());
+    assert!(!minimal.at_me && minimal.images.is_empty());
 }
 
 #[test]

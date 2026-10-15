@@ -169,7 +169,11 @@ impl<A: AdapterPlugin> PluginHandler for AdapterHandler<A> {
 /// 宿主据此识别适配器插件）。
 pub async fn serve_adapter_stdio(plugin: impl AdapterPlugin) -> std::io::Result<()> {
     let mut options = ServeOptions::default();
-    if !options.capabilities.iter().any(|c| c == capabilities::ADAPTER) {
+    if !options
+        .capabilities
+        .iter()
+        .any(|c| c == capabilities::ADAPTER)
+    {
         options.capabilities.push(capabilities::ADAPTER.to_string());
     }
     serve_stdio_with(AdapterHandler::new(plugin), options).await
