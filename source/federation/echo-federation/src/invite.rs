@@ -12,7 +12,7 @@
 //! 对端回连配对成功后自动清理；未配对的邀请在重启后自然失效，避免
 //! 配置文件堆积垃圾占位条目。
 
-use anyhow::{bail, Context, Result};
+use crate::error::FederationError;
 
 /// 邀请串 scheme。
 pub const INVITE_SCHEME: &str = "echofed://";
@@ -39,14 +39,16 @@ pub fn encode_invite(host_port: &str, token: &str, name: Option<&str>) -> String
 }
 
 /// 解析邀请串（严格：scheme 必匹配；token 非空；host:port 非空）。
-pub fn decode_invite(invite: &str) -> Result<InvitePayload> {
+pub fn decode_invite(invite: &str) -> Result<InvitePayload, FederationError> {
     let rest = invite
         .trim()
         .strip_prefix(INVITE_SCHEME)
-        .context("不是 echofed:// 邀请串")?;
-    let (before_fragment, token) = rest.split_once('#').context("邀请串缺少 #<token>")?;
+        .ok_or_else(|| FederationError::Invite("不是 echofed:// 邀请串".into()))?;
+    let (before_fragment, token) = rest
+        .split_once('#')
+        .ok_or_else(|| FederationError::Invite("邀请串缺少 #<token>".into()))?;
     if token.trim().is_empty() {
-        bail!("邀请串 token 为空");
+        return Err(FederationError::Invite("邀请串 token 为空".into()));
     }
     let (host_port, name) = match before_fragment.split_once('?') {
         Some((hp, query)) => {
@@ -61,7 +63,9 @@ pub fn decode_invite(invite: &str) -> Result<InvitePayload> {
     };
     let host_port = host_port.trim().trim_end_matches('/');
     if host_port.is_empty() || !host_port.contains(':') {
-        bail!("邀请串 host:port 非法: {host_port:?}");
+        return Err(FederationError::Invite(format!(
+            "邀请串 host:port 非法: {host_port:?}"
+        )));
     }
     Ok(InvitePayload {
         url: format!("ws://{host_port}"),

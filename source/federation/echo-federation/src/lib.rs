@@ -7,10 +7,12 @@
 //! Phase 1 只提供链路；工具路由（Phase 2）与远程委派（Phase 3）消费
 //! [`LinkEvent`] 与 [`Federation::send_to`]。
 
+pub mod error;
 pub mod frame;
 pub mod invite;
 pub mod link;
 
+pub use error::FederationError;
 pub use frame::{
     call_origin, new_call_id, FedError, FedFrame, InvokeRequest, InvokeResult, InvokeVerdict,
     NodeCaps, NodeHello, OutputStream, QueryKind, QueryRequest, QueryResultFrame,

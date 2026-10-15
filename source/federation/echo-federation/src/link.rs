@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use crate::error::FederationError;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch, RwLock};
@@ -48,7 +48,7 @@ const LINK_WAIT_POLL: Duration = Duration::from_secs(2);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 带超时的出站写（语义见 [`WRITE_TIMEOUT`]）。
-async fn send_with_timeout<S>(write: &mut S, msg: Message) -> Result<()>
+async fn send_with_timeout<S>(write: &mut S, msg: Message) -> Result<(), FederationError>
 where
     S: futures_util::Sink<Message> + Unpin,
     <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
@@ -57,18 +57,21 @@ where
 }
 
 /// 带自定义超时的出站写（测试注入短超时；生产一律走 [`send_with_timeout`]）。
-async fn send_with_timeout_for<S>(write: &mut S, msg: Message, timeout: Duration) -> Result<()>
+async fn send_with_timeout_for<S>(
+    write: &mut S,
+    msg: Message,
+    timeout: Duration,
+) -> Result<(), FederationError>
 where
     S: futures_util::Sink<Message> + Unpin,
     <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
 {
     match tokio::time::timeout(timeout, write.send(msg)).await {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(e.into()),
-        Err(_) => anyhow::bail!(
-            "federation write timed out ({}s) — peer not reading",
-            timeout.as_secs()
-        ),
+        Ok(Err(e)) => Err(FederationError::Ws(Box::new(e))),
+        Err(_) => Err(FederationError::WriteTimeout {
+            secs: timeout.as_secs(),
+        }),
     }
 }
 
@@ -368,7 +371,10 @@ impl Federation {
             .map(|p| p.token.clone())
             .filter(|t| !t.is_empty())
             .collect();
-        *self.synced_tokens.write().unwrap() = tokens;
+        *self
+            .synced_tokens
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = tokens;
     }
 
     /// 同步版 per-peer 令牌判定（端口合并的升级回调专用；空令牌恒不
@@ -379,7 +385,7 @@ impl Federation {
         }
         self.synced_tokens
             .read()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .any(|known| constant_time_eq(known, token))
     }
@@ -392,7 +398,7 @@ impl Federation {
         &self,
         ws: tokio_tungstenite::WebSocketStream<S>,
         presented_token: String,
-    ) -> Result<()>
+    ) -> Result<(), FederationError>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
@@ -482,7 +488,7 @@ impl Federation {
     }
 
     /// 启动监听（`addr` 如 `0.0.0.0:3133`）+ 全部 peers 连出，常驻运行。
-    pub async fn run(self: &Arc<Self>, listen: Option<String>) -> Result<()> {
+    pub async fn run(self: &Arc<Self>, listen: Option<String>) -> Result<(), FederationError> {
         let mut shutdown_rx = self.shutdown.subscribe();
         // 连出任务：启动时的 peers 各起独立重连循环；运行时新增的 peer
         // 由 [`Federation::add_peer`] 现场补起。
@@ -502,7 +508,10 @@ impl Federation {
         if let Some(addr) = listen {
             let listener = TcpListener::bind(&addr)
                 .await
-                .with_context(|| format!("bind federation address {addr}"))?;
+                .map_err(|e| FederationError::Bind {
+                    addr: addr.clone(),
+                    source: e,
+                })?;
             tracing::info!(%addr, "federation listener up");
             loop {
                 tokio::select! {
@@ -654,17 +663,17 @@ impl Federation {
 
     /// 接受一条连入：认证 → 握手 → 跑链路。
     #[doc(hidden)]
-    pub async fn accept_one_pub(&self, stream: TcpStream) -> Result<()> {
+    pub async fn accept_one_pub(&self, stream: TcpStream) -> Result<(), FederationError> {
         self.accept_one(stream).await
     }
 
     /// 握手校验（测试可见）。
     #[doc(hidden)]
-    pub fn check_peer_pub(&self, hello: &NodeHello) -> Result<()> {
+    pub fn check_peer_pub(&self, hello: &NodeHello) -> Result<(), FederationError> {
         self.check_peer(hello)
     }
 
-    async fn accept_one(&self, stream: TcpStream) -> Result<()> {
+    async fn accept_one(&self, stream: TcpStream) -> Result<(), FederationError> {
         // 认证：Bearer token 必须匹配某个配置的 peer（与 management WS 同模式）。
         let tokens: Vec<String> = self
             .peers
@@ -684,7 +693,7 @@ impl Federation {
         ws: tokio_tungstenite::WebSocketStream<S>,
         dial_peer: Option<PeerConfig>,
         link_token: String,
-    ) -> Result<()>
+    ) -> Result<(), FederationError>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
@@ -700,11 +709,15 @@ impl Federation {
         // 等对方 Hello（被动方）或作为主动方已发 Hello 后等 Welcome。
         let first = tokio::time::timeout(HELLO_TIMEOUT, read.next())
             .await
-            .context("hello timeout")?
-            .context("link closed before hello")??;
+            .map_err(|_| FederationError::HelloTimeout)?
+            .ok_or(FederationError::LinkClosedBeforeHello)??;
         let peer_hello: NodeHello = match serde_json::from_str::<FedFrame>(first.to_text()?) {
             Ok(FedFrame::Hello(h)) | Ok(FedFrame::Welcome(h)) => h,
-            _ => anyhow::bail!("first frame is not Hello/Welcome"),
+            _ => {
+                return Err(FederationError::Handshake(
+                    "first frame is not Hello/Welcome".into(),
+                ))
+            }
         };
         self.check_peer(&peer_hello)?;
 
@@ -720,7 +733,9 @@ impl Federation {
                 Ok(FedFrame::Hello(_))
             ) && self.node_id < peer_hello.node_id
             {
-                anyhow::bail!("simultaneous dial, backing off");
+                return Err(FederationError::Handshake(
+                    "simultaneous dial, backing off".into(),
+                ));
             }
         }
 
@@ -777,10 +792,9 @@ impl Federation {
             if let Some(existing) = links.get(&info.node_id) {
                 if existing.preferred && !preferred {
                     drop(links);
-                    anyhow::bail!(
-                        "duplicate non-preferred link to {} (peer's dial wins)",
-                        info.node_id
-                    );
+                    return Err(FederationError::NonPreferredLink {
+                        node_id: info.node_id.clone(),
+                    });
                 }
             }
             links.insert(info.node_id.clone(), handle).is_some()
@@ -839,16 +853,17 @@ impl Federation {
     }
 
     /// 握手校验：版本兼容 + 非回环。
-    fn check_peer(&self, hello: &NodeHello) -> Result<()> {
+    fn check_peer(&self, hello: &NodeHello) -> Result<(), FederationError> {
         if hello.node_id == self.node_id {
-            anyhow::bail!("loop detected: peer is self ({})", hello.node_id);
+            return Err(FederationError::LoopDetected {
+                node_id: hello.node_id.clone(),
+            });
         }
         if hello.protocol_version != PROTOCOL_VERSION {
-            anyhow::bail!(
-                "protocol version mismatch: local {} vs peer {}",
-                PROTOCOL_VERSION,
-                hello.protocol_version
-            );
+            return Err(FederationError::VersionMismatch {
+                local: PROTOCOL_VERSION,
+                peer: hello.protocol_version,
+            });
         }
         Ok(())
     }
@@ -860,7 +875,7 @@ impl Federation {
         write: &mut W,
         out_rx: &mut mpsc::Receiver<FedFrame>,
         info: &PeerInfo,
-    ) -> Result<()>
+    ) -> Result<(), FederationError>
     where
         R: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
         W: SinkExt<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
@@ -881,7 +896,7 @@ impl Federation {
                         // 通道关闭 = 本链路已被顶掉（replace）/被移除：主动
                         // 退出并关闭连接——否则旧连接会成为"僵尸"一直心跳
                         // 存活（双向 dial 场景下持续堆积任务与 socket）。
-                        None => anyhow::bail!("outbound channel closed (link replaced/removed)"),
+                        None => return Err(FederationError::OutboundClosed),
                     }
                 }
                 // 入站
@@ -898,7 +913,7 @@ impl Federation {
                                 Ok(frame) => {
                                     let event = LinkEvent::Frame { from: info.node_id.clone(), frame };
                                     if self.event_tx.send(event).await.is_err() {
-                                        anyhow::bail!("event sink closed");
+                                        return Err(FederationError::EventSinkClosed);
                                     }
                                 }
                                 Err(e) => {
@@ -909,20 +924,22 @@ impl Federation {
                         Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => {
                             last_seen = Instant::now();
                         }
-                        Some(Ok(Message::Close(_))) | None => anyhow::bail!("peer closed"),
-                        Some(Err(e)) => anyhow::bail!("ws error: {e}"),
+                        Some(Ok(Message::Close(_))) | None => return Err(FederationError::PeerClosed),
+                        Some(Err(e)) => return Err(FederationError::Ws(Box::new(e))),
                         _ => {}
                     }
                 }
                 // 心跳 + 判死
                 _ = heartbeat.tick() => {
                     if last_seen.elapsed() > DEAD_AFTER {
-                        anyhow::bail!("peer silent for >{}s", DEAD_AFTER.as_secs());
+                        return Err(FederationError::PeerSilent {
+                            secs: DEAD_AFTER.as_secs(),
+                        });
                     }
                     let ping = FedFrame::Ping { sent_at_ms: now_ms() };
                     send_with_timeout(&mut *write, Message::Text(serde_json::to_string(&ping)?)).await?;
                 }
-                _ = shutdown_rx.changed() => anyhow::bail!("shutdown"),
+                _ = shutdown_rx.changed() => return Err(FederationError::Shutdown),
             }
         }
     }
@@ -972,7 +989,7 @@ fn unauthorized_response() -> tokio_tungstenite::tungstenite::handshake::server:
 async fn accept_with_auth(
     stream: TcpStream,
     tokens: &[String],
-) -> Result<(tokio_tungstenite::WebSocketStream<TcpStream>, String)> {
+) -> Result<(tokio_tungstenite::WebSocketStream<TcpStream>, String), FederationError> {
     let tokens = tokens.to_vec();
     let presented = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let presented2 = presented.clone();
@@ -994,7 +1011,9 @@ async fn accept_with_auth(
                 })
                 .unwrap_or(false);
             if ok {
-                *presented2.lock().unwrap() = token.unwrap_or_default();
+                *presented2
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = token.unwrap_or_default();
                 Ok(response)
             } else {
                 Err(unauthorized_response())
@@ -1002,7 +1021,10 @@ async fn accept_with_auth(
         },
     )
     .await?;
-    let token = presented.lock().unwrap().clone();
+    let token = presented
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     Ok((ws, token))
 }
 
@@ -1010,7 +1032,7 @@ async fn accept_with_auth(
 pub fn bearer_request(
     url: &str,
     token: &str,
-) -> Result<tokio_tungstenite::tungstenite::http::Request<()>> {
+) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, FederationError> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     let mut req = url.into_client_request()?;
     if !token.is_empty() {
@@ -1018,7 +1040,7 @@ pub fn bearer_request(
             "authorization",
             format!("Bearer {token}")
                 .parse()
-                .context("invalid token header")?,
+                .map_err(|e| FederationError::InvalidTokenHeader(Box::new(e)))?,
         );
     }
     Ok(req)
