@@ -374,7 +374,9 @@ pub(crate) async fn handle_migrate_session(
     // 注册 ack 通道（泵收到目标 SessionImportAck 时推进）。
     let (ack_tx, mut ack_rx) = tokio::sync::watch::channel(0u32);
     {
-        let mut map = session_import_acks().lock().expect("ack registry poisoned");
+        let mut map = session_import_acks()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.insert(transfer_id.clone(), ack_tx);
     }
     // 窗口流控 + 超时重发：目标每收一块回 ack（acked_upto）。联邦出站队列
@@ -417,7 +419,7 @@ pub(crate) async fn handle_migrate_session(
     };
     session_import_acks()
         .lock()
-        .expect("ack registry poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(&transfer_id);
     if let Err(error) = send_result {
         fail(error);
