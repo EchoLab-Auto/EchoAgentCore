@@ -651,7 +651,7 @@ async fn supervise(
             msg = conn.recv() => Step::Msg(msg),
         };
         match step {
-            Step::Msg(Ok(msg)) => dispatch(&shared, msg),
+            Step::Msg(Ok(msg)) => dispatch(&shared, &conn, msg),
             Step::Msg(Err(e)) => {
                 tracing::warn!(plugin = %shared.plugin_id, error = %e, "plugin connection lost; treating as crash");
                 shared.fail_pending_calls("plugin connection lost");
@@ -879,9 +879,10 @@ async fn drain_connection(shared: &Arc<Shared>, deadline: Duration) -> Result<()
     }
 
     // 等待插件主动退出（通道关闭），期间照常分发消息（在途结果 / 事件 / 日志）。
+    // 回执路由按来源连接（即本条被排空的连接）——见 `dispatch` 的 W1.2 说明。
     let wait = async {
         while let Ok(msg) = conn.recv().await {
-            dispatch(shared, msg);
+            dispatch(shared, &conn, msg);
         }
     };
     let remaining = deadline.saturating_sub(started.elapsed());
@@ -994,7 +995,7 @@ async fn drain_retired(shared: &Arc<Shared>, conn: &Arc<dyn PluginConnection>, t
 
     let wait = async {
         while let Ok(msg) = conn.recv().await {
-            dispatch(shared, msg);
+            dispatch(shared, conn, msg);
         }
     };
     let remaining = timeout.saturating_sub(started.elapsed());
@@ -1039,7 +1040,13 @@ fn not_ready_error(state: &PluginState) -> TransportError {
 ///
 /// `shared: &Arc<Shared>`：`HostCall` 分支需要把 `Arc` 移入后台任务
 /// （服务调用 + 回发结果），不阻塞监督循环。
-fn dispatch(shared: &Arc<Shared>, msg: PluginToHost) {
+///
+/// `source`：**本条消息的来源连接**。`HostCall` 回执按来源连接回发
+/// （W1.2，2026-10 修复）——不能经 `current_conn()`：热替换 / 排空切换
+/// 瞬间，旧实例发出的 `deliver_message` 类回执会错投到新实例
+/// （call_id 对新实例是孤儿，而载荷已被宿主消费；插件因收不到回执重试
+/// 即造成重复投递）。
+fn dispatch(shared: &Arc<Shared>, source: &Arc<dyn PluginConnection>, msg: PluginToHost) {
     match msg {
         PluginToHost::InvokeResult(r) => match shared.remove_pending(&r.call_id) {
             Some(call) => {
@@ -1062,9 +1069,11 @@ fn dispatch(shared: &Arc<Shared>, msg: PluginToHost) {
         PluginToHost::Log(l) => log_record(&shared.plugin_id, &l),
         PluginToHost::Register(r) => shared.set_contributions(r.contributions),
         PluginToHost::HostCall(call) => {
-            // P2：宿主服务回呼。在后台任务中查表调用并回发结果；连接已不存在 /
-            // 发送失败仅 debug（插件可能已退出 / 崩溃重启中）。
+            // P2：宿主服务回呼。在后台任务中查表调用并回发结果。
+            // 回执按**来源连接**路由（W1.2）：发送失败仅 debug（插件可能已
+            // 退出 / 崩溃重启中）。
             let shared = Arc::clone(shared);
+            let source = Arc::clone(source);
             tokio::spawn(async move {
                 let outcome =
                     match shared
@@ -1074,15 +1083,7 @@ fn dispatch(shared: &Arc<Shared>, msg: PluginToHost) {
                         Ok(result) => HostCallOutcome::Ok { result },
                         Err((code, message)) => HostCallOutcome::Error { code, message },
                     };
-                let Some(conn) = shared.current_conn() else {
-                    tracing::debug!(
-                        plugin = %shared.plugin_id,
-                        call_id = %call.call_id,
-                        "dropping HostCallResult: plugin connection is gone"
-                    );
-                    return;
-                };
-                if let Err(e) = conn
+                if let Err(e) = source
                     .send(HostToPlugin::HostCallResult(HostCallResult {
                         call_id: call.call_id.clone(),
                         outcome,

@@ -160,22 +160,10 @@ async fn b_invoke_roundtrip() {
     let out = handle
         .invoke("echo", ctx(5_000), json!({"text": "hello stdio"}))
         .await;
-    assert_eq!(
-        out,
-        InvokeOutcome::Ok {
-            text: "hello stdio".to_string(),
-            images: vec![]
-        }
-    );
+    assert_eq!(out, InvokeOutcome::ok("hello stdio"));
 
     let out = handle.invoke("echo", ctx(5_000), json!({"n": 7})).await;
-    assert_eq!(
-        out,
-        InvokeOutcome::Ok {
-            text: "{\"n\":7}".to_string(),
-            images: vec![]
-        }
-    );
+    assert_eq!(out, InvokeOutcome::ok("{\"n\":7}"));
 }
 
 /// 3. 超时 → Cancel：hang 不回结果 → timeout；对端回 `peer/cancel` 证明取消送达。
@@ -241,10 +229,7 @@ async fn d_crash_restarts_plugin() {
         .await;
     assert_eq!(
         out,
-        InvokeOutcome::Ok {
-            text: "again".to_string(),
-            images: vec![]
-        },
+        InvokeOutcome::ok("again"),
         "restarted peer should serve invokes"
     );
 }
@@ -318,13 +303,7 @@ async fn h_split_frames_tolerated() {
     let out = handle
         .invoke("echo", ctx(5_000), json!({"text": "segmented"}))
         .await;
-    assert_eq!(
-        out,
-        InvokeOutcome::Ok {
-            text: "segmented".to_string(),
-            images: vec![]
-        }
-    );
+    assert_eq!(out, InvokeOutcome::ok("segmented"));
     handle
         .drain(Duration::from_secs(5))
         .await

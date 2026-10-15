@@ -79,10 +79,7 @@ impl WebSearch {
         results.truncate(max_results);
 
         if results.is_empty() {
-            return InvokeOutcome::Ok {
-                text: format!("未搜索到关于“{query}”的结果。"),
-                images: vec![],
-            };
+            return InvokeOutcome::ok(format!("未搜索到关于“{query}”的结果。"));
         }
 
         let mut out = Vec::new();
@@ -98,10 +95,7 @@ impl WebSearch {
             }
             out.push(block);
         }
-        InvokeOutcome::Ok {
-            text: out.join("\n\n"),
-            images: vec![],
-        }
+        InvokeOutcome::ok(out.join("\n\n"))
     }
 
     async fn search_bing(

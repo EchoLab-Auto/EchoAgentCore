@@ -69,6 +69,7 @@ fn plugin_messages_roundtrip() {
         outcome: InvokeOutcome::Ok {
             text: "ok".into(),
             images: vec![],
+            result: serde_json::json!({"structured": true}),
         },
     }));
     roundtrip_plugin(PluginToHost::InvokeResult(InvokeResult {
@@ -115,6 +116,51 @@ fn unknown_fields_are_tolerated() {
         }
         other => panic!("expected Invoke, got {other:?}"),
     }
+}
+
+#[test]
+fn invoke_outcome_result_field_roundtrip_and_backcompat() {
+    // W1.1：结构化结果字段（适配器 op 返回值的协议载体）。
+    // ① 带 result 的帧往返；
+    roundtrip_plugin(PluginToHost::InvokeResult(InvokeResult {
+        call_id: "adapter:1".into(),
+        outcome: InvokeOutcome::Ok {
+            text: String::new(),
+            images: vec![],
+            result: json!({"state": "connected", "self_id": "123"}),
+        },
+    }));
+
+    // ② 旧插件（不带 result 字段的旧帧）→ 缺省 null（向后兼容解码）；
+    let legacy = json!({
+        "type": "invoke_result",
+        "payload": {
+            "call_id": "p:1",
+            "outcome": {"status": "ok", "text": "legacy"}
+        }
+    });
+    let msg: PluginToHost = serde_json::from_value(legacy).expect("legacy frame tolerated");
+    match msg {
+        PluginToHost::InvokeResult(r) => match r.outcome {
+            InvokeOutcome::Ok { text, result, .. } => {
+                assert_eq!(text, "legacy");
+                assert_eq!(result, serde_json::Value::Null);
+            }
+            other => panic!("expected Ok, got {other:?}"),
+        },
+        other => panic!("expected InvokeResult, got {other:?}"),
+    }
+
+    // ③ result 为 null 时线上省略（旧端点解码无差异）。
+    let plain = serde_json::to_string(&PluginToHost::InvokeResult(InvokeResult {
+        call_id: "p:2".into(),
+        outcome: InvokeOutcome::ok("plain"),
+    }))
+    .unwrap();
+    assert!(
+        !plain.contains("\"result\""),
+        "null result must be omitted on the wire: {plain}"
+    );
 }
 
 #[test]

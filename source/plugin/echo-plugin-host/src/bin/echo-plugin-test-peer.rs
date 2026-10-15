@@ -94,10 +94,7 @@ fn main() {
                         &mut writer,
                         &PluginToHost::InvokeResult(InvokeResult {
                             call_id: invoke.call_id.clone(),
-                            outcome: InvokeOutcome::Ok {
-                                text: config.to_string(),
-                                images: vec![],
-                            },
+                            outcome: InvokeOutcome::ok(config.to_string()),
                         }),
                         split,
                     );
@@ -113,10 +110,7 @@ fn main() {
                     &mut writer,
                     &PluginToHost::InvokeResult(InvokeResult {
                         call_id: invoke.call_id.clone(),
-                        outcome: InvokeOutcome::Ok {
-                            text,
-                            images: vec![],
-                        },
+                        outcome: InvokeOutcome::ok(text),
                     }),
                     split,
                 );

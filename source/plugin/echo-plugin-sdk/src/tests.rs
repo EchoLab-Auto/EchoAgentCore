@@ -70,10 +70,7 @@ impl PluginHandler for TestHandler {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .to_string();
-        InvokeOutcome::Ok {
-            text,
-            images: vec![],
-        }
+        InvokeOutcome::ok(text)
     }
 
     async fn on_drain(&self, _deadline_ms: u64) {
@@ -243,13 +240,7 @@ async fn invoke_roundtrip_returns_result() {
     match recv(&mut session).await {
         PluginToHost::InvokeResult(result) => {
             assert_eq!(result.call_id, "stdio-plugin:1");
-            assert_eq!(
-                result.outcome,
-                InvokeOutcome::Ok {
-                    text: "hello sdk".to_string(),
-                    images: vec![],
-                }
-            );
+            assert_eq!(result.outcome, InvokeOutcome::ok("hello sdk"));
         }
         other => panic!("expected InvokeResult, got {other:?}"),
     }
@@ -492,10 +483,7 @@ impl PluginHandler for HostCallHandler {
             Ok(result) => format!("ok:{result}"),
             Err(error) => format!("err:{error}"),
         };
-        InvokeOutcome::Ok {
-            text,
-            images: vec![],
-        }
+        InvokeOutcome::ok(text)
     }
 
     async fn on_ready(&self, host: HostClient) {
@@ -573,10 +561,7 @@ async fn host_call_roundtrip_via_on_ready_client() {
             assert_eq!(result.call_id, "p:1");
             assert_eq!(
                 result.outcome,
-                InvokeOutcome::Ok {
-                    text: "ok:{\"redacted\":\"***\"}".to_string(),
-                    images: vec![],
-                }
+                InvokeOutcome::ok("ok:{\"redacted\":\"***\"}")
             );
         }
         other => panic!("expected InvokeResult, got {other:?}"),

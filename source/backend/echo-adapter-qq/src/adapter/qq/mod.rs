@@ -14,14 +14,16 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use echo_adapter::capabilities::{QqInstanceInfo, QqManagement};
+use base64::Engine as _;
+use echo_adapter::capabilities::AdapterManagement;
 use echo_adapter::filter::FilterPipeline;
-use echo_adapter::traits::{Adapter, AdapterConnectionState, AdapterError, AdapterInfo, GateMode};
+use echo_adapter::traits::{Adapter, AdapterConnectionState, AdapterError, AdapterInfo};
 use echo_adapter::types::{
     AdapterEvent, ChannelType, IncomingFile, IncomingMessage, MessageTarget, SendResult,
 };
 use echo_core::{Event as OneBotEvent, MessageEvent, Segment};
 use echo_server::{ConnCallback, Context, HandlerRegistry, Server, ServerConfig};
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::config::QqAdapterConfig;
@@ -813,8 +815,8 @@ impl Adapter for QqAdapter {
             started_at: self.inner.started_at.lock().ok().and_then(|g| *g),
             platform: "qq".into(),
             configured: self.is_configured(),
-            // QQ 附加信息（persona/容器/URL/绑定地址）经能力扩展
-            // `QqManagement::instance_info` 暴露（2026-10 重构）。
+            // 附加信息（persona/容器/URL/绑定地址）经管理面
+            // `AdapterManagement::cached_state` 暴露（2026-10 适配器管理通道）。
         }
     }
 
@@ -1134,43 +1136,23 @@ impl Adapter for QqAdapter {
         }
     }
 
-    fn qq_management(&self) -> Option<&dyn QqManagement> {
-        // QQ 适配器恒实现管理能力（2026-10 能力扩展重构：QQ 专属方法
-        // 自此经 `QqManagement` 取用，不再内嵌在 `Adapter` 面上）。
+    fn management(&self) -> Option<&dyn AdapterManagement> {
+        // 平台中立管理面（W3.2，2026-10 适配器管理通道）：QQ 适配器恒实现。
         Some(self)
     }
 }
 
-/// QQ 平台管理能力（能力扩展 trait，2026-10 抽象泄漏重构）。
-///
-/// 原实现内嵌在 `impl Adapter`（带默认 no-op）——非 QQ 适配器上
-/// 「调用成功但什么也没发生」，且把 QQ 概念焊进了通用 trait。
-#[async_trait]
-impl QqManagement for QqAdapter {
-    fn instance_info(&self) -> QqInstanceInfo {
-        QqInstanceInfo {
-            persona: self.inner.persona.clone(),
-            container: Some(self.inner.config.napcat_container.clone()),
-            webui_url: Some(self.inner.config.napcat_webui_url.clone()),
-            onebot_url: Some(self.inner.config.napcat_onebot_url.clone()),
-            // 实例端口分配（`resolve_instances_in`）已把实际反向 WS
-            // 监听地址合并进 config，直接复读即为真实绑定值。
-            bind_address: self.inner.config.server.bind_address.clone(),
-        }
-    }
-
-    async fn get_all_groups(&self) -> Result<Vec<(i64, String)>, AdapterError> {
-        self.get_all_groups().await.map_err(AdapterError::Internal)
-    }
-
-    /// Core 代理登录：从 NapCat 容器取登录二维码 PNG。
+impl QqAdapter {
+    /// 取登录二维码 PNG（Core 代理从 NapCat 容器取回）。
     ///
     /// **陈旧自动刷新**：NapCat 自身的轮换循环可能停摆（实测：停摆后
     /// 面板「获取二维码」只会重复读到过期文件——"刷新也没用"）。因此这里
     /// 检查容器内文件的 mtime：缺失或超过 [`QR_MAX_AGE_SECS`] 时先让
     /// NapCat 重新生成（WebUI `/api/QQLogin/RefreshQRcode`），等待落盘后
     /// 再取 PNG；阈值内的新鲜二维码直接返回，避免作废用户刚扫的码。
-    async fn login_qrcode_png(&self) -> Result<Vec<u8>, String> {
+    ///
+    /// 固有实现（供管理面 `AdapterManagement::login_qrcode` 使用）。
+    pub(crate) async fn fetch_login_qrcode_png(&self) -> Result<Vec<u8>, String> {
         let container = self.inner.config.napcat_container.clone();
         let webui_url = self.inner.config.napcat_webui_url.clone();
 
@@ -1196,73 +1178,187 @@ impl QqManagement for QqAdapter {
             .await
             .map_err(|e| format!("qrcode task failed: {e}"))?
     }
+}
 
-    async fn get_all_friends(&self) -> Result<Vec<(i64, String)>, AdapterError> {
-        self.get_friend_list().await.map_err(AdapterError::Internal)
-    }
-
-    fn update_allowlist(&self, user_ids: Vec<String>, group_ids: Vec<String>) {
-        let users: Vec<i64> = user_ids.iter().filter_map(|s| s.parse().ok()).collect();
-        let groups: Vec<i64> = group_ids.iter().filter_map(|s| s.parse().ok()).collect();
-        self.update_allowlist(users, groups);
-    }
-
-    fn update_denylist(&self, user_ids: Vec<String>, group_ids: Vec<String>) {
-        let users: Vec<i64> = user_ids.iter().filter_map(|s| s.parse().ok()).collect();
-        let groups: Vec<i64> = group_ids.iter().filter_map(|s| s.parse().ok()).collect();
-        self.update_denylist(users, groups);
-    }
-
-    fn get_filter_info(&self) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+/// 平台中立管理面（W3.2，2026-10 适配器管理通道）。
+///
+/// - `cached_state`：内部状态槽的同步投影（零 IO）——与旧 getter 同源，
+///   迁移期两者并存（无双事实来源）；
+/// - `invoke_custom`：method 路由表（方法名与线协议 `InvokeAdapterOp` /
+///   插件协议 `custom op` 同名直通）。写路径内部仍走既有固有 setter
+///   （管道重建 + ConfigStore 持久化语义不变）。
+#[async_trait]
+impl AdapterManagement for QqAdapter {
+    fn cached_state(&self) -> Option<Value> {
         let cfg = self.get_filter_config();
-        (
-            cfg.allowlist
-                .user_ids
-                .iter()
-                .map(|id| id.to_string())
-                .collect(),
-            cfg.allowlist
-                .group_ids
-                .iter()
-                .map(|id| id.to_string())
-                .collect(),
-            cfg.denylist
-                .user_ids
-                .iter()
-                .map(|id| id.to_string())
-                .collect(),
-            cfg.denylist
-                .group_ids
-                .iter()
-                .map(|id| id.to_string())
-                .collect(),
-        )
+        let mode = gate_mode_str(self.get_gate_mode());
+        Some(json!({
+            "instance": {
+                "persona": self.inner.persona.clone(),
+                "container": self.inner.config.napcat_container.clone(),
+                "webui_url": self.inner.config.napcat_webui_url.clone(),
+                "onebot_url": self.inner.config.napcat_onebot_url.clone(),
+                "bind_address": self.inner.config.server.bind_address.clone(),
+            },
+            "running": self.inner.running.load(Ordering::SeqCst),
+            "online": self.inner.connected.load(Ordering::SeqCst),
+            "self_id": self.inner.self_id.lock().ok().and_then(|guard| guard.clone()),
+            "gate": {
+                "mode": mode,
+                "allowlist_users": stringify_ids(&cfg.allowlist.user_ids),
+                "allowlist_groups": stringify_ids(&cfg.allowlist.group_ids),
+                "denylist_users": stringify_ids(&cfg.denylist.user_ids),
+                "denylist_groups": stringify_ids(&cfg.denylist.group_ids),
+            },
+            "owner": *self.inner.owner_qq.lock().expect("owner poisoned"),
+        }))
     }
 
-    fn set_gate_mode(&self, mode: GateMode) {
-        let m = match mode {
-            GateMode::Allowlist => QqGateMode::Allowlist,
-            GateMode::Denylist => QqGateMode::Denylist,
-            GateMode::None => QqGateMode::None,
-        };
-        self.set_gate_mode(m);
-    }
-
-    fn get_gate_mode(&self) -> GateMode {
-        match self.get_gate_mode() {
-            QqGateMode::Allowlist => GateMode::Allowlist,
-            QqGateMode::Denylist => GateMode::Denylist,
-            QqGateMode::None => GateMode::None,
+    async fn invoke_custom(&self, method: &str, payload: Value) -> Result<Value, AdapterError> {
+        match method {
+            "set_gate_mode" => {
+                let mode = match payload.get("mode").and_then(Value::as_str) {
+                    Some("allowlist") => QqGateMode::Allowlist,
+                    Some("denylist") => QqGateMode::Denylist,
+                    Some("none") => QqGateMode::None,
+                    other => {
+                        return Err(AdapterError::Internal(format!(
+                            "invalid gate mode {other:?} (expected allowlist|denylist|none)"
+                        )));
+                    }
+                };
+                self.set_gate_mode(mode);
+                Ok(json!({"mode": gate_mode_str(mode)}))
+            }
+            "get_gate_mode" => Ok(json!({"mode": gate_mode_str(self.get_gate_mode())})),
+            "update_allowlist" => {
+                let users = parse_ids(&payload, "user_ids")?;
+                let groups = parse_ids(&payload, "group_ids")?;
+                self.update_allowlist(users, groups);
+                Ok(json!({}))
+            }
+            "update_denylist" => {
+                let users = parse_ids(&payload, "user_ids")?;
+                let groups = parse_ids(&payload, "group_ids")?;
+                self.update_denylist(users, groups);
+                Ok(json!({}))
+            }
+            "get_filter_config" => {
+                let cfg = self.get_filter_config();
+                Ok(json!({
+                    "allowlist_users": stringify_ids(&cfg.allowlist.user_ids),
+                    "allowlist_groups": stringify_ids(&cfg.allowlist.group_ids),
+                    "denylist_users": stringify_ids(&cfg.denylist.user_ids),
+                    "denylist_groups": stringify_ids(&cfg.denylist.group_ids),
+                }))
+            }
+            "set_owner" => {
+                let owner = parse_id(&payload, "owner_qq")?;
+                self.set_owner_qq(owner);
+                Ok(json!({"owner_qq": owner}))
+            }
+            "get_owner" => Ok(json!({"owner_qq": self.get_owner_qq()})),
+            "login_status" => Ok(json!({
+                "running": self.inner.running.load(Ordering::SeqCst),
+                "online": self.inner.connected.load(Ordering::SeqCst),
+                "user_id": self.inner.self_id.lock().ok().and_then(|guard| guard.clone()),
+            })),
+            "login_qrcode" => {
+                let png = self
+                    .fetch_login_qrcode_png()
+                    .await
+                    .map_err(AdapterError::Internal)?;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+                Ok(json!({"png_base64": encoded}))
+            }
+            "get_groups" => {
+                let groups = self
+                    .get_all_groups()
+                    .await
+                    .map_err(AdapterError::Internal)?;
+                Ok(json!({"groups": id_name_pairs(groups)}))
+            }
+            "get_friends" => {
+                let friends = self
+                    .get_friend_list()
+                    .await
+                    .map_err(AdapterError::Internal)?;
+                Ok(json!({"friends": id_name_pairs(friends)}))
+            }
+            "instance_info" => Ok(json!({
+                "persona": self.inner.persona.clone(),
+                "container": self.inner.config.napcat_container.clone(),
+                "webui_url": self.inner.config.napcat_webui_url.clone(),
+                "onebot_url": self.inner.config.napcat_onebot_url.clone(),
+                "bind_address": self.inner.config.server.bind_address.clone(),
+            })),
+            other => Err(AdapterError::Internal(format!(
+                "unknown adapter method: {other}"
+            ))),
         }
     }
+}
 
-    fn set_owner_qq(&self, owner_qq: i64) {
-        self.set_owner_qq(owner_qq);
+/// 门控模式的线格式字符串（`none` / `allowlist` / `denylist`）。
+fn gate_mode_str(mode: QqGateMode) -> &'static str {
+    match mode {
+        QqGateMode::Allowlist => "allowlist",
+        QqGateMode::Denylist => "denylist",
+        QqGateMode::None => "none",
     }
+}
 
-    fn get_owner_qq(&self) -> i64 {
-        self.get_owner_qq()
+/// id 列表 → 字符串形态（线协议与旧管理面统一以字符串跨层）。
+fn stringify_ids(ids: &[i64]) -> Vec<String> {
+    ids.iter().map(|id| id.to_string()).collect()
+}
+
+/// 从 JSON 载荷解析 id 列表（接受数字与字符串两种形态；缺省 = 空表）。
+fn parse_ids(payload: &Value, key: &str) -> Result<Vec<i64>, AdapterError> {
+    let Some(list) = payload.get(key) else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = list.as_array() else {
+        return Err(AdapterError::Internal(format!("{key} must be an array")));
+    };
+    items
+        .iter()
+        .map(|item| {
+            if let Some(number) = item.as_i64() {
+                return Ok(number);
+            }
+            if let Some(text) = item.as_str() {
+                return text
+                    .parse::<i64>()
+                    .map_err(|_| AdapterError::Internal(format!("{key}: invalid id {text:?}")));
+            }
+            Err(AdapterError::Internal(format!("{key}: invalid id {item}")))
+        })
+        .collect()
+}
+
+/// 从 JSON 载荷解析单个 id（数字或字符串形态；缺失 = 可读报错）。
+fn parse_id(payload: &Value, key: &str) -> Result<i64, AdapterError> {
+    let Some(value) = payload.get(key) else {
+        return Err(AdapterError::Internal(format!("missing {key}")));
+    };
+    if let Some(number) = value.as_i64() {
+        return Ok(number);
     }
+    if let Some(text) = value.as_str() {
+        return text
+            .parse::<i64>()
+            .map_err(|_| AdapterError::Internal(format!("{key}: invalid id {text:?}")));
+    }
+    Err(AdapterError::Internal(format!("{key}: invalid id {value}")))
+}
+
+/// `(id, name)` 列表 → `[{id, name}]`（id 字符串化）。
+fn id_name_pairs(items: Vec<(i64, String)>) -> Vec<Value> {
+    items
+        .into_iter()
+        .map(|(id, name)| json!({"id": id.to_string(), "name": name}))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1289,43 +1385,126 @@ mod tests {
         let multi =
             QqAdapter::with_instance("alix-two", Some("alix".into()), QqAdapterConfig::default());
         assert_eq!(multi.status_info().display_name, "QQ（alix / alix-two）");
-        // 实例附加信息经能力扩展取（2026-10 重构，原在 AdapterInfo 上）。
-        assert_eq!(
-            multi
-                .qq_management()
-                .unwrap()
-                .instance_info()
-                .persona
-                .as_deref(),
-            Some("alix")
-        );
+        // 实例附加信息经管理面 `cached_state` 取（W3.2 适配器管理通道）。
+        let state = multi
+            .management()
+            .and_then(|m| m.cached_state())
+            .expect("cached state");
+        assert_eq!(state["instance"]["persona"], json!("alix"));
     }
 
-    /// 能力扩展契约（2026-10）：QQ 适配器必须暴露 `QqManagement`，
-    /// `instance_info` 反映实例配置，且能力面与固有方法操作同一份状态。
-    #[test]
-    fn qq_adapter_exposes_management_capability() {
+    /// 管理面契约（2026-10 适配器管理通道）：QQ 适配器必须暴露
+    /// `AdapterManagement`，`cached_state` 反映实例配置，且管理面与固有
+    /// 方法操作同一份状态。
+    #[tokio::test]
+    async fn qq_adapter_exposes_management_capability() {
         let cfg = QqAdapterConfig {
             napcat_container: "napcat-x".into(),
             ..Default::default()
         };
         let adapter = QqAdapter::with_instance("alix-two", Some("alix".into()), cfg);
-        // `Adapter::qq_management` 恒定 Some（QQ 实现契约）。
-        let cap = adapter
-            .qq_management()
-            .expect("QQ 适配器必须暴露 QqManagement 能力");
-        let info = cap.instance_info();
-        assert_eq!(info.persona.as_deref(), Some("alix"));
-        assert_eq!(info.container.as_deref(), Some("napcat-x"));
+        let management = adapter
+            .management()
+            .expect("QQ 适配器必须暴露 AdapterManagement 能力");
+        let state = management.cached_state().expect("cached state");
+        assert_eq!(state["instance"]["persona"], json!("alix"));
+        assert_eq!(state["instance"]["container"], json!("napcat-x"));
         assert!(
-            !info.bind_address.is_empty(),
+            !state["instance"]["bind_address"]
+                .as_str()
+                .unwrap_or("")
+                .is_empty(),
             "绑定地址应非空（配置默认 0.0.0.0:3131）"
         );
-        // 能力面与固有方法同源：经能力面切门控 → 固有读取可见。
-        cap.set_gate_mode(GateMode::Allowlist);
+        // 管理面与固有方法同源：经管理面切门控 → 固有读取可见。
+        management
+            .invoke_custom("set_gate_mode", json!({"mode": "allowlist"}))
+            .await
+            .expect("set_gate_mode ok");
         assert_eq!(adapter.get_gate_mode(), QqGateMode::Allowlist);
-        cap.set_gate_mode(GateMode::None);
+        management
+            .invoke_custom("set_gate_mode", json!({"mode": "none"}))
+            .await
+            .expect("set_gate_mode ok");
         assert_eq!(adapter.get_gate_mode(), QqGateMode::None);
+    }
+
+    /// 平台中立管理面契约（W3.2，2026-10 适配器管理通道）：
+    /// `management()` 恒定 Some；`cached_state` 同步投影与写入后状态一致；
+    /// `invoke_custom` method 路由表（含可读错误）与双管理面同源。
+    #[tokio::test]
+    async fn qq_adapter_exposes_platform_neutral_management() {
+        let cfg = QqAdapterConfig {
+            napcat_container: "napcat-mgmt".into(),
+            ..Default::default()
+        };
+        let adapter = QqAdapter::with_instance("alix-mgmt", Some("alix".into()), cfg);
+        let management = adapter
+            .management()
+            .expect("QQ 适配器必须暴露 AdapterManagement 管理面");
+
+        // cached_state：实例信息 + 门控 + owner 快照（零 IO）。
+        let state = management.cached_state().expect("state snapshot");
+        assert_eq!(state["instance"]["persona"], json!("alix"));
+        assert_eq!(state["instance"]["container"], json!("napcat-mgmt"));
+        assert_eq!(state["gate"]["mode"], json!("none"));
+        assert!(state["instance"]["bind_address"].as_str().is_some());
+
+        // invoke_custom：写路径（set_gate_mode / update_allowlist / set_owner）。
+        let out = management
+            .invoke_custom("set_gate_mode", json!({"mode": "allowlist"}))
+            .await
+            .expect("set_gate_mode ok");
+        assert_eq!(out["mode"], json!("allowlist"));
+        management
+            .invoke_custom(
+                "update_allowlist",
+                json!({"user_ids": [7, "8"], "group_ids": ["99"]}),
+            )
+            .await
+            .expect("update_allowlist ok");
+        management
+            .invoke_custom("set_owner", json!({"owner_qq": 4242}))
+            .await
+            .expect("set_owner ok");
+
+        // 双管理面同源：经新面写入 → 固有读取与新面快照均可见。
+        assert_eq!(adapter.get_gate_mode(), QqGateMode::Allowlist);
+        assert_eq!(adapter.get_filter_config().allowlist.user_ids, vec![7, 8]);
+        let state = management.cached_state().unwrap();
+        assert_eq!(state["gate"]["mode"], json!("allowlist"));
+        assert_eq!(state["gate"]["allowlist_users"], json!(["7", "8"]));
+        assert_eq!(state["gate"]["allowlist_groups"], json!(["99"]));
+        assert_eq!(state["owner"], json!(4242));
+
+        // 读路径：get_* 与固有读取同源（单一事实来源）。
+        let out = management
+            .invoke_custom("get_filter_config", json!({}))
+            .await;
+        assert_eq!(out.unwrap()["denylist_groups"], json!([]));
+        let out = management.invoke_custom("get_owner", json!({})).await;
+        assert_eq!(out.unwrap()["owner_qq"], json!(4242));
+
+        // 未知方法：可读错误（fail-closed）。
+        let err = management
+            .invoke_custom("nope", json!({}))
+            .await
+            .expect_err("unknown method must fail");
+        assert!(
+            err.to_string().contains("unknown adapter method: nope"),
+            "unexpected error: {err}"
+        );
+        // 非法门控模式：可读错误且不改变现有状态。
+        let err = management
+            .invoke_custom("set_gate_mode", json!({"mode": "bogus"}))
+            .await
+            .expect_err("invalid mode must fail");
+        assert!(err.to_string().contains("invalid gate mode"), "{err}");
+        assert_eq!(adapter.get_gate_mode(), QqGateMode::Allowlist);
+
+        // 固有读取与管理面快照同源：set_owner 经 invoke_custom 写入后，
+        // 固有 getter 与 cached_state 均可见（单一事实来源）。
+        assert_eq!(adapter.get_owner_qq(), 4242);
     }
 
     async fn mount_login_info(server: &MockServer, user_id: i64) {

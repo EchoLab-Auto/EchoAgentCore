@@ -137,13 +137,7 @@ async fn a_stdio_upgrade_switches_to_new_instance() {
     let out = handle
         .invoke("echo", ctx(5_000), json!({"text": "after-upgrade"}))
         .await;
-    assert_eq!(
-        out,
-        InvokeOutcome::Ok {
-            text: "after-upgrade".to_string(),
-            images: vec![]
-        }
-    );
+    assert_eq!(out, InvokeOutcome::ok("after-upgrade"));
 
     // upgrade 返回 Ok 即表示旧实例已排空退出：只剩新实例。
     if counting {
@@ -256,13 +250,7 @@ async fn c_upgrade_rejected_while_pending() {
     let out = handle
         .invoke("echo", ctx(5_000), json!({"text": "back"}))
         .await;
-    assert_eq!(
-        out,
-        InvokeOutcome::Ok {
-            text: "back".to_string(),
-            images: vec![]
-        }
-    );
+    assert_eq!(out, InvokeOutcome::ok("back"));
     handle
         .drain(Duration::from_secs(3))
         .await
@@ -313,10 +301,7 @@ impl InprocPlugin for EchoInstance {
                         let _ = io
                             .send(PluginToHost::InvokeResult(InvokeResult {
                                 call_id: inv.call_id.clone(),
-                                outcome: InvokeOutcome::Ok {
-                                    text,
-                                    images: vec![],
-                                },
+                                outcome: InvokeOutcome::ok(text),
                             }))
                             .await;
                     }
@@ -359,13 +344,7 @@ async fn d_failed_handshake_keeps_current_instance() {
     let out = handle
         .invoke("echo", ctx(5_000), json!({"text": "before"}))
         .await;
-    assert_eq!(
-        out,
-        InvokeOutcome::Ok {
-            text: "before".to_string(),
-            images: vec![]
-        }
-    );
+    assert_eq!(out, InvokeOutcome::ok("before"));
 
     let err = handle
         .upgrade(json!({"fail_handshake": true}), Duration::from_secs(1))
@@ -384,14 +363,7 @@ async fn d_failed_handshake_keeps_current_instance() {
     let out = handle
         .invoke("echo", ctx(5_000), json!({"text": "still-old"}))
         .await;
-    assert_eq!(
-        out,
-        InvokeOutcome::Ok {
-            text: "still-old".to_string(),
-            images: vec![]
-        },
-        "旧实例应继续服务"
-    );
+    assert_eq!(out, InvokeOutcome::ok("still-old"), "旧实例应继续服务");
 
     handle
         .drain(Duration::from_secs(2))
@@ -422,6 +394,155 @@ async fn e_sequential_upgrades_advance_generation() {
     assert_eq!(handle.hot_replaces(), 2);
     assert_eq!(invoke_config(&handle).await, json!({"gen": 2}));
     assert_eq!(handle.state(), PluginState::Ready);
+
+    handle
+        .drain(Duration::from_secs(3))
+        .await
+        .expect("drain ok");
+    assert_eq!(handle.state(), PluginState::Stopped);
+}
+
+// ── f. 升级交接期间 HostCall 回执按来源连接路由（W1.2 回归）─────────────────
+
+/// 回执记录：`(代, call_id, outcome)`——按插件实例代记，用于断言「回执到了
+/// 哪一代的连接」。
+type HandoffLog = std::sync::Mutex<Vec<(usize, String, HostCallOutcome)>>;
+
+/// 换代测试插件。
+///
+/// - **第 1 代（交接中的旧实例）**：收到 `Drain` 后发一条 `HostCall` 并等待回执；
+///   回执到达 → 记录（代=1）→ 退出（结束排空）。这正是热替换交接的窗口：
+///   此时 `current_conn()` 已是第 2 代，回执必须按**来源连接**（第 1 代）
+///   回发（W1.2 修复前会错投第 2 代）。
+/// - **第 2 代（新实例）**：正常服务；若收到 `HostCallResult`（= 错投泄漏）
+///   也记录（代=2），供用例断言零泄漏。
+struct HandoffPlugin {
+    generation: usize,
+    log: Arc<HandoffLog>,
+}
+
+impl InprocPlugin for HandoffPlugin {
+    fn run(self: Box<Self>, mut io: InprocIo) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            loop {
+                let Some(msg) = io.recv().await else {
+                    return;
+                };
+                match msg {
+                    HostToPlugin::Hello(hello) => {
+                        let _ = io
+                            .send(PluginToHost::Welcome(Welcome {
+                                protocol: hello.protocol.clone(),
+                                version: hello.version,
+                                plugin_id: hello.plugin_id.clone(),
+                                capabilities: vec![capabilities::HOST_CALL.to_string()],
+                            }))
+                            .await;
+                        let _ = io.send(PluginToHost::Ready).await;
+                    }
+                    HostToPlugin::HostCallResult(result) => {
+                        self.log.lock().unwrap().push((
+                            self.generation,
+                            result.call_id.clone(),
+                            result.outcome,
+                        ));
+                        if self.generation == 1 {
+                            return; // 旧实例：收到回执即退出（排空完成）
+                        }
+                    }
+                    HostToPlugin::Drain(_) => {
+                        if self.generation != 1 {
+                            return; // 新实例照常排空退出
+                        }
+                        // 交接窗口：排空前发 HostCall，等回执（上限交给用例超时兜底）。
+                        let call = HostCall {
+                            call_id: "host:g1".to_string(),
+                            service: "svc".to_string(),
+                            method: "ping".to_string(),
+                            payload: json!({}),
+                        };
+                        if !io.send(PluginToHost::HostCall(call)).await {
+                            return;
+                        }
+                    }
+                    HostToPlugin::Dispose => return,
+                    _ => {}
+                }
+            }
+        })
+    }
+}
+
+/// 服务：记录调用次数并回 `{"pong": true}`。
+struct PingService {
+    calls: Arc<AtomicUsize>,
+}
+
+impl echo_plugin_host::host_service::HostService for PingService {
+    fn call(&self, _method: &str, _payload: Value) -> Result<Value, (String, String)> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(json!({"pong": true}))
+    }
+}
+
+/// 升级交接：旧实例在排空期发出的 `HostCall` 回执必须回到旧连接——
+/// 不错投新实例、不丢失（旧实例能收到并完成排空）。
+#[tokio::test]
+async fn f_drain_window_hostcall_reply_routes_to_source_connection() {
+    let supervisor = PluginSupervisor::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    supervisor.host_services().register(
+        "svc",
+        Arc::new(PingService {
+            calls: calls.clone(),
+        }),
+    );
+
+    let generations = Arc::new(AtomicUsize::new(0));
+    let log: Arc<HandoffLog> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let transport = {
+        let generations = generations.clone();
+        let log = log.clone();
+        InprocTransport::new(move |_spec: PluginSpec| -> Box<dyn InprocPlugin> {
+            let generation = generations.fetch_add(1, Ordering::SeqCst) + 1;
+            Box::new(HandoffPlugin {
+                generation,
+                log: log.clone(),
+            })
+        })
+    };
+    let handle = supervisor
+        .start(spec(json!({})), Box::new(transport))
+        .await
+        .expect("handshake ok");
+
+    // 交接：新实例（第 2 代）握手 → 切换 → 旧实例（第 1 代）排空。
+    // 排空期旧实例发 HostCall；upgrade 返回即表示旧实例已完成排空退出。
+    handle
+        .upgrade(json!({"gen": 2}), Duration::from_secs(3))
+        .await
+        .expect("upgrade should succeed");
+    assert_eq!(handle.hot_replaces(), 1);
+
+    let entries = log.lock().unwrap().clone();
+    let gen1: Vec<_> = entries.iter().filter(|(g, ..)| *g == 1).collect();
+    let gen2: Vec<_> = entries.iter().filter(|(g, ..)| *g == 2).collect();
+
+    assert_eq!(
+        gen1.len(),
+        1,
+        "旧实例（第 1 代）必须收到它自己发出的回执；实际记录 = {entries:?}"
+    );
+    assert_eq!(gen1[0].1, "host:g1");
+    match &gen1[0].2 {
+        HostCallOutcome::Ok { result } => assert_eq!(result, &json!({"pong": true})),
+        other => panic!("expected Ok outcome, got {other:?}"),
+    }
+    assert!(
+        gen2.is_empty(),
+        "回执不得错投新实例（第 2 代）；实际记录 = {entries:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "服务应被恰好调用一次");
 
     handle
         .drain(Duration::from_secs(3))

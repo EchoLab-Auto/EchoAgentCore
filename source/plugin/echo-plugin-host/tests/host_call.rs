@@ -91,10 +91,7 @@ impl InprocPlugin for CallPlugin {
                             let _ = io
                                 .send(PluginToHost::InvokeResult(InvokeResult {
                                     call_id: inv.call_id.clone(),
-                                    outcome: InvokeOutcome::Ok {
-                                        text: "pong".to_string(),
-                                        images: vec![],
-                                    },
+                                    outcome: InvokeOutcome::ok("pong"),
                                 }))
                                 .await;
                             continue;
@@ -127,10 +124,7 @@ impl InprocPlugin for CallPlugin {
                                     let _ = io
                                         .send(PluginToHost::InvokeResult(InvokeResult {
                                             call_id: inv.call_id.clone(),
-                                            outcome: InvokeOutcome::Ok {
-                                                text,
-                                                images: vec![],
-                                            },
+                                            outcome: InvokeOutcome::ok(text),
                                         }))
                                         .await;
                                     break;
@@ -355,13 +349,7 @@ async fn host_call_result_send_failure_is_swallowed() {
 
     // 新实例照常服务。
     let out2 = handle.invoke("call", ctx(), json!({})).await;
-    assert_eq!(
-        out2,
-        InvokeOutcome::Ok {
-            text: "pong".to_string(),
-            images: vec![]
-        }
-    );
+    assert_eq!(out2, InvokeOutcome::ok("pong"));
 
     // 旧实例的 HostCallResult 不应串到新实例（发送失败被丢弃）。
     let ob = obs.lock().unwrap();

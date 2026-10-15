@@ -41,10 +41,11 @@ pub struct AdapterInfo {
     /// Whether this adapter is configured and enabled.
     pub configured: bool,
     // 平台专属附加信息不在此（2026-10 抽象泄漏重构）：QQ 实例的
-    // persona/容器/URL/绑定地址经 [`QqManagement::instance_info`]
-    // （能力扩展 trait）暴露，通用快照保持平台中立。
+    // persona/容器/URL/绑定地址经
+    // [`AdapterManagement::cached_state`]（能力扩展 trait）暴露，
+    // 通用快照保持平台中立。
     //
-    // [`QqManagement::instance_info`]: crate::capabilities::QqManagement::instance_info
+    // [`AdapterManagement::cached_state`]: crate::capabilities::AdapterManagement::cached_state
 }
 
 /// Hook that platform adapters use to deliver inbound messages into the
@@ -149,12 +150,11 @@ pub trait Adapter: Send + Sync {
     /// Subscribe to adapter events. May be called multiple times.
     fn subscribe(&self, tx: mpsc::UnboundedSender<AdapterEvent>);
 
-    /// QQ（OneBot）平台管理能力（门控/名单/管理员/二维码/群友列表）。
+    /// 平台中立的适配器管理面（W3.1，2026-10 适配器管理通道）。
     ///
-    /// 非 QQ 适配器返回 `None`（2026-10 能力扩展重构：QQ 专属方法与
-    /// 默认 no-op 曾内嵌在本 trait 上——抽象泄漏 + 静默假成功）。
-    /// QQ 实现返回 `Some(self)`。
-    fn qq_management(&self) -> Option<&dyn crate::capabilities::QqManagement> {
+    /// 平台管理能力的唯一入口；`None` = 该适配器不提供
+    /// 管理面。消费方（命令域 / 面板通道 / 远程适配器）只应依赖本访问器。
+    fn management(&self) -> Option<&dyn crate::capabilities::AdapterManagement> {
         None
     }
 }

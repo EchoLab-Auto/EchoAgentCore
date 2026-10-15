@@ -26,18 +26,37 @@ pub struct AdapterStatus {
     pub self_id: Option<String>,
     pub bind_address: String,
     pub started_at: Option<i64>,
-    /// QQ 实例（2026-09 多实例）：归属人格 id。
+    /// 归属人格 id（概念中立；2026-09 多实例）。
     #[serde(default)]
     pub persona: Option<String>,
-    /// QQ 实例：NapCat 容器名（Panel 展示 / 诊断用）。
+    /// 平台自有展示型字段（W2.2，2026-10 适配器管理通道）：键值对，
+    /// 替代各平台专属具名字段——平台特有字段名随插件/适配器来，消费端
+    /// （Panel）按 KV 通用渲染，宿主不再为每个平台加具名字段。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub metadata: Vec<AdapterMetadataEntry>,
+    /// **deprecated（迁移期保留，随 Panel 阶段 1 删除）**：NapCat 容器名。
+    /// 取代者：`metadata`（key = `container`）。
     #[serde(default)]
     pub container: Option<String>,
-    /// QQ 实例：NapCat WebUI 地址（扫码登录页面链接）。
+    /// **deprecated（迁移期保留，随 Panel 阶段 1 删除）**：NapCat WebUI 地址。
+    /// 取代者：`metadata`（key = `webui_url`）。
     #[serde(default)]
     pub webui_url: Option<String>,
-    /// QQ 实例：OneBot HTTP API 地址。
+    /// **deprecated（迁移期保留，随 Panel 阶段 1 删除）**：OneBot HTTP API 地址。
+    /// 取代者：`metadata`（key = `onebot_url`）。
     #[serde(default)]
     pub onebot_url: Option<String>,
+}
+
+/// 适配器展示型元数据条目（平台自有字段的通用承载；W2.2，2026-10）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdapterMetadataEntry {
+    /// 稳定键（程序消费；如 `container` / `webui_url` / `onebot_url`）。
+    pub key: String,
+    /// 展示标签（UI 渲染；如「容器」「WebUI」）。
+    pub label: String,
+    /// 展示值（字符串化）。
+    pub value: String,
 }
 
 /// 后台 shell 会话摘要（前端可视化终端）。
@@ -710,6 +729,29 @@ pub enum BackendEvent {
     // ---- Adapter management ----
     AdapterList {
         adapters: Vec<AdapterStatus>,
+    },
+    /// 适配器管理方法调用结果（W2.1，2026-10 适配器管理通道；
+    /// [`crate::command::BackendCommand::InvokeAdapterOp`] 的响应）。
+    AdapterOpResult {
+        /// 适配器实例名（回显请求值）。
+        adapter: String,
+        /// 方法名（回显请求值）。
+        method: String,
+        /// 成功时的结构化结果（方法自定义；如 `{"mode":"allowlist"}`）。
+        #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+        result: serde_json::Value,
+        /// 失败原因（成功为 None）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// 适配器状态推送（W2.1，2026-10）：插件/适配器主动上报（含
+    /// `report_ui_state` 与下次拉取状态的刷新触发）；`state` 为
+    /// `AdapterManagement::cached_state` 同构文档（epoch 版本化由宿主缓存管理）。
+    AdapterState {
+        /// 适配器实例名。
+        adapter: String,
+        /// 状态文档（平台自定义；约定键见 `AdapterManagement::cached_state`）。
+        state: serde_json::Value,
     },
     /// QQ group list. `adapter` = 实例名（多实例寻址；None = 旧单实例）。
     GroupList {

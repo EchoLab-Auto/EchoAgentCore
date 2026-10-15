@@ -898,6 +898,101 @@ async fn update_api_config_persists() {
     std::fs::remove_file(&tmp).ok();
 }
 
+// ── 会话级 API 覆盖（2026-10）──
+
+/// 会话级覆盖：设置后 resolve_session_provider 返回专用 provider；
+/// 清除后回到 persona 级。
+#[tokio::test]
+async fn session_provider_override_resolves_and_clears() {
+    let persona_provider: Arc<dyn LlmProvider> = Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "persona".into(),
+    });
+    let agent = test_agent(persona_provider.clone());
+    // 预置一个 profile（池）——set_session_provider 按名解析。
+    {
+        let mut cfg = agent.config.write().await;
+        cfg.api_profiles.push(crate::config::ApiProfile::new(
+            "kimi",
+            "openai",
+            "kimi-k3",
+        ));
+        cfg.api_profiles[0].api_key = "sk-kimi-test".into();
+        cfg.api_profiles[0].base_url = "http://kimi.test".into();
+    }
+
+    // 无覆盖时 → persona 级 provider。
+    let p = agent.resolve_session_provider("sess-1").await;
+    assert_eq!(p.name(), "mock", "no override → persona provider");
+
+    // 设置覆盖 → 专用 provider（实例不同——用 Arc 指针区分）。
+    let ok = agent.set_session_provider("sess-1", "kimi").await;
+    assert!(ok, "set_session_provider(kimi) should succeed");
+    let p = agent.resolve_session_provider("sess-1").await;
+    // profile "kimi" 声明 provider="openai" → create_provider 构建 OpenAI
+    // provider（name="openai"）；与 persona 级 MockProvider（name="mock"）
+    // 区分。
+    assert_eq!(p.name(), "openai", "session override → profile provider");
+    assert!(
+        !Arc::ptr_eq(&p, &persona_provider),
+        "session override must be a different provider instance"
+    );
+
+    // 同 profile 重复设置 → 幂等（不重建）。
+    let ok = agent.set_session_provider("sess-1", "kimi").await;
+    assert!(ok);
+
+    // 清除覆盖 → 回到 persona 级。
+    let ok = agent.set_session_provider("sess-1", "").await;
+    assert!(ok);
+    let p = agent.resolve_session_provider("sess-1").await;
+    assert!(
+        Arc::ptr_eq(&p, &persona_provider),
+        "cleared override → persona provider"
+    );
+}
+
+/// 会话级覆盖不影响其他会话：sess-1 有覆盖，sess-2 无覆盖。
+#[tokio::test]
+async fn session_provider_override_is_scoped() {
+    let persona_provider: Arc<dyn LlmProvider> = Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "persona".into(),
+    });
+    let agent = test_agent(persona_provider.clone());
+    {
+        let mut cfg = agent.config.write().await;
+        cfg.api_profiles.push(crate::config::ApiProfile::new(
+            "deepseek-flash",
+            "deepseek",
+            "deepseek-chat",
+        ));
+        cfg.api_profiles[0].api_key = "sk-ds-test".into();
+    }
+
+    let ok = agent.set_session_provider("sess-1", "deepseek-flash").await;
+    assert!(ok);
+
+    // sess-1 有覆盖，sess-2 无。
+    let p1 = agent.resolve_session_provider("sess-1").await;
+    let p2 = agent.resolve_session_provider("sess-2").await;
+    assert!(!Arc::ptr_eq(&p1, &p2), "sess-1 overridden, sess-2 follows persona");
+    assert!(Arc::ptr_eq(&p2, &persona_provider));
+}
+
+/// 不存在的 profile → set_session_provider 失败（回退 persona 级）。
+#[tokio::test]
+async fn session_provider_override_rejects_unknown_profile() {
+    let agent = test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "x".into(),
+    }));
+    let ok = agent.set_session_provider("sess-1", "nonexistent").await;
+    assert!(!ok, "unknown profile must fail");
+    let p = agent.resolve_session_provider("sess-1").await;
+    assert_eq!(p.name(), "mock", "fallback to persona provider");
+}
+
 #[tokio::test]
 async fn persist_config_keeps_on_disk_api_key() {
     let tmp = std::env::temp_dir().join(format!("echo-agent-cfg-{}.toml", uuid::Uuid::new_v4()));

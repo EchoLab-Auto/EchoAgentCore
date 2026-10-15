@@ -106,13 +106,7 @@ async fn calculator_invocation_returns_result() {
     let outcome = handle
         .invoke("calculator", ctx(5_000), json!({"expression": "(2+3)*4"}))
         .await;
-    assert_eq!(
-        outcome,
-        InvokeOutcome::Ok {
-            text: "20".to_string(),
-            images: vec![],
-        }
-    );
+    assert_eq!(outcome, InvokeOutcome::ok("20"));
 
     handle
         .drain(Duration::from_secs(3))

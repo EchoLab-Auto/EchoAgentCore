@@ -184,19 +184,18 @@ mod tests {
         assert_eq!(configured.len(), 1);
     }
 
-    /// 能力扩展默认：未实现 `qq_management` 的适配器返回 `None`
-    ///（2026-10 重构：QQ 方法不再以默认 no-op 内嵌在 `Adapter` 上——
-    /// 非 QQ 适配器上不再存在"调用成功但什么也没发生"的假接口）。
+    /// 能力扩展默认：未实现 `AdapterManagement` 的适配器返回 `None`
+    ///（非适配器上不再存在"调用成功但什么也没发生"的假接口）。
     #[test]
-    fn non_qq_adapter_exposes_no_qq_capability() {
+    fn adapter_without_management_returns_none() {
         let mock = MockAdapter {
             name: "tg".into(),
             configured: true,
             started: std::sync::atomic::AtomicBool::new(false),
         };
         assert!(
-            mock.qq_management().is_none(),
-            "未实现 QqManagement 的适配器必须返回 None（显式不支持）"
+            mock.management().is_none(),
+            "未实现 AdapterManagement 的适配器必须返回 None（显式不支持）"
         );
     }
 

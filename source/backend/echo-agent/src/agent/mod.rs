@@ -30,7 +30,7 @@ use echo_adapter::AdapterRegistry;
 use crate::bridge::BackendHandle;
 use crate::command::BackendCommand;
 use crate::config::{AgentConfig, ApiProfile};
-use crate::event::{AdapterStatus, BackendEvent};
+use crate::event::{AdapterMetadataEntry, AdapterStatus, BackendEvent};
 use crate::llm::{create_provider, ChatChunk, ChatMessage, ChatRequest, LlmProvider, ToolCall};
 use crate::session::{Session, TrunkStore};
 use crate::skill::SkillRegistry;
@@ -154,6 +154,15 @@ pub struct Agent {
     /// [`Self::apply_persona_api`] 重建本 persona 的 provider，不依赖全局
     /// UpdateApiConfig / SwitchApi 激活路径。
     persona_api: tokio::sync::RwLock<Option<String>>,
+    /// 会话级 provider 覆盖（session_id → (profile_name, provider)）。
+    /// 挂在 Agent 上而非 TrunkStore：provider 是 Agent 级资源（与
+    /// `self.provider` 同级），会话级覆盖是其按会话的镜像。
+    /// `DashMap` 并发读 + 会话级写锁（`session_provider_lock`）防重复
+    /// 构建。
+    session_providers: DashMap<String, (String, Arc<dyn LlmProvider>)>,
+    /// 会话级 provider 构建互斥（同一 session_id 的并发构建串行；
+    /// 不同会话并行）。
+    session_provider_locks: DashMap<String, tokio::sync::Mutex<()>>,
     /// 余额快照/查询互斥（2026-10 审计 P2）：周期任务与手动「查余额」
     /// 共用——防止慢查询（15s 超时）叠加本轮周期 tick、导致同秒重复采样。
     balance_snapshot_lock: tokio::sync::Mutex<()>,
@@ -334,6 +343,8 @@ impl Agent {
             draining: AtomicBool::new(false),
             capabilities: std::sync::Mutex::new(None),
             persona_api: tokio::sync::RwLock::new(None),
+            session_providers: DashMap::new(),
+            session_provider_locks: DashMap::new(),
             balance_snapshot_lock: tokio::sync::Mutex::new(()),
             subagent: std::sync::RwLock::new(None),
         };
@@ -1390,6 +1401,89 @@ impl Agent {
         }
     }
 
+    /// 会话级 provider 解析（2026-10 会话粒度模型）：有覆盖 → 专用
+    /// provider；无覆盖 → persona 级（`self.provider`）。
+    ///
+    /// 覆盖的 provider 在首次使用时按 profile 惰性构建（含计量 + 脱敏
+    /// 装饰器）；构建失败时回退 persona 级（记日志，不中断 turn）。
+    pub async fn resolve_session_provider(
+        &self,
+        session_id: &str,
+    ) -> Arc<dyn LlmProvider> {
+        // 快路径：已缓存的覆盖直接命中。
+        if let Some(entry) = self.session_providers.get(session_id) {
+            return Arc::clone(&entry.1);
+        }
+        // 慢路径：无覆盖 → 跟随 persona 级。
+        Arc::clone(&*self.provider.read().await)
+    }
+
+    /// 设置/清除会话级 provider 覆盖（管理命令入口）。
+    ///
+    /// `profile_name` 空串 = 清除覆盖（回到跟随 persona 级）；非空 =
+    /// 按全局供应商池构建该 profile 的 provider 并缓存。构建失败时
+    /// 返回 false（旧覆盖/无覆盖保持）。
+    pub async fn set_session_provider(
+        &self,
+        session_id: &str,
+        profile_name: &str,
+    ) -> bool {
+        if profile_name.is_empty() {
+            self.session_providers.remove(session_id);
+            self.session_provider_locks.remove(session_id);
+            return true;
+        }
+        // 构建锁：同一会话的并发 set 串行（防重复构建）。
+        let lock = self
+            .session_provider_locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| tokio::sync::Mutex::new(()));
+        let _guard = lock.lock().await;
+        // 双重检查：可能已被并发调用写入。
+        if let Some(entry) = self.session_providers.get(session_id) {
+            if entry.0 == profile_name {
+                return true; // 已是目标 profile
+            }
+        }
+        let config = self.config.read().await.clone();
+        let probe = match crate::agent::api_admin::resolve_probe_config(&config, profile_name) {
+            Ok(p) => p,
+            Err(message) => {
+                self.emit(BackendEvent::Error {
+                    session_id: Some(session_id.to_string()),
+                    message: format!("session profile resolve failed: {message}"),
+                });
+                return false;
+            }
+        };
+        // 计量归属：profile 名（与全局/persona 级同口径）。
+        let provider = match crate::llm::create_provider(&probe) {
+            Ok(p) => Arc::from(p),
+            Err(e) => {
+                self.emit(BackendEvent::Error {
+                    session_id: Some(session_id.to_string()),
+                    message: format!("session profile provider build failed: {e}"),
+                });
+                return false;
+            }
+        };
+        let provider = match self.metrics() {
+            Some(store) => crate::llm::wrap_metering(provider, store, profile_name.to_string()),
+            None => provider,
+        };
+        let provider = match self.redactor() {
+            Some(redactor) => crate::llm::wrap_redacting(provider, redactor),
+            None => provider,
+        };
+        // 安全：登记该 profile 的密钥（幂等）。
+        self.register_config_secrets(&probe);
+        self.session_providers.insert(
+            session_id.to_string(),
+            (profile_name.to_string(), provider),
+        );
+        true
+    }
+
     pub async fn active_provider(&self) -> String {
         self.provider.read().await.name().to_string()
     }
@@ -1846,7 +1940,8 @@ impl Agent {
             let bid = stream_branch.clone();
             Box::pin(async move {
                 request.max_tokens = this.config.read().await.effective_max_tokens();
-                let provider = this.provider.read().await.clone();
+                // 会话级覆盖（2026-10）：该会话有 provider 覆盖时优先使用。
+                let provider = this.resolve_session_provider(&sid).await;
                 if !this.config.read().await.stream_output {
                     return provider.chat(&request).await;
                 }
@@ -2164,7 +2259,8 @@ impl Agent {
                 temperature: None,
                 max_tokens,
             };
-            let provider = self.provider.read().await.clone();
+            // 会话级覆盖（2026-10）：该会话有 provider 覆盖时优先使用。
+            let provider = self.resolve_session_provider(&session_id).await;
             let log_model_error = |error: crate::llm::LlmError| -> crate::llm::LlmError {
                 tracing::warn!(
                     turn_id = %turn_id,
@@ -2710,16 +2806,50 @@ impl Agent {
             .list_info()
             .into_iter()
             .map(|info| {
-                // QQ 实例附加信息（persona/容器/URL/绑定地址）经能力扩展取
-                // （2026-10 重构：原为 AdapterInfo 内嵌字段；是 QQ 概念却
-                // 占用通用快照）。非 QQ 适配器留空——wire 字段本就是
-                // Option / 可空，面板按缺省处理。`bind_address` 顺带修复：
-                // 此前恒为空串且注释谎称"populated by QqAdapter"。
-                let qq = self
+                // 实例附加信息（persona/容器/URL/绑定地址）经管理面
+                // `cached_state` 取（W3.4 单源化——与 AdapterState 同一状态
+                // 文档；缺管理面 / 无状态时留空，wire 字段本就 Option）。
+                let instance = self
                     .adapters
                     .get(&info.name)
-                    .and_then(|a| a.qq_management().map(|q| q.instance_info()))
+                    .and_then(|a| a.management().and_then(|m| m.cached_state()))
+                    .map(|state| state["instance"].clone())
                     .unwrap_or_default();
+                let str_field = |key: &str| -> Option<String> {
+                    instance[key]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                };
+                let bind_address = instance["bind_address"].as_str().unwrap_or("").to_string();
+                let persona = instance["persona"].as_str().map(str::to_string);
+                let container = str_field("container");
+                let webui_url = str_field("webui_url");
+                let onebot_url = str_field("onebot_url");
+                // 通用元数据（W2.2）：平台自有展示字段经 KV 下发；迁移期与
+                // 下方 deprecated 具名字段并存（同源派生，无第二事实来源）。
+                let mut metadata = Vec::new();
+                if let Some(container) = &container {
+                    metadata.push(AdapterMetadataEntry {
+                        key: "container".into(),
+                        label: "容器".into(),
+                        value: container.clone(),
+                    });
+                }
+                if let Some(url) = &webui_url {
+                    metadata.push(AdapterMetadataEntry {
+                        key: "webui_url".into(),
+                        label: "WebUI".into(),
+                        value: url.clone(),
+                    });
+                }
+                if let Some(url) = &onebot_url {
+                    metadata.push(AdapterMetadataEntry {
+                        key: "onebot_url".into(),
+                        label: "OneBot API".into(),
+                        value: url.clone(),
+                    });
+                }
                 AdapterStatus {
                     name: info.name,
                     display_name: info.display_name,
@@ -2729,12 +2859,13 @@ impl Agent {
                     ),
                     running: !matches!(info.status, echo_adapter::AdapterConnectionState::Stopped),
                     self_id: info.self_id,
-                    bind_address: qq.bind_address,
+                    bind_address,
                     started_at: info.started_at,
-                    persona: qq.persona,
-                    container: qq.container,
-                    webui_url: qq.webui_url,
-                    onebot_url: qq.onebot_url,
+                    persona,
+                    metadata,
+                    container,
+                    webui_url,
+                    onebot_url,
                 }
             })
             .collect();

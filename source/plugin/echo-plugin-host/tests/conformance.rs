@@ -177,10 +177,7 @@ impl InprocPlugin for TestPlugin {
                                 let _ = io
                                     .send(PluginToHost::InvokeResult(InvokeResult {
                                         call_id: inv.call_id.clone(),
-                                        outcome: InvokeOutcome::Ok {
-                                            text,
-                                            images: vec![],
-                                        },
+                                        outcome: InvokeOutcome::ok(text),
                                     }))
                                     .await;
                             }
@@ -206,10 +203,7 @@ impl InprocPlugin for TestPlugin {
                                 let _ = io
                                     .send(PluginToHost::InvokeResult(InvokeResult {
                                         call_id: inv.call_id.clone(),
-                                        outcome: InvokeOutcome::Ok {
-                                            text: "refreshed".to_string(),
-                                            images: vec![],
-                                        },
+                                        outcome: InvokeOutcome::ok("refreshed"),
                                     }))
                                     .await;
                             }
@@ -370,13 +364,7 @@ async fn c_invoke_roundtrip() {
     let out = handle
         .invoke("echo", ctx(), json!({"text": "hello from plugin"}))
         .await;
-    assert_eq!(
-        out,
-        InvokeOutcome::Ok {
-            text: "hello from plugin".to_string(),
-            images: vec![]
-        }
-    );
+    assert_eq!(out, InvokeOutcome::ok("hello from plugin"));
     // call_id 形如 <plugin_id>:<序号>。
     let (handle2, obs) = start_plugin(Script::default()).await;
     let _ = handle2.invoke("echo", ctx(), json!({})).await;
@@ -570,10 +558,7 @@ async fn h_crash_restarts_plugin() {
     let out2 = handle.invoke("echo", ctx(), json!({"text": "again"})).await;
     assert_eq!(
         out2,
-        InvokeOutcome::Ok {
-            text: "again".to_string(),
-            images: vec![]
-        },
+        InvokeOutcome::ok("again"),
         "restarted plugin should serve invokes"
     );
 }
@@ -653,13 +638,7 @@ async fn l_register_replaces_contributions() {
     assert_eq!(handle.contributions(), vec![Contribution::Tool(first)]);
 
     let out = handle.invoke("refresh", ctx(), json!({})).await;
-    assert_eq!(
-        out,
-        InvokeOutcome::Ok {
-            text: "refreshed".to_string(),
-            images: vec![]
-        }
-    );
+    assert_eq!(out, InvokeOutcome::ok("refreshed"));
     assert_eq!(
         handle.contributions(),
         vec![Contribution::Tool(second)],

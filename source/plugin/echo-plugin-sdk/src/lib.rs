@@ -34,7 +34,7 @@
 //!         vec![]
 //!     }
 //!     async fn invoke(&self, _req: InvokeRequest) -> InvokeOutcome {
-//!         InvokeOutcome::Ok { text: "ok".to_string(), images: vec![] }
+//!         InvokeOutcome::ok("ok")
 //!     }
 //! }
 //!

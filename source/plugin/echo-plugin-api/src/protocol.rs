@@ -146,7 +146,7 @@ pub struct InvokeResult {
     pub outcome: InvokeOutcome,
 }
 
-/// 调用终态：成功（文本 + 可选图片）或错误。
+/// 调用终态：成功（文本 + 可选图片 + 可选结构化结果）或错误。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum InvokeOutcome {
@@ -156,12 +156,28 @@ pub enum InvokeOutcome {
         /// 多模态产物（图片 URL / data URI）；与内置工具 `execute_rich` 同口径。
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<String>,
+        /// 结构化结果（W1.1，2026-10）：适配器 op（`custom`）等场景的返回载荷经
+        /// 此承载——`status` / 目录 / 二维码等结构化返回不再 JSON 塞 `text`。
+        /// 工具面消费者可忽略；缺省 `null`（旧插件不带该字段，向后兼容）。
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        result: Value,
     },
     Error {
         /// 机器可读错误码（如 `timeout` / `cancelled` / `plugin_crashed` / `internal`）。
         code: String,
         message: String,
     },
+}
+
+impl InvokeOutcome {
+    /// `Ok` 便捷构造：无图片、无结构化结果（旧形态的等价写法）。
+    pub fn ok(text: impl Into<String>) -> Self {
+        Self::Ok {
+            text: text.into(),
+            images: Vec::new(),
+            result: Value::Null,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

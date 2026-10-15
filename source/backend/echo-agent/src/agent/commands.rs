@@ -76,7 +76,9 @@ impl Agent {
             | BackendCommand::DeleteWorkspaceSession { team_id, .. }
             | BackendCommand::ActivateWorkspaceSession { team_id, .. }
             | BackendCommand::RequestWorkspaceGitStatus { team_id, .. }
-            | BackendCommand::RequestWorkspaceFiles { team_id, .. } => team_id.as_deref(),
+            | BackendCommand::RequestWorkspaceFiles { team_id, .. }
+            | BackendCommand::SetSessionApi { team_id, .. }
+            | BackendCommand::ClearSessionApi { team_id, .. } => team_id.as_deref(),
             _ => None,
         }
     }
@@ -98,6 +100,8 @@ impl Agent {
                 | BackendCommand::ActivateWorkspaceSession { .. }
                 | BackendCommand::RequestWorkspaceGitStatus { .. }
                 | BackendCommand::RequestWorkspaceFiles { .. }
+                | BackendCommand::SetSessionApi { .. }
+                | BackendCommand::ClearSessionApi { .. }
         )
     }
 
@@ -383,6 +387,39 @@ impl Agent {
             }
             BackendCommand::SwitchApi { name } => {
                 self.switch_api(&name).await;
+            }
+            BackendCommand::SetSessionApi {
+                team_id: _,
+                session_id,
+                profile,
+            } => {
+                // 会话级 API 覆盖（2026-10）：该会话的 LLM 请求走指定
+                // profile 的 provider；其余会话不受影响。team_id 已由
+                // requires_explicit_team 保证非空。
+                let ok = self.set_session_provider(&session_id, &profile).await;
+                let message = if ok {
+                    if profile.is_empty() {
+                        format!("会话 {session_id} 已恢复跟随 persona 级配置")
+                    } else {
+                        format!("会话 {session_id} 已切换到 API: {profile}")
+                    }
+                } else {
+                    format!("会话 {session_id} 切换 API 失败（profile 不存在或构建失败）")
+                };
+                self.emit(BackendEvent::Error {
+                    session_id: Some(session_id.clone()),
+                    message,
+                });
+                self.emit_api_config().await;
+            }
+            BackendCommand::ClearSessionApi { team_id: _, session_id } => {
+                // 清除会话级覆盖（回到跟随 persona 级）。
+                self.set_session_provider(&session_id, "").await;
+                self.emit(BackendEvent::Error {
+                    session_id: Some(session_id.clone()),
+                    message: format!("会话 {session_id} 已恢复跟随 persona 级配置"),
+                });
+                self.emit_api_config().await;
             }
             BackendCommand::RequestRemoteApiProfiles { peer } => {
                 // 分布式供应商共享（2026-10）：经联邦拉远端**脱敏**供应商
@@ -723,31 +760,16 @@ impl Agent {
                     sessions = emitted_sessions,
                     "state sessions emitted for all personas"
                 );
-                // Also emit adapter status and QQ gate/filter state so the
+                // Also emit adapter status and adapter management state so the
                 // TUI starts up with the correct persisted values.
                 self.emit_adapter_list();
-                // QQ 状态：逐个实例下发（多实例；单实例时前端行为不变）。
+                // 适配器管理状态：逐个实例下发（W3.4 单源化——AdapterState +
+                // 派生旧 QQ 事件；非 QQ / 缺管理面的实例在内部静默跳过）。
                 for name in self.adapters.names() {
                     let Some(adapter) = self.adapters.get(&name) else {
                         continue;
                     };
-                    // QQ 管理能力取用（2026-10 能力扩展）：非 QQ / 缺能力跳过。
-                    let Some(qq) = adapter.qq_management() else {
-                        continue;
-                    };
-                    let instance = Some(name.clone());
-                    let (au, ag, du, dg) = qq.get_filter_info();
-                    self.emit(BackendEvent::QqFilterConfig {
-                        allowlist_users: au.iter().filter_map(|s| s.parse().ok()).collect(),
-                        allowlist_groups: ag.iter().filter_map(|s| s.parse().ok()).collect(),
-                        denylist_users: du.iter().filter_map(|s| s.parse().ok()).collect(),
-                        denylist_groups: dg.iter().filter_map(|s| s.parse().ok()).collect(),
-                        adapter: instance.clone(),
-                    });
-                    self.emit(BackendEvent::QqGateMode {
-                        mode: qq.get_gate_mode(),
-                        adapter: instance,
-                    });
+                    self.emit_adapter_state_events(adapter, Some(name.clone()));
                 }
             }
             BackendCommand::RequestContext {
@@ -1425,7 +1447,8 @@ impl Agent {
             | BackendCommand::RequestGroupList { .. }
             | BackendCommand::RequestFriendList { .. }
             | BackendCommand::RequestQqLoginStatus { .. }
-            | BackendCommand::RequestQqQrcode { .. } => {
+            | BackendCommand::RequestQqQrcode { .. }
+            | BackendCommand::InvokeAdapterOp { .. } => {
                 self.apply_qq_command(cmd).await;
             }
             BackendCommand::RequestWorkspaceSessions { .. }

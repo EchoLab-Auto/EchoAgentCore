@@ -95,7 +95,20 @@ impl Tool for RemoteTool {
             .invoke(&self.contribution.name, ctx, payload)
             .await;
         match outcome {
-            InvokeOutcome::Ok { text, images } => Ok(ToolResult::with_images(text, images)),
+            InvokeOutcome::Ok {
+                text,
+                images,
+                result,
+            } => {
+                // 结构化结果（W1.1，适配器 op 场景）不进工具面：文本为空时以
+                // JSON 文本兜底（防静默丢数据），非空文本保持原文。
+                let text = if text.is_empty() && !result.is_null() {
+                    result.to_string()
+                } else {
+                    text
+                };
+                Ok(ToolResult::with_images(text, images))
+            }
             InvokeOutcome::Error { code, message } => {
                 Err(ToolError::Execution(format!("{message} ({code})")))
             }
@@ -167,18 +180,12 @@ mod tests {
                                 "add" => {
                                     let a = inv.payload["a"].as_f64().unwrap_or(0.0);
                                     let b = inv.payload["b"].as_f64().unwrap_or(0.0);
-                                    InvokeOutcome::Ok {
-                                        text: (a + b).to_string(),
-                                        images: vec![],
-                                    }
+                                    InvokeOutcome::ok((a + b).to_string())
                                 }
-                                "ctx" => InvokeOutcome::Ok {
-                                    text: format!(
-                                        "session={}",
-                                        inv.ctx.session_id.as_deref().unwrap_or("-")
-                                    ),
-                                    images: vec![],
-                                },
+                                "ctx" => InvokeOutcome::ok(format!(
+                                    "session={}",
+                                    inv.ctx.session_id.as_deref().unwrap_or("-")
+                                )),
                                 other => InvokeOutcome::Error {
                                     code: "unknown_tool".into(),
                                     message: format!("no such tool: {other}"),

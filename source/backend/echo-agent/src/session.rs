@@ -16,7 +16,9 @@ use dashmap::DashMap;
 use tokio::sync::Mutex;
 
 use crate::event::SessionInfo;
-use crate::llm::{estimate_history_tokens, estimate_message_tokens, ChatMessage};
+use crate::llm::{
+    estimate_history_tokens, estimate_message_tokens, ChatMessage, LlmProvider,
+};
 
 /// 默认 QQ 实例名（legacy 单实例）：作为会话 id 后缀被省略。
 pub const DEFAULT_QQ_INSTANCE: &str = "qq";
@@ -167,6 +169,11 @@ pub struct Session {
     /// 本会话的模型上下文投影（由事件日志按 `session` 归属过滤导出，
     /// 受 token 预算 `memory_limit_tokens` 约束）。
     pub history: Arc<parking_lot::Mutex<Vec<ChatMessage>>>,
+    /// 会话级 LLM provider 覆盖（2026-10）：`Some(profile_name)` → 该
+    /// 会话的 LLM 请求走专用 provider（按该 profile 重建）；`None` =
+    /// 跟随 persona 级 provider（`Agent.provider`）。DashMap 值是
+    /// `Arc<Session>` 克隆——`session_providers` 挂在 TrunkStore 上
+    /// 以保证克隆间共享（与 `history`/`turn_lock` 同一生命周期）。
     /// Serialises trunk snapshot creation and result merges; branch execution never holds this lock.
     pub turn_lock: Arc<tokio::sync::Mutex<()>>,
     /// 单会话模式的 turn 排队闸门（FIFO，tokio Mutex 保证公平）：
@@ -266,6 +273,11 @@ pub struct TrunkStore {
     timeline_rebaseline: Arc<std::sync::atomic::AtomicBool>,
     /// 探针上次采样快照（对账基准）。
     timeline_probe_state: Arc<std::sync::Mutex<Option<TimelineProbeSample>>>,
+    /// 会话级 provider 覆盖表（session_id → (profile_name, provider)）。
+    /// 与会话生命周期解耦（会话删除时条目保留——重启后恢复会话时
+    /// 可重新绑定；清理由 ClearHistory 触发）。
+    /// `Arc` 共享使 `Session` 克隆间可见同一表（与 `history` 同理）。
+    pub session_providers: Arc<DashMap<String, (String, Arc<dyn LlmProvider>)>>,
     /// The append-only session event log — the **single source of truth** for
     /// the model-facing context. `trunk_history` is its in-memory projection
     /// cache (see `append_event`); persistence writes this log, and older
@@ -295,6 +307,7 @@ impl Clone for TrunkStore {
             timeline_removed: Arc::clone(&self.timeline_removed),
             timeline_rebaseline: Arc::clone(&self.timeline_rebaseline),
             timeline_probe_state: Arc::clone(&self.timeline_probe_state),
+            session_providers: Arc::clone(&self.session_providers),
             event_log: self.event_log.clone(),
             header: std::sync::Mutex::new(self.header.lock().expect("header poisoned").clone()),
             persist_path: std::sync::Mutex::new(
@@ -470,6 +483,7 @@ impl TrunkStore {
             timeline_removed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             timeline_rebaseline: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             timeline_probe_state: Arc::new(std::sync::Mutex::new(None)),
+            session_providers: Arc::new(DashMap::new()),
             event_log: echo_session::EventLog::new(),
             header: std::sync::Mutex::new(None),
             persist_path: std::sync::Mutex::new(None),

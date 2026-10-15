@@ -40,6 +40,19 @@ pub enum BackendCommand {
     },
     /// Switch to an API profile by name (empty = top-level default).
     SwitchApi { name: String },
+    /// 会话级 API 覆盖（2026-10）：该会话的 LLM 请求走指定 profile
+    /// 的 provider；`profile` 空串 = 清除覆盖（回到跟随 persona 级）。
+    /// team_id 必填（去主智能体后会话类命令的显式归属）。
+    SetSessionApi {
+        team_id: Option<String>,
+        session_id: String,
+        profile: String,
+    },
+    /// 清除会话级 API 覆盖（回到跟随 persona 级）。
+    ClearSessionApi {
+        team_id: Option<String>,
+        session_id: String,
+    },
     /// 查询联邦远端节点的**脱敏**供应商池（分布式供应商共享，2026-10）：
     /// 经 `Query(ApiProfiles)` 拉取，回 `RemoteApiProfiles` 事件
     /// （provider/model/base_url/key_set——api_key 明文永不过线）。
@@ -247,6 +260,25 @@ pub enum BackendCommand {
     RestartAdapter { name: String },
     /// Request the current adapter status list.
     RequestAdapterStatus,
+    /// 调用一个适配器管理方法（W2.1，2026-10 适配器管理通道）。
+    ///
+    /// **唯一新增的适配器管理命令**——取代逐平台专属命令（`UpdateQqAllowlist`
+    /// / `SetQqGateMode` / `RequestQqQrcode` …，迁移期共存，两版本周期后删除）。
+    /// `method` 与插件协议 `custom op` 及 `AdapterManagement::invoke_custom`
+    /// 同名直通（如 `set_gate_mode` / `update_allowlist` / `login_qrcode`）。
+    /// 响应为 [`crate::event::BackendEvent::AdapterOpResult`]。
+    ///
+    /// **Frontend-only**（类别判定，fail-closed）：一切适配器管理命令都是
+    /// 人在环配置面，模型绝不可控。
+    InvokeAdapterOp {
+        /// 适配器实例名。
+        adapter: String,
+        /// 管理方法名（平台自定义；推荐名见 `AdapterManagement` 文档）。
+        method: String,
+        /// 方法参数（JSON；缺省空对象）。
+        #[serde(default)]
+        payload: serde_json::Value,
+    },
     /// Request the QQ group list.
     RequestGroupList {
         #[serde(default)]
@@ -470,13 +502,17 @@ pub enum CommandClearance {
 
 /// Return the command clearance level for `cmd`.
 ///
-/// QQ gate/admin mutations are **Frontend** only: the agent has no tool that
-/// updates allowlists/denylists, changes the gate mode, or sets/queries the
-/// owner QQ. These are human-in-the-loop configuration surfaces and must not
-/// be controllable by the model.
+/// **类别判定（W2.3，2026-10）**：适配器管理命令按**类别**判定——
+/// 一切 [`BackendCommand::InvokeAdapterOp`]（以及迁移期的 QQ 专属变体）
+/// 都是 Frontend-only：人在环配置面，模型绝不可控。类别判定取代了
+/// 「逐 QQ 变体枚举」——新增管理方法不再需要记得加枚举臂
+/// （消除「忘加枚举臂」回归窗口，fail-closed）。
 pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
     match cmd {
-        BackendCommand::UpdateQqAllowlist { .. }
+        // 适配器管理命令：类别判定（任意平台、任意方法）。
+        BackendCommand::InvokeAdapterOp { .. }
+        // 迁移期：QQ 专属变体保留同等判定（随废弃删除）。
+        | BackendCommand::UpdateQqAllowlist { .. }
         | BackendCommand::UpdateQqDenylist { .. }
         | BackendCommand::SetQqGateMode { .. }
         | BackendCommand::SetQqOwner { .. }
@@ -531,6 +567,29 @@ mod tests {
         );
         assert!(super::is_broadcast_readonly("RequestState"));
         assert!(!super::is_broadcast_readonly("SendMessage"));
+    }
+
+    /// 适配器管理命令的**类别判定**（W2.3）：`InvokeAdapterOp` 一律
+    /// Frontend-only——不依赖逐变体枚举（新增方法零维护）。
+    #[test]
+    fn adapter_management_commands_are_frontend_only_by_category() {
+        for (method, payload) in [
+            ("set_gate_mode", serde_json::json!({"mode": "allowlist"})),
+            ("update_allowlist", serde_json::json!({"user_ids": [1]})),
+            ("set_owner", serde_json::json!({"owner_qq": 123})),
+            ("login_qrcode", serde_json::json!({})),
+            ("future_unknown_method", serde_json::json!({})),
+        ] {
+            assert_eq!(
+                command_clearance(&BackendCommand::InvokeAdapterOp {
+                    adapter: "qq".into(),
+                    method: method.into(),
+                    payload,
+                }),
+                CommandClearance::Frontend,
+                "adapter op {method} must be frontend-only"
+            );
+        }
     }
 
     #[test]

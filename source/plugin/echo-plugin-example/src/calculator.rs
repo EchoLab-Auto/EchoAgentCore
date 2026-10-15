@@ -33,10 +33,7 @@ pub(crate) fn invoke(payload: &Value) -> InvokeOutcome {
         None => return invalid_arguments("缺少 expression"),
     };
     match evaluate(expression) {
-        Ok(value) => InvokeOutcome::Ok {
-            text: value.to_string(),
-            images: vec![],
-        },
+        Ok(value) => InvokeOutcome::ok(value.to_string()),
         Err(message) => invalid_arguments(message),
     }
 }
@@ -266,10 +263,7 @@ mod tests {
     fn invoke_returns_number_as_text() {
         assert_eq!(
             invoke(&json!({"expression": "(2+3)*4"})),
-            InvokeOutcome::Ok {
-                text: "20".to_string(),
-                images: vec![],
-            }
+            InvokeOutcome::ok("20")
         );
     }
 
