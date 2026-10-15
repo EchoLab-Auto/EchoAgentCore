@@ -79,6 +79,12 @@ pub struct CoreConfig {
     /// QQ 实例表（多实例；缺省 = 单实例 `qq`）。
     #[serde(skip)]
     pub qq_instances: std::collections::BTreeMap<String, QqInstanceSection>,
+    /// `[adapters.qq] mode`：`"builtin"`（缺省）| `"plugin"`。
+    #[serde(skip)]
+    pub qq_adapter_mode: String,
+    /// `[adapters.qq.plugin]`：mode = "plugin" 时的插件进程启动配置。
+    #[serde(skip)]
+    pub qq_plugin_launch: QqPluginLaunchSection,
     /// `[security]`：敏感信息防护（脱敏服务，2026-10）。
     pub security: SecuritySection,
 }
@@ -138,8 +144,37 @@ pub struct AdaptersSection {
 pub struct QqSection {
     #[serde(flatten)]
     pub shared: echo_adapter_qq::QqAdapterConfig,
+    /// 适配器宿主模式（2026-10 适配器插件化）：
+    /// - `"builtin"`（缺省）：进程内适配器（零行为变化）；
+    /// - `"plugin"`：独立进程适配器插件（stdio），由 Core 按实例组装
+    ///   `Hello.config` 拉起（见 `[adapters.qq.plugin]`）。
+    pub mode: String,
+    /// `mode = "plugin"` 时插件进程的启动配置。
+    pub plugin: QqPluginLaunchSection,
     /// 实例表：实例 id → 覆盖项。
     pub instances: std::collections::BTreeMap<String, QqInstanceSection>,
+}
+
+/// `[adapters.qq.plugin]`：适配器插件进程（stdio）启动配置。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct QqPluginLaunchSection {
+    /// 插件可执行文件（绝对路径 / PATH 名）。
+    pub command: String,
+    /// 追加命令行参数。
+    pub args: Vec<String>,
+    /// 注入子进程的环境变量（宿主环境不继承，仅透传 PATH）。
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+impl Default for QqPluginLaunchSection {
+    fn default() -> Self {
+        Self {
+            command: "echo-adapter-qq".to_string(),
+            args: Vec::new(),
+            env: std::collections::BTreeMap::new(),
+        }
+    }
 }
 
 /// 单个 QQ 实例的配置覆盖项（缺省继承 `[adapters.qq]` 共享默认）。
@@ -311,6 +346,8 @@ impl CoreConfig {
                 // New-format config takes priority（共享默认层）。
                 config.qq_adapter = qq_cfg.shared.clone();
                 config.qq_instances = qq_cfg.instances.clone();
+                config.qq_adapter_mode = qq_cfg.mode.trim().to_string();
+                config.qq_plugin_launch = qq_cfg.plugin.clone();
             }
         }
 
@@ -459,6 +496,67 @@ group_at_reply = true
         assert_eq!(config.qq_adapter.server.bind_address, "0.0.0.0:9999");
         assert_eq!(config.qq_adapter.server.access_token, "new_token");
         assert!(!config.qq_adapter.trigger.dm_auto_reply);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// `[adapters.qq] mode` / `[adapters.qq.plugin]` 解析（P1.8）：
+    /// flatten 共享默认与 mode/plugin 字段共存；缺省 = builtin（空串）。
+    #[test]
+    fn qq_plugin_mode_parses_alongside_shared_defaults() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "echo-qq-plugin-mode-test-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"
+[adapters.qq]
+mode = "plugin"
+enabled = true
+
+[adapters.qq.plugin]
+command = "/opt/echo/echo-adapter-qq"
+args = ["--verbose"]
+
+[adapters.qq.instances.alix-two]
+persona = "alix"
+
+[adapters.qq.server]
+bind_address = "0.0.0.0:9999"
+"#,
+        )
+        .unwrap();
+        let config = CoreConfig::load(&path).unwrap();
+        assert_eq!(config.qq_adapter_mode, "plugin");
+        assert_eq!(config.qq_plugin_launch.command, "/opt/echo/echo-adapter-qq");
+        assert_eq!(config.qq_plugin_launch.args, vec!["--verbose"]);
+        // flatten 共享默认仍生效（mode/plugin 不吞掉适配器配置字段）。
+        assert!(config.qq_adapter.enabled);
+        assert_eq!(config.qq_adapter.server.bind_address, "0.0.0.0:9999");
+        assert!(config.qq_instances.contains_key("alix-two"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 缺省 = builtin：mode 空串、plugin.command 为缺省二进制名。
+    #[test]
+    fn qq_plugin_mode_defaults_to_builtin() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "echo-qq-plugin-default-test-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"
+[adapters.qq]
+enabled = true
+"#,
+        )
+        .unwrap();
+        let config = CoreConfig::load(&path).unwrap();
+        assert_eq!(config.qq_adapter_mode, "");
+        assert_eq!(config.qq_plugin_launch.command, "echo-adapter-qq");
         std::fs::remove_file(&path).ok();
     }
 

@@ -10,7 +10,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use echo_adapter::traits::Adapter;
 use echo_adapter::types::{ChannelType, MessageTarget};
-use echo_adapter_qq::QqAdapter;
 use serde_json::{json, Value};
 
 use crate::security::OutboundPolicy;
@@ -32,15 +31,19 @@ pub struct OutboundGate {
 }
 
 /// 该 persona 的 QQ 实例集合（多实例寻址）。
+///
+/// 适配器句柄为 `Arc<dyn Adapter>`（P1.8 适配器插件化）：内置实例与独立
+/// 进程的插件实例（`RemoteAdapter`）同表混用——平台专属动作统一经
+/// [`invoke_management`]（管理面 `invoke_custom`）路由。
 #[derive(Clone)]
 struct QqInstanceSet {
-    adapters: Vec<Arc<QqAdapter>>,
+    adapters: Vec<Arc<dyn Adapter>>,
     /// 缺省实例（恰好一个实例时即它；多实例时 None → 必须给 account）。
     default_index: Option<usize>,
 }
 
 impl QqInstanceSet {
-    fn new(adapters: Vec<Arc<QqAdapter>>) -> Self {
+    fn new(adapters: Vec<Arc<dyn Adapter>>) -> Self {
         let default_index = (adapters.len() == 1).then_some(0);
         Self {
             adapters,
@@ -57,7 +60,7 @@ impl QqInstanceSet {
     }
 
     /// 按 `account` 参数解析目标实例（缺省回退唯一实例）。
-    fn pick(&self, arguments: &Value) -> Result<Arc<QqAdapter>, String> {
+    fn pick(&self, arguments: &Value) -> Result<Arc<dyn Adapter>, String> {
         if let Some(account) = arguments["account"].as_str().filter(|a| !a.is_empty()) {
             return self
                 .adapters
@@ -88,7 +91,7 @@ impl QqInstanceSet {
 /// - 多于 1 个：schema 增加可选 `account`（实例名），缺省时报错列出可选实例。
 pub fn register_qq_tools_multi(
     registry: &mut echo_agent::ToolRegistry,
-    adapters: Vec<Arc<QqAdapter>>,
+    adapters: Vec<Arc<dyn Adapter>>,
     gate: Option<OutboundGate>,
 ) {
     let set = QqInstanceSet::new(adapters);
@@ -281,6 +284,76 @@ pub fn register_qq_tools_multi(
 }
 
 // ---------------------------------------------------------------------------
+// 管理面路由（内置 / 插件实例统一入口）
+// ---------------------------------------------------------------------------
+
+/// 经管理面调用平台自定义方法（builtin 与插件实例同一路径）。
+///
+/// 内置 `QqAdapter` 与远程 `RemoteAdapter` 都实现 [`AdapterManagement`]：
+/// 出站（卡片 / 语音 / 图片 / 文件）、目录与历史一律走 `invoke_custom`
+/// （插件侧对应 `custom` op 的方法表）。
+async fn invoke_management(
+    adapter: &Arc<dyn Adapter>,
+    method: &str,
+    payload: Value,
+) -> Result<Value, String> {
+    let management = adapter.management().ok_or_else(|| {
+        format!(
+            "adapter {} 未提供管理面（invoke_custom 不可用）",
+            adapter.name()
+        )
+    })?;
+    management
+        .invoke_custom(method, payload)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 工具参数（`target_type` / `target_id`）→ 管理面目标 JSON。
+fn management_target(
+    target_type: &str,
+    target_id: i64,
+) -> Result<Value, echo_agent::tool::ToolError> {
+    use echo_agent::tool::ToolError;
+    match target_type {
+        "group" => Ok(json!({
+            "channel": {"type": "group", "group_id": target_id.to_string()},
+            "user_id": "",
+        })),
+        "private" => Ok(json!({
+            "channel": {"type": "dm"},
+            "user_id": target_id.to_string(),
+        })),
+        other => Err(ToolError::InvalidArguments(format!(
+            "target_type must be 'group' or 'private', got '{other}'"
+        ))),
+    }
+}
+
+/// 管理面 `send_*` 返回（`{message_id?, success, error?}`）→ 工具结果文案。
+fn render_managed_send(
+    label: &str,
+    outcome: Result<Value, String>,
+) -> Result<String, echo_agent::tool::ToolError> {
+    use echo_agent::tool::ToolError;
+    match outcome {
+        Ok(out) => {
+            if out["success"].as_bool().unwrap_or(true) {
+                Ok(format!(
+                    "{label} sent, message_id={}",
+                    out["message_id"].as_str().unwrap_or("?")
+                ))
+            } else {
+                Err(ToolError::Execution(
+                    out["error"].as_str().unwrap_or("unknown error").to_string(),
+                ))
+            }
+        }
+        Err(e) => Err(ToolError::Execution(e)),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Internal wrapper
 // ---------------------------------------------------------------------------
 
@@ -386,53 +459,94 @@ impl echo_agent::Tool for QqToolWrapper {
                 let user_id = arguments["user_id"]
                     .as_i64()
                     .ok_or_else(|| ToolError::InvalidArguments("user_id required".into()))?;
-                match adapter.get_group_member_info(group_id, user_id).await {
-                    Ok(info) => Ok(info),
+                match invoke_management(
+                    &adapter,
+                    "get_group_member_info",
+                    json!({"group_id": group_id, "user_id": user_id}),
+                )
+                .await
+                {
+                    Ok(out) => Ok(out
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| out.to_string())),
                     Err(e) => Err(ToolError::Execution(e)),
                 }
             }
-            "get_group_list" => match adapter.get_group_list().await {
-                Ok(groups) => {
-                    let lines: Vec<String> = groups
-                        .iter()
-                        .map(|(gid, name)| format!("  {gid}: {name}"))
-                        .collect();
-                    if lines.is_empty() {
-                        Ok("no groups joined".into())
-                    } else {
-                        Ok(format!("{} groups:\n{}", groups.len(), lines.join("\n")))
+            "get_group_list" => {
+                match invoke_management(&adapter, "get_group_list", json!({})).await {
+                    Ok(out) => {
+                        let lines: Vec<String> = out["groups"]
+                            .as_array()
+                            .map(|groups| {
+                                groups
+                                    .iter()
+                                    .map(|group| {
+                                        format!(
+                                            "  {}: {}",
+                                            group["id"].as_str().unwrap_or("?"),
+                                            group["name"].as_str().unwrap_or("?")
+                                        )
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if lines.is_empty() {
+                            Ok("no groups joined".into())
+                        } else {
+                            Ok(format!("{} groups:\n{}", lines.len(), lines.join("\n")))
+                        }
                     }
+                    Err(e) => Err(ToolError::Execution(e)),
                 }
-                Err(e) => Err(ToolError::Execution(e)),
-            },
-            "get_friend_list" => match adapter.get_gated_friend_list().await {
-                Ok(friends) => {
-                    let lines: Vec<String> = friends
-                        .iter()
-                        .map(|(user_id, nickname)| format!("  {user_id}: {nickname}"))
-                        .collect();
-                    if lines.is_empty() {
-                        Ok("no friends visible under the current gate".into())
-                    } else {
-                        Ok(format!(
-                            "{} visible friends:\n{}",
-                            friends.len(),
-                            lines.join("\n")
-                        ))
+            }
+            "get_friend_list" => {
+                match invoke_management(&adapter, "get_gated_friend_list", json!({})).await {
+                    Ok(out) => {
+                        let lines: Vec<String> = out["friends"]
+                            .as_array()
+                            .map(|friends| {
+                                friends
+                                    .iter()
+                                    .map(|friend| {
+                                        format!(
+                                            "  {}: {}",
+                                            friend["id"].as_str().unwrap_or("?"),
+                                            friend["name"].as_str().unwrap_or("?")
+                                        )
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if lines.is_empty() {
+                            Ok("no friends visible under the current gate".into())
+                        } else {
+                            Ok(format!(
+                                "{} visible friends:\n{}",
+                                lines.len(),
+                                lines.join("\n")
+                            ))
+                        }
                     }
+                    Err(e) => Err(ToolError::Execution(e)),
                 }
-                Err(e) => Err(ToolError::Execution(e)),
-            },
+            }
             "get_group_msg_history" => {
                 let group_id = arguments["group_id"]
                     .as_i64()
                     .ok_or_else(|| ToolError::InvalidArguments("group_id required".into()))?;
                 let count = arguments["count"].as_i64().unwrap_or(50);
-                let since_minutes = arguments["since_minutes"].as_u64();
-                adapter
-                    .get_group_msg_history(group_id, count, since_minutes)
-                    .await
-                    .map_err(ToolError::Execution)
+                let mut payload = json!({"group_id": group_id, "count": count});
+                if let Some(since_minutes) = arguments["since_minutes"].as_u64() {
+                    payload["since_minutes"] = json!(since_minutes);
+                }
+                match invoke_management(&adapter, "get_group_msg_history", payload).await {
+                    Ok(out) => Ok(out
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| out.to_string())),
+                    Err(e) => Err(ToolError::Execution(e)),
+                }
             }
             "send_file" => {
                 let target_type = arguments["target_type"]
@@ -447,18 +561,19 @@ impl echo_agent::Tool for QqToolWrapper {
                 let file_name = arguments["file_name"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("file_name required".into()))?;
-                match target_type {
-                    "group" => adapter
-                        .upload_group_file(target_id, file_path, file_name)
-                        .await
-                        .map_err(ToolError::Execution),
-                    "private" => adapter
-                        .upload_private_file(target_id, file_path, file_name)
-                        .await
-                        .map_err(ToolError::Execution),
-                    other => Err(ToolError::InvalidArguments(format!(
-                        "target_type must be 'group' or 'private', got '{other}'"
-                    ))),
+                let target = management_target(target_type, target_id)?;
+                match invoke_management(
+                    &adapter,
+                    "send_file",
+                    json!({"target": target, "file_path": file_path, "file_name": file_name}),
+                )
+                .await
+                {
+                    Ok(out) => Ok(out
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| out.to_string())),
+                    Err(e) => Err(ToolError::Execution(e)),
                 }
             }
             "send_json_card" => {
@@ -475,40 +590,16 @@ impl echo_agent::Tool for QqToolWrapper {
                 serde_json::from_str::<Value>(json_payload).map_err(|e| {
                     ToolError::InvalidArguments(format!("json is not valid JSON: {e}"))
                 })?;
-                let target = match target_type {
-                    "group" => MessageTarget {
-                        adapter_name: adapter.name().to_string(),
-                        channel: ChannelType::Group {
-                            group_id: target_id.to_string(),
-                        },
-                        user_id: String::new(),
-                    },
-                    "private" => MessageTarget {
-                        adapter_name: adapter.name().to_string(),
-                        channel: ChannelType::Direct,
-                        user_id: target_id.to_string(),
-                    },
-                    other => {
-                        return Err(ToolError::InvalidArguments(format!(
-                            "target_type must be 'group' or 'private', got '{other}'"
-                        )))
-                    }
-                };
-                match adapter.send_json_card(&target, json_payload).await {
-                    Ok(result) => {
-                        if result.success {
-                            Ok(format!(
-                                "json card sent, message_id={}",
-                                result.message_id.as_deref().unwrap_or("?")
-                            ))
-                        } else {
-                            Err(ToolError::Execution(
-                                result.error.unwrap_or_else(|| "unknown error".into()),
-                            ))
-                        }
-                    }
-                    Err(e) => Err(ToolError::Execution(e.to_string())),
-                }
+                let target = management_target(target_type, target_id)?;
+                render_managed_send(
+                    "json card",
+                    invoke_management(
+                        &adapter,
+                        "send_json_card",
+                        json!({"target": target, "json": json_payload}),
+                    )
+                    .await,
+                )
             }
             "send_voice" => {
                 let target_type = arguments["target_type"]
@@ -521,40 +612,16 @@ impl echo_agent::Tool for QqToolWrapper {
                     .as_str()
                     .filter(|f| !f.trim().is_empty())
                     .ok_or_else(|| ToolError::InvalidArguments("file required".into()))?;
-                let target = match target_type {
-                    "group" => MessageTarget {
-                        adapter_name: adapter.name().to_string(),
-                        channel: ChannelType::Group {
-                            group_id: target_id.to_string(),
-                        },
-                        user_id: String::new(),
-                    },
-                    "private" => MessageTarget {
-                        adapter_name: adapter.name().to_string(),
-                        channel: ChannelType::Direct,
-                        user_id: target_id.to_string(),
-                    },
-                    other => {
-                        return Err(ToolError::InvalidArguments(format!(
-                            "target_type must be 'group' or 'private', got '{other}'"
-                        )))
-                    }
-                };
-                match adapter.send_voice(&target, file).await {
-                    Ok(result) => {
-                        if result.success {
-                            Ok(format!(
-                                "voice message sent, message_id={}",
-                                result.message_id.as_deref().unwrap_or("?")
-                            ))
-                        } else {
-                            Err(ToolError::Execution(
-                                result.error.unwrap_or_else(|| "unknown error".into()),
-                            ))
-                        }
-                    }
-                    Err(e) => Err(ToolError::Execution(e.to_string())),
-                }
+                let target = management_target(target_type, target_id)?;
+                render_managed_send(
+                    "voice message",
+                    invoke_management(
+                        &adapter,
+                        "send_voice",
+                        json!({"target": target, "file": file}),
+                    )
+                    .await,
+                )
             }
             "send_image" => {
                 let target_type = arguments["target_type"]
@@ -567,40 +634,16 @@ impl echo_agent::Tool for QqToolWrapper {
                     .as_str()
                     .filter(|f| !f.trim().is_empty())
                     .ok_or_else(|| ToolError::InvalidArguments("image required".into()))?;
-                let target = match target_type {
-                    "group" => MessageTarget {
-                        adapter_name: adapter.name().to_string(),
-                        channel: ChannelType::Group {
-                            group_id: target_id.to_string(),
-                        },
-                        user_id: String::new(),
-                    },
-                    "private" => MessageTarget {
-                        adapter_name: adapter.name().to_string(),
-                        channel: ChannelType::Direct,
-                        user_id: target_id.to_string(),
-                    },
-                    other => {
-                        return Err(ToolError::InvalidArguments(format!(
-                            "target_type must be 'group' or 'private', got '{other}'"
-                        )))
-                    }
-                };
-                match adapter.send_image(&target, image).await {
-                    Ok(result) => {
-                        if result.success {
-                            Ok(format!(
-                                "image sent, message_id={}",
-                                result.message_id.as_deref().unwrap_or("?")
-                            ))
-                        } else {
-                            Err(ToolError::Execution(
-                                result.error.unwrap_or_else(|| "unknown error".into()),
-                            ))
-                        }
-                    }
-                    Err(e) => Err(ToolError::Execution(e.to_string())),
-                }
+                let target = management_target(target_type, target_id)?;
+                render_managed_send(
+                    "image",
+                    invoke_management(
+                        &adapter,
+                        "send_image",
+                        json!({"target": target, "image": image}),
+                    )
+                    .await,
+                )
             }
             other => Err(ToolError::Execution(format!("unknown QQ tool: {other}"))),
         }
@@ -697,13 +740,18 @@ fn redact_json_strings(value: Value, redactor: &dyn echo_defs::sanitize::Redacto
 #[cfg(test)]
 mod tests {
     use super::*;
+    use echo_adapter_qq::QqAdapter;
 
     #[tokio::test]
     async fn registers_gate_filtered_friend_list_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
+        register_qq_tools_multi(
+            &mut registry,
+            vec![adapter.clone() as Arc<dyn Adapter>],
+            None,
+        );
 
         assert!(registry
             .names()
@@ -722,7 +770,11 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
+        register_qq_tools_multi(
+            &mut registry,
+            vec![adapter.clone() as Arc<dyn Adapter>],
+            None,
+        );
 
         let definitions = registry.definitions().await;
         for name in ["send_private_msg", "send_group_msg"] {
@@ -742,7 +794,11 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
+        register_qq_tools_multi(
+            &mut registry,
+            vec![adapter.clone() as Arc<dyn Adapter>],
+            None,
+        );
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -762,7 +818,11 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
+        register_qq_tools_multi(
+            &mut registry,
+            vec![adapter.clone() as Arc<dyn Adapter>],
+            None,
+        );
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -782,7 +842,11 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
+        register_qq_tools_multi(
+            &mut registry,
+            vec![adapter.clone() as Arc<dyn Adapter>],
+            None,
+        );
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -810,7 +874,11 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
+        register_qq_tools_multi(
+            &mut registry,
+            vec![adapter.clone() as Arc<dyn Adapter>],
+            None,
+        );
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -834,7 +902,11 @@ mod tests {
         let mut registry = echo_agent::ToolRegistry::new();
         let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(&mut registry, vec![adapter.clone()], None);
+        register_qq_tools_multi(
+            &mut registry,
+            vec![adapter.clone() as Arc<dyn Adapter>],
+            None,
+        );
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -869,7 +941,7 @@ mod tests {
             protected_paths: vec![std::path::PathBuf::from("/tmp/echo-gate-protected")],
             policy: OutboundPolicy::Block,
         };
-        register_qq_tools_multi(&mut registry, vec![adapter], Some(gate));
+        register_qq_tools_multi(&mut registry, vec![adapter as Arc<dyn Adapter>], Some(gate));
 
         let error = registry
             .execute(
@@ -894,7 +966,7 @@ mod tests {
             protected_paths: vec![std::path::PathBuf::from("/tmp/echo-gate-protected")],
             policy: OutboundPolicy::Block,
         };
-        register_qq_tools_multi(&mut registry, vec![adapter], Some(gate));
+        register_qq_tools_multi(&mut registry, vec![adapter as Arc<dyn Adapter>], Some(gate));
 
         let error = registry
             .execute(

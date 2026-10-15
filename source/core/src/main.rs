@@ -666,25 +666,70 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         &qq_default_persona,
         Some(&qq_data_dir),
     );
-    let mut qq_adapters: Vec<(String, String, Arc<echo_adapter_qq::QqAdapter>)> = Vec::new();
-    for instance in &qq_instances {
-        let adapter = Arc::new(echo_adapter_qq::QqAdapter::with_instance(
-            instance.id.clone(),
-            Some(instance.persona.clone()),
-            instance.config.clone(),
-        ));
-        adapter_registry.register(adapter.clone());
-        qq_adapters.push((instance.id.clone(), instance.persona.clone(), adapter));
+    // 适配器宿主模式（P1.8，2026-10 适配器插件化）：
+    // - `builtin`（缺省）：进程内适配器（零行为变化）；
+    // - `plugin`：独立进程适配器插件（stdio，按实例拉起——specs 见下）。
+    let qq_plugin_mode = cfg.qq_adapter_mode == "plugin";
+    // builtin 实例：进程内创建并注册（plugin 模式由插件贡献在启动后注册）。
+    let mut qq_adapters: Vec<(String, String, Arc<dyn echo_adapter::Adapter>)> = Vec::new();
+    let mut qq_builtin_instances: Vec<(String, String, Arc<echo_adapter_qq::QqAdapter>)> =
+        Vec::new();
+    if !qq_plugin_mode {
+        for instance in &qq_instances {
+            let adapter = Arc::new(echo_adapter_qq::QqAdapter::with_instance(
+                instance.id.clone(),
+                Some(instance.persona.clone()),
+                instance.config.clone(),
+            ));
+            adapter_registry.register(adapter.clone());
+            qq_adapters.push((
+                instance.id.clone(),
+                instance.persona.clone(),
+                adapter.clone() as Arc<dyn echo_adapter::Adapter>,
+            ));
+            qq_builtin_instances.push((instance.id.clone(), instance.persona.clone(), adapter));
+        }
+        if !qq_instances.is_empty() {
+            let ids: Vec<&str> = qq_instances.iter().map(|i| i.id.as_str()).collect();
+            info!(instances = ?ids, "QQ instances registered (builtin)");
+        }
+    } else {
+        info!(
+            instances = qq_instances.len(),
+            "QQ plugin mode: instances launch as adapter plugins"
+        );
     }
-    if !qq_instances.is_empty() {
-        let ids: Vec<&str> = qq_instances.iter().map(|i| i.id.as_str()).collect();
-        info!(instances = ?ids, "QQ instances registered");
-    }
-    // 进程级默认句柄：第一个实例（通常是 `qq`；自动启动/停机与登录兜底用）。
-    let qq_adapter: Arc<echo_adapter_qq::QqAdapter> = qq_adapters
-        .first()
-        .map(|(_, _, a)| a.clone())
-        .unwrap_or_else(|| Arc::new(echo_adapter_qq::QqAdapter::new(cfg.qq_adapter.clone())));
+    // 插件实例 specs（P1.8）：每实例一条 `LaunchSpec`——`Hello.config` 携带
+    // 实例身份 / 归属人格 / 运行期状态文件（门控 / 名单 / owner 落盘回灌）
+    // 与完整适配器配置（含端口分配结果）。
+    let qq_plugin_specs: Vec<echo_plugin_host::bootstrap::LaunchSpec> = if qq_plugin_mode {
+        let launch = &cfg.qq_plugin_launch;
+        let command = if launch.command.trim().is_empty() {
+            "echo-adapter-qq".to_string()
+        } else {
+            launch.command.trim().to_string()
+        };
+        qq_instances
+            .iter()
+            .map(|instance| {
+                let state_file = qq_data_dir.join(format!("qq-{}.toml", instance.id));
+                echo_plugin_host::bootstrap::LaunchSpec {
+                    plugin_id: format!("adapter-qq-{}", instance.id),
+                    command: command.clone(),
+                    args: launch.args.clone(),
+                    env: launch.env.clone(),
+                    config: serde_json::json!({
+                        "name": instance.id,
+                        "persona": instance.persona,
+                        "state_file": state_file.to_string_lossy(),
+                        "config": instance.config,
+                    }),
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     // 实例持久化：新分配的**归属人格与端口**写回
     // `[adapters.qq.instances.<id>]`（persona + ports），保证跨重启稳定：
     // - 端口：容器端口映射必须稳定，NapCat 才能重连到同一处；
@@ -739,18 +784,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         }
     }
 
-    // persona → 该人格的 QQ 实例集合（工具注册按人格隔离）。
-    let qq_by_persona: std::collections::HashMap<String, Vec<Arc<echo_adapter_qq::QqAdapter>>> = {
-        let mut map: std::collections::HashMap<String, Vec<Arc<echo_adapter_qq::QqAdapter>>> =
-            std::collections::HashMap::new();
-        for (_, persona, adapter) in &qq_adapters {
-            map.entry(persona.clone())
-                .or_default()
-                .push(adapter.clone());
-        }
-        map
-    };
-
     let adapters = Arc::new(adapter_registry);
 
     let mut agent_config = cfg.agent.clone();
@@ -792,23 +825,33 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // P2：插件启动前注册宿主服务——子进程插件经 HostCall 回呼
     // `"sanitizer"`（redact / scan / register_secret），与进程内插件
     // 共用同一脱敏器实例。
-    let plugin_runtime = plugins_runtime::start_if_configured(&args.config_path(), |services| {
-        if let Some(redactor) = &redactor {
-            services.register(
-                "sanitizer",
-                std::sync::Arc::new(crate::security::SanitizerHostService::new(redactor.clone())),
-            );
-        }
-    })
+    let plugin_runtime = plugins_runtime::start_with_specs(
+        &args.config_path(),
+        |services| {
+            if let Some(redactor) = &redactor {
+                services.register(
+                    "sanitizer",
+                    std::sync::Arc::new(crate::security::SanitizerHostService::new(
+                        redactor.clone(),
+                    )),
+                );
+            }
+        },
+        qq_plugin_specs,
+    )
     .await;
-    // P1（2026-10 适配器插件化）：把插���的适配器贡献注册进
-    // `AdapterRegistry`（与内置适配器同册——此刻 `adapters` 的 Arc 尚无
-    // 共享者（装配闭包在更晚处才 clone），经 `Arc::get_mut` 可变注册）。
+    // P1（2026-10 适配器插件化）：把插件的适配器贡献注册进
+    // `AdapterRegistry`（与内置适配器同册）。
     let plugin_adapters: Vec<plugins_runtime::RemoteAdapterHandle> = plugin_runtime
         .as_ref()
         .map(|r| r.adapters())
         .unwrap_or_default();
-    for handle in &plugin_adapters {
+    // plugin 模式的 QQ 实例：远程适配器融入统一实例表（与 builtin 同形——
+    // 工具注册 / 自启停 / 默认句柄共用），入站队列（`inbound_rx`）留给
+    // wiring 段的串行 worker（AdapterMessage → AgentMessageHook）。
+    let mut qq_plugin_workers: Vec<(String, String, plugins_runtime::RemoteAdapterHandle)> =
+        Vec::new();
+    for handle in plugin_adapters {
         let name = handle.adapter.name.clone();
         let platform = handle.adapter.platform().to_string();
         adapters.register(handle.adapter.clone());
@@ -817,7 +860,46 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             platform = %platform,
             "plugin adapter registered"
         );
+        if qq_plugin_mode {
+            match qq_instances.iter().find(|instance| instance.id == name) {
+                Some(instance) => {
+                    qq_adapters.push((
+                        instance.id.clone(),
+                        instance.persona.clone(),
+                        handle.adapter.clone() as Arc<dyn echo_adapter::Adapter>,
+                    ));
+                    qq_plugin_workers.push((instance.id.clone(), instance.persona.clone(), handle));
+                }
+                None => {
+                    tracing::warn!(
+                        adapter = %name,
+                        "plugin adapter has no matching QQ instance; inbound worker not wired"
+                    );
+                }
+            }
+        }
     }
+    // 进程级默认句柄：第一个实例（通常是 `qq`；自动启动/停机与登录兜底用）。
+    // 无实例时退回未注册的 builtin 句柄（空壳）。
+    let qq_adapter: Arc<dyn echo_adapter::Adapter> = qq_adapters
+        .first()
+        .map(|(_, _, adapter)| adapter.clone())
+        .unwrap_or_else(|| {
+            Arc::new(echo_adapter_qq::QqAdapter::new(cfg.qq_adapter.clone()))
+                as Arc<dyn echo_adapter::Adapter>
+        });
+    // persona → 该人格的 QQ 实例集合（工具注册按人格隔离；builtin / plugin
+    // 实例统一表）。
+    let qq_by_persona: std::collections::HashMap<String, Vec<Arc<dyn echo_adapter::Adapter>>> = {
+        let mut map: std::collections::HashMap<String, Vec<Arc<dyn echo_adapter::Adapter>>> =
+            std::collections::HashMap::new();
+        for (_, persona, adapter) in &qq_adapters {
+            map.entry(persona.clone())
+                .or_default()
+                .push(adapter.clone());
+        }
+        map
+    };
     let plugin_tools: std::sync::Arc<Vec<std::sync::Arc<echo_plugin_host::RemoteTool>>> =
         std::sync::Arc::new(
             plugin_runtime
@@ -1502,7 +1584,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
     // ---- Wire agents into QQ instances ----
     // 每个实例把入站消息投给**归属人格**（不再是"默认人格"）；实例间互相隔离。
-    for (instance_id, persona_id, adapter) in &qq_adapters {
+    // builtin 实例：单向 hook + 命令 handler（Echo / Help / Admin，进程内注册）。
+    for (instance_id, persona_id, adapter) in &qq_builtin_instances {
         adapter.set_config_store(config_store.clone());
         let target = match supervisor.get_exact(persona_id) {
             Some(p) => p.agent,
@@ -1530,7 +1613,67 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             shutdown_tx.clone(),
             tracker.clone(),
         )));
-        tracing::info!(instance = %instance_id, persona = %persona_id, "QQ instance wired to persona");
+        tracing::info!(instance = %instance_id, persona = %persona_id, "QQ instance wired to persona (builtin)");
+    }
+    // plugin 实例：每实例一个串行 worker（入站队列 → AgentMessageHook）。
+    // 队列由 `adapter_host` 的反压回执语义保序（插件侧退避重试）；
+    // 命令 handler（Echo / Help / Admin）随 P1.9 迁移（当前仅 builtin 注册）。
+    for (instance_id, persona_id, handle) in qq_plugin_workers {
+        let target = match supervisor.get_exact(&persona_id) {
+            Some(p) => p.agent,
+            None => {
+                warn!(persona = %persona_id, "QQ plugin persona not found; skipping wire");
+                continue;
+            }
+        };
+        let hook = Arc::new(echo_agent::AgentMessageHook::new(target));
+        let worker_instance = instance_id.clone();
+        let mut inbound_rx = handle.inbound_rx;
+        tokio::spawn(async move {
+            // 入站送达接口来自 echo-adapter 的 hook trait（use 在闭包外无效，
+            // 任务内显式引入）。
+            use echo_adapter::InboundMessageHook as _;
+            while let Some(message) = inbound_rx.recv().await {
+                let incoming = echo_plugin_host::adapter::message_to_incoming(message);
+                if let Err(error) = hook.on_incoming_message(incoming).await {
+                    tracing::warn!(
+                        instance = %worker_instance,
+                        %error,
+                        "plugin inbound message hook failed"
+                    );
+                }
+            }
+            tracing::debug!(instance = %worker_instance, "plugin inbound worker stopped");
+        });
+        tracing::info!(instance = %instance_id, persona = %persona_id, "QQ plugin instance wired to persona");
+    }
+    // plugin 实例的连接态（`report_state`）→ `AdapterStateChanged` 事件
+    //（Panel 连接状态卡的实时数据源；persona 按实例映射动态解析，容忍
+    //  运行期人格重启——查不到时静默跳过）。
+    if let Some(rt) = &plugin_runtime {
+        let mut states = rt.adapter_host().subscribe_states();
+        let supervisor_for_states = Arc::clone(&supervisor);
+        let persona_by_instance: std::collections::HashMap<String, String> = qq_instances
+            .iter()
+            .map(|instance| (instance.id.clone(), instance.persona.clone()))
+            .collect();
+        tokio::spawn(async move {
+            while let Some(change) = states.recv().await {
+                let Some(persona) = persona_by_instance.get(&change.adapter) else {
+                    continue;
+                };
+                let Some(entry) = supervisor_for_states.get_exact(persona) else {
+                    continue;
+                };
+                entry
+                    .agent
+                    .emit(echo_protocol::BackendEvent::AdapterStateChanged {
+                        adapter_name: change.adapter,
+                        connected: change.connected,
+                        self_id: change.self_id,
+                    });
+            }
+        });
     }
     // ---- Command pump（多 persona 路由）----
     // 命令从进程级通道读取（不再是"默认人格"的 mailbox）：

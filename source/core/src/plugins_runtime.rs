@@ -39,41 +39,81 @@ pub struct PluginRuntime {
 /// 组合根在此把可回呼服务（如 `"sanitizer"`）注册进
 /// [`HostServiceRegistry`]；插件随后经 `HostCall` 调用。无
 /// plugins.toml（特性休眠）时钩子不执行（注册表无消费者，无副作用）。
+#[allow(dead_code)] // 保留 API：测试与"仅静态 plugins.toml"调用形态。
 pub async fn start_if_configured(
     config_path: &Path,
     register_host_services: impl FnOnce(&HostServiceRegistry),
 ) -> Option<PluginRuntime> {
+    start_with_specs(config_path, register_host_services, Vec::new()).await
+}
+
+/// [`start_if_configured`] 的动态实例版（P1.8，2026-10 适配器插件化）：
+/// 在 `plugins.toml` 静态条目之外追加组合根即时组装的 [`LaunchSpec`]——
+/// 适配器插件按**实例**拉起（每实例独立进程 / Hello.config），而
+/// `plugins.toml` 只加载一次，无法承载运行期分配（端口 / persona / state 文件）。
+///
+/// 语义：
+/// - `plugins.toml` 存在 → 静态条目 + `extra_specs` 合并启动；
+/// - 不存在但 `extra_specs` 非空 → 仅启动动态实例；
+/// - 两者皆空 → `None`（休眠，零行为变化）。
+///
+/// [`LaunchSpec`]: echo_plugin_host::bootstrap::LaunchSpec
+pub async fn start_with_specs(
+    config_path: &Path,
+    register_host_services: impl FnOnce(&HostServiceRegistry),
+    extra_specs: Vec<echo_plugin_host::bootstrap::LaunchSpec>,
+) -> Option<PluginRuntime> {
     let path = config_path.with_file_name("plugins.toml");
-    if !path.exists() {
+    let mut load_failed = false;
+    let (mut specs, skipped) = if path.exists() {
+        match echo_plugin_loader::load(&path) {
+            Ok(tree) => echo_plugin_host::bootstrap::launch_specs(&tree),
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "plugins.toml load failed; continuing with dynamic specs only"
+                );
+                load_failed = true;
+                (Vec::new(), Vec::new())
+            }
+        }
+    } else {
         tracing::debug!(
             path = %path.display(),
-            "plugins.toml not found; subprocess plugins dormant"
+            "plugins.toml not found; static subprocess plugins dormant"
         );
+        (Vec::new(), Vec::new())
+    };
+    if !extra_specs.is_empty() {
+        tracing::info!(
+            count = extra_specs.len(),
+            "dynamic plugin specs merged (adapter instances)"
+        );
+        specs.extend(extra_specs);
+    }
+    // 无静态条目且无动态实例：休眠（非法 plugins.toml 也按原语义休眠，
+    // 不改变「错误配置 = 特性不启用」的行为）。
+    if specs.is_empty() && (!path.exists() || load_failed) {
         return None;
     }
-    let tree = match echo_plugin_loader::load(&path) {
-        Ok(tree) => tree,
-        Err(error) => {
-            tracing::warn!(
-                path = %path.display(),
-                %error,
-                "plugins.toml load failed; subprocess plugins dormant"
-            );
-            return None;
-        }
-    };
-    let (specs, skipped) = echo_plugin_host::bootstrap::launch_specs(&tree);
     let supervisor = PluginSupervisor::new();
     register_host_services(&supervisor.host_services());
     // P1：适配器宿主服务先行注册——插件就绪后其 `deliver_message` / `report_*`
     // 回呼即有接收面（否则适配器插件启动即报 adapter_not_found）。
     let adapter_host = Arc::new(echo_plugin_host::AdapterHostService::new());
-    supervisor.host_services().register("adapter_host", adapter_host.clone());
+    supervisor
+        .host_services()
+        .register("adapter_host", adapter_host.clone());
     let started = echo_plugin_host::bootstrap::start_plugins(&supervisor, specs).await;
     for (plugin_id, error) in &started.errors {
         tracing::warn!(plugin = %plugin_id, %error, "subprocess plugin start failed");
     }
-    let runtime = PluginRuntime { started, skipped, adapter_host };
+    let runtime = PluginRuntime {
+        started,
+        skipped,
+        adapter_host,
+    };
     for reason in &runtime.skipped {
         tracing::debug!(reason = %reason, "plugin entry skipped");
     }
@@ -159,6 +199,34 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let config_path = dir.join("echo-agent-core.toml");
         assert!(start_if_configured(&config_path, |_| {}).await.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 动态 specs（适配器实例）穿透 plugins.toml 休眠门控：无 plugins.toml
+    /// 但有 extra specs → 仍启动（命令不存在 → 逐条失败记录，runtime 仍在）。
+    #[tokio::test]
+    async fn dynamic_specs_start_without_plugins_toml() {
+        let dir = unique_dir("dynamic");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let config_path = dir.join("echo-agent-core.toml");
+        let spec = echo_plugin_host::bootstrap::LaunchSpec {
+            plugin_id: "adapter-qq-test".to_string(),
+            command: "/nonexistent/echo-adapter-qq-test".to_string(),
+            args: vec![],
+            env: Default::default(),
+            config: serde_json::json!({"name": "qq-test"}),
+        };
+        let runtime = start_with_specs(&config_path, |_| {}, vec![spec])
+            .await
+            .expect("dynamic specs must wake the runtime");
+        assert!(
+            !runtime.started.errors.is_empty(),
+            "missing command must be recorded as a start error"
+        );
+        assert!(
+            runtime.started.handles.is_empty(),
+            "no handle for a failed launch"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
