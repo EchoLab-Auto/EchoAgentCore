@@ -44,7 +44,7 @@ y: 780
 
 **表单字段**（展开态与字段规则同原设计）：
 
-- **Profile 名称**：仅添加模式显示（必填，trim 非空才可保存）；编辑模式显示只读名称
+- **Profile 名称**：添加模式必填（trim 非空才可保存）；**编辑模式可修改**（2026-10：原名预填，保存时走两步提交——先 `RenameApi` 原子改名，确认成功后字段有改动才按新名补发 `UpdateApiConfig`；纯改名不重保存、不误激活。空白/与现有 profile 撞名实时提示并禁用保存；确认前保存按钮锁定，10s 未确认提示失败并保留表单）
 - **快捷模板**（6 个，点击填充 provider/base_url/model/思考/推理）：**DeepSeek**（合并原「Anthropic 兼容 / OpenAI 兼容」两种格式为单一预设——默认官方 Anthropic 端点 `https://api.deepseek.com/anthropic` + `deepseek-v4-flash`，需 OpenAI 格式时手工改为 `/v1` + `deepseek-chat`，提示文字已注明）、**Kimi For Coding**（Kimi Code 订阅的 Anthropic 兼容端点 `https://api.kimi.com/coding` + `k3`，Key 在 `www.kimi.com/code/console` 创建，推理档位 high；provider=`kimi`）、**中转站（OpenAI 兼容）**（provider=`third-party`，base_url/model **留空待填**，占位提示"你的网关/v1"与"中转站模型名"；请求为干净 OpenAI 格式，不携带 DeepSeek 专有 thinking 字段）、OpenAI、Anthropic、Ollama（本地）
 - **Provider 下拉**：固定 deepseek/openai/kimi/third-party 四项，未知值保留为额外选项；选 deepseek/openai/kimi 自动填充对应 base_url/model；第三方需 OpenAI 兼容（有 /anthropic 端点自动识别）。**注意**：中转站=第三方时不会附加 DeepSeek 专有请求字段（`thinking`/`reasoning_effort`），兼容性最好；若要保留思考模式且后端是 DeepSeek，选 deepseek 预设
 - Model / Base URL（手填）、**API Key**（密码框；标注 已设置/未设置，**留空保持不变**，不回显）、思考模式（启用/禁用）、推理强度（low/high/max）
@@ -58,7 +58,7 @@ y: 780
 - 「取消/收起」→ 丢弃表单修改，回到概览
 - 测试连接：`TestApi`（表单目标 = 编辑中的 profile 名，添加模式为空 = 默认配置）；加载态互斥（一次仅测一个）；**每次表单展开时清空上次测试结果**
 
-后端命令映射：`UpdateApiConfig`（name 空 = 全局默认配置；非空 = 供应商池增改）/ `TestApi` / `DeleteApi` / `QueryApiBalance`（余额查询 + 快照落盘）/ `QueryApiMetrics`（余额/用量时间序列，回 `ApiMetrics`）；`SwitchApi` 保留协议但 UI 不再暴露（persona 级选用取代全局激活）。数据流见 [配置持久化](./core-config-persistence.md)。
+后端命令映射：`UpdateApiConfig`（name 空 = 全局默认配置；非空 = 供应商池增改）/ `RenameApi`（编辑态改名；原子重写全部按名引用——池名 / `active_api` / `teams[*].api_profile` / 运行中 persona、会话覆盖与工作区对话引用；语义见 [配置持久化](./core-config-persistence.md)§改名语义）/ `TestApi` / `DeleteApi` / `QueryApiBalance`（余额查询 + 快照落盘）/ `QueryApiMetrics`（余额/用量时间序列，回 `ApiMetrics`）；`SwitchApi` 保留协议但 UI 不再暴露（persona 级选用取代全局激活）。数据流见 [配置持久化](./core-config-persistence.md)。
 
 ### Persona 级 API（`api_profile` 引用）
 

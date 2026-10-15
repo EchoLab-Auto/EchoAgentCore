@@ -38,6 +38,15 @@ EchoAgentCore 的运行期配置写入通过共享 `ConfigStore` 原子化落盘
 | `/api provider <name>` | 修改 provider → `persist_config()` |
 | `/api prompt <text>` / Panel 系统提示词保存 | 修改 system prompt → `persist_system_prompt_plugin()`（写 `[plugins.system_prompt].text`，不动 `[agent]`） |
 | `/api new <name>` | 新建 profile → `persist_config()` |
+| Panel「编辑 Profile → 改名称」保存 | 原子改名（`RenameApi`）→ **单次** `ConfigStore::patch()` 同时改写 `api_profiles` 名 / `active_api` / `teams[*].api_profile`，落盘成功后重绑运行中 persona、会话级覆盖与各 persona 工作区对话引用（见下「改名语义」） |
+
+### 改名语义（`RenameApi`，2026-10）
+
+- **校验**：`to` 去空白后非空且 ≤128 字符、无控制字符；`from` 精确存在；与现有名撞名拒绝；`from == to` 幂等 no-op（只回推事件）。任何失败零写入并以 `Error` 事件回报。
+- **原子性**：先克隆算全新状态 → 单次 `ConfigStore::patch()`（write_lock + tmp→rename）落盘 → **落盘成功才提交内存**（失败 = 天然回滚）→ 再运行时传播（重建 provider——计量归属名在 provider 构建时烘焙；persona 重引用；会话覆盖重绑；运行中 persona 的工作区对话引用改写）。
+- **未运行（禁用）persona**：其 `teams[*].api_profile` 引用在落盘补丁内一并改写；工作区 JSON 文件的改写仅覆盖运行中 persona（未加载文件留待后续完善版）。
+- **计量历史**：`echo-usage.jsonl` / `echo-balances.jsonl` 为 append-only 历史，按 `name` 过滤查询——**不随改名迁移**：旧名历史成为孤儿序列，面板新名卡片只显示改名后的数据（文档口径，非缺陷）。
+- **外部引用**：技能文档 / 其他节点按名引用（如 `spawn_subagent` 的 `profile` 参数、`model-profiles` 技能）不会自动改写，改名后需手工同步。
 
 ### 数据流
 
