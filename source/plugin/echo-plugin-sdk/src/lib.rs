@@ -163,9 +163,16 @@ impl<A: AdapterPlugin> PluginHandler for AdapterHandler<A> {
     }
 }
 
-/// 以 stdio 服务一个适配器插件（= `serve_stdio(AdapterHandler::new(plugin))`）。
+/// 以 stdio 服务一个适配器插件（= `serve_stdio_with(AdapterHandler::new(plugin), …)`）。
+///
+/// `Welcome.capabilities` 自动追加 `"adapter"`（能力位双方声明才可用；
+/// 宿主据此识别适配器插件）。
 pub async fn serve_adapter_stdio(plugin: impl AdapterPlugin) -> std::io::Result<()> {
-    serve_stdio(AdapterHandler::new(plugin)).await
+    let mut options = ServeOptions::default();
+    if !options.capabilities.iter().any(|c| c == capabilities::ADAPTER) {
+        options.capabilities.push(capabilities::ADAPTER.to_string());
+    }
+    serve_stdio_with(AdapterHandler::new(plugin), options).await
 }
 
 use serde_json::Value;
