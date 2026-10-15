@@ -121,6 +121,30 @@ impl Agent {
         }
     }
 
+    /// 会话级 API 覆盖的持久化（2026-10 用户报障修复）：把
+    /// `local:workspace:` 通道的覆盖写入对应工作区对话（`profile` = `None`
+    /// 清除）。非工作区会话直接跳过。落盘失败 emit `BackendEvent::Error`
+    /// 带消息（不再静默——存量工作区此前 find 失败导致选择过一会「失效」）。
+    fn persist_session_api_profile(&self, session_id: &str, profile: Option<&str>) {
+        let Some((ws_id, conv_id)) = crate::workspace::parse_workspace_channel(session_id) else {
+            return;
+        };
+        let Some(store) = self.workspace_store() else {
+            return;
+        };
+        let result = match conv_id.as_deref() {
+            Some(conv_id) => store.set_conversation_api_profile(&ws_id, conv_id, profile),
+            // legacy 裸通道：按 `legacy == true` 定位（不猜 id=="main"）。
+            None => store.set_legacy_conversation_api_profile(&ws_id, profile),
+        };
+        if let Err(message) = result {
+            self.emit(BackendEvent::Error {
+                session_id: Some(session_id.to_string()),
+                message: format!("会话 {session_id} API 覆盖持久化失败：{message}"),
+            });
+        }
+    }
+
     /// 清理历史后向面板重发**实际剩余**的显示时间线（全量重建语义）。
     ///
     /// 2026-10 用户报告修复：此前无条件发 `messages: Vec::new()`——面板把
@@ -402,34 +426,9 @@ impl Agent {
                 // 报 profile not found）。2026-10 用户报障修正。
                 let ok = self.set_session_provider(&session_id, &profile).await;
                 if ok {
-                    if let Some(rest) = session_id.strip_prefix("local:workspace:") {
-                        // 解析 ws_id 与 conv_id：legacy = "ws_id:local_user"，
-                        // 多对话 = "ws_id/conv_id:local_user"。
-                        let ws_id = rest
-                            .split('/')
-                            .next()
-                            .map(|s| s.strip_suffix(":local_user").unwrap_or(s))
-                            .unwrap_or(rest);
-                        let conv_id = rest
-                            .split('/')
-                            .nth(1)
-                            .map(|s| s.strip_suffix(":local_user").unwrap_or(s))
-                            .unwrap_or("main");
-                        if let Some(store) = self.workspace_store() {
-                            if let Some(mut ws) = store.get(ws_id) {
-                                if let Some(conv) =
-                                    ws.conversations.iter_mut().find(|c| c.id == conv_id)
-                                {
-                                    conv.api_profile = if profile.is_empty() {
-                                        None
-                                    } else {
-                                        Some(profile.clone())
-                                    };
-                                    let _ = store.upsert(ws);
-                                }
-                            }
-                        }
-                    }
+                    // 持久化到工作区对话（顺序：provider 构建成功才落盘；
+                    // 落盘失败 emit Error，不再静默——2026-10 用户报障修复）。
+                    self.persist_session_api_profile(&session_id, Some(profile.as_str()));
                 }
                 let message = if ok {
                     if profile.is_empty() {
@@ -452,30 +451,7 @@ impl Agent {
             } => {
                 // 清除会话级覆盖（回到跟随 persona 级）。
                 // 同步清除工作区对话的持久化 api_profile。
-                if let Some(rest) = session_id.strip_prefix("local:workspace:") {
-                    // 解析 ws_id 与 conv_id：legacy = "ws_id:local_user"，
-                    // 多对话 = "ws_id/conv_id:local_user"。
-                    let ws_id = rest
-                        .split('/')
-                        .next()
-                        .map(|s| s.strip_suffix(":local_user").unwrap_or(s))
-                        .unwrap_or(rest);
-                    let conv_id = rest
-                        .split('/')
-                        .nth(1)
-                        .map(|s| s.strip_suffix(":local_user").unwrap_or(s))
-                        .unwrap_or("main");
-                    if let Some(store) = self.workspace_store() {
-                        if let Some(mut ws) = store.get(ws_id) {
-                            if let Some(conv) =
-                                ws.conversations.iter_mut().find(|c| c.id == conv_id)
-                            {
-                                conv.api_profile = None;
-                                let _ = store.upsert(ws);
-                            }
-                        }
-                    }
-                }
+                self.persist_session_api_profile(&session_id, None);
                 self.set_session_provider(&session_id, "").await;
                 self.emit(BackendEvent::Error {
                     session_id: Some(session_id.clone()),

@@ -225,7 +225,25 @@ impl WorkspaceStore {
                 session.id = candidate;
             }
             match doc.sessions.iter_mut().find(|s| s.id == session.id) {
-                Some(existing) => *existing = session.clone(),
+                Some(existing) => {
+                    // 元数据编辑防护（2026-10 线上事故）：Panel 等客户端编辑
+                    // 名称/目录时可能不携带 conversations / last_conversation
+                    // （协议两字段 serde(default) = 空 / None），不能整条覆盖
+                    // 把它们清掉——否则该工作区的全部对话入口丢失。对话增删
+                    // 有专门路径（upsert_conversation / delete_conversation），
+                    // 空数组只解释为「本次未提供」；整组保留同时保住对话级
+                    // 字段（如 api_profile）。
+                    if session.conversations.is_empty() {
+                        session.conversations = existing.conversations.clone();
+                        // last_conversation 同为 None（未提供）且旧对话被保留
+                        // 时一并保留——否则「最后使用的对话」入口同样丢失。
+                        if session.last_conversation.is_none() && !session.conversations.is_empty()
+                        {
+                            session.last_conversation = existing.last_conversation.clone();
+                        }
+                    }
+                    *existing = session.clone();
+                }
                 None => doc.sessions.push(session.clone()),
             }
             let result = session;
@@ -499,6 +517,64 @@ impl WorkspaceStore {
         Ok(changed)
     }
 
+    /// 写锁内先物化对话（存量工作区 `conversations` 为空时先落下惰性主
+    /// 对话，否则按 id 查找必然失败、覆盖静默丢失），再定位对话；工作区或
+    /// 对话不存在 → `Ok(false)`。值未变化 → 不写盘、不通知，直接
+    /// `Ok(true)`；否则改写、`save_locked`，释放锁后 `notify_change`。
+    pub fn set_conversation_api_profile(
+        &self,
+        ws_id: &str,
+        conv_id: &str,
+        profile: Option<&str>,
+    ) -> Result<bool, String> {
+        self.update_conversation_api_profile(ws_id, Some(conv_id), profile)
+    }
+
+    /// 同上，但定位该工作区的 **legacy 对话**（存量裸通道，`legacy == true`）
+    /// ——不依赖其 id 恰好为 `main`（面板通道 id 无 `/` 段时走本路径）。
+    pub fn set_legacy_conversation_api_profile(
+        &self,
+        ws_id: &str,
+        profile: Option<&str>,
+    ) -> Result<bool, String> {
+        self.update_conversation_api_profile(ws_id, None, profile)
+    }
+
+    /// 覆盖写入的公共实现：`target` = `Some(id)` 按 id 定位；`None` = 按
+    /// `legacy == true` 定位（裸通道回退）。
+    fn update_conversation_api_profile(
+        &self,
+        ws_id: &str,
+        target: Option<&str>,
+        profile: Option<&str>,
+    ) -> Result<bool, String> {
+        let profile = profile.filter(|p| !p.is_empty());
+        let changed = {
+            let mut doc = self.doc.write().unwrap_or_else(|e| e.into_inner());
+            let Some(session) = doc.sessions.iter_mut().find(|s| s.id == ws_id) else {
+                return Ok(false);
+            };
+            materialize_conversations(session);
+            let Some(conv) = session.conversations.iter_mut().find(|c| match target {
+                Some(id) => c.id == id,
+                None => c.legacy,
+            }) else {
+                return Ok(false);
+            };
+            if conv.api_profile.as_deref() == profile {
+                false
+            } else {
+                conv.api_profile = profile.map(str::to_string);
+                self.save_locked(&doc)?;
+                true
+            }
+        };
+        if changed {
+            self.notify_change();
+        }
+        Ok(true)
+    }
+
     /// Atomic save (temp file + rename). No-op when no persist path is set.
     fn save_locked(&self, doc: &WorkspaceDocument) -> Result<(), String> {
         let Some(path) = self.persist.as_deref() else {
@@ -574,6 +650,32 @@ pub fn channel_scope_id(ws_id: &str, conv: &WorkspaceConversationInfo) -> String
         ws_id.to_string()
     } else {
         format!("{ws_id}/{}", conv.id)
+    }
+}
+
+/// 解析工作区通道的会话 id（`local:workspace:<ws>[/<conv>]:<user>`）。
+///
+/// 返回 `(ws_id, Some(conv_id))`（多对话通道，`<ws>/<conv>`）或
+/// `(ws_id, None)`（legacy 裸通道，无 `/` 段——其对话条目由
+/// [`WorkspaceStore::set_legacy_conversation_api_profile`] 按
+/// `legacy == true` 定位，而不是猜 id 为 `main`）。非工作区会话（前缀不
+/// 匹配）→ `None`。user 段允许 `@<account>` 后缀（多实例维度），按最后
+/// 一个 `:` 剥离。
+pub(crate) fn parse_workspace_channel(session_id: &str) -> Option<(String, Option<String>)> {
+    let rest = session_id.strip_prefix("local:workspace:")?;
+    let channel = match rest.rsplit_once(':') {
+        Some((channel, _user)) => channel,
+        None => rest,
+    };
+    if channel.is_empty() {
+        return None;
+    }
+    match channel.split_once('/') {
+        Some((ws, conv)) if !ws.is_empty() && !conv.is_empty() => {
+            Some((ws.to_string(), Some(conv.to_string())))
+        }
+        Some(_) => None, // `ws/` 或 `/conv`：形态非法，不猜测
+        None => Some((channel.to_string(), None)),
     }
 }
 
@@ -1308,6 +1410,68 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    /// 元数据编辑防护（2026-10 线上事故）：Panel 编辑名称/目录时不携带
+    /// conversations / last_conversation（协议 serde(default) = 空 / None），
+    /// upsert 不得整条覆盖清空对话——空数组只解释为「未提供」；整组保留
+    /// 同时保住对话级字段（如 api_profile）。对话增删走专门路径
+    /// （upsert_conversation / delete_conversation）。
+    #[test]
+    fn upsert_preserves_conversations_on_metadata_edit() {
+        let (store, path) = temp_store("keep-convs");
+        store
+            .upsert(WorkspaceSessionInfo {
+                id: "proj".into(),
+                name: "Proj".into(),
+                description: String::new(),
+                directories: vec!["/srv/a".into()],
+                conversations: vec![
+                    WorkspaceConversationInfo {
+                        id: "main".into(),
+                        name: "主对话".into(),
+                        legacy: true,
+                        api_profile: None,
+                    },
+                    WorkspaceConversationInfo {
+                        id: "api".into(),
+                        name: "API".into(),
+                        legacy: false,
+                        api_profile: Some("alpha".into()),
+                    },
+                ],
+                last_conversation: Some("api".into()),
+            })
+            .unwrap();
+
+        // Panel 只改目录：conversations 空、last_conversation 未携带（None）。
+        let saved = store
+            .upsert(WorkspaceSessionInfo {
+                id: "proj".into(),
+                name: "Proj".into(),
+                description: String::new(),
+                directories: vec!["/srv/b".into()],
+                conversations: vec![],
+                last_conversation: None,
+            })
+            .unwrap();
+
+        assert_eq!(saved.directories[0].path(), "/srv/b", "目录已更新");
+        assert_eq!(saved.conversations.len(), 2, "对话不被清空: {saved:?}");
+        assert_eq!(saved.conversations[0].id, "main");
+        assert_eq!(
+            saved.conversations[1].api_profile.as_deref(),
+            Some("alpha"),
+            "对话级字段整组保留"
+        );
+        assert_eq!(saved.last_conversation.as_deref(), Some("api"));
+
+        // 持久化往返：重载后对话与 last_conversation 仍在。
+        let reloaded = WorkspaceStore::load(Some(path.clone()));
+        let ws = reloaded.get("proj").unwrap();
+        assert_eq!(ws.conversations.len(), 2);
+        assert_eq!(ws.last_conversation.as_deref(), Some("api"));
+        std::fs::remove_file(&path).ok();
+    }
+
     #[test]
     fn id_generation_dedupes() {
         let (store, path) = temp_store("dedupe");
@@ -2012,5 +2176,167 @@ mod tests {
             "cleared refs not persisted: {on_disk}"
         );
         std::fs::remove_file(&path).ok();
+    }
+    /// 会话级 API 覆盖持久化（2026-10 用户报障修复）：存量工作区
+    /// （conversations 为空、仅惰性补位 main）经裸通道设置后物化并落盘——
+    /// 重载同路径可读回（此前面板选择 profile 过一会「失效」）。相同值
+    /// 不写盘、不通知。
+    #[test]
+    fn set_api_profile_legacy_channel_materializes_and_persists() {
+        let (store, path) = temp_store("api-legacy");
+        store
+            .upsert(WorkspaceSessionInfo {
+                id: "proj".into(),
+                name: "Proj".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        // 存量工作区：conversations 为空（惰性补位，不落盘）。
+        assert!(store.get("proj").unwrap().conversations.is_empty());
+
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let hits = hits.clone();
+            store.set_on_change(std::sync::Arc::new(move || {
+                hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        }
+
+        // 命令路径的解析回退：裸通道 → (ws, None) → legacy 定位。
+        let (ws_id, conv) = parse_workspace_channel("local:workspace:proj:local_user").unwrap();
+        assert_eq!(ws_id, "proj");
+        assert!(conv.is_none());
+        assert!(store
+            .set_legacy_conversation_api_profile(&ws_id, Some("alpha"))
+            .unwrap());
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "一次变更一次通知"
+        );
+
+        // 物化 + 覆盖就位。
+        let convs = store.conversations_of("proj");
+        assert_eq!(convs.len(), 1);
+        assert!(convs[0].legacy);
+        assert_eq!(convs[0].api_profile.as_deref(), Some("alpha"));
+
+        // 相同值：Ok(true) 且不写盘、不通知。
+        assert!(store
+            .set_legacy_conversation_api_profile("proj", Some("alpha"))
+            .unwrap());
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "无变化不通知"
+        );
+
+        // 持久化往返：重载同路径可读回（重启后恢复）。
+        let reloaded = WorkspaceStore::load(Some(path.clone()));
+        let ws = reloaded.get("proj").unwrap();
+        assert_eq!(ws.conversations.len(), 1);
+        assert!(ws.conversations[0].legacy);
+        assert_eq!(ws.conversations[0].api_profile.as_deref(), Some("alpha"));
+
+        // 清除（None）：落盘为空覆盖。
+        assert!(store
+            .set_legacy_conversation_api_profile("proj", None)
+            .unwrap());
+        let reloaded = WorkspaceStore::load(Some(path.clone()));
+        assert!(reloaded.get("proj").unwrap().conversations[0]
+            .api_profile
+            .is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 多对话对话级覆盖：显式 conv 设置/清除、空串 = 清除；不存在的
+    /// 工作区/对话 → Ok(false)。
+    #[test]
+    fn set_api_profile_explicit_conversation_set_clear_and_missing() {
+        let (store, path) = temp_store("api-conv");
+        store
+            .upsert(WorkspaceSessionInfo {
+                id: "proj".into(),
+                name: "Proj".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let docs = store
+            .upsert_conversation(
+                "proj",
+                WorkspaceConversationInfo {
+                    id: String::new(),
+                    name: "docs".into(),
+                    legacy: false,
+                    api_profile: None,
+                },
+            )
+            .unwrap();
+        let session_id = format!("local:workspace:proj/{}:local_user", docs.id);
+        let (ws_id, conv) = parse_workspace_channel(&session_id).unwrap();
+        assert_eq!(ws_id, "proj");
+        assert_eq!(conv.as_deref(), Some(docs.id.as_str()));
+
+        assert!(store
+            .set_conversation_api_profile(&ws_id, conv.as_deref().unwrap(), Some("beta"))
+            .unwrap());
+        let saved = store
+            .get("proj")
+            .unwrap()
+            .conversations
+            .into_iter()
+            .find(|c| c.id == docs.id)
+            .unwrap();
+        assert_eq!(saved.api_profile.as_deref(), Some("beta"));
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"beta\""), "persisted: {raw}");
+
+        // 空串 = None（清除），并持久化。
+        assert!(store
+            .set_conversation_api_profile("proj", &docs.id, Some(""))
+            .unwrap());
+        let reloaded = WorkspaceStore::load(Some(path.clone()));
+        let saved = reloaded
+            .get("proj")
+            .unwrap()
+            .conversations
+            .into_iter()
+            .find(|c| c.id == docs.id)
+            .unwrap();
+        assert!(saved.api_profile.is_none());
+
+        // 不存在的对话 / 工作区 → Ok(false)，不 panic。
+        assert!(!store
+            .set_conversation_api_profile("proj", "nope", Some("beta"))
+            .unwrap());
+        assert!(!store
+            .set_conversation_api_profile("ghost", "docs", Some("beta"))
+            .unwrap());
+        assert!(!store
+            .set_legacy_conversation_api_profile("ghost", Some("beta"))
+            .unwrap());
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 通道 id 解析：legacy / 多对话 / 非工作区（含 `@account` 后缀）。
+    #[test]
+    fn parse_workspace_channel_covers_legacy_multi_and_non_workspace() {
+        assert_eq!(
+            parse_workspace_channel("local:workspace:ws1:local_user"),
+            Some(("ws1".to_string(), None))
+        );
+        assert_eq!(
+            parse_workspace_channel("local:workspace:ws1/docs:local_user"),
+            Some(("ws1".to_string(), Some("docs".to_string())))
+        );
+        // 多实例维度：user 段带 `@<account>` 后缀。
+        assert_eq!(
+            parse_workspace_channel("local:workspace:ws1/docs:local_user@work"),
+            Some(("ws1".to_string(), Some("docs".to_string())))
+        );
+        // 非工作区：前缀不匹配 / 其它平台通道 / 空通道。
+        assert_eq!(parse_workspace_channel("local:tui::local_user"), None);
+        assert_eq!(parse_workspace_channel("qq:group:12345:67890"), None);
+        assert_eq!(parse_workspace_channel("local:workspace:"), None);
     }
 }
