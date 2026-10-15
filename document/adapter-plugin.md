@@ -227,17 +227,19 @@ impl AdapterPlugin for QqPlugin {
 }
 ```
 
-**QQ 插件已落地（P1.7a/1.7b，独立仓库 `~/code_file/gitlab/echo-tech/echo-adapter-qq`）**：代码迁入（`crates/*` 原样 + `vendor/*` 过渡子集），`plugin.rs` = `QqPlugin`（op 路由 `start`/`stop`/`status`/`send_text`/`send_media`/`get_groups`/`get_friends`/`custom`；入站 `deliver_message`（反压退避重试）+ 连接态 `report_state`）；`configure` 合并 `state_file` 的运行期状态到宿主基线之上。235 测试全绿 + 真实进程 stdio 冒烟（握手 / op / Dispose 干净退出）。剩余：P1.7c（去 vendor：类型换 `echo-plugin-api`、入站图片走 `store_media`）、P1.8 宿主拉端到端、P1.9 删内置。
+**QQ 插件已落地（P1.7a–c，独立仓库 `~/code_file/gitlab/echo-tech/echo-adapter-qq`）**：代码迁入（`crates/*` + 拆解后的自有模块），`plugin.rs` = `QqPlugin`（op 路由 `start`/`stop`/`status`/`send_text`/`send_media`/`get_groups`/`get_friends`/`custom`；入站 `deliver_message`（反压退避重试）+ 连接态 `report_state`）；`configure` 合并 `state_file` 的运行期状态到宿主基线之上。P1.7c 去 vendor（领域词汇 / filter / ConfigStore 收归插件自有，入站图片走 `store_media`）；229 测试全绿 + 真实进程 stdio 冒烟（握手 / op / Dispose 干净退出）。剩余：P1.8 宿主拉端到端、P1.9 删内置。
 
 **QQ 插件仓库（首个样本）**——现状代码整体迁出 + 适配层：
 
 ```text
-echo-adapter-qq/（独立仓库）
-  src/main.rs        # serve_stdio(QqPlugin)
-  src/transport/     # OneBot 反向 WS（现 echo-adapter-qq 主体）
-  src/napcat/        # 容器管理
-  src/filter/        # 触发 / 门控 / 名单（现 filter.rs + trigger 配置）
-  src/plugin.rs      # AdapterPlugin：op 路由 + 入站上报
+echo-adapter-qq/（独立仓库，cargo workspace；P1.7a–c 已落地）
+  crates/echo-adapter-qq/   # 适配器主体
+    src/main.rs             # serve_adapter_stdio(QqPlugin)
+    src/plugin.rs           # AdapterPlugin：op 路由 + 入站上报 + store_media 媒体通道
+    src/types.rs            # 领域词汇（消息 / 目标 / 事件 / 状态；插件自有）
+    src/filter.rs + src/config_store.rs   # 门控过滤管道 + TOML 持久化（插件自有）
+    src/napcat/ + src/adapter/qq/         # 容器管理 + OneBot 反向 WS（现主体）
+  crates/echo-core + echo-server          # OneBot v11 协议与反向 WS（运输层）
 ```
 
 依赖 `echo-plugin-sdk`（git tag / 发布通道）+ 传输依赖；**不再依赖 `echo-adapter`**（trait 词汇经 SDK 镜像）。
@@ -246,13 +248,13 @@ echo-adapter-qq/（独立仓库）
 
 | 依赖 | 实际用到 | 处置 |
 |---|---|---|
-| `echo-core`（OneBot 事件 / 段 / action，零 echo 依赖） | `Event`/`Segment`/`actions::*` 共 23 处 | **随插件迁出**（vendor 进插件仓库 `src/onebot/`）；宿主侧仅 `core/handlers/` 3 个 handler 引用，随 handler 平台中立化一并移除 |
-| `echo-server`（反向 WS 服务端，仅依赖 echo-core） | `Server`/`Handler`/`ConnectionTracker` 共 14 处 | **随插件迁出**（`src/transport/`）；宿主无其他使用者 |
-| `echo-adapter` | `filter::*`（门控 / 名单，957 行）、`ConfigStore`、`ensure_table`、`Adapter`/`AdapterManagement` trait、`IncomingMessage` | filter 与 ConfigStore **复制进插件**（宿主侧 `echo-agent` 仍用，不能删）；trait 换成 `AdapterPlugin`；`IncomingMessage` → `AdapterMessage` |
-| `echo-defs` | `MessageTarget`/`ChannelType`（15 处）、`media_store::*`（5 处） | 前者 → `AdapterTarget`/`AdapterChannel`；**`media_store` 改走 `adapter_host.store_media` HostCall**（宿主侧已实现：path / bytes_b64，32 MiB 上限，内容寻址去重） |
+| `echo-core`（OneBot 事件 / 段 / action，零 echo 依赖） | `Event`/`Segment`/`actions::*` 共 23 处 | **随插件迁出**（迁入插件仓库 `crates/echo-core`）；宿主侧仅 `core/handlers/` 3 个 handler 引用，随 handler 平台中立化一并移除 |
+| `echo-server`（反向 WS 服务端，仅依赖 echo-core） | `Server`/`Handler`/`ConnectionTracker` 共 14 处 | **随插件迁出**（迁入插件仓库 `crates/echo-server`）；宿主无其他使用者 |
+| `echo-adapter` | `filter::*`（门控 / 名单，957 行）、`ConfigStore`、`ensure_table`、`Adapter`/`AdapterManagement` trait、`IncomingMessage` | filter / ConfigStore 收归插件自有（P1.7c 完成；宿主 `echo-agent` 侧自用副本 P1.9 收尾）；`Adapter` / `AdapterManagement` trait 退役为固有方法；领域类型插件自有，线协议转换在 `plugin.rs` 边界（`AdapterMessage`） |
+| `echo-defs` | `MessageTarget`/`ChannelType`（15 处）、`media_store::*`（5 处） | 前者 → `AdapterTarget`/`AdapterChannel`；**`media_store` 改走 `adapter_host.store_media` HostCall**（两侧均已完成，P1.7c：宿主 `store_media` + 插件 `HostMediaStore`，同机传 path） |
 | `echo-context` | `kernel::get_or_init`（缓存 reqwest Client，1 处） | 换 `OnceLock` |
 
-插件仓库最终只依赖 `echo-plugin-sdk`。宿主侧收尾（P1.9）：删除 `echo-adapter-qq`/`echo-core`/`echo-server` 三个 crate 与 `core/src/main.rs` 中的内置 QQ 装配（`QqAdapter::with_instance`、`set_message_hook`/`add_handler` 接线），`core/handlers/` 改为挂在 `AdapterHostService` 入站 worker 之后。迁出期以 `[adapters.qq] mode = "builtin" | "plugin"` 二选一，切换前两条路径并存。
+插件仓库最终只依赖 `echo-plugin-sdk` + 传输 crate（`crates/echo-core` / `crates/echo-server`，零 echo-* 依赖）。宿主侧收尾（P1.9）：删除 `echo-adapter-qq`/`echo-core`/`echo-server` 三个 crate 与 `core/src/main.rs` 中的内置 QQ 装配（`QqAdapter::with_instance`、`set_message_hook`/`add_handler` 接线），`core/handlers/` 改为挂在 `AdapterHostService` 入站 worker 之后。迁出期以 `[adapters.qq] mode = "builtin" | "plugin"` 二选一，切换前两条路径并存。
 
 **迁移映射**：
 
@@ -363,7 +365,7 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 
 > 产出物 = **一个参考实现**（inproc QQ 适配器全程经 `AdapterManagement` 运行）+ 协议三件套（`InvokeAdapterOp` / `AdapterOpResult` / `AdapterState`）+ 三项前置修复。**P1 外迁插件对照本参考实现实现同一接口；P2 远程适配器必须过同一组 conformance**（参考实现先行 = 接口在真实负载下先验证，再外迁）。
 >
-> **实施进度（2026-10 开工）**：**P0 全部完成**（`grep qq_management|QqManagement` 归零、双跑 diff 为空、全仓 63 组测试全绿）；W2.4 随 Panel 阶段 1 推迟（breaking，见其条目注）。**P1 进行中**：宿主侧骨架（`AdapterHostService` + `RemoteAdapter` + `store_media` + 组合根注册）、SDK 脚手架（`AdapterPlugin` / `configure` / `serve_adapter_stdio`）与 QQ 插件（P1.7a/1.7b，独立仓库，235 测试 + 进程冒烟）均已落地；**下一批 = P1.7c（QQ 去 vendor）→ P1.8（宿主把插件拉起来做端到端）→ P1.9（删宿主内置 QQ）**。
+> **实施进度（2026-10 开工）**：**P0 全部完成**（`grep qq_management|QqManagement` 归零、双跑 diff 为空、全仓 63 组测试全绿）；W2.4 随 Panel 阶段 1 推迟（breaking，见其条目注）。**P1 进行中**：宿主侧骨架（`AdapterHostService` + `RemoteAdapter` + `store_media` + 组合根注册）、SDK 脚手架（`AdapterPlugin` / `configure` / `serve_adapter_stdio`）与 QQ 插件（P1.7a–c，独立仓库，去 vendor 后 229 测试 + 进程冒烟）均已落地；**下一批 = P1.8（宿主把插件拉起来做端到端）→ P1.9（删宿主内置 QQ）**。
 
 **W1 前置修复（既有缺陷，先于骨架动工）**
 
