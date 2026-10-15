@@ -1061,6 +1061,394 @@ async fn session_model_pairs_with_override_provider() {
     assert_eq!(agent.session_model("sess-1").await, "deepseek-v4-flash");
 }
 
+// ── API profile 改名（2026-10）──
+
+/// 改名：池条目名与 active_api 一起改写；单个 ConfigStore patch 落盘
+/// （旧名消失、值保留、无关段不丢）；回推 ApiConfigUpdated + 通知。
+#[tokio::test]
+async fn rename_api_rewrites_pool_and_active_api() {
+    let tmp = std::env::temp_dir().join(format!(
+        "echo-rename-{}-{}.toml",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(
+        &tmp,
+        "[server]\nx = 1\n\n[agent]\nprovider = \"openai\"\nmodel = \"top\"\napi_key = \"sk-top\"\n",
+    )
+    .unwrap();
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+    agent.set_config_path(tmp.clone());
+    {
+        let mut cfg = agent.config.write().await;
+        cfg.api_profiles
+            .push(crate::config::ApiProfile::new("alpha", "deepseek", "m1"));
+        cfg.api_profiles[0].api_key = "sk-alpha".into();
+        cfg.api_profiles
+            .push(crate::config::ApiProfile::new("beta", "kimi", "m2"));
+        cfg.active_api = "alpha".into();
+    }
+
+    agent
+        .apply_command(BackendCommand::RenameApi {
+            from: "alpha".into(),
+            to: " gamma ".into(), // 去空白验证
+        })
+        .await;
+
+    let cfg = agent.api_config().await;
+    assert!(
+        cfg.api_profiles.iter().all(|p| p.name != "alpha"),
+        "old name must be gone: {:?}",
+        cfg.api_profiles.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
+    let renamed = cfg
+        .api_profiles
+        .iter()
+        .find(|p| p.name == "gamma")
+        .expect("renamed profile exists");
+    assert_eq!(renamed.api_key, "sk-alpha", "values survive rename");
+    assert_eq!(renamed.provider, "deepseek");
+    assert_eq!(cfg.active_api, "gamma", "active_api follows rename");
+
+    let content = std::fs::read_to_string(&tmp).unwrap();
+    assert!(
+        content.contains("name = \"gamma\""),
+        "pool persisted under new name: {content}"
+    );
+    assert!(
+        !content.contains("name = \"alpha\""),
+        "old name must not remain: {content}"
+    );
+    assert!(
+        content.contains("active_api = \"gamma\""),
+        "active_api persisted: {content}"
+    );
+    assert!(
+        content.contains("[server]\nx = 1"),
+        "unrelated sections preserved: {content}"
+    );
+
+    let mut updated = 0;
+    let mut notify = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        match event {
+            BackendEvent::ApiConfigUpdated { active_api, .. } => {
+                updated += 1;
+                assert_eq!(active_api, "gamma");
+            }
+            BackendEvent::Error { message, .. } => notify.push(message),
+            _ => {}
+        }
+    }
+    assert!(updated >= 1, "ApiConfigUpdated must be re-emitted");
+    assert!(
+        notify.iter().any(|m| m.contains("renamed API config")),
+        "notify message: {notify:?}"
+    );
+    std::fs::remove_file(&tmp).ok();
+}
+
+/// from == to（trim 后）→ 幂等 no-op：零写入，只回推配置事件
+///（Panel 依赖回推收起表单）。
+#[tokio::test]
+async fn rename_api_same_name_is_noop() {
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+    {
+        let mut cfg = agent.config.write().await;
+        cfg.api_profiles
+            .push(crate::config::ApiProfile::new("alpha", "deepseek", "m1"));
+        cfg.active_api = "alpha".into();
+    }
+
+    agent
+        .apply_command(BackendCommand::RenameApi {
+            from: "alpha".into(),
+            to: " alpha ".into(),
+        })
+        .await;
+
+    let cfg = agent.api_config().await;
+    assert_eq!(cfg.api_profiles.len(), 1);
+    assert_eq!(cfg.api_profiles[0].name, "alpha");
+
+    let mut updated = 0;
+    let mut errors = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        match event {
+            BackendEvent::ApiConfigUpdated { .. } => updated += 1,
+            BackendEvent::Error { message, .. } => errors.push(message),
+            _ => {}
+        }
+    }
+    assert!(updated >= 1, "no-op rename must still re-emit config");
+    assert!(
+        !errors.iter().any(|m| m.contains("rename failed")),
+        "no-op must not error: {errors:?}"
+    );
+}
+
+/// to 已被占用 → 拒绝，零写入（不合并、不覆盖）。
+#[tokio::test]
+async fn rename_api_rejects_existing_target() {
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+    {
+        let mut cfg = agent.config.write().await;
+        cfg.api_profiles
+            .push(crate::config::ApiProfile::new("alpha", "deepseek", "m1"));
+        cfg.api_profiles
+            .push(crate::config::ApiProfile::new("beta", "kimi", "m2"));
+        cfg.active_api = "alpha".into();
+    }
+
+    agent
+        .apply_command(BackendCommand::RenameApi {
+            from: "alpha".into(),
+            to: "beta".into(),
+        })
+        .await;
+
+    let cfg = agent.api_config().await;
+    assert!(cfg.api_profiles.iter().any(|p| p.name == "alpha"));
+    assert!(cfg.api_profiles.iter().any(|p| p.name == "beta"));
+    assert_eq!(
+        cfg.active_api, "alpha",
+        "failed rename must not touch state"
+    );
+
+    let mut errors = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        if let BackendEvent::Error { message, .. } = event {
+            errors.push(message);
+        }
+    }
+    assert!(
+        errors.iter().any(|m| m.contains("already exists")),
+        "errors: {errors:?}"
+    );
+}
+
+/// from 不存在 / 空 → 拒绝（精确匹配语义）。
+#[tokio::test]
+async fn rename_api_rejects_missing_source() {
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+
+    for from in ["ghost", ""] {
+        agent
+            .apply_command(BackendCommand::RenameApi {
+                from: from.into(),
+                to: "x".into(),
+            })
+            .await;
+    }
+
+    let mut errors = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        if let BackendEvent::Error { message, .. } = event {
+            errors.push(message);
+        }
+    }
+    assert_eq!(errors.len(), 2, "both must error: {errors:?}");
+    assert!(
+        errors.iter().all(|m| m.contains("API config not found")),
+        "errors: {errors:?}"
+    );
+}
+
+/// to 空白 / 带控制字符 / 超长 → 拒绝。
+#[tokio::test]
+async fn rename_api_rejects_invalid_target() {
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+    {
+        let mut cfg = agent.config.write().await;
+        cfg.api_profiles
+            .push(crate::config::ApiProfile::new("alpha", "deepseek", "m1"));
+    }
+
+    for to in ["   ", "bad\tname", &"x".repeat(200)] {
+        agent
+            .apply_command(BackendCommand::RenameApi {
+                from: "alpha".into(),
+                to: to.into(),
+            })
+            .await;
+    }
+
+    let cfg = agent.api_config().await;
+    assert_eq!(cfg.api_profiles.len(), 1);
+    assert_eq!(cfg.api_profiles[0].name, "alpha");
+
+    let mut errors = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        if let BackendEvent::Error { message, .. } = event {
+            errors.push(message);
+        }
+    }
+    assert_eq!(errors.len(), 3, "all must error: {errors:?}");
+    assert!(
+        errors.iter().all(|m| m.contains("API rename failed")),
+        "errors: {errors:?}"
+    );
+}
+
+/// 会话级覆盖重绑：引用被改名 profile 的会话切到新名（重建 provider），
+/// 引用其他 profile 的会话不受影响。
+#[tokio::test]
+async fn rename_api_rebinds_session_provider_under_new_name() {
+    let agent = test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    }));
+    {
+        let mut cfg = agent.config.write().await;
+        cfg.api_profiles
+            .push(crate::config::ApiProfile::new("kimi", "openai", "kimi-k3"));
+        cfg.api_profiles[0].api_key = "sk-kimi".into();
+        cfg.api_profiles[0].base_url = "http://kimi.test".into();
+        cfg.api_profiles
+            .push(crate::config::ApiProfile::new("other", "openai", "m-other"));
+        cfg.api_profiles[1].api_key = "sk-other".into();
+        cfg.active_api = "kimi".into();
+    }
+    assert!(agent.set_session_provider("sess-1", "kimi").await);
+    assert!(agent.set_session_provider("sess-2", "other").await);
+    let before = agent
+        .session_providers
+        .get("sess-1")
+        .map(|e| e.value().1.clone())
+        .expect("override set");
+
+    agent
+        .apply_command(BackendCommand::RenameApi {
+            from: "kimi".into(),
+            to: "k3".into(),
+        })
+        .await;
+
+    let entry = agent
+        .session_providers
+        .get("sess-1")
+        .map(|e| e.value().clone())
+        .expect("override kept after rename");
+    assert_eq!(entry.0, "k3", "override rebound to the new name");
+    assert!(
+        !Arc::ptr_eq(&entry.1, &before),
+        "rebind must rebuild the provider (metering name is baked at build)"
+    );
+    assert_eq!(entry.1.name(), "openai");
+    // 其他 profile 的覆盖不受影响。
+    assert_eq!(
+        agent.session_providers.get("sess-2").unwrap().value().0,
+        "other"
+    );
+}
+
+/// persona 引用重引用：引用被改名 profile 的 agent 切到新名。
+#[tokio::test]
+async fn rename_api_reapplies_persona_reference() {
+    let agent = test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    }));
+    {
+        let mut cfg = agent.config.write().await;
+        cfg.api_profiles
+            .push(crate::config::ApiProfile::new("kimi", "openai", "kimi-k3"));
+        cfg.api_profiles[0].api_key = "sk-kimi".into();
+        cfg.api_profiles[0].base_url = "http://kimi.test".into();
+    }
+    agent.set_persona_api(Some("kimi".into())).await;
+
+    agent
+        .apply_command(BackendCommand::RenameApi {
+            from: "kimi".into(),
+            to: "k3".into(),
+        })
+        .await;
+
+    assert_eq!(
+        agent.persona_api().await.as_deref(),
+        Some("k3"),
+        "persona reference must follow the rename"
+    );
+}
+
+/// 落盘失败 → 内存零改动（落盘先行、提交在后 = 天然回滚）。
+#[tokio::test]
+async fn rename_api_persist_failure_leaves_memory_unchanged() {
+    let blocker =
+        std::env::temp_dir().join(format!("echo-rename-blocker-{}", uuid::Uuid::new_v4()));
+    std::fs::write(&blocker, "not a directory").unwrap();
+    // 父路径是文件 → patch 写临时文件必然 ENOTDIR。
+    let bad = blocker.join("nested").join("cfg.toml");
+
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+    agent.set_config_store(echo_adapter::ConfigStore::new(bad));
+    {
+        let mut cfg = agent.config.write().await;
+        cfg.api_profiles
+            .push(crate::config::ApiProfile::new("alpha", "deepseek", "m1"));
+        cfg.active_api = "alpha".into();
+    }
+
+    agent
+        .apply_command(BackendCommand::RenameApi {
+            from: "alpha".into(),
+            to: "gamma".into(),
+        })
+        .await;
+
+    let cfg = agent.api_config().await;
+    assert!(
+        cfg.api_profiles.iter().any(|p| p.name == "alpha"),
+        "memory must stay untouched on persist failure"
+    );
+    assert!(cfg.api_profiles.iter().all(|p| p.name != "gamma"));
+    assert_eq!(cfg.active_api, "alpha");
+
+    let mut errors = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        if let BackendEvent::Error { message, .. } = event {
+            errors.push(message);
+        }
+    }
+    assert!(
+        errors.iter().any(|m| m.contains("persist error")),
+        "errors: {errors:?}"
+    );
+    std::fs::remove_file(&blocker).ok();
+}
+
 /// echo-loop turn 的请求模型与 provider 成对（会话覆盖 = profile 模型）：
 /// 2026-10 用户报障回归——此前请求模型取 persona active_model，打到覆盖
 /// 端点 404 model_not_found。LlmRequest 事件在模型调用前发出，断言不依赖

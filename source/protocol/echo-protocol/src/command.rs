@@ -71,6 +71,12 @@ pub enum BackendCommand {
     QueryApiMetrics { name: String },
     /// Delete an API profile by name.
     DeleteApi { name: String },
+    /// 原子改名 API profile：重写全部按名引用（供应商池条目名 / `active_api` /
+    /// `teams[*].api_profile`），并重绑运行中的 persona 引用、会话覆盖与
+    /// 工作区对话引用。`to` 去空白后必须非空且不与现有名字冲突；`from`
+    /// 必须精确存在。成功回 `ApiConfigUpdated` + `ApiProfilesUpdated`
+    /// （teams 有变更时补 `TeamsList`）；失败回 `Error` 且零写入。
+    RenameApi { from: String, to: String },
     /// Request a full state snapshot (responded with `BackendEvent::SessionUpdated`
     /// per session plus a fresh [`crate::BackendState`] via the bridge).
     RequestState,
@@ -653,5 +659,19 @@ mod tests {
             }),
             CommandClearance::Agent
         );
+    }
+
+    /// `RenameApi` 线格式：字段名必须与 Panel 手工镜像一致
+    /// （`{"RenameApi":{"from":"a","to":"b"}}`；Panel protocol-sync 契约）。
+    #[test]
+    fn rename_api_serde_contract() {
+        let cmd = BackendCommand::RenameApi {
+            from: "kimi".into(),
+            to: "k3".into(),
+        };
+        let text = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(text, r#"{"RenameApi":{"from":"kimi","to":"k3"}}"#);
+        let back: BackendCommand = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, cmd);
     }
 }

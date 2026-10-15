@@ -357,6 +357,66 @@ async fn delete_api_removes_profile() {
     );
 }
 
+/// 改名端到端：命令 → 池 / active_api 改写 + 磁盘同步（单 patch）。
+#[tokio::test]
+async fn rename_api_end_to_end_via_apply_command() {
+    let (agent, _provider) = test_agent("ok");
+    let tmp = std::env::temp_dir().join(format!("echo-agent-rename-{}.toml", uuid::Uuid::new_v4()));
+    std::fs::write(
+        &tmp,
+        "[agent]\nprovider = \"openai\"\nmodel = \"top\"\napi_key = \"sk-top\"\n",
+    )
+    .unwrap();
+    agent.set_config_path(tmp.clone());
+
+    agent
+        .apply_command(BackendCommand::UpdateApiConfig {
+            name: "deepseek".into(),
+            provider: "deepseek".into(),
+            model: "ds-v4".into(),
+            base_url: "http://x".into(),
+            api_key: "sk-ds".into(),
+            thinking: None,
+            reasoning_effort: None,
+        })
+        .await;
+    assert!(agent.api_config().await.active_api == "deepseek");
+
+    agent
+        .apply_command(BackendCommand::RenameApi {
+            from: "deepseek".into(),
+            to: "ds".into(),
+        })
+        .await;
+
+    let cfg = agent.api_config().await;
+    assert!(
+        cfg.api_profiles.iter().any(|p| p.name == "ds"),
+        "renamed profile present"
+    );
+    assert!(
+        cfg.api_profiles.iter().all(|p| p.name != "deepseek"),
+        "old name gone"
+    );
+    assert_eq!(cfg.active_api, "ds", "active_api follows");
+
+    let content = std::fs::read_to_string(&tmp).unwrap();
+    assert!(content.contains("name = \"ds\""), "persisted: {content}");
+    assert!(
+        !content.contains("name = \"deepseek\""),
+        "old name not persisted: {content}"
+    );
+    assert!(
+        content.contains("active_api = \"ds\""),
+        "persisted: {content}"
+    );
+    assert!(
+        content.contains("api_key = \"sk-ds\""),
+        "profile key preserved: {content}"
+    );
+    std::fs::remove_file(&tmp).ok();
+}
+
 /// A provider that delays before replying, to expose branch concurrency.
 struct SlowProvider {
     delay_ms: u64,

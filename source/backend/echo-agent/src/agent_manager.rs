@@ -148,6 +148,46 @@ impl AgentManager {
         list
     }
 
+    /// 引用 `api_profile == name` 的全部 team id（含未运行/禁用；升序）。
+    /// API profile 改名时用于计算落盘补丁的改写范围。
+    pub fn api_ref_owners(&self, name: &str) -> Vec<String> {
+        let teams = self.teams.read();
+        let mut ids: Vec<String> = teams
+            .iter()
+            .filter(|(_, t)| t.api_profile.as_deref() == Some(name))
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    /// API profile 改名传播（内存侧）：把 teams 定义与运行中 persona 快照的
+    /// `api_profile` 引用从 `from` 改为 `to`，返回 teams 改写数。
+    ///
+    /// 只做内存改写——持久化由调用方在同一次 ConfigStore patch 内完成；
+    /// 不触发启停（区别于 [`Self::save_profile`] 的建销副作用）。
+    pub fn replace_api_refs(&self, from: &str, to: &str) -> usize {
+        let mut changed = 0usize;
+        {
+            let mut teams = self.teams.write();
+            for t in teams.values_mut() {
+                if t.api_profile.as_deref() == Some(from) {
+                    t.api_profile = Some(to.to_string());
+                    changed += 1;
+                }
+            }
+        }
+        {
+            let mut agents = self.agents.write();
+            for running in agents.values_mut() {
+                if running.profile.api_profile.as_deref() == Some(from) {
+                    running.profile.api_profile = Some(to.to_string());
+                }
+            }
+        }
+        changed
+    }
+
     /// Runtime toggle. Disabling drops the manager's strong ref (agent memory
     /// unloads once last ref drops); enabling re-instantiates via factory.
     pub fn set_enabled(
@@ -457,5 +497,113 @@ mod tests {
         // 无兜底解析：None / "default" 都必须落空（去主智能体语义）。
         assert!(manager.resolve(None).is_none(), "no default fallback");
         assert!(manager.resolve(Some("default")).is_none());
+    }
+
+    // ── API profile 改名传播（2026-10）──
+
+    struct StubProvider;
+
+    #[async_trait::async_trait]
+    impl crate::llm::LlmProvider for StubProvider {
+        fn name(&self) -> &str {
+            "stub"
+        }
+        fn default_model(&self) -> &str {
+            "stub"
+        }
+        async fn chat(
+            &self,
+            _request: &crate::llm::ChatRequest,
+        ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
+            Err(crate::llm::LlmError::Config("stub".into()))
+        }
+        async fn chat_stream(
+            &self,
+            _request: &crate::llm::ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<crate::llm::ChatChunk>,
+        ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
+            Err(crate::llm::LlmError::Config("stub".into()))
+        }
+    }
+
+    fn stub_agent(_id: String, _p: TeamMember) -> Arc<Agent> {
+        Arc::new(Agent::new(
+            Arc::new(StubProvider),
+            AgentConfig::default(),
+            crate::SkillRegistry::new(),
+            crate::tool::ToolRegistry::new(),
+            Arc::new(echo_adapter::AdapterRegistry::new()),
+        ))
+    }
+
+    /// 改名传播：teams（含禁用）与运行中 persona 快照的引用一起改写；
+    /// 无关引用不受影响；只做内存改写（无启停副作用）。
+    ///
+    /// （tokio runtime：`Agent::new` 装配期需要运行时上下文。）
+    #[tokio::test]
+    async fn replace_api_refs_updates_teams_and_running_profiles() {
+        let mut raw = AgentConfig::default();
+        raw.teams.insert(
+            "alice".into(),
+            TeamMember {
+                name: "Alice".into(),
+                api_profile: Some("alpha".into()),
+                ..Default::default()
+            },
+        );
+        raw.teams.insert(
+            "bob".into(),
+            TeamMember {
+                name: "Bob".into(),
+                api_profile: Some("beta".into()),
+                ..Default::default()
+            },
+        );
+        raw.teams.insert(
+            "carol".into(),
+            TeamMember {
+                name: "Carol".into(),
+                api_profile: Some("alpha".into()),
+                ..Default::default()
+            },
+        );
+        raw.disabled_teams = vec!["carol".into()];
+        let mgr = AgentManager::build(&raw, stub_agent);
+
+        assert_eq!(
+            mgr.api_ref_owners("alpha"),
+            vec!["alice".to_string(), "carol".to_string()]
+        );
+        assert_eq!(mgr.api_ref_owners("beta"), vec!["bob".to_string()]);
+        assert!(mgr.api_ref_owners("gamma").is_empty());
+
+        let changed = mgr.replace_api_refs("alpha", "gamma");
+        assert_eq!(changed, 2, "alice + carol (disabled included)");
+
+        assert!(mgr.api_ref_owners("alpha").is_empty());
+        assert_eq!(
+            mgr.api_ref_owners("gamma"),
+            vec!["alice".to_string(), "carol".to_string()]
+        );
+        assert_eq!(
+            mgr.team("alice").unwrap().api_profile.as_deref(),
+            Some("gamma")
+        );
+        assert_eq!(
+            mgr.team("bob").unwrap().api_profile.as_deref(),
+            Some("beta"),
+            "unrelated reference untouched"
+        );
+        // 运行中 persona 的快照同步更新——不重建实例。
+        assert_eq!(
+            mgr.get("alice").unwrap().profile.api_profile.as_deref(),
+            Some("gamma")
+        );
+        assert_eq!(
+            mgr.get("bob").unwrap().profile.api_profile.as_deref(),
+            Some("beta")
+        );
+        // carol 未运行：无实例，但定义已更新。
+        assert!(mgr.get("carol").is_none());
     }
 }

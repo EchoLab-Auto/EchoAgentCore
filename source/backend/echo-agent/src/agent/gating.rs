@@ -226,6 +226,41 @@ impl Agent {
         self.set_model(resolved.model.clone()).await;
         true
     }
+    /// API profile 改名传播（2026-10）：本 agent 的 persona 引用或全局激活名
+    /// 命中被改名的 profile 时，重建 provider——计量归属名是在构建
+    /// provider 时**烘焙**进包装器的（见 `wrap_metering`），只改配置字符串
+    /// 而不重建会继续按旧名记账。
+    ///
+    /// - persona 引用命中 → 重引用为新名 + `apply_persona_api`（按名解析）；
+    /// - 跟随全局默认（无引用）且默认激活名被改写 → `rebuild_provider`
+    ///   （只重建 provider、不动本 agent 配置字段）。
+    ///
+    /// 调用方须已把 `global`（含改名后的池）传入；未命中的 agent 是 no-op。
+    pub(crate) async fn rebind_renamed_profile(
+        &self,
+        from: &str,
+        to: &str,
+        active_renamed: bool,
+        global: &AgentConfig,
+    ) {
+        let reference = self.persona_api.read().await.clone();
+        match reference.as_deref().filter(|n| !n.is_empty()) {
+            Some(name) if name == from => {
+                // persona 引用命中：跟随改名重引用并重建（计量名 → 新名）。
+                *self.persona_api.write().await = Some(to.to_string());
+                self.apply_persona_api(global).await;
+            }
+            Some(_) => {
+                // 引用其他 profile：解析值与计量名都不受影响 → 无需重建。
+            }
+            None => {
+                if active_renamed {
+                    // 跟随全局默认：重建以把计量归属切到新名。
+                    self.rebuild_provider(global).await;
+                }
+            }
+        }
+    }
 
     /// 插件启停对本 agent 注册表的批量效果（**包维度，横跨工具与技能**）。
     ///

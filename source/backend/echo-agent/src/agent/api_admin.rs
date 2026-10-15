@@ -371,6 +371,163 @@ impl Agent {
         }
     }
 
+    /// Atomically rename an API profile (2026-10).
+    ///
+    /// Rewrites every by-name reference:
+    /// 1. `[agent].api_profiles` 条目名 + `[agent].active_api`；
+    /// 2. `[agent].teams[*].api_profile`（persona 引用，含未运行/禁用）；
+    /// 3. 运行中 agent 的 persona 引用与计量归属（重建 provider——名字在
+    ///    provider 构建时烘焙）；
+    /// 4. 会话级覆盖（`session_providers` 重绑）；
+    /// 5. 运行中 persona 的工作区对话引用。
+    ///
+    /// 一致性：先在克隆上算全新状态 → **单次落盘**（失败即中止；内存从未
+    /// 提交 = 天然回滚）→ 提交内存 → 运行时传播（失败只告警——持久化已
+    /// 正确，最差重启自愈）。
+    ///
+    /// 成功回 `ApiConfigUpdated` + `ApiProfilesUpdated`（teams 有变更时补
+    /// `TeamsList`）；失败回 `Error` 且零写入。
+    pub(crate) async fn rename_api(&self, from: &str, to: &str) {
+        let to = to.trim();
+        if to.is_empty() {
+            self.emit(BackendEvent::Error {
+                session_id: None,
+                message: "API rename failed: new name is empty".into(),
+            });
+            return;
+        }
+        if to.chars().count() > 128 || to.chars().any(char::is_control) {
+            self.emit(BackendEvent::Error {
+                session_id: None,
+                message:
+                    "API rename failed: new name must be ≤128 chars without control characters"
+                        .into(),
+            });
+            return;
+        }
+
+        let mut config = self.config.write().await;
+        let old_active = config.active_api.clone();
+        // `from` 精确匹配（不 trim——历史遗留含空白的名也要能被改名）。
+        if from.is_empty() || !config.api_profiles.iter().any(|p| p.name == from) {
+            drop(config);
+            self.emit(BackendEvent::Error {
+                session_id: None,
+                message: format!("API config not found: {from}"),
+            });
+            return;
+        }
+        if from == to {
+            // 幂等 no-op：零写入，只回推（Panel 依赖回推收起表单）。
+            drop(config);
+            self.emit_api_config().await;
+            return;
+        }
+        if config.api_profiles.iter().any(|p| p.name == to) {
+            drop(config);
+            self.emit(BackendEvent::Error {
+                session_id: None,
+                message: format!("API rename failed: {to} already exists"),
+            });
+            return;
+        }
+
+        // 克隆上计算新状态（内存不动，直到落盘成功）。
+        let mut new_cfg = config.clone();
+        for p in new_cfg.api_profiles.iter_mut() {
+            if p.name == from {
+                p.name = to.to_string();
+            }
+        }
+        if new_cfg.active_api == from {
+            new_cfg.active_api = to.to_string();
+        }
+        // teams 引用（含未运行/禁用 persona）：落盘前计算改写范围。
+        let changed_teams: Vec<String> = crate::agent_manager::global_manager()
+            .map(|mgr| mgr.api_ref_owners(from))
+            .unwrap_or_default();
+
+        // 单次落盘：池 + active_api + teams 引用同一 patch（见 try_persist_rename）。
+        if let Err(e) = self.try_persist_rename(&new_cfg, to, &changed_teams).await {
+            drop(config);
+            self.emit(BackendEvent::Error {
+                session_id: None,
+                message: format!("API rename failed: {e}"),
+            });
+            return;
+        }
+
+        // 落盘成功 → 提交内存。
+        *config = new_cfg.clone();
+        drop(config);
+        if let Some(mgr) = crate::agent_manager::global_manager() {
+            mgr.replace_api_refs(from, to);
+        }
+
+        // 运行时传播（持久化已正确；单点失败仅告警，重启自愈）。
+        self.propagate_api_rename(from, to, &old_active, &new_cfg)
+            .await;
+
+        self.emit(BackendEvent::Error {
+            session_id: None,
+            message: format!("renamed API config: {from} → {to}"),
+        });
+        self.emit_api_config().await;
+        if !changed_teams.is_empty() {
+            self.emit_teams_list().await;
+        }
+    }
+
+    /// 改名后的运行时传播（2026-10）：重建持旧名 provider 的包装器（计量
+    /// 归属名在构建时烘焙，改名后不重建会继续按旧名记账），并重绑会话覆盖
+    /// 与工作区对话引用。
+    ///
+    /// 只处理**运行中** agent；未运行 persona 的引用已由磁盘 patch 修正，
+    /// 启用/重启后自然生效。
+    async fn propagate_api_rename(
+        &self,
+        from: &str,
+        to: &str,
+        old_active: &str,
+        new_cfg: &AgentConfig,
+    ) {
+        let active_renamed = old_active == from;
+        // 1) 本 agent（管理面/进程级核心服务代理）。
+        self.rebind_renamed_profile(from, to, active_renamed, new_cfg)
+            .await;
+        let _ = self.rebind_session_providers(from, to).await;
+        if let Some(store) = self.workspace_store() {
+            if let Err(e) = store.rename_api_profile(from, Some(to)) {
+                tracing::warn!(error = %e, %from, %to, "workspace api ref rewrite failed");
+            }
+        }
+        // 2) 全部运行中 persona（与 ClearHistory 的枚举口径一致）。
+        if let Some(mgr) = crate::agent_manager::global_manager() {
+            for running in mgr.all() {
+                let agent = &running.agent;
+                agent
+                    .rebind_renamed_profile(from, to, active_renamed, new_cfg)
+                    .await;
+                agent.rebind_session_providers(from, to).await;
+                if let Some(store) = agent.workspace_store() {
+                    match store.rename_api_profile(from, Some(to)) {
+                        Ok(0) => {}
+                        Ok(n) => tracing::info!(
+                            team = %running.id,
+                            count = n,
+                            "workspace api refs rewritten after rename"
+                        ),
+                        Err(e) => tracing::warn!(
+                            team = %running.id,
+                            error = %e,
+                            "workspace api ref rewrite failed"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
     /// Test connectivity of an API config by sending a minimal probe request.
     ///
     /// `name` empty tests the active (top-level) config; otherwise the named
@@ -675,56 +832,94 @@ impl Agent {
             Some(s) => s,
             None => return,
         };
-        let mut value = match toml::Value::try_from(cfg) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to serialize agent config");
-                return;
-            }
-        };
         tracing::debug!(api_key_len = cfg.api_key.len(), "persisting agent config");
-        if let Err(e) = store.patch(|root| {
-            // `api_key` is excluded from AgentConfig's generic serialization.
-            // Write the explicit in-memory key when set; otherwise keep the
-            // on-disk value so unrelated persists never strip it from the file.
-            let key_value = if cfg.api_key.is_empty() {
-                root.get("agent")
-                    .and_then(|agent| agent.get("api_key"))
-                    .cloned()
-            } else {
-                Some(toml::Value::String(cfg.api_key.clone()))
-            };
-            if let Some(key_value) = key_value {
-                value
-                    .as_table_mut()
-                    .expect("serialized agent config is a table")
-                    .insert("api_key".into(), key_value);
-            }
-            // `teams` / `disabled_teams` 由 AgentManager 独立持久化
-            // （config_writer 只写这两张表）。人格快照里的副本可能已过期，
-            // 这里一律以磁盘为准，避免"某次无关保存把新人格名单写回旧值"。
-            let table = value
-                .as_table_mut()
-                .expect("serialized agent config is a table");
-            for key in ["teams", "disabled_teams"] {
-                let disk = root.get("agent").and_then(|agent| agent.get(key)).cloned();
-                match disk {
-                    Some(v) => {
-                        table.insert(key.into(), v);
-                    }
-                    None => {
-                        table.remove(key);
-                    }
-                }
-            }
-            root.insert("agent".into(), value.clone());
-            Ok(())
-        }) {
+        if let Err(e) = store.patch(|root| patch_agent_table(root, cfg)) {
             tracing::warn!(error = %e, "failed to persist agent config");
             return;
         }
         tracing::info!(path = %store.path().display(), "agent config persisted");
     }
+
+    /// 改名专用落盘：供应商池 / `active_api` / `teams[*].api_profile` 引用
+    /// 在**同一次** [`ConfigStore::patch`] 内改写（write_lock + tmp→rename
+    /// 原子替换）——两条写路径合一时序，杜绝"池已改名、teams 未改"的
+    /// 崩溃窗口（该窗口内 persona 引用悬空、会静默回退全局默认）。
+    ///
+    /// 无 ConfigStore（单测 / 嵌入场景）→ `Ok`，由调用方只改内存。
+    async fn try_persist_rename(
+        &self,
+        cfg: &AgentConfig,
+        to: &str,
+        changed_team_ids: &[String],
+    ) -> Result<(), String> {
+        let store = match self.config_store.lock().await.clone() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        let to_owned = to.to_string();
+        let ids = changed_team_ids.to_vec();
+        store
+            .patch(move |root| {
+                patch_agent_table(root, cfg)?;
+                // 磁盘 teams 表已由 patch_agent_table 原样带回——在此基础上
+                // 只改引用名（直接改字段，避免重序列化 TeamMember 的口径分叉）。
+                if let Some(agent) = root.get_mut("agent").and_then(|v| v.as_table_mut()) {
+                    if let Some(teams) = agent.get_mut("teams").and_then(|v| v.as_table_mut()) {
+                        for id in &ids {
+                            if let Some(entry) = teams.get_mut(id).and_then(|v| v.as_table_mut()) {
+                                entry.insert(
+                                    "api_profile".into(),
+                                    toml::Value::String(to_owned.clone()),
+                                );
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .map_err(|e| format!("persist error: {e}"))
+    }
+}
+
+/// 把 `cfg` 快照序列化进 `root["agent"]`（改名与常规持久化共用，保证
+/// 「api_key 保留」「teams/disabled_teams 以磁盘为准」两条口径不漂移）。
+///
+/// - `api_key` 排除在 `AgentConfig` 泛型序列化之外：显式键非空时写入该值，
+///   否则保留磁盘现值——任何无关保存都不得把文件里的 key 抹掉；
+/// - `teams` / `disabled_teams` 由 AgentManager 独立持久化：快照里的副本
+///   可能已过期，一律以磁盘为准，避免"某次无关保存把人格名单写回旧值"。
+fn patch_agent_table(root: &mut toml::Table, cfg: &AgentConfig) -> Result<(), String> {
+    let mut value =
+        toml::Value::try_from(cfg).map_err(|e| format!("serialize agent config: {e}"))?;
+    let key_value = if cfg.api_key.is_empty() {
+        root.get("agent")
+            .and_then(|agent| agent.get("api_key"))
+            .cloned()
+    } else {
+        Some(toml::Value::String(cfg.api_key.clone()))
+    };
+    if let Some(key_value) = key_value {
+        value
+            .as_table_mut()
+            .expect("serialized agent config is a table")
+            .insert("api_key".into(), key_value);
+    }
+    let table = value
+        .as_table_mut()
+        .expect("serialized agent config is a table");
+    for key in ["teams", "disabled_teams"] {
+        let disk = root.get("agent").and_then(|agent| agent.get(key)).cloned();
+        match disk {
+            Some(v) => {
+                table.insert(key.into(), v);
+            }
+            None => {
+                table.remove(key);
+            }
+        }
+    }
+    root.insert("agent".into(), value);
+    Ok(())
 }
 
 /// 一次余额查询的结果（金额为原始字符串，如 "1287.91"）。
@@ -902,4 +1097,103 @@ pub(crate) fn resolve_probe_config(
         ));
     }
     Ok(probe)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct StubProvider;
+
+    #[async_trait::async_trait]
+    impl crate::llm::LlmProvider for StubProvider {
+        fn name(&self) -> &str {
+            "stub"
+        }
+        fn default_model(&self) -> &str {
+            "stub"
+        }
+        async fn chat(
+            &self,
+            _request: &crate::llm::ChatRequest,
+        ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
+            Err(crate::llm::LlmError::Config("stub".into()))
+        }
+        async fn chat_stream(
+            &self,
+            _request: &crate::llm::ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<crate::llm::ChatChunk>,
+        ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
+            Err(crate::llm::LlmError::Config("stub".into()))
+        }
+    }
+
+    /// 改名单 patch：池 + active_api + teams 引用在**同一次** `store.patch`
+    /// 内改写；磁盘 api_key 保留；无关 team 引用不被触碰。
+    #[tokio::test]
+    async fn try_persist_rename_writes_pool_and_teams_in_single_patch() {
+        let tmp = std::env::temp_dir().join(format!(
+            "echo-rename-patch-{}-{}.toml",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(
+            &tmp,
+            "[agent]\nprovider = \"openai\"\napi_key = \"sk-top\"\nactive_api = \"alpha\"\n\n\
+             [agent.teams.alice]\nname = \"Alice\"\napi_profile = \"alpha\"\n\n\
+             [agent.teams.bob]\nname = \"Bob\"\napi_profile = \"beta\"\n",
+        )
+        .unwrap();
+        let agent = Agent::new(
+            Arc::new(StubProvider),
+            crate::config::AgentConfig::default(),
+            crate::SkillRegistry::new(),
+            crate::tool::ToolRegistry::new(),
+            Arc::new(echo_adapter::AdapterRegistry::new()),
+        );
+        agent.set_config_path(tmp.clone());
+
+        let new_cfg = crate::config::AgentConfig {
+            provider: "openai".into(),
+            api_key: String::new(), // 空 = 保留磁盘值
+            active_api: "gamma".into(),
+            api_profiles: vec![crate::config::ApiProfile::new("gamma", "deepseek", "m1")],
+            ..Default::default()
+        };
+        agent
+            .try_persist_rename(&new_cfg, "gamma", &["alice".to_string()])
+            .await
+            .expect("single patch persist must succeed");
+
+        let content = std::fs::read_to_string(&tmp).unwrap();
+        assert!(
+            content.contains("name = \"gamma\""),
+            "pool rewritten: {content}"
+        );
+        assert!(
+            content.contains("active_api = \"gamma\""),
+            "active_api rewritten: {content}"
+        );
+        assert!(
+            content.contains("api_key = \"sk-top\""),
+            "disk api_key preserved: {content}"
+        );
+        assert!(
+            content.contains("name = \"Alice\""),
+            "unrelated team fields preserved: {content}"
+        );
+        assert!(
+            content.contains("api_profile = \"gamma\""),
+            "referencing team rewritten: {content}"
+        );
+        assert!(
+            content.contains("api_profile = \"beta\""),
+            "non-referencing team untouched: {content}"
+        );
+        assert!(
+            !content.contains("api_profile = \"alpha\""),
+            "old reference gone: {content}"
+        );
+        std::fs::remove_file(&tmp).ok();
+    }
 }

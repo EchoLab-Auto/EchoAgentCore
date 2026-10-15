@@ -472,6 +472,33 @@ impl WorkspaceStore {
         Some(text)
     }
 
+    /// API profile 改名传播（2026-10）：把全部工作区对话里
+    /// `api_profile == from` 的引用改写为 `to`（`None` = 清空引用，供删除
+    /// 语义复用）。一次 doc 锁内改完、只写一次盘；返回改写条数
+    /// （0 = 无引用，不触发变更通知）。
+    pub fn rename_api_profile(&self, from: &str, to: Option<&str>) -> Result<usize, String> {
+        let changed = {
+            let mut doc = self.doc.write().unwrap_or_else(|e| e.into_inner());
+            let mut changed = 0usize;
+            for session in doc.sessions.iter_mut() {
+                for conv in session.conversations.iter_mut() {
+                    if conv.api_profile.as_deref() == Some(from) {
+                        conv.api_profile = to.map(str::to_string);
+                        changed += 1;
+                    }
+                }
+            }
+            if changed > 0 {
+                self.save_locked(&doc)?;
+            }
+            changed
+        };
+        if changed > 0 {
+            self.notify_change();
+        }
+        Ok(changed)
+    }
+
     /// Atomic save (temp file + rename). No-op when no persist path is set.
     fn save_locked(&self, doc: &WorkspaceDocument) -> Result<(), String> {
         let Some(path) = self.persist.as_deref() else {
@@ -1857,5 +1884,133 @@ mod tests {
             error.contains("不是 git 仓库") || error.contains("无法执行 git"),
             "unexpected: {error}"
         );
+    }
+
+    /// API 改名传播：全部对话的引用一次性改写、只写一次盘、只通知一次；
+    /// 无引用的二次调用零变更零通知。
+    #[test]
+    fn rename_api_profile_rewrites_all_conversations_and_saves_once() {
+        let (store, path) = temp_store("rename-api");
+        store
+            .upsert(WorkspaceSessionInfo {
+                id: "ws".into(),
+                name: "WS".into(),
+                description: String::new(),
+                directories: vec![],
+                conversations: vec![],
+                last_conversation: None,
+            })
+            .unwrap();
+        {
+            let mut doc = store.doc.write().unwrap();
+            let session = doc.sessions.iter_mut().find(|s| s.id == "ws").unwrap();
+            session.conversations = vec![
+                WorkspaceConversationInfo {
+                    id: "c1".into(),
+                    name: "C1".into(),
+                    legacy: false,
+                    api_profile: Some("alpha".into()),
+                },
+                WorkspaceConversationInfo {
+                    id: "c2".into(),
+                    name: "C2".into(),
+                    legacy: false,
+                    api_profile: Some("beta".into()),
+                },
+                WorkspaceConversationInfo {
+                    id: "c3".into(),
+                    name: "C3".into(),
+                    legacy: false,
+                    api_profile: Some("alpha".into()),
+                },
+            ];
+            store.save_locked(&doc).unwrap();
+        }
+        let notified = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let notified = notified.clone();
+            store.set_on_change(std::sync::Arc::new(move || {
+                notified.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }));
+        }
+
+        let changed = store.rename_api_profile("alpha", Some("gamma")).unwrap();
+        assert_eq!(changed, 2, "c1 + c3 rewritten");
+        assert_eq!(
+            notified.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "exactly one change notification"
+        );
+
+        let ws = store.get("ws").unwrap();
+        assert_eq!(
+            ws.conversations
+                .iter()
+                .filter(|c| c.api_profile.as_deref() == Some("gamma"))
+                .count(),
+            2
+        );
+        assert!(
+            ws.conversations
+                .iter()
+                .any(|c| c.api_profile.as_deref() == Some("beta")),
+            "unrelated reference untouched"
+        );
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("\"gamma\""), "persisted: {on_disk}");
+        assert!(!on_disk.contains("\"alpha\""), "old ref gone: {on_disk}");
+
+        // 无引用：零变更、零通知。
+        let again = store.rename_api_profile("alpha", Some("gamma")).unwrap();
+        assert_eq!(again, 0);
+        assert_eq!(notified.load(std::sync::atomic::Ordering::SeqCst), 1);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// `to = None` 清空引用（删除语义预埋）：只清匹配条目。
+    #[test]
+    fn rename_api_profile_none_clears_refs() {
+        let (store, path) = temp_store("rename-api-clear");
+        store
+            .upsert(WorkspaceSessionInfo {
+                id: "ws".into(),
+                name: "WS".into(),
+                description: String::new(),
+                directories: vec![],
+                conversations: vec![],
+                last_conversation: None,
+            })
+            .unwrap();
+        {
+            let mut doc = store.doc.write().unwrap();
+            let session = doc.sessions.iter_mut().find(|s| s.id == "ws").unwrap();
+            session.conversations = vec![
+                WorkspaceConversationInfo {
+                    id: "c1".into(),
+                    name: "C1".into(),
+                    legacy: false,
+                    api_profile: Some("alpha".into()),
+                },
+                WorkspaceConversationInfo {
+                    id: "c2".into(),
+                    name: "C2".into(),
+                    legacy: false,
+                    api_profile: Some("beta".into()),
+                },
+            ];
+            store.save_locked(&doc).unwrap();
+        }
+
+        let changed = store.rename_api_profile("alpha", None).unwrap();
+        assert_eq!(changed, 1);
+        let ws = store.get("ws").unwrap();
+        assert!(ws.conversations[0].api_profile.is_none(), "cleared");
+        assert_eq!(ws.conversations[1].api_profile.as_deref(), Some("beta"));
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !on_disk.contains("alpha"),
+            "cleared refs not persisted: {on_disk}"
+        );
+        std::fs::remove_file(&path).ok();
     }
 }

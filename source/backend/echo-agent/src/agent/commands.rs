@@ -612,6 +612,9 @@ impl Agent {
             BackendCommand::DeleteApi { name } => {
                 self.delete_api(&name).await;
             }
+            BackendCommand::RenameApi { from, to } => {
+                self.rename_api(&from, &to).await;
+            }
             BackendCommand::RequestShellSessions { team_id } => {
                 let sessions = crate::shell::shell_manager_global()
                     .map(|m| m.list(team_id.as_deref()))

@@ -1021,6 +1021,31 @@ impl Agent {
         true
     }
 
+    /// API profile 改名传播（2026-10）：把会话级覆盖表里引用 `from` 的条目
+    /// 重绑到 `to`——经 [`Self::set_session_provider`] 重建 provider（计量
+    /// 归属名在构建时烘焙，必须重建而非改字符串）。返回成功重绑的会话数；
+    /// 构建失败的条目直接移除（回落跟随 persona 级，避免悬空旧名）。
+    pub(crate) async fn rebind_session_providers(&self, from: &str, to: &str) -> usize {
+        let sids: Vec<String> = self
+            .session_providers
+            .iter()
+            .filter(|entry| entry.value().0 == from)
+            .map(|entry| entry.key().clone())
+            .collect();
+        let mut rebound = 0usize;
+        for sid in sids {
+            if self.set_session_provider(&sid, to).await {
+                rebound += 1;
+                tracing::info!(session = %sid, %from, %to, "session API override rebound after rename");
+            } else {
+                self.session_providers.remove(&sid);
+                self.session_provider_locks.remove(&sid);
+                tracing::warn!(session = %sid, %from, %to, "session API override dropped after rename (rebuild failed)");
+            }
+        }
+        rebound
+    }
+
     pub async fn active_provider(&self) -> String {
         self.provider.read().await.name().to_string()
     }
