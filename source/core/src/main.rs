@@ -14,6 +14,7 @@ use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod adapter_commands;
 mod agent_supervisor;
 mod config;
 mod federation_import;
@@ -1583,6 +1584,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     }
 
     // ---- Wire agents into QQ instances ----
+    // 命令域上下文（P1.9）：`/echo` `/help` `/status` `/shutdown`——插件实例
+    // 在入站 worker 里先过命令判定（消费的命令不进 agent）；builtin 实例
+    // 仍走 `echo_server` handler。
+    let command_ctx = Arc::new(crate::adapter_commands::CommandContext::new(
+        cfg.qq_adapter.command_prefix.clone(),
+        shutdown_tx.clone(),
+    ));
     // 每个实例把入站消息投给**归属人格**（不再是"默认人格"）；实例间互相隔离。
     // builtin 实例：单向 hook + 命令 handler（Echo / Help / Admin，进程内注册）。
     for (instance_id, persona_id, adapter) in &qq_builtin_instances {
@@ -1615,9 +1623,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         )));
         tracing::info!(instance = %instance_id, persona = %persona_id, "QQ instance wired to persona (builtin)");
     }
-    // plugin 实例：每实例一个串行 worker（入站队列 → AgentMessageHook）。
+    // plugin 实例：每实例一个串行 worker（入站队列 → 命令判定 → AgentMessageHook）。
     // 队列由 `adapter_host` 的反压回执语义保序（插件侧退避重试）；
-    // 命令 handler（Echo / Help / Admin）随 P1.9 迁移（当前仅 builtin 注册）。
+    // 命令域（`/echo` / `/help` / `/status` / `/shutdown`）在投递 agent 前
+    // 消费——回复经该实例的适配器句柄（`send_text`），与内置路径同语义。
     for (instance_id, persona_id, handle) in qq_plugin_workers {
         let target = match supervisor.get_exact(&persona_id) {
             Some(p) => p.agent,
@@ -1628,6 +1637,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         };
         let hook = Arc::new(echo_agent::AgentMessageHook::new(target));
         let worker_instance = instance_id.clone();
+        let worker_adapter = handle.adapter.clone() as Arc<dyn echo_adapter::Adapter>;
+        let worker_commands = command_ctx.clone();
         let mut inbound_rx = handle.inbound_rx;
         tokio::spawn(async move {
             // 入站送达接口来自 echo-adapter 的 hook trait（use 在闭包外无效，
@@ -1635,6 +1646,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             use echo_adapter::InboundMessageHook as _;
             while let Some(message) = inbound_rx.recv().await {
                 let incoming = echo_plugin_host::adapter::message_to_incoming(message);
+                // 命令域：已消费的命令不进 agent（回复在命令域内完成）。
+                if crate::adapter_commands::try_handle(&incoming, &worker_adapter, &worker_commands)
+                    .await
+                {
+                    continue;
+                }
                 if let Err(error) = hook.on_incoming_message(incoming).await {
                     tracing::warn!(
                         instance = %worker_instance,

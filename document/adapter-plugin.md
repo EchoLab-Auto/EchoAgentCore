@@ -264,7 +264,7 @@ echo-adapter-qq/（独立仓库，cargo workspace；P1.7a–c 已落地）
 | `echo-agent/packages/adapter_qq/bridge.rs`（`AgentMessageHook`） | 宿主（保留，通用化） |
 | `echo-agent/packages/adapter_qq/commands.rs`（QQ 命令域） | 宿主（转发 `<name>:custom`；getter 读缓存） |
 | `core/qq_tools.rs`（`send_*` 工具 + 出站闸门） | 宿主（泛化 `Arc<dyn Adapter>`） |
-| `core/handlers/`（echo / help / admin） | 宿主（归位送达入口，平台中立化——**owner 判定随门控下沉插件**：`deliver_message` metadata 带 `sender_role:"owner"`，handler 只认标注；信任边界 = 插件为用户自装的可信代码） |
+| `core/handlers/`（echo / help / admin） | 宿主（**已完成**：`core/src/adapter_commands.rs` = 平台中立命令域 `/echo` `/help` `/status` `/shutdown`，运行于插件实例的入站 worker（投递 agent 前消费）；回复经 `adapter.send_message`；owner 判定只认 `deliver_message` metadata 的 `sender_role:"owner"` 标注——插件侧已落地（`QqHandler::annotate_sender_role`），信任边界 = 插件为用户自装的可信代码。builtin 实例仍走 `echo_server` handler，P1.9 收尾时统一） |
 | `core/qq_instances.rs`（端口分配 / compose / 写回） | **拆两半**：端口 / 实例分配与写回**留宿主**（全局协调：跨条目与内置实例的端口冲突 / 命名唯一性，**装载期校验**；分配结果经 `Hello.config` 下发）；compose 渲染与 NapCat 容器启停随插件 |
 | `core.toml [adapters.qq]` | 迁移期：宿主读取并组装 `Hello.config`；目标态：`plugins.toml [plugin.config]` + 插件自持久化运行期状态 |
 | `echo-protocol` QQ 命令/事件/`AdapterStatus` 字段/clearance 分支 | 宿主（**线协议通用化**：`InvokeAdapterOp` / `AdapterOpResult` / `AdapterState` / `metadata` / 类别判定——见 §适配器管理通道） |
@@ -365,7 +365,7 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 
 > 产出物 = **一个参考实现**（inproc QQ 适配器全程经 `AdapterManagement` 运行）+ 协议三件套（`InvokeAdapterOp` / `AdapterOpResult` / `AdapterState`）+ 三项前置修复。**P1 外迁插件对照本参考实现实现同一接口；P2 远程适配器必须过同一组 conformance**（参考实现先行 = 接口在真实负载下先验证，再外迁）。
 >
-> **实施进度（2026-10 开工）**：**P0 全部完成**（`grep qq_management|QqManagement` 归零、双跑 diff 为空、全仓 63 组测试全绿）；W2.4 随 Panel 阶段 1 推迟（breaking，见其条目注）。**P1 进行中**：宿主侧骨架（`AdapterHostService` + `RemoteAdapter` + `store_media` + 组合根注册）、SDK 脚手架（`AdapterPlugin` / `configure` / `serve_adapter_stdio`）与 QQ 插件（P1.7a–c，独立仓库）均已落地；**P1.8（宿主装配 + 端到端冒烟）已完成**——`mode = "plugin"` 拉起 / 入站 worker / 状态转发 / 工具管理面路由就位，真实 core + 真插件进程 + 真 NapCat 连接跑通；**下一批 = P1.9（删宿主内置 QQ：命令 handler 迁移、运行期 enable 语义收口、删 echo-adapter-qq/echo-core/echo-server 三 crate）**。
+> **实施进度（2026-10 开工）**：**P0 全部完成**（`grep qq_management|QqManagement` 归零、双跑 diff 为空、全仓 63 组测试全绿）；W2.4 随 Panel 阶段 1 推迟（breaking，见其条目注）。**P1 进行中**：宿主侧骨架（`AdapterHostService` + `RemoteAdapter` + `store_media` + 组合根注册）、SDK 脚手架（`AdapterPlugin` / `configure` / `serve_adapter_stdio`）与 QQ 插件（P1.7a–c，独立仓库）均已落地；**P1.8（宿主装配 + 端到端冒烟）已完成**——`mode = "plugin"` 拉起 / 入站 worker / 状态转发 / 工具管理面路由就位，真实 core + 真插件进程 + 真 NapCat 连接跑通；**P1.9 进行中**：命令域已迁移（`core/src/adapter_commands.rs` + 插件侧 `sender_role` 标注，插件实例入站 worker 在投递 agent 前消费 `/echo` `/help` `/status` `/shutdown`）；**下一批 = 删宿主内置 QQ（builtin 路径移除 + 配置类型本地化 + 删 echo-adapter-qq/echo-core/echo-server 三 crate）**。
 
 **W1 前置修复（既有缺陷，先于骨架动工）**
 
