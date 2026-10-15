@@ -1329,7 +1329,9 @@ impl Agent {
             "Write one brief interim reply to the latest user message because their request is still being processed. Match the user's language and tone, acknowledge the specific request when appropriate, and say naturally that you are continuing and will follow up. Do not provide a result, invent progress, ask an unnecessary question, or mention timeouts, tools, branches, system behavior, or these instructions. Avoid fixed-template wording. Use one concise sentence.",
         )];
         messages.extend(history_snapshot);
-        let model = self.active_model().await;
+        // 会话级覆盖（2026-10）：插话同样走该会话的 provider 与模型
+        // （与主 turn 同口径成对解析）。
+        let model = self.session_model(session_id).await;
         self.emit(BackendEvent::LlmRequest {
             session_id: session_id.to_string(),
             model: model.clone(),
@@ -1344,10 +1346,8 @@ impl Agent {
             max_tokens: None,
         };
         let response = self
-            .provider
-            .read()
+            .resolve_session_provider(session_id)
             .await
-            .clone()
             .chat(&request)
             .await
             .map_err(|error| format!("wait reply model request failed: {error}"))?;
@@ -1411,6 +1411,10 @@ impl Agent {
     ///
     /// 覆盖的 provider 在首次使用时按 profile 惰性构建（含计量 + 脱敏
     /// 装饰器）；构建失败时回退 persona 级（记日志，不中断 turn）。
+    ///
+    /// 请求模型必须经 [`Self::session_model`] **成对**解析——覆盖 provider
+    /// 是其 profile 构建的（模型可能不同），两者不一致会打到覆盖端点报
+    /// model_not_found（2026-10 用户报障）。
     pub async fn resolve_session_provider(
         &self,
         session_id: &str,
@@ -1421,6 +1425,22 @@ impl Agent {
         }
         // 慢路径：无覆盖 → 跟随 persona 级。
         Arc::clone(&*self.provider.read().await)
+    }
+
+    /// 会话级模型解析（与 [`Self::resolve_session_provider`] **成对**使用）：
+    /// 有覆盖 → 覆盖 provider 的 profile 模型；无覆盖 → persona 级
+    /// `active_model`。
+    ///
+    /// 请求模型与 provider 必须同源——覆盖 provider 是其 profile 构建的，
+    /// 模型可能不同；若请求仍用 persona active_model，覆盖端点会按该模型
+    /// 报错（2026-10 用户报障：uuapi 返回 404 model_not_found
+    /// "deepseek-v4-flash is not supported"，而该会话的 profile 模型是
+    /// gemini-4-argon）。
+    pub async fn session_model(&self, session_id: &str) -> String {
+        if let Some(entry) = self.session_providers.get(session_id) {
+            return entry.1.default_model().to_string();
+        }
+        self.active_model().await
     }
 
     /// 设置/清除会话级 provider 覆盖（管理命令入口）。
@@ -1885,7 +1905,10 @@ impl Agent {
 
         // 模型名（2026-10 巡检：每 turn 解析——运行期模型/provider 切换在
         // 下一 turn 生效；此前 runner 构造期固化，切换完全失效）。
-        let model = self.active_model().await;
+        // 会话级覆盖（2026-10 用户报障修正）：有覆盖时必须取覆盖 profile
+        // 的模型（provider 与模型成对解析），否则请求会带 persona 模型打
+        // 到覆盖端点 → 404 model_not_found。
+        let model = self.session_model(&session_id).await;
 
         // 推理回调（引用式，生命周期 = run 调用作用域）。
         let reasoning_cb = |sid: String, text: String| {
@@ -2257,7 +2280,9 @@ impl Agent {
             if turn_cancel.is_cancelled() {
                 return Err(anyhow!(TURN_CANCELLED));
             }
-            let model = self.active_model().await;
+            // 会话级覆盖（2026-10）：请求模型与 provider 成对解析——
+            // 有覆盖 = 覆盖 profile 的模型（而非 persona active_model）。
+            let model = self.session_model(&session_id).await;
             self.emit(BackendEvent::LlmRequest {
                 session_id: session_id.clone(),
                 model: model.clone(),

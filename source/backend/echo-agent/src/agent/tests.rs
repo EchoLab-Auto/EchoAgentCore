@@ -1025,6 +1025,154 @@ async fn session_provider_prefers_shared_config_store_pool() {
     std::fs::remove_file(&path).ok();
 }
 
+/// 会话模型与覆盖 provider **成对**解析：覆盖生效时 `session_model` 返回
+/// 覆盖 profile 的模型（2026-10 用户报障回归——请求模型若仍取 persona
+/// active_model，覆盖端点会按该模型报 404 model_not_found）。
+#[tokio::test]
+async fn session_model_pairs_with_override_provider() {
+    let agent = test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "x".into(),
+    }));
+    {
+        let mut cfg = agent.config.write().await;
+        cfg.api_profiles.push(crate::config::ApiProfile::new(
+            "gemini",
+            "anthropic",
+            "gemini-4-argon",
+        ));
+        cfg.api_profiles[0].api_key = "sk-x".into();
+        cfg.api_profiles[0].base_url = "https://uuapi.io".into();
+    }
+    agent.set_model("deepseek-v4-flash".into()).await;
+    // 无覆盖 = persona 级 active_model。
+    assert_eq!(agent.session_model("sess-1").await, "deepseek-v4-flash");
+    // 有覆盖 = 覆盖 profile 的模型（与 resolve_session_provider 配对）。
+    assert!(agent.set_session_provider("sess-1", "gemini").await);
+    assert_eq!(agent.session_model("sess-1").await, "gemini-4-argon");
+    // 覆盖只作用于自身会话。
+    assert_eq!(agent.session_model("sess-2").await, "deepseek-v4-flash");
+    // 清除后回到 persona 级。
+    assert!(agent.set_session_provider("sess-1", "").await);
+    assert_eq!(agent.session_model("sess-1").await, "deepseek-v4-flash");
+}
+
+/// echo-loop turn 的请求模型与 provider 成对（会话覆盖 = profile 模型）：
+/// 2026-10 用户报障回归——此前请求模型取 persona active_model，打到覆盖
+/// 端点 404 model_not_found。LlmRequest 事件在模型调用前发出，断言不依赖
+/// 调用成功（覆盖端点指向空端口）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn echo_loop_turn_uses_session_override_model() {
+    let persona = Arc::new(ScriptedProvider::new(vec![]));
+    let agent = Arc::new(Agent::new(
+        persona.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    ));
+    {
+        let mut cfg = agent.config.write().await;
+        cfg.api_profiles.push(crate::config::ApiProfile::new(
+            "gemini",
+            "anthropic",
+            "gemini-4-argon",
+        ));
+        cfg.api_profiles[0].api_key = "sk-x".into();
+        // 空端口：连接必然失败（不依赖真实网络）；只断言请求模型。
+        cfg.api_profiles[0].base_url = "http://127.0.0.1:1".into();
+    }
+    agent.set_model("deepseek-v4-flash".into()).await;
+
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    {
+        let seen = seen.clone();
+        let sink: EventSink = Arc::new(move |event: BackendEvent| {
+            if let BackendEvent::LlmRequest { model, .. } = &event {
+                seen.lock().unwrap().push(model.clone());
+            }
+        });
+        agent.attach_event_sink(sink);
+    }
+
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    assert!(
+        agent.set_session_provider(&session.id, "gemini").await,
+        "覆盖 provider 应构建成功"
+    );
+
+    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+        Arc::new(echo_context::EventBus::default()),
+        persona.clone(),
+        Arc::new(echo_loop::ToolPipeline::new()),
+        echo_loop::LoopOptions::default(),
+    ));
+    agent.set_loop_runner(runner);
+    agent.set_use_echo_loop(true);
+
+    // turn 因覆盖端点连接失败而报错——LlmRequest 已在模型调用前发出。
+    let _ = agent.process_message(&session, "hi").await;
+
+    let models = seen.lock().unwrap().clone();
+    assert_eq!(
+        models.first().map(String::as_str),
+        Some("gemini-4-argon"),
+        "turn 请求模型必须与覆盖 provider 成对：{models:?}"
+    );
+}
+
+/// 内置循环路径同口径：请求模型与 provider 成对（会话覆盖 = profile 模型）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn builtin_loop_turn_uses_session_override_model() {
+    let persona = Arc::new(ScriptedProvider::new(vec![]));
+    let agent = Arc::new(Agent::new(
+        persona.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(AdapterRegistry::new()),
+    ));
+    {
+        let mut cfg = agent.config.write().await;
+        cfg.api_profiles.push(crate::config::ApiProfile::new(
+            "gemini",
+            "anthropic",
+            "gemini-4-argon",
+        ));
+        cfg.api_profiles[0].api_key = "sk-x".into();
+        cfg.api_profiles[0].base_url = "http://127.0.0.1:1".into();
+    }
+    agent.set_model("deepseek-v4-flash".into()).await;
+
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    {
+        let seen = seen.clone();
+        let sink: EventSink = Arc::new(move |event: BackendEvent| {
+            if let BackendEvent::LlmRequest { model, .. } = &event {
+                seen.lock().unwrap().push(model.clone());
+            }
+        });
+        agent.attach_event_sink(sink);
+    }
+
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    assert!(agent.set_session_provider(&session.id, "gemini").await);
+
+    // 默认（use_echo_loop = false）走内置循环；连接失败不影响事件断言。
+    let _ = agent.process_message(&session, "hi").await;
+
+    let models = seen.lock().unwrap().clone();
+    assert_eq!(
+        models.first().map(String::as_str),
+        Some("gemini-4-argon"),
+        "内置循环请求模型必须与覆盖 provider 成对：{models:?}"
+    );
+}
+
 #[tokio::test]
 async fn persist_config_keeps_on_disk_api_key() {
     let tmp = std::env::temp_dir().join(format!("echo-agent-cfg-{}.toml", uuid::Uuid::new_v4()));
