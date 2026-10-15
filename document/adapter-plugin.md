@@ -234,7 +234,7 @@ echo-adapter-qq/（独立仓库）
 | `echo-core`（OneBot 事件 / 段 / action，零 echo 依赖） | `Event`/`Segment`/`actions::*` 共 23 处 | **随插件迁出**（vendor 进插件仓库 `src/onebot/`）；宿主侧仅 `core/handlers/` 3 个 handler 引用，随 handler 平台中立化一并移除 |
 | `echo-server`（反向 WS 服务端，仅依赖 echo-core） | `Server`/`Handler`/`ConnectionTracker` 共 14 处 | **随插件迁出**（`src/transport/`）；宿主无其他使用者 |
 | `echo-adapter` | `filter::*`（门控 / 名单，957 行）、`ConfigStore`、`ensure_table`、`Adapter`/`AdapterManagement` trait、`IncomingMessage` | filter 与 ConfigStore **复制进插件**（宿主侧 `echo-agent` 仍用，不能删）；trait 换成 `AdapterPlugin`；`IncomingMessage` → `AdapterMessage` |
-| `echo-defs` | `MessageTarget`/`ChannelType`（15 处）、`media_store::*`（5 处） | 前者 → `AdapterTarget`/`AdapterChannel`；**`media_store` 改走 `adapter_host.store_media` HostCall**（宿主侧该方法尚未实现，列为 P1.7 前置） |
+| `echo-defs` | `MessageTarget`/`ChannelType`（15 处）、`media_store::*`（5 处） | 前者 → `AdapterTarget`/`AdapterChannel`；**`media_store` 改走 `adapter_host.store_media` HostCall**（宿主侧已实现：path / bytes_b64，32 MiB 上限，内容寻址去重） |
 | `echo-context` | `kernel::get_or_init`（缓存 reqwest Client，1 处） | 换 `OnceLock` |
 
 插件仓库最终只依赖 `echo-plugin-sdk`。宿主侧收尾（P1.9）：删除 `echo-adapter-qq`/`echo-core`/`echo-server` 三个 crate 与 `core/src/main.rs` 中的内置 QQ 装配（`QqAdapter::with_instance`、`set_message_hook`/`add_handler` 接线），`core/handlers/` 改为挂在 `AdapterHostService` 入站 worker 之后。迁出期以 `[adapters.qq] mode = "builtin" | "plugin"` 二选一，切换前两条路径并存。

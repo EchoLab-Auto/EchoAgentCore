@@ -616,6 +616,7 @@ name = "echo-plugin-host"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "echo-adapter",
  "echo-defs",
  "echo-plugin-api",

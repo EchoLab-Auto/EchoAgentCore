@@ -160,6 +160,15 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 /// 图片字节落盘，返回媒体 id（`<hash>.<ext>`）。内容相同则复用既有文件。
 pub fn save_image_bytes(bytes: &[u8], mime: &str) -> Result<String, String> {
+    save_image_bytes_in(&media_dir(), bytes, mime)
+}
+
+/// 同 [`save_image_bytes`]，落盘到指定媒体目录（宿主服务 / 测试注入用）。
+pub fn save_image_bytes_in(
+    dir: &std::path::Path,
+    bytes: &[u8],
+    mime: &str,
+) -> Result<String, String> {
     if bytes.is_empty() {
         return Err("empty image payload".into());
     }
@@ -170,7 +179,7 @@ pub fn save_image_bytes(bytes: &[u8], mime: &str) -> Result<String, String> {
         ));
     }
     let id = format!("{}.{}", content_id(bytes), ext_for_mime(mime));
-    let path = media_dir().join(&id);
+    let path = dir.join(&id);
     if !path.exists() {
         write_atomic(&path, bytes)?;
     }

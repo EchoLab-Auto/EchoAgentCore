@@ -349,15 +349,61 @@ pub struct AdapterHostService {
     adapters: Mutex<HashMap<String, Arc<RemoteAdapter>>>,
     /// 每实例入站队列（有界；worker 串行消费）。
     inbound_queues: Mutex<HashMap<String, tokio::sync::mpsc::Sender<AdapterMessage>>>,
+    /// `store_media` 落盘目录（缺省 = `media_store::media_dir()`）。
+    media_dir: std::path::PathBuf,
 }
 
+/// `store_media` 单次登记上限（与 `media_store` 落盘上限同量级；path 形态
+/// 读文件前先按元数据校验，避免把超大文件读进内存）。
+const MAX_STORE_MEDIA_BYTES: u64 = 32 * 1024 * 1024;
+
 impl AdapterHostService {
-    /// 空注册表。
+    /// 空注册表（媒体目录 = 宿主媒体库）。
     pub fn new() -> Self {
+        Self::with_media_dir(echo_defs::media_store::media_dir())
+    }
+
+    /// 空注册表，`store_media` 落盘到指定目录（测试 / 多数据根部署用）。
+    pub fn with_media_dir(media_dir: std::path::PathBuf) -> Self {
         Self {
             adapters: Mutex::new(HashMap::new()),
             inbound_queues: Mutex::new(HashMap::new()),
+            media_dir,
         }
+    }
+
+    /// `store_media`：`{path | bytes_b64, mime?}` → `{ref: "/media/<id>"}`。
+    ///
+    /// `path` 形态由宿主读取同机文件（插件为用户自装的可信代码，与宿主同
+    /// 用户运行——读取范围不超出插件自身权限）；`bytes_b64` 用于小载荷。
+    /// 两者同时给出时 `path` 优先。内容寻址：相同内容复用同一 id。
+    fn store_media(&self, payload: &Value) -> Result<Value, (String, String)> {
+        let invalid = |m: String| ("invalid_payload".to_string(), m);
+        let mime = payload["mime"].as_str().unwrap_or("application/octet-stream");
+        let bytes = if let Some(path) = payload["path"].as_str().filter(|p| !p.is_empty()) {
+            let meta = std::fs::metadata(path)
+                .map_err(|e| invalid(format!("store_media path {path}: {e}")))?;
+            if !meta.is_file() {
+                return Err(invalid(format!("store_media path {path}: not a regular file")));
+            }
+            if meta.len() > MAX_STORE_MEDIA_BYTES {
+                return Err((
+                    "too_large".to_string(),
+                    format!("store_media: {} bytes > {MAX_STORE_MEDIA_BYTES}", meta.len()),
+                ));
+            }
+            std::fs::read(path).map_err(|e| invalid(format!("store_media read {path}: {e}")))?
+        } else if let Some(b64) = payload["bytes_b64"].as_str() {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| invalid(format!("store_media bytes_b64: {e}")))?
+        } else {
+            return Err(invalid("store_media requires `path` or `bytes_b64`".to_string()));
+        };
+        let id = echo_defs::media_store::save_image_bytes_in(&self.media_dir, &bytes, mime)
+            .map_err(|e| ("store_failed".to_string(), e))?;
+        Ok(json!({"ref": echo_defs::media_store::media_ref(&id)}))
     }
 
     /// 注册一个远程适配器（宿主侧组合根在插件启动后调用）。
@@ -473,6 +519,7 @@ impl crate::host_service::HostService for AdapterHostService {
                 adapter.note_management_state(state);
                 Ok(json!({}))
             }
+            "store_media" => self.store_media(&payload),
             other => Err((
                 "method_not_found".to_string(),
                 format!("unknown adapter_host method: {other}"),
@@ -735,5 +782,40 @@ mod tests {
             .drain(std::time::Duration::from_secs(2))
             .await
             .expect("drain ok");
+    }
+
+    /// store_media：bytes_b64 / path 两种形态落盘、内容寻址去重、缺参与超限拒绝。
+    #[test]
+    fn adapter_host_store_media() {
+        use base64::Engine as _;
+        let dir = std::env::temp_dir().join(format!("echo-store-media-{}", std::process::id()));
+        let service = AdapterHostService::with_media_dir(dir.clone());
+
+        let png = [0x89u8, b'P', b'N', b'G', 1, 2, 3];
+        let b64 = base64::engine::general_purpose::STANDARD.encode(png);
+        let by_bytes = service
+            .call("store_media", json!({"bytes_b64": b64, "mime": "image/png"}))
+            .expect("bytes ok");
+        let reference = by_bytes["ref"].as_str().unwrap().to_string();
+        assert!(reference.starts_with("/media/") && reference.ends_with(".png"), "{reference}");
+        let id = echo_defs::media_store::id_of_ref(&reference).unwrap();
+        assert_eq!(std::fs::read(dir.join(id)).unwrap(), png);
+
+        // path 形态：同内容 → 同一引用。
+        let src = dir.join("src.bin");
+        std::fs::write(&src, png).unwrap();
+        let by_path = service
+            .call("store_media", json!({"path": src.to_str().unwrap(), "mime": "image/png"}))
+            .expect("path ok");
+        assert_eq!(by_path["ref"], json!(reference));
+
+        let err = service.call("store_media", json!({})).unwrap_err();
+        assert_eq!(err.0, "invalid_payload");
+        let err = service
+            .call("store_media", json!({"path": dir.join("missing").to_str().unwrap()}))
+            .unwrap_err();
+        assert_eq!(err.0, "invalid_payload");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
