@@ -208,10 +208,7 @@ impl TimelineProjector {
         timed_out: bool,
         elapsed_ms: Option<u64>,
     ) {
-        let mut timeline = match self.trunk.timeline_mut() {
-            Some(guard) => guard,
-            None => return,
-        };
+        let mut timeline = self.trunk.timeline_mut();
         let found = if tool_call_id.is_empty() {
             timeline.iter_mut().rev().find(|entry| {
                 entry.kind == "tool"
@@ -472,7 +469,7 @@ mod tests {
             content: "回复".into(),
             branch_id: None,
         });
-        let timeline = store.timeline_snapshot().unwrap_or_default();
+        let timeline = store.timeline_snapshot();
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[0].kind, "user");
         assert_eq!(timeline[0].content, "你好");
@@ -498,7 +495,7 @@ mod tests {
             },
             DispatchMode::Observe,
         );
-        let timeline = store.timeline_snapshot().unwrap_or_default();
+        let timeline = store.timeline_snapshot();
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].content, "通过总线");
     }

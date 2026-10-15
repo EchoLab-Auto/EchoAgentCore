@@ -126,13 +126,9 @@ impl Agent {
     /// 2026-10 用户报告修复：此前无条件发 `messages: Vec::new()`——面板把
     /// "空全量"当权威数据，会清掉**整个本地聊天缓存**（含未被清理的其他
     /// 会话），且本地游标被推进到最新、刷新也拉不回来（增量=空）。改为发
-    /// 清理后的真实剩余条目；快照因锁竞争降级时**跳过本轮**（绝不以空快照
-    /// 顶替），由面板的下一次请求/重连自然收敛。
+    /// 清理后的真实剩余条目（快照为同步短锁 clone，不存在降级为空的路径）。
     fn emit_timeline_after_clear(agent: &Agent, team_id: Option<String>) {
-        let Some(messages) = agent.trunk.timeline_snapshot() else {
-            tracing::warn!("clear history: timeline snapshot degraded; skip this sync round");
-            return;
-        };
+        let messages = agent.trunk.timeline_snapshot();
         let messages = crate::timeline::elide_reasoning_for_wire(messages);
         agent.emit(BackendEvent::TrunkTimeline {
             messages,
@@ -450,7 +446,10 @@ impl Agent {
                 });
                 self.emit_api_config().await;
             }
-            BackendCommand::ClearSessionApi { team_id: _, session_id } => {
+            BackendCommand::ClearSessionApi {
+                team_id: _,
+                session_id,
+            } => {
                 // 清除会话级覆盖（回到跟随 persona 级）。
                 // 同步清除工作区对话的持久化 api_profile。
                 if let Some(rest) = session_id.strip_prefix("local:workspace:") {
@@ -468,7 +467,9 @@ impl Agent {
                         .unwrap_or("main");
                     if let Some(store) = self.workspace_store() {
                         if let Some(mut ws) = store.get(ws_id) {
-                            if let Some(conv) = ws.conversations.iter_mut().find(|c| c.id == conv_id) {
+                            if let Some(conv) =
+                                ws.conversations.iter_mut().find(|c| c.id == conv_id)
+                            {
                                 conv.api_profile = None;
                                 let _ = store.upsert(ws);
                             }
@@ -854,9 +855,8 @@ impl Agent {
                 // since_seq > 0 时走增量快照；增量窗口不完整（None）回退全量。
                 // full 标志告知前端本次是替换还是追加/修补，前端不再凭 seq
                 // 大小猜测（全量误当增量会整段重复，空增量误当全量会清空聊天）。
-                // 快照降级语义（2026-10）：timeline 锁被周期保存短暂
-                // 持有时 timeline_snapshot 短重试后可能回 None——此时
-                // **跳过本次同步**（不发空全量清前端），下轮请求自然重试。
+                // 快照为同步短锁 clone（2026-10 评审：去掉 sleep 自旋与 None
+                // 降级）；Option 外形保留给将来可能的降级路径。
                 let snapshot_or_skip = |trunk: &crate::session::TrunkStore,
                                         since: u64|
                  -> Option<(
@@ -867,14 +867,10 @@ impl Agent {
                     if since > 0 {
                         match trunk.timeline_snapshot_since(since) {
                             Some((m, s)) => Some((m, s, false)),
-                            None => trunk
-                                .timeline_snapshot()
-                                .map(|m| (m, trunk.timeline_seq(), true)),
+                            None => Some((trunk.timeline_snapshot(), trunk.timeline_seq(), true)),
                         }
                     } else {
-                        trunk
-                            .timeline_snapshot()
-                            .map(|m| (m, trunk.timeline_seq(), true))
+                        Some((trunk.timeline_snapshot(), trunk.timeline_seq(), true))
                     }
                 };
                 let (messages, seq, full) = if let Some(ref id) = team_id {
