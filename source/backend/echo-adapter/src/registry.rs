@@ -6,8 +6,13 @@ use std::sync::Arc;
 use crate::traits::{Adapter, AdapterError, AdapterInfo};
 
 /// Manages the lifecycle of multiple adapters.
+/// Adapter registry.
+///
+/// 内部 `RwLock<HashMap>`（内部可变性）——`Arc<AdapterRegistry>` 共享下
+/// 注册 / 查询 / 删除安全进行（2026-10 适配器插件化：运行期远程适配器
+/// 注册需要 `Arc` 下可写）。
 pub struct AdapterRegistry {
-    adapters: HashMap<String, Arc<dyn Adapter>>,
+    adapters: std::sync::RwLock<HashMap<String, Arc<dyn Adapter>>>,
 }
 
 impl std::fmt::Debug for AdapterRegistry {
@@ -27,30 +32,50 @@ impl Default for AdapterRegistry {
 impl AdapterRegistry {
     pub fn new() -> Self {
         Self {
-            adapters: HashMap::new(),
+            adapters: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
     /// Register an adapter. Replaces any existing adapter with the same name.
-    pub fn register(&mut self, adapter: Arc<dyn Adapter>) {
-        self.adapters.insert(adapter.name().to_string(), adapter);
+    ///
+    /// 内部可变性（`RwLock`）：`Arc<AdapterRegistry>` 共享下经 `register` 追加
+    /// （2026-10 适配器插件化：运行期远程适配器注册需要 `Arc` 下可写）。
+    pub fn register(&self, adapter: Arc<dyn Adapter>) {
+        self.adapters
+            .write()
+            .expect("adapter registry lock poisoned")
+            .insert(adapter.name().to_string(), adapter);
     }
 
     /// Get an adapter by name.
-    pub fn get(&self, name: &str) -> Option<&Arc<dyn Adapter>> {
-        self.adapters.get(name)
+    ///
+    /// 按值克隆返回（`RwLock` 读守卫不能跨边界转 `&Arc`；`Arc` 克隆开销可忽略）。
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Adapter>> {
+        self.adapters
+            .read()
+            .expect("adapter registry lock poisoned")
+            .get(name)
+            .cloned()
     }
 
     /// List all registered adapters.
     pub fn list_info(&self) -> Vec<AdapterInfo> {
-        self.adapters.values().map(|a| a.status_info()).collect()
+        self.adapters
+            .read()
+            .expect("adapter registry lock poisoned")
+            .values()
+            .map(|a| a.status_info())
+            .collect()
     }
 
     /// List adapters that are configured (enabled in config).
-    pub fn configured(&self) -> Vec<&Arc<dyn Adapter>> {
+    pub fn configured(&self) -> Vec<Arc<dyn Adapter>> {
         self.adapters
+            .read()
+            .expect("adapter registry lock poisoned")
             .values()
             .filter(|a| a.is_configured())
+            .cloned()
             .collect()
     }
 
@@ -67,21 +92,39 @@ impl AdapterRegistry {
 
     /// Stop all running adapters.
     pub async fn stop_all(&self) {
-        for a in self.adapters.values() {
+        let adapters: Vec<_> = self
+            .adapters
+            .read()
+            .expect("adapter registry lock poisoned")
+            .values()
+            .cloned()
+            .collect();
+        for a in adapters {
             let _ = a.stop().await;
         }
     }
 
     pub fn names(&self) -> Vec<String> {
-        self.adapters.keys().cloned().collect()
+        self.adapters
+            .read()
+            .expect("adapter registry lock poisoned")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     pub fn len(&self) -> usize {
-        self.adapters.len()
+        self.adapters
+            .read()
+            .expect("adapter registry lock poisoned")
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.adapters.is_empty()
+        self.adapters
+            .read()
+            .expect("adapter registry lock poisoned")
+            .is_empty()
     }
 }
 
@@ -163,7 +206,7 @@ mod tests {
 
     #[tokio::test]
     async fn registry_register_and_get() {
-        let mut reg = AdapterRegistry::new();
+        let reg = AdapterRegistry::new();
         reg.register(Arc::new(MockAdapter::new("test", true)));
         assert!(reg.get("test").is_some());
         assert!(reg.get("nonexistent").is_none());
@@ -171,7 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn registry_start_configures_only() {
-        let mut reg = AdapterRegistry::new();
+        let reg = AdapterRegistry::new();
         reg.register(Arc::new(MockAdapter::new("enabled", true)));
         reg.register(Arc::new(MockAdapter::new("disabled", false)));
 
@@ -201,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn registry_list_info() {
-        let mut reg = AdapterRegistry::new();
+        let reg = AdapterRegistry::new();
         reg.register(Arc::new(MockAdapter::new("a", true)));
         reg.register(Arc::new(MockAdapter::new("b", false)));
 

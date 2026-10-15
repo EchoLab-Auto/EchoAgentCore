@@ -629,7 +629,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let _runner_keep = ctx.register::<Arc<echo_loop::TurnRunner>>("loop", runner.clone());
 
     // Adapter registry.
-    let mut adapter_registry = echo_adapter::AdapterRegistry::new();
+    let adapter_registry = echo_adapter::AdapterRegistry::new();
 
     // ---- QQ 实例（多实例；实例 = 适配器名 = 会话 account 维度）----
     // persona 门控：启用了 `echo-agent.adapter.qq` 的人格各自获得实例
@@ -801,6 +801,23 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         }
     })
     .await;
+    // P1（2026-10 适配器插件化）：把插���的适配器贡献注册进
+    // `AdapterRegistry`（与内置适配器同册——此刻 `adapters` 的 Arc 尚无
+    // 共享者（装配闭包在更晚处才 clone），经 `Arc::get_mut` 可变注册）。
+    let plugin_adapters: Vec<plugins_runtime::RemoteAdapterHandle> = plugin_runtime
+        .as_ref()
+        .map(|r| r.adapters())
+        .unwrap_or_default();
+    for handle in &plugin_adapters {
+        let name = handle.adapter.name.clone();
+        let platform = handle.adapter.platform().to_string();
+        adapters.register(handle.adapter.clone());
+        tracing::info!(
+            adapter = %name,
+            platform = %platform,
+            "plugin adapter registered"
+        );
+    }
     let plugin_tools: std::sync::Arc<Vec<std::sync::Arc<echo_plugin_host::RemoteTool>>> =
         std::sync::Arc::new(
             plugin_runtime

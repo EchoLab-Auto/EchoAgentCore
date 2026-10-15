@@ -15,6 +15,7 @@
 
 pub use echo_plugin_api as api;
 
+pub mod adapter;
 pub mod bootstrap;
 pub mod host_service;
 pub mod inproc;
@@ -30,3 +31,5 @@ pub use stdio::{StdioConnection, StdioTransport};
 pub use supervisor::{PluginHandle, PluginState, PluginSupervisor, RestartPolicy};
 pub use tool::RemoteTool;
 pub use transport::{PluginConnection, PluginSpec, Transport, TransportError};
+
+pub use adapter::{AdapterHostService, RemoteAdapter, RemoteAdapterManagement};

@@ -26,6 +26,7 @@ pub mod contribution;
 pub mod protocol;
 
 pub use contribution::{
+    AdapterCapabilities, AdapterChannel, AdapterContribution, AdapterMessage, AdapterTarget,
     Contribution, EventContribution, ServiceContribution, SkillContribution, ToolContribution,
 };
 pub use protocol::{
@@ -50,6 +51,9 @@ pub mod capabilities {
     pub const CANCEL: &str = "cancel";
     /// 插件支持宿主服务回呼（`HostCall` / `HostCallResult`；P2 新增）。
     pub const HOST_CALL: &str = "host_call";
+    /// 插件提供适配器贡献（`Contribution::Adapter`；W1.3 / P1，2026-10
+    /// 适配器插件化）。
+    pub const ADAPTER: &str = "adapter";
 }
 
 #[cfg(test)]

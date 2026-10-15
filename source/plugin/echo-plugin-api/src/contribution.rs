@@ -11,6 +11,11 @@ pub enum Contribution {
     Skill(SkillContribution),
     Service(ServiceContribution),
     Events(EventContribution),
+    /// 适配器贡献（P1，2026-10 适配器插件化）：平台适配器作为插件交付。
+    /// 宿主把 `RemoteAdapter`（`echo_adapter::Adapter` 的远程实现）注册进
+    /// `AdapterRegistry`；动作经 `Invoke("<name>:<op>")`，入站经
+    /// `HostCall` → 宿主服务 `adapter_host`（见 `document/adapter-plugin.md`）。
+    Adapter(AdapterContribution),
 }
 
 fn default_category() -> String {
@@ -64,4 +69,116 @@ pub struct ServiceContribution {
 pub struct EventContribution {
     #[serde(default)]
     pub subscribe: Vec<String>,
+}
+
+/// 适配器贡献（P1，2026-10 适配器插件化）：宿主把 `RemoteAdapter` 注册进
+/// `AdapterRegistry`；`capabilities` 声明该适配器支持的管理动作位（宿主
+/// 只调用声明过的方法，未声明的调用拒绝为 `unsupported`）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdapterContribution {
+    /// 实例名（= Invoke 前缀；全局唯一）。
+    pub name: String,
+    /// 平台标识（会话作用域 / 显示；如 `"qq"`）。
+    pub platform: String,
+    /// 展示名（如 `"QQ / OneBot"`）。
+    pub display_name: String,
+    /// 能力位（`AdapterCapabilities`；宿主 fail-closed 校验）。
+    #[serde(default)]
+    pub capabilities: AdapterCapabilities,
+    /// 插件配置 JSON Schema（校验 / 未来面板表单，可选）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_schema: Option<Value>,
+    /// UI 描述符（插件声明的适配器管理界面；Panel 经通用渲染器呈现；
+    /// 结构见 `document/adapter-plugin.md` §Panel UI 解耦，可选）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<Value>,
+    /// 会话标签（`SessionSwitcher` 等平台分组显示；如 `{"dm":"私聊","group":"群"}`，可选）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_labels: Option<Value>,
+}
+
+/// 适配器能力位（缺省全 false——宿主 fail-closed，未声明的调用拒绝）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdapterCapabilities {
+    /// 出站文本（`send_text`）。
+    #[serde(default)]
+    pub send_text: bool,
+    /// 出站媒体（`send_media`）。
+    #[serde(default)]
+    pub send_media: bool,
+    /// 群目录（`get_groups`）。
+    #[serde(default)]
+    pub groups: bool,
+    /// 好友目录（`get_friends`）。
+    #[serde(default)]
+    pub friends: bool,
+    /// 门控管理（`custom` 的 `*_gate_*` / `update_*list` / `set_owner` 等）。
+    #[serde(default)]
+    pub gating: bool,
+    /// 登录管理（`login_status` / `login_qrcode` 等）。
+    #[serde(default)]
+    pub login: bool,
+}
+
+// ── 词汇结构（与 echo-defs 词汇同构；保持本 crate 零 echo-* 依赖）─────────
+
+/// 适配器实例的目标（出站寻址）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdapterTarget {
+    /// 通道类型：`"dm"`（私聊）/ `{"type":"group","group_id":"…"}`（群聊）。
+    pub channel: AdapterChannel,
+    /// 目标用户 id（私聊回复 / @ 提及；字符串形态，平台号码语义归插件）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+}
+
+/// 通道类型（与 `echo_defs::chat::ChannelType` 同构）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AdapterChannel {
+    /// 私聊。
+    Dm,
+    /// 群聊。
+    Group {
+        /// 群 / 频道 id（字符串形态）。
+        group_id: String,
+    },
+}
+
+/// 入站消息（`deliver_message` 载荷；与 `echo_defs::chat::IncomingMessage`
+/// 同构）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdapterMessage {
+    /// 适配器实例名（= 归属维度）。
+    pub adapter: String,
+    /// 平台标识（如 `"qq"`）。
+    pub platform: String,
+    /// 发送者 id（字符串形态）。
+    pub user_id: String,
+    /// 发送者显示名。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_name: Option<String>,
+    /// 通道。
+    pub channel: AdapterChannel,
+    /// 群显示名（群聊场景）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_name: Option<String>,
+    /// 纯文本内容。
+    #[serde(default)]
+    pub content: String,
+    /// 平台时间戳（Unix 秒）。
+    #[serde(default)]
+    pub timestamp: i64,
+    /// 是否 @ 到本账号。
+    #[serde(default)]
+    pub at_me: bool,
+    /// 平台自有元数据（透传）。
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub metadata: Value,
+    /// 多模态媒体（图片 URL / `data:` URI / `/media/<id>` 引用）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+    /// 已落盘文件附件。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<Value>,
 }

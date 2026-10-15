@@ -194,6 +194,67 @@ fn invoke_context_defaults_and_omission() {
 }
 
 #[test]
+fn adapter_contribution_roundtrip_and_capabilities() {
+    // P1（适配器插件化）：AdapterContribution 线上形态（贡献 + 能力位 +
+    // 词汇结构）。
+    let adapter = Contribution::Adapter(AdapterContribution {
+        name: "qq".into(),
+        platform: "qq".into(),
+        display_name: "QQ / OneBot".into(),
+        capabilities: AdapterCapabilities {
+            send_text: true,
+            send_media: true,
+            groups: true,
+            friends: true,
+            gating: true,
+            login: true,
+        },
+        config_schema: None,
+        ui: Some(json!({"version": 1, "panels": []})),
+        session_labels: Some(json!({"dm": "私聊", "group": "群"})),
+    });
+    let text = serde_json::to_string(&adapter).unwrap();
+    let back: Contribution = serde_json::from_str(&text).unwrap();
+    assert_eq!(adapter, back);
+
+    // 缺省能力位全 false（fail-closed：宿主只调用声明过的方法）。
+    let caps: AdapterCapabilities =
+        serde_json::from_value(json!({})).expect("defaults");
+    assert!(!caps.send_text && !caps.gating && !caps.login);
+
+    // 词汇结构：通道与消息线格式。
+    let msg = AdapterMessage {
+        adapter: "qq".into(),
+        platform: "qq".into(),
+        user_id: "123".into(),
+        user_name: Some("Alice".into()),
+        channel: AdapterChannel::Group {
+            group_id: "456".into(),
+        },
+        group_name: Some("开发群".into()),
+        content: "hello".into(),
+        timestamp: 1733814154,
+        at_me: true,
+        metadata: json!({}),
+        images: vec!["/media/ab12".into()],
+        files: vec![],
+    };
+    let text = serde_json::to_string(&msg).unwrap();
+    let back: AdapterMessage = serde_json::from_str(&text).unwrap();
+    assert_eq!(msg, back);
+    // 私聊通道的最小形态（字段省略容忍）。
+    let minimal: AdapterMessage = serde_json::from_value(json!({
+        "adapter": "qq",
+        "platform": "qq",
+        "user_id": "123",
+        "channel": {"type": "dm"}
+    }))
+    .expect("minimal message tolerated");
+    assert_eq!(minimal.channel, AdapterChannel::Dm);
+    assert!(minimal.at_me == false && minimal.images.is_empty());
+}
+
+#[test]
 fn contribution_shapes() {
     let tool = Contribution::Tool(ToolContribution {
         name: "bash".into(),

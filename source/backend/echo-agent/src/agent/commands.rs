@@ -822,7 +822,7 @@ impl Agent {
                     let Some(adapter) = self.adapters.get(&name) else {
                         continue;
                     };
-                    self.emit_adapter_state_events(adapter, Some(name.clone()));
+                    self.emit_adapter_state_events(adapter.clone(), Some(name.clone()));
                 }
             }
             BackendCommand::RequestContext {

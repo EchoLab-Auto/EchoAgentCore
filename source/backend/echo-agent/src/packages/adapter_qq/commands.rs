@@ -24,14 +24,14 @@ impl Agent {
             return self
                 .adapters
                 .get(name)
-                .cloned()
+                
                 .ok_or_else(|| format!("QQ 实例 {name} 未找到"));
         }
         let qq: Vec<std::sync::Arc<dyn echo_adapter::traits::Adapter>> = self
             .adapters
             .names()
             .into_iter()
-            .filter_map(|n| self.adapters.get(&n).cloned())
+            .filter_map(|n| self.adapters.get(&n))
             .filter(|a| a.platform() == "qq")
             .collect();
         match qq.len() {
@@ -60,7 +60,7 @@ impl Agent {
                             "group_ids": group_ids,
                         });
                         if let Err(message) =
-                            invoke_adapter_method(&ad, "update_allowlist", payload.clone()).await
+                            invoke_adapter_method(ad.clone(), "update_allowlist", payload.clone()).await
                         {
                             self.emit(BackendEvent::Error {
                                 session_id: None,
@@ -71,7 +71,7 @@ impl Agent {
                         self.broadcast_adapter_op_to_others(ad.name(), "update_allowlist", payload)
                             .await;
                         // 状态下发单源化（W3.4）：AdapterState 单源派生。
-                        self.emit_adapter_state_events(&ad, adapter.clone());
+                        self.emit_adapter_state_events(ad.clone(), adapter.clone());
                         self.emit(BackendEvent::Error {
                             session_id: None,
                             message: "QQ 白名单已更新".into(),
@@ -96,7 +96,7 @@ impl Agent {
                             "group_ids": group_ids,
                         });
                         if let Err(message) =
-                            invoke_adapter_method(&ad, "update_denylist", payload.clone()).await
+                            invoke_adapter_method(ad.clone(), "update_denylist", payload.clone()).await
                         {
                             self.emit(BackendEvent::Error {
                                 session_id: None,
@@ -106,7 +106,7 @@ impl Agent {
                         }
                         self.broadcast_adapter_op_to_others(ad.name(), "update_denylist", payload)
                             .await;
-                        self.emit_adapter_state_events(&ad, adapter.clone());
+                        self.emit_adapter_state_events(ad.clone(), adapter.clone());
                         self.emit(BackendEvent::Error {
                             session_id: None,
                             message: "QQ 黑名单已更新".into(),
@@ -140,11 +140,11 @@ impl Agent {
                             self.broadcast_adapter_op_to_others(&adapter, &method, payload.clone())
                                 .await;
                         }
-                        self.invoke_adapter_op(&ad, &adapter, &method, payload)
+                        self.invoke_adapter_op(ad.clone(), &adapter, &method, payload)
                             .await;
                         // 写类方法完成后刷新状态（读类查询不重复下发）。
                         if SHARED_WRITE_METHODS.contains(&method.as_str()) {
-                            self.emit_adapter_state_events(&ad, Some(adapter.clone()));
+                            self.emit_adapter_state_events(ad.clone(), Some(adapter.clone()));
                         }
                     }
                     Err(message) => self.emit(BackendEvent::Error {
@@ -165,7 +165,7 @@ impl Agent {
                             echo_adapter::GateMode::None => "none",
                         };
                         if let Err(message) = invoke_adapter_method(
-                            &ad,
+                            ad.clone(),
                             "set_gate_mode",
                             serde_json::json!({"mode": mode_str}),
                         )
@@ -187,7 +187,7 @@ impl Agent {
                         )
                         .await;
                         // 状态下发单源化（W3.4）：AdapterState + 派生旧事件。
-                        self.emit_adapter_state_events(&ad, adapter.clone());
+                        self.emit_adapter_state_events(ad.clone(), adapter.clone());
                         let label = match mode {
                             echo_adapter::GateMode::Allowlist => "白名单模式",
                             echo_adapter::GateMode::Denylist => "黑名单模式",
@@ -210,7 +210,7 @@ impl Agent {
                     Ok(ad) => {
                         let payload = serde_json::json!({"owner_qq": owner_qq});
                         if let Err(message) =
-                            invoke_adapter_method(&ad, "set_owner", payload.clone()).await
+                            invoke_adapter_method(ad.clone(), "set_owner", payload.clone()).await
                         {
                             self.emit(BackendEvent::Error {
                                 session_id: None,
@@ -222,7 +222,7 @@ impl Agent {
                         // （管理员绕过读 gate，各实例行为必须一致）。
                         self.broadcast_adapter_op_to_others(ad.name(), "set_owner", payload)
                             .await;
-                        self.emit_adapter_state_events(&ad, adapter.clone());
+                        self.emit_adapter_state_events(ad.clone(), adapter.clone());
                         self.emit(BackendEvent::Error {
                             session_id: None,
                             message: if owner_qq > 0 {
@@ -264,7 +264,7 @@ impl Agent {
                     Ok(ad) => {
                         // 读路径（W3.4）：状态下发单源化——AdapterState +
                         // 派生旧事件（mode/filter/owner 由同一状态产出）。
-                        self.emit_adapter_state_events(&ad, adapter.clone());
+                        self.emit_adapter_state_events(ad.clone(), adapter.clone());
                     }
                     Err(message) => self.emit(BackendEvent::Error {
                         session_id: None,
@@ -275,7 +275,7 @@ impl Agent {
             BackendCommand::RequestGroupList { adapter } => {
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
-                        match invoke_adapter_method(&ad, "get_groups", serde_json::json!({})).await
+                        match invoke_adapter_method(ad.clone(), "get_groups", serde_json::json!({})).await
                         {
                             Ok(result) => {
                                 let groups = id_name_list(&result, "groups");
@@ -305,7 +305,7 @@ impl Agent {
             BackendCommand::RequestFriendList { adapter } => {
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
-                        match invoke_adapter_method(&ad, "get_friends", serde_json::json!({})).await
+                        match invoke_adapter_method(ad.clone(), "get_friends", serde_json::json!({})).await
                         {
                             Ok(result) => {
                                 let friends = id_name_list(&result, "friends");
@@ -356,7 +356,7 @@ impl Agent {
                     Ok(ad) => {
                         // Core 代理取二维码（适配器管理通道；管理面内置 base64 编码）。
                         let name = ad.name().to_string();
-                        match invoke_adapter_method(&ad, "login_qrcode", serde_json::json!({}))
+                        match invoke_adapter_method(ad.clone(), "login_qrcode", serde_json::json!({}))
                             .await
                         {
                             Ok(result) => {
@@ -392,7 +392,7 @@ impl Agent {
     /// （`AdapterOpResult` 成功 / `Error` 失败）。
     async fn invoke_adapter_op(
         &self,
-        ad: &std::sync::Arc<dyn echo_adapter::traits::Adapter>,
+        ad: std::sync::Arc<dyn echo_adapter::traits::Adapter>,
         adapter_name: &str,
         method: &str,
         payload: serde_json::Value,
@@ -417,7 +417,7 @@ impl Agent {
     /// 已给出错误反馈）。
     pub(crate) fn emit_adapter_state_events(
         &self,
-        ad: &std::sync::Arc<dyn echo_adapter::traits::Adapter>,
+        ad: std::sync::Arc<dyn echo_adapter::traits::Adapter>,
         adapter: Option<String>,
     ) {
         let Some(management) = ad.management() else {
@@ -497,7 +497,7 @@ impl Agent {
 /// 通道的通用入口；W3.3，2026-10）。适配器不存在 / 缺管理面 / 方法失败
 /// 均以可读错误返回。
 pub(crate) async fn invoke_adapter_method(
-    ad: &std::sync::Arc<dyn echo_adapter::traits::Adapter>,
+    ad: std::sync::Arc<dyn echo_adapter::traits::Adapter>,
     method: &str,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -720,7 +720,7 @@ mod tests {
 
     /// 组装一个挂两个实例（`qq-a` / `qq-b`）的 Agent，返回（agent, 事件缓冲）。
     fn agent_with_qq_instances() -> (Arc<Agent>, Arc<Mutex<Vec<BackendEvent>>>) {
-        let mut registry = AdapterRegistry::new();
+        let registry = AdapterRegistry::new();
         for name in ["qq-a", "qq-b"] {
             registry.register(Arc::new(MockQqAdapter::new(name)));
         }

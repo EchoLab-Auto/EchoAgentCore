@@ -101,6 +101,26 @@ impl StartedPlugins {
         self.handles.iter().flat_map(|h| h.remote_tools()).collect()
     }
 
+    /// 汇总全部句柄的适配器贡献（每个插件的 `Contribution::Adapter` 一个
+    /// [`crate::adapter::RemoteAdapter`]；未注册适配器贡献的插件贡献空表；
+    /// P1，2026-10 适配器插件化）。
+    pub fn adapters(&self) -> Vec<(crate::api::AdapterContribution, PluginHandle)> {
+        self.handles
+            .iter()
+            .flat_map(|h| {
+                h.contributions()
+                    .into_iter()
+                    .filter_map(|c| match c {
+                        crate::api::Contribution::Adapter(adapter) => {
+                            Some((adapter, h.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     /// 逐个排空（`drain(deadline)`）；单点错误只记 debug 日志，不影响其余。
     pub async fn shutdown(&self, deadline: Duration) {
         for handle in &self.handles {

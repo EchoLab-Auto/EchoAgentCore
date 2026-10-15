@@ -224,7 +224,7 @@ mod tests {
     use echo_test_utils::MockAdapter;
 
     fn registry_with(name: &str) -> Arc<AdapterRegistry> {
-        let mut reg = AdapterRegistry::new();
+        let reg = AdapterRegistry::new();
         reg.register(Arc::new(MockAdapter::new(name, true)));
         Arc::new(reg)
     }
@@ -263,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_all_starts_every_adapter() {
-        let mut reg = AdapterRegistry::new();
+        let reg = AdapterRegistry::new();
         reg.register(Arc::new(MockAdapter::new("qq", true)));
         reg.register(Arc::new(MockAdapter::new("tg", true)));
         let reg = Arc::new(reg);
