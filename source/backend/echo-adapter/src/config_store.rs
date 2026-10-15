@@ -68,7 +68,11 @@ impl ConfigStore {
         &self,
         f: impl FnOnce(&mut toml::Table) -> Result<(), String>,
     ) -> Result<(), ConfigStoreError> {
-        let _guard = self.inner.write_lock.lock().expect("config store poisoned");
+        let _guard = self
+            .inner
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut root = match self.read() {
             Ok(r) => r,
             Err(ConfigStoreError::Read(_)) => toml::Table::new(),

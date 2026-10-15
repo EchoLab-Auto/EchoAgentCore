@@ -105,14 +105,20 @@ impl EventBus {
             _marker: std::marker::PhantomData,
         });
         let registered = Arc::clone(&listener);
-        let mut guard = self.listeners.write().expect("event bus poisoned");
+        let mut guard = self
+            .listeners
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let listeners = guard.entry(key).or_default();
         listeners.push(listener);
         drop(guard);
 
         let bus = self.clone();
         Disposer::from_fn(move || {
-            let mut guard = bus.listeners.write().expect("event bus poisoned");
+            let mut guard = bus
+                .listeners
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(listeners) = guard.get_mut(&key) {
                 // 按**指针相等**删除（2026-10 修复）：此前按注册时 index——
                 // 先 dispose 前项会让后续项 index 位移，导致后项删不掉
@@ -217,7 +223,10 @@ impl EventBus {
     }
 
     fn listeners_for<E: Event>(&self) -> Vec<Arc<dyn ErasedListener>> {
-        let guard = self.listeners.read().expect("event bus poisoned");
+        let guard = self
+            .listeners
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.get(&TypeId::of::<E>()).cloned().unwrap_or_default()
     }
 }

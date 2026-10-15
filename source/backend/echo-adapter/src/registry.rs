@@ -43,7 +43,7 @@ impl AdapterRegistry {
     pub fn register(&self, adapter: Arc<dyn Adapter>) {
         self.adapters
             .write()
-            .expect("adapter registry lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(adapter.name().to_string(), adapter);
     }
 
@@ -53,7 +53,7 @@ impl AdapterRegistry {
     pub fn get(&self, name: &str) -> Option<Arc<dyn Adapter>> {
         self.adapters
             .read()
-            .expect("adapter registry lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(name)
             .cloned()
     }
@@ -62,7 +62,7 @@ impl AdapterRegistry {
     pub fn list_info(&self) -> Vec<AdapterInfo> {
         self.adapters
             .read()
-            .expect("adapter registry lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .map(|a| a.status_info())
             .collect()
@@ -72,7 +72,7 @@ impl AdapterRegistry {
     pub fn configured(&self) -> Vec<Arc<dyn Adapter>> {
         self.adapters
             .read()
-            .expect("adapter registry lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .filter(|a| a.is_configured())
             .cloned()
@@ -95,7 +95,7 @@ impl AdapterRegistry {
         let adapters: Vec<_> = self
             .adapters
             .read()
-            .expect("adapter registry lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .cloned()
             .collect();
@@ -107,7 +107,7 @@ impl AdapterRegistry {
     pub fn names(&self) -> Vec<String> {
         self.adapters
             .read()
-            .expect("adapter registry lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .keys()
             .cloned()
             .collect()
@@ -116,14 +116,14 @@ impl AdapterRegistry {
     pub fn len(&self) -> usize {
         self.adapters
             .read()
-            .expect("adapter registry lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.adapters
             .read()
-            .expect("adapter registry lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_empty()
     }
 }

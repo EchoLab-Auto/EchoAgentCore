@@ -152,7 +152,7 @@ impl ShellSession {
 
 #[derive(Default)]
 pub struct ShellManager {
-    sessions: std::sync::Mutex<HashMap<String, Arc<ShellSession>>>,
+    sessions: parking_lot::Mutex<HashMap<String, Arc<ShellSession>>>,
     next_id: std::sync::atomic::AtomicU64,
 }
 
@@ -164,7 +164,7 @@ impl ShellManager {
     /// 列出会话；`team_id` 为 Some 时只返回该 persona 的会话
     /// （None = 全部，兼容进程级旧路径）。
     pub fn list(&self, team_id: Option<&str>) -> Vec<ShellSessionInfo> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock();
         let mut list: Vec<ShellSessionInfo> = sessions
             .values()
             .filter(|s| team_id.is_none() || s.team_id.as_deref() == team_id)
@@ -197,7 +197,7 @@ impl ShellManager {
                 .to_string()
         });
         {
-            let sessions = self.sessions.lock().unwrap();
+            let sessions = self.sessions.lock();
             if sessions.len() >= MAX_SHELL_SESSIONS {
                 return Err(format!(
                     "shell session limit reached ({MAX_SHELL_SESSIONS}); stop one first"
@@ -249,7 +249,6 @@ impl ShellManager {
         });
         self.sessions
             .lock()
-            .unwrap()
             .insert(session_id.clone(), Arc::clone(&session));
         emit(ShellEvent::Started(session.info()));
         Ok(session.info())
@@ -260,7 +259,6 @@ impl ShellManager {
         let session = self
             .sessions
             .lock()
-            .unwrap()
             .remove(session_id)
             .ok_or_else(|| format!("shell session not found: {session_id}"))?;
         kill_process_group(session.pgid);
@@ -280,7 +278,7 @@ impl ShellManager {
 
     /// 销毁会话（进程意外退出等内部原因）。
     fn close_internal(&self, session_id: &str, reason: &str, emit: &ShellEmit) {
-        if let Some(s) = self.sessions.lock().unwrap().remove(session_id) {
+        if let Some(s) = self.sessions.lock().remove(session_id) {
             // 整组清理：bash 可能已退出，残余后台子孙同样要收掉。
             // 不阻塞（close_internal 可能来自同步上下文）。
             kill_process_group(s.pgid);
@@ -297,11 +295,7 @@ impl ShellManager {
 
     /// 会话信息（归属校验/面板展示用；不存在 → None）。
     pub fn session_info(&self, session_id: &str) -> Option<ShellSessionInfo> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .map(|s| s.info())
+        self.sessions.lock().get(session_id).map(|s| s.info())
     }
 
     /// 会话归属校验（2026-10 修复）：LLM 工具路径要求请求者与被操作
@@ -316,7 +310,7 @@ impl ShellManager {
         session_id: &str,
         requester_team: Option<&str>,
     ) -> Result<(), String> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self.sessions.lock();
         let Some(session) = sessions.get(session_id) else {
             return Ok(()); // 不存在：交给后续操作报"找不到"（错误信息更准确）
         };
@@ -343,7 +337,6 @@ impl ShellManager {
         let session = self
             .sessions
             .lock()
-            .unwrap()
             .get(session_id)
             .cloned()
             .ok_or_else(|| format!("shell session not found: {session_id}"))?;

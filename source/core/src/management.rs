@@ -408,8 +408,12 @@ async fn accept_merged_ws(
                 federation.has_peer_token_sync(t)
             }) {
                 Some(role) => {
-                    *role_out2.lock().unwrap() = Some(role);
-                    *token_out2.lock().unwrap() = presented.to_string();
+                    *role_out2
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(role);
+                    *token_out2
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = presented.to_string();
                     Ok(response)
                 }
                 None => Err(unauthorized_response()),
@@ -419,9 +423,12 @@ async fn accept_merged_ws(
     .await?;
     let role = role_out
         .lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .expect("merged classifier sets role before upgrade succeeds");
-    let presented = token_out.lock().unwrap().clone();
+    let presented = token_out
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     Ok((ws, role, presented))
 }
 

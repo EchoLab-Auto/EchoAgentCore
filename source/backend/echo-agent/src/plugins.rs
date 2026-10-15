@@ -138,7 +138,7 @@ impl PluginSkillSink for SkillSink {
 pub struct PluginHost {
     pub registry: PluginRegistry,
     /// Mount context provided to every plugin at mount time.
-    mount_ctx: std::sync::Mutex<Option<MountContext>>,
+    mount_ctx: parking_lot::Mutex<Option<MountContext>>,
 }
 
 impl Default for PluginHost {
@@ -151,18 +151,18 @@ impl PluginHost {
     pub fn new() -> Self {
         Self {
             registry: PluginRegistry::new(),
-            mount_ctx: std::sync::Mutex::new(None),
+            mount_ctx: parking_lot::Mutex::new(None),
         }
     }
 
     /// Attach the mount context (tools/skills/services). Call once at boot
     /// before mounting anything.
     pub fn set_mount_ctx(&self, ctx: MountContext) {
-        *self.mount_ctx.lock().unwrap() = Some(ctx);
+        *self.mount_ctx.lock() = Some(ctx);
     }
 
     fn ctx(&self) -> MountContext {
-        self.mount_ctx.lock().unwrap().clone().unwrap_or_default()
+        self.mount_ctx.lock().clone().unwrap_or_default()
     }
 
     /// Register a plugin and mount it (composition root).

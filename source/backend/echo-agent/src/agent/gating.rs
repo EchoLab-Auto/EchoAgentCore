@@ -23,7 +23,10 @@ impl Agent {
     /// persona 的工具/技能注册表（不再驱动共享 registry 的
     /// mount/unmount，避免"单人格改动扩散到全员"）。
     pub async fn apply_capabilities(&self, profile: &crate::config::AgentProfile) {
-        *self.capabilities.lock().unwrap() = Some(profile.clone());
+        *self
+            .capabilities
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(profile.clone());
 
         // 全局禁用列表：优先管理面（默认 agent）的实时配置——ToggleTool /
         // ToggleSkill 只更新管理面配置，其余 persona 的启动快照会过期。
@@ -322,7 +325,10 @@ impl Agent {
             let attached = self.subagent.read().map(|g| g.is_some()).unwrap_or(false);
             return attached && self.persona_allows_plugin(crate::plugins::SUBAGENT_PLUGIN_ID);
         }
-        let guard = self.capabilities.lock().unwrap();
+        let guard = self
+            .capabilities
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(cap) = guard.as_ref() else {
             return true;
         };

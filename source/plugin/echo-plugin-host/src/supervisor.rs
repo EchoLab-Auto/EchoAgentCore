@@ -410,17 +410,23 @@ impl Shared {
     }
 
     fn state(&self) -> PluginState {
-        self.state.lock().expect("state lock poisoned").clone()
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn set_state(&self, state: PluginState) {
-        *self.state.lock().expect("state lock poisoned") = state;
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = state;
     }
 
     fn contributions(&self) -> Vec<Contribution> {
         self.contributions
             .lock()
-            .expect("contributions lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -429,11 +435,14 @@ impl Shared {
         *self
             .contributions
             .lock()
-            .expect("contributions lock poisoned") = list;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = list;
     }
 
     fn push_event(&self, event: String, payload: Value) {
-        let mut events = self.events.lock().expect("events lock poisoned");
+        let mut events = self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if events.len() >= MAX_PENDING_EVENTS {
             let dropped = self.dropped_events.fetch_add(1, Ordering::Relaxed) + 1;
             // 首次与每满 1024 次告警一次（防刷屏）；计数不受日志节流影响。
@@ -450,28 +459,39 @@ impl Shared {
     }
 
     fn take_events(&self) -> Vec<(String, Value)> {
-        std::mem::take(&mut *self.events.lock().expect("events lock poisoned"))
+        std::mem::take(
+            &mut *self
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     fn current_conn(&self) -> Option<Arc<dyn PluginConnection>> {
-        self.conn.lock().expect("conn lock poisoned").clone()
+        self.conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn set_conn(&self, conn: Option<Arc<dyn PluginConnection>>) {
-        *self.conn.lock().expect("conn lock poisoned") = conn;
+        *self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = conn;
     }
 
     fn insert_pending(&self, call_id: String, call: PendingCall) {
         self.pending
             .lock()
-            .expect("pending lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(call_id, call);
     }
 
     fn remove_pending(&self, call_id: &str) -> Option<PendingCall> {
         self.pending
             .lock()
-            .expect("pending lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(call_id)
     }
 
@@ -480,7 +500,7 @@ impl Shared {
         let drained: Vec<(String, PendingCall)> = self
             .pending
             .lock()
-            .expect("pending lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain()
             .collect();
         for (call_id, call) in drained {
@@ -567,7 +587,7 @@ impl Shared {
         let marked = match self
             .pending
             .lock()
-            .expect("pending lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_mut(call_id)
         {
             Some(call) => {

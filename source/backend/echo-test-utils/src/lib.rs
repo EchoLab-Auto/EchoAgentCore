@@ -136,7 +136,7 @@ mod adapter {
         ) {
             self.subscribers
                 .lock()
-                .expect("subscribers poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(tx);
         }
         async fn send_message(

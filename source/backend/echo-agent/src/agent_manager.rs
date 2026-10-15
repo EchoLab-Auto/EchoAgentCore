@@ -34,12 +34,12 @@ impl std::fmt::Debug for RunningAgent {
 pub struct AgentManager {
     default_id: String,
     /// All team member definitions (including disabled ones), for rebuild.
-    teams: std::sync::RwLock<HashMap<String, TeamMember>>,
+    teams: parking_lot::RwLock<HashMap<String, TeamMember>>,
     /// Running instances (disabled ones are absent).
-    agents: std::sync::RwLock<HashMap<String, RunningAgent>>,
-    disabled: std::sync::Mutex<Vec<String>>,
+    agents: parking_lot::RwLock<HashMap<String, RunningAgent>>,
+    disabled: parking_lot::Mutex<Vec<String>>,
     /// Persistence hook: writes the profiles map back to TOML (or any store).
-    config_writer: std::sync::Mutex<Option<ConfigWriter>>,
+    config_writer: parking_lot::Mutex<Option<ConfigWriter>>,
 }
 
 /// Closure that persists the profiles map (composition root injects the
@@ -77,10 +77,10 @@ impl AgentManager {
         // （无默认兜底、命令须显式 team_id）相悖。现在空配置就是没有智能体，
         // 由 Panel「设置 → 智能体 → 新建智能体」（或手写 `[agent.teams.<id>]`）
         // 按需创建。
-        let teams = std::sync::RwLock::new(profiles);
+        let teams = parking_lot::RwLock::new(profiles);
         let disabled: Vec<String> = raw.disabled_teams.clone();
         let mut agents = HashMap::new();
-        for (id, profile) in teams.read().unwrap().iter() {
+        for (id, profile) in teams.read().iter() {
             if !profile.enabled || disabled.contains(id) {
                 continue;
             }
@@ -102,9 +102,9 @@ impl AgentManager {
         Self {
             default_id,
             teams,
-            agents: std::sync::RwLock::new(agents),
-            disabled: std::sync::Mutex::new(disabled),
-            config_writer: std::sync::Mutex::new(None),
+            agents: parking_lot::RwLock::new(agents),
+            disabled: parking_lot::Mutex::new(disabled),
+            config_writer: parking_lot::Mutex::new(None),
         }
     }
 
@@ -113,20 +113,20 @@ impl AgentManager {
     }
 
     pub fn agent_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.agents.read().unwrap().keys().cloned().collect();
+        let mut ids: Vec<String> = self.agents.read().keys().cloned().collect();
         ids.sort();
         ids
     }
 
     /// All known profile ids (running + disabled).
     pub fn team_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.teams.read().unwrap().keys().cloned().collect();
+        let mut ids: Vec<String> = self.teams.read().keys().cloned().collect();
         ids.sort();
         ids
     }
 
     pub fn team(&self, id: &str) -> Option<TeamMember> {
-        self.teams.read().unwrap().get(id).cloned()
+        self.teams.read().get(id).cloned()
     }
 
     /// Resolve the target agent for a command.
@@ -135,19 +135,15 @@ impl AgentManager {
     /// 由调用方给出明确错误；未知 id 同样返回 `None`（不再静默兜底）。
     pub fn resolve(&self, agent_id: Option<&str>) -> Option<Arc<Agent>> {
         let id = agent_id?;
-        self.agents
-            .read()
-            .unwrap()
-            .get(id)
-            .map(|r| Arc::clone(&r.agent))
+        self.agents.read().get(id).map(|r| Arc::clone(&r.agent))
     }
 
     pub fn get(&self, id: &str) -> Option<RunningAgent> {
-        self.agents.read().unwrap().get(id).cloned()
+        self.agents.read().get(id).cloned()
     }
 
     pub fn all(&self) -> Vec<RunningAgent> {
-        let mut list: Vec<RunningAgent> = self.agents.read().unwrap().values().cloned().collect();
+        let mut list: Vec<RunningAgent> = self.agents.read().values().cloned().collect();
         list.sort_by(|a, b| a.id.cmp(&b.id));
         list
     }
@@ -160,14 +156,14 @@ impl AgentManager {
         enabled: bool,
         factory: impl Fn(String, TeamMember) -> Arc<Agent>,
     ) -> Result<(), String> {
-        if !self.teams.read().unwrap().contains_key(id) {
+        if !self.teams.read().contains_key(id) {
             return Err(format!("agent not found: {id}"));
         }
-        let mut agents = self.agents.write().unwrap();
-        let mut disabled = self.disabled.lock().unwrap();
+        let mut agents = self.agents.write();
+        let mut disabled = self.disabled.lock();
         if enabled {
             if !agents.contains_key(id) {
-                let profile = self.teams.read().unwrap().get(id).cloned().unwrap();
+                let profile = self.teams.read().get(id).cloned().unwrap();
                 agents.insert(
                     id.to_string(),
                     RunningAgent {
@@ -187,7 +183,7 @@ impl AgentManager {
         // Keep the profile's persisted flag in lockstep with the runtime
         // registry. Otherwise a ToggleTeam(false) would appear disabled only
         // until the next rebuild, then restart as enabled.
-        if let Some(profile) = self.teams.write().unwrap().get_mut(id) {
+        if let Some(profile) = self.teams.write().get_mut(id) {
             profile.enabled = enabled;
         }
         drop(disabled);
@@ -197,7 +193,7 @@ impl AgentManager {
 
     /// Inject the persistence hook (writes profiles to TOML).
     pub fn set_config_writer(&self, writer: ConfigWriter) {
-        *self.config_writer.lock().unwrap() = Some(writer);
+        *self.config_writer.lock() = Some(writer);
     }
 
     /// Create or update a profile. When enabled and not running, instantiates
@@ -206,7 +202,7 @@ impl AgentManager {
         let mut profile = profile;
         // 合并语义：传入 profile 的 per-agent 预算为 None 且旧 profile 已有值时
         // 保留旧值，避免前端（未编辑该字段）保存时擦除手工写入 TOML 的预算。
-        if let Some(old) = self.teams.read().unwrap().get(id) {
+        if let Some(old) = self.teams.read().get(id) {
             if profile.memory_limit_tokens.is_none() {
                 profile.memory_limit_tokens = old.memory_limit_tokens;
             }
@@ -214,22 +210,19 @@ impl AgentManager {
                 profile.context_window_tokens = old.context_window_tokens;
             }
         }
-        self.teams
-            .write()
-            .unwrap()
-            .insert(id.to_string(), profile.clone());
+        self.teams.write().insert(id.to_string(), profile.clone());
         {
-            let mut disabled = self.disabled.lock().unwrap();
+            let mut disabled = self.disabled.lock();
             if enabled {
                 disabled.retain(|d| d != id);
             } else if !disabled.contains(&id.to_string()) {
                 disabled.push(id.to_string());
             }
         }
-        let running = self.agents.read().unwrap().contains_key(id);
+        let running = self.agents.read().contains_key(id);
         if enabled && !running {
             let agent = agent_factory_for_toggle().call(id.to_string(), profile.clone());
-            self.agents.write().unwrap().insert(
+            self.agents.write().insert(
                 id.to_string(),
                 RunningAgent {
                     id: id.to_string(),
@@ -238,13 +231,13 @@ impl AgentManager {
                 },
             );
         } else if !enabled && running {
-            self.agents.write().unwrap().remove(id);
+            self.agents.write().remove(id);
         } else if enabled && running {
             // 运行中保存：同步 RunningAgent.profile（2026-10 修复）。
             // SaveTeam 已把新能力应用到运行中 agent，但这里此前不同步——
             // 后续 ToggleTeam(id, true)（already running 分支跳过重建）
             // 会用**旧 profile** 重应用能力，把新能力回滚掉（profile 漂移）。
-            if let Some(entry) = self.agents.write().unwrap().get_mut(id) {
+            if let Some(entry) = self.agents.write().get_mut(id) {
                 entry.profile = profile;
             }
         }
@@ -258,7 +251,7 @@ impl AgentManager {
     /// **至少保留一个智能体**（否则前端/路由将无目标可选）。
     pub fn delete_profile(&self, id: &str) -> Result<(), String> {
         {
-            let teams = self.teams.read().unwrap();
+            let teams = self.teams.read();
             if teams.len() <= 1 {
                 return Err("至少保留一个智能体".into());
             }
@@ -266,9 +259,9 @@ impl AgentManager {
                 return Err(format!("智能体 {id} 不存在"));
             }
         }
-        self.teams.write().unwrap().remove(id);
-        self.agents.write().unwrap().remove(id);
-        let mut disabled = self.disabled.lock().unwrap();
+        self.teams.write().remove(id);
+        self.agents.write().remove(id);
+        let mut disabled = self.disabled.lock();
         disabled.retain(|d| d != id);
         drop(disabled);
         self.persist_profiles()?;
@@ -276,11 +269,11 @@ impl AgentManager {
     }
 
     fn persist_profiles(&self) -> Result<(), String> {
-        let writer = self.config_writer.lock().unwrap();
+        let writer = self.config_writer.lock();
         match writer.as_ref() {
             Some(w) => {
                 let map: std::collections::BTreeMap<String, TeamMember> =
-                    self.teams.read().unwrap().clone().into_iter().collect();
+                    self.teams.read().clone().into_iter().collect();
                 w(&map)
             }
             None => Ok(()),
@@ -289,7 +282,7 @@ impl AgentManager {
 
     /// Persisted disable list (runtime toggles, survives restarts).
     pub fn disabled_list(&self) -> Vec<String> {
-        let mut v = self.disabled.lock().unwrap().clone();
+        let mut v = self.disabled.lock().clone();
         v.sort();
         v
     }
@@ -297,8 +290,8 @@ impl AgentManager {
     /// Snapshot for the Panel (AgentsList event) — all known profiles with
     /// running state and session counts.
     pub fn infos(&self) -> Vec<TeamInfo> {
-        let agents = self.agents.read().unwrap();
-        let teams = self.teams.read().unwrap();
+        let agents = self.agents.read();
+        let teams = self.teams.read();
         let mut list: Vec<TeamInfo> = teams
             .iter()
             .map(|(id, p)| TeamInfo {

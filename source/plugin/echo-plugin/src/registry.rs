@@ -78,7 +78,10 @@ impl PluginRegistry {
     /// mount it yet.
     pub fn register(&self, plugin: Arc<dyn Plugin>) -> Result<(), String> {
         let id = plugin.manifest().id.clone();
-        let mut plugins = self.plugins.lock().unwrap();
+        let mut plugins = self
+            .plugins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if plugins.contains_key(&id) {
             return Err(format!("plugin id already registered: {id}"));
         }
@@ -88,18 +91,28 @@ impl PluginRegistry {
 
     /// Remove a registered (and unmounted) plugin by id.
     pub fn unregister(&self, id: &str) -> bool {
-        let active = self.active.lock().unwrap();
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if active.contains_key(id) {
             return false; // must be unmounted first
         }
         drop(active);
-        self.plugins.lock().unwrap().remove(id).is_some()
+        self.plugins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id)
+            .is_some()
     }
 
     /// Activate a plugin: run its mount hooks and retain disposers.
     pub fn mount(&self, id: &str, ctx: &MountContext) -> PluginMountResult {
         let plugin = {
-            let plugins = self.plugins.lock().unwrap();
+            let plugins = self
+                .plugins
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             match plugins.get(id) {
                 Some(p) => Arc::clone(p),
                 None => {
@@ -110,14 +123,20 @@ impl PluginRegistry {
             }
         };
         let disposers = plugin.mount(ctx)?;
-        let mut active = self.active.lock().unwrap();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         active.insert(id.to_string(), disposers);
         Ok(Vec::new())
     }
 
     /// Deactivate a plugin: dispose all registrations (reversible effects).
     pub fn unmount(&self, id: &str) -> Result<(), PluginMountError> {
-        let mut active = self.active.lock().unwrap();
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(mut disposers) = active.remove(id) {
             for d in disposers.drain(..) {
                 d.dispose();
@@ -131,7 +150,10 @@ impl PluginRegistry {
     pub fn mount_all(&self, ctx: &MountContext) -> Vec<(String, String)> {
         let mut errors = Vec::new();
         let ids: Vec<String> = {
-            let plugins = self.plugins.lock().unwrap();
+            let plugins = self
+                .plugins
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             plugins.keys().cloned().collect()
         };
         for id in ids {
@@ -148,7 +170,10 @@ impl PluginRegistry {
     /// Unmount everything (shutdown).
     pub fn unmount_all(&self) {
         let ids: Vec<String> = {
-            let active = self.active.lock().unwrap();
+            let active = self
+                .active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             active.keys().cloned().collect()
         };
         for id in ids {
@@ -159,11 +184,18 @@ impl PluginRegistry {
     /// Runtime enable/disable. Disabling unmounts; enabling remounts.
     /// `persisted` is the caller's disk-state (e.g. `[agent].disabled_plugins`).
     pub fn set_enabled(&self, id: &str, enabled: bool, ctx: &MountContext) -> Result<(), String> {
-        let exists = self.plugins.lock().unwrap().contains_key(id);
+        let exists = self
+            .plugins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(id);
         if !exists {
             return Err(format!("plugin not found: {id}"));
         }
-        let mut states = self.enabled_state.lock().unwrap();
+        let mut states = self
+            .enabled_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if enabled {
             if states.get(id).copied().unwrap_or(true) {
                 return Ok(()); // already enabled
@@ -185,7 +217,7 @@ impl PluginRegistry {
     pub fn is_enabled(&self, id: &str) -> bool {
         self.enabled_state
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
             .copied()
             .unwrap_or(true)
@@ -193,24 +225,42 @@ impl PluginRegistry {
 
     /// Apply persisted disable state at boot (before mount_all).
     pub fn apply_disabled(&self, disabled: &[String]) {
-        let mut states = self.enabled_state.lock().unwrap();
+        let mut states = self
+            .enabled_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for id in disabled {
             states.insert(id.clone(), false);
         }
     }
 
     pub fn ids(&self) -> Vec<String> {
-        self.plugins.lock().unwrap().keys().cloned().collect()
+        self.plugins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
     }
 
     pub fn plugin(&self, id: &str) -> Option<Arc<dyn Plugin>> {
-        self.plugins.lock().unwrap().get(id).cloned()
+        self.plugins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
     }
 
     /// Full descriptor list for the Panel (plugins + active state).
     pub fn descriptors(&self) -> Vec<PluginDescriptor> {
-        let plugins = self.plugins.lock().unwrap();
-        let states = self.enabled_state.lock().unwrap();
+        let plugins = self
+            .plugins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let states = self
+            .enabled_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let ids: Vec<String> = plugins.keys().cloned().collect();
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {

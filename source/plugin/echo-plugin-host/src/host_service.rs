@@ -36,7 +36,7 @@ impl HostServiceRegistry {
         let replaced = self
             .services
             .write()
-            .expect("host service registry lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(name.to_string(), service)
             .is_some();
         if replaced {
@@ -62,7 +62,7 @@ impl HostServiceRegistry {
         let registered = self
             .services
             .read()
-            .expect("host service registry lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(service)
             .cloned();
         match registered {

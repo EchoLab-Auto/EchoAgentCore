@@ -45,20 +45,26 @@ impl EventLog {
 
     /// Append one event (durable on the next save).
     pub fn append(&self, event: SessionEvent) {
-        self.events.lock().expect("event log poisoned").push(event);
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
     }
 
     /// Append many events in order.
     pub fn extend(&self, events: impl IntoIterator<Item = SessionEvent>) {
         self.events
             .lock()
-            .expect("event log poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .extend(events);
     }
 
     /// Read the full log, oldest first.
     pub fn log(&self) -> Vec<SessionEvent> {
-        self.events.lock().expect("event log poisoned").clone()
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Insert an event after the last `UserMessage` carrying `sequence`.
@@ -73,7 +79,10 @@ impl EventLog {
     /// event; the reply is inserted past them so the projected order never
     /// shows the final reply before the tool round it answers.
     pub fn insert_after_sequence(&self, sequence: u64, event: SessionEvent) {
-        let mut events = self.events.lock().expect("event log poisoned");
+        let mut events = self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let insert_at = events.iter().rposition(|existing| match existing {
             SessionEvent::UserMessage(message) => message.message_sequence == Some(sequence),
             _ => false,
@@ -96,13 +105,19 @@ impl EventLog {
     }
 
     pub fn len(&self) -> usize {
-        self.events.lock().expect("event log poisoned").len()
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Drop every event. Callers clearing conversation memory use this
     /// together with resetting the derived projections.
     pub fn clear(&self) {
-        self.events.lock().expect("event log poisoned").clear();
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     /// 原子整体替换（单次取锁）——压缩落地等「读-改-写」场景的
@@ -110,7 +125,10 @@ impl EventLog {
     /// 此前 `clear()` + `extend()` 分两次取锁，中间窗口里并发读者
     /// 会看到空日志（2026-10 压缩巡检 🔴）。
     pub fn replace_all(&self, events: Vec<SessionEvent>) {
-        *self.events.lock().expect("event log poisoned") = events;
+        *self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = events;
     }
 
     /// Atomically read-modify-write the whole log under the internal lock.
@@ -126,7 +144,10 @@ impl EventLog {
     where
         F: FnOnce(&[SessionEvent]) -> Option<(Vec<SessionEvent>, T)>,
     {
-        let mut events = self.events.lock().expect("event log poisoned");
+        let mut events = self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (replacement, outcome) = f(&events)?;
         *events = replacement;
         Some(outcome)
@@ -139,14 +160,20 @@ impl EventLog {
     /// 抹掉）。`session == None` 的旧版事件**不删**（无归属信息，
     /// 宁保守不误删）；调用方语义上应配合 `session_id` 精确传入。
     pub fn retain_excluding_session(&self, session_id: &str) -> usize {
-        let mut events = self.events.lock().expect("event log poisoned");
+        let mut events = self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let before = events.len();
         events.retain(|event| event.session() != Some(session_id));
         before - events.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.events.lock().expect("event log poisoned").is_empty()
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
     }
 
     /// Serialize the whole log (the durable representation).

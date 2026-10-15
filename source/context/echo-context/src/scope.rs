@@ -37,7 +37,7 @@ impl<T: Send + Sync + 'static> ScopedRegistry<T> {
     pub fn register_global(self: &Arc<Self>, name: &str, entry: T) -> Disposer {
         self.global
             .write()
-            .expect("registry poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(name.to_string(), Arc::new(entry));
         let registry = self.clone();
         let name = name.to_string();
@@ -45,7 +45,7 @@ impl<T: Send + Sync + 'static> ScopedRegistry<T> {
             registry
                 .global
                 .write()
-                .expect("registry poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&name);
         })
     }
@@ -54,7 +54,7 @@ impl<T: Send + Sync + 'static> ScopedRegistry<T> {
     pub fn register_scoped(self: &Arc<Self>, scope: &str, name: &str, entry: T) -> Disposer {
         self.scoped
             .write()
-            .expect("registry poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(scope.to_string())
             .or_default()
             .insert(name.to_string(), Arc::new(entry));
@@ -62,7 +62,10 @@ impl<T: Send + Sync + 'static> ScopedRegistry<T> {
         let scope = scope.to_string();
         let name = name.to_string();
         Disposer::from_fn(move || {
-            let mut scoped = registry.scoped.write().expect("registry poisoned");
+            let mut scoped = registry
+                .scoped
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entries) = scoped.get_mut(&scope) {
                 entries.remove(&name);
                 if entries.is_empty() {
@@ -78,7 +81,7 @@ impl<T: Send + Sync + 'static> ScopedRegistry<T> {
             if let Some(entry) = self
                 .scoped
                 .read()
-                .expect("registry poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(scope)
                 .and_then(|entries| entries.get(name))
             {
@@ -87,7 +90,7 @@ impl<T: Send + Sync + 'static> ScopedRegistry<T> {
         }
         self.global
             .read()
-            .expect("registry poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(name)
             .cloned()
     }
@@ -97,12 +100,17 @@ impl<T: Send + Sync + 'static> ScopedRegistry<T> {
         let mut names: Vec<String> = self
             .global
             .read()
-            .expect("registry poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .keys()
             .cloned()
             .collect();
         if let Some(scope) = scope {
-            if let Some(entries) = self.scoped.read().expect("registry poisoned").get(scope) {
+            if let Some(entries) = self
+                .scoped
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(scope)
+            {
                 names.extend(entries.keys().cloned());
             }
         }
@@ -112,11 +120,14 @@ impl<T: Send + Sync + 'static> ScopedRegistry<T> {
     }
 
     pub fn len(&self) -> usize {
-        self.global.read().expect("registry poisoned").len()
+        self.global
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
             + self
                 .scoped
                 .read()
-                .expect("registry poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .values()
                 .map(HashMap::len)
                 .sum::<usize>()

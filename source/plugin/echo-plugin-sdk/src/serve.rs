@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use echo_plugin_api::{
-    compatible, Contribution, Failure, HostCall, HostCallOutcome, HostToPlugin,
-    InvokeOutcome, InvokeResult, PluginToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
+    compatible, Contribution, Failure, HostCall, HostCallOutcome, HostToPlugin, InvokeOutcome,
+    InvokeResult, PluginToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
 };
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -86,7 +86,7 @@ impl HostClient {
         let (result_tx, result_rx) = oneshot::channel();
         self.pending
             .lock()
-            .expect("host call pending lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(call_id.clone(), result_tx);
 
         let sent = match self.tx.upgrade() {
@@ -103,7 +103,7 @@ impl HostClient {
         if let Err(error) = sent {
             self.pending
                 .lock()
-                .expect("host call pending lock poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&call_id);
             return Err(error);
         }
@@ -118,7 +118,7 @@ impl HostClient {
             Err(_) => {
                 self.pending
                     .lock()
-                    .expect("host call pending lock poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&call_id);
                 Err(HostCallError::Timeout)
             }
@@ -344,7 +344,7 @@ where
             HostToPlugin::HostCallResult(result) => {
                 let waiter = host_calls
                     .lock()
-                    .expect("host call pending lock poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&result.call_id);
                 match waiter {
                     Some(waiter) => {
@@ -363,7 +363,7 @@ where
     //    丢弃全部在途 HostCall（等待者得到 Closed，而非挂到超时）。
     host_calls
         .lock()
-        .expect("host call pending lock poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
     drop(tx);
     while tasks.join_next().await.is_some() {}

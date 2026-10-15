@@ -44,7 +44,7 @@ impl Ctx {
     pub fn register<T: Any + Send + Sync>(self: &Arc<Self>, key: &str, service: T) -> Disposer {
         self.services
             .write()
-            .expect("ctx services poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key.to_string(), Box::new(service));
         Disposer::from((key, self.clone()))
     }
@@ -54,7 +54,10 @@ impl Ctx {
     /// `T` must match the registered type exactly — for a trait-object
     /// registration, resolve with the same `Arc<dyn Trait>` type.
     pub fn resolve<T: Any + Send + Sync + Clone>(&self, key: &str) -> Option<T> {
-        let guard = self.services.read().expect("ctx services poisoned");
+        let guard = self
+            .services
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.get(key)?.downcast_ref::<T>().cloned()
     }
 
@@ -62,7 +65,7 @@ impl Ctx {
     pub fn contains(&self, key: &str) -> bool {
         self.services
             .read()
-            .expect("ctx services poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(key)
     }
 
@@ -70,7 +73,7 @@ impl Ctx {
     pub fn keys(&self) -> Vec<String> {
         self.services
             .read()
-            .expect("ctx services poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .keys()
             .cloned()
             .collect()
@@ -94,7 +97,10 @@ impl Ctx {
         service: T,
     ) -> Result<Disposer, ServiceError> {
         {
-            let mut services = self.services.write().expect("ctx services poisoned");
+            let mut services = self
+                .services
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if services.contains_key(key.name()) {
                 return Err(ServiceError::Conflict {
                     key: key.name().to_string(),
@@ -113,7 +119,10 @@ impl Ctx {
     /// Returns `None` both when the key is not registered and when it holds a
     /// value of a different type.
     pub fn service<T: Any + Send + Sync + Clone>(&self, key: &ServiceKey<T>) -> Option<T> {
-        let services = self.services.read().expect("ctx services poisoned");
+        let services = self
+            .services
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         services.get(key.name())?.downcast_ref::<T>().cloned()
     }
 
@@ -179,7 +188,10 @@ impl Ctx {
     /// the table.
     fn remove_and_wake(self: &Arc<Self>, name: &str) {
         {
-            let mut services = self.services.write().expect("ctx services poisoned");
+            let mut services = self
+                .services
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             services.remove(name);
         }
         self.ready.notify_waiters();
@@ -187,7 +199,10 @@ impl Ctx {
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.services.read().expect("ctx services poisoned").len()
+        self.services
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 }
 
@@ -240,7 +255,7 @@ impl From<(&str, Arc<Ctx>)> for Disposer {
         Self::from_fn(move || {
             ctx.services
                 .write()
-                .expect("ctx services poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&key);
         })
     }
