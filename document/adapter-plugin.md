@@ -32,7 +32,7 @@ link: ["decoupling-plan | 完全解耦计划 | t>l", "plugin-authoring | 插件�
 
 **已具备**——三块拼图已就位：
 
-- **接缝本就平台中立**：`echo-adapter` 的 `Adapter` trait（start/stop/send_text/get_groups/get_friends）、`InboundMessageHook`（单向入站桥）、`QqManagement` 能力 trait——适配器对 agent 的接口早已与平台解耦；
+- **接缝本就平台中立**：定义层的 `Adapter` trait（`echo_defs::adapter::Adapter`，`echo-adapter` re-export 兼容；start/stop/send_text/get_groups/get_friends——管理动作最终收敛为 `AdapterManagement`）、`InboundMessageHook`（单向入站桥）、`AdapterManagement` 能力 trait——适配器对 agent 的接口早已与平台解耦；
 - **物理拆分半程**：`echo-adapter-qq` 是独立 crate，不含 agent 逻辑；工具（`core/qq_tools.rs`）、入站桥（`echo-agent/packages/adapter_qq/bridge.rs`）、命令域（`commands.rs`）、命令处理器（`core/handlers/`）都在宿主侧——天然留在 Core；
 - **插件基础设施可用**：协议 v1（Hello/Register/Invoke/HostCall/…）、SDK（`serve_stdio`）、`PluginSupervisor`（状态机 / 崩溃重启 / upgrade 热替换）、`plugins.toml` 装载、`RemoteTool` 先例、`HostCall` 宿主服务先例（`sanitizer`）。
 
@@ -188,7 +188,7 @@ BackendEvent::AdapterState    { adapter, state: Value }           // 插件主�
 
 1. **`echo-plugin-api`**：`AdapterContribution` + 能力位 + 消息 / 目标 JSON 结构；`Register` / 消息体改「逐项容错解析」（未知项降级 `Unknown(Value)` 并 warn，见「版本与兼容」）。
 2. **`echo-plugin-host`**：
-   - `RemoteAdapter`（实现 `echo_adapter::Adapter`）：异步方法 → `Invoke`；`status_info()` 读缓存但**合并 PluginSupervisor 进程状态**（进程 Pending/Failed 时绝不显示缓存 Connected，见 op 表仲裁）；**管理面生命周期（实施决策）**：`RemoteAdapterManagement` 挂为 `RemoteAdapter` 的字段，持对宿主的 `Weak` 弱引用（避免循环强引用；宿主销毁后调用方拿到可读 `internal error` 而非悬垂指针）——零 unsafe、无占位指针；
+   - `RemoteAdapter`（实现 `echo_defs::adapter::Adapter`；`echo-plugin-host` 只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 `echo-adapter`）：异步方法 → `Invoke`；`status_info()` 读缓存但**合并 PluginSupervisor 进程状态**（进程 Pending/Failed 时绝不显示缓存 Connected，见 op 表仲裁）；**管理面生命周期（实施决策）**：`RemoteAdapterManagement` 挂为 `RemoteAdapter` 的字段，持对宿主的 `Weak` 弱引用（避免循环强引用；宿主销毁后调用方拿到可读 `internal error` 而非悬垂指针）——零 unsafe、无占位指针；
    - **`QqManagement` / `qq_management()` 从 `echo-adapter` 删除**（评审升级）：置换为平台中立的 `AdapterManagement`——`cached_state() -> Option<Value>`（读 epoch 缓存）+ `async invoke_custom(method, payload)`（异步写）；远程化后「同步 setter」只剩乐观缓存假象，收敛为「缓存读 + 异步写」，不再提供假同步面；
    - **缓存失效 = epoch 语义**：连接态 / 门控缓存挂在 `PluginHandle` 的**重启 / 升级计数**上——插件崩溃重启后运行时状态（名单 / gate_mode）全丢，缓存不刷新即**安全相关漂移**（denylist 丢失 = 被拦用户恢复通行）；epoch 变化 → 缓存置脏、按需重拉；
    - `AdapterHostService`（实现 `HostService`）：按 name fan-out 到各 `RemoteAdapter` 的**有界入站队列 + 每实例串行 worker**（回执 = 已入队；满 → `backpressure`，见 HostCall 表）；
@@ -250,7 +250,7 @@ echo-adapter-qq/（独立仓库，cargo workspace；P1.7a–c 已落地）
 |---|---|---|
 | `echo-core`（OneBot 事件 / 段 / action，零 echo 依赖） | `Event`/`Segment`/`actions::*` 共 23 处 | **随插件迁出**（迁入插件仓库 `crates/echo-core`）；宿主侧仅 `core/handlers/` 3 个 handler 引用，随 handler 平台中立化一并移除 |
 | `echo-server`（反向 WS 服务端，仅依赖 echo-core） | `Server`/`Handler`/`ConnectionTracker` 共 14 处 | **随插件迁出**（迁入插件仓库 `crates/echo-server`）；宿主无其他使用者 |
-| `echo-adapter` | `filter::*`（门控 / 名单，957 行）、`ConfigStore`、`ensure_table`、`Adapter`/`AdapterManagement` trait、`IncomingMessage` | filter / ConfigStore 收归插件自有（P1.7c 完成；宿主 `echo-agent` 侧自用副本 P1.9 收尾）；`Adapter` / `AdapterManagement` trait 退役为固有方法；领域类型插件自有，线协议转换在 `plugin.rs` 边界（`AdapterMessage`） |
+| `echo-adapter` | `filter::*`（门控 / 名单，957 行）、`ConfigStore`、`ensure_table`、`Adapter`/`AdapterManagement` trait（**现已定义于 `echo-defs::adapter`，`echo-adapter` 仅 re-export**）、`IncomingMessage` | filter / ConfigStore 收归插件自有（P1.7c 完成；宿主 `echo-agent` 侧自用副本 P1.9 收尾）；`Adapter` / `AdapterManagement` trait 退役为固有方法；领域类型插件自有，线协议转换在 `plugin.rs` 边界（`AdapterMessage`） |
 | `echo-defs` | `MessageTarget`/`ChannelType`（15 处）、`media_store::*`（5 处） | 前者 → `AdapterTarget`/`AdapterChannel`；**`media_store` 改走 `adapter_host.store_media` HostCall**（两侧均已完成，P1.7c：宿主 `store_media` + 插件 `HostMediaStore`，同机传 path） |
 | `echo-context` | `kernel::get_or_init`（缓存 reqwest Client，1 处） | 换 `OnceLock` |
 

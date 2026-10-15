@@ -1,16 +1,19 @@
 //! EchoAgentCore adapter abstraction.
 //!
-//! This crate defines the [`Adapter`] trait, platform-agnostic message types,
-//! a filter pipeline, and an adapter registry — with zero dependency on any
-//! specific protocol (OneBot, Telegram, etc.).
+//! This crate implements a filter pipeline and an adapter registry — with
+//! zero dependency on any specific protocol (OneBot, Telegram, etc.).
+//! The platform-neutral definitions ([`Adapter`] trait, status/error types,
+//! platform-agnostic message types, [`AdapterManagement`]) live in
+//! `echo-defs` (the capability-definition layer) and are re-exported here so
+//! `echo_adapter::…` paths keep working.
 //!
 //! # Crate layout
 //!
 //! | module | purpose |
 //! |---|---|
-//! | [`traits`] | `Adapter` trait, `AdapterError`, `AdapterInfo`（平台中立面） |
-//! | [`capabilities`] | 适配器管理能力扩展（[`AdapterManagement`]） |
-//! | [`types`] | `ChannelType`, `IncomingMessage`, `MessageTarget`, `AdapterEvent` |
+//! | [`traits`] | re-export of `echo-defs`: `Adapter` trait, `AdapterError`, `AdapterInfo`（平台中立面） |
+//! | [`capabilities`] | re-export of `echo-defs`：适配器管理能力扩展（[`AdapterManagement`]） |
+//! | [`types`] | re-export of `echo-defs::chat`: `ChannelType`, `IncomingMessage`, `MessageTarget`, `AdapterEvent` |
 //! | [`filter`] | `MessageFilter` trait, `FilterPipeline`, built-in filters |
 //! | [`registry`] | `AdapterRegistry` |
 

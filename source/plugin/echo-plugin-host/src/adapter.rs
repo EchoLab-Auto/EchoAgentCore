@@ -1,6 +1,6 @@
 //! 适配器插件宿主侧（P1，2026-10 适配器插件化）。
 //!
-//! - [`RemoteAdapter`]：`echo_adapter::Adapter` 的远程实现——异步方法经
+//! - [`RemoteAdapter`]：`echo_defs::adapter::Adapter` 的远程实现——异步方法经
 //!   插件协议 `Invoke("<name>:<op>")`（能力位 fail-closed）；状态经
 //!   `PluginState` 进程态 ∧ 连接态缓存仲裁（见 §交接与崩溃恢复语义）；
 //! - [`RemoteAdapterManagement`]：`AdapterManagement` 的远程实现——
@@ -21,12 +21,12 @@ use crate::api::{AdapterContribution, AdapterMessage, InvokeContext, InvokeOutco
 use crate::supervisor::{PluginHandle, PluginState};
 use crate::transport::TransportError;
 
-use echo_adapter::types::SendResult as AdapterSendResult;
+use echo_defs::chat::SendResult as AdapterSendResult;
 
 /// 入站队列容量上限（每实例；满 → `backpressure` 错误码，插件退避）。
 const INBOUND_QUEUE_CAPACITY: usize = 256;
 
-/// 远程适配器（`echo_adapter::Adapter` 的插件进程实现）。
+/// 远程适配器（`echo_defs::adapter::Adapter` 的插件进程实现）。
 ///
 /// 能力位 fail-closed：宿主只调用该适配器贡献中声明过的方法位
 /// （[`AdapterContribution::capabilities`]），未声明的调用拒绝为
@@ -88,7 +88,10 @@ impl RemoteAdapter {
 
     /// 更新连接态缓存（`report_state` 上报入口；`AdapterHostService` 调用）。
     pub fn note_connection_state(&self, connected: bool, self_id: Option<String>) {
-        let mut cache = self.connection.lock().expect("connection cache poisoned");
+        let mut cache = self
+            .connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.connected = connected;
         cache.self_id = self_id;
     }
@@ -98,14 +101,14 @@ impl RemoteAdapter {
         *self
             .management_state
             .lock()
-            .expect("management state cache poisoned") = None;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
     /// 取管理面状态缓存（`AdapterManagement::cached_state` 的远程侧）。
     pub fn management_state(&self) -> Option<Value> {
         self.management_state
             .lock()
-            .expect("management state cache poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -114,7 +117,7 @@ impl RemoteAdapter {
         *self
             .management_state
             .lock()
-            .expect("management state cache poisoned") = Some(state);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(state);
     }
 
     /// 发起一次适配器 op（`Invoke("<name>:<op>")`）；能力位未声明时
@@ -143,10 +146,10 @@ impl RemoteAdapter {
     }
 }
 
-/// `echo_adapter::Adapter` 的远程实现（`echo-agent` 侧注册点统一走
-/// `AdapterRegistry`，trait 来自 `echo-adapter`）。
+/// `echo_defs::adapter::Adapter` 的远程实现（`echo-agent` 侧注册点统一走
+/// `AdapterRegistry`，trait 来自 `echo-defs`）。
 #[async_trait]
-impl echo_adapter::Adapter for RemoteAdapter {
+impl echo_defs::adapter::Adapter for RemoteAdapter {
     fn name(&self) -> &str {
         &self.name
     }
@@ -164,11 +167,14 @@ impl echo_adapter::Adapter for RemoteAdapter {
         true
     }
 
-    fn status_info(&self) -> echo_adapter::AdapterInfo {
+    fn status_info(&self) -> echo_defs::adapter::AdapterInfo {
         // 进程态仲裁（最高优先）：插件 Pending / Failed 时一律显示非
         // Connected，绝不显示缓存的连接态（重启期间缓存不可信）。
         let state = self.handle.state();
-        let cache = self.connection.lock().expect("connection cache poisoned");
+        let cache = self
+            .connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let connected = match state {
             PluginState::Ready => cache.connected,
             PluginState::Pending => false,
@@ -176,17 +182,19 @@ impl echo_adapter::Adapter for RemoteAdapter {
             PluginState::Stopped => false,
             PluginState::Failed(_) => false,
         };
-        echo_adapter::AdapterInfo {
+        echo_defs::adapter::AdapterInfo {
             name: self.name.clone(),
             display_name: self.contribution.display_name.clone(),
             status: match state {
-                PluginState::Ready if connected => echo_adapter::AdapterConnectionState::Connected,
-                PluginState::Ready | PluginState::Draining => {
-                    echo_adapter::AdapterConnectionState::Disconnected
+                PluginState::Ready if connected => {
+                    echo_defs::adapter::AdapterConnectionState::Connected
                 }
-                PluginState::Pending => echo_adapter::AdapterConnectionState::Starting,
-                PluginState::Stopped => echo_adapter::AdapterConnectionState::Stopped,
-                PluginState::Failed(_) => echo_adapter::AdapterConnectionState::Error,
+                PluginState::Ready | PluginState::Draining => {
+                    echo_defs::adapter::AdapterConnectionState::Disconnected
+                }
+                PluginState::Pending => echo_defs::adapter::AdapterConnectionState::Starting,
+                PluginState::Stopped => echo_defs::adapter::AdapterConnectionState::Stopped,
+                PluginState::Failed(_) => echo_defs::adapter::AdapterConnectionState::Error,
             },
             self_id: cache.self_id.clone(),
             started_at: None,
@@ -195,28 +203,28 @@ impl echo_adapter::Adapter for RemoteAdapter {
         }
     }
 
-    async fn start(&self) -> Result<(), echo_adapter::AdapterError> {
+    async fn start(&self) -> Result<(), echo_defs::adapter::AdapterError> {
         // 生命周期经插件协议直通（`<name>:start` / `<name>:stop`）。
         self.invoke_op(true, "start", json!({}))
             .await
-            .map_err(|e| echo_adapter::AdapterError::Internal(e.to_string()))?;
+            .map_err(|e| echo_defs::adapter::AdapterError::Internal(e.to_string()))?;
         Ok(())
     }
 
-    async fn stop(&self) -> Result<(), echo_adapter::AdapterError> {
+    async fn stop(&self) -> Result<(), echo_defs::adapter::AdapterError> {
         self.invoke_op(true, "stop", json!({}))
             .await
-            .map_err(|e| echo_adapter::AdapterError::Internal(e.to_string()))?;
+            .map_err(|e| echo_defs::adapter::AdapterError::Internal(e.to_string()))?;
         Ok(())
     }
 
     async fn send_message(
         &self,
-        target: &echo_adapter::MessageTarget,
+        target: &echo_defs::chat::MessageTarget,
         content: &str,
-    ) -> Result<AdapterSendResult, echo_adapter::AdapterError> {
+    ) -> Result<AdapterSendResult, echo_defs::adapter::AdapterError> {
         if !self.contribution.capabilities.send_text {
-            return Err(echo_adapter::AdapterError::Internal(format!(
+            return Err(echo_defs::adapter::AdapterError::Internal(format!(
                 "adapter {} does not declare send_text capability",
                 self.name
             )));
@@ -224,8 +232,8 @@ impl echo_adapter::Adapter for RemoteAdapter {
         let payload = json!({
             "target": {
                 "channel": match &target.channel {
-                    echo_adapter::ChannelType::Direct => json!({"type": "dm"}),
-                    echo_adapter::ChannelType::Group { group_id } => {
+                    echo_defs::chat::ChannelType::Direct => json!({"type": "dm"}),
+                    echo_defs::chat::ChannelType::Group { group_id } => {
                         json!({"type": "group", "group_id": group_id})
                     }
                 },
@@ -236,7 +244,7 @@ impl echo_adapter::Adapter for RemoteAdapter {
         let result = self
             .invoke_op(true, "send_text", payload)
             .await
-            .map_err(|e| echo_adapter::AdapterError::SendFailed(e.to_string()))?;
+            .map_err(|e| echo_defs::adapter::AdapterError::SendFailed(e.to_string()))?;
         Ok(AdapterSendResult {
             message_id: result["message_id"].as_str().map(str::to_string),
             success: result["success"].as_bool().unwrap_or(true),
@@ -244,12 +252,12 @@ impl echo_adapter::Adapter for RemoteAdapter {
         })
     }
 
-    fn subscribe(&self, _tx: tokio::sync::mpsc::UnboundedSender<echo_adapter::AdapterEvent>) {
+    fn subscribe(&self, _tx: tokio::sync::mpsc::UnboundedSender<echo_defs::chat::AdapterEvent>) {
         // 入站消息经 `AdapterHostService` 队列分发（不走订阅通道）；
         // 远程适配器的事件流由插件进程持有（`HostCall` 上报）。
     }
 
-    fn management(&self) -> Option<&dyn echo_adapter::AdapterManagement> {
+    fn management(&self) -> Option<&dyn echo_defs::adapter::AdapterManagement> {
         // 远程管理面（cached_state / invoke_custom；按引返回本结构字段）。
         Some(&self.management)
     }
@@ -286,9 +294,9 @@ impl RemoteAdapterManagement {
     }
 
     /// 弱引用升级（宿主已销毁 → 可读错误）。
-    fn adapter(&self) -> Result<Arc<RemoteAdapter>, echo_adapter::AdapterError> {
+    fn adapter(&self) -> Result<Arc<RemoteAdapter>, echo_defs::adapter::AdapterError> {
         self.adapter.upgrade().ok_or_else(|| {
-            echo_adapter::AdapterError::Internal(format!(
+            echo_defs::adapter::AdapterError::Internal(format!(
                 "adapter {} has been destroyed",
                 self.name
             ))
@@ -297,7 +305,7 @@ impl RemoteAdapterManagement {
 }
 
 #[async_trait]
-impl echo_adapter::AdapterManagement for RemoteAdapterManagement {
+impl echo_defs::adapter::AdapterManagement for RemoteAdapterManagement {
     fn cached_state(&self) -> Option<Value> {
         self.adapter.upgrade()?.management_state()
     }
@@ -306,7 +314,7 @@ impl echo_adapter::AdapterManagement for RemoteAdapterManagement {
         &self,
         method: &str,
         payload: Value,
-    ) -> Result<Value, echo_adapter::AdapterError> {
+    ) -> Result<Value, echo_defs::adapter::AdapterError> {
         let adapter = self.adapter()?;
         let gating_methods = [
             "set_gate_mode",
@@ -336,7 +344,7 @@ impl echo_adapter::AdapterManagement for RemoteAdapterManagement {
                 json!({"method": method, "payload": payload}),
             )
             .await
-            .map_err(|e| echo_adapter::AdapterError::Internal(e.to_string()))
+            .map_err(|e| echo_defs::adapter::AdapterError::Internal(e.to_string()))
     }
 }
 
@@ -396,14 +404,17 @@ impl AdapterHostService {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         self.state_sinks
             .lock()
-            .expect("state sinks lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(tx);
         rx
     }
 
     /// 广播一次连接态变化（发送失败的订阅者摘除）。
     fn broadcast_state(&self, change: AdapterStateChange) {
-        let mut sinks = self.state_sinks.lock().expect("state sinks lock poisoned");
+        let mut sinks = self
+            .state_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         sinks.retain(|tx| tx.send(change.clone()).is_ok());
     }
 
@@ -459,11 +470,11 @@ impl AdapterHostService {
         let name = adapter.name.clone();
         self.adapters
             .lock()
-            .expect("adapters lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(name.clone(), adapter);
         self.inbound_queues
             .lock()
-            .expect("inbound queues lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(name, tx);
         rx
     }
@@ -472,7 +483,7 @@ impl AdapterHostService {
     pub fn get(&self, name: &str) -> Option<Arc<RemoteAdapter>> {
         self.adapters
             .lock()
-            .expect("adapters lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(name)
             .cloned()
     }
@@ -481,7 +492,7 @@ impl AdapterHostService {
     pub fn adapters(&self) -> Vec<Arc<RemoteAdapter>> {
         self.adapters
             .lock()
-            .expect("adapters lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .cloned()
             .collect()
@@ -510,7 +521,7 @@ impl crate::host_service::HostService for AdapterHostService {
                 let Some(tx) = self
                     .inbound_queues
                     .lock()
-                    .expect("inbound queues lock poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .get(&adapter_name)
                     .cloned()
                 else {
@@ -588,14 +599,14 @@ impl crate::host_service::HostService for AdapterHostService {
     }
 }
 
-/// 线协议入站消息（`AdapterMessage`）→ 宿主词汇（`echo_adapter::IncomingMessage`）。
+/// 线协议入站消息（`AdapterMessage`）→ 宿主词汇（`echo_defs::chat::IncomingMessage`）。
 ///
 /// 组合根在入站 worker 里用本函数把插件的 `deliver_message` 载荷转成
 /// `AgentMessageHook` 可直接消费的类型（字段差异：`adapter`→`adapter_name`、
 /// `Dm`→`Direct`、`user_name` 缺省空串、`files` 由 JSON 值解析为
-/// [`echo_adapter::IncomingFile`]；无法解析的文件条目跳过并保序）。
-pub fn message_to_incoming(message: AdapterMessage) -> echo_adapter::IncomingMessage {
-    use echo_adapter::types::{ChannelType, IncomingFile, IncomingMessage};
+/// [`echo_defs::chat::IncomingFile`]；无法解析的文件条目跳过并保序）。
+pub fn message_to_incoming(message: AdapterMessage) -> echo_defs::chat::IncomingMessage {
+    use echo_defs::chat::{ChannelType, IncomingFile, IncomingMessage};
 
     let channel = match message.channel {
         crate::api::AdapterChannel::Dm => ChannelType::Direct,
@@ -648,7 +659,7 @@ mod tests {
     use crate::inproc::{InprocIo, InprocPlugin, InprocTransport};
     use crate::supervisor::PluginSupervisor;
     use crate::transport::PluginSpec;
-    use echo_adapter::{Adapter as _, AdapterManagement as _};
+    use echo_defs::adapter::{Adapter as _, AdapterManagement as _};
     use serde_json::json;
     use std::future::Future;
     use std::pin::Pin;
@@ -760,9 +771,9 @@ mod tests {
         let adapter = RemoteAdapter::new(adapters[0].clone(), handle.clone());
 
         // 能力位 fail-closed：send_media 未声明 → 拒绝（不发起 Invoke）。
-        let target = echo_adapter::MessageTarget {
+        let target = echo_defs::chat::MessageTarget {
             adapter_name: "qq".into(),
-            channel: echo_adapter::ChannelType::Direct,
+            channel: echo_defs::chat::ChannelType::Direct,
             user_id: "123".into(),
         };
         // send_text（已声明）正常——经 `Adapter::send_message`（trait 方法名
@@ -1001,7 +1012,7 @@ mod tests {
         assert_eq!(incoming.user_name, "Alice");
         assert!(matches!(
             incoming.channel,
-            echo_adapter::types::ChannelType::Group { ref group_id } if group_id == "456"
+            echo_defs::chat::ChannelType::Group { ref group_id } if group_id == "456"
         ));
         assert_eq!(incoming.group_name.as_deref(), Some("开发群"));
         assert_eq!(incoming.content, "hello");
@@ -1034,7 +1045,7 @@ mod tests {
         let incoming = message_to_incoming(dm);
         assert!(matches!(
             incoming.channel,
-            echo_adapter::types::ChannelType::Direct
+            echo_defs::chat::ChannelType::Direct
         ));
         assert_eq!(incoming.user_name, "");
     }

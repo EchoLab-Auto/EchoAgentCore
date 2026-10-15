@@ -25,48 +25,74 @@ y: 500
 
 ```prodoc-flow
 graph BT
-  Defs[echo-defs<br>Service Definition]
+  Defs[echo-defs<br>Service Definition<br>（Adapter trait / AdapterManagement 在此）]
   Ctx[echo-context<br>Ctx/EventBus/Disposer]
   Session[echo-session<br>事件溯源]
   Loop[echo-loop<br>TurnRunner]
   LLM[echo-llm-*<br>OpenAI/Anthropic/Ollama]
   Proto[echo-protocol<br>线契约]
-  Adapter[echo-adapter<br>平台适配<br>（QQ 已迁出为插件）]
+  Sanitize[echo-sanitize<br>脱敏]
+  Adapter[echo-adapter<br>过滤管道/注册表/ConfigStore]
+  Fed[echo-federation<br>Core↔Core 联邦]
+  Plugin[echo-plugin<br>生命周期钩子]
+  PluginApi[echo-plugin-api<br>协议与贡献类型]
+  PluginLoader[echo-plugin-loader]
+  PluginSdk[echo-plugin-sdk<br>插件 SDK]
+  PluginHost[echo-plugin-host<br>运输/监督/RemoteAdapter]
   Agent[echo-agent<br>agent 框架]
   Bin[echo-agent-core<br>组合根]
   LLM --> Defs
-  Ctx --> Defs
   Session --> Defs
   Loop --> Defs
+  Loop --> Ctx
   Proto --> Defs
   Proto --> Ctx
+  Sanitize --> Defs
+  Sanitize --> Ctx
   Adapter --> Defs
+  Fed --> Defs
+  Plugin --> Defs
+  Plugin --> Ctx
+  PluginSdk --> PluginApi
+  PluginHost --> PluginApi
+  PluginHost --> PluginLoader
+  PluginHost --> Defs
   Agent --> Adapter
   Agent --> Session
   Agent --> LLM
+  Agent --> Loop
+  Agent --> Proto
+  Agent --> Plugin
+  Agent --> Fed
+  Agent --> Ctx
+  Agent --> Defs
   Bin --> Agent
   Bin --> Loop
+  Bin --> PluginHost
+  Bin --> Fed
 ```
+
+> 依赖边以 `cargo metadata --format-version 1 --no-deps`（仅 normal 依赖）实测为准。`echo-context` **不依赖** `echo-defs`（零 echo-* 依赖）；组合根另直接依赖全部中间层 crate（`echo-adapter`/`echo-context`/`echo-defs`/`echo-federation`/`echo-loop`/`echo-plugin`/`echo-plugin-loader`/`echo-protocol`/`echo-sanitize`/`echo-session`），图中只画主干边。
 
 | Crate | 角色 | 职责 |
 |---|---|---|
-| `echo-defs` | Service Definition 层 | 全部词汇与 trait：LLM/工具/技能/平台消息/媒体/会话事件/联邦节点；零实现、零 harness 依赖 |
+| `echo-defs` | Service Definition 层 | 全部词汇与 trait：LLM/工具/技能/平台消息/**适配器（`Adapter` trait、`AdapterManagement`）**/媒体/会话事件/联邦节点；零实现、零 harness 依赖 |
 | `echo-context` | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry` |
 | `echo-session` | 事件溯源会话 | `SessionEvent` 事件集、`EventLog` append-only 持久化、`derive_messages` 投影、compaction、`SessionHeader`、v1-v4 兼容迁移 |
 | `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话）见 [Agent 循环](./core-agent-loop.md) |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 `echo-defs` |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge，Panel 只依赖它 |
-| `echo-plugin` / `-api` / `-host` | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；Transport（inproc/stdio）、监督与崩溃重启、conformance 测试（见 [完全解耦推进计划](./decoupling-plan.md)） |
+| `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、`RemoteAdapter`（实现 `echo_defs::adapter::Adapter`）、conformance 测试（见 [完全解耦推进计划](./decoupling-plan.md)）。**宿主只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层 crate** |
 | `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入——生效口径见 [Agent 循环](./core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
-| `echo-adapter` | 平台适配 | `Adapter` trait、过滤管道、ConfigStore（平台无关）；QQ 实现已迁出为**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteAdapter` 接入——见 [适配器插件化](./adapter-plugin.md)） |
+| `echo-adapter` | 平台适配（实现层） | 过滤管道、`AdapterRegistry`、`ConfigStore`（平台无关）；`Adapter` trait / `AdapterManagement` / 状态与错误类型**定义在 `echo-defs`**（本 crate re-export 保持 `echo_adapter::…` 路径兼容）。QQ 实现已迁出为**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteAdapter` 接入——见 [适配器插件化](./adapter-plugin.md)） |
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](./federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、联邦路由泵、启动 |
 
-依赖方向收敛为单向下游：`echo-defs` / `echo-context`（底座，零 echo-* 依赖）◄ `echo-protocol` / `echo-adapter` / `echo-session` / `echo-llm-*`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）——`echo-adapter` 只依赖定义层、不依赖 `echo-protocol`；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-adapter`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
+依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；`echo-protocol` / `echo-adapter` / `echo-session` / `echo-llm-*` / `echo-federation` / `echo-plugin*` / `echo-sanitize`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）。**Adapter trait 定义在 `echo-defs`**（`echo_defs::adapter::Adapter`；`AdapterError`/`AdapterInfo`/`AdapterConnectionState`/`InboundMessageHook`/`AdapterManagement` 同）；`echo-adapter` 只承载 filter / registry / ConfigStore 等实现并对定义层类型做 re-export——`echo-adapter` 只依赖定义层、不依赖 `echo-protocol`；**`echo-plugin-host` 只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层**；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-adapter`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
 
 ### 定义层（echo-defs）
 
-定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（依赖仅 serde/serde_json/async-trait/tokio/thiserror/base64/tracing 基础 crate，不含 reqwest 与其它 echo-* crate），可独立测试。模块覆盖：消息/LLM（`ChatMessage`/`ChatRequest`/`LlmProvider` 等）、工具、技能、聊天（平台消息词汇与 `ChatAdapter`）、门控与思考模式、token 纯函数、媒体卫生（文本内嵌 base64 → 占位符、图片只走独立 image 块）与入站图片落盘缓存（`/media/<id>` 引用）、会话事件契约、联邦节点词汇（`NodeId`、`node://` 跨机命名空间）。
+定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（依赖仅 serde/serde_json/async-trait/tokio/thiserror/base64/tracing 基础 crate，不含 reqwest 与其它 echo-* crate），可独立测试。模块覆盖：消息/LLM（`ChatMessage`/`ChatRequest`/`LlmProvider` 等）、工具、技能、聊天（平台消息词汇与 `ChatAdapter`）、适配器（`adapter` 模块：`Adapter` trait、`AdapterManagement`、`AdapterInfo`/`AdapterError`）、门控与思考模式、token 纯函数、媒体卫生（文本内嵌 base64 → 占位符、图片只走独立 image 块）与入站图片落盘缓存（`/media/<id>` 引用）、会话事件契约、联邦节点词汇（`NodeId`、`node://` 跨机命名空间）。
 
 ### 机制底座（echo-context）
 
@@ -103,7 +129,7 @@ graph BT
 
 ### Turn/Step 循环
 
-`TurnRunner` 驱动 `turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。调度口径：loop.* 插件启用时普通输入经该状态机执行（启动期回填注入 + 运行期工厂覆盖 + 插件停/再启联动），QQ hook/定时器/QQ 会话始终走内置循环；工具策略（超时/审批/审计/限流）的设计位置是 `ToolPipeline` 中间件（当前生产路径未注册任何中间件，超时由 harness `tool_guard_timeout` 守卫）。细节与边界见 [Agent 循环](./core-agent-loop.md)。
+`TurnRunner` 驱动 `turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。调度口径：这是**唯一**循环实现（2026-10 单轨化），全部输入（含 QQ hook/定时器/QQ 会话，差异只在提示词边界块）经该状态机执行，runner 在人格启动与运行期新建时无条件注入；loop.* 插件只决定循环模式；工具策略（超时/审批/审计/限流）的设计位置是 `ToolPipeline` 中间件（当前生产路径未注册任何中间件，超时由 harness `tool_guard_timeout` 守卫）。细节与边界见 [Agent 循环](./core-agent-loop.md)。
 
 ### 会话与持久化
 
@@ -127,7 +153,7 @@ QQ 命令域独立：`apply_qq_command`（`packages/adapter_qq/commands.rs`）�
 |---|---|
 | 新增 LLM provider | 实现 `echo_defs::LlmProvider`，注册 `ctx.llm` |
 | 新增工具 | 实现 `echo_defs::Tool`，注册进 ToolRegistry |
-| 新增平台 | 实现 `ChatAdapter`，经 `AdapterRegistry` 接入（`ctx.chat` 服务键为规划） |
+| 新增平台 | 实现 `echo_defs::adapter::Adapter`（定义层；`echo-adapter` re-export 并提供 `AdapterRegistry` 接入；`ctx.chat` 服务键为规划） |
 | 拦截请求/工具/turn | EventBus 上注册 lifecycle 事件监听器 |
 | 工具策略 | 超时已由 harness `tool_guard_timeout` 守卫（`agent/tool_exec.rs`）；`ToolPipeline` 中间件机制已备、生产路径未接线 |
 | 新增命令 | 命令分发按域拆分（`apply_qq_command` 模式）+ CommandRegistry（开放后） |

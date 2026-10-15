@@ -15,10 +15,10 @@
 //! | [`tool`] | the `Tool` seam: trait, `ToolError`, `ToolDefinition` |
 //! | [`skill`] | the skill seam: `Skill`, `SkillMetadata`, `SkillProvider` trait |
 //! | [`chat`] | the chat-platform seam: platform-agnostic message/target types + `ChatAdapter` trait |
+//! | [`adapter`] | the adapter seam: `Adapter` trait, `AdapterInfo`/`AdapterError`, `AdapterManagement` |
 //! | [`mode`] | shared policy enums (`GateMode`, `ThinkingMode`, `ReasoningEffort`, `LoopMode`) |
 //! | [`token`] | pure token-estimation/truncation helpers |
 //! | [`media`] | multimodal payload hygiene: embedded base64 → placeholder text |
-//! | [`session`] | the event-sourced session seam: `SessionEvent` + `SessionStore` traits |
 //! | [`session`] | the event-sourced session seam: `SessionEvent` + `SessionStore` traits |
 //! | [`sanitize`] | the sensitive-data seam: `Redactor` trait (scan / redact / register) |
 //! # Dependency rules
@@ -28,6 +28,7 @@
 //!   an HTTP client error; providers map their own errors into it.
 //! - Everything here is a definition: no filesystem, no network, no state.
 
+pub mod adapter;
 pub mod chat;
 pub mod llm;
 pub mod media;
@@ -41,6 +42,10 @@ pub mod skill;
 pub mod token;
 pub mod tool;
 
+pub use adapter::{
+    Adapter, AdapterConnectionState, AdapterError, AdapterInfo, AdapterManagement,
+    InboundMessageHook,
+};
 pub use chat::{
     AdapterEvent, ChannelType, ChatAdapter, IncomingFile, IncomingMessage, MessageTarget,
     SendResult,
