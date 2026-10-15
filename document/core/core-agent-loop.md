@@ -9,7 +9,7 @@ y: 820
 # Agent 循环
 
 > **定位**：本文描述 **Agent 循环**——可插拔驱动（echo-loop `TurnRunner`）的 turn/step 状态机、循环模式（单会话 / 并行多会话）、工具管道，以及 harness（`agent/turn.rs`）如何把一条输入交给唯一的循环驱动执行。读者：需要理解消息如何被循环执行的开发者。
-> 相关：[多 Agent 与会话](./core-agents.md)（分支与会话准入）、[插件化设计](./core-plugins.md)（loop 插件治理）、[工具系统](./core-tools.md)（工具执行与超时）。
+> 相关：[多 Agent 与会话](./core-agents.md)（分支与会话准入）、[插件化设计](../plugins/core-plugins.md)（loop 插件治理）、[工具系统](../plugins/core-tools.md)（工具执行与超时）。
 
 Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态机 + 工具
 管道）。`echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥二选一）只表达
@@ -48,8 +48,8 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 - 每条入站消息经[多 Agent 与会话](./core-agents.md)的临时分支机制进入
   `process_message_inner`；本层只负责循环本身
 - 系统提示词按块构建（`agent/prompt.rs` 的 `build_prompt_blocks`，
-  [插件化设计](./core-plugins.md) 的能力门控作用于各层）：
-  基础提示词、**system 技能层**（system:true，见 [技能系统](./core-skills.md)）、
+  [插件化设计](../plugins/core-plugins.md) 的能力门控作用于各层）：
+  基础提示词、**system 技能层**（system:true，见 [技能系统](../plugins/core-skills.md)）、
   **persona 级系统技能**（`TeamMember.system_skills` 引用）、技能清单、
   常驻/触发技能、**工作区会话**
   （workspace 插件启用且有激活会话时注入名称 + 目录清单）、输入边界规则
@@ -59,7 +59,7 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
   LLM await 会让并行模式的第二个 turn 在 `skills.lock()` 上饿死
 - 循环迭代（`max_tool_iterations`，随附配置缺省 1024；`AgentConfig::default` 代码缺省为 5）：发 LLM 请求 → 有工具调用则逐个执行并回填结果 → 直至产出最终回复或达上限
 - 输出预算：`[agent].max_tokens`（0 = 无上限，后端回退 `DEFAULT_MAX_TOKENS = 128K` 实用上限）；响应被 `max_tokens` 掐断（finish_reason = length/max_tokens）时自动续跑（最多 4 次，提示"继续上次输出"喂回模型；半截工具调用丢弃后重发完整调用）
-- 达上限未完成时报错收尾；工具的超时/失败不中断 loop（见 [工具系统](./core-tools.md)）
+- 达上限未完成时报错收尾；工具的超时/失败不中断 loop（见 [工具系统](../plugins/core-tools.md)）
 
 ## echo-loop：可替换的默认驱动（TurnRunner）
 
@@ -131,6 +131,6 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 - **按 agent 路由**：`CancelRequestedWork` 携带 `team_id`（`#[serde(default)]` 向后兼容），
   命令泵按 team 路由到对应 persona——self-coding 的消息只有在 self-coding 的 Agent 中才能取消
 - **取消即收尾**：TUI 路径取消同样 emit `AgentCompleted`（与 QQ 路径一致），前端据此把
-  activity phase 置 completed；前端同时做乐观中断（见 [Panel 前端](./panel.md)）
-- 优雅排空（见 [部署与自更新](./ops-deploy.md)）：收到 SIGTERM 后排空模式拒绝新消息、等待活跃 turn 完成（最多 120s）
+  activity phase 置 completed；前端同时做乐观中断（见 [Panel 前端](../panel/panel.md)）
+- 优雅排空（见 [部署与自更新](../ops/ops-deploy.md)）：收到 SIGTERM 后排空模式拒绝新消息、等待活跃 turn 完成（最多 120s）
 - 重启后 turn 不恢复；悬空工具调用在投影时由 `repair_tool_pairing` 补合成结果（只作用于投影副本，不回写事件日志），显示时间线的悬空 running 条目标注为"已中断"

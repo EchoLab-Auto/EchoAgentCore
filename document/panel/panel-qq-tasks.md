@@ -8,7 +8,7 @@ y: 780
 
 # Panel QQ 管理 · 任务 · Shell
 
-> **定位**：本文覆盖适配器弹出层的 QQ 管理（扫码登录 / 门控 / 名单）、入口行任务弹层、Shell 列表与详情视图，以及 HTTP 旁路通道——卡片状态、取消约定（乐观中断 + `team_id` 命令）与通道超时。读者：维护 Panel QQ / 任务 / Shell 交互的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)、[QQ 适配器门控](./adapter-qq-gating.md)。
+> **定位**：本文覆盖适配器弹出层的 QQ 管理（扫码登录 / 门控 / 名单）、入口行任务弹层、Shell 列表与详情视图，以及 HTTP 旁路通道——卡片状态、取消约定（乐观中断 + `team_id` 命令）与通道超时。读者：维护 Panel QQ / 任务 / Shell 交互的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)、[QQ 适配器门控](../plugins/adapter-qq-gating.md)。
 
 ## QQ 管理（适配器弹出层）
 

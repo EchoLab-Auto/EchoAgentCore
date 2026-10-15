@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 扫描（可选清理）本机 EchoAgentCore 数据目录中的明文密钥残留。
 #
-# 背景：脱敏服务（document/security-redaction-design.md）保证**新**数据不再
+# 背景：脱敏服务（document/core/security-redaction-design.md）保证**新**数据不再
 # 以明文落盘（会话事件 / 工具结果 / 日志）；本脚本用于回扫**历史**文件，
 # 输出修复清单；`--fix` 可离线替换残留（需先停 Core）。
 #

@@ -1,6 +1,6 @@
 //! # echo-plugin-api — 插件协议（冻结契约）
 //!
-//! P0 阶段产物（见 `document/decoupling-plan.md`）。本 crate 是宿主（kernel）
+//! P0 阶段产物（见 `document/design/decoupling-plan.md`）。本 crate 是宿主（kernel）
 //! 与插件之间的**唯一线上契约**：同一组消息覆盖全部运输层——
 //!
 //! - **inproc**：类型直连（零序列化，插件与宿主同进程编译）；

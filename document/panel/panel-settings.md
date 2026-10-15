@@ -8,7 +8,7 @@ y: 780
 
 # Panel 设置视图
 
-> **定位**：本文覆盖设置视图（左栏一级菜单 + 右侧分类工作区）的完整交互：视图结构、API 设置、资源工作区（技能/工具/插件/智能体）、从 Git 安装技能、Core 连接与联邦、日志与系统。读者：维护 Panel 设置界面的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)（Agent 配置弹层的 API 供应商引用）、[配置持久化](./core-config-persistence.md)。
+> **定位**：本文覆盖设置视图（左栏一级菜单 + 右侧分类工作区）的完整交互：视图结构、API 设置、资源工作区（技能/工具/插件/智能体）、从 Git 安装技能、Core 连接与联邦、日志与系统。读者：维护 Panel 设置界面的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)（Agent 配置弹层的 API 供应商引用）、[配置持久化](../core/core-config-persistence.md)。
 
 ## 设置视图结构
 
@@ -58,7 +58,7 @@ y: 780
 - 「取消/收起」→ 丢弃表单修改，回到概览
 - 测试连接：`TestApi`（表单目标 = 编辑中的 profile 名，添加模式为空 = 默认配置）；加载态互斥（一次仅测一个）；**每次表单展开时清空上次测试结果**
 
-后端命令映射：`UpdateApiConfig`（name 空 = 全局默认配置；非空 = 供应商池增改）/ `RenameApi`（编辑态改名；原子重写全部按名引用——池名 / `active_api` / `teams[*].api_profile` / 运行中 persona、会话覆盖与工作区对话引用；语义见 [配置持久化](./core-config-persistence.md)§改名语义）/ `TestApi` / `DeleteApi` / `QueryApiBalance`（余额查询 + 快照落盘）/ `QueryApiMetrics`（余额/用量时间序列，回 `ApiMetrics`）；`SwitchApi` 保留协议但 UI 不再暴露（persona 级选用取代全局激活）。数据流见 [配置持久化](./core-config-persistence.md)。
+后端命令映射：`UpdateApiConfig`（name 空 = 全局默认配置；非空 = 供应商池增改）/ `RenameApi`（编辑态改名；原子重写全部按名引用——池名 / `active_api` / `teams[*].api_profile` / 运行中 persona、会话覆盖与工作区对话引用；语义见 [配置持久化](../core/core-config-persistence.md)§改名语义）/ `TestApi` / `DeleteApi` / `QueryApiBalance`（余额查询 + 快照落盘）/ `QueryApiMetrics`（余额/用量时间序列，回 `ApiMetrics`）；`SwitchApi` 保留协议但 UI 不再暴露（persona 级选用取代全局激活）。数据流见 [配置持久化](../core/core-config-persistence.md)。
 
 ### Persona 级 API（`api_profile` 引用）
 
@@ -83,7 +83,7 @@ y: 780
 |---|---|---|
 | 技能 | 见下方「技能工作台」小节 | 启停开关（`ToggleSkill`，列表行内 hover 亦有快速开关）、编辑（名称锁定）、删除（confirm）；**Git 来源技能追加**：更新（`UpdateSkillFromGit`，无确认）、移除来源（confirm「目录保留，可手动删除」→ `RemoveSkillSource`） |
 | 工具 | 见下方「工具 / 插件工作台」小节 | 启停开关（`ToggleTool`，禁用后模型不可见；列表行内 hover 亦有快速开关） |
-| 插件 | 见下方「工具 / 插件工作台」小节 | 启停开关（`TogglePlugin`，禁用即卸载注册；全局生效；**「管理面」插件禁用被保护**——core 拒绝 + UI 明示且行内不给开关，防 Panel 自锁断连）。**包级聚合**：包内工具与技能随包一起启停（见 [插件化设计](./core-plugins.md)「Package」） |
+| 插件 | 见下方「工具 / 插件工作台」小节 | 启停开关（`TogglePlugin`，禁用即卸载注册；全局生效；**「管理面」插件禁用被保护**——core 拒绝 + UI 明示且行内不给开关，防 Panel 自锁断连）。**包级聚合**：包内工具与技能随包一起启停（见 [插件化设计](../plugins/core-plugins.md)「Package」） |
 | 智能体 | N 会话/循环模式标签（单会话/并行多会话）、提示词、能力白名单、禁用能力（`disabled_tools`/`disabled_skills` 的 error 色标签组；插件黑名单已移除） | 选中即进编辑态；启停（`ToggleTeam`）；任意智能体可删（**至少保留一个**；无受保护成员） |
 
 ### 技能工作台
@@ -147,7 +147,7 @@ y: 780
 
 ## 从 Git 仓库安装技能
 
-技能工具条「Git 安装」打开**弹层**（原内联表单会顶掉列表且安装后无反馈）：三字段——仓库 URL（https/ssh/本地路径，**唯一必填**，trim 后为空时按钮禁用）、安装目录名（默认取仓库名）、分支（默认取仓库默认分支）；后两者留空传 `null`。提交下发 `InstallSkillFromGit{url, name?, branch?}`（`protocol.ts`），提交后弹层关闭。Core 侧机制（shallow clone、目录提升、`.sources.json` 来源记录、更新/移除语义）见 [技能系统](./core-skills.md)「外部 Git 来源技能」。
+技能工具条「Git 安装」打开**弹层**（原内联表单会顶掉列表且安装后无反馈）：三字段——仓库 URL（https/ssh/本地路径，**唯一必填**，trim 后为空时按钮禁用）、安装目录名（默认取仓库名）、分支（默认取仓库默认分支）；后两者留空传 `null`。提交下发 `InstallSkillFromGit{url, name?, branch?}`（`protocol.ts`），提交后弹层关闭。Core 侧机制（shallow clone、目录提升、`.sources.json` 来源记录、更新/移除语义）见 [技能系统](../plugins/core-skills.md)「外部 Git 来源技能」。
 
 ```prodoc-flow
 graph LR
@@ -170,8 +170,8 @@ graph LR
   - **创建联邦 / 添加节点**：点按钮打开向导（顶部按钮随拓扑状态切换文案）——勾选要纳入的节点（默认全选**在线**的已接入 Core；离线节点禁选），显示「已互联 X 对 / 将新建 Y 对」（全互联补全），执行时逐对完成「一侧生成邀请 → 另一侧登记接入 → 等链路在线」；默认方向失败**自动换向重试一次**，两方向均失败则清理已登记条目并标记失败（可「重试失败项」）。已配置的对自动跳过（含离线链路——重连是链路自身行为，无需重新配对）
   - **拓扑视图**（无向导时的上半区）：节点间链路一览（`a ── b`，在线绿色加粗），数量摘要「N 个节点 · M/K 条链路已配置 · X 条在线」。互联判定：链路在线时按 Core 回传的对端 `node_id` 精确匹配；离线/旧 Core 缺失时按 peer 名兜底（Panel 配置名 / node_name / `node-<id 前 8>`）
   - **手动通道**（每个 Core 卡片内保留）：生成邀请串（一次性 token，含共享密钥按密钥级保密）、添加/编辑 peer（粘贴 `echofed://` 邀请串自动解析）、逐项收紧授权（工具/查询/委派/需确认）；编辑回填现有授权，不以默认覆盖
-  - 联邦网络的架构、占位提升、配对无方向性与安全模型见 [联邦（多机）](./federation.md)
+  - 联邦网络的架构、占位提升、配对无方向性与安全模型见 [联邦（多机）](../federation/federation.md)
 ## 日志与系统
 
 - **日志**（整页查看器，`LogView.vue`）：Core/Panel 分段切换（默认 Core），拉取 `/api/logs/{core,panel}?lines=100` 原文显示（max-height 65vh 内滚动）；自动刷新默认开（**5s** 间隔），可切手动，另有手动「刷新」按钮；切换来源或自动开关立即重载并重启定时器；HTTP 错误显示状态码。**切换分类即卸载**——定时器随卸载清理，切回时重新挂载拉取。**SSH 上游日志（2026-10 末）**：存在 SSH 接入的上游时，Core 视图追加「本机 / 各 SSH 上游」选择器——选中 SSH 上游则请求带 `?core=<上游名>`，Panel 后端经隧道在远端执行 journalctl（两代单元名 `-fixed` 与现役**合并**取最新 N 行；失败给出可操作提示）；选中上游被删除/改直连自动回退「本机」
-- **系统**（自更新）分类：更新服务与流程见 [部署与自更新](./ops-deploy.md)
+- **系统**（自更新）分类：更新服务与流程见 [部署与自更新](../ops/ops-deploy.md)

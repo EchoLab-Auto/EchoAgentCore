@@ -14,7 +14,7 @@ pub enum Contribution {
     /// 适配器贡献（P1，2026-10 适配器插件化）：平台适配器作为插件交付。
     /// 宿主把 `RemoteAdapter`（`echo_adapter::Adapter` 的远程实现）注册进
     /// `AdapterRegistry`；动作经 `Invoke("<name>:<op>")`，入站经
-    /// `HostCall` → 宿主服务 `adapter_host`（见 `document/adapter-plugin.md`）。
+    /// `HostCall` → 宿主服务 `adapter_host`（见 `document/design/adapter-plugin.md`）。
     Adapter(AdapterContribution),
 }
 
@@ -89,7 +89,7 @@ pub struct AdapterContribution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_schema: Option<Value>,
     /// UI 描述符（插件声明的适配器管理界面；Panel 经通用渲染器呈现；
-    /// 结构见 `document/adapter-plugin.md` §Panel UI 解耦，可选）。
+    /// 结构见 `document/design/adapter-plugin.md` §Panel UI 解耦，可选）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<Value>,
     /// 会话标签（`SessionSwitcher` 等平台分组显示；如 `{"dm":"私聊","group":"群"}`，可选）。

@@ -57,7 +57,7 @@ pub async fn serve_with_token(
 }
 
 /// 端口合并监听端（`[core].management_address` == `[federation].listen`，
-/// 见 `document/federation-port-merge.md`）：单监听按令牌命名空间分类——
+/// 见 `document/design/federation-port-merge.md`）：单监听按令牌命名空间分类——
 /// 管理令牌 → 管理 WS；peer 令牌 → 联邦链路；其余 → 标准 HTTP 401。
 pub async fn serve_with_federation(
     addr: &str,
@@ -325,7 +325,7 @@ pub(crate) enum ConnRole {
     Federation,
 }
 
-/// 合并监听端的令牌分类（决策表见 `document/federation-port-merge.md`）：
+/// 合并监听端的令牌分类（决策表见 `document/design/federation-port-merge.md`）：
 /// 1. == 管理令牌（非空）→ 管理；2. ∈ peer 令牌表 → 联邦；
 /// 3. 管理令牌为空 → 管理（兼容旧监听行为；非回环合并已在启动期拒绝）；
 /// 4. 其余（未知令牌 / 缺令牌且管理令牌非空）→ `None`（401）。

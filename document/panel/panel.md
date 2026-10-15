@@ -84,7 +84,7 @@ EchoAgentPanel/
 
 ### 接入点、访问令牌与调度
 
-**一套架构，Panel 只是用户入口**：联邦网络是唯一实体（所有 Core 节点对等互联，见 [联邦](./federation.md)）；Panel 是接入这个网络的**用户面板 / 客户端**。`[[cores]]` 不是「另一套架构的上游」，而是 **Panel 的接入点配置**——它连哪些 Core 节点以看到 / 操作联邦网络。中继把浏览器单连接复用到全部接入点：事件按来源节点带 `{core, frame}` 信封、会话列表带来源徽标；命令按当前会话所属节点路由（`connection.ts::resolveTargetCore`），未选中会话时全局类只读命令（如 `RequestTeamsList`）裸广播全部接入点、各端各回一份聚合。接入点可在设置·Core 连接页在线增删（写回 `[[cores]]` 段持久化，中继动态并入 / 摘除，无需重启）；单接入点（`[core]` 或一条 `[[cores]]`）无信封、按原文转发，行为与单上游模式一致。
+**一套架构，Panel 只是用户入口**：联邦网络是唯一实体（所有 Core 节点对等互联，见 [联邦](../federation/federation.md)）；Panel 是接入这个网络的**用户面板 / 客户端**。`[[cores]]` 不是「另一套架构的上游」，而是 **Panel 的接入点配置**——它连哪些 Core 节点以看到 / 操作联邦网络。中继把浏览器单连接复用到全部接入点：事件按来源节点带 `{core, frame}` 信封、会话列表带来源徽标；命令按当前会话所属节点路由（`connection.ts::resolveTargetCore`），未选中会话时全局类只读命令（如 `RequestTeamsList`）裸广播全部接入点、各端各回一份聚合。接入点可在设置·Core 连接页在线增删（写回 `[[cores]]` 段持久化，中继动态并入 / 摘除，无需重启）；单接入点（`[core]` 或一条 `[[cores]]`）无信封、按原文转发，行为与单上游模式一致。
 
 - **Bearer 访问令牌**：`[server].access_token` 非空时全站（WS 握手 / `/api/*` / `/media`）要求 `Authorization: Bearer <token>` 或 `?token=` 查询参数，静态前端豁免以加载登录页（`proxy.rs::authorized`、`upstreams_api.rs::require_auth`）；前端 URL `?token=` 播种一次后存 localStorage `echo-panel-token`，后续 HTTP 经 `panelFetch` 自动带 Bearer 头（`connection.ts:328-345`）。另有 `[core].access_token` 是连 Core management WS 的认证头，须与 Core 侧配置一致
 - **分布式调度器 `scheduler.ts`**：新建会话（或向无归属新对话发首条消息）时的目标节点选择，策略持久化于 localStorage `echo-schedule-policy`：`least_busy`（默认，按 FederationStatus 各 peer 活跃 turn 数取最小，本机参与比较）/ `round_robin` / `prefer:<name>`（亲和，离线退 least_busy）；只做建议，最终路由仍走 connection.ts 的 coreForCommand 链
@@ -94,7 +94,7 @@ EchoAgentPanel/
 
 - `~/.config/echo-agent-panel/panel.toml`：`[server]`（bind_address、static_dir、media_dir 媒体库目录、media_cache_dir 远端媒体缓存目录、access_token 面板访问令牌）、`[core]`（connect_url 连 Core 的 WS 地址、access_token 认证头；单上游兜底——`[[cores]]` 键出现过即以在线管理为准）、`[[cores]]`（接入点 name/url/access_token/可选 `[cores.ssh]` SSH 段，可空，设置·Core 连接页在线增删并写回）、`[logging]`（level/format/log_file 滚动）
 - `systemctl --user restart echo-agent-panel.service` 重启；静态资源在 `~/.local/libexec/echo-agent-panel/web`
-- 更新走 `echo-agent-panel-update.service`（构建 Rust 服务 + `npm run build` + 替换静态目录 + 重启），详见 [部署与自更新](./ops-deploy.md)
+- 更新走 `echo-agent-panel-update.service`（构建 Rust 服务 + `npm run build` + 替换静态目录 + 重启），详见 [部署与自更新](../ops/ops-deploy.md)
 
 ## 开发与构建
 
@@ -107,4 +107,4 @@ cd web && npm run dev           # 前端热更新（/ws 代理到 :8080）
 ## 延伸阅读
 
 - 前端文档群：[交互定义](./panel-interaction.md)（总入口）→ [布局与导航](./panel-layout.md)、[会话视图](./panel-chat.md)、[模态与覆盖层](./panel-modals.md)、[设置视图](./panel-settings.md)、[QQ 管理·任务·Shell](./panel-qq-tasks.md)、[系统交互](./panel-system.md)
-- 相关：[协议与数据流](./protocol.md)（WS 帧格式、命令与事件）、[部署与自更新](./ops-deploy.md)、[联邦（多机）](./federation.md)
+- 相关：[协议与数据流](../protocol/protocol.md)（WS 帧格式、命令与事件）、[部署与自更新](../ops/ops-deploy.md)、[联邦（多机）](../federation/federation.md)

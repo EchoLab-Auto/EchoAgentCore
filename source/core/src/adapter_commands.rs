@@ -4,7 +4,7 @@
 //! 回复经 `adapter.send_message`（内置实例与插件实例同一路径）。
 //!
 //! **owner 判定**：只认 `metadata.sender_role == "owner"`（插件侧标注，
-//! 见 `document/adapter-plugin.md` §插件侧；信任边界 = 插件为用户自装的
+//! 见 `document/design/adapter-plugin.md` §插件侧；信任边界 = 插件为用户自装的
 //! 可信代码——宿主不重复读平台配置）。
 //!
 //! 接线：插件实例的入站 worker 在投递 agent 之前调用 [`try_handle`]；

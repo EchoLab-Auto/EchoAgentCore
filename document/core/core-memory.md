@@ -65,4 +65,4 @@ y: 980
   （近 40 条保全文、更早截断），持久化不动
 - 加载恢复：`timeline_seq` 从条目最大 seq 重建；悬空 running 工具条目标注"已中断"
 
-> 在架构中的位置见 [架构总览](./architecture.md)§会话与持久化；持久化文件布局见 [配置持久化](./core-config-persistence.md)§Session 持久化。
+> 在架构中的位置见 [架构总览](../overview/architecture.md)§会话与持久化；持久化文件布局见 [配置持久化](./core-config-persistence.md)§Session 持久化。

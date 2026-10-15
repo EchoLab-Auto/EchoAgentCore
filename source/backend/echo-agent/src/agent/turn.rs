@@ -3,7 +3,7 @@
 //! 流式转发与 runner 生命周期事件 → Panel 事件的翻译。
 //!
 //! 2026-10 架构评审：从 `agent/mod.rs` 抽出，并删除并行存在的内置循环
-//! （单轨化，见 `document/core-agent-loop.md`）。
+//! （单轨化，见 `document/core/core-agent-loop.md`）。
 
 use anyhow::{anyhow, Result};
 

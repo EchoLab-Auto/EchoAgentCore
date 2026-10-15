@@ -8,7 +8,7 @@ y: 1620
 
 # 工具系统
 
-> **定位**：本文描述工具系统——工具的注册与分派、参数预检、超时治理、文件工具路径约定、事件持久化与后台 Shell 会话（含已废弃工具）。工具集作为插件（`echo-agent.tools.builtin`）的装载清单与 persona 门控见 [插件化设计](./core-plugins.md)；工具调用相关的协议事件见 [协议与数据流](./protocol.md)。读者：工具系统的使用者与维护者。
+> **定位**：本文描述工具系统——工具的注册与分派、参数预检、超时治理、文件工具路径约定、事件持久化与后台 Shell 会话（含已废弃工具）。工具集作为插件（`echo-agent.tools.builtin`）的装载清单与 persona 门控见 [插件化设计](./core-plugins.md)；工具调用相关的协议事件见 [协议与数据流](../protocol/protocol.md)。读者：工具系统的使用者与维护者。
 
 ## 注册与分发
 
@@ -49,7 +49,7 @@ y: 1620
 ## 事件与持久化
 
 - `ToolCall` / `ToolResult` 都写入事件日志（事件溯源），重启后可完整重放
-- 协议事件携带 `tool_call_id` + `timed_out`：前端精确配对（同名并行调用不再配错对），超时渲染为失败；显示时间线就地更新会重新投递完成态（见 [协议与数据流](./protocol.md)）
+- 协议事件携带 `tool_call_id` + `timed_out`：前端精确配对（同名并行调用不再配错对），超时渲染为失败；显示时间线就地更新会重新投递完成态（见 [协议与数据流](../protocol/protocol.md)）
 
 ## 后台 Shell 会话（持久 bash）
 
@@ -90,4 +90,4 @@ y: 1620
 ## 已废弃工具
 
 - `run_sudo`（人机交互 sudo 授权）、`present_menu`（人机交互选单）、`framework_update`（受控自更新）三个内置工具及其全部配套（broker、协议事件、配置段 `[agent.sudo]` / `[agent.self_update]`、Panel 弹窗/选单卡片）已废弃移除
-- 现状：提权执行与面板选单不再提供；自更新改经受管更新器（`update.sh` / `echo-agent-core-update.service`）执行，见 [部署与自更新](./ops-deploy.md)
+- 现状：提权执行与面板选单不再提供；自更新改经受管更新器（`update.sh` / `echo-agent-core-update.service`）执行，见 [部署与自更新](../ops/ops-deploy.md)

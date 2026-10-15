@@ -11,73 +11,138 @@ link: ["architecture | 架构总览 | l>r", "core | Core 后端 | l>r", "panel |
 
 EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架：Core 负责 LLM agent 循环、工具调用、多 agent 人格、QQ 适配器；Panel 是 Vue 3 前端，通过 WebSocket 与 Core 通信，提供聊天、任务、Shell、设置（API/技能/工具/插件/智能体/日志）等界面。
 
-> 本文档群按 ProDoc 文档图组织（每个 `.md` 是画布上一个框，连线表达主干导航），并按「总览 → 框架 → 子系统 → 细节」四层拉开阅读距离——分层定义与写作约定见 [文档规范](./documentation-guide.md)。两仓库（core + panel）的文档统一维护在本目录。
+> 本文档群按 ProDoc 文档图组织（每个 `.md` 是画布上一个框，连线表达主干导航），物理目录按「主题 × 阅读距离」分层（`overview → core → plugins / panel / protocol / federation → ops / dev → design`），且将**长期参考类**（模块文档）与**设计过程类**（计划/提案/记录）分开——放置规则与写作约定见 [文档规范](./documentation-guide.md)。两仓库（core + panel）的文档统一维护在本目录。
 
 ## 阅读路径
 
-- **理解系统怎么组成**：本页 → [架构总览](./architecture.md) → [Core 后端](./core.md) → [框架（内核）](./frame.md) → [插件化设计](./core-plugins.md)
-- **运行时子系统**：[多 Agent 与会话](./core-agents.md) → [Agent 循环](./core-agent-loop.md)；[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)
-- **扩展系统**：[插件化设计](./core-plugins.md) → [工具系统](./core-tools.md) / [技能系统](./core-skills.md) / [Subagent 插件](./core-subagent.md)；外部插件作者读 [插件开发指南](./plugin-authoring.md)
-- **安全**：[敏感信息隔离（脱敏服务）](./security-redaction-design.md)——出口卡口与保证边界
-- **前端**：[Panel 前端](./panel.md) → [交互定义](./panel-interaction.md) → 各视图文档
-- **运维排障**：[部署与自更新](./ops-deploy.md)、[协议与数据流](./protocol.md)
+- **理解系统怎么组成**：本页 → [架构总览](./overview/architecture.md) → [Core 后端](./core/core.md) → [框架（内核）](./core/frame.md) → [插件化设计](./plugins/core-plugins.md)
+- **运行时子系统**：[多 Agent 与会话](./core/core-agents.md) → [Agent 循环](./core/core-agent-loop.md)；[会话记忆](./core/core-memory.md)、[多模态输入](./core/core-multimodal.md)、[配置持久化](./core/core-config-persistence.md)
+- **扩展系统**：[插件化设计](./plugins/core-plugins.md) → [工具系统](./plugins/core-tools.md) / [技能系统](./plugins/core-skills.md) / [Subagent 插件](./plugins/core-subagent.md)；外部插件作者读 [插件开发指南](./plugins/plugin-authoring.md)
+- **安全**：[敏感信息隔离（脱敏服务）](./core/security-redaction-design.md)——出口卡口与保证边界
+- **前端**：[Panel 前端](./panel/panel.md) → [交互定义](./panel/panel-interaction.md) → 各视图文档
+- **运维排障**：[部署与自更新](./ops/ops-deploy.md)、[协议与数据流](./protocol/protocol.md)
+
+## 分层导航
+
+**总览层 —— 入口与骨架**
+
+- [architecture.md](./overview/architecture.md) — 架构总览：crate 布局、能力接缝、事件、会话与扩展点地图
+- [index.md](./index.md) — 本页：文档总览、阅读路径与分层导航
+
+**核心层 —— 内核机制与运行时子系统**
+
+- [core.md](./core/core.md) — Core 后端入口：组成、进程与运行速览、配置入口
+- [frame.md](./core/frame.md) — 框架（内核）：组合装配、服务定位、事件总线、插件宿主、进程结构
+- [core-agents.md](./core/core-agents.md) — 多 Agent 与会话：persona 装配、会话模型、工作区会话、能力隔离
+- [core-agent-loop.md](./core/core-agent-loop.md) — Agent 循环：单/并行模式、Turn 状态机与默认驱动 TurnRunner
+- [core-memory.md](./core/core-memory.md) — 会话记忆：事件溯源日志、投影、压缩归档、显示时间线
+- [core-multimodal.md](./core/core-multimodal.md) — 多模态输入：媒体库、模型侧还原、token 卫生
+- [core-config-persistence.md](./core/core-config-persistence.md) — 配置持久化：ConfigStore、门控/会话持久化、原子写入
+- [security-redaction-design.md](./core/security-redaction-design.md) — 敏感信息隔离：威胁模型、出口卡口与保证边界
+
+**插件层 —— 插件体系与各插件机制**
+
+- [core-plugins.md](./plugins/core-plugins.md) — 插件化设计：插件模型、内置清单、能力开关、外部进程插件
+- [core-tools.md](./plugins/core-tools.md) — 工具系统：注册分发、路径约定、超时治理、后台 Shell 会话
+- [core-skills.md](./plugins/core-skills.md) — 技能系统：分层、SKILL.md、热重载、系统提示词技能
+- [core-subagent.md](./plugins/core-subagent.md) — Subagent 插件：异步委派、隔离上下文、完成回报
+- [adapter-qq-gating.md](./plugins/adapter-qq-gating.md) — QQ 适配器门控：五层管道、多实例、消息收发与渲染
+- [plugin-authoring.md](./plugins/plugin-authoring.md) — 插件开发指南：快速上手、装载、协议约定与本地验证
+- [federation.md](./federation/federation.md) — 联邦（多机去中心化）：链路协议、安全模型、远程工具与调度
+
+**协议层**
+
+- [protocol.md](./protocol/protocol.md) — 协议与数据流：传输信封、命令/事件、时间线同步、兼容性规则
+
+**前端层 —— Panel 与视图交互契约**
+
+- [panel.md](./panel/panel.md) — Panel 前端：仓库布局、中继模型、状态管理与数据流
+- [panel-interaction.md](./panel/panel-interaction.md) — 交互定义：核心原则与交互模块树（前端总入口）
+- [panel-layout.md](./panel/panel-layout.md) — 布局与导航：视图导航、应用外壳、连接生命周期、侧边栏
+- [panel-chat.md](./panel/panel-chat.md) — 会话视图：消息列表、工具卡、推理块与输入区
+- [panel-modals.md](./panel/panel-modals.md) — 模态与覆盖层：模态清单、分支/上下文弹层、Agent 配置弹层
+- [panel-settings.md](./panel/panel-settings.md) — 设置视图：API、资源工作区、技能安装、Core 连接与联邦、日志
+- [panel-qq-tasks.md](./panel/panel-qq-tasks.md) — QQ 管理·任务·Shell：适配器弹层、任务弹层、HTTP 通道
+- [panel-mobile.md](./panel/panel-mobile.md) — 移动端适配（竖屏）：断点、卡片抽屉、软键盘适配
+- [panel-system.md](./panel/panel-system.md) — 系统交互：Toast、键盘清单、设计边界与关键常量
+
+**运维层**
+
+- [ops-deploy.md](./ops/ops-deploy.md) — 部署与自更新：安装、容器化、更新流程、回滚与日常体检
+
+**开发层**
+
+- [dev-guide.md](./dev/dev-guide.md) — 开发指南：仓库结构、关键抽象、编码约定、治理门禁
+- [dev-testing.md](./dev/dev-testing.md) — 测试策略：测试分层、Mock 与夹具、质量门禁
+- [documentation-guide.md](./documentation-guide.md) — 文档规范：目录分层、单篇体例、模板与放置规则
+
+**设计层 —— 计划 / 提案 / 设计记录（过程性材料，正文标注状态）**
+
+- [decoupling-plan.md](./design/decoupling-plan.md) — 完全解耦推进计划（规划）：验收口径、分阶段计划与风险
+- [adapter-plugin.md](./design/adapter-plugin.md) — 适配器插件化设计：P1 已落地、P2+ 规划
+- [agent-humanlike-style.md](./design/agent-humanlike-style.md) — 拟人化方案（规划）：语气与回复节奏
+- [federation-port-merge.md](./design/federation-port-merge.md) — 联邦·管理端口合并（设计记录，已实施）
+
+**调研稿**（`source/research/`，非文档群成员，过程材料不进本目录）
+
+- [system-audit-2026-10](../research/system-audit-2026-10/README.md)、[compat-audit-2026-10](../research/compat-audit-2026-10/core-compat-audit.md)（[panel 侧](../research/compat-audit-2026-10/panel-compat-audit.md)）
+- [workspace-conversations-2026-10](../research/workspace-conversations-2026-10/design.md)、[opencode-context-compaction](../research/opencode-context-compaction/README.md)
 
 ## 导航地图
 
 ```prodoc-flow
 graph LR
   Home[文档总览|/index.md]
-  Home --> Arch[架构总览|/architecture.md]
-  Home --> Core[Core 后端|/core.md]
-  Home --> Panel[Panel 前端|/panel.md]
-  Home --> Proto[协议与数据流|/protocol.md]
-  Home --> Ops[部署与自更新|/ops-deploy.md]
-  Home --> Dev[开发指南|/dev-guide.md]
-  Core --> Frame[框架（内核）|/frame.md]
-  Core --> Plugins[插件化设计|/core-plugins.md]
-  Frame --> Agents[多 Agent 与会话|/core-agents.md]
-  Agents --> Loop[Agent 循环|/core-agent-loop.md]
-  Frame --> Memory[会话记忆|/core-memory.md]
-  Frame --> MModal[多模态输入|/core-multimodal.md]
-  Frame --> Persist[配置持久化|/core-config-persistence.md]
-  Frame --> Security[敏感信息隔离|/security-redaction-design.md]
-  Plugins --> Tools[工具系统|/core-tools.md]
-  Plugins --> Skills[技能系统|/core-skills.md]
-  Plugins --> Subagent[Subagent 插件|/core-subagent.md]
-  Plugins --> Gating[QQ 适配器门控|/adapter-qq-gating.md]
-  Plugins --> Fed[联邦（多机）|/federation.md]
-  Plugins --> Author[插件开发指南|/plugin-authoring.md]
-  Plugins --> Plan[完全解耦推进计划|/decoupling-plan.md]
-  Plugins --> AdapterPlugin[适配器插件化设计（规划）|/adapter-plugin.md]
-  Agents --> Style[拟人化方案（规划）|/agent-humanlike-style.md]
-  Fed --> FedMerge[联邦·管理端口合并（设计记录）|/federation-port-merge.md]
-  Panel --> Inter[Panel 交互定义|/panel-interaction.md]
-  Inter --> Layout[布局与导航|/panel-layout.md]
-  Inter --> Chat[会话视图|/panel-chat.md]
-  Inter --> Modals[模态与覆盖层|/panel-modals.md]
-  Inter --> Set[设置视图|/panel-settings.md]
-  Inter --> Tasks[QQ管理·任务·Shell|/panel-qq-tasks.md]
-  Inter --> Mobile[移动端适配|/panel-mobile.md]
-  Inter --> Sys[系统交互|/panel-system.md]
-  Dev --> Test[测试策略|/dev-testing.md]
+  Home --> Arch[架构总览|/overview/architecture.md]
+  Home --> Core[Core 后端|/core/core.md]
+  Home --> Panel[Panel 前端|/panel/panel.md]
+  Home --> Proto[协议与数据流|/protocol/protocol.md]
+  Home --> Ops[部署与自更新|/ops/ops-deploy.md]
+  Home --> Dev[开发指南|/dev/dev-guide.md]
+  Core --> Frame[框架（内核）|/core/frame.md]
+  Core --> Plugins[插件化设计|/plugins/core-plugins.md]
+  Frame --> Agents[多 Agent 与会话|/core/core-agents.md]
+  Agents --> Loop[Agent 循环|/core/core-agent-loop.md]
+  Frame --> Memory[会话记忆|/core/core-memory.md]
+  Frame --> MModal[多模态输入|/core/core-multimodal.md]
+  Frame --> Persist[配置持久化|/core/core-config-persistence.md]
+  Frame --> Security[敏感信息隔离|/core/security-redaction-design.md]
+  Plugins --> Tools[工具系统|/plugins/core-tools.md]
+  Plugins --> Skills[技能系统|/plugins/core-skills.md]
+  Plugins --> Subagent[Subagent 插件|/plugins/core-subagent.md]
+  Plugins --> Gating[QQ 适配器门控|/plugins/adapter-qq-gating.md]
+  Plugins --> Fed[联邦（多机）|/federation/federation.md]
+  Plugins --> Author[插件开发指南|/plugins/plugin-authoring.md]
+  Plugins --> Plan[完全解耦推进计划|/design/decoupling-plan.md]
+  Plugins --> AdapterPlugin[适配器插件化设计（规划）|/design/adapter-plugin.md]
+  Agents --> Style[拟人化方案（规划）|/design/agent-humanlike-style.md]
+  Fed --> FedMerge[联邦·管理端口合并（设计记录）|/design/federation-port-merge.md]
+  Panel --> Inter[Panel 交互定义|/panel/panel-interaction.md]
+  Inter --> Layout[布局与导航|/panel/panel-layout.md]
+  Inter --> Chat[会话视图|/panel/panel-chat.md]
+  Inter --> Modals[模态与覆盖层|/panel/panel-modals.md]
+  Inter --> Set[设置视图|/panel/panel-settings.md]
+  Inter --> Tasks[QQ管理·任务·Shell|/panel/panel-qq-tasks.md]
+  Inter --> Mobile[移动端适配|/panel/panel-mobile.md]
+  Inter --> Sys[系统交互|/panel/panel-system.md]
+  Dev --> Test[测试策略|/dev/dev-testing.md]
   Dev --> DocGuide[文档规范|/documentation-guide.md]
 ```
 
-## 文档分类
+## 目录分层
 
-画布分为六组，阅读距离从左到右（框架 → 细节）：
+物理目录将**长期参考类**与**设计过程类**分开：
 
-- **总览**——入口与骨架：本页、[架构总览](./architecture.md)
-- **框架**——内核机制与运行时子系统：[Core 后端](./core.md)、[框架（内核）](./frame.md)、[多 Agent 与会话](./core-agents.md)、[Agent 循环](./core-agent-loop.md)、[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)、[敏感信息隔离（脱敏服务）](./security-redaction-design.md)
-- **插件**——插件体系与各插件机制文档：[插件化设计](./core-plugins.md)、[工具系统](./core-tools.md)、[技能系统](./core-skills.md)、[Subagent 插件](./core-subagent.md)、[QQ 适配器门控](./adapter-qq-gating.md)、[联邦（多机）](./federation.md)、[插件开发指南](./plugin-authoring.md)
-- **前端**——Panel 与各视图交互契约：`panel.md`、`panel-interaction.md` 及各 `panel-*` 视图文档
-- **工程**——协议、运维与开发规范：[协议与数据流](./protocol.md)、[部署与自更新](./ops-deploy.md)、[开发指南](./dev-guide.md)、[测试策略](./dev-testing.md)、[文档规范](./documentation-guide.md)
-- **规划**——路线图与提案：[完全解耦推进计划](./decoupling-plan.md)、[适配器插件化设计](./adapter-plugin.md)、[拟人化方案](./agent-humanlike-style.md)、[联邦·管理端口合并（设计记录）](./federation-port-merge.md)
+- `overview/` 入口与骨架；`core/` 内核与运行时子系统；`plugins/` 插件体系与各插件；`federation/` 联邦；`protocol/` 线协议
+- `panel/` 前端及视图契约；`ops/` 部署运维；`dev/` 开发规范；`design/` 计划、提案与设计记录（已实施的设计记录亦在此，正文已标注状态）
+- 根目录只保留 `index.md`（入口）与 `documentation-guide.md`（写作规范）
+- 画布参数 `group` 暂保留原分组（总览/框架/插件/前端/工程/规划），与目录对应关系见 [文档规范](./documentation-guide.md)
 
 ### 文档约定（速览）
 
 - **模块文档**：**当前实现**的权威描述，与代码同步更新
 - **开发文档**（dev-*）：面向开发者的速查、规范与测试策略
-- **规划文档**：路线图与未落地提案，正文明确标注状态
+- **设计文档**（design/）：路线图、提案与设计记录，正文首段标注状态；已实施记录不删，供追溯
+- **过时内容**：不删除事实，以现状句或状态标注消化
 
 > 原架构决策记录（ADR 0001-0018）已并入对应模块文档；历史演进由 git 提交记录承担，不在文档正文设立变更日志。

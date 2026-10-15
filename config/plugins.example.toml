@@ -2,7 +2,7 @@
 #
 # 放置位置：与 core.toml 同目录（如 ~/.config/echo-agent-core/plugins.toml）。
 # 文件不存在 = 外部插件特性休眠（Core 行为与不启用完全一致）。
-# 详见 document/plugin-authoring.md。
+# 详见 document/plugins/plugin-authoring.md。
 
 [profile]
 name = "default"

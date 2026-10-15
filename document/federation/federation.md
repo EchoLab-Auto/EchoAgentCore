@@ -9,7 +9,7 @@ link: ["federation-port-merge | 端口合并（设计记录） | b>l"]
 
 # 联邦（多机去中心化 Agent）
 
-> **定位**：本文描述联邦（多机去中心化）——Core↔Core 对等链路的设计原则、协议与安全模型、配置与管理面、跨机工具调用/委派/查询/文件协作/会话迁移，以及 Panel 侧的多节点调度。读者：多机部署的使用者与联邦功能的维护者。联邦的装载与门控见 [插件化设计](./core-plugins.md)；节点内的会话与工作区模型见 [多 Agent 与会话](./core-agents.md)。
+> **定位**：本文描述联邦（多机去中心化）——Core↔Core 对等链路的设计原则、协议与安全模型、配置与管理面、跨机工具调用/委派/查询/文件协作/会话迁移，以及 Panel 侧的多节点调度。读者：多机部署的使用者与联邦功能的维护者。联邦的装载与门控见 [插件化设计](../plugins/core-plugins.md)；节点内的会话与工作区模型见 [多 Agent 与会话](../core/core-agents.md)。
 
 Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，agent 可以
 跨机器的工作区执行工具、委派子任务、做只读查询。典型场景：联合调试
@@ -170,7 +170,7 @@ allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspac
 绑定非回环（`echo-agent-core token --rotate` 补救）；管理令牌与任一
 peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲突令牌。
 合并监听挂**管理面插件生命周期**（禁用管理面 = 联邦入站同停，出站连出
-不受影响）。设计全案见 [联邦·管理端口合并（设计记录）](./federation-port-merge.md)。
+不受影响）。设计全案见 [联邦·管理端口合并（设计记录）](../design/federation-port-merge.md)。
 
 **Panel 管理**（设置·Core 连接页·联邦区块）：`SaveFederationPeer` /
 `DeleteFederationPeer` / `RequestFederationStatus` /
@@ -192,7 +192,7 @@ peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲�
 `FederationStatus` 推导互联边——链路在线时按状态快照回传的**对端
 `node_id`** 精确匹配（`FederationPeerInfo.node_id`，2026-10 新增字段；
 离线/旧 Core 缺失时按 peer 名兜底：Panel 配置名 / node_name /
-`node-<id 前 8>`）。一套 Panel 管全联邦，见 [Panel](./panel.md)。
+`node-<id 前 8>`）。一套 Panel 管全联邦，见 [Panel](../panel/panel.md)。
 
 **邀请配对的占位提升**：`invite-*` 占位（运行时-only；**显式登记表**记账
 ——不靠名字前缀猜测，用户配置名含 `invite-` 前缀不会被误提升）配对

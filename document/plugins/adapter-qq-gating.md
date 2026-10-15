@@ -8,7 +8,7 @@ y: 2220
 
 # QQ 适配器门控设计
 
-> **定位**：本文是 `echo-agent.adapter.qq` 插件的机制文档——QQ 消息与会话列表信息在到达 agent 之前经过的五层门控、运行时可变性、多实例与容器生命周期、文件接收与语音/文件发送、消息渲染。读者：QQ 适配器的使用者与维护者。插件的装载与 persona 门控见 [插件化设计](./core-plugins.md)；多实例涉及的会话/人格模型见 [多 Agent 与会话](./core-agents.md)。
+> **定位**：本文是 `echo-agent.adapter.qq` 插件的机制文档——QQ 消息与会话列表信息在到达 agent 之前经过的五层门控、运行时可变性、多实例与容器生命周期、文件接收与语音/文件发送、消息渲染。读者：QQ 适配器的使用者与维护者。插件的装载与 persona 门控见 [插件化设计](./core-plugins.md)；多实例涉及的会话/人格模型见 [多 Agent 与会话](../core/core-agents.md)。
 
 ## 设计目标
 
@@ -289,7 +289,7 @@ echo-core）：
 | `face`（QQ 内置表情） | `[表情:微笑]`；未知 id 回退 `[表情:123]`（对照表 `echo-core/src/face.rs`，取自 NapCat `face_config.json`，329 条） |
 | `dice` / `rps` | `[骰子:4]` / `[石头剪刀布:剪刀]`（OneBot v11：1 石头、2 剪刀、3 布） |
 | `poke` | `[戳一戳]` |
-| `image` | 不进 content，经 `images` 通道——**触发门控与过滤管道通过后**下载、**落盘媒体库**、传递 `/media/<id>` 引用（被丢弃的消息不触发下载；见 [Core 框架](./core.md)§多模态输入） |
+| `image` | 不进 content，经 `images` 通道——**触发门控与过滤管道通过后**下载、**落盘媒体库**、传递 `/media/<id>` 引用（被丢弃的消息不触发下载；见 [Core 框架](../core/core.md)§多模态输入） |
 | `file` / `onlinefile` | 不进 content，经 `files` 通道（见 §文件接收） |
 | 其它（`record`/`video`/`xml`/`json`/`forward`…） | 不渲染 |
 

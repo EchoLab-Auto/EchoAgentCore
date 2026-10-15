@@ -9,7 +9,7 @@ y: 2820
 # 完全解耦推进计划（动态库 / 子进程）
 
 > **定位**：本页是「完全解耦」的推进路线图——验收口径、方案研究（动态库 / 子进程 / wasm）、目标架构、分阶段清单与执行附注。读者：内核与插件体系的规划 / 实施者。**状态：规划**——本页不是当前实现的描述，实施进度以本页清单为准。
-> 前置阅读：[架构总览](./architecture.md)（现状与五条原则）、[插件化设计](./core-plugins.md)。
+> 前置阅读：[架构总览](../overview/architecture.md)（现状与五条原则）、[插件化设计](../plugins/core-plugins.md)。
 
 ## 一、验收标准（"完全解耦"的可测口径）
 
@@ -235,7 +235,7 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 
 - [ ] 消息大小/频率上限（**帧上限 16 MiB 已落地**；频率/数量限额待做）、调用超时强制（已落地：invoke 超时=deadline）、插件资源限额（rlimit / cgroup，待做）
 - [ ] 权限声明（capabilities：fs / net / proc）与宿主中介（远期）；**环境隔离已落地**（env_clear + 仅 PATH + 显式 env）
-- [x] SDK 与脚手架：插件侧运行时（echo-plugin-sdk）+ 试点示例 + [插件开发指南](./plugin-authoring.md)（协议文档含在上手指南内；JSON Schema 导出待做）
+- [x] SDK 与脚手架：插件侧运行时（echo-plugin-sdk）+ 试点示例 + [插件开发指南](../plugins/plugin-authoring.md)（协议文档含在上手指南内；JSON Schema 导出待做）
 - [ ] 文档生成门禁（对齐 dsh 做法）：模块图 / 能力图 / 事件矩阵 / 工具目录自动生成 + 新鲜度校验
 - [x] CI：fmt / clippy `-D warnings` / 全量测试（stable+nightly）/ **依赖方向门禁已扩展到插件分层**（api→零依赖、sdk→api、host→api+loader、loader→零、example→sdk；已提交 `65c1c2a` 起）
 - [x] 无全局态门禁（`no_global_state.rs`，随 workspace 测试自动纳入 CI）

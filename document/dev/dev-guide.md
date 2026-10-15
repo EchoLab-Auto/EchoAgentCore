@@ -10,27 +10,21 @@ link: ["dev-testing | 测试策略 | r>l", "documentation-guide | 文档规范 |
 # 开发指南
 
 > **定位**：EchoAgentCore 开发速查——仓库结构、关键抽象、关键流程、构建与测试；深入主题见各模块文档。读者：本仓库的开发者（含 Agent）。
-> 相关文档：[架构总览](./architecture.md)、[协议与数据流](./protocol.md)、[测试策略](./dev-testing.md)、[文档规范](./documentation-guide.md)。
+> 相关文档：[架构总览](../overview/architecture.md)、[协议与数据流](../protocol/protocol.md)、[测试策略](./dev-testing.md)、[文档规范](../documentation-guide.md)。
 
 ## 文档地图
 
+全量分层导航见 [文档总览](../index.md)（每篇一句话定位）；开发者常用直达：
+
 | 文档 | 内容 |
 |---|---|
-| [architecture.md](./architecture.md) | 架构脊柱：组合、crate、接缝、事件、会话、扩展点 |
-| [frame.md](./frame.md) | 框架（内核机制）：组合与装配、服务定位、事件总线、插件宿主、进程结构 |
-| [protocol.md](./protocol.md) | 前后端线协议（management WS 契约） |
-| [ops-deploy.md](./ops-deploy.md) | 安装、容器化部署、systemd 服务、受控自更新 |
-| [dev-testing.md](./dev-testing.md) | 测试策略：单元 / proptest / 集成 / 并发 |
-| [documentation-guide.md](./documentation-guide.md) | 文档规范：分层、单篇体例、四种模板 |
-| [core-memory.md](./core-memory.md) | 会话记忆：事件溯源日志、投影、时间线、压缩归档 |
-| [core-multimodal.md](./core-multimodal.md) | 多模态输入：媒体库、图片块、token 卫生 |
-| [core-config-persistence.md](./core-config-persistence.md) | ConfigStore、配置/门控/会话持久化 |
-| [adapter-qq-gating.md](./adapter-qq-gating.md) | QQ 消息门控管道（五层）、运行时可变 |
-| [federation.md](./federation.md) | Core↔Core 联邦（链路、握手、帧协议） |
-| [decoupling-plan.md](./decoupling-plan.md) | 规划：完全解耦推进计划（动态库 / 子进程） |
-| [agent-humanlike-style.md](./agent-humanlike-style.md) | 规划：拟人化方案（语气 / 节奏 / 落地建议） |
-| [federation-port-merge.md](./federation-port-merge.md) | 设计：联邦·管理端口合并（单端口，已实施） |
-
+| [架构总览](../overview/architecture.md) | 架构脊柱：组合、crate、接缝、事件、会话、扩展点 |
+| [框架（内核）](../core/frame.md) | 内核机制：组合与装配、服务定位、事件总线、插件宿主、进程结构 |
+| [协议与数据流](../protocol/protocol.md) | 前后端线协议（management WS 契约） |
+| [插件化设计](../plugins/core-plugins.md) | 插件模型、内置清单、能力开关与扩展方式 |
+| [测试策略](./dev-testing.md) | 测试分层、Mock 夹具、质量门禁 |
+| [文档规范](../documentation-guide.md) | 目录分层、单篇体例与模板 |
+| [部署与自更新](../ops/ops-deploy.md) | 安装、容器化、受控自更新 |
 > 架构/Agent/Adapter/Config 的通用细节通过源码注释（`//! module doc`）和 README 维护，避免文档与代码分叉。
 
 ## 仓库结构
@@ -61,7 +55,7 @@ EchoAgentCore/
 │   # QQ 适配器（OneBot 类型 / 反向 WS / NapCat 管理）已迁出为独立进程插件
 │   # （独立仓库；宿主经 echo-plugin-host 的 RemoteAdapter 接入）
 │   └── core/                  # echo-agent-core 二进制（组合根）
-├── document/                  # 本文档群（ProDoc 格式；含附加设计笔记）
+├── document/                  # 文档群（index + overview/core/plugins/panel/protocol/federation/ops/dev/design 分层）
 ├── npm/echo-agent/            # 容器化部署 CLI（Docker 编排；node:test 测试）
 ├── docker/entrypoint.sh       # Core 容器入口
 ├── packaging/systemd/         # 用户服务模板
@@ -105,7 +99,7 @@ EchoAgentCore/
 5. **适配器生命周期**：QqAdapter::start() → 绑定端口 → 服务器任务 → 接受连接 → QqHandler
 6. **技能重载**：按需触发（`ReloadSkills` 命令 / 保存·删除技能后）→ 发现 SKILL.md → 保留启用状态 → 替换注册表（**覆盖全部运行人格**）→ 清提示词缓存（周期扫描已移除）
 7. **自更新**：agent 经 bash 运行受管更新器（`update.sh` → echo-agent-core-update.service）→ 构建 → 原子替换 → Core 重启（排空优先）
-8. **异步子任务**（`spawn_subagent`）：受理即返回子任务 id → 子 agent 隔离上下文执行 → 完成后经 `<subagent_event>` 钩子以新 turn 回报主 agent（见 [Subagent 插件](./core-subagent.md)；旧「后台任务/并行分支」体系已删除）
+8. **异步子任务**（`spawn_subagent`）：受理即返回子任务 id → 子 agent 隔离上下文执行 → 完成后经 `<subagent_event>` 钩子以新 turn 回报主 agent（见 [Subagent 插件](../plugins/core-subagent.md)；旧「后台任务/并行分支」体系已删除）
 
 ## 构建与测试
 
@@ -128,4 +122,6 @@ cargo test -p echo-agent
 
 - **依赖方向 lint**（`scripts/check-deps.sh`，CI `deps-lint` job）：扩展/provider crate 只依赖定义层（echo-defs/echo-context/echo-protocol）；`echo-llm-*` 不得依赖 agent 框架。违规即 CI 失败，不靠人肉 review
 - **config 模板测试**（`source/core/tests/config_template.rs`）：`config/echo-agent-core.toml` 必须是合法 TOML 且含运行时依赖的 section，防模板漂移；并入 `cargo test`
-- **跨仓库清单同步**（人工核对 + 测试守护）：新增/移除插件时四处清单必须同改——Core `GATED_PLUGIN_IDS` / `BUILTIN_PLUGIN_IDS`、更新器 `expected_ids`、Panel `PACKAGE_GATED_PLUGIN_IDS` / `PACKAGE_DISPLAY_NAMES`；新增**插件类型**（`PluginKind`）时 Core `as_str` wire 名与 Panel `PLUGIN_KIND_LABELS` 同改；协议新增命令/事件时 echo-protocol ⇄ `web/src/protocol.ts` 同改。守护测试：`capabilities.test.ts`（Panel 清单对齐）、`update_script_plugins.rs`（Core `BUILTIN_PLUGIN_IDS` ⇄ 更新器 `expected_ids`；曾因 `orchestration` 移除后清单残留、每次更新误报缺 manifest 而补齐）、`update.sh` 插件感知校验（安装后核对二进制）、`protocol-sync.test.ts`（Panel 协议镜像：事件 reduce⊆union、联邦命令存在性快照、unit 命令字符串形态、禁止 `as unknown as` 双重断言绕过——2026-10 联邦 4 命令补齐后归零）。详见 [插件化设计](./core-plugins.md)「新增包维度门控插件时的同步清单」
+- **跨仓库清单同步**（人工核对 + 测试守护）：新增/移除插件时四处清单必须同改——Core `GATED_PLUGIN_IDS` / `BUILTIN_PLUGIN_IDS`、更新器 `expected_ids`、Panel `PACKAGE_GATED_PLUGIN_IDS` / `PACKAGE_DISPLAY_NAMES`；新增**插件类型**（`PluginKind`）时 Core `as_str` wire 名与 Panel `PLUGIN_KIND_LABELS` 同改；协议新增命令/事件时 echo-protocol ⇄ `web/src/protocol.ts` 同改。守护测试：`capabilities.test.ts`（Panel 清单对齐）、`update_script_plugins.rs`（Core `BUILTIN_PLUGIN_IDS` ⇄ 更新器 `expected_ids`；曾因 `orchestration` 移除后清单残留、每次更新误报缺 manifest 而补齐）、`update.sh` 插件感知校验（安装后核对二进制）、`protocol-sync.test.ts`（Panel 协议镜像：事件 reduce⊆union、联邦命令存在性快照、unit 命令字符串形态、禁止 `as unknown as` 双重断言绕过——2026-10 联邦 4 命令补齐后归零）。详见 [插件化设计](../plugins/core-plugins.md)「新增包维度门控插件时的同步清单」
+
+命令与 CI 作业矩阵见 [测试策略](./dev-testing.md)「质量门禁（CI）」。

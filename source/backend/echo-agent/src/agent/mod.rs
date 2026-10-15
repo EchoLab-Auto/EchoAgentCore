@@ -109,7 +109,7 @@ pub struct Agent {
     /// `record_incoming_and_snapshot`）、工具事件与会话落盘的参数、工具结果
     /// （经 `ToolRegistry` 出口与 `run_tool` 双保险）、LLM 请求出口（经
     /// `llm::wrap_redacting` 装饰 provider，见组合根装配）、QQ 出站
-    /// （`core::qq_tools` 闸门）。设计见 `document/security-redaction-design.md`。
+    /// （`core::qq_tools` 闸门）。设计见 `document/core/security-redaction-design.md`。
     redactor: std::sync::RwLock<Option<Arc<dyn echo_defs::sanitize::Redactor>>>,
     /// API 指标存储（余额快照 / token 用量；组合根装配期注入）。
     /// None = 不记录（测试 / 未接线的旧路径）。

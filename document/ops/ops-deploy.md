@@ -9,7 +9,7 @@ y: 1850
 # 部署与自更新
 
 > **定位**：本文是部署与运维手册——安装（install.sh 与 curl | bash 一键路径）、容器化部署（npm + Docker）、systemd 服务布局、受控自更新与回滚、日常体检。读者：部署与运维 EchoAgent 的操作者。
-> 相关文档：[协议与数据流](./protocol.md)、[框架（内核机制）](./frame.md)（进程结构）、[开发指南](./dev-guide.md)。
+> 相关文档：[协议与数据流](../protocol/protocol.md)、[框架（内核机制）](../core/frame.md)（进程结构）、[开发指南](../dev/dev-guide.md)。
 
 EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。源码托管于受管 git 仓库，更新走 oneshot 更新单元（构建 → 原子替换 → 重启）。
 
@@ -136,9 +136,9 @@ echo-agent-core token --rotate                # 重新生成并写回（32 字�
 - `port` 目标键与配置键一一对应：`management`→`[core].management_address`、`federation`→`[federation].listen`、`federation-advertise`→`[federation].advertise`、`qq`/`qq-instance:<id>:<字段>`→`[adapters.qq.instances.<id>.ports]`；`[adapters.qq.server].bind_address` 在运行时被实例端口分配覆盖（`merge_instance`），**实际监听以 ports 三元组为准**，CLI 只写权威键
 - 缺省值与显式值语义区分（如 `listen` 缺省 = 跟随管理地址合并、显式空串 = 仅连出）；非默认实例端口修改前要求实例已存在于配置（防误建实例及其容器）
 - 编辑后做 TOML 合法性与**目标值类型复读**自检；`tmp + rename` 原子写
-- **端口合并（缺省）**：联邦监听**缺省合并至管理端口**——NAT 场景**一条映射同时服务面板与联邦**（见 [联邦](./federation.md#配置与管理面)）；管理地址回环 / 空令牌且非回环 / 令牌与 peer 冲突时自动回退独立监听（启动警告）；**显式**同址合并 + 空令牌 + 非回环仍 fail-closed **拒绝启动**
+- **端口合并（缺省）**：联邦监听**缺省合并至管理端口**——NAT 场景**一条映射同时服务面板与联邦**（见 [联邦](../federation/federation.md#配置与管理面)）；管理地址回环 / 空令牌且非回环 / 令牌与 peer 冲突时自动回退独立监听（启动警告）；**显式**同址合并 + 空令牌 + 非回环仍 fail-closed **拒绝启动**
 - 端口变更重启 Core 生效；`port set` 的提示按**编辑后**的合并状态自适应——合并态下改 `management` 会同时提醒 Panel `[[cores]].url`、对端 `[federation.peers.*]` 的 url 与端口映射/`advertise` 三处同步（独立监听只提醒 Panel）
-- 相应配置解析与编辑逻辑见 [配置持久化](./core-config-persistence.md)；QQ 实例端口分配见 [QQ 门控](./adapter-qq-gating.md)
+- 相应配置解析与编辑逻辑见 [配置持久化](../core/core-config-persistence.md)；QQ 实例端口分配见 [QQ 门控](../plugins/adapter-qq-gating.md)
 
 ## 日常体检
 

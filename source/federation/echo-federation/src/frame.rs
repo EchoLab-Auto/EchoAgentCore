@@ -1,7 +1,7 @@
 //! 联邦线协议（federation Phase 1）：`FedFrame` 帧类型与兼容性约定。
 //!
 //! Core↔Core 链路上的唯一事实类型来源。设计约束（见
-//! `document/federation-rfc.md` §3）：
+//! `document/federation/federation.md`「链路与协议」）：
 //!
 //! - externally-tagged enum（`{"type": ..., "payload": ...}`），变体/字段名为
 //!   线上契约，只增不改

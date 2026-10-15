@@ -1,6 +1,6 @@
 //! P1 门禁（棘轮）：进程级静态可变状态的**只减不增**守卫。
 //!
-//! 背景：解耦计划 Phase 1（见 `document/decoupling-plan.md`）要求把全部
+//! 背景：解耦计划 Phase 1（见 `document/design/decoupling-plan.md`）要求把全部
 //! 进程级全局态收敛到唯一引导单元：`echo-context` 的 kernel cell
 //! （`source/context/echo-context/src/kernel.rs`）。2026-10-08 全量迁移
 //! 完成，本测试锁定上限 = 0：除白名单外，全 source 不允许任何

@@ -9,7 +9,7 @@ link: ["tools | 工具系统 | r>l", "skills | 技能系统 | r>l", "subagent | 
 
 # 插件化设计
 
-> **定位**：本文是插件体系的入口——插件模型与装载机制、**全部内置插件清单**、能力开关（per-persona 门控）与扩展方式。各插件的机制细节见子篇：[工具系统](./core-tools.md)、[技能系统](./core-skills.md)、[Subagent 插件](./core-subagent.md)、[QQ 适配器门控](./adapter-qq-gating.md)、[联邦（多机）](./federation.md)、[插件开发指南](./plugin-authoring.md)；系统设计与路线图见 [完全解耦推进计划](./decoupling-plan.md)。读者：需要理解或扩展插件体系的开发者；内核机制（插件宿主、事件总线）见 [框架（内核）](./frame.md)。
+> **定位**：本文是插件体系的入口——插件模型与装载机制、**全部内置插件清单**、能力开关（per-persona 门控）与扩展方式。各插件的机制细节见子篇：[工具系统](./core-tools.md)、[技能系统](./core-skills.md)、[Subagent 插件](./core-subagent.md)、[QQ 适配器门控](./adapter-qq-gating.md)、[联邦（多机）](../federation/federation.md)、[插件开发指南](./plugin-authoring.md)；系统设计与路线图见 [完全解耦推进计划](../design/decoupling-plan.md)。读者：需要理解或扩展插件体系的开发者；内核机制（插件宿主、事件总线）见 [框架（内核）](../core/frame.md)。
 
 ## 设计原则
 
@@ -37,7 +37,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 - 注册为**可逆**副作用：`Plugin::mount` 返回 disposer（`PluginMountResult`，注册表持有、卸载时调用）；`register_and_mount` 注册并按启用态挂载（禁用插件只注册不挂载）
 - 数据插件（skill/tool）支持热重载（插件目录 5s 轮询）；代码插件需二进制重载
 - **启动顺序**：`apply_disabled` 先于挂载——禁用插件启动时只注册不挂载；persona 白名单的门控**启动期与运行期统一**由 `Agent::apply_capabilities` 承担（`GATED_PLUGIN_IDS` 表逐人格计算：全局启用 ∧ 白名单）；插件宿主由组合根注入为**进程级单例**（全体人格共享）
-- **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / skills.dir / adapter.qq / workspace / subagent）已把组合根装配搬进 mount 闭包，运行期 `TogglePlugin` 停/再启对它们有真实运行效果；`adapter.qq` 的启动期 mount 不抢跑（wired 标志在适配器接线完成后才置位），启动受 `[adapters.qq].enabled` 与插件状态双重门控；`loop.{single,parallel}` 的按人格注入依赖 `AgentManager`（注册于挂载之后），启动期 mount 为 no-op——由人格启动循环**回填注入**（见 [Agent 循环](./core-agent-loop.md)「实化与分派」）
+- **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / skills.dir / adapter.qq / workspace / subagent）已把组合根装配搬进 mount 闭包，运行期 `TogglePlugin` 停/再启对它们有真实运行效果；`adapter.qq` 的启动期 mount 不抢跑（wired 标志在适配器接线完成后才置位），启动受 `[adapters.qq].enabled` 与插件状态双重门控；`loop.{single,parallel}` 的按人格注入依赖 `AgentManager`（注册于挂载之后），启动期 mount 为 no-op——由人格启动循环**回填注入**（见 [Agent 循环](../core/core-agent-loop.md)「实化与分派」）
 - **运行期热更新**：插件/工具/技能勾选在 `SaveTeam` 保存后**立即生效**，无需重启——工具/技能逐名双向应用（取消勾选即禁用、重新勾选即恢复）；全局 `TogglePlugin` 经 mount/unmount 闭包逐 persona 重评估（`reapply_plugin_gating`：全局启用 ∧ persona 名单，名单外不放开、unmount 对全员生效）；`ToggleTool`/`ToggleSkill` 同样逐 persona 重算（`reapply_tool_gating` / `reapply_skill_gating`：persona 黑名单不被全局启用覆盖）
 
 ### 内联分派工具
@@ -52,16 +52,16 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.tools.builtin` | Tool | 内置工具集（计算/搜索/编码/适配器管理/供应商清单查询 `list_api_profiles`） |
 | `echo-agent.adapter.qq` | Adapter | QQ 适配器（OneBot v11 反向 WS，含 QQ 管理工具；门控机制见 [QQ 适配器门控](./adapter-qq-gating.md)） |
 | `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
-| `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](./core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
+| `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](../core/core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
 | `echo-agent.provider.llm` | Provider | LLM 提供方工厂（名义挂载：重启生效） |
-| `echo-agent.loop.single` | Loop | 单会话循环（默认）：启用时 echo-loop 驱动接管普通输入（启动期回填；生效口径见 [Agent 循环](./core-agent-loop.md)）；会话内 turn 串行排队、无会话管理 UI |
+| `echo-agent.loop.single` | Loop | 单会话循环（默认）：启用时 echo-loop 驱动接管普通输入（启动期回填；生效口径见 [Agent 循环](../core/core-agent-loop.md)）；会话内 turn 串行排队、无会话管理 UI |
 | `echo-agent.loop.parallel` | Loop | 并行多会话循环：同一 `TurnRunner`（生效口径同 `loop.single`）；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
 | `echo-agent.subagent` | Tool | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./core-subagent.md)） |
 | `echo-agent.management.panel` | Management | 管理面：management WS 桥接（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
 
-联邦（`echo-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](./federation.md)。
+联邦（`echo-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
 
-> **框架侧实现位置**：echo-agent crate 内按插件分包到 `src/packages/<name>/`，**第一层分类 = 包归属**——`tools_builtin`（内置工具）/ `skills_dir`（技能注册表 + Git 安装）/ `adapter_qq`（入站 hook 桥 + QQ 命令域）/ `workspace`（会话存储/工具 + 命令域）/ `subagent` / `provider_llm`（provider 工厂）；另有特例 `packages/tool/` = 工具子系统的**跨包机制**（`ToolRegistry`：注册/可逆注销/逐名与按包启停/schema 缓存，被各包共用，非插件）。`loop.{single,parallel}` 的实现是 `echo-loop` crate（echo-agent 只做驱动接线）；`management.panel` 是 echo-protocol（线协议，见 [协议与数据流](./protocol.md)）+ echo-agent-core（`source/core/src/management.rs`）。目录只服务物理区分，公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export）。
+> **框架侧实现位置**：echo-agent crate 内按插件分包到 `src/packages/<name>/`，**第一层分类 = 包归属**——`tools_builtin`（内置工具）/ `skills_dir`（技能注册表 + Git 安装）/ `adapter_qq`（入站 hook 桥 + QQ 命令域）/ `workspace`（会话存储/工具 + 命令域）/ `subagent` / `provider_llm`（provider 工厂）；另有特例 `packages/tool/` = 工具子系统的**跨包机制**（`ToolRegistry`：注册/可逆注销/逐名与按包启停/schema 缓存，被各包共用，非插件）。`loop.{single,parallel}` 的实现是 `echo-loop` crate（echo-agent 只做驱动接线）；`management.panel` 是 echo-protocol（线协议，见 [协议与数据流](../protocol/protocol.md)）+ echo-agent-core（`source/core/src/management.rs`）。目录只服务物理区分，公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export）。
 >
 > QQ 工具（`send_*`/`get_*`）例外地实现于组合根 `source/core/src/qq_tools.rs`——工具须实现 `echo_agent::Tool`，而适配器 crate 刻意不依赖 echo-agent。
 
@@ -70,15 +70,15 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 ## 能力开关（per-persona）
 
 - 每个插件 id 均可放入 agent 的 `enabled_plugins`（白名单；空表 = 全部启用）
-- **插件黑名单 `disabled_plugins` 已移除**：与白名单语义重复（前端首次取消勾选即物化全量白名单），既有配置在加载期物化进白名单（见 [配置持久化](./core-config-persistence.md)）；运行期 `SaveTeam` 只写白名单
+- **插件黑名单 `disabled_plugins` 已移除**：与白名单语义重复（前端首次取消勾选即物化全量白名单），既有配置在加载期物化进白名单（见 [配置持久化](../core/core-config-persistence.md)）；运行期 `SaveTeam` 只写白名单
 - **前端「启用插件」勾选区的成员规则**（两处 UI：智能体配置弹层 ⚙ 配置、设置视图智能体编辑器；判定单一来源 = Panel `capabilities.ts::isPluginCheckboxVisible`）：`kind ∈ {adapter, management, interaction}` **∪** 下列包维度门控插件固定清单（`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本表 `GATED_PLUGIN_IDS` 逐项镜像）：`tools.builtin` / `skills.dir` / `workspace` / `adapter.qq` / `subagent`。其余插件（`loop.*` 由循环模式分段控件管理、`provider.llm` 名义挂载重启生效）**不出现**在该勾选区。保存后写回 TOML
-- **循环模式推导**（互斥，默认与兜底都是单会话）：见 [Agent 循环](./core-agent-loop.md)§循环模式（单一来源 `TeamMember::loop_mode()`）
+- **循环模式推导**（互斥，默认与兜底都是单会话）：见 [Agent 循环](../core/core-agent-loop.md)§循环模式（单一来源 `TeamMember::loop_mode()`）
 - **包级聚合**：白名单里的插件 id 即包 id——一次勾选同时门控该插件的生命周期与同名包的工具、技能（QQ 包见「Package」节）
 - **其余插件当前生效范围**：
   - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具（skills.dir 为全部技能）对所有 persona 批量禁用（对 LLM 不可见），启用按各 persona 名单恢复——**仅作用于目标 persona 时用 Agent 配置弹层的勾选**（运行期双向、即时生效）
   - `adapter.qq`：禁用 = 停止 QQ 适配器进程 + QQ 工具包禁用；启用 = 启动 + 按名单恢复
   - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）。**防自锁保护**：经 `TogglePlugin` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
-  - `loop.single` / `loop.parallel`：**纯策略插件**——只表达循环模式（单会话串行 / 并行多会话，由白名单推导 `LoopMode`），mount 无运行期资源。驱动本体（echo-loop `TurnRunner`）是唯一循环实现，组合根在人格启动与运行期新建时无条件注入，不随插件启停切换（2026-10 单轨化，内置循环已删除）。详见 [Agent 循环](./core-agent-loop.md)「注入与分派」
+  - `loop.single` / `loop.parallel`：**纯策略插件**——只表达循环模式（单会话串行 / 并行多会话，由白名单推导 `LoopMode`），mount 无运行期资源。驱动本体（echo-loop `TurnRunner`）是唯一循环实现，组合根在人格启动与运行期新建时无条件注入，不随插件启停切换（2026-10 单轨化，内置循环已删除）。详见 [Agent 循环](../core/core-agent-loop.md)「注入与分派」
   - `provider.llm`：仍为名义挂载——运行中替换 provider 涉及在途 turn，保持"重启生效"语义（禁用 = 下次重启不装配）
 - **优先级**：全局禁用（`TogglePlugin` 卸载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
 - **任务清单的会话隔离**：`ChecklistTool` 状态按**会话**隔离（session_id → 清单名 → 项）——同一 persona 的不同会话（local:tui / qq:group:…）的清单互不可见、互不覆盖；会话键由 `Agent::run_tool` 在参数校验后注入 `__session_id`（联邦远程/无会话上下文调用落 `__global` 兜底键）。事件 `ChecklistUpdated` 带 `team_id`，Panel 按 `(core, team_id, session_id)` 复合键存储并显示
@@ -119,7 +119,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 除源码级内置插件外，系统支持**独立进程插件**——插件以任意语言实现、经 stdio 帧协议与宿主通信，由 `plugins.toml` 配置装载（缺省休眠），崩溃自动重启（进程级隔离）。
 
-- 协议、SDK 与部署方式见 [插件开发指南](./plugin-authoring.md)；系统设计与路线图见 [完全解耦推进计划](./decoupling-plan.md)
+- 协议、SDK 与部署方式见 [插件开发指南](./plugin-authoring.md)；系统设计与路线图见 [完全解耦推进计划](../design/decoupling-plan.md)
 - 与内置插件的关系：内置插件 = 编译期内联（性能零开销、随二进制更新）；外部插件 = 运行期装载（隔离、独立演进、免重编译 Core）
 
 ## 用户扩展方式

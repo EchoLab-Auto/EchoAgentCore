@@ -10,7 +10,7 @@ link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "mul
 # 框架（内核）
 
 > **定位**：本文描述 EchoAgent 的**内核**——插件化软件体系里"让一切插件都能挂上去"的最小机制集：组合与装配、服务定位、事件总线、插件宿主、进程结构。读者：需要理解系统骨架的开发者。
-> 姊妹篇：[插件化设计](./core-plugins.md)（插件体系与装载清单）；运行时子系统见 [多 Agent 与会话](./core-agents.md)、[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)。
+> 姊妹篇：[插件化设计](../plugins/core-plugins.md)（插件体系与装载清单）；运行时子系统见 [多 Agent 与会话](./core-agents.md)、[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)。
 
 ## 内核与插件：一切皆插件
 
@@ -22,7 +22,7 @@ link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "mul
 4. **能力接缝**：Service Definition / Service Provider / Consumer 三角独立演进、独立成 crate；依赖方向单向无环
 5. **事件溯源会话日志**：日志是唯一事实来源，模型上下文由日志投影（"模型可见 ⟺ 已记录"）
 
-内核只含机制（服务注册表 / 事件总线 / 插件宿主 / 线协议 / 组合根）；全部能力以**插件**装载——循环、provider、工具、技能、适配器、工作区、subagent、联邦——配置可禁用到"只剩内核仍能启动"。装载清单与门控规则见 [插件化设计](./core-plugins.md)。
+内核只含机制（服务注册表 / 事件总线 / 插件宿主 / 线协议 / 组合根）；全部能力以**插件**装载——循环、provider、工具、技能、适配器、工作区、subagent、联邦——配置可禁用到"只剩内核仍能启动"。装载清单与门控规则见 [插件化设计](../plugins/core-plugins.md)。
 
 ## 组合根与启动装配
 
@@ -49,16 +49,16 @@ link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "mul
 - `mount` 返回 disposer；`register_and_mount` 注册并按启用态挂载；宿主为**进程级单例**（全体人格共享）
 - 门控：全局启用 ∧ persona 白名单（`Agent::apply_capabilities` 逐人格计算）
 - 热重载：数据类插件（技能/工具/清单）秒级热重载；代码类插件经原子二进制替换 + 进程重启生效
-- 两种装载方式：**内联**（编译期、性能零开销、随二进制更新）与**外部进程**（独立二进制 / 任意语言、stdio 帧协议、崩溃自动重启、`plugins.toml` 装载）——协议与 SDK 见 [插件开发指南](./plugin-authoring.md)
+- 两种装载方式：**内联**（编译期、性能零开销、随二进制更新）与**外部进程**（独立二进制 / 任意语言、stdio 帧协议、崩溃自动重启、`plugins.toml` 装载）——协议与 SDK 见 [插件开发指南](../plugins/plugin-authoring.md)
 
 ## 进程结构
 
 - Cargo 二进制名 `echo-agent-core`（`source/core/Cargo.toml`），由 systemd 用户服务运行；`install.sh` 安装后落盘为 `$LIBEXEC_DIR/echo-agent-core-bin`（libexec 文件名，非 Cargo bin 名）
-- 库结构：框架机制在 `source/backend/echo-agent`（`agent/`），各插件实现按包分目录在 `packages/`；契约层 crate（`echo-defs` / `echo-context` / `echo-session` / `echo-loop` / `echo-protocol` 等）见 [架构总览](./architecture.md) 的 crate 地图
-- 运维命令与部署布局见 [部署与自更新](./ops-deploy.md)
+- 库结构：框架机制在 `source/backend/echo-agent`（`agent/`），各插件实现按包分目录在 `packages/`；契约层 crate（`echo-defs` / `echo-context` / `echo-session` / `echo-loop` / `echo-protocol` 等）见 [架构总览](../overview/architecture.md) 的 crate 地图
+- 运维命令与部署布局见 [部署与自更新](../ops/ops-deploy.md)
 
 ## 延伸阅读
 
 - 运行时子系统：[多 Agent 与会话](./core-agents.md)（Persona 装配、会话模型、工作区通道）、[Agent 循环](./core-agent-loop.md)、[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)
-- 插件体系：[插件化设计](./core-plugins.md)——内置插件清单、能力开关、外部进程插件
+- 插件体系：[插件化设计](../plugins/core-plugins.md)——内置插件清单、能力开关、外部进程插件
 - 安全：[敏感信息隔离（脱敏服务）](./security-redaction-design.md)——出口卡口与保证边界

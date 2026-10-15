@@ -1,6 +1,6 @@
 //! # echo-plugin-sdk — 插件侧运行时
 //!
-//! Phase 3 试点产物（见 `document/decoupling-plan.md`）：让插件二进制
+//! Phase 3 试点产物（见 `document/design/decoupling-plan.md`）：让插件二进制
 //! **零样板**实现 [`echo_plugin_api`] 协议——实现 [`PluginHandler`] 后调用
 //! [`serve_stdio`]，SDK 负责：
 //!
@@ -99,7 +99,7 @@ pub trait AdapterPlugin: Send + Sync + 'static {
 
     /// 握手完成后交付宿主客户端（调用一次）。插件自存（如
     /// `OnceLock<HostClient>`），后续 `deliver_message` / `report_state`
-    /// 等回呼经它发起（见 `document/adapter-plugin.md` §插件动作 表）。
+    /// 等回呼经它发起（见 `document/design/adapter-plugin.md` §插件动作 表）。
     async fn on_ready(&self, _host: HostClient) {}
 
     /// `Drain` 排空通知（随后进程退出）；缺省空实现。

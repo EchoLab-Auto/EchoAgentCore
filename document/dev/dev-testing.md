@@ -9,7 +9,7 @@ y: 2050
 # 测试策略
 
 > **定位**：本仓库的测试体系说明与质量门禁清单——单元 / property / 集成 / 并发 / 前端与 CLI 各层覆盖哪些契约。读者：贡献代码的开发者与 Agent。
-> 相关文档：[开发指南](./dev-guide.md)（构建与测试入口）、[文档规范](./documentation-guide.md)。
+> 相关文档：[开发指南](./dev-guide.md)（构建与测试入口）、[文档规范](../documentation-guide.md)。
 
 **Core（cargo）** 1000+ 条、**Panel 前端（vitest）** 360+ 条、**部署 CLI（node:test）**
 27 条，覆盖各 crate 的源文件与关键交互契约（计数随开发增长，量级为本文件维护基线；最近校准 2026-10：cargo 1046 / vitest 372）。

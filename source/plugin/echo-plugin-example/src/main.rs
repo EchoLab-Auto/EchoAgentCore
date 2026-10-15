@@ -1,7 +1,7 @@
 //! # echo-plugin-example — Phase 3 试点插件
 //!
 //! 把内置工具 `calculator` 与 `web_search` 移植为**独立进程插件**（见
-//! `document/decoupling-plan.md`）：实现 [`PluginHandler`] 后交给
+//! `document/design/decoupling-plan.md`）：实现 [`PluginHandler`] 后交给
 //! [`serve_stdio`]，宿主经 stdio 帧协议（4 字节 LE 长度前缀 + JSON）调用。
 //!
 //! 工具逻辑自 `source/backend/echo-agent/src/packages/tools_builtin/`

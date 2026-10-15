@@ -12,7 +12,7 @@
 //! - [`SpawnSubagentTool`]：模型可见工具（异步拉起，立即返回 id）
 //! - `crate::agent::Agent::dispatch_subagent_hook`：完成 hook 的注入入口
 //!
-//! 设计文档见 `document/core-subagent.md`。
+//! 设计文档见 `document/plugins/core-subagent.md`。
 
 use std::sync::Arc;
 

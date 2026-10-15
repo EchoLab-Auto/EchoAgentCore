@@ -157,7 +157,7 @@ management_access_token = ""
 region_name = ""
 
 [federation]
-# Core↔Core 联邦链路（多机去中心化；详见 document/federation.md）。
+# Core↔Core 联邦链路（多机去中心化；详见 document/federation/federation.md）。
 # 联邦**零配置默认开启**（2026-10）：listen 缺省 0.0.0.0:3133——开箱即可
 # 连出也可被连入（邀请串配对开箱可用）；未配 peer 时 accept 侧靠
 # per-peer token 认证，不放行任何已知链路。

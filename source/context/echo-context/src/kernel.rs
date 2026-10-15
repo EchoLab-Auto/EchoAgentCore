@@ -1,6 +1,6 @@
 //! 进程级唯一引导单元（P1 过渡机制；sole whitelisted bootstrap cell）。
 //!
-//! 解耦计划 Phase 1（`document/decoupling-plan.md` §8）与棘轮门禁
+//! 解耦计划 Phase 1（`document/design/decoupling-plan.md` §8）与棘轮门禁
 //! （`source/core/tests/no_global_state.rs`）的**唯一白名单**：全部进程级
 //! 单例（原各文件的 `OnceLock` 静态）的存储收敛到本文件，经 `TypeId`
 //! 键控的类型擦除表统一存取。各 getter/setter 保留原函数名与签名，

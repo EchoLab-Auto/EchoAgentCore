@@ -43,7 +43,7 @@ EchoAgentCore/
 │   │   ├── echo-agent/           # Agent 框架（packages/ 第一层按插件分包；packages/tool/ 为工具注册表机制）
 │   │   └── echo-test-utils/      # 共享测试 mock（仅 dev-dependency）
 │   # 注：QQ 适配器（含 OneBot 协议类型与反向 WS 服务器）已迁出为独立进程
-│   # 插件（见 document/adapter-plugin.md；独立仓库 echo-adapter-qq）。
+│   # 插件（见 document/design/adapter-plugin.md；独立仓库 echo-adapter-qq）。
 │   └── core/                     # echo-agent-core 二进制（组合根）
 ├── document/                     # 项目文档群（ProDoc 格式：index.md 入口）
 ├── npm/echo-agent/               # 容器化部署 CLI（Docker 编排 core+panel+napcat）
@@ -68,7 +68,7 @@ EchoAgentCore/
 | `echo-plugin` | **插件接缝**：`PluginManifest` + 生命周期钩子（mount/unmount）+ `PluginRegistry`；插件只依赖定义层与机制层（`echo-defs`/`echo-context`/`echo-plugin` 三个 crate），不依赖 `echo-agent` |
 | `echo-agent` | Agent 框架：agent 循环、LLM provider 工厂、工具注册表与各包（`packages/`）、技能系统、trunk 记忆、异步子任务（`spawn_subagent`） |
 | `echo-adapter` | 协议无关的适配器抽象：`Adapter` trait、`InboundMessageHook`、过滤管道、`ConfigStore` |
-| （QQ 适配器插件） | **已迁出**为独立进程插件（stdio 协议）交付：反向 WS 接入、5 层门控、NapCat 管理、OneBot 协议类型；见 `document/adapter-plugin.md` |
+| （QQ 适配器插件） | **已迁出**为独立进程插件（stdio 协议）交付：反向 WS 接入、5 层门控、NapCat 管理、OneBot 协议类型；见 `document/design/adapter-plugin.md` |
 | `echo-federation` | **联邦链路（Core↔Core）**：`FedFrame` 线协议（工具调用/委派/只读查询）、Hello/Welcome 握手、per-peer Bearer 认证、心跳/重连/回环防护、邀请串（`echofed://`） |
 | `echo-agent-core`（bin） | 组合根：加载配置、装配 Agent + QQ 适配器 + 联邦路由泵（代理工具注册/执行端裁决/查询处理）、对外提供 management WS |
 
@@ -133,7 +133,7 @@ Rust 工具链（缺失时走官方 rustup 用户级安装，无需 root）。`-
 | `echo-agent-core.service` | 常驻 Core 服务 |
 | `echo-agent-core-update.service` | 一次性更新器（agent 自更新工具触发） |
 
-详见 [document/ops-deploy.md](document/ops-deploy.md)。卸载（保留配置与会话
+详见 [document/ops/ops-deploy.md](document/ops/ops-deploy.md)。卸载（保留配置与会话
 历史；`--purge` 连配置一起删，`--dry-run` 先预览）：
 
 ```bash
@@ -187,13 +187,13 @@ NapCat 容器管理）；容器模式的完整配置模板见
 - `[plugins.system_prompt]`：全局系统提示词（Panel 中编辑保存的基础提示词层）。
 - `[adapters.qq]`：QQ 适配器开关、NapCat HTTP API、owner_qq、命令前缀；`[adapters.qq.server]` 反向 WS 监听 `:3131` 与访问令牌（`ECHO_ACCESS_TOKEN` env 可覆盖）。
 - `[core] management_address`：前端连接地址（默认 `0.0.0.0:3132`，开箱即可被局域网 Panel 连接；`management_access_token` 提供 Bearer 认证，首装自动生成）。端口与 token 可经 CLI 管理：`echo-agent-core port`（列出/修改各监听端口，含联邦与 QQ 实例端口）与 `echo-agent-core token [--rotate]`。
-- `[federation]`：Core↔Core 联邦（多机去中心化；**零配置默认开启**，listen 缺省 0.0.0.0:3133 开箱可被连入）——`listen`（缺省 :3133，显式空 = 纯连出）、`node_name`、`[federation.peers.*]`（url/token/allow_tools/allow_queries）。配对推荐用 Panel 设置·联邦页的**邀请串**（`echofed://`），见 [document/federation.md](document/federation.md)。
+- `[federation]`：Core↔Core 联邦（多机去中心化；**零配置默认开启**，listen 缺省 0.0.0.0:3133 开箱可被连入）——`listen`（缺省 :3133，显式空 = 纯连出）、`node_name`、`[federation.peers.*]`（url/token/allow_tools/allow_queries）。配对推荐用 Panel 设置·联邦页的**邀请串**（`echofed://`），见 [document/federation/federation.md](document/federation/federation.md)。
 
-前端通过设置视图（API/技能/工具/插件/智能体）与 QQ 管理面板发起的修改，由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core-config-persistence.md](document/core-config-persistence.md)）。
+前端通过设置视图（API/技能/工具/插件/智能体）与 QQ 管理面板发起的修改，由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core/core-config-persistence.md](document/core/core-config-persistence.md)）。
 
 ## 前端协议
 
-Core 与前端之间是 `ws://<management_address>` 上的 JSON 文本帧协议，类型定义在 `echo-protocol` crate，完整契约见 [document/protocol.md](document/protocol.md)。serde 表示即线格式，向后兼容演进（新增字段必须 `#[serde(default)]`）。
+Core 与前端之间是 `ws://<management_address>` 上的 JSON 文本帧协议，类型定义在 `echo-protocol` crate，完整契约见 [document/protocol/protocol.md](document/protocol/protocol.md)。serde 表示即线格式，向后兼容演进（新增字段必须 `#[serde(default)]`）。
 
 ## 文档索引
 
@@ -201,16 +201,16 @@ Core 与前端之间是 `ws://<management_address>` 上的 JSON 文本帧协议�
 
 | 文档 | 内容 |
 |---|---|
-| [document/architecture.md](document/architecture.md) | 架构总览（crate、接缝、事件、会话、扩展点） |
-| [document/protocol.md](document/protocol.md) | 前端 ⇄ Core 线协议契约 |
-| [document/ops-deploy.md](document/ops-deploy.md) | 一键安装、systemd 服务、受控自更新 |
-| [document/core.md](document/core.md) | Core 框架（进程结构、会话记忆、配置） |
-| [document/panel.md](document/panel.md) | Panel 前端（仓库布局、数据流、视图规范） |
-| [document/core-subagent.md](document/core-subagent.md) | Subagent 插件（异步委派、隔离上下文、完成回报） |
-| [document/federation.md](document/federation.md) | 联邦（多机去中心化：链路/远程工具/委派/查询/安全模型） |
-| [document/core-config-persistence.md](document/core-config-persistence.md) | ConfigStore 原子持久化 |
-| [document/adapter-qq-gating.md](document/adapter-qq-gating.md) | QQ 5 层门控管道 |
-| [document/dev-testing.md](document/dev-testing.md) | 测试策略 |
+| [document/overview/architecture.md](document/overview/architecture.md) | 架构总览（crate、接缝、事件、会话、扩展点） |
+| [document/protocol/protocol.md](document/protocol/protocol.md) | 前端 ⇄ Core 线协议契约 |
+| [document/ops/ops-deploy.md](document/ops/ops-deploy.md) | 一键安装、systemd 服务、受控自更新 |
+| [document/core/core.md](document/core/core.md) | Core 框架（进程结构、会话记忆、配置） |
+| [document/panel/panel.md](document/panel/panel.md) | Panel 前端（仓库布局、数据流、视图规范） |
+| [document/plugins/core-subagent.md](document/plugins/core-subagent.md) | Subagent 插件（异步委派、隔离上下文、完成回报） |
+| [document/federation/federation.md](document/federation/federation.md) | 联邦（多机去中心化：链路/远程工具/委派/查询/安全模型） |
+| [document/core/core-config-persistence.md](document/core/core-config-persistence.md) | ConfigStore 原子持久化 |
+| [document/plugins/adapter-qq-gating.md](document/plugins/adapter-qq-gating.md) | QQ 5 层门控管道 |
+| [document/dev/dev-testing.md](document/dev/dev-testing.md) | 测试策略 |
 
 ## 从 EchoAgentPanel 单体仓库迁移
 

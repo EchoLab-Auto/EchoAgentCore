@@ -8,7 +8,7 @@ y: 1820
 
 # 技能系统
 
-> **定位**：本文描述技能系统——SKILL.md 能力包的分层发现、注入与热重载，系统提示词技能，以及外部 Git 来源技能的安装/更新。技能目录作为插件（`echo-agent.skills.dir`）的装载与包门控见 [插件化设计](./core-plugins.md)；技能正文的注入位置见 [Agent 循环](./core-agent-loop.md)。读者：技能作者与系统维护者。
+> **定位**：本文描述技能系统——SKILL.md 能力包的分层发现、注入与热重载，系统提示词技能，以及外部 Git 来源技能的安装/更新。技能目录作为插件（`echo-agent.skills.dir`）的装载与包门控见 [插件化设计](./core-plugins.md)；技能正文的注入位置见 [Agent 循环](../core/core-agent-loop.md)。读者：技能作者与系统维护者。
 
 技能是 SKILL.md 驱动的能力包，为模型注入特定领域的指令与流程知识。`Skill`/`SkillMetadata` 词汇与 `SkillProvider` 接缝在 echo-defs；具体实现 `SkillRegistry`（文件发现 + 热重载）在 echo-agent。
 
@@ -36,7 +36,7 @@ y: 1820
 
 - **常驻技能**（`metadata.always: true` 且启用）：每轮对话都注入正文（`always_enabled`；实例：`subagent-delegation`）
 - **触发技能**：消息命中 `keywords` 时注入（`find_matching`；多命中时按名称排序取第一个，保证确定性）
-- 注入位置：系统提示词的"常驻/触发技能"块（见 [Agent 循环](./core-agent-loop.md) 的提示词按块构建）
+- 注入位置：系统提示词的"常驻/触发技能"块（见 [Agent 循环](../core/core-agent-loop.md) 的提示词按块构建）
 
 ## 热重载与启停
 
@@ -65,7 +65,7 @@ y: 1820
 
 ## 外部 Git 来源技能
 
-技能可从外部 Git 仓库安装/更新（`packages/skills_dir/install.rs` + `InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource` 三命令），Panel 设置视图「技能」分类提供完整交互（见 [Panel 交互定义](./panel-interaction.md) §9.3）。
+技能可从外部 Git 仓库安装/更新（`packages/skills_dir/install.rs` + `InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource` 三命令），Panel 设置视图「技能」分类提供完整交互（见 [Panel 交互定义](../panel/panel-interaction.md) §9.3）。
 
 ### 安装（InstallSkillFromGit）
 

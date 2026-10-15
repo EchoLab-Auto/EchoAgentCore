@@ -10,7 +10,7 @@ link: ["agent-loop | Agent 循环 | r>l", "agent-humanlike-style | 拟人化方�
 # 多 Agent 与会话
 
 > **定位**：本文描述 Core 的**多 Agent 人格与会话**机制——Persona 装配、会话模型与归属、工作区会话与项目通道、临时分支、能力隔离。读者：需要理解多 agent 运行方式、会话归属与人格配置的开发者。
-> 相关：[框架（内核）](./frame.md)（内核机制）、[Agent 循环](./core-agent-loop.md)（循环驱动与准入）、[会话记忆](./core-memory.md)（日志与投影）、[插件化设计](./core-plugins.md)（能力门控）。
+> 相关：[框架（内核）](./frame.md)（内核机制）、[Agent 循环](./core-agent-loop.md)（循环驱动与准入）、[会话记忆](./core-memory.md)（日志与投影）、[插件化设计](../plugins/core-plugins.md)（能力门控）。
 
 Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent（独立 trunk、会话文件、系统提示词、能力白名单）。
 
@@ -18,7 +18,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 >
 > **未配置 `[agent.teams.*]` = 零人格**（2026-10 用户请求）：新建/新装 Core **不再自动合成 "default" 人格**（此前每台新节点都会凭空多出一个"默认" agent）。空配置启动即零智能体，由 Panel「设置 → 智能体 → 新建智能体」按需创建。
 
-> **单一注册表 + `(core, team_id)` 身份**：persona 注册表由 `echo_agent::AgentManager` **独占持有**（单一真源），`AgentSupervisor` 只是它的薄适配（`get`/`personas`，不另持第二份 HashMap）。多接入点（联邦网络多节点）下人格身份是 **`(core, team_id)`**：Panel 的 `TeamsList` 按 core 合并、命令按人格归属 core 路由（会话归属优先，其次人格归属，最后 `activeCore`），并带一致性守卫（目标 core 不拥有该人格时重定向）——详见 [联邦](./federation.md)。
+> **单一注册表 + `(core, team_id)` 身份**：persona 注册表由 `echo_agent::AgentManager` **独占持有**（单一真源），`AgentSupervisor` 只是它的薄适配（`get`/`personas`，不另持第二份 HashMap）。多接入点（联邦网络多节点）下人格身份是 **`(core, team_id)`**：Panel 的 `TeamsList` 按 core 合并、命令按人格归属 core 路由（会话归属优先，其次人格归属，最后 `activeCore`），并带一致性守卫（目标 core 不拥有该人格时重定向）——详见 [联邦](../federation/federation.md)。
 
 ## Persona 装配
 
@@ -68,7 +68,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - 收到 active 变化（含模型 `use` 触发）：**仅当当前活动会话为 Local 来源时**跟随切换（正在查看 QQ 会话时不打扰；切回 Local 时落到 active 对应通道）；
 - QQ 等外部来源不受切换影响：查看/切换不改 active，独立上下文照旧按会话隔离，激活只改变其提示词注入。
 
-**⑥ 文件浏览器（Panel 侧）**：工作区面板左栏提供**只读文件浏览器**（`RequestWorkspaceFiles` → `WorkspaceFiles`）——多根切换、面包屑导航、目录下钻与回退、文件大小展示。服务端以 canonical 路径前缀校验把浏览范围**限定在会话声明的工作区目录及其子孙内**（符号链接按解析后的真实路径比较；`/a/bc` 不会被 `/a/b` 误放行），越界或不存在经 `WorkspaceFiles.error` 回传；隐藏项（`.` 开头）跳过、单目录超 `FILES_CAP`（500）截断。弹层几何见 [Panel 会话视图](./panel-chat.md)§7.7。
+**⑥ 文件浏览器（Panel 侧）**：工作区面板左栏提供**只读文件浏览器**（`RequestWorkspaceFiles` → `WorkspaceFiles`）——多根切换、面包屑导航、目录下钻与回退、文件大小展示。服务端以 canonical 路径前缀校验把浏览范围**限定在会话声明的工作区目录及其子孙内**（符号链接按解析后的真实路径比较；`/a/bc` 不会被 `/a/b` 误放行），越界或不存在经 `WorkspaceFiles.error` 回传；隐藏项（`.` 开头）跳过、单目录超 `FILES_CAP`（500）截断。弹层几何见 [Panel 会话视图](../panel/panel-chat.md)§7.7。
 
 **⑦ 边界**：
 - 既有历史留在默认会话，**不自动迁移**；通道历史从激活起从头积累；
@@ -88,7 +88,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - `enabled_*` 白名单：非空时仅列出的能力可见（空表 = 全部启用）；工具/技能另有 `disabled_tools`/`disabled_skills` 黑名单细化。**插件维度只有白名单**——原 `disabled_plugins` 黑名单已移除（与白名单语义重复），既有配置在加载期物化进白名单
 - 插件/工具/技能三个维度独立配置；未配置白名单时默认全部启用
 - **保存即热生效**：`SaveTeam` 后目标人格立即重算门控（工具/技能逐名双向：取消勾选禁用、重新勾选恢复；插件包维度按 `GATED_PLUGIN_IDS`）；`ToggleTeam` 重新启用的人格也会补应用门控。全局禁用（`ToggleTool`/`ToggleSkill`/`TogglePlugin` 卸载）优先级高于 persona 名单，且这些全局开关会逐 persona 重算而不是只作用于管理面
-- **Package 跨维度**：勾选/取消勾选一个门控插件 = 启停整个包（plugin + 同名包工具 + 同名包技能，QQ 包示例：send_* 工具与 qq-management/qq-transport 一起开关）；详见 [插件化设计](./core-plugins.md)「Package」章节
+- **Package 跨维度**：勾选/取消勾选一个门控插件 = 启停整个包（plugin + 同名包工具 + 同名包技能，QQ 包示例：send_* 工具与 qq-management/qq-transport 一起开关）；详见 [插件化设计](../plugins/core-plugins.md)「Package」章节
 - **循环模式**（互斥插件 `echo-agent.loop.{single,parallel}`）由白名单推导：空表 = single（默认）；含 `loop.parallel` = parallel。推导单一来源 `TeamMember::loop_mode()`（只看白名单）
 - 全局 `[agent].disabled_tools`（Panel ToggleTool 持久化）启动时逐人格应用
 
@@ -120,5 +120,5 @@ enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel", "e
 - **兼容性**：无 `[agent.teams]` 配置 = **零 agent**（2026-10 用户请求：不再自动合成 `default` 人格；显式配置 `[agent.teams.default]` 时它也只是普通 id、无特权）；`SendMessage`/会话类命令缺少 `team_id` 会被明确拒绝（Panel 与 Core 同版本部署）
 - **删除保护**：仅"至少保留一个智能体"；不再有受保护成员
 - **Provider 粒度**：支持 persona 级 API 引用（见上「Persona 装配」）；运行期 `SaveTeam` 改 `api_profile` 立即经 `apply_persona_api` 重建该人格 provider（全局 `UpdateApiConfig`/`SwitchApi` 只作用于管理面/全局默认，不自动广播到其他人格）
-- QQ/平台消息按**实例归属人格**路由：每个启用 `echo-agent.adapter.qq` 的人格拥有自己的 QQ 实例（容器 + 反向 WS 通道），见 [QQ 适配器门控](./adapter-qq-gating.md)「多实例」
+- QQ/平台消息按**实例归属人格**路由：每个启用 `echo-agent.adapter.qq` 的人格拥有自己的 QQ 实例（容器 + 反向 WS 通道），见 [QQ 适配器门控](../plugins/adapter-qq-gating.md)「多实例」
 - 每人格可独立配置记忆预算：`[agent.teams.{id}].memory_limit_tokens` / `context_window_tokens`（未配置 = 继承全局）

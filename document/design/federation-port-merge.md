@@ -8,8 +8,8 @@ y: 3020
 
 # 联邦·管理端口合并（规划）
 
-> **定位**：本页是「单端口合并」的设计记录——让管理 WS（Panel 通道）与联邦链路共用一个监听端口，一条 NAT/防火墙映射同时服务面板与联邦。读者：联邦与部署功能的维护者、多机用户。**状态：已实施（2026-10）**——运行行为见 [联邦（多机去中心化）](./federation.md) 的「端口合并」子节与 [协议与数据流](./protocol.md)；本页保留设计与决策记录。
-> 相关：[联邦（多机去中心化）](./federation.md)（链路与认证现状）、[部署与自更新](./ops-deploy.md)（端口与映射）。
+> **定位**：本页是「单端口合并」的设计记录——让管理 WS（Panel 通道）与联邦链路共用一个监听端口，一条 NAT/防火墙映射同时服务面板与联邦。读者：联邦与部署功能的维护者、多机用户。**状态：已实施（2026-10）**——运行行为见 [联邦（多机去中心化）](../federation/federation.md) 的「端口合并」子节与 [协议与数据流](../protocol/protocol.md)；本页保留设计与决策记录。
+> 相关：[联邦（多机去中心化）](../federation/federation.md)（链路与认证现状）、[部署与自更新](../ops/ops-deploy.md)（端口与映射）。
 
 ## 动机
 
@@ -160,7 +160,7 @@ listen = "0.0.0.0:3132"
 | 链路层 | 同步令牌镜像（`new`/`add_peer`/`remove_peer` 镜像 per-peer 令牌，供升级回调同步读取）+ `has_peer_token` + `accept_ws` 包装 + 常时比较 | `source/federation/echo-federation/src/link.rs` |
 | 装配层 | 拆 `handle_ws`（升级后主体，独立模式行为不变）；`classify` 分类器；`serve_merged` 合并监听；启动校验（安全条件 1/2）；`run_core` 同址判定与接线（联邦 `run` 仅起连出，合并监听挂「管理面」插件生命周期） | `source/core/src/management.rs`、`source/core/src/main.rs` |
 | 工具层 | `port` 显示合并态；帮助文案 | `source/core/src/port_cmd.rs` |
-| 文档收敛 | federation.md 增「端口合并」节、protocol.md 一句、ops-deploy.md 云机配方；本页状态更新 | `document/*` |
+| 文档收敛 | federation.md 增「端口合并」节、protocol.md 一句、ops-deploy.md 云机配方；本页状态更新 | `document/**` |
 | 验证 | 单测 + 集成 + 本机双核冒烟（见下） | `source/core`、`source/federation` |
 
 生命周期语义（明确写入文档）：合并监听挂「管理面」插件——禁用管理面

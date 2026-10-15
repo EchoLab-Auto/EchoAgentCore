@@ -1,6 +1,6 @@
 //! # echo-plugin-host — 插件宿主
 //!
-//! 实现总览见 `document/decoupling-plan.md`（Phase 0 / Phase 2）。宿主提供：
+//! 实现总览见 `document/design/decoupling-plan.md`（Phase 0 / Phase 2）。宿主提供：
 //! - [`transport`]：运输层抽象（[`transport::Transport`] / [`transport::PluginConnection`]）；
 //! - [`inproc`]：in-proc 参考实现 [`inproc::InprocTransport`]（类型直连，零序列化）；
 //! - [`stdio`]：子进程实现 [`stdio::StdioTransport`]（4 字节小端长度前缀 + JSON）；
