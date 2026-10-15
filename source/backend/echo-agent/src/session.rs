@@ -1431,13 +1431,16 @@ impl TrunkStore {
     pub async fn clear_session(&self, session_id: &str) {
         let _compact_guard = self.compact_lock().await;
         let removed = self.event_log.retain_excluding_session(session_id);
-        // 2026-10 上下文审计 🔴 修复：不能只 remove 映射——身份对象
-        // `Session.history` 仍持有同一 Vec 的 Arc（`get_or_create` 命中既有
-        // 身份时原样返回，`process_message` 读的也是它）。仅 remove 会让
-        // 清理后的旧内容继续进下一次 LLM 请求，且此后 `history_or_create`
-        // 新建的空投影与旧 Arc 永久脱节（新消息"失忆"）。与全量
-        // `clear_history` 的原地 `clear()` 语义对齐：先清空既有 Arc 再摘映射。
-        if let Some((_, history)) = self.session_histories.remove(session_id) {
+        // 2026-10-15 用户报障修复（uuapi 端点 400 "field messages is
+        // required"）：必须**保留映射条目并原地清空**，不能 `remove`。
+        // 身份对象 `Session.history` 持有同一 Arc 的拷贝（`get_or_create`
+        // 命中既有身份时原样返回，`register_incoming_branch`/`process_message`
+        // 读的也是它）。一旦摘除映射，下一条事件的 `reproject` 会经
+        // `history_or_create` 新建第二个 Arc——旧 Arc 与后续投影永久脱节：
+        // 该会话此后每个请求只剩系统提示词（严格端点 400 "field messages
+        // is required"；宽松端点回复退化成自我介绍式问候），直到重启才自愈。
+        // 保留 + 原地 clear 与全量 `clear_history` 语义一致。
+        if let Some(history) = self.history_for(session_id) {
             history.lock().clear();
         }
         let (timeline_removed, timeline_remaining) = {
@@ -3076,6 +3079,62 @@ mod tests {
         assert!(
             contents.iter().any(|c| c.contains("清理后的新消息")),
             "新消息应进投影: {contents:?}"
+        );
+    }
+
+    /// 2026-10-15 用户报障回归（uuapi 400 "field messages is required"）：
+    /// 会话级清理后，**身份对象**持有的 Arc 必须继续接收新投影——否则该
+    /// 会话此后每个请求都只带系统提示词（严格端点 400 / 宽松端点回复退化
+    /// 成自我介绍式问候），直到重启。
+    ///
+    /// 上面 `clear_session_empties_the_shared_history_arc` 只断言了
+    /// `history_for`（投影缓存映射里的新 Arc），身份 Arc 脱节时该映射照样
+    /// 有内容——必须直接断言 `session.history`（`process_message` 读的
+    /// 就是它）。
+    #[tokio::test]
+    async fn clear_session_keeps_identity_arc_connected_after_new_events() {
+        let store = TrunkStore::new(1000);
+        let key = SessionKey::parse("local:workspace:proj:bob").unwrap();
+        let session = store.get_or_create(&key, "bob".into(), None);
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some(session.id.clone()),
+                content: "旧内容".into(),
+                timestamp: 1700000101,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        ));
+        assert!(!session.history.lock().is_empty(), "投影已物化");
+
+        store.clear_session(&session.id).await;
+        assert!(session.history.lock().is_empty(), "清理后身份 Arc 为空");
+
+        // 清理后的新事件：身份 Arc 必须同步收敛（不得与新建投影脱节）。
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some(session.id.clone()),
+                content: "清理后的新消息".into(),
+                timestamp: 1700000102,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        ));
+        let contents: Vec<String> = session
+            .history
+            .lock()
+            .iter()
+            .map(|m| m.content.clone())
+            .collect();
+        assert!(
+            contents.iter().any(|c| c.contains("清理后的新消息")),
+            "身份 Arc 必须随新投影收敛（否则会话永久失忆）: {contents:?}"
+        );
+        assert!(
+            contents.iter().all(|c| !c.contains("旧内容")),
+            "旧内容不得复活: {contents:?}"
         );
     }
 
