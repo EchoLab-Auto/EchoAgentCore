@@ -13,8 +13,17 @@ impl Agent {
     }
 
     /// Emit the current API configuration to subscribers.
+    ///
+    /// 供应商池与全局激活项以共享 ConfigStore（core.toml）为准：发事件的
+    /// 可能是任意 persona（如 SetSessionApi 之后的回推），其内存快照可能
+    /// 落后于管理面——否则管理面新加的 profile 会被"看回去"，面板下拉
+    /// 瞬间少项（2026-10 用户报障的连带效应）。
     pub async fn emit_api_config(&self) {
-        let cfg = self.api_config().await;
+        let mut cfg = self.api_config().await;
+        if let Some(snapshot) = self.api_pool_store_snapshot().await {
+            cfg.api_profiles = snapshot.profiles;
+            cfg.active_api = snapshot.active_api;
+        }
         let mut resolved = cfg.clone();
         resolved.apply_active_profile();
         let key_set = !resolved.effective_api_key().is_empty();
@@ -111,12 +120,20 @@ impl Agent {
     /// DeleteApi）在**管理面** agent 上执行，各 persona 持有的配置克隆可能
     /// 落后——而池是全局的（见 [`crate::api_pool`] 模块文档）。
     pub(crate) async fn api_pool_snapshot(&self) -> Vec<ApiProfile> {
-        if let Some(store) = self.config_store.lock().await.clone() {
-            if let Ok(snapshot) = crate::api_pool::read_snapshot(&store) {
-                return snapshot.profiles;
-            }
+        if let Some(snapshot) = self.api_pool_store_snapshot().await {
+            return snapshot.profiles;
         }
         self.config.read().await.api_profiles.clone()
+    }
+
+    /// 共享存储的**完整**池快照（profiles + 全局激活项 + 顶层默认）。
+    ///
+    /// `None` = 未接线 / 读取失败；调用方自行回退本快照（event 发射等场景
+    /// 需要 active_api 一并取共享存储口径，避免 persona 过期快照把面板里
+    /// 新加的 profile「看回去」）。
+    pub(crate) async fn api_pool_store_snapshot(&self) -> Option<crate::api_pool::PoolSnapshot> {
+        let store = self.config_store.lock().await.clone()?;
+        crate::api_pool::read_snapshot(&store).ok()
     }
 
     /// 子代理单次委派的 provider（`spawn_subagent` 的 `profile` 参数）：
@@ -281,8 +298,10 @@ impl Agent {
                 },
             });
         }
-        self.emit_api_config().await;
+        // 先落盘、再广播：emit_api_config 以共享存储为准，必须等本次
+        // 变更写入 core.toml 后发事件，否则面板读到旧列表。
         self.persist_config(&cfg_snapshot).await;
+        self.emit_api_config().await;
     }
 
     /// Switch to an API profile (or the top-level default when name is empty).
@@ -318,8 +337,8 @@ impl Agent {
                 message: format!("switched to API: {label}"),
             });
         }
-        self.emit_api_config().await;
         self.persist_config(&cfg_snapshot).await;
+        self.emit_api_config().await;
     }
 
     /// Delete an API profile; if it was active, fall back to the top-level default.
@@ -342,8 +361,8 @@ impl Agent {
                 session_id: None,
                 message: format!("deleted API config: {name}"),
             });
-            self.emit_api_config().await;
             self.persist_config(&cfg_snapshot).await;
+            self.emit_api_config().await;
         } else {
             self.emit(BackendEvent::Error {
                 session_id: None,

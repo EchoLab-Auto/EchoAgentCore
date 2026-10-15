@@ -993,6 +993,38 @@ async fn session_provider_override_rejects_unknown_profile() {
     assert_eq!(p.name(), "mock", "fallback to persona provider");
 }
 
+/// 会话级覆盖的 profile 解析也以共享 ConfigStore（core.toml）为首选事实
+/// 源：管理面新增（persona 内存快照尚未包含）的 profile 必须能解析成功
+/// ——2026-10 用户报障回归（session profile resolve failed: profile not
+/// found: uuapi-gemini：persona 快照落后于管理面）。
+#[tokio::test]
+async fn session_provider_prefers_shared_config_store_pool() {
+    let path = std::env::temp_dir().join(format!(
+        "echo-session-pool-{}-{}.toml",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(
+        &path,
+        "[agent]\nprovider = \"deepseek\"\nmodel = \"deepseek-flash\"\napi_key = \"sk-top\"\n\n\
+         [[agent.api_profiles]]\nname = \"kimi\"\nprovider = \"kimi\"\nmodel = \"k3\"\n\
+         base_url = \"https://api.kimi.com/coding\"\napi_key = \"sk-kimi\"\n",
+    )
+    .unwrap();
+    let agent = test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "x".into(),
+    }));
+    // 内存快照为空池——文件才是事实源。
+    agent.set_config_store(echo_adapter::ConfigStore::new(path.clone()));
+    let ok = agent.set_session_provider("sess-store", "kimi").await;
+    assert!(ok, "store-only profile must resolve for session override");
+    let p = agent.resolve_session_provider("sess-store").await;
+    // provider="kimi" 走 Anthropic 兼容实现（name = "anthropic"）。
+    assert_eq!(p.name(), "anthropic", "session override built from store profile");
+    std::fs::remove_file(&path).ok();
+}
+
 #[tokio::test]
 async fn persist_config_keeps_on_disk_api_key() {
     let tmp = std::env::temp_dir().join(format!("echo-agent-cfg-{}.toml", uuid::Uuid::new_v4()));

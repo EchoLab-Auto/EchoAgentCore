@@ -1450,7 +1450,12 @@ impl Agent {
                 return true; // 已是目标 profile
             }
         }
-        let config = self.config.read().await.clone();
+        // 供应商池以共享 ConfigStore（core.toml）为首选事实源：本 agent
+        // （persona）持有的配置克隆可能落后于管理面——管理面新增的
+        // profile 在 persona 快照里不存在，直接读本快照会误报
+        // "profile not found"（2026-10 用户报障）。读不到时回退本快照。
+        let mut config = self.config.read().await.clone();
+        config.api_profiles = self.api_pool_snapshot().await;
         let probe = match crate::agent::api_admin::resolve_probe_config(&config, profile_name) {
             Ok(p) => p,
             Err(message) => {
