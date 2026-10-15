@@ -17,9 +17,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::api::{AdapterContribution, AdapterMessage, InvokeContext, InvokeOutcome};
 use crate::supervisor::{PluginHandle, PluginState};
 use crate::transport::TransportError;
-use crate::api::{AdapterContribution, AdapterMessage, InvokeContext, InvokeOutcome};
 
 use echo_adapter::types::SendResult as AdapterSendResult;
 
@@ -136,9 +136,9 @@ impl RemoteAdapter {
             .await;
         match outcome {
             InvokeOutcome::Ok { result, .. } => Ok(result),
-            InvokeOutcome::Error { code, message } => Err(TransportError::Protocol(format!(
-                "{code}: {message}"
-            ))),
+            InvokeOutcome::Error { code, message } => {
+                Err(TransportError::Protocol(format!("{code}: {message}")))
+            }
         }
     }
 }
@@ -244,10 +244,7 @@ impl echo_adapter::Adapter for RemoteAdapter {
         })
     }
 
-    fn subscribe(
-        &self,
-        _tx: tokio::sync::mpsc::UnboundedSender<echo_adapter::AdapterEvent>,
-    ) {
+    fn subscribe(&self, _tx: tokio::sync::mpsc::UnboundedSender<echo_adapter::AdapterEvent>) {
         // 入站消息经 `AdapterHostService` 队列分发（不走订阅通道）；
         // 远程适配器的事件流由插件进程持有（`HostCall` 上报）。
     }
@@ -290,12 +287,12 @@ impl RemoteAdapterManagement {
 
     /// 弱引用升级（宿主已销毁 → 可读错误）。
     fn adapter(&self) -> Result<Arc<RemoteAdapter>, echo_adapter::AdapterError> {
-        self.adapter
-            .upgrade()
-            .ok_or_else(|| echo_adapter::AdapterError::Internal(format!(
+        self.adapter.upgrade().ok_or_else(|| {
+            echo_adapter::AdapterError::Internal(format!(
                 "adapter {} has been destroyed",
                 self.name
-            )))
+            ))
+        })
     }
 }
 
@@ -333,12 +330,15 @@ impl echo_adapter::AdapterManagement for RemoteAdapterManagement {
             true
         };
         adapter
-            .invoke_op(capability, "custom", json!({"method": method, "payload": payload}))
+            .invoke_op(
+                capability,
+                "custom",
+                json!({"method": method, "payload": payload}),
+            )
             .await
             .map_err(|e| echo_adapter::AdapterError::Internal(e.to_string()))
     }
 }
-
 
 /// 插件 → 宿主的适配器宿主服务（`adapter_host`）。
 ///
@@ -349,8 +349,22 @@ pub struct AdapterHostService {
     adapters: Mutex<HashMap<String, Arc<RemoteAdapter>>>,
     /// 每实例入站队列（有界；worker 串行消费）。
     inbound_queues: Mutex<HashMap<String, tokio::sync::mpsc::Sender<AdapterMessage>>>,
+    /// 连接态变化订阅者（组合根把 `AdapterStateChanged` 事件转发给 Panel；
+    /// 订阅者退出（channel 关闭）时自动摘除）。
+    state_sinks: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<AdapterStateChange>>>,
     /// `store_media` 落盘目录（缺省 = `media_store::media_dir()`）。
     media_dir: std::path::PathBuf,
+}
+
+/// 一次连接态变化（`report_state` / `report_stopped` / `report_error` 广播）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterStateChange {
+    /// 适配器实例名。
+    pub adapter: String,
+    /// 当前是否已连接。
+    pub connected: bool,
+    /// 平台账号（连接时自报；断开为 None）。
+    pub self_id: Option<String>,
 }
 
 /// `store_media` 单次登记上限（与 `media_store` 落盘上限同量级；path 形态
@@ -368,8 +382,29 @@ impl AdapterHostService {
         Self {
             adapters: Mutex::new(HashMap::new()),
             inbound_queues: Mutex::new(HashMap::new()),
+            state_sinks: Mutex::new(Vec::new()),
             media_dir,
         }
+    }
+
+    /// 订阅连接态变化（组合根消费并发射 `AdapterStateChanged` 事件）。
+    ///
+    /// 多订阅者各自收全量；接收端 drop 后自动摘除。`report_stopped` /
+    /// `report_error` 以 `connected=false` 广播（进程态仲裁在 `RemoteAdapter`
+    /// 一侧另行处理）。
+    pub fn subscribe_states(&self) -> tokio::sync::mpsc::UnboundedReceiver<AdapterStateChange> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.state_sinks
+            .lock()
+            .expect("state sinks lock poisoned")
+            .push(tx);
+        rx
+    }
+
+    /// 广播一次连接态变化（发送失败的订阅者摘除）。
+    fn broadcast_state(&self, change: AdapterStateChange) {
+        let mut sinks = self.state_sinks.lock().expect("state sinks lock poisoned");
+        sinks.retain(|tx| tx.send(change.clone()).is_ok());
     }
 
     /// `store_media`：`{path | bytes_b64, mime?}` → `{ref: "/media/<id>"}`。
@@ -379,17 +414,24 @@ impl AdapterHostService {
     /// 两者同时给出时 `path` 优先。内容寻址：相同内容复用同一 id。
     fn store_media(&self, payload: &Value) -> Result<Value, (String, String)> {
         let invalid = |m: String| ("invalid_payload".to_string(), m);
-        let mime = payload["mime"].as_str().unwrap_or("application/octet-stream");
+        let mime = payload["mime"]
+            .as_str()
+            .unwrap_or("application/octet-stream");
         let bytes = if let Some(path) = payload["path"].as_str().filter(|p| !p.is_empty()) {
             let meta = std::fs::metadata(path)
                 .map_err(|e| invalid(format!("store_media path {path}: {e}")))?;
             if !meta.is_file() {
-                return Err(invalid(format!("store_media path {path}: not a regular file")));
+                return Err(invalid(format!(
+                    "store_media path {path}: not a regular file"
+                )));
             }
             if meta.len() > MAX_STORE_MEDIA_BYTES {
                 return Err((
                     "too_large".to_string(),
-                    format!("store_media: {} bytes > {MAX_STORE_MEDIA_BYTES}", meta.len()),
+                    format!(
+                        "store_media: {} bytes > {MAX_STORE_MEDIA_BYTES}",
+                        meta.len()
+                    ),
                 ));
             }
             std::fs::read(path).map_err(|e| invalid(format!("store_media read {path}: {e}")))?
@@ -399,7 +441,9 @@ impl AdapterHostService {
                 .decode(b64)
                 .map_err(|e| invalid(format!("store_media bytes_b64: {e}")))?
         } else {
-            return Err(invalid("store_media requires `path` or `bytes_b64`".to_string()));
+            return Err(invalid(
+                "store_media requires `path` or `bytes_b64`".to_string(),
+            ));
         };
         let id = echo_defs::media_store::save_image_bytes_in(&self.media_dir, &bytes, mime)
             .map_err(|e| ("store_failed".to_string(), e))?;
@@ -454,8 +498,14 @@ impl crate::host_service::HostService for AdapterHostService {
     fn call(&self, method: &str, payload: Value) -> Result<Value, (String, String)> {
         match method {
             "deliver_message" => {
-                let message: AdapterMessage = serde_json::from_value(payload.get("message").cloned().unwrap_or(Value::Null))
-                    .map_err(|e| ("invalid_payload".to_string(), format!("deliver_message payload: {e}")))?;
+                let message: AdapterMessage =
+                    serde_json::from_value(payload.get("message").cloned().unwrap_or(Value::Null))
+                        .map_err(|e| {
+                            (
+                                "invalid_payload".to_string(),
+                                format!("deliver_message payload: {e}"),
+                            )
+                        })?;
                 let adapter_name = message.adapter.clone();
                 let Some(tx) = self
                     .inbound_queues
@@ -492,7 +542,12 @@ impl crate::host_service::HostService for AdapterHostService {
                         format!("adapter {adapter_name} not registered"),
                     ));
                 };
-                adapter.note_connection_state(connected, self_id);
+                adapter.note_connection_state(connected, self_id.clone());
+                self.broadcast_state(AdapterStateChange {
+                    adapter: adapter_name,
+                    connected,
+                    self_id,
+                });
                 Ok(json!({}))
             }
             "report_stopped" | "report_error" => {
@@ -505,6 +560,11 @@ impl crate::host_service::HostService for AdapterHostService {
                     ));
                 };
                 adapter.note_connection_state(false, None);
+                self.broadcast_state(AdapterStateChange {
+                    adapter: adapter_name,
+                    connected: false,
+                    self_id: None,
+                });
                 Ok(json!({}))
             }
             "report_ui_state" => {
@@ -528,18 +588,67 @@ impl crate::host_service::HostService for AdapterHostService {
     }
 }
 
+/// 线协议入站消息（`AdapterMessage`）→ 宿主词汇（`echo_adapter::IncomingMessage`）。
+///
+/// 组合根在入站 worker 里用本函数把插件的 `deliver_message` 载荷转成
+/// `AgentMessageHook` 可直接消费的类型（字段差异：`adapter`→`adapter_name`、
+/// `Dm`→`Direct`、`user_name` 缺省空串、`files` 由 JSON 值解析为
+/// [`echo_adapter::IncomingFile`]；无法解析的文件条目跳过并保序）。
+pub fn message_to_incoming(message: AdapterMessage) -> echo_adapter::IncomingMessage {
+    use echo_adapter::types::{ChannelType, IncomingFile, IncomingMessage};
+
+    let channel = match message.channel {
+        crate::api::AdapterChannel::Dm => ChannelType::Direct,
+        crate::api::AdapterChannel::Group { group_id } => ChannelType::Group { group_id },
+    };
+    let files: Vec<IncomingFile> = message
+        .files
+        .iter()
+        .filter_map(|value| {
+            let name = value.get("name").and_then(Value::as_str)?.to_string();
+            Some(IncomingFile {
+                name,
+                path: value
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                size: value.get("size").and_then(Value::as_u64).unwrap_or(0),
+                error: value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect();
+
+    IncomingMessage {
+        adapter_name: message.adapter,
+        platform: message.platform,
+        user_id: message.user_id,
+        user_name: message.user_name.unwrap_or_default(),
+        channel,
+        group_name: message.group_name,
+        content: message.content,
+        timestamp: message.timestamp,
+        at_me: message.at_me,
+        metadata: message.metadata,
+        images: message.images,
+        files,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::api::{
-        capabilities, AdapterCapabilities, AdapterContribution, AdapterMessage,
-        AdapterChannel, HostToPlugin, PluginToHost, Register, Welcome,
+        capabilities, AdapterCapabilities, AdapterChannel, AdapterContribution, AdapterMessage,
+        HostToPlugin, PluginToHost, Register, Welcome,
     };
     use crate::host_service::HostService as _;
     use crate::inproc::{InprocIo, InprocPlugin, InprocTransport};
     use crate::supervisor::PluginSupervisor;
-    use echo_adapter::{Adapter as _, AdapterManagement as _};
     use crate::transport::PluginSpec;
+    use echo_adapter::{Adapter as _, AdapterManagement as _};
     use serde_json::json;
     use std::future::Future;
     use std::pin::Pin;
@@ -633,7 +742,10 @@ mod tests {
     async fn remote_adapter_capability_gates_and_state_arbitration() {
         let supervisor = PluginSupervisor::new();
         let handle = supervisor
-            .start(spec(), Box::new(InprocTransport::new(|_| Box::new(AdapterPlugin))))
+            .start(
+                spec(),
+                Box::new(InprocTransport::new(|_| Box::new(AdapterPlugin))),
+            )
             .await
             .expect("handshake ok");
         let adapters: Vec<_> = handle
@@ -655,7 +767,10 @@ mod tests {
         };
         // send_text（已声明）正常——经 `Adapter::send_message`（trait 方法名
         // 是 send_message；线协议 op 是 `send_text`）。
-        let result = adapter.send_message(&target, "hello").await.expect("send ok");
+        let result = adapter
+            .send_message(&target, "hello")
+            .await
+            .expect("send ok");
         assert_eq!(result.message_id.as_deref(), Some("msg-1"));
         assert!(result.success);
 
@@ -692,7 +807,10 @@ mod tests {
     async fn adapter_host_service_inbound_queue_and_reports() {
         let supervisor = PluginSupervisor::new();
         let handle = supervisor
-            .start(spec(), Box::new(InprocTransport::new(|_| Box::new(AdapterPlugin))))
+            .start(
+                spec(),
+                Box::new(InprocTransport::new(|_| Box::new(AdapterPlugin))),
+            )
             .await
             .expect("handshake ok");
         let adapters: Vec<_> = handle
@@ -734,7 +852,8 @@ mod tests {
         let received = rx.recv().await.expect("queue message");
         assert_eq!(received.content, "hello");
 
-        // report_state：连接态刷新。
+        // report_state：连接态刷新 + 订阅者广播。
+        let mut states = service.subscribe_states();
         service
             .call(
                 "report_state",
@@ -743,6 +862,27 @@ mod tests {
             .expect("report ok");
         let info = adapter.status_info();
         assert_eq!(info.self_id.as_deref(), Some("4242"));
+        assert_eq!(
+            states.try_recv().expect("state broadcast"),
+            AdapterStateChange {
+                adapter: "qq".into(),
+                connected: true,
+                self_id: Some("4242".into()),
+            }
+        );
+
+        // report_error：断开语义广播（connected=false）。
+        service
+            .call("report_error", json!({"adapter": "qq", "message": "boom"}))
+            .expect("report error ok");
+        assert_eq!(
+            states.try_recv().expect("stopped broadcast"),
+            AdapterStateChange {
+                adapter: "qq".into(),
+                connected: false,
+                self_id: None,
+            }
+        );
 
         // report_ui_state：管理面状态缓存刷新。
         service
@@ -794,10 +934,16 @@ mod tests {
         let png = [0x89u8, b'P', b'N', b'G', 1, 2, 3];
         let b64 = base64::engine::general_purpose::STANDARD.encode(png);
         let by_bytes = service
-            .call("store_media", json!({"bytes_b64": b64, "mime": "image/png"}))
+            .call(
+                "store_media",
+                json!({"bytes_b64": b64, "mime": "image/png"}),
+            )
             .expect("bytes ok");
         let reference = by_bytes["ref"].as_str().unwrap().to_string();
-        assert!(reference.starts_with("/media/") && reference.ends_with(".png"), "{reference}");
+        assert!(
+            reference.starts_with("/media/") && reference.ends_with(".png"),
+            "{reference}"
+        );
         let id = echo_defs::media_store::id_of_ref(&reference).unwrap();
         assert_eq!(std::fs::read(dir.join(id)).unwrap(), png);
 
@@ -805,17 +951,91 @@ mod tests {
         let src = dir.join("src.bin");
         std::fs::write(&src, png).unwrap();
         let by_path = service
-            .call("store_media", json!({"path": src.to_str().unwrap(), "mime": "image/png"}))
+            .call(
+                "store_media",
+                json!({"path": src.to_str().unwrap(), "mime": "image/png"}),
+            )
             .expect("path ok");
         assert_eq!(by_path["ref"], json!(reference));
 
         let err = service.call("store_media", json!({})).unwrap_err();
         assert_eq!(err.0, "invalid_payload");
         let err = service
-            .call("store_media", json!({"path": dir.join("missing").to_str().unwrap()}))
+            .call(
+                "store_media",
+                json!({"path": dir.join("missing").to_str().unwrap()}),
+            )
             .unwrap_err();
         assert_eq!(err.0, "invalid_payload");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `message_to_incoming`：线协议字段逐项映射（含 files JSON → IncomingFile）。
+    #[test]
+    fn message_to_incoming_maps_fields() {
+        let message = AdapterMessage {
+            adapter: "qq-two".into(),
+            platform: "qq".into(),
+            user_id: "123".into(),
+            user_name: Some("Alice".into()),
+            channel: AdapterChannel::Group {
+                group_id: "456".into(),
+            },
+            group_name: Some("开发群".into()),
+            content: "hello".into(),
+            timestamp: 1733814154,
+            at_me: true,
+            metadata: json!({"message_id": 7}),
+            images: vec!["/media/ab12.png".into()],
+            files: vec![
+                json!({"name": "report.pdf", "path": "/tmp/report.pdf", "size": 42, "error": null}),
+                json!({"name": "missing.bin", "path": null, "size": 0, "error": "download failed"}),
+                json!({"no_name": true}),
+            ],
+        };
+        let incoming = message_to_incoming(message);
+        assert_eq!(incoming.adapter_name, "qq-two");
+        assert_eq!(incoming.platform, "qq");
+        assert_eq!(incoming.user_id, "123");
+        assert_eq!(incoming.user_name, "Alice");
+        assert!(matches!(
+            incoming.channel,
+            echo_adapter::types::ChannelType::Group { ref group_id } if group_id == "456"
+        ));
+        assert_eq!(incoming.group_name.as_deref(), Some("开发群"));
+        assert_eq!(incoming.content, "hello");
+        assert_eq!(incoming.timestamp, 1733814154);
+        assert!(incoming.at_me);
+        assert_eq!(incoming.metadata, json!({"message_id": 7}));
+        assert_eq!(incoming.images, vec!["/media/ab12.png".to_string()]);
+        // 无 name 的条目被跳过（保序）。
+        assert_eq!(incoming.files.len(), 2);
+        assert_eq!(incoming.files[0].name, "report.pdf");
+        assert_eq!(incoming.files[0].path.as_deref(), Some("/tmp/report.pdf"));
+        assert_eq!(incoming.files[0].size, 42);
+        assert_eq!(incoming.files[1].error.as_deref(), Some("download failed"));
+
+        // DM + 缺省 user_name → 空串（hook 侧按空名兜底）。
+        let dm = AdapterMessage {
+            adapter: "qq".into(),
+            platform: "qq".into(),
+            user_id: "1".into(),
+            user_name: None,
+            channel: AdapterChannel::Dm,
+            group_name: None,
+            content: "x".into(),
+            timestamp: 0,
+            at_me: false,
+            metadata: Value::Null,
+            images: vec![],
+            files: vec![],
+        };
+        let incoming = message_to_incoming(dm);
+        assert!(matches!(
+            incoming.channel,
+            echo_adapter::types::ChannelType::Direct
+        ));
+        assert_eq!(incoming.user_name, "");
     }
 }

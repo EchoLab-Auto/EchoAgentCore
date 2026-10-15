@@ -111,9 +111,7 @@ impl StartedPlugins {
                 h.contributions()
                     .into_iter()
                     .filter_map(|c| match c {
-                        crate::api::Contribution::Adapter(adapter) => {
-                            Some((adapter, h.clone()))
-                        }
+                        crate::api::Contribution::Adapter(adapter) => Some((adapter, h.clone())),
                         _ => None,
                     })
                     .collect::<Vec<_>>()
