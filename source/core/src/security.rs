@@ -154,10 +154,10 @@ pub fn build_redactor(cfg: &CoreConfig) -> Arc<dyn Redactor> {
         }
     }
 
-    // QQ OneBot 服务端 access_token（正/反向 WS 鉴权；结构见
-    // echo_adapter_qq::QqServerConfig）。
-    if !cfg.qq_adapter.server.access_token.trim().is_empty() {
-        redactor.register_secret(&cfg.qq_adapter.server.access_token, "qq:access_token");
+    // QQ OneBot 服务端 access_token（正/反向 WS 鉴权；共享层
+    // `[adapters.qq.server].access_token`，P1.9 配置透传视图）。
+    if !cfg.qq_adapter.access_token.trim().is_empty() {
+        redactor.register_secret(&cfg.qq_adapter.access_token, "qq:access_token");
     }
     for (index, value) in cfg.security.sanitize.extra_secrets.iter().enumerate() {
         redactor.register_secret(value, &format!("extra:{index}"));

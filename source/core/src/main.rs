@@ -18,7 +18,6 @@ mod adapter_commands;
 mod agent_supervisor;
 mod config;
 mod federation_import;
-mod handlers;
 mod management;
 mod node;
 mod plugins_runtime;
@@ -30,7 +29,6 @@ mod security;
 use config::CoreConfig;
 use echo_adapter::traits::Adapter;
 use echo_agent::{Agent, AgentProfile};
-use echo_server::ConnectionTracker;
 
 /// EchoAgentCore — agent core service (agent + QQ adapter + management WS).
 #[derive(Debug, Parser)]
@@ -519,7 +517,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // `shutdown_rx.changed()` would otherwise complete with a `RecvError` and
     // the select below would misinterpret it as an admin shutdown.
     let _shutdown_tx_guard = shutdown_tx.clone();
-    let tracker = ConnectionTracker::default();
 
     // ---- agent framework ----
     // 技能分层（2026-10）：出厂层（skills_dirs，只读）在前、用户层
@@ -667,43 +664,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         &qq_default_persona,
         Some(&qq_data_dir),
     );
-    // 适配器宿主模式（P1.8，2026-10 适配器插件化）：
-    // - `builtin`（缺省）：进程内适配器（零行为变化）；
-    // - `plugin`：独立进程适配器插件（stdio，按实例拉起——specs 见下）。
-    let qq_plugin_mode = cfg.qq_adapter_mode == "plugin";
-    // builtin 实例：进程内创建并注册（plugin 模式由插件贡献在启动后注册）。
+    // QQ 适配器仅以独立进程插件运行（P1.9，2026-10 适配器插件化收尾——
+    // 内置路径已移除；`builtin` 模式配置在加载期告警并按 plugin 处理）。
     let mut qq_adapters: Vec<(String, String, Arc<dyn echo_adapter::Adapter>)> = Vec::new();
-    let mut qq_builtin_instances: Vec<(String, String, Arc<echo_adapter_qq::QqAdapter>)> =
-        Vec::new();
-    if !qq_plugin_mode {
-        for instance in &qq_instances {
-            let adapter = Arc::new(echo_adapter_qq::QqAdapter::with_instance(
-                instance.id.clone(),
-                Some(instance.persona.clone()),
-                instance.config.clone(),
-            ));
-            adapter_registry.register(adapter.clone());
-            qq_adapters.push((
-                instance.id.clone(),
-                instance.persona.clone(),
-                adapter.clone() as Arc<dyn echo_adapter::Adapter>,
-            ));
-            qq_builtin_instances.push((instance.id.clone(), instance.persona.clone(), adapter));
-        }
-        if !qq_instances.is_empty() {
-            let ids: Vec<&str> = qq_instances.iter().map(|i| i.id.as_str()).collect();
-            info!(instances = ?ids, "QQ instances registered (builtin)");
-        }
-    } else {
-        info!(
-            instances = qq_instances.len(),
-            "QQ plugin mode: instances launch as adapter plugins"
-        );
-    }
-    // 插件实例 specs（P1.8）：每实例一条 `LaunchSpec`——`Hello.config` 携带
-    // 实例身份 / 归属人格 / 运行期状态文件（门控 / 名单 / owner 落盘回灌）
-    // 与完整适配器配置（含端口分配结果）。
-    let qq_plugin_specs: Vec<echo_plugin_host::bootstrap::LaunchSpec> = if qq_plugin_mode {
+    info!(
+        instances = qq_instances.len(),
+        "QQ instances launch as adapter plugins"
+    );
+    // 插件实例 specs：每实例一条 `LaunchSpec`——`Hello.config` 携带实例身份 /
+    // 归属人格 / 运行期状态文件（门控 / 名单 / owner 落盘回灌）与完整适配器
+    // 配置（共享层 ⊕ 实例覆盖 + 端口分配结果；TOML 表透传）。
+    let qq_plugin_specs: Vec<echo_plugin_host::bootstrap::LaunchSpec> = {
         let launch = &cfg.qq_plugin_launch;
         let command = if launch.command.trim().is_empty() {
             "echo-adapter-qq".to_string()
@@ -728,8 +699,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 }
             })
             .collect()
-    } else {
-        Vec::new()
     };
     // 实例持久化：新分配的**归属人格与端口**写回
     // `[adapters.qq.instances.<id>]`（persona + ports），保证跨重启稳定：
@@ -861,34 +830,27 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             platform = %platform,
             "plugin adapter registered"
         );
-        if qq_plugin_mode {
-            match qq_instances.iter().find(|instance| instance.id == name) {
-                Some(instance) => {
-                    qq_adapters.push((
-                        instance.id.clone(),
-                        instance.persona.clone(),
-                        handle.adapter.clone() as Arc<dyn echo_adapter::Adapter>,
-                    ));
-                    qq_plugin_workers.push((instance.id.clone(), instance.persona.clone(), handle));
-                }
-                None => {
-                    tracing::warn!(
-                        adapter = %name,
-                        "plugin adapter has no matching QQ instance; inbound worker not wired"
-                    );
-                }
+        match qq_instances.iter().find(|instance| instance.id == name) {
+            Some(instance) => {
+                qq_adapters.push((
+                    instance.id.clone(),
+                    instance.persona.clone(),
+                    handle.adapter.clone() as Arc<dyn echo_adapter::Adapter>,
+                ));
+                qq_plugin_workers.push((instance.id.clone(), instance.persona.clone(), handle));
+            }
+            None => {
+                tracing::debug!(
+                    adapter = %name,
+                    "plugin adapter has no matching QQ instance (non-QQ adapter plugin?)"
+                );
             }
         }
     }
-    // 进程级默认句柄：第一个实例（通常是 `qq`；自动启动/停机与登录兜底用）。
-    // 无实例时退回未注册的 builtin 句柄（空壳）。
-    let qq_adapter: Arc<dyn echo_adapter::Adapter> = qq_adapters
-        .first()
-        .map(|(_, _, adapter)| adapter.clone())
-        .unwrap_or_else(|| {
-            Arc::new(echo_adapter_qq::QqAdapter::new(cfg.qq_adapter.clone()))
-                as Arc<dyn echo_adapter::Adapter>
-        });
+    // 进程级默认句柄：第一个实例（通常是 `qq`；自动启动/停机与登录兜底用）；
+    // 无实例时 `None`（不再有内置空壳）。
+    let qq_adapter: Option<Arc<dyn echo_adapter::Adapter>> =
+        qq_adapters.first().map(|(_, _, adapter)| adapter.clone());
     // persona → 该人格的 QQ 实例集合（工具注册按人格隔离；builtin / plugin
     // 实例统一表）。
     let qq_by_persona: std::collections::HashMap<String, Vec<Arc<dyn echo_adapter::Adapter>>> = {
@@ -916,7 +878,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let factory_provider = provider_arc.clone();
     let factory_skills = skills.clone();
     let factory_adapters = adapters.clone();
-    let factory_qq_adapter = qq_adapter.clone();
+    let factory_qq_default: Vec<Arc<dyn echo_adapter::Adapter>> =
+        qq_adapter.iter().cloned().collect();
     let factory_qq_by_persona = qq_by_persona.clone();
     let factory_base_cfg = agent_config.clone();
     let factory_event_sink = event_sink.clone();
@@ -933,7 +896,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let provider_arc2 = factory_provider.clone();
             let skills2 = factory_skills.clone();
             let adapters2 = factory_adapters.clone();
-            let qq_adapter2 = factory_qq_adapter.clone();
+            let qq_default2 = factory_qq_default.clone();
             let base_cfg = factory_base_cfg.clone();
             let event_sink = factory_event_sink.clone();
             let shared_plugin_host = factory_plugin_host.clone();
@@ -977,7 +940,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 let persona_instances = factory_qq_by_persona
                     .get(&id)
                     .cloned()
-                    .unwrap_or_else(|| vec![qq_adapter2.clone()]);
+                    .unwrap_or_else(|| qq_default2.clone());
                 // QQ 出站闸门（2026-10 安全）：send_* 的文本命中密钥按策略
                 // 阻断/替换；文件参数落在敏感目录（配置 / 凭据目录）直接拒发。
                 let outbound_gate =
@@ -1404,6 +1367,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
         // ── 实化 3：QQ 适配器（启停进程 + 工具包启停）──
         {
+            // 实例句柄（独立进程适配器插件；无实例 = None，启停为 no-op）。
             let qq = qq_adapter.clone();
             let wired = qq_wired.clone();
             let running = qq_running.clone();
@@ -1415,31 +1379,33 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     version,
                     PluginKind::Adapter,
                     "qq",
-                    "OneBot v11 反向 WS 适配器（含 QQ 管理工具）",
+                    "OneBot v11 反向 WS 适配器插件（独立进程；含 QQ 管理工具）",
                 ),
                 move |_ctx| {
                     for_each_agent(|a| a.reapply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, true));
-                    if wired.load(Ordering::SeqCst) && !running.swap(true, Ordering::SeqCst) {
-                        let qq2 = qq.clone();
-                        let running2 = running.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = qq2.start().await {
-                                running2.store(false, Ordering::SeqCst);
-                                warn!(error = %e, "QQ adapter start via plugin mount failed");
-                            }
-                        });
+                    if let Some(qq) = qq.clone() {
+                        if wired.load(Ordering::SeqCst) && !running.swap(true, Ordering::SeqCst) {
+                            let running2 = running.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = qq.start().await {
+                                    running2.store(false, Ordering::SeqCst);
+                                    warn!(error = %e, "QQ adapter start via plugin mount failed");
+                                }
+                            });
+                        }
                     }
                     let qq = qq.clone();
                     let running = running.clone();
                     Ok(vec![Disposer::from_fn(move || {
                         for_each_agent(|a| a.reapply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, false));
                         if running.swap(false, Ordering::SeqCst) {
-                            let qq3 = qq.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = qq3.stop().await {
-                                    warn!(error = %e, "QQ adapter stop via plugin unmount failed");
-                                }
-                            });
+                            if let Some(qq) = qq.clone() {
+                                tokio::spawn(async move {
+                                    if let Err(e) = qq.stop().await {
+                                        warn!(error = %e, "QQ adapter stop via plugin unmount failed");
+                                    }
+                                });
+                            }
                         }
                     })])
                 },
@@ -1592,38 +1558,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         shutdown_tx.clone(),
     ));
     // 每个实例把入站消息投给**归属人格**（不再是"默认人格"）；实例间互相隔离。
-    // builtin 实例：单向 hook + 命令 handler（Echo / Help / Admin，进程内注册）。
-    for (instance_id, persona_id, adapter) in &qq_builtin_instances {
-        adapter.set_config_store(config_store.clone());
-        let target = match supervisor.get_exact(persona_id) {
-            Some(p) => p.agent,
-            None => {
-                warn!(persona = %persona_id, "QQ instance persona not found; skipping wire");
-                continue;
-            }
-        };
-        // QQ events enter through a one-way hook. Outbound messages require tools.
-        adapter.set_message_hook(Arc::new(echo_agent::AgentMessageHook::new(target)));
-        adapter.add_handler(Box::new(handlers::EchoHandler::new(
-            &cfg.qq_adapter.command_prefix,
-        )));
-        adapter.add_handler(Box::new(handlers::HelpHandler::new(
-            &cfg.qq_adapter.command_prefix,
-        )));
-        let owner = adapter.get_owner_qq();
-        adapter.add_handler(Box::new(handlers::AdminHandler::new(
-            &cfg.qq_adapter.command_prefix,
-            if owner > 0 {
-                owner
-            } else {
-                cfg.qq_adapter.owner_qq
-            },
-            shutdown_tx.clone(),
-            tracker.clone(),
-        )));
-        tracing::info!(instance = %instance_id, persona = %persona_id, "QQ instance wired to persona (builtin)");
-    }
-    // plugin 实例：每实例一个串行 worker（入站队列 → 命令判定 → AgentMessageHook）。
+    // 每实例一个串行 worker（入站队列 → 命令判定 → AgentMessageHook）。
     // 队列由 `adapter_host` 的反压回执语义保序（插件侧退避重试）；
     // 命令域（`/echo` / `/help` / `/status` / `/shutdown`）在投递 agent 前
     // 消费——回复经该实例的适配器句柄（`send_text`），与内置路径同语义。
@@ -1811,7 +1746,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // Graceful shutdown: stop the command pump and QQ adapter, cancel
     // background tasks, and flush sessions to disk.
     pump.abort();
-    let _ = qq_adapter.stop().await;
+    if let Some(qq) = &qq_adapter {
+        let _ = qq.stop().await;
+    }
     // 所有人格都要优雅关闭（drain + save_now）。只保存 default 时，非默认
     // 人格（如 self-coding）的最近会话 flush 不到磁盘——叠加此前没有周期
     // 保存任务，一次重启就会丢光非默认 agent 的上下文。

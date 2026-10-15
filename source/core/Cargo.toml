@@ -18,11 +18,8 @@ echo-protocol.workspace = true
 echo-context.workspace = true
 echo-session.workspace = true
 echo-loop.workspace = true
-echo-core.workspace = true
-echo-server.workspace = true
 echo-agent.workspace = true
 echo-adapter.workspace = true
-echo-adapter-qq.workspace = true
 echo-plugin = { path = "../plugin/echo-plugin" }
 echo-plugin-host = { workspace = true }
 echo-plugin-loader = { workspace = true }
@@ -40,6 +37,4 @@ async-trait.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
 
-[dev-dependencies]
-echo-test-utils.workspace = true
-dashmap.workspace = true
+# 无 dev-dependencies：集成测试（core/tests/）只依赖本 crate 与既有依赖。

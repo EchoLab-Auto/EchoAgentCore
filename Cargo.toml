@@ -11,11 +11,8 @@ members = [
     "source/security/echo-sanitize",
     "source/protocol/echo-protocol",
     "source/federation/echo-federation",
-    "source/backend/echo-core",
-    "source/backend/echo-server",
     "source/backend/echo-agent",
     "source/backend/echo-adapter",
-    "source/backend/echo-adapter-qq",
     "source/backend/echo-test-utils",
     "source/core",
     "source/plugin/echo-plugin",
@@ -48,10 +45,7 @@ echo-llm-anthropic = { path = "source/llm/echo-llm-anthropic" }
 echo-llm-ollama = { path = "source/llm/echo-llm-ollama" }
 echo-protocol = { path = "source/protocol/echo-protocol" }
 echo-adapter = { path = "source/backend/echo-adapter" }
-echo-core = { path = "source/backend/echo-core" }
-echo-server = { path = "source/backend/echo-server" }
 echo-agent = { path = "source/backend/echo-agent" }
-echo-adapter-qq = { path = "source/backend/echo-adapter-qq" }
 echo-test-utils = { path = "source/backend/echo-test-utils" }
 echo-plugin = { path = "source/plugin/echo-plugin" }
 echo-plugin-api = { path = "source/plugin/echo-plugin-api" }

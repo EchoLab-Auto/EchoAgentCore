@@ -1,9 +1,9 @@
 //! QQ-specific tools that the LLM can invoke.
 //!
-//! Lives in the binary crate (not echo-adapter-qq) because tools must
-//! implement `echo_agent::Tool` — the adapter crate deliberately has no
-//! dependency on echo-agent. These tools delegate to `QqAdapter` for actual
-//! QQ API calls.
+//! Lives in the binary crate: tools must implement `echo_agent::Tool` — the
+//! adapter plugin deliberately has no dependency on echo-agent. 出站调用
+//! 经 `Arc<dyn Adapter>` 分发（内置 / 插件实例同一路径；平台专属动作走
+//! 管理面 `invoke_custom`，见 [`invoke_management`]）。
 
 use std::sync::Arc;
 
@@ -740,18 +740,71 @@ fn redact_json_strings(value: Value, redactor: &dyn echo_defs::sanitize::Redacto
 #[cfg(test)]
 mod tests {
     use super::*;
-    use echo_adapter_qq::QqAdapter;
+
+    use echo_adapter::types::{AdapterEvent, SendResult};
+    use echo_adapter::{AdapterConnectionState, AdapterError, AdapterInfo, AdapterManagement};
+
+    /// 测试用最小适配器：工具注册 / 闸门用例不触达真实平台路径。
+    struct MockQqAdapter;
+
+    #[async_trait]
+    impl Adapter for MockQqAdapter {
+        fn name(&self) -> &str {
+            "qq"
+        }
+        fn display_name(&self) -> &str {
+            "qq"
+        }
+        fn platform(&self) -> &str {
+            "qq"
+        }
+        fn is_configured(&self) -> bool {
+            true
+        }
+        fn status_info(&self) -> AdapterInfo {
+            AdapterInfo {
+                name: "qq".into(),
+                display_name: "qq".into(),
+                status: AdapterConnectionState::Stopped,
+                self_id: None,
+                started_at: None,
+                platform: "qq".into(),
+                configured: true,
+            }
+        }
+        async fn start(&self) -> Result<(), AdapterError> {
+            Ok(())
+        }
+        async fn stop(&self) -> Result<(), AdapterError> {
+            Ok(())
+        }
+        async fn send_message(
+            &self,
+            _target: &MessageTarget,
+            _content: &str,
+        ) -> Result<SendResult, AdapterError> {
+            Ok(SendResult {
+                message_id: Some("mock".into()),
+                success: true,
+                error: None,
+            })
+        }
+        fn subscribe(&self, _tx: tokio::sync::mpsc::UnboundedSender<AdapterEvent>) {}
+        fn management(&self) -> Option<&dyn AdapterManagement> {
+            None
+        }
+    }
+
+    /// 单实例 mock 集合（测试注册入口）。
+    fn mock_instances() -> Vec<Arc<dyn Adapter>> {
+        vec![Arc::new(MockQqAdapter)]
+    }
 
     #[tokio::test]
     async fn registers_gate_filtered_friend_list_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
-        let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(
-            &mut registry,
-            vec![adapter.clone() as Arc<dyn Adapter>],
-            None,
-        );
+        register_qq_tools_multi(&mut registry, mock_instances(), None);
 
         assert!(registry
             .names()
@@ -768,13 +821,8 @@ mod tests {
     #[tokio::test]
     async fn send_tools_are_declared_as_the_qq_output_boundary() {
         let mut registry = echo_agent::ToolRegistry::new();
-        let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(
-            &mut registry,
-            vec![adapter.clone() as Arc<dyn Adapter>],
-            None,
-        );
+        register_qq_tools_multi(&mut registry, mock_instances(), None);
 
         let definitions = registry.definitions().await;
         for name in ["send_private_msg", "send_group_msg"] {
@@ -792,13 +840,8 @@ mod tests {
     #[tokio::test]
     async fn registers_send_file_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
-        let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(
-            &mut registry,
-            vec![adapter.clone() as Arc<dyn Adapter>],
-            None,
-        );
+        register_qq_tools_multi(&mut registry, mock_instances(), None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -816,13 +859,8 @@ mod tests {
     #[tokio::test]
     async fn registers_send_json_card_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
-        let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(
-            &mut registry,
-            vec![adapter.clone() as Arc<dyn Adapter>],
-            None,
-        );
+        register_qq_tools_multi(&mut registry, mock_instances(), None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -840,13 +878,8 @@ mod tests {
     #[tokio::test]
     async fn registers_send_voice_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
-        let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(
-            &mut registry,
-            vec![adapter.clone() as Arc<dyn Adapter>],
-            None,
-        );
+        register_qq_tools_multi(&mut registry, mock_instances(), None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -872,13 +905,8 @@ mod tests {
     #[tokio::test]
     async fn registers_get_group_msg_history_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
-        let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(
-            &mut registry,
-            vec![adapter.clone() as Arc<dyn Adapter>],
-            None,
-        );
+        register_qq_tools_multi(&mut registry, mock_instances(), None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -900,13 +928,8 @@ mod tests {
     #[tokio::test]
     async fn registers_send_image_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
-        let adapter = Arc::new(QqAdapter::new(Default::default()));
 
-        register_qq_tools_multi(
-            &mut registry,
-            vec![adapter.clone() as Arc<dyn Adapter>],
-            None,
-        );
+        register_qq_tools_multi(&mut registry, mock_instances(), None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -933,7 +956,6 @@ mod tests {
         use echo_defs::sanitize::Redactor;
         const KEY: &str = "sk-gateblockgateblock0001";
         let mut registry = echo_agent::ToolRegistry::new();
-        let adapter = Arc::new(QqAdapter::new(Default::default()));
         let redactor = Arc::new(echo_sanitize::RegistryRedactor::new());
         redactor.register_secret(KEY, "api_key:test");
         let gate = OutboundGate {
@@ -941,7 +963,7 @@ mod tests {
             protected_paths: vec![std::path::PathBuf::from("/tmp/echo-gate-protected")],
             policy: OutboundPolicy::Block,
         };
-        register_qq_tools_multi(&mut registry, vec![adapter as Arc<dyn Adapter>], Some(gate));
+        register_qq_tools_multi(&mut registry, mock_instances(), Some(gate));
 
         let error = registry
             .execute(
@@ -959,14 +981,13 @@ mod tests {
     #[tokio::test]
     async fn outbound_gate_blocks_protected_path() {
         let mut registry = echo_agent::ToolRegistry::new();
-        let adapter = Arc::new(QqAdapter::new(Default::default()));
         let redactor = Arc::new(echo_sanitize::RegistryRedactor::new());
         let gate = OutboundGate {
             redactor,
             protected_paths: vec![std::path::PathBuf::from("/tmp/echo-gate-protected")],
             policy: OutboundPolicy::Block,
         };
-        register_qq_tools_multi(&mut registry, vec![adapter as Arc<dyn Adapter>], Some(gate));
+        register_qq_tools_multi(&mut registry, mock_instances(), Some(gate));
 
         let error = registry
             .execute(

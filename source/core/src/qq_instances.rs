@@ -16,8 +16,8 @@ use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
-use crate::config::QqInstanceSection;
 pub use crate::config::QqPorts;
+use crate::config::{QqHostConfig, QqInstanceSection};
 
 /// legacy 默认实例名（会话 id 不产生 `@` 后缀）。
 pub const DEFAULT_INSTANCE: &str = "qq";
@@ -29,8 +29,9 @@ pub struct QqInstance {
     pub id: String,
     /// 归属人格 id。
     pub persona: String,
-    /// 合并后的适配器配置（含该实例的端口与容器名）。
-    pub config: echo_adapter_qq::QqAdapterConfig,
+    /// 合并后的插件配置（TOML 表：共享层 ⊕ 实例覆盖 + 宿主派生字段；
+    /// 原样进 `Hello.config.config`；宿主不解析插件 schema——P1.9 透传）。
+    pub config: toml::Table,
     /// 宿主端口三元组。
     pub ports: QqPorts,
 }
@@ -90,53 +91,87 @@ fn find_free_port(start: u16, end: u16, taken: &std::collections::HashSet<u16>) 
 
 /// 把实例配置合并到共享默认之上（persona 相关字段逐个覆盖）。
 pub fn merge_instance(
-    shared: &echo_adapter_qq::QqAdapterConfig,
+    shared: &toml::Table,
     section: &QqInstanceSection,
     id: &str,
     persona: &str,
     ports: &QqPorts,
     compose_file: Option<String>,
-) -> echo_adapter_qq::QqAdapterConfig {
-    let mut cfg = shared.clone();
-    cfg.server.bind_address = format!("0.0.0.0:{}", ports.reverse_ws);
-    if let Some(server) = &section.server {
-        // 端口以外允许覆盖（token/心跳），但 bind_address 以端口分配为准。
-        cfg.server.access_token = server.access_token.clone();
-        cfg.server.heartbeat_interval = server.heartbeat_interval;
-    }
-    if let Some(owner) = section.owner_qq {
-        cfg.owner_qq = owner;
-    }
+) -> toml::Table {
+    let mut cfg = merge_tables(shared, &section.config);
     let auto = id != DEFAULT_INSTANCE;
-    // legacy 实例的容器名与 NapCat 地址是"既有部署"的一部分：实例段未覆盖时
-    // 必须沿用共享默认（container 默认 `napcat`、地址默认 localhost:3000/6099），
-    // 否则会把 docker 管理指向不存在的新容器名。
-    let shared_or = |chosen: Option<String>, shared_value: &str| -> Option<String> {
-        chosen.or_else(|| {
-            if !auto && !shared_value.trim().is_empty() {
-                Some(shared_value.to_string())
-            } else {
-                None
+
+    // server.bind_address：端口分配结果强制（其余 server 键允许实例覆盖）。
+    {
+        let server = cfg
+            .entry("server")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let Some(table) = server.as_table_mut() {
+            table.insert(
+                "bind_address".into(),
+                toml::Value::String(format!("0.0.0.0:{}", ports.reverse_ws)),
+            );
+        }
+    }
+
+    // NapCat 容器寻址三键（语义与迁移前的内置合并一致）：
+    // - 实例段显式覆盖 → 保留；
+    // - auto 实例未覆盖 → 由 id / 端口派生（忽略共享层，多实例容器互异）；
+    // - legacy 实例未覆盖 → 沿用共享层显式值；共享层缺省时不写
+    //   （插件默认与迁移前的内置默认一致：`napcat` / localhost:3000/6099）；
+    // - 共享层显式置空串 → 派生值兜底。
+    for (key, derived) in [
+        ("napcat_container", format!("echo-napcat-{id}")),
+        (
+            "napcat_webui_url",
+            format!("http://localhost:{}", ports.webui),
+        ),
+        (
+            "napcat_onebot_url",
+            format!("http://localhost:{}", ports.onebot_http),
+        ),
+    ] {
+        let in_section = section.config.contains_key(key);
+        let action: Option<String> = if in_section {
+            None
+        } else if auto {
+            Some(derived)
+        } else {
+            match cfg.get(key).and_then(toml::Value::as_str) {
+                Some(value) if value.trim().is_empty() => Some(derived),
+                _ => None,
             }
-        })
-    };
-    cfg.napcat_container = shared_or(section.napcat_container.clone(), &shared.napcat_container)
-        .unwrap_or_else(|| format!("echo-napcat-{id}"));
-    cfg.napcat_webui_url = shared_or(section.napcat_webui_url.clone(), &shared.napcat_webui_url)
-        .unwrap_or_else(|| format!("http://localhost:{}", ports.webui));
-    cfg.napcat_onebot_url = shared_or(section.napcat_onebot_url.clone(), &shared.napcat_onebot_url)
-        .unwrap_or_else(|| format!("http://localhost:{}", ports.onebot_http));
-    // 多实例容器由 Core 托管：自动启停按共享默认（除非显式覆盖）。
-    cfg.napcat_auto_start = section
-        .napcat_auto_start
-        .unwrap_or(shared.napcat_auto_start);
-    cfg.napcat_auto_stop = section.napcat_auto_stop.unwrap_or(shared.napcat_auto_stop);
+        };
+        if let Some(value) = action {
+            cfg.insert(key.into(), toml::Value::String(value));
+        }
+    }
     if auto {
         // 多实例：compose 由 Core 生成（路径由调用方给出）。
-        cfg.napcat_compose_file = compose_file.unwrap_or_default();
+        cfg.insert(
+            "napcat_compose_file".into(),
+            toml::Value::String(compose_file.unwrap_or_default()),
+        );
     }
     let _ = persona;
     cfg
+}
+
+/// 深合并两张 TOML 表：`overlay` 覆盖 `base`；嵌套表递归合并，
+/// 其余类型整体替换。用于「共享层 ⊕ 实例覆盖」（P1.9 配置透传）。
+fn merge_tables(base: &toml::Table, overlay: &toml::Table) -> toml::Table {
+    let mut out = base.clone();
+    for (key, value) in overlay {
+        match (out.get_mut(key), value) {
+            (Some(toml::Value::Table(base_table)), toml::Value::Table(overlay_table)) => {
+                *base_table = merge_tables(base_table, overlay_table);
+            }
+            _ => {
+                out.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    out
 }
 
 /// 生成实例的 compose 文件内容（独立容器名 / 端口 / 数据卷）。
@@ -192,7 +227,7 @@ pub fn write_compose(data_dir: &Path, id: &str, ports: &QqPorts) -> Result<PathB
 /// `data_dir` 已知时把自动生成 compose 的路径写进实例配置（容器编排据此
 /// 启停 NapCat），None 表示不生成 compose 路径。
 pub fn resolve_instances_in(
-    shared: &echo_adapter_qq::QqAdapterConfig,
+    shared: &QqHostConfig,
     sections: &BTreeMap<String, QqInstanceSection>,
     enabled_personas: &[String],
     default_persona: &str,
@@ -224,7 +259,7 @@ pub fn resolve_instances_in(
         let ports = allocate_ports_avoiding(&section.ports, id, &taken_ports);
         reserve(&ports, &mut taken_ports);
         let compose = auto_compose_path(data_dir, id);
-        let config = merge_instance(shared, section, id, &persona, &ports, compose);
+        let config = merge_instance(&shared.shared, section, id, &persona, &ports, compose);
         used_ids.insert(id.clone());
         out.push(QqInstance {
             id: id.clone(),
@@ -240,7 +275,7 @@ pub fn resolve_instances_in(
         let ports = allocate_ports_avoiding(&QqPorts::default(), DEFAULT_INSTANCE, &taken_ports);
         reserve(&ports, &mut taken_ports);
         let config = merge_instance(
-            shared,
+            &shared.shared,
             &QqInstanceSection::default(),
             DEFAULT_INSTANCE,
             default_persona,
@@ -280,7 +315,7 @@ pub fn resolve_instances_in(
         reserve(&ports, &mut taken_ports);
         let compose = auto_compose_path(data_dir, &id);
         let config = merge_instance(
-            shared,
+            &shared.shared,
             &QqInstanceSection::default(),
             &id,
             persona,
@@ -323,14 +358,30 @@ fn unique_id(base: &str, used: &std::collections::HashSet<String>) -> String {
 mod tests {
     use super::*;
 
+    /// 共享层测试表（等价旧 typed 配置的最小集合）。
+    fn shared(enabled: bool) -> QqHostConfig {
+        let mut table = toml::Table::new();
+        table.insert("enabled".into(), toml::Value::Boolean(enabled));
+        QqHostConfig::from_shared(table)
+    }
+
+    /// 共享层 + 追加键。
+    fn shared_with(enabled: bool, entries: &[(&str, toml::Value)]) -> QqHostConfig {
+        let mut table = toml::Table::new();
+        table.insert("enabled".into(), toml::Value::Boolean(enabled));
+        for (key, value) in entries {
+            table.insert((*key).into(), value.clone());
+        }
+        QqHostConfig::from_shared(table)
+    }
+
+    fn config_str<'a>(config: &'a toml::Table, key: &str) -> Option<&'a str> {
+        config.get(key).and_then(toml::Value::as_str)
+    }
+
     #[test]
     fn legacy_single_instance_keeps_ports_and_id() {
-        let shared = echo_adapter_qq::QqAdapterConfig {
-            enabled: true,
-            napcat_auto_start: false,
-            ..Default::default()
-        };
-        let instances = resolve_instances_in(&shared, &BTreeMap::new(), &[], "alix", None);
+        let instances = resolve_instances_in(&shared(true), &BTreeMap::new(), &[], "alix", None);
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].id, DEFAULT_INSTANCE);
         assert_eq!(instances[0].persona, "alix");
@@ -339,51 +390,59 @@ mod tests {
         assert!(instances[0].ports.reverse_ws > 0);
         assert_eq!(instances[0].ports.onebot_http, 3000);
         assert_eq!(instances[0].ports.webui, 6099);
-        // 容器与地址沿用共享默认（docker 管理必须指向既有容器 `napcat`）。
-        assert_eq!(instances[0].config.napcat_container, "napcat");
-        assert!(instances[0].config.napcat_onebot_url.contains(":3000"));
-        assert!(instances[0].config.napcat_webui_url.contains(":6099"));
+        // bind_address 由端口分配结果强制。
+        assert_eq!(
+            instances[0].config["server"]["bind_address"]
+                .as_str()
+                .unwrap(),
+            format!("0.0.0.0:{}", instances[0].ports.reverse_ws)
+        );
+        // 容器 / 地址：共享层缺省时不写覆盖——插件默认（`napcat` /
+        // localhost:3000/6099）与迁移前的内置默认一致（P1.9 透传语义）。
+        assert!(!instances[0].config.contains_key("napcat_container"));
+        assert!(!instances[0].config.contains_key("napcat_onebot_url"));
+        assert!(!instances[0].config.contains_key("napcat_webui_url"));
     }
 
     #[test]
     fn legacy_instance_keeps_shared_container_and_urls() {
-        let shared = echo_adapter_qq::QqAdapterConfig {
-            enabled: true,
-            napcat_auto_start: false,
-            napcat_container: "my-napcat".into(),
-            napcat_onebot_url: "http://10.0.0.5:3000".into(),
-            ..Default::default()
-        };
+        let shared = shared_with(
+            true,
+            &[
+                ("napcat_container", toml::Value::String("my-napcat".into())),
+                (
+                    "napcat_onebot_url",
+                    toml::Value::String("http://10.0.0.5:3000".into()),
+                ),
+            ],
+        );
         let instances = resolve_instances_in(&shared, &BTreeMap::new(), &[], "alix", None);
         assert_eq!(instances.len(), 1);
-        assert_eq!(instances[0].config.napcat_container, "my-napcat");
         assert_eq!(
-            instances[0].config.napcat_onebot_url,
-            "http://10.0.0.5:3000"
+            config_str(&instances[0].config, "napcat_container"),
+            Some("my-napcat")
+        );
+        assert_eq!(
+            config_str(&instances[0].config, "napcat_onebot_url"),
+            Some("http://10.0.0.5:3000")
         );
     }
 
     #[test]
     fn auto_instance_derives_container_and_urls_from_ports() {
-        let shared = echo_adapter_qq::QqAdapterConfig {
-            enabled: true,
-            napcat_auto_start: false,
-            ..Default::default()
-        };
         // legacy 归属默认人格 a；b 由自动建档覆盖 → 取 b 断言派生值。
         let personas = vec!["a".to_string(), "b".to_string()];
-        let instances = resolve_instances_in(&shared, &BTreeMap::new(), &personas, "a", None);
+        let instances = resolve_instances_in(&shared(true), &BTreeMap::new(), &personas, "a", None);
         let auto = instances
             .iter()
             .find(|i| i.id != DEFAULT_INSTANCE)
             .expect("auto instance exists");
         assert_eq!(
-            auto.config.napcat_container,
-            format!("echo-napcat-{}", auto.id)
+            config_str(&auto.config, "napcat_container"),
+            Some(format!("echo-napcat-{}", auto.id).as_str())
         );
-        assert!(auto
-            .config
-            .napcat_onebot_url
+        assert!(config_str(&auto.config, "napcat_onebot_url")
+            .unwrap()
             .contains(&auto.ports.onebot_http.to_string()));
         assert!((3010..3090).contains(&auto.ports.onebot_http));
         assert!((6100..6190).contains(&auto.ports.webui));
@@ -391,13 +450,9 @@ mod tests {
 
     #[test]
     fn auto_creates_instance_per_enabled_persona() {
-        let shared = echo_adapter_qq::QqAdapterConfig {
-            enabled: true,
-            napcat_auto_start: false,
-            ..Default::default()
-        };
         let personas = vec!["alix".to_string(), "self-coding".to_string()];
-        let instances = resolve_instances_in(&shared, &BTreeMap::new(), &personas, "alix", None);
+        let instances =
+            resolve_instances_in(&shared(true), &BTreeMap::new(), &personas, "alix", None);
         // legacy 实例 + self-coding 自动实例（alix 已被 legacy 覆盖）
         let ids: Vec<&str> = instances.iter().map(|i| i.id.as_str()).collect();
         assert!(ids.contains(&DEFAULT_INSTANCE), "ids: {ids:?}");
@@ -406,19 +461,18 @@ mod tests {
 
     #[test]
     fn two_personas_get_distinct_ports_and_containers() {
-        let shared = echo_adapter_qq::QqAdapterConfig {
-            enabled: true,
-            napcat_auto_start: false,
-            ..Default::default()
-        };
         // legacy 实例归属 a（默认人格），b 自动建档 → 恰好 2 个实例
         let personas = vec!["a".to_string(), "b".to_string()];
-        let instances = resolve_instances_in(&shared, &BTreeMap::new(), &personas, "a", None);
+        let instances = resolve_instances_in(&shared(true), &BTreeMap::new(), &personas, "a", None);
         assert_eq!(instances.len(), 2, "legacy(a) + auto(b)");
         let (x, y) = (&instances[0], &instances[1]);
         assert_ne!(x.ports.reverse_ws, y.ports.reverse_ws);
         assert_ne!(x.ports.onebot_http, y.ports.onebot_http);
-        assert_ne!(x.config.napcat_container, y.config.napcat_container);
+        // legacy 不写容器覆盖（插件默认 `napcat`）；auto 派生独立容器名。
+        assert_ne!(
+            x.config.get("napcat_container"),
+            y.config.get("napcat_container")
+        );
     }
 
     #[test]
@@ -435,15 +489,12 @@ mod tests {
         assert!(yaml.contains("echo-napcat-alix-2-data:"));
     }
 
-    /// 防漂移：显式实例（其他人格）存在时，默认人格的自动实例仍沿用 legacy
-    /// id `qq` 与共享容器/端口——否则"首个实例被挤出配置表"后归属会漂移。
     #[test]
     fn default_persona_keeps_legacy_id_when_other_instances_persisted() {
-        let shared = echo_adapter_qq::QqAdapterConfig {
-            enabled: true,
-            napcat_auto_start: false,
-            ..Default::default()
-        };
+        let shared = shared_with(
+            true,
+            &[("napcat_container", toml::Value::String("napcat".into()))],
+        );
         let mut sections = BTreeMap::new();
         sections.insert(
             "alix".to_string(),
@@ -475,18 +526,14 @@ mod tests {
             .expect("Alice instance exists");
         assert_eq!(default.id, DEFAULT_INSTANCE);
         assert_eq!(
-            default.config.napcat_container, "napcat",
+            config_str(&default.config, "napcat_container"),
+            Some("napcat"),
             "shared container kept"
         );
     }
 
     #[test]
     fn explicit_instance_wins_over_auto_creation() {
-        let shared = echo_adapter_qq::QqAdapterConfig {
-            enabled: true,
-            napcat_auto_start: false,
-            ..Default::default()
-        };
         let mut sections = BTreeMap::new();
         sections.insert(
             "qq2".to_string(),
@@ -495,9 +542,77 @@ mod tests {
                 ..Default::default()
             },
         );
-        let instances = resolve_instances_in(&shared, &sections, &["alix".to_string()], "x", None);
+        let instances =
+            resolve_instances_in(&shared(true), &sections, &["alix".to_string()], "x", None);
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].id, "qq2");
         assert_eq!(instances[0].persona, "alix");
+    }
+
+    /// P1.9 透传契约：共享层与实例覆盖里的未知 / 未来字段原样存活
+    /// （宿主不解析插件 schema）；嵌套表深合并（实例覆盖 server 子键）。
+    #[test]
+    fn unknown_fields_pass_through_and_deep_merge() {
+        let shared = shared_with(
+            true,
+            &[
+                ("fancy_future_option", toml::Value::String("keep-me".into())),
+                (
+                    "server",
+                    toml::Value::Table(toml::Table::from_iter([
+                        (
+                            "access_token".to_string(),
+                            toml::Value::String("shared-token".into()),
+                        ),
+                        ("heartbeat_interval".to_string(), toml::Value::Integer(30)),
+                    ])),
+                ),
+                ("owner_qq", toml::Value::Integer(10001)),
+            ],
+        );
+        let mut sections = BTreeMap::new();
+        sections.insert(
+            "qq".to_string(),
+            QqInstanceSection {
+                persona: Some("alix".to_string()),
+                ports: QqPorts {
+                    reverse_ws: 3143,
+                    onebot_http: 3012,
+                    webui: 6102,
+                },
+                enabled: None,
+                config: toml::Table::from_iter([
+                    ("owner_qq".to_string(), toml::Value::Integer(20002)),
+                    (
+                        "server".to_string(),
+                        toml::Value::Table(toml::Table::from_iter([(
+                            "access_token".to_string(),
+                            toml::Value::String("instance-token".into()),
+                        )])),
+                    ),
+                ]),
+            },
+        );
+        let instances = resolve_instances_in(&shared, &sections, &[], "alix", None);
+        assert_eq!(instances.len(), 1);
+        let config = &instances[0].config;
+        // 未知字段透传。
+        assert_eq!(config_str(config, "fancy_future_option"), Some("keep-me"));
+        // 实例覆盖标量。
+        assert_eq!(config["owner_qq"].as_integer(), Some(20002));
+        // 嵌套深合并：实例的 access_token 覆盖、共享的 heartbeat_interval 保留、
+        // bind_address 由端口分配强制。
+        assert_eq!(
+            config["server"]["access_token"].as_str(),
+            Some("instance-token")
+        );
+        assert_eq!(
+            config["server"]["heartbeat_interval"].as_integer(),
+            Some(30)
+        );
+        assert_eq!(
+            config["server"]["bind_address"].as_str(),
+            Some("0.0.0.0:3143")
+        );
     }
 }

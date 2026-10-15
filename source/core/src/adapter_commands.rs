@@ -17,6 +17,20 @@ use std::time::Instant;
 use echo_adapter::traits::Adapter;
 use echo_adapter::types::{IncomingMessage, MessageTarget};
 
+/// 从文本开头解析 `prefix + name` 命令，返回参数（已去前导空白）。
+///
+/// 命令后必须是空白或结尾（`/echo` 不匹配 `/echofoo`）；空前缀（自动
+/// 回退）时命令本身仍须词边界。语义移植自原 `handlers::parse_command`
+/// （P1.9 命令域迁移，builtin handler 已移除）。
+fn parse_command(text: &str, prefix: &str, name: &str) -> Option<String> {
+    let expected = format!("{prefix}{name}");
+    let rest = text.strip_prefix(&expected)?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    Some(rest.trim_start().to_string())
+}
+
 /// 命令上下文（进程级共享；按实例复用）。
 pub struct CommandContext {
     /// 命令前缀（`[adapters.qq] command_prefix`）。
@@ -60,7 +74,7 @@ pub async fn try_handle(
         return false;
     }
 
-    if let Some(rest) = crate::handlers::parse_command(text, &ctx.prefix, "echo") {
+    if let Some(rest) = parse_command(text, &ctx.prefix, "echo") {
         let output = if rest.is_empty() {
             format!("用法: {}echo <文本>", ctx.prefix)
         } else {
@@ -69,7 +83,7 @@ pub async fn try_handle(
         reply(adapter, msg, &output).await;
         return true;
     }
-    if crate::handlers::parse_command(text, &ctx.prefix, "help").is_some() {
+    if parse_command(text, &ctx.prefix, "help").is_some() {
         let help = format!(
             "EchoAgentPanel 命令列表:\n{}echo <文本> — 复读文本\n{}help — 显示本帮助\n{}status — 运行状态 (仅管理员)\n{}shutdown — 关闭机器人 (仅管理员)",
             ctx.prefix, ctx.prefix, ctx.prefix, ctx.prefix
@@ -78,8 +92,8 @@ pub async fn try_handle(
         return true;
     }
 
-    let is_status = crate::handlers::parse_command(text, &ctx.prefix, "status").is_some();
-    let is_shutdown = crate::handlers::parse_command(text, &ctx.prefix, "shutdown").is_some();
+    let is_status = parse_command(text, &ctx.prefix, "status").is_some();
+    let is_shutdown = parse_command(text, &ctx.prefix, "shutdown").is_some();
     if !is_status && !is_shutdown {
         return false;
     }
@@ -153,9 +167,7 @@ mod tests {
 
     use async_trait::async_trait;
     use echo_adapter::types::{AdapterEvent, ChannelType, SendResult};
-    use echo_adapter::{
-        AdapterConnectionState, AdapterError, AdapterInfo, AdapterManagement,
-    };
+    use echo_adapter::{AdapterConnectionState, AdapterError, AdapterInfo, AdapterManagement};
 
     /// 记录型适配器：记录 send_message 调用；可选 owner/连接态。
     struct RecordingAdapter {
@@ -309,7 +321,14 @@ mod tests {
         assert!(!*rx.borrow_and_update());
 
         // owner：触发停机。
-        assert!(try_handle(&incoming("/shutdown", Some("owner")), &dyn_adapter(&adapter), &ctx).await);
+        assert!(
+            try_handle(
+                &incoming("/shutdown", Some("owner")),
+                &dyn_adapter(&adapter),
+                &ctx
+            )
+            .await
+        );
         assert!(*rx.borrow_and_update());
     }
 
@@ -317,7 +336,14 @@ mod tests {
     async fn status_reports_adapter_state() {
         let adapter = RecordingAdapter::new("qq", true);
         let (ctx, _rx) = context();
-        assert!(try_handle(&incoming("/status", Some("owner")), &dyn_adapter(&adapter), &ctx).await);
+        assert!(
+            try_handle(
+                &incoming("/status", Some("owner")),
+                &dyn_adapter(&adapter),
+                &ctx
+            )
+            .await
+        );
         let sent = adapter.sent.lock().unwrap();
         assert!(sent[0].1.contains("connected"), "{}", sent[0].1);
         assert!(sent[0].1.contains("4242"), "{}", sent[0].1);

@@ -73,9 +73,10 @@ pub struct CoreConfig {
     /// New adapter configuration.
     #[serde(alias = "adapters")]
     pub adapters_section: Option<AdaptersSection>,
-    /// Resolved QQ adapter config (populated in `load()`).
+    /// Resolved QQ 配置视图（populated in `load()`；P1.9 起为透传宿主视图——
+    /// 完整配置以 TOML 表下发插件，宿主只读校验 / 登记所需字段）。
     #[serde(skip)]
-    pub qq_adapter: echo_adapter_qq::QqAdapterConfig,
+    pub qq_adapter: QqHostConfig,
     /// QQ 实例表（多实例；缺省 = 单实例 `qq`）。
     #[serde(skip)]
     pub qq_instances: std::collections::BTreeMap<String, QqInstanceSection>,
@@ -142,17 +143,66 @@ pub struct AdaptersSection {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct QqSection {
+    /// 共享默认层（透传：原样进 `Hello.config.config`；宿主只读 `enabled` /
+    /// `command_prefix` / `server.access_token` 等少量字段）。
     #[serde(flatten)]
-    pub shared: echo_adapter_qq::QqAdapterConfig,
-    /// 适配器宿主模式（2026-10 适配器插件化）：
-    /// - `"builtin"`（缺省）：进程内适配器（零行为变化）；
-    /// - `"plugin"`：独立进程适配器插件（stdio），由 Core 按实例组装
-    ///   `Hello.config` 拉起（见 `[adapters.qq.plugin]`）。
+    pub shared: toml::Table,
+    /// 适配器宿主模式（历史字段，2026-10 适配器插件化；builtin 模式已移除，
+    /// 见 `load()` 的归一化告警）。
     pub mode: String,
-    /// `mode = "plugin"` 时插件进程的启动配置。
+    /// 插件进程启动配置（`[adapters.qq.plugin]`）。
     pub plugin: QqPluginLaunchSection,
     /// 实例表：实例 id → 覆盖项。
     pub instances: std::collections::BTreeMap<String, QqInstanceSection>,
+}
+
+/// 宿主侧 QQ 配置视图（P1.9 配置本地化）：透传为主、宿主只读少量字段。
+///
+/// `[adapters.qq]` 的完整内容（共享层 + 实例覆盖）以 **TOML 表**原样下发
+/// 给适配器插件（`Hello.config.config`）——宿主不重复插件配置 schema，
+/// 新字段自动透传。本视图仅承载宿主自身需要的读点：
+/// - [`enabled`](Self::enabled)：实例解析 / 自启停门控；
+/// - [`command_prefix`](Self::command_prefix)：命令域（`/echo` 等）；
+/// - [`access_token`](Self::access_token)：脱敏器密钥登记。
+#[derive(Debug, Clone, Default)]
+pub struct QqHostConfig {
+    /// 共享层配置表（归一化后：`command_prefix` 空 → `/`、
+    /// `ECHO_ACCESS_TOKEN` 覆盖已应用）。
+    pub shared: toml::Table,
+    /// `[adapters.qq].enabled`（缺省 false）。
+    pub enabled: bool,
+    /// 归一化后的命令前缀。
+    pub command_prefix: String,
+    /// `[adapters.qq.server].access_token`（空 = 未设置）。
+    pub access_token: String,
+}
+
+impl QqHostConfig {
+    /// 从共享层表构造（读取宿主读点；`load()` 归一化后调用）。
+    pub fn from_shared(shared: toml::Table) -> Self {
+        let enabled = shared
+            .get("enabled")
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(false);
+        let command_prefix = shared
+            .get("command_prefix")
+            .and_then(toml::Value::as_str)
+            .unwrap_or("/")
+            .to_string();
+        let access_token = shared
+            .get("server")
+            .and_then(toml::Value::as_table)
+            .and_then(|server| server.get("access_token"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        Self {
+            shared,
+            enabled,
+            command_prefix,
+            access_token,
+        }
+    }
 }
 
 /// `[adapters.qq.plugin]`：适配器插件进程（stdio）启动配置。
@@ -178,6 +228,11 @@ impl Default for QqPluginLaunchSection {
 }
 
 /// 单个 QQ 实例的配置覆盖项（缺省继承 `[adapters.qq]` 共享默认）。
+///
+/// - `persona` / `ports` / `enabled` = 宿主字段（实例归属 / 端口分配 / 启停）；
+/// - 其余键（`server` / `owner_qq` / `napcat_*` / 插件新增键…）进
+///   [`config`](Self::config) 覆盖片段，与共享层深合并后原样下发插件
+///   （宿主不重复插件 schema，新增字段自动透传）。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct QqInstanceSection {
@@ -185,16 +240,12 @@ pub struct QqInstanceSection {
     pub persona: Option<String>,
     /// 该实例独立端口（多容器多通道）；缺省由分配器填写并持久化。
     pub ports: QqPorts,
-    /// 仅覆盖需要差异化的子字段（None = 继承共享默认）。
-    pub server: Option<echo_adapter_qq::QqServerConfig>,
-    pub owner_qq: Option<i64>,
-    pub napcat_container: Option<String>,
-    pub napcat_webui_url: Option<String>,
-    pub napcat_onebot_url: Option<String>,
-    pub napcat_auto_start: Option<bool>,
-    pub napcat_auto_stop: Option<bool>,
     /// 该实例是否启用（缺省跟随共享默认的 `enabled`）。
     pub enabled: Option<bool>,
+    /// 实例级配置覆盖片段（浅表保留；合并语义见
+    /// `qq_instances::merge_instance`）。
+    #[serde(flatten)]
+    pub config: toml::Table,
 }
 
 /// QQ 实例的宿主端口三元组（自动分配并持久化）。
@@ -340,27 +391,67 @@ impl CoreConfig {
                 .retain(|p| seen.insert(p.name.clone()));
         }
 
-        // ---- Build QQ adapter config ----
+        // ---- Build QQ adapter config（P1.9 配置本地化：TOML 表透传）----
         if let Some(ref adapters) = config.adapters_section {
             if let Some(ref qq_cfg) = adapters.qq {
                 // New-format config takes priority（共享默认层）。
-                config.qq_adapter = qq_cfg.shared.clone();
+                config.qq_adapter = QqHostConfig::from_shared(qq_cfg.shared.clone());
                 config.qq_instances = qq_cfg.instances.clone();
                 config.qq_adapter_mode = qq_cfg.mode.trim().to_string();
                 config.qq_plugin_launch = qq_cfg.plugin.clone();
             }
         }
+        // builtin 模式已移除（P1.9，2026-10 适配器插件化收尾）：QQ 适配器
+        // 只作为独立进程插件运行（`[adapters.qq.plugin]`）。
+        if config.qq_adapter_mode == "builtin" {
+            eprintln!(
+                "warning: [adapters.qq] mode = \"builtin\" 已移除（适配器插件化收尾）；\
+                 按 plugin 模式运行，请在 [adapters.qq.plugin] 配置 command"
+            );
+            config.qq_adapter_mode.clear();
+        }
 
         // Empty command prefix would make bare words trigger command handlers unexpectedly.
-        if config.qq_adapter.command_prefix.is_empty() {
-            eprintln!("warning: [adapters.qq] command_prefix is empty, falling back to \"/\"");
-            config.qq_adapter.command_prefix = "/".to_string();
+        {
+            let prefix_empty = config
+                .qq_adapter
+                .shared
+                .get("command_prefix")
+                .and_then(toml::Value::as_str)
+                .map(|prefix| prefix.is_empty())
+                .unwrap_or(true);
+            if prefix_empty {
+                if config.qq_adapter.shared.contains_key("command_prefix") {
+                    eprintln!(
+                        "warning: [adapters.qq] command_prefix is empty, falling back to \"/\""
+                    );
+                }
+                config
+                    .qq_adapter
+                    .shared
+                    .insert("command_prefix".into(), toml::Value::String("/".into()));
+            }
+            config.qq_adapter.command_prefix = config
+                .qq_adapter
+                .shared
+                .get("command_prefix")
+                .and_then(toml::Value::as_str)
+                .unwrap_or("/")
+                .to_string();
         }
 
         // ECHO_ACCESS_TOKEN env override.
         if let Ok(token) = std::env::var("ECHO_ACCESS_TOKEN") {
             if config.qq_adapter.enabled {
-                config.qq_adapter.server.access_token = token;
+                let server = config
+                    .qq_adapter
+                    .shared
+                    .entry("server")
+                    .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+                if let Some(server) = server.as_table_mut() {
+                    server.insert("access_token".into(), toml::Value::String(token.clone()));
+                }
+                config.qq_adapter.access_token = token;
             }
         }
 
@@ -493,9 +584,16 @@ group_at_reply = true
         .unwrap();
         let config = CoreConfig::load(&path).unwrap();
         assert!(config.qq_adapter.enabled);
-        assert_eq!(config.qq_adapter.server.bind_address, "0.0.0.0:9999");
-        assert_eq!(config.qq_adapter.server.access_token, "new_token");
-        assert!(!config.qq_adapter.trigger.dm_auto_reply);
+        // P1.9 透传视图：完整配置在 TOML 表内（原样下发插件），宿主只读视图字段。
+        assert_eq!(
+            config.qq_adapter.shared["server"]["bind_address"].as_str(),
+            Some("0.0.0.0:9999")
+        );
+        assert_eq!(config.qq_adapter.access_token, "new_token");
+        assert_eq!(
+            config.qq_adapter.shared["trigger"]["dm_auto_reply"].as_bool(),
+            Some(false)
+        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -531,9 +629,12 @@ bind_address = "0.0.0.0:9999"
         assert_eq!(config.qq_adapter_mode, "plugin");
         assert_eq!(config.qq_plugin_launch.command, "/opt/echo/echo-adapter-qq");
         assert_eq!(config.qq_plugin_launch.args, vec!["--verbose"]);
-        // flatten 共享默认仍生效（mode/plugin 不吞掉适配器配置字段）。
+        // flatten 共享层仍生效（mode/plugin 不吞掉适配器配置字段）。
         assert!(config.qq_adapter.enabled);
-        assert_eq!(config.qq_adapter.server.bind_address, "0.0.0.0:9999");
+        assert_eq!(
+            config.qq_adapter.shared["server"]["bind_address"].as_str(),
+            Some("0.0.0.0:9999")
+        );
         assert!(config.qq_instances.contains_key("alix-two"));
         std::fs::remove_file(&path).ok();
     }
