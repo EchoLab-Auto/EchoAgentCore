@@ -190,6 +190,13 @@ impl PluginHandle {
         self.shared.hot_replaces.load(Ordering::SeqCst)
     }
 
+    /// 连接代际（epoch；泛化 01a §1.3）：每次新连接就绪即自增
+    /// （首次启动 / 崩溃重启 / 热替换换代）；宿主侧管理面缓存读时按它
+    /// 惰性失效（见 `RemoteAdapter::management_state`）。
+    pub fn generation(&self) -> u64 {
+        self.shared.generation.load(Ordering::SeqCst)
+    }
+
     /// 排空：state=Draining → 发 `Drain{deadline_ms}` → 等待插件通道关闭
     /// （或 deadline）→ `connection.shutdown()` → state=Stopped。
     ///
@@ -333,6 +340,9 @@ struct Shared {
     restarts: AtomicU32,
     /// 完成的热替换次数（仅成功原子切换计数；崩溃重启不计入）。
     hot_replaces: AtomicU32,
+    /// 连接代际（epoch；泛化 01a §1.3）：每次新连接就绪（首次启动 /
+    /// 崩溃重启 / 热替换换代）即自增；宿主侧管理面缓存按它惰性失效。
+    generation: AtomicU64,
     /// 调用序号（`call_id` 后缀，从 1 开始）。
     seq: AtomicU64,
     pending: Mutex<HashMap<String, PendingCall>>,
@@ -399,6 +409,7 @@ impl Shared {
             contributions: Mutex::new(Vec::new()),
             restarts: AtomicU32::new(0),
             hot_replaces: AtomicU32::new(0),
+            generation: AtomicU64::new(0),
             seq: AtomicU64::new(0),
             pending: Mutex::new(HashMap::new()),
             events: Mutex::new(Vec::new()),
@@ -474,11 +485,17 @@ impl Shared {
             .clone()
     }
 
+    /// 替换当前连接；新连接就绪（`Some`）= 新一代：`generation` 自增
+    /// （泛化 01a §1.3——首次启动 / 崩溃重启 / 热替换三处均经本函数）。
     fn set_conn(&self, conn: Option<Arc<dyn PluginConnection>>) {
+        let live = conn.is_some();
         *self
             .conn
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = conn;
+        if live {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     fn insert_pending(&self, call_id: String, call: PendingCall) {

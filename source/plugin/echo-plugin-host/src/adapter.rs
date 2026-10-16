@@ -38,8 +38,10 @@ pub struct RemoteAdapter {
     handle: PluginHandle,
     /// 连接态缓存（`report_state` 上报刷新；进程态仲裁见 `status_info`）。
     connection: Mutex<ConnectionCache>,
-    /// 管理面状态缓存（epoch 语义：宿主在重启 / 升级时失效后按需重拉）。
-    management_state: Mutex<Option<Value>>,
+    /// 管理面状态缓存（epoch 语义；泛化 01a §1.3：记录写入时的连接代际
+    /// `generation`，读取时不一致视为失效——重启 / 升级换代后宿主缓存
+    /// 不可信，等插件下一次推送恢复）。
+    management_state: Mutex<Option<(u64, Value)>>,
     /// 管理面（构造后以 `Adapter::management()` 按引返回；`Adapter` 的
     /// 签名是 `Option<&dyn AdapterManagement>`——返回值借用本结构的字段）。
     management: RemoteAdapterManagement,
@@ -105,19 +107,32 @@ impl RemoteAdapter {
     }
 
     /// 取管理面状态缓存（`AdapterManagement::cached_state` 的远程侧）。
+    ///
+    /// epoch（泛化 01a §1.3）：缓存记录写入时的连接代际；当前
+    /// `handle.generation()` 不一致（重启 / 热替换换代）即视为失效返回
+    /// `None`（惰性失效，不清除陈旧值），等插件下一次推送（`report_ui_state`
+    /// / `get_state` 拉取）以新代际覆盖恢复。
     pub fn management_state(&self) -> Option<Value> {
-        self.management_state
+        let guard = self
+            .management_state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (generation, state) = guard.as_ref()?;
+        if *generation == self.handle.generation() {
+            Some(state.clone())
+        } else {
+            None
+        }
     }
 
-    /// 更新管理面状态缓存（`report_ui_state` / 状态拉取入口）。
+    /// 更新管理面状态缓存（`report_ui_state` / 状态拉取入口；记录当前
+    /// 连接代际，供 epoch 惰性失效比对）。
     pub fn note_management_state(&self, state: Value) {
         *self
             .management_state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(state);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((self.handle.generation(), state));
     }
 
     /// 发起一次适配器 op（`Invoke("<name>:<op>")`）；能力位未声明时
@@ -447,7 +462,9 @@ impl AdapterHostService {
     ///
     /// 组合根消费并发射 `AdapterState` 事件（+ 派生旧 QQ 事件）；多订阅者
     /// 各自收全量，接收端 drop 后自动摘除。与连接态通道分离。
-    pub fn subscribe_ui_states(&self) -> tokio::sync::mpsc::UnboundedReceiver<AdapterUiStateChange> {
+    pub fn subscribe_ui_states(
+        &self,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<AdapterUiStateChange> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         self.ui_state_sinks
             .lock()
@@ -618,6 +635,12 @@ impl crate::host_service::HostService for AdapterHostService {
                     ));
                 };
                 adapter.note_connection_state(false, None);
+                // 泛化 01a §1.3：`report_stopped` = 实例已停——管理面状态
+                // 不再代表运行实例，显式失效（等插件再次推送恢复）。
+                // `report_error`（连接层错误）保留缓存（插件可能仍在运行）。
+                if method == "report_stopped" {
+                    adapter.invalidate_management_state();
+                }
                 self.broadcast_state(AdapterStateChange {
                     adapter: adapter_name,
                     connected: false,
@@ -1151,5 +1174,219 @@ mod tests {
             echo_defs::chat::ChannelType::Direct
         ));
         assert_eq!(incoming.user_name, "");
+    }
+
+    // ── 泛化 Core-2 S5（01a §1.3）：generation epoch 失效 ──────────────
+
+    /// 崩溃一次插件：握手完成后立刻退出（触发监督自动重启）；重启实例
+    /// （第二次 start）保持存活，正常响应 Drain。
+    struct CrashOncePlugin {
+        crashed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl InprocPlugin for CrashOncePlugin {
+        fn run(self: Box<Self>, mut io: InprocIo) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            Box::pin(async move {
+                let crash_now = !self.crashed.swap(true, std::sync::atomic::Ordering::SeqCst);
+                loop {
+                    let Some(msg) = io.recv().await else {
+                        return;
+                    };
+                    match msg {
+                        HostToPlugin::Hello(hello) => {
+                            let _ = io
+                                .send(PluginToHost::Welcome(Welcome {
+                                    protocol: hello.protocol.clone(),
+                                    version: hello.version,
+                                    plugin_id: hello.plugin_id.clone(),
+                                    capabilities: vec![capabilities::ADAPTER.to_string()],
+                                }))
+                                .await;
+                            let _ = io
+                                .send(PluginToHost::Register(Register {
+                                    contributions: vec![crate::api::Contribution::Adapter(
+                                        contribution(),
+                                    )],
+                                }))
+                                .await;
+                            let _ = io.send(PluginToHost::Ready).await;
+                            if crash_now {
+                                // 首实例：就绪后立刻退出 = 崩溃（监督自动重启）。
+                                return;
+                            }
+                        }
+                        HostToPlugin::Drain(_) => return,
+                        _ => {}
+                    }
+                }
+            })
+        }
+    }
+
+    /// 从句柄取第一个适配器贡献并构造 `RemoteAdapter`。
+    fn remote_adapter_from(handle: &PluginHandle) -> Arc<RemoteAdapter> {
+        let adapters: Vec<_> = handle
+            .contributions()
+            .into_iter()
+            .filter_map(|c| match c {
+                crate::api::Contribution::Adapter(a) => Some(a),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(adapters.len(), 1, "fixture 应注册一个适配器贡献");
+        RemoteAdapter::new(adapters[0].clone(), handle.clone())
+    }
+
+    /// 泛化 S5：崩溃重启换代（`set_conn(Some(新连接))`）后管理面缓存惰性
+    /// 失效（`management_state() == None`）；插件再次推送即以新代际恢复。
+    ///
+    /// 取舍（提交说明）：`cached_state()` 同步签名不能 await，读路径不做
+    /// `invoke_custom("get_state")` 兜底——退化为「等下一次插件推送恢复」
+    /// （QQ 插件 on_ready 必推初始快照；`get_state` 拉取路径在
+    /// echo-agent 侧，见 `InvokeAdapterOp` 臂）。
+    #[tokio::test]
+    async fn management_state_epoch_invalidates_across_restart() {
+        let crashed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let supervisor =
+            PluginSupervisor::new().with_restart_policy(crate::supervisor::RestartPolicy {
+                initial_backoff: std::time::Duration::from_millis(10),
+                ..Default::default()
+            });
+        let handle = supervisor
+            .start(
+                spec(),
+                Box::new(InprocTransport::new({
+                    let crashed = crashed.clone();
+                    move |_| {
+                        Box::new(CrashOncePlugin {
+                            crashed: crashed.clone(),
+                        })
+                    }
+                })),
+            )
+            .await
+            .expect("handshake ok");
+        let adapter = remote_adapter_from(&handle);
+        let service = AdapterHostService::new();
+        service.register(adapter.clone());
+
+        // 首代推送一次 → 缓存就位（初始启动 = 第 1 代）。
+        let initial_generation = handle.generation();
+        assert!(initial_generation >= 1, "初始启动应已自增 generation");
+        service
+            .call(
+                "report_ui_state",
+                json!({"adapter": "qq", "state": {"gate": {"mode": "allowlist"}}}),
+            )
+            .expect("ui state ok");
+        assert_eq!(
+            adapter.management_state().unwrap()["gate"]["mode"],
+            json!("allowlist")
+        );
+
+        // 等监督重启完成（新连接 = 新一代，state 回到 Ready）。
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if handle.generation() > initial_generation && handle.state() == PluginState::Ready {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "restart wait timed out; state={:?}, generation={}",
+                handle.state(),
+                handle.generation()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        // 换代后缓存读时比对 generation → 失效（惰性，不清陈旧值）。
+        assert_eq!(
+            adapter.management_state(),
+            None,
+            "崩溃重启换代后管理面缓存应失效"
+        );
+
+        // 插件重新推送一次 → 以新代际恢复。
+        service
+            .call(
+                "report_ui_state",
+                json!({"adapter": "qq", "state": {"gate": {"mode": "none"}}}),
+            )
+            .expect("ui state ok");
+        assert_eq!(
+            adapter.management_state().unwrap()["gate"]["mode"],
+            json!("none")
+        );
+
+        // `report_stopped`：显式失效（重启 / 停止后缓存不再可信）。
+        service
+            .call("report_stopped", json!({"adapter": "qq"}))
+            .expect("report stopped ok");
+        assert_eq!(
+            adapter.management_state(),
+            None,
+            "report_stopped 应显式失效管理面缓存"
+        );
+
+        handle
+            .drain(std::time::Duration::from_secs(2))
+            .await
+            .expect("drain ok");
+    }
+
+    /// 泛化 S5：热替换换代（升级换连接的 `set_conn(Some)` 路径）同样自增
+    /// generation 并使管理面缓存失效；重新推送恢复。
+    #[tokio::test]
+    async fn management_state_epoch_invalidates_after_upgrade() {
+        let supervisor = PluginSupervisor::new();
+        let handle = supervisor
+            .start(
+                spec(),
+                Box::new(InprocTransport::new(|_| Box::new(AdapterPlugin))),
+            )
+            .await
+            .expect("handshake ok");
+        let adapter = remote_adapter_from(&handle);
+        let service = AdapterHostService::new();
+        service.register(adapter.clone());
+
+        service
+            .call(
+                "report_ui_state",
+                json!({"adapter": "qq", "state": {"gate": {"mode": "allowlist"}}}),
+            )
+            .expect("ui state ok");
+        assert_eq!(
+            adapter.management_state().unwrap()["gate"]["mode"],
+            json!("allowlist")
+        );
+
+        let before = handle.generation();
+        handle
+            .upgrade(json!({}), std::time::Duration::from_secs(2))
+            .await
+            .expect("upgrade ok");
+        assert!(
+            handle.generation() > before,
+            "热替换换代应自增 generation（before={before}, after={}）",
+            handle.generation()
+        );
+        assert_eq!(adapter.management_state(), None, "换代后缓存应失效");
+
+        service
+            .call(
+                "report_ui_state",
+                json!({"adapter": "qq", "state": {"gate": {"mode": "none"}}}),
+            )
+            .expect("ui state ok");
+        assert_eq!(
+            adapter.management_state().unwrap()["gate"]["mode"],
+            json!("none")
+        );
+
+        handle
+            .drain(std::time::Duration::from_secs(2))
+            .await
+            .expect("drain ok");
     }
 }
