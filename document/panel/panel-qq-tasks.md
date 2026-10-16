@@ -15,14 +15,14 @@ y: 780
 入口行「适配器」弹出的 QQ 面板。**所有编辑即点即生效**（无草稿、无保存按钮，页脚明示"点击名单条目即生效"）：
 
 - **作用域 = 当前智能体**：面板只展示**归属当前智能体**（`persona` = team id）的实例——别的 agent 的实例状态、登录状况、容器名均不出现，也不会成为命令目标；当前智能体无实例时显示空态且不发任何请求
-- **适配器行**：逐实例列出状态点、display name（`QQ（<persona> / <实例>）` 等实例化格式）、self_id、**NapCat 容器名**胶囊（`AdapterStatus.container`）与运行中/已停止 胶囊；启动/停止/重启按钮（`StartAdapter`/`StopAdapter`/`RestartAdapter`，断连禁用）
-- **多实例**：实例列表来自 `AdapterList`（`persona` 元数据）；同一智能体多于一个实例时顶部出现「QQ 实例」分段选择，面板其余部分（登录/门控/名单/owner）都作用于所选实例；实例级命令与事件均带 `adapter` 字段（单实例时直接寻址唯一实例）
-- **无实例零噪音**：实例列表为空（QQ 未启用）时面板**不发任何命令**（`refreshLists` 直接返回、登录区跳过请求）——此前打开面板会发 6 条必被 Core 拒绝的查询，堆出"QQ 适配器未找到"×5 + "QQ 实例 qq 未找到"×1
-- **刷新列表**：逐实例拉取群/好友/门控配置/管理员/登录状态（挂载时与连接恢复时自动触发）；**逐查询登记加载跟踪**——按实例分 key（`qq:filter:<实例>` 等），名单/门控区上方 `LoadHint` 呈现 active 实例四个查询的组合阶段（转圈 / >6s 慢提示 / >20s 错误+重试），「刷新列表」按钮加载中转圈
-- **扫码登录区（Core 代理）**：登录状态与二维码都走 WS——`RequestQqLoginStatus` → `QqLoginStatus` 事件；「获取登录二维码」→ `RequestQqQrcode` → `QqQrcode`（PNG base64，前端转 data URL）；**Panel 不再直连 OneBot HTTP / docker**（旧 `/api/qq/*` 已移除）。适配器运行中 + 离线 + 无二维码时**自动获取一次**（挂载即判定，`immediate`；`qrRequested` 单次闸）；获取失败显示错误行。Core 对陈旧码（>90s）自动向 NapCat 请求重新生成后再返回，因此手动「获取登录二维码」总能拿到接近新鲜的码
-  - 连接状态经 `AdapterStateChanged` 实时推送（扫码成功后状态行自动转"已连接"）；二维码约 2 分钟有效；显示 `QQ 管理员：{owner}`（只读——`SetQqOwner` 协议命令未接 UI）与实例 WebUI 链接（`AdapterStatus.webui_url`，多实例各不同）
-- **门控模式**：分段选择 无约束/白名单/黑名单（`SetQqGateMode{adapter}` 即选即生效），每模式附说明
-- **2×2 名单卡**（白名单用户/黑名单用户/白名单群/黑名单群）：计数胶囊 + 已选 id 筹码（点击移除，黑名单染 error 色）+ 候选筹码（好友/群列表，点击切换归属，`UpdateQqAllowlist`/`UpdateQqDenylist` 带 `adapter` 提交）；**黑名单群无候选列表**（提示"群列表仅对白名单开放，黑名单群请在 Core 侧配置"）
+- **适配器行**：逐实例列出状态点、display name、self_id、**元数据胶囊**（`AdapterStatus.metadata[]`，如容器名 / WebUI 地址）与运行中/已停止 胶囊；启动/停止/重启按钮（`StartAdapter`/`StopAdapter`/`RestartAdapter`，断连禁用）。实例列表与状态行由通用 `AdapterPanel`（渲染器外层）提供
+- **多实例**：实例列表来自 `AdapterList`（`persona` 元数据）；同一智能体多于一个实例时顶部出现实例选择，面板其余部分（登录/门控/名单/owner）都作用于所选实例；实例级命令经 `InvokeAdapterOp.adapter`（必填实例名）寻址
+- **无实例零噪音**：实例列表为空（QQ 未启用）时面板**不发任何命令**（`AdapterPanel` 的挂载刷新守卫：无可见实例时不发任何请求）——此前打开面板会发 6 条必被 Core 拒绝的查询，堆出"QQ 适配器未找到"×5 + "QQ 实例 qq 未找到"×1
+- **刷新**：管理读命令经 `InvokeAdapterOp{method:get_filter_config / get_groups / get_friends / get_owner / login_status}` 逐实例拉取；等待态按 `adapter-op:<scopedKey>:<method>` 键登记；状态经 `AdapterState` 回推落定（名单/门控区显示加载与错误态）
+- **扫码登录区（Core 代理）**：登录状态读状态文档（`AdapterState.state.online` / `self_id`）；「获取/刷新二维码」经 `InvokeAdapterOp{method:"login_qrcode"}`（PNG base64 经 `AdapterOpResult` 返回，只存渲染器 image 节点局部，多实例不串号）；**Panel 不直连 OneBot HTTP / docker**（旧 `/api/qq/*` 已移除）。动作按钮由插件描述符 image 节点声明（`clear_when: online` 登录后自动清图）；Core 对陈旧码（>90s）自动向 NapCat 请求重新生成后再返回
+  - 连接状态经 `AdapterStateChanged` 实时推送（扫码成功后状态行自动转"已连接"）；二维码约 2 分钟有效；`QQ 管理员` 与 WebUI 链接由描述符节点读状态文档（`owner` / `instance.webui_url`）呈现（多实例各不同）
+- **门控模式**：选择器 无约束/白名单/黑名单（描述符 `select` 节点，动作 `InvokeAdapterOp{method:"set_gate_mode"}` 即选即生效），每模式附说明（options `hint`）
+- **2×2 名单卡**（白名单用户/黑名单用户/白名单群/黑名单群）：描述符 `list_editor` 节点；增删经 `InvokeAdapterOp{method:"update_allowlist"/"update_denylist"}` 提交（部分载荷：只带变更的表，缺键 = 保留现值）；提交结果经 `AdapterState` 回推落定
 
 ## 任务弹层与 Shell
 

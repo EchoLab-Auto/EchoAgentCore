@@ -34,7 +34,7 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 以下 `BackendCommand` 在协议层存在，但当前 UI 无任何入口——属有意留白而非缺陷，新增入口时按本文档规范补充：
 - `SwitchModel` / `SwitchProvider` / `SetSystemPrompt`（模型与提示词经 API 设置/AgentConfig 覆盖）
 - `StartAllAdapters` / `StopAllAdapters`（逐个适配器控制已覆盖）
-- `SetQqOwner`（管理员显示为只读）
+- 适配器管理（门控/名单/owner/登录）：统一 `InvokeAdapterOp`；owner 显示为只读
 
 > `RequestSystemPrompt` 已接线：切 core 时随"单值管理面"重拉发送（`connection.ts:262`，`requestActiveRegionManagement`），`pending.ts:60` 登记 `SystemPrompt` 响应销账，`state.ts:1206` 消费写入 `state.systemPrompt`；`InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 亦已接线（见 [设置视图](./panel-settings.md)），均不再属于本清单。
 

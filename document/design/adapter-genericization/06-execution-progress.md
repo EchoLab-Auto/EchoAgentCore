@@ -159,3 +159,19 @@
 **偏离记录**：03b 决策建议 D4「S5/S6 间留发布周期」未执行（本地连做）——理由：全部提交未 push 未部署，回滚 = 逐片 revert（d8a7779→2fcfa10→8a46878），无生产风险；发布时如需灰度可在 push 前拆分。parity「挂载即拉二维码」按 03a §2.6 手动化口径（V11 据此修订）。
 
 **至此本工程全部切片完成**：01a P1+S1-S5、01b S1-S6、02a S1-S6、02b R1-R4、03a 全套、03b S1-S7。剩余仅发版流程项（01b S7/S8：deprecated 标记与 N+2 删除）。
+
+## 旧协议变体直接删除（2026-10-16 16:25，用户指示：不等 N+2）
+
+**提交 `c5301f5`**（核心仓库，14 文件，+39/−1255）：
+- echo-protocol：10 命令变体 + 7 事件变体 + `AdapterStatus` 三字段（container/webui_url/onebot_url）删除；`id_compat.rs` 双读层移除；相关测试精简
+- echo-agent：`legacy.rs`（739 行）删除；命令域仅剩 `InvokeAdapterOp`；`emit_adapter_state_events` 仅发 `AdapterState`（单源）；`agent/mod.rs` 弃字段填充删除（metadata 派生保留）
+- core：`main.rs` 旧事件派生循环删除；`management.rs` 测试改写为 `InvokeAdapterOp` 往返
+- 测试：927 → **918 passed / 0 failed**（净减 9 个旧测试；父级独立复跑确认）
+- 四条验收 grep 全空（旧命令 / 旧事件 / GroupInfo+FriendInfo / legacy+id_compat）
+
+**文档层同步**（同批，另有提交）：
+- `adapter-plugin.md`：§变体处置与升级指南改写为「直接删除已生效」；W4.1-W4.4 勾选注释更新；实施进度「无剩余发版项」
+- `01b-core-protocol-lifecycle.md`：B 节加后注（S7/S8 合并直接执行；设计历史保留）
+- `protocol.md`：命令/事件段改写为统一通道；旧变体注明已删除
+- `adapter-qq-gating.md` / `panel-qq-tasks.md` / `panel-system.md`：旧命令引用更新为新通道
+- Panel 仓库：`protocol-sync.test.ts` 注释更新（「Core 侧保留至 N+2」→「同批直接删除」）

@@ -165,10 +165,10 @@ BackendEvent::AdapterState    { adapter, state: Value }           // 插件主�
 //（QQ 号码语义泄漏、Telegram/Discord 不成立；同发布节奏可承受，升级指南写明）
 ```
 
-- **映射**：`RequestQqLoginStatus` → `{method:"login_status"}`；`RequestQqQrcode` → `{method:"login_qrcode"}`；名单 / 门控 / owner 六命令 → `{method:"update_allowlist" / "set_gate_mode" / …}`；宿主译为插件协议 `Invoke("<name>:custom")`（与 §宿主动作 表对齐）；
+- **映射（迁移期历史）**：`RequestQqLoginStatus` → `{method:"login_status"}`；`RequestQqQrcode` → `{method:"login_qrcode"}`；名单 / 门控 / owner 六命令 → `{method:"update_allowlist" / "set_gate_mode" / …}`；宿主译为插件协议 `Invoke("<name>:custom")`（与 §宿主动作 表对齐）。**旧命令载体已随泛化收口物理删除（2026-10-16），映射仅存于本文档作为迁移记录**；
 - **半通用项顺势改名**：`RequestGroupList` / `RequestFriendList` → `RequestAdapterGroups` / `RequestAdapterFriends`（`Adapter::get_groups/get_friends` 本已存在）；`Start/Stop/RestartAdapter` + `RequestAdapterStatus` + `AdapterList` 本就平台中立，不动；
 - **clearance 语义（安全面保留、判定方式改变）**：`command_clearance` 从「按 QQ 变体逐一枚举」改为「**按类别判定**」——一切 `InvokeAdapterOp` = Frontend-only（fail-closed；消除「忘加枚举臂」回归窗口）。现有 `command.rs:537-575` 逐变体测试改写为类别测试；
-- **QQ 变体废弃时间表**：新通道落地后，10 命令 + 7 事件标记 deprecated，两个版本周期后删除（迁移层存在期必须有明确 sunset，否则违反零残留判据）。
+- **QQ 变体处置（2026-10-16 更新）**：新通道落地后原计划「10 命令 + 7 事件标 deprecated、两个版本周期后删除」；**决策人指示直接删除（不等 N+2）**——旧 10 命令 / 7 事件 / 3 字段与 `legacy.rs` 兼容层已同批物理删除，见 §实施进度。
 
 ### 版本与兼容
 
@@ -367,7 +367,7 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 >
 > **实施进度（2026-10 开工）**：**P0 / P1 全部完成**（2026-10）。P0：`grep qq_management|QqManagement` 归零、双跑 diff 为空。P1：宿主侧骨架（`AdapterHostService` + `RemoteAdapter` + `store_media`）、SDK 脚手架（`AdapterPlugin` / `configure` / `serve_adapter_stdio`）、QQ 插件（P1.7a–c，独立仓库）、宿主装配（P1.8，`mode = "plugin"` 拉起 / 入站 worker / 状态转发 / 工具管理面路由，真实 core + 真插件进程 + 真 NapCat 连接冒烟）、命令域迁移与内置清除（P1.9：`core/src/adapter_commands.rs`、内置装配与 `echo-adapter-qq`/`echo-core`/`echo-server` 三 crate 删除、配置 TOML 表透传）均已落地；全工作区测试绿。后续（独立于本计划）：compose 渲染随插件（可选收尾）。
 >
-> **泛化收尾轮（2026-10）**：Core 侧适配器泛化收尾——`adapter_ops` 改名 + 回退/广播泛化（`cea95bd`）、`adapter_tools` 改名 + 实例/persona 泛化与平台残留清理（`ac2c7b9`）；插件侧 UI 描述符 + `get_state` + 部分载荷修复（`4fdc50c`）；UI 描述符链路与状态推送接线（`be94746` / `8109535` / `7c2517d`，含 W2.4 id 串化、epoch 缓存失效）；Panel 阶段 1 通道切换（`cd93c8c..8ced31c`）与阶段 2 通用渲染器 / 通用面板 / 会话分组（`78811dc`、`2f34377` / `b24a7c0`、`f823972`）。**Panel 阶段 2 收尾已完成（2026-10-16）**：挂载切换 → 旧组件与协议段删除 → 注释清理（`67136a3`/`8a46878`/`2fcfa10`/`d8a7779`，含搁置弹层重构 WIP 整理与启停 pending 结算修复 `3d34ff9`）。**剩余：01b S7/S8 发版项（旧变体 deprecated 标记 + 收到旧命令 warn / N+2 物理删除）**。
+> **泛化收尾轮（2026-10）**：Core 侧适配器泛化收尾——`adapter_ops` 改名 + 回退/广播泛化（`cea95bd`）、`adapter_tools` 改名 + 实例/persona 泛化与平台残留清理（`ac2c7b9`）；插件侧 UI 描述符 + `get_state` + 部分载荷修复（`4fdc50c`）；UI 描述符链路与状态推送接线（`be94746` / `8109535` / `7c2517d`，含 W2.4 id 串化、epoch 缓存失效）；Panel 阶段 1 通道切换（`cd93c8c..8ced31c`）与阶段 2 通用渲染器 / 通用面板 / 会话分组（`78811dc`、`2f34377` / `b24a7c0`、`f823972`）。**Panel 阶段 2 收尾已完成（2026-10-16）**：挂载切换 → 旧组件与协议段删除 → 注释清理（`67136a3`/`8a46878`/`2fcfa10`/`d8a7779`，含搁置弹层重构 WIP 整理与启停 pending 结算修复 `3d34ff9`）。**旧协议变体已直接删除（2026-10-16，决策人指示不等 N+2）**：10 命令 / 7 事件 / `AdapterStatus` 三字段 / `legacy.rs` 兼容层 / `id_compat` 双读层全部物理移除；`cargo test --workspace` 全绿。**至此泛化全部收口，无剩余发版项**。
 
 **W1 前置修复（既有缺陷，先于骨架动工）**
 
@@ -394,32 +394,25 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 
 **W4 双跑与兼容（迁移期）**
 
-- [x] W4.1 旧 10 命令 / 7 事件保留（deprecated 保留，发射源 = `AdapterState` 投影，不新增第二事实来源）
-- [x] W4.2 双跑对照入库：`dual_run_old_and_new_gate_commands_produce_equivalent_state`（同一操作经 `SetQqGateMode` 与 `InvokeAdapterOp` 产生**等价状态**与同一事件形态；多实例广播对齐已断言）
-- [x] W4.3 升级指南：线协议 breaking 清单 + 废弃时间表（两版本周期）——随 Panel 阶段 1（W2.4 同批）编写（正文见下「升级指南（W4.3）」）
-- [x] W4.4 loopback 端到端（mock 适配器全链路：`InvokeAdapterOp` → `invoke_custom` → `AdapterOpResult` + `AdapterState` + 派生旧事件；写方法广播断言）
+- [x] W4.1 旧 10 命令 / 7 事件（迁移期曾 deprecated 保留，发射源 = `AdapterState` 投影）——**已于 2026-10-16 直接物理删除（决策人指示不等 N+2）**
+- [x] W4.2 双跑对照曾入库（`dual_run_old_and_new_gate_commands_produce_equivalent_state`）——随旧变体删除同步移除（新通道测试独立覆盖；历史记录见 `adapter-genericization/`）
+- [x] W4.3 升级指南：线协议 breaking 清单 + 直接删除口径——随本轮收口定稿（正文见下「升级指南（W4.3）」）
+- [x] W4.4 loopback 端到端（mock 适配器全链路：`InvokeAdapterOp` → `invoke_custom` → `AdapterOpResult` + `AdapterState`；广播断言。旧事件派生已随变体删除）
 - **验收（已达成）**：Panel 现状功能零回归（全仓 63 组测试全绿）；双跑 diff 为空（双跑测试入库）；`cargo test --workspace` 全量绿
 
 ### 升级指南（W4.3）
 
-> 发行说明草稿（版本 N 起，N+2 完成）。
+> 发行说明（2026-10-16 定稿：**旧变体已直接删除，不等 N+2**——决策人指示）。
 
-**线协议 breaking（版本 N）**
+**线协议 breaking（已生效）**
 
-- id 一律字符串：`GroupInfo.group_id`、`FriendInfo.user_id`、`QqFilterConfig` 四数组、`QqOwner.owner_qq` 输出改为 string；`QqOwner.owner_qq` 未设置由 `0` 变 `""`。命令侧 `user_ids` / `group_ids` / `owner_qq` 同时接受 number 与 string（N+2 起只保证 string 语义，随变体删除）。
-- `AdapterStatus.container` / `webui_url` / `onebot_url` 已标 deprecated（随 Panel 阶段 2 / 旧面板移除同批删除）：过渡期改读 `metadata[]` 中 `key` 同名项。
-
-**废弃时间表（两版本周期）**
-
-| 版本 | 状态 |
-|---|---|
-| N | 旧 10 命令 / 7 事件 / 3 字段标 deprecated；Core 收到旧命令记 warn；id 改 String |
-| N+1 | 行为不变；发行说明再次提示 |
-| N+2 | 物理删除；旧命令反序列化失败（`unknown variant`，Core 对未知命令的回应待验证） |
+- **旧 10 命令 / 7 事件 / 3 字段已物理删除**：`RequestGroupList` / `RequestFriendList` / `RequestQqLoginStatus` / `RequestQqQrcode` / `UpdateQqAllowlist` / `UpdateQqDenylist` / `RequestQqFilterConfig` / `SetQqGateMode` / `SetQqOwner` / `RequestQqOwner`（命令）、`GroupList` / `QqFilterConfig` / `QqGateMode` / `QqLoginStatus` / `QqQrcode` / `QqOwner` / `FriendList`（事件）、`AdapterStatus.container` / `webui_url` / `onebot_url`（字段）。旧客户端再发这些 = 反序列化失败（`unknown variant`）。
+- 管理面唯一通道：`InvokeAdapterOp { adapter, method, payload }` → `AdapterOpResult` + `AdapterState`（状态文档，id 一律字符串）。
+- 旧字段替代：`metadata[]` 中 `key` 同名项（`container` / `webui_url` / `onebot_url` 由 Core 从状态文档同源派生）。
 
 **用户侧操作**
 
-1. Core 与 Panel **必须同时升级到 N**（Panel 侧切到 `InvokeAdapterOp` 通用通道 + `AdapterState` 状态文档——02a 已落地；旧 Panel 连新 Core 会出现名单开关失效）；QQ 插件无需升级。
+1. Core 与 Panel **同批部署**（两端已同步删除旧变体；跨版本混搭必失败——协议里已无旧变体）。QQ 插件无需升级。
 2. 自建客户端：把管理命令改为 `InvokeAdapterOp { adapter, method, payload }`，监听 `AdapterOpResult` / `AdapterState`；方法映射见 §适配器管理通道。
 3. 配置文件不变（`[adapters.qq]` 中 `owner_qq` 等仍为整数，属插件私有）。
 

@@ -47,7 +47,8 @@
 - 顺序：插件测试补齐（可先行）→ Core 合入（不发布）→ Panel 阶段 1 合入 → 同 tag 发布。不设「i64 兼容期」：旧事件本身已 deprecated，避免两次 breaking。
 
 ## B. 旧变体删除计划
-## B. 旧变体删除计划
+
+> **后注（2026-10-16）**：本节原计划「N 标 deprecated → N+1 观察 → N+2 物理删除」。同日决策人指示**直接删除（不等 N+2）**——下述 S7/S8 合并执行：旧 10 命令 / 7 事件 / `AdapterStatus` 三字段 / `legacy.rs` / `id_compat.rs` / dual_run 测试已全部物理删除；升级指南改为「直接删除已生效」口径（见 adapter-plugin.md §升级指南）。本节其余内容保留为设计决策历史。
 
 **时间线**：版本 N（W2.4 + Panel 阶段 1）= 旧变体标 `#[deprecated]`（仅文档/注释已标，代码属性待加）且 id 改 String；
 版本 N+1 = 观察期（日志 warn 统计旧命令调用）；**版本 N+2 = 物理删除**（两版本周期，adapter-plugin.md:397）。

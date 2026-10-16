@@ -98,13 +98,13 @@ y: 2220
 | 群成员放行开关（`group_members_open`） | 修改配置文件 + 重启 | 下次启动 |
 | 白名单/黑名单 | Panel 交互式命令 | 立即生效 |
 | 门控模式 | `/qq setting` 单选切换 | 立即生效 + 持久化 |
-| 管理员 owner | `SetQqOwner` 协议命令 | 立即生效 + 持久化 |
+| 管理员 owner | `InvokeAdapterOp{method:"set_owner"}` | 立即生效 + 持久化 |
 
 白名单/黑名单的运行时修改路径：
 
 ```text
-Panel 表单选择 → BackendCommand (携带 GateMode 枚举)
-  → Agent 分发 → 适配器更新 → rebuild_filter_pipeline() → persist_filter()
+Panel 表单选择 → BackendCommand::InvokeAdapterOp{method:"update_allowlist"/"update_denylist", payload}
+  → Agent 分发（管理面 invoke_custom）→ 适配器更新 → rebuild_filter_pipeline() → persist_filter()
     (通过共享的 ConfigStore 原子写入)
 ```
 
@@ -112,7 +112,7 @@ Panel 表单选择 → BackendCommand (携带 GateMode 枚举)
 
 owner 与门控/名单一样有运行时更新路径，无需重启：
 
-- 经 `BackendCommand::SetQqOwner { owner_qq }` 设置（`0` = 清除）；`QqInner` 持运行时值（初始化自配置），`set_owner_qq` 更新运行时值并经共享 ConfigStore 原子写回 `[adapters.qq] owner_qq`，`get_owner_qq` 读运行时值
+- 经 `InvokeAdapterOp{method:"set_owner", payload:{owner_qq: "…"}}` 设置（空串 = 清除）；`QqInner` 持运行时值（初始化自配置），`set_owner_qq` 更新运行时值并经共享 ConfigStore 原子写回 `[adapters.qq] owner_qq`，`get_owner_qq` 读运行时值
 - 门控豁免一律读运行时值：过滤管道的「管理员绕过」、`get_gated_friend_list`、出站门控
 - `Adapter` trait 提供 `set_owner_qq`/`get_owner_qq` 默认 no-op 方法，QQ 实现覆盖
 - **语义边界**：运行时设置的 owner 仅影响门控豁免，不联动其它授权（原自更新授权联动已随 `framework_update` 工具废弃移除）
@@ -175,8 +175,8 @@ QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的
 - 入站：每实例把消息投给**归属人格**（`AgentMessageHook` 按实例接线），事件带实例名
 - 会话键：`qq:group:<gid>:<uid>@<实例>`；实例名为默认 `qq` 时不加后缀（单实例部署零迁移）
 - 出站工具：每人格注册**自己实例集合**的 `send_*`/`get_*`；多实例时 schema 增加可选 `account`（实例名），缺省在多实例下报错列出可选值
-- 管理面（门控/名单/owner/登录）：命令与事件均带 `adapter` 字段；缺省时若只有唯一实例则回退（单实例部署）
-- **登录由 Core 代理**：`RequestQqLoginStatus` / `RequestQqQrcode`（二维码以 PNG base64 回推 `QqQrcode` 事件），Panel 不直连 OneBot HTTP / docker
+- 管理面（门控/名��/owner/登录）：`InvokeAdapterOp` 的 `adapter` 为必填实例名；状态经 `AdapterState` 推送（`scopedKey(core, adapter)` 归并）
+- **登录由 Core 代理**：`InvokeAdapterOp{method:"login_status"}`（`AdapterOpResult` 回执）；`login_qrcode` 出二维码（PNG base64，经 `AdapterOpResult` 返回，只进渲染器局部），Panel 不直连 OneBot HTTP / docker
 - **二维码陈旧自动刷新**：`login_qrcode_png` 先探测容器内 PNG 的 mtime，缺失或 >90s（`QR_MAX_AGE_SECS`）时经 WebUI（`webui.json` token → `sha256(token+".napcat")` → `/api/auth/login` → `/api/QQLogin/RefreshQRcode`）让 NapCat 重新生成、等 2s 落盘再取；刷新失败仅告警并退回读现有文件。NapCat 自身轮换循环停摆时（实测会发生），这是"刷新没反应"的解法；新鲜码（<90s）直接返回，不会作废用户刚扫的码
 
 ### 容器生命周期与登录保持
@@ -194,8 +194,8 @@ QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的
   快速登录；未登录则尝试 `SetQuickLogin`（失败静默回退扫码流程）。
 - **快速登录失效的兜底**：NapCat 快速登录凭证被 QQ 安全策略判失效时由扫码流程
   兜底（`ensure_quick_login` 检测未登录即调 `SetQuickLogin`，失败静默回退扫码）——
-  此时到 Panel「适配器」面板重新扫码。登录态仅经 `QqLoginStatus`（adapter/online/
-  user_id/nickname）同步；二维码失败原因经 `QqQrcode.error` 回传（如「无法刷新
+  此时到 Panel「适配器」面板重新扫码。登录态经状态文档（`AdapterState.state.online` /
+  `self_id`）同步；二维码失败原因经 `AdapterOpResult.error` 回传（如「无法刷新
   NapCat 二维码」）。二维码约 2 分钟有效（Core 侧 90s 新鲜度阈值，超龄先让 NapCat
   刷新再取），扫旧码会得到 `ErrCode: 3`（授权超时）。
 
