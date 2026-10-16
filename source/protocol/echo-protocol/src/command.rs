@@ -220,6 +220,16 @@ pub enum BackendCommand {
         #[serde(default)]
         since_seq: u64,
     },
+    /// 请求某会话的**显示历史**（从事件日志按会话派生；2026-10 修复面板
+    /// 「会话无消息」——共享显示时间线按 FIFO 淘汰后旧会话条目不可见）。
+    /// `limit`：最多返回条目数（缺省 500；服务端 clamp [1, 2000]，取最近 N 条）。
+    RequestSessionHistory {
+        #[serde(default)]
+        team_id: Option<String>,
+        session_id: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     /// 请求后台 shell 会话列表（带 team_id 时只返回该 persona 的会话）。
     RequestShellSessions {
         #[serde(default)]
@@ -543,4 +553,38 @@ mod tests {
         assert_eq!(back, cmd);
     }
 
+    /// `RequestSessionHistory` 线格式（2026-10 会话显示历史通道）：字段名与
+    /// 序列化顺序固定（Panel 手工镜像协议；team_id / limit 可省略或为 null）。
+    #[test]
+    fn request_session_history_serde_contract() {
+        let cmd = BackendCommand::RequestSessionHistory {
+            team_id: Some("t".into()),
+            session_id: "s".into(),
+            limit: Some(100),
+        };
+        let text = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(
+            text,
+            r#"{"RequestSessionHistory":{"team_id":"t","session_id":"s","limit":100}}"#
+        );
+        let back: BackendCommand = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, cmd);
+
+        // 缺省形态：team_id / limit 可整体省略（serde default），也可为 null。
+        let bare: BackendCommand =
+            serde_json::from_str(r#"{"RequestSessionHistory":{"session_id":"s"}}"#).unwrap();
+        assert_eq!(
+            bare,
+            BackendCommand::RequestSessionHistory {
+                team_id: None,
+                session_id: "s".into(),
+                limit: None,
+            }
+        );
+        let null: BackendCommand = serde_json::from_str(
+            r#"{"RequestSessionHistory":{"team_id":null,"session_id":"s","limit":null}}"#,
+        )
+        .unwrap();
+        assert_eq!(null, bare);
+    }
 }

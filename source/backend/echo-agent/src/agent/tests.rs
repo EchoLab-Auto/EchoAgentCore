@@ -699,6 +699,88 @@ async fn request_trunk_timeline_returns_the_persisted_history() {
     assert_eq!(timeline[0].content, "你好");
 }
 
+/// 2026-10 修复回归（面板「会话无消息」）：请求某会话的显示历史必须从
+/// 事件日志按会话派生——共享显示时间线被 1024 条 FIFO 挤出该会话条目后，
+/// 数据仍在（事件日志是事实来源）；`max_seq` 是合并水位线（该会话在当前
+/// 显示窗口中的最大 seq）。
+#[tokio::test]
+async fn request_session_history_derives_from_the_event_log() {
+    let provider = Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    });
+    let agent = Arc::new(test_agent(provider));
+    // 去主智能体后会话命令必须带 team_id：本 agent 视为 "t"。
+    agent.set_team_id(Some("t".into()));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+
+    let target = "local:tui::local_user";
+    // 显示时间线里有一条该会话的实时条目（合并水位线 = 1）。
+    agent.emit(BackendEvent::MessageReceived {
+        session_id: target.into(),
+        adapter_name: "local".into(),
+        platform: "local".into(),
+        user_id: "local_user".into(),
+        user_name: "local user".into(),
+        channel: "direct".into(),
+        group_name: None,
+        content: "实时条目".into(),
+        images: vec![],
+        timestamp: 1700000000,
+        received_at_ms: 1700000000123,
+        message_sequence: 1,
+        team_id: None,
+    });
+    // 事件日志里有一条该会话的历史（显示窗口被挤出后的唯一数据源）。
+    agent
+        .trunk
+        .append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::UserMessage {
+                content: "事件日志里的历史".into(),
+                timestamp: 1700000001,
+                message_sequence: Some(2),
+                source: None,
+                images: Vec::new(),
+                session: Some(target.into()),
+            },
+        ));
+
+    agent
+        .apply_command(BackendCommand::RequestSessionHistory {
+            team_id: Some("t".into()),
+            session_id: target.into(),
+            limit: None,
+        })
+        .await;
+
+    let mut events = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        events.push(event);
+    }
+    let (session_id, messages, total, truncated, max_seq) = events
+        .into_iter()
+        .find_map(|event| match event {
+            BackendEvent::SessionHistory {
+                session_id,
+                messages,
+                total,
+                truncated,
+                max_seq,
+                ..
+            } => Some((session_id, messages, total, truncated, max_seq)),
+            _ => None,
+        })
+        .expect("SessionHistory event emitted");
+    assert_eq!(session_id, target);
+    assert_eq!(total, 1);
+    assert!(!truncated);
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].kind, "user");
+    assert_eq!(messages[0].content, "事件日志里的历史");
+    assert_eq!(max_seq, 1, "合并水位线 = 该会话显示时间线条目的最大 seq");
+}
+
 /// 2026-10 用户报告回归：清理会话历史后向面板重发的全量时间线必须是
 /// **实际剩余条目**（其他会话仍在），而不是空快照——"空全量"会被面板
 /// 当权威数据、清掉整个本地聊天缓存（含未被清理的会话）。

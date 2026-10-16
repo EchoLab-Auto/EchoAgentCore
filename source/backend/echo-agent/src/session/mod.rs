@@ -15,6 +15,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 
 mod archive;
+mod history;
 mod persist;
 mod timeline;
 

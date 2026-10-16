@@ -67,6 +67,7 @@ impl Agent {
             BackendCommand::SendMessage { team_id, .. }
             | BackendCommand::CancelRequestedWork { team_id, .. }
             | BackendCommand::RequestTrunkTimeline { team_id, .. }
+            | BackendCommand::RequestSessionHistory { team_id, .. }
             | BackendCommand::RequestContext { team_id, .. }
             | BackendCommand::ClearHistory { team_id, .. }
             | BackendCommand::ArchiveHistory { team_id, .. }
@@ -912,6 +913,45 @@ impl Agent {
                 self.emit(BackendEvent::ActiveTurnsSnapshot {
                     session_ids,
                     team_id: team_id.clone(),
+                });
+            }
+            BackendCommand::RequestSessionHistory {
+                team_id,
+                session_id,
+                limit,
+            } => {
+                // 按会话派生显示历史（2026-10 面板「会话无消息」修复）：
+                // 共享显示时间线有 1024 条上限、跨会话 FIFO 淘汰，旧会话
+                // 条目可能被整体挤出；事件日志按会话分区且完整，因此从这里
+                // 按需派生（镜像实时投影的展示形状）。
+                let limit = limit.unwrap_or(500).clamp(1, 2000);
+                // 目标 persona 解析（与 RequestTrunkTimeline 相同）：
+                // team_id 可解析 → 目标 agent 的 trunk；其余回退本 agent。
+                let resolved = team_id
+                    .as_deref()
+                    .and_then(|id| crate::agent_manager::global_manager()?.resolve(Some(id)));
+                let trunk: &crate::session::TrunkStore = match &resolved {
+                    Some(agent) => &agent.trunk,
+                    None => &self.trunk,
+                };
+                let (messages, total, truncated) =
+                    trunk.display_history_for_session(&session_id, limit);
+                // 合并水位线：派生时该会话在显示时间线中的最大 seq。
+                let session_key = session_id.as_str();
+                let max_seq = trunk
+                    .timeline_snapshot()
+                    .iter()
+                    .filter(|message| message.session_id == session_key)
+                    .map(|message| message.seq)
+                    .max()
+                    .unwrap_or(0);
+                self.emit(BackendEvent::SessionHistory {
+                    team_id: team_id.clone(),
+                    session_id,
+                    messages,
+                    total,
+                    truncated,
+                    max_seq,
                 });
             }
             BackendCommand::ClearHistory {

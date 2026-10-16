@@ -1,0 +1,400 @@
+//! 按会话派生**显示历史**（事件日志 → 显示时间线形状）。
+//!
+//! 2026-10 面板「会话无消息」修复：显示时间线（`TrunkStore.timeline`）是
+//! 每人格一条、跨全部会话共享、上限 `TRUNK_TIMELINE_MAX`（1024 条）的
+//! FIFO 窗口——长期无活动的会话条目会被后续会话的活动整体挤出，面板
+//! 切回该会话时只能显示「暂无消息」。事件日志（唯一事实来源）按会话分区
+//! 且完整保留，因此显示历史改为**按需从事件日志派生**（镜像
+//! [`TimelineProjector`](crate::timeline::TimelineProjector) 的展示形状；
+//! 实时投影负责窗口，派生负责回填旧会话）。
+//!
+//! 已知差异（接受）：
+//! - 推理（reasoning）条目与归档提示行**不落事件日志** → 派生不含；
+//! - `ToolResult` 事件没有 `timed_out` 字段 → 派生条目的 `failed` 只按
+//!   `"error:"` 前缀判定（实时投影还有超时维度）。
+
+use std::collections::HashMap;
+
+use crate::event::{TimelineMessage, TimelineSource, TimelineTool};
+use crate::timeline::{summarize_timeline_value, timeline_timer_task, truncate_one_line};
+
+use super::TrunkStore;
+
+impl TrunkStore {
+    /// 从事件日志为单个会话派生显示历史（镜像 `TimelineProjector` 的展示
+    /// 形状；最近 `limit` 条，时间升序）。已知差异（接受）：推理条目与
+    /// 归档提示行不在事件日志中，派生不含；ToolResult 无 timed_out 字段，
+    /// failed 以 "error:" 前缀判定。
+    /// 返回 (messages, total, truncated)。
+    pub fn display_history_for_session(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> (Vec<TimelineMessage>, usize, bool) {
+        let mut messages: Vec<TimelineMessage> = Vec::new();
+        // 已发出、等待结果的工具条目：tool_call_id → 条目索引。结果到达时
+        // 就地补丁（与实时投影同一配对语义）；id 为空的旧版调用不入索引。
+        let mut open: HashMap<String, usize> = HashMap::new();
+        // carry-forward 时间游标：backend/compaction 条目自身不带时间，
+        // 沿用最近一条带时间事件的时间（与实时投影的"当前时间"同义）。
+        let mut last_time: i64 = 0;
+        for event in self.event_log() {
+            if event.session() != Some(session_id) {
+                continue;
+            }
+            match event {
+                echo_session::SessionEvent::UserMessage(user) => {
+                    match user
+                        .source
+                        .as_ref()
+                        .map(|source| source.adapter_name.as_str())
+                    {
+                        // 内部父上下文 hook，不是会话内容（与实时投影一致）。
+                        Some("background") => continue,
+                        Some("timer") => {
+                            let task = timeline_timer_task(&user.content);
+                            let content = match task {
+                                Some(task) => {
+                                    format!("定时任务触发 · {}", truncate_one_line(&task, 120))
+                                }
+                                None => "定时任务触发".into(),
+                            };
+                            messages.push(TimelineMessage::system(
+                                content,
+                                session_id,
+                                user.timestamp,
+                            ));
+                        }
+                        _ => {
+                            // 图片规范化（与实时投影一致）：媒体引用（`/media/<id>`）
+                            // 原样保留，遗留的内嵌 data URI 落盘后改写为引用。
+                            let images: Vec<String> = user
+                                .images
+                                .iter()
+                                .map(|image| echo_defs::media_store::spill_or_keep(image))
+                                .collect();
+                            let source = user.source.as_ref().map(|source| TimelineSource {
+                                adapter_name: source.adapter_name.clone(),
+                                platform: source.platform.clone(),
+                                user_id: source.user_id.clone(),
+                                user_name: source.user_name.clone(),
+                                channel: source.channel.clone(),
+                                group_name: source.group_name.clone(),
+                                received_at_ms: source.received_at_ms,
+                                message_sequence: source.message_sequence,
+                            });
+                            messages.push(TimelineMessage::user(
+                                user.content.clone(),
+                                session_id,
+                                user.timestamp,
+                                source,
+                                images,
+                            ));
+                        }
+                    }
+                    // 两类用户事件都带真实时间戳：推进 carry-forward 游标
+                    // （timer 的系统条目同样算"最近已知时间"）。
+                    last_time = last_time.max(user.timestamp);
+                }
+                echo_session::SessionEvent::AssistantMessage(assistant) => {
+                    // 空正文（纯 tool-call 轮）不落显示条目；tool 条目由
+                    // ToolCall 事件产生，这里不再展开 `tool_calls` 以免重复。
+                    if assistant.content.trim().is_empty() {
+                        continue;
+                    }
+                    // 推理不落日志：`reasoning_content` 不派生（见模块注释）。
+                    messages.push(TimelineMessage::backend(
+                        assistant.content.clone(),
+                        session_id,
+                        last_time,
+                        None,
+                    ));
+                }
+                echo_session::SessionEvent::ToolCall(call) => {
+                    let started_secs = call
+                        .started_at_ms
+                        .map(|ms| ms / 1000)
+                        .filter(|secs| *secs > 0);
+                    let time = started_secs.unwrap_or(last_time);
+                    if let Some(secs) = started_secs {
+                        last_time = last_time.max(secs);
+                    }
+                    messages.push(TimelineMessage::tool(
+                        call.name.clone(),
+                        session_id,
+                        time,
+                        TimelineTool {
+                            name: call.name.clone(),
+                            input: summarize_timeline_value(&call.arguments, 160),
+                            output: None,
+                            failed: false,
+                            tool_call_id: call.id.clone(),
+                            timed_out: false,
+                            started_at_ms: call.started_at_ms,
+                            elapsed_ms: None,
+                        },
+                    ));
+                    if !call.id.is_empty() {
+                        open.insert(call.id, messages.len() - 1);
+                    }
+                }
+                echo_session::SessionEvent::ToolResult(result) => {
+                    let output = summarize_timeline_value(&result.result, 200);
+                    let failed = result.result.trim_start().starts_with("error:");
+                    match open.remove(&result.tool_call_id) {
+                        Some(index) => {
+                            // 命中未完成的工具条目：就地补丁（镜像实时投影的
+                            // update_timeline_tool）。`timed_out` 无日志依据，
+                            // 保持 false。
+                            if let Some(tool) = messages
+                                .get_mut(index)
+                                .and_then(|message| message.tool.as_mut())
+                            {
+                                tool.output = Some(output);
+                                tool.failed = failed;
+                                tool.elapsed_ms = result.elapsed_ms;
+                            }
+                        }
+                        None => {
+                            // 未命中（旧版日志缺 ToolCall 事件 / 重复结果）：
+                            // 追加已完成条目，镜像 update_timeline_tool 的
+                            // fallback。ToolResult 事件不带工具名——以 id 兜底
+                            // （纯空 id 的旧版事件用占位名）。
+                            let name = if result.tool_call_id.is_empty() {
+                                "tool".to_string()
+                            } else {
+                                result.tool_call_id.clone()
+                            };
+                            messages.push(TimelineMessage::tool(
+                                name.clone(),
+                                session_id,
+                                last_time,
+                                TimelineTool {
+                                    name,
+                                    input: String::new(),
+                                    output: Some(output),
+                                    failed,
+                                    tool_call_id: result.tool_call_id.clone(),
+                                    timed_out: false,
+                                    started_at_ms: None,
+                                    elapsed_ms: result.elapsed_ms,
+                                },
+                            ));
+                        }
+                    }
+                }
+                echo_session::SessionEvent::Compaction(compaction) => {
+                    messages.push(TimelineMessage::system(
+                        format!("上下文已压缩 · 替换 {} 条事件", compaction.replaced_count),
+                        session_id,
+                        last_time,
+                    ));
+                }
+            }
+        }
+        let total = messages.len();
+        let truncated = total > limit;
+        if truncated {
+            // 取**最后** limit 条（最近的活动），保持时间升序。
+            messages.drain(..total - limit);
+        }
+        (messages, total, truncated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn trunk() -> TrunkStore {
+        TrunkStore::new(100_000)
+    }
+
+    fn user_event(session: &str, content: &str, timestamp: i64) -> echo_session::SessionEvent {
+        echo_session::SessionEvent::UserMessage(echo_session::UserMessage {
+            content: content.into(),
+            timestamp,
+            message_sequence: None,
+            source: None,
+            images: Vec::new(),
+            session: Some(session.into()),
+        })
+    }
+
+    fn user_event_with_source(
+        session: &str,
+        content: &str,
+        timestamp: i64,
+        adapter_name: &str,
+    ) -> echo_session::SessionEvent {
+        echo_session::SessionEvent::UserMessage(echo_session::UserMessage {
+            content: content.into(),
+            timestamp,
+            message_sequence: None,
+            source: Some(echo_session::event::MessageSource {
+                adapter_name: adapter_name.into(),
+                platform: "core".into(),
+                user_id: String::new(),
+                user_name: String::new(),
+                channel: "direct".into(),
+                group_name: None,
+                received_at_ms: 0,
+                message_sequence: 0,
+            }),
+            images: Vec::new(),
+            session: Some(session.into()),
+        })
+    }
+
+    /// 单会话派生：user → tool（就地补丁结果）→ backend；旁观会话被过滤。
+    #[test]
+    fn derives_user_tool_and_backend_entries_for_one_session() {
+        let store = trunk();
+        let target = "qq:dm::123";
+        let watcher = "qq:group:9:456";
+        store.append_event(user_event(target, "你好", 1_700_000_000));
+        store.append_event(echo_session::SessionEvent::ToolCall(
+            echo_session::ToolCallEvent {
+                id: "call-1".into(),
+                name: "bash".into(),
+                arguments: r#"{"command":"ls"}"#.into(),
+                session: Some(target.into()),
+                started_at_ms: Some(1_700_000_000_500),
+            },
+        ));
+        store.append_event(echo_session::SessionEvent::ToolResult(
+            echo_session::ToolResultEvent {
+                tool_call_id: "call-1".into(),
+                result: "ok output".into(),
+                images: Vec::new(),
+                session: Some(target.into()),
+                elapsed_ms: Some(12),
+            },
+        ));
+        store.append_event(echo_session::SessionEvent::AssistantMessage(
+            echo_session::AssistantMessage {
+                content: "最终回复".into(),
+                reasoning_content: Some("推理不派生".into()),
+                tool_calls: Vec::new(),
+                session: Some(target.into()),
+            },
+        ));
+        store.append_event(user_event(watcher, "旁观会话", 1_700_000_001));
+
+        let (messages, total, truncated) = store.display_history_for_session(target, 500);
+        assert_eq!(total, 3, "only the target session's entries: {messages:?}");
+        assert!(!truncated);
+        assert_eq!(messages.len(), 3);
+
+        assert_eq!(messages[0].kind, "user");
+        assert_eq!(messages[0].content, "你好");
+        assert_eq!(messages[0].session_id, target);
+        assert!(messages[0].source.is_none());
+
+        assert_eq!(messages[1].kind, "tool");
+        let tool = messages[1].tool.as_ref().expect("tool payload");
+        assert_eq!(tool.name, "bash");
+        assert_eq!(tool.tool_call_id, "call-1");
+        assert_eq!(tool.started_at_ms, Some(1_700_000_000_500));
+        assert!(
+            tool.output
+                .as_deref()
+                .is_some_and(|o| o.contains("ok output")),
+            "patched output: {:?}",
+            tool.output
+        );
+        assert!(!tool.failed);
+        assert_eq!(tool.elapsed_ms, Some(12));
+        assert!(tool.input.contains("command"));
+
+        assert_eq!(messages[2].kind, "backend");
+        assert_eq!(messages[2].content, "最终回复");
+        assert!(
+            messages[2].time >= 1_700_000_000,
+            "backend carries the last known time: {}",
+            messages[2].time
+        );
+        assert!(
+            messages.iter().all(|m| m.session_id == target),
+            "watcher session must be filtered out"
+        );
+    }
+
+    /// limit 截断：取最后 limit 条，total 报告截断前总数。
+    #[test]
+    fn truncates_to_the_most_recent_entries() {
+        let store = trunk();
+        let target = "local:tui::local_user";
+        for index in 0..10 {
+            let content = format!("消息 {index}");
+            store.append_event(user_event(target, &content, 1_700_000_000 + index as i64));
+        }
+        let (messages, total, truncated) = store.display_history_for_session(target, 4);
+        assert_eq!(total, 10);
+        assert!(truncated);
+        assert_eq!(messages.len(), 4);
+        let contents: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(contents, ["消息 6", "消息 7", "消息 8", "消息 9"]);
+    }
+
+    /// timer 事件 → system 条目；background hook 跳过。
+    #[test]
+    fn timer_becomes_system_entry_and_background_is_skipped() {
+        let store = trunk();
+        let target = "local:tui::local_user";
+        let timer_content = format!(
+            "{}{}{}",
+            crate::input_marker::TIMER_EVENT_OPEN,
+            r#"{"task":"x"}"#,
+            crate::input_marker::TIMER_EVENT_CLOSE
+        );
+        store.append_event(user_event_with_source(
+            target,
+            &timer_content,
+            1_700_000_000,
+            "timer",
+        ));
+        store.append_event(user_event_with_source(
+            target,
+            "<backend_message_hook>内部父上下文</backend_message_hook>",
+            1_700_000_001,
+            "background",
+        ));
+
+        let (messages, total, truncated) = store.display_history_for_session(target, 500);
+        assert_eq!(total, 1, "background hook must not produce an entry");
+        assert!(!truncated);
+        assert_eq!(messages[0].kind, "system");
+        assert!(
+            messages[0].content.starts_with("定时任务触发"),
+            "{}",
+            messages[0].content
+        );
+        assert!(messages[0].content.contains('x'), "{}", messages[0].content);
+        assert_eq!(messages[0].time, 1_700_000_000);
+    }
+
+    /// 压缩事件 → system 条目（含替换条数）。
+    #[test]
+    fn compaction_renders_a_system_entry() {
+        let store = trunk();
+        let target = "local:tui::local_user";
+        store.append_event(echo_session::SessionEvent::Compaction(
+            echo_session::CompactionEvent {
+                replaced_count: 5,
+                summary: "摘要体".into(),
+                archive: None,
+                session: Some(target.into()),
+            },
+        ));
+        let (messages, total, truncated) = store.display_history_for_session(target, 500);
+        assert_eq!(total, 1);
+        assert!(!truncated);
+        assert_eq!(messages[0].kind, "system");
+        assert!(
+            messages[0].content.contains("替换 5"),
+            "{}",
+            messages[0].content
+        );
+    }
+}

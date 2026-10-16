@@ -625,6 +625,24 @@ pub enum BackendEvent {
         #[serde(default)]
         full: bool,
     },
+    /// 某会话的显示历史（`RequestSessionHistory` 的响应；2026-10）。
+    /// 从事件日志按会话派生（镜像显示时间线的形状），时间升序。
+    SessionHistory {
+        /// 响应归属：= 请求的 team_id（None = 主/默认 agent）。
+        #[serde(default)]
+        team_id: Option<String>,
+        /// = 请求的 session_id（回显）。
+        session_id: String,
+        messages: Vec<TimelineMessage>,
+        /// 派生出的条目总数（截断前）。
+        total: usize,
+        /// true = 因 limit 只含最近 limit 条。
+        truncated: bool,
+        /// 派生时该会话在显示时间线中的最大 seq（**合并水位线**：面板据此
+        /// 跳过窗口里已被快照覆盖的条目；0 = 该会话不在窗口内）。
+        #[serde(default)]
+        max_seq: u64,
+    },
     /// API configuration changed (for TUI settings form).
     ApiConfigUpdated {
         provider: String,
@@ -1387,5 +1405,73 @@ mod adapter_status_tests {
         assert!(value.get("ui").is_none());
         assert!(value.get("session_labels").is_none());
     }
+}
 
+#[cfg(test)]
+mod session_history_tests {
+    use super::*;
+
+    /// `SessionHistory` 线格式（2026-10 会话显示历史通道）：序列化含
+    /// messages / total / max_seq，可完整往返（team_id / max_seq 缺省可解）。
+    #[test]
+    fn session_history_serde_roundtrip() {
+        let event = BackendEvent::SessionHistory {
+            team_id: Some("t".into()),
+            session_id: "s".into(),
+            messages: vec![TimelineMessage::user("你好", "s", 1700000000, None, vec![])],
+            total: 42,
+            truncated: true,
+            max_seq: 7,
+        };
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            value["SessionHistory"]["session_id"],
+            serde_json::json!("s")
+        );
+        assert_eq!(value["SessionHistory"]["team_id"], serde_json::json!("t"));
+        assert_eq!(value["SessionHistory"]["total"], serde_json::json!(42));
+        assert_eq!(
+            value["SessionHistory"]["truncated"],
+            serde_json::json!(true)
+        );
+        assert_eq!(value["SessionHistory"]["max_seq"], serde_json::json!(7));
+        assert!(value["SessionHistory"]["messages"].is_array());
+        match serde_json::from_value::<BackendEvent>(value).unwrap() {
+            BackendEvent::SessionHistory {
+                team_id,
+                session_id,
+                messages,
+                total,
+                truncated,
+                max_seq,
+            } => {
+                assert_eq!(team_id.as_deref(), Some("t"));
+                assert_eq!(session_id, "s");
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].kind, "user");
+                assert_eq!(total, 42);
+                assert!(truncated);
+                assert_eq!(max_seq, 7);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// 旧版/最小形态：team_id 与 max_seq 缺失时解码为 None / 0。
+    #[test]
+    fn session_history_defaults_decode() {
+        let bare: BackendEvent = serde_json::from_str(
+            r#"{"SessionHistory":{"session_id":"s","messages":[],"total":0,"truncated":false}}"#,
+        )
+        .unwrap();
+        match bare {
+            BackendEvent::SessionHistory {
+                team_id, max_seq, ..
+            } => {
+                assert!(team_id.is_none());
+                assert_eq!(max_seq, 0);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
 }

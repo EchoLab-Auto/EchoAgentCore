@@ -298,7 +298,8 @@ pub fn elide_reasoning_for_wire(messages: Vec<TimelineMessage>) -> Vec<TimelineM
 }
 
 /// Extract a timer task summary from a `<timer_event>` payload, if parseable.
-fn timeline_timer_task(content: &str) -> Option<String> {
+/// `pub(crate)`：按会话派生显示历史（`session::history`）复用同一解析。
+pub(crate) fn timeline_timer_task(content: &str) -> Option<String> {
     let body = content
         .strip_prefix(crate::input_marker::TIMER_EVENT_OPEN)?
         .strip_suffix(crate::input_marker::TIMER_EVENT_CLOSE)?;
@@ -307,7 +308,8 @@ fn timeline_timer_task(content: &str) -> Option<String> {
 }
 
 /// Collapse whitespace and truncate to one display line.
-fn truncate_one_line(value: &str, max_chars: usize) -> String {
+/// `pub(crate)`：派生显示历史复用（与实时投影同一折叠/截断规则）。
+pub(crate) fn truncate_one_line(value: &str, max_chars: usize) -> String {
     let collapsed: String = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= max_chars {
         collapsed
@@ -317,7 +319,8 @@ fn truncate_one_line(value: &str, max_chars: usize) -> String {
 }
 
 /// Truncate a tool input/output for display, collapsing whitespace.
-fn summarize_timeline_value(value: &str, max_chars: usize) -> String {
+/// `pub(crate)`：派生显示历史复用（工具行 input/output 概要）。
+pub(crate) fn summarize_timeline_value(value: &str, max_chars: usize) -> String {
     let compact = match serde_json::from_str::<serde_json::Value>(value) {
         Ok(serde_json::Value::Object(map)) => {
             let summarized = map
