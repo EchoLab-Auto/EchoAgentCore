@@ -7,6 +7,120 @@ _SCRIPT_PATH="${BASH_SOURCE[0]:-${0:-}}"
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$_SCRIPT_PATH")/.." 2>/dev/null && pwd -P || true)
 PROJECT_ROOT=${PROJECT_ROOT:-/nonexistent}
 
+# ── 国内镜像加速（2026-10）──────────────────────────────────────────
+# 国内网络下 GitHub 克隆 / rustup 安装 / crates.io 依赖拉取常年缓慢或
+# 不可达；以下机制提供"灵活、可单点、失败自动回退"的加速：
+#   开启（本地）：  ./scripts/install.sh --cn-mirror[=rsproxy|tuna|ustc]
+#   开启（一键）：  curl -fsSL <脚本地址> | ECHO_CN_MIRROR=1 bash
+#                   curl -fsSL <脚本地址> | bash -s -- --cn-mirror
+#   关闭：          --no-cn-mirror / ECHO_CN_MIRROR=0
+#   单环节覆盖（独立于总开关，只加速需要的环节）：
+#     ECHO_GITHUB_PROXY=https://gh-proxy.com    GitHub 克隆加速前缀
+#     ECHO_RUSTUP_INIT_URL / ECHO_RUSTUP_DIST_SERVER /
+#     ECHO_RUSTUP_UPDATE_ROOT / ECHO_CRATES_MIRROR（sparse+https://…）
+# 语义：默认全直连（原有行为不变）；每个环节失败自动回退官方端点；
+# crates 镜像在构建前做可达性预检。详见 README「国内网络」一节。
+CN_MIRROR_REQUEST=${ECHO_CN_MIRROR:-0}
+for _arg in "$@"; do
+    case "$_arg" in
+        --cn-mirror)    CN_MIRROR_REQUEST=1 ;;
+        --cn-mirror=*)  CN_MIRROR_REQUEST=${_arg#--cn-mirror=} ;;
+        --no-cn-mirror) CN_MIRROR_REQUEST=0 ;;
+    esac
+done
+
+# 把请求值（0/1/preset）解析成各环节的镜像 URL：专用环境变量逐项优先
+# 于预设；未设置 = 该环节直连官方。
+resolve_cn_mirror() {
+    local request=$1 preset=
+    case "$request" in
+        0|off|no|false|"") preset= ;;
+        1|on|yes|true)      preset=rsproxy ;;
+        rsproxy|tuna|ustc)  preset=$request ;;
+        *)
+            echo "error: unknown --cn-mirror preset: $request (expected rsproxy|tuna|ustc)" >&2
+            exit 2
+            ;;
+    esac
+    CN_MIRROR=$preset
+    GITHUB_PROXY=${ECHO_GITHUB_PROXY:-}
+    RUSTUP_INIT_URL=${ECHO_RUSTUP_INIT_URL:-}
+    RUSTUP_DIST_SERVER=${ECHO_RUSTUP_DIST_SERVER:-}
+    RUSTUP_UPDATE_ROOT=${ECHO_RUSTUP_UPDATE_ROOT:-}
+    CRATES_MIRROR=${ECHO_CRATES_MIRROR:-}
+    [[ -n "$preset" ]] || return 0
+    # 默认组合：GitHub 走 gh-proxy.com（2026-10 实测最稳）；Rust 生态
+    # 走 rsproxy.cn。tuna / ustc 预设替换 rustup 与 crates 两个环节。
+    : "${GITHUB_PROXY:=https://gh-proxy.com}"
+    : "${RUSTUP_INIT_URL:=https://rsproxy.cn/rustup-init.sh}"
+    case "$preset" in
+        rsproxy)
+            : "${RUSTUP_DIST_SERVER:=https://rsproxy.cn}"
+            : "${RUSTUP_UPDATE_ROOT:=https://rsproxy.cn/rustup}"
+            : "${CRATES_MIRROR:=sparse+https://rsproxy.cn/index/}"
+            ;;
+        tuna)
+            : "${RUSTUP_DIST_SERVER:=https://mirrors.tuna.tsinghua.edu.cn/rustup}"
+            : "${CRATES_MIRROR:=sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/}"
+            ;;
+        ustc)
+            : "${RUSTUP_DIST_SERVER:=https://mirrors.ustc.edu.cn/rust-static}"
+            : "${CRATES_MIRROR:=sparse+https://mirrors.ustc.edu.cn/crates.io-index/}"
+            ;;
+    esac
+}
+resolve_cn_mirror "$CN_MIRROR_REQUEST"
+
+# https://github.com/… → 镜像前缀形式（如
+# https://gh-proxy.com/https://github.com/…）；未启用代理时原样返回。
+github_mirror_url() {
+    local url=$1
+    if [[ -n "$GITHUB_PROXY" && "$url" == https://github.com/* ]]; then
+        printf '%s/%s' "${GITHUB_PROXY%/}" "$url"
+    else
+        printf '%s' "$url"
+    fi
+}
+
+# sparse+URL → 快速可达性预检（curl 不可用时按"可达"处理直接尝试）。
+mirror_reachable() {
+    local url=$1
+    command -v curl >/dev/null 2>&1 || return 0
+    url=${url#sparse+}
+    curl -fsS -o /dev/null --connect-timeout 2 --max-time 4 "${url%/}/config.json"
+}
+
+# bootstrap 前置依赖：git 自动安装（curl|bash 在新机器上的第一道门槛）。
+# 与主流程的 ensure_command 同源策略（可识别包管理器 + root/sudo）。
+try_install_git() {
+    local sudo=""
+    if [[ "$(id -u)" -ne 0 ]]; then
+        if command -v sudo >/dev/null 2>&1; then
+            sudo="sudo"
+        else
+            echo "error: 自动安装 git 需要 root 或 sudo（均不可用）" >&2
+            return 1
+        fi
+    fi
+    echo "==> Installing git via the system package manager"
+    if command -v apt-get >/dev/null 2>&1; then
+        $sudo apt-get update -qq &&
+            DEBIAN_FRONTEND=noninteractive $sudo apt-get install -y git
+    elif command -v dnf >/dev/null 2>&1; then
+        $sudo dnf install -y git
+    elif command -v yum >/dev/null 2>&1; then
+        $sudo yum install -y git
+    elif command -v pacman >/dev/null 2>&1; then
+        $sudo pacman -Sy --noconfirm --needed git
+    elif command -v zypper >/dev/null 2>&1; then
+        $sudo zypper --non-interactive install git
+    else
+        echo "error: 未找到可识别的包管理器（apt-get/dnf/yum/pacman/zypper）" >&2
+        return 1
+    fi
+    command -v git >/dev/null 2>&1
+}
+
 # ── curl|bash 一键安装引导（2026-10）────────────────────────────────
 # 用法：curl -fsSL <raw-url>/scripts/install.sh | bash
 # 通过管道运行时，脚本所在目录不是 git 检出——此时先把仓库浅克隆到
@@ -16,12 +130,35 @@ DEFAULT_REPO="https://github.com/EchoLab-Auto/EchoAgentCore.git"
 if [[ ! -d "$PROJECT_ROOT/.git" ]] && [[ -z "${ECHO_BOOTSTRAPPED:-}" ]]; then
     echo "==> curl|bash bootstrap: cloning repository for installer assets"
     if ! command -v git >/dev/null 2>&1; then
-        echo "error: bootstrap 需要 git（请先安装 git 再重跑本命令）" >&2
-        exit 1
+        if ! try_install_git; then
+            echo "error: bootstrap 需要 git，且自动安装未成功——请手动安装 git 后重跑本命令" >&2
+            exit 1
+        fi
     fi
     BOOTSTRAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/echo-agent-bootstrap.XXXXXX")
     trap 'rm -rf "$BOOTSTRAP_DIR"' EXIT
-    git clone --depth 1 "${ECHO_REPOSITORY_URL:-$DEFAULT_REPO}" "$BOOTSTRAP_DIR/repo"
+    bootstrap_repo=${ECHO_REPOSITORY_URL:-$DEFAULT_REPO}
+    bootstrap_cloned=0
+    if [[ -n "$GITHUB_PROXY" && "$bootstrap_repo" == https://github.com/* ]]; then
+        echo "==> Using GitHub mirror: $GITHUB_PROXY"
+        if git clone --depth 1 "$(github_mirror_url "$bootstrap_repo")" "$BOOTSTRAP_DIR/repo"; then
+            bootstrap_cloned=1
+        else
+            echo "warning: mirror clone failed; retrying without mirror" >&2
+            rm -rf -- "$BOOTSTRAP_DIR/repo"
+        fi
+    fi
+    if ((bootstrap_cloned == 0)); then
+        if ! git clone --depth 1 "$bootstrap_repo" "$BOOTSTRAP_DIR/repo"; then
+            if [[ -z "$GITHUB_PROXY" ]]; then
+                echo "note: 克隆失败。国内/慢网络可启用镜像后重试（见 README「国内网络」）：" >&2
+                echo "      curl -fsSL <本脚本地址> | ECHO_CN_MIRROR=1 bash" >&2
+            else
+                echo "note: 镜像与直连均克隆失败——请检查网络，或用 ECHO_GITHUB_PROXY 指定其他可用代理后重试。" >&2
+            fi
+            exit 1
+        fi
+    fi
     export ECHO_BOOTSTRAPPED=1
     exec bash "$BOOTSTRAP_DIR/repo/scripts/install.sh" "$@"
 fi
@@ -62,6 +199,14 @@ Options:
                         (the previous file is kept as core.toml.bak-<epoch>;
                         an existing management_access_token is carried over)
   --dry-run             Print resolved paths without changing the system
+  --cn-mirror[=PRESET]  Accelerate GitHub clone / rustup / crates.io on slow
+                        networks (PRESET: rsproxy|tuna|ustc; default rsproxy).
+                        Per-component overrides via environment variables:
+                        ECHO_GITHUB_PROXY, ECHO_RUSTUP_INIT_URL,
+                        ECHO_RUSTUP_DIST_SERVER, ECHO_RUSTUP_UPDATE_ROOT,
+                        ECHO_CRATES_MIRROR. Every mirror falls back to the
+                        official endpoint on failure.
+  --no-cn-mirror        Disable mirrors (overrides ECHO_CN_MIRROR)
   -h, --help            Show this help
 EOF
 }
@@ -88,12 +233,23 @@ while (($#)); do
             DRY_RUN=1
             shift
             ;;
+        --cn-mirror|--cn-mirror=*|--no-cn-mirror)
+            # 已在脚本顶部统一解析（bootstrap 阶段也需要），这里仅消费。
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
             ;;
         *)
-            echo "error: unknown option: $1" >&2
+            case "$1" in
+                rsproxy|tuna|ustc)
+                    echo "error: unknown option: $1（镜像预设请写成 --cn-mirror=$1）" >&2
+                    ;;
+                *)
+                    echo "error: unknown option: $1" >&2
+                    ;;
+            esac
             usage >&2
             exit 2
             ;;
@@ -114,6 +270,13 @@ BRANCH=$(git -C "$PROJECT_ROOT" branch --show-current 2>/dev/null || true)
 BRANCH=${BRANCH:-main}
 
 if ((DRY_RUN)); then
+    # 镜像摘要（dry-run 也能核对配置是否正确）。
+    mirror_summary="off"
+    mirror_parts=()
+    if [[ -n "$GITHUB_PROXY" ]]; then mirror_parts+=("github=$GITHUB_PROXY"); fi
+    if [[ -n "$RUSTUP_DIST_SERVER" ]]; then mirror_parts+=("rustup=$RUSTUP_DIST_SERVER"); fi
+    if [[ -n "$CRATES_MIRROR" ]]; then mirror_parts+=("crates=$CRATES_MIRROR"); fi
+    if ((${#mirror_parts[@]})); then mirror_summary="on (${mirror_parts[*]})"; fi
     cat <<EOF
 EchoAgentCore install plan
   project:    $PROJECT_ROOT
@@ -126,6 +289,7 @@ EchoAgentCore install plan
   branch:     $BRANCH
   start Core: $START_SERVICE
   overwrite config: $( ((OVERWRITE_CONFIG)) && echo "yes (backup kept)" || echo no )
+  cn mirror:  $mirror_summary
 EOF
     exit 0
 fi
@@ -244,8 +408,51 @@ ensure_rust_toolchain() {
             return 1
         }
     fi
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet
+
+    # rustup-init 安装器：启用镜像时先走镜像下载，失败回退官方（2026-10）。
+    local init_url=${RUSTUP_INIT_URL:-https://sh.rustup.rs}
+    local init_file fetched=0
+    init_file=$(mktemp "${TMPDIR:-/tmp}/rustup-init.XXXXXX")
+    if [[ "$init_url" != "https://sh.rustup.rs" ]]; then
+        echo "==> Downloading rustup-init via mirror: $init_url"
+    fi
+    if curl --proto '=https' --tlsv1.2 -fsSL "$init_url" -o "$init_file" && [[ -s "$init_file" ]]; then
+        fetched=1
+    elif [[ "$init_url" != "https://sh.rustup.rs" ]]; then
+        echo "warning: rustup-init mirror download failed; falling back to https://sh.rustup.rs" >&2
+        if curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o "$init_file" && [[ -s "$init_file" ]]; then
+            fetched=1
+        fi
+    fi
+    if ((fetched == 0)); then
+        rm -f -- "$init_file"
+        missing_report+=("cargo（rustup-init 下载失败——检查网络；国内网络可加 --cn-mirror）")
+        return 1
+    fi
+
+    # 工具链下载：RUSTUP_DIST_SERVER / RUSTUP_UPDATE_ROOT 交由 rustup-init
+    # 使用；镜像失败时去掉这两个变量重试一次（回退官方）。
+    local mir_env=() installed=0
+    if [[ -n "$RUSTUP_DIST_SERVER" ]]; then mir_env+=("RUSTUP_DIST_SERVER=$RUSTUP_DIST_SERVER"); fi
+    if [[ -n "$RUSTUP_UPDATE_ROOT" ]]; then mir_env+=("RUSTUP_UPDATE_ROOT=$RUSTUP_UPDATE_ROOT"); fi
+    if ((${#mir_env[@]})); then
+        if env "${mir_env[@]}" sh "$init_file" -y --quiet; then
+            installed=1
+        else
+            echo "warning: rustup with mirror failed; retrying without mirror" >&2
+            if sh "$init_file" -y --quiet; then
+                installed=1
+            fi
+        fi
+    elif sh "$init_file" -y --quiet; then
+        installed=1
+    fi
+    rm -f -- "$init_file"
     export PATH="$HOME/.cargo/bin:$PATH"
+    if ((installed == 0)); then
+        missing_report+=("cargo（rustup 安装未成功——检查网络；国内网络可加 --cn-mirror）")
+        return 1
+    fi
     command -v cargo >/dev/null 2>&1
 }
 
@@ -288,8 +495,20 @@ if [[ ! -d "$SOURCE_DIR/.git" ]]; then
         git clone --local --no-hardlinks --branch "$BRANCH" "$PROJECT_ROOT" "$SOURCE_DIR"
     else
         # bootstrap 浅克隆（无 --local 意义）：完整克隆受管检出（自更新
-        # 需要历史与远端跟踪）。
-        git clone --branch "$BRANCH" "$REPOSITORY_URL" "$SOURCE_DIR"
+        # 需要历史与远端跟踪）。启用镜像时先走镜像、失败回退直连。
+        managed_cloned=0
+        if [[ -n "$GITHUB_PROXY" && "$REPOSITORY_URL" == https://github.com/* && ! -e "$SOURCE_DIR" ]]; then
+            echo "==> Using GitHub mirror for managed checkout: $GITHUB_PROXY"
+            if git clone --branch "$BRANCH" "$(github_mirror_url "$REPOSITORY_URL")" "$SOURCE_DIR"; then
+                managed_cloned=1
+            else
+                echo "warning: mirror clone failed; retrying without mirror" >&2
+                rm -rf -- "$SOURCE_DIR"
+            fi
+        fi
+        if ((managed_cloned == 0)); then
+            git clone --branch "$BRANCH" "$REPOSITORY_URL" "$SOURCE_DIR"
+        fi
     fi
     git -C "$SOURCE_DIR" remote set-url origin "$REPOSITORY_URL"
 else
@@ -318,7 +537,29 @@ core_was_enabled=0
 if systemctl --user is-enabled --quiet echo-agent-core.service 2>/dev/null; then
     core_was_enabled=1
 fi
-cargo build --release --locked -p echo-agent-core --manifest-path "$SOURCE_DIR/Cargo.toml"
+build_args=(build --release --locked -p echo-agent-core --manifest-path "$SOURCE_DIR/Cargo.toml")
+if [[ -n "$CRATES_MIRROR" ]]; then
+    # crates.io 镜像：--config 注入源替换（不落盘、不影响用户全局配置）；
+    # 使用前预检镜像可达性，不可达则直接用官方源。
+    if mirror_reachable "$CRATES_MIRROR"; then
+        echo "==> Using crates.io mirror: $CRATES_MIRROR"
+        build_args=(
+            --config 'source.crates-io.replace-with="cn-mirror"'
+            --config "source.cn-mirror.registry=\"$CRATES_MIRROR\""
+            "${build_args[@]}"
+        )
+    else
+        echo "warning: crates mirror unreachable; using the official registry" >&2
+    fi
+fi
+if ! cargo "${build_args[@]}"; then
+    if [[ -n "$CRATES_MIRROR" ]]; then
+        echo "note: 构建失败——若怀疑镜像问题，可不带 --cn-mirror 重跑本脚本。" >&2
+    else
+        echo "note: 构建失败——国内网络可加 --cn-mirror 启用镜像加速后重试。" >&2
+    fi
+    exit 1
+fi
 
 # Keep every file that can affect a running installation until the new service
 # has been reloaded and passes its health check. This makes re-running the

@@ -119,7 +119,29 @@ curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scr
 脚本会先**检查并自动安装前置依赖**（可识别包管理器 + sudo 可用时）：
 系统命令（git / cc 编译器 / pkg-config 等，走 apt/dnf/pacman/zypper）与
 Rust 工具链（缺失时走官方 rustup 用户级安装，无需 root）。`--no-deps`
-跳过自动安装、只做检查并列出缺失清单。
+跳过自动安装、只做检查并列出缺失清单。curl | bash 引导阶段缺 git 时
+同样自动安装，无需预先手装。
+
+**国内网络（镜像加速，2026-10）**：
+
+GitHub 克隆 / rustup / crates.io 在部分网络（典型：国内直连）下缓慢或
+不可达；`--cn-mirror` 一键启用镜像（默认组合：GitHub 走 gh-proxy.com、
+Rust 生态走 rsproxy.cn；`=tuna` / `=ustc` 换镜像站）：
+
+```bash
+# 一键安装：镜像拉取脚本本身 + 镜像克隆/构建
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install.sh \
+    | ECHO_CN_MIRROR=1 bash
+
+# 本地（已 clone 仓库）
+./scripts/install.sh --cn-mirror
+# 关闭：--no-cn-mirror / ECHO_CN_MIRROR=0；先核对配置：加 --dry-run
+```
+
+单环节覆盖（不必开总开关）：`ECHO_GITHUB_PROXY`（克隆代理前缀）、
+`ECHO_RUSTUP_INIT_URL`、`ECHO_RUSTUP_DIST_SERVER`、
+`ECHO_RUSTUP_UPDATE_ROOT`、`ECHO_CRATES_MIRROR`（`sparse+https://…`）。
+默认全直连（不改变既有行为）；每个环节失败自动回退官方端点。
 
 安装后：
 
