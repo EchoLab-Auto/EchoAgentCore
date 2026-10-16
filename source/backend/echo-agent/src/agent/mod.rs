@@ -15,7 +15,7 @@ mod tool_dispatch;
 mod tool_exec;
 mod turn;
 // `qq_commands` / `workspace_commands` 已按包归位：
-// 见 `crate::packages::adapter_qq::commands` / `crate::packages::workspace::commands`。
+// 见 `crate::packages::adapter_ops::commands` / `crate::packages::workspace::commands`。
 
 use boundary::PromptBlock;
 

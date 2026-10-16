@@ -1493,7 +1493,7 @@ impl Agent {
             | BackendCommand::RequestQqLoginStatus { .. }
             | BackendCommand::RequestQqQrcode { .. }
             | BackendCommand::InvokeAdapterOp { .. } => {
-                self.apply_qq_command(cmd).await;
+                self.apply_adapter_command(cmd).await;
             }
             BackendCommand::RequestWorkspaceSessions { .. }
             | BackendCommand::SaveWorkspaceSession { .. }

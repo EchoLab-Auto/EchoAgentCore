@@ -9,7 +9,7 @@
 //! |---|---|---|
 //! | [`tools_builtin`] | `echo-agent.tools.builtin` | 内置工具（计算/搜索/清单/编码/Shell/适配器管理） |
 //! | [`skills_dir`] | `echo-agent.skills.dir` | `SKILL.md` 注册表 + 热重载 + Git 来源安装 |
-//! | [`adapter_qq`] | `echo-agent.adapter.qq` | QQ 入站 hook 桥 + QQ 命令域 |
+//! | [`adapter_ops`] | `echo-agent.adapter.qq` | 适配器命令域（通用 + legacy 兼容层）+ 入站 hook 桥 |
 //! | [`workspace`] | `echo-agent.workspace` | 工作区会话存储/工具 + 命令域 |
 //! | [`subagent`] | `echo-agent.subagent` | 异步子任务委派 |
 //! | [`federation`] | `echo-agent.federation.<peer>` | 远程代理工具 + Invoke 调度/裁决（federation Phase 2） |
@@ -36,7 +36,7 @@
 //! （线协议 re-export）、`plugins.rs`（插件机制）、`config.rs`、
 //! `agent_manager.rs`、`input_marker.rs`（结构化输入标记）。
 
-pub mod adapter_qq;
+pub mod adapter_ops;
 pub mod federation;
 pub mod provider_llm;
 pub mod skills_dir;

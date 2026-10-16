@@ -285,6 +285,11 @@ impl echo_defs::adapter::Adapter for RemoteAdapter {
     fn session_labels(&self) -> Option<Value> {
         self.contribution.session_labels.clone()
     }
+
+    fn gating_capabilities(&self) -> bool {
+        // 泛化 S5（01b §D.2 a′）：写方法广播的源实例能力位。
+        self.contribution.capabilities.gating
+    }
 }
 
 /// `AdapterManagement` 的远程实现（`invoke_custom` 直通 `custom` op；

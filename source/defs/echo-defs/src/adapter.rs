@@ -173,6 +173,17 @@ pub trait Adapter: Send + Sync {
     fn session_labels(&self) -> Option<Value> {
         None
     }
+
+    /// 能力位：`gating`（门控平台的共享配置写方法——`set_gate_mode` /
+    /// `update_allowlist` / `update_denylist` / `set_owner`——按平台跨
+    /// 实例共享）。
+    ///
+    /// 宿主在写方法广播时校验**源实例**本能力位（泛化 S5 / 01b §D.2 a′）；
+    /// 远程适配器返回 `AdapterContribution.capabilities.gating`。默认
+    /// `false`（未声明 = 每实例独立门控，不做跨实例对齐）。
+    fn gating_capabilities(&self) -> bool {
+        false
+    }
 }
 
 /// 平台中立的适配器管理面（W3.1，2026-10 适配器管理通道）。
