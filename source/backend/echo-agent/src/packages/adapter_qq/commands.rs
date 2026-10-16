@@ -206,10 +206,12 @@ impl Agent {
                 }
             }
             BackendCommand::SetQqOwner { owner_qq, adapter } => {
-                tracing::info!(owner_qq, adapter = ?adapter, "Agent: SetQqOwner");
+                tracing::info!(owner_qq = %owner_qq, adapter = ?adapter, "Agent: SetQqOwner");
                 match self.resolve_qq_adapter(&adapter) {
                     Ok(ad) => {
-                        let payload = serde_json::json!({"owner_qq": owner_qq});
+                        // W2.4：字符串透传（插件 `parse_id` 接受 str）；
+                        // `""` = 清除 / 无 owner（替代旧 `0`）。
+                        let payload = serde_json::json!({"owner_qq": owner_qq.clone()});
                         if let Err(message) =
                             invoke_adapter_method(ad.clone(), "set_owner", payload.clone()).await
                         {
@@ -226,10 +228,10 @@ impl Agent {
                         self.emit_adapter_state_events(ad.clone(), adapter.clone());
                         self.emit(BackendEvent::Error {
                             session_id: None,
-                            message: if owner_qq > 0 {
-                                format!("QQ 管理员已设置为: {owner_qq}")
-                            } else {
+                            message: if owner_qq.is_empty() {
                                 "QQ 管理员已清除".into()
+                            } else {
+                                format!("QQ 管理员已设置为: {owner_qq}")
                             },
                         });
                     }
@@ -251,7 +253,7 @@ impl Agent {
                         return;
                     };
                     self.emit(BackendEvent::QqOwner {
-                        owner_qq: state["owner"].as_i64().unwrap_or(0),
+                        owner_qq: state_owner(&state),
                         adapter: adapter.clone(),
                     });
                 }
@@ -443,16 +445,18 @@ impl Agent {
             state: state.clone(),
         });
         // 迁移期：由同一状态派生旧 QQ 事件（W4.1，deprecated 保留）。
+        // W2.4：id 一律字符串输出（对 cached_state 宽容读取 number|string）。
         let gate = &state["gate"];
-        let parse_ids = |key: &str| -> Vec<i64> {
+        let parse_ids = |key: &str| -> Vec<String> {
             gate[key]
                 .as_array()
                 .map(|items| {
                     items
                         .iter()
-                        .filter_map(|item| {
-                            item.as_i64()
-                                .or_else(|| item.as_str().and_then(|s| s.parse().ok()))
+                        .filter_map(|item| match item {
+                            serde_json::Value::Number(number) => Some(number.to_string()),
+                            serde_json::Value::String(text) => Some(text.clone()),
+                            _ => None,
                         })
                         .collect()
                 })
@@ -475,8 +479,10 @@ impl Agent {
             mode: parse_mode(mode),
             adapter: adapter.clone(),
         });
-        let owner_qq = state["owner"].as_i64().unwrap_or(0);
-        self.emit(BackendEvent::QqOwner { owner_qq, adapter });
+        self.emit(BackendEvent::QqOwner {
+            owner_qq: state_owner(&state),
+            adapter,
+        });
     }
 
     /// 把写类管理方法（持久化在共享 `[adapters.qq]` 段）对齐到其余实例
@@ -521,24 +527,41 @@ pub(crate) async fn invoke_adapter_method(
         .map_err(|error| format!("{error}"))
 }
 
-/// 从管理方法结果取 `[{id, name}]` 列表（id 支持数字/字符串两种形态，
-/// 统一解析为 i64；未知形态跳过）。
-fn id_name_list(result: &serde_json::Value, key: &str) -> Vec<(i64, String)> {
+/// 从管理方法结果取 `[{id, name}]` 列表（W2.4：id 支持数字/字符串两种
+/// 形态，统一为 `String`（number → `to_string()`）；未知形态跳过）。
+fn id_name_list(result: &serde_json::Value, key: &str) -> Vec<(String, String)> {
     result[key]
         .as_array()
         .map(|items| {
             items
                 .iter()
                 .filter_map(|item| {
-                    let id = item["id"]
-                        .as_i64()
-                        .or_else(|| item["id"].as_str().and_then(|s| s.parse().ok()))?;
+                    let id = match &item["id"] {
+                        serde_json::Value::Number(number) => number.to_string(),
+                        serde_json::Value::String(text) => text.clone(),
+                        _ => return None,
+                    };
                     let name = item["name"].as_str().unwrap_or("").to_string();
                     Some((id, name))
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// owner 状态宽容读取（W2.4 去号码化）：number → `to_string()`（`0` = 未
+/// 设置 → 空串）、string 原样、缺省/其它 → 空串。`""` = 无 owner（新语义，
+/// 替代旧 `0`；插件 cached_state 现阶段仍发 number，Core 宽容读取）。
+fn state_owner(state: &serde_json::Value) -> String {
+    match &state["owner"] {
+        serde_json::Value::Number(number) => number
+            .as_i64()
+            .filter(|value| *value != 0)
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        serde_json::Value::String(text) => text.clone(),
+        _ => String::new(),
+    }
 }
 
 #[cfg(test)]
@@ -683,7 +706,11 @@ mod tests {
                     "mode": self.mode.lock().unwrap().clone()
                 })),
                 "set_owner" => {
-                    let owner = payload["owner_qq"].as_i64().unwrap_or(0);
+                    // W2.4：插件 `parse_id` 接受 number|string（mock 复刻）。
+                    let owner = payload["owner_qq"]
+                        .as_i64()
+                        .or_else(|| payload["owner_qq"].as_str().and_then(|s| s.parse().ok()))
+                        .unwrap_or(0);
                     *self.owner.lock().unwrap() = owner;
                     Ok(serde_json::json!({"owner_qq": owner}))
                 }
@@ -806,6 +833,15 @@ mod tests {
             })
             .collect();
         assert_eq!(legacy.len(), 3, "派生旧事件（mode/filter/owner）应齐备");
+        // W2.4：派生旧事件 id 一律字符串（owner 未设置 = ""，替代旧 0）。
+        let owner = emitted
+            .iter()
+            .find_map(|e| match e {
+                BackendEvent::QqOwner { owner_qq, .. } => Some(owner_qq.clone()),
+                _ => None,
+            })
+            .expect("QqOwner event");
+        assert_eq!(owner, "");
 
         // 新路径：InvokeAdapterOp 改回 none——与旧命令同一执行面（invoke_custom）。
         agent
@@ -890,6 +926,78 @@ mod tests {
                 .await
                 .unwrap()["owner_qq"],
             serde_json::json!(9527)
+        );
+    }
+
+    /// W2.4：SetQqOwner 字符串载荷透传（number 双读已由协议层归一）；
+    /// 空串 = 清除语义（消息文案区分），派生 QqOwner 输出字符串 id。
+    #[tokio::test]
+    async fn set_qq_owner_string_payload_and_clear_semantics() {
+        let (agent, events) = agent_with_qq_instances();
+
+        agent
+            .apply_qq_command(BackendCommand::SetQqOwner {
+                owner_qq: "9527".into(),
+                adapter: Some("qq-a".into()),
+            })
+            .await;
+        // 实例侧（mock 复刻插件 parse_id）：字符串 id 可解析并广播对齐。
+        let ad_b = agent.adapters.get("qq-b").expect("qq-b");
+        assert_eq!(
+            ad_b.management()
+                .unwrap()
+                .invoke_custom("get_owner", serde_json::json!({}))
+                .await
+                .unwrap()["owner_qq"],
+            serde_json::json!(9527)
+        );
+        let emitted = drain_events(&events);
+        let owner_ev = emitted
+            .iter()
+            .find_map(|e| match e {
+                BackendEvent::QqOwner { owner_qq, .. } => Some(owner_qq.clone()),
+                _ => None,
+            })
+            .expect("QqOwner event");
+        assert_eq!(owner_ev, "9527", "owner 事件输出字符串 id");
+        let messages: Vec<&String> = emitted
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::Error { message, .. } => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            messages.iter().any(|m| m.contains("已设置为")),
+            "got {messages:?}"
+        );
+
+        // 空串 = 清除（替代旧 0 语义）。
+        agent
+            .apply_qq_command(BackendCommand::SetQqOwner {
+                owner_qq: String::new(),
+                adapter: Some("qq-a".into()),
+            })
+            .await;
+        let emitted = drain_events(&events);
+        let owner_ev = emitted
+            .iter()
+            .find_map(|e| match e {
+                BackendEvent::QqOwner { owner_qq, .. } => Some(owner_qq.clone()),
+                _ => None,
+            })
+            .expect("QqOwner event");
+        assert_eq!(owner_ev, "", "清除后 owner 输出空串");
+        let messages: Vec<&String> = emitted
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::Error { message, .. } => Some(message),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            messages.iter().any(|m| m.contains("已清除")),
+            "got {messages:?}"
         );
     }
 }

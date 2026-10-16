@@ -1210,12 +1210,14 @@ impl Agent {
             .list_info()
             .into_iter()
             .map(|info| {
+                // 实例句柄：management / ui_descriptor / session_labels 三个
+                // trait 访问器同源（贡献在注册时静态）。
+                let adapter = self.adapters.get(&info.name);
                 // 实例附加信息（persona/容器/URL/绑定地址）经管理面
                 // `cached_state` 取（W3.4 单源化——与 AdapterState 同一状态
                 // 文档；缺管理面 / 无状态时留空，wire 字段本就 Option）。
-                let instance = self
-                    .adapters
-                    .get(&info.name)
+                let instance = adapter
+                    .as_ref()
                     .and_then(|a| a.management().and_then(|m| m.cached_state()))
                     .map(|state| state["instance"].clone())
                     .unwrap_or_default();
@@ -1230,6 +1232,10 @@ impl Agent {
                 let container = str_field("container");
                 let webui_url = str_field("webui_url");
                 let onebot_url = str_field("onebot_url");
+                // UI 描述符 / 会话标签（01a S2 访问器；AdapterContribution
+                // 原样透传。None = 未声明，线上字段本就 Option）。
+                let ui = adapter.as_ref().and_then(|a| a.ui_descriptor());
+                let session_labels = adapter.as_ref().and_then(|a| a.session_labels());
                 // 通用元数据（W2.2）：平台自有展示字段经 KV 下发；迁移期与
                 // 下方 deprecated 具名字段并存（同源派生，无第二事实来源）。
                 let mut metadata = Vec::new();
@@ -1270,6 +1276,9 @@ impl Agent {
                     container,
                     webui_url,
                     onebot_url,
+                    platform: Some(info.platform),
+                    ui,
+                    session_labels,
                 }
             })
             .collect();

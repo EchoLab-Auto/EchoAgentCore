@@ -46,6 +46,18 @@ pub struct AdapterStatus {
     /// 取代者：`metadata`（key = `onebot_url`）。
     #[serde(default)]
     pub onebot_url: Option<String>,
+    /// 平台标识（如 `"qq"`；来自 `AdapterInfo.platform`）。Panel 会话分组 /
+    /// 通用化寻址需要它上线（W2.3 泛化 Core-1，2026-10）；旧 Panel 忽略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    /// UI 描述符（`AdapterContribution.ui` 原样透传；Panel 通用渲染器按
+    /// `ui.version` 选择渲染方案）。None = 插件未声明 UI。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<serde_json::Value>,
+    /// 会话标签（`AdapterContribution.session_labels` 原样透传；如
+    /// `{"dm":"私聊","group":"群聊"}`）。None = 未声明。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_labels: Option<serde_json::Value>,
 }
 
 /// 适配器展示型元数据条目（平台自有字段的通用承载；W2.2，2026-10）。
@@ -761,10 +773,12 @@ pub enum BackendEvent {
     },
     /// Current QQ filter configuration (allowlist/denylist).
     QqFilterConfig {
-        allowlist_users: Vec<i64>,
-        allowlist_groups: Vec<i64>,
-        denylist_users: Vec<i64>,
-        denylist_groups: Vec<i64>,
+        /// **W2.4（版本 N）**：id 一律字符串（事件侧纯 breaking；Core 从
+        /// `cached_state` 宽容读取 number|string 后统一输出 string）。
+        allowlist_users: Vec<String>,
+        allowlist_groups: Vec<String>,
+        denylist_users: Vec<String>,
+        denylist_groups: Vec<String>,
         #[serde(default)]
         adapter: Option<String>,
     },
@@ -792,9 +806,10 @@ pub enum BackendEvent {
         error: Option<String>,
     },
     /// Current QQ owner (admin) QQ number. Frontend-only; never emitted to
-    /// the agent/LLM context.
+    /// the agent/LLM context. **W2.4（版本 N）**：字符串化，未设置 = `""`。
     QqOwner {
-        owner_qq: i64,
+        /// **W2.4（版本 N）**：owner QQ 号字符串；未设置 = `""`（替代旧 `0`）。
+        owner_qq: String,
         #[serde(default)]
         adapter: Option<String>,
     },
@@ -996,10 +1011,11 @@ pub struct PluginInfo {
     pub package: String,
 }
 
-/// QQ group info for display.
+/// QQ group info for display. **W2.4（版本 N）**：id 一律字符串。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupInfo {
-    pub group_id: i64,
+    /// 群号（字符串；事件侧纯 breaking，旧 Panel 需同升）。
+    pub group_id: String,
     pub group_name: String,
 }
 
@@ -1239,7 +1255,8 @@ pub struct WorkspaceFileEntry {
 /// QQ friend info for allowlist/denylist picker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FriendInfo {
-    pub user_id: i64,
+    /// 好友 QQ 号（字符串；W2.4 事件侧纯 breaking）。
+    pub user_id: String,
     pub nickname: String,
 }
 
@@ -1394,5 +1411,96 @@ mod workspace_directory_tests {
             .to_string(),
             "node://node-x/srv/r"
         );
+    }
+}
+
+#[cfg(test)]
+mod adapter_status_tests {
+    use super::*;
+
+    fn status_with_ui() -> AdapterStatus {
+        AdapterStatus {
+            name: "qq-default".into(),
+            display_name: "QQ / OneBot".into(),
+            connected: true,
+            running: true,
+            self_id: Some("10001".into()),
+            bind_address: "127.0.0.1:3100".into(),
+            started_at: Some(1),
+            persona: None,
+            metadata: vec![],
+            container: None,
+            webui_url: None,
+            onebot_url: None,
+            platform: Some("qq".into()),
+            ui: Some(serde_json::json!({"version": 1, "panels": []})),
+            session_labels: Some(serde_json::json!({"dm": "私聊", "group": "群聊"})),
+        }
+    }
+
+    /// S1：新三字段 round-trip（线上形状：platform / ui / session_labels）。
+    #[test]
+    fn adapter_status_round_trips_ui_fields() {
+        let status = status_with_ui();
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value["platform"], serde_json::json!("qq"));
+        assert_eq!(value["ui"]["version"], serde_json::json!(1));
+        assert_eq!(value["session_labels"]["dm"], serde_json::json!("私聊"));
+        let back: AdapterStatus = serde_json::from_value(value).unwrap();
+        assert_eq!(back.platform.as_deref(), Some("qq"));
+        assert_eq!(back.ui.unwrap()["version"], serde_json::json!(1));
+        assert_eq!(
+            back.session_labels.unwrap()["group"],
+            serde_json::json!("群聊")
+        );
+    }
+
+    /// S1：旧 JSON（缺三字段）可解；None 时序列化省略（旧 Panel 无感）。
+    #[test]
+    fn legacy_adapter_status_json_without_new_fields_decodes() {
+        let legacy = r#"{
+            "name": "qq-default", "display_name": "QQ / OneBot",
+            "connected": true, "running": true, "self_id": null,
+            "bind_address": "127.0.0.1:3100", "started_at": null
+        }"#;
+        let status: AdapterStatus = serde_json::from_str(legacy).unwrap();
+        assert!(status.platform.is_none());
+        assert!(status.ui.is_none());
+        assert!(status.session_labels.is_none());
+        let value = serde_json::to_value(&status).unwrap();
+        assert!(value.get("platform").is_none(), "None 不序列化");
+        assert!(value.get("ui").is_none());
+        assert!(value.get("session_labels").is_none());
+    }
+
+    /// W2.4 契约快照：事件侧 id 一律字符串（GroupInfo/FriendInfo/QqFilterConfig/QqOwner）。
+    #[test]
+    fn w24_event_ids_are_strings() {
+        let value = serde_json::to_value(BackendEvent::GroupList {
+            groups: vec![GroupInfo {
+                group_id: "12345".into(),
+                group_name: "群".into(),
+            }],
+            adapter: None,
+        })
+        .unwrap();
+        assert_eq!(value["GroupList"]["groups"][0]["group_id"], "12345");
+
+        let value = serde_json::to_value(BackendEvent::QqFilterConfig {
+            allowlist_users: vec!["7".into()],
+            allowlist_groups: vec![],
+            denylist_users: vec![],
+            denylist_groups: vec![],
+            adapter: None,
+        })
+        .unwrap();
+        assert_eq!(value["QqFilterConfig"]["allowlist_users"][0], "7");
+
+        let value = serde_json::to_value(BackendEvent::QqOwner {
+            owner_qq: String::new(),
+            adapter: None,
+        })
+        .unwrap();
+        assert_eq!(value["QqOwner"]["owner_qq"], "");
     }
 }

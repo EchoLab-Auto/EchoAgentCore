@@ -261,6 +261,15 @@ impl echo_defs::adapter::Adapter for RemoteAdapter {
         // 远程管理面（cached_state / invoke_custom；按引返回本结构字段）。
         Some(&self.management)
     }
+
+    fn ui_descriptor(&self) -> Option<Value> {
+        // 泛化 Core-1：UI 描述符 = 插件贡献原样透传（注册时静态）。
+        self.contribution.ui.clone()
+    }
+
+    fn session_labels(&self) -> Option<Value> {
+        self.contribution.session_labels.clone()
+    }
 }
 
 /// `AdapterManagement` 的远程实现（`invoke_custom` 直通 `custom` op；
@@ -806,6 +815,44 @@ mod tests {
         // 线格式：`qq:custom` 的载荷 = {"method": "probe", "payload": {"x": 1}}，
         // 插件侧 echoed 内层 payload——断言按实际线格式对齐。
         assert_eq!(out["echoed"]["payload"]["x"], json!(1));
+
+        handle
+            .drain(std::time::Duration::from_secs(2))
+            .await
+            .expect("drain ok");
+    }
+
+    /// 泛化 Core-1（01a S2）：`RemoteAdapter` 的 trait 访问器把贡献里的
+    /// `ui` / `session_labels` 原样返回；未声明时为 None。
+    #[tokio::test]
+    async fn remote_adapter_exposes_ui_descriptor_and_session_labels() {
+        let supervisor = PluginSupervisor::new();
+        let handle = supervisor
+            .start(
+                spec(),
+                Box::new(InprocTransport::new(|_| Box::new(AdapterPlugin))),
+            )
+            .await
+            .expect("handshake ok");
+
+        // 带 ui / session_labels 的贡献 → 访问器返回同值。
+        let mut with_ui = contribution();
+        with_ui.ui = Some(json!({"version": 1, "panels": []}));
+        with_ui.session_labels = Some(json!({"dm": "私聊", "group": "群聊"}));
+        let adapter: Arc<RemoteAdapter> = RemoteAdapter::new(with_ui, handle.clone());
+        assert_eq!(
+            adapter.ui_descriptor(),
+            Some(json!({"version": 1, "panels": []}))
+        );
+        assert_eq!(
+            adapter.session_labels(),
+            Some(json!({"dm": "私聊", "group": "群聊"}))
+        );
+
+        // 未声明的贡献（fixture 默认 None）→ 默认 None。
+        let bare: Arc<RemoteAdapter> = RemoteAdapter::new(contribution(), handle.clone());
+        assert_eq!(bare.ui_descriptor(), None);
+        assert_eq!(bare.session_labels(), None);
 
         handle
             .drain(std::time::Duration::from_secs(2))

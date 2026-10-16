@@ -309,20 +309,33 @@ async fn invoke_management(
         .map_err(|e| e.to_string())
 }
 
+/// 工具 id 参数宽容解析（W2.4 去号码化，非 breaking）：模型可能传 JSON
+/// number 或 string，统一归一为 `String`（number → `to_string()`）。
+/// 空串 / 缺省 / 其它形态视为参数缺失（与旧 `as_i64` 语义一致地报错）。
+fn arg_id(arguments: &Value, key: &str) -> Result<String, echo_agent::tool::ToolError> {
+    use echo_agent::tool::ToolError;
+    match arguments.get(key) {
+        Some(Value::Number(number)) => Ok(number.to_string()),
+        Some(Value::String(text)) if !text.is_empty() => Ok(text.clone()),
+        _ => Err(ToolError::InvalidArguments(format!("{key} required"))),
+    }
+}
+
 /// 工具参数（`target_type` / `target_id`）→ 管理面目标 JSON。
+/// `target_id` 已由 [`arg_id`] 归一为字符串（W2.4 线上一律字符串）。
 fn management_target(
     target_type: &str,
-    target_id: i64,
+    target_id: &str,
 ) -> Result<Value, echo_agent::tool::ToolError> {
     use echo_agent::tool::ToolError;
     match target_type {
         "group" => Ok(json!({
-            "channel": {"type": "group", "group_id": target_id.to_string()},
+            "channel": {"type": "group", "group_id": target_id},
             "user_id": "",
         })),
         "private" => Ok(json!({
             "channel": {"type": "dm"},
-            "user_id": target_id.to_string(),
+            "user_id": target_id,
         })),
         other => Err(ToolError::InvalidArguments(format!(
             "target_type must be 'group' or 'private', got '{other}'"
@@ -395,17 +408,13 @@ impl echo_agent::Tool for QqToolWrapper {
             .map_err(ToolError::InvalidArguments)?;
         match self.name.as_str() {
             "send_group_msg" => {
-                let group_id = arguments["group_id"]
-                    .as_i64()
-                    .ok_or_else(|| ToolError::InvalidArguments("group_id required".into()))?;
+                let group_id = arg_id(&arguments, "group_id")?;
                 let content = arguments["content"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("content required".into()))?;
                 let target = MessageTarget {
                     adapter_name: adapter.name().to_string(),
-                    channel: ChannelType::Group {
-                        group_id: group_id.to_string(),
-                    },
+                    channel: ChannelType::Group { group_id },
                     user_id: String::new(),
                 };
                 match adapter.send_message(&target, content).await {
@@ -425,16 +434,14 @@ impl echo_agent::Tool for QqToolWrapper {
                 }
             }
             "send_private_msg" => {
-                let user_id = arguments["user_id"]
-                    .as_i64()
-                    .ok_or_else(|| ToolError::InvalidArguments("user_id required".into()))?;
+                let user_id = arg_id(&arguments, "user_id")?;
                 let content = arguments["content"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("content required".into()))?;
                 let target = MessageTarget {
                     adapter_name: adapter.name().to_string(),
                     channel: ChannelType::Direct,
-                    user_id: user_id.to_string(),
+                    user_id,
                 };
                 match adapter.send_message(&target, content).await {
                     Ok(result) => {
@@ -453,12 +460,8 @@ impl echo_agent::Tool for QqToolWrapper {
                 }
             }
             "get_group_member_info" => {
-                let group_id = arguments["group_id"]
-                    .as_i64()
-                    .ok_or_else(|| ToolError::InvalidArguments("group_id required".into()))?;
-                let user_id = arguments["user_id"]
-                    .as_i64()
-                    .ok_or_else(|| ToolError::InvalidArguments("user_id required".into()))?;
+                let group_id = arg_id(&arguments, "group_id")?;
+                let user_id = arg_id(&arguments, "user_id")?;
                 match invoke_management(
                     &adapter,
                     "get_group_member_info",
@@ -532,9 +535,7 @@ impl echo_agent::Tool for QqToolWrapper {
                 }
             }
             "get_group_msg_history" => {
-                let group_id = arguments["group_id"]
-                    .as_i64()
-                    .ok_or_else(|| ToolError::InvalidArguments("group_id required".into()))?;
+                let group_id = arg_id(&arguments, "group_id")?;
                 let count = arguments["count"].as_i64().unwrap_or(50);
                 let mut payload = json!({"group_id": group_id, "count": count});
                 if let Some(since_minutes) = arguments["since_minutes"].as_u64() {
@@ -552,16 +553,14 @@ impl echo_agent::Tool for QqToolWrapper {
                 let target_type = arguments["target_type"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("target_type required".into()))?;
-                let target_id = arguments["target_id"]
-                    .as_i64()
-                    .ok_or_else(|| ToolError::InvalidArguments("target_id required".into()))?;
+                let target_id = arg_id(&arguments, "target_id")?;
                 let file_path = arguments["file_path"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("file_path required".into()))?;
                 let file_name = arguments["file_name"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("file_name required".into()))?;
-                let target = management_target(target_type, target_id)?;
+                let target = management_target(target_type, &target_id)?;
                 match invoke_management(
                     &adapter,
                     "send_file",
@@ -580,9 +579,7 @@ impl echo_agent::Tool for QqToolWrapper {
                 let target_type = arguments["target_type"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("target_type required".into()))?;
-                let target_id = arguments["target_id"]
-                    .as_i64()
-                    .ok_or_else(|| ToolError::InvalidArguments("target_id required".into()))?;
+                let target_id = arg_id(&arguments, "target_id")?;
                 let json_payload = arguments["json"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("json required".into()))?;
@@ -590,7 +587,7 @@ impl echo_agent::Tool for QqToolWrapper {
                 serde_json::from_str::<Value>(json_payload).map_err(|e| {
                     ToolError::InvalidArguments(format!("json is not valid JSON: {e}"))
                 })?;
-                let target = management_target(target_type, target_id)?;
+                let target = management_target(target_type, &target_id)?;
                 render_managed_send(
                     "json card",
                     invoke_management(
@@ -605,14 +602,12 @@ impl echo_agent::Tool for QqToolWrapper {
                 let target_type = arguments["target_type"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("target_type required".into()))?;
-                let target_id = arguments["target_id"]
-                    .as_i64()
-                    .ok_or_else(|| ToolError::InvalidArguments("target_id required".into()))?;
+                let target_id = arg_id(&arguments, "target_id")?;
                 let file = arguments["file"]
                     .as_str()
                     .filter(|f| !f.trim().is_empty())
                     .ok_or_else(|| ToolError::InvalidArguments("file required".into()))?;
-                let target = management_target(target_type, target_id)?;
+                let target = management_target(target_type, &target_id)?;
                 render_managed_send(
                     "voice message",
                     invoke_management(
@@ -627,14 +622,12 @@ impl echo_agent::Tool for QqToolWrapper {
                 let target_type = arguments["target_type"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("target_type required".into()))?;
-                let target_id = arguments["target_id"]
-                    .as_i64()
-                    .ok_or_else(|| ToolError::InvalidArguments("target_id required".into()))?;
+                let target_id = arg_id(&arguments, "target_id")?;
                 let image = arguments["image"]
                     .as_str()
                     .filter(|f| !f.trim().is_empty())
                     .ok_or_else(|| ToolError::InvalidArguments("image required".into()))?;
-                let target = management_target(target_type, target_id)?;
+                let target = management_target(target_type, &target_id)?;
                 render_managed_send(
                     "image",
                     invoke_management(
@@ -1050,5 +1043,28 @@ mod tests {
             gate_outbound("get_group_list", get.clone(), &gate).unwrap(),
             get
         );
+    }
+
+    /// W2.4：工具 id 参数宽容解析——number / string 均可（number → String）。
+    #[test]
+    fn arg_id_accepts_number_and_string() {
+        assert_eq!(arg_id(&json!({"id": 123}), "id").unwrap(), "123");
+        assert_eq!(arg_id(&json!({"id": "123"}), "id").unwrap(), "123");
+        assert!(arg_id(&json!({}), "id").is_err(), "缺省 = 参数缺失");
+        assert!(arg_id(&json!({"id": null}), "id").is_err());
+        assert!(arg_id(&json!({"id": ""}), "id").is_err(), "空串 = 参数缺失");
+        assert!(arg_id(&json!({"id": {"x": 1}}), "id").is_err());
+    }
+
+    /// W2.4：管理面目标 JSON 的 id 一律字符串（与线协议去号码化一致）。
+    #[test]
+    fn management_target_uses_string_ids() {
+        let group = management_target("group", "123").unwrap();
+        assert_eq!(group["channel"]["group_id"], serde_json::json!("123"));
+        assert_eq!(group["user_id"], serde_json::json!(""));
+        let dm = management_target("private", "456").unwrap();
+        assert_eq!(dm["channel"]["type"], serde_json::json!("dm"));
+        assert_eq!(dm["user_id"], serde_json::json!("456"));
+        assert!(management_target("channel", "1").is_err());
     }
 }

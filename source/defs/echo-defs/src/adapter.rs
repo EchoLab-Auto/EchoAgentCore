@@ -156,6 +156,23 @@ pub trait Adapter: Send + Sync {
     fn management(&self) -> Option<&dyn AdapterManagement> {
         None
     }
+
+    /// UI 描述符（适配器管理界面声明；泛化 Core-1，2026-10）。
+    ///
+    /// 宿主经本访问器把描述符填进 `AdapterStatus.ui` 下发 Panel（通用
+    /// 渲染器按 `ui.version` 选择方案）；远程适配器返回
+    /// `AdapterContribution.ui` 原样。默认 `None` = 未声明。
+    fn ui_descriptor(&self) -> Option<Value> {
+        None
+    }
+
+    /// 会话标签（会话分组显示；泛化 Core-1，2026-10）。
+    ///
+    /// 如 `{"dm":"私聊","group":"群聊"}`；远程适配器返回
+    /// `AdapterContribution.session_labels` 原样。默认 `None` = 未声明。
+    fn session_labels(&self) -> Option<Value> {
+        None
+    }
 }
 
 /// 平台中立的适配器管理面（W3.1，2026-10 适配器管理通道）。

@@ -4281,3 +4281,95 @@ async fn single_track_loop_injects_input_boundary_blocks() {
         "QQ 会话的后台输入必须注入后台边界块"
     );
 }
+
+/// 泛化 Core-1（01a S3）：`emit_adapter_list` 填充 `platform` / `ui` /
+/// `session_labels`（后两者经 Adapter trait 访问器取贡献原样）。
+#[tokio::test]
+async fn adapter_list_fills_platform_ui_and_session_labels() {
+    struct UiFakeAdapter;
+
+    #[async_trait::async_trait]
+    impl echo_adapter::Adapter for UiFakeAdapter {
+        fn name(&self) -> &str {
+            "fake-default"
+        }
+        fn display_name(&self) -> &str {
+            "Fake / UI"
+        }
+        fn platform(&self) -> &str {
+            "fake"
+        }
+        fn is_configured(&self) -> bool {
+            true
+        }
+        fn status_info(&self) -> echo_adapter::AdapterInfo {
+            echo_adapter::AdapterInfo {
+                name: "fake-default".into(),
+                display_name: "Fake / UI".into(),
+                status: echo_adapter::AdapterConnectionState::Connected,
+                self_id: Some("1".into()),
+                started_at: None,
+                platform: "fake".into(),
+                configured: true,
+            }
+        }
+        async fn start(&self) -> Result<(), echo_adapter::AdapterError> {
+            Ok(())
+        }
+        async fn stop(&self) -> Result<(), echo_adapter::AdapterError> {
+            Ok(())
+        }
+        async fn send_message(
+            &self,
+            _target: &echo_adapter::MessageTarget,
+            _content: &str,
+        ) -> Result<echo_adapter::SendResult, echo_adapter::AdapterError> {
+            Ok(echo_adapter::SendResult {
+                message_id: None,
+                success: true,
+                error: None,
+            })
+        }
+        fn subscribe(&self, _tx: tokio::sync::mpsc::UnboundedSender<echo_adapter::AdapterEvent>) {}
+        fn ui_descriptor(&self) -> Option<serde_json::Value> {
+            Some(serde_json::json!({"version": 1, "panels": []}))
+        }
+        fn session_labels(&self) -> Option<serde_json::Value> {
+            Some(serde_json::json!({"dm": "私聊", "group": "群聊"}))
+        }
+    }
+
+    let registry = AdapterRegistry::new();
+    registry.register(Arc::new(UiFakeAdapter));
+    let agent = Agent::new(
+        Arc::new(MockProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+            reply: "ok".into(),
+        }),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        ToolRegistry::new(),
+        Arc::new(registry),
+    );
+    let received = Arc::new(std::sync::Mutex::new(Vec::<BackendEvent>::new()));
+    let sink_events = received.clone();
+    agent.attach_event_sink(Arc::new(move |event: BackendEvent| {
+        sink_events.lock().expect("events poisoned").push(event);
+    }));
+
+    agent.emit_adapter_list();
+
+    let events = received.lock().expect("events poisoned").clone();
+    let adapters = events
+        .iter()
+        .find_map(|event| match event {
+            BackendEvent::AdapterList { adapters } => Some(adapters),
+            _ => None,
+        })
+        .expect("AdapterList emitted");
+    assert_eq!(adapters.len(), 1);
+    let value = serde_json::to_value(&adapters[0]).unwrap();
+    assert_eq!(value["platform"], serde_json::json!("fake"));
+    assert_eq!(value["ui"]["version"], serde_json::json!(1));
+    assert_eq!(value["session_labels"]["dm"], serde_json::json!("私聊"));
+}
