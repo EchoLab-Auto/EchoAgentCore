@@ -175,3 +175,9 @@
 - `protocol.md`：命令/事件段改写为统一通道；旧变体注明已删除
 - `adapter-qq-gating.md` / `panel-qq-tasks.md` / `panel-system.md`：旧命令引用更新为新通道
 - Panel 仓库：`protocol-sync.test.ts` 注释更新（「Core 侧保留至 N+2」→「同批直接删除」）
+
+## 后续清理：GateMode 孤儿枚举（16:38）
+
+`c5301f5` 删除旧变体后，`GateMode`（旧线协议门控枚举）全仓零活引用（仅剩定义与 re-export）——新通道以方法字符串（`set_gate_mode`）表达门控语义。按「直接删除」口径一并清除（提交 `16f0209`，6 文件 +7/−40）：echo-defs 定义 + echo-protocol/echo-adapter 的 re-export 与文档行。验收：`cargo check --workspace --all-targets` 零 warning、`cargo test --workspace` **918/0**（不变）、GateMode 横扫 0 命中。
+
+至此 Core 侧「零平台残留」终态：`source/ --include=*.rs` 内 qq 旧变体词汇全空（旧命令/旧事件/GroupInfo/FriendInfo/id_compat/legacy/GateMode），仅存豁免项（配置键 `[adapters.qq]`、插件标识 `adapter.qq` / `echo-adapter-qq`、DEFAULT_INSTANCE、部署知识 compose）。
