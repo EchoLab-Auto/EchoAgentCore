@@ -11,6 +11,15 @@
 //! 面板经 `QueryApiMetrics` 读取近 [`METRICS_WINDOW_MS`] 窗口：余额原样、
 //! 用量按小时 × 模型聚合，并附 `[agent.pricing]` 定价表的费用估算。文件按
 //! 保留期剪枝（每 [`PRUNE_EVERY`] 次追加触发一次，低频重写）。
+//!
+//! ## token 口径（2026-10 归一）
+//!
+//! `prompt_tokens` 统一为**总输入**（含缓存），`cache_hit_tokens` 为其
+//! 子集；`completion_tokens` 为输出。Anthropic 协议端点（原生 / DeepSeek /
+//! Kimi 兼容）的原始 `input_tokens` **不含**缓存读取/写入——provider 侧
+//! 已把三者求和归一（`normalize_usage`）。旧 JSONL 行中「命中数 > prompt」
+//! 的行是修复前存储口径（prompt=未命中部分），读取聚合时归一补全；新行
+//! 不受影响。
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -300,6 +309,19 @@ impl MetricsStore {
             }
             match serde_json::from_str::<UsageRecord>(&line) {
                 Ok(rec) if rec.name == name && rec.ts_ms >= since_ms => {
+                    // 口径归一（2026-10 修复，见 metrics 模块文档）：
+                    // 旧记录（Anthropic 端点供应商侧归一前）prompt_tokens
+                    // 存的是「未命中部分」、命中未包含——命中数大于 prompt
+                    // 即旧口径，读时补成总输入（prompt + hit）。新记录
+                    // （provider 侧已归一，prompt ⊇ hit）原样通过。
+                    let (prompt_total, cache_hit) = if rec.cache_hit_tokens > rec.prompt_tokens {
+                        (
+                            rec.prompt_tokens.saturating_add(rec.cache_hit_tokens),
+                            rec.cache_hit_tokens,
+                        )
+                    } else {
+                        (rec.prompt_tokens, rec.cache_hit_tokens)
+                    };
                     let bucket = rec.ts_ms.div_euclid(HOUR_MS) * HOUR_MS;
                     let entry = buckets
                         .entry((bucket, rec.model.clone()))
@@ -311,9 +333,9 @@ impl MetricsStore {
                             cache_hit_tokens: 0,
                             calls: 0,
                         });
-                    entry.prompt_tokens += rec.prompt_tokens;
+                    entry.prompt_tokens += prompt_total;
                     entry.completion_tokens += rec.completion_tokens;
-                    entry.cache_hit_tokens += rec.cache_hit_tokens;
+                    entry.cache_hit_tokens += cache_hit;
                     entry.calls += 1;
                 }
                 _ => {}
@@ -391,7 +413,8 @@ pub fn estimate_cost(
             .or(price.cache_hit_input_per_million)
             .unwrap_or(miss_input)
     };
-    // 钳制：命中数不可能超过 prompt 总量（端点口径差异防负数 miss）。
+    // 钳制：归一后命中数不应超过 prompt 总量（记录/聚合侧已归一；
+    // 这里保留钳制防御异常数据产生负 miss）。
     let hit = cache_hit_tokens.min(prompt_tokens);
     let miss = prompt_tokens.saturating_sub(hit);
     let cost = hit as f64 / 1_000_000.0 * hit_input
@@ -637,15 +660,57 @@ mod tests {
         .unwrap();
         assert!((cost - 8.04).abs() < 1e-9, "all-cache-hit cost = {cost}");
 
-        // hit 超过 prompt 时钳制为全命中（防端点口径差异产生负 miss）。
+        // hit 超过 prompt 时钳制为全命中（异常数据防负 miss）。
         let (cost, _) =
             estimate_cost(&pricing, "deepseek-v4-flash", peak_ms, 100, 0, 1_000).unwrap();
         let (all_hit, _) =
             estimate_cost(&pricing, "deepseek-v4-flash", peak_ms, 100, 0, 100).unwrap();
         assert_eq!(cost, all_hit);
 
-        // 不支持缓存计价的模型（k3）：hit 记录存在时按未命中价（保守）。
+        // k3（2026-10 补缓存命中价 ¥2/M）：命中部分按命中价计费。
         let (cost, _) = estimate_cost(&pricing, "k3", peak_ms, 1_000_000, 0, 1_000_000).unwrap();
-        assert!((cost - 12.0).abs() < 1e-9, "k3 no cache discount: {cost}");
+        assert!((cost - 2.0).abs() < 1e-9, "k3 cache-hit priced: {cost}");
+
+        // 未配置缓存命中价的模型：命中部分按未命中价（保守上界）。
+        let custom = vec![ModelPrice {
+            model: "custom-nocache".into(),
+            input_per_million: 1.0,
+            output_per_million: 1.0,
+            offpeak_input_per_million: None,
+            offpeak_output_per_million: None,
+            cache_hit_input_per_million: None,
+            offpeak_cache_hit_input_per_million: None,
+            currency: "CNY".into(),
+        }];
+        let (cost, _) =
+            estimate_cost(&custom, "custom-nocache", peak_ms, 1_000_000, 0, 500_000).unwrap();
+        // miss 0.5M×1 + hit（回退未命中价）0.5M×1 = 1.0
+        assert!((cost - 1.0).abs() < 1e-9, "fallback to miss price: {cost}");
+    }
+
+    /// 旧口径兼容（2026-10 归一修复）：修复前的 Anthropic 端点记录
+    /// prompt=未命中、命中未包含——命中数大于 prompt 的行读取时补成
+    /// 总输入；新口径行（prompt ⊇ hit）原样通过。
+    #[test]
+    fn usage_slices_normalize_legacy_anthropic_rows() {
+        let dir = temp_dir("usage-legacy");
+        fs::create_dir_all(&dir).unwrap();
+        // 同一小时（ts 相近）两行：旧口径 + 新口径
+        fs::write(
+            dir.join("echo-usage.jsonl"),
+            "{\"ts_ms\":3600001,\"name\":\"a\",\"model\":\"m\",\"prompt_tokens\":454,\"completion_tokens\":10,\"cache_hit_tokens\":125056}\n\
+             {\"ts_ms\":3600002,\"name\":\"a\",\"model\":\"m\",\"prompt_tokens\":2000,\"completion_tokens\":5,\"cache_hit_tokens\":500}\n",
+        )
+        .unwrap();
+        let store = MetricsStore::new(&dir);
+        let slices = store.usage_slices("a", 0);
+        assert_eq!(slices.len(), 1);
+        let s = &slices[0];
+        // 旧行归一：454 + 125056 = 125510；新行原样 2000 → 合计 127510
+        assert_eq!(s.prompt_tokens, 454 + 125056 + 2000);
+        assert_eq!(s.cache_hit_tokens, 125056 + 500);
+        assert_eq!(s.completion_tokens, 15);
+        assert_eq!(s.calls, 2);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

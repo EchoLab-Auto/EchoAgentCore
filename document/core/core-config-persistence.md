@@ -192,7 +192,7 @@ group_ids = []
 
 ```text
 ~/.config/echo-agent-core/echo-balances.jsonl   # 余额快照：{ts_ms, name, currency, total, granted, topped_up}
-~/.config/echo-agent-core/echo-usage.jsonl      # 每次 LLM 调用：{ts_ms, name, model, prompt_tokens, completion_tokens}
+~/.config/echo-agent-core/echo-usage.jsonl      # 每次 LLM 调用：{ts_ms, name, model, prompt_tokens, completion_tokens, cache_hit_tokens}
 ```
 
 - **记录来源**：① 余额——周期任务 `[agent].balance_snapshot_secs`（默认 600s /
@@ -205,15 +205,20 @@ group_ids = []
   每次请求 `request.model`，模型切换即时生效）。
 - **保留与剪枝**：余额保留 30 天、用量 90 天（每 512 次追加触发一次过期行
   重写剪枝）；**面板读取窗口 = 近 7 天**。文件删除即重置图表（无其他副作用）。
-- **费用估算**：`[agent.pricing]` 定价表（缺省 = 内置 DeepSeek 公开价 + Kimi k3
-  （约 ¥12/¥32 每百万——2026-10 审计：k3 的 4.5M tokens 此前零估算）；
-  长度前缀匹配模型名、区分高峰/空闲时段；含 `offpeak_*` 档位豁免）。价格可随配置
-  覆盖或清空（`pricing = []` = 禁用估算）。估算由 Core 在 `QueryApiMetrics`
-  响应时现算（`est_cost` 字段），不落盘。
-- **缓存命中口径（2026-10）**：`Usage` 携带 `prompt_cache_hit_tokens` /
-  `prompt_cache_creation_tokens`（DeepSeek 的 `input_tokens` **包含**缓存命中
-  部分，此前按"未命中"价估算是刻意上界；非缓存端点 = 0/None）。命中价折扣
-  的计价下沉在 providers 透传之后由估算侧消费。
+- **费用估算**：`[agent.pricing]` 定价表（缺省 = 内置 DeepSeek 公开价 +
+  Kimi k3（约 ¥12/¥32 每百万 + 缓存命中 ¥2/M——2026-10 查证官方定价页，
+  k3 的 4.5M tokens 此前零估算）；长度前缀匹配模型名、区分高峰/空闲时段；
+  含 `offpeak_*` 档位豁免）。价格可随配置覆盖或清空（`pricing = []` = 禁用
+  估算）。估算由 Core 在 `QueryApiMetrics` 响应时现算（`est_cost` 字段），
+  不落盘；缓存命中按命中价三段计价（未配置命中价的模型回退未命中价）。
+- **token 口径（2026-10 归一）**：`prompt_tokens` = **总输入**（含缓存），
+  `cache_hit_tokens` 为其子集。Anthropic 协议端点（原生 / DeepSeek / Kimi
+  兼容）的原始 `input_tokens` **不含**缓存读取/写入（2026-10 实测：同前缀
+  复调 input 234 + cache_read 128 = 首调 input 362）——provider 侧已把三者
+  求和归一（`echo-llm-anthropic::normalize_usage`）；旧 JSONL 行中
+  「命中数 > prompt」的行是修复前口径（prompt=未命中），`usage_slices`
+  读取时归一补全。展示与估价统一按此口径（此前注释「input_tokens 包含
+  命中」与实测相反，已随 2026-10 归一修复更正）。
 - **协议**：`QueryApiMetrics{name}`（空 = 默认 + 全部 profile）→ `ApiMetrics`
   事件（`entries: [{name, balance[], usage[], cost_currency}]`；`usage` 按
   小时 × 模型聚合）。实现：`echo-agent/src/metrics.rs`（存储/剪枝/定价）+

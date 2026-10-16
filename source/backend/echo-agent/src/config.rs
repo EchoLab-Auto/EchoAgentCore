@@ -126,14 +126,17 @@ pub fn default_pricing() -> Vec<ModelPrice> {
             currency: "CNY".into(),
         },
         // Kimi K3（2026-10 审计：未计价条目——k3 的 4.5M tokens 此前零估算）。
-        // 按官方页面（约 ¥12/¥32 每百万），不含空闲折扣，也未公开缓存命中价。
+        // 基础价按原口径（约 ¥12/¥32 每百万；官方 K3 API 定价页 2026-10 为
+        // ¥20/¥100，订阅产品请以实际套餐为准）。**缓存命中价补 ¥2/M**：
+        // 官方定价页公开（platform.kimi.com/docs/pricing）；缺失会随缓存
+        // 读取量按未命中价估算，严重虚高（2026-10 归一修复配套）。
         ModelPrice {
             model: "k3".into(),
             input_per_million: 12.0,
             output_per_million: 32.0,
             offpeak_input_per_million: None,
             offpeak_output_per_million: None,
-            cache_hit_input_per_million: None,
+            cache_hit_input_per_million: Some(2.0),
             offpeak_cache_hit_input_per_million: None,
             currency: "CNY".into(),
         },

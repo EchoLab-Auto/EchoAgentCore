@@ -150,12 +150,14 @@ impl LlmProvider for AnthropicProvider {
             stop_reason: parsed.stop_reason,
             usage: parsed
                 .usage
-                .map(|u| Usage {
-                    prompt_tokens: u.input_tokens,
-                    completion_tokens: u.output_tokens,
-                    prompt_cache_hit_tokens: Some(u.prompt_cache_hit_tokens),
-                    prompt_cache_miss_tokens: Some(u.prompt_cache_miss_tokens),
-                    prompt_cache_creation_tokens: Some(u.prompt_cache_creation_tokens),
+                .map(|u| {
+                    normalize_usage(
+                        u.input_tokens,
+                        u.output_tokens,
+                        Some(u.prompt_cache_hit_tokens),
+                        Some(u.prompt_cache_miss_tokens),
+                        Some(u.prompt_cache_creation_tokens),
+                    )
                 })
                 .unwrap_or_default(),
         })
@@ -222,14 +224,40 @@ impl LlmProvider for AnthropicProvider {
                 }
             }
         }
-        acc.set_usage(Usage {
-            prompt_tokens: usage.input_tokens.unwrap_or(0),
-            completion_tokens: usage.output_tokens.unwrap_or(0),
-            prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
-            prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
-            prompt_cache_creation_tokens: usage.prompt_cache_creation_tokens,
-        });
+        acc.set_usage(normalize_usage(
+            usage.input_tokens.unwrap_or(0),
+            usage.output_tokens.unwrap_or(0),
+            usage.prompt_cache_hit_tokens,
+            usage.prompt_cache_miss_tokens,
+            usage.prompt_cache_creation_tokens,
+        ));
         Ok(acc.finish())
+    }
+}
+
+/// 归一化 usage（Anthropic 协议 → 本项目统一口径）。
+///
+/// Anthropic 语义（原生协议与 DeepSeek / Kimi 兼容端点一致，2026-10 实测：
+/// 同一前缀两次调用，input 234 + cache_read 128 = 首次 input 362）：
+/// `input_tokens` **不含**缓存读取/写入部分——总输入 = input + cache_read +
+/// cache_creation。本函数把 `prompt_tokens` 归一为**总输入**，与 OpenAI
+/// 形态的 `prompt_tokens`（本身包含命中部分）口径一致、`cache_hit` 为其
+/// 子集——计量落盘 / 计价 / 展示共用同一语义（metrics 侧对旧记录有兼容）。
+fn normalize_usage(
+    input_tokens: u32,
+    output_tokens: u32,
+    cache_read: Option<u32>,
+    cache_miss: Option<u32>,
+    cache_creation: Option<u32>,
+) -> Usage {
+    let read = cache_read.unwrap_or(0);
+    let creation = cache_creation.unwrap_or(0);
+    Usage {
+        prompt_tokens: input_tokens.saturating_add(read).saturating_add(creation),
+        completion_tokens: output_tokens,
+        prompt_cache_hit_tokens: cache_read,
+        prompt_cache_miss_tokens: cache_miss,
+        prompt_cache_creation_tokens: cache_creation,
     }
 }
 
@@ -620,18 +648,21 @@ enum ContentBlock {
 
 #[derive(Deserialize)]
 struct UsageWire {
+    /// 未缓存部分（**不含**缓存读取/写入；总输入 = 三者之和，见
+    /// [`normalize_usage`]；2026-10 实测：DeepSeek /anthropic 同前缀
+    /// 复调 input 234 + read 128 = 首调 input 362）。
     input_tokens: u32,
     output_tokens: u32,
-    /// DeepSeek prompt 缓存命中 tokens（DeepSeek 文档字段名；
-    /// `input_tokens` **包含**该部分）。Anthropic 原生端点为
-    /// `cache_read_input_tokens`（暂以同名 DeepSeek 字段为主，alias 兼容）。
+    /// 缓存读取 tokens（Anthropic 原生字段名 `cache_read_input_tokens`；
+    /// DeepSeek / Kimi 兼容端点同义别名）。
     #[serde(default, alias = "cache_read_input_tokens")]
     prompt_cache_hit_tokens: u32,
-    /// DeepSeek 缓存未命中 tokens（官方文档字段名）。
+    /// 缓存未命中 tokens（DeepSeek OpenAI 形态文档字段名；/anthropic
+    /// 形态不返回，视 0）。
     #[serde(default)]
     prompt_cache_miss_tokens: u32,
     /// 缓存写入 tokens（Anthropic 原生字段 `cache_creation_input_tokens`；
-    /// DeepSeek 无独立缓存写入价）。
+    /// DeepSeek 无独立缓存写入价，恒 0）。
     #[serde(default, alias = "cache_creation_input_tokens")]
     prompt_cache_creation_tokens: u32,
 }
@@ -1115,7 +1146,7 @@ mod tests {
     fn stream_sequence_assembles_full_response() {
         use echo_defs::message::ChatStreamAccumulator;
         let events = [
-            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":42}}}",
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":42,\"cache_read_input_tokens\":100}}}",
             "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}",
             "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"分析中\"}}",
             "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"你好\"}}",
@@ -1137,13 +1168,14 @@ mod tests {
                 }
             }
         }
-        acc.set_usage(echo_defs::message::Usage {
-            prompt_tokens: usage.input_tokens.unwrap_or(0),
-            completion_tokens: usage.output_tokens.unwrap_or(0),
-            prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
-            prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
-            prompt_cache_creation_tokens: usage.prompt_cache_creation_tokens,
-        });
+        // 与生产路径同一归一：prompt = input + cache_read（42 + 100）。
+        acc.set_usage(normalize_usage(
+            usage.input_tokens.unwrap_or(0),
+            usage.output_tokens.unwrap_or(0),
+            usage.prompt_cache_hit_tokens,
+            usage.prompt_cache_miss_tokens,
+            usage.prompt_cache_creation_tokens,
+        ));
         let response = acc.finish();
         assert_eq!(response.content.as_deref(), Some("你好"));
         assert_eq!(response.reasoning_content.as_deref(), Some("分析中"));
@@ -1151,11 +1183,31 @@ mod tests {
         assert_eq!(response.tool_calls[0].id, "toolu_1");
         assert_eq!(response.tool_calls[0].name, "bash");
         assert_eq!(response.tool_calls[0].arguments, "{\"cmd\":\"ls\"}");
-        assert_eq!(response.usage.prompt_tokens, 42);
+        assert_eq!(response.usage.prompt_tokens, 142);
         assert_eq!(response.usage.completion_tokens, 9);
+        assert_eq!(response.usage.prompt_cache_hit_tokens, Some(100));
         assert_eq!(response.stop_reason.as_deref(), Some("tool_use"));
     }
 
+    /// usage 归一化（2026-10 实测口径）：`input_tokens` 不含缓存读取/写入，
+    /// `prompt_tokens` 统一为总输入（input + read + creation）。
+    #[test]
+    fn usage_normalization_adds_cache_to_prompt() {
+        let u = normalize_usage(234, 5, Some(128), None, None);
+        assert_eq!(u.prompt_tokens, 362);
+        assert_eq!(u.completion_tokens, 5);
+        assert_eq!(u.prompt_cache_hit_tokens, Some(128));
+
+        // 无缓存字段（原生 Anthropic 无缓存 / 旧端点）：保持 input 原样。
+        let plain = normalize_usage(100, 1, None, None, None);
+        assert_eq!(plain.prompt_tokens, 100);
+
+        // 缓存写入单独计入总输入（Anthropic 原生自带 cache_control 时）。
+        let with_creation = normalize_usage(10, 1, Some(20), None, Some(30));
+        assert_eq!(with_creation.prompt_tokens, 60);
+    }
+
+    /// 前缀宽松（2026-10 修复）：Kimi 的 Anthropic 兼容端省略 `data:` 后
     /// 前缀宽松（2026-10 修复）：Kimi 的 Anthropic 兼容端省略 `data:` 后
     /// 空格（`event:message_start\ndata:{...}` 形态）——两种形态都必须能解析。
     #[test]
