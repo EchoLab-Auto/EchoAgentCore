@@ -876,7 +876,6 @@ fn dangerous_rm_root_target(cmd: &str) -> Option<String> {
     None
 }
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
     use super::*;
 
