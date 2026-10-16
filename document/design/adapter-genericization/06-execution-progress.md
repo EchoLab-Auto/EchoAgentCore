@@ -112,3 +112,50 @@
 - S7 注释：ApiSettings.vue:465、connection.ts:93、connection-bootstrap.test.ts:7、pending.test.ts:117 等
 
 **S5/S6/S7 完成后终验 grep**：`grep -rn "qqByAdapter\|lastQrcode\|QqPanel\|QqLoginSection\|RequestQq\|SetQq\|UpdateQq" web/src` 应为 0（测试注释豁免）。
+
+## 15:42–15:47 观察：Panel 仓库他会话仍活跃，ChatView WIP 持续停滞
+
+- 15:42:18 他会话提交 `774b60a`（ApiSettings.vue 费用文案，与泛化无关）；**ChatView.vue WIP 仍停留在 12:08（已 3.5h+）**。
+- 判读：ChatView/PanelPopover/WorkspacePanel 三件 WIP 疑似**被中断/搁置的弹层重构**（另有用例证明面板工作链正常：新提交均不含这三文件）。
+- 处置：维持等待用户裁决（A 整理提交 / B 原会话处理 / C 跳过）；无论哪种，**S5/S6/S7 的执行素材已备好**（见上节预检），且 S6 不可逆点在 Core 侧 N+2 发版（01b S8），当前不构成风险。
+
+## 全部迟到回报对账（15:42 前收齐）
+
+本轮收到 8 条迟到完成通知（Plugin-1 / Core-1 / Core-2 / Panel-1 / Panel-2 / 02a 续写 / 03a / 03b），**全部已在先前轮次核实并消费**（工作树 + 测试数字独立复核），无需任何补做。
+
+## 父级抽查发现 + 修复（15:48）
+
+**缺陷**（我们本轮代码引入）：`AdapterPanel.vue` 启停/重启用 `sendPending` 登记 `adapter:<op>:<core>:<name>`，但全仓无结算路径（start/stop/restart 不在 REQUEST_RESPONSES；settlePending 仅 adapterOps 对 `adapter-op:` 前缀调用）→ 每次点击条目永久滞留（20s 后仅置 timedOut）。
+**修复依据**（已核实）：Core Start/Stop/Restart 完成后必重发 `AdapterList`（agent/commands.rs:1386/1408/1427 三臂）→ 收到 AdapterList = 该 core 启停完成。
+**修复任务** a57b9c32（deepseek）：pending.ts 增 `settleAdapterOpsOfCore(core)`（匹配 `adapter:` 前缀 + core 段，不误伤 `adapter-op:`）；state.ts AdapterList case 调用；pending 单测 + 集成断言。不碰他人 WIP。
+
+## 终验全量测试（15:57，父级独立执行）
+
+| 仓库 | HEAD | 结果 |
+|---|---|---|
+| core | 770c954 | **927 passed / 0 failed**（EXIT:0；较 ac2c7b9 的 925 +2，为他会话 metrics 提交的测试） |
+| panel | 3d34ff9 | **68 文件 / 568 用例全绿**；vue-tsc 恰 1 条已知错误（他人 WIP ChatView TS6133） |
+| plugin | 4fdc50c | **243 passed / 0 failed** |
+
+**17 条迟到通知全部对账完毕**：均对应已核实消费（或已现场处置）的工作；无补做项。
+**剩余唯一事项**：Panel S5/S6/S7（等用户就他人 ChatView.vue WIP 裁决 A/B/C）。
+
+## Panel S5/S6/S7 收尾完成（2026-10-16 16:0x，用户裁决 A：整理 WIP 后继续）
+
+按用户指示，先整理搁置 WIP（弹层重构）为独立提交，后执行 S5→S6→S7：
+
+| 片 | 提交 | 内容 | 验收 |
+|---|---|---|---|
+| WIP 整理 | `67136a3` | PanelPopover 统一弹层（5 个入口弹层迁移，-202 行几何逻辑）；**恢复被 WIP 漏掉的 3 个安全关闭 watcher**（checklist/workspace 不可用 + 切 Agent）；修 checklistKey TS6133 | vitest 68/568 全绿；vue-tsc **零错误**（首次消除） |
+| S5 | `8a46878` | ChatView 适配器入口 QqPanel → AdapterPanel（含 `:core` 显式路由） | 68/568 全绿 |
+| S6 | `2fcfa10` | 删除 QqPanel/QqLoginSection/qqView（含 3 个测试文件 24 用例）+ state 7 臂/qqByAdapter/lastQrcode/QqFilterState + pending 6 映射 + protocol QQ 命令/事件段/GateMode/GroupInfo/FriendInfo/3 deprecated 字段；测试改写（phase1→adapterUiByKey、bootstrap→InvokeAdapterOp、protocol-sync 58→51） | **65 文件/541 用例全绿**；vue-tsc 零错误 |
+| S7 | `d8a7779` | 注释死引用清理（9 文件）+ pending.test 示例键更新 | 65/541 全绿；零错误 |
+
+**父级终验**：
+- 生产构建 `npm run build` ✓（产出 AdapterPanel chunk，无 QqPanel chunk）
+- 死引用 grep（V16 判据）：仅剩 protocol-sync.test.ts:74 的有意变更说明注释
+- panel 工作树全干净（含他人 WIP 已并入 `67136a3`）
+
+**偏离记录**：03b 决策建议 D4「S5/S6 间留发布周期」未执行（本地连做）——理由：全部提交未 push 未部署，回滚 = 逐片 revert（d8a7779→2fcfa10→8a46878），无生产风险；发布时如需灰度可在 push 前拆分。parity「挂载即拉二维码」按 03a §2.6 手动化口径（V11 据此修订）。
+
+**至此本工程全部切片完成**：01a P1+S1-S5、01b S1-S6、02a S1-S6、02b R1-R4、03a 全套、03b S1-S7。剩余仅发版流程项（01b S7/S8：deprecated 标记与 N+2 删除）。

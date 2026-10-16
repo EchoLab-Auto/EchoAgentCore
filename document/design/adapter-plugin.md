@@ -358,7 +358,7 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 - **P0 协议与宿主骨架**：**前置修复（先于骨架动工）**——① `InvokeOutcome::Ok.result` 字段 + conformance；② supervisor `HostCall` 回执按来源连接路由（见「版本与兼容」）；③《交接与崩溃恢复语义》定稿（本页 §交接与崩溃恢复语义）。然后：**线协议通用化**（§适配器管理通道：`InvokeAdapterOp` / `AdapterOpResult` / `AdapterState` / `metadata` / clearance 类别判定）+ **管理面置换**（`QqManagement` → `AdapterManagement`）+ api / host / sdk 扩展 + conformance 补测（**adapter 套件**：注册 / 收 / 发 / 崩溃 / 交接 / **UI 描述符解析**）；loopback 测试适配器（非 QQ）跑通「注册 → 列表 → 收 → 发」端到端。**工作项明细见 §P0 工作项明细**；
 - **P1 QQ 插件外迁**：仓库拆分、代码迁入；**门控运行时状态落盘**（P1 即要，安全相关）；fake WS 对端 e2e；
 - **P2 宿主切换**：配置开关切到远程适配器；命令域 / 工具 / 处理器迁齐；**Panel 阶段 1**（底层命令/事件切 `InvokeAdapterOp` 通用通道；QqPanel 暂留至阶段 2 删除）——**已落地（2026-10-16）**；**Panel 全量命令清单回归**（实例增删 / 二维码 / 名单 / 门控 / 启停——泛化后逐条验证）；
-- **P3 摘除内置路径**：关闭 feature 后 `echo-adapter-qq` 不在二进制；**Panel 阶段 2**（schema 渲染器 + 通用面板已上线，2026-10-16；删 QqPanel / QqLoginSection / `qqByAdapter` / protocol.ts QQ 段待收尾）；QQ 协议变体废弃周期启动（两版本后删除）；自更新流程扩展（插件二进制同步）；文档收口；
+- **P3 摘除内置路径**：关闭 feature 后 `echo-adapter-qq` 不在二进制；**Panel 阶段 2**（schema 渲染器 + 通用面板 + 挂载切换 + 旧组件/协议段删除全部完成，2026-10-16——vitest 65 文件/541 用例全绿、vue-tsc 零错误、死引用 grep 仅剩有意注释）；QQ 协议变体废弃周期启动（两版本后删除）；自更新流程扩展（插件二进制同步）；文档收口；
 - **（叠加 P5）交接演练**：按《交接与崩溃恢复语义》先停后切，验证自动恢复 ≤Ns、NapCat 重连、门控状态不丢（专项用例）。
 
 ### P0 工作项明细（管理面置换为核心）
@@ -367,7 +367,7 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 >
 > **实施进度（2026-10 开工）**：**P0 / P1 全部完成**（2026-10）。P0：`grep qq_management|QqManagement` 归零、双跑 diff 为空。P1：宿主侧骨架（`AdapterHostService` + `RemoteAdapter` + `store_media`）、SDK 脚手架（`AdapterPlugin` / `configure` / `serve_adapter_stdio`）、QQ 插件（P1.7a–c，独立仓库）、宿主装配（P1.8，`mode = "plugin"` 拉起 / 入站 worker / 状态转发 / 工具管理面路由，真实 core + 真插件进程 + 真 NapCat 连接冒烟）、命令域迁移与内置清除（P1.9：`core/src/adapter_commands.rs`、内置装配与 `echo-adapter-qq`/`echo-core`/`echo-server` 三 crate 删除、配置 TOML 表透传）均已落地；全工作区测试绿。后续（独立于本计划）：compose 渲染随插件（可选收尾）。
 >
-> **泛化收尾轮（2026-10）**：Core 侧适配器泛化收尾——`adapter_ops` 改名 + 回退/广播泛化（`cea95bd`）、`adapter_tools` 改名 + 实例/persona 泛化与平台残留清理（`ac2c7b9`）；插件侧 UI 描述符 + `get_state` + 部分载荷修复（`4fdc50c`）；UI 描述符链路与状态推送接线（`be94746` / `8109535` / `7c2517d`，含 W2.4 id 串化、epoch 缓存失效）；Panel 阶段 1 通道切换（`cd93c8c..8ced31c`）与阶段 2 通用渲染器 / 通用面板 / 会话分组（`78811dc`、`2f34377` / `b24a7c0`、`f823972`）。**剩余待办：Panel 阶段 2 收尾（挂载切换 → 旧组件删除，等待他人 ChatView.vue WIP 落定）与 01b S7/S8 发版项（旧变体 deprecated 标记 / N+2 删除）**。
+> **泛化收尾轮（2026-10）**：Core 侧适配器泛化收尾——`adapter_ops` 改名 + 回退/广播泛化（`cea95bd`）、`adapter_tools` 改名 + 实例/persona 泛化与平台残留清理（`ac2c7b9`）；插件侧 UI 描述符 + `get_state` + 部分载荷修复（`4fdc50c`）；UI 描述符链路与状态推送接线（`be94746` / `8109535` / `7c2517d`，含 W2.4 id 串化、epoch 缓存失效）；Panel 阶段 1 通道切换（`cd93c8c..8ced31c`）与阶段 2 通用渲染器 / 通用面板 / 会话分组（`78811dc`、`2f34377` / `b24a7c0`、`f823972`）。**Panel 阶段 2 收尾已完成（2026-10-16）**：挂载切换 → 旧组件与协议段删除 → 注释清理（`67136a3`/`8a46878`/`2fcfa10`/`d8a7779`，含搁置弹层重构 WIP 整理与启停 pending 结算修复 `3d34ff9`）。**剩余：01b S7/S8 发版项（旧变体 deprecated 标记 + 收到旧命令 warn / N+2 物理删除）**。
 
 **W1 前置修复（既有缺陷，先于骨架动工）**
 
