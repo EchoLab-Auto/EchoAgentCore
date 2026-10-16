@@ -308,6 +308,34 @@ impl Agent {
               -> std::pin::Pin<
             Box<dyn std::future::Future<Output = echo_loop::ToolOutcome> + Send>,
         > {
+            // 观测缺口修复（2026-10 审计）：spawn_subagent 经本异步通道直入
+            // 管线、不经过 `run_tool`，此前调用与回执均不落事件日志（审计
+            // 实测 7620 条 tool_call 里 0 条 spawn 记录——委派既无 spawn
+            // 时间戳可算时延，也读不到 profile/node/timeout/task 实参）。
+            // 现在与普通工具同口径：先记 ToolCall（参数脱敏），受理或拒绝后
+            // 记 ToolResult（回执文本），保证日志成对、面板可见。
+            let started = std::time::Instant::now();
+            let started_at_ms = chrono::Utc::now().timestamp_millis();
+            let logged_arguments = self.redact_text(&call.arguments);
+            self.emit(BackendEvent::ToolCall {
+                session_id: sid.to_string(),
+                team_id: None,
+                tool_name: call.name.clone(),
+                arguments: logged_arguments.clone(),
+                tool_call_id: call.id.clone(),
+                branch_id: branch_id.to_string(),
+                started_at_ms: Some(started_at_ms),
+            });
+            self.trunk
+                .append_event(echo_session::SessionEvent::ToolCall(
+                    echo_session::event::ToolCallEvent {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        arguments: logged_arguments,
+                        session: Some(sid.to_string()),
+                        started_at_ms: Some(started_at_ms),
+                    },
+                ));
             let args: serde_json::Value = serde_json::from_str(&call.arguments).unwrap_or_default();
             let text = if !self.allows_dynamic_tool(crate::subagent::SPAWN_SUBAGENT_TOOL) {
                 format!(
@@ -331,6 +359,27 @@ impl Agent {
                     }
                 }
             };
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            self.emit(BackendEvent::ToolResult {
+                session_id: sid.to_string(),
+                team_id: None,
+                tool_name: call.name.clone(),
+                result: text.clone(),
+                tool_call_id: call.id.clone(),
+                timed_out: false,
+                branch_id: branch_id.to_string(),
+                elapsed_ms: Some(elapsed_ms),
+            });
+            self.trunk
+                .append_event(echo_session::SessionEvent::ToolResult(
+                    echo_session::event::ToolResultEvent {
+                        tool_call_id: call.id.clone(),
+                        result: text.clone(),
+                        images: vec![],
+                        session: Some(sid.to_string()),
+                        elapsed_ms: Some(elapsed_ms),
+                    },
+                ));
             Box::pin(async move { echo_loop::ToolOutcome::text(text) })
         };
 

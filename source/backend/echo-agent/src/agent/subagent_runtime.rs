@@ -222,7 +222,7 @@ impl Agent {
                 "event": "subagent_event",
                 "subagent_id": task_id,
                 "session_id": session_id,
-                "task": crate::llm::truncate(&task, 500),
+                "task": subagent_task_field(&task),
                 "success": success,
                 "result": detail,
                 "parent_branch_id": parent_branch_id,
@@ -275,7 +275,7 @@ impl Agent {
             "event": "subagent_event",
             "subagent_id": task_id,
             "session_id": session_id,
-            "task": crate::llm::truncate(task, 500),
+            "task": subagent_task_field(task),
             "success": false,
             "result": format!("子任务受理失败：{reason}"),
             "parent_branch_id": parent_branch_id,
@@ -318,4 +318,22 @@ impl Agent {
         )
         .await;
     }
+}
+
+/// 完成 / 拒绝钩子中的 `task` 字段（2026-10 观测缺口修复）。
+///
+/// 此前固定截断到 500 字符（审计实测 53/58 条 task 恰 501 字符，任务
+/// 描述无法完整审计）。现放宽到 4000 字符并在超限时显式标注；完整
+/// 参数（含 task 全文）随 `spawn_subagent` 的 ToolCall 事件落库
+/// （见 agent/turn.rs 的异步编排工具记录）。
+fn subagent_task_field(task: &str) -> String {
+    const MAX_TASK_CHARS: usize = 4000;
+    if task.chars().count() <= MAX_TASK_CHARS {
+        return task.to_string();
+    }
+    let kept: String = task.chars().take(MAX_TASK_CHARS).collect();
+    format!(
+        "{kept}\n…[task 过长已截断，共 {} 字符；完整文本见该 spawn_subagent 调用的 arguments]",
+        task.chars().count()
+    )
 }

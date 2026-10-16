@@ -2364,6 +2364,138 @@ async fn echo_loop_tool_names_stay_unique_when_spawn_subagent_is_registered() {
     assert_eq!(names.len(), unique.len(), "duplicate tool names: {names:?}");
 }
 
+/// 2026-10 观测缺口修复回归：spawn_subagent 经异步通道直入管线（不走
+/// `run_tool`），其调用与回执必须照样落事件日志——此前委派没有 spawn
+/// 时间戳、也读不到 profile/node/timeout 实参（审计只能靠完成钩子倒推）。
+#[tokio::test]
+async fn spawn_subagent_call_and_receipt_are_recorded_in_event_log() {
+    let task_text =
+        "记录验证用子任务：本用例不真正执行委派（运行态未接线），只断言 spawn 调用与回执已落库。";
+    let provider = Arc::new(ScriptedProvider::new(vec![
+        ChatResponse {
+            stop_reason: Some("tool_calls".into()),
+            content: None,
+            reasoning_content: None,
+            tool_calls: vec![crate::llm::ToolCall {
+                id: "call_spawn_rec_1".into(),
+                name: crate::subagent::SPAWN_SUBAGENT_TOOL.into(),
+                arguments: serde_json::json!({
+                    "task": task_text,
+                    "timeout_secs": 321,
+                })
+                .to_string(),
+            }],
+            usage: Usage::default(),
+        },
+        ChatResponse {
+            stop_reason: None,
+            content: Some("done".into()),
+            reasoning_content: None,
+            tool_calls: vec![],
+            usage: Usage::default(),
+        },
+    ]));
+    let store = crate::subagent::SubagentStore::new();
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(crate::subagent::SpawnSubagentTool::new(
+        store.clone(),
+        Arc::new(|_| {}),
+    )));
+    tools.set_package(
+        crate::subagent::SPAWN_SUBAGENT_TOOL,
+        crate::plugins::SUBAGENT_PLUGIN_ID,
+    );
+    let agent = Arc::new(Agent::new(
+        provider.clone(),
+        AgentConfig::default(),
+        SkillRegistry::new(),
+        tools,
+        Arc::new(AdapterRegistry::new()),
+    ));
+    // 不接运行态：本用例验证"记录先行"——即便受理被拒（运行态未接线），
+    // 调用与回执也必须成对落库（与 run_tool 的权限前置记录同口径）。
+    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+        Arc::new(echo_context::EventBus::default()),
+        provider.clone(),
+        Arc::new(echo_loop::ToolPipeline::new()),
+        echo_loop::LoopOptions::default(),
+    ));
+    agent.set_loop_runner(runner);
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+
+    let session = agent
+        .trunk
+        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    assert_eq!(
+        agent
+            .process_message(&session, "委派一个任务")
+            .await
+            .unwrap(),
+        "done"
+    );
+
+    // 事件日志：ToolCall(spawn_subagent) 与配对 ToolResult 必须成对落库，
+    // 实参（task 全文 / timeout_secs / spawn 时间戳）完整保留。
+    let log = agent.trunk.event_log();
+    let call = log
+        .iter()
+        .find_map(|event| match event {
+            echo_session::SessionEvent::ToolCall(call)
+                if call.name == crate::subagent::SPAWN_SUBAGENT_TOOL =>
+            {
+                Some(call.clone())
+            }
+            _ => None,
+        })
+        .expect("spawn 调用必须落 ToolCall 事件（观测缺口修复）");
+    assert_eq!(call.id, "call_spawn_rec_1");
+    assert!(
+        call.arguments.contains("记录验证用子任务"),
+        "arguments 必须含 task 全文: {}",
+        call.arguments
+    );
+    assert!(
+        call.arguments.contains("321"),
+        "timeout_secs 实参必须保留: {}",
+        call.arguments
+    );
+    assert!(call.started_at_ms.is_some(), "spawn 时间戳（时延计算口径）");
+    let receipt = log
+        .iter()
+        .find_map(|event| match event {
+            echo_session::SessionEvent::ToolResult(result)
+                if result.tool_call_id == "call_spawn_rec_1" =>
+            {
+                Some(result.clone())
+            }
+            _ => None,
+        })
+        .expect("spawn 回执必须落 ToolResult 事件（成对，不留悬空调用）");
+    assert!(!receipt.result.is_empty(), "回执文本非空");
+
+    // 面板事件同口径（委派行可见）：ToolCall + ToolResult。
+    let mut events = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        events.push(event);
+    }
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            BackendEvent::ToolCall { tool_name, .. }
+                if tool_name == crate::subagent::SPAWN_SUBAGENT_TOOL
+        )),
+        "面板 ToolCall 缺失（委派行不可见）"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            BackendEvent::ToolResult { tool_call_id, .. }
+                if tool_call_id == "call_spawn_rec_1"
+        )),
+        "面板 ToolResult 缺失"
+    );
+}
 /// echo-loop 路径的工具超时守卫（2026-09-26 补：此前该路径没有守卫，
 /// 挂死的工具会永久拖住 turn——内置循环的外圈守卫在 echo-loop 上不生效）。
 /// 超时后 turn 继续（notice 喂回模型），事件日志补记中断结果、不留悬空调用。
