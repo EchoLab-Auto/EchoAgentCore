@@ -24,17 +24,32 @@ keywords: [自更新, 更新框架, 部署, update, 升级, 重启服务]
 
 ## 更新流程（Core）
 
+**从 agent 自己的 shell 发起更新时，推荐用 `systemd-run` 瞬态单元启动**——
+直接启动的 updater 身处 `echo-agent-core.service` 的 cgroup：`systemctl
+restart` 清理 cgroup 会把它连带杀死（`setsid`/`nohup` 同 cgroup，救不了；
+已实测复发多次）。被杀的 updater 只剩「二进制替换 + 重启」：QQ 恢复 /
+revision 写入 / 插件校验 / 收尾写 `state=updated` 全跳过，需要人工补写。
+瞬态单元处于**独立 cgroup**（与主服务平级，本机实测验证），restart 不牵连。
+
 ```bash
-cd ~/.local/share/echo-agent-core/source
-bash ~/.local/libexec/echo-agent-core/update.sh
+systemd-run --user --collect --unit=echo-agent-update \
+  bash ~/.local/libexec/echo-agent-core/update.sh
 ```
 
+- 单元内 `systemctl --user` 与 `cargo` 均可用（PATH 含 `~/.cargo/bin`，实测）；
+- 观察：`journalctl --user -u echo-agent-update`（`--collect` 退出即回收）；
+- 结束后读状态文件应见 `state=updated`；异常走「更新后验证清单」§6 人工补写；
+- 回退（无 systemd-run 场景）：`cd ~/.local/share/echo-agent-core/source &&
+  bash ~/.local/libexec/echo-agent-core/update.sh`（会被 restart 连带杀死）。
 - 构建产物：`target/release/echo-agent-core`
 - 替换目标：`~/.local/libexec/echo-agent-core/echo-agent-core-bin`
 - 状态文件：`~/.local/state/echo-agent-core/update-status`
   （state=running → restarting → updated；服务失败时可能停在 failed）
 
 ## ⚠️ 轮询契约：看到 restarting 就立即收尾（防自杀）
+
+> 适用范围：直接 `bash` 启动的回退路径；`systemd-run` 启动的 updater 不受
+> 重启影响——正常结束 turn、稍后读状态文件验证即可，无本约束。
 
 **不要轮询等待 `state=updated`/`done`**：updated 在重启 + QQ 恢复
 （最长约 2 分钟）之后才写入，等它的 turn 会被自己的重启杀死——
@@ -77,7 +92,7 @@ bash ~/.local/libexec/echo-agent-panel/update.sh \
 5. 启动日志：`journalctl --user -u echo-agent-core --no-pager -n 40`
    - 应看到 `agent supervisor ready agents=[...]`、
      `plugins mounted plugins=[...]`、`sessions restored` 等行
-6. 若 update-status 停在 state=running/restarting 且服务已重启：人工补写。
+6. 【回退路径】update-status 停在 state=running/restarting 且服务已重启：人工补写（用 systemd-run 启动时通常无需本节）。
    背景（已实际发生）：从 agent 的 shell 启动 update.sh 时，脚本身处
    echo-agent-core.service 的 cgroup——`systemctl restart` 清理 cgroup 会
    连带杀死 update.sh 自身（restart 阻塞期间被 SIGTERM），后续阶段
