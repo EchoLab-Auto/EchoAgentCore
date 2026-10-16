@@ -1605,6 +1605,50 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             }
         });
     }
+    // 插件 UI 状态（`report_ui_state`）→ `AdapterState` 事件（泛化 01a §1.2
+    // S4：推送接线，与连接态通道分离）。同一份状态派生旧 QQ 事件（W4.1
+    // 迁移期，QqPanel 仍消费旧事件；复用单源纯函数避免双源）。
+    if let Some(rt) = &plugin_runtime {
+        let mut ui_states = rt.adapter_host().subscribe_ui_states();
+        let supervisor_for_ui = Arc::clone(&supervisor);
+        let ui_fallback_agent: Arc<echo_agent::Agent> = core_agent.clone();
+        let ui_persona_by_instance: std::collections::HashMap<String, String> = qq_instances
+            .iter()
+            .map(|instance| (instance.id.clone(), instance.persona.clone()))
+            .collect();
+        let ui_default_persona = qq_default_persona.clone();
+        tokio::spawn(async move {
+            while let Some(change) = ui_states.recv().await {
+                // persona 解析（01a §1.2-3）：优先状态文档自带
+                // `instance.persona`（插件上报），否则按实例名查映射；查不到
+                // 回退默认 persona——非 QQ 适配器无实例概念，不能丢状态。
+                let persona = change
+                    .state
+                    .pointer("/instance/persona")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+                    .or_else(|| ui_persona_by_instance.get(&change.adapter).cloned())
+                    .unwrap_or_else(|| ui_default_persona.clone());
+                // 目标入口：人格 entry → 回落进程级核心代理（所有 agent 共享
+                // 同一事件汇聚点，兜底不丢状态；不做 continue）。
+                let entry = supervisor_for_ui
+                    .get_exact(&persona)
+                    .map(|entry| entry.agent)
+                    .unwrap_or_else(|| ui_fallback_agent.clone());
+                // 迁移期：同一状态单源派生旧 QQ 事件（W4.1，deprecated）。
+                for event in echo_agent::derive_legacy_qq_state_events(
+                    &change.state,
+                    Some(change.adapter.clone()),
+                ) {
+                    entry.emit(event);
+                }
+                entry.emit(echo_protocol::BackendEvent::AdapterState {
+                    adapter: change.adapter,
+                    state: change.state,
+                });
+            }
+        });
+    }
     // ---- Command pump（多 persona 路由）----
     // 命令从进程级通道读取（不再是"默认人格"的 mailbox）：
     // - 聊天/取消：按 team_id 路由到目标人格；

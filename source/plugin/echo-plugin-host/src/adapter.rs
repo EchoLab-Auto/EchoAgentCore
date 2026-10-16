@@ -369,6 +369,9 @@ pub struct AdapterHostService {
     /// 连接态变化订阅者（组合根把 `AdapterStateChanged` 事件转发给 Panel；
     /// 订阅者退出（channel 关闭）时自动摘除）。
     state_sinks: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<AdapterStateChange>>>,
+    /// UI 状态（管理面状态文档）上报订阅者（泛化 01a §1.2）：`report_ui_state`
+    /// 广播给组合根转 `AdapterState`；订阅者退出时自动摘除。
+    ui_state_sinks: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<AdapterUiStateChange>>>,
     /// `store_media` 落盘目录（缺省 = `media_store::media_dir()`）。
     media_dir: std::path::PathBuf,
 }
@@ -382,6 +385,18 @@ pub struct AdapterStateChange {
     pub connected: bool,
     /// 平台账号（连接时自报；断开为 None）。
     pub self_id: Option<String>,
+}
+
+/// 一次 UI 状态上报（`report_ui_state` 广播；泛化 01a §1.2 S4）。
+///
+/// 与 [`AdapterStateChange`]（连接态，`Eq`）**分离**：状态文档是任意
+/// `Value`，混入会破坏既有结构的派生与测试。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterUiStateChange {
+    /// 适配器实例名。
+    pub adapter: String,
+    /// 管理面状态文档（`cached_state` 同构；形状见 00 §三）。
+    pub state: Value,
 }
 
 /// `store_media` 单次登记上限（与 `media_store` 落盘上限同量级；path 形态
@@ -400,6 +415,7 @@ impl AdapterHostService {
             adapters: Mutex::new(HashMap::new()),
             inbound_queues: Mutex::new(HashMap::new()),
             state_sinks: Mutex::new(Vec::new()),
+            ui_state_sinks: Mutex::new(Vec::new()),
             media_dir,
         }
     }
@@ -422,6 +438,28 @@ impl AdapterHostService {
     fn broadcast_state(&self, change: AdapterStateChange) {
         let mut sinks = self
             .state_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        sinks.retain(|tx| tx.send(change.clone()).is_ok());
+    }
+
+    /// 订阅 UI 状态上报（`report_ui_state`；泛化 01a §1.2 S4）。
+    ///
+    /// 组合根消费并发射 `AdapterState` 事件（+ 派生旧 QQ 事件）；多订阅者
+    /// 各自收全量，接收端 drop 后自动摘除。与连接态通道分离。
+    pub fn subscribe_ui_states(&self) -> tokio::sync::mpsc::UnboundedReceiver<AdapterUiStateChange> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.ui_state_sinks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(tx);
+        rx
+    }
+
+    /// 广播一次 UI 状态上报（发送失败的订阅者摘除）。
+    fn broadcast_ui_state(&self, change: AdapterUiStateChange) {
+        let mut sinks = self
+            .ui_state_sinks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         sinks.retain(|tx| tx.send(change.clone()).is_ok());
@@ -596,7 +634,16 @@ impl crate::host_service::HostService for AdapterHostService {
                         format!("adapter {adapter_name} not registered"),
                     ));
                 };
-                adapter.note_management_state(state);
+                adapter.note_management_state(state.clone());
+                // 泛化 01a §1.2：上报即广播（组合根转 `AdapterState` +
+                // 派生旧事件；宿主缓存刷新与推送同点完成）。
+                // 注：插件 payload 现阶段**不带 epoch**——无 epoch 不校验
+                //（epoch 校验待协议扩展；现状由 `RemoteAdapter` 读时按
+                //  generation 惰性失效兜底，见 01a §1.3）。
+                self.broadcast_ui_state(AdapterUiStateChange {
+                    adapter: adapter_name,
+                    state,
+                });
                 Ok(json!({}))
             }
             "store_media" => self.store_media(&payload),
@@ -942,7 +989,9 @@ mod tests {
             }
         );
 
-        // report_ui_state：管理面状态缓存刷新。
+        // report_ui_state：管理面状态缓存刷新 + UI 状态广播（泛化 01a
+        // §1.2 S4：订阅者收到 AdapterUiStateChange，组合根据此转 AdapterState）。
+        let mut ui_states = service.subscribe_ui_states();
         service
             .call(
                 "report_ui_state",
@@ -952,6 +1001,13 @@ mod tests {
         assert_eq!(
             adapter.management_state().unwrap()["gate"]["mode"],
             json!("denylist")
+        );
+        assert_eq!(
+            ui_states.try_recv().expect("ui state broadcast"),
+            AdapterUiStateChange {
+                adapter: "qq".into(),
+                state: json!({"gate": {"mode": "denylist"}}),
+            }
         );
 
         // 未注册实例：可读错误（adapter_not_found）。

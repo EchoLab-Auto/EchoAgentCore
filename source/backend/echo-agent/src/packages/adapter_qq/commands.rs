@@ -127,6 +127,9 @@ impl Agent {
                 // W2.1/W3.3：通用适配器管理命令（唯一新增变体）——经管理面
                 // invoke_custom 执行；写类方法对齐其余实例（best-effort），
                 // 完成后状态下发单源化（AdapterState 单源派生旧事件）。
+                // C1（泛化 02a §7.2）：失败统一回执 AdapterOpResult{error}
+                // （替代 Error），实例解析失败同样以命令自带 adapter/method
+                // 回显（Panel 按键配对，无需等超时）。
                 tracing::info!(%adapter, %method, "Agent: InvokeAdapterOp");
                 match self.resolve_qq_adapter(&Some(adapter.clone())) {
                     Ok(ad) => {
@@ -141,16 +144,24 @@ impl Agent {
                             self.broadcast_adapter_op_to_others(&adapter, &method, payload.clone())
                                 .await;
                         }
-                        self.invoke_adapter_op(ad.clone(), &adapter, &method, payload)
+                        let succeeded = self
+                            .invoke_adapter_op(ad.clone(), &adapter, &method, payload)
                             .await;
                         // 写类方法完成后刷新状态（读类查询不重复下发）。
                         if SHARED_WRITE_METHODS.contains(&method.as_str()) {
                             self.emit_adapter_state_events(ad.clone(), Some(adapter.clone()));
                         }
+                        // C2（泛化 02a §7.2 D2）：读路径 `get_state` 成功完成后
+                        // 推送状态（Panel 首屏路径；复用单源，其余读方法不加）。
+                        if succeeded && method == "get_state" {
+                            self.emit_adapter_state_events(ad.clone(), Some(adapter.clone()));
+                        }
                     }
-                    Err(message) => self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message,
+                    Err(message) => self.emit(BackendEvent::AdapterOpResult {
+                        adapter: adapter.clone(),
+                        method: method.clone(),
+                        result: serde_json::Value::Null,
+                        error: Some(message),
                     }),
                 }
             }
@@ -402,25 +413,36 @@ impl Agent {
     // ── 适配器管理通道基础设施（W3.3/W3.4，2026-10）─────────────────────
 
     /// 经 `AdapterManagement::invoke_custom` 调用一个管理方法并回执
-    /// （`AdapterOpResult` 成功 / `Error` 失败）。
+    /// （`AdapterOpResult`；成功 error=None）。失败同样回执
+    /// `AdapterOpResult{result: null, error}`（C1，泛化 02a §7.2）——不再
+    /// 发 `Error`，Panel 按 (adapter, method) 键配对而非等超时。
+    /// 返回是否成功（`get_state` 读路径推送需要）。
     async fn invoke_adapter_op(
         &self,
         ad: std::sync::Arc<dyn echo_adapter::traits::Adapter>,
         adapter_name: &str,
         method: &str,
         payload: serde_json::Value,
-    ) {
+    ) -> bool {
         match invoke_adapter_method(ad, method, payload).await {
-            Ok(result) => self.emit(BackendEvent::AdapterOpResult {
-                adapter: adapter_name.to_string(),
-                method: method.to_string(),
-                result,
-                error: None,
-            }),
-            Err(message) => self.emit(BackendEvent::Error {
-                session_id: None,
-                message,
-            }),
+            Ok(result) => {
+                self.emit(BackendEvent::AdapterOpResult {
+                    adapter: adapter_name.to_string(),
+                    method: method.to_string(),
+                    result,
+                    error: None,
+                });
+                true
+            }
+            Err(message) => {
+                self.emit(BackendEvent::AdapterOpResult {
+                    adapter: adapter_name.to_string(),
+                    method: method.to_string(),
+                    result: serde_json::Value::Null,
+                    error: Some(message),
+                });
+                false
+            }
         }
     }
 
@@ -444,45 +466,11 @@ impl Agent {
             adapter: ad.name().to_string(),
             state: state.clone(),
         });
-        // 迁移期：由同一状态派生旧 QQ 事件（W4.1，deprecated 保留）。
-        // W2.4：id 一律字符串输出（对 cached_state 宽容读取 number|string）。
-        let gate = &state["gate"];
-        let parse_ids = |key: &str| -> Vec<String> {
-            gate[key]
-                .as_array()
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|item| match item {
-                            serde_json::Value::Number(number) => Some(number.to_string()),
-                            serde_json::Value::String(text) => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        let parse_mode = |text: &str| match text {
-            "allowlist" => echo_adapter::GateMode::Allowlist,
-            "denylist" => echo_adapter::GateMode::Denylist,
-            _ => echo_adapter::GateMode::None,
-        };
-        let mode = gate["mode"].as_str().unwrap_or("none");
-        self.emit(BackendEvent::QqFilterConfig {
-            allowlist_users: parse_ids("allowlist_users"),
-            allowlist_groups: parse_ids("allowlist_groups"),
-            denylist_users: parse_ids("denylist_users"),
-            denylist_groups: parse_ids("denylist_groups"),
-            adapter: adapter.clone(),
-        });
-        self.emit(BackendEvent::QqGateMode {
-            mode: parse_mode(mode),
-            adapter: adapter.clone(),
-        });
-        self.emit(BackendEvent::QqOwner {
-            owner_qq: state_owner(&state),
-            adapter,
-        });
+        // 迁移期：由同一状态派生旧 QQ 事件（W4.1，deprecated 保留；
+        // 推送路径共用同一纯函数——单源派生防双源漂移）。
+        for event in derive_legacy_qq_state_events(&state, adapter) {
+            self.emit(event);
+        }
     }
 
     /// 把写类管理方法（持久化在共享 `[adapters.qq]` 段）对齐到其余实例
@@ -562,6 +550,58 @@ fn state_owner(state: &serde_json::Value) -> String {
         serde_json::Value::String(text) => text.clone(),
         _ => String::new(),
     }
+}
+
+/// 由管理面状态文档派生旧 QQ 事件（W4.1 迁移期，deprecated；泛化 Core-2
+/// S4 抽出的可复用纯函数——`emit_adapter_state_events`（命令路径）与
+/// `core` 组合根的插件推送消费者（`report_ui_state` → `AdapterState`）
+/// 共用同一份派生逻辑，避免旧事件双源）。
+///
+/// `adapter`：旧命令自带的实例名（回显；可为 None）；推送路径传实例名。
+/// W2.4：id 一律字符串输出（对 `cached_state` 宽容读取 number|string）。
+/// 随 Panel 阶段 1 结束与新通道稳定一并删除（见 02a §1-D3 阶段 4）。
+pub fn derive_legacy_qq_state_events(
+    state: &serde_json::Value,
+    adapter: Option<String>,
+) -> Vec<BackendEvent> {
+    let gate = &state["gate"];
+    let parse_ids = |key: &str| -> Vec<String> {
+        gate[key]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| match item {
+                        serde_json::Value::Number(number) => Some(number.to_string()),
+                        serde_json::Value::String(text) => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let parse_mode = |text: &str| match text {
+        "allowlist" => echo_adapter::GateMode::Allowlist,
+        "denylist" => echo_adapter::GateMode::Denylist,
+        _ => echo_adapter::GateMode::None,
+    };
+    vec![
+        BackendEvent::QqFilterConfig {
+            allowlist_users: parse_ids("allowlist_users"),
+            allowlist_groups: parse_ids("allowlist_groups"),
+            denylist_users: parse_ids("denylist_users"),
+            denylist_groups: parse_ids("denylist_groups"),
+            adapter: adapter.clone(),
+        },
+        BackendEvent::QqGateMode {
+            mode: parse_mode(gate["mode"].as_str().unwrap_or("none")),
+            adapter: adapter.clone(),
+        },
+        BackendEvent::QqOwner {
+            owner_qq: state_owner(state),
+            adapter,
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -717,6 +757,12 @@ mod tests {
                 "get_owner" => Ok(serde_json::json!({
                     "owner_qq": *self.owner.lock().unwrap()
                 })),
+                // 01a §1.3 / 02a §7.2 C3：插件 `get_state` 返回完整
+                // cached_state（mock 复刻插件行为；真实实现由
+                // echo-adapter-qq 契约测试守护）。
+                "get_state" => self.cached_state().ok_or_else(|| {
+                    echo_adapter::AdapterError::Internal("no cached state available".into())
+                }),
                 "update_allowlist" => {
                     *self.allow_users.lock().unwrap() = parse_list(&payload, "user_ids");
                     *self.allow_groups.lock().unwrap() = parse_list(&payload, "group_ids");
@@ -999,5 +1045,220 @@ mod tests {
             messages.iter().any(|m| m.contains("已清除")),
             "got {messages:?}"
         );
+    }
+
+    /// C1（泛化 02a §7.2）：`InvokeAdapterOp` 失败路径回执
+    /// `AdapterOpResult{result: null, error: 非空}`（不再发 `Error`）；
+    /// 方法执行失败与实例解析失败同理（后者用命令自带 adapter/method 回显）。
+    #[tokio::test]
+    async fn invoke_adapter_op_failure_acks_with_error_result() {
+        let (agent, events) = agent_with_qq_instances();
+
+        // 方法执行失败（mock 对未知方法返回 Err）。
+        agent
+            .apply_qq_command(BackendCommand::InvokeAdapterOp {
+                adapter: "qq-a".into(),
+                method: "no_such_method".into(),
+                payload: serde_json::json!({}),
+            })
+            .await;
+        let emitted = drain_events(&events);
+        let (adapter, method, result, error) = emitted
+            .iter()
+            .find_map(|e| match e {
+                BackendEvent::AdapterOpResult {
+                    adapter,
+                    method,
+                    result,
+                    error,
+                } => Some((
+                    adapter.clone(),
+                    method.clone(),
+                    result.clone(),
+                    error.clone(),
+                )),
+                _ => None,
+            })
+            .expect("失败应回执 AdapterOpResult");
+        assert_eq!(adapter, "qq-a");
+        assert_eq!(method, "no_such_method");
+        assert!(result.is_null(), "失败 result 应为 null；实际 = {result:?}");
+        assert!(
+            error.as_deref().is_some_and(|m| !m.is_empty()),
+            "error 非空；实际 = {error:?}"
+        );
+        assert!(
+            !emitted
+                .iter()
+                .any(|e| matches!(e, BackendEvent::Error { .. })),
+            "C1 失败不再发 Error；实际 = {emitted:?}"
+        );
+
+        // 实例解析失败：同样以命令自带 adapter/method 回显。
+        agent
+            .apply_qq_command(BackendCommand::InvokeAdapterOp {
+                adapter: "missing".into(),
+                method: "get_state".into(),
+                payload: serde_json::json!({}),
+            })
+            .await;
+        let emitted = drain_events(&events);
+        let found = emitted.iter().find_map(|e| match e {
+            BackendEvent::AdapterOpResult {
+                adapter,
+                method,
+                result,
+                error,
+            } => Some((
+                adapter.clone(),
+                method.clone(),
+                result.clone(),
+                error.clone(),
+            )),
+            _ => None,
+        });
+        let (adapter, method, result, error) = found.expect("解析失败同样回执 AdapterOpResult");
+        assert_eq!(adapter, "missing");
+        assert_eq!(method, "get_state");
+        assert!(result.is_null());
+        assert!(
+            error.as_deref().is_some_and(|m| !m.is_empty()),
+            "error 非空；实际 = {error:?}"
+        );
+
+        // 约束：旧 QQ 9 命令臂失败行为保持不动（仍 Error，无 AdapterOpResult）。
+        agent
+            .apply_qq_command(BackendCommand::SetQqGateMode {
+                mode: echo_adapter::GateMode::None,
+                adapter: Some("missing".into()),
+            })
+            .await;
+        let emitted = drain_events(&events);
+        assert!(
+            emitted
+                .iter()
+                .any(|e| matches!(e, BackendEvent::Error { .. })),
+            "旧命令失败仍发 Error；实际 = {emitted:?}"
+        );
+        assert!(
+            !emitted
+                .iter()
+                .any(|e| matches!(e, BackendEvent::AdapterOpResult { .. })),
+            "旧命令失败不发 AdapterOpResult；实际 = {emitted:?}"
+        );
+    }
+
+    /// C2（泛化 02a §7.2 D2）：读路径 `get_state` 成功完成后推送
+    /// `AdapterState`（+ 派生旧事件，单源）；其它读方法不推。
+    #[tokio::test]
+    async fn invoke_adapter_op_get_state_pushes_adapter_state() {
+        let (agent, events) = agent_with_qq_instances();
+
+        agent
+            .apply_qq_command(BackendCommand::InvokeAdapterOp {
+                adapter: "qq-a".into(),
+                method: "get_state".into(),
+                payload: serde_json::json!({}),
+            })
+            .await;
+        let emitted = drain_events(&events);
+        // 回执成功。
+        assert!(
+            emitted.iter().any(|e| matches!(
+                e,
+                BackendEvent::AdapterOpResult { method, error: None, .. } if method == "get_state"
+            )),
+            "get_state 应回执成功；实际 = {emitted:?}"
+        );
+        // 状态推送：AdapterState（目标实例）+ 派生旧事件同源。
+        let states: Vec<_> = emitted
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::AdapterState { adapter, state } => {
+                    Some((adapter.clone(), state.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            states.len(),
+            1,
+            "get_state 成功应恰好推一条 AdapterState；实际 = {emitted:?}"
+        );
+        assert_eq!(states[0].0, "qq-a");
+        assert_eq!(states[0].1["gate"]["mode"], serde_json::json!("none"));
+        let legacy: Vec<_> = emitted
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    BackendEvent::QqGateMode { .. }
+                        | BackendEvent::QqFilterConfig { .. }
+                        | BackendEvent::QqOwner { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            legacy.len(),
+            3,
+            "旧事件应与状态同源派生；实际 = {emitted:?}"
+        );
+
+        // 另一读方法（get_filter_config）成功但**不**推 AdapterState。
+        agent
+            .apply_qq_command(BackendCommand::InvokeAdapterOp {
+                adapter: "qq-a".into(),
+                method: "get_filter_config".into(),
+                payload: serde_json::json!({}),
+            })
+            .await;
+        let emitted = drain_events(&events);
+        assert!(
+            !emitted
+                .iter()
+                .any(|e| matches!(e, BackendEvent::AdapterState { .. })),
+            "非 get_state 读方法不推 AdapterState；实际 = {emitted:?}"
+        );
+    }
+
+    /// 纯函数 `derive_legacy_qq_state_events`：number|string 宽容读取、
+    /// 缺省门控 → none/空表、owner 0 → 空串（W2.4 语义）。
+    #[test]
+    fn derive_legacy_state_events_shapes() {
+        let events = super::derive_legacy_qq_state_events(
+            &serde_json::json!({
+                "gate": {
+                    "mode": "denylist",
+                    "allowlist_users": [123, "456"],
+                    "denylist_users": ["789"],
+                },
+                "owner": 0,
+            }),
+            Some("qq-a".into()),
+        );
+        assert_eq!(events.len(), 3);
+        match &events[0] {
+            BackendEvent::QqFilterConfig {
+                allowlist_users,
+                denylist_users,
+                adapter,
+                ..
+            } => {
+                assert_eq!(allowlist_users, &vec!["123".to_string(), "456".to_string()]);
+                assert_eq!(denylist_users, &vec!["789".to_string()]);
+                assert_eq!(adapter.as_deref(), Some("qq-a"));
+            }
+            other => panic!("QqFilterConfig expected, got {other:?}"),
+        }
+        match &events[1] {
+            BackendEvent::QqGateMode { mode, .. } => {
+                assert_eq!(*mode, echo_adapter::GateMode::Denylist);
+            }
+            other => panic!("QqGateMode expected, got {other:?}"),
+        }
+        match &events[2] {
+            BackendEvent::QqOwner { owner_qq, .. } => assert_eq!(owner_qq, ""),
+            other => panic!("QqOwner expected, got {other:?}"),
+        }
     }
 }
