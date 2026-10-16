@@ -366,6 +366,8 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 > 产出物 = **一个参考实现**（inproc QQ 适配器全程经 `AdapterManagement` 运行）+ 协议三件套（`InvokeAdapterOp` / `AdapterOpResult` / `AdapterState`）+ 三项前置修复。**P1 外迁插件对照本参考实现实现同一接口；P2 远程适配器必须过同一组 conformance**（参考实现先行 = 接口在真实负载下先验证，再外迁）。
 >
 > **实施进度（2026-10 开工）**：**P0 / P1 全部完成**（2026-10）。P0：`grep qq_management|QqManagement` 归零、双跑 diff 为空。P1：宿主侧骨架（`AdapterHostService` + `RemoteAdapter` + `store_media`）、SDK 脚手架（`AdapterPlugin` / `configure` / `serve_adapter_stdio`）、QQ 插件（P1.7a–c，独立仓库）、宿主装配（P1.8，`mode = "plugin"` 拉起 / 入站 worker / 状态转发 / 工具管理面路由，真实 core + 真插件进程 + 真 NapCat 连接冒烟）、命令域迁移与内置清除（P1.9：`core/src/adapter_commands.rs`、内置装配与 `echo-adapter-qq`/`echo-core`/`echo-server` 三 crate 删除、配置 TOML 表透传）均已落地；全工作区测试绿。后续（独立于本计划）：W2.4（Panel 线协议切换，随 Panel 阶段 1）与 compose 渲染随插件（可选收尾）。
+>
+> **泛化收尾轮（2026-10）**：Core 侧适配器泛化收尾——`adapter_ops` 改名 + 回退/广播泛化（`cea95bd`）、`adapter_tools` 改名 + 实例/persona 泛化与平台残留清理（`ac2c7b9`）；插件侧 UI 描述符 + `get_state` + 部分载荷修复（`4fdc50c`）；UI 描述符链路与状态推送接线（`be94746` / `8109535` / `7c2517d`，含 W2.4 id 串化、epoch 缓存失效）；Panel 阶段 1 通道切换（`cd93c8c..8ced31c`）与阶段 2 通用渲染器 / 通用面板 / 会话分组（`78811dc`、`2f34377` / `b24a7c0`、`f823972`）。**Panel 阶段 2 收尾（挂载切换 → 旧组件删除）待办**。
 
 **W1 前置修复（既有缺陷，先于骨架动工）**
 
@@ -378,7 +380,7 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 - [x] W2.1 新增 `InvokeAdapterOp { adapter, method, payload }` / `AdapterOpResult { adapter, method, result, error? }` / `AdapterState { adapter, state }`（result 空时线上省略）
 - [x] W2.2 `AdapterStatus` 增 `metadata: Vec<AdapterMetadataEntry>`（`persona` 保留；`container` / `webui_url` / `onebot_url` 标 deprecated，随 Panel 阶段 1 删除；发射端 `emit_adapter_list` 同源派生，无双事实来源）
 - [x] W2.3 `command_clearance`：`InvokeAdapterOp` 入 Frontend-only（**类别判定**，含未知方法 fail-closed）；逐变体测试改为类别测试（`adapter_management_commands_are_frontend_only_by_category`）
-- [ ] W2.4 `GroupInfo.group_id` / `FriendInfo.user_id`：`i64` → `String`（breaking；与 Panel 阶段 1 同批发布 + 升级指南记录）。**注**：本轮核实 Panel 侧（`protocol.ts` / `QqPanel.vue` 的比较与 toggle 链路）依赖 number 形态，单侧改动会破坏面板交互——按约定推迟，不拆碎进行
+- [x] W2.4 `GroupInfo.group_id` / `FriendInfo.user_id`：`i64` → `String`（breaking；与 Panel 阶段 1 同批发布 + 升级指南记录）。**注**：本轮核实 Panel 侧（`protocol.ts` / `QqPanel.vue` 的比较与 toggle 链路）依赖 number 形态，单侧改动会破坏面板交互——按约定推迟，不拆碎进行。**已随泛化 Core-1 落地（commit be94746）**：`GroupInfo.group_id` / `FriendInfo.user_id` 等改 `String`，命令侧经 `id_compat.rs` 双读兼容 number/string；Panel 侧同批（02a/02b）
 
 **W3 管理面置换（核心：`QqManagement` → `AdapterManagement`）**
 
@@ -394,9 +396,32 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 
 - [x] W4.1 旧 10 命令 / 7 事件保留（deprecated 保留，发射源 = `AdapterState` 投影，不新增第二事实来源）
 - [x] W4.2 双跑对照入库：`dual_run_old_and_new_gate_commands_produce_equivalent_state`（同一操作经 `SetQqGateMode` 与 `InvokeAdapterOp` 产生**等价状态**与同一事件形态；多实例广播对齐已断言）
-- [ ] W4.3 升级指南：线协议 breaking 清单 + 废弃时间表（两版本周期）——随 Panel 阶段 1（W2.4 同批）编写
+- [x] W4.3 升级指南：线协议 breaking 清单 + 废弃时间表（两版本周期）——随 Panel 阶段 1（W2.4 同批）编写（正文见下「升级指南（W4.3）」）
 - [x] W4.4 loopback 端到端（mock 适配器全链路：`InvokeAdapterOp` → `invoke_custom` → `AdapterOpResult` + `AdapterState` + 派生旧事件；写方法广播断言）
 - **验收（已达成）**：Panel 现状功能零回归（全仓 63 组测试全绿）；双跑 diff 为空（双跑测试入库）；`cargo test --workspace` 全量绿
+
+### 升级指南（W4.3）
+
+> 发行说明草稿（版本 N 起，N+2 完成）。
+
+**线协议 breaking（版本 N）**
+
+- id 一律字符串：`GroupInfo.group_id`、`FriendInfo.user_id`、`QqFilterConfig` 四数组、`QqOwner.owner_qq` 输出改为 string；`QqOwner.owner_qq` 未设置由 `0` 变 `""`。命令侧 `user_ids` / `group_ids` / `owner_qq` 同时接受 number 与 string（N+2 起只保证 string 语义，随变体删除）。
+- `AdapterStatus.container` / `webui_url` / `onebot_url` deprecated：改读 `metadata[]` 中 `key` 同名项。
+
+**废弃时间表（两版本周期）**
+
+| 版本 | 状态 |
+|---|---|
+| N | 旧 10 命令 / 7 事件 / 3 字段标 deprecated；Core 收到旧命令记 warn；id 改 String |
+| N+1 | 行为不变；发行说明再次提示 |
+| N+2 | 物理删除；旧命令反序列化失败（`unknown variant`，Core 对未知命令的回应待验证） |
+
+**用户侧操作**
+
+1. Core 与 Panel **必须同时升级到 N**（旧 Panel 连新 Core 会出现名单开关失效）；QQ 插件无需升级。
+2. 自建客户端：把管理命令改为 `InvokeAdapterOp { adapter, method, payload }`，监听 `AdapterOpResult` / `AdapterState`；方法映射见 §适配器管理通道。
+3. 配置文件不变（`[adapters.qq]` 中 `owner_qq` 等仍为整数，属插件私有）。
 
 **风险与开放问题**：
 

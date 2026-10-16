@@ -199,7 +199,7 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [ ] ① provider-llm（已单点装配，最易）→ 协议化
 - [x] ② 工具子集试点：websearch + calculator → **独立二进制**（已提交 `65c1c2a`：`echo-plugin-sdk` + `echo-plugin-example` + 5 项 e2e；内核 `plugins.toml` 装配集成进行中）
 - [ ] ③ skills-dir
-- [ ] ④ adapter-qq → subprocess（崩溃隔离收益最大；设计见 [适配器插件化设计](./adapter-plugin.md)）
+- [x] ④ adapter-qq → subprocess（崩溃隔离收益最大；设计见 [适配器插件化设计](./adapter-plugin.md)）——**已完成**：QQ 适配器以独立仓库插件、经 `plugins.toml` 由宿主拉起（P1.7 外迁 / P1.8 宿主装配 / P1.9 删内置）；泛化收尾轮完成 `adapter_ops` / `adapter_tools` 改名、UI 描述符链路与 Panel 通道切换、通用渲染器（记录见 [adapter-genericization/](./adapter-genericization/)）。
 - [ ] ⑤ workspace
 - [ ] ⑥ subagent（hook 接入改经协议事件）
 - [ ] ⑦ loop.single / loop.parallel → inproc（保持内联；注入改经协议挂载）
