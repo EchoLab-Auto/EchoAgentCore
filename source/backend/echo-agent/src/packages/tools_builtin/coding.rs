@@ -688,8 +688,15 @@ impl Tool for RunCommandTool {
         super::reject_core_self_stop(cmd)?;
 
         // Block dangerous patterns.
+        // 2026-10 审计修复：rm 改为词元/路径语义判定（此前是子串匹配，
+        // 正常子路径清理全被误拦）；其余模式保持子串匹配不变。
+        if let Some(target) = dangerous_rm_root_target(cmd) {
+            return Err(ToolError::Execution(format!(
+                "blocked dangerous command pattern: rm -rf {target}（受保护的系统路径）"
+            )));
+        }
         let lower = cmd.to_lowercase();
-        for dangerous in &["rm -rf /", "mkfs.", "dd if=", ":(){ :|:& };:", "> /dev/sda"] {
+        for dangerous in &["mkfs.", "dd if=", ":(){ :|:& };:", "> /dev/sda"] {
             if lower.contains(dangerous) {
                 return Err(ToolError::Execution(format!(
                     "blocked dangerous command pattern: {dangerous}"
@@ -806,6 +813,68 @@ pub fn register_coding_tools(registry: &mut ToolRegistry, workspace: PathBuf) {
     ))));
 }
 
+/// 递归+强制 rm 的根目录目标判定（返回命中的目标用于报错；None = 放行）。
+///
+/// 2026-10 审计修复：旧实现用**子串匹配**判（"rm -rf " + "/" 连写——
+/// 任何含该片段的命令都被拦，正常清理也被误伤，实测 16+ 次误报阻断）。
+/// 现在按 shell 词元扫描 rm 调用：仅当「同时带递归 (-r/-R/--recursive)
+/// 与强制 (-f/--force) 标志，或显式 --no-preserve-root」且目标为根目录、
+/// 根级通配 /*、或根下一级系统目录时才判定危险；带引号的写法
+/// （如 bash -c '…'）剥引号后同规则处理。
+fn dangerous_rm_root_target(cmd: &str) -> Option<String> {
+    // 根下一级受保护目录（整目录删除视为灾难性；其子路径不受限）。
+    const PROTECTED_ROOT_DIRS: &[&str] = &[
+        "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64", "/opt", "/proc", "/root",
+        "/run", "/sbin", "/srv", "/sys", "/usr", "/var",
+    ];
+    for segment in cmd.split([';', '|', '&', '\n', '\r']) {
+        let mut words = segment
+            .split_whitespace()
+            .map(|word| word.trim_matches(|c| c == '\'' || c == '"'))
+            .peekable();
+        while let Some(word) = words.next() {
+            if word != "rm" && !word.ends_with("/rm") {
+                continue;
+            }
+            let mut recursive = false;
+            let mut force = false;
+            let mut no_preserve_root = false;
+            let mut targets: Vec<&str> = Vec::new();
+            for word in words.by_ref() {
+                match word {
+                    "--no-preserve-root" => no_preserve_root = true,
+                    "--recursive" => recursive = true,
+                    "--force" => force = true,
+                    "-" => {}
+                    _ if word.starts_with('-') && word.len() > 1 => {
+                        // 组合短标志（-rf / -fr / -r -f …）；未知长标志
+                        // （如 --verbose）不携带 r/f 语义，按前缀排除。
+                        if !word.starts_with("--") {
+                            recursive |= word.contains('r') || word.contains('R');
+                            force |= word.contains('f');
+                        }
+                    }
+                    _ => targets.push(word),
+                }
+            }
+            if !no_preserve_root && !(recursive && force) {
+                continue;
+            }
+            for target in targets {
+                let trimmed = target.trim_end_matches('/');
+                let normalized = if trimmed.is_empty() { "/" } else { trimmed };
+                if no_preserve_root
+                    || normalized == "/"
+                    || normalized == "/*"
+                    || PROTECTED_ROOT_DIRS.contains(&normalized)
+                {
+                    return Some(target.to_string());
+                }
+            }
+        }
+    }
+    None
+}
 #[cfg(test)]
 #[cfg(test)]
 mod tests {
@@ -1172,6 +1241,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&ws);
     }
 
+    /// 词元/路径语义回归（2026-10 审计修复）：正常子路径清理放行，
+    /// 根目录 / 根级通配 / 根下一级系统目录仍拦截；本用例只对判定
+    /// 函数断言，不实际执行任何命令。
+    #[test]
+    fn rm_guard_distinguishes_root_targets_from_subpaths() {
+        for blocked in [
+            "rm -rf /",
+            "rm -rf /*",
+            "rm -rf /etc",
+            "rm -fr /usr/",
+            "rm --recursive --force /home",
+            "rm -rf --no-preserve-root /",
+            "bash -c 'rm -rf /'",
+            "rm -rf /tmp/keep-data /",
+            "cd / && rm -r -f /var",
+        ] {
+            assert!(
+                dangerous_rm_root_target(blocked).is_some(),
+                "must block: {blocked}"
+            );
+        }
+        for allowed in [
+            "rm -rf /tmp/fbx_test_out",
+            "cd /tmp && rm -rf x",
+            "rm -rf /home/evence/.cache/echo-wt",
+            "rm -rf /var/log/myapp",
+            "rm -rf ./build && cargo build",
+            "rm -f /tmp/a.txt",
+            "rm /",
+            "find / -maxdepth 1 -name 'x' -delete",
+        ] {
+            assert!(
+                dangerous_rm_root_target(allowed).is_none(),
+                "must allow: {allowed}"
+            );
+        }
+    }
     #[tokio::test]
     async fn bash_rejects_empty() {
         let ws = temp_workspace("cmd-empty");
