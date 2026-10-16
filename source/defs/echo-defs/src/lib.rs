@@ -16,7 +16,7 @@
 //! | [`skill`] | the skill seam: `Skill`, `SkillMetadata`, `SkillProvider` trait |
 //! | [`chat`] | the chat-platform seam: platform-agnostic message/target types + `ChatAdapter` trait |
 //! | [`adapter`] | the adapter seam: `Adapter` trait, `AdapterInfo`/`AdapterError`, `AdapterManagement` |
-//! | [`mode`] | shared policy enums (`GateMode`, `ThinkingMode`, `ReasoningEffort`, `LoopMode`) |
+//! | [`mode`] | shared policy enums (`ThinkingMode`, `ReasoningEffort`, `LoopMode`) |
 //! | [`token`] | pure token-estimation/truncation helpers |
 //! | [`media`] | multimodal payload hygiene: embedded base64 → placeholder text |
 //! | [`session`] | the event-sourced session seam: `SessionEvent` + `SessionStore` traits |
@@ -56,7 +56,7 @@ pub use message::{
     ChatChunk, ChatMessage, ChatRequest, ChatResponse, ChatRole, ChatStreamAccumulator, ToolCall,
     ToolCallDelta, Usage,
 };
-pub use mode::{GateMode, LoopMode, ReasoningEffort, ThinkingMode};
+pub use mode::{LoopMode, ReasoningEffort, ThinkingMode};
 pub use node::NodeId;
 pub use session::{SessionEvent, SessionStore};
 pub use token::{
