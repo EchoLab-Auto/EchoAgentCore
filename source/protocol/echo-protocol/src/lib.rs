@@ -23,9 +23,6 @@ pub mod command;
 pub mod event;
 pub mod mode;
 
-/// W2.4 命令侧 id 双读助手（私有；事件侧纯 breaking，不需要）。
-mod id_compat;
-
 pub use bridge::{
     create_bridge, deserialize_message, serialize_command, serialize_event, BackendBridge,
     BackendHandle, FanoutHandle, WsMessage,
@@ -35,9 +32,9 @@ pub use command::{command_clearance, BackendCommand, CommandClearance};
 pub use event::{
     AdapterMetadataEntry, AdapterStatus, ApiBalancePoint, ApiMetricsEntry, ApiProfileInfo,
     ApiUsagePoint, BackendEvent, BackendState, BrowseRoot, ContextBlockInfo, ContextMessageInfo,
-    FederationLinkState, FederationPeerInfo, FriendInfo, GroupInfo, PluginInfo, SessionInfo,
-    ShellSessionInfo, SkillInfo, SkillSourceInfo, TeamInfo, TimelineMessage, TimelineSource,
-    TimelineTool, ToolInfo, WorkspaceConversationInfo, WorkspaceDirectory, WorkspaceFileEntry,
-    WorkspaceGitInfo, WorkspaceSessionInfo,
+    FederationLinkState, FederationPeerInfo, PluginInfo, SessionInfo, ShellSessionInfo, SkillInfo,
+    SkillSourceInfo, TeamInfo, TimelineMessage, TimelineSource, TimelineTool, ToolInfo,
+    WorkspaceConversationInfo, WorkspaceDirectory, WorkspaceFileEntry, WorkspaceGitInfo,
+    WorkspaceSessionInfo,
 };
 pub use mode::{GateMode, LoopMode, ReasoningEffort, ThinkingMode};

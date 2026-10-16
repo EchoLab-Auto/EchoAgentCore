@@ -1618,8 +1618,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         });
     }
     // 插件 UI 状态（`report_ui_state`）→ `AdapterState` 事件（泛化 01a §1.2
-    // S4：推送接线，与连接态通道分离）。同一份状态派生旧 QQ 事件（W4.1
-    // 迁移期，QqPanel 仍消费旧事件；复用单源纯函数避免双源）。
+    // S4：推送接线，与连接态通道分离）。
     if let Some(rt) = &plugin_runtime {
         let mut ui_states = rt.adapter_host().subscribe_ui_states();
         let supervisor_for_ui = Arc::clone(&supervisor);
@@ -1647,13 +1646,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     .get_exact(&persona)
                     .map(|entry| entry.agent)
                     .unwrap_or_else(|| ui_fallback_agent.clone());
-                // 迁移期：同一状态单源派生旧 QQ 事件（W4.1，deprecated）。
-                for event in echo_agent::derive_legacy_qq_state_events(
-                    &change.state,
-                    Some(change.adapter.clone()),
-                ) {
-                    entry.emit(event);
-                }
                 entry.emit(echo_protocol::BackendEvent::AdapterState {
                     adapter: change.adapter,
                     state: change.state,

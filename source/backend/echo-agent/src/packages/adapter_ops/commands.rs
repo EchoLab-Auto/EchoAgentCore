@@ -7,8 +7,6 @@
 //! - 实例寻址 [`resolve_adapter`]：显式名字优先；缺省按**注册表全体**
 //!   回退——0 个报错、恰 1 个选它、≥2 要求显式 `adapter`（平台中立，无
 //!   `platform()` 过滤）。
-//! - 旧 QQ 命令变体（迁移期）的处理臂在 `legacy.rs`（N+2 随协议变体删除；
-//!   见 01b §D.1 / §D.5）。
 //!
 //! **多实例寻址**（2026-09）：命令携带 `adapter: Option<String>`（实例名）。
 //! - `Some(name)` → 精确寻址该实例；
@@ -51,12 +49,8 @@ impl Agent {
     /// Handle the adapter-domain command variants. Called by `apply_command`
     /// when the command belongs to this domain.
     ///
-    /// 迁移兼容（N～N+1）：旧 QQ 命令变体先过 `legacy.rs` 兼容层；其余命令
-    /// 进通用 `InvokeAdapterOp` 臂。N+2 兼容层删除后本函数只剩通用臂。
+    /// 命令域只含通用 `InvokeAdapterOp` 臂（旧 QQ 变体已于 2026-10 删除）。
     pub(crate) async fn apply_adapter_command(&self, cmd: BackendCommand) {
-        let Some(cmd) = self.apply_legacy_command(cmd).await else {
-            return;
-        };
         match cmd {
             BackendCommand::InvokeAdapterOp {
                 adapter,
@@ -65,7 +59,7 @@ impl Agent {
             } => {
                 // W2.1/W3.3：通用适配器管理命令（唯一新增变体）——经管理面
                 // invoke_custom 执行；写类方法对齐其余实例（best-effort），
-                // 完成后状态下发单源化（AdapterState 单源派生旧事件）。
+                // 完成后状态下发单源化（AdapterState 单源）。
                 // C1（泛化 02a §7.2）：失败统一回执 AdapterOpResult{error}
                 // （替代 Error），实例解析失败同样以命令自带 adapter/method
                 // 回显（Panel 按键配对，无需等超时）。
@@ -90,12 +84,12 @@ impl Agent {
                             .await;
                         // 写类方法完成后刷新状态（读类查询不重复下发）。
                         if SHARED_WRITE_METHODS.contains(&method.as_str()) {
-                            self.emit_adapter_state_events(ad.clone(), Some(adapter.clone()));
+                            self.emit_adapter_state_events(ad.clone());
                         }
                         // C2（泛化 02a §7.2 D2）：读路径 `get_state` 成功完成后
                         // 推送状态（Panel 首屏路径；复用单源，其余读方法不加）。
                         if succeeded && method == "get_state" {
-                            self.emit_adapter_state_events(ad.clone(), Some(adapter.clone()));
+                            self.emit_adapter_state_events(ad.clone());
                         }
                     }
                     Err(message) => self.emit(BackendEvent::AdapterOpResult {
@@ -148,13 +142,11 @@ impl Agent {
     }
 
     /// 状态下发单源化（W3.4）：从 `AdapterManagement::cached_state` 一次性
-    /// 读管理状态，派生新通道事件（`AdapterState`）与全部迁移期旧事件——
-    /// 单一事实来源，无双源漂移；能力缺失 / 无状态时静默跳过（调用方
-    /// 已给出错误反馈）。旧事件派生在 legacy 兼容层（N+2 只留 AdapterState）。
+    /// 读管理状态，下发新通道事件（`AdapterState`）——单一事实来源；
+    /// 能力缺失 / 无状态时静默跳过（调用方已给出错误反馈）。
     pub(crate) fn emit_adapter_state_events(
         &self,
         ad: std::sync::Arc<dyn echo_adapter::traits::Adapter>,
-        adapter: Option<String>,
     ) {
         let Some(management) = ad.management() else {
             return;
@@ -167,11 +159,6 @@ impl Agent {
             adapter: ad.name().to_string(),
             state: state.clone(),
         });
-        // 迁移期：由同一状态派生旧事件（W4.1，deprecated 保留；推送路径
-        // 共用同一纯函数——单源派生防双源漂移）。函数在 legacy 兼容层。
-        for event in super::legacy::derive_legacy_qq_state_events(&state, adapter) {
-            self.emit(event);
-        }
     }
 
     /// 把写类管理方法（gating 平台的共享配置）对齐到同 **platform** 的
@@ -385,7 +372,7 @@ mod tests {
     }
 
     /// C2（泛化 02a §7.2 D2）：读路径 `get_state` 成功完成后推送
-    /// `AdapterState`（+ 派生旧事件，单源）；其它读方法不推。
+    /// `AdapterState`（单源）；其它读方法不推。
     #[tokio::test]
     async fn invoke_adapter_op_get_state_pushes_adapter_state() {
         let (agent, events) = agent_with_two_instances();
@@ -406,7 +393,7 @@ mod tests {
             )),
             "get_state 应回执成功；实际 = {emitted:?}"
         );
-        // 状态推送：AdapterState（目标实例）+ 派生旧事件同源。
+        // 状态推送：AdapterState（目标实例）。
         let states: Vec<_> = emitted
             .iter()
             .filter_map(|e| match e {
@@ -423,23 +410,6 @@ mod tests {
         );
         assert_eq!(states[0].0, "mock-a");
         assert_eq!(states[0].1["gate"]["mode"], serde_json::json!("none"));
-        let legacy: Vec<_> = emitted
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    BackendEvent::QqGateMode { .. }
-                        | BackendEvent::QqFilterConfig { .. }
-                        | BackendEvent::QqOwner { .. }
-                )
-            })
-            .collect();
-        assert_eq!(
-            legacy.len(),
-            3,
-            "派生旧事件应与状态同源派生；实际 = {emitted:?}"
-        );
-
         // 另一读方法（get_filter_config）成功但**不**推 AdapterState。
         agent
             .apply_adapter_command(BackendCommand::InvokeAdapterOp {

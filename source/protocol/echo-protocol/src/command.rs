@@ -1,6 +1,6 @@
 //! Commands sent by the TUI / API layer into the agent backend.
 
-use crate::mode::{GateMode, ReasoningEffort, ThinkingMode};
+use crate::mode::{ReasoningEffort, ThinkingMode};
 
 /// Commands from the frontend to the agent backend.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -268,8 +268,8 @@ pub enum BackendCommand {
     RequestAdapterStatus,
     /// 调用一个适配器管理方法（W2.1，2026-10 适配器管理通道）。
     ///
-    /// **唯一新增的适配器管理命令**——取代逐平台专属命令（`UpdateQqAllowlist`
-    /// / `SetQqGateMode` / `RequestQqQrcode` …，迁移期共存，两版本周期后删除）。
+    /// **唯一新增的适配器管理命令**——取代逐平台专属命令（旧 QQ 专属变体
+    /// 已于 2026-10 直接删除）。
     /// `method` 与插件协议 `custom op` 及 `AdapterManagement::invoke_custom`
     /// 同名直通（如 `set_gate_mode` / `update_allowlist` / `login_qrcode`）。
     /// 响应为 [`crate::event::BackendEvent::AdapterOpResult`]。
@@ -284,26 +284,6 @@ pub enum BackendCommand {
         /// 方法参数（JSON；缺省空对象）。
         #[serde(default)]
         payload: serde_json::Value,
-    },
-    /// Request the QQ group list.
-    RequestGroupList {
-        #[serde(default)]
-        adapter: Option<String>,
-    },
-    /// Request the QQ friend list (for interactive allowlist/denylist UI).
-    RequestFriendList {
-        #[serde(default)]
-        adapter: Option<String>,
-    },
-    /// 查询某 QQ 实例的登录状态（Core 代理，Panel 不直连 OneBot）。
-    RequestQqLoginStatus {
-        #[serde(default)]
-        adapter: Option<String>,
-    },
-    /// 拉取某 QQ 实例的登录二维码（Core 代理：从 NapCat 容器取 PNG）。
-    RequestQqQrcode {
-        #[serde(default)]
-        adapter: Option<String>,
     },
 
     // ---- 工作区会话（workspace 插件：基于工作空间的会话管理）----
@@ -374,17 +354,6 @@ pub enum BackendCommand {
     StartAllAdapters,
     /// Stop all running adapters.
     StopAllAdapters,
-    /// Update QQ adapter allowlist at runtime.
-    UpdateQqAllowlist {
-        /// QQ 实例名（多实例寻址；None = 唯一实例/legacy "qq"）。
-        #[serde(default)]
-        adapter: Option<String>,
-        /// **W2.4（版本 N）**：字符串 id；迁移期双读（number 旧客户端照常可发）。
-        #[serde(deserialize_with = "crate::id_compat::deserialize_ids")]
-        user_ids: Vec<String>,
-        #[serde(deserialize_with = "crate::id_compat::deserialize_ids")]
-        group_ids: Vec<String>,
-    },
     /// Request the list of all discovered skills (metadata + instructions).
     /// Responds with `BackendEvent::SkillsList`.
     RequestSkillsList,
@@ -394,45 +363,6 @@ pub enum BackendCommand {
     /// Request the list of all registered tool definitions.
     /// Responds with `BackendEvent::ToolsList`.
     RequestToolsList,
-    /// Update QQ adapter denylist at runtime.
-    UpdateQqDenylist {
-        /// QQ 实例名（多实例寻址；None = 唯一实例）。
-        #[serde(default)]
-        adapter: Option<String>,
-        /// **W2.4（版本 N）**：字符串 id；迁移期双读（number 旧客户端照常可发）。
-        #[serde(deserialize_with = "crate::id_compat::deserialize_ids")]
-        user_ids: Vec<String>,
-        #[serde(deserialize_with = "crate::id_compat::deserialize_ids")]
-        group_ids: Vec<String>,
-    },
-    /// Request current QQ filter config.
-    RequestQqFilterConfig {
-        #[serde(default)]
-        adapter: Option<String>,
-    },
-    /// Set QQ gating mode. Serialised as "none" / "allowlist" / "denylist".
-    SetQqGateMode {
-        mode: GateMode,
-        /// QQ 实例名（多实例寻址；None = 唯一实例）。
-        #[serde(default)]
-        adapter: Option<String>,
-    },
-    /// Set the QQ owner (admin) at runtime. Persisted through the Core's
-    /// shared ConfigStore. **Frontend-only** — never exposed to the agent/LLM.
-    SetQqOwner {
-        /// **W2.4（版本 N）**：owner QQ 号字符串（双读兼容 number）；
-        /// `""` = 清除 / 无 owner（替代旧 `0`）。
-        #[serde(deserialize_with = "crate::id_compat::deserialize_id")]
-        owner_qq: String,
-        #[serde(default)]
-        adapter: Option<String>,
-    },
-    /// Request the current QQ owner (admin) QQ number. **Frontend-only** —
-    /// never exposed to the agent/LLM.
-    RequestQqOwner {
-        #[serde(default)]
-        adapter: Option<String>,
-    },
 
     // ── 联邦管理（federation Phase 4，**Frontend-only**）──
     /// 新增/更新一个联邦 peer（运行时生效 + ConfigStore 原子写回）。
@@ -518,21 +448,13 @@ pub enum CommandClearance {
 /// Return the command clearance level for `cmd`.
 ///
 /// **类别判定（W2.3，2026-10）**：适配器管理命令按**类别**判定——
-/// 一切 [`BackendCommand::InvokeAdapterOp`]（以及迁移期的 QQ 专属变体）
-/// 都是 Frontend-only：人在环配置面，模型绝不可控。类别判定取代了
-/// 「逐 QQ 变体枚举」——新增管理方法不再需要记得加枚举臂
-/// （消除「忘加枚举臂」回归窗口，fail-closed）。
+/// 一切 [`BackendCommand::InvokeAdapterOp`] 都是 Frontend-only：人在环
+/// 配置面，模型绝不可控。类别判定取代了「逐平台变体枚举」——新增管理
+/// 方法不再需要记得加枚举臂（消除「忘加枚举臂」回归窗口，fail-closed）。
 pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
     match cmd {
         // 适配器管理命令：类别判定（任意平台、任意方法）。
         BackendCommand::InvokeAdapterOp { .. }
-        // 迁移期：QQ 专属变体保留同等判定（随废弃删除）。
-        | BackendCommand::UpdateQqAllowlist { .. }
-        | BackendCommand::UpdateQqDenylist { .. }
-        | BackendCommand::SetQqGateMode { .. }
-        | BackendCommand::SetQqOwner { .. }
-        | BackendCommand::RequestQqOwner { .. }
-        | BackendCommand::RequestQqFilterConfig { .. }
         | BackendCommand::SaveWorkspaceSession { .. }
         | BackendCommand::DeleteWorkspaceSession { .. }
         | BackendCommand::ActivateWorkspaceSession { .. }
@@ -607,69 +529,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn qq_admin_commands_are_frontend_only() {
-        assert_eq!(
-            command_clearance(&BackendCommand::UpdateQqAllowlist {
-                user_ids: vec![],
-                group_ids: vec![],
-                adapter: None
-            }),
-            CommandClearance::Frontend
-        );
-        assert_eq!(
-            command_clearance(&BackendCommand::UpdateQqDenylist {
-                user_ids: vec![],
-                group_ids: vec![],
-                adapter: None
-            }),
-            CommandClearance::Frontend
-        );
-        assert_eq!(
-            command_clearance(&BackendCommand::SetQqGateMode {
-                mode: crate::mode::GateMode::Allowlist,
-                adapter: None
-            }),
-            CommandClearance::Frontend
-        );
-        assert_eq!(
-            command_clearance(&BackendCommand::SetQqOwner {
-                owner_qq: "123".into(),
-                adapter: None
-            }),
-            CommandClearance::Frontend
-        );
-        assert_eq!(
-            command_clearance(&BackendCommand::RequestQqOwner { adapter: None }),
-            CommandClearance::Frontend
-        );
-        assert_eq!(
-            command_clearance(&BackendCommand::RequestQqFilterConfig { adapter: None }),
-            CommandClearance::Frontend
-        );
-        assert_eq!(
-            command_clearance(&BackendCommand::ClearHistory {
-                team_id: None,
-                session_id: None,
-            }),
-            CommandClearance::Frontend,
-            "wiping memory is a human decision, never agent-originated"
-        );
-        assert_eq!(
-            command_clearance(&BackendCommand::RequestAdapterStatus),
-            CommandClearance::Agent
-        );
-        assert_eq!(
-            command_clearance(&BackendCommand::SendMessage {
-                session_id: "s".into(),
-                content: "hi".into(),
-                images: vec![],
-                team_id: None
-            }),
-            CommandClearance::Agent
-        );
-    }
-
     /// `RenameApi` 线格式：字段名必须与 Panel 手工镜像一致
     /// （`{"RenameApi":{"from":"a","to":"b"}}`；Panel protocol-sync 契约）。
     #[test]
@@ -684,81 +543,4 @@ mod tests {
         assert_eq!(back, cmd);
     }
 
-    /// W2.4 双读：旧客户端 number 与新客户端 string 均可解析（等价载荷）；
-    /// 序列化统一输出 string（新形状）。
-    #[test]
-    fn qq_id_commands_accept_number_and_string() {
-        // UpdateQqAllowlist：number / string / 混合列表 → 同一 String 归一。
-        let numeric: BackendCommand =
-            serde_json::from_str(r#"{"UpdateQqAllowlist":{"user_ids":[7,8],"group_ids":[9]}}"#)
-                .unwrap();
-        assert_eq!(
-            numeric,
-            BackendCommand::UpdateQqAllowlist {
-                adapter: None,
-                user_ids: vec!["7".into(), "8".into()],
-                group_ids: vec!["9".into()],
-            }
-        );
-        let textual: BackendCommand = serde_json::from_str(
-            r#"{"UpdateQqAllowlist":{"user_ids":["7","8"],"group_ids":["9"]}}"#,
-        )
-        .unwrap();
-        assert_eq!(numeric, textual);
-        let mixed: BackendCommand =
-            serde_json::from_str(r#"{"UpdateQqAllowlist":{"user_ids":["7",8],"group_ids":[9]}}"#)
-                .unwrap();
-        assert_eq!(numeric, mixed);
-        // 序列化（写回）一律字符串。
-        let value = serde_json::to_value(&textual).unwrap();
-        assert_eq!(
-            value["UpdateQqAllowlist"]["user_ids"],
-            serde_json::json!(["7", "8"])
-        );
-
-        // UpdateQqDenylist：同上。
-        let numeric: BackendCommand =
-            serde_json::from_str(r#"{"UpdateQqDenylist":{"user_ids":[1],"group_ids":[2,3]}}"#)
-                .unwrap();
-        assert_eq!(
-            numeric,
-            BackendCommand::UpdateQqDenylist {
-                adapter: None,
-                user_ids: vec!["1".into()],
-                group_ids: vec!["2".into(), "3".into()],
-            }
-        );
-
-        // SetQqOwner：number → string；空串 = 清除语义（原样保留）。
-        let numeric: BackendCommand =
-            serde_json::from_str(r#"{"SetQqOwner":{"owner_qq":10001}}"#).unwrap();
-        assert_eq!(
-            numeric,
-            BackendCommand::SetQqOwner {
-                adapter: None,
-                owner_qq: "10001".into(),
-            }
-        );
-        let textual: BackendCommand =
-            serde_json::from_str(r#"{"SetQqOwner":{"owner_qq":"10001"}}"#).unwrap();
-        assert_eq!(numeric, textual);
-        let cleared: BackendCommand =
-            serde_json::from_str(r#"{"SetQqOwner":{"owner_qq":""}}"#).unwrap();
-        assert_eq!(
-            cleared,
-            BackendCommand::SetQqOwner {
-                adapter: None,
-                owner_qq: String::new(),
-            }
-        );
-
-        // 非法形态（null / 对象）拒绝——不静默吞掉。
-        assert!(
-            serde_json::from_str::<BackendCommand>(r#"{"SetQqOwner":{"owner_qq":null}}"#).is_err()
-        );
-        assert!(serde_json::from_str::<BackendCommand>(
-            r#"{"UpdateQqAllowlist":{"user_ids":[{"x":1}],"group_ids":[]}}"#
-        )
-        .is_err());
-    }
 }

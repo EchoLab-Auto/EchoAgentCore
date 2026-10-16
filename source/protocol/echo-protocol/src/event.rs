@@ -34,18 +34,6 @@ pub struct AdapterStatus {
     /// （Panel）按 KV 通用渲染，宿主不再为每个平台加具名字段。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub metadata: Vec<AdapterMetadataEntry>,
-    /// **deprecated（迁移期保留，随 Panel 阶段 1 删除）**：NapCat 容器名。
-    /// 取代者：`metadata`（key = `container`）。
-    #[serde(default)]
-    pub container: Option<String>,
-    /// **deprecated（迁移期保留，随 Panel 阶段 1 删除）**：NapCat WebUI 地址。
-    /// 取代者：`metadata`（key = `webui_url`）。
-    #[serde(default)]
-    pub webui_url: Option<String>,
-    /// **deprecated（迁移期保留，随 Panel 阶段 1 删除）**：OneBot HTTP API 地址。
-    /// 取代者：`metadata`（key = `onebot_url`）。
-    #[serde(default)]
-    pub onebot_url: Option<String>,
     /// 平台标识（如 `"qq"`；来自 `AdapterInfo.platform`）。Panel 会话分组 /
     /// 通用化寻址需要它上线（W2.3 泛化 Core-1，2026-10）；旧 Panel 忽略。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -765,60 +753,6 @@ pub enum BackendEvent {
         /// 状态文档（平台自定义；约定键见 `AdapterManagement::cached_state`）。
         state: serde_json::Value,
     },
-    /// QQ group list. `adapter` = 实例名（多实例寻址；None = 旧单实例）。
-    GroupList {
-        groups: Vec<GroupInfo>,
-        #[serde(default)]
-        adapter: Option<String>,
-    },
-    /// Current QQ filter configuration (allowlist/denylist).
-    QqFilterConfig {
-        /// **W2.4（版本 N）**：id 一律字符串（事件侧纯 breaking；Core 从
-        /// `cached_state` 宽容读取 number|string 后统一输出 string）。
-        allowlist_users: Vec<String>,
-        allowlist_groups: Vec<String>,
-        denylist_users: Vec<String>,
-        denylist_groups: Vec<String>,
-        #[serde(default)]
-        adapter: Option<String>,
-    },
-    /// QQ gate mode changed.
-    QqGateMode {
-        mode: crate::mode::GateMode,
-        #[serde(default)]
-        adapter: Option<String>,
-    },
-    /// QQ 登录状态（Core 代理查询，Panel 不再直连 OneBot HTTP）。
-    QqLoginStatus {
-        adapter: String,
-        online: bool,
-        #[serde(default)]
-        user_id: Option<String>,
-        #[serde(default)]
-        nickname: Option<String>,
-    },
-    /// QQ 登录二维码（PNG base64；Core 从 NapCat 容器取回）。
-    QqQrcode {
-        adapter: String,
-        /// base64 编码的 PNG；错误时为空字符串。
-        png_base64: String,
-        #[serde(default)]
-        error: Option<String>,
-    },
-    /// Current QQ owner (admin) QQ number. Frontend-only; never emitted to
-    /// the agent/LLM context. **W2.4（版本 N）**：字符串化，未设置 = `""`。
-    QqOwner {
-        /// **W2.4（版本 N）**：owner QQ 号字符串；未设置 = `""`（替代旧 `0`）。
-        owner_qq: String,
-        #[serde(default)]
-        adapter: Option<String>,
-    },
-    /// QQ friend list (for interactive allowlist/denylist picker).
-    FriendList {
-        friends: Vec<FriendInfo>,
-        #[serde(default)]
-        adapter: Option<String>,
-    },
 
     // ---- 工作区会话（workspace 插件）----
     /// 工作区会话列表快照（含激活会话标记）。
@@ -1009,14 +943,6 @@ pub struct PluginInfo {
     /// 所属包 id（横跨 plugin+tool+skill 的组合标签；未声明 = 插件 id）。
     #[serde(default)]
     pub package: String,
-}
-
-/// QQ group info for display. **W2.4（版本 N）**：id 一律字符串。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GroupInfo {
-    /// 群号（字符串；事件侧纯 breaking，旧 Panel 需同升）。
-    pub group_id: String,
-    pub group_name: String,
 }
 
 /// 联邦 peer 配置与链路状态（`FederationStatus` 列表元素；
@@ -1252,14 +1178,6 @@ pub struct WorkspaceFileEntry {
     pub size: u64,
 }
 
-/// QQ friend info for allowlist/denylist picker.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FriendInfo {
-    /// 好友 QQ 号（字符串；W2.4 事件侧纯 breaking）。
-    pub user_id: String,
-    pub nickname: String,
-}
-
 /// API profile summary (for TUI list display).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiProfileInfo {
@@ -1429,9 +1347,6 @@ mod adapter_status_tests {
             started_at: Some(1),
             persona: None,
             metadata: vec![],
-            container: None,
-            webui_url: None,
-            onebot_url: None,
             platform: Some("qq".into()),
             ui: Some(serde_json::json!({"version": 1, "panels": []})),
             session_labels: Some(serde_json::json!({"dm": "私聊", "group": "群聊"})),
@@ -1473,34 +1388,4 @@ mod adapter_status_tests {
         assert!(value.get("session_labels").is_none());
     }
 
-    /// W2.4 契约快照：事件侧 id 一律字符串（GroupInfo/FriendInfo/QqFilterConfig/QqOwner）。
-    #[test]
-    fn w24_event_ids_are_strings() {
-        let value = serde_json::to_value(BackendEvent::GroupList {
-            groups: vec![GroupInfo {
-                group_id: "12345".into(),
-                group_name: "群".into(),
-            }],
-            adapter: None,
-        })
-        .unwrap();
-        assert_eq!(value["GroupList"]["groups"][0]["group_id"], "12345");
-
-        let value = serde_json::to_value(BackendEvent::QqFilterConfig {
-            allowlist_users: vec!["7".into()],
-            allowlist_groups: vec![],
-            denylist_users: vec![],
-            denylist_groups: vec![],
-            adapter: None,
-        })
-        .unwrap();
-        assert_eq!(value["QqFilterConfig"]["allowlist_users"][0], "7");
-
-        let value = serde_json::to_value(BackendEvent::QqOwner {
-            owner_qq: String::new(),
-            adapter: None,
-        })
-        .unwrap();
-        assert_eq!(value["QqOwner"]["owner_qq"], "");
-    }
 }

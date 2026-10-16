@@ -1236,8 +1236,7 @@ impl Agent {
                 // 原样透传。None = 未声明，线上字段本就 Option）。
                 let ui = adapter.as_ref().and_then(|a| a.ui_descriptor());
                 let session_labels = adapter.as_ref().and_then(|a| a.session_labels());
-                // 通用元数据（W2.2）：平台自有展示字段经 KV 下发；迁移期与
-                // 下方 deprecated 具名字段并存（同源派生，无第二事实来源）。
+                // 通用元数据（W2.2）：平台自有展示字段经 KV 下发。
                 let mut metadata = Vec::new();
                 if let Some(container) = &container {
                     metadata.push(AdapterMetadataEntry {
@@ -1273,9 +1272,6 @@ impl Agent {
                     started_at: info.started_at,
                     persona,
                     metadata,
-                    container,
-                    webui_url,
-                    onebot_url,
                     platform: Some(info.platform),
                     ui,
                     session_labels,

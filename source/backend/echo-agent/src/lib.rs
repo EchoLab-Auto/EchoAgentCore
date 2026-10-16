@@ -72,7 +72,6 @@ mod packages;
 // ── 包（插件）实现的兼容 re-export：公开路径保持重组前原样，避免破坏
 //    core 组合根与既有引用（`echo_agent::subagent::…` 等）。──
 pub use packages::adapter_ops::bridge as adapter_bridge;
-pub use packages::adapter_ops::legacy::derive_legacy_qq_state_events;
 pub use packages::federation;
 pub use packages::provider_llm as llm;
 pub use packages::skills_dir as skill;
@@ -87,8 +86,8 @@ pub use bridge::{create_bridge, BackendBridge, BackendHandle, FanoutHandle};
 pub use command::BackendCommand;
 pub use config::{AgentConfig, AgentProfile, ReasoningEffort, TeamMember, ThinkingMode};
 pub use event::{
-    ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, GroupInfo, SessionInfo,
-    TimelineMessage, TimelineSource, TimelineTool,
+    ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, SessionInfo, TimelineMessage,
+    TimelineSource, TimelineTool,
 };
 pub use packages::adapter_ops::bridge::AgentMessageHook;
 pub use packages::provider_llm::LlmProvider;

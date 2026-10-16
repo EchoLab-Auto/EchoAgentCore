@@ -804,13 +804,13 @@ impl Agent {
                 // Also emit adapter status and adapter management state so the
                 // TUI starts up with the correct persisted values.
                 self.emit_adapter_list();
-                // 适配器管理状态：逐个实例下发（W3.4 单源化——AdapterState +
-                // 派生旧 QQ 事件；非 QQ / 缺管理面的实例在内部静默跳过）。
+                // 适配器管理状态：逐个实例下发（W3.4 单源化——AdapterState；
+                // 缺管理面的实例在内部静默跳过）。
                 for name in self.adapters.names() {
                     let Some(adapter) = self.adapters.get(&name) else {
                         continue;
                     };
-                    self.emit_adapter_state_events(adapter.clone(), Some(name.clone()));
+                    self.emit_adapter_state_events(adapter.clone());
                 }
             }
             BackendCommand::RequestContext {
@@ -1482,17 +1482,7 @@ impl Agent {
                 });
                 self.emit_adapter_list();
             }
-            BackendCommand::UpdateQqAllowlist { .. }
-            | BackendCommand::UpdateQqDenylist { .. }
-            | BackendCommand::SetQqGateMode { .. }
-            | BackendCommand::SetQqOwner { .. }
-            | BackendCommand::RequestQqOwner { .. }
-            | BackendCommand::RequestQqFilterConfig { .. }
-            | BackendCommand::RequestGroupList { .. }
-            | BackendCommand::RequestFriendList { .. }
-            | BackendCommand::RequestQqLoginStatus { .. }
-            | BackendCommand::RequestQqQrcode { .. }
-            | BackendCommand::InvokeAdapterOp { .. } => {
+            BackendCommand::InvokeAdapterOp { .. } => {
                 self.apply_adapter_command(cmd).await;
             }
             BackendCommand::RequestWorkspaceSessions { .. }
