@@ -337,3 +337,28 @@ fn subagent_task_field(task: &str) -> String {
         task.chars().count()
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::subagent_task_field;
+
+    /// task 字段放宽回归（2026-10 审计修复）：≤4000 字符原样透传
+    /// （500~4000 的描述此前会被截断——实测 53/58 条恰为 501 字符），
+    /// 超限截断并显式标注总字符数。
+    #[test]
+    fn subagent_task_field_keeps_long_descriptions_verbatim() {
+        let task = "a".repeat(783);
+        assert_eq!(subagent_task_field(&task), task, "783 字符应原样保留");
+        let boundary = "b".repeat(4000);
+        assert_eq!(
+            subagent_task_field(&boundary),
+            boundary,
+            "边界 4000 原样保留"
+        );
+        let over = "c".repeat(4001);
+        let out = subagent_task_field(&over);
+        assert!(out.starts_with(&"c".repeat(4000)), "超限保留前 4000");
+        assert!(out.contains("已截断"), "须显式标注截断: {out:?}");
+        assert!(out.contains("4001"), "须标注总字符数");
+    }
+}
