@@ -184,6 +184,16 @@ pub trait Adapter: Send + Sync {
     fn gating_capabilities(&self) -> bool {
         false
     }
+
+    /// 能力位：`send_text`（适配器可出站文本消息）。
+    ///
+    /// 宿主按本能力位（而非 platform）筛选可注册消息工具的适配器
+    ///（泛化 S6 / 01b §D.4）；远程适配器返回
+    /// `AdapterContribution.capabilities.send_text`。默认 `false`
+    ///（未声明 = 非出站通道，不注册任何适配器工具）。
+    fn sends_text(&self) -> bool {
+        false
+    }
 }
 
 /// 平台中立的适配器管理面（W3.1，2026-10 适配器管理通道）。

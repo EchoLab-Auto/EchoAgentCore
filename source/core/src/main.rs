@@ -1,6 +1,6 @@
 //! EchoAgentCore — agent core service.
 //!
-//! 运行 Agent 核心：LLM agent 循环、QQ 适配器（OneBot v11 反向 WS :3131）、
+//! 运行 Agent 核心：LLM agent 循环、平台适配器（独立进程插件）、
 //! 以及供 Panel 等前端连接的 management WebSocket（默认 :3132）。
 //! 前端（TUI）在独立的 EchoAgentPanel 仓库中，通过 `echo-protocol` 定义的
 //! WS/JSON 协议与本服务通信。
@@ -15,6 +15,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod adapter_commands;
+mod adapter_tools;
 mod agent_supervisor;
 mod config;
 mod federation_import;
@@ -25,7 +26,6 @@ mod node;
 mod plugins_runtime;
 mod port_cmd;
 mod qq_instances;
-mod qq_tools;
 mod security;
 
 use config::CoreConfig;
@@ -35,7 +35,7 @@ use echo_agent::{Agent, AgentProfile};
 use federation_rt::*;
 use logging::init_tracing;
 
-/// EchoAgentCore — agent core service (agent + QQ adapter + management WS).
+/// EchoAgentCore — agent core service (agent + adapters + management WS).
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Args {
@@ -157,7 +157,7 @@ async fn main() -> Result<()> {
     run_core(args, cfg).await
 }
 
-// ── Core：Agent + QQ 适配器 + management WS 服务 ────────────────────────────
+// ── Core：Agent + 适配器 + management WS 服务 ──────────────────────────────
 
 async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     init_tracing(&cfg.logging)?;
@@ -517,7 +517,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     }
     // Keep one sender alive for the whole `run_core` scope. The admin handler
     // Keep one sender alive for the whole `run_core` scope. The admin handler
-    // (the only other sender) is stored inside the QQ adapter's handler
+    // (the only other sender) is stored inside the adapter plugin's handler
     // registry; if that registry is dropped during an adapter restart,
     // `shutdown_rx.changed()` would otherwise complete with a `RecvError` and
     // the select below would misinterpret it as an admin shutdown.
@@ -584,7 +584,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             );
         None
     };
-    // 敏感目录（QQ 外发文件闸门用；core.toml / 会话 / 凭据目录）。
+    // 敏感目录（适配器外发文件闸门用；core.toml / 会话 / 凭据目录）。
     let sensitive_dirs = crate::security::sensitive_dirs(&args.config_path());
 
     // ---- API 指标存储（余额快照 / token 用量；面板图表数据源）----
@@ -634,7 +634,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // Adapter registry.
     let adapter_registry = echo_adapter::AdapterRegistry::new();
 
-    // ---- QQ 实例（多实例；实例 = 适配器名 = 会话 account 维度）----
+    // ---- 适配器实例（多实例；实例 = 适配器名 = 会话 account 维度）----
     // persona 门控：启用了 `echo-agent.adapter.qq` 的人格各自获得实例
     // （未配置实例时自动建档），legacy 单实例部署行为不变。
     let qq_enabled_personas: Vec<String> = cfg
@@ -655,7 +655,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         .cloned()
         .unwrap_or_else(|| cfg.agent.teams.keys().next().cloned().unwrap_or_default());
     // 数据目录：实例 compose / 卷命名都从这里派生（配置同目录）。
-    // 配置存储（QQ 实例端口持久化、Agent 配置写回等都依赖它）。
+    // 配置存储（实例端口持久化、Agent 配置写回等都依赖它）。
     let config_store = echo_adapter::ConfigStore::new(args.config_path());
     let qq_data_dir = args
         .config_path()
@@ -669,12 +669,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         &qq_default_persona,
         Some(&qq_data_dir),
     );
-    // QQ 适配器仅以独立进程插件运行（P1.9，2026-10 适配器插件化收尾——
+    // 适配器仅以独立进程插件运行（P1.9，2026-10 适配器插件化收尾——
     // 内置路径已移除；`builtin` 模式配置在加载期告警并按 plugin 处理）。
     let mut qq_adapters: Vec<(String, String, Arc<dyn echo_adapter::Adapter>)> = Vec::new();
     info!(
         instances = qq_instances.len(),
-        "QQ instances launch as adapter plugins"
+        "adapter instances launch as plugins"
     );
     // 插件实例 specs：每实例一条 `LaunchSpec`——`Hello.config` 携带实例身份 /
     // 归属人格 / 运行期状态文件（门控 / 名单 / owner 落盘回灌）与完整适配器
@@ -707,9 +707,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     };
     // 实例持久化：新分配的**归属人格与端口**写回
     // `[adapters.qq.instances.<id>]`（persona + ports），保证跨重启稳定：
-    // - 端口：容器端口映射必须稳定，NapCat 才能重连到同一处；
+    // - 端口：容器端口映射必须稳定，适配器容器才能重连到同一处；
     // - persona：自动建档实例若只写端口，重启后 persona 缺失会被重新
-    //   分配给默认人格（首个启用 QQ 的人格），实例归属漂移。
+    //   分配给默认人格（首个启用适配器插件的人格），实例归属漂移。
     {
         struct InstancePatch {
             id: String,
@@ -751,10 +751,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 }
                 Ok(())
             }) {
-                warn!(%error, "QQ instance persist failed");
+                warn!(%error, "adapter instance persist failed");
             } else {
                 let ids: Vec<&str> = patches.iter().map(|patch| patch.id.as_str()).collect();
-                info!(instances = ?ids, "QQ instance persona/ports allocated and persisted");
+                info!(instances = ?ids, "adapter instance persona/ports allocated and persisted");
             }
         }
     }
@@ -821,9 +821,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         .as_ref()
         .map(|r| r.adapters())
         .unwrap_or_default();
-    // plugin 模式的 QQ 实例：远程适配器融入统一实例表（与 builtin 同形——
-    // 工具注册 / 自启停 / 默认句柄共用），入站队列（`inbound_rx`）留给
-    // wiring 段的串行 worker（AdapterMessage → AgentMessageHook）。
+    // plugin 模式的适配器实例：远程适配器融入统一实例表（工具注册 /
+    // 自启停 / 默认句柄共用），入站队列（`inbound_rx`）留给 wiring 段的
+    // 串行 worker（AdapterMessage → AgentMessageHook）。
     let mut qq_plugin_workers: Vec<(String, String, plugins_runtime::RemoteAdapterHandle)> =
         Vec::new();
     for handle in plugin_adapters {
@@ -835,30 +835,36 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             platform = %platform,
             "plugin adapter registered"
         );
-        match qq_instances.iter().find(|instance| instance.id == name) {
-            Some(instance) => {
-                qq_adapters.push((
-                    instance.id.clone(),
-                    instance.persona.clone(),
-                    handle.adapter.clone() as Arc<dyn echo_adapter::Adapter>,
-                ));
-                qq_plugin_workers.push((instance.id.clone(), instance.persona.clone(), handle));
-            }
+        // 实例匹配放宽（泛化 S6 / 01b §D.4）：命中实例表 → 用其归属人格；
+        // 未命中（其他平台的适配器插件 / 未登记实例）→ 默认人格，仍注册
+        // 入站 worker 与消息工具，不再跳过。
+        let persona = match qq_instances.iter().find(|instance| instance.id == name) {
+            Some(instance) => instance.persona.clone(),
             None => {
-                tracing::debug!(
+                tracing::info!(
                     adapter = %name,
-                    "plugin adapter has no matching QQ instance (non-QQ adapter plugin?)"
+                    persona = %qq_default_persona,
+                    "plugin adapter has no instance entry; wired to the default persona"
                 );
+                qq_default_persona.clone()
             }
-        }
+        };
+        qq_adapters.push((
+            name.clone(),
+            persona.clone(),
+            handle.adapter.clone() as Arc<dyn echo_adapter::Adapter>,
+        ));
+        qq_plugin_workers.push((name, persona, handle));
     }
     // 进程级默认句柄：第一个实例（通常是 `qq`；自动启动/停机与登录兜底用）；
     // 无实例时 `None`（不再有内置空壳）。
     let qq_adapter: Option<Arc<dyn echo_adapter::Adapter>> =
         qq_adapters.first().map(|(_, _, adapter)| adapter.clone());
-    // persona → 该人格的 QQ 实例集合（工具注册按人格隔离；builtin / plugin
-    // 实例统一表）。
-    let qq_by_persona: std::collections::HashMap<String, Vec<Arc<dyn echo_adapter::Adapter>>> = {
+    // persona → 该人格的适配器实例集合（工具注册按人格隔离；实例统一表）。
+    let adapters_by_persona: std::collections::HashMap<
+        String,
+        Vec<Arc<dyn echo_adapter::Adapter>>,
+    > = {
         let mut map: std::collections::HashMap<String, Vec<Arc<dyn echo_adapter::Adapter>>> =
             std::collections::HashMap::new();
         for (_, persona, adapter) in &qq_adapters {
@@ -883,9 +889,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let factory_provider = provider_arc.clone();
     let factory_skills = skills.clone();
     let factory_adapters = adapters.clone();
-    let factory_qq_default: Vec<Arc<dyn echo_adapter::Adapter>> =
+    let factory_default_adapters: Vec<Arc<dyn echo_adapter::Adapter>> =
         qq_adapter.iter().cloned().collect();
-    let factory_qq_by_persona = qq_by_persona.clone();
+    let factory_adapters_by_persona = adapters_by_persona.clone();
     let factory_base_cfg = agent_config.clone();
     let factory_event_sink = event_sink.clone();
     let factory_plugin_host = plugin_host.clone();
@@ -901,7 +907,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let provider_arc2 = factory_provider.clone();
             let skills2 = factory_skills.clone();
             let adapters2 = factory_adapters.clone();
-            let qq_default2 = factory_qq_default.clone();
+            let default_adapters = factory_default_adapters.clone();
             let base_cfg = factory_base_cfg.clone();
             let event_sink = factory_event_sink.clone();
             let shared_plugin_host = factory_plugin_host.clone();
@@ -938,29 +944,35 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 脱敏器——所有工具（内置 / 插件 / 远程 / 子代理直呼）的
                 // 结果与错误消息统一脱敏后再交给任何消费者。
                 t.set_redactor(redactor2.clone());
-                // 平台（QQ）工具同样必须注册到每个 persona：QQ 消息的发送/查询
-                // 都依赖 send_private_msg / send_group_msg 等工具，缺少它们时
-                // persona 收到 QQ hook 后无法完成声明目标的投递。
-                // 每人格注册**自己实例集合**的 QQ 工具（多实例经 account 寻址）。
-                let persona_instances = factory_qq_by_persona
+                // 适配器工具（消息发送/查询）必须注册到每个 persona：缺少
+                // send_private_msg / send_group_msg 等工具时，persona 收到
+                // 适配器入站 hook 后无法完成声明目标的投递。
+                // 每人格注册**自己实例集合**的适配器工具（多实例经 account
+                // 寻址）；按能力（send_text）过滤在注册函数内完成——无出站
+                // 能力的适配器不注册任何工具（泛化 S6 / 01b §D.4）。
+                let persona_adapters = factory_adapters_by_persona
                     .get(&id)
                     .cloned()
-                    .unwrap_or_else(|| qq_default2.clone());
-                // QQ 出站闸门（2026-10 安全）：send_* 的文本命中密钥按策略
+                    .unwrap_or_else(|| default_adapters.clone());
+                // 适配器出站闸门（2026-10 安全）：send_* 的文本命中密钥按策略
                 // 阻断/替换；文件参数落在敏感目录（配置 / 凭据目录）直接拒发。
                 let outbound_gate =
                     redactor2
                         .as_ref()
-                        .map(|redactor| crate::qq_tools::OutboundGate {
+                        .map(|redactor| crate::adapter_tools::OutboundGate {
                             redactor: redactor.clone(),
                             protected_paths: sensitive_dirs2.clone(),
                             policy: outbound_policy,
                         });
-                crate::qq_tools::register_qq_tools_multi(&mut t, persona_instances, outbound_gate);
-                // 包元数据：QQ 工具属于 "echo-agent.adapter.qq"（与对应技能同包）。
+                crate::adapter_tools::register_adapter_tools_multi(
+                    &mut t,
+                    persona_adapters,
+                    outbound_gate,
+                );
+                // 包元数据：适配器工具属于 "echo-agent.adapter.qq"
+                //（QQ 适配器插件包；与对应技能同包）。
                 for name in t.names() {
-                    if name.starts_with("send_") || name.contains("qq") || name.starts_with("get_")
-                    {
+                    if name.starts_with("send_") || name.starts_with("get_") {
                         t.set_package(&name, "echo-agent.adapter.qq");
                     }
                 }
@@ -1099,7 +1111,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             }
         },
     );
-    // 默认人格（管理面/QQ 入口）挂在原变量 `agent` 上，后续代码不变。
+    // 默认人格（管理面/适配器入口）挂在原变量 `agent` 上，后续代码不变。
     // 进程级核心服务代理（不是人格）：承接全局/管理类命令（API 配置、技能/
     // 工具/插件清单与启停、适配器启停、Shell、Teams 管理…）。它不出现在
     // `[agent.teams]` 与 TeamsList 中，team_id 为空，也不接收聊天消息。
@@ -1176,7 +1188,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // loop.runner）的 mount 闭包执行真实副作用（禁用即卸载效果）；
     // provider.llm 仍为名义挂载（重启生效）。
     //
-    // QQ 适配器的接线（hook/handler/config store）在插件挂载之后才完成；
+    // 适配器实例的接线（hook/handler/config store）在插件挂载之后才完成；
     // qq_wired 标志保证启动期 mount 不抢跑启动适配器（启动期由接线后的
     // 门控启动负责），运行期 TogglePlugin 才真正 start/stop。
     let qq_wired = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1527,7 +1539,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         core_agent.start_balance_snapshot_task();
     }
 
-    // ---- Wire agents into QQ instances ----
+    // ---- Wire agents into adapter instances ----
     // 命令域上下文（P1.9）：`/echo` `/help` `/status` `/shutdown`——插件实例
     // 在入站 worker 里先过命令判定（消费的命令不进 agent）；builtin 实例
     // 仍走 `echo_server` handler。
@@ -1544,7 +1556,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let target = match supervisor.get_exact(&persona_id) {
             Some(p) => p.agent,
             None => {
-                warn!(persona = %persona_id, "QQ plugin persona not found; skipping wire");
+                warn!(persona = %persona_id, "adapter plugin persona not found; skipping wire");
                 continue;
             }
         };
@@ -1575,7 +1587,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             }
             tracing::debug!(instance = %worker_instance, "plugin inbound worker stopped");
         });
-        tracing::info!(instance = %instance_id, persona = %persona_id, "QQ plugin instance wired to persona");
+        tracing::info!(instance = %instance_id, persona = %persona_id, "adapter plugin instance wired to persona");
     }
     // plugin 实例的连接态（`report_state`）→ `AdapterStateChanged` 事件
     //（Panel 连接状态卡的实时数据源；persona 按实例映射动态解析，容忍
@@ -1621,7 +1633,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             while let Some(change) = ui_states.recv().await {
                 // persona 解析（01a §1.2-3）：优先状态文档自带
                 // `instance.persona`（插件上报），否则按实例名查映射；查不到
-                // 回退默认 persona——非 QQ 适配器无实例概念，不能丢状态。
+                // 回退默认 persona——未登记实例的适配器不能丢状态。
                 let persona = change
                     .state
                     .pointer("/instance/persona")
@@ -1718,7 +1730,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             echo_agent::agent_manager::set_global_manager(mgr_arc);
         }
     }
-    // ---- Auto-start QQ instances if enabled ----
+    // ---- Auto-start adapter instances if enabled ----
     // 接线完成，标记 wired：此后 adapter.qq 插件的运行期 enable 才会真正
     // start 适配器（启动期 mount 不抢跑）。启动受配置与插件状态双重门控。
     qq_wired.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1741,10 +1753,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             }
             match adapter.start().await {
                 Ok(()) => {
-                    info!(instance = %instance_id, persona = %persona_id, "QQ instance started");
+                    info!(instance = %instance_id, persona = %persona_id, "adapter instance started");
                 }
                 Err(error) => {
-                    warn!(instance = %instance_id, %error, "QQ instance start failed");
+                    warn!(instance = %instance_id, %error, "adapter instance start failed");
                 }
             }
         }
@@ -1757,7 +1769,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         _ = shutdown_rx.changed() => info!("shutdown requested by admin command, exiting"),
     }
 
-    // Graceful shutdown: stop the command pump and QQ adapter, cancel
+    // Graceful shutdown: stop the command pump and adapter handle, cancel
     // background tasks, and flush sessions to disk.
     pump.abort();
     if let Some(qq) = &qq_adapter {

@@ -1,9 +1,9 @@
-//! QQ-specific tools that the LLM can invoke.
+//! Platform adapter tools that the LLM can invoke（泛化 S6 由平台专属工具改名）。
 //!
 //! Lives in the binary crate: tools must implement `echo_agent::Tool` — the
 //! adapter plugin deliberately has no dependency on echo-agent. 出站调用
-//! 经 `Arc<dyn Adapter>` 分发（内置 / 插件实例同一路径；平台专属动作走
-//! 管理面 `invoke_custom`，见 [`invoke_management`]）。
+//! 经 `Arc<dyn Adapter>` 分发（插件实例路径；平台专属动作走管理面
+//! `invoke_custom`，见 [`invoke_management`]）。
 
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::security::OutboundPolicy;
 
-/// QQ 出站闸门（2026-10 安全）：QQ 是消息出本的直接通道，发送前统一检查。
+/// 适配器出站闸门（2026-10 安全）：适配器是消息出站的直接通道，发送前统一检查。
 ///
 /// - 文本命中脱敏器 → 按 [`OutboundPolicy`] 阻断（默认）或替换后照发；
 /// - 文件类参数（`file_path` / `file` / `image`）落在敏感目录（配置目录 /
@@ -30,19 +30,19 @@ pub struct OutboundGate {
     pub policy: OutboundPolicy,
 }
 
-/// 该 persona 的 QQ 实例集合（多实例寻址）。
+/// 该 persona 的适配器实例集合（多实例寻址）。
 ///
-/// 适配器句柄为 `Arc<dyn Adapter>`（P1.8 适配器插件化）：内置实例与独立
-/// 进程的插件实例（`RemoteAdapter`）同表混用——平台专属动作统一经
+/// 适配器句柄为 `Arc<dyn Adapter>`（P1.8 适配器插件化）：独立进程的插件
+/// 实例（`RemoteAdapter`）——平台专属动作统一经
 /// [`invoke_management`]（管理面 `invoke_custom`）路由。
 #[derive(Clone)]
-struct QqInstanceSet {
+struct InstanceSet {
     adapters: Vec<Arc<dyn Adapter>>,
     /// 缺省实例（恰好一个实例时即它；多实例时 None → 必须给 account）。
     default_index: Option<usize>,
 }
 
-impl QqInstanceSet {
+impl InstanceSet {
     fn new(adapters: Vec<Arc<dyn Adapter>>) -> Self {
         let default_index = (adapters.len() == 1).then_some(0);
         Self {
@@ -76,27 +76,39 @@ impl QqInstanceSet {
         }
         match self.default_index {
             Some(i) => Ok(self.adapters[i].clone()),
-            None if self.adapters.is_empty() => Err("该人格没有可用的 QQ 实例".into()),
+            None if self.adapters.is_empty() => Err("该人格没有可用的适配器实例".into()),
             None => Err(format!(
-                "该人格有多个 QQ 实例，请用 account 指定：{}",
+                "该人格有多个适配器实例，请用 account 指定：{}",
                 self.names().join(", ")
             )),
         }
     }
 }
 
-/// Register QQ tools into the agent's `ToolRegistry`（该 persona 的实例集合）。
+/// Register adapter tools into the agent's `ToolRegistry`（该 persona 的实例集合）。
+///
+/// 能力过滤（泛化 S6 / 01b §D.4，不看 platform）：只对声明可出站
+///（`Adapter::sends_text`）的适配器注册工具——无出站能力的适配器不是
+/// 消息通道，整组不注册（send_* / get_* 一概不出现）。
 ///
 /// - 恰好 1 个实例：不带 `account` 参数，绑定该实例；
 /// - 多于 1 个：schema 增加可选 `account`（实例名），缺省时报错列出可选实例。
-pub fn register_qq_tools_multi(
+pub fn register_adapter_tools_multi(
     registry: &mut echo_agent::ToolRegistry,
     adapters: Vec<Arc<dyn Adapter>>,
     gate: Option<OutboundGate>,
 ) {
-    let set = QqInstanceSet::new(adapters);
+    // 能力过滤：无 `send_text` 能力 → 不注册任何工具。
+    let adapters: Vec<Arc<dyn Adapter>> = adapters
+        .into_iter()
+        .filter(|adapter| adapter.sends_text())
+        .collect();
+    if adapters.is_empty() {
+        return;
+    }
+    let set = InstanceSet::new(adapters);
     let multi = set.multi();
-    // 闸门实例由全部 QQ 工具共享（Arc，注册闭包与运行期执行各持一份）。
+    // 闸门实例由全部适配器工具共享（Arc，注册闭包与运行期执行各持一份）。
     let gate = gate.map(Arc::new);
     /// 多实例时在 schema 上补 `account` 字段。
     fn with_account(params: Value, multi: bool) -> Value {
@@ -109,7 +121,7 @@ pub fn register_qq_tools_multi(
                 "account".into(),
                 json!({
                     "type": "string",
-                    "description": "QQ 实例名（多实例时指定用哪个 QQ；缺省 = 该人格唯一实例）"
+                    "description": "适配器实例名（多实例时指定用哪个实例；缺省 = 该人格唯一实例）"
                 }),
             );
         }
@@ -117,7 +129,7 @@ pub fn register_qq_tools_multi(
     }
 
     let mut register = |name: &str, description: &str, params: Value| {
-        registry.register(Arc::new(QqToolWrapper {
+        registry.register(Arc::new(AdapterToolWrapper {
             name: name.to_string(),
             description: description.to_string(),
             parameters: with_account(params, multi),
@@ -128,11 +140,11 @@ pub fn register_qq_tools_multi(
 
     register(
         "send_group_msg",
-        "Send a text message to a QQ group. This is the only way to produce QQ-visible group output. Requires group_id and content.",
+        "Send a text message to a group. This is the only way to produce group-visible output. Requires group_id and content.",
         json!({
             "type": "object",
             "properties": {
-                "group_id": {"type": "integer", "description": "QQ group ID"},
+                "group_id": {"type": "integer", "description": "group ID"},
                 "content": {"type": "string", "description": "Message content"}
             },
             "required": ["group_id", "content"]
@@ -140,11 +152,11 @@ pub fn register_qq_tools_multi(
     );
     register(
         "send_private_msg",
-        "Send a private text message to a QQ user. This is the only way to produce QQ-visible private output. Requires user_id and content.",
+        "Send a private text message to a user. This is the only way to produce private-visible output. Requires user_id and content.",
         json!({
             "type": "object",
             "properties": {
-                "user_id": {"type": "integer", "description": "QQ user ID"},
+                "user_id": {"type": "integer", "description": "user ID"},
                 "content": {"type": "string", "description": "Message content"}
             },
             "required": ["user_id", "content"]
@@ -152,33 +164,33 @@ pub fn register_qq_tools_multi(
     );
     register(
         "get_group_member_info",
-        "Get QQ group member information. Requires group_id and user_id.",
+        "Get group member information. Requires group_id and user_id.",
         json!({
             "type": "object",
             "properties": {
-                "group_id": {"type": "integer", "description": "QQ group ID"},
-                "user_id": {"type": "integer", "description": "QQ user ID"}
+                "group_id": {"type": "integer", "description": "group ID"},
+                "user_id": {"type": "integer", "description": "user ID"}
             },
             "required": ["group_id", "user_id"]
         }),
     );
     register(
         "get_group_list",
-        "List all QQ groups the bot has joined. Returns group IDs and names.",
+        "List all groups the bot has joined. Returns group IDs and names.",
         json!({ "type": "object", "properties": {} }),
     );
     register(
         "get_friend_list",
-        "List QQ friends visible under the current gate mode. Returns user IDs and nicknames.",
+        "List friends visible under the current gate mode. Returns user IDs and nicknames.",
         json!({ "type": "object", "properties": {} }),
     );
     register(
         "get_group_msg_history",
-        "Fetch a QQ group's recent message history as a readable transcript. Unlike normal inbound messages, this includes messages that did NOT mention you and messages the inbound gate filtered out — use it to catch up on group context when asked what was discussed recently, or when you need background for a reply. Gated: only groups visible under the current gate mode are readable. Requires group_id; optional count (default 50, max 500) and since_minutes (keep only messages from the last N minutes).",
+        "Fetch a group's recent message history as a readable transcript. Unlike normal inbound messages, this includes messages that did NOT mention you and messages the inbound gate filtered out — use it to catch up on group context when asked what was discussed recently, or when you need background for a reply. Gated: only groups visible under the current gate mode are readable. Requires group_id; optional count (default 50, max 500) and since_minutes (keep only messages from the last N minutes).",
         json!({
             "type": "object",
             "properties": {
-                "group_id": {"type": "integer", "description": "QQ group ID"},
+                "group_id": {"type": "integer", "description": "group ID"},
                 "count": {"type": "integer", "description": "Max messages to fetch (default 50, max 500)"},
                 "since_minutes": {"type": "integer", "description": "Only keep messages from the last N minutes"}
             },
@@ -187,7 +199,7 @@ pub fn register_qq_tools_multi(
     );
     register(
         "send_file",
-        "Upload a local file to a QQ chat (group or private).          file_path is an absolute path on THIS machine (where the agent          runs) — the framework transparently bridges it to NapCat          (docker cp when possible, otherwise a local HTTP URL that NapCat          pulls from). file_name is the display name in QQ. Requires          target_type (group|private), target_id, file_path and file_name.",
+        "Upload a local file to a chat (group or private).          file_path is an absolute path on THIS machine (where the agent          runs) — the framework transparently bridges it to the adapter          runtime. file_name is the display name in the chat. Requires          target_type (group|private), target_id, file_path and file_name.",
         json!({
             "type": "object",
             "properties": {
@@ -198,15 +210,15 @@ pub fn register_qq_tools_multi(
                 },
                 "target_id": {
                     "type": "integer",
-                    "description": "QQ group ID (when target_type=group) or QQ user ID (when private)"
+                    "description": "group ID (when target_type=group) or user ID (when private)"
                 },
                 "file_path": {
                     "type": "string",
-                    "description": "Absolute path to the file on THIS machine (the agent host); the framework bridges it to NapCat automatically"
+                    "description": "Absolute path to the file on THIS machine (the agent host); the framework bridges it to the adapter automatically"
                 },
                 "file_name": {
                     "type": "string",
-                    "description": "Display file name in QQ, e.g. report.pdf"
+                    "description": "Display file name in the chat, e.g. report.pdf"
                 }
             },
             "required": ["target_type", "target_id", "file_path", "file_name"]
@@ -214,7 +226,7 @@ pub fn register_qq_tools_multi(
     );
     register(
         "send_json_card",
-        "Send a rich JSON card (OneBot json segment) to a QQ chat — this is how structured shares like a Bilibili video mini-app card are sent. The 'json' argument must be the complete card payload as a JSON string (e.g. {\"app\":\"com.tencent.miniapp_01\",\"config\":{...},\"meta\":{...}}). Requires target_type (group|private), target_id and json.",
+        "Send a rich JSON card (platform json segment) to a chat — this is how structured shares like video mini-app cards are sent. The 'json' argument must be the complete card payload as a JSON string (e.g. {\"app\":\"com.tencent.miniapp_01\",\"config\":{...},\"meta\":{...}}). Requires target_type (group|private), target_id and json.",
         json!({
             "type": "object",
             "properties": {
@@ -225,7 +237,7 @@ pub fn register_qq_tools_multi(
                 },
                 "target_id": {
                     "type": "integer",
-                    "description": "QQ group ID (when target_type=group) or QQ user ID (when private)"
+                    "description": "group ID (when target_type=group) or user ID (when private)"
                 },
                 "json": {
                     "type": "string",
@@ -237,7 +249,7 @@ pub fn register_qq_tools_multi(
     );
     register(
         "send_image",
-        "Send an image to a QQ chat (group or private). image can be a local absolute path on THIS machine (bridged to NapCat automatically), an http(s) URL, a base64:// string, or a bare file name found in NapCat's data directory. Requires target_type (group|private), target_id and image.",
+        "Send an image to a chat (group or private). image can be a local absolute path on THIS machine (bridged to the adapter automatically), an http(s) URL, a base64:// string, or a bare file name found in the adapter's data directory. Requires target_type (group|private), target_id and image.",
         json!({
             "type": "object",
             "properties": {
@@ -248,11 +260,11 @@ pub fn register_qq_tools_multi(
                 },
                 "target_id": {
                     "type": "integer",
-                    "description": "QQ group ID (when target_type=group) or QQ user ID (when private)"
+                    "description": "group ID (when target_type=group) or user ID (when private)"
                 },
                 "image": {
                     "type": "string",
-                    "description": "Image source: local absolute path on this machine, http(s) URL, base64:// data, or NapCat data dir file name"
+                    "description": "Image source: local absolute path on this machine, http(s) URL, base64:// data, or a file name in the adapter's data directory"
                 }
             },
             "required": ["target_type", "target_id", "image"]
@@ -260,7 +272,7 @@ pub fn register_qq_tools_multi(
     );
     register(
         "send_voice",
-        "Send a QQ voice message (a native voice bubble played inline), not a downloadable file — use send_file when the user wants to save the file. file accepts: an http(s):// URL, base64:// data, a path inside the NapCat container (e.g. /app/napcat/data/x.mp3), or a path on THIS machine (the framework bridges it to NapCat automatically). A bare file name is looked up in NapCat's data directory first (where files exchanged in chat live). Common audio formats (mp3/wav/amr/silk) are converted automatically. Requires target_type (group|private), target_id and file.",
+        "Send a voice message (a native voice bubble played inline), not a downloadable file — use send_file when the user wants to save the file. file accepts: an http(s):// URL, base64:// data, a path inside the adapter runtime (e.g. /data/x.mp3), or a path on THIS machine (the framework bridges it to the adapter automatically). A bare file name is looked up in the adapter's data directory first (where files exchanged in chat live). Common audio formats (mp3/wav/amr/silk) are converted automatically. Requires target_type (group|private), target_id and file.",
         json!({
             "type": "object",
             "properties": {
@@ -271,11 +283,11 @@ pub fn register_qq_tools_multi(
                 },
                 "target_id": {
                     "type": "integer",
-                    "description": "QQ group ID (when target_type=group) or QQ user ID (when private)"
+                    "description": "group ID (when target_type=group) or user ID (when private)"
                 },
                 "file": {
                     "type": "string",
-                    "description": "Voice source: URL (http/https), base64:// data, an in-container path, a path on THIS machine, or a bare file name found in NapCat's data directory"
+                    "description": "Voice source: URL (http/https), base64:// data, an in-container path, a path on THIS machine, or a bare file name found in the adapter's data directory"
                 }
             },
             "required": ["target_type", "target_id", "file"]
@@ -289,7 +301,7 @@ pub fn register_qq_tools_multi(
 
 /// 经管理面调用平台自定义方法（builtin 与插件实例同一路径）。
 ///
-/// 内置 `QqAdapter` 与远程 `RemoteAdapter` 都实现 [`AdapterManagement`]：
+/// 适配器（远程 `RemoteAdapter` 等）都实现 [`AdapterManagement`]：
 /// 出站（卡片 / 语音 / 图片 / 文件）、目录与历史一律走 `invoke_custom`
 /// （插件侧对应 `custom` op 的方法表）。
 async fn invoke_management(
@@ -370,18 +382,18 @@ fn render_managed_send(
 // Internal wrapper
 // ---------------------------------------------------------------------------
 
-struct QqToolWrapper {
+struct AdapterToolWrapper {
     name: String,
     description: String,
     parameters: Value,
-    /// 该 persona 的 QQ 实例集合（多实例经 `account` 参数寻址）。
-    instances: QqInstanceSet,
+    /// 该 persona 的适配器实例集合（多实例经 `account` 参数寻址）。
+    instances: InstanceSet,
     /// 出站闸门（None = 未启用脱敏，出站直投）。
     gate: Option<Arc<OutboundGate>>,
 }
 
 #[async_trait]
-impl echo_agent::Tool for QqToolWrapper {
+impl echo_agent::Tool for AdapterToolWrapper {
     fn name(&self) -> &str {
         &self.name
     }
@@ -583,7 +595,7 @@ impl echo_agent::Tool for QqToolWrapper {
                 let json_payload = arguments["json"]
                     .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments("json required".into()))?;
-                // 发送前先校验是合法 JSON，避免 NapCat 侧报难懂的错。
+                // 发送前先校验是合法 JSON，避免适配器侧报难懂的错。
                 serde_json::from_str::<Value>(json_payload).map_err(|e| {
                     ToolError::InvalidArguments(format!("json is not valid JSON: {e}"))
                 })?;
@@ -638,7 +650,9 @@ impl echo_agent::Tool for QqToolWrapper {
                     .await,
                 )
             }
-            other => Err(ToolError::Execution(format!("unknown QQ tool: {other}"))),
+            other => Err(ToolError::Execution(format!(
+                "unknown adapter tool: {other}"
+            ))),
         }
     }
 }
@@ -667,7 +681,7 @@ fn gate_outbound(
                 tracing::warn!(
                     tool = name,
                     path = %path.display(),
-                    "QQ outbound blocked: protected path"
+                    "adapter outbound blocked: protected path"
                 );
                 return Err(ToolError::Execution(format!(
                     "blocked: 文件位于受保护目录（{}），禁止外发。该目录包含本机配置/凭据，请改用其他文件。",
@@ -683,13 +697,21 @@ fn gate_outbound(
     }
     match gate.policy {
         OutboundPolicy::Block => {
-            tracing::warn!(tool = name, hits, "QQ outbound blocked: sensitive content");
+            tracing::warn!(
+                tool = name,
+                hits,
+                "adapter outbound blocked: sensitive content"
+            );
             Err(ToolError::Execution(format!(
                 "blocked: 消息内容命中敏感信息（{hits} 处，已阻止发送）。请移除密钥/令牌后重试。"
             )))
         }
         OutboundPolicy::Redact => {
-            tracing::warn!(tool = name, hits, "QQ outbound redacted: sensitive content");
+            tracing::warn!(
+                tool = name,
+                hits,
+                "adapter outbound redacted: sensitive content"
+            );
             Ok(redact_json_strings(arguments, gate.redactor.as_ref()))
         }
     }
@@ -738,30 +760,36 @@ mod tests {
     use echo_adapter::{AdapterConnectionState, AdapterError, AdapterInfo, AdapterManagement};
 
     /// 测试用最小适配器：工具注册 / 闸门用例不触达真实平台路径。
-    struct MockQqAdapter;
+    /// `send_capable` 对应 `Adapter::sends_text` 能力位（泛化 S6）。
+    struct MockAdapter {
+        send_capable: bool,
+    }
 
     #[async_trait]
-    impl Adapter for MockQqAdapter {
+    impl Adapter for MockAdapter {
         fn name(&self) -> &str {
-            "qq"
+            "mock"
         }
         fn display_name(&self) -> &str {
-            "qq"
+            "mock"
         }
         fn platform(&self) -> &str {
-            "qq"
+            "mock"
+        }
+        fn sends_text(&self) -> bool {
+            self.send_capable
         }
         fn is_configured(&self) -> bool {
             true
         }
         fn status_info(&self) -> AdapterInfo {
             AdapterInfo {
-                name: "qq".into(),
-                display_name: "qq".into(),
+                name: "mock".into(),
+                display_name: "mock".into(),
                 status: AdapterConnectionState::Stopped,
                 self_id: None,
                 started_at: None,
-                platform: "qq".into(),
+                platform: "mock".into(),
                 configured: true,
             }
         }
@@ -788,16 +816,42 @@ mod tests {
         }
     }
 
-    /// 单实例 mock 集合（测试注册入口）。
+    /// 单实例 mock 集合（测试注册入口；可出站）。
     fn mock_instances() -> Vec<Arc<dyn Adapter>> {
-        vec![Arc::new(MockQqAdapter)]
+        vec![Arc::new(MockAdapter { send_capable: true })]
+    }
+
+    /// 泛化 S6（01b §D.4）：无 send 能力（`sends_text=false`）的适配器
+    /// 不注册 send_* 工具（整组按能力过滤：适配器不出现在实例集，一个
+    /// 工具都不注册）。
+    #[tokio::test]
+    async fn no_send_capability_registers_no_send_tools() {
+        let mut registry = echo_agent::ToolRegistry::new();
+
+        register_adapter_tools_multi(
+            &mut registry,
+            vec![Arc::new(MockAdapter {
+                send_capable: false,
+            })],
+            None,
+        );
+
+        let names = registry.names();
+        assert!(
+            !names.iter().any(|name| name.starts_with("send_")),
+            "no send_* tools for a non-sending adapter: {names:?}"
+        );
+        assert!(
+            names.is_empty(),
+            "non-sending adapter must not register any adapter tool: {names:?}"
+        );
     }
 
     #[tokio::test]
     async fn registers_gate_filtered_friend_list_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
 
-        register_qq_tools_multi(&mut registry, mock_instances(), None);
+        register_adapter_tools_multi(&mut registry, mock_instances(), None);
 
         assert!(registry
             .names()
@@ -812,20 +866,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_tools_are_declared_as_the_qq_output_boundary() {
+    async fn send_tools_are_declared_as_the_output_boundary() {
         let mut registry = echo_agent::ToolRegistry::new();
 
-        register_qq_tools_multi(&mut registry, mock_instances(), None);
+        register_adapter_tools_multi(&mut registry, mock_instances(), None);
 
         let definitions = registry.definitions().await;
         for name in ["send_private_msg", "send_group_msg"] {
             let definition = definitions
                 .iter()
                 .find(|definition| definition.name == name)
-                .unwrap_or_else(|| panic!("missing QQ send tool: {name}"));
+                .unwrap_or_else(|| panic!("missing send tool: {name}"));
             assert!(
                 definition.description.contains("only way"),
-                "{name} must describe the explicit QQ output boundary"
+                "{name} must describe the explicit output boundary"
             );
         }
     }
@@ -834,7 +888,7 @@ mod tests {
     async fn registers_send_file_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
 
-        register_qq_tools_multi(&mut registry, mock_instances(), None);
+        register_adapter_tools_multi(&mut registry, mock_instances(), None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -842,7 +896,7 @@ mod tests {
             .find(|definition| definition.name == "send_file")
             .expect("send_file tool registered");
         assert!(definition.description.contains("file_path"));
-        assert!(definition.description.contains("NapCat"));
+        assert!(definition.description.contains("bridges"));
         let params = definition.parameters.as_ref().expect("parameters present");
         assert!(params["properties"]["target_type"]["enum"][0] == "group");
         assert!(params["properties"]["target_type"]["enum"][0] == "group");
@@ -853,7 +907,7 @@ mod tests {
     async fn registers_send_json_card_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
 
-        register_qq_tools_multi(&mut registry, mock_instances(), None);
+        register_adapter_tools_multi(&mut registry, mock_instances(), None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -872,7 +926,7 @@ mod tests {
     async fn registers_send_voice_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
 
-        register_qq_tools_multi(&mut registry, mock_instances(), None);
+        register_adapter_tools_multi(&mut registry, mock_instances(), None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -899,7 +953,7 @@ mod tests {
     async fn registers_get_group_msg_history_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
 
-        register_qq_tools_multi(&mut registry, mock_instances(), None);
+        register_adapter_tools_multi(&mut registry, mock_instances(), None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -922,7 +976,7 @@ mod tests {
     async fn registers_send_image_tool() {
         let mut registry = echo_agent::ToolRegistry::new();
 
-        register_qq_tools_multi(&mut registry, mock_instances(), None);
+        register_adapter_tools_multi(&mut registry, mock_instances(), None);
 
         let definitions = registry.definitions().await;
         let definition = definitions
@@ -956,7 +1010,7 @@ mod tests {
             protected_paths: vec![std::path::PathBuf::from("/tmp/echo-gate-protected")],
             policy: OutboundPolicy::Block,
         };
-        register_qq_tools_multi(&mut registry, mock_instances(), Some(gate));
+        register_adapter_tools_multi(&mut registry, mock_instances(), Some(gate));
 
         let error = registry
             .execute(
@@ -980,7 +1034,7 @@ mod tests {
             protected_paths: vec![std::path::PathBuf::from("/tmp/echo-gate-protected")],
             policy: OutboundPolicy::Block,
         };
-        register_qq_tools_multi(&mut registry, mock_instances(), Some(gate));
+        register_adapter_tools_multi(&mut registry, mock_instances(), Some(gate));
 
         let error = registry
             .execute(

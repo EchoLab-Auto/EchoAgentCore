@@ -1,11 +1,15 @@
-//! QQ 多实例：配置解析、端口分配、容器编排。
+//! 适配器插件多实例：配置解析、端口分配、容器编排。
+//!
+//! compose 渲染（NapCat）属 QQ 部署知识，远期移入插件仓；本轮留驻
+//!（泛化 S6 / 01b §D.3——Core 只通用化 `PluginInstance{id, persona}`，
+//! 部署形状与 `[adapters.qq]` 配置键不变）。
 //!
 //! 设计（2026-09）：
 //! - **实例是一等概念**：`instance_id` 全局唯一，`persona` 是归属字段
 //!   （一个 persona 可挂多个实例）；实例 id 即适配器名与会话 `@account` 维度。
 //! - **端口自动分配并持久化**：每实例 3 个宿主端口（反向 WS / OneBot HTTP /
 //!   WebUI）。首次分配后写入 `[adapters.qq.instances.<id>.ports]`，跨重启稳定
-//!   （容器端口映射必须稳定才能让 NapCat 重连到同一处）。
+//!   （容器端口映射必须稳定才能让适配器容器重连到同一处）。
 //! - **容器编排**：每实例一个 compose 文件（独立容器名与数据卷、独立端口映射），
 //!   落在 `~/.local/share/echo-agent-core/napcat/<id>/docker-compose.yml`。
 //! - **自动创建**：persona 启用 `echo-agent.adapter.qq` 且没有归属实例时自动建
@@ -22,9 +26,9 @@ use crate::config::{QqHostConfig, QqInstanceSection};
 /// legacy 默认实例名（会话 id 不产生 `@` 后缀）。
 pub const DEFAULT_INSTANCE: &str = "qq";
 
-/// 一个解析完成的 QQ 实例（配置已合并、端口已确定）。
+/// 一个解析完成的插件实例（配置已合并、端口已确定）。
 #[derive(Debug, Clone)]
-pub struct QqInstance {
+pub struct PluginInstance {
     /// 实例 id（= 适配器名 = 会话 account 维度）。
     pub id: String,
     /// 归属人格 id。
@@ -114,7 +118,7 @@ pub fn merge_instance(
         }
     }
 
-    // NapCat 容器寻址三键（语义与迁移前的内置合并一致）：
+    // 适配器容器寻址三键（NapCat 部署形状；语义与迁移前的内置合并一致）：
     // - 实例段显式覆盖 → 保留；
     // - auto 实例未覆盖 → 由 id / 端口派生（忽略共享层，多实例容器互异）；
     // - legacy 实例未覆盖 → 沿用共享层显式值；共享层缺省时不写
@@ -232,8 +236,8 @@ pub fn resolve_instances_in(
     enabled_personas: &[String],
     default_persona: &str,
     data_dir: Option<&Path>,
-) -> Vec<QqInstance> {
-    let mut out: Vec<QqInstance> = Vec::new();
+) -> Vec<PluginInstance> {
+    let mut out: Vec<PluginInstance> = Vec::new();
     let mut used_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut taken_ports: std::collections::HashSet<u16> = std::collections::HashSet::new();
 
@@ -261,7 +265,7 @@ pub fn resolve_instances_in(
         let compose = auto_compose_path(data_dir, id);
         let config = merge_instance(&shared.shared, section, id, &persona, &ports, compose);
         used_ids.insert(id.clone());
-        out.push(QqInstance {
+        out.push(PluginInstance {
             id: id.clone(),
             persona,
             config,
@@ -282,7 +286,7 @@ pub fn resolve_instances_in(
             &ports,
             None,
         );
-        out.push(QqInstance {
+        out.push(PluginInstance {
             id: DEFAULT_INSTANCE.into(),
             persona: default_persona.to_string(),
             config,
@@ -322,7 +326,7 @@ pub fn resolve_instances_in(
             &ports,
             compose,
         );
-        out.push(QqInstance {
+        out.push(PluginInstance {
             id,
             persona: persona.clone(),
             config,

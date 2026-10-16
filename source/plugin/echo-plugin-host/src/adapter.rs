@@ -290,6 +290,11 @@ impl echo_defs::adapter::Adapter for RemoteAdapter {
         // 泛化 S5（01b §D.2 a′）：写方法广播的源实例能力位。
         self.contribution.capabilities.gating
     }
+
+    fn sends_text(&self) -> bool {
+        // 泛化 S6（01b §D.4）：宿主按能力位过滤可注册消息工具的适配器。
+        self.contribution.capabilities.send_text
+    }
 }
 
 /// `AdapterManagement` 的远程实现（`invoke_custom` 直通 `custom` op；
