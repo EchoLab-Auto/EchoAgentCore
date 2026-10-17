@@ -42,7 +42,7 @@ impl From<&PluginManifest> for PluginDescriptor {
             entry: m.entry.clone(),
             author: m.author.clone(),
             enabled: true,
-            builtin: true,
+            builtin: m.builtin,
             package: m.package_id().to_string(),
             error: None,
         }

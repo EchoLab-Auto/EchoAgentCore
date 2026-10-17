@@ -65,6 +65,9 @@ pub struct PluginManifest {
     /// Human-facing metadata shown in the Panel.
     #[serde(default)]
     pub author: String,
+    /// 是否为 Core 编译内置插件；外部 manifest 缺省为 false。
+    #[serde(default)]
+    pub builtin: bool,
     /// Owning **package** id — the cross-cutting tag spanning
     /// plugin + tools + skills（见 [`Self::package_id`]）。
     /// `None` = 本插件自身即包根：插件 id 同时是包标签（当前全部内置
@@ -108,6 +111,7 @@ impl PluginManifest {
             entry: entry.into(),
             package: None,
             author: "EchoAgentCore".into(),
+            builtin: true,
         }
     }
 }
@@ -171,6 +175,7 @@ author = "EchoAgentCore"
 
     #[test]
     fn missing_id_is_error() {
+        // 覆盖**不能因新增 builtin 而丢**：旧版就用这条守住"缺 id 必须报错"。
         let text = r#"
 name = "x"
 kind = "skill"
@@ -178,6 +183,31 @@ kind = "skill"
         // Missing id either fails deserialization (kind present but id absent
         // → missing required field) or validation; both are errors.
         assert!(parse_manifest(text).is_err());
+    }
+
+    #[test]
+    fn blank_id_is_error() {
+        // 显式空 id 走 validate_manifest 分支（与上面 serde 分支互补）。
+        let text = r#"
+id = "   "
+name = "x"
+kind = "skill"
+"#;
+        assert!(matches!(
+            parse_manifest(text),
+            Err(PluginError::MissingField(field)) if field == "id"
+        ));
+    }
+
+    #[test]
+    fn external_manifest_defaults_to_non_builtin() {
+        let text = r#"
+ id = "example.external"
+ name = "外部插件"
+ kind = "tool"
+ "#;
+        let m = parse_manifest(text).unwrap();
+        assert!(!m.builtin);
     }
 
     #[test]
