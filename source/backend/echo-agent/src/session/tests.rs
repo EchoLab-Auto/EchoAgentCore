@@ -1727,6 +1727,110 @@ fn prune_archives_does_not_swallow_longer_stems() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// 2026-10 性能回归：单会话 append 后的重投影**只看本会话**的事件。
+///
+/// 旧实现先 `event_log.log()` 深克隆整份日志（含所有会话）再过滤，等于每次
+/// append 都付 O(全部会话) 的字符串拷贝。现在走
+/// `EventLog::events_for_session`。这个测试锁定"别把热路径改回全量克隆"的
+/// 行为面：多会话下写一个会话，另一个会话的投影不受影响、且本会话内容正确。
+#[test]
+fn append_reprojects_only_the_owning_session() {
+    let store = TrunkStore::new(10_000);
+    let a = store.get_or_create(&SessionKey::local_tui(), "user-a".into(), None);
+    let b = store.get_or_create(
+        &SessionKey {
+            platform: "local".into(),
+            scope: "workspace".into(),
+            scope_id: "other".into(),
+            user_id: "local_user".into(),
+            account: None,
+        },
+        "user-b".into(),
+        None,
+    );
+
+    for i in 0..3 {
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some(a.id.clone()),
+                content: format!("A{i}"),
+                timestamp: 1_700_000_000 + i,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        ));
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some(b.id.clone()),
+                content: format!("B{i}"),
+                timestamp: 1_700_000_000 + i,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        ));
+    }
+
+    // 两个会话的投影各自独立、互不串显
+    let a_contents: Vec<String> = a.history.lock().iter().map(|m| m.content.clone()).collect();
+    let b_contents: Vec<String> = b.history.lock().iter().map(|m| m.content.clone()).collect();
+    assert_eq!(a_contents, vec!["A0", "A1", "A2"], "A 只含自己的消息");
+    assert_eq!(b_contents, vec!["B0", "B1", "B2"], "B 只含自己的消息");
+}
+
+/// 推理（Reasoning）事件经重投影进入**显示历史**、但不进模型上下文。
+///
+/// 这条把 2026-10 根治的三处接线串起来验：落日志 → 派生含推理 →
+/// 模型投影跳过。
+#[test]
+fn reasoning_events_reach_display_history_but_not_model_context() {
+    let store = TrunkStore::new(10_000);
+    let session = store.get_or_create(&SessionKey::local_tui(), "user".into(), None);
+    let sid = session.id.clone();
+
+    store.append_event(echo_session::SessionEvent::UserMessage(
+        echo_session::event::UserMessage {
+            session: Some(sid.clone()),
+            content: "问题".into(),
+            timestamp: 1_700_000_000,
+            message_sequence: None,
+            source: None,
+            images: vec![],
+        },
+    ));
+    store.append_event(echo_session::SessionEvent::Reasoning(
+        echo_session::event::ReasoningEvent {
+            content: "内部思考".into(),
+            timestamp: 1_700_000_001,
+            session: Some(sid.clone()),
+        },
+    ));
+    store.append_event(echo_session::SessionEvent::AssistantMessage(
+        echo_session::event::AssistantMessage {
+            content: "回答".into(),
+            reasoning_content: None,
+            tool_calls: vec![],
+            session: Some(sid.clone()),
+        },
+    ));
+
+    // 显示历史：含推理条目
+    let (messages, total, _) = store.display_history_for_session(&sid, 100);
+    let kinds: Vec<&str> = messages.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(total, 3);
+    assert_eq!(kinds, vec!["user", "reasoning", "backend"], "{messages:?}");
+
+    // 模型上下文：不含推理正文（只有 user + assistant）
+    let ctx: Vec<String> = session
+        .history
+        .lock()
+        .iter()
+        .map(|m| m.content.clone())
+        .collect();
+    assert_eq!(ctx, vec!["问题", "回答"], "推理不得进入模型上下文: {ctx:?}");
+}
+
 /// 2026-10 上下文审计 🔴 回归：token 预算热更——收窄立即重投影裁剪
 /// 生效；getter 反映新值（此前预算构造时固化，保存后要重启才生效）。
 #[tokio::test]

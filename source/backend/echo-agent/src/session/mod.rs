@@ -737,27 +737,48 @@ impl TrunkStore {
     /// 事件日志变化后刷新投影缓存：`Some(id)` 只刷新该会话（其余会话的
     /// 投影不受影响）；`None` 刷新全部会话（未归因事件的兜底路径）。
     fn reproject(&self, session: &Option<String>) {
-        let log = self.event_log.log();
         match session {
             Some(id) => {
                 // 归因事件会物化其会话的上下文句柄（查询/快照可达）。
                 let _ = self.history_or_create(id);
-                self.reproject_one(&log, id);
+                // **只取该会话的事件**（2026-10 性能）：此前先 `log()`
+                // 深克隆整份日志再过滤，等于每次 append 都付 O(全部会话)
+                // 的字符串拷贝（实测 13 会话 / 4 MB 日志 → 每步工具调用
+                // 多拷 4 MB；推理落日志后日志更大，这笔开销被放大）。
+                let events = self.event_log.events_for_session(id);
+                self.install_projection(id, &events);
             }
             None => {
-                for entry in self.session_histories.iter() {
-                    let id = entry.key().clone();
-                    self.reproject_one(&log, &id);
+                // 全量路径（加载 / 压缩 / 未归因事件）：全量日志取一次，
+                // 各会话在内存里切分，不重复取锁。
+                let log = self.event_log.log();
+                let ids: Vec<String> = self
+                    .session_histories
+                    .iter()
+                    .map(|entry| entry.key().clone())
+                    .collect();
+                for id in ids {
+                    self.install_projection_from_log(&log, &id);
                 }
             }
         }
     }
 
-    fn reproject_one(&self, log: &[echo_session::SessionEvent], session_id: &str) {
+    /// 全量日志里切出该会话的事件后装入投影（罕见的全量路径专用）。
+    fn install_projection_from_log(&self, log: &[echo_session::SessionEvent], session_id: &str) {
+        let events: Vec<echo_session::SessionEvent> = log
+            .iter()
+            .filter(|event| event.session() == Some(session_id))
+            .cloned()
+            .collect();
+        self.install_projection(session_id, &events);
+    }
+
+    /// 从**已按会话过滤**的事件集投影并写入句柄。
+    fn install_projection(&self, session_id: &str, events: &[echo_session::SessionEvent]) {
         // 先在锁外完成投影。
-        let mut projected = echo_session::derive::derive_messages_for(
-            log,
-            Some(session_id),
+        let mut projected = echo_session::derive::derive_messages_from_filtered(
+            events,
             self.memory_limit_tokens.load(Ordering::Relaxed),
         );
         // 媒体引用 → data URI：事件日志/时间线里只存 `/media/<id>`（轻量），
@@ -786,7 +807,7 @@ impl TrunkStore {
             .map(|entry| entry.key().clone())
             .collect();
         for id in ids {
-            self.reproject_one(&log, &id);
+            self.install_projection_from_log(&log, &id);
         }
     }
 

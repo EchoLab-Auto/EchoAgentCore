@@ -60,11 +60,48 @@ impl EventLog {
     }
 
     /// Read the full log, oldest first.
+    ///
+    /// **深克隆整份日志**——只用于确实需要全量的场景（持久化序列化、压缩
+    /// 预览、全量重投影）。每次 append 后热路径上的单会话投影请用
+    /// [`Self::events_for_session`]，否则代价是 O(全部会话的事件数)
+    /// （实测：13 个会话 / 4 MB 日志时，每步工具调用要多拷 4 MB）。
     pub fn log(&self) -> Vec<SessionEvent> {
         self.events
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    /// 只克隆归属 `session_id` 的事件（顺序与全量日志一致）。
+    ///
+    /// 单会话投影（`TrunkStore::reproject`）的热路径：过滤在锁内走一遍指针
+    /// 比较，只有匹配的事件才深克隆。全量日志里通常有多个会话（同人格下
+    /// 每个工作区/工作流一条），按会话取能把克隆量降到 1/N。
+    ///
+    /// 语义与 `log().into_iter().filter(|e| e.session() == Some(id))` 完全
+    /// 一致——包括 `session == None` 的未归因旧事件**不会**被任何会话取到
+    /// （与 `derive_messages_for` 的过滤条件同义）。
+    pub fn events_for_session(&self, session_id: &str) -> Vec<SessionEvent> {
+        self.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|event| event.session() == Some(session_id))
+            .cloned()
+            .collect()
+    }
+
+    /// 持锁只读访问全量事件（**不克隆**）。
+    ///
+    /// 用于"读一遍就走"的场景（序列化到磁盘）。注意闭包在锁内执行：不要
+    /// 在里面做重 I/O，也**不要**再调用本 `EventLog` 的任何加锁方法
+    /// （`parking_lot::Mutex` 不可重入 → 死锁）。
+    pub fn with_events<T>(&self, f: impl FnOnce(&[SessionEvent]) -> T) -> T {
+        let events = self
+            .events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&events)
     }
 
     /// Insert an event after the last `UserMessage` carrying `sequence`.
@@ -182,10 +219,15 @@ impl EventLog {
 
     /// Serialize the whole log (the durable representation).
     pub fn serialize(&self) -> Result<String, EventLogError> {
-        let events = self.log();
-        serde_json::to_string_pretty(&LogDocument {
-            version: LOG_FORMAT_VERSION,
-            events,
+        // 持锁序列化（`with_events`）而不是先 `log()` 全量克隆：省掉一次
+        // MB 级深拷。锁在序列化期间被持有——调用方若在意"别阻塞 append"
+        // （如 30s 周期落盘），自己先 `log()` 克隆再序列化（`persist.rs`
+        // 就是这么做的），代价是那次克隆。
+        self.with_events(|events| {
+            serde_json::to_string_pretty(&LogDocument {
+                version: LOG_FORMAT_VERSION,
+                events: events.to_vec(),
+            })
         })
         .map_err(|e| EventLogError::Serialize(e.to_string()))
     }
@@ -321,6 +363,116 @@ mod tests {
         assert!(matches!(events[1], SessionEvent::ToolCall(_)));
         assert!(matches!(events[2], SessionEvent::ToolResult(_)));
         assert!(matches!(events[3], SessionEvent::AssistantMessage(_)));
+    }
+
+    // ── 按会话取事件 / 持��只读（2026-10 性能）──────────────────────────
+
+    fn user_in(session: &str, content: &str) -> SessionEvent {
+        SessionEvent::UserMessage(UserMessage {
+            session: Some(session.into()),
+            content: content.into(),
+            timestamp: 1_700_000_000,
+            message_sequence: None,
+            source: None,
+            images: vec![],
+        })
+    }
+
+    #[test]
+    fn events_for_session_filters_and_preserves_order() {
+        let log = EventLog::new();
+        log.append(user_in("a", "a1"));
+        log.append(user_in("b", "b1"));
+        log.append(user_in("a", "a2"));
+        log.append(SessionEvent::UserMessage(UserMessage {
+            session: None, // 未归因旧事件
+            content: "legacy".into(),
+            timestamp: 0,
+            message_sequence: None,
+            source: None,
+            images: vec![],
+        }));
+        log.append(user_in("a", "a3"));
+
+        let a = log.events_for_session("a");
+        let contents: Vec<&str> = a
+            .iter()
+            .map(|e| match e {
+                SessionEvent::UserMessage(m) => m.content.as_str(),
+                _ => "?",
+            })
+            .collect();
+        assert_eq!(contents, vec!["a1", "a2", "a3"], "顺序与全量日志一致");
+
+        // 未归因事件不属于任何会话
+        assert_eq!(log.events_for_session("legacy").len(), 0);
+        // 未知会话
+        assert!(log.events_for_session("nope").is_empty());
+        // 与"全量过滤"语义完全等价
+        let manual: Vec<SessionEvent> = log
+            .log()
+            .into_iter()
+            .filter(|e| e.session() == Some("a"))
+            .collect();
+        assert_eq!(a, manual);
+    }
+
+    #[test]
+    fn with_events_reads_without_cloning() {
+        let log = EventLog::new();
+        log.append(user_in("a", "x"));
+        log.append(user_in("b", "y"));
+        // 只读统计：拿到的是 &[SessionEvent]，不产生副本
+        let count = log.with_events(|events| events.len());
+        assert_eq!(count, 2);
+        let sessions: Vec<Option<String>> = log
+            .with_events(|events| events.iter().map(|e| e.session().map(str::to_string)).collect());
+        assert_eq!(sessions.len(), 2);
+        // 读操作不改内容
+        assert_eq!(log.len(), 2);
+    }
+
+    /// 基准：多会话日志下，按会话取事件的克隆量应显著小于全量克隆。
+    ///
+    /// 断言用**字节量**而非墙钟（CI 上时间抖动太大）：构造 13 个会话、
+    /// 每个 100 条带正文的事件，比较两种取法的总字节数。
+    #[test]
+    fn events_for_session_clones_only_matching_events() {
+        let log = EventLog::new();
+        // 会话 id 等长（s00..s12）：让各会话的字节量严格相等，断言才能精确
+        let sessions: Vec<String> = (0..13).map(|i| format!("s{i:02}")).collect();
+        for round in 0..100 {
+            for session in &sessions {
+                log.append(user_in(session, &format!("{session}-{round}-{}", "x".repeat(200))));
+            }
+        }
+        let total_bytes = |events: &[SessionEvent]| -> usize {
+            events
+                .iter()
+                .map(|e| match e {
+                    SessionEvent::UserMessage(m) => m.content.len(),
+                    _ => 0,
+                })
+                .sum()
+        };
+
+        let full = log.with_events(total_bytes);
+        let one = log
+            .events_for_session("s00")
+            .iter()
+            .map(|e| match e {
+                SessionEvent::UserMessage(m) => m.content.len(),
+                _ => 0,
+            })
+            .sum::<usize>();
+
+        assert_eq!(log.len(), 1300);
+        assert_eq!(one, full / 13, "单会话应正好占总量的 1/13");
+        // 优化目标：克隆量从 O(全部) 降到 O(本会话)
+        assert!(
+            one * 10 < full,
+            "按会话取事件应显著小于全量克隆：one={one} full={full}"
+        );
     }
 
     #[test]

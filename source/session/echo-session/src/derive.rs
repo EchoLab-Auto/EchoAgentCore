@@ -149,7 +149,24 @@ pub fn derive_messages_for(
         .filter(|event| event.session() == session)
         .cloned()
         .collect();
-    let mut messages = project_messages(&filtered);
+    derive_messages_from_filtered(&filtered, token_budget)
+}
+
+/// 对**已按会话过滤**的事件集做投影（与 [`derive_messages_for`] 同一步骤）。
+///
+/// 拆出来是为了让调用方省掉"全量克隆 + 再过滤"：`TrunkStore::reproject`
+/// 的 hot path 直接从事件日志取该会话的事件（`EventLog::events_for_session`），
+/// 不必为一次 append 深克隆整份日志（多会话时是 O(全部)。
+///
+/// 前置条件：`events` 的过滤条件必须是 `event.session() == Some(session)`
+/// （与 [`derive_messages_for`] 内部一致）——`Compaction.replaced_count` 按
+/// **本组事件条数**语义生效（`compact_preview` 也是按会话分组计算的），
+/// 传全量日志会切错前缀。
+pub fn derive_messages_from_filtered(
+    events: &[SessionEvent],
+    token_budget: usize,
+) -> Vec<ChatMessage> {
+    let mut messages = project_messages(events);
     merge_consecutive_assistant_messages(&mut messages);
     trim_to_budget(&mut messages, token_budget);
     repair_tool_pairing(&mut messages);
@@ -808,6 +825,113 @@ mod tests {
             timestamp,
             session: Some("s1".into()),
         })
+    }
+
+    /// `derive_messages_from_filtered` 必须与 `derive_messages_for` 等价
+    /// （前者只是省掉"全量克隆 + 过滤"，语义不能漂）。
+    #[test]
+    fn filtered_projection_matches_full_projection() {
+        let mut log = vec![
+            SessionEvent::UserMessage(UserMessage {
+                content: "问题 a".into(),
+                timestamp: 1,
+                message_sequence: None,
+                source: None,
+                images: Vec::new(),
+                session: Some("a".into()),
+            }),
+            SessionEvent::UserMessage(UserMessage {
+                content: "问题 b".into(),
+                timestamp: 2,
+                message_sequence: None,
+                source: None,
+                images: Vec::new(),
+                session: Some("b".into()),
+            }),
+            reasoning("a 的思考", 3),
+            SessionEvent::AssistantMessage(AssistantMessage {
+                content: "回答 a".into(),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                session: Some("a".into()),
+            }),
+            SessionEvent::ToolCall(ToolCallEvent {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+                session: Some("a".into()),
+                started_at_ms: Some(4_000),
+            }),
+            SessionEvent::ToolResult(ToolResultEvent {
+                tool_call_id: "c1".into(),
+                result: "ok".into(),
+                images: Vec::new(),
+                session: Some("a".into()),
+                elapsed_ms: Some(1),
+            }),
+            SessionEvent::AssistantMessage(AssistantMessage {
+                content: "回答 b".into(),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                session: Some("b".into()),
+            }),
+        ];
+        // 未归因旧事件：两种路径都不应把它算进任何会话
+        log.push(SessionEvent::UserMessage(UserMessage {
+            content: "legacy".into(),
+            timestamp: 5,
+            message_sequence: None,
+            source: None,
+            images: Vec::new(),
+            session: None,
+        }));
+
+        for session in ["a", "b"] {
+            let full = derive_messages_for(&log, Some(session), 100_000);
+            let filtered: Vec<SessionEvent> = log
+                .iter()
+                .filter(|e| e.session() == Some(session))
+                .cloned()
+                .collect();
+            let from_filtered = derive_messages_from_filtered(&filtered, 100_000);
+            assert_eq!(full, from_filtered, "会话 {session} 的两种投影必须一致");
+        }
+    }
+
+    /// 压缩语义在"先过滤"下仍正确：`replaced_count` 按**本组**事件条数生效
+    /// （`compact_preview` 也是按会话分组算的），过滤掉别的会话不会切错前缀。
+    #[test]
+    fn filtered_projection_keeps_compaction_semantics() {
+        let events = vec![
+            SessionEvent::UserMessage(UserMessage {
+                content: "被替换的旧问题".into(),
+                timestamp: 1,
+                message_sequence: None,
+                source: None,
+                images: Vec::new(),
+                session: Some("a".into()),
+            }),
+            SessionEvent::Compaction(CompactionEvent {
+                replaced_count: 1,
+                summary: "旧内容的摘要".into(),
+                archive: None,
+                session: Some("a".into()),
+            }),
+            SessionEvent::UserMessage(UserMessage {
+                content: "新问题".into(),
+                timestamp: 2,
+                message_sequence: None,
+                source: None,
+                images: Vec::new(),
+                session: Some("a".into()),
+            }),
+        ];
+        let messages = derive_messages_from_filtered(&events, 100_000);
+        let texts: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
+        // 旧问题被摘要替换，新问题保留
+        assert_eq!(texts.len(), 2, "{messages:?}");
+        assert!(texts[0].contains("旧内容的摘要"), "{texts:?}");
+        assert_eq!(texts[1], "新问题");
     }
 
     #[test]
