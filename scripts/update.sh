@@ -18,6 +18,11 @@ SOURCE_DIR=""
 BINARY=""
 STATUS_FILE=""
 UPDATE_MODE=local
+# 二进制目录里保留多少个历史备份（`<binary>.bak-*` / `<binary>.rollback*`）。
+# 每次安装/更新都会留下上一版二进制，多年累积会白占数百 MiB——实测一天内
+# 多次部署后单目录堆到 308 MiB / 12 个文件。默认保留最近 4 个（够回滚几版），
+# 可用 ECHO_KEEP_BACKUPS 覆盖（0 = 只留本次的 .rollback，负数视为 0）。
+KEEP_BACKUPS=${ECHO_KEEP_BACKUPS:-4}
 
 usage() {
     cat <<'EOF'
@@ -115,6 +120,53 @@ write_status() {
         printf 'updated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } >"$temporary"
     mv -f "$temporary" "$STATUS_FILE"
+}
+
+# Keep only the N most recent binary backups in the install directory.
+#
+# Why: every install/update keeps a copy of the previous binary
+# (`<binary>.bak-*` from manual deploys, `<binary>.rollback*` from failed runs).
+# Nothing pruned them, so the directory had grown to 12 files / 308 MiB in a
+# single day of iterating. Retention default = 4 (env ECHO_KEEP_BACKUPS).
+#
+# Never touches the binary itself, the running rollback of THIS run
+# (`$ROLLBACK_BINARY`), the revision file, or `update.sh`. Sorting is by mtime
+# with a name tie-break so runs in the same second stay deterministic.
+prune_backups() {
+    local keep=$KEEP_BACKUPS
+    local dir
+    dir=$(dirname -- "$BINARY")
+    [[ -d "$dir" ]] || return 0
+    if ! [[ "$keep" =~ ^[0-9]+$ ]]; then
+        keep=4
+    fi
+    local -a candidates=()
+    local f
+    # glob may not match anything: `nullglob`-style manual expansion.
+    shopt -s nullglob
+    for f in "$BINARY".bak-* "$BINARY".rollback*; do
+        # 保护本次运行仍在用的回滚文件（失败时还要靠它还原）
+        if [[ -n "${ROLLBACK_BINARY:-}" && "$f" == "$ROLLBACK_BINARY" ]]; then
+            continue
+        fi
+        candidates+=("$f")
+    done
+    shopt -u nullglob
+    local total=${#candidates[@]}
+    (( total > keep )) || return 0
+    # 新 → 旧：mtime 倒序，同 mtime 用名字倒序兜底（时间戳后缀保证可比）
+    local -a sorted=()
+    # `ls -1t` 按 mtime 新→旧排序（同一秒内按名字，时间戳后缀保证可比）。
+    # mapfile 直接吃 NUL/换行分隔都行，避免 xargs 的引号/空参数坑。
+    mapfile -t sorted < <(ls -1t -- "${candidates[@]}" 2>/dev/null || true)
+    local removed=0
+    local i
+    for (( i = keep; i < ${#sorted[@]}; i++ )); do
+        rm -f -- "${sorted[$i]}" && removed=$((removed + 1))
+    done
+    if (( removed > 0 )); then
+        echo "pruned $removed old binary backup(s); kept $keep (ECHO_KEEP_BACKUPS)"
+    fi
 }
 
 # Restore the previous binary / updater / revision and restart Core if it was
@@ -294,6 +346,8 @@ fi
 mv -f "$temporary" "$BINARY"
 BIN_REPLACED=1
 temporary=""
+# 替换成功后立即修剪历史备份（保留最近 N 个，见 prune_backups）。
+prune_backups || true
 
 if ((core_was_active)); then
     PHASE=restarting
@@ -438,3 +492,7 @@ FINALIZED=1
 BIN_REPLACED=0
 UPDATER_REPLACED=0
 rm -f "$rollback" "$ROLLBACK_UPDATER" || true
+# 成功收尾后再修剪一次：本次的 .rollback 已删除，名额回滚给更早的备份。
+ROLLBACK_BINARY=""
+ROLLBACK_UPDATER=""
+prune_backups || true
