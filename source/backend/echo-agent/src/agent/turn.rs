@@ -114,7 +114,10 @@ impl Agent {
                 .as_ref()
                 .map(|c| c.system_skills.clone())
                 .unwrap_or_default();
-            let workspace = self.workspace_prompt_text();
+            // 按**本次 turn 的会话**解析工作区（2026-10 多窗口修复）：
+            // 全局 active 是 per-persona 单槽，另一个窗口激活工作区后会被
+            // 注入到这里，导致 B 的对话拿到 A 的项目上下文。
+            let workspace = self.workspace_prompt_text_for(&session_id);
             (base, persona_skills, workspace)
         };
         let blocks = {

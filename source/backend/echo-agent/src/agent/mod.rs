@@ -1063,6 +1063,38 @@ impl Agent {
 
     /// 工作区会话（workspace 插件）注入提示词的文本：插件对该 persona 启用
     /// 且存在激活会话时返回 Some（名称 + 工作目录清单），否则 None。
+    /// 工作区提示词（**按会话**解析，2026-10 多窗口修复）。
+    ///
+    /// 旧实现无条件读 `WorkspaceStore::prompt_text()`——那是 per-persona 的
+    /// **全局 active**，与本次 turn 是哪个会话无关。多窗口场景下：A 窗口激活
+    /// 工作区 W2，B 窗口在自己的通道 W1 发消息，模型收到的却是「当前工作区
+    /// 会话 W2 / 工作区目录 …」——对话内容直接串到别人的项目上。
+    ///
+    /// 现在优先按 `session_id` 解析所属工作区；不是工作区通道（默认本地会话 /
+    /// QQ 会话）时回退全局 active（保持旧语义：单窗口下激活工作区后，默认
+    /// 本地会话仍能看到项目上下文）。
+    fn workspace_prompt_text_for(&self, session_id: &str) -> Option<String> {
+        let store = self.workspace_store()?;
+        if !self.workspace_plugin_allowed() {
+            return None;
+        }
+        store
+            .prompt_text_for(session_id)
+            .or_else(|| store.prompt_text())
+    }
+
+    /// workspace 插件是否允许（能力白名单判定，`workspace_prompt_text*` 共用）。
+    fn workspace_plugin_allowed(&self) -> bool {
+        self.capabilities
+            .lock()
+            .ok()
+            .and_then(|cap| cap.clone())
+            .map(|cap| {
+                crate::plugins::profile_allows_plugin(&cap, crate::plugins::WORKSPACE_PLUGIN_ID)
+            })
+            .unwrap_or(false)
+    }
+
     fn workspace_prompt_text(&self) -> Option<String> {
         let store = self.workspace_store()?;
         let plugin_allowed = self

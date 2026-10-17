@@ -455,39 +455,35 @@ impl WorkspaceStore {
         Ok(removed)
     }
 
-    /// System-prompt text for the active session (`None` = nothing to inject).
+    /// System-prompt text for the **active** workspace (`None` = nothing to inject).
+    ///
+    /// ⚠️ 这是 **per-persona 全局** active——与"本次 turn 是哪个会话"无关。
+    /// 多窗口场景下必须用 [`Self::prompt_text_for`]（按会话解析），否则 A 窗口
+    /// 激活工作区后，B 窗口在自己通道里发消息会被注入 A 的工作区上下文。
     pub fn prompt_text(&self) -> Option<String> {
         let (session, conv) = self.active_pair()?;
-        if session.directories.is_empty() && session.name.is_empty() {
-            return None;
-        }
-        let mut text = format!("# 当前工作区会话\n{}", session.name);
-        if !session.description.is_empty() {
-            text.push_str(&format!("（{}）", session.description));
-        }
-        // 多对话（2026-10）：标注当前对话名——各对话上下文独立，
-        // 名称帮助模型区分任务线。
-        text.push_str(&format!("\n当前对话：{}（id: {}）", conv.name, conv.id));
-        if !session.directories.is_empty() {
-            text.push_str("\n工作区目录：\n");
-            for dir in &session.directories {
-                match dir.node() {
-                    // P3-1 跨机文件协作：远程目录可操作——5 个文件工具
-                    // （read_file/write_file/edit_file/list_files/search_code）
-                    // 的 path 参数用 `node://<peer>/<绝对路径>` 前缀，经联邦
-                    // Invoke 在对端沙箱内执行。
-                    Some(node) => text.push_str(&format!(
-                        "- node://{node}/{} [remote:{node}]（远程节点：文件工具的 path 用 node://{node}/<绝对路径> 前缀直接读写/列目录/搜索；bash 工具可用 node://{node}/<命令> 在对端执行，如 node://{node}/cargo test）\n",
-                        dir.path().trim_start_matches('/')
-                    )),
-                    None => text.push_str(&format!("- {}\n", dir.path())),
-                }
-            }
-            text.push_str("在本机目录范围内工作；标注 [remote:<peer>] 的远程目录以 node:// 前缀路径直接操作（文件工具用 path 前缀，bash 用命令前缀；对端白名单/沙箱裁决，拒绝会原样返回）；git 状态与其它会话可用 workspace 工具查询/切换。");
-        } else {
-            text.push_str("\n（尚未配置工作区目录，可用 workspace 工具或面板添加）");
-        }
-        Some(text)
+        Some(render_prompt_text(&session, &conv))
+    }
+
+    /// System-prompt text for the workspace **owning `session_id`**
+    /// （`None` = 该会话不是工作区通道，调用方决定回退策略）。
+    ///
+    /// 2026-10 多窗口修复：工作区上下文必须按**本次 turn 的会话**解析，不能
+    /// 读全局 active。`local:workspace:<ws>[/<conv>]:<user>` → 取该工作区 +
+    /// 该对话；非通道会话 → `None`。
+    ///
+    /// 对话解析：通道内嵌 `<conv>` 就找那条；legacy 裸通道（无 `/` 段）按
+    /// `legacy == true` 定位（与 [`Self::set_legacy_conversation_api_profile`]
+    /// 同一约定，不猜 id 为 `main`）。
+    pub fn prompt_text_for(&self, session_id: &str) -> Option<String> {
+        let (ws_id, conv_id) = parse_workspace_channel(session_id)?;
+        let session = self.get(&ws_id)?;
+        let convs = conversations_view(&session);
+        let conv = match conv_id {
+            Some(id) => convs.into_iter().find(|c| c.id == id)?,
+            None => convs.into_iter().find(|c| c.legacy)?,
+        };
+        Some(render_prompt_text(&session, &conv))
     }
 
     /// API profile 改名传播（2026-10）：把全部工作区对话里
@@ -1690,6 +1686,56 @@ mod tests {
 
     /// 多对话提示词：当前对话名注入；对话独立通道 id 可解析往返。
     #[test]
+    /// 多窗口修复（2026-10）：`prompt_text_for` 必须按**会话**取工作区，
+    /// 与全局 active 无关——否则 A 窗口激活 W2 后，B 在 W1 通道发消息会被
+    /// 注入 W2 的上下文（项目信息串台）。
+    #[test]
+    fn prompt_text_for_uses_session_workspace_not_global_active() {
+        let unique = format!("conv-prompt-for-{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+        let (store, _path) = temp_store(&unique);
+        for (id, name) in [("w1", "项目一"), ("w2", "项目二")] {
+            store
+                .upsert(WorkspaceSessionInfo {
+                    id: id.into(),
+                    name: name.into(),
+                    directories: vec!["/srv/shared".into()],
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        // 全局 active = w2（另一个窗口刚切走的那个）
+        store.set_active(Some("w2".into()), None).unwrap();
+
+        // 本会话是 w1 的 legacy 通道 → 必须解析出 w1，而不是 active 的 w2
+        let text = store
+            .prompt_text_for("local:workspace:w1:local_user")
+            .expect("w1 通道应有提示词");
+        assert!(text.contains("项目一"), "应按会话取 w1: {text}");
+        assert!(!text.contains("项目二"), "不得混入 active 的 w2: {text}");
+
+        // 多对话通道 `<ws>/<conv>` 同样按会话解析
+        let conv = store
+            .upsert_conversation(
+                "w1",
+                WorkspaceConversationInfo {
+                    id: String::new(),
+                    name: "支线".into(),
+                    legacy: false,
+                    api_profile: None,
+                },
+            )
+            .unwrap();
+        let text = store
+            .prompt_text_for(&format!("local:workspace:w1/{}:local_user", conv.id))
+            .expect("多对话通道应有提示词");
+        assert!(text.contains("项目一") && text.contains("支线"), "{text}");
+
+        // 非工作区会话 → None（调用方回退全局 active，保持单窗口旧语义）
+        assert!(store.prompt_text_for("local:tui::local_user").is_none());
+        assert!(store.prompt_text_for("qq:dm::42").is_none());
+    }
+
     fn prompt_text_names_active_conversation() {
         let (store, path) = temp_store("conv-prompt");
         store
@@ -2339,4 +2385,43 @@ mod tests {
         assert_eq!(parse_workspace_channel("qq:group:12345:67890"), None);
         assert_eq!(parse_workspace_channel("local:workspace:"), None);
     }
+}
+
+
+/// 工作区提示词正文（单一实现，供 [`WorkspaceStore::prompt_text`]（全局 active）
+/// 与 [`WorkspaceStore::prompt_text_for`]（按会话解析）两条路径共用）。
+///
+/// 2026-10 多窗口修复时从 `prompt_text` 抽出：编辑器里两处拼装同一段文案
+/// 极易漂移，而这段文案直接决定模型看到的项目上下文。
+fn render_prompt_text(session: &WorkspaceSessionInfo, conv: &WorkspaceConversationInfo) -> String {
+    if session.directories.is_empty() && session.name.is_empty() {
+        return String::new();
+    }
+    let mut text = format!("# 当前工作区会话\n{}", session.name);
+    if !session.description.is_empty() {
+        text.push_str(&format!("（{}）", session.description));
+    }
+    // 多对话（2026-10）：标注当前对话名——各对话上下文独立，
+    // 名称帮助模型区分任务线。
+    text.push_str(&format!("\n当前对话：{}（id: {}）", conv.name, conv.id));
+    if !session.directories.is_empty() {
+        text.push_str("\n工作区目录：\n");
+        for dir in &session.directories {
+            match dir.node() {
+                // P3-1 跨机文件协作：远程目录可操作——5 个文件工具
+                // （read_file/write_file/edit_file/list_files/search_code）
+                // 的 path 参数用 `node://<peer>/<绝对路径>` 前缀，经联邦
+                // Invoke 在对端沙箱内执行。
+                Some(node) => text.push_str(&format!(
+                    "- node://{node}/{} [remote:{node}]（远程节点：文件工具的 path 用 node://{node}/<绝对路径> 前缀直接读写/列目录/搜索；bash 工具可用 node://{node}/<命令> 在对端执行，如 node://{node}/cargo test）\n",
+                    dir.path().trim_start_matches('/')
+                )),
+                None => text.push_str(&format!("- {}\n", dir.path())),
+            }
+        }
+        text.push_str("在本机目录范围内工作；标注 [remote:<peer>] 的远程目录以 node:// 前缀路径直接操作（文件工具用 path 前缀，bash 用命令前缀；对端白名单/沙箱裁决，拒绝会原样返回）；git 状态与其它会话可用 workspace 工具查询/切换。");
+    } else {
+        text.push_str("\n（尚未配置工作区目录，可用 workspace 工具或面板添加）");
+    }
+    text
 }
