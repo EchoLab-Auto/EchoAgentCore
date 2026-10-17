@@ -19,6 +19,10 @@ mod history;
 mod persist;
 mod timeline;
 
+// 显示历史的合并水位线：agent 命令层要用（`RequestSessionHistory`）。
+// 只导出这一个函数——其余派生实现细节留在模块内。
+pub(crate) use history::history_watermark;
+
 use crate::event::SessionInfo;
 use crate::llm::{estimate_history_tokens, estimate_message_tokens, ChatMessage, LlmProvider};
 

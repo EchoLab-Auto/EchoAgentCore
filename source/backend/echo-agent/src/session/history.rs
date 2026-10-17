@@ -12,6 +12,18 @@
 //! - 推理（reasoning）条目与归档提示行**不落事件日志** → 派生不含；
 //! - `ToolResult` 事件没有 `timed_out` 字段 → 派生条目的 `failed` 只按
 //!   `"error:"` 前缀判定（实时投影还有超时维度）。
+//!
+//! ## ⚠️ 水位线必须与派生范围一致（2026-10 事故）
+//!
+//! 前端用 `SessionHistory.max_seq` 作合并水位线：`seq <= baseSeq` 的实时
+//! 条目视为"快照已覆盖"而跳过。若水位线统计了**派生根本不含的 kind**
+//! （推理），前端就会把实时推理判成"快照已有"而整条丢弃——表现为「看不到
+//! 思考 chip」，只有刷新/切会话时更明显。因此 [`history_watermark`] 刻意
+//! 排除推理；新增"不派生"的 kind 时必须同步排除。
+//!
+//! 注：活链路的 `AssistantMessage` 恒为 `reasoning_content: None`
+//! （`agent/inbound.rs::record_assistant_reply` 只落最终回答），推理只存在于
+//! 实时投影的 timeline 里，确实无法从事件日志派生。
 
 use std::collections::HashMap;
 
@@ -200,6 +212,24 @@ impl TrunkStore {
         }
         (messages, total, truncated)
     }
+}
+
+/// 会话历史合并水位线：`timeline` 中该会话、**派生会覆盖的 kind** 的最大 seq。
+///
+/// 前端拿它过滤实时条目（`seq <= 水位线` = 快照已覆盖）。因此这里必须与
+/// [`display_history_for_session`] 的派生范围严格一致——推理（`reasoning`）
+/// 不派生，绝不能计入，否则实时推理会被误判为已覆盖而整条消失（见模块注释）。
+pub fn history_watermark(
+    timeline: impl IntoIterator<Item = TimelineMessage>,
+    session_id: &str,
+) -> u64 {
+    timeline
+        .into_iter()
+        .filter(|message| message.session_id == session_id)
+        .filter(|message| message.kind != "reasoning")
+        .map(|message| message.seq)
+        .max()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -397,4 +427,58 @@ mod tests {
             messages[0].content
         );
     }
+    // ── 合并水位线（2026-10「看不到思考 chip」回归）──────────────────────
+
+    fn entry(kind: &str, session: &str, seq: u64) -> TimelineMessage {
+        TimelineMessage {
+            kind: kind.into(),
+            content: format!("{kind}-{seq}"),
+            session_id: session.into(),
+            time: 0,
+            source: None,
+            reasoning: None,
+            tool: None,
+            images: None,
+            seq,
+        }
+    }
+
+    #[test]
+    fn watermark_excludes_reasoning() {
+        // 派生不含推理 → 水位线不得把推理的 seq 算进去，否则前端会把
+        // 实时推理判成"快照已覆盖"而整条丢弃。
+        let timeline = vec![
+            entry("user", "s1", 10),
+            entry("reasoning", "s1", 95), // 最大 seq，但派生不含
+            entry("backend", "s1", 40),
+            entry("tool", "s1", 60),
+        ];
+        assert_eq!(
+            super::history_watermark(timeline.clone(), "s1"),
+            60,
+            "水位线应停在派生能覆盖的最大 seq（tool 60），不含 reasoning 95"
+        );
+    }
+
+    #[test]
+    fn watermark_filters_by_session() {
+        let timeline = vec![
+            entry("backend", "s1", 30),
+            entry("backend", "s2", 900),
+        ];
+        assert_eq!(super::history_watermark(timeline, "s1"), 30);
+    }
+
+    #[test]
+    fn watermark_is_zero_without_derivable_entries() {
+        // 只有推理（例如刷新后 timeline 里仅剩推理）→ 0，前端据此不过滤。
+        let timeline = vec![entry("reasoning", "s1", 500)];
+        assert_eq!(super::history_watermark(timeline, "s1"), 0);
+    }
+
+    #[test]
+    fn watermark_handles_empty_input() {
+        assert_eq!(super::history_watermark(Vec::new(), "s1"), 0);
+    }
+
 }

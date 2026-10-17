@@ -937,14 +937,14 @@ impl Agent {
                 let (messages, total, truncated) =
                     trunk.display_history_for_session(&session_id, limit);
                 // 合并水位线：派生时该会话在显示时间线中的最大 seq。
+                // **必须与派生范围一致**（`history_watermark` 排除推理 ——
+                // 推理不落事件日志、派生不含；若把它计进水位线，前端会把
+                // 实时推理判成"快照已覆盖"而整条丢弃 → 看不到思考 chip）。
                 let session_key = session_id.as_str();
-                let max_seq = trunk
-                    .timeline_snapshot()
-                    .iter()
-                    .filter(|message| message.session_id == session_key)
-                    .map(|message| message.seq)
-                    .max()
-                    .unwrap_or(0);
+                let max_seq = crate::session::history_watermark(
+                    trunk.timeline_snapshot(),
+                    session_key,
+                );
                 self.emit(BackendEvent::SessionHistory {
                     team_id: team_id.clone(),
                     session_id,
