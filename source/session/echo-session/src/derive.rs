@@ -68,6 +68,10 @@ pub fn project_messages(log: &[SessionEvent]) -> Vec<ChatMessage> {
                     arguments: event.arguments.clone(),
                 });
             }
+            // 推理是**模型不可见**的显示层事实：不进入上下文，也不触发
+            // tool_call 缓冲的 flush（推理出现在一步的开头，从不夹在
+            // ToolCall 与它的 ToolResult 之间）。
+            SessionEvent::Reasoning(_) => {}
             SessionEvent::Compaction(CompactionEvent { summary, .. }) => {
                 flush_tool_calls(&mut messages, &mut pending_tool_calls, &covered_call_ids);
                 messages.push(ChatMessage::user(crate::event::render_compaction_summary(
@@ -796,4 +800,77 @@ mod tests {
         assert_eq!(messages[2].tool_call_id.as_deref(), Some("call_A"));
         assert_eq!(messages[2].content, "ok");
     }
+    // ── 推理事件模型不可见（2026-10）────────────────────────────────────
+
+    fn reasoning(content: &str, timestamp: i64) -> SessionEvent {
+        SessionEvent::Reasoning(crate::event::ReasoningEvent {
+            content: content.into(),
+            timestamp,
+            session: Some("s1".into()),
+        })
+    }
+
+    #[test]
+    fn reasoning_events_are_invisible_to_the_model() {
+        // 推理只在日志里供显示层使用；投影（模型上下文）必须完全跳过它。
+        let log = vec![
+            SessionEvent::UserMessage(UserMessage {
+                content: "问题".into(),
+                timestamp: 1,
+                message_sequence: None,
+                source: None,
+                images: Vec::new(),
+                session: Some("s1".into()),
+            }),
+            reasoning("中间思考", 2),
+            SessionEvent::AssistantMessage(AssistantMessage {
+                content: "回答".into(),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                session: Some("s1".into()),
+            }),
+        ];
+        let messages = project_messages(&log);
+        assert_eq!(messages.len(), 2, "推理不产生任何消息：{messages:?}");
+        assert_eq!(messages[0].content, "问题");
+        assert_eq!(messages[1].content, "回答");
+    }
+
+    #[test]
+    fn reasoning_between_tool_call_and_result_does_not_break_pairing() {
+        // 即使推理意外夹在 ToolCall 与其 ToolResult 之间，也不能打断
+        // tool_use / tool_result 的配对（否则 provider 会拒绝请求）。
+        let log = vec![
+            SessionEvent::UserMessage(UserMessage {
+                content: "问题".into(),
+                timestamp: 1,
+                message_sequence: None,
+                source: None,
+                images: Vec::new(),
+                session: Some("s1".into()),
+            }),
+            SessionEvent::ToolCall(ToolCallEvent {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+                session: Some("s1".into()),
+                started_at_ms: Some(2_000),
+            }),
+            reasoning("夹在中间的思考", 3),
+            SessionEvent::ToolResult(ToolResultEvent {
+                tool_call_id: "c1".into(),
+                result: "ok".into(),
+                images: Vec::new(),
+                session: Some("s1".into()),
+                elapsed_ms: Some(1),
+            }),
+        ];
+        let messages = project_messages(&log);
+        let roles: Vec<_> = messages.iter().map(|m| m.role).collect();
+        assert_eq!(roles.len(), 3, "{messages:?}");
+        // assistant(tool_use) 必须存在且紧邻 tool 结果
+        assert!(messages[1].tool_calls.is_some(), "{messages:?}");
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("c1"));
+    }
+
 }

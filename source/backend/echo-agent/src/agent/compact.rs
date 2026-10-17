@@ -255,6 +255,11 @@ fn render_with_caps(events: &[SessionEvent], caps: TranscriptCaps) -> String {
                     truncate_chars(&result.result, caps.tool_result)
                 ));
             }
+            // 推理**不进**压缩转录（2026-10）：它是显示层内容，对"这段
+            // 对话讲了什么"没有信息量，却占满 transcript 预算（推理体积
+            // 通常是正文的数倍）。与既有行为一致——assistant 消息的
+            // `reasoning_content` 同样从不渲染。
+            SessionEvent::Reasoning(_) => {}
             SessionEvent::Compaction(c) => {
                 lines.push(format!(
                     "[更早摘要] {}",

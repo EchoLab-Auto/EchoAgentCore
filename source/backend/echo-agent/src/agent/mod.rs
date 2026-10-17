@@ -290,6 +290,25 @@ pub fn set_federation_command_handler(handler: FederationCommandHandler) {
     let _ = echo_context::kernel::set(handler);
 }
 
+/// 单步推理落盘上限（字符）。超出截断并标注——推理正文只在面板里读，
+/// 而事件日志是**整份 JSON、30 秒一次整体重写**：不设上限时少数几步超长
+/// 推理就能把日志撑到几十 MB（推理体积通常是正文的数倍）。
+///
+/// 线上传输另有更激进的瘦身（`timeline.rs::elide_reasoning_for_wire`：
+/// 只有最近 40 条保留全文，更早的截成 240 字），所以这里的 2 万字只影响
+/// "保留全文"的那批条目。
+const MAX_REASONING_EVENT_CHARS: usize = 20_000;
+
+/// 按 [`MAX_REASONING_EVENT_CHARS`] 截断推理正文（保留头部 + 明确标注）。
+fn cap_reasoning_for_log(content: &str) -> String {
+    let total = content.chars().count();
+    if total <= MAX_REASONING_EVENT_CHARS {
+        return content.to_string();
+    }
+    let head: String = content.chars().take(MAX_REASONING_EVENT_CHARS).collect();
+    format!("{head}…（推理过长已截断：原文 {total} 字）")
+}
+
 impl Agent {
     pub fn new(
         provider: Arc<dyn LlmProvider>,
@@ -904,6 +923,22 @@ impl Agent {
             .as_deref()
             .filter(|content| !content.trim().is_empty())
         {
+            // 落 durable 事件（2026-10 根治）：推理进事件日志后，显示历史
+            // 派生才与实时投影同形状（推理与工具调用真实交错），前端不再
+            // 需要为推理走"只存在于实时窗口"的特殊路径。
+            //
+            // 模型不可见：`project_messages` 跳过该变体（见 derive.rs）。
+            // 时间在此定格——派生条目与实时 timeline 条目据此对齐。
+            //
+            // 落盘上限见 [`MAX_REASONING_EVENT_CHARS`]：单步推理异常长时截断，
+            // 否则事件日志（整份 JSON、30s 一次整体重写）会被少数几步撑爆。
+            self.trunk.append_event(echo_session::SessionEvent::Reasoning(
+                echo_session::event::ReasoningEvent {
+                    content: cap_reasoning_for_log(content),
+                    timestamp: chrono::Utc::now().timestamp(),
+                    session: Some(session_id.to_string()),
+                },
+            ));
             self.emit(BackendEvent::AgentReasoning {
                 session_id: session_id.to_string(),
                 team_id: None, // 由 annotate_team 统一注入
@@ -1432,6 +1467,34 @@ pub(crate) fn spawn_contextual_wait_reply(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod reasoning_cap_tests {
+    use super::{cap_reasoning_for_log, MAX_REASONING_EVENT_CHARS};
+
+    #[test]
+    fn short_reasoning_is_stored_verbatim() {
+        let text = "简短思考";
+        assert_eq!(cap_reasoning_for_log(text), text);
+    }
+
+    #[test]
+    fn long_reasoning_is_capped_with_marker() {
+        let text = "字".repeat(MAX_REASONING_EVENT_CHARS + 50);
+        let capped = cap_reasoning_for_log(&text);
+        assert!(capped.starts_with(&"字".repeat(MAX_REASONING_EVENT_CHARS)));
+        assert!(capped.contains("推理过长已截断"));
+        assert!(capped.contains(&format!("原文 {}", MAX_REASONING_EVENT_CHARS + 50)));
+        // 截断后长度有界（标记本身十几字）
+        assert!(capped.chars().count() < MAX_REASONING_EVENT_CHARS + 40);
+    }
+
+    #[test]
+    fn exactly_at_limit_is_stored_verbatim() {
+        let text = "字".repeat(MAX_REASONING_EVENT_CHARS);
+        assert_eq!(cap_reasoning_for_log(&text), text);
+    }
+}
 
 #[cfg(test)]
 pub mod tests;

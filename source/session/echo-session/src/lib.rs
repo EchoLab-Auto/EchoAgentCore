@@ -33,7 +33,8 @@ pub mod log;
 
 pub use derive::{derive_messages, project_messages, CompactedRange};
 pub use event::{
-    AssistantMessage, CompactionEvent, SessionEvent, ToolCallEvent, ToolResultEvent, UserMessage,
+    AssistantMessage, CompactionEvent, ReasoningEvent, SessionEvent, ToolCallEvent,
+    ToolResultEvent, UserMessage,
 };
 pub use header::SessionHeader;
 pub use legacy::{migrate_v4_document, MigrationError};

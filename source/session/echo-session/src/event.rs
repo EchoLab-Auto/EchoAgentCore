@@ -22,8 +22,31 @@ pub enum SessionEvent {
     /// A tool call was requested by the assistant (part of the assistant
     /// message's `tool_calls`; kept as its own event for tool-loop clarity).
     ToolCall(ToolCallEvent),
+    /// 一次推理（模型 thinking 正文）。**模型不可见**：投影为上下文时跳过
+    /// （见 `derive.rs`）；只用于显示层（历史回放的头像/时序）。
+    ///
+    /// 为什么进事件日志（2026-10 根治）：显示历史原先按"事件日志派生"回填，
+    /// 而推理从不落日志 → 派生结果里没有推理 → 前端只能靠实时 timeline
+    /// 窗口补，导致「刷新后思考全堆到正文后面」这类时序错乱无法根除。
+    /// 现在推理与工具调用在同一份日志里，派生与实时投影形状一致。
+    Reasoning(ReasoningEvent),
     /// A compaction replaced a prefix of the log with a summary.
     Compaction(CompactionEvent),
+}
+
+/// 一次推理（thinking 正文）。
+///
+/// `timestamp` 记录进入时间线的时刻（Unix 秒），显示历史用它排序并和实时
+/// 条目对齐；`#[serde(default)]` 让缺失时间的旧数据落到 carry-forward。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReasoningEvent {
+    pub content: String,
+    /// Unix seconds（模型产出该段推理的时刻）。
+    #[serde(default)]
+    pub timestamp: i64,
+    /// 归属会话 id（多会话上下文投影分区；None = 旧版/未归因事件）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 /// A user message entered the session.
@@ -156,6 +179,7 @@ impl SessionEvent {
             SessionEvent::AssistantMessage(event) => event.session.as_deref(),
             SessionEvent::ToolResult(event) => event.session.as_deref(),
             SessionEvent::ToolCall(event) => event.session.as_deref(),
+            SessionEvent::Reasoning(event) => event.session.as_deref(),
             SessionEvent::Compaction(event) => event.session.as_deref(),
         }
     }
@@ -167,6 +191,7 @@ impl SessionEvent {
             SessionEvent::AssistantMessage(event) => &mut event.session,
             SessionEvent::ToolResult(event) => &mut event.session,
             SessionEvent::ToolCall(event) => &mut event.session,
+            SessionEvent::Reasoning(event) => &mut event.session,
             SessionEvent::Compaction(event) => &mut event.session,
         }
     }
@@ -178,6 +203,7 @@ impl SessionEvent {
             SessionEvent::AssistantMessage(_) => "assistant/message",
             SessionEvent::ToolCall(_) => "tool/call",
             SessionEvent::ToolResult(_) => "tool/result",
+            SessionEvent::Reasoning(_) => "assistant/reasoning",
             SessionEvent::Compaction(_) => "session/compaction",
         }
     }
@@ -207,6 +233,11 @@ impl From<ToolCallEvent> for SessionEvent {
 impl From<ToolResultEvent> for SessionEvent {
     fn from(value: ToolResultEvent) -> Self {
         SessionEvent::ToolResult(value)
+    }
+}
+impl From<ReasoningEvent> for SessionEvent {
+    fn from(value: ReasoningEvent) -> Self {
+        SessionEvent::Reasoning(value)
     }
 }
 impl From<CompactionEvent> for SessionEvent {

@@ -9,21 +9,30 @@
 //! 实时投影负责窗口，派生负责回填旧会话）。
 //!
 //! 已知差异（接受）：
-//! - 推理（reasoning）条目与归档提示行**不落事件日志** → 派生不含；
+//! - 归档提示行不在事件日志中 → 派生不含；
 //! - `ToolResult` 事件没有 `timed_out` 字段 → 派生条目的 `failed` 只按
 //!   `"error:"` 前缀判定（实时投影还有超时维度）。
 //!
-//! ## ⚠️ 水位线必须与派生范围一致（2026-10 事故）
+//! ## 推理现在**会**派生（2026-10 根治）
 //!
-//! 前端用 `SessionHistory.max_seq` 作合并水位线：`seq <= baseSeq` 的实时
-//! 条目视为"快照已覆盖"而跳过。若水位线统计了**派生根本不含的 kind**
-//! （推理），前端就会把实时推理判成"快照已有"而整条丢弃——表现为「看不到
-//! 思考 chip」，只有刷新/切会话时更明显。因此 [`history_watermark`] 刻意
-//! 排除推理；新增"不派生"的 kind 时必须同步排除。
+//! 此前推理（thinking）从不落事件日志——活链路的 `AssistantMessage` 恒为
+//! `reasoning_content: None`（`agent/inbound.rs::record_assistant_reply`
+//! 只落最终回答），于是派生结果里没有推理，前端只能靠实时 timeline 窗口
+//! 补，导致「刷新后思考全堆到正文后面」的时序错乱无法根除。
 //!
-//! 注：活链路的 `AssistantMessage` 恒为 `reasoning_content: None`
-//! （`agent/inbound.rs::record_assistant_reply` 只落最终回答），推理只存在于
-//! 实时投影的 timeline 里，确实无法从事件日志派生。
+//! 现在每段推理以 [`SessionEvent::Reasoning`] 落日志（模型不可见，投影跳过），
+//! 派生按到达顺序给出 `kind = "reasoning"` 条目，与工具调用真实交错。
+//!
+//! ## ⚠️ 水位线：仍排除推理（保守）
+//!
+//! 前端用 `SessionHistory.max_seq` 作合并水位线（`seq <= baseSeq` 视为已被
+//! 快照覆盖）。历史派生**曾**不含推理，把它计入水位线会让前端把实时推理
+//! 判成"快照已有"而整条丢弃（「看不到思考 chip」，2026-10 事故）。
+//!
+//! 现在派生已包含推理，理论上可以计入；但**旧日志**（本次改动之前）里没有
+//! `Reasoning` 事件，计入后那些会话仍会踩同一个坑。所以 [`history_watermark`]
+//! 继续排除推理，与前端"推理永不按 seq 过滤"构成双保险——两处判据刻意
+//! 不依赖彼此的细节。新增"派生不含"的 kind 时必须同步排除。
 
 use std::collections::HashMap;
 
@@ -122,6 +131,32 @@ impl TrunkStore {
                         None,
                     ));
                 }
+                echo_session::SessionEvent::Reasoning(reasoning) => {
+                    // 推理落独立条目（与实时投影同形状）：按到达顺序与工具
+                    // 调用真实交错。时间用事件自带的产出时刻；旧数据缺失时
+                    // 退回 carry-forward（与 backend/compaction 条目同规则）。
+                    let content = reasoning.content.trim();
+                    if content.is_empty() {
+                        continue;
+                    }
+                    let time = if reasoning.timestamp > 0 {
+                        last_time = last_time.max(reasoning.timestamp);
+                        reasoning.timestamp
+                    } else {
+                        last_time
+                    };
+                    messages.push(TimelineMessage {
+                        kind: "reasoning".into(),
+                        content: content.to_string(),
+                        session_id: session_id.to_string(),
+                        time,
+                        source: None,
+                        reasoning: None,
+                        tool: None,
+                        images: None,
+                        seq: 0,
+                    });
+                }
                 echo_session::SessionEvent::ToolCall(call) => {
                     let started_secs = call
                         .started_at_ms
@@ -216,9 +251,11 @@ impl TrunkStore {
 
 /// 会话历史合并水位线：`timeline` 中该会话、**派生会覆盖的 kind** 的最大 seq。
 ///
-/// 前端拿它过滤实时条目（`seq <= 水位线` = 快照已覆盖）。因此这里必须与
-/// [`display_history_for_session`] 的派生范围严格一致——推理（`reasoning`）
-/// 不派生，绝不能计入，否则实时推理会被误判为已覆盖而整条消失（见模块注释）。
+/// 前端拿它过滤实时条目（`seq <= 水位线` = 快照已覆盖）。
+///
+/// 推理**仍排除**（见模块注释）：派生现已包含推理，但旧日志里没有
+/// `Reasoning` 事件；计入后那些会话的实时推理会被误判为已覆盖而整条消失。
+/// 前端另有"推理永不按 seq 过滤"的独立防线，两处刻意互不依赖。
 pub fn history_watermark(
     timeline: impl IntoIterator<Item = TimelineMessage>,
     session_id: &str,
@@ -479,6 +516,95 @@ mod tests {
     #[test]
     fn watermark_handles_empty_input() {
         assert_eq!(super::history_watermark(Vec::new(), "s1"), 0);
+    }
+
+    // ── 推理派生（2026-10 根治：推理进事件日志）────────────────────────
+
+    fn reasoning_event(session: &str, content: &str, timestamp: i64) -> echo_session::SessionEvent {
+        echo_session::SessionEvent::Reasoning(echo_session::ReasoningEvent {
+            content: content.into(),
+            timestamp,
+            session: Some(session.into()),
+        })
+    }
+
+    #[test]
+    fn reasoning_events_derive_interleaved_with_tools() {
+        let store = trunk();
+        let target = "local:tui::local_user";
+        store.append_event(user_event(target, "问题", 100));
+        store.append_event(reasoning_event(target, "第一段思考", 105));
+        store.append_event(echo_session::SessionEvent::ToolCall(
+            echo_session::ToolCallEvent {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+                session: Some(target.into()),
+                started_at_ms: Some(110_000),
+            },
+        ));
+        store.append_event(echo_session::SessionEvent::ToolResult(
+            echo_session::ToolResultEvent {
+                tool_call_id: "c1".into(),
+                result: "ok".into(),
+                images: Vec::new(),
+                session: Some(target.into()),
+                elapsed_ms: Some(5),
+            },
+        ));
+        store.append_event(reasoning_event(target, "第二段思考", 120));
+        store.append_event(echo_session::SessionEvent::AssistantMessage(
+            echo_session::AssistantMessage {
+                content: "回答".into(),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                session: Some(target.into()),
+            },
+        ));
+
+        let (messages, total, _) = store.display_history_for_session(target, 500);
+        let kinds: Vec<&str> = messages.iter().map(|m| m.kind.as_str()).collect();
+        // 5 条：ToolResult 就地补丁 ToolCall 条目（不新增），其余各一条。
+        assert_eq!(total, 5);
+        assert_eq!(
+            kinds,
+            vec!["user", "reasoning", "tool", "reasoning", "backend"],
+            "推理必须与工具调用按到达顺序真实交错：{messages:?}"
+        );
+        // 推理自带时间戳（不是 carry-forward 的猜测值）
+        assert_eq!(messages[1].time, 105);
+        assert_eq!(messages[1].content, "第一段思考");
+        assert_eq!(messages[3].time, 120);
+    }
+
+    #[test]
+    fn reasoning_without_timestamp_falls_back_to_carry_forward() {
+        let store = trunk();
+        let target = "local:tui::local_user";
+        store.append_event(user_event(target, "问题", 200));
+        store.append_event(reasoning_event(target, "旧数据没有时间", 0));
+        let (messages, _, _) = store.display_history_for_session(target, 500);
+        assert_eq!(messages[1].kind, "reasoning");
+        assert_eq!(messages[1].time, 200, "缺失时间沿用最近已知时间");
+    }
+
+    #[test]
+    fn blank_reasoning_is_skipped() {
+        let store = trunk();
+        let target = "local:tui::local_user";
+        store.append_event(user_event(target, "问题", 10));
+        store.append_event(reasoning_event(target, "   ", 11));
+        let (messages, total, _) = store.display_history_for_session(target, 500);
+        assert_eq!(total, 1, "空白推理不落显示条目：{messages:?}");
+    }
+
+    #[test]
+    fn reasoning_from_other_session_is_not_derived() {
+        let store = trunk();
+        store.append_event(user_event("s1", "问题", 10));
+        store.append_event(reasoning_event("s2", "别的会话的思考", 11));
+        let (messages, total, _) = store.display_history_for_session("s1", 500);
+        assert_eq!(total, 1, "{messages:?}");
     }
 
 }

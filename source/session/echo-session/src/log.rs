@@ -90,10 +90,14 @@ impl EventLog {
         match insert_at {
             Some(index) => {
                 let mut insert_at = index + 1;
+                // 跳过本轮的工具往返**与推理**：推理是显示层条目，读起来
+                // 属于它前面那条请求，最终回答必须排在整轮之后。
                 while insert_at < events.len()
                     && matches!(
                         events[insert_at],
-                        SessionEvent::ToolCall(_) | SessionEvent::ToolResult(_)
+                        SessionEvent::ToolCall(_)
+                            | SessionEvent::ToolResult(_)
+                            | SessionEvent::Reasoning(_)
                     )
                 {
                     insert_at += 1;
@@ -317,6 +321,79 @@ mod tests {
         assert!(matches!(events[1], SessionEvent::ToolCall(_)));
         assert!(matches!(events[2], SessionEvent::ToolResult(_)));
         assert!(matches!(events[3], SessionEvent::AssistantMessage(_)));
+    }
+
+    #[test]
+    fn insert_after_sequence_skips_reasoning_of_that_turn() {
+        // 推理也是本轮事件：最终回答必须排在它之后，不能插到推理前面
+        // （否则显示历史里回答会出现在"思考"之前）。
+        use crate::event::ToolCallEvent;
+        let log = EventLog::new();
+        log.append(SessionEvent::UserMessage(UserMessage {
+            session: None,
+            content: "跑一下".into(),
+            timestamp: 1_700_000_000,
+            message_sequence: Some(1),
+            source: None,
+            images: vec![],
+        }));
+        log.append(SessionEvent::Reasoning(crate::event::ReasoningEvent {
+            content: "思考".into(),
+            timestamp: 100,
+            session: None,
+        }));
+        log.append(SessionEvent::ToolCall(ToolCallEvent {
+            session: None,
+            id: "call_1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+            started_at_ms: None,
+        }));
+        log.insert_after_sequence(
+            1,
+            SessionEvent::AssistantMessage(AssistantMessage {
+                session: None,
+                content: "完成".into(),
+                reasoning_content: None,
+                tool_calls: vec![],
+            }),
+        );
+        let events = log.log();
+        assert_eq!(events.len(), 4);
+        assert!(matches!(events[1], SessionEvent::Reasoning(_)));
+        assert!(matches!(events[2], SessionEvent::ToolCall(_)));
+        assert!(matches!(events[3], SessionEvent::AssistantMessage(_)));
+    }
+
+    #[test]
+    fn reasoning_event_serde_roundtrip_and_backward_compat() {
+        // 新变体落盘后能读回；缺 timestamp/session 的旧写法也能解析。
+        let log = EventLog::new();
+        log.append(SessionEvent::Reasoning(crate::event::ReasoningEvent {
+            content: "思考".into(),
+            timestamp: 1_700_000_000,
+            session: Some("s1".into()),
+        }));
+        let data = log.serialize().unwrap();
+        // 落盘用 `kind` 标签（pretty JSON，别依赖空格形态）
+        let doc: serde_json::Value = serde_json::from_str(&data).unwrap();
+        assert_eq!(
+            doc.pointer("/events/0/kind").and_then(|v| v.as_str()),
+            Some("reasoning"),
+            "{data}"
+        );
+        assert_eq!(EventLog::deserialize(&data).unwrap(), log.log());
+
+        let minimal = r#"{"version":5,"events":[{"kind":"reasoning","content":"旧数据"}]}"#;
+        let parsed = EventLog::deserialize(minimal).unwrap();
+        match &parsed[0] {
+            SessionEvent::Reasoning(event) => {
+                assert_eq!(event.content, "旧数据");
+                assert_eq!(event.timestamp, 0);
+                assert!(event.session.is_none());
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]
