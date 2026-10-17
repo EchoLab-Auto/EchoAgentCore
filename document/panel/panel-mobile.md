@@ -33,7 +33,7 @@ y: 780
 
 - **冲突**：ui-frame 在 `<768px` 给布局挂 `nm-layout--mobile` 并把它切成"整页滚动"模式（`.nm-layout--mobile` `height: auto` / `.nm-layout__body` `min-height: auto` / `.nm-layout__content` `overflow-y: visible`）——期望由**document 滚动**消费溢出。但 Panel 是固定视口 SPA（`html, body, #app` 均 `overflow: hidden`，滚动在各视图内部），溢出被直接裁掉：**小屏（375×667 / 360×640，可用高 < 内容固有高 733px）时输入区被裁出视口，且页面上不存在任何可滚动容器**（用户症状：无法下滑、看不到输入框；宽度 ≥768 或高度足够 844 时恰好掩盖）。
 - **修复**：`styles.css` 移动段以 `#app` 前缀（特异性 1,1,0 > 库 scoped 的 `[data-v-*]`（0,3,0）——不能只写两段类名，会输给 scoped 属性选择器）把布局拉回定高 + 恢复收缩：`#app .nm-layout--mobile { height: 100dvh; overflow: hidden }`、`…__body { min-height: 0; overflow: hidden }`、`…__content { overflow-y: hidden }`。
-- **验证口径**：320×568 / 360×640 / 375×667 / 390×844 输入区均在视口内且消息区可滚动（触摸下滑看历史 / 上滑回底）；设置页 master-detail 的 `caps-detail-pane` 内滚动可达底部；桌面 ≥768px 无 `--mobile` 类、样式零变化。守护测试：`web/src/__tests__/mobile-shell-layout.test.ts`（源码契约，4 断言）。
+- **验证口径**：320×568 / 360×640 / 375×667 / 390×844 输入区均在视口内且消息区可滚动（触摸下滑看历史 / 上滑回底）；设置页 master-detail 的 `caps-detail-pane` 内滚动可达底部；桌面 ≥768px 无 `--mobile` 类、样式零变化。守护测试：`web/src/__tests__/mobile-shell-layout.test.ts`（源码契约，6 个用例）。
 
 **工具条遮挡修复（2026-10）**
 
@@ -52,7 +52,7 @@ y: 780
 
 | 区域 | 桌面 | 移动端 |
 |---|---|---|
-| 双侧边栏 chat-rail | 左右各 324px 常驻卡片列 | **不渲染**（两列在 375px 屏上压死正文）；卡片改经顶栏「卡片」抽屉访问（§四） |
+| 双侧边栏 chat-rail | 左右各 324px 卡片列（列按「登记卡片」保活，与桌面一致） | **不渲染**（两列在 375px 屏上压死正文）；卡片改经顶栏「卡片」抽屉访问（§四） |
 | 消息区留白 | 有卡片列时按列宽 324px 留白 | 归零（`trayPadLeft/Right` 含 `!isMobile` 条件） |
 | 入口行（7 按钮 + Agent 切换器 + 活动条） | 单行铺开 | **横向滚动工具条**：左右 8px 双边界 + `overflow-x: auto` + 隐藏滚动条一一此前无右界，右侧按钮超出屏外不可达 |
 | 输入区 | `left/right/bottom: 12px` | 8px + 底部安全区 + 软键盘偏移（§五）；输入面字号 **16px**（iOS 聚焦防缩放） |
@@ -75,7 +75,7 @@ y: 780
 
 ## 五、设置视图（SettingsView）
 
-**一级菜单**（9 分类）：168px 竖排 → **顶部横滑 tab 条**（`overflow-x: auto`、隐藏滚动条、条目 `min-height: 40px`）。
+**一级菜单**（8 分类）：168px 竖排 → **顶部横滑 tab 条**（`overflow-x: auto`、隐藏滚动条、条目 `min-height: 40px`）。
 
 **工作台 Master-Detail 二级导航**（技能/工具/插件/智能体）：
 
@@ -106,7 +106,7 @@ iOS/Android 弹键盘不改变 layout viewport，`overflow: hidden` 的 SPA 里�
 - **尺寸**：320×568（SE1）/ 375×667 / 390×844 / 430×932（浏览器 + PWA standalone，含安全区）。
 - **回归**：≥768px 桌面关键视图像素不变（改动全在媒体查询内）；桌面无 `nm-layout--mobile` 类。
 - **单测**：
-  - `ChatViewMobile.test.ts`（4）：rail 移动不渲染/桌面渲染、抽屉开关路径、移动样式契约（入口行横滚/安全区/键盘偏移/16px）、visualViewport 挂载清理；
+  - `ChatViewMobile.test.ts`（5）：rail 移动不渲染/桌面渲染、抽屉开关路径、移动样式契约（入口行横滚/安全区/键盘偏移/16px）、visualViewport 挂载清理；
   - `SettingsViewMobile.test.ts`（3）：master-detail 类切换、返回按钮行为、桌面不挂类；
   - `mobile-shell-layout.test.ts`（6）：外壳布局契约（§二 修复）——`#app` 前缀覆盖库"整页滚动"模式的定高/收缩/滚动归属断言 + 固定视口地基守护 + `--app-h` 视口高度兜底契约 + 顶栏可达性契约（全屏类匹配/品牌可缩/header-left 放开收缩）。
-- 交互走查清单：入口行 7 按钮全部可达（横滚到底）；5 个弹出层开/关；设置 9 分类可达、工作台可进详情可返回；输入框聚焦不缩放；键盘弹出输入区可见；**消息区触摸下滑可看历史、上滑回底、顶部/底部可达**（§二 修复的验收项）。
+- 交互走查清单：入口行 7 按钮全部可达（横滚到底）；5 个弹出层开/关；设置 8 分类可达、工作台可进详情可返回；输入框聚焦不缩放；键盘弹出输入区可见；**消息区触摸下滑可看历史、上滑回底、顶部/底部可达**（§二 修复的验收项）。

@@ -4,7 +4,7 @@ title: "Panel 布局 & 交互定义"
 group: 前端
 x: 2720
 y: 500
-link: ["panel-layout | 布局与导航 | b>t", "panel-chat | 会话视图 | b>t", "panel-modals | 模态与覆盖层 | b>t", "panel-settings | 设置视图 | b>t", "panel-qq-tasks | QQ管理·任务·Shell | b>t", "panel-mobile | 移动端适配 | b>t", "panel-system | 系统交互 | b>t"]
+link: ["panel-layout | 布局与导航 | b>t", "panel-chat | 会话视图 | b>t", "panel-modals | 模态与覆盖层 | b>t", "panel-settings | 设置视图 | b>t", "panel-qq-tasks | QQ管理·任务·Shell | b>t", "panel-mobile | 移动端适配 | b>t", "panel-system | 系统交互 | b>t", "panel-icons | 图标体系 | b>t"]
 ---
 
 # Panel 布局 & 交互定义

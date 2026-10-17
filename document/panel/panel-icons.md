@@ -1,3 +1,11 @@
+---
+id: panel-icons
+title: "Panel 图标体系"
+group: 前端
+x: 4160
+y: 780
+---
+
 # 图标体系（2026-10 统一）
 
 > **定位**：Panel 侧图标的唯一实现规范——图标载体、尺寸/线宽档位、语义色、防回归。读者：Panel 前端开发者、ui-frame 维护者。
@@ -23,7 +31,7 @@
 <PanelIcon name="gear" aria-label="设置" />       <!-- 语义图标必配 label -->
 ```
 
-- **尺寸档**：`xs` 12 / `sm` 14 / `md` 16 / `lg` 18 / `xl` 20 / `2xl` 24（数字也可，但须落在这些值上）
+- **尺寸档**：`xs` 12 / `sm` 14 / `md` 16 / `lg` 18 / `xl` 20 / `2xl` 24（**命名档到此为止**：ui-frame 注册表另有 `3xl` 32，但 `PanelIcon` 的 `PanelIconSize` 类型未纳入——需要 32px 时传数字 `:size="32"`，不要写 `size="3xl"`）
 - **线宽自动**：≤12px → 2.5（微图标补偿）；≥24px → 1.5（大图标轻描）；其余 → 2（由 ui-frame 实现，Panel 不重复）
 - **语义色 `tone`**：`inherit`（默认）/ `accent` / `muted` / `ok` / `warn` / `err` / `reasoning` / `subagent`——全部映射到 `styles.css` 的 `--panel-*` 令牌，随亮暗主题切换
 
@@ -115,12 +123,12 @@ src/components/NeumorphismIcon/
 - **`./icons` 子路径**独立导出，消费方只装图标表、不拖整包（与 `./doc` / `./chat` 同模式）
 - 落地步骤：`vite.config.ts` entries 加 `'icons/index'` → `package.json` exports 加 `./icons` → barrel 注册（`check:registry` 会校验）→ changeset
 
-**B. 语义覆盖（首批 40 个，按使用频次）**
+**B. 语义覆盖（首批 42 个，按使用频次）**
 
 | 组 | 图标 |
 | --- | --- |
 | 导航 | `chevron-down/up/left/right`、`arrow-left/right/up/down`、`home`、`external` |
-| 状态 | `check`、`close`、`warning`、`info`、`dot`、`lock`、`unlock`、`spinner-arc` |
+| 状态 | `check`、`close`、`warning`、`info`、`dot`、`lock`、`unlock`、`spinner` |
 | 文件 | `folder`、`folder-open`、`file`、`link`、`cloud` |
 | 操作 | `gear`、`refresh`、`plus`、`minus`、`search`、`trash`、`copy`、`pin`、`grip`、`more` |
 | 数据 | `chart`、`table`、`list`、`calendar`、`clock`、`user`、`users`、`upload`、`download` |

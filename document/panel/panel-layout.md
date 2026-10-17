@@ -8,7 +8,7 @@ y: 780
 
 # Panel 布局与导航
 
-> **定位**：本文覆盖 Panel 的布局骨架与导航形态：视图层级（三主视图 + 设置九分类）、应用外壳几何与层叠秩序、连接生命周期（重连 / 自愈）、侧边栏（临时分支卡）、Agent 切换器与会话切换（入口行）。读者：维护 Panel 布局与导航的开发者；实现位置以 `web/src/` 相对路径标注。相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)、[设置视图](./panel-settings.md)、[移动端适配](./panel-mobile.md)（< 768px 窄屏形态）。
+> **定位**：本文覆盖 Panel 的布局骨架与导航形态：视图层级（三主视图 + 设置八分类）、应用外壳几何与层叠秩序、连接生命周期（重连 / 自愈）、侧边栏（临时分支卡）、Agent 切换器与会话切换（入口行）。读者：维护 Panel 布局与导航的开发者；实现位置以 `web/src/` 相对路径标注。相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)、[设置视图](./panel-settings.md)、[移动端适配](./panel-mobile.md)（< 768px 窄屏形态）。
 
 ## 一、结构总览
 
@@ -100,7 +100,7 @@ graph LR
 | 顶栏左 | 品牌 "EchoAgent Panel"（`.brand` 字重 700） | 顶栏分左中右三段，右侧操作 `margin-left:auto` 顶齐 |
 | 顶栏中 | （空；连接状态已迁入边栏「连接状态」卡（默认右列），见 [会话视图](./panel-chat.md)「侧栏与多接入点」） | 三段结构保留 |
 | 顶栏右 | 两视图导航（聊天/设置）、主题开关（Shell 详情无顶栏入口） | 操作组 gap 6px、允许折行 |
-| 双侧边栏 | 会话视图内左右两列 chat-rail 常驻卡片栈（RailStack）：连接状态 / 文件浏览器 / Shell / 临时分支，**卡片可拖动换列**，详见 [会话视图](./panel-chat.md)「侧栏与多接入点」 | 各 324px 透明容器层；**两列底统一让出入口行**（容器底 `entryBottom+45px`，左右对齐）；空列不渲染；有卡片的列给消息滚动区加同宽留白（拖动期间不变） |
+| 双侧边栏 | 会话视图内左右两列 chat-rail 常驻卡片栈（RailStack）：连接状态 / 文件浏览器 / Shell / 临时分支，**卡片可拖动换列**，详见 [会话视图](./panel-chat.md)「侧栏与多接入点」 | 各 324px 透明容器层；**两列底统一让出入口行**（容器底 `entryBottom+45px`，左右对齐）；**列是否渲染由「该列登记过卡片」决定**（`rail-cards.ts::railRegistered`，读 `railLayout[side]`，只在用户拖动落位时变化）——卡片门控因异步状态（workspace 激活态 / loopMode / teams 列表）暂时失效时列**仍在**，显示空态占位「当前无可用卡片」；登记为空（从未拖过 / 最后一张卡被拖走）才不渲染。消息区留白（`trayPadLeft/Right`）用同一判据，因此门控抖动不引起正文行宽跳动 |
 | 主区 | 当前视图组件 | `flex:1` + `min-width:0`，纵向 flex，`overflow:hidden`（滚动交给视图内部） |
 | （移动端 <768px） | 双侧边栏不渲染、入口行横滚、弹出层全宽贴底、设置走 Master-Detail | 见 [移动端适配](./panel-mobile.md)（断点与库 `useTouchDevice.isMobile` 同源；桌面零回归） |
 
@@ -117,14 +117,15 @@ graph LR
 | 边栏列 | 4 | 左右侧栏卡片列 |
 | 输入区与「回到底部」 | 5 | 会话视图底部输入区、回到底部按钮 |
 | 入口行 | 6 | 配置/上下文/清单/适配器/任务入口行 |
-| 清单浮层 | 25 | `.checklist-pop`（会话区内嵌清单卡为 `.checklist-float`） |
+| 清单卡 | 3 | `.checklist-float`（会话视图内的悬浮清单卡，sticky 在容器内，见 `styles.css`） |
+| 入口行弹出层 | 30 | `PanelPopover`（清单/会话/工作区/适配器/任务浮层共用容器，`teleport` 到 body + fixed） |
 | Agent 菜单 | 30 | AgentSwitcher 上弹菜单（设置视图同段 30–31） |
 | 根 chip 速览 | 40 | 文件浏览器根路径 chip 悬停卡（仅文本、`pointer-events: none`） |
 | 浮层遮罩 | 50 | 会话区覆盖层 |
 | 拖动幽灵 | 200 | 边栏卡片拖拽幽灵 |
 | 模态 / Toast | 库管理 | BranchModal、ToastProvider 等由 ui-frame 统一分配，始终高于应用层 |
 
-会话视图内的悬浮元素按层内 z-index 叠放（边栏 4 / 输入区与「回到底部」5 / 入口行 6 / 弹出层 25 / 会话区覆盖层 50），不参与全局竞争，详见 [会话视图](./panel-chat.md)。
+会话视图内的悬浮元素按层内 z-index 叠放（边栏列 4 / 输入区与「回到底部」5 / 入口行 6 / 弹出层 30 / 会话区覆盖层 50 / 拖动幽灵 200），不参与全局竞争，详见 [会话视图](./panel-chat.md)。
 
 ### 3.3 主题与设计令牌
 
@@ -184,7 +185,7 @@ graph LR
   - **切换 core 时重拉「单值管理面」**（`requestActiveRegionManagement`）：`RequestState` / `RequestSystemPrompt` / `RequestAdapterStatus` / `RequestSkillsList` / `RequestToolsList` / `RequestPluginsList` / `RequestShellSessions` / `RequestFederationStatus`——响应被 `managementCoreCurrent` 过滤到 activeRegion，不重拉会短暂显示上一个 core 的值（`connection.ts:257-268`）。**首屏首次区域确定**（prev=null）时跳过技能/工具目录（`includeCatalogs:false`）——二者合计约 36KB 且首屏无消费方（设置页/Agent 配置弹窗打开时自拉），切换区域保留全量
   - QQ 过滤配置**不预取**（QqPanel/QqLoginSection 打开时按实例自行刷新；无 QQ 或多实例未指定实例时预取必被拒，产生无意义的「QQ 适配器未找到」提示）
 - **重连保留时间线**：只清空运行期状态（`branchTabs`、`tasks`、`activities`、工作区 git/文件浏览器缓存）；时间线（`trunk`、`teamTimelines`、`trunkTeamId`）**不清空**——按缓存游标带 `since_seq` 增量补齐，响应 `full` 标志（首载/窗口滚出/游标超前）时整体替换（`connection.ts:65-95`）
-- **退避**：500ms 起、×2 递增、上限 30s；成功连接后复位 500ms
+- **退避**：500ms 起、×2 递增，**上限按页面可见性分档**（`connection.ts::RETRY_CAP_VISIBLE_MS` = 3s / `RETRY_CAP_HIDDEN_MS` = 30s——前台几秒内即恢复，后台省电）；成功连接后复位 500ms
 - **前台自愈（heal）**：`visibilitychange` 回到前台或 `online` 事件时主动评估连接——已断开则立即重连（复位退避，不等可能被浏览器冻结的退避定时器）；显示 OPEN 也可能半死（设备休眠期间对端已消失而本端未察觉），发 `RequestTeamsList` 探测帧，**5s** 内无任何下行帧则判死、主动关闭走标准重连（`connection.ts`）
 - **上游状态轮询暂停**（`upstreams.ts`）：`/api/upstreams` 每 8s 一次；标签页隐藏时跳过轮询、回到前台立即补一次（省后台流量，回前台即最新）
 - **中继半死收割**：一侧超过 90s（3 个心跳周期）无任何帧（含 Pong）→ 中继断开整条链路；另有 **10s 写超时**——转发一帧时对端写阻塞超过 10s 即断链（冻结标签页不再挂起中继、Core 发送缓冲不再无界积压）（`proxy.rs`；设备休眠留下的僵尸连接因此被清理，唤醒后重连拿到干净状态）

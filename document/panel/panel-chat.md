@@ -14,7 +14,7 @@ y: 780
 
 ## 会话视图结构与消息列表
 
-会话视图由消息列表 + 吸底输入区构成；消息行由面板自渲染（库 `ChatTray` 容器），以拦截扩展角色（`reasoning` / `subagent`）的渲染。
+会话视图由消息列表 + 吸底输入区构成；消息行由面板自渲染（滚动区由 ChatView 自组，`.chat-view__list` **自身即滚动容器**——库 `ChatTray` 组装件已解散），以拦截扩展角色（`reasoning` / `subagent`）的渲染。
 
 ### 消息列表
 
@@ -37,15 +37,15 @@ y: 780
 |---|---|
 | `user` | 用户气泡（含来源元数据：平台/用户/群） |
 | `backend` | Agent 气泡（Markdown） |
-| `reasoning` | **Panel 扩展角色**：消息行循环拦截渲染 ReasoningBlock（库的 ChatRole 无此角色，不拦截会被误渲染为 Agent 气泡；列表自渲染行） |
-| `tool` | **连续调用合并**为 `ToolRunGroup`（一排圆角矩形图标）；单发调用（前后无相邻 tool）也走同一行渲染 |
+| `reasoning` | **Panel 扩展角色**：并入工作行组（`WorkRunGroup` 的 reasoning 工作项，正文层 `ReasoningText`）；库的 ChatRole 无此角色，不拦截会被误渲染为 Agent 气泡 |
+| `tool` | **连续调用合并**为 `WorkRunGroup` 的 tool 工作项（一排圆角矩形图标）；单发调用（前后无相邻 tool）也走同一行渲染 |
 | `subagent` | **Panel 扩展角色**：子代理委派行——派发位置一行「子代理运行中/完成/失败 + 任务摘要」，点击展开结论 |
 | `system` | 系统提示行 |
 | `branch` | 分支合并卡角色（当前 reducer 已不产生——分支内容实时进主时间线；此角色仅为适配保留，面板无对应渲染） |
 
 补充来源：定时器触发以 system 消息插入主时间线（`⏰ 定时器触发 · {task}`，task 截断 160 字符）。
 
-**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（库 `ChatBubble` + `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）、工具行 `ToolRunGroup`、推理 `ReasoningBlock`、子代理 `SubagentEventBlock`；ui-frame 只提供机制原语（`ChatTray` / `ChatComposer` / `ChatBubble` / `ChatFold` / `ChatCopyButton`）。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义），`ChatMessage` 数据契约保留。
+**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（库 `ChatBubble` + `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）；**连续的工具 / 推理 / 子代理统一由 `WorkRunGroup` 渲染**（2026-10 一般化：三者合并为同类「工作项」，`WorkRunItem.kind` 区分 `tool`/`reasoning`/`subagent`；推理正文层为 `ReasoningText`）；ui-frame 只提供机制原语（`ChatComposer` / `ChatBubble` / `ChatFold` / `ChatCopyButton`）。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义），`ChatMessage` 数据契约保留。
 
 **气泡宽度**：宽度完全动态——短消息贴内容收紧（实测最短 186px），长消息/代码/表格撑满消息列可用宽度（随左右侧栏卡片显隐变化，实测 1600px 窗口下 1276px）；`.chat-view__item--msg` 为 flex 列容器（user 靠右 / agent 靠左 / system 居中，依赖库 `align-self`）。面板覆盖库默认 `max-width: min(78%, 640px)`（`MessageItem.vue` 双写类名提权），并隐藏 Markdown 标题锚点（其 -22px 绝对定位会撑出横向溢出）。
 
@@ -89,9 +89,9 @@ graph LR
 - **配对兜底**：ToolResult 到达时主时间线找不到 running 条目（如恢复后的时间线）——追加一条已完成工具卡而非丢弃（`timeline.ts:136-161`）；增量重投递按 tool_call_id **就地修补**已有工具卡，避免 core 带新 seq 重投完成态时出现重复行（`timeline.ts:241-256`）
 - **中断标记**：历史回放时 `output==null` 且未失败的工具恢复为 running（`timeline.ts:163-167`）；「已中断」标记完全由 core 侧重启清理写入（`session.rs`，output = 「[已中断] Core 服务重启导致本次调用未返回，可重试」），panel 自身不做兜底标记
 
-### 工具调用图标行（ToolRunGroup）
+### 工具调用图标行（工作行 tool 项，WorkRunGroup）
 
-**连续的 tool 消息在 ChatView 合并为一组 `ToolRunGroup`**（原为库 `ChatToolCallBlock` 折叠卡，ui-frame 的 chat 组合组件移除后归面板自绘）；其余消息逐条渲染；列表容器为库 `ChatTray` 自渲染行，吸底滚动契约不变。
+**连续的工具消息在 ChatView 合并为一组 `WorkRunGroup`**（`kind: 'tool'` 工作项；原为库 `ChatToolCallBlock` 折叠卡，ui-frame 的 chat 组合组件移除后归面板自绘；历史上叫 `ToolRunGroup`，2026-10 与推理/子代理合并后更名）；其余消息逐条渲染；列表由 `.chat-view__list` 自身滚动，吸底滚动契约不变。
 
 - **折叠态**：一排圆角矩形毛玻璃图标（30×26，间距 4px；flex-wrap——多个工具连续调用时横向扩展，横向空间不足自动下移一行）；图标按工具分派不同 SVG（`ToolIcon.vue`：bash 终端符 / 文件 / 代码括号 / 清单对勾 / 计算器 / 搜索放大镜 / 子代理放射图 / 编排（后台·并行任务） / 消息气泡 / 适配器齿轮 / 工作区文件夹 / 默认扳手）；失败图标染 error 色
 - **加载/运行动画**（任一图标 status=running 时整组进入运行态）：
@@ -102,9 +102,9 @@ graph LR
 - **展开态**：点击某个图标，该行下方浮现该调用的具体内容卡片（图标 + 名称 + 时间 + 状态胶囊 + 输入/输出 `<pre>`）；再点或点其他图标切换/收起；一次只展开一项
 - **委派标签**：`spawn_subagent` 图标行/详情头部显示**任务摘要**而非工具名（解析 Core 时间线摘要串 `{task=… · timeout_secs=…}` 与原始 JSON 两种形态，80 字符截断）——「这次派了什么活」一眼可见
 - **默认折叠**：运行过程中保持折叠（用户可手动点开，但任一条目状态/数量变化时 `watch` 会重新收起）；全部完成且均成功 → 保持折叠；**全部完成但存在失败 → 自动展开首个失败项**
-- 打开项消失（会话清空等）时自动收起；`watch` 兜底（`ToolRunGroup.vue`）
+- 打开项消失（会话清空等）时自动收起；`watch` 兜底（`WorkRunGroup.vue`）
 
-### 子代理委派行（SubagentEventBlock）
+### 子代理委派行（工作行 subagent 项，WorkRunGroup）
 
 子代理（`spawn_subagent`）一份委派对应**一行**、全程可见（此前完成回报以原始 JSON 直接渲染成 user 气泡——一条动辄数千字符、占满半屏）：
 
@@ -112,11 +112,11 @@ graph LR
 - **完成合并**：`<subagent_event>` 钩子到达 → **就地改写该行**为「子代理完成/失败 + 任务摘要」，点击展开结论全文（限高 260px 内滚动）；未命中（行已滚出窗口/刷新后先到钩子）则追加一行兜底——刷新后的历史视图里该行落在钩子位置
 - **匹配语义**：同一会话内按「最老的运行中行」先来先配（FIFO），与 Core `SubagentCompleted` 的完成/取消语义一致；多子代理并发时各占一行
 - **失败态**：红色左边框 + 「子代理失败」，结论体同可展开
-- 实现：`state_domains/timeline.ts::parseSubagentEvent`（实时与历史回放共用解析）、`startSubagentRun`/`finishSubagentRun`；组件 `SubagentEventBlock.vue`
+- 实现：`state_domains/timeline.ts::parseSubagentEvent`（实时与历史回放共用解析）、`startSubagentRun`/`finishSubagentRun`；组件 `WorkRunGroup.vue`（subagent 工作项）
 
 ## 推理块与活动浮条
 
-### 推理块（ReasoningBlock）
+### 推理块（工作行 reasoning 项 + ReasoningText 正文层）
 
 - **实时（流式）**：内容随增量实时生长（全量跟随、不播打字机），自动展开 + 钉底 + 「实时输出…」提示 + 光标；流结束（终值对账）回到默认折叠态
 - **实时（整段，stream_output 关闭/非流式路径）**：打字机逐字——24ms/tick，每 tick ≥2 字符，总时长约 6s 封顶（按文本长度自适应提速）；紫色左边框 + 「思考」标签 + 输入中提示「正在推演…」+ 闪烁光标 + 呼吸点

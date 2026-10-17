@@ -11,8 +11,8 @@ y: 2050
 > **定位**：本仓库的测试体系说明与质量门禁清单——单元 / property / 集成 / 并发 / 前端与 CLI 各层覆盖哪些契约。读者：贡献代码的开发者与 Agent。
 > 相关文档：[开发指南](./dev-guide.md)（构建与测试入口）、[文档规范](../documentation-guide.md)。
 
-**Core（cargo）** 1000+ 条、**Panel 前端（vitest）** 360+ 条、**部署 CLI（node:test）**
-27 条，覆盖各 crate 的源文件与关键交互契约（计数随开发增长，量级为本文件维护基线；最近校准 2026-10：cargo 1046 / vitest 372）。
+**Core（cargo）** 1000+ 条、**Panel 前端（vitest）** 570 条、**部署 CLI（node:test）**
+27 条，覆盖各 crate 的源文件与关键交互契约（计数随开发增长，量级为本文件维护基线；最近校准 2026-10：cargo 1046 / vitest 570（70 文件））。
 
 ## 测试分层
 
@@ -107,7 +107,7 @@ Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
 
 ### 面板前端与部署 CLI（非 cargo）
 
-- **Panel web（vitest + @vue/test-utils，366 条 / 54 文件，2026-10 校准）**：`ChatView` 图片渲染契约
+- **Panel web（vitest + @vue/test-utils，570 条 / 70 文件，2026-10 校准）**：`ChatView` 图片渲染契约
   （`/media/<id>` 懒加载 / 空串省略占位 / data URI 兼容）、设置视图技能/工具/插件
   工作台（筛选、分组维度、详情分区、交叉跳转、脏状态）、右侧栏连接状态卡、
   智能体编辑器分区、协议编解码回归等。**加载态跟踪契约**：

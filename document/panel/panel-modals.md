@@ -8,7 +8,7 @@ y: 780
 
 # Panel 模态与覆盖层
 
-> **定位**：本文覆盖 Panel 的全部模态与覆盖层——分支详情（BranchModal）、上下文弹层（ContextView）、Agent 配置弹层（AgentConfigModal），以及各危险操作的确认形式（原生 confirm / 两步确认）。读者：维护 Panel 交互的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)（弹层入口与几何）、[设置视图](./panel-settings.md)。
+> **定位**：本文覆盖 Panel 的全部模态与覆盖层——分支详情（BranchModal）、上下文弹层（ContextView）、Agent 配置弹层（AgentConfigModal），以及各危险操作的确认形式（统一 `confirmDialog` / 两步确认）。读者：维护 Panel 交互的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)（弹层入口与几何）、[设置视图](./panel-settings.md)。
 
 > **多接入点**：`RequestContext` 等按（人格, 会话）定向的请求经 `sendPending` 统一路由到会话/人格所属 core（`connection.ts::resolveTargetCore`）；响应快照在 ContextView 侧按 `(session_id, core)` 匹配后才展示，忽略他属 core 的陈旧快照（`ContextView.vue:93-98`）。AgentConfigModal 的保存（`SaveTeam`）同理按人格归属 core 路由。
 
@@ -24,11 +24,11 @@ y: 780
 
 | 操作 | 确认形式 |
 |---|---|
-| 禁用「管理面」插件 | **禁止**（core 拒绝命令 + UI alert 明示，防自锁；只能 core.toml + 重启） |
-| 删除技能 | `window.confirm`（提示会删除 SKILL.md 文件） |
-| 删除 Team | 仅当**只剩一个智能体**时 `window.alert` 拒绝（去主智能体：无受保护成员）；否则 `window.confirm`（不可恢复） |
-| 移除技能 Git 来源 | `window.confirm`（明示"目录保留，可手动删除"） |
-| 归档/压缩历史 | `window.confirm` |
+| 禁用「管理面」插件 | **禁止**（Core 侧拒绝 `TogglePlugin`；UI 在启停影响文案区明示「禁用即断连自锁」，防自锁；确需禁用只能改 core.toml 的 `disabled_plugins` + 重启） |
+| 删除技能 | `confirmDialog`（danger 样式；提示会删除 SKILL.md 文件） |
+| 删除 Team | 仅当**只剩一个智能体**时拒绝（error toast「至少保留一个智能体」，去主智能体：无受保护成员）；否则 `confirmDialog`（danger，不可恢复） |
+| 移除技能 Git 来源 | `confirmDialog`（明示"目录保留，可手动删除"） |
+| 归档/压缩历史 | `confirmDialog`（danger；压缩的文案明示"作用于该人格全部会话"） |
 | 清理历史 | 两步按钮确认（见「分支与上下文弹层」的上下文弹层） |
 | 删除 API Profile / 更新 Git 技能 | **无确认**，立即生效 |
 
@@ -38,7 +38,7 @@ y: 780
 
 ### BranchModal（分支详情）
 
-侧边栏分支行点击进入：头部 `临时分支 · {id前8位}` + 状态标签（运行中 primary/已完成 success/已取消 warning/失败 error）；正文 = 任务/目标/会话元信息 + 分支内消息流（按 kind 分别用紧凑工具行组（ToolRunGroup）/推理块/纯文本渲染，新消息自动滚底；消息区 max-height 55vh）；运行中时底部提示「分支执行中…」；分支 tab 被移除后弹窗保持打开，显示「（分支已结束并合并到主会话）」。
+侧边栏分支行点击进入：头部 `临时分支 · {id前8位}` + 状态标签（运行中 primary/已完成 success/已取消 warning/失败 error）；正文 = 任务/目标/会话元信息 + 分支内消息流（按 kind 分别用紧凑工作行（WorkRunGroup）/纯文本渲染，新消息自动滚底；消息区 max-height 55vh）；运行中时底部提示「分支执行中…」；分支 tab 被移除后弹窗保持打开，显示「（分支已结束并合并到主会话）」。
 
 ### ContextView（上下文弹层）
 

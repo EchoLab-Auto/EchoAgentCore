@@ -16,7 +16,7 @@ y: 1650
 ## 仓库拆分与契约归属
 
 - 仓库拆分为 **EchoAgentCore**（后端 agent 服务）与 **EchoAgentPanel**（前端）两个独立仓库，两端可独立构建、发布、演进，仅通过 `echo-protocol` 契约耦合
-- `echo-protocol` 是前端 ⇄ Core **线契约的唯一来源**：只定义 `BackendCommand` / `BackendEvent` / `WsMessage` / bridge / 共享枚举（`GateMode` / `ThinkingMode` / `ReasoningEffort`），不依赖任何 agent、平台或 UI 代码；serde 表示即线格式
+- `echo-protocol` 是前端 ⇄ Core **线契约的唯一来源**：只定义 `BackendCommand` / `BackendEvent` / `WsMessage` / bridge / 共享枚举（`ThinkingMode` / `ReasoningEffort` / `LoopMode`），不依赖任何 agent、平台或 UI 代码；serde 表示即线格式
 - Panel 是纯粹的「协议客户端」：不包含任何 agent 或 QQ 逻辑（Rust 中继按原文转发帧、不解析负载；线格式以 `web/src/protocol.ts` 镜像）；后端各 crate 通过 re-export 保持 `echo_agent::…` 路径兼容
 - 协议演进只服务 Panel ⇄ Core 两端；**全网同步更新（不做旧版本兼容）**——语义变更单侧收紧亦可，两端同版本部署（见文末「兼容性规则」）
 
@@ -25,7 +25,7 @@ y: 1650
 - Core 监听 `[core] management_address`（默认 `0.0.0.0:3132`），由 `source/core/src/management.rs` 提供；每个前端建立一条 WS 连接
 - Core 侧事件经 `EventBroker` 扇出到每条连接的独立订阅通道；命令由各连接独立注入
 - 服务端 30s Ping 心跳（90s 无任何入站活动判死断开）；Panel 转发层对双向心跳做透传，空闲连接不会被中间层悄悄断开
-- 断线自动重连（500ms 起、指数退避、上限 30s）；重连后清空运行期状态（分支/任务/活动/工作区缓存）再 Bootstrap——**时间线刻意保留**（刷新加速：内存 + 磁盘缓存按游标 `since_seq` 增量续拉，Core 缺口检测兜底、响应 `full` 时整体替换）
+- 断线自动重连（500ms 起、指数退避，**上限按页面可见性分档**：可见 3s / 隐藏 30s——部署或 Core 重启后前台几秒内即恢复，后台省电）；重连后清空运行期状态（分支/任务/活动/工作区缓存）再 Bootstrap——**时间线刻意保留**（刷新加速：内存 + 磁盘缓存按游标 `since_seq` 增量续拉，Core 缺口检测兜底、响应 `full` 时整体替换）
 
 ```rust
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
@@ -64,7 +64,15 @@ pub enum WsMessage {
 
 ### 多接入点聚合：可广播只读命令
 
-`BROADCAST_READONLY_COMMANDS` / `is_broadcast_readonly()`（`echo-protocol/src/command.rs`）定义了**中继（Panel 多接入点聚合模式）在未指定目标节点时允许"无壳广播"的只读命令白名单**（`RequestTeamsList` / `RequestAdapterStatus` / `RequestState` / `RequestTrunkTimeline` / `RequestFederationStatus` / `Ping` 等）；其余命令必须显式指定目标节点，避免一次点击扇出到全部接入点。该列表是契约：中继端维护同一列表（其 `is_readonly_command`），**改动必须两端同步**，两边各有一致性测试守护。
+广播由**客户端显式声明**，中继不再按命令名猜只读（2026-10 变更）：
+
+```json
+{"broadcast": true, "frame": {"type": "command", "payload": {"RequestTeamsList": null}}}
+```
+
+- Panel 前端以 `broadcast: true` 信封发送发现类命令（`RequestState` / `RequestTeamsList` 等），中继见该标志即转发给**全部在线上游**；不带标志的命令按信封/会话归属路由到单一目标节点，不会扇出。
+- 中继侧实现见 `echo-web-server/src/proxy.rs`（`{"broadcast": true, "frame": …}` 分支）与 `web/src/connection.ts`（`broadcastEnvelope`）。**中继端当前不维护只读白名单**——判断权在前端调用方；新增可广播命令只需在前端用该信封发送，中继零改动。
+- Core 侧 `BROADCAST_READONLY_COMMANDS` / `is_broadcast_readonly()`（`echo-protocol/src/command.rs`）保留为**命令分类的语义快照**（供测试与文档引用），不再是中继的运行时开关。
 
 ## 事件（Core → Client）
 
@@ -115,13 +123,14 @@ graph LR
 
 ## 共享枚举
 
-`GateMode` / `ThinkingMode` / `ReasoningEffort` / `LoopMode` 定义在 `echo-defs::mode`（Service Definition 层），`echo-protocol` re-export 保持 wire 路径：
+`ThinkingMode` / `ReasoningEffort` / `LoopMode` 定义在 `echo-defs::mode`（Service Definition 层），`echo-protocol` re-export 保持 wire 路径：
 
 | 类型 | 取值（线格式，snake_case） |
 |---|---|
-| `GateMode` | `"none"` / `"allowlist"` / `"denylist"` |
 | `ThinkingMode` | `"enabled"` / `"disabled"` |
 | `ReasoningEffort` | `"low"` / `"high"` / `"max"` |
+
+> **门控模式不是共享枚举**（2026-10 泛化后）：历史上 `GateMode`（`none`/`allowlist`/`denylist`）是 `echo-protocol` 的强类型枚举，现已随 QQ 专属命令一并物理删除——门控取值改为 `InvokeAdapterOp{method:"set_gate_mode", payload:{mode}}` 的**参数字符串**，由适配器插件自行解释，Core 与 Panel 均不校验取值集合。
 
 `LoopMode` 定义在 `echo-defs::mode`（经 `echo-protocol` 再导出）：per-persona 循环模式，由 `enabled_plugins` 对互斥插件 `echo-agent.loop.{single,parallel}` 推导（单会话为默认与兜底；插件黑名单 `disabled_plugins` 已移除，`SaveTeam`/`TeamInfo` 不再携带该字段——旧端帧中的该字段被 serde 忽略，缺省按空表处理）。**协议变更**：`TeamInfo` 携带 `loop_mode`（`"single"`/`"parallel"`）；面板 `loopModeOf()` 缺省按 single。
 
