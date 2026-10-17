@@ -106,5 +106,5 @@ cd web && npm run dev           # 前端热更新（/ws 代理到 :8080）
 
 ## 延伸阅读
 
-- 前端文档群：[交互定义](./panel-interaction.md)（总入口）→ [布局与导航](./panel-layout.md)、[会话视图](./panel-chat.md)、[模态与覆盖层](./panel-modals.md)、[设置视图](./panel-settings.md)、[QQ 管理·任务·Shell](./panel-qq-tasks.md)、[系统交互](./panel-system.md)
+- 前端文档群：[交互定义](./panel-interaction.md)（总入口）→ [布局与导航](./panel-layout.md)、[会话视图](./panel-chat.md)、[模态与覆盖层](./panel-modals.md)、[设置视图](./panel-settings.md)、[QQ 管理·任务·Shell](./panel-qq-tasks.md)、[系统交互](./panel-system.md)、[图标体系](./panel-icons.md)
 - 相关：[协议与数据流](../protocol/protocol.md)（WS 帧格式、命令与事件）、[部署与自更新](../ops/ops-deploy.md)、[联邦（多机）](../federation/federation.md)
