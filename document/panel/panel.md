@@ -78,6 +78,29 @@ EchoAgentPanel/
 - **加载态跟踪 `pending.ts`**：面板是 fire-and-forget 命令模型（无请求 id），等待态由「请求命令→响应事件」关联表统一登记与销账——`sendPending(cmd, key)` 发命令并登记（key 为视图本地命名，重复发送即覆盖=重试语义）；`dispatch` 收到响应事件自动销账；阶段按时间推进：**0–150ms 不显示**（快请求不闪）→ `pending`（骨架/转圈）→ **>6s `slow`**（附「Core 可能正在重启」提示）→ **>20s `timeout`**（错误 + 重试；请求幂等、重发安全），已显示的加载态保证**最短可见 400ms**。视图以 `usePending(key)` 读取（key 可传 getter，动态键如 QQ 多实例 `qq:filter:<实例>`），以 `LoadHint` 组件渲染；聊天区时间线用状态标志判定（`state.timelineArrivedOnce`）不走本表
 - 实时事件按 `team_id` 归一化过滤后才进主时间线（跨 agent 不串显）；`TrunkTimeline` 按 `full` 标志区分全量替换/增量追加
 
+### 多窗口语义（2026-10 审计）
+
+多个浏览器窗口同时连 Panel 是**正常用法**（多标签页 = 多条 Core 连接）。每个窗口有
+独立的 `state`（`store.ts` 的模块级 reactive 单例，天然 per-tab）与独立 WS 连接，但
+**服务器状态与 localStorage 是共享的**——判据如下：
+
+| 类别 | 归属 | 跨窗口行为 |
+| --- | --- | --- |
+| 视图状态（当前视图 / 侧栏布局 / 折叠态 / 列表宽 / 设置分类选中项 / 草稿 / 滚动位置） | 窗口 | 互不影响（内存 per-tab）；偏好键（`echo-panel-view`、`echo-panel-rail-*`、`echo-panel-caps-list-width`）落 localStorage，**最后写者胜**，另一窗口刷新后才生效 |
+| 业务状态（teams / sessions / 时间线 / 活动 / 分支 / 清单 / 适配器 / Shell） | Core | 天然一致：同一事件广播给每条连接，各窗口按 `(core, team_id)` 过滤后渲染 |
+| **单槽服务器状态**（工作区 `active` / `active_conversation`） | Core（per-persona 单例） | **必须按来源区分**：只有本窗口自己发起的激活才驱动视图跟随（`workspace.ts::decideOnWorkspaceBroadcast`），他端变化只同步状态与激活标记 |
+| 共享键（`echo-panel-token`、`echo-panel-trunk-cache`） | 全部窗口 | 令牌共享是设计；时间线缓存落盘时**保留他窗口写过的 team 条目**（`trunk-cache.ts::foreignTeamEntries`），避免两窗口互相冲掉「零等待首屏」 |
+| 服务端动作（启停适配器 / 改配置 / 自更新 / 重启） | Core | 动作本身全局生效，**多窗口无从隔离**（属预期） |
+
+约束（写代码时要守）：
+
+1. **reducer 里带 `team_id` / `core` 的事件必须过滤或按复合键存储**，不得写进无键的
+   单槽——`WorkspaceSessions` 曾因不过滤 `team_id` 而被他 agent 的通播覆盖（`state.ts`
+   已修）；其余事件用 `belongsToActiveTeam` 或 `teamKey`/`checklistKey` 已满足。
+2. **不要把「窗口在看什么」写进服务器状态或共享 localStorage 后再无条件跟随**，
+   改动需带「本窗口意图」判别（见工作区激活）。
+3. 跨窗口的 localStorage 写入应当**合并**而非整体覆盖，避免互相清除对方数据。
+
 视图渲染与交互细节见 [会话视图](./panel-chat.md)、[布局与导航](./panel-layout.md)。
 
 ## 配置与运维
