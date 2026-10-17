@@ -144,7 +144,13 @@ prune_backups() {
     local f
     # glob may not match anything: `nullglob`-style manual expansion.
     shopt -s nullglob
-    for f in "$BINARY".bak-* "$BINARY".rollback*; do
+    # 覆盖三类残留（都实测过会堆积）：
+    #   <binary>.bak-*        手工部署/历史安装留下的二进制副本
+    #   <binary>.rollback*    失败运行留下的回滚副本
+    #   <binary>.old          更早期的命名习惯（不在 bak/rollback 之列，
+    #                         Panel 侧实测残留 4.8 MiB 未被任何规则覆盖；
+    #                         Core 侧当前无此文件，一并纳入以免将来漏）
+    for f in "$BINARY".bak-* "$BINARY".rollback* "$BINARY".old; do
         # 保护本次运行仍在用的回滚文件（失败时还要靠它还原）
         if [[ -n "${ROLLBACK_BINARY:-}" && "$f" == "$ROLLBACK_BINARY" ]]; then
             continue
