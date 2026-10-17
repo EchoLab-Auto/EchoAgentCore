@@ -34,6 +34,33 @@ repository = "https://github.com/EchoLab-Auto/EchoAgentCore"
 [profile.test]
 opt-level = 1
 
+# Release 产物体积（2026-10 实测）。
+#
+# 基线：`target/release/echo-agent-core` = 24,910,840 B（23.76 MiB）。其中
+# `.text` 13.3 MiB（代码本体），其余 ~10.4 MiB 主要是 **`.symtab`/`.strtab`
+# 符号表**——release 默认 `debug = 0` 本就不产生 `.debug_*`，所以"剥调试信息"
+# 几乎无效（实测 `strip --strip-debug` 只省 840 KB ≈ 3%）。
+#
+# 实测三档（同一二进制上直接跑 strip 验证）：
+#   strip = "none"       24,910,840 B  23.76 MiB   （带符号表）
+#   strip = "debuginfo"  24,070,520 B  22.96 MiB   （-0.8 MiB，几乎无用）
+#   strip = "symbols"    18,394,632 B  17.54 MiB   （-6.5 MiB，-26.2% ← 采用）
+#
+# 选 `symbols`：安装器与自更新每次都要复制 + 滚动备份该二进制
+# （`~/.local/libexec/echo-agent-core/echo-agent-core-bin` 与 `.bak-*`），
+# 6.5 MiB 的差额在每次更新时都白付；updater 的下载/替换也更快。
+#
+# 代价与补偿（重要）：
+# - panic 的 **消息与源码位置仍在**（`panic!` 的 file:line 是 `.rodata` 里的
+#   字符串，不受影响），丢的是 backtrace 里的**函数名**（只剩地址）；
+# - 需要函数名排障时，用下面这行临时重建一个带符号的二进制即可（不进仓库）：
+#     cargo build --release -p echo-agent-core \
+#       --config 'profile.release.strip="none"'
+# - 不引入 LTO / codegen-units=1：updater 每次都要跑 `cargo build --release`，
+#   加 LTO 会把每次更新拉长数分钟，与体积收益不划算。
+[profile.release]
+strip = "symbols"
+
 [workspace.dependencies]
 echo-defs = { path = "source/defs/echo-defs" }
 echo-context = { path = "source/context/echo-context" }
