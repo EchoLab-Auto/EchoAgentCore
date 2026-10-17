@@ -9,10 +9,10 @@
 
 | 组件 | 承载 | 说明 |
 | --- | --- | --- |
-| `PanelIcon.vue` | **界面语义**图标 | **薄封装**在 ui-frame `NeumorphismIcon` 之上（82 行）：只加 `tone` → `--panel-*` 语义色映射；几何全部来自 ui-frame 注册表（55 个语义） |
+| `PanelIcon.vue` | **界面语义**图标 | **薄封装**在 ui-frame `NeumorphismIcon` 之上（82 行）：只加 `tone` → `--panel-*` 语义色映射；几何全部来自 ui-frame 注册表（79 个语义） |
 | `ToolIcon.vue` | **工具语义**图标 | 工具名 → 图标分派（`bash` / `files` / `code` / `subagent` …）+ 11 种专属 loading 动画；产品特有，留在 Panel |
 
-底层是 ui-frame 的 `NeumorphismIcon` + `@echolab-auto/ui-frame/icons` 注册表（65 个语义）：**24 基准 viewBox / `stroke="currentColor"` / 尺寸七档 / 线宽按档自动**。
+底层是 ui-frame 的 `NeumorphismIcon` + `@echolab-auto/ui-frame/icons` 注册表（79 个语义）：**24 基准 viewBox / `stroke="currentColor"` / 尺寸七档 / 线宽按档自动**。
 
 > 2026-10 演进：Panel 先自建了 305 行的 `PanelIcon`（含 31 个 path），随后把几何全部上收进 ui-frame 注册表（缺的 `message` / `network` / `sparkle` 也一并补进去），PanelIcon 降到 82 行、只留产品语义色。**Panel 不再持有任何 path 数据。**
 
@@ -170,8 +170,22 @@ ui-frame 内部 **75 个内联 `<svg>` → 6**（全是非语义图形），分 
 | `Spinner`（组件本体） | 双弧轨道设计，非通用图标 |
 | `Button` / `Upload` 的 spinner | 带 `stroke-opacity` 轨道的进度指示器 |
 
-**`src/composites/doc/**`（DocTreeIcon）**：仍自带 16 viewBox 图标体系（`ICON_PATHS`），
-`check-icons.mjs` 对其豁免，列入后续迁移。
+**`src/composites/**` 也已迁完**（`c612314`）：`DocTreeIcon` 的 `ICON_PATHS`（第二套图标体系）
+整体删除，改为语义映射薄封装；doc/chat 的 24 处零散内联 svg 一并收敛。
+
+### 全库内联 svg 总账
+
+| 范围 | 迁移前 | 现在 |
+| --- | --- | --- |
+| `components/` | 75 | 10 |
+| `composites/` | 27 | 2 |
+| **合计** | **102** | **12** |
+
+剩下 12 处全部是**非语义图形**，均已列表明示：图表 ×4（Bar/Line/Pie/Candlestick）、
+`Logo`、`Empty` 插画、`Progress` 环、`Spinner` 本体、`Button`/`Upload` 的带轨道
+spinner、`DocFlowCanvas` 流程图边线、`NeumorphismIcon` 自身。
+
+`check-icons.mjs` 的豁免已收窄到只剩 `src/locales`（语言包文案）。
 
 ### 迁用中发现并修掉的既有缺陷
 
