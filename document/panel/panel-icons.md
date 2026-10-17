@@ -12,7 +12,7 @@
 | `PanelIcon.vue` | **界面语义**图标 | **薄封装**在 ui-frame `NeumorphismIcon` 之上（82 行）：只加 `tone` → `--panel-*` 语义色映射；几何全部来自 ui-frame 注册表（55 个语义） |
 | `ToolIcon.vue` | **工具语义**图标 | 工具名 → 图标分派（`bash` / `files` / `code` / `subagent` …）+ 11 种专属 loading 动画；产品特有，留在 Panel |
 
-底层是 ui-frame 的 `NeumorphismIcon` + `@echolab-auto/ui-frame/icons` 注册表：**24 基准 viewBox / `stroke="currentColor"` / 尺寸七档 / 线宽按档自动**。
+底层是 ui-frame 的 `NeumorphismIcon` + `@echolab-auto/ui-frame/icons` 注册表（65 个语义）：**24 基准 viewBox / `stroke="currentColor"` / 尺寸七档 / 线宽按档自动**。
 
 > 2026-10 演进：Panel 先自建了 305 行的 `PanelIcon`（含 31 个 path），随后把几何全部上收进 ui-frame 注册表（缺的 `message` / `network` / `sparkle` 也一并补进去），PanelIcon 降到 82 行、只留产品语义色。**Panel 不再持有任何 path 数据。**
 
@@ -83,7 +83,7 @@ CI 里与既有令牌规则（`var(--nf-*)` 禁用命名空间、幻影令牌名
    `Checkbox` / `Radio` 的 box 为 18 / 24 / 30px（small/medium/large），内部图标 `width: 65%` → 实测 **11.7 / 15.6 / 19.5px**，三档全部落在枚举档之外。
    同理的还有 `Spinner` 的 `size` prop 已支持数字直传（`<NeumorphismSpinner :size="12" />`），但其它组件没有等价通道。
 
-→ 库侧改造已落地（2026-10，见下方附录的「已实施」标注）。
+→ 库侧改造已全部落地（2026-10）：本节列为**已解决的历史问题**，保留供追溯。
 
 ### 附录：ui-frame 图标组件改造（**已实施** 2026-10）
 
@@ -145,23 +145,35 @@ src/components/NeumorphismIcon/
 
 ---
 
-## 六、剩余工作（未实施）
+## 六、内部迁用完成情况（2026-10）
 
-**ui-frame 内部 75 个内联 `<svg>` 的迁用**（上节 C 步，分 commit 逐步）：
+ui-frame 内部 **75 个内联 `<svg>` → 6**（全是非语义图形），分 6 个提交按语义推进：
 
-| 顺序 | 语义 | 涉及组件数 | 备注 |
-| --- | --- | --- | --- |
-| 1 | `close` | 9 | Alert / AutoComplete / DatePicker / Drawer / Modal / Select / Tag / Toast / Tree |
-| 2 | `chevron-down` | 5 | AutoComplete / Collapse / Menu / NavMenu / Select |
-| 3 | `chevron-right` | 3 | Menu / NavMenu / Pagination |
-| 4 | `check` | 2 | Checkbox / Toast（+ `composites/chat/ChatCopyButton`） |
-| 5 | `spinner` 弧 | 2 | AutoComplete / Select |
-| 6 | 其余一次性图标 | ~20 | 逐个组件替换 |
+| 提交 | 语义 | 组件数 |
+| --- | --- | --- |
+| `d6c3324` | `close` | 9 |
+| `c1eaf0d` | `chevron-down` | 5（6 处） |
+| `0b91e9d` | `chevron-right/left` + `search` | 4（6 处） |
+| `4bbfb46` | `check` / `close` / `plus` / `minus` / 状态图标 | 4（7 处） |
+| `0aff9ad` | `spinner`（改走 `spin` prop） | 2（4 处） |
+| `6c98bc0` | 其余全部（Canvas/DatePicker/Table/Select/Steps/Upload/Alert） | 8（26 处） |
 
-每步只换一个语义、跑 `npm test` + `check:icons` + 视觉对照。**注意**：部分组件的内联 svg 带专属样式钩子（如 Collapse 的旋转 class），迁移时要保留 class 与过渡。
+**刻意保留的 6 处**（非语义图标，不属注册表职责）：
 
-**`src/composites/doc/**`（DocTreeIcon）**：自带一套 16 viewBox 图标体系（`ICON_PATHS`），已列入迁移计划，`check-icons.mjs` 暂时对其豁免。
+| 位置 | 性质 |
+| --- | --- |
+| `ChartBar` / `ChartLine` / `ChartPie` / `ChartCandlestick` | 数据可视化（动态 viewBox + 坐标轴/网格/数据点） |
+| `Logo` | 品牌图形（512 viewBox + filter） |
+| `Empty` | 160×160 空态插画 |
+| `Progress` | 进度环（`stroke-dasharray` 动态计算） |
+| `Spinner`（组件本体） | 双弧轨道设计，非通用图标 |
+| `Button` / `Upload` 的 spinner | 带 `stroke-opacity` 轨道的进度指示器 |
 
-**E. 动画边界** — ✅ 已实施（`spin` / `pulse` 两个布尔 prop） — ✅ 已实施（`spin` / `pulse` 两个布尔 prop）
+**`src/composites/doc/**`（DocTreeIcon）**：仍自带 16 viewBox 图标体系（`ICON_PATHS`），
+`check-icons.mjs` 对其豁免，列入后续迁移。
 
-库内只提供 `spin` / `pulse` 两个布尔 prop（覆盖绝大多数场景）。产品级专属动画（如 Panel 工具图标的 11 种路径动画）留在产品侧，不进库。
+### 迁用中发现并修掉的既有缺陷
+
+- `Steps` 的错误图标 `stroke-width="2.5"` 用在 14–20px 显示档（§8 里 2.5 只属 ≤12px 微图标补偿）→ 改按档自动 `2`
+- `Alert` 内置类型图标是 **Material 实心字形**（`fill: currentColor`），与全库线框语言相反，且与 `Toast` 的状态图标（线框）不一致 → 统一为线框，`defaultIcons` 数据整体删除
+- `AutoComplete` / `Select` 的 spinner 各自用 CSS `animation` 旋转（0.8s），与 `spin` prop 会双写 → 统一交给 `spin`（1s + `prefers-reduced-motion` 停用），删掉 3 处 animation 与 1 段无引用 keyframes
