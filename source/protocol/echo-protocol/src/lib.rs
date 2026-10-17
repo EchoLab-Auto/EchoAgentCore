@@ -24,8 +24,8 @@ pub mod event;
 pub mod mode;
 
 pub use bridge::{
-    create_bridge, deserialize_message, serialize_command, serialize_event, BackendBridge,
-    BackendHandle, FanoutHandle, WsMessage,
+    create_bridge, deserialize_message, serialize_command, serialize_event,
+    serialize_event_sequenced, BackendBridge, BackendHandle, FanoutHandle, SequencedEvent, WsMessage,
 };
 
 pub use command::{command_clearance, BackendCommand, CommandClearance};

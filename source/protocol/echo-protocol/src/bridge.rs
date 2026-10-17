@@ -135,6 +135,22 @@ impl FanoutHandle {
 
 // ── WebSocket message types ────────────────────────────────────────────────
 
+/// 扇出序号信封：每条下发到 Panel 的事件都带一个**进程内单调递增**的序号。
+///
+/// 用途（2026-10）：Panel 侧据此做**事件流连续性校验**——序号一旦跳号，
+/// 说明中间有事件没到（中继半死、连接重建窗口、后台节流……）。前端随即按
+/// 游标补拉一次 timeline 修复，而不是让某个 `ToolResult` 静默丢失、工具行
+/// 永远停在「运行中」。
+///
+/// 序号由 Core 的 WS 扇出（`management::EventBroker`）在**持有订阅者表的
+/// 锁时**分配并投递，因此所有订阅者看到的顺序与序号完全一致。
+#[derive(Debug, Clone)]
+pub struct SequencedEvent {
+    /// 单调递增序号（从 1 开始；一次进程生命周期内唯一）。
+    pub seq: u64,
+    pub event: BackendEvent,
+}
+
 /// Top-level WS message envelope.
 ///
 /// Serialises as:
@@ -164,10 +180,42 @@ pub fn serialize_command(cmd: &BackendCommand) -> String {
 ///
 /// On failure, logs the error and returns an empty string.
 pub fn serialize_event(ev: &BackendEvent) -> String {
-    serde_json::to_string(&WsMessage::Event(ev.clone())).unwrap_or_else(|e| {
-        tracing::error!(error = %e, "failed to serialize event for WS");
-        String::new()
-    })
+    serialize_event_with_seq(None, ev)
+}
+
+/// Serialise an event **with its fanout sequence number** for WS transport.
+///
+/// 序号作为顶层字段附加在事件帧上（`{"type":"event","payload":{…},"seq":N}`）：
+/// 放在顶层而不是塞进 `BackendEvent` 各变体，是为了不动事件契约——新增
+/// 变体不需要记得带序号，也不会让旧版 Panel 的严格反序列化失败（serde 对
+/// internally-tagged enum 的多余字段是忽略的，见下方测试）。
+///
+/// 前端据此校验事件流连续性；缺帧即按游标补拉 timeline（见
+/// `web/src/event-seq.ts`）。
+pub fn serialize_event_sequenced(seq: u64, ev: &BackendEvent) -> String {
+    serialize_event_with_seq(Some(seq), ev)
+}
+
+fn serialize_event_with_seq(seq: Option<u64>, ev: &BackendEvent) -> String {
+    match seq {
+        None => serde_json::to_string(&WsMessage::Event(ev.clone())).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "failed to serialize event for WS");
+            String::new()
+        }),
+        Some(seq) => {
+            let mut value = match serde_json::to_value(WsMessage::Event(ev.clone())) {
+                Ok(value) => value,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to serialize event for WS");
+                    return String::new();
+                }
+            };
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("seq".to_string(), serde_json::Value::from(seq));
+            }
+            value.to_string()
+        }
+    }
 }
 
 /// Deserialise a WS text message. Logs malformed input for diagnosis.
@@ -380,6 +428,29 @@ mod tests {
             .await;
         assert!(rx1.try_recv().is_ok(), "subscriber 1 gets the event");
         assert!(rx2.try_recv().is_ok(), "subscriber 2 gets the event");
+    }
+
+    #[test]
+    fn sequenced_serialization_keeps_event_contract() {
+        let ev = BackendEvent::AgentThinking {
+            session_id: "s1".into(),
+            team_id: None,
+        };
+        let text = serialize_event_sequenced(42, &ev);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value.get("type").and_then(|v| v.as_str()), Some("event"));
+        assert_eq!(value.get("seq").and_then(|v| v.as_u64()), Some(42));
+        // 顶层加 seq 后仍能被既有反序列化路径解析（多余字段忽略）。
+        match deserialize_message(&text) {
+            Some(WsMessage::Event(BackendEvent::AgentThinking { session_id, .. })) => {
+                assert_eq!(session_id, "s1")
+            }
+            other => panic!("sequenced frame should still decode: {other:?}"),
+        }
+        // 不带序号的旧格式照旧可用（序列化/反序列化对称）。
+        let plain = serialize_event(&ev);
+        assert!(!plain.contains("\"seq\""), "旧格式不应带 seq");
+        assert!(deserialize_message(&plain).is_some());
     }
 
     #[tokio::test]

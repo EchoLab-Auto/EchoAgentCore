@@ -3,10 +3,12 @@
 //! Listens on a configurable address, accepts WS connections from Panel
 //! instances, and bridges commands/events between the Panel and the Agent.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::Context;
-use echo_agent::{BackendBridge, BackendEvent};
+use echo_agent::BackendBridge;
+use echo_protocol::SequencedEvent;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
@@ -20,7 +22,15 @@ use tracing::{info, warn};
 /// out to per-connection channels.
 struct EventBroker {
     bridge: Arc<BackendBridge>,
-    subscribers: Mutex<Vec<mpsc::UnboundedSender<BackendEvent>>>,
+    subscribers: Mutex<Vec<mpsc::UnboundedSender<SequencedEvent>>>,
+    /// 下一条事件的序号（1 起；0 留给"从未收到过事件"）。
+    ///
+    /// 序号在**持锁投递之前**分配：与订阅者收到事件的顺序严格一致，
+    /// 多订阅者（多窗口/多 Panel）看到的是同一套编号。Panel 据此做事件流
+    /// 连续性校验——跳号即说明中间有帧没到（中继半死、重连窗口、后台
+    /// 节流），前端随按游标补拉 timeline 修复，而不是让某条 ToolResult
+    /// 静默丢失、工具行永远停在「运行中」（2026-10）。
+    next_seq: AtomicU64,
 }
 
 impl EventBroker {
@@ -28,10 +38,11 @@ impl EventBroker {
         Self {
             bridge,
             subscribers: Mutex::new(Vec::new()),
+            next_seq: AtomicU64::new(1),
         }
     }
 
-    async fn subscribe(&self) -> mpsc::UnboundedReceiver<BackendEvent> {
+    async fn subscribe(&self) -> mpsc::UnboundedReceiver<SequencedEvent> {
         let (tx, rx) = mpsc::unbounded_channel();
         self.subscribers.lock().await.push(tx);
         rx
@@ -40,8 +51,15 @@ impl EventBroker {
     async fn run(&self) {
         let mut rx = self.bridge.event_rx.lock().await;
         while let Some(event) = rx.recv().await {
+            let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
             let mut subscribers = self.subscribers.lock().await;
-            subscribers.retain(|tx| tx.send(event.clone()).is_ok());
+            subscribers.retain(|tx| {
+                tx.send(SequencedEvent {
+                    seq,
+                    event: event.clone(),
+                })
+                .is_ok()
+            });
         }
     }
 }
@@ -463,7 +481,10 @@ async fn serve_management_ws(
             ev = event_rx.recv() => {
                 match ev {
                     Some(ev) => {
-                        let text = echo_agent::bridge::serialize_event(&ev);
+                        // 带扇出序号下发：Panel 据此校验事件流连续性，跳号即
+                        // 按游标补拉 timeline（2026-10，见 web/src/event-seq.ts）。
+                        let text =
+                            echo_agent::bridge::serialize_event_sequenced(ev.seq, &ev.event);
                         if write
                             .send(tokio_tungstenite::tungstenite::Message::Text(text))
                             .await

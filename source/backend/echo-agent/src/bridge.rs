@@ -5,6 +5,7 @@
 //! `echo_agent::bridge::…` paths keep working.
 
 pub use echo_protocol::{
-    create_bridge, deserialize_message, serialize_command, serialize_event, BackendBridge,
-    BackendHandle, FanoutHandle, WsMessage,
+    create_bridge, deserialize_message, serialize_command, serialize_event,
+    serialize_event_sequenced, BackendBridge, BackendHandle, FanoutHandle, SequencedEvent,
+    WsMessage,
 };
