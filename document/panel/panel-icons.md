@@ -77,6 +77,9 @@ CI 里与既有令牌规则（`var(--nf-*)` 禁用命名空间、幻影令牌名
 3. **`NeumorphismThemeToggle` 两处缺陷**（Panel 实测可见）：
    - 三态图标风格不同族：`light` = 实心圆 + 线框射线、`auto` = 纯线框、`dark` = 纯实心块 → 切换主题时"实心↔线框"跳变
    - 激活态 `transform: rotate(15deg) scale(1.1)` → 14px 图标实测渲染 18.86px（变换包围盒，+35%），且脱离 §8 枚举档；同控件内激活项比相邻项明显更大更粗
+4. **勾选类图标用百分比定尺寸**（`_checkable.scss` 的 `checkable-sizes`）：
+   `Checkbox` / `Radio` 的 box 为 18 / 24 / 30px（small/medium/large），内部图标 `width: 65%` → 实测 **11.7 / 15.6 / 19.5px**，三档全部落在枚举档之外。
+   同理的还有 `Spinner` 的 `size` prop 已支持数字直传（`<NeumorphismSpinner :size="12" />`），但其它组件没有等价通道。
 
 → 库侧改造方向见本节附录（提议，未实施）。
 
@@ -125,6 +128,15 @@ src/components/NeumorphismIcon/
 
 - 三态统一线框（`sun` 的圆改 `stroke`、`moon` 改轮廓线框），或统一"实心核心 + 线框外饰"；**关键是三态同族**
 - 激活态去掉 `scale()`：改 `rotate(15deg)` 单变换，或尺寸档切换（`sm` 14 → `lg` 18），保证不出现非档位像素
+
+**D2. 勾选类图标尺寸改枚举档**
+
+`_checkable.scss` 的 `checkable-sizes` 把 `65%` 换成枚举值：small 18px 的 box 配 `--nm-icon-size-xs`(12)、medium 24px 配 `--nm-icon-size-sm`(14)、large 30px 配 `--nm-icon-size-md`(16)——视觉占比从 65% 降到 67%/58%/53%，观感与现状一致但尺寸可枚举、可被 `check:styles` 校验。
+
+**F. 两条已复核的"疑似问题"（不必再查）**
+
+- `NeumorphismThemeToggle` 组内存在 `stroke-width="1"` 的说法**不成立**——该组件全部 4 处线宽均为 `2`（实测 `grep -o 'stroke-width="[0-9.]*"'` 只有 `2`）。
+- 12px 图标配 `stroke-width="2.5"` **符合** §8（2.5 = ≤12px 微图标补偿），不是越界；`ChatFold` 的 12px caret 即属此例。
 
 **E. 动画边界**
 
