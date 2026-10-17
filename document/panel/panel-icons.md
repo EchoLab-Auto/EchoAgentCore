@@ -9,10 +9,12 @@
 
 | 组件 | 承载 | 说明 |
 | --- | --- | --- |
-| `PanelIcon.vue` | **界面语义**图标 | 导航 / 状态 / 操作 / 方向；31 个语义名；无业务耦合 |
-| `ToolIcon.vue` | **工具语义**图标 | 工具名 → 图标分派（`bash` / `files` / `code` / `subagent` …）+ 11 种专属 loading 动画 |
+| `PanelIcon.vue` | **界面语义**图标 | **薄封装**在 ui-frame `NeumorphismIcon` 之上（82 行）：只加 `tone` → `--panel-*` 语义色映射；几何全部来自 ui-frame 注册表（55 个语义） |
+| `ToolIcon.vue` | **工具语义**图标 | 工具名 → 图标分派（`bash` / `files` / `code` / `subagent` …）+ 11 种专属 loading 动画；产品特有，留在 Panel |
 
-两个组件都遵循 ui-frame §8：**24 基准 viewBox / `stroke="currentColor"` / 尺寸取 `--nm-icon-size-*` / 线宽取六档语义**。
+底层是 ui-frame 的 `NeumorphismIcon` + `@echolab-auto/ui-frame/icons` 注册表：**24 基准 viewBox / `stroke="currentColor"` / 尺寸七档 / 线宽按档自动**。
+
+> 2026-10 演进：Panel 先自建了 305 行的 `PanelIcon`（含 31 个 path），随后把几何全部上收进 ui-frame 注册表（缺的 `message` / `network` / `sparkle` 也一并补进去），PanelIcon 降到 82 行、只留产品语义色。**Panel 不再持有任何 path 数据。**
 
 ```vue
 <PanelIcon name="home" />                        <!-- 默认 sm = 14px -->
@@ -22,7 +24,7 @@
 ```
 
 - **尺寸档**：`xs` 12 / `sm` 14 / `md` 16 / `lg` 18 / `xl` 20 / `2xl` 24（数字也可，但须落在这些值上）
-- **线宽自动**：≤12px → 2.5（微图标补偿）；≥24px → 1.5（大图标轻描）；其余 → 2
+- **线宽自动**：≤12px → 2.5（微图标补偿）；≥24px → 1.5（大图标轻描）；其余 → 2（由 ui-frame 实现，Panel 不重复）
 - **语义色 `tone`**：`inherit`（默认）/ `accent` / `muted` / `ok` / `warn` / `err` / `reasoning` / `subagent`——全部映射到 `styles.css` 的 `--panel-*` 令牌，随亮暗主题切换
 
 ---
@@ -81,11 +83,13 @@ CI 里与既有令牌规则（`var(--nf-*)` 禁用命名空间、幻影令牌名
    `Checkbox` / `Radio` 的 box 为 18 / 24 / 30px（small/medium/large），内部图标 `width: 65%` → 实测 **11.7 / 15.6 / 19.5px**，三档全部落在枚举档之外。
    同理的还有 `Spinner` 的 `size` prop 已支持数字直传（`<NeumorphismSpinner :size="12" />`），但其它组件没有等价通道。
 
-→ 库侧改造方向见本节附录（提议，未实施）。
+→ 库侧改造已落地（2026-10，见下方附录的「已实施」标注）。
 
-### 附录：ui-frame 图标组件改造提案
+### 附录：ui-frame 图标组件改造（**已实施** 2026-10）
 
-**A. 新增 `NeumorphismIcon` 组件 + `icons` 子路径**
+实施提交：`4b0d14d`（Icon 组件 + 子路径 + ThemeToggle/Checkbox 修复）、`5bf1429`（补 3 个通用语义）。
+
+**A. 新增 `NeumorphismIcon` 组件 + `icons` 子路径** — ✅ 已实施
 
 ```text
 src/icons/
@@ -124,20 +128,40 @@ src/components/NeumorphismIcon/
 
 `close`（9 个组件）→ `chevron-down`（5）→ `chevron-right`（3）→ `check`（2）→ 其余。每个 commit 只换一个语义，`npm test` + 视觉快照对照。
 
-**D. ThemeToggle 修复**
+**D. ThemeToggle 修复** — ✅ 已实施
 
 - 三态统一线框（`sun` 的圆改 `stroke`、`moon` 改轮廓线框），或统一"实心核心 + 线框外饰"；**关键是三态同族**
 - 激活态去掉 `scale()`：改 `rotate(15deg)` 单变换，或尺寸档切换（`sm` 14 → `lg` 18），保证不出现非档位像素
 
-**D2. 勾选类图标尺寸改枚举档**
+**D2. 勾选类图标尺寸改枚举档** — ✅ 已实施
 
 `_checkable.scss` 的 `checkable-sizes` 把 `65%` 换成枚举值：small 18px 的 box 配 `--nm-icon-size-xs`(12)、medium 24px 配 `--nm-icon-size-sm`(14)、large 30px 配 `--nm-icon-size-md`(16)——视觉占比从 65% 降到 67%/58%/53%，观感与现状一致但尺寸可枚举、可被 `check:styles` 校验。
 
-**F. 两条已复核的"疑似问题"（不必再查）**
+**F. 三条已复核的"疑似问题"（不必再查）**
 
 - `NeumorphismThemeToggle` 组内存在 `stroke-width="1"` 的说法**不成立**——该组件全部 4 处线宽均为 `2`（实测 `grep -o 'stroke-width="[0-9.]*"'` 只有 `2`）。
 - 12px 图标配 `stroke-width="2.5"` **符合** §8（2.5 = ≤12px 微图标补偿），不是越界；`ChatFold` 的 12px caret 即属此例。
+- **旋转/缩放图标的 `getBoundingClientRect()` 不能当尺寸证据**：`transform: rotate(15deg)` 会把 14px 图标的包围盒撑到 17.15px（×cos15°+sin15° = ×1.2247），视觉尺寸完全没变。审查脚本请用 `offsetWidth` 或 `getComputedStyle().width`。上一轮报的「18.86px 越界」里，`scale(1.1)` 部分是真实缺陷（已修），旋转带来的 +22% 是测量假象。
 
-**E. 动画边界**
+---
+
+## 六、剩余工作（未实施）
+
+**ui-frame 内部 75 个内联 `<svg>` 的迁用**（上节 C 步，分 commit 逐步）：
+
+| 顺序 | 语义 | 涉及组件数 | 备注 |
+| --- | --- | --- | --- |
+| 1 | `close` | 9 | Alert / AutoComplete / DatePicker / Drawer / Modal / Select / Tag / Toast / Tree |
+| 2 | `chevron-down` | 5 | AutoComplete / Collapse / Menu / NavMenu / Select |
+| 3 | `chevron-right` | 3 | Menu / NavMenu / Pagination |
+| 4 | `check` | 2 | Checkbox / Toast（+ `composites/chat/ChatCopyButton`） |
+| 5 | `spinner` 弧 | 2 | AutoComplete / Select |
+| 6 | 其余一次性图标 | ~20 | 逐个组件替换 |
+
+每步只换一个语义、跑 `npm test` + `check:icons` + 视觉对照。**注意**：部分组件的内联 svg 带专属样式钩子（如 Collapse 的旋转 class），迁移时要保留 class 与过渡。
+
+**`src/composites/doc/**`（DocTreeIcon）**：自带一套 16 viewBox 图标体系（`ICON_PATHS`），已列入迁移计划，`check-icons.mjs` 暂时对其豁免。
+
+**E. 动画边界** — ✅ 已实施（`spin` / `pulse` 两个布尔 prop） — ✅ 已实施（`spin` / `pulse` 两个布尔 prop）
 
 库内只提供 `spin` / `pulse` 两个布尔 prop（覆盖绝大多数场景）。产品级专属动画（如 Panel 工具图标的 11 种路径动画）留在产品侧，不进库。
