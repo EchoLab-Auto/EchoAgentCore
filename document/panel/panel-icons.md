@@ -70,9 +70,10 @@ CI 里与既有令牌规则（`var(--nf-*)` 禁用命名空间、幻影令牌名
 
 ---
 
-## 五、待办：ui-frame `NeumorphismIcon`
+## 五、ui-frame `NeumorphismIcon`（已落地 2026-10）
 
-当前图标语义由 **Panel 自建 `PanelIcon`** 承载——这是过渡态。根因在库侧：
+> 本节记录**已解决的历史问题**，保留供追溯。当前 PanelIcon 只是 ui-frame 图标的 tone 包装，
+> 几何全部在库注册表；下述 4 项缺陷均已修复。
 
 1. **ui-frame 无通用 Icon 组件**：31 个组件内联 75 个 `<svg>`，同一路径重复定义（`close` 9 处、`chevron-down` 5 处、`chevron-right` 3 处、`check` 2 处、spinner 弧 2 处）——规范（§8）只能被"检查"（`check:styles`），不能被"复用"。
 2. **消费方因此无法共享**：Panel 过去用 emoji 顶替（`🔒`/`🏠`/`📁`/`⛓`/`☑`）、文件树自建 16 viewBox 体系，均源于库不提供 `lock`/`home`/`folder`/`link` 等语义。
