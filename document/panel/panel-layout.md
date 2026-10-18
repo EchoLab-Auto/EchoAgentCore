@@ -17,7 +17,7 @@ y: 780
 ### 1.1 视图层级
 
 ```prodoc-flow
-graph TD
+graph TB
   Root[Panel 主视图] --> Chat[会话]
   Root --> ShellV[Shell 详情]
   Root --> Sets[设置]
@@ -35,7 +35,7 @@ graph TD
 ### 1.2 布局与组件树
 
 ```prodoc-flow
-graph TD
+graph TB
   App[App.vue 应用壳] --> Layout[NeumorphismLayout 外壳]
   Layout --> Header[顶栏：品牌 · 导航 · 主题]
   Layout --> Main[主区：当前视图组件]

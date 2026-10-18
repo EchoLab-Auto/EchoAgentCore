@@ -3,8 +3,8 @@ id: adapter-plugin
 title: "适配器插件化设计（规划）"
 group: 规划
 x: 960
-y: 3020
-link: ["decoupling-plan | 完全解耦计划 | t>l", "plugin-authoring | 插件开发指南 | r>l", "qq-gating | QQ 适配器门控 | b>l"]
+y: 3160
+link: ["adapter-genericization | 泛化设计系列 | b>t"]
 ---
 
 # 适配器插件化设计（规划）

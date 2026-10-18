@@ -1,3 +1,11 @@
+---
+id: gen-evidence-01
+title: "证据 · 01 Core/协议"
+group: 规划
+x: 1280
+y: 3800
+---
+
 # 证据包：01（core / 协议 / 插件侧泛化）
 
 > 配套：`00-frozen-interfaces.md`。行号基于 core @ 3541b46 / 插件 @ 79de9ec。

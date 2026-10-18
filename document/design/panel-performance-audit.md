@@ -2,8 +2,8 @@
 id: panel-performance-audit
 title: "Panel 浏览器性能审计"
 group: 规划
-x: 3200
-y: 2050
+x: 1600
+y: 3160
 ---
 
 # EchoAgent Panel 浏览器性能报告

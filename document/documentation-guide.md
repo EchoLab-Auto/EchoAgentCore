@@ -79,7 +79,7 @@ y: 2190
 - [ ] 概念在前、细节在后；无跨层内容渗漏
 - [ ] 行为性变更未标注日期；无纯过程史段落
 - [ ] 正文相对链接有效
-- [ ] 参数区 `link` 只含主干导航（= 直接子文档），与正文导航一致
+- [ ] 参数区 `link` 只含主干导航（= 直接子文档），与正文导航一致；**不出现多父**（一个框只被一条 `link` 指向）
 - [ ] **引用代码用「文件 + 符号名」，不写行号**（见下）
 
 ## ProDoc 框架约定（速查）
@@ -100,7 +100,26 @@ y: 2190
 - 需要范围时写函数/段落名：`SettingsView.vue` 的 `categories` computed、`proxy.rs` 的 `broadcast` 分支
 - 例外：**行号本身是契约**的场合（如源码契约测试断言的 CSS 片段）可保留，但须写明「行号仅供定位，以符号名为准」
 
+## 自检与预览
+
+改完文档先跑**图校验**，再看画布——校验能抓出断链、环、孤立框与缺参数区，画布只告诉你「不好看」：
+
+```bash
+# 校验（断链 / 环 / 孤立文档 / 缺参数区；CI 可加 --no-fail-on-warn 只报告）
+echo-prodoc check ./document
+
+# 本机预览
+echo-prodoc view ./document
+
+# 开放给同网段的其他设备（手机 / 另一台机器看画布）
+echo-prodoc view ./document --host 0.0.0.0 --port 3344 --no-open
+```
+
+- **孤立框**是最常见的结构问题：新增文档忘了从父文档 `link` 挂入，它就在画布上漂浮。`check` 会点名，按提示补一条 `link` 即可
+- **`--persist-layout`** 才写回坐标；不给这个参数时查看器不改源文件。但 `--host 0.0.0.0` 之后同网段的设备能调用保存 / 删除接口（无鉴权），只在自己信任的网络里这么开
+- 长期在线的预览服务用 `systemd-run --user --collect --unit=<名称>` 起，别用 `nohup`——Core 重启或会话结束时不会被连带清理，`systemctl --user stop <名称>` 收掉
+
 ### 参考
 
-- 画布渲染工具：ProDoc（`echo-prodoc view ./document`）
+- 画布渲染工具：ProDoc（`echo-prodoc`，源码仓库 DocRenderer）；**格式权威定义**见 `skills/prodoc-format/SKILL.md`，渲染器交互细节见 DocRenderer 的《ProDoc 规则定义》
 - 体例来源：ui-frame 仓库《文档分层与撰写规范》（`document/develop/documentation-guide.md`）

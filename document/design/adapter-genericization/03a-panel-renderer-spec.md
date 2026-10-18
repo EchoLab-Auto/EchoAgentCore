@@ -1,6 +1,14 @@
+---
+id: gen-03a
+title: "03a · UI 描述符渲染器规范"
+group: 规划
+x: 1600
+y: 3480
+---
+
 # 03a · Panel 适配器 UI 描述符通用渲染器规范（阶段 2）
 
-> 状态：设计草案。依据：`evidence/00-frozen-interfaces.md`（下称 00）、`evidence/03-evidence-panel-ui.md`（下称 03E）。
+> 状态：已实施（渲染器落地于 `web/src/components/adapter-ui/`）。依据：`evidence/00-frozen-interfaces.md`（下称 00）、`evidence/03-evidence-panel-ui.md`（下称 03E）。
 > 仓库基线：panel @ 4b7d99b / core @ 3541b46。本文只规定 Panel 侧渲染器，不修改任何冻结项。
 >
 > **前置假设（撰写时 01 / 02 文档尚未落盘，以下按合理假设推进，待其定稿后对齐）**

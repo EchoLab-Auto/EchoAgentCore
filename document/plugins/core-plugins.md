@@ -4,7 +4,7 @@ title: "插件化设计"
 group: 插件
 x: 640
 y: 1620
-link: ["tools | 工具系统 | r>l", "skills | 技能系统 | r>l", "subagent | Subagent 插件 | r>l", "qq-gating | QQ 适配器门控 | r>l", "federation | 联邦（多机） | r>l", "plugin-authoring | 插件开发指南 | r>l", "decoupling-plan | 完全解耦计划 | b>l"]
+link: ["tools | 工具系统 | r>l", "skills | 技能系统 | r>l", "subagent | Subagent 插件 | r>l", "qq-gating | QQ 适配器门控 | r>l", "federation | 联邦（多机） | r>l", "plugin-authoring | 插件开发指南 | r>l"]
 ---
 
 # 插件化设计

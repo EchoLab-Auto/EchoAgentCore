@@ -1,6 +1,14 @@
+---
+id: gen-02a
+title: "02a · Panel 协议与状态层"
+group: 规划
+x: 960
+y: 3480
+---
+
 # 02a · Panel 阶段 1：协议与状态层设计（通道切换）
 
-> 状态：设计草案。依据：`evidence/00-frozen-interfaces.md`（下称 00）、`evidence/02-evidence-panel-channel.md`（下称 02E）、`03a-panel-renderer-spec.md`（下称 03a）。
+> 状态：已实施（Panel-1 `cd93c8c..8ced31c`；现 `web/src/adapterOps.ts` / `useAdapterOp.ts`）。依据：`evidence/00-frozen-interfaces.md`（下称 00）、`evidence/02-evidence-panel-channel.md`（下称 02E）、`03a-panel-renderer-spec.md`（下称 03a）。
 > 基线：panel @ 4b7d99b / core @ 3541b46 / echo-adapter-qq @ 79de9ec。范围：protocol.ts / state.ts / pending.ts / connection.ts / store.ts + 新增服务模块；**不含**组件改造（02b）与渲染器（03）。
 > 本文给出 03a/03b 引用的「02 的约定」：配对键、超时、错误文案、断线清理、`invokeAdapterOp` 语义（§5.3 汇总）。
 

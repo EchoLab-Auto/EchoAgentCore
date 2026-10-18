@@ -1,3 +1,12 @@
+---
+id: gen-evidence-00
+title: "证据 · 冻结接口"
+group: 规划
+x: 1760
+y: 3640
+link: ["gen-evidence-01 | 01 | b>t", "gen-evidence-02 | 02 | b>t", "gen-evidence-03 | 03 | b>t", "gen-evidence-04 | 04 | b>t"]
+---
+
 # 冻结接口（所有泛化设计文档的共同基线）
 
 > 任何方案不得与本节冲突；确需变更时必须在文档中显式写「需修订冻结项：<条目>理由 <理由>」。

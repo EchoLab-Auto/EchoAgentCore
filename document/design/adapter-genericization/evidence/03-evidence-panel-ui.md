@@ -1,3 +1,11 @@
+---
+id: gen-evidence-03
+title: "证据 · 03 Panel UI"
+group: 规划
+x: 1920
+y: 3800
+---
+
 # 证据包：03（Panel 阶段 2：UI 描述符 + schema 渲染器 + 迁移删除）
 
 > 配套：`00-frozen-interfaces.md`。行号基于 panel @ 4b7d99b / core 设计文档 adapter-plugin.md。

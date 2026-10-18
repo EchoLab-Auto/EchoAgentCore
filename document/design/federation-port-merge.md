@@ -2,8 +2,8 @@
 id: federation-port-merge
 title: "联邦·管理端口合并（设计记录）"
 group: 规划
-x: 1440
-y: 3020
+x: 1280
+y: 3160
 ---
 
 # 联邦·管理端口合并（规划）

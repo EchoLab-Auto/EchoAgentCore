@@ -1,4 +1,14 @@
+---
+id: gen-02b
+title: "02b · Panel 数据面重接线"
+group: 规划
+x: 1280
+y: 3480
+---
+
 # 02b · Panel 阶段 1：QqPanel / QqLoginSection 数据面重接线
+
+> 状态：已实施（Panel-2）；相关组件现已被通用 `AdapterPanel` + 描述符渲染器取代，见 [03b](./03b-panel-migration.md)
 
 > 基线：panel @ 4b7d99b / echo-adapter-qq @ 79de9ec。配套：evidence/00、01 §E、02、03；03a §4、03b §1.4-1.5。
 > 范围：仅改两个组件的**发送路径与读取路径**；UI 结构、样式、交互不变；组件删除归 03b S6。

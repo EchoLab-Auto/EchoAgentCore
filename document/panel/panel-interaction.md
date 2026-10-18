@@ -32,7 +32,7 @@ link: ["panel-layout | 布局与导航 | b>t", "panel-chat | 会话视图 | b>t"
 ## 交互模块树
 
 ```prodoc-flow
-graph TD
+graph TB
   Root[Panel 布局 & 交互定义|/panel/panel-interaction.md] --> L[布局与导航|/panel/panel-layout.md]
   Root --> C[会话视图|/panel/panel-chat.md]
   Root --> M[模态与覆盖层|/panel/panel-modals.md]

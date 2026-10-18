@@ -1,4 +1,14 @@
+---
+id: gen-01b
+title: "01b · 线协议 id 去号码化"
+group: 规划
+x: 640
+y: 3480
+---
+
 # 01b：线协议 id 去号码化（W2.4）· 旧 QQ 变体生命周期 · QQ 残留清理
+
+> 状态：已实施（W2.4 与 `adapter_qq/`→`adapter_ops/` 改名等，落地见 [06 台账](./06-execution-progress.md)）；双读兼容层已随「全网同步更新」收敛，现状见 [协议与数据流](../../protocol/protocol.md)
 
 > 基线：core @ 3541b46 / panel @ 4b7d99b / echo-adapter-qq @ 79de9ec；冻结接口见 `evidence/00-frozen-interfaces.md`。
 > 下文 `C:` = core `source/`，`P:` = 插件 `crates/echo-adapter-qq/src/`。本文只读分析产出，未改代码。

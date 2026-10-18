@@ -4,7 +4,7 @@ title: "联邦（多机去中心化）"
 group: 插件
 x: 960
 y: 2420
-link: ["federation-port-merge | 端口合并（设计记录） | b>l"]
+link: []
 ---
 
 # 联邦（多机去中心化 Agent）

@@ -4,7 +4,7 @@ title: "EchoAgent 文档总览"
 group: 总览
 x: 1520
 y: 100
-link: ["architecture | 架构总览 | l>r", "core | Core 后端 | l>r", "panel | Panel 前端 | r>l", "protocol | 协议与数据流 | b>l", "ops-deploy | 部署与自更新 | b>l", "dev-guide | 开发指南 | b>l"]
+link: ["architecture | 架构总览 | l>r", "core | Core 后端 | l>r", "panel | Panel 前端 | r>l", "protocol | 协议与数据流 | b>l", "ops-deploy | 部署与自更新 | b>l", "dev-guide | 开发指南 | b>l", "design-index | 设计记录 | b>l"]
 ---
 
 # EchoAgent 文档总览
@@ -79,10 +79,13 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 
 **设计层 —— 计划 / 提案 / 设计记录（过程性材料，正文标注状态）**
 
+- [design/index.md](./design/index.md) — 设计层索引：这一层收什么、写作约定与阅读顺序
 - [decoupling-plan.md](./design/decoupling-plan.md) — 完全解耦推进计划（规划）：验收口径、分阶段计划与风险
 - [adapter-plugin.md](./design/adapter-plugin.md) — 适配器插件化设计：P1 已落地、P2+ 规划
+- [adapter-genericization/index.md](./design/adapter-genericization/index.md) — 适配器泛化设计系列：分册设计（01/02/03）、证据包、对账表与进度台账
 - [agent-humanlike-style.md](./design/agent-humanlike-style.md) — 拟人化方案（规划）：语气与回复节奏
 - [federation-port-merge.md](./design/federation-port-merge.md) — 联邦·管理端口合并（设计记录，已实施）
+- [panel-performance-audit.md](./design/panel-performance-audit.md) — Panel 浏览器性能审计：测量方法与修复前后实测
 
 **调研稿**（`source/research/`，非文档群成员，过程材料不进本目录）
 
@@ -114,10 +117,13 @@ graph LR
   Plugins --> Gating[QQ 适配器门控|/plugins/adapter-qq-gating.md]
   Plugins --> Fed[联邦（多机）|/federation/federation.md]
   Plugins --> Author[插件开发指南|/plugins/plugin-authoring.md]
-  Plugins --> Plan[完全解耦推进计划|/design/decoupling-plan.md]
-  Plugins --> AdapterPlugin[适配器插件化设计（规划）|/design/adapter-plugin.md]
-  Agents --> Style[拟人化方案（规划）|/design/agent-humanlike-style.md]
-  Fed --> FedMerge[联邦·管理端口合并（设计记录）|/design/federation-port-merge.md]
+  Home --> Design[设计记录|/design/index.md]
+  Design --> Plan[完全解耦推进计划|/design/decoupling-plan.md]
+  Design --> AdapterPlugin[适配器插件化设计|/design/adapter-plugin.md]
+  Design --> Style[拟人化方案|/design/agent-humanlike-style.md]
+  Design --> FedMerge[联邦·管理端口合并|/design/federation-port-merge.md]
+  Design --> Perf[Panel 性能审计|/design/panel-performance-audit.md]
+  AdapterPlugin --> Gen[适配器泛化（设计系列）|/design/adapter-genericization/index.md]
   Panel --> Inter[Panel 交互定义|/panel/panel-interaction.md]
   Inter --> Layout[布局与导航|/panel/panel-layout.md]
   Inter --> Chat[会话视图|/panel/panel-chat.md]

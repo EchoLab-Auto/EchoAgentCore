@@ -1,4 +1,14 @@
+---
+id: gen-01a
+title: "01a · Core UI 描述符链路"
+group: 规划
+x: 320
+y: 3480
+---
+
 # 01a · Core 侧 UI 描述符链路 / 状态推送 / epoch 失效 / QQ 插件 UI 补全
+
+> 状态：已实施（Core-1，落地见 [06 台账](./06-execution-progress.md)）；本页为设计记录，实现以当前代码为准
 
 > 基线：core @ 3541b46 / 插件 @ 79de9ec；不违背 00-frozen-interfaces（下称 00），需修订处显式标注。
 > 范围：宿主 / 协议 / 插件；Panel 组件与文件级细节归 02 / 03a / 03b。行号经 grep/sed 局部核查（2026-10-16）。

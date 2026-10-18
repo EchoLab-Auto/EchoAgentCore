@@ -254,6 +254,7 @@ Core 与前端之间是 `ws://<management_address>` 上的 JSON 文本帧协议�
 | [document/ops/ops-deploy.md](document/ops/ops-deploy.md) | 一键安装、systemd 服务、受控自更新、回滚 |
 | [document/dev/dev-guide.md](document/dev/dev-guide.md) | 开发指南（仓库结构、关键抽象、编码约定、治理门禁） |
 | [document/dev/dev-testing.md](document/dev/dev-testing.md) | 测试策略 |
+| [document/design/index.md](document/design/index.md) | 设计记录索引（计划 / 提案 / 实施录像，过程材料） |
 
 ## 从 EchoAgentPanel 单体仓库迁移
 

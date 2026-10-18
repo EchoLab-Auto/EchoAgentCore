@@ -1,3 +1,11 @@
+---
+id: gen-evidence-02
+title: "证据 · 02 Panel 通道"
+group: 规划
+x: 1600
+y: 3800
+---
+
 # 证据包：02（Panel 阶段 1：底层通道切换）
 
 > 配套：`00-frozen-interfaces.md`。行号基于 panel @ 4b7d99b。
