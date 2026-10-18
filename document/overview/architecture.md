@@ -88,7 +88,7 @@ graph BT
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、联邦路由泵、启动 |
 
-依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；`echo-protocol` / `echo-adapter` / `echo-session` / `echo-llm-*` / `echo-federation` / `echo-plugin*` / `echo-sanitize`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）。**Adapter trait 定义在 `echo-defs`**（`echo_defs::adapter::Adapter`；`AdapterError`/`AdapterInfo`/`AdapterConnectionState`/`AdapterManagement` 同）；`echo-adapter` 只承载 registry / ConfigStore 并对定义层类型做 re-export——它只依赖定义层、不依赖 `echo-protocol`。**入站过滤与平台细节都在适配器插件进程内**，宿主侧不持有过滤管道、不认识平台名；**`echo-plugin-host` 只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层**；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-adapter`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
+依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；`echo-protocol` / `echo-adapter` / `echo-session` / `echo-llm-*` / `echo-federation` / `echo-plugin*` / `echo-sanitize`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）。**Adapter trait 定义在 `echo-defs`**（`echo_defs::adapter::Adapter`；`AdapterError`/`AdapterInfo`/`AdapterConnectionState`/`AdapterManagement`/`AdapterToolSpec` 同）；`echo-adapter` 只承载 registry / ConfigStore 并对定义层类型做 re-export——它只依赖定义层、不依赖 `echo-protocol`。**入站过滤与平台细节都在适配器插件进程内**，宿主侧不持有过滤管道、不认识平台名；**`echo-plugin-host` 只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层**；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-adapter`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
 
 ### 定义层（echo-defs）
 
@@ -116,6 +116,7 @@ graph BT
 | LLM | `echo_defs::LlmProvider` | `echo-llm-openai`/`anthropic`/`ollama` | `echo-agent` 工厂 + `echo-loop` runner |
 | 工具 | `echo_defs::Tool` | `echo-agent::ToolRegistry` + builtin | agent 循环 |
 | 技能 | `echo_defs::SkillProvider` | `echo-agent::SkillRegistry`（本地文件） | prompt 组装 |
+| 适配器模型工具 | `echo_defs::adapter::AdapterToolSpec`（`Adapter::tool_specs`） | 适配器插件贡献（`AdapterContribution.tools`） | 组合根通用桥（合并 / `account` 寻址 / 出站闸门 / `invoke_custom` 透传） |
 | 平台生命周期 | `echo_defs::adapter::Adapter` | 适配器插件（**进程外**，宿主经 `RemoteAdapter` 接入——当前唯一样本是 `echo-agent.adapter.qq`，实现在独立仓库） | agent + 适配器工具 |
 | 默认驱动 | `echo_loop::TurnRunner` | 内置（经 `ctx.loop` 注册） | 组合根 |
 

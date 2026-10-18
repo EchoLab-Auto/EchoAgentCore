@@ -119,7 +119,7 @@ pub async fn try_handle(
         echo_adapter::AdapterConnectionState::Error => "error",
     };
     let status = format!(
-        "运行状态\n- 适配器: {} ({})\n- 机器人 QQ: {}\n- Core 运行时长: {}s",
+        "运行状态\n- 适配器: {} ({})\n- 机器人账号: {}\n- Core 运行时长: {}s",
         info.display_name,
         state,
         info.self_id.as_deref().unwrap_or("-"),

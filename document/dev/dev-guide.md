@@ -99,11 +99,11 @@ EchoAgentCore/
 
 ## 关键流程
 
-1. **QQ 输入 hook**：QqHandler → 触发门控 → 过滤管道 → AgentMessageHook → 结构化 `qq_message` 输入
-2. **QQ 输出工具**：Agent 工具调用 → `send_private_msg` / `send_group_msg` → QqAdapter::send_message
+1. **平台入站**：适配器插件（进程外）`deliver_message` → 宿主有界队列 → per-instance worker → `AgentMessageHook::on_incoming_message` → 结构化 `<X_message_hook>` 输入（先过命令域）
+2. **平台出站**：Agent 工具调用 → **适配器插件声明的工具**（`AdapterToolSpec`）→ 宿主通用桥 → `invoke_custom(<工具名>)` → 插件自行投递（框架不认识任何工具名）
 3. **前端输入**：WS 命令帧 → `BackendCommand::SendMessage` → agent.process_message → `BackendEvent::AgentOutput`
 4. **API 配置**：Panel /api → `UpdateApiConfig` → 应用 + ConfigStore 持久化 → `ApiConfigUpdated` 广播
-5. **适配器生命周期**：QqAdapter::start() → 绑定端口 → 服务器任务 → 接受连接 → QqHandler
+5. **适配器生命周期**：组合根按 `[adapters.<platform>.plugin]` 拉起插件进程 → `AdapterContribution` 注册（含工具/UI/能力位）→ `StartAdapter` → 插件自己连平台
 6. **技能重载**：按需触发（`ReloadSkills` 命令 / 保存·删除技能后）→ 发现 SKILL.md → 保留启用状态 → 替换注册表（**覆盖全部运行人格**）→ 清提示词缓存（周期扫描已移除）
 7. **自更新**：agent 经 bash 运行受管更新器（`update.sh` → echo-agent-core-update.service）→ 构建 → 原子替换 → Core 重启（排空优先）
 8. **异步子任务**（`spawn_subagent`）：受理即返回子任务 id → 子 agent 隔离上下文执行 → 完成后经 `<subagent_event>` 钩子以新 turn 回报主 agent（见 [Subagent 插件](../plugins/core-subagent.md)；旧「后台任务/并行分支」体系已删除）
