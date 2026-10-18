@@ -1,58 +1,62 @@
-//! 适配器插件多实例：配置解析、端口分配、容器编排。
+//! 适配器实例编排（**通用机制**）+ 平台部署知识（隔离在子模块）。
 //!
-//! compose 渲染（NapCat）属 QQ 部署知识，远期移入插件仓；本轮留驻
-//!（泛化 S6 / 01b §D.3——Core 只通用化 `PluginInstance{id, persona}`，
-//! 部署形状与 `[adapters.qq]` 配置键不变）。
+//! 分两层：
 //!
-//! 设计（2026-09）：
-//! - **实例是一等概念**：`instance_id` 全局唯一，`persona` 是归属字段
-//!   （一个 persona 可挂多个实例）；实例 id 即适配器名与会话 `@account` 维度。
-//! - **端口自动分配并持久化**：每实例 3 个宿主端口（反向 WS / OneBot HTTP /
-//!   WebUI）。首次分配后写入 `[adapters.qq.instances.<id>.ports]`，跨重启稳定
-//!   （容器端口映射必须稳定才能让适配器容器重连到同一处）。
-//! - **容器编排**：每实例一个 compose 文件（独立容器名与数据卷、独立端口映射），
-//!   落在 `~/.local/share/echo-agent-core/napcat/<id>/docker-compose.yml`。
-//! - **自动创建**：persona 启用 `echo-agent.adapter.qq` 且没有归属实例时自动建
-//!   档（id = persona，重复则 `<persona>-2`…）。
-//! - 单实例（id = `qq`）时端口沿用 legacy 3131/3000/6099，行为与旧版一致。
+//! | 层 | 内容 | 平台相关性 |
+//! |---|---|---|
+//! | 本模块 | 实例解析（persona 归属 / 自动建档）、端口分配与探测、共享层⊕实例覆盖合并、TOML 深合并 | **平台中立** |
+//! | [`napcat`] | compose 渲染、容器名 / 卷 / 镜像、QQ 三端口语义 | QQ / NapCat 专属 |
+//!
+//! 这样「加一个平台」只需要读本模块（了解实例与端口模型），不必读懂 NapCat 细节；
+//! 迁移平台部署知识时也只搬 `napcat.rs`。
+//!
+//! 设计要点：
+//! - **实例是一等概念**：`instance_id` 全局唯一，`persona` 是归属字段（一个
+//!   persona 可挂多个实例）；实例 id 即适配器名与会话 `@account` 维度。
+//! - **端口自动分配并持久化**：首次分配后写回
+//!   `[adapters.<platform>.instances.<id>.ports]`，跨重启稳定（容器端口映射
+//!   必须稳定才能让适配器容器重连到同一处）。
+//! - **自动创建**：persona 启用了该平台插件且没有归属实例时自动建档
+//!   （id = persona，重复则 `<persona>-2`…）。
+
+pub mod napcat;
 
 use std::collections::BTreeMap;
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub use crate::config::QqPorts;
 use crate::config::{AdapterHostConfig, QqInstanceSection};
 
 /// legacy 默认实例名（会话 id 不产生 `@` 后缀）。
+///
+/// 语义见 `SessionKey::account`：实例名 == 平台名时不写 `@account`。
 pub const DEFAULT_INSTANCE: &str = "qq";
 
 /// 一个解析完成的插件实例（配置已合并、端口已确定）。
 #[derive(Debug, Clone)]
 pub struct PluginInstance {
-    /// 实例 id（= 适配器名 = 会话 account 维度）。
     pub id: String,
-    /// 归属人格 id。
     pub persona: String,
-    /// 合并后的插件配置（TOML 表：共享层 ⊕ 实例覆盖 + 宿主派生字段；
-    /// 原样进 `Hello.config.config`；宿主不解析插件 schema——P1.9 透传）。
+    /// 合并后的完整插件配置（共享层 ⊕ 实例覆盖；TOML 表透传）。
     pub config: toml::Table,
     /// 宿主端口三元组。
     pub ports: QqPorts,
 }
 
-/// 端口分配：优先沿用已配置值；缺省时探测空闲端口，
-/// 并避开本轮已分配给其他实例的端口（同一次解析里不重复分配）。
+/// 端口分配：优先沿用已配置值；缺省时探测空闲端口，并避开本轮已分配给
+/// 其他实例的端口（同一次解析里不重复分配）。
+///
+/// **默认实例（id == 平台名，如 `qq`）走 legacy 语义**：缺省沿用
+/// 3131 / 3000 / 6099，且 OneBot HTTP 与 WebUI **不探测**——它们是既有
+/// 容器在宿主的端口映射，端口被容器持有，宿主侧 bind 探测必然失败。
 pub fn allocate_ports_avoiding(
     existing: &QqPorts,
     id: &str,
-    taken: &std::collections::HashSet<u16>,
+    taken: &mut std::collections::HashSet<u16>,
 ) -> QqPorts {
     let mut ports = existing.clone();
     if id == DEFAULT_INSTANCE {
-        // legacy 实例（`qq`）：语义与旧版一致，缺省沿用 3131/3000/6099。
-        // - 反向 WS 由 Core 自身 bind：3131 可绑定则保留（否则回退探测）；
-        // - OneBot HTTP / WebUI 是既有 NapCat 容器的宿主映射（端口被容器
-        //   持有，宿主侧 bind 探测必然失败），缺省**直接沿用、不探测**。
         if ports.reverse_ws == 0 {
             ports.reverse_ws = if app_port_ok(3131) {
                 3131
@@ -66,6 +70,7 @@ pub fn allocate_ports_avoiding(
         if ports.webui == 0 {
             ports.webui = 6099;
         }
+        reserve(&ports, taken);
         return ports;
     }
     // 多实例：全部端口由 Core 分配并持久化（空闲探测，避开本轮已分配）。
@@ -78,7 +83,17 @@ pub fn allocate_ports_avoiding(
     if ports.webui == 0 || taken.contains(&ports.webui) {
         ports.webui = find_free_port(6100, 6190, taken).unwrap_or(0);
     }
+    reserve(&ports, taken);
     ports
+}
+
+/// 记录实例端口，避免后续实例重复分配。
+fn reserve(ports: &QqPorts, taken: &mut std::collections::HashSet<u16>) {
+    for port in [ports.reverse_ws, ports.onebot_http, ports.webui] {
+        if port > 0 {
+            taken.insert(port);
+        }
+    }
 }
 
 fn app_port_ok(port: u16) -> bool {
@@ -88,17 +103,22 @@ fn app_port_ok(port: u16) -> bool {
     TcpListener::bind(("0.0.0.0", port)).is_ok()
 }
 
-/// 在 [start, end) 里找第一个可绑定且未被本轮占用的端口。
 fn find_free_port(start: u16, end: u16, taken: &std::collections::HashSet<u16>) -> Option<u16> {
-    (start..end).find(|p| !taken.contains(p) && app_port_ok(*p))
+    (start..end).find(|port| !taken.contains(port) && app_port_ok(*port))
 }
 
-/// 把实例配置合并到共享默认之上（persona 相关字段逐个覆盖）。
+/// 合并单实例配置：共享层 ⊕ 实例覆盖（深合并），并派生宿主端口相关键。
+///
+/// 派生键（**NapCat 部署形状**，键名由插件消费）：
+/// - 实例段显式覆盖 → 保留；
+/// - 多实例（id ≠ 平台名）未覆盖 → 由 id / 端口派生（多容器互异）；
+/// - 默认实例（id == 平台名）未覆盖 → 沿用共享层显式值；共享层缺省时不写
+///   （插件默认与迁移前的内置默认一致：容器 `napcat`、localhost:3000/6099）；
+/// - 共享层显式置空串 → 派生值兜底。
 pub fn merge_instance(
     shared: &toml::Table,
     section: &QqInstanceSection,
     id: &str,
-    persona: &str,
     ports: &QqPorts,
     compose_file: Option<String>,
 ) -> toml::Table {
@@ -118,12 +138,6 @@ pub fn merge_instance(
         }
     }
 
-    // 适配器容器寻址三键（NapCat 部署形状；语义与迁移前的内置合并一致）：
-    // - 实例段显式覆盖 → 保留；
-    // - auto 实例未覆盖 → 由 id / 端口派生（忽略共享层，多实例容器互异）；
-    // - legacy 实例未覆盖 → 沿用共享层显式值；共享层缺省时不写
-    //   （插件默认与迁移前的内置默认一致：`napcat` / localhost:3000/6099）；
-    // - 共享层显式置空串 → 派生值兜底。
     for (key, derived) in [
         ("napcat_container", format!("echo-napcat-{id}")),
         (
@@ -151,24 +165,21 @@ pub fn merge_instance(
         }
     }
     if auto {
-        // 多实例：compose 由 Core 生成（路径由调用方给出）。
         cfg.insert(
             "napcat_compose_file".into(),
             toml::Value::String(compose_file.unwrap_or_default()),
         );
     }
-    let _ = persona;
     cfg
 }
 
-/// 深合并两张 TOML 表：`overlay` 覆盖 `base`；嵌套表递归合并，
-/// 其余类型整体替换。用于「共享层 ⊕ 实例覆盖」（P1.9 配置透传）。
 fn merge_tables(base: &toml::Table, overlay: &toml::Table) -> toml::Table {
     let mut out = base.clone();
     for (key, value) in overlay {
         match (out.get_mut(key), value) {
-            (Some(toml::Value::Table(base_table)), toml::Value::Table(overlay_table)) => {
-                *base_table = merge_tables(base_table, overlay_table);
+            (Some(toml::Value::Table(inner)), toml::Value::Table(over)) => {
+                let merged = merge_tables(inner, over);
+                *inner = merged;
             }
             _ => {
                 out.insert(key.clone(), value.clone());
@@ -178,58 +189,11 @@ fn merge_tables(base: &toml::Table, overlay: &toml::Table) -> toml::Table {
     out
 }
 
-/// 生成实例的 compose 文件内容（独立容器名 / 端口 / 数据卷）。
-pub fn render_compose(id: &str, ports: &QqPorts) -> String {
-    format!(
-        r#"# 由 EchoAgentCore 自动生成（QQ 实例 `{id}`）——请勿手工编辑。
-# 端口映射由 [adapters.qq.instances.{id}.ports] 决定。
-services:
-  napcat:
-    image: mlikiowa/napcat-docker:latest
-    container_name: echo-napcat-{id}
-    restart: unless-stopped
-    ports:
-      - "{webui}:6099"      # WebUI（扫码登录）
-      - "{onebot}:3000"     # HTTP API
-    environment:
-      - NAPCAT_UID=0
-      - NAPCAT_GID=0
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - echo-napcat-{id}-data:/app/napcat/data
-      - echo-napcat-{id}-config:/app/napcat/config
-
-volumes:
-  echo-napcat-{id}-data:
-  echo-napcat-{id}-config:
-"#,
-        id = id,
-        webui = ports.webui,
-        onebot = ports.onebot_http,
-    )
-}
-
-/// 写实例 compose 文件（幂等；内容变化才写）。
-pub fn write_compose(data_dir: &Path, id: &str, ports: &QqPorts) -> Result<PathBuf, String> {
-    let dir = data_dir.join("napcat").join(id);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let path = dir.join("docker-compose.yml");
-    let content = render_compose(id, ports);
-    let unchanged = std::fs::read_to_string(&path)
-        .map(|old| old == content)
-        .unwrap_or(false);
-    if !unchanged {
-        std::fs::write(&path, content).map_err(|e| format!("write {}: {e}", path.display()))?;
-    }
-    Ok(path)
-}
-
 /// 解析实例列表：显式配置的实例 + persona 门控自动创建的实例。
 ///
-/// `enabled_personas` 是启用了 `echo-agent.adapter.qq` 插件的人格 id 列表；
-/// `data_dir` 已知时把自动生成 compose 的路径写进实例配置（容器编排据此
-/// 启停 NapCat），None 表示不生成 compose 路径。
+/// `enabled_personas` 是启用了该平台适配器插件的人格 id 列表；`data_dir`
+/// 已知时把自动生成 compose 的路径写进实例配置（容器编排据此启停容器），
+/// `None` 表示不生成 compose 路径。
 pub fn resolve_instances_in(
     host: &AdapterHostConfig,
     sections: &BTreeMap<String, QqInstanceSection>,
@@ -241,29 +205,19 @@ pub fn resolve_instances_in(
     let mut used_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut taken_ports: std::collections::HashSet<u16> = std::collections::HashSet::new();
 
-    /// 记录实例端口，避免后续实例重复分配。
-    fn reserve(ports: &QqPorts, taken: &mut std::collections::HashSet<u16>) {
-        for p in [ports.reverse_ws, ports.onebot_http, ports.webui] {
-            if p > 0 {
-                taken.insert(p);
-            }
-        }
-    }
-
-    // 1) 显式实例
+    // 1) 显式实例（按配置顺序）。
     for (id, section) in sections {
-        let enabled = section.enabled.unwrap_or(host.enabled);
-        if !enabled {
-            continue;
-        }
         let persona = section
             .persona
             .clone()
             .unwrap_or_else(|| default_persona.to_string());
-        let ports = allocate_ports_avoiding(&section.ports, id, &taken_ports);
-        reserve(&ports, &mut taken_ports);
-        let compose = auto_compose_path(data_dir, id);
-        let config = merge_instance(&host.shared, section, id, &persona, &ports, compose);
+        let enabled = section.enabled.unwrap_or(host.enabled);
+        if !enabled {
+            continue;
+        }
+        let ports = allocate_ports_avoiding(&section.ports, id, &mut taken_ports);
+        let compose = napcat::auto_compose_path(data_dir, id);
+        let config = merge_instance(&host.shared, section, id, &ports, compose);
         used_ids.insert(id.clone());
         out.push(PluginInstance {
             id: id.clone(),
@@ -273,59 +227,45 @@ pub fn resolve_instances_in(
         });
     }
 
-    // 2) legacy 快速路径：没有实例表但共享默认 enabled → 单实例 `qq`
-    //（有任何显式实例时跳过；默认人格的 `qq` 由下方自动建档兜底创建）
+    // 2) legacy 单实例快路径：没有实例表但平台启用 → 造一个默认实例。
     if sections.is_empty() && host.enabled {
-        let ports = allocate_ports_avoiding(&QqPorts::default(), DEFAULT_INSTANCE, &taken_ports);
-        reserve(&ports, &mut taken_ports);
-        let config = merge_instance(
-            &host.shared,
-            &QqInstanceSection::default(),
-            DEFAULT_INSTANCE,
-            default_persona,
-            &ports,
-            None,
-        );
+        let id = DEFAULT_INSTANCE.to_string();
+        let section = QqInstanceSection::default();
+        let persona = default_persona.to_string();
+        let ports = allocate_ports_avoiding(&QqPorts::default(), &id, &mut taken_ports);
+        let compose = napcat::auto_compose_path(data_dir, &id);
+        let config = merge_instance(&host.shared, &section, &id, &ports, compose);
+        used_ids.insert(id.clone());
         out.push(PluginInstance {
-            id: DEFAULT_INSTANCE.into(),
-            persona: default_persona.to_string(),
+            id,
+            persona,
             config,
             ports,
         });
     }
 
-    // 3) persona 门控自动创建（启用插件但无归属实例）。
-    // 前提：QQ 适配器全局启用（`[adapters.qq].enabled`）——否则不该有实例。
+    // 3) persona 门控自动建档：启用了插件但没有任何归属实例 → 按 persona 建。
     if !host.enabled {
         return out;
     }
     for persona in enabled_personas {
-        if out.iter().any(|i| &i.persona == persona) {
+        if out.iter().any(|instance| &instance.persona == persona) {
             continue;
         }
-        // 默认人格的自动实例沿用 legacy id `qq`：容器沿用共享默认（`napcat`）、
-        // 端口沿用 3131/3000/6099，且**不写回配置**——与"没有实例表"时的
-        // legacy 语义完全一致。否则一旦其他人格的实例被写回配置表，
-        // legacy 快速路径（sections 为空）不再命中，默认人格的实例会从
-        // `qq` 漂移为新实例（容器/端口全变）。
+        // 默认人格的自动实例沿用 legacy id（容器/端口与「没有实例表」时
+        // 完全一致）：否则一旦其他人格的实例被写回配置表，legacy 快速路径
+        // 不再命中，默认人格的实例会从默认 id 漂移（容器/端口全变）。
         let base = if persona == default_persona {
             DEFAULT_INSTANCE
         } else {
             persona.as_str()
         };
         let id = unique_id(base, &used_ids);
+        let section = QqInstanceSection::default();
+        let ports = allocate_ports_avoiding(&QqPorts::default(), &id, &mut taken_ports);
+        let compose = napcat::auto_compose_path(data_dir, &id);
+        let config = merge_instance(&host.shared, &section, &id, &ports, compose);
         used_ids.insert(id.clone());
-        let ports = allocate_ports_avoiding(&QqPorts::default(), &id, &taken_ports);
-        reserve(&ports, &mut taken_ports);
-        let compose = auto_compose_path(data_dir, &id);
-        let config = merge_instance(
-            &host.shared,
-            &QqInstanceSection::default(),
-            &id,
-            persona,
-            &ports,
-            compose,
-        );
         out.push(PluginInstance {
             id,
             persona: persona.clone(),
@@ -337,25 +277,17 @@ pub fn resolve_instances_in(
     out
 }
 
-/// 自动生成的 compose 路径（data_dir 已知时）。
-fn auto_compose_path(data_dir: Option<&Path>, id: &str) -> Option<String> {
-    data_dir.map(|dir| {
-        dir.join("napcat")
-            .join(id)
-            .join("docker-compose.yml")
-            .to_string_lossy()
-            .to_string()
-    })
-}
-
 fn unique_id(base: &str, used: &std::collections::HashSet<String>) -> String {
     if !used.contains(base) {
         return base.to_string();
     }
-    (2..100)
-        .map(|n| format!("{base}-{n}"))
-        .find(|candidate| !used.contains(candidate))
-        .unwrap_or_else(|| format!("{base}-x"))
+    for suffix in 2..100 {
+        let candidate = format!("{base}-{suffix}");
+        if !used.contains(&candidate) {
+            return candidate;
+        }
+    }
+    format!("{base}-{}", std::process::id())
 }
 
 #[cfg(test)]
@@ -485,7 +417,7 @@ mod tests {
             onebot_http: 3011,
             webui: 6111,
         };
-        let yaml = render_compose("alix-2", &ports);
+        let yaml = napcat::render_compose("alix-2", &ports);
         assert!(yaml.contains("container_name: echo-napcat-alix-2"));
         assert!(yaml.contains("\"6111:6099\""));
         assert!(yaml.contains("\"3011:3000\""));

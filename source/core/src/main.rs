@@ -15,6 +15,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod adapter_commands;
+mod adapter_deploy;
 mod adapter_manifests;
 mod adapter_tools;
 mod agent_supervisor;
@@ -26,7 +27,6 @@ mod management;
 mod node;
 mod plugins_runtime;
 mod port_cmd;
-mod qq_instances;
 mod security;
 
 use config::CoreConfig;
@@ -667,7 +667,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // `qq_instances`，属后续阶段）；平台配置本身已泛化到 `cfg.adapters`，
     // 新增平台无需改这里也能读到配置。
     let qq_host = cfg.adapters.get("qq").cloned().unwrap_or_default();
-    let qq_instances = qq_instances::resolve_instances_in(
+    let qq_instances = adapter_deploy::resolve_instances_in(
         &qq_host,
         &qq_host.instances,
         &qq_enabled_personas,
@@ -719,13 +719,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         struct InstancePatch {
             id: String,
             persona: String,
-            ports: qq_instances::QqPorts,
+            ports: adapter_deploy::QqPorts,
             /// persona 是否需要写回（已有显式 persona 的实例跳过该字段）。
             write_persona: bool,
         }
         let mut patches: Vec<InstancePatch> = Vec::new();
         for instance in &qq_instances {
-            if instance.id == qq_instances::DEFAULT_INSTANCE {
+            if instance.id == adapter_deploy::DEFAULT_INSTANCE {
                 continue; // legacy 实例沿用既定端口与默认归属，不写配置
             }
             let section = qq_host.instances.get(&instance.id);
@@ -1744,10 +1744,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let data_dir = qq_data_dir.clone();
         for (instance_id, persona_id, adapter) in &qq_adapters {
             if let Some(instance) = qq_instances.iter().find(|i| &i.id == instance_id) {
-                if instance.id != qq_instances::DEFAULT_INSTANCE {
-                    if let Err(error) =
-                        qq_instances::write_compose(&data_dir, &instance.id, &instance.ports)
-                    {
+                if instance.id != adapter_deploy::DEFAULT_INSTANCE {
+                    if let Err(error) = adapter_deploy::napcat::write_compose(
+                        &data_dir,
+                        &instance.id,
+                        &instance.ports,
+                    ) {
                         warn!(instance = %instance.id, %error, "compose write failed");
                     }
                 }
