@@ -1281,44 +1281,17 @@ impl Agent {
                     .and_then(|a| a.management().and_then(|m| m.cached_state()))
                     .map(|state| state["instance"].clone())
                     .unwrap_or_default();
-                let str_field = |key: &str| -> Option<String> {
-                    instance[key]
-                        .as_str()
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string)
-                };
                 let bind_address = instance["bind_address"].as_str().unwrap_or("").to_string();
                 let persona = instance["persona"].as_str().map(str::to_string);
-                let container = str_field("container");
-                let webui_url = str_field("webui_url");
-                let onebot_url = str_field("onebot_url");
                 // UI 描述符 / 会话标签（01a S2 访问器；InstanceContribution
                 // 原样透传。None = 未声明，线上字段本就 Option）。
                 let ui = handle.as_ref().and_then(|a| a.ui_descriptor());
                 let session_labels = handle.as_ref().and_then(|a| a.session_labels());
-                // 通用元数据（W2.2）：平台自有展示字段经 KV 下发。
-                let mut metadata = Vec::new();
-                if let Some(container) = &container {
-                    metadata.push(InstanceMetadataEntry {
-                        key: "container".into(),
-                        label: "容器".into(),
-                        value: container.clone(),
-                    });
-                }
-                if let Some(url) = &webui_url {
-                    metadata.push(InstanceMetadataEntry {
-                        key: "webui_url".into(),
-                        label: "WebUI".into(),
-                        value: url.clone(),
-                    });
-                }
-                if let Some(url) = &onebot_url {
-                    metadata.push(InstanceMetadataEntry {
-                        key: "onebot_url".into(),
-                        label: "OneBot API".into(),
-                        value: url.clone(),
-                    });
-                }
+                // **平台自有展示字段由插件自己描述**（UI 描述符里的字段绑定，
+                // Panel 的通用渲染器按 `bind` 取 `instance.*`）。Core 不再逐键
+                // 命名 `container` / `webui_url` / `onebot_url` 并配中文标签
+                // ——那是让框架持有某个平台的展示 schema（2026-10 去适配器化）。
+                let metadata: Vec<InstanceMetadataEntry> = Vec::new();
                 InstanceStatus {
                     name: info.name,
                     display_name: info.display_name,

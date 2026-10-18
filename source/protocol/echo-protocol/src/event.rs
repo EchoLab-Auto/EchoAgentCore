@@ -48,12 +48,18 @@ pub struct InstanceStatus {
     pub session_labels: Option<serde_json::Value>,
 }
 
-/// 插件实例展示型元数据条目（平台自有字段的通用承载；W2.2，2026-10）。
+/// 插件实例展示型元数据条目（通用 KV 承载）。
+///
+/// **当前恒为空**：平台自有的展示字段改由插件自己的 **UI 描述符**声明
+/// （字段绑定 `instance.*`，Panel 的通用渲染器按 `bind` 取值）——那是单一
+/// 来源，Core 不必再逐键命名「容器 / WebUI / OneBot API」再配中文标签
+/// （2026-10 去适配器化）。字段保留是为了不改线协议：将来若有「不适合进
+/// 描述符」的只读展示值，仍可走这里。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstanceMetadataEntry {
-    /// 稳定键（程序消费；如 `container` / `webui_url` / `onebot_url`）。
+    /// 稳定键（程序消费）。
     pub key: String,
-    /// 展示标签（UI 渲染；如「容器」「WebUI」）。
+    /// 展示标签（UI 渲染）。
     pub label: String,
     /// 展示值（字符串化）。
     pub value: String,
