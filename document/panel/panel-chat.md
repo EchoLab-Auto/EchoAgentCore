@@ -8,7 +8,7 @@ y: 780
 
 # Panel 会话视图
 
-> **定位**：会话（聊天）视图的完整交互契约：消息列表与角色渲染、历史快照与实时窗口的合并去重、消息渲染对象缓存、工具卡生命周期与工具行收尾、推理块落位与可见性、活动浮条、输入区（发送 / 图片 / 取消任务）、入口行按钮与弹出层、侧栏与多接入点。读者：维护 ChatView 及其组件的开发者；实现位置以 `web/src/` 相对路径标注。相关：[交互定义](./panel-interaction.md)、[布局与导航](./panel-layout.md)、[模态与覆盖层](./panel-modals.md)。
+> **定位**：会话（聊天）视图的完整交互契约：消息列表与角色渲染、历史快照与实时窗口的合并去重、消息渲染对象缓存、工具卡生命周期与工具行收尾、推理块落位与可见性、活动浮条、输入区（发送 / 图片 / 取消任务）、入口行按钮与弹出层、侧栏与多接入点。读者：维护 ChatView 及其组件的开发者；实现位置以 `web/src/` 相对路径标注。相关：[交互定义](./panel-interaction.md)、[电脑端布局](./panel-desktop-layout.md)、[模态与覆盖层](./panel-modals.md)。
 
 > **多接入点**：会话/人格身份是 `(core, id)`——同名会话（每个 core 都有 `local:tui::local_user`）与同名人格跨 core 可重复。会话视图内所有运行态（activities / branchTabs / 时间线缓存 / 忙碌点）一律按复合键（`keys.ts::sessionKey/teamKey`，`\u0000` 分隔，单接入点退化为裸 id）索引；会话列表与 Agent 菜单在跨 core 同名时显示 core 徽标消歧（`SessionSwitcher` / `AgentSwitcher`，见 [Panel 概览](./panel.md)「配置与运维」）。
 
@@ -25,7 +25,7 @@ y: 780
 - **行距**：滚动容器 `gap` 6px；消息气泡用 `chat-view__item--msg` 的 3px 边距补回呼吸（气泡间仍约 12px），工作行（推理块 / 工具行 / 子代理行）保持 6px 紧排且自身不再带外边距——一回合里推理与工具交替十几次，屏幕不被空白吃掉
 - **刷新首屏**：页面加载先还原磁盘缓存（`trunk-cache.ts`，挂载前 hydrate——`state.teamTimelines` 按 team 快照 + 条目级游标），引导请求带 `since_seq` 只拉缺口（无缓存/窗口滚出/游标超前时 Core 自动回退全量）；缓存 10s 周期检查（写盘放 `requestIdleCallback`，不挤占渲染帧）+ 页面隐藏/卸载时立即落盘（配额满静默放弃）；**还原时就格式升级**（旧缓存里 `<subagent_event>` 用户气泡 → 子代理委派行，避免「刷新后仍是旧样式」）；**重连不清空时间线**——保留缓存并按 `since_seq` 增量补齐，响应 `full` 标志时整体替换。配套 Core 侧对发往前端的快照做**推理瘦身**：仅最近 40 条推理保留全文，更早的截断到 240 字 + 标注（持久化不改，`timeline.rs::elide_reasoning_for_wire`）
 - **会话过滤**：「全部消息」（global）显示当前 Agent 全部会话的消息；具体会话仅显示该会话；从全局视图发送会路由到本地会话 `local:tui::local_user`（`App.vue` 的 `send`：全局视图回落到默认本地会话）
-- **空列表占位与加载三态**：消息列为空时区分——未连接（居中 spinner +「正在连接 Core…」）/ 已连接但本次连接尚未收到时间线（「正在加载时间线…」）/ 收到过快照后的真空白（全局视图与具体会话两种文案，`ChatView.vue` 的 `emptyText` / `timelineLoading` computed）。判定标志 `state.timelineArrivedOnce`（`onopen` 重置；见 [布局与导航](./panel-layout.md)§四）
+- **空列表占位与加载三态**：消息列为空时区分——未连接（居中 spinner +「正在连接 Core…」）/ 已连接但本次连接尚未收到时间线（「正在加载时间线…」）/ 收到过快照后的真空白（全局视图与具体会话两种文案，`ChatView.vue` 的 `emptyText` / `timelineLoading` computed）。判定标志 `state.timelineArrivedOnce`（`onopen` 重置；见 [电脑端布局](./panel-desktop-layout.md)§四）
 - **图片**：历史消息中的图片渲染在气泡上方，最大 260×200px（`ChatView.vue` 的 `imagesOf` 与 `.chat-view__images` 模板）；Core 侧 `/media/<id>` 引用直接 `<img loading=lazy decoding=async>` 渲染（同源、强缓存），遗留 data URI 仍兼容；正文经 `chat-adapter.ts::compactForDisplay` 压过——附带的 data URI → `[图片#n]`、其余长内联 base64 → `[图片数据已省略]`，与 Core 侧占位符一致，避免整屏 base64
 - **复制**：消息气泡有复制按钮（库内置，悬停出现）；工具行与工具输出**无**复制按钮；无任何右键菜单
 - **Markdown**：仅 Agent 消息渲染 Markdown
@@ -180,7 +180,7 @@ graph LR
 
 | 按钮 | 行为 |
 |---|---|
-| Agent 切换 | 见 [布局与导航](./panel-layout.md)§六 |
+| Agent 切换 | 见[电脑端布局](./panel-desktop-layout.md)「Agent 切换器」 |
 | 配置 | 打开 AgentConfigModal（当前 Agent 的能力配置）；无激活 Agent 时回退 teams[0]（`ChatView.vue` 的 `configTeam` computed） |
 | 上下文 | 打开 ContextView 弹层（**当前会话**的上下文明细；请求带 `session_id`，切换会话自动重拉、忽略他属陈旧快照；几何与「配置」弹层一致，点遮罩关闭，无返回按钮）。**面板默认展开全部块**（修正此前仅 base 展开、用户「看不到内容」的问题）；每块头部 = 种类徽标 + 名称 + token 数 + **占当前上下文总量的百分比**（<1% 显示 `<1%`；修正此前「相对最大块」口径的误读——小技能块显示 1%、大块显示 100%）；种类徽标覆盖 Core 全部 kind（含 `workspace`/`system-skill`，缺项会裸显英文）；名称自动剥掉与徽标重复的前缀（「常驻技能 · xx」→ 徽标「常驻技能」+ 名称「xx」）；**入口受 `echo-agent.management.panel` 插件对当前 Agent 门控**（`ChatView.vue` 的 `contextAvailable` computed） |
 | 清单 | **仅当 `checklist` 工具对当前 persona 可用时显示**（插件维度已移除，只受工具级白/黑名单与内置工具集包门控，见 [插件化设计](../plugins/core-plugins.md)）；弹出清单卡（徽标 = 清单数）：内嵌 SidebarCard 折叠卡（默认展开、计数徽标），各清单进度条 + `PanelIcon check-square / square` 项（完成项加粗，tone 分别为 ok / muted），只读；工具禁用后入口、浮层与徽标立即移除并清空本地清单状态；空态「（暂无清单）」 |

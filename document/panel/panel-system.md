@@ -8,7 +8,7 @@ y: 780
 
 # Panel 系统交互
 
-> **定位**：Panel 的系统级交互：Toast 通知、键盘清单、设计边界（协议已定义但 UI 未接线的命令）与全部关键常量速查表。读者：Panel 前端开发者与排障者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)、[布局与导航](./panel-layout.md)。
+> **定位**：Panel 的系统级交互：Toast 通知、键盘清单、设计边界（协议已定义但 UI 未接线的命令）与全部关键常量速查表。读者：Panel 前端开发者与排障者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)、[电脑端布局](./panel-desktop-layout.md)。
 
 ## Toast 系统
 

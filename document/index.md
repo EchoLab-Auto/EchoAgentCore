@@ -57,13 +57,13 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 **前端层 —— Panel 与视图交互契约**
 
 - [panel.md](./panel/panel.md) — Panel 前端：仓库布局、中继模型、状态管理与数据流
-- [panel-interaction.md](./panel/panel-interaction.md) — 交互定义：核心原则与交互模块树（前端总入口）
-- [panel-layout.md](./panel/panel-layout.md) — 布局与导航：视图导航、应用外壳、连接生命周期、侧边栏
+- [panel-interaction.md](./panel/panel-interaction.md) — **交互定义**（设备无关）：核心原则、视图层级、导航契约、功能模块清单（前端总入口）
+- [panel-desktop-layout.md](./panel/panel-desktop-layout.md) — **电脑端布局**（≥768px）：外壳几何、层叠秩序、双侧边栏、卡片、连接生命周期
 - [panel-chat.md](./panel/panel-chat.md) — 会话视图：消息列表、工具卡、推理块与输入区
 - [panel-modals.md](./panel/panel-modals.md) — 模态与覆盖层：模态清单、分支/上下文弹层、Agent 配置弹层
 - [panel-settings.md](./panel/panel-settings.md) — 设置视图：API、资源工作区、技能安装、Core 连接与联邦、日志
 - [panel-instance-tasks.md](./panel/panel-instance-tasks.md) — 实例管理·任务·Shell：描述符驱动的插件实例弹层、任务弹层、HTTP 通道
-- [panel-mobile.md](./panel/panel-mobile.md) — 移动端适配（竖屏）：断点、卡片抽屉、软键盘适配
+- [panel-mobile-layout.md](./panel/panel-mobile-layout.md) — **移动端布局**（<768px）：顶栏与视图菜单、入口行横滚提示、卡片 Sheet、软键盘与安全区
 - [panel-system.md](./panel/panel-system.md) — 系统交互：Toast、键盘清单、设计边界与关键常量
 - [panel-icons.md](./panel/panel-icons.md) — 图标体系：载体分工、尺寸线宽档位、语义色令牌、防回归守卫
 
@@ -125,12 +125,12 @@ graph LR
   Design --> Perf[Panel 性能审计|/design/panel-performance-audit.md]
   AdapterPlugin --> Gen[插件实例泛化（设计系列）|/design/adapter-genericization/index.md]
   Panel --> Inter[Panel 交互定义|/panel/panel-interaction.md]
-  Inter --> Layout[布局与导航|/panel/panel-layout.md]
+  Inter --> Desk[电脑端布局|/panel/panel-desktop-layout.md]
   Inter --> Chat[会话视图|/panel/panel-chat.md]
   Inter --> Modals[模态与覆盖层|/panel/panel-modals.md]
   Inter --> Set[设置视图|/panel/panel-settings.md]
   Inter --> Tasks[实例管理·任务·Shell|/panel/panel-instance-tasks.md]
-  Inter --> Mobile[移动端适配|/panel/panel-mobile.md]
+  Inter --> Mobile[移动端布局|/panel/panel-mobile-layout.md]
   Inter --> Sys[系统交互|/panel/panel-system.md]
   Inter --> Icons[图标体系|/panel/panel-icons.md]
   Dev --> Test[测试策略|/dev/dev-testing.md]

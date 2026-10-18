@@ -10,7 +10,7 @@ link: ["panel-interaction | 交互定义 | r>l"]
 # Panel 前端
 
 > **定位**：Panel（EchoAgentPanel）是 EchoAgent 的 Web 管理面板——Rust 后端（axum）托管 Vue 3 + TypeScript 前端（`@echolab-auto/ui-frame` 新拟态组件库），并把浏览器 WebSocket 中继到 Core 的 management WS。默认 `:8080` 提供服务；Core 连不上时页面照常加载并显示「连接中…」（指数退避自动重连）。读者：需要了解 Panel 前后端结构、中继模型（含事件流连续性契约与丢帧诊断）、多窗口状态归属、配置运维的开发者。
-> 交互与视图契约见 [交互定义](./panel-interaction.md) 及其 7 篇子文档（见「延伸阅读」）；布局与导航、连接生命周期见 [布局与导航](./panel-layout.md)。
+> 交互与视图契约见 [交互定义](./panel-interaction.md) 及其 8 篇子文档（见「延伸阅读」）；外壳几何与连接生命周期见[电脑端布局](./panel-desktop-layout.md)，窄屏形态见[移动端布局](./panel-mobile-layout.md)。
 >
 > 📌 **协议名**：Core 与 Panel 已统一用 `Instance*`（`StartInstance` / `RequestInstanceStatus` /
 > 事件 `InstanceList` / `InstanceState` / `InstanceOpResult` / `InstanceStateChanged`）。
@@ -59,7 +59,7 @@ EchoAgentPanel/
 每个浏览器 WS 连接同时中继到**全部**接入点 Core 的 management WS（`[[cores]]`，单接入点 = 一条）；**单接入点时帧按原文转发，不解析、不记录负载**；多接入点时事件按来源节点加壳 `{core, frame}` 信封、命令按信封路由到目标节点（仅信封层，不触碰负载）——协议细节与日志、命令队列完全隔离。协议演进只需同步 core 的 `echo-protocol` 与 `web/src/protocol.ts`，后端零改动。中继对上下行均做 30s Ping 心跳并透传 Ping/Pong；**半死收割**：一侧超过 90s（3 个心跳周期）无任何帧即断开整条链路，设备休眠留下的僵尸连接不会悬挂累积；转发另有 **10s 写超时**（`SEND_TIMEOUT`）——对端写阻塞超时即断链，冻结标签页不会挂住中继、Core 发送缓冲不再无界积压。
 
 - 中继仍无状态（`echo-web-server/src/proxy.rs`，含接入点聚合、信封路由与令牌校验），可独立测试（`tests/proxy.rs` 用假 Core 验证双向帧透传；`tests/relay-diag.rs` 用假 Core + 真中继 + 真浏览器验证诊断只观察、不改转发）
-- 多标签页 = 多条 Core 连接（Core 的 management 支持多 Panel，每条连接独立订阅通道，互不抢事件）；窗口之间如何各看各的见本文「多窗口语义」与 [布局与导航](./panel-layout.md)「多窗口语义」
+- 多标签页 = 多条 Core 连接（Core 的 management 支持多 Panel，每条连接独立订阅通道，互不抢事件）；窗口之间如何各看各的见本文「多窗口语义」与[电脑端布局](./panel-desktop-layout.md)「多窗口语义」
 
 ### 事件流连续性与丢帧诊断
 
@@ -136,7 +136,7 @@ EchoAgentPanel/
 3. 跨窗口的 localStorage 写入应当**合并**而非整体覆盖，避免互相清除对方数据。
 4. 多窗口类问题的排障入口：`window.__echoPanelSessionLog`（会话变更 + reason + 调用栈）与 `window.__echoPanelWorkspaceLog`（工作区广播决策：active / current / mine / decision / next），各留最近 20 条，纯内存、无 IO。
 
-视图渲染与交互细节见 [会话视图](./panel-chat.md)、[布局与导航](./panel-layout.md)（§3.6 键级清单、§3.7 跟随判据与缓存共存）。
+视图渲染与交互细节见 [会话视图](./panel-chat.md)、[电脑端布局](./panel-desktop-layout.md)（「持久化的界面状态」、§3.7 跟随判据与缓存共存）。
 
 ## 运维与开发
 
@@ -164,5 +164,5 @@ cd web && npm run dev           # 前端热更新（/ws 代理到 :8080）
 
 ## 延伸阅读
 
-- 前端文档群：[交互定义](./panel-interaction.md)（总入口）→ [布局与导航](./panel-layout.md)、[会话视图](./panel-chat.md)、[模态与覆盖层](./panel-modals.md)、[设置视图](./panel-settings.md)、[实例管理·任务·Shell](./panel-instance-tasks.md)、[系统交互](./panel-system.md)、[图标体系](./panel-icons.md)
+- 前端文档群：[交互定义](./panel-interaction.md)（总入口）→ [电脑端布局](./panel-desktop-layout.md)、[移动端布局](./panel-mobile-layout.md)、[会话视图](./panel-chat.md)、[模态与覆盖层](./panel-modals.md)、[设置视图](./panel-settings.md)、[实例管理·任务·Shell](./panel-instance-tasks.md)、[系统交互](./panel-system.md)、[图标体系](./panel-icons.md)
 - 相关：[协议与数据流](../protocol/protocol.md)（WS 帧格式、命令与事件）、[部署与自更新](../ops/ops-deploy.md)、[联邦（多机）](../federation/federation.md)
