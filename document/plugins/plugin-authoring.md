@@ -114,6 +114,22 @@ mode = "fast"
 
 改完 `plugins.toml` **重启 Core 生效**（热替换尚未落地，暂不免重启）。
 
+## 五类贡献（当前只接通两类）
+
+`Contribution` 是插件向宿主申报能力的唯一入口，枚举有 **5 个变体**——但宿主当前只消费其中
+**2 个**，写错类型会被静默忽略（不报错、不崩溃，就是没有效果）：
+
+| 变体 | 宿主是否消费 | 实际落点 |
+| --- | --- | --- |
+| `Contribution::Tool` | ✅ 已接线 | `echo-plugin-host::tool` → `RemoteTool` 注册进该人格的 `ToolRegistry`（经 `Invoke("<plugin>:<tool>")` 转发） |
+| `Contribution::PluginInstance` | ✅ 已接线 | `echo-plugin-host::bootstrap` 汇总 → `InstanceRegistry`（平台插件的正常入口，见下节） |
+| `Contribution::Skill` | ❌ 未接线 | SDK 侧只取 `skill.name`（`serve.rs` 的日志用途）；技能实际走 `skills.dir` 插件的目录扫描，不从插件贡献取 |
+| `Contribution::Service` | ❌ 未接线 | SDK 侧只取 `service.key` 用于日志 |
+| `Contribution::Events` | ❌ 未接线 | 宿主无处理分支——**要做事件订阅，目前只能注册为工具或在实例插件内向宿主回呼** |
+
+所以「插件能贡献什么」的现实答案是：**工具**，以及（平台类插件的）**插件实例**。写 `Service` /
+`Events` 不会生效——协议层留了位置，宿主侧尚未实现，别指望它。
+
 ## 协议约定（宿主 ↔ 插件）
 
 同一组消息覆盖全部运输层；插件作者只需理解这些语义（类型定义见 `echo-plugin-api`）：

@@ -249,6 +249,8 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 
 ## 六、改造前基线
 
+> 下表是 **2026-09 改造启动前**的冻结快照，只用于对照「改造前后量级」，不要当现状读：`adapter_qq` 包与 `echo-adapter` crate 已于 2026-10 删除（现为独立插件仓库），技能数已增至 13，crate 数与测试数也随拆分变化。现状以 [架构总览](../overview/architecture.md) 为准。
+
 | 项 | 数值 |
 |---|---|
 | crate 数 | 17（单向无环，已核） |
