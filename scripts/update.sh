@@ -337,7 +337,27 @@ PHASE=installing
 # reinstall 补齐。
 BUILTIN_SKILLS_DIR="$DATA_HOME/echo-agent-core/skills-builtin"
 if [[ -d "$BUILTIN_SKILLS_DIR" && -d "$SOURCE_DIR/skills" ]]; then
-    cp -a "$SOURCE_DIR/skills/." "$BUILTIN_SKILLS_DIR/"
+    # 逐技能目录同步，且**绝不带 .git**（2026-10-18 实况：一次 git 安装的
+    # 技能让自更新整体失败）：
+    # ① `git clone` 出来的 `.git/objects/pack/*` 是 0400 只读位，`cp -a`
+    #    第二次覆盖同一路径时打不开写 → `Permission denied` → 脚本 exit 1，
+    #    二进制已构建却没装上，更新半途而废；
+    # ② 运行期只用 SKILL.md；git 历史属于 `skills/`（用户层），更新/回滚
+    #    都在那一侧做，出厂层留一份拷贝没有意义。
+    # 顺带只同步带 SKILL.md 的目录：`.sources.json` 等来源记录不该进只读层。
+    for _skill_src in "$SOURCE_DIR"/skills/*/; do
+        [[ -f "$_skill_src/SKILL.md" ]] || continue
+        _skill_name=$(basename -- "$_skill_src")
+        _skill_dst="$BUILTIN_SKILLS_DIR/$_skill_name"
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a --delete --exclude='/.git/' "$_skill_src" "$_skill_dst/"
+        else
+            rm -rf "$_skill_dst"
+            cp -a "$_skill_src" "$_skill_dst"
+        fi
+        rm -rf "$_skill_dst/.git"
+    done
+    unset _skill_src _skill_name _skill_dst
 fi
 
 temporary=$(mktemp "${BINARY}.new.XXXXXX")
