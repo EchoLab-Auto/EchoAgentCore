@@ -19,7 +19,7 @@ EchoAgentCore 的运行期配置写入通过共享 `ConfigStore` 原子化落盘
 |---|---|---|
 | Agent 配置（API key、模型、profiles） | `ConfigStore::patch()` 替换 `[agent]` | `[agent]` |
 | 全局系统提示词 | `persist_system_prompt_plugin()` → `ConfigStore::patch()` | `[plugins.system_prompt].text` |
-| QQ 门控配置（gate mode、白名单、黑名单） | `ConfigStore::patch()` 替换 `[adapters.qq]` | `[adapters.qq.gate]` + `[adapters.qq.filter]` |
+| 适配器门控配置（gate mode、白名单、黑名单） | `ConfigStore::patch()` 替换 `[adapters.<platform>]` | `[adapters.<platform>.gate]` + `[adapters.<platform>.filter]` |
 
 `ConfigStore` 内部使用 `std::sync::Mutex` 序列化所有写入，读写一次全文件，
 各调用者（各 persona 的 Agent 与 QqAdapter）共享同一实例，**杜绝并发写互相覆盖**。
@@ -68,9 +68,9 @@ Agent 始终使用单一全局 Trunk（每个 persona 独立一份事件日志�
 ```text
 Core 启动时 --config 指定的文件（如 config/echo-agent-core.local.toml）
 
-ConfigStore 由 main.rs 创建一次，分发给各 persona 的 Agent 与 QqAdapter（都指向同一 core.toml 的 `[agent]` / `[adapters.qq]` section）：
+ConfigStore 由 main.rs 创建一次，分发给各 persona 的 Agent 与适配器宿主视图（都指向同一 core.toml 的 `[agent]` / `[adapters.<platform>]` section）：
   let config_store = echo_adapter::ConfigStore::new(args.config_path());
-  qq_adapter.set_config_store(config_store.clone());
+  // 适配器实例的 persona/端口写回经同一 ConfigStore（`[adapters.<platform>.instances.<id>]`）
   // make_agent 内：每个 persona 共享同一个 config_store（agents_config_store.clone()），
   // 会话文件路径独立设置（JSON，见下）。
 ```

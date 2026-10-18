@@ -37,7 +37,7 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Teamless multi-agent & QQ instances** (echo-agent + core): session
   commands reject a missing `team_id` (no default agent), the process-level
   `EventSink` fans in every persona's events without double delivery, and
-  `source/core/src/qq_instances.rs` covers instance resolution — legacy ports
+  `source/core/src/adapter_deploy/` covers instance resolution — legacy ports
   (3131/3000/6099) + shared container kept, auto-provisioning per QQ-enabled
   persona, distinct ports/containers per instance, compose rendering.
 - **LLM providers** (OpenAI / Anthropic): request body builders (tool-call

@@ -32,7 +32,7 @@ link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "mul
 2. 构建 LLM provider 工厂，注册 `ctx.llm`
 3. 装配插件宿主：`apply_disabled`（禁用插件只注册不挂载）先于挂载执行
 4. 注册内置工具、技能目录与各包（`packages/`），创建多 agent 监督器
-5. 启动 QQ 适配器（受 `[adapters.qq].enabled` 与插件状态双重门控）与 management WS
+5. 启动适配器插件（受 `[adapters.<platform>].enabled` 与插件状态双重门控）与 management WS
 6. 各人格启动循环回填按人格的循环注入（`loop.single` / `loop.parallel`）
 
 ## 服务定位与事件
