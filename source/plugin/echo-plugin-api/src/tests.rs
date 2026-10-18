@@ -255,6 +255,36 @@ fn instance_contribution_roundtrip_and_capabilities() {
     assert!(!minimal.at_me && minimal.images.is_empty());
 }
 
+/// wire tag 冻结：`Contribution::PluginInstance` 在线上必须仍是 `adapter`。
+///
+/// 宿主与插件是两个可独立升级的进程；改这个字符串会同时打断「新 Core +
+/// 已部署旧插件」与「旧 Core + 新插件」两个方向。Rust 侧改名（`Adapter` →
+/// `PluginInstance`）是内部可读性，线上一字节不动。
+#[test]
+fn plugin_instance_contribution_wire_tag_is_frozen() {
+    let value = serde_json::to_value(Contribution::PluginInstance(InstanceContribution {
+        name: "qq".into(),
+        platform: "qq".into(),
+        display_name: "QQ".into(),
+        capabilities: InstanceCapabilities::default(),
+        config_schema: None,
+        ui: None,
+        session_labels: None,
+        tools: Vec::new(),
+    }))
+    .unwrap();
+    assert_eq!(value["kind"], serde_json::json!("adapter"), "{value}");
+    // 别名也接受（未来换 tag 的过渡窗口）。
+    let back: Contribution = serde_json::from_value(serde_json::json!({
+        "kind": "plugin_instance",
+        "name": "qq",
+        "platform": "qq",
+        "display_name": "QQ"
+    }))
+    .unwrap();
+    assert!(matches!(back, Contribution::PluginInstance(_)));
+}
+
 #[test]
 fn contribution_shapes() {
     let tool = Contribution::Tool(ToolContribution {

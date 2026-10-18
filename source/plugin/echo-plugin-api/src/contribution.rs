@@ -12,9 +12,15 @@ pub enum Contribution {
     Service(ServiceContribution),
     Events(EventContribution),
     /// 插件实例贡献（P1，2026-10 实例插件化）：平台插件作为插件交付。
-    /// 宿主把 `RemoteInstance`（`echo_defs::plugin_instance::PluginInstance` 的远程实现）注册进
-    /// `InstanceRegistry`；动作经 `Invoke("<name>:<op>")`，入站经
+    /// 宿主把 `RemoteInstance`（`echo_defs::plugin_instance::PluginInstance` 的远程实现）
+    /// 注册进 `InstanceRegistry`；动作经 `Invoke("<name>:<op>")`，入站经
     /// `HostCall` → 宿主服务 `core_api`（见 `document/design/instance-plugin.md`）。
+    ///
+    /// **wire tag 保持 `adapter`**：这是宿主与插件之间唯一的契约字符串，
+    /// 两侧独立升级（新 Core + 已部署旧插件、旧 Core + 新插件）都依赖它不变。
+    /// Rust 侧名字去掉 adapter 是内部可读性，线上一字节不动；`plugin_instance`
+    /// 作为别名接受，未来若要换 tag 有过渡窗口。
+    #[serde(rename = "adapter", alias = "plugin_instance")]
     PluginInstance(InstanceContribution),
 }
 
