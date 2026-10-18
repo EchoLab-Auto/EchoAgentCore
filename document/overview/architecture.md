@@ -146,7 +146,7 @@ graph BT
 
 ### 结构化输入标记
 
-`<qq_message_hook>`/`<backend_message_hook>`/`<timer_event>` 三个结构化输入标记的单一事实来源是 echo-agent 的 `input_marker.rs`：构造（`wrap_hook`/`wrap_timer`）、判定（`STRUCTURED_INPUT_MARKERS` 常量表）、解析（`structured_message_sequence`，限制在标记开头、防普通文本误读）集中一处，改格式只改一处。演进方向：来源判定从 content 字符串改为 `MessageReceived` 的结构化 origin 字段（跨仓库 wire 变更）。
+结构化输入标记的单一事实来源是 echo-agent 的 `input_marker.rs`：构造（`wrap_hook`/`wrap_timer`）、判定、解析（`structured_message_sequence`，限制在标记开头、防普通文本误读）集中一处，改格式只改一处。**判定不依赖平台名**——`platform_hook_of` 按位置匹配任意 `<X_message_hook>`（`X` 限字母/数字/`_`/`-`）并返回平台名；`FIXED_INPUT_MARKERS` 只列宿主内部的两类（`<backend_message_hook>` / `<timer_event>`，并优先排除，避免被误判成平台 `backend`）。新增平台因此不需要改这个模块。演进方向：来源判定从 content 字符串改为 `MessageReceived` 的结构化 origin 字段（跨仓库 wire 变更）。
 
 ## 扩展点地图
 

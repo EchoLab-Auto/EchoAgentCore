@@ -41,7 +41,7 @@ link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "mul
 - `EventBus`：类型化事件分发（Observe / Waterfall / Parallel / Serial）；waterfall 监听器可改写或拒绝（如 `AgentPreStep`）
 - `Disposer` / `ScopedRegistry`：一切注册均为**可逆副作用**，卸载时依序回滚
 - `EventSink`：**进程级事件汇聚点**——所有人格事件直投于此，Panel 单连接即可看到全部活动；进程级职责由核心服务代理（非人格）承担（无"主智能体"）
-- 结构化输入标记（`<qq_message_hook>` / `<backend_message_hook>` / `<timer_event>`）的单一事实来源是 `input_marker.rs`：构造、判定、解析集中一处
+- 结构化输入标记（平台 `<X_message_hook>` / `<backend_message_hook>` / `<timer_event>`）的单一事实来源是 `input_marker.rs`：构造、判定、解析集中一处；平台名由标记本身带出，框架侧不列具体平台
 
 ## 插件宿主
 

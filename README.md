@@ -46,7 +46,7 @@ EchoAgentCore/
 │   │   ├── echo-plugin-host/     # 插件宿主：Transport（inproc/stdio）+ 监督 + 一致性套件
 │   │   └── echo-plugin-example/  # 试点插件（websearch + calculator），SDK 用法示例
 │   ├── backend/
-│   │   ├── echo-adapter/         # 适配器抽象 + 过滤管道 + ConfigStore
+│   │   ├── echo-adapter/         # 适配器宿主胶水：注册表 + ConfigStore
 │   │   ├── echo-agent/           # Agent 框架（packages/ 第一层按插件分包；packages/tool/ 为工具注册表机制）
 │   │   └── echo-test-utils/      # 共享测试 mock（仅 dev-dependency）
 │   # 注：QQ 适配器（含 OneBot 协议类型与反向 WS 服务器）已迁出为独立进程
