@@ -27,7 +27,7 @@ impl Tool for AdapterStatusTool {
         "adapter_status"
     }
     fn description(&self) -> &str {
-        "Check the status of all platform adapters (QQ etc.). Returns which adapters are running, connected, or stopped."
+        "Check the status of all platform adapters. Returns which adapters are running, connected, or stopped."
     }
     fn parameters(&self) -> Value {
         json!({"type": "object", "properties": {}})
@@ -36,7 +36,7 @@ impl Tool for AdapterStatusTool {
         let infos = self.adapters.list_info();
         if infos.is_empty() {
             return Ok(
-                "No adapters configured. Use [adapters.qq] enabled = true in config to enable QQ."
+                "No adapters configured. Enable one under [adapters.<platform>] in the config."
                     .into(),
             );
         }
@@ -77,7 +77,7 @@ impl Tool for AdapterStartTool {
         "adapter_start"
     }
     fn description(&self) -> &str {
-        "Start a platform adapter (e.g. QQ). Use 'all' to start all configured adapters."
+        "Start a platform adapter. Use 'all' to start all configured adapters."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -134,7 +134,7 @@ impl Tool for AdapterStopTool {
         "adapter_stop"
     }
     fn description(&self) -> &str {
-        "Stop a running platform adapter (e.g. QQ). Use 'all' to stop all running adapters."
+        "Stop a running platform adapter. Use 'all' to stop all running adapters."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -186,13 +186,13 @@ impl Tool for AdapterRestartTool {
         json!({
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Adapter name, e.g. 'qq'"}
+                "name": {"type": "string", "description": "Adapter instance name (omit when only one adapter exists)"}
             },
             "required": ["name"]
         })
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        let name = args["name"].as_str().unwrap_or("qq").to_lowercase();
+        let name = resolve_adapter_name(&self.adapters, &args)?;
         match self.adapters.get(&name) {
             Some(adapter) => {
                 // Stop then start.
@@ -206,6 +206,29 @@ impl Tool for AdapterRestartTool {
             }
             None => Err(ToolError::Execution(format!("Adapter '{name}' not found."))),
         }
+    }
+}
+
+/// Resolve the target adapter name for a tool call.
+///
+/// `name` 参数缺省时**不猜平台名**：只有一个适配器就用它，多个则报错列出
+/// 可选项（此前缺省写死 `"qq"`，等于假设部署里一定有 QQ）。
+fn resolve_adapter_name(adapters: &AdapterRegistry, args: &Value) -> Result<String, ToolError> {
+    if let Some(name) = args["name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(name.to_lowercase());
+    }
+    let names = adapters.names();
+    match names.len() {
+        1 => Ok(names[0].to_lowercase()),
+        0 => Err(ToolError::Execution("No adapters configured.".to_string())),
+        _ => Err(ToolError::Execution(format!(
+            "`name` is required when multiple adapters exist (available: {}).",
+            names.join(", ")
+        ))),
     }
 }
 

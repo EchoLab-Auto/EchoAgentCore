@@ -15,14 +15,20 @@ use crate::event::BackendEvent;
 use crate::llm::{ChatMessage, ChatRequest};
 use crate::session::Session;
 
-/// 按内容标记（而非会话平台）判定输入边界：QQ 会话也可能收到后台 / TUI
-/// 输入（无 hook），那类输入必须在后台作答、绝不推送到 QQ。
+/// 按内容标记（而非会话平台）判定输入边界：平台会话也可能收到后台 / TUI
+/// 输入（无 hook），那类输入必须在后台作答、绝不推送到平台。
+///
+/// **框架不认识任何平台名**：平台由标记本身（`<X_message_hook>`）带出来，
+/// 「是否平台会话」用 [`SessionKey::is_local`] 判断（`local` 是宿主自己的
+/// 平台标识）。
 pub(super) fn input_boundary(session: &Session, content: &str) -> Option<BoundaryKind> {
-    if content.contains("<qq_message_hook>") {
-        Some(BoundaryKind::QqHook)
+    if let Some(platform) = crate::input_marker::platform_hook_of(content) {
+        Some(BoundaryKind::PlatformHook {
+            platform: platform.to_string(),
+        })
     } else if content.contains(crate::input_marker::TIMER_EVENT_OPEN) {
         Some(BoundaryKind::Timer)
-    } else if session.session_key.platform.eq_ignore_ascii_case("qq") {
+    } else if !session.session_key.is_local() {
         Some(BoundaryKind::BackendInput)
     } else {
         None

@@ -785,8 +785,8 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
         "backend input boundary missing: {prompt}"
     );
     assert!(
-        prompt.contains("Do NOT call send_private_msg"),
-        "backend input must forbid QQ sends: {prompt}"
+        prompt.contains("Do NOT call any platform send tool"),
+        "backend input must forbid platform sends: {prompt}"
     );
     assert!(
         !prompt.contains("MUST be answered exactly once"),
@@ -827,16 +827,16 @@ async fn qq_hook_input_gets_transport_boundary_prompt() {
 
     let prompt = provider.last_system_prompt().await;
     assert!(
-        prompt.contains("# QQ transport boundary"),
-        "QQ hook must get the transport boundary: {prompt}"
+        prompt.contains("# Platform message boundary (qq)"),
+        "平台 hook 必须注入平台边界块（平台名来自标记）: {prompt}"
     );
     assert!(
-        prompt.contains("Answer every <qq_message_hook> exactly once"),
-        "QQ hook must guide a send-tool reply: {prompt}"
+        prompt.contains("Answer every platform hook exactly once"),
+        "平台 hook 必须引导走发送工具: {prompt}"
     );
     assert!(
         prompt.contains("never send twice"),
-        "QQ hook must forbid double sends: {prompt}"
+        "平台 hook 必须禁止重复发送: {prompt}"
     );
 }
 

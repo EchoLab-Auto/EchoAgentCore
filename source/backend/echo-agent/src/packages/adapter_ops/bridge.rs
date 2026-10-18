@@ -12,9 +12,9 @@ use echo_adapter::types::{ChannelType, IncomingMessage};
 
 use crate::agent::Agent;
 use crate::event::BackendEvent;
-use crate::session::{SessionKey, DEFAULT_QQ_INSTANCE};
+use crate::session::SessionKey;
 
-const QQ_WAIT_REPLY_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
+const WAIT_REPLY_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Wraps an `Arc<Agent>` behind the adapter-facing inbound hook.
 pub struct AgentMessageHook {
@@ -34,7 +34,9 @@ impl AgentMessageHook {
     pub async fn on_incoming_message(&self, msg: IncomingMessage) -> Result<(), String> {
         let agent = &self.agent;
         // 多实例维度：适配器名即 QQ 实例名（非 "qq" 时进会话键）。
-        let account = (msg.adapter_name != DEFAULT_QQ_INSTANCE).then(|| msg.adapter_name.clone());
+        // 实例名 == 平台名 = 默认实例，不写 account 维度（多实例才需要区分）。
+        let account = (!msg.adapter_name.eq_ignore_ascii_case(&msg.platform))
+            .then(|| msg.adapter_name.clone());
         let key = SessionKey {
             platform: msg.platform.clone(),
             scope: if msg.channel.is_group() {
@@ -119,7 +121,7 @@ impl AgentMessageHook {
                 message_sequence,
                 cancel_all,
                 cancelled,
-                "QQ cancellation command handled"
+                "platform cancellation command handled"
             );
             let reply = if cancelled > 0 {
                 if cancel_all && cancelled > 1 {
@@ -179,7 +181,7 @@ impl AgentMessageHook {
                 &hook_input,
                 message_sequence,
                 group_id,
-                QQ_WAIT_REPLY_AFTER,
+                WAIT_REPLY_AFTER,
             )
             .await;
         Ok(())
@@ -682,7 +684,7 @@ mod tests {
 
     #[tokio::test]
     async fn contextual_wait_reply_is_generated_once_and_suppressed_when_obsolete() {
-        assert_eq!(QQ_WAIT_REPLY_AFTER, std::time::Duration::from_secs(20));
+        assert_eq!(WAIT_REPLY_AFTER, std::time::Duration::from_secs(20));
         let model_calls = Arc::new(AtomicUsize::new(0));
         let sent_contents = Arc::new(std::sync::Mutex::new(Vec::new()));
         let provider = Arc::new(WaitReplyProvider {

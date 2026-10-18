@@ -4481,12 +4481,12 @@ async fn single_track_loop_injects_input_boundary_blocks() {
     assert_eq!(requests.len(), 3, "三条输入都经 echo-loop 各请求一次");
     let system = |i: usize| requests[i].messages[0].content.clone();
     assert!(
-        !system(0).contains("# QQ transport boundary"),
-        "普通输入不注入 QQ 边界"
+        !system(0).contains("# Platform message boundary"),
+        "普通本地输入不注入平台边界"
     );
     assert!(
-        system(1).contains("# QQ transport boundary"),
-        "QQ hook 输入必须注入 QQ 边界块: {}",
+        system(1).contains("# Platform message boundary (qq)"),
+        "平台 hook 输入必须注入平台边界块（平台名来自标记）: {}",
         system(1)
     );
     let backend_block = super::boundary::BoundaryKind::BackendInput.block().content;

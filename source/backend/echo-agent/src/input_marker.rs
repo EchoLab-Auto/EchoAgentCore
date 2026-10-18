@@ -1,17 +1,18 @@
 //! Structured input markers — the single source of truth for the
-//! `<platform_message_hook>` wire convention.
+//! `<platform>_message_hook` / `<timer_event>` envelope convention.
 //!
 //! The agent loop receives inbound platform messages wrapped in a marked
-//! envelope (`<qq_message_hook>JSON</qq_message_hook>`), and backend events
-//! (timers, background-task completions) similarly. These markers carry the
-//! structured payload's provenance and `message_sequence`; the envelope keeps
-//! the actual content JSON-escaped so it can never be confused with source
-//! metadata.
+//! envelope (`<qq_message_hook>JSON</qq_message_hook>` for QQ, and the same
+//! shape for any other platform), and backend events (timers) similarly. These
+//! markers carry the structured payload's provenance and `message_sequence`;
+//! the envelope keeps the actual content JSON-escaped so it can never be
+//! confused with source metadata.
 //!
-//! Everything that constructs, detects, or parses these envelopes lives here —
-//! one definition, no scattered literals. (Protocol-level structuring of this
-//! convention is tracked as Phase 5.5 bundled work; this module is its
-//! consolidation step.)
+//! **Nothing here knows a platform name**: the open/close marker is derived
+//! from whatever platform string an adapter reports, and detection accepts any
+//! `<X_message_hook>` (`X` = word characters). Everything that constructs,
+//! detects, or parses these envelopes lives here — one definition, no scattered
+//! literals.
 
 /// Open marker for a platform message hook, e.g. `<qq_message_hook>`.
 pub fn hook_open(platform: &str) -> String {
@@ -49,22 +50,49 @@ pub fn wrap_timer(payload: impl std::fmt::Display) -> String {
     format!("{TIMER_EVENT_OPEN}{payload}{TIMER_EVENT_CLOSE}")
 }
 
-/// The known structured input markers that carry a `message_sequence`.
+/// The fixed (non-platform) structured input markers.
 ///
-/// Sequence parsing is deliberately restricted to these markers so ordinary
-/// conversation text that happens to contain braces (JSON snippets, code,
-/// math) can never be misread as structured input.
-pub const STRUCTURED_INPUT_MARKERS: [&str; 3] = [
-    "<qq_message_hook>",
-    "<backend_message_hook>",
-    TIMER_EVENT_OPEN,
-];
+/// Platform hooks are **not** listed here — they are matched positionally by
+/// [`platform_hook_of`], so a new platform needs no change to this module.
+pub const FIXED_INPUT_MARKERS: [&str; 2] = ["<backend_message_hook>", TIMER_EVENT_OPEN];
 
-/// Whether `content` starts with any known structured input marker.
-pub fn is_structured_input(content: &str) -> bool {
-    STRUCTURED_INPUT_MARKERS
+/// Suffix that marks a platform message-hook opener (`<qq_message_hook>`).
+const HOOK_SUFFIX: &str = "_message_hook>";
+
+/// If `content` opens with a platform message hook, return that platform.
+///
+/// Matches `<X_message_hook>` where `X` is a non-empty run of word characters
+/// at the very start of the content, so ordinary text that merely mentions a
+/// marker (or contains JSON braces) is never misread as structured input.
+pub fn platform_hook_of(content: &str) -> Option<&str> {
+    // 固定标记（`<backend_message_hook>` / `<timer_event>`）不是平台 hook——
+    // 它们虽然同形，但语义是「宿主内部输入」，平台名那一段是保留字。
+    if FIXED_INPUT_MARKERS
         .iter()
         .any(|marker| content.starts_with(marker))
+    {
+        return None;
+    }
+    let rest = content.strip_prefix('<')?;
+    let end = rest.find(HOOK_SUFFIX)?;
+    let platform = &rest[..end];
+    if platform.is_empty()
+        || !platform
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(platform)
+}
+
+/// Whether `content` starts with a structured input marker (platform hook,
+/// backend message hook, or timer event).
+pub fn is_structured_input(content: &str) -> bool {
+    platform_hook_of(content).is_some()
+        || FIXED_INPUT_MARKERS
+            .iter()
+            .any(|marker| content.starts_with(marker))
 }
 
 /// Extract the JSON payload (between the first `{` and last `}`) of a
@@ -101,6 +129,29 @@ mod tests {
         assert!(is_structured_input("<qq_message_hook>{}"));
         assert!(is_structured_input("<timer_event>{}"));
         assert!(!is_structured_input("hello"));
+    }
+
+    #[test]
+    fn platform_hook_is_platform_agnostic() {
+        // 任何平台的标记都能识别——新增平台不需要改本模块。
+        assert_eq!(platform_hook_of("<qq_message_hook>{}"), Some("qq"));
+        assert_eq!(
+            platform_hook_of("<telegram_message_hook>{}"),
+            Some("telegram")
+        );
+        assert_eq!(
+            platform_hook_of("<my-platform_message_hook>{}"),
+            Some("my-platform")
+        );
+        // 固定标记不是平台 hook（`backend` 是语义保留字，不是平台名）。
+        assert_eq!(platform_hook_of("<backend_message_hook>{}"), None);
+        assert_eq!(platform_hook_of("<timer_event>{}"), None);
+        assert!(is_structured_input("<backend_message_hook>{}"));
+        // 不是标记就不认（含普通文本提到标记、空平台名、非法字符）。
+        assert_eq!(platform_hook_of("note: <qq_message_hook>{}"), None);
+        assert_eq!(platform_hook_of("<_message_hook>{}"), None);
+        assert_eq!(platform_hook_of("<>"), None);
+        assert_eq!(platform_hook_of("hello"), None);
     }
 
     #[test]

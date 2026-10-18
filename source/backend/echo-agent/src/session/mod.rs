@@ -26,9 +26,6 @@ pub(crate) use history::history_watermark;
 use crate::event::SessionInfo;
 use crate::llm::{estimate_history_tokens, estimate_message_tokens, ChatMessage, LlmProvider};
 
-/// 默认 QQ 实例名（legacy 单实例）：作为会话 id 后缀被省略。
-pub const DEFAULT_QQ_INSTANCE: &str = "qq";
-
 /// Structured session identity, replacing the old `user_{qq_number}` format.
 ///
 /// ```text
@@ -41,8 +38,8 @@ pub const DEFAULT_QQ_INSTANCE: &str = "qq";
 ///   local:tui::local_user   — local TUI interaction
 /// ```
 ///
-/// `account` 是 **QQ 实例名**（`[adapters.qq.instances.<id>]`）。单实例
-/// （实例名恰为 `qq`）时不产生后缀，历史会话 id 全部保持有效。
+/// `account` 是**适配器实例名**（`[adapters.<platform>.instances.<id>]`）。
+/// 单实例且实例名等于平台名（如 `qq`）时不产生后缀，历史会话 id 全部保持有效。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionKey {
     /// Platform (e.g., "qq", "local").
@@ -53,33 +50,46 @@ pub struct SessionKey {
     pub scope_id: String,
     /// User identifier (platform-specific user ID as string).
     pub user_id: String,
-    /// QQ 实例名（多实例维度；None/`qq` = 默认单实例，不写入 id）。
+    /// 适配器实例名（多实例维度；None 或等于平台名 = 默认单实例，不写入 id）。
     pub account: Option<String>,
 }
 
 impl SessionKey {
+    /// 本机会话的平台标识（区别于任何适配器平台）。
+    pub const LOCAL_PLATFORM: &'static str = "local";
+
     /// Build the canonical session ID string.
     ///
-    /// 多实例（account 非 `qq`）时以 `@{account}` 结尾，与旧格式天然区分：
-    /// 单实例部署的既有会话 id 一字不变。
+    /// 多实例（实例名 ≠ 平台名）时以 `@{account}` 结尾，与旧格式天然区分：
+    /// 单实例部署（实例名恰为平台名，如 `qq`）的既有会话 id 一字不变。
     pub fn to_session_id(&self) -> String {
         let base = format!(
             "{}:{}:{}:{}",
             self.platform, self.scope, self.scope_id, self.user_id
         );
-        match self.account.as_deref() {
-            Some(account) if !account.is_empty() && account != DEFAULT_QQ_INSTANCE => {
-                format!("{base}@{account}")
-            }
-            _ => base,
+        match self.account() {
+            Some(account) => format!("{base}@{account}"),
+            None => base,
         }
     }
 
-    /// 实例名（None/默认实例 → None）。
+    /// 非默认实例的实例名（None = 默认实例 / 未指定）。
+    ///
+    /// 「默认」= 空串，或恰好等于平台名（`qq` 实例之于 `qq` 平台）——用
+    /// 「实例名 == 平台名」而非写死的默认实例名，新增平台的默认实例
+    /// （`<platform>`）同样不产生后缀。
     pub fn account(&self) -> Option<&str> {
         self.account
             .as_deref()
-            .filter(|a| !a.is_empty() && *a != DEFAULT_QQ_INSTANCE)
+            .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case(&self.platform))
+    }
+
+    /// 是否为**本机会话**（非平台适配器投递）。
+    ///
+    /// 判据是 `platform == "local"`——`local` 是宿主自己的平台标识，与
+    /// 「哪个适配器插件」无关；框架由此不需要认识任何平台名。
+    pub fn is_local(&self) -> bool {
+        self.platform.eq_ignore_ascii_case(Self::LOCAL_PLATFORM)
     }
 
     /// Create a session key for local TUI use.
@@ -1031,7 +1041,9 @@ fn session_id_from_hook_content(content: &str) -> Option<String> {
         .get("sender")
         .and_then(|s| s.get("user_id"))
         .and_then(|u| u.as_str())?;
-    let account = (adapter != DEFAULT_QQ_INSTANCE).then(|| adapter.to_string());
+    // 实例名 == 平台名 = 默认实例，不写 account 后缀（与 SessionKey::account
+    // 同一判据；不依赖任何写死的默认实例名）。
+    let account = (!adapter.eq_ignore_ascii_case(platform)).then(|| adapter.to_string());
     Some(
         SessionKey {
             platform: platform.to_string(),
