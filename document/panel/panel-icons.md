@@ -18,7 +18,7 @@ y: 780
 | 组件 | 承载 | 说明 |
 | --- | --- | --- |
 | `PanelIcon.vue` | **界面语义**图标 | **薄封装**在 ui-frame `NeumorphismIcon` 之上（82 行）：只加 `tone` → `--panel-*` 语义色映射；几何全部来自 ui-frame 注册表（79 个语义） |
-| `ToolIcon.vue` | **工具语义**图标 | 工具名 → 图标分派（`bash` / `files` / `code` / `subagent` …）+ 11 种专属 loading 动画；产品特有，留在 Panel |
+| `ToolIcon.vue` | **工具语义**图标 | 工具名 → 图标分派（`bash` / `files` / `code` / `subagent` …）+ 12 种专属 loading 动画（`bash` / `code` / `files` / `search` / `subagent` / `calc` / `todo` / `message` / `workspace` / `settings` / `tool` / `orchestration`）；产品特有，留在 Panel |
 
 底层是 ui-frame 的 `NeumorphismIcon` + `@echolab-auto/ui-frame/icons` 注册表（79 个语义）：**24 基准 viewBox / `stroke="currentColor"` / 尺寸七档 / 线宽按档自动**。
 
@@ -45,6 +45,8 @@ y: 780
 | 描边线宽 | 0.5 / 1 / 1.5 / 2 / 2.5 / 3 | ui-frame §8 六档语义（2 标准、2.5 ≤12px 补偿、3 勾选、1.5 ≥24px、1/0.5 图表） |
 
 **禁用**：emoji 与符号字符充当控件图标（🔒 🏠 📁 ⛓ ☑ ☐ ⇥ ⇤ ▾ ▸ ⠿ ★ ⇧ ⚠ …）——内容表达（正文、说明文字）除外。
+
+> 现状：emoji 已清零；符号字符**尚有 5 处残留**（`SidebarCard.vue` 1 处、`SettingsView.vue` 4 处的折叠 caret 用 `▾ / ▸`），待换 `PanelIcon chevron-down / chevron-right`。
 
 > 修复前的实测偏差：尺寸 15px / 17px / 10px 三档自造（ChatView 发送/附件钮、文件树 chevron），线宽 1.3×5 / 1.8 自造（文件树自建 16 viewBox 图标体系），emoji 图标 15 处。
 

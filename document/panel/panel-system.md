@@ -61,7 +61,7 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 | 输入区最大高度 | `calc(8em + 20px)` | `ChatView.vue` 的输入区 `max-height` |
 | 边栏列宽（chat-rail） | 324px（左右两列；容器底 = `entryBottom + 45px`） | `ChatView.vue` 的 `RAIL_WIDTH` |
 | 设置视图 | 一级菜单 168px；条目列表 250px；API 概览 ≤720px（表单按需展开）；智能体编辑器 = 头部卡 + 3 折叠分区（默认展开前两个） | SettingsView.vue / ApiSettings.vue |
-| 入口行弹出层 | 宽 `min(520px, 82vw)`；无全屏遮罩 | ChatView.vue |
+| 入口行弹出层 | 默认宽 520px，视口不足按 `100vw - 24px` 收窄；无全屏遮罩（点外部即关） | PanelPopover.vue |
 | 入口行按钮 | ui-frame `NeumorphismButton`（glass/pill/small；`--nm-glass-bg` 45% 更透 + blur 24px）；清单徽标 `NeumorphismBadge` | ChatView.vue |
 | z-index 阶梯 | 清单卡 3（`.checklist-float`，容器内 sticky）/ 边栏列 4 / 输入区与「回到底部」5 / 入口行 6 / 入口行弹出层与 Agent 菜单 30（`PanelPopover`；设置视图同段 30–31）/ 根 chip 速览 40 / 浮层遮罩 50 / 拖动幽灵 200；模态与 Toast 由库统一分配 | styles.css / ChatView.vue / PanelPopover.vue / WorkspaceFileBrowser.vue / AgentSwitcher.vue / RailDragGhost.vue |
 | Agent 切换器 | 卡片高 34px；菜单 min-width 220px、max-height `min(60vh, 100vh-200px)` | `AgentSwitcher.vue` 的卡片与菜单样式 |

@@ -46,7 +46,7 @@ graph TB
   ChatView --> MsgList[消息列表]
   ChatView --> EntryRow[活动浮条 · 入口行]
   ChatView --> Composer[悬浮输入区]
-  ChatView --> Pops[弹出层：清单 · QQ 插件实例 · 任务 TasksPanel]
+  ChatView --> Pops[弹出层：清单 · 适配器 · 任务 TasksPanel]
   ChatView --> Overs[会话区内弹层：上下文 · Agent 配置]
   App --> Modals[模态：Branch]
   App --> Toasts[ToastProvider 右上]
@@ -117,7 +117,7 @@ graph LR
 | 边栏列 | 4 | 左右侧栏卡片列 |
 | 输入区与「回到底部」 | 5 | 会话视图底部输入区、回到底部按钮 |
 | 入口行 | 6 | 配置/上下文/清单/插件实例/任务入口行 |
-| 清单卡 | 3 | `.checklist-float`（会话视图内的悬浮清单卡，sticky 在容器内，见 `styles.css`） |
+| （已无独立清单卡） | — | 清单已并入入口行弹层（`PanelPopover` 内渲染 `ChecklistSidebar`）；`.checklist-float` 只是弹层内的 sticky 容器（`styles.css` 的 `z-index: 3`），不再在会话视图里单独悬浮 |
 | 入口行弹出层 | 30 | `PanelPopover`（清单/会话/工作区/插件实例/任务浮层共用容器，`teleport` 到 body + fixed） |
 | Agent 菜单 | 30 | AgentSwitcher 上弹菜单（设置视图同段 30–31） |
 | 根 chip 速览 | 40 | 文件浏览器根路径 chip 悬停卡（仅文本、`pointer-events: none`） |
@@ -140,7 +140,7 @@ graph LR
 
 ### 3.4 顶栏交互
 
-- **连接指示**（已迁入边栏「连接状态」卡，默认右列、可拖动换列）：`已连接`（online 绿点）/ `连接中…`（connecting 呼吸点），驱动源 `state.connected`；卡片同时逐实例列出 QQ 实例的运行态，详见 [会话视图](./panel-chat.md)「侧栏与多接入点」
+- **连接指示**（已迁入边栏「连接状态」卡，默认右列、可拖动换列）：`已连接`（online 绿点）/ `连接中…`（connecting 呼吸点），驱动源 `state.connected`；卡片同时逐实例列出适配器实例的运行态（全部平台，非 QQ 专属），详见 [会话视图](./panel-chat.md)「侧栏与多接入点」
 - **设置入口**：顶栏导航「设置」直达设置视图（见 [设置视图](./panel-settings.md)）——已不再有设置下拉与 API 弹窗
 - **主题开关**：三态循环（浅色 → 跟随系统 → 深色），由 ui-frame `ThemeProvider` + `NeumorphismThemeToggle` 提供；持久化 `localStorage: echo-panel-theme`；外壳默认 `auto`，index.html 内联脚本防闪烁
 
@@ -184,7 +184,7 @@ graph LR
 |---|---|---|
 | 本窗口刚发起激活，回推命中 `(active, active_conversation)` | `follow`：投影到该通道（reason `workspace-follow`） | `noteLocalActivateIntent` 登记 → `takeLocalActivateIntent` 一次性消费；5s TTL（`LOCAL_INTENT_TTL_MS`）+ 对话维度严格匹配 |
 | 他端发起（另一窗口 / 模型 `use` 工具） | `keep`：只更新工作区面板与切换器激活标记 | 无意图或意图不匹配 |
-| 本窗口停在 QQ / 「全局」等非 Local 来源会话 | `keep`：不把视图抢回工作区通道 | 意图命中但 `activeSessionId` 不以 `local:` 开头 |
+| 本窗口停在非本地平台 / 「全局」等非 Local 来源会话 | `keep`：不把视图抢回工作区通道 | 意图命中但 `activeSessionId` 不以 `local:` 开头 |
 | 本窗口停留的通道已失效（工作区或对话被删） | `reset` → 中立的 `LOCAL_DEFAULT_SESSION` | 快照里找不到该工作区/对话 |
 | 工作区快照尚未同步到当前 Agent（`state.workspaceTeamId ≠ 当前 Agent`） | `keep`：不猜，等快照到达 | `App.vue` 跟随 watcher 的前置守卫 |
 
@@ -226,7 +226,7 @@ graph LR
 - **前台自愈（heal）**：`visibilitychange` 回到前台或 `online` 事件时主动评估连接——已断开则立即重连（复位退避，不等可能被浏览器冻结的退避定时器）；显示 OPEN 也可能半死（设备休眠期间对端已消失而本端未察觉），发 `RequestTeamsList` 探测帧，**5s** 内无任何下行帧则判死、主动关闭走标准重连（`connection.ts`）
 - **上游状态轮询暂停**（`upstreams.ts`）：`/api/upstreams` 每 8s 一次；标签页隐藏时跳过轮询、回到前台立即补一次（省后台流量，回前台即最新）
 - **中继半死收割**：一侧超过 90s（3 个心跳周期）无任何帧（含 Pong）→ 中继断开整条链路；另有 **10s 写超时**（`SEND_TIMEOUT`，`proxy.rs::browser_write`）——转发一帧时对端写阻塞超过 10s 即断链并 WARN 记 `sent` / `timeout_s`（冻结标签页不再挂起中继、Core 发送缓冲不再无界积压；排队帧由重连后 `since_seq` 补拉找回）。链路关闭的统计与缺口语义见 `proxy.rs::LinkStats` / `resume_gap`（见 [Panel 前端](./panel.md)「中继模型」）
-- **断连期间**：边栏「连接状态」卡显示"连接中…" + 重连提示（由原顶栏状态点迁入）；输入框禁用（placeholder `未连接到 Core，暂时无法发送`）；`sendCommand` 不发送并弹 error toast；QQ 面板按钮禁用
+- **断连期间**：边栏「连接状态」卡显示"连接中…" + 重连提示（由原顶栏状态点迁入）；输入框禁用（placeholder `未连接到 Core，暂时无法发送`）；`sendCommand` 不发送并弹 error toast；适配器按钮禁用（`state.connected` 为 false 时）
 - **首屏与重连的加载反馈**：聊天区消息列为空时三态区分——未连接 → 居中 spinner +「正在连接 Core…」；已连接但本次连接尚未收到 `TrunkTimeline` → 「正在加载时间线…」；收到过快照（哪怕为空）才显示「（暂无消息…）」。判定标志 `state.timelineArrivedOnce`（`onopen` 重置、任一 `TrunkTimeline` 置位）；有磁盘缓存时挂载即渲染缓存，无加载闪屏；**JS/CSS 传输期间**（挂载前）由 `index.html` 内联骨架屏给出首帧反馈（纯内联样式、主题跟随，8s 后浮出慢网提示；见 [Panel 前端](./panel.md)「前端分包与首屏」）
 - **兜底对齐**：`AgentCompleted` 时若该会话连一条正式回答都没有，自动补拉 `RequestTrunkTimeline`（带当前 `team_id` 与缓存游标 `since_seq`，走增量；`state.ts` 的 `AgentCompleted` 分支）
 - 协议信封 `{type: command|event, payload}`；无法解析的帧静默丢弃（`protocol.ts::parseEvent`）
@@ -240,7 +240,7 @@ graph LR
 - 仅当当前 Agent 为**并行多会话循环模式**时显示（`loopModeOf(team) === 'parallel'`，`rail-cards.ts::branchCardVisible`）；徽标显示运行中分支数
 - 分支行：脉冲 spinner（8px warn 色圆点，`branch-pulse 1s ease-in-out infinite`）+ 任务摘要（截断 24 字符）；无关闭按钮——`ReplyBranchCompleted` 或重连后自动消失
 - 点击分支行 → 打开 BranchModal（分支详情）
-- 卡片几何（RailStack）：头部 padding 10px/12px + 握把 + 11px 折叠 caret，正文 padding 4px/14px/12px；分支行 padding 5px/8px、圆角 6px；徽标圆角 9px、10px 字、主色底（`RailStack.vue` 的样式段）
+- 卡片几何（RailStack）：头部 padding 10px/12px + 握把 + 折叠 caret（`PanelIcon chevron-down/right`，`size="xs"`），正文 padding **8px/14px**；分支行 padding 5px/8px、圆角 6px；徽标圆角 9px、10px 字、主色底（`RailStack.vue` 的样式段）
 
 ### 5.2 会话切换（入口行「会话」按钮）
 
@@ -248,11 +248,11 @@ graph LR
 入口行「会话」按钮弹出的 `SessionSwitcher`：
 
 - **按钮显隐**：当前智能体会话数 >1，或并行多会话模式（含「全局」入口）时显示；切换 Agent 强制关闭
-- 分组规则（按会话 id `platform:scope:…` 解析）：Local / QQ 私聊 / QQ 群 / 其他；并行模式顶部另有合成的**「全局」**项（跨会话合并视图，选中后发消息重定向到本地会话）
-- **Local 分组含工作区通道**（`local:workspace:<id>:local_user`，昵称 = 工作区名，标签「工作区」独立配色）：选通道 = 激活对应工作区、选默认会话 = 取消激活。**active 回推只跟随本窗口自己发起的激活**——`active` 是 Core 的 per-persona 全局单例、广播发给所有连接，无条件跟随会让 A 窗口的点选把其他窗口一起跳走；他端变化只同步工作区状态与激活标记（面板高亮、切换器标记），不改本窗口当前会话。跟随判据（意图 TTL / 对话维度匹配 / 失效回退落点）见 §3.7，Core 侧规则见 [多 Agent](../core/core-agents.md)「工作区会话与项目通道」⑤
+- 分组规则（按会话 id `platform:scope:…` 解析）：Local / **各平台私聊** / **各平台群聊** / 其他（组键 `<platform>-dm` / `<platform>-group`，标题取 `state.adapters` 的平台名——当前只有 QQ）；并行模式顶部另有合成的**「全局」**项（跨会话合并视图，选中后发消息重定向到本地会话）
+- **Local 分组含工作区通道**（会话 id 形如 `local:workspace:<ws>:local_user`，多对话后是 `local:workspace:<ws>/<conv>:local_user`——`scope_id` 第三段可含 `/` 但不含 `:`；`workspace.ts::parseWorkspaceChannelId` 先按 `:` 切段再拆 `/`。昵称 = 工作区名，标签「工作区」独立配色）：选通道 = 激活该工作区会话（写回 `echo-workspaces-{id}.json` 的 active 标记）——`active` 是所有激活来源的单一事实来源，见 [多 Agent 与会话](../core/core-agents.md)
 - **排序**：组内按 `last_active` 倒序（活跃上浮）
 - **归属过滤**：只显示当前 Agent 的会话（`team_id` 归一化匹配；TeamsList 未到达时他属会话不放行，避免闪现）
-- **忙碌点**：会话有未完成活动时显示绿色 `●`（`--panel-ok`；`state.activities[id].phase ≠ completed`，`SessionSwitcher.vue::isBusy`）
+- **忙碌点**：会话有未完成活动时显示绿色 `●`（`--panel-ok`；`state.activities[sessionKey(core, id)].phase ≠ completed`——activities 是复合键；`SessionSwitcher.vue::isBusy`））
 - 点选 = 切换会话过滤（不重拉时间线）+ 强制回会话视图
 - 每个群/私聊拥有独立模型上下文（见 [多 Agent](../core/core-agents.md)「会话模型」）
 

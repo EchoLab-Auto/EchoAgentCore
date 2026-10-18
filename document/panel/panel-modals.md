@@ -58,6 +58,7 @@ y: 780
 - **API 供应商下拉**：选项 = 「跟随全局默认配置」+ 全局供应商池各 profile（`name（provider / model · key 状态）`）；保存写入 `SaveTeam.api_profile`，运行期立即重建该 persona 的 provider（见 [设置视图](./panel-settings.md)「API 设置」）
 - 三类能力复选表（插件按 kind 分组、工具/技能按包分组，组级全选）：**白名单语义——空表 = 全部启用**；首次取消勾选时先把全量写入列表再移除该项
   - 「启用插件」区成员 = `kind ∈ {instance, management, interaction}` ∪ 包维度门控插件固定清单（单一来源 `capabilities.ts::isPluginCheckboxVisible`，与设置视图同一常量；详见 [插件化设计](../plugins/core-plugins.md)「新增包维度门控插件时的同步清单」）。分组按 kind：插件实例 / 交互独立成组，其余整类能力项归入「管理面」
+      - ⚠️ **分组标签现状**：`PLUGIN_GROUP_LABELS` 只有 `adapter → 适配器` 与 `interaction → 交互` 两条映射；Core 的 wire `kind` 早已改成 `instance`，于是实例插件现在落到兜底的「管理面」组。要么给 `instance` 补映射，要么随 Panel 侧改名一起处理（见 [协议与数据流](../protocol/protocol.md)「协议名版本窗口」）
 - **能力清单加载态**：打开时拉取插件/工具/技能三类清单并各自登记跟踪——分区头计数加载中显示「…」，分区体 `LoadHint` 等待/慢提示/超时重试（空态「（无）」只在确认后出现）
 - **保存即热生效**：勾选/取消立即影响该 Agent 的模型可见能力（取消 = 禁用，重新勾选 = 恢复，无需重启；全局禁用优先，不受勾选覆盖）
 - 保存 → `SaveTeam`
