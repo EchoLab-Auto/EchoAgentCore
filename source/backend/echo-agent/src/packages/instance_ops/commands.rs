@@ -41,7 +41,7 @@ impl Agent {
             0 => Err("未找到任何插件实例".into()),
             1 => Ok(all[0].clone()),
             n => Err(format!(
-                "有 {n} 个插件实例，请在命令中指定 adapter（实例名）"
+                "有 {n} 个插件实例，请在命令中指定 instance（实例名）"
             )),
         }
     }
@@ -195,7 +195,7 @@ impl Agent {
                 continue;
             }
             if let Err(message) = invoke_instance_method(other, method, payload.clone()).await {
-                tracing::warn!(instance = %name, %method, %message, "adapter op broadcast failed");
+                tracing::warn!(instance = %name, %method, %message, "instance op broadcast failed");
             }
         }
     }

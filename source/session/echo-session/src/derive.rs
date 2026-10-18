@@ -427,7 +427,7 @@ mod tests {
             user("查一下"),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_A".into(),
-                name: "adapter_status".into(),
+                name: "instance_status".into(),
                 session: None,
                 arguments: "{}".into(),
                 started_at_ms: None,
@@ -797,7 +797,7 @@ mod tests {
             user("查一下"),
             SessionEvent::ToolCall(ToolCallEvent {
                 id: "call_A".into(),
-                name: "adapter_status".into(),
+                name: "instance_status".into(),
                 session: None,
                 arguments: "{}".into(),
                 started_at_ms: None,

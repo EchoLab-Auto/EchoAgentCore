@@ -180,7 +180,7 @@ impl echo_defs::plugin_instance::InstanceManagement for MockInstance {
                 "denylist_groups": self.deny_groups.lock().unwrap().clone(),
             })),
             other => Err(echo_defs::plugin_instance::InstanceError::Internal(
-                format!("unknown adapter method: {other}"),
+                format!("unknown instance method: {other}"),
             )),
         }
     }

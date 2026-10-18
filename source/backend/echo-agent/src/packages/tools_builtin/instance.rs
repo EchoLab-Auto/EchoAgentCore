@@ -24,10 +24,10 @@ impl InstanceStatusTool {
 #[async_trait]
 impl Tool for InstanceStatusTool {
     fn name(&self) -> &str {
-        "adapter_status"
+        "instance_status"
     }
     fn description(&self) -> &str {
-        "Check the status of all platform adapters. Returns which adapters are running, connected, or stopped."
+        "Check the status of all platform instance plugins. Returns which are running, connected, or stopped."
     }
     fn parameters(&self) -> Value {
         json!({"type": "object", "properties": {}})
@@ -36,7 +36,7 @@ impl Tool for InstanceStatusTool {
         let infos = self.instances.list_info();
         if infos.is_empty() {
             return Ok(
-                "No adapters configured. Enable one under [adapters.<platform>] in the config."
+                "No instance plugins configured. Enable one under [instances.<platform>] in the config."
                     .into(),
             );
         }
@@ -76,10 +76,10 @@ impl InstanceStartTool {
 #[async_trait]
 impl Tool for InstanceStartTool {
     fn name(&self) -> &str {
-        "adapter_start"
+        "instance_start"
     }
     fn description(&self) -> &str {
-        "Start a platform adapter. Use 'all' to start all configured adapters."
+        "Start a platform instance plugin. Use 'all' to start all configured instances."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -102,14 +102,14 @@ impl Tool for InstanceStartTool {
                 })
                 .collect();
             Ok(if lines.is_empty() {
-                "No adapters to start.".into()
+                "No instance plugins to start.".into()
             } else {
                 lines.join("\n")
             })
         } else {
             match self.instances.get(&name) {
                 Some(instance) => match instance.start().await {
-                    Ok(()) => Ok(format!("{} adapter started.", instance.display_name())),
+                    Ok(()) => Ok(format!("{} started.", instance.display_name())),
                     Err(e) => Err(ToolError::Execution(e.to_string())),
                 },
                 None => Err(ToolError::Execution(format!(
@@ -135,10 +135,10 @@ impl InstanceStopTool {
 #[async_trait]
 impl Tool for InstanceStopTool {
     fn name(&self) -> &str {
-        "adapter_stop"
+        "instance_stop"
     }
     fn description(&self) -> &str {
-        "Stop a running platform adapter. Use 'all' to stop all running adapters."
+        "Stop a running platform instance plugin. Use 'all' to stop all running instances."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -153,11 +153,11 @@ impl Tool for InstanceStopTool {
         let name = args["name"].as_str().unwrap_or("all").to_lowercase();
         if name == "all" {
             self.instances.stop_all().await;
-            Ok("All adapters stopped.".into())
+            Ok("All instance plugins stopped.".into())
         } else {
             match self.instances.get(&name) {
                 Some(instance) => match instance.stop().await {
-                    Ok(()) => Ok(format!("{} adapter stopped.", instance.display_name())),
+                    Ok(()) => Ok(format!("{} stopped.", instance.display_name())),
                     Err(e) => Err(ToolError::Execution(e.to_string())),
                 },
                 None => Err(ToolError::Execution(format!(
@@ -183,16 +183,16 @@ impl InstanceRestartTool {
 #[async_trait]
 impl Tool for InstanceRestartTool {
     fn name(&self) -> &str {
-        "adapter_restart"
+        "instance_restart"
     }
     fn description(&self) -> &str {
-        "Restart a platform adapter (stop then start). Useful when the adapter is not responding."
+        "Restart a platform instance plugin (stop then start). Useful when it is not responding."
     }
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Adapter instance name (omit when only one adapter exists)"}
+                "name": {"type": "string", "description": "Instance name (omit when only one instance exists)"}
             },
             "required": ["name"]
         })
@@ -206,7 +206,7 @@ impl Tool for InstanceRestartTool {
                     // Not running — just start.
                 }
                 match instance.start().await {
-                    Ok(()) => Ok(format!("{} adapter restarted.", instance.display_name())),
+                    Ok(()) => Ok(format!("{} restarted.", instance.display_name())),
                     Err(e) => Err(ToolError::Execution(e.to_string())),
                 }
             }
@@ -232,9 +232,11 @@ fn resolve_instance_name(instances: &InstanceRegistry, args: &Value) -> Result<S
     let names = instances.names();
     match names.len() {
         1 => Ok(names[0].to_lowercase()),
-        0 => Err(ToolError::Execution("No adapters configured.".to_string())),
+        0 => Err(ToolError::Execution(
+            "No instance plugins configured.".to_string(),
+        )),
         _ => Err(ToolError::Execution(format!(
-            "`name` is required when multiple adapters exist (available: {}).",
+            "`name` is required when multiple instance plugins exist (available: {}).",
             names.join(", ")
         ))),
     }
@@ -264,7 +266,7 @@ mod tests {
     async fn status_reports_empty_registry() {
         let tool = InstanceStatusTool::new(Arc::new(InstanceRegistry::new()));
         let out = tool.execute(json!({})).await.unwrap();
-        assert!(out.contains("No adapters"));
+        assert!(out.contains("No instance plugins"));
     }
 
     #[tokio::test]
@@ -326,7 +328,7 @@ mod tests {
     async fn stop_all_is_always_ok() {
         let tool = InstanceStopTool::new(registry_with("qq"));
         let out = tool.execute(json!({"name": "all"})).await.unwrap();
-        assert!(out.contains("All adapters stopped"));
+        assert!(out.contains("All instance plugins stopped"));
     }
 
     #[tokio::test]

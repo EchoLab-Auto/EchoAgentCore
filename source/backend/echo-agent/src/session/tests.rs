@@ -77,8 +77,8 @@ fn parse_qualified_preserves_node_attribution() {
 #[test]
 fn legacy_attribution_splits_interleaved_sessions() {
     use echo_session::event::{AssistantMessage, ToolCallEvent, ToolResultEvent, UserMessage};
-    let qq_hook = "<qq_message_hook>\n{\n  \"platform\": \"qq\",\n  \"adapter\": \"qq\",\n  \"channel\": {\"type\": \"private\"},\n  \"sender\": {\"user_id\": \"1828980067\"}\n}\n</qq_message_hook>".to_string();
-    let group_hook = "<qq_message_hook>\n{\n  \"platform\": \"qq\",\n  \"adapter\": \"qq\",\n  \"channel\": {\"type\": \"group\", \"group_id\": \"999\"},\n  \"sender\": {\"user_id\": \"42\"}\n}\n</qq_message_hook>".to_string();
+    let qq_hook = "<qq_message_hook>\n{\n  \"platform\": \"qq\",\n  \"instance\": \"qq\",\n  \"channel\": {\"type\": \"private\"},\n  \"sender\": {\"user_id\": \"1828980067\"}\n}\n</qq_message_hook>".to_string();
+    let group_hook = "<qq_message_hook>\n{\n  \"platform\": \"qq\",\n  \"instance\": \"qq\",\n  \"channel\": {\"type\": \"group\", \"group_id\": \"999\"},\n  \"sender\": {\"user_id\": \"42\"}\n}\n</qq_message_hook>".to_string();
     let backend_hook =
         "<backend_message_hook>\n{\"content\": \"你好\"}\n</backend_message_hook>".to_string();
     let mut events = vec![

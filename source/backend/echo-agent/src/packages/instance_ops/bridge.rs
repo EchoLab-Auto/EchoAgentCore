@@ -81,7 +81,7 @@ impl AgentMessageHook {
             source_timestamp = msg.timestamp,
             received_at_ms,
             receive_lag_ms = received_at_ms.saturating_sub(msg.timestamp.saturating_mul(1000)),
-            "inbound adapter message received"
+            "inbound instance message received"
         );
 
         agent.emit(BackendEvent::SessionUpdated {
@@ -187,7 +187,7 @@ fn format_hook_input(msg: &IncomingMessage, message_sequence: u64, received_at_m
         .collect();
     let payload = serde_json::json!({
         "event": format!("{}_message", msg.platform),
-        "adapter": msg.instance_name,
+        "instance": msg.instance_name,
         "platform": msg.platform,
         "channel": channel,
         "sender": {

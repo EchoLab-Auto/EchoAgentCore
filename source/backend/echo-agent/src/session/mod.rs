@@ -1023,7 +1023,8 @@ fn session_id_from_hook_content(content: &str) -> Option<String> {
         serde_json::from_str(trimmed[body_start..body_end].trim()).ok()?;
     let platform = payload.get("platform").and_then(|v| v.as_str())?;
     let instance = payload
-        .get("adapter")
+        .get("instance")
+        .or_else(|| payload.get("adapter"))
         .and_then(|v| v.as_str())
         .unwrap_or(platform);
     let channel = payload.get("channel");
