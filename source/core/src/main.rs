@@ -700,7 +700,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_plugin_specs: Vec<echo_plugin_host::bootstrap::LaunchSpec> = {
         let launch = &qq_host.launch;
         let command = if launch.command.trim().is_empty() {
-            // 约定：插件可执行文件名为 `echo-instance-<platform>`
+            // 约定：插件可执行文件名为 `echo-adapter-<platform>`（与插件仓库同名）
             format!("echo-adapter-{platform}")
         } else {
             launch.command.trim().to_string()

@@ -253,7 +253,11 @@ pub struct PluginLaunchSection {
 impl Default for PluginLaunchSection {
     fn default() -> Self {
         Self {
-            command: "echo-adapter-qq".to_string(),
+            // 缺省留空 → 组合根按平台名派生 `echo-adapter-<platform>`（见 main.rs）。
+            // 此前这里硬编码 `echo-adapter-qq`：配置 `[instances.telegram]` 而没写
+            // `[instances.telegram.plugin].command` 时，会因为"默认值非空"跳过派生，
+            // 直接拉起 QQ 的二进制——多平台部署默认拉错插件，且没有任何报错。
+            command: String::new(),
             args: Vec::new(),
             env: std::collections::BTreeMap::new(),
         }
@@ -784,7 +788,9 @@ enabled = true
         .unwrap();
         let config = CoreConfig::load(&path).unwrap();
         assert_eq!(config.instances["qq"].mode, "");
-        assert_eq!(config.instances["qq"].launch.command, "echo-adapter-qq");
+        // 缺省 command 必须留空——留给组合根按平台名派生。若这里回退成硬编码
+        // `echo-adapter-qq`，`[instances.telegram]` 之类的配置会静默拉起 QQ 二进制。
+        assert_eq!(config.instances["qq"].launch.command, "");
         std::fs::remove_file(&path).ok();
     }
 
