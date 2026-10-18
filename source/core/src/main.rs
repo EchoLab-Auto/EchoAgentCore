@@ -666,7 +666,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 本仓库当前只**编排** QQ 这一种平台的实例（容器化部署知识仍在
     // `qq_instances`，属后续阶段）；平台配置本身已泛化到 `cfg.adapters`，
     // 新增平台无需改这里也能读到配置。
-    let qq_host = cfg.adapters.get("qq").cloned().unwrap_or_default();
+    // `platform` = 当前被**容器编排**的平台。容器部署知识（`napcat`）目前只覆盖
+    // QQ，因此这里只取它；配置层早已平台中立（`cfg.adapters` 是任意平台名的
+    // 映射），多平台编排是后续阶段的事——但下面的插件 id / 状态文件 / 命令名
+    // 一律由 `platform` 派生，不再写死字符串。
+    let platform = "qq";
+    let qq_host = cfg.adapters.get(platform).cloned().unwrap_or_default();
     let qq_instances = adapter_deploy::resolve_instances_in(
         &qq_host,
         &qq_host.instances,
@@ -687,16 +692,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_plugin_specs: Vec<echo_plugin_host::bootstrap::LaunchSpec> = {
         let launch = &qq_host.launch;
         let command = if launch.command.trim().is_empty() {
-            "echo-adapter-qq".to_string()
+            // 约定：插件可执行文件名为 `echo-adapter-<platform>`
+            format!("echo-adapter-{platform}")
         } else {
             launch.command.trim().to_string()
         };
         qq_instances
             .iter()
             .map(|instance| {
-                let state_file = qq_data_dir.join(format!("qq-{}.toml", instance.id));
+                let state_file = qq_data_dir.join(format!("{platform}-{}.toml", instance.id));
                 echo_plugin_host::bootstrap::LaunchSpec {
-                    plugin_id: format!("adapter-qq-{}", instance.id),
+                    plugin_id: format!("adapter-{platform}-{}", instance.id),
                     command: command.clone(),
                     args: launch.args.clone(),
                     env: launch.env.clone(),
@@ -743,7 +749,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         if !patches.is_empty() {
             if let Err(error) = config_store.patch(|root| {
                 let adapters = echo_adapter::ensure_table(root, "adapters");
-                let qq = echo_adapter::ensure_table(adapters, "qq");
+                let qq = echo_adapter::ensure_table(adapters, platform);
                 let instances = echo_adapter::ensure_table(qq, "instances");
                 for patch in &patches {
                     let entry = echo_adapter::ensure_table(instances, &patch.id);
