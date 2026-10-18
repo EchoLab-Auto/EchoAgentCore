@@ -216,7 +216,7 @@ BackendEvent::InstanceState    { instance, state: Value }           // 插件主
 ```
 
 - **映射（迁移期历史）**：`RequestQqLoginStatus` → `{method:"login_status"}`；`RequestQqQrcode` → `{method:"login_qrcode"}`；名单 / 门控 / owner 六命令 → `{method:"update_allowlist" / "set_gate_mode" / …}`；宿主译为插件协议 `Invoke("<name>:custom")`（与 §宿主动作 表对齐）。**旧命令载体已随泛化收口物理删除（2026-10-16），映射仅存于本文档作为迁移记录**；
-- **半通用项顺势改名**：`RequestGroupList` / `RequestFriendList` → `RequestAdapterGroups` / `RequestAdapterFriends`（`Adapter::get_groups/get_friends` 本已存在）；`Start/Stop/RestartAdapter` + `RequestAdapterStatus` + `InstanceList` 本就平台中立，不动；
+- **半通用项顺势改名**（`Adapter` 一词后来又在 `2d46b7d` 换成 `Instance`，下表是当时的中间态）：`RequestGroupList` / `RequestFriendList` → `RequestAdapterGroups` / `RequestAdapterFriends`（`Adapter::get_groups/get_friends` 本已存在）；`Start/Stop/RestartAdapter` + `RequestAdapterStatus` + `InstanceList` 本就平台中立，不动；
 - **clearance 语义（安全面保留、判定方式改变）**：`command_clearance` 从「按 QQ 变体逐一枚举」改为「**按类别判定**」——一切 `InvokeInstanceOp` = Frontend-only（fail-closed；消除「忘加枚举臂」回归窗口）。现有「逐变体禁用清单」测试改写为「按类别判定」测试；
 - **QQ 变体处置（2026-10-16 更新）**：新通道落地后原计划「10 命令 + 7 事件标 deprecated、两个版本周期后删除」；**决策人指示直接删除（不等 N+2）**——旧 10 命令 / 7 事件 / 3 字段与 `legacy.rs` 兼容层已同批物理删除，见 §实施进度。
 

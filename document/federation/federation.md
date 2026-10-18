@@ -17,7 +17,7 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 
 实现分布：`source/federation/echo-federation`（帧与链路）+
 `source/backend/echo-agent/src/packages/federation`（执行层）+
-`source/core/src/main.rs`（组合根装配与路由泵）。
+`source/core/src/federation_rt.rs`（路由泵 `federation_router_pump` + 代理注册 + 状态快照）、`source/core/src/federation_import.rs`（迁移导入）；`source/core/src/main.rs` 只做装配与 `tokio::spawn`。
 
 ## 设计原则
 
@@ -269,8 +269,7 @@ parent_branch_id → 挂起 call_id 集合）：受理时登记、终态时销�
 - 装配出口：`set_remote_invoker`（组合根注入；联邦关闭时调用报
   「联邦未接线」）
 - 失败路径：peer 离线/不存在、链路不可用、对端拒绝（白名单/沙箱——
-  完全开放策略无沙箱）、超时均原样透传为 ToolError。超时链：路由 invoke 120s → 外层 wait
-  180s → 工具守卫 460s（timeout_hint）
+  完全开放策略无沙箱）、超时均原样透传为 ToolError。超时链：工具守卫**默认 120s（可配）** → `RemoteTool` 硬超时 **460s**（守卫 ×1.5 网络余量封顶；`timeout_hint` 同 460s）；路由侧 pending 的 120s 只是**清扫下限**，带显式超时会按 `timeout + 60` 延长
 
 ### 会话迁移
 
@@ -355,7 +354,7 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   Panel 的 `activeRegion` 是**派生量**（只在选 agent / 会话归属 / TeamsList
   校正时写入），所有命令路由、事件过滤、设置/QQ/联邦等管理面归属都由它决定
   ——**选 agent 即选区域**。无 team/session 的管理事件（`ApiConfigUpdated` /
-  `SkillsList` / `ToolsList` / `PluginsList` / `SystemPrompt` / `Adapter*` /
+  `SkillsList` / `ToolsList` / `PluginsList` / `SystemPrompt` / `Instance*` /
   `Federation*` / `SelfUpdateStatus`）只接受当前区域（`activeRegion`）的响应，
   避免广播/竞态响应串台；区域切换时 `resetManagementState` +
   `requestActiveRegionManagement` 定向重拉。实例管理态按 `(region, instance)`
@@ -375,7 +374,7 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
 
 - `{"core": "<name>", "frame": {...}}` → 定向该接入点（联邦节点）；
 - `{"broadcast": true, "frame": {...}}` → 广播给全部在线接入点（仅只读发现
-  命令：`RequestState` / `RequestTeamsList` / 探活 `Ping` + 重连探测）；
+  命令：`RequestState` / `RequestTeamsList` / `RequestInstanceList` / `RequestInstanceStatus` 等；探活走 WS 层 Ping 控制帧 + 重连探测，不经广播壳）；
 - 无壳 → 仅单接入点语义下直接转发；多接入点下拒绝（不猜测命令语义）。
 
 语义分类不在中继与 Core 间重复：中继只认投递意图，前端 `sendCommand` 在

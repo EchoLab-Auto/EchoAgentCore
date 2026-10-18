@@ -108,7 +108,7 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 - **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`（`SaveSkill.system` 声明系统提示词技能）、`ReloadSkills`（重载技能目录——广播所有运行中人格 + 管理代理，见 [技能系统](../plugins/core-skills.md)）、`InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource`（Git 来源技能，见 [技能系统](../plugins/core-skills.md)）、`SaveTeam/DeleteTeam/ToggleTeam`（`SaveTeam.system_skills` 声明人格系统提示词技能；`TeamInfo.system_skills` / `SkillInfo.system` 随列表事件下发；`SaveTeam.api_profile` / `TeamInfo.api_profile` 声明与回推人格级 API 供应商引用；`PluginInfo.package` 回推插件所属包——横跨 plugin+tool+skill 的组合标签）
 - **运维类**：
   - 插件实例：`Start/Stop/RestartInstance`（按 `name` = 插件实例名寻址）、`StartAllInstances`/`StopAllInstances`（全部插件实例）；**管理面统一通道 `InvokeInstanceOp { instance, method, payload }`**——一切平台专属动作（门控 / 名单 / owner / 登录 / 目录查询）经 `method` 透传（插件侧 `custom` op），响应 `InstanceOpResult`；状态经 `InstanceState` 推送。`instance` 为**必填**实例名（泛化；旧 QQ 专属命令变体已物理删除，旧客户端请迁移）
-  - **线字段兼容**：`instance` 接受旧名 `adapter`（`#[serde(alias = "adapter")]`，2026-10 去适配器化）——已部署 Panel 无需同步升级。同理插件协议的 `IncomingMessage.instance` 也带同一别名，插件宿主回呼的 `submit_input` / `report_*` 载荷则**双读**（`instance` 优先、回退 `adapter`）
+  - **线字段兼容**：`instance` 接受旧名 `adapter`（`#[serde(alias = "adapter")]`，2026-10 去适配器化）——**但这只救字段名，救不了变体名**：`StartAdapter` 这类旧命令 Core 已不认识，Panel 必须同批升级（见 §协议名版本窗口）。同理插件协议的 `IncomingMessage.instance` 也带同一别名，插件宿主回呼的 `submit_input` / `report_*` 载荷则**双读**（`instance` 优先、回退 `adapter`）
   - 工作区：`RequestWorkspaceSessions` / `SaveWorkspaceSession` / `DeleteWorkspaceSession` / `ActivateWorkspaceSession` / `RequestWorkspaceGitStatus` / `RequestWorkspaceFiles`——会话类命令，**`team_id` 语义必填**（线格式同为 `Option<String>` + 服务端校验）并按 persona 路由；状态即改即存（`echo-workspaces-{id}.json`），git 与文件列表为只读采集（`RequestWorkspaceFiles.path` 以 canonical 前缀校验限定在会话目录及其子孙内，越界返回 `WorkspaceFiles.error`）。**激活 = 进入项目对话通道**（重定义）：前端「本地当前对话」按 `active` 投影——选通道 = 激活、选默认本地会话 = 取消激活；`active` 变化必须广播 `WorkspaceSessions`
   - API：`UpdateApiConfig/SwitchApi/TestApi/QueryApiBalance/QueryApiMetrics/DeleteApi/RenameApi`（`SwitchApi` 全局激活已被 persona 级选用取代——`SaveTeam.api_profile` 引用供应商池；该命令仍可经协议调用，面板 UI 不再暴露；`QueryApiBalance` 查 DeepSeek 官方 `/user/balance`，回 `ApiBalanceResult`〔含 `granted`/`topped_up` 分账〕；`QueryApiMetrics` 读本地积累的余额/用量时间序列〔近 7 天〕，回 `ApiMetrics`；`RenameApi{from,to}` 原子改名——单次 ConfigStore patch 重写池名/`active_api`/`teams[*].api_profile` 并重绑运行中引用，失败零写入，语义见 [配置持久化](../core/core-config-persistence.md)§改名语义）
 
@@ -149,8 +149,7 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 
 ```prodoc-flow
 graph LR
-  A[用户消息<br>MessageReceived] --> B[注册分支<br>ReplyBranchStarted]
-  B --> C[系统提示词构建]
+  A[用户消息<br>MessageReceived] --> C[系统提示词构建]
   C --> D[LLM 请求<br>LlmRequest]
   D --> E{有工具调用?}
   E -->|是| F[推理 AgentReasoning]
@@ -158,8 +157,9 @@ graph LR
   G --> H[工具结果 ToolResult]
   H --> D
   E -->|否| I[正式回答 AgentOutput]
-  I --> J[分支完成 ReplyBranchCompleted]
 ```
+
+> 分支事件 `ReplyBranchStarted` / `ReplyBranchCompleted` 只在 **parallel 循环模式**下发（`Agent::shows_reply_branches()` 仅对 `LoopMode::Parallel` 为真）；默认的 `single` 模式不注册分支，事件流是 `MessageReceived → … → AgentOutput → AgentCompleted`。
 
 其他事件分组（字段详见 `echo-protocol/src/event.rs`）：
 
@@ -168,7 +168,7 @@ graph LR
 - **流式输出**：`AgentContentDelta` / `AgentReasoningDelta`（逐段增量，~40ms 合并批；终值仍以 `AgentOutput` / `AgentReasoning` 全量收敛——消费端按 (core, session, branch) 对账，全量到达替换流式内容）。受 `[agent].stream_output` 控制（缺省开）。消费方关闭时 provider **即中止上游读流**（巡检：此前静默读完整流白烧 token；接收端 drop 后首个增量即断，附假 SSE 服务器回归测试）。
 - **Shell**：`ShellSessionsList` / `ShellSessionStarted` / `ShellExecStarted` / `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
 - **状态快照**：`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`SessionHistory`（某会话的显示历史派生：`messages` / `total` / `truncated` / `max_seq`；`max_seq` 是**合并水位线**，显示端按 `seq ≤ max_seq` 判"快照已覆盖"，推理条目不计入——见 [会话记忆](../core/core-memory.md)§显示时间线）、`ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`（`granted`/`topped_up` 分账字段恒下发，失败时为空串）、`ApiMetrics`（余额/用量时间序列——`entries: [{name, balance, usage, cost_currency}]`，见 `event.rs` 的 `ApiMetricsEntry`）、`Error`（也用于信息性 toast）
-- **实例管理（泛化后）**：状态统一经 `AdapterState.state` 文档；查询结果经 `AdapterOpResult.result`。旧 QQ 事件（`GroupList` / `FriendList` / `QqFilterConfig` / `QqGateMode` / `QqLoginStatus` / `QqQrcode` / `QqOwner`）已物理删除
+- **实例管理（泛化后）**：状态统一经 `InstanceState.state` 文档；查询结果经 `InstanceOpResult.result`。旧 QQ 事件（`GroupList` / `FriendList` / `QqFilterConfig` / `QqGateMode` / `QqLoginStatus` / `QqQrcode` / `QqOwner`）已物理删除
 - **工作区会话**：`WorkspaceSessions`（列表 + 激活标记，`team_id` 归属；**`active` 是项目通道的单一事实来源**——面板/工具 `use` 等所有激活来源都必须广播，前端据此切换本地对话投影）、`WorkspaceGitStatus`（某会话各目录的 git 快照：分支 / 领先落后 / 暂存·修改·未跟踪计数 / 最近提交 / 变更文件列表 / 错误）、`WorkspaceFiles`（某目录一层文件列表：条目含 name/path/is_dir/size，目录在前；隐藏项跳过、超 500 条截断；失败经 `error` 回传——文件浏览器数据源）
 
 ### 工具事件的精确配对
@@ -222,7 +222,7 @@ Panel web 后端同源提供）。渲染侧（Panel）直接 `<img src="/media/.
 
 ### 独立通道
 
-- **QQ OneBot**：每个 QQ 实例一条反向 WS（legacy `:3131`；多实例自动分配 `3140-3399`，与 management WS 独立），QQ 消息以 `<qq_message_hook>` 标记进入**实例归属人格**
+- **QQ OneBot**：每个 QQ 实例一条反向 WS（legacy `:3131`；多实例由**插件**在 `3140-3190` 内自动分配、持久化到实例 state 文件的 `[deploy.ports]`，与 management WS 独立——Core 不感知端口），QQ 消息以 `<qq_message_hook>` 标记进入**实例归属人格**
 
 ### 联邦管理
 
@@ -234,7 +234,7 @@ Panel 的 management WS 并存，帧类型为 `FedFrame`（工具调用 Invoke �
 
 Panel 侧的联邦管理命令（Frontend-only）：`SaveFederationPeer` /
 `DeleteFederationPeer` / `RequestFederationStatus` /
-`RequestFederationInvite` / `MigrateSession { session_id, target_peer }`
+`RequestFederationInvite` / `MigrateSession { session_id, team_id?, target_peer }`
 ——Panel 侧全部镜像进 `web/src/protocol.ts`（补齐；unit 变体
 字符串形态，双侧各有形态契约测试：Core 本仓 `management.rs`、Panel
 `protocol-sync` 守护「禁止双重断言绕过」）；

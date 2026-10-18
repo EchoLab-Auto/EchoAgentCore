@@ -49,7 +49,6 @@ graph BT
   Proto --> Ctx
   Sanitize --> Defs
   Sanitize --> Ctx
-  Adapter --> Defs
   Fed --> Defs
   Plugin --> Defs
   Plugin --> Ctx
@@ -57,7 +56,6 @@ graph BT
   PluginHost --> PluginApi
   PluginHost --> PluginLoader
   PluginHost --> Defs
-  Agent --> Adapter
   Agent --> Session
   Agent --> LLM
   Agent --> Loop
@@ -72,7 +70,7 @@ graph BT
   Bin --> Fed
 ```
 
-> 依赖边以 `cargo metadata --format-version 1 --no-deps`（仅 normal 依赖）实测为准。`echo-context` **不依赖** `echo-defs`（零 echo-* 依赖）；组合根另直接依赖全部中间层 crate（`echo-config`/`echo-context`/`echo-defs`/`echo-federation`/`echo-loop`/`echo-plugin`/`echo-plugin-loader`/`echo-protocol`/`echo-sanitize`/`echo-session`），图中只画主干边。
+> 依赖边以 `cargo metadata --format-version 1 --no-deps`（仅 normal 依赖）实测为准。`echo-context` **不依赖** `echo-defs`（零 echo-* 依赖）；组合根另直接依赖全部中间层 crate（`echo-agent`/`echo-config`/`echo-context`/`echo-defs`/`echo-federation`/`echo-loop`/`echo-plugin`/`echo-plugin-host`/`echo-plugin-loader`/`echo-protocol`/`echo-sanitize`/`echo-session`），图中只画主干边。
 
 | Crate | 角色 | 职责 |
 |---|---|---|
@@ -80,11 +78,11 @@ graph BT
 | `echo-context` | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry` |
 | `echo-session` | 事件溯源会话 | `SessionEvent` 事件集（含模型不可见的推理事件）、`EventLog` append-only 持久化、`derive_messages` 投影、**按会话切片投影**（append 的重投影代价只与本次会话相关）、compaction、`SessionHeader`、v1-v4 兼容迁移 |
 | `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话）见 [Agent 循环](../core/core-agent-loop.md) |
-| `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 `echo-defs` |
-| `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性），Panel 只依赖它 |
+| `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现。`openai`/`anthropic` 只依赖 `echo-defs`；`ollama` 是薄包装，**复用 `echo-llm-openai`**（组内一条边） |
+| `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性）。Panel 的 Rust 中继对它**零依赖**（不解析负载、按原文转发），TS 前端以 `web/src/protocol.ts` 手写镜像 |
 | `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、`RemoteInstance`（实现 `echo_defs::plugin_instance::PluginInstance`）、conformance 测试（见 [完全解耦推进计划](../design/decoupling-plan.md)）。**宿主只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层 crate** |
 | `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入——生效口径见 [Agent 循环](../core/core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
-| `echo-defs`（`plugin_instance`） | 插件实例的**定义层** | `PluginInstance` trait / `InstanceManagement` / `ToolContribution` / `InstanceRegistry` / 状态与错误类型。**平台中立**：这里没有平台名、没有部署形状。QQ 实现是**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteInstance` 接入——见 [实例插件化](../design/instance-plugin.md)） |
+| `echo-defs`（`plugin_instance`） | 插件实例的**定义层** | `PluginInstance` trait（`tool_specs() -> Vec<ToolSpec>`）/ `InstanceManagement` / `ToolSpec` / `InstanceRegistry` / 状态与错误类型。**平台中立**：这里没有平台名、没有部署形状。QQ 实现是**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteInstance` 接入——见 [实例插件化](../design/instance-plugin.md)） |
 | `echo-config` | TOML 原子读改写 | `ConfigStore` / `ensure_table`（串行化 + tmp+rename）。**不知道任何 section 的含义**——调用方各自拥有自己的段 |
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、联邦路由泵、启动 |
@@ -117,7 +115,7 @@ graph BT
 | LLM | `echo_defs::LlmProvider` | `echo-llm-openai`/`anthropic`/`ollama` | `echo-agent` 工厂 + `echo-loop` runner |
 | 工具 | `echo_defs::Tool` | `echo-agent::ToolRegistry` + builtin | agent 循环 |
 | 技能 | `echo_defs::SkillProvider` | `echo-agent::SkillRegistry`（本地文件） | prompt 组装 |
-| 插件实例模型工具 | `echo_defs::plugin_instance::ToolContribution`（`PluginInstance::tool_specs`） | 实例插件贡献（`InstanceContribution.tools`） | 组合根通用桥（合并 / `account` 寻址 / 出站闸门 / `invoke_custom` 透传） |
+| 插件实例模型工具 | `echo_defs::plugin_instance::ToolSpec`（`PluginInstance::tool_specs`）；wire 侧对应 `echo_plugin_api::ToolContribution` | 实例插件贡献（`InstanceContribution.tools`） | 组合根通用桥（合并 / `account` 寻址 / 出站闸门 / `invoke_custom` 透传） |
 | 平台生命周期 | `echo_defs::plugin_instance::PluginInstance` | 实例插件（**进程外**，宿主经 `RemoteInstance` 接入——当前唯一样本是 `echo-agent.instance.qq`，实现在独立仓库） | agent + 实例工具 |
 | 默认驱动 | `echo_loop::TurnRunner` | 内置（经 `ctx.loop` 注册） | 组合根 |
 
