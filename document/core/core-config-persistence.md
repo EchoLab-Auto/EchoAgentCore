@@ -75,6 +75,12 @@ ConfigStore 由 main.rs 创建一次，分发给各 persona 的 Agent 与插件�
   // 会话文件路径独立设置（JSON，见下）。
 ```
 
+⚠️ **`[instances.<platform>]` 与 `[adapters.<platform>]` 是同一个字段的两个名字，但别同时写**：
+读取侧 `instances_section` 同时接受两者（`serde(alias)`，去适配器化后新名是 `instances`，
+`adapters` 保留兼容），而 **TOML 里同时出现两个段会让 serde 报 `duplicate field`，Core 直接起不来**。
+写回时 Core 会沿用你已经在用的那个名字（`instance_deploy::instance_section_key`），所以正常
+演进不会踩到；手工编辑配置时二选一。
+
 ⚠️ **会话持久化与配置持久化解耦**：`Agent::set_config_store` 只接管 TOML 配置，
 不连带设置 trunk 会话路径；会话路径由 `Agent::set_session_persist_path` 单独设置
 （`echo-sessions-{id}.json`）——两者绝不可同路径互写（曾因共用路径导致 TOML 解析
