@@ -122,7 +122,7 @@ pub fn merge_instance(
     ports: &QqPorts,
     compose_file: Option<String>,
 ) -> toml::Table {
-    let mut cfg = merge_tables(shared, &section.config);
+    let mut cfg = merge_tables(shared, &section.overrides);
     let auto = id != DEFAULT_INSTANCE;
 
     // server.bind_address：端口分配结果强制（其余 server 键允许实例覆盖）。
@@ -149,7 +149,7 @@ pub fn merge_instance(
             format!("http://localhost:{}", ports.onebot_http),
         ),
     ] {
-        let in_section = section.config.contains_key(key);
+        let in_section = section.overrides.contains_key(key);
         let action: Option<String> = if in_section {
             None
         } else if auto {
@@ -516,7 +516,7 @@ mod tests {
                     webui: 6102,
                 },
                 enabled: None,
-                config: toml::Table::from_iter([
+                overrides: toml::Table::from_iter([
                     ("owner_qq".to_string(), toml::Value::Integer(20002)),
                     (
                         "server".to_string(),

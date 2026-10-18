@@ -132,7 +132,8 @@ impl echo_plugin_host::HostService for SanitizerHostService {
 /// - `[agent]` 顶层 `api_key` 与 `[agent.api_profiles.*]` 的 `api_key`；
 /// - env 回退（`DEEPSEEK_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
 ///   ——`effective_api_key` 的同口径）；
-/// - QQ 适配器 `access_token`（OneBot 正/反向 WS 鉴权用）；
+/// - 实例配置里的凭据字段（键名含 `token` / `secret` / `password` / `api_key`
+///   的字符串值——**不点名任何平台**，新增平台自动纳入）；
 /// - `[security.sanitize]` 的 `extra_secrets`（label `extra:<序号>`）与
 ///   `extra_patterns`（名字 → regex）。
 pub fn build_redactor(cfg: &CoreConfig) -> Arc<dyn Redactor> {
@@ -154,16 +155,19 @@ pub fn build_redactor(cfg: &CoreConfig) -> Arc<dyn Redactor> {
         }
     }
 
-    // 各平台的接入令牌（`[instances.<platform>.server].access_token`）——
-    // **逐平台登记**：新增平台自动纳入脱敏，不需要改这里。
+    // 实例配置里的凭据：按键名形态递归收集，**不认识任何平台或具体键**。
+    // 此前只读 `[instances.<platform>.server].access_token`——那等于让 Core
+    // 记住某个平台的配置 schema（2026-10 去适配器化）。改为形态匹配后，
+    // 插件新增任意凭据字段都被自动纳入脱敏。
     for host in cfg.instances.values() {
-        if host.access_token.trim().is_empty() {
-            continue;
+        for (path, value) in collect_credential_values(&host.shared) {
+            redactor.register_secret(&value, &format!("{}:{path}", host.platform));
         }
-        redactor.register_secret(
-            &host.access_token,
-            &format!("{}:access_token", host.platform),
-        );
+        for (id, instance) in &host.instances {
+            for (path, value) in collect_credential_values(&instance.overrides) {
+                redactor.register_secret(&value, &format!("{}:{id}:{path}", host.platform));
+            }
+        }
     }
     for (index, value) in cfg.security.sanitize.extra_secrets.iter().enumerate() {
         redactor.register_secret(value, &format!("extra:{index}"));
@@ -340,4 +344,47 @@ mod tests {
         assert!(report.text.contains("【已隐藏:extra:0】"));
         assert!(report.text.contains("【已隐藏:pattern:corp_id】"));
     }
+}
+
+/// 递归收集 TOML 表里「看起来是凭据」的字符串值（键名形态匹配）。
+///
+/// 命中键名（小写比较，含即算）：`token` / `secret` / `password` /
+/// `api_key` / `apikey`。空值与过短值（< 8 字符，几乎不可能是真凭据，
+/// 且会造成大片误替换）跳过。返回 `(键路径, 值)`。
+fn collect_credential_values(table: &toml::Table) -> Vec<(String, String)> {
+    const MARKERS: [&str; 5] = ["token", "secret", "password", "api_key", "apikey"];
+    fn walk(table: &toml::Table, prefix: &str, out: &mut Vec<(String, String)>) {
+        for (key, value) in table {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            match value {
+                toml::Value::Table(inner) => walk(inner, &path, out),
+                toml::Value::Array(items) => {
+                    for (index, item) in items.iter().enumerate() {
+                        if let toml::Value::Table(inner) = item {
+                            walk(inner, &format!("{path}[{index}]"), out);
+                        }
+                    }
+                }
+                _ => {
+                    let lowered = key.to_ascii_lowercase();
+                    if !MARKERS.iter().any(|marker| lowered.contains(marker)) {
+                        continue;
+                    }
+                    let Some(text) = value.as_str() else { continue };
+                    let text = text.trim();
+                    if text.len() < 8 {
+                        continue;
+                    }
+                    out.push((path, text.to_string()));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(table, "", &mut out);
+    out
 }

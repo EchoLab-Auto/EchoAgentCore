@@ -183,9 +183,11 @@ pub struct QqSection {
 /// 原样下发给适配器插件（`Hello.config.config`）——宿主不重复插件配置
 /// schema，新字段自动透传。本视图仅承载宿主自身需要的读点：
 /// - [`enabled`](Self::enabled)：实例解析 / 自启停门控；
-/// - [`command_prefix`](Self::command_prefix)：命令域（`/echo` 等）；
-/// - [`access_token`](Self::access_token)：脱敏器密钥登记；
 /// - [`instances`](Self::instances) / [`launch`](Self::launch)：实例表与插件进程启动。
+///
+/// 凭据等平台自有字段**不在这里读**：脱敏器按键名形态从
+/// [`shared`](Self::shared) 里递归收集（见 `security::collect_credential_values`），
+/// 因此新增平台的任何凭据字段都自动生效，宿主无需知道它叫什么。
 #[derive(Debug, Clone, Default)]
 pub struct InstanceHostConfig {
     /// 平台名（= `[instances.<name>]` 的 `<name>`）。
@@ -199,12 +201,8 @@ pub struct InstanceHostConfig {
     /// 共享层配置表（归一化后：`command_prefix` 空 → `/`、
     /// `ECHO_ACCESS_TOKEN` 覆盖已应用）。
     pub shared: toml::Table,
-    /// `[instances.qq].enabled`（缺省 false）。
+    /// `[instances.<platform>].enabled`（缺省 false）。
     pub enabled: bool,
-    /// 归一化后的命令前缀。
-    pub command_prefix: String,
-    /// `[instances.qq.server].access_token`（空 = 未设置）。
-    pub access_token: String,
 }
 
 impl InstanceHostConfig {
@@ -217,18 +215,6 @@ impl InstanceHostConfig {
             .get("enabled")
             .and_then(toml::Value::as_bool)
             .unwrap_or(false);
-        let command_prefix = shared
-            .get("command_prefix")
-            .and_then(toml::Value::as_str)
-            .unwrap_or("/")
-            .to_string();
-        let access_token = shared
-            .get("server")
-            .and_then(toml::Value::as_table)
-            .and_then(|server| server.get("access_token"))
-            .and_then(toml::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
         Self {
             platform: platform.to_string(),
             instances: section.instances.clone(),
@@ -236,8 +222,6 @@ impl InstanceHostConfig {
             mode: section.mode.trim().to_string(),
             shared,
             enabled,
-            command_prefix,
-            access_token,
         }
     }
 
@@ -291,10 +275,9 @@ pub struct QqInstanceSection {
     pub ports: QqPorts,
     /// 该实例是否启用（缺省跟随共享默认的 `enabled`）。
     pub enabled: Option<bool>,
-    /// 实例级配置覆盖片段（浅表保留；合并语义见
-    /// `qq_instances::merge_instance`）。
+    /// 实例级配置覆盖片段（宿主不解释；与共享层深合并后原样下发插件）。
     #[serde(flatten)]
-    pub config: toml::Table,
+    pub overrides: toml::Table,
 }
 
 /// QQ 实例的宿主端口三元组（自动分配并持久化）。
@@ -594,7 +577,11 @@ command = "echo-adapter-telegram"
             config.instances["telegram"].default_instance_id(),
             "telegram"
         );
-        assert_eq!(config.instances["qq"].command_prefix, "!");
+        // 平台自有键不再有宿主读点：原样留在透传表里，由插件自己解释。
+        assert_eq!(
+            config.instances["qq"].shared["command_prefix"].as_str(),
+            Some("!")
+        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -695,7 +682,10 @@ group_at_reply = true
             config.instances["qq"].shared["server"]["bind_address"].as_str(),
             Some("0.0.0.0:9999")
         );
-        assert_eq!(config.instances["qq"].access_token, "new_token");
+        assert_eq!(
+            config.instances["qq"].shared["server"]["access_token"].as_str(),
+            Some("new_token")
+        );
         assert_eq!(
             config.instances["qq"].shared["trigger"]["dm_auto_reply"].as_bool(),
             Some(false)
