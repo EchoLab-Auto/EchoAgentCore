@@ -133,12 +133,12 @@ y: 780
 
 插件工作台回答三件事：在哪个 Core 上管理、这条插件的实现在不在 Core 进程内、它门控了什么——第一个决定列表内容，第二个是默认分组维度，第三个是可切换的语义维度。
 
-- **管理节点**（筛选栏首项，`NeumorphismSelect`，`aria-label="管理节点"`）：选项 = 已接入上游名 ∪ 人格归属 core ∪ `state.pluginsByCore` 的键 ∪ `activeRegion`，标签经 `state.ts::regionLabel`（区域显示名，缺失回落节点 id）；切换即清空选中并定向 `RequestPluginsList`（带目标 core）。列表、筛选计数、副标题统计、行内快速启停与 `TogglePlugin` 的目标 core 统一取 `pluginCoreEffective`——**显示的 = 请求的 = 修改的**
+- **管理节点**（筛选栏首项，`NeumorphismSelect`，`aria-label="管理节点"`）：选项 = 已接入上游名 ∪ 人格归属 core ∪ `state.pluginsByCore` 的键 ∪ `activeRegion`（`pluginCoreOptions`），标签经 `state.ts::regionLabel`（区域显示名，缺失回落节点 id）；切换即清空选中并定向 `RequestPluginsList`（带目标 core）。列表、筛选计数、副标题统计、行内快速启停与 `TogglePlugin` 的目标 core 统一取 `pluginCoreEffective`——**显示的 = 请求的 = 修改的**
 - **按节点归档的清单**（`state.pluginsByCore` / `pluginCatalog`）：各节点回推的插件按上游名归档（中继不加信封的单上游场景键为空串）；`pluginCatalog` 的取数顺位 = 显式选定 / `activeRegion` 的归档 → **唯一来源**（键对不上但只有一份数据）→ `state.plugins`（管理目标兼容视图）；多来源且该节点尚未回推时给空列表，**绝不回退**（否则串显别个节点）
 - **分组维度**（`PLUGIN_GROUP_OPTIONS` 分段控件）：`内部 / 外部`（默认）/ `按门控语义` / `按 kind` / `平铺`
 - **内部 / 外部按运行位置判定**（`pluginSource`）：`runtime === 'subprocess'` → 外部，`in_process` → 内部；旧 Core 未回推 `runtime` 时回退 `builtin`（`false` → 外部）。判据是「实现在哪跑」而非「manifest 从哪来」——QQ 适配器随 Core 发布（`builtin = true`）但实现在独立进程，因此归**外部插件**
 - **组头提示**：外部组 = 「实现在独立进程（独立 PID / 生命周期）；随 Core 发布或来自插件目录」（讲清「随 Core 发布 ≠ 进程内」）；内部组 = 「实现编译在 Core 进程内；随 Core 发布」
-- **行卡标记**：`独立进程`（`pluginIsSubprocess`，与外部组等价）· 包规模徽标（`N 工具 · M 技能`）· `🔒 受保护`（management.panel，**行内渲染锁标记而不给开关**）· `模式`（loop.*）
+- **行卡标记**：`独立进程`（`pluginIsSubprocess`，与外部组等价）· 包规模徽标（`N 工具 · M 技能`，经 `pluginMembers` → `packageMembers` 从 `state.plugins` 与 `state.tools`/`state.skills` 反查——这两份是单份状态、只随管理目标节点更新，故切到非管理目标节点时徽标仍按管理目标口径统计）· `🔒 受保护`（management.panel，**行内渲染锁标记而不给开关**）· `模式`（loop.*）
 - **副标题随分组维度**：按来源 = `共 N 项 · E 外部插件 · I 内部插件 · D 已禁用`；语义分组 = `共 N 项 · G 包维度门控 · M 模式插件 · D 已禁用`
 - **协议契约**：`PluginInfo.runtime`（`in_process` / `subprocess`，缺失 = 进程内）与 `PluginInfo.builtin`（manifest 是否编译进 Core，缺失按 `true` 兼容）均由 Core 回推、彼此正交；来源分组（`pluginSource`）与运行形态标签（`pluginRuntimeLabel`，`PLUGIN_RUNTIME_LABELS`：独立进程 / 进程内）同源于这两个字段，Panel 不做推断性改写
 - **详情分区**：① 这个插件带来什么（包内**工具/技能 chips，点击跳转到对应分类并选中**）② 被谁使用（`enabled_plugins` 白名单反查：「已启用」/「未列入白名单」）③ 启停影响（按门控语义分派文案；受保护插件为警示色说明如何在 core.toml 真正禁用）④ 技术信息（**折叠**，承载 ID / Package / kind·版本 / Entry / **运行形态** / Author）。头部左侧是语义标签（`PLUGIN_SEMANTIC_LABELS`），外部插件另加 `外部插件 · 独立进程` 标签
@@ -175,7 +175,7 @@ graph LR
 
 - **安装期间（可见等待）**：弹层**保持打开**，进度行（`git-modal__progress`，`role="status"`）= 旋转图标 + 「正在克隆…已等待 Ns」（`gitInstallElapsed`，500ms 计时）；超过 20s 追加「已超过 20s，网络慢或不可达；Core 侧最长等 120s」（`gitInstallSlow`）。URL 输入与取消 / 安装按钮禁用，主按钮文案「安装中…」，安装中重复提交被短路（`installGitSkill` 守卫）。关闭弹层不中断 Core 侧克隆
 - **成功判据**：以技能清单变化为准（`watch(state.skills)` 的名称序列）——Core 装完推 `SkillsList` 即自动关窗并清空表单，无需用户再操作
-- **失败反馈**：结果由 Core `Error` 事件以 toast 呈现；界面**不回收安装态**（进度继续累计、URL 仍禁用，关窗重开亦然），需刷新页面恢复
+- **失败反馈**：结果由 Core `Error` 事件以 toast 呈现；界面**不回收安装态**——`gitInstalling` 只由技能清单变化复位（成功路径），失败与超时不会走到那里，于是进度继续累计、URL 仍禁用、关窗重开亦然，需刷新页面才能重试
 - **失败清场与残留**（Core `skills_dir::install`）：clone 失败即删除目标目录，本次与后续重试都不会撞「目录已存在」；目标目录已存在时先按 `is_broken_clone`（有 `.git` 且无 `SKILL.md`）识别上次被超时 kill 的残留并清掉重装，正常技能目录（有 `SKILL.md`）不会被误删——报「目录已存在」并提示卸载 / 换名 / 移走手动放置的同名目录；clone 成功但仓库内找不到 `SKILL.md` 同样清场后报错。`GIT_TERMINAL_PROMPT=0` 让私有仓库缺凭据时立即报认证失败，而不是在无 TTY 的后台进程里挂满超时；硬超时 120s（`GIT_TIMEOUT`）之外另有低速中止（<1KB/s 持续 30s）
 - **弹层静态提示**：浅克隆 + 目录提升说明；建议私有 / 内网仓库用 SSH 地址（`git@github.com:org/repo.git`）——HTTPS 被网络阻断时只能等 120s 超时失败
 - **已装 Git 技能**：详情页「来源」分区显示仓库 / 版本 / 安装时间与「更新」（`UpdateSkillFromGit`，无确认、无进度面板，仅命令 + `SkillsList` / `Error` 反馈）、「移除来源」（confirm 明示目录保留）按钮；`⋯` 菜单同步提供「更新（Git）」「移除来源」入口。来源记录按技能名（frontmatter `name`）索引、目录名可不同，故更新 / 移除来源按技能名寻址
