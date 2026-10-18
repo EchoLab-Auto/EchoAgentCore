@@ -268,28 +268,29 @@ pub enum BackendCommand {
         #[serde(default)]
         session_id: Option<String>,
     },
-    /// Start an adapter by name.
-    StartAdapter { name: String },
-    /// Stop an adapter by name.
-    StopAdapter { name: String },
-    /// Restart an adapter.
-    RestartAdapter { name: String },
-    /// Request the current adapter status list.
-    RequestAdapterStatus,
+    /// Start an instance by name.
+    StartInstance { name: String },
+    /// Stop an instance by name.
+    StopInstance { name: String },
+    /// Restart an instance.
+    RestartInstance { name: String },
+    /// Request the current instance status list.
+    RequestInstanceStatus,
     /// 调用一个适配器管理方法（W2.1，2026-10 适配器管理通道）。
     ///
     /// **唯一新增的适配器管理命令**——取代逐平台专属命令（旧 QQ 专属变体
     /// 已于 2026-10 直接删除）。
-    /// `method` 与插件协议 `custom op` 及 `AdapterManagement::invoke_custom`
+    /// `method` 与插件协议 `custom op` 及 `InstanceManagement::invoke_custom`
     /// 同名直通（如 `set_gate_mode` / `update_allowlist` / `login_qrcode`）。
-    /// 响应为 [`crate::event::BackendEvent::AdapterOpResult`]。
+    /// 响应为 [`crate::event::BackendEvent::InstanceOpResult`]。
     ///
     /// **Frontend-only**（类别判定，fail-closed）：一切适配器管理命令都是
     /// 人在环配置面，模型绝不可控。
-    InvokeAdapterOp {
-        /// 适配器实例名。
-        adapter: String,
-        /// 管理方法名（平台自定义；推荐名见 `AdapterManagement` 文档）。
+    InvokeInstanceOp {
+        /// 插件实例名（旧线协议字段名 `adapter` 仍接受——2026-10 去适配器化）。
+        #[serde(alias = "adapter")]
+        instance: String,
+        /// 管理方法名（平台自定义；推荐名见 `InstanceManagement` 文档）。
         method: String,
         /// 方法参数（JSON；缺省空对象）。
         #[serde(default)]
@@ -360,10 +361,10 @@ pub enum BackendCommand {
         #[serde(default)]
         path: Option<String>,
     },
-    /// Start all configured adapters.
-    StartAllAdapters,
-    /// Stop all running adapters.
-    StopAllAdapters,
+    /// Start all configured instances.
+    StartAllInstances,
+    /// Stop all running instances.
+    StopAllInstances,
     /// Request the list of all discovered skills (metadata + instructions).
     /// Responds with `BackendEvent::SkillsList`.
     RequestSkillsList,
@@ -423,8 +424,8 @@ pub enum BackendCommand {
 /// 契约快照测试见本文件 `broadcast_readonly_contract_snapshot`。
 pub const BROADCAST_READONLY_COMMANDS: &[&str] = &[
     "RequestTeamsList",
-    "RequestAdapterList",
-    "RequestAdapterStatus",
+    "RequestInstanceList",
+    "RequestInstanceStatus",
     "RequestState",
     "RequestConfig",
     "RequestShellSessions",
@@ -458,13 +459,13 @@ pub enum CommandClearance {
 /// Return the command clearance level for `cmd`.
 ///
 /// **类别判定（W2.3，2026-10）**：适配器管理命令按**类别**判定——
-/// 一切 [`BackendCommand::InvokeAdapterOp`] 都是 Frontend-only：人在环
+/// 一切 [`BackendCommand::InvokeInstanceOp`] 都是 Frontend-only：人在环
 /// 配置面，模型绝不可控。类别判定取代了「逐平台变体枚举」——新增管理
 /// 方法不再需要记得加枚举臂（消除「忘加枚举臂」回归窗口，fail-closed）。
 pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
     match cmd {
         // 适配器管理命令：类别判定（任意平台、任意方法）。
-        BackendCommand::InvokeAdapterOp { .. }
+        BackendCommand::InvokeInstanceOp { .. }
         | BackendCommand::SaveWorkspaceSession { .. }
         | BackendCommand::DeleteWorkspaceSession { .. }
         | BackendCommand::ActivateWorkspaceSession { .. }
@@ -498,11 +499,11 @@ mod tests {
             vec![
                 "Ping",
                 "RequestActiveTurns",
-                "RequestAdapterList",
-                "RequestAdapterStatus",
                 "RequestConfig",
                 "RequestFederationInvite",
                 "RequestFederationStatus",
+                "RequestInstanceList",
+                "RequestInstanceStatus",
                 "RequestNodeStatus",
                 "RequestSessions",
                 "RequestShellSessions",
@@ -516,10 +517,10 @@ mod tests {
         assert!(!super::is_broadcast_readonly("SendMessage"));
     }
 
-    /// 适配器管理命令的**类别判定**（W2.3）：`InvokeAdapterOp` 一律
+    /// 适配器管理命令的**类别判定**（W2.3）：`InvokeInstanceOp` 一律
     /// Frontend-only——不依赖逐变体枚举（新增方法零维护）。
     #[test]
-    fn adapter_management_commands_are_frontend_only_by_category() {
+    fn instance_management_commands_are_frontend_only_by_category() {
         for (method, payload) in [
             ("set_gate_mode", serde_json::json!({"mode": "allowlist"})),
             ("update_allowlist", serde_json::json!({"user_ids": [1]})),
@@ -528,8 +529,8 @@ mod tests {
             ("future_unknown_method", serde_json::json!({})),
         ] {
             assert_eq!(
-                command_clearance(&BackendCommand::InvokeAdapterOp {
-                    adapter: "qq".into(),
+                command_clearance(&BackendCommand::InvokeInstanceOp {
+                    instance: "qq".into(),
                     method: method.into(),
                     payload,
                 }),

@@ -50,7 +50,7 @@ impl TimelineProjector {
         match event {
             BackendEvent::MessageReceived {
                 session_id,
-                adapter_name,
+                instance_name,
                 platform,
                 user_id,
                 user_name,
@@ -63,10 +63,10 @@ impl TimelineProjector {
                 message_sequence,
                 ..
             } => {
-                if adapter_name == "background" {
+                if instance_name == "background" {
                     return; // internal parent-context hook, not conversation content
                 }
-                if adapter_name == "timer" {
+                if instance_name == "timer" {
                     let task = timeline_timer_task(content);
                     let content = match task {
                         Some(task) => format!("定时任务触发 · {}", truncate_one_line(&task, 120)),
@@ -92,7 +92,7 @@ impl TimelineProjector {
                     session_id.clone(),
                     *timestamp,
                     Some(TimelineSource {
-                        adapter_name: adapter_name.clone(),
+                        instance_name: instance_name.clone(),
                         platform: platform.clone(),
                         user_id: user_id.clone(),
                         user_name: user_name.clone(),
@@ -453,7 +453,7 @@ mod tests {
         let projector = TimelineProjector::new(store.clone());
         projector.record(&BackendEvent::MessageReceived {
             session_id: "qq:dm::1".into(),
-            adapter_name: "qq".into(),
+            instance_name: "qq".into(),
             platform: "qq".into(),
             user_id: "1".into(),
             user_name: "alice".into(),

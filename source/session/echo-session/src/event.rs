@@ -59,7 +59,7 @@ pub struct UserMessage {
     /// use it to merge replies back into the log in request order.
     #[serde(default)]
     pub message_sequence: Option<u64>,
-    /// Adapter/platform provenance (optional; display-only).
+    /// PluginInstance/platform provenance (optional; display-only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<MessageSource>,
     /// Multimodal media attached to the message (image URLs / data URIs).
@@ -75,7 +75,7 @@ pub struct UserMessage {
 /// Source provenance of an inbound message (display/routing only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageSource {
-    pub adapter_name: String,
+    pub instance_name: String,
     pub platform: String,
     pub user_id: String,
     pub user_name: String,

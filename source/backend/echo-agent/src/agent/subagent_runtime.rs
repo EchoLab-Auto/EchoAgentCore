@@ -296,7 +296,7 @@ impl Agent {
         let message_sequence = self.next_message_sequence();
         self.emit(BackendEvent::MessageReceived {
             session_id: session_id.to_string(),
-            adapter_name: "subagent".into(),
+            instance_name: "subagent".into(),
             platform: "subagent".into(),
             user_id: "subagent".into(),
             user_name: "subagent".into(),

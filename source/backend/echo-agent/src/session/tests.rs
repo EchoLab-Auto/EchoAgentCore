@@ -1009,7 +1009,7 @@ async fn timeline_roundtrips_through_the_persisted_file() {
         session_id: "qq:dm::123".into(),
         time: 1700000000,
         source: Some(crate::event::TimelineSource {
-            adapter_name: "qq".into(),
+            instance_name: "qq".into(),
             platform: "qq".into(),
             user_id: "123".into(),
             user_name: "alice".into(),

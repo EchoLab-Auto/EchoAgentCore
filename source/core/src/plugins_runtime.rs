@@ -28,9 +28,9 @@ pub struct PluginRuntime {
     pub started: StartedPlugins,
     /// 未启动条目的人可读原因（disabled / 非 stdio 运输层等）。
     pub skipped: Vec<String>,
-    /// 适配器宿主服务（`adapter_host`；适配器插件的入站 / 状态回呼入口；
+    /// 适配器宿主服务（`core_api`；适配器插件的入站 / 状态回呼入口；
     /// P1，2026-10 适配器插件化）。无适配器贡献时为空注册表（无副作用）。
-    pub adapter_host: Arc<echo_plugin_host::AdapterHostService>,
+    pub core_api: Arc<echo_plugin_host::CoreApiService>,
 }
 
 /// 若 `<config_path 同目录>/plugins.toml` 存在则装载并启动；否则休眠。
@@ -99,12 +99,12 @@ pub async fn start_with_specs(
     }
     let supervisor = PluginSupervisor::new();
     register_host_services(&supervisor.host_services());
-    // P1：适配器宿主服务先行注册——插件就绪后其 `deliver_message` / `report_*`
-    // 回呼即有接收面（否则适配器插件启动即报 adapter_not_found）。
-    let adapter_host = Arc::new(echo_plugin_host::AdapterHostService::new());
+    // P1：适配器宿主服务先行注册——插件就绪后其 `submit_input` / `report_*`
+    // 回呼即有接收面（否则适配器插件启动即报 instance_not_found）。
+    let core_api = Arc::new(echo_plugin_host::CoreApiService::new());
     supervisor
         .host_services()
-        .register("adapter_host", adapter_host.clone());
+        .register("core_api", core_api.clone());
     let started = echo_plugin_host::bootstrap::start_plugins(&supervisor, specs).await;
     for (plugin_id, error) in &started.errors {
         tracing::warn!(plugin = %plugin_id, %error, "subprocess plugin start failed");
@@ -112,7 +112,7 @@ pub async fn start_with_specs(
     let runtime = PluginRuntime {
         started,
         skipped,
-        adapter_host,
+        core_api,
     };
     for reason in &runtime.skipped {
         tracing::debug!(reason = %reason, "plugin entry skipped");
@@ -127,12 +127,12 @@ pub async fn start_with_specs(
 
 /// 一个已注册的远程适配器 + 其入站队列 receiver（组合根接到送达入口；
 /// P1，2026-10 适配器插件化）。
-pub struct RemoteAdapterHandle {
-    /// 远程适配器（注册进 `AdapterRegistry`）。
-    pub adapter: Arc<echo_plugin_host::RemoteAdapter>,
-    /// 入站消息队列 receiver（插件 `deliver_message` 的出站端；
+pub struct RemoteInstanceHandle {
+    /// 远程适配器（注册进 `InstanceRegistry`）。
+    pub instance: Arc<echo_plugin_host::RemoteInstance>,
+    /// 入站消息队列 receiver（插件 `submit_input` 的出站端；
     /// 每实例串行 worker 消费）。
-    pub inbound_rx: tokio::sync::mpsc::Receiver<echo_plugin_host::api::AdapterMessage>,
+    pub inbound_rx: tokio::sync::mpsc::Receiver<echo_plugin_host::api::IncomingMessage>,
 }
 
 impl PluginRuntime {
@@ -143,29 +143,29 @@ impl PluginRuntime {
 
     /// 全部已启动插件的适配器贡献的远程适配器（P1，2026-10 适配器插件化）。
     ///
-    /// 每个 `(AdapterContribution, PluginHandle)` 构造一个 `RemoteAdapter`
-    /// 并注册进 `adapter_host`（入站队列 / 状态回执入口就位，队列 receiver
-    /// 随元组带出）；组合根随后把适配器注册进 `AdapterRegistry`，并把
+    /// 每个 `(InstanceContribution, PluginHandle)` 构造一个 `RemoteInstance`
+    /// 并注册进 `core_api`（入站队列 / 状态回执入口就位，队列 receiver
+    /// 随元组带出）；组合根随后把适配器注册进 `InstanceRegistry`，并把
     /// receiver 接到消息送达入口（见 `main.rs` 装配）。
-    pub fn adapters(&self) -> Vec<RemoteAdapterHandle> {
+    pub fn instances(&self) -> Vec<RemoteInstanceHandle> {
         self.started
-            .adapters()
+            .instances()
             .into_iter()
             .map(|(contribution, handle)| {
-                let adapter = echo_plugin_host::RemoteAdapter::new(contribution, handle);
-                // 注册进 adapter_host（入站队列就绪；receiver 交组合根）。
-                let inbound_rx = self.adapter_host.register(adapter.clone());
-                RemoteAdapterHandle {
-                    adapter,
+                let instance = echo_plugin_host::RemoteInstance::new(contribution, handle);
+                // 注册进 core_api（入站队列就绪；receiver 交组合根）。
+                let inbound_rx = self.core_api.register(instance.clone());
+                RemoteInstanceHandle {
+                    instance,
                     inbound_rx,
                 }
             })
             .collect()
     }
 
-    /// 适配器宿主服务（`adapter_host`；插件回呼的接收面）。
-    pub fn adapter_host(&self) -> Arc<echo_plugin_host::AdapterHostService> {
-        self.adapter_host.clone()
+    /// 适配器宿主服务（`core_api`；插件回呼的接收面）。
+    pub fn core_api(&self) -> Arc<echo_plugin_host::CoreApiService> {
+        self.core_api.clone()
     }
 
     /// 优雅关停全部插件（5s 期限；单点错误由 bootstrap 内部记 debug 日志）。

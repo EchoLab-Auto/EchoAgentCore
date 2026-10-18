@@ -165,7 +165,7 @@ fn test_agent(provider: Arc<dyn LlmProvider>) -> Agent {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     )
 }
 
@@ -257,10 +257,10 @@ async fn emitted_events_are_recorded_into_the_display_timeline() {
     let agent = test_agent(provider);
     let key = SessionKey::local_tui();
     let session = agent.trunk.get_or_create(&key, "user".into(), None);
-    // Adapter flow: inbound message event, then branch execution, then output.
+    // PluginInstance flow: inbound message event, then branch execution, then output.
     agent.emit(BackendEvent::MessageReceived {
         session_id: session.id.clone(),
-        adapter_name: "local".into(),
+        instance_name: "local".into(),
         platform: "local".into(),
         user_id: "local_user".into(),
         user_name: "local user".into(),
@@ -308,7 +308,7 @@ async fn timeline_records_tools_and_attaches_outcomes() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     let call = ToolCall {
         id: "c1".into(),
@@ -663,7 +663,7 @@ async fn request_trunk_timeline_returns_the_persisted_history() {
     agent.attach(Arc::new(handle));
     agent.emit(BackendEvent::MessageReceived {
         session_id: "local:tui::local_user".into(),
-        adapter_name: "local".into(),
+        instance_name: "local".into(),
         platform: "local".into(),
         user_id: "local_user".into(),
         user_name: "local user".into(),
@@ -719,7 +719,7 @@ async fn request_session_history_derives_from_the_event_log() {
     // 显示时间线里有一条该会话的实时条目（合并水位线 = 1）。
     agent.emit(BackendEvent::MessageReceived {
         session_id: target.into(),
-        adapter_name: "local".into(),
+        instance_name: "local".into(),
         platform: "local".into(),
         user_id: "local_user".into(),
         user_name: "local user".into(),
@@ -1543,7 +1543,7 @@ async fn echo_loop_turn_uses_session_override_model() {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     {
         let mut cfg = agent.config.write().await;
@@ -1605,7 +1605,7 @@ async fn builtin_loop_turn_uses_session_override_model() {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     {
         let mut cfg = agent.config.write().await;
@@ -1932,7 +1932,7 @@ async fn run_tool_empty_arguments_gets_corrective_error() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     let call = ToolCall {
         id: "bad-1".into(),
@@ -1970,7 +1970,7 @@ async fn run_tool_malformed_json_gets_clear_error() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     let call = ToolCall {
         id: "bad-2".into(),
@@ -2003,7 +2003,7 @@ async fn run_tool_valid_arguments_pass_preflight() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     let call = ToolCall {
         id: "ok-1".into(),
@@ -2048,7 +2048,7 @@ async fn skill_keyword_loads_instructions() {
         AgentConfig::default(),
         reg,
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     let prompt = agent.build_system_prompt("help me calc 1+1").await;
     assert!(prompt.contains("Available skills"));
@@ -2083,7 +2083,7 @@ async fn skill_directory_hot_reloads_updates_additions_and_deletions() {
         config,
         initial,
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
 
     let first_prompt = agent.build_system_prompt("plain input").await;
@@ -2241,7 +2241,7 @@ async fn tool_calling_loop_executes_and_finishes() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     let key = SessionKey::local_tui();
     let session = agent.trunk.get_or_create(&key, "user".into(), None);
@@ -2277,7 +2277,7 @@ async fn tool_loop_replays_reasoning_content_on_the_next_request() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     let session = agent
         .trunk
@@ -2326,7 +2326,7 @@ async fn echo_loop_tool_names_stay_unique_when_spawn_subagent_is_registered() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     agent.attach_subagent_runtime(store);
     assert!(
@@ -2410,7 +2410,7 @@ async fn spawn_subagent_call_and_receipt_are_recorded_in_event_log() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     // 不接运行态：本用例验证"记录先行"——即便受理被拒（运行态未接线），
     // 调用与回执也必须成对落库（与 run_tool 的权限前置记录同口径）。
@@ -2550,7 +2550,7 @@ async fn echo_loop_path_guards_hung_tools_with_timeout() {
         },
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let runner = Arc::new(echo_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
@@ -2624,7 +2624,7 @@ async fn echo_loop_path_injects_persona_skills_and_workspace() {
         AgentConfig::default(),
         skills,
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     // persona 系统技能 + 工作区插件允许（空白名单 = 全部启用）。
     agent
@@ -2710,7 +2710,7 @@ async fn echo_loop_model_error_surfaces_completed_and_error_events() {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let runner = Arc::new(echo_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
@@ -2784,7 +2784,7 @@ async fn echo_loop_path_emits_panel_lifecycle_events() {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let runner = Arc::new(echo_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
@@ -2944,7 +2944,7 @@ async fn echo_loop_path_uses_active_model_per_turn() {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let runner = Arc::new(echo_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
@@ -3023,7 +3023,7 @@ async fn echo_loop_path_carries_tool_images_into_next_request() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let runner = Arc::new(echo_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
@@ -3100,7 +3100,7 @@ async fn echo_loop_path_cancels_in_flight_tool() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let runner = Arc::new(echo_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
@@ -3360,7 +3360,7 @@ async fn max_tool_iterations_returns_error() {
         cfg,
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     let key = SessionKey::local_tui();
     let session = agent.trunk.get_or_create(&key, "user".into(), None);
@@ -3386,7 +3386,7 @@ async fn tool_execution_failure_is_surfaced_to_llm() {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     let key = SessionKey::local_tui();
     let session = agent.trunk.get_or_create(&key, "user".into(), None);
@@ -3811,7 +3811,7 @@ async fn workspace_plugin_gates_tool_and_prompt_block() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     agent.set_workspace_store(store);
 
@@ -3914,7 +3914,7 @@ async fn run_tool_redacts_secrets_from_real_bash_output_and_log() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     let redactor = Arc::new(echo_sanitize::RegistryRedactor::new());
     redactor.register_secret(KEY, "api_key:test");
@@ -3998,7 +3998,7 @@ async fn subagent_provider_resolves_named_profile_and_fails_closed() {
         profile_cfg(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     // 命中池中 profile → 构建成功
     assert!(agent.subagent_provider_for("kimi").await.is_ok());
@@ -4026,7 +4026,7 @@ async fn subagent_provider_resolves_named_profile_and_fails_closed() {
         cfg,
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     assert!(agent.subagent_provider_for("keyless").await.is_ok());
 
@@ -4047,7 +4047,7 @@ async fn subagent_provider_resolves_named_profile_and_fails_closed() {
         cfg,
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     let err = agent
         .subagent_provider_for("keyless")
@@ -4085,7 +4085,7 @@ async fn subagent_provider_prefers_shared_config_store_pool() {
         },
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     );
     agent.set_config_store(echo_config::ConfigStore::new(path.clone()));
     // 文件里的 kimi 可见（否则会报"不存在（当前未配置任何…）"）
@@ -4133,7 +4133,7 @@ fn streaming_agent(provider: Arc<StreamingProvider>) -> Arc<Agent> {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ))
 }
 
@@ -4272,7 +4272,7 @@ async fn stream_output_disabled_skips_chat_stream_and_deltas() {
         config,
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
@@ -4337,7 +4337,7 @@ async fn echo_loop_path_forwards_streaming_deltas() {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let runner = Arc::new(echo_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
@@ -4453,7 +4453,7 @@ async fn single_track_loop_injects_input_boundary_blocks() {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let local = agent
         .trunk
@@ -4496,14 +4496,14 @@ async fn single_track_loop_injects_input_boundary_blocks() {
     );
 }
 
-/// 泛化 Core-1（01a S3）：`emit_adapter_list` 填充 `platform` / `ui` /
-/// `session_labels`（后两者经 Adapter trait 访问器取贡献原样）。
+/// 泛化 Core-1（01a S3）：`emit_instance_list` 填充 `platform` / `ui` /
+/// `session_labels`（后两者经 PluginInstance trait 访问器取贡献原样）。
 #[tokio::test]
-async fn adapter_list_fills_platform_ui_and_session_labels() {
-    struct UiFakeAdapter;
+async fn instance_list_fills_platform_ui_and_session_labels() {
+    struct UiFakeInstance;
 
     #[async_trait::async_trait]
-    impl echo_adapter::Adapter for UiFakeAdapter {
+    impl echo_defs::plugin_instance::PluginInstance for UiFakeInstance {
         fn name(&self) -> &str {
             "fake-default"
         }
@@ -4516,21 +4516,21 @@ async fn adapter_list_fills_platform_ui_and_session_labels() {
         fn is_configured(&self) -> bool {
             true
         }
-        fn status_info(&self) -> echo_adapter::AdapterInfo {
-            echo_adapter::AdapterInfo {
+        fn status_info(&self) -> echo_defs::plugin_instance::InstanceInfo {
+            echo_defs::plugin_instance::InstanceInfo {
                 name: "fake-default".into(),
                 display_name: "Fake / UI".into(),
-                status: echo_adapter::AdapterConnectionState::Connected,
+                status: echo_defs::plugin_instance::InstanceConnectionState::Connected,
                 self_id: Some("1".into()),
                 started_at: None,
                 platform: "fake".into(),
                 configured: true,
             }
         }
-        async fn start(&self) -> Result<(), echo_adapter::AdapterError> {
+        async fn start(&self) -> Result<(), echo_defs::plugin_instance::InstanceError> {
             Ok(())
         }
-        async fn stop(&self) -> Result<(), echo_adapter::AdapterError> {
+        async fn stop(&self) -> Result<(), echo_defs::plugin_instance::InstanceError> {
             Ok(())
         }
         fn ui_descriptor(&self) -> Option<serde_json::Value> {
@@ -4541,8 +4541,8 @@ async fn adapter_list_fills_platform_ui_and_session_labels() {
         }
     }
 
-    let registry = AdapterRegistry::new();
-    registry.register(Arc::new(UiFakeAdapter));
+    let registry = InstanceRegistry::new();
+    registry.register(Arc::new(UiFakeInstance));
     let agent = Agent::new(
         Arc::new(MockProvider {
             calls: Arc::new(AtomicUsize::new(0)),
@@ -4559,18 +4559,18 @@ async fn adapter_list_fills_platform_ui_and_session_labels() {
         sink_events.lock().expect("events poisoned").push(event);
     }));
 
-    agent.emit_adapter_list();
+    agent.emit_instance_list();
 
     let events = received.lock().expect("events poisoned").clone();
-    let adapters = events
+    let instances = events
         .iter()
         .find_map(|event| match event {
-            BackendEvent::AdapterList { adapters } => Some(adapters),
+            BackendEvent::InstanceList { instances } => Some(instances),
             _ => None,
         })
-        .expect("AdapterList emitted");
-    assert_eq!(adapters.len(), 1);
-    let value = serde_json::to_value(&adapters[0]).unwrap();
+        .expect("InstanceList emitted");
+    assert_eq!(instances.len(), 1);
+    let value = serde_json::to_value(&instances[0]).unwrap();
     assert_eq!(value["platform"], serde_json::json!("fake"));
     assert_eq!(value["ui"]["version"], serde_json::json!(1));
     assert_eq!(value["session_labels"]["dm"], serde_json::json!("私聊"));

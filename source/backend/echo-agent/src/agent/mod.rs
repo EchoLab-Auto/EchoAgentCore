@@ -15,7 +15,7 @@ mod tool_dispatch;
 mod tool_exec;
 mod turn;
 // `qq_commands` / `workspace_commands` 已按包归位：
-// 见 `crate::packages::adapter_ops::commands` / `crate::packages::workspace::commands`。
+// 见 `crate::packages::instance_ops::commands` / `crate::packages::workspace::commands`。
 
 use boundary::PromptBlock;
 
@@ -30,12 +30,12 @@ use anyhow::Result;
 use dashmap::DashMap;
 use tokio::sync::{Mutex, RwLock};
 
-use echo_adapter::AdapterRegistry;
+use echo_defs::plugin_instance::InstanceRegistry;
 
 use crate::bridge::BackendHandle;
 use crate::command::BackendCommand;
 use crate::config::{AgentConfig, ApiProfile};
-use crate::event::{AdapterMetadataEntry, AdapterStatus, BackendEvent};
+use crate::event::{BackendEvent, InstanceMetadataEntry, InstanceStatus};
 use crate::llm::{create_provider, ChatChunk, ChatMessage, ChatRequest, LlmProvider, ToolCall};
 use crate::session::{Session, TrunkStore};
 use crate::skill::SkillRegistry;
@@ -79,7 +79,7 @@ impl Default for InboundTurnRegistration {
     }
 }
 
-/// The agent: owns provider, tools, skills, sessions, adapters, and emits events.
+/// The agent: owns provider, tools, skills, sessions, instances, and emits events.
 pub struct Agent {
     provider: RwLock<Arc<dyn LlmProvider>>,
     config: RwLock<AgentConfig>,
@@ -89,8 +89,8 @@ pub struct Agent {
     pub tools: Arc<ToolRegistry>,
     pub skills: Arc<Mutex<SkillRegistry>>,
     pub trunk: TrunkStore,
-    /// Platform adapters managed externally (registered by main / config).
-    pub adapters: Arc<AdapterRegistry>,
+    /// Platform instances managed externally (registered by main / config).
+    pub instances: Arc<InstanceRegistry>,
     /// Tokio RwLock: `emit()` runs from async loops and must never block a
     /// worker thread. All access goes through `try_*` (never held across
     /// await points, contention is negligible).
@@ -105,7 +105,7 @@ pub struct Agent {
     /// `record_incoming_and_snapshot`）、工具事件与会话落盘的参数、工具结果
     /// （经 `ToolRegistry` 出口与 `run_tool` 双保险）、LLM 请求出口（经
     /// `llm::wrap_redacting` 装饰 provider，见组合根装配）、适配器出站
-    /// （`core::adapter_tools` 闸门）。设计见 `document/core/security-redaction-design.md`。
+    /// （`core::instance_tools` 闸门）。设计见 `document/core/security-redaction-design.md`。
     redactor: std::sync::RwLock<Option<Arc<dyn echo_defs::sanitize::Redactor>>>,
     /// API 指标存储（余额快照 / token 用量；组合根装配期注入）。
     /// None = 不记录（测试 / 未接线的旧路径）。
@@ -182,7 +182,7 @@ impl std::fmt::Debug for Agent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Agent")
             .field("active_model", &self.active_model)
-            .field("adapters", &self.adapters.names())
+            .field("adapters", &self.instances.names())
             .finish_non_exhaustive()
     }
 }
@@ -308,7 +308,7 @@ impl Agent {
         config: AgentConfig,
         skills: SkillRegistry,
         tools: ToolRegistry,
-        adapters: Arc<AdapterRegistry>,
+        instances: Arc<InstanceRegistry>,
     ) -> Self {
         // The agent owns exactly ONE conversation context: the trunk. Every
         // inbound message forks a temporary branch from a trunk snapshot and
@@ -334,7 +334,7 @@ impl Agent {
             tools: Arc::new(tools),
             skills: Arc::new(Mutex::new(skills)),
             trunk,
-            adapters,
+            instances,
             handle: tokio::sync::RwLock::new(None),
             event_sink: std::sync::RwLock::new(None),
             redactor: std::sync::RwLock::new(None),
@@ -788,7 +788,7 @@ impl Agent {
         match event {
             BackendEvent::MessageReceived {
                 session_id,
-                adapter_name,
+                instance_name,
                 platform,
                 user_id,
                 user_name,
@@ -802,7 +802,7 @@ impl Agent {
                 ..
             } => BackendEvent::MessageReceived {
                 session_id,
-                adapter_name,
+                instance_name,
                 platform,
                 user_id,
                 user_name,
@@ -1263,20 +1263,20 @@ impl Agent {
         prompt
     }
 
-    /// Emit the current adapter list to subscribers.
-    fn emit_adapter_list(&self) {
-        let adapters: Vec<AdapterStatus> = self
-            .adapters
+    /// Emit the current instance list to subscribers.
+    fn emit_instance_list(&self) {
+        let instances: Vec<InstanceStatus> = self
+            .instances
             .list_info()
             .into_iter()
             .map(|info| {
                 // 实例句柄：management / ui_descriptor / session_labels 三个
                 // trait 访问器同源（贡献在注册时静态）。
-                let adapter = self.adapters.get(&info.name);
+                let handle = self.instances.get(&info.name);
                 // 实例附加信息（persona/容器/URL/绑定地址）经管理面
-                // `cached_state` 取（W3.4 单源化——与 AdapterState 同一状态
+                // `cached_state` 取（W3.4 单源化——与 InstanceState 同一状态
                 // 文档；缺管理面 / 无状态时留空，wire 字段本就 Option）。
-                let instance = adapter
+                let instance = handle
                     .as_ref()
                     .and_then(|a| a.management().and_then(|m| m.cached_state()))
                     .map(|state| state["instance"].clone())
@@ -1292,41 +1292,44 @@ impl Agent {
                 let container = str_field("container");
                 let webui_url = str_field("webui_url");
                 let onebot_url = str_field("onebot_url");
-                // UI 描述符 / 会话标签（01a S2 访问器；AdapterContribution
+                // UI 描述符 / 会话标签（01a S2 访问器；InstanceContribution
                 // 原样透传。None = 未声明，线上字段本就 Option）。
-                let ui = adapter.as_ref().and_then(|a| a.ui_descriptor());
-                let session_labels = adapter.as_ref().and_then(|a| a.session_labels());
+                let ui = handle.as_ref().and_then(|a| a.ui_descriptor());
+                let session_labels = handle.as_ref().and_then(|a| a.session_labels());
                 // 通用元数据（W2.2）：平台自有展示字段经 KV 下发。
                 let mut metadata = Vec::new();
                 if let Some(container) = &container {
-                    metadata.push(AdapterMetadataEntry {
+                    metadata.push(InstanceMetadataEntry {
                         key: "container".into(),
                         label: "容器".into(),
                         value: container.clone(),
                     });
                 }
                 if let Some(url) = &webui_url {
-                    metadata.push(AdapterMetadataEntry {
+                    metadata.push(InstanceMetadataEntry {
                         key: "webui_url".into(),
                         label: "WebUI".into(),
                         value: url.clone(),
                     });
                 }
                 if let Some(url) = &onebot_url {
-                    metadata.push(AdapterMetadataEntry {
+                    metadata.push(InstanceMetadataEntry {
                         key: "onebot_url".into(),
                         label: "OneBot API".into(),
                         value: url.clone(),
                     });
                 }
-                AdapterStatus {
+                InstanceStatus {
                     name: info.name,
                     display_name: info.display_name,
                     connected: matches!(
                         info.status,
-                        echo_adapter::AdapterConnectionState::Connected
+                        echo_defs::plugin_instance::InstanceConnectionState::Connected
                     ),
-                    running: !matches!(info.status, echo_adapter::AdapterConnectionState::Stopped),
+                    running: !matches!(
+                        info.status,
+                        echo_defs::plugin_instance::InstanceConnectionState::Stopped
+                    ),
                     self_id: info.self_id,
                     bind_address,
                     started_at: info.started_at,
@@ -1338,7 +1341,7 @@ impl Agent {
                 }
             })
             .collect();
-        self.emit(BackendEvent::AdapterList { adapters });
+        self.emit(BackendEvent::InstanceList { instances });
     }
 }
 
@@ -1359,7 +1362,7 @@ pub(crate) fn structured_message_sequence(content: &str) -> Option<u64> {
 }
 
 /// 模型可见的工具参数预检：schema 声明的必需字段缺失时，返回纠正性错误
-/// [`crate::adapter_bridge::format_hook_input`]); this pulls them into the
+/// [`crate::instance_bridge::format_hook_input`]); this pulls them into the
 /// durable `UserMessage` event so session replay keeps the multimodal
 /// content. Returns an empty vec for plain text.
 /// 单张图片（URL 或 data URI 字符串）进入持久化/模型请求的上限。

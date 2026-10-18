@@ -10,10 +10,10 @@
 //! | `management` | `[core].management_address` | Panel management WS 监听（host:port） |
 //! | `federation` | `[federation].listen` | 联邦监听（host:port；**缺省 = 合并至管理端口**；`none` = 仅连出） |
 //! | `federation-advertise` | `[federation].advertise` | 邀请串对外宣告地址（host[:port]） |
-//! | `qq` | `[adapters.qq.instances.qq.ports].reverse_ws` | 默认 QQ 实例反向 WS（Core 自绑定） |
-//! | `qq-instance:<id>:<字段>` | `[adapters.qq.instances.<id>.ports].<字段>` | 多实例宿主端口三元组 |
+//! | `qq` | `[instances.qq.instances.qq.ports].reverse_ws` | 默认 QQ 实例反向 WS（Core 自绑定） |
+//! | `qq-instance:<id>:<字段>` | `[instances.qq.instances.<id>.ports].<字段>` | 多实例宿主端口三元组 |
 //!
-//! 注意：`[adapters.qq.server].bind_address` 在运行时会被实例端口分配
+//! 注意：`[instances.qq.server].bind_address` 在运行时会被实例端口分配
 //! 覆盖（`qq_instances::merge_instance`），**实际监听端口以实例 `ports`
 //! 三元组为准**——本工具因此只写权威键。
 //!
@@ -1188,8 +1188,8 @@ mod tests {
         // 类型级验证：QQ 端口按整数反序列化成功（QqPorts 为 u16 字段）。
         let cfg = crate::config::CoreConfig::load(&path).unwrap();
         assert_eq!(cfg.federation.listen, "");
-        assert_eq!(cfg.adapters["qq"].instances["qq"].ports.reverse_ws, 3141);
-        assert_eq!(cfg.adapters["qq"].instances["two"].ports.webui, 7100);
+        assert_eq!(cfg.instances["qq"].instances["qq"].ports.reverse_ws, 3141);
+        assert_eq!(cfg.instances["qq"].instances["two"].ports.webui, 7100);
         std::fs::remove_file(&path).ok();
     }
 

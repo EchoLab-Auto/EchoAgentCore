@@ -9,7 +9,7 @@
 //! Communicates with the outside world (TUI, API) through the
 //! [`BackendBridge`] / [`BackendHandle`] mpsc channel pair.
 //!
-//! Platform adapters are managed through [`echo_adapter::AdapterRegistry`].
+//! Platform instances are managed through [`echo_defs::plugin_instance::InstanceRegistry`].
 
 /// 进程级节点身份（federation NodeId，`node-<ulid>`）与"运行区域"名。
 /// 组合根启动时注入；`SessionInfo`/`TeamInfo` 等线格式携带它们，供多节点
@@ -71,8 +71,8 @@ mod packages;
 
 // ── 包（插件）实现的兼容 re-export：公开路径保持重组前原样，避免破坏
 //    core 组合根与既有引用（`echo_agent::subagent::…` 等）。──
-pub use packages::adapter_ops::bridge as adapter_bridge;
 pub use packages::federation;
+pub use packages::instance_ops::bridge as instance_bridge;
 pub use packages::provider_llm as llm;
 pub use packages::skills_dir as skill;
 pub use packages::skills_dir::install as skill_install;
@@ -89,7 +89,7 @@ pub use event::{
     ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, SessionInfo, TimelineMessage,
     TimelineSource, TimelineTool,
 };
-pub use packages::adapter_ops::bridge::AgentMessageHook;
+pub use packages::instance_ops::bridge::AgentMessageHook;
 pub use packages::provider_llm::LlmProvider;
 pub use packages::skills_dir::{Skill, SkillRegistry};
 pub use session::{Session, SessionKey, TrunkStore};

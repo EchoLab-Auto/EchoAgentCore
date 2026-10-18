@@ -101,17 +101,19 @@ impl StartedPlugins {
         self.handles.iter().flat_map(|h| h.remote_tools()).collect()
     }
 
-    /// 汇总全部句柄的适配器贡献（每个插件的 `Contribution::Adapter` 一个
-    /// [`crate::adapter::RemoteAdapter`]；未注册适配器贡献的插件贡献空表；
+    /// 汇总全部句柄的适配器贡献（每个插件的 `Contribution::PluginInstance` 一个
+    /// [`crate::instance::RemoteInstance`]；未注册适配器贡献的插件贡献空表；
     /// P1，2026-10 适配器插件化）。
-    pub fn adapters(&self) -> Vec<(crate::api::AdapterContribution, PluginHandle)> {
+    pub fn instances(&self) -> Vec<(crate::api::InstanceContribution, PluginHandle)> {
         self.handles
             .iter()
             .flat_map(|h| {
                 h.contributions()
                     .into_iter()
                     .filter_map(|c| match c {
-                        crate::api::Contribution::Adapter(adapter) => Some((adapter, h.clone())),
+                        crate::api::Contribution::PluginInstance(instance) => {
+                            Some((instance, h.clone()))
+                        }
                         _ => None,
                     })
                     .collect::<Vec<_>>()

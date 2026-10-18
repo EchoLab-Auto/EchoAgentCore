@@ -1,11 +1,11 @@
 //! Platform-agnostic **chat vocabulary** — the message/target/channel types
-//! that cross the adapter boundary.
+//! that cross the instance boundary.
 //!
-//! An adapter translates platform events into [`IncomingMessage`] and accepts
-//! [`MessageTarget`] to send replies. Consumers (agent loop, adapter tools)
+//! An instance translates platform events into [`IncomingMessage`] and accepts
+//! [`MessageTarget`] to send replies. Consumers (agent loop, instance tools)
 //! depend only on these types — never on a concrete platform crate.
 //!
-//! The seam **trait** for adapters is [`crate::adapter::Adapter`] (not here):
+//! The seam **trait** for instances is [`crate::instance::PluginInstance`] (not here):
 //! an earlier `ChatAdapter` trait in this module never got an implementation
 //! and was removed rather than left as a decoy.
 
@@ -55,7 +55,7 @@ impl std::fmt::Display for ChannelType {
 
 /// An inbound file attachment, downloaded to the local machine.
 ///
-/// Adapters that can receive files (e.g. QQ group uploads / private files)
+/// Instances that can receive files (e.g. QQ group uploads / private files)
 /// download the bytes next to the incoming message and surface them here;
 /// the agent reads `path` with its file/bash tools.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -71,11 +71,11 @@ pub struct IncomingFile {
     pub error: Option<String>,
 }
 
-/// An inbound message from a platform adapter.
+/// An inbound message from a platform instance.
 #[derive(Debug, Clone)]
 pub struct IncomingMessage {
-    /// The adapter that received this message (e.g., "qq").
-    pub adapter_name: String,
+    /// The instance that received this message (e.g., "qq").
+    pub instance_name: String,
     /// Platform identifier string (e.g., "qq").
     pub platform: String,
     /// Platform user ID as a string (e.g., "123456789").
@@ -96,12 +96,12 @@ pub struct IncomingMessage {
     pub metadata: serde_json::Value,
     /// Multimodal media attached to the message: image URLs or `data:` URIs.
     ///
-    /// Populated by adapters that carry media (e.g. QQ images); the agent
+    /// Populated by instances that carry media (e.g. QQ images); the agent
     /// forwards them to vision-capable models. Empty for text-only messages.
     pub images: Vec<String>,
     /// File attachments already downloaded to this machine.
     ///
-    /// Empty for messages without files. Populated by adapters that support
+    /// Empty for messages without files. Populated by instances that support
     /// file transfer (e.g. QQ group uploads); see [`IncomingFile`].
     pub files: Vec<IncomingFile>,
 }

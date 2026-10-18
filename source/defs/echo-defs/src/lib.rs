@@ -15,7 +15,7 @@
 //! | [`tool`] | the `Tool` seam: trait, `ToolError`, `ToolDefinition` |
 //! | [`skill`] | the skill seam: `Skill`, `SkillMetadata`, `SkillProvider` trait |
 //! | [`chat`] | chat vocabulary: platform-agnostic message/target/channel types |
-//! | [`adapter`] | the adapter seam: `Adapter` trait, `AdapterInfo`/`AdapterError`, `AdapterManagement` |
+//! | [`instance`] | the instance seam: `PluginInstance` trait, `InstanceInfo`/`InstanceError`, `InstanceManagement` |
 //! | [`mode`] | shared policy enums (`ThinkingMode`, `ReasoningEffort`, `LoopMode`) |
 //! | [`token`] | pure token-estimation/truncation helpers |
 //! | [`media`] | multimodal payload hygiene: embedded base64 → placeholder text |
@@ -28,7 +28,6 @@
 //!   an HTTP client error; providers map their own errors into it.
 //! - Everything here is a definition: no filesystem, no network, no state.
 
-pub mod adapter;
 pub mod chat;
 pub mod llm;
 pub mod media;
@@ -36,15 +35,13 @@ pub mod media_store;
 pub mod message;
 pub mod mode;
 pub mod node;
+pub mod plugin_instance;
 pub mod sanitize;
 pub mod session;
 pub mod skill;
 pub mod token;
 pub mod tool;
 
-pub use adapter::{
-    Adapter, AdapterConnectionState, AdapterError, AdapterInfo, AdapterManagement, AdapterToolSpec,
-};
 pub use chat::{ChannelType, IncomingFile, IncomingMessage};
 pub use llm::{LlmError, LlmProvider};
 pub use media::{compact_embedded_media, elide_inline_data_uris, image_placeholder};
@@ -54,6 +51,10 @@ pub use message::{
 };
 pub use mode::{LoopMode, ReasoningEffort, ThinkingMode};
 pub use node::NodeId;
+pub use plugin_instance::{
+    InstanceConnectionState, InstanceError, InstanceInfo, InstanceManagement, PluginInstance,
+    ToolSpec,
+};
 pub use session::{SessionEvent, SessionStore};
 pub use token::{
     estimate_history_tokens, estimate_image_tokens, estimate_message_tokens, estimate_tokens,

@@ -12,7 +12,6 @@ members = [
     "source/protocol/echo-protocol",
     "source/federation/echo-federation",
     "source/backend/echo-agent",
-    "source/backend/echo-adapter",
     "source/backend/echo-config",
     "source/backend/echo-test-utils",
     "source/core",
@@ -73,7 +72,6 @@ echo-llm-openai = { path = "source/llm/echo-llm-openai" }
 echo-llm-anthropic = { path = "source/llm/echo-llm-anthropic" }
 echo-llm-ollama = { path = "source/llm/echo-llm-ollama" }
 echo-protocol = { path = "source/protocol/echo-protocol" }
-echo-adapter = { path = "source/backend/echo-adapter" }
 echo-agent = { path = "source/backend/echo-agent" }
 echo-test-utils = { path = "source/backend/echo-test-utils" }
 echo-plugin = { path = "source/plugin/echo-plugin" }

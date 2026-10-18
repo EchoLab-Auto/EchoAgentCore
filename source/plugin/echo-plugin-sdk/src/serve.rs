@@ -296,9 +296,9 @@ where
                     let call_id = invoke.call_id.clone();
                     // 可路由 = 精确命中已注册贡献；或 `"<name>:<op>"` 适配器寻址
                     // 且 `<name>` 是已注册的适配器实例（P1.2）。贡献名原样交给
-                    // handler（`AdapterHandler` 负责剥离实例名前缀）。
+                    // handler（`InstanceHandler` 负责剥离实例名前缀）。
                     let known = registered.contains(&invoke.contribution)
-                        || split_adapter_op(&invoke.contribution)
+                        || split_instance_op(&invoke.contribution)
                             .is_some_and(|(name, _)| registered.contains(&name));
                     let outcome = if known {
                         handler
@@ -376,7 +376,7 @@ where
 
 /// 适配器方法寻址拆分（P1.2）：`"<name>:<op>"` → `(<name>, <op>)`；
 /// 无冒号 = 非适配器调用（None）。
-pub(crate) fn split_adapter_op(contribution: &str) -> Option<(String, String)> {
+pub(crate) fn split_instance_op(contribution: &str) -> Option<(String, String)> {
     let (name, op) = contribution.split_once(':')?;
     if name.is_empty() || op.is_empty() {
         return None;
@@ -393,7 +393,7 @@ fn contribution_target(contribution: &Contribution) -> Option<String> {
         Contribution::Service(service) => Some(service.key.clone()),
         Contribution::Events(_) => None,
         // 适配器贡献的寻址名 = 实例名（宿主按 `Invoke("<name>:<op>")` 寻址）。
-        Contribution::Adapter(adapter) => Some(adapter.name.clone()),
+        Contribution::PluginInstance(instance) => Some(instance.name.clone()),
     }
 }
 

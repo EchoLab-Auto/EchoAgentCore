@@ -1,20 +1,20 @@
-//! Platform adapter → Agent inbound entry.
+//! Platform instance → Agent inbound entry.
 //!
-//! [`AgentMessageHook`] is where an adapter's inbound message becomes an agent
-//! turn. It is **not** a trait implementation: adapters run out-of-process and
-//! the composition root owns the wiring (plugin `deliver_message` → bounded
+//! [`AgentMessageHook`] is where an instance's inbound message becomes an agent
+//! turn. It is **not** a trait implementation: instances run out-of-process and
+//! the composition root owns the wiring (plugin `submit_input` → bounded
 //! queue → per-instance worker → this method). Platform output remains
 //! available only through explicit tools.
 
 use std::sync::Arc;
 
-use echo_adapter::types::{ChannelType, IncomingMessage};
+use echo_defs::chat::{ChannelType, IncomingMessage};
 
 use crate::agent::Agent;
 use crate::event::BackendEvent;
 use crate::session::SessionKey;
 
-/// Wraps an `Arc<Agent>` behind the adapter-facing inbound hook.
+/// Wraps an `Arc<Agent>` behind the instance-facing inbound hook.
 pub struct AgentMessageHook {
     agent: Arc<Agent>,
 }
@@ -28,13 +28,13 @@ impl AgentMessageHook {
 impl AgentMessageHook {
     /// Deliver one inbound platform message into this agent (session lookup,
     /// event emission, turn start). A successful return only acknowledges
-    /// processing; it never carries text for the adapter to send back.
+    /// processing; it never carries text for the instance to send back.
     pub async fn on_incoming_message(&self, msg: IncomingMessage) -> Result<(), String> {
         let agent = &self.agent;
         // 多实例维度：适配器名即 QQ 实例名（非 "qq" 时进会话键）。
         // 实例名 == 平台名 = 默认实例，不写 account 维度（多实例才需要区分）。
-        let account = (!msg.adapter_name.eq_ignore_ascii_case(&msg.platform))
-            .then(|| msg.adapter_name.clone());
+        let account = (!msg.instance_name.eq_ignore_ascii_case(&msg.platform))
+            .then(|| msg.instance_name.clone());
         let key = SessionKey {
             platform: msg.platform.clone(),
             scope: if msg.channel.is_group() {
@@ -73,7 +73,7 @@ impl AgentMessageHook {
 
         tracing::info!(
             message_sequence,
-            adapter = %msg.adapter_name,
+            instance = %msg.instance_name,
             platform = %msg.platform,
             user = %msg.user_id,
             channel = %msg.channel,
@@ -89,7 +89,7 @@ impl AgentMessageHook {
         });
         agent.emit(BackendEvent::MessageReceived {
             session_id: display_session_id.clone(),
-            adapter_name: msg.adapter_name.clone(),
+            instance_name: msg.instance_name.clone(),
             platform: msg.platform.clone(),
             user_id: msg.user_id.clone(),
             user_name: msg.user_name.clone(),
@@ -157,7 +157,7 @@ impl AgentMessageHook {
     }
 }
 
-/// Encode an adapter event as a clearly marked, structured hook input.
+/// Encode an instance event as a clearly marked, structured hook input.
 /// Message content stays inside JSON so it cannot be confused with source
 /// metadata such as sender or group identifiers.
 fn format_hook_input(msg: &IncomingMessage, message_sequence: u64, received_at_ms: i64) -> String {
@@ -187,7 +187,7 @@ fn format_hook_input(msg: &IncomingMessage, message_sequence: u64, received_at_m
         .collect();
     let payload = serde_json::json!({
         "event": format!("{}_message", msg.platform),
-        "adapter": msg.adapter_name,
+        "adapter": msg.instance_name,
         "platform": msg.platform,
         "channel": channel,
         "sender": {
@@ -253,7 +253,7 @@ mod tests {
     };
     use crate::tool::{Tool, ToolError};
     use async_trait::async_trait;
-    use echo_adapter::types::{ChannelType, IncomingMessage};
+    use echo_defs::chat::{ChannelType, IncomingMessage};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct BridgeProvider {
@@ -412,24 +412,24 @@ mod tests {
         let mut tools = crate::tool::ToolRegistry::new();
         tools.register(Arc::new(SendTool("send_private_msg")));
         tools.register(Arc::new(SendTool("send_group_msg")));
-        // 控制回复走 `Adapter::send_message`（平台中立的 typed seam），
+        // 控制回复走 `PluginInstance::send_message`（平台中立的 typed seam），
         // 因此测试也需要一个同 platform 的适配器实例。
-        let adapters = echo_adapter::registry::AdapterRegistry::new();
-        adapters.register(Arc::new(
-            crate::packages::adapter_ops::test_support::MockAdapter::configured("qq", "qq", true),
+        let instances = echo_defs::plugin_instance::InstanceRegistry::new();
+        instances.register(Arc::new(
+            crate::packages::instance_ops::test_support::MockInstance::configured("qq", "qq", true),
         ));
         Arc::new(Agent::new(
             provider,
             crate::config::AgentConfig::default(),
             crate::skill::SkillRegistry::new(),
             tools,
-            Arc::new(adapters),
+            Arc::new(instances),
         ))
     }
 
     fn dm_message(content: &str) -> IncomingMessage {
         IncomingMessage {
-            adapter_name: "qq".into(),
+            instance_name: "qq".into(),
             platform: "qq".into(),
             user_id: "123456".into(),
             user_name: "tester".into(),
@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(agent.loop_mode(), echo_defs::LoopMode::Parallel);
     }
 
-    /// 记录 `Adapter::send_message` 的控制回复（取消回执 / 等待回复走
+    /// 记录 `PluginInstance::send_message` 的控制回复（取消回执 / 等待回复走
     /// 平台中立的 typed seam，不再经过 `send_*` 工具）。
     async fn wait_until(mut predicate: impl FnMut() -> bool) {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -684,7 +684,7 @@ mod tests {
             crate::config::AgentConfig::default(),
             crate::skill::SkillRegistry::new(),
             tools,
-            Arc::new(echo_adapter::registry::AdapterRegistry::new()),
+            Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
         ));
         use_parallel_mode(&agent).await;
         let hook = AgentMessageHook::new(Arc::clone(&agent));

@@ -73,21 +73,21 @@ pub use serve::{
 };
 
 /// 适配器插件（P1.2，2026-10 适配器插件化）：[`PluginHandler`] 的适配器
-/// 形态——注册 `Contribution::Adapter`（宿主据此把 `RemoteAdapter` 注册进
-/// `AdapterRegistry`），`Invoke("<name>:<op>")` 寻址到 [`AdapterPlugin::invoke_op`]
+/// 形态——注册 `Contribution::PluginInstance`（宿主据此把 `RemoteInstance` 注册进
+/// `InstanceRegistry`），`Invoke("<name>:<op>")` 寻址到 [`InstancePlugin::invoke_op`]
 /// 的 method 路由（实例名前缀由 SDK 剥离）。作者实现本 trait 后仍交给
 /// [`serve_stdio`]——协议握手 / 帧 / 回呼全部由 SDK 承担。
 #[async_trait::async_trait]
-pub trait AdapterPlugin: Send + Sync + 'static {
-    /// 接收宿主下发配置（`Hello.config`），先于 [`adapter`](Self::adapter)
+pub trait InstancePlugin: Send + Sync + 'static {
+    /// 接收宿主下发配置（`Hello.config`），先于 [`instance`](Self::instance)
     /// 调用；`Err` = 拒绝启动。缺省忽略。
     async fn configure(&self, _config: Value) -> Result<(), String> {
         Ok(())
     }
 
-    /// 适配器贡献（`Contribution::Adapter`；实例名 / 平台 / 能力位 / UI 描述符）。
+    /// 适配器贡献（`Contribution::PluginInstance`；实例名 / 平台 / 能力位 / UI 描述符）。
     /// 在 [`configure`](Self::configure) 之后调用。
-    fn adapter(&self) -> echo_plugin_api::AdapterContribution;
+    fn instance(&self) -> echo_plugin_api::InstanceContribution;
 
     /// 处理一次适配器方法调用（`Invoke("<name>:<op>")` 的 `op` 部分；
     /// SDK 已剥离实例名前缀）。
@@ -98,25 +98,25 @@ pub trait AdapterPlugin: Send + Sync + 'static {
     async fn invoke_op(&self, op: &str, payload: Value) -> InvokeOutcome;
 
     /// 握手完成后交付宿主客户端（调用一次）。插件自存（如
-    /// `OnceLock<HostClient>`），后续 `deliver_message` / `report_state`
-    /// 等回呼经它发起（见 `document/design/adapter-plugin.md` §插件动作 表）。
+    /// `OnceLock<HostClient>`），后续 `submit_input` / `report_state`
+    /// 等回呼经它发起（见 `document/design/instance-plugin.md` §插件动作 表）。
     async fn on_ready(&self, _host: HostClient) {}
 
     /// `Drain` 排空通知（随后进程退出）；缺省空实现。
     async fn on_drain(&self, _deadline_ms: u64) {}
 }
 
-/// 把 [`AdapterPlugin`] 包装成 [`PluginHandler`]：注册单个
-/// `Contribution::Adapter`，剥离 `"<name>:"` 前缀后路由到
-/// [`AdapterPlugin::invoke_op`]。通常经 [`serve_adapter_stdio`] 使用。
-pub struct AdapterHandler<A: AdapterPlugin> {
+/// 把 [`InstancePlugin`] 包装成 [`PluginHandler`]：注册单个
+/// `Contribution::PluginInstance`，剥离 `"<name>:"` 前缀后路由到
+/// [`InstancePlugin::invoke_op`]。通常经 [`serve_instance_stdio`] 使用。
+pub struct InstanceHandler<A: InstancePlugin> {
     plugin: A,
     /// 实例名：注册时（`configure` 之后）锁定，寻址按它匹配。
     name: std::sync::OnceLock<String>,
 }
 
-impl<A: AdapterPlugin> AdapterHandler<A> {
-    /// 包装适配器插件（实例名在注册时取自 [`AdapterPlugin::adapter`]）。
+impl<A: InstancePlugin> InstanceHandler<A> {
+    /// 包装适配器插件（实例名在注册时取自 [`InstancePlugin::instance`]）。
     pub fn new(plugin: A) -> Self {
         Self {
             plugin,
@@ -131,19 +131,19 @@ impl<A: AdapterPlugin> AdapterHandler<A> {
 }
 
 #[async_trait::async_trait]
-impl<A: AdapterPlugin> PluginHandler for AdapterHandler<A> {
+impl<A: InstancePlugin> PluginHandler for InstanceHandler<A> {
     async fn configure(&self, config: Value) -> Result<(), String> {
         self.plugin.configure(config).await
     }
 
     fn contributions(&self) -> Vec<Contribution> {
-        let adapter = self.plugin.adapter();
-        let _ = self.name.set(adapter.name.clone());
-        vec![Contribution::Adapter(adapter)]
+        let instance = self.plugin.instance();
+        let _ = self.name.set(instance.name.clone());
+        vec![Contribution::PluginInstance(instance)]
     }
 
     async fn invoke(&self, req: InvokeRequest) -> InvokeOutcome {
-        match serve::split_adapter_op(&req.contribution) {
+        match serve::split_instance_op(&req.contribution) {
             Some((name, op)) if self.name.get() == Some(&name) => {
                 self.plugin.invoke_op(&op, req.payload).await
             }
@@ -163,11 +163,11 @@ impl<A: AdapterPlugin> PluginHandler for AdapterHandler<A> {
     }
 }
 
-/// 以 stdio 服务一个适配器插件（= `serve_stdio_with(AdapterHandler::new(plugin), …)`）。
+/// 以 stdio 服务一个适配器插件（= `serve_stdio_with(InstanceHandler::new(plugin), …)`）。
 ///
 /// `Welcome.capabilities` 自动追加 `"adapter"`（能力位双方声明才可用；
 /// 宿主据此识别适配器插件）。
-pub async fn serve_adapter_stdio(plugin: impl AdapterPlugin) -> std::io::Result<()> {
+pub async fn serve_instance_stdio(plugin: impl InstancePlugin) -> std::io::Result<()> {
     let mut options = ServeOptions::default();
     if !options
         .capabilities
@@ -176,7 +176,7 @@ pub async fn serve_adapter_stdio(plugin: impl AdapterPlugin) -> std::io::Result<
     {
         options.capabilities.push(capabilities::ADAPTER.to_string());
     }
-    serve_stdio_with(AdapterHandler::new(plugin), options).await
+    serve_stdio_with(InstanceHandler::new(plugin), options).await
 }
 
 use serde_json::Value;

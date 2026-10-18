@@ -2,15 +2,15 @@
 //!
 //! Extracted from ad-hoc `#[cfg(test)]` mocks so that every crate can use
 //! the same implementations as a `[dev-dependency]`:
-//! - [`MockAdapter`] — a scriptable platform adapter.
+//! - [`MockInstance`] — a scriptable platform instance.
 //! - [`temp_config_file`] — a temp TOML file with automatic cleanup.
 //!
-//! Note: this crate deliberately depends only on echo-adapter, never on
+//! Note: this crate deliberately depends only on echo-instance, never on
 //! echo-agent — agent crates' `[dev-dependencies]` on this crate would
 //! otherwise compile echo-agent twice (dev-dependency cycle), breaking type
 //! identity. Mock LLM providers live inside echo-agent's own test module.
 
-pub use adapter::MockAdapter;
+pub use instance::MockInstance;
 
 /// Create a temporary TOML config file in the system temp dir.
 ///
@@ -49,14 +49,16 @@ fn uuid_lite() -> String {
     format!("{nanos:x}")
 }
 
-mod adapter {
+mod instance {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use async_trait::async_trait;
-    use echo_adapter::traits::{Adapter, AdapterConnectionState, AdapterError, AdapterInfo};
+    use echo_defs::plugin_instance::{
+        InstanceConnectionState, InstanceError, InstanceInfo, PluginInstance,
+    };
 
-    /// A scriptable `Adapter` for registry and integration tests.
-    pub struct MockAdapter {
+    /// A scriptable `PluginInstance` for registry and integration tests.
+    pub struct MockInstance {
         pub name: String,
         pub configured: bool,
         pub started: AtomicBool,
@@ -67,7 +69,7 @@ mod adapter {
         pub denylist_groups: std::sync::Mutex<Vec<String>>,
     }
 
-    impl MockAdapter {
+    impl MockInstance {
         pub fn new(name: &str, configured: bool) -> Self {
             Self {
                 name: name.into(),
@@ -86,7 +88,7 @@ mod adapter {
     }
 
     #[async_trait]
-    impl Adapter for MockAdapter {
+    impl PluginInstance for MockInstance {
         fn name(&self) -> &str {
             &self.name
         }
@@ -99,14 +101,14 @@ mod adapter {
         fn is_configured(&self) -> bool {
             self.configured
         }
-        fn status_info(&self) -> AdapterInfo {
-            AdapterInfo {
+        fn status_info(&self) -> InstanceInfo {
+            InstanceInfo {
                 name: self.name.clone(),
                 display_name: self.name.clone(),
                 status: if self.is_started() {
-                    AdapterConnectionState::Connected
+                    InstanceConnectionState::Connected
                 } else {
-                    AdapterConnectionState::Stopped
+                    InstanceConnectionState::Stopped
                 },
                 self_id: None,
                 started_at: None,
@@ -114,11 +116,11 @@ mod adapter {
                 configured: self.configured,
             }
         }
-        async fn start(&self) -> Result<(), AdapterError> {
+        async fn start(&self) -> Result<(), InstanceError> {
             self.started.store(true, Ordering::SeqCst);
             Ok(())
         }
-        async fn stop(&self) -> Result<(), AdapterError> {
+        async fn stop(&self) -> Result<(), InstanceError> {
             self.started.store(false, Ordering::SeqCst);
             Ok(())
         }

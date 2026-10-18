@@ -83,7 +83,7 @@ pub trait Tool: Send + Sync {
     ///
     /// 循环用它决定「临时等待回复」要不要抑制——此前按工具名前缀/固定名单
     /// 判断（`send_private_msg` | `send_group_msg` | …），等于把平台语义写进
-    /// 框架。默认 `false`；适配器工具按声明给（见 `AdapterToolSpec`）。
+    /// 框架。默认 `false`；适配器工具按声明给（见 `ToolSpec`）。
     fn produces_visible_output(&self) -> bool {
         false
     }

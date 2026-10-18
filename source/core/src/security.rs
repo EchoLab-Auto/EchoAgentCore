@@ -154,9 +154,9 @@ pub fn build_redactor(cfg: &CoreConfig) -> Arc<dyn Redactor> {
         }
     }
 
-    // 各平台的接入令牌（`[adapters.<platform>.server].access_token`）——
+    // 各平台的接入令牌（`[instances.<platform>.server].access_token`）——
     // **逐平台登记**：新增平台自动纳入脱敏，不需要改这里。
-    for host in cfg.adapters.values() {
+    for host in cfg.instances.values() {
         if host.access_token.trim().is_empty() {
             continue;
         }

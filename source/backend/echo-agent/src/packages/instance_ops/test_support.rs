@@ -1,13 +1,13 @@
-//! adapter_ops 测试共享设施（`#[cfg(test)]`；commands / legacy 两个测试
+//! instance_ops 测试共享设施（`#[cfg(test)]`；commands / legacy 两个测试
 //! 模块共用，避免 mock 双份漂移）。
 //!
-//! `MockAdapter` 复刻插件适配器的管理面行为（真实 QQ 实现在独立插件进程，
+//! `MockInstance` 复刻插件适配器的管理面行为（真实 QQ 实现在独立插件进程，
 //! 由插件仓契约测试守护）；`platform` / `gating` 可配——广播泛化用例需要
 //! 构造同 / 异 platform 与不同 gating 能力的实例。
 
 use std::sync::{Arc, Mutex};
 
-use echo_adapter::registry::AdapterRegistry;
+use echo_defs::plugin_instance::InstanceRegistry;
 
 use crate::agent::Agent;
 use crate::config::AgentConfig;
@@ -41,9 +41,9 @@ impl crate::llm::LlmProvider for NullProvider {
     }
 }
 
-/// 测试适配器：实现 `Adapter` + `AdapterManagement`（mock 复刻插件管理面
-/// 行为；生产实现由 `echo-adapter-qq` 的契约测试守护，见 W3.2 测试）。
-pub(crate) struct MockAdapter {
+/// 测试适配器：实现 `PluginInstance` + `InstanceManagement`（mock 复刻插件管理面
+/// 行为；生产实现由 `echo-instance-qq` 的契约测试守护，见 W3.2 测试）。
+pub(crate) struct MockInstance {
     name: String,
     platform: String,
     /// gating 能力位（广播裁剪用例：false = 每实例独立门控，不做共享段对齐）。
@@ -56,7 +56,7 @@ pub(crate) struct MockAdapter {
     deny_groups: Mutex<Vec<String>>,
 }
 
-impl MockAdapter {
+impl MockInstance {
     /// 指定 platform 与 gating 能力位（广播泛化用例；默认档见
     /// `agent_with_instances` 的调用方——platform `mock` + gating `true`
     /// 与 QQ 插件贡献一致）。
@@ -76,7 +76,7 @@ impl MockAdapter {
 }
 
 #[async_trait::async_trait]
-impl echo_adapter::Adapter for MockAdapter {
+impl echo_defs::plugin_instance::PluginInstance for MockInstance {
     fn name(&self) -> &str {
         &self.name
     }
@@ -89,24 +89,24 @@ impl echo_adapter::Adapter for MockAdapter {
     fn is_configured(&self) -> bool {
         true
     }
-    fn status_info(&self) -> echo_adapter::AdapterInfo {
-        echo_adapter::AdapterInfo {
+    fn status_info(&self) -> echo_defs::plugin_instance::InstanceInfo {
+        echo_defs::plugin_instance::InstanceInfo {
             name: self.name.clone(),
             display_name: self.name.clone(),
-            status: echo_adapter::AdapterConnectionState::Connected,
+            status: echo_defs::plugin_instance::InstanceConnectionState::Connected,
             self_id: Some("123".into()),
             started_at: Some(1),
             platform: self.platform.clone(),
             configured: true,
         }
     }
-    async fn start(&self) -> Result<(), echo_adapter::AdapterError> {
+    async fn start(&self) -> Result<(), echo_defs::plugin_instance::InstanceError> {
         Ok(())
     }
-    async fn stop(&self) -> Result<(), echo_adapter::AdapterError> {
+    async fn stop(&self) -> Result<(), echo_defs::plugin_instance::InstanceError> {
         Ok(())
     }
-    fn management(&self) -> Option<&dyn echo_adapter::AdapterManagement> {
+    fn management(&self) -> Option<&dyn echo_defs::plugin_instance::InstanceManagement> {
         Some(self)
     }
     fn gating_capabilities(&self) -> bool {
@@ -115,7 +115,7 @@ impl echo_adapter::Adapter for MockAdapter {
 }
 
 #[async_trait::async_trait]
-impl echo_adapter::AdapterManagement for MockAdapter {
+impl echo_defs::plugin_instance::InstanceManagement for MockInstance {
     fn cached_state(&self) -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "gate": {
@@ -133,7 +133,7 @@ impl echo_adapter::AdapterManagement for MockAdapter {
         &self,
         method: &str,
         payload: serde_json::Value,
-    ) -> Result<serde_json::Value, echo_adapter::AdapterError> {
+    ) -> Result<serde_json::Value, echo_defs::plugin_instance::InstanceError> {
         match method {
             "set_gate_mode" => {
                 let mode = payload["mode"].as_str().unwrap_or("none");
@@ -157,9 +157,11 @@ impl echo_adapter::AdapterManagement for MockAdapter {
             })),
             // 01a §1.3 / 02a §7.2 C3：插件 `get_state` 返回完整
             // cached_state（mock 复刻插件行为；真实实现由
-            // echo-adapter-qq 契约测试守护）。
+            // echo-instance-qq 契约测试守护）。
             "get_state" => self.cached_state().ok_or_else(|| {
-                echo_adapter::AdapterError::Internal("no cached state available".into())
+                echo_defs::plugin_instance::InstanceError::Internal(
+                    "no cached state available".into(),
+                )
             }),
             "update_allowlist" => {
                 *self.allow_users.lock().unwrap() = parse_list(&payload, "user_ids");
@@ -177,9 +179,9 @@ impl echo_adapter::AdapterManagement for MockAdapter {
                 "denylist_users": self.deny_users.lock().unwrap().clone(),
                 "denylist_groups": self.deny_groups.lock().unwrap().clone(),
             })),
-            other => Err(echo_adapter::AdapterError::Internal(format!(
-                "unknown adapter method: {other}"
-            ))),
+            other => Err(echo_defs::plugin_instance::InstanceError::Internal(
+                format!("unknown adapter method: {other}"),
+            )),
         }
     }
 }
@@ -204,9 +206,9 @@ fn parse_list(payload: &serde_json::Value, key: &str) -> Vec<String> {
 pub(crate) fn agent_with_instances(
     specs: &[(&str, &str, bool)],
 ) -> (Arc<Agent>, Arc<Mutex<Vec<BackendEvent>>>) {
-    let registry = AdapterRegistry::new();
+    let registry = InstanceRegistry::new();
     for (name, platform, gating) in specs {
-        registry.register(Arc::new(MockAdapter::configured(name, platform, *gating)));
+        registry.register(Arc::new(MockInstance::configured(name, platform, *gating)));
     }
     let agent = Arc::new(Agent::new(
         Arc::new(NullProvider),
@@ -229,7 +231,7 @@ pub(crate) fn agent_with_two_instances() -> (Arc<Agent>, Arc<Mutex<Vec<BackendEv
 }
 
 /// 取某适配器管理面的 owner（mock `get_owner`）。
-pub(crate) async fn owner_of(ad: &Arc<dyn echo_adapter::Adapter>) -> i64 {
+pub(crate) async fn owner_of(ad: &Arc<dyn echo_defs::plugin_instance::PluginInstance>) -> i64 {
     ad.management()
         .expect("management")
         .invoke_custom("get_owner", serde_json::json!({}))

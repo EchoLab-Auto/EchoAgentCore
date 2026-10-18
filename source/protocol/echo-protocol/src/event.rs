@@ -16,9 +16,9 @@ pub struct SkillSourceInfo {
     pub installed_at: Option<String>,
 }
 
-/// Adapter status reported to the TUI.
+/// PluginInstance status reported to the TUI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdapterStatus {
+pub struct InstanceStatus {
     pub name: String,
     pub display_name: String,
     pub connected: bool,
@@ -33,16 +33,16 @@ pub struct AdapterStatus {
     /// 替代各平台专属具名字段——平台特有字段名随插件/适配器来，消费端
     /// （Panel）按 KV 通用渲染，宿主不再为每个平台加具名字段。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub metadata: Vec<AdapterMetadataEntry>,
-    /// 平台标识（如 `"qq"`；来自 `AdapterInfo.platform`）。Panel 会话分组 /
+    pub metadata: Vec<InstanceMetadataEntry>,
+    /// 平台标识（如 `"qq"`；来自 `InstanceInfo.platform`）。Panel 会话分组 /
     /// 通用化寻址需要它上线（W2.3 泛化 Core-1，2026-10）；旧 Panel 忽略。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
-    /// UI 描述符（`AdapterContribution.ui` 原样透传；Panel 通用渲染器按
+    /// UI 描述符（`InstanceContribution.ui` 原样透传；Panel 通用渲染器按
     /// `ui.version` 选择渲染方案）。None = 插件未声明 UI。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<serde_json::Value>,
-    /// 会话标签（`AdapterContribution.session_labels` 原样透传；如
+    /// 会话标签（`InstanceContribution.session_labels` 原样透传；如
     /// `{"dm":"私聊","group":"群聊"}`）。None = 未声明。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_labels: Option<serde_json::Value>,
@@ -50,7 +50,7 @@ pub struct AdapterStatus {
 
 /// 适配器展示型元数据条目（平台自有字段的通用承载；W2.2，2026-10）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AdapterMetadataEntry {
+pub struct InstanceMetadataEntry {
     /// 稳定键（程序消费；如 `container` / `webui_url` / `onebot_url`）。
     pub key: String,
     /// 展示标签（UI 渲染；如「容器」「WebUI」）。
@@ -151,7 +151,7 @@ pub struct ContextBlockInfo {
 /// Source provenance of a timeline user message (mirrors `MessageReceived`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimelineSource {
-    pub adapter_name: String,
+    pub instance_name: String,
     pub platform: String,
     pub user_id: String,
     pub user_name: String,
@@ -294,10 +294,10 @@ impl TimelineMessage {
 /// Events flowing from the backend to the TUI.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum BackendEvent {
-    // ---- Adapter lifecycle ----
-    /// An adapter's connection state changed.
-    AdapterStateChanged {
-        adapter_name: String,
+    // ---- PluginInstance lifecycle ----
+    /// An instance's connection state changed.
+    InstanceStateChanged {
+        instance_name: String,
         connected: bool,
         self_id: Option<String>,
     },
@@ -306,7 +306,7 @@ pub enum BackendEvent {
     /// A message was received from any platform.
     MessageReceived {
         session_id: String,
-        adapter_name: String,
+        instance_name: String,
         platform: String,
         user_id: String,
         user_name: String,
@@ -744,15 +744,15 @@ pub enum BackendEvent {
         message: String,
     },
 
-    // ---- Adapter management ----
-    AdapterList {
-        adapters: Vec<AdapterStatus>,
+    // ---- PluginInstance management ----
+    InstanceList {
+        instances: Vec<InstanceStatus>,
     },
     /// 适配器管理方法调用结果（W2.1，2026-10 适配器管理通道；
-    /// [`crate::command::BackendCommand::InvokeAdapterOp`] 的响应）。
-    AdapterOpResult {
+    /// [`crate::command::BackendCommand::InvokeInstanceOp`] 的响应）。
+    InstanceOpResult {
         /// 适配器实例名（回显请求值）。
-        adapter: String,
+        instance: String,
         /// 方法名（回显请求值）。
         method: String,
         /// 成功时的结构化结果（方法自定义；如 `{"mode":"allowlist"}`）。
@@ -764,11 +764,11 @@ pub enum BackendEvent {
     },
     /// 适配器状态推送（W2.1，2026-10）：插件/适配器主动上报（含
     /// `report_ui_state` 与下次拉取状态的刷新触发）；`state` 为
-    /// `AdapterManagement::cached_state` 同构文档（epoch 版本化由宿主缓存管理）。
-    AdapterState {
+    /// `InstanceManagement::cached_state` 同构文档（epoch 版本化由宿主缓存管理）。
+    InstanceState {
         /// 适配器实例名。
-        adapter: String,
-        /// 状态文档（平台自定义；约定键见 `AdapterManagement::cached_state`）。
+        instance: String,
+        /// 状态文档（平台自定义；约定键见 `InstanceManagement::cached_state`）。
         state: serde_json::Value,
     },
 
@@ -1276,7 +1276,7 @@ pub struct ApiUsagePoint {
 /// Full state snapshot sent to the TUI on connect.
 #[derive(Debug, Clone, Default)]
 pub struct BackendState {
-    pub adapters: HashMap<String, AdapterStatus>,
+    pub instances: HashMap<String, InstanceStatus>,
     pub active_model: String,
     pub active_provider: String,
     pub system_prompt: String,
@@ -1360,11 +1360,11 @@ mod workspace_directory_tests {
 }
 
 #[cfg(test)]
-mod adapter_status_tests {
+mod instance_status_tests {
     use super::*;
 
-    fn status_with_ui() -> AdapterStatus {
-        AdapterStatus {
+    fn status_with_ui() -> InstanceStatus {
+        InstanceStatus {
             name: "qq-default".into(),
             display_name: "QQ / OneBot".into(),
             connected: true,
@@ -1382,13 +1382,13 @@ mod adapter_status_tests {
 
     /// S1：新三字段 round-trip（线上形状：platform / ui / session_labels）。
     #[test]
-    fn adapter_status_round_trips_ui_fields() {
+    fn instance_status_round_trips_ui_fields() {
         let status = status_with_ui();
         let value = serde_json::to_value(&status).unwrap();
         assert_eq!(value["platform"], serde_json::json!("qq"));
         assert_eq!(value["ui"]["version"], serde_json::json!(1));
         assert_eq!(value["session_labels"]["dm"], serde_json::json!("私聊"));
-        let back: AdapterStatus = serde_json::from_value(value).unwrap();
+        let back: InstanceStatus = serde_json::from_value(value).unwrap();
         assert_eq!(back.platform.as_deref(), Some("qq"));
         assert_eq!(back.ui.unwrap()["version"], serde_json::json!(1));
         assert_eq!(
@@ -1399,13 +1399,13 @@ mod adapter_status_tests {
 
     /// S1：旧 JSON（缺三字段）可解；None 时序列化省略（旧 Panel 无感）。
     #[test]
-    fn legacy_adapter_status_json_without_new_fields_decodes() {
+    fn legacy_instance_status_json_without_new_fields_decodes() {
         let legacy = r#"{
             "name": "qq-default", "display_name": "QQ / OneBot",
             "connected": true, "running": true, "self_id": null,
             "bind_address": "127.0.0.1:3100", "started_at": null
         }"#;
-        let status: AdapterStatus = serde_json::from_str(legacy).unwrap();
+        let status: InstanceStatus = serde_json::from_str(legacy).unwrap();
         assert!(status.platform.is_none());
         assert!(status.ui.is_none());
         assert!(status.session_labels.is_none());

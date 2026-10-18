@@ -1,7 +1,7 @@
 //! Core 侧 TOML 配置加载（含环境变量覆盖）。
 //!
 //! [`CoreConfig`] — `config/echo-agent-core.toml`，Core 启动时加载
-//! （`[logging]` / `[agent]` / `[adapters.qq]` / `[core]` 中的
+//! （`[logging]` / `[agent]` / `[instances.qq]` / `[core]` 中的
 //! management 监听地址）。支持旧的 `[server]`/`[bot]` 格式自动迁移。
 //! Panel 侧配置由 EchoAgentPanel 仓库自行定义。
 
@@ -70,16 +70,16 @@ pub struct CoreConfig {
     pub core: CoreSection,
     /// Core↔Core 联邦链路（零配置缺省开启：缺省监听 `0.0.0.0:3133`，详见 [`FederationSection`]）。
     pub federation: FederationSection,
-    /// New adapter configuration.
-    #[serde(alias = "adapters")]
-    pub adapters_section: Option<AdaptersSection>,
-    /// 各平台的宿主视图（`load()` 从 `[adapters.<name>]` 逐个解析）。
+    /// 平台实例配置段（`[instances.<platform>]`；`[adapters.<platform>]` 仍接受）。
+    #[serde(alias = "adapters", alias = "instances")]
+    pub instances_section: Option<InstancesSection>,
+    /// 各平台的宿主视图（`load()` 从 `[instances.<name>]` 逐个解析）。
     ///
-    /// **平台中立**：新增平台只需在 TOML 里写 `[adapters.<name>]`，无需改本
+    /// **平台中立**：新增平台只需在 TOML 里写 `[instances.<name>]`，无需改本
     /// 结构体；宿主只读 `enabled` / `command_prefix` / `access_token` /
     /// `instances` / `launch`，其余键原样透传给插件。
     #[serde(skip)]
-    pub adapters: std::collections::BTreeMap<String, AdapterHostConfig>,
+    pub instances: std::collections::BTreeMap<String, InstanceHostConfig>,
     /// `[security]`：敏感信息防护（脱敏服务，2026-10）。
     pub security: SecuritySection,
 }
@@ -122,21 +122,21 @@ impl Default for SanitizeSection {
     }
 }
 
-/// Container for the `[adapters]` TOML section.
+/// Container for the `[instances]` TOML section.
 ///
-/// **平台中立**：`[adapters.<name>]` 里的任意平台名都原样收进
+/// **平台中立**：`[instances.<name>]` 里的任意平台名都原样收进
 /// [`platforms`](Self::platforms)——新增平台不需要改本结构体，宿主也不认识
 /// 具体平台（平台专属键透传给插件）。此前是硬编码的 `qq: Option<QqSection>`，
-/// 配 `[adapters.telegram]` 会被 serde 静默丢弃。
+/// 配 `[instances.telegram]` 会被 serde 静默丢弃。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-pub struct AdaptersSection {
+pub struct InstancesSection {
     /// 平台名 → 该平台的适配器段（`shared` 透传 / `plugin` 启停 / `instances` 表）。
     #[serde(flatten)]
     pub platforms: std::collections::BTreeMap<String, QqSection>,
 }
 
-impl AdaptersSection {
+impl InstancesSection {
     /// 取某个平台的段（`None` = 该平台未配置）。
     ///
     /// 生产路径已改为遍历 [`platforms`](Self::platforms)（宿主不再点名平台），
@@ -156,7 +156,7 @@ impl AdaptersSection {
     }
 }
 
-/// `[adapters.qq]`：共享默认 + 多实例表。
+/// `[instances.qq]`：共享默认 + 多实例表。
 ///
 /// - 顶层字段是**共享默认值**（镜像、auto_start、路径模板…）；
 /// - `instances.<id>` 覆盖单实例差异（persona 归属、端口、owner…）。
@@ -171,7 +171,7 @@ pub struct QqSection {
     /// 适配器宿主模式（历史字段，2026-10 适配器插件化；builtin 模式已移除，
     /// 见 `load()` 的归一化告警）。
     pub mode: String,
-    /// 插件进程启动配置（`[adapters.qq.plugin]`）。
+    /// 插件进程启动配置（`[instances.qq.plugin]`）。
     pub plugin: QqPluginLaunchSection,
     /// 实例表：实例 id → 覆盖项。
     pub instances: std::collections::BTreeMap<String, QqInstanceSection>,
@@ -179,7 +179,7 @@ pub struct QqSection {
 
 /// 单平台的宿主配置视图：透传为主、宿主只读少量字段。
 ///
-/// `[adapters.<platform>]` 的完整内容（共享层 + 实例覆盖）以 **TOML 表**
+/// `[instances.<platform>]` 的完整内容（共享层 + 实例覆盖）以 **TOML 表**
 /// 原样下发给适配器插件（`Hello.config.config`）——宿主不重复插件配置
 /// schema，新字段自动透传。本视图仅承载宿主自身需要的读点：
 /// - [`enabled`](Self::enabled)：实例解析 / 自启停门控；
@@ -187,27 +187,27 @@ pub struct QqSection {
 /// - [`access_token`](Self::access_token)：脱敏器密钥登记；
 /// - [`instances`](Self::instances) / [`launch`](Self::launch)：实例表与插件进程启动。
 #[derive(Debug, Clone, Default)]
-pub struct AdapterHostConfig {
-    /// 平台名（= `[adapters.<name>]` 的 `<name>`）。
+pub struct InstanceHostConfig {
+    /// 平台名（= `[instances.<name>]` 的 `<name>`）。
     pub platform: String,
-    /// 实例表（`[adapters.<platform>.instances.<id>]`；缺省空 = 单实例）。
+    /// 实例表（`[instances.<platform>.instances.<id>]`；缺省空 = 单实例）。
     pub instances: std::collections::BTreeMap<String, QqInstanceSection>,
-    /// 插件进程启动配置（`[adapters.<platform>.plugin]`）。
+    /// 插件进程启动配置（`[instances.<platform>.plugin]`）。
     pub launch: QqPluginLaunchSection,
-    /// `[adapters.<platform>] mode`（历史字段；`"builtin"` 已移除）。
+    /// `[instances.<platform>] mode`（历史字段；`"builtin"` 已移除）。
     pub mode: String,
     /// 共享层配置表（归一化后：`command_prefix` 空 → `/`、
     /// `ECHO_ACCESS_TOKEN` 覆盖已应用）。
     pub shared: toml::Table,
-    /// `[adapters.qq].enabled`（缺省 false）。
+    /// `[instances.qq].enabled`（缺省 false）。
     pub enabled: bool,
     /// 归一化后的命令前缀。
     pub command_prefix: String,
-    /// `[adapters.qq.server].access_token`（空 = 未设置）。
+    /// `[instances.qq.server].access_token`（空 = 未设置）。
     pub access_token: String,
 }
 
-impl AdapterHostConfig {
+impl InstanceHostConfig {
     /// 从平台段构造（读取宿主读点；`load()` 归一化后调用）。
     ///
     /// 共享层先归一化（`command_prefix` 空 → `/`、`ECHO_ACCESS_TOKEN`
@@ -254,7 +254,7 @@ impl AdapterHostConfig {
     }
 }
 
-/// `[adapters.qq.plugin]`：适配器插件进程（stdio）启动配置。
+/// `[instances.qq.plugin]`：适配器插件进程（stdio）启动配置。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct QqPluginLaunchSection {
@@ -276,7 +276,7 @@ impl Default for QqPluginLaunchSection {
     }
 }
 
-/// 单个 QQ 实例的配置覆盖项（缺省继承 `[adapters.qq]` 共享默认）。
+/// 单个 QQ 实例的配置覆盖项（缺省继承 `[instances.qq]` 共享默认）。
 ///
 /// - `persona` / `ports` / `enabled` = 宿主字段（实例归属 / 端口分配 / 启停）；
 /// - 其余键（`server` / `owner_qq` / `napcat_*` / 插件新增键…）进
@@ -440,20 +440,20 @@ impl CoreConfig {
                 .retain(|p| seen.insert(p.name.clone()));
         }
 
-        // ---- Build per-platform adapter host configs（平台中立）----
+        // ---- Build per-platform instance host configs（平台中立）----
         //
-        // 任何 `[adapters.<name>]` 段都会被解析进来（不是只认 `qq`）。宿主只
+        // 任何 `[instances.<name>]` 段都会被解析进来（不是只认 `qq`）。宿主只
         // 读四个点（enabled / command_prefix / access_token / instances+launch），
         // 其余键原样透传给插件。
         let mut platforms: Vec<(String, QqSection)> = Vec::new();
-        if let Some(ref adapters) = config.adapters_section {
-            for (name, section) in &adapters.platforms {
+        if let Some(ref instances) = config.instances_section {
+            for (name, section) in &instances.platforms {
                 platforms.push((name.clone(), section.clone()));
             }
         }
-        // QQ 始终有一个视图（历史行为：即使没写 `[adapters.qq]`，其
+        // QQ 始终有一个视图（历史行为：即使没写 `[instances.qq]`，其
         // `command_prefix` 也会被归一化为 `/`、插件 command 默认
-        // `echo-adapter-qq`）。其它平台只在配置里出现时才建视图。
+        // `echo-instance-qq`）。其它平台只在配置里出现时才建视图。
         if !platforms.iter().any(|(name, _)| name == "qq") {
             platforms.push(("qq".to_string(), QqSection::default()));
         }
@@ -492,18 +492,18 @@ impl CoreConfig {
                 }
             }
 
-            let mut host = AdapterHostConfig::from_section(&name, &section, shared);
+            let mut host = InstanceHostConfig::from_section(&name, &section, shared);
 
             // builtin 模式已移除（适配器插件化收尾）：只按 plugin 模式运行。
             if host.mode == "builtin" {
                 eprintln!(
                     "warning: [adapters.{name}] mode = \"builtin\" 已移除（适配器插件化收尾）；\
-                     按 plugin 模式运行，请在 [adapters.{name}.plugin] 配置 command"
+                     按 plugin 模式运行，请在 [instances.{name}.plugin] 配置 command"
                 );
                 host.mode.clear();
             }
 
-            config.adapters.insert(name, host);
+            config.instances.insert(name, host);
         }
 
         // Agent API key overrides: explicit config wins, otherwise env var.
@@ -543,12 +543,12 @@ fn validate_logging_level(logging: &LoggingSection) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// `[adapters.<name>]` 是平台中立的映射：任意平台名都能解析进来。
+    /// `[instances.<name>]` 是平台中立的映射：任意平台名都能解析进来。
     ///
-    /// 回归背景：此前 `AdaptersSection` 只有硬编码的 `qq` 字段，
-    /// `[adapters.telegram]` 会被 serde 静默丢弃（既不报错也不生效）。
+    /// 回归背景：此前 `InstancesSection` 只有硬编码的 `qq` 字段，
+    /// `[instances.telegram]` 会被 serde 静默丢弃（既不报错也不生效）。
     #[test]
-    fn adapters_section_accepts_any_platform_name() {
+    fn instances_section_accepts_any_platform_name() {
         let path = std::env::temp_dir().join("echo-agent-adapters-platforms-test.toml");
         std::fs::write(
             &path,
@@ -557,23 +557,26 @@ mod tests {
 provider = "openai"
 model = "gpt-4o"
 
-[adapters.qq]
+[instances.qq]
 enabled = true
 command_prefix = "!"
 
-[adapters.qq.plugin]
+[instances.qq.plugin]
 command = "echo-adapter-qq"
 
-[adapters.telegram]
+[instances.telegram]
 enabled = true
 
-[adapters.telegram.plugin]
+[instances.telegram.plugin]
 command = "echo-adapter-telegram"
 "#,
         )
         .unwrap();
         let config = CoreConfig::load(&path).unwrap();
-        let section = config.adapters_section.as_ref().expect("adapters 段应存在");
+        let section = config
+            .instances_section
+            .as_ref()
+            .expect("adapters 段应存在");
         assert_eq!(
             section.names(),
             vec!["qq", "telegram"],
@@ -585,13 +588,13 @@ command = "echo-adapter-telegram"
             "未知平台段原样解析，不依赖宿主认识它"
         );
         // 宿主读点仍只取 qq（B 阶段才会泛化到多平台）
-        assert!(config.adapters["qq"].enabled);
+        assert!(config.instances["qq"].enabled);
         // 无实例表时「唯一实例名 = 平台名」（新增平台的默认实例同理）
         assert_eq!(
-            config.adapters["telegram"].default_instance_id(),
+            config.instances["telegram"].default_instance_id(),
             "telegram"
         );
-        assert_eq!(config.adapters["qq"].command_prefix, "!");
+        assert_eq!(config.instances["qq"].command_prefix, "!");
         std::fs::remove_file(&path).ok();
     }
 
@@ -661,7 +664,7 @@ api_key = ""
     }
 
     #[test]
-    fn adapter_config_parses_and_overrides_defaults() {
+    fn instance_config_parses_and_overrides_defaults() {
         let dir = std::env::temp_dir();
         let path = dir.join("echo-new-adapter-test.toml");
         std::fs::write(
@@ -671,36 +674,36 @@ api_key = ""
 provider = "openai"
 model = "gpt-4o"
 
-[adapters.qq]
+[instances.qq]
 enabled = true
 
-[adapters.qq.server]
+[instances.qq.server]
 bind_address = "0.0.0.0:9999"
 access_token = "new_token"
 heartbeat_interval = 60
 
-[adapters.qq.trigger]
+[instances.qq.trigger]
 dm_auto_reply = false
 group_at_reply = true
 "#,
         )
         .unwrap();
         let config = CoreConfig::load(&path).unwrap();
-        assert!(config.adapters["qq"].enabled);
+        assert!(config.instances["qq"].enabled);
         // P1.9 透传视图：完整配置在 TOML 表内（原样下发插件），宿主只读视图字段。
         assert_eq!(
-            config.adapters["qq"].shared["server"]["bind_address"].as_str(),
+            config.instances["qq"].shared["server"]["bind_address"].as_str(),
             Some("0.0.0.0:9999")
         );
-        assert_eq!(config.adapters["qq"].access_token, "new_token");
+        assert_eq!(config.instances["qq"].access_token, "new_token");
         assert_eq!(
-            config.adapters["qq"].shared["trigger"]["dm_auto_reply"].as_bool(),
+            config.instances["qq"].shared["trigger"]["dm_auto_reply"].as_bool(),
             Some(false)
         );
         std::fs::remove_file(&path).ok();
     }
 
-    /// `[adapters.qq] mode` / `[adapters.qq.plugin]` 解析（P1.8）：
+    /// `[instances.qq] mode` / `[instances.qq.plugin]` 解析（P1.8）：
     /// flatten 共享默认与 mode/plugin 字段共存；缺省 = builtin（空串）。
     #[test]
     fn qq_plugin_mode_parses_alongside_shared_defaults() {
@@ -712,36 +715,36 @@ group_at_reply = true
         std::fs::write(
             &path,
             r#"
-[adapters.qq]
+[instances.qq]
 mode = "plugin"
 enabled = true
 
-[adapters.qq.plugin]
+[instances.qq.plugin]
 command = "/opt/echo/echo-adapter-qq"
 args = ["--verbose"]
 
-[adapters.qq.instances.alix-two]
+[instances.qq.instances.alix-two]
 persona = "alix"
 
-[adapters.qq.server]
+[instances.qq.server]
 bind_address = "0.0.0.0:9999"
 "#,
         )
         .unwrap();
         let config = CoreConfig::load(&path).unwrap();
-        assert_eq!(config.adapters["qq"].mode, "plugin");
+        assert_eq!(config.instances["qq"].mode, "plugin");
         assert_eq!(
-            config.adapters["qq"].launch.command,
+            config.instances["qq"].launch.command,
             "/opt/echo/echo-adapter-qq"
         );
-        assert_eq!(config.adapters["qq"].launch.args, vec!["--verbose"]);
+        assert_eq!(config.instances["qq"].launch.args, vec!["--verbose"]);
         // flatten 共享层仍生效（mode/plugin 不吞掉适配器配置字段）。
-        assert!(config.adapters["qq"].enabled);
+        assert!(config.instances["qq"].enabled);
         assert_eq!(
-            config.adapters["qq"].shared["server"]["bind_address"].as_str(),
+            config.instances["qq"].shared["server"]["bind_address"].as_str(),
             Some("0.0.0.0:9999")
         );
-        assert!(config.adapters["qq"].instances.contains_key("alix-two"));
+        assert!(config.instances["qq"].instances.contains_key("alix-two"));
         std::fs::remove_file(&path).ok();
     }
 
@@ -756,19 +759,19 @@ bind_address = "0.0.0.0:9999"
         std::fs::write(
             &path,
             r#"
-[adapters.qq]
+[instances.qq]
 enabled = true
 "#,
         )
         .unwrap();
         let config = CoreConfig::load(&path).unwrap();
-        assert_eq!(config.adapters["qq"].mode, "");
-        assert_eq!(config.adapters["qq"].launch.command, "echo-adapter-qq");
+        assert_eq!(config.instances["qq"].mode, "");
+        assert_eq!(config.instances["qq"].launch.command, "echo-adapter-qq");
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn adapter_less_config_defaults_qq_disabled() {
+    fn instance_less_config_defaults_qq_disabled() {
         let dir = std::env::temp_dir();
         let path = dir.join("echo-adapterless-test.toml");
         std::fs::write(
@@ -782,7 +785,7 @@ model = "gpt-4o"
         .unwrap();
         let config = CoreConfig::load(&path).unwrap();
         assert!(
-            !config.adapters["qq"].enabled,
+            !config.instances["qq"].enabled,
             "QQ adapter should be disabled by default"
         );
         std::fs::remove_file(&path).ok();

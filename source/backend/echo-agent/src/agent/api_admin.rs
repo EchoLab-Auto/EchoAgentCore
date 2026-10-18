@@ -1149,7 +1149,7 @@ mod tests {
             crate::config::AgentConfig::default(),
             crate::SkillRegistry::new(),
             crate::tool::ToolRegistry::new(),
-            Arc::new(echo_adapter::AdapterRegistry::new()),
+            Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
         );
         agent.set_config_path(tmp.clone());
 

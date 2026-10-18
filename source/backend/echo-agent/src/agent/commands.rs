@@ -802,16 +802,16 @@ impl Agent {
                     sessions = emitted_sessions,
                     "state sessions emitted for all personas"
                 );
-                // Also emit adapter status and adapter management state so the
+                // Also emit instance status and instance management state so the
                 // TUI starts up with the correct persisted values.
-                self.emit_adapter_list();
-                // 适配器管理状态：逐个实例下发（W3.4 单源化——AdapterState；
+                self.emit_instance_list();
+                // 适配器管理状态：逐个实例下发（W3.4 单源化——InstanceState；
                 // 缺管理面的实例在内部静默跳过）。
-                for name in self.adapters.names() {
-                    let Some(adapter) = self.adapters.get(&name) else {
+                for name in self.instances.names() {
+                    let Some(instance) = self.instances.get(&name) else {
                         continue;
                     };
-                    self.emit_adapter_state_events(adapter.clone());
+                    self.emit_instance_state_events(instance.clone());
                 }
             }
             BackendCommand::RequestContext {
@@ -1366,7 +1366,7 @@ impl Agent {
                 });
                 self.emit(BackendEvent::MessageReceived {
                     session_id: sid.clone(),
-                    adapter_name: "local".into(),
+                    instance_name: "local".into(),
                     platform: key.platform.clone(),
                     user_id: key.user_id.clone(),
                     user_name: "local user".into(),
@@ -1420,61 +1420,64 @@ impl Agent {
                     }
                 }
             }
-            // ---- Adapter management ----
-            BackendCommand::StartAdapter { name } => match self.adapters.get(&name) {
-                Some(adapter) => {
-                    match adapter.start().await {
+            // ---- PluginInstance management ----
+            BackendCommand::StartInstance { name } => match self.instances.get(&name) {
+                Some(instance) => {
+                    match instance.start().await {
                         Ok(()) => self.emit(BackendEvent::Error {
                             session_id: None,
-                            message: format!("adapter {} started", adapter.display_name()),
+                            message: format!("adapter {} started", instance.display_name()),
                         }),
                         Err(e) => self.emit(BackendEvent::Error {
                             session_id: None,
                             message: format!(
                                 "adapter {} start failed: {e}",
-                                adapter.display_name()
+                                instance.display_name()
                             ),
                         }),
                     }
-                    self.emit_adapter_list();
+                    self.emit_instance_list();
                 }
                 None => self.emit(BackendEvent::Error {
                     session_id: None,
                     message: format!("adapter {name} not found"),
                 }),
             },
-            BackendCommand::StopAdapter { name } => match self.adapters.get(&name) {
-                Some(adapter) => {
-                    match adapter.stop().await {
+            BackendCommand::StopInstance { name } => match self.instances.get(&name) {
+                Some(instance) => {
+                    match instance.stop().await {
                         Ok(()) => self.emit(BackendEvent::Error {
                             session_id: None,
-                            message: format!("adapter {} stopped", adapter.display_name()),
+                            message: format!("adapter {} stopped", instance.display_name()),
                         }),
                         Err(e) => self.emit(BackendEvent::Error {
                             session_id: None,
-                            message: format!("adapter {} stop failed: {e}", adapter.display_name()),
+                            message: format!(
+                                "adapter {} stop failed: {e}",
+                                instance.display_name()
+                            ),
                         }),
                     }
-                    self.emit_adapter_list();
+                    self.emit_instance_list();
                 }
                 None => self.emit(BackendEvent::Error {
                     session_id: None,
                     message: format!("adapter {name} not found"),
                 }),
             },
-            BackendCommand::RestartAdapter { name } => match self.adapters.get(&name) {
-                Some(adapter) => {
-                    match adapter.stop().await {
-                        Ok(()) => match adapter.start().await {
+            BackendCommand::RestartInstance { name } => match self.instances.get(&name) {
+                Some(instance) => {
+                    match instance.stop().await {
+                        Ok(()) => match instance.start().await {
                             Ok(()) => self.emit(BackendEvent::Error {
                                 session_id: None,
-                                message: format!("adapter {} restarted", adapter.display_name()),
+                                message: format!("adapter {} restarted", instance.display_name()),
                             }),
                             Err(e) => self.emit(BackendEvent::Error {
                                 session_id: None,
                                 message: format!(
                                     "adapter {} restart (start) failed: {e}",
-                                    adapter.display_name()
+                                    instance.display_name()
                                 ),
                             }),
                         },
@@ -1482,22 +1485,22 @@ impl Agent {
                             session_id: None,
                             message: format!(
                                 "adapter {} restart (stop) failed: {e}",
-                                adapter.display_name()
+                                instance.display_name()
                             ),
                         }),
                     }
-                    self.emit_adapter_list();
+                    self.emit_instance_list();
                 }
                 None => self.emit(BackendEvent::Error {
                     session_id: None,
                     message: format!("adapter {name} not found"),
                 }),
             },
-            BackendCommand::RequestAdapterStatus => {
-                self.emit_adapter_list();
+            BackendCommand::RequestInstanceStatus => {
+                self.emit_instance_list();
             }
-            BackendCommand::StartAllAdapters => {
-                let results = self.adapters.start_all().await;
+            BackendCommand::StartAllInstances => {
+                let results = self.instances.start_all().await;
                 for (name, result) in &results {
                     match result {
                         Ok(()) => self.emit(BackendEvent::Error {
@@ -1510,18 +1513,18 @@ impl Agent {
                         }),
                     }
                 }
-                self.emit_adapter_list();
+                self.emit_instance_list();
             }
-            BackendCommand::StopAllAdapters => {
-                self.adapters.stop_all().await;
+            BackendCommand::StopAllInstances => {
+                self.instances.stop_all().await;
                 self.emit(BackendEvent::Error {
                     session_id: None,
                     message: "all adapters stopped".into(),
                 });
-                self.emit_adapter_list();
+                self.emit_instance_list();
             }
-            BackendCommand::InvokeAdapterOp { .. } => {
-                self.apply_adapter_command(cmd).await;
+            BackendCommand::InvokeInstanceOp { .. } => {
+                self.apply_instance_command(cmd).await;
             }
             BackendCommand::RequestWorkspaceSessions { .. }
             | BackendCommand::SaveWorkspaceSession { .. }
@@ -1808,7 +1811,7 @@ mod reload_skills_tests {
             },
             SkillRegistry::discover(&dir.to_string_lossy()).unwrap(),
             crate::tool::ToolRegistry::new(),
-            Arc::new(echo_adapter::AdapterRegistry::new()),
+            Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
         )
     }
 

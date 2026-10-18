@@ -14,7 +14,7 @@
 //! - **实例是一等概念**：`instance_id` 全局唯一，`persona` 是归属字段（一个
 //!   persona 可挂多个实例）；实例 id 即适配器名与会话 `@account` 维度。
 //! - **端口自动分配并持久化**：首次分配后写回
-//!   `[adapters.<platform>.instances.<id>.ports]`，跨重启稳定（容器端口映射
+//!   `[instances.<platform>.instances.<id>.ports]`，跨重启稳定（容器端口映射
 //!   必须稳定才能让适配器容器重连到同一处）。
 //! - **自动创建**：persona 启用了该平台插件且没有归属实例时自动建档
 //!   （id = persona，重复则 `<persona>-2`…）。
@@ -26,7 +26,7 @@ use std::net::TcpListener;
 use std::path::Path;
 
 pub use crate::config::QqPorts;
-use crate::config::{AdapterHostConfig, QqInstanceSection};
+use crate::config::{InstanceHostConfig, QqInstanceSection};
 
 /// legacy 默认实例名（会话 id 不产生 `@` 后缀）。
 ///
@@ -195,7 +195,7 @@ fn merge_tables(base: &toml::Table, overlay: &toml::Table) -> toml::Table {
 /// 已知时把自动生成 compose 的路径写进实例配置（容器编排据此启停容器），
 /// `None` 表示不生成 compose 路径。
 pub fn resolve_instances_in(
-    host: &AdapterHostConfig,
+    host: &InstanceHostConfig,
     sections: &BTreeMap<String, QqInstanceSection>,
     enabled_personas: &[String],
     default_persona: &str,
@@ -296,18 +296,18 @@ mod tests {
     use crate::config::QqSection;
 
     /// 共享层测试表（等价旧 typed 配置的最小集合）。
-    fn shared(enabled: bool) -> AdapterHostConfig {
+    fn shared(enabled: bool) -> InstanceHostConfig {
         shared_with(enabled, &[])
     }
 
     /// 共享层 + 追加键。
-    fn shared_with(enabled: bool, entries: &[(&str, toml::Value)]) -> AdapterHostConfig {
+    fn shared_with(enabled: bool, entries: &[(&str, toml::Value)]) -> InstanceHostConfig {
         let mut table = toml::Table::new();
         table.insert("enabled".into(), toml::Value::Boolean(enabled));
         for (key, value) in entries {
             table.insert((*key).into(), value.clone());
         }
-        AdapterHostConfig::from_section("qq", &QqSection::default(), table)
+        InstanceHostConfig::from_section("qq", &QqSection::default(), table)
     }
 
     fn config_str<'a>(config: &'a toml::Table, key: &str) -> Option<&'a str> {

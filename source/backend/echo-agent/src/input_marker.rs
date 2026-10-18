@@ -9,7 +9,7 @@
 //! confused with source metadata.
 //!
 //! **Nothing here knows a platform name**: the open/close marker is derived
-//! from whatever platform string an adapter reports, and detection accepts any
+//! from whatever platform string an instance reports, and detection accepts any
 //! `<X_message_hook>` (`X` = word characters). Everything that constructs,
 //! detects, or parses these envelopes lives here — one definition, no scattered
 //! literals.
@@ -31,7 +31,7 @@ pub fn wrap_hook(platform: &str, json: &str) -> String {
 
 /// Serialize a JSON value (pretty) and wrap it in a platform hook envelope.
 ///
-/// Single entry point for building structured hook inputs — adapter bridges
+/// Single entry point for building structured hook inputs — instance bridges
 /// and the frontend `SendMessage` command both use this so the wire format
 /// cannot drift.
 pub fn wrap_hook_value(platform: &str, value: &serde_json::Value) -> String {

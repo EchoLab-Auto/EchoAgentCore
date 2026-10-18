@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use echo_adapter::AdapterRegistry;
 use echo_agent::llm::{
     ChatChunk, ChatRequest, ChatResponse, LlmError, LlmProvider, ToolCall, Usage,
 };
@@ -12,6 +11,7 @@ use echo_agent::tool::{Tool, ToolError};
 use echo_agent::{
     Agent, AgentConfig, BackendCommand, BackendEvent, SessionKey, SkillRegistry, ToolRegistry,
 };
+use echo_defs::plugin_instance::InstanceRegistry;
 use std::collections::VecDeque;
 
 /// A static-reply provider that counts calls and records the last system prompt.
@@ -161,7 +161,7 @@ fn test_agent(reply: &'static str) -> (Arc<Agent>, Arc<StaticProvider>) {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     // 去主智能体：会话类命令必须带 team_id，测试 agent 统一用 "t"。
     agent.set_team_id(Some("t".into()));
@@ -467,7 +467,7 @@ async fn concurrent_messages_merge_by_request_sequence() {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let key = SessionKey::parse("qq:dm::1").unwrap();
     let session = agent.trunk.get_or_create(&key, "u".into(), None);
@@ -811,7 +811,7 @@ async fn qq_hook_input_gets_transport_boundary_prompt() {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let key = SessionKey::parse("qq:dm::123").unwrap();
     let session = agent.trunk.get_or_create(&key, "u".into(), None);
@@ -931,7 +931,7 @@ async fn turn_emits_lifecycle_events_in_order() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let (bridge, handle) = echo_agent::create_bridge();
     agent.attach(Arc::new(handle));
@@ -1026,7 +1026,7 @@ async fn failing_tool_result_marks_error_and_turn_completes() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let (bridge, handle) = echo_agent::create_bridge();
     agent.attach(Arc::new(handle));
@@ -1143,7 +1143,7 @@ async fn event_log_persists_tool_structure_across_reload() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     let key = SessionKey::parse("qq:dm::123").unwrap();
     let session = agent.trunk.get_or_create(&key, "u".into(), None);
@@ -1207,7 +1207,7 @@ fn agent_with_gated_caps() -> Arc<Agent> {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     agent.set_team_id(Some("t".into()));
     agent
@@ -1424,7 +1424,7 @@ async fn package_gating_spans_tools_and_skills() {
         AgentConfig::default(),
         skills,
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
 
     // 包级禁用：QQ 工具 + QQ 技能一起关闭，包外成员不受影响。
@@ -1513,7 +1513,7 @@ async fn registered_subagent_tool_is_sent_once_with_unique_names() {
         AgentConfig::default(),
         SkillRegistry::new(),
         tools,
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     agent.attach_subagent_runtime(store);
     agent
@@ -1575,10 +1575,10 @@ async fn spawn_subagent_runs_child_and_reports_back_via_hook() {
                     assert!(success, "child should succeed");
                 }
                 BackendEvent::MessageReceived {
-                    adapter_name,
+                    instance_name,
                     content,
                     ..
-                } if adapter_name == "subagent" => {
+                } if instance_name == "subagent" => {
                     saw_hook_message = true;
                     assert!(content.contains("<subagent_event>"), "{content}");
                     assert!(content.contains("子任务结论"), "{content}");
@@ -1690,7 +1690,7 @@ async fn cancelling_parent_turn_cascades_to_subagent() {
         AgentConfig::default(),
         SkillRegistry::new(),
         ToolRegistry::new(),
-        Arc::new(AdapterRegistry::new()),
+        Arc::new(InstanceRegistry::new()),
     ));
     agent.set_team_id(Some("t".into()));
     let store = echo_agent::subagent::SubagentStore::new();

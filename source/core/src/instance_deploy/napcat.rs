@@ -5,7 +5,7 @@
 //! 而「NapCat 需要哪三个端口、镜像叫什么、数据卷挂哪里」是平台部署知识。
 //! 两者混在一个 622 行的文件里，导致「加一个平台」必须读懂全部 QQ 细节。
 //!
-//! 迁移路径（后续阶段，非本次范围）：插件在自己的 `AdapterContribution` 里声明
+//! 迁移路径（后续阶段，非本次范围）：插件在自己的 `InstanceContribution` 里声明
 //! 部署规格（镜像 / 端口映射 / 卷），宿主按声明渲染——那时本文件整体删除。当前
 //! QQ 是唯一内置适配器，先把它隔离到单一出口，迁移时只需搬这一个文件。
 
@@ -17,7 +17,7 @@ use crate::config::QqPorts;
 pub fn render_compose(id: &str, ports: &QqPorts) -> String {
     format!(
         r#"# 由 EchoAgentCore 自动生成（QQ 实例 `{id}`）——请勿手工编辑。
-# 端口映射由 [adapters.qq.instances.{id}.ports] 决定。
+# 端口映射由 [instances.qq.instances.{id}.ports] 决定。
 services:
   napcat:
     image: mlikiowa/napcat-docker:latest

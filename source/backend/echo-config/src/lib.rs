@@ -38,7 +38,7 @@ struct ConfigStoreInner {
     /// patchers cannot interleave and lose updates.
     ///
     /// Deliberately a `std::sync::Mutex` (not tokio): `patch` is called from
-    /// both async contexts and from synchronous `Adapter` trait methods.
+    /// both async contexts and from synchronous `PluginInstance` trait methods.
     write_lock: Mutex<()>,
 }
 

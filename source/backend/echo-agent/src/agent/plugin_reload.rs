@@ -12,7 +12,7 @@ use super::*;
 impl Agent {
     /// Watch the configured plugin directory for `plugin.toml` manifests and
     /// hot-(re)mount discovered data plugins (skills/tools). Code plugins
-    /// (provider/loop/adapter) still require the binary-reload path: this
+    /// (provider/loop/instance) still require the binary-reload path: this
     /// watcher only handles data plugins.
     pub async fn start_plugin_reload_task(self: &Arc<Self>) {
         let plugins_dir = self.config.read().await.plugins_dir.clone();

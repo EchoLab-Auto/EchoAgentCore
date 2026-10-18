@@ -121,7 +121,7 @@ impl SkillRegistry {
     /// 包内成员名（按 `SKILL.md` frontmatter `package:` 匹配，名称排序）。
     ///
     /// Package 是横跨 plugin + tool + skill 的标签：技能维度的成员即
-    /// 声明了同一 `package:` 的技能（如 QQ 包 = `echo-agent.adapter.qq`）。
+    /// 声明了同一 `package:` 的技能（如 QQ 包 = `echo-agent.instance.qq`）。
     pub fn package_names(&self, package: &str) -> Vec<String> {
         let mut names: Vec<String> = self
             .skills

@@ -386,7 +386,7 @@ impl Agent {
     /// Full lifecycle for an inbound platform message. This is the single
     /// implementation of the "register branch → emit lifecycle events →
     /// bounded wait reply → execute → merge → surface outcome" flow; every
-    /// adapter (QQ, ...) routes through it so the paths cannot drift apart.
+    /// instance (QQ, ...) routes through it so the paths cannot drift apart.
     ///
     /// Runs the branch in the background and returns immediately, matching the
     /// one-way inbound hook contract.

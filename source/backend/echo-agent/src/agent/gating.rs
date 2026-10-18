@@ -88,10 +88,10 @@ impl Agent {
     /// 受 persona 名单门控的插件 id 集合。
     ///
     /// = 框架内置的固定清单（工具/技能/工作区/subagent/management）
-    ///   ∪ **运行期注册的全部 `kind == Adapter` 插件**。
+    ///   ∪ **运行期注册的全部 `kind == PluginInstance` 插件**。
     ///
     /// 后者从注册表按 kind 推导，框架因此**不需要认识任何平台**：新增一个
-    /// 适配器插件（`echo-agent.adapter.<platform>`）自动进入门控，无需改
+    /// 适配器插件（`echo-agent.instance.<platform>`）自动进入门控，无需改
     /// 本 crate 的常量表。
     fn gated_plugin_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = crate::plugins::GATED_PLUGIN_IDS
@@ -293,7 +293,7 @@ impl Agent {
     /// - 技能：`SkillRegistry::set_package_enabled`（按 `SKILL.md` 的
     ///   `package:` frontmatter）——`skills.dir` 插件为**整表**语义，
     ///   其余包按同名 package 精确匹配（如 QQ 包：qq-management /
-    ///   qq-transport 随 `echo-agent.adapter.qq` 一起启停）。
+    ///   qq-transport 随 `echo-agent.instance.qq` 一起启停）。
     ///
     /// 启用方向会按本 persona 的工具/技能名单**收紧**：整包启用不越过
     /// 白/黑名单（名单外的成员保持禁用），与启动期"名单先应用、包后禁用"

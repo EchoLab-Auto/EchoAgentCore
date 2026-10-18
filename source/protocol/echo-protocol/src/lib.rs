@@ -31,9 +31,9 @@ pub use bridge::{
 
 pub use command::{command_clearance, BackendCommand, CommandClearance};
 pub use event::{
-    AdapterMetadataEntry, AdapterStatus, ApiBalancePoint, ApiMetricsEntry, ApiProfileInfo,
-    ApiUsagePoint, BackendEvent, BackendState, BrowseRoot, ContextBlockInfo, ContextMessageInfo,
-    FederationLinkState, FederationPeerInfo, PluginInfo, SessionInfo, ShellSessionInfo, SkillInfo,
+    ApiBalancePoint, ApiMetricsEntry, ApiProfileInfo, ApiUsagePoint, BackendEvent, BackendState,
+    BrowseRoot, ContextBlockInfo, ContextMessageInfo, FederationLinkState, FederationPeerInfo,
+    InstanceMetadataEntry, InstanceStatus, PluginInfo, SessionInfo, ShellSessionInfo, SkillInfo,
     SkillSourceInfo, TeamInfo, TimelineMessage, TimelineSource, TimelineTool, ToolInfo,
     WorkspaceConversationInfo, WorkspaceDirectory, WorkspaceFileEntry, WorkspaceGitInfo,
     WorkspaceSessionInfo,

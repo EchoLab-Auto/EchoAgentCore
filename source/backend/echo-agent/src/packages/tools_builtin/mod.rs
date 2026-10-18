@@ -4,11 +4,11 @@ use regex::Regex;
 
 use crate::tool::ToolError;
 
-pub mod adapter;
 pub mod api_profiles;
 pub mod calculator;
 pub mod checklist;
 pub mod coding;
+pub mod instance;
 mod shell_tools;
 pub mod websearch;
 
@@ -42,7 +42,7 @@ pub(crate) fn reject_core_self_stop(command: &str) -> Result<(), ToolError> {
 /// [`crate::tool::ToolRegistry::set_package_enabled`]）。
 pub fn register_all(
     registry: &mut crate::tool::ToolRegistry,
-    adapters: std::sync::Arc<echo_adapter::AdapterRegistry>,
+    instances: std::sync::Arc<echo_defs::plugin_instance::InstanceRegistry>,
     workspace: std::path::PathBuf,
     config_store: echo_config::ConfigStore,
 ) {
@@ -52,7 +52,7 @@ pub fn register_all(
     registry.register(std::sync::Arc::new(api_profiles::ListApiProfilesTool::new(
         config_store,
     )));
-    adapter::register_adapter_tools(registry, adapters);
+    instance::register_instance_tools(registry, instances);
     coding::register_coding_tools(registry, workspace.clone());
     shell_tools::register_shell_tools(registry);
     for name in registry.names() {

@@ -327,22 +327,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-adapter"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "echo-defs",
- "echo-test-utils",
- "regex",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "toml",
- "tracing",
-]
-
-[[package]]
 name = "echo-agent"
 version = "0.1.0"
 dependencies = [
@@ -350,7 +334,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
- "echo-adapter",
  "echo-config",
  "echo-context",
  "echo-defs",
@@ -389,7 +372,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "echo-adapter",
  "echo-agent",
  "echo-config",
  "echo-context",
@@ -630,7 +612,7 @@ name = "echo-test-utils"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "echo-adapter",
+ "echo-defs",
  "serde_json",
  "tokio",
 ]

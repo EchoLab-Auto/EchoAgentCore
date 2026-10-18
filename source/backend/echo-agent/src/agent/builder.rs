@@ -25,8 +25,8 @@
 
 use std::sync::Arc;
 
-use echo_adapter::AdapterRegistry;
 use echo_config::ConfigStore;
+use echo_defs::plugin_instance::InstanceRegistry;
 
 use crate::agent::{Agent, EventSink};
 use crate::config::AgentConfig;
@@ -40,7 +40,7 @@ pub struct AgentBuilder {
     config: AgentConfig,
     skills: SkillRegistry,
     tools: ToolRegistry,
-    adapters: Arc<AdapterRegistry>,
+    instances: Arc<InstanceRegistry>,
     // ── 必填槽（build 时校验）──
     plugin_host: Option<Arc<crate::plugins::PluginHost>>,
     event_sink: Option<EventSink>,
@@ -65,14 +65,14 @@ impl AgentBuilder {
         config: AgentConfig,
         skills: SkillRegistry,
         tools: ToolRegistry,
-        adapters: Arc<AdapterRegistry>,
+        instances: Arc<InstanceRegistry>,
     ) -> Self {
         Self {
             provider,
             config,
             skills,
             tools,
-            adapters,
+            instances,
             plugin_host: None,
             event_sink: None,
             team_id: None,
@@ -163,7 +163,7 @@ impl AgentBuilder {
             self.config,
             self.skills,
             self.tools,
-            self.adapters,
+            self.instances,
         );
         // 必填槽：缺了就是组合根写错了，尽早炸。
         let plugin_host = self

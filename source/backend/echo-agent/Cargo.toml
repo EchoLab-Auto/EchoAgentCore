@@ -18,7 +18,6 @@ echo-llm-openai = { path = "../../llm/echo-llm-openai" }
 echo-llm-anthropic = { path = "../../llm/echo-llm-anthropic" }
 echo-llm-ollama = { path = "../../llm/echo-llm-ollama" }
 echo-protocol = { path = "../../protocol/echo-protocol" }
-echo-adapter = { path = "../echo-adapter" }
 echo-plugin = { path = "../../plugin/echo-plugin" }
 tokio.workspace = true
 parking_lot = "0.12"

@@ -637,15 +637,15 @@ mod tests {
     }
 
     #[test]
-    fn invoke_adapter_op_command_roundtrips() {
+    fn invoke_instance_op_command_roundtrips() {
         // 适配器管理命令线格式（W2.1）：管理方法经统一通道直通。
-        let text = r#"{"type":"command","payload":{"InvokeAdapterOp":{"adapter":"qq-default","method":"set_gate_mode","payload":{"mode":"allowlist"}}}}"#;
+        let text = r#"{"type":"command","payload":{"InvokeInstanceOp":{"instance":"qq-default","method":"set_gate_mode","payload":{"mode":"allowlist"}}}}"#;
         match handle_inbound_text(text) {
             Some(InboundFrame::Command(cmd)) => {
                 assert_eq!(
                     cmd,
-                    BackendCommand::InvokeAdapterOp {
-                        adapter: "qq-default".into(),
+                    BackendCommand::InvokeInstanceOp {
+                        instance: "qq-default".into(),
                         method: "set_gate_mode".into(),
                         payload: serde_json::json!({"mode": "allowlist"}),
                     }
@@ -689,7 +689,7 @@ mod tests {
             echo_agent::AgentConfig::default(),
             echo_agent::SkillRegistry::new(),
             echo_agent::ToolRegistry::new(),
-            Arc::new(echo_adapter::AdapterRegistry::new()),
+            Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
         ))
     }
 

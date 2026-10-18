@@ -192,7 +192,7 @@ impl PluginHandle {
 
     /// 连接代际（epoch；泛化 01a §1.3）：每次新连接就绪即自增
     /// （首次启动 / 崩溃重启 / 热替换换代）；宿主侧管理面缓存读时按它
-    /// 惰性失效（见 `RemoteAdapter::management_state`）。
+    /// 惰性失效（见 `RemoteInstance::management_state`）。
     pub fn generation(&self) -> u64 {
         self.shared.generation.load(Ordering::SeqCst)
     }
@@ -1080,7 +1080,7 @@ fn not_ready_error(state: &PluginState) -> TransportError {
 ///
 /// `source`：**本条消息的来源连接**。`HostCall` 回执按来源连接回发
 /// （W1.2，2026-10 修复）——不能经 `current_conn()`：热替换 / 排空切换
-/// 瞬间，旧实例发出的 `deliver_message` 类回执会错投到新实例
+/// 瞬间，旧实例发出的 `submit_input` 类回执会错投到新实例
 /// （call_id 对新实例是孤儿，而载荷已被宿主消费；插件因收不到回执重试
 /// 即造成重复投递）。
 fn dispatch(shared: &Arc<Shared>, source: &Arc<dyn PluginConnection>, msg: PluginToHost) {

@@ -1,7 +1,7 @@
 //! 适配器插件的 manifest 声明（组合根侧）。
 //!
 //! **这是组合根的事实，不是框架的知识**：`echo-agent` 不认识任何平台名，
-//! 适配器插件由本仓库（组合根）声明、由运行期注册表按 `kind == Adapter`
+//! 适配器插件由本仓库（组合根）声明、由运行期注册表按 `kind == PluginInstance`
 //! 推导出「哪些插件参与 persona 门控」。
 //!
 //! 迁出原因：这些 id 原先写在 `echo-agent::plugins` 的常量表里，等于让框架
@@ -9,9 +9,9 @@
 //! 「适配器是插件」的设计矛盾。
 //!
 //! 新增平台的做法（B 阶段会进一步泛化）：在 [`ADAPTER_PLUGIN_IDS`] 里加一行，
-//! 并在 `main.rs` 里按 `[adapters.<platform>.plugin]` 声明 manifest。
+//! 并在 `main.rs` 里按 `[instances.<platform>.plugin]` 声明 manifest。
 
-/// QQ 适配器插件 id（`[adapters.qq]`；manifest 编译在 Core 里，实现在独立进程）。
+/// QQ 适配器插件 id（`[instances.qq]`；manifest 编译在 Core 里，实现在独立进程）。
 pub const ADAPTER_QQ_PLUGIN_ID: &str = "echo-agent.adapter.qq";
 
 /// 本组合根声明的全部适配器插件 id（安装后二进制里应有这些 manifest）。

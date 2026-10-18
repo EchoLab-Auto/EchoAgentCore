@@ -12,10 +12,10 @@ pub enum Contribution {
     Service(ServiceContribution),
     Events(EventContribution),
     /// 适配器贡献（P1，2026-10 适配器插件化）：平台适配器作为插件交付。
-    /// 宿主把 `RemoteAdapter`（`echo_adapter::Adapter` 的远程实现）注册进
-    /// `AdapterRegistry`；动作经 `Invoke("<name>:<op>")`，入站经
-    /// `HostCall` → 宿主服务 `adapter_host`（见 `document/design/adapter-plugin.md`）。
-    Adapter(AdapterContribution),
+    /// 宿主把 `RemoteInstance`（`echo_defs::plugin_instance::PluginInstance` 的远程实现）注册进
+    /// `InstanceRegistry`；动作经 `Invoke("<name>:<op>")`，入站经
+    /// `HostCall` → 宿主服务 `core_api`（见 `document/design/instance-plugin.md`）。
+    PluginInstance(InstanceContribution),
 }
 
 fn default_category() -> String {
@@ -74,25 +74,25 @@ pub struct EventContribution {
     pub subscribe: Vec<String>,
 }
 
-/// 适配器贡献（P1，2026-10 适配器插件化）：宿主把 `RemoteAdapter` 注册进
-/// `AdapterRegistry`；`capabilities` 声明该适配器支持的管理动作位（宿主
+/// 适配器贡献（P1，2026-10 适配器插件化）：宿主把 `RemoteInstance` 注册进
+/// `InstanceRegistry`；`capabilities` 声明该适配器支持的管理动作位（宿主
 /// 只调用声明过的方法，未声明的调用拒绝为 `unsupported`）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AdapterContribution {
+pub struct InstanceContribution {
     /// 实例名（= Invoke 前缀；全局唯一）。
     pub name: String,
     /// 平台标识（会话作用域 / 显示；如 `"qq"`）。
     pub platform: String,
     /// 展示名（如 `"QQ / OneBot"`）。
     pub display_name: String,
-    /// 能力位（`AdapterCapabilities`；宿主 fail-closed 校验）。
+    /// 能力位（`InstanceCapabilities`；宿主 fail-closed 校验）。
     #[serde(default)]
-    pub capabilities: AdapterCapabilities,
+    pub capabilities: InstanceCapabilities,
     /// 插件配置 JSON Schema（校验 / 未来面板表单，可选）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_schema: Option<Value>,
     /// UI 描述符（插件声明的适配器管理界面；Panel 经通用渲染器呈现；
-    /// 结构见 `document/design/adapter-plugin.md` §Panel UI 解耦，可选）。
+    /// 结构见 `document/design/instance-plugin.md` §Panel UI 解耦，可选）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<Value>,
     /// 会话标签（`SessionSwitcher` 等平台分组显示；如 `{"dm":"私聊","group":"群"}`，可选）。
@@ -108,7 +108,7 @@ pub struct AdapterContribution {
 
 /// 适配器能力位（缺省全 false——宿主 fail-closed，未声明的调用拒绝）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AdapterCapabilities {
+pub struct InstanceCapabilities {
     /// 出站文本（`send_text`）。
     #[serde(default)]
     pub send_text: bool,
@@ -133,9 +133,9 @@ pub struct AdapterCapabilities {
 
 /// 适配器实例的目标（出站寻址）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AdapterTarget {
+pub struct MessageTarget {
     /// 通道类型：`"dm"`（私聊）/ `{"type":"group","group_id":"…"}`（群聊）。
-    pub channel: AdapterChannel,
+    pub channel: ChannelType,
     /// 目标用户 id（私聊回复 / @ 提及；字符串形态，平台号码语义归插件）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
@@ -144,7 +144,7 @@ pub struct AdapterTarget {
 /// 通道类型（与 `echo_defs::chat::ChannelType` 同构）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum AdapterChannel {
+pub enum ChannelType {
     /// 私聊。
     Dm,
     /// 群聊。
@@ -154,12 +154,13 @@ pub enum AdapterChannel {
     },
 }
 
-/// 入站消息（`deliver_message` 载荷；与 `echo_defs::chat::IncomingMessage`
+/// 入站消息（`submit_input` 载荷；与 `echo_defs::chat::IncomingMessage`
 /// 同构）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AdapterMessage {
-    /// 适配器实例名（= 归属维度）。
-    pub adapter: String,
+pub struct IncomingMessage {
+    /// 插件实例名（= 归属维度；旧线字段名 `adapter` 仍接受，兼容已部署插件）。
+    #[serde(alias = "adapter")]
+    pub instance: String,
     /// 平台标识（如 `"qq"`）。
     pub platform: String,
     /// 发送者 id（字符串形态）。
@@ -168,7 +169,7 @@ pub struct AdapterMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_name: Option<String>,
     /// 通道。
-    pub channel: AdapterChannel,
+    pub channel: ChannelType,
     /// 群显示名（群聊场景）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_name: Option<String>,

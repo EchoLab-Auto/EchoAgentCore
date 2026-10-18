@@ -38,7 +38,7 @@ impl From<RunningAgent> for Persona {
     }
 }
 
-/// Thin adapter over the single-source-of-truth [`AgentManager`].
+/// Thin instance over the single-source-of-truth [`AgentManager`].
 pub struct AgentSupervisor {
     manager: Arc<AgentManager>,
 }

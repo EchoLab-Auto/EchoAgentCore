@@ -38,7 +38,7 @@ use crate::llm::{estimate_history_tokens, estimate_message_tokens, ChatMessage, 
 ///   local:tui::local_user   — local TUI interaction
 /// ```
 ///
-/// `account` 是**适配器实例名**（`[adapters.<platform>.instances.<id>]`）。
+/// `account` 是**适配器实例名**（`[instances.<platform>.instances.<id>]`）。
 /// 单实例且实例名等于平台名（如 `qq`）时不产生后缀，历史会话 id 全部保持有效。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionKey {
@@ -1001,7 +1001,7 @@ fn deserialize_messages(history: &[serde_json::Value]) -> Vec<ChatMessage> {
 ///
 /// 支持的封装（见 `input_marker`）：
 /// - `<{platform}_message_hook>{json}</…>`：从载荷解析 platform/channel/sender
-///   （`channel.type == "group"` 时 scope=group，scope_id=群号；`adapter` 为
+///   （`channel.type == "group"` 时 scope=group，scope_id=群号；`instance` 为
 ///   非默认 QQ 实例名时产生 `@account` 后缀）；
 /// - `<backend_message_hook>`：本地后端消息 → 本地 TUI 会话；
 /// - 其余（timer/后台任务事件等）无归属信息 → None（由调用方粘滞/兜底）。
@@ -1022,7 +1022,7 @@ fn session_id_from_hook_content(content: &str) -> Option<String> {
     let payload: serde_json::Value =
         serde_json::from_str(trimmed[body_start..body_end].trim()).ok()?;
     let platform = payload.get("platform").and_then(|v| v.as_str())?;
-    let adapter = payload
+    let instance = payload
         .get("adapter")
         .and_then(|v| v.as_str())
         .unwrap_or(platform);
@@ -1043,7 +1043,7 @@ fn session_id_from_hook_content(content: &str) -> Option<String> {
         .and_then(|u| u.as_str())?;
     // 实例名 == 平台名 = 默认实例，不写 account 后缀（与 SessionKey::account
     // 同一判据；不依赖任何写死的默认实例名）。
-    let account = (!adapter.eq_ignore_ascii_case(platform)).then(|| adapter.to_string());
+    let account = (!instance.eq_ignore_ascii_case(platform)).then(|| instance.to_string());
     Some(
         SessionKey {
             platform: platform.to_string(),

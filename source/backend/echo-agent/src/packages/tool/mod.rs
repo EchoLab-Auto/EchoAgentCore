@@ -2,7 +2,7 @@
 //!
 //! 位置（2026-09-29）：本模块是**工具子系统的跨包机制**（非插件包），
 //! 物理位于 `packages/tool/`——与各包的工具实现（`packages/tools_builtin/`、
-//! `packages/adapter_ops/` 等）同处一个聚合目录，"工具"相关代码只有一处落点。
+//! `packages/instance_ops/` 等）同处一个聚合目录，"工具"相关代码只有一处落点。
 //! 公开路径不变：`echo_agent::tool::…`（经 `lib.rs` re-export）。
 //!
 //! The `Tool` trait and vocabulary live in [`echo_defs`]; this

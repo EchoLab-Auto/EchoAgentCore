@@ -15,8 +15,8 @@ pub enum PluginKind {
     Provider,
     /// Turn runner / agent loop driver.
     Loop,
-    /// Platform adapter (qq, ...).
-    Adapter,
+    /// Platform instance (qq, ...).
+    PluginInstance,
     /// Built-in orchestration（保留类型；原 run_sudo/framework_update 工具已于
     /// 2026-09 废弃，当前无内置成员）。
     Orchestration,
@@ -34,7 +34,7 @@ impl PluginKind {
             PluginKind::Tool => "tool",
             PluginKind::Provider => "provider",
             PluginKind::Loop => "loop",
-            PluginKind::Adapter => "adapter",
+            PluginKind::PluginInstance => "adapter",
             PluginKind::Orchestration => "orchestration",
             PluginKind::Management => "management",
             PluginKind::Interaction => "interaction",
@@ -53,7 +53,7 @@ impl PluginKind {
 ///
 /// 适配器插件化（P1.9，2026-10）之后二者不再同义：QQ 适配器的**门控
 /// manifest** 编译在 Core 里（`builtin = true`），但适配器实现由独立进程
-/// `echo-adapter-qq` 提供（见 `plugins_runtime`）。此前 Panel 只能看到
+/// `echo-instance-qq` 提供（见 `plugins_runtime`）。此前 Panel 只能看到
 /// `builtin`，于是把「跑在独立进程」的插件显示成「内部插件」——用户看到的
 /// 描述与分组互相矛盾（2026-10-18 报障）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -133,7 +133,7 @@ impl PluginManifest {
     /// Package 是横跨三类的标签：插件（本 manifest）声明归属；工具经
     /// `ToolRegistry::set_package` 打标；技能经 `SKILL.md` frontmatter
     /// `package:` 打标。包级门控（禁用一个包 = 其全部成员不可见）即按
-    /// 该字符串聚合（QQ 包 = `echo-agent.adapter.qq`）。
+    /// 该字符串聚合（QQ 包 = `echo-agent.instance.qq`）。
     pub fn package_id(&self) -> &str {
         self.package.as_deref().unwrap_or(&self.id)
     }
@@ -292,19 +292,19 @@ kind = "skill"
 
         // 适配器插件：builtin 仍为 true（manifest 编译内置），但实现跑在
         // 独立进程——两者互不干扰。
-        let adapter = PluginManifest::builtin(
+        let instance = PluginManifest::builtin(
             "echo-agent.adapter.qq",
             "QQ 适配器",
             "0.1.0",
-            PluginKind::Adapter,
+            PluginKind::PluginInstance,
             "qq",
             "OneBot v11（独立进程）",
         )
         .with_runtime(PluginRuntime::Subprocess);
-        assert!(adapter.builtin, "来源维度不受 runtime 影响");
-        assert!(adapter.runtime.is_subprocess());
-        assert_eq!(adapter.runtime.as_str(), "subprocess");
-        let json = serde_json::to_string(&adapter).unwrap();
+        assert!(instance.builtin, "来源维度不受 runtime 影响");
+        assert!(instance.runtime.is_subprocess());
+        assert_eq!(instance.runtime.as_str(), "subprocess");
+        let json = serde_json::to_string(&instance).unwrap();
         assert!(json.contains("\"runtime\":\"subprocess\""), "{json}");
         let back: PluginManifest = serde_json::from_str(&json).unwrap();
         assert_eq!(back.runtime, PluginRuntime::Subprocess);

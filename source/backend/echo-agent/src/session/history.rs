@@ -68,7 +68,7 @@ impl TrunkStore {
                     match user
                         .source
                         .as_ref()
-                        .map(|source| source.adapter_name.as_str())
+                        .map(|source| source.instance_name.as_str())
                     {
                         // 内部父上下文 hook，不是会话内容（与实时投影一致）。
                         Some("background") => continue,
@@ -95,7 +95,7 @@ impl TrunkStore {
                                 .map(|image| echo_defs::media_store::spill_or_keep(image))
                                 .collect();
                             let source = user.source.as_ref().map(|source| TimelineSource {
-                                adapter_name: source.adapter_name.clone(),
+                                instance_name: source.instance_name.clone(),
                                 platform: source.platform.clone(),
                                 user_id: source.user_id.clone(),
                                 user_name: source.user_name.clone(),
@@ -292,14 +292,14 @@ mod tests {
         session: &str,
         content: &str,
         timestamp: i64,
-        adapter_name: &str,
+        instance_name: &str,
     ) -> echo_session::SessionEvent {
         echo_session::SessionEvent::UserMessage(echo_session::UserMessage {
             content: content.into(),
             timestamp,
             message_sequence: None,
             source: Some(echo_session::event::MessageSource {
-                adapter_name: adapter_name.into(),
+                instance_name: instance_name.into(),
                 platform: "core".into(),
                 user_id: String::new(),
                 user_name: String::new(),
