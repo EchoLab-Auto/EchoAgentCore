@@ -53,6 +53,7 @@ impl PluginHandler for TestHandler {
             category: "plugin".to_string(),
             timeout_hint_secs: None,
             package: Some("echo-plugin-sdk.tests".to_string()),
+            visible_reply: false,
         })]
     }
 
@@ -448,6 +449,7 @@ impl PluginHandler for HostCallHandler {
             category: "plugin".to_string(),
             timeout_hint_secs: None,
             package: Some("echo-plugin-sdk.tests".to_string()),
+            visible_reply: false,
         })]
     }
 
@@ -688,6 +690,7 @@ impl crate::AdapterPlugin for TestAdapter {
             config_schema: None,
             ui: None,
             session_labels: None,
+            tools: Vec::new(),
         }
     }
 

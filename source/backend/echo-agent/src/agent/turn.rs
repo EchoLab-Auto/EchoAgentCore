@@ -258,11 +258,11 @@ impl Agent {
                                     // 并行的临时等待回复。
                                     let failed =
                                         tool_result.text.trim_start().starts_with("error:");
+                                    // 「这一调用就是给用户的可见回复」由**工具自己
+                                    // 声明**（`Tool::produces_visible_output`），
+                                    // 不在循环里列平台工具名。
                                     if !failed
-                                        && matches!(
-                                            call.name.as_str(),
-                                            "send_private_msg" | "send_group_msg" | "send_backend_message"
-                                        )
+                                        && this.tools_produce_visible_output(&call.name).await
                                     {
                                         if let Some(visible) = &visible {
                                             let _ = visible.send(true);

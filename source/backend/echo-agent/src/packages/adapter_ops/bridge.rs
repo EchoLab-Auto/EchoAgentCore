@@ -357,6 +357,11 @@ mod tests {
             "test QQ send"
         }
 
+        fn produces_visible_output(&self) -> bool {
+            // 测试替身和真实适配器工具一样声明「这一调用就是可见回复」。
+            true
+        }
+
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
@@ -507,12 +512,18 @@ mod tests {
         let mut tools = crate::tool::ToolRegistry::new();
         tools.register(Arc::new(SendTool("send_private_msg")));
         tools.register(Arc::new(SendTool("send_group_msg")));
+        // 控制回复走 `Adapter::send_message`（平台中立的 typed seam），
+        // 因此测试也需要一个同 platform 的适配器实例。
+        let adapters = echo_adapter::registry::AdapterRegistry::new();
+        adapters.register(Arc::new(
+            crate::packages::adapter_ops::test_support::MockAdapter::configured("qq", "qq", true),
+        ));
         Arc::new(Agent::new(
             provider,
             crate::config::AgentConfig::default(),
             crate::skill::SkillRegistry::new(),
             tools,
-            Arc::new(echo_adapter::registry::AdapterRegistry::new()),
+            Arc::new(adapters),
         ))
     }
 
@@ -542,6 +553,68 @@ mod tests {
             })
             .await;
         assert_eq!(agent.loop_mode(), echo_defs::LoopMode::Parallel);
+    }
+
+    /// 记录 `Adapter::send_message` 的控制回复（取消回执 / 等待回复走
+    /// 平台中立的 typed seam，不再经过 `send_*` 工具）。
+    struct RecordingAdapter {
+        sent: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl echo_adapter::Adapter for RecordingAdapter {
+        fn name(&self) -> &str {
+            "qq"
+        }
+        fn display_name(&self) -> &str {
+            "qq"
+        }
+        fn platform(&self) -> &str {
+            "qq"
+        }
+        fn is_configured(&self) -> bool {
+            true
+        }
+        fn status_info(&self) -> echo_adapter::AdapterInfo {
+            echo_adapter::AdapterInfo {
+                name: "qq".into(),
+                display_name: "qq".into(),
+                status: echo_adapter::AdapterConnectionState::Connected,
+                self_id: None,
+                started_at: None,
+                platform: "qq".into(),
+                configured: true,
+            }
+        }
+        async fn start(&self) -> Result<(), echo_adapter::AdapterError> {
+            Ok(())
+        }
+        async fn stop(&self) -> Result<(), echo_adapter::AdapterError> {
+            Ok(())
+        }
+        async fn send_message(
+            &self,
+            _target: &echo_adapter::MessageTarget,
+            content: &str,
+        ) -> Result<echo_adapter::SendResult, echo_adapter::AdapterError> {
+            self.sent
+                .lock()
+                .expect("recorded sends poisoned")
+                .push(content.to_string());
+            Ok(echo_adapter::SendResult {
+                message_id: Some("rec".into()),
+                success: true,
+                error: None,
+            })
+        }
+    }
+
+    fn registry_with_recorder(
+        sent: Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> Arc<echo_adapter::registry::AdapterRegistry> {
+        let registry = echo_adapter::registry::AdapterRegistry::new();
+        registry.register(Arc::new(RecordingAdapter { sent }));
+        Arc::new(registry)
     }
 
     async fn wait_until(mut predicate: impl FnMut() -> bool) {
@@ -700,7 +773,7 @@ mod tests {
             crate::config::AgentConfig::default(),
             crate::skill::SkillRegistry::new(),
             tools,
-            Arc::new(echo_adapter::registry::AdapterRegistry::new()),
+            registry_with_recorder(Arc::clone(&sent_contents)),
         ));
         let session = agent.trunk.get_or_create(
             &SessionKey::parse("qq:dm::123456").unwrap(),
@@ -847,12 +920,14 @@ mod tests {
                 calls: Arc::clone(&sends),
             }));
         }
+        let control_sends: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let agent = Arc::new(Agent::new(
             provider,
             crate::config::AgentConfig::default(),
             crate::skill::SkillRegistry::new(),
             tools,
-            Arc::new(echo_adapter::registry::AdapterRegistry::new()),
+            registry_with_recorder(Arc::clone(&control_sends)),
         ));
         use_parallel_mode(&agent).await;
         let hook = AgentMessageHook::new(Arc::clone(&agent));
@@ -878,7 +953,8 @@ mod tests {
             .await
             .unwrap();
         wait_until(|| agent.active_inbound_turn_count() == 0).await;
-        wait_until(|| sends.load(Ordering::SeqCst) == 1).await;
+        // 取消回执走 typed seam（`Adapter::send_message`），不经过 `send_*` 工具。
+        wait_until(|| control_sends.lock().expect("control sends poisoned").len() == 1).await;
 
         let session = agent.trunk.all().pop().unwrap();
         let history = session.history.lock();

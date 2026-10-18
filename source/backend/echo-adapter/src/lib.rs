@@ -33,5 +33,5 @@ pub use capabilities::AdapterManagement;
 pub use config_store::{ensure_table, ConfigStore};
 
 pub use registry::AdapterRegistry;
-pub use traits::{Adapter, AdapterConnectionState, AdapterError, AdapterInfo};
+pub use traits::{Adapter, AdapterConnectionState, AdapterError, AdapterInfo, AdapterToolSpec};
 pub use types::{ChannelType, IncomingMessage, MessageTarget, SendResult};

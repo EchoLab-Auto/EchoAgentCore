@@ -366,6 +366,18 @@ impl ToolRegistry {
 
     /// Self-declared execution timeout of a registered tool for the given
     /// arguments, if the tool publishes one (see [`Tool::timeout_hint`]).
+    /// 该工具成功调用是否即产生平台可见输出（见 `Tool::produces_visible_output`）。
+    ///
+    /// 循环用它决定是否抑制「临时等待回复」；未知工具 = false。
+    pub async fn produces_visible_output(&self, name: &str) -> bool {
+        self.tools
+            .read()
+            .await
+            .get(name)
+            .map(|tool| tool.produces_visible_output())
+            .unwrap_or(false)
+    }
+
     pub async fn timeout_hint(&self, name: &str, arguments: &Value) -> Option<std::time::Duration> {
         self.tools
             .read()

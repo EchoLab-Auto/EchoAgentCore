@@ -86,6 +86,11 @@ impl crate::agent::Agent {
     /// 内置循环与 echo-loop 两条驱动路径共用——口径必须一致，否则同一请求
     /// 换驱动后行为不同。2026-09-26 前 echo-loop 路径没有守卫，挂死的工具
     /// 会永久拖住 turn（内置循环的守卫在这条路径上不生效）。
+    /// 该工具成功调用是否即产生平台可见输出（工具自己声明）。
+    pub(crate) async fn tools_produce_visible_output(&self, name: &str) -> bool {
+        self.tools.produces_visible_output(name).await
+    }
+
     pub(crate) async fn tool_guard_timeout(&self, call: &ToolCall) -> std::time::Duration {
         let base = self.config.read().await.effective_tool_timeout();
         tool_timeout(&self.tools, base, call).await

@@ -197,6 +197,7 @@ fn echo_tool() -> ToolContribution {
         category: "plugin".to_string(),
         timeout_hint_secs: None,
         package: Some("echo-plugin-host.test-peer".to_string()),
+        visible_reply: false,
     }
 }
 

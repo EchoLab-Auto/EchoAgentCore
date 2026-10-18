@@ -5,4 +5,6 @@
 //! Implementations (filter pipeline, registry, ConfigStore) stay in this
 //! crate.
 
-pub use echo_defs::adapter::{Adapter, AdapterConnectionState, AdapterError, AdapterInfo};
+pub use echo_defs::adapter::{
+    Adapter, AdapterConnectionState, AdapterError, AdapterInfo, AdapterToolSpec,
+};

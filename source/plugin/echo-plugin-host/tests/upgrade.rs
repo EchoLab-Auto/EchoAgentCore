@@ -286,6 +286,7 @@ impl InprocPlugin for EchoInstance {
                                     category: "plugin".to_string(),
                                     timeout_hint_secs: None,
                                     package: Some("upgrade-test.peer".to_string()),
+                                    visible_reply: false,
                                 })],
                             }))
                             .await;

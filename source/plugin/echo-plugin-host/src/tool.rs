@@ -170,6 +170,7 @@ mod tests {
                                         category: "plugin".into(),
                                         timeout_hint_secs: Some(5),
                                         package: None,
+                                        visible_reply: false,
                                     })],
                                 }))
                                 .await;

@@ -957,14 +957,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     .unwrap_or_else(|| default_adapters.clone());
                 // 适配器出站闸门（2026-10 安全）：send_* 的文本命中密钥按策略
                 // 阻断/替换；文件参数落在敏感目录（配置 / 凭据目录）直接拒发。
-                let outbound_gate =
-                    redactor2
-                        .as_ref()
-                        .map(|redactor| crate::adapter_tools::OutboundGate {
-                            redactor: redactor.clone(),
-                            protected_paths: sensitive_dirs2.clone(),
-                            policy: outbound_policy,
-                        });
+                let outbound_gate = redactor2.as_ref().map(|redactor| {
+                    std::sync::Arc::new(crate::adapter_tools::OutboundGate {
+                        redactor: redactor.clone(),
+                        protected_paths: sensitive_dirs2.clone(),
+                        policy: outbound_policy,
+                    })
+                });
                 let adapter_tool_names = crate::adapter_tools::register_adapter_tools_multi(
                     &mut t,
                     persona_adapters,
@@ -974,8 +973,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 前缀猜——前缀猜测等于假设「工具名遵循某平台命名习惯」，
                 // 换平台换命名就漏标）。包 id 取适配器插件 id：适配器工具与
                 // 对应技能同包，面板按包批量勾选时是一组。
-                for name in &adapter_tool_names {
-                    t.set_package(name, crate::adapter_manifests::ADAPTER_QQ_PLUGIN_ID);
+                // 包 id 由插件在工具声明里给（`AdapterToolSpec.package`）——
+                // Core 不猜平台名。
+                for (name, package) in &adapter_tool_names {
+                    if let Some(package) = package {
+                        t.set_package(name, package);
+                    }
                 }
                 // 任务清单（checklist）为普通内置工具：随内置工具集包
                 // （register_all 已打 echo-agent.tools.builtin 标签），

@@ -62,6 +62,7 @@ fn plugin_messages_roundtrip() {
             category: "builtin".into(),
             timeout_hint_secs: Some(60),
             package: Some("echo-agent.tools.builtin".into()),
+            visible_reply: false,
         })],
     }));
     roundtrip_plugin(PluginToHost::InvokeResult(InvokeResult {
@@ -212,6 +213,7 @@ fn adapter_contribution_roundtrip_and_capabilities() {
         config_schema: None,
         ui: Some(json!({"version": 1, "panels": []})),
         session_labels: Some(json!({"dm": "私聊", "group": "群"})),
+        tools: Vec::new(),
     });
     let text = serde_json::to_string(&adapter).unwrap();
     let back: Contribution = serde_json::from_str(&text).unwrap();
@@ -262,6 +264,7 @@ fn contribution_shapes() {
         category: "builtin".into(),
         timeout_hint_secs: None,
         package: None,
+        visible_reply: false,
     });
     let text = serde_json::to_string(&tool).unwrap();
     let back: Contribution = serde_json::from_str(&text).unwrap();

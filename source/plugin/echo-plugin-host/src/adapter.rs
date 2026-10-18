@@ -281,6 +281,21 @@ impl echo_defs::adapter::Adapter for RemoteAdapter {
         self.contribution.session_labels.clone()
     }
 
+    fn tool_specs(&self) -> Vec<echo_defs::adapter::AdapterToolSpec> {
+        // 平台语义住在插件贡献里：宿主只做形状转换，不认识任何工具名。
+        self.contribution
+            .tools
+            .iter()
+            .map(|tool| echo_defs::adapter::AdapterToolSpec {
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                parameters: tool.parameters.clone(),
+                package: tool.package.clone(),
+                visible_reply: tool.visible_reply,
+            })
+            .collect()
+    }
+
     fn gating_capabilities(&self) -> bool {
         // 泛化 S5（01b §D.2 a′）：写方法广播的源实例能力位。
         self.contribution.capabilities.gating
@@ -771,6 +786,7 @@ mod tests {
             config_schema: None,
             ui: None,
             session_labels: None,
+            tools: Vec::new(),
         }
     }
 

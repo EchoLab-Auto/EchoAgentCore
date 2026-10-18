@@ -288,35 +288,69 @@ impl Agent {
         result
     }
 
+    /// 发送一条**框架生成**的控制回复（取消回执 / 失败通知 / 临时等待回复）。
+    ///
+    /// 走平台中立的 [`Adapter::send_message`]（会话键里已有平台 / 目标用户），
+    /// **不依赖任何平台工具名**——此前写死调用 `send_group_msg` /
+    /// `send_private_msg` 并拼 QQ 形状的参数。
+    ///
+    /// 出口仍过脱敏（控制回复里可能夹带原始错误文本）。
     pub(crate) async fn send_control_reply(
         &self,
         session: &Session,
         group_id: Option<&str>,
         content: &str,
     ) -> std::result::Result<(), String> {
-        let (name, arguments) = match group_id {
-            Some(group_id) => (
-                "send_group_msg",
-                serde_json::json!({ "group_id": group_id, "content": content }),
-            ),
-            None => (
-                "send_private_msg",
-                serde_json::json!({
-                    "user_id": session.session_key.user_id,
-                    "content": content
-                }),
-            ),
+        use echo_defs::chat::{ChannelType, MessageTarget};
+
+        let key = &session.session_key;
+        let adapter = self.resolve_session_adapter(key)?;
+        let text = match self.redactor() {
+            Some(redactor) => redactor.redact(content).text,
+            None => content.to_string(),
         };
-        let call = ToolCall {
-            id: format!("control-{}", uuid::Uuid::new_v4()),
-            name: name.into(),
-            arguments: arguments.to_string(),
+        let target = MessageTarget {
+            adapter_name: adapter.name().to_string(),
+            channel: match group_id {
+                Some(group_id) => ChannelType::Group {
+                    group_id: group_id.to_string(),
+                },
+                None => ChannelType::Direct,
+            },
+            user_id: key.user_id.clone(),
         };
-        let result = self.run_tool(&session.id, "control-reply", &call).await;
-        if result.text.trim_start().starts_with("error:") {
-            Err(result.text)
-        } else {
-            Ok(())
+        match adapter.send_message(&target, &text).await {
+            Ok(result) if result.success => Ok(()),
+            Ok(result) => Err(result
+                .error
+                .unwrap_or_else(|| "adapter reported failure".into())),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// 会话 → 目标适配器：优先按实例名（`account`），否则该平台的唯一实例。
+    fn resolve_session_adapter(
+        &self,
+        key: &crate::session::SessionKey,
+    ) -> std::result::Result<std::sync::Arc<dyn echo_adapter::Adapter>, String> {
+        if let Some(account) = key.account() {
+            if let Some(adapter) = self.adapters.get(account) {
+                return Ok(adapter);
+            }
+        }
+        let candidates: Vec<_> = self
+            .adapters
+            .configured()
+            .into_iter()
+            .filter(|adapter| adapter.platform().eq_ignore_ascii_case(&key.platform))
+            .collect();
+        match candidates.len() {
+            1 => Ok(candidates[0].clone()),
+            0 => Err(format!("会话平台 {} 没有可用适配器实例", key.platform)),
+            _ => Err(format!(
+                "会话平台 {} 有多个适配器实例，请在会话键里带 account",
+                key.platform
+            )),
         }
     }
 

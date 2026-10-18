@@ -60,6 +60,26 @@ pub struct AdapterInfo {
     // [`AdapterManagement::cached_state`]: crate::adapter::AdapterManagement::cached_state
 }
 
+/// 适配器向模型暴露的一个工具（声明式）。
+///
+/// **平台语义住在插件里**：Core 只负责把声明合并后注册、把调用透传给
+/// `invoke_custom(name, args)`。工具名 / 描述 / 参数 schema 全部由适配器插件
+/// 提供，Core 不认识任何一个（此前 10 个 QQ 语义工具的 schema 写死在
+/// `core::adapter_tools`，约 800 行）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdapterToolSpec {
+    /// 工具名，同时是 `invoke_custom` 的 method 名。
+    pub name: String,
+    /// 给模型看的说明。
+    pub description: String,
+    /// 参数 JSON Schema（宿主会按需注入可选 `account` 实例寻址参数）。
+    pub parameters: Value,
+    /// 所属包 id（面板按包批量勾选；`None` = 插件 id）。
+    pub package: Option<String>,
+    /// 成功调用是否即产生**平台可见输出**（见 `Tool::produces_visible_output`）。
+    pub visible_reply: bool,
+}
+
 /// Adapter errors.
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {
@@ -177,6 +197,15 @@ pub trait Adapter: Send + Sync {
     ///（未声明 = 非出站通道，不注册任何适配器工具）。
     fn sends_text(&self) -> bool {
         false
+    }
+
+    /// 该适配器贡献给模型的工具声明（缺省空 = 不贡献工具）。
+    ///
+    /// 宿主按 name 跨实例合并后注册；调用时透传为
+    /// [`AdapterManagement::invoke_custom`]（method = 工具名）。多实例部署
+    /// 由宿主注入可选 `account` 参数寻址，适配器无需关心。
+    fn tool_specs(&self) -> Vec<AdapterToolSpec> {
+        Vec::new()
     }
 }
 

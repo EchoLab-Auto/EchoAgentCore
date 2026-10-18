@@ -306,6 +306,7 @@ fn tool(name: &str) -> ToolContribution {
         category: "demo".to_string(),
         timeout_hint_secs: Some(42),
         package: Some("test.pkg".to_string()),
+        visible_reply: false,
     }
 }
 

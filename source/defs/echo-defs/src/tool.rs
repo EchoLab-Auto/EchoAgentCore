@@ -79,6 +79,14 @@ pub trait Tool: Send + Sync {
     fn category(&self) -> &'static str {
         "builtin"
     }
+    /// 成功调用本工具是否**即产生平台可见输出**（发给用户的真实回复）。
+    ///
+    /// 循环用它决定「临时等待回复」要不要抑制——此前按工具名前缀/固定名单
+    /// 判断（`send_private_msg` | `send_group_msg` | …），等于把平台语义写进
+    /// 框架。默认 `false`；适配器工具按声明给（见 `AdapterToolSpec`）。
+    fn produces_visible_output(&self) -> bool {
+        false
+    }
     /// JSON Schema for the arguments object.
     fn parameters(&self) -> Value {
         json!({"type": "object", "properties": {}})

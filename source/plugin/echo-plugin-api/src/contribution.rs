@@ -39,6 +39,9 @@ pub struct ToolContribution {
     /// 所属包 id（面板按包批量勾选用；如 `echo-agent.tools.builtin`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
+    /// 成功调用是否即产生平台可见输出（宿主据此抑制「临时等待回复」）。
+    #[serde(default)]
+    pub visible_reply: bool,
 }
 
 /// 技能贡献（SKILL.md 目录或内联描述）。
@@ -95,6 +98,12 @@ pub struct AdapterContribution {
     /// 会话标签（`SessionSwitcher` 等平台分组显示；如 `{"dm":"私聊","group":"群"}`，可选）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_labels: Option<Value>,
+    /// 该适配器贡献给模型的工具（**平台语义在此声明，宿主不认识它们**）。
+    ///
+    /// 每个工具名同时是 `Invoke("<adapter>:<name>")` 的 op 名；宿主负责跨实例
+    /// 合并、多实例时注入 `account` 寻址参数、把调用透传回来。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolContribution>,
 }
 
 /// 适配器能力位（缺省全 false——宿主 fail-closed，未声明的调用拒绝）。
