@@ -309,14 +309,8 @@ impl Agent {
             message_sequence,
             team_id: None,
         });
-        self.process_inbound_branch(
-            &session,
-            &hook,
-            message_sequence,
-            None,
-            std::time::Duration::from_secs(u64::MAX),
-        )
-        .await;
+        self.process_inbound_branch(&session, &hook, message_sequence)
+            .await;
     }
 }
 

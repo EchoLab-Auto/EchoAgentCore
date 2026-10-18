@@ -1,13 +1,13 @@
 //! EchoAgentCore adapter abstraction.
 //!
-//! EchoAgentCore adapter abstraction.
-//!
 //! This crate holds what is genuinely **platform-neutral and host-side**:
-//! an [`AdapterRegistry`] (name → handle lookup) and a [`ConfigStore`]
-//! (atomic TOML read-modify-write). The capability definitions themselves
-//! ([`Adapter`] trait, status/error types, platform-agnostic message types,
-//! [`AdapterManagement`]) live in `echo-defs` (the definition layer) and are
-//! re-exported here so `echo_adapter::…` paths keep working.
+//! an [`AdapterRegistry`] (name → handle lookup). The capability definitions
+//! themselves ([`Adapter`] trait, status/error types, platform-agnostic message
+//! types, [`AdapterManagement`]) live in `echo-defs` (the definition layer) and
+//! are re-exported here so `echo_adapter::…` paths keep working.
+//!
+//! Config persistence used to live here too; it was never adapter-specific and
+//! now lives in its own `echo-config` crate.
 //!
 //! Filtering is **not** here: after adapter pluginization, inbound filtering
 //! runs inside the adapter plugin process (before `deliver_message` reaches
@@ -21,17 +21,13 @@
 //! | [`capabilities`] | re-export of `echo-defs`：适配器管理能力扩展（[`AdapterManagement`]） |
 //! | [`types`] | re-export of `echo-defs::chat`: `ChannelType`, `IncomingMessage`, `MessageTarget` |
 //! | [`registry`] | `AdapterRegistry`（name → `Arc<dyn Adapter>`） |
-//! | [`config_store`] | `ConfigStore`（TOML 原子读改写，全宿主共用） |
 
 pub mod capabilities;
-pub mod config_store;
 pub mod registry;
 pub mod traits;
 pub mod types;
 
 pub use capabilities::AdapterManagement;
-pub use config_store::{ensure_table, ConfigStore};
-
 pub use registry::AdapterRegistry;
 pub use traits::{Adapter, AdapterConnectionState, AdapterError, AdapterInfo, AdapterToolSpec};
-pub use types::{ChannelType, IncomingMessage, MessageTarget, SendResult};
+pub use types::{ChannelType, IncomingMessage};

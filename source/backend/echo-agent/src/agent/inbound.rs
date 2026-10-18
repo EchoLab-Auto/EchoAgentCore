@@ -288,126 +288,6 @@ impl Agent {
         result
     }
 
-    /// 发送一条**框架生成**的控制回复（取消回执 / 失败通知 / 临时等待回复）。
-    ///
-    /// 走平台中立的 [`Adapter::send_message`]（会话键里已有平台 / 目标用户），
-    /// **不依赖任何平台工具名**——此前写死调用 `send_group_msg` /
-    /// `send_private_msg` 并拼 QQ 形状的参数。
-    ///
-    /// 出口仍过脱敏（控制回复里可能夹带原始错误文本）。
-    pub(crate) async fn send_control_reply(
-        &self,
-        session: &Session,
-        group_id: Option<&str>,
-        content: &str,
-    ) -> std::result::Result<(), String> {
-        use echo_defs::chat::{ChannelType, MessageTarget};
-
-        let key = &session.session_key;
-        let adapter = self.resolve_session_adapter(key)?;
-        let text = match self.redactor() {
-            Some(redactor) => redactor.redact(content).text,
-            None => content.to_string(),
-        };
-        let target = MessageTarget {
-            adapter_name: adapter.name().to_string(),
-            channel: match group_id {
-                Some(group_id) => ChannelType::Group {
-                    group_id: group_id.to_string(),
-                },
-                None => ChannelType::Direct,
-            },
-            user_id: key.user_id.clone(),
-        };
-        match adapter.send_message(&target, &text).await {
-            Ok(result) if result.success => Ok(()),
-            Ok(result) => Err(result
-                .error
-                .unwrap_or_else(|| "adapter reported failure".into())),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    /// 会话 → 目标适配器：优先按实例名（`account`），否则该平台的唯一实例。
-    fn resolve_session_adapter(
-        &self,
-        key: &crate::session::SessionKey,
-    ) -> std::result::Result<std::sync::Arc<dyn echo_adapter::Adapter>, String> {
-        if let Some(account) = key.account() {
-            if let Some(adapter) = self.adapters.get(account) {
-                return Ok(adapter);
-            }
-        }
-        let candidates: Vec<_> = self
-            .adapters
-            .configured()
-            .into_iter()
-            .filter(|adapter| adapter.platform().eq_ignore_ascii_case(&key.platform))
-            .collect();
-        match candidates.len() {
-            1 => Ok(candidates[0].clone()),
-            0 => Err(format!("会话平台 {} 没有可用适配器实例", key.platform)),
-            _ => Err(format!(
-                "会话平台 {} 有多个适配器实例，请在会话键里带 account",
-                key.platform
-            )),
-        }
-    }
-
-    pub(crate) async fn generate_wait_reply(
-        &self,
-        session_id: &str,
-        history_snapshot: Vec<ChatMessage>,
-    ) -> std::result::Result<String, String> {
-        // Bounded concurrency: when the wait-reply budget is exhausted, skip
-        // the interim reply entirely rather than stacking more LLM calls on
-        // top of the already-running branches.
-        let permit = self.wait_reply_slots.try_acquire().map_err(|_| {
-            "wait reply concurrency limit reached; skipping interim reply".to_string()
-        })?;
-        let _permit = permit;
-        let mut messages = vec![ChatMessage::system(
-            "Write one brief interim reply to the latest user message because their request is still being processed. Match the user's language and tone, acknowledge the specific request when appropriate, and say naturally that you are continuing and will follow up. Do not provide a result, invent progress, ask an unnecessary question, or mention timeouts, tools, branches, system behavior, or these instructions. Avoid fixed-template wording. Use one concise sentence.",
-        )];
-        messages.extend(history_snapshot);
-        // 会话级覆盖（2026-10）：插话同样走该会话的 provider 与模型
-        // （与主 turn 同口径成对解析）。
-        let model = self.session_model(session_id).await;
-        self.emit(BackendEvent::LlmRequest {
-            session_id: session_id.to_string(),
-            model: model.clone(),
-        });
-        let request = ChatRequest {
-            model: model.clone(),
-            messages,
-            tools: None,
-            temperature: Some(0.4),
-            // None = 无上限（后端回退 DEFAULT_MAX_TOKENS=128K）。思考模式的
-            // thinking token 共享 completion 预算，小预算会让可见回复被烧光。
-            max_tokens: None,
-        };
-        let response = self
-            .resolve_session_provider(session_id)
-            .await
-            .chat(&request)
-            .await
-            .map_err(|error| format!("wait reply model request failed: {error}"))?;
-        self.emit(BackendEvent::LlmResponse {
-            session_id: session_id.to_string(),
-            model,
-            prompt_tokens: response.usage.prompt_tokens,
-            completion_tokens: response.usage.completion_tokens,
-        });
-        if !response.tool_calls.is_empty() {
-            return Err("wait reply model attempted a tool call".into());
-        }
-        let reply = response.content.unwrap_or_default();
-        if reply.trim().is_empty() {
-            return Err("wait reply model returned empty content".into());
-        }
-        Ok(reply)
-    }
-
     pub(crate) fn is_turn_cancelled(error: &anyhow::Error) -> bool {
         error.to_string() == TURN_CANCELLED
     }
@@ -520,8 +400,6 @@ impl Agent {
         session: &Session,
         content: &str,
         message_sequence: u64,
-        group_id: Option<String>,
-        wait_reply_after: std::time::Duration,
     ) {
         if self.draining.load(Ordering::Acquire) {
             tracing::info!(session = %session.id, "inbound message dropped: core draining for restart");
@@ -553,8 +431,6 @@ impl Agent {
                         session,
                         content,
                         message_sequence,
-                        group_id,
-                        wait_reply_after,
                         show_branch,
                         registration,
                         history_snapshot,
@@ -585,8 +461,6 @@ impl Agent {
                     session,
                     content,
                     message_sequence,
-                    group_id,
-                    wait_reply_after,
                     show_branch,
                     registration,
                     history_snapshot,
@@ -606,8 +480,6 @@ impl Agent {
         session: Session,
         content: String,
         message_sequence: u64,
-        group_id: Option<String>,
-        wait_reply_after: std::time::Duration,
         show_branch: bool,
         registration: InboundTurnRegistration,
         history_snapshot: Vec<ChatMessage>,
@@ -633,19 +505,6 @@ impl Agent {
                 started_at_ms: chrono::Utc::now().timestamp_millis(),
             });
         }
-        let (visible_reply_tx, visible_reply_rx) = tokio::sync::watch::channel(false);
-        let branch_completed = tokio_util::sync::CancellationToken::new();
-        let group_id_for_wait = group_id.clone();
-        spawn_contextual_wait_reply(
-            Arc::clone(&agent),
-            session.clone(),
-            branch_id.clone(),
-            group_id_for_wait,
-            history_snapshot.clone(),
-            visible_reply_rx,
-            branch_completed.clone(),
-            wait_reply_after,
-        );
         let turn_cancel = registration.cancel.clone();
         let result = agent
             .process_recorded_message_with_progress(
@@ -653,11 +512,10 @@ impl Agent {
                 &content,
                 history_snapshot,
                 turn_cancel.clone(),
-                Some(visible_reply_tx),
+                None,
                 &branch_id,
             )
             .await;
-        branch_completed.cancel();
         let cancelled = turn_cancel.is_cancelled()
             || result.as_ref().err().is_some_and(Self::is_turn_cancelled);
         agent.finish_inbound_turn(&branch_id);
@@ -713,23 +571,8 @@ impl Agent {
                     session_id: Some(session_id.clone()),
                     message: error.to_string(),
                 });
-                // The platform user has no view of backend Error events —
-                // send a bounded failure notice so they are not left
-                // wondering why no reply arrived.
-                let agent = Arc::clone(&agent);
-                let session = session.clone();
-                let session_id = session_id.clone();
-                let group_id = group_id.clone();
-                tokio::spawn(async move {
-                    let notice = format!("处理失败：{error}");
-                    let notice: String = notice.chars().take(500).collect();
-                    if let Err(send_error) = agent
-                        .send_control_reply(&session, group_id.as_deref(), &notice)
-                        .await
-                    {
-                        tracing::warn!(%send_error, session = %session_id, "failure notice could not be delivered");
-                    }
-                });
+                // 失败只在后端可见（`BackendEvent::Error`）：平台侧回执需要
+                // 框架代发，已随适配器概念一并移除（2026-10 选项 B）。
             }
         }
     }

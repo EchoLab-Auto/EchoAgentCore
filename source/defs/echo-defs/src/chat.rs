@@ -105,25 +105,3 @@ pub struct IncomingMessage {
     /// file transfer (e.g. QQ group uploads); see [`IncomingFile`].
     pub files: Vec<IncomingFile>,
 }
-
-/// Describes where to send a reply message.
-#[derive(Debug, Clone)]
-pub struct MessageTarget {
-    /// Adapter to use (e.g., "qq").
-    pub adapter_name: String,
-    /// Channel type.
-    pub channel: ChannelType,
-    /// The target user id (for DM replies or @-mentions).
-    pub user_id: String,
-}
-
-/// Result of sending a message.
-#[derive(Debug, Clone)]
-pub struct SendResult {
-    /// Platform message ID, if available.
-    pub message_id: Option<String>,
-    /// Whether the send succeeded.
-    pub success: bool,
-    /// Error details if failed.
-    pub error: Option<String>,
-}

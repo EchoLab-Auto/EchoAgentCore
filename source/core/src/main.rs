@@ -14,7 +14,6 @@ use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-mod adapter_commands;
 mod adapter_deploy;
 mod adapter_manifests;
 mod adapter_tools;
@@ -348,7 +347,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             node_to_peer: std::sync::Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
-            config_store: echo_adapter::ConfigStore::new(args.config_path()),
+            config_store: echo_config::ConfigStore::new(args.config_path()),
             listen: fed_listen_effective.clone().unwrap_or_default(),
             advertise: cfg.federation.advertise.clone(),
             node_name: cfg
@@ -657,7 +656,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         .unwrap_or_else(|| cfg.agent.teams.keys().next().cloned().unwrap_or_default());
     // 数据目录：实例 compose / 卷命名都从这里派生（配置同目录）。
     // 配置存储（实例端口持久化、Agent 配置写回等都依赖它）。
-    let config_store = echo_adapter::ConfigStore::new(args.config_path());
+    let config_store = echo_config::ConfigStore::new(args.config_path());
     let qq_data_dir = args
         .config_path()
         .parent()
@@ -748,11 +747,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         }
         if !patches.is_empty() {
             if let Err(error) = config_store.patch(|root| {
-                let adapters = echo_adapter::ensure_table(root, "adapters");
-                let qq = echo_adapter::ensure_table(adapters, platform);
-                let instances = echo_adapter::ensure_table(qq, "instances");
+                let adapters = echo_config::ensure_table(root, "adapters");
+                let qq = echo_config::ensure_table(adapters, platform);
+                let instances = echo_config::ensure_table(qq, "instances");
                 for patch in &patches {
-                    let entry = echo_adapter::ensure_table(instances, &patch.id);
+                    let entry = echo_config::ensure_table(instances, &patch.id);
                     let value =
                         toml::Value::try_from(&patch.ports).map_err(|e| format!("ports: {e}"))?;
                     entry.insert("ports".into(), value);
@@ -1558,18 +1557,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     }
 
     // ---- Wire agents into adapter instances ----
-    // 命令域上下文（P1.9）：`/echo` `/help` `/status` `/shutdown`——插件实例
-    // 在入站 worker 里先过命令判定（消费的命令不进 agent）；builtin 实例
-    // 仍走 `echo_server` handler。
-    let command_ctx = Arc::new(crate::adapter_commands::CommandContext::new(
-        qq_host.command_prefix.clone(),
-        shutdown_tx.clone(),
-    ));
     // 每个实例把入站消息投给**归属人格**（不再是"默认人格"）；实例间互相隔离。
-    // 每实例一个串行 worker（入站队列 → 命令判定 → AgentMessageHook）。
-    // 队列由 `adapter_host` 的反压回执语义保序（插件侧退避重试）；
-    // 命令域（`/echo` / `/help` / `/status` / `/shutdown`）在投递 agent 前
-    // 消费——回复经该实例的适配器句柄（`send_text`），与内置路径同语义。
+    // 每实例一个串行 worker（入站队列 → AgentMessageHook）。队列由
+    // `adapter_host` 的反压回执语义保序（插件侧退避重试）。
     for (instance_id, persona_id, handle) in qq_plugin_workers {
         let target = match supervisor.get_exact(&persona_id) {
             Some(p) => p.agent,
@@ -1580,18 +1570,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         };
         let hook = Arc::new(echo_agent::AgentMessageHook::new(target));
         let worker_instance = instance_id.clone();
-        let worker_adapter = handle.adapter.clone() as Arc<dyn echo_adapter::Adapter>;
-        let worker_commands = command_ctx.clone();
         let mut inbound_rx = handle.inbound_rx;
         tokio::spawn(async move {
             while let Some(message) = inbound_rx.recv().await {
                 let incoming = echo_plugin_host::adapter::message_to_incoming(message);
-                // 命令域：已消费的命令不进 agent（回复在命令域内完成）。
-                if crate::adapter_commands::try_handle(&incoming, &worker_adapter, &worker_commands)
-                    .await
-                {
-                    continue;
-                }
                 if let Err(error) = hook.on_incoming_message(incoming).await {
                     tracing::warn!(
                         instance = %worker_instance,
@@ -1717,7 +1699,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 move |teams: &std::collections::BTreeMap<String, echo_agent::TeamMember>| {
                     store
                         .patch(|root| {
-                            let agent = echo_adapter::ensure_table(root, "agent");
+                            let agent = echo_config::ensure_table(root, "agent");
                             let mut tbl = toml::map::Map::new();
                             for (id, p) in teams {
                                 let mut v = toml::Value::try_from(p.clone())

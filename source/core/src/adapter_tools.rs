@@ -370,7 +370,6 @@ fn redact_json_strings(value: Value, redactor: &dyn echo_defs::sanitize::Redacto
 mod tests {
     use super::*;
 
-    use echo_adapter::types::SendResult;
     use echo_adapter::{
         AdapterConnectionState, AdapterError, AdapterInfo, AdapterManagement, AdapterToolSpec,
     };
@@ -480,17 +479,6 @@ mod tests {
         }
         async fn stop(&self) -> Result<(), AdapterError> {
             Ok(())
-        }
-        async fn send_message(
-            &self,
-            _target: &echo_adapter::types::MessageTarget,
-            _content: &str,
-        ) -> Result<SendResult, AdapterError> {
-            Ok(SendResult {
-                message_id: Some("mock".into()),
-                success: true,
-                error: None,
-            })
         }
         fn management(&self) -> Option<&dyn AdapterManagement> {
             Some(&self.management)

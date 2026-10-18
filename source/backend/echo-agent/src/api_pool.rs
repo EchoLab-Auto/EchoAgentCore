@@ -11,7 +11,7 @@
 //!
 //! 输出**绝不含明文密钥**：`key_set` 仅是布尔"是否已配置"。
 
-use echo_adapter::ConfigStore;
+use echo_config::ConfigStore;
 
 use crate::config::ApiProfile;
 

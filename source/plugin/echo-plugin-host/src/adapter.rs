@@ -21,8 +21,6 @@ use crate::api::{AdapterContribution, AdapterMessage, InvokeContext, InvokeOutco
 use crate::supervisor::{PluginHandle, PluginState};
 use crate::transport::TransportError;
 
-use echo_defs::chat::SendResult as AdapterSendResult;
-
 /// 入站队列容量上限（每实例；满 → `backpressure` 错误码，插件退避）。
 const INBOUND_QUEUE_CAPACITY: usize = 256;
 
@@ -232,40 +230,6 @@ impl echo_defs::adapter::Adapter for RemoteAdapter {
             .await
             .map_err(|e| echo_defs::adapter::AdapterError::Internal(e.to_string()))?;
         Ok(())
-    }
-
-    async fn send_message(
-        &self,
-        target: &echo_defs::chat::MessageTarget,
-        content: &str,
-    ) -> Result<AdapterSendResult, echo_defs::adapter::AdapterError> {
-        if !self.contribution.capabilities.send_text {
-            return Err(echo_defs::adapter::AdapterError::Internal(format!(
-                "adapter {} does not declare send_text capability",
-                self.name
-            )));
-        }
-        let payload = json!({
-            "target": {
-                "channel": match &target.channel {
-                    echo_defs::chat::ChannelType::Direct => json!({"type": "dm"}),
-                    echo_defs::chat::ChannelType::Group { group_id } => {
-                        json!({"type": "group", "group_id": group_id})
-                    }
-                },
-                "user_id": target.user_id,
-            },
-            "content": content,
-        });
-        let result = self
-            .invoke_op(true, "send_text", payload)
-            .await
-            .map_err(|e| echo_defs::adapter::AdapterError::SendFailed(e.to_string()))?;
-        Ok(AdapterSendResult {
-            message_id: result["message_id"].as_str().map(str::to_string),
-            success: result["success"].as_bool().unwrap_or(true),
-            error: result["error"].as_str().map(str::to_string),
-        })
     }
 
     fn management(&self) -> Option<&dyn echo_defs::adapter::AdapterManagement> {
@@ -867,21 +831,6 @@ mod tests {
             .collect();
         assert_eq!(adapters.len(), 1);
         let adapter = RemoteAdapter::new(adapters[0].clone(), handle.clone());
-
-        // 能力位 fail-closed：send_media 未声明 → 拒绝（不发起 Invoke）。
-        let target = echo_defs::chat::MessageTarget {
-            adapter_name: "qq".into(),
-            channel: echo_defs::chat::ChannelType::Direct,
-            user_id: "123".into(),
-        };
-        // send_text（已声明）正常——经 `Adapter::send_message`（trait 方法名
-        // 是 send_message；线协议 op 是 `send_text`）。
-        let result = adapter
-            .send_message(&target, "hello")
-            .await
-            .expect("send ok");
-        assert_eq!(result.message_id.as_deref(), Some("msg-1"));
-        assert!(result.success);
 
         // 状态仲裁：插件 Ready 时显示缓存连接态；Pending/Failed 时压住。
         adapter.note_connection_state(true, Some("4242".into()));

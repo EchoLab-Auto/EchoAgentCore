@@ -816,8 +816,8 @@ impl Agent {
         };
         let text = text.to_string();
         if let Err(error) = store.patch(|root| {
-            let plugins = echo_adapter::ensure_table(root, "plugins");
-            let system_prompt = echo_adapter::ensure_table(plugins, "system_prompt");
+            let plugins = echo_config::ensure_table(root, "plugins");
+            let system_prompt = echo_config::ensure_table(plugins, "system_prompt");
             system_prompt.insert("text".into(), toml::Value::String(text));
             Ok(())
         }) {
@@ -826,7 +826,7 @@ impl Agent {
     }
 
     /// Persist a config snapshot's `[agent]` section back to the TOML file
-    /// through the shared [`echo_adapter::ConfigStore`].
+    /// through the shared [`echo_config::ConfigStore`].
     pub(crate) async fn persist_config(&self, cfg: &AgentConfig) {
         let store = match self.config_store.lock().await.clone() {
             Some(s) => s,

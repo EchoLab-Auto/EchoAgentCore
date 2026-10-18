@@ -19,7 +19,7 @@ pub(crate) struct FederationRuntime {
     pub(crate) node_to_peer:
         std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
     /// 联邦管理命令所需的配置写回与本机信息。
-    pub(crate) config_store: echo_adapter::ConfigStore,
+    pub(crate) config_store: echo_config::ConfigStore,
     pub(crate) listen: String,
     /// 邀请串对外宣告地址（`[federation] advertise`；空 = 从 listen 推导）。
     pub(crate) advertise: String,
@@ -661,9 +661,9 @@ pub(crate) async fn handle_federation_command(
             );
             let write_name = name.clone();
             if let Err(e) = rt.config_store.patch(move |root| {
-                let federation = echo_adapter::ensure_table(root, "federation");
-                let peers = echo_adapter::ensure_table(federation, "peers");
-                let entry = echo_adapter::ensure_table(peers, &write_name);
+                let federation = echo_config::ensure_table(root, "federation");
+                let peers = echo_config::ensure_table(federation, "peers");
+                let entry = echo_config::ensure_table(peers, &write_name);
                 entry.insert("url".into(), toml::Value::String(url));
                 entry.insert("token".into(), toml::Value::String(token));
                 entry.insert(
@@ -1265,9 +1265,9 @@ pub(crate) async fn learn_peer_dial_address(
     let write_name = name.clone();
     let write_url = url.clone();
     if let Err(e) = rt.config_store.patch(move |root| {
-        let federation = echo_adapter::ensure_table(root, "federation");
-        let peers = echo_adapter::ensure_table(federation, "peers");
-        let entry = echo_adapter::ensure_table(peers, &write_name);
+        let federation = echo_config::ensure_table(root, "federation");
+        let peers = echo_config::ensure_table(federation, "peers");
+        let entry = echo_config::ensure_table(peers, &write_name);
         entry.insert("url".into(), toml::Value::String(write_url));
         Ok(())
     }) {
@@ -1343,9 +1343,9 @@ pub(crate) async fn promote_paired_invite_placeholders(
         let write_name = promoted.clone();
         let write_token = token.clone();
         if let Err(e) = rt.config_store.patch(move |root| {
-            let federation = echo_adapter::ensure_table(root, "federation");
-            let peers = echo_adapter::ensure_table(federation, "peers");
-            let entry = echo_adapter::ensure_table(peers, &write_name);
+            let federation = echo_config::ensure_table(root, "federation");
+            let peers = echo_config::ensure_table(federation, "peers");
+            let entry = echo_config::ensure_table(peers, &write_name);
             entry.insert("url".into(), toml::Value::String(String::new()));
             entry.insert("token".into(), toml::Value::String(write_token));
             entry.insert(

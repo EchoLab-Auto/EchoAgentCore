@@ -106,17 +106,6 @@ impl echo_adapter::Adapter for MockAdapter {
     async fn stop(&self) -> Result<(), echo_adapter::AdapterError> {
         Ok(())
     }
-    async fn send_message(
-        &self,
-        _target: &echo_adapter::MessageTarget,
-        _content: &str,
-    ) -> Result<echo_adapter::SendResult, echo_adapter::AdapterError> {
-        Ok(echo_adapter::SendResult {
-            message_id: None,
-            success: true,
-            error: None,
-        })
-    }
     fn management(&self) -> Option<&dyn echo_adapter::AdapterManagement> {
         Some(self)
     }

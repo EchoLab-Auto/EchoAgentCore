@@ -16,8 +16,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::chat::{MessageTarget, SendResult};
-
 /// Connection state of an adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AdapterConnectionState {
@@ -137,22 +135,6 @@ pub trait Adapter: Send + Sync {
     /// Stop the adapter gracefully.
     async fn stop(&self) -> Result<(), AdapterError>;
 
-    /// 彻底移除实例资源（实例**删除**语义，2026-10 巡检遗留）。
-    ///
-    /// 与 `stop`（临时停用，保留数据/登录态）不同：实现方应停止适配器
-    /// 并回收外部资源（QQ/NapCat：容器 + 数据卷 + compose 文件）。
-    /// 默认 no-op（无外部资源的适配器无需实现）。幂等：重复调用安全。
-    async fn remove_instance(&self) -> Result<(), AdapterError> {
-        Ok(())
-    }
-
-    /// Send a text message to a specific platform target.
-    async fn send_message(
-        &self,
-        target: &MessageTarget,
-        content: &str,
-    ) -> Result<SendResult, AdapterError>;
-
     /// 平台中立的适配器管理面（W3.1，2026-10 适配器管理通道）。
     ///
     /// 平台管理能力的唯一入口；`None` = 该适配器不提供
@@ -189,8 +171,6 @@ pub trait Adapter: Send + Sync {
         false
     }
 
-    /// 能力位：`send_text`（适配器可出站文本消息）。
-    ///
     /// 宿主按本能力位（而非 platform）筛选可注册消息工具的适配器
     ///（泛化 S6 / 01b §D.4）；远程适配器返回
     /// `AdapterContribution.capabilities.send_text`。默认 `false`

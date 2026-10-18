@@ -132,7 +132,6 @@ impl AdapterRegistry {
 mod tests {
     use super::*;
     use crate::traits::{AdapterConnectionState, AdapterInfo};
-    use crate::types::{MessageTarget, SendResult};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -188,17 +187,6 @@ mod tests {
         async fn stop(&self) -> Result<(), AdapterError> {
             self.started.store(false, Ordering::SeqCst);
             Ok(())
-        }
-        async fn send_message(
-            &self,
-            _target: &MessageTarget,
-            _content: &str,
-        ) -> Result<SendResult, AdapterError> {
-            Ok(SendResult {
-                message_id: Some("1".into()),
-                success: true,
-                error: None,
-            })
         }
     }
 

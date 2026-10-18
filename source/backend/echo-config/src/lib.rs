@@ -1,9 +1,14 @@
 //! Centralised, atomic TOML config persistence.
 //!
-//! Both `Agent::persist_config` and `QqAdapter::persist_filter` used to read,
-//! patch and rewrite the same config file independently — concurrent writes
-//! could silently lose each other's changes. `ConfigStore` serialises all
-//! writes through a mutex and writes atomically (tmp file + rename).
+//! Several subsystems (`Agent::persist_config`, API-profile tooling, federation
+//! peers) used to read, patch and rewrite the same config file independently —
+//! concurrent writes could silently lose each other's changes. `ConfigStore`
+//! serialises all writes through a mutex and writes atomically (tmp file +
+//! rename).
+//!
+//! **This crate knows nothing about any section's meaning**: it stores an
+//! opaque `toml::Table`. Callers own their sections; `ensure_table` only
+//! guarantees "this key is a table" so a hand-edited file cannot panic us.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -134,13 +139,13 @@ mod tests {
         let store = ConfigStore::new(path.clone());
         store
             .patch(|root| {
-                ensure_table(ensure_table(root, "adapters"), "qq")
+                ensure_table(ensure_table(root, "outer"), "inner")
                     .insert("mode".into(), toml::Value::String("allowlist".into()));
                 Ok(())
             })
             .unwrap();
         let root = store.read().unwrap();
-        assert_eq!(root["adapters"]["qq"]["mode"].as_str(), Some("allowlist"));
+        assert_eq!(root["outer"]["inner"]["mode"].as_str(), Some("allowlist"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -172,17 +177,17 @@ mod tests {
     #[test]
     fn patch_overwrites_non_table_value_safely() {
         let path = temp_path("nontable");
-        std::fs::write(&path, "[adapters]\nqq = \"disabled\"\n").unwrap();
+        std::fs::write(&path, "[outer]\ninner = \"disabled\"\n").unwrap();
         let store = ConfigStore::new(path.clone());
         store
             .patch(|root| {
-                ensure_table(ensure_table(root, "adapters"), "qq")
+                ensure_table(ensure_table(root, "outer"), "inner")
                     .insert("mode".into(), toml::Value::String("none".into()));
                 Ok(())
             })
             .unwrap();
         let root = store.read().unwrap();
-        assert_eq!(root["adapters"]["qq"]["mode"].as_str(), Some("none"));
+        assert_eq!(root["outer"]["inner"]["mode"].as_str(), Some("none"));
         let _ = std::fs::remove_file(&path);
     }
 }

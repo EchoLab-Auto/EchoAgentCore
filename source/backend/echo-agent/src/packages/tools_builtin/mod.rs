@@ -44,7 +44,7 @@ pub fn register_all(
     registry: &mut crate::tool::ToolRegistry,
     adapters: std::sync::Arc<echo_adapter::AdapterRegistry>,
     workspace: std::path::PathBuf,
-    config_store: echo_adapter::ConfigStore,
+    config_store: echo_config::ConfigStore,
 ) {
     registry.register(std::sync::Arc::new(calculator::CalculatorTool));
     registry.register(std::sync::Arc::new(websearch::WebSearchTool));

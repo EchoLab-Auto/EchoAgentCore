@@ -45,7 +45,7 @@ pub mod tool;
 pub use adapter::{
     Adapter, AdapterConnectionState, AdapterError, AdapterInfo, AdapterManagement, AdapterToolSpec,
 };
-pub use chat::{ChannelType, IncomingFile, IncomingMessage, MessageTarget, SendResult};
+pub use chat::{ChannelType, IncomingFile, IncomingMessage};
 pub use llm::{LlmError, LlmProvider};
 pub use media::{compact_embedded_media, elide_inline_data_uris, image_placeholder};
 pub use message::{

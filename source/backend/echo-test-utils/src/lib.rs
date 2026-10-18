@@ -60,8 +60,6 @@ mod adapter {
         pub name: String,
         pub configured: bool,
         pub started: AtomicBool,
-        /// Canned outbound send results, drained in order.
-        pub send_results: Vec<echo_adapter::types::SendResult>,
         /// Filter state updated via `update_allowlist` / `update_denylist`.
         pub allowlist_users: std::sync::Mutex<Vec<String>>,
         pub allowlist_groups: std::sync::Mutex<Vec<String>>,
@@ -75,7 +73,6 @@ mod adapter {
                 name: name.into(),
                 configured,
                 started: AtomicBool::new(false),
-                send_results: Vec::new(),
                 allowlist_users: std::sync::Mutex::new(Vec::new()),
                 allowlist_groups: std::sync::Mutex::new(Vec::new()),
                 denylist_users: std::sync::Mutex::new(Vec::new()),
@@ -124,21 +121,6 @@ mod adapter {
         async fn stop(&self) -> Result<(), AdapterError> {
             self.started.store(false, Ordering::SeqCst);
             Ok(())
-        }
-        async fn send_message(
-            &self,
-            _target: &echo_adapter::types::MessageTarget,
-            _content: &str,
-        ) -> Result<echo_adapter::types::SendResult, AdapterError> {
-            Ok(self
-                .send_results
-                .first()
-                .cloned()
-                .unwrap_or(echo_adapter::types::SendResult {
-                    message_id: Some("mock-id".into()),
-                    success: true,
-                    error: None,
-                }))
         }
     }
 }

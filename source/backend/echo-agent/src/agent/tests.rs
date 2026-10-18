@@ -1098,7 +1098,7 @@ async fn session_provider_prefers_shared_config_store_pool() {
         reply: "x".into(),
     }));
     // 内存快照为空池——文件才是事实源。
-    agent.set_config_store(echo_adapter::ConfigStore::new(path.clone()));
+    agent.set_config_store(echo_config::ConfigStore::new(path.clone()));
     let ok = agent.set_session_provider("sess-store", "kimi").await;
     assert!(ok, "store-only profile must resolve for session override");
     let p = agent.resolve_session_provider("sess-store").await;
@@ -1495,7 +1495,7 @@ async fn rename_api_persist_failure_leaves_memory_unchanged() {
     })));
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
-    agent.set_config_store(echo_adapter::ConfigStore::new(bad));
+    agent.set_config_store(echo_config::ConfigStore::new(bad));
     {
         let mut cfg = agent.config.write().await;
         cfg.api_profiles
@@ -4087,7 +4087,7 @@ async fn subagent_provider_prefers_shared_config_store_pool() {
         ToolRegistry::new(),
         Arc::new(AdapterRegistry::new()),
     );
-    agent.set_config_store(echo_adapter::ConfigStore::new(path.clone()));
+    agent.set_config_store(echo_config::ConfigStore::new(path.clone()));
     // 文件里的 kimi 可见（否则会报"不存在（当前未配置任何…）"）
     assert!(agent.subagent_provider_for("kimi").await.is_ok());
     std::fs::remove_file(&path).ok();
@@ -4532,17 +4532,6 @@ async fn adapter_list_fills_platform_ui_and_session_labels() {
         }
         async fn stop(&self) -> Result<(), echo_adapter::AdapterError> {
             Ok(())
-        }
-        async fn send_message(
-            &self,
-            _target: &echo_adapter::MessageTarget,
-            _content: &str,
-        ) -> Result<echo_adapter::SendResult, echo_adapter::AdapterError> {
-            Ok(echo_adapter::SendResult {
-                message_id: None,
-                success: true,
-                error: None,
-            })
         }
         fn ui_descriptor(&self) -> Option<serde_json::Value> {
             Some(serde_json::json!({"version": 1, "panels": []}))

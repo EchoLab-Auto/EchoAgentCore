@@ -15,11 +15,11 @@ use crate::api_pool::PoolSnapshot;
 use crate::tool::{Tool, ToolError};
 
 pub struct ListApiProfilesTool {
-    store: echo_adapter::ConfigStore,
+    store: echo_config::ConfigStore,
 }
 
 impl ListApiProfilesTool {
-    pub fn new(store: echo_adapter::ConfigStore) -> Self {
+    pub fn new(store: echo_config::ConfigStore) -> Self {
         Self { store }
     }
 }
@@ -115,7 +115,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         std::fs::write(&path, content).unwrap();
-        let tool = ListApiProfilesTool::new(echo_adapter::ConfigStore::new(path.clone()));
+        let tool = ListApiProfilesTool::new(echo_config::ConfigStore::new(path.clone()));
         let result = tool.execute(json!({})).await.expect("execute");
         let _ = std::fs::remove_file(&path);
         result
@@ -160,7 +160,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("core.toml");
         std::fs::write(&path, "not = valid = toml\n").unwrap();
-        let tool = ListApiProfilesTool::new(echo_adapter::ConfigStore::new(path));
+        let tool = ListApiProfilesTool::new(echo_config::ConfigStore::new(path));
         assert!(tool.execute(json!({})).await.is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

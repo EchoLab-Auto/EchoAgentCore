@@ -351,6 +351,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "echo-adapter",
+ "echo-config",
  "echo-context",
  "echo-defs",
  "echo-federation",
@@ -390,6 +391,7 @@ dependencies = [
  "clap",
  "echo-adapter",
  "echo-agent",
+ "echo-config",
  "echo-context",
  "echo-defs",
  "echo-federation",
@@ -409,6 +411,15 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "echo-config"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.20",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

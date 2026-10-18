@@ -13,6 +13,7 @@ members = [
     "source/federation/echo-federation",
     "source/backend/echo-agent",
     "source/backend/echo-adapter",
+    "source/backend/echo-config",
     "source/backend/echo-test-utils",
     "source/core",
     "source/plugin/echo-plugin",
@@ -63,6 +64,7 @@ strip = "symbols"
 
 [workspace.dependencies]
 echo-defs = { path = "source/defs/echo-defs" }
+echo-config = { path = "source/backend/echo-config" }
 echo-context = { path = "source/context/echo-context" }
 echo-sanitize = { path = "source/security/echo-sanitize" }
 echo-session = { path = "source/session/echo-session" }

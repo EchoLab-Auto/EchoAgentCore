@@ -14,8 +14,6 @@ use crate::agent::Agent;
 use crate::event::BackendEvent;
 use crate::session::SessionKey;
 
-const WAIT_REPLY_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
-
 /// Wraps an `Arc<Agent>` behind the adapter-facing inbound hook.
 pub struct AgentMessageHook {
     agent: Arc<Agent>,
@@ -132,23 +130,10 @@ impl AgentMessageHook {
             } else {
                 "当前没有可停止的任务。".into()
             };
-            let group_id = msg.channel.group_id().map(str::to_string);
-            let agent = Arc::clone(agent);
-            tokio::spawn(async move {
-                let sent = agent
-                    .send_control_reply(&session, group_id.as_deref(), &reply)
-                    .await;
-                agent
-                    .record_control_reply(&session, reply.clone(), message_sequence)
-                    .await;
-                if let Err(error) = sent {
-                    tracing::warn!(%error, session = %session_id, "cancellation acknowledgement failed");
-                    agent.emit(BackendEvent::Error {
-                        session_id: Some(session_id),
-                        message: error,
-                    });
-                }
-            });
+            // 取消回执只记入后端会话（平台侧回执已随适配器概念移除）。
+            agent
+                .record_control_reply(&session, reply, message_sequence)
+                .await;
             return Ok(());
         }
 
@@ -159,30 +144,14 @@ impl AgentMessageHook {
         // 专属的可见性机制）。
         if single_mode {
             Arc::clone(agent)
-                .process_inbound_branch(
-                    &display_session,
-                    &hook_input,
-                    message_sequence,
-                    // group_id=None：后台来源，普通输出不推 QQ（回复只能经
-                    // send_* 工具显式发出——agent 自行判断是否回复）。
-                    None,
-                    // 等待回复由主会话承载：投递即排队，不生成临时回复。
-                    std::time::Duration::from_secs(u64::MAX),
-                )
+                .process_inbound_branch(&display_session, &hook_input, message_sequence)
                 .await;
             return Ok(());
         }
 
         // 并行多会话模式：每条消息开临时回复分支（保持原行为）。
-        let group_id = msg.channel.group_id().map(str::to_string);
         Arc::clone(agent)
-            .process_inbound_branch(
-                &session,
-                &hook_input,
-                message_sequence,
-                group_id,
-                WAIT_REPLY_AFTER,
-            )
+            .process_inbound_branch(&session, &hook_input, message_sequence)
             .await;
         Ok(())
     }
@@ -280,7 +249,7 @@ fn recall_command_scope(content: &str) -> Option<bool> {
 mod tests {
     use super::*;
     use crate::llm::{
-        ChatChunk, ChatMessage, ChatRequest, ChatResponse, LlmError, LlmProvider, ToolCall, Usage,
+        ChatChunk, ChatRequest, ChatResponse, LlmError, LlmProvider, ToolCall, Usage,
     };
     use crate::tool::{Tool, ToolError};
     use async_trait::async_trait;
@@ -415,75 +384,6 @@ mod tests {
         calls: Arc<AtomicUsize>,
     }
 
-    struct WaitReplyProvider {
-        calls: Arc<AtomicUsize>,
-        reply: String,
-    }
-
-    #[async_trait]
-    impl LlmProvider for WaitReplyProvider {
-        fn name(&self) -> &str {
-            "wait-reply-test"
-        }
-
-        fn default_model(&self) -> &str {
-            "wait-reply-test"
-        }
-
-        async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            assert!(request.tools.is_none());
-            assert!(request.messages[0]
-                .content
-                .contains("Avoid fixed-template wording"));
-            Ok(ChatResponse {
-                stop_reason: None,
-                content: Some(self.reply.clone()),
-                reasoning_content: None,
-                tool_calls: Vec::new(),
-                usage: Usage::default(),
-            })
-        }
-
-        async fn chat_stream(
-            &self,
-            request: &ChatRequest,
-            _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-        ) -> Result<ChatResponse, LlmError> {
-            // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
-            self.chat(request).await
-        }
-    }
-
-    struct RecordingSendTool {
-        contents: Arc<std::sync::Mutex<Vec<String>>>,
-    }
-
-    #[async_trait]
-    impl Tool for RecordingSendTool {
-        fn name(&self) -> &str {
-            "send_private_msg"
-        }
-
-        fn description(&self) -> &str {
-            "record test sends"
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object"})
-        }
-
-        async fn execute(&self, arguments: serde_json::Value) -> Result<String, ToolError> {
-            self.contents.lock().expect("recorded sends poisoned").push(
-                arguments["content"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-            );
-            Ok("message sent".into())
-        }
-    }
-
     #[async_trait]
     impl Tool for CountingSendTool {
         fn name(&self) -> &str {
@@ -557,66 +457,6 @@ mod tests {
 
     /// 记录 `Adapter::send_message` 的控制回复（取消回执 / 等待回复走
     /// 平台中立的 typed seam，不再经过 `send_*` 工具）。
-    struct RecordingAdapter {
-        sent: Arc<std::sync::Mutex<Vec<String>>>,
-    }
-
-    #[async_trait]
-    impl echo_adapter::Adapter for RecordingAdapter {
-        fn name(&self) -> &str {
-            "qq"
-        }
-        fn display_name(&self) -> &str {
-            "qq"
-        }
-        fn platform(&self) -> &str {
-            "qq"
-        }
-        fn is_configured(&self) -> bool {
-            true
-        }
-        fn status_info(&self) -> echo_adapter::AdapterInfo {
-            echo_adapter::AdapterInfo {
-                name: "qq".into(),
-                display_name: "qq".into(),
-                status: echo_adapter::AdapterConnectionState::Connected,
-                self_id: None,
-                started_at: None,
-                platform: "qq".into(),
-                configured: true,
-            }
-        }
-        async fn start(&self) -> Result<(), echo_adapter::AdapterError> {
-            Ok(())
-        }
-        async fn stop(&self) -> Result<(), echo_adapter::AdapterError> {
-            Ok(())
-        }
-        async fn send_message(
-            &self,
-            _target: &echo_adapter::MessageTarget,
-            content: &str,
-        ) -> Result<echo_adapter::SendResult, echo_adapter::AdapterError> {
-            self.sent
-                .lock()
-                .expect("recorded sends poisoned")
-                .push(content.to_string());
-            Ok(echo_adapter::SendResult {
-                message_id: Some("rec".into()),
-                success: true,
-                error: None,
-            })
-        }
-    }
-
-    fn registry_with_recorder(
-        sent: Arc<std::sync::Mutex<Vec<String>>>,
-    ) -> Arc<echo_adapter::registry::AdapterRegistry> {
-        let registry = echo_adapter::registry::AdapterRegistry::new();
-        registry.register(Arc::new(RecordingAdapter { sent }));
-        Arc::new(registry)
-    }
-
     async fn wait_until(mut predicate: impl FnMut() -> bool) {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !predicate() {
@@ -755,87 +595,6 @@ mod tests {
         assert_eq!(message.1, "hello");
     }
 
-    #[tokio::test]
-    async fn contextual_wait_reply_is_generated_once_and_suppressed_when_obsolete() {
-        assert_eq!(WAIT_REPLY_AFTER, std::time::Duration::from_secs(20));
-        let model_calls = Arc::new(AtomicUsize::new(0));
-        let sent_contents = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let provider = Arc::new(WaitReplyProvider {
-            calls: Arc::clone(&model_calls),
-            reply: "我正在核对你提到的配置差异，整理好就回复你。".into(),
-        });
-        let mut tools = crate::tool::ToolRegistry::new();
-        tools.register(Arc::new(RecordingSendTool {
-            contents: Arc::clone(&sent_contents),
-        }));
-        let agent = Arc::new(Agent::new(
-            provider,
-            crate::config::AgentConfig::default(),
-            crate::skill::SkillRegistry::new(),
-            tools,
-            registry_with_recorder(Arc::clone(&sent_contents)),
-        ));
-        let session = agent.trunk.get_or_create(
-            &SessionKey::parse("qq:dm::123456").unwrap(),
-            "tester".into(),
-            None,
-        );
-
-        let (_reply_tx, reply_rx) = tokio::sync::watch::channel(false);
-        let completed = tokio_util::sync::CancellationToken::new();
-        let snapshot = vec![ChatMessage::user("帮我核对这两份配置的差异")];
-        crate::agent::spawn_contextual_wait_reply(
-            Arc::clone(&agent),
-            session.clone(),
-            "branch-1".into(),
-            None,
-            snapshot.clone(),
-            reply_rx,
-            completed,
-            std::time::Duration::from_millis(10),
-        );
-        wait_until(|| sent_contents.lock().expect("recorded sends poisoned").len() == 1).await;
-        assert_eq!(model_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            sent_contents
-                .lock()
-                .expect("recorded sends poisoned")
-                .as_slice(),
-            ["我正在核对你提到的配置差异，整理好就回复你。"]
-        );
-
-        let (reply_tx, reply_rx) = tokio::sync::watch::channel(false);
-        reply_tx.send(true).unwrap();
-        crate::agent::spawn_contextual_wait_reply(
-            Arc::clone(&agent),
-            session.clone(),
-            "branch-2".into(),
-            None,
-            snapshot.clone(),
-            reply_rx,
-            tokio_util::sync::CancellationToken::new(),
-            std::time::Duration::from_millis(10),
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        assert_eq!(model_calls.load(Ordering::SeqCst), 1);
-
-        let (_reply_tx, reply_rx) = tokio::sync::watch::channel(false);
-        let completed = tokio_util::sync::CancellationToken::new();
-        completed.cancel();
-        crate::agent::spawn_contextual_wait_reply(
-            agent,
-            session,
-            "branch-3".into(),
-            None,
-            snapshot,
-            reply_rx,
-            completed,
-            std::time::Duration::from_millis(10),
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        assert_eq!(model_calls.load(Ordering::SeqCst), 1);
-    }
-
     #[test]
     fn hook_input_includes_downloaded_files() {
         let mut msg = dm_message("看这个文件");
@@ -920,14 +679,12 @@ mod tests {
                 calls: Arc::clone(&sends),
             }));
         }
-        let control_sends: Arc<std::sync::Mutex<Vec<String>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
         let agent = Arc::new(Agent::new(
             provider,
             crate::config::AgentConfig::default(),
             crate::skill::SkillRegistry::new(),
             tools,
-            registry_with_recorder(Arc::clone(&control_sends)),
+            Arc::new(echo_adapter::registry::AdapterRegistry::new()),
         ));
         use_parallel_mode(&agent).await;
         let hook = AgentMessageHook::new(Arc::clone(&agent));
@@ -953,8 +710,8 @@ mod tests {
             .await
             .unwrap();
         wait_until(|| agent.active_inbound_turn_count() == 0).await;
-        // 取消回执走 typed seam（`Adapter::send_message`），不经过 `send_*` 工具。
-        wait_until(|| control_sends.lock().expect("control sends poisoned").len() == 1).await;
+        // 取消回执不再由框架代发（2026-10 选项 B）：不经过任何发送工具。
+        assert_eq!(sends.load(Ordering::SeqCst), 0);
 
         let session = agent.trunk.all().pop().unwrap();
         let history = session.history.lock();

@@ -49,10 +49,6 @@ pub(crate) use echo_defs::llm::{MAX_TRUNCATION_CONTINUES, TRUNCATION_CONTINUE_PR
 /// finish before force-cancelling (self-update interruption guard).
 const SHUTDOWN_DRAIN_SECS: u64 = 120;
 const MAX_CONCURRENT_REPLY_BRANCHES: usize = 8;
-/// Upper bound on concurrent "wait reply" generation calls. Every long-running
-/// QQ branch spawns a delayed interim reply; without a cap, many parallel
-/// branches would each fire an extra LLM request at the same moment.
-const MAX_CONCURRENT_WAIT_REPLIES: usize = 4;
 
 /// 循环模式互斥插件 id（见 plugins.rs）：`loop.single`（单会话，默认）与
 /// `loop.parallel`（并行多会话）。两者 mount 同一 TurnRunner，模式经
@@ -89,7 +85,7 @@ pub struct Agent {
     config: RwLock<AgentConfig>,
     active_model: RwLock<String>,
     /// Shared config store for persisting `[agent]` changes (optional).
-    config_store: tokio::sync::Mutex<Option<echo_adapter::ConfigStore>>,
+    config_store: tokio::sync::Mutex<Option<echo_config::ConfigStore>>,
     pub tools: Arc<ToolRegistry>,
     pub skills: Arc<Mutex<SkillRegistry>>,
     pub trunk: TrunkStore,
@@ -126,9 +122,6 @@ pub struct Agent {
     /// （见 `turn::turn_runner`）。
     loop_runner: RwLock<Option<std::sync::Arc<echo_loop::runner::TurnRunner>>>,
     reply_branch_slots: tokio::sync::Semaphore,
-    /// Bounds concurrent interim "wait reply" LLM calls (see
-    /// [`MAX_CONCURRENT_WAIT_REPLIES`]).
-    wait_reply_slots: tokio::sync::Semaphore,
     active_inbound_turns: DashMap<String, ActiveInboundTurn>,
     next_message_sequence: AtomicU64,
     /// Event bus: `emit` broadcasts through it; consumers (the timeline
@@ -351,7 +344,6 @@ impl Agent {
             plugin_reload_started: AtomicBool::new(false),
             loop_runner: RwLock::new(None),
             reply_branch_slots: tokio::sync::Semaphore::new(MAX_CONCURRENT_REPLY_BRANCHES),
-            wait_reply_slots: tokio::sync::Semaphore::new(MAX_CONCURRENT_WAIT_REPLIES),
             active_inbound_turns: DashMap::new(),
             next_message_sequence: AtomicU64::new(1),
             event_bus,
@@ -416,15 +408,15 @@ impl Agent {
     /// 绝不可共用同一路径，否则 patch 读 JSON 会 TOML 解析失败。
     pub fn set_config_path(&self, path: impl Into<std::path::PathBuf>) {
         let p: std::path::PathBuf = path.into();
-        self.set_config_store(echo_adapter::ConfigStore::new(p));
+        self.set_config_store(echo_config::ConfigStore::new(p));
     }
 
-    /// Attach a shared [`echo_adapter::ConfigStore`] for `[agent]` persistence.
+    /// Attach a shared [`echo_config::ConfigStore`] for `[agent]` persistence.
     ///
     /// 只接管 TOML 配置持久化，不动会话路径（会话路径由
     /// [`Self::set_session_persist_path`] 独立设置）。Called once at startup —
     /// uses try_lock since no concurrent access exists yet.
-    pub fn set_config_store(&self, store: echo_adapter::ConfigStore) {
+    pub fn set_config_store(&self, store: echo_config::ConfigStore) {
         if let Ok(mut slot) = self.config_store.try_lock() {
             *slot = Some(store);
         } else {
@@ -1398,71 +1390,6 @@ pub(crate) fn extract_input_images(content: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// After a delay, generate and send one interim reply for a still-running
-/// branch, unless the branch already produced a visible reply or finished.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_contextual_wait_reply(
-    agent: Arc<Agent>,
-    session: crate::session::Session,
-    branch_id: String,
-    group_id: Option<String>,
-    history_snapshot: Vec<crate::llm::ChatMessage>,
-    mut visible_reply: tokio::sync::watch::Receiver<bool>,
-    branch_completed: tokio_util::sync::CancellationToken,
-    delay: std::time::Duration,
-) {
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = tokio::time::sleep(delay) => {
-                if branch_completed.is_cancelled() || *visible_reply.borrow() {
-                    return;
-                }
-                let generated = tokio::select! {
-                    result = agent.generate_wait_reply(&session.id, history_snapshot) => result,
-                    changed = visible_reply.changed() => {
-                        let _ = changed;
-                        return;
-                    }
-                    _ = branch_completed.cancelled() => return,
-                };
-                let reply = match generated {
-                    Ok(reply) => reply,
-                    Err(error) => {
-                        tracing::warn!(%error, session = %session.id, "wait reply generation skipped");
-                        return;
-                    }
-                };
-                if branch_completed.is_cancelled() || *visible_reply.borrow() {
-                    return;
-                }
-                if let Err(error) = agent
-                    .send_control_reply(&session, group_id.as_deref(), &reply)
-                    .await
-                {
-                    tracing::warn!(%error, session = %session.id, "wait reply send failed");
-                    if agent.shows_reply_branches() {
-                        agent.emit(BackendEvent::ReplyBranchContent {
-                            session_id: session.id.clone(),
-                            branch_id,
-                            content: format!("临时回复发送失败：{error}\n待发送内容：{reply}"),
-                        });
-                    }
-                } else if agent.shows_reply_branches() {
-                    agent.emit(BackendEvent::ReplyBranchContent {
-                        session_id: session.id.clone(),
-                        branch_id,
-                        content: reply,
-                    });
-                }
-            }
-            changed = visible_reply.changed() => {
-                let _ = changed;
-            }
-            _ = branch_completed.cancelled() => {}
-        }
-    });
 }
 
 // ---------------------------------------------------------------------------

@@ -25,7 +25,8 @@
 
 use std::sync::Arc;
 
-use echo_adapter::{AdapterRegistry, ConfigStore};
+use echo_adapter::AdapterRegistry;
+use echo_config::ConfigStore;
 
 use crate::agent::{Agent, EventSink};
 use crate::config::AgentConfig;
