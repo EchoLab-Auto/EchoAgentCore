@@ -32,7 +32,7 @@ link: ["adapter-genericization | 泛化设计系列 | b>t"]
 
 **已具备**——三块拼图已就位：
 
-- **接缝本就平台中立**：定义层的 `PluginInstance` trait（`echo_defs::plugin_instance::PluginInstance`，`echo-defs::plugin_instance` re-export 兼容；start/stop/send_text/get_groups/get_friends——管理动作最终收敛为 `InstanceManagement`）、`InboundMessageHook`（单向入站桥）、`InstanceManagement` 能力 trait——插件实例对 agent 的接口早已与平台解耦；
+- **接缝本就平台中立**：定义层的 `PluginInstance` trait（`echo_defs::plugin_instance::PluginInstance`，`echo-defs::plugin_instance` re-export 兼容；start/stop + 描述符/管理面访问器（`management()` / `ui_descriptor()` / `status_info()` / `tool_specs()`）——**没有 send_text/get_groups/get_friends**：出站与目录查询已全部收敛为 `InstanceManagement`）、`InboundMessageHook`（单向入站桥）、`InstanceManagement` 能力 trait——插件实例对 agent 的接口早已与平台解耦；
 - **物理拆分半程**：`echo-adapter-qq` 是独立 crate，不含 agent 逻辑；工具（`crates/echo-adapter-qq/src/tools.rs`）、入站桥（`echo-agent/packages/instance_ops/bridge.rs`）、命令域（`commands.rs`）、命令处理器（`core/handlers/`）都在宿主侧——天然留在 Core；
 - **插件基础设施可用**：协议 v1（Hello/Register/Invoke/HostCall/…）、SDK（`serve_stdio`）、`PluginSupervisor`（状态机 / 崩溃重启 / upgrade 热替换）、`plugins.toml` 装载、`RemoteTool` 先例、`HostCall` 宿主服务先例（`sanitizer`）。
 
@@ -134,8 +134,8 @@ InstanceContribution {
 
 ```jsonc
 // target
-{ "channel": "dm", "user_id": "123" }
-{ "channel": "group", "group_id": "456", "user_id": "123" }
+{ "channel": { "type": "dm" } }
+{ "channel": { "type": "group", "group_id": "456" } }
 
 // message（交付载荷；当时叫 deliver_message，现为 submit_input）
 { "instance": "qq", "platform": "qq", "user_id": "123", "user_name": "Alice",
@@ -241,9 +241,16 @@ BackendEvent::InstanceState    { instance, state: Value }           // 插件主
 
 ### 版本与兼容
 
-- **旧宿主 + 新插件**：`Register` 中未知贡献解析失败 → 握手失败（可读错误）。为此给 `Hello` 增补宿主 `capabilities` 字段（`#[serde(default)]`，增量）：宿主声明 `"adapter"` 特征位；插件未见特征位时 **fail-closed** 报错退出，绝不静默降级；
+- **旧宿主 + 新插件**：`Register` 里出现未知贡献变体 → 整包解码失败 → 握手失败（可读错误）。
+  能力位走**反方向**：`capabilities` 在 `Welcome`（插件→宿主）里，插件据此自报能提供什么
+  （SDK 的 `serve_instance_stdio` 会自动追加 `"adapter"` 位）；`Hello`（宿主→插件）只有
+  `protocol` / `version` / `plugin_id` / `config` 四个字段，没有 capabilities。
+  实际识别实例插件靠**贡献类型本身**（`Contribution::PluginInstance`），不靠能力位协商
 - **新宿主 + 旧插件**：不受影响（serde 忽略未知字段）；
-- **注册解析细节**：`#[serde(other)]` 只能落在 unit variant、拿不到载荷——`Register` 的消息体按 `Vec<Value>` 收取、逐项解析：已知变体正常反序列化，未知项降级为 `Unknown(Value)` 并 warn（而非整包解析失败）；`HostToPlugin` / `PluginToHost` 的未知 type 同理兜底（可读拒绝替代解析失败）；
+- **注册解析细节**：`Register.contributions` 的类型是 `Vec<Contribution>`——**没有** `Unknown(Value)`
+  降级路径（`#[serde(other)]` 只能落在 unit variant、拿不到载荷，加不了兜底）。所以未知
+  kind 直接让整包解码失败（契约测试 `tests.rs` 就断言必须拒绝）——这正是上面
+  「旧宿主 + 新插件 = 握手失败」的机制来源
 - **既有缺陷修复（P0 前置）**：`dispatch` 的 `HostCall` 分支经 `shared.current_conn()` 回发结果——upgrade / 排空切换瞬间，旧实例发出的 `submit_input` 回执会错投**新连接**（call_id 对新实例是孤儿，而载荷已被宿主消费；若插件因未收到回执重试 → 重复投递）。修复：回执按**来源连接**路由（或 call_id 携带连接代际）。
 
 ### 安全边界
@@ -387,7 +394,7 @@ echo-adapter-qq/（独立仓库，cargo workspace；P1.7a–c 已落地）
 ```
 
 - **节点类型（v1 冻结）**：`status` / `text` / `link` / `select` / `list_editor` / `image` / `button`；**未知节点忽略**（向前兼容）；schema 版本化，渲染器按 version 分支；
-- **状态流**：插件 → `HostCall core_api.report_ui_state { state, epoch }`（当时服务名 `adapter_host`） → Core 缓存（epoch 失效语义复用 §宿主侧实现）→ `InstanceState` 事件 → Panel 按 `scopedKey(core, instance)` 归并（`qqByAdapter` 泛化为 `adapterUiByKey`——Panel 内部键名，未随宿主改名）；
+- **状态流**：插件 → `HostCall core_api.report_ui_state { instance, state }`（当时服务名 `adapter_host`；**插件当前不发 epoch**——宿主注释明说「无 epoch 不校验」，失效靠宿主侧 generation 惰性判定） → Core 缓存（epoch 失效语义复用 §宿主侧实现）→ `InstanceState` 事件 → Panel 按 `scopedKey(core, instance)` 归并（`qqByAdapter` 泛化为 `adapterUiByKey`——Panel 内部键名，未随宿主改名）；
 - **命令流**：渲染器 → `InvokeInstanceOp`（经 `connection.ts` `resolveTargetCore` 既有路由）→ Core → `Invoke("<name>:custom")` → 插件；结果经 `InstanceOpResult` + pending 键配对（复用 sendPending 模式）；
 - **通用面板上移**：多实例切换 / 状态行 / **启停重启按钮**（`Start/Stop/RestartAdapter` 本已平台中立）→ Panel 内置**通用插件实例面板**（所有插件实例共享，不属于插件 UI）；插件只贡献 schema 部分；
 - **会话分组**：`SessionSwitcher` 的 `platform === 'qq'` 分支（`:51-71`）通用化为「按 platform 字符串分组」，标签由 `InstanceContribution.session_labels: { dm, group }` 声明。
@@ -432,7 +439,7 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 
 - **P0 协议与宿主骨架**：**前置修复（先于骨架动工）**——① `InvokeOutcome::Ok.result` 字段 + conformance；② supervisor `HostCall` 回执按来源连接路由（见「版本与兼容」）；③《交接与崩溃恢复语义》定稿（本页 §交接与崩溃恢复语义）。然后：**线协议通用化**（§实例管理通道：`InvokeInstanceOp` / `InstanceOpResult` / `InstanceState` / `metadata` / clearance 类别判定）+ **管理面置换**（`QqManagement` → `InstanceManagement`）+ api / host / sdk 扩展 + conformance 补测（**adapter 套件**：注册 / 收 / 发 / 崩溃 / 交接 / **UI 描述符解析**）；loopback 测试插件实例（非 QQ）跑通「注册 → 列表 → 收 → 发」端到端。**工作项明细见 §P0 工作项明细**；
 - **P1 QQ 插件外迁**：仓库拆分、代码迁入；**门控运行时状态落盘**（P1 即要，安全相关）；fake WS 对端 e2e；
-- **P2 宿主切换**：配置开关切到远程插件实例；命令域 / 工具 / 处理器迁齐；**Panel 阶段 1**（底层命令/事件切 `InvokeInstanceOp` 通用通道；QqPanel 暂留至阶段 2 删除）——**已落地（2026-10-16）**；**Panel 全量命令清单回归**（实例增删 / 二维码 / 名单 / 门控 / 启停——泛化后逐条验证）；
+- **P2 宿主切换**：配置开关切到远程插件实例；命令域 / 工具 / 处理器迁齐；**Panel 阶段 1**（底层命令/事件切 `InvokeInstanceOp` 通用通道；QqPanel 暂留至阶段 2 删除）——**Core 侧已落地（2026-10-16）；Panel 侧待跟改**——Panel 仍发 `InvokeAdapterOp`、收 `AdapterList` / `AdapterState` / `AdapterOpResult`，与 Core 的 `Instance*` 变体名不兼容（serde 无变体级 alias），该链路当前**双向不通**（见 [协议与数据流](../protocol/protocol.md)「协议名版本窗口」）；**Panel 全量命令清单回归**（实例增删 / 二维码 / 名单 / 门控 / 启停——泛化后逐条验证）；
 - **P3 摘除内置路径**：关闭 feature 后 `echo-adapter-qq` 不在二进制；**Panel 阶段 2**（schema 渲染器 + 通用面板 + 挂载切换 + 旧组件/协议段删除全部完成，2026-10-16——vitest 65 文件/541 用例全绿、vue-tsc 零错误、死引用 grep 仅剩有意注释）；QQ 协议变体废弃周期启动（两版本后删除）；自更新流程扩展（插件二进制同步）；文档收口；
 - **（叠加 P5）交接演练**：按《交接与崩溃恢复语义》先停后切，验证自动恢复 ≤Ns、NapCat 重连、门控状态不丢（专项用例）。
 
@@ -440,7 +447,7 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 
 > 产出物 = **一个参考实现**（inproc QQ 插件实例全程经 `InstanceManagement` 运行）+ 协议三件套（`InvokeInstanceOp` / `InstanceOpResult` / `InstanceState`）+ 三项前置修复。**P1 外迁插件对照本参考实现实现同一接口；P2 远程插件实例必须过同一组 conformance**（参考实现先行 = 接口在真实负载下先验证，再外迁）。
 >
-> **实施进度（2026-10 开工）**：**P0 / P1 全部完成**（2026-10）。P0：`grep qq_management|QqManagement` 归零、双跑 diff 为空。P1：宿主侧骨架（`CoreApiService` + `RemoteInstance` + `store_media`）、SDK 脚手架（`InstancePlugin` / `configure` / `serve_stdio(InstanceHandler::new(..))`）、QQ 插件（P1.7a–c，独立仓库）、宿主装配（P1.8，`mode = "plugin"` 拉起 / 入站 worker / 状态转发 / 工具管理面路由，真实 core + 真插件进程 + 真 NapCat 连接冒烟）、命令域迁移与内置清除（P1.9：命令域 `core/src/instance_commands.rs` 后来于 2026-10 随「出站面收窄」**整体删除**、内置装配与 `echo-adapter-qq`/`echo-core`/`echo-server` 三 crate 删除、配置 TOML 表透传）均已落地；全工作区测试绿。后续收尾已全部落地（2026-10）：compose 渲染 / 端口分配随插件（插件 `deploy` 模块）、框架代发与平台命令删除、`PluginKind` wire 名 `instance`、Core 生产代码零平台名字面量。
+> **实施进度（2026-10 开工）**：**P0 / P1 全部完成**（2026-10）。P0：**类型层与线协议**零平台词汇（`grep qq_management|QqManagement` 归零、双跑 diff 为空）——这不等于「生产代码零平台名字面量」：组合根仍有 `qq_host` / `qq_instances` 等局部命名（平台化收尾未做完）。P1：宿主侧骨架（`CoreApiService` + `RemoteInstance` + `store_media`）、SDK 脚手架（`InstancePlugin` / `configure` / `serve_stdio(InstanceHandler::new(..))`）、QQ 插件（P1.7a–c，独立仓库）、宿主装配（P1.8，`mode = "plugin"` 拉起 / 入站 worker / 状态转发 / 工具管理面路由，真实 core + 真插件进程 + 真 NapCat 连接冒烟）、命令域迁移与内置清除（P1.9：命令域 `core/src/instance_commands.rs` 后来于 2026-10 随「出站面收窄」**整体删除**、内置装配与 `echo-adapter-qq`/`echo-core`/`echo-server` 三 crate 删除、配置 TOML 表透传）均已落地；全工作区测试绿。后续收尾已全部落地（2026-10）：compose 渲染 / 端口分配随插件（插件 `deploy` 模块）、框架代发与平台命令删除、`PluginKind` wire 名 `instance`、Core 生产代码零平台名字面量。
 >
 > **泛化收尾轮（2026-10）**：Core 侧插件实例泛化收尾——`instance_ops` 改名 + 回退/广播泛化（`cea95bd`）、`instance_tools` 改名 + 实例/persona 泛化与平台残留清理（`ac2c7b9`）；插件侧 UI 描述符 + `get_state` + 部分载荷修复（`4fdc50c`）；UI 描述符链路与状态推送接线（`be94746` / `8109535` / `7c2517d`，含 W2.4 id 串化、epoch 缓存失效）；Panel 阶段 1 通道切换（`cd93c8c..8ced31c`）与阶段 2 通用渲染器 / 通用面板 / 会话分组（`78811dc`、`2f34377` / `b24a7c0`、`f823972`）。**Panel 阶段 2 收尾已完成（2026-10-16）**：挂载切换 → 旧组件与协议段删除 → 注释清理（`67136a3`/`8a46878`/`2fcfa10`/`d8a7779`，含搁置弹层重构 WIP 整理与启停 pending 结算修复 `3d34ff9`）。**旧协议变体已直接删除（2026-10-16，决策人指示不等 N+2）**：10 命令 / 7 事件 / `InstanceStatus` 三字段 / `legacy.rs` 兼容层 / `id_compat` 双读层全部物理移除；`cargo test --workspace` 全绿。**至此泛化全部收口，无剩余发版项**。
 
@@ -483,7 +490,7 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 
 - **旧 10 命令 / 7 事件 / 3 字段已物理删除**：`RequestGroupList` / `RequestFriendList` / `RequestQqLoginStatus` / `RequestQqQrcode` / `UpdateQqAllowlist` / `UpdateQqDenylist` / `RequestQqFilterConfig` / `SetQqGateMode` / `SetQqOwner` / `RequestQqOwner`（命令）、`GroupList` / `QqFilterConfig` / `QqGateMode` / `QqLoginStatus` / `QqQrcode` / `QqOwner` / `FriendList`（事件）、`AdapterStatus.container` / `webui_url` / `onebot_url`（字段）。旧客户端再发这些 = 反序列化失败（`unknown variant`）。
 - 管理面唯一通道：`InvokeInstanceOp { instance, method, payload }` → `InstanceOpResult` + `InstanceState`（状态文档，id 一律字符串）。
-- 旧字段替代：`metadata[]` 中 `key` 同名项（`container` / `webui_url` / `onebot_url` 由 Core 从状态文档同源派生）。
+- 旧字段替代：插件 **UI 描述符** 的 `bind`（如 `instance.webui_url` / `instance.container`）。`InstanceStatus.metadata` 当前**恒为空**（`emit_instance_list` 直接给 `Vec::new()`），该字段只为不改线协议而保留——别指望从这里读到容器名。
 
 **用户侧操作**
 
