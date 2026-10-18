@@ -83,15 +83,15 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.subagent` | Tool | 进程内 | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./core-subagent.md)） |
 | `echo-agent.management.panel` | Management | 进程内 | 管理面：management WS 桥接（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
 
-表内 9 项全部是**编译内置**的 manifest（`builtin = true`）；运行形态一列独立于来源——`instance.qq` 即「内置 manifest + 进程外实现」的现行样本，其余 8 项实现同在 Core 进程内。
+表的来源分两类，别混算：**框架内置 8 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 8]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
 
 联邦（`echo-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
 
 > **框架侧实现位置**：echo-agent crate 内按插件分包到 `src/packages/<name>/`，**第一层分类 = 包归属**——`tools_builtin`（内置工具）/ `skills_dir`（技能注册表 + Git 安装）/ `instance_ops`（入站 hook 桥 + 通用实例命令域）/ `workspace`（会话存储/工具 + 命令域）/ `subagent` / `provider_llm`（provider 工厂）；另有特例 `packages/tool/` = 工具子系统的**跨包机制**（`ToolRegistry`：注册/可逆注销/逐名与按包启停/schema 缓存，被各包共用，非插件）。`loop.{single,parallel}` 的实现是 `echo-loop` crate（echo-agent 只做驱动接线）；`management.panel` 是 echo-protocol（线协议，见 [协议与数据流](../protocol/protocol.md)）+ echo-agent-core（`source/core/src/management.rs`）。目录只服务物理区分，公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export）。
 >
-> QQ 工具（`send_*`/`get_*`）例外地实现于组合根 `source/core/src/qq_tools.rs`——工具须实现 `echo_agent::Tool`，而插件实例 crate 刻意不依赖 echo-agent。
+> QQ 工具（`send_*`/`get_*` 共 10 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由插件进程申报（插件仓库 `crates/echo-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。2026-10 去适配器化时 `source/core/src/qq_tools.rs` 已删除——插件实例本就能声明工具，没有留给组合根的特例。
 
-> 以上 9 个 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单（`BUILTIN_PLUGIN_IDS` 为 `[&str; 9]`）；选单（present_menu）已废弃移除，任务清单（checklist）为普通内置工具。
+> 以上 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单——`expected_ids` 由**框架 8 项 + 前缀 `echo-agent.instance.`** 组成（不是逐个列实例 id）；选单（present_menu）已废弃移除，任务清单（checklist）为普通内置工具。
 
 ## 能力开关（per-persona）
 

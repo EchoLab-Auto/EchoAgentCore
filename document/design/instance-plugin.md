@@ -452,10 +452,10 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 
 **W2 线协议通用化（`echo-protocol`）**
 
-- [x] W2.1 新增 `InvokeInstanceOp { instance, method, payload }` / `AdapterOpResult { adapter, method, result, error? }` / `AdapterState { adapter, state }`（result 空时线上省略）
-- [x] W2.2 `InstanceStatus` 增 `metadata: Vec<AdapterMetadataEntry>`（`persona` 保留；`container` / `webui_url` / `onebot_url` 标 deprecated，随 Panel 阶段 2 删除（旧面板移除同批）；发射端 `emit_adapter_list` 同源派生，无双事实来源）
-- [x] W2.3 `command_clearance`：`InvokeInstanceOp` 入 Frontend-only（**类别判定**，含未知方法 fail-closed）；逐变体测试改为类别测试（`adapter_management_commands_are_frontend_only_by_category`）
-- [x] W2.4 `GroupInfo.group_id` / `FriendInfo.user_id`：`i64` → `String`（breaking；与 Panel 阶段 1 同批发布 + 升级指南记录）。**注**：本轮核实 Panel 侧（`protocol.ts` / `QqPanel.vue` 的比较与 toggle 链路）依赖 number 形态，单侧改动会破坏面板交互——按约定推迟，不拆碎进行。**已随泛化 Core-1 落地（commit be94746）**：`GroupInfo.group_id` / `FriendInfo.user_id` 等改 `String`，命令侧经 `id_compat.rs` 双读兼容 number/string；Panel 侧同批（02a/02b）
+- [x] W2.1 新增 `InvokeInstanceOp { instance, method, payload }` / `InstanceOpResult { instance, method, result, error? }` / `InstanceState { instance, state }`（result 空时线上省略；两个变体名在 `2d46b7d` 由 `Adapter*` 改名，`instance` 字段保留 alias `adapter`）
+- [x] W2.2 `InstanceStatus` 增 `metadata: Vec<InstanceMetadataEntry>`（`persona` 保留；`container` / `webui_url` / `onebot_url` 已随 Panel 阶段 2 删除）。**后续收尾（2026-10）把它变成恒空**：平台展示字段改由插件 UI 描述符声明（`InstanceStatus.ui`，字段绑定 `instance.*`），发射端 `emit_instance_list` 直接给空 vec——否则 Core 又要把「容器名 / WebUI 地址」这类平台知识逐键命名、配中文标签，等于把刚搬走的耦合换个字段搬回来
+- [x] W2.3 `command_clearance`：`InvokeInstanceOp` 入 Frontend-only（**类别判定**，含未知方法 fail-closed）；逐变体测试改为类别测试（`instance_management_commands_are_frontend_only_by_category`，`command.rs`）
+- [~] W2.4 `GroupInfo.group_id` / `FriendInfo.user_id`：`i64` → `String`——**这一项是被「提取」掉了，不是做完了**：两个类型随去适配器化整块移出 `echo-protocol`（现在只在插件仓库 `crates/echo-core/src/model.rs`，`group_id` 仍是 `i64`，工具 schema 也声明 `"type": "integer"`；好友列表直接透传 OneBot JSON，连 `FriendInfo` 都没有同构类型），Core 线协议里已不存在任何平台消息类型，改类型/改名的动机随之消失。当年的障碍（Panel 侧 `QqPanel.vue` 的比较与 toggle 链路依赖 number 形态）也随组件删除而不存在了。
 
 **W3 管理面置换（核心：`QqManagement` → `InstanceManagement`）**
 

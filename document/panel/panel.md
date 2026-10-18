@@ -11,6 +11,8 @@ link: ["panel-interaction | 交互定义 | r>l"]
 
 > **定位**：Panel（EchoAgentPanel）是 EchoAgent 的 Web 管理面板——Rust 后端（axum）托管 Vue 3 + TypeScript 前端（`@echolab-auto/ui-frame` 新拟态组件库），并把浏览器 WebSocket 中继到 Core 的 management WS。默认 `:8080` 提供服务；Core 连不上时页面照常加载并显示「连接中…」（指数退避自动重连）。读者：需要了解 Panel 前后端结构、中继模型（含事件流连续性契约与丢帧诊断）、多窗口状态归属、配置运维的开发者。
 > 交互与视图契约见 [交互定义](./panel-interaction.md) 及其 7 篇子文档（见「延伸阅读」）；布局与导航、连接生命周期见 [布局与导航](./panel-layout.md)。
+>
+> ⚠️ **先读协议名版本窗口**：Core 已把线协议变体改名为 `Instance*`（`StartInstance` / `RequestInstanceStatus` / 事件 `InstanceList`…），Panel 前端尚用旧名 `Adapter*`，两侧当前**双向不通**。本文档与子文档里的 `Adapter*` 一律是 Panel 侧现状名，改名前不要当契约照抄——见[协议与数据流](../protocol/protocol.md)「协议名版本窗口」。
 
 ## 仓库布局
 

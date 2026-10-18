@@ -27,6 +27,25 @@ y: 1650
 3. 新增事件/命令变体时两边同时合入；未知变体由 serde 整帧丢弃（不崩溃）
 4. 进程内 mpsc bridge（`create_bridge` / `BackendBridge` / `BackendHandle` / `FanoutHandle`）与 WS 共享同一组类型，主要用于测试；生产部署一律走 WS
 5. **信封字段与事件契约分离**：`seq` 是 WS 帧的**顶层**信封字段，不属于 `BackendEvent` 任何变体——增删它不触发变体兼容规则，也不会让事件反序列化失败（缺省时消费端走 `ignored` 分支）；同理，信封级元数据不应塞进事件变体
+#### 协议名版本窗口（2026-10，Panel 未跟改）
+
+Core 在 `2d46b7d` 把「适配器」这一平台专用抽象整体改名为「插件实例」，**线协议变体名同步改了**：
+
+| 旧（Panel 代码现状） | 新（Core 现状） |
+| --- | --- |
+| `StartAdapter` / `StopAdapter` / `RestartAdapter` | `StartInstance` / `StopInstance` / `RestartInstance` |
+| `RequestAdapterStatus` | `RequestInstanceStatus` |
+| `StartAllAdapters` / `StopAllAdapters` | `StartAllInstances` / `StopAllInstances` |
+| `AdapterList` / `AdapterState` / `AdapterOpResult`（事件） | `InstanceList` / `InstanceState` / `InstanceOpResult` |
+| `AdapterStatus`（结构） | `InstanceStatus` |
+
+兼容垫片只覆盖**字段名**（`InvokeInstanceOp.instance` 的 alias `adapter`、配置段 `[adapters.*]`），**不覆盖变体名**——serde 的外部标签就是变体名，字段级 alias 救不了它。后果分两个方向：
+
+- **Panel → Core**：`{"StartAdapter":{…}}` 解析失败 → `management.rs::handle_inbound_text` 返回 `None` → **整帧静默丢弃**（该函数注释即「malformed payloads → ignored」）。面板上表现为「点击启停没有任何反馈」，且日志里不会有红色错误。
+- **Core → Panel**：Core 只发 `InstanceState` / `InstanceList` / `InstanceOpResult`，Panel 的事件 `case` 还在等旧名 → 实例状态、登录态、门控快照全部收不到。
+
+所以这轮改名的完成条件是**双端同批发布**（与本文「兼容性规则」第 2 条一致：不做旧版本兼容）。Panel 跟改面（约 31 个文件）：`protocol.ts` 的命令/事件联合、`adapterOps.ts::trackRequest` 的字符串、`connection.ts` 的 Bootstrap 命令组、`AdapterPanel.vue` 的启停按钮、`state.ts` 的事件分发 `case`。**panel-\*.md 里出现的 `Adapter*` 都是 Panel 侧现状名，不是 Core 的契约名**——照抄会与 Core 对不上。
+
 
 ## 传输与信封
 
@@ -65,7 +84,7 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 
 ### 连接与 Bootstrap
 
-连接成功后 Panel 发送 Bootstrap 命令组：`RequestState`、（有保存的 Agent 时）`RequestTrunkTimeline{team_id}`、`RequestAdapterStatus`、`RequestTeamsList`、`RequestShellSessions`。去主智能体后 `team_id` 必填且 QQ 不预取（详见 [Panel 布局与导航](../panel/panel-layout.md) §一）。
+连接成功后 Panel 发送 Bootstrap 命令组：`RequestState`、（有保存的 Agent 时）`RequestTrunkTimeline{team_id}`、`RequestInstanceStatus`、`RequestTeamsList`、`RequestShellSessions`。去主智能体后 `team_id` 必填且 QQ 不预取（详见 [Panel 布局与导航](../panel/panel-layout.md) §一）。
 
 ### 共享枚举
 

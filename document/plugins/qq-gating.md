@@ -193,8 +193,8 @@ QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的
   快速登录；未登录则尝试 `SetQuickLogin`（失败静默回退扫码流程）。
 - **快速登录失效的兜底**：NapCat 快速登录凭证被 QQ 安全策略判失效时由扫码流程
   兜底（`ensure_quick_login` 检测未登录即调 `SetQuickLogin`，失败静默回退扫码）——
-  此时到 Panel「插件实例」面板重新扫码。登录态经状态文档（`AdapterState.state.online` /
-  `self_id`）同步；二维码失败原因经 `AdapterOpResult.error` 回传（如「无法刷新
+  此时到 Panel「插件实例」面板重新扫码。登录态经状态文档（`InstanceState.state.online` /
+  `self_id`）同步；二维码失败原因经 `InstanceOpResult.error` 回传（如「无法刷新
   NapCat 二维码」）。二维码约 2 分钟有效（Core 侧 90s 新鲜度阈值，超龄先让 NapCat
   刷新再取），扫旧码会得到 `ErrCode: 3`（授权超时）。
 

@@ -135,8 +135,8 @@ mode = "fast"
 ## 实例插件
 
 实例插件不是「插件的一个变体」，而是**用同一套协议承载平台接入**：注册一个
-`Contribution::Adapter`，此后生命周期、收发、目录查询、管理动作、以及对模型
-暴露的工具，全部经 `Invoke("<实例名>:<op>")` 路由到你实现的 `AdapterPlugin::invoke_op`。
+`Contribution::PluginInstance`，此后生命周期、收发、目录查询、管理动作、以及对模型
+暴露的工具，全部经 `Invoke("<实例名>:<op>")` 路由到你实现的 `InstancePlugin::invoke_op`。
 
 SDK 侧实现 `InstancePlugin`（`echo-plugin-sdk`）：`configure`（收配置，`Err` 即
 拒绝启动）→ `instance()`（返回贡献）→ `invoke_op(op, payload)`（路由）→

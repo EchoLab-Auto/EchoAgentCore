@@ -48,15 +48,16 @@ pub const GATED_PLUGIN_IDS: [&str; 4] = [
     SUBAGENT_PLUGIN_ID,
 ];
 
-/// 全部内置插件 id（与 `scripts/update.sh` 的插件校验清单一致；
-/// 由 `source/core/tests/update_script_plugins.rs` 守护两者不漂移）。
 /// LLM Provider 插件 id（名义挂载，重启生效）。
 pub const PROVIDER_LLM_PLUGIN_ID: &str = "echo-agent.provider.llm";
 
 /// 框架自身声明的内置插件 id（**不含插件实例**）。
 ///
-/// 实例插件 id 由组合根声明（`core::instance_manifests`）——框架不认识平台名。
-/// 与 `scripts/update.sh::expected_ids` 的对齐校验在 Core 侧测试里把两侧并起来比。
+/// 实例插件 id 由组合根声明（`core::instance_manifests`，按前缀
+/// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
+/// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
+/// 的单测把两侧并起来比（旧路径 `source/core/tests/update_script_plugins.rs`
+/// 已不存在）。
 pub const BUILTIN_PLUGIN_IDS: [&str; 8] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,

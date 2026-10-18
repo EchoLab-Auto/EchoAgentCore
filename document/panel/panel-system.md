@@ -33,7 +33,7 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 
 以下 `BackendCommand` 在协议层存在，但当前 UI 无任何入口——属有意留白而非缺陷，新增入口时按本文档规范补充：
 - `SwitchModel` / `SwitchProvider` / `SetSystemPrompt`（模型与提示词经 API 设置/AgentConfig 覆盖）
-- `StartAllAdapters` / `StopAllAdapters`（逐个插件实例控制已覆盖）
+- `StartAllInstances` / `StopAllInstances`（逐个插件实例控制已覆盖）
 - 实例管理（门控/名单/owner/登录）：统一 `InvokeInstanceOp`；owner 显示为只读
 
 > `RequestSystemPrompt` 已接线：切 core 时随「单值管理面」重拉发送（`connection.ts::requestActiveRegionManagement`），`pending.ts` 的关联表登记 `SystemPrompt` 响应销账；**但 Panel 不落状态**——`AppState.model` / `systemPrompt` 字段已删除（事件写入后零读取方；模型名可由 api/会话归属推导，`SystemPrompt` 回推文本仅面向调试）。`InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 亦已接线（见 [设置视图](./panel-settings.md)），均不再属于本清单。

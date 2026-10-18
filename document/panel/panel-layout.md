@@ -220,6 +220,7 @@ graph LR
   - 去主智能体后 `team_id` 必填：没有保存过 Agent 时**跳过**时间线请求（发了必被 Core 拒绝），等 `TeamsList` 到达后由 App watcher 用列表首个发起（有缓存则同样带 `since_seq`）
   - **切换 core 时重拉「单值管理面」**（`connection.ts::requestActiveRegionManagement`）：`RequestState` / `RequestSystemPrompt` / `RequestAdapterStatus` / `RequestSkillsList` / `RequestToolsList` / `RequestPluginsList` / `RequestShellSessions` / `RequestFederationStatus`——响应被 `managementCoreCurrent` 过滤到 activeRegion，不重拉会短暂显示上一个 core 的值。**首屏首次区域确定**（prev=null）时跳过技能/工具目录（`includeCatalogs:false`）——二者合计约 36KB 且首屏无消费方（设置页/Agent 配置弹窗打开时自拉），切换区域保留全量
   - 实例管理数据**不预取**（`AdapterPanel` 打开时按实例自行刷新描述符与状态；当前 Agent 未启用插件实例、或多实例尚未选定实例时预取必被拒，只堆出无意义的「插件实例未找到」提示）
+- ⚠️ 本节命令名（`RequestAdapterStatus` 等）是 **Panel 侧现状名**；Core 已改为 `RequestInstanceStatus` / `InstanceList` / `InstanceState`，两侧当前不通——见[协议名版本窗口](../protocol/protocol.md)
 - **重连保留时间线**：只清空运行期状态（`branchTabs`、`tasks`、`activities`、工作区 git/文件浏览器缓存）；时间线（`trunk`、`teamTimelines`、`trunkTeamId`）**不清空**——按缓存游标带 `since_seq` 增量补齐，响应 `full` 标志（首载/窗口滚出/游标超前）时整体替换（`connection.ts::startConnection` 的 `onopen` 段）
 - **退避**：500ms 起、×2 递增，**上限按页面可见性分档**（`connection.ts::RETRY_CAP_VISIBLE_MS` = 3s / `RETRY_CAP_HIDDEN_MS` = 30s——前台几秒内即恢复，后台省电）；成功连接后复位 500ms
 - **前台自愈（heal）**：`visibilitychange` 回到前台或 `online` 事件时主动评估连接——已断开则立即重连（复位退避，不等可能被浏览器冻结的退避定时器）；显示 OPEN 也可能半死（设备休眠期间对端已消失而本端未察觉），发 `RequestTeamsList` 探测帧，**5s** 内无任何下行帧则判死、主动关闭走标准重连（`connection.ts`）
