@@ -1,6 +1,6 @@
 # EchoAgentCore
 
-可独立部署的 Agent 核心服务：LLM agent 循环 + 工具/技能系统 + 会话记忆 + QQ（OneBot v11）适配器，通过 management WebSocket（默认 `0.0.0.0:3132`，开箱即可被局域网连接；首装自动生成 `management_access_token` 兜底认证）向前端提供统一的命令/事件协议。
+可独立部署的 Agent 核心服务：LLM agent 循环 + 工具/技能系统 + 会话记忆 + 插件体系（平台接入如 QQ/OneBot v11 由独立进程插件提供），通过 management WebSocket（默认 `0.0.0.0:3132`，开箱即可被局域网连接；首装自动生成 `management_access_token` 兜底认证）向前端提供统一的命令/事件协议。
 
 本仓库是 **Core（后端）**。Web 面板前端在独立仓库 [EchoAgentPanel](../EchoAgentPanel)（`echo-agent-panel` 二进制，Rust 中继 + Vue 3），任何实现了协议的前端都可以连接本服务。
 
@@ -46,11 +46,11 @@ EchoAgentCore/
 │   │   ├── echo-plugin-host/     # 插件宿主：Transport（inproc/stdio）+ 监督 + 一致性套件
 │   │   └── echo-plugin-example/  # 试点插件（websearch + calculator），SDK 用法示例
 │   ├── backend/
-│   │   ├── echo-adapter/         # 适配器宿主胶水：注册表 + ConfigStore
+│   │   ├── echo-config/          # TOML 原子读改写（不认识任何配置段的语义）
 │   │   ├── echo-agent/           # Agent 框架（packages/ 第一层按插件分包；packages/tool/ 为工具注册表机制）
 │   │   └── echo-test-utils/      # 共享测试 mock（仅 dev-dependency）
-│   # 注：QQ 适配器（含 OneBot 协议类型与反向 WS 服务器）已迁出为独立进程
-│   # 插件（见 document/design/adapter-plugin.md；独立仓库 echo-adapter-qq）。
+│   # 注：QQ 平台接入（含 OneBot 协议类型与反向 WS 服务器）已迁出为独立进程
+│   # 插件（见 document/design/instance-plugin.md；独立仓库 echo-adapter-qq）。
 │   └── core/                     # echo-agent-core 二进制（组合根）
 ├── document/                     # 项目文档群（ProDoc 格式：index.md 入口）
 ├── npm/echo-agent/               # 容器化部署 CLI（Docker 编排 core+panel+napcat）
@@ -73,21 +73,21 @@ EchoAgentCore/
 | `echo-llm-openai` / `echo-llm-anthropic` / `echo-llm-ollama` | **LLM provider（Service Provider 角色）**：各自实现 `echo_defs::LlmProvider`,只依赖定义层 |
 | `echo-protocol` | **前后端契约的唯一来源**：`BackendCommand`/`BackendEvent`/`WsMessage`、bridge；`GateMode`/`ThinkingMode`/`ReasoningEffort` 从 `echo-defs` re-export。前端只需依赖它 |
 | `echo-plugin` | **插件接缝**：`PluginManifest` + 生命周期钩子（mount/unmount）+ `PluginRegistry`；插件只依赖定义层与机制层（`echo-defs`/`echo-context`/`echo-plugin` 三个 crate），不依赖 `echo-agent` |
-| `echo-plugin-api` / `-loader` / `-sdk` / `-host` | **插件协议与宿主**：宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商（`-api`）；分层配置合成与依赖排序（`-loader`）；插件侧 stdio 运行时（`-sdk`）；Transport（inproc/stdio）、进程监督与崩溃重启、`RemoteAdapter`（把进程外插件当适配器接入，实现 `echo_defs::adapter::Adapter`）、一致性套件（`-host`）。宿主只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层 |
+| `echo-plugin-api` / `-loader` / `-sdk` / `-host` | **插件协议与宿主**：宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商（`-api`）；分层配置合成与依赖排序（`-loader`）；插件侧 stdio 运行时（`-sdk`）；Transport（inproc/stdio）、进程监督与崩溃重启、`RemoteInstance`（把进程外插件当插件实例接入，实现 `echo_defs::plugin_instance::PluginInstance`）、一致性套件（`-host`）。宿主只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层 |
 | `echo-sanitize` | **敏感信息隔离**：注册表式脱敏器（默认 `Redactor` 实现），在出口卡口统一改写密钥/令牌；保证边界与威胁模型见 `document/core/security-redaction-design.md` |
 | `echo-agent` | Agent 框架：agent 循环、LLM provider 工厂、工具注册表与各包（`packages/`）、技能系统、trunk 记忆、异步子任务（`spawn_subagent`） |
-| `echo-adapter` | 适配器**宿主胶水**：`AdapterRegistry`（name → 句柄）与 `ConfigStore`（TOML 原子读改写）；定义（`Adapter` trait 等）在 `echo-defs`。入站过滤在插件进程内，宿主不留过滤管道 |
-| （QQ 适配器插件） | **已迁出**为独立进程插件（stdio 协议）交付：反向 WS 接入、5 层门控、NapCat 管理、OneBot 协议类型；见 `document/design/adapter-plugin.md` |
+| `echo-config` | TOML **原子读改写**：`ConfigStore`（串行化 + tmp+rename）与 `ensure_table`。**不知道任何 section 的含义**——调用方各自拥有自己的段 |
+| （QQ 插件） | **已迁出**为独立进程插件（stdio 协议）交付：反向 WS 接入、5 层门控、NapCat 容器 / 端口 / compose、OneBot 协议类型；见 `document/design/instance-plugin.md` |
 | `echo-federation` | **联邦链路（Core↔Core）**：`FedFrame` 线协议（工具调用/委派/只读查询）、Hello/Welcome 握手、per-peer Bearer 认证、心跳/重连/回环防护、邀请串（`echofed://`） |
-| `echo-agent-core`（bin） | 组合根：加载配置、装配 Agent + 插件宿主 + 联邦路由泵（代理工具注册/执行端裁决/查询处理）、对外提供 management WS 与适配器实例编排 |
+| `echo-agent-core`（bin） | 组合根：加载配置、装配 Agent + 插件宿主 + 联邦路由泵（代理工具注册/执行端裁决/查询处理）、对外提供 management WS 与插件实例编排（平台名由配置派生，二进制里不含任何平台名） |
 
 依赖方向（单向，无环，扩展只依赖定义层）：
 
 - **底座**（零 echo-* 依赖）：`echo-defs`（定义层）、`echo-context`（机制层）
-- **中间层**（只依赖底座）：`echo-protocol`、`echo-loop`、`echo-session`、`echo-llm-*`（`echo-llm-ollama` 另复用 `echo-llm-openai`）、`echo-adapter`、`echo-sanitize`、`echo-plugin`、`echo-federation`
+- **中间层**（只依赖底座）：`echo-protocol`、`echo-loop`、`echo-session`、`echo-llm-*`（`echo-llm-ollama` 另复用 `echo-llm-openai`）、`echo-config`、`echo-sanitize`、`echo-plugin`、`echo-federation`
 - **插件族**：`echo-plugin-api`（只依赖 `echo-defs`）◄ `echo-plugin-loader` / `echo-plugin-sdk` / `echo-plugin-host`（宿主侧只依赖 `echo-defs` + `-api`/`-loader`，不依赖 backend 层）
-- **框架层**：`echo-agent`（依赖 `echo-defs`/`echo-context`/`echo-loop`/`echo-session`/`echo-llm-openai`/`echo-llm-anthropic`/`echo-llm-ollama`/`echo-protocol`/`echo-adapter`/`echo-sanitize`/`echo-plugin`/`echo-federation`）
-- **适配器插件**（独立仓库，非本工作区成员）：`echo-adapter-qq`（依赖 `echo-plugin-sdk` + 自带 OneBot 传输层）
+- **框架层**：`echo-agent`（依赖 `echo-defs`/`echo-context`/`echo-loop`/`echo-session`/`echo-llm-openai`/`echo-llm-anthropic`/`echo-llm-ollama`/`echo-protocol`/`echo-config`/`echo-sanitize`/`echo-plugin`/`echo-federation`）
+- **平台插件**（独立仓库，非本工作区成员）：`echo-adapter-qq`（依赖 `echo-plugin-sdk` + 自带 OneBot 传输层 + NapCat 部署形状）
 - **组合根**：`echo-agent-core`（bin，装配以上全部 + `echo-plugin-host` 插件宿主）
 
 ## 构建与运行
@@ -217,11 +217,11 @@ NapCat 容器管理）；容器模式的完整配置模板见
 
 - `[agent]`：LLM provider/model/base_url/api_key（env 覆盖：`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`）、`memory_limit_tokens`（trunk token 预算）、`skills_dir`、多 API profile。
 - `[plugins.system_prompt]`：全局系统提示词（Panel 中编辑保存的基础提示词层）。
-- `[adapters.qq]`：QQ 适配器开关、NapCat HTTP API、owner_qq、命令前缀；`[adapters.qq.server]` 反向 WS 监听 `:3131` 与访问令牌（`ECHO_ACCESS_TOKEN` env 可覆盖）。
+- `[adapters.qq]`（等价写 `[instances.qq]`）：平台段——Core 只读 `enabled` 与实例表 / 启动段，**其余键原样透传给插件**（`server` / `filter` / `gate` / `trigger` 都是 QQ 插件自己的 schema，NapCat 端口 / 容器名 / compose 也由插件派生）。
 - `[core] management_address`：前端连接地址（默认 `0.0.0.0:3132`，开箱即可被局域网 Panel 连接；`management_access_token` 提供 Bearer 认证，首装自动生成）。端口与 token 可经 CLI 管理：`echo-agent-core port`（列出/修改各监听端口，含联邦与 QQ 实例端口）与 `echo-agent-core token [--rotate]`。
 - `[federation]`：Core↔Core 联邦（多机去中心化；**零配置默认开启**，listen 缺省 0.0.0.0:3133 开箱可被连入）——`listen`（缺省 :3133，显式空 = 纯连出）、`node_name`、`[federation.peers.*]`（url/token/allow_tools/allow_queries）。配对推荐用 Panel 设置·联邦页的**邀请串**（`echofed://`），见 [document/federation/federation.md](document/federation/federation.md)。
 
-前端通过设置视图（API/技能/工具/插件/智能体）与适配器管理面板发起的修改，由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core/core-config-persistence.md](document/core/core-config-persistence.md)）。
+前端通过设置视图（API/技能/工具/插件/智能体）与实例管理面板发起的修改，由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core/core-config-persistence.md](document/core/core-config-persistence.md)）。
 
 ## 前端协议
 
@@ -246,7 +246,7 @@ Core 与前端之间是 `ws://<management_address>` 上的 JSON 文本帧协议�
 | [document/plugins/core-tools.md](document/plugins/core-tools.md) | 工具系统（注册分发、路径约定、调用治理、Shell 会话） |
 | [document/plugins/core-skills.md](document/plugins/core-skills.md) | 技能系统（分层、SKILL.md、热重载、Git 安装） |
 | [document/plugins/core-subagent.md](document/plugins/core-subagent.md) | Subagent 插件（异步委派、隔离上下文、完成回报与观测） |
-| [document/plugins/adapter-qq-gating.md](document/plugins/adapter-qq-gating.md) | QQ 适配器门控（五层管道、多实例、渲染） |
+| [document/plugins/qq-gating.md](document/plugins/qq-gating.md) | QQ 实例门控（五层管道、多实例、渲染） |
 | [document/plugins/plugin-authoring.md](document/plugins/plugin-authoring.md) | 插件开发指南（装载、协议约定、本地验证） |
 | [document/federation/federation.md](document/federation/federation.md) | 联邦（多机去中心化：链路/远程工具/委派/查询/安全模型） |
 | [document/panel/panel.md](document/panel/panel.md) | Panel 前端（仓库布局、中继模型、状态与数据流） |

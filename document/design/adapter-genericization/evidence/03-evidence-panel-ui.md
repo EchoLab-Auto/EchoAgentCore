@@ -8,11 +8,11 @@ y: 3800
 
 # 证据包：03（Panel 阶段 2：UI 描述符 + schema 渲染器 + 迁移删除）
 
-> 配套：`00-frozen-interfaces.md`。行号基于 panel @ 4b7d99b / core 设计文档 adapter-plugin.md。
+> 配套：`00-frozen-interfaces.md`。行号基于 panel @ 4b7d99b / core 设计文档 instance-plugin.md。
 
 ## A. UI 描述符规范（v1，设计基线）
 
-来源：core 仓库 `document/design/adapter-plugin.md` §Panel UI 解耦（:274-325）。要点：
+来源：core 仓库 `document/design/instance-plugin.md` §Panel UI 解耦（:274-325）。要点：
 
 ```jsonc
 { "version": 1, "panels": [{ "id": "main", "title": "QQ 适配器", "nodes": [
@@ -55,7 +55,7 @@ y: 3800
 ### ui-frame 组件库（web/vendor/ui-frame，可直接复用）
 NeumorphismButton / Select / Input / InputNumber / Checkbox / Card / List / StatusDot / Empty / Badge / Alert / Collapse / Form / Field 等（`web/vendor/ui-frame/dist/components/` 全清单可 ls 查看）
 
-## C. parity 清单（验收对照，来源 adapter-plugin.md:326-333）
+## C. parity 清单（验收对照，来源 instance-plugin.md:326-333）
 
 | 现功能 | 目标归属 |
 |---|---|

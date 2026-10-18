@@ -9,7 +9,7 @@ y: 980
 # 敏感信息隔离（脱敏服务）
 
 > **定位**：本文描述敏感信息隔离服务（脱敏器）——威胁模型、保证边界、各出口卡口（工具结果 / LLM 请求 / QQ 外发 / 入站落盘）、配置与运维（存量扫描与清理）、插件接入点。读者：框架维护者、插件作者与部署运维者。
-> 相关文档：[插件化设计](../plugins/core-plugins.md)（服务定位与插件体系）、[工具系统](../plugins/core-tools.md)（工具执行出口）、[QQ 适配器门控](../plugins/adapter-qq-gating.md)（外发语义）、[插件开发指南](../plugins/plugin-authoring.md)（插件侧接入）。
+> 相关文档：[插件化设计](../plugins/core-plugins.md)（服务定位与插件体系）、[工具系统](../plugins/core-tools.md)（工具执行出口）、[QQ 实例门控](../plugins/qq-gating.md)（外发语义）、[插件开发指南](../plugins/plugin-authoring.md)（插件侧接入）。
 
 ## 威胁模型与保证边界
 

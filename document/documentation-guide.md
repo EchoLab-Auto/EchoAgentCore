@@ -35,7 +35,7 @@ y: 2190
 | 根目录 | `index`（入口）、`documentation-guide`（本规范） | 总览 / 工程 |
 | `overview/` | 架构总览与骨架 | 总览 |
 | `core/` | 内核与运行时子系统（`frame`、`core-*`、`security-redaction-design`） | 框架 |
-| `plugins/` | 插件体系、各插件与适配器、插件开发指南 | 插件 |
+| `plugins/` | 插件体系、各插件与插件实例、插件开发指南 | 插件 |
 | `federation/` | 联邦（多机去中心化） | 插件 |
 | `protocol/` | 前后端线协议 | 工程 |
 | `panel/` | Panel 前端与各视图契约 | 前端 |

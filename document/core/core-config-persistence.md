@@ -19,7 +19,7 @@ EchoAgentCore 的运行期配置写入通过共享 `ConfigStore` 原子化落盘
 |---|---|---|
 | Agent 配置（API key、模型、profiles） | `ConfigStore::patch()` 替换 `[agent]` | `[agent]` |
 | 全局系统提示词 | `persist_system_prompt_plugin()` → `ConfigStore::patch()` | `[plugins.system_prompt].text` |
-| 适配器门控配置（gate mode、白名单、黑名单） | `ConfigStore::patch()` 替换 `[adapters.<platform>]` | `[adapters.<platform>.gate]` + `[adapters.<platform>.filter]` |
+| 实例门控配置（gate mode、白名单、黑名单） | `ConfigStore::patch()` 替换 `[instances.<platform>]` | `[instances.<platform>.gate]` + `[instances.<platform>.filter]` |
 
 `ConfigStore` 内部使用 `std::sync::Mutex` 序列化所有写入，读写一次全文件，
 各调用者（各 persona 的 Agent 与 QqAdapter）共享同一实例，**杜绝并发写互相覆盖**。
@@ -68,9 +68,9 @@ Agent 始终使用单一全局 Trunk（每个 persona 独立一份事件日志�
 ```text
 Core 启动时 --config 指定的文件（如 config/echo-agent-core.local.toml）
 
-ConfigStore 由 main.rs 创建一次，分发给各 persona 的 Agent 与适配器宿主视图（都指向同一 core.toml 的 `[agent]` / `[adapters.<platform>]` section）：
-  let config_store = echo_adapter::ConfigStore::new(args.config_path());
-  // 适配器实例的 persona/端口写回经同一 ConfigStore（`[adapters.<platform>.instances.<id>]`）
+ConfigStore 由 main.rs 创建一次，分发给各 persona 的 Agent 与插件实例宿主视图（都指向同一 core.toml 的 `[agent]` / `[instances.<platform>]` section）：
+  let config_store = echo_config::ConfigStore::new(args.config_path());
+  // 插件实例的 persona/端口写回经同一 ConfigStore（`[instances.<platform>.instances.<id>]`）
   // make_agent 内：每个 persona 共享同一个 config_store（agents_config_store.clone()），
   // 会话文件路径独立设置（JSON，见下）。
 ```
@@ -91,8 +91,8 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 ### 不持久化的内容
 
 以下配置只在启动时从文件读取，运行时修改不持久化：
-- `[adapters.qq.server]`（bind_address、access_token、heartbeat_interval）
-- `[adapters.qq.trigger]`（dm_auto_reply、group_at_reply）
+- `[instances.qq.server]`（bind_address、access_token、heartbeat_interval）
+- `[instances.qq.trigger]`（dm_auto_reply、group_at_reply）
 - `[logging]`
 
 ### provider 取值
@@ -113,20 +113,20 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 ### 数据流
 
 ```text
-Panel 操作（适配器弹层，经 management WS）
-  → BackendCommand::InvokeAdapterOp { adapter, method, payload }
+Panel 操作（插件实例弹层，经 management WS）
+  → BackendCommand::InvokeInstanceOp { instance, method, payload }
       （method = set_gate_mode / update_allowlist / update_denylist …）
-  → Agent::apply_command() → apply_adapter_command()（按 adapter 实例名寻址）
+  → Agent::apply_command() → apply_instance_command()（按 instance 实例名寻址）
     → 插件侧 custom op 承接（进程外插件经宿主转发）
     → 插件更新内存中的 runtime 字段
     → 重建过滤管道（立即生效）
     → 读回当前配置（get_filter_config / get_gate_mode）
       → ConfigStore::patch(|root| {
-           在 root 中更新 adapters.qq.gate.mode
-           在 root 中更新 adapters.qq.filter.allowlist/denylist
+           在 root 中更新 instances.qq.gate.mode
+           在 root 中更新 instances.qq.filter.allowlist/denylist
            Ok(())
         })
-        → 读取全文件 → 修改 [adapters.qq] → 写入 .tmp → rename
+        → 读取全文件 → 修改 [instances.qq] → 写入 .tmp → rename
 ```
 
 > 注：`persist_filter` 和 `Agent::persist_config` 共享同一个 `ConfigStore` 实例。
@@ -135,14 +135,14 @@ Panel 操作（适配器弹层，经 management WS）
 ### 写入的 section
 
 ```toml
-[adapters.qq.gate]
+[instances.qq.gate]
 mode = "allowlist"  # "none" | "allowlist" | "denylist"
 
-[adapters.qq.filter.allowlist]
+[instances.qq.filter.allowlist]
 user_ids = [123456, 789012]
 group_ids = [111222]
 
-[adapters.qq.filter.denylist]
+[instances.qq.filter.denylist]
 user_ids = []
 group_ids = []
 ```

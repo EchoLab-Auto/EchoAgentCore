@@ -43,7 +43,7 @@ link: ["gen-evidence-01 | 01 | b>t", "gen-evidence-02 | 02 | b>t", "gen-evidence
   `capabilities{send_text,send_media,groups,friends,gating,login},`
   `config_schema?: Value, ui?: Value, session_labels?: Value`
 - QQ 插件当前 `config_schema/ui/session_labels` 全为 `None`（plugin.rs:186-188）——01 负责设计补全。
-- **UI 描述符规范 v1**（adapter-plugin.md §Panel UI 解耦, :274-325）：
+- **UI 描述符规范 v1**（instance-plugin.md §Panel UI 解耦, :274-325）：
   `{ "version": 1, "panels": [{ "id", "title", "nodes": [...] }] }`；
   节点类型（v1 冻结）：`status / text / link / select / list_editor / image / button`；**未知节点忽略**；
   节点字段：`bind`（状态文档路径）/ `label` / `options` / `action:{method, arg?}` / `fetch:{method, result_key}`；

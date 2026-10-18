@@ -121,7 +121,7 @@ y: 2020
   （`echo-protocol` 事件，Panel 据此渲染子任务状态；`started` 的 `task` 是全文、
   不受下面的 4000 字符上限约束；入口：会话视图入口行「任务」弹层，按当前会话
   过滤展示）
-- **回灌面**：完成 hook 作为 `MessageReceived { adapter_name: "subagent" }`
+- **回灌面**：完成 hook 作为 `MessageReceived { instance_name: "subagent" }`
   进入显示时间线与 trunk（会话历史含完整委派轨迹：调用 → 回执 → 结论事件）
 
 `<subagent_event>` 信封字段（`packages/subagent/mod.rs::wrap_subagent_event`

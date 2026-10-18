@@ -8,7 +8,7 @@ y: 3480
 
 # 03b · Panel 阶段 2：适配器 UI 迁移与删除方案
 
-> 状态：已实施（旧 `QqPanel` / `QqLoginSection` 已删除）；现状见 [Panel 设置视图](../../panel/panel-settings.md) 与 [QQ 适配器门控](../../plugins/adapter-qq-gating.md)
+> 状态：已实施（旧 `QqPanel` / `QqLoginSection` 已删除）；现状见 [Panel 设置视图](../../panel/panel-settings.md) 与 [QQ 适配器门控](../../plugins/qq-gating.md)
 
 > 基线：`evidence/00-frozen-interfaces.md`（下称「00」）、`evidence/03-evidence-panel-ui.md`（下称「03-ev」）。
 > 仓库基线：panel @ 4b7d99b。行号均引用该基线；落地前需按当时 HEAD 复核。

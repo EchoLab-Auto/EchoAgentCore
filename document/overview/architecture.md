@@ -15,7 +15,7 @@ y: 500
 
 本仓库按 DeepSeek Harness 的设计模式组织，五条核心原则：
 
-1. **一切皆插件、无特权核心**：agent 循环、模型适配器、工具、技能、平台适配器都可挂载/替换；注册是可逆副作用（返回 disposer）。
+1. **一切皆插件、无特权核心**：agent 循环、模型插件实例、工具、技能、平台插件实例都可挂载/替换；注册是可逆副作用（返回 disposer）。
 2. **服务定位 + 依赖注入**：服务通过稳定键从 `Ctx` 解析（`ctx.llm` / `ctx.loop`），加载顺序由服务可用性驱动，扩展插件只依赖定义层。
 3. **类型化事件 = 扩展点**：`EventBus` 的 Observe/Waterfall/Parallel/Serial 四种分发；waterfall 是 around-middleware（`next()` 委托、不调即短路）。
 4. **能力接缝**：Service Definition / Service Provider / Consumer 三角独立演进、独立成 crate；依赖方向单向无环。
@@ -25,20 +25,20 @@ y: 500
 
 ```prodoc-flow
 graph BT
-  Defs[echo-defs<br>Service Definition<br>（Adapter trait / AdapterManagement 在此）]
+  Defs[echo-defs<br>Service Definition<br>（PluginInstance trait / AdapterManagement 在此）]
   Ctx[echo-context<br>Ctx/EventBus/Disposer]
   Session[echo-session<br>事件溯源]
   Loop[echo-loop<br>TurnRunner]
   LLM[echo-llm-*<br>OpenAI/Anthropic/Ollama]
   Proto[echo-protocol<br>线契约]
   Sanitize[echo-sanitize<br>脱敏]
-  Adapter[echo-adapter<br>注册表/ConfigStore]
+  Config[echo-config<br>TOML 原子读改写]
   Fed[echo-federation<br>Core↔Core 联邦]
   Plugin[echo-plugin<br>生命周期钩子]
   PluginApi[echo-plugin-api<br>协议与贡献类型]
   PluginLoader[echo-plugin-loader]
   PluginSdk[echo-plugin-sdk<br>插件 SDK]
-  PluginHost[echo-plugin-host<br>运输/监督/RemoteAdapter]
+  PluginHost[echo-plugin-host<br>运输/监督/RemoteInstance]
   Agent[echo-agent<br>agent 框架]
   Bin[echo-agent-core<br>组合根]
   LLM --> Defs
@@ -72,27 +72,28 @@ graph BT
   Bin --> Fed
 ```
 
-> 依赖边以 `cargo metadata --format-version 1 --no-deps`（仅 normal 依赖）实测为准。`echo-context` **不依赖** `echo-defs`（零 echo-* 依赖）；组合根另直接依赖全部中间层 crate（`echo-adapter`/`echo-context`/`echo-defs`/`echo-federation`/`echo-loop`/`echo-plugin`/`echo-plugin-loader`/`echo-protocol`/`echo-sanitize`/`echo-session`），图中只画主干边。
+> 依赖边以 `cargo metadata --format-version 1 --no-deps`（仅 normal 依赖）实测为准。`echo-context` **不依赖** `echo-defs`（零 echo-* 依赖）；组合根另直接依赖全部中间层 crate（`echo-config`/`echo-context`/`echo-defs`/`echo-federation`/`echo-loop`/`echo-plugin`/`echo-plugin-loader`/`echo-protocol`/`echo-sanitize`/`echo-session`），图中只画主干边。
 
 | Crate | 角色 | 职责 |
 |---|---|---|
-| `echo-defs` | Service Definition 层 | 全部词汇与 trait：LLM/工具/技能/平台消息/**适配器（`Adapter` trait、`AdapterManagement`）**/媒体/会话事件/联邦节点；零实现、零 harness 依赖 |
+| `echo-defs` | Service Definition 层 | 全部词汇与 trait：LLM/工具/技能/平台消息/**插件实例（`PluginInstance` trait、`InstanceManagement`）**/媒体/会话事件/联邦节点；零实现、零 harness 依赖 |
 | `echo-context` | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry` |
 | `echo-session` | 事件溯源会话 | `SessionEvent` 事件集（含模型不可见的推理事件）、`EventLog` append-only 持久化、`derive_messages` 投影、**按会话切片投影**（append 的重投影代价只与本次会话相关）、compaction、`SessionHeader`、v1-v4 兼容迁移 |
 | `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话）见 [Agent 循环](../core/core-agent-loop.md) |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 `echo-defs` |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性），Panel 只依赖它 |
-| `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、`RemoteAdapter`（实现 `echo_defs::adapter::Adapter`）、conformance 测试（见 [完全解耦推进计划](../design/decoupling-plan.md)）。**宿主只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层 crate** |
+| `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、`RemoteInstance`（实现 `echo_defs::plugin_instance::PluginInstance`）、conformance 测试（见 [完全解耦推进计划](../design/decoupling-plan.md)）。**宿主只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层 crate** |
 | `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入——生效口径见 [Agent 循环](../core/core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
-| `echo-adapter` | 适配器**宿主胶水** | `AdapterRegistry`（name → 句柄）与 `ConfigStore`（TOML 原子读改写，全宿主共用）。`Adapter` trait / `AdapterManagement` / `AdapterToolSpec` / 状态与错误类型**定义在 `echo-defs`**（本 crate re-export 保持 `echo_adapter::…` 路径兼容）。**入站过滤在适配器插件进程内**，宿主不持有过滤管道。QQ 实现是**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteAdapter` 接入——见 [适配器插件化](../design/adapter-plugin.md)） |
+| `echo-defs`（`plugin_instance`） | 插件实例的**定义层** | `PluginInstance` trait / `InstanceManagement` / `ToolContribution` / `InstanceRegistry` / 状态与错误类型。**平台中立**：这里没有平台名、没有部署形状。QQ 实现是**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteInstance` 接入——见 [实例插件化](../design/instance-plugin.md)） |
+| `echo-config` | TOML 原子读改写 | `ConfigStore` / `ensure_table`（串行化 + tmp+rename）。**不知道任何 section 的含义**——调用方各自拥有自己的段 |
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、联邦路由泵、启动 |
 
-依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；`echo-protocol` / `echo-adapter` / `echo-session` / `echo-llm-*` / `echo-federation` / `echo-plugin*` / `echo-sanitize`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）。**Adapter trait 定义在 `echo-defs`**（`echo_defs::adapter::Adapter`；`AdapterError`/`AdapterInfo`/`AdapterConnectionState`/`AdapterManagement`/`AdapterToolSpec` 同）；`echo-adapter` 只承载 registry / ConfigStore 并对定义层类型做 re-export——它只依赖定义层、不依赖 `echo-protocol`。**入站过滤与平台细节都在适配器插件进程内**，宿主侧不持有过滤管道、不认识平台名；**`echo-plugin-host` 只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层**；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-adapter`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
+依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；`echo-protocol` / `echo-config` / `echo-session` / `echo-llm-*` / `echo-federation` / `echo-plugin*` / `echo-sanitize`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）。**PluginInstance trait 定义在 `echo-defs`**（`echo_defs::plugin_instance::PluginInstance`；`InstanceError`/`InstanceInfo`/`InstanceConnectionState`/`InstanceManagement`/`ToolContribution` 同）；`echo-config` 只做 TOML 读改写、不认识任何配置段的语义（`echo-adapter` crate 已于 2026-10 删除，其注册表并入 `echo-defs::plugin_instance`）。**入站过滤与平台细节都在实例插件进程内**，宿主侧不持有过滤管道、不认识平台名；**`echo-plugin-host` 只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层**；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
 
 ### 定义层（echo-defs）
 
-定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（依赖仅 serde/serde_json/async-trait/tokio/thiserror/base64/tracing 基础 crate，不含 reqwest 与其它 echo-* crate），可独立测试。模块覆盖：消息/LLM（`ChatMessage`/`ChatRequest`/`LlmProvider` 等）、工具、技能、聊天（`ChannelType`/`IncomingMessage`/`MessageTarget` 等跨边界消息词汇）、适配器（`adapter` 模块：`Adapter` trait、`AdapterManagement`、`AdapterInfo`/`AdapterError`）、门控与思考模式、token 纯函数、媒体卫生（文本内嵌 base64 → 占位符、图片只走独立 image 块）与入站图片落盘缓存（`/media/<id>` 引用）、会话事件契约、联邦节点词汇（`NodeId`、`node://` 跨机命名空间）。
+定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（依赖仅 serde/serde_json/async-trait/tokio/thiserror/base64/tracing 基础 crate，不含 reqwest 与其它 echo-* crate），可独立测试。模块覆盖：消息/LLM（`ChatMessage`/`ChatRequest`/`LlmProvider` 等）、工具、技能、聊天（`ChannelType`/`IncomingMessage`/`MessageTarget` 等跨边界消息词汇）、插件实例（`instance` 模块：`PluginInstance` trait、`InstanceManagement`、`InstanceInfo`/`InstanceError`）、门控与思考模式、token 纯函数、媒体卫生（文本内嵌 base64 → 占位符、图片只走独立 image 块）与入站图片落盘缓存（`/media/<id>` 引用）、会话事件契约、联邦节点词汇（`NodeId`、`node://` 跨机命名空间）。
 
 ### 机制底座（echo-context）
 
@@ -116,8 +117,8 @@ graph BT
 | LLM | `echo_defs::LlmProvider` | `echo-llm-openai`/`anthropic`/`ollama` | `echo-agent` 工厂 + `echo-loop` runner |
 | 工具 | `echo_defs::Tool` | `echo-agent::ToolRegistry` + builtin | agent 循环 |
 | 技能 | `echo_defs::SkillProvider` | `echo-agent::SkillRegistry`（本地文件） | prompt 组装 |
-| 适配器模型工具 | `echo_defs::adapter::AdapterToolSpec`（`Adapter::tool_specs`） | 适配器插件贡献（`AdapterContribution.tools`） | 组合根通用桥（合并 / `account` 寻址 / 出站闸门 / `invoke_custom` 透传） |
-| 平台生命周期 | `echo_defs::adapter::Adapter` | 适配器插件（**进程外**，宿主经 `RemoteAdapter` 接入——当前唯一样本是 `echo-agent.adapter.qq`，实现在独立仓库） | agent + 适配器工具 |
+| 插件实例模型工具 | `echo_defs::plugin_instance::ToolContribution`（`PluginInstance::tool_specs`） | 实例插件贡献（`InstanceContribution.tools`） | 组合根通用桥（合并 / `account` 寻址 / 出站闸门 / `invoke_custom` 透传） |
+| 平台生命周期 | `echo_defs::plugin_instance::PluginInstance` | 实例插件（**进程外**，宿主经 `RemoteInstance` 接入——当前唯一样本是 `echo-agent.instance.qq`，实现在独立仓库） | agent + 实例工具 |
 | 默认驱动 | `echo_loop::TurnRunner` | 内置（经 `ctx.loop` 注册） | 组合根 |
 
 ## 运行时一览
@@ -138,11 +139,11 @@ graph BT
 
 ### 媒体库
 
-入站图片（QQ 消息图、面板上传图）**落盘为媒体文件，链路上只传引用**：`~/.local/share/echo-agent-core/media/`（`$ECHO_MEDIA_DIR` 可覆盖），引用为 `/media/<id>`（Panel 后端同源提供，浏览器懒加载 + 强缓存）。落盘侧：QQ 适配器在**触发门控与过滤通过后**才下载远端图（被丢弃的消息不白存图），SendMessage（面板上传 data URI）入站落盘；遗留内嵌图由加载期迁移一次性改写（幂等）。模型侧：投影出口把引用还原为 data URI——发往 LLM 的请求与内嵌时代无差别。细节见 [多模态输入](../core/core-multimodal.md)。
+入站图片（QQ 消息图、面板上传图）**落盘为媒体文件，链路上只传引用**：`~/.local/share/echo-agent-core/media/`（`$ECHO_MEDIA_DIR` 可覆盖），引用为 `/media/<id>`（Panel 后端同源提供，浏览器懒加载 + 强缓存）。落盘侧：QQ 插件实例在**触发门控与过滤通过后**才下载远端图（被丢弃的消息不白存图），SendMessage（面板上传 data URI）入站落盘；遗留内嵌图由加载期迁移一次性改写（幂等）。模型侧：投影出口把引用还原为 data URI——发往 LLM 的请求与内嵌时代无差别。细节见 [多模态输入](../core/core-multimodal.md)。
 
 ### 命令分发
 
-适配器命令域独立：`apply_adapter_command`（`packages/adapter_ops/commands.rs`）承载 `InvokeAdapterOp` 及其状态查询等通用适配器命令，主 `apply_command` 的对应分支为一行委托，核心分支原地保留——平台专属动作（门控/名单/登录/owner）不再有具体变体，一律经 `InvokeAdapterOp{adapter, method, payload}` 透传给插件。`CommandRegistry` + `CommandHandler` trait（dyn-compatible，async）是开放命令扩展点的基础设施：封闭枚举 `BackendCommand` 下编译器 match 完备性仍由主分发器承担，注册表留待协议开放后承载外部命令插件。
+实例命令域独立：`apply_instance_command`（`packages/instance_ops/commands.rs`）承载 `InvokeInstanceOp` 及其状态查询等通用插件实例命令，主 `apply_command` 的对应分支为一行委托，核心分支原地保留——平台专属动作（门控/名单/登录/owner）不再有具体变体，一律经 `InvokeInstanceOp{instance, method, payload}` 透传给插件。`CommandRegistry` + `CommandHandler` trait（dyn-compatible，async）是开放命令扩展点的基础设施：封闭枚举 `BackendCommand` 下编译器 match 完备性仍由主分发器承担，注册表留待协议开放后承载外部命令插件。
 
 ### 结构化输入标记
 
@@ -154,10 +155,10 @@ graph BT
 |---|---|
 | 新增 LLM provider | 实现 `echo_defs::LlmProvider`，注册 `ctx.llm` |
 | 新增工具 | 实现 `echo_defs::Tool`，注册进 ToolRegistry |
-| 新增平台 | 写一个**适配器插件**（`AdapterPlugin` + `AdapterContribution`：能力位 / UI 描述符 / 会话标签 / **模型工具声明**），在 `[adapters.<platform>]` 配好 `enabled` 与 `plugin.command`。宿主侧无需改代码——配置、门控、工具桥、提示词边界都是平台中立的（见 [插件开发指南](../plugins/plugin-authoring.md)「适配器插件」） |
+| 新增平台 | 写一个**实例插件**（`InstancePlugin` + `InstanceContribution`：能力位 / UI 描述符 / 会话标签 / **模型工具声明**），在 `[instances.<platform>]` 配好 `enabled` 与 `plugin.command`。宿主侧无需改代码——配置、门控、工具桥、提示词边界都是平台中立的（见 [插件开发指南](../plugins/plugin-authoring.md)「实例插件」） |
 | 拦截请求/工具/turn | EventBus 上注册 lifecycle 事件监听器 |
 | 工具策略 | 超时已由 harness `tool_guard_timeout` 守卫（`agent/tool_exec.rs`）；`ToolPipeline` 中间件机制已备、生产路径未接线 |
-| 新增命令 | 命令分发按域拆分（`apply_adapter_command` 模式）+ CommandRegistry（开放后）；平台专属动作优先走 `InvokeAdapterOp` 方法名而非新增变体 |
+| 新增命令 | 命令分发按域拆分（`apply_instance_command` 模式）+ CommandRegistry（开放后）；平台专属动作优先走 `InvokeInstanceOp` 方法名而非新增变体 |
 | 会话状态扩展 | 扩展 `SessionEvent` 枚举（echo-session），从日志渲染 |
 
 ## 关键文档

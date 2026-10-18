@@ -16,13 +16,13 @@ link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "mul
 
 本仓库按 DeepSeek Harness 的设计模式组织，五条核心原则：
 
-1. **无特权核心**：agent 循环、模型适配器、工具、技能、平台适配器都可挂载/替换；注册是可逆副作用（返回 disposer）
+1. **无特权核心**：agent 循环、模型插件实例、工具、技能、平台插件实例都可挂载/替换；注册是可逆副作用（返回 disposer）
 2. **服务定位 + 依赖注入**：服务通过稳定键从 `Ctx` 解析（`ctx.llm` / `ctx.loop`），加载顺序由服务可用性驱动，扩展插件只依赖定义层
 3. **类型化事件 = 扩展点**：`EventBus` 的 Observe / Waterfall / Parallel / Serial 四种分发；waterfall 是 around-middleware（`next()` 委托、不调即短路）
 4. **能力接缝**：Service Definition / Service Provider / Consumer 三角独立演进、独立成 crate；依赖方向单向无环
 5. **事件溯源会话日志**：日志是唯一事实来源，模型上下文由日志投影——"模型可见 ⇒ 已记录"（反例：推理正文入日志但不进模型上下文，见 [会话记忆](./core-memory.md)）
 
-内核只含机制（服务注册表 / 事件总线 / 插件宿主 / 线协议 / 组合根）；全部能力以**插件**装载——循环、provider、工具、技能、适配器、工作区、subagent、联邦——配置可禁用到"只剩内核仍能启动"。装载清单与门控规则见 [插件化设计](../plugins/core-plugins.md)。
+内核只含机制（服务注册表 / 事件总线 / 插件宿主 / 线协议 / 组合根）；全部能力以**插件**装载——循环、provider、工具、技能、插件实例、工作区、subagent、联邦——配置可禁用到"只剩内核仍能启动"。装载清单与门控规则见 [插件化设计](../plugins/core-plugins.md)。
 
 ## 组合根与启动装配
 
@@ -32,7 +32,7 @@ link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "mul
 2. 构建 LLM provider 工厂，注册 `ctx.llm`
 3. 装配插件宿主：`apply_disabled`（禁用插件只注册不挂载）先于挂载执行
 4. 注册内置工具、技能目录与各包（`packages/`），创建多 agent 监督器
-5. 启动适配器插件（受 `[adapters.<platform>].enabled` 与插件状态双重门控）与 management WS
+5. 启动实例插件（受 `[instances.<platform>].enabled` 与插件状态双重门控）与 management WS
 6. 各人格启动循环回填按人格的循环注入（`loop.single` / `loop.parallel`）
 
 ## 服务定位与事件
@@ -45,7 +45,7 @@ link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "mul
 
 ## 插件宿主
 
-- 契约：`Plugin` trait（生命周期钩子）+ `PluginManifest`（id / name / version / kind / entry）+ `PluginKind`（skill / tool / provider / loop / adapter / orchestration / management / interaction）
+- 契约：`Plugin` trait（生命周期钩子）+ `PluginManifest`（id / name / version / kind / entry）+ `PluginKind`（skill / tool / provider / loop / instance / orchestration / management / interaction；`instance` 的线上别名为旧值 `adapter`）
 - `mount` 返回 disposer；`register_and_mount` 注册并按启用态挂载；宿主为**进程级单例**（全体人格共享）
 - 门控：全局启用 ∧ persona 白名单（`Agent::apply_capabilities` 逐人格计算）
 - 热重载：数据类插件（技能/工具/清单）秒级热重载；代码类插件经原子二进制替换 + 进程重启生效

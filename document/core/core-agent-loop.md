@@ -36,7 +36,7 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
   通道**。并行模式下不使用闸门（到达即快照）。
 - **排队期间可取消**：turn 在等待闸门**之前**就注册进 `active_inbound_turns`，
   取消命令能中断排队（该 turn 不执行、不留残回复）；QQ 入站注册在分支任务内
-  完成，适配器入站永不因排队阻塞。
+  完成，插件实例入站永不因排队阻塞。
 - **推导**：`TeamMember::loop_mode()`（单一来源）——白名单含 `loop.parallel`
   → parallel；其余（含白名单为空 = 默认）→ single。
   插件黑名单已移除，推导只看白名单。相关机制见
@@ -110,7 +110,7 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 
 - `agent/turn.rs`：turn 驱动（上文「注入与分派」）+ `input_boundary`
 - `agent/inbound.rs`：入站 turn 生命周期（分支登记 / 串行闸门 / 取消 / 合并、
-  `process_message`、适配器入站 `process_inbound_branch` → `run_inbound_turn`）
+  `process_message`、插件实例入站 `process_inbound_branch` → `run_inbound_turn`）
 - `agent/tool_dispatch.rs`：`run_tool` 统一分派、参数预检、中断结果补记
 - `agent/streaming.rs`：流式增量转发（`AgentContentDelta` / `AgentReasoningDelta`）
 - `agent/plugin_reload.rs`：数据插件热重载

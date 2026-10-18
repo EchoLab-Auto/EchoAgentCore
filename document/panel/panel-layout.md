@@ -46,7 +46,7 @@ graph TB
   ChatView --> MsgList[消息列表]
   ChatView --> EntryRow[活动浮条 · 入口行]
   ChatView --> Composer[悬浮输入区]
-  ChatView --> Pops[弹出层：清单 · QQ 适配器 · 任务 TasksPanel]
+  ChatView --> Pops[弹出层：清单 · QQ 插件实例 · 任务 TasksPanel]
   ChatView --> Overs[会话区内弹层：上下文 · Agent 配置]
   App --> Modals[模态：Branch]
   App --> Toasts[ToastProvider 右上]
@@ -66,7 +66,7 @@ graph LR
   Conn -->|命令下行| Core
 ```
 
-- Core 是**业务状态**的唯一事实来源（「窗口在看什么」属窗口本地，§3.7）；断连重连后凭缓存游标增量补齐、缓存失效时由 Core 回退全量（§四）；唯一乐观例外 = 取消任务（见 [会话视图](./panel-chat.md) 与 [适配器管理·任务·Shell](./panel-adapter-tasks.md)）
+- Core 是**业务状态**的唯一事实来源（「窗口在看什么」属窗口本地，§3.7）；断连重连后凭缓存游标增量补齐、缓存失效时由 Core 回退全量（§四）；唯一乐观例外 = 取消任务（见 [会话视图](./panel-chat.md) 与 [实例管理·任务·Shell](./panel-instance-tasks.md)）
 - HTTP 旁路仅：日志接口（`/api/logs/{panel,core}`）、接入点管理接口（`/api/upstreams` 增删查，多接入点聚合，见 [Panel 概览](./panel.md)「配置与运维」）与媒体文件路由（`GET /media/{name}`，§3.5），其余全部走 WS——QQ 登录/二维码已迁到 WS（Core 代理）
 
 ## 二、视图与导航
@@ -116,9 +116,9 @@ graph LR
 | 基础视图 | 0 | 当前视图组件 |
 | 边栏列 | 4 | 左右侧栏卡片列 |
 | 输入区与「回到底部」 | 5 | 会话视图底部输入区、回到底部按钮 |
-| 入口行 | 6 | 配置/上下文/清单/适配器/任务入口行 |
+| 入口行 | 6 | 配置/上下文/清单/插件实例/任务入口行 |
 | 清单卡 | 3 | `.checklist-float`（会话视图内的悬浮清单卡，sticky 在容器内，见 `styles.css`） |
-| 入口行弹出层 | 30 | `PanelPopover`（清单/会话/工作区/适配器/任务浮层共用容器，`teleport` 到 body + fixed） |
+| 入口行弹出层 | 30 | `PanelPopover`（清单/会话/工作区/插件实例/任务浮层共用容器，`teleport` 到 body + fixed） |
 | Agent 菜单 | 30 | AgentSwitcher 上弹菜单（设置视图同段 30–31） |
 | 根 chip 速览 | 40 | 文件浏览器根路径 chip 悬停卡（仅文本、`pointer-events: none`） |
 | 浮层遮罩 | 50 | 会话区覆盖层 |
@@ -140,7 +140,7 @@ graph LR
 
 ### 3.4 顶栏交互
 
-- **连接指示**（已迁入边栏「连接状态」卡，默认右列、可拖动换列）：`已连接`（online 绿点）/ `连接中…`（connecting 呼吸点），驱动源 `state.connected`；卡片同时逐实例列出 QQ 适配器的运行态，详见 [会话视图](./panel-chat.md)「侧栏与多接入点」
+- **连接指示**（已迁入边栏「连接状态」卡，默认右列、可拖动换列）：`已连接`（online 绿点）/ `连接中…`（connecting 呼吸点），驱动源 `state.connected`；卡片同时逐实例列出 QQ 实例的运行态，详见 [会话视图](./panel-chat.md)「侧栏与多接入点」
 - **设置入口**：顶栏导航「设置」直达设置视图（见 [设置视图](./panel-settings.md)）——已不再有设置下拉与 API 弹窗
 - **主题开关**：三态循环（浅色 → 跟随系统 → 深色），由 ui-frame `ThemeProvider` + `NeumorphismThemeToggle` 提供；持久化 `localStorage: echo-panel-theme`；外壳默认 `auto`，index.html 内联脚本防闪烁
 
@@ -172,7 +172,7 @@ graph LR
 
 ### 3.7 多窗口语义
 
-**概念**：多个标签页/窗口同时连 Panel 是正常用法——每个窗口一条 WS 连接、一份内存 `state`（`store.ts` 的响应式单例天然 per-tab）。串台的根因不是「共享了状态」，而是**把窗口态当成全局态**：视图、当前会话、当前 Agent 是窗口自己的选择；工作区 `active`、适配器运行态、配置是 Core 的单例广播。据此分三层：
+**概念**：多个标签页/窗口同时连 Panel 是正常用法——每个窗口一条 WS 连接、一份内存 `state`（`store.ts` 的响应式单例天然 per-tab）。串台的根因不是「共享了状态」，而是**把窗口态当成全局态**：视图、当前会话、当前 Agent 是窗口自己的选择；工作区 `active`、插件实例运行态、配置是 Core 的单例广播。据此分三层：
 
 1. **窗口态**：当前视图 / 当前会话 / 当前 Agent / 侧栏展开 / 草稿 / 滚动位置——只在本窗口生效；持久化走 `tab-prefs.ts`（`readPref` / `writePref` = 本标签页权威 + 全局默认兜底；`readTabOnly` / `writeTabOnly` = 严格 per-tab）。
 2. **Core 广播态**（per-persona 或进程级单例）：工作区 `active` / `active_conversation`、激活成功提示、TeamsList 等经 EventBroker 扇出给**所有**连接。收到时**只同步状态，不迁移视图**。
@@ -219,7 +219,7 @@ graph LR
   - **首屏优先级**：`RequestAdapterStatus` / `RequestShellSessions` 两条单值管理面命令**仅当目标区域已解析**（刷新/重连场景，activeRegion 自 localStorage 还原）时发送；首访区域未定时跳过——多接入点下会因解析不出目标被拒并误弹「尚未选择 agent」，随后区域解析完成由 activeRegion watcher 统一拉取（含这两条）
   - 去主智能体后 `team_id` 必填：没有保存过 Agent 时**跳过**时间线请求（发了必被 Core 拒绝），等 `TeamsList` 到达后由 App watcher 用列表首个发起（有缓存则同样带 `since_seq`）
   - **切换 core 时重拉「单值管理面」**（`connection.ts::requestActiveRegionManagement`）：`RequestState` / `RequestSystemPrompt` / `RequestAdapterStatus` / `RequestSkillsList` / `RequestToolsList` / `RequestPluginsList` / `RequestShellSessions` / `RequestFederationStatus`——响应被 `managementCoreCurrent` 过滤到 activeRegion，不重拉会短暂显示上一个 core 的值。**首屏首次区域确定**（prev=null）时跳过技能/工具目录（`includeCatalogs:false`）——二者合计约 36KB 且首屏无消费方（设置页/Agent 配置弹窗打开时自拉），切换区域保留全量
-  - 适配器管理数据**不预取**（`AdapterPanel` 打开时按实例自行刷新描述符与状态；当前 Agent 未启用适配器、或多实例尚未选定实例时预取必被拒，只堆出无意义的「适配器未找到」提示）
+  - 实例管理数据**不预取**（`AdapterPanel` 打开时按实例自行刷新描述符与状态；当前 Agent 未启用插件实例、或多实例尚未选定实例时预取必被拒，只堆出无意义的「插件实例未找到」提示）
 - **重连保留时间线**：只清空运行期状态（`branchTabs`、`tasks`、`activities`、工作区 git/文件浏览器缓存）；时间线（`trunk`、`teamTimelines`、`trunkTeamId`）**不清空**——按缓存游标带 `since_seq` 增量补齐，响应 `full` 标志（首载/窗口滚出/游标超前）时整体替换（`connection.ts::startConnection` 的 `onopen` 段）
 - **退避**：500ms 起、×2 递增，**上限按页面可见性分档**（`connection.ts::RETRY_CAP_VISIBLE_MS` = 3s / `RETRY_CAP_HIDDEN_MS` = 30s——前台几秒内即恢复，后台省电）；成功连接后复位 500ms
 - **前台自愈（heal）**：`visibilitychange` 回到前台或 `online` 事件时主动评估连接——已断开则立即重连（复位退避，不等可能被浏览器冻结的退避定时器）；显示 OPEN 也可能半死（设备休眠期间对端已消失而本端未察觉），发 `RequestTeamsList` 探测帧，**5s** 内无任何下行帧则判死、主动关闭走标准重连（`connection.ts`）

@@ -132,17 +132,17 @@ mode = "fast"
 崩溃语义：插件进程退出（panic/segfault/exit）→ 宿主视为崩溃，按 backoff（200ms×2、上限 2s、最多 5 次）自动重启；
 在途调用以 `Error{code:"plugin_crashed"}` 收尾。
 
-## 适配器插件
+## 实例插件
 
-适配器插件不是「插件的一个变体」，而是**用同一套协议承载平台接入**：注册一个
+实例插件不是「插件的一个变体」，而是**用同一套协议承载平台接入**：注册一个
 `Contribution::Adapter`，此后生命周期、收发、目录查询、管理动作、以及对模型
 暴露的工具，全部经 `Invoke("<实例名>:<op>")` 路由到你实现的 `AdapterPlugin::invoke_op`。
 
-SDK 侧实现 `AdapterPlugin`（`echo-plugin-sdk`）：`configure`（收配置，`Err` 即
-拒绝启动）→ `adapter()`（返回贡献）→ `invoke_op(op, payload)`（路由）→
+SDK 侧实现 `InstancePlugin`（`echo-plugin-sdk`）：`configure`（收配置，`Err` 即
+拒绝启动）→ `instance()`（返回贡献）→ `invoke_op(op, payload)`（路由）→
 `on_ready(host)`（拿 `HostClient` 回呼）→ `on_drain`。
 
-### 贡献（`AdapterContribution`）
+### 贡献（`InstanceContribution`）
 
 | 字段 | 作用 |
 | --- | --- |
@@ -159,7 +159,7 @@ SDK 侧实现 `AdapterPlugin`（`echo-plugin-sdk`）：`configure`（收配置�
 `description`、`parameters`（JSON Schema）、`category`、`timeout_hint_secs`、
 `package`、**`visible_reply`**。
 
-宿主侧（`core/adapter_tools.rs`）对声明做三件事，**不认识任何具体工具名**：
+宿主侧（`core/instance_tools.rs`）对声明做三件事，**不认识任何具体工具名**：
 
 1. 跨实例合并（同名只注册一次）；
 2. 多实例时给 schema 注入可选 `account`，执行时按它选实例——

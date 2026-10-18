@@ -39,7 +39,7 @@ y: 3800
 4. `invalidate_management_state`（adapter.rs:100-106）：**全仓零调用**（grep 证实）——epoch 失效未接线
 5. Core `emit_adapter_list`（agent/mod.rs:1207-1290）：从 `management().cached_state()["instance"]` 派生 persona/metadata（container/webui_url/onebot_url 三键），与 deprecated 字段同源并存
 6. `AdapterStatus` **无 ui / session_labels 字段** → 描述符到 Panel 的载体缺失（01 决策：a. AdapterStatus 增字段 / b. 经 AdapterState 状态文档 / c. 新事件；给出理由与线上形状，注意 Panel 是**多上游聚合**，一切只能走 Core 转发）
-7. epoch / 失效语义：计划复用「宿主缓存 + epoch 失效」（参考 adapter-plugin.md §交接与崩溃恢复语义 + 风险表 #1）；实现接不了要写清切片
+7. epoch / 失效语义：计划复用「宿主缓存 + epoch 失效」（参考 instance-plugin.md §交接与崩溃恢复语义 + 风险表 #1）；实现接不了要写清切片
 
 ## C. W2.4（i64 → String）涉及面
 
@@ -51,7 +51,7 @@ y: 3800
 
 - 管理方法 12 个已在插件实现（见 00 文件 §四）；`get_groups/get_friends` 经 `qq:<op>` 直通（plugin.rs:221）
 - 双跑测���已入库：`dual_run_old_and_new_gate_commands_produce_equivalent_state`
-- 交接语义（先停后切）已定稿（adapter-plugin.md §交接与崩溃恢复语义）——协议/宿主侧勿改
+- 交接语义（先停后切）已定稿（instance-plugin.md §交接与崩溃恢复语义）——协议/宿主侧勿改
 - `echo-plugin-host/tests/conformance_stdio.rs` 14 项（a-j + 扩展）、`conformance.rs` 14 项（a-n）；新增协议字段时按既有模式补用例
 
 ## E. 补充核实（2026-10-16 第二轮）

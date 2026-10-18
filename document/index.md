@@ -9,7 +9,7 @@ link: ["architecture | 架构总览 | l>r", "core | Core 后端 | l>r", "panel |
 
 # EchoAgent 文档总览
 
-EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架：Core 负责 LLM agent 循环、工具调用、多 agent 人格、QQ 适配器；Panel 是 Vue 3 前端，通过 WebSocket 与 Core 通信，提供聊天、任务、Shell、设置（API/技能/工具/插件/智能体/日志）等界面。
+EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架：Core 负责 LLM agent 循环、工具调用、多 agent 人格、QQ 插件实例；Panel 是 Vue 3 前端，通过 WebSocket 与 Core 通信，提供聊天、任务、Shell、设置（API/技能/工具/插件/智能体/日志）等界面。
 
 > 本文档群按 ProDoc 文档图组织（每个 `.md` 是画布上一个框，连线表达主干导航），物理目录按「主题 × 阅读距离」分层（`overview → core → plugins / panel / protocol / federation → ops / dev → design`），且将**长期参考类**（模块文档）与**设计过程类**（计划/提案/记录）分开——放置规则与写作约定见 [文档规范](./documentation-guide.md)。两仓库（core + panel）的文档统一维护在本目录。
 
@@ -46,7 +46,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 - [core-tools.md](./plugins/core-tools.md) — 工具系统：注册分发、路径约定、超时治理、后台 Shell 会话
 - [core-skills.md](./plugins/core-skills.md) — 技能系统：分层、SKILL.md、热重载、系统提示词技能
 - [core-subagent.md](./plugins/core-subagent.md) — Subagent 插件：异步委派、隔离上下文、完成回报
-- [adapter-qq-gating.md](./plugins/adapter-qq-gating.md) — QQ 适配器门控：五层管道、多实例、消息收发与渲染
+- [qq-gating.md](./plugins/qq-gating.md) — QQ 实例门控：五层管道、多实例、消息收发与渲染
 - [plugin-authoring.md](./plugins/plugin-authoring.md) — 插件开发指南：快速上手、装载、协议约定与本地验证
 - [federation.md](./federation/federation.md) — 联邦（多机去中心化）：链路协议、安全模型、远程工具与调度
 
@@ -62,7 +62,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 - [panel-chat.md](./panel/panel-chat.md) — 会话视图：消息列表、工具卡、推理块与输入区
 - [panel-modals.md](./panel/panel-modals.md) — 模态与覆盖层：模态清单、分支/上下文弹层、Agent 配置弹层
 - [panel-settings.md](./panel/panel-settings.md) — 设置视图：API、资源工作区、技能安装、Core 连接与联邦、日志
-- [panel-adapter-tasks.md](./panel/panel-adapter-tasks.md) — 适配器管理·任务·Shell：描述符驱动的适配器弹层、任务弹层、HTTP 通道
+- [panel-instance-tasks.md](./panel/panel-instance-tasks.md) — 实例管理·任务·Shell：描述符驱动的插件实例弹层、任务弹层、HTTP 通道
 - [panel-mobile.md](./panel/panel-mobile.md) — 移动端适配（竖屏）：断点、卡片抽屉、软键盘适配
 - [panel-system.md](./panel/panel-system.md) — 系统交互：Toast、键盘清单、设计边界与关键常量
 - [panel-icons.md](./panel/panel-icons.md) — 图标体系：载体分工、尺寸线宽档位、语义色令牌、防回归守卫
@@ -81,8 +81,8 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 
 - [design/index.md](./design/index.md) — 设计层索引：这一层收什么、写作约定与阅读顺序
 - [decoupling-plan.md](./design/decoupling-plan.md) — 完全解耦推进计划（规划）：验收口径、分阶段计划与风险
-- [adapter-plugin.md](./design/adapter-plugin.md) — 适配器插件化设计：P1 已落地、P2+ 规划
-- [adapter-genericization/index.md](./design/adapter-genericization/index.md) — 适配器泛化设计系列：分册设计（01/02/03）、证据包、对账表与进度台账
+- [instance-plugin.md](./design/instance-plugin.md) — 实例插件化设计：P1 已落地、P2+ 规划
+- [adapter-genericization/index.md](./design/adapter-genericization/index.md) — 插件实例泛化设计系列：分册设计（01/02/03）、证据包、对账表与进度台账
 - [agent-humanlike-style.md](./design/agent-humanlike-style.md) — 拟人化方案（规划）：语气与回复节奏
 - [federation-port-merge.md](./design/federation-port-merge.md) — 联邦·管理端口合并（设计记录，已实施）
 - [panel-performance-audit.md](./design/panel-performance-audit.md) — Panel 浏览器性能审计：测量方法与修复前后实测
@@ -114,22 +114,22 @@ graph LR
   Plugins --> Tools[工具系统|/plugins/core-tools.md]
   Plugins --> Skills[技能系统|/plugins/core-skills.md]
   Plugins --> Subagent[Subagent 插件|/plugins/core-subagent.md]
-  Plugins --> Gating[QQ 适配器门控|/plugins/adapter-qq-gating.md]
+  Plugins --> Gating[QQ 实例门控|/plugins/qq-gating.md]
   Plugins --> Fed[联邦（多机）|/federation/federation.md]
   Plugins --> Author[插件开发指南|/plugins/plugin-authoring.md]
   Home --> Design[设计记录|/design/index.md]
   Design --> Plan[完全解耦推进计划|/design/decoupling-plan.md]
-  Design --> AdapterPlugin[适配器插件化设计|/design/adapter-plugin.md]
+  Design --> AdapterPlugin[实例插件化设计|/design/instance-plugin.md]
   Design --> Style[拟人化方案|/design/agent-humanlike-style.md]
   Design --> FedMerge[联邦·管理端口合并|/design/federation-port-merge.md]
   Design --> Perf[Panel 性能审计|/design/panel-performance-audit.md]
-  AdapterPlugin --> Gen[适配器泛化（设计系列）|/design/adapter-genericization/index.md]
+  AdapterPlugin --> Gen[插件实例泛化（设计系列）|/design/adapter-genericization/index.md]
   Panel --> Inter[Panel 交互定义|/panel/panel-interaction.md]
   Inter --> Layout[布局与导航|/panel/panel-layout.md]
   Inter --> Chat[会话视图|/panel/panel-chat.md]
   Inter --> Modals[模态与覆盖层|/panel/panel-modals.md]
   Inter --> Set[设置视图|/panel/panel-settings.md]
-  Inter --> Tasks[适配器管理·任务·Shell|/panel/panel-adapter-tasks.md]
+  Inter --> Tasks[实例管理·任务·Shell|/panel/panel-instance-tasks.md]
   Inter --> Mobile[移动端适配|/panel/panel-mobile.md]
   Inter --> Sys[系统交互|/panel/panel-system.md]
   Inter --> Icons[图标体系|/panel/panel-icons.md]

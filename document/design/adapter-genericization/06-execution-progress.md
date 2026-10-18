@@ -79,7 +79,7 @@ y: 3480
 - 03b S6-S7（删除 QqPanel/QqLoginSection/qqByAdapter/protocol QQ 段 + 注释收尾）——依赖 S5
 - 01b S7（旧变体 deprecated 标记）+ S8（N+2 删除）——发布计划项，非本轮
 - 01a S6（可选：重启后贡献变化重建 RemoteAdapter）
-- 文档收口：01b §C 升级指南写入 adapter-plugin.md；06 台账归档
+- 文档收口：01b §C 升级指南写入 instance-plugin.md；06 台账归档
 
 ## 环境基线（14:42）
 
@@ -102,7 +102,7 @@ y: 3480
 2. 01b S7（旧变体 #[deprecated] 标记 + 收到旧命令 warn）：发版项，随 N 发布做
 3. 01b S8（N+2 物理删除）：发布计划
 4. 01a S6（可选：重启后贡献变化重建 RemoteAdapter）
-5. 文档收口：adapter-plugin.md（W2.4/W4.3 + 进度）与 decoupling-plan.md ④ 状态；泛化设计文档集（本目录）提交入库
+5. 文档收口：instance-plugin.md（W2.4/W4.3 + 进度）与 decoupling-plan.md ④ 状态；泛化设计文档集（本目录）提交入库
 6. 残留 ③（核心局部命名 qq_adapters/QQ 文案/session 示例）——低优先，随插件仓迁移切片
 
 ## S5/S6 预检（父级，15:36；供裁决后立即派发）
@@ -180,10 +180,10 @@ y: 3480
 - 四条验收 grep 全空（旧命令 / 旧事件 / GroupInfo+FriendInfo / legacy+id_compat）
 
 **文档层同步**（同批，另有提交）：
-- `adapter-plugin.md`：§变体处置与升级指南改写为「直接删除已生效」；W4.1-W4.4 勾选注释更新；实施进度「无剩余发版项」
+- `instance-plugin.md`：§变体处置与升级指南改写为「直接删除已生效」；W4.1-W4.4 勾选注释更新；实施进度「无剩余发版项」
 - `01b-core-protocol-lifecycle.md`：B 节加后注（S7/S8 合并直接执行；设计历史保留）
 - `protocol.md`：命令/事件段改写为统一通道；旧变体注明已删除
-- `adapter-qq-gating.md` / `panel-qq-tasks.md` / `panel-system.md`：旧命令引用更新为新通道（`panel-qq-tasks.md` 后续随泛化改名为 `panel-adapter-tasks.md`）
+- `qq-gating.md` / `panel-qq-tasks.md` / `panel-system.md`：旧命令引用更新为新通道（`panel-qq-tasks.md` 后续随泛化改名为 `panel-instance-tasks.md`）
 - Panel 仓库：`protocol-sync.test.ts` 注释更新（「Core 侧保留至 N+2」→「同批直接删除」）
 
 ## 后续清理：GateMode 孤儿枚举（16:38）

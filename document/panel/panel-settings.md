@@ -109,7 +109,7 @@ y: 780
 
 1. **基础信息**（摘要 `启用 · 单会话`）：ID 必填 + `/^[A-Za-z0-9_-]+$/`（编辑时锁定，留空回退为名称）、名称必填、描述、启用开关、**循环模式分段单选**（单会话（默认）/ 并行多会话，互斥——写入 `enabled_plugins` 白名单的 `echo-agent.loop.{single,parallel}` 插件 id；空表即单会话）
 2. **系统提示词**（摘要 `自定义提示词/继承全局 · N 个系统技能`）：提示词文本域 + 系统提示词 skills 复选（双列网格）
-3. **启用的能力**（摘要 `N 插件 · N 工具 · N 技能`，空表显示「不限制（全部可用）」）：四个子块以 `NeumorphismDivider` 分隔——**插件**（`kind ∈ {adapter, management, interaction}` ∪ 包维度门控插件固定清单 tools.builtin / skills.dir / workspace / subagent（与 `capabilities.ts::PACKAGE_GATED_PLUGIN_IDS` 逐项镜像；适配器不经清单，按 `kind == "adapter"` 运行期推导，新增平台零改动），判定单一来源 = `capabilities.ts::isPluginCheckboxVisible`；两者之外的插件如 loop.* 不出现；标签显示中文 kind 名，单一来源 `capabilities.ts::PLUGIN_KIND_LABELS`）、**包（Package）**（一次切换整包工具+技能，附成员清单与项数徽标；显示名单一来源 = `capabilities.ts::PACKAGE_DISPLAY_NAMES`）、**工具**（按分类分组，自适应多列）、**技能**
+3. **启用的能力**（摘要 `N 插件 · N 工具 · N 技能`，空表显示「不限制（全部可用）」）：四个子块以 `NeumorphismDivider` 分隔——**插件**（`kind ∈ {instance, management, interaction}` ∪ 包维度门控插件固定清单 tools.builtin / skills.dir / workspace / subagent（与 `capabilities.ts::PACKAGE_GATED_PLUGIN_IDS` 逐项镜像；插件实例不经清单，按 `kind == "instance"` 运行期推导，新增平台零改动），判定单一来源 = `capabilities.ts::isPluginCheckboxVisible`；两者之外的插件如 loop.* 不出现；标签显示中文 kind 名，单一来源 `capabilities.ts::PLUGIN_KIND_LABELS`）、**包（Package）**（一次切换整包工具+技能，附成员清单与项数徽标；显示名单一来源 = `capabilities.ts::PACKAGE_DISPLAY_NAMES`）、**工具**（按分类分组，自适应多列）、**技能**
 
 > 原「禁用的能力」（插件黑名单复选）分区已移除——插件维度只保留白名单（空表 = 全部启用，取消勾选即物化），既有黑名单配置由 Core 加载期物化进白名单。
 
@@ -124,7 +124,7 @@ y: 780
 
 **工具**
 
-- **按包分组**（默认）：工具按 `package` 归组，组名取 `PACKAGE_DISPLAY_NAMES`（如「内置工具集」「QQ 适配器包」「Subagent 委派」「工作区会话」），与智能体能力勾选区同构。**原「按分类」已退化**：内置工具的 `category` 一律 `builtin`，全归一组；只有进程外插件贡献的工具带 `category = plugin`——分类维度因此没有区分度，按包才是有效维度
+- **按包分组**（默认）：工具按 `package` 归组，组名取 `PACKAGE_DISPLAY_NAMES`（如「内置工具集」「QQ 插件实例包」「Subagent 委派」「工作区会话」），与智能体能力勾选区同构。**原「按分类」已退化**：内置工具的 `category` 一律 `builtin`，全归一组；只有进程外插件贡献的工具带 `category = plugin`——分类维度因此没有区分度，按包才是有效维度
 - 行卡主行 = 状态点 + 名称 + `包已禁用` 标记 + hover 快速启停；次行 = 描述（工具无触发词）
 - 副标题：`共 N 项 · K 个包 · D 已禁用`
 - **详情分区**：① 能力说明（启停是全局开关；启用时仍受各智能体白/黑名单约束——两层叠加）② 被谁使用（`disabled_tools` / `enabled_tools` 反查四态）③ 所属包（包 id + 「在「插件」中查看 →」跳转）④ 参数 Schema（**参数表**：参数 / 类型 / 必填（warning tag）/ 说明；右上角切 JSON 原文 + 复制；schema 无 `properties` 时回落 JSON 原文）
@@ -136,7 +136,7 @@ y: 780
 - **管理节点**（筛选栏首项，`NeumorphismSelect`，`aria-label="管理节点"`）：选项 = 已接入上游名 ∪ 人格归属 core ∪ `state.pluginsByCore` 的键 ∪ `activeRegion`（`pluginCoreOptions`），标签经 `state.ts::regionLabel`（区域显示名，缺失回落节点 id）；切换即清空选中并定向 `RequestPluginsList`（带目标 core）。列表、筛选计数、副标题统计、行内快速启停与 `TogglePlugin` 的目标 core 统一取 `pluginCoreEffective`——**显示的 = 请求的 = 修改的**
 - **按节点归档的清单**（`state.pluginsByCore` / `pluginCatalog`）：各节点回推的插件按上游名归档（中继不加信封的单上游场景键为空串）；`pluginCatalog` 的取数顺位 = 显式选定 / `activeRegion` 的归档 → **唯一来源**（键对不上但只有一份数据）→ `state.plugins`（管理目标兼容视图）；多来源且该节点尚未回推时给空列表，**绝不回退**（否则串显别个节点）
 - **分组维度**（`PLUGIN_GROUP_OPTIONS` 分段控件）：`内部 / 外部`（默认）/ `按门控语义` / `按 kind` / `平铺`
-- **内部 / 外部按运行位置判定**（`pluginSource`）：`runtime === 'subprocess'` → 外部，`in_process` → 内部；旧 Core 未回推 `runtime` 时回退 `builtin`（`false` → 外部）。判据是「实现在哪跑」而非「manifest 从哪来」——QQ 适配器随 Core 发布（`builtin = true`）但实现在独立进程，因此归**外部插件**
+- **内部 / 外部按运行位置判定**（`pluginSource`）：`runtime === 'subprocess'` → 外部，`in_process` → 内部；旧 Core 未回推 `runtime` 时回退 `builtin`（`false` → 外部）。判据是「实现在哪跑」而非「manifest 从哪来」——QQ 插件实例随 Core 发布（`builtin = true`）但实现在独立进程，因此归**外部插件**
 - **组头提示**：外部组 = 「实现在独立进程（独立 PID / 生命周期）；随 Core 发布或来自插件目录」（讲清「随 Core 发布 ≠ 进程内」）；内部组 = 「实现编译在 Core 进程内；随 Core 发布」
 - **行卡标记**：`独立进程`（`pluginIsSubprocess`，与外部组等价）· 包规模徽标（`N 工具 · M 技能`，经 `pluginMembers` → `packageMembers` 从 `state.plugins` 与 `state.tools`/`state.skills` 反查——这两份是单份状态、只随管理目标节点更新，故切到非管理目标节点时徽标仍按管理目标口径统计）· `🔒 受保护`（management.panel，**行内渲染锁标记而不给开关**）· `模式`（loop.*）
 - **副标题随分组维度**：按来源 = `共 N 项 · E 外部插件 · I 内部插件 · D 已禁用`；语义分组 = `共 N 项 · G 包维度门控 · M 模式插件 · D 已禁用`
@@ -148,8 +148,8 @@ y: 780
 
 | 分组 | 成员判定 | 组头提示 |
 |---|---|---|
-| 包维度门控 | `PACKAGE_GATED_PLUGIN_IDS`（非 adapter/management/loop） | 禁用 = 其包内全部工具/技能对所有智能体不可见 |
-| 平台通道 | `kind ∈ {adapter, management}` | 平台连接与管理通道；管理面禁用会切断 Panel 通信（受保护） |
+| 包维度门控 | `PACKAGE_GATED_PLUGIN_IDS`（非 instance/management/loop） | 禁用 = 其包内全部工具/技能对所有智能体不可见 |
+| 平台通道 | `kind ∈ {instance, management}` | 平台连接与管理通道；管理面禁用会切断 Panel 通信（受保护） |
 | 模式插件（互斥） | `kind === 'loop'` | 每智能体的循环模式在「智能体」配置里选；此处全局停用 = 卸载 echo-loop 驱动 |
 | 其它 | 其余（如 provider.llm） | — |
 

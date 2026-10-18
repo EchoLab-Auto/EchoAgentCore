@@ -31,7 +31,7 @@ y: 1820
 ## SKILL.md 与发现
 
 - `[agent].skills_dir` 目录下**递归发现**所有 `SKILL.md`（仓库内为 `skills/`）
-- 文件 = YAML-ish frontmatter + Markdown 正文：`name` / `description` / `keywords` / `always`（**须写在 `metadata:` 块内、带缩进**——顶层 `always` 被忽略；`SaveSkill` 写回时自动生成该块）/ `category` / `package`（**Package 标签**：声明后技能属于该包，随包级门控与工具一起启停——见 [插件化设计](./core-plugins.md)「Package」章节；QQ 包示例 `package: echo-agent.adapter.qq`）
+- 文件 = YAML-ish frontmatter + Markdown 正文：`name` / `description` / `keywords` / `always`（**须写在 `metadata:` 块内、带缩进**——顶层 `always` 被忽略；`SaveSkill` 写回时自动生成该块）/ `category` / `package`（**Package 标签**：声明后技能属于该包，随包级门控与工具一起启停——见 [插件化设计](./core-plugins.md)「Package」章节；QQ 包示例 `package: echo-agent.instance.qq`）
 - **渐进披露**：名称与描述进入系统提示词的技能清单，正文仅在常驻或触发时注入——控制提示词体积
 
 ## 常驻与触发

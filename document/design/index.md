@@ -4,7 +4,7 @@ title: "设计记录（索引）"
 group: 规划
 x: 960
 y: 3000
-link: ["decoupling-plan | 完全解耦计划 | b>t", "agent-humanlike-style | 拟人化方案 | b>t", "adapter-plugin | 适配器插件化 | b>t", "federation-port-merge | 联邦端口合并 | b>t", "panel-performance-audit | Panel 性能审计 | b>t"]
+link: ["decoupling-plan | 完全解耦计划 | b>t", "agent-humanlike-style | 拟人化方案 | b>t", "instance-plugin | 实例插件化 | b>t", "federation-port-merge | 联邦端口合并 | b>t", "panel-performance-audit | Panel 性能审计 | b>t"]
 ---
 
 # 设计记录（索引）
@@ -13,9 +13,9 @@ link: ["decoupling-plan | 完全解耦计划 | b>t", "agent-humanlike-style | �
 
 ## 这一层收什么
 
-- **方案与计划**：还没做、或正在做的设计（[完全解耦推进计划](./decoupling-plan.md)、[适配器插件化设计](./adapter-plugin.md)、[拟人化方案](./agent-humanlike-style.md)、[联邦·管理端口合并](./federation-port-merge.md)）
+- **方案与计划**：还没做、或正在做的设计（[完全解耦推进计划](./decoupling-plan.md)、[实例插件化设计](./instance-plugin.md)、[拟人化方案](./agent-humanlike-style.md)、[联邦·管理端口合并](./federation-port-merge.md)）
 - **审计与实测记录**：为决策提供依据的测量（[Panel 浏览器性能审计](./panel-performance-audit.md)）
-- **实施录像**：一次改造的完整设计包（[适配器泛化设计系列](./adapter-genericization/index.md)）——分册设计、证据包、对账表与进度台账
+- **实施录像**：一次改造的完整设计包（[插件实例泛化设计系列](./adapter-genericization/index.md)）——分册设计、证据包、对账表与进度台账
 
 ## 写作约定
 

@@ -24,7 +24,7 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
   unknown-type preservation, sender nickname (card vs nickname fallback).
 - **Wire protocol** (echo-protocol): command/event WS round-trips,
   malformed frame handling, FanoutHandle subscriber pruning.
-- **Filtering** (echo-adapter): allowlist / denylist / rate limit (sliding
+- **Filtering** (echo-defs::plugin_instance): allowlist / denylist / rate limit (sliding
   window with real-time expiry + per-user/per-group/global bucket isolation) /
   keyword / content length / admin bypass, pipeline ordering and short-circuit.
 - **Security** (echo-agent tools): 相对路径的穿越防护（read/write/edit 共用
@@ -37,7 +37,7 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Teamless multi-agent & QQ instances** (echo-agent + core): session
   commands reject a missing `team_id` (no default agent), the process-level
   `EventSink` fans in every persona's events without double delivery, and
-  `source/core/src/adapter_deploy/` covers instance resolution — legacy ports
+  `source/core/src/instance_deploy.rs` covers instance resolution — legacy ports
   (3131/3000/6099) + shared container kept, auto-provisioning per QQ-enabled
   persona, distinct ports/containers per instance, compose rendering.
 - **LLM providers** (OpenAI / Anthropic): request body builders (tool-call
@@ -86,11 +86,11 @@ Generated inputs that must satisfy invariants:
 - `source/core/src/management.rs` (inline integration tests) — management WS
   server on ephemeral port: Panel command → agent backend, agent event → Panel
   forward.
-- （QQ 插件仓库）`crates/echo-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`、
+- （QQ 插件仓库）`crates/echo-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`（插件侧领域类型，保留）、
   `napcat/mod.rs`、`handler.rs`；`tests/` 目录仅 `owner_qq.rs`）— NapCat client
   against a `wiremock` HTTP server:
   login status detection, WebUI fallback, reverse-WS config, QR fetch.
-  Multi-instance adapters (`QqAdapter::with_instance(id, persona, cfg)`)
+  Multi-instance plugins (`QqAdapter::with_instance(id, persona, cfg)`)
   carry their instance name/display name and persona metadata.
 - `echo-web-server/tests/media.rs`（Panel 仓库）— `/media/{name}` 路由端到端：
   文件字节与 Content-Type 正确、`immutable` 强缓存头、目录穿越 / 未知文件 404。

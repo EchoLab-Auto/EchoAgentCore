@@ -1,14 +1,14 @@
 ---
 id: qq-gating
-title: "QQ 适配器门控"
+title: "QQ 实例门控"
 group: 插件
 x: 960
 y: 2220
 ---
 
-# QQ 适配器门控设计
+# QQ 实例门控设计
 
-> **定位**：本文是 `echo-agent.adapter.qq` 插件的机制文档——QQ 消息与会话列表信息在到达 agent 之前经过的五层门控、运行时可变性、多实例与容器生命周期、文件接收与语音/文件发送、消息渲染。读者：QQ 适配器的使用者与维护者。插件的装载与 persona 门控见 [插件化设计](./core-plugins.md)；多实例涉及的会话/人格模型见 [多 Agent 与会话](../core/core-agents.md)。
+> **定位**：本文是 `echo-agent.instance.qq` 插件的机制文档——QQ 消息与会话列表信息在到达 agent 之前经过的五层门控、运行时可变性、多实例与容器生命周期、文件接收与语音/文件发送、消息渲染。读者：QQ 实例的使用者与维护者。插件的装载与 persona 门控见 [插件化设计](./core-plugins.md)；多实例涉及的会话/人格模型见 [多 Agent 与会话](../core/core-agents.md)。
 
 ## 设计目标
 
@@ -58,7 +58,7 @@ y: 2220
 **设计要点**：
 - 白名单和黑名单根据**门控模式字符串**互斥生效——模式为 `allowlist` 时管道只含白名单过滤器，`denylist` 时只含黑名单，`none` 时两者都不含
 - 白名单为空 = 未启用，所有消息通过
-- **群成员放行开关**（`[adapters.qq.filter.allowlist] group_members_open`，缺省 false）：开启后群消息**只校验群名单**——白名单群内全体成员可交互，`user_ids` 此时仅约束私聊；关闭时群消息需同时命中 `user_ids` 与 `group_ids`（“群里只有名单用户能触发”）。启动期开关（改文件 + 重启生效）；运行时编辑名单（Panel）不会丢失该开关（持久化为整表替换时原样带回）
+- **群成员放行开关**（`[instances.qq.filter.allowlist] group_members_open`，缺省 false）：开启后群消息**只校验群名单**——白名单群内全体成员可交互，`user_ids` 此时仅约束私聊；关闭时群消息需同时命中 `user_ids` 与 `group_ids`（“群里只有名单用户能触发”）。启动期开关（改文件 + 重启生效）；运行时编辑名单（Panel）不会丢失该开关（持久化为整表替换时原样带回）
 - 管理员完全绕过后续过滤
 - 每个过滤器独立判断，互不耦合
 
@@ -86,7 +86,7 @@ y: 2220
 ## 运行时可变性
 
 > 实现位置：门控/名单/管理员/二维码等平台专属动作不再有 Core 内的具体
-> 命令变体，一律经 `InvokeAdapterOp{adapter, method, payload}` 透传给插件
+> 命令变体，一律经 `InvokeInstanceOp{instance, method, payload}` 透传给插件
 > （插件侧按 `custom` op 自行解释 `method`）。Core 只做寻址与转发——
 > 实例不存在或插件不实现该方法时给可见错误而非静默假成功。
 
@@ -98,13 +98,13 @@ y: 2220
 | 群成员放行开关（`group_members_open`） | 修改配置文件 + 重启 | 下次启动 |
 | 白名单/黑名单 | Panel 交互式命令 | 立即生效 |
 | 门控模式 | `/qq setting` 单选切换 | 立即生效 + 持久化 |
-| 管理员 owner | `InvokeAdapterOp{method:"set_owner"}` | 立即生效 + 持久化 |
+| 管理员 owner | `InvokeInstanceOp{method:"set_owner"}` | 立即生效 + 持久化 |
 
 白名单/黑名单的运行时修改路径：
 
 ```text
-Panel 表单选择 → BackendCommand::InvokeAdapterOp{method:"update_allowlist"/"update_denylist", payload}
-  → Agent 分发（管理面 invoke_custom）→ 适配器更新 → rebuild_filter_pipeline() → persist_filter()
+Panel 表单选择 → BackendCommand::InvokeInstanceOp{method:"update_allowlist"/"update_denylist", payload}
+  → Agent 分发（管理面 invoke_custom）→ 插件实例更新 → rebuild_filter_pipeline() → persist_filter()
     (通过共享的 ConfigStore 原子写入)
 ```
 
@@ -112,15 +112,15 @@ Panel 表单选择 → BackendCommand::InvokeAdapterOp{method:"update_allowlist"
 
 owner 与门控/名单一样有运行时更新路径，无需重启：
 
-- 经 `InvokeAdapterOp{method:"set_owner", payload:{owner_qq: "…"}}` 设置（空串 = 清除）；`QqInner` 持运行时值（初始化自配置），`set_owner_qq` 更新运行时值并经共享 ConfigStore 原子写回 `[adapters.qq] owner_qq`，`get_owner_qq` 读运行时值
+- 经 `InvokeInstanceOp{method:"set_owner", payload:{owner_qq: "…"}}` 设置（空串 = 清除）；`QqInner` 持运行时值（初始化自配置），`set_owner_qq` 更新运行时值并经共享 ConfigStore 原子写回 `[instances.qq] owner_qq`，`get_owner_qq` 读运行时值
 - 门控豁免一律读运行时值：过滤管道的「管理员绕过」、`get_gated_friend_list`、出站门控
-- `Adapter` trait 提供 `set_owner_qq`/`get_owner_qq` 默认 no-op 方法，QQ 实现覆盖
+- `PluginInstance` trait 提供 `set_owner_qq`/`get_owner_qq` 默认 no-op 方法，QQ 实现覆盖
 - **语义边界**：运行时设置的 owner 仅影响门控豁免，不联动其它授权（原自更新授权联动已随 `framework_update` 工具废弃移除）
-- `install.sh --owner-qq` 已移除：设置入口为协议命令或直接编辑 `[adapters.qq]`（当前 Web Panel 仅只读显示 owner，未接设置 UI）
+- `install.sh --owner-qq` 已移除：设置入口为协议命令或直接编辑 `[instances.qq]`（当前 Web Panel 仅只读显示 owner，未接设置 UI）
 
 ### 门控模式取值
 
-门控模式是 `InvokeAdapterOp{method:"set_gate_mode", payload:{mode}}` 的**参数字符串**，由适配器插件自行解释——Core 与 Panel 都不校验取值集合（协议层没有强类型枚举）：
+门控模式是 `InvokeInstanceOp{method:"set_gate_mode", payload:{mode}}` 的**参数字符串**，由实例插件自行解释——Core 与 Panel 都不校验取值集合（协议层没有强类型枚举）：
 
 | 取值 | TOML | 行为 |
 |---|---|---|
@@ -132,29 +132,29 @@ owner 与门控/名单一样有运行时更新路径，无需重启：
 
 ## 多实例与容器生命周期
 
-QQ 适配器支持**多实例**：一个实例 = 一个 NapCat 容器 + 一条反向 WS 通道 + 一个账号，
+QQ 插件实例支持**多实例**：一个实例 = 一个 NapCat 容器 + 一条反向 WS 通道 + 一个账号，
 互不冲突；实例归属某个人格（**一个人格可挂多个实例**）。
 
 ### 多实例模型
 
 | 概念 | 说明 |
 | --- | --- |
-| 实例 id | `instance_id`，全局唯一，即**适配器名**与会话 `@account` 维度 |
-| 归属 | `[adapters.qq.instances.<id>].persona = "<team>"` |
+| 实例 id | `instance_id`，全局唯一，即**插件实例名**与会话 `@account` 维度 |
+| 归属 | `[instances.qq.instances.<id>].persona = "<team>"` |
 | 端口 | 每实例 3 个宿主端口：反向 WS / OneBot HTTP / WebUI（`[...ports]`），**自动分配并持久化** |
 | 容器 | `echo-napcat-<id>`，独立数据卷 `echo-napcat-<id>-{data,config}`，compose 由 Core 生成（`<数据目录>/napcat/<id>/docker-compose.yml`） |
-| 自动创建 | 人格启用 `echo-agent.adapter.qq` 且无归属实例时自动建档（id = 人格 id，重复则 `<id>-2`…）；**默认人格（首个启用者）固定用 legacy id `qq`**，沿用共享容器/端口语义 |
+| 自动创建 | 人格启用 `echo-agent.instance.qq` 且无归属实例时自动建档（id = 人格 id，重复则 `<id>-2`…）；**默认人格（首个启用者）固定用 legacy id `qq`**，沿用共享容器/端口语义 |
 | 显示名 | 实例化：`QQ（<persona> / <实例>）`；实例名为 `qq` 时 `QQ（<persona>）`；未归属时 `QQ / OneBot`——Panel 多实例下据此区分 |
-| 持久化 | 自动建档时把 **persona + ports** 一并写回 `[adapters.qq.instances.<id>]`（仅缺字段才写；legacy 实例不写回）。只写端口会让重启后的 persona 缺失、被重新分配给默认人格（归属漂移） |
+| 持久化 | 自动建档时把 **persona + ports** 一并写回 `[instances.qq.instances.<id>]`（仅缺字段才写；legacy 实例不写回）。只写端口会让重启后的 persona 缺失、被重新分配给默认人格（归属漂移） |
 
 ```toml
-[adapters.qq]              # 共享默认（镜像/auto_start/路径模板…）
+[instances.qq]              # 共享默认（镜像/auto_start/路径模板…）
 enabled = true
 
-[adapters.qq.instances.alix-two]
+[instances.qq.instances.alix-two]
 persona = "alix"
 # 端口首次自动分配后写回（可手工固定）
-[adapters.qq.instances.alix-two.ports]
+[instances.qq.instances.alix-two.ports]
 reverse_ws = 3140
 onebot_http = 3010
 webui = 6100
@@ -173,27 +173,27 @@ QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的
 
 - 入站：每实例把消息投给**归属人格**（`AgentMessageHook` 按实例接线），事件带实例名
 - 会话键：`qq:group:<gid>:<uid>@<实例>`；实例名为默认 `qq` 时不加后缀（单实例部署零迁移）
-- 出站工具：**由本插件声明**（`tools.rs` 的 `AdapterContribution.tools`，10 个），每人格按自己实例集合注册；多实例时宿主给 schema 增加可选 `account`（实例名），缺省在多实例下报错列出可选值。平台语义全在声明里——宿主不认识这些工具名（见 [工具系统](./core-tools.md)「工具从哪来」）
-- 管理面（门控/名��/owner/登录）：`InvokeAdapterOp` 的 `adapter` 为必填实例名；状态经 `AdapterState` 推送（`scopedKey(core, adapter)` 归并）
-- **登录由 Core 代理**：`InvokeAdapterOp{method:"login_status"}`（`AdapterOpResult` 回执）；`login_qrcode` 出二维码（PNG base64，经 `AdapterOpResult` 返回，只进渲染器局部），Panel 不直连 OneBot HTTP / docker
+- 出站工具：**由本插件声明**（`tools.rs` 的 `InstanceContribution.tools`，10 个），每人格按自己实例集合注册；多实例时宿主给 schema 增加可选 `account`（实例名），缺省在多实例下报错列出可选值。平台语义全在声明里——宿主不认识这些工具名（见 [工具系统](./core-tools.md)「工具从哪来」）
+- 管理面（门控/名��/owner/登录）：`InvokeInstanceOp` 的 `instance` 为必填实例名；状态经 `InstanceState` 推送（`scopedKey(core, instance)` 归并）
+- **登录由 Core 代理**：`InvokeInstanceOp{method:"login_status"}`（`InstanceOpResult` 回执）；`login_qrcode` 出二维码（PNG base64，经 `InstanceOpResult` 返回，只进渲染器局部），Panel 不直连 OneBot HTTP / docker
 - **二维码陈旧自动刷新**：`login_qrcode_png` 先探测容器内 PNG 的 mtime，缺失或 >90s（`QR_MAX_AGE_SECS`）时经 WebUI（`webui.json` token → `sha256(token+".napcat")` → `/api/auth/login` → `/api/QQLogin/RefreshQRcode`）让 NapCat 重新生成、等 2s 落盘再取；刷新失败仅告警并退回读现有文件。NapCat 自身轮换循环停摆时（实测会发生），这是"刷新没反应"的解法；新鲜码（<90s）直接返回，不会作废用户刚扫的码
 
 ### 容器生命周期与登录保持
 
-- **napcat_auto_start**（默认 true）：适配器启动时确保 NapCat 容器在运行
-  （compose up）；**napcat_auto_stop 默认 false**——适配器停止（含 Core 停机/
+- **napcat_auto_start**（默认 true）：插件实例启动时确保 NapCat 容器在运行
+  （compose up）；**napcat_auto_stop 默认 false**——插件实例停止（含 Core 停机/
   重启）**不**联动停止容器：容器保持运行则 QQ 始终保持在线（NapCat 自身维持
   与 QQ 服务器的连接），Core 重启只断反向 WS、重启后自动重连，用户无感知。
   联动停止会引入两类事故：① 容器重启 = QQ 下线，需重新登录；② 频繁容器重启
   触发 QQ 安全策略使快速登录凭证失效（"用户身份已失效/登录态已失效"）。
   需要联动停止时显式配置 `napcat_auto_stop = true`。
-- **启动时自动登录**：适配器监测到 NapCat online 时经 WebUI API 固化登录态
+- **启动时自动登录**：插件实例监测到 NapCat online 时经 WebUI API 固化登录态
   （`ensure_quick_login`）——已登录则把当前账号写入容器 `webui.json` 的
   `autoLoginAccount`（`docker exec sed` 原地写入），此后容器重启 NapCat 直接
   快速登录；未登录则尝试 `SetQuickLogin`（失败静默回退扫码流程）。
 - **快速登录失效的兜底**：NapCat 快速登录凭证被 QQ 安全策略判失效时由扫码流程
   兜底（`ensure_quick_login` 检测未登录即调 `SetQuickLogin`，失败静默回退扫码）——
-  此时到 Panel「适配器」面板重新扫码。登录态经状态文档（`AdapterState.state.online` /
+  此时到 Panel「插件实例」面板重新扫码。登录态经状态文档（`AdapterState.state.online` /
   `self_id`）同步；二维码失败原因经 `AdapterOpResult.error` 回传（如「无法刷新
   NapCat 二维码」）。二维码约 2 分钟有效（Core 侧 90s 新鲜度阈值，超龄先让 NapCat
   刷新再取），扫旧码会得到 `ErrCode: 3`（授权超时）。
@@ -213,7 +213,7 @@ QQ 用户发来的文件会**自动下载到本机**，以本地路径随消息�
 | 私聊文件 | 消息 `file` 段（`file_id`/`url`） | 段带 `url` 直接下载；否则经 `get_private_file_url` 换链下载 |
 | 私聊「在线文件/文件夹」（QQ 直传） | 消息 `onlinefile` 段 | **不支持自动接收**（无直链，接收动作后字节仍在 NapCat 侧）：以显式失败条目送达，agent 如实告知用户 |
 
-**配置**（`[adapters.qq.files]`）：
+**配置**（`[instances.qq.files]`）：
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
@@ -237,7 +237,7 @@ QQ 用户发来的文件会**自动下载到本机**，以本地路径随消息�
 
 - 「在线文件/文件夹」（QQ 直传。NapCat elementType 23/30）与「闪传」不支持接收；
   前者以显式失败条目送达，后者段类型未识别、整条消息丢弃
-- 下载在适配器事件分发的串行链路上执行：大文件下载期间该 QQ 实例的后继事件排队
+- 下载在插件实例事件分发的串行链路上执行：大文件下载期间该 QQ 实例的后继事件排队
   等待（图片内嵌下载同理，但文件体积上限更大）
 - 下载文件不做自动清理，长期运行需自行管理磁盘（目录见配置 `dir`）
 
@@ -306,5 +306,5 @@ QQ 消息转成 agent 输入时，`content` 走「可读渲染」（QQ 插件仓
 3. **管理员全局绕过**：确保机器人 owner 始终可控，不会把自己锁在外面
 4. **群列表门控与消息门控共用规则**：保持 agent 看到的世界与它能交互的世界一致
 5. **管道可重建不阻塞消息处理**：Mutex 锁仅持有一瞬间（克隆 Arc），不影响消息吞吐
-6. **平台动作走方法名而非命令变体**：门控/名单/登录等取值是 `InvokeAdapterOp` 的参数字符串，由插件自行解释——Core 不为每个平台概念新增协议变体，新增平台成本因此只有插件侧那一半
+6. **平台动作走方法名而非命令变体**：门控/名单/登录等取值是 `InvokeInstanceOp` 的参数字符串，由插件自行解释——Core 不为每个平台概念新增协议变体，新增平台成本因此只有插件侧那一半
 7. **统一配置持久化**：门控配置和 agent 配置共享同一个 `ConfigStore` 实例（main.rs 创建一次分发），并发安全由内部 Mutex 保证

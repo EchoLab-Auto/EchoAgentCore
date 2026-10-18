@@ -116,8 +116,8 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 - 失败自动回滚（恢复备份 + 重启）；状态写入 `~/.local/state/echo-agent-*/update-status`
 - 更新器非阻塞文件锁拒绝并发运行；拉取/构建失败时旧二进制不动、不重启
 - Panel 更新包含 `npm run build`（前端产物从 `web/dist` 拷贝到静态目录，需 PATH 中有 npm——nvm 路径）
-- **NapCat 恢复门控**：Core 重启后仅当 `[adapters.qq].enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（3131 或 3140-3399，多实例）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
-- **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制逐个核对内置插件 manifest id（9 个：`echo-agent.tools.builtin` / `echo-agent.adapter.qq` / `echo-agent.skills.dir` / `echo-agent.workspace` / `echo-agent.subagent` / `echo-agent.provider.llm` / `echo-agent.management.panel` / 互斥循环模式 `echo-agent.loop.{single,parallel}`）。清单与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` 一致，由 `source/core/tests/update_script_plugins.rs` 守护（修复背景：`echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`echo-agent.menu`/`echo-agent.checklist`/旧驱动 `echo-agent.loop.runner` 等 id 已移除（present_menu 已废弃移除；checklist 为普通内置工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
+- **NapCat 恢复门控**：Core 重启后仅当 `[instances.qq].enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（3131 或 3140-3399，多实例）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
+- **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制逐个核对内置插件 manifest id（9 个：`echo-agent.tools.builtin` / `echo-agent.instance.qq` / `echo-agent.skills.dir` / `echo-agent.workspace` / `echo-agent.subagent` / `echo-agent.provider.llm` / `echo-agent.management.panel` / 互斥循环模式 `echo-agent.loop.{single,parallel}`）。清单与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` 一致，由 `source/core/tests/update_script_plugins.rs` 守护（修复背景：`echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`echo-agent.menu`/`echo-agent.checklist`/旧驱动 `echo-agent.loop.runner` 等 id 已移除（present_menu 已废弃移除；checklist 为普通内置工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
 
 ### 出厂技能同步
 
@@ -172,7 +172,7 @@ state=running → state=restarting → state=updated（失败时停在 failed / 
 - **绝不** `systemctl --user stop echo-agent-core.service`：agent 本身运行在 core 进程内，stop 会杀死当前会话，后续 start 永远执行不到（已实际发生）
 - 安全替代：`systemctl --user restart echo-agent-core.service`（原子操作）；确需先停后启时用 `systemd-run --user` 脱离会话执行
 - **用瞬态单元启动 updater**：`update.sh` 自己会 `systemctl --user restart echo-agent-core.service`。若 updater 由 agent 在自己 shell 里直接 `bash update.sh` 起，它与 Core 同处 `echo-agent-core.service` 的 cgroup，restart 清理 cgroup 时被连带杀死（`setsid`/`nohup` 同 cgroup，救不了）——被杀的 updater 只剩「二进制替换 + 重启」，QQ 恢复、revision 写入、插件校验、收尾写 `state=updated` 全部跳过，需人工补写。改用瞬态单元（独立 cgroup，与主服务平级）：`systemd-run --user --collect --unit=echo-agent-update bash ~/.local/libexec/echo-agent-core/update.sh`，进度看 `journalctl --user -u echo-agent-update`；面板/命令触发的自更新（`RequestSelfUpdate` → `handle_self_update`）启动的是独立 oneshot 单元 `echo-agent-core-update.service`，本就不受 restart 牵连
-- **优雅排空（drain-then-exit）**：Core 收到 SIGTERM 后先进入排空模式——拒绝新消息（Panel 主动发送会收到"Core 正在重启"错误提示，重试即可）、等待进行中的回复完成（最多 `SHUTDOWN_DRAIN_SECS = 120s`，期间回复继续实时 emit 到 Panel）再退出；超时仍未完成才强制取消该 turn；`TimeoutStopSec=180s` 兜底保证 drain 窗口内不被 SIGKILL。停机顺序：`pump.abort()`（停命令泵）→ 首个适配器句柄 `stop()`（停收；插件进程随后由 supervisor 排空）→ `agent.shutdown()`（drain）。异步子任务（`spawn_subagent`）不在 `active_inbound_turns` 计数内，drain 不等待它们；其注册表在内存中、完成回报以新 turn 注入——进程退出即终止，未完成子任务的结果不会补投递（重启后需重新委派）
+- **优雅排空（drain-then-exit）**：Core 收到 SIGTERM 后先进入排空模式——拒绝新消息（Panel 主动发送会收到"Core 正在重启"错误提示，重试即可）、等待进行中的回复完成（最多 `SHUTDOWN_DRAIN_SECS = 120s`，期间回复继续实时 emit 到 Panel）再退出；超时仍未完成才强制取消该 turn；`TimeoutStopSec=180s` 兜底保证 drain 窗口内不被 SIGKILL。停机顺序：`pump.abort()`（停命令泵）→ 首个插件实例句柄 `stop()`（停收；插件进程随后由 supervisor 排空）→ `agent.shutdown()`（drain）。异步子任务（`spawn_subagent`）不在 `active_inbound_turns` 计数内，drain 不等待它们；其注册表在内存中、完成回报以新 turn 注入——进程退出即终止，未完成子任务的结果不会补投递（重启后需重新委派）
 - Core 重启后恢复时间线时，进程被杀导致的悬空 running 工具条目会被标注为"已中断"，不再永远显示"运行中"
 
 ## 运维命令与体检
@@ -197,12 +197,12 @@ echo-agent-core token --rotate                # 重新生成并写回（32 字�
 
 要点：
 
-- `port` 目标键与配置键一一对应：`management`→`[core].management_address`、`federation`→`[federation].listen`、`federation-advertise`→`[federation].advertise`、`qq`/`qq-instance:<id>:<字段>`→`[adapters.qq.instances.<id>.ports]`；`[adapters.qq.server].bind_address` 在运行时被实例端口分配覆盖（`merge_instance`），**实际监听以 ports 三元组为准**，CLI 只写权威键
+- `port` 目标键与配置键一一对应：`management`→`[core].management_address`、`federation`→`[federation].listen`、`federation-advertise`→`[federation].advertise`、`qq`/`qq-instance:<id>:<字段>`→`[instances.qq.instances.<id>.ports]`；`[instances.qq.server].bind_address` 在运行时被实例端口分配覆盖（`merge_instance`），**实际监听以 ports 三元组为准**，CLI 只写权威键
 - 缺省值与显式值语义区分（如 `listen` 缺省 = 跟随管理地址合并、显式空串 = 仅连出）；非默认实例端口修改前要求实例已存在于配置（防误建实例及其容器）
 - 编辑后做 TOML 合法性与**目标值类型复读**自检；`tmp + rename` 原子写
 - **端口合并（缺省）**：联邦监听**缺省合并至管理端口**——NAT 场景**一条映射同时服务面板与联邦**（见 [联邦](../federation/federation.md#配置与管理面)）；管理地址回环 / 空令牌且非回环 / 令牌与 peer 冲突时自动回退独立监听（启动警告）；**显式**同址合并 + 空令牌 + 非回环仍 fail-closed **拒绝启动**
 - 端口变更重启 Core 生效；`port set` 的提示按**编辑后**的合并状态自适应——合并态下改 `management` 会同时提醒 Panel `[[cores]].url`、对端 `[federation.peers.*]` 的 url 与端口映射/`advertise` 三处同步（独立监听只提醒 Panel）
-- 相应配置解析与编辑逻辑见 [配置持久化](../core/core-config-persistence.md)；QQ 实例端口分配见 [QQ 门控](../plugins/adapter-qq-gating.md)
+- 相应配置解析与编辑逻辑见 [配置持久化](../core/core-config-persistence.md)；QQ 实例端口分配见 [QQ 门控](../plugins/qq-gating.md)
 
 ### 日常体检
 

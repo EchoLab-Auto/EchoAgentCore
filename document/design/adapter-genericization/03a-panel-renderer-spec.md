@@ -205,7 +205,7 @@ y: 3480
 | `> 1`（未来版本） | **按 v1 尽力解析**：v1 认识的节点照常渲染，不认识的忽略；面板顶部显示一行 `NeumorphismAlert`(info)「该适配器的界面描述版本较新（vN），部分控件可能未显示，请升级 Panel」 |
 | `< 1` / 负数 | 视为非法描述符：不渲染任何 panel，显示「界面描述无效」空态 + `unknown_version` warning |
 
-实现上用 `switch(version)` 分派到 `parseV1`，留出 `parseV2` 位置；v2 解析器应向下兼容 v1 节点（v2 是 v1 超集，是对插件作者的约定，记入 adapter-plugin.md 时由 01 补充）。
+实现上用 `switch(version)` 分派到 `parseV1`，留出 `parseV2` 位置；v2 解析器应向下兼容 v1 节点（v2 是 v1 超集，是对插件作者的约定，记入 instance-plugin.md 时由 01 补充）。
 
 ### 3.2 结构容错
 
@@ -349,7 +349,7 @@ mock 边界：只 mock `invokeAdapterOp`（A2 服务函数），返回可控 Pro
 
 ## 6. Parity 核对
 
-对照 03E §C（来源 adapter-plugin.md:326-333），逐项说明渲染器如何覆盖：
+对照 03E §C（来源 instance-plugin.md:326-333），逐项说明渲染器如何覆盖：
 
 | 现功能（现位置） | 目标归属 | 渲染器覆盖方式 | 结论 |
 |---|---|---|---|
@@ -372,4 +372,4 @@ mock 边界：只 mock `invokeAdapterOp`（A2 服务函数），返回可控 Pro
 - **Q1** list_editor 与 `update_allowlist{user_ids, group_ids}` 双字段：推荐插件支持部分载荷；否则 v2 引入跨 bind 引用。
 - **Q2** 二维码定时刷新 / 过期提示：v1 不做，用户手动刷新。
 - **Q3** 名单「从好友/群列表选择」：v1 不覆盖，迁移期为功能退化项。候选方案（v2）：list_editor 增 `suggest:{method:"get_friends", value_key, label_key}`。是否接受该退化由 03b 的 parity 验收决定。
-- **Q4** 本文标注的假设扩展字段（`arg_key` / `labels` / options 对象 `hint` / `confirm` / `clear_when`）：未知字段按 §3.2 会被旧 Panel 忽略，不破坏 v1 兼容；需 01 决定是否写入 adapter-plugin.md 的 v1 规范，未写入的在实现时删除。
+- **Q4** 本文标注的假设扩展字段（`arg_key` / `labels` / options 对象 `hint` / `confirm` / `clear_when`）：未知字段按 §3.2 会被旧 Panel 忽略，不破坏 v1 兼容；需 01 决定是否写入 instance-plugin.md 的 v1 规范，未写入的在实现时删除。

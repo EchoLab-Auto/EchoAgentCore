@@ -59,7 +59,7 @@ y: 3480
 - 现状：`invalidate_management_state`（adapter.rs:100-106）全仓零调用；重启（supervisor.rs:865-873）和升级（`Control::Upgrade` 臂 :692+）都不通知 RemoteAdapter。
 - 设计：`Shared` 加 `generation: AtomicU64`，凡是 `set_conn(Some(新连接))` 成功握手的地方都自增（重启 :870；升级臂换连接处，待验证具体行，验证方法：`sed -n 692,760p supervisor.rs`）。`PluginHandle::generation()` 公开。`RemoteAdapter` 缓存改成 `Option<(u64, Value)>`；`note_management_state` 记录当前 generation，`management_state()` 读取时 generation 不同就返回 None（惰性失效，等价于「重启/升级后由宿主失效」）。`invalidate_management_state` 保留，由 `report_stopped` 臂（:574 附近）显式调用。
 - 失效后**不主动 invoke 拉取**，等插件推送：插件 on_ready 后一定推一次初始快照（插件 plugin.rs:763-765 有测试），交接语义里新实例 start 之后会 report_state，后者又会触发快照推送（plugin.rs:310-327）。兜底：插件 custom 增 `get_state`（返回 `cached_state`），管理读路径遇到 None 时由 Core 发一次 `invoke_custom("get_state")`，结果走 `note_management_state` 并广播。这条兜底也是 03b §2.3-5 要的「请求重推状态」。
-- 与交接语义一致：三源仲裁里 ③ 宿主缓存在 ①② 未就绪时不可信（adapter-plugin.md 交接节），generation 失效正好在 ① 换代那一刻生效。
+- 与交接语义一致：三源仲裁里 ③ 宿主缓存在 ①② 未就绪时不可信（instance-plugin.md 交接节），generation 失效正好在 ① 换代那一刻生效。
 
 ## 2. QQ 插件 UI 补全（D）
 
@@ -134,7 +134,7 @@ config_schema 目前仅作声明（JSON Schema draft-07 子集），Core 和 Pan
 | `labels` | **否决，实现时删** | options 对象的 `label` 已覆盖 |
 | list_editor `fetch` 候选（03b D3）/ `visible_when`（03b §2.3-8） | **v2**，v1 不写 | 03a Q3 已判退化可接受；挂载即拉码用 `clear_when` 取反语义不够清晰，留给 v2 |
 
-- 写入方式：由 adapter-plugin.md 维护者在 §Panel UI 解耦 节点字段行追加上表「写入 v1」四项（本文不改规范文件）。
+- 写入方式：由 instance-plugin.md 维护者在 §Panel UI 解耦 节点字段行追加上表「写入 v1」四项（本文不改规范文件）。
 - 需修订冻结项：00 §四 方法表追加 `get_state`（→ 返回完整 cached_state 并触发推送）。理由：03b §2.3-5「请求重推状态」与 §1.3 失效兜底共用这一个方法；它是 custom op，线协议不变。
 - 03b §2.3-5：刷新 = 重请 AdapterList，再对选中实例 `InvokeAdapterOp{method:"get_state"}`；结果通过 `AdapterState` 推送回来，`AdapterOpResult` 只用于确认。
 - 03b §2.3-4：`capabilities` 不上线，与 03b 一致；渲染器区是否显示只看 `AdapterStatus.ui`（§1.1）。03a §4.1 selector 的「先读 `AdapterStatus.ui`，再读 `state.ui`」回退可删掉 `state.ui` 一支。

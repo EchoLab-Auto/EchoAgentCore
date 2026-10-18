@@ -15,7 +15,7 @@ y: 3480
 
 ## A. W2.4「i64 → String」全链路
 
-**决策**：版本 N（= Panel 阶段 1 同批，遵守 adapter-plugin.md:381）把下表字段全部改为 `String`；
+**决策**：版本 N（= Panel 阶段 1 同批，遵守 instance-plugin.md:381）把下表字段全部改为 `String`；
 **命令侧双读**（number|string，旧客户端照常可发），**事件侧纯 breaking**（只输出 string）。插件**零改动**。
 
 | 字段 | 现状（C:protocol/echo-protocol/src/） | 新形状 |
@@ -58,10 +58,10 @@ y: 3480
 
 ## B. 旧变体删除计划
 
-> **后注（2026-10-16）**：本节原计划「N 标 deprecated → N+1 观察 → N+2 物理删除」。同日决策人指示**直接删除（不等 N+2）**——下述 S7/S8 合并执行：旧 10 命令 / 7 事件 / `AdapterStatus` 三字段 / `legacy.rs` / `id_compat.rs` / dual_run 测试已全部物理删除；升级指南改为「直接删除已生效」口径（见 adapter-plugin.md §升级指南）。本节其余内容保留为设计决策历史。
+> **后注（2026-10-16）**：本节原计划「N 标 deprecated → N+1 观察 → N+2 物理删除」。同日决策人指示**直接删除（不等 N+2）**——下述 S7/S8 合并执行：旧 10 命令 / 7 事件 / `AdapterStatus` 三字段 / `legacy.rs` / `id_compat.rs` / dual_run 测试已全部物理删除；升级指南改为「直接删除已生效」口径（见 instance-plugin.md §升级指南）。本节其余内容保留为设计决策历史。
 
 **时间线**：版本 N（W2.4 + Panel 阶段 1）= 旧变体标 `#[deprecated]`（仅文档/注释已标，代码属性待加）且 id 改 String；
-版本 N+1 = 观察期（日志 warn 统计旧命令调用）；**版本 N+2 = 物理删除**（两版本周期，adapter-plugin.md:397）。
+版本 N+1 = 观察期（日志 warn 统计旧命令调用）；**版本 N+2 = 物理删除**（两版本周期，instance-plugin.md:397）。
 **删除前置条件**（全部满足）：① Panel 阶段 1 已发布且 `grep -rn 'RequestQq\|UpdateQq\|SetQq\|QqFilterConfig\|QqOwner' panel/src` 仅剩测试/兼容注释；
 ② 新通道等价性有替代测试（见下）；③ N+1 期间无已知第三方客户端依赖（发行说明公告）。
 
@@ -131,7 +131,7 @@ y: 3480
 - `qq_tools.rs`→`adapter_tools.rs`，`register_qq_tools_multi`→`register_adapter_tools_multi`，`QqInstanceSet`→`InstanceSet`；
   工具名（send_group_msg 等）已通用不变；注释/错误串中 "QQ" 改「适配器」。测试 mock 的 `"qq"`（:752-771）属测试豁免，建议改 `"mock"`。
 - `qq_instances.rs`：端口分配/compose（:178-229 `render_compose` 渲染 NapCat）本质是 QQ 部署知识 → **移入插件仓库**
-  （adapter-plugin.md:368「compose 渲染随插件」）；Core 只留通用 `PluginInstance{id, persona}`（:27 `QqInstance` 泛化）。
+  （instance-plugin.md:368「compose 渲染随插件」）；Core 只留通用 `PluginInstance{id, persona}`（:27 `QqInstance` 泛化）。
   风险：compose 移出需插件提供「部署钩子」，属可选收尾，可先改名、后搬迁（S6 标可选）。
 
 **D.4 main.rs 泛化**
@@ -140,7 +140,7 @@ y: 3480
 - :938-962：`factory_qq_by_persona`→`adapters_by_persona`，`qq_default2`→`default_adapters`；按 `capabilities.send_text` 过滤可出站适配器，不看 platform。
 - 风险：非 QQ 插件首次获得工具注册，LLM 工具集变化 → 加单测「无 send 能力的适配器不注册 send_*」。
 
-**D.5 豁免口径**（grep 判据 adapter-plugin.md:424）：允许保留 ① `adapter_ops/legacy.rs` 与 echo-protocol 中 `#[deprecated]` 变体（N+2 前）；
+**D.5 豁免口径**（grep 判据 instance-plugin.md:424）：允许保留 ① `adapter_ops/legacy.rs` 与 echo-protocol 中 `#[deprecated]` 变体（N+2 前）；
 ② 测试函数名/fixture 数据；③ `document/` 与 CHANGELOG；④ 插件仓库（不在 Core/Panel 全仓范围）。
 验收命令：`grep -rniE 'qq|onebot|napcat' source --include=*.rs | grep -vE 'legacy\.rs|#\[cfg\(test|/tests/|deprecated'` 为空（N+2 时去掉 legacy/deprecated 豁免）。
 

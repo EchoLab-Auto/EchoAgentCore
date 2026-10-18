@@ -14,7 +14,7 @@ link: ["agent-loop | Agent 循环 | r>l"]
 
 Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent（独立 trunk、会话文件、系统提示词、能力白名单）。
 
-> **无「主智能体」**：所有智能体一律平等，没有受保护的"主/默认"角色。进程级职责（管理面、插件宿主、全局策略、Shell、适配器）由组合根的**核心服务代理**（`__core`，非人格、不出现在 TeamsList）承担；会话类命令必须显式携带 `team_id`，缺失直接报错。
+> **无「主智能体」**：所有智能体一律平等，没有受保护的"主/默认"角色。进程级职责（管理面、插件宿主、全局策略、Shell、插件实例）由组合根的**核心服务代理**（`__core`，非人格、不出现在 TeamsList）承担；会话类命令必须显式携带 `team_id`，缺失直接报错。
 >
 > **未配置 `[agent.teams.*]` = 零人格**（按用户要求）：新建/新装 Core **不再自动合成 "default" 人格**（此前每台新节点都会凭空多出一个"默认" agent）。空配置启动即零智能体，由 Panel「设置 → 智能体 → 新建智能体」按需创建。
 
@@ -22,7 +22,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 ## Persona 装配
 
-- `AgentSupervisor` 按配置创建所有人格；`make_agent` 闭包为每人格独立组装工具注册表（内置工具 + 该人格适配器实例**声明的**工具 + 包元数据）
+- `AgentSupervisor` 按配置创建所有人格；`make_agent` 闭包为每人格独立组装工具注册表（内置工具 + 该人格插件实例**声明的**工具 + 包元数据）
 - 每人格独立事件总线；**所有人格**（含运行期新建）的 `emit` 都直投进程级事件汇聚点（`EventSink`），Panel 单连接即可看到全部活动（无「镜像进默认人格」转接）
 - 会话文件隔离：统一 `echo-sessions-{id}.json`（旧 `echo-sessions.json` 首次启动自动改名迁移）；会话持久化路径与配置 TOML **解耦**（`set_config_store` 只管 `[agent]` TOML，`set_session_persist_path` 另设 JSON 事件溯源文件，绝不可同路径互写）
 - **Persona 级 API**：`[agent.teams.{id}].api_profile = "<供应商池名>"` 只做**引用**，值存于全局 `[agent].api_profiles`；配置了引用的人格启动时用 `apply_named_profile` 解析并**独立构建自己的 provider**（不共享默认 provider）；未配置 = 跟随全局默认（顶层 + active_api）
@@ -137,5 +137,5 @@ enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel", "e
 - **兼容性**：无 `[agent.teams]` 配置 = **零 agent**（按用户要求：不再自动合成 `default` 人格；显式配置 `[agent.teams.default]` 时它也只是普通 id、无特权）；`SendMessage`/会话类命令缺少 `team_id` 会被明确拒绝（Panel 与 Core 同版本部署）
 - **删除保护**：仅"至少保留一个智能体"；不再有受保护成员
 - **Provider 粒度**：支持 persona 级 API 引用（见上「Persona 装配」）；运行期 `SaveTeam` 改 `api_profile` 立即经 `apply_persona_api` 重建该人格 provider（全局 `UpdateApiConfig`/`SwitchApi` 只作用于管理面/全局默认，不自动广播到其他人格）
-- QQ/平台消息按**实例归属人格**路由：每个启用 `echo-agent.adapter.qq` 的人格拥有自己的 QQ 实例（容器 + 反向 WS 通道），见 [QQ 适配器门控](../plugins/adapter-qq-gating.md)「多实例」
+- QQ/平台消息按**实例归属人格**路由：每个启用 `echo-agent.instance.qq` 的人格拥有自己的 QQ 实例（容器 + 反向 WS 通道），见 [QQ 实例门控](../plugins/qq-gating.md)「多实例」
 - 每人格可独立配置记忆预算：`[agent.teams.{id}].memory_limit_tokens` / `context_window_tokens`（未配置 = 继承全局）
