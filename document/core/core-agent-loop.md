@@ -65,7 +65,7 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 
 `echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。组合根经 `ctx.loop` 注册 `TurnRunner`（`LoopOptions`：`max_tokens` 与 `max_tool_iterations` 来自配置），挂载不同实现即可改变驱动行为；消费方（agent、UI、hook）只依赖生命周期事件。
 
-- **生命周期事件**（全部经 `EventBus` 分发）：`TurnStart` / `AgentPreStep`（waterfall，可改写消息或拒绝 step）/ `StepStart` / `AgentRequest`（waterfall，可改写请求）/ `ToolCallRequested` / `ToolResult` / `StepEnd` / `TurnStopping`（serial）/ `TurnEnd`
+- **生命周期事件**（全部经 `EventBus` 分发）：`TurnStart` / `AgentPreStep`（waterfall，可改写消息或拒绝 step）/ `StepStart` / `AgentRequest`（waterfall，可改写请求）/ `ToolCallRequested` / `ToolResult` / `StepEnd` / `TurnStopping`（Observe——`Serial` 目前无生产发射方）/ `TurnEnd`
 - **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。审批、审计、限流等策略的设计接入方式为管道中间件（非循环代码，新策略 = 一次 `push_pre`/`push_post`；机制已备，当前生产路径未注册任何中间件）；**工具超时守卫**由 harness 侧统一实施（`Agent::tool_guard_timeout`：配置 `tool_timeout_secs` base + 工具自声明 `timeout_hint`）——超时只中止该工具、不中断 turn，结果以 notice 喂回模型，事件日志补记中断结果保持成对
 - 工具经 harness 提供的 `ToolExecutor` 闭包执行，runner 本身不含任何策略代码
 
@@ -83,10 +83,11 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 **分派**：所有输入（普通 / QQ hook / 定时器 / QQ 会话后台输入）都经
 `process_message_inner`（`agent/turn.rs`）进入 runner：
 
-- **输入边界**：`input_boundary` 按**内容标记**（而非会话平台）判定
-  `BoundaryKind`（QQ hook / 定时器 / QQ 会话的后台输入），作为提示词边界块
-  注入；普通输入不注入。投递纪律由提示词与 qq-transport 技能引导。QQ 并发
-  回复的细节见 [多 Agent 与会话](./core-agents.md)。
+  - **输入边界**：`input_boundary` 判 `BoundaryKind` 有三条，**前两条按内容标记、第三条按会话平台**：
+    ① 内容含 `<X_message_hook>` 标记 → `PlatformHook { platform }`；② 含定时器开启标记 → `Timer`；
+    ③ 以上都不匹配、且会话不是本地会话（`!session_key.is_local()`）→ `BackendInput`。
+    命中即注入提示词边界块，普通输入不注入。投递纪律由提示词与 qq-transport 技能引导。
+    QQ 并发回复的细节见 [多 Agent 与会话](./core-agents.md)。
 - `RunExtras` 携带工具 schema（模型可见）、推理回调（`on_reasoning` → 发
   `AgentReasoning` 事件）、**每 turn 模型名**、**每 turn 迭代上限**
   （`max_iterations`，运行期调整下一 turn 生效）与 **ChatExecutor**（每 step

@@ -51,7 +51,7 @@ core 组合根                  构建 + 注入 + 服务注册（"sanitizer" 键
 | 2 | LLM 请求出口 | `llm::wrap_redacting`（装饰 provider，请求侧全文扫描） | 全部 LLM 出口：turn 循环（echo-loop）/ 子代理 / 等待回复 |
 | 3 | 插件实例外发出口 | `core::instance_tools::gate_outbound`（**全部**插件实例工具，不按 `send_` 前缀） | 文本命中按策略阻断/替换（`block` 默认 / `redact`）；`file_path`/`file`/`image` 落在敏感目录直接拒发 |
 | 4 | 入站与落盘 | `Agent::process_message` / `process_inbound_branch` / `record_incoming_and_snapshot` / `run_tool` 参数 | 用户与 QQ 输入、工具调用参数（事件与会话日志）、工具结果事件 |
-| 5 | 密钥登记 | 启动构建（`core::security::build_redactor`）+ `Agent::rebuild_provider` 热同步 | 顶层与 profile 的 `api_key`、env 回退、QQ `access_token`、用户追加值 |
+| 5 | 密钥登记 | 启动构建（`core::security::build_redactor`）+ `Agent::rebuild_provider` 热同步 | 顶层与 profile 的 `api_key`、env 回退、**实例配置里按键名形态识别的凭据**（键名含 `token`/`secret`/`password`/`api_key`/`apikey` 且值 ≥8 字符，递归扫 `shared` 与各实例 `overrides`——不点名平台）、用户追加值 |
 
 设计取舍：
 

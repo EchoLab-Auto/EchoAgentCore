@@ -18,7 +18,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 >
 > **未配置 `[agent.teams.*]` = 零人格**（按用户要求）：新建/新装 Core **不再自动合成 "default" 人格**（此前每台新节点都会凭空多出一个"默认" agent）。空配置启动即零智能体，由 Panel「设置 → 智能体 → 新建智能体」按需创建。
 
-> **单一注册表 + `(core, team_id)` 身份**：persona 注册表由 `echo_agent::AgentManager` **独占持有**（单一真源），`AgentSupervisor` 只是它的薄适配（`get`/`personas`，不另持第二份 HashMap）。多接入点（联邦网络多节点）下人格身份是 **`(core, team_id)`**：Panel 的 `TeamsList` 按 core 合并、命令按人格归属 core 路由（会话归属优先，其次人格归属，最后 `activeCore`），并带一致性守卫（目标 core 不拥有该人格时重定向）——详见 [联邦](../federation/federation.md)。
+> **单一注册表 + `(core, team_id)` 身份**：persona 注册表由 `echo_agent::AgentManager` **独占持有**（单一真源），`AgentSupervisor` 只是它的薄适配（`get`/`personas`，不另持第二份 HashMap）。多接入点（联邦网络多节点）下人格身份是 **`(core, team_id)`**：Panel 的 `TeamsList` 按 core 合并、命令按人格归属 core 路由（显式 `targetCore` > 会话归属 > 人格归属 > 当前运行区域 `currentRegion`），并带一致性守卫（目标 core 不拥有该人格时重定向到拥有它的 core）——**解析不出目标就拒发并提示，不兜底"首个上游"**——详见 [联邦](../federation/federation.md)。
 
 ## Persona 装配
 

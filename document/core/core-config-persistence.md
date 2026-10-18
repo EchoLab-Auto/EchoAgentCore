@@ -96,11 +96,21 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 `CoreConfig::load()` 在反序列化后做一次性修正，**不回写文件**；下次
 `persist_config()`/`ConfigStore::patch` 时自然落盘。现有迁移：
 
+| 迁移 | 触发条件 | 行为 |
+| --- | --- | --- |
+| `api_profiles` 按名去重 | 总是 | 保留首个同名 profile（历史上重复持久化 bug 的自愈） |
+| `command_prefix` 归一化 | 值为空 | 填 `/` |
+| `ECHO_ACCESS_TOKEN` 覆盖 | 环境变量存在 **且** 该平台 `enabled` | 写入共享层 `server.access_token`（覆盖配置文件里的值） |
+| `mode = "builtin"` 清空 | 该平台 `mode` 为 `builtin` | 打警告并清空 → 按 `plugin` 模式运行（内置路径已随实例插件化移除） |
+| `[federation].listen` 是否显式 | 总是 | 额外记一个 `listen_explicit` 标记——serde 填充后分不清「缺省」与「显式同值」，两者语义不同（缺省=自动合并管理端口） |
+| `api_key` 环境回退 | `agent.api_key` 为空 | 按 provider 取名：`anthropic`/`claude` → `ANTHROPIC_API_KEY`，其余 → `OPENAI_API_KEY` |
+
 ### 不持久化的内容
 
 以下配置只在启动时从文件读取，运行时修改不持久化：
-- `[instances.qq.server]`（bind_address、access_token、heartbeat_interval）
-- `[instances.qq.trigger]`（dm_auto_reply、group_at_reply）
+- **`[instances.<platform>.server]` / `[instances.<platform>.trigger]`** —— 这两个段整体由**插件**读取
+  （bind_address / heartbeat_interval / dm_auto_reply / group_at_reply 都在插件侧消费）；
+  Core 只从共享层 `server.access_token` 取管理令牌。改这些键要重启（Core 与插件各自只在启动读）
 - `[logging]`
 
 ### provider 取值
@@ -203,7 +213,7 @@ ports = { reverse_ws = 3131, onebot_http = 3000, webui = 6099 }
 
 工作区会话（`echo-agent.workspace` 插件）独立持久化于
 `~/.config/echo-agent-core/echo-workspaces-{id}.json`（每 persona 一份；
-`{active, sessions[]}` 文档，任何变更即时原子写回）——与配置 TOML、会话
+`{active, active_conversation, sessions[]}` 文档，任何变更即时原子写回）——与配置 TOML、会话
 **所有激活来源（面板/工具 `use`）都必须广播 `WorkspaceSessions`**。
 
 ## API 指标数据（余额 / 用量）
@@ -227,7 +237,9 @@ ports = { reverse_ws = 3131, onebot_http = 3000, webui = 6099 }
   每次请求 `request.model`，模型切换即时生效）。
 - **保留与剪枝**：余额保留 30 天、用量 90 天（每 512 次追加触发一次过期行
   重写剪枝）；**面板读取窗口 = 近 7 天**。文件删除即重置图表（无其他副作用）。
-- **费用估算**：`[agent.pricing]` 定价表（缺省 = 内置 DeepSeek 公开价 +
+- **费用估算**：`[[agent.pricing]]` 定价表——**注意是数组表头（双括号）**，字段类型是
+  `Vec<ModelPrice>`；写成单表头 `[agent.pricing]` 会因 `invalid type: map, expected a
+  sequence` 导致启动失败（缺省 = 内置 DeepSeek 公开价 +
   Kimi k3（约 ¥12/¥32 每百万 + 缓存命中 ¥2/M——查证官方定价页，
   k3 的 4.5M tokens 此前零估算）；长度前缀匹配模型名、区分高峰/空闲时段；
   含 `offpeak_*` 档位豁免）。价格可随配置覆盖或清空（`pricing = []` = 禁用
