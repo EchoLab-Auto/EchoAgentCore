@@ -66,7 +66,7 @@ EchoAgentCore/
 
 | Crate | 职责 |
 |---|---|
-| `echo-defs` | **Service Definition 层**：LLM/工具/技能/平台消息词汇与 trait（`LlmProvider`/`Tool`/`SkillProvider`/`Adapter`）、跨边界消息词汇（`IncomingMessage` 等）、token 纯函数。零实现、零 harness 依赖 |
+| `echo-defs` | **Service Definition 层**：LLM/工具/技能/平台消息词汇与 trait（`LlmProvider`/`Tool`/`SkillProvider`/`PluginInstance`/`InstanceManagement`）、跨边界消息词汇（`IncomingMessage` 等）、token 纯函数。零实现、零 harness 依赖 |
 | `echo-context` | **服务定位与事件机制**：`Ctx`（按 key 注册/解析服务）、`EventBus`（Observe/Waterfall/Parallel/Serial 类型化事件）、`Disposer`（可逆注册）、`ScopedRegistry`（per-scope shadowing）。零 echo-* 依赖 |
 | `echo-session` | **事件溯源会话存储**：`SessionEvent` 事件集、`EventLog`（append-only 持久化）、`derive_messages` 投影、compaction、`SessionHeader`（fork/resume）、v1–v4 旧格式兼容迁移 |
 | `echo-loop` | **Agent 循环驱动**：`TurnRunner` turn/step 状态机（`turn/*`/`step/*`/`agent/*` 生命周期事件）、`ToolPipeline` 工具执行管道（pre/execute/post waterfall 中间件） |
