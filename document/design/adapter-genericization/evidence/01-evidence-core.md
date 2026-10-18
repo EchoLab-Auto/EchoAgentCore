@@ -22,7 +22,7 @@ y: 3800
    - 分发入口 `agent/commands.rs:1495-1497`：`InvokeAdapterOp | <8 个旧 QQ 命令> => apply_qq_command`
    - `emit_adapter_state_events`（packages/adapter_qq/commands.rs:426+）：cached_state 单源派生 `AdapterState` + 旧 QQ 事件（W3.4 已单源化）
 3. **core/src**（平台硬编码点）
-   - `qq_tools.rs`（1054 行；`register_qq_tools_multi`；工具��� send_*/get_* 已是通用词汇但注册逻辑按 platform=="qq"）
+   - `qq_tools.rs`（1054 行；`register_qq_tools_multi`；工具名 send_*/get_* 已是通用词汇但注册逻辑按 platform=="qq"）
    - `qq_instances.rs`（端口分配 / compose / 写回）
    - `main.rs:829-857`：plugin adapter 注册循环——`platform` 变量取了但只用于日志；`matches qq_instances` 找实例，未匹配日志 "non-QQ adapter plugin?"（**非 QQ 适配器当前无实例概念**）
    - `main.rs:938-962`：per-persona 工具注册（`factory_qq_by_persona`，default 回退 `qq_default2`）
@@ -50,7 +50,7 @@ y: 3800
 ## D. 其他已知事实
 
 - 管理方法 12 个已在插件实现（见 00 文件 §四）；`get_groups/get_friends` 经 `qq:<op>` 直通（plugin.rs:221）
-- 双跑测���已入库：`dual_run_old_and_new_gate_commands_produce_equivalent_state`
+- 双跑测试已入库：`dual_run_old_and_new_gate_commands_produce_equivalent_state`
 - 交接语义（先停后切）已定稿（instance-plugin.md §交接与崩溃恢复语义）——协议/宿主侧勿改
 - `echo-plugin-host/tests/conformance_stdio.rs` 14 项（a-j + 扩展）、`conformance.rs` 14 项（a-n）；新增协议字段时按既有模式补用例
 

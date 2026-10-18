@@ -10,7 +10,7 @@ link: ["gen-evidence-01 | 01 | b>t", "gen-evidence-02 | 02 | b>t", "gen-evidence
 # 冻结接口（所有泛化设计文档的共同基线）
 
 > 任何方案不得与本节冲突；确需变更时必须在文档中显式写「需修订冻结项：<条目>理由 <理由>」。
-> 仓库���线（2026-10-16）：core @ 3541b46 / panel @ 4b7d99b / echo-adapter-qq @ 79de9ec。
+> 仓库基线（2026-10-16）：core @ 3541b46 / panel @ 4b7d99b / echo-adapter-qq @ 79de9ec。
 
 ## 一、线协议（echo-protocol；Core ↔ Panel）
 
