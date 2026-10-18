@@ -16,6 +16,37 @@ y: 1620
 - 注册是可逆副作用：`register_reversible` 返回 `Disposer`，插件卸载即撤销
 - 分派入口有两条：turn 内走 echo-loop 的工具管线（`spawn_subagent` 经其异步 hook 通道，见 [Subagent 插件](./core-subagent.md)）；集成测试与直接调用走 `run_tool`（对 `spawn_subagent` 同样特判）。其余工具一律走注册表
 
+### 工具从哪来（三个来源）
+
+`ToolRegistry` 是唯一的注册面，但工具的**声明方**有三类——框架不硬编码任何具体工具：
+
+| 来源 | 声明方式 | 归属包 | 例子 |
+| --- | --- | --- | --- |
+| 内置工具 | 组合根在 `main.rs` 直接 `register` | `echo-agent.tools.builtin` | `bash` / `read_file` / `write_file` / `calculator` / `web_search` |
+| 子进程插件工具 | 插件 `Contribution::Tool`（`ToolContribution`）→ 宿主 `RemoteTool` 转 `Tool` | 插件自报 `package` | 试点插件 `echo-plugin-example` 的 `calculator` / `web_search` |
+| **适配器声明的工具** | 适配器插件 `AdapterContribution.tools` → `Adapter::tool_specs()` → 宿主通用桥 | `AdapterToolSpec.package` | QQ 的 10 个工具（见下） |
+
+#### 适配器工具：声明驱动 + 通用桥
+
+平台适配器对模型暴露的工具**全部由插件声明**，宿主（`core/adapter_tools.rs`）只做三件与平台无关的事：
+
+1. **合并**——同一 persona 的多个实例声明同名工具时只注册一次；
+2. **寻址**——多实例时给参数 schema 注入可选 `account`，执行时按它选实例
+   （`account` 是宿主参数，**不进插件 payload**；缺省且多实例时明确报错列出可选项）；
+3. **过闸**——所有适配器工具都跨平台边界，统一走 `OutboundGate`
+   （文本命中脱敏器按策略阻断/替换；文件参数落在配置/凭据目录直接拒发）。
+
+执行路径是 `invoke_custom(<工具名>, <参数>)`（`AdapterManagement` 透传给插件），
+返回对象带 `success: false` 时转为工具错误。
+
+**`Tool::produces_visible_output`**：工具自声明「成功调用即产生平台可见输出」。
+循环用它决定是否抑制「临时等待回复」——此前是按工具名清单判断（`send_private_msg`
+/ `send_group_msg` / …），等于把平台语义写进框架；现在适配器工具按
+`AdapterToolSpec.visible_reply` 给值，未知工具默认 `false`。
+
+字段全貌与声明示例见 [插件开发指南](./plugin-authoring.md)「适配器插件」节；
+QQ 的 10 个工具与其平台语义见 [QQ 适配器门控](./adapter-qq-gating.md)。
+
 ## 文件工具的路径约定
 
 `read_file` / `list_files` / `search_code` / `write_file` / `edit_file` 共用同一

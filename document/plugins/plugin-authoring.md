@@ -128,6 +128,61 @@ mode = "fast"
 崩溃语义：插件进程退出（panic/segfault/exit）→ 宿主视为崩溃，按 backoff（200ms×2、上限 2s、最多 5 次）自动重启；
 在途调用以 `Error{code:"plugin_crashed"}` 收尾。
 
+## 适配器插件
+
+适配器插件不是「插件的一个变体」，而是**用同一套协议承载平台接入**：注册一个
+`Contribution::Adapter`，此后生命周期、收发、目录查询、管理动作、以及对模型
+暴露的工具，全部经 `Invoke("<实例名>:<op>")` 路由到你实现的 `AdapterPlugin::invoke_op`。
+
+SDK 侧实现 `AdapterPlugin`（`echo-plugin-sdk`）：`configure`（收配置，`Err` 即
+拒绝启动）→ `adapter()`（返回贡献）→ `invoke_op(op, payload)`（路由）→
+`on_ready(host)`（拿 `HostClient` 回呼）→ `on_drain`。
+
+### 贡献（`AdapterContribution`）
+
+| 字段 | 作用 |
+| --- | --- |
+| `name` / `platform` / `display_name` | 实例名（= Invoke 前缀，全局唯一）/ 平台标识（会话作用域）/ 展示名 |
+| `capabilities` | 能力位（`send_text` / `send_media` / `groups` / `friends` / `gating` / `login`）——**fail-closed**：未声明的调用宿主直接拒绝，不发起 Invoke |
+| `config_schema` | 配置 JSON Schema（校验 / 面板表单） |
+| `ui` | 管理界面描述符（Panel 通用渲染器按 `ui.version` 呈现，宿主零平台逻辑） |
+| `session_labels` | 会话分组标签（如 `{"dm":"私聊","group":"群"}`） |
+| **`tools`** | **对模型暴露的工具声明**（见下） |
+
+### 工具声明（`tools`）
+
+每个 `ToolContribution` 声明一个工具：`name`（同时是 `invoke_op` 的 op 名）、
+`description`、`parameters`（JSON Schema）、`category`、`timeout_hint_secs`、
+`package`、**`visible_reply`**。
+
+宿主侧（`core/adapter_tools.rs`）对声明做三件事，**不认识任何具体工具名**：
+
+1. 跨实例合并（同名只注册一次）；
+2. 多实例时给 schema 注入可选 `account`，执行时按它选实例——
+   `account` 是宿主侧寻址参数，**不会出现在你的 payload 里**；
+   多实例未指定时宿主直接报错列出可选项，不会替你猜；
+3. 统一过 `OutboundGate`（文本命中脱敏器按策略阻断/替换；文件参数落在配置/
+   凭据目录直接拒发）——**所以工具名不必也不该以 `send` 开头**。
+
+执行时宿主回传 `invoke_custom(<工具名>, <原始参数>)`；返回值带
+`success: false` 会被转成模型可见的工具错误（`error` 字段给原因），否则原样
+交回模型。
+
+**`visible_reply`**：成功调用是否即产生**平台可见输出**（真正把内容送到用户
+眼前）。宿主的「临时等待回复」逻辑据此决定抑制与否——不声明就不抑制。
+
+示例（QQ 插件的做法）：`send_group_msg` / `send_private_msg` / `send_file` /
+`send_image` / `send_voice` / `send_json_card` 声明 `visible_reply: true`；
+`get_group_list` / `get_friend_list` / `get_group_member_info` /
+`get_group_msg_history` 为 `false`。完整 schema 见 `echo-adapter-qq` 仓的
+`src/tools.rs`（与迁出前的 Core 内置版逐字一致）。
+
+### 能力位 ≠ 工具声明
+
+`capabilities` 是**宿主栅栏**（未声明 → 对应 Invoke 一律拒绝），`tools` 是
+**模型可见面**。两者独立：可以声明工具而关闭某个能力位（该工具的调用会被
+宿主拦下），但通常应保持一致。
+
 ## 模式与参考
 
 - **最小报错即修正**：`InvokeOutcome::Error{code, message}` 的 `message` 是模型可见文本——写清"发生了什么、应该怎么做"（与内置工具的错误口径一致）。

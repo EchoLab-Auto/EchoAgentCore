@@ -76,7 +76,9 @@ EchoAgentCore/
 - `LlmProvider`（echo-defs）— LLM 后端接缝；providers：OpenAI/Anthropic/Ollama
 - `Tool`（echo-defs）— LLM 可调用函数；`timeout_hint` 自声明执行超时
 - `SkillProvider` / `Skill`（echo-defs）— 技能接缝；`SkillRegistry` 在 echo-agent
-- `Adapter`（echo-defs::adapter）— **平台接缝的唯一实现路径**：生命周期/收发/状态面；进程外插件经宿主 `RemoteAdapter` 实现它（`echo-plugin-host` 的 `impl Adapter for RemoteAdapter`）（平台中立的生命周期/收发/状态面）；`echo-adapter` 只承载 filter/registry/ConfigStore 等实现并对其 re-export。平台专属管理动作不再走能力扩展 trait，而是经 **`InvokeAdapterOp{adapter, method, payload}`** 透传（插件侧 `custom` op 自行解释）——门控模式、名单、登录等取值因此是**参数字符串**而非共享枚举
+- `Adapter`（echo-defs::adapter）— **平台接缝的唯一实现路径**：生命周期/收发/状态面；进程外插件经宿主 `RemoteAdapter` 实现它（`echo-plugin-host` 的 `impl Adapter for RemoteAdapter`）。`echo-adapter` 只承载 `AdapterRegistry` / `ConfigStore` 并对定义层类型 re-export。平台专属管理动作不走能力扩展 trait，而是经 **`InvokeAdapterOp{adapter, method, payload}`** 透传（插件侧 `custom` op 自行解释）——门控模式、名单、登录等取值因此是**参数字符串**而非共享枚举
+- `AdapterToolSpec`（echo-defs::adapter，`Adapter::tool_specs`）— 适配器**向模型暴露的工具声明**（name / description / parameters / package / `visible_reply`）。远程适配器 = 插件 `AdapterContribution.tools` 原样；组合根的通用桥（`core/adapter_tools.rs`）只做跨实例合并、`account` 寻址、出站闸门与 `invoke_custom` 透传，**不认识任何具体工具名**
+- `Tool::produces_visible_output`（echo-defs）— 工具自声明「成功调用即产生平台可见输出」；循环据此抑制「临时等待回复」，不再按工具名清单判断
 - `ChannelType` / `IncomingMessage` / `MessageTarget`（echo-defs::chat）— 跨适配器边界的**消息词汇**（平台中立）；入站过滤在适配器插件进程内做，宿主不持有过滤管道
 
 **机制与运行时抽象**：
@@ -85,9 +87,11 @@ EchoAgentCore/
 - `TurnRunner` / `ToolPipeline`（echo-loop）— turn/step 状态机与工具执行管道
 - `EventLog` / `SessionEvent` / `derive_messages`（echo-session）— 事件溯源存储、日志投影
 - `ConfigStore`（echo-adapter）— TOML 原子读改写（Agent 与适配器共享，杜绝并发写覆盖）
+- `AdapterHostConfig`（core::config）— **单平台的宿主配置视图**：`platform` / `shared`（透传表）/ `enabled` / `command_prefix` / `access_token` / `instances` / `launch`。`CoreConfig.adapters: BTreeMap<String, AdapterHostConfig>`，`load()` 遍历 `[adapters.<name>]` 全部平台
+- `adapter_deploy`（core）— 实例编排：`mod.rs` 是平台中立部分（实例解析 / 端口分配 / 配置合并），`napcat.rs` 是 QQ 部署知识（compose / 镜像 / 卷 / 三端口），迁移时只搬后者
 - `PluginManifest` / `PluginRegistry`（echo-plugin）— 插件清单与注册表；`echo-plugin-host` 提供 Transport（inproc/stdio）、监督与 `RemoteAdapter`
 - `AgentMessageHook`（echo-agent）— 入站消息进入 agent 的落点（`on_incoming_message` 固有方法，**不是 trait 实现**）：组合根把插件 `deliver_message` 队列接到它；平台输出必须走工具
-- **平台回复指引**：QQ 消息回复由系统提示词边界块 + `qq-transport` 技能承担（"每条 hook 必调用一次发送工具"），循环层不做代码校验/纠偏
+- **平台回复指引**：由平台中立的边界块（`BoundaryKind::PlatformHook`，只说「走该平台的发送工具」）+ 该平台的 transport 技能（如 `qq-transport`，说明具体工具名与参数）承担；循环层不做代码校验/纠偏。框架文案里不出现平台名与平台技能名
 - `FanoutHandle`（echo-protocol::bridge）— 多订阅者事件扇出（自动清理失效订阅者）；进程内 mpsc 路径不带扇出序号，生产 WS 路径带
 
 ## 编码约定

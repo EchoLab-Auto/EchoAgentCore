@@ -32,7 +32,7 @@ graph BT
   LLM[echo-llm-*<br>OpenAI/Anthropic/Ollama]
   Proto[echo-protocol<br>线契约]
   Sanitize[echo-sanitize<br>脱敏]
-  Adapter[echo-adapter<br>过滤管道/注册表/ConfigStore]
+  Adapter[echo-adapter<br>注册表/ConfigStore]
   Fed[echo-federation<br>Core↔Core 联邦]
   Plugin[echo-plugin<br>生命周期钩子]
   PluginApi[echo-plugin-api<br>协议与贡献类型]
@@ -84,7 +84,7 @@ graph BT
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性），Panel 只依赖它 |
 | `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、`RemoteAdapter`（实现 `echo_defs::adapter::Adapter`）、conformance 测试（见 [完全解耦推进计划](../design/decoupling-plan.md)）。**宿主只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层 crate** |
 | `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入——生效口径见 [Agent 循环](../core/core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
-| `echo-adapter` | 平台适配（实现层） | 过滤管道、`AdapterRegistry`、`ConfigStore`（平台无关）；`Adapter` trait / `AdapterManagement` / 状态与错误类型**定义在 `echo-defs`**（本 crate re-export 保持 `echo_adapter::…` 路径兼容）。QQ 实现已迁出为**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteAdapter` 接入——见 [适配器插件化](../design/adapter-plugin.md)） |
+| `echo-adapter` | 适配器**宿主胶水** | `AdapterRegistry`（name → 句柄）与 `ConfigStore`（TOML 原子读改写，全宿主共用）。`Adapter` trait / `AdapterManagement` / `AdapterToolSpec` / 状态与错误类型**定义在 `echo-defs`**（本 crate re-export 保持 `echo_adapter::…` 路径兼容）。**入站过滤在适配器插件进程内**，宿主不持有过滤管道。QQ 实现是**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteAdapter` 接入——见 [适配器插件化](../design/adapter-plugin.md)） |
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、联邦路由泵、启动 |
 
@@ -154,7 +154,7 @@ graph BT
 |---|---|
 | 新增 LLM provider | 实现 `echo_defs::LlmProvider`，注册 `ctx.llm` |
 | 新增工具 | 实现 `echo_defs::Tool`，注册进 ToolRegistry |
-| 新增平台 | 实现 `echo_defs::adapter::Adapter`（定义层；`echo-adapter` re-export 并提供 `AdapterRegistry` 接入；`ctx.chat` 服务键为规划） |
+| 新增平台 | 写一个**适配器插件**（`AdapterPlugin` + `AdapterContribution`：能力位 / UI 描述符 / 会话标签 / **模型工具声明**），在 `[adapters.<platform>]` 配好 `enabled` 与 `plugin.command`。宿主侧无需改代码——配置、门控、工具桥、提示词边界都是平台中立的（见 [插件开发指南](../plugins/plugin-authoring.md)「适配器插件」） |
 | 拦截请求/工具/turn | EventBus 上注册 lifecycle 事件监听器 |
 | 工具策略 | 超时已由 harness `tool_guard_timeout` 守卫（`agent/tool_exec.rs`）；`ToolPipeline` 中间件机制已备、生产路径未接线 |
 | 新增命令 | 命令分发按域拆分（`apply_adapter_command` 模式）+ CommandRegistry（开放后）；平台专属动作优先走 `InvokeAdapterOp` 方法名而非新增变体 |

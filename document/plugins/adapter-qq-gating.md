@@ -173,7 +173,7 @@ QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的
 
 - 入站：每实例把消息投给**归属人格**（`AgentMessageHook` 按实例接线），事件带实例名
 - 会话键：`qq:group:<gid>:<uid>@<实例>`；实例名为默认 `qq` 时不加后缀（单实例部署零迁移）
-- 出站工具：每人格注册**自己实例集合**的 `send_*`/`get_*`；多实例时 schema 增加可选 `account`（实例名），缺省在多实例下报错列出可选值
+- 出站工具：**由本插件声明**（`tools.rs` 的 `AdapterContribution.tools`，10 个），每人格按自己实例集合注册；多实例时宿主给 schema 增加可选 `account`（实例名），缺省在多实例下报错列出可选值。平台语义全在声明里——宿主不认识这些工具名（见 [工具系统](./core-tools.md)「工具从哪来」）
 - 管理面（门控/名��/owner/登录）：`InvokeAdapterOp` 的 `adapter` 为必填实例名；状态经 `AdapterState` 推送（`scopedKey(core, adapter)` 归并）
 - **登录由 Core 代理**：`InvokeAdapterOp{method:"login_status"}`（`AdapterOpResult` 回执）；`login_qrcode` 出二维码（PNG base64，经 `AdapterOpResult` 返回，只进渲染器局部），Panel 不直连 OneBot HTTP / docker
 - **二维码陈旧自动刷新**：`login_qrcode_png` 先探测容器内 PNG 的 mtime，缺失或 >90s（`QR_MAX_AGE_SECS`）时经 WebUI（`webui.json` token → `sha256(token+".napcat")` → `/api/auth/login` → `/api/QQLogin/RefreshQRcode`）让 NapCat 重新生成、等 2s 落盘再取；刷新失败仅告警并退回读现有文件。NapCat 自身轮换循环停摆时（实测会发生），这是"刷新没反应"的解法；新鲜码（<90s）直接返回，不会作废用户刚扫的码
@@ -243,7 +243,7 @@ QQ 用户发来的文件会**自动下载到本机**，以本地路径随消息�
 
 ### 语音发送（出站）
 
-出站侧有两个易混淆的通道，语义不同（工具描述中同样写明分工）：
+出站侧有两个易混淆的通道，语义不同（工具描述中同样写明分工）。两者的声明都在插件侧（`visible_reply: true`）——成功调用即产生平台可见输出，宿主据此抑制「临时等待回复」：
 
 | 工具 | 形态 | 用途 |
 | --- | --- | --- |
