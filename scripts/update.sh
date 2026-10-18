@@ -21,7 +21,7 @@ UPDATE_MODE=local
 # 二进制目录里保留多少个历史备份（`<binary>.bak-*` / `<binary>.rollback*`）。
 # 每次安装/更新都会留下上一版二进制，多年累积会白占数百 MiB——实测一天内
 # 多次部署后单目录堆到 308 MiB / 12 个文件。默认保留最近 4 个（够回滚几版），
-# 可用 ECHO_KEEP_BACKUPS 覆盖（0 = 只留本次的 .rollback，负数视为 0）。
+# 可用 ECHO_KEEP_BACKUPS 覆盖（0 = 只留本次的 .rollback；非数字或负数回落默认 4）。
 KEEP_BACKUPS=${ECHO_KEEP_BACKUPS:-4}
 
 usage() {

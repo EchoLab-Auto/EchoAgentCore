@@ -127,6 +127,7 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 - 目标先清后写：有 `rsync` 时 `rsync -a --delete --exclude='/.git/'`，否则 `rm -rf` + `cp -a`，最后再 `rm -rf <目标>/.git`
 - **绝不带 `.git`**：Git 安装的技能带 `0400` 只读的 `.git/objects/pack/*`，原先整体 `cp -a` 在同路径覆盖时打不开写 → `Permission denied` → 更新在 `installing` 阶段整体失败（二进制已构建却没装上，服务仍跑旧版），且首次能过、此后每次必败。运行期只用 `SKILL.md`，git 历史归用户层管理
 - 目标目录不存在（旧部署未迁移过）时整段跳过，由下次 install/reinstall 补齐
+- **仅 `update.sh` 走这套规则**：`install.sh` 仍是整体 `cp -a "$SOURCE_DIR/skills/."`，不逐技能、不排除 `.git`（清空与补齐语义不同——它负责首次铺设出厂层，重复执行前需先 `uninstall`；`reinstall` 会先跑 `uninstall` 清掉该层，故正常重装路径不受影响）
 
 ### 备份留存
 
