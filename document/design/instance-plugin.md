@@ -403,7 +403,7 @@ echo-adapter-qq/（独立仓库，cargo workspace；P1.7a–c 已落地）
 
 ### 分阶段
 
-1. **迁移期（随 P2）**：QqPanel 暂留 Panel，但底层命令/事件全部切 `InvokeInstanceOp` 通用通道——**Core 解耦不被 Panel 阻塞**，线协议先通用化；
+1. **迁移期（随 P2）**：QqPanel 暂留 Panel，但底层命令/事件全部切 `InvokeInstanceOp` 通用通道——**Core 解耦不被 Panel 阻塞**，线协议先通用化（*历史设计意图*：这一步后来只有 Core 侧完成，Panel 至今仍在旧变体名上，见本节末的部署要求）；
 2. **目标态**：schema 渲染器上线（约 200-300 行通用组件），删 QqPanel.vue / QqLoginSection.vue / `qqByAdapter` / protocol.ts QQ 段；
 3. **逃生舱**：schema 表达不了时走 iframe 沙箱（`/plugin-assets/`）或平台 WebUI 外链（`link` 节点）。
 
@@ -496,7 +496,9 @@ invoke old:stop（释放监听端口，NapCat 断连）→ drain old（等在途
 
 **用户侧操作**
 
-1. Core 与 Panel **同批部署**（两端已同步删除旧变体；跨版本混搭必失败——协议里已无旧变体）。QQ 插件无需升级。
+1. Core 与 Panel **必须同批部署**——**但这一条目前尚未满足**：Core 侧已删除旧变体（协议里只剩
+   `Instance*`），Panel 前端仍在发 `InvokeAdapterOp` / 等 `AdapterList`（`protocol.ts`），
+   变体名不兼容且无 alias，**当前该链路双向不通**。补齐 Panel 侧后才能算「已同步」。QQ 插件无需升级。
 2. 自建客户端：把管理命令改为 `InvokeInstanceOp { instance, method, payload }`，监听 `InstanceOpResult` / `InstanceState`；方法映射见 §实例管理通道。
 3. 配置文件不变（`[instances.qq]` 中 `owner_qq` 等仍为整数，属插件私有）。
 
