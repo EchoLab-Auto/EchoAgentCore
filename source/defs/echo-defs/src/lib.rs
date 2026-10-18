@@ -14,7 +14,7 @@
 //! | [`llm`] | the `LlmProvider` seam: trait + transport-agnostic `LlmError` |
 //! | [`tool`] | the `Tool` seam: trait, `ToolError`, `ToolDefinition` |
 //! | [`skill`] | the skill seam: `Skill`, `SkillMetadata`, `SkillProvider` trait |
-//! | [`chat`] | the chat-platform seam: platform-agnostic message/target types + `ChatAdapter` trait |
+//! | [`chat`] | chat vocabulary: platform-agnostic message/target/channel types |
 //! | [`adapter`] | the adapter seam: `Adapter` trait, `AdapterInfo`/`AdapterError`, `AdapterManagement` |
 //! | [`mode`] | shared policy enums (`ThinkingMode`, `ReasoningEffort`, `LoopMode`) |
 //! | [`token`] | pure token-estimation/truncation helpers |
@@ -42,14 +42,8 @@ pub mod skill;
 pub mod token;
 pub mod tool;
 
-pub use adapter::{
-    Adapter, AdapterConnectionState, AdapterError, AdapterInfo, AdapterManagement,
-    InboundMessageHook,
-};
-pub use chat::{
-    AdapterEvent, ChannelType, ChatAdapter, IncomingFile, IncomingMessage, MessageTarget,
-    SendResult,
-};
+pub use adapter::{Adapter, AdapterConnectionState, AdapterError, AdapterInfo, AdapterManagement};
+pub use chat::{ChannelType, IncomingFile, IncomingMessage, MessageTarget, SendResult};
 pub use llm::{LlmError, LlmProvider};
 pub use media::{compact_embedded_media, elide_inline_data_uris, image_placeholder};
 pub use message::{

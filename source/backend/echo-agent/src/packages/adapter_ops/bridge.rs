@@ -1,14 +1,14 @@
-//! Platform adapter → Agent inbound message hook.
+//! Platform adapter → Agent inbound entry.
 //!
-//! [`AgentMessageHook`] implements [`echo_adapter::InboundMessageHook`] so
-//! adapters can deliver structured events without receiving an implicit reply.
-//! Platform output remains available only through explicit tools.
+//! [`AgentMessageHook`] is where an adapter's inbound message becomes an agent
+//! turn. It is **not** a trait implementation: adapters run out-of-process and
+//! the composition root owns the wiring (plugin `deliver_message` → bounded
+//! queue → per-instance worker → this method). Platform output remains
+//! available only through explicit tools.
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use echo_adapter::types::{ChannelType, IncomingMessage};
-use echo_adapter::InboundMessageHook;
 
 use crate::agent::Agent;
 use crate::event::BackendEvent;
@@ -27,9 +27,11 @@ impl AgentMessageHook {
     }
 }
 
-#[async_trait]
-impl InboundMessageHook for AgentMessageHook {
-    async fn on_incoming_message(&self, msg: IncomingMessage) -> Result<(), String> {
+impl AgentMessageHook {
+    /// Deliver one inbound platform message into this agent (session lookup,
+    /// event emission, turn start). A successful return only acknowledges
+    /// processing; it never carries text for the adapter to send back.
+    pub async fn on_incoming_message(&self, msg: IncomingMessage) -> Result<(), String> {
         let agent = &self.agent;
         // 多实例维度：适配器名即 QQ 实例名（非 "qq" 时进会话键）。
         let account = (msg.adapter_name != DEFAULT_QQ_INSTANCE).then(|| msg.adapter_name.clone());
@@ -182,14 +184,6 @@ impl InboundMessageHook for AgentMessageHook {
             .await;
         Ok(())
     }
-
-    fn on_connection_state(&self, adapter_name: &str, connected: bool, self_id: Option<String>) {
-        self.agent.emit(BackendEvent::AdapterStateChanged {
-            adapter_name: adapter_name.into(),
-            connected,
-            self_id,
-        });
-    }
 }
 
 /// Encode an adapter event as a clearly marked, structured hook input.
@@ -287,6 +281,7 @@ mod tests {
         ChatChunk, ChatMessage, ChatRequest, ChatResponse, LlmError, LlmProvider, ToolCall, Usage,
     };
     use crate::tool::{Tool, ToolError};
+    use async_trait::async_trait;
     use echo_adapter::types::{ChannelType, IncomingMessage};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -683,13 +678,6 @@ mod tests {
             .expect("MessageReceived emitted");
         assert_eq!(message.0, "local:tui::local_user");
         assert_eq!(message.1, "hello");
-    }
-
-    #[tokio::test]
-    async fn connection_state_propagates() {
-        let hook = AgentMessageHook::new(mock_agent("x"));
-        // Must not panic with no handle attached.
-        hook.on_connection_state("qq", true, Some("10001".into()));
     }
 
     #[tokio::test]

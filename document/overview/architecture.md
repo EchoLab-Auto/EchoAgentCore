@@ -88,11 +88,11 @@ graph BT
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、联邦路由泵、启动 |
 
-依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；`echo-protocol` / `echo-adapter` / `echo-session` / `echo-llm-*` / `echo-federation` / `echo-plugin*` / `echo-sanitize`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）。**Adapter trait 定义在 `echo-defs`**（`echo_defs::adapter::Adapter`；`AdapterError`/`AdapterInfo`/`AdapterConnectionState`/`InboundMessageHook`/`AdapterManagement` 同）；`echo-adapter` 只承载 filter / registry / ConfigStore 等实现并对定义层类型做 re-export——`echo-adapter` 只依赖定义层、不依赖 `echo-protocol`；**`echo-plugin-host` 只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层**；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-adapter`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
+依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；`echo-protocol` / `echo-adapter` / `echo-session` / `echo-llm-*` / `echo-federation` / `echo-plugin*` / `echo-sanitize`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）。**Adapter trait 定义在 `echo-defs`**（`echo_defs::adapter::Adapter`；`AdapterError`/`AdapterInfo`/`AdapterConnectionState`/`AdapterManagement` 同）；`echo-adapter` 只承载 registry / ConfigStore 并对定义层类型做 re-export——它只依赖定义层、不依赖 `echo-protocol`。**入站过滤与平台细节都在适配器插件进程内**，宿主侧不持有过滤管道、不认识平台名；**`echo-plugin-host` 只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层**；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-adapter`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
 
 ### 定义层（echo-defs）
 
-定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（依赖仅 serde/serde_json/async-trait/tokio/thiserror/base64/tracing 基础 crate，不含 reqwest 与其它 echo-* crate），可独立测试。模块覆盖：消息/LLM（`ChatMessage`/`ChatRequest`/`LlmProvider` 等）、工具、技能、聊天（平台消息词汇；`ChatAdapter` 是未接线的预留 trait，见 [开发指南](../dev/dev-guide.md)）、适配器（`adapter` 模块：`Adapter` trait、`AdapterManagement`、`AdapterInfo`/`AdapterError`）、门控与思考模式、token 纯函数、媒体卫生（文本内嵌 base64 → 占位符、图片只走独立 image 块）与入站图片落盘缓存（`/media/<id>` 引用）、会话事件契约、联邦节点词汇（`NodeId`、`node://` 跨机命名空间）。
+定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（依赖仅 serde/serde_json/async-trait/tokio/thiserror/base64/tracing 基础 crate，不含 reqwest 与其它 echo-* crate），可独立测试。模块覆盖：消息/LLM（`ChatMessage`/`ChatRequest`/`LlmProvider` 等）、工具、技能、聊天（`ChannelType`/`IncomingMessage`/`MessageTarget` 等跨边界消息词汇）、适配器（`adapter` 模块：`Adapter` trait、`AdapterManagement`、`AdapterInfo`/`AdapterError`）、门控与思考模式、token 纯函数、媒体卫生（文本内嵌 base64 → 占位符、图片只走独立 image 块）与入站图片落盘缓存（`/media/<id>` 引用）、会话事件契约、联邦节点词汇（`NodeId`、`node://` 跨机命名空间）。
 
 ### 机制底座（echo-context）
 

@@ -53,11 +53,11 @@ impl Agent {
         // 3) 门控插件（包/表维度）：仅在"不允许"时禁用——与启动期逐人格
         //    门控同语义；重新允许的恢复由上面的逐名双向步骤完成。全局状态
         //    （注册表）优先：运行期 TogglePlugin 的卸载不会被本步骤反向覆盖。
-        for plugin_id in crate::plugins::GATED_PLUGIN_IDS {
-            let allowed = crate::plugins::profile_allows_plugin(profile, plugin_id)
-                && self.plugin_globally_enabled(plugin_id);
+        for plugin_id in self.gated_plugin_ids() {
+            let allowed = crate::plugins::profile_allows_plugin(profile, &plugin_id)
+                && self.plugin_globally_enabled(&plugin_id);
             if !allowed {
-                self.apply_plugin_gating(plugin_id, false);
+                self.apply_plugin_gating(&plugin_id, false);
             }
         }
     }
@@ -83,6 +83,29 @@ impl Agent {
                     .map(|p| crate::plugins::profile_allows_plugin(p, plugin_id))
             })
             .unwrap_or(true)
+    }
+
+    /// 受 persona 名单门控的插件 id 集合。
+    ///
+    /// = 框架内置的固定清单（工具/技能/工作区/subagent/management）
+    ///   ∪ **运行期注册的全部 `kind == Adapter` 插件**。
+    ///
+    /// 后者从注册表按 kind 推导，框架因此**不需要认识任何平台**：新增一个
+    /// 适配器插件（`echo-agent.adapter.<platform>`）自动进入门控，无需改
+    /// 本 crate 的常量表。
+    fn gated_plugin_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = crate::plugins::GATED_PLUGIN_IDS
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect();
+        if let Some(host) = plugin_host_global() {
+            for descriptor in host.registry.descriptors() {
+                if descriptor.kind == "adapter" && !ids.contains(&descriptor.id) {
+                    ids.push(descriptor.id);
+                }
+            }
+        }
+        ids
     }
 
     /// 共享注册表中该插件当前是否启用（无全局锚点 = true，以名单为准）。

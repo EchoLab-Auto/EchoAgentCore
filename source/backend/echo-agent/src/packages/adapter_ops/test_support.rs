@@ -117,7 +117,6 @@ impl echo_adapter::Adapter for MockAdapter {
             error: None,
         })
     }
-    fn subscribe(&self, _tx: tokio::sync::mpsc::UnboundedSender<echo_adapter::AdapterEvent>) {}
     fn management(&self) -> Option<&dyn echo_adapter::AdapterManagement> {
         Some(self)
     }

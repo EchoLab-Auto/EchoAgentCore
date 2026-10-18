@@ -15,6 +15,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod adapter_commands;
+mod adapter_manifests;
 mod adapter_tools;
 mod agent_supervisor;
 mod config;
@@ -645,7 +646,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             m.enabled
                 && echo_agent::plugins::profile_allows_plugin(
                     m,
-                    echo_agent::plugins::ADAPTER_QQ_PLUGIN_ID,
+                    crate::adapter_manifests::ADAPTER_QQ_PLUGIN_ID,
                 )
         })
         .map(|(id, _)| id.clone())
@@ -964,17 +965,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                             protected_paths: sensitive_dirs2.clone(),
                             policy: outbound_policy,
                         });
-                crate::adapter_tools::register_adapter_tools_multi(
+                let adapter_tool_names = crate::adapter_tools::register_adapter_tools_multi(
                     &mut t,
                     persona_adapters,
                     outbound_gate,
                 );
-                // 包元数据：适配器工具属于 "echo-agent.adapter.qq"
-                //（QQ 适配器插件包；与对应技能同包）。
-                for name in t.names() {
-                    if name.starts_with("send_") || name.starts_with("get_") {
-                        t.set_package(&name, "echo-agent.adapter.qq");
-                    }
+                // 包元数据：**按注册返回值**精确打标（不按 `send_`/`get_`
+                // 前缀猜——前缀猜测等于假设「工具名遵循某平台命名习惯」，
+                // 换平台换命名就漏标）。包 id 取适配器插件 id：适配器工具与
+                // 对应技能同包，面板按包批量勾选时是一组。
+                for name in &adapter_tool_names {
+                    t.set_package(name, crate::adapter_manifests::ADAPTER_QQ_PLUGIN_ID);
                 }
                 // 任务清单（checklist）为普通内置工具：随内置工具集包
                 // （register_all 已打 echo-agent.tools.builtin 标签），
@@ -1194,9 +1195,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_wired = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let qq_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
+        use crate::adapter_manifests::ADAPTER_QQ_PLUGIN_ID;
         use echo_agent::plugins::{
-            ToolSink, ADAPTER_QQ_PLUGIN_ID, MANAGEMENT_PANEL_PLUGIN_ID, SKILLS_DIR_PLUGIN_ID,
-            TOOLS_BUILTIN_PLUGIN_ID,
+            ToolSink, MANAGEMENT_PANEL_PLUGIN_ID, SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
         };
         use echo_context::Disposer;
         use echo_plugin::{BuiltinPlugin, MountContext, PluginKind, PluginManifest, PluginRuntime};
@@ -1570,9 +1571,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let worker_commands = command_ctx.clone();
         let mut inbound_rx = handle.inbound_rx;
         tokio::spawn(async move {
-            // 入站送达接口来自 echo-adapter 的 hook trait（use 在闭包外无效，
-            // 任务内显式引入）。
-            use echo_adapter::InboundMessageHook as _;
             while let Some(message) = inbound_rx.recv().await {
                 let incoming = echo_plugin_host::adapter::message_to_incoming(message);
                 // 命令域：已消费的命令不进 agent（回复在命令域内完成）。
@@ -1733,7 +1731,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_plugin_enabled = agent
         .plugin_host()
         .registry
-        .is_enabled(echo_agent::plugins::ADAPTER_QQ_PLUGIN_ID);
+        .is_enabled(crate::adapter_manifests::ADAPTER_QQ_PLUGIN_ID);
     if cfg.qq_adapter.enabled && qq_plugin_enabled {
         // 多实例：逐个生成 compose（非 legacy）并启动；单个失败不影响其余。
         let data_dir = qq_data_dir.clone();

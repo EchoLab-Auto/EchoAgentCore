@@ -132,10 +132,9 @@ impl AdapterRegistry {
 mod tests {
     use super::*;
     use crate::traits::{AdapterConnectionState, AdapterInfo};
-    use crate::types::{AdapterEvent, MessageTarget, SendResult};
+    use crate::types::{MessageTarget, SendResult};
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use tokio::sync::mpsc;
 
     struct MockAdapter {
         name: String,
@@ -201,7 +200,6 @@ mod tests {
                 error: None,
             })
         }
-        fn subscribe(&self, _tx: mpsc::UnboundedSender<AdapterEvent>) {}
     }
 
     #[tokio::test]

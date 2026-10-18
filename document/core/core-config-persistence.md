@@ -151,7 +151,6 @@ group_ids = []
 
 - `QqInner` 中所有运行时字段使用 `StdMutex` 保护
 - `persist_filter()` 锁定 `config_store`（共享的 `ConfigStore` 内部 Mutex），不阻塞消息处理
-- 过滤管道使用 `Arc<FilterPipeline>`，读取时克隆 Arc（O(1)），不持锁
 - `ConfigStore` 的 Mutex 是 `std::sync::Mutex`（非 tokio），一次 patch 持锁时间仅限文件 I/O
 
 ### 不持久化的内容

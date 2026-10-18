@@ -3,15 +3,20 @@
 //!
 //! Definitions live here (the capability-definition layer); `echo-adapter`
 //! re-exports them so `echo_adapter::Adapter` / `echo_adapter::traits::…`
-//! paths keep working, while implementations (filter pipeline, registry,
-//! ConfigStore) stay in `echo-adapter`.
+//! paths keep working, while host glue (registry, ConfigStore) stays in
+//! `echo-adapter`.
+//!
+//! **Inbound flow** is not a trait here: adapters run out-of-process and push
+//! messages through the plugin protocol (`HostCall("adapter_host",
+//! "deliver_message")`), which the host turns into an `mpsc` queue consumed by
+//! the composition root. An earlier `InboundMessageHook` trait had no
+//! registration mechanism and was removed rather than left as a decoy.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::mpsc;
 
-use crate::chat::{AdapterEvent, IncomingMessage, MessageTarget, SendResult};
+use crate::chat::{MessageTarget, SendResult};
 
 /// Connection state of an adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,24 +58,6 @@ pub struct AdapterInfo {
     // 通用快照保持平台中立。
     //
     // [`AdapterManagement::cached_state`]: crate::adapter::AdapterManagement::cached_state
-}
-
-/// Hook that platform adapters use to deliver inbound messages into the
-/// agent framework, without depending on echo-agent directly.
-///
-/// This boundary is deliberately one-way. Agent output is not returned from
-/// the hook; sending a platform message must happen through an adapter tool.
-#[async_trait]
-pub trait InboundMessageHook: Send + Sync {
-    /// Deliver one inbound platform message to the agent.
-    ///
-    /// The hook owns session lookup, event emission, and LLM processing.
-    /// A successful return only acknowledges processing; it never contains
-    /// text for the adapter to send automatically.
-    async fn on_incoming_message(&self, msg: IncomingMessage) -> Result<(), String>;
-
-    /// Notify the agent that an adapter's connection state changed.
-    fn on_connection_state(&self, adapter_name: &str, connected: bool, self_id: Option<String>);
 }
 
 /// Adapter errors.
@@ -145,9 +132,6 @@ pub trait Adapter: Send + Sync {
         target: &MessageTarget,
         content: &str,
     ) -> Result<SendResult, AdapterError>;
-
-    /// Subscribe to adapter events. May be called multiple times.
-    fn subscribe(&self, tx: mpsc::UnboundedSender<AdapterEvent>);
 
     /// 平台中立的适配器管理面（W3.1，2026-10 适配器管理通道）。
     ///

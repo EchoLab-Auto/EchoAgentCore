@@ -77,8 +77,7 @@ EchoAgentCore/
 - `Tool`（echo-defs）— LLM 可调用函数；`timeout_hint` 自声明执行超时
 - `SkillProvider` / `Skill`（echo-defs）— 技能接缝；`SkillRegistry` 在 echo-agent
 - `Adapter`（echo-defs::adapter）— **平台接缝的唯一实现路径**：生命周期/收发/状态面；进程外插件经宿主 `RemoteAdapter` 实现它（`echo-plugin-host` 的 `impl Adapter for RemoteAdapter`）（平台中立的生命周期/收发/状态面）；`echo-adapter` 只承载 filter/registry/ConfigStore 等实现并对其 re-export。平台专属管理动作不再走能力扩展 trait，而是经 **`InvokeAdapterOp{adapter, method, payload}`** 透传（插件侧 `custom` op 自行解释）——门控模式、名单、登录等取值因此是**参数字符串**而非共享枚举
-- `MessageFilter`（echo-adapter）— 入站消息过滤器（白名单、黑名单、频率、关键词、长度）
-- `ChatAdapter`（echo-defs::chat）— **预留词汇，零实现零使用**：`Adapter` 接缝定型后它没接线，`IncomingMessage`/`MessageTarget` 等词汇仍被 filter 与适配器桥复用；清理或接线前不要照它写新代码
+- `ChannelType` / `IncomingMessage` / `MessageTarget`（echo-defs::chat）— 跨适配器边界的**消息词汇**（平台中立）；入站过滤在适配器插件进程内做，宿主不持有过滤管道
 
 **机制与运行时抽象**：
 
@@ -87,7 +86,7 @@ EchoAgentCore/
 - `EventLog` / `SessionEvent` / `derive_messages`（echo-session）— 事件溯源存储、日志投影
 - `ConfigStore`（echo-adapter）— TOML 原子读改写（Agent 与适配器共享，杜绝并发写覆盖）
 - `PluginManifest` / `PluginRegistry`（echo-plugin）— 插件清单与注册表；`echo-plugin-host` 提供 Transport（inproc/stdio）、监督与 `RemoteAdapter`
-- `AgentMessageHook`（echo-agent）— 单向 `InboundMessageHook` 实现；平台输出必须走工具
+- `AgentMessageHook`（echo-agent）— 入站消息进入 agent 的落点（`on_incoming_message` 固有方法，**不是 trait 实现**）：组合根把插件 `deliver_message` 队列接到它；平台输出必须走工具
 - **平台回复指引**：QQ 消息回复由系统提示词边界块 + `qq-transport` 技能承担（"每条 hook 必调用一次发送工具"），循环层不做代码校验/纠偏
 - `FanoutHandle`（echo-protocol::bridge）— 多订阅者事件扇出（自动清理失效订阅者）；进程内 mpsc 路径不带扇出序号，生产 WS 路径带
 

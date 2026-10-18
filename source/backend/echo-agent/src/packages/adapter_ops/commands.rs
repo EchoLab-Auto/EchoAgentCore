@@ -51,57 +51,57 @@ impl Agent {
     ///
     /// 命令域只含通用 `InvokeAdapterOp` 臂（旧 QQ 变体已于 2026-10 删除）。
     pub(crate) async fn apply_adapter_command(&self, cmd: BackendCommand) {
-        match cmd {
-            BackendCommand::InvokeAdapterOp {
-                adapter,
-                method,
-                payload,
-            } => {
-                // W2.1/W3.3：通用适配器管理命令（唯一新增变体）——经管理面
-                // invoke_custom 执行；写类方法对齐其余实例（best-effort），
-                // 完成后状态下发单源化（AdapterState 单源）。
-                // C1（泛化 02a §7.2）：失败统一回执 AdapterOpResult{error}
-                // （替代 Error），实例解析失败同样以命令自带 adapter/method
-                // 回显（Panel 按键配对，无需等超时）。
-                tracing::info!(%adapter, %method, "Agent: InvokeAdapterOp");
-                match self.resolve_adapter(&Some(adapter.clone())) {
-                    Ok(ad) => {
-                        // 持久化在共享段（gating 平台）的写方法：对齐同
-                        // platform 的其余实例（源实例须声明 gating 能力，
-                        // 见 `broadcast_adapter_op_to_others`）。
-                        const SHARED_WRITE_METHODS: &[&str] = &[
-                            "set_gate_mode",
-                            "update_allowlist",
-                            "update_denylist",
-                            "set_owner",
-                        ];
-                        if SHARED_WRITE_METHODS.contains(&method.as_str()) {
-                            self.broadcast_adapter_op_to_others(&adapter, &method, payload.clone())
-                                .await;
-                        }
-                        let succeeded = self
-                            .invoke_adapter_op(ad.clone(), &adapter, &method, payload)
-                            .await;
-                        // 写类方法完成后刷新状态（读类查询不重复下发）。
-                        if SHARED_WRITE_METHODS.contains(&method.as_str()) {
-                            self.emit_adapter_state_events(ad.clone());
-                        }
-                        // C2（泛化 02a §7.2 D2）：读路径 `get_state` 成功完成后
-                        // 推送状态（Panel 首屏路径；复用单源，其余读方法不加）。
-                        if succeeded && method == "get_state" {
-                            self.emit_adapter_state_events(ad.clone());
-                        }
-                    }
-                    Err(message) => self.emit(BackendEvent::AdapterOpResult {
-                        adapter: adapter.clone(),
-                        method: method.clone(),
-                        result: serde_json::Value::Null,
-                        error: Some(message),
-                    }),
+        // 只认通用 `InvokeAdapterOp`；其余命令不属于本域（`apply_command`
+        // 只对本域变体调用本函数），直接忽略。
+        let BackendCommand::InvokeAdapterOp {
+            adapter,
+            method,
+            payload,
+        } = cmd
+        else {
+            return;
+        };
+        // W2.1/W3.3：通用适配器管理命令（唯一新增变体）——经管理面
+        // invoke_custom 执行；写类方法对齐其余实例（best-effort），
+        // 完成后状态下发单源化（AdapterState 单源）。
+        // C1（泛化 02a §7.2）：失败统一回执 AdapterOpResult{error}
+        // （替代 Error），实例解析失败同样以命令自带 adapter/method
+        // 回显（Panel 按键配对，无需等超时）。
+        tracing::info!(%adapter, %method, "Agent: InvokeAdapterOp");
+        match self.resolve_adapter(&Some(adapter.clone())) {
+            Ok(ad) => {
+                // 持久化在共享段（gating 平台）的写方法：对齐同
+                // platform 的其余实例（源实例须声明 gating 能力，
+                // 见 `broadcast_adapter_op_to_others`）。
+                const SHARED_WRITE_METHODS: &[&str] = &[
+                    "set_gate_mode",
+                    "update_allowlist",
+                    "update_denylist",
+                    "set_owner",
+                ];
+                if SHARED_WRITE_METHODS.contains(&method.as_str()) {
+                    self.broadcast_adapter_op_to_others(&adapter, &method, payload.clone())
+                        .await;
+                }
+                let succeeded = self
+                    .invoke_adapter_op(ad.clone(), &adapter, &method, payload)
+                    .await;
+                // 写类方法完成后刷新状态（读类查询不重复下发）。
+                if SHARED_WRITE_METHODS.contains(&method.as_str()) {
+                    self.emit_adapter_state_events(ad.clone());
+                }
+                // C2（泛化 02a §7.2 D2）：读路径 `get_state` 成功完成后
+                // 推送状态（Panel 首屏路径；复用单源，其余读方法不加）。
+                if succeeded && method == "get_state" {
+                    self.emit_adapter_state_events(ad.clone());
                 }
             }
-            // 其余命令不属于适配器域（apply_command 只对本域变体调用本函数）。
-            _ => {}
+            Err(message) => self.emit(BackendEvent::AdapterOpResult {
+                adapter: adapter.clone(),
+                method: method.clone(),
+                result: serde_json::Value::Null,
+                error: Some(message),
+            }),
         }
     }
 

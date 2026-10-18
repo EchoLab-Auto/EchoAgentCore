@@ -267,11 +267,6 @@ impl echo_defs::adapter::Adapter for RemoteAdapter {
         })
     }
 
-    fn subscribe(&self, _tx: tokio::sync::mpsc::UnboundedSender<echo_defs::chat::AdapterEvent>) {
-        // 入站消息经 `AdapterHostService` 队列分发（不走订阅通道）；
-        // 远程适配器的事件流由插件进程持有（`HostCall` 上报）。
-    }
-
     fn management(&self) -> Option<&dyn echo_defs::adapter::AdapterManagement> {
         // 远程管理面（cached_state / invoke_custom；按引返回本结构字段）。
         Some(&self.management)

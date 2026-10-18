@@ -1,6 +1,6 @@
 [package]
 name = "echo-adapter"
-description = "EchoAgentCore adapter abstraction — traits, types, and filter pipeline"
+description = "EchoAgentCore adapter host glue — registry and config store (definitions live in echo-defs)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

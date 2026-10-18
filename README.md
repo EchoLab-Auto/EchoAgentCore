@@ -66,7 +66,7 @@ EchoAgentCore/
 
 | Crate | 职责 |
 |---|---|
-| `echo-defs` | **Service Definition 层**：LLM/工具/技能/平台消息词汇与 trait（`LlmProvider`/`Tool`/`SkillProvider`/`ChatAdapter`）、策略枚举（`GateMode` 等）、token 纯函数。零实现、零 harness 依赖 |
+| `echo-defs` | **Service Definition 层**：LLM/工具/技能/平台消息词汇与 trait（`LlmProvider`/`Tool`/`SkillProvider`/`Adapter`）、跨边界消息词汇（`IncomingMessage` 等）、token 纯函数。零实现、零 harness 依赖 |
 | `echo-context` | **服务定位与事件机制**：`Ctx`（按 key 注册/解析服务）、`EventBus`（Observe/Waterfall/Parallel/Serial 类型化事件）、`Disposer`（可逆注册）、`ScopedRegistry`（per-scope shadowing）。零 echo-* 依赖 |
 | `echo-session` | **事件溯源会话存储**：`SessionEvent` 事件集、`EventLog`（append-only 持久化）、`derive_messages` 投影、compaction、`SessionHeader`（fork/resume）、v1–v4 旧格式兼容迁移 |
 | `echo-loop` | **Agent 循环驱动**：`TurnRunner` turn/step 状态机（`turn/*`/`step/*`/`agent/*` 生命周期事件）、`ToolPipeline` 工具执行管道（pre/execute/post waterfall 中间件） |
@@ -76,7 +76,7 @@ EchoAgentCore/
 | `echo-plugin-api` / `-loader` / `-sdk` / `-host` | **插件协议与宿主**：宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商（`-api`）；分层配置合成与依赖排序（`-loader`）；插件侧 stdio 运行时（`-sdk`）；Transport（inproc/stdio）、进程监督与崩溃重启、`RemoteAdapter`（把进程外插件当适配器接入，实现 `echo_defs::adapter::Adapter`）、一致性套件（`-host`）。宿主只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层 |
 | `echo-sanitize` | **敏感信息隔离**：注册表式脱敏器（默认 `Redactor` 实现），在出口卡口统一改写密钥/令牌；保证边界与威胁模型见 `document/core/security-redaction-design.md` |
 | `echo-agent` | Agent 框架：agent 循环、LLM provider 工厂、工具注册表与各包（`packages/`）、技能系统、trunk 记忆、异步子任务（`spawn_subagent`） |
-| `echo-adapter` | 协议无关的适配器抽象：`Adapter` trait、`InboundMessageHook`、过滤管道、`ConfigStore` |
+| `echo-adapter` | 适配器**宿主胶水**：`AdapterRegistry`（name → 句柄）与 `ConfigStore`（TOML 原子读改写）；定义（`Adapter` trait 等）在 `echo-defs`。入站过滤在插件进程内，宿主不留过滤管道 |
 | （QQ 适配器插件） | **已迁出**为独立进程插件（stdio 协议）交付：反向 WS 接入、5 层门控、NapCat 管理、OneBot 协议类型；见 `document/design/adapter-plugin.md` |
 | `echo-federation` | **联邦链路（Core↔Core）**：`FedFrame` 线协议（工具调用/委派/只读查询）、Hello/Welcome 握手、per-peer Bearer 认证、心跳/重连/回环防护、邀请串（`echofed://`） |
 | `echo-agent-core`（bin） | 组合根：加载配置、装配 Agent + 插件宿主 + 联邦路由泵（代理工具注册/执行端裁决/查询处理）、对外提供 management WS 与适配器实例编排 |

@@ -1,13 +1,14 @@
-//! The chat-platform capability seam — platform-agnostic message/target
-//! types and the `ChatAdapter` Service Definition.
+//! Platform-agnostic **chat vocabulary** — the message/target/channel types
+//! that cross the adapter boundary.
 //!
-//! A platform (QQ, Telegram, ...) is a `ChatAdapter` provider: it translates
-//! platform-specific events into [`IncomingMessage`] values and accepts
-//! [`MessageTarget`] values to send replies. Consumers (the agent loop, the
-//! generic send/list tools) depend only on this crate — never on a concrete
-//! platform crate.
+//! An adapter translates platform events into [`IncomingMessage`] and accepts
+//! [`MessageTarget`] to send replies. Consumers (agent loop, adapter tools)
+//! depend only on these types — never on a concrete platform crate.
+//!
+//! The seam **trait** for adapters is [`crate::adapter::Adapter`] (not here):
+//! an earlier `ChatAdapter` trait in this module never got an implementation
+//! and was removed rather than left as a decoy.
 
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 /// Distinguishes between direct messages and group messages across platforms.
@@ -125,138 +126,4 @@ pub struct SendResult {
     pub success: bool,
     /// Error details if failed.
     pub error: Option<String>,
-}
-
-/// Events emitted by adapters for the agent to consume.
-#[derive(Debug, Clone)]
-pub enum AdapterEvent {
-    /// A new message was received from the platform.
-    ///
-    /// Boxed: `IncomingMessage` is much larger than the other variants.
-    MessageReceived(Box<IncomingMessage>),
-    /// Connection state changed.
-    ConnectionState {
-        adapter_name: String,
-        connected: bool,
-        self_id: Option<String>,
-    },
-    /// The adapter was stopped.
-    Stopped { adapter_name: String },
-    /// An error occurred in the adapter.
-    Error {
-        adapter_name: String,
-        message: String,
-    },
-}
-
-/// Adapter lifecycle and capability errors.
-#[derive(Debug, thiserror::Error)]
-pub enum ChatAdapterError {
-    #[error("adapter {0} is not configured")]
-    NotConfigured(String),
-    #[error("adapter {0} is already running")]
-    AlreadyRunning(String),
-    #[error("adapter {0} is not running")]
-    NotRunning(String),
-    #[error("adapter error: {0}")]
-    Internal(String),
-    #[error("send failed: {0}")]
-    SendFailed(String),
-    #[error("timeout")]
-    Timeout,
-}
-
-/// Connection state of a chat adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ChatAdapterConnectionState {
-    /// Not started.
-    Stopped,
-    /// Running and connected.
-    Connected,
-    /// Running but disconnected (no client connected).
-    Disconnected,
-    /// In the process of starting.
-    Starting,
-    /// In the process of stopping.
-    Stopping,
-    /// Encountered an error.
-    Error,
-}
-
-/// Snapshot of adapter status for the TUI / API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatAdapterInfo {
-    /// Unique adapter identifier (e.g., "qq").
-    pub name: String,
-    /// Human-readable label (e.g., "QQ/OneBot").
-    pub display_name: String,
-    /// Connection status.
-    pub status: ChatAdapterConnectionState,
-    /// Self ID on the platform (e.g., QQ number as string).
-    pub self_id: Option<String>,
-    /// When the adapter was started (Unix timestamp).
-    pub started_at: Option<i64>,
-    /// Platform name for session scoping.
-    pub platform: String,
-    /// Whether this adapter is configured and enabled.
-    pub configured: bool,
-}
-
-/// An abstraction over a messaging platform (QQ, Telegram, Discord, etc.).
-///
-/// Adapters translate platform-specific events into platform-agnostic
-/// [`IncomingMessage`] values, and accept [`MessageTarget`] values to send
-/// replies. This is the **Service Definition** of the chat-platform seam:
-/// providers implement it, consumers inject it by key.
-///
-/// # Lifecycle
-///
-/// 1. Created with configuration (may be incomplete — see `is_configured()`).
-/// 2. `subscribe()` — the agent hooks in to receive events.
-/// 3. `start()` — the adapter begins listening for platform events.
-/// 4. `stop()` — graceful shutdown.
-#[async_trait]
-pub trait ChatAdapter: Send + Sync {
-    /// Unique adapter identifier (e.g., "qq").
-    fn name(&self) -> &str;
-
-    /// Human-readable label (e.g., "QQ / OneBot").
-    fn display_name(&self) -> &str;
-
-    /// Platform tag used in session scoping (e.g., "qq").
-    fn platform(&self) -> &str;
-
-    /// Whether this adapter has a valid configuration to run.
-    fn is_configured(&self) -> bool;
-
-    /// Current status info for display.
-    fn status_info(&self) -> ChatAdapterInfo;
-
-    /// Start the adapter.
-    async fn start(&self) -> Result<(), ChatAdapterError>;
-
-    /// Stop the adapter gracefully.
-    async fn stop(&self) -> Result<(), ChatAdapterError>;
-
-    /// Send a text message to a specific platform target.
-    async fn send_text(
-        &self,
-        target: &MessageTarget,
-        content: &str,
-    ) -> Result<SendResult, ChatAdapterError>;
-
-    /// Subscribe to adapter events. May be called multiple times.
-    fn subscribe(&self, tx: tokio::sync::mpsc::UnboundedSender<AdapterEvent>);
-
-    /// Get the group list for this platform. Default: empty.
-    async fn get_groups(&self) -> Result<Vec<(i64, String)>, ChatAdapterError> {
-        let _ = self;
-        Ok(Vec::new())
-    }
-
-    /// Get the friend list for this platform. Default: empty.
-    async fn get_friend_list(&self) -> Result<Vec<(i64, String)>, ChatAdapterError> {
-        let _ = self;
-        Ok(Vec::new())
-    }
 }

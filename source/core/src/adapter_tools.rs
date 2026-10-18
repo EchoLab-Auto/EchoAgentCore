@@ -93,18 +93,22 @@ impl InstanceSet {
 ///
 /// - 恰好 1 个实例：不带 `account` 参数，绑定该实例；
 /// - 多于 1 个：schema 增加可选 `account`（实例名），缺省时报错列出可选实例。
+///
+/// 返回**实际注册的工具名**，供调用方给这些工具打「所属包」标签——不再按
+/// `send_` / `get_` 前缀猜。前缀猜测是「工具名前缀 = 平台语义」的隐式耦合：
+/// 换个平台换套命名就漏标。
 pub fn register_adapter_tools_multi(
     registry: &mut echo_agent::ToolRegistry,
     adapters: Vec<Arc<dyn Adapter>>,
     gate: Option<OutboundGate>,
-) {
+) -> Vec<String> {
     // 能力过滤：无 `send_text` 能力 → 不注册任何工具。
     let adapters: Vec<Arc<dyn Adapter>> = adapters
         .into_iter()
         .filter(|adapter| adapter.sends_text())
         .collect();
     if adapters.is_empty() {
-        return;
+        return Vec::new();
     }
     let set = InstanceSet::new(adapters);
     let multi = set.multi();
@@ -128,7 +132,9 @@ pub fn register_adapter_tools_multi(
         params
     }
 
+    let mut registered: Vec<String> = Vec::new();
     let mut register = |name: &str, description: &str, params: Value| {
+        registered.push(name.to_string());
         registry.register(Arc::new(AdapterToolWrapper {
             name: name.to_string(),
             description: description.to_string(),
@@ -293,6 +299,7 @@ pub fn register_adapter_tools_multi(
             "required": ["target_type", "target_id", "file"]
         }),
     );
+    registered
 }
 
 // ---------------------------------------------------------------------------
@@ -756,7 +763,7 @@ fn redact_json_strings(value: Value, redactor: &dyn echo_defs::sanitize::Redacto
 mod tests {
     use super::*;
 
-    use echo_adapter::types::{AdapterEvent, SendResult};
+    use echo_adapter::types::SendResult;
     use echo_adapter::{AdapterConnectionState, AdapterError, AdapterInfo, AdapterManagement};
 
     /// 测试用最小适配器：工具注册 / 闸门用例不触达真实平台路径。
@@ -810,7 +817,6 @@ mod tests {
                 error: None,
             })
         }
-        fn subscribe(&self, _tx: tokio::sync::mpsc::UnboundedSender<AdapterEvent>) {}
         fn management(&self) -> Option<&dyn AdapterManagement> {
             None
         }

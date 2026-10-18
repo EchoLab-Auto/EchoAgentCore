@@ -4544,7 +4544,6 @@ async fn adapter_list_fills_platform_ui_and_session_labels() {
                 error: None,
             })
         }
-        fn subscribe(&self, _tx: tokio::sync::mpsc::UnboundedSender<echo_adapter::AdapterEvent>) {}
         fn ui_descriptor(&self) -> Option<serde_json::Value> {
             Some(serde_json::json!({"version": 1, "panels": []}))
         }

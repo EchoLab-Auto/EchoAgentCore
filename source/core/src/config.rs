@@ -129,10 +129,33 @@ impl Default for SanitizeSection {
 }
 
 /// Container for the `[adapters]` TOML section.
+///
+/// **平台中立**：`[adapters.<name>]` 里的任意平台名都原样收进
+/// [`platforms`](Self::platforms)——新增平台不需要改本结构体，宿主也不认识
+/// 具体平台（平台专属键透传给插件）。此前是硬编码的 `qq: Option<QqSection>`，
+/// 配 `[adapters.telegram]` 会被 serde 静默丢弃。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct AdaptersSection {
-    pub qq: Option<QqSection>,
+    /// 平台名 → 该平台的适配器段（`shared` 透传 / `plugin` 启停 / `instances` 表）。
+    #[serde(flatten)]
+    pub platforms: std::collections::BTreeMap<String, QqSection>,
+}
+
+impl AdaptersSection {
+    /// 取某个平台的段（`None` = 该平台未配置）。
+    pub fn platform(&self, name: &str) -> Option<&QqSection> {
+        self.platforms.get(name)
+    }
+
+    /// 已配置的平台名（按字典序）。
+    ///
+    /// 目前只被解析回归测试消费（bin 构建下会报 dead_code）；B 阶段泛化
+    /// 多平台装配时进入生产路径。
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn names(&self) -> Vec<&String> {
+        self.platforms.keys().collect()
+    }
 }
 
 /// `[adapters.qq]`：共享默认 + 多实例表。
@@ -393,7 +416,7 @@ impl CoreConfig {
 
         // ---- Build QQ adapter config（P1.9 配置本地化：TOML 表透传）----
         if let Some(ref adapters) = config.adapters_section {
-            if let Some(ref qq_cfg) = adapters.qq {
+            if let Some(qq_cfg) = adapters.platform("qq") {
                 // New-format config takes priority（共享默认层）。
                 config.qq_adapter = QqHostConfig::from_shared(qq_cfg.shared.clone());
                 config.qq_instances = qq_cfg.instances.clone();
@@ -491,6 +514,53 @@ fn validate_logging_level(logging: &LoggingSection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `[adapters.<name>]` 是平台中立的映射：任意平台名都能解析进来。
+    ///
+    /// 回归背景：此前 `AdaptersSection` 只有硬编码的 `qq` 字段，
+    /// `[adapters.telegram]` 会被 serde 静默丢弃（既不报错也不生效）。
+    #[test]
+    fn adapters_section_accepts_any_platform_name() {
+        let path = std::env::temp_dir().join("echo-agent-adapters-platforms-test.toml");
+        std::fs::write(
+            &path,
+            r#"
+[agent]
+provider = "openai"
+model = "gpt-4o"
+
+[adapters.qq]
+enabled = true
+command_prefix = "!"
+
+[adapters.qq.plugin]
+command = "echo-adapter-qq"
+
+[adapters.telegram]
+enabled = true
+
+[adapters.telegram.plugin]
+command = "echo-adapter-telegram"
+"#,
+        )
+        .unwrap();
+        let config = CoreConfig::load(&path).unwrap();
+        let section = config.adapters_section.as_ref().expect("adapters 段应存在");
+        assert_eq!(
+            section.names(),
+            vec!["qq", "telegram"],
+            "两个平台都应被收录"
+        );
+        assert_eq!(
+            section.platform("telegram").unwrap().plugin.command,
+            "echo-adapter-telegram",
+            "未知平台段原样解析，不依赖宿主认识它"
+        );
+        // 宿主读点仍只取 qq（B 阶段才会泛化到多平台）
+        assert!(config.qq_adapter.enabled);
+        assert_eq!(config.qq_adapter.command_prefix, "!");
+        std::fs::remove_file(&path).ok();
+    }
 
     /// listen 字段的**缺省值**（回退地址）——零配置实际生效地址由
     /// `management::plan_federation_listen` 决定（缺省合并至管理地址；

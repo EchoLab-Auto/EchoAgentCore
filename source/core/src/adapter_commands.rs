@@ -166,7 +166,7 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
-    use echo_adapter::types::{AdapterEvent, ChannelType, SendResult};
+    use echo_adapter::types::{ChannelType, SendResult};
     use echo_adapter::{AdapterConnectionState, AdapterError, AdapterInfo, AdapterManagement};
 
     /// 记录型适配器：记录 send_message 调用；可选 owner/连接态。
@@ -236,7 +236,6 @@ mod tests {
                 error: None,
             })
         }
-        fn subscribe(&self, _tx: tokio::sync::mpsc::UnboundedSender<AdapterEvent>) {}
         fn management(&self) -> Option<&dyn AdapterManagement> {
             None
         }

@@ -18,7 +18,6 @@ use crate::tool::ToolRegistry;
 
 /// 内置插件 id（组合根与挂/卸效果共用，避免字符串漂移）。
 pub const TOOLS_BUILTIN_PLUGIN_ID: &str = "echo-agent.tools.builtin";
-pub const ADAPTER_QQ_PLUGIN_ID: &str = "echo-agent.adapter.qq";
 pub const SKILLS_DIR_PLUGIN_ID: &str = "echo-agent.skills.dir";
 pub const MANAGEMENT_PANEL_PLUGIN_ID: &str = "echo-agent.management.panel";
 /// 工作区会话管理插件（workspace）：Panel 侧多会话/多目录管理 + git 状态，
@@ -37,10 +36,14 @@ pub const SUBAGENT_PLUGIN_ID: &str = "echo-agent.subagent";
 pub const SINGLE_LOOP_PLUGIN_ID: &str = "echo-agent.loop.single";
 pub const PARALLEL_LOOP_PLUGIN_ID: &str = "echo-agent.loop.parallel";
 
-pub const GATED_PLUGIN_IDS: [&str; 5] = [
+/// 受 persona 名单门控的**框架内置**插件 id。
+///
+/// 适配器插件**不在这里**：它们按 `kind == Adapter` 在运行期从注册表推导
+/// （见 `Agent::gated_plugin_ids`），框架不需要认识任何平台名——新增平台
+/// 插件自动纳入门控。
+pub const GATED_PLUGIN_IDS: [&str; 4] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
-    ADAPTER_QQ_PLUGIN_ID,
     WORKSPACE_PLUGIN_ID,
     SUBAGENT_PLUGIN_ID,
 ];
@@ -50,10 +53,12 @@ pub const GATED_PLUGIN_IDS: [&str; 5] = [
 /// LLM Provider 插件 id（名义挂载，重启生效）。
 pub const PROVIDER_LLM_PLUGIN_ID: &str = "echo-agent.provider.llm";
 
-/// 供插件黑名单移除迁移物化白名单时使用。
-pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
+/// 框架自身声明的内置插件 id（**不含适配器**）。
+///
+/// 适配器插件 id 由组合根声明（`core::adapter_manifests`）——框架不认识平台名。
+/// 与 `scripts/update.sh::expected_ids` 的对齐校验在 Core 侧测试里把两侧并起来比。
+pub const BUILTIN_PLUGIN_IDS: [&str; 8] = [
     TOOLS_BUILTIN_PLUGIN_ID,
-    ADAPTER_QQ_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
     WORKSPACE_PLUGIN_ID,
     SUBAGENT_PLUGIN_ID,

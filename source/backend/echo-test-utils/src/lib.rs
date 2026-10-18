@@ -62,10 +62,6 @@ mod adapter {
         pub started: AtomicBool,
         /// Canned outbound send results, drained in order.
         pub send_results: Vec<echo_adapter::types::SendResult>,
-        /// Events received via `subscribe`, for assertions.
-        pub subscribers: std::sync::Mutex<
-            Vec<tokio::sync::mpsc::UnboundedSender<echo_adapter::types::AdapterEvent>>,
-        >,
         /// Filter state updated via `update_allowlist` / `update_denylist`.
         pub allowlist_users: std::sync::Mutex<Vec<String>>,
         pub allowlist_groups: std::sync::Mutex<Vec<String>>,
@@ -80,7 +76,6 @@ mod adapter {
                 configured,
                 started: AtomicBool::new(false),
                 send_results: Vec::new(),
-                subscribers: std::sync::Mutex::new(Vec::new()),
                 allowlist_users: std::sync::Mutex::new(Vec::new()),
                 allowlist_groups: std::sync::Mutex::new(Vec::new()),
                 denylist_users: std::sync::Mutex::new(Vec::new()),
@@ -129,15 +124,6 @@ mod adapter {
         async fn stop(&self) -> Result<(), AdapterError> {
             self.started.store(false, Ordering::SeqCst);
             Ok(())
-        }
-        fn subscribe(
-            &self,
-            tx: tokio::sync::mpsc::UnboundedSender<echo_adapter::types::AdapterEvent>,
-        ) {
-            self.subscribers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(tx);
         }
         async fn send_message(
             &self,
