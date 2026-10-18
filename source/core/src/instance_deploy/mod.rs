@@ -1,4 +1,4 @@
-//! 适配器实例编排（**通用机制**）+ 平台部署知识（隔离在子模块）。
+//! 插件实例编排（**通用机制**）+ 平台部署知识（隔离在子模块）。
 //!
 //! 分两层：
 //!
@@ -12,10 +12,10 @@
 //!
 //! 设计要点：
 //! - **实例是一等概念**：`instance_id` 全局唯一，`persona` 是归属字段（一个
-//!   persona 可挂多个实例）；实例 id 即适配器名与会话 `@account` 维度。
+//!   persona 可挂多个实例）；实例 id 即插件实例名与会话 `@account` 维度。
 //! - **端口自动分配并持久化**：首次分配后写回
 //!   `[instances.<platform>.instances.<id>.ports]`，跨重启稳定（容器端口映射
-//!   必须稳定才能让适配器容器重连到同一处）。
+//!   必须稳定才能让插件实例容器重连到同一处）。
 //! - **自动创建**：persona 启用了该平台插件且没有归属实例时自动建档
 //!   （id = persona，重复则 `<persona>-2`…）。
 
@@ -191,7 +191,7 @@ fn merge_tables(base: &toml::Table, overlay: &toml::Table) -> toml::Table {
 
 /// 解析实例列表：显式配置的实例 + persona 门控自动创建的实例。
 ///
-/// `enabled_personas` 是启用了该平台适配器插件的人格 id 列表；`data_dir`
+/// `enabled_personas` 是启用了该平台插件插件的人格 id 列表；`data_dir`
 /// 已知时把自动生成 compose 的路径写进实例配置（容器编排据此启停容器），
 /// `None` 表示不生成 compose 路径。
 pub fn resolve_instances_in(

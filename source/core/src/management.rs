@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn invoke_instance_op_command_roundtrips() {
-        // 适配器管理命令线格式（W2.1）：管理方法经统一通道直通。
+        // 插件实例管理命令线格式（W2.1）：管理方法经统一通道直通。
         let text = r#"{"type":"command","payload":{"InvokeInstanceOp":{"instance":"qq-default","method":"set_gate_mode","payload":{"mode":"allowlist"}}}}"#;
         match handle_inbound_text(text) {
             Some(InboundFrame::Command(cmd)) => {

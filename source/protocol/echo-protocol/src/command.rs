@@ -276,18 +276,18 @@ pub enum BackendCommand {
     RestartInstance { name: String },
     /// Request the current instance status list.
     RequestInstanceStatus,
-    /// 调用一个适配器管理方法（W2.1，2026-10 适配器管理通道）。
+    /// 调用一个插件实例管理方法（W2.1，2026-10 插件实例管理通道）。
     ///
-    /// **唯一新增的适配器管理命令**——取代逐平台专属命令（旧 QQ 专属变体
+    /// **唯一新增的插件实例管理命令**——取代逐平台专属命令（旧 QQ 专属变体
     /// 已于 2026-10 直接删除）。
     /// `method` 与插件协议 `custom op` 及 `InstanceManagement::invoke_custom`
     /// 同名直通（如 `set_gate_mode` / `update_allowlist` / `login_qrcode`）。
     /// 响应为 [`crate::event::BackendEvent::InstanceOpResult`]。
     ///
-    /// **Frontend-only**（类别判定，fail-closed）：一切适配器管理命令都是
+    /// **Frontend-only**（类别判定，fail-closed）：一切插件实例管理命令都是
     /// 人在环配置面，模型绝不可控。
     InvokeInstanceOp {
-        /// 插件实例名（旧线协议字段名 `adapter` 仍接受——2026-10 去适配器化）。
+        /// 插件实例名（旧线协议字段名 `adapter` 仍接受——2026-10 去插件实例化）。
         #[serde(alias = "adapter")]
         instance: String,
         /// 管理方法名（平台自定义；推荐名见 `InstanceManagement` 文档）。
@@ -458,13 +458,13 @@ pub enum CommandClearance {
 
 /// Return the command clearance level for `cmd`.
 ///
-/// **类别判定（W2.3，2026-10）**：适配器管理命令按**类别**判定——
+/// **类别判定（W2.3，2026-10）**：插件实例管理命令按**类别**判定——
 /// 一切 [`BackendCommand::InvokeInstanceOp`] 都是 Frontend-only：人在环
 /// 配置面，模型绝不可控。类别判定取代了「逐平台变体枚举」——新增管理
 /// 方法不再需要记得加枚举臂（消除「忘加枚举臂」回归窗口，fail-closed）。
 pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
     match cmd {
-        // 适配器管理命令：类别判定（任意平台、任意方法）。
+        // 插件实例管理命令：类别判定（任意平台、任意方法）。
         BackendCommand::InvokeInstanceOp { .. }
         | BackendCommand::SaveWorkspaceSession { .. }
         | BackendCommand::DeleteWorkspaceSession { .. }
@@ -517,7 +517,7 @@ mod tests {
         assert!(!super::is_broadcast_readonly("SendMessage"));
     }
 
-    /// 适配器管理命令的**类别判定**（W2.3）：`InvokeInstanceOp` 一律
+    /// 插件实例管理命令的**类别判定**（W2.3）：`InvokeInstanceOp` 一律
     /// Frontend-only——不依赖逐变体枚举（新增方法零维护）。
     #[test]
     fn instance_management_commands_are_frontend_only_by_category() {

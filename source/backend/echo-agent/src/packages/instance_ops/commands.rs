@@ -1,6 +1,6 @@
-//! 适配器命令域（平台中立；泛化 S5，2026-10）。
+//! 插件实例命令域（平台中立；泛化 S5，2026-10）。
 //!
-//! - 通用命令 `InvokeInstanceOp` 的分发：经适配器管理面
+//! - 通用命令 `InvokeInstanceOp` 的分发：经插件实例管理面
 //!   `InstanceManagement::invoke_custom` 执行、`InstanceOpResult` 回执、
 //!   写方法跨实例广播（同 platform + 源实例 gating 声明）、状态下发单源化
 //!   （`InstanceState` 单源派生）。
@@ -18,7 +18,7 @@ use crate::command::BackendCommand;
 use crate::event::BackendEvent;
 
 impl Agent {
-    /// 解析命令要操作的适配器实例：显式名字优先；缺省时按**注册表全体**
+    /// 解析命令要操作的插件实例：显式名字优先；缺省时按**注册表全体**
     /// 回退（0 个 → 错误；恰 1 个 → 选它；≥2 → 要求显式 `instance`）。
     /// 平台中立（泛化 S5 决策，见 01b §D.1）。
     fn resolve_instance(
@@ -29,7 +29,7 @@ impl Agent {
             return self
                 .instances
                 .get(name)
-                .ok_or_else(|| format!("适配器实例 {name} 未找到"));
+                .ok_or_else(|| format!("插件实例 {name} 未找到"));
         }
         let all: Vec<std::sync::Arc<dyn echo_defs::plugin_instance::PluginInstance>> = self
             .instances
@@ -38,10 +38,10 @@ impl Agent {
             .filter_map(|n| self.instances.get(&n))
             .collect();
         match all.len() {
-            0 => Err("未找到任何适配器实例".into()),
+            0 => Err("未找到任何插件实例".into()),
             1 => Ok(all[0].clone()),
             n => Err(format!(
-                "有 {n} 个适配器实例，请在命令中指定 adapter（实例名）"
+                "有 {n} 个插件实例，请在命令中指定 adapter（实例名）"
             )),
         }
     }
@@ -61,7 +61,7 @@ impl Agent {
         else {
             return;
         };
-        // W2.1/W3.3：通用适配器管理命令（唯一新增变体）——经管理面
+        // W2.1/W3.3：通用插件实例管理命令（唯一新增变体）——经管理面
         // invoke_custom 执行；写类方法对齐其余实例（best-effort），
         // 完成后状态下发单源化（InstanceState 单源）。
         // C1（泛化 02a §7.2）：失败统一回执 InstanceOpResult{error}
@@ -105,7 +105,7 @@ impl Agent {
         }
     }
 
-    // ── 适配器管理通道基础设施（W3.3/W3.4，2026-10）─────────────────────
+    // ── 插件实例管理通道基础设施（W3.3/W3.4，2026-10）─────────────────────
 
     /// 经 `InstanceManagement::invoke_custom` 调用一个管理方法并回执
     /// （`InstanceOpResult`；成功 error=None）。失败同样回执
@@ -201,8 +201,8 @@ impl Agent {
     }
 }
 
-/// 经 `InstanceManagement::invoke_custom` 调用一个管理方法（适配器管理
-/// 通道的通用入口；W3.3，2026-10）。适配器不存在 / 缺管理面 / 方法失败
+/// 经 `InstanceManagement::invoke_custom` 调用一个管理方法（插件实例管理
+/// 通道的通用入口；W3.3，2026-10）。插件实例不存在 / 缺管理面 / 方法失败
 /// 均以可读错误返回。
 pub(crate) async fn invoke_instance_method(
     ad: std::sync::Arc<dyn echo_defs::plugin_instance::PluginInstance>,
@@ -210,7 +210,7 @@ pub(crate) async fn invoke_instance_method(
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     let Some(management) = ad.management() else {
-        return Err(format!("适配器 {} 缺少管理面实现", ad.name()));
+        return Err(format!("插件实例 {} 缺少管理面实现", ad.name()));
     };
     management
         .invoke_custom(method, payload)

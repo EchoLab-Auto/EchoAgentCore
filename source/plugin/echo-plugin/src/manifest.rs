@@ -51,8 +51,8 @@ impl PluginKind {
 /// | `builtin` | 这条 manifest 从哪来（编译内置 / 插件目录发现） |
 /// | `runtime` | 插件的实现代码在哪跑（本进程 / 独立子进程） |
 ///
-/// 适配器插件化（P1.9，2026-10）之后二者不再同义：QQ 适配器的**门控
-/// manifest** 编译在 Core 里（`builtin = true`），但适配器实现由独立进程
+/// 实例插件化（P1.9，2026-10）之后二者不再同义：QQ 插件实例的**门控
+/// manifest** 编译在 Core 里（`builtin = true`），但插件实例实现由独立进程
 /// `echo-instance-qq` 提供（见 `plugins_runtime`）。此前 Panel 只能看到
 /// `builtin`，于是把「跑在独立进程」的插件显示成「内部插件」——用户看到的
 /// 描述与分组互相矛盾（2026-10-18 报障）。
@@ -168,7 +168,7 @@ impl PluginManifest {
 
     /// 声明运行形态（builder 风格；未调用 = 进程内）。
     ///
-    /// 进程外插件（适配器插件等）注册门控 manifest 时**必须**调用：否则
+    /// 进程外插件（实例插件等）注册门控 manifest 时**必须**调用：否则
     /// Panel 会把「独立进程」的插件显示成「内部插件」（2026-10-18 报障）。
     /// 描述里写「独立进程」不算数——前端读的是这个字段。
     pub fn with_runtime(mut self, runtime: PluginRuntime) -> Self {
@@ -271,7 +271,7 @@ kind = "skill"
         assert!(!m.builtin);
     }
 
-    /// 2026-10-18 报障：QQ 适配器描述里写「独立进程」，Panel 却按
+    /// 2026-10-18 报障：QQ 插件实例描述里写「独立进程」，Panel 却按
     /// `builtin=true` 归到「内部插件」——两个维度被挤进一个字段。
     /// 现在 `runtime` 独立表达运行形态。
     #[test]
@@ -290,11 +290,11 @@ kind = "skill"
         let json = serde_json::to_string(&plain).unwrap();
         assert!(!json.contains("runtime"), "进程内不外发: {json}");
 
-        // 适配器插件：builtin 仍为 true（manifest 编译内置），但实现跑在
+        // 实例插件：builtin 仍为 true（manifest 编译内置），但实现跑在
         // 独立进程——两者互不干扰。
         let instance = PluginManifest::builtin(
             "echo-agent.adapter.qq",
-            "QQ 适配器",
+            "QQ 插件实例",
             "0.1.0",
             PluginKind::PluginInstance,
             "qq",

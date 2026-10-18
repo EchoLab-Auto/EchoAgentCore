@@ -121,7 +121,7 @@ fn unknown_fields_are_tolerated() {
 
 #[test]
 fn invoke_outcome_result_field_roundtrip_and_backcompat() {
-    // W1.1：结构化结果字段（适配器 op 返回值的协议载体）。
+    // W1.1：结构化结果字段（插件实例 op 返回值的协议载体）。
     // ① 带 result 的帧往返；
     roundtrip_plugin(PluginToHost::InvokeResult(InvokeResult {
         call_id: "adapter:1".into(),
@@ -196,7 +196,7 @@ fn invoke_context_defaults_and_omission() {
 
 #[test]
 fn instance_contribution_roundtrip_and_capabilities() {
-    // P1（适配器插件化）：InstanceContribution 线上形态（贡献 + 能力位 +
+    // P1（实例插件化）：InstanceContribution 线上形态（贡献 + 能力位 +
     // 词汇结构）。
     let instance = Contribution::PluginInstance(InstanceContribution {
         name: "qq".into(),

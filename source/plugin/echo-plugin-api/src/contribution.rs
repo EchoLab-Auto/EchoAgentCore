@@ -11,7 +11,7 @@ pub enum Contribution {
     Skill(SkillContribution),
     Service(ServiceContribution),
     Events(EventContribution),
-    /// 适配器贡献（P1，2026-10 适配器插件化）：平台适配器作为插件交付。
+    /// 插件实例贡献（P1，2026-10 实例插件化）：平台插件作为插件交付。
     /// 宿主把 `RemoteInstance`（`echo_defs::plugin_instance::PluginInstance` 的远程实现）注册进
     /// `InstanceRegistry`；动作经 `Invoke("<name>:<op>")`，入站经
     /// `HostCall` → 宿主服务 `core_api`（见 `document/design/instance-plugin.md`）。
@@ -74,8 +74,8 @@ pub struct EventContribution {
     pub subscribe: Vec<String>,
 }
 
-/// 适配器贡献（P1，2026-10 适配器插件化）：宿主把 `RemoteInstance` 注册进
-/// `InstanceRegistry`；`capabilities` 声明该适配器支持的管理动作位（宿主
+/// 插件实例贡献（P1，2026-10 实例插件化）：宿主把 `RemoteInstance` 注册进
+/// `InstanceRegistry`；`capabilities` 声明该插件实例支持的管理动作位（宿主
 /// 只调用声明过的方法，未声明的调用拒绝为 `unsupported`）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InstanceContribution {
@@ -91,14 +91,14 @@ pub struct InstanceContribution {
     /// 插件配置 JSON Schema（校验 / 未来面板表单，可选）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_schema: Option<Value>,
-    /// UI 描述符（插件声明的适配器管理界面；Panel 经通用渲染器呈现；
+    /// UI 描述符（插件声明的插件实例管理界面；Panel 经通用渲染器呈现；
     /// 结构见 `document/design/instance-plugin.md` §Panel UI 解耦，可选）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<Value>,
     /// 会话标签（`SessionSwitcher` 等平台分组显示；如 `{"dm":"私聊","group":"群"}`，可选）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_labels: Option<Value>,
-    /// 该适配器贡献给模型的工具（**平台语义在此声明，宿主不认识它们**）。
+    /// 该插件实例贡献给模型的工具（**平台语义在此声明，宿主不认识它们**）。
     ///
     /// 每个工具名同时是 `Invoke("<adapter>:<name>")` 的 op 名；宿主负责跨实例
     /// 合并、多实例时注入 `account` 寻址参数、把调用透传回来。
@@ -106,7 +106,7 @@ pub struct InstanceContribution {
     pub tools: Vec<ToolContribution>,
 }
 
-/// 适配器能力位（缺省全 false——宿主 fail-closed，未声明的调用拒绝）。
+/// 插件实例能力位（缺省全 false——宿主 fail-closed，未声明的调用拒绝）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceCapabilities {
     /// 出站文本（`send_text`）。
@@ -131,7 +131,7 @@ pub struct InstanceCapabilities {
 
 // ── 词汇结构（与 echo-defs 词汇同构；保持本 crate 零 echo-* 依赖）─────────
 
-/// 适配器实例的目标（出站寻址）。
+/// 插件实例的目标（出站寻址）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageTarget {
     /// 通道类型：`"dm"`（私聊）/ `{"type":"group","group_id":"…"}`（群聊）。

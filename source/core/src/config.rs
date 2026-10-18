@@ -60,7 +60,7 @@ impl Default for SystemPromptPlugin {
 
 // ── Core 配置 ──────────────────────────────────────────────────────────────
 
-/// Core 侧配置：Agent、适配器与 management 服务。
+/// Core 侧配置：Agent、插件实例与 management 服务。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct CoreConfig {
@@ -131,7 +131,7 @@ impl Default for SanitizeSection {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct InstancesSection {
-    /// 平台名 → 该平台的适配器段（`shared` 透传 / `plugin` 启停 / `instances` 表）。
+    /// 平台名 → 该平台的插件实例段（`shared` 透传 / `plugin` 启停 / `instances` 表）。
     #[serde(flatten)]
     pub platforms: std::collections::BTreeMap<String, QqSection>,
 }
@@ -168,7 +168,7 @@ pub struct QqSection {
     /// `command_prefix` / `server.access_token` 等少量字段）。
     #[serde(flatten)]
     pub shared: toml::Table,
-    /// 适配器宿主模式（历史字段，2026-10 适配器插件化；builtin 模式已移除，
+    /// 插件实例宿主模式（历史字段，2026-10 实例插件化；builtin 模式已移除，
     /// 见 `load()` 的归一化告警）。
     pub mode: String,
     /// 插件进程启动配置（`[instances.qq.plugin]`）。
@@ -180,7 +180,7 @@ pub struct QqSection {
 /// 单平台的宿主配置视图：透传为主、宿主只读少量字段。
 ///
 /// `[instances.<platform>]` 的完整内容（共享层 + 实例覆盖）以 **TOML 表**
-/// 原样下发给适配器插件（`Hello.config.config`）——宿主不重复插件配置
+/// 原样下发给实例插件（`Hello.config.config`）——宿主不重复插件配置
 /// schema，新字段自动透传。本视图仅承载宿主自身需要的读点：
 /// - [`enabled`](Self::enabled)：实例解析 / 自启停门控；
 /// - [`instances`](Self::instances) / [`launch`](Self::launch)：实例表与插件进程启动。
@@ -238,7 +238,7 @@ impl InstanceHostConfig {
     }
 }
 
-/// `[instances.qq.plugin]`：适配器插件进程（stdio）启动配置。
+/// `[instances.qq.plugin]`：实例插件进程（stdio）启动配置。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct QqPluginLaunchSection {
@@ -477,10 +477,10 @@ impl CoreConfig {
 
             let mut host = InstanceHostConfig::from_section(&name, &section, shared);
 
-            // builtin 模式已移除（适配器插件化收尾）：只按 plugin 模式运行。
+            // builtin 模式已移除（实例插件化收尾）：只按 plugin 模式运行。
             if host.mode == "builtin" {
                 eprintln!(
-                    "warning: [adapters.{name}] mode = \"builtin\" 已移除（适配器插件化收尾）；\
+                    "warning: [adapters.{name}] mode = \"builtin\" 已移除（实例插件化收尾）；\
                      按 plugin 模式运行，请在 [instances.{name}.plugin] 配置 command"
                 );
                 host.mode.clear();
@@ -728,7 +728,7 @@ bind_address = "0.0.0.0:9999"
             "/opt/echo/echo-adapter-qq"
         );
         assert_eq!(config.instances["qq"].launch.args, vec!["--verbose"]);
-        // flatten 共享层仍生效（mode/plugin 不吞掉适配器配置字段）。
+        // flatten 共享层仍生效（mode/plugin 不吞掉插件实例配置字段）。
         assert!(config.instances["qq"].enabled);
         assert_eq!(
             config.instances["qq"].shared["server"]["bind_address"].as_str(),

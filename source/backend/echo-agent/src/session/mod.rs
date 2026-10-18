@@ -38,7 +38,7 @@ use crate::llm::{estimate_history_tokens, estimate_message_tokens, ChatMessage, 
 ///   local:tui::local_user   — local TUI interaction
 /// ```
 ///
-/// `account` 是**适配器实例名**（`[instances.<platform>.instances.<id>]`）。
+/// `account` 是**插件实例名**（`[instances.<platform>.instances.<id>]`）。
 /// 单实例且实例名等于平台名（如 `qq`）时不产生后缀，历史会话 id 全部保持有效。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionKey {
@@ -50,12 +50,12 @@ pub struct SessionKey {
     pub scope_id: String,
     /// User identifier (platform-specific user ID as string).
     pub user_id: String,
-    /// 适配器实例名（多实例维度；None 或等于平台名 = 默认单实例，不写入 id）。
+    /// 插件实例名（多实例维度；None 或等于平台名 = 默认单实例，不写入 id）。
     pub account: Option<String>,
 }
 
 impl SessionKey {
-    /// 本机会话的平台标识（区别于任何适配器平台）。
+    /// 本机会话的平台标识（区别于任何插件实例平台）。
     pub const LOCAL_PLATFORM: &'static str = "local";
 
     /// Build the canonical session ID string.
@@ -84,10 +84,10 @@ impl SessionKey {
             .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case(&self.platform))
     }
 
-    /// 是否为**本机会话**（非平台适配器投递）。
+    /// 是否为**本机会话**（非平台插件投递）。
     ///
     /// 判据是 `platform == "local"`——`local` 是宿主自己的平台标识，与
-    /// 「哪个适配器插件」无关；框架由此不需要认识任何平台名。
+    /// 「哪个实例插件」无关；框架由此不需要认识任何平台名。
     pub fn is_local(&self) -> bool {
         self.platform.eq_ignore_ascii_case(Self::LOCAL_PLATFORM)
     }

@@ -219,7 +219,7 @@ impl Tool for InstanceRestartTool {
 
 /// Resolve the target instance name for a tool call.
 ///
-/// `name` 参数缺省时**不猜平台名**：只有一个适配器就用它，多个则报错列出
+/// `name` 参数缺省时**不猜平台名**：只有一个插件实例就用它，多个则报错列出
 /// 可选项（此前缺省写死 `"qq"`，等于假设部署里一定有 QQ）。
 fn resolve_instance_name(instances: &InstanceRegistry, args: &Value) -> Result<String, ToolError> {
     if let Some(name) = args["name"]

@@ -38,7 +38,7 @@ pub const PARALLEL_LOOP_PLUGIN_ID: &str = "echo-agent.loop.parallel";
 
 /// 受 persona 名单门控的**框架内置**插件 id。
 ///
-/// 适配器插件**不在这里**：它们按 `kind == PluginInstance` 在运行期从注册表推导
+/// 实例插件**不在这里**：它们按 `kind == PluginInstance` 在运行期从注册表推导
 /// （见 `Agent::gated_plugin_ids`），框架不需要认识任何平台名——新增平台
 /// 插件自动纳入门控。
 pub const GATED_PLUGIN_IDS: [&str; 4] = [
@@ -53,9 +53,9 @@ pub const GATED_PLUGIN_IDS: [&str; 4] = [
 /// LLM Provider 插件 id（名义挂载，重启生效）。
 pub const PROVIDER_LLM_PLUGIN_ID: &str = "echo-agent.provider.llm";
 
-/// 框架自身声明的内置插件 id（**不含适配器**）。
+/// 框架自身声明的内置插件 id（**不含插件实例**）。
 ///
-/// 适配器插件 id 由组合根声明（`core::instance_manifests`）——框架不认识平台名。
+/// 实例插件 id 由组合根声明（`core::instance_manifests`）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验在 Core 侧测试里把两侧并起来比。
 pub const BUILTIN_PLUGIN_IDS: [&str; 8] = [
     TOOLS_BUILTIN_PLUGIN_ID,

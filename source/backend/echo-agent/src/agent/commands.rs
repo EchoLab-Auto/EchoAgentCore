@@ -805,7 +805,7 @@ impl Agent {
                 // Also emit instance status and instance management state so the
                 // TUI starts up with the correct persisted values.
                 self.emit_instance_list();
-                // 适配器管理状态：逐个实例下发（W3.4 单源化——InstanceState；
+                // 插件实例管理状态：逐个实例下发（W3.4 单源化——InstanceState；
                 // 缺管理面的实例在内部静默跳过）。
                 for name in self.instances.names() {
                     let Some(instance) = self.instances.get(&name) else {

@@ -9,7 +9,7 @@
 //!   合成 / 校验插件树；失败 → warn + `None`。之后 best-effort 启动全部
 //!   enabled 的 stdio 插件（单个失败逐条 warn 但继续）。成功 →
 //!   `tracing::info!(count, skipped)` 并返回 [`PluginRuntime`]。
-//! - [`PluginRuntime::tools`]：全部已启动插件的远程工具适配器
+//! - [`PluginRuntime::tools`]：全部已启动插件的远程工具插件实例
 //!   （`Arc<RemoteTool>`——`RemoteTool` 已实现 `echo_agent::tool::Tool`，
 //!   注册时可直接向上转型为 `Arc<dyn Tool>`；同时保留 `package()` 供注册
 //!   方打「按包分组」标签）。
@@ -28,8 +28,8 @@ pub struct PluginRuntime {
     pub started: StartedPlugins,
     /// 未启动条目的人可读原因（disabled / 非 stdio 运输层等）。
     pub skipped: Vec<String>,
-    /// 适配器宿主服务（`core_api`；适配器插件的入站 / 状态回呼入口；
-    /// P1，2026-10 适配器插件化）。无适配器贡献时为空注册表（无副作用）。
+    /// 插件实例宿主服务（`core_api`；实例插件的入站 / 状态回呼入口；
+    /// P1，2026-10 实例插件化）。无插件实例贡献时为空注册表（无副作用）。
     pub core_api: Arc<echo_plugin_host::CoreApiService>,
 }
 
@@ -47,9 +47,9 @@ pub async fn start_if_configured(
     start_with_specs(config_path, register_host_services, Vec::new()).await
 }
 
-/// [`start_if_configured`] 的动态实例版（P1.8，2026-10 适配器插件化）：
+/// [`start_if_configured`] 的动态实例版（P1.8，2026-10 实例插件化）：
 /// 在 `plugins.toml` 静态条目之外追加组合根即时组装的 [`LaunchSpec`]——
-/// 适配器插件按**实例**拉起（每实例独立进程 / Hello.config），而
+/// 实例插件按**实例**拉起（每实例独立进程 / Hello.config），而
 /// `plugins.toml` 只加载一次，无法承载运行期分配（端口 / persona / state 文件）。
 ///
 /// 语义：
@@ -99,8 +99,8 @@ pub async fn start_with_specs(
     }
     let supervisor = PluginSupervisor::new();
     register_host_services(&supervisor.host_services());
-    // P1：适配器宿主服务先行注册——插件就绪后其 `submit_input` / `report_*`
-    // 回呼即有接收面（否则适配器插件启动即报 instance_not_found）。
+    // P1：插件实例宿主服务先行注册——插件就绪后其 `submit_input` / `report_*`
+    // 回呼即有接收面（否则实例插件启动即报 instance_not_found）。
     let core_api = Arc::new(echo_plugin_host::CoreApiService::new());
     supervisor
         .host_services()
@@ -125,10 +125,10 @@ pub async fn start_with_specs(
     Some(runtime)
 }
 
-/// 一个已注册的远程适配器 + 其入站队列 receiver（组合根接到送达入口；
-/// P1，2026-10 适配器插件化）。
+/// 一个已注册的远程插件实例 + 其入站队列 receiver（组合根接到送达入口；
+/// P1，2026-10 实例插件化）。
 pub struct RemoteInstanceHandle {
-    /// 远程适配器（注册进 `InstanceRegistry`）。
+    /// 远程插件实例（注册进 `InstanceRegistry`）。
     pub instance: Arc<echo_plugin_host::RemoteInstance>,
     /// 入站消息队列 receiver（插件 `submit_input` 的出站端；
     /// 每实例串行 worker 消费）。
@@ -136,16 +136,16 @@ pub struct RemoteInstanceHandle {
 }
 
 impl PluginRuntime {
-    /// 全部已启动插件的远程工具适配器（未注册工具贡献的插件贡献空表）。
+    /// 全部已启动插件的远程工具插件实例（未注册工具贡献的插件贡献空表）。
     pub fn tools(&self) -> Vec<Arc<RemoteTool>> {
         self.started.tools()
     }
 
-    /// 全部已启动插件的适配器贡献的远程适配器（P1，2026-10 适配器插件化）。
+    /// 全部已启动插件的插件实例贡献的远程插件实例（P1，2026-10 实例插件化）。
     ///
     /// 每个 `(InstanceContribution, PluginHandle)` 构造一个 `RemoteInstance`
     /// 并注册进 `core_api`（入站队列 / 状态回执入口就位，队列 receiver
-    /// 随元组带出）；组合根随后把适配器注册进 `InstanceRegistry`，并把
+    /// 随元组带出）；组合根随后把插件实例注册进 `InstanceRegistry`，并把
     /// receiver 接到消息送达入口（见 `main.rs` 装配）。
     pub fn instances(&self) -> Vec<RemoteInstanceHandle> {
         self.started
@@ -163,7 +163,7 @@ impl PluginRuntime {
             .collect()
     }
 
-    /// 适配器宿主服务（`core_api`；插件回呼的接收面）。
+    /// 插件实例宿主服务（`core_api`；插件回呼的接收面）。
     pub fn core_api(&self) -> Arc<echo_plugin_host::CoreApiService> {
         self.core_api.clone()
     }
@@ -202,7 +202,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 动态 specs（适配器实例）穿透 plugins.toml 休眠门控：无 plugins.toml
+    /// 动态 specs（插件实例）穿透 plugins.toml 休眠门控：无 plugins.toml
     /// 但有 extra specs → 仍启动（命令不存在 → 逐条失败记录，runtime 仍在）。
     #[tokio::test]
     async fn dynamic_specs_start_without_plugins_toml() {

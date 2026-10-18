@@ -672,7 +672,7 @@ async fn host_call_after_disconnect_is_closed() {
     );
 }
 
-// ---- 适配器插件（P1.2）：`"<name>:<op>"` 寻址剥离前缀后路由到 invoke_op ----
+// ---- 实例插件（P1.2）：`"<name>:<op>"` 寻址剥离前缀后路由到 invoke_op ----
 
 struct TestInstance;
 

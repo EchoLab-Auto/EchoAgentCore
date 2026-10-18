@@ -1,4 +1,4 @@
-//! 适配器插件宿主侧（P1，2026-10 适配器插件化）。
+//! 实例插件宿主侧（P1，2026-10 实例插件化）。
 //!
 //! - [`RemoteInstance`]：`echo_defs::plugin_instance::PluginInstance` 的远程实现——异步方法经
 //!   插件协议 `Invoke("<name>:<op>")`（能力位 fail-closed）；状态经
@@ -24,13 +24,13 @@ use crate::transport::TransportError;
 /// 入站队列容量上限（每实例；满 → `backpressure` 错误码，插件退避）。
 const INBOUND_QUEUE_CAPACITY: usize = 256;
 
-/// 远程适配器（`echo_defs::plugin_instance::PluginInstance` 的插件进程实现）。
+/// 远程插件实例（`echo_defs::plugin_instance::PluginInstance` 的插件进程实现）。
 ///
-/// 能力位 fail-closed：宿主只调用该适配器贡献中声明过的方法位
+/// 能力位 fail-closed：宿主只调用该插件实例贡献中声明过的方法位
 /// （[`InstanceContribution::capabilities`]），未声明的调用拒绝为
 /// `unsupported`（不发起 Invoke）。
 pub struct RemoteInstance {
-    /// 适配器实例名（= 插件协议 `Invoke` 的贡献前缀）。
+    /// 插件实例名（= 插件协议 `Invoke` 的贡献前缀）。
     pub name: String,
     contribution: InstanceContribution,
     handle: PluginHandle,
@@ -53,7 +53,7 @@ struct ConnectionCache {
 }
 
 impl RemoteInstance {
-    /// 以插件句柄与适配器贡献构造。
+    /// 以插件句柄与插件实例贡献构造。
     ///
     /// 管理面在构造后由 `PluginInstance::management()` 返回（`Option<&dyn …>`
     /// 按引借用本结构的 `management` 字段——`InstanceManagement` 的实现
@@ -134,7 +134,7 @@ impl RemoteInstance {
             Some((self.handle.generation(), state));
     }
 
-    /// 发起一次适配器 op（`Invoke("<name>:<op>")`）；能力位未声明时
+    /// 发起一次插件实例 op（`Invoke("<name>:<op>")`）；能力位未声明时
     /// fail-closed 拒绝。
     async fn invoke_op(
         &self,
@@ -177,7 +177,7 @@ impl echo_defs::plugin_instance::PluginInstance for RemoteInstance {
     }
 
     fn is_configured(&self) -> bool {
-        // 远程适配器以插件握手成功为配置完成（贡献已上报 = 插件已就绪）。
+        // 远程插件实例以插件握手成功为配置完成（贡献已上报 = 插件已就绪）。
         true
     }
 
@@ -273,7 +273,7 @@ impl echo_defs::plugin_instance::PluginInstance for RemoteInstance {
     }
 
     fn sends_text(&self) -> bool {
-        // 泛化 S6（01b §D.4）：宿主按能力位过滤可注册消息工具的适配器。
+        // 泛化 S6（01b §D.4）：宿主按能力位过滤可注册消息工具的插件实例。
         self.contribution.capabilities.send_text
     }
 }
@@ -285,12 +285,12 @@ impl echo_defs::plugin_instance::PluginInstance for RemoteInstance {
 /// 字段上、生命周期与宿主绑定，不形成循环强引用。
 pub struct RemoteInstanceManagement {
     instance: std::sync::Weak<RemoteInstance>,
-    /// 适配器名（弱引用失效后的错误消息用；弱引用升级失败 = 宿主已销毁）。
+    /// 插件实例名（弱引用失效后的错误消息用；弱引用升级失败 = 宿主已销毁）。
     name: String,
 }
 
 impl RemoteInstanceManagement {
-    /// 以宿主适配器构造（宿主侧组合根在 `RemoteInstance` 完成构造后调用）。
+    /// 以宿主插件实例构造（宿主侧组合根在 `RemoteInstance` 完成构造后调用）。
     pub fn new(instance: Arc<RemoteInstance>) -> Self {
         let name = instance.name.clone();
         Self {
@@ -360,7 +360,7 @@ impl echo_defs::plugin_instance::InstanceManagement for RemoteInstanceManagement
     }
 }
 
-/// 插件 → 宿主的适配器宿主服务（`core_api`）。
+/// 插件 → 宿主的插件实例宿主服务（`core_api`）。
 ///
 /// 语义（见 §插件动作 表）：`submit_input` 入队（回执 = 已入队；
 /// 每实例有界队列 + 串行 worker 保序）；`report_state` / `report_stopped` /
@@ -382,7 +382,7 @@ pub struct CoreApiService {
 /// 一次连接态变化（`report_state` / `report_stopped` / `report_error` 广播）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstanceStateChange {
-    /// 适配器实例名。
+    /// 插件实例名。
     pub instance: String,
     /// 当前是否已连接。
     pub connected: bool,
@@ -396,7 +396,7 @@ pub struct InstanceStateChange {
 /// `Value`，混入会破坏既有结构的派生与测试。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstanceUiStateChange {
-    /// 适配器实例名。
+    /// 插件实例名。
     pub instance: String,
     /// 管理面状态文档（`cached_state` 同构；形状见 00 §三）。
     pub state: Value,
@@ -513,7 +513,7 @@ impl CoreApiService {
         Ok(json!({"ref": echo_defs::media_store::media_ref(&id)}))
     }
 
-    /// 注册一个远程适配器（宿主侧组合根在插件启动后调用）。
+    /// 注册一个远程插件实例（宿主侧组合根在插件启动后调用）。
     pub fn register(
         &self,
         instance: Arc<RemoteInstance>,
@@ -531,7 +531,7 @@ impl CoreApiService {
         rx
     }
 
-    /// 取一个远程适配器（命令域 / 面板通道用）。
+    /// 取一个远程插件实例（命令域 / 面板通道用）。
     pub fn get(&self, name: &str) -> Option<Arc<RemoteInstance>> {
         self.instances
             .lock()
@@ -540,7 +540,7 @@ impl CoreApiService {
             .cloned()
     }
 
-    /// 全部已注册远程适配器（`StartedPlugins::instances` 汇总用）。
+    /// 全部已注册远程插件实例（`StartedPlugins::instances` 汇总用）。
     pub fn instances(&self) -> Vec<Arc<RemoteInstance>> {
         self.instances
             .lock()
@@ -578,8 +578,8 @@ impl crate::host_service::HostService for CoreApiService {
                     .cloned()
                 else {
                     return Err((
-                        "adapter_not_found".to_string(),
-                        format!("adapter {instance_name} not registered"),
+                        "instance_not_found".to_string(),
+                        format!("instance {instance_name} not registered"),
                     ));
                 };
                 // 有界队列：满 → backpressure（插件退避 / 落盘重试）。
@@ -587,22 +587,27 @@ impl crate::host_service::HostService for CoreApiService {
                     Ok(()) => Ok(json!({"accepted": true})),
                     Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Err((
                         "backpressure".to_string(),
-                        format!("adapter {instance_name} inbound queue full"),
+                        format!("instance {instance_name} inbound queue full"),
                     )),
                     Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err((
-                        "adapter_stopped".to_string(),
-                        format!("adapter {instance_name} inbound worker stopped"),
+                        "instance_stopped".to_string(),
+                        format!("instance {instance_name} inbound worker stopped"),
                     )),
                 }
             }
             "report_state" => {
-                let instance_name = payload["adapter"].as_str().unwrap_or("").to_string();
+                // 旧插件的回呼仍用 `adapter` 字段名（2026-10 去插件实例化，双读过渡）。
+                let instance_name = payload["instance"]
+                    .as_str()
+                    .or_else(|| payload["adapter"].as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let connected = payload["connected"].as_bool().unwrap_or(false);
                 let self_id = payload["self_id"].as_str().map(str::to_string);
                 let Some(instance) = self.get(&instance_name) else {
                     return Err((
-                        "adapter_not_found".to_string(),
-                        format!("adapter {instance_name} not registered"),
+                        "instance_not_found".to_string(),
+                        format!("instance {instance_name} not registered"),
                     ));
                 };
                 instance.note_connection_state(connected, self_id.clone());
@@ -615,11 +620,16 @@ impl crate::host_service::HostService for CoreApiService {
             }
             "report_stopped" | "report_error" => {
                 // 生命周期 / 错误上报：连接态置未连接（状态文档由插件另行推送）。
-                let instance_name = payload["adapter"].as_str().unwrap_or("").to_string();
+                // 旧插件的回呼仍用 `adapter` 字段名（2026-10 去插件实例化，双读过渡）。
+                let instance_name = payload["instance"]
+                    .as_str()
+                    .or_else(|| payload["adapter"].as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let Some(instance) = self.get(&instance_name) else {
                     return Err((
-                        "adapter_not_found".to_string(),
-                        format!("adapter {instance_name} not registered"),
+                        "instance_not_found".to_string(),
+                        format!("instance {instance_name} not registered"),
                     ));
                 };
                 instance.note_connection_state(false, None);
@@ -637,12 +647,17 @@ impl crate::host_service::HostService for CoreApiService {
                 Ok(json!({}))
             }
             "report_ui_state" => {
-                let instance_name = payload["adapter"].as_str().unwrap_or("").to_string();
+                // 旧插件的回呼仍用 `adapter` 字段名（2026-10 去插件实例化，双读过渡）。
+                let instance_name = payload["instance"]
+                    .as_str()
+                    .or_else(|| payload["adapter"].as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let state = payload["state"].clone();
                 let Some(instance) = self.get(&instance_name) else {
                     return Err((
-                        "adapter_not_found".to_string(),
-                        format!("adapter {instance_name} not registered"),
+                        "instance_not_found".to_string(),
+                        format!("instance {instance_name} not registered"),
                     ));
                 };
                 instance.note_management_state(state.clone());
@@ -758,7 +773,7 @@ mod tests {
         }
     }
 
-    /// 注册适配器贡献的 loopback 测试插件。
+    /// 注册插件实例贡献的 loopback 测试插件。
     struct InstancePlugin;
 
     impl InprocPlugin for InstancePlugin {
@@ -1049,7 +1064,7 @@ mod tests {
                 }).unwrap()}),
             )
             .expect_err("unregistered adapter must fail");
-        assert_eq!(err.0, "adapter_not_found");
+        assert_eq!(err.0, "instance_not_found");
 
         handle
             .drain(std::time::Duration::from_secs(2))
@@ -1219,7 +1234,7 @@ mod tests {
         }
     }
 
-    /// 从句柄取第一个适配器贡献并构造 `RemoteInstance`。
+    /// 从句柄取第一个插件实例贡献并构造 `RemoteInstance`。
     fn remote_instance_from(handle: &PluginHandle) -> Arc<RemoteInstance> {
         let instances: Vec<_> = handle
             .contributions()
@@ -1229,7 +1244,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(instances.len(), 1, "fixture 应注册一个适配器贡献");
+        assert_eq!(instances.len(), 1, "fixture 应注册一个插件实例贡献");
         RemoteInstance::new(instances[0].clone(), handle.clone())
     }
 

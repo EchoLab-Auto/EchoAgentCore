@@ -1,5 +1,5 @@
 //! 入站 turn 生命周期：分支登记 / 串行闸门 / 取消 / 合并回主干，以及
-//! `process_message` 与适配器入站（`process_inbound_branch` →
+//! `process_message` 与插件实例入站（`process_inbound_branch` →
 //! `run_inbound_turn`）的完整流程。
 //!
 //! 2026-10 架构评审：自 `agent/mod.rs` 拆出（纯搬移，行为不变）。
@@ -572,7 +572,7 @@ impl Agent {
                     message: error.to_string(),
                 });
                 // 失败只在后端可见（`BackendEvent::Error`）：平台侧回执需要
-                // 框架代发，已随适配器概念一并移除（2026-10 选项 B）。
+                // 框架代发，已随插件实例概念一并移除（2026-10 选项 B）。
             }
         }
     }

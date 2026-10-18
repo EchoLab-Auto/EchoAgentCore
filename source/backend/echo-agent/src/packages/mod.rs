@@ -7,9 +7,9 @@
 //!
 //! | 目录 | 插件/包 id | 内容 |
 //! |---|---|---|
-//! | [`tools_builtin`] | `echo-agent.tools.builtin` | 内置工具（计算/搜索/清单/编码/Shell/适配器管理） |
+//! | [`tools_builtin`] | `echo-agent.tools.builtin` | 内置工具（计算/搜索/清单/编码/Shell/插件实例管理） |
 //! | [`skills_dir`] | `echo-agent.skills.dir` | `SKILL.md` 注册表 + 热重载 + Git 来源安装 |
-//! | [`instance_ops`] | `echo-agent.instance.qq` | 适配器命令域（通用 + legacy 兼容层）+ 入站 hook 桥 |
+//! | [`instance_ops`] | `echo-agent.instance.qq` | 插件实例命令域（通用 + legacy 兼容层）+ 入站 hook 桥 |
 //! | [`workspace`] | `echo-agent.workspace` | 工作区会话存储/工具 + 命令域 |
 //! | [`subagent`] | `echo-agent.subagent` | 异步子任务委派 |
 //! | [`federation`] | `echo-agent.federation.<peer>` | 远程代理工具 + Invoke 调度/裁决（federation Phase 2） |

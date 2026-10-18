@@ -156,7 +156,7 @@ pub enum InvokeOutcome {
         /// 多模态产物（图片 URL / data URI）；与内置工具 `execute_rich` 同口径。
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<String>,
-        /// 结构化结果（W1.1，2026-10）：适配器 op（`custom`）等场景的返回载荷经
+        /// 结构化结果（W1.1，2026-10）：插件实例 op（`custom`）等场景的返回载荷经
         /// 此承载——`status` / 目录 / 二维码等结构化返回不再 JSON 塞 `text`。
         /// 工具面消费者可忽略；缺省 `null`（旧插件不带该字段，向后兼容）。
         #[serde(default, skip_serializing_if = "Value::is_null")]

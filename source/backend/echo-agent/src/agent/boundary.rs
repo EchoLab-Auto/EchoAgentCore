@@ -22,7 +22,7 @@ pub(crate) struct PromptBlock {
 /// Input-origin boundary rules appended to the system prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BoundaryKind {
-    /// 输入来自某个适配器平台（标记 `<X_message_hook>`；`platform` = X）。
+    /// 输入来自某个插件实例平台（标记 `<X_message_hook>`；`platform` = X）。
     PlatformHook {
         platform: String,
     },

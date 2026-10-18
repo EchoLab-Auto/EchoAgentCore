@@ -6,7 +6,7 @@
 //! 8MB+（实测），会话文件 24MB 且每写一次全量重写，实时订阅也被大帧拖慢。
 //!
 //! 新模型：**图片一律落盘，链路上只传引用**（`/media/<id>`）。
-//! - 写入侧：QQ 适配器下载远端图片后落盘（[`save_image_bytes`]）；面板上传的
+//! - 写入侧：QQ 插件实例下载远端图片后落盘（[`save_image_bytes`]）；面板上传的
 //!   data URI 由 Core 在入站时落盘（[`save_data_uri`]）。
 //! - 展示侧：Panel 的 web 后端按 `/media/<id>` 提供文件（同机读同一目录），
 //!   浏览器 `<img>` 懒加载 + 强缓存（内容哈希命名，天然不可变）。
@@ -34,7 +34,7 @@ pub const ELIDED_IMAGE: &str = "";
 /// 避免把小文件也变成磁盘依赖。
 const SPILL_MIN_CHARS: usize = 4096;
 
-/// 单文件落盘上限（防御异常输入；适配器侧另有 10MB 下载上限）。
+/// 单文件落盘上限（防御异常输入；插件实例侧另有 10MB 下载上限）。
 const MAX_STORED_BYTES: usize = 32 * 1024 * 1024;
 
 /// 媒体库目录：`$ECHO_MEDIA_DIR` 优先；否则 HOME 下的 Core 数据根；

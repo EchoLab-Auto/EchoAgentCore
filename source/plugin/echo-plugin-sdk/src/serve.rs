@@ -225,7 +225,7 @@ where
     } else {
         options.plugin_id.clone()
     };
-    // 宿主下发配置（`Hello.config`）先于贡献收集：适配器实例名 / 端口等
+    // 宿主下发配置（`Hello.config`）先于贡献收集：插件实例名 / 端口等
     // 可由配置决定。配置非法 = Failed 帧 + 退出（宿主按启动失败处理）。
     if let Err(message) = handler.configure(hello.config.clone()).await {
         tracing::warn!(%message, "plugin rejected host config");
@@ -294,8 +294,8 @@ where
                 let tx = tx.clone();
                 tasks.spawn(async move {
                     let call_id = invoke.call_id.clone();
-                    // 可路由 = 精确命中已注册贡献；或 `"<name>:<op>"` 适配器寻址
-                    // 且 `<name>` 是已注册的适配器实例（P1.2）。贡献名原样交给
+                    // 可路由 = 精确命中已注册贡献；或 `"<name>:<op>"` 插件实例寻址
+                    // 且 `<name>` 是已注册的插件实例（P1.2）。贡献名原样交给
                     // handler（`InstanceHandler` 负责剥离实例名前缀）。
                     let known = registered.contains(&invoke.contribution)
                         || split_instance_op(&invoke.contribution)
@@ -374,8 +374,8 @@ where
     }
 }
 
-/// 适配器方法寻址拆分（P1.2）：`"<name>:<op>"` → `(<name>, <op>)`；
-/// 无冒号 = 非适配器调用（None）。
+/// 插件实例方法寻址拆分（P1.2）：`"<name>:<op>"` → `(<name>, <op>)`；
+/// 无冒号 = 非插件实例调用（None）。
 pub(crate) fn split_instance_op(contribution: &str) -> Option<(String, String)> {
     let (name, op) = contribution.split_once(':')?;
     if name.is_empty() || op.is_empty() {
@@ -392,7 +392,7 @@ fn contribution_target(contribution: &Contribution) -> Option<String> {
         Contribution::Skill(skill) => Some(skill.name.clone()),
         Contribution::Service(service) => Some(service.key.clone()),
         Contribution::Events(_) => None,
-        // 适配器贡献的寻址名 = 实例名（宿主按 `Invoke("<name>:<op>")` 寻址）。
+        // 插件实例贡献的寻址名 = 实例名（宿主按 `Invoke("<name>:<op>")` 寻址）。
         Contribution::PluginInstance(instance) => Some(instance.name.clone()),
     }
 }

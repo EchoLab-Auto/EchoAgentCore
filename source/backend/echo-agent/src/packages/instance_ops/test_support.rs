@@ -1,7 +1,7 @@
 //! instance_ops 测试共享设施（`#[cfg(test)]`；commands / legacy 两个测试
 //! 模块共用，避免 mock 双份漂移）。
 //!
-//! `MockInstance` 复刻插件适配器的管理面行为（真实 QQ 实现在独立插件进程，
+//! `MockInstance` 复刻插件插件实例的管理面行为（真实 QQ 实现在独立插件进程，
 //! 由插件仓契约测试守护）；`platform` / `gating` 可配——广播泛化用例需要
 //! 构造同 / 异 platform 与不同 gating 能力的实例。
 
@@ -41,7 +41,7 @@ impl crate::llm::LlmProvider for NullProvider {
     }
 }
 
-/// 测试适配器：实现 `PluginInstance` + `InstanceManagement`（mock 复刻插件管理面
+/// 测试插件实例：实现 `PluginInstance` + `InstanceManagement`（mock 复刻插件管理面
 /// 行为；生产实现由 `echo-instance-qq` 的契约测试守护，见 W3.2 测试）。
 pub(crate) struct MockInstance {
     name: String,
@@ -230,7 +230,7 @@ pub(crate) fn agent_with_two_instances() -> (Arc<Agent>, Arc<Mutex<Vec<BackendEv
     agent_with_instances(&[("mock-a", "mock", true), ("mock-b", "mock", true)])
 }
 
-/// 取某适配器管理面的 owner（mock `get_owner`）。
+/// 取某插件实例管理面的 owner（mock `get_owner`）。
 pub(crate) async fn owner_of(ad: &Arc<dyn echo_defs::plugin_instance::PluginInstance>) -> i64 {
     ad.management()
         .expect("management")

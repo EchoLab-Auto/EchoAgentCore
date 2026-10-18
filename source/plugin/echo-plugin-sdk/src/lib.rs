@@ -72,7 +72,7 @@ pub use serve::{
     DEFAULT_HOST_CALL_TIMEOUT,
 };
 
-/// 适配器插件（P1.2，2026-10 适配器插件化）：[`PluginHandler`] 的适配器
+/// 实例插件（P1.2，2026-10 实例插件化）：[`PluginHandler`] 的插件实例
 /// 形态——注册 `Contribution::PluginInstance`（宿主据此把 `RemoteInstance` 注册进
 /// `InstanceRegistry`），`Invoke("<name>:<op>")` 寻址到 [`InstancePlugin::invoke_op`]
 /// 的 method 路由（实例名前缀由 SDK 剥离）。作者实现本 trait 后仍交给
@@ -85,11 +85,11 @@ pub trait InstancePlugin: Send + Sync + 'static {
         Ok(())
     }
 
-    /// 适配器贡献（`Contribution::PluginInstance`；实例名 / 平台 / 能力位 / UI 描述符）。
+    /// 插件实例贡献（`Contribution::PluginInstance`；实例名 / 平台 / 能力位 / UI 描述符）。
     /// 在 [`configure`](Self::configure) 之后调用。
     fn instance(&self) -> echo_plugin_api::InstanceContribution;
 
-    /// 处理一次适配器方法调用（`Invoke("<name>:<op>")` 的 `op` 部分；
+    /// 处理一次插件实例方法调用（`Invoke("<name>:<op>")` 的 `op` 部分；
     /// SDK 已剥离实例名前缀）。
     ///
     /// 生命周期 `start` / `stop`、出站 `send_text` / `send_media`、目录
@@ -116,7 +116,7 @@ pub struct InstanceHandler<A: InstancePlugin> {
 }
 
 impl<A: InstancePlugin> InstanceHandler<A> {
-    /// 包装适配器插件（实例名在注册时取自 [`InstancePlugin::instance`]）。
+    /// 包装实例插件（实例名在注册时取自 [`InstancePlugin::instance`]）。
     pub fn new(plugin: A) -> Self {
         Self {
             plugin,
@@ -163,10 +163,10 @@ impl<A: InstancePlugin> PluginHandler for InstanceHandler<A> {
     }
 }
 
-/// 以 stdio 服务一个适配器插件（= `serve_stdio_with(InstanceHandler::new(plugin), …)`）。
+/// 以 stdio 服务一个实例插件（= `serve_stdio_with(InstanceHandler::new(plugin), …)`）。
 ///
 /// `Welcome.capabilities` 自动追加 `"adapter"`（能力位双方声明才可用；
-/// 宿主据此识别适配器插件）。
+/// 宿主据此识别实例插件）。
 pub async fn serve_instance_stdio(plugin: impl InstancePlugin) -> std::io::Result<()> {
     let mut options = ServeOptions::default();
     if !options

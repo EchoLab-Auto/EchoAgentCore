@@ -1,13 +1,13 @@
-//! 适配器工具的**通用桥**：把适配器声明的工具注册给模型，并把调用透传回去。
+//! 插件实例工具的**通用桥**：把插件实例声明的工具注册给模型，并把调用透传回去。
 //!
 //! **平台语义不在本仓库**：工具名 / 描述 / 参数 schema 全部来自
-//! [`echo_defs::plugin_instance::PluginInstance::tool_specs`]（远程适配器 = 插件
+//! [`echo_defs::plugin_instance::PluginInstance::tool_specs`]（远程插件实例 = 插件
 //! `InstanceContribution.tools` 原样）。本模块只做三件与平台无关的事：
 //!
 //! 1. **合并**：同一 persona 的多个实例声明同一工具 → 只注册一次；
 //! 2. **寻址**：多实例时给 schema 注入可选 `account`，执行时按它选实例
 //!    （`account` 是宿主参数，不进入插件 payload）；
-//! 3. **过闸**：所有适配器工具都跨平台边界，统一走 [`OutboundGate`]
+//! 3. **过闸**：所有插件实例工具都跨平台边界，统一走 [`OutboundGate`]
 //!    （敏感文本按策略阻断/替换；文件参数命中敏感目录直接拒发）。
 //!
 //! 执行 = `invoke_custom(<工具名>, <参数>)`（见 [`invoke_management`]）。
@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 
 use crate::security::OutboundPolicy;
 
-/// 适配器出站闸门（2026-10 安全）：适配器是消息出站的直接通道，发送前统一检查。
+/// 插件实例出站闸门（2026-10 安全）：插件实例是消息出站的直接通道，发送前统一检查。
 ///
 /// - 文本命中脱敏器 → 按 [`OutboundPolicy`] 阻断（默认）或替换后照发；
 /// - 文件类参数（`file_path` / `file` / `image`）落在敏感目录（配置目录 /
@@ -38,9 +38,9 @@ pub struct OutboundGate {
     pub policy: OutboundPolicy,
 }
 
-/// 该 persona 的适配器实例集合（多实例寻址）。
+/// 该 persona 的插件实例集合（多实例寻址）。
 ///
-/// 适配器句柄为 `Arc<dyn PluginInstance>`（P1.8 适配器插件化）：独立进程的插件
+/// 插件实例句柄为 `Arc<dyn PluginInstance>`（P1.8 实例插件化）：独立进程的插件
 /// 实例（`RemoteInstance`）——平台专属动作统一经
 /// [`invoke_management`]（管理面 `invoke_custom`）路由。
 #[derive(Clone)]
@@ -87,9 +87,9 @@ impl InstanceSet {
         }
         match self.default_index {
             Some(i) => Ok(self.instances[i].clone()),
-            None if self.instances.is_empty() => Err("该人格没有可用的适配器实例".into()),
+            None if self.instances.is_empty() => Err("该人格没有可用的插件实例".into()),
             None => Err(format!(
-                "该人格有多个适配器实例，请用 account 指定：{}",
+                "该人格有多个插件实例，请用 account 指定：{}",
                 self.names().join(", ")
             )),
         }
@@ -99,7 +99,7 @@ impl InstanceSet {
 /// Register instance tools into the agent's `ToolRegistry`（该 persona 的实例集合）。
 ///
 /// 能力过滤（泛化 S6 / 01b §D.4，不看 platform）：只对声明可出站
-///（`PluginInstance::sends_text`）的适配器注册工具——无出站能力的适配器不是
+///（`PluginInstance::sends_text`）的插件实例注册工具——无出站能力的插件实例不是
 /// 消息通道，整组不注册（send_* / get_* 一概不出现）。
 ///
 /// - 恰好 1 个实例：不带 `account` 参数，绑定该实例；
@@ -117,7 +117,7 @@ pub fn register_instance_tools_multi(
         return Vec::new();
     }
     let set = InstanceSet::new(instances);
-    // 跨实例合并工具声明（**平台语义来自适配器**，Core 不认识任何工具名）：
+    // 跨实例合并工具声明（**平台语义来自插件实例**，Core 不认识任何工具名）：
     // 同名工具只登记一次，参数取首个声明者的 schema（多实例是同一插件的
     // 多个进程，schema 必然一致）。
     let mut specs: Vec<echo_defs::plugin_instance::ToolSpec> = Vec::new();
@@ -168,7 +168,7 @@ fn with_account(mut parameters: Value, multi: bool) -> Value {
 
 /// 经管理面调用平台自定义方法（builtin 与插件实例同一路径）。
 ///
-/// 适配器（远程 `RemoteInstance` 等）都实现 [`InstanceManagement`]：
+/// 插件实例（远程 `RemoteInstance` 等）都实现 [`InstanceManagement`]：
 /// 出站（卡片 / 语音 / 图片 / 文件）、目录与历史一律走 `invoke_custom`
 /// （插件侧对应 `custom` op 的方法表）。
 async fn invoke_management(
@@ -192,14 +192,14 @@ async fn invoke_management(
 // 通用工具桥（声明驱动）
 // ---------------------------------------------------------------------------
 
-/// 适配器声明的工具的**通用**执行壳。
+/// 插件实例声明的工具的**通用**执行壳。
 ///
 /// 与平台无关：工具名 / 描述 / 参数全部来自
 /// [`echo_defs::plugin_instance::PluginInstance::tool_specs`]，执行时透传为
 /// `invoke_custom(<工具名>, <参数>)`。Core 不认识任何一个工具名。
 struct InstanceToolBridge {
     spec: echo_defs::plugin_instance::ToolSpec,
-    /// 该 persona 的适配器实例集合（多实例经 `account` 参数寻址）。
+    /// 该 persona 的插件实例集合（多实例经 `account` 参数寻址）。
     instances: InstanceSet,
     /// 出站闸门（None = 未启用脱敏，出站直投）。
     gate: Option<Arc<OutboundGate>>,
@@ -222,7 +222,7 @@ impl echo_agent::Tool for InstanceToolBridge {
     async fn execute(&self, arguments: Value) -> Result<String, echo_agent::tool::ToolError> {
         use echo_agent::tool::ToolError;
 
-        // 出站闸门（2026-10 安全）：所有适配器工具都跨平台边界，统一过闸
+        // 出站闸门（2026-10 安全）：所有插件实例工具都跨平台边界，统一过闸
         // （敏感文本按策略阻断/替换；文件参数命中敏感目录直接拒发）。不再按
         // `send` 前缀决定——那是「工具名 = 平台语义」的隐式假设。
         let arguments = match &self.gate {
@@ -378,13 +378,13 @@ mod tests {
     };
     use std::sync::Mutex;
 
-    /// 记录 `invoke_custom` 调用的共享槽（适配器与管理面各持一份 Arc）。
+    /// 记录 `invoke_custom` 调用的共享槽（插件实例与管理面各持一份 Arc）。
     #[derive(Clone, Default)]
     struct Calls {
         log: Arc<Mutex<Vec<(String, Value)>>>,
     }
 
-    /// 一个可声明工具、可记录 `invoke_custom` 调用的最小适配器。
+    /// 一个可声明工具、可记录 `invoke_custom` 调用的最小插件实例。
     struct MockInstance {
         name: String,
         tools: Vec<ToolSpec>,
@@ -499,7 +499,7 @@ mod tests {
         (registry, names)
     }
 
-    /// 工具注册**完全由适配器声明驱动**：声明什么就注册什么。
+    /// 工具注册**完全由插件实例声明驱动**：声明什么就注册什么。
     #[tokio::test]
     async fn registers_exactly_the_declared_tools() {
         let (registry, registered) = registry_with(vec![Arc::new(MockInstance::new(
@@ -527,7 +527,7 @@ mod tests {
         assert!(alpha.parameters.as_ref().unwrap()["properties"]["content"].is_object());
     }
 
-    /// 不声明 = 不注册（「适配器不出站消息」不再是 Core 侧的能力位判断）。
+    /// 不声明 = 不注册（「插件实例不出站消息」不再是 Core 侧的能力位判断）。
     #[tokio::test]
     async fn no_declaration_registers_nothing() {
         let (registry, names) =
@@ -616,7 +616,7 @@ mod tests {
         assert!(err.to_string().contains("platform rejected"), "{err}");
     }
 
-    /// 闸门：敏感文本按策略阻断——对所有适配器工具生效（不再按 `send` 前缀）。
+    /// 闸门：敏感文本按策略阻断——对所有插件实例工具生效（不再按 `send` 前缀）。
     #[tokio::test]
     async fn gate_blocks_sensitive_text_for_every_instance_tool() {
         use echo_defs::sanitize::Redactor as _;

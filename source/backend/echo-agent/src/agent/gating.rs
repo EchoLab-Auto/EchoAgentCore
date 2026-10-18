@@ -91,7 +91,7 @@ impl Agent {
     ///   ∪ **运行期注册的全部 `kind == PluginInstance` 插件**。
     ///
     /// 后者从注册表按 kind 推导，框架因此**不需要认识任何平台**：新增一个
-    /// 适配器插件（`echo-agent.instance.<platform>`）自动进入门控，无需改
+    /// 实例插件（`echo-agent.instance.<platform>`）自动进入门控，无需改
     /// 本 crate 的常量表。
     fn gated_plugin_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = crate::plugins::GATED_PLUGIN_IDS

@@ -43,7 +43,7 @@ impl OutboundPolicy {
     }
 }
 
-/// 宿主服务适配器：把脱敏器暴露给子进程插件（HostCall `service = "sanitizer"`）。
+/// 宿主服务插件实例：把脱敏器暴露给子进程插件（HostCall `service = "sanitizer"`）。
 ///
 /// 方法契约（与 SDK 侧 `HostClient` 配合）：
 /// - `redact {text}` → `{text, changed, hits}`（hits = 命中部数）；
@@ -157,7 +157,7 @@ pub fn build_redactor(cfg: &CoreConfig) -> Arc<dyn Redactor> {
 
     // 实例配置里的凭据：按键名形态递归收集，**不认识任何平台或具体键**。
     // 此前只读 `[instances.<platform>.server].access_token`——那等于让 Core
-    // 记住某个平台的配置 schema（2026-10 去适配器化）。改为形态匹配后，
+    // 记住某个平台的配置 schema（2026-10 去插件实例化）。改为形态匹配后，
     // 插件新增任意凭据字段都被自动纳入脱敏。
     for host in cfg.instances.values() {
         for (path, value) in collect_credential_values(&host.shared) {
@@ -278,7 +278,7 @@ mod tests {
         );
     }
 
-    /// 宿主服务适配器：子进程插件经 HostCall 调用的 redact / scan / 错误码。
+    /// 宿主服务插件实例：子进程插件经 HostCall 调用的 redact / scan / 错误码。
     #[test]
     fn sanitizer_host_service_contract() {
         use echo_defs::sanitize::Redactor;

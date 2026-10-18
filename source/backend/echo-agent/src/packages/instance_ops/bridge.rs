@@ -31,7 +31,7 @@ impl AgentMessageHook {
     /// processing; it never carries text for the instance to send back.
     pub async fn on_incoming_message(&self, msg: IncomingMessage) -> Result<(), String> {
         let agent = &self.agent;
-        // 多实例维度：适配器名即 QQ 实例名（非 "qq" 时进会话键）。
+        // 多实例维度：插件实例名即 QQ 实例名（非 "qq" 时进会话键）。
         // 实例名 == 平台名 = 默认实例，不写 account 维度（多实例才需要区分）。
         let account = (!msg.instance_name.eq_ignore_ascii_case(&msg.platform))
             .then(|| msg.instance_name.clone());
@@ -130,7 +130,7 @@ impl AgentMessageHook {
             } else {
                 "当前没有可停止的任务。".into()
             };
-            // 取消回执只记入后端会话（平台侧回执已随适配器概念移除）。
+            // 取消回执只记入后端会话（平台侧回执已随插件实例概念移除）。
             agent
                 .record_control_reply(&session, reply, message_sequence)
                 .await;
@@ -327,7 +327,7 @@ mod tests {
         }
 
         fn produces_visible_output(&self) -> bool {
-            // 测试替身和真实适配器工具一样声明「这一调用就是可见回复」。
+            // 测试替身和真实插件实例工具一样声明「这一调用就是可见回复」。
             true
         }
 
@@ -413,7 +413,7 @@ mod tests {
         tools.register(Arc::new(SendTool("send_private_msg")));
         tools.register(Arc::new(SendTool("send_group_msg")));
         // 控制回复走 `PluginInstance::send_message`（平台中立的 typed seam），
-        // 因此测试也需要一个同 platform 的适配器实例。
+        // 因此测试也需要一个同 platform 的插件实例。
         let instances = echo_defs::plugin_instance::InstanceRegistry::new();
         instances.register(Arc::new(
             crate::packages::instance_ops::test_support::MockInstance::configured("qq", "qq", true),

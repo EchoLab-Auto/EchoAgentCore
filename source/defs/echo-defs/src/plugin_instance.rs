@@ -58,10 +58,10 @@ pub struct InstanceInfo {
     // [`InstanceManagement::cached_state`]: crate::instance::InstanceManagement::cached_state
 }
 
-/// 适配器向模型暴露的一个工具（声明式）。
+/// 插件实例向模型暴露的一个工具（声明式）。
 ///
 /// **平台语义住在插件里**：Core 只负责把声明合并后注册、把调用透传给
-/// `invoke_custom(name, args)`。工具名 / 描述 / 参数 schema 全部由适配器插件
+/// `invoke_custom(name, args)`。工具名 / 描述 / 参数 schema 全部由实例插件
 /// 提供，Core 不认识任何一个（此前 10 个 QQ 语义工具的 schema 写死在
 /// `core::instance_tools`，约 800 行）。
 #[derive(Debug, Clone, PartialEq)]
@@ -135,18 +135,18 @@ pub trait PluginInstance: Send + Sync {
     /// Stop the instance gracefully.
     async fn stop(&self) -> Result<(), InstanceError>;
 
-    /// 平台中立的适配器管理面（W3.1，2026-10 适配器管理通道）。
+    /// 平台中立的插件实例管理面（W3.1，2026-10 插件实例管理通道）。
     ///
-    /// 平台管理能力的唯一入口；`None` = 该适配器不提供
-    /// 管理面。消费方（命令域 / 面板通道 / 远程适配器）只应依赖本访问器。
+    /// 平台管理能力的唯一入口；`None` = 该插件实例不提供
+    /// 管理面。消费方（命令域 / 面板通道 / 远程插件实例）只应依赖本访问器。
     fn management(&self) -> Option<&dyn InstanceManagement> {
         None
     }
 
-    /// UI 描述符（适配器管理界面声明；泛化 Core-1，2026-10）。
+    /// UI 描述符（插件实例管理界面声明；泛化 Core-1，2026-10）。
     ///
     /// 宿主经本访问器把描述符填进 `InstanceStatus.ui` 下发 Panel（通用
-    /// 渲染器按 `ui.version` 选择方案）；远程适配器返回
+    /// 渲染器按 `ui.version` 选择方案）；远程插件实例返回
     /// `InstanceContribution.ui` 原样。默认 `None` = 未声明。
     fn ui_descriptor(&self) -> Option<Value> {
         None
@@ -154,7 +154,7 @@ pub trait PluginInstance: Send + Sync {
 
     /// 会话标签（会话分组显示；泛化 Core-1，2026-10）。
     ///
-    /// 如 `{"dm":"私聊","group":"群聊"}`；远程适配器返回
+    /// 如 `{"dm":"私聊","group":"群聊"}`；远程插件实例返回
     /// `InstanceContribution.session_labels` 原样。默认 `None` = 未声明。
     fn session_labels(&self) -> Option<Value> {
         None
@@ -165,35 +165,35 @@ pub trait PluginInstance: Send + Sync {
     /// 实例共享）。
     ///
     /// 宿主在写方法广播时校验**源实例**本能力位（泛化 S5 / 01b §D.2 a′）；
-    /// 远程适配器返回 `InstanceContribution.capabilities.gating`。默认
+    /// 远程插件实例返回 `InstanceContribution.capabilities.gating`。默认
     /// `false`（未声明 = 每实例独立门控，不做跨实例对齐）。
     fn gating_capabilities(&self) -> bool {
         false
     }
 
-    /// 宿主按本能力位（而非 platform）筛选可注册消息工具的适配器
-    ///（泛化 S6 / 01b §D.4）；远程适配器返回
+    /// 宿主按本能力位（而非 platform）筛选可注册消息工具的插件实例
+    ///（泛化 S6 / 01b §D.4）；远程插件实例返回
     /// `InstanceContribution.capabilities.send_text`。默认 `false`
-    ///（未声明 = 非出站通道，不注册任何适配器工具）。
+    ///（未声明 = 非出站通道，不注册任何插件实例工具）。
     fn sends_text(&self) -> bool {
         false
     }
 
-    /// 该适配器贡献给模型的工具声明（缺省空 = 不贡献工具）。
+    /// 该插件实例贡献给模型的工具声明（缺省空 = 不贡献工具）。
     ///
     /// 宿主按 name 跨实例合并后注册；调用时透传为
     /// [`InstanceManagement::invoke_custom`]（method = 工具名）。多实例部署
-    /// 由宿主注入可选 `account` 参数寻址，适配器无需关心。
+    /// 由宿主注入可选 `account` 参数寻址，插件实例无需关心。
     fn tool_specs(&self) -> Vec<ToolSpec> {
         Vec::new()
     }
 }
 
-/// 平台中立的适配器管理面（W3.1，2026-10 适配器管理通道）。
+/// 平台中立的插件实例管理面（W3.1，2026-10 插件实例管理通道）。
 ///
 /// 定义在 `echo-defs`（定义层）；`echo-instance` re-export 保持旧路径兼容。
 ///
-/// 平台专属管理能力的目标形态（2026-10 适配器管理通道；本 trait 已是唯一能力扩展）：
+/// 平台专属管理能力的目标形态（2026-10 插件实例管理通道；本 trait 已是唯一能力扩展）：
 ///
 /// - 管理动作经 **method 路由表**（[`InstanceManagement::invoke_custom`]）
 ///   异步执行——方法名由平台自定义；约定与插件协议 `custom op` 及线协议
@@ -203,12 +203,12 @@ pub trait PluginInstance: Send + Sync {
 ///   不可阻塞（调用方在命令处理路径上同步读取）。
 ///
 /// 取用方式：`instance.management()` 返回 `Option<&dyn InstanceManagement>`；
-/// `None` = 该适配器不提供管理面。
+/// `None` = 该插件实例不提供管理面。
 #[async_trait]
 pub trait InstanceManagement: Send + Sync {
     /// 当前 UI / 管理状态文档（同步读、零 IO；`None` = 暂无状态）。
     ///
-    /// 约定键（与适配器插件规范的 UI 描述符 `bind` 对齐；实现可扩展）：
+    /// 约定键（与实例插件规范的 UI 描述符 `bind` 对齐；实现可扩展）：
     /// - `instance`：`{ persona?, container?, webui_url?, onebot_url?, bind_address? }`
     /// - `online` / `self_id`：连接态快照
     /// - `gate`：`{ mode, allowlist_users[], allowlist_groups[], denylist_users[], denylist_groups[] }`
@@ -233,7 +233,7 @@ use std::sync::Arc;
 /// 宿主侧的插件实例注册表（`name → Arc<dyn PluginInstance>`）。
 ///
 /// 内部 `RwLock<HashMap>`（内部可变性）——`Arc<InstanceRegistry>` 共享下
-/// 注册 / 查询 / 删除安全进行（2026-10 适配器插件化：运行期远程适配器
+/// 注册 / 查询 / 删除安全进行（2026-10 实例插件化：运行期远程插件实例
 /// 注册需要 `Arc` 下可写）。
 pub struct InstanceRegistry {
     instances: std::sync::RwLock<HashMap<String, Arc<dyn PluginInstance>>>,
@@ -263,7 +263,7 @@ impl InstanceRegistry {
     /// Register an instance. Replaces any existing instance with the same name.
     ///
     /// 内部可变性（`RwLock`）：`Arc<InstanceRegistry>` 共享下经 `register` 追加
-    /// （2026-10 适配器插件化：运行期远程适配器注册需要 `Arc` 下可写）。
+    /// （2026-10 实例插件化：运行期远程插件实例注册需要 `Arc` 下可写）。
     pub fn register(&self, instance: Arc<dyn PluginInstance>) {
         self.instances
             .write()
@@ -436,8 +436,8 @@ mod tests {
         assert_eq!(configured.len(), 1);
     }
 
-    /// 能力扩展默认：未实现 `InstanceManagement` 的适配器返回 `None`
-    ///（非适配器上不再存在"调用成功但什么也没发生"的假接口）。
+    /// 能力扩展默认：未实现 `InstanceManagement` 的插件实例返回 `None`
+    ///（非插件实例上不再存在"调用成功但什么也没发生"的假接口）。
     #[test]
     fn instance_without_management_returns_none() {
         let mock = MockInstance {
@@ -447,7 +447,7 @@ mod tests {
         };
         assert!(
             mock.management().is_none(),
-            "未实现 InstanceManagement 的适配器必须返回 None（显式不支持）"
+            "未实现 InstanceManagement 的插件实例必须返回 None（显式不支持）"
         );
     }
 
