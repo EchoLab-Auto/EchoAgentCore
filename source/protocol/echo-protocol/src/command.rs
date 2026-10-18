@@ -423,20 +423,23 @@ pub enum BackendCommand {
 /// （前端引导命令即从此类命令中选取），无跨仓强制同步义务；
 /// 契约快照测试见本文件 `broadcast_readonly_contract_snapshot`。
 pub const BROADCAST_READONLY_COMMANDS: &[&str] = &[
-    "RequestTeamsList",
-    "RequestInstanceList",
-    "RequestInstanceStatus",
+    // 前端引导命令组（顺序同 Panel 的 onopen）
     "RequestState",
-    "RequestConfig",
+    "RequestTeamsList",
+    "RequestInstanceStatus",
     "RequestShellSessions",
-    "RequestWorkspaces",
-    "RequestSessions",
     "RequestTrunkTimeline",
-    "RequestActiveTurns",
+    // 清单 / 发现类
+    "RequestPluginsList",
+    "RequestSkillsList",
+    "RequestToolsList",
+    "RequestSystemPrompt",
+    "RequestRemoteApiProfiles",
+    "RequestWorkspaceSessions",
+    // 联邦与自更新
     "RequestFederationStatus",
     "RequestFederationInvite",
-    "RequestNodeStatus",
-    "Ping",
+    "RequestSelfUpdateStatus",
 ];
 
 /// 命令名是否属于可广播只读集合（中继白名单的权威定义）。
@@ -489,6 +492,44 @@ fn default_true_agent() -> bool {
 mod tests {
     use super::*;
 
+    /// 集合里的每个名字都必须真的是一个 `BackendCommand` 变体。
+    ///
+    /// 回归背景（2026-10 审计发现）：清单里曾长期躺着 `"Ping"`——`BackendCommand` 没有这个
+    /// 变体，也没有任何发送方（Panel 的探活走 WS 层 Ping 控制帧，不经命令通道）。它留在
+    /// 「权威参考」里会误导读者以为协议有探活命令。快照测试只比对字面量列表，抓不到这种
+    /// 「名字根本不是命令」的情况——补充这条不变量。
+    #[test]
+    fn every_broadcast_readonly_name_is_a_real_command_variant() {
+        // serde 的 unknown-variant 错误里带着全部合法变体名（"expected one of ..."）。
+        let error = serde_json::from_str::<BackendCommand>(r#""__not_a_command__""#)
+            .expect_err("unknown command must fail to deserialize")
+            .to_string();
+        // 末尾会带上 "` at line 1 column 7"，先切掉，否则最后一个变体名会被污染。
+        let list = error
+            .split("expected one of ")
+            .nth(1)
+            .unwrap_or_default()
+            .split("` at line")
+            .next()
+            .unwrap_or_default();
+        let variants: Vec<String> = list
+            .split(',')
+            .map(|s| s.trim().trim_matches('`').to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert!(
+            variants.len() > 50,
+            "变体名单解析失败（解析到 {} 个）：{error}",
+            variants.len()
+        );
+        for name in super::BROADCAST_READONLY_COMMANDS {
+            assert!(
+                variants.iter().any(|v| v == name),
+                "BROADCAST_READONLY_COMMANDS 里的 `{name}` 不是 BackendCommand 的变体"
+            );
+        }
+    }
+
     /// 可广播只读集合的契约快照：改动必须与中继 `is_readonly_command` 同步。
     #[test]
     fn broadcast_readonly_contract_snapshot() {
@@ -497,20 +538,20 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "Ping",
-                "RequestActiveTurns",
-                "RequestConfig",
                 "RequestFederationInvite",
                 "RequestFederationStatus",
-                "RequestInstanceList",
                 "RequestInstanceStatus",
-                "RequestNodeStatus",
-                "RequestSessions",
+                "RequestPluginsList",
+                "RequestRemoteApiProfiles",
+                "RequestSelfUpdateStatus",
                 "RequestShellSessions",
+                "RequestSkillsList",
                 "RequestState",
+                "RequestSystemPrompt",
                 "RequestTeamsList",
+                "RequestToolsList",
                 "RequestTrunkTimeline",
-                "RequestWorkspaces",
+                "RequestWorkspaceSessions",
             ]
         );
         assert!(super::is_broadcast_readonly("RequestState"));

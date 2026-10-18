@@ -374,7 +374,10 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
 
 - `{"core": "<name>", "frame": {...}}` → 定向该接入点（联邦节点）；
 - `{"broadcast": true, "frame": {...}}` → 广播给全部在线接入点（仅只读发现
-  命令：`RequestState` / `RequestTeamsList` / `RequestInstanceList` / `RequestInstanceStatus` 等；探活走 WS 层 Ping 控制帧 + 重连探测，不经广播壳）；
+  命令：`RequestState` / `RequestTeamsList` / `RequestInstanceStatus` / `RequestShellSessions` /
+  `RequestTrunkTimeline`（前端引导命令组）与清单类 `RequestPluginsList` / `RequestSkillsList` /
+  `RequestToolsList` 等——权威清单是 `echo_protocol::command::BROADCAST_READONLY_COMMANDS`；
+  探活走 WS 层 Ping 控制帧 + 重连探测，**不经广播壳**，协议里也没有 `Ping` 命令）；
 - 无壳 → 仅单接入点语义下直接转发；多接入点下拒绝（不猜测命令语义）。
 
 语义分类不在中继与 Core 间重复：中继只认投递意图，前端 `sendCommand` 在
