@@ -559,6 +559,12 @@ impl Default for CoreApiService {
 
 impl crate::host_service::HostService for CoreApiService {
     fn call(&self, method: &str, payload: Value) -> Result<Value, (String, String)> {
+        // 旧插件调 `deliver_message`（2026-10 去适配器化改名，双接受过渡）。
+        let method = if method == "deliver_message" {
+            "submit_input"
+        } else {
+            method
+        };
         match method {
             "submit_input" => {
                 let message: IncomingMessage =

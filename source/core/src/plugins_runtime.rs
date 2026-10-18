@@ -105,6 +105,10 @@ pub async fn start_with_specs(
     supervisor
         .host_services()
         .register("core_api", core_api.clone());
+    // 旧插件按名 `adapter_host` 查找宿主服务（双注册过渡，2026-10 去适配器化）。
+    supervisor
+        .host_services()
+        .register("adapter_host", core_api.clone());
     let started = echo_plugin_host::bootstrap::start_plugins(&supervisor, specs).await;
     for (plugin_id, error) in &started.errors {
         tracing::warn!(plugin = %plugin_id, %error, "subprocess plugin start failed");
