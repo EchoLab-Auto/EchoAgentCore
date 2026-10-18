@@ -38,7 +38,7 @@ name = "助手"
 description = "通用助手"
 enabled = true
 enabled_plugins = [
-    "echo-agent.adapter.qq",
+    "echo-agent.instance.qq",
     "echo-agent.management.panel",
     "echo-agent.tools.builtin",
     "echo-agent.skills.dir",
