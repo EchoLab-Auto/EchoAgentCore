@@ -635,10 +635,19 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let instance_registry = echo_defs::plugin_instance::InstanceRegistry::new();
 
     // ---- 插件实例（多实例；实例 = 插件实例名 = 会话 account 维度）----
-    // 当前被**容器编排**的平台。容器部署知识（`napcat`）目前只覆盖 QQ，
-    // 因此这里只取它；配置层早已平台中立（`cfg.instances` 是任意平台名的
-    // 映射）。插件 id / 状态文件 / 命令名一律由 `platform` 派生，不写死字符串。
-    let platform = "qq";
+    // 本组合根当前只**接线一个平台**：取配置里第一个 `enabled = true` 的
+    // `[instances.<name>]`（都没有则取第一个配置段，再无则空串）。
+    //
+    // **不写死平台名**：Core 二进制不认识 "qq"——平台名完全来自用户配置。
+    // 多平台同时接线是后续工作（下面整段接线按单平台推导：一个 manifest、
+    // 一组 specs）；今天只有一个平台被编排时行为与从前一致。
+    let platform = cfg
+        .instances
+        .iter()
+        .find(|(_, host)| host.enabled)
+        .or_else(|| cfg.instances.iter().next())
+        .map(|(name, _)| name.clone())
+        .unwrap_or_default();
     // persona 门控：启用了 `echo-agent.instance.<platform>` 的人格各自获得实例
     // （未配置实例时自动建档），legacy 单实例部署行为不变。
     let qq_enabled_personas: Vec<String> = cfg
@@ -649,7 +658,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             m.enabled
                 && echo_agent::plugins::profile_allows_plugin(
                     m,
-                    &crate::instance_manifests::plugin_id_for(platform),
+                    &crate::instance_manifests::plugin_id_for(&platform),
                 )
         })
         .map(|(id, _)| id.clone())
@@ -666,9 +675,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    let qq_host = cfg.instances.get(platform).cloned().unwrap_or_default();
+    let qq_host = cfg.instances.get(&platform).cloned().unwrap_or_default();
     let qq_instances = instance_deploy::resolve_instances(
-        platform,
+        &platform,
         &qq_host,
         &qq_host.instances,
         &qq_enabled_personas,
@@ -748,7 +757,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         if !patches.is_empty() {
             if let Err(error) = config_store.patch(|root| {
                 let instances = echo_config::ensure_table(root, "adapters");
-                let qq = echo_config::ensure_table(instances, platform);
+                let qq = echo_config::ensure_table(instances, &platform);
                 let instances = echo_config::ensure_table(qq, "instances");
                 for (id, persona) in &patches {
                     let entry = echo_config::ensure_table(instances, id);
@@ -1383,7 +1392,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let wired = qq_wired.clone();
             let running = qq_running.clone();
             // id / 名称 / entry 全部由**平台名**派生——组合根不再持有点名平台的常量。
-            let instance_plugin_id = crate::instance_manifests::plugin_id_for(platform);
+            let instance_plugin_id = crate::instance_manifests::plugin_id_for(&platform);
             let instance_plugin_name = format!("{platform} 插件实例");
             let instance_plugin_id_for_mount = instance_plugin_id.clone();
             register(
@@ -1393,7 +1402,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     &instance_plugin_name,
                     version,
                     PluginKind::PluginInstance,
-                    platform,
+                    platform.clone(),
                     &format!("{platform} 平台实例插件（独立进程）"),
                 )
                 // 实例插件化收尾（P1.9，2026-10）：实现由独立进程
@@ -1728,7 +1737,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_plugin_enabled = agent
         .plugin_host()
         .registry
-        .is_enabled(&crate::instance_manifests::plugin_id_for(platform));
+        .is_enabled(&crate::instance_manifests::plugin_id_for(&platform));
     if qq_host.enabled && qq_plugin_enabled {
         // 多实例：逐个生成 compose（非 legacy）并启动；单个失败不影响其余。
         for (instance_id, persona_id, instance) in &qq_handles {
