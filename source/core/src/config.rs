@@ -585,6 +585,50 @@ command = "echo-adapter-telegram"
         std::fs::remove_file(&path).ok();
     }
 
+    /// 旧配置段名 `[adapters.*]` 仍被接受（2026-10 去适配器化的兼容垫片）。
+    ///
+    /// 用户 core.toml 里写的是 `[adapters.qq]`；改名后若不再接受，升级即
+    /// 「配置读不到 → QQ 静默不启动」。本测试锁住这条迁移通道。
+    #[test]
+    fn legacy_adapters_section_still_parses() {
+        let path = std::env::temp_dir().join("echo-agent-legacy-adapters-test.toml");
+        std::fs::write(
+            &path,
+            r#"
+[agent]
+provider = "openai"
+model = "gpt-4o"
+
+[adapters.qq]
+enabled = true
+napcat_container = "napcat-qq"
+
+[adapters.qq.instances.qq]
+persona = "alix"
+
+[adapters.qq.plugin]
+command = "/opt/echo/echo-adapter-qq"
+"#,
+        )
+        .unwrap();
+        let config = CoreConfig::load(&path).unwrap();
+        assert!(config.instances["qq"].enabled, "旧段名应被接受");
+        assert_eq!(
+            config.instances["qq"].instances["qq"].persona.as_deref(),
+            Some("alix")
+        );
+        assert_eq!(
+            config.instances["qq"].launch.command,
+            "/opt/echo/echo-adapter-qq"
+        );
+        // 平台自有键原样留在透传表里（宿主不解释）。
+        assert_eq!(
+            config.instances["qq"].shared["napcat_container"].as_str(),
+            Some("napcat-qq")
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
     /// listen 字段的**缺省值**（回退地址）——零配置实际生效地址由
     /// `management::plan_federation_listen` 决定（缺省合并至管理地址；
     /// 保守场景才回退为这里的 0.0.0.0:3133）。
