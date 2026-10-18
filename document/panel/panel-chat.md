@@ -60,9 +60,10 @@ y: 780
 
 补充来源：定时器触发以 system 消息插入主时间线（`⏰ 定时器触发 · {task}`，task 截断 160 字符）。
 
-**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（库 `ChatBubble` + `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）；**连续的工具 / 推理 / 子代理统一由 `WorkRunGroup` 渲染**（三者合并为同类「工作项」，`WorkRunItem.kind` 区分 `tool`/`reasoning`/`subagent`；推理正文层为 `ReasoningText`）；ui-frame 只提供机制原语（`ChatComposer` / `ChatBubble` / `ChatFold` / `ChatCopyButton`）。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义），`ChatMessage` 数据契约保留。
+**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（**气泡壳由面板自绘**——原库 `ChatBubble` 已随 ui-frame 2026-10 精简解散，样式吸收进 `MessageItem`；正文用 `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）；**连续的工具 / 推理 / 子代理统一由 `WorkRunGroup` 渲染**（三者合并为同类「工作项」，`WorkRunItem.kind` 区分 `tool`/`reasoning`/`subagent`；推理正文层为 `ReasoningText`）；ui-frame 只提供机制原语（`ChatComposer` / `ChatBubble` / `ChatFold` / `ChatCopyButton`）。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义），`ChatMessage` 数据契约保留。
 
-**气泡宽度**：宽度完全动态——短消息贴内容收紧（实测最短 186px），长消息/代码/表格撑满消息列可用宽度（随左右侧栏卡片显隐变化，实测 1600px 窗口下 1276px）；`.chat-view__item--msg` 为 flex 列容器（user 靠右 / agent 靠左 / system 居中，依赖库 `align-self`）。面板覆盖库默认 `max-width: min(78%, 640px)`（`MessageItem.vue` 双写类名提权），并隐藏 Markdown 标题锚点（其 -22px 绝对定位会撑出横向溢出）。
+**气泡宽度**：宽度完全动态——短消息贴内容收紧（实测最短 186px），长消息/代码/表格撑满消息列可用宽度（随左右侧栏卡片显隐变化，实测 1600px 窗口下 1276px）；`.chat-view__item--msg` 为 flex 列容器（user 靠右 / agent 靠左 / system 居中，依赖库 `align-self`）。面板**不设百分比上限**：普通消息 `max-width: 100%`、system 消息 `92%`（`MessageItem.vue` 自绘，无库默认值需要覆盖）；并隐藏 Markdown 标题锚点
+（其 -22px 绝对定位会撑出横向溢出）。
 
 ### 渲染对象缓存
 
@@ -95,7 +96,7 @@ y: 780
 
 - 打字机/入场动画**仅**对实时消息（`DisplayMessage.animate === true`）播放；历史回放、刷新加载不播动画
 - 动画为纯视觉层：`animate` 是展示元数据，不进入任何数据/逻辑判断
-- 实现要点：ui-frame `ChatRole` 不含 `reasoning`，必须在 `ChatView` 的消息行渲染层拦截（自渲染行循环；否则未知角色会被渲染成 Agent 气泡）；`pendingReasoning`/`completedReasoning` 为**历史遗留字段**（分支合并块已随 ui-frame 移除，现无任何读取方，仅声明与初始化）
+- 实现要点：ui-frame `ChatRole` 不含 `reasoning`，必须在 `ChatView` 的消息行渲染层拦截（自渲染行循环；否则未知角色会被渲染成 Agent 气泡）；`pendingReasoning`/`completedReasoning` **已删除**（2026-10 巡检确认是死状态：分支合并块随 ui-frame 移除后无任何读取方，仅剩声明与初始化，已连同声明一并清掉，`state.ts` 只留一行说明）
 
 ## 工具卡生命周期
 
@@ -188,7 +189,7 @@ graph LR
 | 插件实例 | 弹出实例管理面板（见 [实例管理·任务·Shell](./panel-instance-tasks.md)）——内容全由插件描述符决定，Panel 无平台专属逻辑；仅当前 Agent 启用实例插件时显示；切换 Agent 强制关闭 |
 | 任务 | 弹出 `TasksPanel`（替代原顶栏任务视图）：**只对应当前 agent 的当前会话**（`sessionId` 过滤，「全局」会话显示全部），徽标 = 当前会话运行中/等待整合任务数；显隐 = `echo-agent.subagent` 插件对当前 persona 启用或当前会话已有任务记录；切换 Agent / 插件禁用强制关闭。卡片/状态/取消语义见 [实例管理·任务·Shell](./panel-instance-tasks.md) |
 
-弹出层宽 `min(520px, 82vw)`，锚定按钮上方 8px、相对输入区水平居中。**清单/插件实例/任务弹出层没有全屏遮罩**——是 fixed 定位的内容尺寸面板，仅点到弹层自身 padding 空白（`@click.self`）才关闭，点弹层外的聊天区不关闭（`ChatView.vue`）。**「配置」「上下文」是会话区内锚定的磨砂玻璃弹层**（上/左/右 12px，底边 = 入口行高 + 42px），点弹层外遮罩关闭；上下文弹层无返回按钮。
+弹出层宽 `min(520px, 82vw)`，锚定按钮上方 8px、相对输入区水平居中。**清单/插件实例/任务弹出层没有全屏遮罩**——是 fixed 定位的内容尺寸面板，**点弹层外任意位置（含聊天区）即关闭**（`PanelPopover` 在 document 捕获阶段监听 `pointerdown`，目标不在弹层与锚点内就 `requestClose()`），`Esc` 亦可关闭。**「配置」「上下文」是会话区内锚定的磨砂玻璃弹层**（上/左/右 12px，底边 = 入口行高 + 42px），点弹层外遮罩关闭；上下文弹层无返回按钮。
 
 ## 侧栏与多接入点
 
@@ -217,24 +218,17 @@ graph LR
 不可见的卡片（如未激活工作区时的文件浏览器卡），用可见序号直接 splice 会错位
 （实测：同列重排被静默挪到不可见卡之间）。「落点指示线」仍按可见序号渲染。
 
-**列显隐与消息区留白**：某列有可见卡片时渲染该列；两列都空时不渲染任何列
-（拖动中两列都出现，便于投放）。有卡片的列会给消息滚动区加同宽内边距
-（`padding-left/right = 324px`，0.24s 过渡）——正文不被悬浮卡片压住。**拖动期间
-留白不变**（按「有可见卡片」判定；被拖卡片已从源列摘除、尚未落入目标列，若让
-留白跟随「列是否渲染」会因空列临时出现而反复跳变），落位后再一次性过渡。
+**列显隐与消息区留白**：判据是「该列**是否登记过卡片**」而非「当前是否有可见卡片」
+（`ChatView.vue` 的 `railRegistered('left'|'right')` → `leftRailVisible` / `rightRailVisible`
+→ `trayPadLeft` / `trayPadRight`）。这样单卡列在卡片门控失效（无激活工作区、插件缺失）时
+**列不消失**，改为列内空态占位，消息区留白稳定不抖动——此前按「可见」判定会让左栏在切换
+agent 时莫名隐藏，已修复。
 
-> **单卡列的整列显隐（澄清：行为保持）**：列显隐按「列内**至少一张**
-> 可见卡片」判定——只有一张卡的列，在该卡门控失效时会**整列消失**（消息区
-> 留白同步归零 324→0px）。典型：把「文件浏览器」单独移到左列后，切到
-> **无激活工作区的 agent**（或其无 `echo-agent.workspace` 插件）则左列整体
-> 消失、切回有激活工作区的 agent 又出现。文件浏览器卡的全部触发路径：
-> ① agent 切换（插件缺失或未激活工作区）；② 取消工作区激活（会话切换器点回
-> 默认本地会话 / 工作区面板切换）；③ 刷新后快照回推窗口期（~0.3s 后恢复）；
-> ④ 竖屏 <768px（双侧边栏整体不渲染，卡片走顶栏「卡片」抽屉——设计行为）。
-> 「临时分支」卡仅在并行多会话模式显示（单会话模式 Core 不发 ReplyBranch*）。
-> 已知口径差异（文件浏览器无激活会话=整卡隐藏 / Shell 无会话=卡内空态），
-> 评估后**保持现状**：改「空态卡」会让无插件与无激活两类 agent 的列
-> 行为趋同，收益不足。稳定布局的建议：该列再放一张常驻卡（连接状态 / Shell）。
+已知口径差异（文件浏览器无激活会话=整卡隐藏 / Shell 无会话=卡内空态）保留：前者是卡片自身
+的显隐，不影响列的存在性。
+
+> 「临时分支」卡仅在 parallel 多会话模式显示（single 模式 Core 不发 `ReplyBranch*`）。
+> 竖屏 <768px 双侧边栏整体不渲染，卡片走顶栏「卡片」抽屉——设计行为。
 
 **底部避让**：
 
