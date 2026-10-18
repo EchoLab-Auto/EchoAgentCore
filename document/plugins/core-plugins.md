@@ -97,7 +97,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 - 每个插件 id 均可放入 agent 的 `enabled_plugins`（白名单；空表 = 全部启用）
 - **插件黑名单 `disabled_plugins` 已移除**：与白名单语义重复（前端首次取消勾选即物化全量白名单），既有配置在加载期物化进白名单（见 [配置持久化](../core/core-config-persistence.md)）；运行期 `SaveTeam` 只写白名单
-- **前端「启用插件」勾选区的成员规则**（两处 UI：智能体配置弹层 ⚙ 配置、设置视图智能体编辑器；判定单一来源 = Panel `capabilities.ts::isPluginCheckboxVisible`）：`kind ∈ {adapter, management, interaction}` **∪** 下列包维度门控插件固定清单（`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本表 `GATED_PLUGIN_IDS` 逐项镜像）：`tools.builtin` / `skills.dir` / `workspace` / `adapter.qq` / `subagent`。其余插件（`loop.*` 由循环模式分段控件管理、`provider.llm` 名义挂载重启生效）**不出现**在该勾选区。保存后写回 TOML
+- **前端「启用插件」勾选区的成员规则**（两处 UI：智能体配置弹层 ⚙ 配置、设置视图智能体编辑器；判定单一来源 = Panel `capabilities.ts::isPluginCheckboxVisible`）：`kind ∈ {adapter, management, interaction}` **∪** 下列包维度门控插件固定清单（`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本表 `GATED_PLUGIN_IDS` 的 4 项逐项镜像）：`tools.builtin` / `skills.dir` / `workspace` / `subagent`。**适配器不在清单内**——两侧都按 `kind == "adapter"` 运行期推导（Core `Agent::gated_plugin_ids()` 遍历插件注册表；Panel 同判定的 `isPluginCheckboxVisible`），因此新增平台插件无需改任何清单。其余插件（`loop.*` 由循环模式分段控件管理、`provider.llm` 名义挂载重启生效）**不出现**在该勾选区。保存后写回 TOML
 - **循环模式推导**（互斥，默认与兜底都是单会话）：见 [Agent 循环](../core/core-agent-loop.md)§循环模式（单一来源 `TeamMember::loop_mode()`）
 - **包级聚合**：白名单里的插件 id 即包 id——一次勾选同时门控该插件的生命周期与同名包的工具、技能（QQ 包见「Package」节）
 - **其余插件当前生效范围**：

@@ -109,7 +109,7 @@ y: 780
 
 1. **基础信息**（摘要 `启用 · 单会话`）：ID 必填 + `/^[A-Za-z0-9_-]+$/`（编辑时锁定，留空回退为名称）、名称必填、描述、启用开关、**循环模式分段单选**（单会话（默认）/ 并行多会话，互斥——写入 `enabled_plugins` 白名单的 `echo-agent.loop.{single,parallel}` 插件 id；空表即单会话）
 2. **系统提示词**（摘要 `自定义提示词/继承全局 · N 个系统技能`）：提示词文本域 + 系统提示词 skills 复选（双列网格）
-3. **启用的能力**（摘要 `N 插件 · N 工具 · N 技能`，空表显示「不限制（全部可用）」）：四个子块以 `NeumorphismDivider` 分隔——**插件**（`kind ∈ {adapter, management, interaction}` ∪ 包维度门控插件固定清单 tools.builtin / skills.dir / workspace / adapter.qq / subagent（与 `capabilities.ts::PACKAGE_GATED_PLUGIN_IDS` 逐项镜像），判定单一来源 = `capabilities.ts::isPluginCheckboxVisible`；两者之外的插件如 loop.* 不出现；标签显示中文 kind 名，单一来源 `capabilities.ts::PLUGIN_KIND_LABELS`）、**包（Package）**（一次切换整包工具+技能，附成员清单与项数徽标；显示名单一来源 = `capabilities.ts::PACKAGE_DISPLAY_NAMES`）、**工具**（按分类分组，自适应多列）、**技能**
+3. **启用的能力**（摘要 `N 插件 · N 工具 · N 技能`，空表显示「不限制（全部可用）」）：四个子块以 `NeumorphismDivider` 分隔——**插件**（`kind ∈ {adapter, management, interaction}` ∪ 包维度门控插件固定清单 tools.builtin / skills.dir / workspace / subagent（与 `capabilities.ts::PACKAGE_GATED_PLUGIN_IDS` 逐项镜像；适配器不经清单，按 `kind == "adapter"` 运行期推导，新增平台零改动），判定单一来源 = `capabilities.ts::isPluginCheckboxVisible`；两者之外的插件如 loop.* 不出现；标签显示中文 kind 名，单一来源 `capabilities.ts::PLUGIN_KIND_LABELS`）、**包（Package）**（一次切换整包工具+技能，附成员清单与项数徽标；显示名单一来源 = `capabilities.ts::PACKAGE_DISPLAY_NAMES`）、**工具**（按分类分组，自适应多列）、**技能**
 
 > 原「禁用的能力」（插件黑名单复选）分区已移除——插件维度只保留白名单（空表 = 全部启用，取消勾选即物化），既有黑名单配置由 Core 加载期物化进白名单。
 
