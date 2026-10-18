@@ -10,6 +10,12 @@ y: 780
 
 > **定位**：本文覆盖三块与平台无关的交互——**实例弹出层**（描述符驱动的设备管理界面）、入口行任务弹层、Shell 列表与详情视图，以及 HTTP 旁路通道（卡片状态、取消约定 = 乐观中断 + `team_id` 命令、通道超时）。读者：维护 Panel 插件实例 / 任务 / Shell 交互的开发者。
 > Panel 不认识任何具体平台：弹层的布局由插件下发的描述符（`InstanceStatus.ui`）声明、动作经 `InvokeInstanceOp` 透传、状态经 `InstanceState` 回推。当前在册的实例插件只有 `echo-agent.instance.qq`——它是**进程外插件**：manifest 编译在 Core 里，实现却是独立进程（独立仓库 `echo-adapter-qq`），Core 侧只有门控壳（插件体系的两维度见 [插件化设计](../plugins/core-plugins.md)）。下文举的扫码 / 门控 / 名单都是**该插件描述符的内容**，不是 Panel 的能力边界，也不是 Core 的内置功能。相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)、[插件开发指南](../plugins/plugin-authoring.md)。
+>
+> ⚠️ **本文的协议名是混的**，读之前先分清哪一半能用：**Core 侧契约**是 `InstanceList` / `InstanceState` /
+> `InstanceStateChanged` / `InvokeInstanceOp`（`echo-protocol` 里的实际变体名）；**Panel 前端实现**仍用
+> 旧名 `AdapterList` / `AdapterState` / `AdapterStateChanged` / `InvokeAdapterOp`（`protocol.ts`）。两者
+> **没有变体级 alias，当前双向不通**——下文出现 `Adapter*` 是 Panel 现状名，`Instance*` 是 Core 契约名，
+> 别把两种混着抄。详见[协议与数据流](../protocol/protocol.md)「协议名版本窗口」。
 
 ## 实例管理（描述符驱动的弹出层）
 

@@ -22,7 +22,11 @@ y: 780
 
 底层是 ui-frame 的 `NeumorphismIcon` + `@echolab-auto/ui-frame/icons` 注册表（79 个语义）：**24 基准 viewBox / `stroke="currentColor"` / 尺寸七档 / 线宽按档自动**。
 
-> 演进过程：Panel 先自建了 305 行的 `PanelIcon`（含 31 个 path），随后把几何全部上收进 ui-frame 注册表（缺的 `message` / `network` / `sparkle` 也一并补进去），PanelIcon 降到 82 行、只留产品语义色。**Panel 不再持有任何 path 数据。**
+> 演进过程：Panel 先自建了 305 行的 `PanelIcon`（含 31 个 path），随后把几何全部上收进 ui-frame 注册表（缺的 `message` / `network` / `sparkle` 也一并补进去），PanelIcon 降到 82 行、只留产品语义色。**`PanelIcon` 自身不再持有任何 path 数据**。
+>
+> ⚠️ 但这不等于「Panel 里没有内联 path」：**仍有 4 个组件共 33 处内联 `<path>`**——
+> `ChatView.vue`（16 处，入口行图标）、`ToolIcon.vue`（9 处，工具语义图标，产品特有）、
+> `WorkRunGroup.vue`（6 处）、`AgentSwitcher.vue`（1 处）。这些是待迁移项，别以为已经清零。
 
 ```vue
 <PanelIcon name="home" />                        <!-- 默认 sm = 14px -->
@@ -46,7 +50,13 @@ y: 780
 
 **禁用**：emoji 与符号字符充当控件图标（🔒 🏠 📁 ⛓ ☑ ☐ ⇥ ⇤ ▾ ▸ ⠿ ★ ⇧ ⚠ …）——内容表达（正文、说明文字）除外。
 
-> 现状：emoji 已清零；符号字符**尚有 5 处残留**（`SidebarCard.vue` 1 处、`SettingsView.vue` 4 处的折叠 caret 用 `▾ / ▸`），待换 `PanelIcon chevron-down / chevron-right`。
+> 现状：emoji 已清零；符号字符**尚有 5 处残留**（`SidebarCard.vue` 1 处、`SettingsView.vue` 4 处
+> 的折叠 caret 用 `▾ / ▸`），待换 `PanelIcon chevron-down / chevron-right`。
+>
+> ⚠️ **lint 抓不到这条**：`web/scripts/lint-styles.mjs` 的 `EMOJI_ICON_RE` 只覆盖
+> `1F300-1FAFF` / `2600-27BF` / `2B00-2BFF` 三段——U+25B8 `▸`、U+25BE `▾`、U+21E4 `⇤`、
+> U+21E5 `⇥`、U+283F `⠿`、U+21E7 `⇧` 都不在区间内（只有 `★` U+2605 会被拦）。
+> 实测在上面 5 处残留存在时 `npm run lint:styles` **仍然 exit 0**——这条靠人工评审，别指望 CI。
 
 > 修复前的实测偏差：尺寸 15px / 17px / 10px 三档自造（ChatView 发送/附件钮、文件树 chevron），线宽 1.3×5 / 1.8 自造（文件树自建 16 viewBox 图标体系），emoji 图标 15 处。
 
