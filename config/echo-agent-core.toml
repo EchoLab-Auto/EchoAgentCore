@@ -81,10 +81,15 @@ enabled = false
 # 重启自动回灌；入站消息 / 连接态经 stdio 协议回呼 Core。
 # NapCat OneBot HTTP API，用于读取完整群和好友列表。
 napcat_onebot_url = "http://localhost:3000"
-# NapCat Docker 容器由 QQ 适配器托管：启动 QQ 适配器时自动启动 NapCat，
-# 停止 QQ 适配器时自动停止 NapCat。若 Docker CLI 缺失/无权限，启动会在 Panel 中报错。
+# NapCat Docker 容器由 QQ 插件托管：启动实例时确保容器在跑（compose up）。
+# 若 Docker CLI 缺失/无权限，启动会在 Panel 中报错。
 napcat_auto_start = true
-napcat_auto_stop = true
+# 停止实例（含 Core 停机/自更新）时是否联动停容器。**默认保持 false**：
+# 容器不停则 QQ 始终在线，Core 重启只断反向 WS、重启后自动重连，用户无感知。
+# 联动停止会引入两类事故：① 容器重启 = QQ 下线，需重新扫码登录；
+# ② 频繁重启触发 QQ 安全策略，使快速登录凭证失效（「登录态已失效」）。
+# 确实需要随实例一起停容器时再改成 true。
+napcat_auto_stop = false
 # Docker Compose 文件路径（相对 Core 工作目录或绝对路径）。也可在启动失败时手动准备容器。
 napcat_compose_file = "docker-compose.yml"
 # 允许执行管理员命令（status/shutdown）的 QQ 号，0 表示禁用管理员命令。

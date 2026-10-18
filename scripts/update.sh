@@ -409,12 +409,14 @@ if ((core_was_active)); then
     #    等待窗口 = 5 个重连周期（25s）+ 2 个心跳探测 + 余量 ≈ 40s；
     #    仅当超过窗口仍未连上才 docker restart（最后的兜底）。 ──
     #
-    #    仅当 QQ 确实启用（[adapters.qq].enabled = true）且存在 NapCat 容器
+    #    仅当 QQ 确实启用（[instances.qq] 或等价的 [adapters.qq] 里 enabled = true）
     #    时才做恢复：QQ 关闭的部署没有反向 WS 可等，重启容器只会制造噪音。
     PHASE=restoring_qq
     qq_connected() {
         command -v ss >/dev/null 2>&1 || return 1
-        # 多实例：反向 WS 端口为 3131（legacy）或 3140-3399（自动分配）。
+        # 多实例：反向 WS 端口为 3131（legacy）或 3140-3190（插件自动分配，
+        # 见 echo-adapter-qq 的 deploy::REVERSE_RANGE）。下面刻意放宽到
+        # 3131 + 3140-3399：端口由插件决定、Core 与脚本都不感知。
         # 注意不要匹配 3132（管理面端口）。
         ss -Htn state established 2>/dev/null \
             | grep -qE ':(3131|31[4-9][0-9]|3[2-3][0-9][0-9])\b'
@@ -422,7 +424,7 @@ if ((core_was_active)); then
     qq_enabled=1
     qq_config="${XDG_CONFIG_HOME:-$HOME/.config}/echo-agent-core/core.toml"
     if [[ -f "$qq_config" ]] && ! awk '
-        /^\[adapters\.qq\]/{f=1;next}
+        /^\[(adapters|instances)\.qq\]/{f=1;next}
         /^\[/{f=0}
         f && /^enabled[[:space:]]*=/ {gsub(/[[:space:]]/,"");if ($0=="enabled=true") found=1}
         END{exit !found}' "$qq_config"; then

@@ -756,7 +756,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         }
         if !patches.is_empty() {
             if let Err(error) = config_store.patch(|root| {
-                let instances = echo_config::ensure_table(root, "adapters");
+                let section = instance_deploy::instance_section_key(root, &platform);
+                let instances = echo_config::ensure_table(root, section);
                 let qq = echo_config::ensure_table(instances, &platform);
                 let instances = echo_config::ensure_table(qq, "instances");
                 for (id, persona) in &patches {

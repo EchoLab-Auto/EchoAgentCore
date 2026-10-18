@@ -97,7 +97,7 @@ y: 2220
 | 连接/触发条件 | 修改配置文件 + 重启 | 下次启动 |
 | 群成员放行开关（`group_members_open`） | 修改配置文件 + 重启 | 下次启动 |
 | 白名单/黑名单 | Panel 交互式命令 | 立即生效 |
-| 门控模式 | `/qq setting` 单选切换 | 立即生效 + 持久化 |
+| 门控模式 | Panel「门控」面板单选（`InvokeInstanceOp{method:"set_gate_mode"}`） | 立即生效 + 持久化 |
 | 管理员 owner | `InvokeInstanceOp{method:"set_owner"}` | 立即生效 + 持久化 |
 
 白名单/黑名单的运行时修改路径：
@@ -116,7 +116,7 @@ owner 与门控/名单一样有运行时更新路径，无需重启：
 - 门控豁免一律读运行时值：过滤管道的「管理员绕过」、`get_gated_friend_list`、出站门控
 - `PluginInstance` trait 提供 `set_owner_qq`/`get_owner_qq` 默认 no-op 方法，QQ 实现覆盖
 - **语义边界**：运行时设置的 owner 仅影响门控豁免，不联动其它授权（原自更新授权联动已随 `framework_update` 工具废弃移除）
-- `install.sh --owner-qq` 已移除：设置入口为协议命令或直接编辑 `[instances.qq]`（当前 Web Panel 仅只读显示 owner，未接设置 UI）
+- `install.sh --owner-qq` 已移除：设置入口是 Panel「管理员」面板的**可编辑输入框**（插件 UI 描述符声明 `editable: true` + `action: set_owner`，渲染器直接发 `InvokeInstanceOp{method:"set_owner"}`），或直接编辑配置
 
 ### 门控模式取值
 
@@ -142,7 +142,7 @@ QQ 插件实例支持**多实例**：一个实例 = 一个 NapCat 容器 + 一�
 | 实例 id | `instance_id`，全局唯一，即**插件实例名**与会话 `@account` 维度 |
 | 归属 | `[instances.qq.instances.<id>].persona = "<team>"` |
 | 端口 | 每实例 3 个宿主端口：反向 WS / OneBot HTTP / WebUI，**由插件分配并持久化**（写入实例 state 文件 `[deploy.ports]`；三级回退 = 配置显式值 > 上次持久化 > 探测空闲。默认实例 `qq` 缺省沿用 3131 / 3000 / 6099 且**不探测**——那三个端口由既有容器持有，宿主侧 bind 探测必然失败） |
-| 容器 | `echo-napcat-<id>`，独立数据卷 `echo-napcat-<id>-{data,config}`，**compose 由插件生成**（`<数据目录>/napcat/<id>/docker-compose.yml`，幂等：内容不变不写）。2026-10 之前这两件事在 Core 的 `instance_deploy`——那是让框架持有 NapCat 部署 schema，已移交 |
+| 容器 | `echo-napcat-<id>`，数据以 **bind mount** 挂在 compose 文件旁（`./data/<id>` → 容器 `/app/napcat/config`、`./data/<id>-files` → `/app/napcat/files`，不是 Docker 命名卷），**compose 由插件生成**（`<数据目录>/napcat/<id>/docker-compose.yml`，幂等：内容不变不写；手改会被下次启动覆盖）。2026-10 之前这两件事在 Core 的 `instance_deploy`——那是让框架持有 NapCat 部署 schema，已移交 |
 | 自动创建 | 人格启用 `echo-agent.instance.qq` 且无归属实例时自动建档（id = 人格 id，重复则 `<id>-2`…）；**默认人格（首个启用者）固定用 legacy id `qq`**，沿用共享容器/端口语义 |
 | 显示名 | 实例化：`QQ（<persona> / <实例>）`；实例名为 `qq` 时 `QQ（<persona>）`；未归属时 `QQ / OneBot`——Panel 多实例下据此区分 |
 | 持久化 | **两处、两个作者**：①Core 把自动建档实例的 **persona** 写回 `[instances.qq.instances.<id>]`（仅缺该字段才写；legacy 实例不写回——不写会让重启后 persona 缺失、被重新分配给默认人格，归属漂移）；②插件把自己的 **ports** 写进实例 state 文件 `[deploy.ports]`。两者刻意分离：persona 是宿主的归属决定，端口是插件的部署状态 |
@@ -153,12 +153,18 @@ enabled = true
 
 [instances.qq.instances.alix-two]
 persona = "alix"
-# 端口首次自动分配后写回（可手工固定）
-[instances.qq.instances.alix-two.ports]
-reverse_ws = 3140
-onebot_http = 3010
-webui = 6100
+napcat_onebot_url = "http://127.0.0.1:3010"
+napcat_webui_url  = "http://127.0.0.1:6100"
+
+# 反向 WS 端口在 server 段里（配了就沿用，不配则自动分配）：
+[instances.qq.instances.alix-two.server]
+bind_address = "0.0.0.0:3140"
 ```
+
+⚠️ **别写 `[...instances.<id>.ports]`**——插件不读那个表（Core 时代的残留写法，写了等于没写）。
+端口的真实读取路径只有三个显式键：`[server].bind_address`（反向 WS）、`napcat_onebot_url`、
+`napcat_webui_url`；三者都没配时插件才在 3140-3190 / 3010-3090 / 6100-6190 内探测分配，
+并把结果持久化到**实例 state 文件**的 `[deploy.ports]`（跨重启稳定，不是手改入口）。
 
 **legacy 单实例（未配置任何 `[...instances]` 段）**：实例 id 为 `qq`、归属首个启用
 QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的宿主映射，不做探测），

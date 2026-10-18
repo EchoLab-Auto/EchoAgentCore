@@ -94,18 +94,16 @@ impl Agent {
     /// 实例插件（`echo-agent.instance.<platform>`）自动进入门控，无需改
     /// 本 crate 的常量表。
     fn gated_plugin_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = crate::plugins::GATED_PLUGIN_IDS
-            .iter()
-            .map(|id| (*id).to_string())
-            .collect();
-        if let Some(host) = plugin_host_global() {
-            for descriptor in host.registry.descriptors() {
-                if descriptor.kind == "adapter" && !ids.contains(&descriptor.id) {
-                    ids.push(descriptor.id);
-                }
-            }
-        }
-        ids
+        let registered: Vec<(String, String)> = plugin_host_global()
+            .map(|host| {
+                host.registry
+                    .descriptors()
+                    .into_iter()
+                    .map(|d| (d.id, d.kind))
+                    .collect()
+            })
+            .unwrap_or_default();
+        gated_plugin_ids_from(&registered)
     }
 
     /// 共享注册表中该插件当前是否启用（无全局锚点 = true，以名单为准）。
@@ -410,4 +408,86 @@ fn persona_tool_allowed(profile: &crate::config::AgentProfile, name: &str) -> bo
 fn persona_skill_allowed(profile: &crate::config::AgentProfile, name: &str) -> bool {
     (profile.enabled_skills.is_empty() || profile.enabled_skills.iter().any(|s| s == name))
         && !profile.disabled_skills.iter().any(|s| s == name)
+}
+
+/// 把「框架固定清单 + 运行期注册的实例插件」合成 persona 门控 id 集合。
+///
+/// `registered` 是注册表快照 `(插件 id, wire kind 名)`。实例插件按
+/// [`echo_plugin::PluginKind::PluginInstance`] 的 **wire 名** 判定——不要硬编码
+/// 字符串：`2d46b7d` 把该名从 `adapter` 改成 `instance` 时，硬编码的比较漏改，
+/// 导致实例插件永远进不了门控集合（白名单管不住 `instance.qq`）。
+fn gated_plugin_ids_from(registered: &[(String, String)]) -> Vec<String> {
+    let mut ids: Vec<String> = crate::plugins::GATED_PLUGIN_IDS
+        .iter()
+        .map(|id| (*id).to_string())
+        .collect();
+    let instance_kind = echo_plugin::PluginKind::PluginInstance.as_str();
+    for (id, kind) in registered {
+        if kind == instance_kind && !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    ids
+}
+
+#[cfg(test)]
+mod gating {
+    use super::*;
+
+    fn desc(id: &str, kind: &str) -> (String, String) {
+        (id.to_string(), kind.to_string())
+    }
+
+    /// 实例插件必须进 persona 门控集合（按 wire kind 名推导，不认平台名）。
+    ///
+    /// 回归背景（2026-10 审计发现）：`2d46b7d` 把 `PluginKind::PluginInstance` 的
+    /// wire 名从 `adapter` 改成 `instance`，而本函数的字符串比较当时硬编码了
+    /// `"adapter"`，于是实例插件**永远进不了**门控集合——`enabled_plugins` 白名单
+    /// 管不住 `instance.qq`，白名单形同虚设且无任何测试覆盖。
+    #[test]
+    fn registered_instance_plugins_join_the_gated_set() {
+        let ids = gated_plugin_ids_from(&[desc("echo-agent.instance.qq", "instance")]);
+        assert!(
+            ids.iter().any(|id| id == "echo-agent.instance.qq"),
+            "实例插件必须进门控集合，实际: {ids:?}"
+        );
+    }
+
+    /// 新增平台不改框架：任意 `instance.*` id 都自动进门控，无需登记常量。
+    #[test]
+    fn any_instance_plugin_is_gated_without_framework_changes() {
+        let ids = gated_plugin_ids_from(&[
+            desc("echo-agent.instance.qq", "instance"),
+            desc("echo-agent.instance.telegram", "instance"),
+        ]);
+        assert!(ids.iter().any(|id| id == "echo-agent.instance.telegram"));
+    }
+
+    /// 非实例类插件不进 persona 门控集合（loop/provider 等由各自机制管理）。
+    #[test]
+    fn non_instance_plugins_stay_out_of_the_gated_set() {
+        let ids = gated_plugin_ids_from(&[
+            desc("echo-agent.loop.single", "loop"),
+            desc("echo-agent.provider.llm", "provider"),
+            desc("echo-agent.management.panel", "management"),
+        ]);
+        for id in ["echo-agent.loop.single", "echo-agent.provider.llm"] {
+            assert!(!ids.contains(&id.to_string()), "{id} 不该被 persona 门控");
+        }
+    }
+
+    /// 框架固定清单始终在内，且不与注册表重复。
+    #[test]
+    fn framework_list_is_always_present_and_deduplicated() {
+        let base = crate::plugins::GATED_PLUGIN_IDS;
+        let ids = gated_plugin_ids_from(&[desc(base[0], "instance")]);
+        for id in base {
+            assert!(ids.iter().any(|x| x == id), "{id} 应在清单里");
+        }
+        assert_eq!(
+            ids.iter().filter(|x| *x == base[0]).count(),
+            1,
+            "同一 id 不得重复"
+        );
+    }
 }

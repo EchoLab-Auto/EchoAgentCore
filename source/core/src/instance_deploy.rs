@@ -98,6 +98,26 @@ pub fn resolve_instances(
 /// 深合并两张 TOML 表（实例覆盖 ⊕ 共享层）——留给需要预览合并结果的调用方
 /// （宿主只做透传，实际合并与派生由插件完成）。
 #[cfg_attr(not(test), allow(dead_code))]
+/// 写回实例配置时该用哪个段名。
+///
+/// Core 读取时 `[instances.<platform>]` 与 `[adapters.<platform>]` 是同一个字段的
+/// 两个 `serde(alias)`（`config::CoreConfig::instances_section`），但**写回必须沿用
+/// 用户已经在用的那个名字**：若用户按去适配器化后的 `[instances.qq]` 配置，写回时
+/// 硬造一个 `adapters` 段会让配置文件里同时出现两个段——下次启动 serde 直接报
+/// `duplicate field`，Core 起不来（自动建档触发写回 → 重启即崩）。
+///
+/// 两段都不存在时用 `adapters`（与出厂模板一致）。
+pub fn instance_section_key(root: &toml::Table, platform: &str) -> &'static str {
+    let has_platform = |key: &str| root.get(key).and_then(|v| v.get(platform)).is_some();
+    if has_platform("adapters") {
+        "adapters"
+    } else if has_platform("instances") {
+        "instances"
+    } else {
+        "adapters"
+    }
+}
+
 pub fn merge_tables(base: &toml::Table, overlay: &toml::Table) -> toml::Table {
     let mut out = base.clone();
     for (key, value) in overlay {
@@ -229,5 +249,25 @@ mod tests {
             resolved[0].overrides["napcat_container"].as_str(),
             Some("mine")
         );
+    }
+
+    #[test]
+    fn write_back_keeps_the_section_name_the_user_already_uses() {
+        // 用户配 [instances.qq] → 写回必须还在 instances 段（否则重启时 serde
+        // 同时看到两段会报 duplicate field，Core 起不来）
+        let root: toml::Table = "[instances.qq]\nenabled = true\n".parse().unwrap();
+        assert_eq!(instance_section_key(&root, "qq"), "instances");
+
+        // 用户配 [adapters.qq]（出厂模板）→ 保持 adapters
+        let root: toml::Table = "[adapters.qq]\nenabled = true\n".parse().unwrap();
+        assert_eq!(instance_section_key(&root, "qq"), "adapters");
+
+        // 段在但平台不在（如只有 [instances.telegram]）→ 回落模板默认
+        let root: toml::Table = "[instances.telegram]\nenabled = true\n".parse().unwrap();
+        assert_eq!(instance_section_key(&root, "qq"), "adapters");
+
+        // 空配置 → 模板默认
+        let root: toml::Table = "".parse().unwrap();
+        assert_eq!(instance_section_key(&root, "qq"), "adapters");
     }
 }
