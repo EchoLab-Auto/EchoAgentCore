@@ -996,5 +996,4 @@ mod tests {
         assert!(messages[1].tool_calls.is_some(), "{messages:?}");
         assert_eq!(messages[2].tool_call_id.as_deref(), Some("c1"));
     }
-
 }

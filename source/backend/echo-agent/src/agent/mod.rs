@@ -932,13 +932,14 @@ impl Agent {
             //
             // 落盘上限见 [`MAX_REASONING_EVENT_CHARS`]：单步推理异常长时截断，
             // 否则事件日志（整份 JSON、30s 一次整体重写）会被少数几步撑爆。
-            self.trunk.append_event(echo_session::SessionEvent::Reasoning(
-                echo_session::event::ReasoningEvent {
-                    content: cap_reasoning_for_log(content),
-                    timestamp: chrono::Utc::now().timestamp(),
-                    session: Some(session_id.to_string()),
-                },
-            ));
+            self.trunk
+                .append_event(echo_session::SessionEvent::Reasoning(
+                    echo_session::event::ReasoningEvent {
+                        content: cap_reasoning_for_log(content),
+                        timestamp: chrono::Utc::now().timestamp(),
+                        session: Some(session_id.to_string()),
+                    },
+                ));
             self.emit(BackendEvent::AgentReasoning {
                 session_id: session_id.to_string(),
                 team_id: None, // 由 annotate_team 统一注入

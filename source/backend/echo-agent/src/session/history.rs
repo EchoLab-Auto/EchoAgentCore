@@ -499,10 +499,7 @@ mod tests {
 
     #[test]
     fn watermark_filters_by_session() {
-        let timeline = vec![
-            entry("backend", "s1", 30),
-            entry("backend", "s2", 900),
-        ];
+        let timeline = vec![entry("backend", "s1", 30), entry("backend", "s2", 900)];
         assert_eq!(super::history_watermark(timeline, "s1"), 30);
     }
 
@@ -606,5 +603,4 @@ mod tests {
         let (messages, total, _) = store.display_history_for_session("s1", 500);
         assert_eq!(total, 1, "{messages:?}");
     }
-
 }

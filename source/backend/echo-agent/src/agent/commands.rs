@@ -941,10 +941,8 @@ impl Agent {
                 // 推理不落事件日志、派生不含；若把它计进水位线，前端会把
                 // 实时推理判成"快照已覆盖"而整条丢弃 → 看不到思考 chip）。
                 let session_key = session_id.as_str();
-                let max_seq = crate::session::history_watermark(
-                    trunk.timeline_snapshot(),
-                    session_key,
-                );
+                let max_seq =
+                    crate::session::history_watermark(trunk.timeline_snapshot(), session_key);
                 self.emit(BackendEvent::SessionHistory {
                     team_id: team_id.clone(),
                     session_id,

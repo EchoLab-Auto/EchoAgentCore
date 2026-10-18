@@ -369,8 +369,8 @@ mod tests {
     struct TempSkills(PathBuf);
     impl TempSkills {
         fn new() -> Self {
-            let dir = std::env::temp_dir()
-                .join(format!("echo-skills-{}", uuid::Uuid::new_v4().simple()));
+            let dir =
+                std::env::temp_dir().join(format!("echo-skills-{}", uuid::Uuid::new_v4().simple()));
             std::fs::create_dir_all(&dir).unwrap();
             Self(dir)
         }
@@ -414,7 +414,10 @@ mod tests {
         let bogus = skills.path().join("no-such-repo-anywhere");
         let url = format!("file://{}", bogus.display());
         let err = install(skills.path(), &url, Some("target"), None).unwrap_err();
-        assert!(err.contains("git clone 失败"), "错误信息应说明 clone 失败: {err}");
+        assert!(
+            err.contains("git clone 失败"),
+            "错误信息应说明 clone 失败: {err}"
+        );
         assert!(
             !skills.path().join("target").exists(),
             "失败后不得留下半成品目录"
@@ -502,7 +505,11 @@ mod tests {
             "不应以目录名为键"
         );
         // 目录确实叫 skill-echo-prodoc
-        assert!(skills.path().join("skill-echo-prodoc").join("SKILL.md").exists());
+        assert!(skills
+            .path()
+            .join("skill-echo-prodoc")
+            .join("SKILL.md")
+            .exists());
 
         // update 能用技能名找到目录（旧实现会报「目录不存在」）
         let updated = update(skills.path(), "prodoc-format").unwrap();
@@ -532,7 +539,10 @@ mod tests {
         // update 会先 fetch 失败（本地无 origin）——但错误必须是 git 失败，
         // 不能是「目录不存在」（后者说明目录定位错了）。
         let err = update(skills.path(), name).unwrap_err();
-        assert!(err.contains("git"), "应按 dir 回退定位目录后走到 git: {err}");
+        assert!(
+            err.contains("git"),
+            "应按 dir 回退定位目录后走到 git: {err}"
+        );
     }
 
     /// 旧记录归正：键=目录名、无 dir → 内存里改挂到技能名 + 补 dir。
@@ -556,7 +566,10 @@ mod tests {
         let healed = load_sources_healed(skills.path());
         assert!(healed.contains_key("prodoc-format"), "应改挂到技能名");
         assert!(!healed.contains_key("skill-echo-prodoc"), "旧键不应保留");
-        assert_eq!(healed["prodoc-format"].dir.as_deref(), Some("skill-echo-prodoc"));
+        assert_eq!(
+            healed["prodoc-format"].dir.as_deref(),
+            Some("skill-echo-prodoc")
+        );
         assert_eq!(healed["prodoc-format"].rev, "f727ad5", "其余字段原样保留");
 
         // 归正只在内存：磁盘上仍是旧键（写入留给 install/update/remove）

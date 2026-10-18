@@ -425,8 +425,12 @@ mod tests {
         // 只读统计：拿到的是 &[SessionEvent]，不产生副本
         let count = log.with_events(|events| events.len());
         assert_eq!(count, 2);
-        let sessions: Vec<Option<String>> = log
-            .with_events(|events| events.iter().map(|e| e.session().map(str::to_string)).collect());
+        let sessions: Vec<Option<String>> = log.with_events(|events| {
+            events
+                .iter()
+                .map(|e| e.session().map(str::to_string))
+                .collect()
+        });
         assert_eq!(sessions.len(), 2);
         // 读操作不改内容
         assert_eq!(log.len(), 2);
@@ -443,7 +447,10 @@ mod tests {
         let sessions: Vec<String> = (0..13).map(|i| format!("s{i:02}")).collect();
         for round in 0..100 {
             for session in &sessions {
-                log.append(user_in(session, &format!("{session}-{round}-{}", "x".repeat(200))));
+                log.append(user_in(
+                    session,
+                    &format!("{session}-{round}-{}", "x".repeat(200)),
+                ));
             }
         }
         let total_bytes = |events: &[SessionEvent]| -> usize {
