@@ -187,8 +187,6 @@ echo-agent-core port set management 0.0.0.0:4000   # 改完整监听地址
 echo-agent-core port set federation 4001      # 联邦监听端口
 echo-agent-core port set federation none      # 仅连出（listen = ""）
 echo-agent-core port set federation-advertise 10.0.0.5:4001   # 邀请串对外宣告
-echo-agent-core port set qq 3141              # 默认 QQ 实例反向 WS
-echo-agent-core port set qq-instance:<id>:webui 6105          # 实例宿主端口（auto = 重新自动分配）
 
 # management_access_token：查看 / 轮换
 echo-agent-core token                         # 打印当前 token（空 = 无认证）
@@ -197,12 +195,13 @@ echo-agent-core token --rotate                # 重新生成并写回（32 字�
 
 要点：
 
-- `port` 目标键与配置键一一对应：`management`→`[core].management_address`、`federation`→`[federation].listen`、`federation-advertise`→`[federation].advertise`、`qq`/`qq-instance:<id>:<字段>`→`[instances.qq.instances.<id>.ports]`；`[instances.qq.server].bind_address` 在运行时被实例端口分配覆盖（`merge_instance`），**实际监听以 ports 三元组为准**，CLI 只写权威键
-- 缺省值与显式值语义区分（如 `listen` 缺省 = 跟随管理地址合并、显式空串 = 仅连出）；非默认实例端口修改前要求实例已存在于配置（防误建实例及其容器）
+- `port` 目标键与配置键一一对应，**只有三个**：`management`→`[core].management_address`、`federation`→`[federation].listen`、`federation-advertise`→`[federation].advertise`
+- **QQ / NapCat 端口不在 CLI 管理范围内**（2026-10 移交插件）：`qq` 与 `qq-instance:<id>:<字段>` 两个目标已删除。实例的三端口（反向 WS / OneBot HTTP / WebUI）由插件分配并持久化到实例 state 文件 `[deploy.ports]`；改端口请改配置里的显式值（`[instances.qq.server].bind_address` 或 `[...instances.<id>]` 的对应键），插件会沿用配置值而非重新探测
+- 缺省值与显式值语义区分（如 `listen` 缺省 = 跟随管理地址合并、显式空串 = 仅连出）
 - 编辑后做 TOML 合法性与**目标值类型复读**自检；`tmp + rename` 原子写
 - **端口合并（缺省）**：联邦监听**缺省合并至管理端口**——NAT 场景**一条映射同时服务面板与联邦**（见 [联邦](../federation/federation.md#配置与管理面)）；管理地址回环 / 空令牌且非回环 / 令牌与 peer 冲突时自动回退独立监听（启动警告）；**显式**同址合并 + 空令牌 + 非回环仍 fail-closed **拒绝启动**
 - 端口变更重启 Core 生效；`port set` 的提示按**编辑后**的合并状态自适应——合并态下改 `management` 会同时提醒 Panel `[[cores]].url`、对端 `[federation.peers.*]` 的 url 与端口映射/`advertise` 三处同步（独立监听只提醒 Panel）
-- 相应配置解析与编辑逻辑见 [配置持久化](../core/core-config-persistence.md)；QQ 实例端口分配见 [QQ 门控](../plugins/qq-gating.md)
+- 相应配置解析与编辑逻辑见 [配置持久化](../core/core-config-persistence.md)；QQ 实例端口分配（插件侧）见 [QQ 门控](../plugins/qq-gating.md)
 
 ### 日常体检
 

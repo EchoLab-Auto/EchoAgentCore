@@ -25,7 +25,7 @@ y: 500
 
 ```prodoc-flow
 graph BT
-  Defs[echo-defs<br>Service Definition<br>（PluginInstance trait / AdapterManagement 在此）]
+  Defs[echo-defs<br>Service Definition<br>（PluginInstance trait / InstanceManagement 在此）]
   Ctx[echo-context<br>Ctx/EventBus/Disposer]
   Session[echo-session<br>事件溯源]
   Loop[echo-loop<br>TurnRunner]

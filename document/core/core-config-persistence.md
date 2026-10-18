@@ -99,61 +99,77 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 
 `[agent].provider` 取值：`openai` / `deepseek` / `third-party`（OpenAI 兼容，base_url 以 `/anthropic` 结尾时自动走 Messages 协议）、`anthropic` / `claude`、`kimi`（Kimi Code 订阅：Anthropic 兼容端点 `https://api.kimi.com/coding`，`x-api-key` 在 Kimi Code Console 创建，推理档位 `output_config.effort` low/high/max）、`ollama`。
 
-## QQ 门控配置持久化
+## QQ 门控配置持久化（插件侧，2026-10 起）
+
+> **关键区分**：门控 / 名单 / owner 的持久化**不再写 core.toml**。它们由 QQ 插件
+> 写入自己的**实例 state 文件**（`state_file`，宿主经 `Hello.config` 下发，
+> 路径形如 `<数据目录>/qq-<实例>.toml`），段落为 `[adapters.qq]`。
+>
+> Core 侧只剩两类写：`[agent]`（persona 名单 / provider 等，`Agent::persist_config`）
+> 与实例 persona（自动建档时写回 `[instances.<p>.instances.<id>]`）。两处用**同一个**
+> `ConfigStore` 实例，靠内部 `Mutex` 串行化；插件的 state 文件是**另一个文件、
+> 另一个 `ConfigStore` 实例**，因此两者不可能互相覆盖。
 
 ### 触发时机
 
-| 操作 | 触发 |
+| 操作 | 插件侧动作 |
 |---|---|
-| `/qq setting` 切换门控模式 | `set_gate_mode()` → `persist_filter()` |
-| `/qq setting` → 白名单 → 切换群 | `update_allowlist()` → `persist_filter()` |
-| `/qq setting` → 黑名单 → 切换群 | `update_denylist()` → `persist_filter()` |
-| 手动输入 QQ 号添加/移除用户 | `update_allowlist()` / `update_denylist()` → `persist_filter()` |
+| Panel 切换门控模式 | `set_gate_mode()` → 落盘 `[adapters.qq].gate.mode` |
+| Panel 切白名单群 / 用户 | `update_allowlist()` → 落盘 `[adapters.qq].filter.allowlist` |
+| Panel 切黑名单群 / 用户 | `update_denylist()` → 落盘 `[adapters.qq].filter.denylist` |
+| Panel 设 owner | `set_owner()` → 落盘 `[adapters.qq].owner_qq` |
+
+（`command_prefix` 字段仍在插件配置里，但**当前无消费方**——Core 侧的平台消息命令
+已于 2026-10 随「出站面收窄」删除，插件也未实现命令解析。）
 
 ### 数据流
 
 ```text
-Panel 操作（插件实例弹层，经 management WS）
+Panel 操作（实例弹层）
   → BackendCommand::InvokeInstanceOp { instance, method, payload }
-      （method = set_gate_mode / update_allowlist / update_denylist …）
+      （method = set_gate_mode / update_allowlist / update_denylist / set_owner …）
   → Agent::apply_command() → apply_instance_command()（按 instance 实例名寻址）
-    → 插件侧 custom op 承接（进程外插件经宿主转发）
-    → 插件更新内存中的 runtime 字段
-    → 重建过滤管道（立即生效）
-    → 读回当前配置（get_filter_config / get_gate_mode）
-      → ConfigStore::patch(|root| {
-           在 root 中更新 instances.qq.gate.mode
-           在 root 中更新 instances.qq.filter.allowlist/denylist
-           Ok(())
-        })
-        → 读取全文件 → 修改 [instances.qq] → 写入 .tmp → rename
+    → 进程外插件经 Invoke("<instance>:custom", {method, payload}) 转发
+      → 插件更新内存中的 runtime 字段 + 重建过滤管道（立即生效）
+      → 插件 ConfigStore::patch(|root| { 在 root["adapters"]["qq"] 下写 gate/filter/owner })
+        → 读取 state 文件 → 修改 → 写入 .tmp → rename（原子）
+      → 插件回推 report_ui_state（管理面快照 → InstanceState 事件）
 ```
 
-> 注：`persist_filter` 和 `Agent::persist_config` 共享同一个 `ConfigStore` 实例。
-> 两者在不同时机调用，但通过 `ConfigStore` 内部的 `Mutex` 保证不会并发覆写。
-
-### 写入的 section
+### 写入的 section（实例 state 文件，**不是** core.toml）
 
 ```toml
-[instances.qq.gate]
+# <数据目录>/qq-<实例>.toml
+[adapters.qq.gate]
 mode = "allowlist"  # "none" | "allowlist" | "denylist"
 
-[instances.qq.filter.allowlist]
-user_ids = [123456, 789012]
-group_ids = [111222]
+[adapters.qq.filter.allowlist]
+user_ids = ["123456"]
+group_ids = ["111222"]
 
-[instances.qq.filter.denylist]
+[adapters.qq.filter.denylist]
 user_ids = []
 group_ids = []
+
+[adapters.qq]
+owner_qq = 1828980067
+
+[deploy]
+ports = { reverse_ws = 3131, onebot_http = 3000, webui = 6099 }
 ```
+
+**回灌**：`configure()` 里 state 文件的 `[adapters.qq]` 覆盖宿主下发的基线
+（`apply_persisted_state`）——崩溃重启不得回退到默认值（安全相关）；
+`[deploy].ports` 由 `deploy` 模块读取，用于跨重启稳定端口。
 
 ### 线程安全
 
-- `QqInner` 中所有运行时字段使用 `StdMutex` 保护
-- `persist_filter()` 锁定 `config_store`（共享的 `ConfigStore` 内部 Mutex），不阻塞消息处理
+- 插件侧运行时字段（门控 / 名单 / owner）由 `StdMutex` 保护
+- 落盘时锁 `config_store`（插件自己那个 `ConfigStore` 的内部 Mutex），**不阻塞消息处理**
 - `ConfigStore` 的 Mutex 是 `std::sync::Mutex`（非 tokio），一次 patch 持锁时间仅限文件 I/O
+- Core 与插件的 `ConfigStore` 是**两个实例、两个文件**，不存在跨进程锁竞争
 
-### 不持久化的内容
+### 不持久化的内容（插件侧）
 
 - `rebuild_filter_pipeline()` 不触发持久化（只重建管道，不修改配置）
 - `get_filter_config()` 只读不写

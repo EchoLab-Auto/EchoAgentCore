@@ -141,11 +141,11 @@ QQ 插件实例支持**多实例**：一个实例 = 一个 NapCat 容器 + 一�
 | --- | --- |
 | 实例 id | `instance_id`，全局唯一，即**插件实例名**与会话 `@account` 维度 |
 | 归属 | `[instances.qq.instances.<id>].persona = "<team>"` |
-| 端口 | 每实例 3 个宿主端口：反向 WS / OneBot HTTP / WebUI（`[...ports]`），**自动分配并持久化** |
-| 容器 | `echo-napcat-<id>`，独立数据卷 `echo-napcat-<id>-{data,config}`，compose 由 Core 生成（`<数据目录>/napcat/<id>/docker-compose.yml`） |
+| 端口 | 每实例 3 个宿主端口：反向 WS / OneBot HTTP / WebUI，**由插件分配并持久化**（写入实例 state 文件 `[deploy.ports]`；三级回退 = 配置显式值 > 上次持久化 > 探测空闲。默认实例 `qq` 缺省沿用 3131 / 3000 / 6099 且**不探测**——那三个端口由既有容器持有，宿主侧 bind 探测必然失败） |
+| 容器 | `echo-napcat-<id>`，独立数据卷 `echo-napcat-<id>-{data,config}`，**compose 由插件生成**（`<数据目录>/napcat/<id>/docker-compose.yml`，幂等：内容不变不写）。2026-10 之前这两件事在 Core 的 `instance_deploy`——那是让框架持有 NapCat 部署 schema，已移交 |
 | 自动创建 | 人格启用 `echo-agent.instance.qq` 且无归属实例时自动建档（id = 人格 id，重复则 `<id>-2`…）；**默认人格（首个启用者）固定用 legacy id `qq`**，沿用共享容器/端口语义 |
 | 显示名 | 实例化：`QQ（<persona> / <实例>）`；实例名为 `qq` 时 `QQ（<persona>）`；未归属时 `QQ / OneBot`——Panel 多实例下据此区分 |
-| 持久化 | 自动建档时把 **persona + ports** 一并写回 `[instances.qq.instances.<id>]`（仅缺字段才写；legacy 实例不写回）。只写端口会让重启后的 persona 缺失、被重新分配给默认人格（归属漂移） |
+| 持久化 | **两处、两个作者**：①Core 把自动建档实例的 **persona** 写回 `[instances.qq.instances.<id>]`（仅缺该字段才写；legacy 实例不写回——不写会让重启后 persona 缺失、被重新分配给默认人格，归属漂移）；②插件把自己的 **ports** 写进实例 state 文件 `[deploy.ports]`。两者刻意分离：persona 是宿主的归属决定，端口是插件的部署状态 |
 
 ```toml
 [instances.qq]              # 共享默认（镜像/auto_start/路径模板…）
@@ -174,7 +174,7 @@ QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的
 - 入站：每实例把消息投给**归属人格**（`AgentMessageHook` 按实例接线），事件带实例名
 - 会话键：`qq:group:<gid>:<uid>@<实例>`；实例名为默认 `qq` 时不加后缀（单实例部署零迁移）
 - 出站工具：**由本插件声明**（`tools.rs` 的 `InstanceContribution.tools`，10 个），每人格按自己实例集合注册；多实例时宿主给 schema 增加可选 `account`（实例名），缺省在多实例下报错列出可选值。平台语义全在声明里——宿主不认识这些工具名（见 [工具系统](./core-tools.md)「工具从哪来」）
-- 管理面（门控/名��/owner/登录）：`InvokeInstanceOp` 的 `instance` 为必填实例名；状态经 `InstanceState` 推送（`scopedKey(core, instance)` 归并）
+- 管理面（门控/名单/owner/登录）：`InvokeInstanceOp` 的 `instance` 为必填实例名；状态经 `InstanceState` 推送（`scopedKey(core, instance)` 归并）
 - **登录由 Core 代理**：`InvokeInstanceOp{method:"login_status"}`（`InstanceOpResult` 回执）；`login_qrcode` 出二维码（PNG base64，经 `InstanceOpResult` 返回，只进渲染器局部），Panel 不直连 OneBot HTTP / docker
 - **二维码陈旧自动刷新**：`login_qrcode_png` 先探测容器内 PNG 的 mtime，缺失或 >90s（`QR_MAX_AGE_SECS`）时经 WebUI（`webui.json` token → `sha256(token+".napcat")` → `/api/auth/login` → `/api/QQLogin/RefreshQRcode`）让 NapCat 重新生成、等 2s 落盘再取；刷新失败仅告警并退回读现有文件。NapCat 自身轮换循环停摆时（实测会发生），这是"刷新没反应"的解法；新鲜码（<90s）直接返回，不会作废用户刚扫的码
 

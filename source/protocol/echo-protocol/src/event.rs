@@ -29,9 +29,11 @@ pub struct InstanceStatus {
     /// 归属人格 id（概念中立；2026-09 多实例）。
     #[serde(default)]
     pub persona: Option<String>,
-    /// 平台自有展示型字段（W2.2，2026-10 插件实例管理通道）：键值对，
-    /// 替代各平台专属具名字段——平台特有字段名随插件/插件实例来，消费端
-    /// （Panel）按 KV 通用渲染，宿主不再为每个平台加具名字段。
+    /// 平台自有展示型字段的通用 KV 承载。
+    ///
+    /// **当前恒为空**（2026-10 去适配器化）：平台展示字段改由插件自己的
+    /// **UI 描述符**声明（字段绑定 `instance.*`，Panel 通用渲染器按 `bind`
+    /// 取值）——单一来源，Core 不必逐键命名再配中文标签。字段保留不改线协议。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub metadata: Vec<InstanceMetadataEntry>,
     /// 平台标识（如 `"qq"`；来自 `InstanceInfo.platform`）。Panel 会话分组 /
