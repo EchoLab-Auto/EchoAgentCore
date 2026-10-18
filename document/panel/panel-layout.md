@@ -140,7 +140,7 @@ graph LR
 
 ### 3.4 顶栏交互
 
-- **连接指示**（已迁入边栏「连接状态」卡，默认右列、可拖动换列）：`已连接`（online 绿点）/ `连接中…`（connecting 呼吸点），驱动源 `state.connected`；卡片同时逐实例列出适配器实例的运行态（全部平台，非 QQ 专属），详见 [会话视图](./panel-chat.md)「侧栏与多接入点」
+- **连接指示**（已迁入边栏「连接状态」卡，默认右列、可拖动换列）：`已连接`（online 绿点）/ `连接中…`（connecting 呼吸点），驱动源 `state.connected`；卡片同时逐实例列出适配器实例的运行态（全部平台），详见 [会话视图](./panel-chat.md)「侧栏与多接入点」
 - **设置入口**：顶栏导航「设置」直达设置视图（见 [设置视图](./panel-settings.md)）——已不再有设置下拉与 API 弹窗
 - **主题开关**：三态循环（浅色 → 跟随系统 → 深色），由 ui-frame `ThemeProvider` + `NeumorphismThemeToggle` 提供；持久化 `localStorage: echo-panel-theme`；外壳默认 `auto`，index.html 内联脚本防闪烁
 
