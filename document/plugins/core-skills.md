@@ -108,6 +108,6 @@ git 子进程最长可跑 `GIT_TIMEOUT`（120s），期间 Core **不发送分�
 
 - **不阻塞命令处理路径**：`Agent` 的 `InstallSkillFromGit` / `UpdateSkillFromGit` 分支把 git 调用放进 `tokio::task::spawn_blocking`（git 子进程本身阻塞式，可达分钟级），async 调度线程不被占住；`RemoveSkillSource` 只改一个 JSON 文件，同步完成
 - **来源记录的键与目录可分离**：键 = 技能名、`SkillSource.dir` = 实际目录，`update` / `remove_source` / `emit_skills_list` 统一走 `load_sources_healed`；旧格式记录（键 = 目录名、无 `dir`）在**内存里**归正（`heal_sources` 读 `<键>/SKILL.md` 的 `name`，不同则改挂到该名下并补 `dir`），读路径不做 IO 副作用——落盘发生在下一次 install / update / remove。故历史部署装过的技能打开设置页即能看到徽标，点一次「更新」即完成落盘
-- **结果通知统一走 `Error` 事件**（成功/失败皆是，消息文本区分）——Panel 以 toast 呈现，这是刻意的单向命令约定：面板不预测 core 侧耗时操作
+- **消息提示统一走 `Error` 事件**（成功/失败都发，靠消息文本区分）——Panel 直接以 toast 呈现；列表状态另由 `SkillsList` 承载。两者合起来是刻意的单向命令约定：面板不预测 Core 侧耗时操作的完成时刻
 - shallow clone（`--depth 1`）：不保留历史，更新语义是"对齐远端分支头"而非版本选择；要装特定提交需先在仓库侧打分支/标签
 - `.sources.json` 是来源的唯一事实来源；手工把目录拷进 skills_dir 的技能无来源记录，不显示 Git 徽标也不可「更新」
