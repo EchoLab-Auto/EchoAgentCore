@@ -420,12 +420,10 @@ impl CoreConfig {
                 platforms.push((name.clone(), section.clone()));
             }
         }
-        // QQ 始终有一个视图（历史行为：即使没写 `[instances.qq]`，其
-        // `command_prefix` 也会被归一化为 `/`、插件 command 默认
-        // `echo-instance-qq`）。其它平台只在配置里出现时才建视图。
-        if !platforms.iter().any(|(name, _)| name == "qq") {
-            platforms.push(("qq".to_string(), PlatformSection::default()));
-        }
+        // **不预置任何平台视图**：只有配置里写了的 `[instances.<name>]` 才
+        // 有视图（2026-10 去适配器化）。此前无条件塞一个 `"qq"` 视图——那等于
+        // 让 Core 认识「有一个平台叫 QQ」。该视图的 `enabled` 本就默认 false，
+        // 因此删除它没有行为变化；真正启用平台仍要显式配置。
         for (name, section) in platforms {
             let mut shared = section.shared.clone();
 
@@ -791,9 +789,9 @@ enabled = true
     }
 
     #[test]
-    fn instance_less_config_defaults_qq_disabled() {
+    fn instance_less_config_has_no_platform_view() {
         let dir = std::env::temp_dir();
-        let path = dir.join("echo-adapterless-test.toml");
+        let path = dir.join("echo-instanceless-test.toml");
         std::fs::write(
             &path,
             r#"
@@ -804,9 +802,11 @@ model = "gpt-4o"
         )
         .unwrap();
         let config = CoreConfig::load(&path).unwrap();
+        // 没有任何 `[instances.*]` → 没有平台视图（Core 不再预置 QQ）。
         assert!(
-            !config.instances["qq"].enabled,
-            "QQ adapter should be disabled by default"
+            config.instances.is_empty(),
+            "未配置平台时不应凭空出现平台视图：{:?}",
+            config.instances.keys().collect::<Vec<_>>()
         );
         std::fs::remove_file(&path).ok();
     }
