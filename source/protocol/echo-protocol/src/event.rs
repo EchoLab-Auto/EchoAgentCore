@@ -956,8 +956,17 @@ pub struct PluginInfo {
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Whether the plugin ships inside the binary.
+    ///
+    /// **来源**维度：门控 manifest 编译在 Core 里，但实现可能在独立进程
+    /// （QQ 适配器即是；见 `runtime`）。
     #[serde(default = "default_true")]
     pub builtin: bool,
+    /// 运行形态：`in_process`（实现编译在 Core 进程内）/ `subprocess`
+    /// （实现由独立子进程提供，Core 侧只有启停门控）。
+    ///
+    /// 旧 Core 不发该字段 → 空串，Panel 按 `in_process` 兼容。
+    #[serde(default)]
+    pub runtime: String,
     /// 所属包 id（横跨 plugin+tool+skill 的组合标签；未声明 = 插件 id）。
     #[serde(default)]
     pub package: String,

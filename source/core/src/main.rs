@@ -1199,7 +1199,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             TOOLS_BUILTIN_PLUGIN_ID,
         };
         use echo_context::Disposer;
-        use echo_plugin::{BuiltinPlugin, MountContext, PluginKind, PluginManifest};
+        use echo_plugin::{BuiltinPlugin, MountContext, PluginKind, PluginManifest, PluginRuntime};
         use std::sync::atomic::Ordering;
 
         let plugin_host = plugin_host.clone();
@@ -1382,7 +1382,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     PluginKind::Adapter,
                     "qq",
                     "OneBot v11 反向 WS 适配器插件（独立进程；含 QQ 管理工具）",
-                ),
+                )
+                // 适配器插件化收尾（P1.9，2026-10）：实现由独立进程
+                // `echo-adapter-qq` 提供，这里只是门控壳。必须显式声明，
+                // 否则 Panel 按 builtin=true 把它显示成「内部插件」。
+                .with_runtime(PluginRuntime::Subprocess),
                 move |_ctx| {
                     for_each_agent(|a| a.reapply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, true));
                     if let Some(qq) = qq.clone() {

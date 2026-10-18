@@ -21,7 +21,14 @@ pub struct PluginDescriptor {
     /// Whether the plugin is currently mounted (active).
     pub enabled: bool,
     /// Whether the plugin ships inside the binary (vs. discovered from disk).
+    ///
+    /// **来源**维度（正交于 `runtime`）：门控 manifest 可以编译内置，
+    /// 而实现跑在独立进程里。
     pub builtin: bool,
+    /// 运行形态（`in_process` / `subprocess`，见 [`PluginRuntime`]）。
+    ///
+    /// [`PluginRuntime`]: crate::manifest::PluginRuntime
+    pub runtime: String,
     /// 所属包 id（横跨 plugin+tool+skill 的标签，见
     /// [`PluginManifest::package_id`]）；未声明 = 插件 id 自身。
     #[serde(default)]
@@ -43,6 +50,7 @@ impl From<&PluginManifest> for PluginDescriptor {
             author: m.author.clone(),
             enabled: true,
             builtin: m.builtin,
+            runtime: m.runtime.as_str().to_string(),
             package: m.package_id().to_string(),
             error: None,
         }

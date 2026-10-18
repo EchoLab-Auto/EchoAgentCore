@@ -42,6 +42,50 @@ impl PluginKind {
     }
 }
 
+/// 插件的**运行形态**：实现跑在本进程内，还是由独立子进程提供。
+///
+/// 与 [`PluginManifest::builtin`] **正交**——这是两个不同的问题：
+///
+/// | 字段 | 回答 |
+/// | --- | --- |
+/// | `builtin` | 这条 manifest 从哪来（编译内置 / 插件目录发现） |
+/// | `runtime` | 插件的实现代码在哪跑（本进程 / 独立子进程） |
+///
+/// 适配器插件化（P1.9，2026-10）之后二者不再同义：QQ 适配器的**门控
+/// manifest** 编译在 Core 里（`builtin = true`），但适配器实现由独立进程
+/// `echo-adapter-qq` 提供（见 `plugins_runtime`）。此前 Panel 只能看到
+/// `builtin`，于是把「跑在独立进程」的插件显示成「内部插件」——用户看到的
+/// 描述与分组互相矛盾（2026-10-18 报障）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginRuntime {
+    /// 实现编译在 Core 进程内：挂载/卸载即生效。
+    #[default]
+    InProcess,
+    /// 实现在独立子进程（stdio 插件协议）：Core 侧只保留启停门控。
+    Subprocess,
+}
+
+impl PluginRuntime {
+    /// Wire spelling (`in_process` / `subprocess`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InProcess => "in_process",
+            Self::Subprocess => "subprocess",
+        }
+    }
+
+    /// 是否由独立子进程提供实现。
+    pub fn is_subprocess(self) -> bool {
+        matches!(self, Self::Subprocess)
+    }
+
+    /// serde `skip_serializing_if` 用（签名需 `&self`）：进程内不外发该字段。
+    fn is_in_process(&self) -> bool {
+        matches!(self, Self::InProcess)
+    }
+}
+
 /// Declarative manifest for a plugin.
 ///
 /// `id` is the stable key (e.g. `echo-agent.tools.builtin`); `entry` names the
@@ -66,8 +110,14 @@ pub struct PluginManifest {
     #[serde(default)]
     pub author: String,
     /// 是否为 Core 编译内置插件；外部 manifest 缺省为 false。
+    ///
+    /// 注意：这是**来源**维度，不是运行位置——进程外插件同样可以是
+    /// 编译内置的门控 manifest（见 [`PluginRuntime`]）。
     #[serde(default)]
     pub builtin: bool,
+    /// 运行形态：实现跑在本进程内还是独立子进程（缺省 = 进程内）。
+    #[serde(default, skip_serializing_if = "PluginRuntime::is_in_process")]
+    pub runtime: PluginRuntime,
     /// Owning **package** id — the cross-cutting tag spanning
     /// plugin + tools + skills（见 [`Self::package_id`]）。
     /// `None` = 本插件自身即包根：插件 id 同时是包标签（当前全部内置
@@ -112,7 +162,18 @@ impl PluginManifest {
             package: None,
             author: "EchoAgentCore".into(),
             builtin: true,
+            runtime: PluginRuntime::InProcess,
         }
+    }
+
+    /// 声明运行形态（builder 风格；未调用 = 进程内）。
+    ///
+    /// 进程外插件（适配器插件等）注册门控 manifest 时**必须**调用：否则
+    /// Panel 会把「独立进程」的插件显示成「内部插件」（2026-10-18 报障）。
+    /// 描述里写「独立进程」不算数——前端读的是这个字段。
+    pub fn with_runtime(mut self, runtime: PluginRuntime) -> Self {
+        self.runtime = runtime;
+        self
     }
 }
 
@@ -208,6 +269,57 @@ kind = "skill"
  "#;
         let m = parse_manifest(text).unwrap();
         assert!(!m.builtin);
+    }
+
+    /// 2026-10-18 报障：QQ 适配器描述里写「独立进程」，Panel 却按
+    /// `builtin=true` 归到「内部插件」——两个维度被挤进一个字段。
+    /// 现在 `runtime` 独立表达运行形态。
+    #[test]
+    fn runtime_is_orthogonal_to_builtin() {
+        // 默认 = 进程内，且外发时省略该字段（旧前端零变化）
+        let plain = PluginManifest::builtin(
+            "echo-agent.tools.builtin",
+            "内置工具集",
+            "0.1.0",
+            PluginKind::Tool,
+            "builtin",
+            "desc",
+        );
+        assert_eq!(plain.runtime, PluginRuntime::InProcess);
+        assert!(!plain.runtime.is_subprocess());
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("runtime"), "进程内不外发: {json}");
+
+        // 适配器插件：builtin 仍为 true（manifest 编译内置），但实现跑在
+        // 独立进程——两者互不干扰。
+        let adapter = PluginManifest::builtin(
+            "echo-agent.adapter.qq",
+            "QQ 适配器",
+            "0.1.0",
+            PluginKind::Adapter,
+            "qq",
+            "OneBot v11（独立进程）",
+        )
+        .with_runtime(PluginRuntime::Subprocess);
+        assert!(adapter.builtin, "来源维度不受 runtime 影响");
+        assert!(adapter.runtime.is_subprocess());
+        assert_eq!(adapter.runtime.as_str(), "subprocess");
+        let json = serde_json::to_string(&adapter).unwrap();
+        assert!(json.contains("\"runtime\":\"subprocess\""), "{json}");
+        let back: PluginManifest = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.runtime, PluginRuntime::Subprocess);
+    }
+
+    /// 旧 manifest（无 `runtime` 键）反序列化 = 进程内（向后兼容）。
+    #[test]
+    fn legacy_manifest_without_runtime_deserializes_as_in_process() {
+        let text = r#"
+ id = "example.external"
+ name = "外部插件"
+ kind = "tool"
+ "#;
+        let m = parse_manifest(text).unwrap();
+        assert_eq!(m.runtime, PluginRuntime::InProcess);
     }
 
     #[test]

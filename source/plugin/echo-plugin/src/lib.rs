@@ -13,7 +13,7 @@ pub mod manifest;
 pub mod plugin;
 pub mod registry;
 
-pub use manifest::{PluginError, PluginKind, PluginManifest};
+pub use manifest::{PluginError, PluginKind, PluginManifest, PluginRuntime};
 pub use plugin::{
     BuiltinPlugin, MountContext, Plugin, PluginMountError, PluginMountResult, PluginSkillSink,
     PluginToolHandle, PluginToolSink,

@@ -1639,6 +1639,7 @@ impl Agent {
                 author: d.author,
                 enabled: d.enabled,
                 builtin: d.builtin,
+                runtime: d.runtime,
                 package: d.package,
             })
             .collect();
