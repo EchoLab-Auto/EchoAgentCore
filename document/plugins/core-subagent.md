@@ -82,7 +82,7 @@ y: 2020
 | 技能 | 触发 | 内容 |
 | --- | --- | --- |
 | `subagent-delegation` | 常驻（`metadata.always: true`，每轮注入） | 委派与并行化指南：开工前扫"可委派块"、何时该委派、并行手法（`spawn_subagent` 是唯一真并行）、task 必须自含、单层委派、等回报期间不空转、结果截断 |
-| `model-profiles` | 常驻（`metadata.always: true`，每轮注入） | 模型供应商与子代理模型选择规范：通常情况用 deepseek-flash（不传 profile）；UI 前端图形与视觉闭环作业推荐 `profile: "kimi"`（K3）；`list_api_profiles` 查询可用供应商；fail-closed 行为说明（2026-10 用户设定，可直接编辑文件调整） |
+| `model-profiles` | 常驻（`metadata.always: true`，每轮注入） | 模型供应商与子代理模型选择规范：**默认一律不传 `profile`**（继承主 agent 模型），仅当用户明确点名某模型时按名切换；`list_api_profiles` 查询可用清单；`profile` 名不存在/缺 key 时 fail-closed 立即失败并回报清单（规则随技能文件演进，直接编辑即可调整） |
 
 技能 frontmatter 声明 `package: echo-agent.subagent`，随包级门控与工具一起
 启停（见 [插件化设计](./core-plugins.md)「Package」章节）。

@@ -16,7 +16,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 > **无「主智能体」**：所有智能体一律平等，没有受保护的"主/默认"角色。进程级职责（管理面、插件宿主、全局策略、Shell、适配器）由组合根的**核心服务代理**（`__core`，非人格、不出现在 TeamsList）承担；会话类命令必须显式携带 `team_id`，缺失直接报错。
 >
-> **未配置 `[agent.teams.*]` = 零人格**（2026-10 用户请求）：新建/新装 Core **不再自动合成 "default" 人格**（此前每台新节点都会凭空多出一个"默认" agent）。空配置启动即零智能体，由 Panel「设置 → 智能体 → 新建智能体」按需创建。
+> **未配置 `[agent.teams.*]` = 零人格**（按用户要求）：新建/新装 Core **不再自动合成 "default" 人格**（此前每台新节点都会凭空多出一个"默认" agent）。空配置启动即零智能体，由 Panel「设置 → 智能体 → 新建智能体」按需创建。
 
 > **单一注册表 + `(core, team_id)` 身份**：persona 注册表由 `echo_agent::AgentManager` **独占持有**（单一真源），`AgentSupervisor` 只是它的薄适配（`get`/`personas`，不另持第二份 HashMap）。多接入点（联邦网络多节点）下人格身份是 **`(core, team_id)`**：Panel 的 `TeamsList` 按 core 合并、命令按人格归属 core 路由（会话归属优先，其次人格归属，最后 `activeCore`），并带一致性守卫（目标 core 不拥有该人格时重定向）——详见 [联邦](../federation/federation.md)。
 
@@ -34,7 +34,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - **每个会话拥有独立的模型上下文**（多会话）：事件日志是唯一事实来源，事件带 `session` 归属；`TrunkStore` 按会话投影出各自的 `history`（token 预算逐会话生效），不同会话的上下文互不可见——QQ 私聊、QQ 群、本地 TUI 是独立对话（投影机制详见 [会话记忆](./core-memory.md)）
 - **本地工作区通道**：本地来源（`platform=local`）的工作区专属对话上下文（`local:workspace:<workspace_id>:local_user`）——激活工作区即切换到的对话，见下节
 - 不同 agent 的上下文完全隔离（各自独立的事件日志与投影）
-- 上下文快照（`RequestContext`）按会话返回（`session_id`；`ContextSnapshot` 回带归属）；`CompactHistory` 按会话分别压缩——**预览 → 归档快照（`archives/*-precompact.json`）→ LLM 交接摘要（失败按组回退规则统计文案）→ 落地**（机制与统计见 [会话记忆](./core-memory.md)§压缩与归档）；`ClearHistory` **按会话清理**（`session_id` 存在时只清该会话的事件日志/上下文投影/时间线条目；缺省 = 清空该智能体全部会话——2026-10 用户报告修复：此前只有 team 维度，面板清理会误清其他会话）
+- 上下文快照（`RequestContext`）按会话返回（`session_id`；`ContextSnapshot` 回带归属）；`CompactHistory` 按会话分别压缩——**预览 → 归档快照（`archives/*-precompact.json`）→ LLM 交接摘要（失败按组回退规则统计文案）→ 落地**（机制与统计见 [会话记忆](./core-memory.md)§压缩与归档）；`ClearHistory` **按会话清理**（`session_id` 存在时只清该会话的事件日志/上下文投影/时间线条目；缺省 = 清空该智能体全部会话——用户报告后修复：此前只有 team 维度，面板清理会误清其他会话）
 - `RequestState` 返回**所有人格**的会话（各会话携带自身 team_id），Panel 按当前 agent 过滤展示
 - **单会话模式下的 QQ 入站投递**：hook 格式化的消息（`<qq_message_hook>`，带完整平台/发送者元数据）投递到该 persona 的**默认本地会话**（`local:tui::local_user`）排队跑 turn——不开临时回复分支（ReplyBranch 是并行模式专属可见性机制）、不发 QQ 临时回复；`group_id=None` 保证普通输出不推 QQ，**是否回复由 agent 自行判断**（qq-transport 技能：回复必须走 send_* 工具，明显无需回应的消息可不回复）。QQ 会话键仍按作用域注册（Panel 会话列表可见），并行多会话模式保持原临时回复分支行为
 - **Panel 前端切换**：当前 agent 持久化于 localStorage（`echo-panel-active-team`），刷新/重连后停留原 agent；切换 agent 先渲染该 agent 的时间线缓存（零等待），再以 `since_seq` 增量刷新
@@ -57,7 +57,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 | --- | --- | --- |
 | 默认本地会话 | `local:tui::local_user` | 未进入任何项目时的本地对话（原状） |
 | 工作区通道（存量主对话） | `local:workspace:<workspace_id>:local_user` | 工作区主对话的专属本地对话；昵称 = 工作区名；**惰性注册**（首次激活时注册并广播 `SessionUpdated`，此后常驻） |
-| 工作区通道（多对话，2026-10） | `local:workspace:<workspace_id>/<conv_id>:local_user` | 工作区内其余对话的通道；昵称 = 「工作区名 · 对话名」；同样惰性注册 |
+| 工作区通道（多对话） | `local:workspace:<workspace_id>/<conv_id>:local_user` | 工作区内其余对话的通道；昵称 = 「工作区名 · 对话名」；同样惰性注册 |
 
 通道与其他会话完全平等：独立上下文投影、独立 token 预算、出现在会话列表 Local 分组，同样受压缩/清理等现有手段管理。`<workspace_id>` 为工作区 id（创建时由名称 slug 派生、改名不变），`<conv_id>` 为对话 id（slug、工作区内唯一、不含 `/`），通道 id 因此永久稳定。**存量通道 id 原样保留**（事件日志 append-only 不可改写）：每个工作区的首条对话（含旧数据的主对话）`legacy = true`、通道 id 为裸 ws 格式，唯一例外收敛在 `channel_scope_id()` 一个函数。
 
@@ -85,7 +85,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 **⑤ 前端联动规则**：
 - 会话切换器 Local 分组 = 默认会话 + 已注册通道：**选通道 = 激活对应工作区；选默认会话 = 取消激活**；
-- 收到 active 变化时**只跟随本窗口自己发起的激活**（2026-10 多窗口修复）：`active` 是 per-persona 全局单例、广播发给所有 Panel 连接，而「本窗口在看哪个会话」是**本地视图状态**——无条件跟随会让 A 窗口的点选把其他所有窗口一起跳走（实测两个浏览器窗口无法各看各的）。Panel 在发 `ActivateWorkspaceSession` 前登记本窗口意图（含 **5s TTL** 与目标对话），回推时按 `(active, active_conversation)` 匹配消费：匹配 = 自己的切换，跟随投影；不匹配（另一窗口 / 模型 `use` / 意图已过期）= 只同步工作区状态（面板高亮、切换器激活标记），**不改本窗口当前会话**。TTL 是必需项——消费点会因 `workspaceTeamId` 尚未同步而跳过，无 TTL 的意图会永久残留，导致该窗口此后被任意窗口的同目标激活带走；
+- 收到 active 变化时**只跟随本窗口自己发起的激活**（多窗口修复）：`active` 是 per-persona 全局单例、广播发给所有 Panel 连接，而「本窗口在看哪个会话」是**本地视图状态**——无条件跟随会让 A 窗口的点选把其他所有窗口一起跳走（实测两个浏览器窗口无法各看各的）。Panel 在发 `ActivateWorkspaceSession` 前登记本窗口意图（含 **5s TTL** 与目标对话），回推时按 `(active, active_conversation)` 匹配消费：匹配 = 自己的切换，跟随投影；不匹配（另一窗口 / 模型 `use` / 意图已过期）= 只同步工作区状态（面板高亮、切换器激活标记），**不改本窗口当前会话**。TTL 是必需项——消费点会因 `workspaceTeamId` 尚未同步而跳过，无 TTL 的意图会永久残留，导致该窗口此后被任意窗口的同目标激活带走；
 - 安全网：本地停留的通道因工作区/对话被删而失效时，**回退到默认本地会话**（`local:tui::local_user`）——不能回退到 active 投影，那是他人正在看的地方，观感与串台无异；
 - 代价（有意）：模型 `use` 激活工作区时其他窗口不自动跳转，需手动点选；
 - 正在查看 QQ 等非 Local 来源会话时，本窗口自己的激活回推也不抢回视图（切回 Local 时落到 active 对应通道）；
@@ -134,7 +134,7 @@ enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel", "e
 - **多实例而非单实例多上下文**（对人而言）：每个人格一辆"车"（独立 `Agent::new` + 事件溯源日志），复用现有结构、互不干扰
 - **人格内多会话上下文**：同一人格内再按来源（本地/QQ 私聊/QQ 群）分区上下文——单份事件日志 + `session` 归属字段 + 按会话投影（`derive_messages_for`），避免"每个聊天一份完整 Agent"的内存与调度开销
 - **配置驱动**：人格在配置文件中定义，`enabled=false` 跳过实例化；运行时可通过 `ToggleTeam` 启停、`SaveTeam`/`DeleteTeam` 新建/删除（写回 `[agent.teams]`，立即生效）
-- **兼容性**：无 `[agent.teams]` 配置 = **零 agent**（2026-10 用户请求：不再自动合成 `default` 人格；显式配置 `[agent.teams.default]` 时它也只是普通 id、无特权）；`SendMessage`/会话类命令缺少 `team_id` 会被明确拒绝（Panel 与 Core 同版本部署）
+- **兼容性**：无 `[agent.teams]` 配置 = **零 agent**（按用户要求：不再自动合成 `default` 人格；显式配置 `[agent.teams.default]` 时它也只是普通 id、无特权）；`SendMessage`/会话类命令缺少 `team_id` 会被明确拒绝（Panel 与 Core 同版本部署）
 - **删除保护**：仅"至少保留一个智能体"；不再有受保护成员
 - **Provider 粒度**：支持 persona 级 API 引用（见上「Persona 装配」）；运行期 `SaveTeam` 改 `api_profile` 立即经 `apply_persona_api` 重建该人格 provider（全局 `UpdateApiConfig`/`SwitchApi` 只作用于管理面/全局默认，不自动广播到其他人格）
 - QQ/平台消息按**实例归属人格**路由：每个启用 `echo-agent.adapter.qq` 的人格拥有自己的 QQ 实例（容器 + 反向 WS 通道），见 [QQ 适配器门控](../plugins/adapter-qq-gating.md)「多实例」

@@ -22,7 +22,7 @@ y: 780
 
 底层是 ui-frame 的 `NeumorphismIcon` + `@echolab-auto/ui-frame/icons` 注册表（79 个语义）：**24 基准 viewBox / `stroke="currentColor"` / 尺寸七档 / 线宽按档自动**。
 
-> 2026-10 演进：Panel 先自建了 305 行的 `PanelIcon`（含 31 个 path），随后把几何全部上收进 ui-frame 注册表（缺的 `message` / `network` / `sparkle` 也一并补进去），PanelIcon 降到 82 行、只留产品语义色。**Panel 不再持有任何 path 数据。**
+> 演进过程：Panel 先自建了 305 行的 `PanelIcon`（含 31 个 path），随后把几何全部上收进 ui-frame 注册表（缺的 `message` / `network` / `sparkle` 也一并补进去），PanelIcon 降到 82 行、只留产品语义色。**Panel 不再持有任何 path 数据。**
 
 ```vue
 <PanelIcon name="home" />                        <!-- 默认 sm = 14px -->
@@ -46,7 +46,7 @@ y: 780
 
 **禁用**：emoji 与符号字符充当控件图标（🔒 🏠 📁 ⛓ ☑ ☐ ⇥ ⇤ ▾ ▸ ⠿ ★ ⇧ ⚠ …）——内容表达（正文、说明文字）除外。
 
-> 2026-10 修复前的实测偏差：尺寸 15px / 17px / 10px 三档自造（ChatView 发送/附件钮、文件树 chevron），线宽 1.3×5 / 1.8 自造（文件树自建 16 viewBox 图标体系），emoji 图标 15 处。
+> 修复前的实测偏差：尺寸 15px / 17px / 10px 三档自造（ChatView 发送/附件钮、文件树 chevron），线宽 1.3×5 / 1.8 自造（文件树自建 16 viewBox 图标体系），emoji 图标 15 处。
 
 ---
 
@@ -65,7 +65,7 @@ y: 780
 
 ## 四、防回归
 
-`web/scripts/lint-styles.mjs` 规则 5/6（2026-10 新增）：
+`web/scripts/lint-styles.mjs` 规则 5/6（新增）：
 
 ```bash
 cd web && npm run lint:styles
@@ -92,7 +92,7 @@ CI 里与既有令牌规则（`var(--nf-*)` 禁用命名空间、幻影令牌名
    `Checkbox` / `Radio` 的 box 为 18 / 24 / 30px（small/medium/large），内部图标 `width: 65%` → 实测 **11.7 / 15.6 / 19.5px**，三档全部落在枚举档之外。
    同理的还有 `Spinner` 的 `size` prop 已支持数字直传（`<NeumorphismSpinner :size="12" />`），但其它组件没有等价通道。
 
-→ 库侧改造已全部落地（2026-10）：本节列为**已解决的历史问题**，保留供追溯。
+→ 库侧改造已全部落地：本节列为**已解决的历史问题**，保留供追溯。
 
 ### 附录：ui-frame 图标组件改造（**已实施**）
 

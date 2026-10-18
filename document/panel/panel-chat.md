@@ -60,7 +60,7 @@ y: 780
 
 补充来源：定时器触发以 system 消息插入主时间线（`⏰ 定时器触发 · {task}`，task 截断 160 字符）。
 
-**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（库 `ChatBubble` + `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）；**连续的工具 / 推理 / 子代理统一由 `WorkRunGroup` 渲染**（2026-10 一般化：三者合并为同类「工作项」，`WorkRunItem.kind` 区分 `tool`/`reasoning`/`subagent`；推理正文层为 `ReasoningText`）；ui-frame 只提供机制原语（`ChatComposer` / `ChatBubble` / `ChatFold` / `ChatCopyButton`）。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义），`ChatMessage` 数据契约保留。
+**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（库 `ChatBubble` + `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）；**连续的工具 / 推理 / 子代理统一由 `WorkRunGroup` 渲染**（三者合并为同类「工作项」，`WorkRunItem.kind` 区分 `tool`/`reasoning`/`subagent`；推理正文层为 `ReasoningText`）；ui-frame 只提供机制原语（`ChatComposer` / `ChatBubble` / `ChatFold` / `ChatCopyButton`）。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义），`ChatMessage` 数据契约保留。
 
 **气泡宽度**：宽度完全动态——短消息贴内容收紧（实测最短 186px），长消息/代码/表格撑满消息列可用宽度（随左右侧栏卡片显隐变化，实测 1600px 窗口下 1276px）；`.chat-view__item--msg` 为 flex 列容器（user 靠右 / agent 靠左 / system 居中，依赖库 `align-self`）。面板覆盖库默认 `max-width: min(78%, 640px)`（`MessageItem.vue` 双写类名提权），并隐藏 Markdown 标题锚点（其 -22px 绝对定位会撑出横向溢出）。
 
@@ -78,7 +78,7 @@ y: 780
 
 主时间线对 Agent 运行过程的展示规范（一致性基线，改动需保持三条规则）：
 
-**1. 及时性（实时渲染，不缓冲）**：`AgentReasoning` / `ToolCall` / `ToolResult` / `AgentOutput` 事件到达即渲染进主时间线，**不得**等回复完成后一次性写入；推理是独立 `reasoning` 角色消息按序插入，不缓冲到回复尾部。**真流式（2026-10）**：模型增量经 `AgentContentDelta` / `AgentReasoningDelta` 逐段到达（~40ms 合并批），逐段实时生长；终值 `AgentOutput` / `AgentReasoning`（全量）到达时**对账替换**流式行内容（丢帧/乱序自愈，展示以终值为准）。分步切分：`ToolCall` 到达 = 该步为中间叙述（冻结当前行保留文本）；下一步增量新建一行，终值只替换最新流式行。取消/错误冻结流式行（保留已显示部分）。
+**1. 及时性（实时渲染，不缓冲）**：`AgentReasoning` / `ToolCall` / `ToolResult` / `AgentOutput` 事件到达即渲染进主时间线，**不得**等回复完成后一次性写入；推理是独立 `reasoning` 角色消息按序插入，不缓冲到回复尾部。**真流式**：模型增量经 `AgentContentDelta` / `AgentReasoningDelta` 逐段到达（~40ms 合并批），逐段实时生长；终值 `AgentOutput` / `AgentReasoning`（全量）到达时**对账替换**流式行内容（丢帧/乱序自愈，展示以终值为准）。分步切分：`ToolCall` 到达 = 该步为中间叙述（冻结当前行保留文本）；下一步增量新建一行，终值只替换最新流式行。取消/错误冻结流式行（保留已显示部分）。
 
 **2. 时序表现（还原真实顺序）**：主时间线顺序 = 事件到达顺序（`用户消息 → 推理 → 工具调用 → 工具结果 → … → 正式回答`），推理真实穿插在工具调用之间，正式回答始终最后；**这个顺序由数据层保证**——快照与实时窗口合并时按实时到达顺序插进时序，而不是把「快照里没匹配到」的条目追加到末尾（判据见「会话历史与实时窗口的合并」）。历史回放（`loadTimeline`）同样把 `backend.reasoning` 拆分为独立 reasoning 消息、插在回答之前，与实时路径时序一致；侧边栏临时分支详情继承同一规则（仅做连续 reasoning 的合并展示）。
 
@@ -121,7 +121,7 @@ graph LR
 
 ### 工具调用图标行（工作行 tool 项，WorkRunGroup）
 
-**连续的工具消息在 ChatView 合并为一组 `WorkRunGroup`**（`kind: 'tool'` 工作项；原为库 `ChatToolCallBlock` 折叠卡，ui-frame 的 chat 组合组件移除后归面板自绘；历史上叫 `ToolRunGroup`，2026-10 与推理/子代理合并后更名）；其余消息逐条渲染；列表由 `.chat-view__list` 自身滚动，吸底滚动契约不变。
+**连续的工具消息在 ChatView 合并为一组 `WorkRunGroup`**（`kind: 'tool'` 工作项；原为库 `ChatToolCallBlock` 折叠卡，ui-frame 的 chat 组合组件移除后归面板自绘；历史上叫 `ToolRunGroup`，与推理/子代理合并后更名）；其余消息逐条渲染；列表由 `.chat-view__list` 自身滚动，吸底滚动契约不变。
 
 - **折叠态**：一排圆角矩形毛玻璃图标（30×26，间距 4px；flex-wrap——多个工具连续调用时横向扩展，横向空间不足自动下移一行）；图标按工具分派不同 SVG（`ToolIcon.vue`：bash 终端符 / 文件 / 代码括号 / 清单对勾 / 计算器 / 搜索放大镜 / 子代理放射图 / 编排（后台·并行任务） / 消息气泡 / 适配器齿轮 / 工作区文件夹 / 默认扳手）；失败图标染 error 色
 - **加载/运行动画**（任一图标 status=running 时整组进入运行态）：
@@ -223,7 +223,7 @@ graph LR
 留白不变**（按「有可见卡片」判定；被拖卡片已从源列摘除、尚未落入目标列，若让
 留白跟随「列是否渲染」会因空列临时出现而反复跳变），落位后再一次性过渡。
 
-> **单卡列的整列显隐（2026-10 澄清，行为保持）**：列显隐按「列内**至少一张**
+> **单卡列的整列显隐（澄清：行为保持）**：列显隐按「列内**至少一张**
 > 可见卡片」判定——只有一张卡的列，在该卡门控失效时会**整列消失**（消息区
 > 留白同步归零 324→0px）。典型：把「文件浏览器」单独移到左列后，切到
 > **无激活工作区的 agent**（或其无 `echo-agent.workspace` 插件）则左列整体
@@ -233,7 +233,7 @@ graph LR
 > ④ 竖屏 <768px（双侧边栏整体不渲染，卡片走顶栏「卡片」抽屉——设计行为）。
 > 「临时分支」卡仅在并行多会话模式显示（单会话模式 Core 不发 ReplyBranch*）。
 > 已知口径差异（文件浏览器无激活会话=整卡隐藏 / Shell 无会话=卡内空态），
-> 2026-10 评估后**保持现状**：改「空态卡」会让无插件与无激活两类 agent 的列
+> 评估后**保持现状**：改「空态卡」会让无插件与无激活两类 agent 的列
 > 行为趋同，收益不足。稳定布局的建议：该列再放一张常驻卡（连接状态 / Shell）。
 
 **底部避让**：

@@ -14,7 +14,7 @@ y: 780
 
 原「资源」「日志」视图与 API 设置弹窗合并为统一的设置视图：**左栏一级菜单 + 右侧分类工作区**。
 
-- **一级菜单**（168px）：`API 设置`（徽标 = Profile 数）/ `技能` / `工具` / `插件` / `智能体`（徽标 = 条目数）/ `Core 连接`（`SettingsView.vue` 的 `categories`，2026-10 末**联邦并入本页**：上游 Core + 联邦节点，副标题给 peers 计数）/ `系统`（自更新）/ `日志`（无徽标）——**共八分类**；菜单项 9px/12px 内边距、圆角 8px，选中 = 主色左边框 + `--panel-accent-soft` 底、徽标反白；底部「刷新」按钮拉取四类清单（Skills/Tools/Plugins/Teams，`refresh()`；插件按当前运行区域请求，工作台内切管理节点时另发定向请求，见「工具 / 插件工作台」）。切换分类**丢弃未保存的编辑态**；各分类的选中条目独立保持，切回时恢复
+- **一级菜单**（168px）：`API 设置`（徽标 = Profile 数）/ `技能` / `工具` / `插件` / `智能体`（徽标 = 条目数）/ `Core 连接`（`SettingsView.vue` 的 `categories`；**联邦已并入本页**：上游 Core + 联邦节点，副标题给 peers 计数）/ `系统`（自更新）/ `日志`（无徽标）——**共八分类**；菜单项 9px/12px 内边距、圆角 8px，选中 = 主色左边框 + `--panel-accent-soft` 底、徽标反白；底部「刷新」按钮拉取四类清单（Skills/Tools/Plugins/Teams，`refresh()`；插件按当前运行区域请求，工作台内切管理节点时另发定向请求，见「工具 / 插件工作台」）。切换分类**丢弃未保存的编辑态**；各分类的选中条目独立保持，切回时恢复
 - **工具条**：标题 + 副标题（API = `当前：{provider} / {model}`（有激活 profile 时附 ` · Profile「{name}」`）；日志 = 来源说明；资源类 = `共 N 项 · K 已禁用`）+ 分类级操作（技能：Git 安装 / 新建技能；智能体：新建智能体）
 - 打开视图时自动拉取四类清单（onMounted）；条目消失时选中态自动置空
 
@@ -34,10 +34,10 @@ y: 780
 1. **编辑表单**（仅展开态，插入在列表上方）：标题栏（「编辑 Profile · {name}」+ 编辑中标签 /「新增 API 服务商」+ 收起按钮）→ 快速模板（6 个，点击填充）→ 表单字段 → 操作行（测试连接 / 保存 / 取消）
 2. **API Profiles 卡片网格**（常驻，`repeat(auto-fill, minmax(240px, 1fr))`）：卡片本体用 **ui-frame `NeumorphismCard`**（elevation=2、radius=large、hoverable=bulge、no-padding），按槽位排版——header = 名称 +（编辑中标签）；body = `provider / model` + base_url + key/思考/推理摘要（min-height 62px 对齐）；footer = 余额行（DeepSeek）+ **操作行（测试 / 编辑 / 删除 三按钮等宽网格 `repeat(3, 1fr)`**，`DeleteApi` **无确认，立即生效**）；**编辑中的卡主色 outline 高亮**。**默认标记已移除**：卡片不再有「默认」标签与「设为默认」按钮——profiles 只是可供 persona 引用的供应商池，不再有"哪个是默认"的概念；模型选用在 persona 级（Agent 配置弹层）完成，API 设置页不提供「激活」「切换」
 3. **DeepSeek 余额**：provider=deepseek 或 base_url 含 `deepseek.com` 的卡片显示「查余额」按钮——发 `QueryApiBalance{name}` 查官方 `/user/balance`（Anthropic/OpenAI/beta 端点自动归一到 `{root}/user/balance`），主金额下方附**分账行**（`充值 ¥xx · 赠送 ¥xx`，随 `granted`/`topped_up` 回推），结果显示为 `¥110.00`（CNY；USD 用 `$`，其他币种后缀显示），失败显示错误文本；查询加载态互斥、一次一个目标；查询成功即刷新该目标指标（新快照即时进图）
-4. **余额与用量图表**（2026-10，`ApiMetrics` 事件）：数据由 Core 本地积累——**余额快照**（周期任务默认 10 分钟采样；手动「查余额」成功也落一条）与 **token 用量**（每次 LLM 调用经计量装饰器记录，小时 × 模型聚合）；面板取**近 7 天**窗口，可视化三层：
-   - **总览对比图**（Profiles 网格上方常驻，`formMode==='none'` 且有 profile 时显示）：「余额」与「用量（tokens / 小时）」两张 `NeumorphismChartLine`（height 220、smooth + area、**含坐标轴与横向网格**、legend 开；栅格 `minmax(420px, 1fr)`——宽屏并排各约 834px、窄屏堆叠。X 轴标签由 ui-frame 按宽度自动抽稀，168 个时间点渲染 6–11 个标签），多 profile 经**公共小时桶对齐**（余额前向填充、用量空桶补 0）；下方一行估算费用摘要（`近 7 天估算费用：<profile> 约 ¥x.xx …（按 [agent.pricing] 定价估算；缓存命中按命中价计，未配置命中价的模型按未命中价）`）。**余额采样**：手动「查余额」与周期任务互斥（2026-10 审计 P2：慢查询叠加周期 tick 造成同秒重复采样——共用锁、周期任务 try_lock 跳过）。
+4. **余额与用量图表**（`ApiMetrics` 事件）：数据由 Core 本地积累——**余额快照**（周期任务默认 10 分钟采样；手动「查余额」成功也落一条）与 **token 用量**（每次 LLM 调用经计量装饰器记录，小时 × 模型聚合）；面板取**近 7 天**窗口，可视化三层：
+   - **总览对比图**（Profiles 网格上方常驻，`formMode==='none'` 且有 profile 时显示）：「余额」与「用量（tokens / 小时）」两张 `NeumorphismChartLine`（height 220、smooth + area、**含坐标轴与横向网格**、legend 开；栅格 `minmax(420px, 1fr)`——宽屏并排各约 834px、窄屏堆叠。X 轴标签由 ui-frame 按宽度自动抽稀，168 个时间点渲染 6–11 个标签），多 profile 经**公共小时桶对齐**（余额前向填充、用量空桶补 0）；下方一行估算费用摘要（`近 7 天估算费用：<profile> 约 ¥x.xx …（按 [agent.pricing] 定价估算；缓存命中按命中价计，未配置命中价的模型按未命中价）`）。**余额采样**：手动「查余额」与周期任务互斥（审计发现：慢查询叠加周期 tick 造成同秒重复采样——共用锁、周期任务 try_lock 跳过）。
    - **卡片小图**：每张 profile 卡内嵌两张 sparkline（height 56、无轴无网格无点、legend 关；栅格 `minmax(150px, 1fr)`——卡宽 ≥约 330px 时两张并排）——「余额 · 近 7 天」曲线 + 「用量 · 近 7 天 N tokens · 约 ¥x」曲线；余额 ≥2 个采样点 / 有用量数据才显示；tooltip 金额与 token 缩写（K/M）格式化经 ui-frame `NeumorphismChartLine` 的 `valueFormatter` prop（本次新增，`(value, seriesName) => string`）
-   - **页面布局**（2026-10 优化）：页面满宽（上限 1920px——此前硬限 720px，1920 视口闲置 58%）；profile 网格 `minmax(340px, 1fr)` + `grid-auto-rows: 1fr`（1920 下 4 列 × 413px、2560 下 5 列，同行卡片等高）；卡片 `flex` 纵向撑满、body 吃余高；footer 余额行与操作行 `flex-wrap`（220px 断点：单列宽卡并排、多列窄卡堆叠）。实测 1920 视口整页高 1719 → 1088（-37%）
+   - **页面布局**（已按满宽优化）：页面满宽（上限 1920px——此前硬限 720px，1920 视口闲置 58%）；profile 网格 `minmax(340px, 1fr)` + `grid-auto-rows: 1fr`（1920 下 4 列 × 413px、2560 下 5 列，同行卡片等高）；卡片 `flex` 纵向撑满、body 吃余高；footer 余额行与操作行 `flex-wrap`（220px 断点：单列宽卡并排、多列窄卡堆叠）。实测 1920 视口整页高 1719 → 1088（-37%）
    - **数据健壮性**：`api-metrics` 的 `plausibleBalances` 剔除 `total < 0` 的异常余额采样（上游偶发抖动，实测出现过 `-0.31`）——单点负值会把 Y 轴下限拽到负数（`-500…1500`），真实数据被压成窄带；0 视为合法（账户耗尽）
    - **刷新**：总览标题行「刷新」按钮（`QueryApiMetrics{name:''}` 全量）+ 每 5 分钟自动刷新；空数据显示「数据积累中」提示（说明采样周期）。工具函数与对齐算法在 `web/src/api-metrics.ts`（含单测）
 5. **测试失败复制**：测试连接结果为失败（✗）时，结果行末尾附 **ui-frame `ChatCopyButton`**（`@echolab-auto/ui-frame/chat`，24px `nm-chat-copy` 图标钮，点击复制完整错误文本到剪贴板，复制定时反馈 ✓）——**仅 profile 卡**结果行（API 摘要卡已不存在，`.api-summary-*` 为残留样式）；结果文本整句 `title` 悬停可见（行内 ellipsis 截断时）。**非安全上下文兜底**：Panel 经局域网 IP 以 HTTP 访问时 `navigator.clipboard` 不可用（原本静默失败），`useClipboard` 已补 `textarea + document.execCommand('copy')` 兜底（已合入 ui-frame 上游 `4808f8b`，未发版期间由本地快照携带；安全上下文仍优先 Clipboard API）
@@ -46,7 +46,7 @@ y: 780
 
 **表单字段**（展开态与字段规则同原设计）：
 
-- **Profile 名称**：添加模式必填（trim 非空才可保存）；**编辑模式可修改**（2026-10：原名预填，保存时走两步提交——先 `RenameApi` 原子改名，确认成功后字段有改动才按新名补发 `UpdateApiConfig`；纯改名不重保存、不误激活。空白/与现有 profile 撞名实时提示并禁用保存；确认前保存按钮锁定，10s 未确认提示失败并保留表单）
+- **Profile 名称**：添加模式必填（trim 非空才可保存）；**编辑模式可修改**（原名预填，保存时走两步提交——先 `RenameApi` 原子改名，确认成功后字段有改动才按新名补发 `UpdateApiConfig`；纯改名不重保存、不误激活。空白/与现有 profile 撞名实时提示并禁用保存；确认前保存按钮锁定，10s 未确认提示失败并保留表单）
 - **快捷模板**（6 个，点击填充 provider/base_url/model/思考/推理）：**DeepSeek**（合并原「Anthropic 兼容 / OpenAI 兼容」两种格式为单一预设——默认官方 Anthropic 端点 `https://api.deepseek.com/anthropic` + `deepseek-v4-flash`，需 OpenAI 格式时手工改为 `/v1` + `deepseek-chat`，提示文字已注明）、**Kimi For Coding**（Kimi Code 订阅的 Anthropic 兼容端点 `https://api.kimi.com/coding` + `k3`，Key 在 `www.kimi.com/code/console` 创建，推理档位 high；provider=`kimi`）、**中转站（OpenAI 兼容）**（provider=`third-party`，base_url/model **留空待填**，占位提示"你的网关/v1"与"中转站模型名"；请求为干净 OpenAI 格式，不携带 DeepSeek 专有 thinking 字段）、OpenAI、Anthropic、Ollama（本地）
 - **Provider 下拉**：固定 deepseek/openai/kimi/third-party 四项，未知值保留为额外选项；选 deepseek/openai/kimi 自动填充对应 base_url/model；第三方需 OpenAI 兼容（有 /anthropic 端点自动识别）。**注意**：中转站=第三方时不会附加 DeepSeek 专有请求字段（`thinking`/`reasoning_effort`），兼容性最好；若要保留思考模式且后端是 DeepSeek，选 deepseek 预设
 - Model / Base URL（手填）、**API Key**（密码框；标注 已设置/未设置，**留空保持不变**，不回显）、思考模式（启用/禁用）、推理强度（low/high/max）
@@ -183,13 +183,13 @@ graph LR
 ## Core 连接与联邦
 
 - **Core 连接**（接入点管理）：在设置页在线增删接入点（写回 `[[cores]]` 段持久化，中继动态并入 / 摘除、无需重启）；单接入点兜底（`[core]` 或一条 `[[cores]]`）与访问令牌、分布式调度见 [Panel 概览](./panel.md)「配置与运维」
-  - **接入方式（2026-10 末）**：直连 ｜ **SSH 隧道**——云服务器只开 SSH 端口时选后者：表单含 SSH 主机/端口（默认 22）/用户（须为运行 Core 的用户）/私钥文件（可空 → ssh-agent / 默认密钥）/口令或密码（可选，编辑留空 = 不变）/远端 management 端口（默认 3132）/远端媒体目录（可空 = 默认）。Panel 后端以 russh 直连 SSH 并把远端 management 端口**本地端口转发**给中继（隧道指数退避自动重连、本地端口稳定；主机密钥 known_hosts 校验 + 首连 TOFU，`accept_new_host_key=false` 关闭）；列表行展示 `ssh://user@host → :远端端口`、SSH 徽标与隧道阶段（连接中/已连接/离线 + 失败原因）。编辑既有 SSH 上下游时密文留空 = 保留旧值（与访问令牌同语义）
-- **联邦网络**（同一分类下半区，2026-10 合并；2026-10 末改为**组建向导**）：
+  - **接入方式**：直连 ｜ **SSH 隧道**——云服务器只开 SSH 端口时选后者：表单含 SSH 主机/端口（默认 22）/用户（须为运行 Core 的用户）/私钥文件（可空 → ssh-agent / 默认密钥）/口令或密码（可选，编辑留空 = 不变）/远端 management 端口（默认 3132）/远端媒体目录（可空 = 默认）。Panel 后端以 russh 直连 SSH 并把远端 management 端口**本地端口转发**给中继（隧道指数退避自动重连、本地端口稳定；主机密钥 known_hosts 校验 + 首连 TOFU，`accept_new_host_key=false` 关闭）；列表行展示 `ssh://user@host → :远端端口`、SSH 徽标与隧道阶段（连接中/已连接/离线 + 失败原因）。编辑既有 SSH 上下游时密文留空 = 保留旧值（与访问令牌同语义）
+- **联邦网络**（同一分类下半区，已改为**组建向导**）：
   - **创建联邦 / 添加节点**：点按钮打开向导（顶部按钮随拓扑状态切换文案）——勾选要纳入的节点（默认全选**在线**的已接入 Core；离线节点禁选），显示「已互联 X 对 / 将新建 Y 对」（全互联补全），执行时逐对完成「一侧生成邀请 → 另一侧登记接入 → 等链路在线」；默认方向失败**自动换向重试一次**，两方向均失败则清理已登记条目并标记失败（可「重试失败项」）。已配置的对自动跳过（含离线链路——重连是链路自身行为，无需重新配对）
   - **拓扑视图**（无向导时的上半区）：节点间链路一览（`a ── b`，在线绿色加粗），数量摘要「N 个节点 · M/K 条链路已配置 · X 条在线」。互联判定：链路在线时按 Core 回传的对端 `node_id` 精确匹配；离线/旧 Core 缺失时按 peer 名兜底（Panel 配置名 / node_name / `node-<id 前 8>`）
   - **手动通道**（每个 Core 卡片内保留）：生成邀请串（一次性 token，含共享密钥按密钥级保密）、添加/编辑 peer（粘贴 `echofed://` 邀请串自动解析）、逐项收紧授权（工具/查询/委派/需确认）；编辑回填现有授权，不以默认覆盖
   - 联邦网络的架构、占位提升、配对无方向性与安全模型见 [联邦（多机）](../federation/federation.md)
 ## 日志与系统
 
-- **日志**（整页查看器，`LogView.vue`）：Core/Panel 分段切换（默认 Core），拉取 `/api/logs/{core,panel}?lines=100` 原文显示（max-height 65vh 内滚动）；自动刷新默认开（**5s** 间隔），可切手动，另有手动「刷新」按钮；切换来源或自动开关立即重载并重启定时器；HTTP 错误显示状态码。**切换分类即卸载**——定时器随卸载清理，切回时重新挂载拉取。**SSH 上游日志（2026-10 末）**：存在 SSH 接入的上游时，Core 视图追加「本机 / 各 SSH 上游」选择器——选中 SSH 上游则请求带 `?core=<上游名>`，Panel 后端经隧道在远端执行 journalctl（两代单元名 `-fixed` 与现役**合并**取最新 N 行；失败给出可操作提示）；选中上游被删除/改直连自动回退「本机」
+- **日志**（整页查看器，`LogView.vue`）：Core/Panel 分段切换（默认 Core），拉取 `/api/logs/{core,panel}?lines=100` 原文显示（max-height 65vh 内滚动）；自动刷新默认开（**5s** 间隔），可切手动，另有手动「刷新」按钮；切换来源或自动开关立即重载并重启定时器；HTTP 错误显示状态码。**切换分类即卸载**——定时器随卸载清理，切回时重新挂载拉取。**SSH 上游日志**：存在 SSH 接入的上游时，Core 视图追加「本机 / 各 SSH 上游」选择器——选中 SSH 上游则请求带 `?core=<上游名>`，Panel 后端经隧道在远端执行 journalctl（两代单元名 `-fixed` 与现役**合并**取最新 N 行；失败给出可操作提示）；选中上游被删除/改直连自动回退「本机」
 - **系统**（自更新）分类：更新服务与流程见 [部署与自更新](../ops/ops-deploy.md)
