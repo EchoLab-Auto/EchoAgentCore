@@ -21,7 +21,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
 pub use crate::config::QqPorts;
-use crate::config::{QqHostConfig, QqInstanceSection};
+use crate::config::{AdapterHostConfig, QqInstanceSection};
 
 /// legacy 默认实例名（会话 id 不产生 `@` 后缀）。
 pub const DEFAULT_INSTANCE: &str = "qq";
@@ -231,7 +231,7 @@ pub fn write_compose(data_dir: &Path, id: &str, ports: &QqPorts) -> Result<PathB
 /// `data_dir` 已知时把自动生成 compose 的路径写进实例配置（容器编排据此
 /// 启停 NapCat），None 表示不生成 compose 路径。
 pub fn resolve_instances_in(
-    shared: &QqHostConfig,
+    host: &AdapterHostConfig,
     sections: &BTreeMap<String, QqInstanceSection>,
     enabled_personas: &[String],
     default_persona: &str,
@@ -252,7 +252,7 @@ pub fn resolve_instances_in(
 
     // 1) 显式实例
     for (id, section) in sections {
-        let enabled = section.enabled.unwrap_or(shared.enabled);
+        let enabled = section.enabled.unwrap_or(host.enabled);
         if !enabled {
             continue;
         }
@@ -263,7 +263,7 @@ pub fn resolve_instances_in(
         let ports = allocate_ports_avoiding(&section.ports, id, &taken_ports);
         reserve(&ports, &mut taken_ports);
         let compose = auto_compose_path(data_dir, id);
-        let config = merge_instance(&shared.shared, section, id, &persona, &ports, compose);
+        let config = merge_instance(&host.shared, section, id, &persona, &ports, compose);
         used_ids.insert(id.clone());
         out.push(PluginInstance {
             id: id.clone(),
@@ -275,11 +275,11 @@ pub fn resolve_instances_in(
 
     // 2) legacy 快速路径：没有实例表但共享默认 enabled → 单实例 `qq`
     //（有任何显式实例时跳过；默认人格的 `qq` 由下方自动建档兜底创建）
-    if sections.is_empty() && shared.enabled {
+    if sections.is_empty() && host.enabled {
         let ports = allocate_ports_avoiding(&QqPorts::default(), DEFAULT_INSTANCE, &taken_ports);
         reserve(&ports, &mut taken_ports);
         let config = merge_instance(
-            &shared.shared,
+            &host.shared,
             &QqInstanceSection::default(),
             DEFAULT_INSTANCE,
             default_persona,
@@ -296,7 +296,7 @@ pub fn resolve_instances_in(
 
     // 3) persona 门控自动创建（启用插件但无归属实例）。
     // 前提：QQ 适配器全局启用（`[adapters.qq].enabled`）——否则不该有实例。
-    if !shared.enabled {
+    if !host.enabled {
         return out;
     }
     for persona in enabled_personas {
@@ -319,7 +319,7 @@ pub fn resolve_instances_in(
         reserve(&ports, &mut taken_ports);
         let compose = auto_compose_path(data_dir, &id);
         let config = merge_instance(
-            &shared.shared,
+            &host.shared,
             &QqInstanceSection::default(),
             &id,
             persona,
@@ -361,22 +361,21 @@ fn unique_id(base: &str, used: &std::collections::HashSet<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::QqSection;
 
     /// 共享层测试表（等价旧 typed 配置的最小集合）。
-    fn shared(enabled: bool) -> QqHostConfig {
-        let mut table = toml::Table::new();
-        table.insert("enabled".into(), toml::Value::Boolean(enabled));
-        QqHostConfig::from_shared(table)
+    fn shared(enabled: bool) -> AdapterHostConfig {
+        shared_with(enabled, &[])
     }
 
     /// 共享层 + 追加键。
-    fn shared_with(enabled: bool, entries: &[(&str, toml::Value)]) -> QqHostConfig {
+    fn shared_with(enabled: bool, entries: &[(&str, toml::Value)]) -> AdapterHostConfig {
         let mut table = toml::Table::new();
         table.insert("enabled".into(), toml::Value::Boolean(enabled));
         for (key, value) in entries {
             table.insert((*key).into(), value.clone());
         }
-        QqHostConfig::from_shared(table)
+        AdapterHostConfig::from_section("qq", &QqSection::default(), table)
     }
 
     fn config_str<'a>(config: &'a toml::Table, key: &str) -> Option<&'a str> {

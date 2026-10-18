@@ -663,9 +663,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
+    // 本仓库当前只**编排** QQ 这一种平台的实例（容器化部署知识仍在
+    // `qq_instances`，属后续阶段）；平台配置本身已泛化到 `cfg.adapters`，
+    // 新增平台无需改这里也能读到配置。
+    let qq_host = cfg.adapters.get("qq").cloned().unwrap_or_default();
     let qq_instances = qq_instances::resolve_instances_in(
-        &cfg.qq_adapter,
-        &cfg.qq_instances,
+        &qq_host,
+        &qq_host.instances,
         &qq_enabled_personas,
         &qq_default_persona,
         Some(&qq_data_dir),
@@ -681,7 +685,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 归属人格 / 运行期状态文件（门控 / 名单 / owner 落盘回灌）与完整适配器
     // 配置（共享层 ⊕ 实例覆盖 + 端口分配结果；TOML 表透传）。
     let qq_plugin_specs: Vec<echo_plugin_host::bootstrap::LaunchSpec> = {
-        let launch = &cfg.qq_plugin_launch;
+        let launch = &qq_host.launch;
         let command = if launch.command.trim().is_empty() {
             "echo-adapter-qq".to_string()
         } else {
@@ -724,7 +728,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             if instance.id == qq_instances::DEFAULT_INSTANCE {
                 continue; // legacy 实例沿用既定端口与默认归属，不写配置
             }
-            let section = cfg.qq_instances.get(&instance.id);
+            let section = qq_host.instances.get(&instance.id);
             let configured_ports = section.map(|s| s.ports.clone()).unwrap_or_default();
             let has_persona = section.and_then(|s| s.persona.clone()).is_some();
             if configured_ports != instance.ports || !has_persona {
@@ -1552,7 +1556,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 在入站 worker 里先过命令判定（消费的命令不进 agent）；builtin 实例
     // 仍走 `echo_server` handler。
     let command_ctx = Arc::new(crate::adapter_commands::CommandContext::new(
-        cfg.qq_adapter.command_prefix.clone(),
+        qq_host.command_prefix.clone(),
         shutdown_tx.clone(),
     ));
     // 每个实例把入站消息投给**归属人格**（不再是"默认人格"）；实例间互相隔离。
@@ -1735,7 +1739,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         .plugin_host()
         .registry
         .is_enabled(crate::adapter_manifests::ADAPTER_QQ_PLUGIN_ID);
-    if cfg.qq_adapter.enabled && qq_plugin_enabled {
+    if qq_host.enabled && qq_plugin_enabled {
         // 多实例：逐个生成 compose（非 legacy）并启动；单个失败不影响其余。
         let data_dir = qq_data_dir.clone();
         for (instance_id, persona_id, adapter) in &qq_adapters {

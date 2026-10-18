@@ -1188,8 +1188,8 @@ mod tests {
         // 类型级验证：QQ 端口按整数反序列化成功（QqPorts 为 u16 字段）。
         let cfg = crate::config::CoreConfig::load(&path).unwrap();
         assert_eq!(cfg.federation.listen, "");
-        assert_eq!(cfg.qq_instances["qq"].ports.reverse_ws, 3141);
-        assert_eq!(cfg.qq_instances["two"].ports.webui, 7100);
+        assert_eq!(cfg.adapters["qq"].instances["qq"].ports.reverse_ws, 3141);
+        assert_eq!(cfg.adapters["qq"].instances["two"].ports.webui, 7100);
         std::fs::remove_file(&path).ok();
     }
 

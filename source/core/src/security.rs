@@ -154,10 +154,16 @@ pub fn build_redactor(cfg: &CoreConfig) -> Arc<dyn Redactor> {
         }
     }
 
-    // QQ OneBot 服务端 access_token（正/反向 WS 鉴权；共享层
-    // `[adapters.qq.server].access_token`，P1.9 配置透传视图）。
-    if !cfg.qq_adapter.access_token.trim().is_empty() {
-        redactor.register_secret(&cfg.qq_adapter.access_token, "qq:access_token");
+    // 各平台的接入令牌（`[adapters.<platform>.server].access_token`）——
+    // **逐平台登记**：新增平台自动纳入脱敏，不需要改这里。
+    for host in cfg.adapters.values() {
+        if host.access_token.trim().is_empty() {
+            continue;
+        }
+        redactor.register_secret(
+            &host.access_token,
+            &format!("{}:access_token", host.platform),
+        );
     }
     for (index, value) in cfg.security.sanitize.extra_secrets.iter().enumerate() {
         redactor.register_secret(value, &format!("extra:{index}"));
