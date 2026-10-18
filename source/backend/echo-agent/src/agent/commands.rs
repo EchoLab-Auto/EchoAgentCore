@@ -1562,7 +1562,10 @@ impl Agent {
     pub async fn emit_skills_list(&self) {
         let skills = self.skills.lock().await;
         // 注入外部 Git 来源信息（skills/.sources.json）
-        let sources = crate::skill_install::load_sources(std::path::Path::new(
+        // `load_sources_healed`：旧格式记录（键=目录名）在此归正到技能名，
+        // 否则「目录名 ≠ 技能名」的仓库在 Panel 里看不到来源徽标
+        // （2026-10-18 实测：skill-echo-prodoc/ ↔ prodoc-format）。
+        let sources = crate::skill_install::load_sources_healed(std::path::Path::new(
             &self.config.read().await.skills_dir,
         ));
         let mut list: Vec<crate::event::SkillInfo> = skills

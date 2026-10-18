@@ -3,8 +3,12 @@
 //! - 安装：`git clone` 到 `skills_dir/<name>`（SKILL.md 热重载自动发现）；
 //!   clone 后若仓库根没有 SKILL.md，尝试查找子目录中的 SKILL.md 并提升
 //!   为安装根（把子目录内容拷到安装目录）。
-//! - 来源记录：`skills_dir/.sources.json`（{ name: { url, rev, branch, installed_at } }），
+//! - 来源记录：`skills_dir/.sources.json`（{ name: { url, rev, branch, installed_at, dir } }），
 //!   供更新（fetch + reset 到记录 rev/branch）与前端来源徽标展示。
+//!   **键是技能名（frontmatter `name`），不是目录名**——`emit_skills_list`
+//!   按 `skill.metadata.name` 查，用目录名做键会让「更新 / 移除来源」入口
+//!   在「目录名 ≠ 技能名」的仓库上整体失踪（2026-10-18 实测：
+//!   `skill-echo-prodoc/` 里的技能叫 `prodoc-format`）。
 //! - 更新：git fetch + checkout/reset；失败不动来源记录。
 //! - 移除：仅清理来源记录（目录待用户 DeleteSkill）。
 
@@ -22,6 +26,13 @@ pub struct SkillSource {
     pub branch: Option<String>,
     #[serde(default)]
     pub installed_at: Option<String>,
+    /// 实际安装目录名（相对 `skills_dir`）。
+    ///
+    /// 记录键是**技能名**（`SKILL.md` frontmatter 的 `name`），而目录名可能
+    /// 不同——仓库 `skill-echo-prodoc` 里的技能叫 `prodoc-format`（2026-10-18
+    /// 实测）。旧记录没有该字段，回退「键即目录名」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
 }
 
 pub type SkillSources = BTreeMap<String, SkillSource>;
@@ -41,6 +52,55 @@ pub fn save_sources(skills_dir: &Path, sources: &SkillSources) -> Result<(), Str
     let path = sources_path(skills_dir);
     let raw = serde_json::to_vec_pretty(sources).map_err(|e| format!("serialize sources: {e}"))?;
     std::fs::write(&path, raw).map_err(|e| format!("write sources: {e}"))
+}
+
+/// 把旧格式的来源记录在**内存里**归正（不写盘，热路径安全）。
+///
+/// 旧记录键是目录名、且没有 `dir` 字段。若目录里的 `SKILL.md` 声明的
+/// `name` 与键不同（`skill-echo-prodoc/` → `prodoc-format`），按旧键永远
+/// 查不到来源——Panel 里「更新 / 移除来源」整体不可见。
+///
+/// 归正规则：读 `<key>/SKILL.md` 的 frontmatter `name`；不同则把记录改挂到
+/// 该名下并补 `dir = key`。读不到（目录丢了、frontmatter 坏了）就只补
+/// `dir`，不动键。
+///
+/// 写盘留给 install / update / remove（那时保存的是已归正的全量表），
+/// 列表刷新（`emit_skills_list`，每次打开设置页都跑）不做 IO 副作用。
+fn heal_sources(skills_dir: &Path, sources: &mut SkillSources) {
+    let legacy: Vec<String> = sources
+        .iter()
+        .filter(|(_, src)| src.dir.is_none())
+        .map(|(key, _)| key.clone())
+        .collect();
+    for key in legacy {
+        let skill_name = crate::packages::skills_dir::loader::load_skill(
+            &skills_dir.join(&key).join("SKILL.md"),
+        )
+        .ok()
+        .map(|skill| skill.metadata.name.trim().to_string())
+        .filter(|name| !name.is_empty());
+        match skill_name {
+            Some(name) if name != key => {
+                if let Some(mut src) = sources.remove(&key) {
+                    src.dir = Some(key.clone());
+                    sources.insert(name, src);
+                }
+            }
+            // 键即技能名（或读不到）：只补 dir，保持键不变。
+            _ => {
+                if let Some(src) = sources.get_mut(&key) {
+                    src.dir = Some(key.clone());
+                }
+            }
+        }
+    }
+}
+
+/// 读取来源记录并归正旧格式（见 [`heal_sources`]）。
+pub fn load_sources_healed(skills_dir: &Path) -> SkillSources {
+    let mut sources = load_sources(skills_dir);
+    heal_sources(skills_dir, &mut sources);
+    sources
 }
 
 /// 解析 git 仓库名（url 末尾去 .git）
@@ -235,29 +295,42 @@ pub fn install(
 
     let rev = sh(&["-C", &target.to_string_lossy(), "rev-parse", "HEAD"])
         .unwrap_or_else(|_| "unknown".into());
+    // 记录键 = 技能名（frontmatter `name`），不是目录名：`emit_skills_list`
+    // 按 `skill.metadata.name` 反查来源，键不一致则「更新 / 移除来源」在
+    // Panel 里整体不可见（2026-10-18 实测：目录 skill-echo-prodoc /
+    // 技能 prodoc-format）。读不到 frontmatter 时回退目录名。
+    let skill_name = crate::packages::skills_dir::loader::load_skill(&target.join("SKILL.md"))
+        .ok()
+        .map(|skill| skill.metadata.name.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| dir_name.clone());
     let source = SkillSource {
         url: url.to_string(),
         rev,
         branch: branch.map(|b| b.to_string()),
         installed_at: Some(chrono::Utc::now().to_rfc3339()),
+        dir: Some(dir_name.clone()),
     };
 
     let mut sources = load_sources(skills_dir);
-    sources.insert(dir_name.clone(), source.clone());
+    sources.insert(skill_name, source.clone());
     save_sources(skills_dir, &sources)?;
     Ok(source)
 }
 
 /// 更新：`git fetch --depth 1` + `git reset --hard origin/<branch||HEAD>`。
 pub fn update(skills_dir: &Path, name: &str) -> Result<SkillSource, String> {
-    let mut sources = load_sources(skills_dir);
+    let mut sources = load_sources_healed(skills_dir);
     let source = sources
         .get(name)
         .cloned()
         .ok_or_else(|| format!("{name} 不是 Git 来源安装的 skill（无来源记录）"))?;
-    let target = skills_dir.join(name);
+    // 目录名可能与技能名不同（见 `SkillSource::dir`）；旧记录无该字段 →
+    // 键即目录名。
+    let dir_name = source.dir.clone().unwrap_or_else(|| name.to_string());
+    let target = skills_dir.join(&dir_name);
     if !target.join("SKILL.md").exists() {
-        return Err(format!("目录不存在: {name}"));
+        return Err(format!("目录不存在: {dir_name}"));
     }
     let target_str = target.to_string_lossy().to_string();
     sh(&["-C", &target_str, "fetch", "--depth", "1", "origin"])?;
@@ -281,7 +354,7 @@ pub fn update(skills_dir: &Path, name: &str) -> Result<SkillSource, String> {
 
 /// 移除来源记录（不删目录）。
 pub fn remove_source(skills_dir: &Path, name: &str) -> Result<(), String> {
-    let mut sources = load_sources(skills_dir);
+    let mut sources = load_sources_healed(skills_dir);
     if sources.remove(name).is_none() {
         return Err(format!("{name} 无 Git 来源记录"));
     }
@@ -380,6 +453,134 @@ mod tests {
         assert!(err.contains("目录已存在"), "{err}");
         // 用户数据原封不动
         assert!(target.join("SKILL.md").exists());
+    }
+
+    /// 来源记录键必须是**技能名**（frontmatter `name`），否则 Panel 的
+    /// 「更新 / 移除来源」在「目录名 ≠ 技能名」的仓库上整体失踪
+    /// （2026-10-18 实测：目录 `skill-echo-prodoc`，技能 `prodoc-format`）。
+    ///
+    /// 这里用本地 git 仓库（不触网）复现那个形状。
+    #[test]
+    fn sources_key_is_skill_name_not_directory_name() {
+        let skills = TempSkills::new();
+        let repo = TempSkills::new();
+        // 造一个只有 SKILL.md 的本地 git 仓库
+        std::fs::write(
+            repo.path().join("SKILL.md"),
+            "---\nname: prodoc-format\ndescription: 规范\n---\n# 正文\n",
+        )
+        .unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .expect("git");
+            assert!(status.status.success(), "git {args:?}: {:?}", status);
+        };
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "init"]);
+
+        let url = repo.path().to_string_lossy().to_string();
+        let src = install(skills.path(), &url, Some("skill-echo-prodoc"), None).unwrap();
+
+        // 记录键 = prodoc-format（frontmatter name），dir = 安装目录
+        assert_eq!(src.dir.as_deref(), Some("skill-echo-prodoc"));
+        let sources = load_sources(skills.path());
+        assert!(
+            sources.contains_key("prodoc-format"),
+            "键应为技能名: {:?}",
+            sources.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !sources.contains_key("skill-echo-prodoc"),
+            "不应以目录名为键"
+        );
+        // 目录确实叫 skill-echo-prodoc
+        assert!(skills.path().join("skill-echo-prodoc").join("SKILL.md").exists());
+
+        // update 能用技能名找到目录（旧实现会报「目录不存在」）
+        let updated = update(skills.path(), "prodoc-format").unwrap();
+        assert_eq!(updated.dir.as_deref(), Some("skill-echo-prodoc"));
+
+        // remove_source 同样按技能名
+        remove_source(skills.path(), "prodoc-format").unwrap();
+        assert!(load_sources(skills.path()).is_empty());
+    }
+
+    /// 旧格式记录（无 `dir` 字段）仍可更新：键即目录名。
+    #[test]
+    fn legacy_source_without_dir_updates_by_key() {
+        let skills = TempSkills::new();
+        let name = "legacy-skill";
+        let target = skills.path().join(name);
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("SKILL.md"), "---\nname: legacy-skill\n---\n").unwrap();
+        // 手写旧格式记录
+        let raw = format!(
+            r#"{{"{name}":{{"url":"file:///nowhere","rev":"abc","branch":null,"installed_at":null}}}}"#
+        );
+        std::fs::write(sources_path(skills.path()), raw).unwrap();
+
+        let sources = load_sources(skills.path());
+        assert_eq!(sources[name].dir, None, "旧记录无 dir");
+        // update 会先 fetch 失败（本地无 origin）——但错误必须是 git 失败，
+        // 不能是「目录不存在」（后者说明目录定位错了）。
+        let err = update(skills.path(), name).unwrap_err();
+        assert!(err.contains("git"), "应按 dir 回退定位目录后走到 git: {err}");
+    }
+
+    /// 旧记录归正：键=目录名、无 dir → 内存里改挂到技能名 + 补 dir。
+    #[test]
+    fn heal_moves_legacy_key_to_skill_name() {
+        let skills = TempSkills::new();
+        // 目录名 skill-echo-prodoc，技能名 prodoc-format
+        let dir = skills.path().join("skill-echo-prodoc");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: prodoc-format\ndescription: x\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            sources_path(skills.path()),
+            r#"{"skill-echo-prodoc":{"url":"git@github.com:EchoLab-Auto/skill-echo-prodoc.git","rev":"f727ad5"}}"#,
+        )
+        .unwrap();
+
+        let healed = load_sources_healed(skills.path());
+        assert!(healed.contains_key("prodoc-format"), "应改挂到技能名");
+        assert!(!healed.contains_key("skill-echo-prodoc"), "旧键不应保留");
+        assert_eq!(healed["prodoc-format"].dir.as_deref(), Some("skill-echo-prodoc"));
+        assert_eq!(healed["prodoc-format"].rev, "f727ad5", "其余字段原样保留");
+
+        // 归正只在内存：磁盘上仍是旧键（写入留给 install/update/remove）
+        assert!(load_sources(skills.path()).contains_key("skill-echo-prodoc"));
+    }
+
+    /// 归正后 update 能按技能名找到真实目录。
+    #[test]
+    fn healed_legacy_source_can_be_updated_by_skill_name() {
+        let skills = TempSkills::new();
+        let dir = skills.path().join("skill-echo-prodoc");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "---\nname: prodoc-format\n---\n").unwrap();
+        std::fs::write(
+            sources_path(skills.path()),
+            r#"{"skill-echo-prodoc":{"url":"file:///nowhere","rev":"old"}}"#,
+        )
+        .unwrap();
+
+        // 目录定位正确 → 走到 git fetch 才失败（不是「无来源记录」/「目录不存在」）
+        let err = update(skills.path(), "prodoc-format").unwrap_err();
+        assert!(!err.contains("无来源记录"), "{err}");
+        assert!(!err.contains("目录不存在"), "{err}");
+        assert!(err.contains("git"), "{err}");
     }
 
     #[test]
