@@ -24,9 +24,12 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
   unknown-type preservation, sender nickname (card vs nickname fallback).
 - **Wire protocol** (echo-protocol): command/event WS round-trips,
   malformed frame handling, FanoutHandle subscriber pruning.
-- **Filtering** (echo-defs::plugin_instance): allowlist / denylist / rate limit (sliding
-  window with real-time expiry + per-user/per-group/global bucket isolation) /
-  keyword / content length / admin bypass, pipeline ordering and short-circuit.
+- **Filtering**（**已随去适配器化搬到插件仓库** `crates/echo-adapter-qq/src/filter.rs` 的
+  `#[cfg(test)]` 内联测试，Core 侧已无过滤实现）：allowlist / denylist / rate limit（滑动
+  窗口 + 实时过期 + per-user/per-group/global 三桶隔离）/ keyword / content length /
+  admin bypass、管道顺序与短路。名单**持久化契约**另在插件仓库 `tests/filter_persist.rs`：
+  `persist_filter` 对名单表是整表替换写入，必须原样带回 `group_members_open`——否则
+  Panel 上任一名单编辑都会把「群成员放行」开关静默清掉。
 - **Security** (echo-agent tools): 相对路径的穿越防护（read/write/edit 共用
   `guard_relative_path`：canonicalize 目标或最近已存在祖先，拦 `../..` 与
   区外符号链接；写工具在创建目录前校验，区外不留空目录）、绝对路径按显式
@@ -89,7 +92,7 @@ Generated inputs that must satisfy invariants:
   server on ephemeral port: Panel command → agent backend, agent event → Panel
   forward.
 - （QQ 插件仓库）`crates/echo-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`（插件侧领域类型，保留）、
-  `napcat/mod.rs`、`handler.rs`；`tests/` 目录仅 `owner_qq.rs`）— NapCat client
+  `napcat/mod.rs`、`handler.rs`；`tests/` 目录两个集成测试 `owner_qq.rs` + `filter_persist.rs`）— NapCat client
   against a `wiremock` HTTP server:
   login status detection, WebUI fallback, reverse-WS config, QR fetch.
   Multi-instance plugins (`QqAdapter::with_instance(id, persona, cfg)`)

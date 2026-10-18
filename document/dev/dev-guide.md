@@ -77,7 +77,7 @@ EchoAgentCore/
 - `Tool`（echo-defs）— LLM 可调用函数；`timeout_hint` 自声明执行超时
 - `SkillProvider` / `Skill`（echo-defs）— 技能接缝；`SkillRegistry` 在 echo-agent
 - `PluginInstance`（echo-defs::plugin_instance）— **平台接缝的唯一实现路径**：生命周期/收发/状态面；进程外插件经宿主 `RemoteInstance` 实现它（`echo-plugin-host` 的 `impl PluginInstance for RemoteInstance`）。`InstanceRegistry` 同在 `echo-defs::plugin_instance`；`ConfigStore` 在独立的 `echo-config`（不认识任何配置段的语义）。平台专属管理动作不走能力扩展 trait，而是经 **`InvokeInstanceOp{instance, method, payload}`** 透传（插件侧 `custom` op 自行解释）——门控模式、名单、登录等取值因此是**参数字符串**而非共享枚举
-- `ToolContribution`（echo-defs::plugin_instance，`PluginInstance::tool_specs`）— 插件实例**向模型暴露的工具声明**（name / description / parameters / package / `visible_reply`）。远程插件实例 = 插件 `InstanceContribution.tools` 原样；组合根的通用桥（`core/instance_tools.rs`）只做跨实例合并、`account` 寻址、出站闸门与 `invoke_custom` 透传，**不认识任何具体工具名**
+- `ToolSpec`（echo-defs::plugin_instance，`PluginInstance::tool_specs` 的返回类型）— 插件实例**向模型暴露的工具声明**（name / description / parameters / package / `visible_reply`）。远程插件实例 = 插件 `InstanceContribution.tools` 原样；组合根的通用桥（`core/instance_tools.rs`）只做跨实例合并、`account` 寻址、出站闸门与 `invoke_custom` 透传，**不认识任何具体工具名**
 - `Tool::produces_visible_output`（echo-defs）— 工具自声明「成功调用即产生平台可见输出」；循环据此抑制「临时等待回复」，不再按工具名清单判断
 - `ChannelType` / `IncomingMessage` / `MessageTarget`（echo-defs::chat）— 跨插件实例边界的**消息词汇**（平台中立）；入站过滤在实例插件进程内做，宿主不持有过滤管道
 
@@ -104,7 +104,7 @@ EchoAgentCore/
 ## 关键流程
 
 1. **平台入站**：实例插件（进程外）`submit_input` → 宿主有界队列 → per-instance worker → `AgentMessageHook::on_incoming_message` → 结构化 `<X_message_hook>` 输入（先过命令域）
-2. **平台出站**：Agent 工具调用 → **实例插件声明的工具**（`ToolContribution`）→ 宿主通用桥 → `invoke_custom(<工具名>)` → 插件自行投递（框架不认识任何工具名）
+2. **平台出站**：Agent 工具调用 → **实例插件声明的工具**（wire 侧 `echo_plugin_api::ToolContribution`，宿主侧落到 `ToolSpec`）→ 宿主通用桥 → `invoke_custom(<工具名>)` → 插件自行投递（框架不认识任何工具名）
 3. **前端输入**：WS 命令帧 → `BackendCommand::SendMessage` → agent.process_message → `BackendEvent::AgentOutput`
 4. **API 配置**：Panel /api → `UpdateApiConfig` → 应用 + ConfigStore 持久化 → `ApiConfigUpdated` 广播
 5. **插件实例生命周期**：组合根按 `[instances.<platform>.plugin]` 拉起插件进程 → `InstanceContribution` 注册（含工具/UI/能力位）→ `StartInstance` → 插件自己连平台
