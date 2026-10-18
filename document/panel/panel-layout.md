@@ -66,7 +66,7 @@ graph LR
   Conn -->|命令下行| Core
 ```
 
-- Core 是**业务状态**的唯一事实来源（「窗口在看什么」属窗口本地，§3.7）；断连重连后凭缓存游标增量补齐、缓存失效时由 Core 回退全量（§四）；唯一乐观例外 = 取消任务（见 [会话视图](./panel-chat.md) 与 [QQ 管理·任务·Shell](./panel-qq-tasks.md)）
+- Core 是**业务状态**的唯一事实来源（「窗口在看什么」属窗口本地，§3.7）；断连重连后凭缓存游标增量补齐、缓存失效时由 Core 回退全量（§四）；唯一乐观例外 = 取消任务（见 [会话视图](./panel-chat.md) 与 [适配器管理·任务·Shell](./panel-adapter-tasks.md)）
 - HTTP 旁路仅：日志接口（`/api/logs/{panel,core}`）、接入点管理接口（`/api/upstreams` 增删查，多接入点聚合，见 [Panel 概览](./panel.md)「配置与运维」）与媒体文件路由（`GET /media/{name}`，§3.5），其余全部走 WS——QQ 登录/二维码已迁到 WS（Core 代理）
 
 ## 二、视图与导航
@@ -219,7 +219,7 @@ graph LR
   - **首屏优先级**：`RequestAdapterStatus` / `RequestShellSessions` 两条单值管理面命令**仅当目标区域已解析**（刷新/重连场景，activeRegion 自 localStorage 还原）时发送；首访区域未定时跳过——多接入点下会因解析不出目标被拒并误弹「尚未选择 agent」，随后区域解析完成由 activeRegion watcher 统一拉取（含这两条）
   - 去主智能体后 `team_id` 必填：没有保存过 Agent 时**跳过**时间线请求（发了必被 Core 拒绝），等 `TeamsList` 到达后由 App watcher 用列表首个发起（有缓存则同样带 `since_seq`）
   - **切换 core 时重拉「单值管理面」**（`connection.ts::requestActiveRegionManagement`）：`RequestState` / `RequestSystemPrompt` / `RequestAdapterStatus` / `RequestSkillsList` / `RequestToolsList` / `RequestPluginsList` / `RequestShellSessions` / `RequestFederationStatus`——响应被 `managementCoreCurrent` 过滤到 activeRegion，不重拉会短暂显示上一个 core 的值。**首屏首次区域确定**（prev=null）时跳过技能/工具目录（`includeCatalogs:false`）——二者合计约 36KB 且首屏无消费方（设置页/Agent 配置弹窗打开时自拉），切换区域保留全量
-  - QQ 过滤配置**不预取**（QqPanel/QqLoginSection 打开时按实例自行刷新；无 QQ 或多实例未指定实例时预取必被拒，产生无意义的「QQ 适配器未找到」提示）
+  - 适配器管理数据**不预取**（`AdapterPanel` 打开时按实例自行刷新描述符与状态；当前 Agent 未启用适配器、或多实例尚未选定实例时预取必被拒，只堆出无意义的「适配器未找到」提示）
 - **重连保留时间线**：只清空运行期状态（`branchTabs`、`tasks`、`activities`、工作区 git/文件浏览器缓存）；时间线（`trunk`、`teamTimelines`、`trunkTeamId`）**不清空**——按缓存游标带 `since_seq` 增量补齐，响应 `full` 标志（首载/窗口滚出/游标超前）时整体替换（`connection.ts::startConnection` 的 `onopen` 段）
 - **退避**：500ms 起、×2 递增，**上限按页面可见性分档**（`connection.ts::RETRY_CAP_VISIBLE_MS` = 3s / `RETRY_CAP_HIDDEN_MS` = 30s——前台几秒内即恢复，后台省电）；成功连接后复位 500ms
 - **前台自愈（heal）**：`visibilitychange` 回到前台或 `online` 事件时主动评估连接——已断开则立即重连（复位退避，不等可能被浏览器冻结的退避定时器）；显示 OPEN 也可能半死（设备休眠期间对端已消失而本端未察觉），发 `RequestTeamsList` 探测帧，**5s** 内无任何下行帧则判死、主动关闭走标准重连（`connection.ts`）

@@ -4,7 +4,7 @@ title: "Panel 布局 & 交互定义"
 group: 前端
 x: 2720
 y: 500
-link: ["panel-layout | 布局与导航 | b>t", "panel-chat | 会话视图 | b>t", "panel-modals | 模态与覆盖层 | b>t", "panel-settings | 设置视图 | b>t", "panel-qq-tasks | QQ管理·任务·Shell | b>t", "panel-mobile | 移动端适配 | b>t", "panel-system | 系统交互 | b>t", "panel-icons | 图标体系 | b>t"]
+link: ["panel-layout | 布局与导航 | b>t", "panel-chat | 会话视图 | b>t", "panel-modals | 模态与覆盖层 | b>t", "panel-settings | 设置视图 | b>t", "panel-adapter-tasks | 适配器管理·任务·Shell | b>t", "panel-mobile | 移动端适配 | b>t", "panel-system | 系统交互 | b>t", "panel-icons | 图标体系 | b>t"]
 ---
 
 # Panel 布局 & 交互定义
@@ -37,7 +37,7 @@ graph TB
   Root --> C[会话视图|/panel/panel-chat.md]
   Root --> M[模态与覆盖层|/panel/panel-modals.md]
   Root --> Set[设置视图|/panel/panel-settings.md]
-  Root --> QT[QQ管理·任务·Shell|/panel/panel-qq-tasks.md]
+  Root --> QT[适配器管理·任务·Shell|/panel/panel-adapter-tasks.md]
   Root --> Mobile[移动端适配|/panel/panel-mobile.md]
   Root --> Sys[系统交互|/panel/panel-system.md]
   L --> L1[视图层级与导航]
@@ -59,7 +59,7 @@ graph TB
   Set --> S3[资源工作区]
   Set --> S4[Core 连接与联邦]
   Set --> S5[日志与系统]
-  QT --> Q1[QQ 管理]
+  QT --> Q1[适配器管理]
   QT --> Q2[任务弹层与 Shell]
   QT --> Q3[HTTP 通道]
   Sys --> Y1[Toast]
@@ -76,7 +76,7 @@ graph TB
 | [会话视图](./panel-chat.md) | 消息列表、工具卡与工具行、推理块、输入区、入口行、侧栏 |
 | [模态与覆盖层](./panel-modals.md) | 分支详情、上下文弹层、Agent 配置弹层、确认形式 |
 | [设置视图](./panel-settings.md) | API 设置、资源工作区、Git 安装、Core 连接与联邦、日志与系统 |
-| [QQ 管理·任务·Shell](./panel-qq-tasks.md) | QQ 管理、任务弹层（入口行）、Shell 列表（边栏卡）与详情视图、HTTP 通道 |
+| [适配器管理·任务·Shell](./panel-adapter-tasks.md) | 适配器弹层（描述符驱动，与平台无关）、任务弹层（入口行）、Shell 列表（边栏卡）与详情视图、HTTP 通道 |
 | [移动端适配](./panel-mobile.md) | 断点口径、全局壳约束（安全区/动态视口）、会话/设置窄屏形态、软键盘适配、桌面零回归 |
 | [系统交互](./panel-system.md) | Toast、键盘、设计边界、常量 |
 

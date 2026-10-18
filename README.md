@@ -221,7 +221,7 @@ NapCat 容器管理）；容器模式的完整配置模板见
 - `[core] management_address`：前端连接地址（默认 `0.0.0.0:3132`，开箱即可被局域网 Panel 连接；`management_access_token` 提供 Bearer 认证，首装自动生成）。端口与 token 可经 CLI 管理：`echo-agent-core port`（列出/修改各监听端口，含联邦与 QQ 实例端口）与 `echo-agent-core token [--rotate]`。
 - `[federation]`：Core↔Core 联邦（多机去中心化；**零配置默认开启**，listen 缺省 0.0.0.0:3133 开箱可被连入）——`listen`（缺省 :3133，显式空 = 纯连出）、`node_name`、`[federation.peers.*]`（url/token/allow_tools/allow_queries）。配对推荐用 Panel 设置·联邦页的**邀请串**（`echofed://`），见 [document/federation/federation.md](document/federation/federation.md)。
 
-前端通过设置视图（API/技能/工具/插件/智能体）与 QQ 管理面板发起的修改，由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core/core-config-persistence.md](document/core/core-config-persistence.md)）。
+前端通过设置视图（API/技能/工具/插件/智能体）与适配器管理面板发起的修改，由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core/core-config-persistence.md](document/core/core-config-persistence.md)）。
 
 ## 前端协议
 

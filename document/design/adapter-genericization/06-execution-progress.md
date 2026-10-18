@@ -183,7 +183,7 @@ y: 3480
 - `adapter-plugin.md`：§变体处置与升级指南改写为「直接删除已生效」；W4.1-W4.4 勾选注释更新；实施进度「无剩余发版项」
 - `01b-core-protocol-lifecycle.md`：B 节加后注（S7/S8 合并直接执行；设计历史保留）
 - `protocol.md`：命令/事件段改写为统一通道；旧变体注明已删除
-- `adapter-qq-gating.md` / `panel-qq-tasks.md` / `panel-system.md`：旧命令引用更新为新通道
+- `adapter-qq-gating.md` / `panel-qq-tasks.md` / `panel-system.md`：旧命令引用更新为新通道（`panel-qq-tasks.md` 后续随泛化改名为 `panel-adapter-tasks.md`）
 - Panel 仓库：`protocol-sync.test.ts` 注释更新（「Core 侧保留至 N+2」→「同批直接删除」）
 
 ## 后续清理：GateMode 孤儿枚举（16:38）

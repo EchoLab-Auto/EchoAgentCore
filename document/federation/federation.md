@@ -358,7 +358,7 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   `SkillsList` / `ToolsList` / `PluginsList` / `SystemPrompt` / `Adapter*` /
   `Federation*` / `SelfUpdateStatus`）只接受当前区域（`activeRegion`）的响应，
   避免广播/竞态响应串台；区域切换时 `resetManagementState` +
-  `requestActiveRegionManagement` 定向重拉。QQ 管理态按 `(region, adapter)`
+  `requestActiveRegionManagement` 定向重拉。适配器管理态按 `(region, adapter)`
   存放（实例名跨区域可重复，默认都叫 `qq`）。
 - **区域放置（Panel 统一管理）**：设置 → 智能体 详情展示该 agent 的
   「运行区域」，并可**迁移到其他区域**——Panel 编排 目标区域 `SaveTeam`
