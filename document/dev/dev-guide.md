@@ -76,9 +76,9 @@ EchoAgentCore/
 - `LlmProvider`（echo-defs）— LLM 后端接缝；providers：OpenAI/Anthropic/Ollama
 - `Tool`（echo-defs）— LLM 可调用函数；`timeout_hint` 自声明执行超时
 - `SkillProvider` / `Skill`（echo-defs）— 技能接缝；`SkillRegistry` 在 echo-agent
-- `ChatAdapter`（echo-defs）— 平台接缝（Message/Target/Channel 词汇）
-- `Adapter`（echo-defs::adapter）— 平台集成 trait（平台中立的生命周期/收发/状态面）；`echo-adapter` 只承载 filter/registry/ConfigStore 等实现并对其 re-export。平台专属管理动作不再走能力扩展 trait，而是经 **`InvokeAdapterOp{adapter, method, payload}`** 透传（插件侧 `custom` op 自行解释）——门控模式、名单、登录等取值因此是**参数字符串**而非共享枚举
+- `Adapter`（echo-defs::adapter）— **平台接缝的唯一实现路径**：生命周期/收发/状态面；进程外插件经宿主 `RemoteAdapter` 实现它（`echo-plugin-host` 的 `impl Adapter for RemoteAdapter`）（平台中立的生命周期/收发/状态面）；`echo-adapter` 只承载 filter/registry/ConfigStore 等实现并对其 re-export。平台专属管理动作不再走能力扩展 trait，而是经 **`InvokeAdapterOp{adapter, method, payload}`** 透传（插件侧 `custom` op 自行解释）——门控模式、名单、登录等取值因此是**参数字符串**而非共享枚举
 - `MessageFilter`（echo-adapter）— 入站消息过滤器（白名单、黑名单、频率、关键词、长度）
+- `ChatAdapter`（echo-defs::chat）— **预留词汇，零实现零使用**：`Adapter` 接缝定型后它没接线，`IncomingMessage`/`MessageTarget` 等词汇仍被 filter 与适配器桥复用；清理或接线前不要照它写新代码
 
 **机制与运行时抽象**：
 

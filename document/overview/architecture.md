@@ -92,7 +92,7 @@ graph BT
 
 ### 定义层（echo-defs）
 
-定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（依赖仅 serde/serde_json/async-trait/tokio/thiserror/base64/tracing 基础 crate，不含 reqwest 与其它 echo-* crate），可独立测试。模块覆盖：消息/LLM（`ChatMessage`/`ChatRequest`/`LlmProvider` 等）、工具、技能、聊天（平台消息词汇与 `ChatAdapter`）、适配器（`adapter` 模块：`Adapter` trait、`AdapterManagement`、`AdapterInfo`/`AdapterError`）、门控与思考模式、token 纯函数、媒体卫生（文本内嵌 base64 → 占位符、图片只走独立 image 块）与入站图片落盘缓存（`/media/<id>` 引用）、会话事件契约、联邦节点词汇（`NodeId`、`node://` 跨机命名空间）。
+定义层持有全部词汇类型与 trait，**零实现、零 harness 依赖**（依赖仅 serde/serde_json/async-trait/tokio/thiserror/base64/tracing 基础 crate，不含 reqwest 与其它 echo-* crate），可独立测试。模块覆盖：消息/LLM（`ChatMessage`/`ChatRequest`/`LlmProvider` 等）、工具、技能、聊天（平台消息词汇；`ChatAdapter` 是未接线的预留 trait，见 [开发指南](../dev/dev-guide.md)）、适配器（`adapter` 模块：`Adapter` trait、`AdapterManagement`、`AdapterInfo`/`AdapterError`）、门控与思考模式、token 纯函数、媒体卫生（文本内嵌 base64 → 占位符、图片只走独立 image 块）与入站图片落盘缓存（`/media/<id>` 引用）、会话事件契约、联邦节点词汇（`NodeId`、`node://` 跨机命名空间）。
 
 ### 机制底座（echo-context）
 
@@ -116,7 +116,7 @@ graph BT
 | LLM | `echo_defs::LlmProvider` | `echo-llm-openai`/`anthropic`/`ollama` | `echo-agent` 工厂 + `echo-loop` runner |
 | 工具 | `echo_defs::Tool` | `echo-agent::ToolRegistry` + builtin | agent 循环 |
 | 技能 | `echo_defs::SkillProvider` | `echo-agent::SkillRegistry`（本地文件） | prompt 组装 |
-| 平台生命周期 | `echo_defs::chat::ChatAdapter` | QQ 适配器插件（远程 `RemoteAdapter`）/ 内置实现 | agent + 工具 |
+| 平台生命周期 | `echo_defs::adapter::Adapter` | 适配器插件（**进程外**，宿主经 `RemoteAdapter` 接入——当前唯一样本是 `echo-agent.adapter.qq`，实现在独立仓库） | agent + 适配器工具 |
 | 默认驱动 | `echo_loop::TurnRunner` | 内置（经 `ctx.loop` 注册） | 组合根 |
 
 ## 运行时一览

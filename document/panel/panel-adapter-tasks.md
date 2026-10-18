@@ -9,7 +9,7 @@ y: 780
 # Panel 适配器管理 · 任务 · Shell
 
 > **定位**：本文覆盖三块与平台无关的交互——**适配器弹出层**（描述符驱动的设备管理界面）、入口行任务弹层、Shell 列表与详情视图，以及 HTTP 旁路通道（卡片状态、取消约定 = 乐观中断 + `team_id` 命令、通道超时）。读者：维护 Panel 适配器 / 任务 / Shell 交互的开发者。
-> Panel 不认识任何具体平台：弹层的布局由插件下发的描述符（`AdapterStatus.ui`）声明、动作经 `InvokeAdapterOp` 透传、状态经 `AdapterState` 回推。当前唯一内置适配器是 QQ（其插件机制见 [QQ 适配器门控](../plugins/adapter-qq-gating.md)），下文举的扫码 / 门控 / 名单都是**该适配器描述符的内容**，不是 Panel 的能力边界。相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)、[插件开发指南](../plugins/plugin-authoring.md)。
+> Panel 不认识任何具体平台：弹层的布局由插件下发的描述符（`AdapterStatus.ui`）声明、动作经 `InvokeAdapterOp` 透传、状态经 `AdapterState` 回推。当前在册的适配器插件只有 `echo-agent.adapter.qq`——它是**进程外插件**：manifest 编译在 Core 里，实现却是独立进程（独立仓库 `echo-adapter-qq`），Core 侧只有门控壳（插件体系的两维度见 [插件化设计](../plugins/core-plugins.md)）。下文举的扫码 / 门控 / 名单都是**该插件描述符的内容**，不是 Panel 的能力边界，也不是 Core 的内置功能。相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)、[插件开发指南](../plugins/plugin-authoring.md)。
 
 ## 适配器管理（描述符驱动的弹出层）
 
