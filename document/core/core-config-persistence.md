@@ -19,10 +19,10 @@ EchoAgentCore 的运行期配置写入通过共享 `ConfigStore` 原子化落盘
 |---|---|---|
 | Agent 配置（API key、模型、profiles） | `ConfigStore::patch()` 替换 `[agent]` | `[agent]` |
 | 全局系统提示词 | `persist_system_prompt_plugin()` → `ConfigStore::patch()` | `[plugins.system_prompt].text` |
-| 实例门控配置（gate mode、白名单、黑名单） | `ConfigStore::patch()` 替换 `[instances.<platform>]` | `[instances.<platform>.gate]` + `[instances.<platform>.filter]` |
+| 实例门控配置（gate mode、白名单、黑名单） | **无（不写 core.toml）**——归插件自己的 state 文件，见 §QQ 门控配置持久化 | `<配置目录>/<platform>-<实例>.toml` 的 `[adapters.<platform>]` |
 
 `ConfigStore` 内部使用 `std::sync::Mutex` 序列化所有写入，读写一次全文件，
-各调用者（各 persona 的 Agent 与 QqAdapter）共享同一实例，**杜绝并发写互相覆盖**。
+各调用者（各 persona 的 Agent + 插件实例宿主视图）共享同一实例，**杜绝并发写互相覆盖**。插件自己的运行期状态（门控/名单/端口）不经过它——那是插件 state 文件的另一个 `ConfigStore` 实例。
 
 写入流程：`read TOML → apply patch → write to .tmp → rename`（原子替换）。
 
@@ -70,7 +70,9 @@ Core 启动时 --config 指定的文件（如 config/echo-agent-core.local.toml�
 
 ConfigStore 由 main.rs 创建一次，分发给各 persona 的 Agent 与插件实例宿主视图（都指向同一 core.toml 的 `[agent]` / `[instances.<platform>]` section）：
   let config_store = echo_config::ConfigStore::new(args.config_path());
-  // 插件实例的 persona/端口写回经同一 ConfigStore（`[instances.<platform>.instances.<id>]`）
+  // 插件实例的 **persona** 写回经同一 ConfigStore（段名沿用用户已用的
+  // `[adapters.<platform>.instances.<id>]` 或 `[instances.<platform>.instances.<id>]`）；
+  // **端口不写回**——端口由插件自己分配并持久化到实例 state 文件
   // make_agent 内：每个 persona 共享同一个 config_store（agents_config_store.clone()），
   // 会话文件路径独立设置（JSON，见下）。
 ```
@@ -109,7 +111,7 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 
 > **关键区分**：门控 / 名单 / owner 的持久化**不再写 core.toml**。它们由 QQ 插件
 > 写入自己的**实例 state 文件**（`state_file`，宿主经 `Hello.config` 下发，
-> 路径形如 `<数据目录>/qq-<实例>.toml`），段落为 `[adapters.qq]`。
+> 路径形如 `<配置目录>/qq-<实例>.toml`（与 core.toml 同目录，不是媒体/数据目录），段落为 `[adapters.qq]`。
 >
 > Core 侧只剩两类写：`[agent]`（persona 名单 / provider 等，`Agent::persist_config`）
 > 与实例 persona（自动建档时写回 `[instances.<p>.instances.<id>]`）。两处用**同一个**

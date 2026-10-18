@@ -22,7 +22,7 @@ y: 980
   会话持久化文件（`echo-sessions-{id}.json`，每个 persona 一份）
 - `SessionEvent` 六类：`UserMessage`（带 `message_sequence`，并发分支按请求序合并）、
   `AssistantMessage`（保留 `reasoning_content` / `tool_calls`）、`ToolCall`、
-  `ToolResult`（`tool_call_id` 回链；带 `started_at_ms`/`elapsed_ms` 执行计时）、
+  `ToolResult`（`tool_call_id` 回链 + `elapsed_ms` 耗时；`started_at_ms` 在上一跳的 `ToolCall` 上）、
   `Reasoning`（一步的思考正文；带产出时刻 `timestamp`，serde 标签 `kind = "reasoning"`）、
   `Compaction`（压缩是显式事件，日志保持可重放；`[历史摘要]` 前缀在投影期恰好渲染一次）
 - 推理落成事件是为了保住时序：显示历史由日志派生，推理只活在实时窗口时，
@@ -35,7 +35,7 @@ y: 980
   最终回答始终排在整轮之后（否则显示历史里回答会出现在"思考"之前）
 - `SessionHeader` 携带 fork/resume 元数据（parent/seed_length/origin/delegation_depth），随日志持久化
 - 持久化：v6 整档 JSON（`events` 为权威，每事件带 `session` 归属；
-  `trunk_histories`/`identities`/`timeline` 为持久化投影），tmp+rename 原子写；
+  `identities`/`timeline` 为持久化投影；v6 起**不再存 `trunk_histories`**，加载时按 `events` 重投影），tmp+rename 原子写；
   30s 周期保存（dirty 时）+ 关闭时 flush；v1-v4 旧格式加载期自动迁移
 
 ## 可见性边界

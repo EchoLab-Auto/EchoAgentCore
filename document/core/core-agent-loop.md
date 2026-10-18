@@ -101,7 +101,8 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 
 工具路径（`run_tool`）与提示词构建（`agent/prompt.rs` 的 `build_prompt_blocks` /
 `join_prompt_blocks`，`agent/boundary.rs` 的边界块）只有一份。
-`generate_wait_reply` 是无工具单请求，保持自身实现。
+  「等待回复」不是独立调用路径：它由常规请求 + 工具循环自然产生（旧实现里的
+  `generate_wait_reply` 已随循环重构删除，仓库内零命中）。
 
 ### agent 模块拆分
 
