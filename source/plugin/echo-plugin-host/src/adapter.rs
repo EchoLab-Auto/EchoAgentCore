@@ -63,16 +63,17 @@ impl RemoteAdapter {
     /// 不读名字段，构造顺序无自引用问题）。
     pub fn new(contribution: AdapterContribution, handle: PluginHandle) -> Arc<Self> {
         let name = contribution.name.clone();
-        // `RemoteAdapterManagement` 持有一个指向本结构的裸 Arc——它只被
-        // 本结构的字段持有、生命周期与本结构绑定，不会逃逸。
-        let management = RemoteAdapterManagement::for_inner(name.clone());
-        Arc::new(Self {
-            name,
+        // 管理面持**指向本结构的弱引用**，生命周期严格绑定本结构。
+        // `Arc::new_cyclic` 是拿到它的唯一正确方式：先用 `Weak::new()`
+        // 占位会让 `management()` 永远失效（`invoke_custom` / `cached_state`
+        // 一律返回 "has been destroyed"——宿主侧一切管理动作全废）。
+        Arc::new_cyclic(|weak| Self {
+            name: name.clone(),
             contribution,
             handle,
             connection: Mutex::new(ConnectionCache::default()),
             management_state: Mutex::new(None),
-            management,
+            management: RemoteAdapterManagement::from_weak(weak.clone(), name),
         })
     }
 
@@ -328,13 +329,10 @@ impl RemoteAdapterManagement {
         }
     }
 
-    /// 由宿主 `RemoteAdapter` 内部构造（挂在宿主字段上；弱引用在宿主
-    /// 销毁后自然失效，调用方拿到 `internal error` 而非 UB）。
-    fn for_inner(name: String) -> Self {
-        Self {
-            adapter: std::sync::Weak::new(),
-            name,
-        }
+    /// 由宿主 `RemoteAdapter` 内部构造：`weak` 来自 `Arc::new_cyclic`，
+    /// 指向宿主自身（宿主销毁后自然失效，调用方拿到可读错误而非 UB）。
+    fn from_weak(adapter: std::sync::Weak<RemoteAdapter>, name: String) -> Self {
+        Self { adapter, name }
     }
 
     /// 弱引用升级（宿主已销毁 → 可读错误）。
@@ -892,11 +890,33 @@ mod tests {
         assert_eq!(info.self_id.as_deref(), Some("4242"));
 
         // 管理面：invoke_custom 直通 custom op；cached_state 读缓存。
+        //
+        // **必须用 `adapter.management()`**（宿主消费方走的就是这条路径），
+        // 而不是自建 `RemoteAdapterManagement::new(adapter.clone())`——后者
+        // 永远可用，会掩盖「宿主字段里的弱引用没接对」这种致命 bug
+        // （历史上 `RemoteAdapter::new` 用 `Weak::new()` 占位，导致
+        // `management()` 恒失效、全部管理动作返回 "has been destroyed"）。
+        let management_ref = adapter
+            .management()
+            .expect("management 必须可用（宿主字段的弱引用指向自身）");
+        assert!(
+            management_ref.cached_state().is_none(),
+            "cached_state 读的是本结构缓存，未写入时应为 None 而不是报错"
+        );
         let management = RemoteAdapterManagement::new(adapter.clone());
         assert!(management.cached_state().is_none());
         adapter.note_management_state(json!({"gate": {"mode": "allowlist"}}));
         assert_eq!(
             management.cached_state().unwrap()["gate"]["mode"],
+            json!("allowlist")
+        );
+        // 同一断言走宿主消费路径（`adapter.management()`）：读得到缓存。
+        assert_eq!(
+            adapter
+                .management()
+                .expect("management 可用")
+                .cached_state()
+                .expect("缓存已写入")["gate"]["mode"],
             json!("allowlist")
         );
         let out = management
