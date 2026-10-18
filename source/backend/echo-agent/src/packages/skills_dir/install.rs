@@ -58,6 +58,15 @@ fn repo_name(url: &str) -> String {
     }
 }
 
+/// 半成品 clone 判定：有 `.git` 但没有 `SKILL.md`。
+///
+/// `git clone` 会先创建目标目录再连网络；被硬超时 kill 后连 `.git` 都留下
+/// （实测 2026-10-18：github.com:443 不可达 → 120s 超时 → `skills/<name>/.git`
+/// 残留）。正常技能目录必有 `SKILL.md`，所以这个组合只可能是失败残留。
+fn is_broken_clone(dir: &Path) -> bool {
+    dir.join(".git").exists() && !dir.join("SKILL.md").exists()
+}
+
 /// 在 git 仓库目录中定位 SKILL.md 根：根目录有则用根；否则第一个
 /// 含 SKILL.md 的**直接子目录**（仅扫描一层 read_dir）。
 fn find_skill_root(repo: &Path) -> Option<PathBuf> {
@@ -106,6 +115,10 @@ fn sh(args: &[&str]) -> Result<String, String> {
             .args(args)
             .env("GIT_HTTP_LOW_SPEED_LIMIT", GIT_LOW_SPEED_LIMIT)
             .env("GIT_HTTP_LOW_SPEED_TIME", GIT_LOW_SPEED_TIME)
+            // 私有仓库 / 凭据缺失时 git 会尝试交互式询问用户名密码，
+            // 在无 TTY 的后台进程里直接挂到硬超时（120s）才失败——用户
+            // 只看到「卡住两分钟」。禁止提示后立即报认证失败（2026-10-18）。
+            .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(std::process::Stdio::null())
             .stdout(out_file)
             .stderr(err_file)
@@ -167,7 +180,17 @@ pub fn install(
     }
     let target = skills_dir.join(&dir_name);
     if target.exists() {
-        return Err(format!("目录已存在: {dir_name}（请先卸载或换名安装）"));
+        // 上次失败（clone 被超时 kill）留下只有 `.git` 的半成品：自动清掉，
+        // 否则用户会**永远**撞「目录已存在」而不知为何——2026-10-18 实况：
+        // 一次 HTTPS 超时之后，同一个名字再也装不上，且错误文案只让「换名」。
+        if is_broken_clone(&target) {
+            std::fs::remove_dir_all(&target)
+                .map_err(|e| format!("清理上次失败的残留目录失败: {dir_name}: {e}"))?;
+        } else {
+            return Err(format!(
+                "目录已存在: {dir_name}（若是之前安装的，请先卸载或换名安装；                 若确认是手动放置的同名目录，请先移走）"
+            ));
+        }
     }
     std::fs::create_dir_all(skills_dir).map_err(|e| format!("创建 skills 目录失败: {e}"))?;
 
@@ -179,7 +202,12 @@ pub fn install(
     args.push(url);
     let target_str = target.to_string_lossy().to_string();
     args.push(&target_str);
-    sh(&args)?;
+    if let Err(e) = sh(&args) {
+        // 失败即清场：clone 中途失败/被杀会留下半成品目录（网络不可达时连
+        // `.git` 都在），不清理则本次与后续重试都会被「目录已存在」挡住。
+        let _ = std::fs::remove_dir_all(&target);
+        return Err(e);
+    }
 
     // 目录提升：根无 SKILL.md 时，取第一个子目录作为根
     if !target.join("SKILL.md").exists() {
@@ -258,4 +286,107 @@ pub fn remove_source(skills_dir: &Path, name: &str) -> Result<(), String> {
         return Err(format!("{name} 无 Git 来源记录"));
     }
     save_sources(skills_dir, &sources)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 临时 skills 目录（唯一名，Drop 即清理）。
+    struct TempSkills(PathBuf);
+    impl TempSkills {
+        fn new() -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("echo-skills-{}", uuid::Uuid::new_v4().simple()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempSkills {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn broken_clone_is_only_git_without_skill_md() {
+        let skills = TempSkills::new();
+        // 只有 .git：失败残留
+        let broken = skills.path().join("broken");
+        std::fs::create_dir_all(broken.join(".git")).unwrap();
+        assert!(is_broken_clone(&broken));
+
+        // 空目录（连 .git 都没有）：不是 clone 残留，按"已存在"处理
+        let empty = skills.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(!is_broken_clone(&empty));
+
+        // 有 SKILL.md：正常技能目录，绝不能被判成残留（否则会误删用户数据）
+        let good = skills.path().join("good");
+        std::fs::create_dir_all(good.join(".git")).unwrap();
+        std::fs::write(good.join("SKILL.md"), "---\nname: x\n---\n").unwrap();
+        assert!(!is_broken_clone(&good));
+    }
+
+    /// clone 失败必须清场：否则残留目录会让**同一名字**永久装不上
+    /// （2026-10-18 实况：HTTPS 不可达 → 120s 超时 → `skills/<name>/.git`
+    /// 残留 → 重试报「目录已存在」，用户完全无法自助恢复）。
+    #[test]
+    fn failed_clone_leaves_no_directory() {
+        let skills = TempSkills::new();
+        // 不存在的本地路径：git 立即失败，不触网。
+        let bogus = skills.path().join("no-such-repo-anywhere");
+        let url = format!("file://{}", bogus.display());
+        let err = install(skills.path(), &url, Some("target"), None).unwrap_err();
+        assert!(err.contains("git clone 失败"), "错误信息应说明 clone 失败: {err}");
+        assert!(
+            !skills.path().join("target").exists(),
+            "失败后不得留下半成品目录"
+        );
+    }
+
+    /// 残留目录自动清掉后再装（此处仍失败，但错误必须是 clone 失败而不是
+    /// 「目录已存在」——证明残留被识别并清理）。
+    #[test]
+    fn stale_broken_clone_is_cleaned_before_retry() {
+        let skills = TempSkills::new();
+        let target = skills.path().join("target");
+        std::fs::create_dir_all(target.join(".git").join("refs")).unwrap();
+        assert!(target.exists());
+
+        let url = format!("file://{}", skills.path().join("missing-repo").display());
+        let err = install(skills.path(), &url, Some("target"), None).unwrap_err();
+        assert!(
+            !err.contains("目录已存在"),
+            "残留应被自动清理，而不是撞「目录已存在」: {err}"
+        );
+        assert!(err.contains("git clone 失败"), "{err}");
+        assert!(!target.exists(), "本次失败同样要清场");
+    }
+
+    /// 正常技能目录（有 SKILL.md）不被当成残留：拒绝覆盖并给出指引。
+    #[test]
+    fn existing_real_skill_is_not_overwritten() {
+        let skills = TempSkills::new();
+        let target = skills.path().join("taken");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("SKILL.md"), "---\nname: taken\n---\n").unwrap();
+
+        let url = format!("file://{}", skills.path().join("whatever").display());
+        let err = install(skills.path(), &url, Some("taken"), None).unwrap_err();
+        assert!(err.contains("目录已存在"), "{err}");
+        // 用户数据原封不动
+        assert!(target.join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn repo_name_strips_git_suffix_and_trailing_slash() {
+        assert_eq!(repo_name("https://github.com/a/b.git"), "b");
+        assert_eq!(repo_name("https://github.com/a/b/"), "b");
+        assert_eq!(repo_name("git@github.com:a/b.git"), "b");
+        assert_eq!(repo_name("   "), "   ".trim_end_matches('/'));
+    }
 }
