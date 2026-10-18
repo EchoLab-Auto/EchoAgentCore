@@ -48,10 +48,9 @@ impl BoundaryKind {
                      instead of guessing.\n\
                      Answer every platform hook exactly once through **this \
                      platform's send tools**. Their names and parameters are \
-                     documented in the platform's transport skill (for example \
-                     `qq-transport`); never guess a tool name, never invent a \
-                     target ID, and never send twice. Do not substitute normal \
-                     assistant output for \
+                     documented in the platform's transport skill; never guess \
+                     a tool name, never invent a target ID, and never send \
+                     twice. Do not substitute normal assistant output for \
                      the send — it is backend-only and invisible to the platform \
                      user. Put the whole reply (including any 'sent' wording) \
                      inside the tool's content, and do not claim a reply before \

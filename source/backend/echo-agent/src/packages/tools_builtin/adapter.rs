@@ -83,7 +83,7 @@ impl Tool for AdapterStartTool {
         json!({
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Adapter name: 'qq' or 'all'"}
+                "name": {"type": "string", "description": "Adapter instance name, or 'all'"}
             },
             "required": ["name"]
         })
@@ -140,7 +140,7 @@ impl Tool for AdapterStopTool {
         json!({
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Adapter name: 'qq' or 'all'"}
+                "name": {"type": "string", "description": "Adapter instance name, or 'all'"}
             },
             "required": ["name"]
         })
