@@ -8,13 +8,13 @@ y: 1620
 
 # 工具系统
 
-> **定位**：本文描述工具系统——工具的注册与分派、参数预检、超时治理、文件工具路径约定、事件持久化与后台 Shell 会话（含已废弃工具）。工具集作为插件（`echo-agent.tools.builtin`）的装载清单与 persona 门控见 [插件化设计](./core-plugins.md)；工具调用相关的协议事件见 [协议与数据流](../protocol/protocol.md)。读者：工具系统的使用者与维护者。
+> **定位**：本文描述工具系统——工具的注册与分派、文件工具路径约定、调用治理（参数预检 / 危险命令判定 / 超时）、事件持久化与后台 Shell 会话（含已废弃工具）。工具集作为插件（`echo-agent.tools.builtin`）的装载清单与 persona 门控见 [插件化设计](./core-plugins.md)；工具调用相关的协议事件见 [协议与数据流](../protocol/protocol.md)。读者：工具系统的使用者与维护者。
 
 ## 注册与分发
 
 - `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（echo-agent，`packages/tool/`）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
 - 注册是可逆副作用：`register_reversible` 返回 `Disposer`，插件卸载即撤销
-- `run_tool` 统一分派：`spawn_subagent`（异步委派受理）由 agent 内联分派；其余工具走注册表
+- 分派入口有两条：turn 内走 echo-loop 的工具管线（`spawn_subagent` 经其异步 hook 通道，见 [Subagent 插件](./core-subagent.md)）；集成测试与直接调用走 `run_tool`（对 `spawn_subagent` 同样特判）。其余工具一律走注册表
 
 ## 文件工具的路径约定
 
@@ -31,15 +31,55 @@ y: 1620
   `bash` 工具本身即可访问整个文件系统；需要强制隔离时应约束 `bash`/`write_file`
   的工具白名单（persona 级）
 
-## 参数预检
+## 调用治理
+
+模型可见的工具 schema 之外，调用落地前还有三道治理——参数能否执行、命令是否会
+伤及系统、单次调用允许跑多久。三者都在工具内部实施，与 persona 门控（哪些工具
+可用）正交。
+
+### 参数预检
 
 - 非法 JSON / 缺少必需字段时返回**纠正性错误**（说清"你发了什么、应该发什么"），让模型自我纠正而不是盲目重试
 - 实现在 `agent/tool_exec.rs`：`tool_arguments_error`（注册表 schema 查询 + 判定）/
   `invalid_tool_arguments`（纯函数：比对 schema `required` 与实参，缺失列表 +
   原始参数回显 + schema 一并写入文案——只说"command required" 会让模型原样重试，
   形成空参调用退化循环）
+- 异步编排工具（`spawn_subagent`）经 echo-loop 的 hook 通道直入管线、不经注册表
+  预检，缺参由工具自身的纠正性文案兜底
 
-## 超时治理
+### 危险命令判定
+
+`bash` 工具（`packages/tools_builtin/coding.rs` 的 `RunCommandTool::execute`）
+执行前过闸，命中即返回执行错误、命令不执行：
+
+| 闸 | 实现 | 拦什么 |
+| --- | --- | --- |
+| 自停拦截 | `packages/tools_builtin/mod.rs::reject_core_self_stop` | 从自己的进程里 `systemctl stop/kill echo-agent-core`（含 `bash -c` 包裹）——会让后续清理/启动步骤来不及跑 |
+| rm 目标判定 | `coding.rs::dangerous_rm_root_target` | 递归 + 强制的 `rm` 指向根目录、根级通配 `/*`、或根下一级系统目录 |
+| 危险模式 | `coding.rs` 的模式表（`mkfs.` / `dd if=` / fork bomb / `> /dev/sda`） | 对整条命令串子串匹配 |
+| 提权 | `RunCommandTool::execute` 的行首 `sudo` 检测 | `bash` 无交互 tty、提权工具已废弃——直接拒绝并提示改用无需 root 的方案 |
+
+**rm 判定按词元与目标路径语义，不按命令串子串**（`dangerous_rm_root_target`）：
+
+- 先按 `;` `|` `&` 与换行切段，逐词扫 `rm`（也认 `/usr/bin/rm` 这类 `/rm`
+  结尾写法；词元两端引号剥掉，故 `bash -c 'rm -rf /'` 同样命中）
+- 生效条件：**同时**带递归（`-r` / `-R` / `--recursive`）与强制（`-f` /
+  `--force`），或显式 `--no-preserve-root`；其余情形不进判定
+- 只看**目标**：去掉尾部 `/` 后等于 `/`、`/*`，或落在受保护列表
+  `PROTECTED_ROOT_DIRS`（`/bin` `/boot` `/dev` `/etc` `/home` `/lib` `/lib64`
+  `/opt` `/proc` `/root` `/run` `/sbin` `/srv` `/sys` `/usr` `/var`）
+
+**误拦规避**：删除落在系统目录**之下**不受限——`rm -rf /tmp/x`、
+`rm -rf /var/log/myapp`、`rm -rf /home/u/.cache/x` 放行；`cd /tmp && rm -rf x`
+按段切分后目标是相对路径 `x`，同样放行；不带 `-r -f` 的 `rm /` 根本不进该判定。
+（沿革：早前是对整条命令串做 `rm -rf /` 子串匹配，这类正常清理会被一并误伤。）
+
+**边界**：这是**防误伤**判定，不是权限边界——它只认词元，不解释 shell 语义
+（相对路径 `rm -rf ../`、变量展开、命令替换都不追），绕过方式存在；需要强制
+隔离时用 persona 级工具白名单约束 `bash`。判定目前只覆盖 `bash`：`shell_exec`
+仅有自停拦截，不经 rm 判定与危险模式表。
+
+### 超时治理
 
 - `Tool::timeout_hint`：工具从自己的参数自声明执行超时（如 `bash` 的 `timeout_secs`，默认 120s、上限 300s）
 - 外圈守卫 = `max(tool_timeout_secs（默认 120s）, hint + 15s)`（自声明硬上限 600s）；由 turn harness 的工具执行器统一实施（`Agent::tool_guard_timeout`）
@@ -49,6 +89,7 @@ y: 1620
 ## 事件与持久化
 
 - `ToolCall` / `ToolResult` 都写入事件日志（事件溯源），重启后可完整重放
+- 异步编排工具（`spawn_subagent`）与普通工具同口径：先写 `ToolCall`（参数脱敏）+ 受理/拒绝后写 `ToolResult`（回执文本），带 `tool_call_id` 与耗时（`agent/turn.rs` 的 `execute_async_subagent`）——委派事件在日志里可查、时延可算
 - 协议事件携带 `tool_call_id` + `timed_out`：前端精确配对（同名并行调用不再配错对），超时渲染为失败；显示时间线就地更新会重新投递完成态（见 [协议与数据流](../protocol/protocol.md)）
 
 ## 后台 Shell 会话（持久 bash）

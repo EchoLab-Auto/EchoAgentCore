@@ -39,6 +39,14 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - **单会话模式下的 QQ 入站投递**：hook 格式化的消息（`<qq_message_hook>`，带完整平台/发送者元数据）投递到该 persona 的**默认本地会话**（`local:tui::local_user`）排队跑 turn——不开临时回复分支（ReplyBranch 是并行模式专属可见性机制）、不发 QQ 临时回复；`group_id=None` 保证普通输出不推 QQ，**是否回复由 agent 自行判断**（qq-transport 技能：回复必须走 send_* 工具，明显无需回应的消息可不回复）。QQ 会话键仍按作用域注册（Panel 会话列表可见），并行多会话模式保持原临时回复分支行为
 - **Panel 前端切换**：当前 agent 持久化于 localStorage（`echo-panel-active-team`），刷新/重连后停留原 agent；切换 agent 先渲染该 agent 的时间线缓存（零等待），再以 `since_seq` 增量刷新
 
+### 临时分支
+
+每条入站消息 = 一个临时回复分支。
+
+- 分支可见性由**循环模式**控制：并行多会话模式发射 ReplyBranch* 可见性事件、侧边栏有分支卡与「全局」会话项；单会话模式不发射、无分支卡（会话切换统一在入口行「会话」按钮），但分支照常执行合并（可见性开关而非执行开关）；单会话模式还会排队同一会话的 turn（串行准入，见 [Agent 循环](./core-agent-loop.md)§循环模式）
+- 分支运行期活动实时进主时间线（推理/工具/回答按序穿插），结束仅清理标签
+
+
 ## 工作区会话与项目通道
 
 工作区会话（`echo-agent.workspace` 插件）是**项目上下文**：「激活」不只是换提示词，而是**进入项目对话**。
@@ -58,8 +66,20 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 **③ 激活 = 进入项目对话**（激活单位 = `(工作区, 对话)`）：
 - 激活工作区（不带对话）= 进入其 `last_conversation`（无有效值取首条；列表为空物化存量主对话）；激活指定对话 = 同时激活所属工作区；
 - 本地对话切换到该对话的专属通道——上下文随之切换，通道历史从激活起独立积累；
-- 系统提示词注入目录信息 + 当前对话名（对 persona 的**全部来源会话**生效：本地与 QQ 都会看到）；
+- 系统提示词注入该通道自己的项目信息（**按会话解析**，见下「提示词解析粒度」）；
 - `workspace` 工具默认操作该工作区；`use` 支持可选 `conversation` 直接激活某对话。
+
+**提示词解析粒度**（多窗口语义）。每轮 turn 组装系统提示词时，工作区块按**本次 turn 的 `session_id`** 解析（`Agent::workspace_prompt_text_for` → `WorkspaceStore::prompt_text_for`），不再无条件读 per-persona 全局 `active`：
+
+| 本次 turn 的会话 | 注入内容 | 解析路径 |
+| --- | --- | --- |
+| 工作区通道 `local:workspace:<ws>[/<conv>]:<user>` | 该通道所属工作区与对话（名称/描述、当前对话名与 id、目录清单） | `prompt_text_for` |
+| 非通道会话（默认本地会话 `local:tui::local_user`、QQ 会话等） | 回退全局 `active`——单窗口旧语义：激活工作区后默认本地会话仍看得到项目上下文 | `prompt_text` |
+| workspace 插件不在该 persona 白名单 | 不注入 | `workspace_plugin_allowed` |
+
+- **多窗口语义**：`active` 仍是 per-persona 单槽，但它只记录「最后被激活的是谁」，用于本窗口视图跟随（见「前端联动规则」）与非通道会话兜底；**它不再决定某个通道会话拿到哪个项目的上下文**。A 窗口激活 W2 后，B 窗口在 W1 通道发消息仍只拿到 W1 的目录与对话名——按全局 active 注入时，B 的请求会被塞进 W2 的项目上下文（前端无法修正的语义级串台）
+- 两条路径共用 `render_prompt_text` 拼文案，避免同一段提示词在两处漂移；通道 id 解析走 `parse_workspace_channel`，legacy 裸通道（scope 段无 `/`）按 `legacy == true` 定位对话，而不是猜 id 恰好是 `main`
+- 边界：会话尚无 turn 记录时，`/context` 的代表性提示词仍回退全局 `active`（仅预览，不影响实际请求）
 
 **④ 单一事实来源 = `active` + `active_conversation` 标记**（`echo-workspaces-{id}.json`）。所有激活来源——面板按钮、会话切换器、模型 `use` 工具——共用**同一条广播路径**：store 变更钩子（`WorkspaceStore::set_on_change`，由 `Agent::set_workspace_store` 装配期接线，弱引用不构成循环）。任何成功变更（新建/重命名/删除/激活）→ 确保通道会话注册 + `SessionUpdated`（active 存在时）→ 广播 `WorkspaceSessions`；面板的「本地当前对话」是 active 的**投影**（active 空 → 默认会话；active=W → W 通道），不是独立状态。重启恢复：装配时持久化的 `active` 直接补注册通道（幂等，不广播）。
 
@@ -79,13 +99,6 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - 未激活时本地新消息落默认会话；
 - 通道机制与循环模式（single/parallel）无关；会话切换器可见性 = 存在可切换会话（含通道）。
 
-## 临时分支
-
-每条入站消息 = 一个临时回复分支。
-
-- 分支可见性由**循环模式**控制：并行多会话模式发射 ReplyBranch* 可见性事件、侧边栏有分支卡与「全局」会话项；单会话模式不发射、无分支卡（会话切换统一在入口行「会话」按钮），但分支照常执行合并（可见性开关而非执行开关）；单会话模式还会排队同一会话的 turn（串行准入，见 [Agent 循环](./core-agent-loop.md)§循环模式）
-- 分支运行期活动实时进主时间线（推理/工具/回答按序穿插），结束仅清理标签
-
 ## 能力隔离
 
 - `enabled_*` 白名单：非空时仅列出的能力可见（空表 = 全部启用）；工具/技能另有 `disabled_tools`/`disabled_skills` 黑名单细化。**插件维度只有白名单**——原 `disabled_plugins` 黑名单已移除（与白名单语义重复），既有配置在加载期物化进白名单
@@ -94,6 +107,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - **Package 跨维度**：勾选/取消勾选一个门控插件 = 启停整个包（plugin + 同名包工具 + 同名包技能，QQ 包示例：send_* 工具与 qq-management/qq-transport 一起开关）；详见 [插件化设计](../plugins/core-plugins.md)「Package」章节
 - **循环模式**（互斥插件 `echo-agent.loop.{single,parallel}`）由白名单推导：空表 = single（默认）；含 `loop.parallel` = parallel。推导单一来源 `TeamMember::loop_mode()`（只看白名单）
 - 全局 `[agent].disabled_tools`（Panel ToggleTool 持久化）启动时逐人格应用
+- **工作区提示注入同受门控**：`workspace` 插件不在该 persona 白名单时，提示词的两条解析路径都返回空（`Agent::workspace_plugin_allowed` 判定）——注入与 `workspace` 工具可见性用同一份白名单，不会出现「工具已禁用、项目上下文还在」
 
 ## 典型配置
 

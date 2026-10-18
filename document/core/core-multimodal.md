@@ -25,8 +25,8 @@ y: 1140
 
 ## 模型侧还原
 
-- 发往 LLM 前在**投影出口**（`TrunkStore::reproject_one`）把引用读回 data URI
-  （`inline_media_refs_in_messages`）——模型收到的仍是 image 块，与"内嵌时代"无差别；
+- 发往 LLM 前在**投影出口**把引用读回 data URI
+  （`echo_defs::media_store` 的 `inline_media_refs_in_messages`，在投影结果上就地替换）——模型收到的仍是 image 块，与"内嵌时代"无差别；
   落盘文件缺失时丢弃该图并告警，不毒化整段历史
 - 落盘失败的图在协议层退化为空串占位（前端渲染「图片已省略」，保留数组长度以便计数）
 

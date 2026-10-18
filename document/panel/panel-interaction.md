@@ -33,13 +33,13 @@ link: ["panel-layout | 布局与导航 | b>t", "panel-chat | 会话视图 | b>t"
 
 ```prodoc-flow
 graph TD
-  Root[Panel 布局 & 交互定义|/panel-interaction.md] --> L[布局与导航|/panel-layout.md]
-  Root --> C[会话视图|/panel-chat.md]
-  Root --> M[模态与覆盖层|/panel-modals.md]
-  Root --> Set[设置视图|/panel-settings.md]
-  Root --> QT[QQ管理·任务·Shell|/panel-qq-tasks.md]
-  Root --> Mobile[移动端适配|/panel-mobile.md]
-  Root --> Sys[系统交互|/panel-system.md]
+  Root[Panel 布局 & 交互定义|/panel/panel-interaction.md] --> L[布局与导航|/panel/panel-layout.md]
+  Root --> C[会话视图|/panel/panel-chat.md]
+  Root --> M[模态与覆盖层|/panel/panel-modals.md]
+  Root --> Set[设置视图|/panel/panel-settings.md]
+  Root --> QT[QQ管理·任务·Shell|/panel/panel-qq-tasks.md]
+  Root --> Mobile[移动端适配|/panel/panel-mobile.md]
+  Root --> Sys[系统交互|/panel/panel-system.md]
   L --> L1[视图层级与导航]
   L --> L2[应用外壳布局]
   L --> L3[侧边栏]

@@ -39,16 +39,20 @@ EchoAgentCore/
 │   ├── session/echo-session/  # 事件溯源会话存储（EventLog + derive_messages）
 │   ├── loop/echo-loop/        # TurnRunner 默认驱动 + ToolPipeline
 │   ├── llm/echo-llm-*/        # LLM provider crates（openai/anthropic/ollama）
-│   ├── plugin/echo-plugin/    # Plugin trait / PluginManifest / 注册表
-│   ├── plugin/echo-plugin-api/ # 插件协议契约（消息/贡献类型，冻结；P0）
-│   ├── plugin/echo-plugin-host/# 插件宿主（Transport/Supervisor/conformance；P0-P2）
+│   ├── security/echo-sanitize/     # 脱敏服务（出口卡口，注册表式 Redactor）
+│   ├── plugin/echo-plugin/         # Plugin trait / PluginManifest / 注册表
+│   ├── plugin/echo-plugin-api/     # 插件协议契约（消息/贡献类型，冻结）
+│   ├── plugin/echo-plugin-loader/  # 分层插件配置合成（依赖排序 + provenance）
+│   ├── plugin/echo-plugin-sdk/     # 插件侧运行时 SDK（stdio 服务）
+│   ├── plugin/echo-plugin-host/    # 插件宿主（Transport/Supervisor/conformance）
+│   ├── plugin/echo-plugin-example/ # 试点插件（websearch + calculator）
 │   ├── federation/echo-federation/  # 联邦层：Core↔Core 对等链路（frame/invite/link）
 │   ├── backend/
 │   │   ├── echo-adapter/      # Adapter trait + 过滤管道 + ConfigStore
 │   │   ├── echo-agent/        # Agent 框架
 │   │   │   ├── agent/         # 循环/命令分派/边界/提示词/压缩（框架核心）
 │   │   │   └── packages/      # 第一层 = 包归属
-│   │   │       ├── tools_builtin/   skills_dir/   adapter_qq/   workspace/
+│   │   │       ├── tools_builtin/   skills_dir/   adapter_ops/  workspace/
 │   │   │       ├── subagent/        provider_llm/ federation/
 │   │   │       └── tool/      # 特例：工具子系统跨包机制（ToolRegistry，非包）
 │   │   └── echo-test-utils/   # 共享测试 mock（仅 dev-dependency）
@@ -65,25 +69,29 @@ EchoAgentCore/
 └── Cargo.toml                 # Workspace 清单
 ```
 
-## 关键 Trait
+## 关键抽象与 Trait
+
+**接缝 trait（定义层）**：
 
 - `LlmProvider`（echo-defs）— LLM 后端接缝；providers：OpenAI/Anthropic/Ollama
 - `Tool`（echo-defs）— LLM 可调用函数；`timeout_hint` 自声明执行超时
 - `SkillProvider` / `Skill`（echo-defs）— 技能接缝；`SkillRegistry` 在 echo-agent
 - `ChatAdapter`（echo-defs）— 平台接缝（Message/Target/Channel 词汇）
-- `Adapter`（echo-adapter）— 平台集成 trait（平台中立的生命周期/收发/状态面）；平台专属管理能力经**能力扩展 trait**（如 `QqManagement`：门控/名单/管理员/二维码）由 `Adapter::qq_management()` 取用，`None` = 显式不支持（2026-10 抽象泄漏重构）
-- `MessageFilter` — 入站消息过滤器（白名单、黑名单、频率、关键词、长度）
-- `Handler` — OneBot 事件处理器（优先级链、panic 隔离）
+- `Adapter`（echo-defs::adapter）— 平台集成 trait（平台中立的生命周期/收发/状态面）；`echo-adapter` 只承载 filter/registry/ConfigStore 等实现并对其 re-export。平台专属管理动作不再走能力扩展 trait，而是经 **`InvokeAdapterOp{adapter, method, payload}`** 透传（插件侧 `custom` op 自行解释）——门控模式、名单、登录等取值因此是**参数字符串**而非共享枚举
+- `MessageFilter`（echo-adapter）— 入站消息过滤器（白名单、黑名单、频率、关键词、长度）
 
-## 关键抽象
+**机制与运行时抽象**：
 
-- `ConfigStore` — TOML 原子读改写（Agent + QqAdapter 共享，杜绝并发写覆盖）
-- `GateMode` — 强类型门控枚举（`none`/`allowlist`/`denylist`），echo-defs 定义、echo-protocol 共享
-- `AgentMessageHook` — echo-agent 实现的单向 `InboundMessageHook`；平台输出必须走工具
-- **平台回复指引**：QQ 消息回复由系统提示词边界块 + `qq-transport` 技能承担（"每条 hook 必调用一次发送工具"），循环层不再做代码校验/纠偏
-- `FanoutHandle` — 多订阅者事件扇出（自动清理失效订阅者）
+- `Ctx` / `EventBus` / `Disposer` / `ScopedRegistry`（echo-context）— 服务定位、类型化事件（Observe/Waterfall/Parallel/Serial）、可逆注册、作用域 shadowing
+- `TurnRunner` / `ToolPipeline`（echo-loop）— turn/step 状态机与工具执行管道
+- `EventLog` / `SessionEvent` / `derive_messages`（echo-session）— 事件溯源存储、日志投影
+- `ConfigStore`（echo-adapter）— TOML 原子读改写（Agent 与适配器共享，杜绝并发写覆盖）
+- `PluginManifest` / `PluginRegistry`（echo-plugin）— 插件清单与注册表；`echo-plugin-host` 提供 Transport（inproc/stdio）、监督与 `RemoteAdapter`
+- `AgentMessageHook`（echo-agent）— 单向 `InboundMessageHook` 实现；平台输出必须走工具
+- **平台回复指引**：QQ 消息回复由系统提示词边界块 + `qq-transport` 技能承担（"每条 hook 必调用一次发送工具"），循环层不做代码校验/纠偏
+- `FanoutHandle`（echo-protocol::bridge）— 多订阅者事件扇出（自动清理失效订阅者）；进程内 mpsc 路径不带扇出序号，生产 WS 路径带
 
-## 编码约定（2026-10 架构评审）
+## 编码约定
 
 - **错误处理**：库 crate 用 `thiserror` 定义具体错误类型（如 `echo_federation::FederationError`）；`anyhow` 只用于应用层（`echo-agent` 的 harness 与 `echo-agent-core` 组合根）。库错误经 `?` 自动转为 `anyhow::Error`
 - **锁**：持锁期间不 `.await` 的同步锁优先用 `parking_lot`（无中毒、`lock()` 直接返回 guard）；必须用 `std::sync` 锁的 crate 一律 `.lock().unwrap_or_else(std::sync::PoisonError::into_inner)`，生产代码不 `unwrap()` / `expect()` 锁（测试代码不限）
@@ -101,10 +109,10 @@ EchoAgentCore/
 7. **自更新**：agent 经 bash 运行受管更新器（`update.sh` → echo-agent-core-update.service）→ 构建 → 原子替换 → Core 重启（排空优先）
 8. **异步子任务**（`spawn_subagent`）：受理即返回子任务 id → 子 agent 隔离上下文执行 → 完成后经 `<subagent_event>` 钩子以新 turn 回报主 agent（见 [Subagent 插件](../plugins/core-subagent.md)；旧「后台任务/并行分支」体系已删除）
 
-## 构建与测试
+## 构建、测试与门禁
 
 ```bash
-# Core（Agent + QQ 适配器 + management 服务）
+# Core（Agent + 插件宿主 + management 服务）
 cargo run --release -- --config config/echo-agent-core.local.toml
 
 # 全量测试（各 crate 单元 + proptest + 集成）
@@ -118,10 +126,10 @@ cargo fmt --all --check
 cargo test -p echo-agent
 ```
 
-## 治理门禁（CI）
+### 治理门禁（CI）
 
 - **依赖方向 lint**（`scripts/check-deps.sh`，CI `deps-lint` job）：扩展/provider crate 只依赖定义层（echo-defs/echo-context/echo-protocol）；`echo-llm-*` 不得依赖 agent 框架。违规即 CI 失败，不靠人肉 review
 - **config 模板测试**（`source/core/tests/config_template.rs`）：`config/echo-agent-core.toml` 必须是合法 TOML 且含运行时依赖的 section，防模板漂移；并入 `cargo test`
-- **跨仓库清单同步**（人工核对 + 测试守护）：新增/移除插件时四处清单必须同改——Core `GATED_PLUGIN_IDS` / `BUILTIN_PLUGIN_IDS`、更新器 `expected_ids`、Panel `PACKAGE_GATED_PLUGIN_IDS` / `PACKAGE_DISPLAY_NAMES`；新增**插件类型**（`PluginKind`）时 Core `as_str` wire 名与 Panel `PLUGIN_KIND_LABELS` 同改；协议新增命令/事件时 echo-protocol ⇄ `web/src/protocol.ts` 同改。守护测试：`capabilities.test.ts`（Panel 清单对齐）、`update_script_plugins.rs`（Core `BUILTIN_PLUGIN_IDS` ⇄ 更新器 `expected_ids`；曾因 `orchestration` 移除后清单残留、每次更新误报缺 manifest 而补齐）、`update.sh` 插件感知校验（安装后核对二进制）、`protocol-sync.test.ts`（Panel 协议镜像：事件 reduce⊆union、联邦命令存在性快照、unit 命令字符串形态、禁止 `as unknown as` 双重断言绕过——2026-10 联邦 4 命令补齐后归零）。详见 [插件化设计](../plugins/core-plugins.md)「新增包维度门控插件时的同步清单」
+- **跨仓库清单同步**（人工核对 + 测试守护）：新增/移除插件时四处清单必须同改——Core `GATED_PLUGIN_IDS` / `BUILTIN_PLUGIN_IDS`、更新器 `expected_ids`、Panel `PACKAGE_GATED_PLUGIN_IDS` / `PACKAGE_DISPLAY_NAMES`；新增**插件类型**（`PluginKind`）时 Core `as_str` wire 名与 Panel `PLUGIN_KIND_LABELS` 同改；协议新增命令/事件时 echo-protocol ⇄ `web/src/protocol.ts` 同改。守护测试：`capabilities.test.ts`（Panel 清单对齐）、`update_script_plugins.rs`（Core `BUILTIN_PLUGIN_IDS` ⇄ 更新器 `expected_ids`；曾因 `orchestration` 移除后清单残留、每次更新误报缺 manifest 而补齐）、`update.sh` 插件感知校验（安装后核对二进制）、`protocol-sync.test.ts`（Panel 协议镜像：事件 reduce⊆union、联邦命令存在性快照、unit 命令字符串形态、禁止 `as unknown as` 双重断言绕过——补齐联邦 4 命令后归零）。详见 [插件化设计](../plugins/core-plugins.md)「新增包维度门控插件时的同步清单」
 
 命令与 CI 作业矩阵见 [测试策略](./dev-testing.md)「质量门禁（CI）」。

@@ -9,7 +9,7 @@ link: ["tools | 工具系统 | r>l", "skills | 技能系统 | r>l", "subagent | 
 
 # 插件化设计
 
-> **定位**：本文是插件体系的入口——插件模型与装载机制、**全部内置插件清单**、能力开关（per-persona 门控）与扩展方式。各插件的机制细节见子篇：[工具系统](./core-tools.md)、[技能系统](./core-skills.md)、[Subagent 插件](./core-subagent.md)、[QQ 适配器门控](./adapter-qq-gating.md)、[联邦（多机）](../federation/federation.md)、[插件开发指南](./plugin-authoring.md)；系统设计与路线图见 [完全解耦推进计划](../design/decoupling-plan.md)。读者：需要理解或扩展插件体系的开发者；内核机制（插件宿主、事件总线）见 [框架（内核）](../core/frame.md)。
+> **定位**：本文是插件体系的入口——插件模型（**来源**与**运行形态**两个正交维度）与装载机制、**全部内置插件清单**、能力开关（per-persona 门控）与扩展方式。各插件的机制细节见子篇：[工具系统](./core-tools.md)、[技能系统](./core-skills.md)、[Subagent 插件](./core-subagent.md)、[QQ 适配器门控](./adapter-qq-gating.md)、[联邦（多机）](../federation/federation.md)、[插件开发指南](./plugin-authoring.md)；系统设计与路线图见 [完全解耦推进计划](../design/decoupling-plan.md)。读者：需要理解或扩展插件体系的开发者；内核机制（插件宿主、事件总线）见 [框架（内核）](../core/frame.md)。
 
 ## 设计原则
 
@@ -17,21 +17,21 @@ link: ["tools | 工具系统 | r>l", "skills | 技能系统 | r>l", "subagent | 
 
 1. **一切皆插件**：LLM provider、TurnRunner、工具、技能、适配器、编排、management server 均为插件，无特权核心模块
 2. 插件 = manifest + 生命周期钩子；注册是可逆副作用（disposer）
-3. **热重载优先于重启**：数据类插件（技能/工具/清单）秒级热重载；代码类插件（provider/loop/适配器）经原子二进制替换 + 进程重启生效
+3. **热重载优先于重启**：数据类插件（技能/工具/清单）秒级热重载；代码类插件不热重载——provider / loop 经原子二进制替换 + 进程重启生效，适配器实现作为进程外插件随 Core 重启重建
 4. 插件**只依赖定义层**（echo-defs / echo-plugin / echo-context），不 import echo-agent，依赖方向单一
 
 ### 为什么不用动态库（.so）插件
 
-Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" 桥，维护成本高、崩溃诊断难。因此采用**源码级插件 + 进程级热替换**：插件以 crate/目录形式存在，更新 = 重新构建二进制 + restart（复用自更新的原子替换机制）；热重载范畴限定为数据类插件。
+Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" 桥，维护成本高、崩溃诊断难。因此采用**源码级插件 + 进程级热替换**：插件以 crate/目录形式存在，更新 = 重新构建二进制 + restart（复用自更新的原子替换机制）；热重载范畴限定为数据类插件。另一条通道是**进程外插件**（stdio 帧协议，与 ABI 无关），见「外部进程插件」。
 
 ### 边界与不做
 
-- 不做动态库加载、不做插件沙箱（源码级插件即本仓库内代码，信任边界 = 仓库）
+- 不做动态库加载、不做插件沙箱（源码级插件即本仓库内代码，信任边界 = 仓库；进程外插件是**故障隔离**——独立 PID / 生命周期，不是安全沙箱）
 - 不做插件市场/远程安装（需签名与供应链考虑）
 
 ## 插件模型
 
-- 核心类型：`PluginManifest`（id/name/version/kind/entry/description）+ `BuiltinPlugin` + `MountContext`
+- 核心类型：`PluginManifest`（id/name/version/kind/entry/description + `builtin` / `runtime` / `package`）+ `BuiltinPlugin` + `MountContext`
 - **插件类型（`PluginKind`，wire 名以 `as_str` 为准）**：`skill` / `tool` / `provider` / `loop` / `adapter` / `orchestration` / `management` / `interaction`
   - `interaction`：**人在环交互面**——模型发起、用户在 Panel 应答（Panel 内的问答 UI + 专用应答通道），与 `adapter` / `management` 同属「整类能力开关」，在 Panel「启用插件」勾选区按 kind 即可见（`capabilities.ts::isPluginCheckboxVisible` 的 kind 类判定）。原选单（`present_menu`）已废弃移除，该 kind 目前无内置成员，保留给未来人在环交互插件
 - 注册为**可逆**副作用：`Plugin::mount` 返回 disposer（`PluginMountResult`，注册表持有、卸载时调用）；`register_and_mount` 注册并按启用态挂载（禁用插件只注册不挂载）
@@ -40,28 +40,53 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 - **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / skills.dir / adapter.qq / workspace / subagent）已把组合根装配搬进 mount 闭包，运行期 `TogglePlugin` 停/再启对它们有真实运行效果；`adapter.qq` 的启动期 mount 不抢跑（wired 标志在适配器接线完成后才置位），启动受 `[adapters.qq].enabled` 与插件状态双重门控；`loop.{single,parallel}` 的按人格注入依赖 `AgentManager`（注册于挂载之后），启动期 mount 为 no-op——由人格启动循环**回填注入**（见 [Agent 循环](../core/core-agent-loop.md)「实化与分派」）
 - **运行期热更新**：插件/工具/技能勾选在 `SaveTeam` 保存后**立即生效**，无需重启——工具/技能逐名双向应用（取消勾选即禁用、重新勾选即恢复）；全局 `TogglePlugin` 经 mount/unmount 闭包逐 persona 重评估（`reapply_plugin_gating`：全局启用 ∧ persona 名单，名单外不放开、unmount 对全员生效）；`ToggleTool`/`ToggleSkill` 同样逐 persona 重算（`reapply_tool_gating` / `reapply_skill_gating`：persona 黑名单不被全局启用覆盖）
 
+### 来源与运行形态（两个正交维度）
+
+`PluginManifest` 曾用一个布尔同时承担两件事，现在拆成两个独立字段，互不推导：
+
+| 字段 | 回答的问题 | 取值 | 缺省 |
+| --- | --- | --- | --- |
+| `builtin` | 这条 manifest 从哪来 | 编译内置 / 插件目录发现的 `plugin.toml` | `PluginManifest.builtin` 反序列化缺省 `false`（磁盘 `plugin.toml` 即外部）；wire 侧 `PluginInfo.builtin` 缺省 `true`（旧 Core 兼容） |
+| `runtime` | 插件的实现代码在哪跑 | 本进程内 / 独立子进程 | manifest 侧是 `PluginRuntime` 枚举、声明缺省 `InProcess`（进程内时序列化省略该键）；wire 侧 `PluginInfo.runtime` 是字符串（`PluginRuntime::as_str` → `in_process` / `subprocess`），旧 Core 不发 → 空串，Panel 按进程内兼容 |
+
+- **来源维度**：`builtin` 由 manifest 自己声明，`PluginDescriptor::from(&PluginManifest)` 直取字段——不再硬编码为真，也不按装载路径猜。内置注册走构造器 `PluginManifest::builtin(...)`（显式 `builtin = true`），磁盘 `plugin.toml` 反序列化得到 `false`。`reload_data_plugins` 以 `!desc.builtin` 识别「发现型插件」，故删掉 `plugin.toml` 后热轮询能卸载已挂载项（此前恒为内置，卸载分支永不触发）。
+- **运行形态维度**：由 manifest 显式声明（`with_runtime(PluginRuntime::Subprocess)`）。现行唯一 `subprocess` 成员是 `adapter.qq`——门控 manifest 编译在 Core 里（`builtin = true`），实现却由独立进程 `echo-adapter-qq` 提供；描述文字不算数，前端读的是字段。
+- **协议与 Panel**：`PluginsList` 逐项下发 `{ builtin, runtime }`；旧 Core 不发 `runtime`（空串），Panel 按进程内兼容。设置视图「内部 / 外部插件」分组只看**运行位置**（`runtime == 'subprocess'` → 外部组；`runtime` 缺失才回退按 `builtin === false` 推断），`builtin` 仅作旧 Core 兼容回退与详情标签。
+- **术语**：本文「内置插件」指 `builtin`（来源），「进程内 / 进程外」指 `runtime`（运行位置）——两者不再同义，勿用其一代替另一。
+
 ### 内联分派工具
 
 - `spawn_subagent` 由 loop 内联分派（异步受理），按 persona 白名单过滤（`allows_dynamic_tool`）；schema 由注册表提供（组合根装配时注册）
 - 原 `run_sudo` / `present_menu` / `framework_update` 三个内联工具已废弃移除（见 [工具系统](./core-tools.md)「已废弃工具」）
 
+### 外部进程插件
+
+除源码级进程内插件外，系统支持**进程外插件**——插件以任意语言实现、经 stdio 帧协议与宿主通信（`runtime = subprocess`），装载源是 `plugins.toml`（文件不存在即特性休眠），崩溃自动重启（进程级隔离）。Core 自带的进程外组件走同一条路径：QQ 适配器按 `[qq_plugin_launch]` 与实例表逐实例生成 `LaunchSpec`，命令缺省 `echo-adapter-qq`。
+
+- **装载**：`plugins_runtime::start_with_specs` 把装载器筛出的每条 `LaunchSpec`（plugin_id / command / args / env / config）交给独立 `PluginSupervisor` 拉起，工具与适配器贡献再接入 Core；Core 侧对这类插件只保留启停门控，不持有实现
+- **与来源维度无关**：进程外可以是「manifest 编译内置 + 实现独立进程」（`adapter.qq`），也可以是 manifest 与实现都来自外部；判据是 `runtime`，不是 `builtin`
+- **与进程内插件的差别**：进程内 = 实现编译进 Core（挂载/卸载即生效）；进程外 = 独立 PID 与生命周期（崩了不带走 Core，启停经门控）
+- 协议、SDK 与部署方式见 [插件开发指南](./plugin-authoring.md)；系统设计与路线图见 [完全解耦推进计划](../design/decoupling-plan.md)
+
 ## 内置插件清单
 
-| id | kind | 说明 |
-| --- | --- | --- |
-| `echo-agent.tools.builtin` | Tool | 内置工具集（计算/搜索/编码/适配器管理/供应商清单查询 `list_api_profiles`） |
-| `echo-agent.adapter.qq` | Adapter | QQ 适配器（OneBot v11 反向 WS，含 QQ 管理工具；门控机制见 [QQ 适配器门控](./adapter-qq-gating.md)） |
-| `echo-agent.skills.dir` | Skill | SKILL.md 技能目录（热重载） |
-| `echo-agent.workspace` | Tool | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](../core/core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
-| `echo-agent.provider.llm` | Provider | LLM 提供方工厂（名义挂载：重启生效） |
-| `echo-agent.loop.single` | Loop | 单会话循环（默认）：启用时 echo-loop 驱动接管普通输入（启动期回填；生效口径见 [Agent 循环](../core/core-agent-loop.md)）；会话内 turn 串行排队、无会话管理 UI |
-| `echo-agent.loop.parallel` | Loop | 并行多会话循环：同一 `TurnRunner`（生效口径同 `loop.single`）；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
-| `echo-agent.subagent` | Tool | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./core-subagent.md)） |
-| `echo-agent.management.panel` | Management | 管理面：management WS 桥接（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
+| id | kind | 运行形态 | 说明 |
+| --- | --- | --- | --- |
+| `echo-agent.tools.builtin` | Tool | 进程内 | 内置工具集（计算/搜索/编码/适配器管理/供应商清单查询 `list_api_profiles`） |
+| `echo-agent.adapter.qq` | Adapter | **进程外**（`subprocess`） | QQ 适配器（OneBot v11 反向 WS，实现为独立进程 `echo-adapter-qq`，Core 侧只是门控壳；含 QQ 管理工具；门控机制见 [QQ 适配器门控](./adapter-qq-gating.md)） |
+| `echo-agent.skills.dir` | Skill | 进程内 | SKILL.md 技能目录（热重载） |
+| `echo-agent.workspace` | Tool | 进程内 | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](../core/core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
+| `echo-agent.provider.llm` | Provider | 进程内 | LLM 提供方工厂（名义挂载：重启生效） |
+| `echo-agent.loop.single` | Loop | 进程内 | 单会话循环（默认）：启用时 echo-loop 驱动接管普通输入（启动期回填；生效口径见 [Agent 循环](../core/core-agent-loop.md)）；会话内 turn 串行排队、无会话管理 UI |
+| `echo-agent.loop.parallel` | Loop | 进程内 | 并行多会话循环：同一 `TurnRunner`（生效口径同 `loop.single`）；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
+| `echo-agent.subagent` | Tool | 进程内 | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./core-subagent.md)） |
+| `echo-agent.management.panel` | Management | 进程内 | 管理面：management WS 桥接（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
+
+表内 9 项全部是**编译内置**的 manifest（`builtin = true`）；运行形态一列独立于来源——`adapter.qq` 即「内置 manifest + 进程外实现」的现行样本，其余 8 项实现同在 Core 进程内。
 
 联邦（`echo-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
 
-> **框架侧实现位置**：echo-agent crate 内按插件分包到 `src/packages/<name>/`，**第一层分类 = 包归属**——`tools_builtin`（内置工具）/ `skills_dir`（技能注册表 + Git 安装）/ `adapter_qq`（入站 hook 桥 + QQ 命令域）/ `workspace`（会话存储/工具 + 命令域）/ `subagent` / `provider_llm`（provider 工厂）；另有特例 `packages/tool/` = 工具子系统的**跨包机制**（`ToolRegistry`：注册/可逆注销/逐名与按包启停/schema 缓存，被各包共用，非插件）。`loop.{single,parallel}` 的实现是 `echo-loop` crate（echo-agent 只做驱动接线）；`management.panel` 是 echo-protocol（线协议，见 [协议与数据流](../protocol/protocol.md)）+ echo-agent-core（`source/core/src/management.rs`）。目录只服务物理区分，公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export）。
+> **框架侧实现位置**：echo-agent crate 内按插件分包到 `src/packages/<name>/`，**第一层分类 = 包归属**——`tools_builtin`（内置工具）/ `skills_dir`（技能注册表 + Git 安装）/ `adapter_ops`（入站 hook 桥 + 通用适配器命令域）/ `workspace`（会话存储/工具 + 命令域）/ `subagent` / `provider_llm`（provider 工厂）；另有特例 `packages/tool/` = 工具子系统的**跨包机制**（`ToolRegistry`：注册/可逆注销/逐名与按包启停/schema 缓存，被各包共用，非插件）。`loop.{single,parallel}` 的实现是 `echo-loop` crate（echo-agent 只做驱动接线）；`management.panel` 是 echo-protocol（线协议，见 [协议与数据流](../protocol/protocol.md)）+ echo-agent-core（`source/core/src/management.rs`）。目录只服务物理区分，公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export）。
 >
 > QQ 工具（`send_*`/`get_*`）例外地实现于组合根 `source/core/src/qq_tools.rs`——工具须实现 `echo_agent::Tool`，而适配器 crate 刻意不依赖 echo-agent。
 
@@ -115,15 +140,8 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 **多插件包（前瞻）**：`PluginManifest.with_package()` 允许一个包绑定多个插件；当前全部内置插件均为「插件 id = 包 id」的单插件包，门控按插件 id 传播即可（QQ 包为现行示例）。
 
-## 外部进程插件
-
-除源码级内置插件外，系统支持**独立进程插件**——插件以任意语言实现、经 stdio 帧协议与宿主通信，由 `plugins.toml` 配置装载（缺省休眠），崩溃自动重启（进程级隔离）。
-
-- 协议、SDK 与部署方式见 [插件开发指南](./plugin-authoring.md)；系统设计与路线图见 [完全解耦推进计划](../design/decoupling-plan.md)
-- 与内置插件的关系：内置插件 = 编译期内联（性能零开销、随二进制更新）；外部插件 = 运行期装载（隔离、独立演进、免重编译 Core）
-
 ## 用户扩展方式
 
 - **技能**：在 skills_dir 放置 `SKILL.md`（带 frontmatter：name/description/keywords/always/category/package），运行时自动发现、热重载
-- **数据插件**：在 plugins_dir 放置 `plugin.toml`（skill/tool kind）——`plugins/{kind}/{id}/plugin.toml` 只是约定布局，实现实际是 WalkDir 递归扫描 plugins_dir 下任意 `plugin.toml`（`agent/mod.rs` `reload_data_plugins`），不限三层；5s 轮询热加载（按插件 id 挂载/卸载；**manifest 内容 diff（name/version/description/author/package 任一变化）触发重挂载**——unmount + 重注册 + mount，判定逻辑 `data_plugin_stale` 有单测）；启用状态持久化于 `[agent].disabled_plugins`
+- **数据插件**：在 plugins_dir 放置 `plugin.toml`（skill/tool kind）——`plugins/{kind}/{id}/plugin.toml` 只是约定布局，实现实际是 WalkDir 递归扫描 plugins_dir 下任意 `plugin.toml`（`agent/plugin_reload.rs` 的 `reload_data_plugins`），不限三层；磁盘 manifest 不带 `builtin` 键 → 解析为 `false`（来源 = 外部），运行形态默认进程内；5s 轮询热加载（按插件 id 挂载/卸载；**manifest 内容 diff（name/version/description/author/package 任一变化）触发重挂载**——unmount + 重注册 + mount，判定逻辑 `data_plugin_stale` 有单测）；启用状态持久化于 `[agent].disabled_plugins`
 - **代码插件**（provider/loop/adapter）：需修改源码并走自更新流程

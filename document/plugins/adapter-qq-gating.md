@@ -56,7 +56,7 @@ y: 2220
 | 6 | 长度限制 | 超长消息阻止 | 阻止 |
 
 **设计要点**：
-- 白名单和黑名单根据 `GateMode` **互斥生效**——门控模式为 `allowlist` 时管道只含白名单过滤器，`denylist` 时只含黑名单，`none` 时两者都不含
+- 白名单和黑名单根据**门控模式字符串**互斥生效——模式为 `allowlist` 时管道只含白名单过滤器，`denylist` 时只含黑名单，`none` 时两者都不含
 - 白名单为空 = 未启用，所有消息通过
 - **群成员放行开关**（`[adapters.qq.filter.allowlist] group_members_open`，缺省 false）：开启后群消息**只校验群名单**——白名单群内全体成员可交互，`user_ids` 此时仅约束私聊；关闭时群消息需同时命中 `user_ids` 与 `group_ids`（“群里只有名单用户能触发”）。启动期开关（改文件 + 重启生效）；运行时编辑名单（Panel）不会丢失该开关（持久化为整表替换时原样带回）
 - 管理员完全绕过后续过滤
@@ -85,10 +85,10 @@ y: 2220
 
 ## 运行时可变性
 
-> 实现位置（2026-10 能力扩展重构）：门控/名单/管理员/二维码等 QQ 管理
-> 方法位于 `QqManagement` 能力扩展 trait（`echo-adapter::capabilities`），
-> 经 `Adapter::qq_management()` 取用（非 QQ 适配器返回 `None` = 显式不
-> 支持）；命令层取用失败会给可见错误而非静默假成功。
+> 实现位置：门控/名单/管理员/二维码等平台专属动作不再有 Core 内的具体
+> 命令变体，一律经 `InvokeAdapterOp{adapter, method, payload}` 透传给插件
+> （插件侧按 `custom` op 自行解释 `method`）。Core 只做寻址与转发——
+> 实例不存在或插件不实现该方法时给可见错误而非静默假成功。
 
 门控规则分为两类：
 
@@ -118,18 +118,17 @@ owner 与门控/名单一样有运行时更新路径，无需重启：
 - **语义边界**：运行时设置的 owner 仅影响门控豁免，不联动其它授权（原自更新授权联动已随 `framework_update` 工具废弃移除）
 - `install.sh --owner-qq` 已移除：设置入口为协议命令或直接编辑 `[adapters.qq]`（当前 Web Panel 仅只读显示 owner，未接设置 UI）
 
-### 门控模式类型
+### 门控模式取值
 
-`GateMode` 定义在 `echo-defs`（经 `echo-adapter` / `echo-protocol` 再导出），跨层使用：
+门控模式是 `InvokeAdapterOp{method:"set_gate_mode", payload:{mode}}` 的**参数字符串**，由适配器插件自行解释——Core 与 Panel 都不校验取值集合（协议层没有强类型枚举）：
 
-| 枚举值 | TOML 序列化 | 行为 |
+| 取值 | TOML | 行为 |
 |---|---|---|
-| `GateMode::None` | `"none"` | 不启用任何过滤 |
-| `GateMode::Allowlist` | `"allowlist"` | 仅启用 allowlist 过滤器 |
-| `GateMode::Denylist` | `"denylist"` | 仅启用 denylist 过滤器 |
+| `none` | `"none"` | 不启用任何过滤 |
+| `allowlist` | `"allowlist"` | 仅启用 allowlist 过滤器 |
+| `denylist` | `"denylist"` | 仅启用 denylist 过滤器 |
 
-枚举值在 WebSocket JSON 层自动序列化为 snake_case 字符串（wire 格式固定不变）。
-管道重建时，`build_filter_pipeline_gated(mode)` 根据门控模式**互斥**地只加入 allowlist 或 denylist（不会同时启用两个）。
+取值在配置持久化为 snake_case 字符串。插件侧管道重建时按模式**互斥**地只加入 allowlist 或 denylist（不会同时启用两个）。
 
 ## 多实例与容器生命周期
 
@@ -270,7 +269,7 @@ QQ 用户发来的文件会**自动下载到本机**，以本地路径随消息�
 群里有人问「前面聊了什么」但那条没带 @ 时，agent 仍能翻阅）。
 
 - 参数：`group_id`（必填）、`count`（缺省 50，封顶 500）、`since_minutes`（只看最近 N 分钟）
-- 渲染（`echo-core::segment::render_transcript`）：每条一行
+- 渲染（QQ 插件仓库 `crates/echo-core` 的 `segment::render_transcript`）：每条一行
   `[MM-DD HH:MM:SS] 昵称(QQ号): 正文`；媒体与提及用紧凑标记（`[图片]`/`[语音]`/
   `[文件:名]`/`@昵称`/`[卡片]`/`[转发消息]`…），段解析失败回退 `raw_message`
 - **受群可见性门控**（`visible_group_check`，语义与消息门控一致）：白名单模式只允许
@@ -280,13 +279,13 @@ QQ 用户发来的文件会**自动下载到本机**，以本地路径随消息�
 
 ### 消息内容渲染
 
-QQ 消息转成 agent 输入时，`content` 走「可读渲染」（`MessageEvent::readable_text`，
-echo-core）：
+QQ 消息转成 agent 输入时，`content` 走「可读渲染」（QQ 插件仓库
+`crates/echo-core` 的 `MessageEvent::readable_text`）：
 
 | 段 | 渲染结果 |
 | --- | --- |
 | `text` | 原样 |
-| `face`（QQ 内置表情） | `[表情:微笑]`；未知 id 回退 `[表情:123]`（对照表 `echo-core/src/face.rs`，取自 NapCat `face_config.json`，329 条） |
+| `face`（QQ 内置表情） | `[表情:微笑]`；未知 id 回退 `[表情:123]`（对照表 QQ 插件仓库 `crates/echo-core/src/face.rs`，取自 NapCat `face_config.json`，329 条） |
 | `dice` / `rps` | `[骰子:4]` / `[石头剪刀布:剪刀]`（OneBot v11：1 石头、2 剪刀、3 布） |
 | `poke` | `[戳一戳]` |
 | `image` | 不进 content，经 `images` 通道——**触发门控与过滤管道通过后**下载、**落盘媒体库**、传递 `/media/<id>` 引用（被丢弃的消息不触发下载；见 [Core 框架](../core/core.md)§多模态输入） |
@@ -307,5 +306,5 @@ echo-core）：
 3. **管理员全局绕过**：确保机器人 owner 始终可控，不会把自己锁在外面
 4. **群列表门控与消息门控共用规则**：保持 agent 看到的世界与它能交互的世界一致
 5. **管道可重建不阻塞消息处理**：Mutex 锁仅持有一瞬间（克隆 Arc），不影响消息吞吐
-6. **强类型门控枚举**：`GateMode` 在 `echo-defs` 定义（`echo-adapter` / `echo-protocol` 再导出），全栈类型安全，WebSocket JSON 层用 snake_case 保持兼容
+6. **平台动作走方法名而非命令变体**：门控/名单/登录等取值是 `InvokeAdapterOp` 的参数字符串，由插件自行解释——Core 不为每个平台概念新增协议变体，新增平台成本因此只有插件侧那一半
 7. **统一配置持久化**：门控配置和 agent 配置共享同一个 `ConfigStore` 实例（main.rs 创建一次分发），并发安全由内部 Mutex 保证

@@ -19,7 +19,7 @@ y: 500
 2. **服务定位 + 依赖注入**：服务通过稳定键从 `Ctx` 解析（`ctx.llm` / `ctx.loop`），加载顺序由服务可用性驱动，扩展插件只依赖定义层。
 3. **类型化事件 = 扩展点**：`EventBus` 的 Observe/Waterfall/Parallel/Serial 四种分发；waterfall 是 around-middleware（`next()` 委托、不调即短路）。
 4. **能力接缝**：Service Definition / Service Provider / Consumer 三角独立演进、独立成 crate；依赖方向单向无环。
-5. **事件溯源会话日志**：日志是唯一事实来源，模型上下文由日志投影，"模型可见 ⟺ 已记录"；compaction 是显式事件。
+5. **事件溯源会话日志**：日志是唯一事实来源，模型上下文由日志投影——**"模型可见 ⇒ 已记录"**（模型上下文里的每条内容都能在日志中找到出处）；反向不成立：推理（thinking）正文同样入日志以保住显示时序，但投影时跳过、永不进入模型请求。compaction 是显式事件。
 
 ## Crate 布局与依赖方向
 
@@ -78,10 +78,10 @@ graph BT
 |---|---|---|
 | `echo-defs` | Service Definition 层 | 全部词汇与 trait：LLM/工具/技能/平台消息/**适配器（`Adapter` trait、`AdapterManagement`）**/媒体/会话事件/联邦节点；零实现、零 harness 依赖 |
 | `echo-context` | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry` |
-| `echo-session` | 事件溯源会话 | `SessionEvent` 事件集、`EventLog` append-only 持久化、`derive_messages` 投影、compaction、`SessionHeader`、v1-v4 兼容迁移 |
+| `echo-session` | 事件溯源会话 | `SessionEvent` 事件集（含模型不可见的推理事件）、`EventLog` append-only 持久化、`derive_messages` 投影、**按会话切片投影**（append 的重投影代价只与本次会话相关）、compaction、`SessionHeader`、v1-v4 兼容迁移 |
 | `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话）见 [Agent 循环](../core/core-agent-loop.md) |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现，只依赖 `echo-defs` |
-| `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge，Panel 只依赖它 |
+| `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性），Panel 只依赖它 |
 | `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、`RemoteAdapter`（实现 `echo_defs::adapter::Adapter`）、conformance 测试（见 [完全解耦推进计划](../design/decoupling-plan.md)）。**宿主只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层 crate** |
 | `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入——生效口径见 [Agent 循环](../core/core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
 | `echo-adapter` | 平台适配（实现层） | 过滤管道、`AdapterRegistry`、`ConfigStore`（平台无关）；`Adapter` trait / `AdapterManagement` / 状态与错误类型**定义在 `echo-defs`**（本 crate re-export 保持 `echo_adapter::…` 路径兼容）。QQ 实现已迁出为**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteAdapter` 接入——见 [适配器插件化](../design/adapter-plugin.md)） |
@@ -125,15 +125,15 @@ graph BT
 
 ### 事件模型
 
-事件分四类：**生命周期事件**（echo-loop 经 EventBus 分发——`TurnStart`/`AgentPreStep`/`StepStart`/`AgentRequest`/`ToolCallRequested`/`ToolResult`/`StepEnd`/`TurnStopping`/`TurnEnd`）；**会话事件**（echo-session append-only 日志——`UserMessage`/`AssistantMessage`/`ToolCall`/`ToolResult`/`Compaction`，模型上下文由 `derive_messages` 投影，加载时 `repair_tool_pairing` 修复悬空调用）；**协议事件**（echo-protocol 的 `BackendEvent`，经 management WS 供 Panel 消费，见 [协议与数据流](../protocol/protocol.md)）；**能力事件**（timeline 投影作为 EventBus observe 监听器——`Agent` 不直接写 timeline，显示历史是事件的投影消费者，可独立演进/测试）。
+事件分四类：**生命周期事件**（echo-loop 经 EventBus 分发——`TurnStart`/`AgentPreStep`/`StepStart`/`AgentRequest`/`ToolCallRequested`/`ToolResult`/`StepEnd`/`TurnStopping`/`TurnEnd`）；**会话事件**（echo-session append-only 日志——`UserMessage`/`AssistantMessage`/`ToolCall`/`ToolResult`/`Reasoning`/`Compaction`，模型上下文由 `derive_messages` 投影且跳过 `Reasoning`，加载时 `repair_tool_pairing` 修复悬空调用）；**协议事件**（echo-protocol 的 `BackendEvent`，经 management WS 供 Panel 消费，见 [协议与数据流](../protocol/protocol.md)）；**能力事件**（timeline 投影作为 EventBus observe 监听器——`Agent` 不直接写 timeline，显示历史是事件的投影消费者，可独立演进/测试）。
 
 ### Turn/Step 循环
 
-`TurnRunner` 驱动 `turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。调度口径：这是**唯一**循环实现（2026-10 单轨化），全部输入（含 QQ hook/定时器/QQ 会话，差异只在提示词边界块）经该状态机执行，runner 在人格启动与运行期新建时无条件注入；loop.* 插件只决定循环模式；工具策略（超时/审批/审计/限流）的设计位置是 `ToolPipeline` 中间件（当前生产路径未注册任何中间件，超时由 harness `tool_guard_timeout` 守卫）。细节与边界见 [Agent 循环](../core/core-agent-loop.md)。
+`TurnRunner` 驱动 `turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。调度口径：这是**唯一**循环实现（单轨化），全部输入（含 QQ hook/定时器/QQ 会话，差异只在提示词边界块）经该状态机执行，runner 在人格启动与运行期新建时无条件注入；loop.* 插件只决定循环模式；工具策略（超时/审批/审计/限流）的设计位置是 `ToolPipeline` 中间件（当前生产路径未注册任何中间件，超时由 harness `tool_guard_timeout` 守卫）。细节与边界见 [Agent 循环](../core/core-agent-loop.md)。
 
 ### 会话与持久化
 
-事件溯源：`EventLog` 是权威（append-only，整档 JSON v6，tmp+rename 原子写）；`SessionEvent` 五类（`UserMessage`/`AssistantMessage`/`ToolCall`/`ToolResult`/`Compaction`），压缩落地为显式 `Compaction` 事件（被替换条数 + 摘要 + 可选归档快照），日志保持可重放。投影：`derive_messages` 是唯一的模型上下文出口——多会话按 `session` 归属逐会话投影，裁剪只在投影期、绝不破坏日志；显示时间线带条目级 `seq` 支持增量同步。归档与保留：手动 `ArchiveHistory`（支持 `session_id` 会话级；数据为内存快照）与压缩前自动快照写入 `archives/`（v6 完整快照，保留最新 20 份）；v1-v4 旧格式加载期自动迁移，每个 persona 独立会话文件。细节见 [会话记忆](../core/core-memory.md)（日志/投影/压缩）与 [配置持久化](../core/core-config-persistence.md)（文件布局）。
+事件溯源：`EventLog` 是权威（append-only，整档 JSON v6，tmp+rename 原子写）；`SessionEvent` 六类（`UserMessage`/`AssistantMessage`/`ToolCall`/`ToolResult`/`Reasoning`/`Compaction`），压缩落地为显式 `Compaction` 事件（被替换条数 + 摘要 + 可选归档快照），日志保持可重放。投影：`derive_messages` 是唯一的模型上下文出口——多会话按 `session` 归属逐会话投影，裁剪只在投影期、绝不破坏日志；追加按会话切片重投影，代价只与本次会话长度相关，不随会话总数增长。推理事件只服务显示：投影跳过它，显示水位线也把它排除在过滤之外（否则思考条目会被当成"已覆盖"而消失）。显示时间线带条目级 `seq` 支持增量同步。归档与保留：手动 `ArchiveHistory`（支持 `session_id` 会话级；数据为内存快照）与压缩前自动快照写入 `archives/`（v6 完整快照，保留最新 20 份）；v1-v4 旧格式加载期自动迁移，每个 persona 独立会话文件。细节见 [会话记忆](../core/core-memory.md)（日志/投影/压缩）与 [配置持久化](../core/core-config-persistence.md)（文件布局）。
 
 ### 媒体库
 
@@ -141,7 +141,7 @@ graph BT
 
 ### 命令分发
 
-QQ 命令域独立：`apply_qq_command`（`packages/adapter_qq/commands.rs`）承载名单/门控/群列表/好友列表等 QQ 变体，主 `apply_command` 的对应分支为一行委托，核心分支原地保留。`CommandRegistry` + `CommandHandler` trait（dyn-compatible，async）是开放命令扩展点的基础设施：封闭枚举 `BackendCommand` 下编译器 match 完备性仍由主分发器承担，注册表留待协议开放后承载外部命令插件。
+适配器命令域独立：`apply_adapter_command`（`packages/adapter_ops/commands.rs`）承载 `InvokeAdapterOp` 及其状态查询等通用适配器命令，主 `apply_command` 的对应分支为一行委托，核心分支原地保留——平台专属动作（门控/名单/登录/owner）不再有具体变体，一律经 `InvokeAdapterOp{adapter, method, payload}` 透传给插件。`CommandRegistry` + `CommandHandler` trait（dyn-compatible，async）是开放命令扩展点的基础设施：封闭枚举 `BackendCommand` 下编译器 match 完备性仍由主分发器承担，注册表留待协议开放后承载外部命令插件。
 
 ### 结构化输入标记
 
@@ -156,7 +156,7 @@ QQ 命令域独立：`apply_qq_command`（`packages/adapter_qq/commands.rs`）�
 | 新增平台 | 实现 `echo_defs::adapter::Adapter`（定义层；`echo-adapter` re-export 并提供 `AdapterRegistry` 接入；`ctx.chat` 服务键为规划） |
 | 拦截请求/工具/turn | EventBus 上注册 lifecycle 事件监听器 |
 | 工具策略 | 超时已由 harness `tool_guard_timeout` 守卫（`agent/tool_exec.rs`）；`ToolPipeline` 中间件机制已备、生产路径未接线 |
-| 新增命令 | 命令分发按域拆分（`apply_qq_command` 模式）+ CommandRegistry（开放后） |
+| 新增命令 | 命令分发按域拆分（`apply_adapter_command` 模式）+ CommandRegistry（开放后）；平台专属动作优先走 `InvokeAdapterOp` 方法名而非新增变体 |
 | 会话状态扩展 | 扩展 `SessionEvent` 枚举（echo-session），从日志渲染 |
 
 ## 关键文档

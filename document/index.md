@@ -35,7 +35,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 - [frame.md](./core/frame.md) — 框架（内核）：组合装配、服务定位、事件总线、插件宿主、进程结构
 - [core-agents.md](./core/core-agents.md) — 多 Agent 与会话：persona 装配、会话模型、工作区会话、能力隔离
 - [core-agent-loop.md](./core/core-agent-loop.md) — Agent 循环：单/并行模式、Turn 状态机与默认驱动 TurnRunner
-- [core-memory.md](./core/core-memory.md) — 会话记忆：事件溯源日志、投影、压缩归档、显示时间线
+- [core-memory.md](./core/core-memory.md) — 会话记忆：事件溯源日志、可见性边界、投影与切片、压缩归档、显示时间线
 - [core-multimodal.md](./core/core-multimodal.md) — 多模态输入：媒体库、模型侧还原、token 卫生
 - [core-config-persistence.md](./core/core-config-persistence.md) — 配置持久化：ConfigStore、门控/会话持久化、原子写入
 - [security-redaction-design.md](./core/security-redaction-design.md) — 敏感信息隔离：威胁模型、出口卡口与保证边界
@@ -52,7 +52,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 
 **协议层**
 
-- [protocol.md](./protocol/protocol.md) — 协议与数据流：传输信封、命令/事件、时间线同步、兼容性规则
+- [protocol.md](./protocol/protocol.md) — 协议与数据流：传输信封、命令/事件、事件流连续性、时间线同步、兼容性规则
 
 **前端层 —— Panel 与视图交互契约**
 
@@ -65,6 +65,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 - [panel-qq-tasks.md](./panel/panel-qq-tasks.md) — QQ 管理·任务·Shell：适配器弹层、任务弹层、HTTP 通道
 - [panel-mobile.md](./panel/panel-mobile.md) — 移动端适配（竖屏）：断点、卡片抽屉、软键盘适配
 - [panel-system.md](./panel/panel-system.md) — 系统交互：Toast、键盘清单、设计边界与关键常量
+- [panel-icons.md](./panel/panel-icons.md) — 图标体系：载体分工、尺寸线宽档位、语义色令牌、防回归守卫
 
 **运维层**
 
@@ -125,6 +126,7 @@ graph LR
   Inter --> Tasks[QQ管理·任务·Shell|/panel/panel-qq-tasks.md]
   Inter --> Mobile[移动端适配|/panel/panel-mobile.md]
   Inter --> Sys[系统交互|/panel/panel-system.md]
+  Inter --> Icons[图标体系|/panel/panel-icons.md]
   Dev --> Test[测试策略|/dev/dev-testing.md]
   Dev --> DocGuide[文档规范|/documentation-guide.md]
 ```

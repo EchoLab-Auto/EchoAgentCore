@@ -29,20 +29,20 @@ y: 780
 | Toast | `top-right` | `top-center`（窄屏右上角贴近拇指区，易遮挡） |
 | 库 Modal | — | mask 补 `padding: 8px`（库 mask 无内边距，375px 屏上贴边） |
 
-**布局契约：固定视口 vs 库的"整页滚动"模式（2026-10 回归修复）**
+**布局契约：固定视口 vs 库的"整页滚动"模式（回归修复）**
 
 - **冲突**：ui-frame 在 `<768px` 给布局挂 `nm-layout--mobile` 并把它切成"整页滚动"模式（`.nm-layout--mobile` `height: auto` / `.nm-layout__body` `min-height: auto` / `.nm-layout__content` `overflow-y: visible`）——期望由**document 滚动**消费溢出。但 Panel 是固定视口 SPA（`html, body, #app` 均 `overflow: hidden`，滚动在各视图内部），溢出被直接裁掉：**小屏（375×667 / 360×640，可用高 < 内容固有高 733px）时输入区被裁出视口，且页面上不存在任何可滚动容器**（用户症状：无法下滑、看不到输入框；宽度 ≥768 或高度足够 844 时恰好掩盖）。
 - **修复**：`styles.css` 移动段以 `#app` 前缀（特异性 1,1,0 > 库 scoped 的 `[data-v-*]`（0,3,0）——不能只写两段类名，会输给 scoped 属性选择器）把布局拉回定高 + 恢复收缩：`#app .nm-layout--mobile { height: 100dvh; overflow: hidden }`、`…__body { min-height: 0; overflow: hidden }`、`…__content { overflow-y: hidden }`。
 - **验证口径**：320×568 / 360×640 / 375×667 / 390×844 输入区均在视口内且消息区可滚动（触摸下滑看历史 / 上滑回底）；设置页 master-detail 的 `caps-detail-pane` 内滚动可达底部；桌面 ≥768px 无 `--mobile` 类、样式零变化。守护测试：`web/src/__tests__/mobile-shell-layout.test.ts`（源码契约，6 个用例）。
 
-**工具条遮挡修复（2026-10）**
+**工具条遮挡修复**
 
 - **症状**：手机浏览器上输入框被浏览器底部工具条遮住——固定视口 SPA 的底部内容落在可见区之下。
 - **两个叠加根因**：① ui-frame 的 `.nm-layout--mobile` 自带 `min-height: 100vh`（库移动模式为「整页滚动」站点设计）——移动浏览器里 `vh` 是「大视口」（按工具条隐藏时算），比可见区高 ~工具条高；`min-height` 会顶穿 Panel 的 `height` 覆盖，把底部输入区推到工具条之下。② 个别浏览器 `dvh` 不可靠（iOS 非滚动页不动态更新 / 老 WebView 不支持）——高度偏大产生同样偏移。
 - **修复**：`#app .nm-layout--mobile { min-height: 0 }` 压掉库地板；高度链改为 `var(--app-h, 100dvh)`，`--app-h` 由 `index.html` 内联脚本实测 `window.innerHeight`（px），随 `resize` / `orientationchange` / `pageshow` 更新——`innerHeight` 在主流移动浏览器均为「排除工具条的可见高度」，键盘弹出不改变它（键盘偏移仍由 visualViewport 逻辑处理，互不干扰）。
 - **验证口径**：模拟「工具条遮挡 60px」（覆盖 `innerHeight` 报告值）在 320/360/375/390/430 五档下输入框完整可见；正常场景无回归。
 
-**顶栏可达性修复（2026-10）**
+**顶栏可达性修复**
 
 - **症状**：375px 屏上右侧「主题切换」被推出屏外、不可达；「全屏」按钮本应按设计隐藏却仍在占位。
 - **根因**：① 隐藏规则 `.topbar-actions .fullscreen-toggle` 的类从未落在 `FullscreenToggleButton` 根按钮上（规则空转）；② 库 `header-left` 为 `flex: 0 0 auto` 不可收缩 + 品牌固定宽，右组固定 ~354px 必然溢出。
@@ -52,16 +52,16 @@ y: 780
 
 | 区域 | 桌面 | 移动端 |
 |---|---|---|
-| 双侧边栏 chat-rail | 左右各 324px 卡片列（列按「登记卡片」保活，与桌面一致） | **不渲染**（两列在 375px 屏上压死正文）；卡片改经顶栏「卡片」抽屉访问（§四） |
+| 双侧边栏 chat-rail | 左右各 324px 卡片列（列按「登记卡片」保活，与桌面一致） | **不渲染**（两列在 375px 屏上压死正文）；卡片改经顶栏「卡片」抽屉访问（见下「卡片抽屉」） |
 | 消息区留白 | 有卡片列时按列宽 324px 留白 | 归零（`trayPadLeft/Right` 含 `!isMobile` 条件） |
 | 入口行（7 按钮 + Agent 切换器 + 活动条） | 单行铺开 | **横向滚动工具条**：左右 8px 双边界 + `overflow-x: auto` + 隐藏滚动条一一此前无右界，右侧按钮超出屏外不可达 |
-| 输入区 | `left/right/bottom: 12px` | 8px + 底部安全区 + 软键盘偏移（§五）；输入面字号 **16px**（iOS 聚焦防缩放） |
+| 输入区 | `left/right/bottom: 12px` | 8px + 底部安全区 + 软键盘偏移（见「软键盘适配」）；输入面字号 **16px**（iOS 聚焦防缩放） |
 | 弹出层 `.checklist-pop`（会话/工作区/适配器/任务/清单） | 跟随按钮 `left = centerX - 260` | **全宽贴底**：`left/right: 8px`（锚点法在窄屏会把面板推出屏外）——定位由 `popoverStyle()` 统一分发 |
 | 会话区覆盖层（上下文/Agent 配置） | 贴会话框 12px | 6px 近全屏 |
 | 消息气泡 | `max-width: 78%` | 88% |
-| 输入框占位文本 | 库 locale 默认长文案（`输入消息，Enter 发送（Shift+Enter 换行）`，宽框单行完整显示） | **短占位** `输入消息…` / 断连 `未连接到 Core…`——窄框（内容宽 ~166px）放不下 303px 的默认文案，折行会被单行框拦腰截断，且 Enter/Shift+Enter 在触屏键盘上不成立（2026-10） |
+| 输入框占位文本 | 库 locale 默认长文案（`输入消息，Enter 发送（Shift+Enter 换行）`，宽框单行完整显示） | **短占位** `输入消息…` / 断连 `未连接到 Core…`——窄框（内容宽 ~166px）放不下 303px 的默认文案，折行会被单行框拦腰截断，且 Enter/Shift+Enter 在触屏键盘上不成立 |
 
-## 四、卡片抽屉（移动端双侧栏替代）
+### 卡片抽屉（移动端双侧栏替代）
 
 ```
 顶栏「卡片」按钮（仅 isMobile && 会话视图）
@@ -73,7 +73,7 @@ y: 780
 - **复用面**：连接状态 / 文件浏览器 / Shell / 临时分支四类卡片及其门控、排序、交互全部继承 `PanelSidebar`；移动端不渲染 RailStack 的拖动场景（列被合并为上下排列）。
 - 桌面完全无消费者（按钮与抽屉均 `v-if` 门控），开关值恒 false。
 
-## 五、设置视图（SettingsView）
+## 四、设置视图（SettingsView）
 
 **一级菜单**（8 分类）：168px 竖排 → **顶部横滑 tab 条**（`overflow-x: auto`、隐藏滚动条、条目 `min-height: 40px`）。
 
@@ -93,7 +93,7 @@ y: 780
 - **返回按钮**（`.caps-mobile-back`，工具条内、仅详情态渲染）：先走与各选择逻辑同口径的脏确认（技能编辑中经 `confirmDialog`），再清空选中/编辑态。
 - 其它适配：工具条/表单动作行允许换行；Git 安装弹层 420px 最小宽重置；详情内表格横向滚动兜底。
 
-## 六、软键盘适配（visualViewport）
+## 五、软键盘适配（visualViewport）
 
 iOS/Android 弹键盘不改变 layout viewport，`overflow: hidden` 的 SPA 里输入区会被键盘盖住：
 
@@ -101,7 +101,7 @@ iOS/Android 弹键盘不改变 layout viewport，`overflow: hidden` 的 SPA 里�
 - 注入输入区与入口行 `bottom`（`v-bind(keyboardInsetPx)`）——键盘弹出时两者同步抬升，入口行不悬空；
 - 监听仅移动端挂载、随组件卸载清理；桌面（无 visualViewport 或 isMobile=false）零开销。
 
-## 七、验证口径
+## 六、验证口径
 
 - **尺寸**：320×568（SE1）/ 375×667 / 390×844 / 430×932（浏览器 + PWA standalone，含安全区）。
 - **回归**：≥768px 桌面关键视图像素不变（改动全在媒体查询内）；桌面无 `nm-layout--mobile` 类。

@@ -20,7 +20,7 @@ link: ["agents | 多 Agent 与会话 | r>l", "memory | 会话记忆 | r>l", "mul
 2. **服务定位 + 依赖注入**：服务通过稳定键从 `Ctx` 解析（`ctx.llm` / `ctx.loop`），加载顺序由服务可用性驱动，扩展插件只依赖定义层
 3. **类型化事件 = 扩展点**：`EventBus` 的 Observe / Waterfall / Parallel / Serial 四种分发；waterfall 是 around-middleware（`next()` 委托、不调即短路）
 4. **能力接缝**：Service Definition / Service Provider / Consumer 三角独立演进、独立成 crate；依赖方向单向无环
-5. **事件溯源会话日志**：日志是唯一事实来源，模型上下文由日志投影（"模型可见 ⟺ 已记录"）
+5. **事件溯源会话日志**：日志是唯一事实来源，模型上下文由日志投影——"模型可见 ⇒ 已记录"（反例：推理正文入日志但不进模型上下文，见 [会话记忆](./core-memory.md)）
 
 内核只含机制（服务注册表 / 事件总线 / 插件宿主 / 线协议 / 组合根）；全部能力以**插件**装载——循环、provider、工具、技能、适配器、工作区、subagent、联邦——配置可禁用到"只剩内核仍能启动"。装载清单与门控规则见 [插件化设计](../plugins/core-plugins.md)。
 

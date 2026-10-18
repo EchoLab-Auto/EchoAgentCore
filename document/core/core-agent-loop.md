@@ -15,7 +15,7 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 管道）。`echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥二选一）只表达
 **循环模式**（会话内准入策略），不切换驱动。
 
-> 2026-10 架构评审单轨化：此前存在第二套"内置循环"（`process_message_inner`
+> 单轨化（架构评审）：此前存在第二套"内置循环"（`process_message_inner`
 > 内联实现），QQ hook / 定时器 / QQ 会话输入走它、普通输入走 echo-loop；两者
 > 靠"逐项同口径"维持一致并多次漂移。内置循环已删除，边界输入的唯一差异
 > （提示词边界块）由 harness 统一注入。
@@ -106,7 +106,7 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 ### agent 模块拆分
 
 `agent/mod.rs` 只保留 `Agent` 结构体、装配与运行期接线；按职责拆出的子模块
-（2026-10 架构评审，`impl Agent` 分布在各文件）：
+（架构评审后，`impl Agent` 分布在各文件）：
 
 - `agent/turn.rs`：turn 驱动（上文「注入与分派」）+ `input_boundary`
 - `agent/inbound.rs`：入站 turn 生命周期（分支登记 / 串行闸门 / 取消 / 合并、

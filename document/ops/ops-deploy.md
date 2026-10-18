@@ -23,7 +23,7 @@ EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。�
 
 - Core 工作目录：`~/.local/share/echo-agent-core/source`；配置：`~/.config/echo-agent-core/core.toml`
 - Panel 配置：`~/.config/echo-agent-panel/panel.toml`（`[server].bind_address`、`[core].connect_url` 指向 Core management WS）
-- 更新状态：`~/.local/state/echo-agent-{core,panel}/update-status`；安装/更新回滚快照在 `~/.local/state/echo-agent-core/install-rollback/`
+- 更新状态：`~/.local/state/echo-agent-{core,panel}/update-status`；安装回滚快照在 `~/.local/state/echo-agent-core/install-rollback/`（事务期间存放 binary/updater/launcher/服务单元/core.toml/revision/status，安装成功后清空）
 
 ## 安装（install.sh）
 
@@ -57,7 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scr
 - **私有仓库**：`ECHO_REPOSITORY_URL` 指定 SSH 或镜像地址（`ECHO_REPOSITORY_URL=git@github.com:... curl ... | bash`）；公开仓库匿名可直接跑
 - 全程约 10-20 分钟（rustup + release 构建）；构建期不影响现有服务
 
-### 国内网络（镜像加速，2026-10）
+### 国内网络（镜像加速）
 
 GitHub 克隆 / rustup / crates.io 在部分网络（典型：国内直连）下缓慢或不可达；
 `--cn-mirror` 一键启用镜像（默认组合：GitHub 克隆走 `gh-proxy.com`、Rust
@@ -112,12 +112,50 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 ## 更新流程（update.sh）
 
 - `--local`（默认）：构建当前源码树（含未提交改动，记为 `+dirty`）；`--remote`：先 fetch + fast-forward 再构建（工作树有改动/游离 HEAD/非快进则拒绝）
-- **原子替换**：先备份现有二进制/静态目录到 rollback 文件，替换后重启服务并健康检查（15s 内 3 次活跃确认）
+- **原子替换**：先备份现有二进制/静态目录到 rollback 文件，替换后重启服务并健康检查（15s 内 3 次活跃确认）；替换完成即按保留策略修剪历史副本（见下「备份留存」）
 - 失败自动回滚（恢复备份 + 重启）；状态写入 `~/.local/state/echo-agent-*/update-status`
 - 更新器非阻塞文件锁拒绝并发运行；拉取/构建失败时旧二进制不动、不重启
 - Panel 更新包含 `npm run build`（前端产物从 `web/dist` 拷贝到静态目录，需 PATH 中有 npm——nvm 路径）
 - **NapCat 恢复门控**：Core 重启后仅当 `[adapters.qq].enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（3131 或 3140-3399，多实例）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
 - **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制逐个核对内置插件 manifest id（9 个：`echo-agent.tools.builtin` / `echo-agent.adapter.qq` / `echo-agent.skills.dir` / `echo-agent.workspace` / `echo-agent.subagent` / `echo-agent.provider.llm` / `echo-agent.management.panel` / 互斥循环模式 `echo-agent.loop.{single,parallel}`）。清单与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` 一致，由 `source/core/tests/update_script_plugins.rs` 守护（修复背景：`echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`echo-agent.menu`/`echo-agent.checklist`/旧驱动 `echo-agent.loop.runner` 等 id 已移除（present_menu 已废弃移除；checklist 为普通内置工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
+
+### 出厂技能同步
+
+自更新只滚**出厂技能层**（`~/.local/share/echo-agent-core/skills-builtin/`）；用户技能层（数据目录 `skills/`，Save/DeleteSkill 与 Git 安装技能的落点）不归更新管，同名技能由用户层覆盖出厂版本。`scripts/update.sh` 按技能目录逐个同步：
+
+- 只同步**含 `SKILL.md`** 的目录——`.sources.json` 之类来源记录不进只读层
+- 目标先清后写：有 `rsync` 时 `rsync -a --delete --exclude='/.git/'`，否则 `rm -rf` + `cp -a`，最后再 `rm -rf <目标>/.git`
+- **绝不带 `.git`**：Git 安装的技能带 `0400` 只读的 `.git/objects/pack/*`，原先整体 `cp -a` 在同路径覆盖时打不开写 → `Permission denied` → 更新在 `installing` 阶段整体失败（二进制已构建却没装上，服务仍跑旧版），且首次能过、此后每次必败。运行期只用 `SKILL.md`，git 历史归用户层管理
+- 目标目录不存在（旧部署未迁移过）时整段跳过，由下次 install/reinstall 补齐
+
+### 备份留存
+
+二进制与静态目录的上一版副本按保留数回收，安装目录不再无限堆积（未修剪时单目录可堆到数百 MiB）：
+
+| 项 | Core | Panel |
+| --- | --- | --- |
+| 安装目录 | `~/.local/libexec/echo-agent-core/` | `~/.local/libexec/echo-agent-panel/` |
+| 参与修剪的副本 | `<binary>.bak-*`、`<binary>.rollback*`、`<binary>.old` | 同左，另加静态目录 `<static-dir>.bak-*`、`<static-dir>.rollback*` |
+| 保留数 | `ECHO_KEEP_BACKUPS`，默认 `4` | 同左 |
+| 本次事务受保护 | `ROLLBACK_BINARY` | `ROLLBACK_BINARY` + `ROLLBACK_STATIC` |
+| 永不修剪 | 二进制本体、`update.sh`、`installed-revision` | 二进制本体、静态目录本体、`update.sh`、`installed-revision` |
+
+- 保留数语义：所有候选**合并计数**（不是每类各 N 个）；`0` = 只留本次事务正在用的回滚副本（其余全清）；非数字取值回落默认 4
+- 排序为 mtime 新→旧（同秒靠时间戳后缀的名字兜底），保留的是**最新的 N 个**，与文件名字典序无关
+- 两个调用点：替换完成后立即修剪（及时回收）+ 成功收尾删掉本次 `.rollback` 后再修剪一次（名额回滚给更早的备份）
+- 修剪只影响磁盘占用，不影响回滚：失败回滚消费的正是本次受保护的 `.rollback`
+
+### 构建产物与诊断口径
+
+release 产物设 `strip = "symbols"`（根 `Cargo.toml` 的 `[profile.release]`）：约 **17.5 MiB**，未剥离时约 23.8 MiB（-26%）。updater 每次更新都要构建并复制 + 备份该二进制，差额每次都要付。
+
+| 保留 | 丢失 |
+| --- | --- |
+| panic 的**消息与源码位置**（`file:line` 是 `.rodata` 里的字符串） | backtrace 的函数名（只剩地址） |
+| 内置插件校验依赖的 manifest id 字符串（`strings` 可扫到） | `nm` / `addr2line` 一类的符号级定位（已安装二进制无符号表） |
+
+- 需要函数名排障时**临时重建带符号版本**，不要指望线上二进制：`cargo build --release -p echo-agent-core --config 'profile.release.strip="none"'`
+- 不启用 LTO / `codegen-units=1`：updater 每次更新都跑 `cargo build --release`，编译时间翻倍不划算
 
 ### 状态机与轮询契约
 
@@ -128,14 +166,15 @@ state=running → state=restarting → state=updated（失败时停在 failed / 
 - `state=restarting` 在 **systemctl restart 之前**写入（"构建完成、即将重启"）；`updated` 在重启 + QQ 恢复之后才写入（恢复段仅 QQ 启用时执行：自动重连窗口 40s + 兜底重启窗口 90s，最长约 2 分钟；未启用则直接跳过）
 - **self-update 轮询契约**：agent 轮询到 `restarting` 就应立即收尾结束当前 turn（不要等 `updated`——等它的 turn 会被自己的重启杀死，时间线留下僵尸 running 工具条目）；重连后的新 turn 再验证 `updated`
 
-## 自更新注意事项
+### 自更新注意事项
 
 - **绝不** `systemctl --user stop echo-agent-core.service`：agent 本身运行在 core 进程内，stop 会杀死当前会话，后续 start 永远执行不到（已实际发生）
 - 安全替代：`systemctl --user restart echo-agent-core.service`（原子操作）；确需先停后启时用 `systemd-run --user` 脱离会话执行
+- **用瞬态单元启动 updater**：`update.sh` 自己会 `systemctl --user restart echo-agent-core.service`。若 updater 由 agent 在自己 shell 里直接 `bash update.sh` 起，它与 Core 同处 `echo-agent-core.service` 的 cgroup，restart 清理 cgroup 时被连带杀死（`setsid`/`nohup` 同 cgroup，救不了）——被杀的 updater 只剩「二进制替换 + 重启」，QQ 恢复、revision 写入、插件校验、收尾写 `state=updated` 全部跳过，需人工补写。改用瞬态单元（独立 cgroup，与主服务平级）：`systemd-run --user --collect --unit=echo-agent-update bash ~/.local/libexec/echo-agent-core/update.sh`，进度看 `journalctl --user -u echo-agent-update`；面板/命令触发的自更新（`RequestSelfUpdate` → `handle_self_update`）启动的是独立 oneshot 单元 `echo-agent-core-update.service`，本就不受 restart 牵连
 - **优雅排空（drain-then-exit）**：Core 收到 SIGTERM 后先进入排空模式——拒绝新消息（Panel 主动发送会收到"Core 正在重启"错误提示，重试即可）、等待进行中的回复完成（最多 `SHUTDOWN_DRAIN_SECS = 120s`，期间回复继续实时 emit 到 Panel）再退出；超时仍未完成才强制取消该 turn；`TimeoutStopSec=180s` 兜底保证 drain 窗口内不被 SIGKILL。停机顺序：`pump.abort()`（停命令泵）→ `qq_adapter.stop()`（QQ 停收）→ `agent.shutdown()`（drain）。异步子任务（`spawn_subagent`）不在 `active_inbound_turns` 计数内，drain 不等待它们；其注册表在内存中、完成回报以新 turn 注入——进程退出即终止，未完成子任务的结果不会补投递（重启后需重新委派）
 - Core 重启后恢复时间线时，进程被杀导致的悬空 running 工具条目会被标注为"已中断"，不再永远显示"运行中"
 
-## 管理子命令（CLI）
+## 运维命令与体检
 
 `echo-agent-core`（包装脚本自动注入 `--config`，缺省 `core.toml`）内置管理子命令，**直接操作 TOML 文本**（保留注释与其他段）——免手工编辑配置文件：
 
@@ -164,7 +203,7 @@ echo-agent-core token --rotate                # 重新生成并写回（32 字�
 - 端口变更重启 Core 生效；`port set` 的提示按**编辑后**的合并状态自适应——合并态下改 `management` 会同时提醒 Panel `[[cores]].url`、对端 `[federation.peers.*]` 的 url 与端口映射/`advertise` 三处同步（独立监听只提醒 Panel）
 - 相应配置解析与编辑逻辑见 [配置持久化](../core/core-config-persistence.md)；QQ 实例端口分配见 [QQ 门控](../plugins/adapter-qq-gating.md)
 
-## 日常体检
+### 日常体检
 
 ```bash
 systemctl --user status echo-agent-{core,panel}.service
@@ -173,6 +212,6 @@ cat ~/.local/state/echo-agent-{core,panel}/update-status
 journalctl --user -u echo-agent-core-update.service
 ```
 
-## 回滚
+### 回滚
 
-更新失败时 update.sh **自动回滚**（无需人工介入）。`.rollback` 备份只在单次更新事务内存在——成功即删除、失败即被回滚消费，**从不长期留存**；需要人工回到更早版本时，从 git 仓库构建旧提交后 `reinstall` 重装。
+更新失败时 update.sh **自动回滚**（无需人工介入）：本次事务的 `.rollback` 在成功收尾后删除、失败即被回滚消费，不参与长期留存。**被中断**的更新（进程被杀、机器断电）会留下 `<binary>.rollback*` / `.bak-*` / `.old` 一类残片，由下次运行的 `prune_backups` 按保留数回收（见「备份留存」）。需要人工回到更早版本时，从 git 仓库构建旧提交后 `reinstall` 重装。

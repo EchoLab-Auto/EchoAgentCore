@@ -28,4 +28,15 @@ Core 由两支组成：
 
 ## 配置入口
 
-配置为 `~/.config/echo-agent-core/core.toml`，主要分段：`[agent]`（provider/model 与 api profile 池、输出与记忆预算、工具超时、skills_dir）、`[agent.teams.*]`（人格定义与能力白名单）、`[adapters.qq]`、`[plugins.system_prompt]` 等。持久化机制与 provider 取值见 [配置持久化](./core-config-persistence.md)。
+配置为 `~/.config/echo-agent-core/core.toml`，主要分段：
+
+| 段 | 内容 |
+|---|---|
+| `[agent]` | provider/model 与 api profile 池、`memory_limit_tokens`（trunk 记忆预算）与 `context_window_tokens`（模型窗口，预算按 ×0.8 封顶）、`max_tokens`、`stream_output`、`tool_timeout_secs`、`skills_dir`（+ 只读附加层 `skills_dirs`） |
+| `[agent.teams.*]` | 各人格定义与能力白名单（`enabled_skills` / `enabled_tools` / `enabled_plugins`），可覆盖记忆预算与 `api_profile` |
+| `[core]` | management WS 地址与访问令牌 |
+| `[adapters.qq]` | QQ 适配器实例、端口与过滤配置 |
+| `[federation]` | Core↔Core 联邦（`listen` / `node_name` / `[federation.peers.*]`） |
+| `[plugins.*]` | 插件级配置（如 `[plugins.system_prompt]`） |
+
+进程外插件的装载清单是同目录的 `plugins.toml`（不存在 = 特性休眠）。持久化机制、原子写与改名语义见 [配置持久化](./core-config-persistence.md)。

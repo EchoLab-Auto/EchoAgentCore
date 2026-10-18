@@ -40,7 +40,7 @@ EchoAgentCore 的运行期配置写入通过共享 `ConfigStore` 原子化落盘
 | `/api new <name>` | 新建 profile → `persist_config()` |
 | Panel「编辑 Profile → 改名称」保存 | 原子改名（`RenameApi`）→ **单次** `ConfigStore::patch()` 同时改写 `api_profiles` 名 / `active_api` / `teams[*].api_profile`，落盘成功后重绑运行中 persona、会话级覆盖与各 persona 工作区对话引用（见下「改名语义」） |
 
-### 改名语义（`RenameApi`，2026-10）
+### 改名语义（`RenameApi`）
 
 - **校验**：`to` 去空白后非空且 ≤128 字符、无控制字符；`from` 精确存在；与现有名撞名拒绝；`from == to` 幂等 no-op（只回推事件）。任何失败零写入并以 `Error` 事件回报。
 - **原子性**：先克隆算全新状态 → 单次 `ConfigStore::patch()`（write_lock + tmp→rename）落盘 → **落盘成功才提交内存**（失败 = 天然回滚）→ 再运行时传播（重建 provider——计量归属名在 provider 构建时烘焙；persona 重引用；会话覆盖重绑；运行中 persona 的工作区对话引用改写）。
@@ -113,15 +113,14 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 ### 数据流
 
 ```text
-Panel 操作 (/qq setting)（经 management WS）
-  → BackendCommand::SetQqGateMode / UpdateQqAllowlist / UpdateQqDenylist
-  → Agent::apply_command()
-    → QqManagement::set_gate_mode() / update_allowlist() / update_denylist()
-      （能力扩展 trait；经 Adapter::qq_management() 取用，2026-10 重构）
-    → 更新内存中的 runtime 字段
-    → rebuild_filter_pipeline()（立即生效）
-    → persist_filter()
-      → get_filter_config() + get_gate_mode()
+Panel 操作（适配器弹层，经 management WS）
+  → BackendCommand::InvokeAdapterOp { adapter, method, payload }
+      （method = set_gate_mode / update_allowlist / update_denylist …）
+  → Agent::apply_command() → apply_adapter_command()（按 adapter 实例名寻址）
+    → 插件侧 custom op 承接（进程外插件经宿主转发）
+    → 插件更新内存中的 runtime 字段
+    → 重建过滤管道（立即生效）
+    → 读回当前配置（get_filter_config / get_gate_mode）
       → ConfigStore::patch(|root| {
            在 root 中更新 adapters.qq.gate.mode
            在 root 中更新 adapters.qq.filter.allowlist/denylist
@@ -184,7 +183,7 @@ group_ids = []
 `{active, sessions[]}` 文档，任何变更即时原子写回）——与配置 TOML、会话
 **所有激活来源（面板/工具 `use`）都必须广播 `WorkspaceSessions`**。
 
-## API 指标数据（余额 / 用量，2026-10）
+## API 指标数据（余额 / 用量）
 
 余额与 token 用量由 Core 本地积累为**只增不改的 JSONL 时间序列**（与 core.toml
 同目录）——面板「余额与用量」图表的唯一数据源（DeepSeek 无账单/历史 API，
@@ -206,19 +205,19 @@ group_ids = []
 - **保留与剪枝**：余额保留 30 天、用量 90 天（每 512 次追加触发一次过期行
   重写剪枝）；**面板读取窗口 = 近 7 天**。文件删除即重置图表（无其他副作用）。
 - **费用估算**：`[agent.pricing]` 定价表（缺省 = 内置 DeepSeek 公开价 +
-  Kimi k3（约 ¥12/¥32 每百万 + 缓存命中 ¥2/M——2026-10 查证官方定价页，
+  Kimi k3（约 ¥12/¥32 每百万 + 缓存命中 ¥2/M——查证官方定价页，
   k3 的 4.5M tokens 此前零估算）；长度前缀匹配模型名、区分高峰/空闲时段；
   含 `offpeak_*` 档位豁免）。价格可随配置覆盖或清空（`pricing = []` = 禁用
   估算）。估算由 Core 在 `QueryApiMetrics` 响应时现算（`est_cost` 字段），
   不落盘；缓存命中按命中价三段计价（未配置命中价的模型回退未命中价）。
-- **token 口径（2026-10 归一）**：`prompt_tokens` = **总输入**（含缓存），
+- **token 口径（归一）**：`prompt_tokens` = **总输入**（含缓存），
   `cache_hit_tokens` 为其子集。Anthropic 协议端点（原生 / DeepSeek / Kimi
-  兼容）的原始 `input_tokens` **不含**缓存读取/写入（2026-10 实测：同前缀
+  兼容）的原始 `input_tokens` **不含**缓存读取/写入（实测：同前缀
   复调 input 234 + cache_read 128 = 首调 input 362）——provider 侧已把三者
   求和归一（`echo-llm-anthropic::normalize_usage`）；旧 JSONL 行中
   「命中数 > prompt」的行是修复前口径（prompt=未命中），`usage_slices`
   读取时归一补全。展示与估价统一按此口径（此前注释「input_tokens 包含
-  命中」与实测相反，已随 2026-10 归一修复更正）。
+  命中」与实测相反，已按实测口径更正）。
 - **协议**：`QueryApiMetrics{name}`（空 = 默认 + 全部 profile）→ `ApiMetrics`
   事件（`entries: [{name, balance[], usage[], cost_currency}]`；`usage` 按
   小时 × 模型聚合）。实现：`echo-agent/src/metrics.rs`（存储/剪枝/定价）+

@@ -8,13 +8,13 @@ y: 780
 
 # Panel 设置视图
 
-> **定位**：本文覆盖设置视图（左栏一级菜单 + 右侧分类工作区）的完整交互：视图结构、API 设置、资源工作区（技能/工具/插件/智能体）、从 Git 安装技能、Core 连接（含**并入侵的联邦网络**）、日志与系统。共**八个一级分类**（联邦不是独立分类，是同页内的下半区）。读者：维护 Panel 设置界面的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)（Agent 配置弹层的 API 供应商引用）、[配置持久化](../core/core-config-persistence.md)。
+> **定位**：本文覆盖设置视图（左栏一级菜单 + 右侧分类工作区）的完整交互：视图结构、API 设置、资源工作区（技能 / 工具 / 插件（多 Core 管理节点、按运行位置的内部 / 外部分组）/ 智能体）、从 Git 安装技能（克隆进度、失败清场与残留清理）、Core 连接（含**并入侵的联邦网络**）、日志与系统。共**八个一级分类**（联邦不是独立分类，是同页内的下半区）。读者：维护 Panel 设置界面的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)（Agent 配置弹层的 API 供应商引用）、[配置持久化](../core/core-config-persistence.md)。
 
 ## 设置视图结构
 
 原「资源」「日志」视图与 API 设置弹窗合并为统一的设置视图：**左栏一级菜单 + 右侧分类工作区**。
 
-- **一级菜单**（168px）：`API 设置`（徽标 = Profile 数）/ `技能` / `工具` / `插件` / `智能体`（徽标 = 条目数）/ `Core 连接`（`SettingsView.vue` 的 `categories`，2026-10 末**联邦并入本页**：上游 Core + 联邦节点，副标题给 peers 计数）/ `系统`（自更新）/ `日志`（无徽标）——**共八分类**；菜单项 9px/12px 内边距、圆角 8px，选中 = 主色左边框 + `--panel-accent-soft` 底、徽标反白；底部「刷新」按钮拉取四类清单（Skills/Tools/Plugins/Teams，`refresh()`）。切换分类**丢弃未保存的编辑态**；各分类的选中条目独立保持，切回时恢复
+- **一级菜单**（168px）：`API 设置`（徽标 = Profile 数）/ `技能` / `工具` / `插件` / `智能体`（徽标 = 条目数）/ `Core 连接`（`SettingsView.vue` 的 `categories`，2026-10 末**联邦并入本页**：上游 Core + 联邦节点，副标题给 peers 计数）/ `系统`（自更新）/ `日志`（无徽标）——**共八分类**；菜单项 9px/12px 内边距、圆角 8px，选中 = 主色左边框 + `--panel-accent-soft` 底、徽标反白；底部「刷新」按钮拉取四类清单（Skills/Tools/Plugins/Teams，`refresh()`；插件按当前运行区域请求，工作台内切管理节点时另发定向请求，见「工具 / 插件工作台」）。切换分类**丢弃未保存的编辑态**；各分类的选中条目独立保持，切回时恢复
 - **工具条**：标题 + 副标题（API = `当前：{provider} / {model}`（有激活 profile 时附 ` · Profile「{name}」`）；日志 = 来源说明；资源类 = `共 N 项 · K 已禁用`）+ 分类级操作（技能：Git 安装 / 新建技能；智能体：新建智能体）
 - 打开视图时自动拉取四类清单（onMounted）；条目消失时选中态自动置空
 
@@ -76,7 +76,7 @@ y: 780
 
 **条目列表**（技能工作台 320px 可拖拽；其余分类 250px，与详情面板并排，组头可折叠）：
 
-- 技能/工具/插件均为**工作台**（筛选栏 + 可拖宽列表 + 双行行卡）：技能与工具默认**按包（package）分组**（package 是真实门控单位，与智能体能力勾选区一致；无包条目归「独立技能」/「独立工具」），插件默认**按门控语义分组**（见下）；智能体平铺（**按 id 排序**，无置顶——「主智能体」概念已去除）
+- 技能/工具/插件均为**工作台**（筛选栏 + 可拖宽列表 + 双行行卡）：技能与工具默认**按包（package）分组**（package 是真实门控单位，与智能体能力勾选区一致；无包条目归「独立技能」/「独立工具」），插件默认**按运行位置分组**（内部 / 外部，见下）；智能体平铺（**按 id 排序**，无置顶——「主智能体」概念已去除）
 - 条目行：名称（超长省略）+ 行尾标记（Git 来源技能 `Git` 标签 / `已禁用`；**不再有「主」标签**）；选中 = 主色左边框 + 浅底；空列表显示「（暂无…）」
 - 点选条目在右侧打开详情；点选智能体**直接进入编辑态**
 - **清单加载三态**：四类清单各自独立跟踪（`settings:{skills,tools,plugins,teams}`）——列表区顶部 `LoadHint`（加载转圈 / >6s 慢提示 / >20s 错误+重试），加载中**计数徽标暂隐**、空态「（暂无…）」让位；顶部「刷新」按钮加载中转圈
@@ -85,7 +85,7 @@ y: 780
 |---|---|---|
 | 技能 | 见下方「技能工作台」小节 | 启停开关（`ToggleSkill`，列表行内 hover 亦有快速开关）、编辑（名称锁定）、删除（confirm）；**Git 来源技能追加**：更新（`UpdateSkillFromGit`，无确认）、移除来源（confirm「目录保留，可手动删除」→ `RemoveSkillSource`） |
 | 工具 | 见下方「工具 / 插件工作台」小节 | 启停开关（`ToggleTool`，禁用后模型不可见；列表行内 hover 亦有快速开关） |
-| 插件 | 见下方「工具 / 插件工作台」小节 | 启停开关（`TogglePlugin`，禁用即卸载注册；全局生效；**「管理面」插件禁用被保护**——core 拒绝 + UI 明示且行内不给开关，防 Panel 自锁断连）。**包级聚合**：包内工具与技能随包一起启停（见 [插件化设计](../plugins/core-plugins.md)「Package」） |
+| 插件 | 见下方「工具 / 插件工作台」小节 | 启停开关（`TogglePlugin`，禁用即卸载注册；在选定管理节点上全局生效；**「管理面」插件禁用被保护**——core 拒绝 + UI 明示且行内不给开关，防 Panel 自锁断连）。**包级聚合**：包内工具与技能随包一起启停（见 [插件化设计](../plugins/core-plugins.md)「Package」） |
 | 智能体 | N 会话/循环模式标签（单会话/并行多会话）、提示词、能力白名单、禁用能力（`disabled_tools`/`disabled_skills` 的 error 色标签组；插件黑名单已移除） | 选中即进编辑态；启停（`ToggleTeam`）；任意智能体可删（**至少保留一个**；无受保护成员） |
 
 ### 技能工作台
@@ -98,7 +98,7 @@ y: 780
 - **详情分区检查器**（头部 = 名称 + 包名 + 启停开关 + `⋯` 菜单「编辑 / 更新（Git）/ 移除来源 / 删除」）：
   1. **生效方式**：关键词触发（触发词 chips **可增删**——删除走 `closable` tag，添加走行内输入 + Enter；就地修改经 `SaveSkill` 补丁回写，保留其余字段）、常驻注入开关（`always`）、系统提示词开关（`system`，开启前 confirm 明示「注入 base 区，影响所有启用它的智能体」）
   2. **被谁使用**：按 `TeamsList` 反查每个智能体对本技能的状态——`系统提示词注入`（`system_skills`）/ `已禁用`（`disabled_skills`）/ `未列入白名单`（`enabled_skills` 非空且不含）/ `可用`
-  3. **来源**：内置，或 Git（仓库 / 版本（含分支）/ 安装时间 + 更新 / 移除来源按钮）
+  3. **来源**：两态——**无来源记录**（「新建技能」创建或手工放置的目录；`SkillInfo.source` 为空，详情显示「内置技能（随 Core 分发的 skills 目录）」，文案不区分本地新建）与 **Git 来源**（`SkillInfo.source` 回推：仓库 / 版本（含分支）/ 安装时间 + 更新 / 移除来源按钮）；Git 安装的 URL 可为本机 / 网络路径，一律 clone 并记来源（见「从 Git 仓库安装技能」）
   4. **内容**：frontmatter 摘要条（分类 · 常驻 · 系统提示词 · 触发词数）+ Markdown **预览 / 源码**切换（预览复用 ui-frame `MarkdownRenderer`）
   - 组合并提示：所属包插件禁用、或技能自身禁用时，详情顶部显示对应横幅
 - **技能编辑器**：名称（编辑时锁定）、描述、触发词（逗号分隔）、分类、常驻开关、Markdown 正文（12 行自适应）；**吸底操作条**显示保存状态（`● 有未保存的更改` / `○ 无更改`）+ 放弃更改 / 保存；切换条目或切换分类前若有脏改动会先 confirm；保存 `SaveSkill`
@@ -131,7 +131,20 @@ y: 780
 
 **插件**
 
-- **按门控语义分组**（默认；分组维度可切「按 kind」「平铺」），把影响面最大的组提到最上并带组头语义提示：
+插件工作台回答三件事：在哪个 Core 上管理、这条插件的实现在不在 Core 进程内、它门控了什么——第一个决定列表内容，第二个是默认分组维度，第三个是可切换的语义维度。
+
+- **管理节点**（筛选栏首项，`NeumorphismSelect`，`aria-label="管理节点"`）：选项 = 已接入上游名 ∪ 人格归属 core ∪ `state.pluginsByCore` 的键 ∪ `activeRegion`，标签经 `state.ts::regionLabel`（区域显示名，缺失回落节点 id）；切换即清空选中并定向 `RequestPluginsList`（带目标 core）。列表、筛选计数、副标题统计、行内快速启停与 `TogglePlugin` 的目标 core 统一取 `pluginCoreEffective`——**显示的 = 请求的 = 修改的**
+- **按节点归档的清单**（`state.pluginsByCore` / `pluginCatalog`）：各节点回推的插件按上游名归档（中继不加信封的单上游场景键为空串）；`pluginCatalog` 的取数顺位 = 显式选定 / `activeRegion` 的归档 → **唯一来源**（键对不上但只有一份数据）→ `state.plugins`（管理目标兼容视图）；多来源且该节点尚未回推时给空列表，**绝不回退**（否则串显别个节点）
+- **分组维度**（`PLUGIN_GROUP_OPTIONS` 分段控件）：`内部 / 外部`（默认）/ `按门控语义` / `按 kind` / `平铺`
+- **内部 / 外部按运行位置判定**（`pluginSource`）：`runtime === 'subprocess'` → 外部，`in_process` → 内部；旧 Core 未回推 `runtime` 时回退 `builtin`（`false` → 外部）。判据是「实现在哪跑」而非「manifest 从哪来」——QQ 适配器随 Core 发布（`builtin = true`）但实现在独立进程，因此归**外部插件**
+- **组头提示**：外部组 = 「实现在独立进程（独立 PID / 生命周期）；随 Core 发布或来自插件目录」（讲清「随 Core 发布 ≠ 进程内」）；内部组 = 「实现编译在 Core 进程内；随 Core 发布」
+- **行卡标记**：`独立进程`（`pluginIsSubprocess`，与外部组等价）· 包规模徽标（`N 工具 · M 技能`）· `🔒 受保护`（management.panel，**行内渲染锁标记而不给开关**）· `模式`（loop.*）
+- **副标题随分组维度**：按来源 = `共 N 项 · E 外部插件 · I 内部插件 · D 已禁用`；语义分组 = `共 N 项 · G 包维度门控 · M 模式插件 · D 已禁用`
+- **协议契约**：`PluginInfo.runtime`（`in_process` / `subprocess`，缺失 = 进程内）与 `PluginInfo.builtin`（manifest 是否编译进 Core，缺失按 `true` 兼容）均由 Core 回推、彼此正交；来源分组（`pluginSource`）与运行形态标签（`pluginRuntimeLabel`，`PLUGIN_RUNTIME_LABELS`：独立进程 / 进程内）同源于这两个字段，Panel 不做推断性改写
+- **详情分区**：① 这个插件带来什么（包内**工具/技能 chips，点击跳转到对应分类并选中**）② 被谁使用（`enabled_plugins` 白名单反查：「已启用」/「未列入白名单」）③ 启停影响（按门控语义分派文案；受保护插件为警示色说明如何在 core.toml 真正禁用）④ 技术信息（**折叠**，承载 ID / Package / kind·版本 / Entry / **运行形态** / Author）。头部左侧是语义标签（`PLUGIN_SEMANTIC_LABELS`），外部插件另加 `外部插件 · 独立进程` 标签
+- `PLUGIN_KIND_LABELS.loop` 为「循环驱动」（全站统一的中文 kind 名）
+
+**门控语义分组**（`pluginSemantic`，可切换维度；把影响面最大的组提到最上并带组头提示）：
 
 | 分组 | 成员判定 | 组头提示 |
 |---|---|---|
@@ -140,29 +153,32 @@ y: 780
 | 模式插件（互斥） | `kind === 'loop'` | 每智能体的循环模式在「智能体」配置里选；此处全局停用 = 卸载 echo-loop 驱动 |
 | 其它 | 其余（如 provider.llm） | — |
 
-- 行卡标记：包规模徽标（`N 工具 · M 技能`，来自现有 tools/skills 列表）· `🔒 受保护`（management.panel，**行内渲染锁标记而不给开关**）· `模式`（loop.*）
-- 副标题：`共 N 项 · G 包维度门控 · M 模式插件 · D 已禁用`
-- **详情分区**：① 这个插件带来什么（包内**工具/技能 chips，点击跳转到对应分类并选中**）② 被谁使用（`enabled_plugins` 白名单反查：「已启用」/「未列入白名单」）③ 启停影响（按门控语义分派文案；受保护插件为警示色说明如何在 core.toml 真正禁用）④ 技术信息（**折叠**，承载 ID / Package / kind·版本 / Entry / Author）
-- `PLUGIN_KIND_LABELS.loop` 为「循环驱动」（全站统一的中文 kind 名）
-
-**交叉跳转**（`jumpToCategory`）：插件详情成员 chip → 工具/技能分类并选中该条目；工具详情「所属包」按钮 → 插件分类并选中该插件——把「包 ⇄ 工具/技能」三层关系做成双向可点链路。
+**交叉跳转**（`jumpToCategory`）：插件详情成员 chip → 工具/技能分类并选中该条目；工具详情「所属包」按钮 → 插件分类并选中该插件——把「包 ⇄ 工具/技能」三层关系做成双向可点链路。包规模徽标与成员 chip 的成员名单取自 `state.tools` / `state.skills`（管理目标视图），切到非管理目标的节点时仍按管理目标统计。
 
 ## 从 Git 仓库安装技能
 
-技能工具条「Git 安装」打开**弹层**（原内联表单会顶掉列表且安装后无反馈）：三字段——仓库 URL（https/ssh/本地路径，**唯一必填**，trim 后为空时按钮禁用）、安装目录名（默认取仓库名）、分支（默认取仓库默认分支）；后两者留空传 `null`。提交下发 `InstallSkillFromGit{url, name?, branch?}`（`protocol.ts`），提交后弹层关闭。Core 侧机制（shallow clone、目录提升、`.sources.json` 来源记录、更新/移除语义）见 [技能系统](../plugins/core-skills.md)「外部 Git 来源技能」。
+技能按来源分两态：**无来源记录**（「新建技能」创建或手工放进 skills_dir 的目录；详情「来源」显示「内置技能（随 Core 分发的 skills 目录）」——文案不区分本地新建与随 Core 分发）与 **Git 来源技能**（`SkillInfo.source` 回推仓库 / 版本 / 分支 / 安装时间；列表行 `Git` 徽标、筛选 chip「Git 来源」据此判定）。Git 安装接受 https / ssh / 本机路径，一律走 `git clone` 并写入 `skills_dir/.sources.json`。
+
+技能工具条「Git 安装」打开**弹层**（原内联表单会顶掉列表且安装后无反馈）：三字段——仓库 URL（**唯一必填**，trim 后为空时按钮禁用）、安装目录名（默认取仓库名）、分支（默认取仓库默认分支）；后两者留空传 `null`。提交下发 `InstallSkillFromGit{url, name?, branch?}`（`protocol.ts`）。Core 侧机制（shallow clone、目录提升、`.sources.json` 来源记录、更新 / 移除语义）见 [技能系统](../plugins/core-skills.md)「外部 Git 来源技能」。
 
 ```prodoc-flow
 graph LR
-  Form[表单提交] -->|InstallSkillFromGit| Clone[core: git clone --depth 1]
+  Form[弹层提交] -->|InstallSkillFromGit| Clone[core: git clone --depth 1]
+  Form --> Wait[弹层保持 + 进度计时]
+  Clone -->|失败: 网络 / 超时 / 无 SKILL.md| Clean[失败清场: 删除目标目录]
+  Clean --> Err[Error 事件]
   Clone -->|校验/目录提升| Reload[reload_skills 热重载]
-  Clone -->|失败: 目录已存在/无SKILL.md/网络| Err[Error 事件]
-  Reload -->|SkillsList 回推| List[列表刷新: Git 徽标]
+  Reload -->|SkillsList 回推| List[列表刷新: Git 徽标 + 自动关窗]
   Reload -->|Error 事件| Toast[toast 通知结果]
   Err --> Toast
 ```
 
-- **结果反馈约定**：提交后立即清空表单，本地**无加载态、无成败提示**——安装结果完全依赖 Core 回推 `SkillsList` 事件刷新列表；成功与失败都经 Core `Error` 事件以 toast 呈现（消息文本区分）。这是与"编辑即生效"原则一致的单向命令模式（panel 不预测 core 侧耗时操作的结果）
-- **已装 Git 技能**：详情页「来源」分区显示仓库 / 版本 / 安装时间与「更新」（`UpdateSkillFromGit`，无确认）、「移除来源」（confirm 明示目录保留）按钮；`⋯` 菜单同步提供「更新（Git）」「移除来源」入口
+- **安装期间（可见等待）**：弹层**保持打开**，进度行（`git-modal__progress`，`role="status"`）= 旋转图标 + 「正在克隆…已等待 Ns」（`gitInstallElapsed`，500ms 计时）；超过 20s 追加「已超过 20s，网络慢或不可达；Core 侧最长等 120s」（`gitInstallSlow`）。URL 输入与取消 / 安装按钮禁用，主按钮文案「安装中…」，安装中重复提交被短路（`installGitSkill` 守卫）。关闭弹层不中断 Core 侧克隆
+- **成功判据**：以技能清单变化为准（`watch(state.skills)` 的名称序列）——Core 装完推 `SkillsList` 即自动关窗并清空表单，无需用户再操作
+- **失败反馈**：结果由 Core `Error` 事件以 toast 呈现；界面**不回收安装态**（进度继续累计、URL 仍禁用，关窗重开亦然），需刷新页面恢复
+- **失败清场与残留**（Core `skills_dir::install`）：clone 失败即删除目标目录，本次与后续重试都不会撞「目录已存在」；目标目录已存在时先按 `is_broken_clone`（有 `.git` 且无 `SKILL.md`）识别上次被超时 kill 的残留并清掉重装，正常技能目录（有 `SKILL.md`）不会被误删——报「目录已存在」并提示卸载 / 换名 / 移走手动放置的同名目录；clone 成功但仓库内找不到 `SKILL.md` 同样清场后报错。`GIT_TERMINAL_PROMPT=0` 让私有仓库缺凭据时立即报认证失败，而不是在无 TTY 的后台进程里挂满超时；硬超时 120s（`GIT_TIMEOUT`）之外另有低速中止（<1KB/s 持续 30s）
+- **弹层静态提示**：浅克隆 + 目录提升说明；建议私有 / 内网仓库用 SSH 地址（`git@github.com:org/repo.git`）——HTTPS 被网络阻断时只能等 120s 超时失败
+- **已装 Git 技能**：详情页「来源」分区显示仓库 / 版本 / 安装时间与「更新」（`UpdateSkillFromGit`，无确认、无进度面板，仅命令 + `SkillsList` / `Error` 反馈）、「移除来源」（confirm 明示目录保留）按钮；`⋯` 菜单同步提供「更新（Git）」「移除来源」入口。来源记录按技能名（frontmatter `name`）索引、目录名可不同，故更新 / 移除来源按技能名寻址
 
 ## Core 连接与联邦
 

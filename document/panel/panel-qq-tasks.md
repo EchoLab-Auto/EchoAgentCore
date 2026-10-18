@@ -31,4 +31,4 @@ y: 780
 
 ## HTTP 通道
 
-- WS 之外的接口（日志 `/api/logs/{panel,core}`、上游管理 `/api/upstreams`、媒体 `/media/<id>`）走 `fetchWithTimeout`/`panelFetch`，超时 10s（`api.ts:4`）；QQ 登录/二维码已全部迁到 WS（Core 代理）
+- WS 之外的接口（日志 `/api/logs/{panel,core}`、上游管理 `/api/upstreams`、媒体 `/media/<id>`）走 `fetchWithTimeout`/`panelFetch`，超时由 `api.ts` 的 `FETCH_TIMEOUT_MS` 决定（10s）；QQ 登录/二维码已全部迁到 WS（Core 代理）

@@ -8,7 +8,7 @@ y: 2020
 
 # Subagent 插件
 
-> **定位**：本文描述 `echo-agent.subagent` 插件（kind=Tool）——让模型把独立子任务**委派给隔离上下文的子 agent 执行**（子任务有自己的系统提示词与工具循环），结论经结构化 hook **作为新入站分支**回灌主会话、子上下文不回合并。覆盖动机与边界、生命周期、工具与技能、hook 机制、包门控与测试守护。读者：Agent 使用者与插件维护者。与 [Agent 循环](../core/core-agent-loop.md) 的回复分支（同上下文 fork/合并）互为对照；装载与包门控见 [插件化设计](./core-plugins.md)。
+> **定位**：本文描述 `echo-agent.subagent` 插件（kind=Tool）——让模型把独立子任务**委派给隔离上下文的子 agent 执行**（子任务有自己的系统提示词与工具循环），结论经结构化 hook **作为新入站分支**回灌主会话、子上下文不回合并。覆盖动机与边界、生命周期、工具与技能、hook 机制、事件与观测、包门控与测试守护。读者：Agent 使用者与插件维护者。与 [Agent 循环](../core/core-agent-loop.md) 的回复分支（同上下文 fork/合并）互为对照；装载与包门控见 [插件化设计](./core-plugins.md)。
 
 ## 动机与边界
 
@@ -29,9 +29,10 @@ y: 2020
 
 ## 生命周期
 
-1. 模型调用 `spawn_subagent`（task + 可选 timeout_secs + 可选 node）——**同步受理**：
-   注册进 `SubagentStore`（携带主 turn 的取消令牌子令牌）并立即返回
-   子任务 id 回执；子任务在后台以隔离上下文执行
+1. 模型调用 `spawn_subagent`（task + 可选 timeout_secs + 可选 node / profile）——
+   **同步受理**：注册进 `SubagentStore`（携带主 turn 的取消令牌子令牌）并立即返回
+   子任务 id 回执；子任务在后台以隔离上下文执行。这次调用与回执按普通工具口径
+   落 `ToolCall` / `ToolResult` 事件（见「事件与观测」）
 2. 子 turn 走独立循环（`packages/subagent/mod.rs::run_subagent_turn`：与主循环同源的
    迭代/截断续跑/取消语义，但**不回写 trunk**、不发会话级 LLM 事件）
 3. 完成/失败/超时/取消 → 发射 `SubagentCompleted`，并把结论包进
@@ -60,9 +61,11 @@ y: 2020
   纠正性文案（"子 agent 看不到当前对话，任务描述必须自含"）
 - **取消传播**：主 turn 取消 → 子令牌 → 子循环的 select 中止；取消的子任务
   记为 `Cancelled` 并同样发 hook（主 agent 感知"没有结论会来"）
-- **结果截断**：子任务回复超过 8K 字符时截断并标注，防单个结论反过来烧掉
-  主上下文
-- **子代理模型覆盖（`profile`，2026-10）**：执行体按名从供应商池解析并
+- **结果截断**：子任务回复超过 8K 字符（`MAX_SUBAGENT_RESULT_CHARS`，
+  `packages/subagent/mod.rs::truncate_result`）时截断并标注总字符数，防单个
+  结论反过来烧掉主上下文。与 hook 信封 `task` 字段的 4000 字符上限是两回事：
+  后者限**任务描述**的可审计长度，前者限**结论**回灌体量
+- **子代理模型覆盖（`profile`）**：执行体按名从供应商池解析并
   构建独立 provider（经计量 + 脱敏装饰，与主 provider 同标准；计量归属 =
   profile 名，余额/用量图表可直接看到子代理消耗）。池以**共享 ConfigStore
   （core.toml）为首选事实源**读取（管理面每次变更都会写回；persona 侧
@@ -101,17 +104,48 @@ y: 2020
 - `extra_tool_definitions`：模型可见 schema 追加接口（当前装配为 `None`——`spawn_subagent` 的 schema 由注册表统一提供，避免重复工具名）
 
 `run_tool`（集成测试与直接分派入口）同样特判 `spawn_subagent`，与 hook 路径
-语义一致（2026-10 单轨化后 turn 只经 echo-loop 的 hook 通道）。
+语义一致（turn 只经 echo-loop 的 hook 通道）。
 
 ## 事件与观测
 
-- `SubagentStarted { session_id, task }` / `SubagentCompleted { session_id, success }`
-  （`echo-protocol` 事件，Panel 据此渲染子任务状态；入口：会话视图入口行
-  「任务」弹层，按当前会话过滤展示）
-- 完成 hook 作为 `MessageReceived { adapter_name: "subagent" }` 进入显示时间线
-  与 trunk（会话历史含完整委派轨迹：调用 → 回执 → 结论事件）
+委派有三条观测面：**调用面**（一次普通的工具调用）、**任务面**（子任务自身的
+生命周期）与**回灌面**（结论如何进入主会话）。
 
-## 门控与接线
+- **调用面**：`spawn_subagent` 经 echo-loop 的异步 hook 通道直入管线、不走
+  `run_tool`，调用与回执仍按普通工具口径落账（`agent/turn.rs` 的
+  `execute_async_subagent`）：先写 `ToolCall`（`arguments` 出口脱敏，带
+  `started_at_ms`）→ 受理或拒绝后写配对的 `ToolResult`（回执文本，带
+  `elapsed_ms`）。于是 spawn 时延可算，`task` / `profile` / `node` /
+  `timeout_secs` 实参可查，面板委派行与普通工具行同源同账
+- **任务面**：`SubagentStarted { session_id, task }` / `SubagentCompleted { session_id, success }`
+  （`echo-protocol` 事件，Panel 据此渲染子任务状态；`started` 的 `task` 是全文、
+  不受下面的 4000 字符上限约束；入口：会话视图入口行「任务」弹层，按当前会话
+  过滤展示）
+- **回灌面**：完成 hook 作为 `MessageReceived { adapter_name: "subagent" }`
+  进入显示时间线与 trunk（会话历史含完整委派轨迹：调用 → 回执 → 结论事件）
+
+`<subagent_event>` 信封字段（`packages/subagent/mod.rs::wrap_subagent_event`
+包装，payload 由 `agent/subagent_runtime.rs` 的完成链与受理前拒绝链产出）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `event` | 固定 `subagent_event` |
+| `subagent_id` / `session_id` | 子任务 id 与所属会话 |
+| `task` | 任务描述，上限 4000 字符（见下） |
+| `success` / `result` | 成败与结论文本（受理前拒绝时 `result` 形如「子任务受理失败：…」） |
+| `parent_branch_id` | 发起本次委派的主分支 |
+| `completed_at_ms` | 收尾时刻（epoch 毫秒） |
+
+**`task` 字段的 4000 字符上限**（`subagent_runtime.rs::subagent_task_field`）：
+不超过 4000 字符原样透传（783 字符这类实测常见长度、恰好 4000 的边界都原样）；
+超过 4000 则保留前 4000 并追加「…[task 过长已截断，共 N 字符；完整文本见该
+spawn_subagent 调用的 arguments]」。任务全文始终可从该次调用的
+`ToolCall.arguments` 读到（沿革：此前固定截到 500 字符，长描述在 hook 里只剩
+开头一段）。
+
+## 门控与测试守护
+
+### 包门控与装配
 
 - 包级门控：`SUBAGENT_PLUGIN_ID` 在 `GATED_PLUGIN_IDS`/`BUILTIN_PLUGIN_IDS`；
   勾选区可见性经 Panel `PACKAGE_GATED_PLUGIN_IDS`（+`PACKAGE_DISPLAY_NAMES`）
@@ -121,10 +155,15 @@ y: 2020
   不构成循环）；插件 mount/unmount 经 `reapply_plugin_gating` 逐 persona
   启停（`allows_dynamic_tool` 双重判定：运行态已装配 ∧ persona 白名单允许）
 
-## 测试守护
+### 测试守护
 
 - 单元（`packages/subagent/mod.rs`）：受理注册/回执、空任务纠正性拒绝、超时钳制、
-  结果截断、cancel_all 幂等、hook 信封结构
+  `truncate_result` 结果截断、cancel_all 幂等、hook 信封结构
+- 单元（`agent/subagent_runtime.rs::subagent_task_field_keeps_long_descriptions_verbatim`）：
+  信封 `task` 字段的边界——783 与 4000 字符原样、4001 截断且标注总字符数
 - 集成（`tests/agent_integration.rs`）：装配前后工具可见性、端到端
   「spawn → 子任务执行 → SubagentStarted/Completed → hook 入站」、
   插件白名单拒绝、主 turn 取消级联（子任务记 Cancelled 并发完成事件）
+- 委派落账（`agent/tests.rs::spawn_subagent_call_and_receipt_are_recorded_in_event_log`）：
+  即便运行态未接线（受理被拒），`ToolCall` 与 `ToolResult` 也成对落库，
+  实参含 `task` 全文与 `timeout_secs`、`started_at_ms` 非空

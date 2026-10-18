@@ -10,7 +10,7 @@ y: 780
 
 > **定位**：本文覆盖 Panel 的全部模态与覆盖层——分支详情（BranchModal）、上下文弹层（ContextView）、Agent 配置弹层（AgentConfigModal），以及各危险操作的确认形式（统一 `confirmDialog` / 两步确认）。读者：维护 Panel 交互的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)（弹层入口与几何）、[设置视图](./panel-settings.md)。
 
-> **多接入点**：`RequestContext` 等按（人格, 会话）定向的请求经 `sendPending` 统一路由到会话/人格所属 core（`connection.ts::resolveTargetCore`）；响应快照在 ContextView 侧按 `(session_id, core)` 匹配后才展示，忽略他属 core 的陈旧快照（`ContextView.vue:93-98`）。AgentConfigModal 的保存（`SaveTeam`）同理按人格归属 core 路由。
+> **多接入点**：`RequestContext` 等按（人格, 会话）定向的请求经 `sendPending` 统一路由到会话/人格所属 core（`connection.ts` 的 `resolveTargetCore`）；响应快照在 ContextView 侧按 `(core, session_id)` 复合键匹配后才展示，忽略他属 core 的陈旧快照（`ContextView.vue` 的复合键读取）。AgentConfigModal 的保存（`SaveTeam`）同理按人格归属 core 路由。
 
 ## 模态清单与确认形式
 
@@ -47,12 +47,12 @@ y: 780
 - token 仪表盘：`NeumorphismProgress`（≥90% error、≥70% warning），总量/提示词/历史/上限四项统计
 - 上下文块分「系统提示词与注入块」「对话历史」两组折叠（**全部块默认展开**，每块内容区 220px 内滚动——修正此前仅 base 展开、用户「看不到内容」的问题）：kind 徽标（覆盖 Core 全部种类含「工作区会话」「系统提示词」；名称自动剥掉与徽标重复的前缀）+ token 数 + **占当前上下文总量的百分比**（<1% 显式标注；顶部「总占用」同口径，按全部块求和——Core 的 `total_tokens` 只计历史）
 - 逐条消息明细（角色 + token + 内容），默认折叠
-- 操作：**清理历史**（两步确认：首击变为「确认清理？不可恢复」，再击发送 `ClearHistory{team_id, session_id}`——**只清当前会话**，不影响同人格下其他会话；2026-10 用户报告修复；会话未知时前端 fail-closed 不发命令）；**归档**（confirm → `ArchiveHistory{team_id, session_id}`——**只归档并清空当前会话**，不影响同人格其他会话（2026-10 会话级修复；归档数据为内存快照）；会话未知时 fail-closed 不发命令）；**压缩**（confirm → `CompactHistory{keep_recent: 40}`——作用于**该人格全部会话**（各会话独立分组摘要，LLM 生成可能需要数分钟），执行前**自动把快照写进 `archives/*-precompact.json`**，摘要失败回退统计文案；结果消息含压缩条数/组数/归档路径）；**重载技能**（`ReloadSkills`；重载**所有运行中智能体+管理代理**的技能注册表，不只是当前查看的——回执「技能已重新加载（N/M 个智能体更新）」、无变化时「技能无变化」、部分失败逐个人格报错）；**刷新**
+- 操作：**清理历史**（两步确认：首击变为「确认清理？不可恢复」，再击发送 `ClearHistory{team_id, session_id}`——**只清当前会话**，不影响同人格下其他会话；用户报告后修复；会话未知时前端 fail-closed 不发命令）；**归档**（confirm → `ArchiveHistory{team_id, session_id}`——**只归档并清空当前会话**，不影响同人格其他会话（会话级修复；归档数据为内存快照）；会话未知时 fail-closed 不发命令）；**压缩**（confirm → `CompactHistory{keep_recent: 40}`——作用于**该人格全部会话**（各会话独立分组摘要，LLM 生成可能需要数分钟），执行前**自动把快照写进 `archives/*-precompact.json`**，摘要失败回退统计文案；结果消息含压缩条数/组数/归档路径）；**重载技能**（`ReloadSkills`；重载**所有运行中智能体+管理代理**的技能注册表，不只是当前查看的——回执「技能已重新加载（N/M 个智能体更新）」、无变化时「技能无变化」、部分失败逐个人格报错）；**刷新**
 - **加载三态**：打开即拉取（`sendPending` 登记 `'context'`）——连接中 spinner；加载中骨架（仪表盘 + 2 块卡片，150ms 内到达不显示）；>20s 超时错误 + 重试（`LoadHint`）；已显示过快照时重开先亮旧快照再覆盖；「↻」按钮加载中转圈
 
 ## Agent 配置弹层
 
-锚定会话区上方的磨砂覆盖层（底边 = 入口行高 + 42px，`ChatView.vue:395-402, 874-880`）；点遮罩/✕/取消/保存后关闭。打开时拉取技能/工具/插件清单：
+锚定会话区上方的磨砂覆盖层（底边 = 入口行高 + 42px，`ChatView.vue` 的配置弹层几何）；点遮罩/✕/取消/保存后关闭。打开时拉取技能/工具/插件清单：
 
 - 字段：名称、描述、系统提示词（留空继承全局）、启用开关（**禁用即卸载记忆**，重启用重新挂载）、**循环模式分段单选**（单会话（默认）/ 并行多会话——写入 `enabled_plugins` 白名单的 `echo-agent.loop.{single,parallel}` 插件 id，二选一）
 - **API 供应商下拉**：选项 = 「跟随全局默认配置」+ 全局供应商池各 profile（`name（provider / model · key 状态）`）；保存写入 `SaveTeam.api_profile`，运行期立即重建该 persona 的 provider（见 [设置视图](./panel-settings.md)「API 设置」）
