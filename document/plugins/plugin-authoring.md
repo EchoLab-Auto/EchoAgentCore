@@ -39,6 +39,8 @@ impl PluginHandler for MyPlugin {
             category: "plugin".into(),
             timeout_hint_secs: None,
             package: Some("my-plugin".into()),
+            // 成功调用是否即产生平台可见输出（普通插件工具填 false）
+            visible_reply: false,
         })]
     }
 
@@ -47,6 +49,8 @@ impl PluginHandler for MyPlugin {
             "hello" => InvokeOutcome::Ok {
                 text: format!("你好，{}", req.payload["name"].as_str().unwrap_or("世界")),
                 images: vec![],
+                // 结构化返回（工具面消费者可忽略）；`text` 是模型可见文本
+                result: serde_json::Value::Null,
             },
             other => InvokeOutcome::Error {
                 code: "unknown_contribution".into(),
