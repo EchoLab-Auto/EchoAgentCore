@@ -73,7 +73,9 @@ fn parse_skill(path: &Path, text: &str) -> Result<Skill, SkillError> {
                 package = if v.is_empty() {
                     None
                 } else {
-                    Some(v.to_string())
+                    // 旧 id（`echo-agent.adapter.<p>`）归一为新形态，否则
+                    // 升级后技能与工具的包标签对不上、面板分成两个包。
+                    Some(crate::plugins::canonical_plugin_id(v))
                 };
             }
             "always" if in_metadata => always = value.eq_ignore_ascii_case("true"),

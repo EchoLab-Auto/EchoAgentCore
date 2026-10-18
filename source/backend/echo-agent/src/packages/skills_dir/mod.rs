@@ -438,8 +438,8 @@ mod tests {
     fn package_toggle_bulk_disables_and_restores() {
         let mut registry = SkillRegistry::new();
         for (name, pkg) in [
-            ("qq-management", Some("echo-agent.adapter.qq")),
-            ("qq-transport", Some("echo-agent.adapter.qq")),
+            ("qq-management", Some("echo-agent.instance.qq")),
+            ("qq-transport", Some("echo-agent.instance.qq")),
             ("calculator", None),
         ] {
             registry.register(Skill {
@@ -459,13 +459,13 @@ mod tests {
 
         // 包内成员列举（排序稳定）
         assert_eq!(
-            registry.package_names("echo-agent.adapter.qq"),
+            registry.package_names("echo-agent.instance.qq"),
             vec!["qq-management".to_string(), "qq-transport".to_string()]
         );
 
         // 禁用包：仅包内技能关闭
         assert_eq!(
-            registry.set_package_enabled("echo-agent.adapter.qq", false),
+            registry.set_package_enabled("echo-agent.instance.qq", false),
             2
         );
         assert!(!registry.get("qq-management").unwrap().metadata.enabled);
@@ -477,7 +477,7 @@ mod tests {
 
         // 恢复
         assert_eq!(
-            registry.set_package_enabled("echo-agent.adapter.qq", true),
+            registry.set_package_enabled("echo-agent.instance.qq", true),
             2
         );
         assert!(registry.get("qq-management").unwrap().metadata.enabled);

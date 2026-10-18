@@ -796,7 +796,7 @@ mod tests {
                                     protocol: hello.protocol.clone(),
                                     version: hello.version,
                                     plugin_id: hello.plugin_id.clone(),
-                                    capabilities: vec![capabilities::ADAPTER.to_string()],
+                                    capabilities: vec![capabilities::PLUGIN_INSTANCE.to_string()],
                                 }))
                                 .await;
                             let _ = io
@@ -1216,7 +1216,7 @@ mod tests {
                                     protocol: hello.protocol.clone(),
                                     version: hello.version,
                                     plugin_id: hello.plugin_id.clone(),
-                                    capabilities: vec![capabilities::ADAPTER.to_string()],
+                                    capabilities: vec![capabilities::PLUGIN_INSTANCE.to_string()],
                                 }))
                                 .await;
                             let _ = io

@@ -417,7 +417,7 @@ mod tests {
                 "properties": { "content": {"type": "string"} },
                 "required": ["content"]
             }),
-            package: Some("echo-agent.adapter.mock".into()),
+            package: Some("echo-agent.instance.mock".into()),
             visible_reply: false,
         }
     }
@@ -517,7 +517,7 @@ mod tests {
         assert_eq!(registered.len(), 2);
         assert!(registered
             .iter()
-            .all(|(_, package)| package.as_deref() == Some("echo-agent.adapter.mock")));
+            .all(|(_, package)| package.as_deref() == Some("echo-agent.instance.mock")));
         let definitions = registry.definitions().await;
         let alpha = definitions
             .iter()

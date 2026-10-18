@@ -1378,7 +1378,7 @@ async fn persona_skill_checkbox_round_trip() {
 async fn package_gating_spans_tools_and_skills() {
     use echo_agent::plugins::TOOLS_BUILTIN_PLUGIN_ID;
     /// 测试自带的实例插件 id（框架不认识任何真实平台名）。
-    const ADAPTER_QQ_PLUGIN_ID: &str = "echo-agent.adapter.test";
+    const ADAPTER_QQ_PLUGIN_ID: &str = "echo-agent.instance.test";
 
     let provider = Arc::new(StaticProvider {
         reply: "ok",

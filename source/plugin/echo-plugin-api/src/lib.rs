@@ -52,8 +52,9 @@ pub mod capabilities {
     /// 插件支持宿主服务回呼（`HostCall` / `HostCallResult`；P2 新增）。
     pub const HOST_CALL: &str = "host_call";
     /// 插件提供插件实例贡献（`Contribution::PluginInstance`；W1.3 / P1，2026-10
-    /// 实例插件化）。
-    pub const ADAPTER: &str = "adapter";
+    /// 实例插件化）。wire 字符串保持 `adapter` 以兼容已部署插件（2026-10 去
+    /// 适配器化时改名，握手比对的是字符串，因此不能与旧值断开）。
+    pub const PLUGIN_INSTANCE: &str = "adapter";
 }
 
 #[cfg(test)]

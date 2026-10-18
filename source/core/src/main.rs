@@ -635,7 +635,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let instance_registry = echo_defs::plugin_instance::InstanceRegistry::new();
 
     // ---- 插件实例（多实例；实例 = 插件实例名 = 会话 account 维度）----
-    // persona 门控：启用了 `echo-agent.instance.qq` 的人格各自获得实例
+    // 当前被**容器编排**的平台。容器部署知识（`napcat`）目前只覆盖 QQ，
+    // 因此这里只取它；配置层早已平台中立（`cfg.instances` 是任意平台名的
+    // 映射）。插件 id / 状态文件 / 命令名一律由 `platform` 派生，不写死字符串。
+    let platform = "qq";
+    // persona 门控：启用了 `echo-agent.instance.<platform>` 的人格各自获得实例
     // （未配置实例时自动建档），legacy 单实例部署行为不变。
     let qq_enabled_personas: Vec<String> = cfg
         .agent
@@ -645,7 +649,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             m.enabled
                 && echo_agent::plugins::profile_allows_plugin(
                     m,
-                    crate::instance_manifests::ADAPTER_QQ_PLUGIN_ID,
+                    &crate::instance_manifests::plugin_id_for(platform),
                 )
         })
         .map(|(id, _)| id.clone())
@@ -662,21 +666,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    // 本仓库当前只**编排** QQ 这一种平台的实例（容器化部署知识仍在
-    // `qq_instances`，属后续阶段）；平台配置本身已泛化到 `cfg.instances`，
-    // 新增平台无需改这里也能读到配置。
-    // `platform` = 当前被**容器编排**的平台。容器部署知识（`napcat`）目前只覆盖
-    // QQ，因此这里只取它；配置层早已平台中立（`cfg.instances` 是任意平台名的
-    // 映射），多平台编排是后续阶段的事——但下面的插件 id / 状态文件 / 命令名
-    // 一律由 `platform` 派生，不再写死字符串。
-    let platform = "qq";
     let qq_host = cfg.instances.get(platform).cloned().unwrap_or_default();
-    let qq_instances = instance_deploy::resolve_instances_in(
+    let qq_instances = instance_deploy::resolve_instances(
         &qq_host,
         &qq_host.instances,
         &qq_enabled_personas,
         &qq_default_persona,
-        Some(&qq_data_dir),
     );
     // 插件实例仅以独立进程插件运行（P1.9，2026-10 实例插件化收尾——
     // 内置路径已移除；`builtin` 模式配置在加载期告警并按 plugin 处理）。
@@ -709,44 +704,44 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     command: command.clone(),
                     args: launch.args.clone(),
                     env: launch.env.clone(),
+                    // 三个字段各有读者，**都不再由 Core 派生**：
+                    // - `shared` / `overrides`：新插件自己深合并 + 分配端口 +
+                    //   派生容器名 / compose（NapCat 部署形状归插件）；
+                    // - `config`：合并结果，只给**已部署的旧插件**读（过渡窗口）。
                     config: serde_json::json!({
                         "name": instance.id,
                         "persona": instance.persona,
                         "state_file": state_file.to_string_lossy(),
-                        "config": instance.config,
+                        "data_dir": qq_data_dir.to_string_lossy(),
+                        "shared": qq_host.shared,
+                        "overrides": instance.overrides,
+                        "config": instance_deploy::legacy_merged_config(
+                            &qq_host,
+                            &instance.overrides,
+                        ),
                     }),
                 }
             })
             .collect()
     };
-    // 实例持久化：新分配的**归属人格与端口**写回
-    // `[instances.qq.instances.<id>]`（persona + ports），保证跨重启稳定：
-    // - 端口：容器端口映射必须稳定，插件实例容器才能重连到同一处；
-    // - persona：自动建档实例若只写端口，重启后 persona 缺失会被重新
-    //   分配给默认人格（首个启用实例插件的人格），实例归属漂移。
+    // 实例持久化：自动建档实例的**归属人格**写回
+    // `[instances.qq.instances.<id>]`，保证跨重启稳定（否则重启后 persona
+    // 缺失会被重新分配给默认人格，实例归属漂移）。
+    //
+    // 端口不再写回——端口由插件自行分配并持久化到它自己的 state_file。
     {
-        struct InstancePatch {
-            id: String,
-            persona: String,
-            ports: instance_deploy::QqPorts,
-            /// persona 是否需要写回（已有显式 persona 的实例跳过该字段）。
-            write_persona: bool,
-        }
-        let mut patches: Vec<InstancePatch> = Vec::new();
+        let mut patches: Vec<(String, String)> = Vec::new();
         for instance in &qq_instances {
             if instance.id == instance_deploy::DEFAULT_INSTANCE {
-                continue; // legacy 实例沿用既定端口与默认归属，不写配置
+                continue; // legacy 实例沿用默认归属，不写配置
             }
-            let section = qq_host.instances.get(&instance.id);
-            let configured_ports = section.map(|s| s.ports.clone()).unwrap_or_default();
-            let has_persona = section.and_then(|s| s.persona.clone()).is_some();
-            if configured_ports != instance.ports || !has_persona {
-                patches.push(InstancePatch {
-                    id: instance.id.clone(),
-                    persona: instance.persona.clone(),
-                    ports: instance.ports.clone(),
-                    write_persona: !has_persona,
-                });
+            let has_persona = qq_host
+                .instances
+                .get(&instance.id)
+                .and_then(|s| s.persona.clone())
+                .is_some();
+            if !has_persona {
+                patches.push((instance.id.clone(), instance.persona.clone()));
             }
         }
         if !patches.is_empty() {
@@ -754,21 +749,16 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 let instances = echo_config::ensure_table(root, "adapters");
                 let qq = echo_config::ensure_table(instances, platform);
                 let instances = echo_config::ensure_table(qq, "instances");
-                for patch in &patches {
-                    let entry = echo_config::ensure_table(instances, &patch.id);
-                    let value =
-                        toml::Value::try_from(&patch.ports).map_err(|e| format!("ports: {e}"))?;
-                    entry.insert("ports".into(), value);
-                    if patch.write_persona {
-                        entry.insert("persona".into(), toml::Value::String(patch.persona.clone()));
-                    }
+                for (id, persona) in &patches {
+                    let entry = echo_config::ensure_table(instances, id);
+                    entry.insert("persona".into(), toml::Value::String(persona.clone()));
                 }
                 Ok(())
             }) {
-                warn!(%error, "adapter instance persist failed");
+                warn!(%error, "instance persona persist failed");
             } else {
-                let ids: Vec<&str> = patches.iter().map(|patch| patch.id.as_str()).collect();
-                info!(instances = ?ids, "adapter instance persona/ports allocated and persisted");
+                let ids: Vec<&str> = patches.iter().map(|(id, _)| id.as_str()).collect();
+                info!(instances = ?ids, "instance persona assigned and persisted");
             }
         }
     }
@@ -1213,7 +1203,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_wired = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let qq_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
-        use crate::instance_manifests::ADAPTER_QQ_PLUGIN_ID;
         use echo_agent::plugins::{
             ToolSink, MANAGEMENT_PANEL_PLUGIN_ID, SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
         };
@@ -1392,22 +1381,27 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let qq = qq_instance.clone();
             let wired = qq_wired.clone();
             let running = qq_running.clone();
+            // id / 名称 / entry 全部由**平台名**派生——组合根不再持有点名平台的常量。
+            let instance_plugin_id = crate::instance_manifests::plugin_id_for(platform);
+            let instance_plugin_name = format!("{platform} 插件实例");
+            let instance_plugin_id_for_mount = instance_plugin_id.clone();
             register(
                 &plugin_host,
                 PluginManifest::builtin(
-                    ADAPTER_QQ_PLUGIN_ID,
-                    "QQ 插件实例",
+                    &instance_plugin_id,
+                    &instance_plugin_name,
                     version,
                     PluginKind::PluginInstance,
-                    "qq",
-                    "OneBot v11 反向 WS 实例插件（独立进程；含 QQ 管理工具）",
+                    platform,
+                    &format!("{platform} 平台实例插件（独立进程）"),
                 )
                 // 实例插件化收尾（P1.9，2026-10）：实现由独立进程
                 // `echo-instance-qq` 提供，这里只是门控壳。必须显式声明，
                 // 否则 Panel 按 builtin=true 把它显示成「内部插件」。
                 .with_runtime(PluginRuntime::Subprocess),
                 move |_ctx| {
-                    for_each_agent(|a| a.reapply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, true));
+                    let plugin_id = instance_plugin_id_for_mount.clone();
+                    for_each_agent(|a| a.reapply_plugin_gating(&plugin_id, true));
                     if let Some(qq) = qq.clone() {
                         if wired.load(Ordering::SeqCst) && !running.swap(true, Ordering::SeqCst) {
                             let running2 = running.clone();
@@ -1421,8 +1415,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     }
                     let qq = qq.clone();
                     let running = running.clone();
+                    let plugin_id_unmount = instance_plugin_id_for_mount.clone();
                     Ok(vec![Disposer::from_fn(move || {
-                        for_each_agent(|a| a.reapply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, false));
+                        for_each_agent(|a| a.reapply_plugin_gating(&plugin_id_unmount, false));
                         if running.swap(false, Ordering::SeqCst) {
                             if let Some(qq) = qq.clone() {
                                 tokio::spawn(async move {
@@ -1732,22 +1727,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_plugin_enabled = agent
         .plugin_host()
         .registry
-        .is_enabled(crate::instance_manifests::ADAPTER_QQ_PLUGIN_ID);
+        .is_enabled(&crate::instance_manifests::plugin_id_for(platform));
     if qq_host.enabled && qq_plugin_enabled {
         // 多实例：逐个生成 compose（非 legacy）并启动；单个失败不影响其余。
-        let data_dir = qq_data_dir.clone();
         for (instance_id, persona_id, instance) in &qq_handles {
-            if let Some(instance) = qq_instances.iter().find(|i| &i.id == instance_id) {
-                if instance.id != instance_deploy::DEFAULT_INSTANCE {
-                    if let Err(error) = instance_deploy::napcat::write_compose(
-                        &data_dir,
-                        &instance.id,
-                        &instance.ports,
-                    ) {
-                        warn!(instance = %instance.id, %error, "compose write failed");
-                    }
-                }
-            }
             match instance.start().await {
                 Ok(()) => {
                     info!(instance = %instance_id, persona = %persona_id, "adapter instance started");

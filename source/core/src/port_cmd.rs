@@ -11,7 +11,6 @@
 //! | `federation` | `[federation].listen` | 联邦监听（host:port；**缺省 = 合并至管理端口**；`none` = 仅连出） |
 //! | `federation-advertise` | `[federation].advertise` | 邀请串对外宣告地址（host[:port]） |
 //! | `qq` | `[instances.qq.instances.qq.ports].reverse_ws` | 默认 QQ 实例反向 WS（Core 自绑定） |
-//! | `qq-instance:<id>:<字段>` | `[instances.qq.instances.<id>.ports].<字段>` | 多实例宿主端口三元组 |
 //!
 //! 注意：`[instances.qq.server].bind_address` 在运行时会被实例端口分配
 //! 覆盖（`qq_instances::merge_instance`），**实际监听端口以实例 `ports`
@@ -31,7 +30,6 @@ use clap::Subcommand;
 /// 各端口的缺省值（与 config.rs / qq_instances.rs 的运行时缺省一致）。
 pub const DEFAULT_MANAGEMENT: &str = "0.0.0.0:3132";
 pub const DEFAULT_FEDERATION_LISTEN: &str = "0.0.0.0:3133";
-pub const DEFAULT_QQ_REVERSE_WS: u16 = 3131;
 
 /// `echo-agent-core port` 的次级动作。
 #[derive(Debug, Subcommand)]
@@ -41,7 +39,6 @@ pub enum PortSubCommand {
     /// 修改端口 / 监听地址（重启 Core 生效）。
     Set {
         /// 目标键：management | federation | federation-advertise | qq |
-        /// qq-instance:<id>:<reverse_ws|onebot_http|webui>
         /// （直接复制 `port` 列表第一列）。
         target: String,
         /// 新值：<端口> / <host:端口> / none（仅 federation*）/ auto（仅实例端口）。
@@ -59,42 +56,12 @@ pub fn run(config_path: &Path, action: Option<PortSubCommand>) -> Result<()> {
 
 // ── 目标解析 ───────────────────────────────────────────────────────────────
 
-/// QQ 实例的宿主端口字段。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QqField {
-    ReverseWs,
-    OnebotHttp,
-    Webui,
-}
-
-impl QqField {
-    fn parse(s: &str) -> Result<Self, String> {
-        match s {
-            "reverse_ws" => Ok(Self::ReverseWs),
-            "onebot_http" => Ok(Self::OnebotHttp),
-            "webui" => Ok(Self::Webui),
-            other => Err(format!(
-                "未知实例端口字段 `{other}`（可选：reverse_ws | onebot_http | webui）"
-            )),
-        }
-    }
-
-    fn key(self) -> &'static str {
-        match self {
-            Self::ReverseWs => "reverse_ws",
-            Self::OnebotHttp => "onebot_http",
-            Self::Webui => "webui",
-        }
-    }
-}
-
 /// 修改目标。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Management,
     FederationListen,
     FederationAdvertise,
-    QqInstance { id: String, field: QqField },
 }
 
 impl Target {
@@ -103,33 +70,10 @@ impl Target {
             "management" => return Ok(Self::Management),
             "federation" => return Ok(Self::FederationListen),
             "federation-advertise" => return Ok(Self::FederationAdvertise),
-            "qq" => {
-                return Ok(Self::QqInstance {
-                    id: "qq".to_string(),
-                    field: QqField::ReverseWs,
-                })
-            }
             _ => {}
         }
-        if let Some(rest) = s.strip_prefix("qq-instance:") {
-            let mut parts = rest.splitn(2, ':');
-            let id = parts.next().unwrap_or_default();
-            let field = parts.next().unwrap_or_default();
-            if id.is_empty() || field.is_empty() {
-                return Err(
-                    "qq-instance 目标格式：qq-instance:<实例id>:<reverse_ws|onebot_http|webui>"
-                        .to_string(),
-                );
-            }
-            validate_instance_id(id)?;
-            return Ok(Self::QqInstance {
-                id: id.to_string(),
-                field: QqField::parse(field)?,
-            });
-        }
         Err(format!(
-            "未知目标 `{s}`（可选：management | federation | federation-advertise | qq | \
-             qq-instance:<id>:<字段>）"
+            "未知目标 `{s}`（可选：management | federation | federation-advertise）"
         ))
     }
 
@@ -139,27 +83,11 @@ impl Target {
             Self::Management => ("core".to_string(), "management_address".to_string()),
             Self::FederationListen => ("federation".to_string(), "listen".to_string()),
             Self::FederationAdvertise => ("federation".to_string(), "advertise".to_string()),
-            Self::QqInstance { id, field } => (
-                format!("adapters.qq.instances.{id}.ports"),
-                field.key().to_string(),
-            ),
         }
     }
 }
 
 /// 实例 id 卫生：仅 `[A-Za-z0-9_-]`（防经段头注入 TOML；与 persona id 约定一致）。
-fn validate_instance_id(id: &str) -> Result<(), String> {
-    if id.is_empty()
-        || !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(format!(
-            "实例 id `{id}` 非法（仅允许字母/数字/下划线/连字符）"
-        ));
-    }
-    Ok(())
-}
 
 // ── 值解析 ─────────────────────────────────────────────────────────────────
 
@@ -262,13 +190,6 @@ fn normalize_advertise(value: &str, current: &str) -> Result<String, String> {
 }
 
 /// 归一化实例端口值：`<端口>` 或 `auto`（→ 0）。
-fn normalize_instance_port(value: &str) -> Result<u16, String> {
-    let value = value.trim();
-    if value == "auto" {
-        return Ok(0);
-    }
-    parse_port(value)
-}
 
 // ── 文本编辑 ───────────────────────────────────────────────────────────────
 
@@ -349,9 +270,6 @@ fn set_string_key(text: &str, section: &str, key: &str, value: &str) -> Result<S
 }
 
 /// 设置 `<section>` 内的 `key = <整数>`（裸值形态；QQ 实例端口用）。
-fn set_int_key(text: &str, section: &str, key: &str, value: u16) -> Result<String, String> {
-    set_key_line(text, section, key, &format!("{key} = {value}"))
-}
 
 /// 设置 `<section>` 内的 `key = ...`（赋值行完整给出）：
 /// - 段内已有该键：原位替换；
@@ -444,30 +362,7 @@ fn get_str<'a>(root: &'a toml::Table, path: &[&str]) -> Option<&'a str> {
     None
 }
 
-fn get_u16(root: &toml::Table, path: &[&str]) -> Option<u16> {
-    let mut node = root;
-    for (i, key) in path.iter().enumerate() {
-        let value = node.get(*key)?;
-        if i + 1 == path.len() {
-            return value.as_integer().and_then(|v| u16::try_from(v).ok());
-        }
-        node = value.as_table()?;
-    }
-    None
-}
-
 /// 配置中出现的 QQ 实例 id（有序去重）。
-fn instance_ids(root: &toml::Table) -> Vec<String> {
-    let mut ids: Vec<String> = root
-        .get("adapters")
-        .and_then(|v| v.get("qq"))
-        .and_then(|v| v.get("instances"))
-        .and_then(|v| v.as_table())
-        .map(|t| t.keys().cloned().collect())
-        .unwrap_or_default();
-    ids.sort();
-    ids
-}
 
 // ── 子命令实现 ─────────────────────────────────────────────────────────────
 
@@ -528,45 +423,6 @@ fn list(config_path: &Path) -> Result<()> {
             "（按 listen 推导）".into(),
             "未设置",
         )),
-    }
-
-    // QQ 实例
-    let mut ids = instance_ids(&root);
-    if !ids.iter().any(|id| id == "qq") {
-        ids.insert(0, "qq".to_string()); // 默认实例（legacy 兜底）恒展示
-    }
-    for id in ids {
-        let ports = |field: QqField| -> Option<u16> {
-            get_u16(
-                &root,
-                &["adapters", "qq", "instances", &id, "ports", field.key()],
-            )
-        };
-        if id == "qq" {
-            let value = ports(QqField::ReverseWs)
-                .filter(|p| *p > 0)
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| format!("{DEFAULT_QQ_REVERSE_WS}（缺省）"));
-            let source = if value.ends_with("（缺省）") {
-                "缺省"
-            } else {
-                "配置"
-            };
-            rows.push(("qq".into(), value, source));
-        } else {
-            for field in [QqField::ReverseWs, QqField::OnebotHttp, QqField::Webui] {
-                let value = ports(field)
-                    .filter(|p| *p > 0)
-                    .map(|p| p.to_string())
-                    .unwrap_or_else(|| "自动".to_string());
-                let source = if value == "自动" {
-                    "缺省"
-                } else {
-                    "配置"
-                };
-                rows.push((format!("qq-instance:{}:{}", id, field.key()), value, source));
-            }
-        }
     }
 
     let width = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
@@ -663,7 +519,6 @@ fn set(config_path: &Path, target: &str, value: &str) -> Result<()> {
 
     enum Plan {
         StrValue(String),
-        PortValue(u16),
         NoChange,
     }
     let plan = match &target {
@@ -697,31 +552,11 @@ fn set(config_path: &Path, target: &str, value: &str) -> Result<()> {
                 Plan::StrValue(new)
             }
         }
-        Target::QqInstance { id, field } => {
-            // 防误建实例：非默认实例必须已存在于配置（否则下次启动会
-            // 凭空多出一个启用实例及其容器）。
-            if id != "qq" && !instance_ids(&root).iter().any(|existing| existing == id) {
-                return Err(anyhow::anyhow!(
-                    "实例 `{id}` 不存在于配置（先创建该实例，再改其端口）"
-                ));
-            }
-            let port = normalize_instance_port(value).map_err(anyhow::Error::msg)?;
-            let old = get_u16(
-                &root,
-                &["adapters", "qq", "instances", id, "ports", field.key()],
-            );
-            if old == Some(port) {
-                Plan::NoChange
-            } else {
-                Plan::PortValue(port)
-            }
-        }
     };
 
     /// 自检期望值（结构化——避免从展示文案反解类型）。
     enum Expect {
         Str(String),
-        Port(u16),
     }
     let (updated, new_value_display, expect) = match plan {
         Plan::NoChange => {
@@ -733,10 +568,6 @@ fn set(config_path: &Path, target: &str, value: &str) -> Result<()> {
                 set_string_key(&text, &section, &key, &new).map_err(anyhow::Error::msg)?;
             let expect = Expect::Str(new.clone());
             (updated, display_str(&new, &target), expect)
-        }
-        Plan::PortValue(port) => {
-            let updated = set_int_key(&text, &section, &key, port).map_err(anyhow::Error::msg)?;
-            (updated, format_instance_port(port), Expect::Port(port))
         }
     };
 
@@ -756,15 +587,9 @@ fn set(config_path: &Path, target: &str, value: &str) -> Result<()> {
             (Target::FederationAdvertise, _) => {
                 get_str(&parsed, &["federation", "advertise"]).map(str::to_string)
             }
-            (Target::QqInstance { id, field }, _) => get_u16(
-                &parsed,
-                &["adapters", "qq", "instances", id, "ports", field.key()],
-            )
-            .map(|v| v.to_string()),
         };
         let ok = match (&expect, &found) {
             (Expect::Str(expected), Some(found)) => found == expected,
-            (Expect::Port(expected), Some(found)) => found.parse::<u16>() == Ok(*expected),
             _ => false,
         };
         if !ok {
@@ -801,12 +626,6 @@ fn target_label(target: &Target) -> String {
         Target::Management => "management（[core].management_address）".into(),
         Target::FederationListen => "federation（[federation].listen）".into(),
         Target::FederationAdvertise => "federation-advertise（[federation].advertise）".into(),
-        Target::QqInstance { id, field } => {
-            format!(
-                "qq-instance:{id}:{}（[adapters.qq.instances.{id}.ports]）",
-                field.key()
-            )
-        }
     }
 }
 
@@ -823,14 +642,6 @@ fn display_str(value: &str, _target: &Target) -> String {
         "\"\"".to_string()
     } else {
         value.to_string()
-    }
-}
-
-fn format_instance_port(port: u16) -> String {
-    if port == 0 {
-        "auto（0，下次启动重新分配）".to_string()
-    } else {
-        port.to_string()
     }
 }
 
@@ -863,16 +674,6 @@ fn hints(target: &Target, value: &str, merged: bool) -> Vec<String> {
         Target::FederationAdvertise => {
             vec!["邀请串与对端学习的地址将按新值对外宣告".to_string()]
         }
-        Target::QqInstance { id, field } => {
-            let mut notes = vec![];
-            if id != "qq" {
-                notes.push("实例容器映射随下次启动重建（compose 由 Core 生成）".to_string());
-            }
-            if *field == QqField::ReverseWs {
-                notes.push("NapCat 容器的反向 WS 地址需指向同一端口".to_string());
-            }
-            notes
-        }
     }
 }
 
@@ -902,25 +703,10 @@ mod tests {
             Target::parse("federation-advertise").unwrap(),
             Target::FederationAdvertise
         );
-        assert_eq!(
-            Target::parse("qq").unwrap(),
-            Target::QqInstance {
-                id: "qq".into(),
-                field: QqField::ReverseWs
-            }
-        );
-        assert_eq!(
-            Target::parse("qq-instance:alix-two:webui").unwrap(),
-            Target::QqInstance {
-                id: "alix-two".into(),
-                field: QqField::Webui
-            }
-        );
         assert!(Target::parse("unknown").is_err());
-        assert!(Target::parse("qq-instance:only-id").is_err());
-        assert!(Target::parse("qq-instance:bad:id:extra:webui").is_err());
-        assert!(Target::parse("qq-instance:a b:webui").is_err());
-        assert!(Target::parse("qq-instance:id:badfield").is_err());
+        // 实例端口（QQ/NapCat 的部署形状）已移交插件：容器编排目标不存在了。
+        assert!(Target::parse("qq").is_err());
+        assert!(Target::parse("qq-instance:alix-two:webui").is_err());
     }
 
     // ── 值解析 ──
@@ -974,14 +760,6 @@ mod tests {
         // 无 host 且给纯端口 → 报错。
         assert!(normalize_advertise("4000", "").is_err());
         assert!(normalize_advertise("a b", "").is_err());
-    }
-
-    #[test]
-    fn normalize_instance_port_forms() {
-        assert_eq!(normalize_instance_port("3140").unwrap(), 3140);
-        assert_eq!(normalize_instance_port("auto").unwrap(), 0);
-        assert!(normalize_instance_port("0").is_err());
-        assert!(normalize_instance_port("x").is_err());
     }
 
     // ── 文本编辑 ──
@@ -1040,32 +818,6 @@ mod tests {
         assert_eq!(
             parsed["federation"]["listen"].as_str().unwrap(),
             "0.0.0.0:4001"
-        );
-    }
-
-    #[test]
-    fn creates_deep_section_after_ancestor() {
-        let text = "[adapters.qq.instances.qq]\npersona = \"alix\"\n\n[adapters.qq.server]\nbind_address = \"0.0.0.0:3131\"\n";
-        let out = set_int_key(text, "adapters.qq.instances.qq.ports", "reverse_ws", 3141).unwrap();
-        let parsed: toml::Table = out.parse().unwrap();
-        assert_eq!(
-            parsed["adapters"]["qq"]["instances"]["qq"]["ports"]["reverse_ws"]
-                .as_integer()
-                .unwrap(),
-            3141
-        );
-        // 既有段不受影响。
-        assert_eq!(
-            parsed["adapters"]["qq"]["server"]["bind_address"]
-                .as_str()
-                .unwrap(),
-            "0.0.0.0:3131"
-        );
-        assert_eq!(
-            parsed["adapters"]["qq"]["instances"]["qq"]["persona"]
-                .as_str()
-                .unwrap(),
-            "alix"
         );
     }
 
@@ -1158,57 +910,16 @@ mod tests {
     }
 
     #[test]
-    fn set_federation_none_and_qq_instance() {
+    fn set_federation_none() {
         let path = temp_path("e2e-fed");
-        std::fs::write(
-            &path,
-            "[adapters.qq.instances.qq]\npersona = \"alix\"\n\n[adapters.qq.instances.two]\npersona = \"bob\"\n\n[federation]\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "[federation]\n").unwrap();
         set(&path, "federation", "none").unwrap();
-        set(&path, "qq", "3141").unwrap();
-        set(&path, "qq-instance:two:webui", "7100").unwrap();
-        // 非默认实例校验：不存在的实例报错。
-        assert!(set(&path, "qq-instance:ghost:webui", "7101").is_err());
         let text = std::fs::read_to_string(&path).unwrap();
         let parsed: toml::Table = text.parse().unwrap();
         assert_eq!(parsed["federation"]["listen"].as_str().unwrap(), "");
-        assert_eq!(
-            parsed["adapters"]["qq"]["instances"]["qq"]["ports"]["reverse_ws"]
-                .as_integer()
-                .unwrap(),
-            3141
-        );
-        assert_eq!(
-            parsed["adapters"]["qq"]["instances"]["two"]["ports"]["webui"]
-                .as_integer()
-                .unwrap(),
-            7100
-        );
-        // 类型级验证：QQ 端口按整数反序列化成功（QqPorts 为 u16 字段）。
+        // 类型级验证：编辑后的配置能被 CoreConfig 真正加载。
         let cfg = crate::config::CoreConfig::load(&path).unwrap();
         assert_eq!(cfg.federation.listen, "");
-        assert_eq!(cfg.instances["qq"].instances["qq"].ports.reverse_ws, 3141);
-        assert_eq!(cfg.instances["qq"].instances["two"].ports.webui, 7100);
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn set_auto_resets_instance_port() {
-        let path = temp_path("e2e-auto");
-        std::fs::write(
-            &path,
-            "[adapters.qq.instances.two.ports]\nreverse_ws = 3141\n",
-        )
-        .unwrap();
-        set(&path, "qq-instance:two:reverse_ws", "auto").unwrap();
-        let parsed: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
-        assert_eq!(
-            parsed["adapters"]["qq"]["instances"]["two"]["ports"]["reverse_ws"]
-                .as_integer()
-                .unwrap(),
-            0
-        );
         std::fs::remove_file(&path).ok();
     }
 

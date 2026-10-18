@@ -15,7 +15,11 @@ pub enum PluginKind {
     Provider,
     /// Turn runner / agent loop driver.
     Loop,
-    /// Platform instance (qq, ...).
+    /// Platform instance plugin (one per configured platform: qq, telegram, ...).
+    ///
+    /// Wire 名 `instance`；`adapter` 作为旧名继续接受（2026-10 去适配器化，
+    /// Panel / 外部 manifest 的过渡窗口）。
+    #[serde(rename = "instance", alias = "adapter")]
     PluginInstance,
     /// Built-in orchestration（保留类型；原 run_sudo/framework_update 工具已于
     /// 2026-09 废弃，当前无内置成员）。
@@ -34,7 +38,7 @@ impl PluginKind {
             PluginKind::Tool => "tool",
             PluginKind::Provider => "provider",
             PluginKind::Loop => "loop",
-            PluginKind::PluginInstance => "adapter",
+            PluginKind::PluginInstance => "instance",
             PluginKind::Orchestration => "orchestration",
             PluginKind::Management => "management",
             PluginKind::Interaction => "interaction",
@@ -293,7 +297,7 @@ kind = "skill"
         // 实例插件：builtin 仍为 true（manifest 编译内置），但实现跑在
         // 独立进程——两者互不干扰。
         let instance = PluginManifest::builtin(
-            "echo-agent.adapter.qq",
+            "echo-agent.instance.qq",
             "QQ 插件实例",
             "0.1.0",
             PluginKind::PluginInstance,

@@ -876,7 +876,7 @@ pub struct ToolInfo {
     /// Runtime enable/disable state.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Owning package id (e.g. "echo-agent.adapter.qq"); None = standalone.
+    /// Owning package id (e.g. "echo-agent.instance.qq"); None = standalone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<String>,
 }

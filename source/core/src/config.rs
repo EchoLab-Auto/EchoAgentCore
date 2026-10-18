@@ -126,14 +126,14 @@ impl Default for SanitizeSection {
 ///
 /// **平台中立**：`[instances.<name>]` 里的任意平台名都原样收进
 /// [`platforms`](Self::platforms)——新增平台不需要改本结构体，宿主也不认识
-/// 具体平台（平台专属键透传给插件）。此前是硬编码的 `qq: Option<QqSection>`，
+/// 具体平台（平台专属键透传给插件）。此前是硬编码的 `qq: Option<PlatformSection>`，
 /// 配 `[instances.telegram]` 会被 serde 静默丢弃。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct InstancesSection {
     /// 平台名 → 该平台的插件实例段（`shared` 透传 / `plugin` 启停 / `instances` 表）。
     #[serde(flatten)]
-    pub platforms: std::collections::BTreeMap<String, QqSection>,
+    pub platforms: std::collections::BTreeMap<String, PlatformSection>,
 }
 
 impl InstancesSection {
@@ -142,7 +142,7 @@ impl InstancesSection {
     /// 生产路径已改为遍历 [`platforms`](Self::platforms)（宿主不再点名平台），
     /// 本访问器留给调用方按名查询（含测试）。
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn platform(&self, name: &str) -> Option<&QqSection> {
+    pub fn platform(&self, name: &str) -> Option<&PlatformSection> {
         self.platforms.get(name)
     }
 
@@ -163,7 +163,7 @@ impl InstancesSection {
 /// - 未配置 `instances` 时按「默认值 → 唯一实例 `qq`」解析（legacy 行为）。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-pub struct QqSection {
+pub struct PlatformSection {
     /// 共享默认层（透传：原样进 `Hello.config.config`；宿主只读 `enabled` /
     /// `command_prefix` / `server.access_token` 等少量字段）。
     #[serde(flatten)]
@@ -172,9 +172,9 @@ pub struct QqSection {
     /// 见 `load()` 的归一化告警）。
     pub mode: String,
     /// 插件进程启动配置（`[instances.qq.plugin]`）。
-    pub plugin: QqPluginLaunchSection,
+    pub plugin: PluginLaunchSection,
     /// 实例表：实例 id → 覆盖项。
-    pub instances: std::collections::BTreeMap<String, QqInstanceSection>,
+    pub instances: std::collections::BTreeMap<String, PlatformInstanceSection>,
 }
 
 /// 单平台的宿主配置视图：透传为主、宿主只读少量字段。
@@ -193,9 +193,9 @@ pub struct InstanceHostConfig {
     /// 平台名（= `[instances.<name>]` 的 `<name>`）。
     pub platform: String,
     /// 实例表（`[instances.<platform>.instances.<id>]`；缺省空 = 单实例）。
-    pub instances: std::collections::BTreeMap<String, QqInstanceSection>,
+    pub instances: std::collections::BTreeMap<String, PlatformInstanceSection>,
     /// 插件进程启动配置（`[instances.<platform>.plugin]`）。
-    pub launch: QqPluginLaunchSection,
+    pub launch: PluginLaunchSection,
     /// `[instances.<platform>] mode`（历史字段；`"builtin"` 已移除）。
     pub mode: String,
     /// 共享层配置表（归一化后：`command_prefix` 空 → `/`、
@@ -210,7 +210,7 @@ impl InstanceHostConfig {
     ///
     /// 共享层先归一化（`command_prefix` 空 → `/`、`ECHO_ACCESS_TOKEN`
     /// 覆盖已应用），再从中读宿主所需的四个点。
-    pub fn from_section(platform: &str, section: &QqSection, shared: toml::Table) -> Self {
+    pub fn from_section(platform: &str, section: &PlatformSection, shared: toml::Table) -> Self {
         let enabled = shared
             .get("enabled")
             .and_then(toml::Value::as_bool)
@@ -241,7 +241,7 @@ impl InstanceHostConfig {
 /// `[instances.qq.plugin]`：实例插件进程（stdio）启动配置。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct QqPluginLaunchSection {
+pub struct PluginLaunchSection {
     /// 插件可执行文件（绝对路径 / PATH 名）。
     pub command: String,
     /// 追加命令行参数。
@@ -250,7 +250,7 @@ pub struct QqPluginLaunchSection {
     pub env: std::collections::BTreeMap<String, String>,
 }
 
-impl Default for QqPluginLaunchSection {
+impl Default for PluginLaunchSection {
     fn default() -> Self {
         Self {
             command: "echo-adapter-qq".to_string(),
@@ -268,28 +268,14 @@ impl Default for QqPluginLaunchSection {
 ///   （宿主不重复插件 schema，新增字段自动透传）。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-pub struct QqInstanceSection {
+pub struct PlatformInstanceSection {
     /// 归属人格 id（缺省 = 迁移期的旧单实例语义：第一个已启用人格）。
     pub persona: Option<String>,
-    /// 该实例独立端口（多容器多通道）；缺省由分配器填写并持久化。
-    pub ports: QqPorts,
     /// 该实例是否启用（缺省跟随共享默认的 `enabled`）。
     pub enabled: Option<bool>,
     /// 实例级配置覆盖片段（宿主不解释；与共享层深合并后原样下发插件）。
     #[serde(flatten)]
     pub overrides: toml::Table,
-}
-
-/// QQ 实例的宿主端口三元组（自动分配并持久化）。
-#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct QqPorts {
-    /// 反向 WS 监听端口（NapCat 连回 Core）。
-    pub reverse_ws: u16,
-    /// OneBot HTTP API 宿主端口。
-    pub onebot_http: u16,
-    /// NapCat WebUI 宿主端口。
-    pub webui: u16,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -428,7 +414,7 @@ impl CoreConfig {
         // 任何 `[instances.<name>]` 段都会被解析进来（不是只认 `qq`）。宿主只
         // 读四个点（enabled / command_prefix / access_token / instances+launch），
         // 其余键原样透传给插件。
-        let mut platforms: Vec<(String, QqSection)> = Vec::new();
+        let mut platforms: Vec<(String, PlatformSection)> = Vec::new();
         if let Some(ref instances) = config.instances_section {
             for (name, section) in &instances.platforms {
                 platforms.push((name.clone(), section.clone()));
@@ -438,7 +424,7 @@ impl CoreConfig {
         // `command_prefix` 也会被归一化为 `/`、插件 command 默认
         // `echo-instance-qq`）。其它平台只在配置里出现时才建视图。
         if !platforms.iter().any(|(name, _)| name == "qq") {
-            platforms.push(("qq".to_string(), QqSection::default()));
+            platforms.push(("qq".to_string(), PlatformSection::default()));
         }
         for (name, section) in platforms {
             let mut shared = section.shared.clone();

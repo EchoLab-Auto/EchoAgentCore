@@ -75,7 +75,32 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 8] = [
 /// `Agent::reapply_plugin_gating` 共用本判定，避免两套规则漂移。
 /// （插件黑名单 `disabled_plugins` 已于 2026-09-11 移除，白名单单轨。）
 pub fn profile_allows_plugin(profile: &crate::config::TeamMember, plugin_id: &str) -> bool {
-    profile.enabled_plugins.is_empty() || profile.enabled_plugins.iter().any(|p| p == plugin_id)
+    if profile.enabled_plugins.is_empty() {
+        return true;
+    }
+    let wanted = canonical_plugin_id(plugin_id);
+    profile
+        .enabled_plugins
+        .iter()
+        .any(|listed| canonical_plugin_id(listed) == wanted)
+}
+
+/// 实例插件 id 的旧前缀（`echo-agent.adapter.<platform>`）。
+///
+/// 2026-10 去适配器化把实例插件 id 改成 `echo-agent.instance.<platform>`，
+/// 但用户配置的 `enabled_plugins`、SKILL.md 的 `package:` 里仍是旧 id。
+/// 框架不认识平台名，因此这里只做**前缀替换**，不枚举任何平台。
+pub const LEGACY_INSTANCE_PLUGIN_PREFIX: &str = "echo-agent.adapter.";
+
+/// 实例插件 id 的新前缀（与组合根 `instance_manifests::PLUGIN_ID_PREFIX` 同值）。
+pub const INSTANCE_PLUGIN_PREFIX: &str = "echo-agent.instance.";
+
+/// 把旧实例插件 id 归一为新形态；其余 id 原样返回。
+pub fn canonical_plugin_id(id: &str) -> String {
+    match id.strip_prefix(LEGACY_INSTANCE_PLUGIN_PREFIX) {
+        Some(platform) => format!("{INSTANCE_PLUGIN_PREFIX}{platform}"),
+        None => id.to_string(),
+    }
 }
 
 /// Tool sink adaptor: wraps the agent ToolRegistry behind the plugin seam.

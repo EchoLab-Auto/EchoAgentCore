@@ -172,9 +172,11 @@ pub async fn serve_instance_stdio(plugin: impl InstancePlugin) -> std::io::Resul
     if !options
         .capabilities
         .iter()
-        .any(|c| c == capabilities::ADAPTER)
+        .any(|c| c == capabilities::PLUGIN_INSTANCE)
     {
-        options.capabilities.push(capabilities::ADAPTER.to_string());
+        options
+            .capabilities
+            .push(capabilities::PLUGIN_INSTANCE.to_string());
     }
     serve_stdio_with(InstanceHandler::new(plugin), options).await
 }

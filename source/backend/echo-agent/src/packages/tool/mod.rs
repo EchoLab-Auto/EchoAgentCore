@@ -62,7 +62,7 @@ pub struct ToolRegistry {
     /// Names of tools disabled at runtime (excluded from the LLM definition
     /// list; calls fail with NotFound). Persisted via `[agent].disabled_tools`.
     disabled: tokio::sync::RwLock<std::collections::HashSet<String>>,
-    /// Tool -> owning package id (e.g. "echo-agent.adapter.qq"). Set by the
+    /// Tool -> owning package id (e.g. "echo-agent.instance.qq"). Set by the
     /// composition root when assembling; the frontend uses it to group
     /// checkboxes so a whole package (tools + skills) can be toggled at once.
     packages: tokio::sync::RwLock<std::collections::HashMap<String, String>>,
