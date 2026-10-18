@@ -668,6 +668,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("."));
     let qq_host = cfg.instances.get(platform).cloned().unwrap_or_default();
     let qq_instances = instance_deploy::resolve_instances(
+        platform,
         &qq_host,
         &qq_host.instances,
         &qq_enabled_personas,
@@ -732,7 +733,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     {
         let mut patches: Vec<(String, String)> = Vec::new();
         for instance in &qq_instances {
-            if instance.id == instance_deploy::DEFAULT_INSTANCE {
+            if instance.id == platform {
                 continue; // legacy 实例沿用默认归属，不写配置
             }
             let has_persona = qq_host

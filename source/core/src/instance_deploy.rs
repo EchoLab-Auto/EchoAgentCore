@@ -8,10 +8,14 @@ use std::collections::BTreeMap;
 
 use crate::config::{InstanceHostConfig, PlatformInstanceSection};
 
-/// legacy 默认实例名（会话 id 不产生 `@` 后缀）。
+/// 默认实例名 = **平台名**（会话 id 不产生 `@` 后缀）。
 ///
 /// 语义见 `SessionKey::account`：实例名 == 平台名时不写 `@account`。
-pub const DEFAULT_INSTANCE: &str = "qq";
+/// 因此这里不需要知道任何具体平台——传 `platform` 进来即可；本模块只是提供
+/// 一个语义名，避免调用点各写一遍 `id == platform`。
+pub fn default_instance_id(platform: &str) -> &str {
+    platform
+}
 
 /// 一个解析完成的实例（配置已合并、端口/容器由插件自行决定）。
 #[derive(Debug, Clone)]
@@ -26,6 +30,7 @@ pub struct ResolvedInstance {
 ///
 /// `enabled_personas` 是启用了该平台插件的人格 id 列表。
 pub fn resolve_instances(
+    platform: &str,
     host: &InstanceHostConfig,
     sections: &BTreeMap<String, PlatformInstanceSection>,
     enabled_personas: &[String],
@@ -54,9 +59,10 @@ pub fn resolve_instances(
 
     // 2) legacy 单实例快路径：没有实例表但平台启用 → 造一个默认实例。
     if sections.is_empty() && host.enabled {
-        used_ids.insert(DEFAULT_INSTANCE.to_string());
+        let id = default_instance_id(platform);
+        used_ids.insert(id.to_string());
         out.push(ResolvedInstance {
-            id: DEFAULT_INSTANCE.to_string(),
+            id: id.to_string(),
             persona: default_persona.to_string(),
             overrides: toml::Table::new(),
         });
@@ -73,7 +79,7 @@ pub fn resolve_instances(
         // 默认人格的自动实例沿用 legacy id：否则一旦其他人格的实例被写回
         // 配置表，legacy 快速路径不再命中，默认人格的实例会从默认 id 漂移。
         let base = if persona == default_persona {
-            DEFAULT_INSTANCE
+            default_instance_id(platform)
         } else {
             persona.as_str()
         };
@@ -160,12 +166,8 @@ mod tests {
 
     #[test]
     fn explicit_instances_keep_configured_persona_and_order() {
-        let resolved = resolve_instances(
-            &host(true, &[("a", Some("alix")), ("b", Some("bob"))]),
-            &host(true, &[("a", Some("alix")), ("b", Some("bob"))]).instances,
-            &[],
-            "alix",
-        );
+        let h = host(true, &[("a", Some("alix")), ("b", Some("bob"))]);
+        let resolved = resolve_instances("qq", &h, &h.instances, &[], "alix");
         assert_eq!(resolved.len(), 2);
         assert_eq!(resolved[0].id, "a");
         assert_eq!(resolved[0].persona, "alix");
@@ -175,16 +177,22 @@ mod tests {
     #[test]
     fn legacy_single_instance_when_no_table() {
         let h = host(true, &[]);
-        let resolved = resolve_instances(&h, &h.instances, &[], "alix");
+        let resolved = resolve_instances("qq", &h, &h.instances, &[], "alix");
         assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].id, DEFAULT_INSTANCE);
+        assert_eq!(resolved[0].id, "qq");
         assert_eq!(resolved[0].persona, "alix");
     }
 
     #[test]
     fn auto_creates_one_instance_per_enabled_persona() {
         let h = host(true, &[]);
-        let resolved = resolve_instances(&h, &h.instances, &["alix".into(), "bob".into()], "alix");
+        let resolved = resolve_instances(
+            "qq",
+            &h,
+            &h.instances,
+            &["alix".into(), "bob".into()],
+            "alix",
+        );
         assert_eq!(resolved.len(), 2);
         // 默认人格沿用 legacy id；其余人格用自己的 id。
         assert_eq!(resolved[0].id, "qq");
@@ -194,7 +202,7 @@ mod tests {
     #[test]
     fn disabled_platform_yields_nothing() {
         let h = host(false, &[]);
-        let resolved = resolve_instances(&h, &h.instances, &[], "alix");
+        let resolved = resolve_instances("qq", &h, &h.instances, &[], "alix");
         assert!(resolved.is_empty());
     }
 
@@ -216,7 +224,7 @@ mod tests {
         );
         let mut h = host(true, &[]);
         h.instances = sections.clone();
-        let resolved = resolve_instances(&h, &sections, &[], "alix");
+        let resolved = resolve_instances("qq", &h, &sections, &[], "alix");
         assert_eq!(
             resolved[0].overrides["napcat_container"].as_str(),
             Some("mine")
