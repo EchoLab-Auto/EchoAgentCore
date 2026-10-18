@@ -116,10 +116,10 @@ echo-prodoc view ./document --host 0.0.0.0 --port 3344 --no-open
 ```
 
 - **孤立框**是最常见的结构问题：新增文档忘了从父文档 `link` 挂入，它就在画布上漂浮。`check` 会点名，按提示补一条 `link` 即可
-- **`--persist-layout`** 才写回坐标；不给这个参数时查看器不改源文件。但 `--host 0.0.0.0` 之后同网段的设备能调用保存 / 删除接口（无鉴权），只在自己信任的网络里这么开
+- **`--persist-layout`** 只控制「自动布局坐标是否写回参数区」；**查看器本身就能改源文件**——内置编辑器的保存/删除走 `/__prodoc_api/save`、`/__prodoc_api/delete`，与这个参数无关。所以 `--host 0.0.0.0` 之后同网段的设备**能直接改你的 .md**（这些接口无鉴权），只在自己信任的网络里这么开
 - 长期在线的预览服务用 `systemd-run --user --collect --unit=<名称>` 起，别用 `nohup`——Core 重启或会话结束时不会被连带清理，`systemctl --user stop <名称>` 收掉
 
 ### 参考
 
-- 画布渲染工具：ProDoc（`echo-prodoc`，源码仓库 DocRenderer）；**格式权威定义**见 `skills/prodoc-format/SKILL.md`，渲染器交互细节见 DocRenderer 的《ProDoc 规则定义》
+- 画布渲染工具：ProDoc（`echo-prodoc`，源码仓库 DocRenderer）；**格式权威定义**见 `.claude/skills/prodoc-format/SKILL.md`（同样的内容也随技能分发在 `skills/skill-echo-prodoc/SKILL.md`，两者 name 同为 `prodoc-format`），渲染器交互细节见 DocRenderer 的《ProDoc 规则定义》
 - 体例来源：ui-frame 仓库《文档分层与撰写规范》（`document/develop/documentation-guide.md`）

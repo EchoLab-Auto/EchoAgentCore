@@ -179,10 +179,12 @@ QQ 插件里这体现为 `QqPlugin::dispatch(adapter, op, payload, via_custom)`�
 
 | method | 载荷 | 回执 | 语义 |
 |---|---|---|---|
-| `submit_input` | `{message}` | `{accepted}` / `Error{code:"backpressure"}` | 入站消息（门控已过）**入队**送达宿主；回执 = 已入队，**不等于已处理** |
-| `report_state` | `{connected, self_id?}` | `{}` | 连接状态变化 |
-| `report_stopped` / `report_error` | `{reason?}` / `{message}` | `{}` | 生命周期 / 错误上报 |
+| `submit_input` | `{message}`（`instance` 在 `message` 里——宿主从 `message.instance` 取路由目标） | `{accepted}` / `Error{code:"backpressure"}` | 入站消息（门控已过）**入队**送达宿主；回执 = 已入队，**不等于已处理** |
+| `report_state` | `{instance, connected, self_id?}` | `{}` | 连接状态变化——**`instance` 必填**，缺失即 `instance_not_found` |
+| `report_stopped` / `report_error` | `{instance, reason?}` / `{instance, message}` | `{}` | 生命周期 / 错误上报——**`instance` 必填**；`reason` / `message` 目前宿主收到但**不读**（只用于路由） |
 | `store_media` | `{path \| bytes_b64, mime?}` | `{ref: "/media/<id>"}` | 媒体登记（宿主 media_store 统一命名；同机优先传 path，避免大载荷过协议） |
+
+> **共性**：`report_*` 三个回呼都靠载荷里的 `instance`（兼容旧字段 `adapter`）路由到具体实例，缺了就 `instance_not_found`；`submit_input` 的目标在 `message.instance` 里。
 
 **入站三件套（实现约束）**：① **回执语义 = 已入队**——`HostService::call` 是同步签名，宿主 LLM 排队绝不能在回执路径内阻塞，入队后立即回执；② **每实例有界队列 + 反压**——队列满回 `Error{code:"backpressure"}`，插件退避 / 落盘重试；③ **每实例串行 worker 保序**——HostCall 每调用独立 spawn 会打乱同一会话消息序，`core_api` 必须按实例串行化入站。
 
