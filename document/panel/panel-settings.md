@@ -124,7 +124,7 @@ y: 780
 
 **工具**
 
-- **按包分组**（默认）：工具按 `package` 归组，组名取 `PACKAGE_DISPLAY_NAMES`（如「内置工具集」「QQ 适配器包」「Subagent 委派」「工作区会话」——注意 `instance.qq` 的显示名是「QQ 适配器包」，不是「插件实例包」），与智能体能力勾选区同构。**原「按分类」已退化**：内置工具的 `category` 一律 `builtin`，全归一组；只有进程外插件贡献的工具带 `category = plugin`
+- **按包分组**（默认）：工具按 `package` 归组，组名取 `PACKAGE_DISPLAY_NAMES`（如「内置工具集」「QQ 实例包」「Subagent 委派」「工作区会话」——注意 `instance.qq` 的显示名是「QQ 实例包」），与智能体能力勾选区同构。**原「按分类」已退化**：内置工具的 `category` 一律 `builtin`，全归一组；只有进程外插件贡献的工具带 `category = plugin`
 - 行卡主行 = 状态点 + 名称 + `包已禁用` 标记 + hover 快速启停；次行 = 描述（工具无触发词）
 - 副标题：`共 N 项 · K 个包 · D 已禁用`
 - **详情分区**：① 能力说明（启停是全局开关；启用时仍受各智能体白/黑名单约束——两层叠加）② 被谁使用（`disabled_tools` / `enabled_tools` 反查四态）③ 所属包（包 id + 「在「插件」中查看 →」跳转）④ 参数 Schema（**参数表**：参数 / 类型 / 必填（warning tag）/ 说明；右上角切 JSON 原文 + 复制；schema 无 `properties` 时回落 JSON 原文）

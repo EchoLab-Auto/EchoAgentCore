@@ -10,23 +10,17 @@ y: 780
 
 > **定位**：本文覆盖三块与平台无关的交互——**实例弹出层**（描述符驱动的设备管理界面）、入口行任务弹层、Shell 列表与详情视图，以及 HTTP 旁路通道（卡片状态、取消约定 = 乐观中断 + `team_id` 命令、通道超时）。读者：维护 Panel 插件实例 / 任务 / Shell 交互的开发者。
 > Panel 不认识任何具体平台：弹层的布局由插件下发的描述符（`InstanceStatus.ui`）声明、动作经 `InvokeInstanceOp` 透传、状态经 `InstanceState` 回推。当前在册的实例插件只有 `echo-agent.instance.qq`——它是**进程外插件**：manifest 编译在 Core 里，实现却是独立进程（独立仓库 `echo-adapter-qq`），Core 侧只有门控壳（插件体系的两维度见 [插件化设计](../plugins/core-plugins.md)）。下文举的扫码 / 门控 / 名单都是**该插件描述符的内容**，不是 Panel 的能力边界，也不是 Core 的内置功能。相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)、[插件开发指南](../plugins/plugin-authoring.md)。
->
-> ⚠️ **本文的协议名是混的**，读之前先分清哪一半能用：**Core 侧契约**是 `InstanceList` / `InstanceState` /
-> `InstanceStateChanged` / `InvokeInstanceOp`（`echo-protocol` 里的实际变体名）；**Panel 前端实现**仍用
-> 旧名 `AdapterList` / `AdapterState` / `AdapterStateChanged` / `InvokeAdapterOp`（`protocol.ts`）。两者
-> **没有变体级 alias，当前双向不通**——下文出现 `Adapter*` 是 Panel 现状名，`Instance*` 是 Core 契约名，
-> 别把两种混着抄。详见[协议与数据流](../protocol/protocol.md)「协议名版本窗口」。
 
 ## 实例管理（描述符驱动的弹出层）
 
-入口行「适配器」按钮（Panel 现状名；Core 侧契约名是「插件实例」）弹出的「适配器管理」面板——**面板本身不含平台专属逻辑**，新增平台只需插件侧提供描述符，Panel 零改动。**所有编辑即点即生效**（无草稿、无保存按钮，页脚明示"点击名单条目即生效"）：
+入口行「实例」按钮弹出的「实例管理」面板——**面板本身不含平台专属逻辑**，新增平台只需插件侧提供描述符，Panel 零改动。**所有编辑即点即生效**（无草稿、无保存按钮，页脚明示"点击名单条目即生效"）：
 
 - **作用域 = 当前智能体**：面板只展示**归属当前智能体**（`persona` = team id）的实例——别的 agent 的实例状态、登录状况、容器名均不出现，也不会成为命令目标；当前智能体无实例时显示空态且不发任何请求
-- **插件实例行**：逐实例列出状态点、display name、self_id、**元数据胶囊**（`AdapterStatus.metadata[]`）与运行中/已停止 胶囊；启动/停止/重启按钮（`StartAdapter`/`StopAdapter`/`RestartAdapter`，断连禁用）。**注意 metadata 自 2026-10 起恒为空**——容器名 / WebUI 地址这类展示字段改由插件 UI 描述符声明（`InstanceStatus.ui`，字段绑定 `instance.*`），Core 不再逐键灌元数据；旧面板靠 metadata 显示的胶囊现在只能由渲染器出。命令名同样是 Panel 现状名，Core 侧已改 `StartInstance` 等（见[协议名版本窗口](../protocol/protocol.md)）。实例列表与状态行由通用 `AdapterPanel`（渲染器外层）提供
+- **插件实例行**：逐实例列出状态点、display name、self_id、**元数据胶囊**（`InstanceStatus.metadata[]`）与运行中/已停止 胶囊；启动/停止/重启按钮（`StartInstance`/`StopInstance`/`RestartInstance`，断连禁用）。**注意 metadata 自 2026-10 起恒为空**——容器名 / WebUI 地址这类展示字段改由插件 UI 描述符声明（`InstanceStatus.ui`，字段绑定 `instance.*`），Core 不再逐键灌元数据；旧面板靠 metadata 显示的胶囊现在只能由渲染器出。命令名同样是 Panel 现状名，Core 侧已改 `StartInstance` 等（见[协议名版本窗口](../protocol/protocol.md)）。实例列表与状态行由通用 `InstancePanel`（渲染器外层）提供
 - **多实例**：实例列表来自 `InstanceList`（`persona` 元数据）；同一智能体多于一个实例时顶部出现实例选择，面板其余部分（登录/门控/名单/owner）都作用于所选实例；实例级命令经 `InvokeInstanceOp.instance`（必填实例名）寻址
-- **无实例零噪音**：实例列表为空（当前 Agent 未启用任何实例插件）时面板**不发任何命令**（`AdapterPanel` 的挂载刷新守卫：无可见实例时不发任何请求）——此前打开面板会发 6 条必被 Core 拒绝的查询，堆出一串「插件实例 … 未找到」式错误提示
+- **无实例零噪音**：实例列表为空（当前 Agent 未启用任何实例插件）时面板**不发任何命令**（`InstancePanel` 的挂载刷新守卫：无可见实例时不发任何请求）——此前打开面板会发 6 条必被 Core 拒绝的查询，堆出一串「插件实例 … 未找到」式错误提示
 - **刷新**：管理读命令经 `InvokeInstanceOp{method:get_filter_config / get_groups / get_friends / get_owner / login_status}` 逐实例拉取；等待态按 `adapter-op:<scopedKey>:<method>` 键登记（Panel 内部键名，未随宿主改名）；状态经 `InstanceState` 回推落定（名单/门控区显示加载与错误态）
-- **扫码登录区（Core 代理）**：登录状态读状态文档（`AdapterState.state.online` / `self_id`）；「获取/刷新二维码」经 `InvokeInstanceOp{method:"login_qrcode"}`（PNG base64 经 `InstanceOpResult` 返回，只存渲染器 image 节点局部，多实例不串号）；**Panel 不直连 OneBot HTTP / docker**（旧 `/api/qq/*` 已移除）。动作按钮由插件描述符 image 节点声明（`clear_when: online` 登录后自动清图）；Core 对陈旧码（>90s）自动向 NapCat 请求重新生成后再返回
+- **扫码登录区（Core 代理）**：登录状态读状态文档（`InstanceState.state.online` / `self_id`）；「获取/刷新二维码」经 `InvokeInstanceOp{method:"login_qrcode"}`（PNG base64 经 `InstanceOpResult` 返回，只存渲染器 image 节点局部，多实例不串号）；**Panel 不直连 OneBot HTTP / docker**（旧 `/api/qq/*` 已移除）。动作按钮由插件描述符 image 节点声明（`clear_when: online` 登录后自动清图）；Core 对陈旧码（>90s）自动向 NapCat 请求重新生成后再返回
   - 连接状态经 `InstanceStateChanged` 实时推送（扫码成功后状态行自动转"已连接"）；二维码约 2 分钟有效；「管理员」与 WebUI 链接由描述符节点读状态文档（`owner` / `instance.webui_url`）呈现（多实例各不同）
 - **门控模式**：选择器 无约束/白名单/黑名单（描述符 `select` 节点，动作 `InvokeInstanceOp{method:"set_gate_mode"}` 即选即生效），每模式附说明（options `hint`）
 - **2×2 名单卡**（白名单用户/黑名单用户/白名单群/黑名单群）：描述符 `list_editor` 节点；增删经 `InvokeInstanceOp{method:"update_allowlist"/"update_denylist"}` 提交（部分载荷：只带变更的表，缺键 = 保留现值）；提交结果经 `InstanceState` 回推落定

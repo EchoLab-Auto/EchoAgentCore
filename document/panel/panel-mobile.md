@@ -56,7 +56,7 @@ y: 780
 | 消息区留白 | 有卡片列时按列宽 324px 留白 | 归零（`trayPadLeft/Right` 含 `!isMobile` 条件） |
 | 入口行（7 按钮 + Agent 切换器 + 活动条） | 单行铺开 | **横向滚动工具条**：左右 8px 双边界 + `overflow-x: auto` + 隐藏滚动条一一此前无右界，右侧按钮超出屏外不可达 |
 | 输入区 | `left/right/bottom: 12px` | 8px + 底部安全区 + 软键盘偏移（见「软键盘适配」）；输入面字号 **16px**（iOS 聚焦防缩放） |
-| 入口行弹出层（`PanelPopover`：工作区/任务/清单/适配器实例） | 跟随按钮 `left = centerX - 260` | **全宽贴底**：`left/right: 8px`（锚点法在窄屏会把面板推出屏外）——定位由 `popoverStyle()` 统一分发 |
+| 入口行弹出层（`PanelPopover`：工作区/任务/清单/实例） | 跟随按钮 `left = centerX - 260` | **全宽贴底**：`left/right: 8px`（锚点法在窄屏会把面板推出屏外）——定位由 `popoverStyle()` 统一分发 |
 | 会话区覆盖层（上下文/Agent 配置） | 贴会话框 12px | 6px 近全屏 |
 | 消息气泡 | `max-width: 78%` | 88% |
 | 输入框占位文本 | 库 locale 默认长文案（`输入消息，Enter 发送（Shift+Enter 换行）`，宽框单行完整显示） | **短占位** `输入消息…` / 断连 `未连接到 Core…`——窄框（内容宽 ~166px）放不下 303px 的默认文案，折行会被单行框拦腰截断，且 Enter/Shift+Enter 在触屏键盘上不成立 |

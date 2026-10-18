@@ -25,7 +25,7 @@ link: ["dev-testing | 测试策略 | r>l", "documentation-guide | 文档规范 |
 | [测试策略](./dev-testing.md) | 测试分层、Mock 夹具、质量门禁 |
 | [文档规范](../documentation-guide.md) | 目录分层、单篇体例与模板 |
 | [部署与自更新](../ops/ops-deploy.md) | 安装、容器化、受控自更新 |
-> 架构/Agent/Adapter/Config 的通用细节通过源码注释（`//! module doc`）和 README 维护，避免文档与代码分叉。
+> 架构/Agent/Instance/Config 的通用细节通过源码注释（`//! module doc`）和 README 维护，避免文档与代码分叉。
 
 ## 仓库结构
 

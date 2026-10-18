@@ -186,7 +186,7 @@ graph LR
 | 清单 | **仅当 `checklist` 工具对当前 persona 可用时显示**（插件维度已移除，只受工具级白/黑名单与内置工具集包门控，见 [插件化设计](../plugins/core-plugins.md)）；弹出清单卡（徽标 = 清单数）：内嵌 SidebarCard 折叠卡（默认展开、计数徽标），各清单进度条 + `PanelIcon check-square / square` 项（完成项加粗，tone 分别为 ok / muted），只读；工具禁用后入口、浮层与徽标立即移除并清空本地清单状态；空态「（暂无清单）」 |
 | 工作区 | 弹出工作区会话面板（`WorkspacePanel`，普通宽度）：多会话管理（新建/编辑/删除/激活；每会话多个工作区目录）**+ 每会话多对话**（新建/重命名/删除/切换，经 `SaveWorkspaceSession` 全量 upsert；删对话要发 `ClearHistory` 一并清历史） |
 | 会话 | 弹出 `SessionSwitcher`（多会话切换；**取代侧边栏会话卡**。显隐依赖会话归属完整——Core 侧三层保证见 [多 Agent](../core/core-agents.md)「会话模型」）：按平台分组列出当前智能体的会话（Local / 各平台私聊 / 各平台群聊 / 其他——当前只有 QQ），当前高亮、运行中带忙碌点，点击切换（聊天区按会话过滤；每个群/私聊有独立上下文，见 [多 Agent](../core/core-agents.md)「会话模型」）。**Local 分组含工作区通道**（`local:workspace:<id>:local_user`，昵称 = 工作区名，标签「工作区」）：选通道 = 激活对应工作区、选默认会话 = 取消激活（见 [多 Agent](../core/core-agents.md)「工作区会话与项目通道」）。**>1 个会话或并行多会话模式（含「全局」项）时显示**；切换 Agent 强制关闭 |
-| 适配器 | 弹出「适配器管理」面板（见 [实例管理·任务·Shell](./panel-instance-tasks.md)）——按钮文案是「适配器」（title「平台适配器」，Panel 现状名；Core 契约名是「插件实例」）；内容全由插件描述符决定，Panel 无平台专属逻辑；仅当前 Agent 启用实例插件时显示；切换 Agent 强制关闭 |
+| 实例 | 弹出「实例管理」面板（见 [实例管理·任务·Shell](./panel-instance-tasks.md)）——内容全由插件描述符决定，Panel 无平台专属逻辑；仅当前 Agent 启用实例插件时显示；切换 Agent 强制关闭 |
 | 任务 | 弹出 `TasksPanel`（替代原顶栏任务视图）：**只对应当前 agent 的当前会话**（`sessionId` 过滤，「全局」会话显示全部），徽标 = 当前会话运行中/等待整合任务数；显隐 = `echo-agent.subagent` 插件对当前 persona 启用或当前会话已有任务记录；切换 Agent / 插件禁用强制关闭。卡片/状态/取消语义见 [实例管理·任务·Shell](./panel-instance-tasks.md) |
 
 弹出层默认宽 **520px**，视口不足时夹取到 `100vw - 24px`（`PanelPopover` 的 `MARGIN`）；锚定按钮上方 8px、相对输入区水平居中。**清单/插件实例/任务弹出层没有全屏遮罩**——是 fixed 定位的内容尺寸面板，**点弹层外任意位置（含聊天区）即关闭**（`PanelPopover` 在 document 捕获阶段监听 `pointerdown`，目标不在弹层与锚点内就 `requestClose()`），`Esc` 亦可关闭。**「配置」「上下文」是会话区内锚定的磨砂玻璃弹层**（上/左/右 12px，底边 = 入口行高 + 42px），点弹层外遮罩关闭；上下文弹层无返回按钮。
@@ -249,7 +249,7 @@ agent 时莫名隐藏，已修复。
 
 | 卡片 | 内容 | 门控 |
 |---|---|---|
-| 连接状态 | `ConnectionStatusCard`：Core 管理通道状态点（`已连接` / `连接中…`，断连时附「与 Core 断开，正在自动重连（期间命令不会发送）」）+「适配器」分组逐实例列出显示名 / 自登号 / 运行态（`已连接` / `等待连接` / `已停止`；列全部平台实例，非 QQ 专属）——实例连接态顶栏一行放不下，故随卡片迁入；**紧凑卡**（`compact: true`：固定高度、不参与 flex 分配，也不参与分隔条拖动比例） | 常驻（自顶栏中段迁入） |
+| 连接状态 | `ConnectionStatusCard`：Core 管理通道状态点（`已连接` / `连接中…`，断连时附「与 Core 断开，正在自动重连（期间命令不会发送）」）+「实例」分组逐实例列出显示名 / 自登号 / 运行态（`已连接` / `等待连接` / `已停止`；列全部平台实例，非 QQ 专属）——实例连接态顶栏一行放不下，故随卡片迁入；**紧凑卡**（`compact: true`：固定高度、不参与 flex 分配，也不参与分隔条拖动比例） | 常驻（自顶栏中段迁入） |
 | 文件浏览器 | `WorkspaceFileBrowser`（只读浏览激活工作区会话的目录：多根切换 chip、面包屑导航、目录下钻/回退、文件大小；`RequestWorkspaceFiles` → `WorkspaceFiles`，服务端 canonical 前缀校验限定在会话目录及子孙内）+「会话管理与 git 状态 →」链接（打开工作区弹层，见「入口行按钮与弹出层」）。**根 chip 悬停速览**：chip 只显示 basename（多根同名如两个 `source/` 时无法区分），悬停即显示**绝对路径**——自绘速览经 `Teleport` 到 `body` + `position: fixed`（绕开 rail 卡体 `overflow-y: auto` 的裁剪；不用原生 `title`，约 1s 延迟且长路径被系统截断）；视口内夹取 + 顶部空间不足时翻到 chip 下方，滚动/缩放即收起；`z-index 40`（高于边栏 4/入口行 6/清单浮层 25，低于浮层遮罩 50） | `echo-agent.workspace` 插件与 `workspace` 工具均可用，且存在激活的工作区会话 |
 | Shell | `ShellList` 会话列表：状态点 + 会话 id + 目录 + 命令数 +「详情」按钮，附新建/刷新；**不内嵌终端**——点「详情」经 `openShellDetail` 事件链进入 Shell 详情视图（`ShellPanel`：仅目标会话的终端 + 输入行 + 返回列表/停止会话；无顶栏导航入口） | 常驻 |
 | 临时分支 | 运行中的回执分支列表（点选打开 BranchModal） | 仅并行多会话模式（单会话模式 Core 不发 ReplyBranch* 事件） |

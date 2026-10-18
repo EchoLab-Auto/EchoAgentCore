@@ -67,4 +67,4 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 | Agent 切换器 | 卡片高 34px；菜单 min-width 220px、max-height `min(60vh, 100vh-200px)` | `AgentSwitcher.vue` 的卡片与菜单样式 |
 | 轮询：日志 / 任务耗时 | 5s / 1s | LogView:48 / TasksPanel:70-84（QQ 登录状态为 WS 事件驱动，无轮询） |
 | HTTP 超时 | 10s | `api.ts` 的 `FETCH_TIMEOUT_MS` |
-| 二维码有效期 / 定时器摘要截断 | 约 2 分钟；160 字符 | 插件实例描述符 `image` 节点（`login_qrcode`，`adapter-ui` 渲染器呈现）/ `helpers.ts` 的定时器摘要截断 |
+| 二维码有效期 / 定时器摘要截断 | 约 2 分钟；160 字符 | 插件实例描述符 `image` 节点（`login_qrcode`，`instance-ui` 渲染器呈现）/ `helpers.ts` 的定时器摘要截断 |

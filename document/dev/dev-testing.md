@@ -126,7 +126,7 @@ Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
 
 ## Mock 与夹具
 
-- `echo-test-utils` crate (dev-only): `MockAdapter` for registry/tool tests,
+- `echo-test-utils` crate (dev-only): `MockInstance` for registry/tool tests,
   `temp_config_file` helper. Deliberately does **not** depend on echo-agent
   (a dev-dependency cycle would compile echo-agent twice and break type
   identity).
