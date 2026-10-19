@@ -116,7 +116,7 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 - 失败自动回滚（恢复备份 + 重启）；状态写入 `~/.local/state/echo-agent-*/update-status`
 - 更新器非阻塞文件锁拒绝并发运行；拉取/构建失败时旧二进制不动、不重启
 - Panel 更新包含 `npm run build`（前端产物从 `web/dist` 拷贝到静态目录，需 PATH 中有 npm——nvm 路径）
-- **NapCat 恢复门控**：Core 重启后仅当 `[instances.qq].enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（默认实例 3131；多实例由插件在 3140-3190 内分配、持久化在实例 state 的 `[deploy.ports]`——Core 不感知具体端口，故按「全部 NapCat 容器」而非端口清单判定）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
+- **NapCat 恢复门控**：Core 重启后仅当 `[instances.qq]`（或等价的 `[adapters.qq]`——`update.sh` 的 awk 两个段名都认）`enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（默认实例 3131；多实例由插件在 3140-3190 内分配、持久化在实例 state 的 `[deploy.ports]`——Core 不感知具体端口，故按「全部 NapCat 容器」而非端口清单判定）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
 - **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制核对内置插件 manifest id——框架 8 项（`echo-agent.tools.builtin` / `echo-agent.skills.dir` / `echo-agent.workspace` / `echo-agent.subagent` / `echo-agent.provider.llm` / `echo-agent.management.panel` / 互斥循环模式 `echo-agent.loop.{single,parallel}`）**加上实例插件前缀** `echo-agent.instance.`（`strings` 里能搜到前缀即视为齐备，不逐个枚举平台）。清单与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` + `core::instance_manifests::PLUGIN_ID_PREFIX` 一致，由 `source/core/src/instance_manifests.rs` 的单测守护（修复背景：`echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`echo-agent.menu`/`echo-agent.checklist`/旧驱动 `echo-agent.loop.runner` 等 id 已移除（present_menu 已废弃移除；checklist 为普通内置工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
 
 ### 出厂技能同步

@@ -30,7 +30,7 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
   admin bypass、管道顺序与短路。名单**持久化契约**另在插件仓库 `tests/filter_persist.rs`：
   `persist_filter` 对名单表是整表替换写入，必须原样带回 `group_members_open`——否则
   Panel 上任一名单编辑都会把「群成员放行」开关静默清掉。
-- **Security** (echo-agent tools): 相对路径的穿越防护（read/write/edit 共用
+- **Security** (`echo-plugin-tools`): 相对路径的穿越防护（read/write/edit 共用
   `guard_relative_path`：canonicalize 目标或最近已存在祖先，拦 `../..` 与
   区外符号链接；写工具在创建目录前校验，区外不留空目录）、绝对路径按显式
   意图放行（多仓库工作流，三个 ops 同一约定，均有正向用例）、危险命令模式、

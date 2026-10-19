@@ -10,11 +10,11 @@
 //! | `management` | `[core].management_address` | Panel management WS 监听（host:port） |
 //! | `federation` | `[federation].listen` | 联邦监听（host:port；**缺省 = 合并至管理端口**；`none` = 仅连出） |
 //! | `federation-advertise` | `[federation].advertise` | 邀请串对外宣告地址（host[:port]） |
-//! | `qq` | `[instances.qq.instances.qq.ports].reverse_ws` | 默认 QQ 实例反向 WS（Core 自绑定） |
 //!
-//! 注意：`[instances.qq.server].bind_address` 在运行时会被实例端口分配
-//! 覆盖（`qq_instances::merge_instance`），**实际监听端口以实例 `ports`
-//! 三元组为准**——本工具因此只写权威键。
+//! **只有这三个目标**。QQ / NapCat 端口于 2026-10 移交插件（`qq` 与
+//! `qq-instance:<id>:<字段>` 已删除）：实例三端口（反向 WS / OneBot HTTP /
+//! WebUI）由插件分配并持久化到实例 state 的 `[deploy.ports]`，改端口请改
+//! 配置里的显式值。
 //!
 //! 值形态：
 //! - 地址类（management / federation*）：`<端口>`（沿用现有 host，缺省
@@ -27,7 +27,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
-/// 各端口的缺省值（与 config.rs / qq_instances.rs 的运行时缺省一致）。
+/// 各端口的缺省值（与 config.rs 的运行时缺省一致）。
 pub const DEFAULT_MANAGEMENT: &str = "0.0.0.0:3132";
 pub const DEFAULT_FEDERATION_LISTEN: &str = "0.0.0.0:3133";
 
@@ -38,10 +38,10 @@ pub enum PortSubCommand {
     List,
     /// 修改端口 / 监听地址（重启 Core 生效）。
     Set {
-        /// 目标键：management | federation | federation-advertise | qq |
+        /// 目标键：management | federation | federation-advertise
         /// （直接复制 `port` 列表第一列）。
         target: String,
-        /// 新值：<端口> / <host:端口> / none（仅 federation*）/ auto（仅实例端口）。
+        /// 新值：<端口> / <host:端口> / none（仅 federation*）。
         value: String,
     },
 }

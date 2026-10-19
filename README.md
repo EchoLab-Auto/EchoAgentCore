@@ -236,8 +236,8 @@ NapCat 容器管理）；容器模式的完整配置模板见
 - `[agent]`：LLM provider/model/base_url/api_key（env 覆盖：`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`）、`memory_limit_tokens`（trunk token 预算）、`skills_dir`、多 API profile。
 - `[plugins.system_prompt]`：全局系统提示词（Panel 中编辑保存的基础提示词层）。
 - `[adapters.qq]`（等价写 `[instances.qq]`）：平台段——Core 只读 `enabled` 与实例表 / 启动段，**其余键原样透传给插件**（`server` / `filter` / `gate` / `trigger` 都是 QQ 插件自己的 schema，NapCat 端口 / 容器名 / compose 也由插件派生）。
-- `[core] management_address`：前端连接地址（默认 `0.0.0.0:3132`，开箱即可被局域网 Panel 连接；`management_access_token` 提供 Bearer 认证，首装自动生成）。端口与 token 可经 CLI 管理：`echo-agent-core port`（列出/修改各监听端口，含联邦与 QQ 实例端口）与 `echo-agent-core token [--rotate]`。
-- `[federation]`：Core↔Core 联邦（多机去中心化；**零配置默认开启**，listen 缺省 0.0.0.0:3133 开箱可被连入）——`listen`（缺省 :3133，显式空 = 纯连出）、`node_name`、`[federation.peers.*]`（url/token/allow_tools/allow_queries）。配对推荐用 Panel 设置·联邦页的**邀请串**（`echofed://`），见 [document/federation/federation.md](document/federation/federation.md)。
+- `[core] management_address`：前端连接地址（默认 `0.0.0.0:3132`，开箱即可被局域网 Panel 连接；`management_access_token` 提供 Bearer 认证，首装自动生成）。端口与 token 可经 CLI 管理：`echo-agent-core port`（列出/修改三个监听端口：`management` / `federation` / `federation-advertise`；QQ 实例端口自 2026-10 移交插件，不在 CLI 内）与 `echo-agent-core token [--rotate]`。
+- `[federation]`：Core↔Core 联邦（多机去中心化；**零配置默认开启**，开箱既可连出也可被连入）——`listen`（缺省**合并至管理端口**：一条 NAT/防火墙映射同时服务面板与联邦；管理地址为回环 / 管理令牌为空且非回环 / 管理令牌与某 peer 令牌相同时，自动回退独立监听 `0.0.0.0:3133` 并告警；显式地址 = 独立监听、显式空 = 纯连出）、`advertise`、`node_name`、`[federation.peers.*]`（url/token/allow_tools/allow_queries）。配对推荐用 Panel 设置·联邦页的**邀请串**（`echofed://`），见 [document/federation/federation.md](document/federation/federation.md)。
 
 前端通过设置视图（API/技能/工具/插件/智能体）与实例管理面板发起的修改，由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core/core-config-persistence.md](document/core/core-config-persistence.md)）。
 
