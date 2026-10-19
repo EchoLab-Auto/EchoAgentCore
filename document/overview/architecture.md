@@ -80,6 +80,13 @@ graph BT
 | `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话）见 [Agent 循环](../core/core-agent-loop.md) |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现。`openai`/`anthropic` 只依赖 `echo-defs`；`ollama` 是薄包装，**复用 `echo-llm-openai`**（组内一条边） |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性）。Panel 的 Rust 中继对它**零依赖**（不解析负载、按原文转发），TS 前端以 `web/src/protocol.ts` 手写镜像 |
+| `echo-plugin-provider-llm` | 内置插件：LLM provider（Phase 3 ①） | provider 工厂（OpenAI 兼容 / Anthropic Messages / Ollama，含 DeepSeek `/anthropic` 自动路由与 Kimi base_url 归一）+ 计量装饰器（`UsageRecorder` 出口）+ 脱敏装饰器；只依赖 `echo-defs` 与三个 provider crate |
+| `echo-plugin-skills` | 内置插件：技能目录（Phase 3 ③） | `SkillRegistry`（递归发现 + 多目录分层合并 + 热重载状态）、SKILL.md frontmatter 解析、Git 来源安装与 `.sources.json`；插件 id 归一走 `echo_defs::plugin_id` |
+| `echo-plugin-subagent` | 内置插件：Subagent 委派（Phase 3 ⑥） | `spawn_subagent` 工具（异步受理 + 立即回执）、`SubagentStore`（取消句柄 + TTL 清扫）、`run_subagent_turn`（隔离上下文的一次性 turn，剥离 spawn 能力防递归）；远程委派经注入的 `RemoteDelegationSink` 上报，插件不依赖联邦实现 |
+| `echo-plugin-loop` | 内置插件：循环模式（Phase 3 ⑦） | `loop.single` / `loop.parallel` 两个纯策略插件的 id / 描述 / manifest 唯一事实来源，`Service{key:"loop"}` 贡献声明；mount 无运行期资源 |
+| `echo-plugin-workspace` | 内置插件：工作区会话（Phase 3 ⑤） | `WorkspaceStore`（每 persona 一份 JSON，原子写）、`workspace` 工具（list/status/use/create/delete）、只读 git 与文件采集、浏览沙箱解析；跨机查询经注入的 `RemoteWorkspaceQuery`，插件不依赖联邦实现 |
+| `echo-plugin-management` | 内置插件：管理面 WS（Phase 3 ⑧） | Panel 连接中继（`EventBroker` 单接收者 → 每连接一订阅、按序分配 `seq`）、token 鉴权与常量时间比较、端口合并规划 `plan_federation_listen` + fail-closed `validate_merged`、心跳保活；**不需要 Agent 句柄**，只认线契约 |
+| `echo-tool` | 工具子系统机制 | `ToolRegistry`（可逆注册 + 定义缓存 + 出口脱敏）；`Tool` 词汇在 `echo-defs`，具体工具实现不在此 |
 | `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、`RemoteInstance`（实现 `echo_defs::plugin_instance::PluginInstance`）、conformance 测试（见 [完全解耦推进计划](../design/decoupling-plan.md)）。**宿主只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层 crate** |
 | `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入——生效口径见 [Agent 循环](../core/core-agent-loop.md)）、工具注册表与各包（`packages/`）、技能、trunk、异步子任务（`spawn_subagent`）、命令分发 |
 | `echo-defs`（`plugin_instance`） | 插件实例的**定义层** | `PluginInstance` trait（`tool_specs() -> Vec<ToolSpec>`）/ `InstanceManagement` / `ToolSpec` / `InstanceRegistry` / 状态与错误类型。**平台中立**：这里没有平台名、没有部署形状。QQ 实现是**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteInstance` 接入——见 [实例插件化](../design/instance-plugin.md)） |
@@ -87,7 +94,7 @@ graph BT
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、联邦路由泵、启动 |
 
-依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；`echo-protocol` / `echo-config` / `echo-session` / `echo-llm-*` / `echo-federation` / `echo-plugin*` / `echo-sanitize`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）。**PluginInstance trait 定义在 `echo-defs`**（`echo_defs::plugin_instance::PluginInstance`；`InstanceError`/`InstanceInfo`/`InstanceConnectionState`/`InstanceManagement`/`ToolContribution` 同）；`echo-config` 只做 TOML 读改写、不认识任何配置段的语义（`echo-adapter` crate 已于 2026-10 删除，其注册表并入 `echo-defs::plugin_instance`）。**入站过滤与平台细节都在实例插件进程内**，宿主侧不持有过滤管道、不认识平台名；**`echo-plugin-host` 只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层**；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
+依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；`echo-protocol` / `echo-config` / `echo-session` / `echo-tool` / `echo-llm-*` / `echo-federation` / `echo-plugin*`（含六个 Phase 3 外迁插件）/ `echo-sanitize`（中间层，只依赖底座）◄ `echo-agent` ◄ `echo-agent-core`（bin）。**PluginInstance trait 定义在 `echo-defs`**（`echo_defs::plugin_instance::PluginInstance`；`InstanceError`/`InstanceInfo`/`InstanceConnectionState`/`InstanceManagement`/`ToolContribution` 同）；`echo-config` 只做 TOML 读改写、不认识任何配置段的语义（`echo-adapter` crate 已于 2026-10 删除，其注册表并入 `echo-defs::plugin_instance`）。**入站过滤与平台细节都在实例插件进程内**，宿主侧不持有过滤管道、不认识平台名；**`echo-plugin-host` 只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层**；扩展插件只依赖定义层。旧 crate（`echo-agent`/`echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
 
 ### 定义层（echo-defs）
 

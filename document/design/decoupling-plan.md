@@ -196,14 +196,15 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 
 ### Phase 3：内置插件外迁（2-3 周，逐个）
 
-- [ ] ① provider-llm（已单点装配，最易）→ 协议化
+- [x] ① provider-llm → **独立 crate 协议化**：`echo-plugin-provider-llm`（provider 工厂 + 计量/脱敏装饰器，只依赖 `echo-defs` 与三个 provider crate）。宿主侧只剩 5 行 glue（`echo-agent` 的 `llm` 模块把 `AgentConfig` 投影成 `ProviderConfig`、把 `MetricsStore` 实现成 `UsageRecorder`），旧 `packages/provider_llm/` 已删除、`echo_agent::llm::…` 路径与签名不变
 - [x] ② 工具子集试点：websearch + calculator → **独立二进制**（已提交 `65c1c2a`：`echo-plugin-sdk` + `echo-plugin-example` + 5 项 e2e；内核 `plugins.toml` 装配集成进行中）
-- [ ] ③ skills-dir
+- [x] ③ skills-dir → **独立 crate**：`echo-plugin-skills`（`SkillRegistry` 发现/分层合并 + `loader` frontmatter + `install` Git 来源）。顺带把插件 id 归一词汇下沉到 `echo_defs::plugin_id`（`canonical_plugin_id` 与两个前缀常量），技能加载器与组合根共用同一口径；旧 `packages/skills_dir/` 已删除
 - [x] ④ adapter-qq → subprocess（崩溃隔离收益最大；设计见 [实例插件化设计](./instance-plugin.md)）——**已完成**：QQ 插件实例以独立仓库插件、经 `plugins.toml` 由宿主拉起（P1.7 外迁 / P1.8 宿主装配 / P1.9 删内置）；泛化收尾轮完成 `instance_ops` / `instance_tools` 改名、UI 描述符链路与 Panel 通道切换、通用渲染器（记录见 [adapter-genericization/](./adapter-genericization/)）。
-- [ ] ⑤ workspace
-- [ ] ⑥ subagent（hook 接入改经协议事件）
-- [ ] ⑦ loop.single / loop.parallel → inproc（保持内联；注入改经协议挂载）
-- [ ] ⑧ management-panel → **协议化 inproc 插件**（对齐 dsh：webserver 也是插件；同进程、经服务键装载；"禁用即自锁"守卫留内核）
+- [x] ⑤ workspace → **独立 crate**：`echo-plugin-workspace`（`WorkspaceStore` 会话文档 + `workspace` 工具 + 只读 git/文件采集与沙箱解析）。两处解阻：其一，跨机查询改为**注入 `RemoteWorkspaceQuery`**（三个语义方法 git_status / list_files / browse；组合根注入 `FederationWorkspaceQuery` 映射到 `QueryKind`，未注入 = 远程目录降级为「不可采集」而非报错）；其二，`SessionKey` 下沉到 `echo-session`（会话 id 是跨边界词汇——事件日志文件名、工作区通道、`node://` 引用、插件入站都用它）。**Agent 侧的命令域接线留在宿主** `agent/workspace_commands.rs`（发事件、读 persona 白名单、动会话通道都是宿主职责），原 `packages/workspace/` 已删除
+- [x] ⑥ subagent → **独立 crate**：`echo-plugin-subagent`（`spawn_subagent` 工具 + `SubagentStore` + `run_subagent_turn`，只依赖 `echo-defs` / `echo-tool`）。两处解阻：其一，远程委派聚合改为**注入 `RemoteDelegationSink`**（组合根注入 `AggregatorDelegationSink` 转调进程级聚合器；不注入 = 降级为无聚合摘要，不报错）；其二，`TURN_CANCELLED` 与远程工具命名（`<peer>__<tool>` 的构造/剥前缀）下沉定义层（`echo_defs::llm` / `echo_defs::remote_tool`）——注册端、模型侧与远程子代理三方共用同一口径。旧 `packages/subagent/` 已删除
+- [x] ⑦ loop.single / loop.parallel → **inproc 声明外迁**：`echo-plugin-loop`（两个纯策略插件的 id / 描述 / manifest 唯一事实来源 + `Service{key:"loop"}` 贡献声明），组合根改为 `echo_plugin_loop::plugins(version)` 装载；`echo-agent::plugins` 侧常量降为 re-export 别名，用户配置里的 `enabled_plugins` 字面量不变
+- [x] ⑧ management-panel → **独立 crate**：`echo-plugin-management`（`EventBroker` 扇出 + WS 连接中继 + token 鉴权 + 端口合并规划与 fail-closed 校验 + 心跳保活）。**它本来就是协议驱动的**：入站帧 → `BackendCommand` 塞 bridge、`bridge` 事件 → 带 `seq`/`entry id` 序列化成帧，两侧只碰 `echo-protocol`；此前签名里的 `Arc<Agent>` 已标注 `_agent` 未使用，外迁时直接删掉——**管理面不需要 Agent 句柄**。顺带把 `EntryTracker`（390 行）下沉到 `echo-protocol`：它产出的是线上信封字段，与 `seq` 同层，不该埋在组合根里
+- [x] 机制前置：**`echo-tool`**（工具子系统机制：可逆注册 + 定义缓存 + 出口脱敏）从 `echo-agent::packages::tool` 外迁为独立 crate；`echo_agent::tool::…` 经 shim 保持路径，`packages/tool/` 已删除。这是 ②/⑤/⑥ 及一切工具类插件只依赖机制层的前提
 - [ ] 每插件模板：独立 crate 化 → 贡献声明 → 状态归属审计 → 双跑对照（新旧路径 diff）→ 删旧路径
 
 **验收**：每个插件可独立禁用/启用/替换；禁用后内核正常降级。

@@ -8,7 +8,9 @@ y: 2020
 
 # Subagent 插件
 
-> **定位**：本文描述 `echo-agent.subagent` 插件（kind=Tool）——让模型把独立子任务**委派给隔离上下文的子 agent 执行**（子任务有自己的系统提示词与工具循环），结论经结构化 hook **作为新入站分支**回灌主会话、子上下文不回合并。覆盖动机与边界、生命周期、工具与技能、hook 机制、事件与观测、包门控与测试守护。读者：Agent 使用者与插件维护者。与 [Agent 循环](../core/core-agent-loop.md) 的回复分支（同上下文 fork/合并）互为对照；装载与包门控见 [插件化设计](./core-plugins.md)。
+> **定位**：本文描述 `echo-agent.subagent` 插件（kind=Tool）——让模型把独立子任务**委派给隔离上下文的子 agent 执行**（子任务有自己的系统提示词与工具循环），结论经结构化 hook **作为新入站分支**回灌主会话、子上下文不回合并。覆盖动机与边界、生命周期、工具与技能、hook 机制、事件与观测、包门控与测试守护。读者：Agent 使用者与插件维护者。
+>
+> 实现位置：独立 crate `echo-plugin-subagent`（解耦计划 Phase 3 ⑥，只依赖定义层 `echo-defs` 与工具机制 `echo-tool`）；宿主经 `echo_agent::subagent::…` 兼容路径引用，Agent 侧的接线与执行在 `agent/subagent_runtime.rs`。远程委派的聚合登记经宿主注入的 `RemoteDelegationSink`（组合根实现为 `federation::aggregator::AggregatorDelegationSink`）——插件本身不认识联邦。与 [Agent 循环](../core/core-agent-loop.md) 的回复分支（同上下文 fork/合并）互为对照；装载与包门控见 [插件化设计](./core-plugins.md)。
 
 ## 动机与边界
 
@@ -33,7 +35,7 @@ y: 2020
    **同步受理**：注册进 `SubagentStore`（携带主 turn 的取消令牌子令牌）并立即返回
    子任务 id 回执；子任务在后台以隔离上下文执行。这次调用与回执按普通工具口径
    落 `ToolCall` / `ToolResult` 事件（见「事件与观测」）
-2. 子 turn 走独立循环（`packages/subagent/mod.rs::run_subagent_turn`：与主循环同源的
+2. 子 turn 走独立循环（`echo-plugin-subagent` 的 `run_subagent_turn`：与主循环同源的
    迭代/截断续跑/取消语义，但**不回写 trunk**、不发会话级 LLM 事件）
 3. 完成/失败/超时/取消 → 发射 `SubagentCompleted`，并把结论包进
    `<subagent_event>` hook 经 `dispatch_subagent_hook` 注入主会话——
@@ -62,7 +64,7 @@ y: 2020
 - **取消传播**：主 turn 取消 → 子令牌 → 子循环的 select 中止；取消的子任务
   记为 `Cancelled` 并同样发 hook（主 agent 感知"没有结论会来"）
 - **结果截断**：子任务回复超过 8K 字符（`MAX_SUBAGENT_RESULT_CHARS`，
-  `packages/subagent/mod.rs::truncate_result`）时截断并标注总字符数，防单个
+  `echo-plugin-subagent` 的 `truncate_result`）时截断并标注总字符数，防单个
   结论反过来烧掉主上下文。与 hook 信封 `task` 字段的 4000 字符上限是两回事：
   后者限**任务描述**的可审计长度，前者限**结论**回灌体量
 - **子代理模型覆盖（`profile`）**：执行体按名从供应商池解析并
@@ -91,7 +93,7 @@ y: 2020
 
 子任务完成通知与 QQ 消息/定时器同族：**结构化 hook → 新入站 turn**。
 `<subagent_event>` 包装与解析由 `input_marker` 同族的
-`packages/subagent/mod.rs::wrap_subagent_event` 承担。
+`echo-plugin-subagent` 的 `wrap_subagent_event` 承担。
 
 异步编排工具接入 echo-loop 的接口是 `SubagentToolHooks`
 （`source/loop/echo-loop/src/runner.rs`，由 `process_via_echo_loop` 装配进
@@ -124,7 +126,7 @@ y: 2020
 - **回灌面**：完成 hook 作为 `MessageReceived { instance_name: "subagent" }`
   进入显示时间线与 trunk（会话历史含完整委派轨迹：调用 → 回执 → 结论事件）
 
-`<subagent_event>` 信封字段（`packages/subagent/mod.rs::wrap_subagent_event`
+`<subagent_event>` 信封字段（`echo-plugin-subagent` 的 `wrap_subagent_event`
 包装，payload 由 `agent/subagent_runtime.rs` 的完成链与受理前拒绝链产出）：
 
 | 字段 | 说明 |
@@ -157,7 +159,7 @@ spawn_subagent 调用的 arguments]」。任务全文始终可从该次调用的
 
 ### 测试守护
 
-- 单元（`packages/subagent/mod.rs`）：受理注册/回执、空任务纠正性拒绝、超时钳制、
+- 单元（`echo-plugin-subagent`）：受理注册/回执、空任务纠正性拒绝、超时钳制、
   `truncate_result` 结果截断、cancel_all 幂等、hook 信封结构
 - 单元（`agent/subagent_runtime.rs::subagent_task_field_keeps_long_descriptions_verbatim`）：
   信封 `task` 字段的边界——783 与 4000 字符原样、4001 截断且标注总字符数

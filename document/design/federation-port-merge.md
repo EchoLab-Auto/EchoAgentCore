@@ -158,7 +158,7 @@ listen = "0.0.0.0:3132"
 | 阶段 | 内容 | 主要位置 |
 |---|---|---|
 | 链路层 | 同步令牌镜像（`new`/`add_peer`/`remove_peer` 镜像 per-peer 令牌，供升级回调同步读取）+ `has_peer_token` + `accept_ws` 包装 + 常时比较 | `source/federation/echo-federation/src/link.rs` |
-| 装配层 | 拆 `handle_ws`（升级后主体，独立模式行为不变）；`classify` 分类器；`serve_merged` 合并监听；启动校验（安全条件 1/2）；`run_core` 同址判定与接线（联邦 `run` 仅起连出，合并监听挂「管理面」插件生命周期） | `source/core/src/management.rs`、`source/core/src/main.rs` |
+| 装配层 | 拆 `handle_ws`（升级后主体，独立模式行为不变）；`classify` 分类器；`serve_merged` 合并监听；启动校验（安全条件 1/2）；`run_core` 同址判定与接线（联邦 `run` 仅起连出，合并监听挂「管理面」插件生命周期） | `echo-plugin-management`、`source/core/src/main.rs` |
 | 工具层 | `port` 显示合并态；帮助文案 | `source/core/src/port_cmd.rs` |
 | 文档收敛 | federation.md 增「端口合并」节、protocol.md 一句、ops-deploy.md 云机配方；本页状态更新 | `document/**` |
 | 验证 | 单测 + 集成 + 本机双核冒烟（见下） | `source/core`、`source/federation` |
@@ -201,7 +201,7 @@ dial 出）。
   3. 合并监听 = 挂「管理面」插件生命周期（禁用管理面 = 联邦入站同停、
      出站不受影响；启动期检测到该组合会给出 warn）。
 - **实现落点**：`echo-federation`（同步令牌镜像 `has_peer_token_sync`、
-  `accept_ws_pub`、常时比较）+ core（`management.rs` 分类器/`serve_with_federation`
+  `accept_ws_pub`、常时比较）+ 管理面插件（`echo-plugin-management` 的分类器与 `serve_with_federation`
   /启动校验；`main.rs` 同址判定与接线；`port_cmd` 合并标记）。
 - **已知边界**：地址比较为字符串精确匹配（不做 `0.0.0.0` 与 `[::]`
   等价归一）。表 #4 兼容分支（空令牌核心收到未知令牌→归为管理）保持

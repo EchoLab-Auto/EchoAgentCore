@@ -61,7 +61,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 - [panel-desktop-layout.md](./panel/panel-desktop-layout.md) — **电脑端布局**（≥768px）：外壳几何、层叠秩序、双侧边栏、卡片、连接生命周期
 - [panel-chat.md](./panel/panel-chat.md) — 会话视图：消息列表、工具卡、推理块与输入区
 - [panel-modals.md](./panel/panel-modals.md) — 模态与覆盖层：模态清单、分支/上下文弹层、Agent 配置弹层
-- [panel-settings.md](./panel/panel-settings.md) — 设置视图：API、资源工作区、技能安装、Core 连接与联邦、日志
+- [panel-settings.md](./panel/panel-settings.md) — 设置视图外壳：八分类菜单、共用契约与界面元素树 → 七篇分类子文档：[API](./panel/panel-settings-api.md) · [技能](./panel/panel-settings-skills.md) · [工具](./panel/panel-settings-tools.md) · [插件](./panel/panel-settings-plugins.md) · [智能体](./panel/panel-settings-agents.md) · [Core 与联邦](./panel/panel-settings-cores.md) · [日志与系统](./panel/panel-settings-logs.md)
 - [panel-instance-tasks.md](./panel/panel-instance-tasks.md) — 实例管理·任务·Shell：描述符驱动的插件实例弹层、任务弹层、HTTP 通道
 - [panel-mobile-layout.md](./panel/panel-mobile-layout.md) — **移动端布局**（<768px）：顶栏与视图菜单、入口行横滚提示、卡片 Sheet、软键盘与安全区
 - [panel-system.md](./panel/panel-system.md) — 系统交互：Toast、键盘清单、设计边界与关键常量
@@ -129,6 +129,13 @@ graph LR
   Inter --> Chat[会话视图|/panel/panel-chat.md]
   Inter --> Modals[模态与覆盖层|/panel/panel-modals.md]
   Inter --> Set[设置视图|/panel/panel-settings.md]
+  Set --> SetApi[设置 · API|/panel/panel-settings-api.md]
+  Set --> SetSk[设置 · 技能|/panel/panel-settings-skills.md]
+  Set --> SetTo[设置 · 工具|/panel/panel-settings-tools.md]
+  Set --> SetPl[设置 · 插件|/panel/panel-settings-plugins.md]
+  Set --> SetAg[设置 · 智能体|/panel/panel-settings-agents.md]
+  Set --> SetCo[设置 · Core 与联邦|/panel/panel-settings-cores.md]
+  Set --> SetLo[设置 · 日志与系统|/panel/panel-settings-logs.md]
   Inter --> Tasks[实例管理·任务·Shell|/panel/panel-instance-tasks.md]
   Inter --> Mobile[移动端布局|/panel/panel-mobile-layout.md]
   Inter --> Sys[系统交互|/panel/panel-system.md]

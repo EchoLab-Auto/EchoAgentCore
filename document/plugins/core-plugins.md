@@ -87,7 +87,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 联邦（`echo-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
 
-> **框架侧实现位置**：echo-agent crate 内按插件分包到 `src/packages/<name>/`，**第一层分类 = 包归属**——`tools_builtin`（内置工具）/ `skills_dir`（技能注册表 + Git 安装）/ `instance_ops`（入站 hook 桥 + 通用实例命令域）/ `workspace`（会话存储/工具 + 命令域）/ `subagent` / `provider_llm`（provider 工厂）；另有特例 `packages/tool/` = 工具子系统的**跨包机制**（`ToolRegistry`：注册/可逆注销/逐名与按包启停/schema 缓存，被各包共用，非插件）。`loop.{single,parallel}` 的实现是 `echo-loop` crate（echo-agent 只做驱动接线）；`management.panel` 是 echo-protocol（线协议，见 [协议与数据流](../protocol/protocol.md)）+ echo-agent-core（`source/core/src/management.rs`）。目录只服务物理区分，公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export）。
+> **框架侧实现位置**：解耦计划 Phase 3 已把绝大多数内置插件外迁为独立 crate——`echo-plugin-provider-llm`（provider 工厂 + 计量/脱敏装饰）/ `echo-plugin-skills`（技能注册表 + Git 安装）/ `echo-plugin-workspace`（工作区会话与工具）/ `echo-plugin-subagent` / `echo-plugin-loop`（两个纯策略模式）/ `echo-plugin-management`（Panel 连接面）；工具子系统的跨包机制（`ToolRegistry`）在 `echo-tool`。**仍内联在 echo-agent 的**只剩 `packages/tools_builtin`（内置工具集）、`packages/instance_ops`（入站 hook 桥 + 通用实例命令域）、`packages/federation`（远程代理工具与查询适配）。公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export 指向新 crate）。完整清单与判定见 [完全解耦推进计划](../design/decoupling-plan.md) §Phase 3。
 >
 > QQ 工具（`send_*`/`get_*` 共 10 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由插件进程申报（插件仓库 `crates/echo-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。2026-10 去适配器化时 `source/core/src/qq_tools.rs` 已删除——插件实例本就能声明工具，没有留给组合根的特例。
 

@@ -8,7 +8,7 @@ y: 780
 
 # Panel 模态与覆盖层
 
-> **定位**：本文覆盖 Panel 的全部模态与覆盖层——分支详情（BranchModal）、上下文弹层（ContextView）、Agent 配置弹层（AgentConfigModal），以及各危险操作的确认形式（统一 `confirmDialog` / 两步确认）。读者：维护 Panel 交互的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)（弹层入口与几何）、[设置视图](./panel-settings.md)。
+> **定位**：本文覆盖 Panel 的全部模态与覆盖层——分支详情（BranchModal）、上下文弹层（ContextView）、Agent 配置弹层（AgentConfigModal），以及各危险操作的确认形式（统一 `confirmDialog` / 两步确认）。读者：维护 Panel 交互的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)（弹层入口与几何）、[设置视图](./panel-settings.md)及其[分类子文档](./panel-settings-api.md)。
 
 > **多接入点**：`RequestContext` 等按（人格, 会话）定向的请求经 `sendPending` 统一路由到会话/人格所属 core（`connection.ts` 的 `resolveTargetCore`）；响应快照在 ContextView 侧按 `(core, session_id)` 复合键匹配后才展示，忽略他属 core 的陈旧快照（`ContextView.vue` 的复合键读取）。AgentConfigModal 的保存（`SaveTeam`）同理按人格归属 core 路由。
 
@@ -55,7 +55,7 @@ y: 780
 锚定会话区上方的磨砂覆盖层（底边 = 入口行高 + 42px，`ChatView.vue` 的配置弹层几何）；点遮罩/✕/取消/保存后关闭。打开时拉取技能/工具/插件清单：
 
 - 字段：名称、描述、系统提示词（留空继承全局）、启用开关（**禁用即卸载记忆**，重启用重新挂载）、**循环模式分段单选**（单会话（默认）/ 并行多会话——写入 `enabled_plugins` 白名单的 `echo-agent.loop.{single,parallel}` 插件 id，二选一）
-- **API 供应商下拉**：选项 = 「跟随全局默认配置」+ 全局供应商池各 profile（`name（provider / model · key 状态）`）；保存写入 `SaveTeam.api_profile`，运行期立即重建该 persona 的 provider（见 [设置视图](./panel-settings.md)「API 设置」）
+- **API 供应商下拉**：选项 = 「跟随全局默认配置」+ 全局供应商池各 profile（`name（provider / model · key 状态）`）；保存写入 `SaveTeam.api_profile`，运行期立即重建该 persona 的 provider（见 [设置 · API](./panel-settings-api.md)「Persona 级引用」）
 - 三类能力复选表（插件按 kind 分组、工具/技能按包分组，组级全选）：**白名单语义——空表 = 全部启用**；首次取消勾选时先把全量写入列表再移除该项
   - 「启用插件」区成员 = `kind ∈ {instance, management, interaction}` ∪ 包维度门控插件固定清单（单一来源 `capabilities.ts::isPluginCheckboxVisible`，与设置视图同一常量；详见 [插件化设计](../plugins/core-plugins.md)「新增包维度门控插件时的同步清单」）。分组按 kind：插件实例 / 交互独立成组，其余整类能力项归入「管理面」
       - **分组标签**：`PLUGIN_GROUP_LABELS` 映射 `instance → 平台实例`（另有 `adapter → 平台实例` 兼容旧 Core 的 wire 名）与 `interaction → 交互`；其余 kind 归「管理面」

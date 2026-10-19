@@ -88,7 +88,7 @@ Generated inputs that must satisfy invariants:
   propagation, model switch, API profile switch/delete, skill toggle, **skill
   keyword → prompt injection**, **non-trigger caching**, **concurrent turn
   serialization** (slow provider → no interleaving).
-- `source/core/src/management.rs` (inline integration tests) — management WS
+- `source/plugin/echo-plugin-management`（inline integration tests）— management WS 中继、token 鉴权与端口合并
   server on ephemeral port: Panel command → agent backend, agent event → Panel
   forward.
 - （QQ 插件仓库）`crates/echo-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`（插件侧领域类型，保留）、

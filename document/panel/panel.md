@@ -164,5 +164,5 @@ cd web && npm run dev           # 前端热更新（/ws 代理到 :8080）
 
 ## 延伸阅读
 
-- 前端文档群：[交互定义](./panel-interaction.md)（总入口）→ [电脑端布局](./panel-desktop-layout.md)、[移动端布局](./panel-mobile-layout.md)、[会话视图](./panel-chat.md)、[模态与覆盖层](./panel-modals.md)、[设置视图](./panel-settings.md)、[实例管理·任务·Shell](./panel-instance-tasks.md)、[系统交互](./panel-system.md)、[图标体系](./panel-icons.md)
+- 前端文档群：[交互定义](./panel-interaction.md)（总入口）→ [电脑端布局](./panel-desktop-layout.md)、[移动端布局](./panel-mobile-layout.md)、[会话视图](./panel-chat.md)、[模态与覆盖层](./panel-modals.md)、设置视图（[外壳](./panel-settings.md) + [API](./panel-settings-api.md)、[技能](./panel-settings-skills.md)、[工具](./panel-settings-tools.md)、[插件](./panel-settings-plugins.md)、[智能体](./panel-settings-agents.md)、[Core 与联邦](./panel-settings-cores.md)、[日志与系统](./panel-settings-logs.md)）、[实例管理·任务·Shell](./panel-instance-tasks.md)、[系统交互](./panel-system.md)、[图标体系](./panel-icons.md)
 - 相关：[协议与数据流](../protocol/protocol.md)（WS 帧格式、命令与事件）、[部署与自更新](../ops/ops-deploy.md)、[联邦（多机）](../federation/federation.md)

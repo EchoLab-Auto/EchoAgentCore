@@ -12,7 +12,7 @@ link: ["panel-performance-audit | Panel 性能审计 | l>t"]
 > **状态：P1 第一步已落地（2026-10-19）**。P0（渲染窗口 / 适配前切片 / 时间标签
 > memo / 工作行缓存 / 流式纯文本 / 写时复制 / 合并索引化）已落地并实测达标，
 > 见 [Panel 性能审计](./panel-performance-audit.md)。P1 的**条目身份**已进代码：
-> Core 侧 `core/src/entry_identity.rs` + 信封层 `entry` 字段，Panel 侧已消费
+> Core 侧 `echo_protocol::entry_identity`（原 `core/src/entry_identity.rs`）+ 信封层 `entry` 字段，Panel 侧已消费
 > （流式行 / 终值对账 / 工具配对三处改为精确命中，旧判据保留为回退）。
 > 本文余下章节（归一化存储、游标分页、协议收敛）仍是提案，落地时以代码为准。
 
@@ -60,8 +60,8 @@ P0 把**渲染**成本与历史长度解耦（常数 200 行窗口），但**数
 
 | 位置 | 内容 |
 | --- | --- |
-| Core `core/src/entry_identity.rs` | `EntryTracker`：把"同一逻辑条目的多个事件"绑到同一 id |
-| Core `management.rs` | broker 在**持锁投递之前**推进追踪器（与 `seq` 同序），随帧下发 |
+| `echo-protocol` 的 `entry_identity` | `EntryTracker`：把"同一逻辑条目的多个事件"绑到同一 id（Phase 3 ⑧ 下沉：产出的是线上信封字段，与 `seq` 同层） |
+| `echo-plugin-management` | broker 在**持锁投递之前**推进追踪器（与 `seq` 同序），随帧下发 |
 | Core `bridge.rs` | `serialize_event_identified(seq, entry, ev)`：顶层插键；`None` 时不写该键 |
 | Panel `connection.ts` | 解析帧顶层 `entry` → `dispatch(event, core, entry)` |
 | Panel `state.ts` | `DisplayMessage.entry`；流式增量 / 终值 / 工具结果全链透传 |
@@ -199,7 +199,7 @@ pub enum BackendEvent {
 
 `since` 用**条目身份**而不是进程内 `seq`：Core 重启、游标回退、跨中继重放都
 不会错位（现在的 `seq` 是 `EventBroker` 的进程内计数器，
-`core/src/management.rs:33`，重启归 1）。
+`echo-plugin-management` 的 `EventBroker`，重启归 1）。
 
 ### 呈现排布：从反推到声明
 
@@ -276,7 +276,7 @@ const rec = computed(() => entries.get(props.entryId));
 | 阶段 | 内容 | 改动 | 工作量 | 验收 |
 | --- | --- | --- | --- | --- |
 | **P0**（已完成） | 渲染窗口 200、`formatTime` memo、工作行 WeakMap 缓存、流式纯文本、写时复制 | Panel 5 文件 | ~1 天 | 2000 行 4× CPU：0 掉帧；单 delta ≤1.5 ms；DOM/堆恒定 |
-| **P1（第一步已完成）** | 信封层 `entry`（`EntryTracker`）+ Panel 三处精确命中 | Core `entry_identity.rs` / `management.rs` / `bridge.rs`；Panel `connection` / `state` / `timeline` | 1 天 | 双读回归（`entry` 缺失时行为不变）+ 同名工具并发不配错 |
+| **P1（第一步已完成）** | 信封层 `entry`（`EntryTracker`）+ Panel 三处精确命中 | Core `echo_protocol::entry_identity` / `echo-plugin-management` / `bridge.rs`；Panel `connection` / `state` / `timeline` | 1 天 | 双读回归（`entry` 缺失时行为不变）+ 同名工具并发不配错 |
 | **P1（余下）** | `EntryUpsert` 新增事件 + 时间线条目带 `entry` + `RequestWindow`/`Subscribe` 游标 | Core 协议 + 写入端；Panel 新增 `entry-store.ts` | 3–4 天 | 两套路径同屏输出一致（对账测试）；旧 Panel 不受影响 |
 | **P2** | 删启发式与渲染缓存，`sessionHistory`/`teamTimelines` 并为 `entry-store` | `state.ts` −400 行、`timeline.ts` −200 行、`ChatView` 重构 | 4–6 天 | 1 万条历史：单 delta <2 ms、堆 <60 MB 且与长度无关；`chat-message-cache` 测试组随之删除 |
 | **P3** | `RequestWindow`/`Subscribe` 游标；向上分页 + 锚定；重连纯增量 | Core `commands.rs`/`history.rs`；Panel `connection.ts`/`ChatView` | 3–4 天 | 断线重连帧数 = 新增条数；显示历史可放到 4 万条 |

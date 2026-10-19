@@ -36,7 +36,7 @@ Panel 无全局快捷键系统；所有键处理局部于组件：
 - `StartAllInstances` / `StopAllInstances`（逐个插件实例控制已覆盖）
 - 实例管理（门控/名单/owner/登录）：统一 `InvokeInstanceOp`；owner 显示为只读
 
-> `RequestSystemPrompt` 已接线：切 core 时随「单值管理面」重拉发送（`connection.ts::requestActiveRegionManagement`），`pending.ts` 的关联表登记 `SystemPrompt` 响应销账；**但 Panel 不落状态**——`AppState.model` / `systemPrompt` 字段已删除（事件写入后零读取方；模型名可由 api/会话归属推导，`SystemPrompt` 回推文本仅面向调试）。`InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 亦已接线（见 [设置视图](./panel-settings.md)），均不再属于本清单。
+> `RequestSystemPrompt` 已接线：切 core 时随「单值管理面」重拉发送（`connection.ts::requestActiveRegionManagement`），`pending.ts` 的关联表登记 `SystemPrompt` 响应销账；**但 Panel 不落状态**——`AppState.model` / `systemPrompt` 字段已删除（事件写入后零读取方；模型名可由 api/会话归属推导，`SystemPrompt` 回推文本仅面向调试）。`InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 亦已接线（见 [设置 · 技能](./panel-settings-skills.md)），均不再属于本清单。
 
 ## 关键常量速查
 

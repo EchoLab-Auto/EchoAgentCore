@@ -175,7 +175,7 @@ y: 3480
 **提交 `c5301f5`**（核心仓库，14 文件，+39/−1255）：
 - echo-protocol：10 命令变体 + 7 事件变体 + `AdapterStatus` 三字段（container/webui_url/onebot_url）删除；`id_compat.rs` 双读层移除；相关测试精简
 - echo-agent：`legacy.rs`（739 行）删除；命令域仅剩 `InvokeAdapterOp`；`emit_adapter_state_events` 仅发 `AdapterState`（单源）；`agent/mod.rs` 弃字段填充删除（metadata 派生保留）
-- core：`main.rs` 旧事件派生循环删除；`management.rs` 测试改写为 `InvokeAdapterOp` 往返
+- core：`main.rs` 旧事件派生循环删除；管理面（现 `echo-plugin-management`）测试改写为 `InvokeAdapterOp` 往返
 - 测试：927 → **918 passed / 0 failed**（净减 9 个旧测试；父级独立复跑确认）
 - 四条验收 grep 全空（旧命令 / 旧事件 / GroupInfo+FriendInfo / legacy+id_compat）
 

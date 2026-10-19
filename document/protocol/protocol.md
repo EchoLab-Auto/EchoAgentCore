@@ -44,7 +44,7 @@ Panel 随后在同批迁移中跟齐（Panel `7e8f765`）：
 **没有变体级 alias**：serde 的外部标签就是变体名，字段级 alias（`InvokeInstanceOp.instance` 的
 `alias = "adapter"`）救不了它。所以这次改名必须双端同批落地——中间状态下的失败方式极难排查：
 
-- **Panel → Core**：`{"StartAdapter":{…}}` 解析失败 → `management.rs::handle_inbound_text` 返回
+- **Panel → Core**：`{"StartAdapter":{…}}` 解析失败 → `echo-plugin-management` 的 `handle_inbound_text` 返回
   `None` → **整帧静默丢弃**（该函数注释即「malformed payloads → ignored」）。表现是「点击启停
   没有任何反馈」，日志里也不会有红色错误。
 - **Core → Panel**：Core 只发 `Instance*`，Panel 的 `case` 还在等旧名 → 实例状态、登录态、
@@ -57,7 +57,7 @@ Panel 随后在同批迁移中跟齐（Panel `7e8f765`）：
 
 ## 传输与信封
 
-- Core 监听 `[core] management_address`（默认 `0.0.0.0:3132`），由 `source/core/src/management.rs` 提供；每个前端建立一条 WS 连接
+- Core 监听 `[core] management_address`（默认 `0.0.0.0:3132`），由 `echo-plugin-management` 提供；每个前端建立一条 WS 连接
 - Core 侧事件经 `EventBroker` 扇出到每条连接的独立订阅通道；命令由各连接独立注入
 - 服务端 30s Ping 心跳（90s 无任何入站活动判死断开）；Panel 转发层对双向心跳做透传，空闲连接不会被中间层悄悄断开
 - 断线自动重连（500ms 起、指数退避，**上限按页面可见性分档**：可见 3s / 隐藏 30s——部署或 Core 重启后前台几秒内即恢复，后台省电）；重连后清空运行期状态（分支/任务/活动/工作区缓存）再 Bootstrap——**时间线刻意保留**（刷新加速：内存 + 磁盘缓存按游标 `since_seq` 增量续拉，Core 缺口检测兜底、响应 `full` 时整体替换）
@@ -83,7 +83,7 @@ pub enum WsMessage {
 
 Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEvent { seq, event }`，`echo-protocol/src/bridge.rs`）：
 
-- **语义**：Core **进程内**单调递增序号（从 1 起，重启归 1），标识"这条 Core 发出的第 N 条事件"，不标识任何业务对象。由 WS 扇出点 `management.rs` 的 `EventBroker` 在**持订阅者表锁之前** `fetch_add` 分配，因此编号与投递顺序严格一致——多订阅者（多窗口 / 多 Panel / 中继的多个上游连接）看到同一套编号，不会错位
+- **语义**：Core **进程内**单调递增序号（从 1 起，重启归 1），标识"这条 Core 发出的第 N 条事件"，不标识任何业务对象。由 WS 扇出点 `echo-plugin-management` 的 `EventBroker` 在**持订阅者表锁之前** `fetch_add` 分配，因此编号与投递顺序严格一致——多订阅者（多窗口 / 多 Panel / 中继的多个上游连接）看到同一套编号，不会错位
 - **编码**：`serialize_event_sequenced` 把序号作为顶层字段附加（`{"type":"event","payload":{…},"seq":N}`）；`serialize_event` 保留不带序号的形态，两者共用同一实现。放顶层而不是塞进 `BackendEvent` 变体，是为了不动事件契约——新增事件变体不必记得带序号，旧 Panel 的 serde 也只会忽略这个多余字段
 - **条目身份**：`serialize_event_identified` 在序号之外附加 `entry`（`{"type":"event","payload":{…},"seq":N,"entry":"…"}`）。语义 = **同一条逻辑条目的所有事件共享同一 id**：一段流式输出的全部增量与它的终值同 id（`backend:<session>:<branch>:<n>` / `reasoning:<session>:<branch>:<n>`），工具调用与它的结果同 id（`tool:<session>:<tool_call_id>`，id 为空时不分配）。`<n>` 是 Core 进程级单调计数。由 Core 的扇出（`management::EventBroker` → `core::entry_identity`）在**持锁投递之前**推进，因此多订阅者看到同一套 id；缺省（旧版 Core / 无身份概念的事件）时不写该键，Panel 全部消费点回退原判据
 - **消费方契约（Panel）**：按 `(core, seq)` 分桶观察（`web/src/event-seq.ts` 的 `observeEventSeq`）——`baseline` 首帧建基线、`contiguous` 连续、`gap` 跳号（`missed` = 缺失条数）即**按 timeline 游标补拉**（`RequestTrunkTimeline{ team_id, since_seq }`，`connection.ts` 的 `requestTimelineResync`，带最小间隔限流）、`reset` 序号回退（Core 重启归 1、中继补发旧帧）只重取基线不报警、`ignored` 帧上无序号（旧 Core）跳过校验。判定的职责边界：只观察不修复，修复动作由连接层发起
@@ -245,7 +245,7 @@ Panel 侧的联邦管理命令（Frontend-only）：`SaveFederationPeer` /
 `DeleteFederationPeer` / `RequestFederationStatus` /
 `RequestFederationInvite` / `MigrateSession { session_id, team_id?, target_peer }`
 ——Panel 侧全部镜像进 `web/src/protocol.ts`（补齐；unit 变体
-字符串形态，双侧各有形态契约测试：Core 本仓 `management.rs`、Panel
+字符串形态，双侧各有形态契约测试：Core 本仓 `echo-plugin-management`、Panel
 `protocol-sync` 守护「禁止双重断言绕过」）；
 事件 `FederationStatus`（token 脱敏为 `token_set`；含 per-peer
 `active_turns` 负载，在线 peer 实时拉取）/ `FederationInvite` /
