@@ -774,7 +774,13 @@ impl Agent {
                 // 当前 agent 过滤展示。只遍历默认 agent 会让其他人格的会话
                 // 缺失（或混入主 agent 会话，刷新后侧边栏串显）。
                 let mut emitted_sessions = 0usize;
-                async fn emit_sessions_of(agent: &Agent, count: &mut usize) {
+                // 身份由调用方传入（`Agent` 实例字段）：内层 fn 拿不到 self，
+                // 因此显式作为参数——与 P3「身份是参数」保持一致。
+                async fn emit_sessions_of(
+                    agent: &Agent,
+                    identity: &crate::NodeIdentity,
+                    count: &mut usize,
+                ) {
                     for s in agent.trunk.all() {
                         let last = s
                             .history
@@ -784,13 +790,14 @@ impl Agent {
                             .map(|m| m.content)
                             .unwrap_or_default();
                         agent.emit(BackendEvent::SessionUpdated {
-                            session: s.info(last),
+                            session: s.info(last, identity),
                         });
                         *count += 1;
                     }
                 }
                 // 当前（默认）agent 的会话。
-                emit_sessions_of(self, &mut emitted_sessions).await;
+                let identity = self.node_identity();
+                emit_sessions_of(self, &identity, &mut emitted_sessions).await;
                 // 其余 persona 的会话（经 event_bus 镜像到默认 handle，各自
                 // annotate 自己的 team_id）。
                 if let Some(mgr) = crate::agent_manager::global_manager() {
@@ -798,7 +805,9 @@ impl Agent {
                         if running.agent.team_id() == self.team_id() {
                             continue; // 已由上方覆盖
                         }
-                        emit_sessions_of(&running.agent, &mut emitted_sessions).await;
+                        let running_identity = running.agent.node_identity();
+                        emit_sessions_of(&running.agent, &running_identity, &mut emitted_sessions)
+                            .await;
                     }
                 }
                 tracing::info!(
@@ -1417,7 +1426,7 @@ impl Agent {
                     .collect();
                 // Notify TUI that a session exists so it can set active_session_id.
                 self.emit(BackendEvent::SessionUpdated {
-                    session: session.info(String::new()),
+                    session: session.info(String::new(), &self.node_identity()),
                 });
                 self.emit(BackendEvent::MessageReceived {
                     session_id: sid.clone(),

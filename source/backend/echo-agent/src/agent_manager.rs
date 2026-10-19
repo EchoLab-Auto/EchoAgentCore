@@ -40,6 +40,10 @@ pub struct AgentManager {
     disabled: parking_lot::Mutex<Vec<String>>,
     /// Persistence hook: writes the profiles map back to TOML (or any store).
     config_writer: parking_lot::Mutex<Option<ConfigWriter>>,
+    /// 本节点身份（NodeId + 运行区域名）：`infos()` 把它写进每条 `TeamInfo`，
+    /// 供多节点聚合客户端区分同名人格。组合根装配期注入（P3 终态：参数，
+    /// 非 kernel cell）。
+    node_identity: parking_lot::RwLock<crate::NodeIdentity>,
 }
 
 /// Closure that persists the profiles map (composition root injects the
@@ -105,7 +109,14 @@ impl AgentManager {
             agents: parking_lot::RwLock::new(agents),
             disabled: parking_lot::Mutex::new(disabled),
             config_writer: parking_lot::Mutex::new(None),
+            node_identity: parking_lot::RwLock::new(crate::NodeIdentity::default()),
         }
+    }
+
+    /// 注入本节点身份（组合根装配期，一次）。`infos()` 的每条 `TeamInfo`
+    /// 都会带上它。
+    pub fn set_node_identity(&self, identity: crate::NodeIdentity) {
+        *self.node_identity.write() = identity;
     }
 
     pub fn default_id(&self) -> String {
@@ -330,14 +341,15 @@ impl AgentManager {
     /// Snapshot for the Panel (AgentsList event) — all known profiles with
     /// running state and session counts.
     pub fn infos(&self) -> Vec<TeamInfo> {
+        let identity = self.node_identity.read();
         let agents = self.agents.read();
         let teams = self.teams.read();
         let mut list: Vec<TeamInfo> = teams
             .iter()
             .map(|(id, p)| TeamInfo {
                 id: id.clone(),
-                node_id: crate::node_id().map(str::to_string),
-                region_name: crate::region_name().map(str::to_string),
+                node_id: identity.node_id_field(),
+                region_name: identity.region_name_field(),
                 name: p.name.clone(),
                 description: p.description.clone(),
                 enabled: agents.contains_key(id),
@@ -457,6 +469,31 @@ mod tests {
         assert_eq!(mode_of("coder"), echo_defs::LoopMode::Single);
         // 非空白名单无模式 id → Single（兜底）
         assert_eq!(mode_of("bare"), echo_defs::LoopMode::Single);
+    }
+
+    /// 节点身份作为**参数**下发（P3 终态，不再经 kernel cell）：
+    /// `set_node_identity` 之后每条 `TeamInfo` 都带上它。
+    #[test]
+    fn infos_carry_injected_node_identity() {
+        let mut raw = AgentConfig::default();
+        raw.teams.insert("a".into(), member_with_plugins(&[]));
+        raw.disabled_teams = vec!["a".into()];
+        let mgr = manager_with(raw);
+        // 未注入 → 字段不下发（嵌入式/测试用法）。
+        let info = &mgr.infos()[0];
+        assert_eq!(info.node_id, None);
+        assert_eq!(info.region_name, None);
+
+        mgr.set_node_identity(crate::NodeIdentity::new("node-01abc", "办公机"));
+        let info = &mgr.infos()[0];
+        assert_eq!(info.node_id.as_deref(), Some("node-01abc"));
+        assert_eq!(info.region_name.as_deref(), Some("办公机"));
+
+        // 区域名为空 = 只下发 node_id（前端回退用它展示）。
+        mgr.set_node_identity(crate::NodeIdentity::new("node-01abc", ""));
+        let info = &mgr.infos()[0];
+        assert_eq!(info.node_id.as_deref(), Some("node-01abc"));
+        assert_eq!(info.region_name, None);
     }
 
     #[test]

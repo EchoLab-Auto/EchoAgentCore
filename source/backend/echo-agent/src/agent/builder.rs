@@ -52,6 +52,8 @@ pub struct AgentBuilder {
     config_store: Option<ConfigStore>,
     session_persist_path: Option<std::path::PathBuf>,
     subagent_store: Option<Arc<crate::subagent::SubagentStore>>,
+    /// 节点身份（可选；缺省空 = 线格式不带 node_id / region_name）。
+    node_identity: Option<crate::NodeIdentity>,
     /// 敏感信息脱敏器（可选；注入后 Agent 各出口统一脱敏）。
     redactor: Option<Arc<dyn echo_defs::sanitize::Redactor>>,
     /// API 指标存储（可选；余额/用量时间序列的记录与查询）。
@@ -82,6 +84,7 @@ impl AgentBuilder {
             config_store: None,
             session_persist_path: None,
             subagent_store: None,
+            node_identity: None,
             redactor: None,
             metrics: None,
         }
@@ -100,6 +103,13 @@ impl AgentBuilder {
     }
 
     /// 人格身份（`__core` 服务代理为 None）。
+    /// 节点身份（federation NodeId + 运行区域名）：组合根构造一份，所有
+    /// persona 共用。缺省空 = 线格式不带这两个字段（嵌入式/测试用法）。
+    pub fn node_identity(mut self, identity: crate::NodeIdentity) -> Self {
+        self.node_identity = Some(identity);
+        self
+    }
+
     pub fn team_id(mut self, id: Option<String>) -> Self {
         self.team_id = id;
         self
@@ -196,6 +206,9 @@ impl AgentBuilder {
         }
         if let Some(store) = self.subagent_store {
             agent.attach_subagent_runtime(store);
+        }
+        if let Some(identity) = self.node_identity {
+            agent.set_node_identity(identity);
         }
         if let Some(redactor) = self.redactor {
             agent.set_redactor(redactor);

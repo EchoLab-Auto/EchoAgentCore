@@ -361,7 +361,7 @@ impl Agent {
                 }
             }
             self.emit(BackendEvent::SessionUpdated {
-                session: session.info(String::new()),
+                session: session.info(String::new(), &self.node_identity()),
             });
         }
         self.emit_workspace_sessions();

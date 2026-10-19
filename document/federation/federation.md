@@ -342,8 +342,10 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   trunk 缓存都必须用复合键（`core 为空时退化为裸 id`，单接入点零变化）；同名
   跨 core 不再互相覆盖/串显。
 - **身份内建 `node_id`**：`SessionInfo` /
-  `TeamInfo` 线上携带可选 `node_id`（进程级 NodeId，`echo_agent::set_node_id`
-  由组合根注入）——多节点聚合客户端不再只靠中继信封区分同名会话/人格。Panel 学习 `core → NodeId` 映射并在选择器
+  `TeamInfo` 线上携带可选 `node_id`（`echo_agent::NodeIdentity`：组合根构造
+  一份，装配期下发到 `AgentManager` 与每个 `Agent`——**不再是进程级 kernel
+  cell**，多区域/多节点场景下身份是构造参数而非全局事实）——多节点聚合客户端
+  不再只靠中继信封区分同名会话/人格。Panel 学习 `core → NodeId` 映射并在选择器
   展示；`branchTabs` 按 `(core, branch_id)` 键；等待态（pending）登记时记录
   目标 core，响应只销账同 core 的等待。
 - **运行区域（agent 自带属性）**：不存在"管理目标 core"

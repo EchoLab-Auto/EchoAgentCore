@@ -313,15 +313,28 @@ pub(crate) async fn federation_router_pump(
                     }
                     echo_federation::LinkEvent::Frame { from, frame } => {
                         if let echo_federation::FedFrame::Invoke(request) = frame {
-                            // 执行端：逐个 persona 注册表找工具（工具集按人格
-                            // 装配略有差异；取第一个能解析到的）。
                             let registry = personas
                                 .personas()
                                 .into_iter()
                                 .map(|p| p.agent.tools.clone())
                                 .next();
                             let Some(registry) = registry else {
-                                tracing::warn!(target: "federation", "no persona registry for invoke");
+                                // 无 persona = 无工具注册表。此前的 `continue`
+                                // 让调用方一直等到自身超时（实测 460s 空等，
+                                // 且本端只看到「远程工具超时」，排查成本极高）。
+                                // 改为显式 Error 回执：调用方立即失败并看到原因。
+                                tracing::warn!(
+                                    target: "federation", from = %from, call_id = %request.call_id,
+                                    "invoke rejected: no persona registry on this node"
+                                );
+                                let reply = echo_federation::FedFrame::Error {
+                                    call_id: Some(request.call_id.clone()),
+                                    code: echo_federation::FedError::Forbidden,
+                                    message: "执行端未加载任何 persona，联邦工具通道不可用".into(),
+                                };
+                                if rt.federation.send_to(&from, reply).await.is_err() {
+                                    tracing::warn!(target: "federation", peer = %from, "invoke reject reply send failed");
+                                }
                                 continue;
                             };
                             // 沙箱根并集：全部 persona 工作区目录（本地

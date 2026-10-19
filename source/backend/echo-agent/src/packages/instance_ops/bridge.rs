@@ -85,7 +85,7 @@ impl AgentMessageHook {
         );
 
         agent.emit(BackendEvent::SessionUpdated {
-            session: display_session.info(String::new()),
+            session: display_session.info(String::new(), &agent.node_identity()),
         });
         agent.emit(BackendEvent::MessageReceived {
             session_id: display_session_id.clone(),

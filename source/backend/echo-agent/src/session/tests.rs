@@ -403,12 +403,32 @@ async fn session_info_has_platform_fields() {
     let store = TrunkStore::new(1000);
     let key = SessionKey::parse("qq:group:789:456").unwrap();
     let s = store.get_or_create(&key, "bob".into(), Some("TestGroup".into()));
-    let info = s.info("last msg".into());
+    let info = s.info("last msg".into(), &crate::NodeIdentity::default());
     assert_eq!(info.platform, "qq");
     assert_eq!(info.scope, "group");
     assert_eq!(info.user_id, "456");
     assert_eq!(info.group_name, Some("TestGroup".into()));
     assert_eq!(info.last_message, "last msg");
+    // 空身份 → 字段不下发（嵌入式/测试用法；旧 kernel cell 时代也是这样）。
+    assert_eq!(info.node_id, None);
+    assert_eq!(info.region_name, None);
+}
+
+/// 身份作为**参数**下发：注入什么就写什么（P3 终态，不再经 kernel cell）。
+#[tokio::test]
+async fn session_info_carries_injected_node_identity() {
+    let store = TrunkStore::new(1000);
+    let key = SessionKey::parse("local:tui::local_user").expect("valid session id");
+    let s = store.get_or_create(&key, "alice".into(), None);
+    let identity = crate::NodeIdentity::new("node-01abc", "办公机");
+    let info = s.info(String::new(), &identity);
+    assert_eq!(info.node_id.as_deref(), Some("node-01abc"));
+    assert_eq!(info.region_name.as_deref(), Some("办公机"));
+    // 区域名为空 = 字段不下发（回退 NodeId 由前端做）。
+    let bare = crate::NodeIdentity::new("node-01abc", "");
+    let info = s.info(String::new(), &bare);
+    assert_eq!(info.node_id.as_deref(), Some("node-01abc"));
+    assert_eq!(info.region_name, None);
 }
 
 // ── Persistence ─────────────────────────────────────────────────────────

@@ -173,7 +173,8 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
   - [x] `SESSION_IMPORT_ACKS` / `SELF_STOP_RE` / websearch `CLIENT` / adapter-qq `CLIENT` → kernel cell（缓存类 get_or_init）
 - [ ] Agent 结构体瘦身（可选项，随 Phase 3 外迁进行）：`config_store` / `provider` / `event_sink` / `loop_runner` / `plugin_host` 改为经 Ctx 解析
 - [x] 门禁：`source/core/tests/no_global_state.rs` 升级为相等断言（EXPECTED_MAX=0，白名单=kernel.rs）
-- [ ] 终态跟踪：node_identity / federation 组的参数线程化（随 P3/P5 从 kernel cell 消除）
+- [ ] 终态跟踪：federation 组（notifier / aggregate-deliver / invoker / querier / aggregator）的参数线程化（随 P5 从 kernel cell 消除）
+  - [x] `NODE_ID` / `REGION_NAME`（node_identity 组）已**出 kernel cell**：改为 `echo_agent::NodeIdentity` 值类型，组合根构造一份后显式下发——`AgentBuilder::node_identity`（每个 persona 一份实例字段）+ `AgentManager::set_node_identity`（`TeamInfo` 用）。`Session::info()` 改为接收 `&NodeIdentity` 参数（身份是参数，不是全局事实）。顺带不再 `Box::leak` 两个字符串。零行为变化：空身份仍不下发字段
 
 **验收**：✅ 门禁绿（17 → 0）+ 全量测试通过；`echo-agent` 对具体实现的依赖收敛到定义层（部分随 P3）。
 

@@ -97,11 +97,17 @@ impl Session {
         self.last_active.load(Ordering::Relaxed)
     }
 
-    pub fn info(&self, last_message: String) -> SessionInfo {
+    /// 线格式快照（`SessionInfo`）。
+    ///
+    /// `identity`：本节点身份（NodeId + 运行区域名）。由调用方（Agent）
+    /// 传入——Session 本身不持有身份，避免每会话复制一份；缺省空身份 =
+    /// 字段不下发（嵌入式/测试用法）。P3 终态：身份是参数，不再从
+    /// 进程级 kernel cell 读取。
+    pub fn info(&self, last_message: String, identity: &crate::NodeIdentity) -> SessionInfo {
         SessionInfo {
             id: self.id.clone(),
-            node_id: crate::node_id().map(str::to_string),
-            region_name: crate::region_name().map(str::to_string),
+            node_id: identity.node_id_field(),
+            region_name: identity.region_name_field(),
             team_id: self.team_id.clone(),
             platform: self.session_key.platform.clone(),
             scope: self.session_key.scope.clone(),

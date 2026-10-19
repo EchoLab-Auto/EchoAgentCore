@@ -11,44 +11,46 @@
 //!
 //! Platform instances are managed through [`echo_defs::plugin_instance::InstanceRegistry`].
 
-/// 进程级节点身份（federation NodeId，`node-<ulid>`）与"运行区域"名。
-/// 组合根启动时注入；`SessionInfo`/`TeamInfo` 等线格式携带它们，供多节点
-/// 聚合客户端区分同名会话/人格（每个 Core 的 `local:tui::local_user`、
-/// `default` 都可能相同），并把"agent 运行在哪个区域"作为一等属性。
+/// 本进程的节点身份：federation `NodeId`（`node-<ulid>`）+ 运行区域展示名。
 ///
-/// 存储收敛于 [`echo_context::kernel`]（P1 唯一引导单元）：身份两字段
-/// 合并为单一 [`NodeIdentity`]，首次写入生效。
-#[derive(Clone)]
-struct NodeIdentity {
-    id: &'static str,
-    region: &'static str,
+/// `SessionInfo` / `TeamInfo` 等线格式携带它们，供多节点聚合客户端区分同名
+/// 会话 / 人格（每个 Core 的 `local:tui::local_user`、`default` 都可能相同），
+/// 并把「agent 运行在哪个区域」作为一等属性。
+///
+/// **装配方式（P3 终态）**：组合根在启动时构造**一份**，显式交给
+/// [`agent_manager::AgentManager`] 与每个 [`agent::Agent`]——不再经进程级
+/// kernel cell 存取，也不再为存放它而泄漏字符串。多节点/多区域场景下
+/// 「身份」是构造参数，不是进程全局事实。
+///
+/// 为什么不再是 `'static`：旧实现把两个 `String` 各 `Box::leak` 一次以塞进
+/// 进程级槽位；改成参数后按值持有（`Clone` 开销 = 两次小字符串拷贝），
+/// 展示路径（`SessionInfo`/`TeamInfo` 构造）本就每次都要 `String`。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NodeIdentity {
+    /// federation NodeId（空 = 未注入，纯嵌入式用法）。
+    pub node_id: String,
+    /// 运行区域展示名（空 = 回退 NodeId）。
+    pub region_name: String,
 }
 
-/// 注入本进程的节点身份与区域名（幂等；仅首次生效）。`region_id` 恒为
-/// NodeId；`region_name` 是人类可读展示名（可为空串）。
-pub fn set_region(node_id: String, region_name: String) {
-    // 进程级存储要求 'static：两个 String 每次调用各泄漏一次，生命周期
-    // 与旧的一次性静态槽位一致。
-    let id: &'static str = Box::leak(node_id.into_boxed_str());
-    let region: &'static str = Box::leak(region_name.into_boxed_str());
-    let _ = echo_context::kernel::set(NodeIdentity { id, region });
-}
+impl NodeIdentity {
+    /// 构造一份身份（`region_name` 可为空串 = 回退 NodeId）。
+    pub fn new(node_id: impl Into<String>, region_name: impl Into<String>) -> Self {
+        Self {
+            node_id: node_id.into(),
+            region_name: region_name.into(),
+        }
+    }
 
-/// 注入本进程的节点身份（等价 `set_region(id, "")`）。
-pub fn set_node_id(id: String) {
-    set_region(id, String::new());
-}
+    /// 写出线格式用的 `node_id`（空 → `None`，字段不下发）。
+    pub fn node_id_field(&self) -> Option<String> {
+        (!self.node_id.is_empty()).then(|| self.node_id.clone())
+    }
 
-/// 本进程的节点身份 / 区域 id（未注入 = None，旧/嵌入式用法）。
-pub fn node_id() -> Option<&'static str> {
-    echo_context::kernel::get::<NodeIdentity>().map(|identity| identity.id)
-}
-
-/// 本进程的"运行区域"展示名（未注入或为空 = None）。
-pub fn region_name() -> Option<&'static str> {
-    echo_context::kernel::get::<NodeIdentity>()
-        .map(|identity| identity.region)
-        .filter(|region| !region.is_empty())
+    /// 写出线格式用的 `region_name`（空 → `None`，字段不下发）。
+    pub fn region_name_field(&self) -> Option<String> {
+        (!self.region_name.is_empty()).then(|| self.region_name.clone())
+    }
 }
 
 pub mod agent;

@@ -144,6 +144,10 @@ pub struct Agent {
     plugin_host: std::sync::RwLock<std::sync::Arc<crate::plugins::PluginHost>>,
     /// Team id (None/empty = default). Sets session tagging after boot.
     team_id: std::sync::Mutex<Option<String>>,
+    /// 节点身份（federation NodeId + 运行区域名）：组合根构造一份，装配期
+    /// 注入（[`Self::set_node_identity`]）。缺省为空 = 纯嵌入式用法（线格式
+    /// 里不带这两个字段）。**不再是进程级 kernel cell**——身份是构造参数。
+    node_identity: std::sync::RwLock<crate::NodeIdentity>,
     /// Graceful-drain flag: set during shutdown so new turns are rejected
     /// while in-flight replies finish (self-update continuity).
     draining: AtomicBool,
@@ -357,6 +361,7 @@ impl Agent {
             )),
             workspace_store: std::sync::RwLock::new(None),
             team_id: std::sync::Mutex::new(None),
+            node_identity: std::sync::RwLock::new(crate::NodeIdentity::default()),
             draining: AtomicBool::new(false),
             capabilities: std::sync::Mutex::new(None),
             persona_api: tokio::sync::RwLock::new(None),
@@ -573,6 +578,26 @@ impl Agent {
     pub fn team_id(&self) -> Option<String> {
         self.team_id
             .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// 注入节点身份（组合根装配期；`AgentBuilder::node_identity` 调用）。
+    ///
+    /// 幂等覆盖（可在运行期重新注入，例如测试或多节点聚合场景切身份）——
+    /// 与旧 kernel cell 的"首次生效"不同：那是全局槽位的约束，这里是实例
+    /// 字段，后者更直观。
+    pub fn set_node_identity(&self, identity: crate::NodeIdentity) {
+        *self
+            .node_identity
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = identity;
+    }
+
+    /// 当前节点身份（未注入 = 全空）。
+    pub fn node_identity(&self) -> crate::NodeIdentity {
+        self.node_identity
+            .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }

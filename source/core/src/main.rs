@@ -239,9 +239,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         }
     };
     info!(node_id = %node_doc.node_id, region = %region_name, "node identity ready");
-    // 注入进程级区域身份：SessionInfo/TeamInfo 等线格式携带它（agent 的
-    // 「运行区域」属性），供多节点聚合客户端区分同名会话/人格。
-    echo_agent::set_region(node_doc.node_id.clone(), region_name);
+    // 构造本节点身份（SessionInfo/TeamInfo 等线格式携带它——agent 的
+    // 「运行区域」属性，供多节点聚合客户端区分同名会话/人格）。
+    // P3 终态：**按值构造、显式下发**给 AgentManager 与每个 Agent
+    // （`make_agent` 闭包），不再写进程级 kernel cell。
+    let node_identity = echo_agent::NodeIdentity::new(node_doc.node_id.clone(), region_name);
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -962,6 +964,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let factory_outbound_policy =
         crate::security::OutboundPolicy::from_config(&cfg.security.sanitize.outbound);
     let factory_config_path = args.config_path();
+    // 节点身份（NodeId + 区域名）：所有 persona 共用一份，装配期下发。
+    let factory_node_identity = node_identity.clone();
     let make_agent: Arc<dyn Fn(String, AgentProfile) -> Arc<Agent> + Send + Sync> = Arc::new(
         move |id: String, profile: AgentProfile| -> Arc<Agent> {
             let provider_arc2 = factory_provider.clone();
@@ -1173,7 +1177,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .persona_api(profile.api_profile.clone())
                 .config_store(agents_config_store.clone())
                 .subagent_store(subagent_store.clone())
-                .metrics(metrics2.clone());
+                .metrics(metrics2.clone())
+                .node_identity(factory_node_identity.clone());
                 // 敏感信息脱敏器（2026-10 安全）：Agent 侧入站 / 事件 /
                 // 结果出口统一脱敏。
                 if let Some(redactor) = &redactor2 {
@@ -1232,6 +1237,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let f = make_agent.clone();
             move |id: String, profile: AgentProfile| f(id, profile)
         }));
+    // 节点身份注入注册表：`AgentsList` 的每条 TeamInfo 都带它（多节点聚合
+    // 客户端据此区分同名人格/区域）。
+    supervisor
+        .manager()
+        .set_node_identity(node_identity.clone());
     // 去"主智能体"：不存在默认人格。全局/管理用途一律走进程级核心服务代理
     // （`core_agent`，team_id 为空、不在 TeamsList 中）；聊天与会话按 team_id
     // 显式路由到具体人格。
