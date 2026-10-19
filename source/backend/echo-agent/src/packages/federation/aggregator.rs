@@ -14,6 +14,9 @@
 //! - **聚合**：组内最后一员销账时返回 [`AggregateSummary`]，由组合根
 //!   投递到父会话 timeline（assistant 系统消息）。
 //!
+//! 聚合器由组合根构造一份放进 [`super::FederationPorts`]（P3 终态：参数
+//! 下发，不再是 lazy 全局）。
+//!
 //! 聚合只覆盖**远程**子代理；本机子代理的逐条 hook 回灌语义不变。
 
 use std::sync::Arc;
@@ -186,25 +189,38 @@ impl RemoteSubagentAggregator {
     }
 }
 
-// ── 进程级聚合器（与 REMOTE_SUBAGENT_NOTIFIER 同模式）──
+// ── 聚合器的持有方式（P3 终态：参数，不再 lazy 全局）──
 //
-// 登记点（subagent 包）与销账/投递点（core 组合根）分属不同 crate 层，
-// 经懒初始化的全局句柄解耦；联邦关闭时登记仍发生，但远程 spawn 本身
-// 就依赖联邦（无代理工具时子任务立即失败 → 终态销账 → 聚合照常闭合）。
-// 存储收敛于 [`echo_context::kernel`]（P1 唯一引导单元）。
-
-/// 进程级聚合器句柄（首次调用惰性创建）。
-pub fn remote_aggregator() -> Arc<RemoteSubagentAggregator> {
-    echo_context::kernel::get_or_init(RemoteSubagentAggregator::new)
-}
+// 登记点（subagent 工具）与销账/投递点（Agent 的 notifier 出口、组合根的
+// 联邦泵）必须看**同一张分组表**，所以由组合根构造一份
+// `Arc<RemoteSubagentAggregator>` 放进 `FederationPorts`，两侧都从那里取。
+// 此前是 kernel cell + `get_or_init`：谁先碰谁创建，读侧永远摸全局。
+//
+// 联邦关闭时登记仍发生（组里只有本机看不到的成员），远程 spawn 本身依赖
+// 联邦（无代理工具时子任务立即失败 → 终态销账 → 聚合照常闭合）。
 
 /// 聚合器对 subagent 插件的登记接缝实现（解耦计划 Phase 3 ⑥）。
 ///
 /// subagent 插件不认识联邦，只经 `RemoteDelegationSink` 上报「哪个 call 属于
 /// 哪个父 turn / peer」；组合根在装配 `SpawnSubagentTool` 时注入本类型，
-/// 把登记转交给进程级聚合器。**行为与内联调用完全一致**——只是把
-/// 「插件 → 联邦实现」的直接依赖换成了 trait。
-pub struct AggregatorDelegationSink;
+/// 把登记转交给 `FederationPorts` 里的聚合器。**行为与内联调用完全一致**
+/// ——只是把「插件 → 联邦实现」的直接依赖换成了 trait + 显式持有。
+#[derive(Clone)]
+pub struct AggregatorDelegationSink {
+    aggregator: Arc<RemoteSubagentAggregator>,
+}
+
+impl AggregatorDelegationSink {
+    /// 用组合根构造的聚合器建 sink。
+    pub fn new(aggregator: Arc<RemoteSubagentAggregator>) -> Self {
+        Self { aggregator }
+    }
+
+    /// 从联邦出口集合建 sink（组合根常规路径）。
+    pub fn from_ports(ports: &super::FederationPorts) -> Self {
+        Self::new(Arc::clone(&ports.aggregator))
+    }
+}
 
 impl echo_plugin_subagent::RemoteDelegationSink for AggregatorDelegationSink {
     fn register_remote_delegation(
@@ -215,29 +231,35 @@ impl echo_plugin_subagent::RemoteDelegationSink for AggregatorDelegationSink {
         peer: &str,
         task: &str,
     ) {
-        register_remote_subagent(session_id, parent_branch_id, call_id, peer, task);
+        self.aggregator
+            .register(session_id, parent_branch_id, call_id, peer, task);
     }
 }
 
 /// 登记远程委派（`SpawnSubagentTool::spawn` 受理 `node=Some` 时调用）。
+///
+/// 直接持有聚合器的调用方（插件 sink / 测试）用这个；Agent 侧常规路径走
+/// `FederationPorts` → `AggregatorDelegationSink`。
 pub fn register_remote_subagent(
+    aggregator: &RemoteSubagentAggregator,
     session_id: &str,
     parent_branch_id: &str,
     call_id: &str,
     peer: &str,
     task: &str,
 ) {
-    remote_aggregator().register(session_id, parent_branch_id, call_id, peer, task);
+    aggregator.register(session_id, parent_branch_id, call_id, peer, task);
 }
 
-/// 终态销账（组合根：notifier 出口 / 联邦泵 SubagentEvent 分支调用）；
+/// 终态销账（Agent 的 notifier 出口 / 组合根联邦泵 SubagentEvent 分支调用）；
 /// 返回 Some 时由调用方把摘要投递到父会话 timeline。
 pub fn settle_remote_subagent(
+    aggregator: &RemoteSubagentAggregator,
     call_id: &str,
     status: SubagentStatus,
     result: Option<String>,
 ) -> Option<AggregateSummary> {
-    remote_aggregator().settle(call_id, status, result)
+    aggregator.settle(call_id, status, result)
 }
 
 #[cfg(test)]

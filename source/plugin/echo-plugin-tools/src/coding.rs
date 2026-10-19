@@ -505,14 +505,18 @@ pub struct RemoteAwareTool {
 }
 
 impl RemoteAwareTool {
-    pub fn wrap(inner: Arc<dyn Tool>) -> Arc<dyn Tool> {
+    /// 包装一个本地工具，附上 `node://` 远程分流能力。
+    ///
+    /// `invoker`：组合根的联邦出口（`None` = 联邦未接线，带 `node://` 前缀
+    /// 的调用直接报「联邦未接线」，本机路径照常走 `inner`）。
+    pub fn wrap(inner: Arc<dyn Tool>, invoker: Option<crate::RemoteInvoker>) -> Arc<dyn Tool> {
         let description = format!(
             "{} Path may carry a `node://<peer>/<绝对路径>` prefix to operate on a remote federated node's workspace files directly (executed on the peer inside its sandbox).",
             inner.description()
         );
         Arc::new(Self {
             inner,
-            invoker: crate::remote_invoker::global(),
+            invoker,
             description,
         })
     }
@@ -573,15 +577,11 @@ impl Tool for RemoteAwareTool {
             return self.inner.execute(args).await;
         };
         let (peer, remote) = parsed.map_err(ToolError::InvalidArguments)?;
-        let invoker = self
-            .invoker
-            .clone()
-            .or_else(crate::remote_invoker::global)
-            .ok_or_else(|| {
-                ToolError::Execution(
-                    "联邦未接线：node:// 远程操作不可用（需联邦启用且 peer 在线）".into(),
-                )
-            })?;
+        let invoker = self.invoker.clone().ok_or_else(|| {
+            ToolError::Execution(
+                "联邦未接线：node:// 远程操作不可用（需联邦启用且 peer 在线）".into(),
+            )
+        })?;
         let mut remote_args = args;
         if remote_args.get("path").is_some() {
             remote_args["path"] = json!(remote);
@@ -815,25 +815,18 @@ pub fn register_coding_tools(
     registry: &mut ToolRegistry,
     workspace: PathBuf,
     guard: Option<crate::CommandGuard>,
+    invoker: Option<crate::RemoteInvoker>,
 ) {
-    // P3-1：5 个文件工具包远程分流层（node:// 前缀 → 联邦 Invoke）；
-    // bash 不包（远程 shell 走 <peer>__bash 代理工具）。
-    registry.register(RemoteAwareTool::wrap(Arc::new(ReadFileTool::new(
-        workspace.clone(),
-    ))));
-    registry.register(RemoteAwareTool::wrap(Arc::new(ListFilesTool::new(
-        workspace.clone(),
-    ))));
-    registry.register(RemoteAwareTool::wrap(Arc::new(SearchCodeTool::new(
-        workspace.clone(),
-    ))));
-    registry.register(RemoteAwareTool::wrap(Arc::new(WriteFileTool::new(
-        workspace.clone(),
-    ))));
-    registry.register(RemoteAwareTool::wrap(Arc::new(EditFileTool::new(
-        workspace.clone(),
-    ))));
-    registry.register(RemoteAwareTool::wrap(Arc::new(
+    // P3-1：5 个文件工具 + bash 都包一层远程分流（node:// 前缀 → 联邦
+    // Invoke）。invoker 在注册期即注入——组合根先装配联邦、后构造
+    // Agent，所以注册时拿到的就是运行期要用的那份。
+    let wrap = |tool: Arc<dyn Tool>| RemoteAwareTool::wrap(tool, invoker.clone());
+    registry.register(wrap(Arc::new(ReadFileTool::new(workspace.clone()))));
+    registry.register(wrap(Arc::new(ListFilesTool::new(workspace.clone()))));
+    registry.register(wrap(Arc::new(SearchCodeTool::new(workspace.clone()))));
+    registry.register(wrap(Arc::new(WriteFileTool::new(workspace.clone()))));
+    registry.register(wrap(Arc::new(EditFileTool::new(workspace.clone()))));
+    registry.register(wrap(Arc::new(
         RunCommandTool::new(workspace).with_guard(guard),
     )));
 }
@@ -1551,10 +1544,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&ws);
     }
 
+    /// **注册期注入的 invoker 端到端生效**（P3：node:// 分流的唯一入口）。
+    ///
+    /// 这条锁的是一个真实故障：改用 kernel cell 之后组合根只 set 了
+    /// echo-agent 那份、工具读的是本 crate 那份（从未被 set），于是所有
+    /// `node://` 调用恒报「联邦未接线」。改成注册参数后，注册进来的
+    /// invoker 必须能被 `read_file` 真正用上。
+    #[tokio::test]
+    async fn register_coding_tools_wires_invoker_into_file_tools() {
+        let ws = std::env::temp_dir().join(format!("echo-coding-invoker-{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let invoker: crate::RemoteInvoker = {
+            let seen = seen.clone();
+            Arc::new(move |peer, tool, args| {
+                seen.lock().unwrap().push((peer, tool));
+                let path = args["path"].as_str().unwrap_or_default().to_string();
+                Box::pin(async move { Ok(format!("remote:{path}")) })
+            })
+        };
+        let mut registry = ToolRegistry::new();
+        register_coding_tools(&mut registry, ws.clone(), None, Some(invoker));
+
+        let out = registry
+            .execute("read_file", json!({"path": "node://gpu-box/srv/repo/a.rs"}))
+            .await
+            .expect("remote read should succeed via injected invoker");
+        assert_eq!(out, "remote:/srv/repo/a.rs");
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[("gpu-box".to_string(), "read_file".to_string())]
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
     /// 清单生成：包装后的工具同名，描述带 node:// 用法说明。
     #[test]
     fn remote_aware_tool_advertises_node_prefix() {
-        let tool = RemoteAwareTool::wrap(Arc::new(ReadFileTool::new(PathBuf::from("/tmp"))));
+        let tool = RemoteAwareTool::wrap(Arc::new(ReadFileTool::new(PathBuf::from("/tmp"))), None);
         assert_eq!(tool.name(), "read_file");
         assert!(
             tool.description().contains("node://"),

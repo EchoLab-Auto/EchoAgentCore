@@ -147,9 +147,11 @@ impl Agent {
             // federation Phase 3 对端观测：远程子任务受理时通知对端
             // （SubagentSpawn），完成/失败/取消时回报（SubagentEvent）——
             // 对端 Panel 后台任务列表据此可见、可强制取消。
-            // 通知经进程级 federation 出口（组合根装配时注入）。
+            // 通知经 Agent 持有的联邦出口（组合根装配期注入）。
+            let federation = agent.federation();
             if let Some(ref peer) = node {
                 crate::federation::notify_remote_subagent(
+                    &federation,
                     peer,
                     &task_id,
                     &task,
@@ -206,6 +208,7 @@ impl Agent {
                     _ => crate::federation::SubagentStatus::Failed,
                 };
                 crate::federation::notify_remote_subagent(
+                    &federation,
                     peer,
                     &task_id,
                     &task,
@@ -261,6 +264,7 @@ impl Agent {
         }
         if let Some(peer) = node {
             crate::federation::notify_remote_subagent(
+                &self.federation(),
                 peer,
                 task_id,
                 task,

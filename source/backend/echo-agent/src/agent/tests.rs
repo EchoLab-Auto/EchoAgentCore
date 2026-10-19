@@ -1930,7 +1930,12 @@ async fn run_tool_empty_arguments_gets_corrective_error() {
         reply: "ok".into(),
     });
     let mut tools = ToolRegistry::new();
-    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir(), None);
+    crate::tool::builtin::coding::register_coding_tools(
+        &mut tools,
+        std::env::temp_dir(),
+        None,
+        None,
+    );
     let agent = Agent::new(
         provider,
         AgentConfig::default(),
@@ -1968,7 +1973,12 @@ async fn run_tool_malformed_json_gets_clear_error() {
         reply: "ok".into(),
     });
     let mut tools = ToolRegistry::new();
-    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir(), None);
+    crate::tool::builtin::coding::register_coding_tools(
+        &mut tools,
+        std::env::temp_dir(),
+        None,
+        None,
+    );
     let agent = Agent::new(
         provider,
         AgentConfig::default(),
@@ -2001,7 +2011,12 @@ async fn run_tool_valid_arguments_pass_preflight() {
         reply: "ok".into(),
     });
     let mut tools = ToolRegistry::new();
-    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir(), None);
+    crate::tool::builtin::coding::register_coding_tools(
+        &mut tools,
+        std::env::temp_dir(),
+        None,
+        None,
+    );
     let agent = Agent::new(
         provider,
         AgentConfig::default(),
@@ -3912,7 +3927,12 @@ async fn run_tool_redacts_secrets_from_real_bash_output_and_log() {
         reply: "ok".into(),
     });
     let mut tools = ToolRegistry::new();
-    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir(), None);
+    crate::tool::builtin::coding::register_coding_tools(
+        &mut tools,
+        std::env::temp_dir(),
+        None,
+        None,
+    );
     let agent = Agent::new(
         provider,
         AgentConfig::default(),

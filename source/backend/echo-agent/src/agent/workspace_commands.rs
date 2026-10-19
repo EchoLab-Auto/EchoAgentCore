@@ -153,7 +153,7 @@ impl Agent {
                             return;
                         }
                     };
-                    let result = match crate::federation::remote_querier() {
+                    let result = match self.federation().querier.clone() {
                         Some(querier) => {
                             querier(
                                 peer.clone(),
@@ -249,7 +249,7 @@ impl Agent {
                         Some(node) => {
                             let qualified =
                                 format!("node://{node}/{}", dir.path().trim_start_matches('/'));
-                            let info = match crate::federation::remote_querier() {
+                            let info = match self.federation().querier.clone() {
                                 Some(querier) => {
                                     match querier(
                                         node.to_string(),
@@ -389,7 +389,7 @@ impl Agent {
                     });
                     return;
                 }
-                let result = match crate::federation::remote_querier() {
+                let result = match self.federation().querier.clone() {
                     Some(querier) => {
                         querier(
                             peer.clone(),

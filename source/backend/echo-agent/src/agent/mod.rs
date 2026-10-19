@@ -144,6 +144,11 @@ pub struct Agent {
     plugin_host: std::sync::RwLock<std::sync::Arc<crate::plugins::PluginHost>>,
     /// Team id (None/empty = default). Sets session tagging after boot.
     team_id: std::sync::Mutex<Option<String>>,
+    /// 联邦出口集合（invoker / querier / notifier / deliver / aggregator）：
+    /// 组合根装配联邦时构造一份，经 [`crate::agent::builder::AgentBuilder`]
+    /// 注入。缺省 = 联邦未接线（全部出口为空，远程功能 fail-closed 并给出
+    /// 可读错误）。**P3 终态：不再是 5 个进程级 kernel cell。**
+    federation: std::sync::RwLock<std::sync::Arc<crate::federation::FederationPorts>>,
     /// 节点身份（federation NodeId + 运行区域名）：组合根构造一份，装配期
     /// 注入（[`Self::set_node_identity`]）。缺省为空 = 纯嵌入式用法（线格式
     /// 里不带这两个字段）。**不再是进程级 kernel cell**——身份是构造参数。
@@ -265,12 +270,13 @@ pub fn set_global_policy(policy: std::sync::Arc<GlobalPolicy>) {
     let _ = echo_context::kernel::set(policy);
 }
 
-// ── 联邦命令处理器注册表（federation Phase 4）──
+// ── 联邦命令处理器（federation Phase 4）──
 //
 // `SaveFederationPeer` 等命令的处理需要组合根持有的 Federation 句柄与
-// ConfigStore——不在 Agent 能力面内。组合根装配期经
-// [`set_federation_command_handler`] 注入；未注入时命令明确报错（联邦
-// 关闭）。签名用 boxed future：handler 由组合根闭包提供，捕获其句柄。
+// ConfigStore——不在 Agent 能力面内。组合根装配期把它放进
+// [`crate::federation::FederationPorts::command_handler`]（P3 终态：参数
+// 下发，不再是 kernel cell）；未注入时命令明确报错（联邦关闭）。签名用
+// boxed future：handler 由组合根闭包提供，捕获其句柄。
 /// 联邦命令处理器签名：接受 Agent 引用做同步分发，返回 `'static`
 /// future（实现侧如需跨 await 使用 Agent 能力，应提取所需句柄——
 /// emit 直接经引用同步调用即可，handler 本身可以就是同步实现
@@ -281,14 +287,6 @@ pub type FederationCommandHandler = std::sync::Arc<
 
 pub type FederationHandlerFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
-
-pub fn federation_command_handler() -> Option<FederationCommandHandler> {
-    echo_context::kernel::get::<FederationCommandHandler>()
-}
-
-pub fn set_federation_command_handler(handler: FederationCommandHandler) {
-    let _ = echo_context::kernel::set(handler);
-}
 
 /// 单步推理落盘上限（字符）。超出截断并标注——推理正文只在面板里读，
 /// 而事件日志是**整份 JSON、30 秒一次整体重写**：不设上限时少数几步超长
@@ -361,6 +359,9 @@ impl Agent {
             )),
             workspace_store: std::sync::RwLock::new(None),
             team_id: std::sync::Mutex::new(None),
+            federation: std::sync::RwLock::new(std::sync::Arc::new(
+                crate::federation::FederationPorts::unlinked(),
+            )),
             node_identity: std::sync::RwLock::new(crate::NodeIdentity::default()),
             draining: AtomicBool::new(false),
             capabilities: std::sync::Mutex::new(None),
@@ -597,6 +598,22 @@ impl Agent {
     /// 当前节点身份（未注入 = 全空）。
     pub fn node_identity(&self) -> crate::NodeIdentity {
         self.node_identity
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// 注入联邦出口集合（组合根装配期；`AgentBuilder::federation` 调用）。
+    pub fn set_federation(&self, ports: std::sync::Arc<crate::federation::FederationPorts>) {
+        *self
+            .federation
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = ports;
+    }
+
+    /// 当前联邦出口集合（未注入 = 全部为空，即联邦未接线）。
+    pub fn federation(&self) -> std::sync::Arc<crate::federation::FederationPorts> {
+        self.federation
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()

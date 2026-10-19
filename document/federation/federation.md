@@ -253,7 +253,9 @@ parent_branch_id → 挂起 call_id 集合）：受理时登记、终态时销�
 - 销账双路径：大脑侧本地完成（`notify_remote_subagent` 终态）+
   联邦泵收到对端 `SubagentEvent`（幂等——组销账后即移除，重复
   销账返回 None）
-- 投递出口：`set_aggregate_deliver`（组合根注入；未装配时仅记日志）
+- 投递出口：`FederationPorts::deliver`（组合根装配进出口集合；未装配时仅记日志）
+- 聚合器由组合根构造一份放进 `FederationPorts::aggregator`：Agent 侧登记与
+  联邦泵销账看**同一张分组表**（P3 终态：参数下发，不再是 lazy 全局）
 
 ## 跨机协作与调度
 
@@ -266,8 +268,12 @@ parent_branch_id → 挂起 call_id 集合）：受理时登记、终态时销�
 
 - 工作区会话的远程目录（`{path, node}` 表条目）在提示词中标注
   `[remote:<peer>]` 并附 `node://` 操作说明——agent 据此知晓可操作
-- 装配出口：`set_remote_invoker`（组合根注入；联邦关闭时调用报
-  「联邦未接线」）
+- 装配出口：`FederationPorts::invoker`——组合根装配联邦时构造，经
+  `AgentBuilder::federation` 下发给每个 persona，再作为 `register_coding_tools`
+  的 `invoker` 参数进入工具注册期（联邦关闭 = `None`，带 `node://` 前缀的
+  调用报「联邦未接线」，本机路径不受影响）。
+  注：2026-10 工具外迁 `echo-plugin-tools` 时，工具侧曾留下一份 kernel cell
+  却无人注入，`node://` 分流因此恒报未接线；本次改为显式参数后修复
 - 失败路径：peer 离线/不存在、链路不可用、对端拒绝（白名单/沙箱——
   完全开放策略无沙箱）、超时均原样透传为 ToolError。超时链：工具守卫**默认 120s（可配）** → `RemoteTool` 硬超时 **460s**（守卫 ×1.5 网络余量封顶；`timeout_hint` 同 460s）；路由侧 pending 的 120s 只是**清扫下限**，带显式超时会按 `timeout + 60` 延长
 

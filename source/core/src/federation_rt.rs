@@ -219,6 +219,9 @@ pub(crate) async fn federation_router_pump(
             std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
         >,
     >,
+    // 联邦出口集合：泵侧销账要用与 Agent 侧**同一个**聚合器（P3 终态：
+    // 参数下发，不再摸 kernel cell）。
+    ports: Arc<echo_agent::federation::FederationPorts>,
 ) {
     // 执行端结果回传通道：handle_invoke spawn 的执行任务 → 本泵统一发送。
     let (outbound_tx, mut outbound_rx) =
@@ -425,6 +428,7 @@ pub(crate) async fn federation_router_pump(
                             // 投递父会话 timeline（assistant 系统消息）。
                             if let Some(summary) =
                                 echo_agent::federation::aggregator::settle_remote_subagent(
+                                    &ports.aggregator,
                                     &ev.call_id,
                                     ev.status,
                                     ev.result.clone(),

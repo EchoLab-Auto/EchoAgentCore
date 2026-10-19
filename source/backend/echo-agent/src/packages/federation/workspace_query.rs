@@ -13,16 +13,27 @@
 use echo_federation::QueryKind;
 use echo_plugin_workspace::{QueryFuture, RemoteWorkspaceQuery};
 
-/// 用联邦 `remote_querier` 实现工作区插件���跨机查询。
+/// 用联邦 `RemoteQuerier` 实现工作区插件的跨机查询。
 ///
 /// 每个方法都只做一件事：挑对 `QueryKind`，把结果原样交回插件——载荷的
 /// 解析（`WorkspaceGitInfo` / `WorkspaceFileEntry`）在插件侧，宿主不插手。
-pub struct FederationWorkspaceQuery;
+pub struct FederationWorkspaceQuery {
+    /// 远程查询出口（组合根装配期注入；None = 联邦未接线）。
+    ///
+    /// P3 终态：出口作为**字段**持有，不再从 kernel cell 回查——适配器
+    /// 的生命周期与联邦装配绑定，装配期拿到的就是运行期要用的。
+    querier: Option<crate::federation::RemoteQuerier>,
+}
 
 impl FederationWorkspaceQuery {
+    /// 用组合根注入的出口构造（None = 未接线，查询立即报可读错误）。
+    pub fn new(querier: Option<crate::federation::RemoteQuerier>) -> Self {
+        Self { querier }
+    }
+
     /// 发起一次联邦查询；未接线时立即返回可读错误（插件降级为占位）。
-    fn query(peer: String, kind: QueryKind, subject: String) -> QueryFuture {
-        match crate::federation::remote_querier() {
+    fn query(&self, peer: String, kind: QueryKind, subject: String) -> QueryFuture {
+        match &self.querier {
             Some(querier) => querier(peer, kind, subject),
             None => Box::pin(async {
                 Err("联邦未接线：远程工作区查询不可用".to_string())
@@ -33,15 +44,15 @@ impl FederationWorkspaceQuery {
 
 impl RemoteWorkspaceQuery for FederationWorkspaceQuery {
     fn git_status(&self, peer: String, path: String) -> QueryFuture {
-        Self::query(peer, QueryKind::WorkspaceGitStatus, path)
+        self.query(peer, QueryKind::WorkspaceGitStatus, path)
     }
 
     fn list_files(&self, peer: String, path: String) -> QueryFuture {
-        Self::query(peer, QueryKind::WorkspaceFiles, path)
+        self.query(peer, QueryKind::WorkspaceFiles, path)
     }
 
     fn browse(&self, peer: String, path: String) -> QueryFuture {
-        Self::query(peer, QueryKind::BrowseDirectories, path)
+        self.query(peer, QueryKind::BrowseDirectories, path)
     }
 }
 
@@ -49,13 +60,17 @@ impl RemoteWorkspaceQuery for FederationWorkspaceQuery {
 pub type WorkspaceQueryHandle = std::sync::Arc<dyn RemoteWorkspaceQuery>;
 
 /// 构造适配器句柄（组合根装配期调用）。
-pub fn workspace_query() -> WorkspaceQueryHandle {
-    std::sync::Arc::new(FederationWorkspaceQuery)
+///
+/// `querier = None` 时插件侧降级为「远程不可采集」占位——单机部署零影响。
+pub fn workspace_query(querier: Option<crate::federation::RemoteQuerier>) -> WorkspaceQueryHandle {
+    std::sync::Arc::new(FederationWorkspaceQuery::new(querier))
 }
 
 /// 保证适配器的 future 确实是 `Send`（跨 await 点持有闭包时必需）。
-const _: fn() -> QueryFuture =
-    || FederationWorkspaceQuery::query(String::new(), QueryKind::NodeStatus, String::new());
+const _: fn() -> QueryFuture = || {
+    let adapter = FederationWorkspaceQuery::new(None);
+    adapter.query(String::new(), QueryKind::NodeStatus, String::new())
+};
 
 #[cfg(test)]
 mod tests {
@@ -65,7 +80,7 @@ mod tests {
     /// 显示「远程不可采集」，本机功能不受影响。
     #[tokio::test]
     async fn unconnected_federation_degrades_with_readable_error() {
-        let adapter = FederationWorkspaceQuery;
+        let adapter = FederationWorkspaceQuery::new(None);
         for future in [
             adapter.git_status("peer-a".into(), "/srv/repo".into()),
             adapter.list_files("peer-a".into(), "/srv/repo".into()),
@@ -78,7 +93,7 @@ mod tests {
 
     #[test]
     fn handle_is_object_safe_and_arc_shareable() {
-        let handle: WorkspaceQueryHandle = workspace_query();
+        let handle: WorkspaceQueryHandle = workspace_query(None);
         let cloned = std::sync::Arc::clone(&handle);
         // 仅断言 trait 对象可共享（不实际发查询）。
         assert_eq!(std::sync::Arc::strong_count(&cloned), 2);

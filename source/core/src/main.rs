@@ -269,6 +269,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // `0.0.0.0:3133`，见 plan_federation_listen；显式 `listen = ""` 才
     // 退回纯连出）；无 peer 则不连出、且 accept 侧靠 per-peer token 认证
     // 不放行任何已知链路；联邦管理面永远可用。
+    // 聚合摘要投递槽位（见下：联邦装配早于 supervisor 建立）。
+    let deliver_slot: std::sync::Arc<
+        std::sync::OnceLock<std::sync::Arc<agent_supervisor::AgentSupervisor>>,
+    > = std::sync::Arc::new(std::sync::OnceLock::new());
     let federation = {
         let peers = cfg
             .federation
@@ -413,9 +417,44 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // node=... 受理/完成时经 Federation 通知对端（帧：
         // SubagentSpawn 受理 / SubagentEvent 终态）。peer 名 → node_id
         // 反查走 rt.peer_names（链路 Up 时登记）。
+        // 聚合摘要投递需要 supervisor 句柄，而 supervisor 在联邦装配之后才
+        // 建立——用一次性槽位延后绑定（联邦泵启动晚于 supervisor，任何摘要
+        // 都不可能在槽位就绪前产生）。
+        // ── 联邦出口集合（P3 终态：构造一份、显式下发；不再经 kernel cell）──
+        // 三个出口都持有本节点的 Federation / InvokeRouter 句柄，只能在
+        // 组合根这里造；造好后经 `AgentBuilder::federation` 下发给每个
+        // persona，并经同一份 `ports` 供联邦泵销账。
+        let mut ports = echo_agent::federation::FederationPorts::unlinked();
+        // 联邦 / 自更新命令处理器（联邦始终开启，无需条件注册）：需要
+        // Federation 句柄与 ConfigStore，只能在组合根实现。
+        ports.command_handler = Some(std::sync::Arc::new({
+            let rt_handler = Arc::clone(&rt);
+            move |agent, cmd| {
+                let rt = rt_handler.clone();
+                let emit = agent.emit_handle();
+                Box::pin(async move {
+                    handle_federation_command(emit, cmd, rt).await;
+                })
+            }
+        }));
+        ports.deliver = Some(std::sync::Arc::new({
+            let slot = deliver_slot.clone();
+            move |summary| match slot.get() {
+                Some(supervisor) => {
+                    let sup = supervisor.clone();
+                    tokio::spawn(async move {
+                        federation_import::deliver_aggregate_summary(&sup, summary).await;
+                    });
+                }
+                None => tracing::warn!(
+                    target: "federation",
+                    "aggregate summary produced before supervisor ready; dropped"
+                ),
+            }
+        }));
         {
             let rt_notify = rt.clone();
-            echo_agent::federation::set_remote_subagent_notifier(std::sync::Arc::new(
+            ports.notifier = Some(std::sync::Arc::new(
                 move |peer, call_id, task, timeout_secs, status, result| {
                     let rt = rt_notify.clone();
                     let peer = peer.to_string();
@@ -460,106 +499,89 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             // remote_invoker 同生命周期（peer 离线即失败，fail-closed）。
             {
                 let rt_query = rt.clone();
-                echo_agent::federation::set_remote_querier(std::sync::Arc::new(
-                    move |peer, kind, subject| {
-                        let rt = rt_query.clone();
-                        Box::pin(async move {
-                            let Some(node_id) = rt.resolve_peer_node(&peer).await else {
-                                return Err(format!(
-                                    "远程节点「{peer}」不在线或不存在（跨机工作区查询）"
-                                ));
-                            };
-                            let (request, pending) =
-                                rt.router
-                                    .query(&node_id, kind, subject, String::new(), 0, 0);
-                            let call_id = pending.call_id.clone();
-                            if rt
-                                .federation
-                                .send_to(&node_id, echo_federation::FedFrame::Query(request))
-                                .await
-                                .is_err()
-                            {
-                                // 显式终结等待条目（2026-10 审计 P1-5）：
-                                // 此前仅返回错误，pending 滞留至 sweep/超时。
-                                rt.router.fail_pending(&call_id, "联邦链路发送失败");
-                                return Err(format!("远程节点「{peer}」链路发送失败"));
-                            }
-                            let result = tokio::time::timeout(
-                                std::time::Duration::from_secs(30),
-                                pending.wait(),
-                            )
-                            .await
-                            .map_err(|_| format!("远程节点「{peer}」查询超时"))??;
-                            if !result.success {
-                                return Err(result.output);
-                            }
-                            serde_json::from_str(&result.output)
-                                .map_err(|e| format!("远程查询结果解析失败: {e}"))
-                        })
-                    },
-                ));
-            }
-            echo_agent::federation::set_remote_invoker(std::sync::Arc::new(
-                move |peer, tool, args| {
-                    let rt = rt_invoke.clone();
+                ports.querier = Some(std::sync::Arc::new(move |peer, kind, subject| {
+                    let rt = rt_query.clone();
                     Box::pin(async move {
                         let Some(node_id) = rt.resolve_peer_node(&peer).await else {
                             return Err(format!(
-                                "远程节点「{peer}」不在线或不存在（node:// 分流）"
+                                "远程节点「{peer}」不在线或不存在（跨机工作区查询）"
                             ));
                         };
-                        let (request, pending) = rt.router.invoke(
-                            &node_id,
-                            &tool,
-                            args,
-                            Some(std::time::Duration::from_secs(120)),
-                        );
+                        let (request, pending) =
+                            rt.router
+                                .query(&node_id, kind, subject, String::new(), 0, 0);
                         let call_id = pending.call_id.clone();
                         if rt
                             .federation
-                            .send_to(&node_id, echo_federation::FedFrame::Invoke(request))
+                            .send_to(&node_id, echo_federation::FedFrame::Query(request))
                             .await
                             .is_err()
                         {
-                            // 显式终结等待条目（2026-10 审计 P1-5；与
-                            // remote_tool.rs 的同类处理对齐）。
+                            // 显式终结等待条目（2026-10 审计 P1-5）：
+                            // 此前仅返回错误，pending 滞留至 sweep/超时。
                             rt.router.fail_pending(&call_id, "联邦链路发送失败");
-                            return Err(format!("远程节点「{peer}」链路不可用"));
+                            return Err(format!("远程节点「{peer}」链路发送失败"));
                         }
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(180),
+                        let result = tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
                             pending.wait(),
                         )
                         .await
-                        {
-                            Ok(Ok(result)) if result.success => Ok(result.output),
-                            Ok(Ok(result)) => Err(result.output),
-                            Ok(Err(e)) => Err(e),
-                            Err(_) => Err(format!("远程节点「{peer}」响应超时")),
+                        .map_err(|_| format!("远程节点「{peer}」查询超时"))??;
+                        if !result.success {
+                            return Err(result.output);
                         }
+                        serde_json::from_str(&result.output)
+                            .map_err(|e| format!("远程查询结果解析失败: {e}"))
                     })
-                },
-            ));
+                }));
+            }
+            ports.invoker = Some(std::sync::Arc::new(move |peer, tool, args| {
+                let rt = rt_invoke.clone();
+                Box::pin(async move {
+                    let Some(node_id) = rt.resolve_peer_node(&peer).await else {
+                        return Err(format!("远程节点「{peer}」不在线或不存在（node:// 分流）"));
+                    };
+                    let (request, pending) = rt.router.invoke(
+                        &node_id,
+                        &tool,
+                        args,
+                        Some(std::time::Duration::from_secs(120)),
+                    );
+                    let call_id = pending.call_id.clone();
+                    if rt
+                        .federation
+                        .send_to(&node_id, echo_federation::FedFrame::Invoke(request))
+                        .await
+                        .is_err()
+                    {
+                        // 显式终结等待条目（2026-10 审计 P1-5；与
+                        // remote_tool.rs 的同类处理对齐）。
+                        rt.router.fail_pending(&call_id, "联邦链路发送失败");
+                        return Err(format!("远程节点「{peer}」链路不可用"));
+                    }
+                    match tokio::time::timeout(std::time::Duration::from_secs(180), pending.wait())
+                        .await
+                    {
+                        Ok(Ok(result)) if result.success => Ok(result.output),
+                        Ok(Ok(result)) => Err(result.output),
+                        Ok(Err(e)) => Err(e),
+                        Err(_) => Err(format!("远程节点「{peer}」响应超时")),
+                    }
+                })
+            }));
         }
-        (rt, event_rx, peer_policies)
+        (rt, event_rx, peer_policies, std::sync::Arc::new(ports))
     };
     info!("federation link configured (no switch; zero peers = passive listen)");
     // 端口合并用联邦句柄（rt 随后被路由泵消费；此处预克隆——仅合并
     // 模式下由管理面插件消费）。
     let merge_fed = federation.0.federation.clone();
+    // 联邦出口集合（含 agent 侧需要的 invoker/querier/notifier/deliver/
+    // aggregator）：所有 persona 共用同一份。
+    let federation_ports = federation.3.clone();
     // 联邦 / 自更新命令处理器（联邦始终开启，无需条件注册）。
-    {
-        let rt_handler = Arc::clone(&federation.0);
-        echo_agent::agent::set_federation_command_handler(std::sync::Arc::new(
-            move |agent, cmd| {
-                let rt = rt_handler.clone();
-                let emit = agent.emit_handle();
-                Box::pin(async move {
-                    handle_federation_command(emit, cmd, rt).await;
-                })
-            },
-        ));
-    }
+
     // Keep one sender alive for the whole `run_core` scope. The admin handler
     // Keep one sender alive for the whole `run_core` scope. The admin handler
     // (the only other sender) is stored inside the instance plugin's handler
@@ -966,6 +988,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let factory_config_path = args.config_path();
     // 节点身份（NodeId + 区域名）：所有 persona 共用一份，装配期下发。
     let factory_node_identity = node_identity.clone();
+    // 联邦出口集合：同上（全部 persona 看同一个聚合器与同一组链路出口）。
+    let factory_federation = federation_ports.clone();
     let make_agent: Arc<dyn Fn(String, AgentProfile) -> Arc<Agent> + Send + Sync> = Arc::new(
         move |id: String, profile: AgentProfile| -> Arc<Agent> {
             let provider_arc2 = factory_provider.clone();
@@ -1003,6 +1027,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     instances2.clone(),
                     workspace.clone(),
                     agents_config_store.clone(),
+                    factory_federation.invoker.clone(),
                 );
                 // 工具结果出口卡口（2026-10 安全）：本 persona 注册表注入
                 // 脱敏器——所有工具（内置 / 插件 / 远程 / 子代理直呼）的
@@ -1057,7 +1082,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     echo_agent::workspace::WorkspaceTool::new(workspace_store.clone())
                         // 跨机查询经宿主适配器注入（Phase 3 ⑤：插件不认识联邦；
                         // 联邦未接线时插件自动降级为「远程不可采集」）。
-                        .with_remote_query(echo_agent::federation::workspace_query()),
+                        .with_remote_query(echo_agent::federation::workspace_query(
+                            factory_federation.querier.clone(),
+                        )),
                 ));
                 t.set_package("workspace", echo_agent::plugins::WORKSPACE_PLUGIN_ID);
                 // Subagent 委派（subagent 插件）：每 persona 独立注册表；spawn
@@ -1072,7 +1099,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     // 远程委派聚合登记经 sink 交给联邦子系统（Phase 3 ⑥：
                     // 插件不再直接依赖 `federation::aggregator`）。
                     .with_remote_sink(std::sync::Arc::new(
-                        echo_agent::federation::aggregator::AggregatorDelegationSink,
+                        echo_agent::federation::aggregator::AggregatorDelegationSink::from_ports(
+                            &factory_federation,
+                        ),
                     )),
                 ));
                 t.set_package("spawn_subagent", echo_agent::plugins::SUBAGENT_PLUGIN_ID);
@@ -1178,7 +1207,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .config_store(agents_config_store.clone())
                 .subagent_store(subagent_store.clone())
                 .metrics(metrics2.clone())
-                .node_identity(factory_node_identity.clone());
+                .node_identity(factory_node_identity.clone())
+                .federation(factory_federation.clone());
                 // 敏感信息脱敏器（2026-10 安全）：Agent 侧入站 / 事件 /
                 // 结果出口统一脱敏。
                 if let Some(redactor) = &redactor2 {
@@ -1251,7 +1281,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 联邦路由泵（Phase 2）：supervisor 就绪后启动（代理工具注册需要全部
     // persona 的注册表）。
     {
-        let (rt, event_rx, peer_policies) = federation;
+        let (rt, event_rx, peer_policies, _ports) = federation;
         // 负载上报注入（P2 调度器）：握手 hello 时实时取全部 persona
         // 的活跃 turn 总数——对端调度器拿到实时负载而非启动快照。
         let load_supervisor = supervisor.clone();
@@ -1267,21 +1297,15 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // P3-3 聚合投递出口：大脑侧 settle 产出的摘要经此向父会话
         // timeline 追加 system 消息（supervisor 句柄在 echo-agent crate
         // 不可达，组合根注入）。
-        {
-            let deliver_supervisor = supervisor.clone();
-            echo_agent::federation::set_aggregate_deliver(std::sync::Arc::new(move |summary| {
-                let sup = deliver_supervisor.clone();
-                tokio::spawn(async move {
-                    federation_import::deliver_aggregate_summary(&sup, summary).await;
-                });
-            }));
-        }
+        // 槽位就绪：此后任何聚合摘要都能投递到父会话 timeline。
+        let _ = deliver_slot.set(supervisor.clone());
         tokio::spawn(federation_router_pump(
             event_rx,
             rt,
             supervisor.clone(),
             core_agent.clone(),
             peer_policies,
+            federation_ports.clone(),
         ));
     }
 

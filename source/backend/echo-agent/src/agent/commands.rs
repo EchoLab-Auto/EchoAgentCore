@@ -466,7 +466,7 @@ impl Agent {
             BackendCommand::RequestRemoteApiProfiles { peer } => {
                 // 分布式供应商共享（2026-10）：经联邦拉远端**脱敏**供应商
                 // 池回传前端；peer 离线/未实现该查询时 error 带原因。
-                let result = match crate::federation::remote_querier() {
+                let result = match self.federation().querier.clone() {
                     Some(querier) => {
                         querier(
                             peer.clone(),
@@ -1609,7 +1609,7 @@ impl Agent {
             | BackendCommand::MigrateSession { .. }
             | BackendCommand::RequestSelfUpdate
             | BackendCommand::RequestSelfUpdateStatus => {
-                let handler = crate::agent::federation_command_handler();
+                let handler = self.federation().command_handler.clone();
                 match handler {
                     Some(h) => h(self, cmd).await,
                     None => {

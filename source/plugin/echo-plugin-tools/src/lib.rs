@@ -67,25 +67,15 @@ pub type RemoteInvoker = Arc<
         + Sync,
 >;
 
-/// 进程级远程调用出口（`echo-context` 的 kernel cell；装配期注入）。
+/// 注入口：`RemoteInvoker` 由组合根在**注册工具时**传入
+/// （[`register_coding_tools`] 的 `invoker` 参数）。
 ///
-/// 为什么这里也要有一份 global：`RemoteAwareTool` 在**工具构造期**快照一次，
-/// 但联邦可能在工具注册之后才接线（配置热改 / 启动顺序），因此执行期还需
-/// 一次回查。注入是显式的（[`set_remote_invoker`]），读是 best-effort 的。
-pub mod remote_invoker {
-    use super::RemoteInvoker;
-
-    /// 装配期注入（重复调用保留首个，与 notifier 同约定）。
-    pub fn set(invoker: RemoteInvoker) {
-        let _ = echo_context::kernel::set(invoker);
-    }
-
-    /// 当前出口（未接线 = None）。
-    pub fn global() -> Option<RemoteInvoker> {
-        echo_context::kernel::get::<RemoteInvoker>()
-    }
-}
-
+/// 为什么不再有全局回查（旧的 `remote_invoker::global()`）：这个 crate 是
+/// 工具实现层，不该持有进程级状态；而"联邦可能在工具注册之后才接线"这个
+/// 顾虑在现行组合根里不成立——联邦装配（含 invoker 闭包）发生在所有
+/// `Agent` 构造之前。此前那份 kernel cell **从未被任何代码 set 过**：
+/// `node://` 远程文件/命令分流因此恒报「联邦未接线」。改成参数后，
+/// 装配期传进来的就是运行期用的。
 /// 命令护��：`run_command` / `shell_exec` 在执行**之前**调用。
 ///
 /// 为什么是注入而不是内置：护栏守的是「宿主自己的服务名」（例如禁止工具
@@ -116,7 +106,7 @@ mod tests {
     fn registered_tool_names_are_unique_across_families() {
         let mut registry = ToolRegistry::new();
         register_core_tools(&mut registry);
-        register_coding_tools(&mut registry, std::env::temp_dir(), None);
+        register_coding_tools(&mut registry, std::env::temp_dir(), None, None);
         register_shell_tools(&mut registry, None);
         register_instance_tools(
             &mut registry,

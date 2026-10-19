@@ -42,6 +42,7 @@ pub fn register_all(
     instances: std::sync::Arc<echo_defs::plugin_instance::InstanceRegistry>,
     workspace: std::path::PathBuf,
     config_store: echo_config::ConfigStore,
+    invoker: Option<echo_plugin_tools::RemoteInvoker>,
 ) {
     let guard: echo_plugin_tools::CommandGuard = std::sync::Arc::new(reject_core_self_stop);
     echo_plugin_tools::register_core_tools(registry);
@@ -49,7 +50,7 @@ pub fn register_all(
         config_store,
     )));
     echo_plugin_tools::register_instance_tools(registry, instances);
-    echo_plugin_tools::register_coding_tools(registry, workspace, Some(guard.clone()));
+    echo_plugin_tools::register_coding_tools(registry, workspace, Some(guard.clone()), invoker);
     echo_plugin_tools::register_shell_tools(registry, Some(guard));
     for name in registry.names() {
         registry.set_package(&name, crate::plugins::TOOLS_BUILTIN_PLUGIN_ID);
@@ -74,6 +75,7 @@ mod tests {
             std::sync::Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
             dir.clone(),
             store,
+            None,
         );
         let conflicts = registry.name_conflicts();
         assert!(

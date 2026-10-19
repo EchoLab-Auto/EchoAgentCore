@@ -168,12 +168,12 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
   - [x] `GLOBAL_PLUGIN_HOST` / `GLOBAL_POLICY` / `FEDERATION_COMMAND_HANDLER` → kernel cell
   - [x] `GLOBAL_MANAGER` / `AGENT_FACTORY` → kernel cell
   - [x] `GLOBAL_SHELL` / `SHELL_EMIT` → kernel cell
-  - [x] `REMOTE_SUBAGENT_NOTIFIER` / `AGGREGATE_DELIVER` / `REMOTE_INVOKER` / `REMOTE_QUERIER` → kernel cell
-  - [x] `NODE_ID` / `REGION_NAME` → kernel cell
+  - [x] `REMOTE_SUBAGENT_NOTIFIER` / `AGGREGATE_DELIVER` / `REMOTE_INVOKER` / `REMOTE_QUERIER` → kernel cell（**2026-10 已再进一步：见下方终态跟踪，收敛为 `FederationPorts` 参数**）
+  - [x] `NODE_ID` / `REGION_NAME` → kernel cell（**2026-10 已再进一步：改为 `NodeIdentity` 参数下发**）
   - [x] `SESSION_IMPORT_ACKS` / `SELF_STOP_RE` / websearch `CLIENT` / adapter-qq `CLIENT` → kernel cell（缓存类 get_or_init）
 - [ ] Agent 结构体瘦身（可选项，随 Phase 3 外迁进行）：`config_store` / `provider` / `event_sink` / `loop_runner` / `plugin_host` 改为经 Ctx 解析
 - [x] 门禁：`source/core/tests/no_global_state.rs` 升级为相等断言（EXPECTED_MAX=0，白名单=kernel.rs）
-- [ ] 终态跟踪：federation 组（notifier / aggregate-deliver / invoker / querier / aggregator）的参数线程化（随 P5 从 kernel cell 消除）
+- [x] 终态跟踪：federation 组（notifier / aggregate-deliver / invoker / querier / aggregator / command-handler）**已出 kernel cell**：收敛为 `echo_agent::federation::FederationPorts`（`Clone` 值，`Default` = 联邦未接线、`is_linked()` 可观测），组合根装配联邦时构造一份 → `AgentBuilder::federation` 下发给每个 persona + 联邦泵销账用同一个聚合器。顺带修掉一个真 bug：工具外迁后 `echo-plugin-tools` 自己那份 invoker cell **从未被 set**，`node://` 远程文件/命令分流恒报「联邦未接线」；现改为 `register_coding_tools(..., invoker)` 注册期参数
   - [x] `NODE_ID` / `REGION_NAME`（node_identity 组）已**出 kernel cell**：改为 `echo_agent::NodeIdentity` 值类型，组合根构造一份后显式下发——`AgentBuilder::node_identity`（每个 persona 一份实例字段）+ `AgentManager::set_node_identity`（`TeamInfo` 用）。`Session::info()` 改为接收 `&NodeIdentity` 参数（身份是参数，不是全局事实）。顺带不再 `Box::leak` 两个字符串。零行为变化：空身份仍不下发字段
 
 **验收**：✅ 门禁绿（17 → 0）+ 全量测试通过；`echo-agent` 对具体实现的依赖收敛到定义层（部分随 P3）。
