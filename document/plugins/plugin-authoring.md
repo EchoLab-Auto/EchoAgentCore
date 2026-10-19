@@ -90,7 +90,8 @@ patches = ["local.patch"]    # 之后按序叠加
 # 行内条目（最后应用；等价于末端 patch 的 insert）
 [[plugin]]
 id = "example"                        # 唯一 id（= 插件实例 id，握手比对）
-kind = "stdio"                        # builtin | stdio | dylib | wasm（当前仅 stdio 可装载）
+kind = "stdio"                        # builtin | stdio | dylib | wasm
+                                      # 当前可用：stdio 子进程 + builtin 内置行；dylib / wasm 未实现
 name = "echo-plugin-example"          # 说明性名称（stdio 下 command 才是真实路径）
 command = "/home/me/.local/libexec/echo-agent-core/plugins/echo-plugin-example/echo-plugin-example"
 args = ["--stdio"]                    # 可选
@@ -196,8 +197,8 @@ name = "echo-plugin-example"
 
 | 变体 | 宿主是否消费 | 实际落点 |
 | --- | --- | --- |
-| `Contribution::Tool` | ✅ 已接线 | `echo-plugin-host::tool` → `RemoteTool` 注册进该人格的 `ToolRegistry`（经 `Invoke("<plugin>:<tool>")` 转发） |
-| `Contribution::PluginInstance` | ✅ 已接线 | `echo-plugin-host::bootstrap` 汇总 → `InstanceRegistry`（平台插件的正常入口，见下节） |
+| `Contribution::Tool` | ✅ 已接线 | `echo-plugin-adapter::tool` 的 `RemoteTool` → 注册进该人格的 `ToolRegistry`（经句柄 `invoke("<tool>")` 转发）（经 `Invoke("<plugin>:<tool>")` 转发） |
+| `Contribution::PluginInstance` | ✅ 已接线 | `echo-plugin-adapter::instance_contributions` 汇总 → 组合根注册进 `InstanceRegistry`（`bootstrap` 只负责启动与握手）（平台插件的正常入口，见下节） |
 | `Contribution::Skill` | ❌ 未接线 | SDK 侧只取 `skill.name`（`serve.rs` 的日志用途）；技能实际走 `skills.dir` 插件的目录扫描，不从插件贡献取 |
 | `Contribution::Service` | ❌ 未接线 | SDK 侧只取 `service.key` 用于日志 |
 | `Contribution::Events` | ❌ 未接线 | 宿主无处理分支——**要做事件订阅，目前只能注册为工具或在实例插件内向宿主回呼** |

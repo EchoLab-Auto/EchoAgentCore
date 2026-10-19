@@ -114,7 +114,7 @@ owner 与门控/名单一样有运行时更新路径，无需重启：
 
 - 经 `InvokeInstanceOp{method:"set_owner", payload:{owner_qq: "…"}}` 设置（空串 = 清除）；`QqInner` 持运行时值（初始化自配置），`set_owner_qq` 更新运行时值并经共享 ConfigStore 原子写回 `[instances.qq] owner_qq`，`get_owner_qq` 读运行时值
 - 门控豁免一律读运行时值：过滤管道的「管理员绕过」、`get_gated_friend_list`、出站门控
-- `PluginInstance` trait 提供 `set_owner_qq`/`get_owner_qq` 默认 no-op 方法，QQ 实现覆盖
+- **`PluginInstance` trait 不为 owner 开专用方法**：`set_owner` / `get_owner` 是 `InstanceManagement::invoke_custom` 的**方法名**，owner 值经 `cached_state()` 的 `owner` 键同步读出；`set_owner_qq` / `get_owner_qq` 是 QQ 插件内部（`filter.rs`）维护运行时值的固有方法，不是 trait 默认实现
 - **语义边界**：运行时设置的 owner 仅影响门控豁免，不联动其它授权（原自更新授权联动已随 `framework_update` 工具废弃移除）
 - `install.sh --owner-qq` 已移除：设置入口是 Panel「管理员」面板的**可编辑输入框**（插件 UI 描述符声明 `editable: true` + `action: set_owner`，渲染器直接发 `InvokeInstanceOp{method:"set_owner"}`），或直接编辑配置
 

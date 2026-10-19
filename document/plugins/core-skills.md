@@ -10,7 +10,7 @@ y: 1820
 
 > **定位**：本文描述技能系统——SKILL.md 能力包的分层发现、注入与热重载，系统提示词技能，以及外部 Git 来源技能的安装/更新（含失败清场与安装过程的可观测口径）。技能目录作为插件（`echo-agent.skills.dir`）的装载与包门控见 [插件化设计](./core-plugins.md)；技能正文的注入位置见 [Agent 循环](../core/core-agent-loop.md)。读者：技能作者与系统维护者。
 
-技能是 SKILL.md 驱动的能力包，为模型注入特定领域的指令与流程知识。`Skill`/`SkillMetadata` 词汇与 `SkillProvider` 接缝在 echo-defs；具体实现 `SkillRegistry`（文件发现 + 热重载）在 echo-agent。
+技能是 SKILL.md 驱动的能力包，为模型注入特定领域的指令与流程知识。`Skill`/`SkillMetadata` 词汇与 `SkillProvider` 接缝在 echo-defs；具体实现 `SkillRegistry`（文件发现 + 热重载）在独立 crate `echo-plugin-skills`（`echo_agent::skill::…` 为兼容 re-export）。
 
 ## 技能分层
 

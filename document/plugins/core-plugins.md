@@ -18,7 +18,7 @@ link: ["tools | 工具系统", "skills | 技能系统", "subagent | Subagent 插
 1. **一切皆插件**：LLM provider、TurnRunner、工具、技能、插件实例、编排、management server 均为插件，无特权核心模块
 2. 插件 = manifest + 生命周期钩子；注册是可逆副作用（disposer）
 3. **热重载优先于重启**：数据类插件（技能/工具/清单）秒级热重载；代码类插件不热重载——provider / loop 经原子二进制替换 + 进程重启生效，插件实例实现作为进程外插件随 Core 重启重建
-4. 插件**只依赖定义层**（echo-defs / echo-plugin / echo-context），不 import echo-agent，依赖方向单一
+4. 插件**不 import `echo-agent`**（只有组合根可以），可按需依赖定义层（`echo-defs` / `echo-plugin` / `echo-context`）与机制层（`echo-tool` / `echo-shell` / `echo-protocol` / `echo-session` / `echo-federation`）；逐 crate 的完整白名单在 `scripts/deps-policy.txt`，方向只向下
 
 ### 为什么不用动态库（.so）插件
 
@@ -65,7 +65,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 - **装载**：`plugins_runtime::start_with_specs` 把装载器筛出的每条 `LaunchSpec`（plugin_id / command / args / env / config）交给独立 `PluginSupervisor` 拉起，工具与实例贡献再接入 Core；Core 侧对这类插件只保留启停门控，不持有实现
 - **进插件清单**（2026-10 修复）：每个**静态**条目（动态的 QQ 实例 `LaunchSpec` 除外，它们另有实例门控壳）会在插件宿主里注册一个门控壳——`runtime = subprocess` + `builtin = false`，`enabled` 取配置值，启动失败原因填进 `error`。此前它们从不注册，面板的「外部插件」组因此只剩实例壳，用户装的外部插件完全不可见
-- **启停真的停/起子进程**（2026-10 跟进）：门控壳的 mount 仍是 no-op，但 `TogglePlugin` 对这类条目走**子进程控制面**（`PluginHost::SubprocessPluginControl`，由组合根用 supervisor 的 `PluginHandle` 实现）：禁用 = `stop`（排空后进程退出、监督任务留下可重启），启用 = `start`（重新握手、重新申报贡献）。`RestartPlugin` = `stop` + `start`
+- **启停真的停/起子进程**（2026-10 跟进）：门控壳的 mount 仍是 no-op，但 `TogglePlugin` 对这类条目走**子进程控制面**（独立 trait `SubprocessPluginControl`，经 `PluginHost::set_subprocess_control` 注入；组合根用 supervisor 的 `PluginHandle` 实现它）：禁用 = `stop`（排空后进程退出、监督任务留下可重启），启用 = `start`（重新握手、重新申报贡献）。`RestartPlugin` = `stop` + `start`
 - **入站频率限额**（宿主保护）：`Emit` / `Log` 超每秒配额即丢弃并计数，`HostCall` 超限回 `rate_limited` 错误回执（插件能感知背压），`InvokeResult` 永不丢（丢了调用挂死）。缺省 2000 / 500 / 200 每秒——合法插件远够不到，失控循环会被挡住
 - **与可逆停止的区别**：supervisor 的 `Control::Stop` 保留监督任务（可再 `Start`），`Control::Drain` 是终态（任务退出）。前者服务面板启停，后者服务关停/热替换。停止期间调用立刻失败（不排队、不挂死）
 - **与来源维度无关**：进程外可以是「manifest 编译内置 + 实现独立进程」（`instance.qq`），也可以是 manifest 与实现都来自外部；判据是 `runtime`，不是 `builtin`

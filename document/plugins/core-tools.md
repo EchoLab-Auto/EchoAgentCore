@@ -130,7 +130,7 @@ QQ 的 10 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 
 ## 后台 Shell 会话（持久 bash）
 
-进程级 `ShellManager`（`backend/echo-agent/src/shell.rs`）管理**持久 bash 会话**：
+进程级 `ShellManager`（机制 crate `echo-shell`；`backend/echo-agent/src/shell.rs` 只是兼容 re-export）管理**持久 bash 会话**：
 与 Panel Shell 面板共用同一会话，LLM 与用户看到的是同一终端上下文。
 
 - **会话模型**：每个会话 = 一个 `bash --noprofile --norc` 子进程（stdin/stdout/stderr 管道），
