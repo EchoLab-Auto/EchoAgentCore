@@ -4,7 +4,7 @@ title: "多 Agent 与会话"
 group: 框架
 x: 960
 y: 820
-link: ["agent-loop | Agent 循环 | r>l"]
+link: ["agent-loop | Agent 循环"]
 ---
 
 # 多 Agent 与会话

@@ -4,7 +4,7 @@ title: "实例插件化设计（规划）"
 group: 规划
 x: 960
 y: 3160
-link: ["adapter-genericization | 泛化设计系列 | b>t"]
+link: ["adapter-genericization | 插件实例泛化（设计系列） | b>l"]
 ---
 
 # 实例插件化设计（规划）

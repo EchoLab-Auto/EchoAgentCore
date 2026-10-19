@@ -4,7 +4,7 @@ title: "开发指南"
 group: 工程
 x: 1920
 y: 2050
-link: ["dev-testing | 测试策略 | r>l", "documentation-guide | 文档规范 | r>l"]
+link: ["dev-testing | 测试策略", "documentation-guide | 文档规范"]
 ---
 
 # 开发指南

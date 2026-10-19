@@ -4,7 +4,7 @@ title: "证据 · 冻结接口"
 group: 规划
 x: 1760
 y: 3640
-link: ["gen-evidence-01 | 01 | b>t", "gen-evidence-02 | 02 | b>t", "gen-evidence-03 | 03 | b>t", "gen-evidence-04 | 04 | b>t"]
+link: ["gen-evidence-01 | 01 | l>t", "gen-evidence-02 | 02", "gen-evidence-03 | 03", "gen-evidence-04 | 04 | r>t"]
 ---
 
 # 冻结接口（所有泛化设计文档的共同基线）

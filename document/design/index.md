@@ -4,7 +4,7 @@ title: "设计记录（索引）"
 group: 规划
 x: 960
 y: 3000
-link: ["decoupling-plan | 完全解耦计划 | b>t", "agent-humanlike-style | 拟人化方案 | b>t", "instance-plugin | 实例插件化 | b>t", "federation-port-merge | 联邦端口合并 | b>t", "panel-performance-audit | Panel 性能审计 | b>t", "adapter-genericization | 插件实例泛化设计系列 | b>t"]
+link: ["decoupling-plan | 完全解耦推进计划 | l>t", "instance-plugin | 实例插件化设计", "agent-humanlike-style | 拟人化方案", "federation-port-merge | 联邦·管理端口合并", "panel-performance-audit | Panel 性能审计 | r>t"]
 ---
 
 # 设计记录（索引）

@@ -2,7 +2,7 @@
 id: panel-icons
 title: "Panel 图标体系"
 group: 前端
-x: 4160
+x: 4480
 y: 780
 ---
 

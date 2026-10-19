@@ -2,9 +2,9 @@
 id: adapter-genericization
 title: "适配器泛化（设计系列）"
 group: 规划
-x: 960
+x: 1440
 y: 3320
-link: ["gen-01a | 01a Core UI 描述符 | b>t", "gen-01b | 01b 线协议去号码化 | b>t", "gen-02a | 02a Panel 协议层 | b>t", "gen-02b | 02b Panel 重接线 | b>t", "gen-03a | 03a 渲染器规范 | b>t", "gen-03b | 03b 迁移与删除 | b>t", "gen-05 | 05 对账表 | b>t", "gen-06 | 06 进度台账 | b>t", "gen-evidence-00 | 证据 · 冻结接口 | b>t"]
+link: ["gen-01a | 01a Core UI 描述符 | b>l", "gen-01b | 01b 线协议去号码化 | l>t", "gen-02a | 02a Panel 协议层 | l>t", "gen-02b | 02b Panel 重接线", "gen-03a | 03a 渲染器规范", "gen-03b | 03b 迁移与删除 | r>t", "gen-05 | 05 对账表 | r>t", "gen-06 | 06 进度台账 | r>t", "gen-evidence-00 | 证据 · 冻结接口 | r>t"]
 ---
 
 # 适配器泛化（设计系列）

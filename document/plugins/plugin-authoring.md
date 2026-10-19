@@ -3,7 +3,7 @@ id: plugin-authoring
 title: "插件开发指南"
 group: 插件
 x: 960
-y: 2620
+y: 2420
 ---
 
 # 插件开发指南（外部进程插件）

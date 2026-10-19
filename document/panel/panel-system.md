@@ -2,7 +2,7 @@
 id: panel-system
 title: "Panel 系统交互"
 group: 前端
-x: 3840
+x: 4160
 y: 780
 ---
 
