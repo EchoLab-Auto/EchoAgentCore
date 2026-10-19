@@ -1352,6 +1352,20 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         plugin_host
             .registry
             .apply_disabled(&cfg.agent.disabled_plugins);
+        // `plugins.toml` 里 `enabled = false` 的外部条目：注册进清单但**不挂载**。
+        // 必须在 mount_plan 之前收敛——mount_plan 会跳过处于禁用态的条目。
+        // 这是配置选择（不是故障），面板显示「已禁用」；要真正停掉子进程得
+        // 重启 Core（子进程的生死由 `plugins_runtime` 在启动期决定）。
+        if let Some(runtime) = &plugin_runtime {
+            plugin_host.disable_plugins(
+                &runtime
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.kind != "builtin" && !entry.enabled)
+                    .map(|entry| entry.id.clone())
+                    .collect::<Vec<_>>(),
+            );
+        }
 
         // 遍历全部 persona（运行期 TogglePlugin 时 AgentManager 已就位；
         // 启动期尚未设置，守卫为 no-op，启动期禁用恢复见 persona 循环）。
@@ -1630,6 +1644,41 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             )?;
         }
 
+        // ── plugins.toml 的**外部条目**：注册门控壳，让它们出现在插件清单里 ──
+        //
+        // 此前这些条目的子进程由 `plugins_runtime` 直接拉起（工具注册进
+        // agent），但**从不进 `PluginHost`**——于是面板的插件清单里根本看不到
+        // 用户装的外部插件，文案里却写着「外部组 = 来自插件目录」。
+        //
+        // 壳的语义是**名义挂载**（与 provider.llm 同款）：子进程已由
+        // supervisor 持有，registry 侧不再启停它——`enabled = false` 写进
+        // disabled_plugins 后需重启 Core 生效；重启按钮对这类条目直接给
+        // 明确的「请重启 Core」而不是假装能热重载。
+        //
+        // `builtin = false`：来源维度上它们不是编译进本二进制的（面板的
+        // 来源徽标读这个字段，分组读 `runtime`——两者正交，别互相顶替）。
+        if let Some(runtime) = &plugin_runtime {
+            for entry in &runtime.entries {
+                if entry.kind == "builtin" {
+                    continue; // 内置行由 mount_plan 处理，别重复注册
+                }
+                push_builtin(
+                    &mut catalog,
+                    PluginManifest::builtin(
+                        &entry.id,
+                        &entry.name,
+                        version,
+                        PluginKind::Tool,
+                        &entry.id,
+                        format!("外部插件（plugins.toml，{}）", entry.kind),
+                    )
+                    .with_runtime(PluginRuntime::Subprocess)
+                    .with_builtin_flag(false),
+                    nominal(entry.id.clone()),
+                )?;
+            }
+        }
+
         // ── 按计划挂载（配置化组合 P4 的落点）──
         // 计划来自 plugins.toml 里 kind = "builtin" 的行：出现的按行序挂载、
         // 可 `enabled = false` 关掉；**没提到的一律照旧挂载**（现网
@@ -1650,6 +1699,16 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             // 与改造前逐插件 `?` 同语义：装配失败就启动失败——带着缺失的
             // 管理面/工具集继续跑只会让人以为"服务起来了但一片空白"。
             return Err(anyhow::anyhow!(mount_errors.join("; ")).context("mount builtin plugins"));
+        }
+        // 外部条目的启动失败原因 + 配置来源层（面板据此区分「配置关了」
+        // 与「起不来」，并指出该去改哪一层）。
+        if let Some(runtime) = &plugin_runtime {
+            plugin_host.set_plugin_errors(
+                runtime
+                    .entries
+                    .iter()
+                    .filter_map(|entry| entry.error.clone().map(|error| (entry.id.clone(), error))),
+            );
         }
         info!(
             registered,

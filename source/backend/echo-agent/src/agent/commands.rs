@@ -554,6 +554,25 @@ impl Agent {
                     });
                     return;
                 }
+                // 外部条目（`plugins.toml` 的 stdio 插件的门控壳）是**名义
+                // 挂载**：子进程由 Core 启动时拉起、registry 侧没有启停能力，
+                // 重启它是空操作。给明确说明，而不是假装成功。
+                if let Some(d) = self
+                    .plugin_host()
+                    .descriptors()
+                    .into_iter()
+                    .find(|d| d.id == id)
+                {
+                    if d.runtime == "subprocess" && !d.builtin {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!(
+                                "{id} 是 plugins.toml 里的外部插件：子进程由 Core 启动时拉起，无法单独热重载——改完配置请重启 Core 服务"
+                            ),
+                        });
+                        return;
+                    }
+                }
                 match self.plugin_host().restart(&id) {
                     Ok(()) => {
                         self.emit(BackendEvent::Error {

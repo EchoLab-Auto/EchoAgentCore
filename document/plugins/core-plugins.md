@@ -64,6 +64,8 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 除源码级进程内插件外，系统支持**进程外插件**——插件以任意语言实现、经 stdio 帧协议与宿主通信（`runtime = subprocess`），装载源是 `plugins.toml`（文件不存在即特性休眠），崩溃自动重启（进程级隔离）。Core 自带的进程外组件走同一条路径：插件实例按 `[instances.<platform>.plugin]` 与实例表逐实例生成 `LaunchSpec`（`plugin_id = instance-<platform>-<instance>`、状态文件 `<platform>-<instance>.toml`，命令缺省 `echo-adapter-<platform>`），实例规格由 `instance_deploy` 解析；**平台部署细节（端口分配 / 容器名 / compose）在插件进程内**。
 
 - **装载**：`plugins_runtime::start_with_specs` 把装载器筛出的每条 `LaunchSpec`（plugin_id / command / args / env / config）交给独立 `PluginSupervisor` 拉起，工具与实例贡献再接入 Core；Core 侧对这类插件只保留启停门控，不持有实现
+- **进插件清单**（2026-10 修复）：每个**静态**条目（动态的 QQ 实例 `LaunchSpec` 除外，它们另有实例门控壳）会在插件宿主里注册一个门控壳——`runtime = subprocess` + `builtin = false`，`enabled` 取配置值，启动失败原因填进 `error`。此前它们从不注册，面板的「外部插件」组因此只剩实例壳，用户装的外部插件完全不可见
+- **名义挂载**：壳的 mount 是 no-op——子进程已在启动期拉起，宿主的挂载/卸载不改变它的生死。所以 `TogglePlugin` 禁用这类条目只是写 `disabled_plugins`（重启生效），`RestartPlugin` 会被拒绝并提示「请重启 Core 服务」
 - **与来源维度无关**：进程外可以是「manifest 编译内置 + 实现独立进程」（`instance.qq`），也可以是 manifest 与实现都来自外部；判据是 `runtime`，不是 `builtin`
 - **与进程内插件的差别**：进程内 = 实现编译进 Core（挂载/卸载即生效）；进程外 = 独立 PID 与生命周期（崩了不带走 Core，启停经门控）
 - **实例插件贡献什么**：`InstanceContribution`（实例名 / 平台 / 能力位 / 配置 schema / UI 描述符 / 会话标签 / **模型工具声明**）。宿主侧不认识任何平台细节——管理界面按描述符渲染、管理动作经 `invoke_custom(method, payload)` 字符串透传、**模型工具由插件声明**（宿主只做合并 / `account` 寻址 / 出站闸门 / 透传，见 [工具系统](./core-tools.md)「工具从哪来」）

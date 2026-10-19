@@ -179,6 +179,18 @@ impl PluginManifest {
         self.runtime = runtime;
         self
     }
+
+    /// 声明**来源**：`false` = 不是编译进本二进制的插件（`plugins.toml` 的
+    /// 外部条目、插件目录发现的 `plugin.toml`）。
+    ///
+    /// 与 [`Self::with_runtime`] 正交：外部条目**也可能是进程内**实现
+    /// （数据插件），而编译内置的门控壳**也可能是进程外**实现（实例插件）。
+    /// 面板的来源分组读的是 `runtime`，来源徽标读的是这个字段——两者不能
+    /// 互相顶替（2026-10 调研发现的归类错误即源于此）。
+    pub fn with_builtin_flag(mut self, builtin: bool) -> Self {
+        self.builtin = builtin;
+        self
+    }
 }
 
 /// Errors from manifest parsing/validation.

@@ -356,6 +356,28 @@ impl PluginHost {
         self.registry.restart(id, &self.ctx())
     }
 
+    /// 把一批插件标记为禁用（**只改注册表状态**，不写配置、不持久化）。
+    ///
+    /// 用途：`plugins.toml` 里 `enabled = false` 的外部条目——配置选择让它
+    /// 不启动，清单里应显示为「已禁用」而不是消失（消失会让人以为配置写错了）。
+    pub fn disable_plugins(&self, ids: &[String]) {
+        if !ids.is_empty() {
+            self.registry.apply_disabled(ids);
+        }
+    }
+
+    /// 记录插件装配/启动失败原因（组合根在拉起子进程插件后写入）。
+    pub fn set_plugin_errors<I, K, V>(&self, errors: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        for (id, error) in errors {
+            self.registry.set_plugin_error(id, error);
+        }
+    }
+
     /// 记录插件的配置来源层（组合根装载 `plugins.toml` 后写入）。
     pub fn set_config_origins<I, K, V>(&self, origins: I)
     where

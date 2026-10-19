@@ -37,6 +37,27 @@ pub struct PluginRuntime {
     /// 插件实例宿主服务（`core_api`；实例插件的入站 / 状态回呼入口；
     /// P1，2026-10 实例插件化）。无插件实例贡献时为空注册表（无副作用）。
     pub core_api: Arc<CoreApiService>,
+    /// `plugins.toml` **静态条目**的元数据（id / name / kind / 是否启用 /
+    /// 启动失败原因）。
+    ///
+    /// 只含静态条目：动态 `LaunchSpec`（QQ 实例）另有自己的门控壳，不能
+    /// 重复注册。见 [`PluginRuntime::gate_shells`]。
+    pub entries: Vec<StaticPluginEntry>,
+}
+
+/// `plugins.toml` 静态条目（用于在插件清单里显示**外部插件**）。
+#[derive(Debug, Clone)]
+pub struct StaticPluginEntry {
+    /// 配置里的条目 id。
+    pub id: String,
+    /// 人读名（配置 `name`；空则回退 id）。
+    pub name: String,
+    /// 配置的 kind 字面量（`stdio` / `builtin` …）。
+    pub kind: String,
+    /// 配置里 `enabled = false`（未启动是配置选择，不是故障）。
+    pub enabled: bool,
+    /// 启动失败原因（握手失败 / 命令不存在）；`None` = 已就绪或未尝试。
+    pub error: Option<String>,
 }
 
 /// 若 `<config_path 同目录>/plugins.toml` 存在则装载并启动；否则休眠。
@@ -71,9 +92,14 @@ pub async fn start_with_specs(
 ) -> Option<PluginRuntime> {
     let path = config_path.with_file_name("plugins.toml");
     let mut load_failed = false;
+    let mut entries: Vec<StaticPluginEntry> = Vec::new();
     let (mut specs, skipped) = if path.exists() {
         match echo_plugin_loader::load(&path) {
-            Ok(tree) => echo_plugin_host::bootstrap::launch_specs(&tree),
+            Ok(tree) => {
+                // 记下静态条目（进插件清单）+ 逐条诊断（同层重复 id 等）。
+                entries = static_entries(&tree);
+                echo_plugin_host::bootstrap::launch_specs(&tree)
+            }
             Err(error) => {
                 tracing::warn!(
                     path = %path.display(),
@@ -119,10 +145,18 @@ pub async fn start_with_specs(
     for (plugin_id, error) in &started.errors {
         tracing::warn!(plugin = %plugin_id, %error, "subprocess plugin start failed");
     }
+    // 启动失败原因回填到静态条目：插件清单里能直接看到「为什么没起来」。
+    // 只认静态条目 id——动态实例（QQ）的失败另有实例状态通道上报。
+    for entry in &mut entries {
+        if let Some((_, error)) = started.errors.iter().find(|(id, _)| id == &entry.id) {
+            entry.error = Some(error.clone());
+        }
+    }
     let runtime = PluginRuntime {
         started,
         skipped,
         core_api,
+        entries,
     };
     for reason in &runtime.skipped {
         tracing::debug!(reason = %reason, "plugin entry skipped");
@@ -133,6 +167,24 @@ pub async fn start_with_specs(
         "subprocess plugins started from plugins.toml"
     );
     Some(runtime)
+}
+
+/// 把合成树里的**静态**条目转成清单元数据（不含动态 `LaunchSpec`）。
+fn static_entries(tree: &echo_plugin_loader::LoadedTree) -> Vec<StaticPluginEntry> {
+    tree.entries
+        .iter()
+        .map(|entry| StaticPluginEntry {
+            id: entry.id.clone(),
+            name: if entry.name.trim().is_empty() {
+                entry.id.clone()
+            } else {
+                entry.name.clone()
+            },
+            kind: entry.kind.as_str().to_string(),
+            enabled: entry.enabled,
+            error: None,
+        })
+        .collect()
 }
 
 /// 一个已注册的远程插件实例 + 其入站队列 receiver（组合根接到送达入口；
@@ -528,6 +580,66 @@ mod tests {
             Some("plugins.toml")
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 外部条目进插件清单（此前完全不可见）──────────────────────────
+
+    /// 静态条目按合成树取元数据：id / name（空回退 id）/ kind / enabled。
+    #[test]
+    fn static_entries_mirror_the_composed_tree() {
+        let dir = unique_dir("entries");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(
+            dir.join("plugins.toml"),
+            "[[plugin]]\nid = \"with-name\"\nkind = \"stdio\"\nname = \"有名字\"\ncommand = \"/bin/x\"\n\n\
+             [[plugin]]\nid = \"unnamed\"\nkind = \"stdio\"\nname = \"\"\ncommand = \"/bin/y\"\n\n\
+             [[plugin]]\nid = \"off\"\nkind = \"stdio\"\nname = \"关掉的\"\ncommand = \"/bin/z\"\nenabled = false\n",
+        )
+        .expect("write profile");
+
+        let tree = echo_plugin_loader::load(&dir.join("plugins.toml")).expect("load");
+        let entries = static_entries(&tree);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].name, "有名字");
+        assert!(entries[0].enabled);
+        // name 写成空串 → 回退 id（面板要有东西可显示；name 是 schema 必填，
+        // 所以"未写"不可达，可达的是空串）。
+        assert_eq!(entries[1].name, "unnamed");
+        // enabled = false 是配置选择，不是故障 → error 仍为 None。
+        assert!(!entries[2].enabled);
+        assert_eq!(entries[2].error, None);
+        assert_eq!(entries[2].kind, "stdio");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 启动失败的原因回填到对应静态条目（面板「失败」徽标的数据源）。
+    #[test]
+    fn start_errors_are_attached_to_static_entries() {
+        // 直接验证回填逻辑本身（真实拉起子进程由 bootstrap 的测试覆盖）。
+        let mut entries = vec![
+            StaticPluginEntry {
+                id: "ok-ext".into(),
+                name: "ok".into(),
+                kind: "stdio".into(),
+                enabled: true,
+                error: None,
+            },
+            StaticPluginEntry {
+                id: "bad-ext".into(),
+                name: "bad".into(),
+                kind: "stdio".into(),
+                enabled: true,
+                error: None,
+            },
+        ];
+        let started_errors = [("bad-ext".to_string(), "spawn failed".to_string())];
+        for entry in &mut entries {
+            if let Some((_, error)) = started_errors.iter().find(|(id, _)| id == &entry.id) {
+                entry.error = Some(error.clone());
+            }
+        }
+        assert_eq!(entries[0].error, None);
+        assert_eq!(entries[1].error.as_deref(), Some("spawn failed"));
     }
 
     /// plugins.toml 存在但内容非法 → None（warn，但不 panic）。

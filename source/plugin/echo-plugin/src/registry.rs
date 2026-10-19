@@ -77,6 +77,8 @@ pub struct PluginRegistry {
     enabled_state: std::sync::Mutex<BTreeMap<String, bool>>,
     /// 插件 id → 声明它的配置层（展示用；见 [`PluginRegistry::set_config_origin`]）。
     config_origins: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// 插件 id → 装配/启动失败原因（展示用；`None` 值表示"曾失败后已恢复"）。
+    errors: std::sync::Mutex<BTreeMap<String, String>>,
 }
 
 impl std::fmt::Debug for PluginRegistry {
@@ -282,12 +284,20 @@ impl PluginRegistry {
         let ids: Vec<String> = plugins.keys().cloned().collect();
         let mut out = Vec::with_capacity(ids.len());
         let origins = self.config_origins();
+        let errors = self
+            .errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         for id in ids {
             if let Some(p) = plugins.get(&id) {
                 let mut d = PluginDescriptor::from(p.manifest());
                 d.enabled = states.get(&id).copied().unwrap_or(true);
                 if let Some(origin) = origins.get(&id) {
                     d.config_origin = origin.clone();
+                }
+                if let Some(error) = errors.get(&id) {
+                    d.error = Some(error.clone());
                 }
                 out.push(d);
             }
@@ -320,6 +330,17 @@ impl PluginRegistry {
         for (id, origin) in origins {
             map.insert(id.into(), origin.into());
         }
+    }
+
+    /// 记录插件装配/启动失败原因（组合根在启动子进程 / 装载数据插件后写入）。
+    ///
+    /// 面板据此区分「用户主动禁用」与「装配失败被跳过」——两者
+    /// `enabled` 都是 false，但后者要人去修配置。
+    pub fn set_plugin_error(&self, id: impl Into<String>, error: impl Into<String>) {
+        self.errors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.into(), error.into());
     }
 
     fn config_origins(&self) -> std::collections::HashMap<String, String> {
@@ -440,6 +461,24 @@ mod tests {
         reg.set_enabled("r.r.r", false, &ctx).unwrap();
         let err = reg.restart("r.r.r", &ctx).expect_err("disabled plugin");
         assert!(err.contains("disabled"), "{err}");
+    }
+
+    /// 装配失败原因进 descriptor：面板据此区分「用户主动禁用」（error 空）
+    /// 与「启动失败被跳过」（error 有值）。
+    #[test]
+    fn plugin_errors_reach_descriptors() {
+        let reg = PluginRegistry::new();
+        reg.register(Arc::new(BuiltinPlugin::new(
+            PluginManifest::builtin("e.e.e", "e", "1", PluginKind::Tool, "", ""),
+            |_| Ok(vec![]),
+        )))
+        .unwrap();
+        assert_eq!(reg.descriptors()[0].error, None);
+        reg.set_plugin_error("e.e.e", "spawn failed: No such file or directory");
+        assert_eq!(
+            reg.descriptors()[0].error.as_deref(),
+            Some("spawn failed: No such file or directory")
+        );
     }
 
     /// 配置来源层进 descriptor（面板展示「来自哪一层」）。
