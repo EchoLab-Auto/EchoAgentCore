@@ -1,7 +1,7 @@
 ---
 package: echo-agent.subagent
 name: model-profiles
-description: 模型供应商与子代理模型选择规范 — 通常用 deepseek-flash（不传 profile 继承）；UI 前端图形与视觉闭环作业委派子代理时推荐 kimi(k3)；用 list_api_profiles 查询可用供应商
+description: 模型供应商与子代理模型选择规范 — 默认一律用默认模型（不传 profile 继承主 agent）；仅当用户明确点名某模型（opus/kimi/gemini/gpt）时才用 profile 切换；用 list_api_profiles 查询可用供应商
 metadata:
   always: true
 keywords: [模型, 供应商, profile, kimi, k3, deepseek, 子代理模型, 视觉, 截图, 图形, 前端, spawn_subagent]
@@ -15,16 +15,25 @@ keywords: [模型, 供应商, profile, kimi, k3, deepseek, 子代理模型, 视�
 工具：返回全部 API profile（名称 / 服务商 / 模型 / 端点 / API Key 就绪状态）
 与顶层默认。`spawn_subagent` 的 `profile` 参数只能填该清单中的名称。
 
-## 子代理模型选择（默认策略，2026-10 用户设定）
+## 子代理模型选择（2026-10-17 用户设定：默认即默认模型；指定才切换）
 
-| 场景 | 子代理模型 |
+**核心规则：一切子代理任务默认用「默认模型」（不传 `profile`，继承主 agent）。
+只有用户明确点名某个模型时，才使用 `profile` 切换。**
+
+| 情况 | 子代理模型 |
 | --- | --- |
-| **通常情况下**（调研 / 代码 / 文档 / 验证 / 批量处理…） | **deepseek-flash** —— 不传 `profile`，继承主 agent 模型即可 |
-| **UI 前端图形**（HTML/CSS/SVG/Canvas/图表/组件样式的生成或修改） | `profile: "kimi"`（Kimi K3） |
-| **带视觉闭环的作业**（截图 → 观察 → 修改 → 再截图的迭代验证） | `profile: "kimi"`（Kimi K3） |
+| **默认（绝大多数情况：调研 / 诊断 / 计划 / 设计 / 写码 / 测试 / 部署 / 批量 / 文档…）** | **不传 `profile`** —— 继承主 agent 的默认模型 |
+| 用户明确说「用 opus / 用 uu-api / 用 claude」 | `profile: "uu-api"`（Claude Opus 5.5） |
+| 用户明确说「用 kimi / k3」 | `profile: "kimi"`（Kimi K3） |
+| 用户明确说「用 gemini」 | `profile: "uuapi-gemini"`（Gemini 4 Argon） |
+| 用户明确说「用 gpt / spacetime」 | `profile: "spacetime"` 或 `"uuapi"`（按用户指名） |
 
-用法：`spawn_subagent(task: "…", profile: "kimi")` —— **单次生效**，父 agent
-自身模型不变；多个子任务可以并行用不同模型。
+**禁止擅自升级模型**：不得因为「任务看起来高端 / 重要」就自行切到 opus 等更贵
+的模型；也不得为省钱而擅自降级用户点名的模型。用户点名 = 严格执行；未点名 =
+默认模型。
+
+> 说明：本规则取代此前「opus 做计划、deepseek 做执行」的分工约定（2026-10-17
+> 同日修订）。若用户后续要求恢复按阶段分工，直接改本节即可。
 
 ## 行为与边界
 
