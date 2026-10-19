@@ -17,30 +17,29 @@ link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | �
 本仓库按 DeepSeek Harness 的设计模式组织，五条核心原则：
 
 1. **无特权核心**：agent 循环、模型插件实例、工具、技能、平台插件实例都可挂载/替换；注册是可逆副作用（返回 disposer）
-2. **服务定位 + 依赖注入**：服务通过稳定键从 `Ctx` 解析（`ctx.llm` / `ctx.loop`），加载顺序由服务可用性驱动，扩展插件只依赖定义层
+2. **服务登记 + 显式注入**：服务以稳定键登记在 `Ctx`（`ctx.llm` / `ctx.loop` / `ctx.sanitizer`）供**可发现性与诊断**；实际消费走显式参数——provider 进 `AgentBuilder`、`TurnRunner` 由组合根 `set_loop_runner` 下发。挂载顺序由 `plugins.toml` 的挂载计划决定，不由服务可用性驱动
 3. **类型化事件 = 扩展点**：`EventBus` 的 Observe / Waterfall / Parallel / Serial 四种分发；waterfall 是 around-middleware（`next()` 委托、不调即短路）
 4. **能力接缝**：Service Definition / Service Provider / Consumer 三角独立演进、独立成 crate；依赖方向单向无环
 5. **事件溯源会话日志**：日志是唯一事实来源，模型上下文由日志投影——"模型可见 ⇒ 已记录"（反例：推理正文入日志但不进模型上下文，见 [会话记忆](./core-memory.md)）
 
-内核只含机制（服务注册表 / 事件总线 / 插件宿主 / 线协议 / 组合根）；全部能力以**插件**装载——循环、provider、工具、技能、插件实例、工作区、subagent、联邦——配置可禁用到"只剩内核仍能启动"。装载清单与门控规则见 [插件化设计](../plugins/core-plugins.md)。
+内核只含机制（服务注册表 / 事件总线 / 插件宿主 / 线协议 / 组合根）；能力以**插件**装载——循环、provider、工具、技能、插件实例、工作区、subagent——配置可禁用到"只剩内核仍能启动"。**例外**：联邦与自更新是组合根直连的内核能力（无插件 id、无独立开关，联邦零配置时缺省合并至管理地址），不受插件门控影响。装载清单与门控规则见 [插件化设计](../plugins/core-plugins.md)。
 
 ## 组合根与启动装配
 
 二进制 `echo-agent-core`（`source/core/`）是唯一的组合根，启动按序完成：
 
 1. 加载配置（`core.toml`，见 [配置持久化](./core-config-persistence.md)）
-2. 读 **`plugins.toml`**（与 core.toml 同目录；不存在 = 特性休眠，不报错）：profile → bundles → patches → 自身 `[[plugin]]` 行分层合成，先算「内置插件的挂载计划与顺序」
-3. 构建 LLM provider 工厂，注册 `ctx.llm`
-4. 装配插件宿主：`apply_disabled`（禁用插件只注册不挂载）先于挂载执行
-5. 按计划挂载内置插件（无 `plugins.toml` / 无 `kind = "builtin"` 行 = 目录顺序全启用），注册远程插件门控壳与外部条目，创建多 agent 监督器
-6. 启动实例插件（受 `[instances.<platform>].enabled` 与插件状态双重门控）与 management WS
-7. 各人格启动循环回填按人格的循环注入（`loop.single` / `loop.parallel`）
+2. 构建 LLM provider（计量 + 脱敏装饰）并登记 `ctx.llm`；构建唯一的 `TurnRunner` 登记 `ctx.loop`
+3. **启动 `plugins.toml` 的子进程插件**（含实例插件进程）——这一步在宿主装配之前，宿主服务（如 `sanitizer`）在启动前先注册好供 `HostCall` 回呼
+4. 装配进程级插件宿主：`apply_disabled`（禁用插件只注册不挂载）先于挂载
+5. 一次 `mount_plan` 按 `plugins.toml` 的 `kind = "builtin"` 行序挂载内置插件（无该行 = 目录顺序全启用）——**工具集 / 技能目录 / 工作区 / subagent / 插件实例 / 管理面 / 循环 / provider 全是 mount 的副作用**，management WS 随管理面插件的 mount 起停；同时注册远程插件门控壳与外部条目
+6. 创建多 agent 监督器，按人格回填循环注入（`loop.single` / `loop.parallel`）
 
-> `echo-agent-core dump-config` 只打印第 2 步的合成结果（profile / bundle / patch / 内联层 + 每行来源），用来排查"这行配置从哪来"——不需要真启动。
+> `plugins.toml` 与 core.toml 同目录，不存在 = 不报错（外部插件特性休眠、内置插件按目录默认全启用）。`echo-agent-core dump-config` 只打印它的分层合成结果（profile / bundle / patch / 内联层 + 每行来源），用来排查"这行配置从哪来"——不需要真启动。
 
 ## 服务定位与事件
 
-- `Ctx`：进程级服务注册表——`ctx.llm` / `ctx.loop` 等稳定服务键，加载顺序由服务可用性驱动
+- `Ctx`：进程级服务登记表——`ctx.llm` / `ctx.loop` / `ctx.sanitizer` 等稳定服务键，供可发现性与诊断；**消费侧走显式参数**（`AgentBuilder` 收 provider、`set_loop_runner` 收 runner），不靠运行期键解析
 - `EventBus`：类型化事件分发（Observe / Waterfall / Parallel / Serial）；waterfall 监听器可改写或拒绝（如 `AgentPreStep`）
 - `Disposer` / `ScopedRegistry`：一切注册均为**可逆副作用**，卸载时依序回滚
 - `EventSink`：**进程级事件汇聚点**——所有人格事件直投于此，Panel 单连接即可看到全部活动；进程级职责由核心服务代理（非人格）承担（无"主智能体"）
@@ -52,7 +51,7 @@ link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | �
 - `mount` 返回 disposer；`register_and_mount` 注册并按启用态挂载；宿主为**进程级单例**（全体人格共享）
 - 门控：全局启用 ∧ persona 白名单（`Agent::apply_capabilities` 逐人格计算）
 - 热重载：数据类插件（技能/工具/清单）秒级热重载；代码类插件经原子二进制替换 + 进程重启生效
-- 两种装载方式：**内联**（编译期、性能零开销、随二进制更新）与**外部进程**（独立二进制 / 任意语言、stdio 帧协议、崩溃自动重启、`plugins.toml` 装载）——协议与 SDK 见 [插件开发指南](../plugins/plugin-authoring.md)
+- 两种装载方式：**内联**（编译期、性能零开销、随二进制更新）与**外部进程**（独立二进制 / 任意语言、stdio 帧协议、崩溃自动重启、`plugins.toml` 装载）。`plugins.toml` 同时是**内置插件**的组合表——`kind = "builtin"` 的行决定内置插件的集合、顺序与启用态（未提到的照旧挂载）——协议与 SDK 见 [插件开发指南](../plugins/plugin-authoring.md)
 
 ## 进程结构
 

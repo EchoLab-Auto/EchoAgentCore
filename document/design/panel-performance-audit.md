@@ -420,7 +420,7 @@ id，与 `seq` 同一手法，零构造点改动）：Panel 三处匹配改为�
 尾部 200 行——收 5 倍的量只为画 200 行。
 
 现在：`RequestTrunkTimeline { limit: 200 }` 只取最新 200 条（Core 回
-`has_more` 表示还有更早的），用户向上翻时按 `RequestTimelineEarlier { before_seq }`
+`has_more` 表示还有更早的），用户向上翻时按 `RequestTimelineEarlier { before_ord, limit }`（锚点是永不改变的位置序号，不能用会因就地更新而乱序的 `seq`）
 分页取，`TimelineEarlier` **前插**到已加载列表头部、不动同步游标。
 
 | 项 | 改前 | 改后 |

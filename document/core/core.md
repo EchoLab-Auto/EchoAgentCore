@@ -14,7 +14,7 @@ link: ["frame | 框架（内核）", "plugins | 插件化设计 | l>b"]
 
 ## Core 的组成
 
-Core（EchoAgentCore）是 Agent 后端核心服务，Rust 实现。组合根在 `source/core/src/main.rs`；核心库为 `source/backend/echo-agent`（框架核心在 `agent/`；插件机制在 `source/plugin/`，内置插件实现各自成 crate；宿主侧只剩 `packages/` 的 `instance_ops` / `federation` / `tools_builtin` 兼容面），协议定义在 `source/protocol/echo-protocol`。
+Core（EchoAgentCore）是 Agent 后端核心服务，Rust 实现。组合根在 `source/core/src/main.rs`；核心库为 `source/backend/echo-agent`（框架核心在 `agent/`；插件机制在 `source/plugin/`，内置插件实现各自成 crate；宿主侧 `packages/` 只剩三个仍内联的包：`tools_builtin`（装配壳 + `api_profiles` + 自停拦截）/ `instance_ops` / `federation`），协议定义在 `source/protocol/echo-protocol`。
 
 Core 由两支组成：
 
@@ -39,4 +39,4 @@ Core 由两支组成：
 | `[federation]` | Core↔Core 联邦（`listen` / `node_name` / `[federation.peers.*]`） |
 | `[plugins.*]` | 插件级配置（如 `[plugins.system_prompt]`） |
 
-进程外插件的装载清单是同目录的 `plugins.toml`（不存在 = 特性休眠）。持久化机制、原子写与改名语义见 [配置持久化](./core-config-persistence.md)。
+进程外插件**与内置插件的组合**清单都是同目录的 `plugins.toml`：`kind = "stdio"` 行登记子进程插件，`kind = "builtin"` 行决定内置插件的集合 / 顺序 / 启用态（不存在 = 外部插件特性休眠、内置插件按目录默认全启用；未提到的内置插件照旧挂载）。分层合成结果可用 `echo-agent-core dump-config` 查看。持久化机制、原子写与改名语义见 [配置持久化](./core-config-persistence.md)。
