@@ -241,7 +241,8 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [ ] 消息大小/频率上限（**帧上限 16 MiB 已落地**；频率/数量限额待做）、调用超时强制（已落地：invoke 超时=deadline）
 - [ ] 权限声明（capabilities：fs / net / proc）与宿主中介（远期）；**环境隔离已落地**（env_clear + 仅 PATH + 显式 env）
 - [x] SDK 与脚手架：插件侧运行时（echo-plugin-sdk）+ 试点示例 + [插件开发指南](../plugins/plugin-authoring.md)（协议文档含在上手指南内；JSON Schema 导出待做）
-- [ ] 文档生成门禁（对齐 dsh 做法）：模块图 / 能力图 / 事件矩阵 / 工具目录自动生成 + 新鲜度校验
+- [x] 文档生成门禁（对齐 dsh 做法，取其**可执行的那一半**）：`source/core/tests/doc_catalog.rs` 三项校验——① **工具目录自动生成 + 新鲜度**（`document/plugins/tool-catalog.md` 由 `register_all` 的真实注册表渲染，加/改工具不同步即红；`UPDATE_DOCS=1` 刷新）；② **内置插件 id 不许漏**（`BUILTIN_PLUGIN_IDS` 每项必须出现在 `core-plugins.md`）；③ **相对链接可达**（`document/` 全树死链检查——重命名/拆章最容易留下的坑）。模块图 / 能力图 / 事件矩阵未做：前两者需要图形渲染器（ProDoc 侧职责），事件矩阵已由 Panel `protocol-sync.test.ts` 的变体计数快照跨仓兜住
+- [x] 文档一致性（人工复核 + 门禁）：本轮把「外部条目重启被拒」等**已被实现推翻**的旧表述全部改掉（rlimit / 可逆停止 / 子进程控制面落地后，原文说"重启按钮会回请重启 Core"已不成立）；死链 0 条
 - [x] CI：fmt / clippy `-D warnings` / 全量测试（stable+nightly）/ **依赖方向门禁已扩展到插件分层**（api→零依赖、sdk→api、host→api+loader、loader→零、example→sdk；已提交 `65c1c2a` 起）
 - [x] 无全局态门禁（`no_global_state.rs`，随 workspace 测试自动纳入 CI）
 

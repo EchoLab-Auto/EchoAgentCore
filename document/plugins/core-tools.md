@@ -10,7 +10,12 @@ y: 1620
 
 > **定位**：本文描述工具系统——工具的注册与分派、文件工具路径约定、调用治理（参数预检 / 危险命令判定 / 超时）、事件持久化与后台 Shell 会话（含已废弃工具）。工具集作为插件（`echo-agent.tools.builtin`）的装载清单与 persona 门控见 [插件化设计](./core-plugins.md)；工具调用相关的协议事件见 [协议与数据流](../protocol/protocol.md)。读者：工具系统的使用者与维护者。
 
+
 ## 注册与分发
+
+> **完整工具清单**见 [内置工具目录](./tool-catalog.md)——由
+> `echo-agent::tool::builtin::register_all` **自动生成并校验**（加工具忘了
+> 更新会在门禁红）。本文只讲机制与门控，不复述清单，避免两处漂移。
 
 - `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（echo-agent，`packages/tool/`）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
 - 注册是可逆副作用：`register_reversible` 返回 `Disposer`，插件卸载即撤销

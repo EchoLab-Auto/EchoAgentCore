@@ -44,6 +44,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 
 - [core-plugins.md](./plugins/core-plugins.md) — 插件化设计：插件模型、内置清单、能力开关、外部进程插件
 - [core-tools.md](./plugins/core-tools.md) — 工具系统：注册分发、路径约定、超时治理、后台 Shell 会话
+- [tool-catalog.md](./plugins/tool-catalog.md) — 内置工具目录（**自动生成**：加/改工具后由门禁校验新鲜度）
 - [core-skills.md](./plugins/core-skills.md) — 技能系统：分层、SKILL.md、热重载、系统提示词技能
 - [core-subagent.md](./plugins/core-subagent.md) — Subagent 插件：异步委派、隔离上下文、完成回报
 - [qq-gating.md](./plugins/qq-gating.md) — QQ 实例门控：五层管道、多实例、消息收发与渲染

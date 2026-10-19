@@ -137,6 +137,20 @@ y: 2190
 - 需要范围时写函数/段落名：`SettingsView.vue` 的 `categories` computed、`proxy.rs` 的 `broadcast` 分支
 - 例外：**行号本身是契约**的场合（如源码契约测试断言的 CSS 片段）可保留，但须写明「行号仅供定位，以符号名为准」
 
+## 自动生成的文件（不要手改）
+
+少数文档的内容是**从代码生成的**，手改会在下一次门禁被覆盖或判红：
+
+| 文件 | 生成源 | 刷新 |
+| --- | --- | --- |
+| `plugins/tool-catalog.md` | `echo-agent::tool::builtin::register_all` 的真实注册表 | `UPDATE_DOCS=1 cargo test -p echo-agent-core --test doc_catalog` |
+
+约定：
+
+- 文件首行带 `<!-- 自动生成，请勿手改：<源> -->` 注释——看到它就改代码后重跑生成；
+- 门禁在 `source/core/tests/doc_catalog.rs`：**工具目录新鲜度** + **内置插件 id 不许漏**（`BUILTIN_PLUGIN_IDS` 每项必须出现在 `core-plugins.md`）+ **相对链接可达**（`document/` 全树死链检查）；
+- 生成只覆盖整份文件：想写人工说明就写进相邻的散文文档（如 `core-tools.md`），不要在生成文件里加章节。
+
 ## 自检与预览
 
 改完文档先跑**图校验**，再看画布——校验能抓出断链、环、孤立框与缺参数区，画布只告诉你「不好看」：
