@@ -1,16 +1,29 @@
-//! Subagent plugin: delegate an isolated subtask to a child agent.
+//! # echo-plugin-subagent — Subagent 委派插件（解耦计划 Phase 3 ⑥）
 //!
-//! 主 agent 经 `spawn_subagent` 编排工具拉起子 agent：子任务以**隔离上下文**
-//! 运行（自己的系统提示词与工具循环，不回写 trunk），完成后经
-//! [`crate::input_marker`] 的结构化 hook（`<subagent_event>`）以全新入站分支
-//! 通知主 agent——hook 注入接口由 echo-loop 的 `SubagentToolHooks` 定义
-//! （见 `source/loop/echo-loop/src/runner.rs`），QQ 消息等其他插件复用同一
-//! hook 机制（入站 = 结构化 hook → 新 turn）。
+//! `spawn_subagent` 编排工具 + 隔离上下文的子 agent 循环，原
+//! `echo-agent::packages::subagent` 的独立 crate 化。
+//!
+//! 主 agent 经 [`SpawnSubagentTool`] 拉起子 agent：子任务以**隔离上下文**运行
+//! （自己的系统提示词与工具循环，不回写 trunk），完成后经结构化 hook
+//! （`<subagent_event>`，见 [`wrap_subagent_event`]）以全新入站分支通知主
+//! agent——hook 注入接口由 echo-loop 的 `SubagentToolHooks` 定义，QQ 消息等
+//! 其他插件复用同一机制（入站 = 结构化 hook → 新 turn）。
 //!
 //! 模块构成：
 //! - [`SubagentStore`]：运行中子任务注册表（取消句柄 + 任务快照，TTL 清扫）
 //! - [`SpawnSubagentTool`]：模型可见工具（异步拉起，立即返回 id）
-//! - `crate::agent::Agent::dispatch_subagent_hook`：完成 hook 的注入入口
+//! - [`run_subagent_turn`]：子 agent 的一次性 turn（独立于主循环，避免递归
+//!   hook 注入）
+//!
+//! ## 依赖纪律与宿主接缝
+//!
+//! 只依赖定义层（`echo-defs`）与工具机制（`echo-tool`）——**不认识 agent
+//! 框架，也不认识联邦实现**。跨模块需求一律经 trait 注入：
+//!
+//! - [`RemoteDelegationSink`]：远程委派的聚合登记（宿主把联邦聚合器接上；
+//!   不注入 = 远程委派照常发出，只是不进父 turn 的聚合摘要）；
+//! - `spawn` 执行闭包：由宿主注入（携带 provider / skills / 事件发射），
+//!   因此本 crate 不持有 `Agent`，也不产生循环引用。
 //!
 //! 设计文档见 `document/plugins/core-subagent.md`。
 
@@ -19,11 +32,17 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use crate::llm::ChatMessage;
+use echo_defs::llm::{
+    LlmProvider, MAX_TRUNCATION_CONTINUES, TRUNCATION_CONTINUE_PROMPT, TURN_CANCELLED,
+};
+use echo_defs::message::{ChatMessage, ChatRequest, ChatRole};
+use echo_defs::remote_tool::{remote_tool_name, remote_tool_prefix};
+use echo_defs::token::truncate;
+use echo_tool::{Tool, ToolError, ToolRegistry};
 
 /// 单次委派结果的可见回灌上限（字符）：子任务结论超过即截断并标注，
 /// 防单个子任务反过来烧掉主上下文。
-pub(crate) const MAX_SUBAGENT_RESULT_CHARS: usize = 8 * 1024;
+pub const MAX_SUBAGENT_RESULT_CHARS: usize = 8 * 1024;
 
 /// 已完成任务条目在注册表中的保留时间（到点由清扫任务移除）。
 const COMPLETED_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
@@ -31,16 +50,16 @@ const COMPLETED_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 /// 子 agent 允许的最大委派深度：子 agent 的 spawn 能力被剥离（深度 1），
 /// 不存在递归委派；常量保留给未来显式深度放宽。
 #[allow(dead_code)]
-pub(crate) const MAX_DELEGATION_DEPTH: u32 = 1;
+pub const MAX_DELEGATION_DEPTH: u32 = 1;
 
 /// 子任务默认执行超时（秒）。
 const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 600;
 
 /// `spawn_subagent` 编排工具名（唯一事实来源）。
-pub(crate) const SPAWN_SUBAGENT_TOOL: &str = "spawn_subagent";
+pub const SPAWN_SUBAGENT_TOOL: &str = "spawn_subagent";
 
 /// `<subagent_event>` hook 包装（与 `<qq_message_hook>`/`<timer_event>` 同族）。
-pub(crate) fn wrap_subagent_event(payload: &Value) -> String {
+pub fn wrap_subagent_event(payload: &Value) -> String {
     format!(
         "<subagent_event>\n{}\n</subagent_event>",
         serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string())
@@ -174,13 +193,43 @@ impl SubagentStore {
 ///
 /// 异步语义：调用立即返回子任务 id；子任务在后台以隔离上下文执行，完成时
 /// 经 `<subagent_event>` hook 作为**新的入站分支**通知主 agent（见
-/// `crate::agent::Agent::dispatch_subagent_hook`）——主 turn 不等待，也不会因
+/// 宿主 `Agent::dispatch_subagent_hook`）——主 turn 不等待，也不会因
 /// 子任务的中间过程消耗上下文。
 pub struct SpawnSubagentTool {
     store: Arc<SubagentStore>,
     /// 拉起子任务的执行闭包（由 Agent 注入，携带 provider/skills/事件发射等
     /// 依赖；保持 `Fn` 而非直接持有 `Arc<Agent>`，避免循环引用）。
     spawn: Arc<dyn Fn(SpawnRequest) + Send + Sync>,
+    /// 远程委派聚合登记（宿主注入；`None` = 无人消费，见
+    /// [`RemoteDelegationSink`]）。
+    remote_sink: Option<Arc<dyn RemoteDelegationSink>>,
+}
+
+/// 远程委派的聚合登记接缝（宿主注入）。
+///
+/// 远程子任务的全部终态到达后，宿主需把「按父 turn 分组的聚合摘要」投递回
+/// 父会话——那份状态属联邦子系统（进程级聚合表），**不属于本插件**：本插件
+/// 只负责在受理委派时把「哪个 call 属于哪个 turn / peer」告知宿主。
+///
+/// 实现方（组合根）通常转调 `federation::aggregator::register_remote_subagent`。
+/// 不注入时：远程委派照常发出、`<subagent_event>` 逐个回报，只是没有分组
+/// 聚合摘要——这是**降级而非错误**（单节点部署根本不需要聚合）。
+pub trait RemoteDelegationSink: Send + Sync {
+    /// 登记一次远程委派。
+    ///
+    /// - `session_id`：父会话；
+    /// - `parent_branch_id`：父 turn 分支（聚合分组的键）；
+    /// - `call_id`：子任务 id；
+    /// - `peer`：目标节点名；
+    /// - `task`：任务摘要（聚合摘要里展示给模型看的短句）。
+    fn register_remote_delegation(
+        &self,
+        session_id: &str,
+        parent_branch_id: &str,
+        call_id: &str,
+        peer: &str,
+        task: &str,
+    );
 }
 
 /// 一次委派的全部参数（工具参数解析后交给执行闭包）。
@@ -203,7 +252,7 @@ pub struct SpawnRequest {
 }
 
 #[async_trait::async_trait]
-impl crate::tool::Tool for SpawnSubagentTool {
+impl Tool for SpawnSubagentTool {
     fn name(&self) -> &str {
         SPAWN_SUBAGENT_TOOL
     }
@@ -218,7 +267,7 @@ impl crate::tool::Tool for SpawnSubagentTool {
 
     /// 注册表兜底路径（无 turn 上下文：无父取消传播、归属分支为 "subagent"）。
     /// 主路径在 agent 循环内经 [`Self::spawn`] 携带 turn cancel 调用。
-    async fn execute(&self, arguments: Value) -> Result<String, crate::tool::ToolError> {
+    async fn execute(&self, arguments: Value) -> Result<String, ToolError> {
         // 会话 id 从参数拿不到（模型不可见）——注册表路径只用于面板/调试
         // 直接调用，子任务完成 hook 回灌"background"会话。
         self.spawn(
@@ -227,7 +276,7 @@ impl crate::tool::Tool for SpawnSubagentTool {
             tokio_util::sync::CancellationToken::new(),
             "subagent",
         )
-        .map_err(crate::tool::ToolError::InvalidArguments)
+        .map_err(ToolError::InvalidArguments)
     }
 }
 
@@ -259,8 +308,19 @@ impl SpawnSubagentTool {
         })
     }
 
+    /// 构造工具（无远程聚合 sink：远程委派不参与父 turn 分组）。
     pub fn new(store: Arc<SubagentStore>, spawn: Arc<dyn Fn(SpawnRequest) + Send + Sync>) -> Self {
-        Self { store, spawn }
+        Self {
+            store,
+            spawn,
+            remote_sink: None,
+        }
+    }
+
+    /// 注入远程委派聚合 sink（组合根装配期调用一次）。
+    pub fn with_remote_sink(mut self, sink: Arc<dyn RemoteDelegationSink>) -> Self {
+        self.remote_sink = Some(sink);
+        self
     }
 
     /// 解析并校验参数；`session_id`/`parent_cancel`/`parent_branch_id` 由
@@ -320,16 +380,10 @@ impl SpawnSubagentTool {
             node: node.clone(),
             profile: profile.clone(),
         });
-        // P3-3 聚合登记：远程委派进父 turn 分组（全部终态后组合根
-        // 产出聚合摘要投递父会话）。
-        if let Some(ref peer) = node {
-            crate::federation::aggregator::register_remote_subagent(
-                session_id,
-                parent_branch_id,
-                &task_id,
-                peer,
-                &task,
-            );
+        // P3-3 聚合登记：远程委派进父 turn 分组（全部终态后宿主产出聚合
+        // 摘要投递父会话）。经 sink 交给宿主——本插件不认识联邦实现。
+        if let (Some(ref peer), Some(sink)) = (&node, &self.remote_sink) {
+            sink.register_remote_delegation(session_id, parent_branch_id, &task_id, peer, &task);
         }
         let target = node
             .as_deref()
@@ -341,7 +395,7 @@ impl SpawnSubagentTool {
             .unwrap_or_default();
         Ok(format!(
             "子任务已受理（id: {task_id}）{target}{model_note}，正在后台以隔离上下文执行。完成后会以 <subagent_event> 事件回报结论；你可以继续当前回复或处理其他事项。任务摘要：{}",
-            crate::llm::truncate(&task, 120),
+            truncate(&task, 120),
         ))
     }
 }
@@ -356,10 +410,10 @@ impl SpawnSubagentTool {
 /// - 不发 AgentThinking/LlmRequest 等会话级事件（子任务的观测走
 ///   `SubagentStarted/SubagentCompleted`），只记录推理回调给主分支。
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_subagent_turn(
-    provider: Arc<dyn crate::llm::LlmProvider>,
+pub async fn run_subagent_turn(
+    provider: Arc<dyn LlmProvider>,
     tools: Vec<echo_defs::tool::ToolDefinition>,
-    registry: Arc<crate::tool::ToolRegistry>,
+    registry: Arc<ToolRegistry>,
     base_prompt: String,
     task: String,
     cancel: tokio_util::sync::CancellationToken,
@@ -381,10 +435,10 @@ pub(crate) async fn run_subagent_turn(
     let mut truncation_continues = 0usize;
     for _ in 0..max_iterations.max(1) {
         if cancel.is_cancelled() {
-            return Err(anyhow::anyhow!(crate::agent::TURN_CANCELLED));
+            return Err(anyhow::anyhow!(TURN_CANCELLED));
         }
         let model = provider.default_model().to_string();
-        let request = crate::llm::ChatRequest {
+        let request = ChatRequest {
             model,
             messages: messages.clone(),
             tools: Some(tools.clone()),
@@ -393,14 +447,14 @@ pub(crate) async fn run_subagent_turn(
         };
         let response = tokio::select! {
             response = provider.chat(&request) => response?,
-            _ = cancel.cancelled() => return Err(anyhow::anyhow!(crate::agent::TURN_CANCELLED)),
+            _ = cancel.cancelled() => return Err(anyhow::anyhow!(TURN_CANCELLED)),
         };
         if response.truncated() {
             truncation_continues += 1;
-            if truncation_continues > crate::agent::MAX_TRUNCATION_CONTINUES {
+            if truncation_continues > MAX_TRUNCATION_CONTINUES {
                 return Err(anyhow::anyhow!(
                     "subagent output was truncated at the token limit {} times; giving up",
-                    crate::agent::MAX_TRUNCATION_CONTINUES
+                    MAX_TRUNCATION_CONTINUES
                 ));
             }
             if let Some(text) = &response.content {
@@ -411,14 +465,14 @@ pub(crate) async fn run_subagent_turn(
                     ));
                 }
             }
-            messages.push(ChatMessage::user(crate::agent::TRUNCATION_CONTINUE_PROMPT));
+            messages.push(ChatMessage::user(TRUNCATION_CONTINUE_PROMPT));
             continue;
         }
         if response.tool_calls.is_empty() {
             return Ok(response.content.unwrap_or_default());
         }
         messages.push(ChatMessage {
-            role: crate::llm::ChatRole::Assistant,
+            role: ChatRole::Assistant,
             content: response.content.clone().unwrap_or_default(),
             reasoning_content: response.reasoning_content.clone(),
             tool_calls: Some(response.tool_calls.clone()),
@@ -427,7 +481,7 @@ pub(crate) async fn run_subagent_turn(
         });
         for call in &response.tool_calls {
             if cancel.is_cancelled() {
-                return Err(anyhow::anyhow!(crate::agent::TURN_CANCELLED));
+                return Err(anyhow::anyhow!(TURN_CANCELLED));
             }
             let args: Value =
                 serde_json::from_str(&call.arguments).unwrap_or(Value::Object(Default::default()));
@@ -436,11 +490,11 @@ pub(crate) async fn run_subagent_turn(
             // 语境名称（2026-10 起分隔符为双下划线，与注册端同源）。
             let tool_name = match remote_peer {
                 Some(peer) => {
-                    let prefix = crate::federation::remote_tool_prefix(peer);
+                    let prefix = remote_tool_prefix(peer);
                     if call.name.starts_with(&prefix) {
                         call.name.clone()
                     } else {
-                        crate::federation::remote_tool_name(peer, &call.name)
+                        remote_tool_name(peer, &call.name)
                     }
                 }
                 None => call.name.clone(),
@@ -460,7 +514,7 @@ pub(crate) async fn run_subagent_turn(
 }
 
 /// 截断子任务结论（超限标注，主上下文预算保护）。
-pub(crate) fn truncate_result(text: &str) -> String {
+pub fn truncate_result(text: &str) -> String {
     if text.chars().count() <= MAX_SUBAGENT_RESULT_CHARS {
         return text.to_string();
     }
@@ -679,6 +733,110 @@ mod tests {
             .iter()
             .all(|i| i.status == SubagentStatus::Cancelled));
         assert_eq!(store.cancel_all(), 0, "idempotent");
+    }
+
+    /// 一次委派登记的快照：(session, branch, call_id, peer, task)。
+    type RecordedDelegation = (String, String, String, String, String);
+
+    /// 记录远程委派登记的假 sink（替换宿主的联邦聚合器）。
+    #[derive(Default)]
+    struct RecordingSink {
+        calls: std::sync::Mutex<Vec<RecordedDelegation>>,
+    }
+
+    impl RecordingSink {
+        fn calls(&self) -> Vec<RecordedDelegation> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl RemoteDelegationSink for RecordingSink {
+        fn register_remote_delegation(
+            &self,
+            session_id: &str,
+            parent_branch_id: &str,
+            call_id: &str,
+            peer: &str,
+            task: &str,
+        ) {
+            self.calls.lock().unwrap().push((
+                session_id.to_string(),
+                parent_branch_id.to_string(),
+                call_id.to_string(),
+                peer.to_string(),
+                task.to_string(),
+            ));
+        }
+    }
+
+    #[test]
+    fn remote_delegation_goes_through_injected_sink() {
+        let sink = Arc::new(RecordingSink::default());
+        let store = SubagentStore::new();
+        let tool =
+            SpawnSubagentTool::new(store.clone(), Arc::new(|_| {})).with_remote_sink(sink.clone());
+        tool.spawn(
+            &json!({"task": "在 A 上检索日志", "node": "gpu-a"}),
+            "sess-1",
+            tokio_util::sync::CancellationToken::new(),
+            "turn-7",
+        )
+        .unwrap();
+        let calls = sink.calls();
+        assert_eq!(calls.len(), 1);
+        let (session, branch, call_id, peer, task) = &calls[0];
+        // 聚合分组的三个键必须来自本次受理，而不是库里存的默认值
+        assert_eq!(session, "sess-1");
+        assert_eq!(branch, "turn-7");
+        assert_eq!(peer, "gpu-a");
+        assert_eq!(task, "在 A 上检索日志");
+        // call_id 与注册表里的任务 id 一致（终态销账靠它配对）
+        assert_eq!(call_id, &store.snapshot()[0].id);
+    }
+
+    #[test]
+    fn local_delegation_never_touches_the_sink() {
+        let sink = Arc::new(RecordingSink::default());
+        let tool = SpawnSubagentTool::new(SubagentStore::new(), Arc::new(|_| {}))
+            .with_remote_sink(sink.clone());
+        tool.spawn(
+            &json!({"task": "本机任务"}),
+            "sess-1",
+            tokio_util::sync::CancellationToken::new(),
+            "turn-7",
+        )
+        .unwrap();
+        assert!(sink.calls().is_empty(), "本机委派不进远程聚合分组");
+    }
+
+    #[test]
+    fn absent_sink_degrades_instead_of_failing() {
+        // 单节点部署 / 未装配联邦：远程委派照常受理，只是没有聚合摘要。
+        let store = SubagentStore::new();
+        let tool = SpawnSubagentTool::new(store.clone(), Arc::new(|_| {}));
+        let receipt = tool
+            .spawn(
+                &json!({"task": "远程任务", "node": "peer-x"}),
+                "s",
+                tokio_util::sync::CancellationToken::new(),
+                "b",
+            )
+            .expect("absence of a sink must not fail the spawn");
+        assert!(receipt.contains("peer-x"), "{receipt}");
+        assert_eq!(store.snapshot().len(), 1);
+    }
+
+    #[test]
+    fn tool_contract_is_stable() {
+        // 工具名与 schema 是模型契约：改名会让历史会话里的调用失效。
+        let tool = SpawnSubagentTool::new(SubagentStore::new(), Arc::new(|_| {}));
+        assert_eq!(tool.name(), "spawn_subagent");
+        assert_eq!(SPAWN_SUBAGENT_TOOL, "spawn_subagent");
+        let schema = tool.parameters();
+        assert_eq!(schema["required"][0], "task");
+        for key in ["task", "timeout_secs", "node", "profile"] {
+            assert!(schema["properties"].get(key).is_some(), "{key}");
+        }
     }
 
     #[test]

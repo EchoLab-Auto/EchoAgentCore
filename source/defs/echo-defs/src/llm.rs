@@ -36,6 +36,13 @@ pub enum LlmError {
 /// 持一份（已漂移）——统一在此定义，两处引用同一常量。
 pub const MAX_TRUNCATION_CONTINUES: usize = 4;
 
+/// 「本轮被调用方取消」的统一错误文案。
+///
+/// 取消不是故障：调用方（主 turn / 子 agent / 会话排空）主动中止时，错误
+/// 消息一律用这一句，使上层能按字符串识别而不必依赖错误变体——内置循环、
+/// echo-loop 与 subagent 曾各写一份字面量，收敛到此处。
+pub const TURN_CANCELLED: &str = "agent turn cancelled by requester";
+
 /// 截断续跑时喂给模型的提示（user 角色，区别于真实用户输入）。
 pub const TRUNCATION_CONTINUE_PROMPT: &str = "[system notice] Your previous output was cut off by the max token limit before the turn was complete. Continue exactly from where you stopped. If you were composing a tool call, discard the partial call and re-issue it in full.";
 

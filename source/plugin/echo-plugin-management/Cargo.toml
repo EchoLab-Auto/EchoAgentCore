@@ -1,0 +1,19 @@
+[package]
+name = "echo-plugin-management"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "管理面 WebSocket 插件（解耦计划 Phase 3 ⑧）：Panel 连接中继、端口合并规划与 token 鉴权"
+
+[dependencies]
+echo-protocol = { workspace = true }
+echo-federation = { workspace = true }
+anyhow = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+serde_json = { workspace = true }

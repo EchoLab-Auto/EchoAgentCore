@@ -1,0 +1,13 @@
+[package]
+name = "echo-plugin-loop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "循环模式插件（解耦计划 Phase 3 ⑦）：loop.single / loop.parallel 的策略声明与服务贡献"
+
+[dependencies]
+echo-defs = { workspace = true }
+echo-plugin = { workspace = true }
+echo-plugin-api = { workspace = true }

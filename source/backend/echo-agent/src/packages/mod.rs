@@ -1,46 +1,42 @@
-//! 「包」（插件）实现与工具子系统机制的聚合目录（2026-09-28 重组，
-//! 2026-09-29 收编 `tool/`）。
+//! 仍**内联在 agent 框架内**的「包」（插件）实现聚合目录。
 //!
 //! **第一层分类 = 包归属**：每个子目录对应一个插件 id
-//! （`crate::plugins::*_PLUGIN_ID`），实现不再散落在 `tool/builtin`、
+//! （`crate::plugins::*_PLUGIN_ID`），实现不散落在 `tool/builtin`、
 //! `skill/`、`agent/qq_commands` 等多处。
 //!
 //! | 目录 | 插件/包 id | 内容 |
 //! |---|---|---|
 //! | [`tools_builtin`] | `echo-agent.tools.builtin` | 内置工具（计算/搜索/清单/编码/Shell/插件实例管理） |
-//! | [`skills_dir`] | `echo-agent.skills.dir` | `SKILL.md` 注册表 + 热重载 + Git 来源安装 |
 //! | [`instance_ops`] | `echo-agent.instance.qq` | 插件实例命令域（通用 + legacy 兼容层）+ 入站 hook 桥 |
-//! | [`workspace`] | `echo-agent.workspace` | 工作区会话存储/工具 + 命令域 |
-//! | [`subagent`] | `echo-agent.subagent` | 异步子任务委派 |
-//! | [`federation`] | `echo-agent.federation.<peer>` | 远程代理工具 + Invoke 调度/裁决（federation Phase 2） |
-//! | [`provider_llm`] | `echo-agent.provider.llm` | provider 工厂（名义挂载，重启生效） |
+//! | [`federation`] | `echo-agent.federation.<peer>` | 远程代理工具 + Invoke 调度/裁决 + 工作区跨机查询适配器 |
 //!
-//! **特例：[`tool`] 不是包**——它是工具子系统的**跨包机制**
-//! （`ToolRegistry` 注册表：注册/可逆注销/逐名与按包启停/schema 缓存），
-//! 被内置工具集、QQ 工具、workspace、subagent 等所有包共用。放在本目录是
-//! 为了让"工具"这一子系统的代码（机制 + 各包实现）只有一处落点，不再有
-//! `src/tool` 与 `src/packages/tools_builtin` 两处同名区域。
+//! **已外迁的包不再在此**（解耦计划 Phase 3，见
+//! `document/design/decoupling-plan.md`）：
+//!
+//! | 插件 id | 现所在 crate |
+//! |---|---|
+//! | `echo-agent.provider.llm` | `echo-plugin-provider-llm` |
+//! | `echo-agent.skills.dir` | `echo-plugin-skills` |
+//! | `echo-agent.subagent` | `echo-plugin-subagent` |
+//! | `echo-agent.workspace` | `echo-plugin-workspace`（命令域接线留在 `agent/workspace_commands.rs`） |
+//! | `echo-agent.management.panel` | `echo-plugin-management` |
+//! | `echo-agent.loop.{single,parallel}` | `echo-plugin-loop` |
+//!
+//! 工具子系统的**跨包机制**（`ToolRegistry`）亦已外迁到 `echo-tool`；
+//! 本目录不再有 `tool/` 子目录。
 //!
 //! 本模块**物理私有**（`mod packages`）：对外公开路径保持重组前原样
-//! （`echo_agent::tool::…`、`echo_agent::subagent::…` 等经 `lib.rs` 的兼容
-//! re-export），目录只服务"人看代码"的区分度，不引入第二套公开 API。
-//!
-//! 其余包不在本 crate：`loop.{single,parallel}` 的实现是 echo-loop crate
-//! （本 crate 只做驱动接线，见 `agent/mod.rs` 的 `process_via_echo_loop`）；
-//! `management.panel` 的实现是 echo-protocol（线协议）+ echo-agent-core
-//! （本 crate 只 re-export 协议类型）。
+//! （`echo_agent::tool::…`、`echo_agent::workspace::…` 等经 `lib.rs` 的兼容
+//! re-export 指向上表的新 crate），目录只服务"人看代码"的区分度，
+//! 不引入第二套公开 API。
 //!
 //! 不随包分组的框架基础设施仍留在 `src/` 顶层：`agent/`（循环/命令/边界/
 //! 提示词/压缩）、`session.rs`（事件溯源 trunk）、`timeline.rs`（时间线投影）、
 //! `shell.rs`（Shell 会话子系统，面板命令直用）、`bridge/command/event`
-//! （线协议 re-export）、`plugins.rs`（插件机制）、`config.rs`、
+//! （线协议 re-export）、`plugins.rs`（插件机制）、`llm.rs`（provider 接缝的
+//! 宿主 glue）、`shims_tool.rs`（工具机制的兼容路径）、`config.rs`、
 //! `agent_manager.rs`、`input_marker.rs`（结构化输入标记）。
 
 pub mod federation;
 pub mod instance_ops;
-pub mod provider_llm;
-pub mod skills_dir;
-pub mod subagent;
-pub mod tool;
 pub mod tools_builtin;
-pub mod workspace;

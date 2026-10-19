@@ -25,7 +25,11 @@ pub const MANAGEMENT_PANEL_PLUGIN_ID: &str = "echo-agent.management.panel";
 pub const WORKSPACE_PLUGIN_ID: &str = "echo-agent.workspace";
 /// Subagent 委派插件 id（包 id 同名：`spawn_subagent` 工具 + subagent 技能随包门控）。
 pub const SUBAGENT_PLUGIN_ID: &str = "echo-agent.subagent";
-/// 循环模式互斥插件（按 persona 二选一，single 为推导兜底，也是默认）：
+/// 循环模式互斥插件（按 persona 二选一，single 为推导兜底，也是默认）。
+///
+/// 声明（id / 名称 / 描述 / manifest）已外迁到 [`echo_plugin_loop`]
+/// （解耦计划 Phase 3 ⑦）——这里是**兼容别名**，配置与门控读的是同一批
+/// 字面量，不另存一份：
 /// - `loop.single`：单会话循环（默认）——同一会话内 turn 串行排队，
 ///   无会话管理 UI（会话卡/全局分组隐藏）、回执分支不可见（后端不发射
 ///   `ReplyBranch*` 事件，分支照常执行合并）；
@@ -33,8 +37,9 @@ pub const SUBAGENT_PLUGIN_ID: &str = "echo-agent.subagent";
 ///   会话列表/全局会话/可见回执分支全套。
 ///   两者 mount 的是同一个 TurnRunner（驱动本体），真实效果是 per-persona
 ///   白名单推导出的 `LoopMode`（见 `TeamMember::loop_mode`）。
-pub const SINGLE_LOOP_PLUGIN_ID: &str = "echo-agent.loop.single";
-pub const PARALLEL_LOOP_PLUGIN_ID: &str = "echo-agent.loop.parallel";
+pub use echo_plugin_loop::{
+    PARALLEL_PLUGIN_ID as PARALLEL_LOOP_PLUGIN_ID, SINGLE_PLUGIN_ID as SINGLE_LOOP_PLUGIN_ID,
+};
 
 /// 受 persona 名单门控的**框架内置**插件 id。
 ///
@@ -86,23 +91,18 @@ pub fn profile_allows_plugin(profile: &crate::config::TeamMember, plugin_id: &st
         .any(|listed| canonical_plugin_id(listed) == wanted)
 }
 
-/// 实例插件 id 的旧前缀（`echo-agent.adapter.<platform>`）。
+/// 实例插件 id 的旧前缀（词汇归定义层 `echo_defs::plugin_id`；
+/// 此别名保留既有路径）。
+pub use echo_defs::plugin_id::LEGACY_INSTANCE_PLUGIN_PREFIX;
+
+/// 实例插件 id 的现役前缀（别名，见 [`LEGACY_INSTANCE_PLUGIN_PREFIX`]）。
+pub use echo_defs::plugin_id::INSTANCE_PLUGIN_PREFIX;
+
+/// 把旧实例插件 id 归一为现役形态；其余 id 原样返回。
 ///
-/// 2026-10 去适配器化把实例插件 id 改成 `echo-agent.instance.<platform>`，
-/// 但用户配置的 `enabled_plugins`、SKILL.md 的 `package:` 里仍是旧 id。
-/// 框架不认识平台名，因此这里只做**前缀替换**，不枚举任何平台。
-pub const LEGACY_INSTANCE_PLUGIN_PREFIX: &str = "echo-agent.adapter.";
-
-/// 实例插件 id 的新前缀（与组合根 `instance_manifests::PLUGIN_ID_PREFIX` 同值）。
-pub const INSTANCE_PLUGIN_PREFIX: &str = "echo-agent.instance.";
-
-/// 把旧实例插件 id 归一为新形态；其余 id 原样返回。
-pub fn canonical_plugin_id(id: &str) -> String {
-    match id.strip_prefix(LEGACY_INSTANCE_PLUGIN_PREFIX) {
-        Some(platform) => format!("{INSTANCE_PLUGIN_PREFIX}{platform}"),
-        None => id.to_string(),
-    }
-}
+/// 实现见 `echo_defs::plugin_id::canonical_plugin_id`——技能加载器与
+/// 组合根都走同一口径，不各自维护一份映射。
+pub use echo_defs::plugin_id::canonical_plugin_id;
 
 /// Tool sink adaptor: wraps the agent ToolRegistry behind the plugin seam.
 pub struct ToolSink {

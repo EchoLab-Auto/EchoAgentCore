@@ -1,0 +1,19 @@
+[package]
+name = "echo-plugin-workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "工作区会话插件（解耦计划 Phase 3 ⑤）：会话文档 + workspace 工具 + 只读 git/文件采集"
+
+[dependencies]
+echo-defs = { workspace = true }
+echo-tool = { workspace = true }
+echo-protocol = { workspace = true }
+echo-session = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

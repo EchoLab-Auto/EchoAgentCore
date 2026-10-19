@@ -1,0 +1,19 @@
+[package]
+name = "echo-tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "工具子系统机制（解耦计划 Phase 3 前置）：可逆注册的工具表 + 定义缓存 + 出口脱敏"
+
+[dependencies]
+echo-defs = { workspace = true }
+echo-context = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+echo-sanitize = { workspace = true }

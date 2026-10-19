@@ -16,6 +16,8 @@
 //! | [`skill`] | the skill seam: `Skill`, `SkillMetadata`, `SkillProvider` trait |
 //! | [`chat`] | chat vocabulary: platform-agnostic message/target/channel types |
 //! | [`instance`] | the instance seam: `PluginInstance` trait, `InstanceInfo`/`InstanceError`, `InstanceManagement` |
+//! | [`plugin_id`] | plugin-id vocabulary: instance namespace prefixes + `canonical_plugin_id` |
+//! | [`remote_tool`] | remote tool naming: `<peer>__<tool>` construction + prefix recovery |
 //! | [`mode`] | shared policy enums (`ThinkingMode`, `ReasoningEffort`, `LoopMode`) |
 //! | [`token`] | pure token-estimation/truncation helpers |
 //! | [`media`] | multimodal payload hygiene: embedded base64 → placeholder text |
@@ -35,7 +37,9 @@ pub mod media_store;
 pub mod message;
 pub mod mode;
 pub mod node;
+pub mod plugin_id;
 pub mod plugin_instance;
+pub mod remote_tool;
 pub mod sanitize;
 pub mod session;
 pub mod skill;

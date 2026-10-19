@@ -1,0 +1,17 @@
+[package]
+name = "echo-plugin-skills"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "技能目录插件（解耦计划 Phase 3 ③）：SKILL.md 发现/热重载 + Git 来源安装"
+
+[dependencies]
+echo-defs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+walkdir = { workspace = true }

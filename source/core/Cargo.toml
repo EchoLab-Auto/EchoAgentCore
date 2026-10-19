@@ -23,6 +23,8 @@ echo-agent.workspace = true
 echo-plugin = { path = "../plugin/echo-plugin" }
 echo-plugin-host = { workspace = true }
 echo-plugin-loader = { workspace = true }
+echo-plugin-loop = { workspace = true }
+echo-plugin-management = { workspace = true }
 echo-federation = { path = "../federation/echo-federation" }
 getrandom = "0.2"
 tokio.workspace = true

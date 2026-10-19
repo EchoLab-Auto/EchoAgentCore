@@ -73,12 +73,10 @@ fn heal_sources(skills_dir: &Path, sources: &mut SkillSources) {
         .map(|(key, _)| key.clone())
         .collect();
     for key in legacy {
-        let skill_name = crate::packages::skills_dir::loader::load_skill(
-            &skills_dir.join(&key).join("SKILL.md"),
-        )
-        .ok()
-        .map(|skill| skill.metadata.name.trim().to_string())
-        .filter(|name| !name.is_empty());
+        let skill_name = crate::loader::load_skill(&skills_dir.join(&key).join("SKILL.md"))
+            .ok()
+            .map(|skill| skill.metadata.name.trim().to_string())
+            .filter(|name| !name.is_empty());
         match skill_name {
             Some(name) if name != key => {
                 if let Some(mut src) = sources.remove(&key) {
@@ -299,7 +297,7 @@ pub fn install(
     // 按 `skill.metadata.name` 反查来源，键不一致则「更新 / 移除来源」在
     // Panel 里整体不可见（2026-10-18 实测：目录 skill-echo-prodoc /
     // 技能 prodoc-format）。读不到 frontmatter 时回退目录名。
-    let skill_name = crate::packages::skills_dir::loader::load_skill(&target.join("SKILL.md"))
+    let skill_name = crate::loader::load_skill(&target.join("SKILL.md"))
         .ok()
         .map(|skill| skill.metadata.name.trim().to_string())
         .filter(|n| !n.is_empty())

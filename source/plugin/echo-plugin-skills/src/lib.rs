@@ -1,9 +1,19 @@
-//! Skill system: SKILL.md-driven capabilities with progressive disclosure.
+//! # echo-plugin-skills — 技能目录插件（解耦计划 Phase 3 ③）
 //!
-//! The `Skill`/`SkillMetadata` vocabulary and the `SkillProvider` seam live
-//! in [`echo_defs`](echo_defs); this module re-exports them (keeping the
-//! `echo_agent::skill::…` paths) and owns the concrete [`SkillRegistry`]
-//! (file discovery + hot-reload state).
+//! SKILL.md 驱动的能力发现与来源管理，原 `echo-agent::packages::skills_dir`
+//! 的独立 crate 化：
+//!
+//! - [`SkillRegistry`]：目录发现（递归 `SKILL.md`）+ 多目录分层合并 +
+//!   热重载状态；
+//! - [`loader`]：SKILL.md frontmatter 解析（不引 YAML crate）；
+//! - [`install`]：外部 Git 来源技能的安装 / 更新 / 移除与 `.sources.json`
+//!   来源记录。
+//!
+//! `Skill` / `SkillMetadata` 词汇与 `SkillProvider` 接缝仍在定义层
+//! [`echo_defs::skill`](echo_defs)；插件 id 归一走 [`echo_defs::plugin_id`]。
+//!
+//! **依赖纪律**：只依赖定义层与 walkdir/serde/thiserror——不依赖
+//! `echo-agent`；宿主经 `echo_agent::skill::…` 兼容路径引用本 crate。
 
 pub use echo_defs::skill::{Skill, SkillMetadata};
 

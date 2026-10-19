@@ -20,8 +20,11 @@
 
 pub mod bridge;
 pub mod command;
+pub mod entry_identity;
 pub mod event;
 pub mod mode;
+
+pub use entry_identity::EntryTracker;
 
 pub use bridge::{
     create_bridge, deserialize_message, serialize_command, serialize_event,

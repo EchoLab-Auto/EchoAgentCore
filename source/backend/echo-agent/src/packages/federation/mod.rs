@@ -13,11 +13,13 @@
 pub mod aggregator;
 pub mod remote_tool;
 pub mod router;
+pub mod workspace_query;
 
 pub use remote_tool::{
     proxy_schema, remote_tool_name, remote_tool_prefix, sanitize_peer_component, RemoteTool,
 };
 pub use router::{remote_tool_candidates, ExecutorPolicy, InvokeRouter, PendingInvoke};
+pub use workspace_query::{workspace_query, FederationWorkspaceQuery, WorkspaceQueryHandle};
 
 // ── Phase 3：远程 subagent 对端观测出口 ──
 //

@@ -5,10 +5,9 @@
 //! 工具，`execute()` 内发 `FedFrame::Invoke` 并等终态；模型显式选择目标
 //! 节点，同名本机工具不受影响（RFC §4.1「不做隐式路由」）。
 //!
-//! 命名规范（2026-10 修复）：注册名必须满足 LLM function name 约束
-//! `^[a-zA-Z0-9_-]{1,64}$`（OpenAI/Anthropic 系 provider 均校验）——
-//! 此前以冒号分隔（`peer:tool`），严格 provider 会直接 400 拒绝整个
-//! 请求；现改为双下划线分隔，peer 名中的非法字符统一替换为 `_`。
+//! 命名规范见 [`echo_defs::remote_tool`]（跨边界契约：注册端、模型侧、
+//! 远程子代理三方必须逐字节一致，故词汇在定义层）。本模块只 re-export，
+//! 不另存一份实现。
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,31 +20,7 @@ use echo_federation::{FedFrame, Federation};
 use crate::federation::router::InvokeRouter;
 use crate::tool::{Tool, ToolError};
 
-/// 远程工具注册名的 peer 组件清洗：LLM function name 仅允许
-/// `[a-zA-Z0-9_-]`，其余字符（含此前用作分隔的冒号）统一替换为 `_`。
-pub fn sanitize_peer_component(peer: &str) -> String {
-    peer.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-/// 远程工具对 LLM 暴露的注册名：`<peer>__<tool>`（双下划线，与 MCP
-/// 生态的 `server__tool` 命名惯例一致；见模块头「命名规范」）。
-pub fn remote_tool_name(peer: &str, tool: &str) -> String {
-    format!("{}__{}", sanitize_peer_component(peer), tool)
-}
-
-/// 远程工具注册名前缀（远程子代理工具视图的过滤/剥前缀用；与
-/// [`remote_tool_name`] 同源，保证还原端一致）。
-pub fn remote_tool_prefix(peer: &str) -> String {
-    format!("{}__", sanitize_peer_component(peer))
-}
+pub use echo_defs::remote_tool::{remote_tool_name, remote_tool_prefix, sanitize_peer_component};
 
 /// 一个远程工具代理（大脑侧注册名为 `<peer_name>__<tool>`）。
 pub struct RemoteTool {

@@ -4,6 +4,7 @@ members = [
     "source/defs/echo-defs",
     "source/context/echo-context",
     "source/session/echo-session",
+    "source/tool/echo-tool",
     "source/loop/echo-loop",
     "source/llm/echo-llm-openai",
     "source/llm/echo-llm-anthropic",
@@ -21,6 +22,12 @@ members = [
     "source/plugin/echo-plugin-sdk",
     "source/plugin/echo-plugin-example",
     "source/plugin/echo-plugin-loader",
+    "source/plugin/echo-plugin-provider-llm",
+    "source/plugin/echo-plugin-skills",
+    "source/plugin/echo-plugin-loop",
+    "source/plugin/echo-plugin-subagent",
+    "source/plugin/echo-plugin-workspace",
+    "source/plugin/echo-plugin-management",
 ]
 
 [workspace.package]
@@ -67,6 +74,7 @@ echo-config = { path = "source/backend/echo-config" }
 echo-context = { path = "source/context/echo-context" }
 echo-sanitize = { path = "source/security/echo-sanitize" }
 echo-session = { path = "source/session/echo-session" }
+echo-tool = { path = "source/tool/echo-tool" }
 echo-loop = { path = "source/loop/echo-loop" }
 echo-llm-openai = { path = "source/llm/echo-llm-openai" }
 echo-llm-anthropic = { path = "source/llm/echo-llm-anthropic" }
@@ -80,6 +88,12 @@ echo-plugin-host = { path = "source/plugin/echo-plugin-host" }
 echo-plugin-sdk = { path = "source/plugin/echo-plugin-sdk" }
 echo-plugin-example = { path = "source/plugin/echo-plugin-example" }
 echo-plugin-loader = { path = "source/plugin/echo-plugin-loader" }
+echo-plugin-provider-llm = { path = "source/plugin/echo-plugin-provider-llm" }
+echo-plugin-skills = { path = "source/plugin/echo-plugin-skills" }
+echo-plugin-loop = { path = "source/plugin/echo-plugin-loop" }
+echo-plugin-subagent = { path = "source/plugin/echo-plugin-subagent" }
+echo-plugin-workspace = { path = "source/plugin/echo-plugin-workspace" }
+echo-plugin-management = { path = "source/plugin/echo-plugin-management" }
 echo-federation = { path = "source/federation/echo-federation" }
 
 # async runtime

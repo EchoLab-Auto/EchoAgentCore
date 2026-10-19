@@ -198,6 +198,27 @@ pub fn remote_aggregator() -> Arc<RemoteSubagentAggregator> {
     echo_context::kernel::get_or_init(RemoteSubagentAggregator::new)
 }
 
+/// 聚合器对 subagent 插件的登记接缝实现（解耦计划 Phase 3 ⑥）。
+///
+/// subagent 插件不认识联邦，只经 `RemoteDelegationSink` 上报「哪个 call 属于
+/// 哪个父 turn / peer」；组合根在装配 `SpawnSubagentTool` 时注入本类型，
+/// 把登记转交给进程级聚合器。**行为与内联调用完全一致**——只是把
+/// 「插件 → 联邦实现」的直接依赖换成了 trait。
+pub struct AggregatorDelegationSink;
+
+impl echo_plugin_subagent::RemoteDelegationSink for AggregatorDelegationSink {
+    fn register_remote_delegation(
+        &self,
+        session_id: &str,
+        parent_branch_id: &str,
+        call_id: &str,
+        peer: &str,
+        task: &str,
+    ) {
+        register_remote_subagent(session_id, parent_branch_id, call_id, peer, task);
+    }
+}
+
 /// 登记远程委派（`SpawnSubagentTool::spawn` 受理 `node=Some` 时调用）。
 pub fn register_remote_subagent(
     session_id: &str,

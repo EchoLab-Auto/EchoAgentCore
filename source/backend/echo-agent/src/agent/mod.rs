@@ -14,8 +14,10 @@ mod subagent_runtime;
 mod tool_dispatch;
 mod tool_exec;
 mod turn;
-// `qq_commands` / `workspace_commands` 已按包归位：
-// 见 `crate::packages::instance_ops::commands` / `crate::packages::workspace::commands`。
+mod workspace_commands;
+// 命令域按包拆分：QQ 侧在 `crate::packages::instance_ops::commands`，
+// 工作区侧在本目录 `workspace_commands.rs`（插件实现已外迁到
+// `echo-plugin-workspace`，此处只留 Agent 接线）。
 
 use boundary::PromptBlock;
 
@@ -41,10 +43,11 @@ use crate::session::{Session, TrunkStore};
 use crate::skill::SkillRegistry;
 use crate::tool::ToolRegistry;
 
-pub(crate) const TURN_CANCELLED: &str = "agent turn cancelled by requester";
-/// 截断续跑常量（口径单源 = `echo_defs::llm`，2026-10 巡检：与
-/// echo-loop 双写已漂移过——统一后两处引用同一常量）。
-pub(crate) use echo_defs::llm::{MAX_TRUNCATION_CONTINUES, TRUNCATION_CONTINUE_PROMPT};
+/// 「本轮被调用方取消」的错误文案（口径单源 = `echo_defs::llm`）。
+///
+/// 取消不是故障：主 turn / 子 agent / 会话排空主动中止时一律用这一句，
+/// 上层按字符串识别（`inbound.rs` 的 `is_cancelled_error`）。
+pub(crate) use echo_defs::llm::TURN_CANCELLED;
 /// Graceful-shutdown drain window: how long to wait for in-flight turns to
 /// finish before force-cancelling (self-update interruption guard).
 const SHUTDOWN_DRAIN_SECS: u64 = 120;

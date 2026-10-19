@@ -16,17 +16,18 @@ use tracing_subscriber::EnvFilter;
 
 mod agent_supervisor;
 mod config;
-mod entry_identity;
 mod federation_import;
 mod federation_rt;
 mod instance_deploy;
 mod instance_manifests;
 mod instance_tools;
 mod logging;
-mod management;
 mod node;
 mod plugins_runtime;
 mod port_cmd;
+
+/// 管理面插件（Phase 3 ⑧：已外迁为独立 crate，组合根只负责启动它）。
+use echo_plugin_management as management;
 mod security;
 
 use config::CoreConfig;
@@ -1008,7 +1009,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         config_store_path.with_file_name(format!("echo-workspaces-{id}.json")),
                     )));
                 t.register(std::sync::Arc::new(
-                    echo_agent::workspace::WorkspaceTool::new(workspace_store.clone()),
+                    echo_agent::workspace::WorkspaceTool::new(workspace_store.clone())
+                        // 跨机查询经宿主适配器注入（Phase 3 ⑤：插件不认识联邦；
+                        // 联邦未接线时插件自动降级为「远程不可采集」）。
+                        .with_remote_query(echo_agent::federation::workspace_query()),
                 ));
                 t.set_package("workspace", echo_agent::plugins::WORKSPACE_PLUGIN_ID);
                 // Subagent 委派（subagent 插件）：每 persona 独立注册表；spawn
@@ -1019,7 +1023,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     echo_agent::subagent::SpawnSubagentTool::new(
                         subagent_store.clone(),
                         std::sync::Arc::new(|_| {}),
-                    ),
+                    )
+                    // 远程委派聚合登记经 sink 交给联邦子系统（Phase 3 ⑥：
+                    // 插件不再直接依赖 `federation::aggregator`）。
+                    .with_remote_sink(std::sync::Arc::new(
+                        echo_agent::federation::aggregator::AggregatorDelegationSink,
+                    )),
                 ));
                 t.set_package("spawn_subagent", echo_agent::plugins::SUBAGENT_PLUGIN_ID);
                 // 子进程插件工具（plugins.toml；RemoteTool 已实现 Tool trait）。
@@ -1307,36 +1316,25 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         )?;
 
         // ── 实化 4：循环模式（二选一）──
-        // 驱动本体只有一个：echo-loop TurnRunner（2026-10 单轨化，内置循环
-        // 已删除）；它在人格装配时无条件注入（见下方回填与 agent factory）。
-        // 两个模式插件只表达**策略**（单会话串行 / 并行多会话），由
-        // per-persona 白名单推导的 `LoopMode` 决定（见 `TeamMember::loop_mode`）；
-        // mount/unmount 不再切换驱动。
-        for (id, name, description) in [
-            (
-                echo_agent::plugins::SINGLE_LOOP_PLUGIN_ID,
-                "单会话循环",
-                "单会话（默认）：同一会话的 turn 串行排队，后续输入等待前一轮结束；无会话管理 UI、回执分支不可见",
-            ),
-            (
-                echo_agent::plugins::PARALLEL_LOOP_PLUGIN_ID,
-                "并行多会话循环",
-                "并行多会话：同一会话可并发多个 turn 分支，会话列表/全局会话/可见回执分支全套",
-            ),
-        ] {
-            register(&plugin_host,
-                PluginManifest::builtin(
-                    id,
-                    name,
-                    version,
-                    PluginKind::Loop,
-                    "loop",
-                    description,
-                ),
-                // 纯策略插件：无运行期资源（模式由白名单推导，每次读取）。
-                move |_ctx| Ok(Vec::new()),
-            )?;
+        // 声明已外迁到 `echo-plugin-loop`（Phase 3 ⑦）：驱动本体只有一个
+        // （echo-loop TurnRunner，2026-10 单轨化），两个模式插件只表达**策略**
+        // （per-persona 白名单推导的 `LoopMode`，见 `TeamMember::loop_mode`）；
+        // mount/unmount 不切换驱动、不注册任何运行期资源。
+        //
+        // 协议化：插件族声明 `Service{key:"loop"}` 贡献；真正的 runner 实例
+        // 在本文件更早处（`ctx.register::<Arc<TurnRunner>>("loop", …)`）构造，
+        // 带计量/脱敏装饰，服务键与贡献声明同源。
+        for plugin in echo_plugin_loop::plugins(version) {
+            let id = plugin.manifest().id.clone();
+            plugin_host
+                .register_and_mount(plugin)
+                .map_err(|e| anyhow::anyhow!(e).context(format!("mount plugin {id}")))?;
         }
+        tracing::debug!(
+            service = echo_plugin_loop::service_contribution().key.as_str(),
+            plugins = ?echo_plugin_loop::PLUGIN_IDS,
+            "loop mode plugins mounted (pure policy; service declared)"
+        );
 
         // 任务清单（checklist）已降级为普通内置工具：无插件注册，
         // 与 calculator / bash 等同层，只受工具级白/黑名单门控。
@@ -1405,7 +1403,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     version,
                     PluginKind::PluginInstance,
                     platform.clone(),
-                    &format!("{platform} 平台实例插件（独立进程）"),
+                    format!("{platform} 平台实例插件（独立进程）"),
                 )
                 // 实例插件化收尾（P1.9，2026-10）：实现由独立进程
                 // `echo-instance-qq` 提供，这里只是门控壳。必须显式声明，
@@ -1445,12 +1443,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         }
 
         // ── 实化 4：管理面（management WS 起停）──
+        // 实现已外迁为独立 crate `echo-plugin-management`（Phase 3 ⑧）：它只
+        // 认 `echo-protocol` 的线契约，**不需要 Agent 句柄**（入站命令塞
+        // bridge、事件从 bridge 出），组合根这里只负责起停。
         // 注意自锁语义：禁用管理面 = 关闭 Panel 通道本身，恢复需编辑
         // core.toml 的 disabled_plugins 后重启（文档已注明）。
         {
             let mgmt_addr = cfg.core.management_address.clone();
             let mgmt_token = cfg.core.management_access_token.clone();
-            let mgmt_agent = core_agent.clone();
             let mgmt_bridge = bridge.clone();
             // 合并模式：监听端承接联邦入站（令牌分流）；独立模式：None。
             let mgmt_fed = if merged {
@@ -1469,17 +1469,16 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     "Panel management WS 桥接（合并模式下同时承接联邦入站）",
                 ),
                 move |_ctx| {
-                    let (addr, br, ag) =
-                        (mgmt_addr.clone(), mgmt_bridge.clone(), mgmt_agent.clone());
+                    let (addr, br) = (mgmt_addr.clone(), mgmt_bridge.clone());
                     let token = mgmt_token.clone();
                     let fed_opt = mgmt_fed.clone();
                     let fed_merged = fed_opt.is_some();
                     let server = tokio::spawn(async move {
                         let result = match fed_opt {
                             Some(fed) => {
-                                management::serve_with_federation(&addr, br, ag, token, fed).await
+                                management::serve_with_federation(&addr, br, token, fed).await
                             }
-                            None => management::serve_with_token(&addr, br, ag, token).await,
+                            None => management::serve_with_token(&addr, br, token).await,
                         };
                         if let Err(e) = result {
                             // 管理面监听退出 = Panel 通道失效（合并模式下联邦

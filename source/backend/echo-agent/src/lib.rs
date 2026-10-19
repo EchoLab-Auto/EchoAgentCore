@@ -59,10 +59,12 @@ pub mod command;
 pub mod config;
 pub mod event;
 pub mod input_marker;
+pub mod llm;
 pub mod metrics;
 pub mod plugins;
 pub mod session;
 pub mod shell;
+pub mod shims_tool;
 pub mod timeline;
 
 /// 各「包」（插件）实现的聚合目录（按插件名分目录，2026-09-28 重组；
@@ -71,26 +73,25 @@ mod packages;
 
 // ── 包（插件）实现的兼容 re-export：公开路径保持重组前原样，避免破坏
 //    core 组合根与既有引用（`echo_agent::subagent::…` 等）。──
+pub use echo_plugin_skills as skill;
+pub use echo_plugin_skills::install as skill_install;
+pub use echo_plugin_subagent as subagent;
+pub use echo_plugin_workspace as workspace;
 pub use packages::federation;
 pub use packages::instance_ops::bridge as instance_bridge;
-pub use packages::provider_llm as llm;
-pub use packages::skills_dir as skill;
-pub use packages::skills_dir::install as skill_install;
-pub use packages::subagent;
-pub use packages::tool;
-pub use packages::workspace;
+pub use shims_tool as tool;
 
 pub use agent::{Agent, EventSink};
 pub use agent_manager::AgentManager;
 pub use bridge::{create_bridge, BackendBridge, BackendHandle, FanoutHandle};
 pub use command::BackendCommand;
 pub use config::{AgentConfig, AgentProfile, ReasoningEffort, TeamMember, ThinkingMode};
+pub use echo_plugin_skills::{Skill, SkillRegistry};
 pub use event::{
     ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, SessionInfo, TimelineMessage,
     TimelineSource, TimelineTool,
 };
+pub use llm::LlmProvider;
 pub use packages::instance_ops::bridge::AgentMessageHook;
-pub use packages::provider_llm::LlmProvider;
-pub use packages::skills_dir::{Skill, SkillRegistry};
 pub use session::{Session, SessionKey, TrunkStore};
 pub use tool::{Tool, ToolRegistry};

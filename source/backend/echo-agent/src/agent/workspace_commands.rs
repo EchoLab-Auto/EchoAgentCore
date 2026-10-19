@@ -1,4 +1,14 @@
-//! Workspace-plugin frontend command handling（`echo-agent.workspace`）。
+//! 工作区插件的**宿主接线**（解耦计划 Phase 3 ⑤）。
+//!
+//! 插件实现（`WorkspaceStore` / `WorkspaceTool` / 只读采集）已外迁为独立
+//! crate `echo-plugin-workspace`；本文件只保留「命令 → Agent 状态」的接线：
+//! 命令来自 Panel（Frontend 清关），按 persona 路由（`team_id` 必填，去主
+//! 智能体后无默认人格兜底），状态由每 persona 的 `WorkspaceStore` 持有并
+//! 即时持久化。
+//!
+//! 为什么留在这里而不是插件里：这些是 `impl Agent` 的方法——它们要发事件、
+//! 要读 persona 能力白名单、要动会话通道，全部是宿主的职责。插件提供的是
+//! 数据与工具，宿主负责把它接进循环。
 //!
 //! 与 QQ 命令处理同构：命令来自 Panel（Frontend 清关），按 persona 路由
 //! （`team_id` 必填，去主智能体后无默认人格兜底）。状态由每 persona 的

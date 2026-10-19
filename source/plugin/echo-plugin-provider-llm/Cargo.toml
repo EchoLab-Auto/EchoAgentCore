@@ -1,0 +1,17 @@
+[package]
+name = "echo-plugin-provider-llm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LLM provider 插件（解耦计划 Phase 3 ①）：provider 工厂 + 计量/脱敏装饰器，只依赖定义层"
+
+[dependencies]
+echo-defs = { workspace = true }
+echo-llm-openai = { workspace = true }
+echo-llm-anthropic = { workspace = true }
+echo-llm-ollama = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

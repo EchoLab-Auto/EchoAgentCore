@@ -1,5 +1,10 @@
 //! 条目身份追踪（EntryId）——把「同一逻辑条目的多个事件」绑到同一个 id 上。
 //!
+//! 归属（2026-10，解耦计划 Phase 3 ⑧）：本模块产出的是**线上信封字段**
+//! ——它和 `seq` 一样附加在帧顶层（见本 crate 的 `serialize_event_identified`），
+//! 不是某个消费者的内部实现。因此它属于协议层：管理面插件与任何未来的
+//! 前端通道都共用同一套 id 规则，不各生成一份。
+//!
 //! ## 为什么需要
 //!
 //! Panel 的实时通道与时间线通道是两条独立的路：同一件事既有 `AgentOutput`
@@ -41,7 +46,7 @@
 
 use std::collections::HashMap;
 
-use echo_protocol::BackendEvent;
+use crate::event::BackendEvent;
 
 const KIND_BACKEND: &str = "backend";
 const KIND_REASONING: &str = "reasoning";
@@ -247,7 +252,10 @@ mod tests {
         let b = t.observe(&delta("s", "b", "llo")).unwrap();
         assert_eq!(a, b, "同一段流式输出必须共享条目 id");
         let fin = t.observe(&output("s", "b", "hello")).unwrap();
-        assert_eq!(fin, a, "终值必须落在同一条目上（Panel 据此收敛而非新开一行）");
+        assert_eq!(
+            fin, a,
+            "终值必须落在同一条目上（Panel 据此收敛而非新开一行）"
+        );
         // 终值后封口：下一段正文是新条目
         let next = t.observe(&delta("s", "b", "second")).unwrap();
         assert_ne!(next, a);

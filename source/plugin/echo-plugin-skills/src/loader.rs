@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use crate::skill::{Skill, SkillError, SkillMetadata};
+use crate::{Skill, SkillError, SkillMetadata};
 
 /// Parse a SKILL.md file.
 ///
@@ -75,7 +75,7 @@ fn parse_skill(path: &Path, text: &str) -> Result<Skill, SkillError> {
                 } else {
                     // 旧 id（`echo-agent.adapter.<p>`）归一为新形态，否则
                     // 升级后技能与工具的包标签对不上、面板分成两个包。
-                    Some(crate::plugins::canonical_plugin_id(v))
+                    Some(echo_defs::plugin_id::canonical_plugin_id(v))
                 };
             }
             "always" if in_metadata => always = value.eq_ignore_ascii_case("true"),

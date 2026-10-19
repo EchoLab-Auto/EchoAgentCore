@@ -3,8 +3,10 @@
 //! 从 `agent/mod.rs` 拆出（框架优化）：`Agent` 侧的 subagent 运行时
 //! 装配（attach_subagent_runtime）、spawn 执行体
 //! （spawn_subagent_execution）与 `<subagent_event>` hook 派发
-//! （dispatch_subagent_hook）。与 `packages/subagent` 呼应：那边是
-//! 工具与存储，这边是 Agent 上的接线与执行。纯移动零行为变化。
+//! （dispatch_subagent_hook）。与 `echo-plugin-subagent`（Phase 3 ⑥ 外迁的
+//! 插件 crate）呼应：那边是工具与存储，这边是 Agent 上的接线与执行。
+//!
+//! 远程委派的聚合登记经 `RemoteDelegationSink` 注入（本层不依赖联邦实现）。
 
 use super::*;
 

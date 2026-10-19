@@ -1,20 +1,43 @@
-//! Management WebSocket server for Panel connections.
+//! # echo-plugin-management — 管理面 WebSocket 插件（解耦计划 Phase 3 ⑧）
 //!
-//! Listens on a configurable address, accepts WS connections from Panel
-//! instances, and bridges commands/events between the Panel and the Agent.
+//! Panel 的连接面：监听一个地址、接受 WS 连接，把命令/事件在 Panel 与 Agent
+//! 之间中继。原 `source/core/management.rs` 的独立 crate 化。
+//!
+//! ## 为什么它本来就是「协议驱动」
+//!
+//! 中继两侧都只碰 `echo-protocol` 的类型：入站帧 → `BackendCommand` 塞进
+//! bridge；bridge 的事件 → 带 `seq` + `entry id` 序列化成帧发回。**没有一处
+//! 需要 `Agent` 句柄**——服务化后这一点被显式化：函数签名里不再有
+//! `Arc<Agent>` 参数（此前它已标注 `_agent` 未使用）。
+//!
+//! ## 内容
+//!
+//! - [`EventBroker`]：单一事件接收者 → 每个连接一份订阅通道（防单个 Panel
+//!   标签页饿死其它连接），并按投递顺序分配扇出序号；
+//! - [`serve_with_token`] / [`serve_with_federation`]：独立监听 / 与联邦入站
+//!   共用端口的两种启动形态；
+//! - [`plan_federation_listen`] / [`validate_merged`]：端口合并的规划与
+//!   fail-closed 校验（合并 = 管理通道与联邦入站同址，必须令牌可分）；
+//! - token 鉴权（`classify_token` / 常量时间比较）与心跳保活。
+//!
+//! 依赖纪律：只依赖 `echo-protocol`（线契约）、`echo-federation`（合并端口
+//! 时的对端连接接收）与 tokio/tungstenite——不依赖 `echo-agent`。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::Context;
-use echo_agent::BackendBridge;
-use echo_protocol::{serialize_event_identified, SequencedEvent};
-
-use crate::entry_identity::EntryTracker;
+use echo_protocol::{serialize_event_identified, BackendBridge, EntryTracker, SequencedEvent};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{info, warn};
+
+/// 联邦入站监听的缺省地址（组合根「端口合并」规划与 `port` 命令共用）。
+///
+/// 与组合根 `port_cmd::DEFAULT_FEDERATION_LISTEN` 同值；放在本 crate 是为
+/// 让合并规划（[`plan_federation_listen`]）自带缺省值，不反向依赖组合根。
+pub const DEFAULT_FEDERATION_LISTEN: &str = "0.0.0.0:3133";
 
 /// Broadcasts agent events to every connected Panel.
 ///
@@ -78,10 +101,9 @@ impl EventBroker {
 pub async fn serve_with_token(
     addr: &str,
     bridge: Arc<BackendBridge>,
-    agent: Arc<echo_agent::Agent>,
     access_token: String,
 ) -> anyhow::Result<()> {
-    serve_internal(addr, bridge, agent, access_token, None).await
+    serve_internal(addr, bridge, access_token, None).await
 }
 
 /// 端口合并监听端（`[core].management_address` == `[federation].listen`，
@@ -90,17 +112,15 @@ pub async fn serve_with_token(
 pub async fn serve_with_federation(
     addr: &str,
     bridge: Arc<BackendBridge>,
-    agent: Arc<echo_agent::Agent>,
     access_token: String,
     federation: Arc<echo_federation::Federation>,
 ) -> anyhow::Result<()> {
-    serve_internal(addr, bridge, agent, access_token, Some(federation)).await
+    serve_internal(addr, bridge, access_token, Some(federation)).await
 }
 
 async fn serve_internal(
     addr: &str,
     bridge: Arc<BackendBridge>,
-    agent: Arc<echo_agent::Agent>,
     access_token: String,
     federation: Option<Arc<echo_federation::Federation>>,
 ) -> anyhow::Result<()> {
@@ -124,7 +144,7 @@ async fn serve_internal(
     } else {
         info!("Panel management WS server listening on {addr}");
     }
-    serve_with_listener_and_token(listener, bridge, agent, access_token, federation).await
+    serve_with_listener_and_token(listener, bridge, access_token, federation).await
 }
 
 /// 绑定地址是否为回环（`127.0.0.1`/`localhost`/`::1`）。
@@ -201,12 +221,7 @@ pub fn plan_federation_listen(
         return (false, Some(listen.to_string()), None); // 显式独立
     }
     // 未配置：缺省合并（联邦跟随管理端口）；以下保守场景回退独立监听。
-    let independent = || {
-        (
-            false,
-            Some(crate::port_cmd::DEFAULT_FEDERATION_LISTEN.to_string()),
-        )
-    };
+    let independent = || (false, Some(DEFAULT_FEDERATION_LISTEN.to_string()));
     // ① 管理地址为空/回环：合并会把联邦监听拉进回环（或地址无效），外部
     //    peer 再也连不进来（联邦需要对外可达）。
     if management.is_empty() || is_loopback_addr(management) {
@@ -267,15 +282,13 @@ pub fn validate_merged(
 pub(crate) async fn serve_with_listener(
     listener: TcpListener,
     bridge: Arc<BackendBridge>,
-    agent: Arc<echo_agent::Agent>,
 ) -> anyhow::Result<()> {
-    serve_with_listener_and_token(listener, bridge, agent, String::new(), None).await
+    serve_with_listener_and_token(listener, bridge, String::new(), None).await
 }
 
 async fn serve_with_listener_and_token(
     listener: TcpListener,
     bridge: Arc<BackendBridge>,
-    agent: Arc<echo_agent::Agent>,
     access_token: String,
     federation: Option<Arc<echo_federation::Federation>>,
 ) -> anyhow::Result<()> {
@@ -297,12 +310,11 @@ async fn serve_with_listener_and_token(
 
         let events = events.clone();
         let bridge = bridge.clone();
-        let agent = agent.clone();
         let access_token = access_token.clone();
         let federation = federation.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                handle_connection(stream, events, bridge, agent, &access_token, federation).await
+                handle_connection(stream, events, bridge, &access_token, federation).await
             {
                 warn!(error = %e, "Panel connection error");
             }
@@ -317,7 +329,6 @@ async fn handle_connection(
     stream: tokio::net::TcpStream,
     events: Arc<EventBroker>,
     bridge: Arc<BackendBridge>,
-    _agent: Arc<echo_agent::Agent>,
     access_token: &str,
     federation: Option<Arc<echo_federation::Federation>>,
 ) -> anyhow::Result<()> {
@@ -565,7 +576,7 @@ async fn serve_management_ws(
 /// One parsed inbound frame from the Panel.
 #[derive(Debug)]
 pub(crate) enum InboundFrame {
-    Command(echo_agent::BackendCommand),
+    Command(echo_protocol::BackendCommand),
 }
 
 /// Parse one inbound WS text frame.
@@ -573,8 +584,8 @@ pub(crate) enum InboundFrame {
 /// Returns `None` for non-command frames (events, malformed payloads) —
 /// those are ignored by the management channel.
 pub(crate) fn handle_inbound_text(text: &str) -> Option<InboundFrame> {
-    match echo_agent::bridge::deserialize_message(text) {
-        Some(echo_agent::bridge::WsMessage::Command(cmd)) => Some(InboundFrame::Command(cmd)),
+    match echo_protocol::deserialize_message(text) {
+        Some(echo_protocol::WsMessage::Command(cmd)) => Some(InboundFrame::Command(cmd)),
         _ => None,
     }
 }
@@ -582,7 +593,7 @@ pub(crate) fn handle_inbound_text(text: &str) -> Option<InboundFrame> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use echo_agent::BackendCommand;
+    use echo_protocol::BackendCommand;
 
     #[test]
     fn parses_command_frame() {
@@ -668,50 +679,14 @@ mod tests {
     // ── End-to-end WS server ──────────────────────────────────────────────
 
     /// A provider that is never actually called (management needs an Agent).
-    struct DummyProvider;
-
-    #[async_trait::async_trait]
-    impl echo_agent::LlmProvider for DummyProvider {
-        fn name(&self) -> &str {
-            "dummy"
-        }
-        fn default_model(&self) -> &str {
-            "dummy"
-        }
-        async fn chat(
-            &self,
-            _request: &echo_agent::llm::ChatRequest,
-        ) -> Result<echo_agent::llm::ChatResponse, echo_agent::llm::LlmError> {
-            unimplemented!()
-        }
-        async fn chat_stream(
-            &self,
-            _request: &echo_agent::llm::ChatRequest,
-            _tx: tokio::sync::mpsc::UnboundedSender<echo_agent::llm::ChatChunk>,
-        ) -> Result<echo_agent::llm::ChatResponse, echo_agent::llm::LlmError> {
-            unimplemented!()
-        }
-    }
-
-    fn dummy_agent() -> Arc<echo_agent::Agent> {
-        Arc::new(echo_agent::Agent::new(
-            Arc::new(DummyProvider),
-            echo_agent::AgentConfig::default(),
-            echo_agent::SkillRegistry::new(),
-            echo_agent::ToolRegistry::new(),
-            Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
-        ))
-    }
-
-    async fn start_test_server() -> (Arc<BackendBridge>, echo_agent::BackendHandle, String) {
-        let (bridge, handle) = echo_agent::create_bridge();
+    async fn start_test_server() -> (Arc<BackendBridge>, echo_protocol::BackendHandle, String) {
+        let (bridge, handle) = echo_protocol::create_bridge();
         let bridge = Arc::new(bridge);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
-        let agent = dummy_agent();
         let b = bridge.clone();
         tokio::spawn(async move {
-            let _ = serve_with_listener(listener, b, agent).await;
+            let _ = serve_with_listener(listener, b).await;
         });
         (bridge, handle, addr)
     }
@@ -723,7 +698,7 @@ mod tests {
             .await
             .expect("connect");
 
-        let text = echo_agent::bridge::serialize_command(&BackendCommand::SwitchModel {
+        let text = echo_protocol::serialize_command(&BackendCommand::SwitchModel {
             model: "gpt-x".into(),
         });
         ws.send(tokio_tungstenite::tungstenite::Message::Text(text))
@@ -755,7 +730,7 @@ mod tests {
             .expect("connect");
 
         // Emit an event from the agent side; the server forwards it.
-        handle.emit(echo_agent::BackendEvent::AgentOutput {
+        handle.emit(echo_protocol::BackendEvent::AgentOutput {
             session_id: "s1".into(),
             team_id: None,
             content: "回复".into(),
@@ -767,8 +742,8 @@ mod tests {
         for _ in 0..20 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) = ws.next().await {
-                if let Some(echo_agent::bridge::WsMessage::Event(ev)) =
-                    echo_agent::bridge::deserialize_message(&text)
+                if let Some(echo_protocol::WsMessage::Event(ev)) =
+                    echo_protocol::deserialize_message(&text)
                 {
                     received = Some(ev);
                     break;
@@ -777,7 +752,7 @@ mod tests {
         }
         let ev = received.expect("event forwarded to panel");
         match ev {
-            echo_agent::BackendEvent::AgentOutput { content, .. } => assert_eq!(content, "回复"),
+            echo_protocol::BackendEvent::AgentOutput { content, .. } => assert_eq!(content, "回复"),
             other => panic!("wrong event: {other:?}"),
         }
         let _ = bridge;
@@ -791,15 +766,13 @@ mod tests {
     /// 缺失/不匹配」误诊为协议或网络故障（云机端口映射场景实况）。
     #[tokio::test]
     async fn unauthorized_panel_gets_http_401_not_silent_close() {
-        let (bridge, _handle) = echo_agent::create_bridge();
+        let (bridge, _handle) = echo_protocol::create_bridge();
         let bridge = Arc::new(bridge);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
-        let agent = dummy_agent();
         tokio::spawn(async move {
             let _ =
-                serve_with_listener_and_token(listener, bridge, agent, "secret-token".into(), None)
-                    .await;
+                serve_with_listener_and_token(listener, bridge, "secret-token".into(), None).await;
         });
 
         // 1) 不带令牌：必须收到 HTTP 401（而非 0 字节静默断开）。
@@ -970,7 +943,7 @@ mod tests {
     /// ③ 未知令牌 → 标准 HTTP 401。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn merged_port_routes_by_token_namespace() {
-        let (bridge, handle) = echo_agent::create_bridge();
+        let (bridge, handle) = echo_protocol::create_bridge();
         let bridge = Arc::new(bridge);
 
         // 假“核心”的联邦实例：含一个已知 peer（token = "peer-tok"）。
@@ -997,13 +970,11 @@ mod tests {
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
-        let agent = dummy_agent();
         let fed_for_server = fed.clone();
         tokio::spawn(async move {
             let _ = serve_with_listener_and_token(
                 listener,
                 bridge,
-                agent,
                 "mgmt-tok".into(),
                 Some(fed_for_server),
             )
@@ -1028,9 +999,8 @@ mod tests {
         let (mut mgmt_ws, _) = tokio_tungstenite::connect_async(client_request(Some("mgmt-tok")))
             .await
             .expect("management token must upgrade");
-        let text = echo_agent::bridge::serialize_command(&BackendCommand::SwitchModel {
-            model: "m".into(),
-        });
+        let text =
+            echo_protocol::serialize_command(&BackendCommand::SwitchModel { model: "m".into() });
         mgmt_ws
             .send(tokio_tungstenite::tungstenite::Message::Text(text))
             .await

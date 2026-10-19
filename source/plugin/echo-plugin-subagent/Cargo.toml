@@ -1,0 +1,21 @@
+[package]
+name = "echo-plugin-subagent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Subagent 委派插件（解耦计划 Phase 3 ⑥）：spawn_subagent 工具 + 隔离上下文子 agent 循环"
+
+[dependencies]
+echo-defs = { workspace = true }
+echo-tool = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }

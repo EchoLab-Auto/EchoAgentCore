@@ -1,16 +1,58 @@
-//! Workspace-based session management (the `echo-agent.workspace` plugin).
+//! # echo-plugin-workspace — 工作区会话插件（解耦计划 Phase 3 ⑤）
 //!
-//! A **workspace session** is a named group of working directories that the
-//! user manages from the Panel (create / rename / delete / activate) and can
-//! inspect (per-directory `git status`). The active session's directories are
-//! injected into the system prompt so the model knows where it is expected to
-//! operate; the `workspace` tool exposes list / status / use / create /
-//! delete operations to the model.
+//! 工作区会话 = 用户从 Panel 管理的一组工作目录（创建 / 改名 / 删除 / 激活），
+//! 可逐目录查看 `git status`。激活会话的目录会注入系统提示词，让模型知道
+//! 自己该在哪里干活；`workspace` 工具把 list / status / use / create / delete
+//! 暴露给模型。
 //!
-//! Storage: one JSON document per persona next to the session files
-//! (`echo-workspaces-{id}.json`), written atomically on every mutation.
-//! Git inspection is read-only and always runs through a bounded `git` CLI
-//! invocation (`GIT_TIMEOUT`), never through a shell.
+//! ## 组成
+//!
+//! - [`WorkspaceStore`]：会话文档（每 persona 一个 JSON，原子写）；
+//! - [`WorkspaceTool`]：模型可见工具；
+//! - 只读采集：`collect_dir_git` / `collect_dir_files` / `collect_child_dirs`
+//!   与沙箱解析 `resolve_within_directories` / `resolve_within_browse_roots`；
+//! - 通道标识：`channel_scope_id` / `parse_workspace_channel`（会话 id 走
+//!   `echo_session::SessionKey::local_workspace`，不在这里另定义格式）。
+//!
+//! ## 接缝
+//!
+//! 跨机工作区（`node://<peer>/…` 目录）需要向对端查询，但**本 crate 不认识
+//! 联邦实现**：查询能力经 [`RemoteWorkspaceQuery`] 注入（组合根把联邦的
+//! `remote_querier` 适配成三个语义方法）。未注入时远程目录一律降级为
+//! 「远程不可采集」占位，本机功能完全不受影响——这是**降级而不是错误**，
+//! 单机部署根本不需要该接缝。
+//!
+//! 命令域（`SaveWorkspaceSession` 等 Agent 方法与事件发射）留在宿主
+//! `echo-agent`（`agent/workspace_commands.rs`）——那是接线，不是插件实现。
+
+use std::future::Future;
+use std::pin::Pin;
+
+/// 一次远程查询的 future（结果 = 对端回推的 JSON 载荷）。
+pub type QueryFuture = Pin<Box<dyn Future<Output = Result<serde_json::Value, String>> + Send>>;
+
+/// 跨机工作区查询接缝（宿主注入）。
+///
+/// 工作区目录可以是 `node://<peer>/<path>`——对端机器上的目录。查看其
+/// `git status`、列文件、浏览子目录都需要问到对端，但**那份传输属联邦
+/// 子系统**：本插件只表达「我要问什么」，由宿主实现（组合根把联邦的
+/// `remote_querier` + `QueryKind` 适配到下面三个语义方法）。
+///
+/// 为什么不直接暴露 `QueryKind`：插件不该为了三个查询而依赖整个联邦协议
+/// crate；语义方法也让宿主侧的实现变成一行映射，而不是字符串拼接。
+///
+/// **未注入 = 降级**：远程目录显示「远程不可采集」占位，本机功能不受影响
+/// （单机部署不需要该接缝）。
+pub trait RemoteWorkspaceQuery: Send + Sync {
+    /// 对端某目录的 git 状态（`{git: WorkspaceGitInfo}`）。
+    fn git_status(&self, peer: String, path: String) -> QueryFuture;
+
+    /// 对端某目录的文件清单（`Vec<WorkspaceFileEntry>`）。
+    fn list_files(&self, peer: String, path: String) -> QueryFuture;
+
+    /// 对端目录浏览（`{roots, entries}`；空路径 = 根列表）。
+    fn browse(&self, peer: String, path: String) -> QueryFuture;
+}
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -24,11 +66,7 @@ use echo_protocol::{
     WorkspaceConversationInfo, WorkspaceFileEntry, WorkspaceGitInfo, WorkspaceSessionInfo,
 };
 
-use crate::tool::{Tool, ToolError};
-
-/// 工作区命令域（`SaveWorkspaceSession` / `RequestWorkspaceFiles` 等）——
-/// 由主 `apply_command` 一行委托进来（见 `agent/commands.rs`）。
-pub(crate) mod commands;
+use echo_tool::{Tool, ToolError};
 
 /// Cap on directories per session (protects the prompt/tool output size).
 pub const MAX_DIRECTORIES: usize = 32;
@@ -657,7 +695,7 @@ pub fn channel_scope_id(ws_id: &str, conv: &WorkspaceConversationInfo) -> String
 /// `legacy == true` 定位，而不是猜 id 为 `main`）。非工作区会话（前缀不
 /// 匹配）→ `None`。user 段允许 `@<account>` 后缀（多实例维度），按最后
 /// 一个 `:` 剥离。
-pub(crate) fn parse_workspace_channel(session_id: &str) -> Option<(String, Option<String>)> {
+pub fn parse_workspace_channel(session_id: &str) -> Option<(String, Option<String>)> {
     let rest = session_id.strip_prefix("local:workspace:")?;
     let channel = match rest.rsplit_once(':') {
         Some((channel, _user)) => channel,
@@ -1035,11 +1073,28 @@ pub fn collect_dir_files(directory: &Path) -> Result<Vec<WorkspaceFileEntry>, St
 /// The `workspace` tool: model-facing access to the workspace sessions.
 pub struct WorkspaceTool {
     store: std::sync::Arc<WorkspaceStore>,
+    /// 跨机查询接缝（宿主注入；`None` = 远程目录降级为不可采集）。
+    remote_query: Option<std::sync::Arc<dyn RemoteWorkspaceQuery>>,
 }
 
 impl WorkspaceTool {
+    /// 构造工具（无远程查询能力：`node://` 目录显示为不可采集）。
     pub fn new(store: std::sync::Arc<WorkspaceStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            remote_query: None,
+        }
+    }
+
+    /// 注入跨机查询接缝（组合根装配期调用一次）。
+    pub fn with_remote_query(mut self, query: std::sync::Arc<dyn RemoteWorkspaceQuery>) -> Self {
+        self.remote_query = Some(query);
+        self
+    }
+
+    /// 当前注入的查询接缝。
+    fn remote_query(&self) -> Option<std::sync::Arc<dyn RemoteWorkspaceQuery>> {
+        self.remote_query.clone()
     }
 }
 
@@ -1130,14 +1185,11 @@ impl Tool for WorkspaceTool {
                         Some(node) => {
                             let qualified =
                                 format!("node://{node}/{}", dir.path().trim_start_matches('/'));
-                            let info = match crate::federation::remote_querier() {
-                                Some(querier) => {
-                                    match querier(
-                                        node.to_string(),
-                                        echo_federation::QueryKind::WorkspaceGitStatus,
-                                        dir.path().to_string(),
-                                    )
-                                    .await
+                            let info = match self.remote_query() {
+                                Some(query) => {
+                                    match query
+                                        .git_status(node.to_string(), dir.path().to_string())
+                                        .await
                                     {
                                         Ok(payload) => {
                                             match serde_json::from_value::<WorkspaceGitInfo>(
@@ -1810,8 +1862,8 @@ mod tests {
 
         // 通道 id 往返：scope_id = "proj/<conv>" 经 SessionKey 解析不丢。
         let scope = channel_scope_id("proj", &conv);
-        let key = crate::session::SessionKey::local_workspace(&scope);
-        let parsed = crate::session::SessionKey::parse(&key.to_session_id()).unwrap();
+        let key = echo_session::SessionKey::local_workspace(&scope);
+        let parsed = echo_session::SessionKey::parse(&key.to_session_id()).unwrap();
         assert_eq!(parsed.scope_id, scope);
         assert_eq!(parsed.platform, "local");
         std::fs::remove_file(&path).ok();
@@ -2080,7 +2132,7 @@ mod tests {
         // 本机目录不受影响
         assert!(!session.directories[0].is_remote());
         // 持久化后重载仍保留远程归属
-        let reloaded = crate::workspace::WorkspaceStore::load(Some(_path.clone()));
+        let reloaded = WorkspaceStore::load(Some(_path.clone()));
         let (sessions, _) = reloaded.snapshot();
         assert!(sessions[0].directories[1].is_remote());
     }

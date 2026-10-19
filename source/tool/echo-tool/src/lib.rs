@@ -1,23 +1,23 @@
-//! Tool system: named, described, executable capabilities the LLM can call.
+//! # echo-tool — 工具子系统机制（解耦计划 Phase 3 前置）
 //!
-//! 位置（2026-09-29）：本模块是**工具子系统的跨包机制**（非插件包），
-//! 物理位于 `packages/tool/`——与各包的工具实现（`packages/tools_builtin/`、
-//! `packages/instance_ops/` 等）同处一个聚合目录，"工具"相关代码只有一处落点。
-//! 公开路径不变：`echo_agent::tool::…`（经 `lib.rs` re-export）。
+//! `Tool` 词汇与接缝在定义层 [`echo_defs::tool`]；本 crate 只持有**运行期
+//! 机制** [`ToolRegistry`]——原 `echo-agent::packages::tool` 的独立 crate 化，
+//! 使工具类插件（`tools_builtin` / `instance_ops` / `subagent` / 远程插件）
+//! 能只依赖机制层注册工具，而不依赖 agent 框架。
 //!
-//! The `Tool` trait and vocabulary live in [`echo_defs`]; this
-//! module re-exports them and owns the concrete [`ToolRegistry`].
+//! 三条不变量：
 //!
-//! Registration is reversible: [`ToolRegistry::register_reversible`] returns
-//! a disposer that removes the tool and invalidates the definitions cache
-//! (the dsh "registrations are effects" rule).
+//! 1. **注册可逆**：[`ToolRegistry::register_reversible`] 返回 `Disposer`，
+//!    撤销时移除工具并失效定义缓存（dsh「注册即副作用」）；
+//! 2. **定义缓存**：模型可见的工具清单缓存为 `Arc<Vec<ToolDefinition>>`，
+//!    任何注册变更即失效——避免每次组 prompt 重算；
+//! 3. **出口脱敏**：注入 `Redactor` 后，全部执行出口（`execute` /
+//!    `execute_rich`）的结果文本统一过卡口。
+//!
+//! **依赖纪律**：只依赖 `echo-defs` + `echo-context` + tokio——不认识任何
+//! 具体工具实现（内置工具集在 `echo-agent` 的 `packages/tools_builtin`）。
 
 pub use echo_defs::tool::{Tool, ToolDefinition, ToolError, ToolResult};
-
-/// 内置工具集（包 `echo-agent.tools.builtin`；实现位于
-/// [`crate::packages::tools_builtin`]——此处为兼容既有 `tool::builtin`
-/// 路径保留 re-export）。
-pub use crate::packages::tools_builtin as builtin;
 
 use std::collections::HashMap;
 use std::sync::Arc;
