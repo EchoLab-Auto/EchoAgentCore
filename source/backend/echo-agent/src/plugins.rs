@@ -61,8 +61,7 @@ pub const PROVIDER_LLM_PLUGIN_ID: &str = "echo-agent.provider.llm";
 /// 实例插件 id 由组合根声明（`core::instance_manifests`，按前缀
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
-/// 的单测把两侧并起来比（旧路径 `source/core/tests/update_script_plugins.rs`
-/// 已不存在）。
+/// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
 pub const BUILTIN_PLUGIN_IDS: [&str; 8] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,

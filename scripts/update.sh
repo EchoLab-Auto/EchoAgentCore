@@ -556,7 +556,8 @@ if [[ -x "$BINARY" ]]; then
     strings_tmp=$(mktemp "${BINARY}.strings.XXXXXX")
     strings "$BINARY" >"$strings_tmp" || true
     # 与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` 必须一致（守护测试：
-    # source/core/tests/update_script_plugins.rs）；移除插件时两处同改。
+    # source/core/src/instance_manifests.rs 的单测把两侧并起来比）；
+    # 移除插件时两处同改。
     # 实例插件 id 自 2026-10 由平台名派生（`echo-agent.instance.<platform>`），
     # 无法静态枚举——校验**前缀**即可确认派生逻辑进了二进制。其余为框架内置。
     expected_ids="echo-agent.instance. echo-agent.tools.builtin echo-agent.skills.dir echo-agent.workspace echo-agent.subagent echo-agent.provider.llm echo-agent.loop.single echo-agent.loop.parallel echo-agent.management.panel"
