@@ -28,7 +28,7 @@ y: 780
 ## 任务弹层与 Shell
 
 - **任务弹层**（替代独立任务视图）：入口行「任务」按钮弹出 `TasksPanel`（徽标 = 当前会话运行中/等待整合任务数），**只对应当前 agent 的当前会话**（按 `sessionId` 过滤；「全局」会话显示全部）；显隐 = `echo-agent.subagent` 插件对当前 persona 启用或当前会话已有任务记录，切换 Agent / 插件禁用后残留弹层强制关闭。任务卡片**倒序**（最新在前），kind 两类标签（Subagent/临时回复）+ 状态四态（运行中/已完成/失败/已取消）+ 目标 + 耗时（由 `createdAtMs` 现算）；`running` 状态时耗时**每 1s** 跳动；分支状态与结果逐条列出；运行中任务可「取消」——与聊天区同一约定：先本地乐观中断，再发 `CancelRequestedWork{session_id, all:false, team_id}`
-- **Shell**（列表与详情两层）：边栏「Shell」卡 = 会话列表（`ShellList`：状态点 + 会话 id + 目录 + 命令数 + 「详情」按钮，附新建/刷新；不内嵌终端）；点「详情」进入 **Shell 详情视图**（`ShellPanel`，经 `openShellDetail` 事件链切换视图，无顶栏导航入口）——仅目标会话的终端卡（运行中 spinner，完成/失败/超时 + 耗时（一位小数秒）+ 输出，终端区 max-height 320px）+ 命令输入（Enter 执行 `ShellExec`、Esc 清空）+ 返回列表/停止会话；新输出自动滚底。**列表加载三态**：边栏卡空态让位于加载跟踪（`shell:sessions`）——加载转圈 / 超时重试，确认无会话才显示「（当前 agent 暂无 shell 会话）」
+- **Shell**（列表与详情两层）：边栏「Shell」卡 = 会话列表（`ShellList`：状态点 + 会话 id + 目录 + 命令数 + 「详情」按钮，附新建/刷新；不内嵌终端）；点「详情」进入 **Shell 详情视图**（`ShellPanel`，经 `openShellDetail` 事件链切换视图，无顶栏导航入口）——仅目标会话的终端卡（运行中 spinner，完成/失败/超时 + 耗时（一位小数秒）+ 输出，终端区 max-height 320px）+ 命令输入（Enter 执行 `ShellExec`、Esc 清空）+ 返回列表/停止会话；新输出自动滚底。**终端有界**（`state.ts` 的 `SHELL_ENTRIES_LIMIT` / `SHELL_OUTPUT_TAIL`）：每会话只保留最近 **200** 条命令（FIFO 淘汰最旧）、单条输出只保留**尾部 64 KB**（超限时头部标「…（较早的输出已省略）」）——终端贴底跟随，用户看的永远是最后若干屏；此前 `entries.push` 与 `output += chunk` 两处无界累积会让常驻 shell 的内存与 DOM 随使用时长一直涨（`ShellPanel` 对每条 entry 都渲染一个 `<pre>`，无虚拟滚动）。滚底也改为**定向签名**（各终端最后一条的 seq/输出长度）触发，不再 `deep` 遍历整棵终端树。**列表加载三态**：边栏卡空态让位于加载跟踪（`shell:sessions`）——加载转圈 / 超时重试，确认无会话才显示「（当前 agent 暂无 shell 会话）」
 
 ## HTTP 通道
 
