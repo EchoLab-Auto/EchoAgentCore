@@ -34,6 +34,12 @@ EchoAgentCore/
 │   │   └── echo-llm-ollama/      # Ollama provider（薄包装 OpenAI 兼容端点）
 │   ├── security/
 │   │   └── echo-sanitize/        # 敏感信息隔离（注册表式脱敏器，出口卡口）
+│   ├── tool/
+│   │   └── echo-tool/            # 工具子系统机制：ToolRegistry 可逆注册 + 定义缓存 + 出口脱敏
+│   ├── shell/
+│   │   └── echo-shell/           # Shell 会话机制：bash 子进程 + 哨兵分帧 + 进程组清理
+│   ├── config/
+│   │   └── echo-config/          # TOML 原子读改写（不认识任何配置段的语义）
 │   ├── protocol/
 │   │   └── echo-protocol/        # 前后端线协议 crate（BackendCommand/BackendEvent/bridge）
 │   ├── federation/
@@ -43,11 +49,19 @@ EchoAgentCore/
 │   │   ├── echo-plugin-api/      # 宿主↔插件消息协议与贡献类型（冻结契约 + 版本协商）
 │   │   ├── echo-plugin-loader/   # 分层插件配置合成（profile/bundle/patch + 依赖排序）
 │   │   ├── echo-plugin-sdk/      # 插件侧运行时 SDK（stdio 服务，零样板）
-│   │   ├── echo-plugin-host/     # 插件宿主：Transport（inproc/stdio）+ 监督 + 一致性套件
-│   │   └── echo-plugin-example/  # 试点插件（websearch + calculator），SDK 用法示例
+│   │   ├── echo-plugin-host/     # 插件宿主：Transport（inproc/stdio）+ 监督 + 限额 + 一致性套件（领域中立）
+│   │   ├── echo-plugin-adapter/  # 协议贡献 → 领域 trait（RemoteTool / RemoteInstance / CoreApiService）
+│   │   ├── echo-plugin-example/  # 试点插件（websearch + calculator），SDK 用法示例
+│   │   ├── echo-plugin-tools/    # 内置工具集：计算/检索/清单/编码/Shell/实例管理
+│   │   ├── echo-plugin-skills/   # 内置插件：技能目录（发现/分层合并/热重载 + Git 安装）
+│   │   ├── echo-plugin-subagent/ # 内置插件：spawn_subagent
+│   │   ├── echo-plugin-workspace/# 内置插件：工作区会话与 workspace 工具
+│   │   ├── echo-plugin-management/# 内置插件：管理面 WS（Panel 中继 + 端口合并）
+│   │   ├── echo-plugin-loop/     # 内置插件：loop.single / loop.parallel
+│   │   └── echo-plugin-provider-llm/ # 内置插件：provider 工厂 + 计量/脱敏装饰器
 │   ├── backend/
-│   │   ├── echo-config/          # TOML 原子读改写（不认识任何配置段的语义）
-│   │   ├── echo-agent/           # Agent 框架（packages/ 第一层按插件分包；packages/tool/ 为工具注册表机制）
+│   │   ├── echo-agent/           # Agent 框架（宿主；具体实现多已外迁，packages/ 只剩 instance_ops /
+│   │   │                         #   federation / tools_builtin 兼容面）
 │   │   └── echo-test-utils/      # 共享测试 mock（仅 dev-dependency）
 │   # 注：QQ 平台接入（含 OneBot 协议类型与反向 WS 服务器）已迁出为独立进程
 │   # 插件（见 document/design/instance-plugin.md；独立仓库 echo-adapter-qq）。
@@ -72,10 +86,14 @@ EchoAgentCore/
 | `echo-loop` | **Agent 循环驱动**：`TurnRunner` turn/step 状态机（`turn/*`/`step/*`/`agent/*` 生命周期事件）、`ToolPipeline` 工具执行管道（pre/execute/post waterfall 中间件） |
 | `echo-llm-openai` / `echo-llm-anthropic` / `echo-llm-ollama` | **LLM provider（Service Provider 角色）**：各自实现 `echo_defs::LlmProvider`,只依赖定义层 |
 | `echo-protocol` | **前后端契约的唯一来源**：`BackendCommand`/`BackendEvent`/`WsMessage`、bridge；`GateMode`/`ThinkingMode`/`ReasoningEffort` 从 `echo-defs` re-export。前端只需依赖它 |
-| `echo-plugin` | **插件接缝**：`PluginManifest` + 生命周期钩子（mount/unmount）+ `PluginRegistry`；插件只依赖定义层与机制层（`echo-defs`/`echo-context`/`echo-plugin` 三个 crate），不依赖 `echo-agent` |
-| `echo-plugin-api` / `-loader` / `-sdk` / `-host` | **插件协议与宿主**：宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商（`-api`）；分层配置合成与依赖排序（`-loader`）；插件侧 stdio 运行时（`-sdk`）；Transport（inproc/stdio）、进程监督与崩溃重启、`RemoteInstance`（把进程外插件当插件实例接入，实现 `echo_defs::plugin_instance::PluginInstance`）、一致性套件（`-host`）。宿主只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 backend 层 |
+| `echo-plugin` | **插件接缝**：`PluginManifest` + 生命周期钩子（mount/unmount）+ `PluginRegistry`；插件**不依赖 `echo-agent`**（只有组合根可以），可按需依赖定义层与机制层——逐 crate 的完整白名单在 `scripts/deps-policy.txt` |
+| `echo-plugin-api` / `-loader` / `-sdk` / `-host` | **插件协议与宿主**：宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商（`-api`）；分层配置合成（`plugins.toml`，按 id 整行替换 + 依赖排序，`-loader`）；插件侧 stdio 运行时（`-sdk`）；Transport（inproc/stdio）、进程监督与崩溃重启、子进程资源限额（rlimit）、入站频率限额、可逆停止、一致性套件（`-host`）。**`-host` 只依赖 `-api` + `-loader`——不认识 `echo-defs`、不认识任何领域词汇**，因此可作领域中立的插件机制复用 |
+| `echo-plugin-adapter` | **远程贡献 → 领域 trait 的适配层**：`RemoteTool`（`ToolContribution` → `echo_defs::tool::Tool`）、`RemoteInstance`/`RemoteInstanceManagement`（`InstanceContribution` → `PluginInstance`/`InstanceManagement`）、`CoreApiService`（插件 → 宿主回呼）。依赖 host + api + defs，**不依赖 `echo-agent` 与组合根**——这一层认识领域 trait，而 host 必须保持中立，故单独成 crate |
+| `echo-plugin-tools` / `-skills` / `-subagent` / `-workspace` / `-management` / `-loop` / `-provider-llm` | **七个外迁的内置插件**（各自成 crate）：内置工具集 / 技能目录 / `spawn_subagent` / 工作区会话 / 管理面 WS（含联邦·管理端口合并）/ `loop.single`+`loop.parallel` / provider 工厂与计量脱敏装饰器。宿主侧经 `echo-agent` 的兼容 re-export 指过来，公开路径不变 |
 | `echo-sanitize` | **敏感信息隔离**：注册表式脱敏器（默认 `Redactor` 实现），在出口卡口统一改写密钥/令牌；保证边界与威胁模型见 `document/core/security-redaction-design.md` |
-| `echo-agent` | Agent 框架：agent 循环、LLM provider 工厂、工具注册表与各包（`packages/`）、技能系统、trunk 记忆、异步子任务（`spawn_subagent`） |
+| `echo-tool` | **工具子系统机制**：`ToolRegistry`（可逆注册 + 定义缓存 + 出口脱敏）；`Tool` 词汇在 `echo-defs`，具体工具实现在 `echo-plugin-tools` |
+| `echo-shell` | **Shell 会话机制**：每会话一个 `bash` 子进程（独立进程组、销毁整组终止）、写命令 + 随机哨兵双写分帧、会话串行/跨会话并行、上限与背压水位 |
+| `echo-agent` | Agent 框架（**宿主**）：agent 循环与命令分发、LLM provider 工厂、timeline 投影、trunk 记忆。具体实现多已外迁（工具/技能/子任务/工作区/Shell），`packages/` 只剩 `instance_ops` / `federation` / `tools_builtin` 兼容面 |
 | `echo-config` | TOML **原子读改写**：`ConfigStore`（串行化 + tmp+rename）与 `ensure_table`。**不知道任何 section 的含义**——调用方各自拥有自己的段 |
 | （QQ 插件） | **已迁出**为独立进程插件（stdio 协议）交付：反向 WS 接入、5 层门控、NapCat 容器 / 端口 / compose、OneBot 协议类型；见 `document/design/instance-plugin.md` |
 | `echo-federation` | **联邦链路（Core↔Core）**：`FedFrame` 线协议（工具调用/委派/只读查询）、Hello/Welcome 握手、per-peer Bearer 认证、心跳/重连/回环防护、邀请串（`echofed://`） |
@@ -84,9 +102,9 @@ EchoAgentCore/
 依赖方向（单向，无环，扩展只依赖定义层）：
 
 - **底座**（零 echo-* 依赖）：`echo-defs`（定义层）、`echo-context`（机制层）
-- **中间层**（只依赖底座）：`echo-protocol`、`echo-loop`、`echo-session`、`echo-llm-*`（`echo-llm-ollama` 另复用 `echo-llm-openai`）、`echo-config`、`echo-sanitize`、`echo-plugin`、`echo-federation`
-- **插件族**：`echo-plugin-api`（只依赖 `echo-defs`）◄ `echo-plugin-loader` / `echo-plugin-sdk` / `echo-plugin-host`（宿主侧只依赖 `echo-defs` + `-api`/`-loader`，不依赖 backend 层）
-- **框架层**：`echo-agent`（依赖 `echo-defs`/`echo-context`/`echo-loop`/`echo-session`/`echo-llm-openai`/`echo-llm-anthropic`/`echo-llm-ollama`/`echo-protocol`/`echo-config`/`echo-sanitize`/`echo-plugin`/`echo-federation`）
+- **中间层**（只依赖底座）：`echo-protocol`、`echo-loop`、`echo-session`、`echo-tool`、`echo-shell`、`echo-llm-*`（`echo-llm-ollama` 另复用 `echo-llm-openai`）、`echo-config`、`echo-sanitize`、`echo-plugin`、`echo-federation`
+- **插件族**：`echo-plugin-api` / `echo-plugin-loader`（零 echo-* 依赖）◄ `echo-plugin-sdk` / `echo-plugin-host`（**host 只依赖 `-api` + `-loader`**，领域中立）◄ `echo-plugin-adapter`（+ `echo-defs`，做领域适配）◄ 七个外迁内置插件（按需依赖定义层与机制层）
+- **框架层**：`echo-agent`（依赖上述全部中间层 + `echo-tool`/`echo-shell` + 七个外迁插件 crate）；**组合根** `echo-agent-core` 另直接依赖 `echo-plugin-adapter`/`-host`/`-loader`/`-loop`/`-management`。依赖白名单的单一真值是 `scripts/deps-policy.txt`（`scripts/check-deps.sh` 与 `source/core/tests/plugin_dependency_direction.rs` 双门禁共读）
 - **平台插件**（独立仓库，非本工作区成员）：`echo-adapter-qq`（依赖 `echo-plugin-sdk` + 自带 OneBot 传输层 + NapCat 部署形状）
 - **组合根**：`echo-agent-core`（bin，装配以上全部 + `echo-plugin-host` 插件宿主）
 
