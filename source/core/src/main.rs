@@ -43,7 +43,13 @@ use logging::init_tracing;
 struct Args {
     /// Path to the TOML configuration file.
     /// Default: config/echo-agent-core.toml
-    #[arg(short, long)]
+    ///
+    /// `global`：子命令（token / port / dump-config）也能用，且**前置后置
+    /// 皆可**——`-c x dump-config` 与 `dump-config -c x` 等价。不设时
+    /// clap 要求选项必须写在子命令之前（`dump-config -c x` 会报
+    /// "unexpected argument"），对 `dump-config` 这类"只想指一个配置
+    /// 看一眼"的命令尤其别扭。
+    #[arg(short, long, global = true)]
     config: Option<PathBuf>,
     /// 管理子命令（缺省 = 启动服务）。
     #[command(subcommand)]
@@ -65,6 +71,13 @@ enum SubCommand {
         #[command(subcommand)]
         action: Option<port_cmd::PortSubCommand>,
     },
+    /// 打印 plugins.toml 的**分层合成结果**（profile → bundles → patches →
+    /// 行内条目；每行上方注释标出来自哪一层）。
+    ///
+    /// 只合成不启动：不拉起插件、不监听端口。用途是排查"这行配置到底
+    /// 被哪一层覆盖成了现在这样"，以及提交前确认合成树符合预期。
+    /// plugins.toml 不存在时说明特性休眠（退出码 0，不算错误）。
+    DumpConfig,
 }
 
 impl Args {
@@ -152,11 +165,39 @@ async fn main() -> Result<()> {
         match command {
             SubCommand::Token { rotate } => return token_command(&args.config_path(), rotate),
             SubCommand::Port { action } => return port_cmd::run(&args.config_path(), action),
+            SubCommand::DumpConfig => return dump_config_command(&args.config_path()),
         }
     }
     let path = args.config_path();
     let cfg = CoreConfig::load(&path)?;
     run_core(args, cfg).await
+}
+
+/// `echo-agent-core dump-config`：打印 plugins.toml 的分层合成结果。
+///
+/// 输出到 stdout（可直接 `>` 成文件、或 `diff` 两份合成结果）；诊断信息
+/// 走 stderr，保证管道里拿到的只有 TOML 正文。
+fn dump_config_command(config_path: &std::path::Path) -> Result<()> {
+    let plugins_path = config_path.with_file_name("plugins.toml");
+    match plugins_runtime::dump_config(config_path) {
+        Ok(Some(text)) => {
+            print!("{text}");
+            Ok(())
+        }
+        Ok(None) => {
+            println!(
+                "# {} 不存在——外部插件特性休眠（启动等同未启用）",
+                plugins_path.display()
+            );
+            Ok(())
+        }
+        Err(error) => Err(anyhow::anyhow!(error)).with_context(|| {
+            format!(
+                "合成 {} 失败（修好它，启动路径会报同一个错）",
+                plugins_path.display()
+            )
+        }),
+    }
 }
 
 // ── Core：Agent + 插件实例 + management WS 服务 ──────────────────────────────
@@ -1838,5 +1879,54 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--config` 是 global：前置后置等价。
+    ///
+    /// 锁住的是**实际踩过的坑**——`global` 未设时 clap 只接受
+    /// `-c x dump-config`，而人（与文档）自然写成 `dump-config -c x`，
+    /// 得到 "unexpected argument '--config' found"。三个子命令共享同一
+    /// 选项，任一处退化都会让它们全部复发。
+    #[test]
+    fn config_flag_is_accepted_before_and_after_subcommand() {
+        let before = Args::try_parse_from(["echo-agent-core", "-c", "a.toml", "dump-config"])
+            .expect("flag before subcommand");
+        let after = Args::try_parse_from(["echo-agent-core", "dump-config", "-c", "a.toml"])
+            .expect("flag after subcommand");
+        assert!(matches!(before.command, Some(SubCommand::DumpConfig)));
+        assert!(matches!(after.command, Some(SubCommand::DumpConfig)));
+        // 两种写法必须落到同一个路径——否则"后置能解析但被忽略"会静默读错文件。
+        let expected = PathBuf::from("a.toml");
+        assert_eq!(before.config_path(), expected);
+        assert_eq!(after.config_path(), expected);
+    }
+
+    /// 子命令缺省（无 command）= 启动服务；`dump-config` 不吞掉 `token` /
+    /// `port`（clap 子命令互斥，这里锁住"新增子命令未打乱既有两条"）。
+    #[test]
+    fn existing_subcommands_keep_parsing() {
+        let token =
+            Args::try_parse_from(["echo-agent-core", "token", "--rotate"]).expect("token --rotate");
+        assert!(matches!(
+            token.command,
+            Some(SubCommand::Token { rotate: true })
+        ));
+        let service = Args::try_parse_from(["echo-agent-core"]).expect("bare invocation");
+        assert!(service.command.is_none(), "no subcommand = run the service");
+    }
+
+    /// 缺省配置路径仍是 `config/echo-agent-core.toml`（服务与子命令同源）。
+    #[test]
+    fn default_config_path_is_unchanged() {
+        let args = Args::try_parse_from(["echo-agent-core"]).expect("bare invocation");
+        assert_eq!(
+            args.config_path(),
+            PathBuf::from("config/echo-agent-core.toml")
+        );
     }
 }

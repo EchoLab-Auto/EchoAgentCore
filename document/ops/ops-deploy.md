@@ -191,7 +191,15 @@ echo-agent-core port set federation-advertise 10.0.0.5:4001   # 邀请串对外�
 # management_access_token：查看 / 轮换
 echo-agent-core token                         # 打印当前 token（空 = 无认证）
 echo-agent-core token --rotate                # 重新生成并写回（32 字节 hex）
+
+# 外部插件组合：查看分层合成结果（profile → bundles → patches → 行内条目）
+echo-agent-core dump-config                   # 每行带「来自哪一层」来源注释
 ```
+
+`dump-config` **只合成不启动**（不拉起插件、不监听端口），用的是与启动路径同一个
+`load()`——合成失败 / 环依赖 / 未知 `requires` 在这里报同一个错并**非零退出**，
+可直接放进部署前自检；`plugins.toml` 不存在时打印一行说明并退出码 0（特性休眠）。
+详见 [插件开发指南](../plugins/plugin-authoring.md)「先看一眼合成结果」。
 
 要点：
 

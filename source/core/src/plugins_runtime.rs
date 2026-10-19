@@ -14,6 +14,8 @@
 //!   注册时可直接向上转型为 `Arc<dyn Tool>`；同时保留 `package()` 供注册
 //!   方打「按包分组」标签）。
 //! - [`PluginRuntime::shutdown`]：5s 期限排空全部句柄（best-effort）。
+//! - [`dump_config`]：`dump-config` 子命令的实现——只合成不启动，把分层
+//!   合成树渲染回 TOML（每行带来源注释）。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -178,6 +180,47 @@ impl PluginRuntime {
     }
 }
 
+/// `dump-config` 子命令：把 `plugins.toml` 的**分层合成结果**渲染回 TOML。
+///
+/// 只**合成不启动**——不拉起任何子进程、不碰 kernel / 网络，纯函数式地
+/// 走一遍 [`echo_plugin_loader::load`]（profile → bundles → patches →
+/// 行内条目 的 dsh 式"按 id 定位、整行替换"），再把结果交给
+/// [`echo_plugin_loader::dump`] 渲染成带来源注释的 TOML：
+///
+/// ```text
+/// # --- example (layer 1: bundle-extra.toml) ---
+/// id = "example"
+/// kind = "stdio"
+/// ...
+/// ```
+///
+/// 用途：回答"这行配置**到底**从哪一层来的、最终长什么样"——patch 覆盖
+/// bundle、bundle 覆盖前一个 bundle 的结果全都在注释里，不必手工推演。
+///
+/// 语义与启动路径严格一致：**用同一个 `load()`**，所以这里能合成出来的
+/// 树就是运行期会装载的树；校验失败 / 环 / 未知 `requires` 同样在这里
+/// 报同一个错（错误文本原样回给用户，前后缀由调用方加）。
+///
+/// 返回 `Ok(None)` = `plugins.toml` 不存在（外部插件特性休眠，与启动
+/// 路径的"零行为变化"一致——不是错误）。
+pub fn dump_config(config_path: &Path) -> Result<Option<String>, echo_plugin_loader::LoadError> {
+    let path = config_path.with_file_name("plugins.toml");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let tree = echo_plugin_loader::load(&path)?;
+    let mut text = echo_plugin_loader::dump(&tree);
+    // 合成期诊断（如同一层内重复 id）不进 dump 的正文——它们是告警而非
+    // 配置内容，追加为文件末尾注释，既不污染可回灌的 TOML 语义，又不丢信息。
+    if !tree.warnings.is_empty() {
+        text.push_str("\n# ── 合成期告警 ──\n");
+        for warning in &tree.warnings {
+            text.push_str(&format!("# {warning}\n"));
+        }
+    }
+    Ok(Some(text))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +274,83 @@ mod tests {
             runtime.started.handles.is_empty(),
             "no handle for a failed launch"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── dump-config（只合成不启动）──────────────────────────────────────
+
+    /// 无 plugins.toml → `Ok(None)`：休眠不是错误（与启动路径同语义）。
+    #[test]
+    fn dump_config_reports_dormant_when_missing() {
+        let dir = unique_dir("dump-missing");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let config_path = dir.join("echo-agent-core.toml");
+        assert!(
+            dump_config(&config_path)
+                .expect("missing file is not an error")
+                .is_none(),
+            "no plugins.toml must yield None, not an error"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 三层合成（bundle → patch → 行内）后渲染：每行带来源注释，
+    /// 且 patch 的整行替换确实覆盖了 bundle 的值。
+    #[test]
+    fn dump_config_renders_composed_tree_with_provenance() {
+        let dir = unique_dir("dump-layers");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(
+            dir.join("base.toml"),
+            "[[plugin]]\nid = \"a\"\nkind = \"stdio\"\nname = \"a-base\"\ncommand = \"/bin/a\"\n",
+        )
+        .expect("write bundle");
+        std::fs::write(
+            dir.join("over.toml"),
+            "[[plugin]]\nid = \"a\"\nkind = \"stdio\"\nname = \"a-patched\"\ncommand = \"/bin/a2\"\n",
+        )
+        .expect("write patch");
+        std::fs::write(
+            dir.join("plugins.toml"),
+            "[profile]\nbundles = [\"base\"]\npatches = [\"over\"]\n\n             [[plugin]]\nid = \"b\"\nkind = \"stdio\"\nname = \"b\"\ncommand = \"/bin/b\"\n",
+        )
+        .expect("write profile");
+
+        let text = dump_config(&dir.join("echo-agent-core.toml"))
+            .expect("compose")
+            .expect("plugins.toml exists");
+        // 来源注释把「哪一层」写在每行上方：bundle=0、patch=1、行内=2。
+        assert!(text.contains("# --- a (layer 1: over.toml) ---"), "{text}");
+        assert!(
+            text.contains("# --- b (layer 2: plugins.toml) ---"),
+            "{text}"
+        );
+        // patch 整行替换（不是字段级合并）：值是 patch 的，bundle 的不留残余。
+        assert!(text.contains("name = \"a-patched\""), "{text}");
+        assert!(
+            !text.contains("a-base"),
+            "patch must replace the whole row: {text}"
+        );
+        // 渲染结果必须是可回灌的合法 TOML（dump 的契约）。
+        let reparsed: toml::Value = toml::from_str(&text).expect("dump output must be valid TOML");
+        assert!(reparsed["plugin"]
+            .as_array()
+            .is_some_and(|rows| rows.len() == 2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 合成失败（未知 requires）→ 与启动路径**同一个**错误，不 panic。
+    #[test]
+    fn dump_config_surfaces_compose_errors() {
+        let dir = unique_dir("dump-error");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(
+            dir.join("plugins.toml"),
+            "[[plugin]]\nid = \"a\"\nkind = \"stdio\"\nname = \"a\"\ncommand = \"/bin/a\"\n             requires = [\"ghost\"]\n",
+        )
+        .expect("write profile");
+        let error = dump_config(&dir.join("echo-agent-core.toml")).expect_err("must fail");
+        assert!(error.to_string().contains("ghost"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

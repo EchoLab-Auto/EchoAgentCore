@@ -114,6 +114,36 @@ mode = "fast"
 
 改完 `plugins.toml` **重启 Core 生效**（热替换尚未落地，暂不免重启）。
 
+### 先看一眼合成结果：`dump-config`
+
+多层叠加后"最终这一行到底长什么样、来自哪一层"靠人推演容易出错，用子命令直接看：
+
+```bash
+echo-agent-core dump-config -c ~/.config/echo-agent-core/echo-agent-core.toml
+```
+
+输出是**合成后**的 TOML，每个条目上方带来源注释（`layer` 从 0 起：bundle 先、
+patch 其次、本文件行内条目最后）：
+
+```text
+# --- example (layer 1: local.patch.toml) ---
+[[plugin]]
+command = "/opt/echo/plugins/echo-plugin-example"   # patch 整行替换后的值
+enabled = true
+id = "example"
+kind = "stdio"
+name = "echo-plugin-example"
+```
+
+要点：
+
+- **只合成不启动**——不拉起插件、不监听端口，可随时安全执行；
+- 用的是**与启动完全同一个** `load()`，所以这里合成出来的树就是运行期装载的树，
+  校验失败 / 环 / 未知 `requires` 在这里报**同一个**错（`dump-config` 非零退出）；
+- `plugins.toml` 不存在 → 打印一行说明并**退出码 0**（特性休眠不是错误）；
+- stdout 只有 TOML 正文（`>` 落盘、`diff` 两份合成结果都干净）。
+- `--config` 可写在子命令**前或后**（`dump-config -c x` 与 `-c x dump-config` 等价）。
+
 ## 五类贡献（当前只接通两类）
 
 `Contribution` 是插件向宿主申报能力的唯一入口，枚举有 **5 个变体**——但宿主当前只消费其中

@@ -19,7 +19,7 @@ y: 3160
 2. **一切皆插件**：内核只含机制（服务注册表 / 事件总线 / 插件宿主 / 协议）；全部能力（循环、provider、工具、技能、插件实例、工作区、subagent、联邦）以插件装载，配置可禁用到"只剩内核仍能启动"。
 3. **运行期热替换**：任一代码插件可"卸载 → 替换 → 重挂载"，无进程重启；与数据插件热重载语义统一。
 4. **进程外插件端到端**：至少一个示例插件以**独立二进制**交付、经配置装载；`SIGKILL` 其进程后内核无感（该插件工具报错并按策略自动重启）。
-5. **配置化组合**：`--dump-config` 输出分层合成树（profile / bundle / patch 三层）；改组合不改代码。
+5. **配置化组合**：`dump-config` 输出分层合成树（profile / bundle / patch 三层）；改组合不改代码。
 6. **协议一致性**：同一套 conformance 用例覆盖全部运输层（inproc / subprocess；可选 dylib / wasm）。
 
 ## 二、方案研究：动态库 / 子进程 / wasm（生态核查）
@@ -213,7 +213,7 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 
 - [x] `plugins.toml`：profile → bundles → patch 三层合成（已提交 `65c1c2a`：`echo-plugin-loader`，dsh 语义"按 id 定位、整行替换"；provenance 记录来源层）
 - [x] 装载器：拓扑排序（按 requires）、环检测、未解析行可读报错（已提交 `65c1c2a`，13 项测试）
-- [ ] `--dump-config`：`dump()` 渲染函数已就绪；CLI 接线待做
+- [x] `dump-config`：CLI 已接线（`echo-agent-core dump-config`，只合成不启动；配置路径前置后置皆可）。做成**子命令**而非计划初稿的 `--dump-config` 标志——与既有 `token` / `port` 同类，`--help` 里可发现，且不会让服务二进制多一个"误触发即不启动服务"的开关。输出每行带 `<id> (layer n: <file>)` 来源注释；`plugins.toml` 缺失时退出码 0（休眠），合成失败时非零并打印与启动路径同一个错误。3 项合成测试 + 3 项 CLI 解析测试
 - [x] 内核装配：`plugins.toml`（core.toml 同目录，缺省休眠）→ `PluginSupervisor` 启动 → `RemoteTool` 注册全 persona（`plugins_runtime::start_with_specs`，组合根已接线；`config/plugins.example.toml` 为模板）
 - [ ] 插件目录约定：`~/.local/libexec/echo-agent-core/plugins/<id>/`（版本化路径）——**约定已写入** [插件开发指南](../plugins/plugin-authoring.md)（含 `<id>/<二进制>` 布局），缺的是**安装器侧**：`install.sh` 尚未创建该目录、`update.sh` 尚未做版本化替换与回滚
 - [ ] Panel 对接：插件清单页显示来源/版本/状态/重启（协议扩展走 echo-protocol）
