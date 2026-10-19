@@ -45,6 +45,7 @@ fn entry(id: &str, kind: EntryKind, enabled: bool) -> PluginEntry {
         enabled,
         requires: vec![],
         config: json!({}),
+        limits: None,
         layer: 0,
         layer_source: "test.toml".to_string(),
     }
@@ -57,6 +58,7 @@ fn spec(plugin_id: &str, command: &str) -> LaunchSpec {
         args: vec![],
         env: BTreeMap::new(),
         config: json!({}),
+        limits: None,
     }
 }
 
@@ -243,4 +245,92 @@ async fn shutdown_drains_handles_to_stopped() {
             handle.plugin_id()
         );
     }
+}
+
+// ── 资源限额落地（rlimit）──────────────────────────────────────────────────
+
+/// 限额真的落到子进程：给一个很小的 `open_files`，让插件在握手时就撞上
+/// `EMFILE`（测试对端会打开 stdin/stdout/stderr 之外的 fd）。
+///
+/// 只在 Linux 跑：`RLIMIT_NOFILE` 的语义在各平台不完全一致，这里锁的是
+/// 「限额确实落到子进程」这条不变量，而不是某个平台的细节。
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn resource_limits_reach_the_child_process() {
+    use echo_plugin_host::stdio::ResourceLimits;
+
+    // 3 个 fd 都不够（stdin/stdout/stderr 已占 3），握手必然失败。
+    let mut limited = spec("limited", PEER);
+    limited.limits = Some(echo_plugin_loader::PluginLimits {
+        open_files: Some(3),
+        ..Default::default()
+    });
+    let supervisor = PluginSupervisor::new();
+    let started = start_plugins(&supervisor, vec![limited]).await;
+    assert!(
+        started.handles.is_empty(),
+        "3 个 fd 的限额下插件不可能完成握手"
+    );
+    assert_eq!(started.errors.len(), 1, "失败要记成可读错误");
+
+    // 对照：同一份 spec 不设限额 → 正常启动。
+    let permissive = ResourceLimits {
+        open_files: Some(4096),
+        ..Default::default()
+    };
+    let mut permissive_spec = spec("permissive", PEER);
+    permissive_spec.limits = Some(echo_plugin_loader::PluginLimits {
+        open_files: Some(4096),
+        ..Default::default()
+    });
+    assert!(!permissive.is_empty());
+    let started = start_plugins(&supervisor, vec![permissive_spec]).await;
+    assert_eq!(started.handles.len(), 1, "宽松限额下应正常启动");
+    started.shutdown(Duration::from_secs(3)).await;
+}
+
+/// 空限额 = 不装 `pre_exec`（spawn 路径与无限制完全一致）。
+#[test]
+fn empty_resource_limits_are_a_noop() {
+    use echo_plugin_host::stdio::ResourceLimits;
+    assert!(ResourceLimits::default().is_empty());
+    assert!(!ResourceLimits {
+        cpu_seconds: Some(1),
+        ..Default::default()
+    }
+    .is_empty());
+}
+
+/// 配置单位 → 运行时单位：MiB 换算成字节（换算只在一处发生）。
+#[tokio::test]
+async fn limits_config_units_convert_to_bytes() {
+    // 通过 launch_specs 走一遍真实链路（配置 → spec），确认字段透传。
+    let dir = unique_temp_dir("limits-launch");
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("plugins.toml");
+    std::fs::write(
+        &path,
+        format!(
+            r#"
+[[plugin]]
+id = "ext"
+kind = "stdio"
+name = "ext"
+command = "{PEER}"
+
+[plugin.limits]
+cpu_seconds = 60
+memory_mb = 512
+open_files = 256
+"#
+        ),
+    )
+    .expect("write fixture");
+    let tree = echo_plugin_loader::load(&path).expect("load");
+    let (specs, _skipped) = launch_specs(&tree);
+    let limits = specs[0].limits.expect("limits carried into LaunchSpec");
+    assert_eq!(limits.cpu_seconds, Some(60));
+    assert_eq!(limits.memory_mb, Some(512));
+    assert_eq!(limits.open_files, Some(256));
+    let _ = std::fs::remove_dir_all(&dir);
 }

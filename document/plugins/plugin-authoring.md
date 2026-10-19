@@ -125,6 +125,34 @@ mode = "fast"
 
 **没写进文件的内置插件一律照旧挂载**——这条缺省是为了让"只加一个外部插件"的现有部署行为零变化。内置插件 id 清单见 [插件化设计](./core-plugins.md)「内置插件清单」。
 
+### 资源限额（可选）
+
+子进程插件可以加 `[plugin.limits]`——**缺省不限制**，因为限额是部署策略，没有普适默认值（Node / NapCat 那类插件需要很大的地址空间，随手设 256 MiB 会直接起不来）：
+
+```toml
+[[plugin]]
+id = "example"
+kind = "stdio"
+name = "echo-plugin-example"
+command = "/opt/echo/plugins/echo-plugin-example"
+
+[plugin.limits]
+cpu_seconds = 3600     # CPU 时间（秒）；用尽 → SIGXCPU
+memory_mb = 2048       # 地址空间（MiB）；用尽 → malloc/mmap 失败
+file_size_mb = 256     # 单文件写入（MiB）；超限 → 写返回 EFBIG
+open_files = 1024      # fd 数（含 socket）；用尽 → EMFILE
+processes = 64         # 子进程数；超限 → fork 失败（按 uid 计，见下）
+```
+
+语义要点：
+
+- **硬限额**（软=硬），不做"先警告再收紧"——插件没有义务处理信号，两段式只会让人误以为限额没生效；
+- 在 `exec` **之前**由子进程自己 `setrlimit`，限额**继承给它的后代**；
+- `processes` 用的是 `RLIMIT_NPROC`，它按 **uid** 统计而不是进程树：同 uid 的多个插件共享这个配额，所以值要给得够宽（或者干脆不给）；
+- **`0` 会被加载器拒绝**：`setrlimit` 里 0 表示"完全禁止"而不是"不限制"，写 0 的人几乎一定是想要后者——报错里会提示删掉该行；
+- 空 `[plugin.limits]` 表等价于不限制（归一成 `None`）；
+- `dump-config` 会把生效的限额原样渲染出来。
+
 ### 写完怎么确认它在跑
 
 外部条目（`kind = "stdio"`）会出现在面板「设置 → 插件 → 外部插件」组里，带运行形态 `独立进程`；没起来的话行卡有红色「失败」徽标，详情里给启动失败原因（命令不存在 / 握手失败）。改了 `command` 或换二进制**必须重启 Core**——门控壳是名义挂载，面板的「重启」按钮对这类条目会被明确拒绝。

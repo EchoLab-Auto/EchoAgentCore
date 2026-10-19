@@ -255,6 +255,13 @@ pub struct PluginLaunchSection {
     pub args: Vec<String>,
     /// 注入子进程的环境变量（宿主环境不继承，仅透传 PATH）。
     pub env: std::collections::BTreeMap<String, String>,
+    /// 子进程资源限额（`[instances.<platform>.plugin.limits]`；缺省不限制）。
+    ///
+    /// 实例插件通常比工具插件重（Node / NapCat 那类需要大地址空间），
+    /// 所以这里**不设默认值**——限额交给部署自己决定，见
+    /// [`echo_plugin_loader::PluginLimits`]。
+    #[serde(default)]
+    pub limits: Option<echo_plugin_loader::PluginLimits>,
 }
 
 /// 单个 QQ 实例的配置覆盖项（缺省继承 `[instances.qq]` 共享默认）。

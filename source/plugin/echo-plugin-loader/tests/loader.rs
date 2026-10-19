@@ -623,3 +623,106 @@ name = "solo"
     assert_eq!(tree.entries[0].layer, 0);
     assert_eq!(tree.entries[0].layer_source, "plugins.toml");
 }
+
+// ── 资源限额（`[plugin.limits]`）──────────────────────────────────────────
+
+/// 限额解析进 `PluginEntry`：五项各自独立可选，未写的键为 `None`。
+#[test]
+fn limits_parse_per_field() {
+    let dir = TempDir::new("limits-parse");
+    let profile = dir.write(
+        "plugins.toml",
+        r#"
+[[plugin]]
+id = "ext"
+kind = "stdio"
+name = "ext"
+command = "/bin/ext"
+
+[plugin.limits]
+memory_mb = 512
+open_files = 256
+"#,
+    );
+    let tree = load(&profile).expect("load");
+    let limits = tree.entries[0].limits.expect("limits parsed");
+    assert_eq!(limits.memory_mb, Some(512));
+    assert_eq!(limits.open_files, Some(256));
+    // 未写的键 = 不限制（不是 0）。
+    assert_eq!(limits.cpu_seconds, None);
+    assert_eq!(limits.file_size_mb, None);
+    assert_eq!(limits.processes, None);
+}
+
+/// 空 `[plugin.limits]` 表 = 不限制（与不写等价），不是"限额全 0"。
+#[test]
+fn empty_limits_table_means_unlimited() {
+    let dir = TempDir::new("limits-empty");
+    let profile = dir.write(
+        "plugins.toml",
+        r#"
+[[plugin]]
+id = "ext"
+kind = "stdio"
+name = "ext"
+command = "/bin/ext"
+
+[plugin.limits]
+"#,
+    );
+    let tree = load(&profile).expect("load");
+    assert!(
+        tree.entries[0].limits.is_none(),
+        "空表应归一成 None（否则语义变成「什么都不许」）"
+    );
+}
+
+/// `0` 被拒绝而不是被当成"不限制"：`setrlimit` 里 0 = 完全禁止。
+#[test]
+fn zero_limits_are_rejected_with_actionable_message() {
+    let dir = TempDir::new("limits-zero");
+    let profile = dir.write(
+        "plugins.toml",
+        r#"
+[[plugin]]
+id = "ext"
+kind = "stdio"
+name = "ext"
+command = "/bin/ext"
+
+[plugin.limits]
+memory_mb = 0
+"#,
+    );
+    let error = load(&profile).expect_err("0 must be rejected");
+    let text = error.to_string();
+    assert!(text.contains("memory_mb"), "{text}");
+    assert!(text.contains("不限制"), "错误文本要给出改法：{text}");
+}
+
+/// 限额经 `dump()` 原样回渲染（排查时能看到生效值）。
+#[test]
+fn limits_round_trip_through_dump() {
+    let dir = TempDir::new("limits-dump");
+    let profile = dir.write(
+        "plugins.toml",
+        r#"
+[[plugin]]
+id = "ext"
+kind = "stdio"
+name = "ext"
+command = "/bin/ext"
+
+[plugin.limits]
+cpu_seconds = 60
+memory_mb = 128
+"#,
+    );
+    let tree = load(&profile).expect("load");
+    let text = dump(&tree);
+    assert!(text.contains("cpu_seconds = 60"), "{text}");
+    assert!(text.contains("memory_mb = 128"), "{text}");
+    // 回灌：dump 的输出必须还能被解析（dump 的契约）。
+    let reparsed: toml::Value = toml::from_str(&text).expect("valid toml");
+    assert!(reparsed["plugin"][0]["limits"].is_table());
+}

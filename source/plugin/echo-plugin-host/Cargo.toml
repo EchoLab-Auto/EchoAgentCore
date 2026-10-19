@@ -22,3 +22,8 @@ tracing = { workspace = true }
 [[bin]]
 name = "echo-plugin-test-peer"
 path = "src/bin/echo-plugin-test-peer.rs"
+
+[target.'cfg(unix)'.dependencies]
+# 子进程资源限额（setrlimit）：CPU / 地址空间 / 文件大小 / 打开文件数。
+# 只在 Unix 生效——限额本身是 POSIX 概念，其它平台跳过（见 `stdio::ResourceLimits`）。
+libc = "0.2"

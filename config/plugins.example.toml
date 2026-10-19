@@ -34,3 +34,23 @@ patches = []
 # [plugin.config]
 # # 原样透传给插件（Hello.config）
 # mode = "default"
+
+# ── 子进程资源限额（可选） ──
+#
+# 只对 kind = "stdio" 生效（进程内实现没有独立进程可限）。
+# **缺省不限制**——限额是部署策略，没有普适默认值：Node / NapCat 那类插件
+# 需要很大的地址空间，随手设 256 MiB 会直接起不来。
+#
+# 超限是**硬失败**（不是先警告）：CPU 用尽 → SIGXCPU；地址空间用尽 →
+# malloc/mmap 失败；单文件超限 → 写返回 EFBIG；fd 用尽 → EMFILE；
+# 进程数超限 → fork 失败。
+#
+# 0 会被**拒绝**（setrlimit 里 0 = 完全禁止，不是"不限制"）。
+#
+# [plugin.limits]
+# cpu_seconds = 3600     # CPU 时间上限（秒）
+# memory_mb = 2048       # 地址空间上限（MiB）
+# file_size_mb = 256     # 单文件写入上限（MiB）
+# open_files = 1024      # 打开文件描述符数（含 socket）
+# processes = 64         # 子进程数（注意：RLIMIT_NPROC 按 **uid** 计，
+#                        # 同 uid 的多个插件会共享这个配额，值要给得够宽）

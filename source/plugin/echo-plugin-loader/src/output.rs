@@ -57,6 +57,24 @@ fn render_entry(entry: &PluginEntry) -> String {
             ),
         );
     }
+    // 资���限额（`[plugin.limits]`）：全空不渲染（与未写等价）。
+    if let Some(limits) = &entry.limits {
+        let mut table = toml::Table::new();
+        for (key, value) in [
+            ("cpu_seconds", limits.cpu_seconds),
+            ("memory_mb", limits.memory_mb),
+            ("file_size_mb", limits.file_size_mb),
+            ("open_files", limits.open_files),
+            ("processes", limits.processes),
+        ] {
+            if let Some(value) = value {
+                table.insert(key.to_owned(), toml::Value::Integer(value as i64));
+            }
+        }
+        if !table.is_empty() {
+            row.insert("limits".to_owned(), toml::Value::Table(table));
+        }
+    }
     row.insert("enabled".to_owned(), toml::Value::Boolean(entry.enabled));
     if !entry.requires.is_empty() {
         row.insert(

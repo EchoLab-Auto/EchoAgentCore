@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::{EntryKind, LoadError, LoadedTree, PluginEntry};
+use crate::{EntryKind, LoadError, LoadedTree, PluginEntry, PluginLimits};
 
 /// One parsed file: an optional `[profile]` section plus `[[plugin]]` rows.
 #[derive(Debug, Deserialize)]
@@ -52,6 +52,9 @@ struct RawEntry {
     /// Free-form config as a TOML value; converted to JSON on load.
     #[serde(default)]
     config: Option<toml::Value>,
+    /// 子进程资源限额（可选；见 [`PluginLimits`]）。
+    #[serde(default)]
+    limits: Option<PluginLimits>,
 }
 
 fn default_enabled() -> bool {
@@ -75,6 +78,8 @@ impl RawEntry {
                 .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
             layer,
             layer_source: source.to_owned(),
+            // 全空（`[plugin.limits]` 写了空表）= 不限制，与未写等价。
+            limits: self.limits.filter(|limits| !limits.is_empty()),
         }
     }
 }
@@ -232,6 +237,30 @@ fn validate(entries: &[PluginEntry]) -> Result<(), LoadError> {
                 return Err(LoadError::Validation {
                     message: format!(
                         "plugin `{}` (kind = \"stdio\") requires a non-empty `command`",
+                        entry.id
+                    ),
+                });
+            }
+        }
+    }
+
+    // 限额：0 是**无意义值**（`setrlimit` 里 0 表示"什么都不许"，不是
+    // "不限制"），写在配置里的人几乎一定是想要后者。拒绝而不是猜意图。
+    for entry in entries {
+        let Some(limits) = &entry.limits else {
+            continue;
+        };
+        for (name, value) in [
+            ("cpu_seconds", limits.cpu_seconds),
+            ("memory_mb", limits.memory_mb),
+            ("file_size_mb", limits.file_size_mb),
+            ("open_files", limits.open_files),
+            ("processes", limits.processes),
+        ] {
+            if value == Some(0) {
+                return Err(LoadError::Validation {
+                    message: format!(
+                        "plugin `{}` has `limits.{name} = 0` — 0 表示\"完全禁止\"而不是\"不限制\"；要放开请删掉该行",
                         entry.id
                     ),
                 });

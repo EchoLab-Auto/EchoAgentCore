@@ -32,5 +32,5 @@ mod output;
 
 pub use compose::load;
 pub use error::LoadError;
-pub use model::{EntryKind, LoadedTree, PluginEntry};
+pub use model::{EntryKind, LoadedTree, PluginEntry, PluginLimits};
 pub use output::dump;

@@ -40,6 +40,40 @@ use crate::transport::{PluginConnection, PluginSpec, Transport, TransportError};
 /// 单帧上限（16 MiB）。读侧长度前缀与写侧序列化结果均受此约束。
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
+/// 子进程资源限额（运行时形态；配置侧等价于 `plugins.toml` 的
+/// `[plugin.limits]`）。
+///
+/// 全体 `Option`：**`None` = 不限制**（继承宿主）。只支持五项，每项都是
+/// 硬限额（软=硬）——插件没有义务处理 SIGXCPU，两段式限额只会让人误以为
+/// 没生效。
+///
+/// 限额在 `exec` **之前**由子进程自己设置（`setrlimit` 继承给它的后代），
+/// 因此插件再派生的子进程同样受限。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResourceLimits {
+    /// CPU 时间（秒）。
+    pub cpu_seconds: Option<u64>,
+    /// 地址空间（字节）。
+    pub memory_bytes: Option<u64>,
+    /// 单文件写入上限（字节）。
+    pub file_size_bytes: Option<u64>,
+    /// 打开文件描述符数（含 socket）。
+    pub open_files: Option<u64>,
+    /// 子进程数。
+    pub processes: Option<u64>,
+}
+
+impl ResourceLimits {
+    /// 是否一项都没设（此时不装 `pre_exec`，spawn 路径与无限制完全一致）。
+    pub fn is_empty(&self) -> bool {
+        self.cpu_seconds.is_none()
+            && self.memory_bytes.is_none()
+            && self.file_size_bytes.is_none()
+            && self.open_files.is_none()
+            && self.processes.is_none()
+    }
+}
+
 /// stdio 运输层：每次 [`Transport::start`] spawn 一个插件子进程。
 ///
 /// 命令始终按可执行文件路径解析（[`PathBuf`]，不经 shell、无通配 / 变量展开）：
@@ -57,6 +91,7 @@ pub struct StdioTransport {
     args: Vec<OsString>,
     env: Vec<(OsString, OsString)>,
     cwd: Option<PathBuf>,
+    limits: ResourceLimits,
 }
 
 impl StdioTransport {
@@ -67,6 +102,7 @@ impl StdioTransport {
             args: Vec::new(),
             env: Vec::new(),
             cwd: None,
+            limits: ResourceLimits::default(),
         }
     }
 
@@ -92,6 +128,15 @@ impl StdioTransport {
         self
     }
 
+    /// 设置子进程资源限额（链式；缺省 = 不限制）。
+    ///
+    /// 空限额（一项都没设）等价于没调用：不装 `pre_exec`，spawn 路径保持
+    /// 无限制时的原样。
+    pub fn with_limits(mut self, limits: ResourceLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
     /// 组装 spawn 命令（管道 stdio / 最小环境 / 进程组 / 工作目录）。
     fn command(&self) -> Command {
         let mut cmd = Command::new(&self.program);
@@ -114,8 +159,56 @@ impl StdioTransport {
         }
         #[cfg(unix)]
         cmd.process_group(0); // 独立进程组：shutdown 超时强杀 / 整组清理的前提。
+        #[cfg(unix)]
+        if !self.limits.is_empty() {
+            let limits = self.limits;
+            // SAFETY: `pre_exec` 的闭包在 fork 之后、exec 之前运行，只允许
+            // 异步信号安全的操作。这里只调 `setrlimit`（POSIX 允许在
+            // fork 与 exec 之间调用），不分配内存、不取锁、不碰 Rust 运行时。
+            unsafe {
+                cmd.pre_exec(move || apply_limits(&limits));
+            }
+        }
         cmd
     }
+}
+
+/// 在子进程里落地限额（`fork` 后、`exec` 前；只做 `setrlimit`）。
+///
+/// 返回值是 `io::Error`：`pre_exec` 的契约要求如此，任一限额设置失败即让
+/// spawn 失败——**静默忽略等于假装限额生效**，那比不设更危险。
+#[cfg(unix)]
+fn apply_limits(limits: &ResourceLimits) -> std::io::Result<()> {
+    // `setrlimit` 在 linux 绑定里第一个形参是 `__rlimit_resource_t`（= u32），
+    // 而 `RLIMIT_*` 常量也是 u32；直接沿用绑定类型，避免跨平台猜宽度。
+    fn set(resource: libc::__rlimit_resource_t, value: Option<u64>) -> std::io::Result<()> {
+        let Some(value) = value else {
+            return Ok(());
+        };
+        // rlim_t 在不同平台上宽度不同：u64 → libc::rlim_t 显式转换，
+        // 溢出即按"上限"处理（不做静默截断）。
+        let limit = libc::rlim_t::try_from(value).unwrap_or(libc::rlim_t::MAX);
+        let rlimit = libc::rlimit {
+            rlim_cur: limit,
+            rlim_max: limit,
+        };
+        // SAFETY: 传的是本函数栈上的有效 rlimit 指针；setrlimit 不保留它。
+        let rc = unsafe { libc::setrlimit(resource, &rlimit) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+    set(libc::RLIMIT_CPU, limits.cpu_seconds)?;
+    set(libc::RLIMIT_AS, limits.memory_bytes)?;
+    set(libc::RLIMIT_FSIZE, limits.file_size_bytes)?;
+    set(libc::RLIMIT_NOFILE, limits.open_files)?;
+    // RLIMIT_NPROC 限的是**该 uid 的**总进程数，不是本进程树的——多插件
+    // 同 uid 部署时它会把彼此算进配额（可能误伤）。仍然提供，但值要给得
+    // 足够宽（文档已注明）。
+    set(libc::RLIMIT_NPROC, limits.processes)?;
+    Ok(())
 }
 
 #[async_trait]

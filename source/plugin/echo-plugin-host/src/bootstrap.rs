@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use echo_plugin_loader::{EntryKind, LoadedTree};
 
-use crate::stdio::StdioTransport;
+use crate::stdio::{ResourceLimits, StdioTransport};
 use crate::supervisor::{PluginHandle, PluginSupervisor};
 use crate::transport::PluginSpec;
 
@@ -45,6 +45,8 @@ pub struct LaunchSpec {
     pub env: BTreeMap<String, String>,
     /// 插件配置（原样进 [`PluginSpec::config`]）。
     pub config: Value,
+    /// 子进程资源限额（`plugins.toml` 的 `[plugin.limits]`；None = 不限制）。
+    pub limits: Option<echo_plugin_loader::PluginLimits>,
 }
 
 /// 从合成树中筛选可启动的 stdio 实例。
@@ -82,6 +84,7 @@ pub fn launch_specs(tree: &LoadedTree) -> (Vec<LaunchSpec>, Vec<String>) {
             args: entry.args.clone(),
             env: entry.env.clone(),
             config: entry.config.clone(),
+            limits: entry.limits,
         });
     }
     (specs, skipped)
@@ -110,6 +113,21 @@ impl StartedPlugins {
     }
 }
 
+/// 配置侧限额（MiB / 秒的**人读单位**）→ 运行时限额（字节）。
+///
+/// 单位换算是刻意分开的：配置文件里人写 `memory_mb = 512`，运行时
+/// `setrlimit` 要字节数——换算只在这一处发生，避免两套单位在各层漂移。
+fn resource_limits(limits: echo_plugin_loader::PluginLimits) -> ResourceLimits {
+    const MIB: u64 = 1024 * 1024;
+    ResourceLimits {
+        cpu_seconds: limits.cpu_seconds,
+        memory_bytes: limits.memory_mb.map(|mb| mb.saturating_mul(MIB)),
+        file_size_bytes: limits.file_size_mb.map(|mb| mb.saturating_mul(MIB)),
+        open_files: limits.open_files,
+        processes: limits.processes,
+    }
+}
+
 /// 逐个启动（best-effort）：`start` 失败记录到 [`StartedPlugins::errors`]
 /// 并继续启动其余插件。
 pub async fn start_plugins(
@@ -122,6 +140,9 @@ pub async fn start_plugins(
         let mut transport = StdioTransport::new(&spec.command).with_args(&spec.args);
         for (key, value) in &spec.env {
             transport = transport.with_env(key, value);
+        }
+        if let Some(limits) = spec.limits {
+            transport = transport.with_limits(resource_limits(limits));
         }
         let plugin_spec = PluginSpec {
             plugin_id: spec.plugin_id.clone(),

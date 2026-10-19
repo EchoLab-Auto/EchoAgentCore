@@ -527,6 +527,7 @@ mod tests {
             args: vec![],
             env: Default::default(),
             config: serde_json::json!({"name": "qq-test"}),
+            limits: None,
         };
         let runtime = start_with_specs(&config_path, |_| {}, vec![spec])
             .await

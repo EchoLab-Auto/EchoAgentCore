@@ -781,6 +781,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     command: command.clone(),
                     args: launch.args.clone(),
                     env: launch.env.clone(),
+                    // 实例插件的限额：与 `[adapters.<platform>.plugin]` 同源
+                    // （`launch.limits`），不设 = 不限制。
+                    limits: launch.limits,
                     // 三个字段各有读者，**都不再由 Core 派生**：
                     // - `shared` / `overrides`：新插件自己深合并 + 分配端口 +
                     //   派生容器名 / compose（NapCat 部署形状归插件）；
