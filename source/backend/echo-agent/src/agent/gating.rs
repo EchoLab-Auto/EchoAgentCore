@@ -431,7 +431,7 @@ fn gated_plugin_ids_from(registered: &[(String, String)]) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod gating {
+mod tests {
     use super::*;
 
     fn desc(id: &str, kind: &str) -> (String, String) {

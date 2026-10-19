@@ -1052,7 +1052,10 @@ mod tests {
         assert_eq!(roles.len(), 4, "{messages:?}");
         assert_eq!(messages[0].content, "跑一下");
         // assistant(tool_use) 由 ToolCall 合成——中间夹着 ModelStep 也不受影响。
-        let calls = messages[1].tool_calls.as_ref().expect("assistant tool_use 缺失");
+        let calls = messages[1]
+            .tool_calls
+            .as_ref()
+            .expect("assistant tool_use 缺失");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].id, "c1");
         assert_eq!(messages[2].tool_call_id.as_deref(), Some("c1"));

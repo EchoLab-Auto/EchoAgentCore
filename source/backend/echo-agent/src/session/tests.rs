@@ -249,23 +249,24 @@ async fn model_step_event_is_logged_without_touching_projection() {
         session: Some(session.id.clone()),
     }));
     let before = store.snapshot_for(&session.id).await;
-    store.append_event(echo_session::SessionEvent::ModelStep(
-        ModelStepEvent {
-            step_index: 0,
-            model: "m".into(),
-            prompt_tokens: 10,
-            completion_tokens: 2,
-            tool_call_ids: vec!["c1".into()],
-            turn: Some("branch".into()),
-            elapsed_ms: Some(7),
-            started_at_ms: 123,
-            session: Some(session.id.clone()),
-        },
-    ));
+    store.append_event(echo_session::SessionEvent::ModelStep(ModelStepEvent {
+        step_index: 0,
+        model: "m".into(),
+        prompt_tokens: 10,
+        completion_tokens: 2,
+        tool_call_ids: vec!["c1".into()],
+        turn: Some("branch".into()),
+        elapsed_ms: Some(7),
+        started_at_ms: 123,
+        session: Some(session.id.clone()),
+    }));
     let after = store.snapshot_for(&session.id).await;
     assert_eq!(before.len(), after.len(), "投影不应变化");
     assert_eq!(
-        before.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(),
+        before
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>(),
         after.iter().map(|m| m.content.as_str()).collect::<Vec<_>>()
     );
     // 事件本身必须真的落进日志（审计可读）。

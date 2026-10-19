@@ -544,6 +544,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn insert_after_sequence_skips_reasoning_of_that_turn() {
         // 推理也是本轮事件：最终回答必须排在它之后，不能插到推理前面
         // （否则显示历史里回答会出现在"思考"之前）。

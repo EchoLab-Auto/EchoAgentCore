@@ -260,6 +260,49 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     out
 }
 
+/// 递归收集 TOML 表里「看起来是凭据」的字符串值（键名形态匹配）。
+///
+/// 命中键名（小写比较，含即算）：`token` / `secret` / `password` /
+/// `api_key` / `apikey`。空值与过短值（< 8 字符，几乎不可能是真凭据，
+/// 且会造成大片误替换）跳过。返回 `(键路径, 值)`。
+fn collect_credential_values(table: &toml::Table) -> Vec<(String, String)> {
+    const MARKERS: [&str; 5] = ["token", "secret", "password", "api_key", "apikey"];
+    fn walk(table: &toml::Table, prefix: &str, out: &mut Vec<(String, String)>) {
+        for (key, value) in table {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            match value {
+                toml::Value::Table(inner) => walk(inner, &path, out),
+                toml::Value::Array(items) => {
+                    for (index, item) in items.iter().enumerate() {
+                        if let toml::Value::Table(inner) = item {
+                            walk(inner, &format!("{path}[{index}]"), out);
+                        }
+                    }
+                }
+                _ => {
+                    let lowered = key.to_ascii_lowercase();
+                    if !MARKERS.iter().any(|marker| lowered.contains(marker)) {
+                        continue;
+                    }
+                    let Some(text) = value.as_str() else { continue };
+                    let text = text.trim();
+                    if text.len() < 8 {
+                        continue;
+                    }
+                    out.push((path, text.to_string()));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(table, "", &mut out);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,47 +387,4 @@ mod tests {
         assert!(report.text.contains("【已隐藏:extra:0】"));
         assert!(report.text.contains("【已隐藏:pattern:corp_id】"));
     }
-}
-
-/// 递归收集 TOML 表里「看起来是凭据」的字符串值（键名形态匹配）。
-///
-/// 命中键名（小写比较，含即算）：`token` / `secret` / `password` /
-/// `api_key` / `apikey`。空值与过短值（< 8 字符，几乎不可能是真凭据，
-/// 且会造成大片误替换）跳过。返回 `(键路径, 值)`。
-fn collect_credential_values(table: &toml::Table) -> Vec<(String, String)> {
-    const MARKERS: [&str; 5] = ["token", "secret", "password", "api_key", "apikey"];
-    fn walk(table: &toml::Table, prefix: &str, out: &mut Vec<(String, String)>) {
-        for (key, value) in table {
-            let path = if prefix.is_empty() {
-                key.clone()
-            } else {
-                format!("{prefix}.{key}")
-            };
-            match value {
-                toml::Value::Table(inner) => walk(inner, &path, out),
-                toml::Value::Array(items) => {
-                    for (index, item) in items.iter().enumerate() {
-                        if let toml::Value::Table(inner) = item {
-                            walk(inner, &format!("{path}[{index}]"), out);
-                        }
-                    }
-                }
-                _ => {
-                    let lowered = key.to_ascii_lowercase();
-                    if !MARKERS.iter().any(|marker| lowered.contains(marker)) {
-                        continue;
-                    }
-                    let Some(text) = value.as_str() else { continue };
-                    let text = text.trim();
-                    if text.len() < 8 {
-                        continue;
-                    }
-                    out.push((path, text.to_string()));
-                }
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(table, "", &mut out);
-    out
 }

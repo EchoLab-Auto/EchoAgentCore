@@ -87,8 +87,6 @@ impl Target {
     }
 }
 
-/// 实例 id 卫生：仅 `[A-Za-z0-9_-]`（防经段头注入 TOML；与 persona id 约定一致）。
-
 // ── 值解析 ─────────────────────────────────────────────────────────────────
 
 /// 端口解析：1-65535（0 由 `auto` 关键字单独表达）。
@@ -189,8 +187,6 @@ fn normalize_advertise(value: &str, current: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
-/// 归一化实例端口值：`<端口>` 或 `auto`（→ 0）。
-
 // ── 文本编辑 ───────────────────────────────────────────────────────────────
 
 /// 解析表头行 → (归一化段名, 是否数组表 `[[...]]`)。
@@ -268,8 +264,6 @@ fn set_string_key(text: &str, section: &str, key: &str, value: &str) -> Result<S
     }
     set_key_line(text, section, key, &format!("{key} = \"{value}\""))
 }
-
-/// 设置 `<section>` 内的 `key = <整数>`（裸值形态；QQ 实例端口用）。
 
 /// 设置 `<section>` 内的 `key = ...`（赋值行完整给出）：
 /// - 段内已有该键：原位替换；
@@ -361,8 +355,6 @@ fn get_str<'a>(root: &'a toml::Table, path: &[&str]) -> Option<&'a str> {
     }
     None
 }
-
-/// 配置中出现的 QQ 实例 id（有序去重）。
 
 // ── 子命令实现 ─────────────────────────────────────────────────────────────
 

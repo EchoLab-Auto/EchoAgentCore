@@ -239,29 +239,22 @@ impl InstanceHostConfig {
 }
 
 /// `[instances.qq.plugin]`：实例插件进程（stdio）启动配置。
-#[derive(Debug, Clone, Deserialize)]
+///
+/// 全部字段缺省为空（`derive(Default)`）——**`command` 必须留空**：空值让
+/// 组合根按平台名派生 `echo-adapter-<platform>`（见 `main.rs`）。此前这里
+/// 硬编码 `echo-adapter-qq`，配置 `[instances.telegram]` 而没写
+/// `[instances.telegram.plugin].command` 时会因"默认值非空"跳过派生，直接
+/// 拉起 QQ 的二进制——多平台部署默认拉错插件，且没有任何报错。改配置时
+/// 不要给 `command` 补默认值。
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct PluginLaunchSection {
-    /// 插件可执行文件（绝对路径 / PATH 名）。
+    /// 插件可执行文件（绝对路径 / PATH 名）。留空 = 按平台名派生。
     pub command: String,
     /// 追加命令行参数。
     pub args: Vec<String>,
     /// 注入子进程的环境变量（宿主环境不继承，仅透传 PATH）。
     pub env: std::collections::BTreeMap<String, String>,
-}
-
-impl Default for PluginLaunchSection {
-    fn default() -> Self {
-        Self {
-            // 缺省留空 → 组合根按平台名派生 `echo-adapter-<platform>`（见 main.rs）。
-            // 此前这里硬编码 `echo-adapter-qq`：配置 `[instances.telegram]` 而没写
-            // `[instances.telegram.plugin].command` 时，会因为"默认值非空"跳过派生，
-            // 直接拉起 QQ 的二进制——多平台部署默认拉错插件，且没有任何报错。
-            command: String::new(),
-            args: Vec::new(),
-            env: std::collections::BTreeMap::new(),
-        }
-    }
 }
 
 /// 单个 QQ 实例的配置覆盖项（缺省继承 `[instances.qq]` 共享默认）。

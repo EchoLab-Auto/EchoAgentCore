@@ -525,7 +525,10 @@ mod tests {
         let text = serialize_event_identified(9, None, &ev);
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value.get("seq").and_then(|v| v.as_u64()), Some(9));
-        assert!(value.get("entry").is_none(), "无身份时不写该键（不产生空串）");
+        assert!(
+            value.get("entry").is_none(),
+            "无身份时不写该键（不产生空串）"
+        );
         // 旧入口行为不变
         let legacy = serialize_event_sequenced(9, &ev);
         let legacy_value: serde_json::Value = serde_json::from_str(&legacy).unwrap();
