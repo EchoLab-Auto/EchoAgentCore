@@ -139,7 +139,7 @@ echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/plugin-framework", ta
 
 ### 4.1 测试基线
 
-`cargo test --workspace` 全绿，**1056 通过 / 0 失败**（含 1 项 doctest）。
+`cargo test --workspace` 全绿，**1059 通过 / 0 失败**（含 doctest 3 项）。
 框架六件套贡献 153 项：
 
 | crate | 用例数 |
@@ -173,7 +173,7 @@ release 二进制 `~/.local/libexec/echo-agent-core/echo-agent-core-bin`（md5 �
 | **M0**（本文） | 边界冻结 + semver 策略 + 基线 | 本文提交；判据明确 |
 | **M1** | api + sdk 迁出建仓，打 tag | `git clone` 框架仓 → `cargo test` 通过；`plugin-adapter-qq` 去掉绝对路径后编译通过 |
 | **M2** | 框架层去业务化 | `MountContext` 只剩 `ctx`；框架 crate 零 `echo-defs` 依赖；新增领域词门禁 |
-| **M3** | 六件套整体外迁 | Core 全量测试 1056 仍全绿；release 构建 + 部署 + QQ 插件端到端正常 |
+| **M3** | 六件套整体外迁 | Core 全量测试 1059 仍全绿；release 构建 + 部署 + QQ 插件端到端正常 |
 | **M4** | 可用性与证伪 | **非 EchoAgent 最小宿主示例**（50 行 + 2 插件，只用六件套）可跑；跨语言插件示例可跑；第三方文档 |
 | **M5** | 协议去业务化 | **决策门**：需 2 个以上真实外部使用者才启动；当前建议不动 |
 
@@ -190,3 +190,43 @@ release 二进制 `~/.local/libexec/echo-agent-core/echo-agent-core-bin`（md5 �
 4. **双仓发布耦合**。框架 tag 与 Core 的 `Cargo.lock` 必须同步升级，否则会出现
    「Core 用了框架 A 版、插件用 B 版」的握手不兼容——由 `PROTOCOL_VERSION` 兜底
    （fail-closed 拒绝连接，不会静默错乱）。
+
+## 七、执行记录
+
+### M1：api + sdk 迁出建仓（完成，2026-10-19）
+
+新仓 [plugin-framework](https://github.com/EchoLab-Auto/plugin-framework)（Public），
+tag `v0.1.0` = `8d4c11e`。四个仓库各自钉自己的版本：
+
+| 仓库 | 依赖写法 |
+|---|---|
+| Core | `echo-plugin-{api,sdk} = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.1.0" }` |
+| plugin-adapter-qq | `echo-plugin-sdk = { git = …, tag = "v0.1.0" }`（原来是指向本机的绝对路径） |
+
+**代码零改动**（`diff -r` 逐字节核对 `src/`；仅 `Cargo.toml` 的 `description`
+去掉 `for EchoAgentCore` 前缀、依赖改为独立版本）。
+
+验收实测：
+
+| 项 | 结果 |
+|---|---|
+| 框架仓独立测试 | 24 通过（api 10 + sdk 14）+ 1 doctest，与迁出前**逐项相同** |
+| 框架仓质量 | `cargo fmt --check` 通过；`clippy --all-targets` 0 告警 |
+| 全新 clone 编译 | `/tmp` 干净目录 clone 后 `cargo test --locked` 全绿 |
+| Core 全量 | **1034 通过 / 0 失败**；`1034 + 25（api 10 + sdk 14 + sdk doctest 1）= 1059`，与基线逐项对齐 |
+| plugin-adapter-qq | 252 通过 / 0 失败（与切依赖前一致）；**全新 clone（git 协议）编译通过**，本机路径零残留 |
+| `scripts/check-deps.sh` | `Dependency-direction lint OK (28 crates)` |
+| 离线构建 | `cargo build --locked --offline` 通过（git 依赖已缓存，自更新不受断网影响） |
+
+两处计划外修正：
+
+1. **基线数字订正**：M0 写的 1056 是手工加总一份被截断的测试清单得来的**错值**。
+   M1 用 `git worktree` 检出迁出前提交重跑，实测 **1059**（本文 §4.1 与 M3 验收已改）。
+   教训：这类"总计数"必须由命令算，不能靠人眼累加。
+2. **`Cargo.lock` 是必要产物**：Core 与 adapter-qq 的 `Cargo.lock` 都记录了
+   `source = "git+…?tag=v0.1.0#8d4c11e7"`，rev 钉死意味着上游移动 tag 不会静默
+   改变本地构建；同时 `--locked` 让自更新的可复现性不依赖网络状态。
+
+未做（属 M2/M3）：`MountContext` 的业务 sink、`echo-plugin` 的悬空 `echo-defs`
+依赖、框架仓自建门禁（零全局态 / 依赖方向）——迁出的两个 crate 目前**没有**
+继承 Core 那套 `no_global_state` / 依赖方向门禁，M2 需在框架仓补齐。
