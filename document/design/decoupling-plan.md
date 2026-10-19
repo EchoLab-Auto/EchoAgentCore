@@ -219,7 +219,9 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [ ] Panel 对接：插件清单页显示来源/版本/状态/重启（协议扩展走 echo-protocol）
 - [ ] self-update 扩展：更新同步插件二进制（保留回滚）
 
-**验收（进行中）**：✅ 子进程插件经 `plugins.toml` 可达并注册工具（实例插件即走此路径）；⏳ 删除编译期 `register_and_mount` 调用属后续工作——Phase 3 之后仍内联的只有 `tools_builtin` / `instance_ops` / `federation` 三包。
+- [x] 删除编译期 mount 调用（P4 收口）：组合根不再逐个 `register_and_mount` 挂载内置插件，改为「构造进内置目录 → 一次 `mount_plan` 按计划挂载」。**构造仍在代码里**（mount 闭包要捕获端口 / token / 实例句柄 / broker 等运行期句柄），交给配置的是**集合 / 顺序 / 启用状态**：`plugins.toml` 的 `kind = "builtin"` 行按行序挂载、可 `enabled = false`；**未提及的内置插件一律照旧挂载**（现网 plugins.toml 多只登记子进程插件，缺省必须零变化）。未知 id 只告警不致命；装配失败仍 fail-fast（与逐插件 `?` 同语义）。5 项计划解析测试 + 3 项配置读取测试 + 真实启动冒烟（无 plugins.toml = 9 项全挂载，与改造前同集合）
+
+**验收**：✅ 子进程插件经 `plugins.toml` 可达并注册工具（实例插件即走此路径）；✅ 内置插件的**组合**（集合/顺序/启用）也由配置决定，改组合不改代码。Phase 3 之后仍内联在 echo-agent 的只剩 `tools_builtin` / `instance_ops` / `federation` 三包——它们缺的是**实现**外迁，与"组合配置化"是两条线。
 
 ### Phase 5：热重载与版本治理（1-2 周）
 

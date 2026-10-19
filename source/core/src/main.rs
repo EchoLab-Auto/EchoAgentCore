@@ -1327,15 +1327,22 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         }
 
         let version = env!("CARGO_PKG_VERSION");
-        fn register(
-            plugin_host: &echo_agent::plugins::PluginHost,
+        // 配置化组合（P4）：内置插件的**构造**留在代码里（mount 闭包要
+        // 捕获运行期句柄：端口 / token / 实例句柄 / broker…），但**集合、
+        // 顺序、启用状态**交给 plugins.toml——构造结果先进"内置目录"，
+        // 循环结束后由一次 mount_plan 按计划挂载。
+        let mut catalog: Vec<Arc<dyn echo_plugin::Plugin>> = Vec::new();
+        fn push_builtin(
+            catalog: &mut Vec<Arc<dyn echo_plugin::Plugin>>,
             manifest: PluginManifest,
             mount: impl Fn(&MountContext) -> echo_plugin::PluginMountResult + Send + Sync + 'static,
         ) -> Result<()> {
             let id = manifest.id.clone();
-            plugin_host
-                .register_and_mount(Arc::new(BuiltinPlugin::new(manifest, mount)))
-                .map_err(|e| anyhow::anyhow!(e).context(format!("mount plugin {id}")))?;
+            if catalog.iter().any(|p| p.manifest().id == id) {
+                // 装配 bug（同 id 两条构造）——早失败胜过静默覆盖。
+                return Err(anyhow::anyhow!("duplicate builtin plugin id {id}"));
+            }
+            catalog.push(Arc::new(BuiltinPlugin::new(manifest, mount)));
             Ok(())
         }
 
@@ -1348,8 +1355,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         };
 
         // ── 实化 1：内置工具集（包维度批量启停，跨 persona）──
-        register(
-            &plugin_host,
+        push_builtin(
+            &mut catalog,
             PluginManifest::builtin(
                 TOOLS_BUILTIN_PLUGIN_ID,
                 "内置工具集",
@@ -1368,8 +1375,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         )?;
 
         // ── 实化 2：技能目录（整表启停，跨 persona）──
-        register(
-            &plugin_host,
+        push_builtin(
+            &mut catalog,
             PluginManifest::builtin(
                 SKILLS_DIR_PLUGIN_ID,
                 "技能目录",
@@ -1397,14 +1404,15 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 带计量/脱敏装饰，服务键与贡献声明同源。
         for plugin in echo_plugin_loop::plugins(version) {
             let id = plugin.manifest().id.clone();
-            plugin_host
-                .register_and_mount(plugin)
-                .map_err(|e| anyhow::anyhow!(e).context(format!("mount plugin {id}")))?;
+            if catalog.iter().any(|p| p.manifest().id == id) {
+                return Err(anyhow::anyhow!("duplicate builtin plugin id {id}"));
+            }
+            catalog.push(plugin);
         }
         tracing::debug!(
             service = echo_plugin_loop::service_contribution().key.as_str(),
             plugins = ?echo_plugin_loop::PLUGIN_IDS,
-            "loop mode plugins mounted (pure policy; service declared)"
+            "loop mode plugins queued (pure policy; service declared)"
         );
 
         // 任务清单（checklist）已降级为普通内置工具：无插件注册，
@@ -1413,8 +1421,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // ── 实化 6：工作区会话（workspace 插件）──
         {
             use echo_agent::plugins::WORKSPACE_PLUGIN_ID;
-            register(
-                &plugin_host,
+            push_builtin(
+                &mut catalog,
                 PluginManifest::builtin(
                     WORKSPACE_PLUGIN_ID,
                     "工作区会话",
@@ -1437,8 +1445,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // ── 实化 7：subagent 委派（隔离上下文子任务 + 完成 hook 回灌）──
         {
             use echo_agent::plugins::SUBAGENT_PLUGIN_ID;
-            register(
-                &plugin_host,
+            push_builtin(
+                &mut catalog,
                 PluginManifest::builtin(
                     SUBAGENT_PLUGIN_ID,
                     "Subagent 委派",
@@ -1466,8 +1474,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let instance_plugin_id = crate::instance_manifests::plugin_id_for(&platform);
             let instance_plugin_name = format!("{platform} 插件实例");
             let instance_plugin_id_for_mount = instance_plugin_id.clone();
-            register(
-                &plugin_host,
+            push_builtin(
+                &mut catalog,
                 PluginManifest::builtin(
                     &instance_plugin_id,
                     &instance_plugin_name,
@@ -1529,8 +1537,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             } else {
                 None
             };
-            register(
-                &plugin_host,
+            push_builtin(
+                &mut catalog,
                 PluginManifest::builtin(
                     MANAGEMENT_PANEL_PLUGIN_ID,
                     "管理面",
@@ -1571,8 +1579,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // ── 名义挂载：provider.llm 保持重启生效语义。──
         {
             use echo_agent::plugins::PROVIDER_LLM_PLUGIN_ID;
-            register(
-                &plugin_host,
+            push_builtin(
+                &mut catalog,
                 PluginManifest::builtin(
                     PROVIDER_LLM_PLUGIN_ID,
                     "LLM Provider",
@@ -1585,7 +1593,30 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             )?;
         }
 
+        // ── 按计划挂载（配置化组合 P4 的落点）──
+        // 计划来自 plugins.toml 里 kind = "builtin" 的行：出现的按行序挂载、
+        // 可 `enabled = false` 关掉；**没提到的一律照旧挂载**（现网
+        // plugins.toml 大多只登记子进程插件，绝不能因此关掉内置功能）。
+        // 无 plugins.toml / 无 builtin 行 → 计划为空 = 目录顺序全启用，
+        // 与改造前逐字一致。
+        let plan = plugins_runtime::builtin_mount_plan(&args.config_path());
+        let catalog_ids: Vec<String> = catalog
+            .iter()
+            .map(|plugin| plugin.manifest().id.clone())
+            .collect();
+        let (order, diagnostics) = echo_agent::plugins::resolve_mount_order(&catalog_ids, &plan);
+        for diagnostic in &diagnostics {
+            warn!(%diagnostic, "builtin mount plan");
+        }
+        let (registered, mounted, mount_errors) = plugin_host.mount_plan(catalog, &order);
+        if !mount_errors.is_empty() {
+            // 与改造前逐插件 `?` 同语义：装配失败就启动失败——带着缺失的
+            // 管理面/工具集继续跑只会让人以为"服务起来了但一片空白"。
+            return Err(anyhow::anyhow!(mount_errors.join("; ")).context("mount builtin plugins"));
+        }
         info!(
+            registered,
+            mounted = ?mounted,
             plugins = ?plugin_host.descriptors().iter().map(|d| d.id.clone()).collect::<Vec<_>>(),
             "plugins mounted"
         );

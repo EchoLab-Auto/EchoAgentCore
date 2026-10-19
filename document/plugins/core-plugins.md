@@ -91,6 +91,30 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 >
 > QQ 工具（`send_*`/`get_*` 共 10 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由插件进程申报（插件仓库 `crates/echo-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。2026-10 去适配器化时 `source/core/src/qq_tools.rs` 已删除——插件实例本就能声明工具，没有留给组合根的特例。
 
+### 内置插件也能由 `plugins.toml` 组合（P4）
+
+内置插件的**实现**编译在 Core 里（mount 闭包要捕获端口 / token / 实例句柄等运行期句柄，构造只能在代码里发生），但**集合、顺序、启用状态**可以交给配置：在 `plugins.toml` 里写 `kind = "builtin"` 的行即可，与子进程插件条目共存于同一次分层合成（见 [插件开发指南](./plugin-authoring.md)）。
+
+```toml
+[[plugin]]
+id = "echo-agent.subagent"        # 排到最前（行序 = 挂载顺序）
+kind = "builtin"
+name = "Subagent 委派"
+
+[[plugin]]
+id = "echo-agent.tools.builtin"
+kind = "builtin"
+name = "内置工具集"
+enabled = false                   # 不挂载（仍注册，Panel 清单可见、可就地启用）
+```
+
+语义要点：
+
+- **缺省不写内置行 = 全部照旧挂载**。计划里没提到的内置插件按目录顺序追加挂载——现网 `plugins.toml` 大多只登记子进程插件，绝不能因为加了一条外部插件就关掉工具集/技能/管理面
+- **写错 id 只告警不致命**（启动日志 `builtin mount plan diagnostic=...`）：未知 id 被忽略，其余照常
+- `enabled = false` 只影响**启动期挂载**，不进 `core.toml` 的持久化状态——要长期生效就留在 `plugins.toml` 里；运行期开关仍走 `TogglePlugin`（Panel）
+- 排查"最终这一行来自哪一层、值是什么"用 `echo-agent-core dump-config`（只合成不启动）
+
 > 以上 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单——`expected_ids` 由**框架 8 项 + 前缀 `echo-agent.instance.`** 组成（不是逐个列实例 id）；选单（present_menu）已废弃移除，任务清单（checklist）为普通内置工具。
 
 ## 能力开关（per-persona）

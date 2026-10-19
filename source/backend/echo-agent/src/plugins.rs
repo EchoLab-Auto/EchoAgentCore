@@ -165,6 +165,76 @@ impl PluginSkillSink for SkillSink {
     }
 }
 
+/// 配置化组合（P4）：**一步挂载决定**——某个内置插件要不要挂载。
+///
+/// 只表达"挂载与否"，不表达"怎么构造"：内置插件的 mount 闭包要捕获
+/// 组合根的运行期句柄（端口 / token / 实例句柄 / broker…），构造只能在
+/// 代码里发生；能交给配置的是**集合、顺序、启用状态**。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountStep {
+    /// 内置插件 id（与 `PluginManifest::id` 一致）。
+    pub id: String,
+    /// 是否挂载（`false` = 注册但保持未挂载，Panel 显示为已禁用）。
+    pub enabled: bool,
+}
+
+impl MountStep {
+    /// 构造一步决定。
+    pub fn new(id: impl Into<String>, enabled: bool) -> Self {
+        Self {
+            id: id.into(),
+            enabled,
+        }
+    }
+}
+
+/// 把「内置目录顺序」与「配置给出的挂载计划」解析成**实际挂载序列**。
+///
+/// 语义（保守优先，任何配置都不会"顺手关掉一堆东西"）：
+///
+/// 1. 计划里出现的 id **按计划顺序**排在前面，启用状态取计划值；
+/// 2. 计划里出现、目录里没有的 id → 诊断（配置写错了），不挂载；
+/// 3. 目录里有、计划里**没提到**的 id → 追加在末尾、默认启用。
+///
+/// 第 3 条是关键：`plugins.toml` 长期只用来登记**子进程**插件（实例插件
+/// 等），绝大多数部署里它一个内置 id 都不提。若"计划未提到 = 不挂载"，
+/// 这些部署会一夜之间失去全部内置插件（工具集 / 技能 / 管理面…）。所以
+/// 缺省即挂载，配置只能**显式**改变某个内置插件的顺序或启用状态。
+///
+/// 计划为空（无 `plugins.toml`）→ 目录顺序原样返回，与改造前完全一致。
+pub fn resolve_mount_order(
+    catalog_ids: &[String],
+    plan: &[MountStep],
+) -> (Vec<MountStep>, Vec<String>) {
+    let mut diagnostics = Vec::new();
+    let mut ordered: Vec<MountStep> = Vec::with_capacity(catalog_ids.len());
+    let mut seen: Vec<&str> = Vec::new();
+    for step in plan {
+        if !catalog_ids.iter().any(|id| id == &step.id) {
+            diagnostics.push(format!(
+                "mount plan names unknown builtin plugin `{}` (ignored)",
+                step.id
+            ));
+            continue;
+        }
+        if seen.contains(&step.id.as_str()) {
+            diagnostics.push(format!(
+                "mount plan repeats builtin plugin `{}` (first wins)",
+                step.id
+            ));
+            continue;
+        }
+        seen.push(&step.id);
+        ordered.push(step.clone());
+    }
+    for id in catalog_ids {
+        if !seen.contains(&id.as_str()) {
+            ordered.push(MountStep::new(id.clone(), true));
+        }
+    }
+    (ordered, diagnostics)
+}
+
 /// The agent's plugin host: registry + descriptors + runtime toggling.
 pub struct PluginHost {
     pub registry: PluginRegistry,
@@ -211,6 +281,59 @@ impl PluginHost {
             .mount(&id, &self.ctx())
             .map_err(|e| format!("plugin {id} mount failed: {e}"))?;
         Ok(())
+    }
+
+    /// 配置化组合（P4）：按**挂载计划**注册 + 挂载一批内置插件。
+    ///
+    /// 与逐个 [`Self::register_and_mount`] 的差别只有两点：顺序由计划决定，
+    /// 计划里 `enabled = false` 的条目**不挂载**（但照样注册——Panel 的插件
+    /// 清单要能看到它、并能就地启用）。已持久化的禁用状态（`core.toml` 的
+    /// `disabled_plugins`）在这里再收敛一次：两者任一为禁用即不挂载。
+    ///
+    /// 返回 `(已注册数, 已挂载 id, 错误)`：单个挂载失败不影响其余（启动
+    /// 期"尽力而为"语义，与既有 `mount_all` 一致）；注册冲突（同 id 重复）
+    /// 是装配 bug，记进错误但不中断。
+    pub fn mount_plan(
+        &self,
+        catalog: Vec<Arc<dyn echo_plugin::Plugin>>,
+        plan: &[MountStep],
+    ) -> (usize, Vec<String>, Vec<String>) {
+        let mut errors: Vec<String> = Vec::new();
+        // 先全部注册：Panel 清单的完整性不依赖配置写了哪些行。
+        let mut by_id: Vec<(String, Arc<dyn echo_plugin::Plugin>)> = Vec::new();
+        for plugin in catalog {
+            let id = plugin.manifest().id.clone();
+            if let Err(e) = self.registry.register(Arc::clone(&plugin)) {
+                errors.push(e);
+                continue;
+            }
+            by_id.push((id, plugin));
+        }
+        let registered = by_id.len();
+        // 计划禁用 → 收敛进注册表的启用状态（启动期一次性，不写回配置）。
+        let disabled: Vec<String> = plan
+            .iter()
+            .filter(|step| !step.enabled)
+            .map(|step| step.id.clone())
+            .collect();
+        if !disabled.is_empty() {
+            self.registry.apply_disabled(&disabled);
+        }
+        let ctx = self.ctx();
+        let mut mounted = Vec::new();
+        for step in plan {
+            if !by_id.iter().any(|(id, _)| id == &step.id) {
+                continue; // 未注册（构造失败或计划里是未知 id）
+            }
+            if !self.registry.is_enabled(&step.id) {
+                continue;
+            }
+            match self.registry.mount(&step.id, &ctx) {
+                Ok(_) => mounted.push(step.id.clone()),
+                Err(e) => errors.push(format!("plugin {} mount failed: {e}", step.id)),
+            }
+        }
+        (registered, mounted, errors)
     }
 
     /// Descriptors for the Panel (sorted by id).
@@ -282,6 +405,86 @@ pub mod skill_registry_handle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 配置化组合：挂载计划解析 ─────────────────────────────────────────
+
+    fn catalog() -> Vec<String> {
+        vec!["a".to_string(), "b".to_string(), "c".to_string()]
+    }
+
+    /// 空计划（无 plugins.toml）→ 目录顺序原样、全部启用：与改造前逐字一致。
+    #[test]
+    fn empty_plan_keeps_catalog_order_and_enables_everything() {
+        let (order, diagnostics) = resolve_mount_order(&catalog(), &[]);
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            order,
+            vec![
+                MountStep::new("a", true),
+                MountStep::new("b", true),
+                MountStep::new("c", true)
+            ]
+        );
+    }
+
+    /// **关键安全语义**：计划只提到一个内置 id 时，其余内置仍要挂载。
+    ///
+    /// 现网 `plugins.toml` 多半只登记子进程插件、一个内置 id 都不提；
+    /// 若"未提到 = 不挂载"，这些部署会一夜之间失去工具集/技能/管理面。
+    #[test]
+    fn unmentioned_builtins_stay_mounted_after_named_ones() {
+        let (order, diagnostics) = resolve_mount_order(&catalog(), &[MountStep::new("c", false)]);
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            order,
+            vec![
+                MountStep::new("c", false), // 计划里提到的排前面（并禁用）
+                MountStep::new("a", true),
+                MountStep::new("b", true)
+            ]
+        );
+    }
+
+    /// 计划可重排：顺序决定挂载先后（配置化组合的表达力所在）。
+    #[test]
+    fn plan_reorders_mounting() {
+        let (order, _) = resolve_mount_order(
+            &catalog(),
+            &[MountStep::new("b", true), MountStep::new("a", true)],
+        );
+        assert_eq!(
+            order,
+            vec![
+                MountStep::new("b", true),
+                MountStep::new("a", true),
+                MountStep::new("c", true)
+            ]
+        );
+    }
+
+    /// 写错 id（拼错 / 已下线）→ 诊断而不是静默忽略；重复 → 首个生效。
+    #[test]
+    fn unknown_and_duplicate_ids_are_reported() {
+        let (order, diagnostics) = resolve_mount_order(
+            &catalog(),
+            &[
+                MountStep::new("ghost", true),
+                MountStep::new("b", false),
+                MountStep::new("b", true),
+            ],
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.contains("ghost")),
+            "{diagnostics:?}"
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.contains("repeats")),
+            "{diagnostics:?}"
+        );
+        // 首个 b（disabled）生效，后一个不覆盖它——重复不制造第二种解释。
+        assert_eq!(order[0], MountStep::new("b", false));
+        assert_eq!(order.len(), 3, "unknown id must not be inserted: {order:?}");
+    }
 
     #[test]
     fn profile_allows_plugin_is_whitelist_only() {

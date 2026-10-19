@@ -16,6 +16,8 @@
 //! - [`PluginRuntime::shutdown`]：5s 期限排空全部句柄（best-effort）。
 //! - [`dump_config`]：`dump-config` 子命令的实现——只合成不启动，把分层
 //!   合成树渲染回 TOML（每行带来源注释）。
+//! - [`builtin_mount_plan`]：`plugins.toml` 里 `kind = "builtin"` 的行 →
+//!   内置插件的挂载计划（配置化组合 P4：集合 / 顺序 / 启用由配置说了算）。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -221,6 +223,44 @@ pub fn dump_config(config_path: &Path) -> Result<Option<String>, echo_plugin_loa
     Ok(Some(text))
 }
 
+/// `plugins.toml` 里 `kind = "builtin"` 的行 → 内置插件的**挂载计划**。
+///
+/// 只挑 `kind = "builtin"`：`stdio` 行走子进程启动路径（[`start_with_specs`]），
+/// 两类条目在同一次合成里共存、各管各的。
+///
+/// 语义（与启动路径共用同一个 `load()`，所以不存在"dump 看到的树"与
+/// "装载的树"不一致）：
+/// - 文件不存在 / 解析失败 → **空计划**（外部插件特性休眠，或是坏文件——
+///   后者启动路径会 warn 并继续，这里同样不阻断启动：内置插件的缺省行为
+///   是"全挂载"，空计划正好等价于改造前的行为）；
+/// - 条目顺序即挂载顺序（`requires` 已在合成期拓扑排序过）；
+/// - `enabled = false` 的内置行 → 计划里保留但标记禁用：注册表仍会注册它
+///   （Panel 清单可见、可就地启用），只是启动时不挂载。
+///
+/// 未在计划里出现的内置插件仍按目录顺序挂载——见
+/// [`echo_agent::plugins::resolve_mount_order`] 的说明。
+pub fn builtin_mount_plan(config_path: &Path) -> Vec<echo_agent::plugins::MountStep> {
+    use echo_plugin_loader::EntryKind;
+    let path = config_path.with_file_name("plugins.toml");
+    if !path.exists() {
+        return Vec::new();
+    }
+    match echo_plugin_loader::load(&path) {
+        Ok(tree) => tree
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Builtin)
+            .map(|entry| echo_agent::plugins::MountStep::new(entry.id.clone(), entry.enabled))
+            .collect(),
+        Err(error) => {
+            // 与启动路径同款：坏文件 warn 后按"无配置"继续（内置插件照旧
+            // 全挂载），把可读错误留给用户从日志里看到具体哪一行坏了。
+            tracing::warn!(path = %path.display(), %error, "plugins.toml load failed; builtin mount plan falls back to defaults");
+            Vec::new()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +391,50 @@ mod tests {
         .expect("write profile");
         let error = dump_config(&dir.join("echo-agent-core.toml")).expect_err("must fail");
         assert!(error.to_string().contains("ghost"), "{error}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 内置插件挂载计划（配置化组合 P4）────────────────────────────────
+
+    /// 无 plugins.toml → 空计划（= 内置插件按目录顺序全挂载，行为不变）。
+    #[test]
+    fn builtin_plan_is_empty_without_plugins_toml() {
+        let dir = unique_dir("plan-missing");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        assert!(builtin_mount_plan(&dir.join("echo-agent-core.toml")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 只挑 builtin 行：stdio 行属于子进程启动路径，不能混进内置计划；
+    /// 顺序即行序（合成期已拓扑排序）；`enabled = false` 原样带出。
+    #[test]
+    fn builtin_plan_picks_only_builtin_rows_in_order() {
+        let dir = unique_dir("plan-mixed");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(
+            dir.join("plugins.toml"),
+            "[[plugin]]\nid = \"external\"\nkind = \"stdio\"\nname = \"ext\"\ncommand = \"/bin/ext\"\n\n\
+             [[plugin]]\nid = \"skills.dir\"\nkind = \"builtin\"\nname = \"技能目录\"\n\n\
+             [[plugin]]\nid = \"tools.builtin\"\nkind = \"builtin\"\nname = \"内置工具集\"\nenabled = false\n",
+        )
+        .expect("write profile");
+
+        let plan = builtin_mount_plan(&dir.join("echo-agent-core.toml"));
+        let ids: Vec<&str> = plan.iter().map(|step| step.id.as_str()).collect();
+        assert_eq!(ids, vec!["skills.dir", "tools.builtin"], "{plan:?}");
+        assert!(plan[0].enabled, "缺省 enabled = true");
+        assert!(!plan[1].enabled, "显式 enabled = false 必须带出");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 坏文件 → 空计划（不阻断启动）：内置插件回到缺省全挂载，
+    /// 与子进程路径"warn 后继续"保持一致。
+    #[test]
+    fn builtin_plan_falls_back_to_defaults_on_broken_file() {
+        let dir = unique_dir("plan-broken");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(dir.join("plugins.toml"), "not = valid = toml [[[").expect("write toml");
+        assert!(builtin_mount_plan(&dir.join("echo-agent-core.toml")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
