@@ -67,6 +67,7 @@ impl Agent {
             BackendCommand::SendMessage { team_id, .. }
             | BackendCommand::CancelRequestedWork { team_id, .. }
             | BackendCommand::RequestTrunkTimeline { team_id, .. }
+            | BackendCommand::RequestTimelineEarlier { team_id, .. }
             | BackendCommand::RequestSessionHistory { team_id, .. }
             | BackendCommand::RequestContext { team_id, .. }
             | BackendCommand::ClearHistory { team_id, .. }
@@ -91,6 +92,7 @@ impl Agent {
             BackendCommand::SendMessage { .. }
                 | BackendCommand::CancelRequestedWork { .. }
                 | BackendCommand::RequestTrunkTimeline { .. }
+                | BackendCommand::RequestTimelineEarlier { .. }
                 | BackendCommand::RequestContext { .. }
                 | BackendCommand::ClearHistory { .. }
                 | BackendCommand::ArchiveHistory { .. }
@@ -160,6 +162,7 @@ impl Agent {
             seq: agent.trunk.timeline_seq(),
             team_id,
             full: true,
+            has_more: false, // 全量重建：已含全部条目
         });
     }
     pub async fn apply_command(&self, cmd: BackendCommand) {
@@ -830,30 +833,53 @@ impl Agent {
                 }
                 self.emit_context_snapshot(session_id.as_deref()).await;
             }
-            BackendCommand::RequestTrunkTimeline { team_id, since_seq } => {
+            BackendCommand::RequestTrunkTimeline {
+                team_id,
+                since_seq,
+                limit,
+            } => {
                 // 指定人格时返回该 persona 的独立 timeline（不同记忆）。
                 // since_seq > 0 时走增量快照；增量窗口不完整（None）回退全量。
                 // full 标志告知前端本次是替换还是追加/修补，前端不再凭 seq
                 // 大小猜测（全量误当增量会整段重复，空增量误当全量会清空聊天）。
                 // 快照为同步短锁 clone（2026-10 评审：去掉 sleep 自旋与 None
                 // 降级）；Option 外形保留给将来可能的降级路径。
+                //
+                // 返回值带上 `has_more`（2026-10 分页）：全量路径按 `limit`
+                // 只回**最新** N 条时置 true，前端据此按需向上翻页。增量路径
+                // **不截断**——那是缺口补齐，截断会让前端游标与实际内容不一致。
                 let snapshot_or_skip = |trunk: &crate::session::TrunkStore,
                                         since: u64|
                  -> Option<(
                     Vec<crate::event::TimelineMessage>,
                     u64,
                     bool,
+                    bool,
                 )> {
                     if since > 0 {
                         match trunk.timeline_snapshot_since(since) {
-                            Some((m, s)) => Some((m, s, false)),
-                            None => Some((trunk.timeline_snapshot(), trunk.timeline_seq(), true)),
+                            Some((m, s)) => Some((m, s, false, false)),
+                            None => {
+                                let (m, more) = window_tail(trunk, limit);
+                                Some((m, trunk.timeline_seq(), true, more))
+                            }
                         }
                     } else {
-                        Some((trunk.timeline_snapshot(), trunk.timeline_seq(), true))
+                        let (m, more) = window_tail(trunk, limit);
+                        Some((m, trunk.timeline_seq(), true, more))
                     }
                 };
-                let (messages, seq, full) = if let Some(ref id) = team_id {
+                /// 全量路径取窗口尾部：`limit` 为 None/0 时返回全部。
+                fn window_tail(
+                    trunk: &crate::session::TrunkStore,
+                    limit: Option<usize>,
+                ) -> (Vec<crate::event::TimelineMessage>, bool) {
+                    match limit {
+                        Some(n) if n > 0 => trunk.timeline_window_tail(n),
+                        _ => (trunk.timeline_snapshot(), false),
+                    }
+                }
+                let (messages, seq, full, has_more) = if let Some(ref id) = team_id {
                     match crate::agent_manager::global_manager() {
                         Some(mgr) => match mgr.resolve(Some(id)) {
                             Some(agent) => {
@@ -898,6 +924,7 @@ impl Agent {
                     seq,
                     team_id: team_id.clone(),
                     full,
+                    has_more,
                 });
                 // 活跃 turn 快照（刷新恢复，2026-10）：运行状态本是瞬时事件
                 // 流，前端刷新重连后仅靠 TrunkTimeline 看不到正在运行的会话
@@ -913,6 +940,34 @@ impl Agent {
                 self.emit(BackendEvent::ActiveTurnsSnapshot {
                     session_ids,
                     team_id: team_id.clone(),
+                });
+            }
+            BackendCommand::RequestTimelineEarlier {
+                team_id,
+                before_seq,
+                limit,
+            } => {
+                // 向上翻页（2026-10 分页）：返回 `seq < before_seq` 的最近 N 条。
+                // 与 `RequestTrunkTimeline` 分开的理由见协议注释：翻页是"前插
+                // 到已加载列表头部"，不动同步游标；混在 full/增量语义里会让
+                // 前端难以判断该替换还是该前插。
+                let limit = limit.unwrap_or(200).clamp(1, 500);
+                // 目标 persona 解析（与 RequestTrunkTimeline 相同口径）。
+                let resolved = team_id
+                    .as_deref()
+                    .and_then(|id| crate::agent_manager::global_manager()?.resolve(Some(id)));
+                let trunk: &crate::session::TrunkStore = match &resolved {
+                    Some(agent) => &agent.trunk,
+                    None => &self.trunk,
+                };
+                let (messages, has_more) = trunk.timeline_page_before(before_seq, limit);
+                // 与全量快照同一套线上瘦身（推理正文截断），保证前端拿到的
+                // 形状与首屏一致。
+                let messages = crate::timeline::elide_reasoning_for_wire(messages);
+                self.emit(BackendEvent::TimelineEarlier {
+                    team_id: team_id.clone(),
+                    messages,
+                    has_more,
                 });
             }
             BackendCommand::RequestSessionHistory {

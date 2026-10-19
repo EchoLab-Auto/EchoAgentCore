@@ -632,6 +632,26 @@ pub enum BackendEvent {
         /// 误当增量追加导致整段历史重复。
         #[serde(default)]
         full: bool,
+        /// 本次快照是否**被窗口上限截断**（还有更早的条目可翻）。
+        ///
+        /// 只在 `RequestTrunkTimeline { limit: Some(n) }` 时可能为 true；
+        /// 缺省 false = 已含全部（旧版 Core / 未截断），前端不需要翻页。
+        #[serde(default)]
+        has_more: bool,
+    },
+    /// 更早的一页时间线（`RequestTimelineEarlier` 的响应；2026-10 分页）。
+    ///
+    /// 前端把 `messages` **前插**到已加载列表头部（不动同步游标）；`has_more`
+    /// 为 false 表示已到时间线开头（再往上翻没有更多了）。
+    TimelineEarlier {
+        /// 响应归属：= 请求的 team_id（None = 主/默认 agent）。
+        #[serde(default)]
+        team_id: Option<String>,
+        /// 时间升序的更早条目（`seq` 均小于请求的 `before_seq`）。
+        messages: Vec<TimelineMessage>,
+        /// 是否还有更早的条目。
+        #[serde(default)]
+        has_more: bool,
     },
     /// 某会话的显示历史（`RequestSessionHistory` 的响应；2026-10）。
     /// 从事件日志按会话派生（镜像显示时间线的形状），时间升序。

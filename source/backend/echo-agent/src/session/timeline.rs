@@ -121,6 +121,56 @@ impl TrunkStore {
         Some((messages, current))
     }
 
+    /// 只取**最新** `limit` 条（首屏窗口上限），返回 `(条目, 是否被截断)`。
+    ///
+    /// 为什么要窗口：时间线上限 [`TRUNK_TIMELINE_MAX`]（1024）条，压缩后约
+    /// 0.6 MB——首屏/重连一次收全既拖慢首帧，也让"只想看最后一屏"的场景白付
+    /// 传输与解析。截断后前端拿 `has_more = true`，更早的内容按
+    /// [`Self::timeline_page_before`] 向上翻。
+    ///
+    /// `limit = 0` 视为不限（与旧行为一致）。
+    pub fn timeline_window_tail(
+        &self,
+        limit: usize,
+    ) -> (Vec<crate::event::TimelineMessage>, bool) {
+        let timeline = self.timeline.lock();
+        if limit == 0 || timeline.len() <= limit {
+            return (timeline.clone(), false);
+        }
+        let start = timeline.len() - limit;
+        (timeline[start..].to_vec(), true)
+    }
+
+    /// 向上翻页：取 `seq < before_seq` 的**最近** `limit` 条，返回
+    /// `(条目（时间升序）, 是否还有更早的)`。
+    ///
+    /// 定位方式：在缓冲区内找第一条 `seq >= before_seq` 的条目作为锚点
+    /// （不含它），往前数 `limit` 条。**按位置而不是按 seq 过滤**的理由：
+    /// 旧版/重启前的条目 `seq == 0`（无法用 seq 比较），按 seq 过滤会让它们
+    /// 永远取不到；按位置取则自然带上——它们就在锚点前面。
+    ///
+    /// `before_seq` 小于缓冲区最老条目时返回空页且 `has_more = false`
+    /// （已到开头）；锚点找不到（游标超前/条目已被淘汰）时退化为"取末尾一页"。
+    pub fn timeline_page_before(
+        &self,
+        before_seq: u64,
+        limit: usize,
+    ) -> (Vec<crate::event::TimelineMessage>, bool) {
+        let timeline = self.timeline.lock();
+        if timeline.is_empty() || limit == 0 {
+            return (Vec::new(), false);
+        }
+        let anchor = timeline
+            .iter()
+            .position(|m| m.seq > 0 && m.seq >= before_seq)
+            .unwrap_or(timeline.len());
+        if anchor == 0 {
+            return (Vec::new(), false); // 已在最开头
+        }
+        let start = anchor.saturating_sub(limit);
+        (timeline[start..anchor].to_vec(), start > 0)
+    }
+
     /// Mutable access to the display timeline for in-place updates (e.g.
     /// attaching a tool result to its running entry).
     ///

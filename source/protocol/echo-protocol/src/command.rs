@@ -219,6 +219,34 @@ pub enum BackendCommand {
         /// None / 0 = 全量（默认）。前端首次加载全量，此后切换/回放只拉增量。
         #[serde(default)]
         since_seq: u64,
+        /// **首屏窗口上限**：全量快照最多返回**最新** N 条（`None` = 不限，
+        /// 与旧行为一致）。
+        ///
+        /// 为什么要它：时间线上限 1024 条，压缩后约 0.6 MB——首屏/重连一次性
+        /// 收完既拖慢首帧，也让"用户其实只想看最后一屏"的场景白付传输与解析。
+        /// 前端传 200 级别的值即可，更早的内容按 [`Self::RequestTimelineEarlier`]
+        /// 向上翻页（响应里的 `has_more` 表示还有没有）。
+        ///
+        /// 只影响 `since_seq == 0`（全量）路径：增量路径本来就是缺口补齐，
+        /// 截断会让前端游标与实际内容不一致。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<usize>,
+    },
+    /// 请求**更早的时间线**（向上翻页；2026-10 分页）。
+    ///
+    /// 与 [`Self::RequestTrunkTimeline`] 分开是因为语义不同：翻页只把更早的
+    /// 条目**追加到前端列表头部**，不动同步游标（`seq`）；而 `TrunkTimeline`
+    /// 的 `full` 语义是"替换缓存"。混在一个命令里会让前端难以判断该替换还是
+    /// 该前插。
+    RequestTimelineEarlier {
+        #[serde(default)]
+        team_id: Option<String>,
+        /// 只取 `seq < before_seq` 的最近 N 条（`before_seq` = 前端已加载的
+        /// 最老条目的 seq）。
+        before_seq: u64,
+        /// 本页最多返回条数（服务端 clamp [1, 500]）。
+        #[serde(default)]
+        limit: Option<usize>,
     },
     /// 请求某会话的**显示历史**（从事件日志按会话派生；2026-10 修复面板
     /// 「会话无消息」——共享显示时间线按 FIFO 淘汰后旧会话条目不可见）。

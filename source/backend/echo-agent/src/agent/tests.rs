@@ -681,6 +681,7 @@ async fn request_trunk_timeline_returns_the_persisted_history() {
         .apply_command(BackendCommand::RequestTrunkTimeline {
             team_id: Some("t".into()),
             since_seq: 0,
+            limit: None,
         })
         .await;
     let mut events = Vec::new();
@@ -910,6 +911,7 @@ async fn session_commands_require_explicit_team_id() {
         BackendCommand::RequestTrunkTimeline {
             team_id: None,
             since_seq: 0,
+            limit: None,
         },
         BackendCommand::RequestContext {
             team_id: None,
@@ -1926,7 +1928,7 @@ async fn run_tool_empty_arguments_gets_corrective_error() {
         reply: "ok".into(),
     });
     let mut tools = ToolRegistry::new();
-    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir());
+    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir(), None);
     let agent = Agent::new(
         provider,
         AgentConfig::default(),
@@ -1964,7 +1966,7 @@ async fn run_tool_malformed_json_gets_clear_error() {
         reply: "ok".into(),
     });
     let mut tools = ToolRegistry::new();
-    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir());
+    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir(), None);
     let agent = Agent::new(
         provider,
         AgentConfig::default(),
@@ -1997,7 +1999,7 @@ async fn run_tool_valid_arguments_pass_preflight() {
         reply: "ok".into(),
     });
     let mut tools = ToolRegistry::new();
-    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir());
+    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir(), None);
     let agent = Agent::new(
         provider,
         AgentConfig::default(),
@@ -3908,7 +3910,7 @@ async fn run_tool_redacts_secrets_from_real_bash_output_and_log() {
         reply: "ok".into(),
     });
     let mut tools = ToolRegistry::new();
-    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir());
+    crate::tool::builtin::coding::register_coding_tools(&mut tools, std::env::temp_dir(), None);
     let agent = Agent::new(
         provider,
         AgentConfig::default(),
