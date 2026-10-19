@@ -385,6 +385,7 @@ dependencies = [
  "echo-federation",
  "echo-loop",
  "echo-plugin",
+ "echo-plugin-adapter",
  "echo-plugin-host",
  "echo-plugin-loader",
  "echo-plugin-loop",
@@ -522,6 +523,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-plugin-adapter"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "echo-defs",
+ "echo-plugin-api",
+ "echo-plugin-host",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "echo-plugin-api"
 version = "0.1.0"
 dependencies = [
@@ -547,7 +562,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64",
- "echo-defs",
  "echo-plugin-api",
  "echo-plugin-loader",
  "serde_json",

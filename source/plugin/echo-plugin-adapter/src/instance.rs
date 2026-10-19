@@ -1,4 +1,8 @@
-//! 实例插件宿主侧（P1，2026-10 实例插件化）。
+//! # 实例插件适配（`echo-plugin-adapter`，P1 实例插件化）
+//!
+//! 归属说明见 [`mod@crate::tool`] 的模块文档：这些适配器实现 `echo-defs` 的
+//! 领域 trait（`PluginInstance` / `InstanceManagement`），因此不能留在领域
+//! 中立的 `echo-plugin-host` 里。
 //!
 //! - [`RemoteInstance`]：`echo_defs::plugin_instance::PluginInstance` 的远程实现——异步方法经
 //!   插件协议 `Invoke("<name>:<op>")`（能力位 fail-closed）；状态经
@@ -17,9 +21,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::api::{IncomingMessage, InstanceContribution, InvokeContext, InvokeOutcome};
-use crate::supervisor::{PluginHandle, PluginState};
-use crate::transport::TransportError;
+use echo_plugin_host::api::{IncomingMessage, InstanceContribution, InvokeContext, InvokeOutcome};
+use echo_plugin_host::{PluginHandle, PluginState, TransportError};
 
 /// 入站队列容量上限（每实例；满 → `backpressure` 错误码，插件退避）。
 const INBOUND_QUEUE_CAPACITY: usize = 256;
@@ -557,7 +560,7 @@ impl Default for CoreApiService {
     }
 }
 
-impl crate::host_service::HostService for CoreApiService {
+impl echo_plugin_host::HostService for CoreApiService {
     fn call(&self, method: &str, payload: Value) -> Result<Value, (String, String)> {
         // 旧插件调 `deliver_message`（2026-10 去适配器化改名，双接受过渡）。
         let method = if method == "deliver_message" {
@@ -697,8 +700,8 @@ pub fn message_to_incoming(message: IncomingMessage) -> echo_defs::chat::Incomin
     use echo_defs::chat::{ChannelType, IncomingFile, IncomingMessage};
 
     let channel = match message.channel {
-        crate::api::ChannelType::Dm => ChannelType::Direct,
-        crate::api::ChannelType::Group { group_id } => ChannelType::Group { group_id },
+        echo_plugin_host::api::ChannelType::Dm => ChannelType::Direct,
+        echo_plugin_host::api::ChannelType::Group { group_id } => ChannelType::Group { group_id },
     };
     let files: Vec<IncomingFile> = message
         .files
@@ -739,15 +742,15 @@ pub fn message_to_incoming(message: IncomingMessage) -> echo_defs::chat::Incomin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{
+    use echo_defs::plugin_instance::{InstanceManagement as _, PluginInstance as _};
+    use echo_plugin_host::api::{
         capabilities, ChannelType, HostToPlugin, IncomingMessage, InstanceCapabilities,
         InstanceContribution, PluginToHost, Register, Welcome,
     };
-    use crate::host_service::HostService as _;
-    use crate::inproc::{InprocIo, InprocPlugin, InprocTransport};
-    use crate::supervisor::PluginSupervisor;
-    use crate::transport::PluginSpec;
-    use echo_defs::plugin_instance::{InstanceManagement as _, PluginInstance as _};
+    use echo_plugin_host::inproc::{InprocIo, InprocPlugin, InprocTransport};
+    use echo_plugin_host::HostService as _;
+    use echo_plugin_host::PluginSpec;
+    use echo_plugin_host::PluginSupervisor;
     use serde_json::json;
     use std::future::Future;
     use std::pin::Pin;
@@ -801,9 +804,11 @@ mod tests {
                                 .await;
                             let _ = io
                                 .send(PluginToHost::Register(Register {
-                                    contributions: vec![crate::api::Contribution::PluginInstance(
-                                        contribution(),
-                                    )],
+                                    contributions: vec![
+                                        echo_plugin_host::api::Contribution::PluginInstance(
+                                            contribution(),
+                                        ),
+                                    ],
                                 }))
                                 .await;
                             let _ = io.send(PluginToHost::Ready).await;
@@ -818,14 +823,16 @@ mod tests {
                                 json!({})
                             };
                             let _ = io
-                                .send(PluginToHost::InvokeResult(crate::api::InvokeResult {
-                                    call_id: inv.call_id,
-                                    outcome: crate::api::InvokeOutcome::Ok {
-                                        text: String::new(),
-                                        images: vec![],
-                                        result,
+                                .send(PluginToHost::InvokeResult(
+                                    echo_plugin_host::api::InvokeResult {
+                                        call_id: inv.call_id,
+                                        outcome: echo_plugin_host::api::InvokeOutcome::Ok {
+                                            text: String::new(),
+                                            images: vec![],
+                                            result,
+                                        },
                                     },
-                                }))
+                                ))
                                 .await;
                         }
                         HostToPlugin::Drain(_) => return,
@@ -852,7 +859,7 @@ mod tests {
             .contributions()
             .into_iter()
             .filter_map(|c| match c {
-                crate::api::Contribution::PluginInstance(a) => Some(a),
+                echo_plugin_host::api::Contribution::PluginInstance(a) => Some(a),
                 _ => None,
             })
             .collect();
@@ -962,7 +969,7 @@ mod tests {
             .contributions()
             .into_iter()
             .filter_map(|c| match c {
-                crate::api::Contribution::PluginInstance(a) => Some(a),
+                echo_plugin_host::api::Contribution::PluginInstance(a) => Some(a),
                 _ => None,
             })
             .collect();
@@ -1221,9 +1228,11 @@ mod tests {
                                 .await;
                             let _ = io
                                 .send(PluginToHost::Register(Register {
-                                    contributions: vec![crate::api::Contribution::PluginInstance(
-                                        contribution(),
-                                    )],
+                                    contributions: vec![
+                                        echo_plugin_host::api::Contribution::PluginInstance(
+                                            contribution(),
+                                        ),
+                                    ],
                                 }))
                                 .await;
                             let _ = io.send(PluginToHost::Ready).await;
@@ -1246,7 +1255,7 @@ mod tests {
             .contributions()
             .into_iter()
             .filter_map(|c| match c {
-                crate::api::Contribution::PluginInstance(a) => Some(a),
+                echo_plugin_host::api::Contribution::PluginInstance(a) => Some(a),
                 _ => None,
             })
             .collect();
@@ -1265,7 +1274,7 @@ mod tests {
     async fn management_state_epoch_invalidates_across_restart() {
         let crashed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let supervisor =
-            PluginSupervisor::new().with_restart_policy(crate::supervisor::RestartPolicy {
+            PluginSupervisor::new().with_restart_policy(echo_plugin_host::RestartPolicy {
                 initial_backoff: std::time::Duration::from_millis(10),
                 ..Default::default()
             });

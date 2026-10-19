@@ -893,7 +893,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         }
         map
     };
-    let plugin_tools: std::sync::Arc<Vec<std::sync::Arc<echo_plugin_host::RemoteTool>>> =
+    let plugin_tools: std::sync::Arc<Vec<std::sync::Arc<echo_plugin_adapter::RemoteTool>>> =
         std::sync::Arc::new(
             plugin_runtime
                 .as_ref()
@@ -1585,7 +1585,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let mut inbound_rx = handle.inbound_rx;
         tokio::spawn(async move {
             while let Some(message) = inbound_rx.recv().await {
-                let incoming = echo_plugin_host::instance::message_to_incoming(message);
+                let incoming = echo_plugin_adapter::message_to_incoming(message);
                 if let Err(error) = hook.on_incoming_message(incoming).await {
                     tracing::warn!(
                         instance = %worker_instance,

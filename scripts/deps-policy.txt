@@ -1,0 +1,63 @@
+# echo-* 依赖白名单 —— 依赖方向的**单一真值来源**
+#
+# 两处门禁共读本文件，避免「CI 绿但实际越界」：
+#   - `scripts/check-deps.sh`（CI 的 dependency-direction-lint job，纯 bash）
+#   - `source/core/tests/plugin_dependency_direction.rs`（cargo test）
+#
+# 格式：`<source/ 下相对目录> <允许的 echo-* 依赖...>`（空白分隔）
+#   - 空行与 `#` 注释被忽略；
+#   - 每行是**完整白名单**（不是增量）：列出的依赖之外一律违规；
+#   - `[dependencies]` 与 `[dev-dependencies]` 都算。
+#
+# 纪律：
+#   1. **新增 crate 必须登记**——两处门禁都会报「未登记」并失败（fail-closed），
+#      忘登记不会静默放行；
+#   2. **`echo-agent`（业务 crate）只允许出现在 `core`**（组合根）；
+#      `echo-agent-core` 是二进制名，不应被任何 crate 依赖；
+#   3. 方向只向下：定义层 → 机制层 → 插件层 → 宿主 → 组合根。想在插件里用
+#      框架能力，走服务键 / `HostCall` / trait 注入，而不是 `use echo_agent::…`。
+#
+# 分层依据见 document/overview/architecture.md；Phase 3 外迁记录见
+# document/design/decoupling-plan.md。
+
+# ── 定义层（零 echo-* 依赖）────────────────────────────────────────────
+defs/echo-defs
+context/echo-context
+
+# ── 中间层（只依赖底座）────────────────────────────────────────────────
+session/echo-session                    echo-defs
+loop/echo-loop                          echo-context echo-defs
+protocol/echo-protocol                  echo-context echo-defs
+security/echo-sanitize                  echo-context echo-defs
+tool/echo-tool                          echo-context echo-defs echo-sanitize
+federation/echo-federation              echo-defs
+llm/echo-llm-openai                     echo-defs
+llm/echo-llm-anthropic                  echo-defs
+llm/echo-llm-ollama                     echo-defs echo-llm-openai
+config/echo-config
+backend/echo-test-utils                 echo-defs
+
+# ── 插件机制层 ─────────────────────────────────────────────────────────
+plugin/echo-plugin                      echo-context echo-defs
+plugin/echo-plugin-api
+plugin/echo-plugin-loader
+plugin/echo-plugin-sdk                  echo-plugin-api
+# host 只认协议：领域适配（RemoteTool / RemoteInstance）已迁到 echo-plugin-adapter。
+plugin/echo-plugin-host                 echo-plugin-api echo-plugin-loader
+plugin/echo-plugin-example              echo-plugin-host echo-plugin-sdk
+# 领域适配层：把协议贡献翻译成 echo-defs 的 Tool / PluginInstance trait。
+# 宿主保持领域中立（只认 echo-plugin-api），故适配器单独成 crate。
+plugin/echo-plugin-adapter              echo-plugin-host echo-plugin-api echo-defs
+
+# ── Phase 3 外迁的内置插件 ─────────────────────────────────────────────
+plugin/echo-plugin-provider-llm         echo-defs echo-llm-anthropic echo-llm-ollama echo-llm-openai
+plugin/echo-plugin-skills               echo-defs
+plugin/echo-plugin-loop                 echo-defs echo-plugin echo-plugin-api
+plugin/echo-plugin-subagent             echo-defs echo-tool
+plugin/echo-plugin-workspace            echo-defs echo-protocol echo-session echo-tool
+plugin/echo-plugin-management           echo-federation echo-protocol
+
+# ── 业务层与组合根 ─────────────────────────────────────────────────────
+# echo-agent 是业务 crate：**只有组合根可以依赖它**。
+backend/echo-agent                      echo-config echo-context echo-defs echo-federation echo-llm-anthropic echo-llm-ollama echo-llm-openai echo-loop echo-plugin echo-plugin-loop echo-plugin-provider-llm echo-plugin-skills echo-plugin-subagent echo-plugin-workspace echo-protocol echo-sanitize echo-session echo-test-utils echo-tool
+core                                    echo-agent echo-config echo-context echo-defs echo-federation echo-loop echo-plugin echo-plugin-adapter echo-plugin-host echo-plugin-loader echo-plugin-loop echo-plugin-management echo-protocol echo-sanitize echo-session

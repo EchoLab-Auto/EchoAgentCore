@@ -1,6 +1,17 @@
-//! 远程工具适配：把插件的工具贡献（[`ToolContribution`]）桥接为宿主侧
+//! # 远程工具适配（`echo-plugin-adapter`）
+//!
+//! 把插件的工具贡献（[`ToolContribution`]）桥接为宿主侧
 //! [`echo_defs::tool::Tool`]——无论插件是 inproc 还是子进程，经此适配后
 //! 的用法与内置工具完全一致（注册进 `ToolRegistry` 即可被模型调用）。
+//!
+//! ## 为什么在 adapter crate 而不在 `echo-plugin-host`
+//!
+//! 本适配器认识 `echo-defs` 的 `Tool` trait——那是**agent 领域词汇**。
+//! 宿主（`echo-plugin-host`）必须保持领域中立：它只认协议（
+//! `echo-plugin-api`），因此能把「插件机制」整体复用到任何 Rust 服务上。
+//! 适配器是「把远程调用伪装成本地 trait 对象」的那一层，属于 agent 框架侧；
+//! 外迁后 `echo-plugin-host` 的 echo-* 依赖收窄到 `api` + `loader`，
+//! 由 `scripts/deps-policy.txt` 与 `plugin_dependency_direction.rs` 双门禁守着。
 //!
 //! ## 调用上下文（`__session_id` 过渡桥）
 //!
@@ -17,8 +28,8 @@ use serde_json::Value;
 
 use echo_defs::tool::{Tool, ToolError, ToolResult};
 
-use crate::api::{Contribution, InvokeContext, InvokeOutcome, ToolContribution};
-use crate::supervisor::PluginHandle;
+use echo_plugin_host::api::{Contribution, InvokeContext, InvokeOutcome, ToolContribution};
+use echo_plugin_host::PluginHandle;
 
 /// 插件工具在宿主侧的 `Tool` 插件实例。
 pub struct RemoteTool {
@@ -116,9 +127,18 @@ impl Tool for RemoteTool {
     }
 }
 
-impl PluginHandle {
+/// 插件句柄的工具视图（扩展 trait）。
+///
+/// 用扩展 trait 而非 `impl PluginHandle`：`PluginHandle` 定义在
+/// `echo-plugin-host`，跨 crate 不能为它添加 inherent 方法——而「工具贡献
+/// → `Tool` trait 对象」这层适配**必须**留在认识 `echo-defs` 的 crate 里。
+pub trait PluginHandleTools {
     /// 把本插件的全部工具贡献包装为插件实例（未注册工具贡献的插件返回空表）。
-    pub fn remote_tools(&self) -> Vec<Arc<RemoteTool>> {
+    fn remote_tools(&self) -> Vec<Arc<RemoteTool>>;
+}
+
+impl PluginHandleTools for PluginHandle {
+    fn remote_tools(&self) -> Vec<Arc<RemoteTool>> {
         self.contributions()
             .into_iter()
             .filter_map(|c| match c {
@@ -132,12 +152,12 @@ impl PluginHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{
+    use echo_plugin_host::api::{
         Contribution, PluginToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
     };
-    use crate::inproc::{InprocIo, InprocPlugin, InprocTransport};
-    use crate::supervisor::PluginSupervisor;
-    use crate::transport::PluginSpec;
+    use echo_plugin_host::inproc::{InprocIo, InprocPlugin, InprocTransport};
+    use echo_plugin_host::PluginSpec;
+    use echo_plugin_host::PluginSupervisor;
     use serde_json::json;
 
     /// 测试插件：注册 `add` 工具（返回两数之和）；`boom` 触发错误；
@@ -152,7 +172,7 @@ mod tests {
             Box::pin(async move {
                 while let Some(msg) = io.recv().await {
                     match msg {
-                        crate::api::HostToPlugin::Hello(hello) => {
+                        echo_plugin_host::api::HostToPlugin::Hello(hello) => {
                             let _ = io
                                 .send(PluginToHost::Welcome(Welcome {
                                     protocol: PROTOCOL_NAME.into(),
@@ -176,7 +196,7 @@ mod tests {
                                 .await;
                             let _ = io.send(PluginToHost::Ready).await;
                         }
-                        crate::api::HostToPlugin::Invoke(inv) => {
+                        echo_plugin_host::api::HostToPlugin::Invoke(inv) => {
                             let outcome = match inv.contribution.as_str() {
                                 "add" => {
                                     let a = inv.payload["a"].as_f64().unwrap_or(0.0);
@@ -193,14 +213,16 @@ mod tests {
                                 },
                             };
                             let _ = io
-                                .send(PluginToHost::InvokeResult(crate::api::InvokeResult {
-                                    call_id: inv.call_id,
-                                    outcome,
-                                }))
+                                .send(PluginToHost::InvokeResult(
+                                    echo_plugin_host::api::InvokeResult {
+                                        call_id: inv.call_id,
+                                        outcome,
+                                    },
+                                ))
                                 .await;
                         }
-                        crate::api::HostToPlugin::Drain(_) => return,
-                        crate::api::HostToPlugin::Dispose => return,
+                        echo_plugin_host::api::HostToPlugin::Drain(_) => return,
+                        echo_plugin_host::api::HostToPlugin::Dispose => return,
                         _ => {}
                     }
                 }

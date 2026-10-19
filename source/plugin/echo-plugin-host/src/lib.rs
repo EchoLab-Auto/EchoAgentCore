@@ -6,7 +6,10 @@
 //! - [`stdio`]：子进程实现 [`stdio::StdioTransport`]（4 字节小端长度前缀 + JSON）；
 //! - [`supervisor`]：插件生命周期监督 [`supervisor::PluginSupervisor`]
 //!   （握手 / 贡献注册 / 调用 / 取消 / 排空 / 崩溃重启）；
-//! - [`tool`]：远程工具适配 [`tool::RemoteTool`]（插件工具 → `echo_defs::Tool`）。
+//!
+//! 领域适配（把贡献变成 `echo_defs` 的 `Tool` / `PluginInstance` trait 对象）
+//! **不在本 crate**——见 `echo-plugin-adapter`：宿主只认协议
+//! （`echo-plugin-api`），因此可作为一个领域中立的 Rust 插件机制被整体复用。
 //! - [`bootstrap`]：配置驱动启动封装（[`bootstrap::launch_specs`] /
 //!   [`bootstrap::start_plugins`] / [`bootstrap::start_from_file`]）。
 //!
@@ -18,10 +21,8 @@ pub use echo_plugin_api as api;
 pub mod bootstrap;
 pub mod host_service;
 pub mod inproc;
-pub mod instance;
 pub mod stdio;
 pub mod supervisor;
-pub mod tool;
 pub mod transport;
 
 pub use bootstrap::{launch_specs, start_from_file, start_plugins, LaunchSpec, StartedPlugins};
@@ -29,7 +30,4 @@ pub use host_service::{HostService, HostServiceRegistry};
 pub use inproc::{InprocIo, InprocPlugin, InprocTransport};
 pub use stdio::{StdioConnection, StdioTransport};
 pub use supervisor::{PluginHandle, PluginState, PluginSupervisor, RestartPolicy};
-pub use tool::RemoteTool;
 pub use transport::{PluginConnection, PluginSpec, Transport, TransportError};
-
-pub use instance::{CoreApiService, RemoteInstance, RemoteInstanceManagement};

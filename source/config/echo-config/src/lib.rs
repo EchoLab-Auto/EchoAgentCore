@@ -6,6 +6,12 @@
 //! serialises all writes through a mutex and writes atomically (tmp file +
 //! rename).
 //!
+//! 归属（解耦计划 B3）：本 crate 属**机制层**——TOML 原子读改写是通用件，
+//! 不含任何业务词汇（无 qq/deepseek/panel/workspace/persona 命中，实测）。
+//! 因此物理位置在 `source/config/`（与 `context/` `tool/` 同级），而非
+//! `source/backend/`（业务层）；`scripts/deps-policy.txt` 把它登记为零
+//! echo-* 依赖的底座 crate。
+//!
 //! **This crate knows nothing about any section's meaning**: it stores an
 //! opaque `toml::Table`. Callers own their sections; `ensure_table` only
 //! guarantees "this key is a table" so a hand-edited file cannot panic us.

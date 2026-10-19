@@ -10,12 +10,16 @@
 //! 3. 单点失败 best-effort（坏 command 与好 command 并存）；
 //! 4. [`start_from_file`]（真实 `plugins.toml`）+ 文件缺失 → Err；
 //! 5. shutdown 排空到 Stopped。
+//!
+//! 断言口径：本 crate 领域中立，**不引用适配层**（`RemoteTool` 在
+//! `echo-plugin-adapter`）。因此「工具可用」在这里写成「贡献里有 `Tool`
+//! 且 `invoke` 回显正确」——覆盖同一条链路，但不引入 `echo-defs` 依赖。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use echo_defs::tool::Tool as _;
+use echo_plugin_host::api::{Contribution, InvokeContext, InvokeOutcome};
 use echo_plugin_host::bootstrap::{launch_specs, start_from_file, start_plugins, LaunchSpec};
 use echo_plugin_host::supervisor::{PluginState, PluginSupervisor};
 use echo_plugin_loader::{EntryKind, LoadedTree, PluginEntry};
@@ -126,14 +130,25 @@ async fn start_plugins_all_success_path() {
     assert_eq!(started.handles.len(), 1);
     assert!(started.errors.is_empty(), "errors: {:?}", started.errors);
 
-    let tools = started.tools();
-    assert_eq!(tools.len(), 1, "对端注册一个工具（echo）");
-    assert_eq!(tools[0].tool_name(), "echo");
-    let out = tools[0]
-        .execute(json!({"text": "hi"}))
-        .await
-        .expect("echo execute");
-    assert!(out.contains("hi"), "echo 应回显 text，实际: {out}");
+    let handle = &started.handles[0];
+    let tool_names: Vec<String> = handle
+        .contributions()
+        .into_iter()
+        .filter_map(|c| match c {
+            Contribution::Tool(t) => Some(t.name),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tool_names, vec!["echo"], "对端注册一个工具（echo）");
+    let outcome = handle
+        .invoke("echo", InvokeContext::default(), json!({"text": "hi"}))
+        .await;
+    match outcome {
+        InvokeOutcome::Ok { text, .. } => {
+            assert!(text.contains("hi"), "echo 应回显 text，实际: {text}")
+        }
+        other => panic!("echo 调用应成功，实际: {other:?}"),
+    }
 
     started.shutdown(Duration::from_secs(2)).await;
 }
@@ -157,7 +172,14 @@ async fn start_plugins_best_effort_on_single_failure() {
     assert_eq!(started.errors[0].0, "bad");
     assert!(!started.errors[0].1.is_empty(), "错误描述非空");
     assert_eq!(started.handles.len(), 1, "其余插件应继续启动");
-    assert!(!started.tools().is_empty(), "成功插件工具应可用");
+    let ok_handle = &started.handles[0];
+    assert!(
+        ok_handle
+            .contributions()
+            .iter()
+            .any(|c| matches!(c, Contribution::Tool(_))),
+        "成功插件的工具贡献应可用"
+    );
 
     started.shutdown(Duration::from_secs(2)).await;
 }

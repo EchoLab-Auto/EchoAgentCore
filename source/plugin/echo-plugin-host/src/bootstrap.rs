@@ -9,8 +9,10 @@
 //! - [`start_plugins`]：**best-effort** 逐个启动——单个插件失败（spawn 失败 /
 //!   握手超时等）不阻断其余插件，失败记入 [`StartedPlugins::errors`]。
 //! - [`start_from_file`]：`load(path)` + [`start_plugins`] 一步到位。
-//! - [`StartedPlugins::tools`] / [`StartedPlugins::shutdown`]：汇总远程工具与
-//!   统一排空。
+//! - [`StartedPlugins::shutdown`]：统一排空。
+//!
+//! 工具 / 实例的**适配**（`RemoteTool` / `RemoteInstance`）在
+//! `echo-plugin-adapter`：本 crate 领域中立，不引用 `echo-defs`。
 //!
 //! 语义要点：
 //! - `config` 原样透传（[`PluginSpec::config`] → `Hello.config`）；
@@ -19,7 +21,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
+
 use std::time::Duration;
 
 use serde_json::Value;
@@ -28,7 +30,6 @@ use echo_plugin_loader::{EntryKind, LoadedTree};
 
 use crate::stdio::StdioTransport;
 use crate::supervisor::{PluginHandle, PluginSupervisor};
-use crate::tool::RemoteTool;
 use crate::transport::PluginSpec;
 
 /// 一个可启动的 stdio 插件实例（由 `plugins.toml` 的一个条目翻译而来）。
@@ -95,32 +96,6 @@ pub struct StartedPlugins {
 }
 
 impl StartedPlugins {
-    /// 汇总全部句柄的工具贡献（每个插件工具一个 [`RemoteTool`] 插件实例；
-    /// 未注册工具贡献的插件贡献空表）。
-    pub fn tools(&self) -> Vec<Arc<RemoteTool>> {
-        self.handles.iter().flat_map(|h| h.remote_tools()).collect()
-    }
-
-    /// 汇总全部句柄的插件实例贡献（每个插件的 `Contribution::PluginInstance` 一个
-    /// [`crate::instance::RemoteInstance`]；未注册插件实例贡献的插件贡献空表；
-    /// P1，2026-10 实例插件化）。
-    pub fn instances(&self) -> Vec<(crate::api::InstanceContribution, PluginHandle)> {
-        self.handles
-            .iter()
-            .flat_map(|h| {
-                h.contributions()
-                    .into_iter()
-                    .filter_map(|c| match c {
-                        crate::api::Contribution::PluginInstance(instance) => {
-                            Some((instance, h.clone()))
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect()
-    }
-
     /// 逐个排空（`drain(deadline)`）；单点错误只记 debug 日志，不影响其余。
     pub async fn shutdown(&self, deadline: Duration) {
         for handle in &self.handles {

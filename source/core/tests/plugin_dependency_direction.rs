@@ -1,83 +1,27 @@
-//! Phase 3 门禁：**插件/机制 crate 不得依赖业务 crate**。
+//! 依赖方向门禁（Phase 3）：**机制层/插件层 crate 不得依赖业务 crate**。
 //!
-//! 背景：解耦计划 Phase 3（见 `document/design/decoupling-plan.md`）把内置
-//! 能力逐个外迁为独立 crate。外迁只有在「依赖方向真的收敛」时才有意义——
-//! 一个 `echo-plugin-*` 如果又反向依赖 `echo-agent`，就等于把业务 crate
-//! 换了个名字继续耦合。本测试把这个方向锁死为可断言的**只减不增**棘轮。
+//! 白名单的单一真值来源是 `scripts/deps-policy.txt`——同一份文件也被 CI 的
+//! `scripts/check-deps.sh` 读取。两者共读一张表，杜绝「CI 的清单和 cargo
+//! test 的清单各说一套」：此前正是如此（shell 脚本硬编码 14 个 crate，
+//! Phase 3 新增的 7 个一个都没查，脚本报 OK 而实际越界无人发现）。
 //!
-//! 口径：
-//! - 扫描各**机制层 / 插件层** crate 的 `Cargo.toml`，取 `[dependencies]`
-//!   与 `[dev-dependencies]` 里的 echo-* 依赖名；
-//! - 业务层（`echo-agent`）与组合根（`echo-agent-core`）永远不许出现；
-//! - 每行左 = crate 名（目录相对仓库根）；右 = 允许的 echo-* 依赖白名单。
+//! 本测试比 shell 脚本多两件事（脚本里同样实现了，这里做交叉验证）：
+//! - 业务 crate `echo-agent` 只允许 `core`（组合根）依赖；
+//! - `core` 之外一律不许出现 `echo-agent`，且任何 crate 不许依赖
+//!   `echo-agent-core`（那是二进制名）。
 //!
-//! 新增依赖必须同时改这张表——想在插件里用框架能力，应该走服务键 /
-//! `HostCall`，而不是 `use echo_agent::…`。
+//! 口径：`[dependencies]` 与 `[dev-dependencies]` 都算（测试里引入业务 crate
+//! 同样是方向违规——它会污染被外迁 crate 的编译依赖）。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// 业务 crate：任何机制层/插件层 crate 都不得依赖它们。
-const BUSINESS_CRATES: [&str; 2] = ["echo-agent", "echo-agent-core"];
-
-/// 允许的依赖表（crate 目录 → 允许的 echo-* 依赖）。
-///
-/// 只允许**向下**（定义层 `echo-defs` / 机制层 `echo-context` /
-/// `echo-tool` / `echo-plugin*` / provider 实现）。
-const ALLOWED: [(&str, &[&str]); 8] = [
-    // 机制底座
-    ("source/context/echo-context", &[]),
-    ("source/defs/echo-defs", &[]),
-    // dev-deps 里用 echo-sanitize 构造脱敏器（机制层安全 crate，非业务）
-    (
-        "source/tool/echo-tool",
-        &["echo-defs", "echo-context", "echo-sanitize"],
-    ),
-    // 插件协议与宿主（宿主不得依赖 backend 层）
-    // dev-deps 用 echo-defs 构造测试工具（定义层，非业务）
-    ("source/plugin/echo-plugin", &["echo-context", "echo-defs"]),
-    ("source/plugin/echo-plugin-api", &[]),
-    ("source/plugin/echo-plugin-loader", &[]),
-    (
-        "source/plugin/echo-plugin-host",
-        &["echo-defs", "echo-plugin-api", "echo-plugin-loader"],
-    ),
-    // Phase 3 外迁的内置插件
-    (
-        "source/plugin/echo-plugin-provider-llm",
-        &[
-            "echo-defs",
-            "echo-llm-openai",
-            "echo-llm-anthropic",
-            "echo-llm-ollama",
-        ],
-    ),
-];
-
-/// 额外允许列表（后加入的外迁插件在此登记，避免改动上面的定长表）。
-const ALLOWED_EXTRA: [(&str, &[&str]); 5] = [
-    ("source/plugin/echo-plugin-skills", &["echo-defs"]),
-    (
-        "source/plugin/echo-plugin-loop",
-        &["echo-defs", "echo-plugin", "echo-plugin-api"],
-    ),
-    // subagent 插件只经 `RemoteDelegationSink` 与宿主接缝（Phase 3 ⑥）
-    (
-        "source/plugin/echo-plugin-subagent",
-        &["echo-defs", "echo-tool"],
-    ),
-    // management 插件只认线契约（Phase 3 ⑧）：echo-protocol + 联邦入站接收
-    (
-        "source/plugin/echo-plugin-management",
-        &["echo-protocol", "echo-federation"],
-    ),
-    // workspace 插件只经 `RemoteWorkspaceQuery` 与宿主接缝（Phase 3 ⑤）；
-    // echo-protocol 提供 `WorkspaceSessionInfo` 等**线格式词汇**（不是业务 crate）
-    (
-        "source/plugin/echo-plugin-workspace",
-        &["echo-defs", "echo-tool", "echo-protocol", "echo-session"],
-    ),
-];
+/// 业务 crate：除组合根外，任何 crate 都不得依赖。
+const BUSINESS_CRATE: &str = "echo-agent";
+/// 组合根（唯一允许依赖业务 crate 的 crate 目录）。
+const COMPOSITION_ROOT: &str = "core";
+/// 二进制 crate 名：不应被任何 crate 依赖。
+const BINARY_CRATE: &str = "echo-agent-core";
 
 fn repo_root() -> PathBuf {
     // 本文件位于 source/core/tests/ → source/core → 仓库根
@@ -88,10 +32,36 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// 从 Cargo.toml 取 echo-* 依赖名（`[dependencies]` / `[dev-dependencies]`）。
+/// 读 `scripts/deps-policy.txt`：`crate 目录 → 允许的 echo-* 依赖集合`。
+fn policy() -> BTreeMap<String, BTreeSet<String>> {
+    let path = repo_root().join("scripts/deps-policy.txt");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("读不到依赖白名单 {}: {e}", path.display()));
+    let mut out = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let Some(crate_dir) = parts.next() else {
+            continue;
+        };
+        let allowed = parts.map(str::to_string).collect::<BTreeSet<_>>();
+        let previous = out.insert(crate_dir.to_string(), allowed);
+        assert!(
+            previous.is_none(),
+            "白名单里 {crate_dir} 出现了两次（后者会静默覆盖前者）"
+        );
+    }
+    assert!(!out.is_empty(), "白名单为空——门禁形同虚设");
+    out
+}
+
+/// 从 Cargo.toml 取 echo-* 依赖名（`[dependencies]` 与 `[dev-dependencies]`）。
 ///
-/// 手写解析：本仓库不引 TOML 解析器只为一个门禁测试；格式简单固定
-/// （`name = { … }` / `name = "1"` / `name.workspace = true`）。
+/// 手写解析：门禁测试不该为了读 manifest 引入 TOML 依赖；格式固定
+/// （`name = { … }` / `name.workspace = true` / `name = "1"`）。
 fn echo_deps(manifest: &Path) -> BTreeSet<String> {
     let Ok(text) = std::fs::read_to_string(manifest) else {
         return BTreeSet::new();
@@ -107,92 +77,130 @@ fn echo_deps(manifest: &Path) -> BTreeSet<String> {
         if !in_deps || line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((key, _rest)) = line.split_once('=') else {
+        let Some((key, _)) = line.split_once('=') else {
             continue;
         };
-        // `echo-defs.workspace = true` → key = "echo-defs.workspace"
-        let name = key
-            .trim()
-            .split('.')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        // `echo-defs.workspace = true` → 取 `echo-defs`
+        let name = key.trim().split('.').next().unwrap_or("").trim();
         if name.starts_with("echo-") {
-            out.insert(name);
+            out.insert(name.to_string());
+        }
+    }
+    out
+}
+
+/// `source/` 下所有含 Cargo.toml 的 crate 目录（相对 `source/`）。
+fn discovered_crates() -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let source = repo_root().join("source");
+    for group in std::fs::read_dir(&source).into_iter().flatten().flatten() {
+        if !group.path().is_dir() {
+            continue;
+        }
+        for entry in std::fs::read_dir(group.path())
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let dir = entry.path();
+            if dir.join("Cargo.toml").is_file() {
+                let rel = dir
+                    .strip_prefix(&source)
+                    .expect("under source")
+                    .to_string_lossy()
+                    .to_string();
+                out.insert(rel);
+            }
         }
     }
     out
 }
 
 #[test]
-fn plugin_and_mechanism_crates_never_depend_on_business_crates() {
+fn every_crate_depends_only_on_what_the_policy_allows() {
     let root = repo_root();
     let mut violations = Vec::new();
-    for (dir, _) in ALLOWED.iter().chain(ALLOWED_EXTRA.iter()) {
-        let deps = echo_deps(&root.join(dir).join("Cargo.toml"));
-        for business in BUSINESS_CRATES {
-            if deps.contains(business) {
-                violations.push(format!("{dir} → {business}"));
+    for (crate_dir, allowed) in policy() {
+        let manifest = root.join("source").join(&crate_dir).join("Cargo.toml");
+        assert!(
+            manifest.is_file(),
+            "白名单里的 {crate_dir} 不存在（{}）——删 crate 时记得同步 scripts/deps-policy.txt",
+            manifest.display()
+        );
+        for dep in echo_deps(&manifest) {
+            if !allowed.contains(&dep) {
+                violations.push(format!("{crate_dir} → {dep}"));
             }
         }
     }
     assert!(
         violations.is_empty(),
-        "机制层/插件层 crate 依赖了业务 crate（应改用服务键或 HostCall）：\n{}",
+        "出现未登记的 echo-* 依赖（确认方向正确后加进 scripts/deps-policy.txt）：\n{}",
         violations.join("\n")
     );
 }
 
 #[test]
-fn plugin_and_mechanism_crates_stay_within_the_allowed_dependency_table() {
+fn business_crate_is_only_reachable_from_the_composition_root() {
     let root = repo_root();
     let mut violations = Vec::new();
-    for (dir, allowed) in ALLOWED.iter().chain(ALLOWED_EXTRA.iter()) {
-        let allowed: BTreeSet<&str> = allowed.iter().copied().collect();
-        for dep in echo_deps(&root.join(dir).join("Cargo.toml")) {
-            if !allowed.contains(dep.as_str()) {
-                violations.push(format!("{dir} → {dep}（不在白名单）"));
-            }
+    for crate_dir in discovered_crates() {
+        let manifest = root.join("source").join(&crate_dir).join("Cargo.toml");
+        let deps = echo_deps(&manifest);
+        if deps.contains(BINARY_CRATE) {
+            violations.push(format!(
+                "{crate_dir} → {BINARY_CRATE}（二进制名不可作为依赖）"
+            ));
+        }
+        if deps.contains(BUSINESS_CRATE) && crate_dir != COMPOSITION_ROOT {
+            violations.push(format!(
+                "{crate_dir} → {BUSINESS_CRATE}（业务 crate 只允许 {COMPOSITION_ROOT} 依赖）"
+            ));
         }
     }
     assert!(
         violations.is_empty(),
-        "出现未登记的 echo-* 依赖（确认方向正确后加进本测试的白名单表）：\n{}",
+        "业务 crate 被越界依赖（应改用服务键 / HostCall / trait 注入）：\n{}",
         violations.join("\n")
     );
 }
 
 #[test]
-fn table_covers_every_candidate_crate() {
-    let root = repo_root();
-    let listed: BTreeSet<&str> = ALLOWED
-        .iter()
-        .chain(ALLOWED_EXTRA.iter())
-        .map(|(dir, _)| *dir)
-        .collect();
-    // 新外迁的插件 crate 必须登记，否则门禁形同虚设。
-    let mut missing = Vec::new();
-    let plugin_dir = root.join("source/plugin");
-    if let Ok(entries) = std::fs::read_dir(&plugin_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if !name.starts_with("echo-plugin") {
-                continue;
-            }
-            let rel = format!("source/plugin/{name}");
-            // sdk / example 不参与（插件侧运行时与示例，无 echo-* 业务依赖）
-            if name == "echo-plugin-sdk" || name == "echo-plugin-example" {
-                continue;
-            }
-            if !listed.contains(rel.as_str()) {
-                missing.push(rel);
-            }
-        }
-    }
+fn every_crate_is_registered_in_the_policy() {
+    let declared = policy().into_keys().collect::<BTreeSet<_>>();
+    let missing = discovered_crates()
+        .into_iter()
+        .filter(|c| !declared.contains(c))
+        .collect::<Vec<_>>();
+    // 新 crate（尤其新外迁的插件）不登记就等于门禁对它失效。
     assert!(
         missing.is_empty(),
-        "新插件 crate 未登记到依赖方向门禁：{}",
-        missing.join(", ")
+        "以下 crate 未登记到 scripts/deps-policy.txt（门禁对它们失效）：\n{}",
+        missing.join("\n")
     );
+}
+
+/// 白名单自身形状自检：定义层必须零依赖，插件层不出现业务 crate。
+#[test]
+fn policy_shape_matches_the_layering_contract() {
+    let p = policy();
+    for zero in [
+        "defs/echo-defs",
+        "context/echo-context",
+        "config/echo-config",
+    ] {
+        let allowed = p.get(zero).unwrap_or_else(|| panic!("{zero} 未登记"));
+        assert!(
+            allowed.is_empty(),
+            "{zero} 是底座 crate，不允许任何 echo-* 依赖，实际: {allowed:?}"
+        );
+    }
+    for (crate_dir, allowed) in &p {
+        if crate_dir.starts_with("plugin/") {
+            assert!(
+                !allowed.contains(BUSINESS_CRATE),
+                "{crate_dir} 是插件层 crate，不允许依赖 {BUSINESS_CRATE}"
+            );
+        }
+    }
 }

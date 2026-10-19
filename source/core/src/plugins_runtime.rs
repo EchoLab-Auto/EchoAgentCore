@@ -19,8 +19,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use echo_plugin_adapter::{CoreApiService, RemoteInstance, RemoteTool};
 use echo_plugin_host::bootstrap::StartedPlugins;
-use echo_plugin_host::{HostServiceRegistry, PluginSupervisor, RemoteTool};
+use echo_plugin_host::{HostServiceRegistry, PluginSupervisor};
 
 /// 已装载并启动的子进程插件运行时。
 pub struct PluginRuntime {
@@ -30,7 +31,7 @@ pub struct PluginRuntime {
     pub skipped: Vec<String>,
     /// 插件实例宿主服务（`core_api`；实例插件的入站 / 状态回呼入口；
     /// P1，2026-10 实例插件化）。无插件实例贡献时为空注册表（无副作用）。
-    pub core_api: Arc<echo_plugin_host::CoreApiService>,
+    pub core_api: Arc<CoreApiService>,
 }
 
 /// 若 `<config_path 同目录>/plugins.toml` 存在则装载并启动；否则休眠。
@@ -101,7 +102,7 @@ pub async fn start_with_specs(
     register_host_services(&supervisor.host_services());
     // P1：插件实例宿主服务先行注册——插件就绪后其 `submit_input` / `report_*`
     // 回呼即有接收面（否则实例插件启动即报 instance_not_found）。
-    let core_api = Arc::new(echo_plugin_host::CoreApiService::new());
+    let core_api = Arc::new(CoreApiService::new());
     supervisor
         .host_services()
         .register("core_api", core_api.clone());
@@ -133,7 +134,7 @@ pub async fn start_with_specs(
 /// P1，2026-10 实例插件化）。
 pub struct RemoteInstanceHandle {
     /// 远程插件实例（注册进 `InstanceRegistry`）。
-    pub instance: Arc<echo_plugin_host::RemoteInstance>,
+    pub instance: Arc<RemoteInstance>,
     /// 入站消息队列 receiver（插件 `submit_input` 的出站端；
     /// 每实例串行 worker 消费）。
     pub inbound_rx: tokio::sync::mpsc::Receiver<echo_plugin_host::api::IncomingMessage>,
@@ -142,7 +143,7 @@ pub struct RemoteInstanceHandle {
 impl PluginRuntime {
     /// 全部已启动插件的远程工具插件实例（未注册工具贡献的插件贡献空表）。
     pub fn tools(&self) -> Vec<Arc<RemoteTool>> {
-        self.started.tools()
+        echo_plugin_adapter::tools_of(&self.started)
     }
 
     /// 全部已启动插件的插件实例贡献的远程插件实例（P1，2026-10 实例插件化）。
@@ -152,11 +153,10 @@ impl PluginRuntime {
     /// 随元组带出）；组合根随后把插件实例注册进 `InstanceRegistry`，并把
     /// receiver 接到消息送达入口（见 `main.rs` 装配）。
     pub fn instances(&self) -> Vec<RemoteInstanceHandle> {
-        self.started
-            .instances()
+        echo_plugin_adapter::instance_contributions(&self.started)
             .into_iter()
             .map(|(contribution, handle)| {
-                let instance = echo_plugin_host::RemoteInstance::new(contribution, handle);
+                let instance = RemoteInstance::new(contribution, handle);
                 // 注册进 core_api（入站队列就绪；receiver 交组合根）。
                 let inbound_rx = self.core_api.register(instance.clone());
                 RemoteInstanceHandle {
@@ -168,7 +168,7 @@ impl PluginRuntime {
     }
 
     /// 插件实例宿主服务（`core_api`；插件回呼的接收面）。
-    pub fn core_api(&self) -> Arc<echo_plugin_host::CoreApiService> {
+    pub fn core_api(&self) -> Arc<CoreApiService> {
         self.core_api.clone()
     }
 

@@ -13,12 +13,13 @@ members = [
     "source/protocol/echo-protocol",
     "source/federation/echo-federation",
     "source/backend/echo-agent",
-    "source/backend/echo-config",
+    "source/config/echo-config",
     "source/backend/echo-test-utils",
     "source/core",
     "source/plugin/echo-plugin",
     "source/plugin/echo-plugin-api",
     "source/plugin/echo-plugin-host",
+    "source/plugin/echo-plugin-adapter",
     "source/plugin/echo-plugin-sdk",
     "source/plugin/echo-plugin-example",
     "source/plugin/echo-plugin-loader",
@@ -70,7 +71,7 @@ strip = "symbols"
 
 [workspace.dependencies]
 echo-defs = { path = "source/defs/echo-defs" }
-echo-config = { path = "source/backend/echo-config" }
+echo-config = { path = "source/config/echo-config" }
 echo-context = { path = "source/context/echo-context" }
 echo-sanitize = { path = "source/security/echo-sanitize" }
 echo-session = { path = "source/session/echo-session" }
@@ -85,6 +86,7 @@ echo-test-utils = { path = "source/backend/echo-test-utils" }
 echo-plugin = { path = "source/plugin/echo-plugin" }
 echo-plugin-api = { path = "source/plugin/echo-plugin-api" }
 echo-plugin-host = { path = "source/plugin/echo-plugin-host" }
+echo-plugin-adapter = { path = "source/plugin/echo-plugin-adapter" }
 echo-plugin-sdk = { path = "source/plugin/echo-plugin-sdk" }
 echo-plugin-example = { path = "source/plugin/echo-plugin-example" }
 echo-plugin-loader = { path = "source/plugin/echo-plugin-loader" }
