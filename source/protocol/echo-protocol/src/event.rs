@@ -731,6 +731,22 @@ pub enum BackendEvent {
     PluginsList {
         plugins: Vec<PluginInfo>,
     },
+    /// **插件操作回执**（`TogglePlugin` / `RestartPlugin` 的结构化结果）。
+    ///
+    /// 为什么需要：此前成功与失败都走 `Error { message }`——面板无法把
+    /// 「操作成功」与「真错误」分开渲染，只能靠文案猜。现在按操作回一条
+    /// 结构化回执，`PluginsList` 紧跟着刷新（状态以列表为准，回执只管
+    /// 这一次操作的成败与原因）。
+    PluginOpResult {
+        /// 目标插件 id。
+        id: String,
+        /// 操作：`enable` / `disable` / `restart`。
+        op: String,
+        /// 是否成功。
+        ok: bool,
+        /// 人读说明（成功也带一句，便于 toast 直接显示）。
+        message: String,
+    },
     /// Full list of team members (response to `RequestTeamsList`).
     TeamsList {
         teams: Vec<TeamInfo>,
@@ -1025,6 +1041,19 @@ pub struct PluginInfo {
     /// 空 = 配置未提及（编译内置的缺省行为）。
     #[serde(default)]
     pub config_origin: String,
+    /// **运行态**（子进程插件）：`pending` / `ready` / `draining` /
+    /// `stopped` / `failed`。空 = 进程内实现（没有独立生命周期）。
+    ///
+    /// 与 `enabled` 正交：`enabled = true` + `state = failed` 是「配置开了、
+    /// 进程起不来」——三种组合面板要能分辨。
+    #[serde(default)]
+    pub state: String,
+    /// 崩溃后已自动重启次数（子进程插件）。
+    #[serde(default)]
+    pub restarts: u32,
+    /// 连接代际（每次就绪自增；子进程插件）。
+    #[serde(default)]
+    pub generation: u64,
 }
 
 /// 联邦 peer 配置与链路状态（`FederationStatus` 列表元素；

@@ -144,7 +144,7 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 | 会话 | `SendMessage`、`CancelRequestedWork`、`ClearHistory`、`ArchiveHistory`、`CompactHistory`、`MigrateSession`、`RequestTrunkTimeline`、`RequestSessionHistory`（按会话派生显示历史，`limit` 缺省 500 / clamp 1–2000）、`RequestContext`、`RequestState` |
 | 会话级 API 覆盖 | `SetSessionApi`（该会话的 LLM 请求走指定 profile；`profile` 空串 = 清除）、`ClearSessionApi` |
 | Shell | `RequestShellSessions`、`ShellStart`、`ShellExec`、`ShellStop` |
-| 资源 | `RequestSkillsList`、`RequestToolsList`、`RequestPluginsList`、`RequestTeamsList`、`ToggleSkill`、`ToggleTool`、`TogglePlugin`、`SaveSkill`、`DeleteSkill`、`ReloadSkills`、`InstallSkillFromGit`、`UpdateSkillFromGit`、`RemoveSkillSource`、`SaveTeam`、`DeleteTeam`、`ToggleTeam` |
+| 资源 | `RequestSkillsList`、`RequestToolsList`、`RequestPluginsList`、`RequestTeamsList`、`ToggleSkill`、`ToggleTool`、`TogglePlugin`、`RestartPlugin`、`SaveSkill`、`DeleteSkill`、`ReloadSkills`、`InstallSkillFromGit`、`UpdateSkillFromGit`、`RemoveSkillSource`、`SaveTeam`、`DeleteTeam`、`ToggleTeam` |
 | 插件实例 | `StartInstance`、`StopInstance`、`RestartInstance`、`StartAllInstances`、`StopAllInstances`、`RequestInstanceStatus`、`InvokeInstanceOp` |
 | 工作区 | `RequestWorkspaceSessions`、`SaveWorkspaceSession`、`DeleteWorkspaceSession`、`ActivateWorkspaceSession`、`RequestWorkspaceGitStatus`、`RequestWorkspaceFiles`、`RequestBrowseDirectories`（目录选择器浏览：列「浏览根」内子目录——与文件浏览器不同，不依赖会话已声明的工作区目录，避开「要浏览才能选、要选才能浏览」的循环） |
 | API 供应商 | `UpdateApiConfig`、`SwitchApi`、`TestApi`、`QueryApiBalance`、`QueryApiMetrics`、`DeleteApi`、`RenameApi`、`SwitchModel`、`SwitchProvider`（模型/供应商直切，面板 UI 以 persona 级 `api_profile` 选用为主路径） |
@@ -204,7 +204,7 @@ graph LR
 | 模型与工具 | `AgentThinking`、`AgentReasoning`、`AgentReasoningDelta`、`AgentOutput`、`AgentContentDelta`、`LlmRequest`、`LlmResponse`、`ToolCall`、`ToolResult` |
 | 分支与子代理 | `ReplyBranchStarted`、`ReplyBranchContent`（临时等待回复的正文，只进分支详情、不进主时间线）、`ReplyBranchCompleted`、`SubagentStarted`、`SubagentCompleted` |
 | Shell | `ShellSessionsList`、`ShellSessionStarted`、`ShellExecStarted`、`ShellExecOutput`、`ShellExecDone`、`ShellSessionClosed` |
-| 资源清单 | `SkillsList`、`ToolsList`、`PluginsList`、`TeamsList` |
+| 资源清单 | `SkillsList`、`ToolsList`、`PluginsList`、`TeamsList`、`PluginOpResult`（插件操作回执：`{id, op, ok, message}`） |
 | API 供应商 | `ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`、`ApiMetrics`、`RemoteApiProfiles`（联邦远端节点的**脱敏**供应商池；peer 离线/未实现查询时 `profiles` 为空、`error` 带原因） |
 | 插件实例 | `InstanceStateChanged`、`InstanceList`、`InstanceOpResult`、`InstanceState` |
 | 工作区 | `WorkspaceSessions`、`WorkspaceGitStatus`、`WorkspaceFiles`、`BrowseDirectories`（`RequestBrowseDirectories` 响应，目录选择器数据源） |

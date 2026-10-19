@@ -551,3 +551,105 @@ async fn f_drain_window_hostcall_reply_routes_to_source_connection() {
         .expect("drain ok");
     assert_eq!(handle.state(), PluginState::Stopped);
 }
+
+// ── 可逆停止（Stop ↔ Start）────────────────────────────────────────────────
+//
+// 与 drain 的差别是**监督任务不退出**：停掉之后还能再拉起来，因此面板的
+// 启停开关能真正停掉子进程而不必重启 Core。
+
+/// stop → Stopped（任务存活）→ start → Ready 且服务恢复。
+#[tokio::test]
+async fn stop_then_start_round_trips_a_plugin() {
+    let handle = start_plugin(Box::new(StdioTransport::new(PEER)), json!({"k": 1})).await;
+    assert_eq!(handle.state(), PluginState::Ready);
+    assert_eq!(invoke_config(&handle).await, json!({"k": 1}));
+
+    handle.stop(Duration::from_secs(3)).await.expect("stop ok");
+    assert_eq!(handle.state(), PluginState::Stopped);
+
+    // 停止期间调用应立刻失败（连接已关闭）而不是挂死到超时。
+    let started = Instant::now();
+    let out = handle.invoke("echo", ctx(5_000), json!({"k": 1})).await;
+    assert!(
+        matches!(out, InvokeOutcome::Error { .. }),
+        "invoke after stop must fail, got {out:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "stopped plugin must fail fast, took {:?}",
+        started.elapsed()
+    );
+
+    handle.start().await.expect("start ok");
+    assert_eq!(handle.state(), PluginState::Ready);
+    // 配置沿用同一份 PluginSpec：重启后行为与首启一致。
+    assert_eq!(invoke_config(&handle).await, json!({"k": 1}));
+
+    handle
+        .drain(Duration::from_secs(3))
+        .await
+        .expect("drain ok");
+    assert_eq!(handle.state(), PluginState::Stopped);
+}
+
+/// 重复 stop 幂等；重复 start（已 Ready）报「不是停止态」。
+#[tokio::test]
+async fn stop_is_idempotent_and_start_rejects_running_plugin() {
+    let handle = start_plugin(Box::new(StdioTransport::new(PEER)), json!({})).await;
+
+    // 运行中 start → 拒绝（想换实现用 upgrade）。
+    let err = handle.start().await.expect_err("start on running plugin");
+    assert!(format!("{err:?}").contains("not stopped"), "{err:?}");
+
+    handle.stop(Duration::from_secs(3)).await.expect("stop ok");
+    // 二次 stop：已是停止态，不制造错误。
+    handle
+        .stop(Duration::from_secs(3))
+        .await
+        .expect("second stop is idempotent");
+
+    handle
+        .drain(Duration::from_secs(3))
+        .await
+        .expect("drain ok");
+}
+
+/// 停止态下 drain 立刻收尾（不会等 5s 的握手或 3s 排空）。
+#[tokio::test]
+async fn drain_after_stop_returns_immediately() {
+    let handle = start_plugin(Box::new(StdioTransport::new(PEER)), json!({})).await;
+    handle.stop(Duration::from_secs(3)).await.expect("stop ok");
+
+    let started = Instant::now();
+    handle
+        .drain(Duration::from_secs(3))
+        .await
+        .expect("drain ok");
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "drain on a stopped plugin should not wait: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(handle.state(), PluginState::Stopped);
+}
+
+/// 停止态下的 upgrade 被拒（不是「排队等重启完成」）。
+#[tokio::test]
+async fn upgrade_is_rejected_while_stopped() {
+    let handle = start_plugin(Box::new(StdioTransport::new(PEER)), json!({"k": 1})).await;
+    handle.stop(Duration::from_secs(3)).await.expect("stop ok");
+
+    let err = handle
+        .upgrade(json!({"k": 2}), Duration::from_secs(1))
+        .await
+        .expect_err("upgrade while stopped");
+    // 前置检查在句柄侧（`state != Ready` 即拒），消息里带状态名——
+    // 断言状态名而非具体措辞：措辞属于 CLI 文案，状态才是契约。
+    assert!(format!("{err:?}").contains("stopped"), "{err:?}");
+    // 状态不受影响（仍是停止态，可再 start）。
+    assert_eq!(handle.state(), PluginState::Stopped);
+    handle
+        .drain(Duration::from_secs(3))
+        .await
+        .expect("drain ok");
+}

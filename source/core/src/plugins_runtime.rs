@@ -169,6 +169,124 @@ pub async fn start_with_specs(
     Some(runtime)
 }
 
+/// 已启动子进程插件的生命周期控制面（组合根注入进 [`PluginHost`]）。
+///
+/// 持有每个静态条目的 [`PluginHandle`]：面板的启停开关据此**真正停掉子进程**
+/// （而不是只改注册表状态），重启按钮据此 stop + start。
+/// 动态条目（QQ 实例）不在表里——它们的生命周期归实例插件。
+pub struct SubprocessControl {
+    handles: std::collections::HashMap<String, echo_plugin_host::supervisor::PluginHandle>,
+    /// 配置里 `enabled = false` 的条目（没有 handle，但要显示为**已停止**，
+    /// 否则面板对这类条目连运行态都不显示）。
+    disabled: std::collections::HashSet<String>,
+    /// 启动就没起来的条目（握手失败 / 命令不存在）：没有 handle，
+    /// 但状态应为 **failed** + 原因（面板的「失败」徽标与详情块读它）。
+    failed: std::collections::HashMap<String, String>,
+}
+
+impl SubprocessControl {
+    /// 从启动结果建表（只看静态条目：动态 `LaunchSpec` 的 id 不在 entries 里）。
+    pub fn new(runtime: &PluginRuntime) -> Self {
+        let known: std::collections::HashSet<&str> = runtime
+            .entries
+            .iter()
+            .filter(|entry| entry.kind != "builtin")
+            .map(|entry| entry.id.as_str())
+            .collect();
+        let handles = runtime
+            .started
+            .handles
+            .iter()
+            .filter(|handle| known.contains(handle.plugin_id()))
+            .map(|handle| (handle.plugin_id().to_string(), handle.clone()))
+            .collect();
+        let disabled = runtime
+            .entries
+            .iter()
+            .filter(|entry| entry.kind != "builtin" && !entry.enabled)
+            .map(|entry| entry.id.clone())
+            .collect();
+        let failed = runtime
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let error = entry.error.as_ref()?;
+                (entry.kind != "builtin").then(|| (entry.id.clone(), error.clone()))
+            })
+            .collect();
+        Self {
+            handles,
+            disabled,
+            failed,
+        }
+    }
+}
+
+impl echo_agent::plugins::SubprocessPluginControl for SubprocessControl {
+    fn stop<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let handle = self
+                .handles
+                .get(id)
+                .ok_or_else(|| format!("{id}: 不是已启动的外部插件"))?;
+            handle
+                .stop(std::time::Duration::from_secs(5))
+                .await
+                .map_err(|error| format!("{id} stop failed: {error}"))
+        })
+    }
+
+    fn start<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let handle = self
+                .handles
+                .get(id)
+                .ok_or_else(|| format!("{id}: 不是已启动的外部插件"))?;
+            handle
+                .start()
+                .await
+                .map_err(|error| format!("{id} start failed: {error}"))
+        })
+    }
+
+    fn status(&self, id: &str) -> Option<echo_agent::plugins::SubprocessStatus> {
+        // 没有 handle 的两种已知情形（都要给出明确状态，不能"查不到"）：
+        // ① 启动就没起来 → failed + 原因；② 配置关掉从未启动 → stopped。
+        let Some(handle) = self.handles.get(id) else {
+            if let Some(error) = self.failed.get(id) {
+                return Some(echo_agent::plugins::SubprocessStatus {
+                    state: "failed".to_string(),
+                    restarts: 0,
+                    generation: 0,
+                    error: Some(error.clone()),
+                });
+            }
+            return self
+                .disabled
+                .contains(id)
+                .then(|| echo_agent::plugins::SubprocessStatus {
+                    state: "stopped".to_string(),
+                    restarts: 0,
+                    generation: 0,
+                    error: None,
+                });
+        };
+        let state = handle.state();
+        Some(echo_agent::plugins::SubprocessStatus {
+            state: state.as_str().to_string(),
+            restarts: handle.restarts(),
+            generation: handle.generation(),
+            error: state.error().map(str::to_string),
+        })
+    }
+}
+
 /// 把合成树里的**静态**条目转成清单元数据（不含动态 `LaunchSpec`）。
 fn static_entries(tree: &echo_plugin_loader::LoadedTree) -> Vec<StaticPluginEntry> {
     tree.entries

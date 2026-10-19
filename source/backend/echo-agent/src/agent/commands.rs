@@ -546,46 +546,45 @@ impl Agent {
                 // 防自锁：重启管理面插件 = 先卸下 management WS，Panel 立即
                 // 断连且无法经界面恢复（与禁用同一条约束）。
                 if id == crate::plugins::MANAGEMENT_PANEL_PLUGIN_ID {
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: format!(
-                            "refuse to restart {id}: 管理面插件承载 management 通道，重启会断开 Panel；如需重载请重启 Core 服务"
-                        ),
+                    self.emit(BackendEvent::PluginOpResult {
+                        id: id.clone(),
+                        op: "restart".into(),
+                        ok: false,
+                        message: "管理面插件承载 management 通道，重启会断开 Panel；如需重载请重启 Core 服务".into(),
                     });
                     return;
                 }
-                // 外部条目（`plugins.toml` 的 stdio 插件的门控壳）是**名义
-                // 挂载**：子进程由 Core 启动时拉起、registry 侧没有启停能力，
-                // 重启它是空操作。给明确说明，而不是假装成功。
-                if let Some(d) = self
-                    .plugin_host()
-                    .descriptors()
-                    .into_iter()
-                    .find(|d| d.id == id)
-                {
-                    if d.runtime == "subprocess" && !d.builtin {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!(
-                                "{id} 是 plugins.toml 里的外部插件：子进程由 Core 启动时拉起，无法单独热重载——改完配置请重启 Core 服务"
-                            ),
-                        });
-                        return;
+                // 外部条目：真的 stop + start 子进程（可逆停止语义，见
+                // `PluginHandle::stop`）——这是「重启」对子进程插件唯一
+                // 说得通的含义，也是它区别于「关再开」的地方（不写配置）。
+                let result = if self.plugin_host().is_external_entry(&id) {
+                    match self.plugin_host().stop_subprocess(&id).await {
+                        Ok(()) => self.plugin_host().start_subprocess(&id).await,
+                        Err(error) => Err(error),
                     }
-                }
-                match self.plugin_host().restart(&id) {
+                } else {
+                    self.plugin_host().restart(&id)
+                };
+                match result {
                     Ok(()) => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("plugin {id} restarted"),
+                        self.emit(BackendEvent::PluginOpResult {
+                            id: id.clone(),
+                            op: "restart".into(),
+                            ok: true,
+                            message: format!("{id} 已重启"),
                         });
-                        self.emit_plugins_list().await;
                     }
-                    Err(e) => self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: format!("restart {id} failed: {e}"),
-                    }),
+                    Err(error) => {
+                        self.emit(BackendEvent::PluginOpResult {
+                            id: id.clone(),
+                            op: "restart".into(),
+                            ok: false,
+                            message: format!("restart {id} failed: {error}"),
+                        });
+                    }
                 }
+                // 两种结果都刷新列表：失败时状态同样可能已变（停下来了但没起来）。
+                self.emit_plugins_list().await;
             }
             BackendCommand::RequestToolsList => {
                 self.emit_tools_list().await;
@@ -598,12 +597,59 @@ impl Agent {
                 // 断连且无法经 UI 恢复。拒绝经 TogglePlugin 禁用——确需禁用只能
                 // 编辑 core.toml 的 disabled_plugins 后重启 Core。
                 if !enabled && id == crate::plugins::MANAGEMENT_PANEL_PLUGIN_ID {
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: format!(
-                            "refuse to disable {id}: 管理面插件禁用即关闭 management 通道（Panel 自锁），如需禁用请编辑 core.toml 的 disabled_plugins 后重启 Core"
-                        ),
+                    self.emit(BackendEvent::PluginOpResult {
+                        id: id.clone(),
+                        op: "disable".into(),
+                        ok: false,
+                        message: "管理面插件禁用即关闭 management 通道（Panel 自锁），如需禁用请编辑 core.toml 的 disabled_plugins 后重启 Core".into(),
                     });
+                    return;
+                }
+                // 外部条目（`plugins.toml` 的 stdio 插件）有独立子进程：
+                // 启用/禁用要**真的停掉/拉起进程**，只改注册表状态是不够的
+                // （用户点了「禁用」却发现插件还在跑，比没有开关更糟）。
+                if self.plugin_host().is_external_entry(&id) {
+                    let result = if enabled {
+                        self.plugin_host().start_subprocess(&id).await
+                    } else {
+                        self.plugin_host().stop_subprocess(&id).await
+                    };
+                    let op = if enabled { "enable" } else { "disable" };
+                    match result {
+                        Ok(()) => {
+                            // 同步注册表挂载态（descriptors 的 enabled 与进程
+                            // 状态必须一致，否则面板显示「启用」但进程已停）。
+                            let _ = self.plugin_host().set_enabled(&id, enabled).await;
+                            let mut cfg = self.config.write().await;
+                            cfg.disabled_plugins.retain(|p| p != &id);
+                            if !enabled {
+                                cfg.disabled_plugins.push(id.clone());
+                            }
+                            let cfg_snapshot = cfg.clone();
+                            drop(cfg);
+                            self.persist_config(&cfg_snapshot).await;
+                            self.emit(BackendEvent::PluginOpResult {
+                                id: id.clone(),
+                                op: op.into(),
+                                ok: true,
+                                message: if enabled {
+                                    format!("{id} 已启动")
+                                } else {
+                                    format!("{id} 已停止（子进程已退出）")
+                                },
+                            });
+                            self.emit_plugins_list().await;
+                        }
+                        Err(error) => {
+                            self.emit(BackendEvent::PluginOpResult {
+                                id: id.clone(),
+                                op: op.into(),
+                                ok: false,
+                                message: error,
+                            });
+                            self.emit_plugins_list().await;
+                        }
+                    }
                     return;
                 }
                 match self.plugin_host().set_enabled(&id, enabled).await {
@@ -617,20 +663,32 @@ impl Agent {
                         let cfg_snapshot = cfg.clone();
                         drop(cfg);
                         self.persist_config(&cfg_snapshot).await;
-                        self.emit_plugins_list().await;
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!(
-                                "plugin {id} {}",
-                                if enabled { "enabled" } else { "disabled" }
-                            ),
+                        self.emit(BackendEvent::PluginOpResult {
+                            id: id.clone(),
+                            op: if enabled {
+                                "enable".into()
+                            } else {
+                                "disable".into()
+                            },
+                            ok: true,
+                            message: format!("{id} 已{}", if enabled { "启用" } else { "禁用" }),
                         });
+                        self.emit_plugins_list().await;
                     }
                     Err(e) => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
+                        // 结构化回执（面板按 ok 分流渲染）+ 刷新列表
+                        //（失败时状态可能已被部分改变，以列表为准）。
+                        self.emit(BackendEvent::PluginOpResult {
+                            id: id.clone(),
+                            op: if enabled {
+                                "enable".into()
+                            } else {
+                                "disable".into()
+                            },
+                            ok: false,
                             message: format!("toggle plugin failed: {e}"),
                         });
+                        self.emit_plugins_list().await;
                     }
                 }
             }
@@ -1756,6 +1814,9 @@ impl Agent {
                 package: d.package,
                 error: d.error,
                 config_origin: d.config_origin,
+                state: d.state,
+                restarts: d.restarts,
+                generation: d.generation,
             })
             .collect();
         self.emit(BackendEvent::PluginsList { plugins });

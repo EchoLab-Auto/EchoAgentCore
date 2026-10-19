@@ -43,6 +43,19 @@ pub struct PluginDescriptor {
     /// 来源层，面板据此回答「这行为什么长这样」。
     #[serde(default)]
     pub config_origin: String,
+    /// **运行态**（`ready` / `stopped` / `failed` / `pending` / `draining`）；
+    /// 空 = 非子进程插件（进程内实现没有独立生命周期）。
+    ///
+    /// 与 `enabled`（挂载/启用开关）正交：`enabled = true` 但
+    /// `state = failed` 是「配置开了、进程起不来」——面板要能区分。
+    #[serde(default)]
+    pub state: String,
+    /// 崩溃后已自动重启的次数（仅子进程插件）。
+    #[serde(default)]
+    pub restarts: u32,
+    /// 连接代际（每次就绪自增；仅子进程插件）。
+    #[serde(default)]
+    pub generation: u64,
 }
 
 impl From<&PluginManifest> for PluginDescriptor {
@@ -61,6 +74,9 @@ impl From<&PluginManifest> for PluginDescriptor {
             package: m.package_id().to_string(),
             error: None,
             config_origin: String::new(),
+            state: String::new(),
+            restarts: 0,
+            generation: 0,
         }
     }
 }
@@ -79,6 +95,12 @@ pub struct PluginRegistry {
     config_origins: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// 插件 id → 装配/启动失败原因（展示用；`None` 值表示"曾失败后已恢复"）。
     errors: std::sync::Mutex<BTreeMap<String, String>>,
+    /// 注册顺序（`descriptors()` 按它输出）。
+    ///
+    /// 为什么单独存：底层 `plugins` 是 `BTreeMap`（按 id 排序），而
+    /// `plugins.toml` 的**行序 = 挂载顺序**是有意义的配置表达（bundle 里
+    /// 靠前的先挂）。按 id 排序会把这条信息丢掉。
+    order: std::sync::Mutex<Vec<String>>,
 }
 
 impl std::fmt::Debug for PluginRegistry {
@@ -105,7 +127,12 @@ impl PluginRegistry {
         if plugins.contains_key(&id) {
             return Err(format!("plugin id already registered: {id}"));
         }
-        plugins.insert(id, Arc::clone(&plugin));
+        plugins.insert(id.clone(), Arc::clone(&plugin));
+        drop(plugins);
+        self.order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(id);
         Ok(())
     }
 
@@ -119,6 +146,10 @@ impl PluginRegistry {
             return false; // must be unmounted first
         }
         drop(active);
+        self.order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|existing| existing != id);
         self.plugins
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -254,13 +285,9 @@ impl PluginRegistry {
         }
     }
 
+    /// 全部已注册插件 id（**注册序**，与 [`PluginRegistry::descriptors`] 一致）。
     pub fn ids(&self) -> Vec<String> {
-        self.plugins
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .keys()
-            .cloned()
-            .collect()
+        self.descriptors().into_iter().map(|d| d.id).collect()
     }
 
     pub fn plugin(&self, id: &str) -> Option<Arc<dyn Plugin>> {
@@ -281,7 +308,26 @@ impl PluginRegistry {
             .enabled_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let ids: Vec<String> = plugins.keys().cloned().collect();
+        // 注册序（= 组合顺序 / config 行序），不是 id 字典序。
+        let ids: Vec<String> = {
+            let order = self
+                .order
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut ids: Vec<String> = order
+                .iter()
+                .filter(|id| plugins.contains_key(*id))
+                .cloned()
+                .collect();
+            // 防御：绕过 register 塞进 map 的（不该存在）补在末尾，不丢条目。
+            let mut seen: std::collections::HashSet<String> = ids.iter().cloned().collect();
+            for id in plugins.keys() {
+                if seen.insert(id.clone()) {
+                    ids.push(id.clone());
+                }
+            }
+            ids
+        };
         let mut out = Vec::with_capacity(ids.len());
         let origins = self.config_origins();
         let errors = self
@@ -461,6 +507,27 @@ mod tests {
         reg.set_enabled("r.r.r", false, &ctx).unwrap();
         let err = reg.restart("r.r.r", &ctx).expect_err("disabled plugin");
         assert!(err.contains("disabled"), "{err}");
+    }
+
+    /// 注册序 = 输出序：`plugins.toml` 的行序（= 挂载顺序）是有意义的配置
+    /// 表达，`descriptors()` 不能按 id 字典序重排它。
+    #[test]
+    fn descriptors_follow_registration_order() {
+        let reg = PluginRegistry::new();
+        for id in ["zzz.last", "aaa.first", "mmm.middle"] {
+            reg.register(Arc::new(BuiltinPlugin::new(
+                PluginManifest::builtin(id, id, "1", PluginKind::Tool, "", ""),
+                |_| Ok(vec![]),
+            )))
+            .unwrap();
+        }
+        let ids: Vec<String> = reg.descriptors().into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["zzz.last", "aaa.first", "mmm.middle"]);
+        // ids() 与 descriptors() 同序（同一份真值）。
+        assert_eq!(reg.ids(), ids);
+        // 注销后顺序里也不留空洞。
+        reg.unregister("aaa.first");
+        assert_eq!(reg.ids(), vec!["zzz.last", "mmm.middle"]);
     }
 
     /// 装配失败原因进 descriptor：面板据此区分「用户主动禁用」（error 空）

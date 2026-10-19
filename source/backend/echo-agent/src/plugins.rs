@@ -234,11 +234,51 @@ pub fn resolve_mount_order(
     (ordered, diagnostics)
 }
 
+/// 子进程插件（`plugins.toml` 里的外部条目）的**生命周期控制面**。
+///
+/// 为什么是 trait 而不是直接依赖 `echo-plugin-host`：本 crate 是框架层，
+/// 刻意不认识监督者（宿主实现细节）；而"停/起一个子进程"又必须由持有
+/// supervisor 句柄的组合根来做。trait 把两件事分开——类型在框架层，
+/// 实现在组合根。
+///
+/// 进程内插件不走这条路（它们的启停由注册表 mount/unmount 完成）。
+pub trait SubprocessPluginControl: Send + Sync {
+    /// 停止（可逆）：排空后停在 `stopped`，之后还能 [`Self::start`]。
+    fn stop<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
+    /// 从停止态重新拉起（重新握手）。
+    fn start<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
+    /// 当前运行态快照（None = 不认识这个 id）。
+    fn status(&self, id: &str) -> Option<SubprocessStatus>;
+}
+
+/// 子进程插件运行态快照（面板展示 + 决策）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubprocessStatus {
+    /// `pending` / `ready` / `draining` / `stopped` / `failed`。
+    pub state: String,
+    /// 崩溃后自动重启次数。
+    pub restarts: u32,
+    /// 连接代际（每次就绪自增）。
+    pub generation: u64,
+    /// `state == failed` 时的原因。
+    pub error: Option<String>,
+}
+
 /// The agent's plugin host: registry + descriptors + runtime toggling.
 pub struct PluginHost {
     pub registry: PluginRegistry,
     /// Mount context provided to every plugin at mount time.
     mount_ctx: parking_lot::Mutex<Option<MountContext>>,
+    /// 子进程插件生命周期（组合根注入；None = 无外部条目或未接线）。
+    subprocess: parking_lot::RwLock<Option<Arc<dyn SubprocessPluginControl>>>,
 }
 
 impl Default for PluginHost {
@@ -252,6 +292,7 @@ impl PluginHost {
         Self {
             registry: PluginRegistry::new(),
             mount_ctx: parking_lot::Mutex::new(None),
+            subprocess: parking_lot::RwLock::new(None),
         }
     }
 
@@ -335,10 +376,71 @@ impl PluginHost {
         (registered, mounted, errors)
     }
 
-    /// Descriptors for the Panel (sorted by id).
+    /// 注入子进程插件控制面（组合根装配期，一次）。
+    pub fn set_subprocess_control(&self, control: Arc<dyn SubprocessPluginControl>) {
+        *self.subprocess.write() = Some(control);
+    }
+
+    /// 子进程插件控制面（None = 未接线 / 无外部条目）。
+    pub fn subprocess_control(&self) -> Option<Arc<dyn SubprocessPluginControl>> {
+        self.subprocess.read().clone()
+    }
+
+    /// 某个插件是不是**外部条目**（`plugins.toml` 的 stdio 条目）。
+    ///
+    /// 判据：`runtime == subprocess && !builtin`——实例门控壳是
+    /// `subprocess + builtin`（manifest 编译在 Core 里），不属于这一类。
+    pub fn is_external_entry(&self, id: &str) -> bool {
+        self.registry
+            .descriptors()
+            .into_iter()
+            .find(|d| d.id == id)
+            .is_some_and(|d| d.runtime == "subprocess" && !d.builtin)
+    }
+
+    /// 外部条目的运行态（None = 不是外部条目 / 未接线）。
+    pub fn subprocess_status(&self, id: &str) -> Option<SubprocessStatus> {
+        self.subprocess_control()?.status(id)
+    }
+
+    /// 停止一个外部条目（可逆；进程内插件请走 [`Self::set_enabled`]）。
+    pub async fn stop_subprocess(&self, id: &str) -> Result<(), String> {
+        let control = self
+            .subprocess_control()
+            .ok_or_else(|| format!("{id}: 子进程控制面未接线"))?;
+        control.stop(id).await
+    }
+
+    /// 拉起一个已停止的外部条目。
+    pub async fn start_subprocess(&self, id: &str) -> Result<(), String> {
+        let control = self
+            .subprocess_control()
+            .ok_or_else(|| format!("{id}: 子进程控制面未接线"))?;
+        control.start(id).await
+    }
+
+    /// Descriptors for the Panel（**注册序** = 组合 / 配置行序）。
+    ///
+    /// 不按 id 排序：`plugins.toml` 的行序就是挂载顺序，是配置表达的一部分
+    /// （面板按返回序渲染，用户看到的顺序与自己写的顺序一致）。
+    /// 子进程插件的运行态在这里拼进去（`state` / `restarts` / `generation`），
+    /// 因为注册表本身不持有进程句柄。
     pub fn descriptors(&self) -> Vec<PluginDescriptor> {
         let mut ds = self.registry.descriptors();
-        ds.sort_by(|a, b| a.id.cmp(&b.id));
+        if let Some(control) = self.subprocess_control() {
+            for d in &mut ds {
+                if let Some(status) = control.status(&d.id) {
+                    d.state = status.state;
+                    d.restarts = status.restarts;
+                    d.generation = status.generation;
+                    // 运行态失败但没别的错误来源时，用它补上（面板的「失败」
+                    // 徽标读 error，只有 state 没有 error 会看不出所以然）。
+                    if d.error.is_none() {
+                        d.error = status.error;
+                    }
+                }
+            }
+        }
         ds
     }
 
@@ -524,6 +626,184 @@ mod tests {
         // 首个 b（disabled）生效，后一个不覆盖它——重复不制造第二种解释。
         assert_eq!(order[0], MountStep::new("b", false));
         assert_eq!(order.len(), 3, "unknown id must not be inserted: {order:?}");
+    }
+
+    // ── 子进程插件控制面（外部条目）────────────────────────────────────
+
+    /// 测试用控制面：记录调用、按需返回状态。
+    struct MockControl {
+        calls: parking_lot::Mutex<Vec<String>>,
+        state: parking_lot::Mutex<Option<SubprocessStatus>>,
+        fail: bool,
+    }
+
+    impl MockControl {
+        fn new(state: Option<SubprocessStatus>, fail: bool) -> Arc<Self> {
+            Arc::new(Self {
+                calls: parking_lot::Mutex::new(Vec::new()),
+                state: parking_lot::Mutex::new(state),
+                fail,
+            })
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().clone()
+        }
+    }
+
+    impl SubprocessPluginControl for MockControl {
+        fn stop<'a>(
+            &'a self,
+            id: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+        {
+            self.calls.lock().push(format!("stop:{id}"));
+            let fail = self.fail;
+            Box::pin(async move {
+                if fail {
+                    Err("stop failed".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        fn start<'a>(
+            &'a self,
+            id: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+        {
+            self.calls.lock().push(format!("start:{id}"));
+            let fail = self.fail;
+            Box::pin(async move {
+                if fail {
+                    Err("start failed".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        fn status(&self, _id: &str) -> Option<SubprocessStatus> {
+            self.state.lock().clone()
+        }
+    }
+
+    fn register_plugin(
+        host: &PluginHost,
+        id: &str,
+        builtin: bool,
+        runtime: echo_plugin::PluginRuntime,
+    ) {
+        host.registry
+            .register(Arc::new(echo_plugin::BuiltinPlugin::new(
+                echo_plugin::PluginManifest::builtin(
+                    id,
+                    id,
+                    "1",
+                    echo_plugin::PluginKind::Tool,
+                    id,
+                    "",
+                )
+                .with_runtime(runtime)
+                .with_builtin_flag(builtin),
+                |_| Ok(vec![]),
+            )))
+            .expect("register");
+    }
+
+    /// 外部条目判定：`subprocess + !builtin`——实例门控壳
+    /// （`subprocess + builtin`）**不算**，它的生命周期归实例插件。
+    #[test]
+    fn external_entry_is_subprocess_and_not_builtin() {
+        let host = PluginHost::new();
+        register_plugin(
+            &host,
+            "ext.entry",
+            false,
+            echo_plugin::PluginRuntime::Subprocess,
+        );
+        register_plugin(
+            &host,
+            "instance.shell",
+            true,
+            echo_plugin::PluginRuntime::Subprocess,
+        );
+        register_plugin(
+            &host,
+            "inproc.builtin",
+            true,
+            echo_plugin::PluginRuntime::InProcess,
+        );
+        assert!(host.is_external_entry("ext.entry"));
+        assert!(!host.is_external_entry("instance.shell"));
+        assert!(!host.is_external_entry("inproc.builtin"));
+        // 未知 id 不 panic、不算外部条目。
+        assert!(!host.is_external_entry("ghost"));
+    }
+
+    /// `descriptors()` 把运行态拼进去（注册表不持有进程句柄）。
+    #[test]
+    fn descriptors_merge_subprocess_state() {
+        let host = PluginHost::new();
+        register_plugin(
+            &host,
+            "ext.entry",
+            false,
+            echo_plugin::PluginRuntime::Subprocess,
+        );
+        // 未接线：state 为空（进程内语义），不出错。
+        assert_eq!(host.descriptors()[0].state, "");
+
+        host.set_subprocess_control(MockControl::new(
+            Some(SubprocessStatus {
+                state: "failed".into(),
+                restarts: 3,
+                generation: 7,
+                error: Some("crash loop".into()),
+            }),
+            false,
+        ));
+        let d = &host.descriptors()[0];
+        assert_eq!(d.state, "failed");
+        assert_eq!(d.restarts, 3);
+        assert_eq!(d.generation, 7);
+        // 运行态失败原因补进 error（面板「失败」徽标读它）。
+        assert_eq!(d.error.as_deref(), Some("crash loop"));
+    }
+
+    /// stop / start 转发到控制面；未接线时给可读错误而不是静默 no-op。
+    #[tokio::test]
+    async fn subprocess_stop_and_start_forward_to_control() {
+        let host = PluginHost::new();
+        register_plugin(
+            &host,
+            "ext.entry",
+            false,
+            echo_plugin::PluginRuntime::Subprocess,
+        );
+        // 未接线：明确报错（不是"成功但什么都没做"）。
+        let err = host
+            .stop_subprocess("ext.entry")
+            .await
+            .expect_err("no control");
+        assert!(err.contains("未接线"), "{err}");
+
+        let control = MockControl::new(None, false);
+        host.set_subprocess_control(control.clone());
+        host.stop_subprocess("ext.entry").await.expect("stop ok");
+        host.start_subprocess("ext.entry").await.expect("start ok");
+        assert_eq!(control.calls(), vec!["stop:ext.entry", "start:ext.entry"]);
+    }
+
+    /// 注册序即输出序（不按 id 重排）：`plugins.toml` 的行序是配置表达。
+    #[test]
+    fn descriptor_order_follows_registration() {
+        let host = PluginHost::new();
+        for id in ["zzz", "aaa", "mmm"] {
+            register_plugin(&host, id, true, echo_plugin::PluginRuntime::InProcess);
+        }
+        let ids: Vec<String> = host.descriptors().into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["zzz", "aaa", "mmm"]);
     }
 
     #[test]

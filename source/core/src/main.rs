@@ -1700,6 +1700,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             // 管理面/工具集继续跑只会让人以为"服务起来了但一片空白"。
             return Err(anyhow::anyhow!(mount_errors.join("; ")).context("mount builtin plugins"));
         }
+        // 子进程插件生命周期控制面：面板的启停开关据此真正停/起子进程，
+        // 重启按钮据此 stop + start（注册表本身不持有进程句柄）。
+        if let Some(runtime) = &plugin_runtime {
+            plugin_host.set_subprocess_control(std::sync::Arc::new(
+                plugins_runtime::SubprocessControl::new(runtime),
+            ));
+        }
         // 外部条目的启动失败原因 + 配置来源层（面板据此区分「配置关了」
         // 与「起不来」，并指出该去改哪一层）。
         if let Some(runtime) = &plugin_runtime {

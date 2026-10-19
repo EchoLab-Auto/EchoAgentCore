@@ -38,6 +38,8 @@ y: 1060
 - **行卡标记**：`独立进程`（`pluginIsSubprocess`，与外部组等价）· 包规模徽标（`N 工具 · M 技能`，经 `pluginMembers` → `packageMembers` 从 `state.plugins` 与 `state.tools`/`state.skills` 反查——这两份是单份状态、只随管理目标节点更新，故切到非管理目标节点时徽标仍按管理目标口径统计）· `🔒 受保护`（management.panel，**行内渲染锁标记而不给开关**）· `模式`（loop.*）
 - **副标题随分组维度**：按来源 = `共 N 项 · E 外部插件 · I 内部插件 · D 已禁用`；语义分组 = `共 N 项 · G 包维度门控 · M 模式插件 · D 已禁用`
 - **启停**：`TogglePlugin` 禁用即卸载注册；在选定管理节点上全局生效；**「管理面」插件禁用被保护**——core 拒绝 + UI 明示且行内不给开关，防 Panel 自锁断连。**包级聚合**：包内工具与技能随包一起启停（见[插件化设计](../plugins/core-plugins.md)「Package」）
+- **运行态可见**：`PluginInfo.state`（`pending` / `ready` / `draining` / `stopped` / `failed`）+ `restarts` + `generation`。行卡只在**异常态**出徽标（`失败`红 / `启动中`/`停止中`中性，`ready` 不喊）；技术信息给出「运行态 · 已自动重启 N 次 · 代际 M」。这条与 `enabled` 正交：`enabled = true` + `state = failed` 是「配置开了、进程起不来」
+- **操作回执**：`PluginOpResult { id, op, ok, message }`——启停与重启的成功/失败按 `ok` 分流成 success / error toast。此前两者都走 `Error { message }`，界面只能靠文案猜
 - **重启**：`RestartPlugin`（卸下 → 重新挂载）——**不改启用状态、不写 `disabled_plugins`**，纯粹让插件按最新配置/外部状态重新初始化。行内是一个 hover 才出现的图标按钮（开关左侧），详情头部另有文字按钮；只对**已启用且不受保护**的插件出现（未挂载没有可重载的实例；管理面重启 = 先断 management WS，同禁用一样被拒）
 - **装配失败可见**：`PluginInfo.error` 非空 = 该插件挂载被跳过（command 不存在 / 握手失败），行卡出红色「失败」徽标、详情出失败原因块。与「用户主动禁用」区分开——两者 `enabled` 都是 false，但前者要人去修配置
 - **外部条目现在真的在清单里**（2026-10 修复）：`plugins.toml` 里 `kind = "stdio"` 的条目由 Core 启动期拉起子进程，此前**从不注册进插件宿主**，于是「外部插件」组里只有实例门控壳、用户装的外部插件完全不可见。现在每个静态条目都会注册一个门控壳（`runtime = "subprocess"` + `builtin = false`）：`enabled = false` 的显示为已禁用（不消失）、启动失败的带 `error`。壳是**名义挂载**——子进程的生死由启动期决定，所以对这类条目的「重启」按钮会直接回「请重启 Core 服务」，而不是假装热重载成功
@@ -63,7 +65,9 @@ y: 1060
 | --- | --- | --- |
 | `error` | 挂载失败原因（`PluginDescriptor::error`） | 行卡「失败」徽标 + 详情失败块 |
 | `config_origin` | 声明该插件的配置层（来自 Core 的分层合成，与 `dump-config` 同源） | 技术信息「配置来源」 |
+| `state` / `restarts` / `generation` | 子进程运行态（空 = 进程内实现） | 行卡异常态徽标 + 技术信息「运行态」行 |
 | — | `RestartPlugin { id }` 命令（**写命令**，不进可广播只读清单） | 行内图标按钮 / 详情按钮 |
+| — | `PluginOpResult { id, op, ok, message }` 事件（操作回执） | toast（success / error 分流） |
 
 ## 交叉跳转
 

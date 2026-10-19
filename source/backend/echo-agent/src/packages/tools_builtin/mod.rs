@@ -17,10 +17,15 @@ pub use echo_plugin_tools::{calculator, checklist, coding, instance, shell_tools
 /// command, so the remainder of `stop && cp ... && start` is never executed.
 /// `systemctl restart` is safe because systemd owns the restart job even if the
 /// caller is terminated.
+///
+/// Broad `pkill -f` / `killall` patterns are also rejected when they mention
+/// `core.toml` or `echo-agent-core`: even when intended for a smoke-test
+/// process, `pkill -f core.toml` also matches the production Core command line
+/// (`--config .../core.toml`).
 pub(crate) fn reject_core_self_stop(command: &str) -> Result<(), ToolError> {
     let regex = echo_context::kernel::get_or_init::<Regex>(|| {
         Regex::new(
-            r#"(?im)(?:^|[;&|]\s*|(?:ba)?sh\s+-[A-Za-z]*c\b\s*['\"]?\s*)\s*(?:sudo\s+)?(?:command\s+)?(?:/usr/bin/)?systemctl\b[^\n;&|]*\b(?:stop|kill)\b[^\n;&|]*\becho-agent-core(?:\.service)?\b"#,
+            r#"(?im)(?:^|[;&|]\s*|(?:ba)?sh\s+-[A-Za-z]*c\b\s*['\"]?\s*)\s*(?:sudo\s+)?(?:command\s+)?(?:(?:/usr/bin/)?systemctl\b[^\n;&|]*\b(?:stop|kill)\b[^\n;&|]*\becho-agent-core(?:\.service)?\b|(?:pkill|killall)\b[^\n;&|]*(?:(?:\[e\]|e)cho-agent-core|(?:\[c\]|c)ore\.toml))"#,
         )
         .expect("self-stop regex is valid")
     });
@@ -98,6 +103,10 @@ mod tests {
             "true && systemctl --user kill -s TERM echo-agent-core.service",
             "/usr/bin/systemctl stop echo-agent-core.service",
             "bash -lc 'systemctl --user stop echo-agent-core.service'",
+            "pkill -f core.toml",
+            "pkill -f \"core.toml\"",
+            "pkill -f '[e]cho-agent-core'",
+            "true && killall echo-agent-core",
         ] {
             assert!(
                 reject_core_self_stop(command).is_err(),
@@ -111,7 +120,9 @@ mod tests {
         for command in [
             "systemctl --user restart echo-agent-core.service",
             "systemctl --user status echo-agent-core.service",
+            "pgrep -af '[e]cho-agent-core'",
             "rg 'systemctl --user stop echo-agent-core' README.md",
+            "rg 'pkill -f core.toml' README.md",
         ] {
             assert!(
                 reject_core_self_stop(command).is_ok(),

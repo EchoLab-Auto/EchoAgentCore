@@ -10,7 +10,10 @@ WorkingDirectory=@SOURCE_DIR@
 ExecStart="@BINARY@" --config "@CORE_CONFIG@"
 Environment="ECHO_UPDATE_STATUS_FILE=@STATUS_FILE@"
 Environment="PATH=@SERVICE_PATH@"
-Restart=on-failure
+# A direct SIGTERM/kill (for example from an over-broad pkill) exits cleanly,
+# so on-failure would leave the Core down. systemd still suppresses automatic
+# restart after an explicit `systemctl stop`.
+Restart=always
 RestartSec=5s
 # graceful drain window (in-flight reply finishes before restart)
 TimeoutStopSec=180s

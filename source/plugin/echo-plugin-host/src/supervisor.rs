@@ -73,6 +73,30 @@ pub enum PluginState {
     Failed(String),
 }
 
+impl PluginState {
+    /// 稳定的小写标签（进协议 / 日志；`Failed` 的原因单独取）。
+    ///
+    /// 用固定字符串而不是 `Debug`：这是**线格式**，面板按它分支渲染，
+    /// 不能随 `Debug` 派生变化而静默漂移。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Ready => "ready",
+            Self::Draining => "draining",
+            Self::Stopped => "stopped",
+            Self::Failed(_) => "failed",
+        }
+    }
+
+    /// `Failed` 携带的原因（其它状态 = None）。
+    pub fn error(&self) -> Option<&str> {
+        match self {
+            Self::Failed(reason) => Some(reason.as_str()),
+            _ => None,
+        }
+    }
+}
+
 /// 崩溃重启策略（默认 on-failure：backoff 200ms 起、翻倍、上限 2s、最多 5 次）。
 #[derive(Debug, Clone)]
 pub struct RestartPolicy {
@@ -234,6 +258,64 @@ impl PluginHandle {
         }
     }
 
+    /// **停止但保留可重启**：排空连接后进入 `Stopped`，监督任务继续存活，
+    /// 之后可用 [`PluginHandle::start`] 重新拉起。
+    ///
+    /// 与 [`PluginHandle::drain`] 的差别只有一条：drain 是终态（监督任务
+    /// 退出，句柄再也不能拉起），stop 是可逆的——面板的启停开关用它，
+    /// 因为「关掉一个外部插件」之后还要能「再打开」。
+    ///
+    /// 已是 `Stopped` 时幂等返回 `Ok(())`；`Failed` 时也允许 stop
+    /// （把它从失败态收敛成干净的停止态，便于随后 start 重试）。
+    pub async fn stop(&self, deadline: Duration) -> Result<(), TransportError> {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self
+            .shared
+            .ctl
+            .send(Control::Stop {
+                deadline,
+                ack: ack_tx,
+            })
+            .await
+            .is_err()
+        {
+            // 监督任务已不在（终态 Drain 之后）：视为已停止。
+            return Ok(());
+        }
+        match ack_rx.await {
+            Ok(res) => res,
+            Err(_) => Ok(()),
+        }
+    }
+
+    /// 从 `Stopped` 重新拉起（[`PluginHandle::stop`] 的逆操作）。
+    ///
+    /// 仅 `Stopped` 受理；其它状态返回 `Protocol("plugin is not stopped: …")`
+    /// ——`Ready` 想换实现请用 [`PluginHandle::upgrade`]（保留旧实例直到新实例
+    /// 就绪），`Failed` 请先 `stop` 收敛再 `start`。
+    ///
+    /// 握手沿用首次启动的 5s 上限与同一份 `PluginSpec`（配置要换用 upgrade）。
+    pub async fn start(&self) -> Result<(), TransportError> {
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if self
+            .shared
+            .ctl
+            .send(Control::Start { ack: ack_tx })
+            .await
+            .is_err()
+        {
+            return Err(TransportError::Io(
+                "plugin supervisor is gone; cannot start".to_string(),
+            ));
+        }
+        match ack_rx.await {
+            Ok(res) => res,
+            Err(_) => Err(TransportError::Io(
+                "plugin supervisor dropped the start request".to_string(),
+            )),
+        }
+    }
+
     /// 热替换：用新配置启动一个新进程实例，握手成功后原子切换流量，
     /// 然后优雅排空旧实例；失败则保留旧实例继续服务（可回滚）。
     ///
@@ -377,6 +459,19 @@ enum Control {
         timeout: Duration,
         ack: oneshot::Sender<Result<(), TransportError>>,
     },
+    /// **停止但保留监督任务**（可再 [`Control::Start`]）：排空后进入
+    /// `Stopped`，监督循环继续等命令而不是退出。
+    ///
+    /// 与 [`Control::Drain`] 的差别就是这一条：Drain 是终态（任务退出），
+    /// Stop 是「可逆的停」，用于面板的启停开关真正停掉子进程。
+    Stop {
+        deadline: Duration,
+        ack: oneshot::Sender<Result<(), TransportError>>,
+    },
+    /// 从 `Stopped` 重新握手拉起（[`Control::Stop`] 的逆操作）。
+    Start {
+        ack: oneshot::Sender<Result<(), TransportError>>,
+    },
 }
 
 /// `select!` 输出（避免在分支 future 存活期间借用 `ctl_rx`）。
@@ -391,6 +486,9 @@ enum Restart {
     Restarted,
     /// 重启等待期间收到排空请求并已完成。
     Drained,
+    /// 重启等待期间收到**可逆停止**请求（`Control::Stop`）：已进 `Stopped`，
+    /// 监督任务仍在，等后续 `Control::Start`。
+    Stopped,
     /// 放弃（预算耗尽 / 控制端消失）。
     Dead,
 }
@@ -674,8 +772,24 @@ async fn supervise(
     }
 
     loop {
+        // ── 阶段 A：无连接（Stopped）→ 等 Start / 终态 Drain ──
+        //
+        // 首轮必定有连接（上面的握手刚成功）；进入这里意味着上一轮是
+        // `Control::Stop` 或重启期间被 Stop。**监督任务在这里继续存活**——
+        // 这正是 Stop 与 Drain 的语义差别。
+        if shared.current_conn().is_none() {
+            match await_start_command(&shared, transport.as_ref(), &spec, &mut ctl_rx).await {
+                StartPhase::Started => {}
+                StartPhase::Finished => return,
+                StartPhase::StartFailed(error) => {
+                    // 留在 Failed，继续等下一次 Start（面板可再点一次启用）。
+                    tracing::warn!(plugin = %shared.plugin_id, %error, "explicit start failed");
+                    continue;
+                }
+            }
+        }
         let Some(conn) = shared.current_conn() else {
-            // 不应发生（Ready 态必有连接）；防御性收尾。
+            // 不应发生（阶段 A 出来必有连接）；防御性收尾。
             shared.set_state(PluginState::Stopped);
             return;
         };
@@ -694,6 +808,8 @@ async fn supervise(
                 shared.fail_pending_calls("plugin connection lost");
                 match restart_after_crash(&shared, transport.as_ref(), &spec, &mut ctl_rx).await {
                     Restart::Restarted => {}
+                    // 可逆停止：监督任务留着，回阶段 A 等 Start。
+                    Restart::Stopped => continue,
                     Restart::Drained | Restart::Dead => return,
                 }
             }
@@ -705,6 +821,23 @@ async fn supervise(
                 tracing::info!(plugin = %shared.plugin_id, "plugin stopped (drained)");
                 let _ = ack.send(res);
                 return;
+            }
+            Step::Ctl(Some(Control::Stop { deadline, ack })) => {
+                // 可逆停止：排空后**留在循环里**等 Start（Drain 才退出）。
+                shared.set_state(PluginState::Draining);
+                let res = drain_connection(&shared, deadline).await;
+                shared.set_conn(None);
+                shared.set_state(PluginState::Stopped);
+                tracing::info!(plugin = %shared.plugin_id, "plugin stopped (restartable)");
+                let _ = ack.send(res);
+                continue;
+            }
+            Step::Ctl(Some(Control::Start { ack })) => {
+                // 已在运行：按「非停止态」拒绝（想换实现用 Upgrade）。
+                let _ = ack.send(Err(TransportError::Protocol(format!(
+                    "plugin is not stopped: {}",
+                    state_label(&shared.state())
+                ))));
             }
             Step::Ctl(Some(Control::Upgrade {
                 config,
@@ -866,6 +999,20 @@ async fn restart_after_crash(
                         let _ = ack.send(res);
                         return Restart::Drained;
                     }
+                    Some(Control::Stop { deadline, ack }) => {
+                        // 崩溃重启窗口内的「关闭」：收敛成干净停止态，
+                        // 监督任务继续存活（与 Drain 的终态语义区分）。
+                        shared.set_state(PluginState::Draining);
+                        let res = drain_connection(shared, deadline).await;
+                        shared.set_conn(None);
+                        shared.set_state(PluginState::Stopped);
+                        let _ = ack.send(res);
+                        return Restart::Stopped;
+                    }
+                    Some(Control::Start { ack }) => {
+                        // 已在重启中：按「非就绪」拒绝（调用方无需再点一次）。
+                        let _ = ack.send(Err(not_ready_error(&shared.state())));
+                    }
                     Some(Control::Upgrade { ack, .. }) => {
                         // 重启窗口（Pending）内的升级请求：按「非就绪拒绝」
                         // 语义直接回报错误，不排队等待重启完成。
@@ -893,6 +1040,79 @@ async fn restart_after_crash(
             Err(e) => {
                 tracing::warn!(plugin = %shared.plugin_id, attempt, error = %e, "restart attempt failed");
                 backoff = (backoff * 2).min(shared.policy.max_backoff);
+            }
+        }
+    }
+}
+
+/// 阶段 A 的等待结果（[`await_start_command`]）。
+enum StartPhase {
+    /// 已重新握手成功（连接就绪，可继续消息循环）。
+    Started,
+    /// 监督任务该结束了（收到终态 Drain / 控制端消失）。
+    Finished,
+    /// 本次 start 失败（状态已置 Failed）；监督任务**仍在**，可再等一次。
+    StartFailed(TransportError),
+}
+
+/// 已停止态：等 `Start`（拉起）或终态 `Drain`（退出）。
+///
+/// 只处理"无连接"时能收到的命令：
+/// - `Start` → 置 Pending → 握手 → Ready（失败置 Failed 并把错误回给调用方）；
+/// - `Stop` → 幂等 `Ok(())`（已经是停的，不制造错误）；
+/// - `Drain` → 终态收尾后返回 [`StartPhase::Finished`]；
+/// - `Upgrade` → 「未运行」错误（想换实现必须先 Start）。
+async fn await_start_command(
+    shared: &Arc<Shared>,
+    transport: &dyn Transport,
+    spec: &PluginSpec,
+    ctl_rx: &mut mpsc::Receiver<Control>,
+) -> StartPhase {
+    loop {
+        match ctl_rx.recv().await {
+            Some(Control::Start { ack }) => {
+                shared.set_state(PluginState::Pending);
+                match start_and_handshake(shared, transport, spec).await {
+                    Ok((conn, contributions)) => {
+                        if let Some(list) = contributions {
+                            shared.set_contributions(list);
+                        }
+                        shared.set_conn(Some(conn));
+                        shared.set_state(PluginState::Ready);
+                        tracing::info!(plugin = %shared.plugin_id, "plugin started");
+                        let _ = ack.send(Ok(()));
+                        return StartPhase::Started;
+                    }
+                    Err(error) => {
+                        tracing::error!(plugin = %shared.plugin_id, %error, "explicit start: handshake failed");
+                        shared.set_state(PluginState::Failed(error.to_string()));
+                        // `TransportError` 不实现 Clone：把可读原因回给调用方，
+                        // 原始值用于返回值（两者内容一致，调用方读的是字符串）。
+                        let _ = ack.send(Err(TransportError::Protocol(format!(
+                            "start failed: {error}"
+                        ))));
+                        return StartPhase::StartFailed(error);
+                    }
+                }
+            }
+            Some(Control::Stop { ack, .. }) => {
+                // 已经是停止态：幂等成功（面板重复点"关"不该报错）。
+                let _ = ack.send(Ok(()));
+            }
+            Some(Control::Drain { ack, .. }) => {
+                shared.set_state(PluginState::Stopped);
+                let _ = ack.send(Ok(()));
+                return StartPhase::Finished;
+            }
+            Some(Control::Upgrade { ack, .. }) => {
+                let _ = ack.send(Err(TransportError::Protocol(format!(
+                    "plugin is not running: {}",
+                    state_label(&shared.state())
+                ))));
+            }
+            None => {
+                shared.set_state(PluginState::Stopped);
+                return StartPhase::Finished;
             }
         }
     }
@@ -1174,6 +1394,20 @@ fn log_record(plugin_id: &str, rec: &LogRecord) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 状态标签是**线格式**（面板按它分支渲染）：五态各一个固定小写词。
+    #[test]
+    fn plugin_state_labels_are_stable_wire_strings() {
+        assert_eq!(PluginState::Pending.as_str(), "pending");
+        assert_eq!(PluginState::Ready.as_str(), "ready");
+        assert_eq!(PluginState::Draining.as_str(), "draining");
+        assert_eq!(PluginState::Stopped.as_str(), "stopped");
+        assert_eq!(PluginState::Failed("boom".into()).as_str(), "failed");
+        // 原因只有 Failed 带（其它状态 None，面板据此决定是否显示错误行）。
+        assert_eq!(PluginState::Failed("boom".into()).error(), Some("boom"));
+        assert_eq!(PluginState::Ready.error(), None);
+        assert_eq!(PluginState::Stopped.error(), None);
+    }
 
     /// 事件缓冲封顶：超限丢新并计数，消费端取走的是先到的事件。
     #[test]
