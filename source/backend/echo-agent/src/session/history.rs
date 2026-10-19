@@ -155,6 +155,7 @@ impl TrunkStore {
                         tool: None,
                         images: None,
                         seq: 0,
+                        ord: 0, // 派生条目：非时间线缓冲条目，无需分页锚点
                     });
                 }
                 echo_session::SessionEvent::ToolCall(call) => {
@@ -480,6 +481,7 @@ mod tests {
             tool: None,
             images: None,
             seq,
+            ord: seq, // 测试构造：ord 与 seq 同值即可（不使用分页）
         }
     }
 

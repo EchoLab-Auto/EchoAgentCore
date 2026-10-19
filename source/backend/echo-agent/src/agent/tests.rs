@@ -806,6 +806,7 @@ async fn clear_history_resends_remaining_timeline_not_empty() {
         tool: None,
         images: None,
         seq: 0,
+        ord: 0,
     };
     agent.trunk.push_timeline(entry("sA", "A 的消息"));
     agent.trunk.push_timeline(entry("sB", "B 的消息"));
@@ -863,6 +864,7 @@ async fn archive_history_without_session_id_is_rejected_fail_closed() {
         tool: None,
         images: None,
         seq: 0,
+        ord: 0,
     });
 
     agent

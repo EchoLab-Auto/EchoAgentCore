@@ -219,6 +219,18 @@ pub struct TimelineMessage {
     /// 增量同步（since_seq）按此过滤，就地更新的工具条目会被重新投递。
     #[serde(default)]
     pub seq: u64,
+    /// **位置序号**（push 时分配，此后永不改变；0 = 旧版/未赋值的条目）。
+    ///
+    /// 与 `seq` 的分工：`seq` 服务于**增量同步**（就地更新会推进它，因此
+    /// 非单调）；`ord` 服务于**分页锚点**（永不变更，严格随 push 递增）。
+    ///
+    /// 为什么分页不能复用 `seq`：运行中的工具条目会被就地更新并推进 `seq`
+    /// （位置不变、序号变大），于是缓冲区里存在 seq 乱序——实测 1024 条里有
+    /// 46 处非单调。按 seq 定位锚点会过早截断并**漏条目**。按"已加载条数"
+    /// 定位同样不行：分页期间的新增会让窗口错位。只有「永不变更的 push 序号」
+    /// 才是稳定锚点。
+    #[serde(default)]
+    pub ord: u64,
 }
 
 impl TimelineMessage {
@@ -240,6 +252,7 @@ impl TimelineMessage {
             tool: None,
             images: (!images.is_empty()).then_some(images),
             seq: 0,
+            ord: 0,
         }
     }
 
@@ -260,6 +273,7 @@ impl TimelineMessage {
             tool: None,
             images: None,
             seq: 0,
+            ord: 0,
         }
     }
 
@@ -280,6 +294,7 @@ impl TimelineMessage {
             tool: Some(tool),
             images: None,
             seq: 0,
+            ord: 0,
         }
     }
 
@@ -295,6 +310,7 @@ impl TimelineMessage {
             tool: None,
             images: None,
             seq: 0,
+            ord: 0,
         }
     }
 }

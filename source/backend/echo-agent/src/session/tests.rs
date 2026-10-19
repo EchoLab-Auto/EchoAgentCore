@@ -692,6 +692,7 @@ fn timeline_push_caps_at_max_and_keeps_newest() {
             tool: None,
             images: None,
             seq: 0,
+            ord: 0,
         });
     }
     let timeline = store.timeline_snapshot();
@@ -733,6 +734,7 @@ async fn clear_history_wipes_log_trunk_timeline_and_disk() {
         tool: None,
         images: None,
         seq: 0,
+        ord: 0,
     });
     store.save_now().await;
     assert_eq!(store.trunk_len(), 1);
@@ -785,6 +787,7 @@ async fn clear_session_only_wipes_target_and_keeps_siblings() {
         tool: None,
         images: None,
         seq: 0,
+        ord: 0,
     };
 
     // 会话 A（待清理）与 B（必须完好）各写事件 + 时间线条目。
@@ -998,6 +1001,7 @@ async fn timeline_probe_counters_track_writes() {
         tool: None,
         images: None,
         seq: 0,
+        ord: 0,
     };
     for i in 0..(TRUNK_TIMELINE_MAX + 3) {
         store.push_timeline(message(if i % 2 == 0 { "sA" } else { "sB" }));
@@ -1069,6 +1073,7 @@ async fn timeline_roundtrips_through_the_persisted_file() {
         tool: None,
         images: None,
         seq: 0,
+        ord: 0,
     });
     store.push_timeline(crate::event::TimelineMessage {
         kind: "backend".into(),
@@ -1080,6 +1085,7 @@ async fn timeline_roundtrips_through_the_persisted_file() {
         tool: None,
         images: None,
         seq: 0,
+        ord: 0,
     });
     store.save_now().await;
 
@@ -1133,6 +1139,7 @@ fn push_user(store: &TrunkStore, content: &str) {
         tool: None,
         images: None,
         seq: 0,
+        ord: 0,
     });
 }
 
@@ -2236,9 +2243,51 @@ async fn archive_snapshot_without_persistence_errors() {
 // ── 时间线分页（2026-10）──────────────────────────────────────────────────
 //
 // 背景：时间线上限 1024 条、压缩后约 0.6 MB。首屏/重连一次性收完既拖慢首帧，
-// 也让"只想看最后一屏"的场景白付传输与解析。分页把"首屏只取最新 N 条"与
-// "向上翻页取更早"拆开——但两条路径必须**拼回同一个序列**，否则前端看到的
-// 历史会缺一段或重复一段。
+// 也让"只想看最后一屏"的场景白付传输与解析。
+//
+// ## 锚点必须是 `ord`（不是 seq，也不是"已加载条数"）
+//
+// - `seq` 服务增量同步：**就地更新会推进它**（位置不变、序号变大）→ 缓冲区里
+//   非单调（实测 1024 条里 46 处）。按 seq 定位会过早截断，逐页拼接只还原
+//   842/1024。
+// - "已加载条数"也不稳：分页期间的新增会让"从尾部数 N 条"整体错位，同样漏。
+// - `ord` 只在 push 时分配、**此后永不改变**且严格递增 → 稳定锚点 + 可二分。
+//
+// 下面第三例专门构造 seq 乱序 + 中途新增，钉住这条不变量。
+/// 旧文件里「部分条目有 ord、部分为 0」的混合状态 → 恢复后 ord 必须**整体**
+/// 重排成严格递增。只补 0 项会得到 [1,5,3] 这类乱序，`timeline_page` 的
+/// 二分定位随之失效（翻页开始漏条目），所以这里钉住"重排"而不是"填补"。
+#[test]
+fn restore_timeline_renumbers_mixed_ord_strictly_increasing() {
+    let store = TrunkStore::new(200_000);
+    let mut timeline = Vec::new();
+    for (index, ord) in [0u64, 5, 0, 7, 0].into_iter().enumerate() {
+        let mut message = crate::event::TimelineMessage::backend(
+            format!("m{index}"),
+            "s1",
+            1000 + index as i64,
+            None,
+        );
+        message.ord = ord;
+        timeline.push(message);
+    }
+
+    store.restore_timeline(timeline);
+
+    let snapshot = store.timeline_snapshot();
+    let ords: Vec<u64> = snapshot.iter().map(|m| m.ord).collect();
+    assert_eq!(ords, vec![1, 2, 3, 4, 5], "混合状态应整体重排为 1..=n");
+    assert!(
+        ords.windows(2).all(|pair| pair[0] < pair[1]),
+        "ord 必须严格递增，否则二分定位失效：{ords:?}"
+    );
+
+    // 严格递增 ⇒ 按最老条目做锚点必须定位到开头（空页 = 已到顶）。
+    let (page, more) = store.timeline_page(ords[0], 10);
+    assert!(page.is_empty(), "锚点为最老条目时不应再返回条目");
+    assert!(!more);
+}
+
 #[test]
 fn timeline_window_tail_returns_newest_page_and_flags_truncation() {
     let store = TrunkStore::new(200_000);
@@ -2251,26 +2300,23 @@ fn timeline_window_tail_returns_newest_page_and_flags_truncation() {
         ));
     }
 
-    // limit >= 总数：全部返回、未截断
     let (all, more) = store.timeline_window_tail(50);
     assert_eq!(all.len(), 50);
     assert!(!more, "恰好等于总数时不算截断");
 
-    // limit < 总数：只回最新 N 条、标记截断
     let (page, more) = store.timeline_window_tail(10);
     assert_eq!(page.len(), 10);
     assert!(more);
     assert_eq!(page.first().unwrap().content, "m40");
     assert_eq!(page.last().unwrap().content, "m49");
 
-    // limit = 0 视为不限（与旧行为一致）
     let (all_zero, more_zero) = store.timeline_window_tail(0);
     assert_eq!(all_zero.len(), 50);
     assert!(!more_zero);
 }
 
 #[test]
-fn timeline_page_before_walks_backwards_without_gaps_or_duplicates() {
+fn timeline_page_walks_backwards_by_ord_without_gaps_or_duplicates() {
     let store = TrunkStore::new(200_000);
     for i in 0..50 {
         store.push_timeline(crate::event::TimelineMessage::backend(
@@ -2281,25 +2327,25 @@ fn timeline_page_before_walks_backwards_without_gaps_or_duplicates() {
         ));
     }
 
-    // 首屏：最新 10 条（m40..m49）
     let (head, more) = store.timeline_window_tail(10);
     assert!(more);
     let mut collected: Vec<String> = head.iter().map(|m| m.content.clone()).collect();
-
-    // 逐页向上翻，直到 has_more = false
-    let mut before = head.first().unwrap().seq;
     let mut pages = 0;
     loop {
-        let (page, more) = store.timeline_page_before(before, 10);
+        let anchor = store
+            .timeline_snapshot()
+            .iter()
+            .find(|m| m.content == collected[0])
+            .map(|m| m.ord)
+            .expect("锚点条目必须还在");
+        let (page, more) = store.timeline_page(anchor, 10);
         if page.is_empty() {
             assert!(!more, "空页必须是 '没有更多'");
             break;
         }
-        // 前插（时间升序 → 页内最后一条紧邻已加载的最老一条之前）
         let mut next: Vec<String> = page.iter().map(|m| m.content.clone()).collect();
         next.extend(collected);
         collected = next;
-        before = page.first().unwrap().seq;
         pages += 1;
         if !more {
             break;
@@ -2307,15 +2353,90 @@ fn timeline_page_before_walks_backwards_without_gaps_or_duplicates() {
         assert!(pages < 10, "翻页不应无限循环");
     }
 
-    // 拼回来必须与原始序列**完全一致**（不缺、不重、不乱序）
     let expected: Vec<String> = (0..50).map(|i| format!("m{i}")).collect();
     assert_eq!(collected, expected, "分页拼接必须还原出完整时间线");
 }
 
+/// seq 乱序（就地更新推进 seq）+ 分页期间新增 → 按 ord 翻页仍完整还原。
 #[test]
-fn timeline_page_before_at_start_and_beyond_bounds() {
+fn timeline_page_survives_non_monotonic_seq_and_live_appends() {
     let store = TrunkStore::new(200_000);
-    assert!(store.timeline_page_before(100, 10).0.is_empty(), "空时间线返回空页");
+    for i in 0..30 {
+        store.push_timeline(crate::event::TimelineMessage::backend(
+            format!("m{i}"),
+            "s1",
+            1000 + i,
+            None,
+        ));
+    }
+    // 模拟就地更新：中段条目的 seq 被推进（位置不变、序号变大）
+    {
+        let mut timeline = store.timeline_mut();
+        for (n, idx) in [3usize, 7, 11, 15, 19, 23].iter().enumerate() {
+            timeline[*idx].seq = 900 + n as u64;
+        }
+    }
+    let seqs: Vec<u64> = store.timeline_snapshot().iter().map(|m| m.seq).collect();
+    assert!(
+        seqs.windows(2).any(|w| w[1] <= w[0]),
+        "测试前置：seq 必须出现非单调"
+    );
+
+    // 首屏
+    let (head, _) = store.timeline_window_tail(10);
+    let mut collected: Vec<String> = head.iter().map(|m| m.content.clone()).collect();
+    let anchor_of = |store: &TrunkStore, first: &str| {
+        store
+            .timeline_snapshot()
+            .iter()
+            .find(|m| m.content == first)
+            .map(|m| m.ord)
+            .expect("锚点条目必须还在")
+    };
+
+    // 第一次翻页后**新增 5 条**（模拟实时输出）——"按已加载条数"会在这里错位
+    let (page1, more1) = store.timeline_page(anchor_of(&store, &collected[0]), 10);
+    let mut next: Vec<String> = page1.iter().map(|m| m.content.clone()).collect();
+    next.extend(collected.clone());
+    collected = next;
+    assert!(more1);
+    for i in 30..35 {
+        store.push_timeline(crate::event::TimelineMessage::backend(
+            format!("m{i}"),
+            "s1",
+            2000 + i,
+            None,
+        ));
+    }
+
+    // 继续翻到开头
+    let mut pages = 0;
+    loop {
+        let (page, more) = store.timeline_page(anchor_of(&store, &collected[0]), 10);
+        if page.is_empty() {
+            break;
+        }
+        let mut next: Vec<String> = page.iter().map(|m| m.content.clone()).collect();
+        next.extend(collected);
+        collected = next;
+        pages += 1;
+        assert!(pages < 10);
+        if !more {
+            break;
+        }
+    }
+    // 已加载部分必须是 m0..m29 的完整序列（新增的 30..34 在尾部、不属于这里）
+    let expected: Vec<String> = (0..30).map(|i| format!("m{i}")).collect();
+    assert_eq!(
+        collected, expected,
+        "seq 乱序 + 中途新增时，按 ord 翻页仍须完整还原（不漏不重）"
+    );
+}
+
+#[test]
+fn timeline_page_at_start_and_beyond_bounds() {
+    let store = TrunkStore::new(200_000);
+    assert!(store.timeline_page(0, 10).0.is_empty(), "空时间线返回空页");
 
     for i in 0..5 {
         store.push_timeline(crate::event::TimelineMessage::backend(
@@ -2326,15 +2447,21 @@ fn timeline_page_before_at_start_and_beyond_bounds() {
         ));
     }
 
-    // before_seq 小于最老条目 → 已到开头
-    let oldest = store.timeline_snapshot().first().unwrap().seq;
-    let (page, more) = store.timeline_page_before(oldest, 10);
+    // 锚点 = 最老条目 → 已到开头
+    let oldest_ord = store.timeline_snapshot().first().unwrap().ord;
+    let (page, more) = store.timeline_page(oldest_ord, 10);
     assert!(page.is_empty());
     assert!(!more);
 
-    // 锚点找不到（游标超前）→ 退化为"取末尾一页"，不返回空误导前端
-    let (page, _) = store.timeline_page_before(oldest + 999, 3);
+    // 游标超前（异常输入，如 Core 重启后 ord 重排）：不 panic，退化为
+    // "从末尾取一页"——前端去重即可，不会因此看不到历史。
+    let (page, more) = store.timeline_page(9999, 10);
+    assert_eq!(page.len(), 5, "游标超前应退化为末尾一页，而不是空");
+    assert!(!more);
+
+    // before_ord = 0 → 退化为"从末尾取一页"（等价于首屏）
+    let (page, more) = store.timeline_page(0, 3);
     assert_eq!(page.len(), 3);
     assert_eq!(page.last().unwrap().content, "m4");
+    assert!(more);
 }
-

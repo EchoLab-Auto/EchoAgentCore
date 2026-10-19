@@ -241,9 +241,20 @@ pub enum BackendCommand {
     RequestTimelineEarlier {
         #[serde(default)]
         team_id: Option<String>,
-        /// 只取 `seq < before_seq` 的最近 N 条（`before_seq` = 前端已加载的
-        /// 最老条目的 seq）。
-        before_seq: u64,
+        /// **已加载的最老条目的位置序号**（`TimelineMessage.ord`）。
+        ///
+        /// 为什么不用 `seq` 作锚点：时间线的 `seq` **不是单调递增**的——Core
+        /// 对运行中的工具条目做就地更新时会推进该条目的 `seq`（位置不变、
+        /// 序号变大，增量同步才能重新投递它）。实测 1024 条里��� 46 处非单调，
+        /// 按 `seq` 定位会过早截断并**漏条目**（逐页拼接只还原 842/1024）。
+        ///
+        /// 为什么也不用"已加载条数"：分页期间的新增会让"从尾部数 N 条"整体
+        /// 错位，同样漏条目。
+        ///
+        /// `ord` 是 push 时分配、**此后永不改变**的位置序号，严格递增 → 既是
+        /// 稳定锚点，也能二分定位。与内容、新增、就地更新全都无关。
+        #[serde(default)]
+        before_ord: u64,
         /// 本页最多返回条数（服务端 clamp [1, 500]）。
         #[serde(default)]
         limit: Option<usize>,

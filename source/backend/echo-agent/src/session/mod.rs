@@ -148,6 +148,9 @@ pub struct TrunkStore {
     ///（RequestTrunkTimeline.since_seq + TrunkTimeline.seq），避免切换
     /// agent 时全量重传。
     timeline_seq: Arc<std::sync::atomic::AtomicU64>,
+    /// 位置序号计数器（分页锚点）：与 `timeline_seq` 分开——后者会被就地更新
+    /// 推进（增量同步需要），前者**只在 push 时递增**、此后永不改变。
+    timeline_ord: Arc<std::sync::atomic::AtomicU64>,
     /// 时间线写路径计数（探针，2026-10 面板"历史无声消失"事故定位）——
     /// push / cap-drain / 其余删除三个单调计数用于相邻采样对账。
     timeline_pushed: Arc<std::sync::atomic::AtomicU64>,
@@ -187,6 +190,7 @@ impl Clone for TrunkStore {
             save_lock: Arc::clone(&self.save_lock),
             timeline: Arc::clone(&self.timeline),
             timeline_seq: Arc::clone(&self.timeline_seq),
+            timeline_ord: Arc::clone(&self.timeline_ord),
             timeline_pushed: Arc::clone(&self.timeline_pushed),
             timeline_drained: Arc::clone(&self.timeline_drained),
             timeline_removed: Arc::clone(&self.timeline_removed),
@@ -374,6 +378,7 @@ impl TrunkStore {
             save_lock: Arc::new(tokio::sync::Mutex::new(())),
             timeline: Arc::new(parking_lot::Mutex::new(Vec::new())),
             timeline_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            timeline_ord: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             timeline_pushed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             timeline_drained: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             timeline_removed: Arc::new(std::sync::atomic::AtomicU64::new(0)),

@@ -41,6 +41,7 @@ pub(crate) async fn deliver_aggregate_summary(
                     reasoning: None,
                     tool: None,
                     images: None,
+                    ord: 0, // push_timeline 内部分配（分页锚点）
                 });
             return;
         }

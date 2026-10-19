@@ -944,7 +944,7 @@ impl Agent {
             }
             BackendCommand::RequestTimelineEarlier {
                 team_id,
-                before_seq,
+                before_ord,
                 limit,
             } => {
                 // 向上翻页（2026-10 分页）：返回 `seq < before_seq` 的最近 N 条。
@@ -960,7 +960,7 @@ impl Agent {
                     Some(agent) => &agent.trunk,
                     None => &self.trunk,
                 };
-                let (messages, has_more) = trunk.timeline_page_before(before_seq, limit);
+                let (messages, has_more) = trunk.timeline_page(before_ord, limit);
                 // 与全量快照同一套线上瘦身（推理正文截断），保证前端拿到的
                 // 形状与首屏一致。
                 let messages = crate::timeline::elide_reasoning_for_wire(messages);

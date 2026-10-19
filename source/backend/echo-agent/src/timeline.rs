@@ -125,6 +125,7 @@ impl TimelineProjector {
                     tool: None,
                     images: None,
                     seq: 0, // 由 push_timeline 赋递增序号
+                    ord: 0, // 由 push_timeline 赋（分页锚点，此后不变）
                 });
             }
             BackendEvent::AgentOutput {
@@ -516,6 +517,7 @@ mod tests {
             tool: None,
             images: None,
             seq: 0,
+            ord: 0, // 分页锚点（push 时赋）
         }
     }
 

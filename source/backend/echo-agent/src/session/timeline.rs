@@ -43,6 +43,12 @@ impl TrunkStore {
             .timeline_seq
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
+        // 位置序号：只在 push 时分配，此后**永不改变**（分页锚点）。
+        // 与 `seq` 分开的理由见协议注释（就地更新会推进 seq → 非单调）。
+        message.ord = self
+            .timeline_ord
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
         timeline.push(message);
         self.timeline_pushed
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -141,34 +147,35 @@ impl TrunkStore {
         (timeline[start..].to_vec(), true)
     }
 
-    /// 向上翻页：取 `seq < before_seq` 的**最近** `limit` 条，返回
-    /// `(条目（时间升序）, 是否还有更早的)`。
+    /// 向上翻页：跳过最新的 `skip` 条，返回再往前的 `limit` 条，
+    /// 形如 `(条目（时间升序）, 是否还有更早的)`。
     ///
-    /// 定位方式：在缓冲区内找第一条 `seq >= before_seq` 的条目作为锚点
-    /// （不含它），往前数 `limit` 条。**按位置而不是按 seq 过滤**的理由：
-    /// 旧版/重启前的条目 `seq == 0`（无法用 seq 比较），按 seq 过滤会让它们
-    /// 永远取不到；按位置取则自然带上——它们就在锚点前面。
+    /// **为什么用条数而不是 seq 作锚点**：时间线的 `seq` 不是单调递增的
+    /// —— 运行中的工具条目会被**就地更新**并推进 `seq`（位置不变、序号变大，
+    /// 增量同步才能重新投递它）。实测 1024 条里有 46 处非单调，按 `seq`
+    /// 定位会过早截断并漏条目（逐页拼接只还原 842/1024）。
     ///
-    /// `before_seq` 小于缓冲区最老条目时返回空页且 `has_more = false`
-    /// （已到开头）；锚点找不到（游标超前/条目已被淘汰）时退化为"取末尾一页"。
-    pub fn timeline_page_before(
+    /// 条数锚点与内容无关，对乱序 / 就地更新 / `seq == 0` 的旧条目全都免疫。
+    /// `skip >= len` 时返回空页且 `has_more = false`（已到开头）。
+    pub fn timeline_page(
         &self,
-        before_seq: u64,
+        before_ord: u64,
         limit: usize,
     ) -> (Vec<crate::event::TimelineMessage>, bool) {
         let timeline = self.timeline.lock();
-        if timeline.is_empty() || limit == 0 {
+        let total = timeline.len();
+        if total == 0 || limit == 0 {
             return (Vec::new(), false);
         }
-        let anchor = timeline
-            .iter()
-            .position(|m| m.seq > 0 && m.seq >= before_seq)
-            .unwrap_or(timeline.len());
-        if anchor == 0 {
-            return (Vec::new(), false); // 已在最开头
-        }
-        let start = anchor.saturating_sub(limit);
-        (timeline[start..anchor].to_vec(), start > 0)
+        // 锚点 = 第一条 `ord >= before_ord` 的位置（`ord` 严格递增，可二分）。
+        // `before_ord == 0` / 找不到（旧数据或游标超前）→ 退化为"从末尾取一页"。
+        let end = match timeline.binary_search_by(|m| m.ord.cmp(&before_ord)) {
+            Ok(index) => index,
+            Err(index) => index,
+        };
+        let end = if before_ord == 0 { total } else { end.min(total) };
+        let start = end.saturating_sub(limit);
+        (timeline[start..end].to_vec(), start > 0)
     }
 
     /// Mutable access to the display timeline for in-place updates (e.g.
@@ -218,7 +225,24 @@ impl TrunkStore {
         let entries = timeline.len();
         let head_seq = timeline.first().map(|entry| entry.seq).unwrap_or(0);
         let tail_seq = timeline.last().map(|entry| entry.seq).unwrap_or(0);
+        // 位置序号（2026-10 分页）：旧文件没有 `ord`（反序列化为 0）→ 按位置
+        // 重排为 1..=n；已有 ord 的保持原值，计数器从最大值继续。
+        //
+        // 注意：一旦存在 `ord == 0` 就**整体**重排为 1..=n，而不是只补 0 项。
+        // 混合状态（部分有值、部分为 0）下只补 0 项会破坏严格递增
+        // （如 [0,5,0] → [1,5,3]），二分定位随之失效、翻页开始漏条目。
+        // `ord` 只在单次进程生命周期内充当翻页锚点，重排后前端重新取快照
+        // 即可——旧锚点会命中"游标超前"分支退化为末尾一页（不 panic 不漏页）。
+        let needs_ord = timeline.iter().any(|entry| entry.ord == 0);
+        if needs_ord {
+            for (index, entry) in timeline.iter_mut().enumerate() {
+                entry.ord = index as u64 + 1;
+            }
+        }
+        let max_ord = timeline.iter().map(|entry| entry.ord).max().unwrap_or(0);
         *self.timeline.lock() = timeline;
+        self.timeline_ord
+            .store(max_ord, std::sync::atomic::Ordering::Relaxed);
         self.timeline_seq
             .store(max_seq, std::sync::atomic::Ordering::Relaxed);
         // 整表替换：置位探针重基线标志（跨表差值对账对替换无意义）。
