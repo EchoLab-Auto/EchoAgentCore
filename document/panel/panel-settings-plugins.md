@@ -38,19 +38,29 @@ y: 1060
 - **行卡标记**：`独立进程`（`pluginIsSubprocess`，与外部组等价）· 包规模徽标（`N 工具 · M 技能`，经 `pluginMembers` → `packageMembers` 从 `state.plugins` 与 `state.tools`/`state.skills` 反查——这两份是单份状态、只随管理目标节点更新，故切到非管理目标节点时徽标仍按管理目标口径统计）· `🔒 受保护`（management.panel，**行内渲染锁标记而不给开关**）· `模式`（loop.*）
 - **副标题随分组维度**：按来源 = `共 N 项 · E 外部插件 · I 内部插件 · D 已禁用`；语义分组 = `共 N 项 · G 包维度门控 · M 模式插件 · D 已禁用`
 - **启停**：`TogglePlugin` 禁用即卸载注册；在选定管理节点上全局生效；**「管理面」插件禁用被保护**——core 拒绝 + UI 明示且行内不给开关，防 Panel 自锁断连。**包级聚合**：包内工具与技能随包一起启停（见[插件化设计](../plugins/core-plugins.md)「Package」）
+- **重启**：`RestartPlugin`（卸下 → 重新挂载）——**不改启用状态、不写 `disabled_plugins`**，纯粹让插件按最新配置/外部状态重新初始化。行内是一个 hover 才出现的图标按钮（开关左侧），详情头部另有文字按钮；只对**已启用且不受保护**的插件出现（未挂载没有可重载的实例；管理面重启 = 先断 management WS，同禁用一样被拒）
+- **装配失败可见**：`PluginInfo.error` 非空 = 该插件挂载被跳过（command 不存在 / 握手失败），行卡出红色「失败」徽标、详情出失败原因块。与「用户主动禁用」区分开——两者 `enabled` 都是 false，但前者要人去修配置，修好后点「重启」即可重试，不必重启 Core
 
 ## 详情分区
 
 1. **这个插件带来什么**：包内**工具 / 技能 chips，点击跳转到对应分类并选中**
 2. **被谁使用**：`enabled_plugins` 白名单反查（「已启用」/「未列入白名单」）
 3. **启停影响**：按门控语义分派文案；受保护插件为警示色说明如何在 core.toml 真正禁用
-4. **技术信息**（**折叠**）：承载 ID / Package / kind·版本 / Entry / **运行形态** / Author
+4. **技术信息**（**折叠**）：承载 ID / Package / kind·版本 / Entry / **运行形态** / Author / **配置来源**（`config_origin`：`plugins.toml` 或 `base.toml · layer 0`；空 = 配置未声明，即编译内置的缺省行为）
 
 头部左侧是语义标签（`PLUGIN_SEMANTIC_LABELS`），外部插件另加 `外部插件 · 独立进程` 标签。`PLUGIN_KIND_LABELS.loop` 为「循环驱动」（全站统一的中文 kind 名）。
 
 ## 协议契约
 
 `PluginInfo.runtime`（`in_process` / `subprocess`，缺失 = 进程内）与 `PluginInfo.builtin`（manifest 是否编译进 Core，缺失按 `true` 兼容）均由 Core 回推、彼此正交；来源分组（`pluginSource`）与运行形态标签（`pluginRuntimeLabel`，`PLUGIN_RUNTIME_LABELS`：独立进程 / 进程内）同源于这两个字段，Panel 不做推断性改写。
+
+三个较新的可选字段（旧 Core 不发 → 空值，面板降级但不报错）：
+
+| 字段 | 含义 | 面板落点 |
+| --- | --- | --- |
+| `error` | 挂载失败原因（`PluginDescriptor::error`） | 行卡「失败」徽标 + 详情失败块 |
+| `config_origin` | 声明该插件的配置层（来自 Core 的分层合成，与 `dump-config` 同源） | 技术信息「配置来源」 |
+| — | `RestartPlugin { id }` 命令（**写命令**，不进可广播只读清单） | 行内图标按钮 / 详情按钮 |
 
 ## 交叉跳转
 
