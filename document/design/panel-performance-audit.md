@@ -347,17 +347,46 @@ DOM 与堆都从「随会话线性增长」变成「常数（≈ 200 行窗口�
 注入 `content-visibility: auto` 后掉帧 114 → 111（无变化）——**成本在 JS
 （vnode / Proxy / Intl / 分配），不在布局绘制**；这条也说明「只上 CSS」不是解。
 
+## 四·补三 · 合并索引化与条目身份
+
+窗口化之后剩下的头号瓶颈是**合并匹配**：`sessionMessagesFor` 在每个流式
+delta 都被调用，而它的匹配是「每条窗口消息 × 全表线性扫」。
+
+| 规模（往当前会话灌历史 + 灌满 1024 条实时窗口） | 改前 | 改后 |
+| --- | --- | --- |
+| 3000 历史 + 1024 窗口，单次 delta | **622 ms** | **4.6 ms** |
+| 同上（4× CPU）一次回答 120 delta 掉帧 | — | 1~2 / 119 |
+| 1000 历史 + 1024 窗口（4× CPU）一次回答 | — | 0 / 119 |
+
+做法：建一次索引（`role|time` → 下标列表、`tool_call_id` → 下标、工具名 →
+最后一个 running），每次匹配变一次 Map 查表。合并同时重写为**两阶段**
+（判定用快照原始坐标、输出另用映射表）——边匹配边 `splice` 会让索引下标整体
+偏移，第一版实现因此把同一条回答显示了两遍（现由
+`web/src/__tests__/session-merge-index.test.ts` 锁定）。
+
+### 同一批：条目身份进门（P1 第一步）
+
+`state.ts` 里那三处启发式（流式行按 `(role, session, branch)` 找、终值分支
+缺失时"取最新流式行"、工具结果 `tool_call_id` 缺失时"按工具名猜最后一个
+running"）在并行分支 / 同名并发 / 交错输出下会配错行——历史上表现为"思考
+chip 堆到正文后面""工具行一直读秒""同一条回答显示两遍"。
+
+Core 现在在事件帧**信封层**下发 `entry`（同一条逻辑条目的所有事件共享同一
+id，与 `seq` 同一手法，零构造点改动）：Panel 三处匹配改为精确命中，`entry`
+缺失（旧版 Core）时全部回退原判据。详见
+[entry-identity-p1](./entry-identity-p1.md)。
+
 ### 还没做（下一批）
 
-1. **`sessionMessagesFor` 的 O(窗口 × 历史) 合并**（`state.ts` 的
-   `findToolEntryIndex` / `indexCoveredBySnapshot` 各扫全表）：建
-   `Map<tool_call_id>` / `Map<role|time>` 索引可降为 O(n)。P0 之后它已不是
-   主瓶颈（窗口化把窗口压到 200），但仍是「历史很长 + 窗口很大」时的成本。
-2. **`markRaw` / 归一化存储**：`state.trunk`、`sessionHistory`、
-   `teamTimelines` 全在 `reactive` 下，深响应式图 + 三份副本。真正的解是
-   **条目身份化**（`EntryId` + `rev` + Upsert），见
-   [entry-identity-p1](./entry-identity-p1.md)。
-3. `sessionHistory` 上限 64 份 → LRU 8–16 份；`trunk-cache` 只写变化的 team。
+1. **`markRaw` / 归一化存储**：`state.trunk`、`sessionHistory`、
+   `teamTimelines` 全在 `reactive` 下（改后仍占单次 delta 的 ~29% 是 Proxy
+   get），且是三份副本。真正的解是条目身份化的余下部分（时间线条目带
+   `entry` + `EntryUpsert` + `RequestWindow`/`Subscribe` 游标）。注意：元素
+   `markRaw` 会让 `msg.content += delta` 这类**原地变异**失去响应性，必须先
+   把写路径改成"替换元素"。
+2. `sessionHistory` 上限 64 份 → LRU 8–16 份；`trunk-cache` 只写变化的 team。
+3. Core 侧流式 delta 合批（50–80 ms 窗口），把每条 delta 的端到端成本再降一个
+   量级（当前单次 1~4.6 ms 已可接受，收益在长回答的累计开销）。
 
 ## 五、性能要求评估
 

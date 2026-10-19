@@ -16,6 +16,7 @@ use tracing_subscriber::EnvFilter;
 
 mod agent_supervisor;
 mod config;
+mod entry_identity;
 mod federation_import;
 mod federation_rt;
 mod instance_deploy;

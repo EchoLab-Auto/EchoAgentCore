@@ -26,7 +26,7 @@ y: 1650
 2. **全网同步更新（不做旧版本兼容）**：字段/变体变更可直接收紧（如去 `serde(default)`）；`serde(default)` 仅保留给语义上真正可省略的字段（`Option` + `skip_serializing_if` 等）；两端同版本部署，不设新旧混部容忍
 3. 新增事件/命令变体时两边同时合入；未知变体由 serde 整帧丢弃（不崩溃）
 4. 进程内 mpsc bridge（`create_bridge` / `BackendBridge` / `BackendHandle` / `FanoutHandle`）与 WS 共享同一组类型，主要用于测试；生产部署一律走 WS
-5. **信封字段与事件契约分离**：`seq` 是 WS 帧的**顶层**信封字段，不属于 `BackendEvent` 任何变体——增删它不触发变体兼容规则，也不会让事件反序列化失败（缺省时消费端走 `ignored` 分支）；同理，信封级元数据不应塞进事件变体
+5. **信封字段与事件契约分离**：`seq` / `entry` 是 WS 帧的**顶层**信封字段，不属于 `BackendEvent` 任何变体——增删它们不触发变体兼容规则，也不会让事件反序列化失败（缺省时消费端走 `ignored` 分支 / 回退启发式）；同理，信封级元数据不应塞进事件变体
 #### 协议名迁移（2026-10，已完成）
 
 Core 在 `2d46b7d` 把「适配器」这一平台专用抽象整体改名为「插件实例」，**线协议变体名同步改了**，
@@ -77,7 +77,7 @@ pub enum WsMessage {
 {"type":"event","payload":{"AgentOutput":{"session_id":"...","content":"...","branch_id":null}},"seq":4127}
 ```
 
-序列化助手：`serialize_command` / `serialize_event` / `serialize_event_sequenced` / `deserialize_message`（`echo_protocol::bridge`）；无法解析的帧记日志后丢弃。
+序列化助手：`serialize_command` / `serialize_event` / `serialize_event_sequenced` / `serialize_event_identified` / `deserialize_message`（`echo_protocol::bridge`）；无法解析的帧记日志后丢弃。
 
 ### 事件扇出序号
 
@@ -85,6 +85,7 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 
 - **语义**：Core **进程内**单调递增序号（从 1 起，重启归 1），标识"这条 Core 发出的第 N 条事件"，不标识任何业务对象。由 WS 扇出点 `management.rs` 的 `EventBroker` 在**持订阅者表锁之前** `fetch_add` 分配，因此编号与投递顺序严格一致——多订阅者（多窗口 / 多 Panel / 中继的多个上游连接）看到同一套编号，不会错位
 - **编码**：`serialize_event_sequenced` 把序号作为顶层字段附加（`{"type":"event","payload":{…},"seq":N}`）；`serialize_event` 保留不带序号的形态，两者共用同一实现。放顶层而不是塞进 `BackendEvent` 变体，是为了不动事件契约——新增事件变体不必记得带序号，旧 Panel 的 serde 也只会忽略这个多余字段
+- **条目身份**：`serialize_event_identified` 在序号之外附加 `entry`（`{"type":"event","payload":{…},"seq":N,"entry":"…"}`）。语义 = **同一条逻辑条目的所有事件共享同一 id**：一段流式输出的全部增量与它的终值同 id（`backend:<session>:<branch>:<n>` / `reasoning:<session>:<branch>:<n>`），工具调用与它的结果同 id（`tool:<session>:<tool_call_id>`，id 为空时不分配）。`<n>` 是 Core 进程级单调计数。由 Core 的扇出（`management::EventBroker` → `core::entry_identity`）在**持锁投递之前**推进，因此多订阅者看到同一套 id；缺省（旧版 Core / 无身份概念的事件）时不写该键，Panel 全部消费点回退原判据
 - **消费方契约（Panel）**：按 `(core, seq)` 分桶观察（`web/src/event-seq.ts` 的 `observeEventSeq`）——`baseline` 首帧建基线、`contiguous` 连续、`gap` 跳号（`missed` = 缺失条数）即**按 timeline 游标补拉**（`RequestTrunkTimeline{ team_id, since_seq }`，`connection.ts` 的 `requestTimelineResync`，带最小间隔限流）、`reset` 序号回退（Core 重启归 1、中继补发旧帧）只重取基线不报警、`ignored` 帧上无序号（旧 Core）跳过校验。判定的职责边界：只观察不修复，修复动作由连接层发起
 - **为什么要它**：中继半死、重连窗口、标签页后台节流都可能让事件**静默丢失**；没有序号时前端无从得知，某条 `ToolResult` 丢了工具行就永远停在「运行中」，只能刷新页面。回合收尾兜底只能止住读秒，救不回丢失的内容（工具输出、回答片段、列表更新）
 - **与时间线条目 `seq` 无关**：帧序号标识 Core → Panel 的事件流连续性（进程内、重启归 1），`TimelineMessage.seq` 标识时间线条目（`RequestTrunkTimeline{since_seq}` 用的是它）；两者不可互作游标

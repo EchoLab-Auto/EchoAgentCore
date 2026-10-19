@@ -9,9 +9,12 @@ link: ["panel-performance-audit | Panel 性能审计 | l>t"]
 
 # 条目身份化：P1 协议草案与 Panel 双读骨架
 
-> **状态：规划中（2026-10-19 起草）**。P0（渲染窗口 / 时间标签 memo / 工作行缓存 /
-> 流式纯文本 / 写时复制）已落地并实测达标，见 [Panel 性能审计](./panel-performance-audit.md)。
-> 本文是 P1–P4 的方案与协议草案；协议字段尚未进代码，落地时以代码为准。
+> **状态：P1 第一步已落地（2026-10-19）**。P0（渲染窗口 / 适配前切片 / 时间标签
+> memo / 工作行缓存 / 流式纯文本 / 写时复制 / 合并索引化）已落地并实测达标，
+> 见 [Panel 性能审计](./panel-performance-audit.md)。P1 的**条目身份**已进代码：
+> Core 侧 `core/src/entry_identity.rs` + 信封层 `entry` 字段，Panel 侧已消费
+> （流式行 / 终值对账 / 工具配对三处改为精确命中，旧判据保留为回退）。
+> 本文余下章节（归一化存储、游标分页、协议收敛）仍是提案，落地时以代码为准。
 
 ---
 
@@ -45,6 +48,51 @@ P0 把**渲染**成本与历史长度解耦（常数 200 行窗口），但**数
 这些不是「判据不够聪明」，而是**没有身份就必然要做非法推断**。
 
 ---
+
+## 已落地：信封层的条目身份
+
+实施要点与设计稿的差异：**没有**给 `BackendEvent` 各变体加字段（那会让 70+
+处构造点都要改），改为与 `seq` 同一手法——id 作为**顶层字段**附加在帧上：
+
+```json
+{"type":"event","payload":{"AgentContentDelta":{…}},"seq":142,"entry":"backend:s1:b1:7"}
+```
+
+| 位置 | 内容 |
+| --- | --- |
+| Core `core/src/entry_identity.rs` | `EntryTracker`：把"同一逻辑条目的多个事件"绑到同一 id |
+| Core `management.rs` | broker 在**持锁投递之前**推进追踪器（与 `seq` 同序），随帧下发 |
+| Core `bridge.rs` | `serialize_event_identified(seq, entry, ev)`：顶层插键；`None` 时不写该键 |
+| Panel `connection.ts` | 解析帧顶层 `entry` → `dispatch(event, core, entry)` |
+| Panel `state.ts` | `DisplayMessage.entry`；流式增量 / 终值 / 工具结果全链透传 |
+| Panel `timeline.ts` | `appendStreamDelta` / `settleStream` / `finishToolMessage` 均优先按 `entry` 精确命中 |
+
+id 规则（`EntryTracker`）：
+
+| 事件 | entry |
+| --- | --- |
+| `ToolCall` / `ToolResult`（`tool_call_id` 非空） | `tool:<session>:<tool_call_id>` |
+| 同上但 `tool_call_id` 为空 | 不分配（Panel 回退"同名最后一个 running"） |
+| `AgentContentDelta` / `AgentOutput` | `backend:<session>:<branch>:<n>` |
+| `AgentReasoningDelta` / `AgentReasoning` | `reasoning:<session>:<branch>:<n>` |
+
+`<n>` 是进程级单调计数（全局递增，不按会话维护计数器表——避免会话数增长带来
+的无界状态）。语义约束只有三条：
+
+1. 一段流式输出的所有增量与它的**终值共享同一个 n**（Panel 据此收敛到同一行）；
+2. `ToolCall` 出现即**封口**该会话的正文/推理条目（与 Panel 的 `freezeStreams`
+   一致：工具开始后该步叙述不会再有终值）；
+3. 工具类 id 由 `tool_call_id` 决定，与到达顺序无关（`ToolResult` 先到也不会错配）。
+
+修掉的三类历史问题（Panel 侧 `entry-identity.test.ts` 逐条锁定）：
+
+| 场景 | 旧启发式 | 有了 entry |
+| --- | --- | --- |
+| 同一 branch 下，工具前的中间叙述 + 工具后的正文 | 只比 branch → 并进同一行 | 各自 entry → 两行 |
+| `AgentOutput.branch_id = null`（后端路径） | "取该会话最新流式行" → 并行分支下写错行 | 按 entry 精确收敛 |
+| `tool_call_id` 缺失的工具结果 | "按工具名猜最后一个 running" → 同名并发配错 | 按 entry 精确配对 |
+
+**灰度双读**：`entry` 缺失（旧版 Core）时三条路径全部回退到原判据，行为不变。
 
 ## 协议
 
@@ -228,7 +276,8 @@ const rec = computed(() => entries.get(props.entryId));
 | 阶段 | 内容 | 改动 | 工作量 | 验收 |
 | --- | --- | --- | --- | --- |
 | **P0**（已完成） | 渲染窗口 200、`formatTime` memo、工作行 WeakMap 缓存、流式纯文本、写时复制 | Panel 5 文件 | ~1 天 | 2000 行 4× CPU：0 掉帧；单 delta ≤1.5 ms；DOM/堆恒定 |
-| **P1** | `EntryId`/`rev`/`EntryUpsert` 加字段 + 双发；Panel 双读 | Core 协议 + 写入端；Panel 新增 `entry-store.ts` | 3–4 天 | 两套路径同屏输出一致（对账测试）；旧 Panel 不受影响 |
+| **P1（第一步已完成）** | 信封层 `entry`（`EntryTracker`）+ Panel 三处精确命中 | Core `entry_identity.rs` / `management.rs` / `bridge.rs`；Panel `connection` / `state` / `timeline` | 1 天 | 双读回归（`entry` 缺失时行为不变）+ 同名工具并发不配错 |
+| **P1（余下）** | `EntryUpsert` 新增事件 + 时间线条目带 `entry` + `RequestWindow`/`Subscribe` 游标 | Core 协议 + 写入端；Panel 新增 `entry-store.ts` | 3–4 天 | 两套路径同屏输出一致（对账测试）；旧 Panel 不受影响 |
 | **P2** | 删启发式与渲染缓存，`sessionHistory`/`teamTimelines` 并为 `entry-store` | `state.ts` −400 行、`timeline.ts` −200 行、`ChatView` 重构 | 4–6 天 | 1 万条历史：单 delta <2 ms、堆 <60 MB 且与长度无关；`chat-message-cache` 测试组随之删除 |
 | **P3** | `RequestWindow`/`Subscribe` 游标；向上分页 + 锚定；重连纯增量 | Core `commands.rs`/`history.rs`；Panel `connection.ts`/`ChatView` | 3–4 天 | 断线重连帧数 = 新增条数；显示历史可放到 4 万条 |
 | **P4** | delta 合批（50–80 ms 窗口）、streaming 纯文本下沉、删 `elide_reasoning_for_wire` 与双事件 | 两侧 | 2 天 | 回答期 Markdown 解析次数 = 1；协议面收敛 |

@@ -148,6 +148,16 @@ impl FanoutHandle {
 pub struct SequencedEvent {
     /// 单调递增序号（从 1 开始；一次进程生命周期内唯一）。
     pub seq: u64,
+    /// 条目身份（`EntryId`；见 `core::entry_identity`）。
+    ///
+    /// 与 `seq` 同为**信封层**字段：`{"type":"event","payload":{…},"seq":N,"entry":"…"}`。
+    /// 语义是"这条事件属于哪个逻辑条目"——同一段流式输出的所有增量与它的
+    /// 终值共享同一个 id，工具调用与结果同理。Panel 据此把实时行与时间线
+    /// 权威条目**精确**对齐，不必再靠「同角色 + 同时间 + 内容前缀」去猜。
+    ///
+    /// `None` = 该事件没有条目身份（生命周期事件、或 `tool_call_id` 缺失的
+    /// 旧版工具事件）。
+    pub entry: Option<String>,
     pub event: BackendEvent,
 }
 
@@ -193,29 +203,48 @@ pub fn serialize_event(ev: &BackendEvent) -> String {
 /// 前端据此校验事件流连续性；缺帧即按游标补拉 timeline（见
 /// `web/src/event-seq.ts`）。
 pub fn serialize_event_sequenced(seq: u64, ev: &BackendEvent) -> String {
-    serialize_event_with_seq(Some(seq), ev)
+    serialize_event_with_meta(Some(seq), None, ev)
+}
+
+/// Serialise an event with its fanout sequence **and** entry identity.
+///
+/// 条目身份同样作为顶层字段附加（`entry`），理由与 `seq` 相同：不动
+/// `BackendEvent` 各变体的契约（那会让 70+ 处构造点都要改），旧版 Panel 对
+/// 多余字段是忽略的。
+pub fn serialize_event_identified(seq: u64, entry: Option<&str>, ev: &BackendEvent) -> String {
+    serialize_event_with_meta(Some(seq), entry, ev)
 }
 
 fn serialize_event_with_seq(seq: Option<u64>, ev: &BackendEvent) -> String {
-    match seq {
-        None => serde_json::to_string(&WsMessage::Event(ev.clone())).unwrap_or_else(|e| {
+    serialize_event_with_meta(seq, None, ev)
+}
+
+fn serialize_event_with_meta(seq: Option<u64>, entry: Option<&str>, ev: &BackendEvent) -> String {
+    if seq.is_none() && entry.is_none() {
+        return serde_json::to_string(&WsMessage::Event(ev.clone())).unwrap_or_else(|e| {
             tracing::error!(error = %e, "failed to serialize event for WS");
             String::new()
-        }),
-        Some(seq) => {
-            let mut value = match serde_json::to_value(WsMessage::Event(ev.clone())) {
-                Ok(value) => value,
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to serialize event for WS");
-                    return String::new();
-                }
-            };
-            if let Some(obj) = value.as_object_mut() {
-                obj.insert("seq".to_string(), serde_json::Value::from(seq));
-            }
-            value.to_string()
+        });
+    }
+    let mut value = match serde_json::to_value(WsMessage::Event(ev.clone())) {
+        Ok(value) => value,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to serialize event for WS");
+            return String::new();
+        }
+    };
+    if let Some(obj) = value.as_object_mut() {
+        if let Some(seq) = seq {
+            obj.insert("seq".to_string(), serde_json::Value::from(seq));
+        }
+        if let Some(entry) = entry {
+            obj.insert(
+                "entry".to_string(),
+                serde_json::Value::from(entry.to_string()),
+            );
         }
     }
+    value.to_string()
 }
 
 /// Deserialise a WS text message. Logs malformed input for diagnosis.
@@ -451,6 +480,57 @@ mod tests {
         let plain = serialize_event(&ev);
         assert!(!plain.contains("\"seq\""), "旧格式不应带 seq");
         assert!(deserialize_message(&plain).is_some());
+    }
+
+    /// 条目身份作为**信封层**字段下发（2026-10 条目身份化，P1 第一步）。
+    ///
+    /// 为什么在信封而不是事件变体里：`BackendEvent` 有 70+ 处构造点，加字段
+    /// 会让每一处都要改；而顶层字段对旧版 Panel 是无害的多余键（与 `seq`
+    /// 同一取舍，见 `entry_identity` 模块注释）。
+    #[test]
+    fn identified_serialization_carries_entry() {
+        let ev = BackendEvent::AgentContentDelta {
+            session_id: "s1".into(),
+            team_id: None,
+            branch_id: "b1".into(),
+            delta: "hi".into(),
+        };
+        let text = serialize_event_identified(7, Some("backend:s1:b1:3"), &ev);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value.get("type").and_then(|v| v.as_str()), Some("event"));
+        assert_eq!(value.get("seq").and_then(|v| v.as_u64()), Some(7));
+        assert_eq!(
+            value.get("entry").and_then(|v| v.as_str()),
+            Some("backend:s1:b1:3")
+        );
+        // 事件体本身不含 entry（契约未变）
+        let payload = value.get("payload").unwrap();
+        assert!(payload.get("AgentContentDelta").is_some());
+        assert!(!text.contains("\"entry\":\"backend") || payload.get("entry").is_none());
+        // 仍能被既有反序列化路径解析（多余顶层字段忽略）
+        match deserialize_message(&text) {
+            Some(WsMessage::Event(BackendEvent::AgentContentDelta { delta, .. })) => {
+                assert_eq!(delta, "hi")
+            }
+            other => panic!("identified frame should still decode: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn identified_serialization_omits_entry_when_absent() {
+        let ev = BackendEvent::AgentThinking {
+            session_id: "s1".into(),
+            team_id: None,
+        };
+        let text = serialize_event_identified(9, None, &ev);
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value.get("seq").and_then(|v| v.as_u64()), Some(9));
+        assert!(value.get("entry").is_none(), "无身份时不写该键（不产生空串）");
+        // 旧入口行为不变
+        let legacy = serialize_event_sequenced(9, &ev);
+        let legacy_value: serde_json::Value = serde_json::from_str(&legacy).unwrap();
+        assert!(legacy_value.get("entry").is_none());
+        assert!(!serialize_event(&ev).contains("\"seq\""));
     }
 
     #[tokio::test]

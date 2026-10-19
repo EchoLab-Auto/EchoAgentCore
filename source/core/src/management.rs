@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use echo_agent::BackendBridge;
-use echo_protocol::SequencedEvent;
+use echo_protocol::{serialize_event_identified, SequencedEvent};
+
+use crate::entry_identity::EntryTracker;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
@@ -31,6 +33,10 @@ struct EventBroker {
     /// 节流），前端随按游标补拉 timeline 修复，而不是让某条 ToolResult
     /// 静默丢失、工具行永远停在「运行中」（2026-10）。
     next_seq: AtomicU64,
+    /// 条目身份追踪（见 `entry_identity`）：把"同一逻辑条目的多个事件"绑到
+    /// 同一个 id 上，随帧的 `entry` 顶层字段下发。与 `next_seq` 一样在**持锁
+    /// 投递之前**推进，保证所有订阅者看到同一套身份。
+    entries: Mutex<EntryTracker>,
 }
 
 impl EventBroker {
@@ -39,6 +45,7 @@ impl EventBroker {
             bridge,
             subscribers: Mutex::new(Vec::new()),
             next_seq: AtomicU64::new(1),
+            entries: Mutex::new(EntryTracker::new()),
         }
     }
 
@@ -52,10 +59,13 @@ impl EventBroker {
         let mut rx = self.bridge.event_rx.lock().await;
         while let Some(event) = rx.recv().await {
             let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+            // 条目身份必须先于投递推进（与 seq 同理）：所有订阅者看到同一套 id。
+            let entry = self.entries.lock().await.observe(&event);
             let mut subscribers = self.subscribers.lock().await;
             subscribers.retain(|tx| {
                 tx.send(SequencedEvent {
                     seq,
+                    entry: entry.clone(),
                     event: event.clone(),
                 })
                 .is_ok()
@@ -484,7 +494,7 @@ async fn serve_management_ws(
                         // 带扇出序号下发：Panel 据此校验事件流连续性，跳号即
                         // 按游标补拉 timeline（2026-10，见 web/src/event-seq.ts）。
                         let text =
-                            echo_agent::bridge::serialize_event_sequenced(ev.seq, &ev.event);
+                            serialize_event_identified(ev.seq, ev.entry.as_deref(), &ev.event);
                         if write
                             .send(tokio_tungstenite::tungstenite::Message::Text(text))
                             .await
