@@ -413,6 +413,27 @@ id，与 `seq` 同一手法，零构造点改动）：Panel 三处匹配改为�
 即改前「每 10 秒固定 24 ms」变成「只有内容真变了才付一次 8.4 ms」。用户空闲
 阅读（不产生新消息）时这条成本消失。
 
+### 同一批：时间线分页（首屏限窗）
+
+首屏/重连此前一次收完 1024 条（压缩后 ~0.6 MB）。实测 Panel 侧全量转换
+`toDisplayMessages` = **6.8 ms**，加传输与解析后再加一截；而渲染窗口只有
+尾部 200 行——收 5 倍的量只为画 200 行。
+
+现在：`RequestTrunkTimeline { limit: 200 }` 只取最新 200 条（Core 回
+`has_more` 表示还有更早的），用户向上翻时按 `RequestTimelineEarlier { before_seq }`
+分页取，`TimelineEarlier` **前插**到已加载列表头部、不动同步游标。
+
+| 项 | 改前 | 改后 |
+| --- | --- | --- |
+| 首屏时间线条目 | 1024 | **200**（`TIMELINE_INITIAL_WINDOW`） |
+| 首屏转换（`toDisplayMessages`） | 6.8 ms | ≈1.3 ms（与条目数线性） |
+| 更早内容 | 无从获取（只能全量重拉） | 逐页向上翻，带 `has_more` 终止条件 |
+
+回归防护：Panel `timeline-paging.test.ts`（8 例：has_more 落地、前插不动游标、
+去重、拒绝更晚的页、翻到底隐藏入口、只更新当前 team、多上游不串台）+
+`ChatView` 翻页触发 3 例；Core `session/tests.rs` 3 例（含"逐页拼接必须还原
+完整序列"）。
+
 ### 还没做（下一批）
 
 1. **`markRaw` / 归一化存储**：`state.trunk`、`sessionHistory`、
@@ -423,8 +444,6 @@ id，与 `seq` 同一手法，零构造点改动）：Panel 三处匹配改为�
    把写路径改成"替换元素"。
 2. **下标稳定化**：渲染窗口依赖 `v-for` 的 key；若把窗口切成"分页"（而非
    尾部切片），滚动位置补偿需要 `EntryId` 作为锚点（现在用"距底部距离"近似）。
-3. Core 侧 `TrunkTimeline` 的**分页**（`RequestWindow`）：当前一次性回 1024 条
-   （压缩后 ~0.6 MB），首屏/重连仍是一次大包。
 
 ## 五、性能要求评估
 
