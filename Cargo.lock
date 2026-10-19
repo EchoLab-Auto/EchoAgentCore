@@ -347,10 +347,12 @@ dependencies = [
  "echo-plugin-provider-llm",
  "echo-plugin-skills",
  "echo-plugin-subagent",
+ "echo-plugin-tools",
  "echo-plugin-workspace",
  "echo-protocol",
  "echo-sanitize",
  "echo-session",
+ "echo-shell",
  "echo-test-utils",
  "echo-tool",
  "filetime",
@@ -661,6 +663,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-plugin-tools"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "echo-context",
+ "echo-defs",
+ "echo-shell",
+ "echo-test-utils",
+ "echo-tool",
+ "libc",
+ "regex",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
 name = "echo-plugin-workspace"
 version = "0.1.0"
 dependencies = [
@@ -709,6 +731,21 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+]
+
+[[package]]
+name = "echo-shell"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "echo-context",
+ "echo-protocol",
+ "libc",
+ "parking_lot",
+ "serde",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

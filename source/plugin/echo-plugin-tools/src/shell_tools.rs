@@ -6,18 +6,25 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::shell::shell_manager_global;
+use echo_shell::{shell_emit, shell_manager_global};
 
-pub fn register_shell_tools(registry: &mut crate::tool::ToolRegistry) {
+/// 注册 Shell 工具（`shell_start` / `shell_exec` / `shell_stop`）。
+///
+/// `guard`：执行前的命令护栏（宿主注入；见 [`crate::CommandGuard`]）。
+pub fn register_shell_tools(
+    registry: &mut echo_tool::ToolRegistry,
+    guard: Option<crate::CommandGuard>,
+) {
     registry.register(std::sync::Arc::new(ShellStartTool));
-    registry.register(std::sync::Arc::new(ShellExecTool));
+    registry.register(std::sync::Arc::new(ShellExecTool { guard }));
     registry.register(std::sync::Arc::new(ShellStopTool));
 }
 
-struct ShellStartTool;
+/// `shell_start`：新建一条 Shell 会话（不执行命令，故无命令护栏）。
+pub struct ShellStartTool;
 
 #[async_trait]
-impl crate::tool::Tool for ShellStartTool {
+impl echo_tool::Tool for ShellStartTool {
     fn name(&self) -> &str {
         "shell_start"
     }
@@ -32,12 +39,9 @@ impl crate::tool::Tool for ShellStartTool {
             }
         })
     }
-    async fn execute(
-        &self,
-        arguments: serde_json::Value,
-    ) -> Result<String, crate::tool::ToolError> {
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, echo_tool::ToolError> {
         let manager = shell_manager_global()
-            .ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
+            .ok_or_else(|| echo_tool::ToolError::Execution("shell manager unavailable".into()))?;
         let workdir = arguments["workdir"].as_str().map(|s| s.to_string());
         // 归属 team：由 `Agent::run_tool` 注入 `__team_id`（2026-10 起；
         // 替代此前跨 await 不可靠的线程本地方案）。
@@ -46,9 +50,9 @@ impl crate::tool::Tool for ShellStartTool {
             .and_then(|v| v.as_str())
             .map(str::to_string);
         let info = manager
-            .start(workdir, team_id, &crate::shell::shell_emit())
+            .start(workdir, team_id, &shell_emit())
             .await
-            .map_err(crate::tool::ToolError::Execution)?;
+            .map_err(echo_tool::ToolError::Execution)?;
         Ok(format!(
             "shell session started: {} (workdir: {})",
             info.session_id, info.workdir
@@ -56,10 +60,13 @@ impl crate::tool::Tool for ShellStartTool {
     }
 }
 
-struct ShellExecTool;
+/// `shell_exec`：在指定会话里执行一条命令。
+pub struct ShellExecTool {
+    guard: Option<crate::CommandGuard>,
+}
 
 #[async_trait]
-impl crate::tool::Tool for ShellExecTool {
+impl echo_tool::Tool for ShellExecTool {
     fn name(&self) -> &str {
         "shell_exec"
     }
@@ -77,29 +84,28 @@ impl crate::tool::Tool for ShellExecTool {
             "required": ["session_id", "command"]
         })
     }
-    async fn execute(
-        &self,
-        arguments: serde_json::Value,
-    ) -> Result<String, crate::tool::ToolError> {
-        let session_id = arguments["session_id"].as_str().ok_or_else(|| {
-            crate::tool::ToolError::InvalidArguments("session_id required".into())
-        })?;
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, echo_tool::ToolError> {
+        let session_id = arguments["session_id"]
+            .as_str()
+            .ok_or_else(|| echo_tool::ToolError::InvalidArguments("session_id required".into()))?;
         let command = arguments["command"]
             .as_str()
-            .ok_or_else(|| crate::tool::ToolError::InvalidArguments("command required".into()))?;
-        super::reject_core_self_stop(command)?;
+            .ok_or_else(|| echo_tool::ToolError::InvalidArguments("command required".into()))?;
+        if let Some(guard) = &self.guard {
+            guard(command)?;
+        }
         let timeout = arguments["timeout_secs"].as_u64().map(|t| t.min(300));
         let manager = shell_manager_global()
-            .ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
+            .ok_or_else(|| echo_tool::ToolError::Execution("shell manager unavailable".into()))?;
         // 归属校验（2026-10）：不得操作其他智能体的 shell 会话。
         let requester = arguments.get("__team_id").and_then(|v| v.as_str());
         manager
             .ensure_owned_by(session_id, requester)
-            .map_err(crate::tool::ToolError::Execution)?;
+            .map_err(echo_tool::ToolError::Execution)?;
         let (output, success, timed_out) = manager
-            .exec(session_id, command, timeout, &crate::shell::shell_emit())
+            .exec(session_id, command, timeout, &shell_emit())
             .await
-            .map_err(crate::tool::ToolError::Execution)?;
+            .map_err(echo_tool::ToolError::Execution)?;
         let mut text = output;
         if timed_out {
             text.push_str("\n[notice: command timed out; session kept, you may retry or continue]");
@@ -113,10 +119,11 @@ impl crate::tool::Tool for ShellExecTool {
     }
 }
 
-struct ShellStopTool;
+/// `shell_stop`：销毁会话（终止 bash 及全部子孙进程组）。
+pub struct ShellStopTool;
 
 #[async_trait]
-impl crate::tool::Tool for ShellStopTool {
+impl echo_tool::Tool for ShellStopTool {
     fn name(&self) -> &str {
         "shell_stop"
     }
@@ -132,24 +139,21 @@ impl crate::tool::Tool for ShellStopTool {
             "required": ["session_id"]
         })
     }
-    async fn execute(
-        &self,
-        arguments: serde_json::Value,
-    ) -> Result<String, crate::tool::ToolError> {
-        let session_id = arguments["session_id"].as_str().ok_or_else(|| {
-            crate::tool::ToolError::InvalidArguments("session_id required".into())
-        })?;
+    async fn execute(&self, arguments: serde_json::Value) -> Result<String, echo_tool::ToolError> {
+        let session_id = arguments["session_id"]
+            .as_str()
+            .ok_or_else(|| echo_tool::ToolError::InvalidArguments("session_id required".into()))?;
         let manager = shell_manager_global()
-            .ok_or_else(|| crate::tool::ToolError::Execution("shell manager unavailable".into()))?;
+            .ok_or_else(|| echo_tool::ToolError::Execution("shell manager unavailable".into()))?;
         // 归属校验（2026-10）：不得停止其他智能体的 shell 会话。
         let requester = arguments.get("__team_id").and_then(|v| v.as_str());
         manager
             .ensure_owned_by(session_id, requester)
-            .map_err(crate::tool::ToolError::Execution)?;
+            .map_err(echo_tool::ToolError::Execution)?;
         manager
-            .stop(session_id, &crate::shell::shell_emit())
+            .stop(session_id, &shell_emit())
             .await
-            .map_err(crate::tool::ToolError::Execution)?;
+            .map_err(echo_tool::ToolError::Execution)?;
         Ok(format!("shell session {session_id} stopped"))
     }
 }

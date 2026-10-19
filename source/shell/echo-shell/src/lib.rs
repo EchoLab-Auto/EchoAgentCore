@@ -1,4 +1,4 @@
-//! 后台 shell 会话 —— 持久的 bash 进程，供面板/LLM 反复执行命令。
+//! # echo-shell — Shell 会话子系统
 //!
 //! 设计要点：
 //! - 每个会话 = 一个 `bash --noprofile --norc` 子进程（stdin/stdout/stderr 管道），
@@ -21,7 +21,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 
-use crate::event::ShellSessionInfo;
+use echo_protocol::ShellSessionInfo;
 
 pub const MAX_SHELL_SESSIONS: usize = 8;
 /// 单条命令默认超时（秒）。
@@ -540,21 +540,9 @@ pub fn shell_emit_for(translate: impl Fn(ShellEvent) + Send + Sync + 'static) ->
     Arc::new(translate)
 }
 
-/// 面向命令处理层：把事件通到指定 Agent 的 emit（同一 crate，无循环依赖）。
-pub fn shell_emit_for_self(agent: &crate::agent::Agent) -> ShellEmit {
-    // 走 `Agent::emit_handle`（快照式安全出口，语义与 emit 一致：team 标注
-    // + 事件总线 + 汇聚点）。2026-10 巡检：此前用 unsafe 原始指针给 `&Agent`
-    // 延寿，安全依赖「Arc 由组合根持有」的人工约定；emit_handle 是编译器
-    // 见证的 `'static` 出口，正好为此类跨 await 边界调用方而设。
-    let emit = agent.emit_handle();
-    shell_emit_for(move |event: ShellEvent| {
-        emit(shell_event_to_backend(event));
-    })
-}
-
 /// 把 ShellEvent 翻译为 BackendEvent。
-pub fn shell_event_to_backend(event: ShellEvent) -> crate::event::BackendEvent {
-    use crate::event::BackendEvent;
+pub fn shell_event_to_backend(event: ShellEvent) -> echo_protocol::BackendEvent {
+    use echo_protocol::BackendEvent;
     match event {
         ShellEvent::Started(session) => BackendEvent::ShellSessionStarted { session },
         ShellEvent::ExecStarted {

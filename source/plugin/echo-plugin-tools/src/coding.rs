@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::tool::{Tool, ToolError, ToolRegistry};
+use echo_tool::{Tool, ToolError, ToolRegistry};
 
 /// Canonicalised workspace root for containment checks.
 ///
@@ -493,13 +493,13 @@ fn parse_node_path(raw: &str) -> Option<Result<(String, String), String>> {
 ///
 /// `path` 参数带 `node://<peer>/…` 前缀、或 `command` 参数带
 /// `node://<peer>/<命令>` 前缀（bash）时，经联邦 Invoke 把调用转发到
-/// 对端同名工具执行（出口见 [`crate::federation::remote_invoker`]，装配层
+/// 对端同名工具执行（出口见 [`crate::RemoteInvoker`]，装配层
 /// 注入；对端拒绝——白名单/路径沙箱——原样透传为 `ToolError`）；其余
 /// 原样走本地逻辑。
 pub struct RemoteAwareTool {
     inner: Arc<dyn Tool>,
     /// 装配期快照；`None` 时 execute 再回查全局出口（联邦后接线场景）。
-    invoker: Option<crate::federation::RemoteInvoker>,
+    invoker: Option<crate::RemoteInvoker>,
     /// inner 描述 + node:// 用法说明（清单生成）。
     description: String,
 }
@@ -512,7 +512,7 @@ impl RemoteAwareTool {
         );
         Arc::new(Self {
             inner,
-            invoker: crate::federation::remote_invoker(),
+            invoker: crate::remote_invoker::global(),
             description,
         })
     }
@@ -576,7 +576,7 @@ impl Tool for RemoteAwareTool {
         let invoker = self
             .invoker
             .clone()
-            .or_else(crate::federation::remote_invoker)
+            .or_else(crate::remote_invoker::global)
             .ok_or_else(|| {
                 ToolError::Execution(
                     "联邦未接线：node:// 远程操作不可用（需联邦启用且 peer 在线）".into(),
@@ -598,11 +598,22 @@ impl Tool for RemoteAwareTool {
 
 pub struct RunCommandTool {
     workspace: PathBuf,
+    /// 执行前的命令护栏（宿主注入；见 [`crate::CommandGuard`]）。
+    guard: Option<crate::CommandGuard>,
 }
 
 impl RunCommandTool {
     pub fn new(workspace: PathBuf) -> Self {
-        Self { workspace }
+        Self {
+            workspace,
+            guard: None,
+        }
+    }
+
+    /// 注入命令护栏（组合根装配期；见 [`crate::CommandGuard`]）。
+    pub fn with_guard(mut self, guard: Option<crate::CommandGuard>) -> Self {
+        self.guard = guard;
+        self
     }
 
     /// 工具自声明的执行超时（与 execute 内部一致：默认 120s，上限 300s）。
@@ -685,7 +696,9 @@ impl Tool for RunCommandTool {
         let timeout = Self::requested_timeout(&args);
         let timeout_secs = timeout.as_secs();
 
-        super::reject_core_self_stop(cmd)?;
+        if let Some(guard) = &self.guard {
+            guard(cmd)?;
+        }
 
         // Block dangerous patterns.
         // 2026-10 审计修复：rm 改为词元/路径语义判定（此前是子串匹配，
@@ -790,7 +803,19 @@ fn human_size(bytes: u64) -> String {
 
 // ── Registration ──
 
-pub fn register_coding_tools(registry: &mut ToolRegistry, workspace: PathBuf) {
+/// 注册编码工具（5 个文件工具 + `bash`）。
+///
+/// - `workspace`：路径沙箱根（所有读写都必须落在其内）；
+/// - `invoker`：`node://` 远程分流出口（None = 远程前缀报「联邦未接线」）；
+/// - `guard`：`bash` 执行前的命令护栏（None = 只做内建的危险模式检查）。
+///
+/// 为什么把这些做成参数而不是全局读取：本 crate 不依赖业务/组合根 crate，
+/// 全局态又受 `no_global_state` 门禁约束——显式注入是唯一干净的方向。
+pub fn register_coding_tools(
+    registry: &mut ToolRegistry,
+    workspace: PathBuf,
+    guard: Option<crate::CommandGuard>,
+) {
     // P3-1：5 个文件工具包远程分流层（node:// 前缀 → 联邦 Invoke）；
     // bash 不包（远程 shell 走 <peer>__bash 代理工具）。
     registry.register(RemoteAwareTool::wrap(Arc::new(ReadFileTool::new(
@@ -808,9 +833,9 @@ pub fn register_coding_tools(registry: &mut ToolRegistry, workspace: PathBuf) {
     registry.register(RemoteAwareTool::wrap(Arc::new(EditFileTool::new(
         workspace.clone(),
     ))));
-    registry.register(RemoteAwareTool::wrap(Arc::new(RunCommandTool::new(
-        workspace,
-    ))));
+    registry.register(RemoteAwareTool::wrap(Arc::new(
+        RunCommandTool::new(workspace).with_guard(guard),
+    )));
 }
 
 /// 递归+强制 rm 的根目录目标判定（返回命中的目标用于报错；None = 放行）。
@@ -1207,9 +1232,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bash_blocks_core_self_stop() {
+    async fn injected_command_guard_blocks_execution() {
         let ws = temp_workspace("cmd-self-stop");
-        let tool = RunCommandTool::new(ws.clone());
+        let guard: crate::CommandGuard = Arc::new(|command| {
+            if command.contains("systemctl --user stop echo-agent-core") {
+                Err(ToolError::Execution("blocked command".into()))
+            } else {
+                Ok(())
+            }
+        });
+        let tool = RunCommandTool::new(ws.clone()).with_guard(Some(guard));
         let err = tool
             .execute(json!({
                 "command": "systemctl --user stop echo-agent-core.service && cp binary installed && systemctl --user start echo-agent-core.service"
@@ -1377,7 +1409,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let calls = Arc::new(AtomicUsize::new(0));
         let calls2 = calls.clone();
-        let invoker: crate::federation::RemoteInvoker = Arc::new(move |peer, tool, args| {
+        let invoker: crate::RemoteInvoker = Arc::new(move |peer, tool, args| {
             calls2.fetch_add(1, Ordering::SeqCst);
             let peer = peer.to_string();
             let tool = tool.to_string();
@@ -1415,17 +1447,14 @@ mod tests {
     /// 同步闭包 → RemoteInvoker（测试用：结果立即就绪）。
     fn test_invoker(
         f: impl Fn(String, String, Value) -> Result<String, String> + Send + Sync + 'static,
-    ) -> crate::federation::RemoteInvoker {
+    ) -> crate::RemoteInvoker {
         std::sync::Arc::new(move |peer, tool, args| {
             let result = f(peer, tool, args);
             Box::pin(async move { result })
         })
     }
 
-    fn wrapped(
-        inner: Arc<dyn Tool>,
-        invoker: Option<crate::federation::RemoteInvoker>,
-    ) -> Arc<dyn Tool> {
+    fn wrapped(inner: Arc<dyn Tool>, invoker: Option<crate::RemoteInvoker>) -> Arc<dyn Tool> {
         Arc::new(RemoteAwareTool {
             inner,
             invoker,

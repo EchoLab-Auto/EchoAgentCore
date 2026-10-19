@@ -23,6 +23,8 @@ echo-plugin-provider-llm = { workspace = true }
 echo-plugin-skills = { workspace = true }
 echo-plugin-loop = { workspace = true }
 echo-tool = { workspace = true }
+echo-shell = { workspace = true }
+echo-plugin-tools = { workspace = true }
 echo-plugin-subagent = { workspace = true }
 echo-plugin-workspace = { workspace = true }
 tokio.workspace = true
@@ -52,4 +54,3 @@ filetime = "0.2"
 echo-test-utils = { path = "../echo-test-utils" }
 echo-sanitize = { workspace = true }
 proptest = "1"
-

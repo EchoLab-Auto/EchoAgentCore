@@ -214,12 +214,12 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [x] `plugins.toml`：profile → bundles → patch 三层合成（已提交 `65c1c2a`：`echo-plugin-loader`，dsh 语义"按 id 定位、整行替换"；provenance 记录来源层）
 - [x] 装载器：拓扑排序（按 requires）、环检测、未解析行可读报错（已提交 `65c1c2a`，13 项测试）
 - [ ] `--dump-config`：`dump()` 渲染函数已就绪；CLI 接线待做
-- [x] 内核装配：`plugins.toml`（core.toml 同目录，缺省休眠）→ `PluginSupervisor` 启动 → `RemoteTool` 注册全 persona（集成提交进行中）
-- [ ] 插件目录约定：`~/.local/libexec/echo-agent-core/plugins/<id>/`（版本化路径）
+- [x] 内核装配：`plugins.toml`（core.toml 同目录，缺省休眠）→ `PluginSupervisor` 启动 → `RemoteTool` 注册全 persona（`plugins_runtime::start_with_specs`，组合根已接线；`config/plugins.example.toml` 为模板）
+- [ ] 插件目录约定：`~/.local/libexec/echo-agent-core/plugins/<id>/`（版本化路径）——**约定已写入** [插件开发指南](../plugins/plugin-authoring.md)（含 `<id>/<二进制>` 布局），缺的是**安装器侧**：`install.sh` 尚未创建该目录、`update.sh` 尚未做版本化替换与回滚
 - [ ] Panel 对接：插件清单页显示来源/版本/状态/重启（协议扩展走 echo-protocol）
 - [ ] self-update 扩展：更新同步插件二进制（保留回滚）
 
-**验收（进行中）**：子进程插件经配置可达并注册工具；删除编译期 register 调用（全量替换为后续工作）。
+**验收（进行中）**：✅ 子进程插件经 `plugins.toml` 可达并注册工具（实例插件即走此路径）；⏳ 删除编译期 `register_and_mount` 调用属后续工作——Phase 3 之后仍内联的只有 `tools_builtin` / `instance_ops` / `federation` 三包。
 
 ### Phase 5：热重载与版本治理（1-2 周）
 

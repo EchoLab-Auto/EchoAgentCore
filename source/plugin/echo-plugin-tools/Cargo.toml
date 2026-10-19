@@ -1,0 +1,29 @@
+[package]
+name = "echo-plugin-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "内置工具集（echo-agent.tools.builtin）：计算/检索/清单/编码/Shell/实例管理"
+
+[dependencies]
+echo-defs = { workspace = true }
+echo-tool = { workspace = true }
+echo-shell = { workspace = true }
+echo-context = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+regex = { workspace = true }
+walkdir = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# run_command 的进程组清理（向子进程组发 SIGKILL）。
+libc = "0.2"
+
+[dev-dependencies]
+echo-test-utils = { workspace = true }

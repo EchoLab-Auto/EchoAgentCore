@@ -5,12 +5,9 @@ use regex::Regex;
 use crate::tool::ToolError;
 
 pub mod api_profiles;
-pub mod calculator;
-pub mod checklist;
-pub mod coding;
-pub mod instance;
-mod shell_tools;
-pub mod websearch;
+
+// 工具实现已外迁到 `echo-plugin-tools`；这里保留原模块路径作为宿主兼容面。
+pub use echo_plugin_tools::{calculator, checklist, coding, instance, shell_tools, websearch};
 
 /// Reject commands that would stop or kill the Core service from inside
 /// Core's own process tree.
@@ -46,15 +43,14 @@ pub fn register_all(
     workspace: std::path::PathBuf,
     config_store: echo_config::ConfigStore,
 ) {
-    registry.register(std::sync::Arc::new(calculator::CalculatorTool));
-    registry.register(std::sync::Arc::new(websearch::WebSearchTool));
-    registry.register(std::sync::Arc::new(checklist::ChecklistTool::new()));
+    let guard: echo_plugin_tools::CommandGuard = std::sync::Arc::new(reject_core_self_stop);
+    echo_plugin_tools::register_core_tools(registry);
     registry.register(std::sync::Arc::new(api_profiles::ListApiProfilesTool::new(
         config_store,
     )));
-    instance::register_instance_tools(registry, instances);
-    coding::register_coding_tools(registry, workspace.clone());
-    shell_tools::register_shell_tools(registry);
+    echo_plugin_tools::register_instance_tools(registry, instances);
+    echo_plugin_tools::register_coding_tools(registry, workspace, Some(guard.clone()));
+    echo_plugin_tools::register_shell_tools(registry, Some(guard));
     for name in registry.names() {
         registry.set_package(&name, crate::plugins::TOOLS_BUILTIN_PLUGIN_ID);
     }
@@ -62,7 +58,35 @@ pub fn register_all(
 
 #[cfg(test)]
 mod tests {
-    use super::reject_core_self_stop;
+    use super::{register_all, reject_core_self_stop};
+
+    /// 内置工具集内部不能有重名：`ToolRegistry::register` 是覆盖语义，
+    /// 撞名会让一个工具静默消失（工具定义还在，执行却落到另一个实现上）。
+    /// 这条不变量此前靠人肉检查——踩过一次（`calculator` 与插件示例同名）。
+    #[test]
+    fn builtin_tools_have_unique_names() {
+        let dir = std::env::temp_dir().join(format!("echo-builtin-unique-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = echo_config::ConfigStore::new(dir.join("core.toml"));
+        let mut registry = crate::tool::ToolRegistry::new();
+        register_all(
+            &mut registry,
+            std::sync::Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
+            dir.clone(),
+            store,
+        );
+        let conflicts = registry.name_conflicts();
+        assert!(
+            conflicts.is_empty(),
+            "内置工具集内部重名（后者覆盖前者）: {conflicts:?}"
+        );
+        let names = registry.names();
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(names.len(), unique.len(), "工具名必须唯一: {names:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn blocks_common_core_self_stop_variants() {
