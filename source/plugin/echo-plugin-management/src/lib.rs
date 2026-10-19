@@ -25,9 +25,13 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use echo_protocol::{serialize_event_identified, BackendBridge, EntryTracker, SequencedEvent};
+use echo_protocol::{
+    serialize_event_identified, BackendBridge, BackendEvent, DeltaBatcher, EntryTracker,
+    SequencedEvent,
+};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
@@ -78,22 +82,61 @@ impl EventBroker {
         rx
     }
 
+    /// 事件循环：接收 → 条目身份 → **增量合批** → 扇出。
+    ///
+    /// 合批（2026-10）：provider 的流式节奏很碎（一段中等回答 20–60 个增量），
+    /// 每个增量在 Panel 侧都是一次完整链路、也是一帧 WS 消息。把同一段连续
+    /// 增量在 60 ms 窗口内合并成一帧，语义不变（拼接后的 `delta` 就是原增量
+    /// 顺序拼接），但帧数与 Panel 侧的重算次数同比例下降。
+    ///
+    /// **条目身份必须在合批之前推进**（`observe` 会因工具开始而封口条目）：
+    /// 若等到冲批时才 `observe`，被延后的增量会拿到封口后的新 id，Panel 就
+    /// 配不上它那一行。
+    ///
+    /// 保序由 [`DeltaBatcher`] 保证：任何非增量事件到达时先把挂起的增量全部
+    /// 冲出，再发它自己（工具开始 = 分步边界，不能让它越过前面的叙述）。
     async fn run(&self) {
         let mut rx = self.bridge.event_rx.lock().await;
-        while let Some(event) = rx.recv().await {
-            let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-            // 条目身份必须先于投递推进（与 seq 同理）：所有订阅者看到同一套 id。
-            let entry = self.entries.lock().await.observe(&event);
-            let mut subscribers = self.subscribers.lock().await;
-            subscribers.retain(|tx| {
-                tx.send(SequencedEvent {
-                    seq,
-                    entry: entry.clone(),
-                    event: event.clone(),
-                })
-                .is_ok()
-            });
+        let mut batcher = DeltaBatcher::default();
+        // 20 ms 的到期检查（窗口 60 ms）：代价可忽略，延迟上界 = 窗口 + 20 ms。
+        let mut ticker = tokio::time::interval(Duration::from_millis(20));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                maybe = rx.recv() => {
+                    let Some(event) = maybe else {
+                        // 桥关闭：把挂起的增量冲出后退出（不丢最后一段文本）。
+                        for emit in batcher.drain() {
+                            self.deliver(emit.event, emit.entry).await;
+                        }
+                        return;
+                    };
+                    let entry = self.entries.lock().await.observe(&event);
+                    for emit in batcher.push(event, entry, Instant::now()) {
+                        self.deliver(emit.event, emit.entry).await;
+                    }
+                }
+                _ = ticker.tick() => {
+                    for emit in batcher.take_due(Instant::now()) {
+                        self.deliver(emit.event, emit.entry).await;
+                    }
+                }
+            }
         }
+    }
+
+    /// 分配扇出序号并投递给所有订阅者（死订阅者就地摘除）。
+    async fn deliver(&self, event: BackendEvent, entry: Option<String>) {
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        let mut subscribers = self.subscribers.lock().await;
+        subscribers.retain(|tx| {
+            tx.send(SequencedEvent {
+                seq,
+                entry: entry.clone(),
+                event: event.clone(),
+            })
+            .is_ok()
+        });
     }
 }
 
