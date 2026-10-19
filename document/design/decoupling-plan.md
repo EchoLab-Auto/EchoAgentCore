@@ -148,7 +148,7 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [x] 新建 `source/plugin/echo-plugin-host` 完整落地（已提交 `cd0b345`）：Transport 抽象 + InprocTransport + PluginSupervisor（握手/注册/调用/取消/超时/排空/崩溃重启）+ 14 项 conformance 全绿
 - [x] 全局态棘轮门禁 `source/core/tests/no_global_state.rs`（基线 17 个静态单元；全 source 扫描、`static` 行含 `OnceLock`/`LazyLock` 口径，只减不增）
 - [x] 编码决策落地：**4 字节 LE 长度前缀 + JSON**（inproc 类型直连零序列化；stdio 实现进行中，见 Phase 2）
-- [ ] 协议选型决策：自研统一协议为基线；评估 **MCP（rmcp 3.5.1）** 作为工具类插件的兼容导入通道（可省 2-4 人周 + 免费获得 MCP 生态）
+- [x] 协议选型决策：**自研统一协议为基线，MCP 走「桥接插件」而非 Core 原生**（评估见 [MCP 导入通道评估](./mcp-import.md)，2026-10-19 实测）。要点：rmcp 3.5.1（Apache-2.0 / MSRV 1.88）最小集只新增 4 个 crate、不引入 HTTP 栈；**必须用自己的 spawn**（rmcp 的 `TokioChildProcess` 走 process-wrap、不暴露 `pre_exec`，装不上 rlimit），协议层用 `AsyncRwTransport::new_client` 接自家管道（已跑通）。桥接 3-4 人日 / 零 Core 改动 vs 原生 6-8 人日 + 第二套生命周期；**动态工具集与进度通知的缺口在 Core 不在接入形态**，故原生并不更彻底。计划里"省 2-4 人周"对**插件作者**成立、对我们不成立。落地：桥 crate 落独立仓库，本轮不实施
 - [x] 协议语义对齐 nushell 蓝本：CallId 并发/流式/中断、Hello 版本 + capabilities 协商（空闲回收随 P2 监督者完善）
 - [x] conformance 测试套件：inproc 14 项全绿（stdio 参数化随 Phase 2）
 - [x] **冻结**：协议变更需过 conformance + bump 版本；纳入 CI（`PROTOCOL_VERSION` + `compatible()` 契约测试）

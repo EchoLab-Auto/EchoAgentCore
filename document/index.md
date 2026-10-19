@@ -82,6 +82,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 
 - [design/index.md](./design/index.md) — 设计层索引：这一层收什么、写作约定与阅读顺序
 - [decoupling-plan.md](./design/decoupling-plan.md) — 完全解耦推进计划（规划）：验收口径、分阶段计划与风险
+- [mcp-import.md](./design/mcp-import.md) — MCP 导入通道评估：实测证据、能力映射、三种形态成本、安全面与升级条件
 - [instance-plugin.md](./design/instance-plugin.md) — 实例插件化设计：P1 已落地、P2+ 规划
 - [adapter-genericization/index.md](./design/adapter-genericization/index.md) — 插件实例泛化设计系列：分册设计（01/02/03）、证据包、对账表与进度台账
 - [agent-humanlike-style.md](./design/agent-humanlike-style.md) — 拟人化方案（规划）：语气与回复节奏
