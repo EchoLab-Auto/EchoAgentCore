@@ -55,6 +55,8 @@ y: 1060
 
 `PluginInfo.runtime`（`in_process` / `subprocess`，缺失 = 进程内）与 `PluginInfo.builtin`（manifest 是否编译进 Core，缺失按 `true` 兼容）均由 Core 回推、彼此正交；来源分组（`pluginSource`）与运行形态标签（`pluginRuntimeLabel`，`PLUGIN_RUNTIME_LABELS`：独立进程 / 进程内）同源于这两个字段，Panel 不做推断性改写。
 
+`builtin` 是**另一个维度**（manifest 从哪来），面板用 `pluginOrigin` 单独呈现：`false` → 行卡「外部来源」徽标 + 技术信息「来源：外部来源」；`true` → 技术信息「随二进制发布」（行卡不出徽标，默认情况不占视觉）。这条与分组正交——`builtin = false` + `runtime = in_process` 的**数据插件**（插件目录发现的 `plugin.toml`）留在「内部插件」组里，但来源一眼可见，不会被分组吞掉。
+
 三个较新的可选字段（旧 Core 不发 → 空值，面板降级但不报错）：
 
 | 字段 | 含义 | 面板落点 |
