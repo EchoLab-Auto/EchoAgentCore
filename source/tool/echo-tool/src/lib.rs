@@ -54,6 +54,38 @@ where
 /// The map is `tokio::sync::RwLock`-protected so reversible registrations can
 /// mutate it from `&Arc<Self>` (shared ownership), while static assembly uses
 /// the same lock via `try_write` (no contention at boot).
+/// 一个**外部插件**工具：工具实例 + 插件自报的包 id。
+///
+/// 为什么把 `package` 单独带出来：包 id 是插件贡献的元数据（
+/// `ToolContribution.package`），不在 `Tool` trait 上——插件工具是
+/// `RemoteTool`，注册进注册表时要一并记下它属于哪个包（前端按包分组勾选）。
+pub struct PluginTool {
+    pub tool: Arc<dyn Tool>,
+    pub package: Option<String>,
+}
+
+impl PluginTool {
+    pub fn new(tool: Arc<dyn Tool>, package: Option<String>) -> Self {
+        Self { tool, package }
+    }
+}
+
+/// [`ToolRegistry::register_plugin_tools`] 的逐条结果。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PluginToolRegistration {
+    /// 成功注册的工具名（按输入顺序）。
+    pub registered: Vec<String>,
+    /// 因与宿主保留名重名而跳过的插件工具：`(名字, 插件自报的包 id)`。
+    pub skipped: Vec<(String, Option<String>)>,
+}
+
+impl PluginToolRegistration {
+    /// 是否有工具被跳过（调用方据此决定要不要 warn）。
+    pub fn has_skips(&self) -> bool {
+        !self.skipped.is_empty()
+    }
+}
+
 pub struct ToolRegistry {
     tools: tokio::sync::RwLock<HashMap<String, Arc<dyn Tool>>>,
     /// Cache of the definition list sent to the LLM; invalidated on any
@@ -66,6 +98,13 @@ pub struct ToolRegistry {
     /// composition root when assembling; the frontend uses it to group
     /// checkboxes so a whole package (tools + skills) can be toggled at once.
     packages: tokio::sync::RwLock<std::collections::HashMap<String, String>>,
+    /// 注册期出现过的**重名**（name → 首次被覆盖时的说明）。
+    ///
+    /// 为什么记：`insert` 是静默覆盖——一个插件和一个内置工具叫同一个名字
+    /// 时，后者会无声无息地顶掉前者（实测风险：`echo-plugin-example` 的
+    /// `calculator` / `web_search` 与内置工具同名）。重名本身**是事件**，
+    /// 必须留痕：组合根装配完读一次，Panel 详情页也可展示。
+    conflicts: tokio::sync::RwLock<std::collections::BTreeMap<String, String>>,
     /// 结果脱敏器（安全服务注入；`None` = 透传）。
     /// 出口统一处理：所有工具（内置 / 插件 / 远程 / 子代理直呼 / 联邦）
     /// 的结果文本经此处脱敏后才交给任何消费者（2026-10 敏感信息隔离）。
@@ -93,6 +132,7 @@ impl ToolRegistry {
             cached_definitions: tokio::sync::RwLock::new(None),
             disabled: tokio::sync::RwLock::new(std::collections::HashSet::new()),
             packages: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            conflicts: tokio::sync::RwLock::new(std::collections::BTreeMap::new()),
             redactor: tokio::sync::RwLock::new(None),
         }
     }
@@ -121,13 +161,52 @@ impl ToolRegistry {
     /// uncontended at this point (`try_write` succeeds). For reversible
     /// registration use [`register_reversible`](Self::register_reversible).
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
+        let name = tool.name().to_string();
         let mut tools = self
             .tools
             .try_write()
             .expect("tools map uncontended at boot");
-        tools.insert(tool.name().to_string(), tool);
+        let replaced = tools.insert(name.clone(), tool).is_some();
         drop(tools);
+        if replaced {
+            self.note_conflict(&name, "register");
+        }
         self.invalidate_definitions();
+    }
+
+    /// 记一次重名覆盖（`context` = 覆盖发生的入口，便于定位是谁顶了谁）。
+    fn note_conflict(&self, name: &str, context: &str) {
+        tracing::warn!(
+            tool = name,
+            via = context,
+            "工具重名：先注册的实现已被覆盖（后者生效）。同名不代表同义——\n\
+             若是内置工具与插件工具撞名，请改名其一；插件作者见\
+             document/plugins/plugin-authoring.md"
+        );
+        match self.conflicts.try_write() {
+            Ok(mut conflicts) => {
+                conflicts
+                    .entry(name.to_string())
+                    .or_insert_with(|| context.to_string());
+            }
+            Err(_) => blocking_section(|| {
+                self.conflicts
+                    .blocking_write()
+                    .entry(name.to_string())
+                    .or_insert_with(|| context.to_string());
+            }),
+        }
+    }
+
+    /// 注册期出现过的重名（按名字排序；value = 首次覆盖发生的入口）。
+    ///
+    /// 组合根在装配完成后调用一次即可知道有没有工具被顶掉；测试用它把
+    /// 「默认装配零重名」钉成不变量。
+    pub fn name_conflicts(&self) -> std::collections::BTreeMap<String, String> {
+        self.conflicts
+            .try_read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
     }
 
     /// Register a tool reversibly, returning a disposer that removes it and
@@ -143,13 +222,19 @@ impl ToolRegistry {
     /// blocking pool. Disposal uses the same strategy.
     pub fn register_reversible(self: &Arc<Self>, tool: Arc<dyn Tool>) -> Disposer {
         let name = tool.name().to_string();
-        if let Ok(mut tools) = self.tools.try_write() {
-            tools.insert(name.clone(), tool);
+        let replaced = if let Ok(mut tools) = self.tools.try_write() {
+            tools.insert(name.clone(), tool).is_some()
         } else {
             let name_for_blocking = name.clone();
             blocking_section(move || {
-                self.tools.blocking_write().insert(name_for_blocking, tool);
-            });
+                self.tools
+                    .blocking_write()
+                    .insert(name_for_blocking, tool)
+                    .is_some()
+            })
+        };
+        if replaced {
+            self.note_conflict(&name, "register_reversible");
         }
         self.invalidate_definitions();
         let registry = self.clone();
@@ -199,6 +284,51 @@ impl ToolRegistry {
     /// Whether a registered tool is currently disabled.
     pub async fn is_disabled(&self, name: &str) -> bool {
         self.disabled.read().await.contains(name)
+    }
+
+    /// 是否已注册同名工具（宿主保留名判定）。
+    ///
+    /// 与 `names().contains(..)` 的区别：直接查 map，O(1) 而不是 O(注册数)——
+    /// 插件工具注册是逐条调用的，用 `names()` 会变成 O(n²)。
+    pub fn contains_tool(&self, name: &str) -> bool {
+        match self.tools.try_read() {
+            Ok(tools) => tools.contains_key(name),
+            Err(_) => blocking_section(|| self.tools.blocking_read().contains_key(name)),
+        }
+    }
+
+    /// 注册一批**外部插件**工具，返回逐条结果。
+    ///
+    /// ## 语义：宿主保留名优先
+    ///
+    /// [`Self::register`] 的 `insert` 是**覆盖**语义——插件工具与内置/宿主工具
+    /// 同名时，插件实现会无声无息地顶掉内置实现（典型：外部插件声明
+    /// `calculator` / `web_search`，与内置同名，表现为"功能还在但行为变了"，
+    /// 排查成本极高）。
+    ///
+    /// 因此插件工具走这条路径：**已注册的名字是保留名**，同名插件项被跳过并
+    /// 记入返回值的 `skipped`（调用方据此 warn 点名），内置实现保持不变。
+    /// 插件仍可提供其它不冲突的工具——冲突只淘汰冲突项，不做整体拒绝。
+    ///
+    /// 包标签按插件自报的 `package` 打（`None` 表示插件未声明）。
+    pub fn register_plugin_tools(
+        &mut self,
+        tools: impl IntoIterator<Item = PluginTool>,
+    ) -> PluginToolRegistration {
+        let mut report = PluginToolRegistration::default();
+        for PluginTool { tool, package } in tools {
+            let name = tool.name().to_string();
+            if self.contains_tool(&name) {
+                report.skipped.push((name, package));
+                continue;
+            }
+            self.register(tool);
+            if let Some(pkg) = &package {
+                self.set_package(&name, pkg.clone());
+            }
+            report.registered.push(name);
+        }
+        report
     }
 
     /// Assign the owning package id for a tool (metadata for the Panel).
@@ -555,7 +685,6 @@ mod tests {
     }
 
     #[async_trait]
-    #[async_trait]
     impl Tool for StubTool {
         fn name(&self) -> &str {
             self.name
@@ -566,6 +695,143 @@ mod tests {
         async fn execute(&self, _arguments: Value) -> Result<String, ToolError> {
             Ok("stub".into())
         }
+    }
+
+    /// 输出可区分的桩工具：用来断言"同名时到底哪个实现生效"。
+    struct TaggedTool {
+        name: &'static str,
+        output: &'static str,
+    }
+
+    #[async_trait]
+    impl Tool for TaggedTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "tagged"
+        }
+        async fn execute(&self, _arguments: Value) -> Result<String, ToolError> {
+            Ok(self.output.into())
+        }
+    }
+
+    /// 宿主保留名优先（2026-10 去耦重构后的注册语义，抽成纯函数便于测试）。
+    ///
+    /// 背景：`register` 的 `insert` 是覆盖语义。内置工具外迁为插件后，
+    /// 外部插件声明的 `calculator` / `web_search` 与内置同名，于是**内置实现
+    /// 被悄悄顶掉**——线上表现是"功能还在但行为变了"，五条 ERROR 日志。
+    ///
+    /// 契约：
+    /// 1. 与已注册工具同名的插件工具被**跳过**（内置实现保留）；
+    /// 2. 非冲突的插件工具照常注册，并按插件自报的 package 打标；
+    /// 3. 报告逐条列出 registered / skipped，调用方据此 warn 点名。
+    #[tokio::test]
+    async fn plugin_tools_never_override_host_reserved_names() {
+        let mut registry = ToolRegistry::new();
+        // 宿主（内置）实现
+        registry.register(Arc::new(TaggedTool {
+            name: "calculator",
+            output: "builtin",
+        }));
+        registry.set_package("calculator", "echo-agent.tools.builtin");
+
+        let report = registry.register_plugin_tools(vec![
+            // 冲突项：与内置同名
+            PluginTool::new(
+                Arc::new(TaggedTool {
+                    name: "calculator",
+                    output: "plugin",
+                }),
+                Some("echo-plugin-example".into()),
+            ),
+            // 非冲突项
+            PluginTool::new(
+                Arc::new(TaggedTool {
+                    name: "plugin_only",
+                    output: "plugin",
+                }),
+                Some("echo-plugin-example".into()),
+            ),
+        ]);
+
+        assert_eq!(report.registered, vec!["plugin_only"]);
+        assert_eq!(
+            report.skipped,
+            vec![("calculator".to_string(), Some("echo-plugin-example".to_string()))]
+        );
+        assert!(report.has_skips());
+
+        // 内置实现仍然生效（关键断言：不是"功能消失"，也不是"被换掉"）
+        assert_eq!(
+            registry.execute("calculator", Value::Null).await.unwrap(),
+            "builtin"
+        );
+        // 包标签没被插件覆盖
+        assert_eq!(
+            registry.package_of("calculator").as_deref(),
+            Some("echo-agent.tools.builtin")
+        );
+        // 非冲突项按插件自报的包打标
+        assert_eq!(
+            registry.package_of("plugin_only").as_deref(),
+            Some("echo-plugin-example")
+        );
+        // 冲突**不**记进 name_conflicts（没有发生覆盖）
+        assert!(registry.name_conflicts().is_empty());
+    }
+
+    /// 插件之间同名：先注册者生效，后到者跳过（与宿主保留名同一规则）。
+    #[tokio::test]
+    async fn duplicate_plugin_tool_names_keep_the_first() {
+        let mut registry = ToolRegistry::new();
+        let report = registry.register_plugin_tools(vec![
+            PluginTool::new(
+                Arc::new(TaggedTool {
+                    name: "dup",
+                    output: "first",
+                }),
+                Some("pkg-a".into()),
+            ),
+            PluginTool::new(
+                Arc::new(TaggedTool {
+                    name: "dup",
+                    output: "second",
+                }),
+                Some("pkg-b".into()),
+            ),
+        ]);
+        assert_eq!(report.registered, vec!["dup"]);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(
+            registry.execute("dup", Value::Null).await.unwrap(),
+            "first",
+            "后到的插件不得覆盖先注册的实现"
+        );
+        assert_eq!(registry.package_of("dup").as_deref(), Some("pkg-a"));
+    }
+
+    /// 空输入是 no-op（组合根在无插件时也会调用）。
+    #[tokio::test]
+    async fn register_plugin_tools_accepts_empty_input() {
+        let mut registry = ToolRegistry::new();
+        let report = registry.register_plugin_tools(Vec::new());
+        assert!(report.registered.is_empty());
+        assert!(!report.has_skips());
+        assert!(registry.names().is_empty());
+    }
+
+    /// 插件未声明 package 时也能注册（`None` 不打标，不影响可用性）。
+    #[tokio::test]
+    async fn plugin_tool_without_package_is_registered_without_label() {
+        let mut registry = ToolRegistry::new();
+        let report = registry.register_plugin_tools(vec![PluginTool::new(
+            Arc::new(StubTool { name: "unlabeled" }),
+            None,
+        )]);
+        assert_eq!(report.registered, vec!["unlabeled"]);
+        assert_eq!(registry.package_of("unlabeled"), None);
+        assert!(registry.contains_tool("unlabeled"));
     }
 
     #[tokio::test]
@@ -773,5 +1039,48 @@ mod tests {
         );
         let defs = registry.definitions().await;
         assert!(defs.iter().any(|d| d.name == "A100-40g__bash"));
+    }
+
+    /// 重名不是「无所谓」：后者静默顶掉前者，必须留痕（否则插件能无声劫持
+    /// 内置工具——`echo-plugin-example` 与内置 `calculator` / `web_search`
+    /// 同名，正是这个坑）。
+    #[tokio::test]
+    async fn duplicate_registration_is_recorded_as_conflict() {
+        let mut registry = ToolRegistry::new();
+        assert!(registry.name_conflicts().is_empty());
+
+        registry.register(Arc::new(StubTool { name: "calculator" }));
+        assert!(registry.name_conflicts().is_empty(), "首次注册不算冲突");
+        // 同名再来一次 = 覆盖
+        registry.register(Arc::new(StubTool { name: "calculator" }));
+        let conflicts = registry.name_conflicts();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(
+            conflicts.get("calculator").map(String::as_str),
+            Some("register")
+        );
+    }
+
+    /// 可逆注册（插件挂载路径）同样记录。
+    #[tokio::test]
+    async fn reversible_duplicate_is_recorded_as_conflict() {
+        let registry = Arc::new(ToolRegistry::new());
+        let first = registry.register_reversible(Arc::new(StubTool { name: "web_search" }));
+        let _second = registry.register_reversible(Arc::new(StubTool { name: "web_search" }));
+        let conflicts = registry.name_conflicts();
+        assert_eq!(
+            conflicts.get("web_search").map(String::as_str),
+            Some("register_reversible")
+        );
+        drop(first);
+    }
+
+    /// 不同名字永不产生冲突记录。
+    #[tokio::test]
+    async fn distinct_names_never_conflict() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(StubTool { name: "a" }));
+        registry.register(Arc::new(StubTool { name: "b" }));
+        assert!(registry.name_conflicts().is_empty());
     }
 }

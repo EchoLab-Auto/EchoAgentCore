@@ -1032,12 +1032,42 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 ));
                 t.set_package("spawn_subagent", echo_agent::plugins::SUBAGENT_PLUGIN_ID);
                 // 子进程插件工具（plugins.toml；RemoteTool 已实现 Tool trait）。
-                for tool in pt.iter() {
-                    let name = tool.tool_name().to_string();
-                    t.register(tool.clone());
-                    if let Some(pkg) = tool.package() {
-                        t.set_package(&name, pkg);
-                    }
+                //
+                // 语义在 `ToolRegistry::register_plugin_tools`（可单测的纯逻辑）：
+                // **已注册的名字是宿主保留名**，同名插件项被跳过并逐条回报，
+                // 内置实现保持不变——否则 `register` 的覆盖语义会让插件悄悄
+                // 顶掉内置实现（内置工具外迁为插件后 `calculator` /
+                // `web_search` 曾经如此，线上只能看到"功能还在但行为变了"）。
+                let registration = t.register_plugin_tools(pt.iter().map(|tool| {
+                    echo_agent::PluginTool::new(
+                        tool.clone() as std::sync::Arc<dyn echo_agent::Tool>,
+                        tool.package().map(str::to_string),
+                    )
+                }));
+                for (name, package) in &registration.skipped {
+                    tracing::warn!(
+                        persona = %id,
+                        tool = %name,
+                        package = package.as_deref().unwrap_or("<unlabeled>"),
+                        "外部插件工具与已注册工具重名，已跳过该插件工具"
+                    );
+                }
+                // 装配完成即检查工具重名：`insert` 是覆盖语义，撞名会让后
+                // 注册的实现无声顶掉前者（典型：启用 `echo-plugin-example`
+                // 后它的 `calculator` / `web_search` 与内置工具同名）。
+                // 这里升级为 error 并点名，避免「功能悄悄换了个实现」。
+                let conflicts = t.name_conflicts();
+                if !conflicts.is_empty() {
+                    let detail = conflicts
+                        .iter()
+                        .map(|(name, via)| format!("{name}（via {via}）"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    tracing::error!(
+                        persona = %id,
+                        conflicts = %detail,
+                        "工具重名：同名工具被后者覆盖——请改名其一（内置工具与插件工具不应同名）"
+                    );
                 }
                 // Persona 级 API：配置了 api_profile 的 persona 在启动时构建
                 // 自己的 provider（从全局池解析，不共享默认 provider）。

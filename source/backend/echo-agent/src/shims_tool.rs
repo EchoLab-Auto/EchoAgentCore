@@ -10,4 +10,6 @@
 //!   的包实现，**不随机制外迁**。
 
 pub use crate::packages::tools_builtin as builtin;
-pub use echo_tool::{Tool, ToolDefinition, ToolError, ToolRegistry, ToolResult};
+pub use echo_tool::{
+    PluginTool, PluginToolRegistration, Tool, ToolDefinition, ToolError, ToolRegistry, ToolResult,
+};

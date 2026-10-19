@@ -94,4 +94,4 @@ pub use event::{
 pub use llm::LlmProvider;
 pub use packages::instance_ops::bridge::AgentMessageHook;
 pub use session::{Session, SessionKey, TrunkStore};
-pub use tool::{Tool, ToolRegistry};
+pub use tool::{PluginTool, PluginToolRegistration, Tool, ToolRegistry};
