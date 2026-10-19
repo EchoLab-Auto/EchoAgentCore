@@ -18,6 +18,7 @@
 //!   合成树渲染回 TOML（每行带来源注释）。
 //! - [`builtin_mount_plan`]：`plugins.toml` 里 `kind = "builtin"` 的行 →
 //!   内置插件的挂载计划（配置化组合 P4：集合 / 顺序 / 启用由配置说了算）。
+//! - [`config_origins`]：每个插件条目由**哪一层**配置声明（面板展示用）。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -261,6 +262,51 @@ pub fn builtin_mount_plan(config_path: &Path) -> Vec<echo_agent::plugins::MountS
     }
 }
 
+/// `plugins.toml` 里每个条目由**哪一层**声明 → `(插件 id, 来源描述)`。
+///
+/// 分层合成（profile → bundles → patches → 行内）之后，每个条目都带着
+/// `layer`（0 起的应用序号）与 `layer_source`（文件名）。面板的插件清单
+/// 用它回答「这行为什么长这样 / 我要去哪一层改它」。
+///
+/// 描述形如 `plugins.toml`（本文件行内条目）或 `base.toml · layer 0`
+/// （被 bundle/patch 覆盖过的行按**最后写入**的那一层显示——与合成语义
+/// 一致：整行替换）。
+///
+/// 配置未提及的插件不会出现在结果里（调用方保持空串 = 编译内置的缺省）。
+/// 文件不存在 / 解析失败 → 空表（与 [`builtin_mount_plan`] 同款降级：
+/// 展示信息缺失不该阻断启动）。
+pub fn config_origins(config_path: &Path) -> Vec<(String, String)> {
+    let path = config_path.with_file_name("plugins.toml");
+    if !path.exists() {
+        return Vec::new();
+    }
+    match echo_plugin_loader::load(&path) {
+        Ok(tree) => {
+            let profile_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("plugins.toml")
+                .to_string();
+            tree.entries
+                .iter()
+                .map(|entry| {
+                    let origin = if entry.layer_source == profile_name {
+                        // 本文件行内条目：直接报文件名，不必说第几层。
+                        entry.layer_source.clone()
+                    } else {
+                        format!("{} · layer {}", entry.layer_source, entry.layer)
+                    };
+                    (entry.id.clone(), origin)
+                })
+                .collect()
+        }
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "plugins.toml load failed; plugin config origins unavailable");
+            Vec::new()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,6 +481,52 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp dir");
         std::fs::write(dir.join("plugins.toml"), "not = valid = toml [[[").expect("write toml");
         assert!(builtin_mount_plan(&dir.join("echo-agent-core.toml")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 配置来源层（面板展示用）──────────────────────────────────────
+
+    /// 无 plugins.toml → 空表（面板显示「配置未声明」）。
+    #[test]
+    fn config_origins_empty_without_plugins_toml() {
+        let dir = unique_dir("origins-missing");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        assert!(config_origins(&dir.join("echo-agent-core.toml")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 行内条目报文件名；被 bundle 覆盖的行报「哪一层」。
+    #[test]
+    fn config_origins_name_the_writing_layer() {
+        let dir = unique_dir("origins-layers");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(
+            dir.join("base.toml"),
+            "[[plugin]]\nid = \"a\"\nkind = \"stdio\"\nname = \"a\"\ncommand = \"/bin/a\"\n\n\
+             [[plugin]]\nid = \"overridden\"\nkind = \"stdio\"\nname = \"old\"\ncommand = \"/bin/old\"\n",
+        )
+        .expect("write bundle");
+        std::fs::write(
+            dir.join("plugins.toml"),
+            "[profile]\nbundles = [\"base\"]\n\n\
+             [[plugin]]\nid = \"overridden\"\nkind = \"stdio\"\nname = \"new\"\ncommand = \"/bin/new\"\n",
+        )
+        .expect("write profile");
+
+        let origins: std::collections::HashMap<String, String> =
+            config_origins(&dir.join("echo-agent-core.toml"))
+                .into_iter()
+                .collect();
+        // bundle 里的行：报 bundle 文件名 + 层号。
+        assert_eq!(
+            origins.get("a").map(String::as_str),
+            Some("base.toml · layer 0")
+        );
+        // 被本文件覆盖的行：报本文件名（最后写入的那一层）。
+        assert_eq!(
+            origins.get("overridden").map(String::as_str),
+            Some("plugins.toml")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

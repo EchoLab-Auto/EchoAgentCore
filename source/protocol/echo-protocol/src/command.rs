@@ -173,6 +173,11 @@ pub enum BackendCommand {
     /// session.global / chatbot.sessions）的禁用有实际效果。数据插件的
     /// 真实注册卸载随 Phase 2 落地。
     TogglePlugin { id: String, enabled: bool },
+    /// 重载一个插件（卸下 → 重新挂载），**不改**启用状态与持久化配置。
+    ///
+    /// 用途：插件按新配置/新外部依赖重新初始化（子进程插件重连、实例
+    /// 插件重启进程）；管理面插件被拒绝（重启 = Panel 断连）。
+    RestartPlugin { id: String },
     /// Request a snapshot of a conversation context (`BackendEvent::ContextSnapshot`).
     ///
     /// 多会话（2026-09）：`session_id` 指定要查看的会话上下文；缺省回退

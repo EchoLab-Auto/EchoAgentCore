@@ -1014,6 +1014,17 @@ pub struct PluginInfo {
     /// 所属包 id（横跨 plugin+tool+skill 的组合标签；未声明 = 插件 id）。
     #[serde(default)]
     pub package: String,
+    /// 挂载失败原因（`enabled == false` 且是内置插件时可能有值）。
+    ///
+    /// 面板据此区分「用户主动禁用」与「装配失败被跳过」——此前协议不带
+    /// 该字段（`PluginDescriptor::error` 有、`PluginInfo` 丢了），失败原因
+    /// 只能翻日志。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// 声明该插件的配置层（`plugins.toml` / `bundle:base.toml` …）；
+    /// 空 = 配置未提及（编译内置的缺省行为）。
+    #[serde(default)]
+    pub config_origin: String,
 }
 
 /// 联邦 peer 配置与链路状态（`FederationStatus` 列表元素；

@@ -347,6 +347,25 @@ impl PluginHost {
         self.registry.set_enabled(id, enabled, &self.ctx())
     }
 
+    /// 重载一个插件（卸下 → 重新挂载）；**不改**启用状态。
+    ///
+    /// 语义与 `set_enabled(false)` + `set_enabled(true)` 等价，但不写
+    /// `disabled_plugins`、不触发持久化——面板的「重启」按钮走这条，
+    /// 免掉"重启一次就在配置里留一条禁用记录"的副作用。
+    pub fn restart(&self, id: &str) -> Result<(), String> {
+        self.registry.restart(id, &self.ctx())
+    }
+
+    /// 记录插件的配置来源层（组合根装载 `plugins.toml` 后写入）。
+    pub fn set_config_origins<I, K, V>(&self, origins: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.registry.set_config_origins(origins);
+    }
+
     pub fn plugins_of_kind(&self, kind: PluginKind) -> Vec<PluginDescriptor> {
         self.descriptors()
             .into_iter()

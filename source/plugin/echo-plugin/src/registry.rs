@@ -36,6 +36,13 @@ pub struct PluginDescriptor {
     /// Mount error description when `enabled == false && builtin`.
     #[serde(default)]
     pub error: Option<String>,
+    /// 该插件在 `plugins.toml` 里由**哪一层**配置（空 = 配置未提及）。
+    ///
+    /// 由组合根在装载配置时写入（[`PluginRegistry::set_config_origin`]）：
+    /// 分层合成（profile → bundles → patches → 行内）之后每个条目都带着
+    /// 来源层，面板据此回答「这行为什么长这样」。
+    #[serde(default)]
+    pub config_origin: String,
 }
 
 impl From<&PluginManifest> for PluginDescriptor {
@@ -53,6 +60,7 @@ impl From<&PluginManifest> for PluginDescriptor {
             runtime: m.runtime.as_str().to_string(),
             package: m.package_id().to_string(),
             error: None,
+            config_origin: String::new(),
         }
     }
 }
@@ -67,6 +75,8 @@ pub struct PluginRegistry {
     plugins: std::sync::Mutex<BTreeMap<String, Arc<dyn Plugin>>>,
     active: std::sync::Mutex<BTreeMap<String, Vec<Disposer>>>,
     enabled_state: std::sync::Mutex<BTreeMap<String, bool>>,
+    /// 插件 id → 声明它的配置层（展示用；见 [`PluginRegistry::set_config_origin`]）。
+    config_origins: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl std::fmt::Debug for PluginRegistry {
@@ -271,14 +281,68 @@ impl PluginRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let ids: Vec<String> = plugins.keys().cloned().collect();
         let mut out = Vec::with_capacity(ids.len());
+        let origins = self.config_origins();
         for id in ids {
             if let Some(p) = plugins.get(&id) {
                 let mut d = PluginDescriptor::from(p.manifest());
                 d.enabled = states.get(&id).copied().unwrap_or(true);
+                if let Some(origin) = origins.get(&id) {
+                    d.config_origin = origin.clone();
+                }
                 out.push(d);
             }
         }
         out
+    }
+
+    /// 记录「该插件由配置的哪一层声明」（组合根装载 `plugins.toml` 后写入）。
+    ///
+    /// 只影响展示（`PluginDescriptor::config_origin`）——运行期语义仍由
+    /// 启停状态与 mount 计划决定。
+    pub fn set_config_origin(&self, id: impl Into<String>, origin: impl Into<String>) {
+        self.config_origins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.into(), origin.into());
+    }
+
+    /// 批量写入来源层（组合根一次装载多处声明时用）。
+    pub fn set_config_origins<I, K, V>(&self, origins: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let mut map = self
+            .config_origins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (id, origin) in origins {
+            map.insert(id.into(), origin.into());
+        }
+    }
+
+    fn config_origins(&self) -> std::collections::HashMap<String, String> {
+        self.config_origins
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// 重载一个已启用的插件：卸下（执行全部 disposer）再重新挂载。
+    ///
+    /// 与 `set_enabled(false) → set_enabled(true)` 的差别：**不动启用状态**
+    /// （不写 `disabled_plugins`、不触发持久化），因此可以安全地用于
+    /// "让某个插件按新配置/新外部状态重新初始化"。已禁用的插件直接报错
+    /// ——重启的前提是先启用。
+    pub fn restart(&self, id: &str, ctx: &MountContext) -> Result<(), String> {
+        if !self.is_enabled(id) {
+            return Err(format!(
+                "plugin {id} is disabled; enable it before restarting"
+            ));
+        }
+        self.unmount(id).map_err(|e| e.to_string())?;
+        self.mount(id, ctx).map(|_| ()).map_err(|e| e.to_string())
     }
 }
 
@@ -335,6 +399,62 @@ mod tests {
         reg.unmount_all();
         reg.mount_all(&ctx);
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    /// `restart` = 卸下 + 重新挂载，**不动**启用状态；
+    /// 禁用的插件不允许重启（前提是先启用）。
+    #[test]
+    fn restart_remounts_without_touching_enabled_state() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let reg = PluginRegistry::new();
+        let ctx = MountContext::new();
+        let mounts = Arc::new(AtomicUsize::new(0));
+        let disposes = Arc::new(AtomicUsize::new(0));
+        let (m, d) = (mounts.clone(), disposes.clone());
+        reg.register(Arc::new(BuiltinPlugin::new(
+            PluginManifest::builtin("r.r.r", "r", "1", PluginKind::Tool, "", ""),
+            move |_| {
+                m.fetch_add(1, Ordering::SeqCst);
+                let d = d.clone();
+                Ok(vec![Disposer::from_fn(move || {
+                    d.fetch_add(1, Ordering::SeqCst);
+                })])
+            },
+        )))
+        .unwrap();
+        reg.mount_all(&ctx);
+        assert_eq!(mounts.load(Ordering::SeqCst), 1);
+
+        reg.restart("r.r.r", &ctx).expect("restart enabled plugin");
+        assert_eq!(mounts.load(Ordering::SeqCst), 2, "应重新挂载一次");
+        assert_eq!(
+            disposes.load(Ordering::SeqCst),
+            1,
+            "旧挂载的 disposer 应执行"
+        );
+        // 启用状态未变（restart 不是 set_enabled 的别名）。
+        assert!(reg.is_enabled("r.r.r"));
+        assert!(reg.descriptors()[0].enabled);
+
+        // 禁用后拒绝重启。
+        reg.set_enabled("r.r.r", false, &ctx).unwrap();
+        let err = reg.restart("r.r.r", &ctx).expect_err("disabled plugin");
+        assert!(err.contains("disabled"), "{err}");
+    }
+
+    /// 配置来源层进 descriptor（面板展示「来自哪一层」）。
+    #[test]
+    fn config_origin_flags_reach_descriptors() {
+        let reg = PluginRegistry::new();
+        reg.register(Arc::new(BuiltinPlugin::new(
+            PluginManifest::builtin("o.o.o", "o", "1", PluginKind::Tool, "", ""),
+            |_| Ok(vec![]),
+        )))
+        .unwrap();
+        // 缺省：配置未提及。
+        assert_eq!(reg.descriptors()[0].config_origin, "");
+        reg.set_config_origins([("o.o.o", "base.toml · layer 0")]);
+        assert_eq!(reg.descriptors()[0].config_origin, "base.toml · layer 0");
     }
 
     #[test]

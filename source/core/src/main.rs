@@ -1343,6 +1343,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .with_tools(Arc::new(ToolSink::new(agent.tools.clone())))
                 .with_ctx(ctx.clone()),
         );
+        // 插件清单的来源层（面板展示「这行配置来自 plugins.toml 的哪一层」）：
+        // 配置未提及的插件保持空串 = 编译内置的缺省行为。
+        plugin_host.set_config_origins(plugins_runtime::config_origins(&args.config_path()));
 
         // 先应用持久化的禁用状态再挂载：register_and_mount 对禁用插件只注册
         // 不挂载，禁用的插件在启动时不获得任何副作用。

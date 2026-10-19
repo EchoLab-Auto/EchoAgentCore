@@ -542,6 +542,32 @@ impl Agent {
                     message,
                 });
             }
+            BackendCommand::RestartPlugin { id } => {
+                // 防自锁：重启管理面插件 = 先卸下 management WS，Panel 立即
+                // 断连且无法经界面恢复（与禁用同一条约束）。
+                if id == crate::plugins::MANAGEMENT_PANEL_PLUGIN_ID {
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: format!(
+                            "refuse to restart {id}: 管理面插件承载 management 通道，重启会断开 Panel；如需重载请重启 Core 服务"
+                        ),
+                    });
+                    return;
+                }
+                match self.plugin_host().restart(&id) {
+                    Ok(()) => {
+                        self.emit(BackendEvent::Error {
+                            session_id: None,
+                            message: format!("plugin {id} restarted"),
+                        });
+                        self.emit_plugins_list().await;
+                    }
+                    Err(e) => self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: format!("restart {id} failed: {e}"),
+                    }),
+                }
+            }
             BackendCommand::RequestToolsList => {
                 self.emit_tools_list().await;
             }
@@ -1709,6 +1735,8 @@ impl Agent {
                 builtin: d.builtin,
                 runtime: d.runtime,
                 package: d.package,
+                error: d.error,
+                config_origin: d.config_origin,
             })
             .collect();
         self.emit(BackendEvent::PluginsList { plugins });
