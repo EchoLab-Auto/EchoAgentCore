@@ -802,6 +802,97 @@ mod tests {
         ws.close(None).await.ok();
     }
 
+    /// 流式增量合批（2026-10）在**扇出层**生效：连续同类增量合并为一帧下发，
+    /// 且非增量事件（工具开始）先把挂起的增量冲出——保序是硬约束。
+    ///
+    /// 这条测试锁的是**接线**（`DeltaBatcher` 自己的单测在 echo-protocol），
+    /// 因为合批一旦顺序错乱，Panel 就会把工具后的正文并进工具前那一行
+    /// （历史上"思考 chip 堆到正文后面"的同型问题）。
+    #[tokio::test]
+    async fn stream_deltas_are_batched_but_ordered_before_tool_calls() {
+        let (bridge, handle, addr) = start_test_server().await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+            .await
+            .expect("connect");
+        // 订阅完成后再发事件（broker 只投给已订阅连接）。
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let delta = |text: &str| echo_protocol::BackendEvent::AgentContentDelta {
+            session_id: "s1".into(),
+            team_id: None,
+            branch_id: "b1".into(),
+            delta: text.into(),
+        };
+        // 三个连续增量 + 一个工具调用（分步边界）。
+        handle.emit(delta("he"));
+        handle.emit(delta("llo"));
+        handle.emit(delta(" world"));
+        handle.emit(echo_protocol::BackendEvent::ToolCall {
+            session_id: "s1".into(),
+            team_id: None,
+            tool_name: "bash".into(),
+            arguments: "{}".into(),
+            tool_call_id: "c1".into(),
+            branch_id: String::new(),
+            started_at_ms: None,
+        });
+
+        // 收集帧，直到收到 ToolCall（或超时）。
+        let mut frames: Vec<(String, Option<String>)> = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(300), ws.next()).await {
+                Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))) => {
+                    let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+                    let entry = value
+                        .get("entry")
+                        .and_then(|v| v.as_str())
+                        .map(std::string::ToString::to_string);
+                    let Some(echo_protocol::WsMessage::Event(ev)) =
+                        echo_protocol::deserialize_message(&text)
+                    else {
+                        continue;
+                    };
+                    match ev {
+                        echo_protocol::BackendEvent::AgentContentDelta { delta, .. } => {
+                            frames.push((format!("delta:{delta}"), entry))
+                        }
+                        echo_protocol::BackendEvent::ToolCall { .. } => {
+                            frames.push(("tool".into(), entry));
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(e))) => panic!("ws error: {e}"),
+                Ok(None) => break,
+                Err(_) => {} // 等下一轮（合批窗口 60ms + 检查 20ms）
+            }
+        }
+
+        assert!(!frames.is_empty(), "应至少收到一帧");
+        // 最后一帧必须是工具调用（保序：它不能越过前面的增量）。
+        assert_eq!(frames.last().unwrap().0, "tool", "frames={frames:?}");
+        // 前面所有增量合并后的文本必须与原始顺序一致（不得丢字、不得乱序）。
+        let merged: String = frames
+            .iter()
+            .filter_map(|(tag, _)| tag.strip_prefix("delta:"))
+            .collect();
+        assert_eq!(merged, "hello world", "frames={frames:?}");
+        // 合批生效：三次增量不应各自成帧（窗口内应被合并）。
+        let delta_frames = frames.iter().filter(|(t, _)| t.starts_with("delta:")).count();
+        assert!(
+            delta_frames < 3,
+            "增量应被合批（实际 {delta_frames} 帧）：frames={frames:?}"
+        );
+        // 条目身份随帧下发（同一段流式 + 工具各自身份）。
+        let tool_entry = frames.last().unwrap().1.clone().expect("tool entry");
+        assert_eq!(tool_entry, "tool:s1:c1");
+        let _ = bridge;
+        ws.close(None).await.ok();
+    }
+
     /// 未授权拒绝必须是标准 HTTP 401 响应（回归，2026-10）：
     /// 此前 `ErrorResponse::new(Some("unauthorized"))` 的默认状态是 200，
     /// tungstenite 对成功状态直接放弃写出（CustomResponseSuccessful）——
