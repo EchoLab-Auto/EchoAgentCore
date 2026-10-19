@@ -260,6 +260,9 @@ fn render_with_caps(events: &[SessionEvent], caps: TranscriptCaps) -> String {
             // 通常是正文的数倍）。与既有行为一致——assistant 消息的
             // `reasoning_content` 同样从不渲染。
             SessionEvent::Reasoning(_) => {}
+            // 模型往返观测（2026-10-19）：token/耗时/步号对"这段对话讲了
+            // 什么"没有信息量，与推理同口径不进压缩转录。
+            SessionEvent::ModelStep(_) => {}
             SessionEvent::Compaction(c) => {
                 lines.push(format!(
                     "[更早摘要] {}",

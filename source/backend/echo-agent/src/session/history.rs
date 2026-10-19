@@ -230,6 +230,9 @@ impl TrunkStore {
                         }
                     }
                 }
+                // 模型往返观测（2026-10-19）：审计用事实，不是对话内容——
+                // 显示时间线不为它造条目（与实时投影保持一致：实时也不发）。
+                echo_session::SessionEvent::ModelStep(_) => {}
                 echo_session::SessionEvent::Compaction(compaction) => {
                     messages.push(TimelineMessage::system(
                         format!("上下文已压缩 · 替换 {} 条事件", compaction.replaced_count),

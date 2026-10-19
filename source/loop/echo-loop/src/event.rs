@@ -66,6 +66,12 @@ pub struct ToolResult {
 /// Carries the usage counters so consumers (UI/usage accounting) can render
 /// token spend without reaching into the runner. Emitted after `agent/request`
 /// and before any tool calls of the same step.
+///
+/// 2026-10-19 观测缺口修复：新增 `tool_calls`——本步模型**一次性**请求的
+/// 全部工具调用。此前该事件只有 token 计数，harness 无法知道"一条响应里
+/// 带了几个工具"，只好用相邻 `tool_call.started_at_ms` 的间隔（<1s）去猜
+/// 同轮打包，审计因此低估并行度、也读不到被取消而未执行的调用 id。
+/// 工具**执行**仍由后续 `tool/call` 事件逐个记录（含参数与时间戳）。
 #[derive(Debug, Clone)]
 pub struct ModelResponse {
     pub session_id: String,
@@ -74,6 +80,8 @@ pub struct ModelResponse {
     pub model: String,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
+    /// 本步响应携带的工具调用（空 = 纯文本收尾步）。
+    pub tool_calls: Vec<echo_defs::message::ToolCall>,
 }
 
 /// A step ended: `step/end`.

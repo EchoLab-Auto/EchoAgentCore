@@ -127,14 +127,16 @@ impl EventLog {
         match insert_at {
             Some(index) => {
                 let mut insert_at = index + 1;
-                // 跳过本轮的工具往返**与推理**：推理是显示层条目，读起来
-                // 属于它前面那条请求，最终回答必须排在整轮之后。
+                // 跳过本轮的工具往返、推理**与模型往返观测**：后两者是
+                // 显示层/审计条目，读起来属于它们前面那条请求，最终回答
+                // 必须排在整轮之后（否则回答会插到 thinking 或 step 之前）。
                 while insert_at < events.len()
                     && matches!(
                         events[insert_at],
                         SessionEvent::ToolCall(_)
                             | SessionEvent::ToolResult(_)
                             | SessionEvent::Reasoning(_)
+                            | SessionEvent::ModelStep(_)
                     )
                 {
                     insert_at += 1;
@@ -365,7 +367,7 @@ mod tests {
         assert!(matches!(events[3], SessionEvent::AssistantMessage(_)));
     }
 
-    // ── 按会话取事件 / 持��只读（2026-10 性能）──────────────────────────
+    // ── 按会话取事件 / 持锁只读（2026-10 性能）──────────────────────────
 
     fn user_in(session: &str, content: &str) -> SessionEvent {
         SessionEvent::UserMessage(UserMessage {
@@ -483,6 +485,65 @@ mod tests {
     }
 
     #[test]
+    fn insert_after_sequence_skips_model_step_events() {
+        // 模型往返观测（2026-10-19）也属于本轮：最终回答必须排在它之后，
+        // 否则投影会变成 [用户, 回答, assistant(tool_use), tool]——回答跑
+        // 到工具调用前面（显示与上下文双双错位）。
+        use crate::event::ToolCallEvent;
+        let log = EventLog::new();
+        log.append(SessionEvent::UserMessage(UserMessage {
+            session: None,
+            content: "跑一下".into(),
+            timestamp: 1_700_000_000,
+            message_sequence: Some(1),
+            source: None,
+            images: vec![],
+        }));
+        log.append(SessionEvent::ModelStep(crate::event::ModelStepEvent {
+            step_index: 0,
+            model: "m".into(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            tool_call_ids: vec!["call_1".into()],
+            turn: None,
+            elapsed_ms: Some(1),
+            started_at_ms: 1,
+            session: None,
+        }));
+        log.append(SessionEvent::ToolCall(ToolCallEvent {
+            session: None,
+            id: "call_1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+            started_at_ms: None,
+        }));
+        log.append(SessionEvent::ToolResult(crate::event::ToolResultEvent {
+            session: None,
+            tool_call_id: "call_1".into(),
+            result: "ok".into(),
+            images: vec![],
+            elapsed_ms: None,
+        }));
+        log.insert_after_sequence(
+            1,
+            SessionEvent::AssistantMessage(AssistantMessage {
+                session: None,
+                content: "完成".into(),
+                reasoning_content: None,
+                tool_calls: vec![],
+            }),
+        );
+        let events = log.log();
+        assert_eq!(events.len(), 5);
+        assert!(matches!(events[1], SessionEvent::ModelStep(_)));
+        assert!(matches!(events[2], SessionEvent::ToolCall(_)));
+        assert!(matches!(events[3], SessionEvent::ToolResult(_)));
+        assert!(
+            matches!(events[4], SessionEvent::AssistantMessage(_)),
+            "{events:?}"
+        );
+    }
+
     fn insert_after_sequence_skips_reasoning_of_that_turn() {
         // 推理也是本轮事件：最终回答必须排在它之后，不能插到推理前面
         // （否则显示历史里回答会出现在"思考"之前）。

@@ -739,8 +739,17 @@ impl TrunkStore {
     /// writers) so the event order matches the projected message order.
     pub(crate) fn append_event(&self, event: echo_session::SessionEvent) {
         let session = event.session().map(str::to_string);
+        // 模型不可见事件（推理 / 模型往返观测）不改变投影：跳过重建。
+        // 投影重建是 O(本会话事件数) 的整份克隆——长会话里每次 append
+        // 都要重付，观测事件（2026-10-19 起每步一条）不该再摊这份成本。
+        let affects_projection = event.affects_projection();
         self.event_log.append(event);
-        self.reproject(&session);
+        if affects_projection {
+            self.reproject(&session);
+        } else if let Some(id) = session.as_deref() {
+            // 仍然物化上下文句柄：历史查询/快照要能拿到该会话（幂等）。
+            let _ = self.history_or_create(id);
+        }
         self.mark_dirty();
     }
 

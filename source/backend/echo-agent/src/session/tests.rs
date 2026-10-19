@@ -231,6 +231,52 @@ async fn interleaved_events_project_per_session() {
     assert!(qq_hist.iter().all(|m| !m.content.starts_with("本地")));
 }
 
+/// 2026-10-19 观测缺口：`ModelStep` 事件落日志、但不进投影——
+/// append 时跳过整份投影重建（`affects_projection == false`），
+/// 上下文快照必须与追加前完全一致。
+#[tokio::test]
+async fn model_step_event_is_logged_without_touching_projection() {
+    use echo_session::event::{ModelStepEvent, UserMessage};
+    let store = TrunkStore::new(10_000);
+    let key = SessionKey::local_tui();
+    let session = store.get_or_create(&key, "local".into(), None);
+    store.append_event(echo_session::SessionEvent::UserMessage(UserMessage {
+        content: "跑".into(),
+        timestamp: 0,
+        message_sequence: None,
+        source: None,
+        images: vec![],
+        session: Some(session.id.clone()),
+    }));
+    let before = store.snapshot_for(&session.id).await;
+    store.append_event(echo_session::SessionEvent::ModelStep(
+        ModelStepEvent {
+            step_index: 0,
+            model: "m".into(),
+            prompt_tokens: 10,
+            completion_tokens: 2,
+            tool_call_ids: vec!["c1".into()],
+            turn: Some("branch".into()),
+            elapsed_ms: Some(7),
+            started_at_ms: 123,
+            session: Some(session.id.clone()),
+        },
+    ));
+    let after = store.snapshot_for(&session.id).await;
+    assert_eq!(before.len(), after.len(), "投影不应变化");
+    assert_eq!(
+        before.iter().map(|m| m.content.as_str()).collect::<Vec<_>>(),
+        after.iter().map(|m| m.content.as_str()).collect::<Vec<_>>()
+    );
+    // 事件本身必须真的落进日志（审计可读）。
+    let logged = store
+        .event_log()
+        .into_iter()
+        .filter(|e| matches!(e, echo_session::SessionEvent::ModelStep(_)))
+        .count();
+    assert_eq!(logged, 1, "ModelStep 未落日志");
+}
+
 #[test]
 fn session_key_format() {
     let key = SessionKey {

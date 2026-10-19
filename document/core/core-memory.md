@@ -20,19 +20,29 @@ y: 980
 
 - 每个 agent 独立 `TrunkStore`：**事件日志**（append-only）、**显示时间线**、
   会话持久化文件（`echo-sessions-{id}.json`，每个 persona 一份）
-- `SessionEvent` 六类：`UserMessage`（带 `message_sequence`，并发分支按请求序合并）、
+- `SessionEvent` 七类：`UserMessage`（带 `message_sequence`，并发分支按请求序合并）、
   `AssistantMessage`（保留 `reasoning_content` / `tool_calls`）、`ToolCall`、
   `ToolResult`（`tool_call_id` 回链 + `elapsed_ms` 耗时；`started_at_ms` 在上一跳的 `ToolCall` 上）、
   `Reasoning`（一步的思考正文；带产出时刻 `timestamp`，serde 标签 `kind = "reasoning"`）、
+  `ModelStep`（一次模型往返的观测事实：`step_index` / 模型 / token / 请求→响应
+  `elapsed_ms` / 本步 `tool_call_ids`；serde 标签 `kind = "model_step"`，wire
+  kind 为 `step/model`）、
   `Compaction`（压缩是显式事件，日志保持可重放；`[历史摘要]` 前缀在投影期恰好渲染一次）
+- `ModelStep` 是**观测缺口补丁（2026-10-19 审计）**：此前日志只有逐个 `ToolCall`，
+  没有"这一响应里带了几个工具"的事实，审计只能用相邻 `started_at_ms` 间隔 <1s 猜
+  同轮打包（实测 95% 的响应被判定为单调用轮，无法区分"模型只发一个"与"框架丢弃
+  并行"）；它还带每步 token 与往返延迟，替代此前只能从 `echo-usage.jsonl` 全局汇总
+  的口径。事件由 harness 在 `step/model` 总线事件里落库——`ModelResponse` 现在携带
+  `tool_calls` 全集，`AgentRequest` 观察者记起点算耗时
 - 推理落成事件是为了保住时序：显示历史由日志派生，推理只活在实时窗口时，
   历史快照与窗口形状不对称，刷新后"思考条目堆到正文之后"无法根治。落盘前按
   `MAX_REASONING_EVENT_CHARS` 截断（2 万字/步）——日志是整份 JSON、30s 一次
   整体重写，不封顶时少数超长推理就能把文件撑到几十 MB
 - 该变体是向后兼容的增量：**不升日志格式版本**，旧日志没有 `Reasoning` 事件照常解析
   （读取侧按缺省处理，见 §显示时间线）
-- `insert_after_sequence` 合并并发分支回复时跳过本轮的工具往返**与推理**——
-  最终回答始终排在整轮之后（否则显示历史里回答会出现在"思考"之前）
+- `insert_after_sequence` 合并并发分支回复时跳过本轮的工具往返、推理**与
+  `ModelStep`**——最终回答始终排在整轮之后（否则显示历史里回答会出现在
+  "思考"/步骤事件之前，且会切断 `ToolCall` → `ToolResult` 的配对合成）
 - `SessionHeader` 携带 fork/resume 元数据（parent/seed_length/origin/delegation_depth），随日志持久化
 - 持久化：v6 整档 JSON（`events` 为权威，每事件带 `session` 归属；
   `identities`/`timeline` 为持久化投影；v6 起**不再存 `trunk_histories`**，加载时按 `events` 重投影），tmp+rename 原子写；
@@ -48,6 +58,7 @@ y: 980
 | `AssistantMessage` | ✓（正文 + `tool_calls`） | ✓（空正文的纯工具轮不落条目） | ✓（正文） |
 | `ToolCall` / `ToolResult` | ✓（严格配对，悬空调用补合成错误结果） | ✓（工具行，按 `tool_call_id` 就地更新） | ✓ |
 | `Reasoning` | — | ✓（独立 `reasoning` 条目，与工具行真实交错） | — |
+| `ModelStep` | — | —（审计事实，不造条目；实时侧也不发） | — |
 | `Compaction` | ✓（`[历史摘要]` 渲染一次） | ✓（「上下文已压缩 · 替换 N 条事件」系统行） | ✓（`[更早摘要]`） |
 
 - 推理对模型不可见：它是中间草稿，对"接下来该写什么"没有边际信息量，体积却常是
@@ -66,7 +77,11 @@ y: 980
   `derive_messages_from_filtered` / `project_messages`）：
   多会话按 `session` 归属过滤后**逐会话投影**，token 预算逐会话生效；
   裁剪只在投影期（`trim_to_budget`），绝不破坏日志
-- 推理不进上下文：`project_messages` 遇 `Reasoning` 直接跳过（见 §可见性边界）
+- 推理不进上下文：`project_messages` 遇 `Reasoning` 直接跳过（见 §可见性边界）；
+  `ModelStep` 同口径
+- **不可见事件不重建投影**：`SessionEvent::affects_projection()` 为假的变体
+  （`Reasoning` / `ModelStep`）追加时跳过 `reproject`（只物化会话句柄 + 标脏）——投影
+  重建是 O(本会话事件数) 的整份克隆，观测事件（每步一条）不该摊这份成本
 - **投影切片**：切片键是事件自带的 `session` 归属。单次 append 只重投影本会话——
   `append_event` → `reproject(Some(id))` → `EventLog::events_for_session` →
   `install_projection`，克隆量 O(本会话) 而非 O(全部会话)；全量路径只用于加载 /

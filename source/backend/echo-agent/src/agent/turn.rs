@@ -160,6 +160,18 @@ impl Agent {
             self.emit_reasoning(&sid, branch_id, &Some(text));
         };
 
+        // ── 模型往返观测（2026-10-19 审计缺口修复）──
+        // 每步落一条 `ModelStep` 事件：step_index / 模型 / token /
+        // 请求→响应耗时 / 本步工具调用 id。此前日志只有逐个 ToolCall，
+        // "一条响应里几个工具"只能靠时间戳间隔猜（审计实测 95% 的响应
+        // 被判定为单调用轮，无法区分"模型只发一个"与"框架丢弃并行"）。
+        //
+        // 时钟在同 turn 的 AgentRequest 观察者里刷新，在 ModelResponse 里
+        // 读差值——两者都是 emit_sync、顺序固定（见 echo-loop runner）。
+        let step_clock: std::sync::Arc<std::sync::Mutex<std::time::Instant>> =
+            std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+        let step_seq = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
         // ── 生命周期事件翻译（2026-10 巡检）──
         // 订阅 runner 的事件总线，把 turn/step 事件转发为 Panel 事件
         // 。订阅按 session_id 过滤——runner 可被
@@ -172,10 +184,15 @@ impl Agent {
                 let emit = emit_handle.clone();
                 let sid = session_id.clone();
                 let turn = branch_id.to_string();
+                let clock = std::sync::Arc::clone(&step_clock);
                 disposers.push(bus.observe::<echo_loop::AgentRequest, _>(move |evt| {
                     // session + turn 双过滤：并行模式同会话并发分支时
                     // 各 turn 的订阅互不串收（2026-10 巡检）。
                     if evt.session_id == sid && evt.turn_id.as_deref() == Some(turn.as_str()) {
+                        // 模型请求发出：记下时刻，供本步 ModelStep 算往返耗时。
+                        if let Ok(mut slot) = clock.lock() {
+                            *slot = std::time::Instant::now();
+                        }
                         emit(BackendEvent::LlmRequest {
                             session_id: evt.session_id.clone(),
                             model: evt.request.model.clone(),
@@ -187,8 +204,40 @@ impl Agent {
                 let emit = emit_handle.clone();
                 let sid = session_id.clone();
                 let turn = branch_id.to_string();
+                let clock = std::sync::Arc::clone(&step_clock);
+                let seq = std::sync::Arc::clone(&step_seq);
+                let trunk = self.trunk.clone();
                 disposers.push(bus.observe::<echo_loop::ModelResponse, _>(move |evt| {
                     if evt.session_id == sid && evt.turn_id.as_deref() == Some(turn.as_str()) {
+                        // 本步往返耗时（请求发出 → 响应到达）。
+                        let elapsed_ms = clock
+                            .lock()
+                            .ok()
+                            .map(|since| since.elapsed().as_millis() as u64);
+                        // 步号自增：`StepStart` 没有 turn_id（并发分支无法
+                        // 归因），故用本 turn 自己的计数，口径与 runner 的
+                        // step_index 一致（每步一次 ModelResponse）。
+                        let step_index = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        // 落 durable 事件（模型不可见 / 不进时间线 / 不进
+                        // 压缩转录）：审计据此算"每轮打包了几个工具"、每步
+                        // 的 token 与延迟（2026-10-19 审计缺口）。
+                        trunk.append_event(echo_session::SessionEvent::ModelStep(
+                            echo_session::event::ModelStepEvent {
+                                step_index,
+                                model: evt.model.clone(),
+                                prompt_tokens: evt.prompt_tokens,
+                                completion_tokens: evt.completion_tokens,
+                                tool_call_ids: evt
+                                    .tool_calls
+                                    .iter()
+                                    .map(|call| call.id.clone())
+                                    .collect(),
+                                turn: evt.turn_id.clone(),
+                                elapsed_ms,
+                                started_at_ms: chrono::Utc::now().timestamp_millis(),
+                                session: Some(evt.session_id.clone()),
+                            },
+                        ));
                         emit(BackendEvent::LlmResponse {
                             session_id: evt.session_id.clone(),
                             model: evt.model.clone(),

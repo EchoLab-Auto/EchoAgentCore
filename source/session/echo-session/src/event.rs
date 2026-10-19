@@ -30,6 +30,15 @@ pub enum SessionEvent {
     /// 窗口补，导致「刷新后思考全堆到正文后面」这类时序错乱无法根除。
     /// 现在推理与工具调用在同一份日志里，派生与实时投影形状一致。
     Reasoning(ReasoningEvent),
+    /// 一次模型往返（step）的观测事实。**模型不可见**：投影为上下文时跳过
+    /// （见 `derive.rs`）；不进显示时间线（见 `history.rs`）；不进压缩转录。
+    ///
+    /// 为什么进事件日志（2026-10-19 审计缺口）：此前日志里只有逐个
+    /// `ToolCall` 事件，没有"这一步模型一次性请求了几个工具"的事实，
+    /// 审计只能用相邻 started_at_ms 间隔 <1s 去猜同轮打包，低估并行度、
+    /// 也看不到被取消而未执行的调用。本事件把 step_index / 模型 / token /
+    /// 请求→响应的耗时 / 本步工具调用 id 一次性固定下来。
+    ModelStep(ModelStepEvent),
     /// A compaction replaced a prefix of the log with a summary.
     Compaction(CompactionEvent),
 }
@@ -99,6 +108,44 @@ pub struct AssistantMessage {
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
     /// 归属会话 id（多会话上下文投影分区；None = 旧版事件）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+}
+
+/// 一次模型往返（step）的观测事实。
+///
+/// 全部字段带 `#[serde(default)]`：新事件类型只在 2026-10-19 之后的日志里
+/// 出现，旧日志不会解析它；将来加字段也不破坏已落盘数据。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelStepEvent {
+    /// 本 turn 内的第几步（0 起；与 echo-loop `StepStart.step_index` 同口径，
+    /// 但由 harness 自增——`StepStart` 没有 turn_id，并发分支无法归因）。
+    #[serde(default)]
+    pub step_index: usize,
+    /// 实际使用的模型名。
+    #[serde(default)]
+    pub model: String,
+    /// 本步请求的 prompt token（provider usage）。
+    #[serde(default)]
+    pub prompt_tokens: u32,
+    /// 本步响应生成的 completion token。
+    #[serde(default)]
+    pub completion_tokens: u32,
+    /// 本步响应携带的工具调用 id（顺序 = 模型给出的顺序；空 = 纯文本
+    /// 收尾步）。执行细节（name/arguments/耗时）由后续 `ToolCall`/
+    /// `ToolResult` 事件补充，这里只做**步骤分组**。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_call_ids: Vec<String>,
+    /// 调用方标识（分支 id）：同一会话并发分支时区分事件归属。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
+    /// 请求发出 → 响应到达的耗时（毫秒，含网络与排队）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    /// 事件落库时刻（epoch 毫秒），显示/排序用。
+    #[serde(default)]
+    pub started_at_ms: i64,
+    /// 归属会话 id（多会话上下文投影分区；None = 旧版/未归因事件）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
 }
@@ -180,6 +227,7 @@ impl SessionEvent {
             SessionEvent::ToolResult(event) => event.session.as_deref(),
             SessionEvent::ToolCall(event) => event.session.as_deref(),
             SessionEvent::Reasoning(event) => event.session.as_deref(),
+            SessionEvent::ModelStep(event) => event.session.as_deref(),
             SessionEvent::Compaction(event) => event.session.as_deref(),
         }
     }
@@ -192,6 +240,7 @@ impl SessionEvent {
             SessionEvent::ToolResult(event) => &mut event.session,
             SessionEvent::ToolCall(event) => &mut event.session,
             SessionEvent::Reasoning(event) => &mut event.session,
+            SessionEvent::ModelStep(event) => &mut event.session,
             SessionEvent::Compaction(event) => &mut event.session,
         }
     }
@@ -204,8 +253,23 @@ impl SessionEvent {
             SessionEvent::ToolCall(_) => "tool/call",
             SessionEvent::ToolResult(_) => "tool/result",
             SessionEvent::Reasoning(_) => "assistant/reasoning",
+            SessionEvent::ModelStep(_) => "step/model",
             SessionEvent::Compaction(_) => "session/compaction",
         }
+    }
+}
+
+impl SessionEvent {
+    /// 该事件是否改变**模型可见投影**（`derive::project_messages`）。
+    ///
+    /// `false` 的事件（推理 / 模型往返观测）只服务显示与审计：追加时不必
+    /// 重建整份会话投影——长会话里那是 O(事件数) 的字符串克隆，实测每次
+    /// 工具调用都要重付一遍，推理与 step 事件再各加一份纯属浪费。
+    pub fn affects_projection(&self) -> bool {
+        !matches!(
+            self,
+            SessionEvent::Reasoning(_) | SessionEvent::ModelStep(_)
+        )
     }
 }
 

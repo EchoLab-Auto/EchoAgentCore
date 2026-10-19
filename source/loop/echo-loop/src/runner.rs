@@ -353,6 +353,9 @@ impl TurnRunner {
                 }
             };
             // 用量回传（step/model）：消费方据此转发 UI（LlmResponse）与记账。
+            // `tool_calls` 一并回传（2026-10-19 观测缺口）：本步响应携带的
+            // 全部工具调用 id/name/arguments，harness 据此落一条 model_step
+            // 事件——"一条响应里几个工具"从此是日志事实，不再靠时间戳反推。
             self.bus.emit_sync(
                 ModelResponse {
                     session_id: session_id.into(),
@@ -360,6 +363,7 @@ impl TurnRunner {
                     model: request.request.model.clone(),
                     prompt_tokens: response.usage.prompt_tokens,
                     completion_tokens: response.usage.completion_tokens,
+                    tool_calls: response.tool_calls.clone(),
                 },
                 DispatchMode::Observe,
             );

@@ -72,6 +72,10 @@ pub fn project_messages(log: &[SessionEvent]) -> Vec<ChatMessage> {
             // tool_call 缓冲的 flush（推理出现在一步的开头，从不夹在
             // ToolCall 与它的 ToolResult 之间）。
             SessionEvent::Reasoning(_) => {}
+            // 模型往返观测（2026-10-19）：与推理同理——不产出消息、也不
+            // 触发 tool_call 缓冲 flush（它总在某步开头，绝不夹在 ToolCall
+            // 与它的 ToolResult 之间）。
+            SessionEvent::ModelStep(_) => {}
             SessionEvent::Compaction(CompactionEvent { summary, .. }) => {
                 flush_tool_calls(&mut messages, &mut pending_tool_calls, &covered_call_ids);
                 messages.push(ChatMessage::user(crate::event::render_compaction_summary(
@@ -827,6 +831,20 @@ mod tests {
         })
     }
 
+    fn model_step(step_index: usize, tool_call_ids: &[&str]) -> SessionEvent {
+        SessionEvent::ModelStep(crate::event::ModelStepEvent {
+            step_index,
+            model: "test-model".into(),
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            tool_call_ids: tool_call_ids.iter().map(|id| (*id).to_string()).collect(),
+            turn: None,
+            elapsed_ms: Some(5),
+            started_at_ms: 1,
+            session: Some("s1".into()),
+        })
+    }
+
     /// `derive_messages_from_filtered` 必须与 `derive_messages_for` 等价
     /// （前者只是省掉"全量克隆 + 过滤"，语义不能漂）。
     #[test]
@@ -995,5 +1013,60 @@ mod tests {
         // assistant(tool_use) 必须存在且紧邻 tool 结果
         assert!(messages[1].tool_calls.is_some(), "{messages:?}");
         assert_eq!(messages[2].tool_call_id.as_deref(), Some("c1"));
+    }
+
+    /// 2026-10-19 观测缺口：`ModelStep` 是审计事实，模型不可见，且**不得**
+    /// 打断 ToolCall → ToolResult 之间的合成（否则 assistant(tool_use) 会
+    /// 在 ToolCall 与结果之间被 flush 成一条空 assistant 消息）。
+    #[test]
+    fn model_step_events_are_invisible_and_do_not_flush_tool_calls() {
+        let log = vec![
+            SessionEvent::UserMessage(UserMessage {
+                content: "跑一下".into(),
+                timestamp: 1,
+                message_sequence: None,
+                source: None,
+                images: Vec::new(),
+                session: Some("s1".into()),
+            }),
+            model_step(0, &["c1"]),
+            SessionEvent::ToolCall(ToolCallEvent {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+                session: Some("s1".into()),
+                started_at_ms: Some(2_000),
+            }),
+            model_step(1, &[]),
+            SessionEvent::ToolResult(ToolResultEvent {
+                tool_call_id: "c1".into(),
+                result: "ok".into(),
+                images: Vec::new(),
+                session: Some("s1".into()),
+                elapsed_ms: Some(1),
+            }),
+            assistant("完成"),
+        ];
+        let messages = project_messages(&log);
+        let roles: Vec<_> = messages.iter().map(|m| m.role).collect();
+        assert_eq!(roles.len(), 4, "{messages:?}");
+        assert_eq!(messages[0].content, "跑一下");
+        // assistant(tool_use) 由 ToolCall 合成——中间夹着 ModelStep 也不受影响。
+        let calls = messages[1].tool_calls.as_ref().expect("assistant tool_use 缺失");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "c1");
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(messages[3].content, "完成");
+        // 事件本身不进上下文
+        assert!(!messages.iter().any(|m| m.content.contains("test-model")));
+    }
+
+    /// `affects_projection` 决定 append 时是否重建投影：只有模型可见事件为真。
+    #[test]
+    fn observation_events_do_not_affect_projection() {
+        assert!(!model_step(0, &["c1"]).affects_projection());
+        assert!(!reasoning("想", 1).affects_projection());
+        assert!(user("你好").affects_projection());
+        assert!(assistant("回复").affects_projection());
     }
 }
