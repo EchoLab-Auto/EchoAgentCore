@@ -18,4 +18,4 @@ pub use plugin::{
     BuiltinPlugin, MountContext, Plugin, PluginMountError, PluginMountResult, PluginSkillSink,
     PluginToolHandle, PluginToolSink,
 };
-pub use registry::{PluginDescriptor, PluginRegistry};
+pub use registry::{PluginDefinition, PluginDescriptor, PluginRegistry};

@@ -1707,6 +1707,32 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 plugins_runtime::SubprocessControl::new(runtime),
             ));
         }
+        // 定义来源（面板技术信息）：外部条目报「plugins.toml 路径 + 启动命令 +
+        // 环境变量键名」——排查「为什么不起来」不必翻配置文件。
+        if let Some(runtime) = &plugin_runtime {
+            let plugins_toml = args
+                .config_path()
+                .with_file_name("plugins.toml")
+                .display()
+                .to_string();
+            plugin_host.set_definitions(
+                runtime
+                    .entries
+                    .iter()
+                    .filter(|e| e.kind != "builtin")
+                    .map(|entry| {
+                        (
+                            entry.id.clone(),
+                            echo_plugin::PluginDefinition {
+                                source_path: plugins_toml.clone(),
+                                command: entry.command.clone(),
+                                args: entry.args.clone(),
+                                env_keys: entry.env_keys.clone(),
+                            },
+                        )
+                    }),
+            );
+        }
         // 外部条目的启动失败原因 + 配置来源层（面板据此区分「配置关了」
         // 与「起不来」，并指出该去改哪一层）。
         if let Some(runtime) = &plugin_runtime {

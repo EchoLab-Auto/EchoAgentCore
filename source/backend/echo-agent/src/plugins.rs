@@ -468,6 +468,17 @@ impl PluginHost {
         }
     }
 
+    /// 记录「定义从哪来 / 怎么启动」（组合根装配期，面板技术信息用）。
+    pub fn set_definitions<I, K>(&self, definitions: I)
+    where
+        I: IntoIterator<Item = (K, echo_plugin::PluginDefinition)>,
+        K: Into<String>,
+    {
+        for (id, definition) in definitions {
+            self.registry.set_definition(id, definition);
+        }
+    }
+
     /// 记录插件装配/启动失败原因（组合根在拉起子进程插件后写入）。
     pub fn set_plugin_errors<I, K, V>(&self, errors: I)
     where

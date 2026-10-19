@@ -56,6 +56,41 @@ pub struct PluginDescriptor {
     /// 连接代际（每次就绪自增；仅子进程插件）。
     #[serde(default)]
     pub generation: u64,
+    /// 插件**定义从哪读来**：`plugins.toml` 的路径，或数据插件的
+    /// `plugin.toml` 路径；空 = 编译内置（无外部定义文件）。
+    ///
+    /// 排查用：「我改的到底是不是这个文件」——比 `config_origin`（只说哪一层）
+    /// 更具体，后者是线格式里的层名，这里是磁盘路径。
+    #[serde(default)]
+    pub source_path: String,
+    /// 子进程插件的启动命令（空 = 进程内实现 / 未声明）。
+    ///
+    /// 与 `error` 配合回答「为什么起不来」：命令拼错、路径不存在、参数漏了
+    /// ——面板不必让人翻 `plugins.toml` 就能看出意图。
+    #[serde(default)]
+    pub command: String,
+    /// 启动参数（`plugins.toml` 的 `args`）。
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// 环境变量的**键名**（值不下发）。
+    ///
+    /// 只给键：排查「我是不是漏传了某个变量」够用，而值里常有 token /
+    /// 密钥，上协议即等于把它们送到前端内存与日志里。
+    #[serde(default)]
+    pub env_keys: Vec<String>,
+}
+
+/// 插件的**定义来源**（面板技术信息展示用）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PluginDefinition {
+    /// 定义文件路径（`plugins.toml` / 数据插件的 `plugin.toml`）。
+    pub source_path: String,
+    /// 子进程启动命令（进程内实现为空）。
+    pub command: String,
+    /// 启动参数。
+    pub args: Vec<String>,
+    /// 环境变量**键名**（值不下发：常含 token / 密钥）。
+    pub env_keys: Vec<String>,
 }
 
 impl From<&PluginManifest> for PluginDescriptor {
@@ -77,6 +112,10 @@ impl From<&PluginManifest> for PluginDescriptor {
             state: String::new(),
             restarts: 0,
             generation: 0,
+            source_path: String::new(),
+            command: String::new(),
+            args: Vec::new(),
+            env_keys: Vec::new(),
         }
     }
 }
@@ -95,6 +134,9 @@ pub struct PluginRegistry {
     config_origins: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// 插件 id → 装配/启动失败原因（展示用；`None` 值表示"曾失败后已恢复"）。
     errors: std::sync::Mutex<BTreeMap<String, String>>,
+    /// 插件 id → 「定义从哪来 / 怎么启动」（展示用；见
+    /// [`PluginRegistry::set_definition`]）。
+    definitions: std::sync::Mutex<BTreeMap<String, PluginDefinition>>,
     /// 注册顺序（`descriptors()` 按它输出）。
     ///
     /// 为什么单独存：底层 `plugins` 是 `BTreeMap`（按 id 排序），而
@@ -330,6 +372,11 @@ impl PluginRegistry {
         };
         let mut out = Vec::with_capacity(ids.len());
         let origins = self.config_origins();
+        let definitions = self
+            .definitions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let errors = self
             .errors
             .lock()
@@ -344,6 +391,12 @@ impl PluginRegistry {
                 }
                 if let Some(error) = errors.get(&id) {
                     d.error = Some(error.clone());
+                }
+                if let Some(definition) = definitions.get(&id) {
+                    d.source_path = definition.source_path.clone();
+                    d.command = definition.command.clone();
+                    d.args = definition.args.clone();
+                    d.env_keys = definition.env_keys.clone();
                 }
                 out.push(d);
             }
@@ -376,6 +429,16 @@ impl PluginRegistry {
         for (id, origin) in origins {
             map.insert(id.into(), origin.into());
         }
+    }
+
+    /// 记录「定义从哪来 / 怎么启动」（面板技术信息用）。
+    ///
+    /// 只影响展示：运行期行为仍由 manifest 与配置决定。
+    pub fn set_definition(&self, id: impl Into<String>, definition: PluginDefinition) {
+        self.definitions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.into(), definition);
     }
 
     /// 记录插件装配/启动失败原因（组合根在启动子进程 / 装载数据插件后写入）。
@@ -546,6 +609,39 @@ mod tests {
             reg.descriptors()[0].error.as_deref(),
             Some("spawn failed: No such file or directory")
         );
+    }
+
+    /// 定义来源进 descriptor：来源文件 / 启动命令 / 参数 / 环境变量键名。
+    ///
+    /// 只下发 env 的**键**：值里常带 token，上协议等于送进前端内存与日志。
+    #[test]
+    fn definitions_reach_descriptors_without_env_values() {
+        let reg = PluginRegistry::new();
+        reg.register(Arc::new(BuiltinPlugin::new(
+            PluginManifest::builtin("x.ext", "x", "1", PluginKind::Tool, "", "")
+                .with_runtime(crate::PluginRuntime::Subprocess)
+                .with_builtin_flag(false),
+            |_| Ok(vec![]),
+        )))
+        .unwrap();
+        // 缺省：无定义来源（编译内置的形态）。
+        assert_eq!(reg.descriptors()[0].source_path, "");
+        assert_eq!(reg.descriptors()[0].command, "");
+
+        reg.set_definition(
+            "x.ext",
+            PluginDefinition {
+                source_path: "/etc/echo/plugins.toml".into(),
+                command: "/opt/x/plugin".into(),
+                args: vec!["--mode".into(), "fast".into()],
+                env_keys: vec!["X_TOKEN".into(), "X_HOME".into()],
+            },
+        );
+        let d = &reg.descriptors()[0];
+        assert_eq!(d.source_path, "/etc/echo/plugins.toml");
+        assert_eq!(d.command, "/opt/x/plugin");
+        assert_eq!(d.args, vec!["--mode", "fast"]);
+        assert_eq!(d.env_keys, vec!["X_TOKEN", "X_HOME"]);
     }
 
     /// 配置来源层进 descriptor（面板展示「来自哪一层」）。

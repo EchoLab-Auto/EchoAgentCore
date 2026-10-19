@@ -66,6 +66,7 @@ y: 1060
 | `error` | 挂载失败原因（`PluginDescriptor::error`） | 行卡「失败」徽标 + 详情失败块 |
 | `config_origin` | 声明该插件的配置层（来自 Core 的分层合成，与 `dump-config` 同源） | 技术信息「配置来源」 |
 | `state` / `restarts` / `generation` | 子进程运行态（空 = 进程内实现） | 行卡异常态徽标 + 技术信息「运行态」行 |
+| `source_path` / `command` / `args` / `env_keys` | 定义文件与启动方式（env 只给键名） | 技术信息「定义文件 / 启动命令 / 环境变量」 |
 | — | `RestartPlugin { id }` 命令（**写命令**，不进可广播只读清单） | 行内图标按钮 / 详情按钮 |
 | — | `PluginOpResult { id, op, ok, message }` 事件（操作回执） | toast（success / error 分流） |
 

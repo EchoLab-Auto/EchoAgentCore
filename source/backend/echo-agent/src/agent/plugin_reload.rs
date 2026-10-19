@@ -59,12 +59,15 @@ impl Agent {
             let path = entry.path();
             if path.is_file() && path.file_name().and_then(|n| n.to_str()) == Some("plugin.toml") {
                 if let Ok(manifest) = echo_plugin::manifest::load_manifest(path) {
-                    manifests.push(manifest);
+                    // 记下定义文件路径：面板技术信息报「这个插件从哪个
+                    // plugin.toml 读来的」（热重载场景下尤其重要——同一个 id
+                    // 可能出现在多个目录）。
+                    manifests.push((manifest, path.display().to_string()));
                 }
             }
         }
         let id_set: std::collections::HashSet<String> =
-            manifests.iter().map(|m| m.id.clone()).collect();
+            manifests.iter().map(|(m, _)| m.id.clone()).collect();
         let host = &self.plugin_host();
         // Unmount discovered plugins that no longer exist.
         for desc in host.descriptors() {
@@ -74,7 +77,7 @@ impl Agent {
         }
         // Mount newly seen data plugins (skill/tool kinds); manifests whose
         // content changed since the last scan are remounted (diff reload).
-        for manifest in manifests {
+        for (manifest, source_path) in manifests {
             let kind = manifest.kind;
             if !matches!(
                 kind,
@@ -101,8 +104,17 @@ impl Agent {
                     Ok(vec![])
                 }));
             let _ = &manifest2;
-            if let Err(e) = host.register_and_mount(plugin) {
-                tracing::warn!(%e, "discovered plugin mount failed");
+            let definition = echo_plugin::PluginDefinition {
+                source_path,
+                command: String::new(),
+                args: Vec::new(),
+                env_keys: Vec::new(),
+            };
+            match host.register_and_mount(plugin) {
+                Ok(()) => host
+                    .registry
+                    .set_definition(manifest2.id.clone(), definition),
+                Err(e) => tracing::warn!(%e, "discovered plugin mount failed"),
             }
         }
         Ok(())

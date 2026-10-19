@@ -1817,6 +1817,10 @@ impl Agent {
                 state: d.state,
                 restarts: d.restarts,
                 generation: d.generation,
+                source_path: d.source_path,
+                command: d.command,
+                args: d.args,
+                env_keys: d.env_keys,
             })
             .collect();
         self.emit(BackendEvent::PluginsList { plugins });

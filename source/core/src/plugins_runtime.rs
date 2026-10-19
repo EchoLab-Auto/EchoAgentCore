@@ -58,6 +58,12 @@ pub struct StaticPluginEntry {
     pub enabled: bool,
     /// 启动失败原因（握手失败 / 命令不存在）；`None` = 已就绪或未尝试。
     pub error: Option<String>,
+    /// 启动命令（`plugins.toml` 的 `command`；面板据此排查「为什么不起来」）。
+    pub command: String,
+    /// 启动参数。
+    pub args: Vec<String>,
+    /// 环境变量**键名**（值不下发：常含 token / 密钥）。
+    pub env_keys: Vec<String>,
 }
 
 /// 若 `<config_path 同目录>/plugins.toml` 存在则装载并启动；否则休眠。
@@ -301,6 +307,9 @@ fn static_entries(tree: &echo_plugin_loader::LoadedTree) -> Vec<StaticPluginEntr
             kind: entry.kind.as_str().to_string(),
             enabled: entry.enabled,
             error: None,
+            command: entry.command.clone().unwrap_or_default(),
+            args: entry.args.clone(),
+            env_keys: entry.env.keys().cloned().collect(),
         })
         .collect()
 }
@@ -727,6 +736,8 @@ mod tests {
         assert!(!entries[2].enabled);
         assert_eq!(entries[2].error, None);
         assert_eq!(entries[2].kind, "stdio");
+        // 启动命令随条目带出（面板排查「为什么不起来」要看它）。
+        assert_eq!(entries[0].command, "/bin/x");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -741,6 +752,9 @@ mod tests {
                 kind: "stdio".into(),
                 enabled: true,
                 error: None,
+                command: "/bin/ok".into(),
+                args: vec![],
+                env_keys: vec![],
             },
             StaticPluginEntry {
                 id: "bad-ext".into(),
@@ -748,6 +762,9 @@ mod tests {
                 kind: "stdio".into(),
                 enabled: true,
                 error: None,
+                command: "/bin/bad".into(),
+                args: vec![],
+                env_keys: vec![],
             },
         ];
         let started_errors = [("bad-ext".to_string(), "spawn failed".to_string())];

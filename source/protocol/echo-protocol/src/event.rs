@@ -1054,6 +1054,19 @@ pub struct PluginInfo {
     /// 连接代际（每次就绪自增；子进程插件）。
     #[serde(default)]
     pub generation: u64,
+    /// 插件定义文件路径（`plugins.toml` / 数据插件的 `plugin.toml`）；
+    /// 空 = 编译内置（无外部定义文件）。
+    #[serde(default)]
+    pub source_path: String,
+    /// 子进程启动命令（空 = 进程内实现）。
+    #[serde(default)]
+    pub command: String,
+    /// 启动参数。
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// 环境变量**键名**（值不下发——常含 token / 密钥）。
+    #[serde(default)]
+    pub env_keys: Vec<String>,
 }
 
 /// 联邦 peer 配置与链路状态（`FederationStatus` 列表元素；
