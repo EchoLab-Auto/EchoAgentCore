@@ -87,6 +87,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 - [adapter-genericization/index.md](./design/adapter-genericization/index.md) — 插件实例泛化设计系列：分册设计（01/02/03）、证据包、对账表与进度台账
 - [agent-humanlike-style.md](./design/agent-humanlike-style.md) — 拟人化方案（规划）：语气与回复节奏
 - [federation-port-merge.md](./design/federation-port-merge.md) — 联邦·管理端口合并（设计记录，已实施）
+- [entry-identity-p1.md](./design/entry-identity-p1.md) — 条目身份化（P1）：EntryId + rev + Upsert，让流式增量与工具事件可精确对齐
 - [panel-performance-audit.md](./design/panel-performance-audit.md) — Panel 浏览器性能审计：测量方法与修复前后实测
 
 **调研稿**（`source/research/`，非文档群成员，过程材料不进本目录）
@@ -125,6 +126,7 @@ graph LR
   Design --> Style[拟人化方案|/design/agent-humanlike-style.md]
   Design --> FedMerge[联邦·管理端口合并|/design/federation-port-merge.md]
   Design --> Perf[Panel 性能审计|/design/panel-performance-audit.md]
+  Design --> Identity[条目身份化（P1）|/design/entry-identity-p1.md]
   AdapterPlugin --> Gen[插件实例泛化（设计系列）|/design/adapter-genericization/index.md]
   Panel --> Inter[Panel 交互定义|/panel/panel-interaction.md]
   Inter --> Desk[电脑端布局|/panel/panel-desktop-layout.md]

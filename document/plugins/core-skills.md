@@ -67,7 +67,7 @@ y: 1820
 
 ## 外部 Git 来源技能
 
-技能可从外部 Git 仓库安装/更新（`packages/skills_dir/install.rs` + `InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 三命令），Panel 设置视图「技能」分类提供完整交互（见 [Panel 交互定义](../panel/panel-interaction.md) §9.3）。
+技能可从外部 Git 仓库安装/更新（`echo-plugin-skills/src/install.rs` + `InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 三命令），Panel 设置视图「技能」分类提供完整交互（见 [Panel 交互定义](../panel/panel-interaction.md) §9.3）。
 
 命令形状（`command.rs` 的 `BackendCommand`）：`InstallSkillFromGit { url, name?, branch? }`、`UpdateSkillFromGit { name }`、`RemoveSkillSource { name }`——`name` 一律是**技能名**（见下「来源记录」）。
 

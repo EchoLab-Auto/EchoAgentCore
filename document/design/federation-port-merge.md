@@ -163,6 +163,8 @@ listen = "0.0.0.0:3132"
 | 文档收敛 | federation.md 增「端口合并」节、protocol.md 一句、ops-deploy.md 云机配方；本页状态更新 | `document/**` |
 | 验证 | 单测 + 集成 + 本机双核冒烟（见下） | `source/core`、`source/federation` |
 
+> **落地后的实际位置（2026-10，Phase 3 外迁之后）**：合并监听整体搬进**管理面插件** `echo-plugin-management`，宿主侧不再持有监听代码。对应符号：`plan_federation_listen`（合并规划）/ `validate_merged`（fail-closed 校验：合并 + 空令牌 + 非回环拒绝）/ `accept_management_ws` / `accept_merged_ws` / `serve_management_ws` / `serve_with_token` / `serve_with_federation`，令牌分类在 `classify_token`（上表写的 `handle_ws`/`serve_merged` 是实施前的计划名）。Core 侧只剩 `source/core/src/port_cmd.rs` 的展示与接线。
+
 生命周期语义（明确写入文档）：合并监听挂「管理面」插件——禁用管理面
 = 同时关停管理通道与联邦**入站**（出站联邦不受影响，仅连出节点可继续
 dial 出）。

@@ -17,7 +17,7 @@ y: 1620
 > `echo-agent::tool::builtin::register_all` **自动生成并校验**（加工具忘了
 > 更新会在门禁红）。本文只讲机制与门控，不复述清单，避免两处漂移。
 
-- `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（echo-agent，`packages/tool/`）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
+- `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（`echo-tool` crate；`echo-agent` 保留 `echo_agent::tool::…` 兼容路径）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
 - 注册是可逆副作用：`register_reversible` 返回 `Disposer`，插件卸载即撤销
 - 分派入口有两条：turn 内走 echo-loop 的工具管线（`spawn_subagent` 经其异步 hook 通道，见 [Subagent 插件](./core-subagent.md)）；集成测试与直接调用走 `run_tool`（对 `spawn_subagent` 同样特判）。其余工具一律走注册表
 
@@ -55,7 +55,7 @@ QQ 的 10 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 ## 文件工具的路径约定
 
 `read_file` / `list_files` / `search_code` / `write_file` / `edit_file` 共用同一
-套路径解析（`packages/tools_builtin/coding.rs::resolve_tool_path`）：
+套路径解析（`echo-plugin-tools/src/coding.rs::resolve_tool_path`）：
 
 - **相对路径**：相对工作区（Core 进程 cwd）解析，解析结果必须落在工作区内
   （`guard_relative_path`：canonicalize 目标或最近的已存在祖先；`../..` 逃逸、
@@ -85,12 +85,12 @@ QQ 的 10 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 
 ### 危险命令判定
 
-`bash` 工具（`packages/tools_builtin/coding.rs` 的 `RunCommandTool::execute`）
+`bash` 工具（`echo-plugin-tools/src/coding.rs` 的 `RunCommandTool::execute`）
 执行前过闸，命中即返回执行错误、命令不执行：
 
 | 闸 | 实现 | 拦什么 |
 | --- | --- | --- |
-| 自停拦截 | `packages/tools_builtin/mod.rs::reject_core_self_stop` | 从自己的进程里 `systemctl stop/kill echo-agent-core`（含 `bash -c` 包裹）——会让后续清理/启动步骤来不及跑 |
+| 自停拦截 | `echo-agent::packages::tools_builtin::reject_core_self_stop`（**留在宿主**：它拦的是「从自己进程里停掉 Core」，属组合根/宿主职责，不在工具插件里） | 从自己的进程里 `systemctl stop/kill echo-agent-core`（含 `bash -c` 包裹）——会让后续清理/启动步骤来不及跑 |
 | rm 目标判定 | `coding.rs::dangerous_rm_root_target` | 递归 + 强制的 `rm` 指向根目录、根级通配 `/*`、或根下一级系统目录 |
 | 危险模式 | `coding.rs` 的模式表（`mkfs.` / `dd if=` / fork bomb / `> /dev/sda`） | 对整条命令串子串匹配 |
 | 提权 | `RunCommandTool::execute` 的行首 `sudo` 检测 | `bash` 无交互 tty、提权工具已废弃——直接拒绝并提示改用无需 root 的方案 |

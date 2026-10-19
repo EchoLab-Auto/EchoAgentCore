@@ -29,11 +29,14 @@ link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | �
 二进制 `echo-agent-core`（`source/core/`）是唯一的组合根，启动按序完成：
 
 1. 加载配置（`core.toml`，见 [配置持久化](./core-config-persistence.md)）
-2. 构建 LLM provider 工厂，注册 `ctx.llm`
-3. 装配插件宿主：`apply_disabled`（禁用插件只注册不挂载）先于挂载执行
-4. 注册内置工具、技能目录与各包（`packages/`），创建多 agent 监督器
-5. 启动实例插件（受 `[instances.<platform>].enabled` 与插件状态双重门控）与 management WS
-6. 各人格启动循环回填按人格的循环注入（`loop.single` / `loop.parallel`）
+2. 读 **`plugins.toml`**（与 core.toml 同目录；不存在 = 特性休眠，不报错）：profile → bundles → patches → 自身 `[[plugin]]` 行分层合成，先算「内置插件的挂载计划与顺序」
+3. 构建 LLM provider 工厂，注册 `ctx.llm`
+4. 装配插件宿主：`apply_disabled`（禁用插件只注册不挂载）先于挂载执行
+5. 按计划挂载内置插件（无 `plugins.toml` / 无 `kind = "builtin"` 行 = 目录顺序全启用），注册远程插件门控壳与外部条目，创建多 agent 监督器
+6. 启动实例插件（受 `[instances.<platform>].enabled` 与插件状态双重门控）与 management WS
+7. 各人格启动循环回填按人格的循环注入（`loop.single` / `loop.parallel`）
+
+> `echo-agent-core dump-config` 只打印第 2 步的合成结果（profile / bundle / patch / 内联层 + 每行来源），用来排查"这行配置从哪来"——不需要真启动。
 
 ## 服务定位与事件
 
@@ -54,7 +57,7 @@ link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | �
 ## 进程结构
 
 - Cargo 二进制名 `echo-agent-core`（`source/core/Cargo.toml`），由 systemd 用户服务运行；`install.sh` 安装后落盘为 `$LIBEXEC_DIR/echo-agent-core-bin`（libexec 文件名，非 Cargo bin 名）
-- 库结构：框架机制在 `source/backend/echo-agent`（`agent/`），各插件实现按包分目录在 `packages/`；契约层 crate（`echo-defs` / `echo-context` / `echo-session` / `echo-loop` / `echo-protocol` 等）见 [架构总览](../overview/architecture.md) 的 crate 地图
+- 库结构：框架机制在 `source/backend/echo-agent`（`agent/`）；插件机制在 `source/plugin/`（host 领域中立、adapter 做领域适配），**内置插件实现各自成 crate**（`echo-plugin-tools` / `-skills` / `-subagent` / `-workspace` / `-management` / `-loop` / `-provider-llm`），宿主侧 `packages/` 只剩 `instance_ops` / `federation` / `tools_builtin` 兼容面；Shell 机制在 `source/shell/echo-shell`。契约层 crate（`echo-defs` / `echo-context` / `echo-session` / `echo-loop` / `echo-protocol` 等）见 [架构总览](../overview/architecture.md) 的 crate 地图
 - 运维命令与部署布局见 [部署与自更新](../ops/ops-deploy.md)
 
 ## 延伸阅读

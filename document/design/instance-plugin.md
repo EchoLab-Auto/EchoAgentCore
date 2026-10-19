@@ -265,8 +265,9 @@ BackendEvent::InstanceState    { instance, state: Value }           // 插件主
 ## 宿主侧实现（Core）
 
 1. **`echo-plugin-api`**：`InstanceContribution` + 能力位 + 消息 / 目标 JSON 结构；`Register` / 消息体改「逐项容错解析」（未知项降级 `Unknown(Value)` 并 warn，见「版本与兼容」）。
-2. **`echo-plugin-host`**：
-   - `RemoteInstance`（实现 `echo_defs::plugin_instance::PluginInstance`；`echo-plugin-host` 只依赖 `echo-defs` + `echo-plugin-api`/`-loader`，不依赖 `echo-defs::plugin_instance`）：异步方法 → `Invoke`；`status_info()` 读缓存但**合并 PluginSupervisor 进程状态**（进程 Pending/Failed 时绝不显示缓存 Connected，见 op 表仲裁）；**管理面生命周期（实施决策）**：`RemoteInstanceManagement` 挂为 `RemoteInstance` 的字段，持对宿主的 `Weak` 弱引用（避免循环强引用；宿主销毁后调用方拿到可读 `internal error` 而非悬垂指针）——零 unsafe、无占位指针；
+2. **`echo-plugin-host` + `echo-plugin-adapter`**（2026-10 分层：宿主只管机制，适配层才认识领域 trait）：
+   - **`echo-plugin-host`**：Transport / Supervisor / 子进程限额（rlimit）/ 入站频率限额 / 可逆停止。**只依赖 `echo-plugin-api` + `echo-plugin-loader`，连 `echo-defs` 都不依赖**——这样它才能作领域中立的 Rust 插件机制被复用；
+   - **`echo-plugin-adapter`**：`RemoteInstance`（实现 `echo_defs::plugin_instance::PluginInstance`）、`RemoteTool`、`CoreApiService`、`RemoteInstanceManagement`。依赖 host + api + defs，不依赖 `echo-agent`/组合根。`RemoteInstance`：异步方法 → `Invoke`；`status_info()` 读缓存但**合并 PluginSupervisor 进程状态**（进程 Pending/Failed 时绝不显示缓存 Connected，见 op 表仲裁）；**管理面生命周期（实施决策）**：`RemoteInstanceManagement` 挂为 `RemoteInstance` 的字段，持对宿主的 `Weak` 弱引用（避免循环强引用；宿主销毁后调用方拿到可读 `internal error` 而非悬垂指针）——零 unsafe、无占位指针；
    - **`QqManagement` / `qq_management()` 从 `echo-defs::plugin_instance` 删除**（评审升级）：置换为平台中立的 `InstanceManagement`——`cached_state() -> Option<Value>`（读 epoch 缓存）+ `async invoke_custom(method, payload)`（异步写）；远程化后「同步 setter」只剩乐观缓存假象，收敛为「缓存读 + 异步写」，不再提供假同步面；
    - **缓存失效 = epoch 语义**：连接态 / 门控缓存挂在 `PluginHandle` 的**重启 / 升级计数**上——插件崩溃重启后运行时状态（名单 / gate_mode）全丢，缓存不刷新即**安全相关漂移**（denylist 丢失 = 被拦用户恢复通行）；epoch 变化 → 缓存置脏、按需重拉；
    - `CoreApiService`（实现 `HostService`）：按 name fan-out 到各 `RemoteInstance` 的**有界入站队列 + 每实例串行 worker**（回执 = 已入队；满 → `backpressure`，见 HostCall 表）；
