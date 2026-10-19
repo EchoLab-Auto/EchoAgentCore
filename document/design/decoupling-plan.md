@@ -215,7 +215,7 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 - [x] 装载器：拓扑排序（按 requires）、环检测、未解析行可读报错（已提交 `65c1c2a`，13 项测试）
 - [x] `dump-config`：CLI 已接线（`echo-agent-core dump-config`，只合成不启动；配置路径前置后置皆可）。做成**子命令**而非计划初稿的 `--dump-config` 标志——与既有 `token` / `port` 同类，`--help` 里可发现，且不会让服务二进制多一个"误触发即不启动服务"的开关。输出每行带 `<id> (layer n: <file>)` 来源注释；`plugins.toml` 缺失时退出码 0（休眠），合成失败时非零并打印与启动路径同一个错误。3 项合成测试 + 3 项 CLI 解析测试
 - [x] 内核装配：`plugins.toml`（core.toml 同目录，缺省休眠）→ `PluginSupervisor` 启动 → `RemoteTool` 注册全 persona（`plugins_runtime::start_with_specs`，组合根已接线；`config/plugins.example.toml` 为模板）
-- [ ] 插件目录约定：`~/.local/libexec/echo-agent-core/plugins/<id>/`（版本化路径）——**约定已写入** [插件开发指南](../plugins/plugin-authoring.md)（含 `<id>/<二进制>` 布局），缺的是**安装器侧**：`install.sh` 尚未创建该目录、`update.sh` 尚未做版本化替换与回滚
+- [x] 插件目录约定：`~/.local/libexec/echo-agent-core/plugins/<包名>/<二进制>`（目录名取 Cargo 包名——运行期插件 id 在二进制 manifest 里，安装器静态读不到）。安装器侧已接线：`install.sh` 建目录并按 `PLUGIN_BINARIES` 装二进制（与 Core 同一次 cargo 调用构建，纳入安装事务快照与回滚）；`update.sh` 用同一张表做**版本化替换**（旧版留 `<二进制>.rollback`，后续任一步失败——含健康检查——把全部插件还原，不留 Core 新/插件旧的半新组合）。两脚本清单一致性 + 「仓库里 `[[bin]] path = "src/main.rs"` 的插件 crate」三方比对由 `source/core/tests/install_script_flag.rs` 守护（含 `bash -n` 语法门禁，`update.sh` 一并纳入）
 - [ ] Panel 对接：插件清单页显示来源/版本/状态/重启（协议扩展走 echo-protocol）
 - [ ] self-update 扩展：更新同步插件二进制（保留回滚）
 

@@ -171,6 +171,13 @@ DATA_DIR="$DATA_HOME/echo-agent-core"
 STATE_DIR="$STATE_HOME/echo-agent-core"
 SOURCE_DIR="$DATA_DIR/source"
 LIBEXEC_DIR="$PREFIX/libexec/echo-agent-core"
+# 插件安装根（约定：`plugins/<包名>/<二进制>`，见插件开发指南「安装目录约定」）。
+PLUGINS_DIR="$LIBEXEC_DIR/plugins"
+# 随框架一起安装的**进程外插件二进制**：仓库内 `source/plugin/*` 中
+# `[[bin]] path = "src/main.rs"` 的 crate（`src/bin/*` 是测试夹具，不装）。
+# 守护测试 source/core/tests/install_script_flag.rs 比对本表与仓库实际；
+# 新增/删除可安装插件二进制时，本表与 update.sh 的 PLUGIN_BINARIES 同改。
+PLUGIN_BINARIES=(echo-plugin-example)
 BIN_DIR="$PREFIX/bin"
 SYSTEMD_DIR="$CONFIG_HOME/systemd/user"
 CORE_CONFIG="$CONFIG_DIR/core.toml"
@@ -486,7 +493,7 @@ if ! systemctl --user show-environment >/dev/null 2>&1; then
     exit 1
 fi
 
-install -d -m 755 "$BIN_DIR" "$LIBEXEC_DIR" "$CONFIG_DIR" "$DATA_DIR" "$STATE_DIR" "$SYSTEMD_DIR"
+install -d -m 755 "$BIN_DIR" "$LIBEXEC_DIR" "$PLUGINS_DIR" "$CONFIG_DIR" "$DATA_DIR" "$STATE_DIR" "$SYSTEMD_DIR"
 
 if [[ ! -d "$SOURCE_DIR/.git" ]]; then
     echo "==> Creating managed source checkout"
@@ -537,7 +544,13 @@ core_was_enabled=0
 if systemctl --user is-enabled --quiet echo-agent-core.service 2>/dev/null; then
     core_was_enabled=1
 fi
-build_args=(build --release --locked -p echo-agent-core --manifest-path "$SOURCE_DIR/Cargo.toml")
+build_args=(build --release --locked -p echo-agent-core)
+# 进程外插件二进制与 Core 同一次 cargo 调用构建（同一个 target 目录、
+# 同一套 --locked / 镜像参数），避免第二轮解析依赖。
+for _plugin in "${PLUGIN_BINARIES[@]}"; do
+    build_args+=(-p "$_plugin")
+done
+build_args+=(--manifest-path "$SOURCE_DIR/Cargo.toml")
 if [[ -n "$CRATES_MIRROR" ]]; then
     # crates.io 镜像：--config 注入源替换（不落盘、不影响用户全局配置）；
     # 使用前预检镜像可达性，不可达则直接用官方源。
@@ -592,6 +605,9 @@ snapshot_file "$BIN_DIR/echo-agent-core" "$ROLLBACK_DIR/launcher"
 snapshot_file "$SYSTEMD_DIR/echo-agent-core.service" "$ROLLBACK_DIR/core_unit"
 snapshot_file "$SYSTEMD_DIR/echo-agent-core-update.service" "$ROLLBACK_DIR/update_unit"
 snapshot_file "$CORE_CONFIG" "$ROLLBACK_DIR/core_config"
+for _plugin in "${PLUGIN_BINARIES[@]}"; do
+    snapshot_file "$PLUGINS_DIR/$_plugin/$_plugin" "$ROLLBACK_DIR/plugin-$_plugin"
+done
 snapshot_file "$STATE_DIR/installed-revision" "$ROLLBACK_DIR/revision"
 snapshot_file "$STATUS_FILE" "$ROLLBACK_DIR/status"
 
@@ -604,6 +620,9 @@ install_rollback() {
     if [[ "${INSTALL_TRANSACTION:-0}" == 1 ]]; then
         restore_file "$LIBEXEC_DIR/echo-agent-core-bin" "$ROLLBACK_DIR/binary"
         restore_file "$LIBEXEC_DIR/update.sh" "$ROLLBACK_DIR/updater"
+        for _plugin in "${PLUGIN_BINARIES[@]}"; do
+            restore_file "$PLUGINS_DIR/$_plugin/$_plugin" "$ROLLBACK_DIR/plugin-$_plugin"
+        done
         restore_file "$BIN_DIR/echo-agent-core" "$ROLLBACK_DIR/launcher"
         restore_file "$SYSTEMD_DIR/echo-agent-core.service" "$ROLLBACK_DIR/core_unit"
         restore_file "$SYSTEMD_DIR/echo-agent-core-update.service" "$ROLLBACK_DIR/update_unit"
@@ -635,6 +654,17 @@ trap install_rollback ERR
 binary_temporary=$(mktemp "$LIBEXEC_DIR/echo-agent-core-bin.new.XXXXXX")
 install -m 755 "$SOURCE_DIR/target/release/echo-agent-core" "$binary_temporary"
 mv -f "$binary_temporary" "$LIBEXEC_DIR/echo-agent-core-bin"
+# 进程外插件二进制：`plugins/<包名>/<二进制>`——plugins.toml 的 command
+# 直接指这里。目录一次建好，便于用户往同一处放自己的插件。
+for _plugin in "${PLUGIN_BINARIES[@]}"; do
+    plugin_dir="$PLUGINS_DIR/$_plugin"
+    install -d -m 755 "$plugin_dir"
+    plugin_temporary=$(mktemp "$plugin_dir/$_plugin.new.XXXXXX")
+    install -m 755 "$SOURCE_DIR/target/release/$_plugin" "$plugin_temporary"
+    mv -f "$plugin_temporary" "$plugin_dir/$_plugin"
+    echo "==> Installed plugin binary: $plugin_dir/$_plugin"
+done
+unset _plugin plugin_dir plugin_temporary
 updater_temporary=$(mktemp "$LIBEXEC_DIR/update.sh.new.XXXXXX")
 install -m 755 "$PROJECT_ROOT/scripts/update.sh" "$updater_temporary"
 mv -f "$updater_temporary" "$LIBEXEC_DIR/update.sh"

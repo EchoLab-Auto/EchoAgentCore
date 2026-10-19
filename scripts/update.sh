@@ -11,6 +11,11 @@ PREFIX=${ECHO_PREFIX:-"$HOME/.local"}
 # checkout when it has a Cargo.toml (covers dev worktrees with uncommitted
 # changes), falling back to the managed source checkout.
 DEFAULT_BINARY="$PREFIX/libexec/echo-agent-core/echo-agent-core-bin"
+# 随框架安装的进程外插件二进制（`plugins/<包名>/<二进制>`）。
+# **必须与 install.sh 的 PLUGIN_BINARIES 一致**（守护测试：
+# source/core/tests/install_script_flag.rs）；自更新与首装装同一套。
+PLUGINS_DIR="$PREFIX/libexec/echo-agent-core/plugins"
+PLUGIN_BINARIES=(echo-plugin-example)
 DEFAULT_STATUS_FILE="$STATE_HOME/echo-agent-core/update-status"
 DEFAULT_SOURCE_DIR="$DATA_HOME/echo-agent-core/source"
 
@@ -103,8 +108,11 @@ TARGET=unknown
 ROLLBACK_ACTIVE=0
 BIN_REPLACED=0
 UPDATER_REPLACED=0
+PLUGINS_REPLACED=0
 ROLLBACK_BINARY=""
 ROLLBACK_UPDATER=""
+# 每个插件二进制本次的回滚副本路径（assoc array；失败时逐个还原）。
+declare -A PLUGIN_ROLLBACKS=()
 temporary=""
 FINALIZED=0
 
@@ -182,6 +190,15 @@ rollback_installation() {
         mv -f "$ROLLBACK_BINARY" "$BINARY" || true
     elif ((BIN_REPLACED)); then
         rm -f "$BINARY" || true
+    fi
+    if ((PLUGINS_REPLACED)); then
+        local _p
+        for _p in "${PLUGIN_BINARIES[@]}"; do
+            if [[ -n "${PLUGIN_ROLLBACKS[$_p]:-}" && -x "${PLUGIN_ROLLBACKS[$_p]}" ]]; then
+                mv -f "${PLUGIN_ROLLBACKS[$_p]}" "$PLUGINS_DIR/$_p/$_p" || true
+            fi
+        done
+        PLUGINS_REPLACED=0
     fi
     if [[ -n "$ROLLBACK_UPDATER" && -f "$ROLLBACK_UPDATER" ]]; then
         mv -f "$ROLLBACK_UPDATER" "$(dirname -- "$BINARY")/update.sh" || true
@@ -328,7 +345,12 @@ fi
 
 PHASE=building
 write_status running "building revision $TARGET" "$TARGET"
-cargo build --release --locked -p echo-agent-core --manifest-path "$SOURCE_DIR/Cargo.toml"
+# Core + 进程外插件二进制一次构建（同一 target 目录 / 同一 --locked）。
+plugin_build_args=(build --release --locked -p echo-agent-core)
+for _plugin in "${PLUGIN_BINARIES[@]}"; do
+    plugin_build_args+=(-p "$_plugin")
+done
+cargo "${plugin_build_args[@]}" --manifest-path "$SOURCE_DIR/Cargo.toml"
 
 PHASE=installing
 # 出厂技能同步（2026-10 技能分层）：自更新只滚出厂层——把新检出里的
@@ -374,6 +396,43 @@ BIN_REPLACED=1
 temporary=""
 # 替换成功后立即修剪历史备份（保留最近 N 个，见 prune_backups）。
 prune_backups || true
+
+# ── 进程外插件二进制同步（与 Core 同一版本）──
+# Core 与插件必须配套升级：`Hello.config` 的字段语义、协议 capabilities
+# 都在同一份仓库里演进。逐个版本化替换（旧文件留 `.rollback`），任何一个
+# 失败都由 finalize_failure → rollback_installation 把**全部**插件还原回
+# 上一版，不留"半新半旧"的组合。
+# 目录不存在（旧部署尚未跑过新 install.sh）时静默创建——自更新不该因为
+# 多了个目录就失败。
+if ((${#PLUGIN_BINARIES[@]} > 0)); then
+    install -d -m 755 "$PLUGINS_DIR"
+    plugin_failed=0
+    for _plugin in "${PLUGIN_BINARIES[@]}"; do
+        plugin_dir="$PLUGINS_DIR/$_plugin"
+        plugin_source="$SOURCE_DIR/target/release/$_plugin"
+        if [[ ! -x "$plugin_source" ]]; then
+            echo "warning: plugin binary missing after build: $plugin_source" >&2
+            plugin_failed=1
+            continue
+        fi
+        install -d -m 755 "$plugin_dir"
+        plugin_rollback="$plugin_dir/$_plugin.rollback"
+        if [[ -x "$plugin_dir/$_plugin" ]]; then
+            plugin_rollback_tmp=$(mktemp "${plugin_rollback}.new.XXXXXX")
+            install -m 755 "$plugin_dir/$_plugin" "$plugin_rollback_tmp"
+            mv -f "$plugin_rollback_tmp" "$plugin_rollback"
+            PLUGIN_ROLLBACKS["$_plugin"]=$plugin_rollback
+        fi
+        plugin_tmp=$(mktemp "$plugin_dir/$_plugin.new.XXXXXX")
+        install -m 755 "$plugin_source" "$plugin_tmp"
+        mv -f "$plugin_tmp" "$plugin_dir/$_plugin"
+        PLUGINS_REPLACED=1
+    done
+    unset _plugin plugin_dir plugin_source plugin_rollback plugin_rollback_tmp plugin_tmp
+    if ((plugin_failed)); then
+        false
+    fi
+fi
 
 if ((core_was_active)); then
     PHASE=restarting
@@ -521,7 +580,9 @@ fi
 FINALIZED=1
 BIN_REPLACED=0
 UPDATER_REPLACED=0
-rm -f "$rollback" "$ROLLBACK_UPDATER" || true
+PLUGINS_REPLACED=0
+rm -f "$rollback" "$ROLLBACK_UPDATER" "${PLUGIN_ROLLBACKS[@]}" || true
+PLUGIN_ROLLBACKS=()
 # 成功收尾后再修剪一次：本次的 .rollback 已删除，名额回滚给更早的备份。
 ROLLBACK_BINARY=""
 ROLLBACK_UPDATER=""

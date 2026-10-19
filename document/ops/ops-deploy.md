@@ -129,6 +129,16 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 - 目标目录不存在（旧部署未迁移过）时整段跳过，由下次 install/reinstall 补齐
 - **仅 `update.sh` 走这套规则**：`install.sh` 仍是整体 `cp -a "$SOURCE_DIR/skills/."`，不逐技能、不排除 `.git`（清空与补齐语义不同——它负责首次铺设出厂层，重复执行前需先 `uninstall`；`reinstall` 会先跑 `uninstall` 清掉该层，故正常重装路径不受影响）
 
+### 进程外插件二进制同步
+
+`plugins/<包名>/<二进制>` 下的插件二进制与 Core **同版本**部署（协议与 `Hello.config` 语义在同一份仓库里演进，不允许 Core 新 / 插件旧）：
+
+- `install.sh` 按 `PLUGIN_BINARIES` 与 Core 在同一次 `cargo build --release --locked` 里构建，装到 `~/.local/libexec/echo-agent-core/plugins/<包名>/<二进制>`；旧文件纳入安装事务快照，失败回滚时一并还原
+- `update.sh` 用**同一张表**（两脚本一致性由 `source/core/tests/install_script_flag.rs` 守护，同时比对仓库里 `[[bin]] path = "src/main.rs"` 的插件 crate）做版本化替换：旧二进制先落 `<二进制>.rollback`，任一步失败（含重启后健康检查）→ `finalize_failure` 把所有插件还原回上一版
+- 构建产物缺失（例如清单里写了但 crate 被删）只 `warning` 并触发回滚，不会静默留下半套插件
+- 目录不存在（旧部署未跑过新版 `install.sh`）时静默创建——自更新不会因为多了个目录就失败；清单外的目录（用户自装插件）不会被触碰
+- 布局与命名理由见 [插件开发指南](../plugins/plugin-authoring.md)「安装目录约定」
+
 ### 备份留存
 
 二进制与静态目录的上一版副本按保留数回收，安装目录不再无限堆积（未修剪时单目录可堆到数百 MiB）：

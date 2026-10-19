@@ -106,11 +106,16 @@ mode = "fast"
 
 校验：`kind=stdio` 必须有 `command`；`requires` 必须可解析；环依赖报可读错误。
 
-**安装目录约定**（自更新将按此同步，进行中）：
+**安装目录约定**（install.sh 建目录并安装，update.sh 同步刷新 + 回滚）：
 
 ```text
-~/.local/libexec/echo-agent-core/plugins/<id>/<二进制>
+~/.local/libexec/echo-agent-core/plugins/<包名>/<二进制>
 ```
+
+- 目录名 = **Cargo 包名**（不是运行期插件 id——id 写在二进制里的 manifest 中，安装器静态读不到）；二进制名与包名一致。
+- 随框架一同安装的插件集合由 `scripts/install.sh` 的 `PLUGIN_BINARIES` 决定（当前：`echo-plugin-example`），`update.sh` 用同一张表同步升级——**两者必须一致**，由 `source/core/tests/install_script_flag.rs` 守护（同时比对「仓库里 `[[bin]] path = "src/main.rs"` 的插件 crate」）。
+- 自更新的插件替换是**版本化**的：旧二进制留成 `<二进制>.rollback`，任何后续步骤失败（含健康检查）都会把全部插件还原回上一版，不留"Core 新 / 插件旧"的半新组合。
+- 自己的插件可以放在同一目录下（`plugins/<你>/<二进制>`），`plugins.toml` 的 `command` 指过去即可；自更新不会碰清单外的目录。
 
 改完 `plugins.toml` **重启 Core 生效**（热替换尚未落地，暂不免重启）。
 
