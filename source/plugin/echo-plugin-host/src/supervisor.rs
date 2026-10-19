@@ -118,10 +118,119 @@ impl Default for RestartPolicy {
     }
 }
 
+/// 插件 → 宿主方向的**频率限额**（防失控插件刷屏 / 刷回呼）。
+///
+/// 与 [`RestartPolicy`]（崩溃重启预算）同层：都是宿主对插件的保护策略，
+/// 一份策略作用于本监督者启动的全部插件。
+///
+/// 只限**投递即忘**的帧与被动的回呼：
+/// - `Emit`：超限直接丢弃并计数（事件本就带缓冲封顶，这里防的是 CPU 空转）；
+/// - `Log`：超限丢弃（日志是诊断信息，刷屏只会把真问题淹掉）；
+/// - `HostCall`：超限**回一条错误回执**而不是丢弃——插件在等回执，丢掉会让它
+///   永久挂住；错误文本让它自己看到背压。
+///
+/// **绝不动** `InvokeResult`：那是宿主在等的调用结果，丢弃 = 调用挂死。
+///
+/// 缺省值刻意给得宽松（合法插件远够不到，失控循环会被挡住）：事件 2000/s、
+/// 回呼 500/s、日志 200/s。`None` = 不限。
+#[derive(Debug, Clone)]
+pub struct RatePolicy {
+    /// 每秒允许的 `Emit` 帧数。
+    pub events_per_sec: Option<u32>,
+    /// 每秒允许的 `HostCall` 数。
+    pub host_calls_per_sec: Option<u32>,
+    /// 每秒允许的 `Log` 帧数。
+    pub logs_per_sec: Option<u32>,
+}
+
+impl Default for RatePolicy {
+    fn default() -> Self {
+        Self {
+            events_per_sec: Some(2000),
+            host_calls_per_sec: Some(500),
+            logs_per_sec: Some(200),
+        }
+    }
+}
+
+impl RatePolicy {
+    /// 全不限（测试 / 需要绝对吞吐的场景）。
+    pub fn unlimited() -> Self {
+        Self {
+            events_per_sec: None,
+            host_calls_per_sec: None,
+            logs_per_sec: None,
+        }
+    }
+}
+
+/// 三路限额的区分（窗口 + 缺省值 + 日志标签一处定义）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RateBudget {
+    /// `Emit`（投递即忘）。
+    Events,
+    /// `HostCall`（插件在等回执 → 超限回错误而不是丢弃）。
+    HostCalls,
+    /// `Log`（投递即忘）。
+    Logs,
+}
+
+impl RateBudget {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Events => "events",
+            Self::HostCalls => "host_calls",
+            Self::Logs => "logs",
+        }
+    }
+}
+
+/// 秒级滑动窗口计数器（够用且无依赖：三个 u32 + 一个窗口起点）。
+///
+/// 为什么不用令牌桶：限额是**粗粒度保护**，秒级窗口的边界突刺（最多 2×）
+/// 对"防失控"完全够用；令牌桶要维护充电速率与容量两个参数，配置面更复杂。
+#[derive(Debug, Default)]
+struct Window {
+    /// 窗口起点（`Instant`；None = 尚未开始）。
+    started: Option<std::time::Instant>,
+    count: u32,
+}
+
+impl Window {
+    /// 记一次并返回是否放行。
+    fn allow(&mut self, limit: Option<u32>) -> bool {
+        let Some(limit) = limit else {
+            return true;
+        };
+        let now = std::time::Instant::now();
+        match self.started {
+            Some(start) if now.duration_since(start) < Duration::from_secs(1) => {}
+            _ => {
+                self.started = Some(now);
+                self.count = 0;
+            }
+        }
+        self.count = self.count.saturating_add(1);
+        self.count <= limit
+    }
+}
+
+/// 一个插件的三路窗口计数 + 超限计数（观测用）。
+#[derive(Debug, Default)]
+struct RateMeters {
+    events: Window,
+    host_calls: Window,
+    logs: Window,
+    /// 累计被限流的帧数（与窗口无关；面板/日志读它判断"这个插件在刷"）。
+    limited: u64,
+}
+
 /// 插件监督者（Clone / Arc 共享；`start` 可并发启动多个插件实例）。
 #[derive(Clone, Default)]
 pub struct PluginSupervisor {
     policy: RestartPolicy,
+    /// 插件 → 宿主方向的频率限额（[`RatePolicy`]）。
+    rate: RatePolicy,
     /// 宿主服务注册表（P2 HostCall）；`new()` 时创建，Clone 共享同一注册表。
     host_services: Arc<HostServiceRegistry>,
 }
@@ -139,6 +248,12 @@ impl PluginSupervisor {
     /// 覆盖默认重启策略。
     pub fn with_restart_policy(mut self, policy: RestartPolicy) -> Self {
         self.policy = policy;
+        self
+    }
+
+    /// 覆盖默认频率限额（`RatePolicy::unlimited()` = 完全不限）。
+    pub fn with_rate_policy(mut self, rate: RatePolicy) -> Self {
+        self.rate = rate;
         self
     }
 
@@ -163,6 +278,7 @@ impl PluginSupervisor {
             self.policy.clone(),
             ctl_tx,
             self.host_services.clone(),
+            self.rate.clone(),
         ));
         let (init_tx, init_rx) = oneshot::channel();
         let task_shared = shared.clone();
@@ -212,6 +328,12 @@ impl PluginHandle {
     /// （见 [`PluginHandle::restarts`]）。
     pub fn hot_replaces(&self) -> u32 {
         self.shared.hot_replaces.load(Ordering::SeqCst)
+    }
+
+    /// 累计被[频率限额](RatePolicy)挡下的帧数（`Emit` / `Log` 丢弃 +
+    /// `HostCall` 拒绝）。0 = 该插件一直守规矩。
+    pub fn rate_limited(&self) -> u64 {
+        self.shared.rate_limited()
     }
 
     /// 连接代际（epoch；泛化 01a §1.3）：每次新连接就绪即自增
@@ -417,6 +539,9 @@ const MAX_PENDING_EVENTS: usize = 1024;
 struct Shared {
     plugin_id: String,
     policy: RestartPolicy,
+    /// 频率限额 + 三路窗口计数（[`RateMeters`]）。
+    rate: RatePolicy,
+    rate_meters: Mutex<RateMeters>,
     state: Mutex<PluginState>,
     contributions: Mutex<Vec<Contribution>>,
     restarts: AtomicU32,
@@ -499,10 +624,13 @@ impl Shared {
         policy: RestartPolicy,
         ctl: mpsc::Sender<Control>,
         host_services: Arc<HostServiceRegistry>,
+        rate: RatePolicy,
     ) -> Self {
         Self {
             plugin_id,
             policy,
+            rate,
+            rate_meters: Mutex::new(RateMeters::default()),
             state: Mutex::new(PluginState::Pending),
             contributions: Mutex::new(Vec::new()),
             restarts: AtomicU32::new(0),
@@ -545,6 +673,49 @@ impl Shared {
             .contributions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = list;
+    }
+
+    /// 频率限额：`kind` 走哪一路窗口。返回是否放行；超限时累计计数并按
+    /// 「首次 + 每 1024 次」warn 一次（防日志刷屏本身变成新的刷屏源）。
+    fn allow(&self, kind: RateBudget) -> bool {
+        let limit = match kind {
+            RateBudget::Events => self.rate.events_per_sec,
+            RateBudget::HostCalls => self.rate.host_calls_per_sec,
+            RateBudget::Logs => self.rate.logs_per_sec,
+        };
+        let mut meters = self
+            .rate_meters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let window = match kind {
+            RateBudget::Events => &mut meters.events,
+            RateBudget::HostCalls => &mut meters.host_calls,
+            RateBudget::Logs => &mut meters.logs,
+        };
+        if window.allow(limit) {
+            return true;
+        }
+        meters.limited = meters.limited.saturating_add(1);
+        let limited = meters.limited;
+        drop(meters);
+        if limited == 1 || limited.is_multiple_of(1024) {
+            tracing::warn!(
+                plugin = %self.plugin_id,
+                budget = kind.label(),
+                limit_per_sec = ?limit,
+                limited,
+                "plugin exceeded its rate budget; dropping (events/logs) or rejecting (host calls)"
+            );
+        }
+        false
+    }
+
+    /// 累计被限流的帧数（观测 / 测试）。
+    fn rate_limited(&self) -> u64 {
+        self.rate_meters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .limited
     }
 
     fn push_event(&self, event: String, payload: Value) {
@@ -1320,12 +1491,39 @@ fn dispatch(shared: &Arc<Shared>, source: &Arc<dyn PluginConnection>, msg: Plugi
             ),
         },
         PluginToHost::Emit(e) => {
+            // 频率限额：超限丢弃（事件是投递即忘的，丢一条不影响正确性）。
+            if !shared.allow(RateBudget::Events) {
+                return;
+            }
             tracing::debug!(plugin = %shared.plugin_id, event = %e.event, "plugin event");
             shared.push_event(e.event, e.payload);
         }
-        PluginToHost::Log(l) => log_record(&shared.plugin_id, &l),
+        PluginToHost::Log(l) => {
+            if !shared.allow(RateBudget::Logs) {
+                return;
+            }
+            log_record(&shared.plugin_id, &l);
+        }
         PluginToHost::Register(r) => shared.set_contributions(r.contributions),
         PluginToHost::HostCall(call) => {
+            // 频率限额：超限**回一条错误回执**（插件在等，丢掉会永久挂住）。
+            if !shared.allow(RateBudget::HostCalls) {
+                let source = Arc::clone(source);
+                let call_id = call.call_id.clone();
+                tokio::spawn(async move {
+                    let _ = source
+                        .send(HostToPlugin::HostCallResult(HostCallResult {
+                            call_id,
+                            outcome: HostCallOutcome::Error {
+                                code: "rate_limited".into(),
+                                message: "宿主回呼频率超限（plugins 的 rate policy）；请退避后重试"
+                                    .into(),
+                            },
+                        }))
+                        .await;
+                });
+                return;
+            }
             // P2：宿主服务回呼。在后台任务中查表调用并回发结果。
             // 回执按**来源连接**路由（W1.2）：发送失败仅 debug（插件可能已
             // 退出 / 崩溃重启中）。
@@ -1395,6 +1593,68 @@ fn log_record(plugin_id: &str, rec: &LogRecord) {
 mod tests {
     use super::*;
 
+    /// 窗口限流：配额内全放行，超了全拒；跨过 1 秒窗口重新计数。
+    #[test]
+    fn window_allows_up_to_limit_then_rejects() {
+        let mut window = Window::default();
+        for _ in 0..3 {
+            assert!(window.allow(Some(3)));
+        }
+        assert!(!window.allow(Some(3)), "第 4 次应被拒");
+        // 不限：永远放行。
+        let mut unlimited = Window::default();
+        for _ in 0..10_000 {
+            assert!(unlimited.allow(None));
+        }
+        // 等一个窗口后恢复（测试里把窗口起点挪回 2 秒前，避免真睡 1 秒）。
+        window.started = Some(std::time::Instant::now() - Duration::from_secs(2));
+        assert!(window.allow(Some(3)), "新窗口应重新计数");
+    }
+
+    /// 频率限额三路独立：事件刷爆不影响回呼配额；被限流的帧计入 `limited`。
+    #[test]
+    fn rate_budgets_are_independent_and_counted() {
+        let (ctl_tx, _ctl_rx) = mpsc::channel::<Control>(1);
+        let shared = Shared::new(
+            "rated".into(),
+            RestartPolicy::default(),
+            ctl_tx,
+            Arc::new(HostServiceRegistry::new()),
+            RatePolicy {
+                events_per_sec: Some(2),
+                host_calls_per_sec: Some(5),
+                logs_per_sec: Some(1),
+            },
+        );
+        // 事件：2 放 + 1 拒
+        assert!(shared.allow(RateBudget::Events));
+        assert!(shared.allow(RateBudget::Events));
+        assert!(!shared.allow(RateBudget::Events));
+        // 日志：1 放 + 1 拒
+        assert!(shared.allow(RateBudget::Logs));
+        assert!(!shared.allow(RateBudget::Logs));
+        // 回呼：事件/日志被限不影响它（还有 5 个配额）。
+        for _ in 0..5 {
+            assert!(shared.allow(RateBudget::HostCalls));
+        }
+        assert!(!shared.allow(RateBudget::HostCalls));
+        assert_eq!(shared.rate_limited(), 3, "三次被拒都计入");
+    }
+
+    /// 缺省策略是**宽松上限**（合法插件够不到）而不是「不限」——否则这条
+    /// 保护在默认部署里等于没有。
+    #[test]
+    fn default_rate_policy_is_generous_but_finite() {
+        let policy = RatePolicy::default();
+        assert_eq!(policy.events_per_sec, Some(2000));
+        assert_eq!(policy.host_calls_per_sec, Some(500));
+        assert_eq!(policy.logs_per_sec, Some(200));
+        let unlimited = RatePolicy::unlimited();
+        assert!(unlimited.events_per_sec.is_none());
+        assert!(unlimited.host_calls_per_sec.is_none());
+        assert!(unlimited.logs_per_sec.is_none());
+    }
+
     /// 状态标签是**线格式**（面板按它分支渲染）：五态各一个固定小写词。
     #[test]
     fn plugin_state_labels_are_stable_wire_strings() {
@@ -1418,6 +1678,7 @@ mod tests {
             RestartPolicy::default(),
             ctl_tx,
             Arc::new(HostServiceRegistry::new()),
+            RatePolicy::unlimited(),
         );
         let overflow = 50;
         for i in 0..(MAX_PENDING_EVENTS + overflow) {

@@ -238,7 +238,7 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 ### Phase 6：安全与生态（持续）
 
 - [x] 插件资源限额（rlimit）：`plugins.toml` 的 `[plugin.limits]` / `[instances.<platform>.plugin.limits]` → `StdioTransport::with_limits` → `exec` 前 `setrlimit`（CPU 时间 / 地址空间 / 单文件大小 / fd 数 / 进程数，五项各自可选，**缺省不限制**）。硬限额（软=硬）、继承给后代；`0` 被加载器拒绝（`setrlimit` 里 0 = 完全禁止，不是"不限制"）。cgroup 轨未做——rlimit 已覆盖"单个插件失控"这一类，cgroup 解决的是"多插件共享预算"，收益/成本不划算
-- [ ] 消息大小/频率上限（**帧上限 16 MiB 已落地**；频率/数量限额待做）、调用超时强制（已落地：invoke 超时=deadline）
+- [x] 消息大小/频率上限：**帧上限 16 MiB** + **入站频率限额**（`RatePolicy`，supervisor 级缺省策略：`Emit` 2000/s、`HostCall` 500/s、`Log` 200/s，`None` = 不限）。只限**投递即忘**的帧：`Emit` / `Log` 超限丢弃并计数，`HostCall` 超限**回错误回执**（插件在等，丢掉会永久挂住），`InvokeResult` **绝不丢**（丢了调用挂死）。缺省刻意给宽松上限而不是"不限"——否则默认部署里这条保护等于没有。累计超限次数经 `PluginHandle::rate_limited()` 可观测；调用超时强制已落地（invoke 超时 = deadline）
 - [ ] 权限声明（capabilities：fs / net / proc）与宿主中介（远期）；**环境隔离已落地**（env_clear + 仅 PATH + 显式 env）
 - [x] SDK 与脚手架：插件侧运行时（echo-plugin-sdk）+ 试点示例 + [插件开发指南](../plugins/plugin-authoring.md)（协议文档含在上手指南内；JSON Schema 导出待做）
 - [x] 文档生成门禁（对齐 dsh 做法，取其**可执行的那一半**）：`source/core/tests/doc_catalog.rs` 三项校验——① **工具目录自动生成 + 新鲜度**（`document/plugins/tool-catalog.md` 由 `register_all` 的真实注册表渲染，加/改工具不同步即红；`UPDATE_DOCS=1` 刷新）；② **内置插件 id 不许漏**（`BUILTIN_PLUGIN_IDS` 每项必须出现在 `core-plugins.md`）；③ **相对链接可达**（`document/` 全树死链检查——重命名/拆章最容易留下的坑）。模块图 / 能力图 / 事件矩阵未做：前两者需要图形渲染器（ProDoc 侧职责），事件矩阵已由 Panel `protocol-sync.test.ts` 的变体计数快照跨仓兜住

@@ -135,6 +135,9 @@ pub async fn start_with_specs(
     if specs.is_empty() && (!path.exists() || load_failed) {
         return None;
     }
+    // 频率限额用 supervisor 的缺省策略（事件 2000/s、回呼 500/s、日志 200/s
+    // ——合法插件远够不到，失控循环会被挡住）。目前不做 per-plugin 配置：
+    // 这是宿主保护，不是插件特性。
     let supervisor = PluginSupervisor::new();
     register_host_services(&supervisor.host_services());
     // P1：插件实例宿主服务先行注册——插件就绪后其 `submit_input` / `report_*`
