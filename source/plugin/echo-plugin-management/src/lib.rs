@@ -881,7 +881,10 @@ mod tests {
             .collect();
         assert_eq!(merged, "hello world", "frames={frames:?}");
         // 合批生效：三次增量不应各自成帧（窗口内应被合并）。
-        let delta_frames = frames.iter().filter(|(t, _)| t.starts_with("delta:")).count();
+        let delta_frames = frames
+            .iter()
+            .filter(|(t, _)| t.starts_with("delta:"))
+            .count();
         assert!(
             delta_frames < 3,
             "增量应被合批（实际 {delta_frames} 帧）：frames={frames:?}"

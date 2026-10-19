@@ -123,12 +123,7 @@ impl DeltaBatcher {
     /// - 队列满 → 先冲出全部挂起，再挂起新的；
     /// - 非增量 → 先冲出全部挂起，再返回它本身（**严格保序**：工具开始是
     ///   分步边界，不能越过它前面的叙述）。
-    pub fn push(
-        &mut self,
-        event: BackendEvent,
-        entry: Option<String>,
-        now: Instant,
-    ) -> Vec<Emit> {
+    pub fn push(&mut self, event: BackendEvent, entry: Option<String>, now: Instant) -> Vec<Emit> {
         let Some(key) = batch_key(&event) else {
             // 非增量：冲出挂起，再发自己。
             let mut out = self.drain();
@@ -238,9 +233,15 @@ mod tests {
     fn consecutive_deltas_of_one_entry_merge_into_one_emit() {
         let mut b = DeltaBatcher::new(Duration::from_millis(60));
         let t0 = Instant::now();
-        assert!(b.push(content("s", "b", "he"), Some("e1".into()), t0).is_empty());
-        assert!(b.push(content("s", "b", "llo"), Some("e1".into()), t0).is_empty());
-        assert!(b.push(content("s", "b", " world"), Some("e1".into()), t0).is_empty());
+        assert!(b
+            .push(content("s", "b", "he"), Some("e1".into()), t0)
+            .is_empty());
+        assert!(b
+            .push(content("s", "b", "llo"), Some("e1".into()), t0)
+            .is_empty());
+        assert!(b
+            .push(content("s", "b", " world"), Some("e1".into()), t0)
+            .is_empty());
         assert_eq!(b.pending_len(), 1);
         let out = b.take_due(t0 + Duration::from_millis(61));
         assert_eq!(out.len(), 1);
@@ -279,7 +280,9 @@ mod tests {
         let t0 = Instant::now();
         b.push(content("s", "b", "a"), Some("e1".into()), t0);
         // 不同 entry 绝不能进同一帧——否则 Panel 无法判断这段文本属于哪一行
-        assert!(b.push(content("s", "b", "b"), Some("e2".into()), t0).is_empty());
+        assert!(b
+            .push(content("s", "b", "b"), Some("e2".into()), t0)
+            .is_empty());
         let out = b.drain();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].entry.as_deref(), Some("e1"));
@@ -296,8 +299,14 @@ mod tests {
         b.push(reasoning("s", "b", "think"), None, t0);
         let out = b.drain();
         assert_eq!(out.len(), 2);
-        assert!(matches!(out[0].event, BackendEvent::AgentContentDelta { .. }));
-        assert!(matches!(out[1].event, BackendEvent::AgentReasoningDelta { .. }));
+        assert!(matches!(
+            out[0].event,
+            BackendEvent::AgentContentDelta { .. }
+        ));
+        assert!(matches!(
+            out[1].event,
+            BackendEvent::AgentReasoningDelta { .. }
+        ));
     }
 
     #[test]

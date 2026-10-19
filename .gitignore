@@ -4,3 +4,8 @@
 qrcode.png
 /napcat/data/
 echo-sessions.json
+
+# 运行期产物：媒体下载 / 技能来源记录 / Git 安装技能的只读 .git
+/downloads/
+/skills/.sources.json
+/skills/*/.git/

@@ -135,10 +135,7 @@ impl TrunkStore {
     /// [`Self::timeline_page_before`] 向上翻。
     ///
     /// `limit = 0` 视为不限（与旧行为一致）。
-    pub fn timeline_window_tail(
-        &self,
-        limit: usize,
-    ) -> (Vec<crate::event::TimelineMessage>, bool) {
+    pub fn timeline_window_tail(&self, limit: usize) -> (Vec<crate::event::TimelineMessage>, bool) {
         let timeline = self.timeline.lock();
         if limit == 0 || timeline.len() <= limit {
             return (timeline.clone(), false);
@@ -173,7 +170,11 @@ impl TrunkStore {
             Ok(index) => index,
             Err(index) => index,
         };
-        let end = if before_ord == 0 { total } else { end.min(total) };
+        let end = if before_ord == 0 {
+            total
+        } else {
+            end.min(total)
+        };
         let start = end.saturating_sub(limit);
         (timeline[start..end].to_vec(), start > 0)
     }

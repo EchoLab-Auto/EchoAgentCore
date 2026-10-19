@@ -758,7 +758,10 @@ mod tests {
         assert_eq!(report.registered, vec!["plugin_only"]);
         assert_eq!(
             report.skipped,
-            vec![("calculator".to_string(), Some("echo-plugin-example".to_string()))]
+            vec![(
+                "calculator".to_string(),
+                Some("echo-plugin-example".to_string())
+            )]
         );
         assert!(report.has_skips());
 
