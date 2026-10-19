@@ -21,7 +21,9 @@ y: 780
 - **hook 输入展示剥离**：`<xxx_hook>{json}</xxx_hook>` 结构化输入在会话里只显示 payload 的 `content` 字段（`displayContentOf`，实时事件与历史回放共用同一剥离；非法 JSON/非 hook 原样兜底）——QQ 消息投递到默认会话后显示干净正文而非整段 hook JSON
 - **自动滚动**：仅当用户处于底部 120px 阈值内时跟随新内容；上翻后出现「回到底部 ↓」按钮（平滑滚动，500ms 后解除锁定）。滚动区内 padding-bottom 190px。**按钮落位**：`right = trayPadRight + 16px`、`bottom = entryBottom + 45px`（消息列右缘、右侧栏列左侧 16px，纵向与边栏列底对齐；贴右下角会被右侧栏卡片完全压住、hit test 命中 rail 卡片，故移至此处）；入口行浮层 / Agent 配置 / 上下文弹层打开时按钮隐藏（浮层从入口行向上展开、最高 68vh，窄视口下必盖住）
 - **入场动画**：0.28s 淡入 + 上移 6px，仅实时消息（`animate: true`）播放；历史回放不播
-- **容量**：主时间线上限 1024 条，溢出裁最旧
+- **容量与渲染窗口**：主时间线上限 1024 条，溢出裁最旧（数据侧）；**渲染侧只画尾部 200 条**（`ChatView.vue` 的 `WINDOW_INITIAL`/`renderWindow`），更早的显示「加载更早的消息（还有 N 条）」入口，点击按 200 扩窗（`loadEarlier`：扩窗后按"距底部距离"补偿 `scrollTop`，保持视觉位置）。**切片在适配之前**——`sessionMessagesFor` 只取尾部窗口喂给 `toChatMessage`/缓存判等，因此一次 delta 的成本只与**窗口大小**相关、与历史长度无关（实测见 [性能审计](../design/panel-performance-audit.md)）。切会话 / 切 agent 把窗口复位到 200
+- **流式中纯文本**：`streamState === 'streaming'` 的 Agent 消息走纯文本渲染（`MessageItem` 的 `streamingPlain`），终值到达后才交给 `MarkdownLazy`——Markdown 渲染器对 `content` 是"每次变化全量 `marked.parse` + DOMPurify + `innerHTML` 替换"，逐 delta 全量重解析的成本是 `O(deltas × 长度)`（实测 4 万字正文单次 16.9 ms、8 万字 33.3 ms）；改为终值一次成型后是 `O(长度)`，副产品是正文立即可见
+- **时间标签 memo**：`formatTime` 按"秒"缓存 `toLocaleTimeString('zh-CN')` 结果（`chat-adapter.ts`，FIFO 上限 8192）——实测单次 51 µs，`messageRows` 每次重算都会给每条工作行调一次，在 2000 行会话里占单次 delta 的 44%
 - **行距**：滚动容器 `gap` 6px；消息气泡用 `chat-view__item--msg` 的 3px 边距补回呼吸（气泡间仍约 12px），工作行（推理块 / 工具行 / 子代理行）保持 6px 紧排且自身不再带外边距——一回合里推理与工具交替十几次，屏幕不被空白吃掉
 - **刷新首屏**：页面加载先还原磁盘缓存（`trunk-cache.ts`，挂载前 hydrate——`state.teamTimelines` 按 team 快照 + 条目级游标），引导请求带 `since_seq` 只拉缺口（无缓存/窗口滚出/游标超前时 Core 自动回退全量）；缓存 10s 周期检查（写盘放 `requestIdleCallback`，不挤占渲染帧）+ 页面隐藏/卸载时立即落盘（配额满静默放弃）；**还原时就格式升级**（旧缓存里 `<subagent_event>` 用户气泡 → 子代理委派行，避免「刷新后仍是旧样式」）；**重连不清空时间线**——保留缓存并按 `since_seq` 增量补齐，响应 `full` 标志时整体替换。配套 Core 侧对发往前端的快照做**推理瘦身**：仅最近 40 条推理保留全文，更早的截断到 240 字 + 标注（持久化不改，`timeline.rs::elide_reasoning_for_wire`）
 - **会话过滤**：「全部消息」（global）显示当前 Agent 全部会话的消息；具体会话仅显示该会话；从全局视图发送会路由到本地会话 `local:tui::local_user`（`App.vue` 的 `send`：全局视图回落到默认本地会话）
