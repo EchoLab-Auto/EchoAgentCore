@@ -104,7 +104,24 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 10] = [
 ///
 /// 理由很具体：插件管理命令（`TogglePlugin` / `RestartPlugin` /
 /// `RequestPluginsList`）如果被某个插件抢走，人在面板上点"禁用"就再也点不
-/// 回来了——把自我管理面交给被管理者，是自锁。同类还包括进程退出与会话迁移。
+/// 回来了——把自我管理面交给被管理者，是自锁。
+///
+/// **`MigrateSession` 曾列在这里，是个真 bug**：实现明明在联邦插件的命令
+/// 处理链（`FederationPorts::command_handler` → `handle_migrate_session`），
+/// 保留名单却让分发器永远不路由过去，命令落进宿主兜底并报"联邦插件未启用"
+/// ——面板上的「迁移会话」从来就没成功过。它不会造成自锁，本来就不该保留
+/// （2026-11 修掉；正是 `reject_reserved_commands` 装配期检查抓出来的）。
+///
+/// ## 名单的两条纪律
+///
+/// 1. **只列真实存在的命令**。此前这里放着 `SetPluginConfig` / `Shutdown`
+///    ——两者在 `BackendCommand` 里**根本不存在**，于是名单看起来在守两件
+///    事，实际一件也没守（测试 `reserved_commands_exist_in_the_protocol`）。
+/// 2. **被保留的命令必须有人处理**。名单本身不会让命令生效，它只是"别交给
+///    插件"；真正的处理者要在宿主 `apply_command` 里。曾经的
+///    `RequestSelfUpdate` 就是反例：既被保留（插件收不到），实现又只在插件
+///    那一侧——两条命令必失败（2026-11 修掉，改由 `echo-agent.selfupdate`
+///    插件认领）。
 ///
 /// `SendMessage` / `Cancel` 不在此列：聊天入口归宿主核心是当前的架构事实，但
 /// 那是"还没搬"，不是"不能搬"；真有需要时把这条删掉即可，不需要动机制。
@@ -112,9 +129,6 @@ pub const HOST_RESERVED_COMMANDS: &[&str] = &[
     "TogglePlugin",
     "RestartPlugin",
     "RequestPluginsList",
-    "SetPluginConfig",
-    "Shutdown",
-    "MigrateSession",
 ];
 
 /// 该命令是否属于宿主自我管理面（插件不得接管）。
@@ -839,6 +853,50 @@ pub mod skill_registry_handle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 宿主保留名单的纪律 ──────────────────────────────────────────────
+
+    /// 名单里的每个名字都必须是**真实存在**的命令。
+    ///
+    /// 反例（2026-11 之前）：`SetPluginConfig` / `Shutdown` 在
+    /// `BackendCommand` 里根本不存在——名单看着守了两件事，其实一件也没守。
+    /// 这类"死的守卫"比没有守卫更糟：它让人以为这条路被封住了。
+    ///
+    /// 判据用协议源码里的 `kind_name` 分支（`Self::X { .. } => "X",`）——那是
+    /// 命令名与枚举变体**唯一**的权威映射，框架分发读的也是它。
+    #[test]
+    fn reserved_commands_exist_in_the_protocol() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../protocol/echo-protocol/src/command.rs"
+        ));
+        // `pub fn kind_name` 之后到下一个 `}` 收尾的那一段。
+        let start = source
+            .find("pub fn kind_name")
+            .expect("命令协议里应有 kind_name");
+        let body = &source[start..];
+        let end = body.find("\n    }").expect("kind_name 应有收尾");
+        let body = &body[..end];
+        let names: Vec<&str> = body
+            .match_indices("=> \"")
+            .filter_map(|(index, _)| {
+                let rest = &body[index + 4..];
+                let close = rest.find('"')?;
+                Some(&rest[..close])
+            })
+            .collect();
+        assert!(
+            names.len() > 40,
+            "kind_name 解析出 {} 个名字——解析器可能跟不上协议格式",
+            names.len()
+        );
+        for reserved in HOST_RESERVED_COMMANDS {
+            assert!(
+                names.contains(reserved),
+                "宿主保留名单里的 {reserved:?} 不是真实命令（协议里没有这个变体）"
+            );
+        }
+    }
 
     // ── 配置化组合：挂载计划解析 ─────────────────────────────────────────
 

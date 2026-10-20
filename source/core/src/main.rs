@@ -1483,7 +1483,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 instance: qq_instance.clone(),
                 instance_wired: qq_wired.clone(),
                 instance_running: qq_running.clone(),
-                platform: platform.clone(),
+                platform: (!platform.is_empty()).then(|| platform.clone()),
                 bridge: bridge.clone(),
                 management_address: cfg.core.management_address.clone(),
                 management_token: cfg.core.management_access_token.clone(),
@@ -1880,10 +1880,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 接线完成，标记 wired：此后 instance.qq 插件的运行期 enable 才会真正
     // start 插件实例（启动期 mount 不抢跑）。启动受配置与插件状态双重门控。
     qq_wired.store(true, std::sync::atomic::Ordering::SeqCst);
-    let qq_plugin_enabled = agent
-        .plugin_host()
-        .registry
-        .is_enabled(&crate::instance_manifests::plugin_id_for(&platform));
+    // 没有平台配置时**根本没有**实例插件条目（目录里不建幽灵插件），所以
+    // 这里直接算作"未启用"，不去问一个不存在的 id。
+    let qq_plugin_enabled = !platform.is_empty()
+        && agent
+            .plugin_host()
+            .registry
+            .is_enabled(&crate::instance_manifests::plugin_id_for(&platform));
     if qq_host.enabled && qq_plugin_enabled {
         // 多实例：逐个生成 compose（非 legacy）并启动；单个失败不影响其余。
         for (instance_id, persona_id, instance) in &qq_handles {

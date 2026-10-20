@@ -60,7 +60,12 @@ pub(crate) struct Hosts {
     pub instance_wired: Arc<std::sync::atomic::AtomicBool>,
     pub instance_running: Arc<std::sync::atomic::AtomicBool>,
     /// 平台名（实例插件 id 由它派生——组合根不持有点名平台的常量）。
-    pub platform: String,
+    ///
+    /// `None` = 配置里**没有任何** `[instances.<平台>]` 段。这不是错误（不用
+    /// 平台的部署很正常），但**必须**跳过实例插件条目：否则目录里会出现一个
+    /// id 为 `echo-agent.instance.`（尾随点、平台名为空）的幽灵条目，面板
+    /// 插件清单里会多出一个点不动的「插件实例」。
+    pub platform: Option<String>,
     /// 管理面 WS 桥（Panel 通道）。
     pub bridge: Arc<echo_agent::BackendBridge>,
     /// 管理面监听地址 / 令牌（`plugins.toml` 可覆盖 address，token 不行）。
@@ -87,6 +92,25 @@ fn for_each_agent(mgr: &Arc<AgentManager>, f: impl Fn(&Arc<echo_agent::Agent>)) 
     }
 }
 
+/// 插件 id 的**形状**校验（装配 bug 早失败胜过面板里出现怪条目）。
+///
+/// 真实踩到过的一个：没配置 `[instances.<平台>]` 时，实例插件的 id 会被派生成
+/// `echo-agent.instance.`（尾随点、平台名为空）——它在 `plugins mounted` 日志
+/// 与面板清单里都是一个点不动的幽灵插件，而当时没有任何断言拦得住。
+fn validate_plugin_id(id: &str) -> anyhow::Result<()> {
+    if id.is_empty() {
+        return Err(anyhow::anyhow!("builtin plugin id must not be empty"));
+    }
+    let last = id.rsplit('.').next().unwrap_or("");
+    if last.is_empty() {
+        // 派生 id 的空段几乎一定是"平台名/名字没取到"的装配 bug。
+        return Err(anyhow::anyhow!(
+            "builtin plugin id {id:?} ends with an empty segment (derived name missing?)"
+        ));
+    }
+    Ok(())
+}
+
 /// 压入一个只有 manifest + mount 闭包的插件。
 fn push_builtin(
     catalog: &mut Vec<Arc<dyn Plugin>>,
@@ -94,6 +118,7 @@ fn push_builtin(
     mount: impl Fn(&MountContext) -> echo_plugin::PluginMountResult + Send + Sync + 'static,
 ) -> anyhow::Result<()> {
     let id = manifest.id.clone();
+    validate_plugin_id(&id)?;
     if catalog.iter().any(|p| p.manifest().id == id) {
         // 装配 bug（同 id 两条构造）——早失败胜过静默覆盖。
         return Err(anyhow::anyhow!("duplicate builtin plugin id {id}"));
@@ -108,6 +133,7 @@ fn push_builtin(
 /// 能力（`with_commands` / `with_text_blocks` / …）用不上。
 fn push_plugin(catalog: &mut Vec<Arc<dyn Plugin>>, plugin: Arc<dyn Plugin>) -> anyhow::Result<()> {
     let id = plugin.manifest().id.clone();
+    validate_plugin_id(&id)?;
     if catalog.iter().any(|p| p.manifest().id == id) {
         return Err(anyhow::anyhow!("duplicate builtin plugin id {id}"));
     }
@@ -332,7 +358,10 @@ tracing::debug!(
 }
 
 // ── 实化 3：QQ 插件实例（启停进程 + 工具包启停）──
-{
+//
+// **只在配置了平台时存在**：平台名是 id 的派生来源（`echo-agent.instance.<平台>`），
+// 没有平台就没有这个插件——而不是造一个 id 为空后缀的幽灵条目。
+if let Some(platform) = platform.clone() {
     // 实例句柄（独立进程实例插件；无实例 = None，启停为 no-op）。
     let qq = qq_instance.clone();
     let wired = qq_wired.clone();
@@ -556,5 +585,92 @@ for entry in external_entries {
         nominal(entry.id.clone()),
     )?;
 }
+    reject_duplicate_commands(&catalog)?;
+    reject_reserved_commands(&catalog)?;
     Ok(catalog)
+}
+
+/// 声明了**宿主保留命令**的插件是死代码：命令泵在分发前就把它挡掉了
+/// （`command_is_host_reserved`），插件永远收不到，且**没有任何提示**。
+///
+/// 这正是 `RequestSelfUpdate` 曾经的形状——保留在名单里 + 实现只在插件侧 =
+/// 必失败。装配期报出来，这类"声明了但收不到"就不可能再溜进去。
+fn reject_reserved_commands(catalog: &[Arc<dyn Plugin>]) -> anyhow::Result<()> {
+    for plugin in catalog {
+        let id = plugin.manifest().id.clone();
+        for command in plugin.handled_commands() {
+            if echo_agent::plugins::command_is_host_reserved(&command) {
+                return Err(anyhow::anyhow!(
+                    "{id} declares host-reserved command {command}: the dispatcher will never                      route it to the plugin (remove the declaration or the reservation)"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 派生 id 的空段必须被拦下（真实踩到过：无 `[instances]` 配置时出现
+    /// 一个叫 `echo-agent.instance.` 的幽灵插件）。
+    #[test]
+    fn plugin_id_shape_is_validated() {
+        assert!(validate_plugin_id("echo-agent.instance.qq").is_ok());
+        assert!(validate_plugin_id("echo-agent.tools.builtin").is_ok());
+        assert!(validate_plugin_id("").is_err());
+        assert!(validate_plugin_id("echo-agent.instance.").is_err());
+        // 中间的空段是既有 id 形态（`<prefix>.<name>` 之外没人管），不拦。
+        assert!(validate_plugin_id("echo-agent..x").is_ok());
+    }
+
+    /// 同一条命令被两个插件声明 → 装配期失败（否则先挂上的静默赢）。
+    #[test]
+    fn duplicate_command_declarations_are_rejected() {
+        let one = Arc::new(BuiltinPlugin::new(
+            PluginManifest::builtin("a.one", "a", "0", "tool", "a", "a"),
+            |_| Ok(vec![]),
+        )
+        .with_commands(["Shared"]));
+        let two = Arc::new(BuiltinPlugin::new(
+            PluginManifest::builtin("a.two", "b", "0", "tool", "b", "b"),
+            |_| Ok(vec![]),
+        )
+        .with_commands(["Shared"]));
+        let err = reject_duplicate_commands(&[one, two]).expect_err("重名必须报错");
+        assert!(err.to_string().contains("Shared"), "{err}");
+    }
+
+    /// 声明宿主保留命令 → 装配期失败（分发器永远不会路由给它）。
+    #[test]
+    fn reserved_command_declarations_are_rejected() {
+        let plugin = Arc::new(BuiltinPlugin::new(
+            PluginManifest::builtin("a.bad", "bad", "0", "tool", "bad", "bad"),
+            |_| Ok(vec![]),
+        )
+        .with_commands(["TogglePlugin"]));
+        let err = reject_reserved_commands(&[plugin]).expect_err("保留命令必须报错");
+        assert!(err.to_string().contains("TogglePlugin"), "{err}");
+    }
+}
+
+/// 同一条命令被两个内置插件声明 = **静默遮蔽**（先挂上的那个赢，另一个永远
+/// 收不到）——这是注册关系层面的装配 bug，启动期就报出来。
+///
+/// 为什么要在这里查：命令名与归属都是各插件 crate 自己声明的（这正是 S5 的
+/// 成果），框架分发时只是"问一遍谁认领"。跨 crate 的重名没有任何编译器守得住。
+fn reject_duplicate_commands(catalog: &[Arc<dyn Plugin>]) -> anyhow::Result<()> {
+    let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for plugin in catalog {
+        let id = plugin.manifest().id.clone();
+        for command in plugin.handled_commands() {
+            if let Some(previous) = seen.insert(command.clone(), id.clone()) {
+                return Err(anyhow::anyhow!(
+                    "command {command} is claimed by both {previous} and {id}"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
