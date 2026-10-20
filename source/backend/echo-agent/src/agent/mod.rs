@@ -202,13 +202,13 @@ impl std::fmt::Debug for Agent {
 /// Process-wide plugin host (best-effort): set once by the composition root.
 /// Lets gating checks resolve the global registry from code that runs inside
 /// the agent but outside a `&Agent` scope (see `plugin_globally_enabled`).
-/// 存储收敛于 [`echo_context::kernel`]（P1 唯一引导单元）。
+/// 存储收敛于 [`echo_bootstrap`]（P1 唯一引导单元）。
 pub fn plugin_host_global() -> Option<std::sync::Arc<crate::plugins::PluginHost>> {
-    echo_context::kernel::get::<std::sync::Arc<crate::plugins::PluginHost>>()
+    echo_bootstrap::get::<std::sync::Arc<crate::plugins::PluginHost>>()
 }
 
 pub fn set_plugin_host_global(host: std::sync::Arc<crate::plugins::PluginHost>) {
-    let _ = echo_context::kernel::set(host);
+    let _ = echo_bootstrap::set(host);
 }
 
 /// 进程级全局策略（`[agent]` 层的工具/技能启停）：全局开关不属于任何人格，
@@ -263,11 +263,11 @@ impl GlobalPolicy {
 }
 
 pub fn global_policy() -> Option<std::sync::Arc<GlobalPolicy>> {
-    echo_context::kernel::get::<std::sync::Arc<GlobalPolicy>>()
+    echo_bootstrap::get::<std::sync::Arc<GlobalPolicy>>()
 }
 
 pub fn set_global_policy(policy: std::sync::Arc<GlobalPolicy>) {
-    let _ = echo_context::kernel::set(policy);
+    let _ = echo_bootstrap::set(policy);
 }
 
 // ── 联邦命令处理器（federation Phase 4）──

@@ -3,10 +3,14 @@
 //! 背景：解耦计划 Phase 1（见 `document/design/decoupling-plan.md`）要求把全部
 //! 进程级全局态收敛到唯一引导单元。2026-10-08 全量迁移完成。
 //!
-//! 现状（2026-10-19 M3）：kernel cell 随 `echo-context` 迁出到
-//! `plugin-framework` 仓，**本仓 `source/` 里已没有任何全局态**，因此本门禁
-//! 的白名单被清空、上限恒为 0。kernel cell 自身由框架仓的
-//! `crates/framework-gates/tests/no_global_state.rs` 精确豁免一个文件看着。
+//! 口径（2026-10-19 M4）：
+//!
+//! - **框架仓**（`plugin-framework`）零全局态，无条件成立——白名单为空，由那边
+//!   的 `crates/framework-gates/tests/no_global_state.rs` 守着；
+//! - **本仓**唯一允许的静态存储是 `context/echo-bootstrap`（进程级引导单元）。
+//!   它曾随 `echo-context` 一起被迁进框架仓，是错的：使用者全在应用层（8 处），
+//!   框架自己一处不用，而框架导出进程级单例表会直接破坏"同一进程能起两套宿主"。
+//!   现已搬回本仓，本门禁重新精确豁免这一个文件。
 //!
 //! 口径（2026-10-07 精化，全 source 扫描）：
 //! - 扫描仓库 `source/` 全树，跳过 `tests/` 目录与 `tests.rs` 文件（只数生产代码）；
@@ -23,11 +27,11 @@ use std::path::{Path, PathBuf};
 /// 存量上限（2026-10-08：全量迁移完成 → 0；只降不升，永不调大）。
 const EXPECTED_MAX: usize = 0;
 
-/// 白名单（M3 起为空：kernel cell 已随框架外迁）。
+/// 唯一白名单：宿主侧进程级引导单元（`echo-bootstrap`）。
 ///
-/// 保留这个常量而不是删掉分支，是为了让"将来若确有豁免"有现成的显式位置
-/// ——比临时在扫描里加 `ends_with` 更难被忽略。
-const WHITELIST: &str = "";
+/// **它是唯一允许的**——新增第二处即红。搬到本仓而不是留在框架仓的理由见
+/// 该 crate 的文档；若将来把句柄改由 `Ctx` 显式注入，这条豁免应随之清零。
+const WHITELIST: &str = "context/echo-bootstrap/src/lib.rs";
 
 fn repo_root() -> PathBuf {
     // 本文件位于 source/core/tests/ → source/core → 仓库根
@@ -107,7 +111,7 @@ fn global_state_ratchet_only_decreases() {
     assert_eq!(
         total, EXPECTED_MAX,
         "进程级静态单元数 {total} != 期望 {EXPECTED_MAX}。\n\
-         P1：除 kernel cell（source/{WHITELIST}）外，禁止任何进程级全局态；\n\
+         P1：除宿主引导单元（source/{WHITELIST}）外，禁止任何进程级全局态；\n\
          若你刚迁移了一处，请把 EXPECTED_MAX 调低到 {total}（只降不升）。\n\
          当前分布：\n{listing}"
     );

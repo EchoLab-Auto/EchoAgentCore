@@ -517,22 +517,22 @@ impl ShellManager {
 }
 
 /// 进程级 ShellManager 锚点（组合根设置一次；存储收敛于
-/// [`echo_context::kernel`]）。
+/// [`echo_bootstrap`]）。
 pub fn shell_manager_global() -> Option<Arc<ShellManager>> {
-    echo_context::kernel::get::<Arc<ShellManager>>()
+    echo_bootstrap::get::<Arc<ShellManager>>()
 }
 
 pub fn set_shell_manager_global(mgr: Arc<ShellManager>) {
-    let _ = echo_context::kernel::set(mgr);
+    let _ = echo_bootstrap::set(mgr);
 }
 
 /// 组合根注入的 emit 回调（接到默认 agent 的 handle，广播到 Panel）。
 pub fn set_shell_emit(emit: ShellEmit) {
-    let _ = echo_context::kernel::set(emit);
+    let _ = echo_bootstrap::set(emit);
 }
 
 pub fn shell_emit() -> ShellEmit {
-    echo_context::kernel::get::<ShellEmit>().unwrap_or_else(|| Arc::new(|_| {}))
+    echo_bootstrap::get::<ShellEmit>().unwrap_or_else(|| Arc::new(|_| {}))
 }
 
 /// 由调用方提供翻译回调的工厂。

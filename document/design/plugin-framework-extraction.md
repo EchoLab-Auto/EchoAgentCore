@@ -368,12 +368,40 @@ interaction）——**宿主应用的分类词汇，被写进了框架契约**�
 | release 构建 | 通过（Core + 进程外插件二进制） |
 | 部署与端到端 | 见 §八 |
 
-## 八、后续任务（M3 之后）
+### M3.5：把进程级单例表搬回宿主侧（完成，2026-10-19）
 
-1. **把 `echo-context::kernel` 搬出框架仓**。做法：在 Core 新建宿主 crate
-   （如 `source/backend/echo-kernel`）承载这张表，`echo-context` 只保留
-   `Ctx` / `EventBus` / `Disposer`。8 个调用点改 import，框架仓门禁白名单随之
-   清零（`whitelist_stays_minimal` 会强制同步）。这条清掉之后，"框架零全局态"
-   才是无条件成立的。
-2. M4：第三方可用性——非 EchoAgent 最小宿主示例 + 跨语言插件示例 + 文档。
-3. M5：协议去业务化（有决策门，当前建议不动）。
+框架仓 `v0.3.0`（`b162c95`）**移除** `echo_context::kernel`；Core 新建
+`source/context/echo-bootstrap` 承载它（182 行，零依赖叶子）。
+
+为什么不留在框架里——两条独立的理由：
+
+1. **框架自己一处不用**：六个 crate 零调用，14 处调用点全在应用层
+   （`echo-agent` 6 / `echo-shell` 3 / `echo-plugin-tools` 1 / `core` 1，
+   其余为文档）。
+2. **它破坏复用前提**：「同一进程能起两套宿主」要求框架不在进程级藏状态；
+   留着这张表，第二套宿主会读到第一套的句柄。
+
+搬迁是**纯改名**（`echo_context::kernel::set` → `echo_bootstrap::set`），
+行为不变。这轮把两边的门禁都收紧了：
+
+| 侧 | 处置 |
+|---|---|
+| 框架仓 | `no_global_state` 白名单 **清空为 `[]`**，自检改名 `whitelist_stays_empty` —— 「零全局态」从此无条件成立 |
+| Core | `no_global_state` 白名单恢复为**精确一个文件** `context/echo-bootstrap/src/lib.rs`（M3 时曾清空） |
+
+**终态不是这个**。`echo-bootstrap` 只是把全局态从框架搬到宿主，没有消灭它。
+真正干净的形态是让宿主把句柄经 `echo_context::Ctx` 显式注入——`Ctx::provide`
+已具备能力，且天然支持多份互不干扰。之所以没做：14 处调用点分布在多层构造
+函数里，逐层下传是独立一轮改造，与「框架外迁」正交。`echo-bootstrap` 的
+crate 文档把这一点写成了第一段而非脚注。
+
+验收：Core **908 通过**（903 + bootstrap 5）、框架仓 **160 通过**
+（原 165 − kernel 的 5 项）；`check-deps.sh` OK（25 crates）；框架仓门禁实测
+仍能报错（清零后往 `ctx.rs` 注入 `static` → FAILED 并指出行号）。
+
+## 八、后续任务
+
+1. M4：第三方可用性——非 EchoAgent 最小宿主示例 + 跨语言插件示例 + 文档。
+2. M5：协议去业务化（有决策门，当前建议不动）。
+3. （可选，独立一轮）把 `echo-bootstrap` 的句柄改成 `Ctx` 注入，然后清空
+   Core 侧那条白名单。做完之后整个仓库**零进程级全局态**。

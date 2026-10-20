@@ -23,7 +23,7 @@ pub use echo_plugin_tools::{calculator, checklist, coding, instance, shell_tools
 /// process, `pkill -f core.toml` also matches the production Core command line
 /// (`--config .../core.toml`).
 pub(crate) fn reject_core_self_stop(command: &str) -> Result<(), ToolError> {
-    let regex = echo_context::kernel::get_or_init::<Regex>(|| {
+    let regex = echo_bootstrap::get_or_init::<Regex>(|| {
         Regex::new(
             r#"(?im)(?:^|[;&|]\s*|(?:ba)?sh\s+-[A-Za-z]*c\b\s*['\"]?\s*)\s*(?:sudo\s+)?(?:command\s+)?(?:(?:/usr/bin/)?systemctl\b[^\n;&|]*\b(?:stop|kill)\b[^\n;&|]*\becho-agent-core(?:\.service)?\b|(?:pkill|killall)\b[^\n;&|]*(?:(?:\[e\]|e)cho-agent-core|(?:\[c\]|c)ore\.toml))"#,
         )

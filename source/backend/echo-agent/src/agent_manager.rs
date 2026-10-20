@@ -377,7 +377,7 @@ impl AgentManager {
 
 /// Process-wide manager & factory slots.
 ///
-/// 存储收敛于 `echo_context::kernel`（P1 唯一引导单元；原为模块级
+/// 存储收敛于 `echo_bootstrap`（P1 唯一引导单元；原为模块级
 /// 静态槽位）。注意：函数局部项在 Rust 中是**每函数一份**的独立实例，
 /// setter/getter 分处两个函数时会互不可见（历史 bug：SaveAgent 报
 /// "agent manager unavailable"）——单例必须走 kernel cell。
@@ -385,11 +385,11 @@ impl AgentManager {
 /// Lets any Agent read the persona list (e.g. RequestAgentsList) without a
 /// direct dependency on the manager instance.
 pub fn global_manager() -> Option<std::sync::Arc<AgentManager>> {
-    echo_context::kernel::get::<std::sync::Arc<AgentManager>>()
+    echo_bootstrap::get::<std::sync::Arc<AgentManager>>()
 }
 
 pub fn set_global_manager(manager: std::sync::Arc<AgentManager>) {
-    let _ = echo_context::kernel::set(manager);
+    let _ = echo_bootstrap::set(manager);
 }
 
 /// Process-wide agent factory (set once by the composition root). Used by
@@ -397,7 +397,7 @@ pub fn set_global_manager(manager: std::sync::Arc<AgentManager>) {
 pub fn set_agent_factory(
     factory: impl Fn(String, TeamMember) -> Arc<Agent> + Send + Sync + 'static,
 ) {
-    let _ = echo_context::kernel::set(AgentFactory {
+    let _ = echo_bootstrap::set(AgentFactory {
         inner: std::sync::Arc::new(factory),
     });
 }
@@ -418,7 +418,7 @@ impl AgentFactory {
 
 /// Retrieve the registered factory (panics with a clear message when unset).
 pub fn agent_factory_for_toggle() -> AgentFactory {
-    echo_context::kernel::get::<AgentFactory>()
+    echo_bootstrap::get::<AgentFactory>()
         .unwrap_or_else(|| panic!("agent factory not set by composition root"))
 }
 

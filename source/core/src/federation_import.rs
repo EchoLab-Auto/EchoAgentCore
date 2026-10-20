@@ -270,12 +270,12 @@ pub(crate) async fn run_session_import(
 
 /// 进行中的迁移 ack 通道：transfer_id → 已确认块数。
 /// 源侧 `handle_migrate_session` 注册，泵收到 `SessionImportAck` 时推进。
-/// 存储收敛于 [`echo_context::kernel`]（P1 唯一引导单元）：cell 内保存
+/// 存储收敛于 [`echo_bootstrap`]（P1 唯一引导单元）：cell 内保存
 /// 惰性泄漏的 `&'static Mutex<…>` 句柄（init 只执行一次，句柄生命周期
 /// 与旧的进程级存储一致），对外签名与行为不变。
 pub(crate) fn session_import_acks(
 ) -> &'static std::sync::Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<u32>>> {
-    echo_context::kernel::get_or_init(|| {
+    echo_bootstrap::get_or_init(|| {
         let registry: &'static std::sync::Mutex<
             std::collections::HashMap<String, tokio::sync::watch::Sender<u32>>,
         > = Box::leak(Box::new(std::sync::Mutex::new(

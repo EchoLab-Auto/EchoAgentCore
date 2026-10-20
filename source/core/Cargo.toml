@@ -17,6 +17,7 @@ echo-config.workspace = true
 echo-sanitize.workspace = true
 echo-protocol.workspace = true
 echo-context.workspace = true
+echo-bootstrap = { workspace = true }
 echo-session.workspace = true
 echo-loop.workspace = true
 echo-agent.workspace = true

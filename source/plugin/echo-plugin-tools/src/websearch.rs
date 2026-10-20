@@ -83,7 +83,7 @@ struct SearchResult {
 fn client() -> &'static reqwest::Client {
     // 进程级单例存储收敛于 kernel cell（唯一引导单元）；初值只构造一次
     // （Box::leak 一次，生命周期与旧的进程级存储一致）。
-    echo_context::kernel::get_or_init(|| {
+    echo_bootstrap::get_or_init(|| {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::limited(5))
