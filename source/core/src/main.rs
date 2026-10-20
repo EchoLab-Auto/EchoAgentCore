@@ -202,6 +202,25 @@ fn dump_config_command(config_path: &std::path::Path) -> Result<()> {
 
 // ── Core：Agent + 插件实例 + management WS 服务 ──────────────────────────────
 
+/// 当前 Unix 毫秒（插件事件的时间戳；面板排序用）。
+fn epoch_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 服务变更的一行描述（日志用；`plugin tree reconciled` 的 `service` 字段）。
+///
+/// 不直接 `{:?}` 整个 `Change`：日志里要一眼看出"哪个键、哪一层"，
+/// 结构体调试格式会把这两条埋在花括号里。
+fn describe_change(change: &echo_context::Change) -> String {
+    match change {
+        echo_context::Change::Provided { key, depth } => format!("+{key}@d{depth}"),
+        echo_context::Change::Disposed { key, depth } => format!("-{key}@d{depth}"),
+    }
+}
+
 async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let log_reload = init_tracing(&cfg.logging)?;
     // 级别热更新（2026-10 日志治理）：`SIGHUP` 重读 `[logging].level`，
@@ -1362,9 +1381,35 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 挂载上下文只带服务定位器（框架层零领域依赖；`tools`/`skills` 两个
         // sink 是死代码，2026-10 M2 删除——见 echo_agent::plugins 模块文档）。
         plugin_host.set_mount_ctx(MountContext::new().with_ctx(ctx.clone()));
+        // 插件事件出口（plugin-framework v0.7）：插件 `emit` 的东西（含注册表
+        // 自己发的 `plugin.mounted` / `plugin.unmounted`）转成
+        // `BackendEvent::PluginEvent` 走进程级汇聚点到面板。
+        //
+        // **必须在任何 mount 之前**：挂载本身就会 emit，晚接线会漏掉"启动时
+        // 谁挂上了"这一段（那正是排查装配问题时最想看的部分）。
+        {
+            let sink = event_sink.clone();
+            plugin_host.set_event_sink(std::sync::Arc::new(
+                move |event: echo_plugin::PluginEvent| {
+                    sink(echo_protocol::BackendEvent::PluginEvent {
+                        plugin: event.plugin,
+                        name: event.name,
+                        payload: event.payload,
+                        at_ms: epoch_millis(),
+                    });
+                },
+            ));
+        }
+
         // 插件清单的来源层（面板展示「这行配置来自 plugins.toml 的哪一层」）：
         // 配置未提及的插件保持空串 = 编译内置的缺省行为。
         plugin_host.set_config_origins(plugins_runtime::config_origins(&args.config_path()));
+        // 配置下发（2026-11）：`plugins.toml` 里 `kind = "builtin"` 行的
+        // `[plugin.config]` 按 id 送进注册表，`mount` 时注入
+        // `MountContext.config`——内置插件因此能"改配置不改代码"，且各拿
+        // 各的那一份（不必自己去解析分层合成结果）。
+        // 必须在任何 mount 之前：`mount` 取的是当时登记的值。
+        plugin_host.set_configs(plugins_runtime::builtin_configs(&args.config_path()));
 
         // 先应用持久化的禁用状态再挂载：register_and_mount 对禁用插件只注册
         // 不挂载，禁用的插件在启动时不获得任何副作用。
@@ -1641,8 +1686,31 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     "panel",
                     "Panel management WS 桥接（合并模式下同时承接联邦入站）",
                 ),
-                move |_ctx| {
-                    let (addr, br) = (mgmt_addr.clone(), mgmt_bridge.clone());
+                move |mctx| {
+                    // **配置下发的第一个真实消费者**（2026-11）：管理面端口
+                    // 可以由 `plugins.toml` 覆盖，不必改 core.toml 再重启：
+                    //
+                    //     [[plugin]]
+                    //     id = "echo-agent.management.panel"
+                    //     kind = "builtin"
+                    //     [plugin.config]
+                    //     address = "127.0.0.1:8737"
+                    //
+                    // 只有 `address` 走这条路：**token 不从这里读**——插件
+                    // 配置会进插件清单接口与日志排查面，把凭证放这里等于
+                    // 主动泄漏（token 仍只认 core.toml / 环境变量）。
+                    let addr = mctx
+                        .config_str("address")
+                        .map(str::to_string)
+                        .unwrap_or_else(|| mgmt_addr.clone());
+                    if addr != mgmt_addr {
+                        tracing::info!(
+                            configured = %mgmt_addr,
+                            effective = %addr,
+                            "management address overridden by plugins.toml"
+                        );
+                    }
+                    let br = mgmt_bridge.clone();
                     let token = mgmt_token.clone();
                     let fed_opt = mgmt_fed.clone();
                     let fed_merged = fed_opt.is_some();
@@ -1737,12 +1805,53 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         for diagnostic in &diagnostics {
             warn!(%diagnostic, "builtin mount plan");
         }
-        let (registered, mounted, mount_errors) = plugin_host.mount_plan(catalog, &order);
+        // 就绪等待（plugin-framework v0.6）：每个插件挂载前先等它的
+        // `inject` 就绪，最多 2s。现网正常启动时依赖早已注册，第一次检查
+        // 就命中（开销 = 一次 contains）；只有在组合根装配顺序将来被打乱、
+        // 或依赖由异步任务稍后注册时，这 2s 才是真的等待而不是立刻报错。
+        // 等不到的不算失败——进 pending，依赖到了由变更订阅（见下）追平。
+        let (registered, mounted, waiting, mount_errors) = plugin_host
+            .mount_plan_when_ready(catalog, &order, std::time::Duration::from_secs(2))
+            .await;
+        // 等满超时仍然缺依赖 = 装配 bug（服务键改名、注册被挪到挂载之后、
+        // 或压根忘了注册）。**启动照样失败**——与 v0.5 的"缺失即启动失败"
+        // 同款守卫；区别只是先给 2s 让"稍后才注册"这种情况自愈。
+        // 运行期的短暂缺失不在这里判：那个由 `reconcile` 事后追平。
+        let mut mount_errors = mount_errors;
+        for (id, keys) in &waiting {
+            mount_errors.push(format!(
+                "plugin {id} still waiting for injected services {keys:?} after {:?}",
+                std::time::Duration::from_secs(2)
+            ));
+        }
         if !mount_errors.is_empty() {
             // 与改造前逐插件 `?` 同语义：装配失败就启动失败——带着缺失的
             // 管理面/工具集继续跑只会让人以为"服务起来了但一片空白"。
             return Err(anyhow::anyhow!(mount_errors.join("; ")).context("mount builtin plugins"));
         }
+        // 声明式注入的**响应端**（plugin-framework v0.6）：服务表的增删
+        // 会沿父链广播 `Change`，这里把变化交给 `reconcile`——依赖到位的
+        // pending 插件自动挂上、依赖消失的自动卸下。没有这条订阅，`inject`
+        // 就只是"启动期检查一次"，而不是声明式。
+        //
+        // 重入由 `PluginHost::reconcile` 内部的重入位挡住（挂载会再注册服务）；
+        // 订阅本身常驻进程生命周期，故意不保存 disposer（= 不撤销）。
+        {
+            let host = plugin_host.clone();
+            let sub = ctx.on_change(move |change| {
+                let report = host.reconcile();
+                if !report.is_noop() {
+                    info!(
+                        service = %describe_change(&change),
+                        mounted = ?report.mounted,
+                        unmounted = ?report.unmounted,
+                        "plugin tree reconciled after service change"
+                    );
+                }
+            });
+            std::mem::forget(sub);
+        }
+
         // 子进程插件生命周期控制面：面板的启停开关据此真正停/起子进程，
         // 重启按钮据此 stop + start（注册表本身不持有进程句柄）。
         if let Some(runtime) = &plugin_runtime {

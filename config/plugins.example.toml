@@ -35,6 +35,26 @@ patches = []
 # # 原样透传给插件（Hello.config）
 # mode = "default"
 
+# ── 内置插件的配置（`kind = "builtin"`）──
+#
+# 内置插件（编译进 Core 的那些）也能配：`[plugin.config]` 会被**按 id 原样
+# 下发**给该插件的 mount 闭包（`MountContext.config`），不必改 core.toml、
+# 不必改代码。内容由宿主与该插件约定，Core 只负责投递——写错键等同没写。
+#
+# 目前有约定的键：
+#   echo-agent.management.panel  address = "127.0.0.1:8737"   # Panel 监听地址
+#
+#     ⚠ 只有 address 走这条路。**token 不从这里读**：插件配置会进插件清单
+#     接口与日志排查面，凭证放这里等于主动泄漏（token 仍只认 core.toml /
+#     环境变量）。
+#
+# [[plugin]]
+# id = "echo-agent.management.panel"
+# kind = "builtin"
+# name = "管理面"
+# [plugin.config]
+# address = "127.0.0.1:8737"
+
 # ── 子进程资源限额（可选） ──
 #
 # 只对 kind = "stdio" 生效（进程内实现没有独立进程可限）。

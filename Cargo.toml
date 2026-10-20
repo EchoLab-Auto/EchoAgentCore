@@ -68,7 +68,7 @@ strip = "symbols"
 [workspace.dependencies]
 echo-defs = { path = "source/defs/echo-defs" }
 echo-config = { path = "source/config/echo-config" }
-echo-context = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.4.1" }
+echo-context = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.7.0" }
 echo-sanitize = { path = "source/security/echo-sanitize" }
 echo-session = { path = "source/session/echo-session" }
 echo-tool = { path = "source/tool/echo-tool" }
@@ -80,13 +80,13 @@ echo-llm-ollama = { path = "source/llm/echo-llm-ollama" }
 echo-protocol = { path = "source/protocol/echo-protocol" }
 echo-agent = { path = "source/backend/echo-agent" }
 echo-test-utils = { path = "source/backend/echo-test-utils" }
-echo-plugin = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.4.1" }
-echo-plugin-api = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.4.1" }
-echo-plugin-host = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.4.1" }
+echo-plugin = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.7.0" }
+echo-plugin-api = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.7.0" }
+echo-plugin-host = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.7.0" }
 echo-plugin-adapter = { path = "source/plugin/echo-plugin-adapter" }
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.4.1" }
+echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.7.0" }
 echo-plugin-example = { path = "source/plugin/echo-plugin-example" }
-echo-plugin-loader = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.4.1" }
+echo-plugin-loader = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.7.0" }
 echo-plugin-provider-llm = { path = "source/plugin/echo-plugin-provider-llm" }
 echo-plugin-skills = { path = "source/plugin/echo-plugin-skills" }
 echo-plugin-loop = { path = "source/plugin/echo-plugin-loop" }

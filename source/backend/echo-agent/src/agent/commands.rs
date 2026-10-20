@@ -1823,6 +1823,10 @@ impl Agent {
                 command: d.command,
                 args: d.args,
                 env_keys: d.env_keys,
+                required_services: d.required_services,
+                optional_services: d.optional_services,
+                pending_services: d.pending_services,
+                subscribed_events: d.subscribed_events,
             })
             .collect();
         self.emit(BackendEvent::PluginsList { plugins });

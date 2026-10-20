@@ -228,6 +228,9 @@ pub struct PluginHost {
     mount_ctx: parking_lot::Mutex<Option<MountContext>>,
     /// 子进程插件生命周期（组合根注入；None = 无外部条目或未接线）。
     subprocess: parking_lot::RwLock<Option<Arc<dyn SubprocessPluginControl>>>,
+    /// `reconcile` 重入保护：依赖变更回调里挂载插件会再注册服务、再触发
+    /// 回调——不加这道闸就是无限递归。
+    reconciling: std::sync::atomic::AtomicBool,
 }
 
 impl Default for PluginHost {
@@ -242,6 +245,7 @@ impl PluginHost {
             registry: PluginRegistry::new(),
             mount_ctx: parking_lot::Mutex::new(None),
             subprocess: parking_lot::RwLock::new(None),
+            reconciling: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -251,7 +255,8 @@ impl PluginHost {
         *self.mount_ctx.lock() = Some(ctx);
     }
 
-    fn ctx(&self) -> MountContext {
+    /// 挂载上下文（测试与 [`Self::reconcile`] 共用；不是公开 API）。
+    pub(crate) fn ctx(&self) -> MountContext {
         self.mount_ctx.lock().clone().unwrap_or_default()
     }
 
@@ -323,6 +328,114 @@ impl PluginHost {
             }
         }
         (registered, mounted, errors)
+    }
+
+    /// 配置化组合的**就绪等待**版本：注册 + 按计划挂载，每个插件都先等它的
+    /// `inject` 就绪（最多 `timeout`；见 `echo_plugin::PluginRegistry::
+    /// mount_when_ready`）。
+    ///
+    /// 与 [`Self::mount_plan`] 的唯一差别是"依赖暂时没到"的处理：`mount_plan`
+    /// 立即失败（启动即报错），这里等一等再判。对现网无行为差异——正常启动
+    /// 时依赖早已注册，第一次检查就命中，一次 `contains` 的开销。
+    ///
+    /// 返回 `(已注册数, 已挂载 id, 仍在等依赖的 (id, 缺的键), 错误)`。
+    /// 「仍在等」不算失败：它们留在 `pending` 里，依赖到了由
+    /// [`Self::reconcile`] 挂上。
+    pub async fn mount_plan_when_ready(
+        &self,
+        catalog: Vec<Arc<dyn echo_plugin::Plugin>>,
+        plan: &[MountStep],
+        timeout: std::time::Duration,
+    ) -> (usize, Vec<String>, Vec<(String, Vec<String>)>, Vec<String>) {
+        let mut errors: Vec<String> = Vec::new();
+        let mut by_id: Vec<(String, Arc<dyn echo_plugin::Plugin>)> = Vec::new();
+        for plugin in catalog {
+            let id = plugin.manifest().id.clone();
+            if let Err(e) = self.registry.register(Arc::clone(&plugin)) {
+                errors.push(e);
+                continue;
+            }
+            by_id.push((id, plugin));
+        }
+        let registered = by_id.len();
+        let disabled: Vec<String> = plan
+            .iter()
+            .filter(|step| !step.enabled)
+            .map(|step| step.id.clone())
+            .collect();
+        if !disabled.is_empty() {
+            self.registry.apply_disabled(&disabled);
+        }
+        let ctx = self.ctx();
+        let mut mounted = Vec::new();
+        let mut waiting = Vec::new();
+        for step in plan {
+            if !by_id.iter().any(|(id, _)| id == &step.id) {
+                continue;
+            }
+            if !self.registry.is_enabled(&step.id) {
+                continue;
+            }
+            match self
+                .registry
+                .mount_when_ready(&step.id, &ctx, timeout)
+                .await
+            {
+                Ok(_) => mounted.push(step.id.clone()),
+                Err(echo_plugin::PluginMountError::MissingService { key, .. }) => {
+                    // 依赖没到：**不算错误**，进 pending 等依赖变更。
+                    waiting.push((step.id.clone(), vec![key]));
+                }
+                Err(e) => errors.push(format!("plugin {} mount failed: {e}", step.id)),
+            }
+        }
+        (registered, mounted, waiting, errors)
+    }
+
+    /// 依赖变更后重新核对注册表（`inject` 的响应端）。
+    ///
+    /// 语义见 `echo_plugin::PluginRegistry::reconcile`：pending 里依赖已齐的
+    /// 挂上、已挂载但依赖消失的卸下。**重入保护**：挂载动作会注册服务、再触发
+    /// 变更通知，没有这道闸就是递归。
+    ///
+    /// 组合根可以在 `ctx.on_change` 回调里直接调它——这是"声明式注入"真正
+    /// 生效的地方（不是启动期检查一次，而是依赖变化时自动追平）。
+    pub fn reconcile(&self) -> echo_plugin::ReconcileReport {
+        use std::sync::atomic::Ordering;
+        if self.reconciling.swap(true, Ordering::SeqCst) {
+            return echo_plugin::ReconcileReport::default();
+        }
+        struct Reset<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset(&self.reconciling);
+        self.registry.reconcile(&self.ctx())
+    }
+
+    /// 注入**插件事件出口**（组合根装配期一次）。
+    ///
+    /// 插件 `emit` 的事件（含注册表自己发的 `plugin.mounted` /
+    /// `plugin.unmounted`）经它出去；组合根把它接到进程级事件汇聚点，
+    /// 于是前端能看到"插件在干什么"。未注入 = 静默丢弃（降级不是错误）。
+    pub fn set_event_sink(&self, sink: echo_plugin::EventSink) {
+        self.registry.set_event_sink(sink);
+    }
+
+    /// 把一条事件**投递给订阅了它的已挂载插件**（返回成功投递数）。
+    ///
+    /// 谁来调：宿主在广播领域事件时顺手投一份（本轮**未接线**——目前没有
+    /// 订阅方；接线点是 `Agent::emit` 的汇聚处，等第一个真实订阅者出现再做，
+    /// 免得变成"每条事件都空转一圈"）。
+    pub fn deliver_plugin_event(&self, event: &echo_plugin::PluginEvent) -> usize {
+        self.registry.deliver_event(event)
+    }
+
+    /// 眼下还缺依赖的插件（`id → 缺的键`）。
+    pub fn pending_inject(&self) -> Vec<(String, Vec<String>)> {
+        self.registry.pending_inject()
     }
 
     /// 注入子进程插件控制面（组合根装配期，一次）。
@@ -448,6 +561,23 @@ impl PluginHost {
         V: Into<String>,
     {
         self.registry.set_config_origins(origins);
+    }
+
+    /// 下发插件的配置（组合根装载 `plugins.toml` 后写入）。
+    ///
+    /// 这是**内置插件拿到自己那份配置的唯一通路**：`plugins.toml` 里
+    /// `kind = "builtin"` 行的 `[plugin.config]` 经这里进入注册表，`mount`
+    /// 时按 id 注入 [`echo_plugin::MountContext::config`]。插件因此不必自己去
+    /// 找 `plugins.toml`、解析分层合成结果，也不会读到别人的配置。
+    ///
+    /// 时序：`set_configs` 必须在挂载**之前**（启动期）或重新启用**之前**
+    /// （运行期）调用——`mount` 取的是当时登记的值。
+    pub fn set_configs<I, K>(&self, configs: I)
+    where
+        I: IntoIterator<Item = (K, serde_json::Value)>,
+        K: Into<String>,
+    {
+        self.registry.set_configs(configs);
     }
 
     /// 按 `kind` 标签筛选插件快照。
@@ -776,5 +906,192 @@ mod tests {
         };
         assert!(profile_allows_plugin(&member, SKILLS_DIR_PLUGIN_ID));
         assert!(!profile_allows_plugin(&member, TOOLS_BUILTIN_PLUGIN_ID));
+    }
+
+    // ── 声明式注入：就绪等待 + 依赖变更追平（plugin-framework v0.6）──────
+
+    fn inject_plugin(
+        id: &str,
+        service: &str,
+        mounted: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Arc<dyn echo_plugin::Plugin> {
+        use std::sync::atomic::Ordering;
+        Arc::new(
+            echo_plugin::BuiltinPlugin::new(
+                echo_plugin::PluginManifest::builtin(id, id, "1", "tool", "", ""),
+                move |_| {
+                    mounted.fetch_add(1, Ordering::SeqCst);
+                    Ok(vec![])
+                },
+            )
+            .with_inject(echo_plugin::Inject::new([service])),
+        )
+    }
+
+    /// 启动期：依赖没到 → 插件进 pending（**不算失败**），依赖到了由一个
+    /// `reconcile` 挂上。这是"声明式注入"在宿主侧的完整闭环。
+    #[tokio::test]
+    async fn pending_inject_mounts_once_the_service_arrives() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let host = PluginHost::new();
+        let ctx = std::sync::Arc::new(echo_context::Ctx::default());
+        host.set_mount_ctx(echo_plugin::MountContext::new().with_ctx(ctx.clone()));
+
+        let mounted = Arc::new(AtomicUsize::new(0));
+        let catalog: Vec<Arc<dyn echo_plugin::Plugin>> =
+            vec![inject_plugin("i.loop", "loop", mounted.clone())];
+
+        let (_, up, waiting, errors) = host
+            .mount_plan_when_ready(
+                catalog,
+                &[MountStep::new("i.loop", true)],
+                std::time::Duration::ZERO,
+            )
+            .await;
+        assert!(up.is_empty());
+        assert!(errors.is_empty(), "缺依赖不该算错误: {errors:?}");
+        assert_eq!(
+            waiting,
+            vec![("i.loop".to_string(), vec!["loop".to_string()])]
+        );
+        assert_eq!(mounted.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            host.pending_inject(),
+            vec![("i.loop".to_string(), vec!["loop".to_string()])]
+        );
+
+        // 服务到位 → reconcile 追平。
+        let keep = ctx.register::<u8>("loop", 1u8);
+        let report = host.reconcile();
+        assert_eq!(report.mounted, vec!["i.loop".to_string()]);
+        assert_eq!(mounted.load(Ordering::SeqCst), 1);
+        assert!(host.pending_inject().is_empty());
+
+        // 服务消失 → reconcile 卸下。
+        keep.dispose();
+        let report = host.reconcile();
+        assert_eq!(report.unmounted, vec!["i.loop".to_string()]);
+        assert_eq!(
+            host.pending_inject(),
+            vec![("i.loop".to_string(), vec!["loop".to_string()])]
+        );
+    }
+
+    /// `reconcile` 的重入保护：在服务变更回调里调用它（真实用法）不能递归。
+    #[test]
+    fn reconcile_is_reentrancy_safe_from_a_change_callback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let host = Arc::new(PluginHost::new());
+        let ctx = Arc::new(echo_context::Ctx::default());
+        host.set_mount_ctx(echo_plugin::MountContext::new().with_ctx(ctx.clone()));
+
+        let mounted = Arc::new(AtomicUsize::new(0));
+        host.registry
+            .register(inject_plugin("i.cb", "svc", mounted.clone()))
+            .unwrap();
+        // 首次挂载失败 → pending。
+        assert!(host.registry.mount("i.cb", &host.ctx()).is_err());
+
+        // 订阅在回调里 reconcile（与 main.rs 的接法一致）。
+        let host_for_cb = host.clone();
+        let _sub = ctx.on_change(move |_| {
+            host_for_cb.reconcile();
+        });
+
+        // 注册服务触发回调 → 回调里 reconcile → 插件挂上；挂载过程里
+        // 若再触发回调，重入位会让内层直接返回（否则这里会栈溢出）。
+        let _keep = ctx.register::<u8>("svc", 1u8);
+        assert_eq!(mounted.load(Ordering::SeqCst), 1);
+        assert!(host.pending_inject().is_empty());
+
+        // 幂等：再核一次不动。
+        assert!(host.reconcile().is_noop());
+    }
+
+    // ── 插件事件通道（plugin-framework v0.7）─────────────────────────────
+
+    /// 宿主注入出口后：插件 `emit` 的事件带自己的 id 到达宿主；
+    /// 注册表自己发的 lifecycle 事件（`plugin.mounted`）也走同一个出口。
+    #[test]
+    fn plugin_events_reach_the_host_sink_with_ids() {
+        use std::sync::Mutex;
+        let host = PluginHost::new();
+        let seen: Arc<Mutex<Vec<echo_plugin::PluginEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = seen.clone();
+        host.set_event_sink(Arc::new(move |event| sink_seen.lock().unwrap().push(event)));
+        host.set_mount_ctx(echo_plugin::MountContext::new());
+        host.register_and_mount(Arc::new(echo_plugin::BuiltinPlugin::new(
+            echo_plugin::PluginManifest::builtin("ev.p", "p", "1", "tool", "", ""),
+            |mctx: &echo_plugin::MountContext| {
+                mctx.emit("tool.done", serde_json::json!({"ok": true}));
+                Ok(vec![])
+            },
+        )))
+        .expect("mount ok");
+
+        let events = seen.lock().unwrap().clone();
+        let mounted = events
+            .iter()
+            .find(|e| e.name == "plugin.mounted")
+            .expect("lifecycle 事件应到达宿主");
+        assert_eq!(mounted.payload["id"], "ev.p");
+        let emitted = events
+            .iter()
+            .find(|e| e.name == "tool.done")
+            .expect("插件 emit 应到达宿主");
+        assert_eq!(emitted.plugin, "ev.p", "出口自动填来源 id");
+        assert_eq!(emitted.payload["ok"], true);
+    }
+
+    /// 未注入出口 = 静默丢弃：挂载照常成功（降级不是错误）。
+    #[test]
+    fn missing_event_sink_does_not_break_mounting() {
+        let host = PluginHost::new();
+        host.set_mount_ctx(echo_plugin::MountContext::new());
+        host.register_and_mount(Arc::new(echo_plugin::BuiltinPlugin::new(
+            echo_plugin::PluginManifest::builtin("ev.bare", "b", "1", "tool", "", ""),
+            |mctx: &echo_plugin::MountContext| {
+                mctx.emit("nobody.listens", serde_json::Value::Null);
+                Ok(vec![])
+            },
+        )))
+        .expect("没有出口也不该失败");
+        assert_eq!(host.descriptors().len(), 1);
+    }
+
+    /// 宿主 → 插件的投递：只有订阅了的已挂载插件收到。
+    #[test]
+    fn host_delivers_events_only_to_subscribers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let host = PluginHost::new();
+        host.set_mount_ctx(echo_plugin::MountContext::new());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        host.register_and_mount(Arc::new(
+            echo_plugin::BuiltinPlugin::new(
+                echo_plugin::PluginManifest::builtin("ev.sub", "s", "1", "tool", "", ""),
+                |_| Ok(vec![]),
+            )
+            .with_subscriptions([echo_plugin::ALL_EVENTS])
+            .with_event_handler(move |_: &echo_plugin::PluginEvent| {
+                h.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        ))
+        .expect("mount ok");
+
+        assert_eq!(
+            host.deliver_plugin_event(&echo_plugin::PluginEvent::host(
+                "tool.called",
+                serde_json::Value::Null
+            )),
+            1
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        // descriptor 里能看到订阅声明（面板据此显示）
+        assert_eq!(
+            host.descriptors()[0].subscribed_events,
+            vec![echo_plugin::ALL_EVENTS.to_string()]
+        );
     }
 }

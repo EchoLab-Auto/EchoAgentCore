@@ -747,6 +747,28 @@ pub enum BackendEvent {
         /// 人读说明（成功也带一句，便于 toast 直接显示）。
         message: String,
     },
+    /// **插件事件**（plugin-framework v0.7 的事件通道出口）。
+    ///
+    /// 插件在运行期 `emit` 的东西（注册表自己也会发 `plugin.mounted` /
+    /// `plugin.unmounted`）经这里到前端。`name` / `payload` 是**插件与宿主
+    /// 自行约定**的词汇，Core 不解释——所以协议只搬三个字段，新产品加事件
+    /// 不必改 Core 协议。
+    ///
+    /// 面板把它当"插件活动日志"用：谁挂上了、谁发了个通知。**不是**领域
+    /// 事件（会话/工具那些有各自的强类型变体）。
+    PluginEvent {
+        /// 来源插件 id（宿主自身发出的为空串）。
+        #[serde(default)]
+        plugin: String,
+        /// 事件名（点分小写约定）。
+        name: String,
+        /// 载荷（自由 JSON）。
+        #[serde(default)]
+        payload: serde_json::Value,
+        /// 服务端时间戳（毫秒；面板排序用，不信任客户端时钟）。
+        #[serde(default)]
+        at_ms: u64,
+    },
     /// Full list of team members (response to `RequestTeamsList`).
     TeamsList {
         teams: Vec<TeamInfo>,
@@ -1067,6 +1089,23 @@ pub struct PluginInfo {
     /// 环境变量**键名**（值不下发——常含 token / 密钥）。
     #[serde(default)]
     pub env_keys: Vec<String>,
+    /// 本插件**要求的服务键**（`Inject::required`；空 = 无要求）。
+    ///
+    /// 与 `error` 一起回答「为什么不挂载」：Core 挂载前逐个校验，缺失即拒绝。
+    #[serde(default)]
+    pub required_services: Vec<String>,
+    /// 软依赖（`Inject::optional`；缺失不阻止挂载）。
+    #[serde(default)]
+    pub optional_services: Vec<String>,
+    /// 眼下**还缺**的硬依赖（空 = 不缺）。
+    ///
+    /// 与 `error` 的区别：`error` 是「上次挂载尝试的结果」，这里是「此刻的
+    /// 事实」——依赖到位后 Core 会自动挂上并清空它。
+    #[serde(default)]
+    pub pending_services: Vec<String>,
+    /// 订阅的事件名（`Contribution::Events` 的进程内等价物；空 = 不订阅）。
+    #[serde(default)]
+    pub subscribed_events: Vec<String>,
 }
 
 /// 联邦 peer 配置与链路状态（`FederationStatus` 列表元素；

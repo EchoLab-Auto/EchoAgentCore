@@ -210,6 +210,77 @@ Plugin→Host: Welcome{id, version, capabilities} | Register{contributions}
 
 **验收**：每个插件可独立禁用/启用/替换；禁用后内核正常降级。
 
+### Phase 3.5：inproc 协议轨补完（配置下发 + 服务键依赖）
+
+Phase 3 把实现搬出了 echo-agent，但 inproc 轨只兑现了**工具贡献**一类的机制：
+`Contribution::Service` 宿主零消费（`echo-plugin-loop` 声明了 `Service{key:"loop"}`，
+宿主只打了一行 `tracing::debug!`），`Ctx` 服务定位器注册了 3 个服务（`llm` /
+`sanitizer` / `loop`）却**没有任何解析方**；`plugins.toml` 的 `[plugin.config]`
+只送到子进程插件的 `Hello.config`，内置插件的 `mount` 拿不到自己的配置。
+结果是"一切皆插件"在 inproc 侧只有形状、没有链路。
+
+- [x] **配置下发**（plugin-framework `v0.5.0`）：`MountContext.config`（+`with_config`
+  /`config()`/`config_str()`）；`PluginRegistry::set_config`/`set_configs`/`config_for`
+  按 id 分发，`mount()` 时合并进传给该插件的上下文。缺省 `Null` 而非 `{}`
+  （区分"没配"与"配了空表"）。宿主侧装载端 `plugins_runtime::builtin_configs`
+  → `PluginHost::set_configs`（组合根在**任何 mount 之前**调用）。
+  **第一个真实消费者**：管理面 `address`——`plugins.toml` 可覆盖
+  `core.toml` 的监听地址而不改代码；`token` 刻意不走这条路（插件配置会进
+  清单接口与日志排查面，凭据放那里等于主动泄漏）。
+- [x] **服务键依赖校验**（plugin-framework `v0.5.0`）：`Plugin::required_services`
+  （默认空）+ `BuiltinPlugin::with_required_services`；`PluginRegistry::mount`
+  在跑 mount 闭包**之前**逐个 `Ctx::contains` 校验，缺失即
+  `PluginMountError::MissingService{key, available}`——**闭包根本不执行**
+  （依赖没就绪就不该产生副作用）。这是 dsh `inject` 的最小落法：框架只认
+  服务键的**存在性**（`echo-context` 的概念），不认键背后的类型（那是宿主与
+  插件的私事；认了就破 `echo-plugin` 零领域依赖的边界）。
+  **第一个真实解析方**：`echo-plugin-loop` 的两个插件用 `Inject` 声明
+  `[service_contribution().key]`——服务键与贡献声明同源（单一真值：`"loop"`）。组合根若把
+  `ctx.register::<Arc<TurnRunner>>("loop", …)` 挪到挂载之后或删掉，启动期
+  立刻失败并列出可用服务，而不是"插件挂载成功、运行期才发现驱动不存在"。
+- [x] **可观测**：`PluginDescriptor.required_services`（`#[serde(default)]`）
+  ——面板能回答「这个插件为什么不挂载」。
+- [x] **声明式 inject + 就绪等待**（plugin-framework `v0.6.x`）：`Inject{required,
+  optional}` 是唯一真值（`required_services` 降为便捷读法）；`Ctx::wait_for_keys`
+  + `PluginRegistry::mount_when_ready`（**先等后挂**，不留空窗）；
+  `PluginRegistry::reconcile`（依赖变更 → 追平：pending 里依赖已齐的挂上、
+  已挂载但依赖消失的卸下；只看事实不看意图）。宿主侧：
+  `PluginHost::mount_plan_when_ready`（启动期 2s 等待预算，等满仍缺 = 启动
+  失败——保留 v0.5 的守卫）+ `PluginHost::reconcile`（**重入保护**）+ 组合根
+  在 `ctx.on_change` 里订阅（这是"声明式"的响应端，否则 inject 只是启动期
+  检查一次）。面板新增 `required / optional / pending_services` 三行。
+- [x] **插件树 / 父 ctx**（plugin-framework `v0.6.x`）：`Ctx::child/parent/depth`
+  （父链继承、子遮蔽父、子注册对父不可见）+ `Ctx::on_change`（通知沿父链
+  **向上**传播，等待在家族内共享唤醒源）+ `PluginScope`（一层 = 一个 ctx +
+  一个注册表）+ `MountContext::nest`（插件在 mount 里建子作用域挂子插件，
+  归属靠挂载期压栈记录）+ `unmount(父)` **递归级联**卸子作用域（子先于父）。
+  裸注册表没有树把手：`nest()` = `None`，挂载照常（树是可选能力）。
+- [x] **`Contribution::Events` 的消费**（plugin-framework `v0.7.0`）：协议里这个
+  贡献一直"声明了没人读"（SDK 的 `serve` 里 `Contribution::Events(_) => None`）。
+  现在两侧都通了：
+  - **插件 → 宿主**：`MountContext::emit(name, payload)`（出口由宿主注入，
+    无出口 = 静默丢弃，降级不是错误）。来源 `plugin` 由注册表自动填，插件不必
+    知道自己的 id（`MountContext.plugin_id` 顺带给出）。
+  - **宿主 → 插件**：`Plugin::subscribed_events` / `on_event` +
+    `PluginRegistry::deliver_event`（按名分发，`"*"` 全收）。只投给**已挂载**
+    的插件；`on_event` 返回 `Err` 只计数不卸载（观察通道，不是控制通道）。
+  - **真实消费者**：注册表自己在挂/卸时发 `plugin.mounted` /
+    `plugin.unmounted`（带 `id` / `depth`）——插件树的变化因此可观测，面板
+    的插件详情直接显示"最近事件"。协议新增 `BackendEvent::PluginEvent
+    { plugin, name, payload, at_ms }`（`payload` 是自由 JSON，前端不解释词汇，
+    所以新增插件事件不必再改 Core 协议）。
+  - 宿主侧只接了**插件 → 面板**这一段；**宿主 → 插件**的投递点
+    （`PluginHost::deliver_plugin_event`）已就位但**故意未接线**：目前没有真实
+    订阅方，接上去就是"每条事件空转一圈"，等第一个订阅者出现再接。
+- [ ] 下一步（未做）：声明式 inject 的**类型化**校验（需 M5 去业务化后重估）、
+  插件树在业务侧的第一个真实消费者（workspace 子会话 / subagent 隔离上下文
+  最像）、`PluginHost::deliver_plugin_event` 的接线（等真实订阅方）。
+
+**为什么这条比"workspace 独立仓库"优先**：workspace 要"core 默认不带"，缺的
+不是仓库位置（`echo-plugin-workspace` 早已是独立 crate），而是"宿主不认识它、
+能力经键解析"的链路。链路不通时搬家只会把 565 行命令域接线换个地方写，
+仍然要一个私有 trait 注入（不是 dsh 的"以服务键暴露、可被替换/包装"）。
+
 ### Phase 4：配置化组合（1-2 周）
 
 - [x] `plugins.toml`：profile → bundles → patch 三层合成（已提交 `65c1c2a`：`echo-plugin-loader`，dsh 语义"按 id 定位、整行替换"；provenance 记录来源层）

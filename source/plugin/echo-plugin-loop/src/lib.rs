@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use echo_plugin::{BuiltinPlugin, Plugin, PluginManifest, PluginMountResult};
+use echo_plugin::{BuiltinPlugin, Inject, Plugin, PluginManifest, PluginMountResult};
 use echo_plugin_api::ServiceContribution;
 
 /// 单会话循环插件 id（默认模式；空白名单即此模式）。
@@ -80,15 +80,29 @@ pub fn declarations() -> [(&'static str, &'static str, &'static str); 2] {
 /// 构造两个插件实例（`version` = 宿主版本号，写进 manifest）。
 ///
 /// mount 返回空 disposer 列表：纯策略插件没有运行期资源可撤销。
+///
+/// **服务键依赖**（2026-11）：两个插件都声明 [`SERVICE_KEY`] 为
+/// `required_services`——「挂我之前，`Ctx` 里必须有 `loop` 服务」。注册表在
+/// mount 前逐个 `Ctx::contains` 校验，缺失即 `MissingService` 且 mount 闭包
+/// 不执行。这样组合根若把 `ctx.register::<Arc<TurnRunner>>("loop", …)` 挪到
+/// 挂载之后（或删掉），启动期就会**明确失败**并给出可用服务清单，而不是
+/// "插件挂载成功、运行期才发现驱动不存在"。
+///
+/// 服务键与贡献声明同源：[`service_contribution().key`] 是唯一真值。
+///
+/// [`service_contribution().key`]: service_contribution
 pub fn plugins(version: &str) -> Vec<Arc<dyn Plugin>> {
+    // 声明式注入（plugin-framework v0.6 的 `Inject`）：硬依赖 = 服务键，
+    // 可选软依赖留给将来（如计量/脱敏装饰器就绪时才包一层）。
+    let inject = Inject::new([service_contribution().key]);
     declarations()
         .into_iter()
         .map(|(id, name, description)| {
             let manifest = PluginManifest::builtin(id, name, version, "loop", "loop", description);
-            let plugin: Arc<dyn Plugin> =
-                Arc::new(BuiltinPlugin::new(manifest, |_ctx| -> PluginMountResult {
-                    Ok(Vec::new())
-                }));
+            let plugin: Arc<dyn Plugin> = Arc::new(
+                BuiltinPlugin::new(manifest, |_ctx| -> PluginMountResult { Ok(Vec::new()) })
+                    .with_inject(inject.clone()),
+            );
             plugin
         })
         .collect()
@@ -131,6 +145,40 @@ mod tests {
             assert!(disposers.is_empty());
             plugin.unmount().expect("unmount ok");
         }
+    }
+
+    /// 服务键依赖**从贡献声明派生**（单一真值）：改 `service_contribution`
+    /// 的服务键，`required_services` 自动跟着变——不会出现"声明说 loop、
+    /// 挂载校验说别的键"这种漂移。
+    #[test]
+    fn plugins_require_the_declared_service_key() {
+        for plugin in plugins("0.1.0") {
+            assert_eq!(plugin.required_services(), vec![SERVICE_KEY.to_string()]);
+        }
+    }
+
+    /// 服务未注册时**挂不上**：这是组合根启动顺序的真实门禁。
+    ///
+    /// 用 `PluginRegistry` 走一遍（而不是直接 `plugin.mount`）——校验在
+    /// 注册表的 mount 里，直接调 trait 方法就绕过它了。
+    #[test]
+    fn mount_fails_when_loop_service_is_missing() {
+        let reg = echo_plugin::PluginRegistry::new();
+        for plugin in plugins("0.1.0") {
+            reg.register(plugin).expect("register");
+        }
+        let errors = reg.mount_all(&echo_plugin::MountContext::new());
+        assert_eq!(errors.len(), 2, "两个插件都该因缺服务失败: {errors:?}");
+        assert!(
+            errors[0].1.contains("loop"),
+            "错误里要指明缺的键: {errors:?}"
+        );
+
+        // 服务就绪后同一批插件挂载成功（幂等重试）。
+        let ctx = std::sync::Arc::new(echo_context::Ctx::default());
+        let _keep = ctx.register::<u8>(SERVICE_KEY, 1u8);
+        let errors = reg.mount_all(&echo_plugin::MountContext::new().with_ctx(ctx));
+        assert!(errors.is_empty(), "服务就绪后不该再失败: {errors:?}");
     }
 
     #[test]

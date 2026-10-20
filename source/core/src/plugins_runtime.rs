@@ -444,6 +444,40 @@ pub fn builtin_mount_plan(config_path: &Path) -> Vec<echo_agent::plugins::MountS
     }
 }
 
+/// `plugins.toml` 里内置行（`kind = "builtin"`）的 `[plugin.config]` → 配置表。
+///
+/// 这是**配置下发**的装载端：结果交给
+/// [`echo_agent::plugins::PluginHost::set_configs`]，注册表在 `mount` 时按 id
+/// 注入 `MountContext.config`，于是 in-process 插件不必自己去找并解析
+/// `plugins.toml`（也就不会读到别人的配置）。
+///
+/// 只挑 `kind = "builtin"`：`stdio` 行的配置本来就经 `Hello.config` 下发给
+/// 子进程，两条路互不重叠。
+///
+/// 降级：文件不存在 / 解析失败 / 该行没写 `[plugin.config]` → 空表
+/// （与 [`config_origins`] 同款：配置缺失不该阻断启动）。
+pub fn builtin_configs(config_path: &Path) -> Vec<(String, serde_json::Value)> {
+    use echo_plugin_loader::EntryKind;
+    let path = config_path.with_file_name("plugins.toml");
+    if !path.exists() {
+        return Vec::new();
+    }
+    match echo_plugin_loader::load(&path) {
+        Ok(tree) => tree
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == EntryKind::Builtin)
+            // `config` 缺省是空对象；没有键的行不必登记（注册表缺省即 Null）。
+            .filter(|entry| entry.config.as_object().is_some_and(|m| !m.is_empty()))
+            .map(|entry| (entry.id.clone(), entry.config.clone()))
+            .collect(),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "plugins.toml load failed; builtin plugin configs unavailable");
+            Vec::new()
+        }
+    }
+}
+
 /// `plugins.toml` 里每个条目由**哪一层**声明 → `(插件 id, 来源描述)`。
 ///
 /// 分层合成（profile → bundles → patches → 行内）之后，每个条目都带着
@@ -664,6 +698,89 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp dir");
         std::fs::write(dir.join("plugins.toml"), "not = valid = toml [[[").expect("write toml");
         assert!(builtin_mount_plan(&dir.join("echo-agent-core.toml")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 配置下发（插件配置装载端）────────────────────────────────────
+
+    /// 无 plugins.toml → 空表（配置下发休眠，插件看到 `Null`）。
+    #[test]
+    fn builtin_configs_empty_without_plugins_toml() {
+        let dir = unique_dir("cfg-missing");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        assert!(builtin_configs(&dir.join("echo-agent-core.toml")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 只取内置行的 `[plugin.config]`：stdio 行的配置走 `Hello.config`，
+    /// 两条路不重叠；没写 config 的内置行不登记（注册表缺省即 `Null`）。
+    #[test]
+    fn builtin_configs_picks_only_configured_builtin_rows() {
+        let dir = unique_dir("cfg-pick");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(
+            dir.join("plugins.toml"),
+            "[[plugin]]\nid = \"external\"\nkind = \"stdio\"\nname = \"ext\"\ncommand = \"/bin/ext\"\n\
+             [plugin.config]\nport = 1\n\n\
+             [[plugin]]\nid = \"echo-agent.management.panel\"\nkind = \"builtin\"\nname = \"管理面\"\n\
+             [plugin.config]\naddress = \"127.0.0.1:8737\"\n\n\
+             [[plugin]]\nid = \"echo-agent.skills.dir\"\nkind = \"builtin\"\nname = \"技能目录\"\n",
+        )
+        .expect("write profile");
+
+        let configs = builtin_configs(&dir.join("echo-agent-core.toml"));
+        assert_eq!(configs.len(), 1, "只有管理面写了 config: {configs:?}");
+        assert_eq!(configs[0].0, "echo-agent.management.panel");
+        assert_eq!(configs[0].1["address"], "127.0.0.1:8737");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 坏文件 → 空表（与 `builtin_mount_plan` 同款：配置读不到不该阻断启动）。
+    #[test]
+    fn builtin_configs_fall_back_to_empty_on_broken_file() {
+        let dir = unique_dir("cfg-broken");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(dir.join("plugins.toml"), "not = valid = toml [[[").expect("write toml");
+        assert!(builtin_configs(&dir.join("echo-agent-core.toml")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 装配集成：装载端 + 注册表**串起来**——`plugins.toml` 写下的配置
+    /// 真的到达插件的 `mount` 闭包。这是「配置下发」的唯一端到端证据，
+    /// 只测 `builtin_configs` 或只测注册表都盖不住接缝。
+    #[test]
+    fn plugin_config_reaches_the_mount_closure_end_to_end() {
+        use std::sync::{Arc, Mutex};
+        let dir = unique_dir("cfg-e2e");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(
+            dir.join("plugins.toml"),
+            "[[plugin]]\nid = \"t.management\"\nkind = \"builtin\"\nname = \"管理面\"\n\
+             [plugin.config]\naddress = \"127.0.0.1:9999\"\n",
+        )
+        .expect("write profile");
+
+        let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let slot = seen.clone();
+        let plugin = echo_plugin::BuiltinPlugin::new(
+            echo_plugin::PluginManifest::builtin(
+                "t.management",
+                "管理面",
+                "1",
+                "management",
+                "",
+                "",
+            ),
+            move |mctx: &echo_plugin::MountContext| {
+                *slot.lock().unwrap() = mctx.config_str("address").map(str::to_string);
+                Ok(Vec::new())
+            },
+        );
+        let host = echo_agent::plugins::PluginHost::new();
+        host.set_configs(builtin_configs(&dir.join("echo-agent-core.toml")));
+        host.register_and_mount(Arc::new(plugin)).expect("mount ok");
+
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("127.0.0.1:9999"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
