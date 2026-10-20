@@ -20,6 +20,7 @@ members = [
     "source/plugin/echo-plugin-example",
     "source/plugin/echo-plugin-provider-llm",
     "source/plugin/echo-plugin-skills",
+    "source/plugin/echo-plugin-federation",
     "source/plugin/echo-plugin-loop",
     "source/plugin/echo-plugin-subagent",
     "source/plugin/echo-plugin-workspace",
@@ -89,6 +90,7 @@ echo-plugin-example = { path = "source/plugin/echo-plugin-example" }
 echo-plugin-loader = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.9.0" }
 echo-plugin-provider-llm = { path = "source/plugin/echo-plugin-provider-llm" }
 echo-plugin-skills = { path = "source/plugin/echo-plugin-skills" }
+echo-plugin-federation = { path = "source/plugin/echo-plugin-federation" }
 echo-plugin-loop = { path = "source/plugin/echo-plugin-loop" }
 echo-plugin-subagent = { path = "source/plugin/echo-plugin-subagent" }
 echo-plugin-workspace = { path = "source/plugin/echo-plugin-workspace" }
