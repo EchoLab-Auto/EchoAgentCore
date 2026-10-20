@@ -348,6 +348,11 @@ Phase 3 把实现搬出了 echo-agent，但 inproc 轨只兑现了**工具贡献
 - [ ] 下一步（未做）：声明式 inject 的**类型化**校验（需 M5 去业务化后重估）、
   插件树在业务侧的第一个真实消费者（workspace 子会话 / subagent 隔离上下文
   最像）。
+- [ ] **S4：`Agent` 拆服务**（27,917 行业务核心里最后一块上帝对象）——
+  计划与分阶段拆解见 [s4-agent-decomposition.md](./s4-agent-decomposition.md)。
+  结论摘要：S4a（`ModelService`）/ S4b（解 `manager ↔ Agent` 环）值得做且风险可控；
+  S4c（`PromptService` + `ToolService`）视收益再定；S4d（`SessionService`）建议暂缓
+  ——它是事件日志唯一真源、且没有替换需求。
 
 **为什么这条比"workspace 独立仓库"优先**：workspace 要"core 默认不带"，缺的
 不是仓库位置（`echo-plugin-workspace` 早已是独立 crate），而是"宿主不认识它、
