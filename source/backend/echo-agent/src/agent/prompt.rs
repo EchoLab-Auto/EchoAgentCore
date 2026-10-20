@@ -11,16 +11,23 @@ use super::boundary::{BoundaryKind, PromptBlock};
 /// Build the system prompt as named blocks so the panel can visualize
 /// token usage per section.
 ///
-/// `workspace` is the active workspace session's prompt text (already gated
-/// by the caller against the persona's plugin allowlist); `None` skips the
-/// workspace block.
+/// `plugin_blocks` 是**已挂载插件贡献的有序文本块**（
+/// `Contribution::Text`；由 `PluginHost::collect_text_blocks` 收集，已按 order
+/// 排好序、已丢弃空内容）。
+///
+/// 为什么不再是 `workspace: Option<String>`：那是"某个插件专属内容"作为位置
+/// 参数写进装配函数——每来一个需要注入内容的插件就要改一次签名。现在装配与
+/// 插件数量解耦：插件在不在、有几个，这个函数都不用改。
+///
+/// 插件的块的 `kind` 取它的 `key`（如 `workspace`），所以面板的种类徽标与
+/// 排序语义保持不变。
 pub(crate) async fn build_prompt_blocks(
     skills: &SkillRegistry,
     base_prompt: &str,
     content: &str,
     boundary: Option<BoundaryKind>,
     persona_system_skills: &[String],
-    workspace: Option<String>,
+    plugin_blocks: &[(echo_plugin::PluginTextBlock, String)],
 ) -> Vec<PromptBlock> {
     let matched = skills.find_matching(content);
     let mut blocks = Vec::new();
@@ -96,14 +103,20 @@ pub(crate) async fn build_prompt_blocks(
             ),
         });
     }
-    // 工作区会话（workspace 插件）：插件对该 persona 启用且存在激活会话
-    // 时注入——名称 + 工作目录清单，让模型知道在哪些目录内工作。
-    if let Some(content) = workspace {
+    // 插件贡献的文本块（`Contribution::Text`）：按 order 排好序、空内容已丢。
+    //
+    // 位置在"触发技能"之后、"边界"之前——与历史行为一致（工作区会话提示词
+    // 原本就在这里）。`kind` 取块的 `key`，面板的种类徽标因此不变。
+    for (block, text) in plugin_blocks {
         blocks.push(PromptBlock {
-            key: "workspace".into(),
-            label: "工作区会话".into(),
-            kind: "workspace".into(),
-            content,
+            key: block.key.clone(),
+            label: if block.label.is_empty() {
+                block.key.clone()
+            } else {
+                block.label.clone()
+            },
+            kind: block.key.clone(),
+            content: text.clone(),
         });
     }
     if let Some(boundary) = boundary {

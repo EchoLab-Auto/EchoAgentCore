@@ -199,6 +199,28 @@ impl Agent {
                 }
             }
         }
+        // ── 命令域归插件（plugin-framework v0.8 的 `Contribution::Command`）──
+        //
+        // 在落内置 match **之前**问一次插件：有插件声明处理这条命令就交给它，
+        // 内置分支不再执行。于是"某个命令域归某个插件"是**注册关系**——
+        // 插件未装/被禁用时，命令自然回落到内置分支（或明确报错），不需要在
+        // 这里为每个插件写特判。
+        //
+        // **内置保留名单**：插件不能抢这些——它们是宿主的自我管理面，被抢走
+        // 会让面板再也改不回来（禁用插件后无法重新启用）。命中保留名单时**不**
+        // 分发，并记一条 warn（配置写错要能看见，而不是静默失效）。
+        if !crate::plugins::command_is_host_reserved(cmd.kind_name()) {
+            if let Some(outcome) = self.plugin_host().dispatch_command(&cmd) {
+                match outcome {
+                    Ok(_) => {}
+                    Err(message) => self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message,
+                    }),
+                }
+                return;
+            }
+        }
         match cmd {
             BackendCommand::SwitchModel { model } => {
                 self.config.write().await.model = model.clone();

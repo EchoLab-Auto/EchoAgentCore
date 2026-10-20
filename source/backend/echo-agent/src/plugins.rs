@@ -83,6 +83,30 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 8] = [
     PROVIDER_LLM_PLUGIN_ID,
 ];
 
+/// 插件**不得**接管的命令（宿主自我管理面）。
+///
+/// 理由很具体：插件管理命令（`TogglePlugin` / `RestartPlugin` /
+/// `RequestPluginsList`）如果被某个插件抢走，人在面板上点"禁用"就再也点不
+/// 回来了——把自我管理面交给被管理者，是自锁。同类还包括进程退出与会话迁移。
+///
+/// `SendMessage` / `Cancel` 不在此列：聊天入口归宿主核心是当前的架构事实，但
+/// 那是"还没搬"，不是"不能搬"；真有需要时把这条删掉即可，不需要动机制。
+pub const HOST_RESERVED_COMMANDS: &[&str] = &[
+    "TogglePlugin",
+    "RestartPlugin",
+    "RequestPluginsList",
+    "SetPluginConfig",
+    "RequestSelfUpdate",
+    "RequestSelfUpdateStatus",
+    "Shutdown",
+    "MigrateSession",
+];
+
+/// 该命令是否属于宿主自我管理面（插件不得接管）。
+pub fn command_is_host_reserved(name: &str) -> bool {
+    HOST_RESERVED_COMMANDS.contains(&name)
+}
+
 /// 某 persona 的白名单是否允许一个插件 id。
 ///
 /// 语义：白名单非空 = 仅列出的插件；空白名单 = 全部允许。
@@ -592,6 +616,43 @@ impl PluginHost {
             .set_enabled(id, enabled, &self.ctx())
             .expect("set_enabled");
         self.refresh_event_interest();
+    }
+
+    // ── 命令处理 + 有序文本块（plugin-framework v0.8）────────────────────
+
+    /// **把一条命令分发给插件**（`Contribution::Command`）。
+    ///
+    /// 返回 `None` = 没有已挂载插件声明这个命令（调用方走默认分支）；
+    /// `Some(Ok(v))` / `Some(Err(e))` = 插件处理了（成功 / 失败）。
+    ///
+    /// 命令名用 [`echo_protocol::BackendCommand::kind_name`]（零分配），载荷用
+    /// [`echo_protocol::BackendCommand::payload_value`]（剥掉外层 tag）。插件
+    /// 可以用 `serde_json::from_value::<BackendCommand>` 拿回强类型——共享
+    /// 词汇在 `echo-protocol`，那正是它该在的地方。
+    pub fn dispatch_command(
+        &self,
+        command: &echo_protocol::BackendCommand,
+    ) -> Option<Result<serde_json::Value, String>> {
+        self.registry
+            .dispatch_command(command.kind_name(), &command.payload_value())
+    }
+
+    /// 某条命令当前归谁处理（诊断/测试用）。
+    pub fn command_owner(&self, name: &str) -> Option<String> {
+        self.registry.command_owner(name)
+    }
+
+    /// 收集已挂载插件贡献的**有序文本块**（按 `order` 升序，空内容丢弃）。
+    ///
+    /// `keep` 是**按插件 id 的过滤钩子**：宿主的"这个使用者能看什么"是按
+    /// 使用者决定的（EchoAgent 里是 persona 白名单），而插件挂载是进程级的。
+    /// 传 `|_| true` 表示不过滤。
+    pub fn collect_text_blocks(
+        &self,
+        context: &serde_json::Value,
+        keep: impl Fn(&str) -> bool,
+    ) -> Vec<(echo_plugin::PluginTextBlock, String)> {
+        self.registry.collect_text_blocks_filtered(context, keep)
     }
 
     /// 事件投递计数（成功条数, 失败条数）——诊断用。

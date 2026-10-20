@@ -111,7 +111,7 @@ impl Agent {
         // system_prompt 覆盖值）→ 全局 system 技能 → persona 系统技能
         // （capabilities.system_skills）→ … → 工作区会话注入 → 输入边界。
         let boundary = input_boundary(session, content);
-        let (base, persona_skills, workspace) = {
+        let (base, persona_skills, plugin_blocks) = {
             let base = self.config.read().await.system_prompt.clone();
             let persona_skills = self
                 .capabilities
@@ -120,11 +120,10 @@ impl Agent {
                 .as_ref()
                 .map(|c| c.system_skills.clone())
                 .unwrap_or_default();
-            // 按**本次 turn 的会话**解析工作区（2026-10 多窗口修复）：
-            // 全局 active 是 per-persona 单槽，另一个窗口激活工作区后会被
-            // 注入到这里，导致 B 的对话拿到 A 的项目上下文。
-            let workspace = self.workspace_prompt_text_for(&session_id);
-            (base, persona_skills, workspace)
+            // 按**本次 turn 的会话**收集插件文本块（2026-10 多窗口修复）：
+            // 上下文里带着 session_id，插件据此决定给自己那一份内容。
+            let plugin_blocks = self.collect_plugin_text_blocks(&session_id);
+            (base, persona_skills, plugin_blocks)
         };
         let blocks = {
             let skills = self.skills.lock().await;
@@ -134,7 +133,7 @@ impl Agent {
                 content,
                 boundary,
                 &persona_skills,
-                workspace,
+                &plugin_blocks,
             )
             .await
         };

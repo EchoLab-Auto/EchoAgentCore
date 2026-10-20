@@ -282,9 +282,38 @@ Phase 3 把实现搬出了 echo-agent，但 inproc 轨只兑现了**工具贡献
     后自动刷新（`PluginHost::refresh_event_interest`）。
   - **投递重入保护**：插件在 `on_event` 里又触发一次投递（调了个会发事件的
     宿主 API）时，内层直接丢弃 + 记一次失败计数，不递归。
+- [x] **命令域归插件 + 有序文本块**（plugin-framework `v0.8.x`）——S1：
+  - `Contribution::Command`：插件声明"这些命令我来处理"；
+    `PluginRegistry::dispatch_command` 按注册序问已挂载插件，`None` = 无人处理。
+    宿主 `apply_command` 在落内置 match **之前**问一次插件——于是"某个命令域归
+    某个插件"是**注册关系**而不是硬编码分支。**内置保留名单**
+    （`HOST_RESERVED_COMMANDS`：插件管理/自更新/退出/迁移）防止把自我管理面
+    交给被管理者（禁用插件后再也启不回来 = 自锁）。
+  - `Contribution::Text` + `Plugin::text_blocks()`（声明）/
+    `text_block_content(key, context)`（内容）：**声明与内容分开**——描述符
+    生成要能随时调用（纯读），而内容依赖上下文（同一块在不同会话下不同）。
+    `collect_text_blocks(context)` 按 order 升序、丢空块；
+    `collect_text_blocks_filtered` 提供**按插件 id 过滤**的钩子（宿主用它实现
+    persona 白名单——插件挂载是进程级的，但"这个人格能不能看到"是 per-persona）。
+  - **第一个真实迁移**：`workspace` 的提示词块从"宿主装配函数的位置参数"变成
+    插件贡献的 `Text` 块。`build_prompt_blocks` 的 `workspace: Option<String>`
+    参数消失，改成 `plugin_blocks: &[(PluginTextBlock, String)]`；`Agent` 里
+    三个 workspace 提示词方法（50 行）删除。**装配函数从此与插件数量解耦**。
+    多 persona 的 store 经**进程级共享表**注入（`team_id → store`），插件按
+    上下文里的 `team_id` 取自己那一份。
+  - `BackendCommand::kind_name()` / `payload_value()`：零分配取命令名 + 剥壳取
+    载荷（与 `BackendEvent::kind_name` 同款穷举 match，新增变体时编译器逼你起名）。
+- [ ] 下一步（未做）：**workspace 命令域整体迁移**（7 条 `*Workspace*` 命令，
+  565 行）。机制已就绪（`dispatch_command` 可用且有测试），缺的是**宿主服务
+  seam**：命令处理要发 `BackendEvent`（带本 agent 的 team 标注）、要动会话通道
+  （`ensure_workspace_channel` / 清空）、要用联邦 `RemoteWorkspaceQuery`（已有）。
+  正确做法是把这三件事定义成宿主注册进 `Ctx` 的服务（发送端已天然存在：
+  `Agent::emit_handle` 就是逐个 agent 的），再由插件在 `handle_command` 里解析——
+  与 `RemoteWorkspaceQuery` 同一套注入思路。**半途而废的做法是把事件发射塞进
+  payload**，那会让插件依赖宿主的内部类型，比现在更糟。
 - [ ] 下一步（未做）：声明式 inject 的**类型化**校验（需 M5 去业务化后重估）、
   插件树在业务侧的第一个真实消费者（workspace 子会话 / subagent 隔离上下文
-  最像）、`PluginHost::deliver_plugin_event` 的接线（等真实订阅方）。
+  最像）。
 
 **为什么这条比"workspace 独立仓库"优先**：workspace 要"core 默认不带"，缺的
 不是仓库位置（`echo-plugin-workspace` 早已是独立 crate），而是"宿主不认识它、

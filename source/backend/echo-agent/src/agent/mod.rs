@@ -1225,63 +1225,44 @@ impl Agent {
 
     /// 工作区会话（workspace 插件）注入提示词的文本：插件对该 persona 启用
     /// 且存在激活会话时返回 Some（名称 + 工作目录清单），否则 None。
-    /// 工作区提示词（**按会话**解析，2026-10 多窗口修复）。
-    ///
-    /// 旧实现无条件读 `WorkspaceStore::prompt_text()`——那是 per-persona 的
-    /// **全局 active**，与本次 turn 是哪个会话无关。多窗口场景下：A 窗口激活
-    /// 工作区 W2，B 窗口在自己的通道 W1 发消息，模型收到的却是「当前工作区
-    /// 会话 W2 / 工作区目录 …」——对话内容直接串到别人的项目上。
-    ///
-    /// 现在优先按 `session_id` 解析所属工作区；不是工作区通道（默认本地会话 /
-    /// QQ 会话）时回退全局 active（保持旧语义：单窗口下激活工作区后，默认
-    /// 本地会话仍能看到项目上下文）。
-    fn workspace_prompt_text_for(&self, session_id: &str) -> Option<String> {
-        let store = self.workspace_store()?;
-        if !self.workspace_plugin_allowed() {
-            return None;
-        }
-        store
-            .prompt_text_for(session_id)
-            .or_else(|| store.prompt_text())
-    }
-
-    /// workspace 插件是否允许（能力白名单判定，`workspace_prompt_text*` 共用）。
-    fn workspace_plugin_allowed(&self) -> bool {
-        self.capabilities
-            .lock()
-            .ok()
-            .and_then(|cap| cap.clone())
-            .map(|cap| {
-                crate::plugins::profile_allows_plugin(&cap, crate::plugins::WORKSPACE_PLUGIN_ID)
-            })
-            .unwrap_or(false)
-    }
-
-    fn workspace_prompt_text(&self) -> Option<String> {
-        let store = self.workspace_store()?;
-        let plugin_allowed = self
-            .capabilities
-            .lock()
-            .ok()
-            .and_then(|cap| cap.clone())
-            .map(|cap| {
-                crate::plugins::profile_allows_plugin(&cap, crate::plugins::WORKSPACE_PLUGIN_ID)
-            })
-            .unwrap_or(false);
-        if plugin_allowed {
-            store.prompt_text()
-        } else {
-            None
-        }
-    }
-
     /// 构建系统提示词块（无输入相关区块的代表性构建，供 `/context` 在无
     /// 最近 turn 时回退使用）。
     async fn build_prompt_blocks(&self) -> Vec<PromptBlock> {
         let base = self.config.read().await.system_prompt.clone();
-        let workspace = self.workspace_prompt_text();
+        // 没有指定会话 → 上下文为空。插件负责决定"空上下文下有没有内容"
+        // （如工作区插件在无 active 会话时不贡献块）。
+        let plugin_blocks = self.collect_plugin_text_blocks("");
         let skills = self.skills.lock().await;
-        crate::agent::prompt::build_prompt_blocks(&skills, &base, "", None, &[], workspace).await
+        crate::agent::prompt::build_prompt_blocks(&skills, &base, "", None, &[], &plugin_blocks)
+            .await
+    }
+
+    /// 收集插件贡献的文本块，上下文带**本次 turn 的会话 id 与人格 id**。
+    ///
+    /// 为什么这两个键：`Contribution::Text` 的 `text_block_content` 会拿到它们
+    /// （框架只透传，不解释）。`session_id` 让插件按会话给不同文本——这正是
+    /// 2026-10 多窗口问题的修法（全局 active 是 per-persona 单槽，另一个窗口
+    /// 激活工作区后会被注入到这里）；`team_id` 让进程级插件服务多个人格时能
+    /// 找到"当前这个 agent 的那一份状态"。
+    pub(crate) fn collect_plugin_text_blocks(
+        &self,
+        session_id: &str,
+    ) -> Vec<(echo_plugin::PluginTextBlock, String)> {
+        // **persona 白名单仍然生效**：插件挂载是进程级的，但"这个人格能不能
+        // 看到它的内容"是 per-persona 的（`enabled_plugins`）。过滤钩子在这里，
+        // 判断逻辑在 `profile_allows_plugin`——框架只提供"按 id 过滤"。
+        let capabilities = self.capabilities.lock().ok().and_then(|cap| cap.clone());
+        self.plugin_host().collect_text_blocks(
+            &serde_json::json!({
+                "session_id": session_id,
+                "team_id": self.team_id().unwrap_or_default(),
+            }),
+            |plugin_id| match &capabilities {
+                Some(cap) => crate::plugins::profile_allows_plugin(cap, plugin_id),
+                // 没注入能力表 = 不启用任何人格级限制（单测/裸装配）。
+                None => true,
+            },
+        )
     }
     /// Decomposed context blocks for `/context`: the prompt sections of the
     /// most recent turn (falling back to a boundary-free build) plus the

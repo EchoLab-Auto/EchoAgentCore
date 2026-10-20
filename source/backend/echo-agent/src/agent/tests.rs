@@ -2665,7 +2665,44 @@ async fn echo_loop_path_injects_persona_skills_and_workspace() {
         })
         .unwrap();
     store.set_active(Some("proj".into()), None).unwrap();
-    agent.set_workspace_store(store);
+    // 工作区块由 **workspace 插件**贡献（`Contribution::Text`），不是 Agent
+    // 自己拼的——所以这里也得把插件装上（与组合根同款接法）。
+    {
+        let host = Arc::new(crate::plugins::PluginHost::new());
+        let prompt_store = store.clone();
+        host.register_and_mount(Arc::new(
+            echo_plugin::BuiltinPlugin::new(
+                echo_plugin::PluginManifest::builtin(
+                    crate::plugins::WORKSPACE_PLUGIN_ID,
+                    "工作区会话",
+                    "1",
+                    "tool",
+                    "workspace",
+                    "",
+                ),
+                |_| Ok(vec![]),
+            )
+            .with_text_blocks([echo_plugin::PluginTextBlock::new(
+                "workspace",
+                "工作区会话",
+                50,
+            )])
+            .with_text_block_content(move |key, ctx| {
+                if key != "workspace" {
+                    return None;
+                }
+                match ctx.get("session_id").and_then(|v| v.as_str()) {
+                    Some(session) if !session.is_empty() => prompt_store
+                        .prompt_text_for(session)
+                        .or_else(|| prompt_store.prompt_text()),
+                    _ => prompt_store.prompt_text(),
+                }
+            }),
+        ))
+        .expect("mount workspace plugin");
+        agent.set_plugin_host(host);
+    }
+    agent.set_workspace_store(store.clone());
 
     let runner = Arc::new(echo_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
@@ -3832,6 +3869,41 @@ async fn workspace_plugin_gates_tool_and_prompt_block() {
         tools,
         Arc::new(InstanceRegistry::new()),
     ));
+    // **文本块的来源是这个插件本身**（`Contribution::Text`）：把插件装上，
+    // 内容按 `{"team_id", "session_id"}` 上下文算——与组合根里的接法一致。
+    let host = Arc::new(crate::plugins::PluginHost::new());
+    {
+        let prompt_store = store.clone();
+        let plugin = echo_plugin::BuiltinPlugin::new(
+            echo_plugin::PluginManifest::builtin(
+                crate::plugins::WORKSPACE_PLUGIN_ID,
+                "工作区会话",
+                "1",
+                "tool",
+                "workspace",
+                "",
+            ),
+            |_| Ok(vec![]),
+        )
+        .with_text_blocks([echo_plugin::PluginTextBlock::new(
+            "workspace",
+            "工作区会话",
+            50,
+        )])
+        .with_text_block_content(move |key, ctx| {
+            if key != "workspace" {
+                return None;
+            }
+            match ctx.get("session_id").and_then(|v| v.as_str()) {
+                Some(session) if !session.is_empty() => prompt_store
+                    .prompt_text_for(session)
+                    .or_else(|| prompt_store.prompt_text()),
+                _ => prompt_store.prompt_text(),
+            }
+        });
+        host.register_and_mount(Arc::new(plugin)).expect("mount");
+    }
+    agent.set_plugin_host(host);
     agent.set_workspace_store(store);
 
     // 白名单含 workspace → 工具可见 + 提示区块注入。

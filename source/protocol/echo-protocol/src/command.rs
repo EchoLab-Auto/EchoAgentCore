@@ -457,6 +457,114 @@ pub enum BackendCommand {
     RequestSelfUpdateStatus,
 }
 
+impl BackendCommand {
+    /// 变体名的**零分配**取值（等于 serde 的线上 tag）。
+    ///
+    /// `BackendCommand` 没有 `rename_all`，所以线上 tag 就是 Rust 变体名——
+    /// 本函数返回的字符串与 `serde_json::to_value(&cmd)` 的第一个键逐字相同
+    /// （有测试守着这条等价关系）。
+    ///
+    /// 用途：命令分发的**插件前置查表**。插件按名字声明"我处理哪些命令"
+    /// （`Contribution::Command`），宿主需要"不序列化就看得到名字"——
+    /// `apply_command` 拿到的是已反序列化的枚举，为拿名字再 `to_value` 一遍
+    /// 是纯浪费（而命令里有大载荷，比如整段消息）。
+    ///
+    /// **穷举 match，没有 `_` 分支**：新增命令变体时编译器会逼你在这里起名。
+    /// 忘了起名会让插件永远收不到该命令，而这种静默失败比编译错误难查得多。
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::SendMessage { .. } => "SendMessage",
+            Self::SwitchModel { .. } => "SwitchModel",
+            Self::SwitchProvider { .. } => "SwitchProvider",
+            Self::SetSystemPrompt { .. } => "SetSystemPrompt",
+            Self::RequestSystemPrompt { .. } => "RequestSystemPrompt",
+            Self::UpdateApiConfig { .. } => "UpdateApiConfig",
+            Self::SwitchApi { .. } => "SwitchApi",
+            Self::SetSessionApi { .. } => "SetSessionApi",
+            Self::ClearSessionApi { .. } => "ClearSessionApi",
+            Self::RequestRemoteApiProfiles { .. } => "RequestRemoteApiProfiles",
+            Self::TestApi { .. } => "TestApi",
+            Self::QueryApiBalance { .. } => "QueryApiBalance",
+            Self::QueryApiMetrics { .. } => "QueryApiMetrics",
+            Self::DeleteApi { .. } => "DeleteApi",
+            Self::RenameApi { .. } => "RenameApi",
+            Self::RequestState { .. } => "RequestState",
+            Self::ToggleSkill { .. } => "ToggleSkill",
+            Self::ToggleTool { .. } => "ToggleTool",
+            Self::SaveSkill { .. } => "SaveSkill",
+            Self::DeleteSkill { .. } => "DeleteSkill",
+            Self::ArchiveHistory { .. } => "ArchiveHistory",
+            Self::CompactHistory { .. } => "CompactHistory",
+            Self::RequestPluginsList { .. } => "RequestPluginsList",
+            Self::RequestTeamsList { .. } => "RequestTeamsList",
+            Self::ToggleTeam { .. } => "ToggleTeam",
+            Self::SaveTeam { .. } => "SaveTeam",
+            Self::DeleteTeam { .. } => "DeleteTeam",
+            Self::TogglePlugin { .. } => "TogglePlugin",
+            Self::RestartPlugin { .. } => "RestartPlugin",
+            Self::RequestContext { .. } => "RequestContext",
+            Self::CancelRequestedWork { .. } => "CancelRequestedWork",
+            Self::InstallSkillFromGit { .. } => "InstallSkillFromGit",
+            Self::UpdateSkillFromGit { .. } => "UpdateSkillFromGit",
+            Self::RemoveSkillSource { .. } => "RemoveSkillSource",
+            Self::RequestTrunkTimeline { .. } => "RequestTrunkTimeline",
+            Self::RequestTimelineEarlier { .. } => "RequestTimelineEarlier",
+            Self::RequestSessionHistory { .. } => "RequestSessionHistory",
+            Self::RequestShellSessions { .. } => "RequestShellSessions",
+            Self::ShellStart { .. } => "ShellStart",
+            Self::ShellExec { .. } => "ShellExec",
+            Self::ShellStop { .. } => "ShellStop",
+            Self::ClearHistory { .. } => "ClearHistory",
+            Self::StartInstance { .. } => "StartInstance",
+            Self::StopInstance { .. } => "StopInstance",
+            Self::RestartInstance { .. } => "RestartInstance",
+            Self::RequestInstanceStatus { .. } => "RequestInstanceStatus",
+            Self::InvokeInstanceOp { .. } => "InvokeInstanceOp",
+            Self::RequestWorkspaceSessions { .. } => "RequestWorkspaceSessions",
+            Self::SaveWorkspaceSession { .. } => "SaveWorkspaceSession",
+            Self::DeleteWorkspaceSession { .. } => "DeleteWorkspaceSession",
+            Self::ActivateWorkspaceSession { .. } => "ActivateWorkspaceSession",
+            Self::RequestWorkspaceGitStatus { .. } => "RequestWorkspaceGitStatus",
+            Self::RequestWorkspaceFiles { .. } => "RequestWorkspaceFiles",
+            Self::RequestBrowseDirectories { .. } => "RequestBrowseDirectories",
+            Self::StartAllInstances { .. } => "StartAllInstances",
+            Self::StopAllInstances { .. } => "StopAllInstances",
+            Self::RequestSkillsList { .. } => "RequestSkillsList",
+            Self::ReloadSkills { .. } => "ReloadSkills",
+            Self::RequestToolsList { .. } => "RequestToolsList",
+            Self::SaveFederationPeer { .. } => "SaveFederationPeer",
+            Self::DeleteFederationPeer { .. } => "DeleteFederationPeer",
+            Self::RequestFederationStatus { .. } => "RequestFederationStatus",
+            Self::RequestFederationInvite { .. } => "RequestFederationInvite",
+            Self::MigrateSession { .. } => "MigrateSession",
+            Self::RequestSelfUpdate { .. } => "RequestSelfUpdate",
+            Self::RequestSelfUpdateStatus { .. } => "RequestSelfUpdateStatus",
+        }
+    }
+
+    /// 命令的**载荷**（自由 JSON；剥掉外层 tag）。
+    ///
+    /// 与 [`Self::kind_name`] 配合，把"已反序列化的命令"降级成"名字 + 载荷"
+    /// 交给插件——插件侧可以再用 `serde_json::from_value::<BackendCommand>`
+    /// 拿回强类型（它依赖 `echo-protocol`，这正是共享词汇的正确位置）。
+    ///
+    /// **单元变体**（无字段命令，如 `RequestPluginsList`）序列化成裸字符串
+    /// `"RequestPluginsList"`，没有载荷 → 返回 `Null`；
+    /// **结构体变体**剥掉外层 tag，返回该变体自己的字段对象。
+    ///
+    /// 失败（不可能发生：命令刚反序列化过）时也返回 `Null`。
+    pub fn payload_value(&self) -> serde_json::Value {
+        let name = self.kind_name();
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(mut map)) => {
+                map.remove(name).unwrap_or(serde_json::Value::Null)
+            }
+            // 单元变体（裸字符串）/ 其它形状：没有可剥的载荷。
+            Ok(_) | Err(_) => serde_json::Value::Null,
+        }
+    }
+}
+
 /// 多上游聚合下**适合广播**的幂等只读命令名集合（参考清单）。
 ///
 /// 历史（准确性校准 2026-10 巡检）：中继曾按命令名白名单判别"能否无壳
@@ -672,5 +780,51 @@ mod tests {
         )
         .unwrap();
         assert_eq!(null, bare);
+    }
+    /// `kind_name()` 与 serde 的线上 tag 逐字相同（插件按名字订阅，分叉即失配）。
+    #[test]
+    fn kind_name_matches_the_serde_tag() {
+        let samples = [
+            BackendCommand::RequestPluginsList,
+            BackendCommand::RestartPlugin { id: "p".into() },
+            BackendCommand::TogglePlugin {
+                id: "p".into(),
+                enabled: true,
+            },
+            BackendCommand::RequestWorkspaceFiles {
+                session_id: "s".into(),
+                team_id: None,
+                path: String::new(),
+            },
+        ];
+        for cmd in &samples {
+            let value = serde_json::to_value(cmd).expect("serialize");
+            // 外部标签枚举：结构体变体 → `{"Name": {...}}`；单元变体 → `"Name"`。
+            let tag = match &value {
+                serde_json::Value::Object(map) => {
+                    map.keys().next().cloned().expect("结构体变体应只有一个键")
+                }
+                serde_json::Value::String(name) => name.clone(),
+                other => panic!("意外的序列化形状: {other:?}"),
+            };
+            assert_eq!(&tag, cmd.kind_name(), "kind_name 与 serde tag 分叉");
+        }
+    }
+
+    /// `payload_value()` 剥掉外层 tag：插件拿到的就是命令自己的字段。
+    #[test]
+    fn payload_value_unwraps_the_tag() {
+        let cmd = BackendCommand::RestartPlugin {
+            id: "echo-agent.x".into(),
+        };
+        let payload = cmd.payload_value();
+        assert_eq!(payload["id"], "echo-agent.x");
+        assert!(payload.get("RestartPlugin").is_none(), "外层 tag 应已剥掉");
+
+        // 无字段命令 → 载荷为 Null（不是缺键，也不是空对象）
+        assert_eq!(
+            BackendCommand::RequestPluginsList.payload_value(),
+            serde_json::Value::Null
+        );
     }
 }
