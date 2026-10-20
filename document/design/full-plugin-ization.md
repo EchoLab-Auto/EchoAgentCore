@@ -10,7 +10,8 @@ y: 3640
 
 > **定位**：目标是把**全部业务逻辑**组织为插件（对齐 dsh / Cordis 的形态：
 > 能力以服务键暴露、以插件装载、可替换可禁用），而不是把宿主掏空。
-> 读者：内核与插件体系的实施者。**状态：实施中**——S1 已完成，S2–S6 见清单。
+> 读者：内核与插件体系的实施者。**状态：S1–S6 已完成**（2026-11）；剩余部分
+> 见 [不搬清单](#不搬清单每条都试过附理由)——每一条都试过，附理由。
 
 ## 一、判据（为什么"代码在插件 crate 里"不等于"业务是插件"）
 
@@ -20,6 +21,7 @@ y: 3640
 |---|---|---|
 | 1 | **实现在插件 crate 里**（零 `echo-agent` 依赖） | 已基本达成 |
 | 2 | **入口经插件机制注册**（命令域 / 文本块 / 工具 / 服务键），宿主不认识它 | 仅剩自管理面与会话写（见 S5 的 11 条） |
+| 4 | **构造不带运行期句柄**（插件自己按键解析宿主能力） | 已达成（S6）：`catalog(version)` |
 | 3 | **副作用经插件��制发出**（事件、状态变更、对其他能力的通知） | `run_tool` 里 `call.name == "checklist"` 的特判；`subagent` 的 hook 派发 |
 
 2026-11 实测（口径：应用代码，已排测试）：
@@ -190,6 +192,101 @@ y: 3640
 **这一轮的方法论**：每次搬迁都先找「**唯一的宿主依赖**」并消掉它——不是
 "给插件一个 `Arc<Agent>`"。9 次里有 6 次的解阻点是**把一个跨边界类型下沉到
 定义层**（`ApiProfile` / `ModelPrice` / 压缩四词汇 / 输入信封）。
+
+### S6：插件零捕获 ——**已完成 2026-11**
+
+用户要求"完全插件化"。这一步回答的是其中一个最具体的问题：**组合根还知不
+知道"哪个插件需要宿主的什么"？**
+
+以前知道。`catalog(version, hosts: &Hosts)`，`Hosts` 有 13 个字段，全是组合
+根手里的运行期句柄：
+
+```text
+persona 管理器 · 事件出口 · 联邦端口集合 · 实例句柄 · 实例接线/运行状态位
+平台名 · Panel 通道桥 · 管理面地址 · 管理面令牌 · 合并模式联邦句柄 · 外部条目
+```
+
+后果不是"main 太长"，而是三条：
+
+1. 新增一个插件 = 改三处（目录、参数组装、门控闭包）；
+2. **插件自己反而不声明它需要什么** —— 依赖知识住在组合根；
+3. 6 个插件各收一个语义完全相同的 `gate: impl Fn(bool)`。
+
+现在：
+
+```rust
+pub fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>>
+```
+
+三层各就各位，每层只回答自己那个问题：
+
+```text
+  host_services::register(ctx, wiring)   ← 宿主：我有什么能力，按什么键
+                ↓  （Context 服务表）
+  插件 mount: mctx.require(&KEY)          ← 插件：我需要什么（缺了就挂不上）
+                ↓
+  catalog(version)                        ← 目录：这个二进制里有什么
+```
+
+框架侧为此补了两件（v0.11.0 / v0.11.1）：`MountContext::service` /
+`require` / `context`，以及 `ServiceSlot<T>`（mount 时解析、处理器里取用、
+卸载自动清空）。
+
+**门控从 6 份闭包收成 1 处**：挂载/卸载事件 → 逐 persona 重算。安全性由既
+有语义保证（`reapply_plugin_gating` 内部再算 `persona_allows_plugin`），所以
+"挂上 = 全局可用"不会突破白名单；新增插件（含组合根不认识的外部插件）自动
+纳入。
+
+**配置驱动的那两项刻意留在目录之外**：平台实例插件（id 由 `[instances.<平台>]`
+派生）与 `plugins.toml` 的外部条目——它们的"存在"取决于这份部署的配置，不
+是这个二进制里有什么。由调用点在目录之后追加。
+
+#### 顺带修掉的两个真 bug
+
+| 现象 | 根因 |
+|---|---|
+| 管理面 WS 起监听后**立刻被卸载**，面板连不上 | 服务是 RAII 的（`Disposer` 落下即注销）；注册句柄放在内层 block 里，block 结束服务全注销 → 注册表 reconcile 把刚挂上的插件级联卸载 |
+| 第一次跑守卫就红 | `loop` 插件声明硬依赖 `llm`，而那个键由组合根更早注册，不在 `host_services` 的清单里 |
+
+前者是真机冒烟抓到的，后者是新增守卫测试抓到的。第二个的修法不是"补个例
+外"，而是让 `provided_keys()` 诚实列出**三类来源**（本层注册 / 组合根早期
+注册 / 插件自 provide）。
+
+#### 同轮归位的两处能力
+
+| 搬走 | 去哪 | 为什么它算能力 |
+|---|---|---|
+| `core/instance_tools.rs`（643 行） | `echo-plugin-tools::instance_bridge` | 插件实例能力的**工具面**（合并 / 寻址 / 出站闸门）。它住在组合根的理由（工具要实现 `echo_agent::Tool`）早已过期——trait 下文到 `echo-tool` 两年了 |
+| `fetch_balance` 等（~110 行） | `echo-plugin-provider-llm::balance` | 供应商的 HTTP 知识（端点归一是真实故障修出来的、响应字段是供应商专有） |
+
+两处都牵出词汇下沉：`OutboundPolicy` / `sensitive_local_path` → 
+`echo-defs::sanitize`（宿主装配与工具插件共用），`ProviderConfig` 投影
+（宿主 7 行适配器）。
+
+#### 数字
+
+```text
+builtin_plugins.rs     676 → 336 行   （-50%，只剩目录 + 三项守卫）
+core/instance_tools.rs 643 →  13 行   （re-export）
+core/security.rs       390 → 324 行   （两个词下沉）
+api_admin.rs         1,257 → 1,167 行 （余额 HTTP 搬走）
+插件 crate           +848 行          （instance_bridge 647 + balance 201）
+7 个插件             plugin(version, host…, gate) → plugin(version)
+```
+
+#### 可执行守卫（防止回退）
+
+`catalog_shape_tests` 四条：
+
+| 守卫 | 抓住什么 |
+|---|---|
+| `every_declared_dependency_is_registered_by_the_host` | 插件声明了宿主没注册的键 → 启动起不来 |
+| `no_command_is_declared_twice_across_the_catalog` | 两插件抢同一命令 → 先挂的静默赢 |
+| `catalog_ids_are_well_formed` | 幽灵 id（`echo-agent.instance.`） |
+| `static_catalog_has_no_deployment_specific_entries` | 配置驱动项混进静态目录 |
+
+加上各插件自己的"声明 ⇒ 认领"测试，"插件声明的东西一定可达"这条不变量在
+两个方向上都有人守。
 
 ## 不搬清单（每条都试过，附理由）
 
