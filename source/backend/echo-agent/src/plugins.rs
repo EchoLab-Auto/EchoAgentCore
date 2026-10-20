@@ -231,6 +231,36 @@ pub struct PluginHost {
     /// `reconcile` 重入保护：依赖变更回调里挂载插件会再注册服务、再触发
     /// 回调——不加这道闸就是无限递归。
     reconciling: std::sync::atomic::AtomicBool,
+    /// 事件投递重入保护：插件的 `on_event` 若又触发一次 `emit`（比如它调了
+    /// 某个会发事件的宿主 API），没有这道闸就会自递归。
+    delivering: std::sync::atomic::AtomicBool,
+    /// **订阅兴趣集**（已挂载插件声明的事件名；挂/卸/启停后刷新）。
+    ///
+    /// 单独缓存的原因：`Agent::emit` 是**热路径**（流式正文每个 token 一条
+    /// 事件）。`any` 是一个原子标志，无订阅者时一次 load 就返回——不给
+    /// 现有部署增加任何可测开销。
+    event_interest: parking_lot::RwLock<EventInterest>,
+    /// 累计投递成功/失败条数（诊断用；不是指标系统）。
+    event_delivered: std::sync::atomic::AtomicU64,
+    event_failed: std::sync::atomic::AtomicU64,
+}
+
+/// 已挂载插件订阅的事件名（`PluginHost` 的缓存）。
+#[derive(Default)]
+struct EventInterest {
+    /// 是否有人订阅（热路径的快速判定；与 `names` / `all` 保持一致）。
+    any: std::sync::atomic::AtomicBool,
+    /// 精确订阅的名字。
+    names: std::collections::HashSet<String>,
+    /// 有插件订阅了 `*`（全收）。
+    all: bool,
+}
+
+impl EventInterest {
+    /// 该事件名是否有人要。
+    fn wants(&self, name: &str) -> bool {
+        self.all || self.names.contains(name)
+    }
 }
 
 impl Default for PluginHost {
@@ -246,6 +276,10 @@ impl PluginHost {
             mount_ctx: parking_lot::Mutex::new(None),
             subprocess: parking_lot::RwLock::new(None),
             reconciling: std::sync::atomic::AtomicBool::new(false),
+            delivering: std::sync::atomic::AtomicBool::new(false),
+            event_interest: parking_lot::RwLock::new(EventInterest::default()),
+            event_delivered: std::sync::atomic::AtomicU64::new(0),
+            event_failed: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -274,6 +308,7 @@ impl PluginHost {
         self.registry
             .mount(&id, &self.ctx())
             .map_err(|e| format!("plugin {id} mount failed: {e}"))?;
+        self.refresh_event_interest();
         Ok(())
     }
 
@@ -327,6 +362,7 @@ impl PluginHost {
                 Err(e) => errors.push(format!("plugin {} mount failed: {e}", step.id)),
             }
         }
+        self.refresh_event_interest();
         (registered, mounted, errors)
     }
 
@@ -389,6 +425,7 @@ impl PluginHost {
                 Err(e) => errors.push(format!("plugin {} mount failed: {e}", step.id)),
             }
         }
+        self.refresh_event_interest();
         (registered, mounted, waiting, errors)
     }
 
@@ -412,7 +449,10 @@ impl PluginHost {
             }
         }
         let _reset = Reset(&self.reconciling);
-        self.registry.reconcile(&self.ctx())
+        let report = self.registry.reconcile(&self.ctx());
+        // 挂上/卸下会改变"谁在订阅"——不刷新的话热路径会按旧集合判断。
+        self.refresh_event_interest();
+        report
     }
 
     /// 注入**插件事件出口**（组合根装配期一次）。
@@ -424,13 +464,143 @@ impl PluginHost {
         self.registry.set_event_sink(sink);
     }
 
-    /// 把一条事件**投递给订阅了它的已挂载插件**（返回成功投递数）。
+    /// 把一条**插件事件**投递给订阅了它的已挂载插件（返回成功投递数）。
     ///
-    /// 谁来调：宿主在广播领域事件时顺手投一份（本轮**未接线**——目前没有
-    /// 订阅方；接线点是 `Agent::emit` 的汇聚处，等第一个真实订阅者出现再做，
-    /// 免得变成"每条事件都空转一圈"）。
+    /// 这是**插件自己发的**事件（`MountContext::emit`）的回流路径：一个插件
+    /// emit 的东西，其他订阅了同名事件的插件也能看到。宿主领域事件走
+    /// [`Self::deliver_backend_event`]。
     pub fn deliver_plugin_event(&self, event: &echo_plugin::PluginEvent) -> usize {
-        self.registry.deliver_event(event)
+        self.deliver_guarded(event)
+    }
+
+    /// 把一条**宿主领域事件**（`BackendEvent`）转投给订阅了它的插件。
+    ///
+    /// ## 谁调、什么时候
+    ///
+    /// `Agent::emit` 在事件上总线之后调这里——**同一个汇聚点**，所以插件看到
+    /// 的事件顺序与面板一致。事件名用 [`echo_protocol::BackendEvent::kind_name`]
+    /// （零分配，等于 serde 的线上 tag），载荷是整条事件序列化成的 JSON。
+    ///
+    /// ## 成本
+    ///
+    /// 热路径保护分三层，没有订阅者时**一层就返回**：
+    /// 1. [`Self::has_event_subscribers`] —— 一次原子 load（`Agent::emit` 先调它）；
+    /// 2. [`Self::wants_event`] —— 读缓存的名字集合，不做序列化；
+    /// 3. 只有真的有人订阅这个名字，才 `serde_json::to_value` 一次。
+    ///
+    /// 所以「没有任何插件订阅事件」的部署（当前全部部署）**零额外开销**；
+    /// 有人订阅 `*` 才会为每条事件付一次序列化——那是订阅方明确选择的。
+    pub fn deliver_backend_event(&self, event: &echo_protocol::BackendEvent) -> usize {
+        let name = event.kind_name();
+        if !self.wants_event(name) {
+            return 0;
+        }
+        // 只在这一步付序列化代价（有人真的订阅了这个名字）。
+        let payload = match serde_json::to_value(event) {
+            Ok(serde_json::Value::Object(mut map)) => {
+                map.remove(name).unwrap_or(serde_json::Value::Null)
+            }
+            Ok(other) => other,
+            Err(error) => {
+                tracing::warn!(%error, %name, "plugin event payload serialization failed");
+                return 0;
+            }
+        };
+        let plugin_event = echo_plugin::PluginEvent::host(name, payload);
+        self.deliver_guarded(&plugin_event)
+    }
+
+    /// 是否有任何已挂载插件订阅了事件（热路径的快速判定）。
+    pub fn has_event_subscribers(&self) -> bool {
+        self.event_interest
+            .read()
+            .any
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 该事件名当前是否有人订阅（不做序列化，供调用方提前分流）。
+    pub fn wants_event(&self, name: &str) -> bool {
+        let interest = self.event_interest.read();
+        interest.any.load(std::sync::atomic::Ordering::Relaxed) && interest.wants(name)
+    }
+
+    /// 投递 + 重入保护 + 计数。
+    fn deliver_guarded(&self, event: &echo_plugin::PluginEvent) -> usize {
+        use std::sync::atomic::Ordering;
+        // 插件的 `on_event` 里若再触发 emit，内层直接丢（记一次失败计数）。
+        if self.delivering.swap(true, Ordering::SeqCst) {
+            self.event_failed.fetch_add(1, Ordering::Relaxed);
+            tracing::debug!(
+                name = %event.name,
+                "plugin event dropped: delivery is already in progress (re-entrant emit)"
+            );
+            return 0;
+        }
+        struct Reset<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset(&self.delivering);
+        let delivered = self.registry.deliver_event(event);
+        if delivered > 0 {
+            self.event_delivered
+                .fetch_add(delivered as u64, Ordering::Relaxed);
+        }
+        delivered
+    }
+
+    /// 重算**订阅兴趣集**（挂载/卸载/启停后必须调；否则热路径的判断会过期）。
+    ///
+    /// 只统计**已挂载**的插件——没挂载的插件不该收到事件，替它"占位"订阅会
+    /// 让热路径付无意义的序列化代价。
+    pub fn refresh_event_interest(&self) {
+        use std::sync::atomic::Ordering;
+        let mut names = std::collections::HashSet::new();
+        let mut all = false;
+        for descriptor in self.registry.descriptors() {
+            if !descriptor.enabled || !self.registry.is_mounted(&descriptor.id) {
+                continue;
+            }
+            for name in &descriptor.subscribed_events {
+                if name == echo_plugin::ALL_EVENTS {
+                    all = true;
+                } else {
+                    names.insert(name.clone());
+                }
+            }
+        }
+        let any = all || !names.is_empty();
+        let mut interest = self.event_interest.write();
+        interest.names = names;
+        interest.all = all;
+        interest.any.store(any, Ordering::Relaxed);
+        drop(interest);
+        tracing::debug!(
+            all,
+            count = self.event_interest.read().names.len(),
+            "plugin event interest refreshed"
+        );
+    }
+
+    /// **仅测试用**：同步切换启用状态（生产路径走 async 的 [`Self::set_enabled`]，
+    /// 那条要读写配置/子进程；测试只关心事件闸门）。
+    #[cfg(test)]
+    fn set_plugin_enabled_for_tests(&self, id: &str, enabled: bool) {
+        self.registry
+            .set_enabled(id, enabled, &self.ctx())
+            .expect("set_enabled");
+        self.refresh_event_interest();
+    }
+
+    /// 事件投递计数（成功条数, 失败条数）——诊断用。
+    pub fn event_counters(&self) -> (u64, u64) {
+        (
+            self.event_delivered
+                .load(std::sync::atomic::Ordering::Relaxed),
+            self.event_failed.load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
 
     /// 眼下还缺依赖的插件（`id → 缺的键`）。
@@ -508,7 +678,11 @@ impl PluginHost {
 
     /// Runtime toggle; persists via the configured `disabled_plugins` hook.
     pub async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
-        self.registry.set_enabled(id, enabled, &self.ctx())
+        let result = self.registry.set_enabled(id, enabled, &self.ctx());
+        if result.is_ok() {
+            self.refresh_event_interest();
+        }
+        result
     }
 
     /// 重载一个插件（卸下 → 重新挂载）；**不改**启用状态。
@@ -517,7 +691,11 @@ impl PluginHost {
     /// `disabled_plugins`、不触发持久化——面板的「重启」按钮走这条，
     /// 免掉"重启一次就在配置里留一条禁用记录"的副作用。
     pub fn restart(&self, id: &str) -> Result<(), String> {
-        self.registry.restart(id, &self.ctx())
+        let result = self.registry.restart(id, &self.ctx());
+        if result.is_ok() {
+            self.refresh_event_interest();
+        }
+        result
     }
 
     /// 把一批插件标记为禁用（**只改注册表状态**，不写配置、不持久化）。
@@ -1092,6 +1270,218 @@ mod tests {
         assert_eq!(
             host.descriptors()[0].subscribed_events,
             vec![echo_plugin::ALL_EVENTS.to_string()]
+        );
+    }
+
+    // ── 宿主 → 插件：事件投递（plugin-framework v0.7 接线）───────────────
+
+    /// 挂一个订阅 `subs` 的插件，返回它收到的事件名列表。
+    fn subscribe_probe(
+        host: &PluginHost,
+        id: &str,
+        subs: &[&str],
+    ) -> Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> {
+        let seen: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let plugin = echo_plugin::BuiltinPlugin::new(
+            echo_plugin::PluginManifest::builtin(id, id, "1", "tool", "", ""),
+            |_| Ok(vec![]),
+        )
+        .with_subscriptions(subs.to_vec())
+        .with_event_handler(move |event: &echo_plugin::PluginEvent| {
+            sink.lock()
+                .unwrap()
+                .push((event.name.clone(), event.payload.clone()));
+            Ok(())
+        });
+        host.register_and_mount(Arc::new(plugin)).expect("mount ok");
+        seen
+    }
+
+    /// 领域事件（`BackendEvent`）→ 按 `kind_name()` 投给订阅者，载荷是
+    /// 该变体的**内层**对象（外层 tag 已被剥掉，与插件事件同构）。
+    #[test]
+    fn backend_events_reach_subscribers_with_unwrapped_payload() {
+        let host = PluginHost::new();
+        host.set_mount_ctx(echo_plugin::MountContext::new());
+        let seen = subscribe_probe(&host, "obs.tools", &["ToolCall"]);
+
+        assert!(host.has_event_subscribers(), "有订阅者后热路径闸门应打开");
+        assert!(host.wants_event("ToolCall"));
+        assert!(
+            !host.wants_event("AgentContentDelta"),
+            "没订阅的名字不该通过"
+        );
+
+        let delivered = host.deliver_backend_event(&echo_protocol::BackendEvent::ToolCall {
+            session_id: "s1".into(),
+            team_id: None,
+            tool_name: "bash".into(),
+            arguments: r#"{"cmd":"ls"}"#.into(),
+            tool_call_id: "call-1".into(),
+            branch_id: String::new(),
+            started_at_ms: None,
+        });
+        assert_eq!(delivered, 1);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "ToolCall");
+        // 内层对象：能直接取到字段（不需要先挖一层 ["ToolCall"]）
+        assert_eq!(seen[0].1["tool_name"], "bash");
+        // `arguments` 在协议里是**字符串**（模型给的原始 JSON 文本），插件拿到
+        // 的也一模一样——框架不做解析，避免替插件决定 schema。
+        assert_eq!(seen[0].1["arguments"], r#"{"cmd":"ls"}"#);
+        assert_eq!(seen[0].1["tool_call_id"], "call-1");
+        assert!(seen[0].1.get("ToolCall").is_none(), "外层 tag 应已剥掉");
+    }
+
+    /// 没订阅的名字**不做序列化**：`wants_event` 是热路径的第二道闸。
+    #[test]
+    fn unsubscribed_event_names_are_filtered_before_serialization() {
+        let host = PluginHost::new();
+        host.set_mount_ctx(echo_plugin::MountContext::new());
+        // 出口先接上（否则挂载时那条 lifecycle 事件没人接）。
+        let emitted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let e = emitted.clone();
+        host.set_event_sink(Arc::new(move |_| {
+            e.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        subscribe_probe(&host, "obs.one", &["ToolCall"]);
+        let lifecycle = emitted.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(lifecycle, 1, "挂载产生一条 plugin.mounted");
+
+        // 没人订阅 Error → 0 次投递，且**不进失败计数**（过滤不是错误）
+        assert_eq!(
+            host.deliver_backend_event(&echo_protocol::BackendEvent::Error {
+                session_id: None,
+                message: "x".into(),
+            }),
+            0
+        );
+        assert_eq!(host.event_counters(), (0, 0));
+        assert_eq!(
+            emitted.load(std::sync::atomic::Ordering::SeqCst),
+            lifecycle,
+            "被过滤的事件不该产生任何对外 emitted"
+        );
+    }
+
+    /// 订阅 `*` 收全部；未挂载（禁用）的订阅者收不到，且**不占位**兴趣集。
+    #[test]
+    fn wildcard_subscription_and_unmounted_subscribers() {
+        let host = PluginHost::new();
+        host.set_mount_ctx(echo_plugin::MountContext::new());
+        let all = subscribe_probe(&host, "obs.all", &[echo_plugin::ALL_EVENTS]);
+        assert!(host.wants_event("AnythingAtAll"));
+
+        // 禁用后：既收不到，也不该让热路径继续打开。
+        host.set_plugin_enabled_for_tests("obs.all", false);
+        assert!(
+            !host.has_event_subscribers(),
+            "唯一订阅者被禁用后闸门应关闭"
+        );
+        assert_eq!(
+            host.deliver_backend_event(&echo_protocol::BackendEvent::Error {
+                session_id: None,
+                message: "x".into(),
+            }),
+            0
+        );
+        assert!(all.lock().unwrap().is_empty());
+
+        // 重新启用 → 闸门重开（refresh 挂在 set_enabled 上）。
+        host.set_plugin_enabled_for_tests("obs.all", true);
+        assert!(host.has_event_subscribers());
+        assert_eq!(
+            host.deliver_backend_event(&echo_protocol::BackendEvent::Error {
+                session_id: None,
+                message: "x".into(),
+            }),
+            1
+        );
+    }
+
+    /// 重入保护：插件在 `on_event` 里再次触发投递，内层被丢弃而不是递归。
+    #[test]
+    fn reentrant_delivery_is_dropped_instead_of_recursing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let host = Arc::new(PluginHost::new());
+        host.set_mount_ctx(echo_plugin::MountContext::new());
+        let depth = Arc::new(AtomicUsize::new(0));
+        let observed_max = Arc::new(AtomicUsize::new(0));
+        let (d, o, h) = (depth.clone(), observed_max.clone(), host.clone());
+        host.register_and_mount(Arc::new(
+            echo_plugin::BuiltinPlugin::new(
+                echo_plugin::PluginManifest::builtin("obs.re", "r", "1", "tool", "", ""),
+                |_| Ok(vec![]),
+            )
+            .with_subscriptions([echo_plugin::ALL_EVENTS])
+            .with_event_handler(move |_| {
+                let now = d.fetch_add(1, Ordering::SeqCst) + 1;
+                o.fetch_max(now, Ordering::SeqCst);
+                // 在回调里再次投递（真实场景：插件处理事件时调了个会发事件的
+                // 宿主 API）。没有重入位这里会栈溢出。
+                h.deliver_backend_event(&echo_protocol::BackendEvent::Error {
+                    session_id: None,
+                    message: "nested".into(),
+                });
+                d.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        ))
+        .expect("mount ok");
+
+        assert_eq!(
+            host.deliver_backend_event(&echo_protocol::BackendEvent::Error {
+                session_id: None,
+                message: "outer".into(),
+            }),
+            1,
+            "外层投递成功；内层被丢弃"
+        );
+        assert_eq!(observed_max.load(Ordering::SeqCst), 1, "不该嵌套");
+        let (ok, failed) = host.event_counters();
+        assert_eq!(ok, 1);
+        assert_eq!(failed, 1, "被丢弃的内层记一次失败");
+    }
+
+    /// 插件自己 emit 的事件也会回流给订阅了同名的**其他**插件。
+    #[test]
+    fn plugin_emitted_events_flow_back_to_other_subscribers() {
+        let host = PluginHost::new();
+        host.set_mount_ctx(echo_plugin::MountContext::new());
+        let seen = subscribe_probe(&host, "obs.listener", &["custom.ping"]);
+        host.deliver_plugin_event(&echo_plugin::PluginEvent::new(
+            "obs.emitter",
+            "custom.ping",
+            serde_json::json!({"n": 1}),
+        ));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "custom.ping");
+        assert_eq!(seen[0].1["n"], 1);
+    }
+
+    /// 没有任何订阅者时：热路径闸门关闭（`Agent::emit` 因此一次原子 load
+    /// 就返回），且投递是 no-op。
+    #[test]
+    fn no_subscribers_keeps_the_hot_path_closed() {
+        let host = PluginHost::new();
+        host.set_mount_ctx(echo_plugin::MountContext::new());
+        host.register_and_mount(Arc::new(echo_plugin::BuiltinPlugin::new(
+            echo_plugin::PluginManifest::builtin("plain", "p", "1", "tool", "", ""),
+            |_| Ok(vec![]),
+        )))
+        .expect("mount ok");
+        assert!(!host.has_event_subscribers());
+        assert!(!host.wants_event("ToolCall"));
+        assert_eq!(
+            host.deliver_backend_event(&echo_protocol::BackendEvent::Error {
+                session_id: None,
+                message: "x".into(),
+            }),
+            0
         );
     }
 }

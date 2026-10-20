@@ -1423,6 +1423,81 @@ pub struct BackendState {
 /// `BackendEvent` is dispatchable on the harness event bus: the enum derives
 /// Clone + Debug + Send + Sync, this impl declares the membership so
 /// listeners can subscribe by event type (dsh typed events).
+impl BackendEvent {
+    /// 变体名的**零分配**取值（等于 serde 的线上 tag）。
+    ///
+    /// `BackendEvent` 没有 `rename_all`，所以线上 tag 就是 Rust 变体名——
+    /// 本函数返回的字符串与 `serde_json::to_value(&event)` 的第一个键逐字
+    /// 相同。（有测试守着这条等价关系。）
+    ///
+    /// 为什么需要它：插件事件通道要**先按名字判断有无订阅者，再决定要不要
+    /// 序列化载荷**。流式事件（`AgentContentDelta` 等）每个 token 一条，若为了
+    /// 拿名字而先 `to_value` 一遍，等于给热路径加一次全量序列化。这里是一次
+    /// 无分配的 match。
+    ///
+    /// **穷举 match，没有 `_` 分支**：新增变体时编译器会逼你在这里起名——
+    /// 忘了起名会让插件永远收不到该事件，而这种静默失败比编译错误难查得多。
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::InstanceStateChanged { .. } => "InstanceStateChanged",
+            Self::MessageReceived { .. } => "MessageReceived",
+            Self::AgentThinking { .. } => "AgentThinking",
+            Self::LlmRequest { .. } => "LlmRequest",
+            Self::LlmResponse { .. } => "LlmResponse",
+            Self::AgentReasoning { .. } => "AgentReasoning",
+            Self::SubagentStarted { .. } => "SubagentStarted",
+            Self::SubagentCompleted { .. } => "SubagentCompleted",
+            Self::ReplyBranchStarted { .. } => "ReplyBranchStarted",
+            Self::ReplyBranchContent { .. } => "ReplyBranchContent",
+            Self::ReplyBranchCompleted { .. } => "ReplyBranchCompleted",
+            Self::ToolCall { .. } => "ToolCall",
+            Self::ToolResult { .. } => "ToolResult",
+            Self::AgentContentDelta { .. } => "AgentContentDelta",
+            Self::AgentReasoningDelta { .. } => "AgentReasoningDelta",
+            Self::ChecklistUpdated { .. } => "ChecklistUpdated",
+            Self::AgentOutput { .. } => "AgentOutput",
+            Self::AgentCompleted { .. } => "AgentCompleted",
+            Self::SessionUpdated { .. } => "SessionUpdated",
+            Self::ActiveTurnsSnapshot { .. } => "ActiveTurnsSnapshot",
+            Self::FederationStatus { .. } => "FederationStatus",
+            Self::SessionMigrated { .. } => "SessionMigrated",
+            Self::SelfUpdateStatus { .. } => "SelfUpdateStatus",
+            Self::FederationInvite { .. } => "FederationInvite",
+            Self::ContextSnapshot { .. } => "ContextSnapshot",
+            Self::ShellSessionsList { .. } => "ShellSessionsList",
+            Self::ShellSessionStarted { .. } => "ShellSessionStarted",
+            Self::ShellExecStarted { .. } => "ShellExecStarted",
+            Self::ShellExecOutput { .. } => "ShellExecOutput",
+            Self::ShellExecDone { .. } => "ShellExecDone",
+            Self::ShellSessionClosed { .. } => "ShellSessionClosed",
+            Self::TrunkTimeline { .. } => "TrunkTimeline",
+            Self::TimelineEarlier { .. } => "TimelineEarlier",
+            Self::SessionHistory { .. } => "SessionHistory",
+            Self::ApiConfigUpdated { .. } => "ApiConfigUpdated",
+            Self::RemoteApiProfiles { .. } => "RemoteApiProfiles",
+            Self::ApiProfilesUpdated { .. } => "ApiProfilesUpdated",
+            Self::SkillsList { .. } => "SkillsList",
+            Self::ToolsList { .. } => "ToolsList",
+            Self::PluginsList { .. } => "PluginsList",
+            Self::PluginOpResult { .. } => "PluginOpResult",
+            Self::PluginEvent { .. } => "PluginEvent",
+            Self::TeamsList { .. } => "TeamsList",
+            Self::ApiTestResult { .. } => "ApiTestResult",
+            Self::ApiBalanceResult { .. } => "ApiBalanceResult",
+            Self::ApiMetrics { .. } => "ApiMetrics",
+            Self::SystemPrompt { .. } => "SystemPrompt",
+            Self::Error { .. } => "Error",
+            Self::InstanceList { .. } => "InstanceList",
+            Self::InstanceOpResult { .. } => "InstanceOpResult",
+            Self::InstanceState { .. } => "InstanceState",
+            Self::WorkspaceSessions { .. } => "WorkspaceSessions",
+            Self::WorkspaceGitStatus { .. } => "WorkspaceGitStatus",
+            Self::WorkspaceFiles { .. } => "WorkspaceFiles",
+            Self::BrowseDirectories { .. } => "BrowseDirectories",
+        }
+    }
+}
+
 impl echo_context::Event for BackendEvent {}
 
 #[cfg(test)]
@@ -1617,6 +1692,52 @@ mod session_history_tests {
                 assert_eq!(max_seq, 0);
             }
             other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// `kind_name()` 必须与 serde 的线上 tag 逐字相同。
+    ///
+    /// 为什么值得一条测试：插件按 `kind_name()` 的名字订阅，而面板与子进程
+    /// 插件按 serde 的 tag 匹配——两者一旦分叉，同一条事件在两条通路上会被
+    /// 认成两件事，且**没有任何一方报错**。这里用手头几个代表变体做交叉校验
+    /// （含一个流式变体、一个带 Option 字段的、一个新加的）。
+    #[test]
+    fn kind_name_matches_the_serde_tag() {
+        let samples = [
+            BackendEvent::AgentContentDelta {
+                session_id: "s".into(),
+                team_id: None,
+                branch_id: String::new(),
+                delta: "x".into(),
+            },
+            BackendEvent::Error {
+                session_id: None,
+                message: "boom".into(),
+            },
+            BackendEvent::PluginEvent {
+                plugin: "p".into(),
+                name: "x".into(),
+                payload: serde_json::Value::Null,
+                at_ms: 1,
+            },
+            BackendEvent::PluginOpResult {
+                id: "p".into(),
+                op: "restart".into(),
+                ok: true,
+                message: "ok".into(),
+            },
+        ];
+        for event in &samples {
+            let value = serde_json::to_value(event).expect("serialize");
+            let tag = value
+                .as_object()
+                .and_then(|m| m.keys().next())
+                .expect("externally tagged enum: 顶层只有一个键");
+            assert_eq!(
+                tag,
+                event.kind_name(),
+                "kind_name 与 serde tag 分叉（订阅侧会收不到）"
+            );
         }
     }
 }

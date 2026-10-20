@@ -4599,3 +4599,61 @@ async fn instance_list_fills_platform_ui_and_session_labels() {
     assert_eq!(value["ui"]["version"], serde_json::json!(1));
     assert_eq!(value["session_labels"]["dm"], serde_json::json!("私聊"));
 }
+
+// ── 宿主 → 插件的事件投递（plugin-framework v0.7 接线）──
+
+/// `Agent::emit` 是**唯一**的领域事件汇聚点：订阅了某事件名的插件应当收到它，
+/// 且热路径闸门（无人订阅时一次原子 load 返回）在挂上订阅者后打开。
+///
+/// 这条测试走真实 `Agent::emit`，不是直接调 `PluginHost`——接线的价值就在
+/// "emit 的输出真的流到插件"，只测 PluginHost 盖不住那个接缝。
+#[tokio::test]
+async fn agent_emit_delivers_to_subscribed_plugins() {
+    let agent = test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "x".into(),
+    }));
+    let host = Arc::new(crate::plugins::PluginHost::new());
+    host.set_mount_ctx(echo_plugin::MountContext::new());
+    agent.set_plugin_host(host.clone());
+
+    // 无人订阅：闸门关闭（这是现网全部部署的状态）。
+    assert!(!host.has_event_subscribers());
+
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = seen.clone();
+    host.register_and_mount(Arc::new(
+        echo_plugin::BuiltinPlugin::new(
+            echo_plugin::PluginManifest::builtin("obs.tool", "o", "1", "tool", "", ""),
+            |_| Ok(vec![]),
+        )
+        .with_subscriptions(["ToolResult"])
+        .with_event_handler(move |event: &echo_plugin::PluginEvent| {
+            sink.lock().unwrap().push(event.name.clone());
+            Ok(())
+        }),
+    ))
+    .expect("mount ok");
+    assert!(host.has_event_subscribers(), "挂上订阅者后闸门应打开");
+
+    // 订阅的事件 → 到达。
+    agent.emit(echo_protocol::BackendEvent::ToolResult {
+        session_id: "s1".into(),
+        team_id: None,
+        tool_name: "bash".into(),
+        result: "ok".into(),
+        tool_call_id: String::new(),
+        timed_out: false,
+        branch_id: String::new(),
+        elapsed_ms: Some(12),
+    });
+    assert_eq!(*seen.lock().unwrap(), vec!["ToolResult".to_string()]);
+
+    // 没订阅的事件 → 被名字闸门挡掉（连序列化都不做）。
+    agent.emit(echo_protocol::BackendEvent::Error {
+        session_id: None,
+        message: "boom".into(),
+    });
+    assert_eq!(seen.lock().unwrap().len(), 1, "未订阅的事件不该到达插件");
+    assert_eq!(host.event_counters().0, 1, "只有那一条进成功计数");
+}

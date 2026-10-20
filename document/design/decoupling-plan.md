@@ -269,9 +269,19 @@ Phase 3 把实现搬出了 echo-agent，但 inproc 轨只兑现了**工具贡献
     的插件详情直接显示"最近事件"。协议新增 `BackendEvent::PluginEvent
     { plugin, name, payload, at_ms }`（`payload` 是自由 JSON，前端不解释词汇，
     所以新增插件事件不必再改 Core 协议）。
-  - 宿主侧只接了**插件 → 面板**这一段；**宿主 → 插件**的投递点
-    （`PluginHost::deliver_plugin_event`）已就位但**故意未接线**：目前没有真实
-    订阅方，接上去就是"每条事件空转一圈"，等第一个订阅者出现再接。
+  - **宿主 → 插件**（本轮接线）：`Agent::emit` 与 `Agent::emit_handle` 两条
+    出口都会把领域事件投给订阅者——只在一条上投递会让"插件能看到哪些事件"
+    取决于 Core 内部走了哪条路。事件名用 `BackendEvent::kind_name()`（零分配
+    的穷举 match，等于 serde 的线上 tag，有测试守着等价性），载荷是**剥掉外层
+    tag 后的内层对象**（与插件事件同构）。
+  - **热路径成本**三层闸门，无订阅者时**一层就返回**（一次原子 load）：
+    `has_event_subscribers()` → `wants_event(name)`（不序列化）→ 真的有人订阅
+    这个名字才 `serde_json::to_value` 一次。当前所有部署都没有插件声明
+    `subscribed_events`，所以这次接线**零额外开销**；订阅 `*` 才为每条事件付
+    一次序列化，那是订阅方明确选择的。兴趣集在挂载/卸载/启停/重启/`reconcile`
+    后自动刷新（`PluginHost::refresh_event_interest`）。
+  - **投递重入保护**：插件在 `on_event` 里又触发一次投递（调了个会发事件的
+    宿主 API）时，内层直接丢弃 + 记一次失败计数，不递归。
 - [ ] 下一步（未做）：声明式 inject 的**类型化**校验（需 M5 去业务化后重估）、
   插件树在业务侧的第一个真实消费者（workspace 子会话 / subagent 隔离上下文
   最像）、`PluginHost::deliver_plugin_event` 的接线（等真实订阅方）。

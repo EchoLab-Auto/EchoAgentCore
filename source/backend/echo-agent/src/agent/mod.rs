@@ -842,6 +842,9 @@ impl Agent {
         let bus = self.event_bus.clone();
         let sink = self.event_sink.read().ok().and_then(|g| g.clone());
         let handle = self.handle.try_read().ok().and_then(|g| g.clone());
+        // 插件事件出口的快照（与 bus/sink 同口径：创建时快照，避免跨 await
+        // 边界持锁）。`None` = 当时未注入宿主。
+        let host_handle = self.plugin_host.read().ok().map(|g| g.clone());
         let team = self.team_id();
         std::sync::Arc::new(move |event| {
             // 与 emit 同口径（2026-10 修复）：此前本路径绕过 annotate_team
@@ -849,6 +852,11 @@ impl Agent {
             // 会静默漏标 team（Panel 按 team 过滤时串显）。现共享
             // annotate_team_for（team 快照于创建时，与 sink/handle 一致）。
             let event = Self::annotate_team_for(event, team.clone());
+            if let Some(host) = host_handle.as_ref() {
+                if host.has_event_subscribers() {
+                    host.deliver_backend_event(&event);
+                }
+            }
             bus.emit_sync(event.clone(), echo_context::DispatchMode::Observe);
             if let Some(sink) = &sink {
                 sink(event);
@@ -864,6 +872,7 @@ impl Agent {
         // 中心化注入 team_id：多 team 场景下 Panel 需要知道事件归属哪个
         // team，才能过滤实时消息（避免串线）。
         let event = self.annotate_team(event);
+        self.deliver_event_to_plugins(&event);
         self.event_bus
             .emit_sync(event.clone(), echo_context::DispatchMode::Observe);
         // 汇聚点优先：组合根把所有 persona 都接到同一个进程级汇聚点，
@@ -880,6 +889,25 @@ impl Agent {
             .and_then(|g| g.as_ref())
         {
             h.emit(event);
+        }
+    }
+
+    /// 把一条领域事件投给订阅了它的已挂载插件（plugin-framework v0.7 事件通道）。
+    ///
+    /// **热路径**：`emit` 会被流式正文逐 token 调用，所以门槛是
+    /// `has_event_subscribers()`——**一次原子 load**，无人订阅就立刻返回。
+    /// 当前所有部署都属这一类（没有任何内置插件声明 `subscribed_events`），
+    /// 因此这次接线不增加可测开销；有人订阅才继续走名字判定与序列化
+    /// （三层保护见 `PluginHost::deliver_backend_event`）。
+    ///
+    /// 为什么 `emit` 与 `emit_handle` **都**调它：两条都是"事件出口"
+    /// （后者给联邦命令处理器这类跨 await 的调用方）。只在一条上投递，会让
+    /// "插件能看到哪些事件"取决于 Core 内部走了哪条路——那种不一致没法从
+    /// 插件侧解释。
+    fn deliver_event_to_plugins(&self, event: &BackendEvent) {
+        let host = self.plugin_host();
+        if host.has_event_subscribers() {
+            host.deliver_backend_event(event);
         }
     }
 
