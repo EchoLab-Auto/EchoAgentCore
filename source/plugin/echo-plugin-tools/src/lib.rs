@@ -37,6 +37,7 @@ use std::sync::Arc;
 
 use echo_tool::ToolRegistry;
 
+pub mod host_keys;
 pub mod calculator;
 pub mod checklist;
 pub mod coding;

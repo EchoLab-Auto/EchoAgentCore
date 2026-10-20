@@ -3494,9 +3494,14 @@ fn install_workspace_plugin(agent: &Arc<Agent>) {
         ),
     );
     let plugin_host = Arc::new(crate::plugins::PluginHost::new());
-    plugin_host.set_mount_ctx(echo_plugin::MountContext::new());
+    // 宿主接缝经服务表（全插件化 S6：插件构造不再收参数）。
+    let ctx = std::sync::Arc::new(echo_context::Ctx::default());
+    let _keep = ctx
+        .provide(&echo_plugin_workspace::host_keys::WORKSPACE_HOST, host)
+        .expect("workspace host 注册");
+    plugin_host.set_mount_ctx(echo_plugin::MountContext::new().with_ctx(ctx));
     plugin_host
-        .register_and_mount(echo_plugin_workspace::plugin("test", host, |_| {}))
+        .register_and_mount(echo_plugin_workspace::plugin("test"))
         .expect("mount workspace plugin");
     agent.set_plugin_host(plugin_host);
 }

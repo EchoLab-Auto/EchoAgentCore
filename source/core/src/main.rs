@@ -15,6 +15,7 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod builtin_plugins;
+mod host_services;
 mod agent_supervisor;
 mod config;
 mod federation_import;
@@ -1403,10 +1404,20 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 回合驱动：**由 `echo-plugin-loop` 在挂载时 provide**，本块结束时解析出来。
     // 声明在这里（块外）是为了后面每个人格接线（`set_loop_runner`）用同一实例。
     let loop_runner: Arc<echo_loop::TurnRunner>;
+    // 宿主能力的注册句柄：**必须活到进程结束**。
+    //
+    // 服务是 RAII 的（`Disposer` 落下即注销），而插件在 `mount` 里按服务键
+    // 解析宿主能力、注册表在服务变化时会 `reconcile`——把这个 Vec 放在内层
+    // block 里，block 一结束服务就全被注销，**插件会被级联卸载**（真实踩到：
+    // 管理面 WS 起监听后立刻被卸掉，面板连不上）。与 `loop_runner` 同一模式：
+    // 声明在外层、赋值在内层。
+    let _host_service_keep: Vec<echo_context::Disposer>;
     {
         use echo_plugin::MountContext;
 
         let plugin_host = plugin_host.clone();
+        // persona 管理器：门控（挂载/卸载事件的反应）与宿主能力注册都要它。
+        let gating_manager = supervisor.manager();
         // 挂载上下文只带服务定位器（框架层零领域依赖；`tools`/`skills` 两个
         // sink 是死代码，2026-10 M2 删除——见 echo_agent::plugins 模块文档）。
         plugin_host.set_mount_ctx(MountContext::new().with_ctx(ctx.clone()));
@@ -1418,8 +1429,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 谁挂上了"这一段（那正是排查装配问题时最想看的部分）。
         {
             let sink = event_sink.clone();
+            // 门控接在这里（全插件化 S6）：`plugin.mounted` / `plugin.unmounted`
+            // → 逐 persona 重算可用性。此前是 6 个插件各收一个 `gate` 闭包，
+            // 于是"新增插件"要记得写第 7 份；现在一处逻辑覆盖全部插件——包括
+            // 组合根根本不认识的外部插件。
+            //
+            // 安全前提：`reapply_plugin_gating` 内部会再算一次
+            // `persona_allows_plugin`，所以"挂上 = 全局可用"不会突破白名单。
+            let gating_manager = gating_manager.clone();
             plugin_host.set_event_sink(std::sync::Arc::new(
                 move |event: echo_plugin::PluginEvent| {
+                    crate::host_services::gating_from_plugin_event(&gating_manager, &event);
                     sink(echo_protocol::BackendEvent::PluginEvent {
                         plugin: event.plugin,
                         name: event.name,
@@ -1460,8 +1480,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             );
         }
 
-        let gating_manager = supervisor.manager();
-
         let version = env!("CARGO_PKG_VERSION");
         // 配置化组合（P4）：内置插件的**构造**留在代码里（mount 闭包要
         // 捕获运行期句柄：端口 / token / 实例句柄 / broker…），但**集合、
@@ -1473,9 +1491,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 而是**归属**：`plugins.toml` 决定"装哪些、什么顺序"，代码决定"目录
         // 里有什么、各自 mount 做什么"。两者放在一起时，"新增一个内置插件要
         // 改哪里"没有答案。
-        let catalog = crate::builtin_plugins::catalog(
-            version,
-            &crate::builtin_plugins::Hosts {
+        // ── 宿主能力 → 服务表（全插件化 S6）──
+        //
+        // 插件构造不再带参数：每个插件在自己的 `mount` 里按**它声明的键**
+        // 解析宿主能力（`MountContext::require`）。组合根因此只剩一件事——
+        // 把手里这些"配置表达不了、只有装配期知道"的句柄按同一批键注册。
+        //
+        // 顺序要求：**必须在任何 mount 之前**。注册晚了的表现为插件
+        // `MissingService{available}` 挂不上（错误里带着当时已有的键，好查）。
+        _host_service_keep = crate::host_services::register(
+            &ctx,
+            crate::host_services::HostWiring {
                 manager: gating_manager.clone(),
                 agent: agent.clone(),
                 event_sink: event_sink.clone(),
@@ -1483,28 +1509,42 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 instance: qq_instance.clone(),
                 instance_wired: qq_wired.clone(),
                 instance_running: qq_running.clone(),
-                platform: (!platform.is_empty()).then(|| platform.clone()),
                 bridge: bridge.clone(),
                 management_address: cfg.core.management_address.clone(),
                 management_token: cfg.core.management_access_token.clone(),
                 merged_federation: if merged { Some(merge_fed.clone()) } else { None },
-                external_entries: plugin_runtime
-                    .as_ref()
-                    .map(|runtime| {
-                        runtime
-                            .entries
-                            .iter()
-                            .filter(|entry| entry.kind != "builtin")
-                            .map(|entry| crate::builtin_plugins::ExternalEntry {
-                                id: entry.id.clone(),
-                                name: entry.name.clone(),
-                                kind: entry.kind.clone(),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
             },
-        )?;
+        );
+
+        // ── 内置插件目录：零参数（纯静态：这个二进制里有什么）──
+        let mut catalog = crate::builtin_plugins::catalog(version)?;
+        // 配置驱动的两项在目录之后追加：平台实例（id 由 `[instances.<平台>]`
+        // 派生）与外部条目（`plugins.toml` 的非 builtin 行）——它们的"存在"
+        // 取决于这份部署的配置，不该混进静态目录的签名。
+        if let Some(platform) = (!platform.is_empty()).then_some(platform.as_str()) {
+            catalog.push(crate::builtin_plugins::instance_plugin(version, platform));
+        }
+        for entry in plugin_runtime
+            .as_ref()
+            .map(|runtime| {
+                runtime
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.kind != "builtin")
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+        {
+            let entry = crate::builtin_plugins::ExternalEntry {
+                id: entry.id.clone(),
+                name: entry.name.clone(),
+                kind: entry.kind.clone(),
+            };
+            catalog.push(crate::builtin_plugins::external_plugin(
+                version, &entry,
+            ));
+        }
 
         // ── 按计划挂载（配置化组合 P4 的落点）──
         // 计划来自 plugins.toml 里 kind = "builtin" 的行：出现的按行序挂载、

@@ -133,68 +133,93 @@ pub fn manifest(version: &str) -> PluginManifest {
     )
 }
 
-/// 构造插件：`mount` 把 provider 挂到 [`SERVICE_KEY`]，并把门控开关拨到位。
+/// 构造插件：`mount` 把 provider 挂到 [`SERVICE_KEY`]。
 ///
-/// `gate` 是**宿主的配置概念**（persona 白名单 / 全局启停），插件只表达
-/// "我挂上了 / 我卸下了"——这也是别的内置插件（workspace / skills）同一套
-/// 约定，宿主因此只有一处接线。
-pub fn plugin(
-    version: &str,
-    shell_host: Arc<dyn crate::shell_commands::ShellCommandHost>,
-    instance_host: Arc<dyn crate::instance_commands::InstanceCommandHost>,
-    tools_host: Arc<dyn crate::tool_commands::ToolsCommandHost>,
-    gate: impl Fn(bool) + Send + Sync + 'static,
-) -> Arc<dyn Plugin> {
-    let gate = Arc::new(gate);
-    let gate_mount = gate.clone();
-    let handler = Arc::new(crate::shell_commands::ShellCommandHandler::new(shell_host));
-    let instance_handler =
-        Arc::new(crate::instance_commands::InstanceCommandHandler::new(instance_host));
-    let tools_handler = Arc::new(crate::tool_commands::ToolsCommandHandler::new(tools_host));
-    Arc::new(BuiltinPlugin::new(manifest(version), move |mctx: &MountContext| {
-        gate_mount(true);
-        let gate_unmount = gate_mount.clone();
-        let mut disposers = vec![echo_context::Disposer::from_fn(move || gate_unmount(false))];
-        // 服务表可能不存在（裸注册表 / 单测）：此时只做门控，不提供键——
-        // 与 loop 插件同样的降级口径（缺服务表不是错误）。
-        if let Some(ctx) = &mctx.ctx {
-            let provider: Arc<dyn BuiltinToolProvider> = Arc::new(BuiltinTools);
-            let keep = ctx
-                .provide(&service_key(), provider)
-                .map_err(|e| echo_plugin::PluginMountError::Mount(e.to_string()))?;
-            disposers.push(keep);
-        }
-        Ok(disposers)
-    })
-    // 命令域：4 条 `*Shell*` 命令由本插件处理（宿主 `apply_command` 在落
-    // 内置 match 之前问一次插件）。`shell_*` 工具也在这里——会话的模型侧与
-    // 面板侧从此同属一个插件。
-    .with_commands(
-        crate::shell_commands::COMMANDS
-            .into_iter()
-            .chain(crate::instance_commands::COMMANDS)
-            .chain(crate::tool_commands::COMMANDS)
-            .collect::<Vec<_>>(),
-    )
-    .with_command_handler_async(move |name, payload| {
-        let shell = handler.clone();
-        let instance = instance_handler.clone();
-        let tools = tools_handler.clone();
-        Box::pin(async move {
-            // 三个域依次问一次；都没认领 = `Ok(Null)`（插件声明过的命令名不该
-            // 走到这里——`with_commands` 与处理器必须同步，测试守着）。
-            if let Some(outcome) = shell.handle(&name, payload.clone()).await {
-                return outcome;
+/// **零参数**（全插件化 S6）：三个命令域的宿主接缝各有一个键
+/// （[`host_keys::SHELL_HOST`] / `INSTANCE_HOST` / `TOOLS_HOST`），`mount` 里
+/// 解析并绑定。此前这三个接缝是构造参数，于是组合根必须知道"tools 插件需要
+/// 哪三个宿主的什么"——那是插件自己的事。
+///
+/// persona 门控**不在这里**：挂载/卸载是一件事，"这个使用者看不看得到它"是
+/// 另一件事，宿主监听 `plugin.mounted` / `plugin.unmounted` 统一拨。
+pub fn plugin(version: &str) -> Arc<dyn Plugin> {
+    use echo_plugin::{Inject, ServiceSlot};
+
+    let shell = ServiceSlot::<Arc<dyn crate::shell_commands::ShellCommandHost>>::new();
+    let instance = ServiceSlot::<Arc<dyn crate::instance_commands::InstanceCommandHost>>::new();
+    let tools = ServiceSlot::<Arc<dyn crate::tool_commands::ToolsCommandHost>>::new();
+    let (bind_shell, bind_instance, bind_tools) = (shell.clone(), instance.clone(), tools.clone());
+    let (b_shell, b_instance, b_tools) = (shell.clone(), instance.clone(), tools.clone());
+
+    Arc::new(
+        BuiltinPlugin::new(manifest(version), move |mctx: &MountContext| {
+            let mut disposers = Vec::new();
+            // 服务表可能不存在（裸注册表 / 单测）：此时只做门控式挂载，
+            // 不提供键——与 loop 插件同样的降级口径（缺服务表不是错误）。
+            if let Some(ctx) = mctx.context() {
+                let provider: Arc<dyn BuiltinToolProvider> = Arc::new(BuiltinTools);
+                disposers.push(
+                    ctx.provide(&service_key(), provider)
+                        .map_err(|e| echo_plugin::PluginMountError::Mount(e.to_string()))?,
+                );
             }
-            if let Some(outcome) = instance.handle(&name, payload.clone()).await {
-                return outcome;
-            }
-            tools
-                .handle(&name, payload)
-                .await
-                .unwrap_or_else(|| Err(format!("命令 {name} 被 echo-agent.tools.builtin 声明，但 tools 处理器没有认领它")))
+            disposers.push(bind_shell.bind(mctx, &crate::host_keys::SHELL_HOST)?);
+            disposers.push(bind_instance.bind(mctx, &crate::host_keys::INSTANCE_HOST)?);
+            disposers.push(bind_tools.bind(mctx, &crate::host_keys::TOOLS_HOST)?);
+            Ok(disposers)
         })
-    }))
+        .with_inject(Inject::new([
+            crate::host_keys::SHELL_HOST.name().to_string(),
+            crate::host_keys::INSTANCE_HOST.name().to_string(),
+            crate::host_keys::TOOLS_HOST.name().to_string(),
+        ]))
+        // 命令域：`*Shell*` + `*Instance*` + 工具管理面共三条域由本插件处理
+        // （宿主 `apply_command` 在落内置 match 之前问一次插件）。
+        .with_commands(
+            crate::shell_commands::COMMANDS
+                .into_iter()
+                .chain(crate::instance_commands::COMMANDS)
+                .chain(crate::tool_commands::COMMANDS)
+                .collect::<Vec<_>>(),
+        )
+        .with_command_handler_async(move |name, payload| {
+            let (shell, instance, tools) =
+                (b_shell.clone(), b_instance.clone(), b_tools.clone());
+            Box::pin(async move {
+                let (Some(shell_host), Some(instance_host), Some(tools_host)) =
+                    (shell.get(), instance.get(), tools.get())
+                else {
+                    return Err(format!(
+                        "命令 {name} 到 {PLUGIN_ID} 时插件尚未挂载（宿主接缝未绑定）"
+                    ));
+                };
+                // 三个域依次问一次；都没认领 = 错（`with_commands` 与处理器
+                // 必须同步，测试守着）。
+                if let Some(outcome) =
+                    crate::shell_commands::ShellCommandHandler::new(shell_host)
+                        .handle(&name, payload.clone())
+                        .await
+                {
+                    return outcome;
+                }
+                if let Some(outcome) =
+                    crate::instance_commands::InstanceCommandHandler::new(instance_host)
+                        .handle(&name, payload.clone())
+                        .await
+                {
+                    return outcome;
+                }
+                crate::tool_commands::ToolsCommandHandler::new(tools_host)
+                    .handle(&name, payload)
+                    .await
+                    .unwrap_or_else(|| {
+                        Err(format!(
+                            "命令 {name} 被 {PLUGIN_ID} 声明，但 tools 的三个域都没有认领它"
+                        ))
+                    })
+            })
+        }),
+    )
 }
 
 /// `tools.builtin` 的强类型键（与 [`SERVICE_KEY`] 同源）。
@@ -355,7 +380,11 @@ mod tests {
             Arc::new(NoInstanceHost);
         let tools_host: Arc<dyn crate::tool_commands::ToolsCommandHost> =
             Arc::new(NoToolsHost);
-        let plugin = plugin("9.9.9", shell_host, instance_host, tools_host, |_| {});
+        // 宿主接缝按**服务键**注册（全插件化 S6：插件不再收构造参数）。
+        let _keep_shell = ctx.provide(&crate::host_keys::SHELL_HOST, shell_host);
+        let _keep_instance = ctx.provide(&crate::host_keys::INSTANCE_HOST, instance_host);
+        let _keep_tools = ctx.provide(&crate::host_keys::TOOLS_HOST, tools_host);
+        let plugin = plugin("9.9.9");
         let mounted = plugin
             .mount(&MountContext::new().with_ctx(ctx.clone()))
             .expect("mount ok");

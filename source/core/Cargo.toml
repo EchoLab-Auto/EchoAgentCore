@@ -27,6 +27,10 @@ echo-plugin-federation = { workspace = true }
 echo-plugin-loader = { workspace = true }
 echo-plugin-loop = { workspace = true }
 echo-plugin-management = { workspace = true }
+echo-plugin-tools = { workspace = true }
+echo-plugin-skills = { workspace = true }
+echo-plugin-workspace = { workspace = true }
+echo-plugin-subagent = { workspace = true }
 echo-plugin-provider-llm = { workspace = true }
 echo-plugin-self-update = { workspace = true }
 echo-federation = { path = "../federation/echo-federation" }

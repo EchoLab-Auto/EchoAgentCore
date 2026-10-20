@@ -10,6 +10,7 @@ description = "LLM provider 插件（解耦计划 Phase 3 ①）：provider 工�
 [dependencies]
 echo-defs = { workspace = true }
 echo-config = { workspace = true }
+echo-context = { workspace = true }
 echo-plugin = { workspace = true }
 echo-protocol = { workspace = true }
 serde = { workspace = true }

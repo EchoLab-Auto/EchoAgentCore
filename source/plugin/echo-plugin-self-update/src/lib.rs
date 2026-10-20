@@ -28,18 +28,23 @@
 use std::sync::Arc;
 
 /// 自更新命令域（`RequestSelfUpdate` / `RequestSelfUpdateStatus`）。
+pub mod host_keys;
 pub mod commands;
 
 /// 插件 id（`plugins.toml` / Panel 插件清单同一口径）。
 pub const PLUGIN_ID: &str = "echo-agent.selfupdate";
 
 /// 构造插件：认领两条自更新命令。
-pub fn plugin(
-    version: &str,
-    host: Arc<dyn commands::SelfUpdateHost>,
-) -> Arc<dyn echo_plugin::Plugin> {
-    use echo_plugin::{BuiltinPlugin, PluginManifest};
-    let handler = Arc::new(commands::SelfUpdateHandler::new(host));
+///
+/// **零参数**（全插件化 S6）：唯一需要的宿主能力是事件出口，经服务表解析
+/// （[`host_keys::EVENTS`]）。updater 单元名与状态文件布局都在本 crate 里
+/// ——组合根不认识它们。
+pub fn plugin(version: &str) -> Arc<dyn echo_plugin::Plugin> {
+    use echo_plugin::{BuiltinPlugin, Inject, PluginManifest, ServiceSlot};
+
+    let events = ServiceSlot::<Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>>::new();
+    let bind = events.clone();
+    let serve = events.clone();
     let manifest = PluginManifest::builtin(
         PLUGIN_ID,
         "自更新",
@@ -53,16 +58,27 @@ pub fn plugin(
         "自更新：触发 updater 单元（oneshot，脱离本进程构建→替换→重启）+ 读状态文件",
     );
     Arc::new(
-        BuiltinPlugin::new(manifest, |_mctx| Ok(vec![]))
-            .with_commands(commands::COMMANDS)
-            .with_command_handler_async(move |name, payload| {
-                let handler = handler.clone();
-                Box::pin(async move {
-                    handler
-                        .handle(&name, payload)
-                        .await
-                        .unwrap_or_else(|| Err(format!("命令 {name} 被 echo-agent.selfupdate 声明，但 self-update 处理器没有认领它")))
-                })
-            }),
+        BuiltinPlugin::new(manifest, move |mctx| {
+            let keep = bind.bind(mctx, &host_keys::EVENTS)?;
+            Ok(vec![keep])
+        })
+        .with_inject(Inject::new([host_keys::EVENTS.name().to_string()]))
+        .with_commands(commands::COMMANDS)
+        .with_command_handler_async(move |name, payload| {
+            let serve = serve.clone();
+            Box::pin(async move {
+                let Some(sink) = serve.get() else {
+                    return Err(format!(
+                        "命令 {name} 到 {PLUGIN_ID} 时插件尚未挂载（事件出口未绑定）"
+                    ));
+                };
+                commands::SelfUpdateHandler::new(Arc::new(commands::SinkHost::new(sink)))
+                    .handle(&name, payload)
+                    .await
+                    .unwrap_or_else(|| {
+                        Err(format!("命令 {name} 被 {PLUGIN_ID} 声明，但 self-update 处理器没有认领它"))
+                    })
+            })
+        }),
     )
 }

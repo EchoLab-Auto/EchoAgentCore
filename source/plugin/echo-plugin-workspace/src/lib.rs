@@ -25,6 +25,7 @@
 //! 命令域（`SaveWorkspaceSession` 等 Agent 方法与事件发射）留在宿主
 //! `echo-agent`（`agent/workspace_commands.rs`）——那是接线，不是插件实现。
 
+pub mod host_keys;
 pub mod commands;
 
 /// 插件 id（**唯一真值**在这里；宿主的 `WORKSPACE_PLUGIN_ID` 是它的别名）。
@@ -1487,62 +1488,67 @@ pub fn manifest(version: &str) -> echo_plugin::PluginManifest {
 ///
 /// `gate` 是 persona 门控回调（宿主提供：`for_each_agent` + `reapply_plugin_gating`
 /// 之类），因为"哪些 persona 允许这个插件"是宿主的配置概念。
-pub fn plugin(
-    version: &str,
-    host: std::sync::Arc<dyn commands::WorkspaceHost>,
-    gate: impl Fn(bool) + Send + Sync + 'static,
-) -> std::sync::Arc<dyn echo_plugin::Plugin> {
-    use echo_plugin::{Inject, PluginTextBlock};
+pub fn plugin(version: &str) -> std::sync::Arc<dyn echo_plugin::Plugin> {
+    use echo_plugin::{Inject, PluginTextBlock, ServiceSlot};
 
-    let handler = std::sync::Arc::new(commands::WorkspaceCommandHandler::new(host.clone()));
-    // 提示词块也走**同一个** [`WorkspaceHost`]：按 `team_id` 解析出该人格的
-    // store 再算文本。不需要第二个 seam——宿主给插件的东西越少，将来搬家越省事。
-    let prompt_host = host.clone();
-    let gate = std::sync::Arc::new(gate);
-    let gate_mount = gate.clone();
+    // **零参数**（全插件化 S6）：store 是 per-persona 的（按 `team_id` 解析）、
+    // 浏览根要跨全部人格、跨机查询要联邦出口——三件事都只有宿主做得到，经
+    // [`host_keys::WORKSPACE_HOST`] 解析。
+    let host = ServiceSlot::<std::sync::Arc<dyn commands::WorkspaceHost>>::new();
+    let bind = host.clone();
+    let serve = host.clone();
 
     std::sync::Arc::new(
-        echo_plugin::BuiltinPlugin::new(manifest(version), move |_mctx| {
-            gate_mount(true);
-            let gate_unmount = gate_mount.clone();
-            Ok(vec![echo_context::Disposer::from_fn(move || {
-                gate_unmount(false)
-            })])
+        echo_plugin::BuiltinPlugin::new(manifest(version), move |mctx| {
+            let keep = bind.bind(mctx, &host_keys::WORKSPACE_HOST)?;
+            Ok(vec![keep])
         })
+        .with_inject(Inject::new([host_keys::WORKSPACE_HOST.name().to_string()]))
         // 命令域：7 条工作区命令由本插件处理（宿主 dispatch 时先问插件）。
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
-            let handler = handler.clone();
+            let serve = serve.clone();
             Box::pin(async move {
-                handler
+                let Some(host) = serve.get() else {
+                    return Err(format!(
+                        "命令 {name} 到 {} 时插件尚未挂载（宿主接缝未绑定）",
+                        PLUGIN_ID
+                    ));
+                };
+                commands::WorkspaceCommandHandler::new(host)
                     .handle(&name, payload)
                     .await
-                    .unwrap_or_else(|| Err(format!("命令 {name} 被 echo-agent.workspace 声明，但 workspace 处理器没有认领它")))
+                    .unwrap_or_else(|| {
+                        Err(format!(
+                            "命令 {name} 被 {PLUGIN_ID} 声明，但 workspace 处理器没有认领它"
+                        ))
+                    })
             })
         })
-        // 提示词块：键取 `workspace`（面板的 kind 徽标与历史行为一致）。
         .with_text_blocks([PluginTextBlock::new("workspace", "工作区会话", 50)])
-        .with_text_block_content(move |key, ctx| {
+        .with_text_block_content(move |key, context| {
             if key != "workspace" {
                 return None;
             }
-            // 插件自己解释上下文（框架不解释）：
+            // 提示词块与命令域共用**同一个**接缝（宿主给插件的东西越少，
+            // 将来搬家越省事）。上下文由插件自己解释（框架不解释）：
             // - `team_id` 决定看哪一份 store（多个人格各有自己的工作区会话）；
             // - `session_id` 决定按会话还是按全局 active 解析（2026-10 多窗口
             //   修复的判据：全局 active 是 per-persona 单槽，别的窗口激活工作区
             //   后会被注入到这里）。
-            let team_id = ctx.get("team_id").and_then(|v| v.as_str()).unwrap_or("");
-            let store = prompt_host.store(team_id)?;
-            match ctx.get("session_id").and_then(|v| v.as_str()) {
+            let host = host.get()?;
+            let team_id = context
+                .get("team_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let store = host.store(team_id)?;
+            match context.get("session_id").and_then(|v| v.as_str()) {
                 Some(session_id) if !session_id.is_empty() => store
                     .prompt_text_for(session_id)
                     .or_else(|| store.prompt_text()),
                 _ => store.prompt_text(),
             }
-        })
-        // 依赖声明：无硬依赖（单机部署不需要任何服务）；`loop` 之类的服务留给
-        // 将来真需要时再加——声明了不存在的依赖会让插件挂不上。
-        .with_inject(Inject::default()),
+        }),
     )
 }
 

@@ -18,6 +18,7 @@
 pub use echo_defs::skill::{Skill, SkillMetadata};
 
 /// 外部 Git 来源技能的安装/更新/移除（`.sources.json` 来源记录）。
+pub mod host_keys;
 pub mod commands;
 pub mod install;
 /// SKILL.md 解析/热重载加载器。
@@ -43,36 +44,44 @@ pub fn manifest(version: &str) -> echo_plugin::PluginManifest {
     )
 }
 
-/// 构造插件：技能表 + 命令域（7 条 `*Skill*` 命令）。
+/// 构造插件：技能表 + 命令域（8 条 `*Skill*` 命令）。
 ///
-/// `mount` 只做两件事：拨 persona 门控开关（技能表随白名单启停）+ 挂命令域。
-/// 表本身由宿主持有（per-persona），插件经 [`commands::SkillsCommandHost`]
-/// 访问——所以这里不需要 `provide` 任何服务。
-pub fn plugin(
-    version: &str,
-    host: Arc<dyn commands::SkillsCommandHost>,
-    gate: impl Fn(bool) + Send + Sync + 'static,
-) -> Arc<dyn echo_plugin::Plugin> {
-    use echo_plugin::{BuiltinPlugin, PluginTextBlock};
-    let gate = Arc::new(gate);
-    let gate_mount = gate.clone();
-    let handler = Arc::new(commands::SkillsCommandHandler::new(host));
+/// **零参数**（全插件化 S6）：技能表是 per-persona 的，宿主按
+/// [`host_keys::SKILLS_HOST`] 注册接缝，插件的 `mount` 自己解析。
+///
+/// 注意：persona 门控**不在插件里**——挂载/卸载是一件事，"这个使用者看不看
+/// 得到它"是另一件事。宿主监听 `plugin.mounted` / `plugin.unmounted` 统一拨
+/// （见组合根），插件因此不必再拿一个 `gate` 闭包。
+pub fn plugin(version: &str) -> Arc<dyn echo_plugin::Plugin> {
+    use echo_plugin::{BuiltinPlugin, Inject, PluginTextBlock, ServiceSlot};
+
+    let host = ServiceSlot::<Arc<dyn commands::SkillsCommandHost>>::new();
+    let bind = host.clone();
+    let serve = host.clone();
     Arc::new(
-        BuiltinPlugin::new(manifest(version), move |_mctx| {
-            gate_mount(true);
-            let gate_unmount = gate_mount.clone();
-            Ok(vec![echo_context::Disposer::from_fn(move || {
-                gate_unmount(false)
-            })])
+        BuiltinPlugin::new(manifest(version), move |mctx| {
+            let keep = bind.bind(mctx, &host_keys::SKILLS_HOST)?;
+            Ok(vec![keep])
         })
+        .with_inject(Inject::new([host_keys::SKILLS_HOST.name().to_string()]))
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
-            let handler = handler.clone();
+            let serve = serve.clone();
             Box::pin(async move {
-                handler
+                let Some(host) = serve.get() else {
+                    return Err(format!(
+                        "命令 {name} 到 {} 时插件尚未挂载（宿主接缝未绑定）",
+                        PLUGIN_ID
+                    ));
+                };
+                commands::SkillsCommandHandler::new(host)
                     .handle(&name, payload)
                     .await
-                    .unwrap_or_else(|| Err(format!("命令 {name} 被 echo-agent.skills.dir 声明，但 skills 处理器没有认领它")))
+                    .unwrap_or_else(|| {
+                        Err(format!(
+                            "命令 {name} 被 {PLUGIN_ID} 声明，但 skills 处理器没有认领它"
+                        ))
+                    })
             })
         })
         // 文本块：把本 persona 已启用的技能描述注入系统提示词。

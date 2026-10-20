@@ -27,6 +27,7 @@
 //! 远程工具报「联邦未接线」、远程目录降级为不可采集（显式降级，不 panic）。
 
 pub mod aggregator;
+pub mod host_keys;
 pub mod commands;
 pub mod ports;
 pub mod remote_tool;
@@ -71,32 +72,48 @@ pub fn manifest(version: &str) -> echo_plugin::PluginManifest {
 ///
 /// 实现留在组合根（`Federation` 句柄与 `ConfigStore` 是它的所有物），
 /// 本插件负责**归属关系**与未接线时的兜底语义。
-pub fn plugin(
-    version: &str,
-    ports: std::sync::Arc<FederationPorts>,
-    emit: std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>,
-    gate: impl Fn(bool) + Send + Sync + 'static,
-) -> std::sync::Arc<dyn echo_plugin::Plugin> {
-    use echo_plugin::BuiltinPlugin;
-    let gate = std::sync::Arc::new(gate);
-    let gate_mount = gate.clone();
-    let bridge = std::sync::Arc::new(commands::FederationCommandBridge::new(ports, emit));
+pub fn plugin(version: &str) -> std::sync::Arc<dyn echo_plugin::Plugin> {
+    use echo_plugin::{BuiltinPlugin, Inject, ServiceSlot};
+
+    // **零参数**（全插件化 S6）：出口集合与事件出口都是装配期构造的进程级
+    // 对象，经服务表解析（[`host_keys::PORTS`] / [`host_keys::EVENTS`]）。
+    let ports = ServiceSlot::<std::sync::Arc<FederationPorts>>::new();
+    let events = ServiceSlot::<std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>>::new();
+    let (bind_ports, bind_events) = (ports.clone(), events.clone());
+    let (serve_ports, serve_events) = (ports.clone(), events.clone());
+
     std::sync::Arc::new(
-        BuiltinPlugin::new(manifest(version), move |_mctx| {
-            gate_mount(true);
-            let gate_unmount = gate_mount.clone();
-            Ok(vec![echo_context::Disposer::from_fn(move || {
-                gate_unmount(false)
-            })])
+        BuiltinPlugin::new(manifest(version), move |mctx| {
+            let mut disposers = vec![
+                bind_ports.bind(mctx, &host_keys::PORTS)?,
+                bind_events.bind(mctx, &host_keys::EVENTS)?,
+            ];
+            // persona 门控不在这里（宿主监听挂载/卸载事件统一拨）。
+            disposers.shrink_to_fit();
+            Ok(disposers)
         })
+        .with_inject(Inject::new([
+            host_keys::PORTS.name().to_string(),
+            host_keys::EVENTS.name().to_string(),
+        ]))
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
-            let bridge = bridge.clone();
+            let (ports, events) = (serve_ports.clone(), serve_events.clone());
             Box::pin(async move {
-                bridge
+                let (Some(ports), Some(events)) = (ports.get(), events.get()) else {
+                    return Err(format!(
+                        "命令 {name} 到 {} 时插件尚未挂载（宿主接缝未绑定）",
+                        PLUGIN_ID
+                    ));
+                };
+                commands::FederationCommandBridge::new(ports, events)
                     .handle(&name, payload)
                     .await
-                    .unwrap_or_else(|| Err(format!("命令 {name} 被 echo-agent.federation 声明，但 federation 处理器没有认领它")))
+                    .unwrap_or_else(|| {
+                        Err(format!(
+                            "命令 {name} 被 {PLUGIN_ID} 声明，但 federation 处理器没有认领它"
+                        ))
+                    })
             })
         }),
     )

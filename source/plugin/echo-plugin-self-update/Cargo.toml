@@ -8,6 +8,7 @@ repository.workspace = true
 description = "自更新插件：触发 updater 单元 + 读状态文件（部署形状归插件，不再住在组合根）"
 
 [dependencies]
+echo-context = { workspace = true }
 echo-plugin = { workspace = true }
 echo-protocol = { workspace = true }
 serde_json = { workspace = true }

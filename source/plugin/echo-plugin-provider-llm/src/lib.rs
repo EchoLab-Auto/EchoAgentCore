@@ -38,6 +38,7 @@ pub use echo_defs::tool::ToolDefinition;
 pub mod admin;
 pub mod api_pool;
 /// 供应商 / API 命令域（全插件化 S5：13 条命令的归属关系）。
+pub mod host_keys;
 pub mod commands;
 pub mod metrics;
 
@@ -76,16 +77,21 @@ pub struct ProviderConfig {
 
 /// 构造插件：命令域（13 条 API / provider 命令）。
 ///
-/// `mount` 只挂命令域、不注册任何运行期资源：provider 的**构造**仍由宿主在
-/// 配置变更时调用 [`create_provider`]（它要 `AgentConfig`、要重建链、要广播
-/// ——那些是宿主的动作，不是插件的）。本插件"启用"的含义是**它的命令域可以
-/// 被派发**；禁用后这些命令回落到宿主的兜底分支并明确报"插件未启用"。
-pub fn plugin(
-    version: &str,
-    host: Arc<dyn commands::ProviderCommandHost>,
-) -> Arc<dyn echo_plugin::Plugin> {
-    use echo_plugin::{BuiltinPlugin, PluginManifest};
-    let handler = Arc::new(commands::ProviderCommandHandler::new(host));
+/// **零参数**（全插件化 S6）：宿主能力经服务表解析（[`host_keys::PROVIDER_HOST`]），
+/// 不再由组合根把 `Arc<dyn ProviderCommandHost>` 塞进来。于是"哪个插件需要
+/// 宿主的什么"这件事，从**构造点**搬进了**插件自己的 mount**——目录那边只剩
+/// `plugin(version)`。
+///
+/// `mount` 不注册任何运行期资源：provider 的**构造**仍由宿主在配置变更时调用
+/// [`create_provider`]（它要 `AgentConfig`、要重建链、要广播——那些是宿主的
+/// 动作）。本插件"启用"的含义是**它的命令域可以被派发**；禁用后这些命令回落
+/// 到宿主的兜底分支并明确报"插件未启用"。
+pub fn plugin(version: &str) -> Arc<dyn echo_plugin::Plugin> {
+    use echo_plugin::{BuiltinPlugin, Inject, PluginManifest, ServiceSlot};
+
+    let host = ServiceSlot::<Arc<dyn commands::ProviderCommandHost>>::new();
+    let bind = host.clone();
+    let serve = host.clone();
     let manifest = PluginManifest::builtin(
         PLUGIN_ID,
         "LLM Provider",
@@ -95,17 +101,31 @@ pub fn plugin(
         "LLM 提供方：provider 工厂 + 计量/脱敏装饰器 + 供应商池规则与 API 命令域",
     );
     Arc::new(
-        BuiltinPlugin::new(manifest, |_mctx| Ok(vec![]))
-            .with_commands(commands::COMMANDS)
-            .with_command_handler_async(move |name, payload| {
-                let handler = handler.clone();
-                Box::pin(async move {
-                    handler
-                        .handle(&name, payload)
-                        .await
-                        .unwrap_or_else(|| Err(format!("命令 {name} 被 echo-agent.provider.llm 声明，但 provider 处理器没有认领它")))
-                })
-            }),
+        BuiltinPlugin::new(manifest, move |mctx| {
+            // 缺宿主 = 挂载失败（比"挂着但每条命令都回不出东西"好）。
+            let keep = bind.bind(mctx, &host_keys::PROVIDER_HOST)?;
+            Ok(vec![keep])
+        })
+        .with_inject(Inject::new([
+            host_keys::PROVIDER_HOST.name().to_string(),
+        ]))
+        .with_commands(commands::COMMANDS)
+        .with_command_handler_async(move |name, payload| {
+            let serve = serve.clone();
+            Box::pin(async move {
+                let Some(host) = serve.get() else {
+                    return Err(format!(
+                        "命令 {name} 到 {PLUGIN_ID} 时插件尚未挂载（宿主接缝未绑定）"
+                    ));
+                };
+                commands::ProviderCommandHandler::new(host)
+                    .handle(&name, payload)
+                    .await
+                    .unwrap_or_else(|| {
+                        Err(format!("命令 {name} 被 {PLUGIN_ID} 声明，但 provider 处理器没有认领它"))
+                    })
+            })
+        }),
     )
 }
 
