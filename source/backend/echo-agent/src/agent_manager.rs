@@ -14,11 +14,47 @@ use crate::agent::Agent;
 use crate::config::{AgentConfig, TeamMember};
 
 /// A running persona: profile + its agent instance.
+///
+/// # 构造是封住的（2026-10-20 事故的根治）
+///
+/// 字段可读（调用方大量读取 `id` / `profile` / `agent`），但**不能从外部
+/// 直接构造**——`_sealed` 是私有字段，因此模块外写不出 `RunningAgent { .. }`。
+/// 唯一入口是 [`RunningAgent::bound`]，它在构造时**强制**把 manager 弱引用
+/// 绑到 agent 上。
+///
+/// 为什么值得这样一个技巧：绑定漏了不会 panic、不会报错，只会让
+/// `TeamsList` / 命令路由**静默降级为空**——2026-10-20 的两次漏绑
+/// （`__core`、运行期新建人格）都是这样藏了很久。把"必须绑定"变成类型
+/// 约束，比在调用点补 `set_manager` 靠得住：以后新增创建路径时，
+/// 不经过 `bound` 就编译不过。
 #[derive(Clone)]
 pub struct RunningAgent {
     pub id: String,
     pub profile: TeamMember,
     pub agent: Arc<Agent>,
+    /// 私有标记：封住结构体字面量构造（见类型文档）。恒为 `()`。
+    _sealed: (),
+}
+
+impl RunningAgent {
+    /// **唯一构造入口**：构造即绑定 manager。
+    ///
+    /// 内部做两件事，顺序不可换：先把 manager 弱引用写给 agent，再返回结构体。
+    /// 调用方拿到的一定是"已绑定"的运行实例。
+    fn bound(
+        manager: &std::sync::Arc<AgentManager>,
+        id: String,
+        profile: TeamMember,
+        agent: Arc<Agent>,
+    ) -> Self {
+        agent.set_manager(manager);
+        Self {
+            id,
+            profile,
+            agent,
+            _sealed: (),
+        }
+    }
 }
 
 impl std::fmt::Debug for RunningAgent {
@@ -100,12 +136,21 @@ impl AgentManager {
                 continue;
             }
             let p = profile.clone();
+            // `build` 时 manager 尚未构造完成（`Self` 正在建），无法给出
+            // `&Arc<Self>`。这里先构造、由 `AgentManager::new` 之后统一
+            // `bind_all` 兜底——该函数是唯一能把"未绑定"变成"已绑定"的
+            // 地方，且 `_sealed` 保证外部无法绕过。
+            let agent = factory(id.clone(), p.clone());
+            // 这里**不能**走 `RunningAgent::bound`：`Self` 正在构造中，
+            // 拿不到 `&Arc<Self>`。改由 `AgentManager::bind_all` 在 Arc
+            // 建立之后统一补绑（唯一能把"未绑定"变"已绑定"的地方）。
             agents.insert(
                 id.clone(),
                 RunningAgent {
                     id: id.clone(),
-                    profile: p.clone(),
-                    agent: factory(id.clone(), p),
+                    profile: p,
+                    agent,
+                    _sealed: (),
                 },
             );
         }
@@ -228,17 +273,9 @@ impl AgentManager {
             if !agents.contains_key(id) {
                 let profile = self.teams.read().get(id).cloned().unwrap();
                 let agent = factory(id.to_string(), profile.clone());
-                // **必须立即绑定 manager**（同 SaveTeam 路径）：漏绑会让
-                // TeamsList / 命令路由静默降级为空。
-                agent.set_manager(self);
-                agents.insert(
-                    id.to_string(),
-                    RunningAgent {
-                        id: id.to_string(),
-                        profile,
-                        agent,
-                    },
-                );
+                // 走唯一入口：构造即绑定 manager。
+                let running = RunningAgent::bound(self, id.to_string(), profile, agent);
+                agents.insert(id.to_string(), running);
             }
             disabled.retain(|d| d != id);
         } else {
@@ -258,7 +295,17 @@ impl AgentManager {
         Ok(())
     }
 
-    /// Inject the persistence hook (writes profiles to TOML).
+    /// 给注册表内**全部**运行实例补绑 manager 弱引用。
+    ///
+    /// 只在 `Arc<AgentManager>` 建立之后调用一次（`build` 阶段拿不到 Arc）。
+    /// 这是"未绑定 → 已绑定"的唯一通道；`RunningAgent::bound` 覆盖其余
+    /// 创建路径（`set_enabled` / `save_profile`）。
+    pub fn bind_all(&self, manager: &std::sync::Arc<Self>) {
+        for running in self.agents.read().values() {
+            running.agent.set_manager(manager);
+        }
+    }
+
     /// 注入人格重建工厂（组合根调用一次；见字段文档）。
     pub fn set_factory(
         &self,
@@ -314,18 +361,9 @@ impl AgentManager {
                     format!("agent factory not injected by composition root; cannot rebuild {id}")
                 })?
                 .call(id.to_string(), profile.clone());
-            // **必须立即绑定 manager**：否则新建的 agent 读不到 manager，
-            // TeamsList / 命令路由会静默降级为空（2026-10-20 事故：
-            // `__core` 与运行期新建人格都漏绑，Panel 收到 teams: []）。
-            agent.set_manager(self);
-            self.agents.write().insert(
-                id.to_string(),
-                RunningAgent {
-                    id: id.to_string(),
-                    profile,
-                    agent,
-                },
-            );
+            // 走唯一入口：构造即绑定 manager（漏绑会让 TeamsList 静默为空）。
+            let running = RunningAgent::bound(self, id.to_string(), profile, agent);
+            self.agents.write().insert(id.to_string(), running);
         } else if !enabled && running {
             self.agents.write().remove(id);
         } else if enabled && running {
