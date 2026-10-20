@@ -218,7 +218,58 @@ y: 3640
   这是 `document/design/s4-agent-decomposition.md` 里被"暂缓"的那一项，
   全插件化的口径下它不再可选——但**服务化**不等于出进程。
 
-### S5：命令泵收口
+### S4.5：插件机制三层合并（2026-11，已完成）
+
+用户问「能不能把 2（宿主适配层）和 3（内置插件身份）合并到 1（框架机制）」。
+查清后答案是**分半**：
+
+**3 早就合并了**。内置插件是 `Arc<dyn Plugin>`，与子进程插件、`example`
+在同一个 `PluginRegistry`、同一份 `mount_plan`、同一套 `mount` 语义。
+证据是启动日志那一行 `plugins mounted`——12 个 id 一视同仁。
+
+**2 上收到框架了**（框架 v0.10.0，本轮新增 + push + tag）。宿主
+`PluginHost` 曾自己维护四样与领域无关的状态：缓存的 `MountContext`、事件
+订阅兴趣集、投递重入保护、投递计数。四者上收到 `PluginRegistry` 之后：
+
+| 宿主删掉 | 框架新增 |
+|---|---|
+| `mount_ctx: Mutex<Option<MountContext>>` | `set_mount_ctx` / `mount_ctx` / `enable` / `restart_cached` / `reconcile_cached` |
+| `event_interest: RwLock<EventInterest>` + 影子结构 | `has_event_subscribers` / `wants_event` / `refresh_event_interest`（**注册表在挂/卸/启停后自己刷**） |
+| `delivering: AtomicBool` + `Reset` 守卫 | `deliver_event_guarded` |
+| `event_delivered` / `event_failed` | `event_counters` |
+
+`PluginHost` 1,559 → 1,496 行，文档写清了它只做三件本项目的语义：
+`plugins.toml` 计划、`BackendEvent` 翻译、子进程控制分派。
+
+**判据**写成一句话：「框架知道这件事吗？」知道（生命周期 / 事件 / 兴趣集）
+就上收；不知道（`plugins.toml` 长什么样、`BackendEvent` 是什么、子进程怎么
+起）就留。这比"宿主包一层更安全"务实——包着只会让两边都有半份实现的可能。
+
+**同时把 3 的装载代码归位**：`main.rs` 的八个「实化 N」段（378 行）搬进
+`source/core/src/builtin_plugins.rs`，形态变成 dsh 的样子：
+
+```text
+  builtin_plugins::catalog()   ← 代码里的插件目录（构造 + mount）
+             ↓
+  plugins.toml 的 builtin 行   ← 配置：顺序、启用状态、每插件的 config
+             ↓
+  PluginHost::mount_plan_when_ready
+```
+
+`main.rs` 2,400 → 2,006 行。
+
+**没做的两件，附理由**：
+
+1. **子进程运行态合并进 `descriptors()` 未上收**：框架的 `PluginDescriptor`
+   有 `state` / `restarts` / `generation` / `error` 四个字段，但**值只有本
+   项目的 supervisor 知道**；上收会把"生成清单时读一下"变成"每次状态变化
+   都要推送"，反而更复杂。留 24 行换一个更简单的数据流。
+2. **门控壳未消除**：`builtin_plugins` 里 8 个条目的 `mount` 大多只做
+   `reapply_plugin_gating`，真实实现已在各插件 crate。壳留下的原因是**构造
+   参数是宿主的东西**（哪个人格 / 哪个端口 / 哪个事件出口）。要彻底消除它们
+   需要框架提供「插件自己声明构造参数」的能力（factory 注册表）——下一步。
+
+## S5：命令泵收口
 
 `commands.rs` 53 个分支 → 每个域一条"插件未启用"兜底：
 
