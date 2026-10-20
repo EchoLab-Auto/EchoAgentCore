@@ -11,6 +11,7 @@ mod plugin_reload;
 pub(crate) mod prompt;
 pub mod provider_host;
 pub mod registry;
+pub mod session_view_host;
 mod streaming;
 pub mod subagent_host;
 mod subagent_runtime;
@@ -1411,16 +1412,15 @@ impl Agent {
         prompt
     }
 
-    /// Emit the current instance list to subscribers.
-    /// 广播实例清单。
-    ///
-    /// **投影逻辑在插件里**（`echo_plugin_tools::instance_commands::instance_list`）
-    /// ——读哪些访问器、线上形状怎么填是适配器能力的知识。宿主只剩"拿进程级
-    /// 注册表 + 发事件"这两件事。
-    fn emit_instance_list(&self) {
-        self.emit(BackendEvent::InstanceList {
-            instances: echo_plugin_tools::instance_commands::instance_list(&self.instances),
-        });
+}
+
+/// 实例清单事件（`RequestState` 全量快照与测试共用**同一份**投影入口）。
+///
+/// 投影逻辑在插件里（`echo_plugin_tools::instance_commands::instance_list`）
+/// ——读哪些访问器、线上形状怎么填是适配器能力的知识；这里只是"装成事件"。
+pub(crate) fn instance_list_event(agent: &Agent) -> BackendEvent {
+    BackendEvent::InstanceList {
+        instances: echo_plugin_tools::instance_commands::instance_list(&agent.instances),
     }
 }
 

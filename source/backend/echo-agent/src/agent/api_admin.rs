@@ -19,6 +19,17 @@ impl Agent {
     /// 落后于管理面——否则管理面新加的 profile 会被"看回去"，面板下拉
     /// 瞬间少项（2026-10 用户报障的连带效应）。
     pub async fn emit_api_config(&self) {
+        for event in self.api_config_events().await {
+            self.emit(event);
+        }
+    }
+
+    /// 供应商配置快照的**事件形态**（不发，只组装）。
+    ///
+    /// 拆出来是为了让"面板重连的全量快照"（`RequestState`）能把这几条事件
+    /// 和其它快照事件**按序装进一份列表**再一次性发出——而不是在插件里
+    /// 先调一个 emit 再调另一个（顺序就成了调用顺序的副作用）。
+    pub async fn api_config_events(&self) -> Vec<BackendEvent> {
         let mut cfg = self.api_config().await;
         if let Some(snapshot) = self.api_pool_store_snapshot().await {
             cfg.api_profiles = snapshot.profiles;
@@ -40,21 +51,24 @@ impl Agent {
                 reasoning_effort: p.reasoning_effort,
             })
             .collect();
-        self.emit(BackendEvent::ApiConfigUpdated {
-            provider: resolved.provider.clone(),
-            model: self.active_model().await,
-            base_url: resolved.effective_base_url(),
-            api_key_set: key_set,
-            thinking: resolved.thinking,
-            reasoning_effort: resolved.reasoning_effort,
-            system_prompt: cfg.system_prompt.clone(),
-            active_api: cfg.active_api.clone(),
-            profiles: profiles.clone(),
-        });
-        self.emit(BackendEvent::ApiProfilesUpdated {
-            active_api: cfg.active_api.clone(),
-            profiles,
-        });
+        let model = self.active_model().await;
+        vec![
+            BackendEvent::ApiConfigUpdated {
+                provider: resolved.provider.clone(),
+                model,
+                base_url: resolved.effective_base_url(),
+                api_key_set: key_set,
+                thinking: resolved.thinking,
+                reasoning_effort: resolved.reasoning_effort,
+                system_prompt: cfg.system_prompt.clone(),
+                active_api: cfg.active_api.clone(),
+                profiles: profiles.clone(),
+            },
+            BackendEvent::ApiProfilesUpdated {
+                active_api: cfg.active_api.clone(),
+                profiles,
+            },
+        ]
     }
 
     /// Rebuild the LLM provider from the current config snapshot.

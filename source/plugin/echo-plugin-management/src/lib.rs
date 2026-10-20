@@ -26,6 +26,7 @@
 //! 时的对端连接接收）与 tokio/tungstenite——不依赖 `echo-agent`。
 
 pub mod history;
+pub mod session_view;
 pub mod timeline;
 
 use std::sync::atomic::{AtomicU64, Ordering};

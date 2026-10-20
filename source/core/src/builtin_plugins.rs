@@ -394,27 +394,39 @@ tracing::debug!(
     )?;
 }
 
-// ── 实化 4：管理面（management WS 起停）──
+// ── 实化 4：管理面（management WS 起停 + 会话视图命令域）──
 // 实现已外迁为独立 crate `echo-plugin-management`（Phase 3 ⑧）：它只
 // 认 `echo-protocol` 的线契约，**不需要 Agent 句柄**（入站命令塞
-// bridge、事件从 bridge 出），组合根这里只负责起停。
+// bridge、事件从 bridge 出），组合根这里只负责起停与接缝注入。
+//
 // 注意自锁语义：禁用管理面 = 关闭 Panel 通道本身，恢复需编辑
 // core.toml 的 disabled_plugins 后重启（文档已注明）。
+//
+// 全插件化 S5：面板的 5 条**会话视图命令**（RequestState / RequestContext /
+// RequestTrunkTimeline / RequestTimelineEarlier / RequestSessionHistory）的
+// 归属也在这里——"面板看到什么"与显示时间线的投影策略同源。宿主侧只注入
+// `AgentSessionViewHost`（读窗口 / 读事件日志 / 跨人格遍历）。
 {
     let mgmt_addr = management_address.clone();
     let mgmt_token = management_token.clone();
     let mgmt_bridge = bridge.clone();
-    push_builtin(
-        &mut catalog,
-        PluginManifest::builtin(
-            MANAGEMENT_PANEL_PLUGIN_ID,
-            "管理面",
-            version,
-            "management",
-            "panel",
-            "Panel management WS 桥接（合并模式下同时承接联邦入站）",
-        ),
-        move |mctx| {
+    let view_host: std::sync::Arc<
+        dyn echo_plugin_management::session_view::SessionViewHost,
+    > = std::sync::Arc::new(echo_agent::agent::session_view_host::AgentSessionViewHost::new(
+        agent.clone(),
+    ));
+    let view_handler = std::sync::Arc::new(
+        echo_plugin_management::session_view::SessionViewHandler::new(view_host),
+    );
+    let mgmt_manifest = PluginManifest::builtin(
+        MANAGEMENT_PANEL_PLUGIN_ID,
+        "管理面",
+        version,
+        "management",
+        "panel",
+        "Panel management WS 桥接（合并模式下同时承接联邦入站）+ 会话视图命令域",
+    );
+    let mgmt_plugin = BuiltinPlugin::new(mgmt_manifest, move |mctx| {
             // **配置下发的第一个真实消费者**（2026-11）：管理面端口
             // 可以由 `plugins.toml` 覆盖，不必改 core.toml 再重启：
             //
@@ -462,8 +474,18 @@ tracing::debug!(
             });
             let abort = server.abort_handle();
             Ok(vec![Disposer::from_fn(move || abort.abort())])
-        },
-    )?;
+    })
+    .with_commands(echo_plugin_management::session_view::COMMANDS)
+    .with_command_handler_async(move |name, payload| {
+        let view_handler = view_handler.clone();
+        Box::pin(async move {
+            view_handler
+                .handle(&name, payload)
+                .await
+                .unwrap_or(Ok(serde_json::Value::Null))
+        })
+    });
+    push_plugin(&mut catalog, std::sync::Arc::new(mgmt_plugin))?;
 }
 
 // ── 实化 5：LLM provider（命令域在这里，全插件化 S5）──

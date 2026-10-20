@@ -173,6 +173,21 @@ fn test_agent(provider: Arc<dyn LlmProvider>) -> Agent {
 /// `apply_command` 移到 `echo-plugin-provider-llm`。测试要覆盖的是**宿主
 /// 接缝**（`AgentProviderCommandHost`）——这里直接打接缝，而不是测宿主那条
 /// "插件未启用"的兜底分支（兜底有它自己的测试）。
+/// 走**会话视图命令域**（全插件化 S5）：面板视图命令由
+/// `echo-plugin-management::session_view` 认领。这里直接打宿主接缝
+/// （插件侧的投影/瘦身/顺序在自己 crate 的测试里覆盖）。
+async fn apply_via_session_view(agent: &Arc<Agent>, cmd: BackendCommand) {
+    let host = Arc::new(crate::agent::session_view_host::AgentSessionViewHost::new(
+        Arc::clone(agent),
+    ));
+    let handler = echo_plugin_management::session_view::SessionViewHandler::new(host);
+    handler
+        .handle(cmd.kind_name(), cmd.payload_value())
+        .await
+        .expect("命令应属于会话视图命令域")
+        .expect("命令处理失败");
+}
+
 async fn apply_via_provider_plugin(agent: &Arc<Agent>, cmd: BackendCommand) {
     let host = Arc::new(crate::agent::provider_host::AgentProviderCommandHost::new(
         Arc::clone(agent),
@@ -693,13 +708,15 @@ async fn request_trunk_timeline_returns_the_persisted_history() {
         team_id: None,
     });
 
-    agent
-        .apply_command(BackendCommand::RequestTrunkTimeline {
+    apply_via_session_view(
+        &agent,
+        BackendCommand::RequestTrunkTimeline {
             team_id: Some("t".into()),
             since_seq: 0,
             limit: None,
-        })
-        .await;
+        },
+    )
+    .await;
     let mut events = Vec::new();
     while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
         events.push(event);
@@ -763,13 +780,15 @@ async fn request_session_history_derives_from_the_event_log() {
             },
         ));
 
-    agent
-        .apply_command(BackendCommand::RequestSessionHistory {
+    apply_via_session_view(
+        &agent,
+        BackendCommand::RequestSessionHistory {
             team_id: Some("t".into()),
             session_id: target.into(),
             limit: None,
-        })
-        .await;
+        },
+    )
+    .await;
 
     let mut events = Vec::new();
     while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
@@ -4687,7 +4706,8 @@ async fn instance_list_fills_platform_ui_and_session_labels() {
         sink_events.lock().expect("events poisoned").push(event);
     }));
 
-    agent.emit_instance_list();
+    let instance_list = crate::agent::instance_list_event(&agent);
+    agent.emit(instance_list);
 
     let events = received.lock().expect("events poisoned").clone();
     let instances = events

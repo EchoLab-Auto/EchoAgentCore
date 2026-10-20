@@ -19,7 +19,21 @@ impl Agent {
 
     /// 按会话发出上下文快照（多会话，2026-09）。
     /// `session_id` 缺省时回退本地 TUI 会话，再回退该智能体的任一已有会话。
-    async fn emit_context_snapshot(&self, session_id: Option<&str>) {
+    pub(crate) async fn emit_context_snapshot(&self, session_id: Option<&str>) {
+        for event in self.context_snapshot_events(session_id).await {
+            self.emit(event);
+        }
+    }
+
+    /// 上下文快照的**事件形态**（不发，只组装）。
+    ///
+    /// 拆出来供面板视图命令域（`echo-plugin-management::session_view`）按需
+    /// 组装：命令层要知道"发几条、按什么顺序"，那属于线契约投影，不属于
+    /// 会话存储。
+    pub(crate) async fn context_snapshot_events(
+        &self,
+        session_id: Option<&str>,
+    ) -> Vec<BackendEvent> {
         let resolved = match session_id {
             Some(id) => Some(id.to_string()),
             None => {
@@ -52,13 +66,13 @@ impl Agent {
             })
             .collect();
         let blocks = self.context_blocks(resolved.as_deref(), &history).await;
-        self.emit(BackendEvent::ContextSnapshot {
+        vec![BackendEvent::ContextSnapshot {
             session_id: resolved,
             messages,
             blocks,
             total_tokens,
             limit_tokens: self.trunk.memory_limit_tokens(),
-        });
+        }]
     }
 
     /// 命令的目标 team_id（会话类命令；None = 未指定）。
@@ -447,264 +461,26 @@ impl Agent {
                     message: "技能命令由 echo-agent.skills.dir 插件处理，但该插件未启用".into(),
                 });
             }
-            BackendCommand::RequestState => {
-                self.emit_api_config().await;
-                // 会话列表要覆盖**所有人格**：每个会话由事件自带 team_id
-                //（SessionInfo.team_id / emit 的 annotate_team），Panel 按
-                // 当前 agent 过滤展示。只遍历默认 agent 会让其他人格的会话
-                // 缺失（或混入主 agent 会话，刷新后侧边栏串显）。
-                let mut emitted_sessions = 0usize;
-                // 身份由调用方传入（`Agent` 实例字段）：内层 fn 拿不到 self，
-                // 因此显式作为参数——与 P3「身份是参数」保持一致。
-                async fn emit_sessions_of(
-                    agent: &Agent,
-                    identity: &crate::NodeIdentity,
-                    count: &mut usize,
-                ) {
-                    for s in agent.trunk.all() {
-                        let last = s
-                            .history
-                            .lock()
-                            .last()
-                            .cloned()
-                            .map(|m| m.content)
-                            .unwrap_or_default();
-                        agent.emit(BackendEvent::SessionUpdated {
-                            session: s.info(last, identity),
-                        });
-                        *count += 1;
-                    }
-                }
-                // 当前（默认）agent 的会话。
-                let identity = self.node_identity();
-                emit_sessions_of(self, &identity, &mut emitted_sessions).await;
-                // 其余 persona 的会话（经 event_bus 镜像到默认 handle，各自
-                // annotate 自己的 team_id）。
-                if let Some(mgr) = self.registry() {
-                    for running in mgr.all() {
-                        if running.agent.team_id() == self.team_id() {
-                            continue; // 已由上方覆盖
-                        }
-                        let running_identity = running.agent.node_identity();
-                        emit_sessions_of(&running.agent, &running_identity, &mut emitted_sessions)
-                            .await;
-                    }
-                }
-                // DEBUG：这是「面板重连后的一次全量快照」，频次跟随连接
-                // 抖动（实测 151 条/天），不是状态变化——默认级别不该看见。
-                tracing::debug!(
-                    sessions = emitted_sessions,
-                    "state sessions emitted for all personas"
-                );
-                // Also emit instance status and instance management state so the
-                // TUI starts up with the correct persisted values.
-                self.emit_instance_list();
-                // 插件实例管理状态：逐个实例下发（W3.4 单源化——InstanceState；
-                // 缺管理面的实例在内部静默跳过）。
-                for name in self.instances.names() {
-                    let Some(instance) = self.instances.get(&name) else {
-                        continue;
-                    };
-                    // 状态下发单源（投影在插件里）：`InstanceState` 的构造
-                    // 归 `echo-plugin-tools`，宿主只决定"何时发"。
-                    if let Some(management) = instance.management() {
-                        if let Some(state) = management.cached_state() {
-                            self.emit(BackendEvent::InstanceState {
-                                instance: instance.name().to_string(),
-                                state,
-                            });
-                        }
-                    }
-                }
-            }
-            BackendCommand::RequestContext {
-                team_id,
-                session_id,
-            } => {
-                // 会话隔离：team 指定时返回该成员自己的上下文快照；
-                // session_id 指定时按会话（多会话上下文，2026-09）。
-                if let Some(id) = team_id {
-                    let agent = self.registry().and_then(|r| r.resolve(&id));
-                    if let Some(t) = agent {
-                        t.emit_context_snapshot(session_id.as_deref()).await;
-                        return;
-                    }
-                }
-                self.emit_context_snapshot(session_id.as_deref()).await;
-            }
-            BackendCommand::RequestTrunkTimeline {
-                team_id,
-                since_seq,
-                limit,
-            } => {
-                // 指定人格时返回该 persona 的独立 timeline（不同记忆）。
-                // since_seq > 0 时走增量快照；增量窗口不完整（None）回退全量。
-                // full 标志告知前端本次是替换还是追加/修补，前端不再凭 seq
-                // 大小猜测（全量误当增量会整段重复，空增量误当全量会清空聊天）。
-                // 快照为同步短锁 clone（2026-10 评审：去掉 sleep 自旋与 None
-                // 降级）；Option 外形保留给将来可能的降级路径。
-                //
-                // 返回值带上 `has_more`（2026-10 分页）：全量路径按 `limit`
-                // 只回**最新** N 条时置 true，前端据此按需向上翻页。增量路径
-                // **不截断**——那是缺口补齐，截断会让前端游标与实际内容不一致。
-                let snapshot_or_skip = |trunk: &crate::session::TrunkStore,
-                                        since: u64|
-                 -> Option<(
-                    Vec<crate::event::TimelineMessage>,
-                    u64,
-                    bool,
-                    bool,
-                )> {
-                    if since > 0 {
-                        match trunk.timeline_snapshot_since(since) {
-                            Some((m, s)) => Some((m, s, false, false)),
-                            None => {
-                                let (m, more) = window_tail(trunk, limit);
-                                Some((m, trunk.timeline_seq(), true, more))
-                            }
-                        }
-                    } else {
-                        let (m, more) = window_tail(trunk, limit);
-                        Some((m, trunk.timeline_seq(), true, more))
-                    }
-                };
-                /// 全量路径取窗口尾部：`limit` 为 None/0 时返回全部。
-                fn window_tail(
-                    trunk: &crate::session::TrunkStore,
-                    limit: Option<usize>,
-                ) -> (Vec<crate::event::TimelineMessage>, bool) {
-                    match limit {
-                        Some(n) if n > 0 => trunk.timeline_window_tail(n),
-                        _ => (trunk.timeline_snapshot(), false),
-                    }
-                }
-                let (messages, seq, full, has_more) = if let Some(ref id) = team_id {
-                    match self.registry() {
-                        Some(mgr) => match mgr.resolve(id) {
-                            Some(agent) => {
-                                let Some(snap) = snapshot_or_skip(&agent.trunk, since_seq) else {
-                                    tracing::warn!(
-                                        "timeline snapshot degraded; skip this sync round"
-                                    );
-                                    return;
-                                };
-                                snap
-                            }
-                            None => {
-                                let Some(snap) = snapshot_or_skip(&self.trunk, since_seq) else {
-                                    tracing::warn!(
-                                        "timeline snapshot degraded; skip this sync round"
-                                    );
-                                    return;
-                                };
-                                snap
-                            }
-                        },
-                        None => {
-                            let Some(snap) = snapshot_or_skip(&self.trunk, since_seq) else {
-                                tracing::warn!("timeline snapshot degraded; skip this sync round");
-                                return;
-                            };
-                            snap
-                        }
-                    }
-                } else {
-                    let Some(snap) = snapshot_or_skip(&self.trunk, since_seq) else {
-                        tracing::warn!("timeline snapshot degraded; skip this sync round");
-                        return;
-                    };
-                    snap
-                };
-                // 快照瘦身（2026-09 刷新加速）：推理正文占板载快照约七成，
-                // 只给最近若干条保留全文（旧条目截断 + 标注），持久化不改。
-                let messages = crate::timeline::elide_reasoning_for_wire(messages);
-                self.emit(BackendEvent::TrunkTimeline {
-                    messages,
-                    seq,
-                    team_id: team_id.clone(),
-                    full,
-                    has_more,
-                });
-                // 活跃 turn 快照（刷新恢复，2026-10）：运行状态本是瞬时事件
-                // 流，前端刷新重连后仅靠 TrunkTimeline 看不到正在运行的会话
-                // （活动浮条/取消按钮丢失）。timeline 之后立刻补发——增量与
-                // 全量都发，前端按快照重建 running 集合。
-                let session_ids = match team_id.as_deref() {
-                    Some(id) => self
-                        .registry()
-                        .and_then(|m| m.resolve(id))
-                        .map(|a| a.active_turn_session_ids())
-                        .unwrap_or_default(),
-                    None => self.active_turn_session_ids(),
-                };
-                self.emit(BackendEvent::ActiveTurnsSnapshot {
-                    session_ids,
-                    team_id: team_id.clone(),
-                });
-            }
-            BackendCommand::RequestTimelineEarlier {
-                team_id,
-                before_ord,
-                limit,
-            } => {
-                // 向上翻页（2026-10 分页）：返回 `seq < before_seq` 的最近 N 条。
-                // 与 `RequestTrunkTimeline` 分开的理由见协议注释：翻页是"前插
-                // 到已加载列表头部"，不动同步游标；混在 full/增量语义里会让
-                // 前端难以判断该替换还是该前插。
-                let limit = limit.unwrap_or(200).clamp(1, 500);
-                // 目标 persona 解析（与 RequestTrunkTimeline 相同口径）。
-                let resolved = team_id
-                    .as_deref()
-                    .and_then(|id| self.registry()?.resolve(id));
-                let trunk: &crate::session::TrunkStore = match &resolved {
-                    Some(agent) => &agent.trunk,
-                    None => &self.trunk,
-                };
-                let (messages, has_more) = trunk.timeline_page(before_ord, limit);
-                // 与全量快照同一套线上瘦身（推理正文截断），保证前端拿到的
-                // 形状与首屏一致。
-                let messages = crate::timeline::elide_reasoning_for_wire(messages);
-                self.emit(BackendEvent::TimelineEarlier {
-                    team_id: team_id.clone(),
-                    messages,
-                    has_more,
-                });
-            }
-            BackendCommand::RequestSessionHistory {
-                team_id,
-                session_id,
-                limit,
-            } => {
-                // 按会话派生显示历史（2026-10 面板「会话无消息」修复）：
-                // 共享显示时间线有 1024 条上限、跨会话 FIFO 淘汰，旧会话
-                // 条目可能被整体挤出；事件日志按会话分区且完整，因此从这里
-                // 按需派生（镜像实时投影的展示形状）。
-                let limit = limit.unwrap_or(500).clamp(1, 2000);
-                // 目标 persona 解析（与 RequestTrunkTimeline 相同）：
-                // team_id 可解析 → 目标 agent 的 trunk；其余回退本 agent。
-                let resolved = team_id
-                    .as_deref()
-                    .and_then(|id| self.registry()?.resolve(id));
-                let trunk: &crate::session::TrunkStore = match &resolved {
-                    Some(agent) => &agent.trunk,
-                    None => &self.trunk,
-                };
-                let (messages, total, truncated) =
-                    trunk.display_history_for_session(&session_id, limit);
-                // 合并水位线：派生时该会话在显示时间线中的最大 seq。
-                // **必须与派生范围一致**（`history_watermark` 排除推理 ——
-                // 推理不落事件日志、派生不含；若把它计进水位线，前端会把
-                // 实时推理判成"快照已覆盖"而整条丢弃 → 看不到思考 chip）。
-                let session_key = session_id.as_str();
-                let max_seq =
-                    crate::session::history_watermark(trunk.timeline_snapshot(), session_key);
-                self.emit(BackendEvent::SessionHistory {
-                    team_id: team_id.clone(),
-                    session_id,
-                    messages,
-                    total,
-                    truncated,
-                    max_seq,
+            // ── 会话视图命令域已迁进 `echo-plugin-management`（全插件化 S5）──
+            //
+            // 面板要看到什么（快照顺序 / 增量与全量的 full 标志 / 分页 /
+            // 历史派生 / 推理瘦身）是**线契约投影**，与显示时间线的投影策略
+            // 同源——那套规则已经在 `echo-plugin-management`（`timeline` /
+            // `history` / `session_view`）。宿主只剩数据：`TrunkStore` 的窗口
+            // 与事件日志。这里只是"插件未启用"的兜底。
+            //
+            // **写操作不在本域**：ClearHistory / ArchiveHistory /
+            // CompactHistory / CancelRequestedWork / SendMessage 动的是会话
+            // 真源与 turn 驱动（宿主骨架），仍由下面的分支处理。
+            BackendCommand::RequestState
+            | BackendCommand::RequestContext { .. }
+            | BackendCommand::RequestTrunkTimeline { .. }
+            | BackendCommand::RequestTimelineEarlier { .. }
+            | BackendCommand::RequestSessionHistory { .. } => {
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: "会话视图命令由 echo-agent.management.panel 插件处理，但该插件未启用"
+                        .into(),
                 });
             }
             BackendCommand::ClearHistory {
