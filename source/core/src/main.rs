@@ -1536,30 +1536,26 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             )?;
         }
 
-        // ── 实化 2：技能目录（整表启停，跨 persona）──
-        let gating_manager_2 = gating_manager.clone();
-        push_builtin(
-            &mut catalog,
-            PluginManifest::builtin(
-                SKILLS_DIR_PLUGIN_ID,
-                "技能目录",
-                version,
-                "skill",
-                "skills_dir",
-                "SKILL.md 技能目录（热重载）",
-            ),
-            move |_ctx| {
-                for_each_agent(&gating_manager_2, |a| {
-                    a.reapply_plugin_gating(SKILLS_DIR_PLUGIN_ID, true)
-                });
-                let gating_manager_u2 = gating_manager_2.clone();
-                Ok(vec![Disposer::from_fn(move || {
-                    for_each_agent(&gating_manager_u2, |a| {
-                        a.reapply_plugin_gating(SKILLS_DIR_PLUGIN_ID, false)
+        // ── 实化 2：技能目录（整表启停 + 命令域，跨 persona）──
+        //
+        // 清单与命令域都在插件里（全插件化 S3）：宿主只注入 `SkillsCommandHost`
+        // （per-persona 技能表 / 写目录 / 重载 / 启停持久化 / 事件出口）。
+        {
+            let gating_manager_2 = gating_manager.clone();
+            let skills_host: std::sync::Arc<
+                dyn echo_agent::skill::commands::SkillsCommandHost,
+            > = std::sync::Arc::new(echo_agent::agent::skills_host::AgentSkillsCommandHost::new(
+                agent.clone(),
+            ));
+            push_plugin(
+                &mut catalog,
+                echo_agent::skill::plugin(version, skills_host, move |enable| {
+                    for_each_agent(&gating_manager_2, |a| {
+                        a.reapply_plugin_gating(SKILLS_DIR_PLUGIN_ID, enable)
                     });
-                })])
-            },
-        )?;
+                }),
+            )?;
+        }
 
         // ── 实化 4：循环模式（二选一）──
         // 声明已外迁到 `echo-plugin-loop`（Phase 3 ⑦）：驱动本体只有一个

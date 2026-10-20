@@ -9,6 +9,11 @@ description = "技能目录插件（解耦计划 Phase 3 ③）：SKILL.md 发�
 
 [dependencies]
 echo-defs = { workspace = true }
+echo-context = { workspace = true }
+echo-plugin = { workspace = true }
+echo-protocol = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

@@ -18,13 +18,69 @@
 pub use echo_defs::skill::{Skill, SkillMetadata};
 
 /// 外部 Git 来源技能的安装/更新/移除（`.sources.json` 来源记录）。
+pub mod commands;
 pub mod install;
 /// SKILL.md 解析/热重载加载器。
 pub mod loader;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use thiserror::Error;
+
+/// 插件 id（宿主 `plugins::SKILLS_DIR_PLUGIN_ID` 与本常量同源字面量）。
+pub const PLUGIN_ID: &str = "echo-agent.skills.dir";
+
+/// 插件清单（id / 名称 / 类别 / 路由键与宿主既有字面量一致）。
+pub fn manifest(version: &str) -> echo_plugin::PluginManifest {
+    echo_plugin::PluginManifest::builtin(
+        PLUGIN_ID,
+        "技能目录",
+        version,
+        "skill",
+        "skills_dir",
+        "SKILL.md 技能目录（热重载）",
+    )
+}
+
+/// 构造插件：技能表 + 命令域（7 条 `*Skill*` 命令）。
+///
+/// `mount` 只做两件事：拨 persona 门控开关（技能表随白名单启停）+ 挂命令域。
+/// 表本身由宿主持有（per-persona），插件经 [`commands::SkillsCommandHost`]
+/// 访问——所以这里不需要 `provide` 任何服务。
+pub fn plugin(
+    version: &str,
+    host: Arc<dyn commands::SkillsCommandHost>,
+    gate: impl Fn(bool) + Send + Sync + 'static,
+) -> Arc<dyn echo_plugin::Plugin> {
+    use echo_plugin::{BuiltinPlugin, PluginTextBlock};
+    let gate = Arc::new(gate);
+    let gate_mount = gate.clone();
+    let handler = Arc::new(commands::SkillsCommandHandler::new(host));
+    Arc::new(
+        BuiltinPlugin::new(manifest(version), move |_mctx| {
+            gate_mount(true);
+            let gate_unmount = gate_mount.clone();
+            Ok(vec![echo_context::Disposer::from_fn(move || {
+                gate_unmount(false)
+            })])
+        })
+        .with_commands(commands::COMMANDS)
+        .with_command_handler_async(move |name, payload| {
+            let handler = handler.clone();
+            Box::pin(async move {
+                handler
+                    .handle(&name, payload)
+                    .await
+                    .unwrap_or(Ok(serde_json::Value::Null))
+            })
+        })
+        // 文本块：把本 persona 已启用的技能描述注入系统提示词。
+        // 内容仍在宿主的提示词装配里实现（它需要 persona 白名单与缓存），
+        // 这里只声明"本插件提供一个块"——面板据此显示与分组。
+        .with_text_blocks([PluginTextBlock::new("skills", "技能清单", 40)]),
+    )
+}
 
 /// Registry of discovered skills.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

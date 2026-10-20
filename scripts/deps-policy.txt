@@ -46,7 +46,7 @@ plugin/echo-plugin-adapter              echo-plugin-host echo-plugin-api echo-de
 
 # ── Phase 3 外迁的内置插件 ─────────────────────────────────────────────
 plugin/echo-plugin-provider-llm         echo-defs echo-llm-anthropic echo-llm-ollama echo-llm-openai
-plugin/echo-plugin-skills               echo-defs
+plugin/echo-plugin-skills               echo-defs echo-context echo-plugin echo-protocol
 plugin/echo-plugin-loop                 echo-context echo-defs echo-loop echo-plugin echo-plugin-api
 plugin/echo-plugin-subagent             echo-defs echo-tool
 plugin/echo-plugin-workspace            echo-context echo-defs echo-plugin echo-protocol echo-session echo-tool

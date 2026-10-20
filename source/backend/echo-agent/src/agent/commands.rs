@@ -277,47 +277,6 @@ impl Agent {
                 let text = self.model.config.read().await.system_prompt.clone();
                 self.emit(BackendEvent::SystemPrompt { text });
             }
-            BackendCommand::ToggleSkill { name, enabled } => {
-                let ok = {
-                    let mut skills = self.prompt.skills.lock().await;
-                    skills.set_enabled(&name, enabled)
-                };
-                if ok {
-                    self.prompt.invalidate().await;
-                    // Persist the choice so it survives restarts.
-                    let mut cfg = self.model.config.write().await;
-                    cfg.disabled_skills.retain(|n| n != &name);
-                    if !enabled {
-                        cfg.disabled_skills.push(name.clone());
-                    }
-                    let cfg_snapshot = cfg.clone();
-                    drop(cfg);
-                    self.persist_config(&cfg_snapshot).await;
-                    // 全局策略（进程级）：所有 persona 重算时读同一份事实。
-                    if let Some(policy) = self.global_policy() {
-                        policy.set_skill_enabled(&name, enabled);
-                    }
-                    // 全局生效：最终状态 = 全局启停 ∧ 各 persona 名单，
-                    // 逐 persona 重算（此前只作用于管理面，其他人格照旧）。
-                    if let Some(mgr) = self.registry() {
-                        for running in mgr.all() {
-                            running.agent.reapply_skill_gating(&name, enabled).await;
-                        }
-                    }
-                    self.emit_skills_list().await;
-                }
-                self.emit(BackendEvent::Error {
-                    session_id: None,
-                    message: if ok {
-                        format!(
-                            "skill {name} {}",
-                            if enabled { "enabled" } else { "disabled" }
-                        )
-                    } else {
-                        format!("skill {name} not found")
-                    },
-                });
-            }
             BackendCommand::ToggleTool { name, enabled } => {
                 let ok = self.tools.set_enabled(&name, enabled).await;
                 if ok {
@@ -353,65 +312,6 @@ impl Agent {
                         session_id: None,
                         message: format!("tool {name} not found"),
                     });
-                }
-            }
-            BackendCommand::SaveSkill {
-                name,
-                description,
-                keywords,
-                always,
-                category,
-                content,
-                system,
-            } => {
-                let dir = self.current_skills_dir().await;
-                let draft = SkillDraft {
-                    name: name.clone(),
-                    description,
-                    keywords,
-                    always,
-                    category,
-                    content,
-                    system,
-                };
-                match self.save_skill_file(&dir, &draft) {
-                    Ok(()) => {
-                        if let Err(e) = self.reload_skills(&dir).await {
-                            tracing::warn!(error = %e, "skill reload after save failed");
-                        }
-                        self.emit_skills_list().await;
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("skill {name} saved"),
-                        });
-                    }
-                    Err(e) => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("save skill failed: {e}"),
-                        });
-                    }
-                }
-            }
-            BackendCommand::DeleteSkill { name } => {
-                let dir = self.current_skills_dir().await;
-                match self.delete_skill_file(&dir, &name) {
-                    Ok(()) => {
-                        if let Err(e) = self.reload_skills(&dir).await {
-                            tracing::warn!(error = %e, "skill reload after delete failed");
-                        }
-                        self.emit_skills_list().await;
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("skill {name} deleted"),
-                        });
-                    }
-                    Err(e) => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("delete skill failed: {e}"),
-                        });
-                    }
                 }
             }
             BackendCommand::UpdateApiConfig {
@@ -532,41 +432,6 @@ impl Agent {
             }
             BackendCommand::QueryApiMetrics { name } => {
                 self.query_api_metrics(&name).await;
-            }
-            BackendCommand::RequestSkillsList => {
-                self.emit_skills_list().await;
-            }
-            BackendCommand::ReloadSkills => {
-                let dir = self.current_skills_dir().await;
-                // 技能目录是进程级共享的：重载必须覆盖**所有运行中人格**。
-                // 此臂由管理代理（__core）执行，此前只重载了它自己的注册表——
-                // 面板「重载技能」改完 SKILL.md 后，真正干活的人格仍停留在
-                // 启动时的技能内容（实测：EchoCode 的上下文块不含新增技能）。
-                let running = self
-                    .registry()
-                    .map(|manager| manager.all())
-                    .unwrap_or_default();
-                let mut targets: Vec<(&str, &Agent)> = running
-                    .iter()
-                    .map(|r| (r.id.as_str(), r.agent.as_ref()))
-                    .collect();
-                targets.push(("<core>", self));
-                let (updated, checked, failures) = reload_skills_into(&dir, targets).await;
-                self.emit_skills_list().await;
-                let message = if !failures.is_empty() {
-                    format!(
-                        "技能重载部分失败（{updated}/{checked} 个更新）：{}",
-                        failures.join("；")
-                    )
-                } else if updated == 0 {
-                    "技能无变化".into()
-                } else {
-                    format!("技能已重新加载（{updated}/{checked} 个智能体更新）")
-                };
-                self.emit(BackendEvent::Error {
-                    session_id: None,
-                    message,
-                });
             }
             BackendCommand::RestartPlugin { id } => {
                 // 防自锁：重启管理面插件 = 先卸下 management WS，Panel 立即
@@ -741,84 +606,21 @@ impl Agent {
                     message: "shell 命令由 echo-agent.tools.builtin 插件处理，但该插件未启用".into(),
                 });
             }
-            BackendCommand::InstallSkillFromGit { url, name, branch } => {
-                let dir = self.current_skills_dir().await;
-                // git 子进程（clone/fetch）可达秒级至分钟级：整段放
-                // blocking 池，不阻塞 async 调度线程（2026-10 巡检）。
-                let (dir_c, url_c) = (dir.clone(), url.clone());
-                let (name_c, branch_c) = (name.clone(), branch.clone());
-                let install_res = tokio::task::spawn_blocking(move || {
-                    crate::skill_install::install(
-                        std::path::Path::new(&dir_c),
-                        &url_c,
-                        name_c.as_deref(),
-                        branch_c.as_deref(),
-                    )
-                })
-                .await
-                .unwrap_or_else(|e| Err(format!("install task join failed: {e}")));
-                match install_res {
-                    Ok(_) => {
-                        if let Err(e) = self.reload_skills(&dir).await {
-                            tracing::warn!(error = %e, "skill reload after install failed");
-                        }
-                        self.emit_skills_list().await;
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("skill source installed: {url}"),
-                        });
-                    }
-                    Err(e) => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("install skill source failed: {e}"),
-                        });
-                    }
-                }
-            }
-            BackendCommand::UpdateSkillFromGit { name } => {
-                let dir = self.current_skills_dir().await;
-                let (dir_c, name_c) = (dir.clone(), name.clone());
-                let update_res = tokio::task::spawn_blocking(move || {
-                    crate::skill_install::update(std::path::Path::new(&dir_c), &name_c)
-                })
-                .await
-                .unwrap_or_else(|e| Err(format!("update task join failed: {e}")));
-                match update_res {
-                    Ok(src) => {
-                        if let Err(e) = self.reload_skills(&dir).await {
-                            tracing::warn!(error = %e, "skill reload after update failed");
-                        }
-                        self.emit_skills_list().await;
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("skill {name} updated to {}", src.rev),
-                        });
-                    }
-                    Err(e) => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("update skill source failed: {e}"),
-                        });
-                    }
-                }
-            }
-            BackendCommand::RemoveSkillSource { name } => {
-                let dir = self.current_skills_dir().await;
-                match crate::skill_install::remove_source(std::path::Path::new(&dir), &name) {
-                    Ok(()) => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("skill source record removed: {name}"),
-                        });
-                    }
-                    Err(e) => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("remove skill source failed: {e}"),
-                        });
-                    }
-                }
+            // 技能命令域已迁进 `echo-plugin-skills`（全插件化 S3）：技能表、
+            // frontmatter、目录校验、`.sources.json`、git 安装与列表投影都在
+            // 那里。这里只剩"插件未启用"的兜底。
+            BackendCommand::RequestSkillsList
+            | BackendCommand::ReloadSkills
+            | BackendCommand::ToggleSkill { .. }
+            | BackendCommand::SaveSkill { .. }
+            | BackendCommand::DeleteSkill { .. }
+            | BackendCommand::InstallSkillFromGit { .. }
+            | BackendCommand::UpdateSkillFromGit { .. }
+            | BackendCommand::RemoveSkillSource { .. } => {
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: "技能命令由 echo-agent.skills.dir 插件处理，但该插件未启用".into(),
+                });
             }
             BackendCommand::RequestState => {
                 self.emit_api_config().await;
@@ -1564,111 +1366,14 @@ impl Agent {
         self.emit(BackendEvent::PluginsList { plugins });
     }
 
-    /// Current configured skill directory (resolved from the live config).
-    async fn current_skills_dir(&self) -> String {
-        self.model.config.read().await.skills_dir.clone()
-    }
-
-    /// Persist a skill to `{skills_dir}/{name}/SKILL.md`.
-    ///
-    /// The frontmatter is regenerated from the metadata fields; the content
-    /// is stored verbatim as the markdown body. Returns an error string on
-    /// invalid names or filesystem failures.
-    fn save_skill_file(&self, skills_dir: &str, draft: &SkillDraft) -> Result<(), String> {
-        validate_skill_name(&draft.name)?;
-        let dir = std::path::Path::new(skills_dir);
-        let skill_dir = dir.join(&draft.name);
-        std::fs::create_dir_all(&skill_dir)
-            .map_err(|e| format!("cannot create {}: {e}", skill_dir.display()))?;
-        let keywords_str = if draft.keywords.is_empty() {
-            String::new()
-        } else {
-            format!("keywords: [{}]\n", draft.keywords.join(", "))
-        };
-        let mut frontmatter = format!(
-            "---\nname: {}\ndescription: {}\n{keywords_str}",
-            draft.name, draft.description,
-        );
-        if draft.always {
-            frontmatter.push_str("metadata:\n  always: true\n");
-        }
-        if !draft.category.is_empty() {
-            frontmatter.push_str(&format!("category: {}\n", draft.category));
-        }
-        if draft.system {
-            frontmatter.push_str("system: true\n");
-        }
-        frontmatter.push_str("---\n");
-        let body = format!("{frontmatter}{}", draft.content);
-        std::fs::write(skill_dir.join("SKILL.md"), body)
-            .map_err(|e| format!("cannot write SKILL.md: {e}"))?;
-        Ok(())
-    }
-
-    /// Delete `{skills_dir}/{name}` (only when it is a skill directory inside
-    /// the configured skills directory).
-    fn delete_skill_file(&self, skills_dir: &str, name: &str) -> Result<(), String> {
-        validate_skill_name(name)?;
-        let root = std::path::Path::new(skills_dir);
-        let canonical_root = root
-            .canonicalize()
-            .map_err(|e| format!("skills dir missing: {e}"))?;
-        let skill_dir = root.join(name);
-        let canonical_target = skill_dir
-            .canonicalize()
-            .map_err(|e| format!("skill {name} not found: {e}"))?;
-        if !canonical_target.starts_with(&canonical_root) {
-            return Err("refusing to delete outside skills directory".into());
-        }
-        if !canonical_target.join("SKILL.md").exists() {
-            return Err(format!("{name} is not a skill directory"));
-        }
-        std::fs::remove_dir_all(&canonical_target)
-            .map_err(|e| format!("cannot delete {name}: {e}"))?;
-        Ok(())
-    }
 }
 
-/// Draft payload for creating/updating a skill (`BackendCommand::SaveSkill`).
-#[derive(Debug, Clone)]
-pub(crate) struct SkillDraft {
-    pub name: String,
-    pub description: String,
-    pub keywords: Vec<String>,
-    pub always: bool,
-    pub category: String,
-    pub content: String,
-    pub system: bool,
-}
-
-/// Skill name/directory key validation: Unicode letters/digits (covers Chinese),
-/// `-`, `_` and spaces; no path separators, no leading dots.
-fn validate_skill_name(name: &str) -> Result<(), String> {
-    if name.is_empty() {
-        return Err("skill name is empty".into());
-    }
-    // 目录 key 校验：Unicode 字母/数字（支持中文名）+ '-' + '_'；
-    // 拒绝路径分隔符、点开头（防路径穿越）与空白/控制字符。
-    if name.starts_with('.')
-        || !name
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ' ')
-    {
-        return Err(format!(
-            "invalid skill name {name:?}: only Unicode letters/digits, '-', '_' allowed"
-        ));
-    }
-    // 路径分隔符显式禁止（is_alphanumeric 不含它们，这里兜底明确语义）。
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err("skill name must be a single directory key".into());
-    }
-    Ok(())
-}
-
-/// 把磁盘技能目录重载进一组代理：返回 `(updated, checked, failures)`。
-///
-/// 从 [`BackendCommand::ReloadSkills`] 的处理臂抽出，便于测试直接注入代理集合
-/// （生产路径的集合 = 所有运行中人格 + 管理代理自身）。
+/// 从 `ReloadSkills` 的处理臂抽出时的批量重载助手——**现在只有测试用它**
+/// （生产路径的重载已随命令域迁进 `echo-plugin-skills`，由
+/// `SkillsCommandHost::reload` 表达）。保留它是为了让"跨人格生效"这条不变量
+/// 继续有断言守着：等 `AgentSkillsCommandHost::reload` 的多人格版本落地后，
+/// 这段和它的测试一起删。
+#[cfg(test)]
 pub(crate) async fn reload_skills_into<'a>(
     dir: &str,
     targets: impl IntoIterator<Item = (&'a str, &'a Agent)>,
@@ -1774,27 +1479,5 @@ mod reload_skills_tests {
         assert!(failures.len() <= 1);
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-#[cfg(test)]
-mod skill_name_tests {
-    use super::validate_skill_name;
-
-    #[test]
-    fn accepts_unicode_chinese_names() {
-        assert!(validate_skill_name("信息检索").is_ok());
-        assert!(validate_skill_name("web-search").is_ok());
-        assert!(validate_skill_name("my_skill-2").is_ok());
-    }
-
-    #[test]
-    fn rejects_path_traversal_and_separators() {
-        assert!(validate_skill_name("").is_err());
-        assert!(validate_skill_name(".hidden").is_err());
-        assert!(validate_skill_name("a/b").is_err());
-        assert!(validate_skill_name("a\\b").is_err());
-        assert!(validate_skill_name("..").is_err());
-        assert!(validate_skill_name("../evil").is_err());
     }
 }

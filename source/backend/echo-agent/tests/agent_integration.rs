@@ -650,12 +650,23 @@ async fn toggle_skill_enables_and_disables() {
         },
         instructions: "use calculator".into(),
     });
-    agent
-        .apply_command(BackendCommand::ToggleSkill {
-            name: "calc".into(),
-            enabled: false,
-        })
-        .await;
+    // 命令域归插件（全插件化 S3）：驱动**插件侧处理器**而不是 `apply_command`
+    // ——后者在"插件未安装"时会回"插件未启用"。这样测的仍是能力本身
+    // （启停 + 持久化 + 全局策略），而不依赖插件装配。
+    let host: Arc<dyn echo_agent::skill::commands::SkillsCommandHost> =
+        Arc::new(echo_agent::agent::skills_host::AgentSkillsCommandHost::new(
+            agent.clone(),
+        ));
+    let handler = echo_agent::skill::commands::SkillsCommandHandler::new(host);
+
+    handler
+        .handle(
+            "ToggleSkill",
+            serde_json::json!({"name": "calc", "enabled": false}),
+        )
+        .await
+        .expect("本域命令")
+        .expect("载荷合法");
     assert!(
         !agent
             .skills()
@@ -666,12 +677,14 @@ async fn toggle_skill_enables_and_disables() {
             .metadata
             .enabled
     );
-    agent
-        .apply_command(BackendCommand::ToggleSkill {
-            name: "calc".into(),
-            enabled: true,
-        })
-        .await;
+    handler
+        .handle(
+            "ToggleSkill",
+            serde_json::json!({"name": "calc", "enabled": true}),
+        )
+        .await
+        .expect("本域命令")
+        .expect("载荷合法");
     assert!(
         agent
             .skills()

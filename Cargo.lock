@@ -664,10 +664,15 @@ name = "echo-plugin-skills"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "echo-context",
  "echo-defs",
+ "echo-plugin",
+ "echo-protocol",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
+ "tracing",
  "uuid",
  "walkdir",
 ]
