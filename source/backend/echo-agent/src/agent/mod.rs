@@ -85,11 +85,15 @@ impl Default for InboundTurnRegistration {
 
 /// The agent: owns provider, tools, skills, sessions, instances, and emits events.
 pub struct Agent {
-    provider: RwLock<Arc<dyn LlmProvider>>,
-    config: RwLock<AgentConfig>,
-    active_model: RwLock<String>,
-    /// Shared config store for persisting `[agent]` changes (optional).
-    config_store: tokio::sync::Mutex<Option<echo_config::ConfigStore>>,
+    /// 模型出口（S4a）：provider / 配置 / 模型名 / profile 与会话级覆盖。
+    ///
+    /// 这四件事必须**一起变**（切 provider 要同时改实例与配置；切 profile 要
+    /// 同时改 persona 标记与会话覆盖），所以它们现在有一个共同的持有者而不是
+    /// 散在 `Agent` 的 8 个字段里。不变式表见 [`crate::model_service`]。
+    ///
+    /// `Arc` 而不是内联：后续阶段要把这个句柄单独递给别的服务（读配置不需要
+    /// 整只 `Agent`）。
+    pub(crate) model: Arc<crate::model_service::ModelService>,
     pub tools: Arc<ToolRegistry>,
     pub skills: Arc<Mutex<SkillRegistry>>,
     pub trunk: TrunkStore,
@@ -180,24 +184,6 @@ pub struct Agent {
     /// while in-flight replies finish (self-update continuity).
     draining: AtomicBool,
     capabilities: std::sync::Mutex<Option<crate::config::AgentProfile>>,
-    /// Persona 级 API 供应商引用（None = 跟随全局默认配置；
-    /// Some(name) = 全局供应商池 `[agent].api_profiles` 中该名字的 profile）。
-    /// 保存于 `[agent.teams.{id}].api_profile`；运行期变更经由
-    /// [`Self::apply_persona_api`] 重建本 persona 的 provider，不依赖全局
-    /// UpdateApiConfig / SwitchApi 激活路径。
-    persona_api: tokio::sync::RwLock<Option<String>>,
-    /// 会话级 provider 覆盖（session_id → (profile_name, provider)）。
-    /// 挂在 Agent 上而非 TrunkStore：provider 是 Agent 级资源（与
-    /// `self.provider` 同级），会话级覆盖是其按会话的镜像。
-    /// `DashMap` 并发读 + 会话级写锁（`session_provider_lock`）防重复
-    /// 构建。
-    session_providers: DashMap<String, (String, Arc<dyn LlmProvider>)>,
-    /// 会话级 provider 构建互斥（同一 session_id 的并发构建串行；
-    /// 不同会话并行）。
-    session_provider_locks: DashMap<String, tokio::sync::Mutex<()>>,
-    /// 余额快照/查询互斥（2026-10 审计 P2）：周期任务与手动「查余额」
-    /// 共用——防止慢查询（15s 超时）叠加本轮周期 tick、导致同秒重复采样。
-    balance_snapshot_lock: tokio::sync::Mutex<()>,
     /// Subagent 插件运行态：子任务注册表 + spawn 执行闭包（组合根装配；
     /// None = 插件未启用，spawn_subagent 对模型不可见）。
     subagent: std::sync::RwLock<Option<SubagentRuntime>>,
@@ -222,7 +208,7 @@ pub(crate) struct SubagentRuntime {
 impl std::fmt::Debug for Agent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Agent")
-            .field("active_model", &self.active_model)
+            .field("active_model", &self.model.active_model)
             .field("adapters", &self.instances.names())
             .finish_non_exhaustive()
     }
@@ -341,10 +327,7 @@ impl Agent {
             std::sync::Arc::new(crate::timeline::TimelineProjector::new(trunk.clone()));
         let _timeline_projection = timeline_projector.subscribe(&event_bus);
         let agent = Self {
-            provider: RwLock::new(provider),
-            config: RwLock::new(config),
-            active_model: RwLock::new(String::new()),
-            config_store: tokio::sync::Mutex::new(None),
+            model: Arc::new(crate::model_service::ModelService::new(provider, config)),
             tools: Arc::new(tools),
             skills: Arc::new(Mutex::new(skills)),
             trunk,
@@ -378,10 +361,6 @@ impl Agent {
             node_identity: std::sync::RwLock::new(crate::NodeIdentity::default()),
             draining: AtomicBool::new(false),
             capabilities: std::sync::Mutex::new(None),
-            persona_api: tokio::sync::RwLock::new(None),
-            session_providers: DashMap::new(),
-            session_provider_locks: DashMap::new(),
-            balance_snapshot_lock: tokio::sync::Mutex::new(()),
             subagent: std::sync::RwLock::new(None),
             gating_log_state: DashMap::new(),
         };
@@ -440,7 +419,7 @@ impl Agent {
     /// [`Self::set_session_persist_path`] 独立设置）。Called once at startup —
     /// uses try_lock since no concurrent access exists yet.
     pub fn set_config_store(&self, store: echo_config::ConfigStore) {
-        if let Ok(mut slot) = self.config_store.try_lock() {
+        if let Ok(mut slot) = self.model.config_store.try_lock() {
             *slot = Some(store);
         } else {
             tracing::warn!("config store slot busy, ignoring set_config_store");
@@ -543,7 +522,7 @@ impl Agent {
     /// 同名覆盖）」。传入的 `write_dir` 仅用于判断用户层是否存在（不存在
     /// 只意味着没有用户技能，出厂层仍照常加载）。
     pub(crate) async fn reload_skills(&self, write_dir: &str) -> Result<bool, String> {
-        let mut dirs = self.config.read().await.skills_dirs.clone();
+        let mut dirs = self.model.config.read().await.skills_dirs.clone();
         dirs.push(write_dir.to_string());
         if dirs
             .iter()
@@ -1077,16 +1056,16 @@ impl Agent {
     }
 
     pub async fn active_model(&self) -> String {
-        let model = self.active_model.read().await.clone();
+        let model = self.model.active_model.read().await.clone();
         if model.is_empty() {
-            self.provider.read().await.default_model().to_string()
+            self.model.provider.read().await.default_model().to_string()
         } else {
             model
         }
     }
 
     /// 会话级 provider 解析（2026-10 会话粒度模型）：有覆盖 → 专用
-    /// provider；无覆盖 → persona 级（`self.provider`）。
+    /// provider；无覆盖 → persona 级（`self.model.provider`）。
     ///
     /// 覆盖的 provider 在首次使用时按 profile 惰性构建（含计量 + 脱敏
     /// 装饰器）；构建失败时回退 persona 级（记日志，不中断 turn）。
@@ -1096,11 +1075,11 @@ impl Agent {
     /// model_not_found（2026-10 用户报障）。
     pub async fn resolve_session_provider(&self, session_id: &str) -> Arc<dyn LlmProvider> {
         // 快路径：已缓存的覆盖直接命中。
-        if let Some(entry) = self.session_providers.get(session_id) {
+        if let Some(entry) = self.model.session_providers.get(session_id) {
             return Arc::clone(&entry.1);
         }
         // 慢路径：无覆盖 → 跟随 persona 级。
-        Arc::clone(&*self.provider.read().await)
+        Arc::clone(&*self.model.provider.read().await)
     }
 
     /// 会话级模型解析（与 [`Self::resolve_session_provider`] **成对**使用）：
@@ -1113,7 +1092,7 @@ impl Agent {
     /// "deepseek-v4-flash is not supported"，而该会话的 profile 模型是
     /// gemini-4-argon）。
     pub async fn session_model(&self, session_id: &str) -> String {
-        if let Some(entry) = self.session_providers.get(session_id) {
+        if let Some(entry) = self.model.session_providers.get(session_id) {
             return entry.1.default_model().to_string();
         }
         self.active_model().await
@@ -1126,18 +1105,19 @@ impl Agent {
     /// 返回 false（旧覆盖/无覆盖保持）。
     pub async fn set_session_provider(&self, session_id: &str, profile_name: &str) -> bool {
         if profile_name.is_empty() {
-            self.session_providers.remove(session_id);
-            self.session_provider_locks.remove(session_id);
+            self.model.session_providers.remove(session_id);
+            self.model.session_provider_locks.remove(session_id);
             return true;
         }
         // 构建锁：同一会话的并发 set 串行（防重复构建）。
         let lock = self
+            .model
             .session_provider_locks
             .entry(session_id.to_string())
             .or_insert_with(|| tokio::sync::Mutex::new(()));
         let _guard = lock.lock().await;
         // 双重检查：可能已被并发调用写入。
-        if let Some(entry) = self.session_providers.get(session_id) {
+        if let Some(entry) = self.model.session_providers.get(session_id) {
             if entry.0 == profile_name {
                 return true; // 已是目标 profile
             }
@@ -1146,7 +1126,7 @@ impl Agent {
         // （persona）持有的配置克隆可能落后于管理面——管理面新增的
         // profile 在 persona 快照里不存在，直接读本快照会误报
         // "profile not found"（2026-10 用户报障）。读不到时回退本快照。
-        let mut config = self.config.read().await.clone();
+        let mut config = self.model.config.read().await.clone();
         config.api_profiles = self.api_pool_snapshot().await;
         let probe = match crate::agent::api_admin::resolve_probe_config(&config, profile_name) {
             Ok(p) => p,
@@ -1179,7 +1159,8 @@ impl Agent {
         };
         // 安全：登记该 profile 的密钥（幂等）。
         self.register_config_secrets(&probe);
-        self.session_providers
+        self.model
+            .session_providers
             .insert(session_id.to_string(), (profile_name.to_string(), provider));
         true
     }
@@ -1190,6 +1171,7 @@ impl Agent {
     /// 构建失败的条目直接移除（回落跟随 persona 级，避免悬空旧名）。
     pub(crate) async fn rebind_session_providers(&self, from: &str, to: &str) -> usize {
         let sids: Vec<String> = self
+            .model
             .session_providers
             .iter()
             .filter(|entry| entry.value().0 == from)
@@ -1201,8 +1183,8 @@ impl Agent {
                 rebound += 1;
                 tracing::info!(session = %sid, %from, %to, "session API override rebound after rename");
             } else {
-                self.session_providers.remove(&sid);
-                self.session_provider_locks.remove(&sid);
+                self.model.session_providers.remove(&sid);
+                self.model.session_provider_locks.remove(&sid);
                 tracing::warn!(session = %sid, %from, %to, "session API override dropped after rename (rebuild failed)");
             }
         }
@@ -1210,16 +1192,16 @@ impl Agent {
     }
 
     pub async fn active_provider(&self) -> String {
-        self.provider.read().await.name().to_string()
+        self.model.provider.read().await.name().to_string()
     }
 
     pub async fn set_model(&self, model: String) {
-        *self.active_model.write().await = model;
+        *self.model.active_model.write().await = model;
     }
 
     /// 同步版 [`Self::set_model`]：供组合根启动期（make_agent 为同步闭包）调用。
     pub fn set_model_now(&self, model: String) {
-        if let Ok(mut slot) = self.active_model.try_write() {
+        if let Ok(mut slot) = self.model.active_model.try_write() {
             *slot = model;
         }
     }
@@ -1229,7 +1211,7 @@ impl Agent {
     /// 构建系统提示词块（无输入相关区块的代表性构建，供 `/context` 在无
     /// 最近 turn 时回退使用）。
     async fn build_prompt_blocks(&self) -> Vec<PromptBlock> {
-        let base = self.config.read().await.system_prompt.clone();
+        let base = self.model.config.read().await.system_prompt.clone();
         // 没有指定会话 → 上下文为空。插件负责决定"空上下文下有没有内容"
         // （如工作区插件在无 active 会话时不贡献块）。
         let plugin_blocks = self.collect_plugin_text_blocks("");
@@ -1354,7 +1336,7 @@ impl Agent {
                 return cached.clone();
             }
         }
-        let base = self.config.read().await.system_prompt.clone();
+        let base = self.model.config.read().await.system_prompt.clone();
         let mut prompt = base;
         if !skills.is_empty() {
             prompt.push_str("\n\n# Available skills\n");

@@ -9,7 +9,7 @@ use super::*;
 impl Agent {
     /// Current API configuration summary (for the TUI settings form).
     pub async fn api_config(&self) -> AgentConfig {
-        self.config.read().await.clone()
+        self.model.config.read().await.clone()
     }
 
     /// Emit the current API configuration to subscribers.
@@ -82,7 +82,7 @@ impl Agent {
                     Some(redactor) => crate::llm::wrap_redacting(provider, redactor),
                     None => provider,
                 };
-                *self.provider.write().await = provider;
+                *self.model.provider.write().await = provider;
                 true
             }
             Err(e) => {
@@ -116,14 +116,14 @@ impl Agent {
     /// 供应商池快照：共享 ConfigStore（core.toml，管理面每次变更都会写回）
     /// 优先，读不到时回退本 agent 的配置快照（单元测试 / 未接线场景）。
     ///
-    /// 为什么读共享文件而不是 `self.config`：配置变更命令（UpdateApiConfig /
+    /// 为什么读共享文件而不是 `self.model.config`：配置变更命令（UpdateApiConfig /
     /// DeleteApi）在**管理面** agent 上执行，各 persona 持有的配置克隆可能
     /// 落后——而池是全局的（见 [`crate::api_pool`] 模块文档）。
     pub(crate) async fn api_pool_snapshot(&self) -> Vec<ApiProfile> {
         if let Some(snapshot) = self.api_pool_store_snapshot().await {
             return snapshot.profiles;
         }
-        self.config.read().await.api_profiles.clone()
+        self.model.config.read().await.api_profiles.clone()
     }
 
     /// 共享存储的**完整**池快照（profiles + 全局激活项 + 顶层默认）。
@@ -132,7 +132,7 @@ impl Agent {
     /// 需要 active_api 一并取共享存储口径，避免 persona 过期快照把面板里
     /// 新加的 profile「看回去」）。
     pub(crate) async fn api_pool_store_snapshot(&self) -> Option<crate::api_pool::PoolSnapshot> {
-        let store = self.config_store.lock().await.clone()?;
+        let store = self.model.config_store.lock().await.clone()?;
         crate::api_pool::read_snapshot(&store).ok()
     }
 
@@ -146,7 +146,7 @@ impl Agent {
         &self,
         name: &str,
     ) -> Result<Arc<dyn LlmProvider>, String> {
-        let mut config = self.config.read().await.clone();
+        let mut config = self.model.config.read().await.clone();
         config.api_profiles = self.api_pool_snapshot().await;
         if !config.api_profiles.iter().any(|p| p.name == name) {
             let available: Vec<&str> = config
@@ -201,7 +201,7 @@ impl Agent {
         thinking: Option<crate::config::ThinkingMode>,
         reasoning_effort: Option<crate::config::ReasoningEffort>,
     ) {
-        let mut config = self.config.write().await;
+        let mut config = self.model.config.write().await;
         let keep_key = api_key.is_empty();
         // 新建命名 profile 时，空的 provider/model/base_url 从当前生效配置
         // 继承，避免写出残缺 profile：残缺 profile 单独做 TestApi 时必然
@@ -306,7 +306,7 @@ impl Agent {
 
     /// Switch to an API profile (or the top-level default when name is empty).
     pub(crate) async fn switch_api(&self, name: &str) {
-        let mut config = self.config.write().await;
+        let mut config = self.model.config.write().await;
         if name.is_empty() {
             config.active_api.clear();
         } else {
@@ -343,7 +343,7 @@ impl Agent {
 
     /// Delete an API profile; if it was active, fall back to the top-level default.
     pub(crate) async fn delete_api(&self, name: &str) {
-        let mut config = self.config.write().await;
+        let mut config = self.model.config.write().await;
         let before = config.api_profiles.len();
         config.api_profiles.retain(|p| p.name != name);
         let removed = config.api_profiles.len() < before;
@@ -406,7 +406,7 @@ impl Agent {
             return;
         }
 
-        let mut config = self.config.write().await;
+        let mut config = self.model.config.write().await;
         let old_active = config.active_api.clone();
         // `from` 精确匹配（不 trim——历史遗留含空白的名也要能被改名）。
         if from.is_empty() || !config.api_profiles.iter().any(|p| p.name == from) {
@@ -536,7 +536,7 @@ impl Agent {
     /// active provider is never modified.
     pub(crate) async fn test_api_config(&self, name: &str) {
         let timestamp_start = std::time::Instant::now();
-        let config = self.config.read().await.clone();
+        let config = self.model.config.read().await.clone();
 
         // Resolve the config to test: named profile or the active default.
         let probe = match resolve_probe_config(&config, name) {
@@ -608,8 +608,8 @@ impl Agent {
     pub(crate) async fn query_api_balance(&self, name: &str) {
         // 手动「查余额」与周期快照共用同一把锁（2026-10 审计 P2）：慢查询
         // 叠加本轮周期 tick 会造成同秒重复采样。
-        let _snapshot_guard = self.balance_snapshot_lock.lock().await;
-        let config = self.config.read().await.clone();
+        let _snapshot_guard = self.model.balance_snapshot_lock.lock().await;
+        let config = self.model.config.read().await.clone();
         let probe = match resolve_probe_config(&config, name) {
             Ok(probe) => probe,
             Err(message) => {
@@ -674,7 +674,7 @@ impl Agent {
             });
             return;
         };
-        let config = self.config.read().await.clone();
+        let config = self.model.config.read().await.clone();
         let names: Vec<String> = if name.is_empty() {
             metrics_targets(&config)
         } else {
@@ -743,7 +743,7 @@ impl Agent {
         let agent = Arc::clone(self);
         let cancel = self.cancel.clone();
         tokio::spawn(async move {
-            let period_secs = agent.config.read().await.balance_snapshot_secs;
+            let period_secs = agent.model.config.read().await.balance_snapshot_secs;
             if period_secs == 0 {
                 tracing::info!("balance snapshot task disabled (balance_snapshot_secs = 0)");
                 return;
@@ -767,11 +767,11 @@ impl Agent {
         // 周期任务与手动「查余额」共用锁（2026-10 审计 P2）：慢查询叠加
         // 本轮周期 tick 会造成同秒重复采样——try_lock 失败（手动查询正在
         // 进行）时跳过本轮，下个 tick 再采。
-        let Ok(_snapshot_guard) = self.balance_snapshot_lock.try_lock() else {
+        let Ok(_snapshot_guard) = self.model.balance_snapshot_lock.try_lock() else {
             tracing::debug!("balance snapshot skipped (manual balance query in flight)");
             return;
         };
-        let config = self.config.read().await.clone();
+        let config = self.model.config.read().await.clone();
         let targets = metrics_targets(&config);
         // 多个 profile 时并发查询（tokio::join!）——此前串行，多 profile
         // 时一轮总耗时 = Σ（逐条查询 + 网络延迟），反而拉长本轮窗口。
@@ -811,7 +811,7 @@ impl Agent {
     /// Persist the system prompt plugin text to `[plugins.system_prompt]`
     /// instead of `[agent]`. The API config no longer owns the system prompt.
     pub(crate) async fn persist_system_prompt_plugin(&self, text: &str) {
-        let store = match self.config_store.lock().await.clone() {
+        let store = match self.model.config_store.lock().await.clone() {
             Some(s) => s,
             None => return,
         };
@@ -829,7 +829,7 @@ impl Agent {
     /// Persist a config snapshot's `[agent]` section back to the TOML file
     /// through the shared [`echo_config::ConfigStore`].
     pub(crate) async fn persist_config(&self, cfg: &AgentConfig) {
-        let store = match self.config_store.lock().await.clone() {
+        let store = match self.model.config_store.lock().await.clone() {
             Some(s) => s,
             None => return,
         };
@@ -853,7 +853,7 @@ impl Agent {
         to: &str,
         changed_team_ids: &[String],
     ) -> Result<(), String> {
-        let store = match self.config_store.lock().await.clone() {
+        let store = match self.model.config_store.lock().await.clone() {
             Some(s) => s,
             None => return Ok(()),
         };

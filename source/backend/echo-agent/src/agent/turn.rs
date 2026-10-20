@@ -47,12 +47,12 @@ impl Agent {
             return runner;
         }
         let (max_tool_iterations, max_tokens) = {
-            let cfg = self.config.read().await;
+            let cfg = self.model.config.read().await;
             (cfg.max_tool_iterations.max(1), cfg.effective_max_tokens())
         };
         let runner = std::sync::Arc::new(echo_loop::TurnRunner::new(
             std::sync::Arc::new(echo_context::EventBus::default()),
-            self.provider.read().await.clone(),
+            self.model.provider.read().await.clone(),
             std::sync::Arc::new(echo_loop::ToolPipeline::new()),
             echo_loop::LoopOptions {
                 max_tool_iterations,
@@ -112,7 +112,7 @@ impl Agent {
         // （capabilities.system_skills）→ … → 工作区会话注入 → 输入边界。
         let boundary = input_boundary(session, content);
         let (base, persona_skills, plugin_blocks) = {
-            let base = self.config.read().await.system_prompt.clone();
+            let base = self.model.config.read().await.system_prompt.clone();
             let persona_skills = self
                 .capabilities
                 .lock()
@@ -265,10 +265,10 @@ impl Agent {
             let sid = stream_session.clone();
             let bid = stream_branch.clone();
             Box::pin(async move {
-                request.max_tokens = this.config.read().await.effective_max_tokens();
+                request.max_tokens = this.model.config.read().await.effective_max_tokens();
                 // 会话级覆盖（2026-10）：该会话有 provider 覆盖时优先使用。
                 let provider = this.resolve_session_provider(&sid).await;
-                if !this.config.read().await.stream_output {
+                if !this.model.config.read().await.stream_output {
                     return provider.chat(&request).await;
                 }
                 let (delta_tx, delta_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -455,7 +455,7 @@ impl Agent {
                 chat: Some(chat_executor),
                 turn_id: Some(branch_id.to_string()),
                 // 每 turn 读配置：运行期调整 max_tool_iterations 下一 turn 生效。
-                max_iterations: Some(self.config.read().await.max_tool_iterations.max(1)),
+                max_iterations: Some(self.model.config.read().await.max_tool_iterations.max(1)),
             };
             runner
                 .run(

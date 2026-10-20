@@ -348,7 +348,9 @@ Phase 3 把实现搬出了 echo-agent，但 inproc 轨只兑现了**工具贡献
 - [ ] 下一步（未做）：声明式 inject 的**类型化**校验（需 M5 去业务化后重估）、
   插件树在业务侧的第一个真实消费者（workspace 子会话 / subagent 隔离上下文
   最像）。
-- [ ] **S4：`Agent` 拆服务**（27,917 行业务核心里最后一块上帝对象）——
+- [x] **S4a：`ModelService`**（`Agent` 的 8 个模型字段 → 一个 `Arc<ModelService>`，
+  字段 39 → 32；全量 932 项绿；真实进程经 `SwitchModel` 验证四段锁路径）。
+- [ ] **S4b 起的 `Agent` 拆服务**（27,917 行业务核心里最后一块上帝对象）——
   计划与分阶段拆解见 [s4-agent-decomposition.md](./s4-agent-decomposition.md)。
   结论摘要：S4a（`ModelService`）/ S4b（解 `manager ↔ Agent` 环）值得做且风险可控；
   S4c（`PromptService` + `ToolService`）视收益再定；S4d（`SessionService`）建议暂缓

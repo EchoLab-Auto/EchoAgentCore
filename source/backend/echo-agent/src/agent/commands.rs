@@ -228,18 +228,18 @@ impl Agent {
         }
         match cmd {
             BackendCommand::SwitchModel { model } => {
-                self.config.write().await.model = model.clone();
+                self.model.config.write().await.model = model.clone();
                 self.set_model(model.clone()).await;
                 self.emit_api_config().await;
                 self.emit(BackendEvent::Error {
                     session_id: None,
                     message: format!("switched model: {model}"),
                 });
-                let cfg = self.config.read().await.clone();
+                let cfg = self.model.config.read().await.clone();
                 self.persist_config(&cfg).await;
             }
             BackendCommand::SwitchProvider { provider } => {
-                let mut config = self.config.write().await;
+                let mut config = self.model.config.write().await;
                 let old_provider = config.provider.clone();
                 config.provider = provider.clone();
                 let cfg = config.clone();
@@ -259,12 +259,12 @@ impl Agent {
                         ),
                     });
                 } else {
-                    let mut config = self.config.write().await;
+                    let mut config = self.model.config.write().await;
                     config.provider = old_provider;
                 }
             }
             BackendCommand::SetSystemPrompt { prompt } => {
-                self.config.write().await.system_prompt = prompt.clone();
+                self.model.config.write().await.system_prompt = prompt.clone();
                 *self.system_prompt_cache.write().await = None;
                 self.persist_system_prompt_plugin(&prompt).await;
                 self.emit(BackendEvent::SystemPrompt { text: prompt });
@@ -274,7 +274,7 @@ impl Agent {
                 });
             }
             BackendCommand::RequestSystemPrompt => {
-                let text = self.config.read().await.system_prompt.clone();
+                let text = self.model.config.read().await.system_prompt.clone();
                 self.emit(BackendEvent::SystemPrompt { text });
             }
             BackendCommand::ToggleSkill { name, enabled } => {
@@ -285,7 +285,7 @@ impl Agent {
                 if ok {
                     *self.system_prompt_cache.write().await = None;
                     // Persist the choice so it survives restarts.
-                    let mut cfg = self.config.write().await;
+                    let mut cfg = self.model.config.write().await;
                     cfg.disabled_skills.retain(|n| n != &name);
                     if !enabled {
                         cfg.disabled_skills.push(name.clone());
@@ -321,7 +321,7 @@ impl Agent {
             BackendCommand::ToggleTool { name, enabled } => {
                 let ok = self.tools.set_enabled(&name, enabled).await;
                 if ok {
-                    let mut cfg = self.config.write().await;
+                    let mut cfg = self.model.config.write().await;
                     cfg.disabled_tools.retain(|n| n != &name);
                     if !enabled {
                         cfg.disabled_tools.push(name.clone());
@@ -646,7 +646,7 @@ impl Agent {
                             // 同步注册表挂载态（descriptors 的 enabled 与进程
                             // 状态必须一致，否则面板显示「启用」但进程已停）。
                             let _ = self.plugin_host().set_enabled(&id, enabled).await;
-                            let mut cfg = self.config.write().await;
+                            let mut cfg = self.model.config.write().await;
                             cfg.disabled_plugins.retain(|p| p != &id);
                             if !enabled {
                                 cfg.disabled_plugins.push(id.clone());
@@ -681,7 +681,7 @@ impl Agent {
                 match self.plugin_host().set_enabled(&id, enabled).await {
                     Ok(()) => {
                         // Persist so the choice survives restarts.
-                        let mut cfg = self.config.write().await;
+                        let mut cfg = self.model.config.write().await;
                         cfg.disabled_plugins.retain(|p| p != &id);
                         if !enabled {
                             cfg.disabled_plugins.push(id.clone());
@@ -1162,7 +1162,7 @@ impl Agent {
                             // 同步清除该会话的 provider 覆盖（2026-10 会话级
                             // API 清理一致性：历史清空时覆盖一并移除）。
                             if let Some(sid) = session_id.as_deref().filter(|s| !s.is_empty()) {
-                                agent.session_providers.remove(sid);
+                                agent.model.session_providers.remove(sid);
                             }
                             tracing::info!(
                                 team = %id,
@@ -1186,7 +1186,7 @@ impl Agent {
                         None if self.team_id().as_deref() == Some(id.as_str()) => {
                             Self::clear_agent_history(self, session_id.as_deref()).await;
                             if let Some(sid) = session_id.as_deref().filter(|s| !s.is_empty()) {
-                                self.session_providers.remove(sid);
+                                self.model.session_providers.remove(sid);
                             }
                             tracing::info!(
                                 team = %id,
@@ -1413,7 +1413,7 @@ impl Agent {
                             // 文件（覆盖用户手动新增/修改的 SKILL.md），再应用新的
                             // 启用/禁用白名单，最后推送技能列表。
                             if let Some(target) = mgr.resolve(Some(&id)) {
-                                let dir = target.config.read().await.skills_dir.clone();
+                                let dir = target.model.config.read().await.skills_dir.clone();
                                 if let Err(e) = target.reload_skills(&dir).await {
                                     tracing::warn!(error = %e, agent = %id, "skill reload after team save failed");
                                 }
@@ -1422,7 +1422,7 @@ impl Agent {
                                 // Persona 级 API 引用变更：立即重建该 persona 的
                                 // provider（以管理面本 agent 的全局配置为池基准）。
                                 target.set_persona_api(profile.api_profile.clone()).await;
-                                let global_cfg = self.config.read().await.clone();
+                                let global_cfg = self.model.config.read().await.clone();
                                 target.apply_persona_api(&global_cfg).await;
                                 // token 预算热更（2026-10 审计 🔴 修复）：
                                 // 此前只在构造 TrunkStore 时取一次，保存后
@@ -1772,7 +1772,7 @@ impl Agent {
         // 否则「目录名 ≠ 技能名」的仓库在 Panel 里看不到来源徽标
         // （2026-10-18 实测：skill-echo-prodoc/ ↔ prodoc-format）。
         let sources = crate::skill_install::load_sources_healed(std::path::Path::new(
-            &self.config.read().await.skills_dir,
+            &self.model.config.read().await.skills_dir,
         ));
         let mut list: Vec<crate::event::SkillInfo> = skills
             .all()
@@ -1868,7 +1868,7 @@ impl Agent {
 
     /// Current configured skill directory (resolved from the live config).
     async fn current_skills_dir(&self) -> String {
-        self.config.read().await.skills_dir.clone()
+        self.model.config.read().await.skills_dir.clone()
     }
 
     /// Persist a skill to `{skills_dir}/{name}/SKILL.md`.

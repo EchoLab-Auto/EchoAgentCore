@@ -63,6 +63,8 @@ pub mod event;
 pub mod input_marker;
 pub mod llm;
 pub mod metrics;
+/// 模型出口服务（S4a）：provider / 配置 / 模型名 / profile 覆盖的唯一持有者。
+pub mod model_service;
 pub mod plugins;
 pub mod session;
 pub mod shell;

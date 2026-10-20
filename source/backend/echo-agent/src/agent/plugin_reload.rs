@@ -15,7 +15,7 @@ impl Agent {
     /// (provider/loop/instance) still require the binary-reload path: this
     /// watcher only handles data plugins.
     pub async fn start_plugin_reload_task(self: &Arc<Self>) {
-        let plugins_dir = self.config.read().await.plugins_dir.clone();
+        let plugins_dir = self.model.config.read().await.plugins_dir.clone();
         if plugins_dir.trim().is_empty()
             || !std::path::Path::new(&plugins_dir).exists()
             || self

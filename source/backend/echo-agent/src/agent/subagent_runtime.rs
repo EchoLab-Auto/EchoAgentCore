@@ -102,7 +102,7 @@ impl Agent {
                 });
                 // 子 agent 上下文：base 提示词 + 工具集（剥离 spawn_subagent，
                 // 单层委派）。
-                let base = agent.config.read().await.system_prompt.clone();
+                let base = agent.model.config.read().await.system_prompt.clone();
                 let mut tools = (*agent.tools.definitions().await).clone();
                 tools.retain(|d| d.name != crate::subagent::SPAWN_SUBAGENT_TOOL);
                 let registry = Arc::clone(&agent.tools);
@@ -165,10 +165,10 @@ impl Agent {
                             return;
                         }
                     },
-                    None => agent.provider.read().await.clone(),
+                    None => agent.model.provider.read().await.clone(),
                 };
-                let max_iterations = agent.config.read().await.max_tool_iterations;
-                let max_tokens = agent.config.read().await.effective_max_tokens();
+                let max_iterations = agent.model.config.read().await.max_tool_iterations;
+                let max_tokens = agent.model.config.read().await.effective_max_tokens();
                 // federation Phase 3 对端观测：远程子任务受理时通知对端
                 // （SubagentSpawn），完成/失败/取消时回报（SubagentEvent）——
                 // 对端 Panel 后台任务列表据此可见、可强制取消。

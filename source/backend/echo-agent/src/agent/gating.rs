@@ -68,7 +68,7 @@ impl Agent {
         if let Some(policy) = self.global_policy() {
             return (policy.disabled_tools(), policy.disabled_skills());
         }
-        let cfg = self.config.read().await;
+        let cfg = self.model.config.read().await;
         (cfg.disabled_tools.clone(), cfg.disabled_skills.clone())
     }
 
@@ -158,20 +158,20 @@ impl Agent {
     /// Persona 级 API：设置本 agent 对全局供应商池的引用（不重建）。
     /// `None` = 跟随全局默认配置；`Some(name)` = 使用池中该 profile。
     pub async fn set_persona_api(&self, name: Option<String>) {
-        *self.persona_api.write().await = name;
+        *self.model.persona_api.write().await = name;
     }
 
     /// 同步版 [`Self::set_persona_api`]：供组合根启动期（make_agent 为同步
     /// 闭包）调用；启动期无人持有读锁，try_write 必然成功。
     pub fn set_persona_api_now(&self, name: Option<String>) {
-        if let Ok(mut slot) = self.persona_api.try_write() {
+        if let Ok(mut slot) = self.model.persona_api.try_write() {
             *slot = name;
         }
     }
 
     /// 当前 persona 级的 API 供应商引用。
     pub async fn persona_api(&self) -> Option<String> {
-        self.persona_api.read().await.clone()
+        self.model.persona_api.read().await.clone()
     }
 
     /// Persona 级 API：按引用重建本 agent 的 provider。
@@ -183,7 +183,7 @@ impl Agent {
     ///
     /// 返回是否成功重建；失败时保留旧 provider 并 emit Error。
     pub async fn apply_persona_api(&self, global: &AgentConfig) -> bool {
-        let reference = self.persona_api.read().await.clone();
+        let reference = self.model.persona_api.read().await.clone();
         let mut resolved = global.clone();
         let ok = match reference.as_deref().filter(|n| !n.is_empty()) {
             Some(name) => resolved.apply_named_profile(name),
@@ -212,7 +212,7 @@ impl Agent {
         resolved.base_url = resolved.effective_base_url();
         // 本 persona 的 config 只更新 API 相关字段（保留权限、预算等其余项）。
         {
-            let mut cfg = self.config.write().await;
+            let mut cfg = self.model.config.write().await;
             cfg.provider = resolved.provider.clone();
             cfg.model = resolved.model.clone();
             cfg.base_url = resolved.base_url.clone();
@@ -243,7 +243,7 @@ impl Agent {
             Some(redactor) => crate::llm::wrap_redacting(provider, redactor),
             None => provider,
         };
-        *self.provider.write().await = provider;
+        *self.model.provider.write().await = provider;
         self.set_model(resolved.model.clone()).await;
         true
     }
@@ -264,11 +264,11 @@ impl Agent {
         active_renamed: bool,
         global: &AgentConfig,
     ) {
-        let reference = self.persona_api.read().await.clone();
+        let reference = self.model.persona_api.read().await.clone();
         match reference.as_deref().filter(|n| !n.is_empty()) {
             Some(name) if name == from => {
                 // persona 引用命中：跟随改名重引用并重建（计量名 → 新名）。
-                *self.persona_api.write().await = Some(to.to_string());
+                *self.model.persona_api.write().await = Some(to.to_string());
                 self.apply_persona_api(global).await;
             }
             Some(_) => {

@@ -1,7 +1,11 @@
 ---
-x: 48
-y: 48
+id: s4-agent-decomposition
+title: "S4 计划：Agent 拆服务"
+group: 规划
+x: 320
+y: 3320
 ---
+
 # S4 计划：`Agent` 拆服务
 
 > 前序：[decoupling-plan.md](./decoupling-plan.md) Phase 3 / 3.5 / S1-S3 已完成。
@@ -32,22 +36,27 @@ source/backend/echo-agent/src   27,917 行   全仓 70,686 行的 39.5%
 └── 顶层（plugins/config/metrics/agent_manager/…）  5,064
 ```
 
-`Agent` 本体：
+`Agent` 本体（**2026-11 复测，修正了本文初稿的误算**）：
 
 ```
-pub struct Agent      33 个字段
-impl Agent            ~236 个方法，散在 15 个文件里
-  agent/mod.rs           66      ← 核心：emit / trunk / prompt / store 接线
-  config.rs              35
-  agent_manager.rs       33      ← 与 AgentManager 互指
-  agent/gating.rs        22
-  agent/commands.rs      22      ← 56 个 match 分支的巨型 dispatch
-  agent/api_admin.rs     22
-  agent/inbound.rs       17
-  agent/builder.rs       16
-  packages/instance_ops/* 22
-  …（其余 8 个文件 39）
+pub struct Agent      39 个字段（初稿写 33 是 grep 漏了带注释的）
+impl Agent            148 个方法，散在 12 个文件里
+  agent/mod.rs          56   ← 核心：emit / trunk / prompt / store 接线
+  agent/api_admin.rs    21   ← 模型出口（本次 S4a 的对象）
+  agent/gating.rs       17
+  agent/inbound.rs      17
+  agent/commands.rs     16   ← 56 个 match 分支的 dispatch
+  agent/workspace_commands.rs 5
+  agent/subagent_runtime.rs   5
+  packages/instance_ops/commands.rs 5
+  agent/tool_dispatch.rs 2 · tool_exec 2 · plugin_reload 1 · compact 1
 ```
+
+> **初稿的错**：说 `impl Agent` 有 236 个方法、散在 15 个文件，把
+> `impl AgentConfig`（`config.rs`，35 个方法）与 `impl AgentManager`
+> （`agent_manager.rs`，33 个）也算进去了——`grep "^impl Agent"` 会前缀匹配到
+> 这两个类型。**`AgentConfig` 早就是独立类型**，不在上帝对象里。修正后是
+> 148 个方法 / 12 个文件。
 
 **从外部看它有多大**：组合根 `core/` 里 55 处直接调 `Agent` 的方法（`emit` /
 `set_*` / `apply_*` / `trunk` / `process_message`），`packages/instance_ops` 23 处。
@@ -68,7 +77,7 @@ manager（那环还在），要么改成注入"解析 team_id → 服务"的函�
 
 ### 目标（可断言）
 
-1. `Agent` 的字段从 33 减到 **≤ 12**（只剩身份、总线、句柄这类"接线"）；
+1. `Agent` 的字段从 39 减到 **≤ 16**（只剩身份、总线、句柄这类"接线"）；
 2. 至少 4 个能力能**独立替换成 fake** 而不用起整个 Agent（prompt 装配、压缩、
    gating、api_admin）；
 3. `Agent` ↔ `AgentManager` 的环解开（依赖单向）；
@@ -83,7 +92,7 @@ manager（那环还在），要么改成注入"解析 team_id → 服务"的函�
   命令域与文本块做成贡献，S4 只动进程内结构。
 - **不追求"零 `&self`"**。有些方法（`emit`、`team_id`）本来就是实例级的。
 
-## 三、33 个字段该归谁（分组的依据）
+## 三、39 个字段该归谁（分组的依据）
 
 | 组 | 字段 | 归属 | 备注 |
 |---|---|---|---|
@@ -109,7 +118,8 @@ manager（那环还在），要么改成注入"解析 team_id → 服务"的函�
 - **有真实替换需求**：单测里换一个 fake provider 现在要造整个 Agent；
 - 风险最低（35 个方法里 30 个是 getter/setter）。
 
-**验收**：`Agent` 字段 33 → 25；`config.rs` 不在 `impl Agent` 里；929 项测试全绿。
+**验收**：`Agent` 字段 39 → 32（实测达成，见 §八）；`config.rs` **本来就**是
+`impl AgentConfig`（不在上帝对象里，初稿判断有误）；全量测试全绿。
 
 **回退**：`git revert` 单个提交即可（不留双向兼容层）。
 
@@ -150,7 +160,7 @@ pub trait AgentResolver: Send + Sync {
 
 **为什么合在一阶段**：两者都要改 `turn.rs` 的调用点，分开做等于同一个文件改两遍。
 
-**验收**：`Agent` 字段 25 → 17；`/context` 视图输出与改造前**逐字节相同**
+**验收**：`Agent` 字段 32 → 24；`/context` 视图输出与改造前**逐字节相同**
 （用一份快照测试锁住——这是"重构不改行为"的硬证据）。
 
 ### S4d：`SessionService` — 2-4 周（**建议暂缓**）
@@ -170,7 +180,7 @@ pub trait AgentResolver: Send + Sync {
 
 ### S4e：收尾 — 1 周
 
-- `Agent` 字段 ≤ 12，`impl Agent` 只剩 `agent/mod.rs` 一个文件；
+- `Agent` 字段 ≤ 16，`impl Agent` 只剩 `agent/mod.rs` 一个文件；
 - 55 处组合根调用点全部走服务；
 - 文档：`document/overview/architecture.md` 加一节"服务一览"；
 - 门禁：加一条测试断言 `Agent` 字段数（防回流）。
@@ -207,3 +217,66 @@ pub trait AgentResolver: Send + Sync {
 痛点是"加功能慢"，那瓶颈大概率不在这里——它在 `commands.rs` 的 56 分支 dispatch
 与 Panel 的 109 个联合类型分支上，而那些已经被 S1 的 `Contribution::Command` 打开
 了缺口，继续往那个方向做收益更直接。
+
+---
+
+## 八、S4a 完成记录（2026-11）
+
+### 做了什么
+
+`Agent` 的 8 个模型相关字段搬进 `crate::model_service::ModelService`，`Agent`
+改为持 `Arc<ModelService>`：
+
+```rust
+// 之前（8 个字段）
+provider: RwLock<Arc<dyn LlmProvider>>,
+config: RwLock<AgentConfig>,
+active_model: RwLock<String>,
+config_store: tokio::sync::Mutex<Option<echo_config::ConfigStore>>,
+persona_api: tokio::sync::RwLock<Option<String>>,
+session_providers: DashMap<String, (String, Arc<dyn LlmProvider>)>,
+session_provider_locks: DashMap<String, tokio::sync::Mutex<()>>,
+balance_snapshot_lock: tokio::sync::Mutex<()>,
+
+// 之后（1 个字段）
+pub(crate) model: Arc<crate::model_service::ModelService>,
+```
+
+**字段数 39 → 32**。`ModelService` 新增 6 个语义方法（`provider()` /
+`replace_provider()` / `config_snapshot()` / `model_name()` /
+`set_active_model()` / `session_provider()` / `clear_session_provider()`），
+它们封装的是"必须一起变"的那几组操作（不变式表见 `model_service.rs` 模块文档）。
+
+### 三个过程中的真发现
+
+1. **`config.rs` 不是 `impl Agent`**——它是 `impl AgentConfig`（既有独立类型）。
+   初稿把它算成"上帝对象的一部分"是 grep 前缀匹配的错误。**这降低了 S4 的总量**：
+   上帝对象是 148 个方法，不是 236 个。
+2. **同名方法会静默改变语义**。机械改写 `self.active_model()` 时，`ModelService`
+   上恰好也有个 `active_model()`——于是"**带回退**的模型名解析"被换成了"**不带
+   回退**的原始字段值"，编译通过、只有一个集成测试失败（`LlmRequest.model` 变成
+   空串）。修法是把 ModelService 的方法**改名** `model_name()`，让这类错误变成
+   编译错误而不是运行期行为差异。
+3. **字符串里的 `agent.provider` 会被误改**。全局正则把
+   `"echo-agent.provider.llm"` 改成了 `"echo-agent.model.provider.llm"`——插件 id
+   是线上契约，改了等于所有配置失效。已还原，并在提交前加了一道
+   `grep 'echo-agent\.model\.'` 的自查。
+
+### 验证
+
+- **932 项 / 57 套件全绿**（+3：`ModelService` 的初始状态 / 名字与 provider 往返 /
+  会话级覆盖设置与清除）；
+- clippy 仅剩 1 条既有警告（`agent_manager.rs`，与本次无关）；
+- **真实进程**：`SwitchModel` → `ApiConfigUpdated { model }` + 回执，这条路径串起
+  `config.write()` → `set_model`（active_model 写）→ `emit_api_config`
+  （config 读 + `active_model()` 带回退）→ `persist_config`（config_store 读），
+  全部经 `ModelService`。
+
+### 对后续阶段的影响
+
+- **S4b 更容易了**：`Arc<ModelService>` 可以直接递给 `AgentResolver` 的实现与
+  其它服务，不必再绕 `Agent`；
+- **S4c 的 `PromptService`**：它只需要 `config_snapshot()`，现在拿一个
+  `Arc<ModelService>` 就够，不用整只 `Agent`——这正是"把字段搬出去"的直接收益；
+- **教训写进流程**：以后做机械改写前，先 `grep` 目标类型上**同名的方法**与
+  **同名的字符串字面量**，两者都会让"编译通过的改写"变成静默 bug。

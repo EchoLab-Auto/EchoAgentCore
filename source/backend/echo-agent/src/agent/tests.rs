@@ -997,7 +997,7 @@ async fn session_provider_override_resolves_and_clears() {
     let agent = test_agent(persona_provider.clone());
     // 预置一个 profile（池）——set_session_provider 按名解析。
     {
-        let mut cfg = agent.config.write().await;
+        let mut cfg = agent.model.config.write().await;
         cfg.api_profiles
             .push(crate::config::ApiProfile::new("kimi", "openai", "kimi-k3"));
         cfg.api_profiles[0].api_key = "sk-kimi-test".into();
@@ -1044,7 +1044,7 @@ async fn session_provider_override_is_scoped() {
     });
     let agent = test_agent(persona_provider.clone());
     {
-        let mut cfg = agent.config.write().await;
+        let mut cfg = agent.model.config.write().await;
         cfg.api_profiles.push(crate::config::ApiProfile::new(
             "deepseek-flash",
             "deepseek",
@@ -1125,7 +1125,7 @@ async fn session_model_pairs_with_override_provider() {
         reply: "x".into(),
     }));
     {
-        let mut cfg = agent.config.write().await;
+        let mut cfg = agent.model.config.write().await;
         cfg.api_profiles.push(crate::config::ApiProfile::new(
             "gemini",
             "anthropic",
@@ -1171,7 +1171,7 @@ async fn rename_api_rewrites_pool_and_active_api() {
     agent.attach(Arc::new(handle));
     agent.set_config_path(tmp.clone());
     {
-        let mut cfg = agent.config.write().await;
+        let mut cfg = agent.model.config.write().await;
         cfg.api_profiles
             .push(crate::config::ApiProfile::new("alpha", "deepseek", "m1"));
         cfg.api_profiles[0].api_key = "sk-alpha".into();
@@ -1251,7 +1251,7 @@ async fn rename_api_same_name_is_noop() {
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
     {
-        let mut cfg = agent.config.write().await;
+        let mut cfg = agent.model.config.write().await;
         cfg.api_profiles
             .push(crate::config::ApiProfile::new("alpha", "deepseek", "m1"));
         cfg.active_api = "alpha".into();
@@ -1294,7 +1294,7 @@ async fn rename_api_rejects_existing_target() {
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
     {
-        let mut cfg = agent.config.write().await;
+        let mut cfg = agent.model.config.write().await;
         cfg.api_profiles
             .push(crate::config::ApiProfile::new("alpha", "deepseek", "m1"));
         cfg.api_profiles
@@ -1371,7 +1371,7 @@ async fn rename_api_rejects_invalid_target() {
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
     {
-        let mut cfg = agent.config.write().await;
+        let mut cfg = agent.model.config.write().await;
         cfg.api_profiles
             .push(crate::config::ApiProfile::new("alpha", "deepseek", "m1"));
     }
@@ -1411,7 +1411,7 @@ async fn rename_api_rebinds_session_provider_under_new_name() {
         reply: "ok".into(),
     }));
     {
-        let mut cfg = agent.config.write().await;
+        let mut cfg = agent.model.config.write().await;
         cfg.api_profiles
             .push(crate::config::ApiProfile::new("kimi", "openai", "kimi-k3"));
         cfg.api_profiles[0].api_key = "sk-kimi".into();
@@ -1424,6 +1424,7 @@ async fn rename_api_rebinds_session_provider_under_new_name() {
     assert!(agent.set_session_provider("sess-1", "kimi").await);
     assert!(agent.set_session_provider("sess-2", "other").await);
     let before = agent
+        .model
         .session_providers
         .get("sess-1")
         .map(|e| e.value().1.clone())
@@ -1437,6 +1438,7 @@ async fn rename_api_rebinds_session_provider_under_new_name() {
         .await;
 
     let entry = agent
+        .model
         .session_providers
         .get("sess-1")
         .map(|e| e.value().clone())
@@ -1449,7 +1451,13 @@ async fn rename_api_rebinds_session_provider_under_new_name() {
     assert_eq!(entry.1.name(), "openai");
     // 其他 profile 的覆盖不受影响。
     assert_eq!(
-        agent.session_providers.get("sess-2").unwrap().value().0,
+        agent
+            .model
+            .session_providers
+            .get("sess-2")
+            .unwrap()
+            .value()
+            .0,
         "other"
     );
 }
@@ -1462,7 +1470,7 @@ async fn rename_api_reapplies_persona_reference() {
         reply: "ok".into(),
     }));
     {
-        let mut cfg = agent.config.write().await;
+        let mut cfg = agent.model.config.write().await;
         cfg.api_profiles
             .push(crate::config::ApiProfile::new("kimi", "openai", "kimi-k3"));
         cfg.api_profiles[0].api_key = "sk-kimi".into();
@@ -1478,7 +1486,7 @@ async fn rename_api_reapplies_persona_reference() {
         .await;
 
     assert_eq!(
-        agent.persona_api().await.as_deref(),
+        agent.model.persona_api.read().await.as_deref(),
         Some("k3"),
         "persona reference must follow the rename"
     );
@@ -1501,7 +1509,7 @@ async fn rename_api_persist_failure_leaves_memory_unchanged() {
     agent.attach(Arc::new(handle));
     agent.set_config_store(echo_config::ConfigStore::new(bad));
     {
-        let mut cfg = agent.config.write().await;
+        let mut cfg = agent.model.config.write().await;
         cfg.api_profiles
             .push(crate::config::ApiProfile::new("alpha", "deepseek", "m1"));
         cfg.active_api = "alpha".into();
@@ -1550,7 +1558,7 @@ async fn echo_loop_turn_uses_session_override_model() {
         Arc::new(InstanceRegistry::new()),
     ));
     {
-        let mut cfg = agent.config.write().await;
+        let mut cfg = agent.model.config.write().await;
         cfg.api_profiles.push(crate::config::ApiProfile::new(
             "gemini",
             "anthropic",
@@ -1612,7 +1620,7 @@ async fn builtin_loop_turn_uses_session_override_model() {
         Arc::new(InstanceRegistry::new()),
     ));
     {
-        let mut cfg = agent.config.write().await;
+        let mut cfg = agent.model.config.write().await;
         cfg.api_profiles.push(crate::config::ApiProfile::new(
             "gemini",
             "anthropic",
@@ -1816,15 +1824,21 @@ async fn test_api_config_profile_empty_fields_fall_back() {
         .await;
 
     // 手工注入一个字段残缺的 profile（provider/base_url 为空）。
-    agent.config.write().await.api_profiles.push(ApiProfile {
-        name: "broken".into(),
-        provider: String::new(),
-        model: "deepseek-x".into(),
-        base_url: String::new(),
-        api_key: String::new(),
-        thinking: crate::config::ThinkingMode::Enabled,
-        reasoning_effort: crate::config::ReasoningEffort::Max,
-    });
+    agent
+        .model
+        .config
+        .write()
+        .await
+        .api_profiles
+        .push(ApiProfile {
+            name: "broken".into(),
+            provider: String::new(),
+            model: "deepseek-x".into(),
+            base_url: String::new(),
+            api_key: String::new(),
+            thinking: crate::config::ThinkingMode::Enabled,
+            reasoning_effort: crate::config::ReasoningEffort::Max,
+        });
 
     agent
         .apply_command(BackendCommand::TestApi {

@@ -92,7 +92,7 @@ impl crate::agent::Agent {
     }
 
     pub(crate) async fn tool_guard_timeout(&self, call: &ToolCall) -> std::time::Duration {
-        let base = self.config.read().await.effective_tool_timeout();
+        let base = self.model.config.read().await.effective_tool_timeout();
         tool_timeout(&self.tools, base, call).await
     }
 }

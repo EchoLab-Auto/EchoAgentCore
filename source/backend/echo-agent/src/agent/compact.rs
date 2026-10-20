@@ -294,7 +294,7 @@ impl crate::agent::Agent {
         // clear_history 竞争会按过时摘要重写日志、统计错乱。
         let _compact_guard = self.trunk.compact_lock().await;
         let preview = self.trunk.compact_preview(keep_recent)?;
-        let provider = self.provider.read().await.clone();
+        let provider = self.model.provider.read().await.clone();
         let archive = match self.trunk.archive_snapshot("precompact").await {
             Ok(path) => Some(path),
             Err(error) => {
