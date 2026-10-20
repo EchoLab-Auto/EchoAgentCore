@@ -686,6 +686,7 @@ dependencies = [
  "echo-llm-openai",
  "echo-plugin",
  "echo-protocol",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

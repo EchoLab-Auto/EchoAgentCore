@@ -37,6 +37,7 @@ pub use echo_defs::tool::ToolDefinition;
 /// 全局供应商池的读取助手（`list_api_profiles` 工具与子代理 profile 解析共用）。
 pub mod admin;
 pub mod api_pool;
+pub mod balance;
 /// 供应商 / API 命令域（全插件化 S5：13 条命令的归属关系）。
 pub mod host_keys;
 pub mod commands;

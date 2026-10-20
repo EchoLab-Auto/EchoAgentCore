@@ -980,102 +980,31 @@ fn patch_agent_table(root: &mut toml::Table, cfg: &AgentConfig) -> Result<(), St
     Ok(())
 }
 
-/// 一次余额查询的结果（金额为原始字符串，如 "1287.91"）。
-pub(crate) struct BalanceFetch {
-    pub available: bool,
-    pub total: String,
-    pub granted: String,
-    pub topped_up: String,
-    pub currency: String,
-}
+/// 一次余额查询的结果（金额为原始字符串，如 `"1287.91"`）。
+///
+/// 实现归 provider 插件（[`echo_plugin_provider_llm::balance`]）：端点归一
+/// 与响应字段是**供应商的知识**。这里只留一个适配器——把宿主的
+/// `AgentConfig` 投影成插件认识的 [`echo_plugin_provider_llm::ProviderConfig`]。
+pub(crate) use echo_plugin_provider_llm::balance::BalanceFetch;
 
-/// 请求 DeepSeek `/user/balance`（15s 超时；无事件 / 记录副作用——供手动
-/// 查询与周期快照共用）。
+/// 请求 DeepSeek `/user/balance`（15s 超时；无事件 / 记录副作用）。
 pub(crate) async fn fetch_balance(probe: &AgentConfig) -> Result<BalanceFetch, String> {
-    #[derive(serde::Deserialize)]
-    struct BalanceResponse {
-        #[serde(default)]
-        is_available: bool,
-        #[serde(default)]
-        balance_infos: Vec<BalanceInfo>,
-    }
-    #[derive(serde::Deserialize)]
-    struct BalanceInfo {
-        #[serde(default)]
-        currency: String,
-        #[serde(default)]
-        total_balance: String,
-        #[serde(default)]
-        granted_balance: String,
-        #[serde(default)]
-        topped_up_balance: String,
-    }
-
-    let Some(endpoint) = deepseek_balance_endpoint(&probe.base_url) else {
-        return Err(format!(
-            "余额查询仅支持 DeepSeek 官方端点（当前 base_url: {}）",
-            probe.base_url
-        ));
+    let projection = echo_plugin_provider_llm::ProviderConfig {
+        provider: probe.provider.clone(),
+        base_url: probe.effective_base_url(),
+        model: probe.model.clone(),
+        api_key: probe.effective_api_key(),
+        thinking: probe.thinking,
+        reasoning_effort: probe.reasoning_effort,
     };
-    let api_key = probe.effective_api_key();
-    if api_key.is_empty() {
-        return Err("缺少 API Key，无法查询余额".into());
-    }
-
-    let result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| format!("HTTP client build failed: {e}"))?;
-        let response = client
-            .get(&endpoint)
-            .bearer_auth(&api_key)
-            .send()
-            .await
-            .map_err(|e| format!("请求失败: {e}"))?;
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| format!("读取响应失败: {e}"))?;
-        if !status.is_success() {
-            return Err(format!(
-                "HTTP {status}: {}",
-                echo_defs::token::truncate(&text, 200)
-            ));
-        }
-        let parsed: BalanceResponse = serde_json::from_str(&text).map_err(|e| {
-            format!(
-                "响应解析失败: {e} — body: {}",
-                echo_defs::token::truncate(&text, 200)
-            )
-        })?;
-        Ok::<BalanceResponse, String>(parsed)
-    })
-    .await;
-
-    match result {
-        Ok(Ok(parsed)) => {
-            let info = parsed.balance_infos.first();
-            Ok(BalanceFetch {
-                available: parsed.is_available,
-                total: info.map(|i| i.total_balance.clone()).unwrap_or_default(),
-                granted: info.map(|i| i.granted_balance.clone()).unwrap_or_default(),
-                topped_up: info
-                    .map(|i| i.topped_up_balance.clone())
-                    .unwrap_or_default(),
-                currency: info.map(|i| i.currency.clone()).unwrap_or_default(),
-            })
-        }
-        Ok(Err(message)) => Err(message),
-        Err(_) => Err("请求超时（>15s）".into()),
-    }
+    echo_plugin_provider_llm::balance::fetch_balance(&projection).await
 }
 
 /// 宽松解析金额字符串（失败 = 0.0；不阻断快照记录）。
-pub(crate) fn parse_amount(text: &str) -> f64 {
-    text.trim().parse::<f64>().unwrap_or(0.0)
-}
+pub(crate) use echo_plugin_provider_llm::balance::parse_amount;
+
+/// 从 base_url 推导 DeepSeek 余额查询端点。
+pub(crate) use echo_plugin_provider_llm::balance::deepseek_balance_endpoint;
 
 /// 「全部目标」列表：顶层默认（`""`）+ 全部 profile 名。
 ///
@@ -1098,25 +1027,6 @@ fn metrics_targets(config: &AgentConfig) -> Vec<String> {
 /// in; otherwise the named profile's non-empty values override the current
 /// effective config. Returns an error string when the profile does not exist
 /// or the resolved config has no provider.
-/// 从 base_url 推导 DeepSeek 余额查询端点。
-///
-/// `https://api.deepseek.com/anthropic` / `.../v1` / `.../beta` / 裸域
-/// 统一映射为 `{root}/user/balance`；非 DeepSeek 域返回 None。
-pub(crate) fn deepseek_balance_endpoint(base_url: &str) -> Option<String> {
-    let mut root = base_url.trim().trim_end_matches('/');
-    for suffix in ["/anthropic", "/v1", "/beta"] {
-        if let Some(stripped) = root.strip_suffix(suffix) {
-            root = stripped;
-            break;
-        }
-    }
-    if root.contains("deepseek.com") {
-        Some(format!("{root}/user/balance"))
-    } else {
-        None
-    }
-}
-
 pub(crate) fn resolve_probe_config(
     config: &crate::config::AgentConfig,
     name: &str,
