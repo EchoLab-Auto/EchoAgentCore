@@ -255,46 +255,42 @@ pub struct SubprocessStatus {
     pub error: Option<String>,
 }
 
-/// The agent's plugin host: registry + descriptors + runtime toggling.
+/// The agent's plugin host: **本项目对插件机制的领域适配层**。
+///
+/// ## 它现在只剩三件事（2026-11，框架 v0.10 运行态上收）
+///
+/// 框架（`plugin-framework`）已经把**与领域无关的运行态**收进
+/// `PluginRegistry`：挂载上下文缓存、事件订阅兴趣集、投递重入保护、投递
+/// 计数。此前这四样由本结构自己维护（多出 ~150 行状态 + 一处 `EventInterest`
+/// 影子结构），现在一行都不留。
+///
+/// 剩下的三件**本项目的语义**，框架不该知道：
+///
+/// 1. [`Self::mount_plan`]：`plugins.toml` 的三层合成结果 → 挂载计划
+///    （配置格式是本项目的）；
+/// 2. [`Self::deliver_backend_event`]：`BackendEvent` → `PluginEvent` 的翻译
+///    （领域词汇是本项目的）；
+/// 3. 子进程控制的分派（`stop_subprocess` / `start_subprocess` /
+///    `is_external_entry`）：外部插件由本项目的 `plugins.toml` 声明、由本
+///    项目的 supervisor 拉起。
+///    （`reconcile` 重入保护也留在这里：它防的是**本宿主**在
+///    `Ctx::on_change` 回调里重入，属编排问题。）
+///
+/// ## 判据
+///
+/// 「框架知道这件事吗？」——知道（生命周期、事件、兴趣集）就上收；不知道
+/// （`plugins.toml` 长什么样、`BackendEvent` 是什么、子进程怎么起）就留这里。
+/// 这比"宿主包一层更安全"务实：包着只会让两边都有半份实现的可能。
 pub struct PluginHost {
     pub registry: PluginRegistry,
-    /// Mount context provided to every plugin at mount time.
-    mount_ctx: parking_lot::Mutex<Option<MountContext>>,
     /// 子进程插件生命周期（组合根注入；None = 无外部条目或未接线）。
     subprocess: parking_lot::RwLock<Option<Arc<dyn SubprocessPluginControl>>>,
     /// `reconcile` 重入保护：依赖变更回调里挂载插件会再注册服务、再触发
     /// 回调——不加这道闸就是无限递归。
-    reconciling: std::sync::atomic::AtomicBool,
-    /// 事件投递重入保护：插件的 `on_event` 若又触发一次 `emit`（比如它调了
-    /// 某个会发事件的宿主 API），没有这道闸就会自递归。
-    delivering: std::sync::atomic::AtomicBool,
-    /// **订阅兴趣集**（已挂载插件声明的事件名；挂/卸/启停后刷新）。
     ///
-    /// 单独缓存的原因：`Agent::emit` 是**热路径**（流式正文每个 token 一条
-    /// 事件）。`any` 是一个原子标志，无订阅者时一次 load 就返回——不给
-    /// 现有部署增加任何可测开销。
-    event_interest: parking_lot::RwLock<EventInterest>,
-    /// 累计投递成功/失败条数（诊断用；不是指标系统）。
-    event_delivered: std::sync::atomic::AtomicU64,
-    event_failed: std::sync::atomic::AtomicU64,
-}
-
-/// 已挂载插件订阅的事件名（`PluginHost` 的缓存）。
-#[derive(Default)]
-struct EventInterest {
-    /// 是否有人订阅（热路径的快速判定；与 `names` / `all` 保持一致）。
-    any: std::sync::atomic::AtomicBool,
-    /// 精确订阅的名字。
-    names: std::collections::HashSet<String>,
-    /// 有插件订阅了 `*`（全收）。
-    all: bool,
-}
-
-impl EventInterest {
-    /// 该事件名是否有人要。
-    fn wants(&self, name: &str) -> bool {
-        self.all || self.names.contains(name)
-    }
+    /// 留在这里而不是上收：它防的是**本宿主**在 `Ctx::on_change` 回调里
+    /// 重入，属编排问题（框架的 `reconcile` 不知道自己被谁调）。
+    reconciling: std::sync::atomic::AtomicBool,
 }
 
 impl Default for PluginHost {
@@ -307,25 +303,23 @@ impl PluginHost {
     pub fn new() -> Self {
         Self {
             registry: PluginRegistry::new(),
-            mount_ctx: parking_lot::Mutex::new(None),
             subprocess: parking_lot::RwLock::new(None),
             reconciling: std::sync::atomic::AtomicBool::new(false),
-            delivering: std::sync::atomic::AtomicBool::new(false),
-            event_interest: parking_lot::RwLock::new(EventInterest::default()),
-            event_delivered: std::sync::atomic::AtomicU64::new(0),
-            event_failed: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
     /// Attach the mount context (tools/skills/services). Call once at boot
     /// before mounting anything.
+    ///
+    /// **委托给框架**（v0.10）：注册表自己缓存它，之后的
+    /// `enable` / `restart_cached` / `reconcile_cached` 不必再传。
     pub fn set_mount_ctx(&self, ctx: MountContext) {
-        *self.mount_ctx.lock() = Some(ctx);
+        self.registry.set_mount_ctx(ctx);
     }
 
     /// 挂载上下文（测试与 [`Self::reconcile`] 共用；不是公开 API）。
     pub(crate) fn ctx(&self) -> MountContext {
-        self.mount_ctx.lock().clone().unwrap_or_default()
+        self.registry.mount_ctx().unwrap_or_default()
     }
 
     /// Register a plugin and mount it (composition root).
@@ -342,7 +336,6 @@ impl PluginHost {
         self.registry
             .mount(&id, &self.ctx())
             .map_err(|e| format!("plugin {id} mount failed: {e}"))?;
-        self.refresh_event_interest();
         Ok(())
     }
 
@@ -396,7 +389,6 @@ impl PluginHost {
                 Err(e) => errors.push(format!("plugin {} mount failed: {e}", step.id)),
             }
         }
-        self.refresh_event_interest();
         (registered, mounted, errors)
     }
 
@@ -459,7 +451,6 @@ impl PluginHost {
                 Err(e) => errors.push(format!("plugin {} mount failed: {e}", step.id)),
             }
         }
-        self.refresh_event_interest();
         (registered, mounted, waiting, errors)
     }
 
@@ -485,7 +476,6 @@ impl PluginHost {
         let _reset = Reset(&self.reconciling);
         let report = self.registry.reconcile(&self.ctx());
         // 挂上/卸下会改变"谁在订阅"——不刷新的话热路径会按旧集合判断。
-        self.refresh_event_interest();
         report
     }
 
@@ -545,77 +535,31 @@ impl PluginHost {
     }
 
     /// 是否有任何已挂载插件订阅了事件（热路径的快速判定）。
+    ///
+    /// **委托给框架**（v0.10）：兴趣集由注册表在挂/卸/启停后自己刷新，宿主
+    /// 不必记得调。
     pub fn has_event_subscribers(&self) -> bool {
-        self.event_interest
-            .read()
-            .any
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.registry.has_event_subscribers()
     }
 
     /// 该事件名当前是否有人订阅（不做序列化，供调用方提前分流）。
     pub fn wants_event(&self, name: &str) -> bool {
-        let interest = self.event_interest.read();
-        interest.any.load(std::sync::atomic::Ordering::Relaxed) && interest.wants(name)
+        self.registry.wants_event(name)
     }
 
-    /// 投递 + 重入保护 + 计数。
+    /// 投递 + 重入保护 + 计数（**委托给框架**的
+    /// [`PluginRegistry::deliver_event_guarded`]）。
     fn deliver_guarded(&self, event: &echo_plugin::PluginEvent) -> usize {
-        use std::sync::atomic::Ordering;
-        // 插件的 `on_event` 里若再触发 emit，内层直接丢（记一次失败计数）。
-        if self.delivering.swap(true, Ordering::SeqCst) {
-            self.event_failed.fetch_add(1, Ordering::Relaxed);
-            tracing::debug!(
-                name = %event.name,
-                "plugin event dropped: delivery is already in progress (re-entrant emit)"
-            );
-            return 0;
-        }
-        struct Reset<'a>(&'a std::sync::atomic::AtomicBool);
-        impl Drop for Reset<'_> {
-            fn drop(&mut self) {
-                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
-        let _reset = Reset(&self.delivering);
-        let delivered = self.registry.deliver_event(event);
-        if delivered > 0 {
-            self.event_delivered
-                .fetch_add(delivered as u64, Ordering::Relaxed);
-        }
-        delivered
+        self.registry.deliver_event_guarded(event)
     }
 
-    /// 重算**订阅兴趣集**（挂载/卸载/启停后必须调；否则热路径的判断会过期）。
+    /// 重算**订阅兴趣集**。
     ///
-    /// 只统计**已挂载**的插件——没挂载的插件不该收到事件，替它"占位"订阅会
-    /// 让热路径付无意义的序列化代价。
+    /// **委托给框架**（v0.10）：注册表在挂载 / 卸载 / 启停 / 重启 / reconcile
+    /// 之后自己调。本方法保留是为了既有调用点（宿主侧的 `reconcile` 与
+    /// 测试）；它现在是幂等的显式补刷，不再是"必须记得调"的负担。
     pub fn refresh_event_interest(&self) {
-        use std::sync::atomic::Ordering;
-        let mut names = std::collections::HashSet::new();
-        let mut all = false;
-        for descriptor in self.registry.descriptors() {
-            if !descriptor.enabled || !self.registry.is_mounted(&descriptor.id) {
-                continue;
-            }
-            for name in &descriptor.subscribed_events {
-                if name == echo_plugin::ALL_EVENTS {
-                    all = true;
-                } else {
-                    names.insert(name.clone());
-                }
-            }
-        }
-        let any = all || !names.is_empty();
-        let mut interest = self.event_interest.write();
-        interest.names = names;
-        interest.all = all;
-        interest.any.store(any, Ordering::Relaxed);
-        drop(interest);
-        tracing::debug!(
-            all,
-            count = self.event_interest.read().names.len(),
-            "plugin event interest refreshed"
-        );
+        self.registry.refresh_event_interest();
     }
 
     /// **仅测试用**：同步切换启用状态（生产路径走 async 的 [`Self::set_enabled`]，
@@ -625,7 +569,6 @@ impl PluginHost {
         self.registry
             .set_enabled(id, enabled, &self.ctx())
             .expect("set_enabled");
-        self.refresh_event_interest();
     }
 
     // ── 命令处理 + 有序文本块（plugin-framework v0.8）────────────────────
@@ -668,11 +611,7 @@ impl PluginHost {
 
     /// 事件投递计数（成功条数, 失败条数）——诊断用。
     pub fn event_counters(&self) -> (u64, u64) {
-        (
-            self.event_delivered
-                .load(std::sync::atomic::Ordering::Relaxed),
-            self.event_failed.load(std::sync::atomic::Ordering::Relaxed),
-        )
+        self.registry.event_counters()
     }
 
     /// 眼下还缺依赖的插件（`id → 缺的键`）。
@@ -748,12 +687,17 @@ impl PluginHost {
         ds
     }
 
+    /// 切换插件启用状态（**领域编排**：分派到子进程或框架注册表，然后落盘）。
+    ///
+    /// 与框架 [`PluginRegistry::enable`] 的分工：框架只管"挂载/卸载 + 状态"，
+    /// 本方法额外做三件本项目的事——外部条目的子进程真的停/起、`plugins.toml`
+    /// 的 `disabled_plugins` 写回、失败原因进清单。
+    ///
     /// Runtime toggle; persists via the configured `disabled_plugins` hook.
     pub async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
         let result = self.registry.set_enabled(id, enabled, &self.ctx());
         if result.is_ok() {
-            self.refresh_event_interest();
-        }
+            }
         result
     }
 
@@ -765,8 +709,7 @@ impl PluginHost {
     pub fn restart(&self, id: &str) -> Result<(), String> {
         let result = self.registry.restart(id, &self.ctx());
         if result.is_ok() {
-            self.refresh_event_interest();
-        }
+            }
         result
     }
 

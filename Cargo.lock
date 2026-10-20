@@ -438,7 +438,7 @@ dependencies = [
 [[package]]
 name = "echo-context"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.9.0#72b12f2c03af0f3287d574d517423738e239ccf2"
+source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.10.0#99e9e1b53425f137b08f84d87420956a8a2d3f7d"
 dependencies = [
  "dashmap",
  "thiserror 2.0.20",
@@ -536,13 +536,14 @@ dependencies = [
 [[package]]
 name = "echo-plugin"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.9.0#72b12f2c03af0f3287d574d517423738e239ccf2"
+source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.10.0#99e9e1b53425f137b08f84d87420956a8a2d3f7d"
 dependencies = [
  "echo-context",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -562,7 +563,7 @@ dependencies = [
 [[package]]
 name = "echo-plugin-api"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.9.0#72b12f2c03af0f3287d574d517423738e239ccf2"
+source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.10.0#99e9e1b53425f137b08f84d87420956a8a2d3f7d"
 dependencies = [
  "serde",
  "serde_json",
@@ -604,7 +605,7 @@ dependencies = [
 [[package]]
 name = "echo-plugin-host"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.9.0#72b12f2c03af0f3287d574d517423738e239ccf2"
+source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.10.0#99e9e1b53425f137b08f84d87420956a8a2d3f7d"
 dependencies = [
  "async-trait",
  "base64",
@@ -620,7 +621,7 @@ dependencies = [
 [[package]]
 name = "echo-plugin-loader"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.9.0#72b12f2c03af0f3287d574d517423738e239ccf2"
+source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.10.0#99e9e1b53425f137b08f84d87420956a8a2d3f7d"
 dependencies = [
  "serde",
  "serde_json",
@@ -685,7 +686,7 @@ dependencies = [
 [[package]]
 name = "echo-plugin-sdk"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.9.0#72b12f2c03af0f3287d574d517423738e239ccf2"
+source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.10.0#99e9e1b53425f137b08f84d87420956a8a2d3f7d"
 dependencies = [
  "async-trait",
  "echo-plugin-api",
@@ -862,7 +863,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1555,7 +1556,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1782,7 +1783,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2068,7 +2069,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2616,7 +2617,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
