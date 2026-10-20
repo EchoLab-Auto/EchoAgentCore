@@ -79,10 +79,17 @@ graph BT
 
 > 依赖边以 `cargo metadata --format-version 1 --no-deps`（仅 normal 依赖）实测为准。`echo-context` **不依赖** `echo-defs`（零 echo-* 依赖）；组合根另直接依赖全部中间层 crate（`echo-agent`/`echo-config`/`echo-context`/`echo-defs`/`echo-federation`/`echo-loop`/`echo-plugin`/`echo-plugin-adapter`/`echo-plugin-host`/`echo-plugin-loader`/`echo-plugin-loop`/`echo-plugin-management`/`echo-protocol`/`echo-sanitize`/`echo-session`），图中只画主干边（Phase 3 外迁的七个内置插件各自只依赖定义层/机制层，边略）。**依赖白名单的单一真值是 `scripts/deps-policy.txt`**——`scripts/check-deps.sh`（CI `deps-lint`）与 `source/core/tests/plugin_dependency_direction.rs`（cargo test）共读同一份，新增 crate 未登记即失败。
 
+> **归属（2026-10-19 框架外迁）**：下表里带「框架仓」标记的 crate **不在本仓**，
+> 而是独立仓库 [plugin-framework](https://github.com/EchoLab-Auto/plugin-framework)
+> （`v0.4.1`），由本仓的 `Cargo.toml` 以 `git + tag` 引用。它们与任何应用 crate
+> 无反向依赖，可被其它 Rust 应用单独使用——判据与取舍见
+> [插件框架外迁](../design/plugin-framework-extraction.md)。本仓 `source/plugin/`
+> 下只剩**框架的使用者**（内置插件）与领域适配层。
+
 | Crate | 角色 | 职责 |
 |---|---|---|
 | `echo-defs` | Service Definition 层 | 全部词汇与 trait：LLM/工具/技能/平台消息/**插件实例（`PluginInstance` trait、`InstanceManagement`）**/媒体/会话事件/联邦节点；零实现、零 harness 依赖 |
-| `echo-context` | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry` |
+| `echo-context` **（框架仓）** | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry`。**零全局态**：进程级单例表不在此（见 `echo-bootstrap`） |
 | `echo-session` | 事件溯源会话 | `SessionEvent` 事件集（含模型不可见的推理事件）、`EventLog` append-only 持久化、`derive_messages` 投影、**按会话切片投影**（append 的重投影代价只与本次会话相关）、compaction、`SessionHeader`、v1-v4 兼容迁移 |
 | `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话）见 [Agent 循环](../core/core-agent-loop.md) |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现。`openai`/`anthropic` 只依赖 `echo-defs`；`ollama` 是薄包装，**复用 `echo-llm-openai`**（组内一条边） |
@@ -96,7 +103,8 @@ graph BT
 | `echo-plugin-tools` | 内置插件：内置工具集（Phase 3 之后的延续工作） | `echo-agent.tools.builtin` 的实现：计算/检索（`calculator`/`web_search`）、清单（`checklist`）、插件实例管理（`instance_*`）、编码（`read_file`/`write_file`/`edit_file`/`list_files`/`search_code`/`run_command`）、Shell（`shell_*`）。三个外部能力**经注入**：`RemoteInvoker`（`node://` 远程调用）、`echo_shell`（会话管理器）、工作区根——未注入时显式降级（「联邦未接线」/「manager unavailable」），不静默换实现 |
 | `echo-shell` | Shell 会话机制 | 每会话一个 `bash --noprofile --norc`（独立进程组，销毁整组终止）、写命令 + 随机哨兵双写分帧（stdout/stderr 两路专职读取，避免假超时）、会话串行/跨会话并行、`MAX_SHELL_SESSIONS` 上限、事件经注入 emit 广播；宿主侧接线（`shell_emit_for_self` 等要拿 `Agent` 的部分）留在 `echo-agent::shell` |
 | `echo-tool` | 工具子系统机制 | `ToolRegistry`（可逆注册 + 定义缓存 + 出口脱敏）；`Tool` 词汇在 `echo-defs`，具体工具实现不在此 |
-| `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、子进程限额与入站频率限额、可逆停止、conformance 测试（见 [完全解耦推进计划](../design/decoupling-plan.md)）。**`echo-plugin-host` 只依赖 `echo-plugin-api` + `echo-plugin-loader`——不认识 `echo-defs`、不认识任何领域词汇**，因此可作领域中立的插件机制复用 |
+| `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` **（框架仓）** | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、子进程限额与入站频率限额、可逆停止、conformance 测试（见 [完全解耦推进计划](../design/decoupling-plan.md)）。**`echo-plugin-host` 只依赖 `echo-plugin-api` + `echo-plugin-loader`——不认识 `echo-defs`、不认识任何领域词汇**，因此可作领域中立的插件机制复用 |
+| `echo-bootstrap` | 宿主引导单元（机制层） | 进程级单例表：`TypeId` 键控的 `set` / `get` / `get_or_init`。**这是本仓唯一允许的全局态**（门禁精确豁免一个文件）。它曾随 `echo-context` 迁进框架仓又被搬回——框架一处不用它、而框架导出进程级单例表会破坏「同一进程能起两套宿主」。终态应改为经 `Ctx` 显式注入，见 [插件框架外迁 §八](../design/plugin-framework-extraction.md) |
 | `echo-plugin-adapter` | 远程贡献 → 领域 trait 的适配层 | `RemoteTool`（`ToolContribution` → `echo_defs::tool::Tool`）、`RemoteInstance`/`RemoteInstanceManagement`（`InstanceContribution` → `PluginInstance`/`InstanceManagement`，能力位 fail-closed，动作经 `Invoke("<name>:<op>")`）、`CoreApiService`（插件 → 宿主回呼）；依赖 host + api + defs，**不依赖 `echo-agent` 与组合根**。单独成 crate 的理由：这一层认识领域 trait，而 host 必须保持领域中立 |
 | `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入——生效口径见 [Agent 循环](../core/core-agent-loop.md)）、provider 工厂与装配、命令分发、timeline 投影、trunk。**具体实现多已外迁**：内置工具在 `echo-plugin-tools`（`packages/tools_builtin` 只留 `register_all` 兼容面与 `api_profiles`）、Shell 机制在 `echo-shell`（`shell.rs` 只留宿主侧接线）、技能在 `echo-plugin-skills`、子任务在 `echo-plugin-subagent`、工作区在 `echo-plugin-workspace` |
 | `echo-defs`（`plugin_instance`） | 插件实例的**定义层** | `PluginInstance` trait（`tool_specs() -> Vec<ToolSpec>`）/ `InstanceManagement` / `ToolSpec` / `InstanceRegistry` / 状态与错误类型。**平台中立**：这里没有平台名、没有部署形状。QQ 实现是**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteInstance` 接入——见 [实例插件化](../design/instance-plugin.md)） |

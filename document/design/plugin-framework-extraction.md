@@ -170,11 +170,11 @@ release 二进制 `~/.local/libexec/echo-agent-core/echo-agent-core-bin`（md5 �
 
 | 里程碑 | 内容 | 验收 |
 |---|---|---|
-| **M0**（本文） | 边界冻结 + semver 策略 + 基线 | 本文提交；判据明确 |
-| **M1** | api + sdk 迁出建仓，打 tag | `git clone` 框架仓 → `cargo test` 通过；`plugin-adapter-qq` 去掉绝对路径后编译通过 |
-| **M2** | 框架层去业务化 | `MountContext` 只剩 `ctx`；框架 crate 零 `echo-defs` 依赖；新增领域词门禁 |
-| **M3** | 六件套整体外迁 | Core 全量测试 1059 仍全绿；release 构建 + 部署 + QQ 插件端到端正常 |
-| **M4** | 可用性与证伪 | **非 EchoAgent 最小宿主示例**（50 行 + 2 插件，只用六件套）可跑；跨语言插件示例可跑；第三方文档 |
+| **M0** | 边界冻结 + semver 策略 + 基线 | ✅ 判据三条、六件套冻结、基线实测 |
+| **M1** | api + sdk 迁出建仓，打 tag | ✅ 全新 clone 编译通过；adapter-qq 去掉绝对路径后 252 通过 |
+| **M2** | 框架层去业务化 | ✅ `MountContext` 只剩 `ctx`；零 `echo-defs` 依赖；领域词门禁实测能报错 |
+| **M3** | 六件套整体外迁 | ✅ Core 全量 903 / 框架仓 165；release 构建 + 部署 + QQ 插件端到端正常 |
+| **M4** | 可用性与证伪 | ✅ 非 EchoAgent 最小宿主示例可跑（含 assert）；跨语言插件可跑；第三方文档 |
 | **M5** | 协议去业务化 | **决策门**：需 2 个以上真实外部使用者才启动；当前建议不动 |
 
 ## 六、风险与已知边界
@@ -399,9 +399,65 @@ crate 文档把这一点写成了第一段而非脚注。
 （原 165 − kernel 的 5 项）；`check-deps.sh` OK（25 crates）；框架仓门禁实测
 仍能报错（清零后往 `ctx.rs` 注入 `static` → FAILED 并指出行号）。
 
+### M4：第三方可用性（完成，2026-10-19）
+
+框架仓 `v0.4.0` / `v0.4.1`。这一轮的目标是**证伪**：如果框架真有业务残留，
+「在非本应用的宿主里跑通」就做不到。
+
+| 产物 | 内容 |
+|---|---|
+| `examples/minimal-host` | 130 行：`Ctx` + 服务键、进程内插件挂载与**撤销验证**、supervisor 拉起子进程插件、invoke、drain |
+| `examples/minimal-plugin` | 70 行：只依赖 `echo-plugin-sdk` |
+| `examples/minimal-plugin-py` | 150 行纯 Python：手写帧、零 Rust 依赖 |
+| `docs/getting-started.md` | 第三方快速上手（写插件 / 拉起来 / 同进程轨 / 崩溃隔离 / 跨语言 / 版本策略） |
+| `tests/cross_language.rs` | 3 项：真 spawn Python、版本不兼容 fail-closed、直接对帧断言 |
+| CI | 示例端到端 + 跨语言各一个独立步骤 |
+
+两个示例都**不引入** `echo-defs` / `echo-agent` / `echo-protocol`。宿主示例内部带
+`assert!`，跑通即证据，CI 里真跑。
+
+#### 这轮撞出的真 bug（从 P0 就存在）
+
+`Contribution::Service` **根本过不了 stdio 轨**：
+
+```json
+{"kind":"service","key":"greeter","kind":"greeter","version":1}
+                                   ^^^^ 与枚举 tag 重复
+```
+
+`Contribution` 是内部标签枚举、tag 叫 `kind`，而 `ServiceContribution` 的载荷
+字段也叫 `kind` → 序列化出重复键 → 宿主 `serde_json` 报 `duplicate field`，
+整帧解析失败。
+
+**为什么长期没被发现**：inproc 轨类型直连、零序列化，冲突不出现；而当时唯一声明
+`Service` 贡献的插件（`echo-plugin-loop`）跑在 inproc 上。这两个示例是第一个
+同时用「Service 贡献 + stdio 轨」的组合。
+
+修法：wire 字段改名 `service_kind`。**零兼容成本**——此前这种帧根本解析不了，
+不可能有在用的一端。
+
+三道防线（都实测能报错）：
+1. `every_contribution_variant_roundtrips_through_json`：所有变体过一遍 JSON
+2. `service_contribution_wire_field_avoids_tag_collision`：断言 JSON 里
+   `"kind"` 只出现一次
+3. `cross_language.rs`：Python 插件真发这个帧；把 `service_kind` 改回 `kind`，
+   两条测试立刻 FAILED
+
+#### 验收
+
+| 项 | 结果 |
+|---|---|
+| 框架仓 | **165 通过 / 0 失败** |
+| Core | **908 通过 / 0 失败**（框架依赖升 v0.4.1，零 API 变化） |
+| 全新 clone（`/tmp/fw-m5`） | **165 通过** + 示例打印 ✅ |
+| plugin-adapter-qq | 升到 v0.4.1，**257 通过 / 0 失败**（与 Core 同 tag，避免多版本并存） |
+| 部署 | 二进制 md5 `1a477c24…`，运行中进程与安装文件一致 |
+| 端到端 | 插件 10 / QQ connected（self_id 2911759808）/ 工具 29 / 时间线 ord 严格递增 |
+
 ## 八、后续任务
 
-1. M4：第三方可用性——非 EchoAgent 最小宿主示例 + 跨语言插件示例 + 文档。
-2. M5：协议去业务化（有决策门，当前建议不动）。
-3. （可选，独立一轮）把 `echo-bootstrap` 的句柄改成 `Ctx` 注入，然后清空
+1. M5：协议去业务化（有决策门：需 2 个以上真实外部使用者；当前建议不动）。
+2. （可选，独立一轮）把 `echo-bootstrap` 的句柄改成 `Ctx` 注入，然后清空
    Core 侧那条白名单。做完之后整个仓库**零进程级全局态**。
+3. （可选，低优先）插件模板仓——`examples/minimal-plugin` 已可直接当模板用，
+   单独建仓目前只会多一份需要同步维护的副本。等有外部作者反馈起手麻烦时再做。
