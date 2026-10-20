@@ -286,6 +286,16 @@ commands.rs 行数       1,967          1,051   （-47%）
 |---|---|---|---|
 | provider / API 管理面 | 13 | `echo-plugin-provider-llm`（此前是**名义挂载**） | `AgentProviderCommandHost`（13 个原子动作） |
 | 会话视图（快照 / 上下文 / 时间线 / 翻页 / 派生历史） | 5 | `echo-plugin-management` | `AgentSessionViewHost`（5 次语义快照 + active_turns） |
+| 自更新（触发 updater + 读状态） | 2 | **新 crate** `echo-plugin-self-update` | `SelfUpdateHost`（只有事件出口） |
+
+**自更新这一域顺带修掉一条死路**：两条命令原来既在 `HOST_RESERVED_COMMANDS`
+（插件不得接管）名单里，实现又只经"插件分发 → 联邦插件的命令处理器"可达——
+于是**必失败**，且文案误报"联邦插件未启用"。现在归属明确：
+reserved 名单只留真正的自我管理面（插件清单/启停/重启/Shutdown/会话迁移），
+自更新作为内置插件认领自己的命令；updater 单元名与状态文件布局是**部署形状**，
+换部署方式只改插件。真机验证：`RequestSelfUpdateStatus` 经 management WS 回
+`SelfUpdateStatus{state:"idle"}`，`RequestState` 回 `ApiConfigUpdated` /
+`ApiProfilesUpdated` / `InstanceList`（按序、无 Error）。
 
 两域的共同形状：**"发什么、按什么顺序、文案长什么样"归插件；"状态怎么迁移"归宿主**。
 典型分工证据是会话视图的**推理正文瘦身**——它是展示规则（宿主不该知道"面板嫌

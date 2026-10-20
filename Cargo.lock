@@ -362,6 +362,7 @@ dependencies = [
  "echo-plugin-loop",
  "echo-plugin-management",
  "echo-plugin-provider-llm",
+ "echo-plugin-self-update",
  "echo-plugin-skills",
  "echo-plugin-subagent",
  "echo-plugin-tools",
@@ -411,6 +412,8 @@ dependencies = [
  "echo-plugin-loader",
  "echo-plugin-loop",
  "echo-plugin-management",
+ "echo-plugin-provider-llm",
+ "echo-plugin-self-update",
  "echo-protocol",
  "echo-sanitize",
  "echo-session",
@@ -675,6 +678,8 @@ dependencies = [
  "echo-llm-anthropic",
  "echo-llm-ollama",
  "echo-llm-openai",
+ "echo-plugin",
+ "echo-protocol",
  "serde",
  "serde_json",
  "tokio",
@@ -693,6 +698,17 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "echo-plugin-self-update"
+version = "0.1.0"
+dependencies = [
+ "echo-plugin",
+ "echo-protocol",
+ "serde_json",
  "tokio",
  "tracing",
 ]

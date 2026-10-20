@@ -510,6 +510,23 @@ tracing::debug!(
     )?;
 }
 
+// ── 实化 6：自更新（命令域 + updater 单元形状）──
+//
+// 全插件化 S5：`RequestSelfUpdate` / `RequestSelfUpdateStatus` 的归属与实现
+// 一起搬出组合根（此前在 `federation_rt.rs`，且因在 `HOST_RESERVED` 名单里
+// 永远走不到——见插件文档）。updater 单元名与状态文件布局是**部署形状**，
+// 换部署方式就该换掉，正是插件的形状。
+{
+    let sink = event_sink.clone();
+    let self_update_host: std::sync::Arc<
+        dyn echo_plugin_self_update::commands::SelfUpdateHost,
+    > = std::sync::Arc::new(echo_plugin_self_update::commands::SinkHost::new(sink));
+    push_plugin(
+        &mut catalog,
+        echo_plugin_self_update::plugin(version, self_update_host),
+    )?;
+}
+
 // ── plugins.toml 的**外部条目**：注册门控壳，让它们出现在插件清单里 ──
 //
 // 此前这些条目的子进程由 `plugins_runtime` 直接拉起（工具注册进

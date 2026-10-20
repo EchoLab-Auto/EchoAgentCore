@@ -28,6 +28,7 @@ echo-plugin-loader = { workspace = true }
 echo-plugin-loop = { workspace = true }
 echo-plugin-management = { workspace = true }
 echo-plugin-provider-llm = { workspace = true }
+echo-plugin-self-update = { workspace = true }
 echo-federation = { path = "../federation/echo-federation" }
 getrandom = "0.2"
 tokio.workspace = true

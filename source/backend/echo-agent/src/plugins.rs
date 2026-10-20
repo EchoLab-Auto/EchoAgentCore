@@ -69,6 +69,12 @@ pub const GATED_PLUGIN_IDS: [&str; 4] = [
 /// LLM Provider 插件 id（名义挂载，重启生效）。
 pub const PROVIDER_LLM_PLUGIN_ID: &str = "echo-agent.provider.llm";
 
+/// 自更新插件 id（`RequestSelfUpdate` / `RequestSelfUpdateStatus` 的归属）。
+///
+/// 声明与实现都在 [`echo_plugin_self_update`]——这里是**兼容别名**，面板
+/// 插件清单与配置读的是同一批字面量。
+pub use echo_plugin_self_update::PLUGIN_ID as SELF_UPDATE_PLUGIN_ID;
+
 /// 联邦插件 id：Core↔Core 对等链路（远程工具 / 跨机委派 / 会话迁移）。
 ///
 /// 声明（id / 名称 / 描述 / manifest）与实现都在 [`echo_plugin_federation`]
@@ -81,7 +87,7 @@ pub use echo_plugin_federation::PLUGIN_ID as FEDERATION_PLUGIN_ID;
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
+pub const BUILTIN_PLUGIN_IDS: [&str; 10] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
     WORKSPACE_PLUGIN_ID,
@@ -91,6 +97,7 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
     SINGLE_LOOP_PLUGIN_ID,
     PARALLEL_LOOP_PLUGIN_ID,
     PROVIDER_LLM_PLUGIN_ID,
+    SELF_UPDATE_PLUGIN_ID,
 ];
 
 /// 插件**不得**接管的命令（宿主自我管理面）。
@@ -106,8 +113,6 @@ pub const HOST_RESERVED_COMMANDS: &[&str] = &[
     "RestartPlugin",
     "RequestPluginsList",
     "SetPluginConfig",
-    "RequestSelfUpdate",
-    "RequestSelfUpdateStatus",
     "Shutdown",
     "MigrateSession",
 ];

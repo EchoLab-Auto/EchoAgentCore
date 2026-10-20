@@ -81,18 +81,19 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.instance.qq` | Instance | **进程外**（`subprocess`） | QQ 插件实例（OneBot v11 反向 WS，实现为独立进程 `echo-adapter-qq`，Core 侧只是门控壳；含 QQ 管理工具；门控机制见 [QQ 实例门控](./qq-gating.md)） |
 | `echo-agent.skills.dir` | Skill | 进程内 | SKILL.md 技能目录（热重载） |
 | `echo-agent.workspace` | Tool | 进程内 | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](../core/core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
-| `echo-agent.provider.llm` | Provider | 进程内 | LLM 提供方工厂（名义挂载：重启生效） |
+| `echo-agent.provider.llm` | Provider | 进程内 | LLM 提供方工厂 + 供应商池规则 + **13 条 API / provider 命令域**（`SwitchModel` / `UpdateApiConfig` / `TestApi`… ；provider 构建仍由宿主在配置变更时调用） |
 | `echo-agent.loop.single` | Loop | 进程内 | 单会话循环（默认）：启用时 echo-loop 驱动接管普通输入（启动期回填；生效口径见 [Agent 循环](../core/core-agent-loop.md)）；会话内 turn 串行排队、无会话管理 UI |
 | `echo-agent.loop.parallel` | Loop | 进程内 | 并行多会话循环：同一 `TurnRunner`（生效口径同 `loop.single`）；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
 | `echo-agent.subagent` | Tool | 进程内 | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./core-subagent.md)） |
-| `echo-agent.management.panel` | Management | 进程内 | 管理面：management WS 桥接（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
-| `echo-agent.federation` | Federation | 进程内 | Core↔Core 对等链路：远程工具路由表 / 跨机委派聚合 / 跨机只读查询 / 会话迁移 + 7 条联邦与自更新命令 |
+| `echo-agent.management.panel` | Management | 进程内 | 管理面：management WS 桥接（禁用即 Panel 自锁，TogglePlugin 拒绝禁用）+ **5 条会话视图命令域**（`RequestState` / `RequestContext` / `RequestTrunkTimeline` / `RequestTimelineEarlier` / `RequestSessionHistory`，含推理正文线上瘦身） |
+| `echo-agent.federation` | Federation | 进程内 | Core↔Core 对等链路：远程工具路由表 / 跨机委派聚合 / 跨机只读查询 / 会话迁移 + 5 条联邦命令 |
+| `echo-agent.selfupdate` | Orchestration | 进程内 | 自更新：触发 `echo-agent-core-update.service`（oneshot，脱离本进程构建→替换→重启）+ 读状态文件（`RequestSelfUpdate` / `RequestSelfUpdateStatus`；updater 单元名与状态文件布局是**部署形状**，归插件） |
 
-表的来源分两类，别混算：**框架内置 9 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 9]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
+表的来源分两类，别混算：**框架内置 10 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 10]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
 
 联邦（`echo-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
 
-> **框架侧实现位置**：解耦计划 Phase 3 已把绝大多数内置插件外迁为独立 crate——`echo-plugin-provider-llm`（provider 工厂 + 计量/脱敏装饰）/ `echo-plugin-skills`（技能注册表 + Git 安装）/ `echo-plugin-workspace`（工作区会话与工具）/ `echo-plugin-subagent` / `echo-plugin-loop`（两个纯策略模式）/ `echo-plugin-management`（Panel 连接面）/ `echo-plugin-tools`（内置工具集：计算/检索/清单/编码/Shell/实例管理）；工具子系统的跨包机制（`ToolRegistry`）在 `echo-tool`，Shell 机制在 `echo-shell`。**仍内联在 echo-agent 的**只剩 `packages/tools_builtin` 的兼容面（`register_all` 重导出给文档生成与旧调用点 + `api_profiles`）、`packages/instance_ops`（入站 hook 桥 + 通用实例命令域）、`packages/federation`（远程代理工具与查询适配）。公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export 指向新 crate）。完整清单与判定见 [完全解耦推进计划](../design/decoupling-plan.md) §Phase 3。
+> **框架侧实现位置**：解耦计划 Phase 3 已把绝大多数内置插件外迁为独立 crate——`echo-plugin-provider-llm`（provider 工厂 + 计量/脱敏装饰）/ `echo-plugin-skills`（技能注册表 + Git 安装）/ `echo-plugin-workspace`（工作区会话与工具）/ `echo-plugin-subagent` / `echo-plugin-loop`（两个纯策略模式）/ `echo-plugin-management`（Panel 连接面 + 会话视图命令域）/ `echo-plugin-self-update`（自更新命令域）/ `echo-plugin-tools`（内置工具集：计算/检索/清单/编码/Shell/实例管理）；工具子系统的跨包机制（`ToolRegistry`）在 `echo-tool`，Shell 机制在 `echo-shell`。**仍内联在 echo-agent 的**只剩 `packages/tools_builtin` 的兼容面（`register_all` 重导出给文档生成与旧调用点 + `api_profiles`）、`packages/instance_ops`（入站 hook 桥 + 通用实例命令域）、`packages/federation`（远程代理工具与查询适配）。公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export 指向新 crate）。完整清单与判定见 [完全解耦推进计划](../design/decoupling-plan.md) §Phase 3。
 >
 > QQ 工具（`send_*`/`get_*` 共 10 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由插件进程申报（插件仓库 `crates/echo-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。2026-10 去适配器化时 `source/core/src/qq_tools.rs` 已删除——插件实例本就能声明工具，没有留给组合根的特例。
 

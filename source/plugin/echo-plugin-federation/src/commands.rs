@@ -28,14 +28,12 @@ use echo_protocol::{BackendCommand, BackendEvent};
 use crate::ports::FederationPorts;
 
 /// 本插件处理的命令名。
-pub const COMMANDS: [&str; 7] = [
+pub const COMMANDS: [&str; 5] = [
     "SaveFederationPeer",
     "DeleteFederationPeer",
     "RequestFederationStatus",
     "RequestFederationInvite",
     "MigrateSession",
-    "RequestSelfUpdate",
-    "RequestSelfUpdateStatus",
 ];
 
 /// 命令处理器：转发给装配期注入的出口。

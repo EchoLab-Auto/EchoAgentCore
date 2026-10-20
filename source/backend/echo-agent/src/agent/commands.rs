@@ -867,12 +867,21 @@ impl Agent {
             | BackendCommand::DeleteFederationPeer { .. }
             | BackendCommand::RequestFederationStatus
             | BackendCommand::RequestFederationInvite
-            | BackendCommand::MigrateSession { .. }
-            | BackendCommand::RequestSelfUpdate
-            | BackendCommand::RequestSelfUpdateStatus => {
+            | BackendCommand::MigrateSession { .. } => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
                     message: "联邦命令由 echo-agent.federation 插件处理，但该插件未启用".into(),
+                });
+            }
+            // 自更新命令域已迁进 `echo-plugin-self-update`（全插件化 S5）：
+            // updater 单元名、状态文件布局、重入判定都在那里。此前它们既是
+            // `HOST_RESERVED`（插件不得接管）又只经插件分发可达——两条命令
+            // 必失败，且文案误报"联邦插件未启用"。现在归属明确、兜底准确。
+            BackendCommand::RequestSelfUpdate | BackendCommand::RequestSelfUpdateStatus => {
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: "自更新命令由 echo-agent.selfupdate 插件处理，但该插件未启用"
+                        .into(),
                 });
             }
         }
