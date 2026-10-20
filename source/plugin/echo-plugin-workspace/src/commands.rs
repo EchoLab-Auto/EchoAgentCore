@@ -102,6 +102,12 @@ impl WorkspaceCommandHandler {
     /// `BackendCommand`——插件依赖 `echo-protocol`，那正是共享命令词汇该在的
     /// 地方（不是框架层，也不是插件自己定义的影子类型）。
     pub async fn handle(&self, name: &str, payload: Value) -> Option<Result<Value, String>> {
+        // **先认领再解析**：契约上 `None` = 不归本插件管。此前先反序列化、
+        // 解析失败就 `Some(Err(...))`，于是**任何**名字（含别的域的命令）都会被
+        // 认领成错误——与本域无关的载荷畸形本应"不是我的事"。
+        if !COMMANDS.contains(&name) {
+            return None;
+        }
         let command: BackendCommand = match serde_json::from_value(json!({ name: payload })) {
             Ok(command) => command,
             // 载荷形状不对 = 前端/协议层 bug。回明确错误比"静默不处理"好：
@@ -550,6 +556,50 @@ fn remote_git_placeholder(directory: &str, message: String) -> WorkspaceGitInfo 
 mod tests {
     use super::qualify_remote_entries;
     use echo_protocol::WorkspaceFileEntry;
+
+    /// **声明 ⇒ 认领**：`COMMANDS` 里的每一条都必须有处理分支。
+    ///
+    /// 声明（给分发器）与实现（`match`）分开写，漂移时命令会被"认领"成空
+    /// 操作——面板点了按钮没反应也没有错误。`Null` 载荷被判错也算认领。
+    #[tokio::test]
+    async fn every_declared_command_is_claimed() {
+        use super::{WorkspaceCommandHandler, WorkspaceHost};
+        use std::sync::Arc;
+
+        /// 全空实现：本测试只关心"命令名有没有落在某个分支上"。
+        struct NoHost;
+
+        impl WorkspaceHost for NoHost {
+            fn store(&self, _team_id: &str) -> Option<Arc<crate::WorkspaceStore>> {
+                None
+            }
+            fn emit(&self, _team_id: Option<&str>, _event: echo_protocol::BackendEvent) {}
+            fn browse_roots(&self) -> Vec<echo_protocol::BrowseRoot> {
+                Vec::new()
+            }
+            fn remote_query(&self) -> Option<Arc<dyn crate::RemoteWorkspaceQuery>> {
+                None
+            }
+        }
+
+        let handler = WorkspaceCommandHandler::new(Arc::new(NoHost));
+        for name in super::COMMANDS {
+            assert!(
+                handler
+                    .handle(name, serde_json::Value::Null)
+                    .await
+                    .is_some(),
+                "{name} 在 COMMANDS 里但没有处理分支"
+            );
+        }
+        assert!(
+            handler
+                .handle("SendMessage", serde_json::Value::Null)
+                .await
+                .is_none(),
+            "未声明的命令不该被认领（分发器永远路由不到它）"
+        );
+    }
 
     fn entry(name: &str, path: &str, is_dir: bool) -> WorkspaceFileEntry {
         WorkspaceFileEntry {

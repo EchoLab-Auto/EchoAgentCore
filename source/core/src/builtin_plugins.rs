@@ -511,7 +511,7 @@ if let Some(platform) = platform.clone() {
             view_handler
                 .handle(&name, payload)
                 .await
-                .unwrap_or(Ok(serde_json::Value::Null))
+                .unwrap_or_else(|| Err(format!("命令 {name} 被 echo-agent.management.panel 声明，但 session-view 处理器没有认领它")))
         })
     });
     push_plugin(&mut catalog, std::sync::Arc::new(mgmt_plugin))?;

@@ -435,6 +435,32 @@ mod tests {
         }
     }
 
+    /// **声明 ⇒ 认领**：`COMMANDS` 里的每一条都必须有处理分支。
+    ///
+    /// 声明与实现分开写（前者给分发器看、后者是 `match`），漂移时命令会被
+    /// "认领"成空操作——面板点了按钮没反应也没有错误。这条测试拿 `Null`
+    /// 载荷逐条过一遍：断言"被认领"（对错载荷报错也算认领）。
+    #[tokio::test]
+    async fn every_declared_command_is_claimed() {
+        let (handler, _host, _dir) = setup();
+        for name in COMMANDS {
+            assert!(
+                handler
+                    .handle(name, serde_json::Value::Null)
+                    .await
+                    .is_some(),
+                "{name} 在 COMMANDS 里但没有处理分支"
+            );
+        }
+        // 反向：没声明的命令不许被认领（否则分发器永远路由不到它）。
+        assert!(
+            handler
+                .handle("SendMessage", serde_json::Value::Null)
+                .await
+                .is_none()
+        );
+    }
+
     fn setup() -> (SkillsCommandHandler, Arc<FakeHost>, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "echo-skills-cmd-{}-{:?}",

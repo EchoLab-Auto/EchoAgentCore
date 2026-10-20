@@ -96,7 +96,7 @@ pub fn plugin(
                 bridge
                     .handle(&name, payload)
                     .await
-                    .unwrap_or(Ok(serde_json::Value::Null))
+                    .unwrap_or_else(|| Err(format!("命令 {name} 被 echo-agent.federation 声明，但 federation 处理器没有认领它")))
             })
         }),
     )

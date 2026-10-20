@@ -72,7 +72,7 @@ pub fn plugin(
                 handler
                     .handle(&name, payload)
                     .await
-                    .unwrap_or(Ok(serde_json::Value::Null))
+                    .unwrap_or_else(|| Err(format!("命令 {name} 被 echo-agent.skills.dir 声明，但 skills 处理器没有认领它")))
             })
         })
         // 文本块：把本 persona 已启用的技能描述注入系统提示词。

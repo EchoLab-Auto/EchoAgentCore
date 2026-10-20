@@ -192,7 +192,7 @@ pub fn plugin(
             tools
                 .handle(&name, payload)
                 .await
-                .unwrap_or(Ok(serde_json::Value::Null))
+                .unwrap_or_else(|| Err(format!("命令 {name} 被 echo-agent.tools.builtin 声明，但 tools 处理器没有认领它")))
         })
     }))
 }
@@ -269,6 +269,39 @@ mod tests {
             invoker: None,
             shell: echo_shell::ShellHandle::new(),
             config_store: None,
+        }
+    }
+
+    /// **声明 ⇒ 认领**：插件声明的每条命令都必须被三个域之一认领。
+    ///
+    /// 三个命令域（shell / instance / tools）各自声明 `COMMANDS`，插件把三者
+    /// 拼起来交给分发器。拼错或漏接时命令会被"认领"成空操作——面板点了没
+    /// 反应也没有错误。这里逐条过一遍（`Null` 载荷被拒算认领）。
+    #[tokio::test]
+    async fn every_declared_command_is_claimed_by_one_of_the_three_domains() {
+        let shell = crate::shell_commands::ShellCommandHandler::new(Arc::new(NoShellHost));
+        let instance =
+            crate::instance_commands::InstanceCommandHandler::new(Arc::new(NoInstanceHost));
+        let tools = crate::tool_commands::ToolsCommandHandler::new(Arc::new(NoToolsHost));
+        let declared: Vec<String> = crate::shell_commands::COMMANDS
+            .into_iter()
+            .chain(crate::instance_commands::COMMANDS)
+            .chain(crate::tool_commands::COMMANDS)
+            .map(str::to_string)
+            .collect();
+        for name in &declared {
+            let claimed = shell.handle(name, serde_json::Value::Null).await.is_some()
+                || instance.handle(name, serde_json::Value::Null).await.is_some()
+                || tools.handle(name, serde_json::Value::Null).await.is_some();
+            assert!(claimed, "{name} 声明了但没有处理分支");
+        }
+        // 反向：没声明的命令不许被认领（分发器永远路由不到它）。
+        for handler_claims in [
+            shell.handle("SendMessage", serde_json::Value::Null).await.is_some(),
+            instance.handle("SendMessage", serde_json::Value::Null).await.is_some(),
+            tools.handle("SendMessage", serde_json::Value::Null).await.is_some(),
+        ] {
+            assert!(!handler_claims, "未声明的命令不该被认领");
         }
     }
 

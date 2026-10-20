@@ -1517,7 +1517,7 @@ pub fn plugin(
                 handler
                     .handle(&name, payload)
                     .await
-                    .unwrap_or(Ok(serde_json::Value::Null))
+                    .unwrap_or_else(|| Err(format!("命令 {name} 被 echo-agent.workspace 声明，但 workspace 处理器没有认领它")))
             })
         })
         // 提示词块：键取 `workspace`（面板的 kind 徽标与历史行为一致）。

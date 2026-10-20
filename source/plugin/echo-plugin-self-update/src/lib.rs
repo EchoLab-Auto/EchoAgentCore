@@ -61,7 +61,7 @@ pub fn plugin(
                     handler
                         .handle(&name, payload)
                         .await
-                        .unwrap_or(Ok(serde_json::Value::Null))
+                        .unwrap_or_else(|| Err(format!("命令 {name} 被 echo-agent.selfupdate 声明，但 self-update 处理器没有认领它")))
                 })
             }),
     )
