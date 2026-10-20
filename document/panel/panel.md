@@ -150,7 +150,7 @@ EchoAgentPanel/
 
 ### 面板配置与运维
 
-- `~/.config/echo-agent-panel/panel.toml`：`[server]`（bind_address、static_dir、media_dir 媒体库目录、media_cache_dir 远端媒体缓存目录、access_token 面板访问令牌）、`[core]`（connect_url 连 Core 的 WS 地址、access_token 认证头；单上游兜底——`[[cores]]` 键出现过即以在线管理为准）、`[[cores]]`（接入点 name/url/access_token/可选 `[cores.ssh]` SSH 段，可空，设置·Core 连接页在线增删并写回）、`[logging]`（level/format/log_file 滚动）
+- `~/.config/echo-agent-panel/panel.toml`：`[server]`（bind_address、static_dir、media_dir 媒体库目录、media_cache_dir 远端媒体缓存目录、access_token 面板访问令牌）、`[core]`（connect_url 连 Core 的 WS 地址、access_token 认证头；单上游兜底——`[[cores]]` 键出现过即以在线管理为准）、`[[cores]]`（接入点 name/url/access_token/可选 `[cores.ssh]` SSH 段，可空，设置·Core 连接页在线增删并写回）、`[logging]`（level/format；`log_file` 在 Panel 侧未实现——日志走 stdout/journald，配了会在启动时告警）
 - `systemctl --user restart echo-agent-panel.service` 重启；静态资源在 `~/.local/libexec/echo-agent-panel/web`
 - 更新走 `echo-agent-panel-update.service`（构建 Rust 服务 + `npm run build` + 替换静态目录 + 重启），详见 [部署与自更新](../ops/ops-deploy.md)
 

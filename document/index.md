@@ -38,6 +38,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 - [core-memory.md](./core/core-memory.md) — 会话记忆：事件溯源日志、可见性边界、投影与切片、压缩归档、显示时间线
 - [core-multimodal.md](./core/core-multimodal.md) — 多模态输入：媒体库、模型侧还原、token 卫生
 - [core-config-persistence.md](./core/core-config-persistence.md) — 配置持久化：ConfigStore、门控/会话持久化、原子写入
+- [core-logging.md](./core/core-logging.md) — 日志与可观测性：出口与格式、打点约定、span 关联、轮转、级别热更新
 - [security-redaction-design.md](./core/security-redaction-design.md) — 敏感信息隔离：威胁模型、出口卡口与保证边界
 
 **插件层 —— 插件体系与各插件机制**
@@ -113,6 +114,7 @@ graph LR
   Frame --> Memory[会话记忆|/core/core-memory.md]
   Frame --> MModal[多模态输入|/core/core-multimodal.md]
   Frame --> Persist[配置持久化|/core/core-config-persistence.md]
+  Frame --> Logging[日志与可观测性|/core/core-logging.md]
   Frame --> Security[敏感信息隔离|/core/security-redaction-design.md]
   Plugins --> Tools[工具系统|/plugins/core-tools.md]
   Plugins --> Skills[技能系统|/plugins/core-skills.md]
