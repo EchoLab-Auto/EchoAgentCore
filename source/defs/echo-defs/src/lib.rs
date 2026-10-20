@@ -30,6 +30,7 @@
 //!   an HTTP client error; providers map their own errors into it.
 //! - Everything here is a definition: no filesystem, no network, no state.
 
+pub mod api_profile;
 pub mod chat;
 pub mod llm;
 pub mod media;

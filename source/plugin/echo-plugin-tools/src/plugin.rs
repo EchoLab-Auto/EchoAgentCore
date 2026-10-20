@@ -49,8 +49,11 @@ pub struct ToolsHostCtx {
     pub workspace: PathBuf,
     /// 联邦远程调用出口（`node://` 前缀的分流目标；None = 联邦未接线）。
     pub invoker: Option<crate::RemoteInvoker>,
-    /// Shell 会话管理器（`shell_*` 工具）。
+    /// Shell 会话管理器（`shell_*` 工��）。
     pub shell: echo_shell::ShellHandle,
+    /// 共享配置存储（`list_api_profiles` 读供应商池用；None = 未接线，
+    /// 该工具不注册——与"列不出供应商"相比，不注册是更诚实的降级）。
+    pub config_store: Option<echo_config::ConfigStore>,
 }
 
 /// 内置工具集的构造契约：端口进，配好的工具箱出。
@@ -68,6 +71,12 @@ impl BuiltinToolProvider for BuiltinTools {
         let guard = core_self_stop_guard();
         let mut registry = ToolRegistry::new();
         crate::register_core_tools(&mut registry);
+        // 供应商池清单（`list_api_profiles`）：数据源是共享 `ConfigStore` 的
+        // `[agent.api_profiles]`，读取助手已随 `ApiProfile` 下沉进 provider
+        // 插件（全插件化 S3）——本工具因此也搬进来了。
+        if let Some(store) = &cx.config_store {
+            registry.register(Arc::new(crate::ListApiProfilesTool::new(store.clone())));
+        }
         crate::register_instance_tools(&mut registry, cx.instances.clone());
         crate::register_coding_tools(
             &mut registry,
@@ -259,6 +268,7 @@ mod tests {
             workspace: std::env::temp_dir(),
             invoker: None,
             shell: echo_shell::ShellHandle::new(),
+            config_store: None,
         }
     }
 

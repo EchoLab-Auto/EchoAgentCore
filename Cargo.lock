@@ -455,6 +455,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "toml",
  "tracing",
 ]
 
@@ -660,12 +661,16 @@ name = "echo-plugin-provider-llm"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "echo-config",
  "echo-defs",
  "echo-llm-anthropic",
  "echo-llm-ollama",
  "echo-llm-openai",
+ "serde_json",
  "tokio",
+ "toml",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -722,9 +727,11 @@ name = "echo-plugin-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "echo-config",
  "echo-context",
  "echo-defs",
  "echo-plugin",
+ "echo-plugin-provider-llm",
  "echo-protocol",
  "echo-shell",
  "echo-test-utils",
@@ -736,6 +743,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
  "walkdir",
 ]
 

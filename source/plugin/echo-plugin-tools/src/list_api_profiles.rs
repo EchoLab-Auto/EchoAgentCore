@@ -5,14 +5,14 @@
 //! 就绪状态；模型选择规范见 `model-profiles` 技能。
 //!
 //! 数据源：共享 `ConfigStore`（core.toml 的 `[agent]`——全局供应商池与管理面
-//! 顶层默认的持久化事实源；见 [`crate::api_pool`] 模块文档）。输出**绝不含
+//! 顶层默认的持久化事实源；见 [`echo_plugin_provider_llm::api_pool`] 模块文档）。输出**绝不含
 //! 明文密钥**，仅布尔"是否已配置"。
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::api_pool::PoolSnapshot;
-use crate::tool::{Tool, ToolError};
+use echo_plugin_provider_llm::api_pool::PoolSnapshot;
+use echo_tool::{Tool, ToolError};
 
 pub struct ListApiProfilesTool {
     store: echo_config::ConfigStore,
@@ -40,7 +40,7 @@ impl Tool for ListApiProfilesTool {
     }
 
     async fn execute(&self, _arguments: Value) -> Result<String, ToolError> {
-        let snapshot = crate::api_pool::read_snapshot(&self.store).map_err(ToolError::Execution)?;
+        let snapshot = echo_plugin_provider_llm::api_pool::read_snapshot(&self.store).map_err(ToolError::Execution)?;
         Ok(render(&snapshot))
     }
 }

@@ -11,41 +11,12 @@ pub use echo_defs::LoopMode;
 pub use echo_protocol::{ReasoningEffort, ThinkingMode};
 
 /// A named LLM API profile (multi-API storage, switchable from the TUI).
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
-pub struct ApiProfile {
-    /// 配置名，如 "openai-main" / "deepseek"。
-    pub name: String,
-    pub provider: String,
-    pub model: String,
-    pub base_url: String,
-    #[serde(default)]
-    pub api_key: String,
-    /// DeepSeek thinking mode. Defaults to enabled for old profiles.
-    #[serde(default)]
-    pub thinking: ThinkingMode,
-    /// DeepSeek reasoning effort. Defaults to max for old profiles.
-    #[serde(default)]
-    pub reasoning_effort: ReasoningEffort,
-}
-
-impl ApiProfile {
-    pub fn new(
-        name: impl Into<String>,
-        provider: impl Into<String>,
-        model: impl Into<String>,
-    ) -> Self {
-        Self {
-            name: name.into(),
-            provider: provider.into(),
-            model: model.into(),
-            base_url: String::new(),
-            api_key: String::new(),
-            thinking: ThinkingMode::default(),
-            reasoning_effort: ReasoningEffort::default(),
-        }
-    }
-}
+///
+/// **定义在 [`echo_defs::api_profile`]**（全插件化 S3）：它是跨边界词汇
+/// ——写在 core.toml、由管理面增删改、被 provider 插件消费、被
+/// `list_api_profiles` 投影给模型、被子代理 `profile` 解析。搬走它之后
+/// API 管理面那一整块（1,208 行）才能离开宿主。这里保留路径别名。
+pub use echo_defs::api_profile::ApiProfile;
 
 /// Default trunk token budget: 1M × 0.8 = 800,000 tokens.
 pub const DEFAULT_MEMORY_LIMIT_TOKENS: usize = 1_000_000 * 8 / 10;
