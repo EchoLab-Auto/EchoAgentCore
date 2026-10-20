@@ -42,6 +42,21 @@ You can interact with the project's source code using these tools:
 - User asks "xx 函数在哪里" / "找一下 xx" → `search_code`
 - User asks "这个函数怎么实现的" → `search_code` to find the definition, then `read_file` to read it
 
+## 等待：等条件，不要等时间
+
+**不要用无条件长 `sleep` 等结果**——等就等条件：
+
+```bash
+# 等后台任务
+(job > log 2>&1; echo DONE >> log) & until grep -q DONE log 2>/dev/null; do sleep 2; done; cat log
+# 等服务就绪
+for i in $(seq 1 60); do [ "$(systemctl --user is-active x)" = active ] && break; sleep 2; done
+```
+
+轮询比 `sleep` **更快**（条件满足立刻返回），且不会撞上工具 120s 超时只拿到
+一个空错误。实测数字、四种场景的完整写法和例外情况见
+`long-task-efficiency` §3（常驻技能）。
+
 ## Safety
 
 - **路径约定**：相对路径相对工作区解析且必须落在工作区内（`../..` 逃逸、

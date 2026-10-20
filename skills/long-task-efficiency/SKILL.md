@@ -1,6 +1,6 @@
 ---
 name: long-task-efficiency
-description: 长任务执行效率 — 每次响应打包 2-4 条独立调用（跨轮等待中位 2.4s，懒得分轮代价最大）；同一文件同段内最多读 2 次，第 2 次必须放大范围；>30s 命令后台化 + 期间并行推进；>20K 字符输出落盘分页，禁整读；每 50 步一次检查点与拆分判断 (常驻)
+description: 长任务执行效率 — 每次响应打包 2-4 条独立调用（跨轮等待中位 2.4s，懒得分轮代价最大）；同一文件同段内最多读 2 次，第 2 次必须放大范围；**等待等条件不等时间**（无条件 sleep 占过一次会话 61% 工具耗时的 2989s；改用 `until <cond>; do sleep 2; done`，>30s 命令后台化 + 期间并行推进）；>20K 字符输出落盘分页，禁整读；每 50 步一次检查点与拆分判断 (常驻)
 keywords: [长任务, 效率, 批处理, 并行, 往返, 轮次, 轮询, 重试, 重试失败, 超时, 上下文, bash, 检查点, checkpoint, 读文件, 分页, 落盘, 后台, shell_start]
 ---
 
@@ -70,15 +70,58 @@ keywords: [长任务, 效率, 批处理, 并行, 往返, 轮次, 轮询, 重试,
 - 需要重读第 3 次时，改为：`sed -n '1,<文件末尾>p'` 一次读全 / 或直接
   `search_code` 拿全部命中行号再按行号并读。
 
-## 3. 长等待：后台化 + 期间并行推进（不要 sleep 轮询）
+## 3. 长等待：等条件，不等时间（**最贵的习惯**）
 
-- 构建、安装、长测试、训练监控、服务探测：用 `shell_start`（持久会话）
-  + `shell_exec`，或 `cmd > /tmp/x.log 2>&1 &` 起后台，然后**在同一轮里继续
-  干别的**；下一次需要结果时再 `tail`/`grep` 一次日志。
-- 反复 `sleep 30; 看一眼` 是纯浪费：实测 483 次 / 10.4h，其中 95% 集中在
-  训练监控。这类等待本身不可避免，**但等待期间不该空转**。
-- 单条命令 >30s 的有 243 次（>120s 大量）：这些命令期间不要等，同轮发别的
-  独立任务；超过工具 timeout（默认 120s，max 300s）就显式传 `timeout_secs`，
+### 硬规矩
+
+**不用无条件 `sleep` 等结果。** 要等就等条件——`until <条件>; do sleep 1-2; done`。
+
+两次独立审计都指向同一条：
+
+| 审计 | `sleep` 占比 |
+| --- | --- |
+| 2026-10-19（3 天 / 8664 次调用） | 483 次 / **10.4h**（95% 在训练监控） |
+| 2026-10-20（单次会话 / 767 次调用） | 59 次 / **2989s = 该会话工具总耗时的 61%** |
+
+第二条最刺眼的地方：**37 次**都是同一个模式——
+
+```bash
+# ❌ 测试 130s 就完了，剩下 70s 纯等
+(cargo test --workspace > /tmp/t.log 2>&1; echo DONE >> /tmp/t.log) & sleep 200; cat /tmp/t.log
+```
+
+```bash
+# ✅ 条件一满足立刻返回；同一件事，只多写一个 until
+(cargo test --workspace > /tmp/t.log 2>&1; echo DONE >> /tmp/t.log) &
+until grep -q DONE /tmp/t.log 2>/dev/null; do sleep 2; done; cat /tmp/t.log
+```
+
+轮询**严格更快**：`sleep 200` 只能等满 200 秒，`until` 在 130 秒就返回。
+而且 `sleep` 撞上工具 120s 上限时只拿到一个超时错误，什么信息都没有。
+
+### 四种场景的写法
+
+| 场景 | ❌ 不要 | ✅ 这样写 |
+| --- | --- | --- |
+| 等后台任务 | `(job > log) & sleep 200; cat log` | `(job > log 2>&1; echo DONE >> log) &`<br>`until grep -q DONE log 2>/dev/null; do sleep 2; done; cat log` |
+| 等服务/进程就绪 | `systemctl restart x; sleep 60` | `systemctl restart x`<br>`for i in $(seq 1 60); do [ "$(systemctl --user is-active x)" = active ] && break; sleep 2; done` |
+| 等文件/端口 | `job & sleep 30; test -f f` | `until test -f f; do sleep 1; done` |
+| 真要脱离执行 | `sleep 45; systemctl restart x` | `systemd-run --user --collect --unit=<name> bash -c '…'`（立刻返回） |
+
+轮询间隔 **1–2 秒**：短到条件一满足就返回，长到不刷爆日志和 CPU。
+
+### 例外（这些不是浪费）
+
+- **几秒内的短 `sleep`**：等文件落盘、等子进程起头；
+- **`shell_exec` 里的等待**：本来就是跑常驻进程的会话；
+- **测试夹具**：为构造"超时"场景写长 `sleep` 是正当用法。
+
+### 等待期间仍然要并行
+
+- 构建、安装、长测试：`cmd > /tmp/x.log 2>&1 &` 起后台后，**同一轮里继续
+  干别的**；下一次需要结果时再 `tail`/`grep`。
+- 单条命令 >30s 的有 243 次（>120s 大量）：期间不要空转，同轮发别的独立
+  任务；预计超工具 timeout（默认 120s，max 300s）就显式传 `timeout_secs`，
   别让命令被砍掉再重跑。
 
 **启动即并行（模板）**：
