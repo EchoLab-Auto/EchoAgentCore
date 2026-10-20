@@ -1,6 +1,12 @@
 //! 日志初始化：按大小轮转的文件写入器 + tracing subscriber 装配。
 //!
 //! 2026-10 架构评审：自 `main.rs` 拆出，纯搬移、行为不变。
+//! 2026-10 日志治理（见 `document/core/core-logging.md`）：
+//!
+//! - **ANSI 自动判定**：只有输出目标是终端时才着色——此前固定开，导致
+//!   journald 里的结构化字段被转义序列拆散（`grep session=` 零命中）；
+//! - **panic 钩子**：panic 转一条 `ERROR` 事件（配 `log_file` 时崩溃不再
+//!   只落在 stderr 里）。
 
 #[allow(unused_imports)]
 use crate::*;
@@ -118,9 +124,26 @@ pub(crate) fn rotated_log_path(path: &std::path::Path, index: usize) -> PathBuf 
     PathBuf::from(name)
 }
 
+/// panic 兜底：panic 先转一条 `ERROR` 事件，再走默认钩子（保留 stderr 追溯）。
+///
+/// 配了 `log_file` 时 panic 只落在 stderr 里，靠日志文件排障的人会看到
+/// 「日志在崩溃前就断了」；这里让 panic 也进同一出口。
+///
+/// 只应由 [`init_tracing`] 调用（每进程一次，重复安装会让同一条 panic 被多
+/// 打一遍）。这里不设静态哨兵：本仓 P1 门禁禁止进程级静态态，而
+/// `init_tracing` 在 `main` 里本就只调用一次。
+pub(crate) fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(panic = %info, "panic caught by logging hook");
+        default_hook(info);
+    }));
+}
+
 /// Core defaults to stdout/journald, but honors an explicit `log_file` with
 /// rotating files.
 pub(crate) fn init_tracing(cfg: &config::LoggingSection) -> Result<()> {
+    install_panic_hook();
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cfg.level));
     if !cfg.log_file.is_empty() {
         let path = PathBuf::from(&cfg.log_file);
@@ -132,7 +155,15 @@ pub(crate) fn init_tracing(cfg: &config::LoggingSection) -> Result<()> {
         )?;
         init_subscriber(cfg, filter, writer, false)
     } else {
-        init_subscriber(cfg, filter, std::io::stdout, true)
+        // journald / 管道 / 重定向：ANSI 只在真正的终端上才有意义。
+        // 此前固定 `true`，journald 里 97% 的行都夹着转义序列，
+        // 结构化字段（`session=` / `elapsed_ms=`）因此不可 grep。
+        init_subscriber(
+            cfg,
+            filter,
+            std::io::stdout,
+            std::io::IsTerminal::is_terminal(&std::io::stdout()),
+        )
     }
 }
 
