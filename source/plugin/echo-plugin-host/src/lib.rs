@@ -7,9 +7,9 @@
 //! - [`supervisor`]：插件生命周期监督 [`supervisor::PluginSupervisor`]
 //!   （握手 / 贡献注册 / 调用 / 取消 / 排空 / 崩溃重启）；
 //!
-//! 领域适配（把贡献变成 `echo_defs` 的 `Tool` / `PluginInstance` trait 对象）
-//! **不在本 crate**——见 `echo-plugin-adapter`：宿主只认协议
-//! （`echo-plugin-api`），因此可作为一个领域中立的 Rust 插件机制被整体复用。
+//! **领域适配不在本 crate**（把协议里的贡献翻译成宿主自己的 trait 对象）——
+//! 见 `echo-plugin-adapter`：宿主只认协议（`echo-plugin-api`），因此可作为一个
+//! 领域中立的 Rust 插件机制被整体复用。
 //! - [`bootstrap`]：配置驱动启动封装（[`bootstrap::launch_specs`] /
 //!   [`bootstrap::start_plugins`] / [`bootstrap::start_from_file`]）。
 //!

@@ -78,12 +78,10 @@ impl Agent {
         // Mount newly seen data plugins (skill/tool kinds); manifests whose
         // content changed since the last scan are remounted (diff reload).
         for (manifest, source_path) in manifests {
-            let kind = manifest.kind;
-            if !matches!(
-                kind,
-                echo_plugin::PluginKind::Skill | echo_plugin::PluginKind::Tool
-            ) {
-                continue; // code plugins need binary reload
+            // 只有数据类插件（skill/tool）能 diff 重挂；代码插件需二进制重载。
+            // `kind` 是宿主自定义标签（框架不再有枚举），所以这里直接比字面量。
+            if !matches!(manifest.kind.as_str(), "skill" | "tool") {
+                continue;
             }
             if desc_exists(host, &manifest.id) {
                 // 已挂载：manifest 内容 diff → 重挂载（unmount + 重注册 + mount）。

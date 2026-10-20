@@ -1333,19 +1333,16 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         use echo_agent::plugins::{
-            ToolSink, MANAGEMENT_PANEL_PLUGIN_ID, SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
+            MANAGEMENT_PANEL_PLUGIN_ID, SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
         };
         use echo_context::Disposer;
-        use echo_plugin::{BuiltinPlugin, MountContext, PluginKind, PluginManifest, PluginRuntime};
+        use echo_plugin::{BuiltinPlugin, MountContext, PluginManifest, PluginRuntime};
         use std::sync::atomic::Ordering;
 
         let plugin_host = plugin_host.clone();
-        // Agent 内部已有共享工具注册表（Arc），直接复用同一实例。
-        plugin_host.set_mount_ctx(
-            MountContext::new()
-                .with_tools(Arc::new(ToolSink::new(agent.tools.clone())))
-                .with_ctx(ctx.clone()),
-        );
+        // 挂载上下文只带服务定位器（框架层零领域依赖；`tools`/`skills` 两个
+        // sink 是死代码，2026-10 M2 删除——见 echo_agent::plugins 模块文档）。
+        plugin_host.set_mount_ctx(MountContext::new().with_ctx(ctx.clone()));
         // 插件清单的来源层（面板展示「这行配置来自 plugins.toml 的哪一层」）：
         // 配置未提及的插件保持空串 = 编译内置的缺省行为。
         plugin_host.set_config_origins(plugins_runtime::config_origins(&args.config_path()));
@@ -1415,7 +1412,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 TOOLS_BUILTIN_PLUGIN_ID,
                 "内置工具集",
                 version,
-                PluginKind::Tool,
+                "tool",
                 "builtin_tools",
                 "平台无关的内置工具（计算/搜索/清单/编码/插件实例管理）",
             ),
@@ -1435,7 +1432,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 SKILLS_DIR_PLUGIN_ID,
                 "技能目录",
                 version,
-                PluginKind::Skill,
+                "skill",
                 "skills_dir",
                 "SKILL.md 技能目录（热重载）",
             ),
@@ -1481,7 +1478,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     WORKSPACE_PLUGIN_ID,
                     "工作区会话",
                     version,
-                    PluginKind::Tool,
+                    "tool",
                     "workspace",
                     "基于工作空间的会话管理：Panel 多会话/多目录管理 + git 状态查看 + workspace 工具",
                 ),
@@ -1505,7 +1502,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     SUBAGENT_PLUGIN_ID,
                     "Subagent 委派",
                     version,
-                    PluginKind::Tool,
+                    "tool",
                     "subagent",
                     "委派独立子任务给隔离上下文的子 agent：spawn_subagent 工具 + 完成后 <subagent_event> hook 回灌主 agent",
                 ),
@@ -1534,7 +1531,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     &instance_plugin_id,
                     &instance_plugin_name,
                     version,
-                    PluginKind::PluginInstance,
+                    "instance",
                     platform.clone(),
                     format!("{platform} 平台实例插件（独立进程）"),
                 )
@@ -1597,7 +1594,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     MANAGEMENT_PANEL_PLUGIN_ID,
                     "管理面",
                     version,
-                    PluginKind::Management,
+                    "management",
                     "panel",
                     "Panel management WS 桥接（合并模式下同时承接联邦入站）",
                 ),
@@ -1639,7 +1636,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     PROVIDER_LLM_PLUGIN_ID,
                     "LLM Provider",
                     version,
-                    PluginKind::Provider,
+                    "provider",
                     "llm",
                     "LLM 提供方（deepseek/openai/anthropic/ollama 工厂）",
                 ),
@@ -1671,7 +1668,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         &entry.id,
                         &entry.name,
                         version,
-                        PluginKind::Tool,
+                        "tool",
                         &entry.id,
                         format!("外部插件（plugins.toml，{}）", entry.kind),
                     )

@@ -145,9 +145,9 @@ impl EventBus {
 
     /// Dispatch an event synchronously (Observe/Waterfall only).
     ///
-    /// Listeners are synchronous, so no runtime is required — the hot paths
-    /// (`Agent::emit`) can fan out without an async context. Parallel/Serial
-    /// require the async [`emit`](Self::emit).
+    /// Listeners are synchronous, so no runtime is required — hot paths can
+    /// fan out without an async context. Parallel/Serial require the async
+    /// [`emit`](Self::emit).
     pub fn emit_sync<E: Event>(&self, event: E, mode: DispatchMode) -> E {
         let listeners = self.listeners_for::<E>();
         let mut event = event;

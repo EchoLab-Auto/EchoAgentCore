@@ -6,14 +6,21 @@ use echo_context::Disposer;
 
 use crate::manifest::PluginManifest;
 
-/// What a plugin may consume when mounting. Kept deliberately narrow so
-/// plugins never depend on echo-agent directly — only the seams they need.
+/// What a plugin may consume when mounting.
+///
+/// **只携带框架自己能解释的东西**：一个服务定位器 `Ctx`。插件要注册能力，
+/// 就 [`Ctx::provide`] 一个服务（按服务键 + 类型）；框架不认识"工具""技能"
+/// 这类词汇——它们是**宿主的领域概念**，由宿主侧适配层在注册表里解释。
+///
+/// 历史（2026-10 M2）：这里曾有 `tools` / `skills` 两个字段，各配一个
+/// `PluginToolSink` / `PluginSkillSink` trait。审计发现**零使用**——全仓
+/// `mount` 闭包都是 `|_ctx| Ok(vec![])`，`with_skills` 从未被调用，
+/// `register_tool` 零调用点。它们是"给未来外部工具插件预留的接缝"，
+/// 而预留方式恰好把应用领域词汇写进了框架。删除后框架层零领域依赖。
+///
+/// [`Ctx::provide`]: echo_context::Ctx::provide
 #[derive(Default, Clone)]
 pub struct MountContext {
-    /// Tool registry hooks (builtin tools register here).
-    pub tools: Option<Arc<dyn PluginToolSink>>,
-    /// Skill registry hooks (builtin skills register here).
-    pub skills: Option<Arc<dyn PluginSkillSink>>,
     /// Global service locator (services resolved by stable key).
     pub ctx: Option<Arc<echo_context::Ctx>>,
 }
@@ -22,36 +29,10 @@ impl MountContext {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn with_tools(mut self, tools: Arc<dyn PluginToolSink>) -> Self {
-        self.tools = Some(tools);
-        self
-    }
-    pub fn with_skills(mut self, skills: Arc<dyn PluginSkillSink>) -> Self {
-        self.skills = Some(skills);
-        self
-    }
     pub fn with_ctx(mut self, ctx: Arc<echo_context::Ctx>) -> Self {
         self.ctx = Some(ctx);
         self
     }
-}
-
-/// Narrow tool sink used by plugins (avoids a dependency on echo-agent's
-/// concrete ToolRegistry; echo-defs Tool stays the definition type).
-pub trait PluginToolSink: Send + Sync {
-    fn register_tool(&self, name: &str, description: &str) -> Arc<dyn PluginToolHandle>;
-}
-
-/// Handle to a registered tool that can be removed (reversible registration).
-pub trait PluginToolHandle: Send + Sync {
-    fn dispose(self: Arc<Self>);
-}
-
-/// Narrow skill sink for data plugins.
-pub trait PluginSkillSink: Send + Sync {
-    /// Register a skill directory (walks for SKILL.md under `dir`) and return
-    /// a disposer that removes those skills.
-    fn register_skill_dir(&self, dir: &str) -> Result<Disposer, String>;
 }
 
 /// Errors produced during mount.

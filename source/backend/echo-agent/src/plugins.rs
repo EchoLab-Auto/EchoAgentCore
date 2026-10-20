@@ -2,21 +2,31 @@
 //! registries (tools, skills, services) so built-in modules mount as plugins.
 //!
 //! The Agent owns a [`PluginRegistry`]; the composition root registers
-//! built-in plugins (tools/skills/instances/loop/…), and the host implements
-//! the narrow sinks plugins use to register their effects. Plugins never
-//! import echo-agent; the host is the only instance.
+//! built-in plugins (tools/skills/instances/loop/…) and supplies the effects
+//! they need at mount time. Plugins never import echo-agent; the host is the
+//! only instance.
+//!
+//! 历史（2026-10 M2）：本文件曾提供 `ToolSink` / `SkillSink` 两个"窄接缝"
+//! 给插件注册工具与技能。审计发现它们是死代码（`register_tool` 零调用、
+//! `SkillSink` 从未实例化、`register_skill_dir` 无调用方），而两个 trait
+//! 把应用领域词汇带进了框架层。随 `MountContext.tools/.skills` 一并删除。
 
 use std::sync::Arc;
 
-use echo_plugin::{
-    MountContext, PluginDescriptor, PluginKind, PluginRegistry, PluginSkillSink, PluginToolHandle,
-    PluginToolSink,
-};
+use echo_plugin::{MountContext, PluginDescriptor, PluginRegistry};
 
 use crate::skill::Skill;
-use crate::tool::ToolRegistry;
 
 /// 内置插件 id（组合根与挂/卸效果共用，避免字符串漂移）。
+/// 实例类插件的 `kind` 标签。
+///
+/// 框架不再有 `PluginKind` 枚举（M2 去业务化），词汇表归宿主所有：这里是
+/// 「哪些插件按实例插件处理」的**唯一真值**，别处一律引用本常量。
+///
+/// 为什么值得一个常量：`2d46b7d` 把 wire 名从 `adapter` 改成 `instance` 时，
+/// 硬编码比较的地方漏改，导致实例插件永远进不了 persona 门控集合。
+pub const INSTANCE_PLUGIN_KIND: &str = "instance";
+
 pub const TOOLS_BUILTIN_PLUGIN_ID: &str = "echo-agent.tools.builtin";
 pub const SKILLS_DIR_PLUGIN_ID: &str = "echo-agent.skills.dir";
 pub const MANAGEMENT_PANEL_PLUGIN_ID: &str = "echo-agent.management.panel";
@@ -102,67 +112,6 @@ pub use echo_defs::plugin_id::INSTANCE_PLUGIN_PREFIX;
 /// 实现见 `echo_defs::plugin_id::canonical_plugin_id`——技能加载器与
 /// 组合根都走同一口径，不各自维护一份映射。
 pub use echo_defs::plugin_id::canonical_plugin_id;
-
-/// Tool sink adaptor: wraps the agent ToolRegistry behind the plugin seam.
-pub struct ToolSink {
-    registry: Arc<ToolRegistry>,
-}
-
-impl ToolSink {
-    pub fn new(registry: Arc<ToolRegistry>) -> Self {
-        Self { registry }
-    }
-}
-
-struct RegisteredTool {
-    name: String,
-    registry: Arc<ToolRegistry>,
-}
-
-impl PluginToolHandle for RegisteredTool {
-    fn dispose(self: Arc<Self>) {
-        // ToolRegistry only supports removal via reversible-registration
-        // disposers; keep a no-op here because builtin tools register at boot
-        // and are removed through the registry's own disposer list.
-        let _ = (self.name.as_str(), &self.registry);
-    }
-}
-
-impl PluginToolSink for ToolSink {
-    fn register_tool(&self, _name: &str, _description: &str) -> Arc<dyn PluginToolHandle> {
-        // Builtin plugins use the ToolRegistry directly through `MountContext`
-        // helpers in the composition root; this seam exists for future
-        // external tool plugins (data-driven tool registration).
-        Arc::new(RegisteredTool {
-            name: _name.to_string(),
-            registry: Arc::clone(&self.registry),
-        })
-    }
-}
-
-/// Skill sink adaptor: registers a skill directory (data plugin hot-reload).
-pub struct SkillSink {
-    skill_dir: String,
-}
-
-impl SkillSink {
-    pub fn new(skill_dir: impl Into<String>) -> Self {
-        Self {
-            skill_dir: skill_dir.into(),
-        }
-    }
-}
-
-impl PluginSkillSink for SkillSink {
-    fn register_skill_dir(&self, dir: &str) -> Result<echo_context::Disposer, String> {
-        let _ = dir;
-        // Skills are managed by the agent's own hot-reload task keyed on
-        // `[agent].skills_dir`; the sink is a placeholder for per-plugin
-        // skill directories (Phase 2 of the plugin architecture).
-        let _ = &self.skill_dir;
-        Ok(echo_context::Disposer::from_fn(|| {}))
-    }
-}
 
 /// 配置化组合（P4）：**一步挂载决定**——某个内置插件要不要挂载。
 ///
@@ -501,10 +450,14 @@ impl PluginHost {
         self.registry.set_config_origins(origins);
     }
 
-    pub fn plugins_of_kind(&self, kind: PluginKind) -> Vec<PluginDescriptor> {
+    /// 按 `kind` 标签筛选插件快照。
+    ///
+    /// `kind` 现在是**宿主自定义的开放标签**（框架不再有枚举），因此入参是
+    /// `&str`：调用方用本 crate 自己的常量，框架不设词汇表。
+    pub fn plugins_of_kind(&self, kind: &str) -> Vec<PluginDescriptor> {
         self.descriptors()
             .into_iter()
-            .filter(|d| d.kind == kind.as_str())
+            .filter(|d| d.kind == kind)
             .collect()
     }
 }
@@ -707,16 +660,9 @@ mod tests {
     ) {
         host.registry
             .register(Arc::new(echo_plugin::BuiltinPlugin::new(
-                echo_plugin::PluginManifest::builtin(
-                    id,
-                    id,
-                    "1",
-                    echo_plugin::PluginKind::Tool,
-                    id,
-                    "",
-                )
-                .with_runtime(runtime)
-                .with_builtin_flag(builtin),
+                echo_plugin::PluginManifest::builtin(id, id, "1", "tool", id, "")
+                    .with_runtime(runtime)
+                    .with_builtin_flag(builtin),
                 |_| Ok(vec![]),
             )))
             .expect("register");

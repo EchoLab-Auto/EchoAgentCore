@@ -230,3 +230,78 @@ tag `v0.1.0` = `8d4c11e`。四个仓库各自钉自己的版本：
 未做（属 M2/M3）：`MountContext` 的业务 sink、`echo-plugin` 的悬空 `echo-defs`
 依赖、框架仓自建门禁（零全局态 / 依赖方向）——迁出的两个 crate 目前**没有**
 继承 Core 那套 `no_global_state` / 依赖方向门禁，M2 需在框架仓补齐。
+
+### M2：框架层去业务化（完成，2026-10-19）
+
+三件事：删死代码、断悬空依赖、**把领域枚举换成开放标签**。最后一件是执行中
+发现的，不在原清单里。
+
+#### 删掉的东西
+
+| 对象 | 证据 |
+|---|---|
+| `MountContext.tools` / `.skills` + `with_tools` / `with_skills` | `with_skills` 零调用；全仓 `mount` 闭包都是 `\|_ctx\| Ok(vec![])`；`ctx.tools` / `ctx.skills` 零读取点 |
+| `PluginToolSink` / `PluginToolHandle` / `PluginSkillSink` | `register_tool` 零调用点、`register_skill_dir` 零调用点 |
+| `ToolSink` / `RegisteredTool` / `SkillSink`（宿主侧适配） | `SkillSink::new` 从未被调用；`ToolSink` 只被 `with_tools` 用 |
+| `echo-plugin` 的 `echo-defs` 依赖 | `grep echo_defs::` 在 `echo-plugin/src` 零命中——依赖只活在注释里 |
+
+`MountContext` 现在只剩 `ctx: Option<Arc<Ctx>>`——**服务定位器是框架唯一认可
+的注册途径**，认什么服务由宿主决定。
+
+#### 真正的耦合：`PluginKind` 枚举
+
+原清单没列它，是写领域词门禁时撞出来的。`echo-plugin` 里曾有一个 8 变体枚举
+（skill / tool / provider / loop / instance / orchestration / management /
+interaction）——**宿主应用的分类词汇，被写进了框架契约**。
+
+关键审计结论：**框架从不按它分支**。56 处引用里，框架侧只有
+`registry.rs` 的 `kind: m.kind.as_str().into()`（转成字符串塞进前端快照），
+其余 `match` 全是 `io::ErrorKind` / `EntryKind`（运输形态）这类同名不同物的
+东西。它纯粹是透传的元数据。
+
+因此改成 `kind: String`（`builtin()` 收 `impl Into<String>`）：
+
+- **wire 格式零变化**——单元枚举本来就序列化成 `"tool"` 这类纯字符串
+- Panel 零改动（它读 `kind: string`，只对 `'loop'` / `'management'` 分支）
+- 新增回归测试 `open_kind_vocabulary_roundtrips`：`kind = "widget"` 必须能
+  解析、往返（改动前会当场解析失败）
+- 词汇表归宿主：实例插件的 kind 变成 `echo_agent::plugins::INSTANCE_PLUGIN_KIND`
+  常量，仍保留"不要硬编码字符串"的原始意图（`2d46b7d` 那次漏改的教训）
+
+**代价（须知）**：manifest 里的未知 `kind` 不再报解析错误。这是框架化的必然
+——框架不拥有词汇表就无法校验它。宿主若需要严格校验，应在自己那侧做。
+
+顺带把框架生产代码里最后 8 处领域词（都在文档注释中）改写成中性表述：
+`Agent::emit` → "hot paths"、`LlmProvider` 示例 → `Encoder`、
+`echo-agent.tools.builtin` 示例 → `acme.things.widget`、`[agent].disabled_plugins`
+→ "host-defined storage"。
+
+#### 新增门禁
+
+**宿主侧** `source/core/tests/framework_domain_agnostic.rs`（4 项）：
+1. 框架 crate 生产代码（`#[cfg(test)]` 之前，跳过 `src/bin/`）零领域词
+2. 框架 crate 不依赖 `echo-defs` / `echo-agent` / `echo-protocol` / `echo-session`
+3. 整词匹配自检（`tools`/`EchoAgentCore` 不误报、`Session` 命中）
+4. `#[cfg(test)]` 之后不算
+
+**框架仓** `crates/framework-gates`（4 项）：不反向依赖宿主、库内零全局态，
+各配一条自检。
+
+**两条门禁都实测过能真报错**（否则等于没加）：
+- 注入 `/// a live Session` 到 `echo-plugin/src/plugin.rs` → FAILED，指出行号
+- 注入 `static PROBE: u8 = 0;` 到框架仓 `api/src/lib.rs` → FAILED
+- 注入 `echo-defs = { path = … }` 到框架仓 `sdk/Cargo.toml` → FAILED，打印
+  `echo-plugin-sdk → echo-defs`
+
+写法上的一处取舍：门禁按"第一个 `#[cfg(test)]` 截断"取生产代码。这依赖
+"测试模块在文件末尾"这个本仓一贯风格；若有人把代码写在测试模块之后，门禁
+看不到。已在该测试文件里写明。
+
+#### 验收
+
+| 项 | 结果 |
+|---|---|
+| Core 全量 | **1038 通过 / 0 失败**（M1 基线 1034 + 4 项新门禁） |
+| 框架仓 | **29 通过 / 0 失败**（api 10 + sdk 14 + gates 4 + doctest 1） |
+| 领域词扫描 | 四个框架 crate 生产代码**零命中** |
+| Panel | 零改动（`kind` 取值集合未变） |

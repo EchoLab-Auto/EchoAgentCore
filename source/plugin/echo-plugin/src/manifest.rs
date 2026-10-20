@@ -3,49 +3,6 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// The category of a plugin. Determines where it mounts and its reload mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PluginKind {
-    /// Data plugin: SKILL.md-style directory, hot-reloads in seconds.
-    Skill,
-    /// Tool plugin: registers Tool instances, hot-reloads (reversible).
-    Tool,
-    /// LLM provider factory (deepseek/openai/anthropic/ollama).
-    Provider,
-    /// Turn runner / agent loop driver.
-    Loop,
-    /// Platform instance plugin (one per configured platform: qq, telegram, ...).
-    ///
-    /// Wire 名 `instance`；`adapter` 作为旧名继续接受（2026-10 去适配器化，
-    /// Panel / 外部 manifest 的过渡窗口）。
-    #[serde(rename = "instance", alias = "adapter")]
-    PluginInstance,
-    /// Built-in orchestration（保留类型；原 run_sudo/framework_update 工具已于
-    /// 2026-09 废弃，当前无内置成员）。
-    Orchestration,
-    /// Management surface (Panel bridge).
-    Management,
-    /// Interaction surface: human-in-the-loop UI driven from the agent
-    /// （保留类型；原选单（menu）已于 2026-09 废弃，当前无内置成员）。
-    Interaction,
-}
-
-impl PluginKind {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            PluginKind::Skill => "skill",
-            PluginKind::Tool => "tool",
-            PluginKind::Provider => "provider",
-            PluginKind::Loop => "loop",
-            PluginKind::PluginInstance => "instance",
-            PluginKind::Orchestration => "orchestration",
-            PluginKind::Management => "management",
-            PluginKind::Interaction => "interaction",
-        }
-    }
-}
-
 /// 插件的**运行形态**：实现跑在本进程内，还是由独立子进程提供。
 ///
 /// 与 [`PluginManifest::builtin`] **正交**——这是两个不同的问题：
@@ -92,9 +49,9 @@ impl PluginRuntime {
 
 /// Declarative manifest for a plugin.
 ///
-/// `id` is the stable key (e.g. `echo-agent.tools.builtin`); `entry` names the
-/// mount entry point within the builtin registry (empty for external manifests
-/// that carry their own SKILL.md/code).
+/// `id` is the stable key (e.g. `acme.things.widget`); `entry` names the mount
+/// entry point within the host's builtin registry (empty for external
+/// manifests that carry their own payload).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
     /// Stable unique id: `{vendor}.{group}.{name}`.
@@ -104,8 +61,20 @@ pub struct PluginManifest {
     pub version: String,
     #[serde(default)]
     pub description: String,
-    /// Which seam this plugin mounts into.
-    pub kind: PluginKind,
+    /// 插件类别——**开放标签**（宿主自定义），不是框架枚举。
+    ///
+    /// 框架只把它透传（manifest → 注册表 → 前端快照），**从不按它分支决策**：
+    /// 2026-10 M2 审计发现框架内唯一用法是转成 `String` 填
+    /// [`PluginDescriptor::kind`]，其余 `match` 全是 `io::ErrorKind` /
+    /// `EntryKind`（运输形态）这类同名不同物的东西。
+    ///
+    /// 历史：这里曾是 8 个变体的领域枚举（宿主应用的分类词汇），被误写进
+    /// 框架契约——第三方宿主用 `kind = "widget"` 会当场解析失败。改为字符串
+    /// 后词汇表归宿主，框架只透传。来龙去脉见
+    /// `document/design/plugin-framework-extraction.md` §M2。
+    ///
+    /// [`PluginDescriptor::kind`]: crate::registry::PluginDescriptor::kind
+    pub kind: String,
     /// Builtin mount entry name (composition root resolves it); empty for
     /// data plugins discovered from a plugin directory.
     #[serde(default)]
@@ -134,10 +103,11 @@ pub struct PluginManifest {
 impl PluginManifest {
     /// 本插件所属的**包** id：显式声明优先，未声明时回退为插件 id。
     ///
-    /// Package 是横跨三类的标签：插件（本 manifest）声明归属；工具经
-    /// `ToolRegistry::set_package` 打标；技能经 `SKILL.md` frontmatter
-    /// `package:` 打标。包级门控（禁用一个包 = 其全部成员不可见）即按
-    /// 该字符串聚合（QQ 包 = `echo-agent.instance.qq`）。
+    /// Package 是**跨贡献类型的标签**：本 manifest 声明归属，宿主把同一标签
+    /// 打到它自己的各类贡献上（工具 / 技能 / 实例……由宿主决定有什么），
+    /// 包级门控（禁用一个包 = 其全部成员不可见）按这个字符串聚合。
+    ///
+    /// 框架只负责把标签带到前端快照里，不解释标签的含义。
     pub fn package_id(&self) -> &str {
         self.package.as_deref().unwrap_or(&self.id)
     }
@@ -152,7 +122,7 @@ impl PluginManifest {
         id: impl Into<String>,
         name: impl Into<String>,
         version: impl Into<String>,
-        kind: PluginKind,
+        kind: impl Into<String>,
         entry: impl Into<String>,
         description: impl Into<String>,
     ) -> Self {
@@ -161,7 +131,7 @@ impl PluginManifest {
             name: name.into(),
             version: version.into(),
             description: description.into(),
-            kind,
+            kind: kind.into(),
             entry: entry.into(),
             package: None,
             author: "EchoAgentCore".into(),
@@ -246,7 +216,7 @@ author = "EchoAgentCore"
 "#;
         let m = parse_manifest(text).unwrap();
         assert_eq!(m.id, "echo-agent.tools.builtin");
-        assert_eq!(m.kind, PluginKind::Tool);
+        assert_eq!(m.kind, "tool");
         assert_eq!(m.entry, "builtin_tools");
     }
 
@@ -297,7 +267,7 @@ kind = "skill"
             "echo-agent.tools.builtin",
             "内置工具集",
             "0.1.0",
-            PluginKind::Tool,
+            "tool",
             "builtin",
             "desc",
         );
@@ -312,7 +282,7 @@ kind = "skill"
             "echo-agent.instance.qq",
             "QQ 插件实例",
             "0.1.0",
-            PluginKind::PluginInstance,
+            "instance",
             "qq",
             "OneBot v11（独立进程）",
         )
@@ -339,26 +309,27 @@ kind = "skill"
     }
 
     #[test]
-    fn interaction_kind_wire_name_is_stable() {
-        // 前端按字符串分派显示分组：wire 名必须稳定。
-        assert_eq!(PluginKind::Interaction.as_str(), "interaction");
-        let m = PluginManifest::builtin(
-            "echo-agent.example.interaction",
-            "交互示例",
-            "0.1.0",
-            PluginKind::Interaction,
-            "example",
-            "desc",
-        );
+    fn open_kind_vocabulary_roundtrips() {
+        // 框架不认识词汇表：任意标签都能解析、透传、往返（M2 去业务化）。
+        // 历史：`kind` 曾是 8 变体枚举，`kind = "widget"` 当场解析失败——
+        // 第三方宿主想用自己的分类就得先改框架源码。
+        let text = r#"
+ id = "acme.widget.gizmo"
+ name = "第三方插件"
+ kind = "widget"
+ "#;
+        let m = parse_manifest(text).expect("未知 kind 不应导致解析失败");
+        assert_eq!(m.kind, "widget");
+
         let json = serde_json::to_string(&m).unwrap();
-        assert!(json.contains("\"kind\":\"interaction\""), "{json}");
+        assert!(json.contains("\"kind\":\"widget\""), "{json}");
         let back: PluginManifest = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.kind, PluginKind::Interaction);
+        assert_eq!(back.kind, "widget");
     }
 
     #[test]
     fn roundtrip_serialization() {
-        let m = PluginManifest::builtin("a.b.c", "x", "1.0.0", PluginKind::Skill, "entry", "desc");
+        let m = PluginManifest::builtin("a.b.c", "x", "1.0.0", "skill", "entry", "desc");
         let json = serde_json::to_string(&m).unwrap();
         let back: PluginManifest = serde_json::from_str(&json).unwrap();
         assert_eq!(m, back);

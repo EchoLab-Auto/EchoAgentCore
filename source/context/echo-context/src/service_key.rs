@@ -23,26 +23,26 @@ use std::marker::PhantomData;
 /// use std::sync::Arc;
 /// use echo_context::{Ctx, ServiceKey};
 ///
-/// trait LlmProvider: Send + Sync {
-///     fn model(&self) -> &'static str;
+/// trait Encoder: Send + Sync {
+///     fn format(&self) -> &'static str;
 /// }
 ///
 /// // Declared once where the interface lives; providers and consumers both
 /// // refer to this key without importing each other's concrete types.
-/// static LLM: ServiceKey<Arc<dyn LlmProvider>> = ServiceKey::new("llm");
+/// static ENCODER: ServiceKey<Arc<dyn Encoder>> = ServiceKey::new("encoder");
 ///
-/// struct MockProvider;
-/// impl LlmProvider for MockProvider {
-///     fn model(&self) -> &'static str {
-///         "mock"
+/// struct JsonEncoder;
+/// impl Encoder for JsonEncoder {
+///     fn format(&self) -> &'static str {
+///         "json"
 ///     }
 /// }
 ///
 /// let ctx = Arc::new(Ctx::default());
-/// let _keep = ctx.provide(&LLM, Arc::new(MockProvider)).unwrap();
+/// let _keep = ctx.provide(&ENCODER, Arc::new(JsonEncoder)).unwrap();
 ///
-/// let provider: Arc<dyn LlmProvider> = ctx.require(&LLM).unwrap();
-/// assert_eq!(provider.model(), "mock");
+/// let encoder: Arc<dyn Encoder> = ctx.require(&ENCODER).unwrap();
+/// assert_eq!(encoder.format(), "json");
 /// ```
 ///
 /// The marker is `PhantomData<fn() -> T>`: a key never owns a `T`, so it is

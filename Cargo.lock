@@ -517,7 +517,6 @@ name = "echo-plugin"
 version = "0.1.0"
 dependencies = [
  "echo-context",
- "echo-defs",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

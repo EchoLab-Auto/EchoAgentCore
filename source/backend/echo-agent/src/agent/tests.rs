@@ -1860,12 +1860,12 @@ async fn test_api_config_profile_empty_fields_fall_back() {
 
 #[test]
 fn data_plugin_stale_detects_manifest_diff() {
-    use echo_plugin::{PluginDescriptor, PluginKind, PluginManifest};
+    use echo_plugin::{PluginDescriptor, PluginManifest};
     let manifest = PluginManifest::builtin(
         "acme.tools.weather",
         "Weather",
         "1.0.0",
-        PluginKind::Tool,
+        "tool",
         "weather",
         "old desc",
     );

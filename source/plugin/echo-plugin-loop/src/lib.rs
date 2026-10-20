@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use echo_plugin::{BuiltinPlugin, Plugin, PluginKind, PluginManifest, PluginMountResult};
+use echo_plugin::{BuiltinPlugin, Plugin, PluginManifest, PluginMountResult};
 use echo_plugin_api::ServiceContribution;
 
 /// 单会话循环插件 id（默认模式；空白名单即此模式）。
@@ -84,8 +84,7 @@ pub fn plugins(version: &str) -> Vec<Arc<dyn Plugin>> {
     declarations()
         .into_iter()
         .map(|(id, name, description)| {
-            let manifest =
-                PluginManifest::builtin(id, name, version, PluginKind::Loop, "loop", description);
+            let manifest = PluginManifest::builtin(id, name, version, "loop", "loop", description);
             let plugin: Arc<dyn Plugin> =
                 Arc::new(BuiltinPlugin::new(manifest, |_ctx| -> PluginMountResult {
                     Ok(Vec::new())
@@ -118,7 +117,7 @@ mod tests {
             assert_eq!(manifest.id, id);
             assert_eq!(manifest.name, name);
             assert_eq!(manifest.description, description);
-            assert_eq!(manifest.kind, PluginKind::Loop);
+            assert_eq!(manifest.kind, "loop");
             assert_eq!(manifest.version, "9.9.9");
         }
     }

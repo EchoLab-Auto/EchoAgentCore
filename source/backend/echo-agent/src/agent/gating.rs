@@ -412,16 +412,19 @@ fn persona_skill_allowed(profile: &crate::config::AgentProfile, name: &str) -> b
 
 /// 把「框架固定清单 + 运行期注册的实例插件」合成 persona 门控 id 集合。
 ///
-/// `registered` 是注册表快照 `(插件 id, wire kind 名)`。实例插件按
-/// [`echo_plugin::PluginKind::PluginInstance`] 的 **wire 名** 判定——不要硬编码
-/// 字符串：`2d46b7d` 把该名从 `adapter` 改成 `instance` 时，硬编码的比较漏改，
-/// 导致实例插件永远进不了门控集合（白名单管不住 `instance.qq`）。
+/// `registered` 是注册表快照 `(插件 id, kind 标签)`。实例插件按
+/// [`crate::plugins::INSTANCE_PLUGIN_KIND`] 判定——**不要硬编码字符串**：
+/// `2d46b7d` 把该名从 `adapter` 改成 `instance` 时，硬编码的比较漏改，导致
+/// 实例插件永远进不了门控集合（白名单管不住 `instance.qq`）。
+///
+/// 该标签原本取自 `echo_plugin::PluginKind::PluginInstance`；框架去掉 kind
+/// 枚举后（M2），词汇表归宿主，常量搬到 `plugins` 模块，语义不变。
 fn gated_plugin_ids_from(registered: &[(String, String)]) -> Vec<String> {
     let mut ids: Vec<String> = crate::plugins::GATED_PLUGIN_IDS
         .iter()
         .map(|id| (*id).to_string())
         .collect();
-    let instance_kind = echo_plugin::PluginKind::PluginInstance.as_str();
+    let instance_kind = crate::plugins::INSTANCE_PLUGIN_KIND;
     for (id, kind) in registered {
         if kind == instance_kind && !ids.contains(id) {
             ids.push(id.clone());
@@ -440,7 +443,7 @@ mod tests {
 
     /// 实例插件必须进 persona 门控集合（按 wire kind 名推导，不认平台名）。
     ///
-    /// 回归背景（2026-10 审计发现）：`2d46b7d` 把 `PluginKind::PluginInstance` 的
+    /// 回归背景（2026-10 审计发现）：`2d46b7d` 把实例插件的
     /// wire 名从 `adapter` 改成 `instance`，而本函数的字符串比较当时硬编码了
     /// `"adapter"`，于是实例插件**永远进不了**门控集合——`enabled_plugins` 白名单
     /// 管不住 `instance.qq`，白名单形同虚设且无任何测试覆盖。

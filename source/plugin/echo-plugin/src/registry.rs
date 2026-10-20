@@ -29,8 +29,8 @@ pub struct PluginDescriptor {
     ///
     /// [`PluginRuntime`]: crate::manifest::PluginRuntime
     pub runtime: String,
-    /// 所属包 id（横跨 plugin+tool+skill 的标签，见
-    /// [`PluginManifest::package_id`]）；未声明 = 插件 id 自身。
+    /// 所属包 id（跨贡献类型的标签，见 [`PluginManifest::package_id`]）；
+    /// 未声明 = 插件 id 自身。
     #[serde(default)]
     pub package: String,
     /// Mount error description when `enabled == false && builtin`.
@@ -99,7 +99,7 @@ impl From<&PluginManifest> for PluginDescriptor {
             id: m.id.clone(),
             name: m.name.clone(),
             version: m.version.clone(),
-            kind: m.kind.as_str().into(),
+            kind: m.kind.clone(),
             description: m.description.clone(),
             entry: m.entry.clone(),
             author: m.author.clone(),
@@ -275,7 +275,8 @@ impl PluginRegistry {
     }
 
     /// Runtime enable/disable. Disabling unmounts; enabling remounts.
-    /// `persisted` is the caller's disk-state (e.g. `[agent].disabled_plugins`).
+    /// `persisted` is the caller's durable enable/disable state (host-defined
+    /// storage; the framework never reads it back).
     pub fn set_enabled(&self, id: &str, enabled: bool, ctx: &MountContext) -> Result<(), String> {
         let exists = self
             .plugins
@@ -479,14 +480,14 @@ impl PluginRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{PluginKind, PluginManifest};
+    use crate::manifest::PluginManifest;
     use crate::plugin::{BuiltinPlugin, PluginMountError};
 
     #[test]
     fn register_and_descriptors() {
         let reg = PluginRegistry::new();
         reg.register(Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin("t.t.t", "test", "1.0", PluginKind::Tool, "entry", "d"),
+            PluginManifest::builtin("t.t.t", "test", "1.0", "tool", "entry", "d"),
             |_| Ok(vec![]),
         )))
         .unwrap();
@@ -502,7 +503,7 @@ mod tests {
         let reg = PluginRegistry::new();
         let p = || {
             Arc::new(BuiltinPlugin::new(
-                PluginManifest::builtin("a.a.a", "x", "1", PluginKind::Skill, "", ""),
+                PluginManifest::builtin("a.a.a", "x", "1", "skill", "", ""),
                 |_| Ok(vec![]),
             ))
         };
@@ -517,7 +518,7 @@ mod tests {
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let c2 = counter.clone();
         reg.register(Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin("m.m.m", "m", "1", PluginKind::Tool, "", ""),
+            PluginManifest::builtin("m.m.m", "m", "1", "tool", "", ""),
             move |_| {
                 c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(vec![])
@@ -542,7 +543,7 @@ mod tests {
         let disposes = Arc::new(AtomicUsize::new(0));
         let (m, d) = (mounts.clone(), disposes.clone());
         reg.register(Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin("r.r.r", "r", "1", PluginKind::Tool, "", ""),
+            PluginManifest::builtin("r.r.r", "r", "1", "tool", "", ""),
             move |_| {
                 m.fetch_add(1, Ordering::SeqCst);
                 let d = d.clone();
@@ -579,7 +580,7 @@ mod tests {
         let reg = PluginRegistry::new();
         for id in ["zzz.last", "aaa.first", "mmm.middle"] {
             reg.register(Arc::new(BuiltinPlugin::new(
-                PluginManifest::builtin(id, id, "1", PluginKind::Tool, "", ""),
+                PluginManifest::builtin(id, id, "1", "tool", "", ""),
                 |_| Ok(vec![]),
             )))
             .unwrap();
@@ -599,7 +600,7 @@ mod tests {
     fn plugin_errors_reach_descriptors() {
         let reg = PluginRegistry::new();
         reg.register(Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin("e.e.e", "e", "1", PluginKind::Tool, "", ""),
+            PluginManifest::builtin("e.e.e", "e", "1", "tool", "", ""),
             |_| Ok(vec![]),
         )))
         .unwrap();
@@ -618,7 +619,7 @@ mod tests {
     fn definitions_reach_descriptors_without_env_values() {
         let reg = PluginRegistry::new();
         reg.register(Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin("x.ext", "x", "1", PluginKind::Tool, "", "")
+            PluginManifest::builtin("x.ext", "x", "1", "tool", "", "")
                 .with_runtime(crate::PluginRuntime::Subprocess)
                 .with_builtin_flag(false),
             |_| Ok(vec![]),
@@ -649,7 +650,7 @@ mod tests {
     fn config_origin_flags_reach_descriptors() {
         let reg = PluginRegistry::new();
         reg.register(Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin("o.o.o", "o", "1", PluginKind::Tool, "", ""),
+            PluginManifest::builtin("o.o.o", "o", "1", "tool", "", ""),
             |_| Ok(vec![]),
         )))
         .unwrap();
@@ -663,7 +664,7 @@ mod tests {
     fn disabled_plugins_skip_mount() {
         let reg = PluginRegistry::new();
         reg.register(Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin("d.d.d", "d", "1", PluginKind::Tool, "", ""),
+            PluginManifest::builtin("d.d.d", "d", "1", "tool", "", ""),
             |_| Ok(vec![]),
         )))
         .unwrap();
@@ -677,7 +678,7 @@ mod tests {
     fn mount_failure_is_reported() {
         let reg = PluginRegistry::new();
         reg.register(Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin("f.f.f", "f", "1", PluginKind::Tool, "", ""),
+            PluginManifest::builtin("f.f.f", "f", "1", "tool", "", ""),
             |_| Err(PluginMountError::Mount("boom".into())),
         )))
         .unwrap();

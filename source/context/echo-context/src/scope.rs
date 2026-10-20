@@ -9,8 +9,9 @@ use crate::ctx::Disposer;
 ///
 /// Lookup resolves **scoped first, then global** — a scoped entry replaces
 /// its same-named global twin for that scope alone (dsh shadowing). Scope
-/// keys are opaque strings; the harness convention is that a live agent is
-/// the key of its own scope.
+/// keys are opaque strings supplied by the host — the framework never
+/// interprets them (a host typically keys each scope by its own runtime
+/// instance identity).
 ///
 /// Registration returns a [`Disposer`]; unloading a scope's plugin unwinds
 /// all its scoped registrations.

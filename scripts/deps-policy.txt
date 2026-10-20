@@ -39,7 +39,7 @@ config/echo-config
 backend/echo-test-utils                 echo-defs
 
 # ── 插件机制层 ─────────────────────────────────────────────────────────
-plugin/echo-plugin                      echo-context echo-defs
+plugin/echo-plugin                      echo-context
 plugin/echo-plugin-loader
 # host 只认协议：领域适配（RemoteTool / RemoteInstance）已迁到 echo-plugin-adapter。
 plugin/echo-plugin-host                 echo-plugin-api echo-plugin-loader

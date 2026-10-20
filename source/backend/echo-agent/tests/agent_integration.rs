@@ -525,20 +525,13 @@ async fn concurrent_messages_merge_by_request_sequence() {
 
 #[tokio::test]
 async fn plugin_list_and_toggle_roundtrip() {
-    use echo_plugin::{BuiltinPlugin, PluginKind, PluginManifest};
+    use echo_plugin::{BuiltinPlugin, PluginManifest};
     let (agent, _provider) = test_agent("ok");
     // 注册一个内置插件并挂载。
     agent
         .plugin_host()
         .register_and_mount(std::sync::Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin(
-                "test.plugin.one",
-                "测试插件",
-                "0.1",
-                PluginKind::Tool,
-                "t",
-                "d",
-            ),
+            PluginManifest::builtin("test.plugin.one", "测试插件", "0.1", "tool", "t", "d"),
             |_| Ok(vec![]),
         )))
         .unwrap();
@@ -574,7 +567,7 @@ async fn plugin_list_and_toggle_roundtrip() {
 
 #[tokio::test]
 async fn toggle_management_panel_plugin_disable_is_refused() {
-    use echo_plugin::{BuiltinPlugin, PluginKind, PluginManifest};
+    use echo_plugin::{BuiltinPlugin, PluginManifest};
     let (agent, _provider) = test_agent("ok");
     agent
         .plugin_host()
@@ -583,7 +576,7 @@ async fn toggle_management_panel_plugin_disable_is_refused() {
                 echo_agent::plugins::MANAGEMENT_PANEL_PLUGIN_ID,
                 "管理面",
                 "0.1",
-                PluginKind::Management,
+                "management",
                 "m",
                 "d",
             ),
