@@ -729,99 +729,18 @@ impl Agent {
                     message: "API 改名应由进程级处理器处理（命令泵接线异常）".into(),
                 });
             }
-            BackendCommand::RequestShellSessions { team_id } => {
-                let sessions = self
-                    .shell()
-                    .manager()
-                    .map(|m| m.list(team_id.as_deref()))
-                    .unwrap_or_default();
-                self.emit(BackendEvent::ShellSessionsList { sessions, team_id });
+            // Shell 命令域已迁进 `echo-plugin-tools`（全插件化 S3：与 `shell_*`
+            // 工具同属一个插件，会话的模型侧与面板侧不再横跨插件边界）。
+            // 这里只剩"插件未启用"的兜底——插件禁用后命令明确报错，不静默。
+            BackendCommand::RequestShellSessions { .. }
+            | BackendCommand::ShellStart { .. }
+            | BackendCommand::ShellExec { .. }
+            | BackendCommand::ShellStop { .. } => {
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: "shell 命令由 echo-agent.tools.builtin 插件处理，但该插件未启用".into(),
+                });
             }
-            BackendCommand::ShellStart { workdir } => match self.shell().manager() {
-                Some(m) => {
-                    let emit = crate::shell::shell_emit_for_self(self);
-                    match m.start(workdir, self.team_id(), &emit).await {
-                        Ok(info) => {
-                            self.emit(BackendEvent::ShellSessionStarted {
-                                session: info.clone(),
-                            });
-                            self.emit(BackendEvent::Error {
-                                session_id: None,
-                                message: format!("shell session started: {}", info.session_id),
-                            });
-                        }
-                        Err(e) => {
-                            self.emit(BackendEvent::Error {
-                                session_id: None,
-                                message: format!("shell start failed: {e}"),
-                            });
-                        }
-                    }
-                }
-                None => {
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: "shell manager unavailable".into(),
-                    });
-                }
-            },
-            BackendCommand::ShellExec {
-                session_id,
-                command,
-                timeout_secs,
-            } => match self.shell().manager() {
-                Some(m) => {
-                    let emit = crate::shell::shell_emit_for_self(self);
-                    match m.exec(&session_id, &command, timeout_secs, &emit).await {
-                        Ok((output, _success, _timed_out)) => {
-                            self.emit(BackendEvent::Error {
-                                session_id: None,
-                                message: format!(
-                                    "shell exec done ({session_id}): {} chars",
-                                    output.chars().count()
-                                ),
-                            });
-                        }
-                        Err(e) => {
-                            self.emit(BackendEvent::Error {
-                                session_id: None,
-                                message: format!("shell exec failed: {e}"),
-                            });
-                        }
-                    }
-                }
-                None => {
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: "shell manager unavailable".into(),
-                    });
-                }
-            },
-            BackendCommand::ShellStop { session_id } => match self.shell().manager() {
-                Some(m) => {
-                    let emit = crate::shell::shell_emit_for_self(self);
-                    match m.stop(&session_id, &emit).await {
-                        Ok(()) => {
-                            self.emit(BackendEvent::Error {
-                                session_id: None,
-                                message: format!("shell session {session_id} stopped"),
-                            });
-                        }
-                        Err(e) => {
-                            self.emit(BackendEvent::Error {
-                                session_id: None,
-                                message: format!("shell stop failed: {e}"),
-                            });
-                        }
-                    }
-                }
-                None => {
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: "shell manager unavailable".into(),
-                    });
-                }
-            },
             BackendCommand::InstallSkillFromGit { url, name, branch } => {
                 let dir = self.current_skills_dir().await;
                 // git 子进程（clone/fetch）可达秒级至分钟级：整段放

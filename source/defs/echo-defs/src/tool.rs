@@ -126,4 +126,17 @@ pub trait Tool: Send + Sync {
     fn snapshot_for_session(&self, _session_id: &str) -> Option<Value> {
         self.snapshot()
     }
+
+    /// 本工具是否产生**可见状态**，以及该状态在线上的标识（2026-11）。
+    ///
+    /// 返回 `Some(key)` = "我执行完会有新状态，请广播"；`key` 是宿主侧
+    /// 协议映射表的键（例如 `"checklist"` → `ChecklistUpdated`）。
+    ///
+    /// 为什么放在 trait 上：执行链此前用 `if call.name == "checklist"` 判断，
+    /// 等于把"哪个工具有状态面板"写成执行链里的一张名单——新增一个有状态的
+    /// 工具要改执行链、改宿主分派、再改面板。现在这是**工具自己的声明**，
+    /// 执行链只问一句（见 `echo_tool::execute::tool_state`）。
+    fn state_key(&self) -> Option<&'static str> {
+        None
+    }
 }

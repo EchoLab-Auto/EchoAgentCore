@@ -29,6 +29,10 @@ pub mod api_profiles;
 pub use echo_plugin_tools::{coding, plugin as builtin_plugin, BuiltinToolProvider, BuiltinTools, ToolsHostCtx};
 /// 服务表解析（`tools.builtin`）：插件挂上了就有，没挂上返回 `None`。
 pub use echo_plugin_tools::plugin::{resolve_provider, standalone_provider};
+/// Shell 命令域的宿主接缝（组合根实现、插件消费）。
+pub use echo_plugin_tools::shell_commands::{
+    ShellCommandHost as ShellCommandHostAlias, ShellCommandHandler,
+};
 
 /// 组装一个 persona 的内置工具集：**实现全在插件里**，这里只传端口。
 ///

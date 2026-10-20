@@ -13,6 +13,7 @@ echo-tool = { workspace = true }
 echo-shell = { workspace = true }
 echo-context = { workspace = true }
 echo-plugin = { workspace = true }
+echo-protocol = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

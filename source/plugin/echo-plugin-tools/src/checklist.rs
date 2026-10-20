@@ -133,6 +133,12 @@ impl Tool for ChecklistTool {
         self.snapshot_of(session_id)
     }
 
+    /// 声明"我有可见状态"：执行链在结果落盘后广播它（键与面板协议一致）。
+    /// 此前这是执行链里的 `if call.name == "checklist"`。
+    fn state_key(&self) -> Option<&'static str> {
+        Some("checklist")
+    }
+
     async fn execute(&self, arguments: Value) -> Result<String, ToolError> {
         let operation = arguments
             .get("operation")

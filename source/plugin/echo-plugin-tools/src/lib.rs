@@ -42,6 +42,7 @@ pub mod checklist;
 pub mod coding;
 pub mod instance;
 pub mod plugin;
+pub mod shell_commands;
 pub mod shell_tools;
 pub mod websearch;
 
@@ -50,6 +51,7 @@ pub use checklist::ChecklistTool;
 pub use coding::{register_coding_tools, RemoteAwareTool};
 pub use instance::register_instance_tools;
 pub use plugin::{BuiltinToolProvider, BuiltinTools, ToolsHostCtx, PLUGIN_ID};
+pub use shell_commands::{ShellCommandHandler, ShellCommandHost, COMMANDS as SHELL_COMMANDS};
 pub use shell_tools::{register_shell_tools, ShellExecTool, ShellStartTool, ShellStopTool};
 pub use websearch::WebSearchTool;
 
@@ -78,7 +80,7 @@ pub type RemoteInvoker = Arc<
 /// `Agent` 构造之前。此前那份 kernel cell **从未被任何代码 set 过**：
 /// `node://` 远程文件/命令分流因此恒报「联邦未接线」。改成参数后，
 /// 装配期传进来的就是运行期用的。
-/// 命令护��：`run_command` / `shell_exec` 在执行**之前**调用。
+/// 命令护栏：`run_command` / `shell_exec` 在执行**之前**调用。
 ///
 /// 为什么是注入而不是内置：护栏守的是「宿主自己的服务名」（例如禁止工具
 /// 停掉运行中的 Core），那是宿主身份的一部分，不该硬编码进工具实现。

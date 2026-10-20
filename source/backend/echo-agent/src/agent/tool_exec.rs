@@ -1,65 +1,18 @@
-//! Tool execution: schema validation, timeout guarding, event emission.
+//! 工具执行的宿主侧遗留：只剩**超时口径**。
 //!
-//! Executes a tool call with preflight argument validation (schema required
-//! fields), timeout guarding (respecting tool-declared `timeout_hint`), and
-//! durable event logging (ToolCall/ToolResult events).
+//! 参数预检、执行、事件配对、出口脱敏全部搬进机制层
+//! [`echo_tool::execute`]（2026-11 全插件化 S2）。这里留着的 `tool_timeout`
+//! 是**宿主策略**：配置里的 `tool_timeout_secs`（用户可调）+ 工具自声明的
+//! `timeout_hint`（工具知道自己的长跑上限）取大，硬上限 600s。机制层不知道
+//! "用户的配置默认值是多少"，所以这条留在宿主。
+//!
+//! 内置循环与 echo-loop 两条驱动路径共用同一口径——否则同一请求换驱动后
+//! 行为不同（2026-09-26 前 echo-loop 路径完全没有守卫，挂死的工具会永久
+//! 拖住 turn）。
 
 use crate::llm::ToolCall;
 use crate::tool::ToolRegistry;
 
-/// 模型可见的工具参数预检：schema 必需字段缺失时返回纠正性错误文案
-/// （说清"你发了什么、应该发什么"），返回 None 表示通过预检。
-pub(crate) async fn tool_arguments_error(
-    tools: &ToolRegistry,
-    tool_name: &str,
-    raw_arguments: &str,
-    args: &serde_json::Value,
-) -> Option<String> {
-    let schema = tools.parameters(tool_name).await?;
-    invalid_tool_arguments(tool_name, raw_arguments, args, &schema)
-}
-
-/// 模型可见的工具参数预检：schema 声明的必需字段缺失时，返回纠正性错误
-/// 文案（说清"你发了什么、应该发什么"）。返回 None 表示参数通过预检。
-///
-/// 设计动机：模型在长工具循环中可能退化出空参调用（如 bash {}），
-/// 若错误反馈只是模糊的"command required"，模型不知道错在哪，会原样
-/// 重试形成退化循环，烧掉整段上下文预算。
-pub(crate) fn invalid_tool_arguments(
-    tool_name: &str,
-    raw_arguments: &str,
-    args: &serde_json::Value,
-    schema: &serde_json::Value,
-) -> Option<String> {
-    let required: Vec<&str> = schema["required"]
-        .as_array()?
-        .iter()
-        .filter_map(|field| field.as_str())
-        .collect();
-    if required.is_empty() {
-        return None;
-    }
-    // 缺失 = 键不存在或值为 null（空字符串保留给各工具自己判定，
-    // 避免把 write_file content:"" 这类合法调用误判为缺参）。
-    let missing: Vec<&str> = match args.as_object() {
-        Some(obj) => required
-            .iter()
-            .filter(|field| obj.get(**field).is_none_or(|v| v.is_null()))
-            .copied()
-            .collect(),
-        None => required.clone(),
-    };
-    if missing.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "工具参数无效: {tool_name} 缺少必需参数 {}（你发送的参数: {}）。\
-         该工具的参数 schema: {}。请按 schema 携带全部必需参数重新调用。",
-        missing.join(", "),
-        crate::llm::truncate(raw_arguments, 200),
-        schema,
-    ))
-}
 /// 工具超时计算：尊重工具自声明的 `timeout_hint`，外圈守卫长过 hint + 15s，
 /// 硬上限 600s；用户配置的 base 不受此限。
 pub(crate) async fn tool_timeout(
@@ -80,19 +33,48 @@ pub(crate) async fn tool_timeout(
 }
 
 impl crate::agent::Agent {
-    /// 工具外圈超时守卫：配置 base + 工具自声明 `timeout_hint`
-    /// （见 [`tool_timeout`]）。
-    ///
-    /// 内置循环与 echo-loop 两条驱动路径共用——口径必须一致，否则同一请求
-    /// 换驱动后行为不同。2026-09-26 前 echo-loop 路径没有守卫，挂死的工具
-    /// 会永久拖住 turn（内置循环的守卫在这条路径上不生效）。
     /// 该工具成功调用是否即产生平台可见输出（工具自己声明）。
     pub(crate) async fn tools_produce_visible_output(&self, name: &str) -> bool {
         self.tools.produces_visible_output(name).await
     }
 
+    /// 工具外圈超时守卫：配置 base + 工具自声明 `timeout_hint`。
     pub(crate) async fn tool_guard_timeout(&self, call: &ToolCall) -> std::time::Duration {
         let base = self.model.config.read().await.effective_tool_timeout();
         tool_timeout(&self.tools, base, call).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_timeout;
+    use crate::llm::ToolCall;
+    use crate::tool::ToolRegistry;
+    use std::time::Duration;
+
+    fn call(name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: "c".into(),
+            name: name.into(),
+            arguments: arguments.into(),
+        }
+    }
+
+    /// 无 hint 的工具：用户配置即上限。
+    #[tokio::test]
+    async fn configured_base_applies_without_a_hint() {
+        let registry = ToolRegistry::new();
+        let base = Duration::from_secs(30);
+        let guard = tool_timeout(&registry, base, &call("unknown", "{}")).await;
+        assert_eq!(guard, base);
+    }
+
+    /// 非法 JSON 不 panic（参数是模型产的，可能坏）。
+    #[tokio::test]
+    async fn malformed_arguments_fall_back_to_the_base() {
+        let registry = ToolRegistry::new();
+        let base = Duration::from_secs(30);
+        let guard = tool_timeout(&registry, base, &call("unknown", "{oops")).await;
+        assert_eq!(guard, base);
     }
 }

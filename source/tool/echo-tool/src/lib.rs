@@ -19,6 +19,12 @@
 
 pub use echo_defs::tool::{Tool, ToolDefinition, ToolError, ToolResult};
 
+pub mod execute;
+pub use execute::{
+    invalid_tool_arguments, tool_state, ToolCallContext, ToolExecutionHost, ToolExecutor,
+    ToolInvocation,
+};
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -471,6 +477,17 @@ impl ToolRegistry {
 
     /// 按会话过滤的状态快照（2026-10，带会话维度的工具用；默认同
     /// [`Self::snapshot`]）。
+    /// 按名字取工具句柄（读侧访问器：执行链拿它问工具自己的声明）。
+    ///
+    /// 为什么需要它：状态广播要问"这个工具有可见状态吗"（[`Tool::state_key`]），
+    /// 那是工具实例上的知识，而注册表的其它方法都只回值不回句柄。
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        match self.tools.try_read() {
+            Ok(tools) => tools.get(name).cloned(),
+            Err(_) => blocking_section(|| self.tools.blocking_read().get(name).cloned()),
+        }
+    }
+
     pub fn snapshot_for_session(&self, name: &str, session_id: &str) -> Option<Value> {
         match self.tools.try_read() {
             Ok(tools) => tools

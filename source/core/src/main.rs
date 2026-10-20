@@ -1507,14 +1507,25 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 而不是由组合根指名。
         {
             let gating_manager_1 = gating_manager.clone();
+            // Shell 命令域的宿主接缝：按 `team_id` 解析人格（当前 agent 兜底）。
+            // 插件因此不认识 `Agent`——它只要"管理器 / 出口 / 归属 / 进度回调"。
+            let shell_command_host: std::sync::Arc<
+                dyn echo_agent::tool::builtin::ShellCommandHostAlias,
+            > = std::sync::Arc::new(echo_agent::agent::shell_host::AgentShellCommandHost::new(
+                agent.clone(),
+            ));
             push_plugin(
                 &mut catalog,
-                echo_agent::tool::builtin::builtin_plugin::plugin(version, move |enable| {
-                    // 逐 persona 重评估：全局启用 ∧ 各 persona 白/黑名单。
-                    for_each_agent(&gating_manager_1, |a| {
-                        a.reapply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, enable)
-                    });
-                }),
+                echo_agent::tool::builtin::builtin_plugin::plugin(
+                    version,
+                    shell_command_host,
+                    move |enable| {
+                        // 逐 persona 重评估：全局启用 ∧ 各 persona 白/黑名单。
+                        for_each_agent(&gating_manager_1, |a| {
+                            a.reapply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, enable)
+                        });
+                    },
+                ),
             )?;
         }
 

@@ -697,6 +697,7 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-plugin",
+ "echo-protocol",
  "echo-shell",
  "echo-test-utils",
  "echo-tool",

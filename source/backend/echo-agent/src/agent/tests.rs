@@ -1,4 +1,4 @@
-use super::tool_exec::invalid_tool_arguments;
+use echo_tool::execute::invalid_tool_arguments;
 use super::*;
 use crate::llm::{ChatChunk, ChatResponse, LlmError, Usage};
 use crate::session::SessionKey;

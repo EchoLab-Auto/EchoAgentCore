@@ -350,19 +350,62 @@ impl InvokeRouter {
     pub fn dispatch_frame(&self, from: &str, frame: &FedFrame) {
         match frame {
             FedFrame::InvokeAccepted { call_id, verdict } => {
-                if let Some(pending) = self.pending.get(call_id) {
-                    if *verdict == InvokeVerdict::Rejected {
-                        drop(pending);
+                // 非 Accepted 的受理回执都是**终态**：v1 没有后续确
+                // 认流程，也没有"再次裁决"的帧——若在此继续等，等待方
+                // 会一直挂到自身硬超时（460s），界面上只看到"远程工具
+                // 超时"，真正的裁决原因（白名单/门控）完全不可见。
+                // 因此 Rejected / NeedsConfirm 一律立即终结 pending。
+                match verdict {
+                    InvokeVerdict::Accepted => {}
+                    InvokeVerdict::Rejected | InvokeVerdict::NeedsConfirm => {
+                        let reason = if *verdict == InvokeVerdict::Rejected {
+                            "对端拒绝执行（白名单/门控）"
+                        } else {
+                            "对端要求人工确认，v1 无确认通道（按拒绝处理）"
+                        };
                         if let Some((_, pending)) = self.pending.remove(call_id) {
                             let _ = pending.done.send(InvokeResult {
                                 call_id: call_id.clone(),
                                 success: false,
-                                output: "对端拒绝执行（白名单/门控）".into(),
+                                output: reason.into(),
                                 elapsed_ms: pending.started.elapsed().as_millis() as u64,
                             });
                         }
                     }
                 }
+            }
+            // 通用错误帧（2026-10 修复）：此前落到 `_ => {}` 被静默丢弃，
+            // 执行端明确的"未加载任何 persona""路径越界""回环"等回执全
+            // 都变成调用方的 460s 空等（实测 node-01m436f8 空 agent 时
+            // list_files/bash 均挂满超时）。带 call_id 即终结对应 pending。
+            FedFrame::Error {
+                call_id: Some(call_id),
+                code,
+                message,
+            } => {
+                if let Some((_, pending)) = self.pending.remove(call_id) {
+                    tracing::warn!(
+                        target: "federation",
+                        from = %from, call_id = %call_id, code = ?code,
+                        "remote invoke failed (error frame)"
+                    );
+                    let _ = pending.done.send(InvokeResult {
+                        call_id: call_id.clone(),
+                        success: false,
+                        output: format!("对端返回错误（{code:?}）：{message}"),
+                        elapsed_ms: pending.started.elapsed().as_millis() as u64,
+                    });
+                }
+            }
+            FedFrame::Error {
+                call_id: None,
+                code,
+                message,
+            } => {
+                tracing::warn!(
+                    target: "federation", from = %from, code = ?code, message = %message,
+                    "federation error frame without call_id"
+                );
             }
             FedFrame::InvokeOutput {
                 call_id,
@@ -582,6 +625,96 @@ mod tests {
         assert!(got.success);
         assert_eq!(got.output, "done");
         assert_eq!(router.pending_count(), 0);
+    }
+
+    /// 执行端以 `Error` 帧回执（如「未加载任何 persona」「绝对路径越界」）时
+    /// 必须**立即**终结等待者：此前该帧落到 `_ => {}` 被丢弃，调用方干等
+    /// 460s 硬超时且看不到任何原因（2026-10 实测：node-01m436f8 空 agent，
+    /// list_files / bash 均挂满超时）。
+    #[tokio::test]
+    async fn error_frame_fails_pending_fast() {
+        let router = InvokeRouter::new("node-a".into());
+        let (req, pending) =
+            router.invoke("node-b", "bash", serde_json::json!({"command": "ls"}), None);
+        router.dispatch_frame(
+            "node-b",
+            &FedFrame::Error {
+                call_id: Some(req.call_id.clone()),
+                code: echo_federation::FedError::Forbidden,
+                message: "执行端未加载任何 persona，联邦工具通道不可用".into(),
+            },
+        );
+        let got = tokio::time::timeout(std::time::Duration::from_secs(1), pending.wait())
+            .await
+            .expect("应即时返回，而非等到硬超时")
+            .expect("终态应为 Ok(失败结果)，而非链路断开");
+        assert!(!got.success);
+        assert!(got.output.contains("未加载任何 persona"), "{}", got.output);
+        assert_eq!(router.pending_count(), 0);
+    }
+
+    /// 无 call_id 的错误帧（链路级）不得 panic、不得误伤其他 pending。
+    #[tokio::test]
+    async fn error_frame_without_call_id_is_ignored() {
+        let router = InvokeRouter::new("node-a".into());
+        let (_req, _pending) = router.invoke("node-b", "bash", serde_json::json!({}), None);
+        router.dispatch_frame(
+            "node-b",
+            &FedFrame::Error {
+                call_id: None,
+                code: echo_federation::FedError::Internal,
+                message: "boom".into(),
+            },
+        );
+        assert_eq!(router.pending_count(), 1);
+    }
+
+    /// `NeedsConfirm` 是终态（v1 无确认通道）：不终结就会挂到硬超时。
+    #[tokio::test]
+    async fn needs_confirm_fails_pending_fast() {
+        let router = InvokeRouter::new("node-a".into());
+        let (req, pending) = router.invoke("node-b", "bash", serde_json::json!({}), None);
+        router.dispatch_frame(
+            "node-b",
+            &FedFrame::InvokeAccepted {
+                call_id: req.call_id.clone(),
+                verdict: InvokeVerdict::NeedsConfirm,
+            },
+        );
+        let got = tokio::time::timeout(std::time::Duration::from_secs(1), pending.wait())
+            .await
+            .expect("应即时返回")
+            .expect("终态应为 Ok(失败结果)");
+        assert!(!got.success);
+        assert!(got.output.contains("确认"), "{}", got.output);
+        assert_eq!(router.pending_count(), 0);
+    }
+
+    /// `Accepted` 回执**不得**终结 pending（结果帧随后才到）。
+    #[tokio::test]
+    async fn accepted_verdict_keeps_pending() {
+        let router = InvokeRouter::new("node-a".into());
+        let (req, pending) = router.invoke("node-b", "bash", serde_json::json!({}), None);
+        router.dispatch_frame(
+            "node-b",
+            &FedFrame::InvokeAccepted {
+                call_id: req.call_id.clone(),
+                verdict: InvokeVerdict::Accepted,
+            },
+        );
+        assert_eq!(router.pending_count(), 1);
+        router.dispatch_frame(
+            "node-b",
+            &FedFrame::InvokeResult(InvokeResult {
+                call_id: req.call_id.clone(),
+                success: true,
+                output: "ok".into(),
+                elapsed_ms: 1,
+            }),
+        );
+        let got = pending.wait().await.expect("result");
+        assert!(got.success);
+        assert_eq!(got.output, "ok");
     }
 
     /// 等待方放弃（receiver 被 drop，如短超时查询）的条目：sweep 清理、
