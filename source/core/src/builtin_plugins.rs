@@ -269,6 +269,69 @@ fn reject_reserved_commands(catalog: &[Arc<dyn Plugin>]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 目录形状的**可执行守卫**（全插件化 S6 的回归防线）。
+///
+/// 插件零捕获之后，"我需要什么"写在插件的 `inject()` 里，"我能给什么"写在
+/// 宿主的 [`crate::host_services::register`] 里。两者跨 crate、跨文件，编译器
+/// 看不见——对不上的表现是**启动期挂载失败**（`MissingService`）。这组测试
+/// 把它提前到 `cargo test`。
+#[cfg(test)]
+mod catalog_shape_tests {
+    use super::*;
+
+    /// 每个插件声明的硬依赖，宿主都得真的会注册。
+    ///
+    /// 反向不检查（宿主注册了但没人用的键是允许的：那是"将来的插件"的接缝，
+    /// 也是诊断面）。
+    #[test]
+    fn every_declared_dependency_is_registered_by_the_host() {
+        let provided = crate::host_services::provided_keys();
+        let catalog = catalog("0.0.0-test").expect("目录构造");
+        for plugin in &catalog {
+            let id = plugin.manifest().id.clone();
+            for key in plugin.inject().required {
+                assert!(
+                    provided.contains(&key),
+                    "插件 {id} 声明硬依赖 `{key}`，但宿主没有注册这个键。\n\
+                     能注册的键：{provided:?}\n\
+                     → 在 `host_services::register` 里加一行，或从插件的 inject 里去掉"
+                );
+            }
+        }
+    }
+
+    /// 孤儿命令：插件声明要接管的命令，若没有任何插件认领，是**静默死路**
+    /// （面板点了没反应）。反向由各插件自己的"声明 ⇒ 认领"测试守。
+    #[test]
+    fn no_command_is_declared_twice_across_the_catalog() {
+        let catalog = catalog("0.0.0-test").expect("目录构造");
+        reject_duplicate_commands(&catalog).expect("命令不得被两个插件同时声明");
+    }
+
+    /// 目录里不许有幽灵条目：id 的空段（`echo-agent.instance.`）是派生 bug。
+    #[test]
+    fn catalog_ids_are_well_formed() {
+        let catalog = catalog("0.0.0-test").expect("目录构造");
+        for plugin in &catalog {
+            validate_plugin_id(&plugin.manifest().id).expect("id 形状");
+        }
+    }
+
+    /// **静态目录不含配置驱动项**：平台实例插件与外部的 `plugins.toml` 条目
+    /// 由调用点追加（它们的"存在"取决于这份部署，不是二进制里有什么）。
+    #[test]
+    fn static_catalog_has_no_deployment_specific_entries() {
+        let catalog = catalog("0.0.0-test").expect("目录构造");
+        for plugin in &catalog {
+            let id = plugin.manifest().id.clone();
+            assert!(
+                !id.starts_with(crate::instance_manifests::PLUGIN_ID_PREFIX),
+                "平台实例插件不该出现在静态目录里：{id}"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

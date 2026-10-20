@@ -284,6 +284,47 @@ impl InstanceControl for PluginInstanceControl {
     }
 }
 
+/// 进程里**全部**服务键（诊断与守卫用：不注册任何东西）。
+///
+/// 存在理由很具体：插件在 `inject()` 里声明"没它我不能挂"，而"谁能提供那个
+/// 键"只有宿主知道。两者对不上时的表现是**启动期挂载失败**
+/// （`MissingService`）——如果没人守着，代价是"这次发布起不来"，或者更糟：
+/// 某个插件静默缺席、功能少一块但没人发现。
+///
+/// 所以这里把键清单**显式列出**，由 `catalog_shape_tests` 与插件声明逐条
+/// 对表。新增插件时忘了注册宿主能力 = 测试红。
+///
+/// 三类来源，都是"有人提供"：
+/// 1. [`register`] 注册的宿主能力（本文件）；
+/// 2. 组合根更早注册的进程级服务（LLM 出口 / 脱敏器——插件在 mount 里要它们）；
+/// 3. 插件自己 `provide` 的（`loop` 的 TurnRunner / `tools.builtin` 的 provider）。
+pub(crate) fn provided_keys() -> Vec<String> {
+    let mut keys = vec![
+        // ── 1. 本层注册 ──
+        SHELL_HOST.name().to_string(),
+        INSTANCE_HOST.name().to_string(),
+        TOOLS_HOST.name().to_string(),
+        SKILLS_HOST.name().to_string(),
+        WORKSPACE_HOST.name().to_string(),
+        PORTS.name().to_string(),
+        FEDERATION_EVENTS.name().to_string(),
+        MANAGEMENT_HOST.name().to_string(),
+        SESSION_VIEW_HOST.name().to_string(),
+        PROVIDER_HOST.name().to_string(),
+        SELF_UPDATE_EVENTS.name().to_string(),
+        INSTANCE_CONTROL.name().to_string(),
+        // ── 2. 组合根早期注册（key 是宿主与插件约定的字面量）──
+        "llm".to_string(),
+        "sanitizer".to_string(),
+        // ── 3. 插件自 provide ──
+        echo_plugin_loop::SERVICE_KEY.to_string(),
+        echo_plugin_tools::plugin::SERVICE_KEY.to_string(),
+    ];
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
 /// 拨一个人的门控开关（插件挂载 / 卸载事件的反应）。
 ///
 /// 为什么集中在这里：门控是**宿主对生命周期的反应**，不是插件的职责。此前
