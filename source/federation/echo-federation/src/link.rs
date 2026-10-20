@@ -622,10 +622,15 @@ impl Federation {
                 Ok(Err(e)) => {
                     let reason = e.to_string();
                     let failures = self.note_dial_failure(&peer.name, &reason).await;
-                    // 失败显性化（2026-10 地址漂移事故）：首次与每 10 次
-                    // （退避上限 30s ≈ 5 分钟）warn 一次——此前恒 debug，
+                    // 失败显性化（2026-10 地址漂移事故）：首次与每 60 次
+                    // （退避上限 30s ≈ 30 分钟）warn 一次——此前恒 debug，
                     // 对端地址变了之后"两边空转"在日志里完全不可见。
-                    if failures == 1 || failures % 10 == 0 {
+                    //
+                    // 2026-10 日志治理：间隔由每 10 次（≈5 分钟）放宽到每 60
+                    // 次（≈30 分钟）。长期失联的对端（对端下线是常态）每分钟
+                    // 一条 WARN 会把 7 天窗口内的日志顶到 1600+ 条，淹没真正
+                    // 的变化；恢复时另有一条独立的 INFO（见 run_link）。
+                    if failures == 1 || failures % 60 == 0 {
                         tracing::warn!(
                             peer = %peer.name,
                             url = %peer.url,
@@ -640,7 +645,7 @@ impl Federation {
                 Err(_) => {
                     let reason = "dial timeout".to_string();
                     let failures = self.note_dial_failure(&peer.name, &reason).await;
-                    if failures == 1 || failures % 10 == 0 {
+                    if failures == 1 || failures % 60 == 0 {
                         tracing::warn!(
                             peer = %peer.name,
                             url = %peer.url,

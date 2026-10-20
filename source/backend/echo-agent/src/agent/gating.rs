@@ -297,12 +297,18 @@ impl Agent {
     /// 白/黑名单（名单外的成员保持禁用），与启动期"名单先应用、包后禁用"
     /// 的组合语义一致。
     pub fn apply_plugin_gating(&self, plugin_id: &str, enabled: bool) {
+        // 一次性判定「该插件的最终启用态是否真的变了」：本函数在每次
+        // `apply_capabilities`（插件目录 5s 热重载 / 名单变更 / 能力重算）里
+        // 都会被逐 persona 调用，而绝大多数调用的结果是幂等的——按"每次调用
+        // 都打日志"记，实测 321 条/天（工具 + 技能各一条 × N 个 persona），
+        // 真正的开关动作被淹没。改为只在状态翻转时记录。
+        let changed = self.note_gating_state(plugin_id, enabled);
         // 工具维度：按 package 标签批量启停。
         let affected_tools = self.tools.set_package_enabled(plugin_id, enabled);
         if enabled {
             self.tighten_tools_by_lists(plugin_id);
         }
-        if affected_tools > 0 {
+        if changed && affected_tools > 0 {
             tracing::info!(
                 plugin = plugin_id,
                 enabled,
@@ -337,7 +343,7 @@ impl Agent {
                 }
                 affected
             };
-            if affected_skills > 0 {
+            if changed && affected_skills > 0 {
                 if plugin_id == crate::plugins::SKILLS_DIR_PLUGIN_ID {
                     tracing::info!(
                         enabled,
@@ -353,6 +359,16 @@ impl Agent {
                     );
                 }
             }
+        }
+    }
+
+    /// 记录插件的最终启用态；返回 `true` 表示相对上次记录发生了变化。
+    ///
+    /// 首次记录即「变化」（启动期的那次应用值得留一条日志）。
+    fn note_gating_state(&self, plugin_id: &str, enabled: bool) -> bool {
+        match self.gating_log_state.insert(plugin_id.to_string(), enabled) {
+            Some(previous) => previous != enabled,
+            None => true,
         }
     }
 

@@ -200,6 +200,12 @@ pub struct Agent {
     /// Subagent 插件运行态：子任务注册表 + spawn 执行闭包（组合根装配；
     /// None = 插件未启用，spawn_subagent 对模型不可见）。
     subagent: std::sync::RwLock<Option<SubagentRuntime>>,
+    /// 门控日志去重（`plugin_id` → 上次记录的最终启用态）。
+    ///
+    /// `apply_plugin_gating` 在每轮能力重算里被逐 persona 调用，绝大多数
+    /// 调用是幂等的；只按「状态真的翻转」打日志，把默认级别下的
+    /// `plugin tool/skill package toggled` 从 321 条/天降到仅剩真实开关。
+    gating_log_state: DashMap<String, bool>,
 }
 
 /// spawn 执行闭包类型（子任务拉起）。
@@ -376,6 +382,7 @@ impl Agent {
             session_provider_locks: DashMap::new(),
             balance_snapshot_lock: tokio::sync::Mutex::new(()),
             subagent: std::sync::RwLock::new(None),
+            gating_log_state: DashMap::new(),
         };
         // Spawn periodic identity eviction (every 5 minutes). Only stale
         // source labels are dropped; the trunk history is never evicted.

@@ -912,7 +912,9 @@ impl Agent {
                             .await;
                     }
                 }
-                tracing::info!(
+                // DEBUG：这是「面板重连后的一次全量快照」，频次跟随连接
+                // 抖动（实测 151 条/天），不是状态变化——默认级别不该看见。
+                tracing::debug!(
                     sessions = emitted_sessions,
                     "state sessions emitted for all personas"
                 );

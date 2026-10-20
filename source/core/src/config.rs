@@ -20,6 +20,10 @@ pub struct LoggingSection {
     pub log_file: String,
     pub max_file_size_mb: u64,
     pub max_files: usize,
+    /// 跨天首条日志自动开新文件（本地时间零点切分；`false` = 只按大小轮转）。
+    pub rotate_by_day: bool,
+    /// 归档文件 gzip 压缩（压缩失败时降级保留明文，不影响写入）。
+    pub compress: bool,
 }
 
 impl Default for LoggingSection {
@@ -30,6 +34,8 @@ impl Default for LoggingSection {
             log_file: String::new(),
             max_file_size_mb: 20,
             max_files: 5,
+            rotate_by_day: true,
+            compress: true,
         }
     }
 }

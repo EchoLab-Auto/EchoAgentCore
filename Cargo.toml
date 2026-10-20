@@ -127,6 +127,8 @@ tokio-util = { version = "0.7", features = ["rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 base64 = "0.22"
 chrono = "0.4"
+# 日志归档压缩（日志轮转器用；纯 Rust 后端，无系统 zlib 依赖）。
+flate2 = "1"
 sha2 = "0.10"
 walkdir = "2"
 regex = "1"

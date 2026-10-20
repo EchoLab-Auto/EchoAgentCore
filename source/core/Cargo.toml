@@ -39,5 +39,8 @@ tracing-subscriber.workspace = true
 async-trait.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true
+# 日志：本地日期判定（按天轮转）与归档 gzip。
+chrono.workspace = true
+flate2.workspace = true
 
 # 无 dev-dependencies：集成测试（core/tests/）只依赖本 crate 与既有依赖。
