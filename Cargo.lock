@@ -360,6 +360,7 @@ dependencies = [
  "echo-plugin",
  "echo-plugin-federation",
  "echo-plugin-loop",
+ "echo-plugin-management",
  "echo-plugin-provider-llm",
  "echo-plugin-skills",
  "echo-plugin-subagent",
@@ -648,6 +649,9 @@ name = "echo-plugin-management"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "echo-context",
+ "echo-defs",
  "echo-federation",
  "echo-protocol",
  "futures-util",

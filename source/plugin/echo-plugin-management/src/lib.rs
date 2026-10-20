@@ -18,10 +18,14 @@
 //!   共用端口的两种启动形态；
 //! - [`plan_federation_listen`] / [`validate_merged`]：端口合并的规划与
 //!   fail-closed 校验（合并 = 管理通道与联邦入站同址，必须令牌可分）；
+//! - [`timeline`]：**显示时间线的投影策略**——哪些事件进面板、字段怎么映射、
+//!   工具完成态如何在原地合并、推理条目发往前端时怎么瘦身（全插件化 S3）；
 //! - token 鉴权（`classify_token` / 常量时间比较）与心跳保活。
 //!
 //! 依赖纪律：只依赖 `echo-protocol`（线契约）、`echo-federation`（合并端口
 //! 时的对端连接接收）与 tokio/tungstenite——不依赖 `echo-agent`。
+
+pub mod timeline;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
