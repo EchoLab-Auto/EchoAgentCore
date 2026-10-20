@@ -35,6 +35,7 @@ pub use echo_defs::token::{
 pub use echo_defs::tool::ToolDefinition;
 
 /// 全局供应商池的读取助手（`list_api_profiles` 工具与子代理 profile 解析共用）。
+pub mod admin;
 pub mod api_pool;
 
 mod metering;

@@ -201,174 +201,212 @@ impl Agent {
         thinking: Option<crate::config::ThinkingMode>,
         reasoning_effort: Option<crate::config::ReasoningEffort>,
     ) {
+        use echo_plugin_provider_llm::admin as pool;
         let mut config = self.model.config.write().await;
-        let keep_key = api_key.is_empty();
-        // 新建命名 profile 时，空的 provider/model/base_url 从当前生效配置
-        // 继承，避免写出残缺 profile：残缺 profile 单独做 TestApi 时必然
-        // "provider build failed"，且极易误导用户以为 LLM 整体不可用。
-        // （更新已有 profile 时保持"空 = 保留该 profile 原值"的语义。）
-        let (provider, model, base_url) =
-            if !name.is_empty() && !config.api_profiles.iter().any(|p| p.name == name) {
-                let mut resolved = config.clone();
-                resolved.apply_active_profile();
-                (
-                    if provider.is_empty() {
-                        resolved.provider
-                    } else {
-                        provider
-                    },
-                    if model.is_empty() {
-                        resolved.model
-                    } else {
-                        model
-                    },
-                    if base_url.is_empty() {
-                        resolved.base_url
-                    } else {
-                        base_url
-                    },
-                )
-            } else {
-                (provider, model, base_url)
+        // 继承基准：**当前生效**配置（`active_api` 解析后的那份）。新建
+        // profile 时空字段从这里取，避免写出残缺 profile——残缺 profile
+        // 单独 TestApi 必然 "provider build failed"，且极易误导用户以为
+        // LLM 整体不可用。
+        let defaults = {
+            let mut resolved = config.clone();
+            resolved.apply_active_profile();
+            pool::PoolDefaults {
+                provider: resolved.provider,
+                model: resolved.model,
+                base_url: resolved.base_url,
+                api_key: resolved.api_key,
+                thinking: resolved.thinking,
+                reasoning_effort: resolved.reasoning_effort,
+            }
+        };
+        let input = pool::UpsertInput {
+            name: name.clone(),
+            provider: provider.clone(),
+            model: model.clone(),
+            base_url,
+            api_key,
+            thinking,
+            reasoning_effort,
+        };
+        // 规则在插件里（空字段继承 / 空 key 保留 / 非空 name 立即激活），
+        // 宿主只执行它要求的副作用。
+        let effects = if name.is_empty() {
+            let mut writable = pool::PoolDefaults {
+                provider: config.provider.clone(),
+                model: config.model.clone(),
+                base_url: config.base_url.clone(),
+                api_key: config.api_key.clone(),
+                thinking: config.thinking,
+                reasoning_effort: config.reasoning_effort,
             };
-        if name.is_empty() {
-            if !provider.is_empty() {
-                config.provider = provider.clone();
-            }
-            if !model.is_empty() {
-                config.model = model.clone();
-            }
-            if !base_url.is_empty() {
-                config.base_url = base_url.clone();
-            }
-            if !keep_key {
-                config.api_key = api_key.clone();
-            }
-            if let Some(thinking) = thinking {
-                config.thinking = thinking;
-            }
-            if let Some(reasoning_effort) = reasoning_effort {
-                config.reasoning_effort = reasoning_effort;
-            }
-            // Don't clear active_api — let explicit SwitchApi handle that.
+            let effects = pool::update_defaults(&mut writable, &input);
+            // 把改动搬回配置（视图只覆盖参与规则的那几项）。
+            config.provider = writable.provider;
+            config.model = writable.model;
+            config.base_url = writable.base_url;
+            config.api_key = writable.api_key;
+            config.thinking = writable.thinking;
+            config.reasoning_effort = writable.reasoning_effort;
+            effects
         } else {
-            let profile = match config.api_profiles.iter_mut().find(|p| p.name == name) {
-                Some(p) => p,
-                None => {
-                    config.api_profiles.push(ApiProfile::new(
-                        name.clone(),
-                        provider.clone(),
-                        model.clone(),
-                    ));
-                    let idx = config.api_profiles.len() - 1;
-                    &mut config.api_profiles[idx]
-                }
+            // 分离借用两个字段（不是整个 `config`）：`PoolState` 只需要池与
+            // 激活指针，多借用一项都会把宿主类型带进插件。经 `DerefMut`
+            // 一次拿到底再解构，避免两次 `&mut config.field` 的整锁借用冲突。
+            let crate::config::AgentConfig {
+                api_profiles,
+                active_api,
+                ..
+            } = &mut *config;
+            let mut state = pool::PoolState {
+                profiles: api_profiles,
+                active_api,
             };
-            if !provider.is_empty() {
-                profile.provider = provider.clone();
-            }
-            if !model.is_empty() {
-                profile.model = model.clone();
-            }
-            if !base_url.is_empty() {
-                profile.base_url = base_url.clone();
-            }
-            if !keep_key {
-                profile.api_key = api_key.clone();
-            }
-            if let Some(thinking) = thinking {
-                profile.thinking = thinking;
-            }
-            if let Some(reasoning_effort) = reasoning_effort {
-                profile.reasoning_effort = reasoning_effort;
-            }
-            config.active_api = name.clone();
-        }
+            pool::upsert(&mut state, &defaults, input)
+        };
         let cfg_snapshot = config.clone();
         drop(config);
 
-        self.set_model(model.clone()).await;
-        if self.rebuild_provider(&cfg_snapshot).await {
-            self.emit(BackendEvent::Error {
-                session_id: None,
-                message: if name.is_empty() {
-                    format!("default API updated: {provider} / {model}")
-                } else {
-                    format!("API saved and activated: {name} ({provider} / {model})")
-                },
-            });
+        for effect in effects {
+            match effect {
+                pool::PoolEffect::RebuildProvider => {
+                    if self.rebuild_provider(&cfg_snapshot).await {
+                        self.set_model(model.clone()).await;
+                    }
+                }
+                pool::PoolEffect::BroadcastApiConfig => {}
+                pool::PoolEffect::Notice(_) | pool::PoolEffect::Persist
+                | pool::PoolEffect::BroadcastTeams => {}
+            }
         }
-        // 先落盘、再广播：emit_api_config 以共享存储为准，必须等本次
-        // 变更写入 core.toml 后发事件，否则面板读到旧列表。
+        // 回执文案由插件给（它知道改的是什么），宿主只补"生效的是哪个模型"。
+        let label = if name.is_empty() {
+            format!("default API updated: {provider} / {model}")
+        } else {
+            format!("API saved and activated: {name} ({provider} / {model})")
+        };
+        self.emit(BackendEvent::Error {
+            session_id: None,
+            message: label,
+        });
+        // 先落盘、再广播：emit_api_config 以共享存储为准，必须等本次变更写入
+        // core.toml 后发事件，否则面板读到旧列表。
         self.persist_config(&cfg_snapshot).await;
         self.emit_api_config().await;
     }
 
-    /// Switch to an API profile (or the top-level default when name is empty).
+    /// 切换到某个 profile（空 = 顶层默认）。
+    ///
+    /// **规则在插件里**（`echo_plugin_provider_llm::admin::switch`）：找不到
+    /// 就明确报错、空名清空 active。宿主执行它要求的副作用（重建 provider /
+    /// 落盘 / 广播）。
     pub(crate) async fn switch_api(&self, name: &str) {
+        use echo_plugin_provider_llm::admin as pool;
         let mut config = self.model.config.write().await;
-        if name.is_empty() {
-            config.active_api.clear();
-        } else {
-            if !config.api_profiles.iter().any(|p| p.name == name) {
+        let effects = {
+            let crate::config::AgentConfig {
+                api_profiles,
+                active_api,
+                ..
+            } = &mut *config;
+            pool::switch(
+                &mut pool::PoolState {
+                    profiles: api_profiles,
+                    active_api,
+                },
+                name,
+            )
+        };
+        let effects = match effects {
+            Ok(effects) => effects,
+            Err(message) => {
+                drop(config);
                 self.emit(BackendEvent::Error {
                     session_id: None,
-                    message: format!("API config not found: {name}"),
+                    message,
                 });
                 return;
             }
-            config.active_api = name.to_string();
-        }
+        };
         let cfg_snapshot = config.clone();
         let mut resolved = cfg_snapshot.clone();
         resolved.apply_active_profile();
         let model = resolved.model.clone();
         drop(config);
 
-        if self.rebuild_provider(&cfg_snapshot).await {
-            self.set_model(model).await;
-            let label = if name.is_empty() {
-                "default config".to_string()
-            } else {
-                name.to_string()
-            };
-            self.emit(BackendEvent::Error {
-                session_id: None,
-                message: format!("switched to API: {label}"),
-            });
+        for effect in effects {
+            match effect {
+                pool::PoolEffect::RebuildProvider => {
+                    if self.rebuild_provider(&cfg_snapshot).await {
+                        self.set_model(model.clone()).await;
+                    }
+                }
+                pool::PoolEffect::Notice(message) => {
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message,
+                    });
+                }
+                pool::PoolEffect::Persist
+                | pool::PoolEffect::BroadcastApiConfig
+                | pool::PoolEffect::BroadcastTeams => {}
+            }
         }
         self.persist_config(&cfg_snapshot).await;
         self.emit_api_config().await;
     }
 
-    /// Delete an API profile; if it was active, fall back to the top-level default.
+    /// 删除一个 profile；若删的是激活项，`active_api` 清空（回落顶层默认）。
+    ///
+    /// **规则在插件里**（`echo_plugin_provider_llm::admin::delete`）：池里本来
+    /// 就没有时只回"not found"，宿主据此**不落盘、不重建 provider**（零写入）。
     pub(crate) async fn delete_api(&self, name: &str) {
+        use echo_plugin_provider_llm::admin as pool;
         let mut config = self.model.config.write().await;
-        let before = config.api_profiles.len();
-        config.api_profiles.retain(|p| p.name != name);
-        let removed = config.api_profiles.len() < before;
-        if removed && config.active_api == name {
-            config.active_api.clear();
-        }
+        let effects = {
+            let crate::config::AgentConfig {
+                api_profiles,
+                active_api,
+                ..
+            } = &mut *config;
+            pool::delete(
+                &mut pool::PoolState {
+                    profiles: api_profiles,
+                    active_api,
+                },
+                name,
+            )
+        };
+        // 只有"真的删掉了"才需要落盘 / 重建（`delete` 在未命中时只回 Notice）。
+        let removed = effects
+            .iter()
+            .any(|effect| matches!(effect, pool::PoolEffect::RebuildProvider));
         let cfg_snapshot = config.clone();
         drop(config);
 
-        if removed {
-            if self.rebuild_provider(&cfg_snapshot).await {
-                self.set_model(cfg_snapshot.model.clone()).await;
+        if !removed {
+            for effect in effects {
+                if let pool::PoolEffect::Notice(message) = effect {
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message,
+                    });
+                }
             }
-            self.emit(BackendEvent::Error {
-                session_id: None,
-                message: format!("deleted API config: {name}"),
-            });
-            self.persist_config(&cfg_snapshot).await;
-            self.emit_api_config().await;
-        } else {
-            self.emit(BackendEvent::Error {
-                session_id: None,
-                message: format!("API config not found: {name}"),
-            });
+            return;
         }
+        if self.rebuild_provider(&cfg_snapshot).await {
+            self.set_model(cfg_snapshot.model.clone()).await;
+        }
+        for effect in effects {
+            if let pool::PoolEffect::Notice(message) = effect {
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message,
+                });
+            }
+        }
+        self.persist_config(&cfg_snapshot).await;
+        self.emit_api_config().await;
     }
 
     /// Atomically rename an API profile (2026-10).
@@ -393,60 +431,57 @@ impl Agent {
         to: &str,
         admin: Option<&Arc<dyn crate::agent::registry::TeamAdmin>>,
     ) {
+        use echo_plugin_provider_llm::admin as pool;
+        // 命名规则在插件里（非空 / ≤128 / 无控制字符）。
+        if let Err(message) = pool::validate_profile_name(to) {
+            self.emit(BackendEvent::Error {
+                session_id: None,
+                message,
+            });
+            return;
+        }
         let to = to.trim();
-        if to.is_empty() {
-            self.emit(BackendEvent::Error {
-                session_id: None,
-                message: "API rename failed: new name is empty".into(),
-            });
-            return;
-        }
-        if to.chars().count() > 128 || to.chars().any(char::is_control) {
-            self.emit(BackendEvent::Error {
-                session_id: None,
-                message:
-                    "API rename failed: new name must be ≤128 chars without control characters"
-                        .into(),
-            });
-            return;
-        }
 
         let mut config = self.model.config.write().await;
         let old_active = config.active_api.clone();
-        // `from` 精确匹配（不 trim——历史遗留含空白的名也要能被改名）。
-        if from.is_empty() || !config.api_profiles.iter().any(|p| p.name == from) {
-            drop(config);
-            self.emit(BackendEvent::Error {
-                session_id: None,
-                message: format!("API config not found: {from}"),
-            });
-            return;
-        }
+        // 改名计划在**克隆上**算（插件给规则：源精确匹配、目标不冲突、同名
+        // 幂等、连带改 active）。内存不动，直到落盘成功。
+        let plan = {
+            let crate::config::AgentConfig {
+                api_profiles,
+                active_api,
+                ..
+            } = &mut *config;
+            pool::plan_rename(
+                &pool::PoolState {
+                    profiles: api_profiles,
+                    active_api,
+                },
+                from,
+                to,
+            )
+        };
+        let plan = match plan {
+            Ok(plan) => plan,
+            Err(message) => {
+                drop(config);
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message,
+                });
+                return;
+            }
+        };
         if from == to {
             // 幂等 no-op：零写入，只回推（Panel 依赖回推收起表单）。
             drop(config);
             self.emit_api_config().await;
             return;
         }
-        if config.api_profiles.iter().any(|p| p.name == to) {
-            drop(config);
-            self.emit(BackendEvent::Error {
-                session_id: None,
-                message: format!("API rename failed: {to} already exists"),
-            });
-            return;
-        }
 
-        // 克隆上计算新状态（内存不动，直到落盘成功）。
         let mut new_cfg = config.clone();
-        for p in new_cfg.api_profiles.iter_mut() {
-            if p.name == from {
-                p.name = to.to_string();
-            }
-        }
-        if new_cfg.active_api == from {
-            new_cfg.active_api = to.to_string();
-        }
+        new_cfg.api_profiles = plan.profiles;
+        new_cfg.active_api = plan.active_api;
         // teams 引用（含未运行/禁用 persona）：落盘前计算改写范围。
         // 管理面由**进程级处理器**注入（`process_commands`）——`Agent` 自己
         // 不再持有它（S4c：团队/全局配置的增删改都不经人格）。
