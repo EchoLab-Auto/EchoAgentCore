@@ -768,6 +768,7 @@ dependencies = [
  "echo-plugin",
  "echo-plugin-provider-llm",
  "echo-protocol",
+ "echo-sanitize",
  "echo-shell",
  "echo-test-utils",
  "echo-tool",

@@ -21,6 +21,8 @@
 //! - **幂等**：`redact(redact(x)) == redact(x)`（占位符本身不得再被识别）；
 //! - **无命中快速路径**：`changed == false` 时行为等价于原样返回。
 
+use std::path::{Path, PathBuf};
+
 use std::fmt;
 
 /// 一次脱敏的结果。
@@ -99,4 +101,86 @@ pub trait Redactor: Send + Sync {
 
     /// 当前登记条目数（秘密 + 模式；诊断 / 状态展示）。
     fn registered_count(&self) -> usize;
+}
+
+// ── 出站策略与路径闸门（跨边界词汇）────────────────────────────────────
+//
+// 为什么在定义层：这两个东西被**多个 crate** 同时需要——宿主的安全装配
+// （读 `[security.sanitize.outbound]`）、工具插件的出站闸门（敏感文件拒发）、
+// 以及将来任何要外发内容的插件。放在某一个实现 crate 里会让另一个反向依赖它。
+
+/// 出站内容命中敏感信息时的处置策略（`[security.sanitize].outbound`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutboundPolicy {
+    /// 拒绝发送（默认）：给模型明确报错，不泄漏任何片段。
+    #[default]
+    Block,
+    /// 替换为占位符后照发。
+    Redact,
+}
+
+impl OutboundPolicy {
+    /// 解析配置字符串（未知值回退 [`Block`](Self::Block) 并告警）。
+    ///
+    /// 「未知值回退到最严格的一档」是刻意的：拼错的配置不该意外放宽外发。
+    pub fn from_config(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "block" => Self::Block,
+            "redact" => Self::Redact,
+            other => {
+                tracing::warn!(
+                    value = other,
+                    "unknown outbound policy; falling back to \"block\""
+                );
+                Self::Block
+            }
+        }
+    }
+}
+
+/// 参数里出现这个路径时，判定它是否落在受保护目录内。
+///
+/// 返回 `Some(命中目录)` / `None`。非路径形态（URL / data URI / base64）与
+/// 相对路径一律 `None`——它们不是"本机文件外发"。
+///
+/// 为什么要 canonicalize：符号链接可以让 `~/link/repo` 指向 `~/.ssh`。
+/// 解析失败（路径不存在）时退化为词法折叠。
+pub fn sensitive_local_path(raw: &str, protected: &[PathBuf]) -> Option<PathBuf> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("base64://")
+        || trimmed.starts_with("data:")
+    {
+        return None;
+    }
+    let path = if let Some(rest) = trimmed.strip_prefix("~/") {
+        PathBuf::from(std::env::var_os("HOME")?).join(rest)
+    } else {
+        PathBuf::from(trimmed)
+    };
+    if !path.is_absolute() {
+        return None;
+    }
+    let resolved = path.canonicalize().unwrap_or_else(|_| normalize_lexically(&path));
+    protected
+        .iter()
+        .find(|dir| resolved.starts_with(dir))
+        .cloned()
+}
+
+/// 词法路径规范化（不触盘）：折叠 `.` 与 `..`（`..` 在根处忽略）。
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }

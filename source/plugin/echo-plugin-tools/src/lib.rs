@@ -42,6 +42,7 @@ pub mod calculator;
 pub mod checklist;
 pub mod coding;
 pub mod instance;
+pub mod instance_bridge;
 pub mod list_api_profiles;
 pub mod instance_commands;
 pub mod instance_ops;

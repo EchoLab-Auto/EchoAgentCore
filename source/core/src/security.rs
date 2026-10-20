@@ -17,31 +17,8 @@ use echo_sanitize::RegistryRedactor;
 use serde_json::{json, Value};
 
 use crate::config::CoreConfig;
-/// QQ 外发命中敏感信息时的策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutboundPolicy {
-    /// 拒绝发送（默认）：给模型明确报错，不泄漏任何片段。
-    Block,
-    /// 替换为占位符后照发。
-    Redact,
-}
-
-impl OutboundPolicy {
-    /// 解析配置字符串（未知值回退 `Block` 并告警）。
-    pub fn from_config(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "" | "block" => OutboundPolicy::Block,
-            "redact" => OutboundPolicy::Redact,
-            other => {
-                tracing::warn!(
-                    value = other,
-                    "unknown security.sanitize.outbound policy; falling back to \"block\""
-                );
-                OutboundPolicy::Block
-            }
-        }
-    }
-}
+/// 出站策略（词汇归定义层：宿主装配与工具插件的闸门共用一份）。
+pub use echo_defs::sanitize::OutboundPolicy;
 
 /// 宿主服务插件实例：把脱敏器暴露给子进程插件（HostCall `service = "sanitizer"`）。
 ///
@@ -213,52 +190,8 @@ pub fn sensitive_dirs(config_path: &Path) -> Vec<PathBuf> {
     }
     dirs
 }
+/// 敏感路径判定（词汇归定义层，与工具插件的出站闸门共用）。
 
-/// 判断一个参数值是否是落在敏感目录内的本地文件路径。
-///
-/// 非路径形态（URL / base64 / data URI / 相对路径）返回 `None`。
-/// 存在时优先 `canonicalize`（解析符号链接）；不存在时按词法规范化。
-pub fn sensitive_local_path(raw: &str, protected: &[PathBuf]) -> Option<PathBuf> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty()
-        || trimmed.starts_with("http://")
-        || trimmed.starts_with("https://")
-        || trimmed.starts_with("base64://")
-        || trimmed.starts_with("data:")
-    {
-        return None;
-    }
-    let path = if let Some(rest) = trimmed.strip_prefix("~/") {
-        PathBuf::from(std::env::var_os("HOME")?).join(rest)
-    } else {
-        PathBuf::from(trimmed)
-    };
-    if !path.is_absolute() {
-        return None;
-    }
-    let resolved = path
-        .canonicalize()
-        .unwrap_or_else(|_| normalize_lexically(&path));
-    protected
-        .iter()
-        .find(|dir| resolved.starts_with(dir))
-        .cloned()
-}
-
-/// 词法路径规范化（不触盘）：折叠 `.` 与 `..`（`..` 在根处忽略）。
-fn normalize_lexically(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
-}
 
 /// 递归收集 TOML 表里「看起来是凭据」的字符串值（键名形态匹配）。
 ///
@@ -305,6 +238,8 @@ fn collect_credential_values(table: &toml::Table) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    use echo_defs::sanitize::sensitive_local_path;
+
     use super::*;
 
     #[test]

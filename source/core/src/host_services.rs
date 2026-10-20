@@ -298,6 +298,7 @@ impl InstanceControl for PluginInstanceControl {
 /// 1. [`register`] 注册的宿主能力（本文件）；
 /// 2. 组合根更早注册的进程级服务（LLM 出口 / 脱敏器——插件在 mount 里要它们）；
 /// 3. 插件自己 `provide` 的（`loop` 的 TurnRunner / `tools.builtin` 的 provider）。
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn provided_keys() -> Vec<String> {
     let mut keys = vec![
         // ── 1. 本层注册 ──
