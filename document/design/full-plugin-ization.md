@@ -25,9 +25,9 @@ y: 3640
 2026-11 实测（口径：应用代码，已排测试）：
 
 ```text
-              起点（S1 前）        现在（S3 后）
-插件 crate     13,883  39.7%   →   15,658  42.7%
-宿主实现       21,103  60.3%   →   21,047  57.3%
+              起点（S1 前）        现在（S3 完成）
+插件 crate     13,883  39.7%   →   18,956  51.1%
+宿主实现       21,103  60.3%   →   18,143  48.9%
 ```
 
 宿主那 57% 里，**约 8,000 行是宿主骨架**（插件注册表、命令泵路由、面板协议、
@@ -39,14 +39,27 @@ subagent 执行体 401 / instance 桥接 747 / turn 驱动 512）。
 
 ```text
                  S3 前     现在
-插件处理          7 条      27 条    ██████████░░░░░░░░░░  51%
-宿主兜底         46 条      26 条
-文件行数        1967 行    1406 行   （-29%）
+插件处理          7 条      35 条   ██████████████░░░░░░  66%
+宿主兜底         46 条      31 条
+文件行数        1967 行    1419 行   （-28%）
 ```
 
-已迁进插件的域：**workspace**（7）· **skills**（8）· **shell**（4）·
-**instance**（6）· **tools**（2）。仍未迁移：provider/api（14）·
-session/上下文（17）· federation（4）· selfupdate/plugin（5，宿主保留）。
+**已迁进插件的域**（35 条）：
+
+| 插件 | 命令 | 能力本体 |
+|---|---|---|
+| `echo-plugin-workspace` | 7 | store + git/文件采集 + 提示词块 |
+| `echo-plugin-skills` | 8 | SKILL.md / 目录校验 / `.sources.json` / git 安装 / 列表投影 |
+| `echo-plugin-tools` | 13 | shell ×4（+ `shell_*` 工具）· instance ×7（+ `instance_*` 工具 + 清单投影）· tools ×2 |
+| `echo-plugin-federation` | 7 | 路由表 / 代理工具 / 聚合器 / 跨机查询 / 出口集合 |
+
+**宿主仍处理的 31 条**（每条都记录了理由，见下面 §不搬清单）：
+
+| 类 | 条数 | 内容 |
+|---|---|---|
+| provider / API 管理面 | 14 | `SwitchModel` · `SwitchProvider` · `UpdateApiConfig` · `SwitchApi` · `SetSessionApi` · `ClearSessionApi` · `RequestRemoteApiProfiles` · `TestApi` · `QueryApiBalance` · `QueryApiMetrics` · `DeleteApi` · `RenameApi` · `SetSystemPrompt` · `RequestSystemPrompt` |
+| 会话 / 上下文 | 11 | `RequestState` · `RequestContext` · `RequestTrunkTimeline` · `RequestTimelineEarlier` · `RequestSessionHistory` · `ClearHistory` · `ArchiveHistory` · `CompactHistory` · `CancelRequestedWork` · `SendMessage` |
+| 自管理面（宿主保留） | 7 | `RequestPluginsList` · `TogglePlugin` · `RestartPlugin` · `RequestTeamsList` · `SaveTeam` · `DeleteTeam` · `ToggleTeam` |
 
 ## 二、形态约定（dsh 对齐的三条硬规则）
 
@@ -117,21 +130,46 @@ session/上下文（17）· federation（4）· selfupdate/plugin（5，宿主�
 **验收**：`grep -rn '"checklist"' source/backend/echo-agent/src/agent/` = 0；
 工具执行的全部既有集成测试（含超时 / 取消 / 图片结果 / 远程分流）不改断言通过。
 
-### S3：其余能力归位（命令域已完成，能力本体见下）
+### S3：其余能力归位——**已完成 2026-11**
 
-| 能力 | 现状 | 做法 |
+| 能力 | 做法 | 结果 |
 |---|---|---|
-| **subagent 执行体**（401 行） | 工具 + store 在插件，执行体在宿主 | 注入 `SubagentExecutionHost`（建 agent / 取 provider / 发 hook / 联邦通知），执行体搬进插件 |
-| **instance 桥接**（747 行） | 插件有实现，宿主侧是 `impl Agent` 粘合 | 同 workspace 的收法：`InstanceHost` 四方法（emit / trunk / registry / gate）；`InvokeInstanceOp` 随桥接一起走 |
-| **联邦**（1,698 行） | 有机制 crate（`echo-federation`），无插件 crate | 新建 `echo-plugin-federation`。**解阻结论（已核实）**：`packages/federation/*` 除 `FederationPorts::command_handler`（现在是 `Fn(&Agent, cmd)`）外不引用任何宿主类型——把那一个类型改成 `Fn(BackendCommand) -> BoxFuture`（组合根捕获 agent）后即可整块搬走 |
-| **API 管理面**（1,208 行） | provider 插件只有工厂 | 阻塞点：`ApiProfile` 还在 `echo-agent::config`。**先决条件**：把 `ApiProfile` 下沉到 `echo-config`（它本就是配置词汇），之后 `ApiAdminHost`（配置写回 / 探测 / 计量）+ 14 条 `*Api*` 命令一起进 `echo-plugin-provider-llm` |
+| **联邦**（1,698 行） | 解阻：`FederationPorts::command_handler` 的类型 `Fn(&Agent, cmd)` → `Fn(cmd) -> future`（实现只需要事件出口）。整块搬进新 crate `echo-plugin-federation` | 宿主 `packages/federation/` 只剩 re-export |
+| **subagent 执行体**（401 行） | 解阻：九个端口 `SubagentExecutionHost`（提示词 / 工具 / provider / 循环参数 / 事件 / 联邦通知 / hook 投递）。执行体搬进 `echo-plugin-subagent::execution` | 宿主 401 → 98 行 |
+| **instance 命令域**（429 行） | 解阻：`ApiProfile`… 不，这里的解阻是"依赖只有注册表 + 事件出口"（原本就够）。连同 `InvokeInstanceOp` 一起进 `echo-plugin-tools::instance_ops` | 实例域一个插件 |
+| **provider / API** | 解阻：`ApiProfile` 下沉到 `echo_defs::api_profile`（跨边界词汇）。`api_pool`（132 行）+ `list_api_profiles` 工具进插件 | **管理面本身未搬**，见 §不搬清单 |
 
-**已完成（命令域 + 投影）**：
+**逐块记录**：
 
-| 插件 | 迁走的命令 | 迁走的投影 |
+- **联邦**：`router`（1030）/ `aggregator`（372）/ `remote_tool`（195）/
+  `workspace_query`（101）/ `ports`（298）/ `commands`（171）。顺带修一个隐性
+  耦合：此前每个 persona 都往同一个进程级 ports 里塞"自己的 emit"，谁的装配
+  最后跑谁生效；现在出口在装配期固定（进程级汇聚点经 `OnceLock` 交付）。
+- **subagent**：三个搬家助手跟上——`subagent_task_field`（4000 字符上限 +
+  标注）、`is_turn_cancelled`（取消 vs 真失败，单点定义在 `echo_defs::llm`）、
+  `wire_status`（插件状态 → 线协议词汇）。拒绝路径与正常终态走**同一套**回报
+  （漏掉任何一步都会让面板的子任务永远停在"运行中"）。
+- **instance**：三条不变量逐条保留（多实例寻址回退 / 失败也回执 / 状态下发
+  单源）。`SHARED_WRITE_METHODS` 加了一条测试——它是平台行为契约，漏一行会
+  表现为"改了实例 A，B 没跟上"。
+- **provider**：`echo_agent::config::ApiProfile` 与 `crate::api_pool::…` 都保留
+  为路径别名，调用方零改动。
+
+## 不搬清单（每条都试过，附理由）
+
+诚实记录"没做"比做完的部分更重要——否则下一个人会把同样的时间再花一遍。
+
+| 模块 | 行数 | 为什么不搬 |
 |---|---|---|
-| `echo-plugin-tools` | shell ×4 · instance ×6 · tools ×2 | `InstanceList`（读 ui_descriptor / session_labels / cached_state）· `ToolsList` |
-| `echo-plugin-skills` | skills ×8 | `SkillsList`（含 `.sources.json` 归正） |
+| **API 管理面**（`agent/api_admin.rs`） | 1,208 | 核心逻辑建立在 **`AgentConfig`** 上（`update_api_config` 前 90 行都是"在配置聚合体上改 profile"）。搬它要先下沉 `AgentConfig`——那是整个配置层，而没人会替换"agent 的配置结构"。**可搬的部分已搬**：`ApiProfile`（定义层）、`api_pool`（provider 插件）、`list_api_profiles`（tools 插件） |
+| **turn 驱动**（`agent/turn.rs`） | 512 | 它是 **harness**：把宿主的提示词 / 工具执行器 / 流式转发 / 事件翻译接到 `echo_loop::TurnRunner`。引用 13+ 个宿主协作点，造出来的 seam 就是 `Agent` 本身——那是**最坏的抽象**（seam 变影子）。它存在的意义就是"接线"，不是能力 |
+| **instance 入站桥**（`instance_ops/bridge.rs`） | 754 | 名字叫 bridge，实质是**入站入口**（会话键 / 单并行模式展示会话 / 事件 / turn 启动 / 脱敏）。核心入站编排，不是 adapter 能力；adapter 能力早已出进程（`echo-plugin-adapter` + 独立仓库 `echo-adapter-qq`） |
+| **会话 / trunk**（`session/`） | 2,119 | 事件日志唯一真源 + 投影 + 压缩编排。**没有替换需求**（谁会换掉会话存储？），且 `s4-agent-decomposition.md` 已论证过服务化的收益/成本 |
+| **`Agent` 本身** | 1,539 | 对应 Cordis 的 `ctx.fork()` **作用域**，不是插件。门面化（字段 30 → 8）可以做，但把它做成插件会得到一个没人会替换的插件 + 一层间接 |
+| **插件注册表 / 面板协议 / 配置 / 时间线 / 指标** | ~5,000 | 宿主骨架。插件化它们等于把宿主变空壳 |
+
+**判据**：能不能回答"谁会替换它"。能回答的是能力（搬）；不能回答的是编排
+或骨架（留）。这条判据在 2026-11 的六轮迁移里没有一次失效。
 
 ### S4：会话与 turn（编排骨架的边界）
 

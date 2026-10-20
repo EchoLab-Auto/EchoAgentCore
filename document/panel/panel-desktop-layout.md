@@ -113,7 +113,7 @@ Panel 覆写 ui-frame 的样式时，**裸类选择器压不过库**——库规
 | --- | --- |
 | 品牌 `EchoAgent Panel` | 纯展示（无点击）；`.brand` 字重 700 |
 | 聊天 / 设置 | 切视图，`aria-pressed` 标当前项；当前视图按标签页持久化 |
-| 全屏 | 切换浏览器全屏（`FullscreenToggleButton`）；触摸端由 CSS 隐藏（iOS Safari 不支持元素全屏） |
+| 全屏 | 切换浏览器全屏（`FullscreenToggleButton`，`aria-pressed` 反映状态）。触摸端不再隐藏，改为 `compact` 图标态约 34px、位置在「卡片」左侧；浏览器不提供 `requestFullscreen`（iOS Safari）时点按给明确提示，见[移动端布局](./panel-mobile-layout.md)「顶栏全屏按钮」 |
 | 主题 | 三态（浅色 / 自动跟随系统 / 深色），切换即持久化到 `echo-panel-theme` |
 
 顶栏中段留空——连接状态在侧栏「连接状态」卡，**面板级信息与业务导航分离**。

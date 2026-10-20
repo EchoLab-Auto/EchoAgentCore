@@ -49,11 +49,24 @@ graph TB
 | 区段 | 桌面 | 移动端 v2 |
 | --- | --- | --- |
 | 顶栏左 | 品牌 `EchoAgent Panel` | **`☰`（视图菜单）+ 当前视图标题** |
-| 顶栏右 | 聊天 / 设置 / 全屏 / 主题 | 卡片（仅 chat）+ 主题（全屏按钮被隐藏：iOS Safari 不支持元素全屏） |
+| 顶栏右 | 聊天 / 设置 / 全屏 / 主题 | 全屏（图标）+ 卡片（仅 chat）+ 主题——全屏在卡片**左侧**，2026-10 起不再隐藏 |
 | 主区 | 双列侧栏 + 消息 | 消息（单列，无侧栏留白） |
 | 底部 | 入口行 + 悬浮输入区 | 入口行（横滚）+ 输入区（贴底、随键盘抬升） |
 | 侧栏卡片 | 常驻双列 | 底部 Sheet（卡片抽屉） |
 | 视图切换 | 顶栏常驻按钮 | `☰` → 底部 Sheet |
+
+### 顶栏全屏按钮（2026-10 改为移动端可用）
+
+此前 `.topbar-actions .fullscreen-toggle { display: none }` 把移动端整段隐藏，理由写的是「iOS Safari 不支持元素全屏」。**这是把一家限制当成所有移动端的限制**：Android Chrome、微信内置浏览器、各家 WebView 都支持 `requestFullscreen`，手机上隐藏地址栏能给会话区多出 ~50px 真实可见高度。
+
+| 决策 | 做法 |
+| --- | --- |
+| 显示 | 移动端照常显示，位置在「卡片」**左侧**（`App.vue` 里 DOM 顺序即视觉顺序；桌面端卡片按钮 `v-if` 为假，故桌面仍是「聊天/设置 → 全屏 → 主题」） |
+| 收窄 | 窄屏走 `compact` 图标态：16px 四角图标 + 左右 8px 内边距 ≈ **34px**（原来文本按钮 60px），375/320 顶栏仍放得下三个按钮；高度由 `pointer: coarse` 段的 `min-height: 44px` 兜住 |
+| 能力检测 | `typeof document.documentElement.requestFullscreen === 'function'` 为假（iOS Safari）时：按钮仍显示，`title` 与点按 toast 都说明「可『添加到主屏幕』后全屏运行」——不假装能全屏，也不静默失败 |
+| 图标 | 进入=四角向外、退出=四角向内；同时 `aria-pressed` 反映状态，`aria-label` 在图标态承担文案（`全屏` / `退出全屏` / `全屏（当前浏览器不支持）`） |
+
+实测（375×812，CDP 真实鼠标手势）：点按 → `document.fullscreenElement = HTML`、图标与 `aria-label` 同步切到「退出全屏」；再点 → 退出、还原。`element.click()` 之类的合成事件会被浏览器以 NotAllowedError 拒绝（非用户手势）——这是 API 的正确行为，不是 bug。
 
 ### 视图切换 Sheet
 
@@ -199,6 +212,9 @@ Shell 视图在两个视口共用同一份结构，只有两处窄屏差异：�
 | 无横向溢出 | `document.documentElement.scrollWidth === innerWidth`（320 / 375 / 390 三档） |
 | 顶栏让开刘海 | 顶栏高 = `56 + safe-top`；顶栏内每个按钮的 `top ≥ safe-top` 且 `bottom ≤ 顶栏高` |
 | 顶栏全部可达 | 顶栏内所有 `display !== none` 的按钮，最右一个 `rect.right < innerWidth` |
+| 全屏按钮可用 | 移动端 `.fullscreen-toggle` 的 `display !== none` 且只含 SVG（`compact` 图标态） |
+| 全屏在卡片左侧 | `.fullscreen-toggle` 的 `right ≤ .mobile-cards-btn` 的 `left` |
+| 全屏触控目标 | 宽 **32..48px**、高 **≥44px**（实测 34×44） |
 | 底部不漏 | 入口行 `bottom ≤ 输入区 top − 8`（无重叠，实测间距 16） |
 | 留白跟键盘 | 消息区 `padding-bottom ≥ 输入区占位（bottom + 高）`，键盘弹出后仍成立 |
 | 视图切换可达 | `☰` 可见（44×44），Sheet 三项可点，切换后标题随之变化 |
@@ -217,7 +233,7 @@ Shell 视图在两个视口共用同一份结构，只有两处窄屏差异：�
 ### 怎么测（可复现，已入库）
 
 ```bash
-cd web && npm run layout:mobile        # 375×812 + 320×640，26 条断言
+cd web && npm run layout:mobile        # 375×812 + 320×640，32 条断言
 BASE=http://127.0.0.1:8080 npm run layout:mobile   # 打生产构建
 ```
 
@@ -259,3 +275,17 @@ Emulation.setSafeAreaInsetsOverride({ insets: { top: 47, bottom: 34, left: 0, ri
 | 桌面（1280×800） | 卡片 213.9、菜单可见 | 卡片 213.9、菜单改由 PanelPopover 承载（360px，视觉一致） |
 
 七条修复分别落在：`styles.css` 的顶栏安全区（高度 + 内边距 + `#app` 前缀）、`ChatView.vue` 的入口行 `bottom`、`ChatView.vue` 的消息区 `padding-bottom`（含「回到底部」按钮与上下文档覆盖层的底部同步补安全区）、`SettingsView.vue` 的筛选条两行化、`AgentSwitcher.vue` 的窄屏卡片收敛与菜单容器迁移（`PanelPopover` + 删除自挂 document 监听）、`web/scripts/mobile-layout-check.mjs` 新增 6 条 Agent 断言。
+
+### 第三轮（2026-10-20：顶栏全屏按钮）
+
+| 项 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 全屏按钮（375） | `display: none`（移动端整段隐藏） | 可见 **34×44** 图标态，x=163..197 |
+| 与「卡片」相对位置 | —（不存在） | 全屏 right 197 ≤ 卡片 left 201，**在其左侧** |
+| 顶栏右侧组宽 | 162px（卡片 + 主题） | **200px**（全屏 34 + 卡片 60 + 主题 94 + 间距） |
+| 品牌可用宽（375） | 153px | **67px 余量**（品牌实测 35.9px，未截断） |
+| 品牌可用宽（320） | 99px | 12px 余量（仍不截断） |
+| 桌面（1280） | 文本按钮「全屏」60px | 不变（`compact` 仅窄屏传入） |
+| 点击行为 | —（无按钮） | CDP 真实手势 → `fullscreenElement=HTML`，图标/aria 双向同步 |
+
+两条修复落在：`App.vue`（全屏按钮移到「卡片」之前 + 传 `:compact="isMobile"`）、`styles.css`（删 `display:none`，改 34px 图标态收窄）、`FullscreenToggleButton.vue`（图标态 + 能力检测 + 明确提示）。断言：`mobile-shell-layout.test.ts` 改为「收窄不隐藏」，`fullscreen-toggle.test.ts` 增 2 条（图标态 / 无 API），`layout:mobile` 增 3 条。
