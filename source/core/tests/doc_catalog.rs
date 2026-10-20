@@ -37,14 +37,13 @@ async fn render_tool_catalog() -> String {
     let dir = std::env::temp_dir().join(format!("echo-doc-catalog-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     let store = echo_config::ConfigStore::new(dir.join("core.toml"));
-    let mut registry = echo_agent::ToolRegistry::new();
-    echo_agent::tool::builtin::register_all(
-        &mut registry,
+    let registry = echo_agent::tool::builtin::build_registry(
         std::sync::Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
         dir.clone(),
         store,
         None,
         echo_agent::shell::ShellHandle::new(),
+        None,
     );
     // `full_definitions` 是**面板同源**的那一份：name / description / category /
     // package 全在里面（`snapshot` 拿的是工具状态快照，不是定义）。
@@ -76,7 +75,7 @@ async fn render_tool_catalog() -> String {
     out.push_str("y: 1780\n");
     out.push_str("---\n\n");
     out.push_str(&format!(
-        "{GENERATED_MARKER}`echo-agent::tool::builtin::register_all`） -->\n\n"
+        "{GENERATED_MARKER}`echo-agent::tool::builtin::build_registry`） -->\n\n"
     ));
     out.push_str("# 内置工具目录\n\n");
     out.push_str("> 本文件由 `source/core/tests/doc_catalog.rs` 生成并校验。\n");

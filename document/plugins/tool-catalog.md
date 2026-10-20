@@ -6,7 +6,7 @@ x: 960
 y: 1780
 ---
 
-<!-- 自动生成，请勿手改：`echo-agent::tool::builtin::register_all`） -->
+<!-- 自动生成，请勿手改：`echo-agent::tool::builtin::build_registry`） -->
 
 # 内置工具目录
 

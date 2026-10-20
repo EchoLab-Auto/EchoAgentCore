@@ -51,7 +51,7 @@ plugin/echo-plugin-loop                 echo-context echo-defs echo-loop echo-pl
 plugin/echo-plugin-subagent             echo-defs echo-tool
 plugin/echo-plugin-workspace            echo-context echo-defs echo-plugin echo-protocol echo-session echo-tool
 plugin/echo-plugin-management           echo-federation echo-protocol
-plugin/echo-plugin-tools                echo-defs echo-tool echo-shell echo-context echo-test-utils
+plugin/echo-plugin-tools                echo-defs echo-tool echo-shell echo-context echo-plugin echo-test-utils
 
 # ── 业务层与组合根 ─────────────────────────────────────────────────────
 # echo-agent 是业务 crate：**只有组合根可以依赖它**。

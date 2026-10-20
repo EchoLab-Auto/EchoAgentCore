@@ -1028,6 +1028,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let factory_shell_handle = shell_handle.clone();
     // 全局禁用策略：所有 persona 共用一份（开关变化只需改这份）。
     let factory_global_policy = global_policy.clone();
+    // 工具集插件（`echo-agent.tools.builtin`）的服务表：agent factory 在
+    // "插件是否已挂载"上只问一次——挂上了就解析 provider，没挂上直接构造
+    // 同一实现（见 `tools_builtin` 模块文档）。
+    let tool_ctx = ctx.clone();
     let make_agent: Arc<dyn Fn(String, AgentProfile) -> Arc<Agent> + Send + Sync> = Arc::new(
         move |id: String, profile: AgentProfile| -> Arc<Agent> {
             let provider_arc2 = factory_provider.clone();
@@ -1044,6 +1048,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let config_store_path = factory_config_path.clone();
             let agents_config_store = factory_config_store.clone();
             let pt = factory_plugin_tools.clone();
+            let tool_ctx = tool_ctx.clone();
             let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             {
                 let mut cfg = base_cfg.clone();
@@ -1059,14 +1064,22 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     cfg.context_window_tokens = profile.context_window_tokens;
                 }
                 // 每个 persona 独立的工具注册表（启动期一次性组装）。
-                let mut t = echo_agent::ToolRegistry::new();
-                echo_agent::tool::builtin::register_all(
-                    &mut t,
+                //
+                // **清单在插件里**（`echo-plugin-tools` 的 `BuiltinToolProvider`），
+                // 这里只递端口。服务表里有 provider 就用它（插件已挂载），
+                // 否则直接构造同一实现（`core_agent` 早于插件挂载——S1b 前的
+                // 唯一无服务表路径，见 `tools_builtin` 模块文档）。
+                let persona_instances = factory_instances_by_persona
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| default_instances.clone());
+                let mut t = echo_agent::tool::builtin::build_registry(
                     instances2.clone(),
                     workspace.clone(),
                     agents_config_store.clone(),
                     factory_federation.invoker.clone(),
                     factory_shell_handle.clone(),
+                    echo_agent::tool::builtin::resolve_provider(&tool_ctx),
                 );
                 // 工具结果出口卡口（2026-10 安全）：本 persona 注册表注入
                 // 脱敏器——所有工具（内置 / 插件 / 远程 / 子代理直呼）的
@@ -1078,10 +1091,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 每人格注册**自己实例集合**的插件实例工具（多实例经 account
                 // 寻址）；按能力（send_text）过滤在注册函数内完成——无出站
                 // 能力的插件实例不注册任何工具（泛化 S6 / 01b §D.4）。
-                let persona_instances = factory_instances_by_persona
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_else(|| default_instances.clone());
                 // 插件实例出站闸门（2026-10 安全）：send_* 的文本命中密钥按策略
                 // 阻断/替换；文件参数落在敏感目录（配置 / 凭据目录）直接拒发。
                 let outbound_gate = redactor2.as_ref().map(|redactor| {
@@ -1108,7 +1117,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     }
                 }
                 // 任务清单（checklist）为普通内置工具：随内置工具集包
-                // （register_all 已打 echo-agent.tools.builtin 标签），
+                // （插件装配时已打 echo-agent.tools.builtin 标签），
                 // 插件维度已于 2026-09 移除，只受工具级白/黑名单控制。
                 // 工作区会话（workspace 插件）：每 persona 独立存储 + 工具。
                 // 存储文件与配置 TOML 解耦（独立 JSON，绝不同路径互写）；
@@ -1491,30 +1500,23 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         };
 
         // ── 实化 1：内置工具集（包维度批量启停，跨 persona）──
-        let gating_manager_1 = gating_manager.clone();
-        push_builtin(
-            &mut catalog,
-            PluginManifest::builtin(
-                TOOLS_BUILTIN_PLUGIN_ID,
-                "内置工具集",
-                version,
-                "tool",
-                "builtin_tools",
-                "平台无关的内置工具（计算/搜索/清单/编码/插件实例管理）",
-            ),
-            move |_ctx| {
-                // 逐 persona 重评估：全局启用 ∧ 各 persona 白/黑名单。
-                for_each_agent(&gating_manager_1, |a| {
-                    a.reapply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, true)
-                });
-                let gating_manager_u1 = gating_manager_1.clone();
-                Ok(vec![Disposer::from_fn(move || {
-                    for_each_agent(&gating_manager_u1, |a| {
-                        a.reapply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, false)
+        //
+        // 清单与装配都在插件里（`echo-plugin-tools`，全插件化 S1）：这里只给
+        // 一个门控回调 + 挂载。`mount` 会把 `BuiltinToolProvider` provide 到
+        // `tools.builtin` 服务键——之后创建的 persona 从服务表解析它，
+        // 而不是由组合根指名。
+        {
+            let gating_manager_1 = gating_manager.clone();
+            push_plugin(
+                &mut catalog,
+                echo_agent::tool::builtin::builtin_plugin::plugin(version, move |enable| {
+                    // 逐 persona 重评估：全局启用 ∧ 各 persona 白/黑名单。
+                    for_each_agent(&gating_manager_1, |a| {
+                        a.reapply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, enable)
                     });
-                })])
-            },
-        )?;
+                }),
+            )?;
+        }
 
         // ── 实化 2：技能目录（整表启停，跨 persona）──
         let gating_manager_2 = gating_manager.clone();

@@ -696,6 +696,7 @@ dependencies = [
  "async-trait",
  "echo-context",
  "echo-defs",
+ "echo-plugin",
  "echo-shell",
  "echo-test-utils",
  "echo-tool",

@@ -41,6 +41,7 @@ pub mod calculator;
 pub mod checklist;
 pub mod coding;
 pub mod instance;
+pub mod plugin;
 pub mod shell_tools;
 pub mod websearch;
 
@@ -48,6 +49,7 @@ pub use calculator::CalculatorTool;
 pub use checklist::ChecklistTool;
 pub use coding::{register_coding_tools, RemoteAwareTool};
 pub use instance::register_instance_tools;
+pub use plugin::{BuiltinToolProvider, BuiltinTools, ToolsHostCtx, PLUGIN_ID};
 pub use shell_tools::{register_shell_tools, ShellExecTool, ShellStartTool, ShellStopTool};
 pub use websearch::WebSearchTool;
 
