@@ -14,6 +14,7 @@ use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod builtin_plugins;
 mod agent_supervisor;
 mod config;
 mod federation_import;
@@ -1403,12 +1404,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 声明在这里（块外）是为了后面每个人格接线（`set_loop_runner`）用同一实例。
     let loop_runner: Arc<echo_loop::TurnRunner>;
     {
-        use echo_agent::plugins::{
-            MANAGEMENT_PANEL_PLUGIN_ID, SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
-        };
-        use echo_context::Disposer;
-        use echo_plugin::{BuiltinPlugin, MountContext, PluginManifest, PluginRuntime};
-        use std::sync::atomic::Ordering;
+        use echo_plugin::MountContext;
 
         let plugin_host = plugin_host.clone();
         // 挂载上下文只带服务定位器（框架层零领域依赖；`tools`/`skills` 两个
@@ -1464,16 +1460,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             );
         }
 
-        // 遍历全部 persona。manager 句柄由调用方显式传入（supervisor 已在
-        // 上方建立）——技债清理：不再回读进程级 `global_manager` 锚点。
-        fn for_each_agent(
-            mgr: &std::sync::Arc<echo_agent::agent_manager::AgentManager>,
-            f: impl Fn(&std::sync::Arc<echo_agent::Agent>),
-        ) {
-            for running in mgr.all() {
-                f(&running.agent);
-            }
-        }
         let gating_manager = supervisor.manager();
 
         let version = env!("CARGO_PKG_VERSION");
@@ -1481,424 +1467,44 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 捕获运行期句柄：端口 / token / 实例句柄 / broker…），但**集合、
         // 顺序、启用状态**交给 plugins.toml——构造结果先进"内置目录"，
         // 循环结束后由一次 mount_plan 按计划挂载。
-        let mut catalog: Vec<Arc<dyn echo_plugin::Plugin>> = Vec::new();
-        fn push_builtin(
-            catalog: &mut Vec<Arc<dyn echo_plugin::Plugin>>,
-            manifest: PluginManifest,
-            mount: impl Fn(&MountContext) -> echo_plugin::PluginMountResult + Send + Sync + 'static,
-        ) -> Result<()> {
-            let id = manifest.id.clone();
-            if catalog.iter().any(|p| p.manifest().id == id) {
-                // 装配 bug（同 id 两条构造）——早失败胜过静默覆盖。
-                return Err(anyhow::anyhow!("duplicate builtin plugin id {id}"));
-            }
-            catalog.push(Arc::new(BuiltinPlugin::new(manifest, mount)));
-            Ok(())
-        }
-
-        /// 直接压入一个**已构造好**的插件（带贡献：命令 / 文本块 / 事件…）。
-        ///
-        /// 与 [`push_builtin`] 的分工：后者只给 manifest + mount 闭包，构造器
-        /// 的额外能力（`with_commands` / `with_text_blocks` / …）用不上。需要
-        /// 声明贡献的内置插件走这一条。
-        fn push_plugin(
-            catalog: &mut Vec<Arc<dyn echo_plugin::Plugin>>,
-            plugin: Arc<dyn echo_plugin::Plugin>,
-        ) -> Result<()> {
-            let id = plugin.manifest().id.clone();
-            if catalog.iter().any(|p| p.manifest().id == id) {
-                return Err(anyhow::anyhow!("duplicate builtin plugin id {id}"));
-            }
-            catalog.push(plugin);
-            Ok(())
-        }
-
-        // 名义挂载：provider.llm 保持重启生效语义。
-        let nominal = |entry: String| {
-            move |_ctx: &MountContext| {
-                let _ = entry;
-                Ok(vec![])
-            }
-        };
-
-        // ── 实化 1：内置工具集（包维度批量启停，跨 persona）──
+        // ── 内置插件目录（构造在 `builtin_plugins`，装载计划在 `plugins.toml`）──
         //
-        // 清单与装配都在插件里（`echo-plugin-tools`，全插件化 S1）：这里只给
-        // 一个门控回调 + 挂载。`mount` 会把 `BuiltinToolProvider` provide 到
-        // `tools.builtin` 服务键——之后创建的 persona 从服务表解析它，
-        // 而不是由组合根指名。
-        {
-            let gating_manager_1 = gating_manager.clone();
-            // Shell 命令域的宿主接缝：按 `team_id` 解析人格（当前 agent 兜底）。
-            // 插件因此不认识 `Agent`——它只要"管理器 / 出口 / 归属 / 进度回调"。
-            let shell_command_host: std::sync::Arc<
-                dyn echo_agent::tool::builtin::ShellCommandHostAlias,
-            > = std::sync::Arc::new(echo_agent::agent::shell_host::AgentShellCommandHost::new(
-                agent.clone(),
-            ));
-            // 工具管理面：注册表 per-persona、启停要持久化 + 逐人格重算。
-            let tools_command_host: std::sync::Arc<
-                dyn echo_agent::tool::builtin::ToolsCommandHostAlias,
-            > = std::sync::Arc::new(echo_agent::agent::tools_host::AgentToolsCommandHost::new(
-                agent.clone(),
-            ));
-            // 实例命令域：注册表是进程级单例，出口就是 `Agent::emit`。
-            let instance_command_host: std::sync::Arc<
-                dyn echo_agent::tool::builtin::InstanceCommandHostAlias,
-            > = std::sync::Arc::new(echo_agent::agent::shell_host::AgentInstanceCommandHost::new(
-                agent.clone(),
-            ));
-            push_plugin(
-                &mut catalog,
-                echo_agent::tool::builtin::builtin_plugin::plugin(
-                    version,
-                    shell_command_host,
-                    instance_command_host,
-                    tools_command_host,
-                    move |enable| {
-                        // 逐 persona 重评估：全局启用 ∧ 各 persona 白/黑名单。
-                        for_each_agent(&gating_manager_1, |a| {
-                            a.reapply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, enable)
-                        });
-                    },
-                ),
-            )?;
-        }
-
-        // ── 实化 2：技能目录（整表启停 + 命令域，跨 persona）──
-        //
-        // 清单与命令域都在插件里（全插件化 S3）：宿主只注入 `SkillsCommandHost`
-        // （per-persona 技能表 / 写目录 / 重载 / 启停持久化 / 事件出口）。
-        {
-            let gating_manager_2 = gating_manager.clone();
-            let skills_host: std::sync::Arc<
-                dyn echo_agent::skill::commands::SkillsCommandHost,
-            > = std::sync::Arc::new(echo_agent::agent::skills_host::AgentSkillsCommandHost::new(
-                agent.clone(),
-            ));
-            push_plugin(
-                &mut catalog,
-                echo_agent::skill::plugin(version, skills_host, move |enable| {
-                    for_each_agent(&gating_manager_2, |a| {
-                        a.reapply_plugin_gating(SKILLS_DIR_PLUGIN_ID, enable)
-                    });
-                }),
-            )?;
-        }
-
-        // ── 实化 4：循环模式（二选一）──
-        // 声明已外迁到 `echo-plugin-loop`（Phase 3 ⑦）：驱动本体只有一个
-        // （echo-loop TurnRunner，2026-10 单轨化），两个模式插件只表达**策略**
-        // （per-persona 白名单推导的 `LoopMode`，见 `TeamMember::loop_mode`）；
-        // mount/unmount 不切换驱动、不注册任何运行期资源。
-        //
-        // 协议化：插件族声明 `Service{key:"loop"}` 贡献；真正的 runner 实例
-        // 在本文件更早处（`ctx.register::<Arc<TurnRunner>>("loop", …)`）构造，
-        // 带计量/脱敏装饰，服务键与贡献声明同源。
-        for plugin in echo_plugin_loop::plugins(version) {
-            let id = plugin.manifest().id.clone();
-            if catalog.iter().any(|p| p.manifest().id == id) {
-                return Err(anyhow::anyhow!("duplicate builtin plugin id {id}"));
-            }
-            catalog.push(plugin);
-        }
-        tracing::debug!(
-            service = echo_plugin_loop::service_contribution().key.as_str(),
-            plugins = ?echo_plugin_loop::PLUGIN_IDS,
-            "loop mode plugins queued (pure policy; service declared)"
-        );
-
-        // 任务清单（checklist）已降级为普通内置工具：无插件注册，
-        // 与 calculator / bash 等同层，只受工具级白/黑名单门控。
-
-        // ── 实化 6：工作区会话（workspace 插件）──
-        //
-        // **整个命令域 + 提示词块都在插件里**（本轮迁移完成）。宿主这边只剩
-        // **一处**接线：注入 `WorkspaceHost`（四个方法，见
-        // `agent/workspace_host.rs`）。于是：
-        // - 7 条 `*Workspace*` 命令由 `dispatch_command` 路由到插件，
-        //   `commands.rs` 里不再有 workspace 的 match 分支（只剩"插件没装"兜底）；
-        // - 提示词块 `workspace` 由插件的 `Contribution::Text` 提供，
-        //   装配函数不再有 workspace 位置参数；
-        // - persona 门控（白名单）由宿主的 gate 回调表达——那是宿主的配置概念。
-        {
-            use echo_agent::plugins::WORKSPACE_PLUGIN_ID;
-            let gating_manager_3 = gating_manager.clone();
-            // 宿主能力：store 解析 / 事件出口 / 浏览根 / 联邦查询。
-            //
-            // store 走**进程级共享表**（`team_id → store`）：进程级只有一个
-            // workspace 插件，而 store 是 per-persona 的。提示词块与命令处理
-            // 都要按 `team_id` 取自己那一份。
-            let workspace_host: std::sync::Arc<dyn echo_agent::workspace::commands::WorkspaceHost> =
-                std::sync::Arc::new(
-                    echo_agent::agent::workspace_host::AgentWorkspaceHost::from_agents(
-                        {
-                            let manager = supervisor.manager();
-                            move || {
-                                manager
-                                    .all()
-                                    .into_iter()
-                                    .map(|running| Arc::clone(&running.agent))
-                                    .collect()
-                            }
-                        },
-                        event_sink.clone(),
-                        // 联邦查询出口：直接用组合根持有的那份（`federation_ports`
-                        // 在装配期构造、与插件同寿命），不必借 `factory_federation`
-                        // ——后者已经被 agent factory 闭包移走了。
-                        Some(echo_agent::federation::workspace_query(
-                            federation_ports.querier.clone(),
-                        )),
-                    ),
-                );
-            let plugin = echo_agent::workspace::plugin(version, workspace_host, move |enable| {
-                for_each_agent(&gating_manager_3, |a| {
-                    a.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, enable)
-                });
-            });
-            push_plugin(&mut catalog, plugin)?;
-        }
-
-        // ── 实化 6b：联邦（对等链路：远程工具 / 跨机委派 / 会话迁移）──
-        //
-        // 实现（路由表 / 代理工具 / 聚合器 / 跨机查询 / 出口集合，1,698 行）
-        // 已整块外迁到 `echo-plugin-federation`（全插件化 S3）。宿主这边只剩：
-        // 一份 `FederationPorts`（装配期构造，含组合根实现的命令处理器）+
-        // 进程级事件出口。于是"联邦"可独立禁用、可独立替换。
-        {
-            use echo_agent::plugins::FEDERATION_PLUGIN_ID;
-            let gating_manager_f = gating_manager.clone();
-            let plugin = echo_plugin_federation::plugin(
-                version,
-                std::sync::Arc::clone(&federation_ports),
-                event_sink.clone(),
-                move |enable| {
-                    for_each_agent(&gating_manager_f, |a| {
-                        a.reapply_plugin_gating(FEDERATION_PLUGIN_ID, enable)
-                    });
-                },
-            );
-            push_plugin(&mut catalog, plugin)?;
-        }
-
-        // 选单（present_menu）已于 2026-09 废弃移除（无插件、无 broker）。
-
-        // ── 实化 7：subagent 委派（隔离上下文子任务 + 完成 hook 回灌）──
-        {
-            use echo_agent::plugins::SUBAGENT_PLUGIN_ID;
-            let gating_manager_4 = gating_manager.clone();
-            push_builtin(
-                &mut catalog,
-                PluginManifest::builtin(
-                    SUBAGENT_PLUGIN_ID,
-                    "Subagent 委派",
-                    version,
-                    "tool",
-                    "subagent",
-                    "委派独立子任务给隔离上下文的子 agent：spawn_subagent 工具 + 完成后 <subagent_event> hook 回灌主 agent",
-                ),
-                move |_ctx| {
-                        for_each_agent(&gating_manager_4, |a| a.reapply_plugin_gating(SUBAGENT_PLUGIN_ID, true));
-                    let gating_manager_u4 = gating_manager_4.clone();
-                    Ok(vec![Disposer::from_fn(move || {
-                        for_each_agent(&gating_manager_u4, |a| a.reapply_plugin_gating(SUBAGENT_PLUGIN_ID, false));
-                    })])
-                },
-            )?;
-        }
-
-        // ── 实化 3：QQ 插件实例（启停进程 + 工具包启停）──
-        {
-            // 实例句柄（独立进程实例插件；无实例 = None，启停为 no-op）。
-            let qq = qq_instance.clone();
-            let wired = qq_wired.clone();
-            let running = qq_running.clone();
-            // id / 名称 / entry 全部由**平台名**派生——组合根不再持有点名平台的常量。
-            let instance_plugin_id = crate::instance_manifests::plugin_id_for(&platform);
-            let instance_plugin_name = format!("{platform} 插件实例");
-            let instance_plugin_id_for_mount = instance_plugin_id.clone();
-            let gating_manager_5 = gating_manager.clone();
-            push_builtin(
-                &mut catalog,
-                PluginManifest::builtin(
-                    &instance_plugin_id,
-                    &instance_plugin_name,
-                    version,
-                    "instance",
-                    platform.clone(),
-                    format!("{platform} 平台实例插件（独立进程）"),
-                )
-                // 实例插件化收尾（P1.9，2026-10）：实现由独立进程
-                // `echo-instance-qq` 提供，这里只是门控壳。必须显式声明，
-                // 否则 Panel 按 builtin=true 把它显示成「内部插件」。
-                .with_runtime(PluginRuntime::Subprocess),
-                move |_ctx| {
-                    let plugin_id = instance_plugin_id_for_mount.clone();
-                    for_each_agent(&gating_manager_5, |a| {
-                        a.reapply_plugin_gating(&plugin_id, true)
-                    });
-                    if let Some(qq) = qq.clone() {
-                        if wired.load(Ordering::SeqCst) && !running.swap(true, Ordering::SeqCst) {
-                            let running2 = running.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = qq.start().await {
-                                    running2.store(false, Ordering::SeqCst);
-                                    warn!(error = %e, "QQ adapter start via plugin mount failed");
-                                }
-                            });
-                        }
-                    }
-                    let qq = qq.clone();
-                    let running = running.clone();
-                    let plugin_id_unmount = instance_plugin_id_for_mount.clone();
-                    let gating_manager_u5 = gating_manager_5.clone();
-                    Ok(vec![Disposer::from_fn(move || {
-                        for_each_agent(&gating_manager_u5, |a| {
-                            a.reapply_plugin_gating(&plugin_id_unmount, false)
-                        });
-                        if running.swap(false, Ordering::SeqCst) {
-                            if let Some(qq) = qq.clone() {
-                                tokio::spawn(async move {
-                                    if let Err(e) = qq.stop().await {
-                                        warn!(error = %e, "QQ adapter stop via plugin unmount failed");
-                                    }
-                                });
-                            }
-                        }
-                    })])
-                },
-            )?;
-        }
-
-        // ── 实化 4：管理面（management WS 起停）──
-        // 实现已外迁为独立 crate `echo-plugin-management`（Phase 3 ⑧）：它只
-        // 认 `echo-protocol` 的线契约，**不需要 Agent 句柄**（入站命令塞
-        // bridge、事件从 bridge 出），组合根这里只负责起停。
-        // 注意自锁语义：禁用管理面 = 关闭 Panel 通道本身，恢复需编辑
-        // core.toml 的 disabled_plugins 后重启（文档已注明）。
-        {
-            let mgmt_addr = cfg.core.management_address.clone();
-            let mgmt_token = cfg.core.management_access_token.clone();
-            let mgmt_bridge = bridge.clone();
-            // 合并模式：监听端承接联邦入站（令牌分流）；独立模式：None。
-            let mgmt_fed = if merged {
-                Some(merge_fed.clone())
-            } else {
-                None
-            };
-            push_builtin(
-                &mut catalog,
-                PluginManifest::builtin(
-                    MANAGEMENT_PANEL_PLUGIN_ID,
-                    "管理面",
-                    version,
-                    "management",
-                    "panel",
-                    "Panel management WS 桥接（合并模式下同时承接联邦入站）",
-                ),
-                move |mctx| {
-                    // **配置下发的第一个真实消费者**（2026-11）：管理面端口
-                    // 可以由 `plugins.toml` 覆盖，不必改 core.toml 再重启：
-                    //
-                    //     [[plugin]]
-                    //     id = "echo-agent.management.panel"
-                    //     kind = "builtin"
-                    //     [plugin.config]
-                    //     address = "127.0.0.1:8737"
-                    //
-                    // 只有 `address` 走这条路：**token 不从这里读**——插件
-                    // 配置会进插件清单接口与日志排查面，把凭证放这里等于
-                    // 主动泄漏（token 仍只认 core.toml / 环境变量）。
-                    let addr = mctx
-                        .config_str("address")
-                        .map(str::to_string)
-                        .unwrap_or_else(|| mgmt_addr.clone());
-                    if addr != mgmt_addr {
-                        tracing::info!(
-                            configured = %mgmt_addr,
-                            effective = %addr,
-                            "management address overridden by plugins.toml"
-                        );
-                    }
-                    let br = mgmt_bridge.clone();
-                    let token = mgmt_token.clone();
-                    let fed_opt = mgmt_fed.clone();
-                    let fed_merged = fed_opt.is_some();
-                    let server = tokio::spawn(async move {
-                        let result = match fed_opt {
-                            Some(fed) => {
-                                management::serve_with_federation(&addr, br, token, fed).await
-                            }
-                            None => management::serve_with_token(&addr, br, token).await,
-                        };
-                        if let Err(e) = result {
-                            // 管理面监听退出 = Panel 通道失效（合并模式下联邦
-                            // 入站一并失效）；升级为 error 并给出排查线索
-                            // （2026-10 审计：此前仅 warn，运行期静默）。
-                            tracing::error!(
-                                error = %e,
-                                "management WS server stopped — Panel channel{} down;                                  check the bind address is free (ss -tlnp)",
-                                if fed_merged { " and federation inbound" } else { "" }
-                            );
-                        }
-                    });
-                    let abort = server.abort_handle();
-                    Ok(vec![Disposer::from_fn(move || abort.abort())])
-                },
-            )?;
-        }
-
-        // ── 名义挂载：provider.llm 保持重启生效语义。──
-        {
-            use echo_agent::plugins::PROVIDER_LLM_PLUGIN_ID;
-            push_builtin(
-                &mut catalog,
-                PluginManifest::builtin(
-                    PROVIDER_LLM_PLUGIN_ID,
-                    "LLM Provider",
-                    version,
-                    "provider",
-                    "llm",
-                    "LLM 提供方（deepseek/openai/anthropic/ollama 工厂）",
-                ),
-                nominal("llm".to_string()),
-            )?;
-        }
-
-        // ── plugins.toml 的**外部条目**：注册门控壳，让它们出现在插件清单里 ──
-        //
-        // 此前这些条目的子进程由 `plugins_runtime` 直接拉起（工具注册进
-        // agent），但**从不进 `PluginHost`**——于是面板的插件清单里根本看不到
-        // 用户装的外部插件，文案里却写着「外部组 = 来自插件目录」。
-        //
-        // 壳的语义是**名义挂载**（与 provider.llm 同款）：子进程已由
-        // supervisor 持有，registry 侧不再启停它——`enabled = false` 写进
-        // disabled_plugins 后需重启 Core 生效；重启按钮对这类条目直接给
-        // 明确的「请重启 Core」而不是假装能热重载。
-        //
-        // `builtin = false`：来源维度上它们不是编译进本二进制的（面板的
-        // 来源徽标读这个字段，分组读 `runtime`——两者正交，别互相顶替）。
-        if let Some(runtime) = &plugin_runtime {
-            for entry in &runtime.entries {
-                if entry.kind == "builtin" {
-                    continue; // 内置行由 mount_plan 处理，别重复注册
-                }
-                push_builtin(
-                    &mut catalog,
-                    PluginManifest::builtin(
-                        &entry.id,
-                        &entry.name,
-                        version,
-                        "tool",
-                        &entry.id,
-                        format!("外部插件（plugins.toml，{}）", entry.kind),
-                    )
-                    .with_runtime(PluginRuntime::Subprocess)
-                    .with_builtin_flag(false),
-                    nominal(entry.id.clone()),
-                )?;
-            }
-        }
+        // 这一段此前是八个「实化 N」段（378 行）。搬走的理由不是"main 太长"，
+        // 而是**归属**：`plugins.toml` 决定"装哪些、什么顺序"，代码决定"目录
+        // 里有什么、各自 mount 做什么"。两者放在一起时，"新增一个内置插件要
+        // 改哪里"没有答案。
+        let catalog = crate::builtin_plugins::catalog(
+            version,
+            &crate::builtin_plugins::Hosts {
+                manager: gating_manager.clone(),
+                agent: agent.clone(),
+                event_sink: event_sink.clone(),
+                federation: federation_ports.clone(),
+                instance: qq_instance.clone(),
+                instance_wired: qq_wired.clone(),
+                instance_running: qq_running.clone(),
+                platform: platform.clone(),
+                bridge: bridge.clone(),
+                management_address: cfg.core.management_address.clone(),
+                management_token: cfg.core.management_access_token.clone(),
+                merged_federation: if merged { Some(merge_fed.clone()) } else { None },
+                external_entries: plugin_runtime
+                    .as_ref()
+                    .map(|runtime| {
+                        runtime
+                            .entries
+                            .iter()
+                            .filter(|entry| entry.kind != "builtin")
+                            .map(|entry| crate::builtin_plugins::ExternalEntry {
+                                id: entry.id.clone(),
+                                name: entry.name.clone(),
+                                kind: entry.kind.clone(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            },
+        )?;
 
         // ── 按计划挂载（配置化组合 P4 的落点）──
         // 计划来自 plugins.toml 里 kind = "builtin" 的行：出现的按行序挂载、
