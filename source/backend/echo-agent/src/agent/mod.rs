@@ -18,6 +18,7 @@ mod turn;
 mod workspace_commands;
 pub mod shell_host;
 pub mod skills_host;
+pub mod tools_host;
 pub mod workspace_host;
 // 命令域按包拆分：QQ 侧在 `crate::packages::instance_ops::commands`，
 // 工作区侧在本目录 `workspace_commands.rs`（插件实现已外迁到

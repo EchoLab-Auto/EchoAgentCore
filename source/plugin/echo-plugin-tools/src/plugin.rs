@@ -133,6 +133,7 @@ pub fn plugin(
     version: &str,
     shell_host: Arc<dyn crate::shell_commands::ShellCommandHost>,
     instance_host: Arc<dyn crate::instance_commands::InstanceCommandHost>,
+    tools_host: Arc<dyn crate::tool_commands::ToolsCommandHost>,
     gate: impl Fn(bool) + Send + Sync + 'static,
 ) -> Arc<dyn Plugin> {
     let gate = Arc::new(gate);
@@ -140,6 +141,7 @@ pub fn plugin(
     let handler = Arc::new(crate::shell_commands::ShellCommandHandler::new(shell_host));
     let instance_handler =
         Arc::new(crate::instance_commands::InstanceCommandHandler::new(instance_host));
+    let tools_handler = Arc::new(crate::tool_commands::ToolsCommandHandler::new(tools_host));
     Arc::new(BuiltinPlugin::new(manifest(version), move |mctx: &MountContext| {
         gate_mount(true);
         let gate_unmount = gate_mount.clone();
@@ -162,18 +164,23 @@ pub fn plugin(
         crate::shell_commands::COMMANDS
             .into_iter()
             .chain(crate::instance_commands::COMMANDS)
+            .chain(crate::tool_commands::COMMANDS)
             .collect::<Vec<_>>(),
     )
     .with_command_handler_async(move |name, payload| {
         let shell = handler.clone();
         let instance = instance_handler.clone();
+        let tools = tools_handler.clone();
         Box::pin(async move {
-            // 两个域各问一次；都没认领 = `Ok(Null)`（插件声明过的命令名不该
+            // 三个域依次问一次；都没认领 = `Ok(Null)`（插件声明过的命令名不该
             // 走到这里——`with_commands` 与处理器必须同步，测试守着）。
             if let Some(outcome) = shell.handle(&name, payload.clone()).await {
                 return outcome;
             }
-            instance
+            if let Some(outcome) = instance.handle(&name, payload.clone()).await {
+                return outcome;
+            }
+            tools
                 .handle(&name, payload)
                 .await
                 .unwrap_or(Ok(serde_json::Value::Null))
@@ -211,6 +218,22 @@ mod tests {
     impl crate::instance_commands::InstanceCommandHost for NoInstanceHost {
         fn instances(&self) -> Arc<echo_defs::plugin_instance::InstanceRegistry> {
             Arc::new(echo_defs::plugin_instance::InstanceRegistry::new())
+        }
+        fn emit(&self, _event: echo_protocol::BackendEvent) {}
+    }
+
+    struct NoToolsHost;
+
+    impl crate::tool_commands::ToolsCommandHost for NoToolsHost {
+        fn registry(&self) -> Arc<echo_tool::ToolRegistry> {
+            Arc::new(echo_tool::ToolRegistry::new())
+        }
+        fn set_enabled(
+            &self,
+            _name: &str,
+            _enabled: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
+            Box::pin(async { false })
         }
         fn emit(&self, _event: echo_protocol::BackendEvent) {}
     }
@@ -287,7 +310,9 @@ mod tests {
             Arc::new(NoShellHost);
         let instance_host: Arc<dyn crate::instance_commands::InstanceCommandHost> =
             Arc::new(NoInstanceHost);
-        let plugin = plugin("9.9.9", shell_host, instance_host, |_| {});
+        let tools_host: Arc<dyn crate::tool_commands::ToolsCommandHost> =
+            Arc::new(NoToolsHost);
+        let plugin = plugin("9.9.9", shell_host, instance_host, tools_host, |_| {});
         let mounted = plugin
             .mount(&MountContext::new().with_ctx(ctx.clone()))
             .expect("mount ok");

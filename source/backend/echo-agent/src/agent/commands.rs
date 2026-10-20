@@ -277,43 +277,6 @@ impl Agent {
                 let text = self.model.config.read().await.system_prompt.clone();
                 self.emit(BackendEvent::SystemPrompt { text });
             }
-            BackendCommand::ToggleTool { name, enabled } => {
-                let ok = self.tools.set_enabled(&name, enabled).await;
-                if ok {
-                    let mut cfg = self.model.config.write().await;
-                    cfg.disabled_tools.retain(|n| n != &name);
-                    if !enabled {
-                        cfg.disabled_tools.push(name.clone());
-                    }
-                    let cfg_snapshot = cfg.clone();
-                    drop(cfg);
-                    self.persist_config(&cfg_snapshot).await;
-                    // 全局策略（进程级）：所有 persona 重算时读同一份事实。
-                    if let Some(policy) = self.global_policy() {
-                        policy.set_tool_enabled(&name, enabled);
-                    }
-                    // 全局生效：最终状态 = 全局启停 ∧ 各 persona 名单，
-                    // 逐 persona 重算（此前只作用于管理面，其他人格照旧）。
-                    if let Some(mgr) = self.registry() {
-                        for running in mgr.all() {
-                            running.agent.reapply_tool_gating(&name, enabled).await;
-                        }
-                    }
-                    self.emit_tools_list().await;
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: format!(
-                            "tool {name} {}",
-                            if enabled { "enabled" } else { "disabled" }
-                        ),
-                    });
-                } else {
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: format!("tool {name} not found"),
-                    });
-                }
-            }
             BackendCommand::UpdateApiConfig {
                 name,
                 provider,
@@ -477,8 +440,14 @@ impl Agent {
                 // 两种结果都刷新列表：失败时状态同样可能已变（停下来了但没起来）。
                 self.emit_plugins_list().await;
             }
-            BackendCommand::RequestToolsList => {
-                self.emit_tools_list().await;
+            // 工具管理面命令域已迁进 `echo-plugin-tools`（全插件化 S3：
+            // 清单与启停本来就是这个插件拥有的东西）。这里只剩兜底。
+            BackendCommand::RequestToolsList | BackendCommand::ToggleTool { .. } => {
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: "工具命令由 echo-agent.tools.builtin 插件处理，但该插件未启用"
+                        .into(),
+                });
             }
             BackendCommand::RequestPluginsList => {
                 self.emit_plugins_list().await;
@@ -1265,63 +1234,17 @@ impl Agent {
     }
 
     /// Emit the full skill list (`BackendEvent::SkillsList`).
+    /// 广播技能清单（**投影在插件里**：`echo_plugin_skills::commands::skills_list`）。
+    ///
+    /// 保留这个入口是因为"保存人格后刷新列表"发生在宿主的管理面流程里
+    /// （`process_commands`），那处不必为此构造插件 handler——但它读的仍是
+    /// 插件导出的同一份投影，不是第二套实现。
     pub async fn emit_skills_list(&self) {
+        let dir = self.model.config.read().await.skills_dir.clone();
         let skills = self.prompt.skills.lock().await;
-        // 注入外部 Git 来源信息（skills/.sources.json）
-        // `load_sources_healed`：旧格式记录（键=目录名）在此归正到技能名，
-        // 否则「目录名 ≠ 技能名」的仓库在 Panel 里看不到来源徽标
-        // （2026-10-18 实测：skill-echo-prodoc/ ↔ prodoc-format）。
-        let sources = crate::skill_install::load_sources_healed(std::path::Path::new(
-            &self.model.config.read().await.skills_dir,
-        ));
-        let mut list: Vec<crate::event::SkillInfo> = skills
-            .all()
-            .iter()
-            .map(|skill| crate::event::SkillInfo {
-                name: skill.metadata.name.clone(),
-                description: skill.metadata.description.clone(),
-                keywords: skill.metadata.keywords.clone(),
-                always: skill.metadata.always,
-                enabled: skill.metadata.enabled,
-                category: skill.metadata.category.clone(),
-                package: skill.metadata.package.clone(),
-                content: skill.instructions.clone(),
-                system: skill.metadata.system,
-                source: sources.get(&skill.metadata.name).map(|src| {
-                    crate::event::SkillSourceInfo {
-                        url: src.url.clone(),
-                        rev: src.rev.clone(),
-                        branch: src.branch.clone(),
-                        installed_at: src.installed_at.clone(),
-                    }
-                }),
-            })
-            .collect();
-        list.sort_by_key(|s| s.name.clone());
+        let list = crate::skill::commands::skills_list(&skills, std::path::Path::new(&dir));
         drop(skills);
         self.emit(BackendEvent::SkillsList { skills: list });
-    }
-
-    /// Emit the full tool list (`BackendEvent::ToolsList`), including
-    /// disabled tools, each with their
-    /// category and (for this agent's perspective) enable state.
-    pub async fn emit_tools_list(&self) {
-        let defs = self.tools.full_definitions().await;
-        let mut list: Vec<crate::event::ToolInfo> = defs
-            .into_iter()
-            .map(|(t, category, enabled, pkg)| crate::event::ToolInfo {
-                name: t.name,
-                description: t.description,
-                parameters: t.parameters.unwrap_or(serde_json::Value::Null),
-                category,
-                enabled,
-                package: pkg,
-            })
-            .collect();
-        // 工具清单直接来自注册表（模型可见工具的唯一真源；spawn_subagent
-        // 由组合根装配时注册、按包标签随 subagent 插件门控）。
-        list.sort_by_key(|t| t.name.clone());
-        self.emit(BackendEvent::ToolsList { tools: list });
     }
 
     /// Emit the team list (`BackendEvent::TeamsList`).

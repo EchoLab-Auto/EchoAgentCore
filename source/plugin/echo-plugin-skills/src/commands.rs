@@ -243,32 +243,10 @@ impl SkillsCommandHandler {
     /// Panel 里看不到来源徽标（2026-10-18 实测：`skill-echo-prodoc/` ↔
     /// `prodoc-format`）。
     async fn emit_list(&self) {
-        let sources =
-            crate::install::load_sources_healed(std::path::Path::new(&self.host.skills_dir()));
+        let dir = self.host.skills_dir();
         let registry = self.host.registry();
         let skills = registry.lock().await;
-        let mut list: Vec<SkillInfo> = skills
-            .all()
-            .iter()
-            .map(|skill| SkillInfo {
-                name: skill.metadata.name.clone(),
-                description: skill.metadata.description.clone(),
-                keywords: skill.metadata.keywords.clone(),
-                always: skill.metadata.always,
-                enabled: skill.metadata.enabled,
-                category: skill.metadata.category.clone(),
-                package: skill.metadata.package.clone(),
-                content: skill.instructions.clone(),
-                system: skill.metadata.system,
-                source: sources.get(&skill.metadata.name).map(|src| SkillSourceInfo {
-                    url: src.url.clone(),
-                    rev: src.rev.clone(),
-                    branch: src.branch.clone(),
-                    installed_at: src.installed_at.clone(),
-                }),
-            })
-            .collect();
-        list.sort_by_key(|skill| skill.name.clone());
+        let list = skills_list(&skills, std::path::Path::new(&dir));
         drop(skills);
         self.host.emit(BackendEvent::SkillsList { skills: list });
     }
@@ -279,6 +257,41 @@ impl SkillsCommandHandler {
             message: message.into(),
         });
     }
+}
+
+/// 技能清单投影（`SkillsList` 的线上形状）——**本 crate 是它的唯一作者**。
+///
+/// 来源信息（`.sources.json`）在这里合并：`load_sources_healed` 把旧格式记录
+/// （键 = 目录名）归正到技能名，否则「目录名 ≠ 技能名」的仓库在 Panel 里看不到
+/// 来源徽标（2026-10-18 实测：`skill-echo-prodoc/` ↔ `prodoc-format`）。
+///
+/// 抽成自由函数的原因与 `instance_list` 相同：宿主还有一处需要它（保存人格后
+/// 刷新技能列表），那处不必为此造一个 handler。
+pub fn skills_list(skills: &SkillRegistry, skills_dir: &std::path::Path) -> Vec<SkillInfo> {
+    let sources = crate::install::load_sources_healed(skills_dir);
+    let mut list: Vec<SkillInfo> = skills
+        .all()
+        .iter()
+        .map(|skill| SkillInfo {
+            name: skill.metadata.name.clone(),
+            description: skill.metadata.description.clone(),
+            keywords: skill.metadata.keywords.clone(),
+            always: skill.metadata.always,
+            enabled: skill.metadata.enabled,
+            category: skill.metadata.category.clone(),
+            package: skill.metadata.package.clone(),
+            content: skill.instructions.clone(),
+            system: skill.metadata.system,
+            source: sources.get(&skill.metadata.name).map(|src| SkillSourceInfo {
+                url: src.url.clone(),
+                rev: src.rev.clone(),
+                branch: src.branch.clone(),
+                installed_at: src.installed_at.clone(),
+            }),
+        })
+        .collect();
+    list.sort_by_key(|skill| skill.name.clone());
+    list
 }
 
 /// 新建/更新技能的载荷（`BackendCommand::SaveSkill` 的字段）。

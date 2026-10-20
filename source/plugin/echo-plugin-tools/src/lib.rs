@@ -44,6 +44,7 @@ pub mod instance;
 pub mod instance_commands;
 pub mod plugin;
 pub mod shell_commands;
+pub mod tool_commands;
 pub mod shell_tools;
 pub mod websearch;
 
@@ -54,6 +55,7 @@ pub use instance::register_instance_tools;
 pub use instance_commands::{InstanceCommandHandler, InstanceCommandHost, COMMANDS as INSTANCE_COMMANDS};
 pub use plugin::{BuiltinToolProvider, BuiltinTools, ToolsHostCtx, PLUGIN_ID};
 pub use shell_commands::{ShellCommandHandler, ShellCommandHost, COMMANDS as SHELL_COMMANDS};
+pub use tool_commands::{ToolsCommandHandler, ToolsCommandHost, COMMANDS as TOOL_COMMANDS};
 pub use shell_tools::{register_shell_tools, ShellExecTool, ShellStartTool, ShellStopTool};
 pub use websearch::WebSearchTool;
 

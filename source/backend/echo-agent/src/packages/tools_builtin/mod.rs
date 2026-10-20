@@ -33,6 +33,10 @@ pub use echo_plugin_tools::plugin::{resolve_provider, standalone_provider};
 pub use echo_plugin_tools::shell_commands::{
     ShellCommandHost as ShellCommandHostAlias, ShellCommandHandler,
 };
+/// 工具管理面命令域的宿主接缝。
+pub use echo_plugin_tools::tool_commands::{
+    ToolsCommandHost as ToolsCommandHostAlias, ToolsCommandHandler,
+};
 /// 实例命令域的宿主接缝。
 pub use echo_plugin_tools::instance_commands::{
     InstanceCommandHost as InstanceCommandHostAlias, InstanceCommandHandler,
