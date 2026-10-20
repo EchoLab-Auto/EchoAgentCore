@@ -2171,7 +2171,15 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             mgr_arc.bind_all(&mgr_arc);
             // `core_agent` 是管理面/TeamsList 的命令宿主，但不是人格，
             // 不包含在 `mgr_arc.all()` 中；漏绑会让 Panel 收到空 TeamsList。
-            core_agent.set_manager(&mgr_arc);
+            //
+            // S4b：绑的是**两个收窄后的面向**（查询 / 管理），不是 manager 本身。
+            {
+                let registry: std::sync::Arc<dyn echo_agent::agent::registry::AgentRegistry> =
+                    mgr_arc.clone();
+                let admin: std::sync::Arc<dyn echo_agent::agent::registry::TeamAdmin> =
+                    mgr_arc.clone();
+                core_agent.set_host(&registry, &admin);
+            }
             // 联邦运行时也绑定同一 manager（迁移需要枚举 source persona）。
             if let Ok(mut slot) = agent_manager_slot.write() {
                 *slot = std::sync::Arc::downgrade(&mgr_arc);

@@ -9,6 +9,7 @@ mod gating;
 mod inbound;
 mod plugin_reload;
 mod prompt;
+pub mod registry;
 mod streaming;
 mod subagent_runtime;
 mod tool_dispatch;
@@ -161,7 +162,19 @@ pub struct Agent {
     /// 2026-10 技术债清理：此前 21 处读取走 `echo_bootstrap` 进程级槽。
     /// 但"我属于哪个 manager"天然是**本 agent 的属性**——现在显式持有，
     /// 同一进程两套 manager 不会互相看见对方的人格表。
-    manager: std::sync::RwLock<std::sync::Weak<crate::agent_manager::AgentManager>>,
+    /// 兄弟 agent 的查询面（**弱引用**：manager 强持有 agents，agents 弱持有
+    /// 它，否则成环泄漏）。
+    ///
+    /// 类型是 `dyn AgentRegistry` 而不是 `AgentManager`（S4b）：`Agent` 只需要
+    /// "按 id 找兄弟 / 列全部 / 报清单"，不需要管理能力。团队管理动作已经在
+    /// [`crate::agent_manager`] 的自由函数里，不再经过 `Agent`。
+    registry: std::sync::RwLock<Option<std::sync::Weak<dyn crate::agent::registry::AgentRegistry>>>,
+    /// 团队管理面（**弱引用**，与 `registry` 同一份 manager 的两个面向）。
+    ///
+    /// 分成两个字段而不是一个："查兄弟"与"增删改人格"是不同关注点，测试可只造
+    /// 前者。**这是技术债**：团队 CRUD 本该由进程级处理器接掉，而不是让被命令
+    /// 泵选中的 agent 代办（详见 [`crate::agent::registry::TeamAdmin`]）。
+    admin: std::sync::RwLock<Option<std::sync::Weak<dyn crate::agent::registry::TeamAdmin>>>,
     /// 「未绑定 manager」告警只报一次（避免每命令刷屏）。
     manager_warned: std::sync::atomic::AtomicBool,
     /// Shell 子系统句柄（组合根创建并注入；工具与命令侧共享同一份）。
@@ -350,7 +363,8 @@ impl Agent {
                 crate::plugins::PluginHost::new(),
             )),
             global_policy: std::sync::RwLock::new(None),
-            manager: std::sync::RwLock::new(std::sync::Weak::new()),
+            registry: std::sync::RwLock::new(None),
+            admin: std::sync::RwLock::new(None),
             manager_warned: std::sync::atomic::AtomicBool::new(false),
             shell: echo_shell::ShellHandle::new(),
             workspace_store: std::sync::RwLock::new(None),
@@ -690,33 +704,79 @@ impl Agent {
         }
     }
 
-    /// 绑定所属 manager（组合根构造完 manager 后对每个 agent 调用一次）。
-    pub fn set_manager(&self, manager: &std::sync::Arc<crate::agent_manager::AgentManager>) {
-        if let Ok(mut slot) = self.manager.write() {
-            *slot = std::sync::Arc::downgrade(manager);
+    /// 绑定兄弟 agent 的查询面（组合根 / `AgentManager::bound` 调用一次）。
+    ///
+    /// 收窄成 `&dyn AgentRegistry`：调用方传 `&AgentManager`（它实现了该 trait）
+    /// 即可，而 `Agent` 侧不需要知道具体类型。
+    pub fn set_host(
+        &self,
+        registry: &std::sync::Arc<dyn crate::agent::registry::AgentRegistry>,
+        admin: &std::sync::Arc<dyn crate::agent::registry::TeamAdmin>,
+    ) {
+        if let Ok(mut slot) = self.registry.write() {
+            *slot = Some(std::sync::Arc::downgrade(registry));
         } else {
-            tracing::warn!("agent manager slot busy, ignoring set_manager");
+            tracing::warn!("agent registry slot busy, ignoring set_host");
+        }
+        if let Ok(mut slot) = self.admin.write() {
+            *slot = Some(std::sync::Arc::downgrade(admin));
+        } else {
+            tracing::warn!("agent admin slot busy, ignoring set_host");
         }
     }
 
-    /// 所属 manager（未绑定 / 已被回收 = None）。
+    /// 兄弟 agent 的查询面（未绑定 / 已被回收 = `None`）。
     ///
-    /// 收口了原先散在 21 处的 `agent_manager::global_manager()`。
-    pub fn manager(&self) -> Option<std::sync::Arc<crate::agent_manager::AgentManager>> {
-        let manager = self.manager.read().ok().and_then(|slot| slot.upgrade());
-        if manager.is_none()
+    /// **不要在新代码里用它**：直接用 [`Self::require_registry`]，让"未绑定"
+    /// 变成显式错误而不是静默降级——这正是 2026-10-20 事故的教训
+    /// （`None => {}` 让 Panel 收到空清单而日志里什么也没有）。
+    pub fn registry(&self) -> Option<std::sync::Arc<dyn crate::agent::registry::AgentRegistry>> {
+        let found = self
+            .registry
+            .read()
+            .ok()
+            .and_then(|slot| slot.as_ref().and_then(|weak| weak.upgrade()));
+        if found.is_none()
             && !self
                 .manager_warned
                 .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
-            // 2026-10-20 事故：漏绑的后果是 Panel 收到空 `teams: []`，
-            // 而命令处理器里是 `None => {}` 静默跳过——日志完全看不出来。
             tracing::warn!(
-                "agent has no manager bound; manager-dependent commands \
-                 (TeamsList / agent CRUD) will silently no-op"
+                "agent has no registry bound; sibling lookup (TeamsList / command \
+                 forwarding / cross-persona broadcast) will fail explicitly"
             );
         }
-        manager
+        found
+    }
+
+    /// 取查询面，未绑定即**明确错误**（fail-closed）。
+    ///
+    /// 与 [`Self::registry`] 的区别就是"失败时怎么办"：这里返回 `Err` 让调用方
+    /// 必须处理（通常是回一条可见的 `Error` 事件），而不是 `if let Some(..)`
+    /// 静默跳过。原 `manager()` 是后者，那让漏绑藏了很久。
+    pub fn require_registry(
+        &self,
+    ) -> Result<std::sync::Arc<dyn crate::agent::registry::AgentRegistry>, String> {
+        self.registry().ok_or_else(|| {
+            "agent registry unavailable（该 agent 未被装入 AgentManager）".to_string()
+        })
+    }
+
+    /// 取团队管理面，未绑定即**明确错误**（fail-closed）。
+    ///
+    /// 原来这些命令走 `if let Some(mgr) = self.manager() { … } else { emit Error }`
+    /// ——失败时至少还有回执。改成 `Result` 是为了让**所有**调用点必须处理，
+    /// 包括那些原本写 `None => {}` 静默跳过的（`ToggleTeam` 就是）。
+    pub(crate) fn require_admin(
+        &self,
+    ) -> Result<std::sync::Arc<dyn crate::agent::registry::TeamAdmin>, String> {
+        self.admin
+            .read()
+            .ok()
+            .and_then(|slot| slot.as_ref().and_then(|weak| weak.upgrade()))
+            .ok_or_else(|| {
+                "agent manager unavailable（该 agent 未被装入 AgentManager）".to_string()
+            })
     }
 
     /// Shell 子系统句柄（见字段文档）。

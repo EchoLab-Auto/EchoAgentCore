@@ -443,9 +443,12 @@ impl Agent {
             new_cfg.active_api = to.to_string();
         }
         // teams 引用（含未运行/禁用 persona）：落盘前计算改写范围。
+        // 团队引用改写范围要问**管理面**（不是查询面）：这两件事分属不同
+        // trait（见 `agent::registry`）。未接线时按"无人引用"处理——落盘照旧，
+        // 只是不广播改名（与改造前的 `unwrap_or_default()` 同语义）。
         let changed_teams: Vec<String> = self
-            .manager()
-            .map(|mgr| mgr.api_ref_owners(from))
+            .require_admin()
+            .map(|admin| admin.api_ref_owners(from))
             .unwrap_or_default();
 
         // 单次落盘：池 + active_api + teams 引用同一 patch（见 try_persist_rename）。
@@ -461,8 +464,8 @@ impl Agent {
         // 落盘成功 → 提交内存。
         *config = new_cfg.clone();
         drop(config);
-        if let Some(mgr) = self.manager() {
-            mgr.replace_api_refs(from, to);
+        if let Ok(admin) = self.require_admin() {
+            admin.replace_api_refs(from, to);
         }
 
         // 运行时传播（持久化已正确；单点失败仅告警，重启自愈）。
@@ -503,7 +506,7 @@ impl Agent {
             }
         }
         // 2) 全部运行中 persona（与 ClearHistory 的枚举口径一致）。
-        if let Some(mgr) = self.manager() {
+        if let Some(mgr) = self.registry() {
             for running in mgr.all() {
                 let agent = &running.agent;
                 agent

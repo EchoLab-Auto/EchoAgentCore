@@ -182,7 +182,7 @@ impl Agent {
                     let current = self.team_id();
                     if current.as_deref() != Some(target_id) {
                         // 转发给目标人格（未知 team_id → 明确报错，不再回退默认）。
-                        match self.manager().and_then(|m| m.resolve(Some(target_id))) {
+                        match self.registry().and_then(|r| r.resolve(target_id)) {
                             Some(agent) => {
                                 Box::pin(agent.apply_command(cmd)).await;
                                 return;
@@ -299,7 +299,7 @@ impl Agent {
                     }
                     // 全局生效：最终状态 = 全局启停 ∧ 各 persona 名单，
                     // 逐 persona 重算（此前只作用于管理面，其他人格照旧）。
-                    if let Some(mgr) = self.manager() {
+                    if let Some(mgr) = self.registry() {
                         for running in mgr.all() {
                             running.agent.reapply_skill_gating(&name, enabled).await;
                         }
@@ -335,7 +335,7 @@ impl Agent {
                     }
                     // 全局生效：最终状态 = 全局启停 ∧ 各 persona 名单，
                     // 逐 persona 重算（此前只作用于管理面，其他人格照旧）。
-                    if let Some(mgr) = self.manager() {
+                    if let Some(mgr) = self.registry() {
                         for running in mgr.all() {
                             running.agent.reapply_tool_gating(&name, enabled).await;
                         }
@@ -543,7 +543,7 @@ impl Agent {
                 // 面板「重载技能」改完 SKILL.md 后，真正干活的人格仍停留在
                 // 启动时的技能内容（实测：EchoCode 的上下文块不含新增技能）。
                 let running = self
-                    .manager()
+                    .registry()
                     .map(|manager| manager.all())
                     .unwrap_or_default();
                 let mut targets: Vec<(&str, &Agent)> = running
@@ -929,7 +929,7 @@ impl Agent {
                 emit_sessions_of(self, &identity, &mut emitted_sessions).await;
                 // 其余 persona 的会话（经 event_bus 镜像到默认 handle，各自
                 // annotate 自己的 team_id）。
-                if let Some(mgr) = self.manager() {
+                if let Some(mgr) = self.registry() {
                     for running in mgr.all() {
                         if running.agent.team_id() == self.team_id() {
                             continue; // 已由上方覆盖
@@ -964,7 +964,7 @@ impl Agent {
                 // 会话隔离：team 指定时返回该成员自己的上下文快照；
                 // session_id 指定时按会话（多会话上下文，2026-09）。
                 if let Some(id) = team_id {
-                    let agent = self.manager().and_then(|m| m.resolve(Some(&id)));
+                    let agent = self.registry().and_then(|r| r.resolve(&id));
                     if let Some(t) = agent {
                         t.emit_context_snapshot(session_id.as_deref()).await;
                         return;
@@ -1019,8 +1019,8 @@ impl Agent {
                     }
                 }
                 let (messages, seq, full, has_more) = if let Some(ref id) = team_id {
-                    match self.manager() {
-                        Some(mgr) => match mgr.resolve(Some(id)) {
+                    match self.registry() {
+                        Some(mgr) => match mgr.resolve(id) {
                             Some(agent) => {
                                 let Some(snap) = snapshot_or_skip(&agent.trunk, since_seq) else {
                                     tracing::warn!(
@@ -1071,8 +1071,8 @@ impl Agent {
                 // 全量都发，前端按快照重建 running 集合。
                 let session_ids = match team_id.as_deref() {
                     Some(id) => self
-                        .manager()
-                        .and_then(|m| m.resolve(Some(id)))
+                        .registry()
+                        .and_then(|m| m.resolve(id))
                         .map(|a| a.active_turn_session_ids())
                         .unwrap_or_default(),
                     None => self.active_turn_session_ids(),
@@ -1095,7 +1095,7 @@ impl Agent {
                 // 目标 persona 解析（与 RequestTrunkTimeline 相同口径）。
                 let resolved = team_id
                     .as_deref()
-                    .and_then(|id| self.manager()?.resolve(Some(id)));
+                    .and_then(|id| self.registry()?.resolve(id));
                 let trunk: &crate::session::TrunkStore = match &resolved {
                     Some(agent) => &agent.trunk,
                     None => &self.trunk,
@@ -1124,7 +1124,7 @@ impl Agent {
                 // team_id 可解析 → 目标 agent 的 trunk；其余回退本 agent。
                 let resolved = team_id
                     .as_deref()
-                    .and_then(|id| self.manager()?.resolve(Some(id)));
+                    .and_then(|id| self.registry()?.resolve(id));
                 let trunk: &crate::session::TrunkStore = match &resolved {
                     Some(agent) => &agent.trunk,
                     None => &self.trunk,
@@ -1155,7 +1155,7 @@ impl Agent {
                 // 该会话——此前只有 team 维度，面板「清理历史记忆」会把同人格
                 // 下所有会话（QQ 群/私聊等）的记忆一并抹掉。
                 if let Some(id) = team_id {
-                    let target = self.manager().and_then(|m| m.resolve(Some(&id)));
+                    let target = self.registry().and_then(|r| r.resolve(&id));
                     match target {
                         Some(agent) => {
                             Self::clear_agent_history(&agent, session_id.as_deref()).await;
@@ -1256,7 +1256,7 @@ impl Agent {
                 // 无会话维度，点一次清掉同人格全部会话（「清理历史记忆」
                 // 同类漏网）。
                 if let Some(id) = team_id {
-                    match self.manager().and_then(|m| m.resolve(Some(&id))) {
+                    match self.registry().and_then(|r| r.resolve(&id)) {
                         Some(agent) => {
                             match agent.trunk.archive_session(&session).await {
                                 Ok(path) => {
@@ -1335,7 +1335,7 @@ impl Agent {
                 // team 路由：解析目标 agent；无 team_id 或解析落空时在本
                 // agent 上执行（`target` 即压缩落地方）。
                 let target = match team_id.as_deref() {
-                    Some(id) => self.manager().and_then(|m| m.resolve(Some(id))),
+                    Some(id) => self.registry().and_then(|r| r.resolve(id)),
                     None => None,
                 };
                 let result = match &target {
@@ -1390,8 +1390,8 @@ impl Agent {
                 memory_limit_tokens,
                 context_window_tokens,
                 api_profile,
-            } => match self.manager() {
-                Some(mgr) => {
+            } => match self.require_admin() {
+                Ok(mgr) => {
                     let profile = crate::config::AgentProfile {
                         system_skills,
                         name,
@@ -1412,7 +1412,11 @@ impl Agent {
                             // 勾选变化立即生效：对运行中的目标 agent 重新发现技能
                             // 文件（覆盖用户手动新增/修改的 SKILL.md），再应用新的
                             // 启用/禁用白名单，最后推送技能列表。
-                            if let Some(target) = mgr.resolve(Some(&id)) {
+                            // 目标 agent 经**查询面**找（管理面没有 resolve）：
+                            // 保存成功后再对运行中的它应用新能力。
+                            if let Some(target) =
+                                self.require_registry().ok().and_then(|r| r.resolve(&id))
+                            {
                                 let dir = target.model.config.read().await.skills_dir.clone();
                                 if let Err(e) = target.reload_skills(&dir).await {
                                     tracing::warn!(error = %e, agent = %id, "skill reload after team save failed");
@@ -1455,15 +1459,15 @@ impl Agent {
                         }
                     }
                 }
-                None => {
+                Err(reason) => {
                     self.emit(BackendEvent::Error {
                         session_id: None,
-                        message: "agent manager unavailable".into(),
+                        message: reason,
                     });
                 }
             },
-            BackendCommand::DeleteTeam { id } => match self.manager() {
-                Some(mgr) => match mgr.delete_profile(&id) {
+            BackendCommand::DeleteTeam { id } => match self.require_admin() {
+                Ok(mgr) => match mgr.delete_profile(&id) {
                     Ok(()) => {
                         self.emit_teams_list().await;
                         self.emit(BackendEvent::Error {
@@ -1478,18 +1482,25 @@ impl Agent {
                         });
                     }
                 },
-                None => {
+                Err(reason) => {
                     self.emit(BackendEvent::Error {
                         session_id: None,
-                        message: "agent manager unavailable".into(),
+                        message: reason,
                     });
                 }
             },
             BackendCommand::ToggleTeam { id, enabled } => {
                 // 组合根 AgentManager 处理；这里转发回进程级管理器。
-                match self.manager() {
-                    None => {}
-                    Some(mgr) => {
+                //
+                // **改造前这里是 `None => {}` 静默跳过**——未绑定时用户点"启用"
+                // 什么都不会发生，也没有日志（2026-10-20 事��的同款形状）。
+                // 现在失败即回可见错误。
+                match self.require_admin() {
+                    Err(reason) => self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: reason,
+                    }),
+                    Ok(mgr) => {
                         // 重建工厂由 manager 自己持有（技债清理：不再是进程级槽）。
                         let Some(factory) = mgr.factory_ref() else {
                             tracing::warn!(
@@ -1498,14 +1509,15 @@ impl Agent {
                             );
                             return;
                         };
-                        let f = move |i: String, p: crate::config::AgentProfile| factory.call(i, p);
-                        match mgr.set_enabled(&id, enabled, f) {
+                        // `set_enabled` 的接收者是 `Arc<Self>`（它要把 manager
+                        // 交给重建出来的 agent 做绑定），所以这里 clone 一份。
+                        match std::sync::Arc::clone(&mgr).set_enabled(&id, enabled, factory) {
                             Ok(()) => {
                                 // 重新启用的人格：补应用启动期门控（名单 +
                                 // 全局禁用），否则新实例以"全开"状态运行到
                                 // 下次保存/重启。
                                 if enabled {
-                                    if let Some(running) = mgr.get(&id) {
+                                    if let Some(running) = mgr.get_running(&id) {
                                         running.agent.apply_capabilities(&running.profile).await;
                                     }
                                 }
@@ -1826,7 +1838,7 @@ impl Agent {
 
     /// Emit the team list (`BackendEvent::TeamsList`).
     pub async fn emit_teams_list(&self) {
-        let teams = self.manager().map(|m| m.infos()).unwrap_or_default();
+        let teams = self.registry().map(|m| m.infos()).unwrap_or_default();
         self.emit(BackendEvent::TeamsList { teams });
     }
 

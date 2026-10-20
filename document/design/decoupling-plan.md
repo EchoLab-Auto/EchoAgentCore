@@ -4,6 +4,7 @@ title: "完全解耦推进计划"
 group: 规划
 x: 320
 y: 3160
+link: ["s4-agent-decomposition | S4 计划：Agent 拆服务 | b>t"]
 ---
 
 # 完全解耦推进计划（动态库 / 子进程）
@@ -350,7 +351,12 @@ Phase 3 把实现搬出了 echo-agent，但 inproc 轨只兑现了**工具贡献
   最像）。
 - [x] **S4a：`ModelService`**（`Agent` 的 8 个模型字段 → 一个 `Arc<ModelService>`，
   字段 39 → 32；全量 932 项绿；真实进程经 `SwitchModel` 验证四段锁路径）。
-- [ ] **S4b 起的 `Agent` 拆服务**（27,917 行业务核心里最后一块上帝对象）——
+- [x] **S4b：解 `manager ↔ Agent`**：`Agent` 的 `Weak<AgentManager>` 换成两个
+  收窄的弱引用（`AgentRegistry` 查询面 + `TeamAdmin` 管理面），`agent/` 不再
+  出现具体 manager 类型；未绑定从"静默跳过"改为 `require_*()` 显式错误
+  （`ToggleTeam` 的 `None => {}` 是最后一个静默点，已消除）。`TeamAdmin` 仍是
+  技术债（团队 CRUD 应迁到进程级处理器），但删除点已明确。
+- [ ] **S4c 起的 `Agent` 拆服务**（27,917 行业务核心里最后一块上帝对象）——
   计划与分阶段拆解见 [s4-agent-decomposition.md](./s4-agent-decomposition.md)。
   结论摘要：S4a（`ModelService`）/ S4b（解 `manager ↔ Agent` 环）值得做且风险可控；
   S4c（`PromptService` + `ToolService`）视收益再定；S4d（`SessionService`）建议暂缓

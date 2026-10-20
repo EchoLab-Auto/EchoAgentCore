@@ -47,7 +47,11 @@ impl RunningAgent {
         profile: TeamMember,
         agent: Arc<Agent>,
     ) -> Self {
-        agent.set_manager(manager);
+        // 绑定**收窄后的查询面**（`AgentRegistry`），不是 manager 本身：
+        // `Agent` 只需要"找兄弟 / 列全部 / 报清单"这三件事（S4b）。
+        let registry: Arc<dyn crate::agent::registry::AgentRegistry> = manager.clone();
+        let admin: Arc<dyn crate::agent::registry::TeamAdmin> = manager.clone();
+        agent.set_host(&registry, &admin);
         Self {
             id,
             profile,
@@ -98,6 +102,68 @@ type AgentFactoryInner = std::sync::Arc<dyn Fn(String, TeamMember) -> Arc<Agent>
 pub type ConfigWriter = Box<
     dyn Fn(&std::collections::BTreeMap<String, TeamMember>) -> Result<(), String> + Send + Sync,
 >;
+
+/// `AgentManager` 是 [`AgentRegistry`] 的**唯一实现**：agent 侧的"找兄弟 /
+/// 列全部 / 报清单"全部经这个只读面（S4b）。
+///
+/// 为什么 trait 而不是让 `Agent` 直接用 `AgentManager`：`Agent` 的类型面里
+/// 不该出现 manager——否则单测只能靠造一个 manager 才能测命令转发，且"新增
+/// 一处 `self.manager().xxx()`"永远不会被察觉。收成 trait 之后，那类调用只能
+/// 走 `require_registry()`（失败即显式错误），无法悄悄加回静默降级。
+impl crate::agent::registry::AgentRegistry for AgentManager {
+    fn resolve(&self, team_id: &str) -> Option<Arc<Agent>> {
+        AgentManager::resolve(self, Some(team_id))
+    }
+
+    fn all(&self) -> Vec<RunningAgent> {
+        AgentManager::all(self)
+    }
+
+    fn infos(&self) -> Vec<TeamInfo> {
+        AgentManager::infos(self)
+    }
+}
+
+/// 团队管理面（见 [`crate::agent::registry::TeamAdmin`] 的"技术债"说明）。
+impl crate::agent::registry::TeamAdmin for AgentManager {
+    fn save_profile(
+        self: Arc<Self>,
+        id: &str,
+        profile: TeamMember,
+        enabled: bool,
+    ) -> Result<(), String> {
+        AgentManager::save_profile(&self, id, profile, enabled)
+    }
+
+    fn delete_profile(&self, id: &str) -> Result<(), String> {
+        AgentManager::delete_profile(self, id)
+    }
+
+    fn set_enabled(
+        self: Arc<Self>,
+        id: &str,
+        enabled: bool,
+        factory: AgentFactory,
+    ) -> Result<(), String> {
+        AgentManager::set_enabled(&self, id, enabled, move |i, p| factory.call(i, p))
+    }
+
+    fn factory_ref(&self) -> Option<AgentFactory> {
+        AgentManager::factory_ref(self)
+    }
+
+    fn get_running(&self, id: &str) -> Option<RunningAgent> {
+        AgentManager::get(self, id)
+    }
+
+    fn api_ref_owners(&self, name: &str) -> Vec<String> {
+        AgentManager::api_ref_owners(self, name)
+    }
+
+    fn replace_api_refs(&self, from: &str, to: &str) -> usize {
+        AgentManager::replace_api_refs(self, from, to)
+    }
+}
 
 impl std::fmt::Debug for AgentManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -301,8 +367,11 @@ impl AgentManager {
     /// 这是"未绑定 → 已绑定"的唯一通道；`RunningAgent::bound` 覆盖其余
     /// 创建路径（`set_enabled` / `save_profile`）。
     pub fn bind_all(&self, manager: &std::sync::Arc<Self>) {
+        // S4b：绑定的是**两个收窄后的面向**（查询 / 管理），不是 manager 本身。
+        let registry: std::sync::Arc<dyn crate::agent::registry::AgentRegistry> = manager.clone();
+        let admin: std::sync::Arc<dyn crate::agent::registry::TeamAdmin> = manager.clone();
         for running in self.agents.read().values() {
-            running.agent.set_manager(manager);
+            running.agent.set_host(&registry, &admin);
         }
     }
 

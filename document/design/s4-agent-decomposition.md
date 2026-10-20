@@ -123,7 +123,7 @@ manager（那环还在），要么改成注入"解析 team_id → 服务"的函�
 
 **回退**：`git revert` 单个提交即可（不留双向兼容层）。
 
-### S4b：解 `manager ↔ Agent` 环 — 1-2 周
+### S4b：解 `manager ↔ Agent` 环 — 1-2 周（**已完成，见 §九**）
 
 **做什么**：把 27 处 `self.manager()` 换成注入的 `AgentResolver`：
 
@@ -280,3 +280,86 @@ pub(crate) model: Arc<crate::model_service::ModelService>,
   `Arc<ModelService>` 就够，不用整只 `Agent`——这正是"把字段搬出去"的直接收益；
 - **教训写进流程**：以后做机械改写前，先 `grep` 目标类型上**同名的方法**与
   **同名的字符串字面量**，两者都会让"编译通过的改写"变成静默 bug。
+
+---
+
+## 九、S4b 完成记录（2026-11）
+
+### 先纠正计划里的两个数字
+
+初稿写"27 处 `self.manager()` 回查"。实测：
+
+```
+17 处 self.manager()（另 3 处是 self.shell().manager()，无关）
+├── 只读查询 12 处：resolve(7) / all(4) / infos(1)
+└── 管理动作  5 处：save_profile / delete_profile / set_enabled+fatory_ref / api_ref_owners+replace_api_refs
+```
+
+而且 **那个"环"有一半早就解掉了**：`Agent.manager` 是 `Weak`，加上
+`RunningAgent` 的 `_sealed` + 唯一构造入口 `bound()` 让"必须绑定"成了类型约束
+（2026-10-20 事故后的补丁，做得很好）。所以 S4b 的真实目标不是"解环"，而是：
+
+1. `Agent` 的**类型面里不该出现 `AgentManager`**；
+2. 未绑定的路径**不该静默降级**。
+
+### 做了什么
+
+新增 `agent/registry.rs`，两个**分开的** trait：
+
+| trait | 方法 | 关注点 |
+|---|---|---|
+| `AgentRegistry` | `resolve` / `all` / `infos` | 看兄弟（只读） |
+| `TeamAdmin` | `save_profile` / `delete_profile` / `set_enabled` / `factory_ref` / `get_running` / `api_ref_owners` / `replace_api_refs` | 增删改人格 |
+
+`Agent` 的 `manager: Weak<AgentManager>` 换成两个 `Option<Weak<dyn …>>`，
+`set_manager()` 换成 `set_host(&registry, &admin)`；`AgentManager` 同时实现两个
+trait（唯一实现）。
+
+**为什么分两个 trait 而不是一个**：合成一个等于把 `AgentManager` 的方法表原样
+搬过来，`Agent` 对管理的依赖一点没少，只是改了名字。分开之后，测试可以只造
+查询面的 fake（§九的测试就是这么写的），而"管理面该搬出去"这件事也有了明确的
+删除点：删 `TeamAdmin` 时 5 个调用点会全部编译失败并指出位置。
+
+### 两个技术细节
+
+**1. `save_profile` / `set_enabled` 用 `self: Arc<Self>` 接收者。**
+它们内部要把 manager 交给新建的 agent 做绑定，`&self` 拿不到 `Arc`。`Arc<Self>`
+是**对象安全**的接收者（稳定 Rust 支持），所以 `Arc<dyn TeamAdmin>` 上照常可调，
+调用点写 `Arc::clone(&admin).set_enabled(..)`。
+
+**2. `Weak::<dyn Trait>::new()` 不存在（`Sized` 约束）。**
+所以字段是 `RwLock<Option<Weak<dyn …>>>`，初始 `None`。
+
+### fail-closed 的具体改进
+
+`ToggleTeam` 原来是：
+
+```rust
+match self.manager() {
+    None => {}          // ← 未绑定时：用户点"启用"什么都不会发生，无日志
+    Some(mgr) => { … }
+}
+```
+
+现在是 `match self.require_admin() { Err(reason) => emit(Error { reason }), … }`
+——失败必须有回执。这正是 S4b 相对"解环"更实际的那一半价值。
+
+### 验证
+
+- **319 项 lib 测试全绿**（+2：未绑定 fail-closed / fake registry 能解析兄弟）；
+- 全 workspace：50 套件 ok，core 87 项 ok；
+  唯一失败是 `doc_catalog::tool_catalog_is_fresh` ——**与本次无关**：并发文档
+  重构改了 `document/plugins/tool-catalog.md` 的坐标（x: 960→1280），已用 HEAD
+  版本单独验证该门禁通过；
+- clippy：仅剩 1 条既有警告（就是 `RunningAgent` 的 `_sealed`，即那条被刻意保留
+  的约束本身）；
+- **真实进程**：`RequestTeamsList` → `TeamsList: ["t"]`（走 `infos`）；
+  `ToggleTeam{enabled:false}` → `TeamsList` + `Error: agent t disabled`
+  （走 `set_enabled` 的 `Arc<Self>` 接收者）。
+
+### 剩下的（S4c 前置）
+
+- `TeamAdmin` 仍是技术债：团队 CRUD 该由**进程级**处理器接掉（与 S1 的
+  `Contribution::Command` 同一套路），而不是让被命令泵选中的 agent 代办。
+- `running.agent` 这类"通过 RunningAgent 拿兄弟的 Agent"仍在用——那是
+  `AgentRegistry::all()` 的返回类型决定的，可接受（数据载体，不是行为依赖）。
