@@ -48,7 +48,7 @@ plugin/echo-plugin-adapter              echo-plugin-host echo-plugin-api echo-de
 plugin/echo-plugin-provider-llm         echo-config echo-defs echo-llm-anthropic echo-llm-ollama echo-llm-openai
 plugin/echo-plugin-skills               echo-defs echo-context echo-plugin echo-protocol
 plugin/echo-plugin-federation          echo-defs echo-context echo-federation echo-plugin echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-tool
-plugin/echo-plugin-loop                 echo-context echo-defs echo-loop echo-plugin echo-plugin-api
+plugin/echo-plugin-loop                 echo-context echo-defs echo-loop echo-plugin echo-plugin-api echo-session
 plugin/echo-plugin-subagent             echo-defs echo-federation echo-protocol echo-tool
 plugin/echo-plugin-workspace            echo-context echo-defs echo-plugin echo-protocol echo-session echo-tool
 plugin/echo-plugin-management           echo-federation echo-protocol

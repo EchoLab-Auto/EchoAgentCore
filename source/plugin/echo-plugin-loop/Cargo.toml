@@ -14,6 +14,10 @@ echo-context = { workspace = true }
 echo-loop = { workspace = true }
 echo-plugin = { workspace = true }
 echo-plugin-api = { workspace = true }
+# 压缩策略：转录渲染 / 分层裁剪 / 摘要调用（词汇在 echo-session）。
+echo-session = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 # 提供 loop 服务的测试要造一个 `llm` provider（trait 是 async 的）+ 拼配置 JSON。

@@ -25,6 +25,7 @@
 //! | [`header`] | `SessionHeader` fork/resume metadata |
 //! | [`legacy`] | migration from the pre-event-sourced `echo-sessions.json` v4 format |
 
+pub mod compaction;
 pub mod derive;
 pub mod event;
 pub mod header;
@@ -32,6 +33,7 @@ pub mod legacy;
 pub mod log;
 pub mod session_key;
 
+pub use compaction::{CompactGroup, CompactPreview, CompactionApplied, CompactionSummary};
 pub use derive::{derive_messages, project_messages, CompactedRange};
 pub use event::{
     AssistantMessage, CompactionEvent, ReasoningEvent, SessionEvent, ToolCallEvent,

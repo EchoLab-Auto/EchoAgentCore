@@ -44,6 +44,8 @@
 
 #![warn(missing_docs)]
 
+pub mod compaction;
+
 use std::sync::Arc;
 
 use echo_context::Disposer;

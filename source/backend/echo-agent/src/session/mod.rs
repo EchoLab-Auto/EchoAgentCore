@@ -248,58 +248,11 @@ const PERSIST_VERSION: u32 = 6;
 /// Upper bound on persisted display timeline entries.
 const TRUNK_TIMELINE_MAX: usize = 1024;
 
-/// One session's share of a compaction plan: the events that a compaction
-/// would replace, in log order, plus counts for the fallback summary.
-#[derive(Debug, Clone)]
-pub struct CompactGroup {
-    /// Owning session (None = unattributed legacy events).
-    pub session: Option<String>,
-    /// Leading events this group would replace (already sliced).
-    pub replaced: Vec<echo_session::SessionEvent>,
-    /// `replaced.len()`, kept for convenience.
-    pub replaced_count: usize,
-    /// User messages inside `replaced`.
-    pub users: usize,
-    /// Tool calls inside `replaced`.
-    pub tools: usize,
-}
-
-/// What [`TrunkStore::compact_preview`] would do — computed without mutating
-/// anything so the caller can archive and summarize before committing.
-#[derive(Debug, Clone)]
-pub struct CompactPreview {
-    /// Groups that would be compacted (at least one replaced event each).
-    pub groups: Vec<CompactGroup>,
-    /// Total events across those groups' replaced prefixes.
-    pub total_replaced: usize,
-    /// Total events in the log at preview time (for reporting).
-    pub total_events: usize,
-}
-
-/// One prepared summary to install, keyed by session.
-#[derive(Debug, Clone)]
-pub struct CompactionSummary {
-    /// Owning session this summary stands in for (must match a preview group).
-    pub session: Option<String>,
-    /// Summary **body** — no `[历史摘要]` marker (added at projection time).
-    pub summary: String,
-    /// 预览时该组被替换的前缀长度（事件条数）。落地切片用它——见
-    /// [`TrunkStore::apply_compaction`]（2026-10 审计：不再按应用时点
-    /// `len - keep_recent` 重算，防窗口期新事件把保留尾最老条目挤成
-    /// 无摘要丢弃）。
-    pub replaced_count: usize,
-}
-
-/// Result of [`TrunkStore::apply_compaction`].
-#[derive(Debug, Clone)]
-pub struct CompactionApplied {
-    /// Total events replaced.
-    pub total_replaced: usize,
-    /// Number of session groups compacted.
-    pub groups: usize,
-    /// Events left untouched behind each summary.
-    pub kept: usize,
-}
+/// 压缩的四种词汇（计划 / 摘要 / 落地结果）**定义在 `echo-session`**
+/// （全插件化 S3）：它们是"事件日志将被压缩"这件事的契约——日志自己算出
+/// 预览、调用方填回摘要、落地结果回给调用方。压缩**策略**（怎么渲染
+/// transcript、怎么分层裁剪、怎么让 LLM 出摘要）因此能独立于宿主。
+pub use echo_session::{CompactGroup, CompactPreview, CompactionApplied, CompactionSummary};
 
 /// 时间线探针的采样快照（见 [`TrunkStore::probe_timeline`]）。
 #[derive(Debug, Clone, Copy)]

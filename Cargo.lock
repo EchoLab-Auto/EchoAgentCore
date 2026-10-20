@@ -637,8 +637,10 @@ dependencies = [
  "echo-loop",
  "echo-plugin",
  "echo-plugin-api",
+ "echo-session",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
