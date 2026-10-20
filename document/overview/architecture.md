@@ -166,7 +166,7 @@ graph BT
 
 ### 命令分发
 
-实例命令域独立：`apply_instance_command`（`packages/instance_ops/commands.rs`）承载 `InvokeInstanceOp` 及其状态查询等通用插件实例命令，主 `apply_command` 的对应分支为一行委托，核心分支原地保留——平台专属动作（门控/名单/登录/owner）不再有具体变体，一律经 `InvokeInstanceOp{instance, method, payload}` 透传给插件。`CommandRegistry` + `CommandHandler` trait（dyn-compatible，async）是开放命令扩展点的基础设施：封闭枚举 `BackendCommand` 下编译器 match 完备性仍由主分发器承担，注册表留待协议开放后承载外部命令插件。
+实例命令域独立：`apply_instance_command`（`packages/instance_ops/commands.rs`）承载 `InvokeInstanceOp` 及其状态查询等通用插件实例命令，主 `apply_command` 的对应分支为一行委托，核心分支原地保留——平台专属动作（门控/名单/登录/owner）不再有具体变体，一律经 `InvokeInstanceOp{instance, method, payload}` 透传给插件。**命令扩展只有一条路径**：写一个插件、用 `Contribution::Command` 声明它认领的命令名（全插件化 S3/S5）。此前另有一套 `CommandRegistry` + `CommandHandler`（按注册顺序问“谁认领”），在插件命令域落地后已删除——留着两套说法只会让人先花时间判断该用哪套。封闭枚举 `BackendCommand` 下编译器 match 完备性仍由主分发器承担。
 
 ### 结构化输入标记
 
@@ -181,7 +181,7 @@ graph BT
 | 新增平台 | 写一个**实例插件**（`InstancePlugin` + `InstanceContribution`：能力位 / UI 描述符 / 会话标签 / **模型工具声明**），在 `[instances.<platform>]` 配好 `enabled` 与 `plugin.command`。宿主侧无需改代码——配置、门控、工具桥、提示词边界都是平台中立的（见 [插件开发指南](../plugins/plugin-authoring.md)「实例插件」） |
 | 拦截请求/工具/turn | EventBus 上注册 lifecycle 事件监听器 |
 | 工具策略 | 超时已由 harness `tool_guard_timeout` 守卫（`agent/tool_exec.rs`）；`ToolPipeline` 中间件机制已备、生产路径未接线 |
-| 新增命令 | 命令分发按域拆分（`apply_instance_command` 模式）+ CommandRegistry（开放后）；平台专属动作优先走 `InvokeInstanceOp` 方法名而非新增变体 |
+| 新增命令 | 新域 → 写插件并声明 `Contribution::Command`；宿主保留面（自管理 / 会话写 / turn 控制）仍在 `apply_command` 的 match 里加分支；平台专属动作优先走 `InvokeInstanceOp` 方法名而非新增变体 |
 | 会话状态扩展 | 扩展 `SessionEvent` 枚举（echo-session），从日志渲染 |
 
 ## 关键文档

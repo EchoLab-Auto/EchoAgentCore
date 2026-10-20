@@ -128,7 +128,7 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
 
 - 每个插件 id 均可放入 agent 的 `enabled_plugins`（白名单；空表 = 全部启用）
 - **插件黑名单 `disabled_plugins` 已移除**：与白名单语义重复（前端首次取消勾选即物化全量白名单），既有配置在加载期物化进白名单（见 [配置持久化](../core/core-config-persistence.md)）；运行期 `SaveTeam` 只写白名单
-- **前端「启用插件」勾选区的成员规则**（两处 UI：智能体配置弹层 ⚙ 配置、设置视图智能体编辑器；判定单一来源 = Panel `capabilities.ts::isPluginCheckboxVisible`）：`kind ∈ {instance, management, interaction}` **∪** 下列包维度门控插件固定清单（`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本表 `GATED_PLUGIN_IDS` 的 4 项逐项镜像）：`tools.builtin` / `skills.dir` / `workspace` / `subagent`。**插件实例不在清单内**——两侧都按 `kind == "instance"` 运行期推导（Core `Agent::gated_plugin_ids()` 遍历插件注册表；Panel 同判定的 `isPluginCheckboxVisible`），因此新增平台插件无需改任何清单。其余插件（`loop.*` 由循环模式分段控件管理、`provider.llm` 名义挂载重启生效）**不出现**在该勾选区。保存后写回 TOML
+- **前端「启用插件」勾选区的成员规则**（两处 UI：智能体配置弹层 ⚙ 配置、设置视图智能体编辑器；判定单一来源 = Panel `capabilities.ts::isPluginCheckboxVisible`）：`kind ∈ {instance, management, interaction}` **∪** 下列包维度门控插件固定清单（`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本表 `GATED_PLUGIN_IDS` 的 4 项逐项镜像）：`tools.builtin` / `skills.dir` / `workspace` / `subagent`。**插件实例不在清单内**——两侧都按 `kind == "instance"` 运行期推导（Core `Agent::gated_plugin_ids()` 遍历插件注册表；Panel 同判定的 `isPluginCheckboxVisible`），因此新增平台插件无需改任何清单。其余插件（`loop.*` 由循环模式分段控件管理、`provider.llm` / `selfupdate` 为**进程级**能力）**不出现**在该勾选区。保存后写回 TOML
 - **循环模式推导**（互斥，默认与兜底都是单会话）：见 [Agent 循环](../core/core-agent-loop.md)§循环模式（单一来源 `TeamMember::loop_mode()`）
 - **包级聚合**：白名单里的插件 id 即包 id——一次勾选同时门控该插件的生命周期与同名包的工具、技能（QQ 包见「Package」节）
 - **其余插件当前生效范围**：
@@ -136,7 +136,8 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
   - `instance.qq`：禁用 = 停止 QQ 插件实例进程 + QQ 工具包禁用；启用 = 启动 + 按名单恢复
   - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）。**防自锁保护**：经 `TogglePlugin` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
   - `loop.single` / `loop.parallel`：**纯策略插件**——只表达循环模式（单会话串行 / 并行多会话，由白名单推导 `LoopMode`），mount 无运行期资源。驱动本体（echo-loop `TurnRunner`）是唯一循环实现，组合根在人格启动与运行期新建时无条件注入，不随插件启停切换（单轨化后内置循环已删除）。详见 [Agent 循环](../core/core-agent-loop.md)「注入与分派」
-  - `provider.llm`：仍为名义挂载——运行中替换 provider 涉及在途 turn，保持"重启生效"语义（禁用 = 下次重启不装配）
+  - `provider.llm`：**命令域随插件启停**（13 条 API / provider 命令禁用后回落到宿主兜底并明确报错），但 provider 的**构造**仍由宿主在配置变更时完成——运行中替换 provider 涉及在途 turn，不因插件挂载而改变
+  - `selfupdate`：进程级、`kind = orchestration`（按人格启停是假开关——挂载是进程级的，命令分发不看人格白名单）
 - **优先级**：全局禁用（`TogglePlugin` 卸载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
 - **任务清单的会话隔离**：`ChecklistTool` 状态按**会话**隔离（session_id → 清单名 → 项）——同一 persona 的不同会话（local:tui / qq:group:…）的清单互不可见、互不覆盖；会话键由 `Agent::run_tool` 在参数校验后注入 `__session_id`（联邦远程/无会话上下文调用落 `__global` 兜底键）。事件 `ChecklistUpdated` 带 `team_id`，Panel 按 `(core, team_id, session_id)` 复合键存储并显示
 - **内置工具包覆盖**：任务清单（checklist）已降级为普通内置工具（随 `tools.builtin` 包，见上表注）；关闭内置工具集 = checklist 一并不可用，单独停用请在「启用工具」里按名勾选（运行期双向、即时生效），Panel 入口行同步移除「清单」入口、关闭已打开浮层并清空徽标状态；`base` 人格演示了"纯对话"配置（禁用 tools.builtin + skills.dir）

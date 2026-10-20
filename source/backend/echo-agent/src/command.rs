@@ -1,110 +1,21 @@
-//! Command dispatch registry.
+//! 命令词汇的**稳定路径**（`echo_agent::command::BackendCommand`）。
 //!
-//! The wire contract type itself lives in `echo-protocol`; re-exported here so
-//! `echo_agent::command::BackendCommand` keeps working.
+//! 线契约类型本身在 `echo-protocol`；这里只做 re-export，让既有调用点
+//! （`agent/commands.rs`、`agent/mod.rs`）的 `crate::command::BackendCommand`
+//! 保持不变。
 //!
-//! `apply_command` used to be a single giant match (478 lines, 25+ arms) in
-//! `agent/commands.rs`. This registry makes command handling pluggable: each
-//! handler claims the command variants it owns and processes them; the
-//! dispatcher asks handlers in registration order until one consumes the
-//! command. Adding a command = adding a handler, never editing the dispatcher.
+//! ## 这里曾经有什么（2026-11 删除）
+//!
+//! 一个 `CommandHandler` trait + `CommandRegistry`（约 90 行）：按注册顺序问
+//! 一遍"谁认领这条命令"。它在**全插件化 S3/S5 之后彻底多余**——命令域现在由
+//! 插件注册关系承载（`Contribution::Command` + `PluginHost::dispatch_command`），
+//! 而宿主自己处理的那 11 条本来就是 `apply_command` 的 match。
+//!
+//! 删掉它的理由不是"没人用"，是**它会误导**：模块文档写着"加一条命令 = 加一个
+//! handler，永远不用改分发器"，而真实的分发器（`Agent::apply_command`）仍然
+//! 是一个 match，新命令照样要改它。留着两套"可扩展命令"的说法，下一个人会先
+//! 花半小时搞清楚该用哪套。
+//!
+//! 现在只有一条扩展路径：**写一个插件，声明它认领的命令**。
 
 pub use echo_protocol::BackendCommand;
-
-use std::sync::Arc;
-
-use crate::agent::Agent;
-
-/// One command handler: claims the variants it owns.
-///
-/// `handle` returns `true` when the command was consumed (no further handler
-/// runs). A handler should claim only the variants it owns — for an enum
-/// match that means a `match` with no fall-through, returning `false` for
-/// variants outside its domain.
-pub trait CommandHandler: Send + Sync {
-    /// Process a command. Returns whether this handler consumed it.
-    fn handle(
-        &self,
-        agent: &Agent,
-        cmd: &BackendCommand,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>;
-
-    /// A short label for diagnostics (e.g. "api", "qq", "state").
-    fn name(&self) -> &'static str;
-}
-
-/// An ordered registry of command handlers.
-///
-/// Handlers run in registration order; the first to return `true` consumes
-/// the command. An unknown command falls through every handler and is logged.
-#[derive(Default)]
-pub struct CommandRegistry {
-    handlers: Vec<Arc<dyn CommandHandler>>,
-}
-
-impl CommandRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Register a handler (in order). Returns the registration for potential
-    /// removal.
-    pub fn register(&mut self, handler: Arc<dyn CommandHandler>) {
-        self.handlers.push(handler);
-    }
-
-    /// Dispatch one command to the handlers in order.
-    pub async fn dispatch(&self, agent: &Agent, cmd: BackendCommand) -> bool {
-        for handler in &self.handlers {
-            if handler.handle(agent, &cmd).await {
-                return true;
-            }
-        }
-        tracing::warn!(command = ?cmd, "no handler consumed command");
-        false
-    }
-
-    pub fn len(&self) -> usize {
-        self.handlers.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.handlers.is_empty()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct ClaimAll;
-    impl CommandHandler for ClaimAll {
-        fn name(&self) -> &'static str {
-            "claim-all"
-        }
-        fn handle(
-            &self,
-            _agent: &Agent,
-            _cmd: &BackendCommand,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> {
-            Box::pin(async { true })
-        }
-    }
-
-    #[test]
-    fn empty_registry_dispatch_returns_false() {
-        let registry = CommandRegistry::new();
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        // Cannot build an Agent here; exercise the registry mechanics with a
-        // claim-all handler instead.
-        assert!(registry.is_empty());
-        let _ = runtime;
-    }
-
-    #[tokio::test]
-    async fn registry_orders_handlers() {
-        let mut registry = CommandRegistry::new();
-        registry.register(Arc::new(ClaimAll));
-        assert_eq!(registry.len(), 1);
-    }
-}
