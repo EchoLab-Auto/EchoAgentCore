@@ -288,6 +288,69 @@ api_admin.rs         1,257 → 1,167 行 （余额 HTTP 搬走）
 加上各插件自己的"声明 ⇒ 认领"测试，"插件声明的东西一定可达"这条不变量在
 两个方向上都有人守。
 
+### S7：工具按需取上下文 ——**已完成 2026-11**
+
+上一轮（S6）结束时还剩两处宿主持有工具名：`spawn_subagent`（编排特判 +
+一条并行异步通道）与 `checklist`（参数注入 + 状态事件映射表）。这一轮把
+根因和表现一起拆掉。
+
+#### 根因
+
+**工具拿不到调用上下文**。会话 / 分支 / 归属人格 / 取消信号都在宿主手里，
+而 `Tool::execute(&self, arguments: Value)` 只有一个 JSON。于是宿主只能：
+
+- 往参数里塞 `__session_id` / `__team_id`（魔术键，模型可见面的污染）；
+- 需要取消信号的工具（子代理）另开一条通道，因为参数里放不下令牌。
+
+#### 修法：把上下文变成可选入参
+
+| 词汇 | 在哪 | 作用 |
+|---|---|---|
+| `ToolContext` | `echo-defs::tool` | `session_id` / `branch_id` / `team_id` / `cancel` |
+| `Cancellation`（trait） | `echo-defs::tool` | 「能问是否已取消 / 能等它取消」——**不绑定** `tokio_util` |
+| `Tool::execute_in(&self, cx, args)` | `echo-defs::tool` | 默认转 `execute_rich`；需要的工具覆写 |
+| `ToolRegistry::execute_rich_in` | `echo-tool` | 执行链的上下文入口 |
+| `ToolRegistry::register_shared` | `echo-tool` | 注册到**注册表寿命**（无 Disposer） |
+
+不需要上下文的工具一行都不用改（默认实现丢掉它）。
+
+#### 删掉的四张表
+
+| 表 | 曾经 | 现在 |
+|---|---|---|
+| 参数注入 | `match tool { "checklist" => __session_id, "shell_*" => __team_id }` | 工具覆写 `execute_in` |
+| 编排分派 | `if call.name == "spawn_subagent"` → 另一条通道 | 它就是普通工具 |
+| 状态广播 | `match state_key { "checklist" => ChecklistUpdated }` | 绑定方声明（插件提供 `all_state_event_bindings`） |
+| 门控 | `allows_dynamic_tool` 里按名字判断插件装没装 | 注册表 + 包标签（`set_package_enabled`） |
+
+#### 顺带删掉两条平行路径
+
+`echo-loop` 的 `SubagentToolHooks`（`is_async_tool` / `execute_async` /
+`extra_tool_definitions`）整组删除。`spawn_subagent` 曾在此**重新实现**了
+一遍"记 ToolCall / 记 ToolResult / 受理"——与注册表路径重复的两份逻辑。
+
+工具 schema 因此只剩**一个来源**（注册表）：`extra_tool_definitions` 造成
+的同名重复曾让 API 直接拒绝整个请求（"Tool names must be unique"）。
+
+#### 真实踩到的坑（写进注释与测试）
+
+注册是 **RAII** 的：装配期用 `register_reversible` 却不保存返回值，
+`Disposer` 在函数返回时 drop，工具**当场消失**——表现是"注册了但模型看不到
+schema"。`register_shared` 存在的唯一理由就是这个。
+
+#### 数字
+
+```text
+tool_dispatch.rs   3 处工具名 match → 0（只剩注释）
+turn.rs            少 120 行并行通道
+gating.rs          少 1 条名字分支
+echo-loop          少 ~35 行死接口
+生产代码里工具名字面量：0（grep 只剩注释）
+```
+
+**结论**：`crate::subagent::SPAWN_SUBAGENT_TOOL` 这类常量现在只出现在
+"工具自己的实现"与"注册它的那一行"——这正是插件该有的形态。
+
 ## 不搬清单（每条都试过，附理由）
 
 诚实记录"没做"比做完的部分更重要——否则下一个人会把同样的时间再花一遍。
