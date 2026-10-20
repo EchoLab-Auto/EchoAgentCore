@@ -62,21 +62,6 @@ pub fn wrap_metering(
 /// 用脱敏器包装 provider（LLM 请求出口的敏感信息卡口）。
 pub use echo_plugin_provider_llm::wrap_redacting;
 
-/// 指标存储即用量出口：计量装饰器只认 [`UsageRecorder`]，
-/// 不认 `echo-balances.jsonl` / 保留期 / 定价表（那些属宿主的指标子系统）。
-impl UsageRecorder for MetricsStore {
-    fn record_usage(
-        &self,
-        profile: &str,
-        model: &str,
-        prompt: u32,
-        completion: u32,
-        cache_hit: u32,
-    ) {
-        MetricsStore::record_usage(self, profile, model, prompt, completion, cache_hit);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

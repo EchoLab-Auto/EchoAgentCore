@@ -10,6 +10,8 @@ description = "LLM provider 插件（解耦计划 Phase 3 ①）：provider 工�
 [dependencies]
 echo-defs = { workspace = true }
 echo-config = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
 toml = { workspace = true }
 serde_json = { workspace = true }
 echo-llm-openai = { workspace = true }

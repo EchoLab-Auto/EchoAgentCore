@@ -40,6 +40,7 @@ pub mod message;
 pub mod mode;
 pub mod node;
 pub mod plugin_id;
+pub mod pricing;
 pub mod plugin_instance;
 pub mod remote_tool;
 pub mod sanitize;
