@@ -25,6 +25,7 @@
 //! 依赖纪律：只依赖 `echo-protocol`（线契约）、`echo-federation`（合并端口
 //! 时的对端连接接收）与 tokio/tungstenite——不依赖 `echo-agent`。
 
+pub mod history;
 pub mod timeline;
 
 use std::sync::atomic::{AtomicU64, Ordering};

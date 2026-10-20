@@ -51,7 +51,7 @@ plugin/echo-plugin-federation          echo-defs echo-context echo-federation ec
 plugin/echo-plugin-loop                 echo-context echo-defs echo-loop echo-plugin echo-plugin-api echo-session
 plugin/echo-plugin-subagent             echo-defs echo-federation echo-protocol echo-tool
 plugin/echo-plugin-workspace            echo-context echo-defs echo-plugin echo-protocol echo-session echo-tool
-plugin/echo-plugin-management           echo-context echo-defs echo-federation echo-protocol
+plugin/echo-plugin-management           echo-context echo-defs echo-federation echo-protocol echo-session
 plugin/echo-plugin-tools                echo-config echo-defs echo-tool echo-shell echo-context echo-plugin echo-plugin-provider-llm echo-protocol echo-test-utils
 
 # ── 业务层与组合根 ─────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ echo-protocol = { workspace = true }
 # 时间线投影：事件总线订阅 + 消息词汇（都在机制层）+ 图片规范化 + 定时信封解析。
 echo-context = { workspace = true }
 echo-defs = { workspace = true }
+echo-session = { workspace = true }
 chrono = { workspace = true }
 echo-federation = { workspace = true }
 anyhow = { workspace = true }
