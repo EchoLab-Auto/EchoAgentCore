@@ -173,6 +173,77 @@ fn test_agent(provider: Arc<dyn LlmProvider>) -> Agent {
 /// `apply_command` 移到 `echo-plugin-provider-llm`。测试要覆盖的是**宿主
 /// 接缝**（`AgentProviderCommandHost`）——这里直接打接缝，而不是测宿主那条
 /// "插件未启用"的兜底分支（兜底有它自己的测试）。
+/// 状态广播的**绑定**（2026-11 S7）：工具声明 `state_key`，装它的插件声明
+/// 线上形状，执行链只做一次查表。
+///
+/// 这条锁住三件事：① 绑定生效时面板**真的**收到 `ChecklistUpdated`；
+/// ② 会话归属来自上下文（不是参数魔术键）；③ **没绑定就不发**——不许猜。
+#[tokio::test]
+async fn tool_state_event_is_emitted_only_when_a_binding_exists() {
+    use echo_plugin_tools::checklist::ChecklistTool;
+
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    // 工具必须在注册表里（执行链查的是注册表）。
+    // `register_shared`：注册到注册表寿命——用 `register_reversible` 却不保存
+    // 返回值会让工具当场注销（那正是本文件要防的坑）。
+    agent.tools.register_shared(Arc::new(ChecklistTool::new()));
+
+    let received = Arc::new(std::sync::Mutex::new(Vec::<BackendEvent>::new()));
+    let sink = received.clone();
+    agent.attach_event_sink(Arc::new(move |event: BackendEvent| {
+        sink.lock().expect("events poisoned").push(event);
+    }));
+
+    let call = ToolCall {
+        id: "c1".into(),
+        name: "checklist".into(),
+        arguments: r#"{"operation":"create","name":"smoke"}"#.into(),
+    };
+    agent.run_tool("local:tui::local_user", "branch-1", &call).await;
+
+    // ① 没有绑定 → 不发（工具声明了状态，但没人认领线上形状）。
+    assert!(
+        !received
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| matches!(e, BackendEvent::ChecklistUpdated { .. })),
+        "没有绑定时不该发事件"
+    );
+
+    // ② 注册绑定（由拥有该工具的插件给出声明）→ 发，且会话来自上下文。
+    for (key, build) in echo_plugin_tools::checklist::all_state_event_bindings() {
+        agent.register_tool_state_event(key, build);
+    }
+    received.lock().unwrap().clear();
+    let call = ToolCall {
+        id: "c2".into(),
+        name: "checklist".into(),
+        arguments: r#"{"operation":"add","name":"smoke","item":"hello"}"#.into(),
+    };
+    agent.run_tool("local:tui::local_user", "branch-1", &call).await;
+
+    let events = received.lock().unwrap();
+    let found = events
+        .iter()
+        .find_map(|event| match event {
+            BackendEvent::ChecklistUpdated { session_id, state, .. } => {
+                Some((session_id.clone(), state.clone()))
+            }
+            _ => None,
+        })
+        .expect("注册绑定后必须发 ChecklistUpdated");
+    assert_eq!(found.0, "local:tui::local_user", "会话来自调用上下文");
+    assert!(
+        serde_json::to_string(&found.1).unwrap().contains("hello"),
+        "状态快照应含刚添加的条目：{}",
+        found.1
+    );
+}
+
 /// 走**会话视图命令域**（全插件化 S5）：面板视图命令由
 /// `echo-plugin-management::session_view` 认领。这里直接打宿主接缝
 /// （插件侧的投影/瘦身/顺序在自己 crate 的测试里覆盖）。

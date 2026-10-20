@@ -23,12 +23,22 @@ impl Agent {
     /// `SubagentToolHooks` 定义，QQ 消息等入站复用同一「结构化 hook →
     /// 新 turn」路径。
     pub fn attach_subagent_runtime(self: &Arc<Self>, store: Arc<crate::subagent::SubagentStore>) {
+        self.attach_subagent_runtime_with(store, None)
+    }
+
+    /// 带远程委派聚合接缝的版本（组合根用：联邦要按父 turn 分组汇总）。
+    pub fn attach_subagent_runtime_with(
+        self: &Arc<Self>,
+        store: Arc<crate::subagent::SubagentStore>,
+        remote_sink: Option<Arc<dyn crate::subagent::RemoteDelegationSink>>,
+    ) {
         let agent = Arc::downgrade(self);
         let spawn: SubagentSpawnFn = Arc::new(move |request| {
             if let Some(agent) = agent.upgrade() {
                 agent.spawn_subagent_execution(request);
             }
         });
+        let spawn_for_tool = spawn.clone();
         if let Ok(mut slot) = self.subagent.write() {
             *slot = Some(SubagentRuntime {
                 store: store.clone(),
@@ -38,6 +48,20 @@ impl Agent {
             tracing::warn!("subagent slot busy, ignoring attach_subagent_runtime");
             return;
         }
+        // **注册工具**（模型可见的 schema 来源）+ 打插件包标签。
+        //
+        // 这两行取代了两处宿主特判：
+        // - `allows_dynamic_tool` 里"按工具名判断插件是否装配"——现在工具就在
+        //   注册表里，`set_package_enabled(SUBAGENT_PLUGIN_ID, …)` 直接管它；
+        // - `run_orchestration` 里"按工具名找编排通道"——现在它走普通执行链，
+        //   只是覆写了 `Tool::execute_in`。
+        let tool = crate::subagent::SpawnSubagentTool::new(store.clone(), spawn_for_tool)
+            .with_opt_remote_sink(remote_sink);
+        // 注册到**注册表寿命**（agent 消失时整表释放）：不用 `register_reversible`
+        // ——它返回的 `Disposer` 一旦在这里被 drop，工具会当场注销。
+        self.tools.register_shared(Arc::new(tool));
+        self.tools
+            .set_package(crate::subagent::SPAWN_SUBAGENT_TOOL, crate::plugins::SUBAGENT_PLUGIN_ID);
         store.spawn_sweeper(self.cancel.clone());
     }
 

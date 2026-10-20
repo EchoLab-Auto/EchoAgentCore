@@ -1516,14 +1516,29 @@ fn test_agent_with_subagent(reply: &'static str) -> (Arc<Agent>, Arc<StaticProvi
     (agent, provider)
 }
 
+/// 「工具存在」与「能力可用」现在是**同一件事**（2026-11 S7）。
+///
+/// 此前 `spawn_subagent` 在装配期由组合根注册成占位工具（只为 schema），
+/// 真正能不能用靠 `allows_dynamic_tool` 里一条工具名特判回答——于是"注册表里
+/// 有它"与"它可执行"可以不一致。现在注册与接线是同一个动作
+/// （`attach_subagent_runtime`），判据只剩注册表本身。
 #[tokio::test]
-async fn spawn_subagent_tool_is_visible_only_when_runtime_attached() {
-    // 未装配：工具不可见（schema 不注入、调用按未注册报错）。
-    let (agent, _) = test_agent("ok");
-    assert!(!agent.allows_dynamic_tool("spawn_subagent"));
-    // 装配后：默认 persona（无白名单）可见。
+async fn spawn_subagent_exists_only_when_runtime_attached() {
+    use echo_agent::subagent::SPAWN_SUBAGENT_TOOL;
+    // 未装配：注册表里没有它（模型看不到 schema，调用按未注册报错）。
+    let (bare, _) = test_agent("ok");
+    assert!(
+        !bare.tools.names().contains(&SPAWN_SUBAGENT_TOOL.to_string()),
+        "未装配运行态时不该注册"
+    );
+    // 装配后：注册表里有它，且带 subagent 插件包标签（门控按包生效）。
     let (agent, _) = test_agent_with_subagent("ok");
-    assert!(agent.allows_dynamic_tool("spawn_subagent"));
+    assert!(agent.tools.names().contains(&SPAWN_SUBAGENT_TOOL.to_string()));
+    assert_eq!(
+        agent.tools.package_of(SPAWN_SUBAGENT_TOOL).as_deref(),
+        Some(echo_agent::plugins::SUBAGENT_PLUGIN_ID),
+        "包标签是插件门控的唯一依据"
+    );
 }
 
 /// 回归：生产装配（core 组合根）把 spawn_subagent 注册进 persona 注册表；
@@ -1664,7 +1679,12 @@ async fn spawn_subagent_is_blocked_when_plugin_not_allowed() {
             ..Default::default()
         })
         .await;
-    assert!(!agent.allows_dynamic_tool("spawn_subagent"));
+    // 门控经**包标签**生效：插件不在白名单 → 该包的工具整组禁用
+    // （不再有按工具名的特判分支）。
+    assert!(
+        agent.tools.is_disabled("spawn_subagent").await,
+        "插件不在白名单 → 工具应被包门控禁用"
+    );
     let session = agent
         .trunk
         .get_or_create(&SessionKey::local_tui(), "user".into(), None);
@@ -1675,7 +1695,7 @@ async fn spawn_subagent_is_blocked_when_plugin_not_allowed() {
     };
     let result = agent.run_tool(&session.id, "branch-main", &call).await;
     assert!(
-        result.text.contains("subagent 插件未启用"),
+        result.text.contains("找不到工具") || result.text.contains("not registered"),
         "denied: {}",
         result.text
     );

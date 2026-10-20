@@ -5,6 +5,17 @@ use std::collections::HashMap;
 
 use crate::mode::LoopMode;
 
+/// 状态快照 → 线上事件的构造器。
+///
+/// 工具用 `Tool::state_key` 声明"我执行完有可见状态"，而**这状态长什么线上
+/// 事件**是协议形状——由绑定该工具的插件给出，不由执行链按工具名猜。
+///
+/// 参数是 `(归属会话, 状态快照)`：状态是 per-session 的（清单按会话隔离），
+/// 线上事件必须带上归属会话，否则面板会把 A 会话的状态挂到 B 会话上。
+pub type ToolStateEventBuilder =
+    std::sync::Arc<dyn Fn(&str, &serde_json::Value) -> BackendEvent + Send + Sync>;
+
+
 /// 技能来源信息（外部 Git 仓库安装）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillSourceInfo {

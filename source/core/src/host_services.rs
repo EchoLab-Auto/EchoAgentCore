@@ -128,6 +128,16 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
             as Arc<dyn echo_agent::tool::builtin::ToolsCommandHostAlias>,
     );
 
+    // ── 工具状态 → 线上事件（**绑定方声明**，2026-11 S7）──
+    //
+    // 执行链不再有 `match state_key { "checklist" => … }` 表，这里也不该有
+    // 工具名：谁装了这个工具，谁声明"它的状态长什么线上事件"。绑定本体在
+    // `echo-plugin-tools`（见 `checklist::state_event_binding`），本层只把
+    // 声明装进 agent——新增一个有状态工具时这里一行都不用改。
+    for (key, build) in echo_plugin_tools::checklist::all_state_event_bindings() {
+        wiring.agent.register_tool_state_event(key, build);
+    }
+
     // ── 技能目录 ──
     put(
         &mut keep,

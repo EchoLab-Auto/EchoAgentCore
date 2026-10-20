@@ -226,6 +226,34 @@ impl ToolRegistry {
     /// Uncontended (assembly, test) paths take the lock directly; under
     /// contention inside a multi-thread runtime the lock is taken on the
     /// blocking pool. Disposal uses the same strategy.
+    /// 注册一个工具，**生命周期 = 注册表本身**（无撤销句柄）。
+    ///
+    /// 与 [`Self::register_reversible`] 的分工：那个给"可装卸"的场景（插件
+    /// mount/unmount），必须持有返回的 [`Disposer`]；这个给"这个工具属于
+    /// 这个 agent"的场景——它不该被提前卸掉，也不该逼调用方存一个句柄。
+    ///
+    /// 真实踩到过的坑：装配期用 `register_reversible` 却不保存返回值，
+    /// `Disposer` 在函数返回时立即 drop，工具**当场消失**（表现为"工具注册
+    /// 了但模型看不到 schema"）。注册表寿命语义的入口因此是必要的。
+    pub fn register_shared(self: &Arc<Self>, tool: Arc<dyn Tool>) {
+        let name = tool.name().to_string();
+        let replaced = if let Ok(mut tools) = self.tools.try_write() {
+            tools.insert(name.clone(), tool).is_some()
+        } else {
+            let name_for_blocking = name.clone();
+            blocking_section(move || {
+                self.tools
+                    .blocking_write()
+                    .insert(name_for_blocking, tool)
+                    .is_some()
+            })
+        };
+        if replaced {
+            self.note_conflict(&name, "register_shared");
+        }
+        self.invalidate_definitions();
+    }
+
     pub fn register_reversible(self: &Arc<Self>, tool: Arc<dyn Tool>) -> Disposer {
         let name = tool.name().to_string();
         let replaced = if let Ok(mut tools) = self.tools.try_write() {
@@ -547,6 +575,32 @@ impl ToolRegistry {
             None => Err(ToolError::NotFound(name.to_string())),
         };
         self.redact_text_outcome(result).await
+    }
+
+    /// 带**调用上下文**执行（`Tool::execute_in` 的注册表入口）。
+    ///
+    /// 与 [`Self::execute_rich`] 的唯一区别是把上下文递给工具——需要会话 /
+    /// 人格 / 取消信号的工具（清单、shell、子代理）靠它取代历史上的魔术参数
+    /// 注入。不覆写 `execute_in` 的工具行为完全不变。
+    pub async fn execute_rich_in(
+        &self,
+        cx: &echo_defs::tool::ToolContext,
+        name: &str,
+        arguments: Value,
+    ) -> Result<echo_defs::tool::ToolResult, ToolError> {
+        let (tool, disabled) = {
+            let tools = self.tools.read().await;
+            let disabled = self.disabled.read().await;
+            (tools.get(name).cloned(), disabled.contains(name))
+        };
+        if disabled {
+            return Err(ToolError::NotFound(name.to_string()));
+        }
+        let result = match tool {
+            Some(tool) => tool.execute_in(cx, arguments).await,
+            None => Err(ToolError::NotFound(name.to_string())),
+        };
+        self.redact_rich_outcome(result).await
     }
 
     /// Execute a tool with multimodal output support (text + images).

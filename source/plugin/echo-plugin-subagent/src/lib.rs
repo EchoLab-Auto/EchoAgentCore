@@ -40,7 +40,7 @@ use echo_defs::llm::{
 use echo_defs::message::{ChatMessage, ChatRequest, ChatRole};
 use echo_defs::remote_tool::{remote_tool_name, remote_tool_prefix};
 use echo_defs::token::truncate;
-use echo_tool::{Tool, ToolError, ToolRegistry};
+use echo_tool::{Tool, ToolError, ToolRegistry, ToolResult};
 
 /// 单次委派结果的可见回灌上限（字符）：子任务结论超过即截断并标注，
 /// 防单个子任务反过来烧掉主上下文。
@@ -205,6 +205,26 @@ impl SubagentStore {
     }
 }
 
+/// 等"任一条取消链"：注册表条目的令牌 **或** 主 turn 的取消信号。
+///
+/// 为什么不是 `child_token()`：那需要 `CancellationToken` 这个具体类型，而
+/// 主 turn 的令牌到了定义层只剩 [`echo_defs::tool::Cancellation`] 能力。
+/// 两条链各自独立、任一触发即停——语义与 child token 等价。
+pub async fn wait_cancelled(
+    own: &tokio_util::sync::CancellationToken,
+    parent: Option<&dyn echo_defs::tool::Cancellation>,
+) {
+    match parent {
+        Some(parent) => {
+            tokio::select! {
+                _ = own.cancelled() => {}
+                _ = parent.when_cancelled() => {}
+            }
+        }
+        None => own.cancelled().await,
+    }
+}
+
 /// The `spawn_subagent` tool: delegate an isolated subtask to a child agent.
 ///
 /// 异步语义：调用立即返回子任务 id；子任务在后台以隔离上下文执行，完成时
@@ -254,8 +274,11 @@ pub struct SpawnRequest {
     pub session_id: String,
     pub task: String,
     pub timeout: std::time::Duration,
-    /// 主 turn 的取消令牌：主 turn 取消时子任务一并取消。
-    pub parent_cancel: tokio_util::sync::CancellationToken,
+    /// 主 turn 的取消信号：主 turn 取消时子任务一并取消。
+    ///
+    /// 用定义层的 [`echo_defs::tool::Cancellation`] 而不是具体令牌类型——
+    /// 本插件不依赖宿主的取消实现，宿主把它的令牌包一层递进来即可。
+    pub parent_cancel: Option<Arc<dyn echo_defs::tool::Cancellation>>,
     /// 主 turn 的分支 id（子任务事件归属渲染用）。
     pub parent_branch_id: String,
     /// 目标联邦节点（federation Phase 3；None = 本机）。
@@ -281,17 +304,35 @@ impl Tool for SpawnSubagentTool {
         Self::schema()
     }
 
-    /// 注册表兜底路径（无 turn 上下文：无父取消传播、归属分支为 "subagent"）。
-    /// 主路径在 agent 循环内经 [`Self::spawn`] 携带 turn cancel 调用。
+    /// **无上下文**调用（面板调试 / 直接经注册表执行）：会话与分支用占位值，
+    /// 且不传播取消——子任务完成 hook 回灌到 `local:subagent::direct`。
     async fn execute(&self, arguments: Value) -> Result<String, ToolError> {
-        // 会话 id 从参数拿不到（模型不可见）——注册表路径只用于面板/调试
-        // 直接调用，子任务完成 hook 回灌"background"会话。
         self.spawn(
             &arguments,
             "local:subagent::direct",
-            tokio_util::sync::CancellationToken::new(),
+            None,
             "subagent",
         )
+        .map_err(ToolError::InvalidArguments)
+    }
+
+    /// **主路径**：会话 / 分支 / 取消信号全部来自调用上下文。
+    ///
+    /// 历史上这里是宿主的 `run_orchestration` 特判（按工具名分支）外加
+    /// `turn.rs` 一条并行的异步通道——两条路各自重复了事件日志。现在它就是
+    /// 一个普通工具，只是要上下文（[`Tool::execute_in`]）。
+    async fn execute_in(
+        &self,
+        cx: &echo_defs::tool::ToolContext,
+        arguments: Value,
+    ) -> Result<ToolResult, ToolError> {
+        self.spawn(
+            &arguments,
+            &cx.session_id,
+            cx.cancel.clone(),
+            &cx.branch_id,
+        )
+        .map(ToolResult::text)
         .map_err(ToolError::InvalidArguments)
     }
 }
@@ -339,13 +380,19 @@ impl SpawnSubagentTool {
         self
     }
 
+    /// 可选 sink（宿主装配点常用：`None` = 单机部署，不需要聚合摘要）。
+    pub fn with_opt_remote_sink(mut self, sink: Option<Arc<dyn RemoteDelegationSink>>) -> Self {
+        self.remote_sink = sink;
+        self
+    }
+
     /// 解析并校验参数；`session_id`/`parent_cancel`/`parent_branch_id` 由
     /// 执行环境注入（模型不可见）。返回立即可见的回执文本。
     pub fn spawn(
         &self,
         arguments: &Value,
         session_id: &str,
-        parent_cancel: tokio_util::sync::CancellationToken,
+        parent_cancel: Option<Arc<dyn echo_defs::tool::Cancellation>>,
         parent_branch_id: &str,
     ) -> Result<String, String> {
         let task = arguments
@@ -363,6 +410,9 @@ impl SpawnSubagentTool {
             .unwrap_or(DEFAULT_SUBAGENT_TIMEOUT_SECS)
             .clamp(30, 3600);
         let task_id = uuid::Uuid::new_v4().to_string();
+        // 注册表条目的令牌**独立**（`cancel_all` / 逐项 `finish` 只取消它）：
+        // 父取消不再"生一个 child_token"（那需要具体令牌类型），而是在执行体
+        // 里**同时等两条取消链**（见 `wait_cancelled`）。
         self.store.register(
             SubagentInfo {
                 id: task_id.clone(),
@@ -371,7 +421,7 @@ impl SpawnSubagentTool {
                 started_at_ms: chrono::Utc::now().timestamp_millis(),
                 status: SubagentStatus::Running,
             },
-            parent_cancel.child_token(),
+            tokio_util::sync::CancellationToken::new(),
         );
         let node = arguments
             .get("node")
@@ -558,7 +608,7 @@ mod tests {
         tool.spawn(
             &serde_json::json!({"task": "t"}),
             "s",
-            tokio_util::sync::CancellationToken::new(),
+            None,
             "b",
         )
         .unwrap();
@@ -567,7 +617,7 @@ mod tests {
         tool.spawn(
             &serde_json::json!({"task": "t", "node": "gpu-box"}),
             "s",
-            tokio_util::sync::CancellationToken::new(),
+            None,
             "b",
         )
         .unwrap();
@@ -592,7 +642,7 @@ mod tests {
         tool.spawn(
             &serde_json::json!({"task": "t"}),
             "s",
-            tokio_util::sync::CancellationToken::new(),
+            None,
             "b",
         )
         .unwrap();
@@ -601,7 +651,7 @@ mod tests {
         tool.spawn(
             &serde_json::json!({"task": "t", "profile": "  kimi "}),
             "s",
-            tokio_util::sync::CancellationToken::new(),
+            None,
             "b",
         )
         .unwrap();
@@ -613,7 +663,7 @@ mod tests {
         tool.spawn(
             &serde_json::json!({"task": "t", "profile": "   "}),
             "s",
-            tokio_util::sync::CancellationToken::new(),
+            None,
             "b",
         )
         .unwrap();
@@ -640,7 +690,7 @@ mod tests {
             .spawn(
                 &json!({"task": "找出所有 X 的用法"}),
                 "local:tui::one",
-                tokio_util::sync::CancellationToken::new(),
+                None,
                 "branch-1",
             )
             .expect("spawn ok");
@@ -659,7 +709,7 @@ mod tests {
             .spawn(
                 &json!({"task": "  "}),
                 "local:tui::one",
-                tokio_util::sync::CancellationToken::new(),
+                None,
                 "b",
             )
             .unwrap_err();
@@ -671,22 +721,52 @@ mod tests {
         );
     }
 
-    #[test]
-    fn parent_cancel_cascades_to_child_token() {
-        let spawned = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let spawned2 = spawned.clone();
-        let (tool, store) = tool(Arc::new(move |req| {
-            spawned2.lock().unwrap().push(req.task_id);
-        }));
-        let parent = tokio_util::sync::CancellationToken::new();
-        tool.spawn(&json!({"task": "t"}), "s", parent.clone(), "b")
+    /// 取消传播：注册表条目的令牌与主 turn 的取消信号**任一触发都停**。
+    ///
+    /// 语义来源：`SpawnRequest::parent_cancel` 是定义层的 `Cancellation` 能力
+    /// （不是具体令牌类型），所以执行体同时等两条链——等价于过去的
+    /// `child_token()`，但不把运行时类型带进定义层。
+    #[tokio::test]
+    async fn either_cancel_chain_stops_the_task() {
+        /// 包一层 `CancellationToken`：定义层只认能力。
+        struct Token(tokio_util::sync::CancellationToken);
+        impl echo_defs::tool::Cancellation for Token {
+            fn is_cancelled(&self) -> bool {
+                self.0.is_cancelled()
+            }
+            fn when_cancelled(
+                &self,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+                Box::pin(self.0.cancelled())
+            }
+        }
+
+        // ① 注册表条目令牌取消 → 停
+        let own = tokio_util::sync::CancellationToken::new();
+        let handle = tokio::spawn({
+            let own = own.clone();
+            async move { wait_cancelled(&own, None).await }
+        });
+        own.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .expect("条目令牌取消后应立刻返回")
             .unwrap();
-        // 父令牌取消后，注册表中的子令牌一并取消。
-        parent.cancel();
-        let id = store.snapshot()[0].id.clone();
-        // 注册表 finish 会取消条目令牌；这里直接断言取消传播链存在。
-        assert!(store.finish(&id, SubagentStatus::Cancelled));
-        assert_eq!(store.snapshot()[0].status, SubagentStatus::Cancelled);
+
+        // ② 主 turn 取消 → 停（条目令牌没动）
+        let own = tokio_util::sync::CancellationToken::new();
+        let parent = Arc::new(Token(tokio_util::sync::CancellationToken::new()));
+        let handle = tokio::spawn({
+            let own = own.clone();
+            let parent = parent.clone();
+            async move { wait_cancelled(&own, Some(parent.as_ref() as &dyn echo_defs::tool::Cancellation)).await }
+        });
+        (parent.0).cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+            .await
+            .expect("父取消后应立刻返回")
+            .unwrap();
+        assert!(!own.is_cancelled(), "条目自己的令牌不该被连带取消");
     }
 
     #[test]
@@ -699,14 +779,14 @@ mod tests {
         tool.spawn(
             &json!({"task": "a"}),
             "s",
-            tokio_util::sync::CancellationToken::new(),
+            None,
             "b",
         )
         .unwrap();
         tool.spawn(
             &json!({"task": "b", "timeout_secs": 1}),
             "s",
-            tokio_util::sync::CancellationToken::new(),
+            None,
             "b",
         )
         .unwrap();
@@ -794,7 +874,7 @@ mod tests {
         tool.spawn(
             &json!({"task": "在 A 上检索日志", "node": "gpu-a"}),
             "sess-1",
-            tokio_util::sync::CancellationToken::new(),
+            None,
             "turn-7",
         )
         .unwrap();
@@ -818,7 +898,7 @@ mod tests {
         tool.spawn(
             &json!({"task": "本机任务"}),
             "sess-1",
-            tokio_util::sync::CancellationToken::new(),
+            None,
             "turn-7",
         )
         .unwrap();
@@ -834,7 +914,7 @@ mod tests {
             .spawn(
                 &json!({"task": "远程任务", "node": "peer-x"}),
                 "s",
-                tokio_util::sync::CancellationToken::new(),
+                None,
                 "b",
             )
             .expect("absence of a sink must not fail the spawn");

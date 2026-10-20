@@ -6,6 +6,21 @@
 use async_trait::async_trait;
 use serde_json::json;
 
+/// 这次调用的归属人格。
+///
+/// **优先取调用上下文**（`Tool::execute_in` 递进来的 `cx.team_id`）；直接经
+/// 注册表执行时没有上下文，才回退历史上的 `__team_id` 参数（模型看不到它）。
+/// 归属校验本身不变：`ensure_owned_by` 决定放行与否。
+fn requester<'a>(
+    cx: Option<&'a echo_defs::tool::ToolContext>,
+    arguments: &'a serde_json::Value,
+) -> Option<&'a str> {
+    cx.and_then(|cx| cx.team_id.as_deref())
+        .filter(|id| !id.is_empty())
+        .or_else(|| arguments.get("__team_id").and_then(|v| v.as_str()))
+}
+
+
 use echo_shell::ShellHandle;
 
 /// 注册 Shell 工具（`shell_start` / `shell_exec` / `shell_stop`）。
@@ -48,17 +63,33 @@ impl echo_tool::Tool for ShellStartTool {
         })
     }
     async fn execute(&self, arguments: serde_json::Value) -> Result<String, echo_tool::ToolError> {
+        self.apply(None, arguments).await
+    }
+
+    /// 归属人格来自**上下文**（不再是 `__team_id` 魔术参数）。
+    async fn execute_in(
+        &self,
+        cx: &echo_defs::tool::ToolContext,
+        arguments: serde_json::Value,
+    ) -> Result<echo_defs::tool::ToolResult, echo_tool::ToolError> {
+        self.apply(Some(cx), arguments)
+            .await
+            .map(echo_defs::tool::ToolResult::text)
+    }
+}
+
+impl ShellStartTool {
+    async fn apply(
+        &self,
+        cx: Option<&echo_defs::tool::ToolContext>,
+        arguments: serde_json::Value,
+    ) -> Result<String, echo_tool::ToolError> {
         let manager = self
             .shell
             .manager()
             .ok_or_else(|| echo_tool::ToolError::Execution("shell manager unavailable".into()))?;
         let workdir = arguments["workdir"].as_str().map(|s| s.to_string());
-        // 归属 team：由 `Agent::run_tool` 注入 `__team_id`（2026-10 起；
-        // 替代此前跨 await 不可靠的线程本地方案）。
-        let team_id = arguments
-            .get("__team_id")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
+        let team_id = requester(cx, &arguments).map(str::to_string);
         let info = manager
             .start(workdir, team_id, &self.shell.emit())
             .await
@@ -96,6 +127,26 @@ impl echo_tool::Tool for ShellExecTool {
         })
     }
     async fn execute(&self, arguments: serde_json::Value) -> Result<String, echo_tool::ToolError> {
+        self.apply(None, arguments).await
+    }
+
+    async fn execute_in(
+        &self,
+        cx: &echo_defs::tool::ToolContext,
+        arguments: serde_json::Value,
+    ) -> Result<echo_defs::tool::ToolResult, echo_tool::ToolError> {
+        self.apply(Some(cx), arguments)
+            .await
+            .map(echo_defs::tool::ToolResult::text)
+    }
+}
+
+impl ShellExecTool {
+    async fn apply(
+        &self,
+        cx: Option<&echo_defs::tool::ToolContext>,
+        arguments: serde_json::Value,
+    ) -> Result<String, echo_tool::ToolError> {
         let session_id = arguments["session_id"]
             .as_str()
             .ok_or_else(|| echo_tool::ToolError::InvalidArguments("session_id required".into()))?;
@@ -111,7 +162,7 @@ impl echo_tool::Tool for ShellExecTool {
             .manager()
             .ok_or_else(|| echo_tool::ToolError::Execution("shell manager unavailable".into()))?;
         // 归属校验（2026-10）：不得操作其他智能体的 shell 会话。
-        let requester = arguments.get("__team_id").and_then(|v| v.as_str());
+        let requester = requester(cx, &arguments);
         manager
             .ensure_owned_by(session_id, requester)
             .map_err(echo_tool::ToolError::Execution)?;
@@ -155,6 +206,26 @@ impl echo_tool::Tool for ShellStopTool {
         })
     }
     async fn execute(&self, arguments: serde_json::Value) -> Result<String, echo_tool::ToolError> {
+        self.apply(None, arguments).await
+    }
+
+    async fn execute_in(
+        &self,
+        cx: &echo_defs::tool::ToolContext,
+        arguments: serde_json::Value,
+    ) -> Result<echo_defs::tool::ToolResult, echo_tool::ToolError> {
+        self.apply(Some(cx), arguments)
+            .await
+            .map(echo_defs::tool::ToolResult::text)
+    }
+}
+
+impl ShellStopTool {
+    async fn apply(
+        &self,
+        cx: Option<&echo_defs::tool::ToolContext>,
+        arguments: serde_json::Value,
+    ) -> Result<String, echo_tool::ToolError> {
         let session_id = arguments["session_id"]
             .as_str()
             .ok_or_else(|| echo_tool::ToolError::InvalidArguments("session_id required".into()))?;
@@ -163,7 +234,7 @@ impl echo_tool::Tool for ShellStopTool {
             .manager()
             .ok_or_else(|| echo_tool::ToolError::Execution("shell manager unavailable".into()))?;
         // 归属校验（2026-10）：不得停止其他智能体的 shell 会话。
-        let requester = arguments.get("__team_id").and_then(|v| v.as_str());
+        let requester = requester(cx, &arguments);
         manager
             .ensure_owned_by(session_id, requester)
             .map_err(echo_tool::ToolError::Execution)?;

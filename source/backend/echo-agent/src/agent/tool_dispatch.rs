@@ -1,18 +1,24 @@
 //! 工具分派（宿主侧）：把 `Agent` 的能力实现成执行链的四个接缝。
 //!
 //! 2026-11 全插件化 S2：执行链本体（参数预检 / 超时口径 / 调用与结果成对 /
-//! 出口脱敏���已搬进机制层 [`echo_tool::execute`]。本文件只剩**宿主的四件事**：
+//! 出口脱敏）已搬进机制层 [`echo_tool::execute`]。本文件只剩**宿主的三件事**：
 //!
 //! | 接缝 | 本文件的实现 |
 //! |---|---|
 //! | [`redact`](ToolExecutionHost::redact) | `Agent::redact_text_tracked`（组合根注入的脱敏器） |
 //! | [`on_call`](ToolExecutionHost::on_call) | `BackendEvent::ToolCall` + `SessionEvent::ToolCall` |
 //! | [`on_result`](ToolExecutionHost::on_result) | `BackendEvent::ToolResult` + `SessionEvent::ToolResult` + **状态广播** |
-//! | [`run_orchestration`](ToolExecutionHost::run_orchestration) | `spawn_subagent`（异步编排工具） |
-//! | [`tool_arguments`](ToolExecutionHost::tool_arguments) | `__session_id` / `__team_id` 的**宿主映射表** |
 //!
-//! 两条特判（`checklist` 的状态广播、按工具名注入会话参数）都从"执行链里
-//! 的 if"变成了"工具声明 + 宿主映射"——执行链不认识任何工具名。
+//! ## 这里曾经有三张按工具名的表（2026-11 S7 删完）
+//!
+//! | 表 | 曾经的形状 | 现在 |
+//! |---|---|---|
+//! | 参数注入 | `match tool { "checklist" => __session_id, "shell_*" => __team_id }` | 工具覆写 `Tool::execute_in` 直接拿上下文 |
+//! | 编排分派 | `if call.name == "spawn_subagent"` → 另一条通道 | 它就是普通工具，覆写 `execute_in` |
+//! | 状态广播 | `match state_key { "checklist" => ChecklistUpdated }` | 绑定时声明（见 [`Agent::tool_state_events`]） |
+//!
+//! 判据很简单：**执行链不该认识任何一个具体工具的名字**。名字只出现在两个
+//! 地方——工具自己的实现、以及绑定它的那行注册。
 
 use echo_tool::execute::{tool_state, ToolCallContext, ToolExecutionHost, ToolInvocation};
 
@@ -95,85 +101,24 @@ impl ToolExecutionHost for AgentToolHost<'_> {
                     elapsed_ms: Some(elapsed_ms),
                 },
             ));
-        // 状态广播：工具自己声明"我有可见状态"（`Tool::state_key`），执行链
-        // 负责在正确的时机问一句，**线上形状**归宿主。
+        // 状态广播：工具自己声明"我有可见状态"（`Tool::state_key`），**绑定它
+        // 的那个插件**声明线上形状（`Agent::tool_state_events` 里的构造器）。
         //
-        // 这里的 match 是**协议映射表**（state_key → 线上事件变体），不是分派
-        // 逻辑：新增一个有状态面板的工具只需实现 `state_key` + 在协议里加一个
-        // 变体，不必碰执行链。等协议收敛成通用的 `ToolStateUpdated`，这张表
-        // 整个消失。
+        // 这里曾经是一张 `match state_key { "checklist" => … }` 表——那等于让
+        // 执行链认识具体工具的名字。现在只剩一次查表：没有绑定就记一条 debug
+        // （工具声明了状态但没人认领它的线上形状）。
         if let Some((key, state)) = tool_state(&agent.tools, &call.name, &cx.session_id) {
-            match key {
-                "checklist" => agent.emit(BackendEvent::ChecklistUpdated {
-                    session_id: cx.session_id.clone(),
-                    state,
-                    team_id: None, // annotate_team 统一补
-                }),
-                other => tracing::debug!(
+            match agent.tool_state_event(&key) {
+                Some(build) => agent.emit(build(&cx.session_id, &state)),
+                None => tracing::debug!(
                     tool = %call.name,
-                    state_key = other,
-                    "工具声明了状态，但协议里没有对应事件（丢弃）"
+                    state_key = %key,
+                    "工具声明了状态，但没有注册它的线上事件（丢弃）"
                 ),
             }
         }
     }
 
-    fn run_orchestration(
-        &self,
-        cx: &ToolCallContext,
-        call: &ToolInvocation,
-        args: &serde_json::Value,
-    ) -> Option<Result<echo_tool::ToolResult, crate::tool::ToolError>> {
-        if call.name != crate::subagent::SPAWN_SUBAGENT_TOOL {
-            return None;
-        }
-        let agent = &self.agent;
-        // 异步编排工具：插件未挂载 / persona 不允许时按未注册工具报错。
-        if !agent.allows_dynamic_tool(crate::subagent::SPAWN_SUBAGENT_TOOL) {
-            return Some(Err(crate::tool::ToolError::NotFound(format!(
-                "tool '{}' is not registered (subagent 插件未启用或不在本 persona 白名单)",
-                crate::subagent::SPAWN_SUBAGENT_TOOL
-            ))));
-        }
-        let (store, spawn) = agent
-            .subagent_runtime()
-            .expect("allows_dynamic_tool checked the runtime is attached");
-        let tool = crate::subagent::SpawnSubagentTool::new(store, spawn);
-        let cancel = agent
-            .active_inbound_turns
-            .get(&cx.branch_id)
-            .map(|turn| turn.cancel.clone())
-            .unwrap_or_default();
-        Some(
-            tool.spawn(args, &cx.session_id, cancel, &cx.branch_id)
-                .map(crate::tool::ToolResult::text)
-                .map_err(crate::tool::ToolError::Execution),
-        )
-    }
-
-    fn tool_arguments(
-        &self,
-        cx: &ToolCallContext,
-        tool: &str,
-        mut args: serde_json::Value,
-    ) -> serde_json::Value {
-        // 按工具隔离会话状态的两条历史约定（清单按会话、Shell 按人格）。
-        //
-        // 这仍是宿主知识（它知道哪些工具按会话/人格隔离），但已经**不在执行链
-        // 里**——执行链只问一句"这个工具要补什么参数"。终态是工具自己在注册时
-        // 声明它需要哪个维度的上下文（等 `Tool` 词汇长出一个 `context_scope`），
-        // 届时这张表也消失。
-        match tool {
-            "checklist" => {
-                args["__session_id"] = serde_json::json!(cx.session_id);
-            }
-            "shell_start" | "shell_exec" | "shell_stop" => {
-                args["__team_id"] = serde_json::json!(self.agent.team_id());
-            }
-            _ => {}
-        }
-        args
-    }
 }
 
 impl Agent {
@@ -187,10 +132,17 @@ impl Agent {
         branch_id: &str,
         call: &ToolCall,
     ) -> crate::tool::ToolResult {
+        // 取消信号：本分支（若有）的令牌包一层定义层能力递进去——工具要
+        // 「主 turn 取消时我也停」时自己等它，宿主不必知道谁需要。
+        let cancel = self
+            .cancel_signal_of(branch_id)
+            .map(|token| std::sync::Arc::new(TurnCancellation(token))
+                as std::sync::Arc<dyn echo_defs::tool::Cancellation>);
         let cx = ToolCallContext {
             session_id: session_id.to_string(),
             branch_id: branch_id.to_string(),
-            team_id: None,
+            team_id: self.team_id(),
+            cancel,
         };
         let invocation =
             ToolInvocation::new(call.id.clone(), call.name.clone(), call.arguments.clone());
@@ -250,3 +202,67 @@ pub(super) fn tool_timeout_notice(tool: &str, secs: u64) -> String {
     )
 }
 
+
+/// 状态快照 → 线上事件的构造器（词汇在协议层：插件与宿主都要用）。
+pub use echo_protocol::ToolStateEventBuilder;
+
+/// 把宿主的 `CancellationToken` 包成定义层的 [`echo_defs::tool::Cancellation`]。
+///
+/// 为什么需要这一层：定义层不能依赖 `tokio_util`（那会把一个运行时类型钉进
+/// 词汇表），而工具要的是"能不能等它取消"这个**能力**。包装只有两个方法，
+/// 却让 `spawn_subagent` 不必认识宿主的令牌类型。
+struct TurnCancellation(tokio_util::sync::CancellationToken);
+
+impl echo_defs::tool::Cancellation for TurnCancellation {
+    fn is_cancelled(&self) -> bool {
+        self.0.is_cancelled()
+    }
+
+    fn when_cancelled(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(self.0.cancelled())
+    }
+}
+
+impl Agent {
+    /// 某个 turn 分支的取消令牌（找不到 = 该分支已结束 / 无分支语义）。
+    pub(crate) fn cancel_signal_of(
+        &self,
+        branch_id: &str,
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        self.active_inbound_turns
+            .get(branch_id)
+            .map(|turn| turn.cancel.clone())
+    }
+}
+
+impl Agent {
+    /// 注册一个「状态快照 key → 线上事件」的绑定（**由绑定该工具的插件声明**）。
+    ///
+    /// 例（`echo-plugin-tools` 装配 checklist 时）：
+    /// ```ignore
+    /// agent.register_tool_state_event("checklist", |session_id, state| {
+    ///     BackendEvent::ChecklistUpdated { session_id: session_id.into(), state: state.clone(), team_id: None }
+    /// });
+    /// ```
+    ///
+    /// 同 key 重复注册 = 后到者赢（插件重装时刷新形状；这也是热重载的语义）。
+    pub fn register_tool_state_event(
+        &self,
+        key: impl Into<String>,
+        build: ToolStateEventBuilder,
+    ) {
+        if let Ok(mut map) = self.tool_state_events.write() {
+            map.insert(key.into(), build);
+        }
+    }
+
+    /// 查一个状态 key 的线上事件构造器（执行链用；无绑定 = `None`）。
+    pub(crate) fn tool_state_event(&self, key: &str) -> Option<ToolStateEventBuilder> {
+        self.tool_state_events
+            .read()
+            .ok()
+            .and_then(|map| map.get(key).cloned())
+    }
+}

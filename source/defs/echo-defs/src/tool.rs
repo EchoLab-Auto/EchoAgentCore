@@ -70,6 +70,83 @@ impl From<&str> for ToolResult {
     }
 }
 
+/// 取消信号（定义层词汇：**不绑定**具体 cancellation 实现）。
+///
+/// 为什么需要它：编排类工具（`spawn_subagent`）要在主 turn 取消时一并停掉，
+/// 而"主 turn 的取消令牌"是宿主的运行期对象。把 `tokio_util::CancellationToken`
+/// 写进定义层会把一个运行时类型钉进词汇表；这里只描述**能力**：
+/// 「能被问是否已取消」+「能等它取消」。
+///
+/// 实现方通常是 `CancellationToken` 的一层薄包装（见 `echo-agent`）。
+pub trait Cancellation: Send + Sync {
+    /// 是否已经取消（同步、廉价、可反复问）。
+    fn is_cancelled(&self) -> bool;
+    /// 取消完成时 resolve；**已取消则立即完成**。
+    ///
+    /// 返回 boxed future 是为了对象安全（`dyn Cancellation`）。
+    fn when_cancelled(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+}
+
+/// 一次工具调用的**上下文**（工具可以要，但大多数不需要）。
+///
+/// 历史：这些信息此前经**魔术参数**注入——宿主往 JSON 里塞 `__session_id` /
+/// `__team_id`，工具再从参数里读。两个问题：
+///
+/// 1. 参数是模型可见面的形状，塞宿主私有键意味着**契约里没有的东西混进了
+///    参数 JSON**（远程调用 / 直接 registry 执行时还没有，于是工具得写
+///    "缺失就兜底"的分支）；
+/// 2. 每加一个维度（分支 id、取消信号）都要改一遍注入表和每个工具。
+///
+/// 现在它是显式入参：[`Tool::execute_in`]。不覆写该方法的工具完全看不到它。
+#[derive(Default, Clone)]
+pub struct ToolContext {
+    /// 会话键（`local:tui::local_user` / `qq:group:1:2` …）。
+    pub session_id: String,
+    /// turn 分支 id（并发分支的归属渲染；空 = 无分支语义）。
+    pub branch_id: String,
+    /// persona id（`None` = 无归属，如进程级调用）。
+    pub team_id: Option<String>,
+    /// 主 turn 的取消信号（`None` = 不可取消 / 无 turn 上下文）。
+    pub cancel: Option<std::sync::Arc<dyn Cancellation>>,
+}
+
+impl ToolContext {
+    /// 只带会话（直接调用 / 测试用）。
+    pub fn for_session(session_id: impl Into<String>) -> Self {
+        Self {
+            session_id: session_id.into(),
+            ..Default::default()
+        }
+    }
+
+    /// 命名分支的会话上下文。
+    pub fn for_branch(session_id: impl Into<String>, branch_id: impl Into<String>) -> Self {
+        Self {
+            session_id: session_id.into(),
+            branch_id: branch_id.into(),
+            ..Default::default()
+        }
+    }
+
+    /// 是否已被取消（无取消信号 = 永不取消）。
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.is_cancelled())
+    }
+}
+
+impl std::fmt::Debug for ToolContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolContext")
+            .field("session_id", &self.session_id)
+            .field("branch_id", &self.branch_id)
+            .field("team_id", &self.team_id)
+            .field("cancellable", &self.cancel.is_some())
+            .finish()
+    }
+}
+
 /// A capability the LLM can invoke during the agent loop.
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -108,6 +185,23 @@ pub trait Tool: Send + Sync {
     async fn execute_rich(&self, arguments: Value) -> Result<ToolResult, ToolError> {
         let text = self.execute(arguments).await?;
         Ok(ToolResult::text(text))
+    }
+
+    /// 带**调用上下文**的执行入口。
+    ///
+    /// 默认实现丢掉上下文、转调 [`Self::execute`]——绝大多数工具不需要会话 /
+    /// 人格 / 取消信号。需要它们的工具（清单按会话隔离、shell 按人格归属、
+    /// 子代理传播主 turn 取消）覆写本方法，于是不必再靠魔术参数或执行链里的
+    /// 工具名特判。
+    ///
+    /// 覆盖者请**不要**假设 `cx` 一定有值：直接调用（面板 / 远程 / 单测）走的
+    /// 是 [`Self::execute`]，那时上下文为空。
+    async fn execute_in(
+        &self,
+        _cx: &ToolContext,
+        arguments: Value,
+    ) -> Result<ToolResult, ToolError> {
+        self.execute_rich(arguments).await
     }
 
     /// Optional structured state snapshot for UI visualization. Tools that

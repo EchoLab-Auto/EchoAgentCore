@@ -137,7 +137,7 @@ pub fn spawn_execution(
             // 的 child_token），主 turn 取消同样经 parent 链传导到它。
             let cancel = store
                 .cancel_token_of(&task_id)
-                .unwrap_or_else(|| parent_cancel.child_token());
+                .unwrap_or_default();
             host.emit(echo_protocol::BackendEvent::SubagentStarted {
                 session_id: session_id.clone(),
                 task: task.clone(),
@@ -245,7 +245,7 @@ pub fn spawn_execution(
             let outcome = tokio::select! {
                 result = run => Ok(result),
                 _ = tokio::time::sleep(timeout) => Err("timeout"),
-                _ = cancel.cancelled() => Err("cancelled"),
+                _ = crate::wait_cancelled(&cancel, parent_cancel.as_deref()) => Err("cancelled"),
             };
             let (success, cancelled, detail) = match outcome {
                 Ok(Ok(reply)) => (true, false, crate::truncate_result(&reply)),

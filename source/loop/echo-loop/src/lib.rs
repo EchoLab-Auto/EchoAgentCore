@@ -31,6 +31,6 @@ pub use event::{
 };
 pub use pipeline::{ToolPipeline, ToolPipelineResult};
 pub use runner::{
-    AsyncToolExecutor, ChatExecutor, LoopError, LoopOptions, SubagentToolHooks, ToolExecutor,
+    ChatExecutor, LoopError, LoopOptions, ToolExecutor,
     ToolOutcome, TurnRunner,
 };

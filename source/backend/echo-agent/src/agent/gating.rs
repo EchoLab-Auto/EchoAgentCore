@@ -388,15 +388,17 @@ impl Agent {
         }
     }
 
-    /// Whether a dynamic tool is allowed for this agent
+    /// Whether a *dynamically registered* tool is allowed for this agent
     /// (allowlist first, denylist refinement; empty allowlist = all allowed).
+    ///
+    /// **不再有按工具名的特判**（2026-11 S7）：`spawn_subagent` 曾在装配期
+    /// 之外靠一条名字分支回答"subagent 插件装了没"——现在它就是一个注册表
+    /// 工具、带着 `echo-agent.subagent` 包标签，插件门控经
+    /// `set_package_enabled` 直接作用在注册表上（见 `apply_plugin_gating`）。
+    ///
+    /// 本方法留着是为了**名单**语义（persona 的 tool 白/黑名单），与插件门控
+    /// 是两件事。
     pub fn allows_dynamic_tool(&self, name: &str) -> bool {
-        // spawn_subagent 由 subagent 插件实化：插件未挂载（未装配运行态）
-        // 或 persona 白名单不含该插件时对模型不可见。
-        if name == crate::subagent::SPAWN_SUBAGENT_TOOL {
-            let attached = self.subagent.read().map(|g| g.is_some()).unwrap_or(false);
-            return attached && self.persona_allows_plugin(crate::plugins::SUBAGENT_PLUGIN_ID);
-        }
         let guard = self
             .capabilities
             .lock()

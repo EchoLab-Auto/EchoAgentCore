@@ -52,6 +52,7 @@ pub struct AgentBuilder {
     config_store: Option<ConfigStore>,
     session_persist_path: Option<std::path::PathBuf>,
     subagent_store: Option<Arc<crate::subagent::SubagentStore>>,
+    subagent_remote_sink: Option<Arc<dyn crate::subagent::RemoteDelegationSink>>,
     /// 节点身份（可选；缺省空 = 线格式不带 node_id / region_name）。
     node_identity: Option<crate::NodeIdentity>,
     /// 联邦出口集合（可选；缺省 = 联邦未接线，远程功能 fail-closed）。
@@ -88,6 +89,7 @@ impl AgentBuilder {
             config_store: None,
             session_persist_path: None,
             subagent_store: None,
+            subagent_remote_sink: None,
             node_identity: None,
             federation: None,
             global_policy: None,
@@ -173,6 +175,15 @@ impl AgentBuilder {
         self
     }
 
+    /// 远程委派的聚合登记接缝（联邦子系统注入；`None` = 单机部署）。
+    pub fn subagent_remote_sink(
+        mut self,
+        sink: Arc<dyn crate::subagent::RemoteDelegationSink>,
+    ) -> Self {
+        self.subagent_remote_sink = Some(sink);
+        self
+    }
+
     /// 敏感信息脱敏器（可选；组合根注入后 Agent 的入站内容、工具事件 /
     /// 结果、错误消息等出口统一脱敏——见 `document/core/security-redaction-design.md`）。
     pub fn redactor(mut self, redactor: Arc<dyn echo_defs::sanitize::Redactor>) -> Self {
@@ -230,7 +241,7 @@ impl AgentBuilder {
             agent.set_workspace_store(store);
         }
         if let Some(store) = self.subagent_store {
-            agent.attach_subagent_runtime(store);
+            agent.attach_subagent_runtime_with(store, self.subagent_remote_sink);
         }
         if let Some(identity) = self.node_identity {
             agent.set_node_identity(identity);

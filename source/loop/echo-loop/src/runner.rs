@@ -100,19 +100,6 @@ pub type ToolExecutor<'a> = &'a (dyn Fn(
          + Send
          + Sync);
 
-/// 异步版工具执行器：异步编排工具（如 `spawn_subagent`）经此通道进入管线。
-///
-/// 签名是「同步返回 future 句柄」而非 async 闭包：harness 侧的编排通常需要
-/// tokio::spawn 一个后台任务，其结果经 oneshot 通道传回——这避免了
-/// `async Fn` 闭包捕获引用时未来生命周期无法表达为 Send 的经典困境。
-pub type AsyncToolExecutor<'a> = &'a (dyn Fn(
-    &str,
-    &str,
-    &ToolCall,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send>>
-         + Send
-         + Sync);
-
 /// 每 step 的模型出口（2026-10 巡检新增）：harness 在此解析**当前**
 /// provider 并执行请求——运行期 provider/预算切换（persona API 切换、
 /// 配置更新）对 echo-loop 即时生效，不再固化于 runner 构造期。
@@ -126,35 +113,6 @@ pub type ChatExecutor<'a> = &'a (dyn Fn(
 > + Send
          + Sync);
 
-/// 异步编排工具的内联处理钩子（subagent 等）。
-///
-/// loop 拥有"先管线拦截、后回退注册表"的分派点——不在 agent 层的
-/// `run_tool` 里硬编码特判；其他异步编排工具将来复用同一组钩子。
-/// 默认实现全部 no-op（无异步编排工具时零成本）。
-#[derive(Default)]
-pub struct SubagentToolHooks<'a> {
-    /// 判断某工具是否应由异步通道处理（如 `spawn_subagent`）。
-    pub is_async_tool: Option<&'a (dyn Fn(&str) -> bool + Send + Sync)>,
-    /// 异步执行一个被 [`Self::is_async_tool`] 认领的工具。
-    pub execute_async: Option<AsyncToolExecutor<'a>>,
-    /// 模型可见的异步编排工具 schema（追加在注册表定义之后）。
-    pub extra_tool_definitions:
-        Option<&'a (dyn Fn() -> Vec<echo_defs::tool::ToolDefinition> + Send + Sync)>,
-}
-
-impl std::fmt::Debug for SubagentToolHooks<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SubagentToolHooks")
-            .field("is_async_tool", &self.is_async_tool.is_some())
-            .field("execute_async", &self.execute_async.is_some())
-            .field(
-                "extra_tool_definitions",
-                &self.extra_tool_definitions.is_some(),
-            )
-            .finish()
-    }
-}
-
 /// run 的扩展参数：工具 schema（发给模型）、推理回调（转发至 UI）、
 /// 动态模型名与 chat 出口。
 #[derive(Default)]
@@ -165,7 +123,6 @@ pub struct RunExtras<'a> {
     /// 引用式（与 executor 相同哲学）：回调可与调用方的会话状态绑定。
     pub on_reasoning: Option<&'a (dyn Fn(String, String) + Send + Sync)>,
     /// 异步编排工具钩子（subagent 等；默认无）。
-    pub subagent_hooks: SubagentToolHooks<'a>,
     /// 本 turn 的模型名（harness 每 turn 解析一次；None = 构造期
     /// `llm.default_model()`）。
     ///
@@ -305,21 +262,12 @@ impl TurnRunner {
             );
 
             // agent/request: listeners may rewrite the request.
-            // 异步编排工具（spawn_subagent 等）的 schema 由 hook 追加在
-            // 注册表定义之后——模型可见性与注册表工具同源同帧。
-            let tools = match (&extras.tools, &extras.subagent_hooks.extra_tool_definitions) {
-                (Some(base), Some(extra_defs)) => {
-                    let extra = extra_defs();
-                    if extra.is_empty() {
-                        Some(base.clone())
-                    } else {
-                        let mut merged = base.clone();
-                        merged.extend(extra);
-                        Some(merged)
-                    }
-                }
-                (tools, _) => tools.clone(),
-            };
+            //
+            // 工具 schema **只有一个来源**：注册表（`extras.tools`）。它过去
+            // 还能被异步编排钩子追加，于是同名工具可能被定义两次——API 直接
+            // 拒绝整个请求（"Tool names must be unique"）。钩子已在 2026-11
+            // 删除（编排工具改走 `Tool::execute_in`），来源因此唯一。
+            let tools = extras.tools.clone();
             let request = AgentRequest {
                 session_id: session_id.into(),
                 turn_id: extras.turn_id.clone(),
@@ -446,19 +394,12 @@ impl TurnRunner {
                 );
                 let session_id_owned = session_id.to_string();
                 let call_for_executor = call.clone();
-                let is_async_tool = extras.subagent_hooks.is_async_tool;
-                let execute_async = extras.subagent_hooks.execute_async;
                 let result = self
                     .pipeline
                     .run(call, move || {
                         let session_id = session_id_owned.clone();
                         let call = call_for_executor.clone();
                         Box::pin(async move {
-                            if is_async_tool.is_some_and(|f| f(&call.name)) {
-                                if let Some(exec) = execute_async {
-                                    return exec(&session_id, "", &call).await;
-                                }
-                            }
                             execute_tool(&session_id, "", &call).await
                         })
                     })

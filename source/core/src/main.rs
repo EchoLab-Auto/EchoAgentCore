@@ -1159,24 +1159,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         )),
                 ));
                 t.set_package("workspace", echo_agent::plugins::WORKSPACE_PLUGIN_ID);
-                // Subagent 委派（subagent 插件）：每 persona 独立注册表；spawn
-                // 执行闭包由 attach_subagent_runtime 在 agent 创建后接线
-                // （需要 Arc<Agent> 弱引用），此处先注册占位工具 + 打包标签。
+                // Subagent 委派（subagent 插件）：**注册归插件接线**（2026-11 S7）。
+                //
+                // 此前这里手工注册占位工具 + 打包标签，而真正的执行闭包由
+                // `attach_subagent_runtime` 在 agent 创建后才接线——于是"工具
+                // 存在"与"能力可用"是两件事，宿主只能靠工具名特判把它们对上。
+                // 现在 `attach_subagent_runtime_with` 一次做完：注册工具、打
+                // 包标签、接执行闭包。这里只把 store 交给 builder。
                 let subagent_store = echo_agent::subagent::SubagentStore::new();
-                t.register(std::sync::Arc::new(
-                    echo_agent::subagent::SpawnSubagentTool::new(
-                        subagent_store.clone(),
-                        std::sync::Arc::new(|_| {}),
-                    )
-                    // 远程委派聚合登记经 sink 交给联邦子系统（Phase 3 ⑥：
-                    // 插件不再直接依赖 `federation::aggregator`）。
-                    .with_remote_sink(std::sync::Arc::new(
-                        echo_agent::federation::aggregator::AggregatorDelegationSink::from_ports(
-                            &factory_federation,
-                        ),
-                    )),
-                ));
-                t.set_package("spawn_subagent", echo_agent::plugins::SUBAGENT_PLUGIN_ID);
                 // 子进程插件工具（plugins.toml；RemoteTool 已实现 Tool trait）。
                 //
                 // 语义在 `ToolRegistry::register_plugin_tools`（可单测的纯逻辑）：
@@ -1278,6 +1268,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .persona_api(profile.api_profile.clone())
                 .config_store(agents_config_store.clone())
                 .subagent_store(subagent_store.clone())
+                // 远程委派聚合：插件不认识联邦，聚合登记经这个接缝交出去。
+                .subagent_remote_sink(std::sync::Arc::new(
+                    echo_agent::federation::aggregator::AggregatorDelegationSink::from_ports(
+                        &factory_federation,
+                    ),
+                ))
                 .metrics(metrics2.clone())
                 .node_identity(factory_node_identity.clone())
                 .global_policy(factory_global_policy.clone())

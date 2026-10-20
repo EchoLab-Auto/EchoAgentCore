@@ -350,107 +350,19 @@ impl Agent {
                 })
             };
 
-        // Subagent hook（echo-loop 的 hook 注入接口）：spawn_subagent 的
-        // future 不 Send，无法走普通执行器——经 `execute_async` 通道直接进
-        // 管线（模型可见的 schema 由注册表统一提供，不再经
-        // extra_tool_definitions 追加）。spawn_subagent 本身是同步受理
-        // （注册 + 后台拉起），结果立即可得——同步 body 内一次性算好文本，
-        // 再包一个 'static ready future 返回（AsyncToolExecutor 的设计意图：
-        // harness 编排需要 tokio::spawn 时经通道把结果带回，这里无需 spawn
-        // 因此直接 ready）。
-        let is_async_subagent = |name: &str| name == crate::subagent::SPAWN_SUBAGENT_TOOL;
-        let execute_async_subagent = move |sid: &str,
-                                           _branch: &str,
-                                           call: &crate::llm::ToolCall|
-              -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = echo_loop::ToolOutcome> + Send>,
-        > {
-            // 观测缺口修复（2026-10 审计）：spawn_subagent 经本异步通道直入
-            // 管线、不经过 `run_tool`，此前调用与回执均不落事件日志（审计
-            // 实测 7620 条 tool_call 里 0 条 spawn 记录——委派既无 spawn
-            // 时间戳可算时延，也读不到 profile/node/timeout/task 实参）。
-            // 现在与普通工具同口径：先记 ToolCall（参数脱敏），受理或拒绝后
-            // 记 ToolResult（回执文本），保证日志成对、面板可见。
-            let started = std::time::Instant::now();
-            let started_at_ms = chrono::Utc::now().timestamp_millis();
-            let logged_arguments = self.redact_text(&call.arguments);
-            self.emit(BackendEvent::ToolCall {
-                session_id: sid.to_string(),
-                team_id: None,
-                tool_name: call.name.clone(),
-                arguments: logged_arguments.clone(),
-                tool_call_id: call.id.clone(),
-                branch_id: branch_id.to_string(),
-                started_at_ms: Some(started_at_ms),
-            });
-            self.trunk
-                .append_event(echo_session::SessionEvent::ToolCall(
-                    echo_session::event::ToolCallEvent {
-                        id: call.id.clone(),
-                        name: call.name.clone(),
-                        arguments: logged_arguments,
-                        session: Some(sid.to_string()),
-                        started_at_ms: Some(started_at_ms),
-                    },
-                ));
-            let args: serde_json::Value = serde_json::from_str(&call.arguments).unwrap_or_default();
-            let text = if !self.allows_dynamic_tool(crate::subagent::SPAWN_SUBAGENT_TOOL) {
-                format!(
-                    "error: tool '{}' is not registered (subagent 插件未启用或不在本 persona 白名单)",
-                    crate::subagent::SPAWN_SUBAGENT_TOOL
-                )
-            } else {
-                match self.subagent_runtime() {
-                    None => "error: subagent runtime not attached".to_string(),
-                    Some((store, spawn)) => {
-                        let tool = crate::subagent::SpawnSubagentTool::new(store, spawn);
-                        let cancel = self
-                            .active_inbound_turns
-                            .get(branch_id)
-                            .map(|turn| turn.cancel.clone())
-                            .unwrap_or_default();
-                        match tool.spawn(&args, sid, cancel, branch_id) {
-                            Ok(receipt) => receipt,
-                            Err(error) => format!("error: {error}"),
-                        }
-                    }
-                }
-            };
-            let elapsed_ms = started.elapsed().as_millis() as u64;
-            self.emit(BackendEvent::ToolResult {
-                session_id: sid.to_string(),
-                team_id: None,
-                tool_name: call.name.clone(),
-                result: text.clone(),
-                tool_call_id: call.id.clone(),
-                timed_out: false,
-                branch_id: branch_id.to_string(),
-                elapsed_ms: Some(elapsed_ms),
-            });
-            self.trunk
-                .append_event(echo_session::SessionEvent::ToolResult(
-                    echo_session::event::ToolResultEvent {
-                        tool_call_id: call.id.clone(),
-                        result: text.clone(),
-                        images: vec![],
-                        session: Some(sid.to_string()),
-                        elapsed_ms: Some(elapsed_ms),
-                    },
-                ));
-            Box::pin(async move { echo_loop::ToolOutcome::text(text) })
-        };
-
         let result = {
-            let subagent_hooks = echo_loop::SubagentToolHooks {
-                is_async_tool: Some(&is_async_subagent),
-                execute_async: Some(&execute_async_subagent),
-                // schema 由注册表提供（见上）；hook 只负责异步执行分派。
-                extra_tool_definitions: None,
-            };
+            // 编排工具**没有独立通道**（2026-11 S7）。
+            //
+            // 此前 `spawn_subagent` 走一条并行路径（`is_async_tool` +
+            // `execute_async`），与注册表路径各自实现了一遍"记 ToolCall / 记
+            // ToolResult / 受理"——两份逻辑，只因为它的执行体要拿会话、分支和
+            // 取消信号，而这些当时只能靠宿主按工具名猜。
+            //
+            // 现在工具自己声明（`Tool::execute_in` + `ToolContext`）：它就是注册表
+            // 里的一个普通工具，事件日志、脱敏、超时全部由同一条执行链负责。
             let extras = echo_loop::runner::RunExtras {
                 tools: Some(tools),
                 on_reasoning: Some(&reasoning_cb),
-                subagent_hooks,
                 model: Some(model),
                 chat: Some(chat_executor),
                 turn_id: Some(branch_id.to_string()),

@@ -33,13 +33,10 @@ use serde_json::Value;
 use crate::ToolRegistry;
 
 /// 一次工具调用的**会话坐标**（执行链与工具自己都要的三件事）。
-#[derive(Debug, Clone, Default)]
-pub struct ToolCallContext {
-    pub session_id: String,
-    pub branch_id: String,
-    /// 人格 id（编排类工具注入给工具的参数会用到；`None` = 无归属事件）。
-    pub team_id: Option<String>,
-}
+///
+/// 词汇在定义层（[`echo_defs::tool::ToolContext`]）——工具也要用它，而工具
+/// 不认识执行链。这里保留别名，既有调用点不必改。
+pub use echo_defs::tool::{Cancellation, ToolContext as ToolCallContext};
 
 /// 待执行的一次调用（机制层的词汇，故意不依赖任何 LLM 协议类型）。
 #[derive(Debug, Clone)]
@@ -95,27 +92,6 @@ pub trait ToolExecutionHost: Send + Sync {
         elapsed_ms: u64,
     );
 
-    /// 编排类工具的执行入口（宿主自有实现，不在注册表里）。
-    ///
-    /// 返回 `None` = 不是编排工具，走注册表。为什么不用 async：真实用例
-    /// （`spawn_subagent`）是**发起**一个后台任务，同步返回文本即可；把签名
-    /// 做成 async 只会逼机制层引入 `async_trait` 装箱。
-    fn run_orchestration(
-        &self,
-        _cx: &ToolCallContext,
-        _call: &ToolInvocation,
-        _args: &Value,
-    ) -> Option<Result<ToolResult, echo_defs::tool::ToolError>> {
-        None
-    }
-
-    /// 执行前给工具补的**会话参数**（默认原样返回）。
-    ///
-    /// 历史上是执行链里按工具名注入 `__session_id` / `__team_id`；现在是宿主
-    /// 的映射（它知道哪些工具按会话隔离状态），执行链不认识工具名。
-    fn tool_arguments(&self, _cx: &ToolCallContext, _tool: &str, args: Value) -> Value {
-        args
-    }
 }
 
 /// 参数预检：schema 声明的必需字段缺失时返回纠正性错误文案。
@@ -254,24 +230,17 @@ impl ToolExecutor {
                 truncate(&call.arguments, 200),
                 call.name,
             )),
-            Ok(args) => {
-                // 编排工具优先：它们不在注册表里（宿主的内存实现），因此
-                // 不能走 schema 预检的注册表查询。
-                match host.run_orchestration(cx, call, &args) {
-                    Some(Ok(result)) => Ok(result),
-                    Some(Err(error)) => Err(error.to_string()),
-                    None => match self.preflight(call, &args).await {
-                        Some(message) => Err(message),
-                        None => {
-                            let args = host.tool_arguments(cx, &call.name, args);
-                            self.registry
-                                .execute_rich(&call.name, args)
-                                .await
-                                .map_err(|error| error.to_string())
-                        }
-                    },
-                }
-            }
+            Ok(args) => match self.preflight(call, &args).await {
+                Some(message) => Err(message),
+                // 上下文**直接递给工具**（`Tool::execute_in`）：会话 / 人格 /
+                // 取消信号不再经魔术参数注入，执行链也不再有"哪个工具要什么"
+                // 的映射表——工具自己声明、自己取。
+                None => self
+                    .registry
+                    .execute_rich_in(cx, &call.name, args)
+                    .await
+                    .map_err(|error| error.to_string()),
+            },
         };
         let mut result = outcome
             .unwrap_or_else(|error| ToolResult::text(format!("error: {error}")));
@@ -363,12 +332,6 @@ mod tests {
                 .unwrap()
                 .push(format!("result:{}:{}", call.name, result.text));
         }
-        fn tool_arguments(&self, cx: &ToolCallContext, tool: &str, mut args: Value) -> Value {
-            if tool == "echo" {
-                args["__session_id"] = Value::String(cx.session_id.clone());
-            }
-            args
-        }
     }
 
     struct EchoTool;
@@ -386,10 +349,21 @@ mod tests {
         }
         async fn execute(&self, arguments: Value) -> Result<String, ToolError> {
             Ok(format!(
+                "text={} session=none",
+                arguments["text"].as_str().unwrap_or_default(),
+            ))
+        }
+        /// 会话来自**上下文**（不是参数魔术键）——这是本 crate 的机制契约。
+        async fn execute_in(
+            &self,
+            cx: &echo_defs::tool::ToolContext,
+            arguments: Value,
+        ) -> Result<echo_defs::tool::ToolResult, ToolError> {
+            Ok(echo_defs::tool::ToolResult::text(format!(
                 "text={} session={}",
                 arguments["text"].as_str().unwrap_or_default(),
-                arguments["__session_id"].as_str().unwrap_or("none"),
-            ))
+                if cx.session_id.is_empty() { "none" } else { &cx.session_id },
+            )))
         }
     }
 
@@ -406,6 +380,7 @@ mod tests {
             session_id: "s1".into(),
             branch_id: "b1".into(),
             team_id: None,
+            cancel: None,
         }
     }
 
@@ -472,29 +447,44 @@ mod tests {
         assert!(result.text.starts_with("error:"), "{}", result.text);
     }
 
-    /// 编排工具：宿主实现的路径优先于注册表（即使注册表里有同名工具）。
+    /// 工具可以**按需取上下文**：覆写 `execute_in` 的工具拿得到会话 / 分支，
+    /// 没覆写的工具行为完全不变（拿到的仍是纯参数）。
+    ///
+    /// 这条替换了历史上的"编排工具优先"测试：`spawn_subagent` 曾是执行链里
+    /// 按名字特判的一条独立通道（`run_orchestration`），与注册表路径重复了
+    /// 事件日志逻辑。现在它就是一个**普通工具**，只是覆写了 `execute_in`。
     #[tokio::test]
-    async fn orchestration_tool_takes_precedence_over_the_registry() {
-        struct Orch;
-        impl ToolExecutionHost for Orch {
-            fn redact(&self, text: &str) -> (String, usize) {
-                (text.to_string(), 0)
+    async fn tools_can_opt_into_the_call_context() {
+        let (ex, rec) = executor(true);
+        let ctx = ToolCallContext {
+            session_id: "sess-42".into(),
+            branch_id: "branch-7".into(),
+            team_id: Some("alix".into()),
+            cancel: None,
+        };
+        let result = ex.run(&rec, &ctx, &ToolInvocation::new("c1", "echo", r#"{"text":"hi"}"#)).await;
+        assert_eq!(result.text, "text=hi session=sess-42");
+    }
+
+    /// 取消信号：定义层不绑定 `CancellationToken`，但任何实现都能被问。
+    #[tokio::test]
+    async fn cancellation_is_queryable_from_the_context() {
+        struct Always(bool);
+        impl echo_defs::tool::Cancellation for Always {
+            fn is_cancelled(&self) -> bool {
+                self.0
             }
-            fn on_call(&self, _: &ToolCallContext, _: &ToolInvocation, _: &str, _: i64) {}
-            fn on_result(&self, _: &ToolCallContext, _: &ToolInvocation, _: &ToolResult, _: u64) {}
-            fn run_orchestration(
+            fn when_cancelled(
                 &self,
-                _cx: &ToolCallContext,
-                call: &ToolInvocation,
-                _args: &Value,
-            ) -> Option<Result<ToolResult, ToolError>> {
-                (call.name == "spawn").then(|| Ok(ToolResult::text("orchestrated")))
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+                Box::pin(async {})
             }
         }
-        let ex = ToolExecutor::new(Arc::new(ToolRegistry::new()));
-        let result = ex
-            .run(&Orch, &cx(), &ToolInvocation::new("c1", "spawn", "{}"))
-            .await;
-        assert_eq!(result.text, "orchestrated");
+        let ctx = ToolCallContext {
+            cancel: Some(Arc::new(Always(true))),
+            ..Default::default()
+        };
+        assert!(ctx.is_cancelled(), "带取消信号且已取消");
+        assert!(!ToolCallContext::default().is_cancelled(), "无信号 = 永不取消");
     }
 }

@@ -18,6 +18,32 @@ struct ChecklistItem {
     done: bool,
 }
 
+/// 本工具状态 key → 线上事件的**绑定声明**（由本插件给出，2026-11 S7）。
+///
+/// 为什么在插件里：`Tool::state_key` 是本工具声明"我有可见状态"，而"这状态
+/// 长什么线上事件"是**协议形状**——把两者放在一起，新增一个有状态面板的
+/// 工具就只需要：实现 `state_key` + 提供一个绑定。执行链与组合根都不参与。
+pub fn state_event_binding() -> (&'static str, echo_protocol::ToolStateEventBuilder) {
+    (
+        "checklist",
+        std::sync::Arc::new(|session_id: &str, state: &serde_json::Value| {
+            echo_protocol::BackendEvent::ChecklistUpdated {
+                session_id: session_id.to_string(),
+                state: state.clone(),
+                team_id: None, // annotate_team 统一补
+            }
+        }),
+    )
+}
+
+/// 本 crate 声明的**全部**状态绑定（组合根遍历它注册）。
+///
+/// 只有一个元素（清单）也保留成"列表"：新增第二个有状态工具时，改的是这个
+/// 函数，而不是组合根。
+pub fn all_state_event_bindings() -> Vec<(&'static str, echo_protocol::ToolStateEventBuilder)> {
+    vec![state_event_binding()]
+}
+
 /// 会话缺失时的兜底键（联邦远程调用 / 直接 registry 执行没有会话上下文；
 /// 它们共享一份"全局"清单——本地会话均有注入的 `__session_id`）。
 const FALLBACK_SESSION: &str = "__global";
@@ -40,12 +66,23 @@ impl ChecklistTool {
         }
     }
 
-    /// 本次调用的会话键（`Agent::run_tool` 注入；缺失 = 全局兜底键）。
-    fn session_key(arguments: &Value) -> String {
-        arguments
-            .get("__session_id")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
+    /// 本次调用的会话键。
+    ///
+    /// **优先取调用上下文**（`Tool::execute_in` 递进来的 `cx.session_id`）；
+    /// 直接经注册表执行（联邦远程调用 / 面板调试 / 单测）时没有上下文，
+    /// 那时仍认历史上的 `__session_id` 参数——但模型永远看不到这个键（宿主
+    /// 不再往参数里塞它），所以它不是契约的一部分，只是兼容退路。
+    fn session_key(cx: Option<&echo_defs::tool::ToolContext>, arguments: &Value) -> String {
+        let from_context = cx
+            .map(|cx| cx.session_id.as_str())
+            .filter(|id| !id.is_empty());
+        from_context
+            .or_else(|| {
+                arguments
+                    .get("__session_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+            })
             .unwrap_or(FALLBACK_SESSION)
             .to_string()
     }
@@ -125,6 +162,21 @@ impl Tool for ChecklistTool {
         })
     }
 
+    async fn execute(&self, arguments: Value) -> Result<String, ToolError> {
+        self.apply(None, arguments).await
+    }
+
+    /// 带上下文的执行：会话来自 [`ToolContext`]，不再依赖魔术参数。
+    async fn execute_in(
+        &self,
+        cx: &echo_defs::tool::ToolContext,
+        arguments: Value,
+    ) -> Result<echo_defs::tool::ToolResult, ToolError> {
+        self.apply(Some(cx), arguments)
+            .await
+            .map(echo_defs::tool::ToolResult::text)
+    }
+
     fn snapshot(&self) -> Option<Value> {
         self.state_snapshot()
     }
@@ -138,8 +190,15 @@ impl Tool for ChecklistTool {
     fn state_key(&self) -> Option<&'static str> {
         Some("checklist")
     }
+}
 
-    async fn execute(&self, arguments: Value) -> Result<String, ToolError> {
+impl ChecklistTool {
+    /// 两个入口的共同实现。
+    async fn apply(
+        &self,
+        cx: Option<&echo_defs::tool::ToolContext>,
+        arguments: Value,
+    ) -> Result<String, ToolError> {
         let operation = arguments
             .get("operation")
             .and_then(|v| v.as_str())
@@ -151,7 +210,7 @@ impl Tool for ChecklistTool {
             .to_string();
         let item = arguments.get("item").and_then(|v| v.as_str());
         let index = arguments.get("index").and_then(|v| v.as_u64());
-        let session = Self::session_key(&arguments);
+        let session = Self::session_key(cx, &arguments);
 
         let mut all = self
             .lists

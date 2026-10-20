@@ -40,6 +40,7 @@ pub use event::{
     BrowseRoot, ContextBlockInfo, ContextMessageInfo, FederationLinkState, FederationPeerInfo,
     InstanceMetadataEntry, InstanceStatus, PluginInfo, SessionInfo, ShellSessionInfo, SkillInfo,
     SkillSourceInfo, TeamInfo, TimelineMessage, TimelineSource, TimelineTool, ToolInfo,
+    ToolStateEventBuilder,
     WorkspaceConversationInfo, WorkspaceDirectory, WorkspaceFileEntry, WorkspaceGitInfo,
     WorkspaceSessionInfo,
 };

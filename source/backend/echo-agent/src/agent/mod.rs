@@ -102,6 +102,13 @@ pub struct Agent {
     /// 整只 `Agent`）。
     pub(crate) model: Arc<crate::model_service::ModelService>,
     pub tools: Arc<ToolRegistry>,
+    /// 状态快照 key → 线上事件构造器（**绑定时声明**，2026-11 S7）。
+    ///
+    /// 工具用 `Tool::state_key` 声明"我有可见状态"，而"这状态长什么线上事件"
+    /// 是**协议形状**——它由绑定这个工具的插件给出，不由执行链按工具名猜。
+    /// 例：`echo-plugin-tools` 注册 `checklist → ChecklistUpdated`。
+    tool_state_events:
+        std::sync::RwLock<std::collections::HashMap<String, crate::agent::tool_dispatch::ToolStateEventBuilder>>,
     /// 提示词服务（S4c）：技能表 + 装配缓存 + 按会话的最近快照。
     ///
     /// 这三样描述同一件事的三个时刻（素材 / 缓存 / 上次结果），且"什么时候
@@ -349,6 +356,7 @@ impl Agent {
         let agent = Self {
             model: Arc::new(crate::model_service::ModelService::new(provider, config)),
             tools: Arc::new(tools),
+            tool_state_events: std::sync::RwLock::new(std::collections::HashMap::new()),
             prompt: Arc::new(crate::prompt_service::PromptService::new(Arc::new(
                 Mutex::new(skills),
             ))),
