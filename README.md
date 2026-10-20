@@ -1,8 +1,11 @@
 # EchoAgentCore
 
-可独立部署的 Agent 核心服务：LLM agent 循环 + 工具/技能系统 + 会话记忆 + 插件体系（平台接入如 QQ/OneBot v11 由独立进程插件提供），通过 management WebSocket（默认 `0.0.0.0:3132`，开箱即可被局域网连接；首装自动生成 `management_access_token` 兜底认证）向前端提供统一的命令/事件协议。
+可独立部署的 **Agent 核心服务**：LLM agent 循环 + 工具/技能系统 + 会话记忆 + 插件体系，
+通过 management WebSocket 向前端提供统一的命令/事件协议。
 
-本仓库是 **Core（后端）**。Web 面板前端在独立仓库 [EchoAgentPanel](../EchoAgentPanel)（`echo-agent-panel` 二进制，Rust 中继 + Vue 3），任何实现了协议的前端都可以连接本服务。
+平台接入（QQ / OneBot v11 等）由**独立进程插件**提供——插件崩溃不影响内核。
+本仓库是 **Core（后端）**；Web 面板在独立仓库
+[EchoAgentPanel](https://github.com/EchoLab-Auto/EchoAgentPanel)。
 
 ```
  NapCat (QQ)                 EchoAgentCore                 EchoAgentPanel (Web)
@@ -13,274 +16,189 @@
                             └──────────────────────┘
 ```
 
-## 仓库结构
+**能力一览**：多 agent 人格与会话隔离 · 工具/技能热插拔 · 事件溯源记忆与压缩 ·
+进程外插件（崩溃隔离 + 跨语言）· Core↔Core 联邦（多机去中心化）· 脱敏与 token 治理。
 
-```
-EchoAgentCore/
-├── config/echo-agent-core.toml   # Core 配置模板
-├── skills/                       # SKILL.md 技能定义（Core 独占消费，按需重载）
-├── source/
-│   ├── defs/
-│   │   └── echo-defs/            # Service Definition 层：词汇类型 + trait，零实现
-│   ├── context/
-│   │   └── echo-context/         # 服务定位 Ctx + 类型化 EventBus + 可逆注册 + 作用域
-│   ├── session/
-│   │   └── echo-session/         # 事件溯源会话存储：append-only 事件日志 + 投影 + 兼容迁移
-│   ├── loop/
-│   │   └── echo-loop/            # Agent 循环驱动：TurnRunner turn/step 状态机 + 工具执行管道
-│   ├── llm/
-│   │   ├── echo-llm-openai/      # OpenAI 兼容 provider（Service Provider 角色）
-│   │   ├── echo-llm-anthropic/   # Anthropic Messages provider
-│   │   └── echo-llm-ollama/      # Ollama provider（薄包装 OpenAI 兼容端点）
-│   ├── security/
-│   │   └── echo-sanitize/        # 敏感信息隔离（注册表式脱敏器，出口卡口）
-│   ├── tool/
-│   │   └── echo-tool/            # 工具子系统机制：ToolRegistry 可逆注册 + 定义缓存 + 出口脱敏
-│   ├── shell/
-│   │   └── echo-shell/           # Shell 会话机制：bash 子进程 + 哨兵分帧 + 进程组清理
-│   ├── config/
-│   │   └── echo-config/          # TOML 原子读改写（不认识任何配置段的语义）
-│   ├── protocol/
-│   │   └── echo-protocol/        # 前后端线协议 crate（BackendCommand/BackendEvent/bridge）
-│   ├── federation/
-│   │   └── echo-federation/      # Core↔Core 联邦链路（FedFrame/握手/认证/邀请串）
-│   ├── plugin/
-│   │   ├── echo-plugin/          # 插件接缝：PluginManifest + 生命周期 + 注册表
-│   │   ├── echo-plugin-api/      # 宿主↔插件消息协议与贡献类型（冻结契约 + 版本协商）
-│   │   ├── echo-plugin-loader/   # 分层插件配置合成（profile/bundle/patch + 依赖排序）
-│   │   ├── echo-plugin-sdk/      # 插件侧运行时 SDK（stdio 服务，零样板）
-│   │   ├── echo-plugin-host/     # 插件宿主：Transport（inproc/stdio）+ 监督 + 限额 + 一致性套件（领域中立）
-│   │   ├── echo-plugin-adapter/  # 协议贡献 → 领域 trait（RemoteTool / RemoteInstance / CoreApiService）
-│   │   ├── echo-plugin-example/  # 试点插件（websearch + calculator），SDK 用法示例
-│   │   ├── echo-plugin-tools/    # 内置工具集：计算/检索/清单/编码/Shell/实例管理
-│   │   ├── echo-plugin-skills/   # 内置插件：技能目录（发现/分层合并/热重载 + Git 安装）
-│   │   ├── echo-plugin-subagent/ # 内置插件：spawn_subagent
-│   │   ├── echo-plugin-workspace/# 内置插件：工作区会话与 workspace 工具
-│   │   ├── echo-plugin-management/# 内置插件：管理面 WS（Panel 中继 + 端口合并）
-│   │   ├── echo-plugin-loop/     # 内置插件：loop.single / loop.parallel
-│   │   └── echo-plugin-provider-llm/ # 内置插件：provider 工厂 + 计量/脱敏装饰器
-│   ├── backend/
-│   │   ├── echo-agent/           # Agent 框架（宿主；具体实现多已外迁，packages/ 只剩 instance_ops /
-│   │   │                         #   federation / tools_builtin 兼容面）
-│   │   └── echo-test-utils/      # 共享测试 mock（仅 dev-dependency）
-│   # 注：QQ 平台接入（含 OneBot 协议类型与反向 WS 服务器）已迁出为独立进程
-│   # 插件（见 document/design/instance-plugin.md；独立仓库 echo-adapter-qq）。
-│   └── core/                     # echo-agent-core 二进制（组合根）
-├── document/                     # 项目文档群（ProDoc 格式：index.md 入口）
-├── npm/echo-agent/               # 容器化部署 CLI（Docker 编排 core+panel+napcat）
-├── docker/entrypoint.sh          # Core 容器入口（配置解析 / socket 能力探测）
-├── packaging/systemd/            # 用户级 systemd 单元模板
-├── scripts/                      # install.sh / update.sh（受控自更新）
-├── napcat/                       # NapCat Docker 配置（宿主安装路径用）
-├── docker-compose.yml            # NapCat 容器（宿主安装路径用）
-└── Dockerfile                    # Core 容器镜像（含 docker CLI；GHCR 发布）
-```
+---
 
-### Crate 职责
+## 快速部署
 
-| Crate | 职责 |
-|---|---|
-| `echo-defs` | **Service Definition 层**：LLM/工具/技能/平台消息词汇与 trait（`LlmProvider`/`Tool`/`SkillProvider`/`PluginInstance`/`InstanceManagement`）、跨边界消息词汇（`IncomingMessage` 等）、token 纯函数。零实现、零 harness 依赖 |
-| `echo-context` | **服务定位与事件机制**：`Ctx`（按 key 注册/解析服务）、`EventBus`（Observe/Waterfall/Parallel/Serial 类型化事件）、`Disposer`（可逆注册）、`ScopedRegistry`（per-scope shadowing）。零 echo-* 依赖 |
-| `echo-session` | **事件溯源会话存储**：`SessionEvent` 事件集、`EventLog`（append-only 持久化）、`derive_messages` 投影、compaction、`SessionHeader`（fork/resume）、v1–v4 旧格式兼容迁移 |
-| `echo-loop` | **Agent 循环驱动**：`TurnRunner` turn/step 状态机（`turn/*`/`step/*`/`agent/*` 生命周期事件）、`ToolPipeline` 工具执行管道（pre/execute/post waterfall 中间件） |
-| `echo-llm-openai` / `echo-llm-anthropic` / `echo-llm-ollama` | **LLM provider（Service Provider 角色）**：各自实现 `echo_defs::LlmProvider`,只依赖定义层 |
-| `echo-protocol` | **前后端契约的唯一来源**：`BackendCommand`/`BackendEvent`/`WsMessage`、bridge；`GateMode`/`ThinkingMode`/`ReasoningEffort` 从 `echo-defs` re-export。前端只需依赖它 |
-| `echo-plugin` | **插件接缝**：`PluginManifest` + 生命周期钩子（mount/unmount）+ `PluginRegistry`；插件**不依赖 `echo-agent`**（只有组合根可以），可按需依赖定义层与机制层——逐 crate 的完整白名单在 `scripts/deps-policy.txt` |
-| `echo-plugin-api` / `-loader` / `-sdk` / `-host` | **插件协议与宿主**：宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商（`-api`）；分层配置合成（`plugins.toml`，按 id 整行替换 + 依赖排序，`-loader`）；插件侧 stdio 运行时（`-sdk`）；Transport（inproc/stdio）、进程监督与崩溃重启、子进程资源限额（rlimit）、入站频率限额、可逆停止、一致性套件（`-host`）。**`-host` 只依赖 `-api` + `-loader`——不认识 `echo-defs`、不认识任何领域词汇**，因此可作领域中立的插件机制复用 |
-| `echo-plugin-adapter` | **远程贡献 → 领域 trait 的适配层**：`RemoteTool`（`ToolContribution` → `echo_defs::tool::Tool`）、`RemoteInstance`/`RemoteInstanceManagement`（`InstanceContribution` → `PluginInstance`/`InstanceManagement`）、`CoreApiService`（插件 → 宿主回呼）。依赖 host + api + defs，**不依赖 `echo-agent` 与组合根**——这一层认识领域 trait，而 host 必须保持中立，故单独成 crate |
-| `echo-plugin-tools` / `-skills` / `-subagent` / `-workspace` / `-management` / `-loop` / `-provider-llm` | **七个外迁的内置插件**（各自成 crate）：内置工具集 / 技能目录 / `spawn_subagent` / 工作区会话 / 管理面 WS（含联邦·管理端口合并）/ `loop.single`+`loop.parallel` / provider 工厂与计量脱敏装饰器。宿主侧经 `echo-agent` 的兼容 re-export 指过来，公开路径不变 |
-| `echo-sanitize` | **敏感信息隔离**：注册表式脱敏器（默认 `Redactor` 实现），在出口卡口统一改写密钥/令牌；保证边界与威胁模型见 `document/core/security-redaction-design.md` |
-| `echo-tool` | **工具子系统机制**：`ToolRegistry`（可逆注册 + 定义缓存 + 出口脱敏）；`Tool` 词汇在 `echo-defs`，具体工具实现在 `echo-plugin-tools` |
-| `echo-shell` | **Shell 会话机制**：每会话一个 `bash` 子进程（独立进程组、销毁整组终止）、写命令 + 随机哨兵双写分帧、会话串行/跨会话并行、上限与背压水位 |
-| `echo-agent` | Agent 框架（**宿主**）：agent 循环与命令分发、LLM provider 工厂、timeline 投影、trunk 记忆。具体实现多已外迁（工具/技能/子任务/工作区/Shell），`packages/` 只剩 `instance_ops` / `federation` / `tools_builtin` 兼容面 |
-| `echo-config` | TOML **原子读改写**：`ConfigStore`（串行化 + tmp+rename）与 `ensure_table`。**不知道任何 section 的含义**——调用方各自拥有自己的段 |
-| （QQ 插件） | **已迁出**为独立进程插件（stdio 协议）交付：反向 WS 接入、5 层门控、NapCat 容器 / 端口 / compose、OneBot 协议类型；见 `document/design/instance-plugin.md` |
-| `echo-federation` | **联邦链路（Core↔Core）**：`FedFrame` 线协议（工具调用/委派/只读查询）、Hello/Welcome 握手、per-peer Bearer 认证、心跳/重连/回环防护、邀请串（`echofed://`） |
-| `echo-agent-core`（bin） | 组合根：加载配置、装配 Agent + 插件宿主 + 联邦路由泵（代理工具注册/执行端裁决/查询处理）、对外提供 management WS 与插件实例编排（平台名由配置派生，二进制里不含任何平台名） |
-
-依赖方向（单向，无环，扩展只依赖定义层）：
-
-- **底座**（零 echo-* 依赖）：`echo-defs`（定义层）、`echo-context`（机制层）
-- **中间层**（只依赖底座）：`echo-protocol`、`echo-loop`、`echo-session`、`echo-tool`、`echo-shell`、`echo-llm-*`（`echo-llm-ollama` 另复用 `echo-llm-openai`）、`echo-config`、`echo-sanitize`、`echo-plugin`、`echo-federation`
-- **插件族**：`echo-plugin-api` / `echo-plugin-loader`（零 echo-* 依赖）◄ `echo-plugin-sdk` / `echo-plugin-host`（**host 只依赖 `-api` + `-loader`**，领域中立）◄ `echo-plugin-adapter`（+ `echo-defs`，做领域适配）◄ 七个外迁内置插件（按需依赖定义层与机制层）
-- **框架层**：`echo-agent`（依赖上述全部中间层 + `echo-tool`/`echo-shell` + 七个外迁插件 crate）；**组合根** `echo-agent-core` 另直接依赖 `echo-plugin-adapter`/`-host`/`-loader`/`-loop`/`-management`。依赖白名单的单一真值是 `scripts/deps-policy.txt`（`scripts/check-deps.sh` 与 `source/core/tests/plugin_dependency_direction.rs` 双门禁共读）
-- **平台插件**（独立仓库，非本工作区成员）：`echo-adapter-qq`（依赖 `echo-plugin-sdk` + 自带 OneBot 传输层 + NapCat 部署形状）
-- **组合根**：`echo-agent-core`（bin，装配以上全部 + `echo-plugin-host` 插件宿主）
-
-## 构建与运行
-
-```bash
-cp config/echo-agent-core.toml config/echo-agent-core.local.toml  # 填入 api_key 等
-
-# 开发运行
-cargo run -- --config config/echo-agent-core.local.toml
-
-# 发布构建
-cargo build --release -p echo-agent-core
-
-# 测试与质量门（CI 强制执行）
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all --check
-```
-
-## 安装部署（systemd 用户服务）
-
-**一键安装（curl | bash，无需先 clone）**：
+### 一键安装（systemd 用户服务，推荐）
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install.sh | bash
 ```
 
-（引导脚本会浅克隆仓库到临时目录、接力完整安装流程：前置依赖自动
-安装 → 受管检出 → 构建 → systemd 服务。指定分支/仓库可用
-`ECHO_REPOSITORY_URL`/`BRANCH` 环境变量。）
+无需先 clone：引导脚本会浅克隆仓库到临时目录、接力完整安装流程（前置依赖自动安装
+→ 受管检出 → 构建 → systemd 服务）。
 
-**本地（已 clone 仓库）**：
+**已 clone 仓库时**：
 
 ```bash
 ./scripts/install.sh [--no-start] [--no-deps]
-# 先检查路径：./scripts/install.sh --dry-run
+./scripts/install.sh --dry-run          # 先看它要做什么
 ```
 
-脚本会先**检查并自动安装前置依赖**（可识别包管理器 + sudo 可用时）：
-系统命令（git / cc 编译器 / pkg-config 等，走 apt/dnf/pacman/zypper）与
-Rust 工具链（缺失时走官方 rustup 用户级安装，无需 root）。`--no-deps`
-跳过自动安装、只做检查并列出缺失清单。curl | bash 引导阶段缺 git 时
-同样自动安装，无需预先手装。
+脚本会自动检查并安装前置依赖（系统命令走 apt/dnf/pacman/zypper；Rust 工具链缺失时
+走官方 rustup 用户级安装，无需 root）。`--no-deps` 只检查不安装。
 
-**国内网络（镜像加速，2026-10）**：
-
-GitHub 克隆 / rustup / crates.io 在部分网络（典型：国内直连）下缓慢或
-不可达；`--cn-mirror` 一键启用镜像（默认组合：GitHub 走 gh-proxy.com、
-Rust 生态走 rsproxy.cn；`=tuna` / `=ustc` 换镜像站）：
+**国内网络（镜像加速）**：GitHub / rustup / crates.io 在部分网络下缓慢或不可达，
+`--cn-mirror` 一键启用镜像（默认 gh-proxy.com + rsproxy.cn，`=tuna` / `=ustc` 换站）：
 
 ```bash
-# 一键安装：镜像拉取脚本本身 + 镜像克隆/构建
+# 一键安装
 curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install.sh \
     | ECHO_CN_MIRROR=1 bash
 
-# 本地（已 clone 仓库）
+# 已 clone
 ./scripts/install.sh --cn-mirror
-# 关闭：--no-cn-mirror / ECHO_CN_MIRROR=0；先核对配置：加 --dry-run
+# 关闭：--no-cn-mirror；只覆盖单环节：ECHO_GITHUB_PROXY / ECHO_CRATES_MIRROR / …
 ```
 
-单环节覆盖（不必开总开关）：`ECHO_GITHUB_PROXY`（克隆代理前缀）、
-`ECHO_RUSTUP_INIT_URL`、`ECHO_RUSTUP_DIST_SERVER`、
-`ECHO_RUSTUP_UPDATE_ROOT`、`ECHO_CRATES_MIRROR`（`sparse+https://…`）。
-默认全直连（不改变既有行为）；每个环节失败自动回退官方端点。
+默认全直连，每个环节失败自动回退官方端点。
 
-安装后：
+### 安装后
 
 | 路径 | 用途 |
 |---|---|
 | `~/.local/bin/echo-agent-core` | Core 启动器 |
 | `~/.local/libexec/echo-agent-core/` | 运行二进制与 updater |
-| `~/.config/echo-agent-core/core.toml` | 持久化 Core 配置 |
+| `~/.config/echo-agent-core/core.toml` | 持久化配置 |
 | `~/.local/share/echo-agent-core/source` | 受管 Git 检出（自更新源） |
 | `~/.local/state/echo-agent-core/` | 更新锁、版本与状态 |
 | `echo-agent-core.service` | 常驻 Core 服务 |
-| `echo-agent-core-update.service` | 一次性更新器（agent 自更新工具触发） |
+| `echo-agent-core-update.service` | 一次性更新器 |
 
-详见 [document/ops/ops-deploy.md](document/ops/ops-deploy.md)。卸载（保留配置与会话
-历史；`--purge` 连配置一起删，`--dry-run` 先预览）：
+首装自动生成 `management_access_token`（32 字节随机 hex）——把 management WS 暴露到
+局域网开箱即有认证。服务单元设 `NoNewPrivileges=true`，agent 无提权能力。
 
 ```bash
-./scripts/uninstall.sh
-# 或免 clone 一键卸载：
-curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/uninstall-remote.sh | bash
-# 重装（保留配置，二进制/服务全换新）：
-curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/reinstall.sh | bash
-# 重装 + 以最新模板重置配置（旧 core.toml 自动备份；token 沿用）：
-curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/reinstall.sh | bash -s -- --overwrite-config
+systemctl --user status echo-agent-core     # 看状态
+journalctl --user -u echo-agent-core -f     # 看日志
+echo-agent-core port                        # 查看/修改监听端口
+echo-agent-core token [--rotate]            # 查看/轮换管理令牌
 ```
 
-> 首装自动生成 `management_access_token`（32 字节随机 hex）——暴露
-> management WS 到局域网开箱即有认证；token 在 `core.toml` 可查，
-> 重装卸载不丢。
+### 卸载与重装
 
-> 注意：长驻 `echo-agent-core.service` 与一次性更新器服务均设
-> `NoNewPrivileges=true`——agent 不再提供 setuid 提权（`run_sudo` 已废弃移除），
-> 两个单元都限制被攻破进程/构建脚本的提权面。
+```bash
+./scripts/uninstall.sh                  # 保留配置与会话历史；--purge 连配置删；--dry-run 预览
+./scripts/uninstall-remote.sh | bash    # 免 clone 版本
+
+# 重装（保留配置）
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/reinstall.sh | bash
+# 以最新模板重置配置（旧 core.toml 自动备份；token 沿用）
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/reinstall.sh \
+    | bash -s -- --overwrite-config
+```
 
 ### Docker
 
-**一键部署（npm 编排，推荐）**：
-
 ```bash
-npx @echolab-auto/echo-agent up   # core + panel + napcat 三容器，面板在 :8080
+npx @echolab-auto/echo-agent up      # core + panel + napcat 三容器，面板在 :8080
 ```
 
-包源码见 [`npm/echo-agent/`](npm/echo-agent/)（生成 compose + 配置模板并代理
-`docker compose` 的日常操作；镜像发布见 `.github/workflows/docker.yml`）。
-
-**手动构建/运行**（无 registry 镜像时）：
+包源码见 [`npm/echo-agent/`](npm/echo-agent/)；镜像发布见 `.github/workflows/docker.yml`。
 
 ```bash
+# 手动构建/运行
 docker build -t echo-agent-core .
 docker run -v ./config:/config -v ./data:/data -p 3131:3131 -p 3132:3132 echo-agent-core
 ```
 
-镜像内置 docker CLI（可选挂 `/var/run/docker.sock`：QR 取图 / 文件桥 /
-NapCat 容器管理）；容器模式的完整配置模板见
-[`npm/echo-agent/templates/core.toml`](npm/echo-agent/templates/core.toml)。
+镜像内置 docker CLI（可选挂 `/var/run/docker.sock`：QR 取图 / 文件桥 / NapCat 管理）。
 
-仓库根目录的 `docker-compose.yml` 只编排 NapCat（QQ 协议端），宿主安装
-（systemd）时由 Core 用来起停 NapCat 容器。
+---
 
 ## 配置
 
-见 [config/echo-agent-core.toml](config/echo-agent-core.toml) 内联注释。要点：
+模板与内联注释：[`config/echo-agent-core.toml`](config/echo-agent-core.toml)。最常改的几项：
 
-- `[agent]`：LLM provider/model/base_url/api_key（env 覆盖：`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`DEEPSEEK_API_KEY`）、`memory_limit_tokens`（trunk token 预算）、`skills_dir`、多 API profile。
-- `[plugins.system_prompt]`：全局系统提示词（Panel 中编辑保存的基础提示词层）。
-- `[adapters.qq]`（等价写 `[instances.qq]`）：平台段——Core 只读 `enabled` 与实例表 / 启动段，**其余键原样透传给插件**（`server` / `filter` / `gate` / `trigger` 都是 QQ 插件自己的 schema，NapCat 端口 / 容器名 / compose 也由插件派生）。
-- `[core] management_address`：前端连接地址（默认 `0.0.0.0:3132`，开箱即可被局域网 Panel 连接；`management_access_token` 提供 Bearer 认证，首装自动生成）。端口与 token 可经 CLI 管理：`echo-agent-core port`（列出/修改三个监听端口：`management` / `federation` / `federation-advertise`；QQ 实例端口自 2026-10 移交插件，不在 CLI 内）与 `echo-agent-core token [--rotate]`。
-- `[federation]`：Core↔Core 联邦（多机去中心化；**零配置默认开启**，开箱既可连出也可被连入）——`listen`（缺省**合并至管理端口**：一条 NAT/防火墙映射同时服务面板与联邦；管理地址为回环 / 管理令牌为空且非回环 / 管理令牌与某 peer 令牌相同时，自动回退独立监听 `0.0.0.0:3133` 并告警；显式地址 = 独立监听、显式空 = 纯连出）、`advertise`、`node_name`、`[federation.peers.*]`（url/token/allow_tools/allow_queries）。配对推荐用 Panel 设置·联邦页的**邀请串**（`echofed://`），见 [document/federation/federation.md](document/federation/federation.md)。
+| 段 | 用途 |
+|---|---|
+| `[agent]` | provider / model / base_url / api_key（env 覆盖：`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`）、记忆预算、技能目录、多 API profile |
+| `[core]` | `management_address`（默认 `0.0.0.0:3132`）、`management_access_token` |
+| `[adapters.qq]` | 平台实例——Core 只读 `enabled` 与启动段，**其余键原样透传插件** |
+| `[federation]` | Core↔Core 联邦；**零配置默认开启**，缺省合并至管理端口 |
 
-前端通过设置视图（API/技能/工具/插件/智能体）与实例管理面板发起的修改，由 Core 经 `ConfigStore` 原子写回本文件（见 [document/core/core-config-persistence.md](document/core/core-config-persistence.md)）。
+前端设置视图发起的修改由 Core 经 `ConfigStore` 原子写回该文件。
+完整配置语义见 [部署与自更新](document/ops/ops-deploy.md) 与 [配置持久化](document/core/core-config-persistence.md)。
 
-## 前端协议
+**开发运行**（改本仓库代码时）：
 
-Core 与前端之间是 `ws://<management_address>` 上的 JSON 文本帧协议，类型定义在 `echo-protocol` crate，完整契约见 [document/protocol/protocol.md](document/protocol/protocol.md)。serde 表示即线格式，向后兼容演进（新增字段必须 `#[serde(default)]`）。
+```bash
+cp config/echo-agent-core.toml config/echo-agent-core.local.toml   # 填 api_key
+cargo run -- --config config/echo-agent-core.local.toml
+cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
+```
+
+---
 
 ## 文档索引
 
-文档群按 [ProDoc](https://github.com/EchoLab-Auto/DocRenderer) 规范组织（文档图模型：`echo-prodoc view document/` 可视化浏览）。入口 [document/index.md](document/index.md)。
+文档群按 [ProDoc](https://github.com/EchoLab-Auto/DocRenderer) 组织，入口
+**[document/index.md](document/index.md)**（`echo-prodoc view document/` 可视化浏览）。
+
+**架构与实现**（本 README 不展开，从这里进）
 
 | 文档 | 内容 |
 |---|---|
-| [document/overview/architecture.md](document/overview/architecture.md) | 架构总览（crate、接缝、事件、会话、扩展点） |
-| [document/core/frame.md](document/core/frame.md) | 框架内核（装配、服务定位、事件总线、插件宿主、进程结构） |
-| [document/core/core-agents.md](document/core/core-agents.md) | 多 Agent 与会话（persona 装配、会话模型、能力隔离） |
-| [document/core/core-agent-loop.md](document/core/core-agent-loop.md) | Agent 循环（turn/step 状态机、循环模式） |
-| [document/core/core-memory.md](document/core/core-memory.md) | 会话记忆（事件溯源、可见性边界、投影、压缩归档） |
-| [document/core/core-multimodal.md](document/core/core-multimodal.md) | 多模态输入（媒体库、模型侧还原） |
-| [document/core/core-config-persistence.md](document/core/core-config-persistence.md) | ConfigStore 原子持久化 |
-| [document/core/security-redaction-design.md](document/core/security-redaction-design.md) | 敏感信息隔离（脱敏出口卡口与保证边界） |
-| [document/protocol/protocol.md](document/protocol/protocol.md) | 前端 ⇄ Core 线协议契约 |
-| [document/plugins/core-plugins.md](document/plugins/core-plugins.md) | 插件化设计（插件模型、内置清单、能力开关、进程外插件） |
-| [document/plugins/core-tools.md](document/plugins/core-tools.md) | 工具系统（注册分发、路径约定、调用治理、Shell 会话） |
-| [document/plugins/core-skills.md](document/plugins/core-skills.md) | 技能系统（分层、SKILL.md、热重载、Git 安装） |
-| [document/plugins/core-subagent.md](document/plugins/core-subagent.md) | Subagent 插件（异步委派、隔离上下文、完成回报与观测） |
-| [document/plugins/qq-gating.md](document/plugins/qq-gating.md) | QQ 实例门控（五层管道、多实例、渲染） |
-| [document/plugins/plugin-authoring.md](document/plugins/plugin-authoring.md) | 插件开发指南（装载、协议约定、本地验证） |
-| [document/federation/federation.md](document/federation/federation.md) | 联邦（多机去中心化：链路/远程工具/委派/查询/安全模型） |
-| [document/panel/panel.md](document/panel/panel.md) | Panel 前端（仓库布局、中继模型、状态与数据流） |
-| [document/panel/panel-interaction.md](document/panel/panel-interaction.md) | 交互定义总入口（模块树与索引） |
-| [document/ops/ops-deploy.md](document/ops/ops-deploy.md) | 一键安装、systemd 服务、受控自更新、回滚 |
-| [document/dev/dev-guide.md](document/dev/dev-guide.md) | 开发指南（仓库结构、关键抽象、编码约定、治理门禁） |
-| [document/dev/dev-testing.md](document/dev/dev-testing.md) | 测试策略 |
-| [document/design/index.md](document/design/index.md) | 设计记录索引（计划 / 提案 / 实施录像，过程材料） |
+| [overview/architecture.md](document/overview/architecture.md) | 架构总览：crate 布局、能力接缝、扩展点 |
+| [core/frame.md](document/core/frame.md) | 框架内核：装配、服务定位、事件总线、插件宿主、进程结构 |
+| [core/core.md](document/core/core.md) | Core 后端入口：组成与运行速览 |
+| [core/core-agents.md](document/core/core-agents.md) | 多 Agent 与会话：persona、能力隔离 |
+| [core/core-agent-loop.md](document/core/core-agent-loop.md) | Agent 循环：turn/step 状态机 |
+| [core/core-memory.md](document/core/core-memory.md) | 会话记忆：事件溯源、投影、压缩 |
+| [core/core-multimodal.md](document/core/core-multimodal.md) | 多模态输入 |
+| [core/core-config-persistence.md](document/core/core-config-persistence.md) | 配置原子持久化 |
+| [core/security-redaction-design.md](document/core/security-redaction-design.md) | 脱敏出口卡口与保证边界 |
+| [core/core-logging.md](document/core/core-logging.md) | 日志与可观测性：通道分工、打点约定、轮转 |
+
+**扩展系统（插件 / 工具 / 技能）**
+
+| 文档 | 内容 |
+|---|---|
+| [plugins/core-plugins.md](document/plugins/core-plugins.md) | 插件化设计：模型、内置清单、进程外插件 |
+| [plugins/plugin-authoring.md](document/plugins/plugin-authoring.md) | **插件开发指南**（外部作者入口） |
+| [plugins/core-tools.md](document/plugins/core-tools.md) | 工具系统：注册分发、路径约定、调用治理 |
+| [plugins/core-skills.md](document/plugins/core-skills.md) | 技能系统：分层、SKILL.md、热重载、Git 安装 |
+| [plugins/core-subagent.md](document/plugins/core-subagent.md) | Subagent 插件 |
+| [plugins/qq-gating.md](document/plugins/qq-gating.md) | QQ 实例门控 |
+
+**协议与联邦**
+
+| 文档 | 内容 |
+|---|---|
+| [protocol/protocol.md](document/protocol/protocol.md) | 前端 ⇄ Core 线协议契约（`ws://<management_address>` JSON 文本帧） |
+| [federation/federation.md](document/federation/federation.md) | 多机去中心化联邦：链路 / 远程工具 / 委派 / 安全模型 |
+
+**运维与开发**
+
+| 文档 | 内容 |
+|---|---|
+| [ops/ops-deploy.md](document/ops/ops-deploy.md) | 一键安装、systemd、受控自更新、回滚 |
+| [dev/dev-guide.md](document/dev/dev-guide.md) | 开发指南：仓库结构、关键抽象、编码约定、门禁 |
+| [dev/dev-testing.md](document/dev/dev-testing.md) | 测试策略 |
+| [design/index.md](document/design/index.md) | 设计记录索引（计划 / 提案 / 实施记录） |
+
+**仓库结构**：`source/` 按层分目录（`defs → context / session / loop / tool / shell →
+protocol / federation → plugin → backend → core`），逐 crate 职责见
+[架构总览的 crate 表](document/overview/architecture.md)。
+
+---
 
 ## 从 EchoAgentPanel 单体仓库迁移
 
-本仓库由 EchoAgentPanel 单体仓库拆分而来。旧部署（`echo-agent-panel-core.service`）迁移：
+旧部署（`echo-agent-panel-core.service`）迁移到本仓库：
 
 ```bash
-systemctl --user disable --now echo-agent-panel-core.service   # 停旧 Core
-./scripts/install.sh                                            # 装新 Core
-# 迁移旧配置：~/.config/echo-agent-panel/core.toml → ~/.config/echo-agent-core/core.toml
-# Panel 端无需改动（协议兼容），升级到新 EchoAgentPanel 即可
+systemctl --user disable --now echo-agent-panel-core.service
+mkdir -p ~/.config/echo-agent-core
+cp ~/.config/echo-agent-panel/core.toml ~/.config/echo-agent-core/core.toml
 ```
+
+Panel 端无需改动（协议兼容），升级到新版 EchoAgentPanel 即可。
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)。
