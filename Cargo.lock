@@ -435,7 +435,7 @@ dependencies = [
 [[package]]
 name = "echo-context"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.8.1#23e861b1fb7f0a275f96253d3d7079de7507394f"
+source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.9.0#72b12f2c03af0f3287d574d517423738e239ccf2"
 dependencies = [
  "dashmap",
  "thiserror 2.0.20",
@@ -532,7 +532,7 @@ dependencies = [
 [[package]]
 name = "echo-plugin"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.8.1#23e861b1fb7f0a275f96253d3d7079de7507394f"
+source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.9.0#72b12f2c03af0f3287d574d517423738e239ccf2"
 dependencies = [
  "echo-context",
  "serde",
@@ -558,7 +558,7 @@ dependencies = [
 [[package]]
 name = "echo-plugin-api"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.8.1#23e861b1fb7f0a275f96253d3d7079de7507394f"
+source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.9.0#72b12f2c03af0f3287d574d517423738e239ccf2"
 dependencies = [
  "serde",
  "serde_json",
@@ -579,7 +579,7 @@ dependencies = [
 [[package]]
 name = "echo-plugin-host"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.8.1#23e861b1fb7f0a275f96253d3d7079de7507394f"
+source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.9.0#72b12f2c03af0f3287d574d517423738e239ccf2"
 dependencies = [
  "async-trait",
  "base64",
@@ -595,7 +595,7 @@ dependencies = [
 [[package]]
 name = "echo-plugin-loader"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.8.1#23e861b1fb7f0a275f96253d3d7079de7507394f"
+source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.9.0#72b12f2c03af0f3287d574d517423738e239ccf2"
 dependencies = [
  "serde",
  "serde_json",
@@ -648,7 +648,7 @@ dependencies = [
 [[package]]
 name = "echo-plugin-sdk"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.8.1#23e861b1fb7f0a275f96253d3d7079de7507394f"
+source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.9.0#72b12f2c03af0f3287d574d517423738e239ccf2"
 dependencies = [
  "async-trait",
  "echo-plugin-api",
@@ -714,7 +714,9 @@ name = "echo-plugin-workspace"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "echo-context",
  "echo-defs",
+ "echo-plugin",
  "echo-protocol",
  "echo-session",
  "echo-tool",

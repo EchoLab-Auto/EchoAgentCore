@@ -25,6 +25,14 @@
 //! 命令域（`SaveWorkspaceSession` 等 Agent 方法与事件发射）留在宿主
 //! `echo-agent`（`agent/workspace_commands.rs`）——那是接线，不是插件实现。
 
+pub mod commands;
+
+/// 插件 id（**唯一真值**在这里；宿主的 `WORKSPACE_PLUGIN_ID` 是它的别名）。
+///
+/// 为什么放插件侧：id 是"这个插件叫什么"，属于插件自己。宿主定义一份常量再
+/// 让插件猜，两边一改就漂移。
+pub const PLUGIN_ID: &str = "echo-agent.workspace";
+
 use std::future::Future;
 use std::pin::Pin;
 
@@ -1449,6 +1457,96 @@ fn render_prompt_text(session: &WorkspaceSessionInfo, conv: &WorkspaceConversati
     text
 }
 
+/// 工作区插件的 **manifest 描述**（id / 名称 / 描述的唯一事实来源之一）。
+///
+/// 组合根构造插件时用它，避免"id 写在宿主、描述写在插件"两处漂移。
+pub fn manifest(version: &str) -> echo_plugin::PluginManifest {
+    echo_plugin::PluginManifest::builtin(
+        crate::PLUGIN_ID,
+        "工作区会话",
+        version,
+        "tool",
+        "workspace",
+        "基于工作空间的会话管理：Panel 多会话/多目录管理 + git 状态查看 + workspace 工具",
+    )
+}
+
+/// 构造**完整的**工作区插件：策略 + 命令域 + 提示词块。
+///
+/// 三件事都在这里声明，宿主只需注入 [`commands::WorkspaceHost`]：
+///
+/// | 贡献 | 内容 |
+/// |---|---|
+/// | `mount` | persona 门控开关（工具/提示词块随白名单启停） |
+/// | `Contribution::Command` | 7 条 `*Workspace*` 命令（见 [`commands::COMMANDS`]） |
+/// | `Contribution::Text` | 键 `workspace` 的提示词块（当前工作区 + 目录清单） |
+///
+/// 这样"工作区"在宿主侧的全部接线只剩**一处**：`inject` 一个
+/// [`commands::WorkspaceHost`] 实现。宿主不再为它写 match 分支、不再给它留
+/// 装配函数的位置参数。
+///
+/// `gate` 是 persona 门控回调（宿主提供：`for_each_agent` + `reapply_plugin_gating`
+/// 之类），因为"哪些 persona 允许这个插件"是宿主的配置概念。
+pub fn plugin(
+    version: &str,
+    host: std::sync::Arc<dyn commands::WorkspaceHost>,
+    gate: impl Fn(bool) + Send + Sync + 'static,
+) -> std::sync::Arc<dyn echo_plugin::Plugin> {
+    use echo_plugin::{Inject, PluginTextBlock};
+
+    let handler = std::sync::Arc::new(commands::WorkspaceCommandHandler::new(host.clone()));
+    // 提示词块也走**同一个** [`WorkspaceHost`]：按 `team_id` 解析出该人格的
+    // store 再算文本。不需要第二个 seam——宿主给插件的东西越少，将来搬家越省事。
+    let prompt_host = host.clone();
+    let gate = std::sync::Arc::new(gate);
+    let gate_mount = gate.clone();
+
+    std::sync::Arc::new(
+        echo_plugin::BuiltinPlugin::new(manifest(version), move |_mctx| {
+            gate_mount(true);
+            let gate_unmount = gate_mount.clone();
+            Ok(vec![echo_context::Disposer::from_fn(move || {
+                gate_unmount(false)
+            })])
+        })
+        // 命令域：7 条工作区命令由本插件处理（宿主 dispatch 时先问插件）。
+        .with_commands(commands::COMMANDS)
+        .with_command_handler_async(move |name, payload| {
+            let handler = handler.clone();
+            Box::pin(async move {
+                handler
+                    .handle(&name, payload)
+                    .await
+                    .unwrap_or(Ok(serde_json::Value::Null))
+            })
+        })
+        // 提示词块：键取 `workspace`（面板的 kind 徽标与历史行为一致）。
+        .with_text_blocks([PluginTextBlock::new("workspace", "工作区会话", 50)])
+        .with_text_block_content(move |key, ctx| {
+            if key != "workspace" {
+                return None;
+            }
+            // 插件自己解释上下文（框架不解释）：
+            // - `team_id` 决定看哪一份 store（多个人格各有自己的工作区会话）；
+            // - `session_id` 决定按会话还是按全局 active 解析（2026-10 多窗口
+            //   修复的判据：全局 active 是 per-persona 单槽，别的窗口激活工作区
+            //   后会被注入到这里）。
+            let team_id = ctx.get("team_id").and_then(|v| v.as_str()).unwrap_or("");
+            let store = prompt_host.store(team_id)?;
+            match ctx.get("session_id").and_then(|v| v.as_str()) {
+                Some(session_id) if !session_id.is_empty() => store
+                    .prompt_text_for(session_id)
+                    .or_else(|| store.prompt_text()),
+                _ => store.prompt_text(),
+            }
+        })
+        // 依赖声明：无硬依赖（单机部署不需要任何服务）；`loop` 之类的服务留给
+        // 将来真需要时再加——声明了不存在的依赖会让插件挂不上。
+        .with_inject(Inject::default()),
+    )
+}
+
+#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use super::*;

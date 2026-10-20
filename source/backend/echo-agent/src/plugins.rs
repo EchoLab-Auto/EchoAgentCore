@@ -629,12 +629,13 @@ impl PluginHost {
     /// [`echo_protocol::BackendCommand::payload_value`]（剥掉外层 tag）。插件
     /// 可以用 `serde_json::from_value::<BackendCommand>` 拿回强类型——共享
     /// 词汇在 `echo-protocol`，那正是它该在的地方。
-    pub fn dispatch_command(
+    pub async fn dispatch_command(
         &self,
         command: &echo_protocol::BackendCommand,
     ) -> Option<Result<serde_json::Value, String>> {
         self.registry
-            .dispatch_command(command.kind_name(), &command.payload_value())
+            .dispatch_command_async(command.kind_name(), command.payload_value())
+            .await
     }
 
     /// 某条命令当前归谁处理（诊断/测试用）。

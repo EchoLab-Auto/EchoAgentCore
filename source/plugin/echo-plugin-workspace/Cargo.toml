@@ -9,6 +9,9 @@ description = "工作区会话插件（解耦计划 Phase 3 ⑤）：会话文�
 
 [dependencies]
 echo-defs = { workspace = true }
+# 命令域 / 提示词块贡献 + 可撤销挂载：插件形态由机制层定义。
+echo-context = { workspace = true }
+echo-plugin = { workspace = true }
 echo-tool = { workspace = true }
 echo-protocol = { workspace = true }
 echo-session = { workspace = true }

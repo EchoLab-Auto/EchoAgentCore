@@ -15,6 +15,7 @@ mod tool_dispatch;
 mod tool_exec;
 mod turn;
 mod workspace_commands;
+pub mod workspace_host;
 // 命令域按包拆分：QQ 侧在 `crate::packages::instance_ops::commands`，
 // 工作区侧在本目录 `workspace_commands.rs`（插件实现已外迁到
 // `echo-plugin-workspace`，此处只留 Agent 接线）。

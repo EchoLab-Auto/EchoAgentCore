@@ -210,7 +210,12 @@ impl Agent {
         // 会让面板再也改不回来（禁用插件后无法重新启用）。命中保留名单时**不**
         // 分发，并记一条 warn（配置写错要能看见，而不是静默失效）。
         if !crate::plugins::command_is_host_reserved(cmd.kind_name()) {
-            if let Some(outcome) = self.plugin_host().dispatch_command(&cmd) {
+            // 每个受本 agent 处理的命令都会经过这里——所以**先 clone 一份**给
+            // 插件分发，命中插件就返回，未命中再落下面的内置 match（此时 cmd
+            // 仍然完好）。clone 的代价是每条命令一次，而命中插件时省下的是一整
+            // 段宿主分支；命中不了时多一次 clone 也远小于一次面板往返。
+            let probe = cmd.clone();
+            if let Some(outcome) = self.plugin_host().dispatch_command(&probe).await {
                 match outcome {
                     Ok(_) => {}
                     Err(message) => self.emit(BackendEvent::Error {
@@ -1719,6 +1724,10 @@ impl Agent {
             BackendCommand::InvokeInstanceOp { .. } => {
                 self.apply_instance_command(cmd).await;
             }
+            // 工作区命令域：**已迁入 `echo-agent.workspace` 插件**
+            // （`Contribution::Command`）。走上面的插件分发路径；这里只剩
+            // "插件没装/被禁用"的兜底——那种情况下用户点了按钮得有回应，
+            // 不能静默。
             BackendCommand::RequestWorkspaceSessions { .. }
             | BackendCommand::SaveWorkspaceSession { .. }
             | BackendCommand::DeleteWorkspaceSession { .. }
@@ -1726,7 +1735,10 @@ impl Agent {
             | BackendCommand::RequestWorkspaceGitStatus { .. }
             | BackendCommand::RequestWorkspaceFiles { .. }
             | BackendCommand::RequestBrowseDirectories { .. } => {
-                self.apply_workspace_command(cmd).await;
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: "workspace 插件未启用（该命令由 echo-agent.workspace 处理）".into(),
+                });
             }
             // 联邦管理（Phase 4）：处理函数注册在组合根（需要 Federation
             // 句柄与 ConfigStore），经进程级注册表分发；未接线（组合根未

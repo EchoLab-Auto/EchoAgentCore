@@ -49,7 +49,7 @@ plugin/echo-plugin-provider-llm         echo-defs echo-llm-anthropic echo-llm-ol
 plugin/echo-plugin-skills               echo-defs
 plugin/echo-plugin-loop                 echo-context echo-defs echo-loop echo-plugin echo-plugin-api
 plugin/echo-plugin-subagent             echo-defs echo-tool
-plugin/echo-plugin-workspace            echo-defs echo-protocol echo-session echo-tool
+plugin/echo-plugin-workspace            echo-context echo-defs echo-plugin echo-protocol echo-session echo-tool
 plugin/echo-plugin-management           echo-federation echo-protocol
 plugin/echo-plugin-tools                echo-defs echo-tool echo-shell echo-context echo-test-utils
 

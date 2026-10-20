@@ -902,25 +902,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         })
     };
 
-    /// 各 persona 的工作区存储（`team_id → store`）。
-    ///
-    /// 为什么是**进程级共享表**而不是每 persona 一个局部变量：workspace 是
-    /// **一个**进程级插件（`echo-agent.workspace`），而 store 是 per-persona 的。
-    /// 插件的 `text_block_content` 要在运行期按 `team_id` 取对应那一份，所以
-    /// 得有一张大家都看得见的表。组合根在建 persona 时往表里塞，插件在装配时
-    /// 捕获它（依赖注入，不是全局变量）。
-    type WorkspaceStoreMap = std::sync::Arc<
-        std::sync::RwLock<
-            std::collections::HashMap<
-                String,
-                std::sync::Arc<echo_agent::workspace::WorkspaceStore>,
-            >,
-        >,
-    >;
-    let workspace_stores: WorkspaceStoreMap =
-        std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
-    let workspace_stores_for_persona = workspace_stores.clone();
-
     // 进程级插件宿主（去主 P1）：所有人格共享同一实例，插件注册/挂载/卸载
     // 与「谁挂到 Panel」同样不再寄居在某个"默认人格"上。
     let plugin_host: std::sync::Arc<echo_agent::plugins::PluginHost> =
@@ -1136,12 +1117,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     std::sync::Arc::new(echo_agent::workspace::WorkspaceStore::load(Some(
                         config_store_path.with_file_name(format!("echo-workspaces-{id}.json")),
                     )));
-                // 登记进进程级表：workspace 插件在运行期按 team_id 取这一份
-                // 来算提示词内容（同一个插件服务多个人格）。
-                workspace_stores_for_persona
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(id.clone(), workspace_store.clone());
                 t.register(std::sync::Arc::new(
                     echo_agent::workspace::WorkspaceTool::new(workspace_store.clone())
                         // 跨机查询经宿主适配器注入（Phase 3 ⑤：插件不认识联邦；
@@ -1593,65 +1568,50 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
         // ── 实化 6：工作区会话（workspace 插件）──
         //
-        // **贡献声明**（plugin-framework v0.8）：这个插件不再只靠"宿主给它写
-        // 特判"，它自己声明：
-        // - `Text` 块 `workspace`：激活会话时注入"当前工作区 / 目录清单"；
-        //   内容按 `{"session_id": …}` 上下文算——**装配函数不再有 workspace
-        //   位置参数**；
-        // - `Command`：7 条 `*Workspace*` 命令（下一轮从 `workspace_commands.rs`
-        //   搬进来，本轮先声明 + 接线宿主分发路径）。
+        // **整个命令域 + 提示词块都在插件里**（本轮迁移完成）。宿主这边只剩
+        // **一处**接线：注入 `WorkspaceHost`（四个方法，见
+        // `agent/workspace_host.rs`）。于是：
+        // - 7 条 `*Workspace*` 命令由 `dispatch_command` 路由到插件，
+        //   `commands.rs` 里不再有 workspace 的 match 分支（只剩"插件没装"兜底）；
+        // - 提示词块 `workspace` 由插件的 `Contribution::Text` 提供，
+        //   装配函数不再有 workspace 位置参数；
+        // - persona 门控（白名单）由宿主的 gate 回调表达——那是宿主的配置概念。
         {
             use echo_agent::plugins::WORKSPACE_PLUGIN_ID;
             let gating_manager_3 = gating_manager.clone();
-            let prompt_stores = workspace_stores.clone();
-            let plugin = echo_plugin::BuiltinPlugin::new(
-                PluginManifest::builtin(
-                    WORKSPACE_PLUGIN_ID,
-                    "工作区会话",
-                    version,
-                    "tool",
-                    "workspace",
-                    "基于工作空间的会话管理：Panel 多会话/多目录管理 + git 状态查看 + workspace 工具",
-                ),
-                move |_ctx| {
-                    for_each_agent(&gating_manager_3, |a| {
-                        a.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, true)
-                    });
-                    let gating_manager_u3 = gating_manager_3.clone();
-                    Ok(vec![Disposer::from_fn(move || {
-                        for_each_agent(&gating_manager_u3, |a| {
-                            a.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, false)
-                        });
-                    })])
-                },
-            )
-            // 文本块：键取 `workspace`（面板的 kind 徽标与历史行为一致）。
-            .with_text_blocks([echo_plugin::PluginTextBlock::new(
-                "workspace",
-                "工作区会话",
-                50,
-            )])
-            .with_text_block_content(move |key, ctx| {
-                if key != "workspace" {
-                    return None;
-                }
-                // 插件自己解释上下文（框架不解释）：`team_id` 决定看哪一份 store
-                // （多个人格各有自己的工作区会话），`session_id` 决定按会话还是
-                // 按全局 active 解析（2026-10 多窗口修复的判据）。
-                let team_id = ctx.get("team_id").and_then(|v| v.as_str()).unwrap_or("");
-                let store = prompt_stores
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(team_id)
-                    .cloned()?;
-                match ctx.get("session_id").and_then(|v| v.as_str()) {
-                    Some(session_id) => store
-                        .prompt_text_for(session_id)
-                        .or_else(|| store.prompt_text()),
-                    None => store.prompt_text(),
-                }
+            // 宿主能力：store 解析 / 事件出口 / 浏览根 / 联邦查询。
+            //
+            // store 走**进程级共享表**（`team_id → store`）：进程级只有一个
+            // workspace 插件，而 store 是 per-persona 的。提示词块与命令处理
+            // 都要按 `team_id` 取自己那一份。
+            let workspace_host: std::sync::Arc<dyn echo_agent::workspace::commands::WorkspaceHost> =
+                std::sync::Arc::new(
+                    echo_agent::agent::workspace_host::AgentWorkspaceHost::from_agents(
+                        {
+                            let manager = supervisor.manager();
+                            move || {
+                                manager
+                                    .all()
+                                    .into_iter()
+                                    .map(|running| Arc::clone(&running.agent))
+                                    .collect()
+                            }
+                        },
+                        event_sink.clone(),
+                        // 联邦查询出口：直接用组合根持有的那份（`federation_ports`
+                        // 在装配期构造、与插件同寿命），不必借 `factory_federation`
+                        // ——后者已经被 agent factory 闭包移走了。
+                        Some(echo_agent::federation::workspace_query(
+                            federation_ports.querier.clone(),
+                        )),
+                    ),
+                );
+            let plugin = echo_agent::workspace::plugin(version, workspace_host, move |enable| {
+                for_each_agent(&gating_manager_3, |a| {
+                    a.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, enable)
+                });
             });
-            push_plugin(&mut catalog, std::sync::Arc::new(plugin))?;
+            push_plugin(&mut catalog, plugin)?;
         }
 
         // 选单（present_menu）已于 2026-09 废弃移除（无插件、无 broker）。

@@ -313,14 +313,38 @@ Phase 3 把实现搬出了 echo-agent，但 inproc 轨只兑现了**工具贡献
   "服务由插件提供"第一次落到实处。
   两个模式插件共享同一个驱动（进程级没有"二选一"这回事），后挂的看到键已存在
   就**不重复提供**——降级而不是 `Conflict`（报冲突会让正常配置起不来）。
-- [ ] 下一步（未做）：**workspace 命令域整体迁移**（7 条 `*Workspace*` 命令，
-  565 行）。机制已就绪（`dispatch_command` 可用且有测试），缺的是**宿主服务
-  seam**：命令处理要发 `BackendEvent`（带本 agent 的 team 标注）、要动会话通道
-  （`ensure_workspace_channel` / 清空）、要用联邦 `RemoteWorkspaceQuery`（已有）。
-  正确做法是把这三件事定义成宿主注册进 `Ctx` 的服务（发送端已天然存在：
-  `Agent::emit_handle` 就是逐个 agent 的），再由插件在 `handle_command` 里解析——
-  与 `RemoteWorkspaceQuery` 同一套注入思路。**半途而废的做法是把事件发射塞进
-  payload**，那会让插件依赖宿主的内部类型，比现在更糟。
+- [x] **workspace 命令域整体迁移**（plugin-framework `v0.9.0`）——S3 完成：
+  - **框架先补异步入口**：`handle_command` 是同步的，只能做"不等"的事，而真实
+    命令域里几乎每条都要 IO（`spawn_blocking` 读 git / 跨机查询）。新增
+    `Plugin::handle_command_async`（boxed future —— 插件以 `Arc<dyn Plugin>`
+    存在，trait 必须对象安全，原生 `async fn` in trait 不是）+ 
+    `PluginRegistry::dispatch_command_async`；默认实现把同步版包成 ready future，
+    所以只写同步版的插件照常工作。
+  - **宿主 seam = 四项能力**（`echo_plugin_workspace::commands::WorkspaceHost`）：
+    `store(team_id)` / `emit(team_id, event)` / `browse_roots()` /
+    `remote_query()`。逐条对着原实现里的 `self.xxx()` 调的——多一项都意味着插件
+    多知道一件宿主内部结构。
+  - **不在这四项里的**：`workspace_after_change`（列表/激活广播 + 会话通道注册 +
+    会话级 API 恢复）。它是 store 的**变更钩子**，宿主在 `set_workspace_store` 时
+    就接好了——插件只改 store，广播自动发生。所以命令处理器不需要知道"会话通道"
+    存在，这是整次迁移最省事的一点。
+  - **命令处理器**（`commands.rs`，561 行）：用
+    `serde_json::from_value::<BackendCommand>` 把"名字 + 载荷"还原成强类型
+    （插件依赖 `echo-protocol`，共享命令词汇的正确位置就在那里，不在框架层）。
+    宿主侧 `apply_command` 在落内置 match **之前**问一次插件；`commands.rs` 里
+    7 条 workspace 分支缩成一句兜底（"插件未启用"）——插件禁用后命令自然回落，
+    不需要特判。
+  - **宿主实现**（`agent/workspace_host.rs`，118 行）：`agents: Arc<dyn Fn() ->
+    Vec<Arc<Agent>>>` 而不是 `Arc<AgentManager>`——生产传 manager 快照，单测传
+    单元素，**同一份实现两种装配**。无人格归属的事件（目录浏览）走组合根的进程级
+    出口（`manager.resolve(None)` 在去主智能体之后返回 `None`）。
+  - **净结果**：`workspace_commands.rs` 565 → 102 行（只剩 `ensure_workspace_channel
+    _for_active` / `workspace_after_change` / 三个 emit 辅助——确实是宿主会话子
+    系统的事）；插件侧 +561 行（在它该在的地方）。
+  - **实测**（真进程 + WS）：`RequestWorkspaceSessions` → `WorkspaceSessions`
+    （插件处理）；`SaveWorkspaceSession` → `Error` 回执 + 变更钩子广播的
+    `WorkspaceSessions`；`plugins.toml` 里 `enabled = false` 禁用插件后同一条命令
+    → `workspace 插件未启用（该命令由 echo-agent.workspace 处理）`（回落兜底）。
 - [ ] 下一步（未做）：声明式 inject 的**类型化**校验（需 M5 去业务化后重估）、
   插件树在业务侧的第一个真实消费者（workspace 子会话 / subagent 隔离上下文
   最像）。

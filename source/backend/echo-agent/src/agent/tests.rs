@@ -3452,6 +3452,33 @@ async fn tool_execution_failure_is_surfaced_to_llm() {
 
 // ── 工作区会话（workspace 插件）──
 
+/// 给一个 agent 装上**完整的** workspace 插件（命令域 + 提示词块 + 门控）。
+///
+/// 为什么测试也要走真装配：工作区命令域已迁进插件（`Contribution::Command`），
+/// `apply_command` 先问插件再落内置分支。只 `set_workspace_store` 而不装插件，
+/// 测的是"宿主兜底分支"——那不是线上路径。
+///
+/// `AgentWorkspaceHost` 用"单元素 agent 快照"构造（生产传 manager 快照），
+/// 同一份实现两种装配。
+fn install_workspace_plugin(agent: &Arc<Agent>) {
+    let host = Arc::new(
+        crate::agent::workspace_host::AgentWorkspaceHost::from_agents(
+            {
+                let agent = Arc::clone(agent);
+                move || vec![Arc::clone(&agent)]
+            },
+            Arc::new(|_event| {}),
+            None,
+        ),
+    );
+    let plugin_host = Arc::new(crate::plugins::PluginHost::new());
+    plugin_host.set_mount_ctx(echo_plugin::MountContext::new());
+    plugin_host
+        .register_and_mount(echo_plugin_workspace::plugin("test", host, |_| {}))
+        .expect("mount workspace plugin");
+    agent.set_plugin_host(plugin_host);
+}
+
 /// 工作区命令走 team 路由（去主智能体后不落"默认人格"兜底），
 /// 且 save → list → active → git 的完整链路可用。
 #[tokio::test]
@@ -3470,6 +3497,7 @@ async fn workspace_commands_lifecycle() {
         path.clone(),
     ))));
 
+    install_workspace_plugin(&agent);
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
 
@@ -3589,6 +3617,7 @@ async fn workspace_files_command_lists_within_scope() {
         path.clone(),
     ))));
 
+    install_workspace_plugin(&agent);
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
 
