@@ -3,6 +3,8 @@
 //!
 //! 2026-10 架构评审：自 `agent/mod.rs` 拆出（纯搬移，行为不变）。
 
+use tracing::Instrument as _;
+
 use super::*;
 
 impl Agent {
@@ -55,6 +57,93 @@ impl Agent {
                     started_at_ms: Some(started_at_ms),
                 },
             ));
+        //
+        // 一次工具调用 = 一个 span（2026-10 日志治理）：并发工具 / 多会话下
+        // 「这几条 warn 属于哪个工具」靠 span 归组，JSON 出口自动带
+        // `session`/`branch_id`/`tool`/`tool_call_id`。
+        let span = tracing::info_span!(
+            "tool_call",
+            tool = %call.name,
+            session = %session_id,
+            branch_id = %branch_id,
+            tool_call_id = %call.id,
+        );
+        let result = self
+            .dispatch_tool(session_id, branch_id, call)
+            .instrument(span)
+            .await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        // 工具耗时是 turn 耗时的主要成分：慢调用与失败恒 INFO（默认级别下
+        // 「时间花在哪」有据可查），快调用降 DEBUG（不给正常路径刷噪声）。
+        let characters = result.text.chars().count();
+        let failed = result.text.starts_with("error:");
+        if elapsed_ms >= 1000 || failed {
+            tracing::info!(
+                session = %session_id,
+                branch_id = %branch_id,
+                tool = %call.name,
+                elapsed_ms,
+                characters,
+                ok = !failed,
+                "tool call finished"
+            );
+        } else {
+            tracing::debug!(
+                session = %session_id,
+                branch_id = %branch_id,
+                tool = %call.name,
+                elapsed_ms,
+                characters,
+                "tool call finished"
+            );
+        }
+        let result_text = result.text.clone();
+        let result_images = result.images.clone();
+        self.emit(BackendEvent::ToolResult {
+            session_id: session_id.to_string(),
+            team_id: None,
+            tool_name: call.name.clone(),
+            result: result_text.clone(),
+            tool_call_id: call.id.clone(),
+            timed_out: false,
+            branch_id: branch_id.to_string(),
+            elapsed_ms: Some(elapsed_ms),
+        });
+        self.trunk
+            .append_event(echo_session::SessionEvent::ToolResult(
+                echo_session::event::ToolResultEvent {
+                    tool_call_id: call.id.clone(),
+                    result: result_text.clone(),
+                    images: result_images.clone(),
+                    session: Some(session_id.to_string()),
+                    elapsed_ms: Some(elapsed_ms),
+                },
+            ));
+        if call.name == "checklist" {
+            // 按会话过滤（2026-10 P0 修复）：此前取全量状态挂当前会话广播
+            // ——A 会话触发时 B 会话的数据也会挂到 A 上（面板按会话显示必串）。
+            if let Some(state) = self.tools.snapshot_for_session(&call.name, session_id) {
+                self.emit(BackendEvent::ChecklistUpdated {
+                    session_id: session_id.to_string(),
+                    state,
+                    team_id: None, // annotate_team 统一补
+                });
+            }
+        }
+        result
+    }
+
+    /// 工具执行体（参数解析 → 预检 → 分派 → 结果脱敏）。
+    ///
+    /// 与 [`Self::run_tool`] 拆开是为了让整段执行被 `tool_call` span 包裹：
+    /// `Instrument` 需要一个 future，而 `run_tool` 开头的同步序言
+    /// （发出 ToolCall 事件 + 会话落盘）不应计入工具耗时。
+    async fn dispatch_tool(
+        &self,
+        session_id: &str,
+        branch_id: &str,
+        call: &ToolCall,
+    ) -> crate::tool::ToolResult {
         // 参数解析与预检：给模型可纠正的错误反馈。非法 JSON 或缺少必需
         // 字段时，错误文案必须说清"你发了什么、应该发什么"——一句模糊的
         // "command required" 只会让模型原样重试，形成空调用退化循环。
@@ -136,40 +225,7 @@ impl Agent {
                 "tool result contained sensitive data; redacted at exit"
             );
         }
-        result.text = result_text.clone();
-        let result_images = result.images.clone();
-        let elapsed_ms = started.elapsed().as_millis() as u64;
-        self.emit(BackendEvent::ToolResult {
-            session_id: session_id.to_string(),
-            team_id: None,
-            tool_name: call.name.clone(),
-            result: result_text.clone(),
-            tool_call_id: call.id.clone(),
-            timed_out: false,
-            branch_id: branch_id.to_string(),
-            elapsed_ms: Some(elapsed_ms),
-        });
-        self.trunk
-            .append_event(echo_session::SessionEvent::ToolResult(
-                echo_session::event::ToolResultEvent {
-                    tool_call_id: call.id.clone(),
-                    result: result_text.clone(),
-                    images: result_images.clone(),
-                    session: Some(session_id.to_string()),
-                    elapsed_ms: Some(elapsed_ms),
-                },
-            ));
-        if call.name == "checklist" {
-            // 按会话过滤（2026-10 P0 修复）：此前取全量状态挂当前会话广播
-            // ——A 会话触发时 B 会话的数据也会挂到 A 上（面板按会话显示必串）。
-            if let Some(state) = self.tools.snapshot_for_session(&call.name, session_id) {
-                self.emit(BackendEvent::ChecklistUpdated {
-                    session_id: session_id.to_string(),
-                    state,
-                    team_id: None, // annotate_team 统一补
-                });
-            }
-        }
+        result.text = result_text;
         result
     }
 

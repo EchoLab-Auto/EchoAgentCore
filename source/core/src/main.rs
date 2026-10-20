@@ -203,7 +203,10 @@ fn dump_config_command(config_path: &std::path::Path) -> Result<()> {
 // ── Core：Agent + 插件实例 + management WS 服务 ──────────────────────────────
 
 async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
-    init_tracing(&cfg.logging)?;
+    let log_reload = init_tracing(&cfg.logging)?;
+    // 级别热更新（2026-10 日志治理）：`SIGHUP` 重读 `[logging].level`，
+    // 免去为开 debug 而重启进程（重启要等在途回复 drain，最长 180s）。
+    logging::spawn_reload_on_sighup(args.config_path(), log_reload);
 
     // 节点身份（federation Phase 0）：加载或生成持久化 NodeId。
     // 与配置 TOML 同目录（echo-node.json）；Phase 1 联邦链路消费。
@@ -2000,11 +2003,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 },
             ));
             // 每个 agent 绑定所属 manager（弱引用；技债清理：不再有进程级锚点）。
-            // 必须在此处做：manager 与 agent 都已构造完成，且这是唯一同时
-            // 持有两者的位置。
-            for running in mgr_arc.all() {
-                running.agent.set_manager(&mgr_arc);
-            }
+            // `bind_all` 覆盖注册表内的全部人格；`core_agent` 不是人格、
+            // 不在注册表里，必须单独绑。
+            mgr_arc.bind_all(&mgr_arc);
             // `core_agent` 是管理面/TeamsList 的命令宿主，但不是人格，
             // 不包含在 `mgr_arc.all()` 中；漏绑会让 Panel 收到空 TeamsList。
             core_agent.set_manager(&mgr_arc);

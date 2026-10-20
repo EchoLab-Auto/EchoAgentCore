@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use tracing::Instrument as _;
 
 use super::*;
 
@@ -261,6 +262,15 @@ impl Agent {
                 .map_err(|_| anyhow!("reply branch scheduler is closed"))?,
             _ = cancel.cancelled() => return Err(anyhow!(TURN_CANCELLED)),
         };
+        // 一次 turn = 一个 span（2026-10 日志治理）：turn 内的全部事件
+        // （模型调用、工具、子代理、压缩）因此共享同一 `session`/`branch_id`
+        // 上下文。文本出口仍靠事件自带的显式字段（便于 grep），JSON 出口
+        // 由 `with_current_span` 带出 span 树，无需每条事件手抄字段。
+        let turn_span = tracing::info_span!(
+            "agent_turn",
+            session = %session.id,
+            branch_id = %branch_id,
+        );
         let result = self
             .process_message_inner(
                 session,
@@ -270,6 +280,7 @@ impl Agent {
                 visible_reply,
                 branch_id,
             )
+            .instrument(turn_span)
             .await;
         drop(branch_slot);
         if let Ok(reply) = &result {

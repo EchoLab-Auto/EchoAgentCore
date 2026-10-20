@@ -6,12 +6,55 @@
 //! - **ANSI 自动判定**：只有输出目标是终端时才着色——此前固定开，导致
 //!   journald 里的结构化字段被转义序列拆散（`grep session=` 零命中）；
 //! - **panic 钩子**：panic 转一条 `ERROR` 事件（配 `log_file` 时崩溃不再
-//!   只落在 stderr 里）。
+//!   只落在 stderr 里）；
+//! - **级别热更新**：`SIGHUP` 重读 `[logging].level`，不用重启进程。
 
 #[allow(unused_imports)]
 use crate::*;
 #[allow(unused_imports)]
 use anyhow::Context;
+
+/// 重载动作的类型擦除：`reload::Handle<EnvFilter, Formatter<..>>` 的第二个
+/// 类型参数随输出目标（journald 的 stdout / 轮转文件）与格式（text/json）
+/// 而变，存具体类型会把 `init_subscriber` 的泛型泄漏到调用方——这里统一成
+/// 「给我一个新的 `EnvFilter`」这一个动作。
+type LevelReloadFn = Box<dyn Fn(EnvFilter) -> Result<(), String> + Send + Sync>;
+
+/// 级别热更新句柄：[`init_tracing`] 的返回值，组合根持有并交给
+/// [`spawn_reload_on_sighup`]。
+///
+/// 刻意**不是**进程级静态：本仓的 P1 门禁要求零全局态（见
+/// `source/core/tests/no_global_state.rs`）——能力面显式往下传，组合根
+/// 拿到什么就有什么，两套宿主也互不干扰。
+pub(crate) struct LogReload {
+    /// 类型擦除后的重载动作（`None` = subscriber 未走可重载装配）。
+    reload: Option<LevelReloadFn>,
+}
+
+impl LogReload {
+    fn from_handle<S>(handle: tracing_subscriber::reload::Handle<EnvFilter, S>) -> Self
+    where
+        S: 'static,
+    {
+        Self {
+            reload: Some(Box::new(move |filter: EnvFilter| {
+                handle.reload(filter).map_err(|error| error.to_string())
+            })),
+        }
+    }
+
+    /// 热更新日志级别（`RUST_LOG` 同语法）。
+    pub(crate) fn set_level(&self, spec: &str) -> Result<()> {
+        let filter = EnvFilter::try_new(spec)
+            .map_err(|error| anyhow::anyhow!("[logging] level 无法解析 \"{spec}\": {error}"))?;
+        match self.reload.as_ref() {
+            Some(reload) => {
+                reload(filter).map_err(|error| anyhow::anyhow!("重载日志级别失败: {error}"))
+            }
+            None => anyhow::bail!("日志级别热更新未装配（subscriber 未启用 filter reloading）"),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct RotatingLogWriter {
@@ -142,7 +185,7 @@ pub(crate) fn install_panic_hook() {
 
 /// Core defaults to stdout/journald, but honors an explicit `log_file` with
 /// rotating files.
-pub(crate) fn init_tracing(cfg: &config::LoggingSection) -> Result<()> {
+pub(crate) fn init_tracing(cfg: &config::LoggingSection) -> Result<LogReload> {
     install_panic_hook();
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cfg.level));
     if !cfg.log_file.is_empty() {
@@ -172,7 +215,7 @@ pub(crate) fn init_subscriber<W>(
     filter: EnvFilter,
     writer: W,
     ansi: bool,
-) -> Result<()>
+) -> Result<LogReload>
 where
     W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + 'static + Send + Sync,
 {
@@ -182,11 +225,66 @@ where
         .with_thread_ids(true)
         .with_ansi(ansi)
         .with_writer(writer);
+    // 分支顺序固定：`json()` 必须在 `with_filter_reloading()` 之前——重载
+    // 层的类型参数绑在「当前 formatter」上，先重载再换 formatter 不成立。
     match cfg.format.as_str() {
-        "json" => builder.json().try_init().map_err(anyhow::Error::msg)?,
-        _ => builder.try_init().map_err(anyhow::Error::msg)?,
+        "json" => {
+            // JSON 出口带上当前 span：`session`/`branch_id`/`tool` 这类字段
+            // 由 span 统一携带，事件本身不必重复抄写。
+            let builder = builder
+                .json()
+                .with_current_span(true)
+                .with_span_list(false)
+                .with_filter_reloading();
+            let handle = builder.reload_handle();
+            builder.try_init().map_err(anyhow::Error::msg)?;
+            Ok(LogReload::from_handle(handle))
+        }
+        _ => {
+            let builder = builder.with_filter_reloading();
+            let handle = builder.reload_handle();
+            builder.try_init().map_err(anyhow::Error::msg)?;
+            Ok(LogReload::from_handle(handle))
+        }
     }
-    Ok(())
+}
+
+/// 注册 `SIGHUP` → 重读配置文件 `[logging].level` 并热更新。
+///
+/// `systemctl --user reload echo-agent-core` 或 `kill -HUP <pid>` 即可，
+/// 不必重启进程（Core 重启要走最长 180s 的在途回复 drain）。
+pub(crate) fn spawn_reload_on_sighup(config_path: PathBuf, reload: LogReload) {
+    #[cfg(unix)]
+    {
+        tokio::spawn(async move {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sighup = match signal(SignalKind::hangup()) {
+                Ok(signal) => signal,
+                Err(error) => {
+                    warn!(%error, "SIGHUP 监听装配失败：日志级别热更新不可用（需重启进程改级别）");
+                    return;
+                }
+            };
+            while sighup.recv().await.is_some() {
+                match config::CoreConfig::load(&config_path) {
+                    Ok(loaded) => match reload.set_level(&loaded.logging.level) {
+                        Ok(()) => info!(
+                            level = %loaded.logging.level,
+                            "日志级别已热更新（SIGHUP）"
+                        ),
+                        Err(error) => warn!(%error, "日志级别热更新失败，沿用原级别"),
+                    },
+                    Err(error) => warn!(%error, "SIGHUP 重读配置失败，沿用原级别"),
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows：无 SIGHUP 等价物，保留函数以满足调用点。
+        let _ = (config_path, reload);
+        warn!("SIGHUP 日志级别热更新在非 unix 平台不可用");
+    }
 }
 
 #[cfg(test)]
