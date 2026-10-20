@@ -44,7 +44,18 @@ pub struct AgentManager {
     /// 供多节点聚合客户端区分同名人格。组合根装配期注入（P3 终态：参数，
     /// 非 kernel cell）。
     node_identity: parking_lot::RwLock<crate::NodeIdentity>,
+    /// 人格重建工厂（组合根在 manager 构造完成后注入）：运行期启用被禁用
+    /// 的人格时用它重建实例，与启动期同一装配闭包。
+    ///
+    /// 2026-10 技术债清理：此前是 `echo_bootstrap` 进程级槽
+    /// （`set_agent_factory` / `agent_factory_for_toggle`）。它天然属于
+    /// **某个** manager——现在直接挂在它自己身上，两套 manager 各持各的。
+    /// None = 未注入（toggle 返回明确错误，而不是 panic）。
+    factory: parking_lot::RwLock<Option<AgentFactoryInner>>,
 }
+
+/// 工厂闭包的内部类型别名（对外仍用 [`AgentFactory`] 包装）。
+type AgentFactoryInner = std::sync::Arc<dyn Fn(String, TeamMember) -> Arc<Agent> + Send + Sync>;
 
 /// Closure that persists the profiles map (composition root injects the
 /// ConfigStore patch writer).
@@ -110,6 +121,7 @@ impl AgentManager {
             disabled: parking_lot::Mutex::new(disabled),
             config_writer: parking_lot::Mutex::new(None),
             node_identity: parking_lot::RwLock::new(crate::NodeIdentity::default()),
+            factory: parking_lot::RwLock::new(None),
         }
     }
 
@@ -243,6 +255,21 @@ impl AgentManager {
     }
 
     /// Inject the persistence hook (writes profiles to TOML).
+    /// 注入人格重建工厂（组合根调用一次；见字段文档）。
+    pub fn set_factory(
+        &self,
+        factory: impl Fn(String, TeamMember) -> Arc<Agent> + Send + Sync + 'static,
+    ) {
+        *self.factory.write() = Some(std::sync::Arc::new(factory));
+    }
+
+    /// 取重建工厂（未注入 = None）。
+    pub fn factory_ref(&self) -> Option<AgentFactory> {
+        self.factory.read().as_ref().map(|inner| AgentFactory {
+            inner: std::sync::Arc::clone(inner),
+        })
+    }
+
     pub fn set_config_writer(&self, writer: ConfigWriter) {
         *self.config_writer.lock() = Some(writer);
     }
@@ -272,7 +299,12 @@ impl AgentManager {
         }
         let running = self.agents.read().contains_key(id);
         if enabled && !running {
-            let agent = agent_factory_for_toggle().call(id.to_string(), profile.clone());
+            let agent = self
+                .factory_ref()
+                .ok_or_else(|| {
+                    format!("agent factory not injected by composition root; cannot rebuild {id}")
+                })?
+                .call(id.to_string(), profile.clone());
             self.agents.write().insert(
                 id.to_string(),
                 RunningAgent {
@@ -377,49 +409,15 @@ impl AgentManager {
 
 /// Process-wide manager & factory slots.
 ///
-/// 存储收敛于 `echo_bootstrap`（P1 唯一引导单元；原为模块级
-/// 静态槽位）。注意：函数局部项在 Rust 中是**每函数一份**的独立实例，
-/// setter/getter 分处两个函数时会互不可见（历史 bug：SaveAgent 报
-/// "agent manager unavailable"）——单例必须走 kernel cell。
-/// Process-wide AgentManager (best-effort): set once by the composition root.
-/// Lets any Agent read the persona list (e.g. RequestAgentsList) without a
-/// direct dependency on the manager instance.
-pub fn global_manager() -> Option<std::sync::Arc<AgentManager>> {
-    echo_bootstrap::get::<std::sync::Arc<AgentManager>>()
-}
-
-pub fn set_global_manager(manager: std::sync::Arc<AgentManager>) {
-    let _ = echo_bootstrap::set(manager);
-}
-
-/// Process-wide agent factory (set once by the composition root). Used by
-/// runtime toggling: enabling a disabled agent rebuilds it from config.
-pub fn set_agent_factory(
-    factory: impl Fn(String, TeamMember) -> Arc<Agent> + Send + Sync + 'static,
-) {
-    let _ = echo_bootstrap::set(AgentFactory {
-        inner: std::sync::Arc::new(factory),
-    });
-}
-
-/// Clonable snapshot of the agent factory (for `set_enabled` calls from
-/// commands). Panics only if the composition root never injected a factory
-/// (should not happen in production).
 #[derive(Clone)]
 pub struct AgentFactory {
-    inner: std::sync::Arc<dyn Fn(String, TeamMember) -> Arc<Agent> + Send + Sync>,
+    inner: AgentFactoryInner,
 }
 
 impl AgentFactory {
     pub fn call(&self, id: String, profile: TeamMember) -> Arc<Agent> {
         (self.inner)(id, profile)
     }
-}
-
-/// Retrieve the registered factory (panics with a clear message when unset).
-pub fn agent_factory_for_toggle() -> AgentFactory {
-    echo_bootstrap::get::<AgentFactory>()
-        .unwrap_or_else(|| panic!("agent factory not set by composition root"))
 }
 
 #[cfg(test)]

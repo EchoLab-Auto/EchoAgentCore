@@ -8,8 +8,8 @@
 //! 公开路径 `echo_agent::shell::…` 保持不变（re-export），调用点零改动。
 
 pub use echo_shell::{
-    set_shell_emit, set_shell_manager_global, shell_emit, shell_emit_for, shell_event_to_backend,
-    shell_manager_global, ShellEmit, ShellEvent, ShellManager, MAX_SHELL_SESSIONS,
+    shell_emit_for, shell_event_to_backend, ShellEmit, ShellEvent, ShellHandle, ShellManager,
+    MAX_SHELL_SESSIONS,
 };
 
 use crate::event::BackendEvent;

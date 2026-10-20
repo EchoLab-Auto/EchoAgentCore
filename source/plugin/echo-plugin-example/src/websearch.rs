@@ -3,7 +3,7 @@
 //!
 //! 使用公开端点 `cn.bing.com/search?format=rss`（大陆网络可达）并解析 RSS。
 //!
-//! 偏差：原实现经宿主侧的 `echo_bootstrap::get_or_init` 收敛进程级客户端
+//! 偏差：原实现经进程级惰性槽收敛 HTTP 客户端（宿主侧已改为注册期注入）
 //! 单例；插件遵守"零进程级全局态"纪律（P1 门禁），HTTP 客户端改为
 //! **实例级**（`WebSearch::new()` 时构建一次，随 handler 存活）。
 

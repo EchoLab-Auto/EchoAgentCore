@@ -3,14 +3,19 @@
 //! 背景：解耦计划 Phase 1（见 `document/design/decoupling-plan.md`）要求把全部
 //! 进程级全局态收敛到唯一引导单元。2026-10-08 全量迁移完成。
 //!
-//! 口径（2026-10-19 M4）：
+//! 口径（2026-10-19 技术债清理完成）：
 //!
-//! - **框架仓**（`plugin-framework`）零全局态，无条件成立——白名单为空，由那边
-//!   的 `crates/framework-gates/tests/no_global_state.rs` 守着；
-//! - **本仓**唯一允许的静态存储是 `context/echo-bootstrap`（进程级引导单元）。
-//!   它曾随 `echo-context` 一起被迁进框架仓，是错的：使用者全在应用层（8 处），
-//!   框架自己一处不用，而框架导出进程级单例表会直接破坏"同一进程能起两套宿主"。
-//!   现已搬回本仓，本门禁重新精确豁免这一个文件。
+//! **两仓都是无条件零全局态**——白名单为空，没有任何豁免。
+//!
+//! 最后一处（`echo-bootstrap` 的 TypeId 键控单例表）已拆解为显式注入：
+//! - 插件宿主 / 全局禁用策略 → `Agent` 字段（`plugin_host` / `global_policy`）
+//! - 所属 manager → `Agent.manager`（弱引用，避免引用环）
+//! - 人格重建工厂 → `AgentManager.factory`
+//! - shell manager / 广播回调 → `ShellHandle`（组合根创建、clone 分发）
+//! - 编译产物 / HTTP 连接池 → 注册期构造并捕获（不是宿主状态）
+//! - 迁移 ack 表 → `FederationRuntime.session_import_acks`
+//!
+//! 副作用：同一进程现在可以起**两套完整宿主**，互不干扰。
 //!
 //! 口径（2026-10-07 精化，全 source 扫描）：
 //! - 扫描仓库 `source/` 全树，跳过 `tests/` 目录与 `tests.rs` 文件（只数生产代码）；
@@ -27,11 +32,11 @@ use std::path::{Path, PathBuf};
 /// 存量上限（2026-10-08：全量迁移完成 → 0；只降不升，永不调大）。
 const EXPECTED_MAX: usize = 0;
 
-/// 唯一白名单：宿主侧进程级引导单元（`echo-bootstrap`）。
+/// 白名单：**空**（2026-10-19 技术债清理后无条件零全局态）。
 ///
-/// **它是唯一允许的**——新增第二处即红。搬到本仓而不是留在框架仓的理由见
-/// 该 crate 的文档；若将来把句柄改由 `Ctx` 显式注入，这条豁免应随之清零。
-const WHITELIST: &str = "context/echo-bootstrap/src/lib.rs";
+/// 保留这个常量（而不是删掉分支）是为了让"将来若确有豁免"有现成的显式位置
+/// ——比临时在扫描里加 `ends_with` 更难被忽略。
+const WHITELIST: &str = "";
 
 fn repo_root() -> PathBuf {
     // 本文件位于 source/core/tests/ → source/core → 仓库根

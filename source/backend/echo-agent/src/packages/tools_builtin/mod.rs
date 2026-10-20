@@ -22,19 +22,24 @@ pub use echo_plugin_tools::{calculator, checklist, coding, instance, shell_tools
 /// `core.toml` or `echo-agent-core`: even when intended for a smoke-test
 /// process, `pkill -f core.toml` also matches the production Core command line
 /// (`--config .../core.toml`).
-pub(crate) fn reject_core_self_stop(command: &str) -> Result<(), ToolError> {
-    let regex = echo_bootstrap::get_or_init::<Regex>(|| {
-        Regex::new(
-            r#"(?im)(?:^|[;&|]\s*|(?:ba)?sh\s+-[A-Za-z]*c\b\s*['\"]?\s*)\s*(?:sudo\s+)?(?:command\s+)?(?:(?:/usr/bin/)?systemctl\b[^\n;&|]*\b(?:stop|kill)\b[^\n;&|]*\becho-agent-core(?:\.service)?\b|(?:pkill|killall)\b[^\n;&|]*(?:(?:\[e\]|e)cho-agent-core|(?:\[c\]|c)ore\.toml))"#,
-        )
-        .expect("self-stop regex is valid")
-    });
-    if regex.is_match(command) {
-        return Err(ToolError::Execution(
-            "blocked command: stopping or killing echo-agent-core from inside its own process would terminate this tool before later cleanup/start steps run. Use `systemctl --user restart echo-agent-core.service` or the managed updater `scripts/update.sh` instead.".into(),
-        ));
-    }
-    Ok(())
+const CORE_SELF_STOP_PATTERN: &str = r#"(?im)(?:^|[;&|]\s*|(?:ba)?sh\s+-[A-Za-z]*c\b\s*['\"]?\s*)\s*(?:sudo\s+)?(?:command\s+)?(?:(?:/usr/bin/)?systemctl\b[^\n;&|]*\b(?:stop|kill)\b[^\n;&|]*\becho-agent-core(?:\.service)?\b|(?:pkill|killall)\b[^\n;&|]*(?:(?:\[e\]|e)cho-agent-core|(?:\[c\]|c)ore\.toml))"#;
+
+/// 构造自停护栏：[`CommandGuard`] 闭包，正则**编译一次**并捕获进去。
+///
+/// 2026-10 技术债清理：此前用 `echo_bootstrap::get_or_init` 存那份编译好的
+/// `Regex`——但正则编译产物是**纯计算常量**，不是宿主状态，塞进进程级表纯属
+/// 借用现成设施。改为「构造护栏时编译一次、move 进闭包」：零全局态，且护栏
+/// 的唯一实例由调用方持有。
+pub(crate) fn core_self_stop_guard() -> echo_plugin_tools::CommandGuard {
+    let regex = Regex::new(CORE_SELF_STOP_PATTERN).expect("self-stop regex is valid");
+    std::sync::Arc::new(move |command: &str| {
+        if regex.is_match(command) {
+            return Err(ToolError::Execution(
+                "blocked command: stopping or killing echo-agent-core from inside its own process would terminate this tool before later cleanup/start steps run. Use `systemctl --user restart echo-agent-core.service` or the managed updater `scripts/update.sh` instead.".into(),
+            ));
+        }
+        Ok(())
+    })
 }
 
 /// Register all built-in tools into a registry.
@@ -48,15 +53,16 @@ pub fn register_all(
     workspace: std::path::PathBuf,
     config_store: echo_config::ConfigStore,
     invoker: Option<echo_plugin_tools::RemoteInvoker>,
+    shell: echo_shell::ShellHandle,
 ) {
-    let guard: echo_plugin_tools::CommandGuard = std::sync::Arc::new(reject_core_self_stop);
+    let guard = core_self_stop_guard();
     echo_plugin_tools::register_core_tools(registry);
     registry.register(std::sync::Arc::new(api_profiles::ListApiProfilesTool::new(
         config_store,
     )));
     echo_plugin_tools::register_instance_tools(registry, instances);
     echo_plugin_tools::register_coding_tools(registry, workspace, Some(guard.clone()), invoker);
-    echo_plugin_tools::register_shell_tools(registry, Some(guard));
+    echo_plugin_tools::register_shell_tools(registry, Some(guard), shell);
     for name in registry.names() {
         registry.set_package(&name, crate::plugins::TOOLS_BUILTIN_PLUGIN_ID);
     }
@@ -64,7 +70,7 @@ pub fn register_all(
 
 #[cfg(test)]
 mod tests {
-    use super::{register_all, reject_core_self_stop};
+    use super::{core_self_stop_guard, register_all};
 
     /// 内置工具集内部不能有重名：`ToolRegistry::register` 是覆盖语义，
     /// 撞名会让一个工具静默消失（工具定义还在，执行却落到另一个实现上）。
@@ -81,6 +87,7 @@ mod tests {
             dir.clone(),
             store,
             None,
+            echo_shell::ShellHandle::new(),
         );
         let conflicts = registry.name_conflicts();
         assert!(
@@ -109,7 +116,7 @@ mod tests {
             "true && killall echo-agent-core",
         ] {
             assert!(
-                reject_core_self_stop(command).is_err(),
+                core_self_stop_guard()(command).is_err(),
                 "not blocked: {command}"
             );
         }
@@ -125,7 +132,7 @@ mod tests {
             "rg 'pkill -f core.toml' README.md",
         ] {
             assert!(
-                reject_core_self_stop(command).is_ok(),
+                core_self_stop_guard()(command).is_ok(),
                 "unexpectedly blocked: {command}"
             );
         }

@@ -516,23 +516,49 @@ impl ShellManager {
     }
 }
 
-/// 进程级 ShellManager 锚点（组合根设置一次；存储收敛于
-/// [`echo_bootstrap`]）。
-pub fn shell_manager_global() -> Option<Arc<ShellManager>> {
-    echo_bootstrap::get::<Arc<ShellManager>>()
+/// Shell 子系统的**可延迟绑定句柄**（组合根创建、工具与命令侧共享）。
+///
+/// 为什么是"槽"而不是直接值：`ShellManager` 的构造晚于工具注册与 agent
+/// 构造（emit 回调还要接 agent 的 handle），所以先发一个空槽，全部就绪后
+/// 再填入。槽本身由组合根持有并 clone 分发——**不是进程级全局**。
+///
+/// 2026-10 技术债清理：此前这里是两个 `echo_bootstrap` 进程级槽
+/// （`set_shell_manager_global` / `shell_emit`）。
+#[derive(Clone, Default)]
+pub struct ShellHandle {
+    manager: Arc<std::sync::RwLock<Option<Arc<ShellManager>>>>,
+    emit: Arc<std::sync::RwLock<Option<ShellEmit>>>,
 }
 
-pub fn set_shell_manager_global(mgr: Arc<ShellManager>) {
-    let _ = echo_bootstrap::set(mgr);
-}
+impl ShellHandle {
+    /// 空槽：manager / emit 都未绑定（此时工具返回「shell manager unavailable」）。
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-/// 组合根注入的 emit 回调（接到默认 agent 的 handle，广播到 Panel）。
-pub fn set_shell_emit(emit: ShellEmit) {
-    let _ = echo_bootstrap::set(emit);
-}
+    /// 绑定 manager 与广播回调（组合根在两者就绪后调用一次）。
+    pub fn bind(&self, manager: Arc<ShellManager>, emit: ShellEmit) {
+        if let Ok(mut slot) = self.manager.write() {
+            *slot = Some(manager);
+        }
+        if let Ok(mut slot) = self.emit.write() {
+            *slot = Some(emit);
+        }
+    }
 
-pub fn shell_emit() -> ShellEmit {
-    echo_bootstrap::get::<ShellEmit>().unwrap_or_else(|| Arc::new(|_| {}))
+    /// 取 manager（未绑定 = None）。
+    pub fn manager(&self) -> Option<Arc<ShellManager>> {
+        self.manager.read().ok().and_then(|slot| slot.clone())
+    }
+
+    /// 取广播回调（未绑定 = no-op）。
+    pub fn emit(&self) -> ShellEmit {
+        self.emit
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone())
+            .unwrap_or_else(|| Arc::new(|_| {}))
+    }
 }
 
 /// 由调用方提供翻译回调的工厂。

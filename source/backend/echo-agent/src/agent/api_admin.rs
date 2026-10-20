@@ -443,7 +443,8 @@ impl Agent {
             new_cfg.active_api = to.to_string();
         }
         // teams 引用（含未运行/禁用 persona）：落盘前计算改写范围。
-        let changed_teams: Vec<String> = crate::agent_manager::global_manager()
+        let changed_teams: Vec<String> = self
+            .manager()
             .map(|mgr| mgr.api_ref_owners(from))
             .unwrap_or_default();
 
@@ -460,7 +461,7 @@ impl Agent {
         // 落盘成功 → 提交内存。
         *config = new_cfg.clone();
         drop(config);
-        if let Some(mgr) = crate::agent_manager::global_manager() {
+        if let Some(mgr) = self.manager() {
             mgr.replace_api_refs(from, to);
         }
 
@@ -502,7 +503,7 @@ impl Agent {
             }
         }
         // 2) 全部运行中 persona（与 ClearHistory 的枚举口径一致）。
-        if let Some(mgr) = crate::agent_manager::global_manager() {
+        if let Some(mgr) = self.manager() {
             for running in mgr.all() {
                 let agent = &running.agent;
                 agent

@@ -10,7 +10,33 @@ use serde_json::{json, Value};
 use echo_tool::{Tool, ToolError};
 
 #[derive(Debug, Default)]
-pub struct WebSearchTool;
+/// 检索工具。
+///
+/// `client` 由注册方注入（`reqwest::Client` 内含**连接池**，应全进程复用一份）。
+/// 2026-10 技术债清理：此前存在进程级 `echo_bootstrap` 惰性槽，现在改为注册期
+/// 注入——连接池仍是共享的，但不再是"没有主人的全局状态"。
+pub struct WebSearchTool {
+    client: std::sync::Arc<reqwest::Client>,
+}
+
+impl WebSearchTool {
+    /// 以注入的 HTTP 客户端构造。
+    pub fn new(client: std::sync::Arc<reqwest::Client>) -> Self {
+        Self { client }
+    }
+
+    /// 构造一份默认客户端（15s 超时 / 限 5 次重定向 / 浏览器 UA）。
+    pub fn default_client() -> std::sync::Arc<reqwest::Client> {
+        std::sync::Arc::new(
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .redirect(reqwest::redirect::Policy::limited(5))
+                .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+                .build()
+                .expect("failed to build reqwest client for web_search"),
+        )
+    }
+}
 
 #[async_trait]
 impl Tool for WebSearchTool {
@@ -47,7 +73,7 @@ impl Tool for WebSearchTool {
             .unwrap_or(5)
             .clamp(1, 10) as usize;
 
-        let results = search_bing(query, max_results).await?;
+        let results = search_bing(&self.client, query, max_results).await?;
         // Filter junk (Bing navigation pages, duplicates, irrelevant entries),
         // then cap to the requested count.
         let mut results = filter_results(query, results);
@@ -80,23 +106,12 @@ struct SearchResult {
     snippet: String,
 }
 
-fn client() -> &'static reqwest::Client {
-    // 进程级单例存储收敛于 kernel cell（唯一引导单元）；初值只构造一次
-    // （Box::leak 一次，生命周期与旧的进程级存储一致）。
-    echo_bootstrap::get_or_init(|| {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
-            .build()
-            .expect("failed to build reqwest client for web_search");
-        let leaked: &'static reqwest::Client = Box::leak(Box::new(client));
-        leaked
-    })
-}
-
-async fn search_bing(query: &str, max_results: usize) -> Result<Vec<SearchResult>, ToolError> {
-    let resp = client()
+async fn search_bing(
+    client: &reqwest::Client,
+    query: &str,
+    max_results: usize,
+) -> Result<Vec<SearchResult>, ToolError> {
+    let resp = client
         .get("https://cn.bing.com/search")
         .query(&[("q", query), ("format", "rss")])
         .send()
@@ -382,7 +397,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "需要外网，按需手动运行"]
     async fn live_bing_search() {
-        let results = search_bing("沪深指数", 3).await.unwrap();
+        let client = WebSearchTool::default_client();
+        let results = search_bing(&client, "沪深指数", 3).await.unwrap();
         assert!(!results.is_empty(), "live search should return results");
         println!("=== live search results ===");
         for r in &results {

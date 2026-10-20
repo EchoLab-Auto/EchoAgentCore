@@ -150,6 +150,18 @@ pub struct Agent {
     /// `&self` 方法——上下文本来就在手上，却去读全局。改为字段注入后，
     /// 依赖变显式，同一进程的两套宿主也互不干扰。
     global_policy: std::sync::RwLock<Option<std::sync::Arc<GlobalPolicy>>>,
+    /// 所属 [`AgentManager`]（**弱引用**：manager 强持有 agents，agents 弱
+    /// 指回它，避免引用环）。
+    ///
+    /// 2026-10 技术债清理：此前 21 处读取走 `echo_bootstrap` 进程级槽。
+    /// 但"我属于哪个 manager"天然是**本 agent 的属性**——现在显式持有，
+    /// 同一进程两套 manager 不会互相看见对方的人格表。
+    manager: std::sync::RwLock<std::sync::Weak<crate::agent_manager::AgentManager>>,
+    /// Shell 子系统句柄（组合根创建并注入；工具与命令侧共享同一份）。
+    /// 未注入 = 空句柄（shell 命令回「manager unavailable」）。
+    ///
+    /// 2026-10 技术债清理：此前 shell manager / emit 读的是进程级锚点。
+    shell: echo_shell::ShellHandle,
     /// Team id (None/empty = default). Sets session tagging after boot.
     team_id: std::sync::Mutex<Option<String>>,
     /// 联邦出口集合（invoker / querier / notifier / deliver / aggregator）：
@@ -346,6 +358,8 @@ impl Agent {
                 crate::plugins::PluginHost::new(),
             )),
             global_policy: std::sync::RwLock::new(None),
+            manager: std::sync::RwLock::new(std::sync::Weak::new()),
+            shell: echo_shell::ShellHandle::new(),
             workspace_store: std::sync::RwLock::new(None),
             team_id: std::sync::Mutex::new(None),
             federation: std::sync::RwLock::new(std::sync::Arc::new(
@@ -684,6 +698,27 @@ impl Agent {
         } else {
             tracing::warn!("global policy slot busy, ignoring set_global_policy");
         }
+    }
+
+    /// 绑定所属 manager（组合根构造完 manager 后对每个 agent 调用一次）。
+    pub fn set_manager(&self, manager: &std::sync::Arc<crate::agent_manager::AgentManager>) {
+        if let Ok(mut slot) = self.manager.write() {
+            *slot = std::sync::Arc::downgrade(manager);
+        } else {
+            tracing::warn!("agent manager slot busy, ignoring set_manager");
+        }
+    }
+
+    /// 所属 manager（未绑定 / 已被回收 = None）。
+    ///
+    /// 收口了原先散在 21 处的 `agent_manager::global_manager()`。
+    pub fn manager(&self) -> Option<std::sync::Arc<crate::agent_manager::AgentManager>> {
+        self.manager.read().ok().and_then(|slot| slot.upgrade())
+    }
+
+    /// Shell 子系统句柄（见字段文档）。
+    pub fn shell(&self) -> &echo_shell::ShellHandle {
+        &self.shell
     }
 
     /// 本 agent 的全局禁用策略（未注入 = None，调用方回退自身配置快照）。

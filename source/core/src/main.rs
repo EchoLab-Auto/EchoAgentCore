@@ -273,6 +273,15 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let deliver_slot: std::sync::Arc<
         std::sync::OnceLock<std::sync::Arc<agent_supervisor::AgentSupervisor>>,
     > = std::sync::Arc::new(std::sync::OnceLock::new());
+    // Shell 子系统句柄（技债清理：替代两个进程级锚点）。工具注册与 agent
+    // 构造都早于 ShellManager 本体，所以先建空槽、就绪后再 bind。
+    let shell_handle = echo_agent::shell::ShellHandle::new();
+    // manager 弱引用槽（技债清理：替代 `global_manager` 进程级锚点）。
+    // rt 随后被解构进路由泵，而 manager 更晚就绪——外层留同一份 Arc，
+    // 延迟写入即可；rt 内部读的是同一个槽。
+    let agent_manager_slot: std::sync::Arc<
+        std::sync::RwLock<std::sync::Weak<echo_agent::agent_manager::AgentManager>>,
+    > = Default::default();
     let federation = {
         let peers = cfg
             .federation
@@ -412,6 +421,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 None
             },
             invite_placeholders: std::sync::Mutex::new(std::collections::HashMap::new()),
+            session_import_acks: std::sync::Mutex::new(std::collections::HashMap::new()),
+            // 弱引用：manager 在 supervisor 建立后才存在，稍后绑定。
+            agent_manager: agent_manager_slot.clone(),
         });
         // 远程 subagent 观测出口（Phase 3）：大脑侧 spawn_subagent
         // node=... 受理/完成时经 Federation 通知对端（帧：
@@ -992,6 +1004,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let factory_node_identity = node_identity.clone();
     // 联邦出口集合：同上（全部 persona 看同一个聚合器与同一组链路出口）。
     let factory_federation = federation_ports.clone();
+    let factory_shell_handle = shell_handle.clone();
     // 全局禁用策略：所有 persona 共用一份（开关变化只需改这份）。
     let factory_global_policy = global_policy.clone();
     let make_agent: Arc<dyn Fn(String, AgentProfile) -> Arc<Agent> + Send + Sync> = Arc::new(
@@ -1032,6 +1045,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     workspace.clone(),
                     agents_config_store.clone(),
                     factory_federation.invoker.clone(),
+                    factory_shell_handle.clone(),
                 );
                 // 工具结果出口卡口（2026-10 安全）：本 persona 注册表注入
                 // 脱敏器——所有工具（内置 / 插件 / 远程 / 子代理直呼）的
@@ -1369,15 +1383,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             );
         }
 
-        // 遍历全部 persona（运行期 TogglePlugin 时 AgentManager 已就位；
-        // 启动期尚未设置，守卫为 no-op，启动期禁用恢复见 persona 循环）。
-        fn for_each_agent(f: impl Fn(&std::sync::Arc<echo_agent::Agent>)) {
-            if let Some(mgr) = echo_agent::agent_manager::global_manager() {
-                for running in mgr.all() {
-                    f(&running.agent);
-                }
+        // 遍历全部 persona。manager 句柄由调用方显式传入（supervisor 已在
+        // 上方建立）——技债清理：不再回读进程级 `global_manager` 锚点。
+        fn for_each_agent(
+            mgr: &std::sync::Arc<echo_agent::agent_manager::AgentManager>,
+            f: impl Fn(&std::sync::Arc<echo_agent::Agent>),
+        ) {
+            for running in mgr.all() {
+                f(&running.agent);
             }
         }
+        let gating_manager = supervisor.manager();
 
         let version = env!("CARGO_PKG_VERSION");
         // 配置化组合（P4）：内置插件的**构造**留在代码里（mount 闭包要
@@ -1408,6 +1424,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         };
 
         // ── 实化 1：内置工具集（包维度批量启停，跨 persona）──
+        let gating_manager_1 = gating_manager.clone();
         push_builtin(
             &mut catalog,
             PluginManifest::builtin(
@@ -1420,14 +1437,20 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             ),
             move |_ctx| {
                 // 逐 persona 重评估：全局启用 ∧ 各 persona 白/黑名单。
-                for_each_agent(|a| a.reapply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, true));
-                Ok(vec![Disposer::from_fn(|| {
-                    for_each_agent(|a| a.reapply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, false));
+                for_each_agent(&gating_manager_1, |a| {
+                    a.reapply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, true)
+                });
+                let gating_manager_u1 = gating_manager_1.clone();
+                Ok(vec![Disposer::from_fn(move || {
+                    for_each_agent(&gating_manager_u1, |a| {
+                        a.reapply_plugin_gating(TOOLS_BUILTIN_PLUGIN_ID, false)
+                    });
                 })])
             },
         )?;
 
         // ── 实化 2：技能目录（整表启停，跨 persona）──
+        let gating_manager_2 = gating_manager.clone();
         push_builtin(
             &mut catalog,
             PluginManifest::builtin(
@@ -1439,9 +1462,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 "SKILL.md 技能目录（热重载）",
             ),
             move |_ctx| {
-                for_each_agent(|a| a.reapply_plugin_gating(SKILLS_DIR_PLUGIN_ID, true));
-                Ok(vec![Disposer::from_fn(|| {
-                    for_each_agent(|a| a.reapply_plugin_gating(SKILLS_DIR_PLUGIN_ID, false));
+                for_each_agent(&gating_manager_2, |a| {
+                    a.reapply_plugin_gating(SKILLS_DIR_PLUGIN_ID, true)
+                });
+                let gating_manager_u2 = gating_manager_2.clone();
+                Ok(vec![Disposer::from_fn(move || {
+                    for_each_agent(&gating_manager_u2, |a| {
+                        a.reapply_plugin_gating(SKILLS_DIR_PLUGIN_ID, false)
+                    });
                 })])
             },
         )?;
@@ -1474,6 +1502,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // ── 实化 6：工作区会话（workspace 插件）──
         {
             use echo_agent::plugins::WORKSPACE_PLUGIN_ID;
+            let gating_manager_3 = gating_manager.clone();
             push_builtin(
                 &mut catalog,
                 PluginManifest::builtin(
@@ -1485,9 +1514,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     "基于工作空间的会话管理：Panel 多会话/多目录管理 + git 状态查看 + workspace 工具",
                 ),
                 move |_ctx| {
-                    for_each_agent(|a| a.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, true));
-                    Ok(vec![Disposer::from_fn(|| {
-                        for_each_agent(|a| a.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, false));
+                        for_each_agent(&gating_manager_3, |a| a.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, true));
+                    let gating_manager_u3 = gating_manager_3.clone();
+                    Ok(vec![Disposer::from_fn(move || {
+                        for_each_agent(&gating_manager_u3, |a| a.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, false));
                     })])
                 },
             )?;
@@ -1498,6 +1528,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // ── 实化 7：subagent 委派（隔离上下文子任务 + 完成 hook 回灌）──
         {
             use echo_agent::plugins::SUBAGENT_PLUGIN_ID;
+            let gating_manager_4 = gating_manager.clone();
             push_builtin(
                 &mut catalog,
                 PluginManifest::builtin(
@@ -1509,9 +1540,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     "委派独立子任务给隔离上下文的子 agent：spawn_subagent 工具 + 完成后 <subagent_event> hook 回灌主 agent",
                 ),
                 move |_ctx| {
-                    for_each_agent(|a| a.reapply_plugin_gating(SUBAGENT_PLUGIN_ID, true));
-                    Ok(vec![Disposer::from_fn(|| {
-                        for_each_agent(|a| a.reapply_plugin_gating(SUBAGENT_PLUGIN_ID, false));
+                        for_each_agent(&gating_manager_4, |a| a.reapply_plugin_gating(SUBAGENT_PLUGIN_ID, true));
+                    let gating_manager_u4 = gating_manager_4.clone();
+                    Ok(vec![Disposer::from_fn(move || {
+                        for_each_agent(&gating_manager_u4, |a| a.reapply_plugin_gating(SUBAGENT_PLUGIN_ID, false));
                     })])
                 },
             )?;
@@ -1527,6 +1559,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let instance_plugin_id = crate::instance_manifests::plugin_id_for(&platform);
             let instance_plugin_name = format!("{platform} 插件实例");
             let instance_plugin_id_for_mount = instance_plugin_id.clone();
+            let gating_manager_5 = gating_manager.clone();
             push_builtin(
                 &mut catalog,
                 PluginManifest::builtin(
@@ -1543,7 +1576,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .with_runtime(PluginRuntime::Subprocess),
                 move |_ctx| {
                     let plugin_id = instance_plugin_id_for_mount.clone();
-                    for_each_agent(|a| a.reapply_plugin_gating(&plugin_id, true));
+                    for_each_agent(&gating_manager_5, |a| {
+                        a.reapply_plugin_gating(&plugin_id, true)
+                    });
                     if let Some(qq) = qq.clone() {
                         if wired.load(Ordering::SeqCst) && !running.swap(true, Ordering::SeqCst) {
                             let running2 = running.clone();
@@ -1558,8 +1593,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     let qq = qq.clone();
                     let running = running.clone();
                     let plugin_id_unmount = instance_plugin_id_for_mount.clone();
+                    let gating_manager_u5 = gating_manager_5.clone();
                     Ok(vec![Disposer::from_fn(move || {
-                        for_each_agent(|a| a.reapply_plugin_gating(&plugin_id_unmount, false));
+                        for_each_agent(&gating_manager_u5, |a| {
+                            a.reapply_plugin_gating(&plugin_id_unmount, false)
+                        });
                         if running.swap(false, Ordering::SeqCst) {
                             if let Some(qq) = qq.clone() {
                                 tokio::spawn(async move {
@@ -1757,12 +1795,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     {
         use echo_agent::shell::{ShellEvent, ShellManager};
         let mgr = std::sync::Arc::new(ShellManager::new());
-        echo_agent::shell::set_shell_manager_global(std::sync::Arc::clone(&mgr));
         // 事件广播：接到默认 agent 的 handle，Panel 单连接即可实时可视化。
         let shell_emitter = core_agent.clone();
-        echo_agent::shell::set_shell_emit(std::sync::Arc::new(move |event: ShellEvent| {
+        let emit = std::sync::Arc::new(move |event: ShellEvent| {
             shell_emitter.emit(echo_agent::shell::shell_event_to_backend(event));
-        }));
+        });
+        // 绑定到共享句柄：工具侧与命令侧读同一份（不再是进程级锚点）。
+        shell_handle.bind(std::sync::Arc::clone(&mgr), emit);
         info!("background shell manager ready");
     }
 
@@ -1929,7 +1968,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         {
             let f = make_agent.clone();
             let runner = runner.clone();
-            echo_agent::agent_manager::set_agent_factory(move |id: String, p: AgentProfile| {
+            mgr_arc.set_factory(move |id: String, p: AgentProfile| {
                 let agent = f(id, p);
                 // 运行期新建人格：与启动期同一共享 runner。
                 agent.set_loop_runner(runner.clone());
@@ -1960,7 +1999,16 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         .map_err(|e| e.to_string())
                 },
             ));
-            echo_agent::agent_manager::set_global_manager(mgr_arc);
+            // 每个 agent 绑定所属 manager（弱引用；技债清理：不再有进程级锚点）。
+            // 必须在此处做：manager 与 agent 都已构造完成，且这是唯一同时
+            // 持有两者的位置。
+            for running in mgr_arc.all() {
+                running.agent.set_manager(&mgr_arc);
+            }
+            // 联邦运行时也绑定同一 manager（迁移需要枚举 source persona）。
+            if let Ok(mut slot) = agent_manager_slot.write() {
+                *slot = std::sync::Arc::downgrade(&mgr_arc);
+            }
         }
     }
     // ---- Auto-start instance instances if enabled ----

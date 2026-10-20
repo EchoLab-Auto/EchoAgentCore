@@ -182,9 +182,7 @@ impl Agent {
                     let current = self.team_id();
                     if current.as_deref() != Some(target_id) {
                         // 转发给目标人格（未知 team_id → 明确报错，不再回退默认）。
-                        match crate::agent_manager::global_manager()
-                            .and_then(|m| m.resolve(Some(target_id)))
-                        {
+                        match self.manager().and_then(|m| m.resolve(Some(target_id))) {
                             Some(agent) => {
                                 Box::pin(agent.apply_command(cmd)).await;
                                 return;
@@ -274,7 +272,7 @@ impl Agent {
                     }
                     // 全局生效：最终状态 = 全局启停 ∧ 各 persona 名单，
                     // 逐 persona 重算（此前只作用于管理面，其他人格照旧）。
-                    if let Some(mgr) = crate::agent_manager::global_manager() {
+                    if let Some(mgr) = self.manager() {
                         for running in mgr.all() {
                             running.agent.reapply_skill_gating(&name, enabled).await;
                         }
@@ -310,7 +308,7 @@ impl Agent {
                     }
                     // 全局生效：最终状态 = 全局启停 ∧ 各 persona 名单，
                     // 逐 persona 重算（此前只作用于管理面，其他人格照旧）。
-                    if let Some(mgr) = crate::agent_manager::global_manager() {
+                    if let Some(mgr) = self.manager() {
                         for running in mgr.all() {
                             running.agent.reapply_tool_gating(&name, enabled).await;
                         }
@@ -517,7 +515,8 @@ impl Agent {
                 // 此臂由管理代理（__core）执行，此前只重载了它自己的注册表——
                 // 面板「重载技能」改完 SKILL.md 后，真正干活的人格仍停留在
                 // 启动时的技能内容（实测：EchoCode 的上下文块不含新增技能）。
-                let running = crate::agent_manager::global_manager()
+                let running = self
+                    .manager()
                     .map(|manager| manager.all())
                     .unwrap_or_default();
                 let mut targets: Vec<(&str, &Agent)> = running
@@ -699,12 +698,14 @@ impl Agent {
                 self.rename_api(&from, &to).await;
             }
             BackendCommand::RequestShellSessions { team_id } => {
-                let sessions = crate::shell::shell_manager_global()
+                let sessions = self
+                    .shell()
+                    .manager()
                     .map(|m| m.list(team_id.as_deref()))
                     .unwrap_or_default();
                 self.emit(BackendEvent::ShellSessionsList { sessions, team_id });
             }
-            BackendCommand::ShellStart { workdir } => match crate::shell::shell_manager_global() {
+            BackendCommand::ShellStart { workdir } => match self.shell().manager() {
                 Some(m) => {
                     let emit = crate::shell::shell_emit_for_self(self);
                     match m.start(workdir, self.team_id(), &emit).await {
@@ -736,7 +737,7 @@ impl Agent {
                 session_id,
                 command,
                 timeout_secs,
-            } => match crate::shell::shell_manager_global() {
+            } => match self.shell().manager() {
                 Some(m) => {
                     let emit = crate::shell::shell_emit_for_self(self);
                     match m.exec(&session_id, &command, timeout_secs, &emit).await {
@@ -764,33 +765,31 @@ impl Agent {
                     });
                 }
             },
-            BackendCommand::ShellStop { session_id } => {
-                match crate::shell::shell_manager_global() {
-                    Some(m) => {
-                        let emit = crate::shell::shell_emit_for_self(self);
-                        match m.stop(&session_id, &emit).await {
-                            Ok(()) => {
-                                self.emit(BackendEvent::Error {
-                                    session_id: None,
-                                    message: format!("shell session {session_id} stopped"),
-                                });
-                            }
-                            Err(e) => {
-                                self.emit(BackendEvent::Error {
-                                    session_id: None,
-                                    message: format!("shell stop failed: {e}"),
-                                });
-                            }
+            BackendCommand::ShellStop { session_id } => match self.shell().manager() {
+                Some(m) => {
+                    let emit = crate::shell::shell_emit_for_self(self);
+                    match m.stop(&session_id, &emit).await {
+                        Ok(()) => {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("shell session {session_id} stopped"),
+                            });
+                        }
+                        Err(e) => {
+                            self.emit(BackendEvent::Error {
+                                session_id: None,
+                                message: format!("shell stop failed: {e}"),
+                            });
                         }
                     }
-                    None => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: "shell manager unavailable".into(),
-                        });
-                    }
                 }
-            }
+                None => {
+                    self.emit(BackendEvent::Error {
+                        session_id: None,
+                        message: "shell manager unavailable".into(),
+                    });
+                }
+            },
             BackendCommand::InstallSkillFromGit { url, name, branch } => {
                 let dir = self.current_skills_dir().await;
                 // git 子进程（clone/fetch）可达秒级至分钟级：整段放
@@ -903,7 +902,7 @@ impl Agent {
                 emit_sessions_of(self, &identity, &mut emitted_sessions).await;
                 // 其余 persona 的会话（经 event_bus 镜像到默认 handle，各自
                 // annotate 自己的 team_id）。
-                if let Some(mgr) = crate::agent_manager::global_manager() {
+                if let Some(mgr) = self.manager() {
                     for running in mgr.all() {
                         if running.agent.team_id() == self.team_id() {
                             continue; // 已由上方覆盖
@@ -936,8 +935,7 @@ impl Agent {
                 // 会话隔离：team 指定时返回该成员自己的上下文快照；
                 // session_id 指定时按会话（多会话上下文，2026-09）。
                 if let Some(id) = team_id {
-                    let agent =
-                        crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(&id)));
+                    let agent = self.manager().and_then(|m| m.resolve(Some(&id)));
                     if let Some(t) = agent {
                         t.emit_context_snapshot(session_id.as_deref()).await;
                         return;
@@ -992,7 +990,7 @@ impl Agent {
                     }
                 }
                 let (messages, seq, full, has_more) = if let Some(ref id) = team_id {
-                    match crate::agent_manager::global_manager() {
+                    match self.manager() {
                         Some(mgr) => match mgr.resolve(Some(id)) {
                             Some(agent) => {
                                 let Some(snap) = snapshot_or_skip(&agent.trunk, since_seq) else {
@@ -1043,7 +1041,8 @@ impl Agent {
                 // （活动浮条/取消按钮丢失）。timeline 之后立刻补发——增量与
                 // 全量都发，前端按快照重建 running 集合。
                 let session_ids = match team_id.as_deref() {
-                    Some(id) => crate::agent_manager::global_manager()
+                    Some(id) => self
+                        .manager()
                         .and_then(|m| m.resolve(Some(id)))
                         .map(|a| a.active_turn_session_ids())
                         .unwrap_or_default(),
@@ -1067,7 +1066,7 @@ impl Agent {
                 // 目标 persona 解析（与 RequestTrunkTimeline 相同口径）。
                 let resolved = team_id
                     .as_deref()
-                    .and_then(|id| crate::agent_manager::global_manager()?.resolve(Some(id)));
+                    .and_then(|id| self.manager()?.resolve(Some(id)));
                 let trunk: &crate::session::TrunkStore = match &resolved {
                     Some(agent) => &agent.trunk,
                     None => &self.trunk,
@@ -1096,7 +1095,7 @@ impl Agent {
                 // team_id 可解析 → 目标 agent 的 trunk；其余回退本 agent。
                 let resolved = team_id
                     .as_deref()
-                    .and_then(|id| crate::agent_manager::global_manager()?.resolve(Some(id)));
+                    .and_then(|id| self.manager()?.resolve(Some(id)));
                 let trunk: &crate::session::TrunkStore = match &resolved {
                     Some(agent) => &agent.trunk,
                     None => &self.trunk,
@@ -1127,8 +1126,7 @@ impl Agent {
                 // 该会话——此前只有 team 维度，面板「清理历史记忆」会把同人格
                 // 下所有会话（QQ 群/私聊等）的记忆一并抹掉。
                 if let Some(id) = team_id {
-                    let target =
-                        crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(&id)));
+                    let target = self.manager().and_then(|m| m.resolve(Some(&id)));
                     match target {
                         Some(agent) => {
                             Self::clear_agent_history(&agent, session_id.as_deref()).await;
@@ -1229,8 +1227,7 @@ impl Agent {
                 // 无会话维度，点一次清掉同人格全部会话（「清理历史记忆」
                 // 同类漏网）。
                 if let Some(id) = team_id {
-                    match crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(&id)))
-                    {
+                    match self.manager().and_then(|m| m.resolve(Some(&id))) {
                         Some(agent) => {
                             match agent.trunk.archive_session(&session).await {
                                 Ok(path) => {
@@ -1309,9 +1306,7 @@ impl Agent {
                 // team 路由：解析目标 agent；无 team_id 或解析落空时在本
                 // agent 上执行（`target` 即压缩落地方）。
                 let target = match team_id.as_deref() {
-                    Some(id) => {
-                        crate::agent_manager::global_manager().and_then(|m| m.resolve(Some(id)))
-                    }
+                    Some(id) => self.manager().and_then(|m| m.resolve(Some(id))),
                     None => None,
                 };
                 let result = match &target {
@@ -1366,7 +1361,7 @@ impl Agent {
                 memory_limit_tokens,
                 context_window_tokens,
                 api_profile,
-            } => match crate::agent_manager::global_manager() {
+            } => match self.manager() {
                 Some(mgr) => {
                     let profile = crate::config::AgentProfile {
                         system_skills,
@@ -1438,7 +1433,7 @@ impl Agent {
                     });
                 }
             },
-            BackendCommand::DeleteTeam { id } => match crate::agent_manager::global_manager() {
+            BackendCommand::DeleteTeam { id } => match self.manager() {
                 Some(mgr) => match mgr.delete_profile(&id) {
                     Ok(()) => {
                         self.emit_teams_list().await;
@@ -1463,10 +1458,17 @@ impl Agent {
             },
             BackendCommand::ToggleTeam { id, enabled } => {
                 // 组合根 AgentManager 处理；这里转发回进程级管理器。
-                match crate::agent_manager::global_manager() {
+                match self.manager() {
                     None => {}
                     Some(mgr) => {
-                        let factory = crate::agent_manager::agent_factory_for_toggle();
+                        // 重建工厂由 manager 自己持有（技债清理：不再是进程级槽）。
+                        let Some(factory) = mgr.factory_ref() else {
+                            tracing::warn!(
+                                team = %id,
+                                "agent factory not injected; cannot rebuild persona"
+                            );
+                            return;
+                        };
                         let f = move |i: String, p: crate::config::AgentProfile| factory.call(i, p);
                         match mgr.set_enabled(&id, enabled, f) {
                             Ok(()) => {
@@ -1788,9 +1790,7 @@ impl Agent {
 
     /// Emit the team list (`BackendEvent::TeamsList`).
     pub async fn emit_teams_list(&self) {
-        let teams = crate::agent_manager::global_manager()
-            .map(|m| m.infos())
-            .unwrap_or_default();
+        let teams = self.manager().map(|m| m.infos()).unwrap_or_default();
         self.emit(BackendEvent::TeamsList { teams });
     }
 

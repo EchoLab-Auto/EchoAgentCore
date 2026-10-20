@@ -334,7 +334,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
- "echo-bootstrap",
  "echo-config",
  "echo-context",
  "echo-defs",
@@ -382,7 +381,6 @@ dependencies = [
  "async-trait",
  "clap",
  "echo-agent",
- "echo-bootstrap",
  "echo-config",
  "echo-context",
  "echo-defs",
@@ -407,10 +405,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
 ]
-
-[[package]]
-name = "echo-bootstrap"
-version = "0.1.0"
 
 [[package]]
 name = "echo-config"
@@ -677,7 +671,6 @@ name = "echo-plugin-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "echo-bootstrap",
  "echo-context",
  "echo-defs",
  "echo-shell",
@@ -749,7 +742,6 @@ name = "echo-shell"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "echo-bootstrap",
  "echo-context",
  "echo-protocol",
  "libc",

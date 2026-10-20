@@ -44,6 +44,7 @@ async fn render_tool_catalog() -> String {
         dir.clone(),
         store,
         None,
+        echo_agent::shell::ShellHandle::new(),
     );
     // `full_definitions` 是**面板同源**的那一份：name / description / category /
     // package 全在里面（`snapshot` 拿的是工具状态快照，不是定义）。

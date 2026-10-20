@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "source/defs/echo-defs",
-    "source/context/echo-bootstrap",
     "source/session/echo-session",
     "source/tool/echo-tool",
     "source/shell/echo-shell",
@@ -70,7 +69,6 @@ strip = "symbols"
 echo-defs = { path = "source/defs/echo-defs" }
 echo-config = { path = "source/config/echo-config" }
 echo-context = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.4.1" }
-echo-bootstrap = { path = "source/context/echo-bootstrap" }
 echo-sanitize = { path = "source/security/echo-sanitize" }
 echo-session = { path = "source/session/echo-session" }
 echo-tool = { path = "source/tool/echo-tool" }

@@ -487,7 +487,7 @@ impl Agent {
         let mut dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
         let mut labels: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
-        if let Some(manager) = crate::agent_manager::global_manager() {
+        if let Some(manager) = self.manager() {
             for running in manager.all() {
                 if let Some(store) = running.agent.workspace_store() {
                     let (sessions, _) = store.snapshot();

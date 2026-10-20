@@ -268,26 +268,15 @@ pub(crate) async fn run_session_import(
     let _ = rt.federation.send_to(&from, frame).await;
 }
 
-/// 进行中的迁移 ack 通道：transfer_id → 已确认块数。
-/// 源侧 `handle_migrate_session` 注册，泵收到 `SessionImportAck` 时推进。
-/// 存储收敛于 [`echo_bootstrap`]（P1 唯一引导单元）：cell 内保存
-/// 惰性泄漏的 `&'static Mutex<…>` 句柄（init 只执行一次，句柄生命周期
-/// 与旧的进程级存储一致），对外签名与行为不变。
-pub(crate) fn session_import_acks(
-) -> &'static std::sync::Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<u32>>> {
-    echo_bootstrap::get_or_init(|| {
-        let registry: &'static std::sync::Mutex<
-            std::collections::HashMap<String, tokio::sync::watch::Sender<u32>>,
-        > = Box::leak(Box::new(std::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        )));
-        registry
-    })
-}
-
 /// 泵收到目标 ack：推进对应迁移的已确认游标（无接收者时忽略）。
-pub(crate) fn note_session_import_ack(transfer_id: &str, acked_upto: u32) {
-    if let Ok(map) = session_import_acks().lock() {
+///
+/// ack 表挂在 [`FederationRuntime`] 上（见该字段文档），不再是进程级全局。
+pub(crate) fn note_session_import_ack(
+    rt: &crate::federation_rt::FederationRuntime,
+    transfer_id: &str,
+    acked_upto: u32,
+) {
+    if let Ok(map) = rt.session_import_acks.lock() {
         if let Some(tx) = map.get(transfer_id) {
             let _ = tx.send(acked_upto);
         }
@@ -321,7 +310,7 @@ pub(crate) async fn handle_migrate_session(
         return;
     };
     // 2) 定位源 persona + 该会话的事件（事实来源日志按 session 过滤）。
-    let Some(mgr) = echo_agent::agent_manager::global_manager() else {
+    let Some(mgr) = rt.agent_manager.read().ok().and_then(|w| w.upgrade()) else {
         fail("agent manager unavailable".into());
         return;
     };
@@ -375,7 +364,8 @@ pub(crate) async fn handle_migrate_session(
     // 注册 ack 通道（泵收到目标 SessionImportAck 时推进）。
     let (ack_tx, mut ack_rx) = tokio::sync::watch::channel(0u32);
     {
-        let mut map = session_import_acks()
+        let mut map = rt
+            .session_import_acks
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         map.insert(transfer_id.clone(), ack_tx);
@@ -418,7 +408,7 @@ pub(crate) async fn handle_migrate_session(
             }
         }
     };
-    session_import_acks()
+    rt.session_import_acks
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(&transfer_id);

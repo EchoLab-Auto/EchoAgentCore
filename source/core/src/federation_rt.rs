@@ -51,6 +51,21 @@ pub(crate) struct FederationRuntime {
     /// （此前只增不减，面板出现无法取消的幽灵 peer）。
     pub(crate) invite_placeholders:
         std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    /// 进行中的会话迁移 ack 通道：`transfer_id → 已确认块数的 watch sender`。
+    /// 源侧 `handle_migrate_session` 注册，泵收到 `SessionImportAck` 时推进。
+    ///
+    /// 2026-10 技术债清理：此前存在 `echo_bootstrap` 惰性槽（`Box::leak` 出
+    /// `&'static Mutex`）。它确实是**宿主运行期状态**，但塞进进程级表只是
+    /// "借用现成设施"——挪到本运行时后，两套联邦运行时也互不干扰。
+    pub(crate) session_import_acks:
+        std::sync::Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<u32>>>,
+    /// 本节点的 [`AgentManager`]（**弱引用**，组合根在 manager 就绪后绑定）。
+    /// 联邦侧的会话迁移需要枚举 source persona——此前读进程级锚点。
+    ///
+    /// 用 `Arc<RwLock<…>>` 而非直接字段：组合根里 `rt` 会被解构进路由泵，
+    /// 而 manager 要更晚才就绪——外层保留同一个 `Arc` 槽即可延后绑定。
+    pub(crate) agent_manager:
+        std::sync::Arc<std::sync::RwLock<std::sync::Weak<echo_agent::agent_manager::AgentManager>>>,
 }
 
 impl FederationRuntime {
@@ -481,7 +496,11 @@ pub(crate) async fn federation_router_pump(
                             }
                         } else if let echo_federation::FedFrame::SessionImportAck(ack) = &frame {
                             // 源侧（P3-2b）：目标 ack → 推进本任务窗口。
-                            federation_import::note_session_import_ack(&ack.transfer_id, ack.acked_upto);
+                            federation_import::note_session_import_ack(
+                                &rt,
+                                &ack.transfer_id,
+                                ack.acked_upto,
+                            );
                         } else if let echo_federation::FedFrame::SessionImportResult(result) = &frame
                         {
                             // 源侧（P3-2b）：目标终态回执 → 面板结果事件。

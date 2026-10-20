@@ -10,7 +10,6 @@ description = "Shell 会话子系统：bash 子进程 + 哨兵分帧 + 进程组
 [dependencies]
 echo-protocol = { workspace = true }
 echo-context = { workspace = true }
-echo-bootstrap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }

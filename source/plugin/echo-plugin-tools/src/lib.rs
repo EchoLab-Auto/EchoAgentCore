@@ -92,7 +92,11 @@ pub type CommandGuard = Arc<dyn Fn(&str) -> Result<(), echo_tool::ToolError> + S
 /// 里不装 Shell 工具）。包标签由调用方打——本 crate 不认识包 id 的语义。
 pub fn register_core_tools(registry: &mut ToolRegistry) {
     registry.register(Arc::new(CalculatorTool));
-    registry.register(Arc::new(WebSearchTool));
+    // HTTP 客户端（连接池）在此构造一次、注入工具：仍是全进程复用一份，
+    // 但不再藏进进程级全局槽（2026-10 技术债清理）。
+    registry.register(Arc::new(
+        WebSearchTool::new(WebSearchTool::default_client()),
+    ));
     registry.register(Arc::new(ChecklistTool::new()));
 }
 
@@ -107,7 +111,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         register_core_tools(&mut registry);
         register_coding_tools(&mut registry, std::env::temp_dir(), None, None);
-        register_shell_tools(&mut registry, None);
+        register_shell_tools(&mut registry, None, echo_shell::ShellHandle::new());
         register_instance_tools(
             &mut registry,
             Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),

@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use echo_shell::{shell_emit, shell_manager_global};
+use echo_shell::ShellHandle;
 
 /// 注册 Shell 工具（`shell_start` / `shell_exec` / `shell_stop`）。
 ///
@@ -14,14 +14,22 @@ use echo_shell::{shell_emit, shell_manager_global};
 pub fn register_shell_tools(
     registry: &mut echo_tool::ToolRegistry,
     guard: Option<crate::CommandGuard>,
+    shell: ShellHandle,
 ) {
-    registry.register(std::sync::Arc::new(ShellStartTool));
-    registry.register(std::sync::Arc::new(ShellExecTool { guard }));
-    registry.register(std::sync::Arc::new(ShellStopTool));
+    registry.register(std::sync::Arc::new(ShellStartTool {
+        shell: shell.clone(),
+    }));
+    registry.register(std::sync::Arc::new(ShellExecTool {
+        guard,
+        shell: shell.clone(),
+    }));
+    registry.register(std::sync::Arc::new(ShellStopTool { shell }));
 }
 
 /// `shell_start`：新建一条 Shell 会话（不执行命令，故无命令护栏）。
-pub struct ShellStartTool;
+pub struct ShellStartTool {
+    shell: ShellHandle,
+}
 
 #[async_trait]
 impl echo_tool::Tool for ShellStartTool {
@@ -40,7 +48,9 @@ impl echo_tool::Tool for ShellStartTool {
         })
     }
     async fn execute(&self, arguments: serde_json::Value) -> Result<String, echo_tool::ToolError> {
-        let manager = shell_manager_global()
+        let manager = self
+            .shell
+            .manager()
             .ok_or_else(|| echo_tool::ToolError::Execution("shell manager unavailable".into()))?;
         let workdir = arguments["workdir"].as_str().map(|s| s.to_string());
         // 归属 team：由 `Agent::run_tool` 注入 `__team_id`（2026-10 起；
@@ -50,7 +60,7 @@ impl echo_tool::Tool for ShellStartTool {
             .and_then(|v| v.as_str())
             .map(str::to_string);
         let info = manager
-            .start(workdir, team_id, &shell_emit())
+            .start(workdir, team_id, &self.shell.emit())
             .await
             .map_err(echo_tool::ToolError::Execution)?;
         Ok(format!(
@@ -62,6 +72,7 @@ impl echo_tool::Tool for ShellStartTool {
 
 /// `shell_exec`：在指定会话里执行一条命令。
 pub struct ShellExecTool {
+    shell: ShellHandle,
     guard: Option<crate::CommandGuard>,
 }
 
@@ -95,7 +106,9 @@ impl echo_tool::Tool for ShellExecTool {
             guard(command)?;
         }
         let timeout = arguments["timeout_secs"].as_u64().map(|t| t.min(300));
-        let manager = shell_manager_global()
+        let manager = self
+            .shell
+            .manager()
             .ok_or_else(|| echo_tool::ToolError::Execution("shell manager unavailable".into()))?;
         // 归属校验（2026-10）：不得操作其他智能体的 shell 会话。
         let requester = arguments.get("__team_id").and_then(|v| v.as_str());
@@ -103,7 +116,7 @@ impl echo_tool::Tool for ShellExecTool {
             .ensure_owned_by(session_id, requester)
             .map_err(echo_tool::ToolError::Execution)?;
         let (output, success, timed_out) = manager
-            .exec(session_id, command, timeout, &shell_emit())
+            .exec(session_id, command, timeout, &self.shell.emit())
             .await
             .map_err(echo_tool::ToolError::Execution)?;
         let mut text = output;
@@ -120,7 +133,9 @@ impl echo_tool::Tool for ShellExecTool {
 }
 
 /// `shell_stop`：销毁会话（终止 bash 及全部子孙进程组）。
-pub struct ShellStopTool;
+pub struct ShellStopTool {
+    shell: ShellHandle,
+}
 
 #[async_trait]
 impl echo_tool::Tool for ShellStopTool {
@@ -143,7 +158,9 @@ impl echo_tool::Tool for ShellStopTool {
         let session_id = arguments["session_id"]
             .as_str()
             .ok_or_else(|| echo_tool::ToolError::InvalidArguments("session_id required".into()))?;
-        let manager = shell_manager_global()
+        let manager = self
+            .shell
+            .manager()
             .ok_or_else(|| echo_tool::ToolError::Execution("shell manager unavailable".into()))?;
         // 归属校验（2026-10）：不得停止其他智能体的 shell 会话。
         let requester = arguments.get("__team_id").and_then(|v| v.as_str());
@@ -151,7 +168,7 @@ impl echo_tool::Tool for ShellStopTool {
             .ensure_owned_by(session_id, requester)
             .map_err(echo_tool::ToolError::Execution)?;
         manager
-            .stop(session_id, &shell_emit())
+            .stop(session_id, &self.shell.emit())
             .await
             .map_err(echo_tool::ToolError::Execution)?;
         Ok(format!("shell session {session_id} stopped"))
