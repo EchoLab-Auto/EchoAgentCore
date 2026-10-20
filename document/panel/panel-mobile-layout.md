@@ -98,6 +98,32 @@ graph TB
 
 提示的实现要点（`ChatView.vue`）：`entryRowRef` + `syncEntryScroll()` 算 `entryScrollable / entryAtEnd`；在入口行 `scroll`、窗口 `resize`、以及四个能力开关变化时重算。**桌面**：入口行不溢出 → `entryScrollable` 恒 false → 提示不渲染（零回归）。
 
+### Agent 卡片：窄屏必须收窄（2026-10 修复）
+
+Agent 切换器是入口行第一项，卡片里塞了**头像 + 名字 + 区域徽标 + 模型名 + 箭头**五段信息。375px 上实测宽 **213.9px**，占掉可用宽（359px）的 **60%**——后面「配置 / 上下文 / 清单 / 会话 / 任务 / 模型」全被推到横滚里，一屏只露出 1.4 个按钮。
+
+| 收敛手段 | 效果 |
+| --- | --- |
+| 隐藏 `.agent-card__region`（区域徽标） | 信息冗余：菜单里每条 Agent 仍带 core 徽标；单接入点场景本来就没有这条 |
+| 名字 `max-width: 84px`、模型 `max-width: 64px` | 超长名与模型名省略号截断，卡片宽度确定 |
+| 卡片 `gap: 6px`、`padding: 0 8px 0 3px` | 与入口行其它 pill 的视觉密度对齐 |
+
+收窄后卡片 **108.6px**，320px 屏上一屏可见「Agent + 配置 + 上下文」三个按钮。桌面（≥768px）不受影响，仍显示区域徽标（213.9px，入口行不溢出）。
+
+### Agent 菜单：被入口行裁掉的坑（2026-10 修复）
+
+入口行在窄屏是 `overflow-x: auto` 的横滚容器。CSS 规定：**当一个方向是 `auto`/`scroll`、另一个方向是 `visible` 时，`visible` 会被计算成 `auto`**——于是入口行成了双向裁剪容器。原来的 Agent 菜单是入口行内的 `position: absolute; bottom: calc(100% + 8px)` 上弹层，**整个落在裁剪区外**：
+
+| 现象 | 实测（375×812） |
+| --- | --- |
+| 菜单 DOM 存在、`getBoundingClientRect()` 正常 | 菜单 y = 466..632，宽 321 |
+| 但屏幕上什么都看不到 | 入口行 top = 640，裁剪区从 640 才开始 |
+| 命中测试揭示真相 | `elementFromPoint(菜单中心)` → `.chat-view__item--msg`（消息区），不是菜单 |
+
+修复：菜单改由 `PanelPopover` 承载（`teleport` 到 body + `position: fixed`），与入口行其它六项弹层同一套容器与关闭语义；窄屏自动变成左右各 8px、贴底上弹（实测 375 上 x=8、宽 359，320 上宽 304），桌面为 360px 锚定卡片居中。`AgentSwitcher` 自挂的 `document` 点击监听随之删除——两套外部点击监听会互相抢先。
+
+> **同类风险**：任何在 `.entry-row`（或其它横滚容器）内部就地 `absolute` 定位的浮层，纵向都会被裁。做入口行新控件时，弹层一律用 `PanelPopover`。
+
 > 为什么不改成「常驻 2 项 + 更多 Sheet」：这 8 个入口在聊天时都有即时用途（清单、工作区、会话切换尤甚），收进二级菜单会让高频动作多一次点击。横滚的学习成本低，缺的只是「右边还有」这条视觉信号——补信号比改造交互结构更划算。
 
 ## 三、视图内的窄屏重排（设置 / Shell）
@@ -178,6 +204,10 @@ Shell 视图在两个视口共用同一份结构，只有两处窄屏差异：�
 | 视图切换可达 | `☰` 可见（44×44），Sheet 三项可点，切换后标题随之变化 |
 | Shell 可达 | 视图 Sheet 第三项进入后主区非空（有会话 → 详情；无会话 → 空态） |
 | 入口行提示正确 | 未滚到底 → `.entry-row__more` 存在；滚到底 → 不存在；桌面 → 始终不存在 |
+| Agent 卡片不吃掉入口行 | `.agent-card` 宽 ≤ 140px（实测 108.6，修复前 213.9）；窄屏 `.agent-card__region` 不可见 |
+| Agent 菜单点得开 | 点卡片后 `elementFromPoint(菜单中心)` 命中菜单内元素（**被裁时命中消息区**——这条是唯一能抓住该 bug 的判据） |
+| Agent 菜单在视口内 | `.panel-popover` 的 `parentElement === body`，且四边不越界（375：x=8、宽 359；320：宽 304） |
+| Agent 菜单可关 | Escape 后 `.agent-menu` 消失 |
 | 设置可用宽度 | 技能/工具分类下 `.caps-workspace` 高度 ≥ 可视区一半（实测 431 / 709 = 61%） |
 | 固定视口 | `documentElement.scrollHeight === innerHeight`（不允许整页滚动） |
 | 桌面零回归 | ≥768px：侧栏渲染、两视图按钮可见、无 `.mobile-view-btn`、消息区 `padding-bottom` 恒 190px |
@@ -187,7 +217,7 @@ Shell 视图在两个视口共用同一份结构，只有两处窄屏差异：�
 ### 怎么测（可复现，已入库）
 
 ```bash
-cd web && npm run layout:mobile        # 375×812 + 320×640，14 条断言
+cd web && npm run layout:mobile        # 375×812 + 320×640，26 条断言
 BASE=http://127.0.0.1:8080 npm run layout:mobile   # 打生产构建
 ```
 
@@ -217,4 +247,15 @@ Emulation.setSafeAreaInsetsOverride({ insets: { top: 47, bottom: 34, left: 0, ri
 | 设置·技能 列表高 | 230px（375）/ 58px（320） | **431px / 259px** |
 | 桌面（1440×900） | 顶栏 64、入口行间隙 12、留白 190 | 完全一致（未回归） |
 
-四条修复分别落在：`styles.css` 的顶栏安全区（高度 + 内边距 + `#app` 前缀）、`ChatView.vue` 的入口行 `bottom`、`ChatView.vue` 的消息区 `padding-bottom`（含「回到底部」按钮与上下文档覆盖层的底部同步补安全区）、`SettingsView.vue` 的筛选条两行化。
+### 第二轮（2026-10-20：入口行 Agent 切换）
+
+| 项 | 修复前 | 修复后 |
+| --- | --- | --- |
+| Agent 卡片宽（375） | **213.9px**（入口行 359px 的 60%） | **108.6px** |
+| 入口行一屏可见按钮（320） | 1.4 个 | 3 个（Agent / 配置 / 上下文） |
+| 点 Agent 卡片 | 菜单**不可见**（DOM 在、被入口行裁掉，命中消息区） | 可见可点，`elementFromPoint` 落在菜单内 |
+| 菜单容器 | 入口行内 `absolute`（宽 321、y 466..632，整块被裁） | `PanelPopover` → body，375 上 x=8/宽 359、320 上宽 304 |
+| 关闭方式 | 仅"再点一次卡片"（另挂 document 监听） | `PanelPopover`：外部点击 + Escape（并回焦卡片） |
+| 桌面（1280×800） | 卡片 213.9、菜单可见 | 卡片 213.9、菜单改由 PanelPopover 承载（360px，视觉一致） |
+
+七条修复分别落在：`styles.css` 的顶栏安全区（高度 + 内边距 + `#app` 前缀）、`ChatView.vue` 的入口行 `bottom`、`ChatView.vue` 的消息区 `padding-bottom`（含「回到底部」按钮与上下文档覆盖层的底部同步补安全区）、`SettingsView.vue` 的筛选条两行化、`AgentSwitcher.vue` 的窄屏卡片收敛与菜单容器迁移（`PanelPopover` + 删除自挂 document 监听）、`web/scripts/mobile-layout-check.mjs` 新增 6 条 Agent 断言。

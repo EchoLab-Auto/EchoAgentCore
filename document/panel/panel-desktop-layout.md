@@ -59,7 +59,7 @@ graph TB
 | 「回到底部」按钮 | 36×36；`right = trayPadRight + 16px`、`bottom = entryBottom + 45px` | `.chat-view__jump` |
 | 会话区覆盖层 | 上/左/右 12px；底边 = `entryBottom + 30 + 12` | `configBottomOffset` |
 | 入口行弹层 | 宽 520px、内容 `max-height: 68vh`、锚点上方 8px、边距 12px | `PanelPopover` |
-| Agent 切换器 | 卡片高 34px；菜单 `min-width: 220px`、`max-height: min(60vh, 100vh - 200px)` | `AgentSwitcher.vue` |
+| Agent 切换器 | 卡片高 34px；菜单 = `PanelPopover`（宽 360px、内容 `max-height: 52vh`、锚点上方 8px） | `AgentSwitcher.vue` |
 | 设置视图 | 一级菜单 168px、条目列表 250px、API 概览 ≤720px | `SettingsView.vue` / `ApiSettings.vue` |
 | 卡片间距 | 槽位 12px（分隔条净占位 0） | `RailStack.vue` |
 
@@ -84,7 +84,7 @@ Panel 覆写 ui-frame 的样式时，**裸类选择器压不过库**——库规
 | 输入区与「回到底部」 | 5 | 会话视图底部输入区、回到底部按钮 |
 | 入口行 | 6 | 配置 / 上下文 / 清单 / 会话 / 工作区 / 实例 / 任务 / 模型 |
 | 入口行弹出层 | 30 | `PanelPopover`（六项共用容器，`teleport` 到 body + fixed） |
-| Agent 菜单 | 30 | `AgentSwitcher` 上弹菜单（设置视图同段 30–31） |
+| Agent 菜单 | 30 | `AgentSwitcher` 的上弹菜单，容器同 `PanelPopover`（设置视图同段 30–31） |
 | 根 chip 速览 | 40 | 文件浏览器根路径 chip 悬停卡（仅文本、`pointer-events: none`） |
 | 浮层遮罩 | 50 | 会话区覆盖层（上下文 / Agent 配置） |
 | 目录选择器 | 60 | `DirectoryPicker` 全屏模态（`Teleport` 到 body；高于会话区覆盖层） |
@@ -128,6 +128,8 @@ Panel 覆写 ui-frame 的样式时，**裸类选择器压不过库**——库规
 ### Agent 切换器
 
 入口行左侧的玻璃胶囊（头像 + 名称 + 区域 + 模型 + 箭头），点开上弹菜单（z30）列出全部 Agent：选中即切换（含归属 core 解析），箭头展开时旋转 180°。多接入点下同名 Agent 按 `(core, team_id)` 区分。
+
+**菜单容器**：与入口行其余六项一致走 `PanelPopover`（`teleport` 到 body + `position: fixed`，宽 360px、内容 `max-height: 52vh`，`open` 即 v-model；外部点击 / Escape 由它统一关闭）。**不要**改回就地 `position: absolute`——入口行是横滚容器，纵向 `overflow` 会被算成 `auto`，上弹菜单会整个被裁掉（窄屏尤其致命，见[移动端布局](./panel-mobile-layout.md)「入口行」）。
 
 ### 媒体文件路由
 

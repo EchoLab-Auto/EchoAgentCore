@@ -3,7 +3,7 @@ id: skills
 title: "技能系统"
 group: 插件
 x: 960
-y: 1820
+y: 1940
 ---
 
 # 技能系统

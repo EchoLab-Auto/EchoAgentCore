@@ -1209,9 +1209,10 @@ impl Agent {
                     message: "workspace 插件未启用（该命令由 echo-agent.workspace 处理）".into(),
                 });
             }
-            // 联邦管理（Phase 4）：处理函数注册在组合根（需要 Federation
-            // 句柄与 ConfigStore），经进程级注册表分发；未接线（组合根未
-            // 注册处理函数）时明确报错而非静默吞掉。
+            // 联邦 / 自更新命令域已迁进 `echo-plugin-federation`（全插件化
+            // S3）：实现仍在组合根（`Federation` 句柄与 `ConfigStore` 是它的
+            // 所有物，经 `ports.command_handler` 下发），但**归属关系**归插件
+            // ——宿主不再需要这段 match，也不再有"谁来处理"的判断。
             BackendCommand::SaveFederationPeer { .. }
             | BackendCommand::DeleteFederationPeer { .. }
             | BackendCommand::RequestFederationStatus
@@ -1219,16 +1220,10 @@ impl Agent {
             | BackendCommand::MigrateSession { .. }
             | BackendCommand::RequestSelfUpdate
             | BackendCommand::RequestSelfUpdateStatus => {
-                let handler = self.federation().command_handler.clone();
-                match handler {
-                    Some(h) => h(self, cmd).await,
-                    None => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: "联邦未启用（[federation] enabled = false）".into(),
-                        });
-                    }
-                }
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: "联邦命令由 echo-agent.federation 插件处理，但该插件未启用".into(),
+                });
             }
         }
     }

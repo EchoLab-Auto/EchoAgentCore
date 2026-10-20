@@ -21,7 +21,7 @@ use echo_federation::{
     new_call_id, FedFrame, InvokeRequest, InvokeResult, InvokeVerdict, NodeCaps,
 };
 
-use crate::tool::ToolRegistry;
+use echo_tool::ToolRegistry;
 
 /// 等待中的出站调用：中间输出聚合 + 终态通知。
 struct PendingCall {
@@ -500,7 +500,7 @@ impl InvokeRouter {
         if !full_access && FILE_TOOLS.contains(&request.tool.as_str()) {
             if let Some(raw) = request.args.get("path").and_then(|v| v.as_str()) {
                 if raw.starts_with('/')
-                    && !crate::federation::path_within_roots(raw, workspace_roots)
+                    && !crate::path_within_roots(raw, workspace_roots)
                 {
                     tracing::warn!(
                         target: "federation",

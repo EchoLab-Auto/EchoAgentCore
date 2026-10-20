@@ -22,12 +22,12 @@ pub struct FederationWorkspaceQuery {
     ///
     /// P3 终态：出口作为**字段**持有，不再从 kernel cell 回查——适配器
     /// 的生命周期与联邦装配绑定，装配期拿到的就是运行期要用的。
-    querier: Option<crate::federation::RemoteQuerier>,
+    querier: Option<crate::RemoteQuerier>,
 }
 
 impl FederationWorkspaceQuery {
     /// 用组合根注入的出口构造（None = 未接线，查询立即报可读错误）。
-    pub fn new(querier: Option<crate::federation::RemoteQuerier>) -> Self {
+    pub fn new(querier: Option<crate::RemoteQuerier>) -> Self {
         Self { querier }
     }
 
@@ -62,7 +62,7 @@ pub type WorkspaceQueryHandle = std::sync::Arc<dyn RemoteWorkspaceQuery>;
 /// 构造适配器句柄（组合根装配期调用）。
 ///
 /// `querier = None` 时插件侧降级为「远程不可采集」占位——单机部署零影响。
-pub fn workspace_query(querier: Option<crate::federation::RemoteQuerier>) -> WorkspaceQueryHandle {
+pub fn workspace_query(querier: Option<crate::RemoteQuerier>) -> WorkspaceQueryHandle {
     std::sync::Arc::new(FederationWorkspaceQuery::new(querier))
 }
 

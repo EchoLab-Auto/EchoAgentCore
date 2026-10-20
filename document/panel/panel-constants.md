@@ -47,7 +47,7 @@ y: 500
 | 入口行弹出层 | 默认宽 520px，视口不足按 `100vw - 24px` 收窄；无全屏遮罩（点外部即关） | PanelPopover.vue |
 | 入口行按钮 | ui-frame `NeumorphismButton`（glass/pill/small；`--nm-glass-bg` 45% 更透 + blur 24px）；清单徽标 `NeumorphismBadge` | ChatView.vue |
 | z-index 阶梯 | 清单卡 3（`.checklist-float`，容器内 sticky）/ 边栏列 4 / 输入区与「回到底部」5 / 入口行 6 / 入口行弹出层与 Agent 菜单 30（`PanelPopover`；设置视图同段 30–31）/ 根 chip 速览 40 / 浮层遮罩 50 / 目录选择器 60 / 拖动幽灵 200；模态与 Toast 由库统一分配 | styles.css / ChatView.vue / PanelPopover.vue / WorkspaceFileBrowser.vue / AgentSwitcher.vue / RailDragGhost.vue |
-| Agent 切换器 | 卡片高 34px；菜单 min-width 220px、max-height `min(60vh, 100vh-200px)` | `AgentSwitcher.vue` 的卡片与菜单样式 |
+| Agent 切换器 | 卡片高 34px（窄屏 ≤140px 宽、隐藏区域徽标）；菜单 = `PanelPopover` 宽 360px / 内容 `max-height: 52vh`（窄屏贴底全宽） | `AgentSwitcher.vue` 的卡片样式 + `PanelPopover.vue` |
 | 轮询：日志 / 任务耗时 | 5s / 1s | `LogView.vue` 的自动刷新定时器 / `TasksPanel.vue` 的耗时刷新（QQ 登录状态为 WS 事件驱动，无轮询） |
 | HTTP 超时 | 10s | `api.ts` 的 `FETCH_TIMEOUT_MS` |
 | 二维码有效期 / 定时器摘要截断 | 约 2 分钟；160 字符 | 插件实例描述符 `image` 节点（`login_qrcode`，`instance-ui` 渲染器呈现）/ `helpers.ts` 的定时器摘要截断 |

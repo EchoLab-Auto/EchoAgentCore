@@ -27,8 +27,11 @@ use crate::skill::Skill;
 /// 硬编码比较的地方漏改，导致实例插件永远进不了 persona 门控集合。
 pub const INSTANCE_PLUGIN_KIND: &str = "instance";
 
-pub const TOOLS_BUILTIN_PLUGIN_ID: &str = "echo-agent.tools.builtin";
-pub const SKILLS_DIR_PLUGIN_ID: &str = "echo-agent.skills.dir";
+/// 内置工具集插件 id（**声明与实现都在 [`echo_plugin_tools`]**，这里是兼容
+/// 别名——配置、门控、面板读的是同一批字面量）。
+pub use echo_plugin_tools::PLUGIN_ID as TOOLS_BUILTIN_PLUGIN_ID;
+/// 技能目录插件 id（同上，源头在 [`echo_plugin_skills`]）。
+pub use echo_plugin_skills::PLUGIN_ID as SKILLS_DIR_PLUGIN_ID;
 pub const MANAGEMENT_PANEL_PLUGIN_ID: &str = "echo-agent.management.panel";
 /// 工作区会话管理插件（workspace）：Panel 侧多会话/多目录管理 + git 状态，
 /// 模型侧 `workspace` 工具与激活会话的系统提示注入。
@@ -66,17 +69,24 @@ pub const GATED_PLUGIN_IDS: [&str; 4] = [
 /// LLM Provider 插件 id（名义挂载，重启生效）。
 pub const PROVIDER_LLM_PLUGIN_ID: &str = "echo-agent.provider.llm";
 
+/// 联邦插件 id：Core↔Core 对等链路（远程工具 / 跨机委派 / 会话迁移）。
+///
+/// 声明（id / 名称 / 描述 / manifest）与实现都在 [`echo_plugin_federation`]
+/// （全插件化 S3）——这里是**兼容别名**，门控与配置读的是同一批字面量。
+pub use echo_plugin_federation::PLUGIN_ID as FEDERATION_PLUGIN_ID;
+
 /// 框架自身声明的内置插件 id（**不含插件实例**）。
 ///
 /// 实例插件 id 由组合根声明（`core::instance_manifests`，按前缀
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_PLUGIN_IDS: [&str; 8] = [
+pub const BUILTIN_PLUGIN_IDS: [&str; 9] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
     WORKSPACE_PLUGIN_ID,
     SUBAGENT_PLUGIN_ID,
+    FEDERATION_PLUGIN_ID,
     MANAGEMENT_PANEL_PLUGIN_ID,
     SINGLE_LOOP_PLUGIN_ID,
     PARALLEL_LOOP_PLUGIN_ID,

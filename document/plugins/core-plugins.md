@@ -86,8 +86,9 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.loop.parallel` | Loop | 进程内 | 并行多会话循环：同一 `TurnRunner`（生效口径同 `loop.single`）；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
 | `echo-agent.subagent` | Tool | 进程内 | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./core-subagent.md)） |
 | `echo-agent.management.panel` | Management | 进程内 | 管理面：management WS 桥接（禁用即 Panel 自锁，TogglePlugin 拒绝禁用） |
+| `echo-agent.federation` | Federation | 进程内 | Core↔Core 对等链路：远程工具路由表 / 跨机委派聚合 / 跨机只读查询 / 会话迁移 + 7 条联邦与自更新命令 |
 
-表的来源分两类，别混算：**框架内置 8 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 8]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
+表的来源分两类，别混算：**框架内置 9 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 9]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
 
 联邦（`echo-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
 

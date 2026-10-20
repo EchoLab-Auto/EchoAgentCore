@@ -20,6 +20,7 @@ echo-llm-ollama = { path = "../../llm/echo-llm-ollama" }
 echo-protocol = { path = "../../protocol/echo-protocol" }
 echo-plugin = { workspace = true }
 echo-plugin-provider-llm = { workspace = true }
+echo-plugin-federation = { workspace = true }
 echo-plugin-skills = { workspace = true }
 echo-plugin-loop = { workspace = true }
 echo-tool = { workspace = true }

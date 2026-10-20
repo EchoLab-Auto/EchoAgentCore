@@ -23,6 +23,7 @@ echo-agent.workspace = true
 echo-plugin = { workspace = true }
 echo-plugin-host = { workspace = true }
 echo-plugin-adapter = { workspace = true }
+echo-plugin-federation = { workspace = true }
 echo-plugin-loader = { workspace = true }
 echo-plugin-loop = { workspace = true }
 echo-plugin-management = { workspace = true }

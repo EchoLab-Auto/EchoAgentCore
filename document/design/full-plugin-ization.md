@@ -3,8 +3,7 @@ id: full-plugin-ization
 title: "全插件化：业务逻辑全部组织为插件（dsh 对齐）"
 group: 规划
 x: 320
-y: 3400
-link: ["decoupling-plan | 完全解耦推进计划 | b>t", "s4-agent-decomposition | S4 计划：Agent 拆服务 | b>t"]
+y: 3640
 ---
 
 # 全插件化：业务逻辑全部组织为插件（dsh 对齐）

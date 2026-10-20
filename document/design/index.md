@@ -4,7 +4,7 @@ title: "设计记录（索引）"
 group: 规划
 x: 960
 y: 3000
-link: ["decoupling-plan | 完全解耦推进计划 | l>t", "plugin-framework-extraction | 插件框架外迁（真框架） | b>t", "instance-plugin | 实例插件化设计", "agent-humanlike-style | 拟人化方案", "federation-port-merge | 联邦·管理端口合并", "panel-performance-audit | Panel 性能审计 | r>t", "entry-identity-p1 | 条目身份化（P1） | r>b", "mcp-import | MCP 导入通道评估 | b>r"]
+link: ["decoupling-plan | 完全解耦推进计划 | l>t", "plugin-framework-extraction | 插件框架外迁（真框架） | b>t", "instance-plugin | 实例插件化设计", "agent-humanlike-style | 拟人化方案", "federation-port-merge | 联邦·管理端口合并", "panel-performance-audit | Panel 性能审计 | r>t", "entry-identity-p1 | 条目身份化（P1） | r>b", "mcp-import | MCP 导入通道评估 | b>r", "full-plugin-ization | 全插件化（dsh 对齐） | b>t"]
 ---
 
 # 设计记录（索引）

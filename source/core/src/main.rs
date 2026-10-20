@@ -295,6 +295,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let deliver_slot: std::sync::Arc<
         std::sync::OnceLock<std::sync::Arc<agent_supervisor::AgentSupervisor>>,
     > = std::sync::Arc::new(std::sync::OnceLock::new());
+    // 进程级事件出口的延迟槽位：联邦命令处理器在装配期就要绑好（端口集合
+    // 是值，构造后不再改），而 bridge 与 `event_sink` 在更后面才建立。
+    // 一次写、多次读——与 `deliver_slot` 同一模式。
+    let federation_emit_slot: std::sync::Arc<
+        std::sync::OnceLock<echo_agent::EventSink>,
+    > = std::sync::Arc::new(std::sync::OnceLock::new());
     // Shell 子系统句柄（技债清理：替代两个进程级锚点）。工具注册与 agent
     // 构造都早于 ShellManager 本体，所以先建空槽、就绪后再 bind。
     let shell_handle = echo_agent::shell::ShellHandle::new();
@@ -461,13 +467,27 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let mut ports = echo_agent::federation::FederationPorts::unlinked();
         // 联邦 / 自更新命令处理器（联邦始终开启，无需条件注册）：需要
         // Federation 句柄与 ConfigStore，只能在组合根实现。
+        // 出口在**装配期**固定成进程级汇聚点：`command_handler` 的类型已不再
+        // 引用 `Agent`（全插件化 S3），所以不必等某个 persona 出现再取它的
+        // emit——此前每个 persona 都会往同一个进程级 ports 里塞"自己的 emit"，
+        // 谁的装配最后跑谁生效。
         ports.command_handler = Some(std::sync::Arc::new({
             let rt_handler = Arc::clone(&rt);
-            move |agent, cmd| {
+            let emit_slot = federation_emit_slot.clone();
+            move |cmd| {
                 let rt = rt_handler.clone();
-                let emit = agent.emit_handle();
+                let emit_slot = emit_slot.clone();
                 Box::pin(async move {
-                    handle_federation_command(emit, cmd, rt).await;
+                    // 槽位在 bridge 建好后必然已填（联邦泵启动晚于它）；万一
+                    // 未填就明确记一条 error —— 静默丢弃会让面板永远转圈。
+                    match emit_slot.get() {
+                        Some(emit) => handle_federation_command(emit.clone(), cmd, rt).await,
+                        None => tracing::error!(
+                            target: "federation",
+                            command = cmd.kind_name(),
+                            "event sink not wired yet; federation command dropped"
+                        ),
+                    }
                 })
             }
         }));
@@ -901,6 +921,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let _ = tx.send(event);
         })
     };
+    // 联邦命令处理器的出口（装配期已绑好槽位，这里交付实体）。
+    let _ = federation_emit_slot.set(event_sink.clone());
 
     // 进程级插件宿主（去主 P1）：所有人格共享同一实例，插件注册/挂载/卸载
     // 与「谁挂到 Panel」同样不再寄居在某个"默认人格"上。
@@ -1634,6 +1656,28 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     a.reapply_plugin_gating(WORKSPACE_PLUGIN_ID, enable)
                 });
             });
+            push_plugin(&mut catalog, plugin)?;
+        }
+
+        // ── 实化 6b：联邦（对等链路：远程工具 / 跨机委派 / 会话迁移）──
+        //
+        // 实现（路由表 / 代理工具 / 聚合器 / 跨机查询 / 出口集合，1,698 行）
+        // 已整块外迁到 `echo-plugin-federation`（全插件化 S3）。宿主这边只剩：
+        // 一份 `FederationPorts`（装配期构造，含组合根实现的命令处理器）+
+        // 进程级事件出口。于是"联邦"可独立禁用、可独立替换。
+        {
+            use echo_agent::plugins::FEDERATION_PLUGIN_ID;
+            let gating_manager_f = gating_manager.clone();
+            let plugin = echo_plugin_federation::plugin(
+                version,
+                std::sync::Arc::clone(&federation_ports),
+                event_sink.clone(),
+                move |enable| {
+                    for_each_agent(&gating_manager_f, |a| {
+                        a.reapply_plugin_gating(FEDERATION_PLUGIN_ID, enable)
+                    });
+                },
+            );
             push_plugin(&mut catalog, plugin)?;
         }
 

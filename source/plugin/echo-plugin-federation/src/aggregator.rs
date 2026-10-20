@@ -163,14 +163,14 @@ impl RemoteSubagentAggregator {
                 "- {icon} [{}] {}：{}",
                 member.peer,
                 label,
-                crate::llm::truncate(&member.task, MEMBER_TASK_MAX_CHARS),
+                echo_defs::token::truncate(&member.task, MEMBER_TASK_MAX_CHARS),
             ));
             if let Some(text) = result {
                 let text = text.trim();
                 if !text.is_empty() {
                     lines.push(format!(
                         "  结果：{}",
-                        crate::llm::truncate(text, MEMBER_RESULT_MAX_CHARS)
+                        echo_defs::token::truncate(text, MEMBER_RESULT_MAX_CHARS)
                     ));
                 }
             }

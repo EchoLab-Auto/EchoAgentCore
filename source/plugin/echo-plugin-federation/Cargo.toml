@@ -1,0 +1,28 @@
+[package]
+name = "echo-plugin-federation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "联邦执行层插件：远程工具路由表 / 代理工具 / 跨机聚合 / 跨机只读查询"
+
+[dependencies]
+echo-defs = { workspace = true }
+echo-federation = { workspace = true }
+echo-tool = { workspace = true }
+echo-context = { workspace = true }
+echo-plugin = { workspace = true }
+echo-plugin-subagent = { workspace = true }
+echo-plugin-tools = { workspace = true }
+echo-plugin-workspace = { workspace = true }
+echo-protocol = { workspace = true }
+async-trait = { workspace = true }
+dashmap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
