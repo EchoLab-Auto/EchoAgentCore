@@ -43,6 +43,8 @@ y: 500
 | 边栏列宽（chat-rail） | 324px（左右两列；容器底 = `entryBottom + 45px`） | `ChatView.vue` 的 `RAIL_WIDTH` |
 | 安全区 / 键盘（仅窄屏） | iPhone 实测 `safe-top 47` / `safe-bottom 34`；`keyboardInset` <80px 视为抖动归零 | `index.html` 的 `viewport-fit=cover` / `ChatView.vue` 的 `updateKeyboardInset` |
 | 窄屏底部三公式 | 输入区 `bottom: 8 + safe + kb`；入口行 `bottom: entryBottom + safe + kb`；消息留白 `190 + safe + kb` | `ChatView.vue` 的 `@media` 段 |
+| 设备圆角 token | `--panel-display-radius`：桌面 0 / 窄屏 55（iPhone 12–16 实测口径；SE 与平边 Android 近似值偏大，但对使用方安全） | `styles.css` 的「设备圆角」段 |
+| 输入区圆角 | 桌面 `--composer-radius: 24px`（内框/按钮 24−12=12）；窄屏 `clamp(20px, 屏圆角−8px, 34px)` = 34（内框/按钮 24） | `ChatView.vue` 的 `.chat-composer-float` |
 | 设置视图 | 一级菜单 168px；条目列表 250px；API 概览 ≤720px（表单按需展开）；智能体编辑器 = 头部卡 + 3 折叠分区（默认展开前两个） | SettingsView.vue / ApiSettings.vue |
 | 入口行弹出层 | 默认宽 520px，视口不足按 `100vw - 24px` 收窄；无全屏遮罩（点外部即关） | PanelPopover.vue |
 | 入口行按钮 | ui-frame `NeumorphismButton`（glass/pill/small；`--nm-glass-bg` 45% 更透 + blur 24px）；清单徽标 `NeumorphismBadge` | ChatView.vue |

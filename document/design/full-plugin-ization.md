@@ -26,14 +26,25 @@ y: 3640
 
 ```text
               起点（S1 前）        现在（S3 完成）
-插件 crate     13,883  39.7%   →   18,956  51.1%
-宿主实现       21,103  60.3%   →   18,143  48.9%
+插件 crate     13,883  39.7%   →   21,959  58.5%
+宿主实现       21,103  60.3%   →   15,594  41.5%
 ```
 
-宿主那 57% 里，**约 8,000 行是宿主骨架**（插件注册表、命令泵路由、面板协议、
-配置、时间线与指标）、**约 8,000 行是编排逻辑**（会话 / 压缩 / turn / 门控），
-**约 4,500 行是本该是插件但还不是能力**（联邦 1,698 / API 管理面 1,208 /
-subagent 执行体 401 / instance 桥接 747 / turn 驱动 512）。
+宿主那 41% 里（15,594 行）：
+
+| 类 | 行数 | 内容 |
+|---|---|---|
+| 插件注册表与门控 | 2,071 | `plugins.rs` 1,559 + `agent/gating.rs` 512——插件机制本身 + persona 白名单 |
+| `Agent` 骨架 | 1,509 | 字段 / 构造 / 事件出口 / 服务句柄 |
+| 命令泵 | 1,419 | 31 条命令的内置分支 + 路由（域已归插件的只剩兜底） |
+| 会话存储 | 1,033 | `TrunkStore`：事件日志、投影、落盘、压缩落地 |
+| 管理面 | 764 | `AgentManager`（人格生命周期） |
+| 入站编排 | 1,344 | `inbound.rs` 590 + `instance_ops/bridge.rs` 754 |
+| 配置 | 721 | `AgentConfig` / `TeamMember` / 持久化投影 |
+| turn 驱动 | 512 | harness（把宿主接到 `echo_runner`） |
+| 其余 | ~4,200 | 模型服务 / 提示词服务 / 各种端口实现 / 命令域兜底 |
+
+**没有剩「本该是插件但还不是」的业务逻辑**——见下面的不搬清单。
 
 ### 命令域的迁移进度（最直观的读数）
 
@@ -42,6 +53,10 @@ subagent 执行体 401 / instance 桥接 747 / turn 驱动 512）。
 插件处理          7 条      35 条   ██████████████░░░░░░  66%
 宿主兜底         46 条      31 条
 文件行数        1967 行    1419 行   （-28%）
+
+（`commands.rs` 只剩 31 条内置分支：14 条 provider/API + 11 条会话/上下文
++ 6 条自管理面。3 条域（shell / skills / tools+instance+workspace+federation）
+的 35 条已改走插件注册关系。）
 ```
 
 **已迁进插件的域**（35 条）：
@@ -155,13 +170,34 @@ subagent 执行体 401 / instance 桥接 747 / turn 驱动 512）。
 - **provider**：`echo_agent::config::ApiProfile` 与 `crate::api_pool::…` 都保留
   为路径别名，调用方零改动。
 
+### S3 续：策略类业务逻辑（2026-11，六轮追加）
+
+命令域搬完后，剩下的是**策略**（纯逻辑，此前住在宿主只因需要几样宿主设施）。
+逐块搬走：
+
+| 搬走的东西 | 行数 | 归属 | 解阻点 |
+|---|---|---|---|
+| 上下文压缩策略（转录渲染 / 分层裁剪 / 摘要调用 / 失败回退） | ~290 | `echo-plugin-loop::compaction` | `CompactGroup` / `CompactPreview` / `CompactionSummary` / `CompactionApplied` 下沉 `echo-session`（压缩契约与 `SessionEvent` 同层） |
+| 供应商池管理规则（空字段继承 / 空 key 保留 / 删激活回落 / 改名连带） | ~180 | `echo-plugin-provider-llm::admin` | `ApiProfile` 下沉 `echo_defs`（此前在 `echo-agent::config`） |
+| 显示时间线实时投影（哪些事件进面板 / 工具完成态原地合并 / wire 瘦身） | ~400 | `echo-plugin-management::timeline` | `TimelineHost` 三方法（**刻意不给 `timeline_mut`**：那会让插件认识宿主的锁类型） |
+| 显示历史派生（事件日志 → 时间线形状 / 水位线） | ~380 | `echo-plugin-management::history` | 派生改成吃 `&[SessionEvent]`（纯函数） |
+| 计量与成本估算（余额 / 小时桶 / 定价匹配 / 高峰时段 / 缓存命中） | 716 | `echo-plugin-provider-llm::metrics` | `ModelPrice` 下沉 `echo_defs`；`UsageRecorder` 的 impl 回到同 crate（此前靠孤儿规则勉强成立） |
+| 输入信封（`<X>_message_hook>` / `<timer_event>`） | 174 | `echo-defs::input_marker` | 纯词汇——实例桥 / 面板 / 循环 / 显示投影四方共用格式 |
+| 工具执行链（参数预检 / 超时口径 / 成对落盘 / 出口脱敏） | ~250 | `echo-tool::execute` | `ToolExecutionHost` 四接缝；**`Tool::state_key()` 取代 `if call.name == "checklist"`** |
+| subagent 执行体（受理 → 上下文 → spawn → 终态三分支 → hook） | ~280 | `echo-plugin-subagent::execution` | `SubagentExecutionHost` 九端口（含 `deliver_hook`：插件只表达意图，入站流程留宿主） |
+| 联邦执行层（路由表 / 代理工具 / 聚合器 / 跨机查询 / 出口集合） | 1,698 | `echo-plugin-federation`（新 crate） | `command_handler` 的类型去掉 `&Agent`（实现只需要事件出口） |
+
+**这一轮的方法论**：每次搬迁都先找「**唯一的宿主依赖**」并消掉它——不是
+"给插件一个 `Arc<Agent>`"。9 次里有 6 次的解阻点是**把一个跨边界类型下沉到
+定义层**（`ApiProfile` / `ModelPrice` / 压缩四词汇 / 输入信封）。
+
 ## 不搬清单（每条都试过，附理由）
 
 诚实记录"没做"比做完的部分更重要——否则下一个人会把同样的时间再花一遍。
 
 | 模块 | 行数 | 为什么不搬 |
 |---|---|---|
-| **API 管理面**（`agent/api_admin.rs`） | 1,208 | 核心逻辑建立在 **`AgentConfig`** 上（`update_api_config` 前 90 行都是"在配置聚合体上改 profile"）。搬它要先下沉 `AgentConfig`——那是整个配置层，而没人会替换"agent 的配置结构"。**可搬的部分已搬**：`ApiProfile`（定义层）、`api_pool`（provider 插件）、`list_api_profiles`（tools 插件） |
+| **API 管理面**（`agent/api_admin.rs`） | 1,243 | **池管理规则已全部搬走**（`echo-plugin-provider-llm::admin`：继承 / 保留密钥 / 删激活回落 / 改名连带）。留在宿主的是**编排**：读 `AgentConfig` → 调规则 → 写回 → 落盘 → 重建 provider → 广播 → 重绑会话覆盖 → 传播到其它人格。这些步骤的每一步都要 `AgentConfig` / provider 重建 / 事件出口——把 `AgentConfig` 整体下沉等于搬整个配置层，而没人会替换"agent 的配置结构" |
 | **turn 驱动**（`agent/turn.rs`） | 512 | 它是 **harness**：把宿主的提示词 / 工具执行器 / 流式转发 / 事件翻译接到 `echo_loop::TurnRunner`。引用 13+ 个宿主协作点，造出来的 seam 就是 `Agent` 本身——那是**最坏的抽象**（seam 变影子）。它存在的意义就是"接线"，不是能力 |
 | **instance 入站桥**（`instance_ops/bridge.rs`） | 754 | 名字叫 bridge，实质是**入站入口**（会话键 / 单并行模式展示会话 / 事件 / turn 启动 / 脱敏）。核心入站编排，不是 adapter 能力；adapter 能力早已出进程（`echo-plugin-adapter` + 独立仓库 `echo-adapter-qq`） |
 | **会话 / trunk**（`session/`） | 2,119 | 事件日志唯一真源 + 投影 + 压缩编排。**没有替换需求**（谁会换掉会话存储？），且 `s4-agent-decomposition.md` 已论证过服务化的收益/成本 |

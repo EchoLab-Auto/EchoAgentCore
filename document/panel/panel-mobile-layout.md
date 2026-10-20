@@ -90,13 +90,40 @@ graph TB
 
 | 元素 | 公式 |
 | --- | --- |
-| 输入区 | `bottom: 8px + safe-bottom + keyboardInset`；`left/right: 8px`；`padding: 10px`；圆角 20px；输入字号 **16px**（iOS 焦点防缩放，硬约束） |
+| 输入区 | `bottom: 8px + safe-bottom + keyboardInset`；`left/right: 8px`；`padding: 10px`；圆角 = **与屏幕圆角同心**（`clamp(20px, 屏幕圆角−8, 34px)` → 34px，§「输入区圆角」）；输入字号 **16px**（iOS 焦点防缩放，硬约束） |
 | 入口行 | `bottom: entryBottom + safe-bottom + keyboardInset`；`left/right: 8px`；横滚 |
 | 消息区留白 | `padding-bottom: 190px + safe-bottom + keyboardInset` |
 
 > **为什么都要加安全区**（2026-10 实测修复）：`entryBottom` 里的 24px 是**桌面口径**（输入区 `bottom: 12` + 12 间隙）。窄屏输入区 `bottom` 是 `8 + 安全区`，两端口径差 16px——只写 `entryBottom` 时，iPhone（安全区 34）上入口行会**压进输入区 18px**（实测 375×812：入口行 674..720 vs 输入区顶 702）。加安全区后间距稳定在 16px。
 >
 > **消息留白为什么是 190 + 两量**：190px 只覆盖「键盘收起 + 无安全区」的情形。键盘一弹（≥80px 才计入），输入区上移多少，最新消息就被压多少——实测键盘 300px 时被遮 220px，且**拖不出来**（留白不够，滚到底也还在输入区背后）。加上两者后，留白恒比输入区占位多约 114px。
+
+### 输入区圆角：与设备屏幕圆角同心（2026-10）
+
+需求：输入区的圆角要跟 iPhone 屏幕的圆角「对齐」。**这里有个硬约束**——浏览器读不到屏幕圆角（CSS Round Display 的 `device-radius` 没实现、也没有对应的 `env()`），所以：
+- 值来自近似 token `--panel-display-radius`（`styles.css`，窄屏 55px = iPhone 12–16 系列实测口径；桌面 0）；
+- 「对齐」按**同心圆**定义：外圆半径 = 屏幕圆角 − 浮层到屏幕边缘的留白（侧边 8px）→ 47px；
+- 但 47px 会撞上两条几何天花板，于是 `clamp(20px, calc(屏幕圆角 − 8px), 34px)`：
+
+| 约束 | 内容 |
+| --- | --- |
+| ① 半高压缩 | 竖直半径 > 盒高一半时，CSS 把**四角等比压缩**，声明值失去意义（静止态高 68px → 半高 34px） |
+| ② 不能划出屏幕 | 底角最左点到「屏幕左下圆角圆心」的距离要 ≤ 屏幕圆角：`√(47² + (13−r)²) ≤ 55` ⇒ r ≤ 41.6。r=34 时 51.5，**余量 3.5px**；超过就被物理圆角裁出一个缺口（比不圆更难看） |
+| ③ 无圆角屏 | token 为 0（直角屏 / 想回到原设计）时 `clamp` 下界兜住 20px，不会算出负数圆角 |
+
+派生规则不变（同心）：内框/按钮 = 外框 − `padding(10px)`，所以三者一起从 10px 涨到 **24px**——46px 高的输入框自然收成胶囊、44×44 的附件钮收成圆形、发送钮成胶囊，正是 iOS 输入条的样子。桌面口径完全不动（外框 24 / 内框与按钮 12）。
+
+实测（375×812 与 320×640 同值）：
+
+| 元素 | 修复前 | 修复后 | 说明 |
+| --- | --- | --- | --- |
+| 输入区外框 | 20px | **34px** | = 半高，胶囊；`clamp` 上界 |
+| 输入框内框 | 10px | **24px** | 34 − 10（同心） |
+| 附件钮 44×44 | 10px | **24px**（渲染为 r=22 的圆） | 34 − 10 超过半宽，浏览器收成圆 |
+| 发送钮 78×45.6 | 10px | **24px**（胶囊） | 同上 |
+| 桌面（1280） | 24 / 12 / 12 / 12 | **一模一样** | token 在桌面为 0，走 `--composer-radius: 24px` |
+
+四条断言（`npm run layout:mobile`）：圆角 = `min(max(20, 55−8), 34)`、圆角 = 半高且未被压缩、底角弧线未越出屏幕圆角（5° 步进采样 19 点算最大距离）、**角尖点击穿透**（`elementFromPoint(外接矩形角尖)` 不命中输入区——只看 `getComputedStyle` 抓不到「声明了但没切出来」）。
 
 ### 入口行：横滚 + 「还有更多」提示
 
@@ -216,6 +243,8 @@ Shell 视图在两个视口共用同一份结构，只有两处窄屏差异：�
 | 全屏在卡片左侧 | `.fullscreen-toggle` 的 `right ≤ .mobile-cards-btn` 的 `left` |
 | 全屏触控目标 | 宽 **32..48px**、高 **≥44px**（实测 34×44） |
 | 底部不漏 | 入口行 `bottom ≤ 输入区 top − 8`（无重叠，实测间距 16） |
+| 输入区圆角同心 | 外框圆角 = `min(max(20, 屏幕圆角−8), 34)`；内框/附件/发送 = 外框 − 10（±0.5） |
+| 圆角真切出来 | `elementFromPoint(外接矩形角尖)` 不命中输入区，底边中点命中 |
 | 留白跟键盘 | 消息区 `padding-bottom ≥ 输入区占位（bottom + 高）`，键盘弹出后仍成立 |
 | 视图切换可达 | `☰` 可见（44×44），Sheet 三项可点，切换后标题随之变化 |
 | Shell 可达 | 视图 Sheet 第三项进入后主区非空（有会话 → 详情；无会话 → 空态） |
@@ -233,7 +262,7 @@ Shell 视图在两个视口共用同一份结构，只有两处窄屏差异：�
 ### 怎么测（可复现，已入库）
 
 ```bash
-cd web && npm run layout:mobile        # 375×812 + 320×640，32 条断言
+cd web && npm run layout:mobile        # 375×812 + 320×640，46 条断言
 BASE=http://127.0.0.1:8080 npm run layout:mobile   # 打生产构建
 ```
 
@@ -289,3 +318,14 @@ Emulation.setSafeAreaInsetsOverride({ insets: { top: 47, bottom: 34, left: 0, ri
 | 点击行为 | —（无按钮） | CDP 真实手势 → `fullscreenElement=HTML`，图标/aria 双向同步 |
 
 两条修复落在：`App.vue`（全屏按钮移到「卡片」之前 + 传 `:compact="isMobile"`）、`styles.css`（删 `display:none`，改 34px 图标态收窄）、`FullscreenToggleButton.vue`（图标态 + 能力检测 + 明确提示）。断言：`mobile-shell-layout.test.ts` 改为「收窄不隐藏」，`fullscreen-toggle.test.ts` 增 2 条（图标态 / 无 API），`layout:mobile` 增 3 条。
+
+### 第四轮（2026-10-20：输入区圆角对齐屏幕圆角）
+
+| 项 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 输入区外框圆角 | 20px（与屏幕 55px 弧线交叉、看着"没对齐"） | **34px**（= 半高胶囊，且距屏幕弧线余量 3.5px） |
+| 输入框内框 / 附件 / 发送 | 10px | **24px**（外框 − padding，同心） |
+| 桌面（1280） | 24 / 12 | 不变（token 桌面为 0） |
+| 多行输入（4 行，盒高 144） | 圆角固定 20 | 仍 34（上界封顶，不被半高压缩） |
+
+改动落在：`styles.css`（新增 `--panel-display-radius` 设备圆角 token，桌面 0 / 窄屏 55）、`ChatView.vue`（`--composer-radius` 单一事实来源；桌面 24、窄屏 `clamp(...)`；内框/按钮改为由它派生）。断言：`layout:mobile` 增 4 条，`ChatViewMobile.test.ts` 的同心断言改为校验 `clamp` 公式与派生关系。
