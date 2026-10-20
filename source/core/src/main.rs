@@ -719,18 +719,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         ctx.register::<Arc<dyn echo_defs::sanitize::Redactor>>("sanitizer", redactor.clone())
     });
 
-    // The default turn runner (dsh: the loop is a swappable plugin, resolved
-    // by key). Register it now; consumers (the agent driver) resolve it.
-    let runner: Arc<echo_loop::TurnRunner> = Arc::new(echo_loop::TurnRunner::new(
-        Arc::new(echo_context::EventBus::default()),
-        provider_arc.clone(),
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions {
-            max_tool_iterations: cfg.agent.max_tool_iterations.max(1),
-            max_tokens: cfg.agent.effective_max_tokens(),
-        },
-    ));
-    let _runner_keep = ctx.register::<Arc<echo_loop::TurnRunner>>("loop", runner.clone());
+    // 回合驱动（`loop` 服务）：**由 `echo-plugin-loop` 插件在 mount 里构造并
+    // provide**，组合根不再自己建一个再借插件的名义登记（2026-11 S2）。
+    //
+    // 它需要的前置都在上下文里：`llm`（上面已注册）+ `plugins.toml` 的
+    // `[plugin.config]`（可覆盖 max_tool_iterations / max_tokens）。装配顺序由
+    // 声明式 inject 保证——插件声明了 `llm` 为硬依赖，缺失即拒绝挂载。
+    //
+    // 注意：**每个 agent 仍然自己建 runner 跑 turn**（`agent/turn.rs`），
+    // 因为 `TurnRunner` 绑定了 provider / bus / pipeline 三件 per-persona 的
+    // 东西。进程级 `loop` 服务是"驱动可由插件提供"这条契约的落脚点，也是
+    // 面板/诊断里"循环服务由谁提供"的答案。
 
     // PluginInstance registry.
     let instance_registry = echo_defs::plugin_instance::InstanceRegistry::new();
@@ -1394,6 +1393,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 门控启动负责），运行期 TogglePlugin 才真正 start/stop。
     let qq_wired = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let qq_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // 回合驱动：**由 `echo-plugin-loop` 在挂载时 provide**，本块结束时解析出来。
+    // 声明在这里（块外）是为了后面每个人格接线（`set_loop_runner`）用同一实例。
+    let loop_runner: Arc<echo_loop::TurnRunner>;
     {
         use echo_agent::plugins::{
             MANAGEMENT_PANEL_PLUGIN_ID, SKILLS_DIR_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID,
@@ -1933,6 +1935,17 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             std::mem::forget(sub);
         }
 
+        // **`loop` 服务的唯一消费者**：驱动由插件 provide（见上方注释），宿主
+        // 在挂载完成后才解析它。解析失败 = 插件没装/挂载失败——**启动失败**
+        // （没有驱动的 agent 只会收消息不干活，静默比崩溃难查）。
+        loop_runner = ctx
+            .resolve::<Arc<echo_loop::TurnRunner>>("loop")
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "`loop` 服务未提供：echo-plugin-loop 未挂载或挂载失败（驱动由该插件 provide）"
+                )
+            })?;
+
         // 子进程插件生命周期控制面：面板的启停开关据此真正停/起子进程，
         // 重启按钮据此 stop + start（注册表本身不持有进程句柄）。
         if let Some(runtime) = &plugin_runtime {
@@ -2019,7 +2032,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // [agent].disabled_tools / disabled_skills、以及共享注册表里被
         // TogglePlugin 卸载的插件。
         persona.agent.apply_capabilities(&persona.profile).await;
-        persona.agent.set_loop_runner(runner.clone());
+        persona.agent.set_loop_runner(loop_runner.clone());
         persona.agent.start_session_save_task();
         persona.agent.start_plugin_reload_task().await;
         // orchestration 已删除（2026-09-16）
@@ -2160,7 +2173,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 使用同一装配闭包（make_agent），实例接线完全一致。
         {
             let f = make_agent.clone();
-            let runner = runner.clone();
+            let runner = loop_runner.clone();
             mgr_arc.set_factory(move |id: String, p: AgentProfile| {
                 let agent = f(id, p);
                 // 运行期新建人格：与启动期同一共享 runner。

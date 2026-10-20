@@ -607,10 +607,14 @@ dependencies = [
 name = "echo-plugin-loop"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "echo-context",
  "echo-defs",
+ "echo-loop",
  "echo-plugin",
  "echo-plugin-api",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

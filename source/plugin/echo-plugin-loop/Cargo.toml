@@ -9,10 +9,14 @@ description = "循环模式插件（解耦计划 Phase 3 ⑦）：loop.single / 
 
 [dependencies]
 echo-defs = { workspace = true }
+# 驱动本体 + 服务表：插件在 mount 里构造 `TurnRunner` 并 provide 到 `loop`。
+echo-context = { workspace = true }
+echo-loop = { workspace = true }
 echo-plugin = { workspace = true }
 echo-plugin-api = { workspace = true }
 
 [dev-dependencies]
-# 服务键就绪校验的测试要自己造一个 `Ctx`（注册 `loop` 服务）：
-# 只用于测试，运行期代码不碰 echo-context（依赖纪律见 deps-policy.txt）。
-echo-context = { workspace = true }
+# 提供 loop 服务的测试要造一个 `llm` provider（trait 是 async 的）+ 拼配置 JSON。
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

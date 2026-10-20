@@ -303,6 +303,16 @@ Phase 3 把实现搬出了 echo-agent，但 inproc 轨只兑现了**工具贡献
     上下文里的 `team_id` 取自己那一份。
   - `BackendCommand::kind_name()` / `payload_value()`：零分配取命令名 + 剥壳取
     载荷（与 `BackendEvent::kind_name` 同款穷举 match，新增变体时编译器逼你起名）。
+- [x] **`loop` 服务由插件提供**（S2）：`echo-plugin-loop` 的 `mount` 不再只是
+  "占个位"，它从 `Ctx["llm"]`（硬依赖，注册表挂载前校验）+ `MountContext.config`
+  （可覆盖 `max_tool_iterations` / `max_tokens`）**构造 `TurnRunner` 并
+  `provide` 到 `loop` 键**；卸载时 `Disposer` 撤销、键消失。
+  组合根删掉了"自己建 runner 再借插件名义登记"的 12 行，改成**挂载后解析**——
+  解析失败 = 插件没装/挂载失败 → **启动失败**（没有驱动的 agent 只会收消息
+  不干活，静默比崩溃难查）。于是 `loop` 有了真实提供方与真实消费者，这是
+  "服务由插件提供"第一次落到实处。
+  两个模式插件共享同一个驱动（进程级没有"二选一"这回事），后挂的看到键已存在
+  就**不重复提供**——降级而不是 `Conflict`（报冲突会让正常配置起不来）。
 - [ ] 下一步（未做）：**workspace 命令域整体迁移**（7 条 `*Workspace*` 命令，
   565 行）。机制已就绪（`dispatch_command` 可用且有测试），缺的是**宿主服务
   seam**：命令处理要发 `BackendEvent`（带本 agent 的 team 标注）、要动会话通道
