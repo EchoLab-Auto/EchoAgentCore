@@ -214,7 +214,7 @@ impl AgentManager {
     /// Runtime toggle. Disabling drops the manager's strong ref (agent memory
     /// unloads once last ref drops); enabling re-instantiates via factory.
     pub fn set_enabled(
-        &self,
+        self: &std::sync::Arc<Self>,
         id: &str,
         enabled: bool,
         factory: impl Fn(String, TeamMember) -> Arc<Agent>,
@@ -227,12 +227,16 @@ impl AgentManager {
         if enabled {
             if !agents.contains_key(id) {
                 let profile = self.teams.read().get(id).cloned().unwrap();
+                let agent = factory(id.to_string(), profile.clone());
+                // **必须立即绑定 manager**（同 SaveTeam 路径）：漏绑会让
+                // TeamsList / 命令路由静默降级为空。
+                agent.set_manager(self);
                 agents.insert(
                     id.to_string(),
                     RunningAgent {
                         id: id.to_string(),
-                        profile: profile.clone(),
-                        agent: factory(id.to_string(), profile),
+                        profile,
+                        agent,
                     },
                 );
             }
@@ -276,7 +280,12 @@ impl AgentManager {
 
     /// Create or update a profile. When enabled and not running, instantiates
     /// via the factory; persists through the config writer.
-    pub fn save_profile(&self, id: &str, profile: TeamMember, enabled: bool) -> Result<(), String> {
+    pub fn save_profile(
+        self: &std::sync::Arc<Self>,
+        id: &str,
+        profile: TeamMember,
+        enabled: bool,
+    ) -> Result<(), String> {
         let mut profile = profile;
         // 合并语义：传入 profile 的 per-agent 预算为 None 且旧 profile 已有值时
         // 保留旧值，避免前端（未编辑该字段）保存时擦除手工写入 TOML 的预算。
@@ -305,6 +314,10 @@ impl AgentManager {
                     format!("agent factory not injected by composition root; cannot rebuild {id}")
                 })?
                 .call(id.to_string(), profile.clone());
+            // **必须立即绑定 manager**：否则新建的 agent 读不到 manager，
+            // TeamsList / 命令路由会静默降级为空（2026-10-20 事故：
+            // `__core` 与运行期新建人格都漏绑，Panel 收到 teams: []）。
+            agent.set_manager(self);
             self.agents.write().insert(
                 id.to_string(),
                 RunningAgent {

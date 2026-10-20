@@ -157,6 +157,8 @@ pub struct Agent {
     /// 但"我属于哪个 manager"天然是**本 agent 的属性**——现在显式持有，
     /// 同一进程两套 manager 不会互相看见对方的人格表。
     manager: std::sync::RwLock<std::sync::Weak<crate::agent_manager::AgentManager>>,
+    /// 「未绑定 manager」告警只报一次（避免每命令刷屏）。
+    manager_warned: std::sync::atomic::AtomicBool,
     /// Shell 子系统句柄（组合根创建并注入；工具与命令侧共享同一份）。
     /// 未注入 = 空句柄（shell 命令回「manager unavailable」）。
     ///
@@ -359,6 +361,7 @@ impl Agent {
             )),
             global_policy: std::sync::RwLock::new(None),
             manager: std::sync::RwLock::new(std::sync::Weak::new()),
+            manager_warned: std::sync::atomic::AtomicBool::new(false),
             shell: echo_shell::ShellHandle::new(),
             workspace_store: std::sync::RwLock::new(None),
             team_id: std::sync::Mutex::new(None),
@@ -713,7 +716,20 @@ impl Agent {
     ///
     /// 收口了原先散在 21 处的 `agent_manager::global_manager()`。
     pub fn manager(&self) -> Option<std::sync::Arc<crate::agent_manager::AgentManager>> {
-        self.manager.read().ok().and_then(|slot| slot.upgrade())
+        let manager = self.manager.read().ok().and_then(|slot| slot.upgrade());
+        if manager.is_none()
+            && !self
+                .manager_warned
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            // 2026-10-20 事故：漏绑的后果是 Panel 收到空 `teams: []`，
+            // 而命令处理器里是 `None => {}` 静默跳过——日志完全看不出来。
+            tracing::warn!(
+                "agent has no manager bound; manager-dependent commands \
+                 (TeamsList / agent CRUD) will silently no-op"
+            );
+        }
+        manager
     }
 
     /// Shell 子系统句柄（见字段文档）。
