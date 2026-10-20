@@ -45,7 +45,7 @@ plugin/echo-plugin-example              echo-plugin-host echo-plugin-sdk
 plugin/echo-plugin-adapter              echo-plugin-host echo-plugin-api echo-defs
 
 # ── Phase 3 外迁的内置插件 ─────────────────────────────────────────────
-plugin/echo-plugin-provider-llm         echo-config echo-defs echo-llm-anthropic echo-llm-ollama echo-llm-openai
+plugin/echo-plugin-provider-llm         echo-config echo-defs echo-llm-anthropic echo-llm-ollama echo-llm-openai echo-plugin echo-protocol
 plugin/echo-plugin-skills               echo-defs echo-context echo-plugin echo-protocol
 plugin/echo-plugin-federation          echo-defs echo-context echo-federation echo-plugin echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-tool
 plugin/echo-plugin-loop                 echo-context echo-defs echo-loop echo-plugin echo-plugin-api echo-session
@@ -57,4 +57,4 @@ plugin/echo-plugin-tools                echo-config echo-defs echo-tool echo-she
 # ── 业务层与组合根 ─────────────────────────────────────────────────────
 # echo-agent 是业务 crate：**只有组合根可以依赖它**。
 backend/echo-agent                      echo-config echo-shell echo-context echo-defs echo-federation echo-plugin-federation echo-plugin-management echo-llm-anthropic echo-llm-ollama echo-llm-openai echo-loop echo-plugin echo-plugin-loop echo-plugin-provider-llm echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-sanitize echo-session echo-test-utils echo-tool
-core                                    echo-agent echo-config echo-context echo-defs echo-federation echo-loop echo-plugin echo-plugin-adapter echo-plugin-federation echo-plugin-host echo-plugin-loader echo-plugin-loop echo-plugin-management echo-protocol echo-sanitize echo-session
+core                                    echo-agent echo-config echo-context echo-defs echo-federation echo-loop echo-plugin echo-plugin-adapter echo-plugin-federation echo-plugin-host echo-plugin-loader echo-plugin-loop echo-plugin-management echo-plugin-provider-llm echo-protocol echo-sanitize echo-session

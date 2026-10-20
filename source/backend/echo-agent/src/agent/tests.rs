@@ -169,6 +169,22 @@ fn test_agent(provider: Arc<dyn LlmProvider>) -> Agent {
     )
 }
 
+/// 走**插件命令域**（全插件化 S5）：API / provider 命令的归属已从宿主
+/// `apply_command` 移到 `echo-plugin-provider-llm`。测试要覆盖的是**宿主
+/// 接缝**（`AgentProviderCommandHost`）——这里直接打接缝，而不是测宿主那条
+/// "插件未启用"的兜底分支（兜底有它自己的测试）。
+async fn apply_via_provider_plugin(agent: &Arc<Agent>, cmd: BackendCommand) {
+    let host = Arc::new(crate::agent::provider_host::AgentProviderCommandHost::new(
+        Arc::clone(agent),
+    ));
+    let handler = echo_plugin_provider_llm::commands::ProviderCommandHandler::new(host);
+    handler
+        .handle(cmd.kind_name(), cmd.payload_value())
+        .await
+        .expect("命令应属于 provider 命令域")
+        .expect("命令处理失败");
+}
+
 // ── 进程级事件汇聚点（去主智能体 P0）──
 
 /// 多人格共享同一汇聚点：任一人格 emit 的事件都到达同一处，
@@ -952,11 +968,12 @@ async fn update_api_config_persists() {
         calls: Arc::new(AtomicUsize::new(0)),
         reply: "ok".into(),
     });
-    let agent = test_agent(provider);
+    let agent = Arc::new(test_agent(provider));
     agent.set_config_path(tmp.clone());
 
-    agent
-        .apply_command(BackendCommand::UpdateApiConfig {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::UpdateApiConfig {
             name: String::new(),
             provider: "anthropic".into(),
             model: "claude-x".into(),
@@ -964,8 +981,9 @@ async fn update_api_config_persists() {
             api_key: "sk-test-123".into(),
             thinking: None,
             reasoning_effort: None,
-        })
-        .await;
+        },
+    )
+    .await;
 
     let cfg = agent.api_config().await;
     assert_eq!(cfg.provider, "anthropic");
@@ -1632,11 +1650,12 @@ async fn persist_config_keeps_on_disk_api_key() {
         calls: Arc::new(AtomicUsize::new(0)),
         reply: "ok".into(),
     });
-    let agent = test_agent(provider);
+    let agent = Arc::new(test_agent(provider));
     agent.set_config_path(tmp.clone());
 
-    agent
-        .apply_command(BackendCommand::UpdateApiConfig {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::UpdateApiConfig {
             name: String::new(),
             provider: "anthropic".into(),
             model: "claude-x".into(),
@@ -1644,8 +1663,9 @@ async fn persist_config_keeps_on_disk_api_key() {
             api_key: String::new(),
             thinking: None,
             reasoning_effort: None,
-        })
-        .await;
+        },
+    )
+    .await;
 
     let content = std::fs::read_to_string(&tmp).unwrap();
     assert!(content.contains("provider = \"anthropic\""));
@@ -1666,15 +1686,16 @@ async fn persist_config_preserves_on_disk_teams() {
         "[agent]\nprovider = \"openai\"\n\n[agent.teams.fresh]\nname = \"Fresh\"\n",
     )
     .unwrap();
-    let agent = test_agent(Arc::new(MockProvider {
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
         calls: Arc::new(AtomicUsize::new(0)),
         reply: "ok".into(),
-    }));
+    })));
     // 模拟"过期快照"：agent 内存里的 teams 是空的，磁盘上已有 fresh。
     agent.set_config_path(tmp.clone());
 
-    agent
-        .apply_command(BackendCommand::UpdateApiConfig {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::UpdateApiConfig {
             name: String::new(),
             provider: "anthropic".into(),
             model: "claude-x".into(),
@@ -1682,8 +1703,9 @@ async fn persist_config_preserves_on_disk_teams() {
             api_key: String::new(),
             thinking: None,
             reasoning_effort: None,
-        })
-        .await;
+        },
+    )
+    .await;
 
     let content = std::fs::read_to_string(&tmp).unwrap();
     assert!(content.contains("provider = \"anthropic\""));
@@ -1700,11 +1722,12 @@ async fn update_api_config_new_profile_inherits_empty_fields() {
         calls: Arc::new(AtomicUsize::new(0)),
         reply: "ok".into(),
     });
-    let agent = test_agent(provider);
+    let agent = Arc::new(test_agent(provider));
 
     // 先建立顶层默认配置。
-    agent
-        .apply_command(BackendCommand::UpdateApiConfig {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::UpdateApiConfig {
             name: String::new(),
             provider: "deepseek".into(),
             model: "deepseek-x".into(),
@@ -1712,13 +1735,15 @@ async fn update_api_config_new_profile_inherits_empty_fields() {
             api_key: "sk-top".into(),
             thinking: None,
             reasoning_effort: None,
-        })
-        .await;
+        },
+    )
+    .await;
 
     // 用全空字段创建命名 profile：应从当前生效配置继承，而不是写出
     // 残缺 profile（真实事故：TUI 只改 model 保存后 profile 缺字段）。
-    agent
-        .apply_command(BackendCommand::UpdateApiConfig {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::UpdateApiConfig {
             name: "backup".into(),
             provider: String::new(),
             model: String::new(),
@@ -1726,8 +1751,9 @@ async fn update_api_config_new_profile_inherits_empty_fields() {
             api_key: String::new(),
             thinking: None,
             reasoning_effort: None,
-        })
-        .await;
+        },
+    )
+    .await;
 
     let cfg = agent.api_config().await;
     assert_eq!(cfg.active_api, "backup");
@@ -1741,8 +1767,9 @@ async fn update_api_config_new_profile_inherits_empty_fields() {
     assert_eq!(profile.base_url, "http://ds.test", "base_url inherited");
 
     // 更新已有 profile 时保持"空 = 保留原值"语义。
-    agent
-        .apply_command(BackendCommand::UpdateApiConfig {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::UpdateApiConfig {
             name: "backup".into(),
             provider: String::new(),
             model: "deepseek-y".into(),
@@ -1750,8 +1777,9 @@ async fn update_api_config_new_profile_inherits_empty_fields() {
             api_key: String::new(),
             thinking: None,
             reasoning_effort: None,
-        })
-        .await;
+        },
+    )
+    .await;
     let cfg = agent.api_config().await;
     let profile = cfg
         .api_profiles
@@ -1773,8 +1801,9 @@ async fn test_api_config_profile_empty_fields_fall_back() {
     agent.attach(Arc::new(handle));
 
     // 顶层配置指向一个必然连不上的地址（连接即刻被拒绝，不打真实网络）。
-    agent
-        .apply_command(BackendCommand::UpdateApiConfig {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::UpdateApiConfig {
             name: String::new(),
             provider: "deepseek".into(),
             model: "deepseek-x".into(),
@@ -1782,8 +1811,9 @@ async fn test_api_config_profile_empty_fields_fall_back() {
             api_key: "sk-top".into(),
             thinking: None,
             reasoning_effort: None,
-        })
-        .await;
+        },
+    )
+    .await;
 
     // 手工注入一个字段残缺的 profile（provider/base_url 为空）。
     agent
@@ -1802,11 +1832,13 @@ async fn test_api_config_profile_empty_fields_fall_back() {
             reasoning_effort: crate::config::ReasoningEffort::Max,
         });
 
-    agent
-        .apply_command(BackendCommand::TestApi {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::TestApi {
             name: "broken".into(),
-        })
-        .await;
+        },
+    )
+    .await;
 
     let mut result = None;
     for _ in 0..50 {

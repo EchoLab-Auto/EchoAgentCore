@@ -224,11 +224,13 @@ async fn send_message_creates_session() {
 #[tokio::test]
 async fn set_system_prompt_changes_behaviour() {
     let (agent, provider) = test_agent("ok");
-    agent
-        .apply_command(BackendCommand::SetSystemPrompt {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::SetSystemPrompt {
             prompt: "你是翻译助手".into(),
-        })
-        .await;
+        },
+    )
+    .await;
     // The next message must carry the new prompt to the LLM.
     agent
         .apply_command(BackendCommand::SendMessage {
@@ -252,11 +254,13 @@ async fn set_system_prompt_persists_to_config() {
     )
     .unwrap();
     agent.set_config_path(tmp.clone());
-    agent
-        .apply_command(BackendCommand::SetSystemPrompt {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::SetSystemPrompt {
             prompt: "你是翻译助手".into(),
-        })
-        .await;
+        },
+    )
+    .await;
     let content = std::fs::read_to_string(&tmp).unwrap();
     // 系统提示词由 [plugins.system_prompt] 插件段拥有（Core 插件注入后端 API
     // 配置无关），持久化目标是 plugins 段而非 [agent] 段。
@@ -275,11 +279,13 @@ async fn set_system_prompt_persists_to_config() {
 #[tokio::test]
 async fn switch_model_updates_active_model() {
     let (agent, _provider) = test_agent("ok");
-    agent
-        .apply_command(BackendCommand::SwitchModel {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::SwitchModel {
             model: "gpt-4o".into(),
-        })
-        .await;
+        },
+    )
+    .await;
     assert_eq!(agent.active_model().await, "gpt-4o");
 }
 
@@ -293,11 +299,13 @@ async fn switch_model_persists_to_config() {
     )
     .unwrap();
     agent.set_config_path(tmp.clone());
-    agent
-        .apply_command(BackendCommand::SwitchModel {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::SwitchModel {
             model: "gpt-4o".into(),
-        })
-        .await;
+        },
+    )
+    .await;
     let content = std::fs::read_to_string(&tmp).unwrap();
     assert!(
         content.contains("model = \"gpt-4o\""),
@@ -310,8 +318,9 @@ async fn switch_model_persists_to_config() {
 async fn switch_api_activates_profile() {
     let (agent, _provider) = test_agent("ok");
     // Seed a profile via UpdateApiConfig.
-    agent
-        .apply_command(BackendCommand::UpdateApiConfig {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::UpdateApiConfig {
             name: "deepseek".into(),
             provider: "deepseek".into(),
             model: "ds-v4".into(),
@@ -319,13 +328,16 @@ async fn switch_api_activates_profile() {
             api_key: String::new(),
             thinking: None,
             reasoning_effort: None,
-        })
-        .await;
-    agent
-        .apply_command(BackendCommand::SwitchApi {
+        },
+    )
+    .await;
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::SwitchApi {
             name: "deepseek".into(),
-        })
-        .await;
+        },
+    )
+    .await;
     let cfg = agent.api_config().await;
     assert_eq!(cfg.active_api, "deepseek");
     assert_eq!(cfg.api_profiles.len(), 1);
@@ -334,8 +346,9 @@ async fn switch_api_activates_profile() {
 #[tokio::test]
 async fn delete_api_removes_profile() {
     let (agent, _provider) = test_agent("ok");
-    agent
-        .apply_command(BackendCommand::UpdateApiConfig {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::UpdateApiConfig {
             name: "temp".into(),
             provider: "openai".into(),
             model: "m".into(),
@@ -343,14 +356,17 @@ async fn delete_api_removes_profile() {
             api_key: String::new(),
             thinking: None,
             reasoning_effort: None,
-        })
-        .await;
+        },
+    )
+    .await;
     assert_eq!(agent.api_config().await.api_profiles.len(), 1);
-    agent
-        .apply_command(BackendCommand::DeleteApi {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::DeleteApi {
             name: "temp".into(),
-        })
-        .await;
+        },
+    )
+    .await;
     assert!(
         agent.api_config().await.api_profiles.is_empty(),
         "profile removed"
@@ -369,8 +385,9 @@ async fn rename_api_end_to_end_via_apply_command() {
     .unwrap();
     agent.set_config_path(tmp.clone());
 
-    agent
-        .apply_command(BackendCommand::UpdateApiConfig {
+    apply_via_provider_plugin(
+        &agent,
+        BackendCommand::UpdateApiConfig {
             name: "deepseek".into(),
             provider: "deepseek".into(),
             model: "ds-v4".into(),
@@ -378,8 +395,9 @@ async fn rename_api_end_to_end_via_apply_command() {
             api_key: "sk-ds".into(),
             thinking: None,
             reasoning_effort: None,
-        })
-        .await;
+        },
+    )
+    .await;
     assert!(agent.api_config().await.active_api == "deepseek");
 
     // RenameApi 是**进程级命令**（改全局供应商池，不属于任何人格）：
@@ -1477,6 +1495,21 @@ async fn package_gating_spans_tools_and_skills() {
 // ── Subagent 委派（echo-agent.subagent 插件）──
 
 /// 装配了 subagent 运行态的 agent（插件 mount 的测试等价物）。
+/// 走**插件命令域**（全插件化 S5）：API / provider 命令由
+/// `echo-plugin-provider-llm` 认领，测试直接打宿主接缝（插件侧的派发测试在
+/// 那个 crate 里），于是这些用例仍然只验证"命令做了什么"。
+async fn apply_via_provider_plugin(agent: &Arc<Agent>, cmd: BackendCommand) {
+    let host = Arc::new(echo_agent::agent::provider_host::AgentProviderCommandHost::new(
+        Arc::clone(agent),
+    ));
+    let handler = echo_plugin_provider_llm::commands::ProviderCommandHandler::new(host);
+    handler
+        .handle(cmd.kind_name(), cmd.payload_value())
+        .await
+        .expect("命令应属于 provider 命令域")
+        .expect("命令处理失败");
+}
+
 fn test_agent_with_subagent(reply: &'static str) -> (Arc<Agent>, Arc<StaticProvider>) {
     let (agent, provider) = test_agent(reply);
     agent.attach_subagent_runtime(echo_agent::subagent::SubagentStore::new());

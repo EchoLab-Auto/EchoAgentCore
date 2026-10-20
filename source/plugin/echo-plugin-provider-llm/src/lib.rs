@@ -37,6 +37,8 @@ pub use echo_defs::tool::ToolDefinition;
 /// 全局供应商池的读取助手（`list_api_profiles` 工具与子代理 profile 解析共用）。
 pub mod admin;
 pub mod api_pool;
+/// 供应商 / API 命令域（全插件化 S5：13 条命令的归属关系）。
+pub mod commands;
 pub mod metrics;
 
 mod metering;
@@ -70,6 +72,41 @@ pub struct ProviderConfig {
     pub thinking: ThinkingMode,
     /// 推理强度（词汇归定义层 `echo-defs`）。
     pub reasoning_effort: ReasoningEffort,
+}
+
+/// 构造插件：命令域（13 条 API / provider 命令）。
+///
+/// `mount` 只挂命令域、不注册任何运行期资源：provider 的**构造**仍由宿主在
+/// 配置变更时调用 [`create_provider`]（它要 `AgentConfig`、要重建链、要广播
+/// ——那些是宿主的动作，不是插件的）。本插件"启用"的含义是**它的命令域可以
+/// 被派发**；禁用后这些命令回落到宿主的兜底分支并明确报"插件未启用"。
+pub fn plugin(
+    version: &str,
+    host: Arc<dyn commands::ProviderCommandHost>,
+) -> Arc<dyn echo_plugin::Plugin> {
+    use echo_plugin::{BuiltinPlugin, PluginManifest};
+    let handler = Arc::new(commands::ProviderCommandHandler::new(host));
+    let manifest = PluginManifest::builtin(
+        PLUGIN_ID,
+        "LLM Provider",
+        version,
+        "provider",
+        "llm",
+        "LLM 提供方：provider 工厂 + 计量/脱敏装饰器 + 供应商池规则与 API 命令域",
+    );
+    Arc::new(
+        BuiltinPlugin::new(manifest, |_mctx| Ok(vec![]))
+            .with_commands(commands::COMMANDS)
+            .with_command_handler_async(move |name, payload| {
+                let handler = handler.clone();
+                Box::pin(async move {
+                    handler
+                        .handle(&name, payload)
+                        .await
+                        .unwrap_or(Ok(serde_json::Value::Null))
+                })
+            }),
+    )
 }
 
 /// 按配置构建一个 provider。

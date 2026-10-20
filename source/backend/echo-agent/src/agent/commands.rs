@@ -128,7 +128,7 @@ impl Agent {
     /// `local:workspace:` 通道的覆盖写入对应工作区对话（`profile` = `None`
     /// 清除）。非工作区会话直接跳过。落盘失败 emit `BackendEvent::Error`
     /// 带消息（不再静默——存量工作区此前 find 失败导致选择过一会「失效」）。
-    fn persist_session_api_profile(&self, session_id: &str, profile: Option<&str>) {
+    pub(crate) fn persist_session_api_profile(&self, session_id: &str, profile: Option<&str>) {
         let Some((ws_id, conv_id)) = crate::workspace::parse_workspace_channel(session_id) else {
             return;
         };
@@ -227,174 +227,33 @@ impl Agent {
             }
         }
         match cmd {
-            BackendCommand::SwitchModel { model } => {
-                self.model.config.write().await.model = model.clone();
-                self.set_model(model.clone()).await;
-                self.emit_api_config().await;
+            // ── 供应商 / API 命令域已迁进 `echo-plugin-provider-llm`（全插件化 S5）──
+            //
+            // 池的规则（`admin`）、命令名、载荷解析、事件形状与文案都在插件里
+            // （`echo_plugin_provider_llm::commands`）；宿主接缝在
+            // `AgentProviderCommandHost`（只做状态迁移的原子动作）。
+            // 这里只剩"插件未启用"的兜底——插件禁用后命令明确报错，不静默。
+            //
+            // `RenameApi` **不在**本域：它改的是全局供应商池（进程级），由
+            // [`crate::process_commands`] 在命令泵里处理；落到这里说明接线异常。
+            BackendCommand::SwitchModel { .. }
+            | BackendCommand::SwitchProvider { .. }
+            | BackendCommand::SetSystemPrompt { .. }
+            | BackendCommand::RequestSystemPrompt
+            | BackendCommand::UpdateApiConfig { .. }
+            | BackendCommand::SwitchApi { .. }
+            | BackendCommand::SetSessionApi { .. }
+            | BackendCommand::ClearSessionApi { .. }
+            | BackendCommand::RequestRemoteApiProfiles { .. }
+            | BackendCommand::TestApi { .. }
+            | BackendCommand::QueryApiBalance { .. }
+            | BackendCommand::QueryApiMetrics { .. }
+            | BackendCommand::DeleteApi { .. } => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
-                    message: format!("switched model: {model}"),
+                    message: "API 命令由 echo-agent.provider.llm 插件处理，但该插件未启用"
+                        .into(),
                 });
-                let cfg = self.model.config.read().await.clone();
-                self.persist_config(&cfg).await;
-            }
-            BackendCommand::SwitchProvider { provider } => {
-                let mut config = self.model.config.write().await;
-                let old_provider = config.provider.clone();
-                config.provider = provider.clone();
-                let cfg = config.clone();
-                drop(config);
-                if self.rebuild_provider(&cfg).await {
-                    let model = cfg.model.clone();
-                    let base_url = cfg.effective_base_url();
-                    let key_set = !cfg.effective_api_key().is_empty();
-                    self.set_model(model).await;
-                    self.emit_api_config().await;
-                    self.persist_config(&cfg).await;
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: format!(
-                            "switched provider: {provider} ({base_url}, key: {})",
-                            if key_set { "***" } else { "not set" }
-                        ),
-                    });
-                } else {
-                    let mut config = self.model.config.write().await;
-                    config.provider = old_provider;
-                }
-            }
-            BackendCommand::SetSystemPrompt { prompt } => {
-                self.model.config.write().await.system_prompt = prompt.clone();
-                self.prompt.invalidate().await;
-                self.persist_system_prompt_plugin(&prompt).await;
-                self.emit(BackendEvent::SystemPrompt { text: prompt });
-                self.emit(BackendEvent::Error {
-                    session_id: None,
-                    message: "system prompt updated".into(),
-                });
-            }
-            BackendCommand::RequestSystemPrompt => {
-                let text = self.model.config.read().await.system_prompt.clone();
-                self.emit(BackendEvent::SystemPrompt { text });
-            }
-            BackendCommand::UpdateApiConfig {
-                name,
-                provider,
-                model,
-                base_url,
-                api_key,
-                thinking,
-                reasoning_effort,
-            } => {
-                self.update_api_config(
-                    name,
-                    provider,
-                    model,
-                    base_url,
-                    api_key,
-                    thinking,
-                    reasoning_effort,
-                )
-                .await;
-            }
-            BackendCommand::SwitchApi { name } => {
-                self.switch_api(&name).await;
-            }
-            BackendCommand::SetSessionApi {
-                team_id: _,
-                session_id,
-                profile,
-            } => {
-                // 会话级 API 覆盖（2026-10）：该会话的 LLM 请求走指定
-                // profile 的 provider；其余会话不受影响。team_id 已由
-                // requires_explicit_team 保证非空。
-                //
-                // 持久化（2026-10 拓展）：同时写入工作区对话的
-                // `api_profile`（`WorkspaceConversationInfo.api_profile`），
-                // 重启后激活该对话时恢复。
-                //
-                // 顺序：先解析（provider 构建成功）再落盘——失败时不写入，
-                // 避免在工作区 JSON 里留下无法解析的覆盖（重启后会反复
-                // 报 profile not found）。2026-10 用户报障修正。
-                let ok = self.set_session_provider(&session_id, &profile).await;
-                if ok {
-                    // 持久化到工作区对话（顺序：provider 构建成功才落盘；
-                    // 落盘失败 emit Error，不再静默——2026-10 用户报障修复）。
-                    self.persist_session_api_profile(&session_id, Some(profile.as_str()));
-                }
-                let message = if ok {
-                    if profile.is_empty() {
-                        format!("会话 {session_id} 已恢复跟随 persona 级配置")
-                    } else {
-                        format!("会话 {session_id} 已切换到 API: {profile}")
-                    }
-                } else {
-                    format!("会话 {session_id} 切换 API 失败（profile 不存在或构建失败）")
-                };
-                self.emit(BackendEvent::Error {
-                    session_id: Some(session_id.clone()),
-                    message,
-                });
-                self.emit_api_config().await;
-            }
-            BackendCommand::ClearSessionApi {
-                team_id: _,
-                session_id,
-            } => {
-                // 清除会话级覆盖（回到跟随 persona 级）。
-                // 同步清除工作区对话的持久化 api_profile。
-                self.persist_session_api_profile(&session_id, None);
-                self.set_session_provider(&session_id, "").await;
-                self.emit(BackendEvent::Error {
-                    session_id: Some(session_id.clone()),
-                    message: format!("会话 {session_id} 已恢复跟随 persona 级配置"),
-                });
-                self.emit_api_config().await;
-            }
-            BackendCommand::RequestRemoteApiProfiles { peer } => {
-                // 分布式供应商共享（2026-10）：经联邦拉远端**脱敏**供应商
-                // 池回传前端；peer 离线/未实现该查询时 error 带原因。
-                let result = match self.federation().querier.clone() {
-                    Some(querier) => {
-                        querier(
-                            peer.clone(),
-                            echo_federation::QueryKind::ApiProfiles,
-                            String::new(),
-                        )
-                        .await
-                    }
-                    None => Err("联邦未接线：远程供应商查询不可用".into()),
-                };
-                match result {
-                    Ok(payload) => {
-                        self.emit(BackendEvent::RemoteApiProfiles {
-                            peer,
-                            active: payload.get("active").cloned(),
-                            profiles: payload
-                                .get("profiles")
-                                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                                .unwrap_or_default(),
-                            error: None,
-                        });
-                    }
-                    Err(message) => {
-                        self.emit(BackendEvent::RemoteApiProfiles {
-                            peer,
-                            active: None,
-                            profiles: Vec::new(),
-                            error: Some(message),
-                        });
-                    }
-                }
-            }
-            BackendCommand::TestApi { name } => {
-                self.test_api_config(&name).await;
-            }
-            BackendCommand::QueryApiBalance { name } => {
-                self.query_api_balance(&name).await;
-            }
-            BackendCommand::QueryApiMetrics { name } => {
-                self.query_api_metrics(&name).await;
             }
             BackendCommand::RestartPlugin { id } => {
                 // 防自锁：重启管理面插件 = 先卸下 management WS，Panel 立即
@@ -551,9 +410,6 @@ impl Agent {
                         self.emit_plugins_list().await;
                     }
                 }
-            }
-            BackendCommand::DeleteApi { name } => {
-                self.delete_api(&name).await;
             }
             BackendCommand::RenameApi { .. } => {
                 // RenameApi 是**进程级**命令（改的是全局供应商池，不是某个人格），

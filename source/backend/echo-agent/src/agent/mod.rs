@@ -9,6 +9,7 @@ mod gating;
 mod inbound;
 mod plugin_reload;
 pub(crate) mod prompt;
+pub mod provider_host;
 pub mod registry;
 mod streaming;
 pub mod subagent_host;

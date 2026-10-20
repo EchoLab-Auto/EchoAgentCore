@@ -466,20 +466,25 @@ tracing::debug!(
     )?;
 }
 
-// ── 名义挂载：provider.llm 保持重启生效语义。──
+// ── 实化 5：LLM provider（命令域在这里，全插件化 S5）──
+//
+// 此前是**名义挂载**（mount 空转、改配置重启才生效）：provider 的构造归
+// 宿主，插件只是个身份。现在它有了真正的命令域——13 条 API / provider 命令
+// 的注册关系归它（`echo_plugin_provider_llm::commands`），宿主只给一个接缝
+// （`AgentProviderCommandHost`：读配置 / 重建 provider / 落盘 / 广播）。
+//
+// **仍然不是**"插件构造 provider"：构造要 `AgentConfig`、要重建链、要通知
+// 全部会话——那是宿主的动作。插件的"启用"含义是**它的命令域可被派发**；
+// 禁用后这些命令回落到宿主兜底分支，并明确报"插件未启用"。
 {
-    use echo_agent::plugins::PROVIDER_LLM_PLUGIN_ID;
-    push_builtin(
+    let provider_host: std::sync::Arc<
+        dyn echo_plugin_provider_llm::commands::ProviderCommandHost,
+    > = std::sync::Arc::new(echo_agent::agent::provider_host::AgentProviderCommandHost::new(
+        agent.clone(),
+    ));
+    push_plugin(
         &mut catalog,
-        PluginManifest::builtin(
-            PROVIDER_LLM_PLUGIN_ID,
-            "LLM Provider",
-            version,
-            "provider",
-            "llm",
-            "LLM 提供方（deepseek/openai/anthropic/ollama 工厂）",
-        ),
-        nominal("llm".to_string()),
+        echo_plugin_provider_llm::plugin(version, provider_host),
     )?;
 }
 
