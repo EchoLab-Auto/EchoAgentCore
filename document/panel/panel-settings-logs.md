@@ -2,7 +2,7 @@
 id: panel-settings-logs
 title: "设置 · 日志与系统"
 group: 前端
-x: 3840
+x: 4480
 y: 1060
 ---
 

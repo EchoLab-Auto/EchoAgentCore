@@ -2,7 +2,7 @@
 id: panel-settings-tools
 title: "设置 · 工具"
 group: 前端
-x: 2560
+x: 3200
 y: 1060
 ---
 

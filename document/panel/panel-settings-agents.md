@@ -2,7 +2,7 @@
 id: panel-settings-agents
 title: "设置 · 智能体"
 group: 前端
-x: 3200
+x: 3840
 y: 1060
 ---
 

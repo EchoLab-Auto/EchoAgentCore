@@ -2,14 +2,14 @@
 id: panel-settings
 title: "Panel 设置视图"
 group: 前端
-x: 2880
+x: 2560
 y: 780
 link: ["panel-settings-api | API 设置 | b>t", "panel-settings-skills | 技能 | b>t", "panel-settings-tools | 工具 | b>t", "panel-settings-plugins | 插件 | b>t", "panel-settings-agents | 智能体 | b>t", "panel-settings-cores | Core 与联邦 | b>t", "panel-settings-logs | 日志与系统 | b>t"]
 ---
 
 # Panel 设置视图
 
-> **定位**：设置视图的**外壳与共用契约**——左栏一级菜单、工具条、分类切换与清单加载语义、资源工作区的通用布局，以及八分类的界面元素树。每个分类的内容与操作细节归对应子文档（见「分类清单」）。读者：维护 Panel 设置界面的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)（Agent 配置弹层的 API 供应商引用）、[配置持久化](../core/core-config-persistence.md)。
+> **定位**：设置视图的**外壳与共用契约**——左栏一级菜单、工具条、分类切换与清单加载语义、资源工作区的通用布局，以及八分类的界面元素树。每个分类的内容与操作细节归对应子文档（见「分类清单」）。**分界线**：本篇写给「菜单怎么切、切换时怎么拦未保存、清单三态怎么呈现」；7 篇分类子文档是各分类的**功能与操作参考**（字段清单、命令映射、协议契约），不改交互语义时不必读它们。读者：维护 Panel 设置界面的开发者；相关：[交互定义](./panel-interaction.md)、[会话视图](./panel-chat.md)（Agent 配置弹层的 API 供应商引用）、[配置持久化](../core/core-config-persistence.md)。
 
 原「资源」「日志」两个独立视图与 API 设置弹窗合并为统一的设置视图：**左栏一级菜单 + 右侧分类工作区**——八个一级分类，每个分类是画布上的一个文档节点。
 

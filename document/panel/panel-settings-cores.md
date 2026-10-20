@@ -2,7 +2,7 @@
 id: panel-settings-cores
 title: "设置 · Core 与联邦"
 group: 前端
-x: 3520
+x: 4160
 y: 1060
 ---
 

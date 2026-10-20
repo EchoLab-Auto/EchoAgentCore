@@ -3,13 +3,13 @@ id: protocol
 title: "协议与数据流"
 group: 工程
 x: 1920
-y: 1650
+y: 1790
 ---
 
 # 协议与数据流
 
 > **定位**：本文是前后端线协议（management WebSocket 契约）的参考——契约归属与兼容规则、传输与信封（含事件扇出序号、Bootstrap、共享枚举）、命令、事件（含时间线增量同步）、归属与路由、管理通道与快照。读者：Core / Panel 双端开发者与协议维护者。
-> 相关文档：[架构总览](../overview/architecture.md)、[Panel 交互定义](../panel/panel-interaction.md)、[电脑端布局](../panel/panel-desktop-layout.md)、[联邦](../federation/federation.md)、[部署与自更新](../ops/ops-deploy.md)。
+> 相关文档：[架构总览](../overview/architecture.md)、[Panel 交互定义](../panel/panel-interaction.md)、[桌面端布局](../panel/panel-desktop-layout.md)、[联邦](../federation/federation.md)、[部署与自更新](../ops/ops-deploy.md)。
 
 前后端通过 **management WebSocket**（默认 `0.0.0.0:3132`，开箱即可被局域网连接；`[core] management_access_token` 提供 Bearer 认证，首装自动生成）通信，消息为 JSON 文本帧。令牌缺失/不匹配时在握手阶段返回**标准 HTTP 401**（客户端据此归类为认证失败并提示排查令牌——此前该拒绝路径因响应状态默认 200 被 tungstenite 静默丢弃，客户端只能看到「握手未完成」，令牌问题极难排查）。命令与事件定义在 `source/protocol/echo-protocol`（Core 侧直接使用该 crate；Panel 以 `web/src/protocol.ts` 镜像线格式）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
 
@@ -95,7 +95,7 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 
 ### 连接与 Bootstrap
 
-连接成功后 Panel 发送 Bootstrap 命令组：`RequestState`、（有保存的 Agent 时）`RequestTrunkTimeline{team_id}`、`RequestInstanceStatus`、`RequestTeamsList`、`RequestShellSessions`。去主智能体后 `team_id` 必填且 QQ 不预取（详见 [Panel 交互定义](../panel/panel-interaction.md)、[电脑端布局](../panel/panel-desktop-layout.md) §一）。
+连接成功后 Panel 发送 Bootstrap 命令组：`RequestState`、（有保存的 Agent 时）`RequestTrunkTimeline{team_id}`、`RequestInstanceStatus`、`RequestTeamsList`、`RequestShellSessions`。去主智能体后 `team_id` 必填且 QQ 不预取（详见 [Panel 交互定义](../panel/panel-interaction.md)、[桌面端布局](../panel/panel-desktop-layout.md) §一）。
 
 ### 共享枚举
 

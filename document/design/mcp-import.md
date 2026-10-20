@@ -4,7 +4,6 @@ title: "MCP 作为工具插件导入通道（评估）"
 group: 规划
 x: 620
 y: 3300
-link: ["decoupling-plan | 完全解耦推进计划 | t>l"]
 ---
 
 # MCP 作为工具插件导入通道（评估）

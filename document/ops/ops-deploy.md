@@ -3,7 +3,7 @@ id: ops-deploy
 title: "部署与自更新"
 group: 工程
 x: 1920
-y: 1850
+y: 1990
 ---
 
 # 部署与自更新

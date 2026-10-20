@@ -2,9 +2,8 @@
 id: entry-identity-p1
 title: "条目身份化（EntryId + rev + Upsert）"
 group: 规划
-x: 1600
+x: 1920
 y: 3360
-link: ["panel-performance-audit | Panel 性能审计 | l>t"]
 ---
 
 # 条目身份化：P1 协议草案与 Panel 双读骨架

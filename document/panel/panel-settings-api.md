@@ -2,13 +2,13 @@
 id: panel-settings-api
 title: "设置 · API"
 group: 前端
-x: 1920
+x: 2560
 y: 1060
 ---
 
 # 设置 · API
 
-> **定位**：`ApiSettings.vue` 的双层视图——供应商池（profiles）的增删改与测试、DeepSeek 余额查询、近 7 天余额与用量图表，以及 persona 级的 `api_profile` 引用。设置视图外壳、菜单与切换语义见[设置视图](./panel-settings.md)。读者：维护 API 设置界面的开发者；相关：[配置持久化](../core/core-config-persistence.md)、[模态与覆盖层](./panel-modals.md)（Agent 配置弹层的供应商下拉）。
+> **定位**：`ApiSettings.vue` 的双层视图——供应商池（profiles）的增删改与测试、DeepSeek 余额查询、近 7 天余额与用量图表，以及 persona 级的 `api_profile` 引用。设置视图外壳、菜单与切换语义见[设置视图](./panel-settings.md)。读者：维护 API 设置界面的开发者；相关：[配置持久化](../core/core-config-persistence.md)、[桌面端模态与覆盖层](./panel-desktop-overlays.md)（Agent 配置弹层的供应商下拉）。
 
 ## 双层视图
 

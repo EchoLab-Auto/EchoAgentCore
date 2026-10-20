@@ -26,14 +26,28 @@ link: ["decoupling-plan | 完全解耦推进计划 | b>t", "s4-agent-decompositi
 2026-11 实测（口径：应用代码，已排测试）：
 
 ```text
-插件 crate 13,883 行   ████████████░░░░░░░░░░░░░░░░░░  39.7%
-宿主实现   21,103 行   ██████████████████░░░░░░░░░░░░  60.3%
+              起点（S1 前）        现在（S3 后）
+插件 crate     13,883  39.7%   →   15,658  42.7%
+宿主实现       21,103  60.3%   →   21,047  57.3%
 ```
 
-宿主那 60% 里，**约 8,000 行是宿主骨架**（插件注册表、命令泵路由、面板协议、
+宿主那 57% 里，**约 8,000 行是宿主骨架**（插件注册表、命令泵路由、面板协议、
 配置、时间线与指标）、**约 8,000 行是编排逻辑**（会话 / 压缩 / turn / 门控），
 **约 4,500 行是本该是插件但还不是能力**（联邦 1,698 / API 管理面 1,208 /
 subagent 执行体 401 / instance 桥接 747 / turn 驱动 512）。
+
+### 命令域的迁移进度（最直观的读数）
+
+```text
+                 S3 前     现在
+插件处理          7 条      27 条    ██████████░░░░░░░░░░  51%
+宿主兜底         46 条      26 条
+文件行数        1967 行    1406 行   （-29%）
+```
+
+已迁进插件的域：**workspace**（7）· **skills**（8）· **shell**（4）·
+**instance**（6）· **tools**（2）。仍未迁移：provider/api（14）·
+session/上下文（17）· federation（4）· selfupdate/plugin（5，宿主保留）。
 
 ## 二、形态约定（dsh 对齐的三条硬规则）
 
@@ -70,7 +84,26 @@ subagent 执行体 401 / instance 桥接 747 / turn 驱动 512）。
 - `core_agent` 早于插件挂载创建，走"直接构造同一实现"路径；把插件清单块
   提到 agent factory 之前即可只剩解析一条路径。
 
-### S2：工具执行链（`ToolService`）——wall 级
+### S2：工具执行链（`ToolService`）——**已完成 2026-11**
+
+执行链本体搬进机制层 `echo_tool::execute`，宿主只剩四个接缝：
+
+| 接缝 | 宿主实现（`agent/tool_dispatch.rs`） |
+|---|---|
+| `redact` | `Agent::redact_text_tracked` |
+| `on_call` | `BackendEvent::ToolCall` + `SessionEvent::ToolCall` |
+| `on_result` | `+ SessionEvent::ToolResult` + **状态广播** |
+| `run_orchestration` | `spawn_subagent`（同步发起，不必 async_trait） |
+| `tool_arguments` | `__session_id` / `__team_id` 的宿主映射表 |
+
+- `ToolExecutor::run(&dyn ToolExecutionHost, …)`：接缝**按调用传入**而不是
+  存字段——宿主实现因此可以借用 `&Agent`（存 `Arc<Agent>` 会成引用环）。
+- **`if call.name == "checklist"` 已删除**：`Tool::state_key()` 让工具自己
+  声明"我有可见状态"，执行链在结果落盘后统一问一句；宿主只保留
+  `state_key → 线上事件变体` 的协议映射表。新增有状态工具 = 一个 trait 方法。
+- `agent/tool_exec.rs` 只剩超时口径（用户配置 + 工具 hint，硬上限 600s）。
+
+### S2 原计划：工具执行链（`ToolService`）——wall 级（已落地，保留设计记录）
 
 `run_tool` 一次碰 5 个协作点（`redactor` / `emit` / `trunk` / `tools` /
 `session_id`），这是"工具能力归插件"的最后一堵墙。做法：
@@ -85,14 +118,21 @@ subagent 执行体 401 / instance 桥接 747 / turn 驱动 512）。
 **验收**：`grep -rn '"checklist"' source/backend/echo-agent/src/agent/` = 0；
 工具执行的全部既有集成测试（含超时 / 取消 / 图片结果 / 远程分流）不改断言通过。
 
-### S3：其余四个能力归位
+### S3：其余能力归位（命令域已完成，能力本体见下）
 
 | 能力 | 现状 | 做法 |
 |---|---|---|
-| **subagent 执行体**（401 行） | 工具 + store 在插件，执行体在宿主 | 注入 `SubagentExecutionHost`（建 agent / 取 provider / 发 hook），执行体搬进插件 |
-| **instance 桥接**（747 行） | 插件有实现，宿主侧是 `impl Agent` 粘合 | 同 workspace 的收法：`InstanceHost` 四方法（emit / trunk / registry / gate） |
-| **联邦**（1,698 行） | 有机制 crate（`echo-federation`），无插件 crate | 新建 `echo-plugin-federation`：7 条命令 + 4 个 peer 级后台任务 + `FederationPorts` 注入 |
-| **API 管理面**（1,208 行） | provider 插件只有工厂 | 管理面归 `echo-plugin-provider-llm`：`ApiAdminHost`（配置写回 / 探测 / 计量），14 条 `*Api*` 命令迁出 |
+| **subagent 执行体**（401 行） | 工具 + store 在插件，执行体在宿主 | 注入 `SubagentExecutionHost`（建 agent / 取 provider / 发 hook / 联邦通知），执行体搬进插件 |
+| **instance 桥接**（747 行） | 插件有实现，宿主侧是 `impl Agent` 粘合 | 同 workspace 的收法：`InstanceHost` 四方法（emit / trunk / registry / gate）；`InvokeInstanceOp` 随桥接一起走 |
+| **联邦**（1,698 行） | 有机制 crate（`echo-federation`），无插件 crate | 新建 `echo-plugin-federation`。**解阻结论（已核实）**：`packages/federation/*` 除 `FederationPorts::command_handler`（现在是 `Fn(&Agent, cmd)`）外不引用任何宿主类型——把那一个类型改成 `Fn(BackendCommand) -> BoxFuture`（组合根捕获 agent）后即可整块搬走 |
+| **API 管理面**（1,208 行） | provider 插件只有工厂 | 阻塞点：`ApiProfile` 还在 `echo-agent::config`。**先决条件**：把 `ApiProfile` 下沉到 `echo-config`（它本就是配置词汇），之后 `ApiAdminHost`（配置写回 / 探测 / 计量）+ 14 条 `*Api*` 命令一起进 `echo-plugin-provider-llm` |
+
+**已完成（命令域 + 投影）**：
+
+| 插件 | 迁走的命令 | 迁走的投影 |
+|---|---|---|
+| `echo-plugin-tools` | shell ×4 · instance ×6 · tools ×2 | `InstanceList`（读 ui_descriptor / session_labels / cached_state）· `ToolsList` |
+| `echo-plugin-skills` | skills ×8 | `SkillsList`（含 `.sources.json` 归正） |
 
 ### S4：会话与 turn（编排骨架的边界）
 

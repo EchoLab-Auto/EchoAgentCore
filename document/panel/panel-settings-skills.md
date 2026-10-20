@@ -2,7 +2,7 @@
 id: panel-settings-skills
 title: "设置 · 技能"
 group: 前端
-x: 2240
+x: 2880
 y: 1060
 ---
 

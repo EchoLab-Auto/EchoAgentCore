@@ -2,63 +2,58 @@
 id: panel-mobile-layout
 title: "移动端布局"
 group: 前端
-x: 3840
-y: 780
+x: 2240
+y: 500
+link: ["panel-mobile-overlays | 模态与覆盖层"]
 ---
 
 # 移动端布局
 
-> **定位**：Panel 在**移动端**（视口 < 768px，竖屏为主）的完整空间设计与交互重排。这不是「把桌面样式收窄」，而是**按拇指可达性重新排布信息架构**：视图切换进底部 Sheet、卡片进抽屉、入口行只保留一条可横滚的带。设备无关的功能契约见[交互定义](./panel-interaction.md)，宽屏形态见[电脑端布局](./panel-desktop-layout.md)。
+> **定位**：Panel 在**移动端**���视口 < 768px，竖屏为主）的完整空间设计与交互重排。这不是「把桌面样式收窄」，而是**按拇指可达性重新排布信息架构**：视图切换进底部 Sheet、卡片进抽屉、入口行只保留一条可横滚的带。设备无关的功能契约见[交互定义](./panel-interaction.md)，宽屏形态见[桌面端布局](./panel-desktop-layout.md)。
 >
-> **读者**：要改窄屏形态的开发者。本文的每个结论都对应 `web/src` 里的具体规则与一条可度量断言（§九）。
+> **读者**：要改窄屏形态的开发者。每个结论都对应 `web/src` 里的具体规则与一条**可度量断言**（§六），关键数值来自 headless Chrome + CDP 实测（320×640 / 375×812，安全区 47/34）。浮层（入口行弹层 / 会话区覆盖层 / 模态 / Sheet）在窄屏的形态见[移动端模态与覆盖层](./panel-mobile-overlays.md)。
 
-## 一、设计目标与版面总览
+## 一、版面总览与三条口径
 
 | 目标 | 约束来源 | 落地判据 |
 | --- | --- | --- |
 | 单列、单一滚动 | 375px 放不下双 324px 侧栏 | 侧栏不渲染；唯一滚动容器是消息区 / 视图自身 |
 | 拇指可达 | 单手竖握，可达区在屏幕下 1/3 | 高频操作（输入、卡片、视图切换）在下部或顶栏两侧 |
 | 触控目标 ≥ 44px | iOS HIG / Material 一致口径 | 顶栏按钮 44×44；Sheet 项 52px；视图内按钮 44px |
-| 不横向溢出 | 320px 是实测下限 | `document.scrollWidth === innerWidth`（§九 断言） |
-| 安全区 | 刘海 / Home 指示条 / 圆角 | 所有贴边元素带 `env(safe-area-inset-*)` |
-| 桌面零回归 | 同一套组件要服务两种视口 | 移动规则全部收在 `@media (max-width: 767.98px)` 内 |
+| 不横向溢出 | 320px 是实测下限 | `document.scrollWidth === innerWidth`（§六 断言） |
+| 安全区 | 刘海 / Home 指示条 / 圆角 | 贴边元素带 `env(safe-area-inset-*)`，且**高度与内边距一起加** |
+| 桌面零回归 | 同一套组件服务两种视口 | 窄屏规则全部收在 `@media (max-width: 767.98px)` 内 |
 
-**断点**：`(max-width: 767.98px)` 与 `useTouchDevice().isMobile`（`innerWidth < 768`）严格同源——前者给 CSS，后者给模板 `v-if`，两者判定永不打架。
+**口径 1 · 断点同源**：`(max-width: 767.98px)` 与 `useTouchDevice().isMobile`（`innerWidth < 768`）严格互补——前者给 CSS，后者给模板 `v-if`，两者判定永不打架。
+
+**口径 2 · 三把环境量**：窄屏的一切「为什么会错位」都出在这三个量没被算进去（桌面它们恒为 0，所以桌面看不出来）：
+
+| 量 | 取值 | 消费方 |
+| --- | --- | --- |
+| `env(safe-area-inset-top/bottom)` | iPhone 实测 47 / 34 | 顶栏**高度与**内边距；输入区、入口行、覆盖层底部；消息区底部留白 |
+| `keyboardInset`（`visualViewport` 算得，<80px 视为抖动归零） | 键盘高度 ≈ 300 | 输入区 / 入口行的 `bottom`；消息区 `padding-bottom` |
+| `isMobile` | `true` | 侧栏是否渲染、模板分支、默认占位文案 |
+
+**口径 3 · 底部是一条链**：`entryBottom = 输入区高 + 24`（`ResizeObserver` 实测写入），入口行、侧栏下界、覆盖层底边、「回到底部」按钮**全部以它表达**。窄屏改任何底部元素，先看它挂没挂这条链、有没有补安全区与键盘位移。
 
 ### 版面总览
 
 ```prodoc-flow
 graph TB
-  H["顶栏 56px：☰ · 标题 · 卡片 · 主题"] --> C[内容区：唯一滚动]
+  H["顶栏 56px + 安全区：☰ · 标题 · 卡片 · 主题"] --> C[内容区：唯一滚动]
   C --> B["底部：入口行 + 输入区（chat）"]
   H -.->|☰| VS[视图 Sheet：聊天/设置/Shell]
   H -.->|卡片| CS[卡片 Sheet：信息卡片]
 ```
 
-三段结构，与桌面一致（顶栏 / 主区），但每段的**内容不同**：
-
 | 区段 | 桌面 | 移动端 v2 |
 | --- | --- | --- |
 | 顶栏左 | 品牌 `EchoAgent Panel` | **`☰`（视图菜单）+ 当前视图标题** |
-| 顶栏右 | 聊天 / 设置 / 全屏 / 主题 | 卡片（仅 chat）+ 主题 |
-| 主区 | 双列侧栏 + 消息 | 消息（单列） |
-| 底部 | 入口行浮层 + 悬浮输入区 | 入口行（横滚）+ 输入区（贴底安全区） |
-| 侧栏卡片 | 常驻双列 | 底部 Sheet |
+| 顶栏右 | 聊天 / 设置 / 全屏 / 主题 | 卡片（仅 chat）+ 主题（全屏按钮被隐藏：iOS Safari 不支持元素全屏） |
+| 主区 | 双列侧栏 + 消息 | 消息（单列，无侧栏留白） |
+| 底部 | 入口行 + 悬浮输入区 | 入口行（横滚）+ 输入区（贴底、随键盘抬升） |
+| 侧栏卡片 | 常驻双列 | 底部 Sheet（卡片抽屉） |
 | 视图切换 | 顶栏常驻按钮 | `☰` → 底部 Sheet |
-
-### 顶栏（v2 重设计）
-
-```prodoc-flow
-graph LR
-  M["☰"] --> T["标题"] --> S["（弹性空）"] --> K["卡片"] --> TH["主题"]
-```
-
-- **`☰` 视图菜单**（44×44，`aria-expanded` 反映 Sheet 开合）：打开视图 Sheet；`aria-label="切换视图"`
-- **标题**：随视图变化——会话视图显示**当前 Agent 名**（人格即身份），设置显示「设置」，Shell 显示「Shell」。仍保留省略号（多节点聚合时 Agent 名可很长），但不再是「品牌压成省略号」那种无信息量的退化
-- **卡片**：仅会话视图渲染；打开卡片 Sheet
-- **主题**：ui-frame 三态开关（浅 / 自动 / 深），90px
-
-**为什么不像桌面那样直接摆视图按钮**：桌面是「品牌 + 聊天 + 设置 + 全屏 + 主题」，375px 上必然溢出——v1 的解法是压品牌字号 + 加省略号（实测 320px 时品牌宽被压到 0）。v2 把视图切换移进 Sheet 后，顶栏只剩「菜单 + 标题 + 卡片 + 主题」，320px 仍有 18px 余量，且 **Shell 视图终于有了常驻入口**（v1 只能走「卡片 Sheet → Shell 卡 → 详情」三级路径）。
 
 ### 视图切换 Sheet
 
@@ -70,99 +65,156 @@ graph LR
 | 设置 | `gear` | API、技能、插件与 Core 连接 |
 | Shell | `clipboard` | Shell 会话列表与详情 |
 
-- 当前项高亮 + `check` 图标 + `aria-current="page"`
-- 选中即切换并关闭；点遮罩 / 关闭按钮只关闭、不切换
+- 当前项高亮 + `check` 图标 + `aria-current="page"`；选中即切换并关闭，点遮罩 / 关闭按钮只关闭、不切换
 - 项高 **52px**（> 44px 触控下限），图标 + 双行文字（标题 15px / 副标题 12px 省略号）
+- **为什么不像桌面那样直接摆视图按钮**：桌面是「品牌 + 聊天 + 设置 + 全屏 + 主题」，375px 上必然溢出——v1 压品牌字号 + 省略号（320px 时品牌宽被压到 0）。v2 移进 Sheet 后顶栏只剩四项，320px 仍有余量，且 **Shell 有了常驻入口**（v1 只能走「卡片 Sheet → Shell 卡 → 详情」三级路径）
 
-## 二、内容区与入口行
+## 二、底部两带：入口行、输入区与消息留白
 
-**内容区**是唯一滚动容器（`overflow-y: auto`），滚动交给视图自身——库在 <768px 会给布局挂 `nm-layout--mobile` 切成「整页滚动」模式，而本应用是固定视口 SPA（`html/body/#app` 均 `overflow: hidden`），必须把布局拉回定高并恢复收缩能力，否则小屏上输入区会被裁出视口且无任何可滚动容器可达（§七 详述）。
+**内容区**是唯一滚动容器（`overflow-y: auto`），滚动交给视图自身——库在 <768px 给布局挂 `nm-layout--mobile` 切成「整页滚动」模式，而本应用是固定视口 SPA（`html/body/#app` 均 `overflow: hidden`），必须把布局拉回定高并恢复收缩能力，否则小屏上输入区会被裁出视口且无任何可滚动容器可达（§五 详述）。
+
+三条底部公式（**都必须含安全区，都会随键盘抬升**）：
+
+| 元素 | 公式 |
+| --- | --- |
+| 输入区 | `bottom: 8px + safe-bottom + keyboardInset`；`left/right: 8px`；`padding: 10px`；圆角 20px；输入字号 **16px**（iOS 焦点防缩放，硬约束） |
+| 入口行 | `bottom: entryBottom + safe-bottom + keyboardInset`；`left/right: 8px`；横滚 |
+| 消息区留白 | `padding-bottom: 190px + safe-bottom + keyboardInset` |
+
+> **为什么都要加安全区**（2026-10 实测修复）：`entryBottom` 里的 24px 是**桌面口径**（输入区 `bottom: 12` + 12 间隙）。窄屏输入区 `bottom` 是 `8 + 安全区`，两端口径差 16px——只写 `entryBottom` 时，iPhone（安全区 34）上入口行会**压进输入区 18px**（实测 375×812：入口行 674..720 vs 输入区顶 702）。加安全区后间距稳定在 16px。
+>
+> **消息留白为什么是 190 + 两量**：190px 只覆盖「键盘收起 + 无安全区」的情形。键盘一弹（≥80px 才计入），输入区上移多少，最新消息就被压多少——实测键盘 300px 时被遮 220px，且**拖不出来**（留白不够，滚到底也还在输入区背后）。加上两者后，留白恒比输入区占位多约 114px。
 
 ### 入口行：横滚 + 「还有更多」提示
 
-入口行最多可挂 8 个控件（Agent 切换器 + 配置 / 上下文 / 清单 / 会话 / 工作区 / 任务 / 实例，后四个按能力 `v-if`）。375px 上实测总宽 **608px** vs 可用 **359px**——必然横向滚动。
+入口行最多可挂 8 个控件（Agent 切换器 + 配置 / 上下文 / 清单 / 会话 / 工作区 / 任务 / 实例 + 模型，后几个按能力 `v-if`）。375px 上实测总宽 **608px** vs 可用 **359px**——必然横向滚动。
 
 | 做法 | 说明 |
 | --- | --- |
 | 容器 | `left/right: 8px`（右界保证可滑到底，此前无右界时右侧按钮滑不到）、`overflow-x: auto`、`flex-wrap: nowrap`、隐藏滚动条 |
 | 子项 | `flex: 0 0 auto`（不压缩，保持各自完整宽度） |
-| 纵向手势 | `touch-action: pan-x`——纵向滚动完全交给消息区，避免斜滑时两个容器抢手势 |
+| 纵向手势 | `touch-action: pan-x`——纵向滚动交给消息区，避免斜滑时两个容器抢手势 |
 | **滚动提示** | 可滚且未滚到底时，右端叠一个 `›`（36px，`position: sticky` 贴右缘、`pointer-events: none`、左缘 mask 渐隐）；滚到底立即消失 |
 
-提示的实现要点（`ChatView.vue`）：`entryRowRef` + `syncEntryScroll()` 计算 `entryScrollable / entryAtEnd`；在入口行 `scroll` 事件、窗口 `resize`、以及四个能力开关（`sessionSwitcherAvailable` / `workspaceAvailable` / `tasksAvailable` / `instanceAvailable`）变化时重算。**桌面**：入口行不溢出 → `entryScrollable` 恒 false → 提示不渲染（零回归）。
+提示的实现要点（`ChatView.vue`）：`entryRowRef` + `syncEntryScroll()` 算 `entryScrollable / entryAtEnd`；在入口行 `scroll`、窗口 `resize`、以及四个能力开关变化时重算。**桌面**：入口行不溢出 → `entryScrollable` 恒 false → 提示不渲染（零回归）。
 
-> 为什么不改成「常驻 2 项 + 更多 Sheet」：这 8 个入口在聊天时都有即时用途（清单、工作区、会话切换尤甚），收进二级菜单会让高频动作多一次点击。横滚的学习成本低，缺的只是「右边还有」这一条视觉信号——补信号比改造交互结构更划算。
+> 为什么不改成「常驻 2 项 + 更多 Sheet」：这 8 个入口在聊天时都有即时用途（清单、工作区、会话切换尤甚），收进二级菜单会让高频动作多一次点击。横滚的学习成本低，缺的只是「右边还有」这条视觉信号——补信号比改造交互结构更划算。
 
-### 输入区
+## 三、视图内的窄屏重排（设置 / Shell）
 
-- `left/right: 8px`，`bottom: calc(8px + env(safe-area-inset-bottom) + 键盘偏移)`
-- 圆角 20px、内边距 10px（与桌面同族，只收窄）
-- **输入字号 16px**：iOS Safari 在 <16px 的输入框聚焦时会自动放大整页，这是硬约束，不是审美选择
-- 键盘弹出时随 `visualViewport` 抬升（§七）
+顶栏与底部两带之外，各视图有自己的窄屏重排。设置视图是最重的一处（`SettingsView.vue` 的 `@media`）：
 
-### 消息区
+| 桌面 | 移动端 | 实现 |
+| --- | --- | --- |
+| 一级菜单 168px 竖排 | 顶部**横滑 tab 条**（`scrollbar: none`、`flex: 0 0 auto`） | `.caps-nav` 改 `flex-direction: row` |
+| 列表 + 详情并排（可拖分隔条） | **Master-Detail 单栏**：列表态隐藏详情、详情态隐藏列表，详情头部出「返回」 | `.caps-workspace--mobile-list/detail` + `mobileWorkspaceClass` |
+| 筛选条：搜索框 + chips + 分组段选，`flex-wrap` | **两行固定形态**：搜索独占一行、chips 单行横滚、段选靠右 | `.caps-filters` / `.caps-filters__chips` |
+| 工具条 `flex-wrap` | 允许换行（按钮 44px 高） | `.caps-toolbar` |
 
-- 气泡 `max-width: 88%`（桌面 100%，窄屏减少两侧浪费）
-- 底部 `padding-bottom` 预留浮层高度（入口行 + 输入区 + 安全区），保证最后一条消息可滚到浮层之上
-- 会话区覆盖层（上下文 / Agent 配置）收为 `inset: 6px` 近全屏，最大化可读宽度
+> **筛选条为什么要收成两行**（2026-10 实测修复）：桌面三者各自换行，窄屏上是**三段各自成行**——技能分类实测吃掉 **359px**（可视区 686px 的 **52%**），列表被压到 230px（320×640 时只剩 58px，等于看不见）。收成两行后筛选条 111px，列表升到 431px（375）/ 259px（320）。
 
-## 三、卡片 Sheet（双侧栏的窄屏替代）
+Shell 视图在两个视口共用同一份结构，只有两处窄屏差异：命令输入行补底部安全区、输入字号 16px；空态（无 Shell 会话）是**显式契约**——给出说明与「回到聊天」出口，不留白（移动端可从视图 Sheet 直接进入 Shell，首次进入必然无目标会话）。
+
+## 四、卡片 Sheet（双侧栏的窄屏替代）
 
 桌面双列侧栏在 375px 上会压死正文（两列各 324px），因此**不渲染侧栏**，卡片改由顶部「卡片」按钮打开的底部 Sheet 承载：
 
 - 容器：`NeumorphismDrawer position="bottom"`，标题「信息卡片」，高度 78%
 - 内容：复用 `PanelSidebar`（左列 + 右列），门控 / 排序 / 工作区绑定全部继承——**不是另写一套卡片列表**
-- 排列：`RailStack` 在 Sheet 内改为纵向 `block`（桌面「常驻列」语义中的 `height:100%` + 槽位 `flex:1` 会让每列各占满一屏、要滚两次才看全）；滚动交给 Sheet 本身
-- 拖动：`drag-enabled=false`（无跨列拖动，窄屏没有「另一列」）
+- 排列：`RailStack` 在 Sheet 内改为纵向 `block`（桌面「常驻列」语义里的 `height:100%` + 槽位 `flex:1` 会让每列各占满一屏、要滚两次才看全）；滚动交给 Sheet 本身
+- 拖动：`drag-enabled=false`（窄屏没有「另一列」）
+- 底部：卡片栈容器补 `12px + env(safe-area-inset-bottom)`，末卡不被 Home 指示条压住
 - 空态：「（当前无可见卡片）」
 - **与视图 Sheet 互斥**：两者共用一个 `mobileSheet` 单值（`mobile-sheets.ts`），不会出现「打开卡片时视图菜单还开着」的叠层事故
 
-## 四、软键盘、触控与安全区
+## 五、软键盘、安全区与库样式覆盖
 
-这是移动浏览器最脏的一块，三层兜底（缺一层就会出现「输入框被工具条遮住」）：
+### 视口高度三层兜底
 
-1. `height: 100%`（最上方全局段，兜底中的兜底）
+移动浏览器最脏的一块，缺一层就会出现「输入框被工具条遮住」：
+
+1. `height: 100%`（全局兜底）
 2. `height: 100dvh`（iOS 15.4+ / Chrome 108+ 地址栏收展动态跟随）
 3. `height: var(--app-h, 100dvh)`——`index.html` 内联脚本实测 `window.innerHeight` 写入的 px 值（个别浏览器 dvh 不可靠：iOS 非滚动页不动态更新、老 WebView 不支持）
 
-另外必须压掉库给的 `min-height: 100vh`：移动浏览器里 `vh` 是「大视口」（按工具条隐藏时算），比可见区高约一个工具条高度，会顶穿 `height` 覆盖、把底部输入区推到工具条之下。这是「输入框被浏览器底部遮住」的直接元凶。
+另外必须压掉库给的 `min-height: 100vh`：移动浏览器的 `vh` 是「大视口」（按工具条隐藏时算），比可见区高约一个工具条，会顶穿 `height` 覆盖、把输入区推到工具条之下——这是「输入框被浏览器底部遮住」的直接元凶。这条覆盖同样要 `#app` 前缀（见下）。
 
-**键盘偏移**：`visualViewport` 的 `resize` / `scroll` 事件算出键盘高度，写进 `keyboardInsetPx`，输入区与入口行同步 `bottom: calc(... + v-bind(keyboardInsetPx))`。
+### 安全区：高度与内边距必须一起加
 
-### 触控目标与安全区
+```css
+#app .nm-layout__header {
+  height: calc(56px + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top);
+  padding-left/right: max(12px, env(safe-area-inset-left/right, 0px));
+}
+```
+
+只加 `padding-top` 不够：库把顶栏定高 `56px`，内边距吃掉 47px 后内容盒只剩 9px，44px 的 `☰` 反而**溢出到会话区之上**（实测按钮 29.5..73.5 vs 顶栏 0..56）。高度与内边距同步加，顶栏整体下移。
+
+### 库样式覆盖：必须赢特异性
+
+库规则带 scoped 属性选择器，比裸类多一级：`.nm-layout__header[data-v-006e9573]` 是 `(0,2,0)`，应用侧的 `.nm-layout__header` 只有 `(0,1,0)` —— **整段静默失效**（不报错，只是没生效）。实测后果：`padding-top` 仍是 `0`、左右仍是库的 `16px`，刘海屏上顶栏按钮有 41px 埋在状态栏里。修法是加 `#app` 前缀提到 `(1,1,0)+`；`styles.css` 里所有覆盖库根节点的窄屏规则都遵循这一条。
+
+### 触控目标
 
 | 元素 | 尺寸 | 依据 |
 | --- | --- | --- |
 | 顶栏按钮（`☰` / 卡片 / 主题） | ≥ 44×44 | iOS HIG |
 | Sheet 项 | 52px 高 | 同上 + 双行文字 |
-| 视图内主按钮（刷新 / 查询 / 编辑 / 删除） | 44px 高 | `@media (pointer: coarse)` 统一抬升 |
+| 视图内主按钮（刷新 / 查询 / 编辑 / 删除） | 44px 高 | `@media (pointer: coarse)` 统一抬升（与视口无关：平板触摸同样受益） |
 | 入口行按钮 | 原有 pill 尺寸（≥32px）+ 横滚容器额外 2px 下内边距 | 横滚时手指不易误触 |
 
-安全区：顶栏 `padding-top: env(safe-area-inset-top)`、左右 `max(12px, env(safe-area-inset-*))`；Sheet 与输入区底部 `env(safe-area-inset-bottom)`。
+## 六、验证口径与实测记录
 
-## 五、验证口径（可度量断言）
+### 可度量断言
 
 | 断言 | 判据 |
 | --- | --- |
 | 无横向溢出 | `document.documentElement.scrollWidth === innerWidth`（320 / 375 / 390 三档） |
-| 顶栏全部可达 | 顶栏内所有 `display !== none` 的按钮，最右一个 `getBoundingClientRect().right < innerWidth` |
+| 顶栏让开刘海 | 顶栏高 = `56 + safe-top`；顶栏内每个按钮的 `top ≥ safe-top` 且 `bottom ≤ 顶栏高` |
+| 顶栏全部可达 | 顶栏内所有 `display !== none` 的按钮，最右一个 `rect.right < innerWidth` |
+| 底部不漏 | 入口行 `bottom ≤ 输入区 top − 8`（无重叠，实测间距 16） |
+| 留白跟键盘 | 消息区 `padding-bottom ≥ 输入区占位（bottom + 高）`，键盘弹出后仍成立 |
 | 视图切换可达 | `☰` 可见（44×44），Sheet 三项可点，切换后标题随之变化 |
 | Shell 可达 | 视图 Sheet 第三项进入后主区非空（有会话 → 详情；无会话 → 空态） |
 | 入口行提示正确 | 未滚到底 → `.entry-row__more` 存在；滚到底 → 不存在；桌面 → 始终不存在 |
+| 设置可用宽度 | 技能/工具分类下 `.caps-workspace` 高度 ≥ 可视区一半（实测 431 / 709 = 61%） |
 | 固定视口 | `documentElement.scrollHeight === innerHeight`（不允许整页滚动） |
-| 单一滚动容器 | 页面内 `overflow-y: auto/scroll` 且内容溢出的元素只有消息区 / 视图自身 |
-| 桌面零回归 | ≥768px：侧栏渲染、顶栏两视图按钮可见、无 `.mobile-view-btn`、无卡片按钮 |
+| 桌面零回归 | ≥768px：侧栏渲染、两视图按钮可见、无 `.mobile-view-btn`、消息区 `padding-bottom` 恒 190px |
 
-视口档位（实测覆盖）：**320×568**（最小）、**360×640**、**375×667**（主参考）、**390×844**（现代 iPhone）。
+视口档位（实测覆盖）：**320×640**（最小）、**375×812**（主参考）、**390×844**（现代 iPhone）。安全区按 iPhone 口径注入 `top: 47 / bottom: 34`。
 
-## 六、v1 → v2 变更摘要
+### 怎么测（可复现，已入库）
 
-| 项 | v1（2026-10 初） | v2（本次重设计） |
+```bash
+cd web && npm run layout:mobile        # 375×812 + 320×640，14 条断言
+BASE=http://127.0.0.1:8080 npm run layout:mobile   # 打生产构建
+```
+
+脚本 `web/scripts/mobile-layout-check.mjs`：无头 Chrome + CDP 直连（**不引 playwright**，Node ≥21 的内置 `WebSocket` 即可），关键三步是
+
+```js
+Emulation.setDeviceMetricsOverride({ width, height, deviceScaleFactor: 2, mobile: true })
+Emulation.setTouchEmulationEnabled({ enabled: true, maxTouchPoints: 5 })
+Emulation.setSafeAreaInsetsOverride({ insets: { top: 47, bottom: 34, left: 0, right: 0 } })
+// 再 Runtime.evaluate 取 getBoundingClientRect / getComputedStyle 断言
+```
+
+找不到浏览器时**跳过并退出 0**（CI 无浏览器不该红），`--strict` 则视为失败。
+
+> `env(safe-area-inset-*)` 取到非零值取决于两件事：`index.html` 的 `viewport-fit=cover`（已配）与上面的 override——**没有 override 时它恒为 0**。这正是这类 bug 在桌面浏览器和大多数「手机模式」里永远看不见的原因。
+
+### 本轮实测（2026-10 修复前后）
+
+| 项 | 修复前 | 修复后 |
 | --- | --- | --- |
-| 视图切换 | 顶栏「聊天 / 设置」两个按钮 | `☰` → 底部 Sheet（含 **Shell**，v1 无入口） |
-| 顶栏标题 | 品牌，被挤成省略号 | 当前视图标题（聊天 = Agent 名） |
-| 顶栏宽度 | 375px 时品牌被压到几近不可见 | 320px 仍余 18px |
-| 入口行 | 横滚，无任何提示 | 横滚 + `›` 提示（滚到底消失） |
-| 卡片抽屉 | 独立布尔，可与视图菜单叠加 | 与视图 Sheet 共用单值，互斥 |
-| Shell 视图 | 进入无目标会话时**空白** | 自动落到第一个会话；无会话时显式空态 |
-| 断点口径 | CSS 与 JS 各自硬编码 | 统一 `767.98px` / `innerHeight < 768`，并写入测试 |
+| 顶栏 `padding-top`（安全区 47） | `0px`（规则被库压掉） | `47px`，顶栏高 56 → **103** |
+| `☰` 按钮纵向位置 | 6..50（41px 埋在状态栏里） | 53..97（完全在顶栏内） |
+| 顶栏左右内边距 | 16px（库值） | 12px（+ 安全区 `max()`） |
+| 入口行 vs 输入区 | **+18px 重叠** | **−16px 间隙** |
+| 消息区底部留白 | 190px（键盘一开就遮 220px） | 224px（=190+34），随键盘继续增长 |
+| 设置·技能 筛选条高 | **359px**（可视区 52%） | **111px** |
+| 设置·技能 列表高 | 230px（375）/ 58px（320） | **431px / 259px** |
+| 桌面（1440×900） | 顶栏 64、入口行间隙 12、留白 190 | 完全一致（未回归） |
+
+四条修复分别落在：`styles.css` 的顶栏安全区（高度 + 内边距 + `#app` 前缀）、`ChatView.vue` 的入口行 `bottom`、`ChatView.vue` 的消息区 `padding-bottom`（含「回到底部」按钮与上下文档覆盖层的底部同步补安全区）、`SettingsView.vue` 的筛选条两行化。

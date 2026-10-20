@@ -2,7 +2,7 @@
 id: panel-settings-plugins
 title: "设置 · 插件"
 group: 前端
-x: 2880
+x: 3520
 y: 1060
 ---
 

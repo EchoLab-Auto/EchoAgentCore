@@ -58,16 +58,13 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 
 **前端层 —— Panel 与视图交互契约**
 
-- [panel.md](./panel/panel.md) — Panel 前端：仓库布局、中继模型、状态管理与数据流
-- [panel-interaction.md](./panel/panel-interaction.md) — **交互定义**（设备无关）：核心原则、视图层级、导航契约、功能模块清单（前端总入口）
-- [panel-desktop-layout.md](./panel/panel-desktop-layout.md) — **电脑端布局**（≥768px）：外壳几何、层叠秩序、双侧边栏、卡片、连接生命周期
-- [panel-chat.md](./panel/panel-chat.md) — 会话视图：消息列表、工具卡、推理块与输入区
-- [panel-modals.md](./panel/panel-modals.md) — 模态与覆盖层：模态清单、分支/上下文弹层、Agent 配置弹层
-- [panel-settings.md](./panel/panel-settings.md) — 设置视图外壳：八分类菜单、共用契约与界面元素树 → 七篇分类子文档：[API](./panel/panel-settings-api.md) · [技能](./panel/panel-settings-skills.md) · [工具](./panel/panel-settings-tools.md) · [插件](./panel/panel-settings-plugins.md) · [智能体](./panel/panel-settings-agents.md) · [Core 与联邦](./panel/panel-settings-cores.md) · [日志与系统](./panel/panel-settings-logs.md)
-- [panel-instance-tasks.md](./panel/panel-instance-tasks.md) — 实例管理·任务·Shell：描述符驱动的插件实例弹层、任务弹层、HTTP 通道
-- [panel-mobile-layout.md](./panel/panel-mobile-layout.md) — **移动端布局**（<768px）：顶栏与视图菜单、入口行横滚提示、卡片 Sheet、软键盘与安全区
-- [panel-system.md](./panel/panel-system.md) — 系统交互：Toast、键盘清单、设计边界与关键常量
-- [panel-icons.md](./panel/panel-icons.md) — 图标体系：载体分工、尺寸线宽档位、语义色令牌、防回归守卫
+- [panel.md](./panel/panel.md) — Panel 前端（前端层入口）：仓库布局、中继模型、状态管理与数据流 → 下面三支
+- **呈现与参考**：[panel-desktop-layout.md](./panel/panel-desktop-layout.md) — **桌面端布局**（≥768px）：外壳几何、层叠秩序、双侧边栏、卡片、连接生命周期 → [桌面端模态与覆盖层](./panel/panel-desktop-overlays.md)；[panel-mobile-layout.md](./panel/panel-mobile-layout.md) — **移动端布局**（<768px）：顶栏与视图菜单、入口行横滚提示、卡片 Sheet、软键盘与安全区 → [移动端模态与覆盖层](./panel/panel-mobile-overlays.md)；[panel-icons.md](./panel/panel-icons.md) — 图标体系：载体分工、尺寸线宽档位、语义色令牌、防回归守卫；[panel-constants.md](./panel/panel-constants.md) — 关键常量速查 + 协议已定义但 UI 未接线的命令清单
+- **功能与视图契约**：[panel-interaction.md](./panel/panel-interaction.md) — **交互定义**（设备无关）：核心原则、视图层级、导航契约、功能模块清单
+  - [panel-chat.md](./panel/panel-chat.md) — **会话视图**（总览）：视图构成、三分区职责、组件与数据流 → 消息区（[总览](./panel/panel-chat-messages.md)：[列表与滚动](./panel/panel-chat-list.md) · [历史与实时窗口](./panel/panel-chat-history.md) · [时序与动画](./panel/panel-chat-timeline.md) · [工作行](./panel/panel-chat-work.md) → [工具卡与图标行](./panel/panel-chat-tools.md) / [推理块与活动浮条](./panel/panel-chat-reasoning.md)）、[输入区与入口行](./panel/panel-chat-input.md)、[双侧边栏](./panel/panel-chat-rail.md)
+  - [panel-settings.md](./panel/panel-settings.md) — 设置视图外壳：八分类菜单、共用契约与界面元素树 → 七篇分类子文档：[API](./panel/panel-settings-api.md) · [技能](./panel/panel-settings-skills.md) · [工具](./panel/panel-settings-tools.md) · [插件](./panel/panel-settings-plugins.md) · [智能体](./panel/panel-settings-agents.md) · [Core 与联邦](./panel/panel-settings-cores.md) · [日志与系统](./panel/panel-settings-logs.md)
+  - [panel-instance-tasks.md](./panel/panel-instance-tasks.md) — 实例管理·任务·Shell：描述符驱动的插件实例弹层、任务弹层、HTTP 通道
+  - [panel-system.md](./panel/panel-system.md) — 系统反馈：Toast 形态与来源、键盘清单、反馈形态的选择
 
 **运维层**
 
@@ -83,6 +80,8 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 
 - [design/index.md](./design/index.md) — 设计层索引：这一层收什么、写作约定与阅读顺序
 - [decoupling-plan.md](./design/decoupling-plan.md) — 完全解耦推进计划（规划）：验收口径、分阶段计划与风险
+- [plugin-framework-extraction.md](./design/plugin-framework-extraction.md) — 插件框架外迁（真框架）：M0–M5 边界与判据、各阶段执行记录
+- [s4-agent-decomposition.md](./design/s4-agent-decomposition.md) — S4 计划：`Agent` 拆服务（分阶段 + 风险 + 何时别做）
 - [mcp-import.md](./design/mcp-import.md) — MCP 导入通道评估：实测证据、能力映射、三种形态成本、安全面与升级条件
 - [instance-plugin.md](./design/instance-plugin.md) — 实例插件化设计：P1 已落地、P2+ 规划
 - [adapter-genericization/index.md](./design/adapter-genericization/index.md) — 插件实例泛化设计系列：分册设计（01/02/03）、证据包、对账表与进度台账
@@ -117,6 +116,7 @@ graph LR
   Frame --> Logging[日志与可观测性|/core/core-logging.md]
   Frame --> Security[敏感信息隔离|/core/security-redaction-design.md]
   Plugins --> Tools[工具系统|/plugins/core-tools.md]
+  Tools --> ToolCat[内置工具目录|/plugins/tool-catalog.md]
   Plugins --> Skills[技能系统|/plugins/core-skills.md]
   Plugins --> Subagent[Subagent 插件|/plugins/core-subagent.md]
   Plugins --> Gating[QQ 实例门控|/plugins/qq-gating.md]
@@ -129,11 +129,40 @@ graph LR
   Design --> FedMerge[联邦·管理端口合并|/design/federation-port-merge.md]
   Design --> Perf[Panel 性能审计|/design/panel-performance-audit.md]
   Design --> Identity[条目身份化（P1）|/design/entry-identity-p1.md]
+  Design --> PluginFW[插件框架外迁|/design/plugin-framework-extraction.md]
+  Design --> McpImport[MCP 导入通道|/design/mcp-import.md]
+  Plan --> S4[S4 计划：Agent 拆服务|/design/s4-agent-decomposition.md]
   AdapterPlugin --> Gen[插件实例泛化（设计系列）|/design/adapter-genericization/index.md]
+  Gen --> Gen01a[01a Core UI 描述符链路|/design/adapter-genericization/01a-core-uidescriptor.md]
+  Gen --> Gen01b[01b 线协议去号码化|/design/adapter-genericization/01b-core-protocol-lifecycle.md]
+  Gen --> Gen02a[02a Panel 协议与状态层|/design/adapter-genericization/02a-panel-protocol.md]
+  Gen --> Gen02b[02b Panel 数据面重接线|/design/adapter-genericization/02b-panel-rewire.md]
+  Gen --> Gen03a[03a UI 描述符渲染器规范|/design/adapter-genericization/03a-panel-renderer-spec.md]
+  Gen --> Gen03b[03b Panel UI 迁移与删除|/design/adapter-genericization/03b-panel-migration.md]
+  Gen --> Gen05[05 跨文档对账表|/design/adapter-genericization/05-reconciliation.md]
+  Gen --> Gen06[06 执行进度台账|/design/adapter-genericization/06-execution-progress.md]
+  Gen --> GenEv00[证据 · 冻结接口|/design/adapter-genericization/evidence/00-frozen-interfaces.md]
+  GenEv00 --> GenEv01[证据 · 01 Core/协议|/design/adapter-genericization/evidence/01-evidence-core.md]
+  GenEv00 --> GenEv02[证据 · 02 Panel 通道|/design/adapter-genericization/evidence/02-evidence-panel-channel.md]
+  GenEv00 --> GenEv03[证据 · 03 Panel UI|/design/adapter-genericization/evidence/03-evidence-panel-ui.md]
+  GenEv00 --> GenEv04[证据 · 04 仓库竞争|/design/adapter-genericization/evidence/04-repo-contention-note.md]
+  Panel --> Desk[桌面端布局|/panel/panel-desktop-layout.md]
+  Desk --> DeskOv[桌面端模态与覆盖层|/panel/panel-desktop-overlays.md]
+  Panel --> Mobile[移动端布局|/panel/panel-mobile-layout.md]
+  Mobile --> MobileOv[移动端模态与覆盖层|/panel/panel-mobile-overlays.md]
+  Panel --> Icons[图标体系|/panel/panel-icons.md]
+  Panel --> Consts[关键常量与设计边界|/panel/panel-constants.md]
   Panel --> Inter[Panel 交互定义|/panel/panel-interaction.md]
-  Inter --> Desk[电脑端布局|/panel/panel-desktop-layout.md]
   Inter --> Chat[会话视图|/panel/panel-chat.md]
-  Inter --> Modals[模态与覆盖层|/panel/panel-modals.md]
+  Chat --> ChatMsg[会话消息区|/panel/panel-chat-messages.md]
+  ChatMsg --> ChatList[消息列表与滚动|/panel/panel-chat-list.md]
+  ChatMsg --> ChatHist[历史快照与实时窗口|/panel/panel-chat-history.md]
+  ChatMsg --> ChatTime[主时间线时序与动画|/panel/panel-chat-timeline.md]
+  ChatMsg --> ChatWork[工作行|/panel/panel-chat-work.md]
+  ChatWork --> ChatTool[工具卡与图标行|/panel/panel-chat-tools.md]
+  ChatWork --> ChatRea[推理块与活动浮条|/panel/panel-chat-reasoning.md]
+  Chat --> ChatInp[输入区与入口行|/panel/panel-chat-input.md]
+  Chat --> ChatRail[双侧边栏|/panel/panel-chat-rail.md]
   Inter --> Set[设置视图|/panel/panel-settings.md]
   Set --> SetApi[设置 · API|/panel/panel-settings-api.md]
   Set --> SetSk[设置 · 技能|/panel/panel-settings-skills.md]
@@ -143,9 +172,7 @@ graph LR
   Set --> SetCo[设置 · Core 与联邦|/panel/panel-settings-cores.md]
   Set --> SetLo[设置 · 日志与系统|/panel/panel-settings-logs.md]
   Inter --> Tasks[实例管理·任务·Shell|/panel/panel-instance-tasks.md]
-  Inter --> Mobile[移动端布局|/panel/panel-mobile-layout.md]
-  Inter --> Sys[系统交互|/panel/panel-system.md]
-  Inter --> Icons[图标体系|/panel/panel-icons.md]
+  Inter --> Sys[系统反馈|/panel/panel-system.md]
   Dev --> Test[测试策略|/dev/dev-testing.md]
   Dev --> DocGuide[文档规范|/documentation-guide.md]
 ```

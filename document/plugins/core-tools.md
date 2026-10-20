@@ -4,6 +4,7 @@ title: "工具系统"
 group: 插件
 x: 960
 y: 1620
+link: ["tool-catalog | 内置工具目录"]
 ---
 
 # 工具系统
