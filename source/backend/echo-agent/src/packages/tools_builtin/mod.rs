@@ -33,6 +33,10 @@ pub use echo_plugin_tools::plugin::{resolve_provider, standalone_provider};
 pub use echo_plugin_tools::shell_commands::{
     ShellCommandHost as ShellCommandHostAlias, ShellCommandHandler,
 };
+/// 实例命令域的宿主接缝。
+pub use echo_plugin_tools::instance_commands::{
+    InstanceCommandHost as InstanceCommandHostAlias, InstanceCommandHandler,
+};
 
 /// 组装一个 persona 的内置工具集：**实现全在插件里**，这里只传端口。
 ///

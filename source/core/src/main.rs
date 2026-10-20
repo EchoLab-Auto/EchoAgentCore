@@ -1514,11 +1514,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             > = std::sync::Arc::new(echo_agent::agent::shell_host::AgentShellCommandHost::new(
                 agent.clone(),
             ));
+            // 实例命令域：注册表是进程级单例，出口就是 `Agent::emit`。
+            let instance_command_host: std::sync::Arc<
+                dyn echo_agent::tool::builtin::InstanceCommandHostAlias,
+            > = std::sync::Arc::new(echo_agent::agent::shell_host::AgentInstanceCommandHost::new(
+                agent.clone(),
+            ));
             push_plugin(
                 &mut catalog,
                 echo_agent::tool::builtin::builtin_plugin::plugin(
                     version,
                     shell_command_host,
+                    instance_command_host,
                     move |enable| {
                         // 逐 persona 重评估：全局启用 ∧ 各 persona 白/黑名单。
                         for_each_agent(&gating_manager_1, |a| {

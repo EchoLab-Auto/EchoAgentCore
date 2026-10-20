@@ -1403,107 +1403,21 @@ impl Agent {
                 }
             }
             // ---- PluginInstance management ----
-            BackendCommand::StartInstance { name } => match self.instances.get(&name) {
-                Some(instance) => {
-                    match instance.start().await {
-                        Ok(()) => self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("adapter {} started", instance.display_name()),
-                        }),
-                        Err(e) => self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!(
-                                "adapter {} start failed: {e}",
-                                instance.display_name()
-                            ),
-                        }),
-                    }
-                    self.emit_instance_list();
-                }
-                None => self.emit(BackendEvent::Error {
-                    session_id: None,
-                    message: format!("adapter {name} not found"),
-                }),
-            },
-            BackendCommand::StopInstance { name } => match self.instances.get(&name) {
-                Some(instance) => {
-                    match instance.stop().await {
-                        Ok(()) => self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("adapter {} stopped", instance.display_name()),
-                        }),
-                        Err(e) => self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!(
-                                "adapter {} stop failed: {e}",
-                                instance.display_name()
-                            ),
-                        }),
-                    }
-                    self.emit_instance_list();
-                }
-                None => self.emit(BackendEvent::Error {
-                    session_id: None,
-                    message: format!("adapter {name} not found"),
-                }),
-            },
-            BackendCommand::RestartInstance { name } => match self.instances.get(&name) {
-                Some(instance) => {
-                    match instance.stop().await {
-                        Ok(()) => match instance.start().await {
-                            Ok(()) => self.emit(BackendEvent::Error {
-                                session_id: None,
-                                message: format!("adapter {} restarted", instance.display_name()),
-                            }),
-                            Err(e) => self.emit(BackendEvent::Error {
-                                session_id: None,
-                                message: format!(
-                                    "adapter {} restart (start) failed: {e}",
-                                    instance.display_name()
-                                ),
-                            }),
-                        },
-                        Err(e) => self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!(
-                                "adapter {} restart (stop) failed: {e}",
-                                instance.display_name()
-                            ),
-                        }),
-                    }
-                    self.emit_instance_list();
-                }
-                None => self.emit(BackendEvent::Error {
-                    session_id: None,
-                    message: format!("adapter {name} not found"),
-                }),
-            },
-            BackendCommand::RequestInstanceStatus => {
-                self.emit_instance_list();
-            }
-            BackendCommand::StartAllInstances => {
-                let results = self.instances.start_all().await;
-                for (name, result) in &results {
-                    match result {
-                        Ok(()) => self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("adapter {name} started"),
-                        }),
-                        Err(e) => self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("adapter {name}: {e}"),
-                        }),
-                    }
-                }
-                self.emit_instance_list();
-            }
-            BackendCommand::StopAllInstances => {
-                self.instances.stop_all().await;
+            // 实例（adapter）命令域已迁进 `echo-plugin-tools`（全插件化 S3：
+            // 与 `instance_*` 工具同一个插件；清单投影也搬过去了——"这个平台
+            // 有哪些展示字段"是适配器能力的知识）。这里只剩"插件未启用"的
+            // 兜底：面板点了按钮必须有回应，不能静默。
+            BackendCommand::StartInstance { .. }
+            | BackendCommand::StopInstance { .. }
+            | BackendCommand::RestartInstance { .. }
+            | BackendCommand::RequestInstanceStatus
+            | BackendCommand::StartAllInstances
+            | BackendCommand::StopAllInstances => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
-                    message: "all adapters stopped".into(),
+                    message:
+                        "实例命令由 echo-agent.tools.builtin 插件处理，但该插件未启用".into(),
                 });
-                self.emit_instance_list();
             }
             BackendCommand::InvokeInstanceOp { .. } => {
                 self.apply_instance_command(cmd).await;

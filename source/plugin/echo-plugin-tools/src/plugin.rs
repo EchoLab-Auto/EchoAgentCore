@@ -132,11 +132,14 @@ pub fn manifest(version: &str) -> PluginManifest {
 pub fn plugin(
     version: &str,
     shell_host: Arc<dyn crate::shell_commands::ShellCommandHost>,
+    instance_host: Arc<dyn crate::instance_commands::InstanceCommandHost>,
     gate: impl Fn(bool) + Send + Sync + 'static,
 ) -> Arc<dyn Plugin> {
     let gate = Arc::new(gate);
     let gate_mount = gate.clone();
     let handler = Arc::new(crate::shell_commands::ShellCommandHandler::new(shell_host));
+    let instance_handler =
+        Arc::new(crate::instance_commands::InstanceCommandHandler::new(instance_host));
     Arc::new(BuiltinPlugin::new(manifest(version), move |mctx: &MountContext| {
         gate_mount(true);
         let gate_unmount = gate_mount.clone();
@@ -155,11 +158,22 @@ pub fn plugin(
     // 命令域：4 条 `*Shell*` 命令由本插件处理（宿主 `apply_command` 在落
     // 内置 match 之前问一次插件）。`shell_*` 工具也在这里——会话的模型侧与
     // 面板侧从此同属一个插件。
-    .with_commands(crate::shell_commands::COMMANDS)
+    .with_commands(
+        crate::shell_commands::COMMANDS
+            .into_iter()
+            .chain(crate::instance_commands::COMMANDS)
+            .collect::<Vec<_>>(),
+    )
     .with_command_handler_async(move |name, payload| {
-        let handler = handler.clone();
+        let shell = handler.clone();
+        let instance = instance_handler.clone();
         Box::pin(async move {
-            handler
+            // 两个域各问一次；都没认领 = `Ok(Null)`（插件声明过的命令名不该
+            // 走到这里——`with_commands` 与处理器必须同步，测试守着）。
+            if let Some(outcome) = shell.handle(&name, payload.clone()).await {
+                return outcome;
+            }
+            instance
                 .handle(&name, payload)
                 .await
                 .unwrap_or(Ok(serde_json::Value::Null))
@@ -191,7 +205,16 @@ pub fn standalone_provider() -> Arc<dyn BuiltinToolProvider> {
 mod tests {
     use super::*;
 
-    /// 命令域测试不关心 shell：最小宿主（未接线）。
+    /// 命令域测试不关心具体能力：两个最小宿主（未接线）。
+    struct NoInstanceHost;
+
+    impl crate::instance_commands::InstanceCommandHost for NoInstanceHost {
+        fn instances(&self) -> Arc<echo_defs::plugin_instance::InstanceRegistry> {
+            Arc::new(echo_defs::plugin_instance::InstanceRegistry::new())
+        }
+        fn emit(&self, _event: echo_protocol::BackendEvent) {}
+    }
+
     struct NoShellHost;
 
     impl crate::shell_commands::ShellCommandHost for NoShellHost {
@@ -260,9 +283,11 @@ mod tests {
     #[test]
     fn mount_provides_and_unmount_revokes_the_service() {
         let ctx = Arc::new(echo_context::Ctx::default());
-        let host: Arc<dyn crate::shell_commands::ShellCommandHost> =
+        let shell_host: Arc<dyn crate::shell_commands::ShellCommandHost> =
             Arc::new(NoShellHost);
-        let plugin = plugin("9.9.9", host, |_| {});
+        let instance_host: Arc<dyn crate::instance_commands::InstanceCommandHost> =
+            Arc::new(NoInstanceHost);
+        let plugin = plugin("9.9.9", shell_host, instance_host, |_| {});
         let mounted = plugin
             .mount(&MountContext::new().with_ctx(ctx.clone()))
             .expect("mount ok");

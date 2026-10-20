@@ -40,7 +40,7 @@ use echo_defs::plugin_instance::InstanceRegistry;
 use crate::bridge::BackendHandle;
 use crate::command::BackendCommand;
 use crate::config::{AgentConfig, ApiProfile};
-use crate::event::{BackendEvent, InstanceMetadataEntry, InstanceStatus};
+use crate::event::BackendEvent;
 use crate::llm::{create_provider, ChatChunk, ChatMessage, ChatRequest, LlmProvider, ToolCall};
 use crate::session::{Session, TrunkStore};
 use crate::skill::SkillRegistry;
@@ -1400,57 +1400,15 @@ impl Agent {
     }
 
     /// Emit the current instance list to subscribers.
+    /// 广播实例清单。
+    ///
+    /// **投影逻辑在插件里**（`echo_plugin_tools::instance_commands::instance_list`）
+    /// ——读哪些访问器、线上形状怎么填是适配器能力的知识。宿主只剩"拿进程级
+    /// 注册表 + 发事件"这两件事。
     fn emit_instance_list(&self) {
-        let instances: Vec<InstanceStatus> = self
-            .instances
-            .list_info()
-            .into_iter()
-            .map(|info| {
-                // 实例句柄：management / ui_descriptor / session_labels 三个
-                // trait 访问器同源（贡献在注册时静态）。
-                let handle = self.instances.get(&info.name);
-                // 实例附加信息（persona/容器/URL/绑定地址）经管理面
-                // `cached_state` 取（W3.4 单源化——与 InstanceState 同一状态
-                // 文档；缺管理面 / 无状态时留空，wire 字段本就 Option）。
-                let instance = handle
-                    .as_ref()
-                    .and_then(|a| a.management().and_then(|m| m.cached_state()))
-                    .map(|state| state["instance"].clone())
-                    .unwrap_or_default();
-                let bind_address = instance["bind_address"].as_str().unwrap_or("").to_string();
-                let persona = instance["persona"].as_str().map(str::to_string);
-                // UI 描述符 / 会话标签（01a S2 访问器；InstanceContribution
-                // 原样透传。None = 未声明，线上字段本就 Option）。
-                let ui = handle.as_ref().and_then(|a| a.ui_descriptor());
-                let session_labels = handle.as_ref().and_then(|a| a.session_labels());
-                // **平台自有展示字段由插件自己描述**（UI 描述符里的字段绑定，
-                // Panel 的通用渲染器按 `bind` 取 `instance.*`）。Core 不再逐键
-                // 命名 `container` / `webui_url` / `onebot_url` 并配中文标签
-                // ——那是让框架持有某个平台的展示 schema（2026-10 去适配器化）。
-                let metadata: Vec<InstanceMetadataEntry> = Vec::new();
-                InstanceStatus {
-                    name: info.name,
-                    display_name: info.display_name,
-                    connected: matches!(
-                        info.status,
-                        echo_defs::plugin_instance::InstanceConnectionState::Connected
-                    ),
-                    running: !matches!(
-                        info.status,
-                        echo_defs::plugin_instance::InstanceConnectionState::Stopped
-                    ),
-                    self_id: info.self_id,
-                    bind_address,
-                    started_at: info.started_at,
-                    persona,
-                    metadata,
-                    platform: Some(info.platform),
-                    ui,
-                    session_labels,
-                }
-            })
-            .collect();
-        self.emit(BackendEvent::InstanceList { instances });
+        self.emit(BackendEvent::InstanceList {
+            instances: echo_plugin_tools::instance_commands::instance_list(&self.instances),
+        });
     }
 }
 

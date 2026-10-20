@@ -82,3 +82,24 @@ mod tests {
         assert!(host.manager().is_none());
     }
 }
+
+/// 实例命令域的宿主适配器：注册表 + 出口，两件事。
+pub struct AgentInstanceCommandHost {
+    origin: Arc<Agent>,
+}
+
+impl AgentInstanceCommandHost {
+    pub fn new(origin: Arc<Agent>) -> Self {
+        Self { origin }
+    }
+}
+
+impl echo_plugin_tools::instance_commands::InstanceCommandHost for AgentInstanceCommandHost {
+    fn instances(&self) -> Arc<echo_defs::plugin_instance::InstanceRegistry> {
+        Arc::clone(&self.origin.instances)
+    }
+
+    fn emit(&self, event: BackendEvent) {
+        self.origin.emit(event);
+    }
+}
