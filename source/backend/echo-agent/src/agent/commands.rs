@@ -265,7 +265,7 @@ impl Agent {
             }
             BackendCommand::SetSystemPrompt { prompt } => {
                 self.model.config.write().await.system_prompt = prompt.clone();
-                *self.system_prompt_cache.write().await = None;
+                self.prompt.invalidate().await;
                 self.persist_system_prompt_plugin(&prompt).await;
                 self.emit(BackendEvent::SystemPrompt { text: prompt });
                 self.emit(BackendEvent::Error {
@@ -279,11 +279,11 @@ impl Agent {
             }
             BackendCommand::ToggleSkill { name, enabled } => {
                 let ok = {
-                    let mut skills = self.skills.lock().await;
+                    let mut skills = self.prompt.skills.lock().await;
                     skills.set_enabled(&name, enabled)
                 };
                 if ok {
-                    *self.system_prompt_cache.write().await = None;
+                    self.prompt.invalidate().await;
                     // Persist the choice so it survives restarts.
                     let mut cfg = self.model.config.write().await;
                     cfg.disabled_skills.retain(|n| n != &name);
@@ -721,8 +721,13 @@ impl Agent {
             BackendCommand::DeleteApi { name } => {
                 self.delete_api(&name).await;
             }
-            BackendCommand::RenameApi { from, to } => {
-                self.rename_api(&from, &to).await;
+            BackendCommand::RenameApi { .. } => {
+                // RenameApi 是**进程级**命令（改的是全局供应商池，不是某个人格），
+                // 由 [`crate::process_commands`] 在命令泵里处理。这里 fail-closed。
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: "API 改名应由进程级处理器处理（命令泵接线异常）".into(),
+                });
             }
             BackendCommand::RequestShellSessions { team_id } => {
                 let sessions = self
@@ -1375,171 +1380,19 @@ impl Agent {
                     }),
                 }
             }
-            BackendCommand::SaveTeam {
-                id,
-                name,
-                description,
-                system_prompt,
-                enabled,
-                system_skills,
-                disabled_tools,
-                disabled_skills,
-                enabled_plugins,
-                enabled_tools,
-                enabled_skills,
-                memory_limit_tokens,
-                context_window_tokens,
-                api_profile,
-            } => match self.require_admin() {
-                Ok(mgr) => {
-                    let profile = crate::config::AgentProfile {
-                        system_skills,
-                        name,
-                        description,
-                        system_prompt,
-                        enabled,
-                        disabled_tools,
-                        disabled_skills,
-                        enabled_plugins,
-                        enabled_tools,
-                        enabled_skills,
-                        memory_limit_tokens,
-                        context_window_tokens,
-                        api_profile,
-                    };
-                    match mgr.save_profile(&id, profile.clone(), enabled) {
-                        Ok(()) => {
-                            // 勾选变化立即生效：对运行中的目标 agent 重新发现技能
-                            // 文件（覆盖用户手动新增/修改的 SKILL.md），再应用新的
-                            // 启用/禁用白名单，最后推送技能列表。
-                            // 目标 agent 经**查询面**找（管理面没有 resolve）：
-                            // 保存成功后再对运行中的它应用新能力。
-                            if let Some(target) =
-                                self.require_registry().ok().and_then(|r| r.resolve(&id))
-                            {
-                                let dir = target.model.config.read().await.skills_dir.clone();
-                                if let Err(e) = target.reload_skills(&dir).await {
-                                    tracing::warn!(error = %e, agent = %id, "skill reload after team save failed");
-                                }
-                                target.apply_capabilities(&profile).await;
-                                target.emit_skills_list().await;
-                                // Persona 级 API 引用变更：立即重建该 persona 的
-                                // provider（以管理面本 agent 的全局配置为池基准）。
-                                target.set_persona_api(profile.api_profile.clone()).await;
-                                let global_cfg = self.model.config.read().await.clone();
-                                target.apply_persona_api(&global_cfg).await;
-                                // token 预算热更（2026-10 审计 🔴 修复）：
-                                // 此前只在构造 TrunkStore 时取一次，保存后
-                                // 运行中 agent 仍用旧预算直到重启。与工厂
-                                // （main.rs 装配）同口径：per-persona 覆盖
-                                // 全局 cfg 后再算有效预算（None = 继承）。
-                                let mut budget_cfg = global_cfg.clone();
-                                if profile.memory_limit_tokens.is_some() {
-                                    budget_cfg.memory_limit_tokens = profile.memory_limit_tokens;
-                                }
-                                if profile.context_window_tokens.is_some() {
-                                    budget_cfg.context_window_tokens =
-                                        profile.context_window_tokens;
-                                }
-                                target.trunk.set_memory_limit_tokens(
-                                    budget_cfg.effective_memory_limit_tokens(),
-                                );
-                                self.emit_teams_list().await;
-                            }
-                            self.emit(BackendEvent::Error {
-                                session_id: None,
-                                message: format!("agent {id} saved"),
-                            });
-                        }
-                        Err(e) => {
-                            self.emit(BackendEvent::Error {
-                                session_id: None,
-                                message: format!("save agent failed: {e}"),
-                            });
-                        }
-                    }
-                }
-                Err(reason) => {
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: reason,
-                    });
-                }
-            },
-            BackendCommand::DeleteTeam { id } => match self.require_admin() {
-                Ok(mgr) => match mgr.delete_profile(&id) {
-                    Ok(()) => {
-                        self.emit_teams_list().await;
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("agent {id} deleted"),
-                        });
-                    }
-                    Err(e) => {
-                        self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("delete agent failed: {e}"),
-                        });
-                    }
-                },
-                Err(reason) => {
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: reason,
-                    });
-                }
-            },
-            BackendCommand::ToggleTeam { id, enabled } => {
-                // 组合根 AgentManager 处理；这里转发回进程级管理器。
-                //
-                // **改造前这里是 `None => {}` 静默跳过**——未绑定时用户点"启用"
-                // 什么都不会发生，也没有日志（2026-10-20 事��的同款形状）。
-                // 现在失败即回可见错误。
-                match self.require_admin() {
-                    Err(reason) => self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message: reason,
-                    }),
-                    Ok(mgr) => {
-                        // 重建工厂由 manager 自己持有（技债清理：不再是进程级槽）。
-                        let Some(factory) = mgr.factory_ref() else {
-                            tracing::warn!(
-                                team = %id,
-                                "agent factory not injected; cannot rebuild persona"
-                            );
-                            return;
-                        };
-                        // `set_enabled` 的接收者是 `Arc<Self>`（它要把 manager
-                        // 交给重建出来的 agent 做绑定），所以这里 clone 一份。
-                        match std::sync::Arc::clone(&mgr).set_enabled(&id, enabled, factory) {
-                            Ok(()) => {
-                                // 重新启用的人格：补应用启动期门控（名单 +
-                                // 全局禁用），否则新实例以"全开"状态运行到
-                                // 下次保存/重启。
-                                if enabled {
-                                    if let Some(running) = mgr.get_running(&id) {
-                                        running.agent.apply_capabilities(&running.profile).await;
-                                    }
-                                }
-                                self.emit_teams_list().await;
-                                self.emit(BackendEvent::Error {
-                                    session_id: None,
-                                    message: format!(
-                                        "agent {id} {}",
-                                        if enabled { "enabled" } else { "disabled" }
-                                    ),
-                                });
-                            }
-                            Err(e) => {
-                                self.emit(BackendEvent::Error {
-                                    session_id: None,
-                                    message: format!("toggle agent failed: {e}"),
-                                });
-                            }
-                        }
-                    }
-                }
+            // 团队 CRUD（SaveTeam / DeleteTeam / ToggleTeam）：**进程级命令**，
+            // 由 [`crate::process_commands`] 在命令泵里先处理，不该到达任何
+            // 人格。这里保留一个 fail-closed 兜底——真到了这里说明命令泵的
+            // 接线坏了，要能看见（改造前它们是 `require_admin()` + 静默降级）。
+            BackendCommand::SaveTeam { .. }
+            | BackendCommand::DeleteTeam { .. }
+            | BackendCommand::ToggleTeam { .. } => {
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: "团队管理命令应由进程级处理器处理（命令泵接线异常）".into(),
+                });
             }
+
             BackendCommand::SendMessage {
                 session_id,
                 content,
@@ -1778,7 +1631,7 @@ impl Agent {
 
     /// Emit the full skill list (`BackendEvent::SkillsList`).
     pub async fn emit_skills_list(&self) {
-        let skills = self.skills.lock().await;
+        let skills = self.prompt.skills.lock().await;
         // 注入外部 Git 来源信息（skills/.sources.json）
         // `load_sources_healed`：旧格式记录（键=目录名）在此归正到技能名，
         // 否则「目录名 ≠ 技能名」的仓库在 Panel 里看不到来源徽标
@@ -2068,7 +1921,7 @@ mod reload_skills_tests {
             "两个代理都更新"
         );
         for agent in [&a, &b] {
-            let mut names = agent.skills.lock().await.names();
+            let mut names = agent.prompt.skills.lock().await.names();
             names.sort();
             assert_eq!(names, vec!["alpha".to_string(), "beta".to_string()]);
         }

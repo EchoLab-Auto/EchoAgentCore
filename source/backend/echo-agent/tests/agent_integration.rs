@@ -382,12 +382,10 @@ async fn rename_api_end_to_end_via_apply_command() {
         .await;
     assert!(agent.api_config().await.active_api == "deepseek");
 
-    agent
-        .apply_command(BackendCommand::RenameApi {
-            from: "deepseek".into(),
-            to: "ds".into(),
-        })
-        .await;
+    // RenameApi 是**进程级命令**（改全局供应商池，不属于任何人格）：
+    // 生产路径由命令泵先交给 `process_commands`，不经过 `apply_command`。
+    // 这里直接调它（`admin = None` = 没有其他人格引用要传播）。
+    agent.rename_api("deepseek", "ds", None).await;
 
     let cfg = agent.api_config().await;
     assert!(
@@ -639,7 +637,7 @@ async fn reply_branch_visibility_follows_loop_mode() {
 #[tokio::test]
 async fn toggle_skill_enables_and_disables() {
     let (agent, _provider) = test_agent("ok");
-    agent.skills.lock().await.register(echo_agent::Skill {
+    agent.skills().lock().await.register(echo_agent::Skill {
         metadata: echo_agent::skill::SkillMetadata {
             name: "calc".into(),
             description: "d".into(),
@@ -660,7 +658,7 @@ async fn toggle_skill_enables_and_disables() {
         .await;
     assert!(
         !agent
-            .skills
+            .skills()
             .lock()
             .await
             .get("calc")
@@ -676,7 +674,7 @@ async fn toggle_skill_enables_and_disables() {
         .await;
     assert!(
         agent
-            .skills
+            .skills()
             .lock()
             .await
             .get("calc")
@@ -689,7 +687,7 @@ async fn toggle_skill_enables_and_disables() {
 #[tokio::test]
 async fn skill_keyword_injects_instructions_into_prompt() {
     let (agent, provider) = test_agent("ok");
-    agent.skills.lock().await.register(echo_agent::Skill {
+    agent.skills().lock().await.register(echo_agent::Skill {
         metadata: echo_agent::skill::SkillMetadata {
             name: "calc".into(),
             description: "算术计算".into(),
@@ -730,7 +728,7 @@ async fn skill_keyword_injects_instructions_into_prompt() {
 #[tokio::test]
 async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
     let (agent, provider) = test_agent("ok");
-    agent.skills.lock().await.register(echo_agent::Skill {
+    agent.skills().lock().await.register(echo_agent::Skill {
         metadata: echo_agent::skill::SkillMetadata {
             name: "concise-dialogue".into(),
             description: "简洁表达".into(),
@@ -743,7 +741,7 @@ async fn always_skill_coexists_with_keyword_skill_and_qq_context() {
         },
         instructions: "QQ 单段通常不超过 30 个字符".into(),
     });
-    agent.skills.lock().await.register(echo_agent::Skill {
+    agent.skills().lock().await.register(echo_agent::Skill {
         metadata: echo_agent::skill::SkillMetadata {
             name: "calc".into(),
             description: "算术计算".into(),
@@ -1054,7 +1052,7 @@ async fn failing_tool_result_marks_error_and_turn_completes() {
 #[tokio::test]
 async fn non_triggering_message_uses_cached_prompt() {
     let (agent, provider) = test_agent("ok");
-    agent.skills.lock().await.register(echo_agent::Skill {
+    agent.skills().lock().await.register(echo_agent::Skill {
         metadata: echo_agent::skill::SkillMetadata {
             name: "calc".into(),
             description: "算术计算".into(),
@@ -1321,7 +1319,7 @@ async fn global_tool_toggle_respects_persona_denylist() {
 async fn persona_skill_checkbox_round_trip() {
     let (agent, _provider) = test_agent("ok");
     for name in ["alpha", "beta"] {
-        agent.skills.lock().await.register(echo_agent::Skill {
+        agent.skills().lock().await.register(echo_agent::Skill {
             metadata: echo_agent::skill::SkillMetadata {
                 name: name.into(),
                 description: "d".into(),
@@ -1343,7 +1341,7 @@ async fn persona_skill_checkbox_round_trip() {
             ..Default::default()
         })
         .await;
-    let skills = agent.skills.lock().await;
+    let skills = agent.skills().lock().await;
     assert!(skills.get("alpha").unwrap().metadata.enabled);
     assert!(
         !skills.get("beta").unwrap().metadata.enabled,
@@ -1358,7 +1356,7 @@ async fn persona_skill_checkbox_round_trip() {
             ..Default::default()
         })
         .await;
-    let skills = agent.skills.lock().await;
+    let skills = agent.skills().lock().await;
     assert!(
         skills.get("beta").unwrap().metadata.enabled,
         "重新勾选应立即恢复"
@@ -1424,7 +1422,7 @@ async fn package_gating_spans_tools_and_skills() {
     agent.apply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, false);
     assert!(agent.tools.is_disabled("send_private_msg").await);
     {
-        let s = agent.skills.lock().await;
+        let s = agent.skills().lock().await;
         assert!(!s.get("qq-management").unwrap().metadata.enabled);
         assert!(!s.get("qq-transport").unwrap().metadata.enabled);
         assert!(
@@ -1438,7 +1436,7 @@ async fn package_gating_spans_tools_and_skills() {
     agent.apply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, true);
     assert!(!agent.tools.is_disabled("send_private_msg").await);
     {
-        let s = agent.skills.lock().await;
+        let s = agent.skills().lock().await;
         assert!(s.get("qq-management").unwrap().metadata.enabled);
         assert!(s.get("qq-transport").unwrap().metadata.enabled);
     }
@@ -1454,7 +1452,7 @@ async fn package_gating_spans_tools_and_skills() {
     agent.apply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, false);
     agent.apply_plugin_gating(ADAPTER_QQ_PLUGIN_ID, true);
     {
-        let s = agent.skills.lock().await;
+        let s = agent.skills().lock().await;
         assert!(
             !s.get("qq-management").unwrap().metadata.enabled,
             "persona 黑名单技能不随包恢复"

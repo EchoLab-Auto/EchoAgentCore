@@ -41,14 +41,14 @@ impl Agent {
 
         // 2) 技能逐名双向：同一语义。
         {
-            let mut skills = self.skills.lock().await;
+            let mut skills = self.prompt.skills.lock().await;
             for name in skills.names() {
                 let allowed = persona_skill_allowed(profile, &name)
                     && !global_disabled_skills.iter().any(|s| s == &name);
                 skills.set_enabled(&name, allowed);
             }
         }
-        *self.system_prompt_cache.write().await = None;
+        self.prompt.invalidate().await;
 
         // 3) 门控插件（包/表维度）：仅在"不允许"时禁用——与启动期逐人格
         //    门控同语义；重新允许的恢复由上面的逐名双向步骤完成。全局状态
@@ -146,11 +146,11 @@ impl Agent {
                 .and_then(|guard| guard.as_ref().map(|p| persona_skill_allowed(p, name)))
                 .unwrap_or(true);
         let ok = {
-            let mut skills = self.skills.lock().await;
+            let mut skills = self.prompt.skills.lock().await;
             skills.set_enabled(name, allowed)
         };
         if ok {
-            *self.system_prompt_cache.write().await = None;
+            self.prompt.invalidate().await;
         }
         ok
     }
@@ -319,7 +319,7 @@ impl Agent {
 
         // 技能维度：Package 标签横跨技能，同名包内技能随包启停。
         // （锁竞争时跳过——下一周期/切换时再应用。）
-        if let Ok(mut skills) = self.skills.try_lock() {
+        if let Ok(mut skills) = self.prompt.skills.try_lock() {
             let cap = self.capabilities.lock().ok().and_then(|g| g.clone());
             let affected_skills = if plugin_id == crate::plugins::SKILLS_DIR_PLUGIN_ID {
                 // 技能目录插件：整表启停。启用时只放开名单内的技能。

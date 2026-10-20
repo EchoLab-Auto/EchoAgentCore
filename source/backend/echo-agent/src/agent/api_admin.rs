@@ -387,7 +387,12 @@ impl Agent {
     ///
     /// 成功回 `ApiConfigUpdated` + `ApiProfilesUpdated`（teams 有变更时补
     /// `TeamsList`）；失败回 `Error` 且零写入。
-    pub(crate) async fn rename_api(&self, from: &str, to: &str) {
+    pub async fn rename_api(
+        &self,
+        from: &str,
+        to: &str,
+        admin: Option<&Arc<dyn crate::agent::registry::TeamAdmin>>,
+    ) {
         let to = to.trim();
         if to.is_empty() {
             self.emit(BackendEvent::Error {
@@ -443,11 +448,11 @@ impl Agent {
             new_cfg.active_api = to.to_string();
         }
         // teams 引用（含未运行/禁用 persona）：落盘前计算改写范围。
-        // 团队引用改写范围要问**管理面**（不是查询面）：这两件事分属不同
-        // trait（见 `agent::registry`）。未接线时按"无人引用"处理——落盘照旧，
-        // 只是不广播改名（与改造前的 `unwrap_or_default()` 同语义）。
-        let changed_teams: Vec<String> = self
-            .require_admin()
+        // 管理面由**进程级处理器**注入（`process_commands`）——`Agent` 自己
+        // 不再持有它（S4c：团队/全局配置的增删改都不经人格）。
+        // 未接线（单测 / 无 manager）时按"无其他人格引用"处理：落盘照旧，
+        // 只是不广播 `TeamsList`。这不是静默降级——人名引用与持久化无关。
+        let changed_teams: Vec<String> = admin
             .map(|admin| admin.api_ref_owners(from))
             .unwrap_or_default();
 
@@ -464,7 +469,7 @@ impl Agent {
         // 落盘成功 → 提交内存。
         *config = new_cfg.clone();
         drop(config);
-        if let Ok(admin) = self.require_admin() {
+        if let Some(admin) = admin {
             admin.replace_api_refs(from, to);
         }
 

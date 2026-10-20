@@ -356,7 +356,16 @@ Phase 3 把实现搬出了 echo-agent，但 inproc 轨只兑现了**工具贡献
   出现具体 manager 类型；未绑定从"静默跳过"改为 `require_*()` 显式错误
   （`ToggleTeam` 的 `None => {}` 是最后一个静默点，已消除）。`TeamAdmin` 仍是
   技术债（团队 CRUD 应迁到进程级处理器），但删除点已明确。
-- [ ] **S4c 起的 `Agent` 拆服务**（27,917 行业务核心里最后一块上帝对象）——
+- [x] **`TeamAdmin` 债务清偿**：团队 CRUD 与 API 改名搬进
+  `crate::process_commands`（命令泵在路由到 agent 之前先处理）。`Agent.admin`
+  字段与 `require_admin()` 删除，`ToggleTeam` 的最后一处 `None => {}` 静默降级
+  消除。团队/全局命令从此彻底离开人格。
+- [x] **S4c：`PromptService`**（`skills` / `system_prompt_cache` /
+  `last_prompt_blocks` → 一个服务；字段 32 → 30；缓存失效从 4 个散点收敛成
+  一个显式入口）。`ToolService` **未做**：`run_tool` 一次碰 5 个协作点，
+  搬它要么让服务变成 `Agent` 的影子，要么先给这 5 个各造 seam（另一个 S4a
+  量级）——收益/成本不划算。
+- [ ] **S4d：`SessionService`**（27,917 行业务核心里最后一块上帝对象）——
   计划与分阶段拆解见 [s4-agent-decomposition.md](./s4-agent-decomposition.md)。
   结论摘要：S4a（`ModelService`）/ S4b（解 `manager ↔ Agent` 环）值得做且风险可控；
   S4c（`PromptService` + `ToolService`）视收益再定；S4d（`SessionService`）建议暂缓

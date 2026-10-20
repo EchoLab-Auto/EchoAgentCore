@@ -1181,10 +1181,7 @@ async fn rename_api_rewrites_pool_and_active_api() {
     }
 
     agent
-        .apply_command(BackendCommand::RenameApi {
-            from: "alpha".into(),
-            to: " gamma ".into(), // 去空白验证
-        })
+        .rename_api("alpha", " gamma ", None) // 去空白验证
         .await;
 
     let cfg = agent.api_config().await;
@@ -1257,12 +1254,7 @@ async fn rename_api_same_name_is_noop() {
         cfg.active_api = "alpha".into();
     }
 
-    agent
-        .apply_command(BackendCommand::RenameApi {
-            from: "alpha".into(),
-            to: " alpha ".into(),
-        })
-        .await;
+    agent.rename_api("alpha", " alpha ", None).await;
 
     let cfg = agent.api_config().await;
     assert_eq!(cfg.api_profiles.len(), 1);
@@ -1302,12 +1294,7 @@ async fn rename_api_rejects_existing_target() {
         cfg.active_api = "alpha".into();
     }
 
-    agent
-        .apply_command(BackendCommand::RenameApi {
-            from: "alpha".into(),
-            to: "beta".into(),
-        })
-        .await;
+    agent.rename_api("alpha", "beta", None).await;
 
     let cfg = agent.api_config().await;
     assert!(cfg.api_profiles.iter().any(|p| p.name == "alpha"));
@@ -1340,12 +1327,7 @@ async fn rename_api_rejects_missing_source() {
     agent.attach(Arc::new(handle));
 
     for from in ["ghost", ""] {
-        agent
-            .apply_command(BackendCommand::RenameApi {
-                from: from.into(),
-                to: "x".into(),
-            })
-            .await;
+        agent.rename_api(from, "x", None).await;
     }
 
     let mut errors = Vec::new();
@@ -1377,12 +1359,7 @@ async fn rename_api_rejects_invalid_target() {
     }
 
     for to in ["   ", "bad\tname", &"x".repeat(200)] {
-        agent
-            .apply_command(BackendCommand::RenameApi {
-                from: "alpha".into(),
-                to: to.into(),
-            })
-            .await;
+        agent.rename_api("alpha", to, None).await;
     }
 
     let cfg = agent.api_config().await;
@@ -1430,12 +1407,7 @@ async fn rename_api_rebinds_session_provider_under_new_name() {
         .map(|e| e.value().1.clone())
         .expect("override set");
 
-    agent
-        .apply_command(BackendCommand::RenameApi {
-            from: "kimi".into(),
-            to: "k3".into(),
-        })
-        .await;
+    agent.rename_api("kimi", "k3", None).await;
 
     let entry = agent
         .model
@@ -1478,12 +1450,7 @@ async fn rename_api_reapplies_persona_reference() {
     }
     agent.set_persona_api(Some("kimi".into())).await;
 
-    agent
-        .apply_command(BackendCommand::RenameApi {
-            from: "kimi".into(),
-            to: "k3".into(),
-        })
-        .await;
+    agent.rename_api("kimi", "k3", None).await;
 
     assert_eq!(
         agent.model.persona_api.read().await.as_deref(),
@@ -1515,12 +1482,7 @@ async fn rename_api_persist_failure_leaves_memory_unchanged() {
         cfg.active_api = "alpha".into();
     }
 
-    agent
-        .apply_command(BackendCommand::RenameApi {
-            from: "alpha".into(),
-            to: "gamma".into(),
-        })
-        .await;
+    agent.rename_api("alpha", "gamma", None).await;
 
     let cfg = agent.api_config().await;
     assert!(
@@ -2140,7 +2102,7 @@ async fn skill_directory_hot_reloads_updates_additions_and_deletions() {
         "modified + added skills should report a reload"
     );
 
-    let skills = agent.skills.lock().await;
+    let skills = agent.prompt.skills.lock().await;
     let updated = skills
         .get("style")
         .is_some_and(|skill| skill.instructions == "new instructions");
@@ -2159,7 +2121,7 @@ async fn skill_directory_hot_reloads_updates_additions_and_deletions() {
         agent.reload_skills(&skills_dir).await.unwrap(),
         "deleted skill should report a reload"
     );
-    assert!(agent.skills.lock().await.get("style").is_none());
+    assert!(agent.prompt.skills.lock().await.get("style").is_none());
 
     agent.shutdown().await;
     std::fs::remove_dir_all(&dir).ok();
@@ -2916,7 +2878,7 @@ async fn echo_loop_path_emits_panel_lifecycle_events() {
     assert!(thinking < completed, "Thinking 应先于 Completed");
     // /context 视图数据（与内置循环同口径）。
     assert!(
-        agent.last_prompt_blocks.contains_key(&session.id),
+        agent.prompt.last_blocks(&session.id).is_some(),
         "last_prompt_blocks 必须按会话写入（/context 视图）"
     );
 }
@@ -2946,6 +2908,7 @@ async fn last_prompt_blocks_are_scoped_per_session() {
     // 注册一个触发式技能（关键词 alpha）：命中会话 A 的输入、不命中 B，
     // 使两会话的提示词块内容可区分。
     agent
+        .prompt
         .skills
         .lock()
         .await
@@ -2969,14 +2932,8 @@ async fn last_prompt_blocks_are_scoped_per_session() {
     agent.process_message(&session_a, "alpha").await.unwrap();
     agent.process_message(&session_b, "beta").await.unwrap();
 
-    let blocks_a = agent
-        .last_prompt_blocks
-        .get(&session_a.id)
-        .map(|b| b.clone());
-    let blocks_b = agent
-        .last_prompt_blocks
-        .get(&session_b.id)
-        .map(|b| b.clone());
+    let blocks_a = agent.prompt.last_blocks(&session_a.id);
+    let blocks_b = agent.prompt.last_blocks(&session_b.id);
     let text_of = |blocks: Option<Vec<super::boundary::PromptBlock>>| {
         blocks
             .expect("提示词块")

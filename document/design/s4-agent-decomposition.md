@@ -363,3 +363,74 @@ match self.manager() {
   `Contribution::Command` 同一套路），而不是让被命令泵选中的 agent 代办。
 - `running.agent` 这类"通过 RunningAgent 拿兄弟的 Agent"仍在用——那是
   `AgentRegistry::all()` 的返回类型决定的，可接受（数据载体，不是行为依赖）。
+
+---
+
+## 十、S4b 债务清偿 + S4c 完成记录（2026-11）
+
+### 一、`TeamAdmin` 债务清偿（S4b 遗留）
+
+改造前 `SaveTeam` / `DeleteTeam` / `ToggleTeam` / `RenameApi` 走
+`Agent::apply_command` 的分支，内部 `require_admin()` 拿回 manager 代办。
+
+搬到 `crate::process_commands`（新模块 195 行）：命令泵在**路由到 agent 之前**
+先问这里，命中即 `continue`。于是：
+
+- `Agent.admin` 字段删除、`require_admin()` 删除、`set_host()` 收回
+  `set_registry(&registry)`；
+- `commands.rs` 里那 4 个分支缩成一句 fail-closed 兜底（"应由进程级处理器处理"）
+  ——真到那里说明命令泵接线坏了，要能看见；
+- 顺带修掉 `ToggleTeam` 里最后一处 `None => {}` 静默降级（现在是 fail-closed）。
+
+**为什么这些命令确实属于进程级**：团队 CRUD 改的是"有哪些人格"，
+`RenameApi` 改的是**全局供应商池**（`[agent].api_profiles`）并把
+`[agent.teams.*].api_profile` 的引用一起改——两者都不是某个人格的私有状态。
+
+实测（真进程 + WS）：`ToggleTeam{false}` → `TeamsList` + `Error "agent t disabled"`；
+`RenameApi{nope→x}` → `Error "API config not found: nope"`。
+
+### 二、S4c：`PromptService`
+
+`skills` / `system_prompt_cache` / `last_prompt_blocks` 三个字段收进
+`crate::prompt_service::PromptService`（124 行），`Agent` 持
+`prompt: Arc<PromptService>`。**字段数 32 → 30**。
+
+为什么这三样归一起——它们是同一件事的三个时刻：
+
+| 字段 | 是什么 |
+|---|---|
+| `skills` | 输入素材（SKILL.md，可热重载） |
+| `system_prompt_cache` | 装配结果缓存（技能/人格/边界变了就失效） |
+| `last_prompt_blocks` | 上一次真正发出去的东西，**按会话**（`/context`） |
+
+改造前"什么时候该失效缓存"这条知识散在 4 个调用点
+（`apply_capabilities` / `reload_skills` / `SetSystemPrompt` / 技能启停），
+现在收敛成 `prompt.invalidate()`。
+
+**缓存失效为什么保持显式而不做成自动**：装配的输入不止技能（persona 提示词、
+边界规则、插件文本块各有独立变更路径），自动失效要在每个输入上挂钩子——漏一个
+就是"用了旧缓存"的静默 bug，比显式调用更难查。文件头写了这条取舍。
+
+**两处为兼容留的接口**：
+
+- `Agent::skills()` 公开访问器：`prompt` 是 `pub(crate)`，而**集成测试**（crate
+  外）要注册技能并断言启停效果，这是它们唯一需要的入口。
+- `rename_api` 从 `pub(crate)` 放宽到 `pub`：同理由集成测试直接调用（它现在
+  是进程级命令，不再经 `apply_command`）。
+
+### 三、ToolService：**本轮未做**，理由
+
+计划里写它是"唯一会让可读性下降的地方"，实际动手时确认了：`run_tool`（140 行）
+一次触碰 5 个协作点（`redactor` / `emit` / `trunk` / `tools` / `session_id`），
+搬到服务意味着要么把这 5 个都传进去（服务变成 `Agent` 的影子），要么先给它们
+各造一个 seam（那是另一个 S4a 量级的工作）。
+
+**当前 30 个字段的构成**里，剩下的多是"身份与接线"（`team_id` / `node_identity`
+/ `cancel` / `event_sink` / `handle` / `event_bus`）与"外部子系统句柄"
+（`instances` / `shell` / `federation` / `subagent` / `workspace_store`）——
+按 §三的分组，这两类本来就该留在 `Agent` 上。真正还能搬的是 `trunk`（`S4d`，
+已判定暂缓）与 `tools`+`redactor`（ToolService）。
+
+**所以 S4 到此的实际成果**：字段 39 → 30，`impl Agent` 的方法不再跨
+12 个文件里"各改一个字段"，团队/全局命令彻底离开人格，`manager` 依赖收窄成
+只读查询面。剩下的部分要么已判定暂缓（S4d），要么收益/成本不划算（ToolService）。

@@ -126,7 +126,7 @@ impl Agent {
             (base, persona_skills, plugin_blocks)
         };
         let blocks = {
-            let skills = self.skills.lock().await;
+            let skills = self.prompt.skills.lock().await;
             crate::agent::prompt::build_prompt_blocks(
                 &skills,
                 &base,
@@ -139,7 +139,7 @@ impl Agent {
         };
         let system_prompt = crate::agent::prompt::join_prompt_blocks(&blocks);
         // `/context` 视图：保存最近一次提示词块（按会话记录，多会话互不覆盖）。
-        self.last_prompt_blocks.insert(session_id.clone(), blocks);
+        self.prompt.remember(&session_id, blocks);
         let history = history_snapshot.unwrap_or_else(|| session.history.lock().clone());
         // 工具 schema：注册表是唯一真源。编排工具
         // （spawn_subagent）同样由注册表提供（组合根装配时注册），这里不得

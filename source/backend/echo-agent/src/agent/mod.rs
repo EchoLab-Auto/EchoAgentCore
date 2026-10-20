@@ -1,14 +1,14 @@
 //! The agent loop: LLM + tools + skills + memory composed into one reply.
 
 mod api_admin;
-mod boundary;
+pub(crate) mod boundary;
 pub mod builder;
 mod commands;
 mod compact;
 mod gating;
 mod inbound;
 mod plugin_reload;
-mod prompt;
+pub(crate) mod prompt;
 pub mod registry;
 mod streaming;
 mod subagent_runtime;
@@ -96,7 +96,12 @@ pub struct Agent {
     /// 整只 `Agent`）。
     pub(crate) model: Arc<crate::model_service::ModelService>,
     pub tools: Arc<ToolRegistry>,
-    pub skills: Arc<Mutex<SkillRegistry>>,
+    /// 提示词服务（S4c）：技能表 + 装配缓存 + 按会话的最近快照。
+    ///
+    /// 这三样描述同一件事的三个时刻（素材 / 缓存 / 上次结果），且"什么时候
+    /// 该失效缓存"这条知识原先散在 4 个调用点。收进服务后失效与装配同处一地
+    /// （见 [`crate::prompt_service`]）。
+    pub(crate) prompt: Arc<crate::prompt_service::PromptService>,
     pub trunk: TrunkStore,
     /// Platform instances managed externally (registered by main / config).
     pub instances: Arc<InstanceRegistry>,
@@ -119,12 +124,6 @@ pub struct Agent {
     /// API 指标存储（余额快照 / token 用量；组合根装配期注入）。
     /// None = 不记录（测试 / 未接线的旧路径）。
     metrics: std::sync::RwLock<Option<Arc<crate::metrics::MetricsStore>>>,
-    system_prompt_cache: RwLock<Option<String>>,
-    /// Decomposed system-prompt blocks of the most recent turn **per
-    /// session**, kept so the panel can visualize the exact prompt sections
-    /// sent to the LLM. 2026-10 上下文审计 🟡 修复：此前为 agent 级单槽，
-    /// 多会话时 /context 展示的是另一会话最近 turn 的提示词块（串会话）。
-    last_prompt_blocks: DashMap<String, Vec<PromptBlock>>,
     plugin_reload_started: AtomicBool,
     /// Turn 驱动（echo-loop TurnRunner，唯一循环实现）。组合根注入共享
     /// runner；未注入时首个 turn 按本 agent 的 provider/配置惰性构建
@@ -169,12 +168,6 @@ pub struct Agent {
     /// "按 id 找兄弟 / 列全部 / 报清单"，不需要管理能力。团队管理动作已经在
     /// [`crate::agent_manager`] 的自由函数里，不再经过 `Agent`。
     registry: std::sync::RwLock<Option<std::sync::Weak<dyn crate::agent::registry::AgentRegistry>>>,
-    /// 团队管理面（**弱引用**，与 `registry` 同一份 manager 的两个面向）。
-    ///
-    /// 分成两个字段而不是一个："查兄弟"与"增删改人格"是不同关注点，测试可只造
-    /// 前者。**这是技术债**：团队 CRUD 本该由进程级处理器接掉，而不是让被命令
-    /// 泵选中的 agent 代办（详见 [`crate::agent::registry::TeamAdmin`]）。
-    admin: std::sync::RwLock<Option<std::sync::Weak<dyn crate::agent::registry::TeamAdmin>>>,
     /// 「未绑定 manager」告警只报一次（避免每命令刷屏）。
     manager_warned: std::sync::atomic::AtomicBool,
     /// Shell 子系统句柄（组合根创建并注入；工具与命令侧共享同一份）。
@@ -342,15 +335,15 @@ impl Agent {
         let agent = Self {
             model: Arc::new(crate::model_service::ModelService::new(provider, config)),
             tools: Arc::new(tools),
-            skills: Arc::new(Mutex::new(skills)),
+            prompt: Arc::new(crate::prompt_service::PromptService::new(Arc::new(
+                Mutex::new(skills),
+            ))),
             trunk,
             instances,
             handle: tokio::sync::RwLock::new(None),
             event_sink: std::sync::RwLock::new(None),
             redactor: std::sync::RwLock::new(None),
             metrics: std::sync::RwLock::new(None),
-            system_prompt_cache: RwLock::new(None),
-            last_prompt_blocks: DashMap::new(),
             plugin_reload_started: AtomicBool::new(false),
             loop_runner: RwLock::new(None),
             reply_branch_slots: tokio::sync::Semaphore::new(MAX_CONCURRENT_REPLY_BRANCHES),
@@ -364,7 +357,6 @@ impl Agent {
             )),
             global_policy: std::sync::RwLock::new(None),
             registry: std::sync::RwLock::new(None),
-            admin: std::sync::RwLock::new(None),
             manager_warned: std::sync::atomic::AtomicBool::new(false),
             shell: echo_shell::ShellHandle::new(),
             workspace_store: std::sync::RwLock::new(None),
@@ -550,7 +542,7 @@ impl Agent {
             .map_err(|error| format!("skill reload task failed: {error}"))?
             .map_err(|error| error.to_string())?;
 
-        let mut current = self.skills.lock().await;
+        let mut current = self.prompt.skills.lock().await;
         reloaded.inherit_enabled_from(&current);
         if *current == reloaded {
             return Ok(false);
@@ -559,7 +551,7 @@ impl Agent {
         let names = reloaded.names();
         *current = reloaded;
         drop(current);
-        *self.system_prompt_cache.write().await = None;
+        self.prompt.invalidate().await;
         tracing::info!(skills = ?names, user_dir = %write_dir, "skills hot reloaded");
         Ok(true)
     }
@@ -708,21 +700,24 @@ impl Agent {
     ///
     /// 收窄成 `&dyn AgentRegistry`：调用方传 `&AgentManager`（它实现了该 trait）
     /// 即可，而 `Agent` 侧不需要知道具体类型。
-    pub fn set_host(
+    pub fn set_registry(
         &self,
         registry: &std::sync::Arc<dyn crate::agent::registry::AgentRegistry>,
-        admin: &std::sync::Arc<dyn crate::agent::registry::TeamAdmin>,
     ) {
         if let Ok(mut slot) = self.registry.write() {
             *slot = Some(std::sync::Arc::downgrade(registry));
         } else {
-            tracing::warn!("agent registry slot busy, ignoring set_host");
+            tracing::warn!("agent registry slot busy, ignoring set_registry");
         }
-        if let Ok(mut slot) = self.admin.write() {
-            *slot = Some(std::sync::Arc::downgrade(admin));
-        } else {
-            tracing::warn!("agent admin slot busy, ignoring set_host");
-        }
+    }
+
+    /// 技能注册表（`PromptService` 的素材来源）。
+    ///
+    /// 为什么暴露成方法而不是让调用方碰 `self.prompt.skills`：`prompt` 是
+    /// `pub(crate)`，而**集成测试**（crate 外）要注册技能并断言启停效果。
+    /// 这层访问器是它们唯一需要的入口。
+    pub fn skills(&self) -> &Arc<Mutex<SkillRegistry>> {
+        &self.prompt.skills
     }
 
     /// 兄弟 agent 的查询面（未绑定 / 已被回收 = `None`）。
@@ -760,23 +755,6 @@ impl Agent {
         self.registry().ok_or_else(|| {
             "agent registry unavailable（该 agent 未被装入 AgentManager）".to_string()
         })
-    }
-
-    /// 取团队管理面，未绑定即**明确错误**（fail-closed）。
-    ///
-    /// 原来这些命令走 `if let Some(mgr) = self.manager() { … } else { emit Error }`
-    /// ——失败时至少还有回执。改成 `Result` 是为了让**所有**调用点必须处理，
-    /// 包括那些原本写 `None => {}` 静默跳过的（`ToggleTeam` 就是）。
-    pub(crate) fn require_admin(
-        &self,
-    ) -> Result<std::sync::Arc<dyn crate::agent::registry::TeamAdmin>, String> {
-        self.admin
-            .read()
-            .ok()
-            .and_then(|slot| slot.as_ref().and_then(|weak| weak.upgrade()))
-            .ok_or_else(|| {
-                "agent manager unavailable（该 agent 未被装入 AgentManager）".to_string()
-            })
     }
 
     /// Shell 子系统句柄（见字段文档）。
@@ -1275,7 +1253,7 @@ impl Agent {
         // 没有指定会话 → 上下文为空。插件负责决定"空上下文下有没有内容"
         // （如工作区插件在无 active 会话时不贡献块）。
         let plugin_blocks = self.collect_plugin_text_blocks("");
-        let skills = self.skills.lock().await;
+        let skills = self.prompt.skills.lock().await;
         crate::agent::prompt::build_prompt_blocks(&skills, &base, "", None, &[], &plugin_blocks)
             .await
     }
@@ -1317,8 +1295,8 @@ impl Agent {
         session_id: Option<&str>,
         history: &[ChatMessage],
     ) -> Vec<crate::event::ContextBlockInfo> {
-        let prompt = match session_id.and_then(|id| self.last_prompt_blocks.get(id)) {
-            Some(blocks) => blocks.clone(),
+        let prompt = match session_id.and_then(|id| self.prompt.last_blocks(id)) {
+            Some(blocks) => blocks,
             // No turn has run yet for this session in this process — build a
             // representative set without input-specific sections.
             None => self.build_prompt_blocks().await,
@@ -1388,12 +1366,12 @@ impl Agent {
     /// System prompt string (tests only; the turn loop uses blocks).
     #[cfg(test)]
     async fn build_system_prompt(&self, content: &str) -> String {
-        let skills = self.skills.lock().await;
+        let skills = self.prompt.skills.lock().await;
         let matched = skills.find_matching(content);
         // No skill triggered — use cache if available.
         if matched.is_none() {
-            if let Some(ref cached) = *self.system_prompt_cache.read().await {
-                return cached.clone();
+            if let Some(cached) = self.prompt.cached_prompt().await {
+                return cached;
             }
         }
         let base = self.model.config.read().await.system_prompt.clone();
@@ -1416,8 +1394,7 @@ impl Agent {
             return prompt; // don't cache triggered-skill prompts
         }
         // Cache the base+metadata prompt.
-        let mut cache = self.system_prompt_cache.write().await;
-        *cache = Some(prompt.clone());
+        self.prompt.cache_prompt(prompt.clone()).await;
         prompt
     }
 

@@ -66,6 +66,11 @@ pub mod metrics;
 /// 模型出口服务（S4a）：provider / 配置 / 模型名 / profile 覆盖的唯一持有者。
 pub mod model_service;
 pub mod plugins;
+/// 进程级命令（团队 CRUD）：不属于任何人格，命令泵在路由前先问这里。
+/// 进程级命令（团队 CRUD）：不属于任何人格，命令泵在路由前先问这里。
+pub mod process_commands;
+/// 提示词服务（S4c）：技能表 + 装配缓存 + 按会话的最近快照。
+pub mod prompt_service;
 pub mod session;
 pub mod shell;
 pub mod shims_tool;

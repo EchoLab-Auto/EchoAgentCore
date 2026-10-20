@@ -49,9 +49,10 @@ impl RunningAgent {
     ) -> Self {
         // 绑定**收窄后的查询面**（`AgentRegistry`），不是 manager 本身：
         // `Agent` 只需要"找兄弟 / 列全部 / 报清单"这三件事（S4b）。
+        // 管理面（团队 CRUD）不经 `Agent`——它由 `process_commands` 在命令泵
+        // 里直接处理（S4c 的前置：`Agent.admin` 已删除）。
         let registry: Arc<dyn crate::agent::registry::AgentRegistry> = manager.clone();
-        let admin: Arc<dyn crate::agent::registry::TeamAdmin> = manager.clone();
-        agent.set_host(&registry, &admin);
+        agent.set_registry(&registry);
         Self {
             id,
             profile,
@@ -367,11 +368,10 @@ impl AgentManager {
     /// 这是"未绑定 → 已绑定"的唯一通道；`RunningAgent::bound` 覆盖其余
     /// 创建路径（`set_enabled` / `save_profile`）。
     pub fn bind_all(&self, manager: &std::sync::Arc<Self>) {
-        // S4b：绑定的是**两个收窄后的面向**（查询 / 管理），不是 manager 本身。
+        // S4b：绑定收窄后的查询面（管理面不经 Agent，见 `process_commands`）。
         let registry: std::sync::Arc<dyn crate::agent::registry::AgentRegistry> = manager.clone();
-        let admin: std::sync::Arc<dyn crate::agent::registry::TeamAdmin> = manager.clone();
         for running in self.agents.read().values() {
-            running.agent.set_host(&registry, &admin);
+            running.agent.set_registry(&registry);
         }
     }
 

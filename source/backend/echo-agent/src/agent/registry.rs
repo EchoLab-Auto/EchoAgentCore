@@ -135,43 +135,6 @@ mod tests {
         }
     }
 
-    /// 只用 fake 就能测"管理面不可用"的路径：`TeamAdmin` 的替身什么都不做。
-    struct FakeAdmin;
-
-    impl TeamAdmin for FakeAdmin {
-        fn save_profile(
-            self: Arc<Self>,
-            _id: &str,
-            _profile: TeamMember,
-            _enabled: bool,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-        fn delete_profile(&self, _id: &str) -> Result<(), String> {
-            Ok(())
-        }
-        fn set_enabled(
-            self: Arc<Self>,
-            _id: &str,
-            _enabled: bool,
-            _factory: crate::agent_manager::AgentFactory,
-        ) -> Result<(), String> {
-            Ok(())
-        }
-        fn factory_ref(&self) -> Option<crate::agent_manager::AgentFactory> {
-            None
-        }
-        fn get_running(&self, _id: &str) -> Option<RunningAgent> {
-            None
-        }
-        fn api_ref_owners(&self, _name: &str) -> Vec<String> {
-            Vec::new()
-        }
-        fn replace_api_refs(&self, _from: &str, _to: &str) -> usize {
-            0
-        }
-    }
-
     fn make_agent(team: &str) -> Arc<Agent> {
         use crate::llm::LlmProvider;
 
@@ -218,7 +181,6 @@ mod tests {
         let err = agent.require_registry().err().expect("未绑定应报错");
         assert!(err.contains("registry unavailable"), "{err}");
         assert!(agent.registry().is_none());
-        assert!(agent.require_admin().is_err(), "管理面同样 fail-closed");
     }
 
     /// 绑上 fake 之后能按 team_id 找到兄弟（不经过 `AgentManager`）。
@@ -232,8 +194,7 @@ mod tests {
             agents: vec![Arc::clone(&a), Arc::clone(&b)],
             lookups: lookups.clone(),
         });
-        let admin: Arc<dyn TeamAdmin> = Arc::new(FakeAdmin);
-        a.set_host(&registry, &admin);
+        a.set_registry(&registry);
 
         assert!(Arc::ptr_eq(
             &a.require_registry().unwrap().resolve("b").expect("找到 b"),
@@ -241,7 +202,5 @@ mod tests {
         ));
         assert!(a.require_registry().unwrap().resolve("ghost").is_none());
         assert_eq!(lookups.load(Ordering::SeqCst), 2);
-        // 管理面独立可绑：fake registry + fake admin（互不依赖）
-        assert!(a.require_admin().is_ok());
     }
 }

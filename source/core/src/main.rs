@@ -2107,11 +2107,30 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // - 其余（全局/管理类）：交给进程级核心服务代理（非人格）。
     let pump_core = core_agent.clone();
     let pump_handle = handle.clone();
+    // 进程级命令（团队 CRUD / API 改名）：**不属于任何人格**，在路由到 agent
+    // 之前先问这里。
+    //
+    // 为什么在循环里惰性解析 manager 而不是进循环前拿一次：泵在装配早期就
+    // spawn 了，而 manager 更晚才就绪（同一个 `agent_manager_slot` 弱引用）。
+    // 惰性解析的代价是每条命令一次 `Weak::upgrade` —— 可忽略。
+    let pump_slot = agent_manager_slot.clone();
     let pump = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         loop {
             interval.tick().await;
             while let Some(cmd) = pump_handle.try_recv_command() {
+                // 进程级命令先处理：命中即 `continue`，不落到任何 agent 上。
+                // `admin` / `registry` 是同一个 manager 的两个面向。
+                if let Some(manager) = pump_slot.read().ok().and_then(|w| w.upgrade()) {
+                    let host = echo_agent::process_commands::ProcessCommandHost {
+                        admin: manager.clone(),
+                        registry: manager,
+                        emitter: pump_core.clone(),
+                    };
+                    if echo_agent::process_commands::try_handle(&cmd, &host).await {
+                        continue;
+                    }
+                }
                 // 所有命令统一交核心服务代理；聊天/取消类由它在
                 // `apply_command` 内按 team_id 路由（缺失 → 明确报错，
                 // 不再有"默认人格"兜底）。
@@ -2176,9 +2195,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             {
                 let registry: std::sync::Arc<dyn echo_agent::agent::registry::AgentRegistry> =
                     mgr_arc.clone();
-                let admin: std::sync::Arc<dyn echo_agent::agent::registry::TeamAdmin> =
-                    mgr_arc.clone();
-                core_agent.set_host(&registry, &admin);
+                core_agent.set_registry(&registry);
             }
             // 联邦运行时也绑定同一 manager（迁移需要枚举 source persona）。
             if let Ok(mut slot) = agent_manager_slot.write() {
