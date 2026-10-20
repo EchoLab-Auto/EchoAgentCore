@@ -672,7 +672,7 @@ impl Tool for RunCommandTool {
         "bash"
     }
     fn description(&self) -> &str {
-        "Run a shell (bash) command in the project workspace. Returns stdout and stderr. Use for git operations, cargo builds, file operations, and other shell commands. Timeout: 120s (max 300s). Long-running polling loops should pass timeout_secs explicitly."
+        "Run a shell (bash) command in the project workspace. Returns stdout and stderr. Use for git operations, cargo builds, file operations, and other shell commands. Timeout: 120s (max 300s). Long-running polling loops should pass timeout_secs explicitly. Avoid unconditional long `sleep` (>= 20s): wait for a condition instead — `until <cond>; do sleep 2; done` returns as soon as it holds; `(job > log 2>&1; echo DONE >> log) & until grep -q DONE log; do sleep 2; done` for background jobs; `systemd-run --user --collect --unit=<name> bash -c '…'` for detached work."
     }
     fn parameters(&self) -> Value {
         json!({
