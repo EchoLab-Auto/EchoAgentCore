@@ -714,6 +714,8 @@ dependencies = [
  "chrono",
  "dashmap",
  "echo-defs",
+ "echo-federation",
+ "echo-protocol",
  "echo-tool",
  "serde_json",
  "tokio",

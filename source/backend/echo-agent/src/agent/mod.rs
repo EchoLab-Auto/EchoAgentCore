@@ -11,6 +11,7 @@ mod plugin_reload;
 pub(crate) mod prompt;
 pub mod registry;
 mod streaming;
+pub mod subagent_host;
 mod subagent_runtime;
 mod tool_dispatch;
 mod tool_exec;

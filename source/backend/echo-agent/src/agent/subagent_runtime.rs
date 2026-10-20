@@ -1,14 +1,16 @@
-//! Subagent 插件运行态管理（attach/spawn 执行/hook 派发）。
+//! Subagent 插件运行态管理：装配 / 取句柄 / hook 派发（宿主侧接线）。
 //!
-//! 从 `agent/mod.rs` 拆出（框架优化）：`Agent` 侧的 subagent 运行时
-//! 装配（attach_subagent_runtime）、spawn 执行体
-//! （spawn_subagent_execution）与 `<subagent_event>` hook 派发
-//! （dispatch_subagent_hook）。与 `echo-plugin-subagent`（Phase 3 ⑥ 外迁的
-//! 插件 crate）呼应：那边是工具与存储，这边是 Agent 上的接线与执行。
+//! **执行体已搬进插件**（全插件化 S3，见 [`echo_plugin_subagent::execution`]）：
+//! 受理、上下文装配、超时/取消、终态三分支、hook 文本构造共 280 行搬走，
+//! 这里是 95 行——三件宿主才该做的事：
+//!
+//! | 本文件 | 为什么在宿主 |
+//! |---|---|
+//! | `attach_subagent_runtime` | 插件 `mount` 时由组合根调用，把 store 与 spawn 闭包接进 `Agent` |
+//! | `spawn_subagent_execution` | 造 [`AgentSubagentHost`](crate::agent::subagent_host::AgentSubagentHost) 并递过去（端口实现需要 `&Arc<Agent>`） |
+//! | `dispatch_subagent_hook` | 把 hook 文本变成主会话的**新入站分支**——走的是核心入站生命周期，不是子代理能力 |
 //!
 //! 远程委派的聚合登记经 `RemoteDelegationSink` 注入（本层不依赖联邦实现）。
-
-use tracing::Instrument as _;
 
 use super::*;
 
@@ -48,290 +50,28 @@ impl Agent {
         Some((runtime.store.clone(), runtime.spawn.clone()))
     }
 
-    /// spawn 执行体：后台以隔离上下文跑子任务，完成/失败/超时/取消都经
-    /// hook 通知主 agent（恰好一次）。
+    /// spawn 执行体：**实现已搬进 `echo-plugin-subagent`**（全插件化 S3）。
+    ///
+    /// 本方法只剩"把宿主端口实现递过去"——受理、上下文装配、超时/取消、
+    /// 终态三分支、hook 文本构造全在插件里（`execution::spawn_execution`）。
     fn spawn_subagent_execution(self: &Arc<Self>, request: crate::subagent::SpawnRequest) {
-        let agent = Arc::clone(self);
-        // 子任务 = 一个独立 span（2026-10 日志治理）：`tokio::spawn` 不继承
-        // 主 turn 的 span，所以显式带上 `parent_branch_id`——排障时能回答
-        // 「这次委派挂在哪个 turn 下、跑在哪个节点、用的哪个模型」。
-        let span = tracing::info_span!(
-            "subagent_task",
-            task_id = %request.task_id,
-            session = %request.session_id,
-            parent_branch_id = %request.parent_branch_id,
-            node = request.node.as_deref().unwrap_or("local"),
-            profile = request.profile.as_deref().unwrap_or("inherit"),
-        );
-        tokio::spawn(
-            async move {
-                let crate::subagent::SpawnRequest {
-                    task_id,
-                    session_id,
-                    task,
-                    timeout,
-                    parent_cancel,
-                    parent_branch_id,
-                    node,
-                    profile,
-                } = request;
-                let (store, _) = match agent.subagent_runtime() {
-                    Some(runtime) => runtime,
-                    None => return,
-                };
-                let started = std::time::Instant::now();
-                // 起始日志与 SPAN 同字段：卡死的子任务在日志里表现为「有 started
-                // 无 finished」，一眼可判（此前只有事件、日志侧完全不可见）。
-                tracing::info!(
-                    task_id = %task_id,
-                    session = %session_id,
-                    parent_branch_id = %parent_branch_id,
-                    node = ?node,
-                    profile = ?profile,
-                    "subagent started"
-                );
-                // 执行体监听**注册表条目的令牌**（store.cancel_all / 逐项 finish 都取消
-                // 它）；它与 parent_cancel 是同一传播链（spawn 时 register 存的就是
-                // parent 的 child_token），主 turn 取消同样经 parent 链传导到该令牌。
-                let cancel = store
-                    .cancel_token_of(&task_id)
-                    .unwrap_or_else(|| parent_cancel.child_token());
-                agent.emit(BackendEvent::SubagentStarted {
-                    session_id: session_id.clone(),
-                    task: task.clone(),
-                });
-                // 子 agent 上下文：base 提示词 + 工具集（剥离 spawn_subagent，
-                // 单层委派）。
-                let base = agent.model.config.read().await.system_prompt.clone();
-                let mut tools = (*agent.tools.definitions().await).clone();
-                tools.retain(|d| d.name != crate::subagent::SPAWN_SUBAGENT_TOOL);
-                let registry = Arc::clone(&agent.tools);
-                // federation Phase 3：`node` 指定时子任务工具视图指向远程
-                // 节点——LLM 仍在本机推理，工具定义替换为该 peer 的代理工具
-                // 描述（`<peer>__<tool>` 已注册进注册表，执行经 Invoke 路由）。
-                // 语义说明（RFC §5）：远程 subagent 的任务文本不感知本机
-                // 工作区，工具列表即"在远程能做什么"的完整能力面。
-                if let Some(ref peer) = node {
-                    let prefix = crate::federation::remote_tool_prefix(peer);
-                    let remote_defs: Vec<echo_defs::tool::ToolDefinition> = tools
-                        .iter()
-                        .filter(|d| d.name.starts_with(&prefix))
-                        .cloned()
-                        .map(|mut d| {
-                            // 剥前缀：模型在远程语境下用本机工具名调用，
-                            // 执行端（packages/federation 的路由）按前缀还原。
-                            d.name = d.name.trim_start_matches(&prefix).to_string();
-                            d
-                        })
-                        .collect();
-                    if remote_defs.is_empty() {
-                        // fail-closed（2026-10 审查修复）：peer 离线/错名时
-                        // **不**静默回本机执行（错机操作风险）——立即以
-                        // Failed 终态回报并销账（聚合组同步闭合）。
-                        let reason = format!(
-                        "远程节点「{peer}」无可用代理工具（peer 离线、名称错误或联邦链路未建立）"
-                    );
-                        agent
-                            .reject_subagent(
-                                &task_id,
-                                &session_id,
-                                &task,
-                                &parent_branch_id,
-                                Some(peer),
-                                reason,
-                            )
-                            .await;
-                        return;
-                    }
-                    tools = remote_defs;
-                }
-                // 子代理模型：`profile` 指定时按名从供应商池解析（fail-closed——
-                // 解析失败立即以 Failed 终态 + hook 回报，不回退主模型）；
-                // 未指定 = 继承本 agent 的 provider（原有语义）。
-                let provider = match profile.as_deref() {
-                    Some(name) => match agent.subagent_provider_for(name).await {
-                        Ok(provider) => provider,
-                        Err(reason) => {
-                            agent
-                                .reject_subagent(
-                                    &task_id,
-                                    &session_id,
-                                    &task,
-                                    &parent_branch_id,
-                                    node.as_deref(),
-                                    reason,
-                                )
-                                .await;
-                            return;
-                        }
-                    },
-                    None => agent.model.provider.read().await.clone(),
-                };
-                let max_iterations = agent.model.config.read().await.max_tool_iterations;
-                let max_tokens = agent.model.config.read().await.effective_max_tokens();
-                // federation Phase 3 对端观测：远程子任务受理时通知对端
-                // （SubagentSpawn），完成/失败/取消时回报（SubagentEvent）——
-                // 对端 Panel 后台任务列表据此可见、可强制取消。
-                // 通知经 Agent 持有的联邦出口（组合根装配期注入）。
-                let federation = agent.federation();
-                if let Some(ref peer) = node {
-                    crate::federation::notify_remote_subagent(
-                        &federation,
-                        peer,
-                        &task_id,
-                        &task,
-                        Some(timeout.as_secs()),
-                        crate::federation::SubagentStatus::Running,
-                        None,
-                    );
-                }
-                let run = crate::subagent::run_subagent_turn(
-                    provider,
-                    tools,
-                    registry,
-                    base,
-                    task.clone(),
-                    cancel.clone(),
-                    max_iterations,
-                    max_tokens,
-                    node.as_deref(),
-                );
-                let outcome = tokio::select! {
-                    result = run => Ok(result),
-                    _ = tokio::time::sleep(timeout) => Err("timeout"),
-                    _ = cancel.cancelled() => Err("cancelled"),
-                };
-                let (success, cancelled, detail) = match outcome {
-                    Ok(Ok(reply)) => (true, false, crate::subagent::truncate_result(&reply)),
-                    Ok(Err(error)) if Agent::is_turn_cancelled(&error) => {
-                        (false, true, "子任务已随主任务取消".into())
-                    }
-                    Ok(Err(error)) => (false, false, format!("子任务执行失败：{error}")),
-                    Err("timeout") => (
-                        false,
-                        false,
-                        format!("子任务超时（{}s）", timeout.as_secs()),
-                    ),
-                    Err(_) => (false, true, "子任务已随主任务取消".into()),
-                };
-                let status = if success {
-                    crate::subagent::SubagentStatus::Completed
-                } else if cancelled {
-                    crate::subagent::SubagentStatus::Cancelled
-                } else {
-                    crate::subagent::SubagentStatus::Failed
-                };
-                store.finish(&task_id, status);
-                tracing::info!(
-                    task_id = %task_id,
-                    session = %session_id,
-                    parent_branch_id = %parent_branch_id,
-                    node = ?node,
-                    status = ?status,
-                    success,
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    "subagent finished"
-                );
-                if let Some(ref peer) = node {
-                    let fed_status = match status {
-                        crate::subagent::SubagentStatus::Completed => {
-                            crate::federation::SubagentStatus::Completed
-                        }
-                        crate::subagent::SubagentStatus::Cancelled => {
-                            crate::federation::SubagentStatus::Cancelled
-                        }
-                        _ => crate::federation::SubagentStatus::Failed,
-                    };
-                    crate::federation::notify_remote_subagent(
-                        &federation,
-                        peer,
-                        &task_id,
-                        &task,
-                        None,
-                        fed_status,
-                        Some(detail.clone()),
-                    );
-                }
-                agent.emit(BackendEvent::SubagentCompleted {
-                    session_id: session_id.clone(),
-                    success,
-                });
-                // hook 回灌主 agent：作为该会话的全新入站分支（主 turn 已结束，
-                // 结论需要新的 turn 来消化；与 QQ hook / timer 事件同族）。
-                let payload = serde_json::json!({
-                    "event": "subagent_event",
-                    "subagent_id": task_id,
-                    "session_id": session_id,
-                    "task": subagent_task_field(&task),
-                    "success": success,
-                    "result": detail,
-                    "parent_branch_id": parent_branch_id,
-                    "completed_at_ms": chrono::Utc::now().timestamp_millis(),
-                });
-                let hook = crate::subagent::wrap_subagent_event(&payload);
-                agent.dispatch_subagent_hook(&session_id, hook).await;
-            }
-            .instrument(span),
-        );
-    }
-
-    /// 子任务在**开始执行之前**被拒绝的收尾（profile 解析失败 / 远程节点
-    /// 无可用工具）：store 落 `Failed`、通知对端（联邦下同时为本机聚合组
-    /// 销账）、emit `SubagentCompleted{success:false}`、经 `<subagent_event>`
-    /// hook 回报主 agent——与正常完成路径同一条收尾链，**绝不静默**：
-    /// 模型据此纠错重试（如 profile 名写错时按回报的可用清单重发），
-    /// 面板的委派行也不会悬挂在"运行中"。
-    async fn reject_subagent(
-        self: &Arc<Self>,
-        task_id: &str,
-        session_id: &str,
-        task: &str,
-        parent_branch_id: &str,
-        node: Option<&str>,
-        reason: String,
-    ) {
-        tracing::warn!(
-            task_id = %task_id,
-            node = ?node,
-            %reason,
-            "subagent rejected before start"
-        );
-        if let Some((store, _)) = self.subagent_runtime() {
-            store.finish(task_id, crate::subagent::SubagentStatus::Failed);
-        }
-        if let Some(peer) = node {
-            crate::federation::notify_remote_subagent(
-                &self.federation(),
-                peer,
-                task_id,
-                task,
-                None,
-                crate::federation::SubagentStatus::Failed,
-                Some(reason.clone()),
+        let Some((store, _)) = self.subagent_runtime() else {
+            // 插件未挂载：没有 store 就没有"受理"可言。此处只记日志——调用方
+            // 是插件自己的 spawn 闭包，未挂载时它不会产生请求。
+            tracing::warn!(
+                task_id = %request.task_id,
+                "subagent runtime detached; dropping spawn request"
             );
-        }
-        self.emit(BackendEvent::SubagentCompleted {
-            session_id: session_id.to_string(),
-            success: false,
-        });
-        let payload = serde_json::json!({
-            "event": "subagent_event",
-            "subagent_id": task_id,
-            "session_id": session_id,
-            "task": subagent_task_field(task),
-            "success": false,
-            "result": format!("子任务受理失败：{reason}"),
-            "parent_branch_id": parent_branch_id,
-            "completed_at_ms": chrono::Utc::now().timestamp_millis(),
-        });
-        let hook = crate::subagent::wrap_subagent_event(&payload);
-        self.dispatch_subagent_hook(session_id, hook).await;
+            return;
+        };
+        let host = Arc::new(crate::agent::subagent_host::AgentSubagentHost::new(Arc::clone(self)));
+        crate::subagent::execution::spawn_execution(host, store, request);
     }
 
     /// 把子任务完成 hook 作为新入站分支注入主会话（内部复用
     /// `process_inbound_branch` 的完整生命周期；`group_id=None` = 后台来源，
     /// 回复只进后台，不推送外部平台）。
-    async fn dispatch_subagent_hook(self: &Arc<Self>, session_id: &str, hook: String) {
+    pub(crate) async fn dispatch_subagent_hook(self: &Arc<Self>, session_id: &str, hook: String) {
         let Some(session) = self.trunk.get(session_id) else {
             tracing::warn!(session = %session_id, "subagent hook target session gone");
             return;
@@ -354,48 +94,5 @@ impl Agent {
         });
         self.process_inbound_branch(&session, &hook, message_sequence)
             .await;
-    }
-}
-
-/// 完成 / 拒绝钩子中的 `task` 字段（2026-10 观测缺口修复）。
-///
-/// 此前固定截断到 500 字符（审计实测 53/58 条 task 恰 501 字符，任务
-/// 描述无法完整审计）。现放宽到 4000 字符并在超限时显式标注；完整
-/// 参数（含 task 全文）随 `spawn_subagent` 的 ToolCall 事件落库
-/// （见 agent/turn.rs 的异步编排工具记录）。
-fn subagent_task_field(task: &str) -> String {
-    const MAX_TASK_CHARS: usize = 4000;
-    if task.chars().count() <= MAX_TASK_CHARS {
-        return task.to_string();
-    }
-    let kept: String = task.chars().take(MAX_TASK_CHARS).collect();
-    format!(
-        "{kept}\n…[task 过长已截断，共 {} 字符；完整文本见该 spawn_subagent 调用的 arguments]",
-        task.chars().count()
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::subagent_task_field;
-
-    /// task 字段放宽回归（2026-10 审计修复）：≤4000 字符原样透传
-    /// （500~4000 的描述此前会被截断——实测 53/58 条恰为 501 字符），
-    /// 超限截断并显式标注总字符数。
-    #[test]
-    fn subagent_task_field_keeps_long_descriptions_verbatim() {
-        let task = "a".repeat(783);
-        assert_eq!(subagent_task_field(&task), task, "783 字符应原样保留");
-        let boundary = "b".repeat(4000);
-        assert_eq!(
-            subagent_task_field(&boundary),
-            boundary,
-            "边界 4000 原样保留"
-        );
-        let over = "c".repeat(4001);
-        let out = subagent_task_field(&over);
-        assert!(out.starts_with(&"c".repeat(4000)), "超限保留前 4000");
-        assert!(out.contains("已截断"), "须显式标注截断: {out:?}");
-        assert!(out.contains("4001"), "须标注总字符数");
     }
 }

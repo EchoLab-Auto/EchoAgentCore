@@ -10,6 +10,8 @@ description = "Subagent 委派插件（解耦计划 Phase 3 ⑥）：spawn_subag
 [dependencies]
 echo-defs = { workspace = true }
 echo-tool = { workspace = true }
+echo-federation = { workspace = true }
+echo-protocol = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }

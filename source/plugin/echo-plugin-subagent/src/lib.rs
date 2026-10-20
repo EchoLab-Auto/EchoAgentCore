@@ -27,6 +27,8 @@
 //!
 //! 设计文档见 `document/plugins/core-subagent.md`。
 
+pub mod execution;
+
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -82,6 +84,20 @@ pub enum SubagentStatus {
     Completed,
     Failed,
     Cancelled,
+}
+
+/// 本插件状态与**线协议**词汇（`echo_federation::SubagentStatus`）的对应。
+///
+/// 为什么两份而不是一份：`echo-federation` 是线协议 crate，插件不该为了一个
+/// 状态枚举去依赖整条链路（它只在 `node` 委派时才用到）。映射放在插件里，
+/// 于是宿主拿到的永远是协议词汇，不需要做转换。
+pub fn wire_status(status: SubagentStatus) -> echo_federation::SubagentStatus {
+    match status {
+        SubagentStatus::Running => echo_federation::SubagentStatus::Running,
+        SubagentStatus::Completed => echo_federation::SubagentStatus::Completed,
+        SubagentStatus::Failed => echo_federation::SubagentStatus::Failed,
+        SubagentStatus::Cancelled => echo_federation::SubagentStatus::Cancelled,
+    }
 }
 
 impl SubagentStatus {
@@ -847,4 +863,30 @@ mod tests {
         assert!(hook.contains("</subagent_event>"));
         assert!(hook.contains("\"success\": true"));
     }
+}
+
+/// 完成 / 拒绝钩子中的 `task` 字段（2026-10 观测缺口修复）。
+///
+/// 此前固定截断到 500 字符（审计实测 53/58 条 task 恰 501 字符，任务描述
+/// 无法完整审计）。现放宽到 4000 字符并在超限时显式标注；完整参数（含 task
+/// 全文）随 `spawn_subagent` 的 ToolCall 事件落库。
+pub fn subagent_task_field(task: &str) -> String {
+    const MAX_TASK_CHARS: usize = 4000;
+    if task.chars().count() <= MAX_TASK_CHARS {
+        return task.to_string();
+    }
+    let kept: String = task.chars().take(MAX_TASK_CHARS).collect();
+    format!(
+        "{kept}\n…[task 过长已截断，共 {} 字符；完整文本见该 spawn_subagent 调用的 arguments]",
+        task.chars().count()
+    )
+}
+
+/// 本次失败是否属于"随主任务取消"（而不是真失败）。
+///
+/// 判据是 `anyhow` 错误的**显示文本**等于定义层的 `TURN_CANCELLED`——单点
+/// 定义在 `echo_defs::llm`，三方（循环、子代理、宿主）共用同一口径，避免
+/// "取消被当成失败"报警到面板。
+pub fn is_turn_cancelled(error: &anyhow::Error) -> bool {
+    error.to_string() == echo_defs::llm::TURN_CANCELLED
 }
