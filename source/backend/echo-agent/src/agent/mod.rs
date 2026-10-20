@@ -142,6 +142,14 @@ pub struct Agent {
     /// agent's concrete registries. 组合根注入**同一个**进程级宿主
     /// （去主智能体 P1：插件宿主不再寄居在某个"默认人格"上）。
     plugin_host: std::sync::RwLock<std::sync::Arc<crate::plugins::PluginHost>>,
+    /// 全局禁用策略（`[agent].disabled_tools/disabled_skills`）：进程级开关
+    /// 不属于任何人格，组合根注入同一份。None = 未接线（调用方回退本 agent
+    /// 的配置快照，单元测试走这条）。
+    ///
+    /// 2026-10 技术债清理：此前存在进程级 `echo_bootstrap` 锚点，读取方是
+    /// `&self` 方法——上下文本来就在手上，却去读全局。改为字段注入后，
+    /// 依赖变显式，同一进程的两套宿主也互不干扰。
+    global_policy: std::sync::RwLock<Option<std::sync::Arc<GlobalPolicy>>>,
     /// Team id (None/empty = default). Sets session tagging after boot.
     team_id: std::sync::Mutex<Option<String>>,
     /// 联邦出口集合（invoker / querier / notifier / deliver / aggregator）：
@@ -199,18 +207,6 @@ impl std::fmt::Debug for Agent {
     }
 }
 
-/// Process-wide plugin host (best-effort): set once by the composition root.
-/// Lets gating checks resolve the global registry from code that runs inside
-/// the agent but outside a `&Agent` scope (see `plugin_globally_enabled`).
-/// 存储收敛于 [`echo_bootstrap`]（P1 唯一引导单元）。
-pub fn plugin_host_global() -> Option<std::sync::Arc<crate::plugins::PluginHost>> {
-    echo_bootstrap::get::<std::sync::Arc<crate::plugins::PluginHost>>()
-}
-
-pub fn set_plugin_host_global(host: std::sync::Arc<crate::plugins::PluginHost>) {
-    let _ = echo_bootstrap::set(host);
-}
-
 /// 进程级全局策略（`[agent]` 层的工具/技能启停）：全局开关不属于任何人格，
 /// 组合根注入一次，所有 persona 重算门控时读取同一份事实。
 #[derive(Debug, Default)]
@@ -260,14 +256,6 @@ impl GlobalPolicy {
             }
         }
     }
-}
-
-pub fn global_policy() -> Option<std::sync::Arc<GlobalPolicy>> {
-    echo_bootstrap::get::<std::sync::Arc<GlobalPolicy>>()
-}
-
-pub fn set_global_policy(policy: std::sync::Arc<GlobalPolicy>) {
-    let _ = echo_bootstrap::set(policy);
 }
 
 // ── 联邦命令处理器（federation Phase 4）──
@@ -357,6 +345,7 @@ impl Agent {
             plugin_host: std::sync::RwLock::new(std::sync::Arc::new(
                 crate::plugins::PluginHost::new(),
             )),
+            global_policy: std::sync::RwLock::new(None),
             workspace_store: std::sync::RwLock::new(None),
             team_id: std::sync::Mutex::new(None),
             federation: std::sync::RwLock::new(std::sync::Arc::new(
@@ -686,6 +675,20 @@ impl Agent {
         } else {
             tracing::warn!("plugin host slot busy, ignoring set_plugin_host");
         }
+    }
+
+    /// 注入全局禁用策略（组合根对每个 persona 调用一次）。
+    pub fn set_global_policy(&self, policy: std::sync::Arc<GlobalPolicy>) {
+        if let Ok(mut slot) = self.global_policy.write() {
+            *slot = Some(policy);
+        } else {
+            tracing::warn!("global policy slot busy, ignoring set_global_policy");
+        }
+    }
+
+    /// 本 agent 的全局禁用策略（未注入 = None，调用方回退自身配置快照）。
+    pub fn global_policy(&self) -> Option<std::sync::Arc<GlobalPolicy>> {
+        self.global_policy.read().ok().and_then(|slot| slot.clone())
     }
 
     /// 注入进程级事件汇聚点（组合根对每个 persona 调用一次）。

@@ -65,7 +65,7 @@ impl Agent {
     /// 全局禁用列表（工具/技能）：读进程级策略（组合根注入）。
     /// 无策略（单元测试）时回退本 agent 的配置快照。
     async fn global_disabled_lists(&self) -> (Vec<String>, Vec<String>) {
-        if let Some(policy) = global_policy() {
+        if let Some(policy) = self.global_policy() {
             return (policy.disabled_tools(), policy.disabled_skills());
         }
         let cfg = self.config.read().await;
@@ -94,23 +94,23 @@ impl Agent {
     /// 实例插件（`echo-agent.instance.<platform>`）自动进入门控，无需改
     /// 本 crate 的常量表。
     fn gated_plugin_ids(&self) -> Vec<String> {
-        let registered: Vec<(String, String)> = plugin_host_global()
-            .map(|host| {
-                host.registry
-                    .descriptors()
-                    .into_iter()
-                    .map(|d| (d.id, d.kind))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // 读**本 agent 注入的**宿主，不读进程级锚点（2026-10 技术债清理）：
+        // 字段是必填槽、组合根注入的就是同一实例，语义等价；但依赖变为显式，
+        // 且同一进程的两套宿主不会互相看见对方的注册表。
+        let registered: Vec<(String, String)> = self
+            .plugin_host()
+            .registry
+            .descriptors()
+            .into_iter()
+            .map(|d| (d.id, d.kind))
+            .collect();
         gated_plugin_ids_from(&registered)
     }
 
     /// 共享注册表中该插件当前是否启用（无全局锚点 = true，以名单为准）。
     fn plugin_globally_enabled(&self, plugin_id: &str) -> bool {
-        plugin_host_global()
-            .map(|host| host.registry.is_enabled(plugin_id))
-            .unwrap_or(true)
+        // 同上：`is_enabled` 对未注册 id 返回 true，与旧 `None => true` 等价。
+        self.plugin_host().registry.is_enabled(plugin_id)
     }
 
     /// 全局插件状态变化后，重新评估该插件在本 persona 的最终效果：

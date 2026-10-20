@@ -873,12 +873,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 与「谁挂到 Panel」同样不再寄居在某个"默认人格"上。
     let plugin_host: std::sync::Arc<echo_agent::plugins::PluginHost> =
         std::sync::Arc::new(echo_agent::plugins::PluginHost::new());
-    // 进程级全局策略（工具/技能启停）：全局开关不属于任何人格。
-    echo_agent::agent::set_global_policy(std::sync::Arc::new(
-        echo_agent::agent::GlobalPolicy::new(
-            agent_config.disabled_tools.clone(),
-            agent_config.disabled_skills.clone(),
-        ),
+    // 全局禁用策略（工具/技能启停）：全局开关不属于任何人格。构造**一份**，
+    // 注入每个 persona（不再走进程级锚点——2026-10 技术债清理）。
+    let global_policy = std::sync::Arc::new(echo_agent::agent::GlobalPolicy::new(
+        agent_config.disabled_tools.clone(),
+        agent_config.disabled_skills.clone(),
     ));
 
     // ── 子进程插件（解耦计划 P3/P4）：plugins.toml 缺省休眠 ──
@@ -993,6 +992,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let factory_node_identity = node_identity.clone();
     // 联邦出口集合：同上（全部 persona 看同一个聚合器与同一组链路出口）。
     let factory_federation = federation_ports.clone();
+    // 全局禁用策略：所有 persona 共用一份（开关变化只需改这份）。
+    let factory_global_policy = global_policy.clone();
     let make_agent: Arc<dyn Fn(String, AgentProfile) -> Arc<Agent> + Send + Sync> = Arc::new(
         move |id: String, profile: AgentProfile| -> Arc<Agent> {
             let provider_arc2 = factory_provider.clone();
@@ -1211,6 +1212,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .subagent_store(subagent_store.clone())
                 .metrics(metrics2.clone())
                 .node_identity(factory_node_identity.clone())
+                .global_policy(factory_global_policy.clone())
                 .federation(factory_federation.clone());
                 // 敏感信息脱敏器（2026-10 安全）：Agent 侧入站 / 事件 /
                 // 结果出口统一脱敏。
@@ -1764,9 +1766,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         info!("background shell manager ready");
     }
 
-    // 进程级插件宿主锚点：供插件门控判定读取全局注册表
-    // （与各 persona 注入的是同一实例）。
-    echo_agent::agent::set_plugin_host_global(plugin_host.clone());
+    // （插件门控判定读的是各 persona 注入的宿主，不再需要进程级锚点——
+    //   2026-10 技术债清理：`plugin_host_global` 已删除。）
     // Turn 驱动注入：所有人格共享组合根的 TurnRunner（含计量/脱敏装饰的
     // provider 与配置预算）。运行期新建人格由 set_agent_factory 的包装覆盖。
     // Restore persisted sessions and start periodic save (all personas).

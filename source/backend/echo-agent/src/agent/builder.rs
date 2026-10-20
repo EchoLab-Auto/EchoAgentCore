@@ -56,6 +56,8 @@ pub struct AgentBuilder {
     node_identity: Option<crate::NodeIdentity>,
     /// 联邦出口集合（可选；缺省 = 联邦未接线，远程功能 fail-closed）。
     federation: Option<std::sync::Arc<crate::federation::FederationPorts>>,
+    /// 全局禁用策略（可选；缺省 = 回退本 agent 的配置快照）。
+    global_policy: Option<std::sync::Arc<crate::agent::GlobalPolicy>>,
     /// 敏感信息脱敏器（可选；注入后 Agent 各出口统一脱敏）。
     redactor: Option<Arc<dyn echo_defs::sanitize::Redactor>>,
     /// API 指标存储（可选；余额/用量时间序列的记录与查询）。
@@ -88,6 +90,7 @@ impl AgentBuilder {
             subagent_store: None,
             node_identity: None,
             federation: None,
+            global_policy: None,
             redactor: None,
             metrics: None,
         }
@@ -115,6 +118,15 @@ impl AgentBuilder {
 
     /// 联邦出口集合（组合根装配联邦后注入；所有 persona 共用一份，
     /// 因为它们看的是同一个聚合器与同一组链路出口）。
+    /// 注入全局禁用策略（`[agent].disabled_tools/disabled_skills`）。
+    ///
+    /// 进程级开关不属于任何人格：组合根构造**一份**、注入每个 persona，
+    /// 运行期开关变化只需改这份的字段（内部 RwLock）。
+    pub fn global_policy(mut self, policy: std::sync::Arc<crate::agent::GlobalPolicy>) -> Self {
+        self.global_policy = Some(policy);
+        self
+    }
+
     pub fn federation(mut self, ports: std::sync::Arc<crate::federation::FederationPorts>) -> Self {
         self.federation = Some(ports);
         self
@@ -211,6 +223,9 @@ impl AgentBuilder {
             agent.set_session_persist_path(path);
         }
         let agent = Arc::new(agent);
+        if let Some(policy) = self.global_policy {
+            agent.set_global_policy(policy);
+        }
         if let Some(store) = self.workspace_store {
             agent.set_workspace_store(store);
         }

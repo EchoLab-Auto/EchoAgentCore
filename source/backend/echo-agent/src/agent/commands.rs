@@ -269,7 +269,7 @@ impl Agent {
                     drop(cfg);
                     self.persist_config(&cfg_snapshot).await;
                     // 全局策略（进程级）：所有 persona 重算时读同一份事实。
-                    if let Some(policy) = crate::agent::global_policy() {
+                    if let Some(policy) = self.global_policy() {
                         policy.set_skill_enabled(&name, enabled);
                     }
                     // 全局生效：最终状态 = 全局启停 ∧ 各 persona 名单，
@@ -305,7 +305,7 @@ impl Agent {
                     drop(cfg);
                     self.persist_config(&cfg_snapshot).await;
                     // 全局策略（进程级）：所有 persona 重算时读同一份事实。
-                    if let Some(policy) = crate::agent::global_policy() {
+                    if let Some(policy) = self.global_policy() {
                         policy.set_tool_enabled(&name, enabled);
                     }
                     // 全局生效：最终状态 = 全局启停 ∧ 各 persona 名单，
