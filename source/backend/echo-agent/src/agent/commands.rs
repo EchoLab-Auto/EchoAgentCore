@@ -649,7 +649,16 @@ impl Agent {
                     let Some(instance) = self.instances.get(&name) else {
                         continue;
                     };
-                    self.emit_instance_state_events(instance.clone());
+                    // 状态下发单源（投影在插件里）：`InstanceState` 的构造
+                    // 归 `echo-plugin-tools`，宿主只决定"何时发"。
+                    if let Some(management) = instance.management() {
+                        if let Some(state) = management.cached_state() {
+                            self.emit(BackendEvent::InstanceState {
+                                instance: instance.name().to_string(),
+                                state,
+                            });
+                        }
+                    }
                 }
             }
             BackendCommand::RequestContext {
@@ -1191,7 +1200,16 @@ impl Agent {
                 });
             }
             BackendCommand::InvokeInstanceOp { .. } => {
-                self.apply_instance_command(cmd).await;
+                // 通用实例管理方法转发也归 `echo-plugin-tools`（见
+                // `instance_ops`）；未启用时明确报错，不让面板等超时。
+                self.emit(BackendEvent::InstanceOpResult {
+                    instance: String::new(),
+                    method: String::new(),
+                    result: serde_json::Value::Null,
+                    error: Some(
+                        "实例命令由 echo-agent.tools.builtin 插件处理，但该插件未启用".into(),
+                    ),
+                });
             }
             // 工作区命令域：**已迁入 `echo-agent.workspace` 插件**
             // （`Contribution::Command`）。走上面的插件分发路径；这里只剩

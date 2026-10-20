@@ -1,10 +1,17 @@
-//! Platform instance → Agent inbound entry.
+//! 平台实例 → Agent 的**入站入口**（`AgentMessageHook`）。
 //!
-//! [`AgentMessageHook`] is where an instance's inbound message becomes an agent
-//! turn. It is **not** a trait implementation: instances run out-of-process and
-//! the composition root owns the wiring (plugin `submit_input` → bounded
-//! queue → per-instance worker → this method). Platform output remains
-//! available only through explicit tools.
+//! 这里把一条平台消息变成一次 agent turn：会话键构造（多实例维度）、单/并行
+//! 模式的展示会话选择、`SessionUpdated` / `MessageReceived` 事件、turn 启动、
+//! 内容脱敏。**这是核心入站编排，不是 adapter 能力**——adapter 能力（平台
+//! 协议、收发消息）在 `echo-plugin-adapter` 与独立仓库的 `echo-adapter-qq`
+//! 里，早已出进程。
+//!
+//! 它**不是** trait 实现：实例跑在进程外，接线归组合根（插件 `submit_input`
+//! → 有界队列 → 每实例 worker → 本方法）。平台输出只经显式工具可用。
+//!
+//! 2026-11 全插件化 S3 审计：本文件曾与 `commands.rs`（实例命令域，429 行）
+//! 同处一个目录，让"桥接"看起来像 adapter 能力的一部分。命令域已搬进
+//! `echo-plugin-tools`，本文件留在宿主是**刻意的**（理由见上）。
 
 use std::sync::Arc;
 

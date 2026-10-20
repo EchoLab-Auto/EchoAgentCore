@@ -29,13 +29,14 @@ use echo_defs::plugin_instance::{InstanceConnectionState, InstanceRegistry};
 use echo_protocol::{BackendCommand, BackendEvent, InstanceMetadataEntry, InstanceStatus};
 
 /// 本插件处理的命令名。
-pub const COMMANDS: [&str; 6] = [
+pub const COMMANDS: [&str; 7] = [
     "StartInstance",
     "StopInstance",
     "RestartInstance",
     "RequestInstanceStatus",
     "StartAllInstances",
     "StopAllInstances",
+    "InvokeInstanceOp",
 ];
 
 /// 宿主接缝：实例命令域需要的两件事。
@@ -93,6 +94,17 @@ impl InstanceCommandHandler {
             }
             BackendCommand::RequestInstanceStatus => {
                 self.emit_list(&instances);
+                Ok(())
+            }
+            BackendCommand::InvokeInstanceOp {
+                instance,
+                method,
+                payload,
+            } => {
+                // 通用管理方法转发（含跨实例对齐与状态下发，见
+                // `crate::instance_ops`）。解析失败也回执，不让面板等超时。
+                let runner = crate::instance_ops::InstanceOpRunner::new(Arc::clone(&self.host));
+                runner.invoke(&instance, &method, payload).await;
                 Ok(())
             }
             BackendCommand::StartAllInstances => {
@@ -276,14 +288,33 @@ mod tests {
         }
     }
 
-    /// `InvokeInstanceOp` **不**被认领（通用操作转发留在宿主）。
+    /// `InvokeInstanceOp` 现在**被认领**（通用管理方法转发，见
+    /// `instance_ops`）；实例不存在时按命令自带的 instance/method 回执，
+    /// 而不是抛错或静默。
     #[tokio::test]
-    async fn invoke_instance_op_is_not_claimed() {
-        let (h, _host) = handler();
-        assert!(h
-            .handle("InvokeInstanceOp", serde_json::json!({}))
-            .await
-            .is_none());
+    async fn invoke_instance_op_acks_with_a_readable_error() {
+        let (h, host) = handler();
+        h.handle(
+            "InvokeInstanceOp",
+            serde_json::json!({"instance": "ghost", "method": "get_state", "payload": null}),
+        )
+        .await
+        .expect("本域命令必须被认领")
+        .expect("回执不是解析错误");
+        let events = host.events.lock().unwrap();
+        match events.first() {
+            Some(BackendEvent::InstanceOpResult {
+                instance,
+                method,
+                error: Some(message),
+                ..
+            }) => {
+                assert_eq!(instance, "ghost");
+                assert_eq!(method, "get_state");
+                assert!(message.contains("未找到"), "{message}");
+            }
+            other => panic!("期望 InstanceOpResult 回执，得到 {other:?}"),
+        }
     }
 
     /// 全量启停后一定广播清单（面板据此刷新）。

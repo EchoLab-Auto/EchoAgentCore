@@ -1,45 +1,11 @@
-//! instance_ops 测试共享设施（`#[cfg(test)]`；commands / legacy 两个测试
-//! 模块共用，避免 mock 双份漂移）。
+//! instance_ops 测试设施（`#[cfg(test)]`）。
 //!
-//! `MockInstance` 复刻插件插件实例的管理面行为（真实 QQ 实现在独立插件进程，
-//! 由插件仓契约测试守护）；`platform` / `gating` 可配——广播泛化用例需要
-//! 构造同 / 异 platform 与不同 gating 能力的实例。
+//! 2026-11 全插件化 S3：命令域（429 行）与它的 mock 已搬进
+//! `echo-plugin-tools::instance_ops`（插件侧自带测试）。这里留下的
+//! `MockInstance` 只服务 **`bridge` 的测试**——它复刻插件实例的管理面行为
+//! （真实 QQ 实现在独立插件进程，由插件仓契约测试守护）。
 
-use std::sync::{Arc, Mutex};
-
-use echo_defs::plugin_instance::InstanceRegistry;
-
-use crate::agent::Agent;
-use crate::config::AgentConfig;
-use crate::event::BackendEvent;
-use crate::skill::SkillRegistry;
-use crate::tool::ToolRegistry;
-
-/// 无操作 provider（管理命令不经 LLM，仅为满足 Agent 构造）。
-pub(crate) struct NullProvider;
-
-#[async_trait::async_trait]
-impl crate::llm::LlmProvider for NullProvider {
-    fn name(&self) -> &str {
-        "null"
-    }
-    fn default_model(&self) -> &str {
-        "null"
-    }
-    async fn chat(
-        &self,
-        _request: &crate::llm::ChatRequest,
-    ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
-        Err(crate::llm::LlmError::Config("null provider".into()))
-    }
-    async fn chat_stream(
-        &self,
-        _request: &crate::llm::ChatRequest,
-        _tx: tokio::sync::mpsc::UnboundedSender<crate::llm::ChatChunk>,
-    ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
-        Err(crate::llm::LlmError::Config("null provider".into()))
-    }
-}
+use std::sync::Mutex;
 
 /// 测试插件实例：实现 `PluginInstance` + `InstanceManagement`（mock 复刻插件管理面
 /// 行为；生产实现由 `echo-instance-qq` 的契约测试守护，见 W3.2 测试）。
@@ -200,47 +166,4 @@ fn parse_list(payload: &serde_json::Value, key: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// 组装一个挂指定实例（name, platform, gating）的 Agent，返回（agent, 事件缓冲）。
-pub(crate) fn agent_with_instances(
-    specs: &[(&str, &str, bool)],
-) -> (Arc<Agent>, Arc<Mutex<Vec<BackendEvent>>>) {
-    let registry = InstanceRegistry::new();
-    for (name, platform, gating) in specs {
-        registry.register(Arc::new(MockInstance::configured(name, platform, *gating)));
-    }
-    let agent = Arc::new(Agent::new(
-        Arc::new(NullProvider),
-        AgentConfig::default(),
-        SkillRegistry::new(),
-        ToolRegistry::new(),
-        Arc::new(registry),
-    ));
-    let events: Arc<Mutex<Vec<BackendEvent>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink_events = events.clone();
-    agent.attach_event_sink(Arc::new(move |event: BackendEvent| {
-        sink_events.lock().expect("events poisoned").push(event);
-    }));
-    (agent, events)
-}
-
-/// 两实例（`mock-a` / `mock-b`，同 platform + gating）——多数用例的公共装配。
-pub(crate) fn agent_with_two_instances() -> (Arc<Agent>, Arc<Mutex<Vec<BackendEvent>>>) {
-    agent_with_instances(&[("mock-a", "mock", true), ("mock-b", "mock", true)])
-}
-
-/// 取某插件实例管理面的 owner（mock `get_owner`）。
-pub(crate) async fn owner_of(ad: &Arc<dyn echo_defs::plugin_instance::PluginInstance>) -> i64 {
-    ad.management()
-        .expect("management")
-        .invoke_custom("get_owner", serde_json::json!({}))
-        .await
-        .expect("get_owner")["owner_qq"]
-        .as_i64()
-        .expect("owner_qq number")
-}
-
-pub(crate) fn drain_events(events: &Arc<Mutex<Vec<BackendEvent>>>) -> Vec<BackendEvent> {
-    std::mem::take(&mut *events.lock().expect("events poisoned"))
 }
