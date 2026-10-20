@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "source/defs/echo-defs",
-    "source/context/echo-context",
     "source/session/echo-session",
     "source/tool/echo-tool",
     "source/shell/echo-shell",
@@ -17,11 +16,8 @@ members = [
     "source/config/echo-config",
     "source/backend/echo-test-utils",
     "source/core",
-    "source/plugin/echo-plugin",
-    "source/plugin/echo-plugin-host",
     "source/plugin/echo-plugin-adapter",
     "source/plugin/echo-plugin-example",
-    "source/plugin/echo-plugin-loader",
     "source/plugin/echo-plugin-provider-llm",
     "source/plugin/echo-plugin-skills",
     "source/plugin/echo-plugin-loop",
@@ -72,7 +68,7 @@ strip = "symbols"
 [workspace.dependencies]
 echo-defs = { path = "source/defs/echo-defs" }
 echo-config = { path = "source/config/echo-config" }
-echo-context = { path = "source/context/echo-context" }
+echo-context = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.2.0" }
 echo-sanitize = { path = "source/security/echo-sanitize" }
 echo-session = { path = "source/session/echo-session" }
 echo-tool = { path = "source/tool/echo-tool" }
@@ -84,13 +80,13 @@ echo-llm-ollama = { path = "source/llm/echo-llm-ollama" }
 echo-protocol = { path = "source/protocol/echo-protocol" }
 echo-agent = { path = "source/backend/echo-agent" }
 echo-test-utils = { path = "source/backend/echo-test-utils" }
-echo-plugin = { path = "source/plugin/echo-plugin" }
-echo-plugin-api = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.1.0" }
-echo-plugin-host = { path = "source/plugin/echo-plugin-host" }
+echo-plugin = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.2.0" }
+echo-plugin-api = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.2.0" }
+echo-plugin-host = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.2.0" }
 echo-plugin-adapter = { path = "source/plugin/echo-plugin-adapter" }
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.1.0" }
+echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.2.0" }
 echo-plugin-example = { path = "source/plugin/echo-plugin-example" }
-echo-plugin-loader = { path = "source/plugin/echo-plugin-loader" }
+echo-plugin-loader = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.2.0" }
 echo-plugin-provider-llm = { path = "source/plugin/echo-plugin-provider-llm" }
 echo-plugin-skills = { path = "source/plugin/echo-plugin-skills" }
 echo-plugin-loop = { path = "source/plugin/echo-plugin-loop" }

@@ -20,7 +20,7 @@ echo-context.workspace = true
 echo-session.workspace = true
 echo-loop.workspace = true
 echo-agent.workspace = true
-echo-plugin = { path = "../plugin/echo-plugin" }
+echo-plugin = { workspace = true }
 echo-plugin-host = { workspace = true }
 echo-plugin-adapter = { workspace = true }
 echo-plugin-loader = { workspace = true }

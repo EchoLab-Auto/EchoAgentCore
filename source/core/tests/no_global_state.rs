@@ -1,10 +1,12 @@
 //! P1 门禁（棘轮）：进程级静态可变状态的**只减不增**守卫。
 //!
 //! 背景：解耦计划 Phase 1（见 `document/design/decoupling-plan.md`）要求把全部
-//! 进程级全局态收敛到唯一引导单元：`echo-context` 的 kernel cell
-//! （`source/context/echo-context/src/kernel.rs`）。2026-10-08 全量迁移
-//! 完成，本测试锁定上限 = 0：除白名单外，全 source 不允许任何
-//! `static` + `OnceLock`/`LazyLock` 声明行。
+//! 进程级全局态收敛到唯一引导单元。2026-10-08 全量迁移完成。
+//!
+//! 现状（2026-10-19 M3）：kernel cell 随 `echo-context` 迁出到
+//! `plugin-framework` 仓，**本仓 `source/` 里已没有任何全局态**，因此本门禁
+//! 的白名单被清空、上限恒为 0。kernel cell 自身由框架仓的
+//! `crates/framework-gates/tests/no_global_state.rs` 精确豁免一个文件看着。
 //!
 //! 口径（2026-10-07 精化，全 source 扫描）：
 //! - 扫描仓库 `source/` 全树，跳过 `tests/` 目录与 `tests.rs` 文件（只数生产代码）；
@@ -21,8 +23,11 @@ use std::path::{Path, PathBuf};
 /// 存量上限（2026-10-08：全量迁移完成 → 0；只降不升，永不调大）。
 const EXPECTED_MAX: usize = 0;
 
-/// 唯一白名单（kernel cell 本体，扫描时整体跳过）。
-const WHITELIST: &str = "context/echo-context/src/kernel.rs";
+/// 白名单（M3 起为空：kernel cell 已随框架外迁）。
+///
+/// 保留这个常量而不是删掉分支，是为了让"将来若确有豁免"有现成的显式位置
+/// ——比临时在扫描里加 `ends_with` 更难被忽略。
+const WHITELIST: &str = "";
 
 fn repo_root() -> PathBuf {
     // 本文件位于 source/core/tests/ → source/core → 仓库根
@@ -66,8 +71,8 @@ fn scan(dir: &Path, out: &mut Vec<(PathBuf, usize)>) {
             if name == "tests.rs" {
                 continue;
             }
-            // 唯一白名单：kernel cell 本体（全 source 唯一允许的静态存储）。
-            if path.ends_with(WHITELIST) {
+            // 白名单为空时不跳过任何文件。
+            if !WHITELIST.is_empty() && path.ends_with(WHITELIST) {
                 continue;
             }
             let n = count_in_file(&path);
@@ -82,11 +87,13 @@ fn scan(dir: &Path, out: &mut Vec<(PathBuf, usize)>) {
 fn global_state_ratchet_only_decreases() {
     let root = repo_root();
     let source_dir = root.join("source");
-    // 白名单必须真实存在——防止 kernel cell 被移动/改名后豁免静默失效。
-    assert!(
-        source_dir.join(WHITELIST).is_file(),
-        "白名单文件不存在：source/{WHITELIST}（kernel cell 被移动或删除？）"
-    );
+    // 白名单非空时必须真实存在——防止豁免在被审计文件移动后静默失效。
+    if !WHITELIST.is_empty() {
+        assert!(
+            source_dir.join(WHITELIST).is_file(),
+            "白名单文件不存在：source/{WHITELIST}（被移动或删除？）"
+        );
+    }
     let mut files = Vec::new();
     scan(&source_dir, &mut files);
     let total: usize = files.iter().map(|(_, n)| n).sum();

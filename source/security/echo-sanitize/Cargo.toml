@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 echo-defs = { path = "../../defs/echo-defs" }
-echo-context = { path = "../../context/echo-context" }
+echo-context = { workspace = true }
 aho-corasick.workspace = true
 regex.workspace = true
 tracing.workspace = true

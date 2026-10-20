@@ -184,11 +184,10 @@ fn every_crate_is_registered_in_the_policy() {
 #[test]
 fn policy_shape_matches_the_layering_contract() {
     let p = policy();
-    for zero in [
-        "defs/echo-defs",
-        "context/echo-context",
-        "config/echo-config",
-    ] {
+    // `context/echo-context` 已随框架外迁（2026-10-19 M3），本仓只剩这两个
+    // 零 echo-* 依赖的底座 crate；框架侧的等价约束在
+    // `plugin-framework/crates/framework-gates/tests/domain_agnostic.rs`。
+    for zero in ["defs/echo-defs", "config/echo-config"] {
         let allowed = p.get(zero).unwrap_or_else(|| panic!("{zero} 未登记"));
         assert!(
             allowed.is_empty(),

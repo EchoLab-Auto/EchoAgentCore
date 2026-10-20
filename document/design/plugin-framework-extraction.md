@@ -305,3 +305,75 @@ interaction）——**宿主应用的分类词汇，被写进了框架契约**�
 | 框架仓 | **29 通过 / 0 失败**（api 10 + sdk 14 + gates 4 + doctest 1） |
 | 领域词扫描 | 四个框架 crate 生产代码**零命中** |
 | Panel | 零改动（`kind` 取值集合未变） |
+
+### M3：六件套整体外迁（完成，2026-10-19）
+
+框架仓 `v0.2.0`（`9116b44`）收下 `echo-context` / `echo-plugin` /
+`echo-plugin-loader` / `echo-plugin-host`，Core 侧只剩应用层。
+
+| 项 | 值 |
+|---|---|
+| Core workspace members | 30 → 24 |
+| 迁出代码 | 6097 行（context 1540 + plugin 1184 + loader 810 + host 2563）|
+| 迁出测试 | 135 项 |
+| 框架仓总量 | 8533 行 / **165 项测试** |
+
+**代码零改动**（逐字节搬迁）。但发现**五处依赖声明并不都走 `workspace = true`**——
+`echo-sanitize` / `echo-loop` / `echo-protocol` / `echo-agent` / `core` 里还写着
+`{ path = "../../context/echo-context" }` 这类直接相对路径。删目录后 cargo
+立刻报 `failed to read .../echo-context/Cargo.toml`。全部改为
+`{ workspace = true }` 后由 workspace 统一指向 git tag——**这就是"改名不动源码"
+的前提**：依赖来源必须只有一处真值。
+
+#### 两道门禁随迁移搬家
+
+迁移前它们扫 `source/` 目录树，迁出后**自动不再覆盖框架，且不会报错**——
+保护静默消失。M3 的实际处理：
+
+| 门禁 | 处理 |
+|---|---|
+| 零全局态 | Core 侧白名单清空（扫描树里已无 kernel cell）；框架仓**精确豁免一个文件** `crates/echo-context/src/kernel.rs`，并用 `whitelist_stays_minimal` 把白名单锁死为 1 条 |
+| 领域无关性 | `framework_domain_agnostic.rs` 从 Core 删除，改写为框架仓的 `domain_agnostic.rs`（覆盖 context/plugin/loader/host，另加一条"任意框架 crate 不得依赖领域/内核 crate"）|
+| 依赖方向 | Core 的 `policy_shape_matches_the_layering_contract` 里 `context/echo-context` 那条底座断言随之删除（否则断言一个已不在本仓的 crate）|
+
+#### 一个真问题：框架仓导出了进程级单例表
+
+`echo-context::kernel` 是 `static KERNEL: OnceLock<Cell>`——一张
+`TypeId → Box<dyn Any>` 的进程级表。M3 前它是 Core `no_global_state` 门禁的
+唯一豁免（P1 阶段把散落各处的 `OnceLock` 静态收敛到这里）。
+
+审计它的使用者：**全部 8 处都在应用层**（`agent_manager`、`plugin_host`、
+`global_policy`、`shell_manager`、搜索客户端、联邦导入），框架自己一处都不用。
+
+这意味着：迁完之后，**框架仓导出的 API 里带着一张进程级全局表**。对"同一进程
+能起两套宿主"这个复用前提，它是直接冲突。
+
+处理方式与理由：M3 的纪律是"只搬迁不重新设计"，改它需要新建一个宿主 crate
+并改 8 个调用点，风险与本轮目标（大迁移）叠加不划算。因此：
+
+- 门禁里**精确到文件**豁免，白名单数量锁死为 1，新增任何其它全局态仍红；
+- 在框架仓 README / CHANGELOG 与本文档**同时写明**它该搬走；
+- 列入后续任务（见 §八）。
+
+这是本轮"六件套齐备"里唯一一处"结构上到位、归属上不到位"的地方，不掩饰。
+
+#### 验收
+
+| 项 | 结果 |
+|---|---|
+| Core 全量 | **903 通过 / 0 失败** |
+| 框架仓全量 | **165 通过 / 0 失败** |
+| 加总核对 | 1059（M0 基线）− 160（迁出并扣除 doctest）+ 4（M2 门禁）+ 5（M3 新增门禁自检）= 1068 = 903 + 165 ✓ |
+| `cargo fmt` / `clippy` | 两仓均干净 / 0 告警 |
+| release 构建 | 通过（Core + 进程外插件二进制） |
+| 部署与端到端 | 见 §八 |
+
+## 八、后续任务（M3 之后）
+
+1. **把 `echo-context::kernel` 搬出框架仓**。做法：在 Core 新建宿主 crate
+   （如 `source/backend/echo-kernel`）承载这张表，`echo-context` 只保留
+   `Ctx` / `EventBus` / `Disposer`。8 个调用点改 import，框架仓门禁白名单随之
+   清零（`whitelist_stays_minimal` 会强制同步）。这条清掉之后，"框架零全局态"
+   才是无条件成立的。
+2. M4：第三方可用性——非 EchoAgent 最小宿主示例 + 跨语言插件示例 + 文档。
+3. M5：协议去业务化（有决策门，当前建议不动）。

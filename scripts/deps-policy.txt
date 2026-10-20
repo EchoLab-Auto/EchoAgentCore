@@ -22,7 +22,6 @@
 
 # ── 定义层（零 echo-* 依赖）────────────────────────────────────────────
 defs/echo-defs
-context/echo-context
 
 # ── 中间层（只依赖底座）────────────────────────────────────────────────
 session/echo-session                    echo-defs
@@ -39,10 +38,7 @@ config/echo-config
 backend/echo-test-utils                 echo-defs
 
 # ── 插件机制层 ─────────────────────────────────────────────────────────
-plugin/echo-plugin                      echo-context
-plugin/echo-plugin-loader
 # host 只认协议：领域适配（RemoteTool / RemoteInstance）已迁到 echo-plugin-adapter。
-plugin/echo-plugin-host                 echo-plugin-api echo-plugin-loader
 plugin/echo-plugin-example              echo-plugin-host echo-plugin-sdk
 # 领域适配层：把协议贡献翻译成 echo-defs 的 Tool / PluginInstance trait。
 # 宿主保持领域中立（只认 echo-plugin-api），故适配器单独成 crate。
