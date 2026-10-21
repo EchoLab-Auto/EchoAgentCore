@@ -39,8 +39,17 @@ pub(crate) struct FederationRuntime {
     /// 一并注销；且「先插后删」时旧句柄按名移除会把同名的**新**注册条目
     /// 顶掉（连续重连后所有对端的远程工具全部消失，spawn_subagent node=
     /// 报「无可用代理工具」——活证据见当日日志）。
-    pub(crate) remote_tool_keepers:
-        std::sync::Mutex<std::collections::HashMap<String, Vec<echo_context::Disposer>>>,
+    /// **两层**（2026-11 S13）：`node_id → persona id → 该人格的 Disposer`。
+    ///
+    /// 为什么按人格分层：注册是**按人格**发生的（每人格有自己的工具注册表），
+    /// 而"新人格在链路已 Up 之后才建"要求能够**单独**给一个 agent 注册而不
+    /// 重复给别人注册（此前只有 node_id 一层，只能整 node 重注册）。
+    pub(crate) remote_tool_keepers: std::sync::Mutex<
+        std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, Vec<echo_context::Disposer>>,
+        >,
+    >,
     /// 端口合并（2026-10）：Some(management_access_token) = 合并模式——
     /// `SaveFederationPeer` 拒绝与之一致的 peer token（升级回调无法区分
     /// 管理/联邦连接）；None = 独立模式（无此校验）。
@@ -1090,8 +1099,68 @@ pub(crate) fn pick_promoted_peer_name(
 
 
 
-/// 按对端 caps 给全部 persona 注册代理工具（本机 schema 复制；注册即
-/// 启用——包级禁用只在 Down 时发生，重连 Up 负责整包重新启用）。
+/// 代理工具的包标签（Down 时按它整包禁用）。
+///
+/// `peer_name` 是**解析后的配置名**（占位提升后 = 新名）；工具注册名与包
+/// 标签都以它为准，保证与 Down 的 `peer_package`（node_to_peer 反查）一致。
+fn peer_tool_package(peer_name: &str) -> String {
+    format!("echo-agent.federation.{peer_name}")
+}
+
+/// 给**一个** agent 注册某对端的全部代理工具（本机 schema 复制）。
+///
+/// 返回该 agent 的保活句柄（drop 即按名注销）。
+///
+/// ## 为什么是"一个 agent"而不是"全部 persona"（2026-11 S13）
+///
+/// 原来的形状只能整进程一次性做：`register_remote_tools(rt, personas, …)`
+/// 遍历 supervisor。于是有一个**静默缺口**——链路 Up 之后才建的人格拿不到
+/// 任何远程工具（`grep register_remote_tools` 只有一个调用点：Link Up），
+/// 面板上看得见这个人格、模型却看不见 `peer__read_file`，且**没有任何报错**；
+/// 要等到下次断线重连才补上。
+///
+/// 拆成"单人格"之后，两条路径复用同一段逻辑：
+/// - 链路 Up → 遍历全部人格各调一次；
+/// - 人格新建 → 只给自己调一次（`adopt_active_links`）。
+pub(crate) async fn register_remote_tools_for_agent(
+    rt: &FederationRuntime,
+    agent: &std::sync::Arc<echo_agent::Agent>,
+    info: &echo_federation::PeerInfo,
+    peer_name: &str,
+) -> Vec<echo_context::Disposer> {
+    let candidates = echo_agent::federation::remote_tool_candidates(&info.caps);
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let package = peer_tool_package(peer_name);
+    let definitions = agent.tools.definitions().await;
+    let mut keepers = Vec::with_capacity(candidates.len());
+    for remote_name in &candidates {
+        let (description, parameters) =
+            echo_agent::federation::proxy_schema(&definitions, remote_name, peer_name);
+        let tool = std::sync::Arc::new(echo_agent::federation::RemoteTool::new(
+            peer_name,
+            &info.node_id,
+            remote_name,
+            description,
+            parameters,
+            rt.federation.clone(),
+            rt.router.clone(),
+        ));
+        // 保活：drop 即注销，绝不能当临时值。
+        keepers.push(agent.tools.register_reversible(tool));
+        agent.tools.set_package(
+            &echo_agent::federation::remote_tool_name(peer_name, remote_name),
+            &package,
+        );
+    }
+    // 重连语义：Down 时整包禁用，Up 必须整包重新启用（首次注册时包不在
+    // 禁用集，本调用无害幂等）。
+    agent.tools.set_package_enabled(&package, true);
+    keepers
+}
+
+/// 按对端 caps 给**全部** persona 注册代理工具（链路 Up 时调）。
 pub(crate) async fn register_remote_tools(
     rt: &FederationRuntime,
     personas: &agent_supervisor::AgentSupervisor,
@@ -1102,12 +1171,11 @@ pub(crate) async fn register_remote_tools(
     if candidates.is_empty() {
         return;
     }
-    // `peer_name` 为解析后的配置名（占位提升后 = 新名）；工具注册名与包
-    // 标签都以它为准，保证与 Down 的 peer_package（node_to_peer 反查）一致。
-    let package = format!("echo-agent.federation.{peer_name}");
-    // 先清本 peer 旧句柄（重注册/重连场景）：**先删后插**——Disposer
-    // 按名移除，若先插后删，旧句柄会把同名的**新**注册条目一并删掉
-    // （2026-10 修复；旧实现为全局 clear 后 extend，多 peer 下互杀）。
+    let package = peer_tool_package(peer_name);
+    prune_deleted_personas(rt);
+    // 先清本 peer 旧桶（重注册/重连场景）：**先删后插**——Disposer 按名移除，
+    // 若先插后删，旧句柄会把同名的**新**注册条目一并删掉（2026-10 修复；
+    // 旧实现为全局 clear 后 extend，多 peer 下互杀）。
     {
         let mut slot = rt
             .remote_tool_keepers
@@ -1115,47 +1183,317 @@ pub(crate) async fn register_remote_tools(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         slot.remove(&info.node_id);
     }
-    let mut registered = 0usize;
-    let mut keepers: Vec<echo_context::Disposer> = Vec::new();
+    let mut per_persona: std::collections::HashMap<String, Vec<echo_context::Disposer>> =
+        std::collections::HashMap::new();
     for persona in personas.personas() {
-        let definitions = persona.agent.tools.definitions().await;
-        for remote_name in &candidates {
-            let (description, parameters) =
-                echo_agent::federation::proxy_schema(&definitions, remote_name, peer_name);
-            let tool = std::sync::Arc::new(echo_agent::federation::RemoteTool::new(
-                peer_name,
-                &info.node_id,
-                remote_name,
-                description,
-                parameters,
-                rt.federation.clone(),
-                rt.router.clone(),
-            ));
-            let disposer = persona.agent.tools.register_reversible(tool);
-            keepers.push(disposer); // 保活：drop 即注销，绝不能当临时值
-            persona.agent.tools.set_package(
-                &echo_agent::federation::remote_tool_name(peer_name, remote_name),
-                &package,
-            );
+        let keepers = register_remote_tools_for_agent(rt, &persona.agent, info, peer_name).await;
+        if !keepers.is_empty() {
+            per_persona.insert(persona.id.clone(), keepers);
         }
-        registered = candidates.len();
-        // 重连语义：Down 时整包禁用，Up 必须整包重新启用（首次注册时
-        // 包不在禁用集，本调用无害幂等）。
-        persona.agent.tools.set_package_enabled(&package, true);
     }
+    let registered = candidates.len();
     // 保活句柄入库（本 peer 分桶；旧桶已在上方清空）。
     {
         let mut slot = rt
             .remote_tool_keepers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        slot.insert(info.node_id.clone(), keepers);
+        slot.insert(info.node_id.clone(), per_persona);
     }
     tracing::info!(
         target: "federation",
         peer = %info.node_id, name = %peer_name, package = %package, tools = registered,
         "remote proxy tools registered"
     );
+}
+
+/// 清掉**已经被删掉的人格**留下的保活句柄（2026-11 S13）。
+///
+/// 为什么需要：每个 `Disposer` 内部持有 `Arc<ToolRegistry>`（RAII 注销要靠它）。
+/// 人格被删除后，它的注册表本该随之消失——但 keepers 里的句柄仍在，于是
+/// **整个注册表被一条不会再被读的记录**吊着。反复"新建 → 删除"会线性累积。
+///
+/// 清扫时机选在"有真实事件发生"的两处（人格新建 / 链路 Up），不另起定时器：
+/// 这两处必然发生，且此时 `agent_manager` 已就绪（弱引用升级失败 = 尚未绑定，
+/// 跳过——那种情况下也不可能有人格被删）。
+fn prune_deleted_personas(rt: &FederationRuntime) {
+    let manager = match rt.agent_manager.read() {
+        Ok(slot) => match slot.upgrade() {
+            Some(manager) => manager,
+            None => return,
+        },
+        Err(_) => return,
+    };
+    let live: std::collections::HashSet<String> =
+        manager.all().into_iter().map(|running| running.id).collect();
+    let mut slot = rt
+        .remote_tool_keepers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut dropped = 0usize;
+    for bucket in slot.values_mut() {
+        let before = bucket.len();
+        bucket.retain(|persona, _| live.contains(persona));
+        dropped += before - bucket.len();
+    }
+    slot.retain(|_, bucket| !bucket.is_empty());
+    if dropped > 0 {
+        tracing::debug!(
+            target: "federation",
+            dropped,
+            "清掉已删除人格的代理工具保活句柄"
+        );
+    }
+}
+
+/// **新建人格**：把当前已 Up 的全部对端的代理工具装进它（2026-11 S13）。
+///
+/// 补的是原来的静默缺口：`register_remote_tools` 只在 Link Up 时跑一次，
+/// 之后新建的人格**拿不到任何远程工具**（面板看得见这个人格、模型看不见
+/// `peer__read_file`，且不报错），要等下次断线重连才补上。
+///
+/// 幂等：已注册过的人格再调一次只会覆盖自己的桶（先删后插），不会重复注册。
+pub(crate) async fn adopt_active_links(
+    rt: &FederationRuntime,
+    agent: &std::sync::Arc<echo_agent::Agent>,
+    persona_id: &str,
+) {
+    // 先清扫：这个入口在每次人格新建时都会跑，是顺手的回收点。
+    prune_deleted_personas(rt);
+    // 当前 Up 的 peer：`peer_names` 是 (配置名 → node_id) 的登记表。
+    let peers: Vec<(String, String)> = rt
+        .peer_names
+        .read()
+        .await
+        .iter()
+        .map(|(name, node)| (name.clone(), node.clone()))
+        .collect();
+    if peers.is_empty() {
+        return;
+    }
+    for (peer_name, node_id) in peers {
+        let Some(info) = rt.federation.peer_info(&peer_name).await else {
+            continue;
+        };
+        // 防御：登记表与 PeerInfo 可能短暂不一致（刚断链）——以 node_id 为准。
+        if info.node_id != node_id {
+            continue;
+        }
+        let keepers = register_remote_tools_for_agent(rt, agent, &info, &peer_name).await;
+        if keepers.is_empty() {
+            continue;
+        }
+        let package = peer_tool_package(&peer_name);
+        let count = keepers.len();
+        // 记下**工具名**而不只是数量：这条日志是排查"新人格为什么看不见
+        // 远程工具"的唯一线索（此前连数量都没有）。
+        let installed: Vec<String> = echo_agent::federation::remote_tool_candidates(&info.caps)
+            .iter()
+            .map(|tool| echo_agent::federation::remote_tool_name(&peer_name, tool))
+            .collect();
+        {
+            let mut slot = rt
+                .remote_tool_keepers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            slot.entry(node_id.clone())
+                .or_default()
+                .insert(persona_id.to_string(), keepers);
+        }
+        tracing::info!(
+            target: "federation",
+            persona = %persona_id, peer = %node_id, name = %peer_name,
+            package = %package, tools = count, installed = ?installed,
+            "persona 新建：补装已在线的远程代理工具"
+        );
+    }
+}
+
+#[cfg(test)]
+mod remote_tool_install_tests {
+    //! 代理工具**按人格安装**（2026-11 S13）。
+    //!
+    //! 这一组测试守的是一个静默缺口：`register_remote_tools` 曾在**只有**
+    //! 链路 Up 一个调用点，于是"链路已通之后新建的人格"拿不到任何 `peer__*`
+    //! 工具——面板看得见它、模型看不见，且不报错。
+    //!
+    //! 拆分之后两条路径复用 [`super::register_remote_tools_for_agent`]，所以
+    //! 这里直接测那一段（它才知道"给谁装、装成什么样"）。
+
+    use std::sync::Arc;
+
+    /// 最小 agent（不跑模型，只要能装工具）。
+    struct NullProvider;
+
+    #[async_trait::async_trait]
+    impl echo_agent::llm::LlmProvider for NullProvider {
+        fn name(&self) -> &str {
+            "null"
+        }
+        fn default_model(&self) -> &str {
+            "null"
+        }
+        async fn chat(
+            &self,
+            _request: &echo_agent::llm::ChatRequest,
+        ) -> Result<echo_agent::llm::ChatResponse, echo_agent::llm::LlmError> {
+            Err(echo_agent::llm::LlmError::Config("not used".into()))
+        }
+        async fn chat_stream(
+            &self,
+            request: &echo_agent::llm::ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<echo_agent::llm::ChatChunk>,
+        ) -> Result<echo_agent::llm::ChatResponse, echo_agent::llm::LlmError> {
+            self.chat(request).await
+        }
+    }
+
+    fn new_agent(team: &str) -> Arc<echo_agent::Agent> {
+        let agent = Arc::new(echo_agent::Agent::new(
+            Arc::new(NullProvider),
+            echo_agent::AgentConfig::default(),
+            echo_agent::skill::SkillRegistry::new(),
+            echo_agent::tool::ToolRegistry::new(),
+            Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
+        ));
+        agent.set_team_id(Some(team.to_string()));
+        agent
+    }
+
+    /// 造一个"够用"的联邦运行时（不监听、不连出：只要句柄）。
+    fn runtime(dir: &std::path::Path) -> Arc<super::FederationRuntime> {
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+        let federation = echo_federation::Federation::new(
+            "node-local".into(),
+            None,
+            echo_federation::NodeCaps::default(),
+            Vec::new(),
+            None,
+            event_tx,
+            shutdown_tx,
+        );
+        Arc::new(super::FederationRuntime {
+            federation,
+            router: echo_agent::federation::InvokeRouter::new("node-local".into()),
+            peer_names: Arc::new(tokio::sync::RwLock::new(Default::default())),
+            node_to_peer: Arc::new(tokio::sync::RwLock::new(Default::default())),
+            config_store: echo_config::ConfigStore::new(dir.join("core.toml")),
+            listen: String::new(),
+            advertise: String::new(),
+            node_name: None,
+            peer_policies: Arc::new(tokio::sync::RwLock::new(Default::default())),
+            remote_tool_keepers: std::sync::Mutex::new(Default::default()),
+            merged_management_token: None,
+            invite_placeholders: std::sync::Mutex::new(Default::default()),
+            session_import_acks: std::sync::Mutex::new(Default::default()),
+            agent_manager: Default::default(),
+        })
+    }
+
+    fn peer_info(caps: echo_federation::NodeCaps) -> echo_federation::PeerInfo {
+        echo_federation::PeerInfo {
+            node_id: "node-remote".into(),
+            node_name: Some("gpu-box".into()),
+            version: "0.0.0".into(),
+            caps,
+            advertise: None,
+            peer_name: "gpu-box".into(),
+        }
+    }
+
+    /// 核心行为：给**一个**人格装远程工具 = 它自己的注册表里出现 `peer__*`，
+    /// 且打到正确的包标签（Down 时按包整包禁用，标错就禁不掉）。
+    #[tokio::test]
+    async fn installing_for_one_persona_fills_only_that_persona() {
+        let dir = std::env::temp_dir().join(format!("echo-adopt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime(&dir);
+        let alice = new_agent("alice");
+        let bob = new_agent("bob");
+
+        let caps = echo_federation::NodeCaps {
+            tools: vec!["read_file".into(), "bash".into()],
+            ..Default::default()
+        };
+        // 本机 schema 复制要用到同名工具定义；没有定义时 proxy_schema 仍会
+        // 产出可调用工具（描述退化为简版），这正是它设计上的降级路径。
+        let keepers = super::register_remote_tools_for_agent(&rt, &alice, &peer_info(caps), "gpu-box")
+            .await;
+        assert_eq!(keepers.len(), 2, "两个候选工具都该注册");
+        let names = alice.tools.names();
+        assert!(
+            names.iter().any(|n| n == "gpu-box__read_file"),
+            "alice 必须有 gpu-box__read_file：{names:?}"
+        );
+        assert!(names.iter().any(|n| n == "gpu-box__bash"), "{names:?}");
+
+        // 包标签：Down 时按它整包禁用（`set_package_enabled`）。标错就禁不掉，
+        // 对端离线后模型仍会看到并调用 `gpu-box__*`（2026-10 审计 P0-1 的形状）。
+        assert_eq!(
+            alice.tools.package_of("gpu-box__read_file").as_deref(),
+            Some("echo-agent.federation.gpu-box"),
+            "包标签必须是 echo-agent.federation.<配置名>，且 Down 侧按同一套算"
+        );
+        assert_eq!(
+            alice.tools.package_of("gpu-box__bash").as_deref(),
+            Some("echo-agent.federation.gpu-box")
+        );
+
+        // bob 完全不受影响——这正是"按人格装"的意义。
+        assert!(
+            bob.tools.names().is_empty(),
+            "给 alice 装工具不得污染 bob：{:?}",
+            bob.tools.names()
+        );
+
+        // 保活句柄 drop 即注销（RAII 纪律：临时值会让工具当场消失）。
+        drop(keepers);
+        assert!(
+            !alice
+                .tools
+                .names()
+                .iter()
+                .any(|n| n == "gpu-box__read_file"),
+            "Disposer drop 后工具必须注销：{:?}",
+            alice.tools.names()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 对端没宣告任何可远程工具 → 不装、返回空句柄（不是错误）。
+    #[tokio::test]
+    async fn peer_without_remote_tools_installs_nothing() {
+        let dir = std::env::temp_dir().join(format!("echo-adopt-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime(&dir);
+        let alice = new_agent("alice");
+        let keepers = super::register_remote_tools_for_agent(
+            &rt,
+            &alice,
+            &peer_info(echo_federation::NodeCaps::default()),
+            "gpu-box",
+        )
+        .await;
+        assert!(keepers.is_empty());
+        assert!(alice.tools.names().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **新建人格**的入口：没有在线 peer 时是**静默 no-op**（不 panic、不阻塞）。
+    ///
+    /// 这条守的是组合根 factory 的那次 `tokio::spawn`：它在每个人格构造时都会
+    /// 跑（包括启动期的全部人格，那时链路还没起），所以必须便宜且安全。
+    #[tokio::test]
+    async fn adopt_active_links_is_a_cheap_noop_without_peers() {
+        let dir = std::env::temp_dir().join(format!("echo-adopt-none-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime(&dir);
+        let bob = new_agent("bob");
+        super::adopt_active_links(&rt, &bob, "bob").await;
+        assert!(bob.tools.names().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

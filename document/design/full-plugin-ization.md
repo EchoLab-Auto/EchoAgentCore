@@ -558,6 +558,102 @@ plugin/admin.rs                 +477（规则 + 命令域 + 9 条纯函数测试
 地址漂移自愈，文档各有 2026-10 报障记录）；搬错的代价是两台机器互相连不上，
 而收益只是"形式上更完整"。等有真实的"多节点拓扑变化"需求再做。
 
+### S12：插件之间零依赖 ——**已完成 2026-11**
+
+`scripts/deps-policy.txt` 此前只禁"插件依赖业务 crate `echo-agent`"，
+**插件之间的依赖一直是允许的**。实测 4 处：
+
+```text
+federation → subagent    impl RemoteDelegationSink for AggregatorDelegationSink
+federation → workspace   use {QueryFuture, RemoteWorkspaceQuery}
+federation → tools       type RemoteInvoker = echo_plugin_tools::RemoteInvoker
+tools      → provider    use api_pool::{PoolSnapshot, read_snapshot}
+```
+
+后果不是"多一条边"，是**替换不可能**：想换掉 federation 就必须先接受 subagent
+的词汇。它们一直能编译、一直没人拦——前三轮的每次修一处（`llm` 键、
+`FederationAdminHost`）都是手动发现、手动修的。
+
+#### 修法：trait/struct 长在错的一边 → 下沉定义层
+
+| 词汇 | 新位置 | 为什么它不属于任何一方 |
+|---|---|---|
+| `RemoteDelegationSink` | `defs::subagent` | 声明方 subagent / 实现方 federation |
+| `RemoteWorkspaceQuery` + `QueryFuture` | `defs::workspace` | 声明方 workspace / 实现方宿主 |
+| `RemoteInvoker` | `defs::remote_tool` | 声明方 tools / 实现方联邦 |
+| `PoolSnapshot` + `parse_pool` | `defs::api_profile` | "用户在配置里写了什么" |
+
+第 4 处不是纯移动：`read_snapshot(store: &ConfigStore)` 拆成两半——**解析**
+（吃 `toml::Value`，进定义层）+ **读文件**（留插件/宿主）。于是
+`list_api_profiles` 工具不再需要认识 provider 插件。原位置全部保留 `pub use`
+re-export，下游路径不变。
+
+#### 门禁（两层，互为冗余）
+
+1. `deps-policy.txt` 新增第 4 条纪律 + 收紧两行白名单；
+2. `plugins_do_not_depend_on_other_plugins` 扫每个插件 `Cargo.toml`，点名
+   "哪个插件依赖了哪个插件 + 该怎么修"。
+
+例外只有机制 crate（`echo-plugin` / `-api` / `-host` / `-sdk` / `-loader`）：
+它们是"插件怎么装"，不是"某个插件"。
+
+**反向验证**：临时给 loop 加一条 `echo-plugin-tools` 依赖，两道门禁同时红，
+然后还原。
+
+```text
+插件间 echo-plugin-* 依赖：4 → 0
+剩余 3 条全是机制 crate（adapter/example/loop → api/host/sdk）
+```
+
+### S13：新人格拿不到远程工具 ——**已修 2026-11**
+
+一个**静默缺口**，不是重构需求：`register_remote_tools` 只有一个调用点
+（`LinkEvent::Up`）。于是链路已通之后新建的人格：
+
+- 面板上看得见它（TeamsList 里有）；
+- 模型看不见 `peer__read_file`（注册表里没有）；
+- **没有任何报错**——要等下次断线重连才补上。
+
+#### 修法：拆成"按一个 agent 装" + 两个入口
+
+```text
+register_remote_tools_for_agent(rt, agent, info, peer_name) -> Vec<Disposer>
+   ├── register_remote_tools(rt, personas, …)      链路 Up → 遍历各装一次
+   └── adopt_active_links(rt, agent, persona_id)   人格新建 → 只给自己装
+```
+
+keepers 从 `node_id → Vec<Disposer>` 改成 `node_id → persona → Vec<Disposer>`：
+"只给一个人格注册"要求桶能按人格分辨（此前只能整 node 重注册）。
+
+组合根的 agent factory 末尾 `tokio::spawn` 一次 `adopt_active_links`——factory
+是同步闭包，而注册要读 `PeerInfo`；"人格刚建好"到"它跑第一个 turn"之间隔着
+面板操作，几十毫秒窗口不可感知。
+
+#### 顺带修掉的泄漏
+
+`Disposer` 内部持有 `Arc<ToolRegistry>`（RAII 注销要用）。人格被删除后 keepers
+仍留着它的句柄 → **整个注册表被一条不会再被读的记录吊着**，反复新建/删除会
+线性累积。新增 `prune_deleted_personas`，在"人格新建"与"链路 Up"两个必然发生
+的时点顺手回收（不另起定时器）。
+
+#### 真机验证（两台节点 + 运行期新建人格）
+
+```text
+16:xx:xx link up peer=node-… name=b tools=[bash, edit_file, list_files,
+                                              read_file, search_code, write_file]
+16:xx:xx remote proxy tools registered peer=node-… name=b
+         package=echo-agent.federation.b tools=6
+--- SaveTeam {id:"Zoe"} （运行期新建，此前不存在）---
+16:xx:xx agent Zoe saved
+16:xx:xx persona 新建：补装已在线的远程代理工具 persona=Zoe peer=node-…
+         package=echo-agent.federation.b tools=6
+         installed=["b__bash", "b__edit_file", "b__list_files",
+                    "b__read_file", "b__search_code", "b__write_file"]
+```
+
+3 条新单测：只填目标人格（bob 不受影响）/ 包标签正确 / Disposer drop 即注销 /
+无 peer 时是廉价 no-op。
+
 ## 不搬清单（每条都试过，附理由）
 
 诚实记录"没做"比做完的部分更重要——否则下一个人会把同样的时间再花一遍。

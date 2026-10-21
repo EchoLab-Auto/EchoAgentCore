@@ -1037,6 +1037,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let factory_node_identity = node_identity.clone();
     // 联邦出口集合：同上（全部 persona 看同一个聚合器与同一组链路出口）。
     let factory_federation = federation_ports.clone();
+    // 联邦运行时（2026-11 S13）：新建人格要补装**已经在线的**远程代理工具。
+    // 克隆在这里（`federation` 元组稍后会被解构进路由泵）。
+    let factory_federation_runtime = federation.0.clone();
     let factory_shell_handle = shell_handle.clone();
     // 全局禁用策略：所有 persona 共用一份（开关变化只需改这份）。
     let factory_global_policy = global_policy.clone();
@@ -1300,7 +1303,25 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         }
                     }
                 }
-                builder.session_persist_path(file).build()
+                let built = builder.session_persist_path(file).build();
+                // **新建人格补装远程工具**（2026-11 S13）。
+                //
+                // 此前 `register_remote_tools` 只在链路 Up 时跑一次：链路已通
+                // 之后新建的人格拿不到任何 `peer__*` 工具，面板看得见它、模型
+                // 看不见，且没有任何报错——要等下次断线重连才补上。
+                //
+                // factory 是**同步**闭包，所以这里 spawn：注册本身是异步的
+                // （要读 PeerInfo），而"人格刚建好"到"它开始跑第一个 turn"
+                // 之间隔着面板操作，几十毫秒的窗口不会造成可感知的缺失。
+                {
+                    let rt = factory_federation_runtime.clone();
+                    let agent = built.clone();
+                    let persona_id = id.clone();
+                    tokio::spawn(async move {
+                        crate::federation_rt::adopt_active_links(&rt, &agent, &persona_id).await;
+                    });
+                }
+                built
             }
         },
     );

@@ -230,6 +230,11 @@ peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲�
   `<peer>__<tool>` 的 peer 段经 LLM function-name 清洗（非
   `[a-zA-Z0-9_-]` 字符 → `_`），模型/标注回传的清洗形会被**回查解析**为
   原始配置名（`node://` 分流、子代理通知、只读查询三个出口）
+- **代理工具按人格安装（2026-11 S13）**：链路 Up 时给**当时存在的**每个
+  人格各装一份 `peer__*`；**新建人格**时补装已在线的（`adopt_active_links`，
+  在 agent factory 里触发）。此前注册只有"Link Up"一个调用点——链路通之后
+  新建的人格拿不到任何远程工具，面板看得见它、模型看不见，**且不报错**，
+  要等下次断线重连才补上
 - **管理命令域在插件里（2026-11 S11）**：`SaveFederationPeer` /
   `DeleteFederationPeer` / `RequestFederationStatus` / `RequestFederationInvite` /
   `MigrateSession` 的**规则与分发**在 `echo-plugin-federation::admin`（纯函数
