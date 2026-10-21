@@ -798,7 +798,7 @@ impl Agent {
     /// 报错由手动「查余额」路径呈现。
     pub fn start_balance_snapshot_task(self: &Arc<Self>) {
         let agent = Arc::clone(self);
-        let cancel = self.cancel.clone();
+        let cancel = self.turns.cancel.clone();
         tokio::spawn(async move {
             let period_secs = agent.model.config.read().await.balance_snapshot_secs;
             if period_secs == 0 {

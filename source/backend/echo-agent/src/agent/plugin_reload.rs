@@ -19,14 +19,14 @@ impl Agent {
         if plugins_dir.trim().is_empty()
             || !std::path::Path::new(&plugins_dir).exists()
             || self
-                .plugin_reload_started
+                .plugins.reload_started
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
         {
             return;
         }
         let agent = Arc::clone(self);
-        let cancel = self.cancel.clone();
+        let cancel = self.turns.cancel.clone();
         tracing::info!(path = %plugins_dir, interval_seconds = 5, "plugin hot reload started");
         tokio::spawn(async move {
             let start = tokio::time::Instant::now() + std::time::Duration::from_secs(5);

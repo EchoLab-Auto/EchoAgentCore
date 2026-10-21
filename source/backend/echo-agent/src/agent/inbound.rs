@@ -14,7 +14,7 @@ use super::*;
 
 impl Agent {
     pub(crate) fn next_message_sequence(&self) -> u64 {
-        self.next_message_sequence.fetch_add(1, Ordering::Relaxed)
+        self.turns.next_message_sequence.fetch_add(1, Ordering::Relaxed)
     }
 
     pub(crate) fn register_inbound_turn(
@@ -25,7 +25,7 @@ impl Agent {
     ) -> InboundTurnRegistration {
         let id = uuid::Uuid::new_v4().to_string();
         let cancel = tokio_util::sync::CancellationToken::new();
-        self.active_inbound_turns.insert(
+        self.turns.active_inbound_turns.insert(
             id.clone(),
             ActiveInboundTurn {
                 session_id: session_id.to_string(),
@@ -38,14 +38,14 @@ impl Agent {
     }
 
     pub(crate) fn finish_inbound_turn(&self, turn_id: &str) {
-        self.active_inbound_turns.remove(turn_id);
+        self.turns.active_inbound_turns.remove(turn_id);
     }
 
     /// Cancel the newest active turn belonging to the command sender. Branches
     /// win ties so a follow-up cancellation targets the temporary work first.
     pub(crate) fn cancel_inbound_turns(&self, session_id: &str, all: bool) -> usize {
         let mut turns = self
-            .active_inbound_turns
+            .turns.active_inbound_turns
             .iter()
             .filter(|turn| turn.session_id == session_id)
             .map(|turn| (turn.message_sequence, turn.branch, turn.cancel.clone()))
@@ -63,7 +63,7 @@ impl Agent {
 
     pub(crate) fn cancel_all_inbound_turns(&self) -> usize {
         let turns = self
-            .active_inbound_turns
+            .turns.active_inbound_turns
             .iter()
             .map(|turn| turn.cancel.clone())
             .collect::<Vec<_>>();
@@ -258,7 +258,7 @@ impl Agent {
         let message_sequence = structured_message_sequence(content);
         let merge_cancel = cancel.clone();
         let branch_slot = tokio::select! {
-            permit = self.reply_branch_slots.acquire() => permit
+            permit = self.turns.reply_branch_slots.acquire() => permit
                 .map_err(|_| anyhow!("reply branch scheduler is closed"))?,
             _ = cancel.cancelled() => return Err(anyhow!(TURN_CANCELLED)),
         };
@@ -307,7 +307,7 @@ impl Agent {
     /// `ActiveTurnsSnapshot` 事件；见 protocol event 文档）。
     pub fn active_turn_session_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self
-            .active_inbound_turns
+            .turns.active_inbound_turns
             .iter()
             .map(|t| t.session_id.clone())
             .collect();
@@ -318,19 +318,19 @@ impl Agent {
 
     #[cfg(test)]
     pub(crate) fn active_inbound_turn_count(&self) -> usize {
-        self.active_inbound_turns.len()
+        self.turns.active_inbound_turns.len()
     }
 
     #[cfg(test)]
     pub(crate) fn active_inbound_branch_count(&self) -> usize {
-        self.active_inbound_turns
+        self.turns.active_inbound_turns
             .iter()
             .filter(|turn| turn.branch)
             .count()
     }
 
     pub async fn process_message(&self, session: &Session, content: &str) -> Result<String> {
-        if self.draining.load(Ordering::Acquire) {
+        if self.turns.draining.load(Ordering::Acquire) {
             return Err(anyhow!("Core 正在重启，消息暂未处理，请稍后重试"));
         }
         // 入站内容脱敏（2026-10 安全）：本 turn 及后续记录 / 模型上下文
@@ -412,7 +412,7 @@ impl Agent {
         content: &str,
         message_sequence: u64,
     ) {
-        if self.draining.load(Ordering::Acquire) {
+        if self.turns.draining.load(Ordering::Acquire) {
             tracing::info!(session = %session.id, "inbound message dropped: core draining for restart");
             return;
         }

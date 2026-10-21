@@ -39,10 +39,10 @@ impl Agent {
     /// 当前 turn 驱动：组合根注入的共享 runner；未注入（单元测试 / 独立
     /// 嵌入）时按本 agent 的 provider 与配置惰性构建一个默认 runner 并缓存。
     pub(super) async fn turn_runner(&self) -> std::sync::Arc<echo_loop::TurnRunner> {
-        if let Some(runner) = self.loop_runner.read().await.clone() {
+        if let Some(runner) = self.turns.runner.read().await.clone() {
             return runner;
         }
-        let mut slot = self.loop_runner.write().await;
+        let mut slot = self.turns.runner.write().await;
         if let Some(runner) = slot.clone() {
             return runner;
         }
@@ -114,7 +114,7 @@ impl Agent {
         let (base, persona_skills, plugin_blocks) = {
             let base = self.model.config.read().await.system_prompt.clone();
             let persona_skills = self
-                .capabilities
+                .identity.capabilities
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()

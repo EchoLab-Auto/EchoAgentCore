@@ -231,7 +231,7 @@ impl Agent {
         &self,
         branch_id: &str,
     ) -> Option<tokio_util::sync::CancellationToken> {
-        self.active_inbound_turns
+        self.turns.active_inbound_turns
             .get(branch_id)
             .map(|turn| turn.cancel.clone())
     }
@@ -253,14 +253,14 @@ impl Agent {
         key: impl Into<String>,
         build: ToolStateEventBuilder,
     ) {
-        if let Ok(mut map) = self.tool_state_events.write() {
+        if let Ok(mut map) = self.egress.state_events.write() {
             map.insert(key.into(), build);
         }
     }
 
     /// 查一个状态 key 的线上事件构造器（执行链用；无绑定 = `None`）。
     pub(crate) fn tool_state_event(&self, key: &str) -> Option<ToolStateEventBuilder> {
-        self.tool_state_events
+        self.egress.state_events
             .read()
             .ok()
             .and_then(|map| map.get(key).cloned())

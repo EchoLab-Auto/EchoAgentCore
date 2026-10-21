@@ -39,7 +39,7 @@ impl Agent {
             }
         });
         let spawn_for_tool = spawn.clone();
-        if let Ok(mut slot) = self.subagent.write() {
+        if let Ok(mut slot) = self.ports.subagent.write() {
             *slot = Some(SubagentRuntime {
                 store: store.clone(),
                 spawn,
@@ -62,14 +62,14 @@ impl Agent {
         self.tools.register_shared(Arc::new(tool));
         self.tools
             .set_package(crate::subagent::SPAWN_SUBAGENT_TOOL, crate::plugins::SUBAGENT_PLUGIN_ID);
-        store.spawn_sweeper(self.cancel.clone());
+        store.spawn_sweeper(self.turns.cancel.clone());
     }
 
     /// subagent 运行态（None = 插件未启用）。
     pub(crate) fn subagent_runtime(
         &self,
     ) -> Option<(Arc<crate::subagent::SubagentStore>, SubagentSpawnFn)> {
-        let guard = self.subagent.read().ok()?;
+        let guard = self.ports.subagent.read().ok()?;
         let runtime = guard.as_ref()?;
         Some((runtime.store.clone(), runtime.spawn.clone()))
     }

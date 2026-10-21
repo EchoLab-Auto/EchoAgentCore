@@ -24,7 +24,7 @@ impl Agent {
     /// mount/unmount，避免"单人格改动扩散到全员"）。
     pub async fn apply_capabilities(&self, profile: &crate::config::AgentProfile) {
         *self
-            .capabilities
+            .identity.capabilities
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(profile.clone());
 
@@ -74,7 +74,7 @@ impl Agent {
 
     /// 本 persona 白/黑名单是否允许某插件（capabilities 未设置 = 允许）。
     pub fn persona_allows_plugin(&self, plugin_id: &str) -> bool {
-        self.capabilities
+        self.identity.capabilities
             .lock()
             .ok()
             .and_then(|guard| {
@@ -128,7 +128,7 @@ impl Agent {
     pub async fn reapply_tool_gating(&self, name: &str, globally_enabled: bool) -> bool {
         let allowed = globally_enabled
             && self
-                .capabilities
+                .identity.capabilities
                 .lock()
                 .ok()
                 .and_then(|guard| guard.as_ref().map(|p| persona_tool_allowed(p, name)))
@@ -140,7 +140,7 @@ impl Agent {
     pub async fn reapply_skill_gating(&self, name: &str, globally_enabled: bool) -> bool {
         let allowed = globally_enabled
             && self
-                .capabilities
+                .identity.capabilities
                 .lock()
                 .ok()
                 .and_then(|guard| guard.as_ref().map(|p| persona_skill_allowed(p, name)))
@@ -320,7 +320,7 @@ impl Agent {
         // 技能维度：Package 标签横跨技能，同名包内技能随包启停。
         // （锁竞争时跳过——下一周期/切换时再应用。）
         if let Ok(mut skills) = self.prompt.skills.try_lock() {
-            let cap = self.capabilities.lock().ok().and_then(|g| g.clone());
+            let cap = self.identity.capabilities.lock().ok().and_then(|g| g.clone());
             let affected_skills = if plugin_id == crate::plugins::SKILLS_DIR_PLUGIN_ID {
                 // 技能目录插件：整表启停。启用时只放开名单内的技能。
                 let names = skills.names();
@@ -366,7 +366,7 @@ impl Agent {
     ///
     /// 首次记录即「变化」（启动期的那次应用值得留一条日志）。
     fn note_gating_state(&self, plugin_id: &str, enabled: bool) -> bool {
-        match self.gating_log_state.insert(plugin_id.to_string(), enabled) {
+        match self.instrumentation.gating_log_state.insert(plugin_id.to_string(), enabled) {
             Some(previous) => previous != enabled,
             None => true,
         }
@@ -375,7 +375,7 @@ impl Agent {
     /// 按本 persona 的工具名单，把包内"名单外"的成员重新禁用。
     /// 同步尽力（try_write）；未配置 capabilities 时为 no-op。
     fn tighten_tools_by_lists(&self, package: &str) {
-        let Some(cap) = self.capabilities.lock().ok().and_then(|g| g.clone()) else {
+        let Some(cap) = self.identity.capabilities.lock().ok().and_then(|g| g.clone()) else {
             return;
         };
         if cap.enabled_tools.is_empty() && cap.disabled_tools.is_empty() {
@@ -400,7 +400,7 @@ impl Agent {
     /// 是两件事。
     pub fn allows_dynamic_tool(&self, name: &str) -> bool {
         let guard = self
-            .capabilities
+            .identity.capabilities
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(cap) = guard.as_ref() else {

@@ -6,6 +6,7 @@ pub mod builder;
 mod commands;
 mod compact;
 mod gating;
+pub(crate) mod groups;
 mod inbound;
 mod plugin_reload;
 pub(crate) mod prompt;
@@ -29,7 +30,7 @@ pub mod workspace_host;
 
 use boundary::PromptBlock;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 /// 进程级事件汇聚点：任意 persona 的 `emit` 都投递到此，组合根保证
 /// 所有人格（含运行期新建）共享同一汇聚点，Panel 单连接即可看到全部活动。
@@ -37,8 +38,7 @@ pub type EventSink = std::sync::Arc<dyn Fn(BackendEvent) + Send + Sync>;
 use std::sync::Arc;
 
 use anyhow::Result;
-use dashmap::DashMap;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 use echo_defs::plugin_instance::InstanceRegistry;
 
@@ -67,7 +67,7 @@ const MAX_CONCURRENT_REPLY_BRANCHES: usize = 8;
 pub use crate::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
 
 #[derive(Debug, Clone)]
-struct ActiveInboundTurn {
+pub(crate) struct ActiveInboundTurn {
     session_id: String,
     message_sequence: u64,
     branch: bool,
@@ -90,25 +90,40 @@ impl Default for InboundTurnRegistration {
     }
 }
 
-/// The agent: owns provider, tools, skills, sessions, instances, and emits events.
+/// The agent：per-persona 的**作用域**（对应 Cordis 的 `ctx.fork()`），不是插件。
+///
+/// ## 字段按"谁拥有谁"分组（2026-11 S9）
+///
+/// 从 32 个平铺字段降到 12 个。分组不是审美：每组的成员**必须一起变**，
+/// 拆开就会出现"改了 A 忘了 B"的 bug（历史上真实发生过：切 provider 忘了
+/// 同步 persona 标记；插件停用忘了撤销远程面声明）。分组把这类不变式写进
+/// 类型，不变式与文档都在 [`groups`]。
+///
+/// | 字段 | 是什么 | 为什么在这一层 |
+/// |---|---|---|
+/// | `model` | 服务（S4a） | provider/配置/模型名/profile 一起变 |
+/// | `prompt` | 服务（S4c） | 素材/缓存/上次结果一起变 |
+/// | `tools` | **真句柄** | 独立所有权，联邦泵与管理面直接用 |
+/// | `trunk` | **真句柄** | 会话唯一真源 |
+/// | `instances` | **真句柄** | 平台实例注册表（外部注册） |
+/// | `identity` | 组 | 「我是谁」 |
+/// | `egress` | 组 | 「事件怎么出去」 |
+/// | `turns` | 组 | 「谁在跑」 |
+/// | `instrumentation` | 组 | 脱敏 / 指标 / 日志去重 |
+/// | `plugins` | 组 | 插件子系统 |
+/// | `ports` | 组 | 插件装上来的接口 |
+/// | `manager` | 组 | 反向弱引用 |
+///
+/// 三个真句柄没有并进任何组：往定位器里塞真句柄只会多一层解引用，而不变式
+/// 收益为零。
 pub struct Agent {
     /// 模型出口（S4a）：provider / 配置 / 模型名 / profile 与会话级覆盖。
     ///
     /// 这四件事必须**一起变**（切 provider 要同时改实例与配置；切 profile 要
-    /// 同时改 persona 标记与会话覆盖），所以它们现在有一个共同的持有者而不是
+    /// 同时改 persona 标记与会话覆盖），所以它们有一个共同的持有者而不是
     /// 散在 `Agent` 的 8 个字段里。不变式表见 [`crate::model_service`]。
-    ///
-    /// `Arc` 而不是内联：后续阶段要把这个句柄单独递给别的服务（读配置不需要
-    /// 整只 `Agent`）。
     pub(crate) model: Arc<crate::model_service::ModelService>,
     pub tools: Arc<ToolRegistry>,
-    /// 状态快照 key → 线上事件构造器（**绑定时声明**，2026-11 S7）。
-    ///
-    /// 工具用 `Tool::state_key` 声明"我有可见状态"，而"这状态长什么线上事件"
-    /// 是**协议形状**——它由绑定这个工具的插件给出，不由执行链按工具名猜。
-    /// 例：`echo-plugin-tools` 注册 `checklist → ChecklistUpdated`。
-    tool_state_events:
-        std::sync::RwLock<std::collections::HashMap<String, crate::agent::tool_dispatch::ToolStateEventBuilder>>,
     /// 提示词服务（S4c）：技能表 + 装配缓存 + 按会话的最近快照。
     ///
     /// 这三样描述同一件事的三个时刻（素材 / 缓存 / 上次结果），且"什么时候
@@ -118,100 +133,20 @@ pub struct Agent {
     pub trunk: TrunkStore,
     /// Platform instances managed externally (registered by main / config).
     pub instances: Arc<InstanceRegistry>,
-    /// Tokio RwLock: `emit()` runs from async loops and must never block a
-    /// worker thread. All access goes through `try_*` (never held across
-    /// await points, contention is negligible).
-    pub handle: tokio::sync::RwLock<Option<Arc<BackendHandle>>>,
-    /// 进程级事件汇聚点（组合根注入）：所有 persona 的 `emit` 都投递到同一
-    /// 汇聚点，Panel 单连接即可看到所有人格活动，无需求助"默认人格"镜像。
-    /// 设置后优先于 `handle`（`handle` 保留给单 agent 测试与旧路径）。
-    event_sink: std::sync::RwLock<Option<EventSink>>,
-    /// 敏感信息脱敏器（组合根注入；None = 透传）。
-    ///
-    /// 覆盖：入站内容（`process_message` / `process_inbound_branch` /
-    /// `record_incoming_and_snapshot`）、工具事件与会话落盘的参数、工具结果
-    /// （经 `ToolRegistry` 出口与 `run_tool` 双保险）、LLM 请求出口（经
-    /// `llm::wrap_redacting` 装饰 provider，见组合根装配）、插件实例出站
-    /// （`core::instance_tools` 闸门）。设计见 `document/core/security-redaction-design.md`。
-    redactor: std::sync::RwLock<Option<Arc<dyn echo_defs::sanitize::Redactor>>>,
-    /// API 指标存储（余额快照 / token 用量；组合根装配期注入）。
-    /// None = 不记录（测试 / 未接线的旧路径）。
-    metrics: std::sync::RwLock<Option<Arc<crate::metrics::MetricsStore>>>,
-    plugin_reload_started: AtomicBool,
-    /// Turn 驱动（echo-loop TurnRunner，唯一循环实现）。组合根注入共享
-    /// runner；未注入时首个 turn 按本 agent 的 provider/配置惰性构建
-    /// （见 `turn::turn_runner`）。
-    loop_runner: RwLock<Option<std::sync::Arc<echo_loop::runner::TurnRunner>>>,
-    reply_branch_slots: tokio::sync::Semaphore,
-    active_inbound_turns: DashMap<String, ActiveInboundTurn>,
-    next_message_sequence: AtomicU64,
-    /// Event bus: `emit` broadcasts through it; consumers (the timeline
-    /// projector, the frontend bridge) subscribe as listeners.
-    pub event_bus: std::sync::Arc<echo_context::EventBus>,
-    /// Keeps the timeline projector's bus subscription alive for the agent's
-    /// lifetime; dropped (disposed) together with the agent.
-    _timeline_projection: echo_context::Disposer,
-    /// Cancels background tasks (identity eviction / save) on shutdown.
-    cancel: tokio_util::sync::CancellationToken,
-    /// 工作区会话存储（`echo-agent.workspace` 插件；组合根按 persona 注入）。
-    /// None = 未挂载（命令会回明确错误）。
-    workspace_store: std::sync::RwLock<Option<std::sync::Arc<crate::workspace::WorkspaceStore>>>,
-    /// Plugin host: registry + mount context bridging `echo_plugin` to the
-    /// agent's concrete registries. 组合根注入**同一个**进程级宿主
-    /// （去主智能体 P1：插件宿主不再寄居在某个"默认人格"上）。
-    plugin_host: std::sync::RwLock<std::sync::Arc<crate::plugins::PluginHost>>,
-    /// 全局禁用策略（`[agent].disabled_tools/disabled_skills`）：进程级开关
-    /// 不属于任何人格，组合根注入同一份。None = 未接线（调用方回退本 agent
-    /// 的配置快照，单元测试走这条）。
-    ///
-    /// 2026-10 技术债清理：此前存在进程级 `echo_bootstrap` 锚点，读取方是
-    /// `&self` 方法——上下文本来就在手上，却去读全局。改为字段注入后，
-    /// 依赖变显式，同一进程的两套宿主也互不干扰。
-    global_policy: std::sync::RwLock<Option<std::sync::Arc<GlobalPolicy>>>,
-    /// 所属 [`AgentManager`]（**弱引用**：manager 强持有 agents，agents 弱
-    /// 指回它，避免引用环）。
-    ///
-    /// 2026-10 技术债清理：此前 21 处读取走 `echo_bootstrap` 进程级槽。
-    /// 但"我属于哪个 manager"天然是**本 agent 的属性**——现在显式持有，
-    /// 同一进程两套 manager 不会互相看见对方的人格表。
-    /// 兄弟 agent 的查询面（**弱引用**：manager 强持有 agents，agents 弱持有
-    /// 它，否则成环泄漏）。
-    ///
-    /// 类型是 `dyn AgentRegistry` 而不是 `AgentManager`（S4b）：`Agent` 只需要
-    /// "按 id 找兄弟 / 列全部 / 报清单"，不需要管理能力。团队管理动作已经在
-    /// [`crate::agent_manager`] 的自由函数里，不再经过 `Agent`。
-    registry: std::sync::RwLock<Option<std::sync::Weak<dyn crate::agent::registry::AgentRegistry>>>,
-    /// 「未绑定 manager」告警只报一次（避免每命令刷屏）。
-    manager_warned: std::sync::atomic::AtomicBool,
-    /// Shell 子系统句柄（组合根创建并注入；工具与命令侧共享同一份）。
-    /// 未注入 = 空句柄（shell 命令回「manager unavailable」）。
-    ///
-    /// 2026-10 技术债清理：此前 shell manager / emit 读的是进程级锚点。
-    shell: echo_shell::ShellHandle,
-    /// Team id (None/empty = default). Sets session tagging after boot.
-    team_id: std::sync::Mutex<Option<String>>,
-    /// 联邦出口集合（invoker / querier / notifier / deliver / aggregator）：
-    /// 组合根装配联邦时构造一份，经 [`crate::agent::builder::AgentBuilder`]
-    /// 注入。缺省 = 联邦未接线（全部出口为空，远程功能 fail-closed 并给出
-    /// 可读错误）。**P3 终态：不再是 5 个进程级 kernel cell。**
-    federation: std::sync::RwLock<std::sync::Arc<crate::federation::FederationPorts>>,
-    /// 节点身份（federation NodeId + 运行区域名）：组合根构造一份，装配期
-    /// 注入（[`Self::set_node_identity`]）。缺省为空 = 纯嵌入式用法（线格式
-    /// 里不带这两个字段）。**不再是进程级 kernel cell**——身份是构造参数。
-    node_identity: std::sync::RwLock<crate::NodeIdentity>,
-    /// Graceful-drain flag: set during shutdown so new turns are rejected
-    /// while in-flight replies finish (self-update continuity).
-    draining: AtomicBool,
-    capabilities: std::sync::Mutex<Option<crate::config::AgentProfile>>,
-    /// Subagent 插件运行态：子任务注册表 + spawn 执行闭包（组合根装配；
-    /// None = 插件未启用，spawn_subagent 对模型不可见）。
-    subagent: std::sync::RwLock<Option<SubagentRuntime>>,
-    /// 门控日志去重（`plugin_id` → 上次记录的最终启用态）。
-    ///
-    /// `apply_plugin_gating` 在每轮能力重算里被逐 persona 调用，绝大多数
-    /// 调用是幂等的；只按「状态真的翻转」打日志，把默认级别下的
-    /// `plugin tool/skill package toggled` 从 321 条/天降到仅剩真实开关。
-    gating_log_state: DashMap<String, bool>,
+    /// 「我是谁」（team_id / node_identity / capabilities）。
+    pub(crate) identity: groups::Identity,
+    /// 「事件怎么出去」（四条出口 + 状态事件绑定表）。
+    pub(crate) egress: groups::EventEgress,
+    /// 「谁在跑」（turn 驱动 / 并发闸 / 在飞表 / 序号 / 退出）。
+    pub(crate) turns: groups::TurnState,
+    /// 横切仪表（脱敏 / 指标 / 门控日志去重）。
+    pub(crate) instrumentation: groups::Instrumentation,
+    /// 插件子系统（宿主 / 全局策略 / 重载闸）。
+    pub(crate) plugins: groups::PluginSubsystem,
+    /// 插件装上来的接口（workspace / shell / subagent / federation）。
+    pub(crate) ports: groups::PluginPorts,
+    /// 反向弱引用（我在哪个 manager 里 + 告警去重）。
+    pub(crate) manager: groups::ManagerLink,
 }
 
 /// spawn 执行闭包类型（子任务拉起）。
@@ -356,41 +291,26 @@ impl Agent {
         let agent = Self {
             model: Arc::new(crate::model_service::ModelService::new(provider, config)),
             tools: Arc::new(tools),
-            tool_state_events: std::sync::RwLock::new(std::collections::HashMap::new()),
             prompt: Arc::new(crate::prompt_service::PromptService::new(Arc::new(
                 Mutex::new(skills),
             ))),
             trunk,
             instances,
-            handle: tokio::sync::RwLock::new(None),
-            event_sink: std::sync::RwLock::new(None),
-            redactor: std::sync::RwLock::new(None),
-            metrics: std::sync::RwLock::new(None),
-            plugin_reload_started: AtomicBool::new(false),
-            loop_runner: RwLock::new(None),
-            reply_branch_slots: tokio::sync::Semaphore::new(MAX_CONCURRENT_REPLY_BRANCHES),
-            active_inbound_turns: DashMap::new(),
-            next_message_sequence: AtomicU64::new(1),
-            event_bus,
-            _timeline_projection,
-            cancel,
-            plugin_host: std::sync::RwLock::new(std::sync::Arc::new(
+            identity: groups::Identity::default(),
+            egress: groups::EventEgress {
+                sink: std::sync::RwLock::new(None),
+                handle: tokio::sync::RwLock::new(None),
+                bus: event_bus,
+                timeline_projection: _timeline_projection,
+                state_events: std::sync::RwLock::new(std::collections::HashMap::new()),
+            },
+            turns: groups::TurnState::new(MAX_CONCURRENT_REPLY_BRANCHES, cancel),
+            instrumentation: groups::Instrumentation::default(),
+            plugins: groups::PluginSubsystem::new(std::sync::Arc::new(
                 crate::plugins::PluginHost::new(),
             )),
-            global_policy: std::sync::RwLock::new(None),
-            registry: std::sync::RwLock::new(None),
-            manager_warned: std::sync::atomic::AtomicBool::new(false),
-            shell: echo_shell::ShellHandle::new(),
-            workspace_store: std::sync::RwLock::new(None),
-            team_id: std::sync::Mutex::new(None),
-            federation: std::sync::RwLock::new(std::sync::Arc::new(
-                crate::federation::FederationPorts::unlinked(),
-            )),
-            node_identity: std::sync::RwLock::new(crate::NodeIdentity::default()),
-            draining: AtomicBool::new(false),
-            capabilities: std::sync::Mutex::new(None),
-            subagent: std::sync::RwLock::new(None),
-            gating_log_state: DashMap::new(),
+            ports: groups::PluginPorts::unlinked(),
+            manager: groups::ManagerLink::default(),
         };
         // Spawn periodic identity eviction (every 5 minutes). Only stale
         // source labels are dropped; the trunk history is never evicted.
@@ -410,23 +330,23 @@ impl Agent {
     pub async fn shutdown(&self) {
         // Graceful drain: reject new work, let in-flight turns finish so a
         // self-update restart does not cut off an ongoing reply.
-        self.draining.store(true, Ordering::Release);
+        self.turns.draining.store(true, Ordering::Release);
         self.emit(BackendEvent::Error {
             session_id: None,
             message: "Core 正在重启：等待当前回复完成…".into(),
         });
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_secs(SHUTDOWN_DRAIN_SECS);
-        while !self.active_inbound_turns.is_empty() && std::time::Instant::now() < deadline {
+        while !self.turns.active_inbound_turns.is_empty() && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
         self.cancel_all_inbound_turns();
-        if let Ok(guard) = self.subagent.read() {
+        if let Ok(guard) = self.ports.subagent.read() {
             if let Some(runtime) = guard.as_ref() {
                 runtime.store.cancel_all();
             }
         }
-        self.cancel.cancel();
+        self.turns.cancel.cancel();
         self.trunk.save_now().await;
     }
 
@@ -458,7 +378,7 @@ impl Agent {
     ///
     /// 只写一次（装配期无并发）；重复调用以最后一次为准。
     pub(crate) fn set_redactor(&self, redactor: Arc<dyn echo_defs::sanitize::Redactor>) {
-        if let Ok(mut slot) = self.redactor.write() {
+        if let Ok(mut slot) = self.instrumentation.redactor.write() {
             *slot = Some(redactor);
         } else {
             tracing::warn!("redactor slot poisoned, ignoring set_redactor");
@@ -467,14 +387,14 @@ impl Agent {
 
     /// 当前脱敏器（未注入 / 锁中毒 = None，全部脱敏路径按透传处理）。
     pub(crate) fn redactor(&self) -> Option<Arc<dyn echo_defs::sanitize::Redactor>> {
-        self.redactor.read().ok().and_then(|slot| slot.clone())
+        self.instrumentation.redactor.read().ok().and_then(|slot| slot.clone())
     }
 
     /// 注入指标存储（组合根装配期；`AgentBuilder::metrics` 调用）。
     ///
     /// 只写一次（装配期无并发）；重复调用以最后一次为准。
     pub(crate) fn set_metrics(&self, store: Arc<crate::metrics::MetricsStore>) {
-        if let Ok(mut slot) = self.metrics.write() {
+        if let Ok(mut slot) = self.instrumentation.metrics.write() {
             *slot = Some(store);
         } else {
             tracing::warn!("metrics slot poisoned, ignoring set_metrics");
@@ -483,7 +403,7 @@ impl Agent {
 
     /// 当前指标存储（未注入 / 锁中毒 = None，记录与查询路径按跳过处理）。
     pub(crate) fn metrics(&self) -> Option<Arc<crate::metrics::MetricsStore>> {
-        self.metrics.read().ok().and_then(|slot| slot.clone())
+        self.instrumentation.metrics.read().ok().and_then(|slot| slot.clone())
     }
 
     /// 文本脱敏：无脱敏器或未命中时返回原文副本。
@@ -524,7 +444,7 @@ impl Agent {
     /// Spawn a periodic session save task.
     pub fn start_session_save_task(self: &Arc<Self>) {
         let agent = Arc::clone(self);
-        let cancel = self.cancel.clone();
+        let cancel = self.turns.cancel.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             let mut ticks: u64 = 0;
@@ -582,7 +502,7 @@ impl Agent {
     /// it in SessionInfo). Call once at boot before any message arrives.
     /// 注入共享 turn 驱动（echo-loop TurnRunner；组合根装配时调用）。
     pub fn set_loop_runner(&self, runner: std::sync::Arc<echo_loop::runner::TurnRunner>) {
-        if let Ok(mut slot) = self.loop_runner.try_write() {
+        if let Ok(mut slot) = self.turns.runner.try_write() {
             *slot = Some(runner);
         } else {
             tracing::warn!("loop runner slot busy, ignoring set_loop_runner");
@@ -591,14 +511,14 @@ impl Agent {
 
     pub fn set_team_id(&self, team_id: Option<String>) {
         *self
-            .team_id
+            .identity.team_id
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = team_id.clone();
         self.trunk.set_team_id(team_id);
     }
 
     pub fn team_id(&self) -> Option<String> {
-        self.team_id
+        self.identity.team_id
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -611,14 +531,14 @@ impl Agent {
     /// 字段，后者更直观。
     pub fn set_node_identity(&self, identity: crate::NodeIdentity) {
         *self
-            .node_identity
+            .identity.node_identity
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = identity;
     }
 
     /// 当前节点身份（未注入 = 全空）。
     pub fn node_identity(&self) -> crate::NodeIdentity {
-        self.node_identity
+        self.identity.node_identity
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -627,14 +547,14 @@ impl Agent {
     /// 注入联邦出口集合（组合根装配期；`AgentBuilder::federation` 调用）。
     pub fn set_federation(&self, ports: std::sync::Arc<crate::federation::FederationPorts>) {
         *self
-            .federation
+            .ports.federation
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = ports;
     }
 
     /// 当前联邦出口集合（未注入 = 全部为空，即联邦未接线）。
     pub fn federation(&self) -> std::sync::Arc<crate::federation::FederationPorts> {
-        self.federation
+        self.ports.federation
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -647,7 +567,7 @@ impl Agent {
     /// [`echo_defs::LoopMode`]）。
     pub fn loop_mode(&self) -> echo_defs::LoopMode {
         let guard = self
-            .capabilities
+            .identity.capabilities
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match guard.as_ref() {
@@ -684,7 +604,7 @@ impl Agent {
     }
 
     pub fn attach(&self, handle: Arc<BackendHandle>) {
-        if let Ok(mut h) = self.handle.try_write() {
+        if let Ok(mut h) = self.egress.handle.try_write() {
             *h = Some(handle);
         } else {
             tracing::warn!("handle slot busy, ignoring attach");
@@ -694,7 +614,7 @@ impl Agent {
     /// 进程级插件宿主（组合根注入；未注入时为该 agent 自带的空宿主，
     /// 便于单元测试）。
     pub fn plugin_host(&self) -> std::sync::Arc<crate::plugins::PluginHost> {
-        self.plugin_host
+        self.plugins.host
             .read()
             .map(|g| g.clone())
             .unwrap_or_else(|_| std::sync::Arc::new(crate::plugins::PluginHost::new()))
@@ -702,7 +622,7 @@ impl Agent {
 
     /// 注入共享的进程级插件宿主（组合根对每个 persona 调用一次）。
     pub fn set_plugin_host(&self, host: std::sync::Arc<crate::plugins::PluginHost>) {
-        if let Ok(mut slot) = self.plugin_host.write() {
+        if let Ok(mut slot) = self.plugins.host.write() {
             *slot = host;
         } else {
             tracing::warn!("plugin host slot busy, ignoring set_plugin_host");
@@ -711,7 +631,7 @@ impl Agent {
 
     /// 注入全局禁用策略（组合根对每个 persona 调用一次）。
     pub fn set_global_policy(&self, policy: std::sync::Arc<GlobalPolicy>) {
-        if let Ok(mut slot) = self.global_policy.write() {
+        if let Ok(mut slot) = self.plugins.global_policy.write() {
             *slot = Some(policy);
         } else {
             tracing::warn!("global policy slot busy, ignoring set_global_policy");
@@ -726,7 +646,7 @@ impl Agent {
         &self,
         registry: &std::sync::Arc<dyn crate::agent::registry::AgentRegistry>,
     ) {
-        if let Ok(mut slot) = self.registry.write() {
+        if let Ok(mut slot) = self.manager.registry.write() {
             *slot = Some(std::sync::Arc::downgrade(registry));
         } else {
             tracing::warn!("agent registry slot busy, ignoring set_registry");
@@ -749,13 +669,13 @@ impl Agent {
     /// （`None => {}` 让 Panel 收到空清单而日志里什么也没有）。
     pub fn registry(&self) -> Option<std::sync::Arc<dyn crate::agent::registry::AgentRegistry>> {
         let found = self
-            .registry
+            .manager.registry
             .read()
             .ok()
             .and_then(|slot| slot.as_ref().and_then(|weak| weak.upgrade()));
         if found.is_none()
             && !self
-                .manager_warned
+                .manager.warned
                 .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
             tracing::warn!(
@@ -781,18 +701,18 @@ impl Agent {
 
     /// Shell 子系统句柄（见字段文档）。
     pub fn shell(&self) -> &echo_shell::ShellHandle {
-        &self.shell
+        &self.ports.shell
     }
 
     /// 本 agent 的全局禁用策略（未注入 = None，调用方回退自身配置快照）。
     pub fn global_policy(&self) -> Option<std::sync::Arc<GlobalPolicy>> {
-        self.global_policy.read().ok().and_then(|slot| slot.clone())
+        self.plugins.global_policy.read().ok().and_then(|slot| slot.clone())
     }
 
     /// 注入进程级事件汇聚点（组合根对每个 persona 调用一次）。
     /// 汇聚点优先于 `handle`：设置后 `emit` 只投递汇聚点，避免双投。
     pub fn attach_event_sink(&self, sink: EventSink) {
-        if let Ok(mut slot) = self.event_sink.write() {
+        if let Ok(mut slot) = self.egress.sink.write() {
             *slot = Some(sink);
         } else {
             tracing::warn!("event sink slot busy, ignoring attach_event_sink");
@@ -812,7 +732,7 @@ impl Agent {
         self: &std::sync::Arc<Self>,
         store: std::sync::Arc<crate::workspace::WorkspaceStore>,
     ) {
-        if let Ok(mut slot) = self.workspace_store.write() {
+        if let Ok(mut slot) = self.ports.workspace_store.write() {
             *slot = Some(store.clone());
         } else {
             tracing::warn!("workspace store slot busy, ignoring set_workspace_store");
@@ -852,7 +772,7 @@ impl Agent {
 
     /// 当前 persona 的工作区会话存储（None = 插件未挂载）。
     pub fn workspace_store(&self) -> Option<std::sync::Arc<crate::workspace::WorkspaceStore>> {
-        self.workspace_store
+        self.ports.workspace_store
             .read()
             .ok()
             .and_then(|slot| slot.clone())
@@ -860,7 +780,7 @@ impl Agent {
 
     /// Non-blocking poll for a frontend command (used by the command pump).
     pub fn try_recv_command(&self) -> Option<BackendCommand> {
-        self.handle
+        self.egress.handle
             .try_read()
             .ok()?
             .as_ref()
@@ -879,12 +799,12 @@ impl Agent {
     pub fn emit_handle(&self) -> std::sync::Arc<dyn Fn(BackendEvent) + Send + Sync> {
         // 安全前提：Agent 本身以 Arc 持有于进程级（supervisor/manager），
         // 其生命周期 ≥ 任何借用它的命令处理。在创建时快照出口。
-        let bus = self.event_bus.clone();
-        let sink = self.event_sink.read().ok().and_then(|g| g.clone());
-        let handle = self.handle.try_read().ok().and_then(|g| g.clone());
+        let bus = self.egress.bus.clone();
+        let sink = self.egress.sink.read().ok().and_then(|g| g.clone());
+        let handle = self.egress.handle.try_read().ok().and_then(|g| g.clone());
         // 插件事件出口的快照（与 bus/sink 同口径：创建时快照，避免跨 await
         // 边界持锁）。`None` = 当时未注入宿主。
-        let host_handle = self.plugin_host.read().ok().map(|g| g.clone());
+        let host_handle = self.plugins.host.read().ok().map(|g| g.clone());
         let team = self.team_id();
         std::sync::Arc::new(move |event| {
             // 与 emit 同口径（2026-10 修复）：此前本路径绕过 annotate_team
@@ -913,16 +833,16 @@ impl Agent {
         // team，才能过滤实时消息（避免串线）。
         let event = self.annotate_team(event);
         self.deliver_event_to_plugins(&event);
-        self.event_bus
+        self.egress.bus
             .emit_sync(event.clone(), echo_context::DispatchMode::Observe);
         // 汇聚点优先：组合根把所有 persona 都接到同一个进程级汇聚点，
         // 「谁挂到 Panel」不再取决于是否为默认人格。
-        if let Some(sink) = self.event_sink.read().ok().and_then(|g| g.clone()) {
+        if let Some(sink) = self.egress.sink.read().ok().and_then(|g| g.clone()) {
             sink(event);
             return;
         }
         if let Some(h) = self
-            .handle
+            .egress.handle
             .try_read()
             .ok()
             .as_ref()
@@ -1294,7 +1214,7 @@ impl Agent {
         // **persona 白名单仍然生效**：插件挂载是进程级的，但"这个人格能不能
         // 看到它的内容"是 per-persona 的（`enabled_plugins`）。过滤钩子在这里，
         // 判断逻辑在 `profile_allows_plugin`——框架只提供"按 id 过滤"。
-        let capabilities = self.capabilities.lock().ok().and_then(|cap| cap.clone());
+        let capabilities = self.identity.capabilities.lock().ok().and_then(|cap| cap.clone());
         self.plugin_host().collect_text_blocks(
             &serde_json::json!({
                 "session_id": session_id,
