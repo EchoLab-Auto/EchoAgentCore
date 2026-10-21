@@ -55,9 +55,16 @@ pub fn status_path() -> std::path::PathBuf {
 
 /// 读状态文件 → `SelfUpdateStatus` 事件（无文件 = `idle`）。
 pub async fn read_status() -> BackendEvent {
-    let path = status_path();
+    read_status_at(&status_path()).await
+}
+
+/// 读**指定**状态文件 → `SelfUpdateStatus` 事件（无文件 = `idle`）。
+///
+/// 路径可注入是测试隔离的前提：此前测试靠 `set_var("XDG_STATE_HOME")` 改变
+/// 进程级环境变量，两个测试并行时互相覆盖 → 偶发失败（2026-10 修）。
+pub async fn read_status_at(path: &std::path::Path) -> BackendEvent {
     let mut fields = std::collections::HashMap::new();
-    if let Ok(text) = tokio::fs::read_to_string(&path).await {
+    if let Ok(text) = tokio::fs::read_to_string(path).await {
         for line in text.lines() {
             if let Some((k, v)) = line.split_once('=') {
                 fields.insert(k.trim().to_string(), v.trim().to_string());
@@ -121,12 +128,31 @@ pub async fn start_update(host: &dyn SelfUpdateHost) {
 /// 命令处理器。
 pub struct SelfUpdateHandler {
     host: Arc<dyn SelfUpdateHost>,
+    /// 状态文件覆盖（`None` = 按 `XDG_STATE_HOME` 解析）。
+    ///
+    /// 放在结构上而不是每次读环境变量：测试并行跑时环境变量是**进程级**
+    /// 副作用，会互相覆盖（2026-10 偶发失败的根因）。
+    status_file: Option<std::path::PathBuf>,
 }
 
 impl SelfUpdateHandler {
     /// 用宿主接缝构造处理器。
     pub fn new(host: Arc<dyn SelfUpdateHost>) -> Self {
-        Self { host }
+        Self {
+            host,
+            status_file: None,
+        }
+    }
+
+    /// 指定状态文件（测试 / 非常规部署布局用）。
+    pub fn with_status_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.status_file = Some(path.into());
+        self
+    }
+
+    /// 本次调用要读的状态文件路径。
+    fn status_file(&self) -> std::path::PathBuf {
+        self.status_file.clone().unwrap_or_else(status_path)
     }
 
     /// 处理一条命令；`None` = 不是本域。
@@ -157,7 +183,7 @@ impl SelfUpdateHandler {
                 Ok(())
             }
             BackendCommand::RequestSelfUpdateStatus => {
-                self.host.emit(read_status().await);
+                self.host.emit(read_status_at(&self.status_file()).await);
                 Ok(())
             }
             other => Err(format!(
@@ -207,19 +233,34 @@ mod tests {
         (SelfUpdateHandler::new(host.clone()), host)
     }
 
+    /// 指向**指定**状态文件的处理器（并行安全的测试隔离）。
+    fn handler_at(path: impl Into<std::path::PathBuf>) -> (SelfUpdateHandler, Arc<FakeHost>) {
+        let host = Arc::new(FakeHost::default());
+        (
+            SelfUpdateHandler::new(host.clone()).with_status_path(path),
+            host,
+        )
+    }
+
     #[tokio::test]
     async fn foreign_commands_are_not_claimed() {
         let (h, host) = handler();
-        assert!(h.handle("RequestState", serde_json::Value::Null).await.is_none());
+        assert!(h
+            .handle("RequestState", serde_json::Value::Null)
+            .await
+            .is_none());
         assert!(host.events.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn status_without_file_is_idle() {
-        // 指向一个必然不存在的状态目录，避免读到开发机上的真实状态。
-        let dir = std::env::temp_dir().join(format!("echo-su-none-{}", std::process::id()));
-        std::env::set_var("XDG_STATE_HOME", &dir);
-        let (h, host) = handler();
+        // 指向一个必然不存在的状态文件——**注入路径**而不是改环境变量：
+        // 并行测试下 `set_var` 会与同进程其它测试互相覆盖（2026-10 修）。
+        let path = std::env::temp_dir()
+            .join(format!("echo-su-none-{}", std::process::id()))
+            .join("echo-agent-core/update-status");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+        let (h, host) = handler_at(&path);
         h.handle("RequestSelfUpdateStatus", serde_json::Value::Null)
             .await
             .unwrap()
@@ -236,16 +277,16 @@ mod tests {
 
     #[tokio::test]
     async fn status_file_fields_are_projected() {
-        let dir = std::env::temp_dir().join(format!("echo-su-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("echo-su-fields-{}", std::process::id()));
         let path = dir.join("echo-agent-core");
         std::fs::create_dir_all(&path).unwrap();
+        let status_file = path.join("update-status");
         std::fs::write(
-            path.join("update-status"),
+            &status_file,
             "state=running\nphase=building\nrevision=abc123\nmessage=编译中\nupdated_at=2026-11-01T00:00:00Z\n",
         )
         .unwrap();
-        std::env::set_var("XDG_STATE_HOME", &dir);
-        let (h, host) = handler();
+        let (h, host) = handler_at(&status_file);
         h.handle("RequestSelfUpdateStatus", serde_json::Value::Null)
             .await
             .unwrap()
