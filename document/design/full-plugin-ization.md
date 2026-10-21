@@ -22,7 +22,7 @@ y: 3640
 | 1 | **实现在插件 crate 里**（零 `echo-agent` 依赖） | 已基本达成 |
 | 2 | **入口经插件机制注册**（命令域 / 文本块 / 工具 / 服务键），宿主不认识它 | 仅剩自管理面与会话写（见 S5 的 11 条） |
 | 4 | **构造不带运行期句柄**（插件自己按键解析宿主能力） | 已达成（S6）：`catalog(version)` |
-| 3 | **副作用经插件��制发出**（事件、状态变更、对其他能力的通知） | `run_tool` 里 `call.name == "checklist"` 的特判；`subagent` 的 hook 派发 |
+| 3 | **副作用经插件机制发出**（事件、状态变更、对其他能力的通知） | `run_tool` 里 `call.name == "checklist"` 的特判；`subagent` 的 hook 派发 |
 
 2026-11 实测（口径：应用代码，已排测试）：
 
@@ -654,6 +654,79 @@ keepers 从 `node_id → Vec<Disposer>` 改成 `node_id → persona → Vec<Disp
 3 条新单测：只填目标人格（bob 不受影响）/ 包标签正确 / Disposer drop 即注销 /
 无 peer 时是廉价 no-op。
 
+### S14：联邦不再依赖 Supervisor ——**已完成 2026-11**
+
+S13 修完"新人格没有远程工具"之后，剩下的最后一块是：`federation_rt.rs` 里
+**15 处** `personas.personas()`，全部来自 `AgentSupervisor` 句柄。那不只是
+耦合，它是一个具体的低效与一个具体的漏接线：
+
+| 问题 | 具体 |
+|---|---|
+| 耦合 | 泵搬不进插件（签名里挂着 `Arc<AgentSupervisor>`） |
+| 低效 | 每次要"全部人格"都 clone 一整份 `Vec<Persona>`（链路抖动时每条事件两次） |
+| 两份真源 | 会话迁移读 `rt.agent_manager`（`AgentManager` 的强引用列表）——同一个事实的第二份来源 |
+| 漏接线 | 工作区插件的 `remote_query` 传的是 `None`，于是**面板**的 `node://` 浏览永远回「联邦未接线」，而模型侧 `workspace` 工具是好的 |
+
+#### 修法：人格自己报
+
+```rust
+// FederationRuntime
+personas: RwLock<Vec<(String, Weak<Agent>)>>,     // 人格自己登记
+event_fallback: RwLock<Option<Weak<Agent>>>,      // 无人格时的事件兜底
+
+register_persona(id, &agent)   // 构造期调；同 id 覆盖 = 人格重建
+live_personas() -> Vec<(id, Arc<Agent>)>   // upgrade 失败的顺手摘掉
+persona_by_id(id)
+emit_federation_event(event)   // 第一个活人格，落空走兜底
+```
+
+于是：
+- `federation_router_pump(rx, rt, peer_policies, ports)` —— **不再有 supervisor /
+  core_agent 参数**；
+- `handle_federation_query(rt, from, req)` / `register_remote_tools(rt, info, name)` /
+  `broadcast_federation_status(rt)` 同样瘦下来；
+- `FederationRuntime::agent_manager` 字段**删除**（迁移改读 `live_personas`）；
+- `prune_deleted_personas` 不再需要 `AgentManager`：弱引用升级失败就是"死了"。
+
+S13 那套 `prune` 仍然保留（keepers 里的 `Disposer` 持有 `Arc<ToolRegistry>`，
+人格死后要回收），但判据从"问 manager"变成"看自己那张表"。
+
+#### 顺带修掉的两处漏接线
+
+1. **工作区远程查询**：`host_services` 里 `AgentWorkspaceHost::from_agents(…, None)`
+   → 传 `Some(workspace_query(wiring.federation.querier.clone()))`。此前面板的
+   `RequestBrowseDirectories` / `RequestWorkspaceFiles` 走 `node://` 一律失败，
+   而同一个能力的模型侧工具是好的——**同一能力两种行为**。
+2. **`node://<peer>/` 的尾斜杠**：剥前缀后剩 `"/"`，被当成"要浏览对端根目录"，
+   于是点开对端必回「路径不在浏览根内」。归一化：`"/"` → 空（= 请求根列表）。
+
+#### 真机验证（两个节点）
+
+```text
+link up peer=b … remote proxy tools registered tools=6
+--- 跨机只读查询（对端执行端用 live_personas 建浏览根）---
+node://b              → roots=[{家目录 (~), node://b/home/evence}]
+node://b/             → roots=[…]（尾斜杠归一化生效）
+node://b/home/evence  → entries=[assets, bin, …]   ← 真的读到了对端目录
+node://b/nonexistent  → 明确错误「路径不存在或不可访问」
+--- 跨机工具调用 ---
+ToolCall b__read_file {"path":"/home/evence/.bashrc"}
+ToolResult 129 lines …（对端执行、结果回传）
+--- 断链（对端退出）---
+link down peer=b
+ToolsList → b__bash … b__write_file 全部 enabled=False（整包禁用，清单仍可见）
+```
+
+#### 数字
+
+```text
+federation_rt 里 `personas.personas()`       15 → 0
+federation_rt 里对 AgentSupervisor 的依赖     签名 3 处 → 0（仅注释提到）
+FederationRuntime 字段                        agent_manager 删除，personas/event_fallback 新增
+pump 参数                                     6 → 4
+新增单测                                       2（人格登记弱引用淘汰 / 事件兜底不 panic）
+```
+
 ## 不搬清单（每条都试过，附理由）
 
 诚实记录"没做"比做完的部分更重要——否则下一个人会把同样的时间再花一遍。
@@ -831,4 +904,4 @@ S9 Agent 门面化        ✅ 已完成（字段 32 → 12，含结构守卫）
 **S1 的收益为什么值得先做**：它把"业务逻辑在插件里"从**代码位置**变成
 **所有权**——宿主不再知道任何一个内置工具的名字、包标签、护栏正则。这是后面
 每一步都要复用的模板（本轮已在 `tools.builtin` 上跑通：端口 4 项、服务键 1 个、
-插件侧 230 行、宿主侧净�� ~220 行）。
+插件侧 230 行、宿主侧净减 ~220 行）。

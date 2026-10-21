@@ -162,7 +162,14 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
                     .collect()
             },
             wiring.event_sink.clone(),
-            None,
+            // 跨机目录查询（2026-11 S14 修）：此前这里是 `None`，于是**面板**
+            // 的 `RequestBrowseDirectories` / `RequestWorkspaceFiles` 走
+            // `node://` 时一律回「联邦未接线：远程目录浏览不可用」——而模型侧
+            // 的 `workspace` 工具（组合根注册时传了 adapter）是好的。
+            // 同一个能力两条路径两种行为，是纯粹的漏接线。
+            Some(echo_agent::federation::workspace_query(
+                wiring.federation.querier.clone(),
+            )) as Option<Arc<dyn echo_defs::workspace::RemoteWorkspaceQuery>>,
         )) as Arc<dyn echo_agent::workspace::commands::WorkspaceHost>,
     );
 
@@ -371,7 +378,6 @@ pub(crate) fn gating_from_plugin_event(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     /// 生命周期事件名 → 门控方向的映射（两行代码，但写反了没人发现）。
     #[test]

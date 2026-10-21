@@ -294,13 +294,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // `0.0.0.0:3133`，见 plan_federation_listen；显式 `listen = ""` 才
     // 退回纯连出）；无 peer 则不连出、且 accept 侧靠 per-peer token 认证
     // 不放行任何已知链路；联邦管理面永远可用。
-    // 聚合摘要投递槽位（见下：联邦装配早于 supervisor 建立）。
-    let deliver_slot: std::sync::Arc<
-        std::sync::OnceLock<std::sync::Arc<agent_supervisor::AgentSupervisor>>,
-    > = std::sync::Arc::new(std::sync::OnceLock::new());
     // 进程级事件出口的延迟槽位：联邦命令处理器在装配期就要绑好（端口集合
     // 是值，构造后不再改），而 bridge 与 `event_sink` 在更后面才建立。
-    // 一次写、多次读——与 `deliver_slot` 同一模式。
+    // 一次写、多次读。
     let federation_emit_slot: std::sync::Arc<
         std::sync::OnceLock<echo_agent::EventSink>,
     > = std::sync::Arc::new(std::sync::OnceLock::new());
@@ -444,8 +440,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             },
             invite_placeholders: std::sync::Mutex::new(std::collections::HashMap::new()),
             session_import_acks: std::sync::Mutex::new(std::collections::HashMap::new()),
-            // 弱引用：manager 在 supervisor 建立后才存在，稍后绑定。
-            agent_manager: agent_manager_slot.clone(),
+            // 人格登记表（2026-11 S14）：由每个人格构造时自己写入（弱引用），
+            // 于是联邦侧不再需要 `AgentSupervisor` / `AgentManager` 句柄。
+            personas: tokio::sync::RwLock::new(Vec::new()),
+            event_fallback: std::sync::RwLock::new(None),
         });
         // 远程 subagent 观测出口（Phase 3）：大脑侧 spawn_subagent
         // node=... 受理/完成时经 Federation 通知对端（帧：
@@ -472,18 +470,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             crate::federation_admin_host::RuntimeAdminHost::new(Arc::clone(&rt)),
         ));
         ports.deliver = Some(std::sync::Arc::new({
-            let slot = deliver_slot.clone();
-            move |summary| match slot.get() {
-                Some(supervisor) => {
-                    let sup = supervisor.clone();
-                    tokio::spawn(async move {
-                        federation_import::deliver_aggregate_summary(&sup, summary).await;
-                    });
-                }
-                None => tracing::warn!(
-                    target: "federation",
-                    "aggregate summary produced before supervisor ready; dropped"
-                ),
+            let rt_deliver = rt.clone();
+            move |summary| {
+                // 投递目标直接从人格登记表里找（"哪个 agent 有这个会话"），
+                // 不再需要 supervisor 句柄（2026-11 S14）。
+                let rt = rt_deliver.clone();
+                tokio::spawn(async move {
+                    federation_import::deliver_aggregate_summary(&rt, summary).await;
+                });
             }
         }));
         {
@@ -1318,6 +1312,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     let agent = built.clone();
                     let persona_id = id.clone();
                     tokio::spawn(async move {
+                        // ① 登记进联邦侧的人格表（**人格自己报**，2026-11 S14）：
+                        //    联邦不再持有 supervisor / manager 句柄。
+                        rt.register_persona(&persona_id, &agent).await;
+                        // ② `__core` 同时充当"无人格时的事件兜底出口"。
+                        if persona_id == "__core" {
+                            rt.set_event_fallback(&agent);
+                        }
+                        // ③ 补装已在线的远程代理工具（2026-11 S13）。
                         crate::federation_rt::adopt_active_links(&rt, &agent, &persona_id).await;
                     });
                 }
@@ -1405,16 +1407,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 );
             }
         });
-        // P3-3 聚合投递出口：大脑侧 settle 产出的摘要经此向父会话
-        // timeline 追加 system 消息（supervisor 句柄在 echo-agent crate
-        // 不可达，组合根注入）。
-        // 槽位就绪：此后任何聚合摘要都能投递到父会话 timeline。
-        let _ = deliver_slot.set(supervisor.clone());
         tokio::spawn(federation_router_pump(
             event_rx,
             rt,
-            supervisor.clone(),
-            core_agent.clone(),
             peer_policies,
             federation_ports.clone(),
         ));

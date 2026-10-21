@@ -68,13 +68,24 @@ pub(crate) struct FederationRuntime {
     /// "借用现成设施"——挪到本运行时后，两套联邦运行时也互不干扰。
     pub(crate) session_import_acks:
         std::sync::Mutex<std::collections::HashMap<String, tokio::sync::watch::Sender<u32>>>,
-    /// 本节点的 [`AgentManager`]（**弱引用**，组合根在 manager 就绪后绑定）。
-    /// 联邦侧的会话迁移需要枚举 source persona——此前读进程级锚点。
+    /// 本节点当前活跃的人格：`id → Weak<Agent>`（2026-11 S14）。
     ///
-    /// 用 `Arc<RwLock<…>>` 而非直接字段：组合根里 `rt` 会被解构进路由泵，
-    /// 而 manager 要更晚才就绪——外层保留同一个 `Arc` 槽即可延后绑定。
-    pub(crate) agent_manager:
-        std::sync::Arc<std::sync::RwLock<std::sync::Weak<echo_agent::agent_manager::AgentManager>>>,
+    /// ## 为什么不用 `AgentSupervisor`
+    ///
+    /// 此前联邦侧要"全部人格"时一律调 `personas.personas()`——那是
+    /// `AgentSupervisor` 的句柄，于是 `federation_rt` 与 `agent_supervisor`
+    /// 绑死（泵因此搬不进插件），每次调用还要 clone 一整份 `Vec<Persona>`
+    /// （链路抖动时每条事件两次）。
+    ///
+    /// 现在改为**人格自己登记**：构造时调 [`Self::register_persona`]，
+    /// 存的是 `Weak`——人格被删除/禁用后自动从列表里消失（`upgrade()` 失败），
+    /// 不需要任何"清扫已删人格"的代码路径。
+    ///
+    /// 语义与 `supervisor.personas()` 等价：都是"当前活着的、启用的人格"。
+    pub(crate) personas: tokio::sync::RwLock<Vec<(String, std::sync::Weak<echo_agent::Agent>)>>,
+    /// 进程级事件兜底出口（`core_agent`）：**没有**任何人格时联邦状态事件
+    /// 仍要送到 Panel（否则链路变化静默丢失）。弱引用，理由同上。
+    pub(crate) event_fallback: std::sync::RwLock<Option<std::sync::Weak<echo_agent::Agent>>>,
 }
 
 impl FederationRuntime {
@@ -130,6 +141,79 @@ impl FederationRuntime {
     }
 
     /// 组装 `FederationStatus` 事件（token 脱敏为 token_set 标记）。
+    /// 登记一个人格（构造期调；同 id 覆盖）。
+    ///
+    /// 幂等：人格重建（禁用再启用 / 保存后重跑 factory）会用新实例覆盖旧条目，
+    /// 于是 `live_personas()` 永远只看到**当前**那一个。
+    pub(crate) async fn register_persona(&self, id: &str, agent: &std::sync::Arc<echo_agent::Agent>) {
+        let mut list = self.personas.write().await;
+        let weak = std::sync::Arc::downgrade(agent);
+        if let Some(entry) = list.iter_mut().find(|(existing, _)| existing == id) {
+            entry.1 = weak;
+        } else {
+            list.push((id.to_string(), weak));
+            list.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+    }
+
+    /// 当前**活着**的人格（`Weak` 升级失败 = 已被删除/替换）。
+    ///
+    /// 顺带把死条目摘掉（这就是"清扫"的全部，不需要定时器）。
+    pub(crate) async fn live_personas(&self) -> Vec<(String, std::sync::Arc<echo_agent::Agent>)> {
+        let mut list = self.personas.write().await;
+        let mut live = Vec::with_capacity(list.len());
+        list.retain(|(id, weak)| match weak.upgrade() {
+            Some(agent) => {
+                live.push((id.clone(), agent));
+                true
+            }
+            None => false,
+        });
+        live
+    }
+
+    /// 按 id 取一个人格（`None` = 不存在 / 已死）。
+    pub(crate) async fn persona_by_id(
+        &self,
+        id: &str,
+    ) -> Option<std::sync::Arc<echo_agent::Agent>> {
+        let list = self.personas.read().await;
+        list.iter()
+            .find(|(existing, _)| existing == id)
+            .and_then(|(_, weak)| weak.upgrade())
+    }
+
+    /// 设事件兜底出口（`core_agent`；组合根在它构造后调一次）。
+    pub(crate) fn set_event_fallback(&self, agent: &std::sync::Arc<echo_agent::Agent>) {
+        if let Ok(mut slot) = self.event_fallback.write() {
+            *slot = Some(std::sync::Arc::downgrade(agent));
+        }
+    }
+
+    /// 发一条联邦事件：**任一人格**都通到 Panel（进程级汇聚点），所以取第一个
+    /// 活着的；无人格（全部被禁用）时回退到 `core_agent`——否则链路变化静默丢失。
+    ///
+    /// 取第一个而不是"找特定人格"：事件是进程级的，谁发都一样。
+    pub(crate) async fn emit_federation_event(&self, event: echo_protocol::BackendEvent) {
+        if let Some((_, agent)) = self.live_personas().await.into_iter().next() {
+            agent.emit(event);
+            return;
+        }
+        let fallback = self
+            .event_fallback
+            .read()
+            .ok()
+            .and_then(|slot| slot.as_ref().and_then(std::sync::Weak::upgrade));
+        match fallback {
+            Some(agent) => agent.emit(event),
+            None => tracing::warn!(
+                target: "federation",
+                event = event.kind_name(),
+                "no persona and no fallback emitter; federation event dropped"
+            ),
+        }
+    }
+
     pub(crate) async fn status_event(&self) -> echo_protocol::BackendEvent {
         let active: std::collections::HashSet<String> =
             self.federation.active_peers().await.into_iter().collect();
@@ -236,8 +320,6 @@ impl FederationRuntime {
 pub(crate) async fn federation_router_pump(
     mut rx: tokio::sync::mpsc::Receiver<echo_federation::LinkEvent>,
     rt: Arc<FederationRuntime>,
-    personas: Arc<agent_supervisor::AgentSupervisor>,
-    core_agent: Arc<echo_agent::Agent>,
     peer_policies: std::sync::Arc<
         tokio::sync::RwLock<
             std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
@@ -318,32 +400,33 @@ pub(crate) async fn federation_router_pump(
                         // 两者不同——此前按旧占位名注册工具/包，而 Down 按新名
                         // 禁用（set_package_enabled 命中 0），对端离线后 LLM 仍见
                         // invite-xxxx__* 且包未禁（2026-10 审计 P0-1）。
-                        register_remote_tools(&rt, &personas, &info, &resolved_name).await;
+                        register_remote_tools(&rt, &info, &resolved_name).await;
                         // 学习对端宣告的拨号地址（配对无方向性，2026-10）：
                         // 对端 Hello 携带其对外地址 → 本机若无该 peer 地址
                         // 则补上（运行时 + 落配置）→ 双方都会主动重连。
                         learn_peer_dial_address(&rt, &info).await;
-                        broadcast_federation_status(&rt, &personas, &core_agent).await;
+                        broadcast_federation_status(&rt).await;
                     }
                     echo_federation::LinkEvent::Down { peer_node_id, reason } => {
                         tracing::info!(target: "federation", peer = %peer_node_id, %reason, "link down");
                         rt.router.drop_peer(&peer_node_id);
                         let package = peer_package(&rt, &peer_node_id).await;
-                        for persona in personas.personas() {
-                            persona.agent.tools.set_package_enabled(&package, false);
+                        for (_id, agent) in rt.live_personas().await {
+                            agent.tools.set_package_enabled(&package, false);
                         }
                         if let Some(name) = rt.node_to_peer.write().await.remove(&peer_node_id) {
                             rt.peer_names.write().await.remove(&name);
                         }
                         // 链路状态变化 → 面板联邦页实时刷新。
-                        broadcast_federation_status(&rt, &personas, &core_agent).await;
+                        broadcast_federation_status(&rt).await;
                     }
                     echo_federation::LinkEvent::Frame { from, frame } => {
                         if let echo_federation::FedFrame::Invoke(request) = frame {
-                            let registry = personas
-                                .personas()
+                            let registry = rt
+                                .live_personas()
+                                .await
                                 .into_iter()
-                                .map(|p| p.agent.tools.clone())
+                                .map(|(_id, agent)| agent.tools.clone())
                                 .next();
                             let Some(registry) = registry else {
                                 // 无 persona = 无工具注册表。此前的 `continue`
@@ -367,8 +450,8 @@ pub(crate) async fn federation_router_pump(
                             // 沙箱根并集：全部 persona 工作区目录（本地
                             // 目录取 path；远程目录标注占位不参战）。
                             let mut roots: Vec<std::path::PathBuf> = Vec::new();
-                            for persona in personas.personas() {
-                                if let Some(store) = persona.agent.workspace_store() {
+                            for (_id, agent) in rt.live_personas().await {
+                                if let Some(store) = agent.workspace_store() {
                                     let (sessions, _) = store.snapshot();
                                     for s in sessions {
                                         for d in s.directories {
@@ -388,7 +471,7 @@ pub(crate) async fn federation_router_pump(
                         } else if let echo_federation::FedFrame::Query(req) = frame {
                             // 只读查询执行端（Phase 5）：白名单裁决 → 本机采集 →
                             // QueryResult 回传。
-                            let reply = handle_federation_query(&rt, &personas, &from, req).await;
+                            let reply = handle_federation_query(&rt, &from, req).await;
                             if rt.federation.send_to(&from, reply).await.is_err() {
                                 tracing::warn!(target: "federation", peer = %from, "query reply send failed");
                             }
@@ -458,13 +541,13 @@ pub(crate) async fn federation_router_pump(
                                     ev.result.clone(),
                                 )
                             {
-                                federation_import::deliver_aggregate_summary(&personas, summary).await;
+                                federation_import::deliver_aggregate_summary(&rt, summary).await;
                             }
                         } else if let echo_federation::FedFrame::SessionImport(import) = &frame {
                             // 目标侧（P3-2b）：聚合分块 + 每块 ack（流控/重发）；
                             // 凑齐后 spawn_blocking 导入，终态经 Result 回源。
                             let (acked, outcome) =
-                                federation_import::handle_session_import(&personas, import, &mut imports);
+                                federation_import::handle_session_import(&rt, import, &mut imports);
                             let ack = echo_federation::FedFrame::SessionImportAck(
                                 echo_federation::SessionImportAckFrame {
                                     transfer_id: import.transfer_id.clone(),
@@ -530,11 +613,7 @@ pub(crate) async fn federation_router_pump(
                                 message,
                                 success: result.success,
                             };
-                            if let Some(persona) = personas.personas().into_iter().next() {
-                                persona.agent.emit(event);
-                            } else {
-                                core_agent.emit(event);
-                            }
+                            rt.emit_federation_event(event).await;
                         } else {
                             rt.router.dispatch_frame(&from, &frame);
                         }
@@ -565,19 +644,11 @@ pub(crate) async fn peer_package(rt: &FederationRuntime, peer_node: &str) -> Str
 
 /// 经进程级汇聚点广播联邦状态（任一人格的 emit 都到 Panel；用第一个
 /// persona 出口，无 persona 时跳过——核心服务代理装配早于泵启动）。
-pub(crate) async fn broadcast_federation_status(
-    rt: &FederationRuntime,
-    personas: &agent_supervisor::AgentSupervisor,
-    core_agent: &Arc<echo_agent::Agent>,
-) {
+pub(crate) async fn broadcast_federation_status(rt: &FederationRuntime) {
     // 进程级事件汇聚点：任一人格都到 Panel。无人格（全部被禁用）时回退到
     // 进程级核心服务代理 `__core`——否则联邦状态变化静默丢失。
     let event = rt.status_event().await;
-    if let Some(persona) = personas.personas().into_iter().next() {
-        persona.agent.emit(event);
-    } else {
-        core_agent.emit(event);
-    }
+    rt.emit_federation_event(event).await;
 }
 
 
@@ -591,7 +662,6 @@ pub(crate) async fn broadcast_federation_status(
 ///   按本机处理）；复用 trunk 时间线快照 + since_seq/limit 分页
 pub(crate) async fn handle_federation_query(
     rt: &FederationRuntime,
-    personas: &agent_supervisor::AgentSupervisor,
     from: &str,
     req: echo_federation::QueryRequest,
 ) -> echo_federation::FedFrame {
@@ -623,10 +693,10 @@ pub(crate) async fn handle_federation_query(
     }
     match req.kind {
         QueryKind::NodeStatus => {
-            let agents = personas.personas();
+            let agents = rt.live_personas().await;
             let active_turns: usize = agents
                 .iter()
-                .map(|p| p.agent.active_turn_session_ids().len())
+                .map(|(_id, agent)| agent.active_turn_session_ids().len())
                 .sum();
             ok(serde_json::json!({
                 "node_id": rt.federation.local_node_id(),
@@ -648,8 +718,8 @@ pub(crate) async fn handle_federation_query(
                 .map(|p| p.is_full_access())
                 .unwrap_or(false);
             let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
-            for persona in personas.personas() {
-                if let Some(store) = persona.agent.workspace_store() {
+            for (_id, agent) in rt.live_personas().await {
+                if let Some(store) = agent.workspace_store() {
                     let (sessions, _) = store.snapshot();
                     for s in sessions {
                         all_dirs.extend(s.directories);
@@ -688,8 +758,8 @@ pub(crate) async fn handle_federation_query(
                 .map(|p| p.is_full_access())
                 .unwrap_or(false);
             let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
-            for persona in personas.personas() {
-                if let Some(store) = persona.agent.workspace_store() {
+            for (_id, agent) in rt.live_personas().await {
+                if let Some(store) = agent.workspace_store() {
                     let (sessions, _) = store.snapshot();
                     for s in sessions {
                         all_dirs.extend(s.directories);
@@ -724,12 +794,15 @@ pub(crate) async fn handle_federation_query(
             // 供应商发现/导入（2026-10）。含全局默认配置（active_api
             // 视角）与各 profile；key_set 布尔指示该条目是否已配 key
             // ——「哪个节点有什么供应商、哪个没配 key」开箱可见。
-            let agents = personas.personas();
-            let core_agent = agents.iter().find(|p| p.id == "__core").or(agents.first());
+            // 全局配置在 `__core` 上（它承接管理面命令）；无人格时回退兜底出口。
+            let core_agent = match rt.persona_by_id("__core").await {
+                Some(agent) => Some(agent),
+                None => rt.live_personas().await.into_iter().next().map(|(_, a)| a),
+            };
             let Some(core_agent) = core_agent else {
                 return err("无可用 agent 读取供应商配置");
             };
-            let cfg = core_agent.agent.api_config().await;
+            let cfg = core_agent.api_config().await;
             let mut resolved = cfg.clone();
             resolved.apply_active_profile();
             let active = serde_json::json!({
@@ -764,14 +837,22 @@ pub(crate) async fn handle_federation_query(
         QueryKind::BrowseDirectories => {
             // 目录选择器浏览（2026-10）：与 ApiProfiles 同级的只读结构查询。
             // `subject` 空 = 根列表请求；否则列出该目录子目录（限浏览根）。
-            let requested = req.subject.trim().to_string();
+            //
+            // `"/"` 也按"根列表"处理（2026-11）：大脑侧的自然写法是
+            // `node://<peer>/`，剥掉前缀后剩 `"/"`——此前它被当成"要浏览
+            // 对端根目录"，于是**每次点开对端都回「路径不在浏览根内」**。
+            // 语义上"对端的 /" 就等于"列出对端能做根的目录"，所以归一化到空。
+            let requested = match req.subject.trim() {
+                "/" => String::new(),
+                other => other.to_string(),
+            };
             // 浏览根 = 全部 persona 工作区目录并集 ∪ HOME（与大脑侧本机
             // 浏览同一逻辑——browse_roots helper）。
             let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
             let mut labels: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
-            for persona in personas.personas() {
-                if let Some(store) = persona.agent.workspace_store() {
+            for (_id, agent) in rt.live_personas().await {
+                if let Some(store) = agent.workspace_store() {
                     let (sessions, _) = store.snapshot();
                     for s in sessions {
                         for dir in &s.directories {
@@ -811,16 +892,16 @@ pub(crate) async fn handle_federation_query(
             if req.team_id.is_empty() {
                 return err("team_id 必填（会话快照按人格限定）");
             }
-            let candidates: Vec<_> = personas
-                .personas()
+            let candidates: Vec<_> = rt
+                .live_personas()
+                .await
                 .into_iter()
-                .filter(|p| p.id == req.team_id)
+                .filter(|(id, _)| id == &req.team_id)
                 .collect();
             if candidates.is_empty() {
                 return err(&format!("人格 {} 不存在", req.team_id));
             }
-            for persona in candidates {
-                let agent = &persona.agent;
+            for (persona_id, agent) in candidates {
                 if let Some(session) = agent.trunk.get(session_id) {
                     let (messages, seq) = if req.since_seq > 0 {
                         match agent.trunk.timeline_snapshot_since(req.since_seq) {
@@ -841,7 +922,7 @@ pub(crate) async fn handle_federation_query(
                     }
                     return ok(serde_json::json!({
                         "session_id": session.id,
-                        "team_id": persona.id,
+                        "team_id": persona_id,
                         "seq": seq,
                         "messages": messages,
                     }));
@@ -1163,7 +1244,6 @@ pub(crate) async fn register_remote_tools_for_agent(
 /// 按对端 caps 给**全部** persona 注册代理工具（链路 Up 时调）。
 pub(crate) async fn register_remote_tools(
     rt: &FederationRuntime,
-    personas: &agent_supervisor::AgentSupervisor,
     info: &echo_federation::PeerInfo,
     peer_name: &str,
 ) {
@@ -1185,10 +1265,10 @@ pub(crate) async fn register_remote_tools(
     }
     let mut per_persona: std::collections::HashMap<String, Vec<echo_context::Disposer>> =
         std::collections::HashMap::new();
-    for persona in personas.personas() {
-        let keepers = register_remote_tools_for_agent(rt, &persona.agent, info, peer_name).await;
+    for (id, agent) in rt.live_personas().await {
+        let keepers = register_remote_tools_for_agent(rt, &agent, info, peer_name).await;
         if !keepers.is_empty() {
-            per_persona.insert(persona.id.clone(), keepers);
+            per_persona.insert(id, keepers);
         }
     }
     let registered = candidates.len();
@@ -1207,25 +1287,26 @@ pub(crate) async fn register_remote_tools(
     );
 }
 
-/// 清掉**已经被删掉的人格**留下的保活句柄（2026-11 S13）。
+/// 清掉**已经被删掉的人格**留下的保活句柄（2026-11 S13/S14）。
 ///
 /// 为什么需要：每个 `Disposer` 内部持有 `Arc<ToolRegistry>`（RAII 注销要靠它）。
 /// 人格被删除后，它的注册表本该随之消失——但 keepers 里的句柄仍在，于是
 /// **整个注册表被一条不会再被读的记录**吊着。反复"新建 → 删除"会线性累积。
 ///
-/// 清扫时机选在"有真实事件发生"的两处（人格新建 / 链路 Up），不另起定时器：
-/// 这两处必然发生，且此时 `agent_manager` 已就绪（弱引用升级失败 = 尚未绑定，
-/// 跳过——那种情况下也不可能有人格被删）。
+/// 判据来自 [`FederationRuntime::live_personas`]（`Weak` 升级失败的条目已被
+/// 它摘掉）——S14 之前这里读 `agent_manager` 的强引用列表，那是一个多余的
+/// 依赖：既然人格登记本身就是弱引用，"谁还活着"不需要再问第二个人。
 fn prune_deleted_personas(rt: &FederationRuntime) {
-    let manager = match rt.agent_manager.read() {
-        Ok(slot) => match slot.upgrade() {
-            Some(manager) => manager,
-            None => return,
-        },
-        Err(_) => return,
-    };
-    let live: std::collections::HashSet<String> =
-        manager.all().into_iter().map(|running| running.id).collect();
+    let live: std::collections::HashSet<String> = rt
+        .personas
+        .try_read()
+        .map(|list| {
+            list.iter()
+                .filter(|(_, weak)| weak.strong_count() > 0)
+                .map(|(id, _)| id.clone())
+                .collect()
+        })
+        .unwrap_or_default();
     let mut slot = rt
         .remote_tool_keepers
         .lock()
@@ -1361,7 +1442,7 @@ mod remote_tool_install_tests {
     }
 
     /// 造一个"够用"的联邦运行时（不监听、不连出：只要句柄）。
-    fn runtime(dir: &std::path::Path) -> Arc<super::FederationRuntime> {
+    pub(super) fn runtime(dir: &std::path::Path) -> Arc<super::FederationRuntime> {
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         let federation = echo_federation::Federation::new(
@@ -1387,7 +1468,8 @@ mod remote_tool_install_tests {
             merged_management_token: None,
             invite_placeholders: std::sync::Mutex::new(Default::default()),
             session_import_acks: std::sync::Mutex::new(Default::default()),
-            agent_manager: Default::default(),
+            personas: tokio::sync::RwLock::new(Vec::new()),
+            event_fallback: std::sync::RwLock::new(None),
         })
     }
 
@@ -1480,6 +1562,85 @@ mod remote_tool_install_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 人格登记表（2026-11 S14）：登记 / 去重 / 弱引用自动淘汰。
+    ///
+    /// 这一组替掉的是 `AgentSupervisor` 依赖：「谁还活着」由人格自己报，
+    /// 死后自动消失（`Weak` 升级失败），不需要任何"清扫已删人格"的路径。
+    #[tokio::test]
+    async fn persona_registry_tracks_liveness_without_a_supervisor() {
+        let dir = std::env::temp_dir().join(format!("echo-pregistry-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime(&dir);
+
+        let alice = new_agent("alice");
+        rt.register_persona("alice", &alice).await;
+        assert_eq!(rt.live_personas().await.len(), 1);
+        assert!(rt.persona_by_id("alice").await.is_some());
+
+        // 同 id 覆盖（人格重建）：不会留下两条记录。
+        let alice2 = new_agent("alice");
+        rt.register_persona("alice", &alice2).await;
+        let live = rt.live_personas().await;
+        assert_eq!(live.len(), 1, "同 id 必须覆盖而不是追加：{}", live.len());
+        assert!(
+            Arc::ptr_eq(&live[0].1, &alice2),
+            "覆盖后必须是新实例"
+        );
+
+        // 旧实例被 drop（模拟人格被删除）→ 自动从表里消失。
+        //
+        // 注意 `drop(live)`：`live_personas()` 返回的是**强引用**，调用方拿着
+        // 它期间人格就是活的——这是对的行为（发事件时不能让人格跑到一半消失），
+        // 但测试里必须先放手才能断言"死了就消失"。
+        drop(live);
+        drop(alice);
+        drop(alice2);
+        assert!(
+            rt.live_personas().await.is_empty(),
+            "drop 掉的人格不该还活着"
+        );
+        assert!(rt.persona_by_id("alice").await.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 无人格时的事件出口回退到 `__core`，且没有兜底时**只 warn 不 panic**。
+    ///
+    /// 这条守的是"全部人格被禁用"的场景：联邦状态事件不能静默丢失，也不能
+    /// 让泵直接崩掉。
+    #[tokio::test]
+    async fn federation_events_fall_back_when_no_persona_is_alive() {
+        let dir = std::env::temp_dir().join(format!("echo-pevent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime(&dir);
+
+        // ① 什么都没有：不 panic（只记 warn）。
+        rt.emit_federation_event(echo_protocol::BackendEvent::Error {
+            session_id: None,
+            message: "x".into(),
+        })
+        .await;
+
+        // ② 设了兜底出口 → 事件经它发出（用 sink 断言）。
+        let core = new_agent("__core");
+        rt.set_event_fallback(&core);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        core.attach_event_sink(Arc::new(move |event| {
+            sink.lock().unwrap().push(event.kind_name().to_string());
+        }));
+        rt.emit_federation_event(echo_protocol::BackendEvent::Error {
+            session_id: None,
+            message: "y".into(),
+        })
+        .await;
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            ["Error"],
+            "无人格时必须走兜底出口"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// **新建人格**的入口：没有在线 peer 时是**静默 no-op**（不 panic、不阻塞）。
     ///
     /// 这条守的是组合根 factory 的那次 `tokio::spawn`：它在每个人格构造时都会
@@ -1499,11 +1660,9 @@ mod remote_tool_install_tests {
 #[cfg(test)]
 mod core_util_tests {
     use super::online_node_for_peer;
-    use crate::agent_supervisor::AgentSupervisor;
     use crate::federation_import::{chunk_utf8, handle_session_import, ImportOutcome};
     use crate::pick_promoted_peer_name;
     use crate::learnable_peer_url;
-    use echo_plugin_federation::admin::invite_host;
     use echo_agent::{AgentConfig, TeamMember};
 
     /// 对端地址学习决策（配对无方向性）：仅填空，不覆盖；空宣告不学习。
@@ -1614,20 +1773,6 @@ mod core_util_tests {
         assert_eq!(chunk_utf8("abc", 8), vec!["abc".to_string()]);
     }
 
-    pub(crate) fn disabled_supervisor() -> AgentSupervisor {
-        let mut raw = AgentConfig::default();
-        raw.teams.insert(
-            "alix".into(),
-            TeamMember {
-                enabled: false,
-                ..Default::default()
-            },
-        );
-        AgentSupervisor::build(&raw, |_id, _profile| {
-            panic!("disabled personas must not be instantiated")
-        })
-    }
-
     pub(crate) fn import_frame(
         index: u32,
         total: u32,
@@ -1647,14 +1792,14 @@ mod core_util_tests {
     /// P3-2b：非终块 ack 推进但不产出终态；终块 ack=total 且目标无该人格 → 失败。
     #[test]
     pub(crate) fn session_import_buffers_chunks_then_reports_missing_persona() {
-        let supervisor = disabled_supervisor();
+        let rt = super::remote_tool_install_tests::runtime(std::path::Path::new("/tmp"));
         let mut imports = std::collections::HashMap::new();
         let (acked, outcome) =
-            handle_session_import(&supervisor, &import_frame(0, 2, "[]"), &mut imports);
+            handle_session_import(&rt, &import_frame(0, 2, "[]"), &mut imports);
         assert_eq!(acked, 1);
         assert!(matches!(outcome, ImportOutcome::Pending));
         let (acked, outcome) =
-            handle_session_import(&supervisor, &import_frame(1, 2, ""), &mut imports);
+            handle_session_import(&rt, &import_frame(1, 2, ""), &mut imports);
         assert_eq!(acked, 2);
         match outcome {
             ImportOutcome::Failed(message) => assert!(message.contains("不存在")),
@@ -1665,28 +1810,28 @@ mod core_util_tests {
     /// 重复块（重发）幂等：已确认前缀不因重复而倒退。
     #[test]
     pub(crate) fn session_import_duplicate_chunks_are_idempotent() {
-        let supervisor = disabled_supervisor();
+        let rt = super::remote_tool_install_tests::runtime(std::path::Path::new("/tmp"));
         let mut imports = std::collections::HashMap::new();
         let (acked, _) =
-            handle_session_import(&supervisor, &import_frame(0, 3, "[]"), &mut imports);
+            handle_session_import(&rt, &import_frame(0, 3, "[]"), &mut imports);
         assert_eq!(acked, 1);
         // 重发第 0 块：ack 仍为 1，不倒退。
         let (acked, _) =
-            handle_session_import(&supervisor, &import_frame(0, 3, "[]"), &mut imports);
+            handle_session_import(&rt, &import_frame(0, 3, "[]"), &mut imports);
         assert_eq!(acked, 1);
         // 乱序：先到第 2 块不推进前缀（ack 仍 1）。
-        let (acked, _) = handle_session_import(&supervisor, &import_frame(2, 3, ""), &mut imports);
+        let (acked, _) = handle_session_import(&rt, &import_frame(2, 3, ""), &mut imports);
         assert_eq!(acked, 1);
     }
 
     /// 防御：超限单块（>192KB）拒收，不进入缓冲（接收侧尺寸校验）。
     #[test]
     pub(crate) fn session_import_rejects_oversized_chunk() {
-        let supervisor = disabled_supervisor();
+        let rt = super::remote_tool_install_tests::runtime(std::path::Path::new("/tmp"));
         let mut imports = std::collections::HashMap::new();
         let oversized = "x".repeat(192 * 1024 + 1);
         let (acked, outcome) =
-            handle_session_import(&supervisor, &import_frame(0, 1, &oversized), &mut imports);
+            handle_session_import(&rt, &import_frame(0, 1, &oversized), &mut imports);
         assert_eq!(acked, 0);
         match outcome {
             ImportOutcome::Failed(message) => assert!(message.contains("超限"), "消息: {message}"),
@@ -1698,10 +1843,10 @@ mod core_util_tests {
     /// 防御：非法分块头（total=0）立即回失败，不污染缓冲。
     #[test]
     pub(crate) fn session_import_rejects_bad_header() {
-        let supervisor = disabled_supervisor();
+        let rt = super::remote_tool_install_tests::runtime(std::path::Path::new("/tmp"));
         let mut imports = std::collections::HashMap::new();
         let (acked, outcome) =
-            handle_session_import(&supervisor, &import_frame(0, 0, "[]"), &mut imports);
+            handle_session_import(&rt, &import_frame(0, 0, "[]"), &mut imports);
         assert_eq!(acked, 0);
         assert!(matches!(outcome, ImportOutcome::Failed(_)));
         assert!(imports.is_empty());

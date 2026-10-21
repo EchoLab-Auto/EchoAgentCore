@@ -230,6 +230,11 @@ peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲�
   `<peer>__<tool>` 的 peer 段经 LLM function-name 清洗（非
   `[a-zA-Z0-9_-]` 字符 → `_`），模型/标注回传的清洗形会被**回查解析**为
   原始配置名（`node://` 分流、子代理通知、只读查询三个出口）
+- **联邦不依赖 Supervisor（2026-11 S14）**：`FederationRuntime` 自己维护一张
+  人格弱引用表（`register_persona` / `live_personas`），人格构造时自己登记、
+  死后自动消失。于是泵与查询执行端都不再需要 `AgentSupervisor` / `AgentManager`
+  句柄，"全部人格"也不再是每次 clone 一份 `Vec<Persona>`。无人格时联邦事件
+  走 `event_fallback`（`__core`）
 - **代理工具按人格安装（2026-11 S13）**：链路 Up 时给**当时存在的**每个
   人格各装一份 `peer__*`；**新建人格**时补装已在线的（`adopt_active_links`，
   在 agent factory 里触发）。此前注册只有"Link Up"一个调用点——链路通之后

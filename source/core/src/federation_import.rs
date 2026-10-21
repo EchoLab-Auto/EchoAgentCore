@@ -17,16 +17,15 @@
 
 use std::sync::Arc;
 
-use crate::{agent_supervisor, FederationRuntime};
+use crate::FederationRuntime;
 
 pub(crate) async fn deliver_aggregate_summary(
-    supervisor: &agent_supervisor::AgentSupervisor,
+    rt: &crate::federation_rt::FederationRuntime,
     summary: echo_agent::federation::aggregator::AggregateSummary,
 ) {
-    for persona in supervisor.personas() {
-        if persona.agent.trunk.get(&summary.session_id).is_some() {
-            persona
-                .agent
+    for (_id, agent) in rt.live_personas().await {
+        if agent.trunk.get(&summary.session_id).is_some() {
+            agent
                 .trunk
                 .push_timeline(echo_protocol::TimelineMessage {
                     seq: 0, // push_timeline 内部分配
@@ -166,7 +165,7 @@ pub(crate) fn contiguous_acked(chunks: &[Option<String>]) -> u32 {
 /// 目标侧处理一个 `SessionImport` 分块。返回 `(acked_upto, outcome)`：
 /// `acked_upto` 是连续收到的块数（回 ack 推进源窗口 / 触发重发）。
 pub(crate) fn handle_session_import(
-    personas: &agent_supervisor::AgentSupervisor,
+    rt: &crate::federation_rt::FederationRuntime,
     frame: &echo_federation::SessionImportFrame,
     imports: &mut std::collections::HashMap<String, ImportBuffer>,
 ) -> (u32, ImportOutcome) {
@@ -216,7 +215,15 @@ pub(crate) fn handle_session_import(
             );
         }
     };
-    let Some(persona) = personas.get_exact(&entry.team_id) else {
+    // 同步函数（被 select! 的一个分支调用，不 await）：用 blocking 读拿
+    // 「谁还活着」。人格登记是弱引用，读锁极短，且这条路径每次会话迁移只走一次。
+    let persona = rt
+        .personas
+        .blocking_read()
+        .iter()
+        .find(|(id, _)| id == &entry.team_id)
+        .and_then(|(_, weak)| weak.upgrade());
+    let Some(persona) = persona else {
         return (
             total as u32,
             ImportOutcome::Failed(format!("人格 {} 不存在或未运行", entry.team_id)),
@@ -225,7 +232,7 @@ pub(crate) fn handle_session_import(
     (
         total as u32,
         ImportOutcome::Ready(Box::new(ImportReady {
-            trunk: persona.agent.trunk.clone(),
+            trunk: persona.trunk.clone(),
             session_id: entry.session_id,
             transfer_id: frame.transfer_id.clone(),
             target_peer: frame.target_peer.clone(),
@@ -310,30 +317,28 @@ pub(crate) async fn handle_migrate_session(
         return;
     };
     // 2) 定位源 persona + 该会话的事件（事实来源日志按 session 过滤）。
-    let Some(mgr) = rt.agent_manager.read().ok().and_then(|w| w.upgrade()) else {
-        fail("agent manager unavailable".into());
-        return;
-    };
-    let personas = mgr.all();
+    // 「谁还活着」直接问联邦运行时的人格登记（弱引用表，2026-11 S14）——
+    // 此前读 `agent_manager` 的强引用列表，那是同一个事实的第二份来源。
+    let personas = rt.live_personas().await;
     let persona = match team_id.as_deref() {
-        Some(team) => personas.iter().find(|p| p.id == team),
+        Some(team) => personas.iter().find(|(id, _)| id == team),
         None => personas
             .iter()
-            .find(|p| p.agent.trunk.get(&session_id).is_some()),
+            .find(|(_, agent)| agent.trunk.get(&session_id).is_some()),
     };
-    let Some(persona) = persona else {
+    let Some((persona_id, persona_agent)) = persona else {
         fail(match team_id.as_deref() {
             Some(team) => format!("人格 {team} 不存在或未运行"),
             None => format!("会话 {session_id} 不存在"),
         });
         return;
     };
-    if persona.agent.trunk.get(&session_id).is_none() {
-        fail(format!("会话 {session_id} 在人格 {} 下不存在", persona.id));
+    let (persona_id, persona_agent) = (persona_id.clone(), persona_agent.clone());
+    if persona_agent.trunk.get(&session_id).is_none() {
+        fail(format!("会话 {session_id} 在人格 {persona_id} 下不存在"));
         return;
     }
-    let events: Vec<echo_session::SessionEvent> = persona
-        .agent
+    let events: Vec<echo_session::SessionEvent> = persona_agent
         .trunk
         .event_log()
         .into_iter()
@@ -360,7 +365,7 @@ pub(crate) async fn handle_migrate_session(
     }
     let transfer_id = echo_federation::new_call_id(rt.federation.local_node_id());
     let total = chunks.len() as u32;
-    let source_team = persona.id.clone();
+    let source_team = persona_id.clone();
     // 注册 ack 通道（泵收到目标 SessionImportAck 时推进）。
     let (ack_tx, mut ack_rx) = tokio::sync::watch::channel(0u32);
     {
