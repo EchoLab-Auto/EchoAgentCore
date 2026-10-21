@@ -103,6 +103,19 @@ pub trait CompactionHost: Send + Sync {
     fn provider(
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Arc<dyn LlmProvider>> + Send + '_>>;
+    /// 摘要失败的**备用出口**（2026-10 修复：人格 provider 欠费/不可用时
+    /// 摘要全组降级为统计文案，上下文直接丢失）。
+    ///
+    /// 宿主按「全局默认 profile（`active_api`）」解析；与 [`Self::provider`]
+    /// 等价时应返回 `None`（重试同一个出口没有意义）。默认实现返回 `None`
+    /// ——不认识全局默认的宿主保持原行为。
+    fn fallback_provider(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<Arc<dyn LlmProvider>>> + Send + '_>,
+    > {
+        Box::pin(async { None })
+    }
     /// 进度提示（"正在生成摘要…"）。用户等的是这个，不是终态。
     fn progress(&self, message: String);
     /// 落地（追加 `CompactionEvent` 并返回统计）。
@@ -142,8 +155,12 @@ pub async fn compact_history(
         preview.groups.len(),
         preview.total_replaced
     ));
+    // 摘要备用出口（2026-10 修复）：人格 profile 欠费（HTTP 402）或端点不可用
+    // 时，此前整份历史只剩统计文案——损失比压缩本身大得多。取全局默认 profile
+    // 的 provider 作备用，逐组失败时重试一次。
+    let fallback = host.fallback_provider().await;
     let (summaries, llm_count, fallback_count) =
-        summarize_preview(&provider, &preview, keep_recent).await;
+        summarize_preview(&provider, fallback.as_ref(), &preview, keep_recent).await;
     // 预览切片（事件条数）：落地只替换这批前缀，窗口期新到事件全部留在
     // 保留尾（2026-10 审计修复）。
     let prepared: Vec<CompactionSummary> = summaries
@@ -182,10 +199,12 @@ pub async fn compact_history(
     Ok(message)
 }
 
-/// 逐组摘要（按序，每组一次调用）。**整体永不失败**：某组的 LLM 调用出错就
-/// 用规则文案顶上。返回 `(摘要, LLM 组数, 回退组数)`。
+/// 逐组摘要（按序，每组**最多两次**调用）。**整体永不失败**：主出口出错时
+/// 先用 `fallback`（全局默认 profile）重试一次，仍失败才用规则文案顶上。
+/// 返回 `(摘要, LLM 组数, 回退组数)`——备用出口成功的计入 LLM 组数。
 pub async fn summarize_preview(
     provider: &Arc<dyn LlmProvider>,
+    fallback: Option<&Arc<dyn LlmProvider>>,
     preview: &CompactPreview,
     keep_recent: usize,
 ) -> (Vec<SummaryOrFallback>, usize, usize) {
@@ -193,24 +212,52 @@ pub async fn summarize_preview(
     let mut llm_count = 0usize;
     let mut fallback_count = 0usize;
     for group in &preview.groups {
-        let (summary, from_llm, fallback_reason) = match summarize_group(provider, group).await {
-            Ok(body) => {
-                llm_count += 1;
-                (body, true, None)
-            }
-            Err(reason) => {
-                fallback_count += 1;
-                (
-                    rule_fallback_summary(group, keep_recent, &reason),
-                    false,
-                    Some(reason),
-                )
+        let primary = summarize_group(provider, group).await;
+        let mut retried = false;
+        let (summary, from_llm, fallback_reason) = match primary {
+            Ok(body) => (body, true, None),
+            Err(primary_reason) => {
+                // 2026-10 修复：人格 profile 欠费（HTTP 402）/ 端点不可用时，
+                // 此前整组直接降级为统计文案，历史信息全丢。这里换全局默认
+                // 出口重试一次；两次失败原因都留在回退文案里便于排障。
+                let retry = match fallback {
+                    Some(alternative) => {
+                        retried = true;
+                        summarize_group(alternative, group)
+                            .await
+                            .map_err(|retry_reason| {
+                                format!("{primary_reason}；备用出口重试亦失败：{retry_reason}")
+                            })
+                    }
+                    None => Err(primary_reason),
+                };
+                match retry {
+                    Ok(body) => {
+                        tracing::warn!(
+                            session = group.session.as_deref().unwrap_or("<legacy>"),
+                            "compaction: primary provider failed, fallback provider succeeded"
+                        );
+                        (body, true, None)
+                    }
+                    Err(reason) => {
+                        fallback_count += 1;
+                        (
+                            rule_fallback_summary(group, keep_recent, &reason),
+                            false,
+                            Some(reason),
+                        )
+                    }
+                }
             }
         };
+        if from_llm {
+            llm_count += 1;
+        }
         tracing::info!(
             session = group.session.as_deref().unwrap_or("<legacy>"),
             replaced = group.replaced_count,
             from_llm,
+            retried,
             "compaction: group summarized"
         );
         out.push(SummaryOrFallback {
@@ -269,14 +316,11 @@ pub async fn summarize_group(
 }
 
 /// 模型不可用时的规则摘要。保持既有统计形状，让新老压缩读起来一致。
-pub fn rule_fallback_summary(
-    group: &CompactGroup,
-    keep_recent: usize,
-    reason: &str,
-) -> String {
+pub fn rule_fallback_summary(group: &CompactGroup, keep_recent: usize, reason: &str) -> String {
     format!(
-        "已压缩 {} 条历史事件（{} 条用户消息，{} 次工具调用），保留最近 {} 条。\
-         自动摘要不可用（{}），本组仅保留统计信息。",
+        "⚠️ 自动摘要失败，仅保留统计信息：已压缩 {} 条历史事件（{} 条用户消息，\
+         {} 次工具调用），保留最近 {} 条。失败原因：{}。\
+         ——上下文细节已丢失，需要时请从归档快照恢复。",
         group.replaced_count, group.users, group.tools, keep_recent, reason
     )
 }
@@ -464,6 +508,120 @@ mod tests {
         assert!(text.contains("2 条用户消息"), "{text}");
         assert!(text.contains("保留最近 10 条"), "{text}");
         assert!(text.contains("provider 缺失"), "{text}");
+    }
+
+    /// 可编排的 provider：`fail = true` 时按 HTTP 402 报错（真实故障形状）。
+    struct ScriptedProvider {
+        reply: &'static str,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for ScriptedProvider {
+        fn name(&self) -> &str {
+            "scripted"
+        }
+        fn default_model(&self) -> &str {
+            "scripted-model"
+        }
+        async fn chat(
+            &self,
+            _request: &ChatRequest,
+        ) -> Result<echo_defs::message::ChatResponse, echo_defs::llm::LlmError> {
+            if self.fail {
+                return Err(echo_defs::llm::LlmError::Api(
+                    "API 返回错误: HTTP 402 Payment Required: Insufficient Balance".into(),
+                ));
+            }
+            let mut response = echo_defs::message::ChatResponse::empty();
+            response.content = Some(self.reply.to_string());
+            Ok(response)
+        }
+        async fn chat_stream(
+            &self,
+            _request: &ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<echo_defs::message::ChatChunk>,
+        ) -> Result<echo_defs::message::ChatResponse, echo_defs::llm::LlmError> {
+            self.chat(_request).await
+        }
+    }
+
+    fn preview_of(events: Vec<SessionEvent>) -> CompactPreview {
+        let group = group(events);
+        CompactPreview {
+            total_replaced: group.replaced_count,
+            total_events: group.replaced_count,
+            groups: vec![group],
+        }
+    }
+
+    /// 主出口欠费 → 用备用出口重试并成功（2026-10 修复：此前整组降级为
+    /// 统计文案，历史信息全丢——「聊天还能用、一压缩就失忆」的根因）。
+    #[tokio::test]
+    async fn failing_primary_provider_retries_on_fallback() {
+        let primary: Arc<dyn LlmProvider> = Arc::new(ScriptedProvider {
+            reply: "",
+            fail: true,
+        });
+        let fallback: Arc<dyn LlmProvider> = Arc::new(ScriptedProvider {
+            reply: "## 当前目标\n恢复上下文",
+            fail: false,
+        });
+        let (summaries, llm_count, fallback_count) = summarize_preview(
+            &primary,
+            Some(&fallback),
+            &preview_of(vec![user("继续排查")]),
+            10,
+        )
+        .await;
+        assert_eq!(llm_count, 1, "备用出口成功应计入 LLM 组数");
+        assert_eq!(fallback_count, 0, "不应记为规则回退");
+        assert!(summaries[0].from_llm);
+        assert!(summaries[0].summary.contains("恢复上下文"));
+    }
+
+    /// 两个出口都失败 → 规则回退，且文案里两次原因都在（排障要能看出
+    /// 「主出口欠费、备用出口也连不上」）。
+    #[tokio::test]
+    async fn both_providers_failing_keeps_both_reasons() {
+        let primary: Arc<dyn LlmProvider> = Arc::new(ScriptedProvider {
+            reply: "",
+            fail: true,
+        });
+        let fallback: Arc<dyn LlmProvider> = Arc::new(ScriptedProvider {
+            reply: "",
+            fail: true,
+        });
+        let (summaries, llm_count, fallback_count) = summarize_preview(
+            &primary,
+            Some(&fallback),
+            &preview_of(vec![user("继续排查")]),
+            10,
+        )
+        .await;
+        assert_eq!(llm_count, 0);
+        assert_eq!(fallback_count, 1);
+        assert!(!summaries[0].from_llm);
+        let reason = summaries[0].fallback_reason.as_deref().unwrap_or_default();
+        assert!(reason.contains("402"), "主出口原因缺失：{reason}");
+        assert!(
+            reason.contains("备用出口重试亦失败"),
+            "备用原因缺失：{reason}"
+        );
+    }
+
+    /// 没有备用出口时行为与修复前一致（默认实现返回 None）。
+    #[tokio::test]
+    async fn without_fallback_primary_failure_still_falls_back() {
+        let primary: Arc<dyn LlmProvider> = Arc::new(ScriptedProvider {
+            reply: "",
+            fail: true,
+        });
+        let (summaries, llm_count, fallback_count) =
+            summarize_preview(&primary, None, &preview_of(vec![user("a")]), 10).await;
+        assert_eq!(llm_count, 0);
+        assert_eq!(fallback_count, 1);
+        assert!(summaries[0].summary.contains("已压缩 1 条历史事件"));
     }
 
     /// 空组：不调 LLM，直接回退（避免无意义的往返）。

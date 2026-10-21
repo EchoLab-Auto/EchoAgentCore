@@ -50,6 +50,73 @@ impl CompactionHost for AgentCompactionHost<'_> {
         Box::pin(async move { self.agent.model.provider.read().await.clone() })
     }
 
+    /// 摘要备用出口：**全局默认 profile（`active_api`）**（2026-10 修复）。
+    ///
+    /// 压缩此前只认人格级 provider（`[agent.teams.*] api_profile`）。人格
+    /// profile 欠费（HTTP 402）时，聊天还能靠会话级覆盖正常工作，压缩却整份
+    /// 降级成统计文案——历史信息全丢。这里按全局默认 profile 现建一个出口，
+    /// 供 `summarize_preview` 在主出口失败时重试一次。
+    ///
+    /// 与当前出口等价（key / model / base_url 三项全同）时返回 `None`：
+    /// 重试同一个出口没有意义，也避免白花一次调用。
+    fn fallback_provider(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<Arc<dyn crate::llm::LlmProvider>>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            let current = self.agent.model.config.read().await.clone();
+            let mut global = current.clone();
+            global.apply_active_profile();
+            let same = global.effective_api_key() == current.effective_api_key()
+                && global.model == current.model
+                && global.effective_base_url() == current.effective_base_url();
+            if same {
+                return None;
+            }
+            global.api_key = global.effective_api_key();
+            global.base_url = global.effective_base_url();
+            let boxed = match crate::llm::create_provider(&global) {
+                Ok(provider) => provider,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "compaction: fallback provider build failed; 主出口失败时将降级为统计文案"
+                    );
+                    return None;
+                }
+            };
+            let mut provider: Arc<dyn crate::llm::LlmProvider> = Arc::from(boxed);
+            // 备用出口同样过安全卡口与计量——否则「换了出口就漏脱敏/用量」。
+            let metrics = self
+                .agent
+                .instrumentation
+                .metrics
+                .read()
+                .ok()
+                .and_then(|guard| guard.as_ref().cloned());
+            if let Some(metrics) = metrics {
+                provider = crate::llm::wrap_metering(provider, metrics, global.active_api.clone());
+            }
+            let redactor = self
+                .agent
+                .instrumentation
+                .redactor
+                .read()
+                .ok()
+                .and_then(|guard| guard.as_ref().cloned());
+            if let Some(redactor) = redactor {
+                provider = crate::llm::wrap_redacting(provider, redactor);
+            }
+            tracing::info!(
+                profile = %global.active_api,
+                model = %global.model,
+                "compaction: fallback provider ready"
+            );
+            Some(provider)
+        })
+    }
+
     fn progress(&self, message: String) {
         self.agent.emit(crate::event::BackendEvent::Error {
             session_id: None,
