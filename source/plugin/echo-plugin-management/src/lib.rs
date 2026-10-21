@@ -478,7 +478,8 @@ async fn accept_management_ws(
     Ok(if access_token.is_empty() {
         tokio_tungstenite::accept_hdr_async(
             stream,
-            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                  response| {
                 observe(request);
                 Ok(response)
             },
@@ -487,7 +488,8 @@ async fn accept_management_ws(
     } else {
         tokio_tungstenite::accept_hdr_async(
             stream,
-            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                  response| {
                 observe(request);
                 let authorized = request
                     .headers()
@@ -960,7 +962,8 @@ mod tests {
         let addr = listener.local_addr().unwrap().to_string();
         tokio::spawn(async move {
             let _ =
-                serve_with_listener_and_token(listener, bridge, "secret-token".into(), None, None).await;
+                serve_with_listener_and_token(listener, bridge, "secret-token".into(), None, None)
+                    .await;
         });
 
         // 1) 不带令牌：必须收到 HTTP 401（而非 0 字节静默断开）。
