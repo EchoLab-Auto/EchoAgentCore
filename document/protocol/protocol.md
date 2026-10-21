@@ -152,7 +152,7 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 | 联邦 | `RequestFederationStatus`、`RequestFederationInvite`、`SaveFederationPeer`、`DeleteFederationPeer`、`RequestRemoteApiProfiles`（查远端节点的**脱敏**供应商池，回 `RemoteApiProfiles`；api_key 明文永不过线） |
 | 运维 | `RequestSelfUpdate`、`RequestSelfUpdateStatus` |
 
-实例管理方法名（`set_gate_mode` / `update_allowlist` / `login_qrcode` …）见 [实例插件化设计](../design/instance-plugin.md) §宿主动作。
+实例管理方法名（`set_gate_mode` / `update_allowlist` / `login_qrcode` …）由 `echo-defs` 的 `InstanceManagement` 定义。
 
 ## 事件（Core → Client）
 

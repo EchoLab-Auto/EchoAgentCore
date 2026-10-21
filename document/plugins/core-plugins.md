@@ -9,7 +9,7 @@ link: ["tools | 工具系统", "skills | 技能系统", "subagent | Subagent 插
 
 # 插件化设计
 
-> **定位**：本文是插件体系的入口——插件模型（**来源**与**运行形态**两个正交维度）与装载机制、**全部内置插件清单**、能力开关（per-persona 门控）与扩展方式。各插件的机制细节见子篇：[工具系统](./core-tools.md)、[技能系统](./core-skills.md)、[Subagent 插件](./core-subagent.md)、[QQ 实例门控](./qq-gating.md)、[联邦（多机）](../federation/federation.md)、[插件开发指南](./plugin-authoring.md)；系统设计与路线图见 [完全解耦推进计划](../design/decoupling-plan.md)。读者：需要理解或扩展插件体系的开发者；内核机制（插件宿主、事件总线）见 [框架（内核）](../core/frame.md)。
+> **定位**：本文是插件体系的入口——插件模型（**来源**与**运行形态**两个正交维度）与装载机制、**全部内置插件清单**、能力开关（per-persona 门控）与扩展方式。各插件的机制细节见子篇：[工具系统](./core-tools.md)、[技能系统](./core-skills.md)、[Subagent 插件](./core-subagent.md)、[QQ 实例门控](./qq-gating.md)、[联邦（多机）](../federation/federation.md)、[插件开发指南](./plugin-authoring.md)。读者：需要理解或扩展插件体系的开发者；内核机制（插件宿主、事件总线）见 [框架（内核）](../core/frame.md)。
 
 ## 设计原则
 
@@ -71,7 +71,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 - **与来源维度无关**：进程外可以是「manifest 编译内置 + 实现独立进程」（`instance.qq`），也可以是 manifest 与实现都来自外部；判据是 `runtime`，不是 `builtin`
 - **与进程内插件的差别**：进程内 = 实现编译进 Core（挂载/卸载即生效）；进程外 = 独立 PID 与生命周期（崩了不带走 Core，启停经门控）
 - **实例插件贡献什么**：`InstanceContribution`（实例名 / 平台 / 能力位 / 配置 schema / UI 描述符 / 会话标签 / **模型工具声明**）。宿主侧不认识任何平台细节——管理界面按描述符渲染、管理动作经 `invoke_custom(method, payload)` 字符串透传、**模型工具由插件声明**（宿主只做合并 / `account` 寻址 / 出站闸门 / 透传，见 [工具系统](./core-tools.md)「工具从哪来」）
-- 协议、SDK 与部署方式见 [插件开发指南](./plugin-authoring.md)（含「实例插件」一节）；系统设计与路线图见 [完全解耦推进计划](../design/decoupling-plan.md)
+- 协议、SDK 与部署方式见 [插件开发指南](./plugin-authoring.md)（含「实例插件」一节）
 
 ## 内置插件清单
 
@@ -94,7 +94,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 联邦（`echo-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
 
-> **框架侧实现位置**：解耦计划 Phase 3 已把绝大多数内置插件外迁为独立 crate——`echo-plugin-provider-llm`（provider 工厂 + 计量/脱敏装饰）/ `echo-plugin-skills`（技能注册表 + Git 安装）/ `echo-plugin-workspace`（工作区会话与工具）/ `echo-plugin-subagent` / `echo-plugin-loop`（两个纯策略模式）/ `echo-plugin-management`（Panel 连接面 + 会话视图命令域）/ `echo-plugin-self-update`（自更新命令域）/ `echo-plugin-tools`（内置工具集：计算/检索/清单/编码/Shell/实例管理）；工具子系统的跨包机制（`ToolRegistry`）在 `echo-tool`，Shell 机制在 `echo-shell`。**仍内联在 echo-agent 的**只剩 `packages/tools_builtin` 的兼容面（`register_all` 重导出给文档生成与旧调用点 + `api_profiles`）、`packages/instance_ops`（入站 hook 桥 + 通用实例命令域）、`packages/federation`（远程代理工具与查询适配）。公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export 指向新 crate）。完整清单与判定见 [完全解耦推进计划](../design/decoupling-plan.md) §Phase 3。
+> **框架侧实现位置**：解耦计划 Phase 3 已把绝大多数内置插件外迁为独立 crate——`echo-plugin-provider-llm`（provider 工厂 + 计量/脱敏装饰）/ `echo-plugin-skills`（技能注册表 + Git 安装）/ `echo-plugin-workspace`（工作区会话与工具）/ `echo-plugin-subagent` / `echo-plugin-loop`（两个纯策略模式）/ `echo-plugin-management`（Panel 连接面 + 会话视图命令域）/ `echo-plugin-self-update`（自更新命令域）/ `echo-plugin-tools`（内置工具集：计算/检索/清单/编码/Shell/实例管理）；工具子系统的跨包机制（`ToolRegistry`）在 `echo-tool`，Shell 机制在 `echo-shell`。**仍内联在 echo-agent 的**只剩 `packages/tools_builtin` 的兼容面（`register_all` 重导出给文档生成与旧调用点 + `api_profiles`）、`packages/instance_ops`（入站 hook 桥 + 通用实例命令域）、`packages/federation`（远程代理工具与查询适配）。公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export 指向新 crate）。完整清单见上述 crate 的公开导出。
 >
 > QQ 工具（`send_*`/`get_*` 共 10 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由插件进程申报（插件仓库 `crates/echo-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。2026-10 去适配器化时 `source/core/src/qq_tools.rs` 已删除——插件实例本就能声明工具，没有留给组合根的特例。
 

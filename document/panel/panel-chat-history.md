@@ -29,7 +29,7 @@ y: 1340
 
 ## 条目身份
 
-- Core 在事件帧**信封层**下发 `entry`（`{"type":"event","payload":{…},"seq":N,"entry":"…"}`，与 `seq` 同一手法）。语义 = 同一条逻辑条目的所有事件共享同一 id：一段流式输出的全部增量与它的终值同 id，工具调用与它的结果同 id。Panel 用它把三处**启发式**换成精确命中——流式增量按 `entry` 找当前行（`appendStreamDelta`）、终值按 `entry` 收敛（`settleStream`）、工具结果按 `entry` 配对（`finishToolMessage`）；`entry` 缺失（旧版 Core）时全部回退原判据（灰度双读，`DisplayMessage.entry` 为 `undefined`）。修掉的场景：同一 branch 下工具前的中间叙述与工具后的正文曾被并进同一行；`AgentOutput.branch_id` 缺失时"取最新流式行"在并行分支下写错行；`tool_call_id` 缺失时"按工具名猜最后一个 running"在同名并发下配错。详见 [条目身份化](../design/entry-identity-p1.md)
+- Core 在事件帧**信封层**下发 `entry`（`{"type":"event","payload":{…},"seq":N,"entry":"…"}`，与 `seq` 同一手法）。语义 = 同一条逻辑条目的所有事件共享同一 id：一段流式输出的全部增量与它的终值同 id，工具调用与它的结果同 id。Panel 用它把三处**启发式**换成精确命中——流式增量按 `entry` 找当前行（`appendStreamDelta`）、终值按 `entry` 收敛（`settleStream`）、工具结果按 `entry` 配对（`finishToolMessage`）；`entry` 缺失（旧版 Core）时全部回退原判据（灰度双读，`DisplayMessage.entry` 为 `undefined`）。修掉的场景：同一 branch 下工具前的中间叙述与工具后的正文曾被并进同一行；`AgentOutput.branch_id` 缺失时"取最新流式行"在并行分支下写错行；`tool_call_id` 缺失时"按工具名猜最后一个 running"在同名并发下配错。
 
 ## 渐进式分页与常驻上限
 

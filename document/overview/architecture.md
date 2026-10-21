@@ -82,8 +82,7 @@ graph BT
 > **归属（2026-10-19 框架外迁）**：下表里带「框架仓」标记的 crate **不在本仓**，
 > 而是独立仓库 [plugin-framework](https://github.com/EchoLab-Auto/plugin-framework)
 > （`v0.4.1`），由本仓的 `Cargo.toml` 以 `git + tag` 引用。它们与任何应用 crate
-> 无反向依赖，可被其它 Rust 应用单独使用——判据与取舍见
-> [插件框架外迁](../design/plugin-framework-extraction.md)。本仓 `source/plugin/`
+> 无反向依赖，可被其它 Rust 应用单独使用。本仓 `source/plugin/`
 > 下只剩**框架的使用者**（内置插件）与领域适配层。
 
 | Crate | 角色 | 职责 |
@@ -104,11 +103,11 @@ graph BT
 | `echo-plugin-shell` | 内置插件：Shell 会话（2026-11 从工具集拆出） | `echo-agent.shell` 的实现：`bash-start` / `bash-exec` / `bash-stop` 三个工具 + 四条 `*Shell*` 面板命令。机制依赖 `echo-shell`（进程组生命周期 + 哨兵分帧），与工具集**互不依赖**；拆出的理由是独立的启停需求与独立的机制依赖——想关 shell 不该连计算器一起关 |
 | `echo-shell` | Shell 会话机制 | 每会话一个 `bash --noprofile --norc`（独立进程组，销毁整组终止）、写命令 + 随机哨兵双写分帧（stdout/stderr 两路专职读取，避免假超时）、会话串行/跨会话并行、`MAX_SHELL_SESSIONS` 上限、事件经注入 emit 广播；宿主侧接线（`shell_emit_for_self` 等要拿 `Agent` 的部分）留在 `echo-agent::shell` |
 | `echo-tool` | 工具子系统机制 | `ToolRegistry`（可逆注册 + 定义缓存 + 出口脱敏）；`Tool` 词汇在 `echo-defs`，具体工具实现不在此 |
-| `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` **（框架仓）** | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、子进程限额与入站频率限额、可逆停止、conformance 测试（见 [完全解耦推进计划](../design/decoupling-plan.md)）。**`echo-plugin-host` 只依赖 `echo-plugin-api` + `echo-plugin-loader`——不认识 `echo-defs`、不认识任何领域词汇**，因此可作领域中立的插件机制复用 |
-| `echo-bootstrap` | 宿主引导单元（机制层） | 进程级单例表：`TypeId` 键控的 `set` / `get` / `get_or_init`。**这是本仓唯一允许的全局态**（门禁精确豁免一个文件）。它曾随 `echo-context` 迁进框架仓又被搬回——框架一处不用它、而框架导出进程级单例表会破坏「同一进程能起两套宿主」。终态应改为经 `Ctx` 显式注入，见 [插件框架外迁 §八](../design/plugin-framework-extraction.md) |
+| `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` **（框架仓）** | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、子进程限额与入站频率限额、可逆停止、conformance 测试。**`echo-plugin-host` 只依赖 `echo-plugin-api` + `echo-plugin-loader`——不认识 `echo-defs`、不认识任何领域词汇**，因此可作领域中立的插件机制复用 |
+| `echo-bootstrap` | 宿主引导单元（机制层） | 进程级单例表：`TypeId` 键控的 `set` / `get` / `get_or_init`。**这是本仓唯一允许的全局态**（门禁精确豁免一个文件）。它曾随 `echo-context` 迁进框架仓又被搬回——框架一处不用它、而框架导出进程级单例表会破坏「同一进程能起两套宿主」。终态应改为经 `Ctx` 显式注入 |
 | `echo-plugin-adapter` | 远程贡献 → 领域 trait 的适配层 | `RemoteTool`（`ToolContribution` → `echo_defs::tool::Tool`）、`RemoteInstance`/`RemoteInstanceManagement`（`InstanceContribution` → `PluginInstance`/`InstanceManagement`，能力位 fail-closed，动作经 `Invoke("<name>:<op>")`）、`CoreApiService`（插件 → 宿主回呼）；依赖 host + api + defs，**不依赖 `echo-agent` 与组合根**。单独成 crate 的理由：这一层认识领域 trait，而 host 必须保持领域中立 |
 | `echo-agent` | agent 框架 | 循环（内置实现；loop.* 插件启用时 echo-loop 驱动接管普通输入——生效口径见 [Agent 循环](../core/core-agent-loop.md)）、provider 工厂与装配、命令分发、timeline 投影、trunk。**具体实现多已外迁**：内置工具在 `echo-plugin-tools`（`packages/tools_builtin` 只留 `register_all` 兼容面与 `api_profiles`）、Shell 机制在 `echo-shell`（`shell.rs` 只留宿主侧接线）、技能在 `echo-plugin-skills`、子任务在 `echo-plugin-subagent`、工作区在 `echo-plugin-workspace` |
-| `echo-defs`（`plugin_instance`） | 插件实例的**定义层** | `PluginInstance` trait（`tool_specs() -> Vec<ToolSpec>`）/ `InstanceManagement` / `ToolSpec` / `InstanceRegistry` / 状态与错误类型。**平台中立**：这里没有平台名、没有部署形状。QQ 实现是**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteInstance` 接入——见 [实例插件化](../design/instance-plugin.md)） |
+| `echo-defs`（`plugin_instance`） | 插件实例的**定义层** | `PluginInstance` trait（`tool_specs() -> Vec<ToolSpec>`）/ `InstanceManagement` / `ToolSpec` / `InstanceRegistry` / 状态与错误类型。**平台中立**：这里没有平台名、没有部署形状。QQ 实现是**独立进程插件**（独立仓库，stdio 协议；宿主经 `RemoteInstance` 接入） |
 | `echo-config` | TOML 原子读改写 | `ConfigStore` / `ensure_table`（串行化 + tmp+rename）。**不知道任何 section 的含义**——调用方各自拥有自己的段 |
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm`/`ctx.loop` 注册、联邦路由泵、启动 |
@@ -178,7 +177,7 @@ graph BT
 | 目标 | 机制 |
 |---|---|
 | 新增 LLM provider | 实现 `echo_defs::LlmProvider`，注册 `ctx.llm` |
-| 新增工具 | 内置：实现 `echo_defs::Tool` 并注册进 `ToolRegistry`（现役实现在 `echo-plugin-tools`）；外部：写进程插件贡献 `ToolContribution`，经 `echo-plugin-adapter` 适配（MCP 走桥接插件，见 [MCP 导入通道评估](../design/mcp-import.md)） |
+| 新增工具 | 内置：实现 `echo_defs::Tool` 并注册进 `ToolRegistry`（现役实现在 `echo-plugin-tools`）；外部：写进程插件贡献 `ToolContribution`，经 `echo-plugin-adapter` 适配（MCP 走桥接插件） |
 | 新增平台 | 写一个**实例插件**（`InstancePlugin` + `InstanceContribution`：能力位 / UI 描述符 / 会话标签 / **模型工具声明**），在 `[instances.<platform>]` 配好 `enabled` 与 `plugin.command`。宿主侧无需改代码——配置、门控、工具桥、提示词边界都是平台中立的（见 [插件开发指南](../plugins/plugin-authoring.md)「实例插件」） |
 | 拦截请求/工具/turn | EventBus 上注册 lifecycle 事件监听器 |
 | 工具策略 | 超时已由 harness `tool_guard_timeout` 守卫（`agent/tool_exec.rs`）；`ToolPipeline` 中间件机制已备、生产路径未接线 |

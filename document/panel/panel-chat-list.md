@@ -16,7 +16,7 @@ y: 1340
 
 ## 容量与渲染窗口
 
-- 主时间线上限 1024 条，溢出裁最旧（数据侧）；**渲染侧只画尾部 200 条**（`ChatView.vue` 的 `WINDOW_INITIAL`/`renderWindow`），更早的显示「加载更早的消息（还有 N 条）」入口，点击按 200 扩窗（`loadEarlier`：扩窗后按"距底部距离"补偿 `scrollTop`，并在 nextTick / 下一帧 / 300 ms 后各补偿一次——前插的 200 行里延迟加载的 Markdown 与图片会在插入后继续改高度，一次性补偿会残留约 100 px 偏移）。**切片在适配之前**——`sessionMessagesFor` 只取尾部窗口喂给 `toChatMessage`/缓存判等，因此一次 delta 的成本只与**窗口大小**相关、与历史长度无关（实测见 [性能审计](../design/panel-performance-audit.md)）。切会话 / 切 agent 把窗口复位到 200
+- 主时间线上限 1024 条，溢出裁最旧（数据侧）；**渲染侧只画尾部 200 条**（`ChatView.vue` 的 `WINDOW_INITIAL`/`renderWindow`），更早的显示「加载更早的消息（还有 N 条）」入口，点击按 200 扩窗（`loadEarlier`：扩窗后按"距底部距离"补偿 `scrollTop`，并在 nextTick / 下一帧 / 300 ms 后各补偿一次——前插的 200 行里延迟加载的 Markdown 与图片会在插入后继续改高度，一次性补偿会残留约 100 px 偏移）。**切片在适配之前**——`sessionMessagesFor` 只取尾部窗口喂给 `toChatMessage`/缓存判等，因此一次 delta 的成本只与**窗口大小**相关、与历史长度无关（实测：200 条窗口下单次 delta 的适配耗时与总条数无关）。切会话 / 切 agent 把窗口复位到 200
 
 ## 流式与重算成本
 

@@ -209,9 +209,9 @@ document/panel/panel-chat.md:82 — 旧 core 无 id 时按名回填最新 runnin
 document/dev/dev-guide.md:124 — EchoAgentTui CI 以 ECHO_CORE_REF 钉住协议兼容 commit — [DOC]
 document/dev/dev-testing.md:25-26 — 测试覆盖 legacy payload decoding（缺 branch_id） — [DOC]
 document/dev/dev-testing.md:41 — 测试覆盖 qq_instances legacy 端口/共享容器 — [DOC]
-document/design/decoupling-plan.md:75-76 — MCP 换行分帧兼容模式 + FedFrame serde(default) 前向兼容 — [DOC]
-document/design/decoupling-plan.md:228 — compatible() 版本协商 + 不兼容可读拒绝 — [DOC]
-document/design/decoupling-plan.md:315 — setter 侧「旧 setter 兼容期双写」 — [DOC]
+(deleted) decoupling-plan.md:75-76 — MCP 换行分帧兼容模式 + FedFrame serde(default) 前向兼容 — [DOC]
+(deleted) decoupling-plan.md:228 — compatible() 版本协商 + 不兼容可读拒绝 — [DOC]
+(deleted) decoupling-plan.md:315 — setter 侧「旧 setter 兼容期双写」 — [DOC]
 
 ## 核验备注（非清单项）
 

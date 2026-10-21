@@ -4,14 +4,14 @@ title: "EchoAgent 文档总览"
 group: 总览
 x: 1520
 y: 100
-link: ["architecture | 架构总览", "core | Core 后端 | b>l", "panel | Panel 前端", "protocol | 协议与数据流", "ops-deploy | 部署与自更新 | r>t", "dev-guide | 开发指南 | b>l", "design-index | 设计记录"]
+link: ["architecture | 架构总览", "core | Core 后端 | b>l", "panel | Panel 前端", "protocol | 协议与数据流", "ops-deploy | 部署与自更新 | r>t", "dev-guide | 开发指南 | b>l"]
 ---
 
 # EchoAgent 文档总览
 
 EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架：Core 负责 LLM agent 循环、工具调用、多 agent 人格、QQ 插件实例；Panel 是 Vue 3 前端，通过 WebSocket 与 Core 通信，提供聊天、任务、Shell、设置（API/技能/工具/插件/智能体/日志）等界面。
 
-> 本文档群按 ProDoc 文档图组织（每个 `.md` 是画布上一个框，连线表达主干导航），物理目录按「主题 × 阅读距离」分层（`overview → core → plugins / panel / protocol / federation → ops / dev → design`），且将**长期参考类**（模块文档）与**设计过程类**（计划/提案/记录）分开——放置规则与写作约定见 [文档规范](./documentation-guide.md)。两仓库（core + panel）的文档统一维护在本目录。
+> 本文档群按 ProDoc 文档图组织（每个 `.md` 是画布上一个框，连线表达主干导航），物理目录按「主题 × 阅读距离」分层（`overview → core → plugins / panel / protocol / federation → ops / dev`）——放置规则与写作约定见 [文档规范](./documentation-guide.md)。两仓库（core + panel）的文档统一维护在本目录。
 
 ## 阅读路径
 
@@ -76,20 +76,6 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 - [dev-testing.md](./dev/dev-testing.md) — 测试策略：测试分层、Mock 与夹具、质量门禁
 - [documentation-guide.md](./documentation-guide.md) — 文档规范：目录分层、单篇体例、模板与放置规则
 
-**设计层 —— 计划 / 提案 / 设计记录（过程性材料，正文标注状态）**
-
-- [design/index.md](./design/index.md) — 设计层索引：这一层收什么、写作约定与阅读顺序
-- [decoupling-plan.md](./design/decoupling-plan.md) — 完全解耦推进计划（规划）：验收口径、分阶段计划与风险
-- [plugin-framework-extraction.md](./design/plugin-framework-extraction.md) — 插件框架外迁（真框架）：M0–M5 边界与判据、各阶段执行记录
-- [s4-agent-decomposition.md](./design/s4-agent-decomposition.md) — S4 计划：`Agent` 拆服务（分阶段 + 风险 + 何时别做）
-- [mcp-import.md](./design/mcp-import.md) — MCP 导入通道评估：实测证据、能力映射、三种形态成本、安全面与升级条件
-- [instance-plugin.md](./design/instance-plugin.md) — 实例插件化设计：P1 已落地、P2+ 规划
-- [adapter-genericization/index.md](./design/adapter-genericization/index.md) — 插件实例泛化设计系列：分册设计（01/02/03）、证据包、对账表与进度台账
-- [agent-humanlike-style.md](./design/agent-humanlike-style.md) — 拟人化方案（规划）：语气与回复节奏
-- [federation-port-merge.md](./design/federation-port-merge.md) — 联邦·管理端口合并（设计记录，已实施）
-- [entry-identity-p1.md](./design/entry-identity-p1.md) — 条目身份化（P1）：EntryId + rev + Upsert，让流式增量与工具事件可精确对齐
-- [panel-performance-audit.md](./design/panel-performance-audit.md) — Panel 浏览器性能审计：测量方法与修复前后实测
-
 **调研稿**（`source/research/`，非文档群成员，过程材料不进本目录）
 
 - [system-audit-2026-10](../research/system-audit-2026-10/README.md)、[compat-audit-2026-10](../research/compat-audit-2026-10/core-compat-audit.md)（[panel 侧](../research/compat-audit-2026-10/panel-compat-audit.md)）
@@ -122,30 +108,6 @@ graph LR
   Plugins --> Gating[QQ 实例门控|/plugins/qq-gating.md]
   Plugins --> Fed[联邦（多机）|/federation/federation.md]
   Plugins --> Author[插件开发指南|/plugins/plugin-authoring.md]
-  Home --> Design[设计记录|/design/index.md]
-  Design --> Plan[完全解耦推进计划|/design/decoupling-plan.md]
-  Design --> AdapterPlugin[实例插件化设计|/design/instance-plugin.md]
-  Design --> Style[拟人化方案|/design/agent-humanlike-style.md]
-  Design --> FedMerge[联邦·管理端口合并|/design/federation-port-merge.md]
-  Design --> Perf[Panel 性能审计|/design/panel-performance-audit.md]
-  Design --> Identity[条目身份化（P1）|/design/entry-identity-p1.md]
-  Design --> PluginFW[插件框架外迁|/design/plugin-framework-extraction.md]
-  Design --> McpImport[MCP 导入通道|/design/mcp-import.md]
-  Plan --> S4[S4 计划：Agent 拆服务|/design/s4-agent-decomposition.md]
-  AdapterPlugin --> Gen[插件实例泛化（设计系列）|/design/adapter-genericization/index.md]
-  Gen --> Gen01a[01a Core UI 描述符链路|/design/adapter-genericization/01a-core-uidescriptor.md]
-  Gen --> Gen01b[01b 线协议去号码化|/design/adapter-genericization/01b-core-protocol-lifecycle.md]
-  Gen --> Gen02a[02a Panel 协议与状态层|/design/adapter-genericization/02a-panel-protocol.md]
-  Gen --> Gen02b[02b Panel 数据面重接线|/design/adapter-genericization/02b-panel-rewire.md]
-  Gen --> Gen03a[03a UI 描述符渲染器规范|/design/adapter-genericization/03a-panel-renderer-spec.md]
-  Gen --> Gen03b[03b Panel UI 迁移与删除|/design/adapter-genericization/03b-panel-migration.md]
-  Gen --> Gen05[05 跨文档对账表|/design/adapter-genericization/05-reconciliation.md]
-  Gen --> Gen06[06 执行进度台账|/design/adapter-genericization/06-execution-progress.md]
-  Gen --> GenEv00[证据 · 冻结接口|/design/adapter-genericization/evidence/00-frozen-interfaces.md]
-  GenEv00 --> GenEv01[证据 · 01 Core/协议|/design/adapter-genericization/evidence/01-evidence-core.md]
-  GenEv00 --> GenEv02[证据 · 02 Panel 通道|/design/adapter-genericization/evidence/02-evidence-panel-channel.md]
-  GenEv00 --> GenEv03[证据 · 03 Panel UI|/design/adapter-genericization/evidence/03-evidence-panel-ui.md]
-  GenEv00 --> GenEv04[证据 · 04 仓库竞争|/design/adapter-genericization/evidence/04-repo-contention-note.md]
   Panel --> Desk[桌面端布局|/panel/panel-desktop-layout.md]
   Desk --> DeskOv[桌面端模态与覆盖层|/panel/panel-desktop-overlays.md]
   Panel --> Mobile[移动端布局|/panel/panel-mobile-layout.md]
@@ -179,18 +141,17 @@ graph LR
 
 ## 目录分层
 
-物理目录将**长期参考类**与**设计过程类**分开：
+物理目录按主题分层：
 
 - `overview/` 入口与骨架；`core/` 内核与运行时子系统；`plugins/` 插件体系与各插件；`federation/` 联邦；`protocol/` 线协议
-- `panel/` 前端及视图契约；`ops/` 部署运维；`dev/` 开发规范；`design/` 计划、提案与设计记录（已实施的设计记录亦在此，正文已标注状态）
+- `panel/` 前端及视图契约；`ops/` 部署运维；`dev/` 开发规范
 - 根目录只保留 `index.md`（入口）与 `documentation-guide.md`（写作规范）
-- 画布参数 `group` 暂保留原分组（总览/框架/插件/前端/工程/规划），与目录对应关系见 [文档规范](./documentation-guide.md)
+- 画布参数 `group` 暂保留原分组（总览/框架/插件/前端/工程），与目录对应关系见 [文档规范](./documentation-guide.md)
 
 ### 文档约定（速览）
 
 - **模块文档**：**当前实现**的权威描述，与代码同步更新
 - **开发文档**（dev-*）：面向开发者的速查、规范与测试策略
-- **设计文档**（design/）：路线图、提案与设计记录，正文首段标注状态；已实施记录不删，供追溯
 - **过时内容**：不删除事实，以现状句或状态标注消化
 
 > 原架构决策记录（ADR 0001-0018）已并入对应模块文档；历史演进由 git 提交记录承担，不在文档正文设立变更日志。

@@ -179,7 +179,6 @@ cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 | [ops/ops-deploy.md](document/ops/ops-deploy.md) | 一键安装、systemd、受控自更新、回滚 |
 | [dev/dev-guide.md](document/dev/dev-guide.md) | 开发指南：仓库结构、关键抽象、编码约定、门禁 |
 | [dev/dev-testing.md](document/dev/dev-testing.md) | 测试策略 |
-| [design/index.md](document/design/index.md) | 设计记录索引（计划 / 提案 / 实施记录） |
 
 **仓库结构**：`source/` 按层分目录（`defs → context / session / loop / tool / shell →
 protocol / federation → plugin → backend → core`），逐 crate 职责见

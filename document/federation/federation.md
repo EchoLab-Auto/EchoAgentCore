@@ -177,7 +177,7 @@ allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspac
 绑定非回环（`echo-agent-core token --rotate` 补救）；管理令牌与任一
 peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲突令牌。
 合并监听挂**管理面插件生命周期**（禁用管理面 = 联邦入站同停，出站连出
-不受影响）。设计全案见 [联邦·管理端口合并（设计记录）](../design/federation-port-merge.md)。
+不受影响）。
 
 **Panel 管理**（设置·Core 连接页·联邦区块）：`SaveFederationPeer` /
 `DeleteFederationPeer` / `RequestFederationStatus` /
