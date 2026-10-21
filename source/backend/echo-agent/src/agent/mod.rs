@@ -222,22 +222,6 @@ impl GlobalPolicy {
 
 // ── 联邦命令处理器（federation Phase 4）──
 //
-// `SaveFederationPeer` 等命令的处理需要组合根持有的 Federation 句柄与
-// ConfigStore——不在 Agent 能力面内。组合根装配期把它放进
-// [`crate::federation::FederationPorts::command_handler`]（P3 终态：参数
-// 下发，不再是 kernel cell）；未注入时命令明确报错（联邦关闭）。签名用
-// boxed future：handler 由组合根闭包提供，捕获其句柄。
-/// 联邦命令处理器签名：接受 Agent 引用做同步分发，返回 `'static`
-/// future（实现侧如需跨 await 使用 Agent 能力，应提取所需句柄——
-/// emit 直接经引用同步调用即可，handler 本身可以就是同步实现
-/// 包一层 ready future）。
-pub type FederationCommandHandler = std::sync::Arc<
-    dyn Fn(&Agent, echo_protocol::BackendCommand) -> FederationHandlerFuture + Send + Sync,
->;
-
-pub type FederationHandlerFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
-
 /// 单步推理落盘上限（字符）。超出截断并标注——推理正文只在面板里读，
 /// 而事件日志是**整份 JSON、30 秒一次整体重写**：不设上限时少数几步超长
 /// 推理就能把日志撑到几十 MB（推理体积通常是正文的数倍）。

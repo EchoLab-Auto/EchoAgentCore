@@ -5,13 +5,22 @@
 //! 六个出口 + 一个共享聚合器。它们**天然同源同寿命**（同一次联邦装配产生），
 //! 所以是一个值而不是六个参数；`Clone` 廉价、无全局槽位。
 //!
-//! ## 为什么 `command_handler` 不再引用 `Agent`
+//! ## 为什么出口是 `FederationAdminHost` 而不是一个命令回调
 //!
-//! 搬进独立 crate 时唯一的宿主依赖是这个类型：`Fn(&Agent, BackendCommand)`。
-//! 但它的实现（组合根的 `handle_federation_command`）真正用到的只有
-//! **事件出口**（`emit`）——`Agent` 是多余的一层。改成
-//! `Fn(BackendCommand) -> future`，由构造方在装配期捕获出口，于是本 crate
-//! 对宿主**零依赖**（`scripts/deps-policy.txt` 上有门禁）。
+//! 搬进独立 crate 时唯一的宿主依赖曾是 `Fn(&Agent, BackendCommand)`；后来
+//! 收成 `Fn(BackendCommand) -> future`（去 `Agent` 化）。但那个形状仍然把
+//! **整条命令的处理**留在组合根——插件只声明"我处理这几条"，实现却在宿主。
+//!
+//! 2026-11 S11 改成 [`crate::admin::FederationAdminHost`]：一个只含**原子
+//! 状态迁移**的 trait（落 peer / 删 peer / 登记邀请 / 迁移会话 / 取状态）。
+//! 规则（token 继承与冲突、URL 形状、邀请地址推导、失败文案）随之搬进插件
+//! 的 `admin.rs`，是纯函数、可单测。于是：
+//!
+//! | 归插件 | 归宿主 |
+//! |---|---|
+//! | 判什么、按什么顺序判、失败说什么 | 真的改内存与磁盘 |
+//!
+//! 本 crate 对宿主仍**零依赖**（`scripts/deps-policy.txt` 上有门禁）。
 //!
 //! 顺带修掉一个隐性耦合：此前每个 persona 都会把"自己的 emit"塞进同一个
 //! 进程级 ports，谁的装配最后跑谁生效。现在出口在装配期固定（进程级汇聚点），
@@ -36,6 +45,10 @@ use crate::aggregator;
 pub use echo_federation::SubagentStatus;
 
 /// 联邦管理命令的异步返回（组合根的实现要 await 网络 / 磁盘）。
+///
+/// 保留别名是为了 `ports` 的既有读者；处理链本身已迁到
+/// [`crate::admin::FederationAdminHost`]（每个动作一个方法，不再是一条
+/// 收整条命令的大回调）。
 pub type FederationCommandFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
 
@@ -43,8 +56,16 @@ pub type FederationCommandFuture =
 ///
 /// 装配期由组合根构造（它持有 `Federation` 句柄、`ConfigStore` 与事件出口），
 /// 插件命令域只负责"这条命令归我"的注册关系。
+/// v0.11 之前的管理面回调形状（一条命令一个回调 → 整条处理在宿主）。
+///
+/// **已废弃**：新代码用 [`crate::admin::FederationAdminHost`]。保留类型别名
+/// 只是为了让下游能平滑迁移（`echo-agent` 已不再使用它）。
 pub type FederationCommandHandler =
     Arc<dyn Fn(echo_protocol::BackendCommand) -> FederationCommandFuture + Send + Sync>;
+
+/// 联邦管理面的状态迁移出口（`Arc` 包装，装配期放进
+/// [`FederationPorts::admin`]）。
+pub type FederationAdmin = Arc<dyn crate::admin::FederationAdminHost>;
 
 /// 远程 subagent 观测出口：`(peer, call_id, task, timeout, status, result)`。
 pub type RemoteSubagentNotifier = std::sync::Arc<
@@ -91,13 +112,15 @@ pub struct FederationPorts {
     /// 跨机子代理结果聚合器（登记 / 销账 / 产出摘要）。进程内一份：
     /// 大脑侧登记与组合根联邦泵销账必须看同一张分组表。
     pub aggregator: std::sync::Arc<aggregator::RemoteSubagentAggregator>,
-    /// 联邦管理命令处理器（`SaveFederationPeer` / 邀请 / 会话迁移 /
-    /// 自更新等）：需要 `Federation` 句柄与 ConfigStore，只能在组合根里
-    /// 实现。None = 联邦未接线，命令回可读错误。
+    /// 联邦管理面的**状态迁移**出口（2026-11 S11）。
     ///
-    /// 类型**不引用 `Agent`**：实现只需要事件出口，装配期捕获即可（见模块
-    /// 文档"为什么 `command_handler` 不再引用 `Agent`"）。
-    pub command_handler: Option<FederationCommandHandler>,
+    /// 只含原子动作（落 peer / 删 peer / 登记邀请 / 迁移会话 / 取状态），
+    /// 规则判定在 [`crate::admin`] 的纯函数里。None = 联邦未接线，命令回
+    /// 可读错误（文案由插件给出，不是宿主）。
+    ///
+    /// 类型**不引用 `Agent`**，也不引用组合根的任何类型：本 crate 对宿主
+    /// 零依赖（见模块文档）。
+    pub admin: Option<FederationAdmin>,
 }
 
 impl Default for FederationPorts {
@@ -108,7 +131,7 @@ impl Default for FederationPorts {
             notifier: None,
             deliver: None,
             aggregator: aggregator::RemoteSubagentAggregator::new(),
-            command_handler: None,
+            admin: None,
         }
     }
 }
@@ -120,7 +143,7 @@ impl std::fmt::Debug for FederationPorts {
             .field("querier", &self.querier.is_some())
             .field("notifier", &self.notifier.is_some())
             .field("deliver", &self.deliver.is_some())
-            .field("command_handler", &self.command_handler.is_some())
+            .field("admin", &self.admin.is_some())
             .finish()
     }
 }
@@ -137,7 +160,7 @@ impl FederationPorts {
             || self.querier.is_some()
             || self.notifier.is_some()
             || self.deliver.is_some()
-            || self.command_handler.is_some()
+            || self.admin.is_some()
     }
 }
 
@@ -213,7 +236,7 @@ mod tests {
         assert!(ports.querier.is_none());
         assert!(ports.notifier.is_none());
         assert!(ports.deliver.is_none());
-        assert!(ports.command_handler.is_none());
+        assert!(ports.admin.is_none());
         // 未接线：受理（Running）与终态都不应 panic。
         notify_remote_subagent(
             &ports,

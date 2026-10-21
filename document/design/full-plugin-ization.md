@@ -486,6 +486,78 @@ loop 声明依赖它 / 插件侧别名指向定义层 / 源码里不再出现那
   要按人格切这些命令得改协议 + Panel。
 - **人格作用域里的插件仍然只有 5 个**：其余 5 个是进程级单例，本来就该一份。
 
+### S11：联邦命令域进插件 ——**已完成 2026-11（第①②步）**
+
+S10 之后联邦还剩一处"声明在插件、实现在宿主"：`echo-plugin-federation`
+声明处理 5 条命令，而真正的处理在 `core/federation_rt.rs`
+（`handle_federation_command`，约 300 行）。于是**归属是假的**——读插件读得出
+"我管这几条"，读宿主才看得到"怎么管"。
+
+#### 关键动作不是搬代码，是切规则与状态
+
+| 内容 | 搬到哪 | 判据 |
+|---|---|---|
+| "token 不能为空" / "不能与管理面令牌相同" / "同一 token 只能属于一个 peer" / "URL 必须 `ws://host:port`" | 插件 `admin.rs`（**纯函数**） | 把 peer 表换成数据库也照样成立 |
+| "邀请串 = listen + 新 token" / "未配对占位 1 小时后清扫" | 插件 `admin.rs` | 邀请语义属于联邦，不属于 Core |
+| `invite_host` / `advertise_host`（地址推导） | 插件 `admin.rs`（**纯函数**，无依赖） | 纯计算 |
+| `Federation::add_peer` / 配置写回 / `drop_link` / 反查表清理 / `router.drop_peer` | 宿主 `core/federation_admin_host.rs`（`impl FederationAdminHost`） | 真的改内存与磁盘 |
+
+结果：**规则可单测（9 条纯函数测试），宿主实现短到一眼读完**。这与
+`echo-plugin-provider-llm::admin`（`PoolState` 进 → `PoolEffect` 出）是同一个
+形状——凡是"用户点了面板一个按钮"的命令都长这样。
+
+#### 出口类型的变化
+
+```text
+S3:  Option<Arc<dyn Fn(&Agent, BackendCommand) -> future>>   ← 整条处理在宿主
+S3+: Option<Arc<dyn Fn(BackendCommand) -> future>>           ← 去掉 Agent
+S11: Option<Arc<dyn FederationAdminHost>>                    ← 每个原子动作一个方法
+```
+
+`FederationAdminHost` 只有一个实现者（组合根），9 个方法。
+
+#### 数字
+
+```text
+core/federation_rt.rs         1801 → 1371 行（-430，含迁走的测试）
+core/federation_admin_host.rs   +257（新增，impl 一个 trait）
+plugin/admin.rs                 +477（规则 + 命令域 + 9 条纯函数测试）
+宿主里联邦命令的 match 臂        300 → 0
+```
+
+#### 回归守卫
+
+`plugin_dependency_direction.rs` 新增了一条**源码扫描**断言：组合根里不得出现
+`BackendCommand::<SaveFederationPeer\|DeleteFederationPeer\|RequestFederationStatus\|RequestFederationInvite\|MigrateSession>`
+的匹配臂，且插件必须真的认得这 5 条。双向：既防"实现回流"，也防"只删不搬"
+（命令没人处理 = 面板点了没反应）。
+
+这类漂移只有源码能抓——两条路径都编译通过、测试也全绿，只是实现长在错的
+一边。
+
+#### 真机验证（6 条链路）
+
+```text
+① RequestFederationInvite   → echofed://127.0.0.1:39911?name=fedtest#db25b460…
+② SaveFederationPeer 缺 token → 「联邦 peer token 不能为空」        （插件判）
+③ SaveFederationPeer 坏 URL   → 「必须以 ws:// 或 wss:// 开头」      （插件判）
+④ SaveFederationPeer 合法     → FederationStatus 含新 peer          （宿主落状态）
+⑤ 同 token 另一 peer          → 「已被 peer「peer-x」使用」          （插件判）
+⑥ DeleteFederationPeer        → peers 列表少一项                    （宿主删）
+   配置落盘：[federation.peers.saved-peer] token/url/allow_tools 全在
+```
+
+#### 还没做的第③步
+
+`federation_router_pump`（LinkEvent 消费循环，约 400 行）仍在组合根。它要
+"全部 persona"视角（链路 Up → 给每个 persona 注册代理工具），而 S10 的人格
+作用域已经提供了新解法——让 `kind = "federation"` 也进人格层，每人格自己装
+代理工具，泵就不再需要遍历 supervisor。
+
+**没做**的理由：它是唯一跨机子系统，内含两处事故驱动逻辑（邀请配对提升、
+地址漂移自愈，文档各有 2026-10 报障记录）；搬错的代价是两台机器互相连不上，
+而收益只是"形式上更完整"。等有真实的"多节点拓扑变化"需求再做。
+
 ## 不搬清单（每条都试过，附理由）
 
 诚实记录"没做"比做完的部分更重要——否则下一个人会把同样的时间再花一遍。

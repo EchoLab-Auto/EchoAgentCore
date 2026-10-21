@@ -26,9 +26,10 @@
 //! 于是"联邦"成为一个可独立禁用、可独立替换的能力：禁用后内核照常启动，
 //! 远程工具报「联邦未接线」、远程目录降级为不可采集（显式降级，不 panic）。
 
+pub mod admin;
 pub mod aggregator;
-pub mod host_keys;
 pub mod commands;
+pub mod host_keys;
 pub mod ports;
 pub mod remote_tool;
 pub mod router;
@@ -38,6 +39,8 @@ pub use remote_tool::{
     proxy_schema, remote_tool_name, remote_tool_prefix, sanitize_peer_component, RemoteTool,
 };
 pub use router::{remote_tool_candidates, ExecutorPolicy, InvokeRouter, PendingInvoke};
+pub use admin::{Emit as FederationEmit, FederationAdminHost};
+pub use ports::FederationAdmin;
 pub use workspace_query::{workspace_query, FederationWorkspaceQuery, WorkspaceQueryHandle};
 
 pub use commands::{FederationCommandBridge, COMMANDS as FEDERATION_COMMANDS};

@@ -203,3 +203,129 @@ fn policy_shape_matches_the_layering_contract() {
         }
     }
 }
+
+// ── 命令域实现的归属（S11）───────────────────────────────────────────────
+
+/// 某条命令的**实现**不得留在组合根（否则"命令域归插件"只是声明）。
+///
+/// 背景：`echo-plugin-federation::commands` 一直声明处理那 5 条命令，但
+/// 真正的处理在 `core/federation_rt.rs::handle_federation_command`（300 行）。
+/// 于是"哪条命令归谁"读插件读得出来、读宿主读不出来——归属是假的。
+///
+/// 这类漂移只有源码能抓：两条路径都编译通过、测试也全绿，只是实现长在
+/// 错的一边。所以直接读源码断言：**组合根里不得出现 `BackendCommand::<名>`
+/// 的模式匹配臂**（模式匹配是"这里处理它"的唯一形状；注释不算）。
+#[test]
+fn plugin_command_implementations_do_not_live_in_the_composition_root() {
+    let root = repo_root().join("source");
+
+    // 扫描全部源码，收集每个 crate 目录里出现的 `BackendCommand::<X>` 匹配臂。
+    let mut owners: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    walk_rs(&root, &mut |path, text| {
+        let Some((crate_name, relative)) = crate_of(&root, path) else {
+            return;
+        };
+        for (index, line) in text.lines().enumerate() {
+            let code = line.trim_start();
+            // 注释与文档里的例子不算实现。
+            if code.starts_with("//") || code.starts_with('*') {
+                continue;
+            }
+            if let Some(pos) = line.find("BackendCommand::") {
+                let rest = &line[pos + "BackendCommand::".len()..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if name.is_empty() {
+                    continue;
+                }
+                owners
+                    .entry(crate_name.clone())
+                    .or_default()
+                    .insert(format!("{name}@{}:{relative}", index + 1));
+            }
+        }
+    });
+    // 这 5 条由 `echo-plugin-federation` 处理；组合根只允许**分发**（
+    // `apply_command` 里的兜底 match 不再提及它们，因为插件已认领）。
+    let federation_commands = [
+        "SaveFederationPeer",
+        "DeleteFederationPeer",
+        "RequestFederationStatus",
+        "RequestFederationInvite",
+        "MigrateSession",
+    ];
+    let core = owners.get("core").cloned().unwrap_or_default();
+    let leaked: Vec<&String> = core
+        .iter()
+        .filter(|entry| {
+            let name = entry.split('@').next().unwrap_or(entry);
+            federation_commands.contains(&name)
+        })
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "这些联邦命令的实现仍在组合根里（应搬进 echo-plugin-federation::admin，\
+         宿主只实现 FederationAdminHost 的原子动作）：{leaked:#?}"
+    );
+
+    // 反方向：插件必须**真的**认得它们（只删不搬 = 命令没人处理）。
+    let plugin = owners
+        .get("echo-plugin-federation")
+        .cloned()
+        .unwrap_or_default();
+    let owned: BTreeSet<&str> = plugin
+        .iter()
+        .map(|entry| entry.split('@').next().unwrap_or(entry))
+        .collect();
+    for command in federation_commands {
+        assert!(
+            owned.contains(command),
+            "插件没有处理 {command}（它只出现在扫描结果的这些地方：{owned:?}）——\
+             命令会变成无人认领的死路"
+        );
+    }
+
+    // 扫描器自身的守卫：它至少要看得到「别处确实有命令匹配」——否则上面的
+    // 断言可能只是因为"一条都没扫到"而恒真。
+    let total: usize = owners.values().map(BTreeSet::len).sum();
+    assert!(
+        total > federation_commands.len(),
+        "扫描器失效（只找到 {total} 处 BackendCommand:: 匹配；路径规则改过？）"
+    );
+}
+
+/// 路径 → `(crate 目录名, 相对路径)`；`target/` 与测试目录下的数据跳过。
+fn crate_of(root: &Path, path: &Path) -> Option<(String, String)> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut parts = relative.components();
+    // source/<组>/<crate>/...
+    let _group = parts.next()?;
+    let crate_name = parts.next()?.as_os_str().to_string_lossy().to_string();
+    if crate_name == "plugin" {
+        // `source/plugin/<crate>/…`：插件 crate 多一层。
+        let inner = parts.next()?.as_os_str().to_string_lossy().to_string();
+        return Some((inner, relative.display().to_string()));
+    }
+    Some((crate_name, relative.display().to_string()))
+}
+
+fn walk_rs(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().and_then(|n| n.to_str()) == Some("target") {
+                continue;
+            }
+            walk_rs(&path, f);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                f(&path, &text);
+            }
+        }
+    }
+}

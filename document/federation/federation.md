@@ -230,6 +230,14 @@ peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲�
   `<peer>__<tool>` 的 peer 段经 LLM function-name 清洗（非
   `[a-zA-Z0-9_-]` 字符 → `_`），模型/标注回传的清洗形会被**回查解析**为
   原始配置名（`node://` 分流、子代理通知、只读查询三个出口）
+- **管理命令域在插件里（2026-11 S11）**：`SaveFederationPeer` /
+  `DeleteFederationPeer` / `RequestFederationStatus` / `RequestFederationInvite` /
+  `MigrateSession` 的**规则与分发**在 `echo-plugin-federation::admin`（纯函数
+  可单测：token 继承 / token 与管理面令牌冲突 / token 跨 peer 唯一 / URL 形状 /
+  邀请地址推导）；**状态迁移**由组合根实现 `FederationAdminHost`（落 peer、
+  配置原子写回、断链清理、邀请占位登记、会话迁移）。此前整段处理在
+  `core/federation_rt.rs`（约 300 行），插件只声明归属不留实现——那样"归属"
+  只有一半是真的
 - **`caps.tools` 的真源（2026-11 S8）**：**工具自己**声明
   `Tool::remote_capable()`（默认 `false`），组合根在 supervisor 就绪后经
   `Federation::set_tool_reporter` 注入注册表查询，**握手时现取**（插件启停

@@ -18,6 +18,7 @@ mod builtin_plugins;
 mod host_services;
 mod agent_supervisor;
 mod config;
+mod federation_admin_host;
 mod federation_import;
 mod federation_rt;
 mod instance_deploy;
@@ -368,8 +369,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 主动重连（配对无方向性，2026-10）。
         // 合并时监听地址即管理地址（advertise 推导与邀请串同源）。
         let listen_for_advertise = fed_listen_effective.as_deref().unwrap_or("");
-        let local_advertise = invite_host(listen_for_advertise, &cfg.federation.advertise)
-            .map(|host_port| format!("ws://{host_port}"));
+        let local_advertise =
+            echo_plugin_federation::admin::invite_host(listen_for_advertise, &cfg.federation.advertise)
+                .map(|host_port| format!("ws://{host_port}"));
         let fed = echo_federation::Federation::new(
             node_doc.node_id.clone(),
             cfg.federation
@@ -463,26 +465,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 引用 `Agent`（全插件化 S3），所以不必等某个 persona 出现再取它的
         // emit——此前每个 persona 都会往同一个进程级 ports 里塞"自己的 emit"，
         // 谁的装配最后跑谁生效。
-        ports.command_handler = Some(std::sync::Arc::new({
-            let rt_handler = Arc::clone(&rt);
-            let emit_slot = federation_emit_slot.clone();
-            move |cmd| {
-                let rt = rt_handler.clone();
-                let emit_slot = emit_slot.clone();
-                Box::pin(async move {
-                    // 槽位在 bridge 建好后必然已填（联邦泵启动晚于它）；万一
-                    // 未填就明确记一条 error —— 静默丢弃会让面板永远转圈。
-                    match emit_slot.get() {
-                        Some(emit) => handle_federation_command(emit.clone(), cmd, rt).await,
-                        None => tracing::error!(
-                            target: "federation",
-                            command = cmd.kind_name(),
-                            "event sink not wired yet; federation command dropped"
-                        ),
-                    }
-                })
-            }
-        }));
+        // 管理面的**状态迁移**出口（2026-11 S11）：命令的判定与文案已经搬进
+        // `echo-plugin-federation::admin`，这里只提供"改内存与磁盘"的原子动作。
+        // 事件出口由插件侧从服务表取（进程级汇聚点），所以这里不需要再传 emit。
+        ports.admin = Some(std::sync::Arc::new(
+            crate::federation_admin_host::RuntimeAdminHost::new(Arc::clone(&rt)),
+        ));
         ports.deliver = Some(std::sync::Arc::new({
             let slot = deliver_slot.clone();
             move |summary| match slot.get() {
