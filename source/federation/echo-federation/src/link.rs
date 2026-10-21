@@ -37,6 +37,8 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const DEAD_AFTER: Duration = Duration::from_secs(90);
 /// 握手超时。
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+/// 入站观测主机池上限（只留最近若干个不同的 `Host`，去重后仍封顶）。
+const OBSERVED_HOST_CAP: usize = 8;
 /// 出站帧通道容量（慢对端背压上限；满则断链）。
 const OUTBOUND_CAP: usize = 256;
 /// dial 停车轮询间隔（已有活跃链路时等待其消失的检查周期）。
@@ -175,6 +177,17 @@ pub struct Federation {
     /// 异步 `peers` 表在升级回调里不可用。`new`/`add_peer`/`remove_peer`
     /// 同步维护（只含非空令牌；比较走常时）。
     synced_tokens: std::sync::RwLock<Vec<String>>,
+    /// 入站连接观测到的「客户端访问本机用的主机名」池（`Host` 头；2026-11）：
+    /// 邀请串与 Hello.advertise 的**首选**来源——手工 `[federation] advertise`
+    /// 常写成只有本机视角成立的地址（NAT 后的内网 IP），而对端照着拨必然
+    /// 超时；真正可达的地址其实就写在对端自己的请求里（见
+    /// [`crate::invite`] 模块文档）。
+    ///
+    /// 为什么是 `Arc<std::sync::RwLock<..>>`：WS 升级回调是**同步**闭包且
+    /// 要求 `'static`（与 `synced_tokens` 同理），所以既不能用 tokio 锁，
+    /// 也不能借 `&self`——只能把句柄 clone 进闭包。临界区只有几微秒（比较
+    /// 一个长度 ≤ 8 的 Vec），不会阻塞运行时。
+    observed_hosts: Arc<std::sync::RwLock<Vec<String>>>,
     /// node_id → 链路句柄（活跃链路）。
     links: Arc<RwLock<HashMap<String, LinkHandle>>>,
     /// 链路代际计数（见 LinkHandle::generation）。
@@ -237,6 +250,7 @@ impl Federation {
             local_advertise: advertise,
             peers: RwLock::new(peers),
             synced_tokens,
+            observed_hosts: Arc::new(std::sync::RwLock::new(Vec::new())),
             links: Arc::new(RwLock::new(HashMap::new())),
             link_generation: std::sync::atomic::AtomicU64::new(0),
             dial_cancels: RwLock::new(std::collections::HashMap::new()),
@@ -288,7 +302,9 @@ impl Federation {
             protocol_version: PROTOCOL_VERSION,
             version: self.version.clone(),
             caps,
-            advertise: self.local_advertise.clone(),
+            // 观测地址优先（2026-11）：手工 advertise 可能只在本机视角成立
+            // （云机 NAT 后的内网 IP），对端据它回拨必然超时。
+            advertise: self.effective_advertise_sync(),
         }
     }
 
@@ -432,6 +448,41 @@ impl Federation {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .any(|known| constant_time_eq(known, token))
+    }
+
+    /// 记录一次入站连接观测到的 `Host`（同步：WS 升级回调专用）。
+    ///
+    /// 只记「可用于对外邀请」的主机名（回环/通配直接丢弃，见
+    /// [`crate::invite::note_observed`]）；池内去重且最近优先。
+    pub fn note_observed_host_sync(&self, host: &str) {
+        let cap = OBSERVED_HOST_CAP;
+        let mut hosts = self
+            .observed_hosts
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::invite::note_observed(&mut hosts, host, cap);
+    }
+
+    /// 当前最优的观测主机名（公网优先，同级取最近）；`None` = 还没观测到
+    /// 可用地址（此时调用方回退 `[federation] advertise`）。
+    pub fn observed_host_sync(&self) -> Option<String> {
+        let hosts = self
+            .observed_hosts
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::invite::pick_observed_host(&hosts)
+    }
+
+    /// Hello 里宣告的本机可拨地址：观测地址优先（替换主机部分、端口不变），
+    /// 未观测到则用构造期推导值（2026-11：对端据此回拨，地址必须真可达）。
+    fn effective_advertise_sync(&self) -> Option<String> {
+        let advertise = self.local_advertise.as_deref()?;
+        let Some(observed) = self.observed_host_sync() else {
+            return self.local_advertise.clone();
+        };
+        crate::invite::replace_host(advertise.trim_start_matches("ws://"), &observed)
+            .map(|host_port| format!("ws://{host_port}"))
+            .or_else(|| self.local_advertise.clone())
     }
 
     /// 在**已完成**认证与 WS 升级的连接上跑联邦链路（端口合并模式：
@@ -731,7 +782,8 @@ impl Federation {
             .iter()
             .map(|p| p.token.clone())
             .collect();
-        let (ws, presented_token) = accept_with_auth(stream, &tokens).await?;
+        let (ws, presented_token) =
+            accept_with_auth(stream, &tokens, self.observed_hosts.clone()).await?;
         self.run_link(ws, None, presented_token).await
     }
 
@@ -1034,10 +1086,10 @@ fn unauthorized_response() -> tokio_tungstenite::tungstenite::handshake::server:
 
 /// 连入侧认证 + WS upgrade。回调签名由 tungstenite 固定（Err 侧
 /// `ErrorResponse` 体积大，与 `core/src/management.rs` 同款容忍）。
-#[allow(clippy::result_large_err)]
 async fn accept_with_auth(
     stream: TcpStream,
     tokens: &[String],
+    observed_hosts: Arc<std::sync::RwLock<Vec<String>>>,
 ) -> Result<(tokio_tungstenite::WebSocketStream<TcpStream>, String), FederationError> {
     let tokens = tokens.to_vec();
     let presented = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -1045,6 +1097,18 @@ async fn accept_with_auth(
     let ws = tokio_tungstenite::accept_hdr_async(
         stream,
         move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            // 观测地址（2026-11）：对端拨号用的 `Host` 就是「它眼中的我」，
+            // 比本机推导的 advertise 更接近真相（NAT/端口映射下尤其如此）。
+            if let Some(host) = request.headers().get("host").and_then(|v| v.to_str().ok()) {
+                let cap = OBSERVED_HOST_CAP;
+                crate::invite::note_observed(
+                    &mut observed_hosts
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    host,
+                    cap,
+                );
+            }
             let token = request
                 .headers()
                 .get("authorization")
@@ -1173,6 +1237,47 @@ mod tests {
             tx,
             shutdown,
         )
+    }
+
+    /// 观测地址（2026-11 云机配对事故）：入站连接的 `Host` 决定 Hello 宣告
+    /// 的地址——手工 advertise 常停在 NAT 后的内网 IP，对端照着拨必然超时。
+    #[tokio::test]
+    async fn observed_host_overrides_advertised_address() {
+        let (tx, _rx) = mpsc::channel(8);
+        let (shutdown, _) = watch::channel(false);
+        let fed = Federation::new(
+            "node-test".into(),
+            Some("test".into()),
+            NodeCaps::default(),
+            Vec::new(),
+            Some("ws://10.1.0.8:3132".into()), // 云机自行推导出的内网地址
+            tx,
+            shutdown,
+        );
+        assert_eq!(fed.observed_host_sync(), None);
+        assert_eq!(
+            fed.hello().advertise.as_deref(),
+            Some("ws://10.1.0.8:3132"),
+            "未观测时回退构造期推导值"
+        );
+
+        fed.note_observed_host_sync("114.132.241.46:3132");
+        assert_eq!(fed.observed_host_sync().as_deref(), Some("114.132.241.46"));
+        assert_eq!(
+            fed.hello().advertise.as_deref(),
+            Some("ws://114.132.241.46:3132"),
+            "观测到的公网地址替换主机部分（端口不变）"
+        );
+
+        // 回环/通配观测不覆盖有效值（否则一次本机访问就会毁掉邀请）。
+        fed.note_observed_host_sync("127.0.0.1:3132");
+        fed.note_observed_host_sync("localhost:3132");
+        assert_eq!(fed.observed_host_sync().as_deref(), Some("114.132.241.46"));
+
+        // 公网优先于私网：内网观测（如另一台 Panel 走 10.10.10.100）不顶掉
+        // 已学到的公网地址，即使它更近。
+        fed.note_observed_host_sync("10.10.10.100:3132");
+        assert_eq!(fed.observed_host_sync().as_deref(), Some("114.132.241.46"));
     }
 
     /// 诊断计数（2026-10 地址漂移事故）：失败累计 → 在线清零；宣告地址

@@ -86,6 +86,9 @@ pub(crate) struct HostWiring {
     pub management_token: String,
     /// 合并模式下承接联邦入站的监听句柄（None = 独立模式）。
     pub merged_federation: Option<Arc<Federation>>,
+    /// 联邦句柄（**不看合并与否**）：管理面用它记录入站连接的 `Host`，
+    /// 邀请串据此宣告「别人实际连我用的地址」（2026-11；None = 联邦关闭）。
+    pub federation_observer: Option<Arc<Federation>>,
 }
 
 /// 把全部宿主能力注册进服务表。返回的 `Disposer` 需要活到进程结束。
@@ -188,6 +191,7 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
             token: wiring.management_token.clone(),
             bridge: wiring.bridge.clone(),
             federation: wiring.merged_federation.clone(),
+            federation_observer: wiring.federation_observer.clone(),
         }) as Arc<dyn ManagementHost>,
     );
     put(
@@ -233,6 +237,8 @@ struct CoreManagementHost {
     token: String,
     bridge: Arc<BackendBridge>,
     federation: Option<Arc<Federation>>,
+    /// 观测出处（独立监听时也需要，见 `HostWiring::federation_observer`）。
+    federation_observer: Option<Arc<Federation>>,
 }
 
 impl ManagementHost for CoreManagementHost {
@@ -247,6 +253,9 @@ impl ManagementHost for CoreManagementHost {
     }
     fn federation(&self) -> Option<Arc<Federation>> {
         self.federation.clone()
+    }
+    fn federation_observer(&self) -> Option<Arc<Federation>> {
+        self.federation_observer.clone()
     }
 }
 

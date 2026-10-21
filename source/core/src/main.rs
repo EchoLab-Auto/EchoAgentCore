@@ -365,9 +365,15 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 主动重连（配对无方向性，2026-10）。
         // 合并时监听地址即管理地址（advertise 推导与邀请串同源）。
         let listen_for_advertise = fed_listen_effective.as_deref().unwrap_or("");
-        let local_advertise =
-            echo_plugin_federation::admin::invite_host(listen_for_advertise, &cfg.federation.advertise)
-                .map(|host_port| format!("ws://{host_port}"));
+        // 启动期还没有任何入站连接（= 没有观测地址），这里先按配置推导；
+        // 真正的对外地址在首个 Panel/对端连入后由 `Federation::hello`
+        // 用观测到的 `Host` 主机名替换（2026-11）。
+        let local_advertise = echo_plugin_federation::admin::invite_host(
+            listen_for_advertise,
+            &cfg.federation.advertise,
+            None,
+        )
+        .map(|host_port| format!("ws://{host_port}"));
         let fed = echo_federation::Federation::new(
             node_doc.node_id.clone(),
             cfg.federation
@@ -1553,6 +1559,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 management_address: cfg.core.management_address.clone(),
                 management_token: cfg.core.management_access_token.clone(),
                 merged_federation: if merged { Some(merge_fed.clone()) } else { None },
+                // 观测出处：合并与否都给——独立监听时 Panel 连的端口正是
+                // 管理端口，邀请串要宣告「它用的那个地址」（2026-11）。
+                federation_observer: Some(merge_fed.clone()),
             },
         );
 

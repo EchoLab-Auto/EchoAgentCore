@@ -156,7 +156,21 @@ pub async fn serve_with_token(
     bridge: Arc<BackendBridge>,
     access_token: String,
 ) -> anyhow::Result<()> {
-    serve_internal(addr, bridge, access_token, None).await
+    serve_internal(addr, bridge, access_token, None, None).await
+}
+
+/// 独立监听 + 联邦观测出处（2026-11）：监听与管理面行为同
+/// [`serve_with_token`]，但升级回调会把入站连接的 `Host` 记进
+/// [`echo_federation::Federation::note_observed_host_sync`]——邀请串据此
+/// 选「别人连我时实际用的地址」（独立监听时联邦不经本端口，所以这里只
+/// 借用它的观测表，不分流）。
+pub async fn serve_with_token_observing(
+    addr: &str,
+    bridge: Arc<BackendBridge>,
+    access_token: String,
+    observer: Option<Arc<echo_federation::Federation>>,
+) -> anyhow::Result<()> {
+    serve_internal(addr, bridge, access_token, None, observer).await
 }
 
 /// 端口合并监听端（`[core].management_address` == `[federation].listen`，
@@ -168,7 +182,7 @@ pub async fn serve_with_federation(
     access_token: String,
     federation: Arc<echo_federation::Federation>,
 ) -> anyhow::Result<()> {
-    serve_internal(addr, bridge, access_token, Some(federation)).await
+    serve_internal(addr, bridge, access_token, Some(federation.clone()), Some(federation)).await
 }
 
 async fn serve_internal(
@@ -176,6 +190,7 @@ async fn serve_internal(
     bridge: Arc<BackendBridge>,
     access_token: String,
     federation: Option<Arc<echo_federation::Federation>>,
+    observer: Option<Arc<echo_federation::Federation>>,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -197,7 +212,7 @@ async fn serve_internal(
     } else {
         info!("Panel management WS server listening on {addr}");
     }
-    serve_with_listener_and_token(listener, bridge, access_token, federation).await
+    serve_with_listener_and_token(listener, bridge, access_token, federation, observer).await
 }
 
 /// 绑定地址是否为回环（`127.0.0.1`/`localhost`/`::1`）。
@@ -336,7 +351,7 @@ pub(crate) async fn serve_with_listener(
     listener: TcpListener,
     bridge: Arc<BackendBridge>,
 ) -> anyhow::Result<()> {
-    serve_with_listener_and_token(listener, bridge, String::new(), None).await
+    serve_with_listener_and_token(listener, bridge, String::new(), None, None).await
 }
 
 async fn serve_with_listener_and_token(
@@ -344,6 +359,7 @@ async fn serve_with_listener_and_token(
     bridge: Arc<BackendBridge>,
     access_token: String,
     federation: Option<Arc<echo_federation::Federation>>,
+    observer: Option<Arc<echo_federation::Federation>>,
 ) -> anyhow::Result<()> {
     let events = Arc::new(EventBroker::new(bridge.clone()));
     let event_runner = events.clone();
@@ -365,9 +381,10 @@ async fn serve_with_listener_and_token(
         let bridge = bridge.clone();
         let access_token = access_token.clone();
         let federation = federation.clone();
+        let observer = observer.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                handle_connection(stream, events, bridge, &access_token, federation).await
+                handle_connection(stream, events, bridge, &access_token, federation, observer).await
             {
                 warn!(error = %e, "Panel connection error");
             }
@@ -384,11 +401,12 @@ async fn handle_connection(
     bridge: Arc<BackendBridge>,
     access_token: &str,
     federation: Option<Arc<echo_federation::Federation>>,
+    observer: Option<Arc<echo_federation::Federation>>,
 ) -> anyhow::Result<()> {
     match federation {
-        // 独立模式：管理通道（原行为不变）。
+        // 独立模式：管理通道（行为不变；`observer` 仅用于记录入站 Host）。
         None => {
-            let ws = accept_management_ws(stream, access_token).await?;
+            let ws = accept_management_ws(stream, access_token, observer).await?;
             serve_management_ws(ws, events, bridge, false).await
         }
         // 合并模式：升级回调按令牌分类，升级后按角色分派。
@@ -446,13 +464,31 @@ fn classify_token(
 async fn accept_management_ws(
     stream: tokio::net::TcpStream,
     access_token: &str,
+    observer: Option<Arc<echo_federation::Federation>>,
 ) -> anyhow::Result<tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>> {
+    // 独立监听：没有令牌时也要能观测 `Host`（升级回调是唯一的时机——升级
+    // 完成后握手头就没了），所以空/非空令牌两条路径都走带回调的升级。
+    let observe = move |request: &tokio_tungstenite::tungstenite::handshake::server::Request| {
+        if let Some(federation) = observer.as_ref() {
+            if let Some(host) = request.headers().get("host").and_then(|v| v.to_str().ok()) {
+                federation.note_observed_host_sync(host);
+            }
+        }
+    };
     Ok(if access_token.is_empty() {
-        tokio_tungstenite::accept_async(stream).await?
+        tokio_tungstenite::accept_hdr_async(
+            stream,
+            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                observe(request);
+                Ok(response)
+            },
+        )
+        .await?
     } else {
         tokio_tungstenite::accept_hdr_async(
             stream,
-            |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                observe(request);
                 let authorized = request
                     .headers()
                     .get("authorization")
@@ -490,6 +526,11 @@ async fn accept_merged_ws(
     let ws = tokio_tungstenite::accept_hdr_async(
         stream,
         move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            // 观测地址（2026-11）：客户端连本机用的 `Host` 就是「它眼中的
+            // 我」——邀请串优先用它（手工 advertise 常停在过期内网 IP）。
+            if let Some(host) = request.headers().get("host").and_then(|v| v.to_str().ok()) {
+                federation.note_observed_host_sync(host);
+            }
             let presented = request
                 .headers()
                 .get("authorization")
@@ -919,7 +960,7 @@ mod tests {
         let addr = listener.local_addr().unwrap().to_string();
         tokio::spawn(async move {
             let _ =
-                serve_with_listener_and_token(listener, bridge, "secret-token".into(), None).await;
+                serve_with_listener_and_token(listener, bridge, "secret-token".into(), None, None).await;
         });
 
         // 1) 不带令牌：必须收到 HTTP 401（而非 0 字节静默断开）。
@@ -1124,6 +1165,7 @@ mod tests {
                 bridge,
                 "mgmt-tok".into(),
                 Some(fed_for_server),
+                None,
             )
             .await;
         });
@@ -1267,13 +1309,16 @@ pub fn plugin(version: &str) -> std::sync::Arc<dyn echo_plugin::Plugin> {
             let bridge = host.bridge();
             let token = host.token();
             let federation = host.federation();
+            // 观测出处：独立监听时联邦不经过本端口，但**入站 Host 仍要从这里
+            // 学**（Panel 怎么连我，邀请串就宣告哪个地址）。
+            let observer = host.federation_observer();
             let merged = federation.is_some();
             let server = tokio::spawn(async move {
                 let result = match federation {
                     Some(federation) => {
                         serve_with_federation(&addr, bridge, token, federation).await
                     }
-                    None => serve_with_token(&addr, bridge, token).await,
+                    None => serve_with_token_observing(&addr, bridge, token, observer).await,
                 };
                 if let Err(error) = result {
                     // 管理面监听退出 = Panel 通道失效（合并模式下联邦入站一并

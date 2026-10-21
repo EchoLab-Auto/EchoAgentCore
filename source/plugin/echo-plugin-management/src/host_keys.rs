@@ -28,6 +28,14 @@ pub trait ManagementHost: Send + Sync {
     fn bridge(&self) -> Arc<BackendBridge>;
     /// 合并模式下承接联邦入站的句柄（`None` = 独立监听）。
     fn federation(&self) -> Option<Arc<Federation>>;
+
+    /// 联邦句柄（**不看合并与否**）：独立监听时也要把入站连接的 `Host`
+    /// 记进观测表——邀请串优先用它当对外地址（2026-11）。
+    ///
+    /// 默认 `None`：不认识联邦的宿主（测试替身）保持旧行为。
+    fn federation_observer(&self) -> Option<Arc<Federation>> {
+        None
+    }
 }
 
 /// 管理面的宿主接缝。

@@ -976,8 +976,13 @@ pub(crate) async fn learn_peer_dial_address(
         return;
     };
     // 自指防护：对端宣告的竟是本机地址 → 学习只会导致自拨回环。
-    let own = echo_plugin_federation::admin::invite_host(&rt.listen, &rt.advertise)
-        .map(|host_port| format!("ws://{host_port}"));
+    let observed = rt.federation.observed_host_sync();
+    let own = echo_plugin_federation::admin::invite_host(
+        &rt.listen,
+        &rt.advertise,
+        observed.as_deref(),
+    )
+    .map(|host_port| format!("ws://{host_port}"));
     if own.as_deref() == Some(url.as_str()) {
         return;
     }

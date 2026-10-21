@@ -69,6 +69,15 @@ pub trait FederationAdminHost: Send + Sync {
     /// `[federation] advertise`（`""` = 从 listen 推导）。
     fn advertise(&self) -> String;
 
+    /// 入站连接观测到的「对端/面板实际访问本机用的主机名」（`Host` 头；
+    /// 公网优先、同级取最近；`None` = 还没观测到）。
+    ///
+    /// 为什么需要它（2026-10 云机配对事故）：邀请串此前只从 `advertise` /
+    /// `listen` 推导，而手工 `advertise` 极易写成只有本机视角成立的地址
+    /// （腾讯云 VM 的 `10.1.0.8`、本机内网 `10.10.10.100`），对端照着拨
+    /// 必然超时。真正的答案就在对端自己的请求头里，所以邀请优先用它。
+    fn observed_host(&self) -> Option<String>;
+
     /// 人类可读节点名（邀请串里带它，便于对端识别）。
     fn node_name(&self) -> Option<String>;
 
@@ -193,14 +202,28 @@ pub fn validate_peer_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 邀请串对外地址：显式 `advertise` 优先，否则从 `listen` 推导。
+/// 邀请串对外地址：观测到的访问主机优先，其次显式 `advertise`，最后从
+/// `listen` 推导。
 ///
 /// `None` = 不监听或推导不出（此时邀请无意义，必须让人去配
 /// `[federation] listen` / `advertise`）。
-pub fn invite_host(listen: &str, advertise: &str) -> Option<String> {
-    if listen.trim().is_empty() {
+pub fn invite_host(listen: &str, advertise: &str, observed: Option<&str>) -> Option<String> {
+    let listen = listen.trim();
+    if listen.is_empty() {
         return None;
     }
+    // ① 观测地址（2026-11）：端口**一律取联邦监听端口**——观测值里的端口
+    // 属于管理面，独立监听时两者不同（合并时相同，故行为不变）。
+    if let Some(observed) = observed.map(str::trim).filter(|o| !o.is_empty()) {
+        if let Some(host) = echo_federation::invite::host_of(observed) {
+            if echo_federation::invite::host_rank(host) > 0 {
+                if let Some(host_port) = echo_federation::invite::replace_host(listen, host) {
+                    return Some(host_port);
+                }
+            }
+        }
+    }
+    // ② 显式 advertise（端口缺省时沿用 listen 端口）。
     let adv = advertise.trim();
     if !adv.is_empty() {
         let has_port = adv
@@ -217,6 +240,7 @@ pub fn invite_host(listen: &str, advertise: &str) -> Option<String> {
             .unwrap_or("3133");
         return Some(format!("{adv}:{port}"));
     }
+    // ③ 从 listen 推导。
     advertise_host(listen)
 }
 
@@ -367,7 +391,9 @@ async fn save_peer(
 
 /// 生成一次性邀请串：新 token + 占位 peer（只进运行时，不写配置）。
 async fn create_invite(host: &dyn FederationAdminHost) -> Result<String, String> {
-    let Some(host_port) = invite_host(&host.listen(), &host.advertise()) else {
+    let observed = host.observed_host();
+    let Some(host_port) = invite_host(&host.listen(), &host.advertise(), observed.as_deref())
+    else {
         return Err(
             "联邦未监听（listen 为空）或无法推导对外地址；请在配置 [federation] 写 \
              listen / advertise（对端可达地址）"
@@ -454,22 +480,51 @@ mod tests {
     #[test]
     fn invite_host_prefers_explicit_advertise() {
         assert_eq!(
-            invite_host("0.0.0.0:3133", "1.2.3.4:4000").as_deref(),
+            invite_host("0.0.0.0:3133", "1.2.3.4:4000", None).as_deref(),
             Some("1.2.3.4:4000")
         );
         assert_eq!(
-            invite_host("0.0.0.0:3133", "1.2.3.4").as_deref(),
+            invite_host("0.0.0.0:3133", "1.2.3.4", None).as_deref(),
             Some("1.2.3.4:3133"),
             "advertise 只给主机时用 listen 的端口"
         );
-        assert_eq!(invite_host("", "1.2.3.4").as_deref(), None, "不监听则无邀请");
         assert_eq!(
-            invite_host("10.1.2.3:3133", "").as_deref(),
+            invite_host("", "1.2.3.4", None).as_deref(),
+            None,
+            "不监听则无邀请"
+        );
+        assert_eq!(
+            invite_host("10.1.2.3:3133", "", None).as_deref(),
             Some("10.1.2.3:3133"),
             "listen 是具体地址时直接用它"
         );
     }
 
+    /// 2026-11 云机配对事故的回归锚点：观测到的访问主机**优先于**手工
+    /// advertise（后者常停在过期内网地址），且端口一律取联邦监听端口。
+    #[test]
+    fn invite_host_prefers_observed_host_over_advertise() {
+        // 腾讯云实况：advertise 缺省推导出内网 10.1.0.8，Panel 从公网连入。
+        assert_eq!(
+            invite_host("0.0.0.0:3132", "10.1.0.8:3132", Some("114.132.241.46:3132")).as_deref(),
+            Some("114.132.241.46:3132")
+        );
+        // 独立监听：观测值的端口属于管理面，邀请必须用联邦监听端口。
+        assert_eq!(
+            invite_host("0.0.0.0:3133", "10.10.10.100:3133", Some("10.10.10.100:3132")).as_deref(),
+            Some("10.10.10.100:3133")
+        );
+        // 回环观测值对远端无意义 → 忽略它，回退 advertise。
+        assert_eq!(
+            invite_host("0.0.0.0:3133", "1.2.3.4:3133", Some("127.0.0.1:3132")).as_deref(),
+            Some("1.2.3.4:3133")
+        );
+        // 未观测到（None）= 老行为，advertise 仍然生效。
+        assert_eq!(
+            invite_host("0.0.0.0:3133", "1.2.3.4:3133", None).as_deref(),
+            Some("1.2.3.4:3133")
+        );
+    }
     #[test]
     fn placeholder_uses_token_prefix() {
         assert_eq!(invite_placeholder("abcdefghijkl"), "invite-abcdefgh");

@@ -154,6 +154,9 @@ mod tests {
         fn advertise(&self) -> String {
             String::new()
         }
+        fn observed_host(&self) -> Option<String> {
+            None
+        }
         fn node_name(&self) -> Option<String> {
             None
         }
@@ -198,6 +201,9 @@ mod tests {
             }
             fn advertise(&self) -> String {
                 String::new()
+            }
+            fn observed_host(&self) -> Option<String> {
+                None
             }
             fn node_name(&self) -> Option<String> {
                 None
@@ -290,6 +296,9 @@ mod tests {
             }
             fn advertise(&self) -> String {
                 String::new()
+            }
+            fn observed_host(&self) -> Option<String> {
+                None
             }
             fn node_name(&self) -> Option<String> {
                 Some("alpha".into())

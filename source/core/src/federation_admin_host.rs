@@ -62,6 +62,12 @@ impl FederationAdminHost for RuntimeAdminHost {
         self.rt.advertise.clone()
     }
 
+    fn observed_host(&self) -> Option<String> {
+        // 入站连接观测到的「对端/面板访问本机用的主机名」（2026-11）：
+        // 邀请串优先用它——手工 advertise 常停在只有本机视角成立的地址。
+        self.rt.federation.observed_host_sync()
+    }
+
     fn node_name(&self) -> Option<String> {
         self.rt.node_name.clone()
     }
