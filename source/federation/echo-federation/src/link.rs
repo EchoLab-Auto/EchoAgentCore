@@ -456,11 +456,24 @@ impl Federation {
     /// [`crate::invite::note_observed`]）；池内去重且最近优先。
     pub fn note_observed_host_sync(&self, host: &str) {
         let cap = OBSERVED_HOST_CAP;
-        let mut hosts = self
-            .observed_hosts
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        crate::invite::note_observed(&mut hosts, host, cap);
+        let observed = {
+            let mut hosts = self
+                .observed_hosts
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let before = hosts.len();
+            crate::invite::note_observed(&mut hosts, host, cap);
+            hosts.len() != before || hosts.last().is_some_and(|last| last == host)
+        };
+        if observed {
+            // 运维排查面：邀请串/Hello 宣告的地址来自这里（`RUST_LOG=debug`）。
+            tracing::debug!(
+                target: "federation",
+                host = %host.trim(),
+                effective = ?self.observed_host_sync(),
+                "observed inbound access host"
+            );
+        }
     }
 
     /// 当前最优的观测主机名（公网优先，同级取最近）；`None` = 还没观测到
