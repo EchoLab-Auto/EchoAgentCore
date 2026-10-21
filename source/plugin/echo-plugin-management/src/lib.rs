@@ -1183,6 +1183,28 @@ mod tests {
             }
             request
         };
+        // 同一个请求，但把 `Host` 换成"客户端眼中本机的地址"（公网/NAT 视角）。
+        let client_request_from = |token: Option<&str>, host: &str| {
+            let mut request = client_request(token);
+            request
+                .headers_mut()
+                .insert("host", host.parse().unwrap());
+            request
+        };
+
+        // ⓪ 观测地址（2026-11）：合并端握手回调必须把客户端用的 `Host` 记进
+        // 联邦观测表——邀请串据此宣告「别人实际连我用的地址」。
+        assert_eq!(fed.observed_host_sync(), None);
+        let (mut observed_ws, _) =
+            tokio_tungstenite::connect_async(client_request_from(Some("mgmt-tok"), "114.132.241.46:3132"))
+                .await
+                .expect("host-carrying upgrade");
+        assert_eq!(
+            fed.observed_host_sync().as_deref(),
+            Some("114.132.241.46"),
+            "merged-port handshake must record the client's Host"
+        );
+        observed_ws.close(None).await.ok();
 
         // ① 管理令牌 → 管理通道：命令送达后端。
         let (mut mgmt_ws, _) = tokio_tungstenite::connect_async(client_request(Some("mgmt-tok")))
