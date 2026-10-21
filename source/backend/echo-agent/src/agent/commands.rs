@@ -179,7 +179,7 @@ impl Agent {
             has_more: false, // 全量重建：已含全部条目
         });
     }
-    pub async fn apply_command(&self, cmd: BackendCommand) {
+    pub async fn apply_command(self: &std::sync::Arc<Self>, cmd: BackendCommand) {
         // ---- 去主智能体：会话类命令按显式 team_id 路由 ----
         // 每个智能体一律平等；没有"默认人格"兜底，缺失 team_id 直接报错。
         if Self::requires_explicit_team(&cmd) {
@@ -229,7 +229,12 @@ impl Agent {
             // 仍然完好）。clone 的代价是每条命令一次，而命中插件时省下的是一整
             // 段宿主分支；命中不了时多一次 clone 也远小于一次面板往返。
             let probe = cmd.clone();
-            if let Some(outcome) = self.plugin_host().dispatch_command(&probe).await {
+            // **按作用域分发**（2026-11 S10）：人格有自己的插件作用域时，
+            // 命令在那一层执行——插件解析到的是**这个人格**的宿主适配器，
+            // 而不是进程级核心服务代理的。无作用域（核心服务代理 / 未接线 /
+            // 该命令域是进程级的）自动回落到进程级分发。
+            let host = self.plugin_host();
+            if let Some(outcome) = host.dispatch_command_for(self, &probe).await {
                 match outcome {
                     Ok(_) => {}
                     Err(message) => self.emit(BackendEvent::Error {

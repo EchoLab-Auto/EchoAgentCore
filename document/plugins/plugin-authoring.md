@@ -122,6 +122,16 @@ mode = "fast"
 
 ### 同一个文件也管内置插件
 
+内置插件的 manifest 还带一个宿主词汇 `kind`（`tool` / `skill` / `provider` /
+`loop` / `federation` / `management` / `orchestration` / `instance`）。它决定
+**这插件挂在一层还是一份**：
+
+- `kind ∈ {tool, skill, provider}` → 每人格一份**独立实例**，挂在该人格的
+  子作用域里（`Ctx` 是宿主服务表的 `child`，适配器绑该人格自己的工具表 /
+  技能表 / 模型配置）。新增"按人格才说得通"的插件请归入这三类。
+- 其余 → 进程级单例，挂在根作用域（管理面的监听端口、联邦链路表、updater
+  单元都属于这一档；挂 N 份会真的开 N 个监听）。
+
 `plugins.toml` 不只登记子进程插件：写 `kind = "builtin"` 的行可以**重排 / 关闭**编译进 Core 的内置插件（工具集、技能目录、工作区、subagent、循环模式、管理面、provider、实例门控壳）。行序即挂载顺序；`enabled = false` = 注册但不挂载（Panel 清单仍可见、可就地启用）。
 
 **没写进文件的内置插件一律照旧挂载**——这条缺省是为了让"只加一个外部插件"的现有部署行为零变化。内置插件 id 清单见 [插件化设计](./core-plugins.md)「内置插件清单」。

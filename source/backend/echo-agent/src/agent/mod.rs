@@ -20,6 +20,7 @@ mod tool_dispatch;
 mod tool_exec;
 mod turn;
 mod workspace_commands;
+pub mod persona_hosts;
 pub mod shell_host;
 pub mod skills_host;
 pub mod tools_host;

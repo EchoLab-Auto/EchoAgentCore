@@ -300,6 +300,91 @@ mod catalog_shape_tests {
         }
     }
 
+    /// `llm` 键的 ownership 不得再漂移（2026-11 S10 的更正）。
+    ///
+    /// 这条守着一段真实的历史误解：`echo-plugin-provider-llm` 里曾有个叫
+    /// `SERVICE_KEY` 的常量，值是 `"llm"`，文档写"本插件贡献的服务键"——而
+    /// 它**并不提供**这个键（提供的是命令域接缝 `PROVIDER_HOST`）。真正的
+    /// 注册方是组合根，消费方是 `loop` 插件。于是"谁拥有 `llm`"读代码会读错。
+    ///
+    /// 现在键住在定义层（`echo_defs::llm::LLM_PROVIDER_SERVICE_KEY`），三方
+    /// 都引用它。这条测试锁住三件事：
+    /// ① 宿主声明会提供它；② 消费方（loop）确实声明依赖它；
+    /// ③ 没有任何内置插件"认领"它是自己 provide 的（名义 ownership 归宿主）。
+    #[test]
+    fn llm_service_key_has_exactly_one_owner() {
+        let key = echo_defs::llm::LLM_PROVIDER_SERVICE_KEY;
+        assert!(
+            crate::host_services::provided_keys().contains(&key.to_string()),
+            "宿主必须声明提供 {key}（组合根按配置构建默认 provider）"
+        );
+
+        let catalog = catalog("0.0.0-test").expect("目录构造");
+        let loop_depends = catalog.iter().any(|plugin| {
+            plugin.manifest().kind == "loop" && plugin.inject().required.iter().any(|k| k == key)
+        });
+        assert!(loop_depends, "loop 插件必须声明依赖 {key}");
+
+        // ③ 插件侧的**别名**必须指向定义层（不是又写一遍字面量）。
+        assert_eq!(
+            echo_plugin_provider_llm::PROVIDER_KEY,
+            key,
+            "provider 插件的别名必须指向定义层常量，不能自己再写一遍 \"llm\""
+        );
+
+        // ④ 源码里不许再出现那两种历史形状（各自独立的一份字面量）。
+        //    这是**真的**防回归：行为对、名字错的漂移只有源码能抓到。
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root")
+            .join("source");
+        let banned = ["SERVICE_KEY: &str = \"llm\"", "Inject::new([\"llm\"])"];
+        // 定义层自己就是那份字面量的家；注释里提到旧形状是**说明**不是副本。
+        let definition = root.join("defs/echo-defs/src/llm.rs");
+        let mut hits = Vec::new();
+        walk_rs(&root, &mut |path, text| {
+            if path == definition {
+                return;
+            }
+            for (index, line) in text.lines().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                for pattern in banned {
+                    if line.contains(pattern) {
+                        hits.push(format!("{}:{}: {pattern}", path.display(), index + 1));
+                    }
+                }
+            }
+        });
+        assert!(
+            hits.is_empty(),
+            "`llm` 键又出现了独立副本（应引用 echo_defs::llm::LLM_PROVIDER_SERVICE_KEY）：{hits:#?}"
+        );
+    }
+
+    /// 递归遍历 `.rs`（不引第三方 walkdir：这一段只在测试里跑）。
+    fn walk_rs(dir: &std::path::Path, f: &mut impl FnMut(&std::path::Path, &str)) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().and_then(|n| n.to_str()) == Some("target") {
+                    continue;
+                }
+                walk_rs(&path, f);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    f(&path, &text);
+                }
+            }
+        }
+    }
+
     /// 孤儿命令：插件声明要接管的命令，若没有任何插件认领，是**静默死路**
     /// （面板点了没反应）。反向由各插件自己的"声明 ⇒ 认领"测试守。
     #[test]

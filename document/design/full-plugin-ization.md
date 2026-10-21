@@ -418,6 +418,74 @@ caps 后**不会重问**——远程工具缺失一直持续到下次断线重�
 Rust 的默认实现让漏转发**编译通过**。`declarations_survive_wrapping` 测试
 逐个断言转发到位——新增声明方法时它会红。
 
+### S10：persona 作用域（对齐 `ctx.fork()`）——**已完成 2026-11**
+
+S9 之前的形状是**星形单层**：10 个插件挂在一张进程级注册表上，共享一份
+宿主服务表。能力确实归插件了，但**"作用于谁"没有答案**——四个
+`Agent*CommandHost`（shell / tools / skills / provider）全都绑到进程级核心
+服务代理（`core_agent`，`team_id = None`），于是：
+
+- `ToggleTool` 改的是 core_agent 的工具表，再靠一段"逐 persona 重算"的
+  fan-out 补回来；
+- `SwitchModel` 改的是 core_agent 的模型配置；
+- 结果对，但那是**巧合**：它依赖"fan-out 恰好覆盖了所有该改的地方"。
+
+#### 做成什么：作用域树
+
+```text
+root scope   ← Ctx = 宿主服务表（进程级：实例 / 联邦端口 / 管理面 / 事件…）
+├── persona "base"    ← Ctx::child()（父链继承、同名键遮蔽）
+│                       provide: SHELL_HOST · TOOLS_HOST · SKILLS_HOST · PROVIDER_HOST
+│                       mount:   kind ∈ {tool, skill, provider} 的插件（**全新实例**）
+├── persona "Alice"   ← 同构，适配器绑 Alice 的 Agent
+└── persona …         ← 按需建立（首次有人格命令时）
+```
+
+命令分发变成 `dispatch_command_for(&agent, cmd)`：先问该人格的作用域，
+落空再问进程级。于是"执行者 = 归属者"由**作用域**保证，而不是由谁恰好持有
+哪个 `Arc` 决定。
+
+#### 三个必须讲清的技术点
+
+**① 为什么必须是目录工厂，不是目录。** 插件实例内部持有 `ServiceSlot`
+（`mount` 时绑定宿主适配器）。同一个 `Arc<dyn Plugin>` 挂进两层会让两层的槽
+互相覆盖——第一个人格的适配器被第二个人格顶掉，**全程零报错**。
+`persona_scoped_plugins_are_fresh_instances` 守着这条。
+
+**② 为什么存 `Weak<Agent>`。** `Agent → plugins.host → scope → Agent` 是环；
+persona 重启后旧 `Agent` 永远 drop 不掉。用 `Weak::ptr_eq` 判"这层过期了吗"：
+同一 team_id 换了 Agent 就重建，`persona_scope_is_rebuilt_when_the_agent_changes`
+守着这条。
+
+**③ 哪类插件进人格作用域。** 由 manifest 的 `kind` 决定（`tool` / `skill` /
+`provider`）。这不是"宿主认识插件名"的复发：`kind` 本来就是宿主的分类词汇
+（框架文档明确它"开放标签、框架从不按它分支"），而"哪类插件该按人格隔离"
+是**宿主策略**。判据是"它的宿主适配器是不是 per-persona 的"。
+`loop` / `federation` / `management` / `orchestration` / `instance` 是进程级
+单例（监听端口、链路表、updater 单元），挂 N 份会真的开 N 个监听。
+
+#### 顺带修掉 `llm` 键的 ownership 漂移
+
+`echo-plugin-provider-llm` 里曾有个 `SERVICE_KEY = "llm"`，文档写"本插件贡献
+的服务键"——**它并不提供**这个键（提供的是命令域接缝 `PROVIDER_HOST`）。
+真正的注册方是组合根，消费方是 `loop`。三处各写一遍字面量，这次恰好一致。
+
+现在键在 `echo_defs::llm::LLM_PROVIDER_SERVICE_KEY`（**词汇归定义层**）：
+注册方、消费方、声明方都引用它。`scripts/deps-policy.txt` 不允许 `loop` 依赖
+provider 插件，所以定义层是唯一合法位置——约束本身就指明了答案。
+
+守卫 `llm_service_key_has_exactly_one_owner` 四条断言：宿主声明提供它 /
+loop 声明依赖它 / 插件侧别名指向定义层 / 源码里不再出现那两种历史形状
+（扫描非注释行，跳过定义层自己）。
+
+#### 边界（诚实记录）
+
+- **命令路由仍按协议分**：`ToggleTool` / `ToggleSkill` / `SwitchModel` 等
+  不带 `team_id`，按设计是进程级语义（持久化到 `[agent]`、逐人格重算）。
+  它们落在根作用域——**不是**因为作用域没生效，而是协议就是这么定的。
+  要按人格切这些命令得改协议 + Panel。
+- **人格作用域里的插件仍然只有 5 个**：其余 5 个是进程级单例，本来就该一份。
+
 ## 不搬清单（每条都试过，附理由）
 
 诚实记录"没做"比做完的部分更重要——否则下一个人会把同样的时间再花一遍。

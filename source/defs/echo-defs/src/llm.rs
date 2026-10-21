@@ -6,6 +6,25 @@ use tokio::sync::mpsc;
 
 use crate::message::{ChatChunk, ChatRequest, ChatResponse};
 
+/// 服务键：`Ctx[LLM_PROVIDER_SERVICE_KEY]` = `Arc<dyn LlmProvider>`。
+///
+/// ## 为什么这个字面量住在定义层
+///
+/// 它是**宿主与插件之间的契约**，契约双方都不该"拥有"它：
+///
+/// | 角色 | 谁 | 为什么不能写在它那里 |
+/// |---|---|---|
+/// | 注册 | 组合根（按配置构建默认 provider） | 组合根依赖所有插件，写在它会反向被依赖 |
+/// | 消费 | `echo-plugin-loop`（构造 `TurnRunner` 要模型出口） | 它不允许依赖 provider 插件（`scripts/deps-policy.txt`） |
+/// | 声明 | `echo-plugin-provider-llm` | 它**并不提供**这个键（提供的是命令域接缝） |
+///
+/// 此前这三处各写一遍字面量 `"llm"`，且 provider 插件把它叫 `SERVICE_KEY`、
+/// 文档写"本插件贡献的服务键"——读代码会以为 ownership 在插件，实际在宿主。
+/// 行为一直对，名字与文档是错的。
+///
+/// 现在唯一真源在这里，三方都引用它：改名会**编译失败**，不是静默少一个依赖。
+pub const LLM_PROVIDER_SERVICE_KEY: &str = "llm";
+
 /// Provider errors, transport-agnostic by design.
 ///
 /// The definition layer must not depend on an HTTP client: providers map

@@ -31,7 +31,8 @@
 //! `provide` 到 `Ctx` 的 `loop` 键——服务由插件提供，不是组合根建好再借插件
 //! 的名义登记。构造所需的东西都从上下文来：
 //!
-//! - `Ctx["llm"]`（`Arc<dyn LlmProvider>`）：硬依赖，注册表在挂载前校验；
+//! - `Ctx[LLM_PROVIDER_SERVICE_KEY]`（`Arc<dyn LlmProvider>`）：硬依赖，
+//!   由**组合根**注册（键由定义层给出，本 crate 不依赖 provider 插件）；
 //! - `MountContext.config`：`LoopOptions` 的两个字段（`max_tool_iterations` /
 //!   `max_tokens`）可由 `plugins.toml` 覆盖，缺省回退 `LoopOptions::default()`。
 //!
@@ -117,7 +118,10 @@ pub fn plugins(version: &str) -> Vec<Arc<dyn Plugin>> {
     // 二选一），但"`loop` 键存在"是它们共同的前置——`Ctx::provide` 对同名键
     // 是 fail-closed 的（`Conflict`），所以两个都挂时只有一个能 provide 成功，
     // 另一个会拿到 Conflict 并明确失败，而不是悄悄覆盖。
-    let inject = Inject::new(["llm"]);
+    // 键来自**定义层**（宿主 ↔ 插件契约，`scripts/deps-policy.txt` 不允许
+    // 本 crate 依赖 provider 插件）。此前这里是字面量 `"llm"`，与插件侧那个
+    // 名不副实的 `SERVICE_KEY` 各写一遍——改名一侧就静默少一个依赖。
+    let inject = Inject::new([echo_defs::llm::LLM_PROVIDER_SERVICE_KEY]);
     declarations()
         .into_iter()
         .map(|(id, name, description)| {
@@ -149,10 +153,11 @@ fn mount_runner(mctx: &MountContext) -> PluginMountResult {
         // 构造，也不持有任何资源，卸载时无需撤销。
         return Ok(Vec::new());
     }
+    let key = echo_defs::llm::LLM_PROVIDER_SERVICE_KEY;
     let provider = ctx
-        .resolve::<Arc<dyn echo_defs::llm::LlmProvider>>("llm")
+        .resolve::<Arc<dyn echo_defs::llm::LlmProvider>>(key)
         .ok_or_else(|| echo_plugin::PluginMountError::MissingService {
-            key: "llm".to_string(),
+            key: key.to_string(),
             available: ctx.keys(),
         })?;
     // 配置下发（`plugins.toml` 的 `[plugin.config]`）：两个字段都可覆盖，
@@ -236,7 +241,10 @@ mod tests {
     #[test]
     fn plugins_require_the_llm_service() {
         for plugin in plugins("0.1.0") {
-            assert_eq!(plugin.inject().required, vec!["llm".to_string()]);
+            assert_eq!(
+                plugin.inject().required,
+                vec![echo_defs::llm::LLM_PROVIDER_SERVICE_KEY.to_string()]
+            );
         }
     }
 
@@ -290,7 +298,10 @@ mod tests {
         }
 
         let ctx = std::sync::Arc::new(echo_context::Ctx::default());
-        let _llm = ctx.register::<Arc<dyn LlmProvider>>("llm", Arc::new(NoopProvider));
+        let _llm = ctx.register::<Arc<dyn LlmProvider>>(
+            echo_defs::llm::LLM_PROVIDER_SERVICE_KEY,
+            Arc::new(NoopProvider),
+        );
 
         let reg = echo_plugin::PluginRegistry::new();
         let plugin = plugins("0.1.0").into_iter().next().expect("one plugin");

@@ -52,8 +52,21 @@ pub use redacting::wrap_redacting;
 /// 插件 id（`plugins.toml` / Panel 插件清单同一口径）。
 pub const PLUGIN_ID: &str = "echo-agent.provider.llm";
 
-/// 本插件贡献的服务键（`Controller` 服务定位命名空间）。
-pub const SERVICE_KEY: &str = "llm";
+/// provider 实例的服务键（**别名**，真源在定义层）。
+///
+/// `Ctx["llm"]` = `Arc<dyn LlmProvider>`：由**组合根**注册，由
+/// `echo-plugin-loop` 消费。本插件**不提供**它——提供的是命令域接缝
+/// [`host_keys::PROVIDER_HOST`]。
+///
+/// ## 2026-11 更正
+///
+/// 这个常量此前叫 `SERVICE_KEY`、文档写"本插件贡献的服务键"。名字与文档把
+/// ownership 指向了插件，而实际在宿主；`loop` 侧的 `Inject::new(["llm"])` 也
+/// 是一份独立的字面量。三处各写一遍，只是这次三处恰好一致。
+///
+/// 现在键在 [`echo_defs::llm::LLM_PROVIDER_SERVICE_KEY`]，这里留别名是为了
+/// "读本 crate 就能看到它依赖/涉及哪些键"的局部性。
+pub const PROVIDER_KEY: &str = echo_defs::llm::LLM_PROVIDER_SERVICE_KEY;
 
 /// 构建一个 provider 所需的配置投影。
 ///

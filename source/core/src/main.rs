@@ -732,7 +732,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         Some(redactor) => echo_agent::llm::wrap_redacting(base_provider, redactor.clone()),
         None => base_provider,
     };
-    let _ctx_keep = ctx.register::<Arc<dyn echo_agent::LlmProvider>>("llm", provider_arc.clone());
+    let _ctx_keep = ctx.register::<Arc<dyn echo_agent::LlmProvider>>(
+        echo_defs::llm::LLM_PROVIDER_SERVICE_KEY,
+        provider_arc.clone(),
+    );
     // 脱敏服务（"sanitizer" 键；进程内插件经 MountContext.ctx 解析）。
     let _sanitizer_keep: Option<echo_context::Disposer> = redactor.as_ref().map(|redactor| {
         ctx.register::<Arc<dyn echo_defs::sanitize::Redactor>>("sanitizer", redactor.clone())
@@ -1541,6 +1544,33 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 merged_federation: if merged { Some(merge_fed.clone()) } else { None },
             },
         );
+
+        // ── 作用域树（2026-11 S10：对齐 dsh/Cordis 的 `ctx.fork()`）──
+        //
+        // 根作用域 = 进程级：上面注册的那张服务表就是它的 `Ctx`。人格作用域
+        // 从它 `child()` 派生（父链继承、同名键遮蔽），各自挂"按人格才说得通"
+        // 的插件（`kind ∈ {tool, skill, provider}`）。
+        //
+        // 目录**工厂**而不是目录：插件实例内部持有 `ServiceSlot`（mount 时绑定
+        // 宿主适配器）。同一个实例挂进两层会让两层的槽互相覆盖——第一个人格的
+        // 适配器被第二个人格顶掉，且无任何报错。所以每层重新构造一批。
+        plugin_host.attach_root_ctx(ctx.clone());
+        {
+            let version = version.to_string();
+            plugin_host.set_persona_catalog(std::sync::Arc::new(move || {
+                match crate::builtin_plugins::catalog(&version) {
+                    Ok(catalog) => catalog,
+                    Err(error) => {
+                        // 目录构造失败（命令域重名 / 抢了保留命令）= 装配 bug，
+                        // 启动期已经因此失败过；走到这里只可能是运行期重建，
+                        // 记 error 并返回空目录（该人格没有插件作用域，命令
+                        // 回落进程级，不会静默用错适配器）。
+                        tracing::error!(%error, "persona 插件目录构造失败");
+                        Vec::new()
+                    }
+                }
+            }));
+        }
 
         // ── 内置插件目录：零参数（纯静态：这个二进制里有什么）──
         let mut catalog = crate::builtin_plugins::catalog(version)?;

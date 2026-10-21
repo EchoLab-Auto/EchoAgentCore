@@ -324,8 +324,10 @@ pub(crate) fn provided_keys() -> Vec<String> {
         PROVIDER_HOST.name().to_string(),
         SELF_UPDATE_EVENTS.name().to_string(),
         INSTANCE_CONTROL.name().to_string(),
-        // ── 2. 组合根早期注册（key 是宿主与插件约定的字面量）──
-        "llm".to_string(),
+        // ── 2. 组合根早期注册 ──
+        // provider 实例：键由 provider 插件声明（`PROVIDER_KEY`），值由组合根
+        // 按配置构建——两侧同源，见该常量的文档。
+        echo_defs::llm::LLM_PROVIDER_SERVICE_KEY.to_string(),
         "sanitizer".to_string(),
         // ── 3. 插件自 provide ──
         echo_plugin_loop::SERVICE_KEY.to_string(),

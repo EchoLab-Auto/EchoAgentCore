@@ -310,6 +310,68 @@ pub struct PluginHost {
     /// 留在这里而不是上收：它防的是**本宿主**在 `Ctx::on_change` 回调里
     /// 重入，属编排问题（框架的 `reconcile` 不知道自己被谁调）。
     reconciling: std::sync::atomic::AtomicBool,
+    /// **根作用域**（2026-11 S10）：`PluginScope::root(宿主服务表)`。
+    ///
+    /// 根作用域 = 进程级：联邦链路、管理面监听、provider、自更新、实例门控
+    /// 都只有一份，挂在这一层。子作用域（每人格一个）从它的 `Ctx::child()`
+    /// 派生，父链继承宿主服务、自身遮蔽同名键。
+    ///
+    /// 晚绑定（`attach_root_ctx`）：`PluginHost` 在 `Agent` 构造期就要存在，
+    /// 而宿主服务表要到组合根的装配中段才成型。
+    root: parking_lot::RwLock<Option<Arc<echo_plugin::PluginScope>>>,
+    /// **persona 作用域**（team_id → 那一层）。
+    ///
+    /// 值为 `Weak<Agent>` 而不持 `Arc`：`Agent → plugins.host → scope → Agent`
+    /// 会成环（persona 重启后旧 Agent 永远 drop 不掉）。判"这层过期了吗"用
+    /// `Weak::ptr_eq`——同一 team_id 换了 Agent 就是过期，重建。
+    persona_scopes: parking_lot::RwLock<std::collections::HashMap<String, Arc<PersonaScope>>>,
+    /// persona 作用域的插件**目录工厂**（同一份 `catalog()` 再调一次 = 一批
+    /// 全新实例）。
+    ///
+    /// 为什么必须是工厂而不是目录本身：插件实例内部持有 `ServiceSlot`
+    /// （`mount` 时绑定宿主适配器）。同一个 `Arc<dyn Plugin>` 挂进两个作用域
+    /// 会让两层的槽互相覆盖——第一个人格的适配器被第二个人格顶掉，而且没有
+    /// 任何报错。**必须重新构造**。
+    persona_catalog: parking_lot::RwLock<Option<PersonaCatalogFn>>,
+}
+
+/// 目录工厂：每次调用产出一批**全新**插件实例。
+pub type PersonaCatalogFn = Arc<dyn Fn() -> Vec<Arc<dyn echo_plugin::Plugin>> + Send + Sync>;
+
+/// 一个人格的插件作用域：独立 `Ctx`（父链继承）+ 独立注册表 + 已挂插件。
+pub struct PersonaScope {
+    /// 本层作用域（`PluginScope::root(child_ctx)`）。
+    pub scope: Arc<echo_plugin::PluginScope>,
+    /// 建这一层时的 agent（弱引用：见 `PluginHost::persona_scopes` 的环说明）。
+    agent: std::sync::Weak<crate::agent::Agent>,
+    /// 本层挂上的插件 id（诊断 / 面板）。
+    pub mounted: Vec<String>,
+    /// persona 宿主适配器的服务登记（`provide` 的返回值）：活到本层销毁。
+    _hosts: Vec<echo_context::Disposer>,
+}
+
+impl PersonaScope {
+    /// 这一层是否仍对应**当前**的 agent（persona 重启后为 false）。
+    pub fn matches(&self, agent: &Arc<crate::agent::Agent>) -> bool {
+        self.agent
+            .upgrade()
+            .map(|current| Arc::ptr_eq(&current, agent))
+            .unwrap_or(false)
+    }
+
+    /// 本层的服务表（persona `Ctx`）。
+    pub fn ctx(&self) -> &Arc<echo_context::Ctx> {
+        self.scope.ctx()
+    }
+}
+
+impl std::fmt::Debug for PersonaScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PersonaScope")
+            .field("mounted", &self.mounted)
+            .field("alive", &self.agent.strong_count())
+            .finish()
+    }
 }
 
 impl Default for PluginHost {
@@ -324,6 +386,9 @@ impl PluginHost {
             registry: PluginRegistry::new(),
             subprocess: parking_lot::RwLock::new(None),
             reconciling: std::sync::atomic::AtomicBool::new(false),
+            root: parking_lot::RwLock::new(None),
+            persona_scopes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            persona_catalog: parking_lot::RwLock::new(None),
         }
     }
 
@@ -334,6 +399,148 @@ impl PluginHost {
     /// `enable` / `restart_cached` / `reconcile_cached` 不必再传。
     pub fn set_mount_ctx(&self, ctx: MountContext) {
         self.registry.set_mount_ctx(ctx);
+    }
+
+    // ── 作用域（2026-11 S10：对齐 `ctx.fork()`）──────────────────────────
+
+    /// 绑定**根作用域**（组合根在宿主服务注册完成后调用一次）。
+    ///
+    /// 之后 `persona_scope` 才能从这层 `Ctx::child()` 派生人格作用域。
+    /// 晚绑定时不报错——没有根作用域只意味着"没有人格作用域可用"，
+    /// 命令照旧走进程级分发（与 S10 之前完全一致）。
+    pub fn attach_root_ctx(&self, ctx: Arc<echo_context::Ctx>) {
+        let scope = echo_plugin::PluginScope::root(ctx);
+        *self.root.write() = Some(scope);
+    }
+
+    /// 根作用域（None = 还没 `attach_root_ctx`）。
+    pub fn root_scope(&self) -> Option<Arc<echo_plugin::PluginScope>> {
+        self.root.read().clone()
+    }
+
+    /// 注入 persona 作用域的插件**目录工厂**。
+    ///
+    /// 传工厂而不是目录：见 [`Self::persona_catalog`] 字段的环/槽覆盖说明。
+    pub fn set_persona_catalog(&self, catalog: PersonaCatalogFn) {
+        *self.persona_catalog.write() = Some(catalog);
+    }
+
+    /// persona 作用域里挂哪些插件：由 manifest 的 `kind` 决定（**宿主词汇**，
+    /// 框架只透传）。
+    ///
+    /// 判据是"这些插件的宿主适配器是不是 per-persona 的"：
+    ///
+    /// | kind | 适配器 | 一层还是一份 |
+    /// |---|---|---|
+    /// | `tool` | `ToolsCommandHost`（每人格的工具表） | 每人格 |
+    /// | `skill` | `SkillsCommandHost`（每人格的技能表） | 每人格 |
+    /// | `provider` | `ProviderCommandHost`（每人格的模型配置） | 每人格 |
+    /// | `loop` / `federation` / `management` / `orchestration` / `instance` | 进程级单例 | 进程 |
+    ///
+    /// 这里出现字面量 `kind` 不是"宿主认识插件名"的复发：`kind` 本来就是宿主
+    /// 的分类词汇（框架文档明确它"开放标签、框架从不按它分支"），而"哪类插件
+    /// 该按人格隔离"是**宿主策略**，不是插件知识。
+    const PERSONA_SCOPED_KINDS: [&'static str; 3] = ["tool", "skill", "provider"];
+
+    /// 取（必要时建立）某个人格的作用域。
+    ///
+    /// 返回 `None` 的情形都是"照旧走进程级"：无根作用域 / 无目录工厂 /
+    /// 这个 agent 没有 team_id（进程级核心服务代理不属于任何人格）。
+    pub fn persona_scope(&self, agent: &Arc<crate::agent::Agent>) -> Option<Arc<PersonaScope>> {
+        let team_id = agent.team_id()?;
+        {
+            let existing = self.persona_scopes.read();
+            if let Some(scope) = existing.get(&team_id) {
+                if scope.matches(agent) {
+                    return Some(Arc::clone(scope));
+                }
+            }
+        }
+        let mut scopes = self.persona_scopes.write();
+        // 双检：并发建两次没有意义，但也不能让后者覆盖前者的已挂插件。
+        if let Some(scope) = scopes.get(&team_id) {
+            if scope.matches(agent) {
+                return Some(Arc::clone(scope));
+            }
+            tracing::info!(
+                team_id = %team_id,
+                "persona 换了 agent（重启/重建）——重建插件作用域，适配器改绑新实例"
+            );
+        }
+        let built = self.build_persona_scope(&team_id, agent)?;
+        scopes.insert(team_id, Arc::clone(&built));
+        Some(built)
+    }
+
+    fn build_persona_scope(
+        &self,
+        team_id: &str,
+        agent: &Arc<crate::agent::Agent>,
+    ) -> Option<Arc<PersonaScope>> {
+        let root = self.root_scope()?;
+        let factory = self.persona_catalog.read().clone()?;
+        // 子作用域：父链继承宿主服务（实例 / 联邦端口 / 管理面…）。
+        let child = root.ctx().child();
+        let hosts = crate::agent::persona_hosts::provide(&child, agent);
+        let scope = echo_plugin::PluginScope::root(child);
+        let mut mounted = Vec::new();
+        for plugin in factory() {
+            let id = plugin.manifest().id.clone();
+            let kind = plugin.manifest().kind.clone();
+            if !Self::PERSONA_SCOPED_KINDS.contains(&kind.as_str()) {
+                continue;
+            }
+            // 进程级禁用（`core.toml` 的 `disabled_plugins` / 挂载计划）照旧生效。
+            if !self.registry.is_enabled(&id) {
+                continue;
+            }
+            match scope.mount(plugin) {
+                Ok(()) => mounted.push(id),
+                Err(error) => {
+                    // 单个人格挂不上不拖垮整个作用域：其余插件照常工作，
+                    // 缺的那条命令由插件的"未挂载"分支回明确错误。
+                    tracing::warn!(
+                        team_id = %team_id, plugin = %id, %error,
+                        "persona 作用域挂载失败（该命令域在此人格不可用）"
+                    );
+                }
+            }
+        }
+        tracing::info!(
+            team_id = %team_id,
+            plugins = ?mounted,
+            "persona 插件作用域就绪（ctx.fork：独立 Ctx + 独立注册表）"
+        );
+        Some(Arc::new(PersonaScope {
+            scope,
+            agent: Arc::downgrade(agent),
+            mounted,
+            _hosts: hosts,
+        }))
+    }
+
+    /// **按作用域分发命令**：先问该人格的作用域，落空再问进程级。
+    ///
+    /// 为什么"先人格后进程"：persona 作用域是根作用域的子集（只挂
+    /// `tool/skill/provider`），两层的命令域**不重叠**；所以顺序不影响结果，
+    /// 只影响一次查找的代价。先问人格是为了让"这条命令归谁"在日志/诊断里
+    /// 与实际的执行者一致。
+    pub async fn dispatch_command_for(
+        &self,
+        agent: &Arc<crate::agent::Agent>,
+        command: &echo_protocol::BackendCommand,
+    ) -> Option<Result<serde_json::Value, String>> {
+        let name = command.kind_name();
+        if let Some(scope) = self.persona_scope(agent) {
+            if scope.scope.registry().command_owner(name).is_some() {
+                return scope
+                    .scope
+                    .registry()
+                    .dispatch_command_async(name, command.payload_value())
+                    .await;
+            }
+        }
+        self.dispatch_command(command).await
     }
 
     /// 挂载上下文（测试与 [`Self::reconcile`] 共用；不是公开 API）。
@@ -853,6 +1060,237 @@ pub mod skill_registry_handle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── persona 作用域（S10：对齐 `ctx.fork()`）────────────────────────
+
+    /// 测试用插件：`kind` 可控、记下自己 mount 时看到的 `ctx` 键，带一条命令。
+    struct ScopeProbePlugin {
+        manifest: echo_plugin::PluginManifest,
+        /// mount 时本层 `Ctx` 里 TOOLS_HOST 指向的注册表（识别"绑到谁"）。
+        seen_tools: Arc<parking_lot::Mutex<Option<Arc<echo_tool::ToolRegistry>>>>,
+    }
+
+    impl echo_plugin::Plugin for ScopeProbePlugin {
+        fn manifest(&self) -> &echo_plugin::PluginManifest {
+            &self.manifest
+        }
+        fn mount(&self, ctx: &echo_plugin::MountContext) -> echo_plugin::PluginMountResult {
+            if let Some(mctx) = ctx.ctx.as_ref() {
+                let host = mctx
+                    .service(&echo_plugin_tools::host_keys::TOOLS_HOST)
+                    .expect("persona 作用域必须先提供 TOOLS_HOST");
+                *self.seen_tools.lock() = Some(host.registry());
+            }
+            Ok(Vec::new())
+        }
+        fn handled_commands(&self) -> Vec<String> {
+            vec!["ToggleTool".to_string()]
+        }
+        fn handle_command(
+            &self,
+            name: &str,
+            _payload: &serde_json::Value,
+        ) -> Option<Result<serde_json::Value, String>> {
+            (name == "ToggleTool").then(|| Ok(serde_json::json!({"by": self.manifest.id.clone()})))
+        }
+    }
+
+    fn probe(id: &str, kind: &str) -> (Arc<dyn echo_plugin::Plugin>, Arc<parking_lot::Mutex<Option<Arc<echo_tool::ToolRegistry>>>>) {
+        let seen = Arc::new(parking_lot::Mutex::new(None));
+        let plugin = Arc::new(ScopeProbePlugin {
+            manifest: echo_plugin::PluginManifest::builtin(
+                id,
+                id,
+                "0.0.0",
+                kind,
+                id,
+                "test probe",
+            ),
+            seen_tools: Arc::clone(&seen),
+        });
+        (plugin as Arc<dyn echo_plugin::Plugin>, seen)
+    }
+
+    /// 最小 provider：作用域测试不跑模型，只要一个合法的 `LlmProvider`。
+    struct NullProvider;
+
+    #[async_trait::async_trait]
+    impl crate::llm::LlmProvider for NullProvider {
+        fn name(&self) -> &str {
+            "null"
+        }
+        fn default_model(&self) -> &str {
+            "null"
+        }
+        async fn chat(
+            &self,
+            _request: &crate::llm::ChatRequest,
+        ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
+            Err(crate::llm::LlmError::Config("not used in scope tests".into()))
+        }
+        async fn chat_stream(
+            &self,
+            request: &crate::llm::ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<crate::llm::ChatChunk>,
+        ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
+            self.chat(request).await
+        }
+    }
+
+    fn scope_agent(team: &str) -> Arc<crate::agent::Agent> {
+        let agent = Arc::new(crate::agent::Agent::new(
+            Arc::new(NullProvider),
+            crate::config::AgentConfig::default(),
+            crate::skill::SkillRegistry::new(),
+            echo_tool::ToolRegistry::new(),
+            Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
+        ));
+        agent.set_team_id(Some(team.to_string()));
+        agent
+    }
+
+    /// **每个 persona 拿到自己的宿主适配器**——这是 `ctx.fork()` 的全部意义。
+    ///
+    /// 反例（S10 之前）：四个 `Agent*CommandHost` 一律绑进程级核心服务代理，
+    /// 命令"作用于谁"只能靠调用方恰好持有哪个 `Arc`，或靠一段逐人格 fan-out
+    /// 补回来。
+    #[tokio::test]
+    async fn persona_scopes_bind_their_own_host_adapters() {
+        let host = PluginHost::new();
+        let root_ctx = Arc::new(echo_context::Ctx::default());
+        host.attach_root_ctx(root_ctx);
+        host.set_persona_catalog(Arc::new(|| Vec::new()));
+
+        let a = scope_agent("a");
+        let b = scope_agent("b");
+        let scope_a = host.persona_scope(&a).expect("persona a 作用域");
+        let scope_b = host.persona_scope(&b).expect("persona b 作用域");
+
+        let tools_a = scope_a
+            .ctx()
+            .service(&echo_plugin_tools::host_keys::TOOLS_HOST)
+            .expect("TOOLS_HOST")
+            .registry();
+        let tools_b = scope_b
+            .ctx()
+            .service(&echo_plugin_tools::host_keys::TOOLS_HOST)
+            .expect("TOOLS_HOST")
+            .registry();
+        assert!(
+            Arc::ptr_eq(&tools_a, &a.tools),
+            "a 的适配器必须指向 a 的工具表"
+        );
+        assert!(
+            Arc::ptr_eq(&tools_b, &b.tools),
+            "b 的适配器必须指向 b 的工具表"
+        );
+        assert!(
+            !Arc::ptr_eq(&tools_a, &tools_b),
+            "两个人格不能共用同一份适配器（那正是 S10 之前的形状）"
+        );
+        // 父链继承：shell / 实例等进程级服务对子作用域仍可见。
+        assert!(
+            scope_a
+                .ctx()
+                .service(&echo_plugin_tools::host_keys::SHELL_HOST)
+                .is_some(),
+            "子作用域必须继承根层的进程级能力"
+        );
+    }
+
+    /// persona 作用域里的插件是**新实例**，不是根层那份的克隆。
+    ///
+    /// 这条防的是最阴的一类 bug：插件实例内部持有 `ServiceSlot`，同一实例
+    /// 挂进两层会让两层的槽互相覆盖——第一个人格的适配器被第二个人格顶掉，
+    /// 全程没有任何报错（只是"命令作用到了别人身上"）。
+    #[tokio::test]
+    async fn persona_scoped_plugins_are_fresh_instances() {
+        let host = PluginHost::new();
+        host.attach_root_ctx(Arc::new(echo_context::Ctx::default()));
+        host.set_persona_catalog(Arc::new(|| {
+            vec![probe("test.tool", "tool").0, probe("test.loop", "loop").0]
+        }));
+
+        let scope_a = host.persona_scope(&scope_agent("a")).expect("scope a");
+        let scope_b = host.persona_scope(&scope_agent("b")).expect("scope b");
+
+        // 只有 kind = tool/skill/provider 进人格作用域。
+        assert_eq!(scope_a.mounted, vec!["test.tool".to_string()]);
+        assert_eq!(scope_b.mounted, vec!["test.tool".to_string()]);
+
+        let pa = scope_a.scope.registry().plugin("test.tool").expect("plugin a");
+        let pb = scope_b.scope.registry().plugin("test.tool").expect("plugin b");
+        assert!(
+            !Arc::ptr_eq(&pa, &pb),
+            "两层必须是不同实例（同一实例会让 ServiceSlot 互相覆盖）"
+        );
+    }
+
+    /// persona 换了 agent（重启 / 运行时重建）→ 作用域重建，适配器改绑新实例。
+    #[tokio::test]
+    async fn persona_scope_is_rebuilt_when_the_agent_changes() {
+        let host = PluginHost::new();
+        host.attach_root_ctx(Arc::new(echo_context::Ctx::default()));
+        host.set_persona_catalog(Arc::new(|| Vec::new()));
+
+        let first = scope_agent("a");
+        let scope_first = host.persona_scope(&first).expect("scope 1");
+        let second = scope_agent("a"); // 同 id、不同实例 = persona 重建
+        let scope_second = host.persona_scope(&second).expect("scope 2");
+        assert!(
+            !Arc::ptr_eq(&scope_first.scope, &scope_second.scope),
+            "换了 agent 必须重建作用域（否则命令作用在已经没人用的旧实例上）"
+        );
+        let tools = scope_second
+            .ctx()
+            .service(&echo_plugin_tools::host_keys::TOOLS_HOST)
+            .expect("TOOLS_HOST")
+            .registry();
+        assert!(
+            Arc::ptr_eq(&tools, &second.tools),
+            "重建后的适配器必须指向新 agent"
+        );
+        // 同一个 agent 再来一次 = 复用，不重建。
+        let again = host.persona_scope(&second).expect("scope 3");
+        assert!(Arc::ptr_eq(&scope_second.scope, &again.scope));
+    }
+
+    /// 命令按作用域分发：人格作用域认领的命令在那一层执行。
+    #[tokio::test]
+    async fn dispatch_command_for_uses_the_persona_scope() {
+        let host = PluginHost::new();
+        host.attach_root_ctx(Arc::new(echo_context::Ctx::default()));
+        // 根层挂一个同名命令域的插件（模拟进程级 + 人格级并存的现状）。
+        host.set_persona_catalog(Arc::new(|| vec![probe("test.tool.persona", "tool").0]));
+
+        let agent = scope_agent("a");
+        let command = echo_protocol::BackendCommand::ToggleTool {
+            name: "x".into(),
+            enabled: true,
+        };
+        let outcome = host
+            .dispatch_command_for(&agent, &command)
+            .await
+            .expect("persona 作用域认得这条命令");
+        assert_eq!(
+            outcome.expect("ok")["by"],
+            "test.tool.persona",
+            "必须由人格作用域里那份插件处理"
+        );
+
+        // 没有人格（核心服务代理）→ 回落根层，根层没人认领 → None。
+        let core = Arc::new(crate::agent::Agent::new(
+            Arc::new(NullProvider),
+            crate::config::AgentConfig::default(),
+            crate::skill::SkillRegistry::new(),
+            echo_tool::ToolRegistry::new(),
+            Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
+        ));
+        assert!(
+            host.dispatch_command_for(&core, &command).await.is_none(),
+            "没有 team_id 的 agent 不该拿到人格作用域"
+        );
+    }
 
     // ── 宿主保留名单的纪律 ──────────────────────────────────────────────
 
