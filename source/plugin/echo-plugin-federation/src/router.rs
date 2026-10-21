@@ -477,18 +477,38 @@ impl InvokeRouter {
                 verdict,
             };
         }
-        // 沙箱裁决（2026-10 安全收紧；P3-1 扩展到全部 5 个文件工具）：
-        // 联邦路径的文件类工具，绝对路径必须落在执行端工作区根并集内——
-        // 否则获授 read_file/list_files 的 peer 可读 ~/.ssh 等任意路径，
-        // allow_tools 白名单形同虚设。本地多仓库工作流的"绝对路径显式意图"
-        // 例外不适用于跨机远程调用。
-        const FILE_TOOLS: &[&str] = &[
-            "read_file",
-            "write_file",
-            "edit_file",
-            "list_files",
-            "search_code",
-        ];
+        // 能力裁决（2026-11 S8）：本机**没声明可远程调用**的工具一律不执行。
+        //
+        // 这条闸门此前不存在：peer 策略为 `allow_tools = ["*"]`（配对互信
+        // 的默认档）时，任何工具名都能穿透到执行端——包括 `workspace` /
+        // `instance_stop` / `spawn_subagent` 这类会改宿主状态、本来就只该
+        // 本地调的管理工具。准入集合现在由工具自己的声明给出。
+        let Some(tool) = registry.get(&request.tool) else {
+            return FedFrame::Error {
+                call_id: Some(call_id),
+                code: echo_federation::FedError::UnknownCall,
+                message: format!("executor has no tool named `{}`", request.tool),
+            };
+        };
+        if !tool.remote_capable() {
+            tracing::warn!(
+                target: "federation",
+                from = %from, call_id = %call_id, tool = %request.tool,
+                "invoke rejected: tool did not declare remote_capable"
+            );
+            return FedFrame::Error {
+                call_id: Some(call_id),
+                code: echo_federation::FedError::Forbidden,
+                message: format!("tool `{}` is not remote-capable on this node", request.tool),
+            };
+        }
+        // 沙箱裁决（2026-10 安全收紧；S8 改为**问工具**）：
+        // 带路径参数的工具，绝对路径必须落在执行端工作区根并集内——否则获授
+        // read_file 的 peer 可读 ~/.ssh 等任意路径，allow_tools 白名单形同
+        // 虚设。参数名由 [`echo_defs::tool::Tool::path_arguments`] 声明，
+        // 所以插件新加的文件工具自动享有同一条保护（此前是一张写死的
+        // 5 个名字的表，新工具静默裸奔）。
+        //
         // **豁免（2026-10 设计演进）**：peer 策略为完全开放
         // （allow_queries = ["*"]，邀请配对提升的默认互信档）时跳过沙箱——
         // 「SSH 免密」同语义：完全互信的对端不受目录边界约束。
@@ -497,21 +517,24 @@ impl InvokeRouter {
             .get(from)
             .map(|p| p.is_full_access())
             .unwrap_or(false);
-        if !full_access && FILE_TOOLS.contains(&request.tool.as_str()) {
-            if let Some(raw) = request.args.get("path").and_then(|v| v.as_str()) {
-                if raw.starts_with('/')
-                    && !crate::path_within_roots(raw, workspace_roots)
-                {
+        if !full_access {
+            for arg in tool.path_arguments() {
+                let Some(raw) = request.args.get(*arg).and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                if raw.starts_with('/') && !crate::path_within_roots(raw, workspace_roots) {
                     tracing::warn!(
                         target: "federation",
-                        from = %from, call_id = %call_id, tool = %request.tool, path = %raw,
+                        from = %from, call_id = %call_id, tool = %request.tool,
+                        argument = %arg, path = %raw,
                         "federation absolute path outside workspace roots — rejected"
                     );
                     return FedFrame::Error {
                         call_id: Some(call_id),
                         code: echo_federation::FedError::Forbidden,
-                        message: "absolute path outside workspace roots (federation sandbox)"
-                            .into(),
+                        message: format!(
+                            "absolute path in `{arg}` outside workspace roots (federation sandbox)"
+                        ),
                     };
                 }
             }
@@ -555,21 +578,22 @@ impl InvokeRouter {
     }
 }
 
-/// 从对端 caps 推导可注册的代理工具名（交集：对端声明 ∩ 首批支持的
-/// 无状态工具族——shell 三件套的远程化留待后续迭代，见 RFC §4 注记）。
+/// 从对端 caps 推导可注册的代理工具名（2026-11 S8）。
+///
+/// 此前这里还有一份 `const SUPPORTED: [&str; 6]`，与本机握手宣告的清单
+/// 求交集——同一批工具名写在**两个 crate** 里，任一处改名就静默少一个远程
+/// 工具（对端照旧宣告、本机照旧忽略，没有任何报错）。现在唯一真源是工具
+/// 自己的 [`echo_defs::tool::Tool::remote_capable`] 声明：对端宣告什么就
+/// 镜像什么，本函数只负责去重与保序。
+///
+/// 安全性不靠这张表：执行端的准入由 peer 策略（`allow_tools`）+ 工具声明
+/// 双重裁决（见 [`InvokeRouter::handle_invoke`]）。
 pub fn remote_tool_candidates(caps: &NodeCaps) -> Vec<String> {
-    const SUPPORTED: [&str; 6] = [
-        "bash",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "search_code",
-        "list_files",
-    ];
-    SUPPORTED
+    let mut seen = std::collections::HashSet::new();
+    caps.tools
         .iter()
-        .filter(|t| caps.tools.iter().any(|c| c == *t))
-        .map(|t| t.to_string())
+        .filter(|tool| !tool.is_empty() && seen.insert(tool.as_str()))
+        .cloned()
         .collect()
 }
 
@@ -577,6 +601,57 @@ pub fn remote_tool_candidates(caps: &NodeCaps) -> Vec<String> {
 mod tests {
     use super::*;
     use echo_federation::NodeCaps;
+
+    /// 最小工具：**按声明**控制远程面与路径参数。
+    ///
+    /// 执行端测试需要"注册表里真的有个工具"——S8 起 `handle_invoke` 先查
+    /// 注册表再查声明，空注册表会得到 `UnknownCall`（此前按名字查表，
+    /// 没注册也照样过沙箱裁决，那个"过"其实毫无意义）。
+    struct DeclaredTool {
+        name: &'static str,
+        remote: bool,
+        path_args: &'static [&'static str],
+    }
+
+    #[async_trait::async_trait]
+    impl echo_defs::tool::Tool for DeclaredTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "test tool"
+        }
+        async fn execute(
+            &self,
+            _arguments: serde_json::Value,
+        ) -> Result<String, echo_tool::ToolError> {
+            Ok(format!("{} ran", self.name))
+        }
+        fn remote_capable(&self) -> bool {
+            self.remote
+        }
+        fn path_arguments(&self) -> &'static [&'static str] {
+            self.path_args
+        }
+    }
+
+    /// 建一个装好文件的注册表（5 个文件工具 + bash，语义同内置工具族）。
+    fn file_registry() -> Arc<ToolRegistry> {
+        let registry = Arc::new(ToolRegistry::new());
+        for name in ["read_file", "write_file", "edit_file", "list_files", "search_code"] {
+            registry.register_shared(Arc::new(DeclaredTool {
+                name,
+                remote: true,
+                path_args: &["path"],
+            }));
+        }
+        registry.register_shared(Arc::new(DeclaredTool {
+            name: "bash",
+            remote: true,
+            path_args: &[],
+        }));
+        registry
+    }
 
     fn policy(tools: &[&str]) -> ExecutorPolicy {
         ExecutorPolicy {
@@ -859,7 +934,7 @@ mod tests {
                 allow_subagent: false,
             },
         );
-        let registry = Arc::new(ToolRegistry::new());
+        let registry = file_registry();
         let (tx, _rx) = mpsc::channel(1);
         let root = std::env::temp_dir().join(format!("echo-fed-roots-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
@@ -927,7 +1002,7 @@ mod tests {
     async fn executor_full_access_skips_workspace_sandbox() {
         let router = InvokeRouter::new("node-a".into());
         router.set_policy("node-b", ExecutorPolicy::full());
-        let registry = Arc::new(ToolRegistry::new());
+        let registry = file_registry();
         let (tx, _rx) = mpsc::channel(1);
         let reply = router.handle_invoke(
             "node-b",
@@ -1015,16 +1090,89 @@ mod tests {
         assert!(got.output.contains("node-b"));
     }
 
+    /// 候选集**完全**由对端宣告决定（S8）：本机不再有"支持集"名单。
+    ///
+    /// 这里故意放一个本机并不实现的名字（`their_plugin_tool`）——对端能宣告
+    /// 它就说明它的工具声明了 `remote_capable`，我们照镜像；重复项去重保序。
     #[test]
-    fn candidates_intersect_caps_with_supported() {
+    fn candidates_mirror_peer_caps_exactly() {
         let caps = NodeCaps {
-            tools: vec!["bash".into(), "shell_start".into(), "read_file".into()],
+            tools: vec![
+                "read_file".into(),
+                "their_plugin_tool".into(),
+                "read_file".into(),
+                "".into(),
+            ],
             subagent: true,
             workspaces: vec![],
             active_turns: 0,
         };
-        let names = remote_tool_candidates(&caps);
-        // shell_start 不在首批支持集；交集保序
-        assert_eq!(names, vec!["bash", "read_file"]);
+        assert_eq!(
+            remote_tool_candidates(&caps),
+            vec!["read_file", "their_plugin_tool"],
+            "宣告什么镜像什么：去重、保序、忽略空名"
+        );
+    }
+
+    /// 执行端准入（S8）：注册表里没有 / 没声明可远程 → 明确拒绝。
+    #[tokio::test]
+    async fn executor_rejects_unknown_and_non_remote_tools() {
+        let router = InvokeRouter::new("node-a".into());
+        router.set_policy("node-b", policy(&["*"]));
+        let (tx, _rx) = mpsc::channel(1);
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register_shared(Arc::new(DeclaredTool {
+            name: "workspace",
+            remote: false, // 改宿主状态的管理工具：不声明远程面
+            path_args: &[],
+        }));
+
+        let unknown = router.handle_invoke(
+            "node-b",
+            InvokeRequest {
+                call_id: "node-c:9-0".into(),
+                tool: "no_such_tool".into(),
+                args: serde_json::json!({}),
+                workdir: None,
+                timeout_secs: None,
+            },
+            registry.clone(),
+            tx.clone(),
+            &[],
+        );
+        assert!(
+            matches!(
+                unknown,
+                FedFrame::Error {
+                    code: echo_federation::FedError::UnknownCall,
+                    ..
+                }
+            ),
+            "未注册的工具必须报 UnknownCall（此前按名字过沙箱后静默失败）: {unknown:?}"
+        );
+
+        let not_remote = router.handle_invoke(
+            "node-b",
+            InvokeRequest {
+                call_id: "node-c:9-1".into(),
+                tool: "workspace".into(),
+                args: serde_json::json!({}),
+                workdir: None,
+                timeout_secs: None,
+            },
+            registry,
+            tx,
+            &[],
+        );
+        assert!(
+            matches!(
+                not_remote,
+                FedFrame::Error {
+                    code: echo_federation::FedError::Forbidden,
+                    ..
+                }
+            ),
+            "未声明 remote_capable 的工具即使 allow_tools=[\"*\"] 也不得执行: {not_remote:?}"
+        );
     }
 }

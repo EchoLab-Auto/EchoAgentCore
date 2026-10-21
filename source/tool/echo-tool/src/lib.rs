@@ -516,6 +516,44 @@ impl ToolRegistry {
         }
     }
 
+    /// 可被**远程调用**的工具名（[`Tool::remote_capable`] 声明，2026-11 S8）。
+    ///
+    /// 跳过被禁用的工具：握手宣告的是"本单位现在真的能接的活"，
+    /// 停用的插件不该还挂在 `NodeCaps.tools` 里（对端注册出来的代理工具
+    /// 会一路活着，直到调用时才报错）。排序保证同配置多节点宣告一致
+    /// （便于对账与测试）。
+    ///
+    /// 同步尽力：锁竞争时返回已读到的部分（调用方是握手，缺了就当没宣告）。
+    pub fn remote_capable_names(&self) -> Vec<String> {
+        let disabled = self.disabled.try_read().ok();
+        let Ok(tools) = self.tools.try_read() else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = tools
+            .iter()
+            .filter(|(name, tool)| {
+                tool.remote_capable()
+                    && !disabled
+                        .as_ref()
+                        .map(|d| d.contains(name.as_str()))
+                        .unwrap_or(false)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// 某工具声明的**路径参数名**（[`Tool::path_arguments`]；未声明/未知工具 = 空）。
+    ///
+    /// 联邦执行端据此决定"要不要做工作区沙箱裁决"——判定依据从插件里的
+    /// 工具名清单变成了工具自己的声明（2026-11 S8）。
+    pub fn path_arguments_of(&self, name: &str) -> &'static [&'static str] {
+        self.get(name)
+            .map(|tool| tool.path_arguments())
+            .unwrap_or(&[])
+    }
+
     pub fn snapshot_for_session(&self, name: &str, session_id: &str) -> Option<Value> {
         match self.tools.try_read() {
             Ok(tools) => tools
@@ -766,6 +804,74 @@ mod tests {
         async fn execute(&self, _arguments: Value) -> Result<String, ToolError> {
             Ok("stub".into())
         }
+    }
+
+    /// 声明类桩工具：远程面 + 路径参数（S8）。
+    struct DeclaringTool {
+        name: &'static str,
+        remote: bool,
+        path_args: &'static [&'static str],
+    }
+
+    #[async_trait]
+    impl Tool for DeclaringTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "declaring stub"
+        }
+        async fn execute(&self, _arguments: Value) -> Result<String, ToolError> {
+            Ok("ok".into())
+        }
+        fn remote_capable(&self) -> bool {
+            self.remote
+        }
+        fn path_arguments(&self) -> &'static [&'static str] {
+            self.path_args
+        }
+    }
+
+    /// 远程面集合来自**工具声明**，且停用的工具不再宣告（S8）。
+    ///
+    /// 这条锁住的是"谁有权决定我能被远程调用"：此前是组合根与联邦插件里
+    /// 两份写死的名字表，插件无法加入、改名则静默掉出。
+    #[test]
+    fn remote_capable_names_follow_declarations_and_skip_disabled() {
+        let registry: Arc<ToolRegistry> = Arc::new(ToolRegistry::new());
+        registry.register_shared(Arc::new(DeclaringTool {
+            name: "read_file",
+            remote: true,
+            path_args: &["path"],
+        }));
+        registry.register_shared(Arc::new(DeclaringTool {
+            name: "alpha",
+            remote: false,
+            path_args: &[],
+        }));
+        registry.register_shared(Arc::new(StubTool { name: "plain" }));
+
+        assert_eq!(
+            registry.remote_capable_names(),
+            vec!["read_file"],
+            "只宣告不声明 → 不可远程（fail-closed）"
+        );
+
+        // 插件停用 → 立刻从宣告里消失（对端下次握手就不会再注册它）。
+        registry.set_package_enabled("pkg-a", false);
+        registry.set_package("read_file", "pkg-a");
+        registry.set_package_enabled("pkg-a", false);
+        assert!(
+            registry.remote_capable_names().is_empty(),
+            "停用的工具不得继续宣告: {:?}",
+            registry.remote_capable_names()
+        );
+
+        // 路径参数声明：未声明 / 未知工具都是空切片（调用方据此跳过沙箱）。
+        registry.set_package_enabled("pkg-a", true);
+        assert_eq!(registry.path_arguments_of("read_file"), ["path"]);
+        assert!(registry.path_arguments_of("alpha").is_empty());
+        assert!(registry.path_arguments_of("nope").is_empty());
     }
 
     /// 输出可区分的桩工具：用来断言"同名时到底哪个实现生效"。

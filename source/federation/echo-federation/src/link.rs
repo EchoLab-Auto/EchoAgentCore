@@ -196,6 +196,15 @@ pub struct Federation {
     /// 数——对端调度器拿到的是**实时**负载而非启动快照。由装配层
     /// （core/main.rs，持有 supervisor）注入；未注入时 hello 报 0。
     load_reporter: RwLock<Option<std::sync::Arc<dyn Fn() -> u32 + Send + Sync>>>,
+    /// 远程可调用工具上报句柄（2026-11 S8）：握手 hello 时调用取**当前**
+    /// 可被远程调用的工具名——真源是每个工具自己的 `remote_capable()`
+    /// 声明（经 `ToolRegistry::remote_capable_names` 汇总）。
+    ///
+    /// 为什么是回调而不是构造参数：`Federation::new` 在组合根里比插件挂载
+    /// 早得多（此刻还没有任何工具注册表）。注入后 hello 每次现取，所以
+    /// 运行期启用/停用插件会直接反映到下一次握手，而不用重启节点。
+    /// 未注入 = 宣告空集（fail-closed：宁可少宣告，不可宣告了接不了）。
+    tool_reporter: RwLock<Option<std::sync::Arc<dyn Fn() -> Vec<String> + Send + Sync>>>,
     /// 事件出口（路由层订阅）。
     event_tx: mpsc::Sender<LinkEvent>,
     shutdown: watch::Sender<bool>,
@@ -235,6 +244,7 @@ impl Federation {
             dial_health: RwLock::new(std::collections::HashMap::new()),
             known_advertise: RwLock::new(std::collections::HashMap::new()),
             load_reporter: RwLock::new(None),
+            tool_reporter: RwLock::new(None),
             event_tx,
             shutdown,
         })
@@ -247,6 +257,29 @@ impl Federation {
         if let Ok(guard) = self.load_reporter.try_read() {
             if let Some(reporter) = guard.as_ref() {
                 caps.active_turns = reporter();
+            }
+        }
+        // 远程可调用工具（2026-11 S8）：工具自己的 `remote_capable()` 声明，
+        // 汇总自注册表。**覆盖**构造时的快照——那个快照只在未注入 reporter
+        // 的场合有意义（单测 / 早启动），生产装配一律走 reporter。
+        match self.tool_reporter.try_read() {
+            Ok(guard) => match guard.as_ref() {
+                Some(reporter) => caps.tools = reporter(),
+                None => {
+                    // 装配顺序错了（监听早于工具注册表就绪）：对端会以为本机
+                    // 什么活都接不了，且**不会重问**——所以这条必须显性报警，
+                    // 而不是安静地宣告空集。组合根已在注入 reporter 之后才
+                    // 起监听/连出（见 core/main.rs），所以正常运行时不会出现。
+                    tracing::warn!(
+                        target: "federation",
+                        "hello: tool reporter not injected yet — advertising no remote tools; \
+                         peer will register no proxy tools until reconnect"
+                    );
+                }
+            },
+            Err(_) => {
+                // 注入中（写锁未释放）：本次握手保守地不宣告，下次握手会好。
+                tracing::debug!(target: "federation", "hello: tool reporter busy — empty tools");
             }
         }
         NodeHello {
@@ -332,6 +365,17 @@ impl Federation {
     /// 注入负载上报句柄（装配层：core/main.rs 持 supervisor 后调用）。
     pub async fn set_load_reporter(&self, reporter: std::sync::Arc<dyn Fn() -> u32 + Send + Sync>) {
         *self.load_reporter.write().await = Some(reporter);
+    }
+
+    /// 注入"远程可调用工具"的真源（组合根：全部 persona 的工具注册表）。
+    ///
+    /// 组装顺序：`Federation` 先建（此时还没有工具注册表）→ persona/supervisor
+    /// 就绪 → 调用本方法。此后每次握手都现取，插件启停即时生效。
+    pub async fn set_tool_reporter(
+        &self,
+        reporter: std::sync::Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+    ) {
+        *self.tool_reporter.write().await = Some(reporter);
     }
 
     /// 运行时新增/更新 peer（Phase 4）：配置写表；有 url 即补起连出循环。

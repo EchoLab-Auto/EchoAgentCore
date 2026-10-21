@@ -110,6 +110,93 @@ async fn two_nodes_handshake_and_exchange_frames() {
     let _ = sd_b.send(true);
 }
 
+/// 远程可调用工具的真源是**注入的 reporter**（2026-11 S8）。
+///
+/// 构造期的 `caps.tools` 只是"还没接线时的快照"：生产装配里
+/// `Federation::new` 早于任何工具注册表，真正能接的活只有握手那一刻才知道
+/// （工具自己的 `remote_capable()` 声明，经注册表汇总）。这条测试锁两件事：
+///   ① reporter 覆盖构造快照；
+///   ② reporter 变了 → 下一次握手立刻反映（插件启停无需重启节点）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hello_tools_come_from_injected_reporter() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = format!("ws://{}", listener.local_addr().unwrap());
+    let (b_events, mut b_rx) = mpsc::channel::<LinkEvent>(16);
+    let (sd_a, sd_b) = shutdown_pair();
+
+    // B 构造时宣告一个假名字（模拟"启动早、注册表还没建"），真值由 reporter 给。
+    let fed_b = Federation::new(
+        "node-b".into(),
+        None,
+        caps(&["stale_placeholder"]),
+        peers(&[("a", "", "secret")]),
+        None,
+        b_events,
+        sd_b.clone(),
+    );
+    let live: Arc<std::sync::RwLock<Vec<String>>> =
+        Arc::new(std::sync::RwLock::new(vec!["read_file".into(), "write_file".into()]));
+    let live_writer = live.clone();
+    fed_b
+        .set_tool_reporter(Arc::new(move || live_writer.read().unwrap().clone()))
+        .await;
+    let fed_b2 = fed_b.clone();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let fed = fed_b2.clone();
+            tokio::spawn(async move { fed.accept_one_pub(stream).await });
+        }
+    });
+
+    // 第一个客户端：看到的是 reporter 的实时集合，而非构造快照。
+    let (a_events, mut a_rx) = mpsc::channel::<LinkEvent>(16);
+    let fed_a = Federation::new(
+        "node-a".into(),
+        None,
+        caps(&[]),
+        peers(&[("b", &addr, "secret")]),
+        None,
+        a_events,
+        sd_a.clone(),
+    );
+    let fed_a2 = fed_a.clone();
+    tokio::spawn(async move { fed_a2.run(None).await });
+    let up_a = wait_up(&mut a_rx, Duration::from_secs(5)).await;
+    let _ = wait_up(&mut b_rx, Duration::from_secs(5)).await;
+    assert_eq!(
+        up_a.caps.tools,
+        vec!["read_file".to_string(), "write_file".to_string()],
+        "握手必须用 reporter 的实时值，而不是构造快照"
+    );
+    drop(fed_a); // 断开第一个客户端，让 B 的连接表空出来
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // 工具声明变化（插件停用）→ 新连接立刻看到新集合。
+    *live.write().unwrap() = vec!["bash".into()];
+    let (c_events, mut c_rx) = mpsc::channel::<LinkEvent>(16);
+    let fed_c = Federation::new(
+        "node-c".into(),
+        None,
+        caps(&["stale_placeholder"]),
+        peers(&[("b", &addr, "secret")]),
+        None,
+        c_events,
+        sd_a.clone(),
+    );
+    let fed_c2 = fed_c.clone();
+    tokio::spawn(async move { fed_c2.run(None).await });
+    let up_c = wait_up(&mut c_rx, Duration::from_secs(5)).await;
+    assert_eq!(
+        up_c.caps.tools,
+        vec!["bash".to_string()],
+        "reporter 变了，新连接必须看到新集合（无需重启节点）"
+    );
+
+    let _ = sd_a.send(true);
+    let _ = sd_b.send(true);
+}
+
 /// 认证失败：token 不符 → 握手前即被拒，不会 Up。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wrong_token_is_rejected() {

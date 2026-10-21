@@ -92,6 +92,15 @@ impl Tool for ReadFileTool {
     fn description(&self) -> &str {
         "Read the contents of a file in the project. Returns the file content with line numbers. Use this to examine source code, config files, or logs."
     }
+    // ── 远程面声明（2026-11 S8）──
+    /// 本工具是"无会话依赖的纯操作"，可被别的节点直接调用。
+    fn remote_capable(&self) -> bool {
+        true
+    }
+    /// 沙箱裁决的参数：文件系统路径（绝对路径必须落在执行端工作区根内）。
+    fn path_arguments(&self) -> &'static [&'static str] {
+        &["path"]
+    }
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -177,6 +186,15 @@ impl Tool for ListFilesTool {
     fn description(&self) -> &str {
         "List files in a directory. Shows file names, sizes, and types. Use this to explore the project structure."
     }
+    // ── 远程面声明（2026-11 S8）──
+    /// 本工具是"无会话依赖的纯操作"，可被别的节点直接调用。
+    fn remote_capable(&self) -> bool {
+        true
+    }
+    /// 沙箱裁决的参数：文件系统路径（绝对路径必须落在执行端工作区根内）。
+    fn path_arguments(&self) -> &'static [&'static str] {
+        &["path"]
+    }
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -251,6 +269,15 @@ impl Tool for SearchCodeTool {
     }
     fn description(&self) -> &str {
         "Search for a pattern in source files. Returns matching file paths and line numbers. Use this to find function definitions, imports, or specific code patterns."
+    }
+    // ── 远程面声明（2026-11 S8）──
+    /// 本工具是"无会话依赖的纯操作"，可被别的节点直接调用。
+    fn remote_capable(&self) -> bool {
+        true
+    }
+    /// 沙箱裁决的参数：文件系统路径（绝对路径必须落在执行端工作区根内）。
+    fn path_arguments(&self) -> &'static [&'static str] {
+        &["path"]
     }
     fn parameters(&self) -> Value {
         json!({
@@ -346,6 +373,15 @@ impl Tool for WriteFileTool {
     fn description(&self) -> &str {
         "Create a new file or overwrite an existing file with new content. Use this to create or update source files, config files, or documentation."
     }
+    // ── 远程面声明（2026-11 S8）──
+    /// 本工具是"无会话依赖的纯操作"，可被别的节点直接调用。
+    fn remote_capable(&self) -> bool {
+        true
+    }
+    /// 沙箱裁决的参数：文件系统路径（绝对路径必须落在执行端工作区根内）。
+    fn path_arguments(&self) -> &'static [&'static str] {
+        &["path"]
+    }
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -401,6 +437,15 @@ impl Tool for EditFileTool {
     }
     fn description(&self) -> &str {
         "Replace lines in an existing file. Specify start_line and end_line (inclusive) to replace with new_content. Use this to make targeted edits without rewriting the entire file."
+    }
+    // ── 远程面声明（2026-11 S8）──
+    /// 本工具是"无会话依赖的纯操作"，可被别的节点直接调用。
+    fn remote_capable(&self) -> bool {
+        true
+    }
+    /// 沙箱裁决的参数：文件系统路径（绝对路径必须落在执行端工作区根内）。
+    fn path_arguments(&self) -> &'static [&'static str] {
+        &["path"]
     }
     fn parameters(&self) -> Value {
         json!({
@@ -535,6 +580,31 @@ impl Tool for RemoteAwareTool {
     }
     fn parameters(&self) -> Value {
         self.inner.parameters()
+    }
+    // ── 声明类方法必须**全部**转发（2026-11 S8）──
+    //
+    // 包装器漏转发一条 = 被包的工具静默失能：`state_key` 丢了面板不再刷新，
+    // `remote_capable` 丢了联邦里根本看不见这个工具，`path_arguments` 丢了
+    // 远程调用绕过沙箱（安全性回归，且没有任何报错）。Rust 的默认实现让
+    // 漏转发**编译通过**，所以这份清单必须与 `Tool` 的声明方法一一对应；
+    // `declarations_survive_wrapping` 测试替未来兜底（新增声明方法时它会红）。
+    fn produces_visible_output(&self) -> bool {
+        self.inner.produces_visible_output()
+    }
+    fn snapshot(&self) -> Option<Value> {
+        self.inner.snapshot()
+    }
+    fn snapshot_for_session(&self, session_id: &str) -> Option<Value> {
+        self.inner.snapshot_for_session(session_id)
+    }
+    fn state_key(&self) -> Option<&'static str> {
+        self.inner.state_key()
+    }
+    fn remote_capable(&self) -> bool {
+        self.inner.remote_capable()
+    }
+    fn path_arguments(&self) -> &'static [&'static str] {
+        self.inner.path_arguments()
     }
     fn timeout_hint(&self, arguments: &Value) -> Option<std::time::Duration> {
         let is_remote = arguments
@@ -673,6 +743,15 @@ impl Tool for RunCommandTool {
     }
     fn description(&self) -> &str {
         "Run a shell (bash) command in the project workspace. Returns stdout and stderr. Use for git operations, cargo builds, file operations, and other shell commands. Timeout: 120s (max 300s). Long-running polling loops should pass timeout_secs explicitly."
+    }
+    // ── 远程面声明（2026-11 S8）──
+    /// 可远程：命令是自包含的（`node://` 分流另有机理，见 `RemoteAwareTool`）。
+    ///
+    /// 注意这里**没有** `path_arguments`：`bash` 的 `command` 是命令串不是
+    /// 路径，无法按参数裁决沙箱——所以远程 bash 的边界是 peer 策略
+    /// （`allow_tools`）而不是目录。这条诚实说明比假装有沙箱重要。
+    fn remote_capable(&self) -> bool {
+        true
     }
     fn parameters(&self) -> Value {
         json!({
@@ -1576,6 +1655,82 @@ mod tests {
             &[("gpu-box".to_string(), "read_file".to_string())]
         );
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    /// 包装器**不得吞掉声明**（2026-11 S8）。
+    ///
+    /// Rust 的 trait 默认实现让"漏转发"编译通过，后果是静默失能：`state_key`
+    /// 丢了面板不刷新、`remote_capable` 丢了联邦看不见、`path_arguments` 丢了
+    /// 远程调用绕过沙箱（安全性回归）。这条测试逐个断言转发到位——新增声明
+    /// 方法时把这里也补上，漏了会红。
+    #[test]
+    fn declarations_survive_wrapping() {
+        // 逐个包装所有声明了远程面的工具，断言声明一致。
+        let inner: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(ReadFileTool::new(PathBuf::from("/tmp"))),
+            Arc::new(ListFilesTool::new(PathBuf::from("/tmp"))),
+            Arc::new(SearchCodeTool::new(PathBuf::from("/tmp"))),
+            Arc::new(WriteFileTool::new(PathBuf::from("/tmp"))),
+            Arc::new(EditFileTool::new(PathBuf::from("/tmp"))),
+            Arc::new(RunCommandTool::new(PathBuf::from("/tmp"))),
+        ];
+        assert_eq!(inner.len(), 6, "工具族变了就同步这条测试");
+        for tool in &inner {
+            let wrapped = RemoteAwareTool::wrap(tool.clone(), None);
+            assert_eq!(wrapped.name(), tool.name());
+            assert!(
+                wrapped.remote_capable(),
+                "{}: 包装后丢了远程面声明（联邦将看不见它）",
+                tool.name()
+            );
+            assert_eq!(
+                wrapped.path_arguments(),
+                tool.path_arguments(),
+                "{}: 包装后丢了路径参数声明（远程沙箱会失效）",
+                tool.name()
+            );
+            assert_eq!(wrapped.produces_visible_output(), tool.produces_visible_output());
+            assert_eq!(wrapped.state_key(), tool.state_key());
+        }
+    }
+
+    /// 工具族自身的远程面声明（S8）：6 个编码工具可远程，文件类带 `path`。
+    ///
+    /// 这些声明取代了组合根与联邦插件里两份写死的名字表——名字改了、工具
+    /// 挪了位置，远程面自动跟着走。
+    #[test]
+    fn coding_tools_declare_their_remote_surface() {
+        let registry: Arc<ToolRegistry> = Arc::new(ToolRegistry::new());
+        registry.register_shared(Arc::new(ReadFileTool::new(PathBuf::from("/tmp"))));
+        registry.register_shared(Arc::new(ListFilesTool::new(PathBuf::from("/tmp"))));
+        registry.register_shared(Arc::new(SearchCodeTool::new(PathBuf::from("/tmp"))));
+        registry.register_shared(Arc::new(WriteFileTool::new(PathBuf::from("/tmp"))));
+        registry.register_shared(Arc::new(EditFileTool::new(PathBuf::from("/tmp"))));
+        registry.register_shared(Arc::new(RunCommandTool::new(PathBuf::from("/tmp"))));
+        // 清单类工具按会话隔离，不能跨机调用（没有"对端的会话"这种东西）。
+        registry.register_shared(Arc::new(crate::checklist::ChecklistTool::new()));
+
+        assert_eq!(
+            registry.remote_capable_names(),
+            vec![
+                "bash",
+                "edit_file",
+                "list_files",
+                "read_file",
+                "search_code",
+                "write_file"
+            ],
+            "远程面 = 6 个编码工具；checklist 是会话内的，不许宣告"
+        );
+        for file_tool in ["read_file", "list_files", "write_file", "edit_file"] {
+            assert_eq!(
+                registry.path_arguments_of(file_tool),
+                ["path"],
+                "{file_tool} 必须声明路径参数（否则远程调用绕过沙箱）"
+            );
+        }
+        // `bash` 的边界是 peer 策略而不是目录（command 是命令串，不是路径）。
+        assert!(registry.path_arguments_of("bash").is_empty());
     }
 
     /// 清单生成：包装后的工具同名，描述带 node:// 用法说明。

@@ -323,22 +323,16 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 token: p.token.clone(),
             })
             .collect::<Vec<_>>();
-        // 能力声明：本机可被远程调用的工具集合（Phase 2 由注册表实际驱动；
-        // v1 先宣告内置编码工具族 + shell，与 RFC §2.2 一致）。
+        // 能力声明：本机可被远程调用的工具集合。
+        //
+        // 这里**不再有工具名清单**（2026-11 S8）：真源是每个工具自己的
+        // `remote_capable()` 声明，supervisor 就绪后经
+        // `Federation::set_tool_reporter` 注入注册表查询，握手时现取。
+        // 此前这里写死 6 个名字、联邦插件里再写同样的 6 个名字取交集——
+        // 插件新加的工具永远进不了远程面，而任一工具改名会静默掉出去
+        // （对端照旧宣告、本机照旧忽略，两边都没有任何报错）。
         let caps = echo_federation::NodeCaps {
-            tools: [
-                "bash",
-                "read_file",
-                "write_file",
-                "edit_file",
-                "search_code",
-                "list_files",
-                // shell 三件套与进程级 ShellManager 耦合深，远程化留待后续
-                // ——不宣告（对端按 caps 预期会落空）。
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+            tools: Vec::new(),
             subagent: true,
             workspaces: Vec::new(),
             // 启动时无活跃 turn；调度器应经 Query(NodeStatus) 拉实时值。
@@ -414,18 +408,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         } else {
             fed_listen_effective.clone()
         };
+        // **延后**起监听/连出（2026-11 S8）：握手里的 `caps.tools` 来自
+        // 各 persona 的工具注册表，而注册表要等插件挂载 + supervisor 就绪
+        // （本函数后半段）。此前在这里就 `run()`，于是"对端在我们启动过程中
+        // 连入"会拿到空工具集，对端侧**不会**再重问——远程工具一直缺失到
+        // 下次断线重连（实测：两节点同时重启时稳定复现）。
+        // 监听晚起几百毫秒的代价远小于静默少一半远程面。
         let fed_runner = fed.clone();
-        tokio::spawn(async move {
-            if let Err(e) = fed_runner.run(listen).await {
-                // 独立监听退出（bind 失败如端口占用、或运行期错误）＝入站
-                // 静默失效；此前仅 warn（2026-10 审计 P1-5b），升级为
-                // error 并给出排查线索。
-                tracing::error!(
-                    error = %e,
-                    "federation listener exited — inbound links will NOT be accepted;                      check the listen port is free (ss -tlnp) and not used by another Core"
-                );
-            }
-        });
+        let listen_for_run = listen.clone();
         let rt = Arc::new(FederationRuntime {
             federation: fed.clone(),
             router,
@@ -627,7 +617,14 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 })
             }));
         }
-        (rt, event_rx, peer_policies, std::sync::Arc::new(ports))
+        (
+            rt,
+            event_rx,
+            peer_policies,
+            std::sync::Arc::new(ports),
+            fed_runner,
+            listen_for_run,
+        )
     };
     info!("federation link configured (no switch; zero peers = passive listen)");
     // 端口合并用联邦句柄（rt 随后被路由泵消费；此处预克隆——仅合并
@@ -1350,7 +1347,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 联邦路由泵（Phase 2）：supervisor 就绪后启动（代理工具注册需要全部
     // persona 的注册表）。
     {
-        let (rt, event_rx, peer_policies, _ports) = federation;
+        let (rt, event_rx, peer_policies, _ports, fed_runner, listen_for_run) = federation;
         // 负载上报注入（P2 调度器）：握手 hello 时实时取全部 persona
         // 的活跃 turn 总数——对端调度器拿到实时负载而非启动快照。
         let load_supervisor = supervisor.clone();
@@ -1363,6 +1360,39 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     .sum()
             }))
             .await;
+        // 远程可调用工具的真源（S8）：工具自己的 `remote_capable()` 声明。
+        //
+        // 取**全部 persona 注册表的名字并集**：执行端按第一个 persona 的
+        // 注册表执行（见路由泵的 Invoke 分支），而各 persona 装的是同一批
+        // 插件——并集是"本机任意 persona 能接的活"，与实际接活能力一致；
+        // 少了任何一个，对端就少注册一个代理工具。
+        let caps_supervisor = supervisor.clone();
+        rt.federation
+            .set_tool_reporter(std::sync::Arc::new(move || {
+                let mut names: Vec<String> = Vec::new();
+                for persona in caps_supervisor.personas().iter() {
+                    for name in persona.agent.tools.remote_capable_names() {
+                        if !names.contains(&name) {
+                            names.push(name);
+                        }
+                    }
+                }
+                names.sort();
+                names
+            }))
+            .await;
+        // 工具上报就绪后才起联邦监听/连出（顺序即协议契约：见上面延后说明）。
+        tokio::spawn(async move {
+            if let Err(e) = fed_runner.run(listen_for_run).await {
+                // 独立监听退出（bind 失败如端口占用、或运行期错误）＝入站
+                // 静默失效；此前仅 warn（2026-10 审计 P1-5b），升级为
+                // error 并给出排查线索。
+                tracing::error!(
+                    error = %e,
+                    "federation listener exited — inbound links will NOT be accepted; check the listen port is free (ss -tlnp) and not used by another Core"
+                );
+            }
+        });
         // P3-3 聚合投递出口：大脑侧 settle 产出的摘要经此向父会话
         // timeline 追加 system 消息（supervisor 句柄在 echo-agent crate
         // 不可达，组合根注入）。

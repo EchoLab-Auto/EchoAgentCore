@@ -223,15 +223,28 @@ peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲�
 
 ### 代理工具与远程委派
 
-- **代理注册**：链路 Up 时按对端 caps ∩ 首批支持集（bash/read_file/
-  write_file/edit_file/search_code/list_files）给全部 persona 注册
+- **代理注册**：链路 Up 时按**对端 caps 原样镜像**给全部 persona 注册
   `<peer>__<tool>`（per-peer package 标签 `echo-agent.federation.<peer>`，
   Down 整包禁用、Up 幂等恢复）——注册名与包标签取**解析后的配置名**
   （邀请占位配对提升后即为提升后的名字，与 Down 的整包禁用键一致）；
   `<peer>__<tool>` 的 peer 段经 LLM function-name 清洗（非
   `[a-zA-Z0-9_-]` 字符 → `_`），模型/标注回传的清洗形会被**回查解析**为
-  原始配置名（`node://` 分流、子代理通知、只读查询三个出口）；
-  shell 三件套与进程级 ShellManager 耦合深，远程化留待后续
+  原始配置名（`node://` 分流、子代理通知、只读查询三个出口）
+- **`caps.tools` 的真源（2026-11 S8）**：**工具自己**声明
+  `Tool::remote_capable()`（默认 `false`），组合根在 supervisor 就绪后经
+  `Federation::set_tool_reporter` 注入注册表查询，**握手时现取**（插件启停
+  即时生效，无需重启）。此前是两处硬编码名单——组合根里写 6 个名字、
+  联邦插件里再写同样 6 个求交集：插件新加的工具永远进不了远程面，任一改名
+  会静默掉出去（两侧都没有任何报错）。执行端准入同样按声明裁决：注册表里
+  没有 → `UnknownCall`；有但未声明 → `Forbidden`（**即使 `allow_tools=["*"]`**）
+  ——这条闸门此前不存在，配对互信档下任何工具名都能穿透执行
+- **远程沙箱的范围**由工具声明的 `Tool::path_arguments()` 决定（文件类工具
+  是 `["path"]`）：绝对路径必须落在执行端工作区根并集内。插件新加的文件工具
+  自动享有同一条保护；`bash` 的边界是 peer 策略而不是目录（`command` 是命令行
+  不是路径，假装有沙箱会更糟）
+- **监听顺序即协议契约**：`Federation::run`（监听 + 连出）延后到工具上报
+  注入之后才启动——否则"对端在本机启动过程中连入"会拿到空 `caps.tools`，
+  而对端不会重问，远程工具一直缺失到下次断线重连（两节点同时重启时稳定复现）
 - **远程 subagent 失败语义（fail-closed）**：node 指定的 peer 离线/
   名称错误时，子任务**立即以 Failed 终态回报**（不会静默回本机执行
   造成错机操作）；聚合组同步闭合。peer 名来源：工具列表的
