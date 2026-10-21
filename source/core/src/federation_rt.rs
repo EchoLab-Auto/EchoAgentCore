@@ -8,6 +8,12 @@ use crate::*;
 #[allow(unused_imports)]
 use anyhow::Context;
 
+/// 进程级核心服务代理的固定 id（组合根 `make_agent("__core", ..)` 同一口径）。
+///
+/// 它不是人格：不在 `[agent.teams]`、不在 TeamsList、不接聊天消息，但工具表
+/// 与人格同源。零人格节点的执行宿主与事件出口都落到它身上。
+pub(crate) const CORE_AGENT_ID: &str = "__core";
+
 /// 联邦路由上下文（Phase 2）：路由泵与代理工具注册共用的句柄束。
 pub(crate) struct FederationRuntime {
     pub(crate) federation: Arc<echo_federation::Federation>,
@@ -183,11 +189,54 @@ impl FederationRuntime {
             .and_then(|(_, weak)| weak.upgrade())
     }
 
-    /// 设事件兜底出口（`core_agent`；组合根在它构造后调一次）。
-    pub(crate) fn set_event_fallback(&self, agent: &std::sync::Arc<echo_agent::Agent>) {
+    /// 设进程级核心服务代理（`core_agent`；组合根在它构造后调一次）。
+    ///
+    /// 同一个对象承担两件事，因为两者问的是同一个问题——「本进程里那个
+    /// **不属于任何人格**的 agent 是谁」：
+    ///
+    /// - **事件兜底出口**：零人格时联邦事件仍要送到 Panel；
+    /// - **零人格执行宿主**：见 [`Self::executor_hosts`]。
+    ///
+    /// 必须在**组合根**调用，不能靠 `AgentManager` 的 factory：`core_agent`
+    /// 由 `make_agent` 直接构造（id 固定 `__core`），不在 `[agent.teams]`
+    /// 里，factory 永远轮不到它。漏了这一行，纯执行节点（`[agent.teams]`
+    /// 为空）的两个能力一起静默消失：链路事件无处可发、远程调用一律
+    /// Forbidden（2026-10 实测：云端中转节点链路正常、工具表看着有 6 个，
+    /// 调用全失败）。
+    pub(crate) fn set_core_agent(&self, agent: &std::sync::Arc<echo_agent::Agent>) {
         if let Ok(mut slot) = self.event_fallback.write() {
             *slot = Some(std::sync::Arc::downgrade(agent));
         }
+    }
+
+    /// 核心服务代理（`None` = 组合根未接线 / 已被 drop）。
+    pub(crate) fn core_agent(&self) -> Option<std::sync::Arc<echo_agent::Agent>> {
+        self.event_fallback
+            .read()
+            .ok()
+            .and_then(|slot| slot.as_ref().and_then(std::sync::Weak::upgrade))
+    }
+
+    /// 远程调用的**执行宿主**：人格优先，零人格回退核心服务代理。
+    ///
+    /// 「零人格」是合法形态而不是故障（2026-10 设计：`[agent.teams]` 为空 =
+    /// 没有智能体），但**不等于没有执行能力**——`__core` 的工具表（bash /
+    /// 读写 / search）与人格走同一条 `build_registry` 构造路径，同一个
+    /// `ToolRegistry` 门控语义（空白名单 = 全允许）。纯执行节点（GPU 工作站、
+    /// 云端中转）正是这个形态：它不需要聊天人格，只需要能被派活。
+    ///
+    /// 唯一的真失败是"既没人格也没接线 `__core`"——那时返回空集，调用方
+    /// 按 Forbidden 明确回执（而不是让调用方空等超时）。
+    pub(crate) async fn executor_hosts(
+        &self,
+    ) -> Vec<(String, std::sync::Arc<echo_agent::Agent>)> {
+        let live = self.live_personas().await;
+        if !live.is_empty() {
+            return live;
+        }
+        self.core_agent()
+            .map(|agent| vec![(CORE_AGENT_ID.to_string(), agent)])
+            .unwrap_or_default()
     }
 
     /// 发一条联邦事件：**任一人格**都通到 Panel（进程级汇聚点），所以取第一个
@@ -199,12 +248,7 @@ impl FederationRuntime {
             agent.emit(event);
             return;
         }
-        let fallback = self
-            .event_fallback
-            .read()
-            .ok()
-            .and_then(|slot| slot.as_ref().and_then(std::sync::Weak::upgrade));
-        match fallback {
+        match self.core_agent() {
             Some(agent) => agent.emit(event),
             None => tracing::warn!(
                 target: "federation",
@@ -468,7 +512,10 @@ pub(crate) async fn federation_router_pump(
                         tracing::info!(target: "federation", peer = %peer_node_id, %reason, "link down");
                         rt.router.drop_peer(&peer_node_id);
                         let package = peer_package(&rt, &peer_node_id).await;
-                        for (_id, agent) in rt.live_personas().await {
+                        // 用执行宿主而不是"人格"：零人格节点的核心服务代理
+                        // 也装了该 peer 的代理工具（链路 Up 时按宿主注册），
+                        // 漏了它，对端离线后那些工具在 `__core` 上仍然可调。
+                        for (_id, agent) in rt.executor_hosts().await {
                             agent.tools.set_package_enabled(&package, false);
                         }
                         if let Some(name) = rt.node_to_peer.write().await.remove(&peer_node_id) {
@@ -479,46 +526,37 @@ pub(crate) async fn federation_router_pump(
                     }
                     echo_federation::LinkEvent::Frame { from, frame } => {
                         if let echo_federation::FedFrame::Invoke(request) = frame {
-                            let registry = rt
-                                .live_personas()
-                                .await
-                                .into_iter()
-                                .map(|(_id, agent)| agent.tools.clone())
-                                .next();
+                            // 执行宿主：人格优先、零人格回退 `__core`。用
+                            // `executor_hosts()` 而**不是** `live_personas()`：
+                            // 纯执行节点按设计可以零人格，但它的 bash / 文件
+                            // 工具一直在（挂在核心服务代理上）。此前这里只看
+                            // 人格，零人格节点一律 Forbidden——链路通、工具表
+                            // 有 6 个、调用全失败（2026-10 ai_station 现场）。
+                            let hosts = rt.executor_hosts().await;
+                            let registry = hosts
+                                .first()
+                                .map(|(_id, agent)| agent.tools.clone());
                             let Some(registry) = registry else {
-                                // 无 persona = 无工具注册表。此前的 `continue`
-                                // 让调用方一直等到自身超时（实测 460s 空等，
-                                // 且本端只看到「远程工具超时」，排查成本极高）。
-                                // 改为显式 Error 回执：调用方立即失败并看到原因。
+                                // 既没人格也没接线核心服务代理 = 真正的无执行
+                                // 能力。此前的 `continue` 让调用方一直等到自身
+                                // 超时（实测 460s 空等，且本端只看到「远程工具
+                                // 超时」，排查成本极高）。改为显式 Error 回执：
+                                // 调用方立即失败并看到原因。
                                 tracing::warn!(
                                     target: "federation", from = %from, call_id = %request.call_id,
-                                    "invoke rejected: no persona registry on this node"
+                                    "invoke rejected: no executor host on this node"
                                 );
                                 let reply = echo_federation::FedFrame::Error {
                                     call_id: Some(request.call_id.clone()),
                                     code: echo_federation::FedError::Forbidden,
-                                    message: "执行端未加载任何 persona，联邦工具通道不可用".into(),
+                                    message: "执行端没有任何执行宿主（零人格且未接线核心服务代理），联邦工具通道不可用".into(),
                                 };
                                 if rt.federation.send_to(&from, reply).await.is_err() {
                                     tracing::warn!(target: "federation", peer = %from, "invoke reject reply send failed");
                                 }
                                 continue;
                             };
-                            // 沙箱根并集：全部 persona 工作区目录（本地
-                            // 目录取 path；远程目录标注占位不参战）。
-                            let mut roots: Vec<std::path::PathBuf> = Vec::new();
-                            for (_id, agent) in rt.live_personas().await {
-                                if let Some(store) = agent.workspace_store() {
-                                    let (sessions, _) = store.snapshot();
-                                    for s in sessions {
-                                        for d in s.directories {
-                                            if !d.is_remote() {
-                                                roots.push(std::path::PathBuf::from(d.path()));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            let roots = executor_roots(&hosts);
                             let reply = rt.router.handle_invoke(
                                 &from, request, registry, outbound_tx.clone(), &roots,
                             );
@@ -708,6 +746,36 @@ pub(crate) async fn broadcast_federation_status(rt: &FederationRuntime) {
     rt.emit_federation_event(event).await;
 }
 
+/// 执行宿主的沙箱根 = 各宿主工作区**本地**目录的并集。
+///
+/// 零人格的纯执行节点通常一个工作区会话都没有，此时退回 Core 的启动目录：
+/// 工具注册表的基准目录本就取自它（组合根 `make_agent` 里的
+/// `current_dir`），让"能执行"和"能碰哪些路径"来自同一个地方。没有这条兜底，
+/// 非 `full_access` 对端的每个绝对路径都会被判越界——fail-closed 到不可用，
+/// 而 `allow_queries = ["*"]` 的互信对端根本看不出差别（沙箱被豁免），
+/// 于是问题只在收紧配置的节点上才暴露。
+fn executor_roots(hosts: &[(String, std::sync::Arc<echo_agent::Agent>)]) -> Vec<std::path::PathBuf> {
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    for (_id, agent) in hosts {
+        if let Some(store) = agent.workspace_store() {
+            let (sessions, _) = store.snapshot();
+            for s in sessions {
+                for d in s.directories {
+                    // 远程目录是占位标注，不参与本机沙箱。
+                    if !d.is_remote() {
+                        roots.push(std::path::PathBuf::from(d.path()));
+                    }
+                }
+            }
+        }
+    }
+    if roots.is_empty() {
+        if let Ok(cwd) = std::env::current_dir() {
+            roots.push(cwd);
+        }
+    }
+    roots
+}
 
 /// 只读查询执行端（Phase 5）。
 ///
@@ -775,7 +843,7 @@ pub(crate) async fn handle_federation_query(
                 .map(|p| p.is_full_access())
                 .unwrap_or(false);
             let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
-            for (_id, agent) in rt.live_personas().await {
+            for (_id, agent) in rt.executor_hosts().await {
                 if let Some(store) = agent.workspace_store() {
                     let (sessions, _) = store.snapshot();
                     for s in sessions {
@@ -815,7 +883,7 @@ pub(crate) async fn handle_federation_query(
                 .map(|p| p.is_full_access())
                 .unwrap_or(false);
             let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
-            for (_id, agent) in rt.live_personas().await {
+            for (_id, agent) in rt.executor_hosts().await {
                 if let Some(store) = agent.workspace_store() {
                     let (sessions, _) = store.snapshot();
                     for s in sessions {
@@ -908,7 +976,7 @@ pub(crate) async fn handle_federation_query(
             let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
             let mut labels: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
-            for (_id, agent) in rt.live_personas().await {
+            for (_id, agent) in rt.executor_hosts().await {
                 if let Some(store) = agent.workspace_store() {
                     let (sessions, _) = store.snapshot();
                     for s in sessions {
@@ -1682,9 +1750,9 @@ mod remote_tool_install_tests {
         })
         .await;
 
-        // ② 设了兜底出口 → 事件经它发出（用 sink 断言）。
+        // ② 接线了核心服务代理 → 事件经它发出（用 sink 断言）。
         let core = new_agent("__core");
-        rt.set_event_fallback(&core);
+        rt.set_core_agent(&core);
         let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let sink = seen.clone();
         core.attach_event_sink(Arc::new(move |event| {
@@ -1699,6 +1767,77 @@ mod remote_tool_install_tests {
             seen.lock().unwrap().as_slice(),
             ["Error"],
             "无人格时必须走兜底出口"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// 零人格节点的**执行宿主**回退：`__core` 必须能被联邦调用选上。
+    ///
+    /// 这是 2026-10 那批现场的直接回归测试：云端节点 `[agent.teams]` 为空
+    /// （按设计合法），链路通、Hello 宣告了 6 个工具，但每次 `Invoke` 都回
+    /// `Forbidden`——执行端只查人格表。纯执行节点（GPU 工作站 / 云端中转）
+    /// 正是这个形态：它不需要聊天人格，只需要能被派活；bash 与文件工具一直
+    /// 挂在核心服务代理上。
+    #[tokio::test]
+    async fn executor_hosts_fall_back_to_the_core_agent() {
+        let dir = std::env::temp_dir().join(format!("echo-executor-hosts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime(&dir);
+
+        // ① 什么都没接线：零宿主。fail-closed 是刻意的——凭空造一个执行
+        //    宿主会让「这台机器到底谁在接活」不可解释。
+        assert!(
+            rt.executor_hosts().await.is_empty(),
+            "既无人格也未接线时不能凭空造出执行宿主"
+        );
+
+        // ② 接线核心服务代理 → 它是唯一的执行宿主。
+        let core = new_agent(super::CORE_AGENT_ID);
+        rt.set_core_agent(&core);
+        let hosts = rt.executor_hosts().await;
+        assert_eq!(hosts.len(), 1, "零人格时执行宿主应恰为 __core");
+        assert_eq!(hosts[0].0, super::CORE_AGENT_ID);
+        assert!(Arc::ptr_eq(&hosts[0].1, &core), "必须是接线的那个实例");
+        drop(hosts);
+
+        // ③ 有人格 → **人格优先**。核心服务代理仍可发事件，但不再充当第二条
+        //    执行路径：两套注册表同时接活会让「谁执行了这次调用」不可解释。
+        let alice = new_agent("alice");
+        rt.register_persona("alice", &alice).await;
+        let hosts = rt.executor_hosts().await;
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].0, "alice");
+        assert!(Arc::ptr_eq(&hosts[0].1, &alice));
+
+        // ④ 人格被 drop（删除 / 禁用）→ 自动退回核心服务代理。
+        drop(hosts);
+        drop(alice);
+        let hosts = rt.executor_hosts().await;
+        assert_eq!(hosts.len(), 1, "人格消失后必须退回 __core");
+        assert_eq!(hosts[0].0, super::CORE_AGENT_ID);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 沙箱根兜底：零人格 + 无工作区会话时退到 Core 的启动目录。
+    ///
+    /// 没有这条，非 `full_access` 对端的**每个**绝对路径都被判越界
+    /// （`roots` 为空 → `path_within_roots` 恒 false），零人格节点等于只能用
+    /// 不带路径参数的���具；而 `allow_queries = ["*"]` 的互信对端根本看不出
+    /// 差别（沙箱被豁免）——问题只在收紧配置的节点上暴露，最难排查那种。
+    #[tokio::test]
+    async fn executor_roots_fall_back_to_core_working_directory() {
+        let dir = std::env::temp_dir().join(format!("echo-executor-roots-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime(&dir);
+        let core = new_agent(super::CORE_AGENT_ID);
+        rt.set_core_agent(&core);
+
+        let hosts = rt.executor_hosts().await;
+        let roots = super::executor_roots(&hosts);
+        assert_eq!(roots.len(), 1, "无工作区会话时必须有且仅有一个兜底根: {roots:?}");
+        assert_eq!(
+            roots[0],
+            std::env::current_dir().unwrap(),
+            "兜底根必须与工具注册表的基准目录同源（组合根的 current_dir）"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

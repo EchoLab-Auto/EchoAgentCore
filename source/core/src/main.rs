@@ -1362,10 +1362,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         // ① 登记进联邦侧的人格表（**人格自己报**，2026-11 S14）：
                         //    联邦不再持有 supervisor / manager 句柄。
                         rt.register_persona(&persona_id, &agent).await;
-                        // ② `__core` 同时充当"无人格时的事件兜底出口"。
-                        if persona_id == "__core" {
-                            rt.set_event_fallback(&agent);
-                        }
+                        // ② 核心服务代理的接线**不在这里**：`core_agent` 由
+                        //    `make_agent` 直接构造（id 固定 `__core`），不经本
+                        //    factory，`persona_id == "__core"` 永远不会命中。
+                        //    改为组合根在拿到 `rt` 后一次注入（见
+                        //    `rt.set_core_agent(&core_agent)`）——那里同时
+                        //    覆盖"零人格执行宿主"与"事件兜底"两个用途。
                         // ③ 补装已在线的远程代理工具（2026-11 S13）。
                         crate::federation_rt::adopt_active_links(&rt, &agent, &persona_id).await;
                     });
@@ -1409,6 +1411,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // persona 的注册表）。
     {
         let (rt, event_rx, peer_policies, _ports, fed_runner, listen_for_run) = federation;
+        // 核心服务代理接线（**必须在这里**）：`core_agent` 由 `make_agent`
+        // 直接构造、不经 `AgentManager` 的 factory（它不在 `[agent.teams]`
+        // 里，factory 永远轮不到它）。零人格节点（纯执行节点）的两个能力
+        // 都依赖这一行：
+        //   ① 联邦链路状态事件有出口（否则静默丢弃）；
+        //   ② 远程调用有执行宿主（否则一律 Forbidden）。
+        rt.set_core_agent(&core_agent);
         // 负载上报注入（P2 调度器）：握手 hello 时实时取全部 persona
         // 的活跃 turn 总数——对端调度器拿到实时负载而非启动快照。
         let load_supervisor = supervisor.clone();
@@ -1423,16 +1432,23 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             .await;
         // 远程可调用工具的真源（S8）：工具自己的 `remote_capable()` 声明。
         //
-        // 取**全部 persona 注册表的名字并集**：执行端按第一个 persona 的
-        // 注册表执行（见路由泵的 Invoke 分支），而各 persona 装的是同一批
-        // 插件——并集是"本机任意 persona 能接的活"，与实际接活能力一致；
-        // 少了任何一个，对端就少注册一个代理工具。
+        // 宣告必须与**执行端的宿主选择同口径**，否则对端会注册一批"看着有、
+        // 一调就失败"的代理工具（2026-10 ai_station：宣告 6 个、执行全
+        // Forbidden）。执行端规则见 `FederationRuntime::executor_hosts`——
+        // 人格优先、零人格回退 `__core`——这里照抄同一规则。
         let caps_supervisor = supervisor.clone();
+        let caps_core = core_agent.clone();
         rt.federation
             .set_tool_reporter(std::sync::Arc::new(move || {
+                let personas = caps_supervisor.personas();
+                let mut hosts: Vec<&Arc<echo_agent::Agent>> =
+                    personas.iter().map(|p| &p.agent).collect();
+                if hosts.is_empty() {
+                    hosts.push(&caps_core);
+                }
                 let mut names: Vec<String> = Vec::new();
-                for persona in caps_supervisor.personas().iter() {
-                    for name in persona.agent.tools.remote_capable_names() {
+                for agent in hosts {
+                    for name in agent.tools.remote_capable_names() {
                         if !names.contains(&name) {
                             names.push(name);
                         }
