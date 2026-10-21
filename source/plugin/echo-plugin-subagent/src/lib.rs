@@ -243,30 +243,15 @@ pub struct SpawnSubagentTool {
 
 /// 远程委派的聚合登记接缝（宿主注入）。
 ///
-/// 远程子任务的全部终态到达后，宿主需把「按父 turn 分组的聚合摘要」投递回
-/// 父会话——那份状态属联邦子系统（进程级聚合表），**不属于本插件**：本插件
-/// 只负责在受理委派时把「哪个 call 属于哪个 turn / peer」告知宿主。
+/// **定义在定义层**（`echo_defs::subagent`，2026-11 S12）：声明方是本插件
+/// （受理委派的一方），实现方是 `echo-plugin-federation`（聚合表的所有者）。
+/// 此前 trait 住在这里，于是联邦插件要 `impl echo_plugin_subagent::...` 才能
+/// 接上——聚合功能因此把两个插件绑成了 Cargo 依赖。
 ///
 /// 实现方（组合根）通常转调 `federation::aggregator::register_remote_subagent`。
 /// 不注入时：远程委派照常发出、`<subagent_event>` 逐个回报，只是没有分组
 /// 聚合摘要——这是**降级而非错误**（单节点部署根本不需要聚合）。
-pub trait RemoteDelegationSink: Send + Sync {
-    /// 登记一次远程委派。
-    ///
-    /// - `session_id`：父会话；
-    /// - `parent_branch_id`：父 turn 分支（聚合分组的键）；
-    /// - `call_id`：子任务 id；
-    /// - `peer`：目标节点名；
-    /// - `task`：任务摘要（聚合摘要里展示给模型看的短句）。
-    fn register_remote_delegation(
-        &self,
-        session_id: &str,
-        parent_branch_id: &str,
-        call_id: &str,
-        peer: &str,
-        task: &str,
-    );
-}
+pub use echo_defs::subagent::RemoteDelegationSink;
 
 /// 一次委派的全部参数（工具参数解析后交给执行闭包）。
 pub struct SpawnRequest {

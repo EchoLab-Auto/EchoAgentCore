@@ -31,8 +31,6 @@
 //! （Shell 机制）+ 基础 crate；**不依赖 `echo-agent`**，也不依赖组合根。
 //! `scripts/deps-policy.txt` 与 `plugin_dependency_direction.rs` 双门禁守着。
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use echo_tool::ToolRegistry;
@@ -67,19 +65,11 @@ pub use websearch::WebSearchTool;
 
 /// 远程工具调用出口（`node://<peer>/…` 前缀的分流目标）。
 ///
-/// 签名 `(peer, tool, args) -> Result<text, error>`：与联邦的 Invoke 一一对应。
-/// 定义为 type alias（而非 trait）是刻意的——它只是「一个异步函数」，
-/// 加一层 trait 只会让组合根多写一次装箱；实现方（联邦）本来就是一个
-/// 闭包/函数指针。
-pub type RemoteInvoker = Arc<
-    dyn Fn(
-            String,
-            String,
-            serde_json::Value,
-        ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>
-        + Send
-        + Sync,
->;
+/// **类型定义在定义层**（`echo_defs::remote_tool::RemoteInvoker`，2026-11 S12）：
+/// 声明方是本 crate（`node://` 的消费方），实现方是联邦子系统。此前类型住在
+/// 这里，于是联邦插件不得不 `use echo_plugin_tools::RemoteInvoker`——两个互不
+/// 相干的插件因此结了 Cargo 依赖。
+pub use echo_defs::remote_tool::RemoteInvoker;
 
 /// 注入口：`RemoteInvoker` 由组合根在**注册工具时**传入
 /// （[`register_coding_tools`] 的 `invoker` 参数）。

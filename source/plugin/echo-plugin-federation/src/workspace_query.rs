@@ -11,7 +11,9 @@
 //! 「远程不可采集」占位——单机部署零影响。
 
 use echo_federation::QueryKind;
-use echo_plugin_workspace::{QueryFuture, RemoteWorkspaceQuery};
+// 定义层（S12）：trait 的声明方是 workspace 插件、实现方是本 crate，
+// 但它既不属于谁——放在定义层，两边都不必依赖对方。
+use echo_defs::workspace::{QueryFuture, RemoteWorkspaceQuery};
 
 /// 用联邦 `RemoteQuerier` 实现工作区插件的跨机查询。
 ///

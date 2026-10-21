@@ -89,3 +89,68 @@ model = "m"
         assert!(profile.key_set());
     }
 }
+
+/// 供应商池 + 顶层默认的**只读快照**（`list_api_profiles` 输出与子代理
+/// profile 解析共用）。
+///
+/// ## 为什么在定义层（2026-11 S12）
+///
+/// 它描述的是"用户在配置里写了什么"——与 [`ApiProfile`] 同源。此前它住在
+/// `echo-plugin-provider-llm::api_pool`，于是 `echo-plugin-tools` 的
+/// `list_api_profiles` 工具不得不 `use echo_plugin_provider_llm::...`：
+/// **一个"读配置并投影给模型"的工具，因为一个结构体依赖了 provider 插件**。
+///
+/// 输出**绝不含明文密钥**：`default_key_set` / `ApiProfile.key_set` 只是
+/// 布尔"是否已配置"。
+#[derive(Debug, Default, Clone)]
+pub struct PoolSnapshot {
+    /// 池中全部 profile（原序）。
+    pub profiles: Vec<ApiProfile>,
+    /// 全局激活 profile 名（`[agent].active_api`；空 = 顶层默认）。
+    pub active_api: String,
+    /// 顶层默认 provider（无 profile / 未命中的兜底）。
+    pub default_provider: String,
+    /// 顶层默认 model。
+    pub default_model: String,
+    /// 顶层默认是否已配置 api_key（仅布尔，不回显明文）。
+    pub default_key_set: bool,
+}
+
+/// 从**已解析的配置文档**读取供应商池快照。
+///
+/// 只吃 `toml::Value` 而不是 `ConfigStore`：读取文件是宿主的活，解析配置形状
+/// 是词汇的事。于是消费方（工具插件 / 宿主 / 测试）都能用同一份解析器，
+/// 而不必互相依赖。
+///
+/// - `Ok` = 读到（`[agent]` 段缺失按空池处理——全新部署尚未落盘）；
+/// - `Err(message)` = `api_profiles` 存在但形状不对。
+pub fn parse_pool(document: &toml::Value) -> Result<PoolSnapshot, String> {
+    let agent = document.get("agent");
+    let profiles = agent
+        .and_then(|agent| agent.get("api_profiles"))
+        .cloned()
+        .unwrap_or_else(|| toml::Value::Array(Vec::new()))
+        .try_into::<Vec<ApiProfile>>()
+        .map_err(|e| format!("供应商池解析失败: {e}"))?;
+    let get_str = |key: &str| -> String {
+        agent
+            .and_then(|agent| agent.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let key_set = |key: &str| -> bool {
+        agent
+            .and_then(|agent| agent.get(key))
+            .and_then(|v| v.as_str())
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    };
+    Ok(PoolSnapshot {
+        profiles,
+        active_api: get_str("active_api"),
+        default_provider: get_str("provider"),
+        default_model: get_str("model"),
+        default_key_set: key_set("api_key"),
+    })
+}

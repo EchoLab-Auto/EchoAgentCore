@@ -13,9 +13,6 @@ echo-federation = { workspace = true }
 echo-tool = { workspace = true }
 echo-context = { workspace = true }
 echo-plugin = { workspace = true }
-echo-plugin-subagent = { workspace = true }
-echo-plugin-tools = { workspace = true }
-echo-plugin-workspace = { workspace = true }
 echo-protocol = { workspace = true }
 async-trait = { workspace = true }
 dashmap = { workspace = true }

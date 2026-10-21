@@ -16,6 +16,16 @@
 #      `echo-agent-core` 是二进制名，不应被任何 crate 依赖；
 #   3. 方向只向下：定义层 → 机制层 → 插件层 → 宿主 → 组合根。想在插件里用
 #      框架能力，走服务键 / `HostCall` / trait 注入，而不是 `use echo_agent::…`。
+#   4. **插件之间互不依赖**（2026-11 S12）。想共用类型 = 那个类型该下沉到
+#      `echo-defs`（它是"跨边界词汇"）；想调用能力 = 走服务键。允许的例外
+#      只有机制 crate：`echo-plugin` / `echo-plugin-api` / `echo-plugin-host`
+#      / `echo-plugin-sdk` / `echo-plugin-loader`——它们是"插件怎么装"，
+#      不是"某个插件"。
+#
+#      为什么这条要写死：2026-11 实测有 4 处插件互依赖（federation → subagent
+#      / tools / workspace，tools → provider-llm），全部是"一个 trait/struct
+#      长在了错的一边"。它们一直能编译、一直没人拦——于是想替换 federation
+#      就必须先接受 subagent。收紧后同类问题在 `cargo build` 就红。
 #
 # 分层依据见 document/overview/architecture.md；Phase 3 外迁记录见
 # document/design/decoupling-plan.md。
@@ -48,12 +58,12 @@ plugin/echo-plugin-adapter              echo-plugin-host echo-plugin-api echo-de
 plugin/echo-plugin-provider-llm         echo-config echo-context echo-defs echo-llm-anthropic echo-llm-ollama echo-llm-openai echo-plugin echo-protocol
 plugin/echo-plugin-skills               echo-defs echo-context echo-plugin echo-protocol
 plugin/echo-plugin-self-update          echo-context echo-plugin echo-protocol
-plugin/echo-plugin-federation          echo-defs echo-context echo-federation echo-plugin echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-tool
+plugin/echo-plugin-federation           echo-defs echo-context echo-federation echo-plugin echo-protocol echo-tool
 plugin/echo-plugin-loop                 echo-context echo-defs echo-loop echo-plugin echo-plugin-api echo-session
 plugin/echo-plugin-subagent             echo-defs echo-federation echo-protocol echo-tool
 plugin/echo-plugin-workspace            echo-context echo-defs echo-plugin echo-protocol echo-session echo-tool
 plugin/echo-plugin-management         echo-plugin   echo-context echo-defs echo-federation echo-protocol echo-session
-plugin/echo-plugin-tools                echo-config echo-defs echo-sanitize echo-tool echo-shell echo-context echo-plugin echo-plugin-provider-llm echo-protocol echo-test-utils
+plugin/echo-plugin-tools                echo-config echo-context echo-defs echo-plugin echo-protocol echo-sanitize echo-shell echo-test-utils echo-tool
 
 # ── 业务层与组合根 ─────────────────────────────────────────────────────
 # echo-agent 是业务 crate：**只有组合根可以依赖它**。

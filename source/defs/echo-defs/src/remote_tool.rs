@@ -78,3 +78,27 @@ mod tests {
         assert!(remote_tool_name("a:b", "t").starts_with(&prefix));
     }
 }
+
+/// 远程工具调用出口（`node://<peer>/…` 前缀的分流目标）。
+///
+/// 签名 `(peer, tool, args) -> Result<text, error>`：与联邦的 Invoke 一一对应。
+/// 定义为 type alias（而非 trait）是刻意的——它只是「一个异步函数」，加一层
+/// trait 只会让组合根多写一次装箱；实现方（联邦）本来就是一个闭包。
+///
+/// ## 为什么在定义层（2026-11 S12）
+///
+/// 声明方是 `echo-plugin-tools`（`node://` 前缀的**消费方**），实现方是联邦
+/// 子系统（组合根装配）。此前它住在 tools 插件里，于是联邦插件不得不
+/// `use echo_plugin_tools::RemoteInvoker` —— **两个互不相干的插件因为一个字面量
+/// 结了依赖**。类型本身是"一次跨机调用"这个动作的形状，不含任何一方的实现，
+/// 所以它的家在定义层。
+pub type RemoteInvoker = std::sync::Arc<
+    dyn Fn(
+            String,
+            String,
+            serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<String, String>> + Send>,
+        > + Send
+        + Sync,
+>;

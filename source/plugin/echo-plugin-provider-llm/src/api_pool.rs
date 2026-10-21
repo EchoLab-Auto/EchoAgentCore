@@ -13,22 +13,7 @@
 
 use echo_config::ConfigStore;
 
-use echo_defs::api_profile::ApiProfile;
-
-/// 供应商池 + 顶层默认的只读快照（工具输出与 profile 解析用）。
-#[derive(Debug, Default)]
-pub struct PoolSnapshot {
-    /// 池中全部 profile（原序）。
-    pub profiles: Vec<ApiProfile>,
-    /// 全局激活 profile 名（`[agent].active_api`；空 = 顶层默认）。
-    pub active_api: String,
-    /// 顶层默认 provider（无 profile / 未命中的兜底）。
-    pub default_provider: String,
-    /// 顶层默认 model。
-    pub default_model: String,
-    /// 顶层默认是否已配置 api_key（仅布尔，不回显明文）。
-    pub default_key_set: bool,
-}
+pub use echo_defs::api_profile::PoolSnapshot;
 
 /// 从共享配置存储读取供应商池快照。
 ///
@@ -38,30 +23,12 @@ pub fn read_snapshot(store: &ConfigStore) -> Result<PoolSnapshot, String> {
     if !store.path().exists() {
         return Ok(PoolSnapshot::default());
     }
-    let doc = store
+    let document = store
         .read()
         .map_err(|e| format!("读取配置失败（{}）: {e}", store.path().display()))?;
-    let agent = doc.get("agent");
-    let profiles = agent
-        .and_then(|agent| agent.get("api_profiles"))
-        .cloned()
-        .unwrap_or_else(|| toml::Value::Array(Vec::new()))
-        .try_into::<Vec<ApiProfile>>()
-        .map_err(|e| format!("供应商池解析失败: {e}"))?;
-    let get_str = |key: &str| -> String {
-        agent
-            .and_then(|agent| agent.get(key))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string()
-    };
-    Ok(PoolSnapshot {
-        profiles,
-        active_api: get_str("active_api"),
-        default_provider: get_str("provider"),
-        default_model: get_str("model"),
-        default_key_set: !get_str("api_key").trim().is_empty(),
-    })
+    // 解析在定义层（`echo_defs::api_profile::parse_pool`）：配置形状是词汇，
+    // 读文件是本地的事。于是 provider-llm 与 tools 不再因为一个结构体互依赖。
+    echo_defs::api_profile::parse_pool(&toml::Value::Table(document))
 }
 
 #[cfg(test)]

@@ -329,3 +329,71 @@ fn walk_rs(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
         }
     }
 }
+
+// ── 插件之间互不依赖（S12）────────────────────────────────────────────────
+
+/// 插件层**不得依赖别的插件**：只允许机制 crate。
+///
+/// 背景（2026-11 实测）：曾有 4 处插件互依赖，全部是"一个 trait/struct 长在了
+/// 错的一边"——federation 要 `impl echo_plugin_subagent::RemoteDelegationSink`、
+/// `use echo_plugin_workspace::{QueryFuture, RemoteWorkspaceQuery}`、
+/// `type RemoteInvoker = echo_plugin_tools::…`；tools 要
+/// `use echo_plugin_provider_llm::api_pool::PoolSnapshot`。
+///
+/// 后果不是"多一条边"，而是**替换不可能**：想换掉 federation 就必须先接受
+/// subagent 的词汇。它们一直能编译、一直没人拦。
+///
+/// 例外只有机制 crate（"插件怎么装"，不是"某个插件"）：
+/// `echo-plugin` / `echo-plugin-api` / `echo-plugin-host` / `echo-plugin-sdk`
+/// / `echo-plugin-loader`。
+///
+/// 本条与 `scripts/deps-policy.txt` 的白名单**互为冗余**：policy 是人读的
+/// 真值来源，这里给出可执行的诊断信息（点名是哪两个插件、该怎么修）。
+#[test]
+fn plugins_do_not_depend_on_other_plugins() {
+    const MECHANISM: [&str; 5] = [
+        "echo-plugin",
+        "echo-plugin-api",
+        "echo-plugin-host",
+        "echo-plugin-sdk",
+        "echo-plugin-loader",
+    ];
+    let root = repo_root().join("source/plugin");
+    let mut violations = Vec::new();
+    let mut plugins_seen = 0usize;
+    for entry in std::fs::read_dir(&root).expect("source/plugin") {
+        let dir = entry.expect("dir entry").path();
+        let cargo = dir.join("Cargo.toml");
+        if !cargo.exists() {
+            continue;
+        }
+        let name = dir.file_name().unwrap_or_default().to_string_lossy().to_string();
+        plugins_seen += 1;
+        let text = std::fs::read_to_string(&cargo).expect("read Cargo.toml");
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('#') {
+                continue;
+            }
+            let Some((dep, _)) = line.split_once('=') else {
+                continue;
+            };
+            let dep = dep.trim();
+            // `echo-plugin-xxx` 但**不是**机制 crate → 插件互依赖。
+            if dep.starts_with("echo-plugin-") && !MECHANISM.contains(&dep) {
+                violations.push(format!(
+                    "{name} → {dep}（应把共用的 trait/struct 下沉到 echo-defs，\
+                     或改成服务键调用）"
+                ));
+            }
+        }
+    }
+    assert!(plugins_seen >= 9, "只扫到 {plugins_seen} 个插件 crate（路径规则改过？）");
+    assert!(
+        violations.is_empty(),
+        "插件之间不得互相依赖（S12）：\n{}\n\
+         修法二选一：① 共用类型 → 下沉 `echo-defs`（跨边界词汇的家）；\
+         ② 想调能力 → 服务键（`MountContext::require`）。",
+        violations.join("\n")
+    );
+}

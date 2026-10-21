@@ -11,7 +11,7 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use echo_plugin_provider_llm::api_pool::PoolSnapshot;
+use echo_defs::api_profile::{parse_pool, PoolSnapshot};
 use echo_tool::{Tool, ToolError};
 
 pub struct ListApiProfilesTool {
@@ -40,7 +40,17 @@ impl Tool for ListApiProfilesTool {
     }
 
     async fn execute(&self, _arguments: Value) -> Result<String, ToolError> {
-        let snapshot = echo_plugin_provider_llm::api_pool::read_snapshot(&self.store).map_err(ToolError::Execution)?;
+        // 解析器在定义层（吃已解析的文档），读文件是本地的事——
+        // 于是"读配置并投影给模型"不需要认识 provider 插件（S12）。
+        let snapshot = if self.store.path().exists() {
+            let document = self
+                .store
+                .read()
+                .map_err(|e| ToolError::Execution(format!("读取配置失败: {e}")))?;
+            parse_pool(&toml::Value::Table(document)).map_err(ToolError::Execution)?
+        } else {
+            PoolSnapshot::default()
+        };
         Ok(render(&snapshot))
     }
 }

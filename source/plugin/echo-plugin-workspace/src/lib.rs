@@ -34,34 +34,14 @@ pub mod commands;
 /// 让插件猜，两边一改就漂移。
 pub const PLUGIN_ID: &str = "echo-agent.workspace";
 
-use std::future::Future;
-use std::pin::Pin;
 
-/// 一次远程查询的 future（结果 = 对端回推的 JSON 载荷）。
-pub type QueryFuture = Pin<Box<dyn Future<Output = Result<serde_json::Value, String>> + Send>>;
-
-/// 跨机工作区查询接缝（宿主注入）。
+/// 一次远程查询的 future（结果 = 对端回推的 JSON 载荷）���
 ///
-/// 工作区目录可以是 `node://<peer>/<path>`——对端机器上的目录。查看其
-/// `git status`、列文件、浏览子目录都需要问到对端，但**那份传输属联邦
-/// 子系统**：本插件只表达「我要问什么」，由宿主实现（组合根把联邦的
-/// `remote_querier` + `QueryKind` 适配到下面三个语义方法）。
-///
-/// 为什么不直接暴露 `QueryKind`：插件不该为了三个查询而依赖整个联邦协议
-/// crate；语义方法也让宿主侧的实现变成一行映射，而不是字符串拼接。
-///
-/// **未注入 = 降级**：远程目录显示「远程不可采集」占位，本机功能不受影响
-/// （单机部署不需要该接缝）。
-pub trait RemoteWorkspaceQuery: Send + Sync {
-    /// 对端某目录的 git 状态（`{git: WorkspaceGitInfo}`）。
-    fn git_status(&self, peer: String, path: String) -> QueryFuture;
-
-    /// 对端某目录的文件清单（`Vec<WorkspaceFileEntry>`）。
-    fn list_files(&self, peer: String, path: String) -> QueryFuture;
-
-    /// 对端目录浏览（`{roots, entries}`；空路径 = 根列表）。
-    fn browse(&self, peer: String, path: String) -> QueryFuture;
-}
+/// **定义在定义层**（`echo_defs::workspace`，2026-11 S12）：语义方法
+/// （问 git / 问文件 / 问目录）不属于任何一方，所以它既不做成 workspace 插件
+/// 的私有词汇（那会让实现方依赖本插件），也不住在联邦里（那会让本插件依赖
+/// 联邦）。
+pub use echo_defs::workspace::{QueryFuture, RemoteWorkspaceQuery};
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

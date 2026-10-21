@@ -222,7 +222,7 @@ impl AggregatorDelegationSink {
     }
 }
 
-impl echo_plugin_subagent::RemoteDelegationSink for AggregatorDelegationSink {
+impl echo_defs::subagent::RemoteDelegationSink for AggregatorDelegationSink {
     fn register_remote_delegation(
         &self,
         session_id: &str,

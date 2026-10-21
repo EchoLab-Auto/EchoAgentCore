@@ -80,7 +80,7 @@ pub type AggregateDeliver = std::sync::Arc<dyn Fn(aggregator::AggregateSummary) 
 /// `Err` 文本原样透传（对端白名单 / 沙箱拒绝、链路失败、超时等）。
 ///
 /// 类型与 `echo-plugin-tools` 共享（工具就注册在那个 crate 里）。
-pub type RemoteInvoker = echo_plugin_tools::RemoteInvoker;
+pub type RemoteInvoker = echo_defs::remote_tool::RemoteInvoker;
 
 /// 远程**只读查询**发起函数（跨机工作区用）：
 /// `(peer, kind, subject) → Result<payload_json, err>`。
@@ -285,7 +285,7 @@ mod tests {
 
         // 两个远程子代理登记在同一个父 turn 上。
         let sink = aggregator::AggregatorDelegationSink::from_ports(&ports);
-        use echo_plugin_subagent::RemoteDelegationSink;
+        use echo_defs::subagent::RemoteDelegationSink;
         sink.register_remote_delegation("sess-1", "turn-1", "call-a", "node-a", "任务 A");
         sink.register_remote_delegation("sess-1", "turn-1", "call-b", "node-b", "任务 B");
 

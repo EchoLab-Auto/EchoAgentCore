@@ -8,12 +8,12 @@ repository.workspace = true
 description = "内置工具集（echo-agent.tools.builtin）：计算/检索/清单/编码/Shell/实例管理"
 
 [dependencies]
+toml = { workspace = true }
 echo-defs = { workspace = true }
 echo-tool = { workspace = true }
 echo-shell = { workspace = true }
 echo-context = { workspace = true }
 echo-plugin = { workspace = true }
-echo-plugin-provider-llm = { workspace = true }
 echo-config = { workspace = true }
 echo-protocol = { workspace = true }
 async-trait = { workspace = true }
