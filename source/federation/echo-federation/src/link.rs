@@ -456,22 +456,21 @@ impl Federation {
     /// [`crate::invite::note_observed`]）；池内去重且最近优先。
     pub fn note_observed_host_sync(&self, host: &str) {
         let cap = OBSERVED_HOST_CAP;
-        let observed = {
+        let recorded = {
             let mut hosts = self
                 .observed_hosts
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let before = hosts.len();
-            crate::invite::note_observed(&mut hosts, host, cap);
-            hosts.len() != before || hosts.last().is_some_and(|last| last == host)
+            crate::invite::note_observed(&mut hosts, host, cap)
         };
-        if observed {
-            // 运维排查面：邀请串/Hello 宣告的地址来自这里（`RUST_LOG=debug`）。
-            tracing::debug!(
+        if recorded {
+            // 运维排查面：邀请串 / Hello 宣告的地址来自这里（连接频率低，
+            // 一条 info 不吵——配对排障时正是最需要的那行）。
+            tracing::info!(
                 target: "federation",
-                host = %host.trim(),
+                seen = %host.trim(),
                 effective = ?self.observed_host_sync(),
-                "observed inbound access host"
+                "observed inbound access address"
             );
         }
     }

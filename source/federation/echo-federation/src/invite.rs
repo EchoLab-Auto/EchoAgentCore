@@ -203,10 +203,12 @@ pub fn pick_observed_host(hosts: &[String]) -> Option<String> {
 }
 
 /// 记录一次观测（去重并挪到尾部 = 最近优先；池上限 `cap`）。
-pub fn note_observed(hosts: &mut Vec<String>, host: &str, cap: usize) {
+///
+/// 返回 `true` = 该主机确实进了池（调用方据此打一条握手日志）。
+pub fn note_observed(hosts: &mut Vec<String>, host: &str, cap: usize) -> bool {
     let host = host.trim();
     if host.is_empty() || host_rank(host) == 0 {
-        return; // 回环/通配对远端毫无意义，不进池（否则会顶掉有效值）
+        return false; // 回环/通配对远端毫无意义，不进池（否则会顶掉有效值）
     }
     hosts.retain(|known| !known.eq_ignore_ascii_case(host));
     hosts.push(host.to_string());
@@ -214,6 +216,7 @@ pub fn note_observed(hosts: &mut Vec<String>, host: &str, cap: usize) {
         let excess = hosts.len() - cap;
         hosts.drain(0..excess);
     }
+    true
 }
 
 fn urlencoding_encode(s: &str) -> String {
