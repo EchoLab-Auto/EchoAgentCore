@@ -10,8 +10,7 @@
 //! | [`instance_ops`] | `echo-agent.instance.qq` | 插件实例命令域（通用 + legacy 兼容层）+ 入站 hook 桥 |
 //! | [`federation`] | `echo-agent.federation.<peer>` | 远程代理工具 + Invoke 调度/裁决 + 工作区跨机查询适配器 |
 //!
-//! **已外迁的包不再在此**（解耦计划 Phase 3，见
-//! `document/design/decoupling-plan.md`）：
+//! **已外迁的包不再在此**（解耦计划 Phase 3）：
 //!
 //! | 插件 id | 现所在 crate |
 //! |---|---|

@@ -22,7 +22,7 @@
 //! 与嵌入式用法里就是"空身份"，不必再写 8 个 `RwLock::new(None)`。
 //!
 //! 分组**不是**插件化：`Agent` 是 per-persona 作用域（对应 Cordis 的
-//! `ctx.fork()`），不是能力。见 `document/design/full-plugin-ization.md` §不搬清单。
+//! `ctx.fork()`），不是能力。
 
 use std::sync::Arc;
 

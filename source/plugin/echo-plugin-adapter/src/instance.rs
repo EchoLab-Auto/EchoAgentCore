@@ -13,7 +13,7 @@
 //!   `submit_input` 入队（回执 = 已入队，每实例有界队列 + 串行 worker
 //!   保序）、`report_*` 更新连接态缓存。
 //!
-//! 选型与语义见 `document/design/instance-plugin.md`（协议规范 / 宿主侧实现）。
+//! 选型与语义见 `document/plugins/plugin-authoring.md`（协议规范 / 宿主侧实现）。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
