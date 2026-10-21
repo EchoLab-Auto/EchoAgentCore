@@ -13,6 +13,7 @@ fn caps(tools: &[&str]) -> NodeCaps {
         subagent: true,
         workspaces: vec![],
         active_turns: 0,
+        panel_ready: false,
     }
 }
 

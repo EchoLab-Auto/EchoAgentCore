@@ -34,10 +34,14 @@ pub use bridge::{
     FanoutHandle, SequencedEvent, WsMessage,
 };
 
-pub use command::{command_clearance, BackendCommand, CommandClearance};
+pub use command::{
+    command_clearance, is_panel_readonly_allowed, BackendCommand, CommandClearance,
+    PANEL_READONLY_COMMANDS,
+};
 pub use event::{
     ApiBalancePoint, ApiMetricsEntry, ApiProfileInfo, ApiUsagePoint, BackendEvent, BackendState,
-    BrowseRoot, ContextBlockInfo, ContextMessageInfo, FederationLinkState, FederationPeerInfo,
+    BrowseRoot, ContextBlockInfo, ContextMessageInfo, FederatedNodeInfo, FederationLinkState,
+    FederationPeerInfo,
     InstanceMetadataEntry, InstanceStatus, PluginInfo, SessionInfo, ShellSessionInfo, SkillInfo,
     SkillSourceInfo, TeamInfo, TimelineMessage, TimelineSource, TimelineTool, ToolInfo,
     ToolStateEventBuilder,

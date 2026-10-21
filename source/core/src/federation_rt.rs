@@ -303,6 +303,63 @@ impl FederationRuntime {
             node_name: self.node_name.clone(),
             listen: self.listen.clone(),
             peers,
+            // Panel 身份（P1）：面板据此显示「本节点已/未开放 Panel 接入」。
+            // 权限级别随事件下发但不含密钥——密钥永不过线。
+            panel_ready: self.federation.panel_ready_sync(),
+            panel_access: self.federation.panel_access_sync().as_str().to_string(),
+        }
+    }
+
+    /// 组装 `FederationDirectory` 事件（P2「自动发现」）。
+    ///
+    /// 只报**直接邻居**（`[federation.peers.*]` + 邀请占位提升后的配置名）：
+    /// 联邦没有中心成员表，拓扑由 Panel 汇总多个节点的目录得到（见联邦
+    /// 设计原则「节点对等、无 gossip」）。
+    ///
+    /// 每个邻居给出的两个地址各有用途：
+    /// - `url` = 本机拨号地址（配置值，可能是内网/VPN——Panel 未必可达）；
+    /// - `advertise` = 对端**自己宣告**的可拨地址（握手学到，跨断链保留）——
+    ///   Panel 应优先用它，这正是地址漂移场景下唯一正确的那个。
+    pub(crate) async fn directory_event(&self) -> echo_protocol::BackendEvent {
+        let active: std::collections::HashSet<String> =
+            self.federation.active_peers().await.into_iter().collect();
+        let peer_names = self.peer_names.read().await.clone();
+        let mut nodes = Vec::new();
+        for config in self.federation.peer_configs().await {
+            // 在线判定同 `status_event`：按 token 匹配活跃链路（配置名与
+            // 链路的 node_id 之间没有一对一映射——连入侧占位也算）。
+            let node_id = peer_names.get(&config.name).cloned().unwrap_or_default();
+            let online = !node_id.is_empty() && active.contains(&node_id)
+                || self.federation.is_link_token_online(&config.token).await;
+            let info = self.federation.peer_info(&config.name).await;
+            nodes.push(echo_protocol::FederatedNodeInfo {
+                name: config.name.clone(),
+                node_id: if node_id.is_empty() {
+                    info.as_ref().map(|i| i.node_id.clone()).unwrap_or_default()
+                } else {
+                    node_id
+                },
+                node_name: info.as_ref().and_then(|i| i.node_name.clone()),
+                url: config.url.clone(),
+                advertise: self
+                    .federation
+                    .peer_diagnostics(&config.name)
+                    .await
+                    .last_advertise
+                    .or_else(|| info.as_ref().and_then(|i| i.advertise.clone())),
+                online,
+                // 对端是否开放 Panel 身份：来自握手 Hello 的能力声明。
+                // 旧版对端不宣告 = false（Panel 仍可试连，401 即按未开放处理）。
+                panel_ready: info.as_ref().map(|i| i.caps.panel_ready).unwrap_or(false),
+            });
+        }
+        echo_protocol::BackendEvent::FederationDirectory {
+            node_id: self.federation.local_node_id().to_string(),
+            node_name: self.node_name.clone(),
+            listen: self.listen.clone(),
+            panel_ready: self.federation.panel_ready_sync(),
+            panel_access: self.federation.panel_access_sync().as_str().to_string(),
+            nodes,
         }
     }
 }
@@ -1854,5 +1911,117 @@ mod core_util_tests {
         assert_eq!(acked, 0);
         assert!(matches!(outcome, ImportOutcome::Failed(_)));
         assert!(imports.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod directory_tests {
+    //! `FederationDirectory` / `FederationStatus.panel_ready` 的**数据面**
+    //! （P1/P2，2026-11）。
+    //!
+    //! 这两条事件是 Panel 自动发现与"权限一致"的全部信息来源，错一个字段
+    //! 就会表现成"面板看不到某台机器"或"以为开放了其实没开"——所以钉在这里，
+    //! 而不是只靠端到端冒烟。
+
+    use std::sync::Arc;
+
+    /// 造一个只在内存里的运行时（不监听、不连出）。
+    fn runtime(dir: &std::path::Path) -> Arc<super::FederationRuntime> {
+        super::remote_tool_install_tests::runtime(dir)
+    }
+
+    fn tmpdir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("echo-fed-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 目录事件：本机身份 + 每个 peer 的 **两套地址**（url / advertise）与在线
+    /// 状态。离线 peer 也在清单里（Panel 仍可用历史宣告地址试连）。
+    #[tokio::test]
+    async fn directory_reports_identity_and_neighbours() {
+        let dir = tmpdir("directory");
+        let rt = runtime(&dir);
+        rt.federation
+            .add_peer(echo_federation::PeerConfig {
+                name: "gpu-box".into(),
+                url: "ws://10.0.0.9:3132".into(),
+                token: "peer-tok".into(),
+            })
+            .await;
+
+        match rt.directory_event().await {
+            echo_protocol::BackendEvent::FederationDirectory {
+                node_id,
+                listen,
+                panel_ready,
+                panel_access,
+                nodes,
+                ..
+            } => {
+                assert_eq!(node_id, "node-local", "必须是**应答节点自己**的 node_id");
+                assert_eq!(listen, "", "运行时的 listen 是空串（测试不监听）");
+                assert!(!panel_ready, "未配置 panel 身份时不许自称开放");
+                assert_eq!(panel_access, "off");
+                assert_eq!(nodes.len(), 1, "一个 peer 一条目录项：{nodes:?}");
+                let node = &nodes[0];
+                assert_eq!(node.name, "gpu-box");
+                assert_eq!(node.url, "ws://10.0.0.9:3132", "本机拨号地址原样报出");
+                assert!(!node.online, "没建链路就必须报离线");
+                assert!(
+                    node.advertise.is_none(),
+                    "从未握手过就没有对端宣告地址：{:?}",
+                    node.advertise
+                );
+                assert!(!node.panel_ready, "对端未声明 = 未开放（Panel 仍可试连）");
+            }
+            other => panic!("expected FederationDirectory, got {other:?}"),
+        }
+    }
+
+    /// 状态事件必须带 Panel 身份字段：**开放后立刻反映**（同一份运行时，
+    /// 配置热更新语义）。密钥永不过线，只有级别与布尔。
+    #[tokio::test]
+    async fn status_reports_panel_identity_without_leaking_keys() {
+        let dir = tmpdir("status-panel");
+        let rt = runtime(&dir);
+
+        // 未配置：off。
+        match rt.status_event().await {
+            echo_protocol::BackendEvent::FederationStatus {
+                panel_ready,
+                panel_access,
+                ..
+            } => {
+                assert!(!panel_ready);
+                assert_eq!(panel_access, "off");
+            }
+            other => panic!("expected FederationStatus, got {other:?}"),
+        }
+
+        // 开放为 operate。
+        rt.federation
+            .set_panel_identity(echo_federation::PanelIdentity::new(
+                vec!["super-secret-panel-key".into()],
+                echo_federation::PanelAccess::Operate,
+            ));
+        let event = rt.status_event().await;
+        match &event {
+            echo_protocol::BackendEvent::FederationStatus {
+                panel_ready,
+                panel_access,
+                ..
+            } => {
+                assert!(panel_ready, "配了密钥 + 非 off 级别即开放");
+                assert_eq!(panel_access, "operate");
+            }
+            other => panic!("expected FederationStatus, got {other:?}"),
+        }
+        // 序列化后**不得**出现密钥明文（事件会经管理 WS 下发到每个 Panel）。
+        let wire = serde_json::to_string(&event).unwrap();
+        assert!(
+            !wire.contains("super-secret-panel-key"),
+            "panel 密钥绝不能进事件流：{wire}"
+        );
     }
 }

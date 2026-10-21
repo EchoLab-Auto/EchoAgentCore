@@ -218,6 +218,16 @@ pub struct Federation {
     /// 运行期启用/停用插件会直接反映到下一次握手，而不用重启节点。
     /// 未注入 = 宣告空集（fail-closed：宁可少宣告，不可宣告了接不了）。
     tool_reporter: RwLock<Option<std::sync::Arc<dyn Fn() -> Vec<String> + Send + Sync>>>,
+    /// **联邦级 Panel 身份**门（P1，2026-11）：一套密钥 + 一个授权级别，
+    /// 供合并端口的同步升级回调判定「这条管理连接来自哪个 Panel、给多大权限」。
+    ///
+    /// 为什么挂在 `Federation` 上：升级回调只能拿到 `Arc<Federation>`（与
+    /// [`Self::has_peer_token_sync`] 同款理由），而 `[federation] panel_keys`
+    /// 本来就写在联邦配置段里。
+    ///
+    /// 热更新：装配层在启动时 [`Self::set_panel_identity`] 一次；将来支持
+    /// 配置热重载时再调用即可（`PanelGate` 内部 `RwLock`）。
+    panel_gate: crate::panel::PanelGate,
     /// 事件出口（路由层订阅）。
     event_tx: mpsc::Sender<LinkEvent>,
     shutdown: watch::Sender<bool>,
@@ -259,6 +269,7 @@ impl Federation {
             known_advertise: RwLock::new(std::collections::HashMap::new()),
             load_reporter: RwLock::new(None),
             tool_reporter: RwLock::new(None),
+            panel_gate: crate::panel::PanelGate::default(),
             event_tx,
             shutdown,
         })
@@ -296,6 +307,8 @@ impl Federation {
                 tracing::debug!(target: "federation", "hello: tool reporter busy — empty tools");
             }
         }
+        // Panel 身份开放状态：同样在握手时现取（配置热更新后下一个握手即生效）。
+        caps.panel_ready = self.panel_gate.is_open();
         NodeHello {
             node_id: self.node_id.clone(),
             node_name: self.node_name.clone(),
@@ -435,6 +448,34 @@ impl Federation {
             .synced_tokens
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = tokens;
+    }
+
+    /// 装配期设置**联邦级 Panel 身份**（P1，2026-11）：密钥表 + 授权级别。
+    ///
+    /// 幂等：重复调用即整体替换（配置热更新）。空密钥表或 `Off` 级别 =
+    /// 不接受 Panel 身份（默认状态）。
+    pub fn set_panel_identity(&self, identity: crate::panel::PanelIdentity) {
+        self.panel_gate.set(identity);
+    }
+
+    /// 本节点是否对外接受 Panel 身份（握手 `caps.panel_ready` 与
+    /// `FederationStatus.panel_ready` 的数据源）。
+    pub fn panel_ready_sync(&self) -> bool {
+        self.panel_gate.is_open()
+    }
+
+    /// 本节点授予 Panel 身份的级别（常量，装配期确定）。
+    pub fn panel_access_sync(&self) -> crate::panel::PanelAccess {
+        self.panel_gate.identity().access()
+    }
+
+    /// 同步版 Panel 身份判定（合并端口/独立监听的升级回调专用）：
+    /// 命中返回该身份应得的级别，未命中返回 `None`（→ 401）。
+    ///
+    /// **空凭据恒不命中**（同 `has_peer_token_sync` 的纪律：空令牌不是
+    /// "万能令牌"）。
+    pub fn panel_gate_sync(&self, token: &str) -> Option<crate::panel::PanelAccess> {
+        self.panel_gate.lookup(token)
     }
 
     /// 同步版 per-peer 令牌判定（端口合并的升级回调专用；空令牌恒不

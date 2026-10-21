@@ -1097,6 +1097,7 @@ mod tests {
     #[test]
     fn candidates_mirror_peer_caps_exactly() {
         let caps = NodeCaps {
+            panel_ready: false,
             tools: vec![
                 "read_file".into(),
                 "their_plugin_tool".into(),

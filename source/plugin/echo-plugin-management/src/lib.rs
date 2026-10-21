@@ -20,7 +20,10 @@
 //!   fail-closed 校验（合并 = 管理通道与联邦入站同址，必须令牌可分）；
 //! - [`timeline`]：**显示时间线的投影策略**——哪些事件进面板、字段怎么映射、
 //!   工具完成态如何在原地合并、推理条目发往前端时怎么瘦身（全插件化 S3）；
-//! - token 鉴权（`classify_token` / 常量时间比较）与心跳保活。
+//! - token 鉴权（`classify_token` / 常量时间比较）与心跳保活；
+//! - **Panel 身份**（P1，2026-11）：`[federation] panel_keys` + `panel_access`
+//!   让一个 Panel 用同一把密钥接入全网任一节点，服务端按级别（只读/操作/
+//!   管理）强制边界——见 [`ConnRole::Panel`] 与 [`serve_management_ws`]。
 //!
 //! 依赖纪律：只依赖 `echo-protocol`（线契约）、`echo-federation`（合并端口
 //! 时的对端连接接收）与 tokio/tungstenite——不依赖 `echo-agent`。
@@ -344,6 +347,58 @@ pub fn validate_merged(
     Ok(())
 }
 
+/// Panel 身份配置的启动期校验（P1，2026-11）——**fail-closed**。
+///
+/// 三类令牌共用"Bearer 命名空间"（合并模式下同一个监听端口），所以必须
+/// 互不相同，否则连接意图不可判定（同一把密钥既是管理又是 Panel，升级回调
+/// 只能二选一，另一种用法静默降级）。这条与 [`validate_merged`] 的令牌冲突
+/// 校验同源，但**在独立模式下也要跑**：Panel 密钥与管理令牌相同时，运维改
+/// 一次 `[federation].listen` 就会让行为变脸。
+///
+/// `level` 来自 `[federation].panel_access`；`keys` 来自 `panel_keys`。
+pub fn validate_panel_identity(
+    keys: &[String],
+    level: echo_federation::PanelAccess,
+    management_token: &str,
+    has_peer_token: impl Fn(&str) -> bool,
+) -> anyhow::Result<()> {
+    let keys: Vec<&String> = keys.iter().filter(|k| !k.trim().is_empty()).collect();
+    // ① 声明了开放级别却没配密钥：配置写错了（多半是漏了一行）。
+    //    不静默按 off 处理——那会让运维以为已开放，实际全部 401。
+    if level.is_open() && keys.is_empty() {
+        anyhow::bail!(
+            "[federation] panel_access = {} 但没有配置任何 panel_keys——\
+             请补上 panel_keys，或把 panel_access 改回 \"off\"",
+            level.as_str()
+        );
+    }
+    // ② 配了密钥却级别是 off：同样是"差不多能用"的错觉，明确报错。
+    if !level.is_open() && !keys.is_empty() {
+        anyhow::bail!(
+            "配置了 [federation] panel_keys 但 panel_access = \"off\"（缺省值）——\
+             请显式设为 readonly / operate / admin 之一，或删掉 panel_keys"
+        );
+    }
+    // ③ 与其它令牌撞车：不可判定。
+    for key in &keys {
+        let key = key.trim();
+        if !management_token.is_empty() && constant_time_eq(key, management_token) {
+            anyhow::bail!(
+                "[federation] panel_keys 与 management_access_token 相同——\
+                 两者必须使用不同密钥（连接意图不可判定）。建议：\
+                 `echo-agent-core token --rotate` 换管理令牌，或换一把 panel 密钥。"
+            );
+        }
+        if has_peer_token(key) {
+            anyhow::bail!(
+                "[federation] panel_keys 与某个 [federation.peers.*] token 相同——\
+                 两者必须使用不同密钥（Panel 身份会被误判为联邦链路）。"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Serve on a pre-bound listener (tests use it to pick a free port).
 #[cfg(test)]
 pub(crate) async fn serve_with_listener(
@@ -381,9 +436,20 @@ async fn serve_with_listener_and_token(
         let access_token = access_token.clone();
         let federation = federation.clone();
         let observer = observer.clone();
+        // Panel 身份出处：合并模式 = 同一联邦句柄；独立模式 = 观测句柄
+        // （两者都指向本节点的 `Arc<Federation>`，装配层保证）。
+        let panel_source = federation.clone().or_else(|| observer.clone());
         tokio::spawn(async move {
-            if let Err(e) =
-                handle_connection(stream, events, bridge, &access_token, federation, observer).await
+            if let Err(e) = handle_connection(
+                stream,
+                events,
+                bridge,
+                &access_token,
+                federation,
+                observer,
+                panel_source,
+            )
+            .await
             {
                 warn!(error = %e, "Panel connection error");
             }
@@ -399,20 +465,42 @@ async fn handle_connection(
     events: Arc<EventBroker>,
     bridge: Arc<BackendBridge>,
     access_token: &str,
+    // 合并模式的联邦句柄（Some = 联邦入站与本端口共用监听）。
     federation: Option<Arc<echo_federation::Federation>>,
+    // 入站 Host 观测出处（独立模式也用它学"别人怎么连我"）。
     observer: Option<Arc<echo_federation::Federation>>,
+    // **Panel 身份密钥表**出处（P1）：合并模式下与 `federation` 同一个句柄，
+    // 独立模式下就是 `observer`。单独一个参数是为了让"谁提供 panel 判定"
+    // 在调用点显式可读（两者在两种模式下恰好同源，但不是同一个概念）。
+    panel_source: Option<Arc<echo_federation::Federation>>,
 ) -> anyhow::Result<()> {
     match federation {
-        // 独立模式：管理通道（行为不变；`observer` 仅用于记录入站 Host）。
+        // 独立模式：管理通道 + Panel 身份（`panel_source` 提供 Panel 密钥表；
+        // `observer` 仅用于记录入站 Host）。
         None => {
-            let ws = accept_management_ws(stream, access_token, observer).await?;
-            serve_management_ws(ws, events, bridge, false).await
+            let (ws, access) =
+                accept_standalone_ws(stream, access_token, panel_source, observer).await?;
+            serve_management_ws(ws, events, bridge, false, access).await
         }
         // 合并模式：升级回调按令牌分类，升级后按角色分派。
         Some(fed) => {
             let (ws, role, presented) = accept_merged_ws(stream, access_token, fed.clone()).await?;
             match role {
-                ConnRole::Management => serve_management_ws(ws, events, bridge, true).await,
+                ConnRole::Management => {
+                    serve_management_ws(
+                        ws,
+                        events,
+                        bridge,
+                        true,
+                        echo_federation::PanelAccess::Admin,
+                    )
+                    .await
+                }
+                // Panel 身份：同一条管理 WS，但权限受级别约束（只读时拒绝
+                // 一切写命令，见 `serve_management_ws` 的门）。
+                ConnRole::Panel(access) => {
+                    serve_management_ws(ws, events, bridge, true, access).await
+                }
                 ConnRole::Federation => {
                     let result = fed.accept_ws_pub(ws, presented).await;
                     if let Err(ref e) = result {
@@ -432,19 +520,30 @@ async fn handle_connection(
 pub(crate) enum ConnRole {
     Management,
     Federation,
+    /// **联邦级 Panel 身份**（P1，2026-11）：持 `[federation] panel_keys` 之一
+    /// 的客户端。走管理 WS，但权限由 `panel_access` 决定（`Readonly` 时
+    /// 只放行 `PANEL_READONLY_COMMANDS`）。
+    Panel(echo_federation::PanelAccess),
 }
 
 /// 合并监听端的令牌分类（决策表如下）：
 /// 1. == 管理令牌（非空）→ 管理；2. ∈ peer 令牌表 → 联邦；
-/// 3. 管理令牌为空 → 管理（兼容旧监听行为；非回环合并已在启动期拒绝）；
-/// 4. 其余（未知令牌 / 缺令牌且管理令牌非空）→ `None`（401）。
+/// 3. ∈ Panel 密钥表 → **Panel 身份**（级别由节点配置决定）；
+/// 4. 管理令牌为空 → 管理（兼容旧监听行为；非回环合并已在启动期拒绝）；
+/// 5. 其余（未知令牌 / 缺令牌且管理令牌非空）→ `None`（401）。
 ///
-/// `has_peer_token("")` 必须为 false（`Federation::has_peer_token_sync`
-/// 已保证）；判定顺序即决策表自上而下，管理/联邦令牌相等已在启动期校验。
+/// **顺序即优先级**：管理令牌排在最前，所以即使运维把 Panel 密钥误配成
+/// 管理令牌，本机管理面也不会因为"看起来像 panel"而被降级（启动期还有
+/// `validate_panel_identity` fail-closed 拦住这种配置）。
+///
+/// `has_peer_token("")` / `panel_of("")` 必须为 None（生产实现由
+/// `Federation::has_peer_token_sync` / `panel_gate_sync` 保证：空凭据恒不
+/// 命中——空串不是"万能令牌"）。
 fn classify_token(
     presented: &str,
     management_token: &str,
     has_peer_token: impl Fn(&str) -> bool,
+    panel_of: impl Fn(&str) -> Option<echo_federation::PanelAccess>,
 ) -> Option<ConnRole> {
     if !management_token.is_empty() && constant_time_eq(presented, management_token) {
         return Some(ConnRole::Management);
@@ -452,21 +551,44 @@ fn classify_token(
     if has_peer_token(presented) {
         return Some(ConnRole::Federation);
     }
+    // 空凭据**永不**归为 Panel（纵深防御：即便注入的判定闭包把空串当成
+    // 命中——例如将来有人写出"未配置密钥 = 不校验"的那种实现——这里也拦住。
+    // 无 Authorization 头的连接最多落到下面的"管理令牌为空"兼容分支。）
+    if !presented.is_empty() {
+        if let Some(access) = panel_of(presented) {
+            return Some(ConnRole::Panel(access));
+        }
+    }
     if management_token.is_empty() {
         return Some(ConnRole::Management);
     }
     None
 }
 
-/// 独立模式升级：无令牌 = 不校验（旧行为）；有令牌 = Bearer 断言。
+/// 独立模式升级：管理令牌 → 管理；Panel 密钥 → Panel 身份；无令牌 = 不校验
+/// （兼容旧行为，一律按管理）。
+///
+/// 返回（已升级连接, 该连接的权限级别）。`Management` 恒等于
+/// [`echo_federation::PanelAccess::Admin`]——本机管理面本来就是全权。
+///
+/// 为什么独立模式也要认 Panel 密钥：`[federation] listen` 显式独立（或
+/// 缺省合并被保守回退）时，Panel 身份的入口就在管理监听上。若只在合并
+/// 模式认，运维一改 `listen` 就会得到"同一把密钥有时能连、有时 401"的
+/// 不一致行为。
 #[allow(clippy::result_large_err)]
-async fn accept_management_ws(
+async fn accept_standalone_ws(
     stream: tokio::net::TcpStream,
     access_token: &str,
+    panel_source: Option<Arc<echo_federation::Federation>>,
     observer: Option<Arc<echo_federation::Federation>>,
-) -> anyhow::Result<tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>> {
+) -> anyhow::Result<(
+    tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    echo_federation::PanelAccess,
+)> {
+    use echo_federation::PanelAccess as Level;
     // 独立监听：没有令牌时也要能观测 `Host`（升级回调是唯一的时机——升级
     // 完成后握手头就没了），所以空/非空令牌两条路径都走带回调的升级。
+    let access_token = access_token.to_string();
     let observe = move |request: &tokio_tungstenite::tungstenite::handshake::server::Request| {
         if let Some(federation) = observer.as_ref() {
             if let Some(host) = request.headers().get("host").and_then(|v| v.to_str().ok()) {
@@ -474,37 +596,45 @@ async fn accept_management_ws(
             }
         }
     };
-    Ok(if access_token.is_empty() {
-        tokio_tungstenite::accept_hdr_async(
-            stream,
-            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                  response| {
-                observe(request);
-                Ok(response)
-            },
-        )
-        .await?
-    } else {
-        tokio_tungstenite::accept_hdr_async(
-            stream,
-            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                  response| {
-                observe(request);
-                let authorized = request
-                    .headers()
-                    .get("authorization")
-                    .and_then(|value| value.to_str().ok())
-                    .map(|value| constant_time_eq(value, &format!("Bearer {access_token}")))
-                    .unwrap_or(false);
-                if authorized {
-                    Ok(response)
-                } else {
-                    Err(unauthorized_response())
-                }
-            },
-        )
-        .await?
-    })
+    // 命中的权限级别由升级回调写入（与合并模式同款：回调是同步且 'static，
+    // 结果只能经共享槽位带回）。
+    let level_out = Arc::new(std::sync::Mutex::new(Level::Admin));
+    let level_out2 = level_out.clone();
+    let panel_source2 = panel_source.clone();
+    let ws = tokio_tungstenite::accept_hdr_async(
+        stream,
+        move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            observe(request);
+            let presented = request
+                .headers()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+                .unwrap_or("");
+            let level = if !access_token.is_empty() && constant_time_eq(presented, &access_token) {
+                Level::Admin
+            } else if let Some(level) = panel_source2
+                .as_ref()
+                .and_then(|fed| fed.panel_gate_sync(presented))
+            {
+                level
+            } else if access_token.is_empty() {
+                // 兼容旧监听行为（无令牌 = 不校验）。
+                Level::Admin
+            } else {
+                return Err(unauthorized_response());
+            };
+            *level_out2
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = level;
+            Ok(response)
+        },
+    )
+    .await?;
+    let level = *level_out
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Ok((ws, level))
 }
 
 /// 合并模式升级：按令牌命名空间分类；未命中即标准 401（非静默断开）。
@@ -538,9 +668,12 @@ async fn accept_merged_ws(
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| value.strip_prefix("Bearer "))
                 .unwrap_or("");
-            match classify_token(presented, &management_token, |t| {
-                federation.has_peer_token_sync(t)
-            }) {
+            match classify_token(
+                presented,
+                &management_token,
+                |t| federation.has_peer_token_sync(t),
+                |t| federation.panel_gate_sync(t),
+            ) {
                 Some(role) => {
                     *role_out2
                         .lock()
@@ -571,11 +704,19 @@ async fn accept_merged_ws(
 /// `merged_hint` = 该连接来自合并监听端（用于联邦帧误连的诊断增强：
 /// 管理令牌为空的核心上，未知 peer 令牌的连接会经兼容分支被归为管理，
 /// 若其首帧是联邦帧则明确记录并断开，避免对端黑盒等超时）。
+/// `access` = 本连接的权限级别（P1，2026-11）：
+///
+/// - 本机管理令牌 / Panel 身份的 `operate` / `admin` → 不设门（与原行为一致）；
+/// - Panel 身份的 `readonly` → **只放行** [`echo_protocol::PANEL_READONLY_COMMANDS`]，
+///   其余命令就地拒绝并回一条 `Error` 事件（而不是静默丢弃——客户端必须知道
+///   "我不是没权限，是被降级了"）；
+/// - `off` 理论上不会走到这里（握手期已 401），出现即按只读处理（fail-closed）。
 async fn serve_management_ws(
     ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     events: Arc<EventBroker>,
     bridge: Arc<BackendBridge>,
     merged_hint: bool,
+    access: echo_federation::PanelAccess,
 ) -> anyhow::Result<()> {
     let (mut write, mut read) = ws.split();
 
@@ -621,6 +762,26 @@ async fn serve_management_ws(
                             tokio_tungstenite::tungstenite::Message::Text(text) => {
                                 match handle_inbound_text(&text) {
                                     Some(InboundFrame::Command(cmd)) => {
+                                        // 只读 Panel 身份的门（P1）：边界在服务端
+                                        // 强制，客户端自律不算边界。
+                                        if let Some(reason) = readonly_rejection(access, &cmd) {
+                                            let frame = echo_protocol::serialize_event(
+                                                &echo_protocol::BackendEvent::Error {
+                                                    session_id: None,
+                                                    message: reason,
+                                                },
+                                            );
+                                            if write
+                                                .send(tokio_tungstenite::tungstenite::Message::Text(
+                                                    frame,
+                                                ))
+                                                .await
+                                                .is_err()
+                                            {
+                                                break; // client gone
+                                            }
+                                            continue;
+                                        }
                                         let _ = bridge.send_command(cmd);
                                     }
                                     None => {
@@ -682,6 +843,37 @@ pub(crate) fn handle_inbound_text(text: &str) -> Option<InboundFrame> {
     match echo_protocol::deserialize_message(text) {
         Some(echo_protocol::WsMessage::Command(cmd)) => Some(InboundFrame::Command(cmd)),
         _ => None,
+    }
+}
+
+/// 只读 Panel 身份的**服务端门**（P1，2026-11）：返回 `Some(拒绝原因)` 即拦下。
+///
+/// 为什么是纯函数：门是安全边界，必须能脱离 WS/网络单测（`mod tests` 里
+/// 有三条：放行观察命令、拒绝写命令、拒绝取密钥）。三个级别的语义：
+///
+/// | 级别 | 行为 |
+/// |---|---|
+/// | `Off` | 拒绝一切（理论上握手期已 401；这里是兜底） |
+/// | `Readonly` | 只放行 `PANEL_READONLY_COMMANDS`，其余拒绝并说明 |
+/// | `Operate` / `Admin` | 不设门（等同管理面） |
+fn readonly_rejection(
+    access: echo_federation::PanelAccess,
+    cmd: &echo_protocol::BackendCommand,
+) -> Option<String> {
+    use echo_federation::PanelAccess;
+    match access {
+        PanelAccess::Off => Some("该连接没有操作权限（Panel 身份未授予）".to_string()),
+        PanelAccess::Readonly => {
+            let name = cmd.kind_name();
+            if echo_protocol::is_panel_readonly_allowed(name) {
+                None
+            } else {
+                Some(format!(
+                    "只读 Panel 身份不能执行 `{name}`（本节点 [federation] panel_access = readonly）"
+                ))
+            }
+        }
+        PanelAccess::Operate | PanelAccess::Admin => None,
     }
 }
 
@@ -1024,31 +1216,152 @@ mod tests {
         let peers = ["peer-token-1".to_string()];
         let has = |t: &str| peers.iter().any(|p| p == t);
 
+        let no_panel = |_: &str| None;
+
         // #1 管理令牌命中 → 管理。
         assert_eq!(
-            classify_token("mgmt-tok", "mgmt-tok", has),
+            classify_token("mgmt-tok", "mgmt-tok", has, no_panel),
             Some(ConnRole::Management)
         );
         // #2 peer 令牌命中 → 联邦（管理令牌空/非空皆然）。
         assert_eq!(
-            classify_token("peer-token-1", "mgmt-tok", has),
+            classify_token("peer-token-1", "mgmt-tok", has, no_panel),
             Some(ConnRole::Federation)
         );
         assert_eq!(
-            classify_token("peer-token-1", "", has),
+            classify_token("peer-token-1", "", has, no_panel),
             Some(ConnRole::Federation)
         );
         // #3 未知令牌 + 管理令牌非空 → 401。
-        assert_eq!(classify_token("unknown", "mgmt-tok", has), None);
+        assert_eq!(classify_token("unknown", "mgmt-tok", has, no_panel), None);
         // #4 未知令牌 + 管理令牌为空 → 管理（兼容旧监听行为）。
         assert_eq!(
-            classify_token("unknown", "", has),
+            classify_token("unknown", "", has, no_panel),
             Some(ConnRole::Management)
         );
         // #5 无令牌 + 管理令牌为空 → 管理。
-        assert_eq!(classify_token("", "", has), Some(ConnRole::Management));
+        assert_eq!(
+            classify_token("", "", has, no_panel),
+            Some(ConnRole::Management)
+        );
         // #6 无令牌 + 管理令牌非空 → 401。
-        assert_eq!(classify_token("", "mgmt-tok", has), None);
+        assert_eq!(classify_token("", "mgmt-tok", has, no_panel), None);
+    }
+
+    /// Panel 身份配置校验（P1）：四种错配都必须**拒绝启动**，正确配置放行。
+    ///
+    /// 为什么全是 fail-closed：这些组合的运行时表现都是"看起来能用"——
+    /// 只配级别不配密钥 → 全 401（以为开了）；只配密钥不配级别 → 全 401；
+    /// 与其它令牌撞车 → 行为取决于分类顺序（同一把密钥两种角色）。
+    /// 启动时直接拒绝，运维当场知道改哪里。
+    #[test]
+    fn panel_identity_validation_is_fail_closed() {
+        use echo_federation::PanelAccess;
+        let no_peers = |_: &str| false;
+        let key = |k: &str| vec![k.to_string()];
+
+        // ① 级别开了但没密钥 → 拒绝。
+        let err = validate_panel_identity(&[], PanelAccess::Readonly, "mgmt", no_peers)
+            .expect_err("open level without keys must fail");
+        assert!(err.to_string().contains("panel_keys"), "{err}");
+
+        // ② 有密钥但级别 off → 拒绝。
+        let err = validate_panel_identity(&key("k1"), PanelAccess::Off, "mgmt", no_peers)
+            .expect_err("keys without open level must fail");
+        assert!(err.to_string().contains("panel_access"), "{err}");
+
+        // ③ 与管理令牌相同 → 拒绝。
+        let err = validate_panel_identity(&key("mgmt"), PanelAccess::Admin, "mgmt", no_peers)
+            .expect_err("panel key must differ from management token");
+        assert!(err.to_string().contains("management_access_token"), "{err}");
+
+        // ④ 与某 peer 令牌相同 → 拒绝。
+        let err = validate_panel_identity(&key("peer-tok"), PanelAccess::Admin, "mgmt", |t| {
+            t == "peer-tok"
+        })
+        .expect_err("panel key must differ from peer tokens");
+        assert!(err.to_string().contains("[federation.peers.*]"), "{err}");
+
+        // ⑤ 正确配置（含多条轮换密钥）放行；空白项被忽略。
+        validate_panel_identity(
+            &["k1".to_string(), " ".to_string(), "k2".to_string()],
+            PanelAccess::Operate,
+            "mgmt",
+            |t| t == "peer-tok",
+        )
+        .expect("valid panel identity must pass");
+
+        // ⑥ 完全未配置（默认状态）放行。
+        validate_panel_identity(&[], PanelAccess::Off, "mgmt", no_peers)
+            .expect("default (off + no keys) must pass");
+    }
+
+    /// Panel 身份分类（P1）：命中即带级别，且**空凭据永不命中**。
+    ///
+    /// 安全契约：空串若被当成"万能 Panel 密钥"，任何不带 Authorization 头
+    /// 的连接都会拿到 Panel 权限——这一条测试把它钉死。
+    #[test]
+    fn panel_identity_classification_carries_level() {
+        use echo_federation::PanelAccess;
+        let peers = ["peer-token-1".to_string()];
+        let has = |t: &str| peers.iter().any(|p| p == t);
+        let panel = |t: &str| (t == "panel-key-1").then_some(PanelAccess::Readonly);
+        // Panel 密钥命中 → 带级别（走管理 WS，权限受限）。
+        assert_eq!(
+            classify_token("panel-key-1", "mgmt-tok", has, panel),
+            Some(ConnRole::Panel(PanelAccess::Readonly))
+        );
+        // Panel 密钥不得凌驾于 peer 令牌之上（分类顺序：管理 → 联邦 → Panel）。
+        let both = |t: &str| {
+            if t == "peer-token-1" {
+                Some(PanelAccess::Admin)
+            } else {
+                None
+            }
+        };
+        assert_eq!(
+            classify_token("peer-token-1", "mgmt-tok", has, both),
+            Some(ConnRole::Federation)
+        );
+        // 未知密钥 → 401（管理令牌非空时）。
+        assert_eq!(classify_token("nope", "mgmt-tok", has, panel), None);
+        // 空凭据恒不命中 Panel（即使实现在别处被写成"空=放行"）。
+        let empty_hits = |t: &str| (t.is_empty()).then_some(PanelAccess::Admin);
+        assert_eq!(
+            classify_token("", "mgmt-tok", has, empty_hits),
+            None,
+            "空凭据绝不能拿到 Panel 身份"
+        );
+    }
+
+    /// 只读 Panel 身份的服务端门（P1）：观察放行、写拒绝、`Off` 全拒。
+    ///
+    /// 这条是**权限边界**的单元测试；端到端的令牌分流见
+    /// `merged_port_routes_by_token_namespace`。
+    #[test]
+    fn readonly_panel_gate_blocks_writes() {
+        use echo_federation::PanelAccess;
+        let observe = echo_protocol::BackendCommand::RequestState;
+        let write = echo_protocol::BackendCommand::SendMessage {
+            session_id: "s1".into(),
+            content: "hi".into(),
+            images: vec![],
+            team_id: None,
+        };
+        let secret = echo_protocol::BackendCommand::RequestFederationInvite;
+        // 只读：观察类放行，写/密钥类拒绝。
+        assert_eq!(readonly_rejection(PanelAccess::Readonly, &observe), None);
+        assert!(readonly_rejection(PanelAccess::Readonly, &write)
+            .unwrap_or_default()
+            .contains("SendMessage"));
+        assert!(readonly_rejection(PanelAccess::Readonly, &secret).is_some());
+        // 操作级及以上：不设门。
+        for level in [PanelAccess::Operate, PanelAccess::Admin] {
+            assert_eq!(readonly_rejection(level, &write), None);
+            assert_eq!(readonly_rejection(level, &secret), None);
+        }
+        // Off：兜底全拒（握手期本应已 401）。
+        assert!(readonly_rejection(PanelAccess::Off, &observe).is_some());
     }
 
     /// 联邦监听规划（「缺省合并」语义）全分支：
@@ -1147,6 +1460,7 @@ mod tests {
                 subagent: false,
                 workspaces: vec![],
                 active_turns: 0,
+                panel_ready: false,
             },
             vec![echo_federation::PeerConfig {
                 name: "remote".into(),
@@ -1242,6 +1556,7 @@ mod tests {
                 subagent: false,
                 workspaces: vec![],
                 active_turns: 0,
+                panel_ready: false,
             },
             advertise: None,
         });
@@ -1275,6 +1590,138 @@ mod tests {
                     if resp.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED
             ),
             "unknown token on merged port must be HTTP 401, got {error:?}"
+        );
+    }
+
+    /// **端到端**：Panel 身份在合并端口上的完整语义（P1，2026-11）。
+    ///
+    /// 一条测试钉住四件事（缺一条就等于边界漏了）：
+    /// ① Panel 密钥能升级（不是 401）——否则"一个密钥接全网"无从谈起；
+    /// ② 只读级别下**观察命令放行**、**写命令被拒**（且回一条可读 `Error`
+    ///    而不是静默丢弃——客户端必须知道是被降级了）；
+    /// ③ 观察命令确实到达后端（证明门没把只读身份整个关掉）；
+    /// ④ 未配置 Panel 身份时，同一把密钥 = 401（不因"没配"而放行）。
+    #[tokio::test]
+    async fn merged_port_honours_panel_identity_level() {
+        use echo_federation::{PanelAccess, PanelIdentity};
+        let (bridge, handle) = echo_protocol::create_bridge();
+        let bridge = Arc::new(bridge);
+
+        let (fed_events, _fed_rx) = tokio::sync::mpsc::channel(16);
+        let (fed_shutdown, _fed_sd) = tokio::sync::watch::channel(false);
+        let fed = echo_federation::Federation::new(
+            "node-panel-host".into(),
+            None,
+            echo_federation::NodeCaps {
+                tools: vec![],
+                subagent: false,
+                workspaces: vec![],
+                active_turns: 0,
+                panel_ready: true,
+            },
+            vec![],
+            None,
+            fed_events,
+            fed_shutdown,
+        );
+        // 只读级别的 Panel 身份。
+        fed.set_panel_identity(PanelIdentity::new(
+            vec!["panel-key".into()],
+            PanelAccess::Readonly,
+        ));
+        assert!(fed.panel_ready_sync());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let fed_for_server = fed.clone();
+        tokio::spawn(async move {
+            let _ = serve_with_listener_and_token(
+                listener,
+                bridge,
+                "mgmt-tok".into(),
+                Some(fed_for_server),
+                None,
+            )
+            .await;
+        });
+
+        let client_request = |token: Option<&str>| {
+            let mut request =
+                tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(
+                    format!("ws://{addr}").as_str(),
+                )
+                .unwrap();
+            if let Some(token) = token {
+                request
+                    .headers_mut()
+                    .insert("authorization", format!("Bearer {token}").parse().unwrap());
+            }
+            request
+        };
+
+        // ① Panel 密钥能升级。
+        let (mut panel_ws, _) = tokio_tungstenite::connect_async(client_request(Some("panel-key")))
+            .await
+            .expect("panel key must upgrade on merged port");
+
+        // ② 写命令被拒：后端**收不到**，并且本连接收到一条 Error 说明。
+        let write =
+            echo_protocol::serialize_command(&BackendCommand::SwitchModel { model: "m".into() });
+        panel_ws
+            .send(tokio_tungstenite::tungstenite::Message::Text(write))
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), panel_ws.next())
+            .await
+            .expect("rejection timeout")
+            .expect("rejection frame")
+            .expect("rejection ok");
+        let frame: echo_protocol::WsMessage =
+            serde_json::from_str(&reply.into_text().unwrap()).unwrap();
+        match frame {
+            echo_protocol::WsMessage::Event(event) => match event {
+                echo_protocol::BackendEvent::Error { message, .. } => {
+                    assert!(
+                        message.contains("SwitchModel"),
+                        "rejection must name the command: {message}"
+                    );
+                }
+                other => panic!("expected Error event, got {other:?}"),
+            },
+            other => panic!("expected event frame, got {other:?}"),
+        }
+        assert!(
+            handle.command_rx.lock().await.try_recv().is_err(),
+            "readonly panel write must NOT reach the backend"
+        );
+
+        // ③ 观察命令放行：后端收到（只读身份看得到东西）。
+        let observe = echo_protocol::serialize_command(&BackendCommand::RequestState);
+        panel_ws
+            .send(tokio_tungstenite::tungstenite::Message::Text(observe))
+            .await
+            .unwrap();
+        let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            handle.command_rx.lock().await.recv().await
+        })
+        .await
+        .expect("readonly observe timeout")
+        .expect("readonly observe delivered");
+        assert!(matches!(delivered, BackendCommand::RequestState));
+        panel_ws.close(None).await.ok();
+
+        // ④ 关掉 Panel 身份后，同一把密钥 401。
+        fed.set_panel_identity(PanelIdentity::default());
+        let error = tokio_tungstenite::connect_async(client_request(Some("panel-key")))
+            .await
+            .expect_err("revoked panel key must be rejected");
+        assert!(
+            matches!(
+                error,
+                tokio_tungstenite::tungstenite::Error::Http(ref resp)
+                    if resp.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED
+            ),
+            "revoked panel key must be HTTP 401, got {error:?}"
         );
     }
 }

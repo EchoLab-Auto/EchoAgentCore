@@ -115,6 +115,16 @@ pub struct NodeCaps {
     /// 握手时快照——负载随时间变化，精确值经 Query(NodeStatus) 拉取。
     #[serde(default)]
     pub active_turns: u32,
+    /// 本节点是否接受**联邦级 Panel 身份**（P1，2026-11）。
+    ///
+    /// 供 Panel 的「自动发现」判断「这个邻居值不值得用 panel 密钥去试」，
+    /// 也让 `FederationDirectory` 能直接告诉 Panel 每个邻居的开放状态。
+    ///
+    /// **不提升 `PROTOCOL_VERSION`**：旧版对端不发这个字段，`serde(default)`
+    /// 读成 `false` = 「未声明」——Panel 仍会尝试连接，401 即按未开放处理。
+    /// 提升版本号会把所有旧节点拒之门外（版本是精确匹配），代价远大于收益。
+    #[serde(default)]
+    pub panel_ready: bool,
 }
 
 /// 工具调用请求。`args` 为该工具本机 schema 的 JSON。
@@ -405,6 +415,7 @@ mod tests {
                 subagent: true,
                 workspaces: vec!["/srv/proj".into()],
                 active_turns: 0,
+                panel_ready: true,
             },
             advertise: Some("ws://10.0.0.5:3133".into()),
         };

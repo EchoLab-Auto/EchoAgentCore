@@ -552,6 +552,40 @@ pub enum BackendEvent {
         listen: String,
         #[serde(default)]
         peers: Vec<FederationPeerInfo>,
+        /// 本节点是否接受**联邦级 Panel 身份**（`[federation] panel_keys`
+        /// 非空且 `panel_access != "off"`；P1 2026-11）。Panel 据此在界面上
+        /// 区分「本节点已开放/未开放」——未开放时用 panel 密钥连入会 401。
+        #[serde(default)]
+        panel_ready: bool,
+        /// 授予 Panel 身份的级别（`off` / `readonly` / `operate` / `admin`）。
+        /// 空串 = 旧版 Core（无此概念），按 `off` 处理。
+        #[serde(default)]
+        panel_access: String,
+    },
+    /// 联邦节点目录（`RequestFederationDirectory` 响应；P2「自动发现」）。
+    ///
+    /// 只含**直接邻居**（不做 gossip）：Panel 拿到后逐个用 Panel 身份密钥
+    /// 尝试接入，成功即纳入聚合视图（会话列表/区域切换/拓扑随之完整）。
+    /// 因此本条事件的语义是「我这个节点知道的地址」而不是「全网成员」——
+    /// 全网的连通性由 Panel 侧汇总（多接入点各报一份邻居表）。
+    FederationDirectory {
+        /// 应答节点自身身份。
+        #[serde(default)]
+        node_id: String,
+        #[serde(default)]
+        node_name: Option<String>,
+        /// 本机联邦监听/宣告地址（`host:port`；空 = 不监听纯连出）。
+        #[serde(default)]
+        listen: String,
+        /// 应答节点自身是否开放 Panel 身份（同 `FederationStatus.panel_ready`）。
+        #[serde(default)]
+        panel_ready: bool,
+        /// 应答节点授予 Panel 身份的级别。
+        #[serde(default)]
+        panel_access: String,
+        /// 直接邻居（含离线——离线条目仍给出地址与历史宣告，Panel 可试连）。
+        #[serde(default)]
+        nodes: Vec<FederatedNodeInfo>,
     },
     /// 会话迁移结果（`MigrateSession` 响应）。
     SessionMigrated {
@@ -1179,6 +1213,38 @@ pub struct FederationPeerInfo {
     pub last_advertise: Option<String>,
 }
 
+/// 联邦节点目录里的一个**邻居**条目（`FederationDirectory.nodes[]`，P2 2026-11）。
+///
+/// 字段取舍的原则：Panel 需要「能否连上 + 连到哪个地址 + 是不是已经是我
+/// 配置里的那台」，其余（工具白名单、策略）属于本节点与对端的私事，不下发。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FederatedNodeInfo {
+    /// 该节点在本机配置里的 peer 名（`[federation.peers.<name>]`）。
+    pub name: String,
+    /// 对端 node_id（`node-<ulid>`）。离线且从未连上过时为空串。
+    #[serde(default)]
+    pub node_id: String,
+    /// 对端人类可读别名（握手 Hello 携带；未知为空）。
+    #[serde(default)]
+    pub node_name: Option<String>,
+    /// 本机配置的拨号地址（`ws://host:port`；空 = 仅接受连入，不可拨）。
+    ///
+    /// 注意这是**本机视角**的地址（可能是内网/VPN）——Panel 未必可达；
+    /// 因此 `advertise` 优先。
+    #[serde(default)]
+    pub url: String,
+    /// 对端最近宣告的可拨地址（握手学到；跨断链保留）。Panel 优先用它试连。
+    #[serde(default)]
+    pub advertise: Option<String>,
+    /// 链路当前是否在线。
+    #[serde(default)]
+    pub online: bool,
+    /// 对端是否开放 Panel 身份（来自 Hello 的能力声明；旧版对端恒 false
+    /// = 未声明，Panel 仍可试连，失败即按「未开放」处理）。
+    #[serde(default)]
+    pub panel_ready: bool,
+}
+
 /// peer 链路状态。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FederationLinkState {
@@ -1471,6 +1537,7 @@ impl BackendEvent {
             Self::SessionUpdated { .. } => "SessionUpdated",
             Self::ActiveTurnsSnapshot { .. } => "ActiveTurnsSnapshot",
             Self::FederationStatus { .. } => "FederationStatus",
+            Self::FederationDirectory { .. } => "FederationDirectory",
             Self::SessionMigrated { .. } => "SessionMigrated",
             Self::SelfUpdateStatus { .. } => "SelfUpdateStatus",
             Self::FederationInvite { .. } => "FederationInvite",

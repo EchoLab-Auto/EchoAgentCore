@@ -25,7 +25,7 @@ use crate::admin::{self, Emit};
 use crate::ports::FederationPorts;
 
 /// 本插件处理的命令名（真源在 [`admin::COMMANDS`]）。
-pub const COMMANDS: [&str; 5] = admin::COMMANDS;
+pub const COMMANDS: [&str; 6] = admin::COMMANDS;
 
 /// 命令处理器：把命令交给规则层，状态迁移经 [`FederationAdminHost`]。
 pub struct FederationCommandBridge {
@@ -166,6 +166,12 @@ mod tests {
                 message: "status".into(),
             }
         }
+        async fn directory_event(&self) -> BackendEvent {
+            BackendEvent::Error {
+                session_id: None,
+                message: "directory".into(),
+            }
+        }
         async fn apply_peer(&self, _peer: PeerSave) {}
         async fn remove_peer(&self, _name: &str) {}
         async fn register_invite(&self, _placeholder: &str, _token: &str) -> Vec<String> {
@@ -212,6 +218,12 @@ mod tests {
                 BackendEvent::Error {
                     session_id: None,
                     message: "status".into(),
+                }
+            }
+            async fn directory_event(&self) -> BackendEvent {
+                BackendEvent::Error {
+                    session_id: None,
+                    message: "directory".into(),
                 }
             }
             async fn apply_peer(&self, peer: PeerSave) {
@@ -307,6 +319,12 @@ mod tests {
                 BackendEvent::Error {
                     session_id: None,
                     message: "status".into(),
+                }
+            }
+            async fn directory_event(&self) -> BackendEvent {
+                BackendEvent::Error {
+                    session_id: None,
+                    message: "directory".into(),
                 }
             }
             async fn apply_peer(&self, _peer: PeerSave) {}

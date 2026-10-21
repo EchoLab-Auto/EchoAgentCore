@@ -149,7 +149,7 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 | 工作区 | `RequestWorkspaceSessions`、`SaveWorkspaceSession`、`DeleteWorkspaceSession`、`ActivateWorkspaceSession`、`RequestWorkspaceGitStatus`、`RequestWorkspaceFiles`、`RequestBrowseDirectories`（目录选择器浏览：列「浏览根」内子目录——与文件浏览器不同，不依赖会话已声明的工作区目录，避开「要浏览才能选、要选才能浏览」的循环） |
 | API 供应商 | `UpdateApiConfig`、`SwitchApi`、`TestApi`、`QueryApiBalance`、`QueryApiMetrics`、`DeleteApi`、`RenameApi`、`SwitchModel`、`SwitchProvider`（模型/供应商直切，面板 UI 以 persona 级 `api_profile` 选用为主路径） |
 | 系统提示词 | `SetSystemPrompt`（替换 Core 插件持有的系统提示词）、`RequestSystemPrompt` |
-| 联邦 | `RequestFederationStatus`、`RequestFederationInvite`、`SaveFederationPeer`、`DeleteFederationPeer`、`RequestRemoteApiProfiles`（查远端节点的**脱敏**供应商池，回 `RemoteApiProfiles`；api_key 明文永不过线） |
+| 联邦 | `RequestFederationStatus`、`RequestFederationDirectory`（节点目录：本机身份 + 直接邻居地址，供 Panel 自动发现）、`RequestFederationInvite`、`SaveFederationPeer`、`DeleteFederationPeer`、`RequestRemoteApiProfiles`（查远端节点的**脱敏**供应商池，回 `RemoteApiProfiles`；api_key 明文永不过线） |
 | 运维 | `RequestSelfUpdate`、`RequestSelfUpdateStatus` |
 
 实例管理方法名（`set_gate_mode` / `update_allowlist` / `login_qrcode` …）由 `echo-defs` 的 `InstanceManagement` 定义。
@@ -244,7 +244,7 @@ Panel 的 management WS 并存，帧类型为 `FedFrame`（工具调用 Invoke �
 `#[serde(default)]`）。
 
 Panel 侧的联邦管理命令（Frontend-only）：`SaveFederationPeer` /
-`DeleteFederationPeer` / `RequestFederationStatus` /
+`DeleteFederationPeer` / `RequestFederationStatus` / `RequestFederationDirectory` /
 `RequestFederationInvite` / `MigrateSession { session_id, team_id?, target_peer }`
 ——Panel 侧全部镜像进 `web/src/protocol.ts`（补齐；unit 变体
 字符串形态，双侧各有形态契约测试：Core 本仓 `echo-plugin-management`、Panel

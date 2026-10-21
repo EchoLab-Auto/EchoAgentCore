@@ -429,6 +429,16 @@ pub enum BackendCommand {
     DeleteFederationPeer { name: String },
     /// 请求联邦状态（开关/监听/node_id/peers + 各 peer 链路状态）。
     RequestFederationStatus,
+    /// 请求**联邦节点目录**（2026-11 P2「自动发现」）：本机身份（node_id /
+    /// node_name / listen）与直接邻居清单（配置名 / node_id / node_name /
+    /// 拨号地址 / 对端最近宣告地址 / 在线状态 / 是否开放 Panel 身份）。
+    /// 响应 `BackendEvent::FederationDirectory`。
+    ///
+    /// 为什么由 Core 回答而不是 Panel 自己猜：邻居地址与 node_id 映射只有
+    /// 节点自己知道（`[federation.peers.*]` + 握手学到的 advertise）；Panel
+    /// 拿到后逐个用 **Panel 身份密钥**尝试接入，接得上即纳入聚合视图。
+    /// 只回**直接邻居**（不做 gossip：拓扑由 Panel 汇总，见联邦设计原则）。
+    RequestFederationDirectory,
     /// 生成本机邀请串（`echofed://`；对端粘贴后自动填 url/token）。
     /// 邀请串含一次性之外的静态 token——按「互信 ≈ SSH 免密」对待其分发。
     RequestFederationInvite,
@@ -535,6 +545,7 @@ impl BackendCommand {
             Self::SaveFederationPeer { .. } => "SaveFederationPeer",
             Self::DeleteFederationPeer { .. } => "DeleteFederationPeer",
             Self::RequestFederationStatus { .. } => "RequestFederationStatus",
+            Self::RequestFederationDirectory { .. } => "RequestFederationDirectory",
             Self::RequestFederationInvite { .. } => "RequestFederationInvite",
             Self::MigrateSession { .. } => "MigrateSession",
             Self::RequestSelfUpdate { .. } => "RequestSelfUpdate",
@@ -590,9 +601,58 @@ pub const BROADCAST_READONLY_COMMANDS: &[&str] = &[
     "RequestWorkspaceSessions",
     // 联邦与自更新
     "RequestFederationStatus",
+    "RequestFederationDirectory",
     "RequestFederationInvite",
     "RequestSelfUpdateStatus",
 ];
+
+/// **只读 Panel 身份**可执行的命令名集合（P1，2026-11）。
+///
+/// 背景：Panel 可以用**联邦级 Panel 身份密钥**接入任一节点（见
+/// `[federation] panel_keys` / `panel_access`）。`readonly` 级别只允许
+/// 观察，不允许驱动 agent 或改配置——这条边界必须在**服务端**强制
+/// （客户端自律不算边界）。
+///
+/// 与 [`BROADCAST_READONLY_COMMANDS`] 的区别（两者**刻意**不同）：
+/// - 那份的判据是"能否无壳广播"（含 `RequestFederationInvite`——它泄露
+///   一份可用于配对的密钥，只读面板不该拿）；
+/// - 这份的判据是"只观察、无副作用"：**不含**任何 SendMessage / Shell* /
+///   Save* / Delete* / Toggle* / Migrate* / RequestSelfUpdate（会重启服务）
+///   / RequestFederationInvite（泄露 token）。
+///
+/// fail-closed：未列出的命令一律拒绝。新增只读命令时若忘了登记，代价是
+/// 「只读面板看不到它」——而不是「只读面板能写」。
+pub const PANEL_READONLY_COMMANDS: &[&str] = &[
+    // 状态与清单
+    "RequestState",
+    "RequestTeamsList",
+    "RequestContext",
+    "RequestPluginsList",
+    "RequestSkillsList",
+    "RequestToolsList",
+    "RequestSystemPrompt",
+    "RequestRemoteApiProfiles",
+    "RequestInstanceStatus",
+    "RequestSelfUpdateStatus",
+    // 会话与时间线（只读）
+    "RequestShellSessions",
+    "RequestTrunkTimeline",
+    "RequestTimelineEarlier",
+    "RequestSessionHistory",
+    // 工作区（只读）
+    "RequestWorkspaceSessions",
+    "RequestWorkspaceGitStatus",
+    "RequestWorkspaceFiles",
+    "RequestBrowseDirectories",
+    // 联邦（只读：状态与目录；邀请串与增删 peer 不在其列）
+    "RequestFederationStatus",
+    "RequestFederationDirectory",
+];
+
+/// 只读 Panel 身份能否执行该命令（名字口径，见 [`PANEL_READONLY_COMMANDS`]）。
+pub fn is_panel_readonly_allowed(command_name: &str) -> bool {
+    PANEL_READONLY_COMMANDS.contains(&command_name)
+}
 
 /// 命令名是否属于可广播只读集合（中继白名单的权威定义）。
 pub fn is_broadcast_readonly(command_name: &str) -> bool {
@@ -627,6 +687,7 @@ pub fn command_clearance(cmd: &BackendCommand) -> CommandClearance {
         | BackendCommand::SaveFederationPeer { .. }
         | BackendCommand::DeleteFederationPeer { .. }
         | BackendCommand::RequestFederationStatus
+        | BackendCommand::RequestFederationDirectory
         | BackendCommand::RequestFederationInvite
         | BackendCommand::MigrateSession { .. }
         | BackendCommand::RequestSelfUpdate
@@ -690,6 +751,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "RequestFederationDirectory",
                 "RequestFederationInvite",
                 "RequestFederationStatus",
                 "RequestInstanceStatus",
@@ -708,6 +770,69 @@ mod tests {
         );
         assert!(super::is_broadcast_readonly("RequestState"));
         assert!(!super::is_broadcast_readonly("SendMessage"));
+    }
+
+    /// 只读 Panel 身份的边界（P1）：能看、不能写、不能拿密钥。
+    ///
+    /// 这条测试是**安全契约**——放宽它等于给只读身份开写权限：
+    /// ① 每个登记项必须是真的命令变体（防止像历史上 `"Ping"` 那样
+    ///    留一个不存在的名字）；② 明确的写命令/密钥泄露命令必须**不在**
+    ///    名单里。
+    #[test]
+    fn panel_readonly_gate_excludes_writes_and_secrets() {
+        // ① 登记项都是真变体（借用 serde 的 unknown-variant 报错名单）。
+        let error = serde_json::from_str::<BackendCommand>(r#""__not_a_command__""#)
+            .expect_err("unknown command must fail to deserialize")
+            .to_string();
+        let list = error
+            .split("expected one of ")
+            .nth(1)
+            .unwrap_or_default()
+            .split("` at line")
+            .next()
+            .unwrap_or_default();
+        let variants: Vec<String> = list
+            .split(',')
+            .map(|s| s.trim().trim_matches('`').to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert!(variants.len() > 50, "变体名单解析失败：{error}");
+        for name in super::PANEL_READONLY_COMMANDS {
+            assert!(
+                variants.iter().any(|v| v == name),
+                "PANEL_READONLY_COMMANDS 里的 `{name}` 不是 BackendCommand 的变体"
+            );
+        }
+        // ② 写/密钥类必须被拒（fail-closed 反例清单）。
+        for forbidden in [
+            "SendMessage",
+            "ShellStart",
+            "ShellExec",
+            "ShellStop",
+            "SaveFederationPeer",
+            "DeleteFederationPeer",
+            "RequestFederationInvite",
+            "MigrateSession",
+            "RequestSelfUpdate",
+            "ClearHistory",
+            "TogglePlugin",
+            "SaveTeam",
+            "StartInstance",
+            "StopInstance",
+            "InstallSkillFromGit",
+            "SaveWorkspaceSession",
+            "ActivateWorkspaceSession",
+        ] {
+            assert!(
+                !super::is_panel_readonly_allowed(forbidden),
+                "{forbidden} 必须被只读 Panel 身份拒绝"
+            );
+        }
+        // ③ 观察类放行。
+        assert!(super::is_panel_readonly_allowed("RequestState"));
+        assert!(super::is_panel_readonly_allowed(
+            "RequestFederationDirectory"
+        ));
     }
 
     /// 插件实例管理命令的**类别判定**（W2.3）：`InvokeInstanceOp` 一律

@@ -101,6 +101,30 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
   受限策略仍受沙箱约束。
 - 全部联邦调用记 `federation` 审计日志（tracing target）
 
+### Panel 身份（2026-11 P1）
+
+「一个 Panel 接入全网」的凭据面：**Panel 身份密钥**（`[federation]
+panel_keys`）与授予级别（`panel_access`）分开表达"谁"和"多大权限"。
+
+- **身份网络级、权限节点级**：所有节点配同一把密钥 → Panel 只配一份
+  `panel_key` 就能接入任意一台；但每台机器给多大权限**由它自己决定**
+  （一致性是运维约定，不是协议强制——不能因为 A 授权 admin 就让 B 也
+  admin）。默认 `off`：不配 = 不接受。
+- **合并端口的第三类令牌**：管理令牌 / peer 令牌 / Panel 密钥三者互斥，
+  启动期 fail-closed（`validate_panel_identity`）——否则同一把密钥两种
+  角色，连接意图不可判定。独立监听模式同样认 Panel 密钥（行为不随
+  `listen` 变得不一致）。
+- **级别语义**：`readonly` 在服务端只放行 `PANEL_READONLY_COMMANDS`
+  （观察类：状态/时间线/工作区只读查询/联邦状态与目录），写命令与
+  `RequestFederationInvite`（泄露配对密钥）一律拒绝并回可读 `Error`；
+  `operate` / `admin` 当前等同管理面。空凭据**永不**命中（任何模式下
+  都不存在"不带头就放行"的路径）。
+- **密钥永不过线**：状态/目录事件只带 `panel_ready` 布尔与
+  `panel_access` 级别，密钥明文从不进事件流。
+- **握手宣告**：`NodeCaps.panel_ready` 让邻居（进而让 Panel）知道某台
+  机器是否值得用 Panel 密钥去试；旧版对端不宣告 = false，**不提升**
+  `PROTOCOL_VERSION`（版本是精确匹配，提升会把旧节点全部拒之门外）。
+
 ### 只读查询授权
 
 `NodeStatus` 恒允许（无害遥测）；`WorkspaceFiles`/`SessionSnapshot`/`BrowseDirectories`
@@ -131,7 +155,7 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
   `10.10.10.100:3133`）。纯对外连出（`listen = ""`）时忽略。
 - 观测出的地址同时用于 Hello 的 `advertise` 字段（对端据此回拨）——所以
   「地址互告」也不会再把内网 IP 广播出去。
-- 联邦管理面（状态查询 / 邀请串 / 添加 peer）始终可用。
+- 联邦管理面（状态查询 / 节点目录 / 邀请串 / 添加 peer）始终可用。
 - `RequestFederationStatus` 恒回 `enabled: true` 的正常快照。
 - 一旦配置 `listen` 或 peer，互信边界即生效（≈ SSH 免密）——务必 per-peer
   token + `allow_tools`/`allow_queries` 收敛。
@@ -149,6 +173,14 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 # hostname -I 首个非回环 IPv4）
 # advertise = "10.10.10.100:3133"
 node_name = "workstation"
+# ── Panel 身份（2026-11 P1）────────────────────────────────────────────
+# 一个 Panel 用**同一把密钥**接入全网任一节点（面板侧配 [federation]
+# panel_key）。密钥表允许多条以便轮换；与 management_access_token / 任一
+# peer token 必须不同（启动期 fail-closed）。
+# panel_keys = ["<openssl rand -hex 32>"]
+# 授予该身份的级别：off（缺省）/ readonly / operate / admin。
+#   readonly → 只放行 PANEL_READONLY_COMMANDS（观察类；无写、无邀请串）
+# panel_access = "operate"
 
 [federation.peers.gpu-box]
 url = "ws://192.168.1.20:3133"
@@ -160,7 +192,8 @@ allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspac
 ```
 
 **端口合并（缺省）**：联邦监听**缺省与管理面合并**——单监听按令牌命名
-空间分流：管理令牌 → 管理 WS、per-peer 令牌 → 联邦链路、其余 → 标准
+空间分流：管理令牌 → 管理 WS、per-peer 令牌 → 联邦链路、**Panel 身份密钥
+→ 管理 WS（按 `panel_access` 收敛权限）**、其余 → 标准
 401。**一条 NAT/防火墙映射同时服务面板与联邦**（NAT 后的节点不必维护
 两条映射）；invite 串、dial 侧、面板配置与线格式全部不变，旧版本对端
 零感知。`[federation].listen` 配置语义：
@@ -175,13 +208,15 @@ allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspac
 
 安全条件（**显式合并** fail-closed 拒绝启动）：合并 + 管理令牌为空 +
 绑定非回环（`echo-agent-core token --rotate` 补救）；管理令牌与任一
-peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲突令牌。
+peer 令牌相同（路由歧义）；`panel_keys` 与其它两类令牌相同
+（`validate_panel_identity`）；运行时 `SaveFederationPeer` 同拦冲突令牌。
 合并监听挂**管理面插件生命周期**（禁用管理面 = 联邦入站同停，出站连出
 不受影响）。
 
 **Panel 管理**（设置·Core 连接页·联邦区块）：`SaveFederationPeer` /
 `DeleteFederationPeer` / `RequestFederationStatus` /
-`RequestFederationInvite`（Frontend-only 命令）——peers 列表与在线
+`RequestFederationDirectory` / `RequestFederationInvite`（Frontend-only
+命令）——peers 列表与在线
 状态、在线增删（运行时生效 + ConfigStore 原子写回）、**授权逐项可配**
 （全部工具 / 自定义工具白名单 / 只读查询逐类勾选 / 接受委派 / 需确认列表；
 **添加 peer 默认满权限**）、手动**邀请串配对**：
@@ -189,6 +224,25 @@ peer 令牌相同（路由歧义）；运行时 `SaveFederationPeer` 同拦冲�
 在另一 Core 的卡片上粘贴自动填充。保存前**校验**：peer URL 须为
 `ws://host:port`（空 = 仅接受连入）；同一 token 不得跨 peer 复用——
 在线判定与连入侧名字解析按 token 匹配，复用即歧义（直接拒绝保存）。
+
+### 节点目录与自动发现（2026-11 P2）
+
+`RequestFederationDirectory` → `FederationDirectory`：应答节点报出自己的
+身份（`node_id` / `node_name` / `listen` / `panel_ready` / `panel_access`）
+与**直接邻居**清单（每项含配置名 / `node_id` / `node_name` / 配置拨号地址
+`url` / 对端最近宣告地址 `advertise` / `online` / `panel_ready`）。
+
+- **只报直接邻居，不做 gossip**：联邦没有中心成员表（设计原则「节点对等」），
+  全网拓扑由 **Panel 汇总多个节点的目录**得到；每个节点只暴露它本来就要对
+  邻居暴露的地址信息，零新增信任面。
+- **两套地址各有用途**：`url` 是应答节点视角的拨号地址（可能是内网/VPN，
+  Panel 未必可达）；`advertise` 是对端自己宣告的可拨地址——Panel **优先**
+  用它试连（与"地址漂移一键修复"同源数据）。
+- **Panel 侧闭环**：对每个候选地址用 **Panel 身份密钥**试连；成功即写成一条
+  `source = "discovered"` 的接入点（凭据来自 `panel_key`，不是任何节点的管理
+  令牌）。人工条目**永不**被派生条目覆盖、也永不被自动清理；清理只发生在
+  「本轮目录里至少一台在线」且「该派生条目的地址与名字都不再被任何目录提到」
+  时才执行。
 
 **联邦组建向导**：面板以「创建联邦 / 添加节点」向导替代
 逐对手动配对——勾选节点（已接入的 Core，默认全选在线者）后按**全互联

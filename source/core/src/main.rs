@@ -328,12 +328,32 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 此前这里写死 6 个名字、联邦插件里再写同样的 6 个名字取交集——
         // 插件新加的工具永远进不了远程面，而任一工具改名会静默掉出去
         // （对端照旧宣告、本机照旧忽略，两边都没有任何报错）。
+        // ── Panel 身份（P1，2026-11）──
+        // `[federation] panel_keys` + `panel_access`：一个 Panel 用同一把密钥
+        // 接入全网任一节点，权限由**本节点**决定。解析与校验都在这里做
+        // （fail-closed：配置写错宁可起不来，也不要"以为开了其实没开"）。
+        let panel_access = echo_federation::PanelAccess::parse(&cfg.federation.panel_access)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "[federation] panel_access = {:?} 不是合法级别（可选 off / readonly / operate / admin）",
+                    cfg.federation.panel_access
+                )
+            })?;
+        management::validate_panel_identity(
+            &cfg.federation.panel_keys,
+            panel_access,
+            &cfg.core.management_access_token,
+            |t| cfg.federation.peers.values().any(|p| p.token == t),
+        )?;
         let caps = echo_federation::NodeCaps {
             tools: Vec::new(),
             subagent: true,
             workspaces: Vec::new(),
             // 启动时无活跃 turn；调度器应经 Query(NodeStatus) 拉实时值。
             active_turns: 0,
+            // 握手能力位：本节点是否接受 Panel 身份（旧版对端读不到 = false，
+            // 不影响协议版本——见 `NodeCaps::panel_ready` 注释）。
+            panel_ready: panel_access.is_open() && !cfg.federation.panel_keys.is_empty(),
         };
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(64);
         let router = echo_agent::federation::InvokeRouter::new(node_doc.node_id.clone());
@@ -386,6 +406,20 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             event_tx,
             shutdown_tx.clone(),
         );
+        // Panel 身份注入（P1）：握手 `caps.panel_ready` 与合并端口/独立监听
+        // 的令牌分流都从这里取（`Federation::panel_gate_sync`）。
+        fed.set_panel_identity(echo_federation::PanelIdentity::new(
+            cfg.federation.panel_keys.clone(),
+            panel_access,
+        ));
+        if fed.panel_ready_sync() {
+            info!(
+                level = fed.panel_access_sync().as_str(),
+                keys = cfg.federation.panel_keys.len(),
+                "Panel 身份已开放（[federation] panel_keys）：任一持有该密钥的 \
+                 Panel 可以此节点身份接入，权限按 panel_access 收敛"
+            );
+        }
         // ── 端口合并安全校验（判定在块外；fail-closed，非法拒绝启动）──
         if merged {
             management::validate_merged(

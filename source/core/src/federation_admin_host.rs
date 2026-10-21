@@ -76,6 +76,10 @@ impl FederationAdminHost for RuntimeAdminHost {
         self.rt.status_event().await
     }
 
+    async fn directory_event(&self) -> BackendEvent {
+        self.rt.directory_event().await
+    }
+
     async fn apply_peer(&self, peer: PeerSave) {
         let rt = &self.rt;
         rt.federation

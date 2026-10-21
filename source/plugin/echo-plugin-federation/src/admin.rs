@@ -84,6 +84,14 @@ pub trait FederationAdminHost: Send + Sync {
     /// 当前联邦状态事件（`FederationStatus`）。
     async fn status_event(&self) -> BackendEvent;
 
+    /// **联邦节点目录**事件（`FederationDirectory`，P2 自动发现）：本机身份 +
+    /// 直接邻居清单（含离线条目——Panel 仍可用历史宣告地址试连）。
+    ///
+    /// 规则（"报谁、报什么"）属于联邦领域，但数据只能由宿主取（链路表、
+    /// 诊断表、`peer_names` 映射都在 `FederationRuntime` 里），所以这里是
+    /// 一个原子动作而不是纯函数。
+    async fn directory_event(&self) -> BackendEvent;
+
     /// 落一条 peer：运行时表 + 配置原子写回 + 策略同步 + 刷新路由。
     async fn apply_peer(&self, peer: PeerSave);
 
@@ -285,10 +293,11 @@ pub fn invite_placeholder(token: &str) -> String {
 // ── 命令域实现 ─────────────────────────────────────────────────────────
 
 /// 本插件处理的命令名。
-pub const COMMANDS: [&str; 5] = [
+pub const COMMANDS: [&str; 6] = [
     "SaveFederationPeer",
     "DeleteFederationPeer",
     "RequestFederationStatus",
+    "RequestFederationDirectory",
     "RequestFederationInvite",
     "MigrateSession",
 ];
@@ -322,6 +331,9 @@ async fn handle(
     match cmd {
         BackendCommand::RequestFederationStatus => {
             emit(host.status_event().await);
+        }
+        BackendCommand::RequestFederationDirectory => {
+            emit(host.directory_event().await);
         }
         BackendCommand::MigrateSession {
             session_id,

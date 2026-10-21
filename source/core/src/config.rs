@@ -342,6 +342,21 @@ pub struct FederationSection {
     pub advertise: String,
     /// 人类可读节点别名（Hello 中携带；缺省仅 node_id）。
     pub node_name: Option<String>,
+    /// **联邦级 Panel 身份密钥表**（P1，2026-11）：持有其中之一的前端可以
+    /// 以「Panel 身份」接入本节点（走管理 WS，权限由 `panel_access` 决定）。
+    ///
+    /// 设计意图：Panel 只配一份密钥即可接入全网任一节点（各节点配同一把），
+    /// 从而"连哪台都看到同一个联邦"；**权限是否一致仍由各节点自己决定**
+    /// （运维约定，不由协议强制）。
+    ///
+    /// 允许多条以便轮换（新旧并存 → 全部 Panel 换完 → 删旧）。
+    /// 与 `management_access_token` / 任一 peer `token` **必须不同**（启动期
+    /// fail-closed：`management::validate_panel_identity`）。
+    pub panel_keys: Vec<String>,
+    /// 授予 Panel 身份的级别：`"off"`（缺省）/ `"readonly"` / `"operate"` /
+    /// `"admin"`。非 `off` 时 `panel_keys` 必须非空，反之亦然（两侧都
+    /// fail-closed，避免"以为开了其实没开"）。
+    pub panel_access: String,
     /// 静态对等节点表。
     pub peers: std::collections::BTreeMap<String, FederationPeerSection>,
 }
@@ -353,6 +368,8 @@ impl Default for FederationSection {
             listen_explicit: false,
             advertise: String::new(),
             node_name: None,
+            panel_keys: Vec::new(),
+            panel_access: "off".into(),
             peers: std::collections::BTreeMap::new(),
         }
     }

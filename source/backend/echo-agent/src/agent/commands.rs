@@ -871,6 +871,7 @@ impl Agent {
             BackendCommand::SaveFederationPeer { .. }
             | BackendCommand::DeleteFederationPeer { .. }
             | BackendCommand::RequestFederationStatus
+            | BackendCommand::RequestFederationDirectory
             | BackendCommand::RequestFederationInvite
             | BackendCommand::MigrateSession { .. } => {
                 self.emit(BackendEvent::Error {
