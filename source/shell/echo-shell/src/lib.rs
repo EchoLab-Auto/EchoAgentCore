@@ -97,6 +97,47 @@ where
     });
 }
 
+/// 执行 shell 命令前的**命令护栏**（可选；`Err` = 拒绝执行，文本原样回给模型）。
+///
+/// ## 为什么在机制层
+///
+/// 两个消费方（`echo-plugin-tools` 的 `bash`、`echo-plugin-shell` 的
+/// `bash-exec`）**互不认识**（插件之间零依赖，S12），但都要在真正执行前问
+/// 同一句"这条命令能不能跑"。类型与默认实现在这里，两边各构造一份——
+/// 只有一份实现，没有跨插件边。
+///
+/// ## 为什么是"注入"而不是工具内置
+///
+/// 护栏守的是**宿主自己的服务名**（例如禁止工具停掉运行中的 Core），那是
+/// 宿主身份的一部分。实现方（组合根 / 插件装配）决定用哪个守卫；未注入 =
+/// 不做该检查（工具本身仍在沙箱内）。
+pub type CommandGuard = std::sync::Arc<dyn Fn(&str) -> Result<(), echo_tool::ToolError> + Send + Sync>;
+
+/// 拒绝会从 Core 自己的进程树里停掉 / 杀掉 Core 服务的命令。
+///
+/// `systemctl stop` 之后没有 `start`：systemd 会终止整个服务 cgroup，包含
+/// 正在跑这条命令的 shell，于是 `stop && cp ... && start` 的后半段永远不执行。
+/// `systemctl restart` 是安全的——重启作业由 systemd 持有，即使调用方被终止。
+///
+/// 宽泛的 `pkill -f` / `killall` 同样拒绝提到 `core.toml` 或
+/// `echo-agent-core` 的模式：即使本意是打某个冒烟测试进程，`pkill -f core.toml`
+/// 也会匹配到生产 Core 的命令行（`--config .../core.toml`）。
+///
+/// 正则编译产物是**纯计算常量**，不是宿主状态：构造护栏时编译一次、move 进
+/// 闭包——零全局态（2026-10 技术债清理的结论，2026-11 随 shell 插件化搬到这里）。
+pub fn self_stop_guard() -> CommandGuard {
+    const PATTERN: &str = r#"(?im)(?:^|[;&|]\s*|(?:ba)?sh\s+-[A-Za-z]*c\b\s*['\"]?\s*)\s*(?:sudo\s+)?(?:command\s+)?(?:(?:/usr/bin/)?systemctl\b[^\n;&|]*\b(?:stop|kill)\b[^\n;&|]*\becho-agent-core(?:\.service)?\b|(?:pkill|killall)\b[^\n;&|]*(?:(?:\[e\]|e)cho-agent-core|(?:\[c\]|c)ore\.toml))"#;
+    let regex = regex::Regex::new(PATTERN).expect("self-stop regex is valid");
+    std::sync::Arc::new(move |command: &str| {
+        if regex.is_match(command) {
+            return Err(echo_tool::ToolError::Execution(
+                "blocked command: stopping or killing echo-agent-core from inside its own process would terminate this tool before later cleanup/start steps run. Use `systemctl --user restart echo-agent-core.service` or the managed updater `scripts/update.sh` instead.".into(),
+            ));
+        }
+        Ok(())
+    })
+}
+
 /// 向会话进程组发送 SIGKILL（pgid 由 spawn 时 `process_group(0)` 确定）。
 /// 组内是 bash 及其全部子孙；自行 `setsid` 脱离进程组的后代不在其列。
 #[cfg(unix)]

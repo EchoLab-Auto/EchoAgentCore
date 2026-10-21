@@ -44,6 +44,9 @@ async fn render_tool_catalog() -> String {
         None,
         echo_agent::shell::ShellHandle::new(),
         None,
+        // Shell 工具（`bash-start` / `bash-exec` / `bash-stop`）由 shell 插件造
+        // （2026-11 拆出）——目录要包含它们，所以这里给它一个 standalone provider。
+        Some(echo_plugin_shell::standalone_provider()),
     );
     // `full_definitions` 是**面板同源**的那一份：name / description / category /
     // package 全在里面（`snapshot` 拿的是工具状态快照，不是定义）。

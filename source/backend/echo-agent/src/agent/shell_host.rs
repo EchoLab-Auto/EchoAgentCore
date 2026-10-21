@@ -1,7 +1,10 @@
 //! Shell 插件命令域的**宿主能力实现**。
 //!
-//! `echo-plugin-tools` 的 `ShellCommandHandler` 不认识 `Agent`——它只认识
+//! `echo-plugin-shell` 的 `ShellCommandHandler` 不认识 `Agent`——它只认识
 //! [`ShellCommandHost`] 的四个方法。本模块就是那四个方法的宿主实现。
+//!
+//! 2026-11：命令域与工具一起从 `echo-plugin-tools` 搬进
+//! `echo-plugin-shell`——本文件只换了一个 `use` 路径，实现没动。
 //!
 //! ## 为什么只有"执行命令的那个 agent"，没有 `team_id` 查表
 //!
@@ -20,7 +23,7 @@
 
 use std::sync::Arc;
 
-use echo_plugin_tools::shell_commands::ShellCommandHost;
+use echo_plugin_shell::commands::ShellCommandHost;
 use echo_protocol::BackendEvent;
 use echo_shell::{ShellEmit, ShellManager};
 

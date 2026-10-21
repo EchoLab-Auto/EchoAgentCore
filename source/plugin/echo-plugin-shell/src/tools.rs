@@ -1,10 +1,32 @@
-//! 后台 shell 工具：shell_start / shell_exec / shell_stop。
+//! 后台 bash 会话工具：`bash-start` / `bash-exec` / `bash-stop`。
 //!
-//! 与 Panel 的 Shell 面板共用同一个进程级 [`ShellManager`]：
-//! LLM 可借此维护持久 shell 上下文（cd、变量、长任务），面板做终端可视化。
+//! 与 Panel 的 Shell 面板共用同一个进程级 [`ShellHandle`]（`echo-shell` 的
+//! 会话管理器）：LLM 可借此维护持久 shell 上下文（cd、变量、长任务），面板
+//! 做终端可视化。
+//!
+//! ## 命名（2026-11）
+//!
+//! 这一族工具的名字统一到 `bash-` 前缀，与同步的一次性工具 [`bash`] 区分：
+//!
+//! | 工具 | 语义 |
+//! |---|---|
+//! | `bash` | 一次性执行，**不等**状态、命令结束即进程消失 |
+//! | `bash-start` | 起一条**常驻**会话（返回 `session_id`） |
+//! | `bash-exec` | 在常驻会话里执行一条命令（`cd` / `export` 跨调用保持） |
+//! | `bash-stop` | 销毁会话（终止 bash 及其全部子孙进程组） |
+//!
+//! 此前叫 `shell_exec`——但它与 `bash` 是同一件事的两种模式，名字不一致
+//! 会让模型在两套命名之间犹豫（实测有模型因此在长任务里选错工具）。
+//!
+//! ## 为什么不再叫 `shell_*`
+//!
+//! 其中 `bash-exec` 是用户直接点名的重命名；`bash-start` / `bash-stop` 一并
+//! 对齐，否则同一族工具横跨两个前缀，模型的工具选择会退化成猜。
 
 use async_trait::async_trait;
 use serde_json::json;
+
+use echo_shell::{CommandGuard, ShellHandle};
 
 /// 这次调用的归属人格。
 ///
@@ -20,39 +42,36 @@ fn requester<'a>(
         .or_else(|| arguments.get("__team_id").and_then(|v| v.as_str()))
 }
 
-
-use echo_shell::ShellHandle;
-
-/// 注册 Shell 工具（`shell_start` / `shell_exec` / `shell_stop`）。
+/// 注册 shell 工具（`bash-start` / `bash-exec` / `bash-stop`）。
 ///
-/// `guard`：执行前的命令护栏（宿主注入；见 [`crate::CommandGuard`]）。
+/// `guard`：执行前的命令护栏（见 [`echo_shell::self_stop_guard`]）。
 pub fn register_shell_tools(
     registry: &mut echo_tool::ToolRegistry,
-    guard: Option<crate::CommandGuard>,
+    guard: Option<CommandGuard>,
     shell: ShellHandle,
 ) {
-    registry.register(std::sync::Arc::new(ShellStartTool {
+    registry.register(std::sync::Arc::new(BashStartTool {
         shell: shell.clone(),
     }));
-    registry.register(std::sync::Arc::new(ShellExecTool {
+    registry.register(std::sync::Arc::new(BashExecTool {
         guard,
         shell: shell.clone(),
     }));
-    registry.register(std::sync::Arc::new(ShellStopTool { shell }));
+    registry.register(std::sync::Arc::new(BashStopTool { shell }));
 }
 
-/// `shell_start`：新建一条 Shell 会话（不执行命令，故无命令护栏）。
-pub struct ShellStartTool {
+/// `bash-start`：新建一条 shell 会话（不执行命令，故无命令护栏）。
+pub struct BashStartTool {
     shell: ShellHandle,
 }
 
 #[async_trait]
-impl echo_tool::Tool for ShellStartTool {
+impl echo_tool::Tool for BashStartTool {
     fn name(&self) -> &str {
-        "shell_start"
+        "bash-start"
     }
     fn description(&self) -> &str {
-        "Start a persistent background bash session. Commands run in the same shell keep state (cwd, exports). Returns session_id used by shell_exec / shell_stop. Optional workdir."
+        "Start a persistent background bash session. Commands run in the same shell keep state (cwd, exports, background jobs). Returns session_id used by bash-exec / bash-stop. Optional workdir."
     }
     fn parameters(&self) -> serde_json::Value {
         json!({
@@ -78,7 +97,7 @@ impl echo_tool::Tool for ShellStartTool {
     }
 }
 
-impl ShellStartTool {
+impl BashStartTool {
     async fn apply(
         &self,
         cx: Option<&echo_defs::tool::ToolContext>,
@@ -101,25 +120,28 @@ impl ShellStartTool {
     }
 }
 
-/// `shell_exec`：在指定会话里执行一条命令。
-pub struct ShellExecTool {
+/// `bash-exec`：在指定会话里执行一条命令。
+///
+/// 与一次性工具 `bash` 的差别是**状态**：`cd` / `export` / 后台作业都留在
+/// 会话里，下一次 `bash-exec` 接着用；超时也**不销毁**会话（可以回去看进度）。
+pub struct BashExecTool {
     shell: ShellHandle,
-    guard: Option<crate::CommandGuard>,
+    guard: Option<CommandGuard>,
 }
 
 #[async_trait]
-impl echo_tool::Tool for ShellExecTool {
+impl echo_tool::Tool for BashExecTool {
     fn name(&self) -> &str {
-        "shell_exec"
+        "bash-exec"
     }
     fn description(&self) -> &str {
-        "Run one command inside a persistent shell session (see shell_start). Output is streamed to the Panel live. Timeout: 120s default, max 300s; on timeout the session is kept."
+        "Run one command inside a persistent bash session (see bash-start). Output is streamed to the Panel live. Timeout: 120s default, max 300s; on timeout the SESSION IS KEPT (you may poll again or continue). Background jobs survive: start them with `&` and poll in the next call."
     }
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
-                "session_id": {"type": "string", "description": "Session id from shell_start"},
+                "session_id": {"type": "string", "description": "Session id from bash-start"},
                 "command": {"type": "string", "description": "Shell command to run"},
                 "timeout_secs": {"type": "integer", "description": "Timeout in seconds (default 120, max 300)"}
             },
@@ -141,7 +163,7 @@ impl echo_tool::Tool for ShellExecTool {
     }
 }
 
-impl ShellExecTool {
+impl BashExecTool {
     async fn apply(
         &self,
         cx: Option<&echo_defs::tool::ToolContext>,
@@ -183,24 +205,24 @@ impl ShellExecTool {
     }
 }
 
-/// `shell_stop`：销毁会话（终止 bash 及全部子孙进程组）。
-pub struct ShellStopTool {
+/// `bash-stop`：销毁会话（终止 bash 及全部子孙进程组）。
+pub struct BashStopTool {
     shell: ShellHandle,
 }
 
 #[async_trait]
-impl echo_tool::Tool for ShellStopTool {
+impl echo_tool::Tool for BashStopTool {
     fn name(&self) -> &str {
-        "shell_stop"
+        "bash-stop"
     }
     fn description(&self) -> &str {
-        "Stop and destroy a persistent shell session."
+        "Stop and destroy a persistent bash session (kills the whole process group, including background jobs)."
     }
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
             "properties": {
-                "session_id": {"type": "string", "description": "Session id from shell_start"}
+                "session_id": {"type": "string", "description": "Session id from bash-start"}
             },
             "required": ["session_id"]
         })
@@ -220,7 +242,7 @@ impl echo_tool::Tool for ShellStopTool {
     }
 }
 
-impl ShellStopTool {
+impl BashStopTool {
     async fn apply(
         &self,
         cx: Option<&echo_defs::tool::ToolContext>,

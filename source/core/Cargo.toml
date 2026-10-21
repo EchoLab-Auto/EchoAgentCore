@@ -33,6 +33,7 @@ echo-plugin-workspace = { workspace = true }
 echo-plugin-subagent = { workspace = true }
 echo-plugin-provider-llm = { workspace = true }
 echo-plugin-self-update = { workspace = true }
+echo-plugin-shell = { workspace = true }
 echo-federation = { path = "../federation/echo-federation" }
 getrandom = "0.2"
 tokio.workspace = true

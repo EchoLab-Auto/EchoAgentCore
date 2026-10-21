@@ -363,6 +363,7 @@ dependencies = [
  "echo-plugin-management",
  "echo-plugin-provider-llm",
  "echo-plugin-self-update",
+ "echo-plugin-shell",
  "echo-plugin-skills",
  "echo-plugin-subagent",
  "echo-plugin-tools",
@@ -414,6 +415,7 @@ dependencies = [
  "echo-plugin-management",
  "echo-plugin-provider-llm",
  "echo-plugin-self-update",
+ "echo-plugin-shell",
  "echo-plugin-skills",
  "echo-plugin-subagent",
  "echo-plugin-tools",
@@ -719,6 +721,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "echo-plugin-shell"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "echo-context",
+ "echo-defs",
+ "echo-plugin",
+ "echo-protocol",
+ "echo-shell",
+ "echo-tool",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "echo-plugin-skills"
 version = "0.1.0"
 dependencies = [
@@ -840,9 +858,12 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "echo-context",
+ "echo-defs",
  "echo-protocol",
+ "echo-tool",
  "libc",
  "parking_lot",
+ "regex",
  "serde",
  "tokio",
  "tracing",

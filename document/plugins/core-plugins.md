@@ -77,7 +77,8 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 | id | kind | 运行形态 | 说明 |
 | --- | --- | --- | --- |
-| `echo-agent.tools.builtin` | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理/供应商清单查询 `list_api_profiles`） |
+| `echo-agent.tools.builtin` | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理/供应商清单查询 `list_api_profiles`）；**不含 shell 会话**（2026-11 拆出，见下一行） |
+| `echo-agent.shell` | Tool | 进程内 | Shell 会话：`bash-start` / `bash-exec` / `bash-stop` 三个工具 + `*Shell*` 四条命令域（会话列表 / 起 / 执行 / 停）；与 Panel 的 Shell 页面共用同一个进程级 `ShellManager`（进程组生命周期 + 哨兵分帧见 [Shell 子系统](./core-tools.md)）。**独立插件**的理由：它有自己的一套机制依赖与独立的启停需求——想关 shell 不该连计算器一起关 |
 | `echo-agent.instance.qq` | Instance | **进程外**（`subprocess`） | QQ 插件实例（OneBot v11 反向 WS，实现为独立进程 `echo-adapter-qq`，Core 侧只是门控壳；含 QQ 管理工具；门控机制见 [QQ 实例门控](./qq-gating.md)） |
 | `echo-agent.skills.dir` | Skill | 进程内 | SKILL.md 技能目录（热重载） |
 | `echo-agent.workspace` | Tool | 进程内 | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](../core/core-agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |

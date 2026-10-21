@@ -47,6 +47,19 @@ pub struct AgentBuilder {
     // ── 可选槽 ──
     team_id: Option<String>,
     workspace_store: Option<Arc<crate::workspace::WorkspaceStore>>,
+    /// 进程级 Shell 会话句柄（2026-11）：面板的 `*Shell*` 命令域经
+    /// `Agent::shell()` 访问它。
+    ///
+    /// ## 为什么必须有这个槽
+    ///
+    /// `Agent::new` 里 `ports.shell` 是一个**空的** `ShellHandle::new()`。
+    /// 组合根在 main 里 bind 的是另一个句柄（工具注册时用的那个），两者不是
+    /// 同一份内里——于是 `ShellCommandHost::manager()` 恒为 `None`，面板的
+    /// Shell 面板每条命令都回「shell manager unavailable」，而**模型侧的
+    /// `bash-*` 工具是好的**（它用的是工具注册时传进去的那份句柄）。
+    ///
+    /// 同一能力两条路径两种行为，是纯粹的漏接线。这里补上唯一正确的来源。
+    shell: Option<echo_shell::ShellHandle>,
     persona_api: Option<String>,
     active_model: Option<String>,
     config_store: Option<ConfigStore>,
@@ -84,6 +97,7 @@ impl AgentBuilder {
             event_sink: None,
             team_id: None,
             workspace_store: None,
+            shell: None,
             persona_api: None,
             active_model: None,
             config_store: None,
@@ -96,6 +110,12 @@ impl AgentBuilder {
             redactor: None,
             metrics: None,
         }
+    }
+
+    /// 注入进程级 Shell 句柄（与工具注册用的是**同一份**）。
+    pub fn shell(mut self, handle: echo_shell::ShellHandle) -> Self {
+        self.shell = Some(handle);
+        self
     }
 
     /// 进程级插件宿主（必填；所有人格共享同一个宿主实例）。
@@ -201,13 +221,17 @@ impl AgentBuilder {
     /// 运行态装配需要 `&Arc<Self>`）。必填槽缺失 = 装配 bug，fail-fast
     /// panic（消息指明缺哪个）。
     pub fn build(self) -> Arc<Agent> {
-        let agent = Agent::new(
+        let mut agent = Agent::new(
             self.provider,
             self.config,
             self.skills,
             self.tools,
             self.instances,
         );
+        // Shell 句柄必须在 `Arc` 化之前写进去（`ports.shell` 是普通字段）。
+        if let Some(shell) = self.shell {
+            agent.ports.shell = shell;
+        }
         // 必填槽：缺了就是组合根写错了，尽早炸。
         let plugin_host = self
             .plugin_host

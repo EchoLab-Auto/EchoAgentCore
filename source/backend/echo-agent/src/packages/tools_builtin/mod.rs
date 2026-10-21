@@ -27,8 +27,17 @@ pub use echo_plugin_tools::instance_commands::{
     InstanceCommandHost as InstanceCommandHostAlias, InstanceCommandHandler,
 };
 /// Shell 命令域的宿主接缝（组合根实现、插件消费）。
-pub use echo_plugin_tools::shell_commands::{
+///
+/// 2026-11：`shell_*` 工具与 `*Shell*` 命令随 shell 会话一起搬进独立插件
+/// `echo-plugin-shell`（`bash-start` / `bash-exec` / `bash-stop`）。这里保留
+/// re-export 是为了宿主侧既有路径不变。
+pub use echo_plugin_shell::commands::{
     ShellCommandHost as ShellCommandHostAlias, ShellCommandHandler,
+};
+/// Shell 工具集的构造契约（插件提供、宿主调用）。
+pub use echo_plugin_shell::{
+    resolve_provider as resolve_shell_provider, standalone_provider as standalone_shell_provider,
+    ShellHostCtx, ShellToolProvider,
 };
 
 /// 组装一个 persona 的内置工具集：**实现全在插件里**，这里只传端口。
@@ -41,17 +50,42 @@ pub fn build_registry(
     invoker: Option<echo_plugin_tools::RemoteInvoker>,
     shell: echo_shell::ShellHandle,
     provider: Option<std::sync::Arc<dyn BuiltinToolProvider>>,
+    shell_provider: Option<std::sync::Arc<dyn ShellToolProvider>>,
 ) -> crate::tool::ToolRegistry {
     let provider = provider.unwrap_or_else(echo_plugin_tools::plugin::standalone_provider);
     let cx = ToolsHostCtx {
         instances,
         workspace,
         invoker,
-        shell,
         // 共享配置存储：`list_api_profiles` 读供应商池的唯一入口。
         config_store: Some(config_store),
     };
-    provider.registry(&cx)
+    let mut registry = provider.registry(&cx);
+
+    // Shell 会话工具（`bash-start` / `bash-exec` / `bash-stop`）**由 shell 插件
+    // 造**（2026-11）：它知道这些工具该打什么包标签、需要什么端口。宿主只把
+    // 端口递过去并把产物并进同一个注册表——**不复制工具清单**。
+    //
+    // 与 `tools.builtin` 同一个降级口径：**装配期**插件尚未挂载（`make_agent`
+    // 早于 `mount_plan`），此时回退到插件的 standalone 实现；"这个使用者看不
+    // 看得到"由 persona 门控（`GATED_PLUGIN_IDS` 含 `echo-agent.shell`）与
+    // 包级启停负责——那是运行期的事，不该在构造工具表时表达。
+    let shell_provider =
+        shell_provider.unwrap_or_else(echo_plugin_shell::standalone_provider);
+    let shell_registry = shell_provider.registry(&ShellHostCtx {
+        shell: shell.clone(),
+        guard: Some(echo_shell::self_stop_guard()),
+    });
+    for name in shell_registry.names() {
+        let Some(tool) = shell_registry.get(&name) else {
+            continue;
+        };
+        registry.register(tool);
+        if let Some(package) = shell_registry.package_of(&name) {
+            registry.set_package(&name, package);
+        }
+    }
+    registry
 }
 
 #[cfg(test)]
@@ -73,6 +107,9 @@ mod tests {
             None,
             echo_shell::ShellHandle::new(),
             None,
+            // 带上 shell 插件造的工具一起查重名：两个插件产出的名字同处一张
+            // 注册表，撞名会被静默覆盖（这正是本测试要抓的）。
+            Some(crate::tool::builtin::standalone_shell_provider()),
         );
         let conflicts = registry.name_conflicts();
         assert!(conflicts.is_empty(), "内置工具重名: {conflicts:?}");
@@ -91,6 +128,7 @@ mod tests {
             store,
             None,
             echo_shell::ShellHandle::new(),
+            None,
             None,
         );
         assert!(

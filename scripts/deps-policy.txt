@@ -39,7 +39,7 @@ loop/echo-loop                          echo-context echo-defs
 protocol/echo-protocol                  echo-context echo-defs
 security/echo-sanitize                  echo-context echo-defs
 tool/echo-tool                          echo-context echo-defs echo-sanitize
-shell/echo-shell                        echo-context echo-protocol
+shell/echo-shell                        echo-context echo-defs echo-protocol echo-tool
 federation/echo-federation              echo-defs
 llm/echo-llm-openai                     echo-defs
 llm/echo-llm-anthropic                  echo-defs
@@ -64,8 +64,9 @@ plugin/echo-plugin-subagent             echo-defs echo-federation echo-protocol 
 plugin/echo-plugin-workspace            echo-context echo-defs echo-plugin echo-protocol echo-session echo-tool
 plugin/echo-plugin-management         echo-plugin   echo-context echo-defs echo-federation echo-protocol echo-session
 plugin/echo-plugin-tools                echo-config echo-context echo-defs echo-plugin echo-protocol echo-sanitize echo-shell echo-test-utils echo-tool
+plugin/echo-plugin-shell                echo-context echo-defs echo-plugin echo-protocol echo-shell echo-tool
 
 # ── 业务层与组合根 ─────────────────────────────────────────────────────
 # echo-agent 是业务 crate：**只有组合根可以依赖它**。
-backend/echo-agent                      echo-config echo-shell echo-context echo-defs echo-federation echo-plugin-federation echo-plugin-management echo-llm-anthropic echo-llm-ollama echo-llm-openai echo-loop echo-plugin echo-plugin-loop echo-plugin-provider-llm echo-plugin-self-update echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-sanitize echo-session echo-test-utils echo-tool
-core                                     echo-agent echo-config echo-context echo-defs echo-federation echo-loop echo-plugin echo-plugin-adapter echo-plugin-federation echo-plugin-host echo-plugin-loader echo-plugin-loop echo-plugin-management echo-plugin-provider-llm echo-plugin-self-update echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-sanitize echo-session
+backend/echo-agent                      echo-config echo-shell echo-context echo-plugin-shell echo-defs echo-federation echo-plugin-federation echo-plugin-management echo-llm-anthropic echo-llm-ollama echo-llm-openai echo-loop echo-plugin echo-plugin-loop echo-plugin-provider-llm echo-plugin-self-update echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-sanitize echo-session echo-test-utils echo-tool
+core                                     echo-agent echo-config echo-context echo-plugin-shell echo-defs echo-federation echo-loop echo-plugin echo-plugin-adapter echo-plugin-federation echo-plugin-host echo-plugin-loader echo-plugin-loop echo-plugin-management echo-plugin-provider-llm echo-plugin-self-update echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-sanitize echo-session

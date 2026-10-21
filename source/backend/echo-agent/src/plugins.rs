@@ -38,6 +38,12 @@ pub const MANAGEMENT_PANEL_PLUGIN_ID: &str = "echo-agent.management.panel";
 pub const WORKSPACE_PLUGIN_ID: &str = "echo-agent.workspace";
 /// Subagent 委派插件 id（包 id 同名：`spawn_subagent` 工具 + subagent 技能随包门控）。
 pub const SUBAGENT_PLUGIN_ID: &str = "echo-agent.subagent";
+/// Shell 会话插件 id（`bash-start` / `bash-exec` / `bash-stop` + `*Shell*` 命令域）。
+///
+/// 2026-11 从 `echo-agent.tools.builtin` 拆出：shell 会话有自己的一套机制
+/// （`echo-shell` 的进程组生命周期）、自己的面板页面、独立的启停需求。
+/// 声明与实现都在 [`echo_plugin_shell`]，这里是兼容别名。
+pub use echo_plugin_shell::PLUGIN_ID as SHELL_PLUGIN_ID;
 /// 循环模式互斥插件（按 persona 二选一，single 为推导兜底，也是默认）。
 ///
 /// 声明（id / 名称 / 描述 / manifest）已外迁到 [`echo_plugin_loop`]
@@ -59,11 +65,14 @@ pub use echo_plugin_loop::{
 /// 实例插件**不在这里**：它们按 `kind == PluginInstance` 在运行期从注册表推导
 /// （见 `Agent::gated_plugin_ids`），框架不需要认识任何平台名——新增平台
 /// 插件自动纳入门控。
-pub const GATED_PLUGIN_IDS: [&str; 4] = [
+pub const GATED_PLUGIN_IDS: [&str; 5] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
     WORKSPACE_PLUGIN_ID,
     SUBAGENT_PLUGIN_ID,
+    // 2026-11：shell 从 tools.builtin 拆出后**必须**在这里——persona 白名单
+    // 里没列它时要真的关掉，否则拆出插件反而让"谁都能开 shell"。
+    SHELL_PLUGIN_ID,
 ];
 
 /// LLM Provider 插件 id（名义挂载，重启生效）。
@@ -87,8 +96,9 @@ pub use echo_plugin_federation::PLUGIN_ID as FEDERATION_PLUGIN_ID;
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_PLUGIN_IDS: [&str; 10] = [
+pub const BUILTIN_PLUGIN_IDS: [&str; 11] = [
     TOOLS_BUILTIN_PLUGIN_ID,
+    SHELL_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
     WORKSPACE_PLUGIN_ID,
     SUBAGENT_PLUGIN_ID,
@@ -1192,7 +1202,7 @@ mod tests {
         assert!(
             scope_a
                 .ctx()
-                .service(&echo_plugin_tools::host_keys::SHELL_HOST)
+                .service(&echo_plugin_shell::host_keys::SHELL_HOST)
                 .is_some(),
             "子作用域必须继承根层的进程级能力"
         );

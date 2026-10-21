@@ -7,7 +7,11 @@
 //! `echo_plugin_tools::plugin(version)` —— 不带任何 `Arc<dyn …>` 参数，
 //! 接线全部发生在服务表里（`MountContext::require`）。
 //!
-//! ## 一个插件三个键，而不是一个"上帝键"
+//! Shell 命令域的键**不在这里**（2026-11）：它随 `shell_*` 工具一起搬进
+//! `echo-plugin-shell`（`echo-agent.host.shell`）。本 crate 的两个键是
+//! instance / tools。
+//!
+//! ## 一个插件多个键，而不是一个"上帝键"
 //!
 //! shell / instance / tools 是**三个独立的能力**（宿主侧也确实是三个适配器）。
 //! 合成一个键会让"我只想要 shell"的地方被迫依赖另外两个的形状。
@@ -17,12 +21,7 @@ use std::sync::Arc;
 use echo_context::ServiceKey;
 
 use crate::instance_commands::InstanceCommandHost;
-use crate::shell_commands::ShellCommandHost;
 use crate::tool_commands::ToolsCommandHost;
-
-/// Shell 命令域（会话 / 执行 / 停止 + `shell_*` 工具）。
-pub static SHELL_HOST: ServiceKey<Arc<dyn ShellCommandHost>> =
-    ServiceKey::new("echo-agent.host.tools.shell");
 
 /// 插件实例命令域（启停 / 状态 / 通用管理方法）。
 pub static INSTANCE_HOST: ServiceKey<Arc<dyn InstanceCommandHost>> =

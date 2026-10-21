@@ -36,7 +36,7 @@ use std::sync::Arc;
 use echo_context::Ctx;
 use echo_plugin_provider_llm::commands::ProviderCommandHost;
 use echo_plugin_skills::commands::SkillsCommandHost;
-use echo_plugin_tools::shell_commands::ShellCommandHost;
+use echo_plugin_shell::commands::ShellCommandHost;
 use echo_plugin_tools::tool_commands::ToolsCommandHost;
 
 use crate::agent::provider_host::AgentProviderCommandHost;
@@ -73,7 +73,7 @@ pub(crate) fn provide(ctx: &Arc<Ctx>, agent: &Arc<Agent>) -> Vec<echo_context::D
     put(
         keep.as_mut(),
         ctx,
-        &echo_plugin_tools::host_keys::SHELL_HOST,
+        &echo_plugin_shell::host_keys::SHELL_HOST,
         Arc::new(AgentShellCommandHost::new(agent.clone())) as Arc<dyn ShellCommandHost>,
     );
     put(

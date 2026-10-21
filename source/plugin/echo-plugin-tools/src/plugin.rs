@@ -42,6 +42,9 @@ pub const SERVICE_KEY: &str = "tools.builtin";
 ///
 /// 每项都对应工具箱里一个真实接缝（见 lib.rs 的「接缝」章节）——多一项都
 /// 意味着插件多知道一件宿主内部结构，所以这里刻意只有四个。
+///
+/// 2026-11 之前有第五个（`shell`）：`bash-*` 三个工具需要它。那三个工具搬进
+/// `echo-plugin-shell` 之后，本插件不再认识 shell 会话管理器。
 pub struct ToolsHostCtx {
     /// 插件实例注册表（`instance_*` 工具按它枚举/寻址实例）。
     pub instances: Arc<echo_defs::plugin_instance::InstanceRegistry>,
@@ -49,8 +52,6 @@ pub struct ToolsHostCtx {
     pub workspace: PathBuf,
     /// 联邦远程调用出口（`node://` 前缀的分流目标；None = 联邦未接线）。
     pub invoker: Option<crate::RemoteInvoker>,
-    /// Shell 会话管理器（`shell_*` 工��）。
-    pub shell: echo_shell::ShellHandle,
     /// 共享配置存储（`list_api_profiles` 读供应商池用；None = 未接线，
     /// 该工具不注册——与"列不出供应商"相比，不注册是更诚实的降级）。
     pub config_store: Option<echo_config::ConfigStore>,
@@ -84,7 +85,8 @@ impl BuiltinToolProvider for BuiltinTools {
             Some(guard.clone()),
             cx.invoker.clone(),
         );
-        crate::register_shell_tools(&mut registry, Some(guard), cx.shell.clone());
+        // `bash-*` 三个工具**不在这里**：它们随 shell 会话一起搬进
+        // `echo-plugin-shell`（2026-11）。本插件只留一次性 `bash`。
         // 每个工具打上本包标签：`echo-agent.tools.builtin` 的启停按包批量生效
         // （`ToolRegistry::set_package_enabled`）。打标签的知识归插件——
         // 它知道"这些是我装的"。
@@ -145,11 +147,10 @@ pub fn manifest(version: &str) -> PluginManifest {
 pub fn plugin(version: &str) -> Arc<dyn Plugin> {
     use echo_plugin::{Inject, ServiceSlot};
 
-    let shell = ServiceSlot::<Arc<dyn crate::shell_commands::ShellCommandHost>>::new();
     let instance = ServiceSlot::<Arc<dyn crate::instance_commands::InstanceCommandHost>>::new();
     let tools = ServiceSlot::<Arc<dyn crate::tool_commands::ToolsCommandHost>>::new();
-    let (bind_shell, bind_instance, bind_tools) = (shell.clone(), instance.clone(), tools.clone());
-    let (b_shell, b_instance, b_tools) = (shell.clone(), instance.clone(), tools.clone());
+    let (bind_instance, bind_tools) = (instance.clone(), tools.clone());
+    let (b_instance, b_tools) = (instance.clone(), tools.clone());
 
     Arc::new(
         BuiltinPlugin::new(manifest(version), move |mctx: &MountContext| {
@@ -163,45 +164,36 @@ pub fn plugin(version: &str) -> Arc<dyn Plugin> {
                         .map_err(|e| echo_plugin::PluginMountError::Mount(e.to_string()))?,
                 );
             }
-            disposers.push(bind_shell.bind(mctx, &crate::host_keys::SHELL_HOST)?);
             disposers.push(bind_instance.bind(mctx, &crate::host_keys::INSTANCE_HOST)?);
             disposers.push(bind_tools.bind(mctx, &crate::host_keys::TOOLS_HOST)?);
             Ok(disposers)
         })
         .with_inject(Inject::new([
-            crate::host_keys::SHELL_HOST.name().to_string(),
             crate::host_keys::INSTANCE_HOST.name().to_string(),
             crate::host_keys::TOOLS_HOST.name().to_string(),
         ]))
-        // 命令域：`*Shell*` + `*Instance*` + 工具管理面共三条域由本插件处理
+        // 命令域：`*Instance*` + 工具管理面两条域由本插件处理
         // （宿主 `apply_command` 在落内置 match 之前问一次插件）。
+        //
+        // `*Shell*` 四条已随 shell 工具搬进 `echo-plugin-shell`（2026-11）：
+        // 会话生命周期是一个独立能力，不该让"想关 shell"变成"关掉整个工具集"。
         .with_commands(
-            crate::shell_commands::COMMANDS
+            crate::instance_commands::COMMANDS
                 .into_iter()
-                .chain(crate::instance_commands::COMMANDS)
                 .chain(crate::tool_commands::COMMANDS)
                 .collect::<Vec<_>>(),
         )
         .with_command_handler_async(move |name, payload| {
-            let (shell, instance, tools) =
-                (b_shell.clone(), b_instance.clone(), b_tools.clone());
+            let (instance, tools) = (b_instance.clone(), b_tools.clone());
             Box::pin(async move {
-                let (Some(shell_host), Some(instance_host), Some(tools_host)) =
-                    (shell.get(), instance.get(), tools.get())
+                let (Some(instance_host), Some(tools_host)) = (instance.get(), tools.get())
                 else {
                     return Err(format!(
                         "命令 {name} 到 {PLUGIN_ID} 时插件尚未挂载（宿主接缝未绑定）"
                     ));
                 };
-                // 三个域依次问一次；都没认领 = 错（`with_commands` 与处理器
+                // 两个域依次问一次；都没认领 = 错（`with_commands` 与处理器
                 // 必须同步，测试守着）。
-                if let Some(outcome) =
-                    crate::shell_commands::ShellCommandHandler::new(shell_host)
-                        .handle(&name, payload.clone())
-                        .await
-                {
-                    return outcome;
-                }
                 if let Some(outcome) =
                     crate::instance_commands::InstanceCommandHandler::new(instance_host)
                         .handle(&name, payload.clone())
@@ -272,57 +264,39 @@ mod tests {
         fn emit(&self, _event: echo_protocol::BackendEvent) {}
     }
 
-    struct NoShellHost;
-
-    impl crate::shell_commands::ShellCommandHost for NoShellHost {
-        fn manager(&self) -> Option<Arc<echo_shell::ShellManager>> {
-            None
-        }
-        fn emit(&self, _event: echo_protocol::BackendEvent) {}
-        fn team_id(&self) -> Option<String> {
-            None
-        }
-        fn progress(&self) -> echo_shell::ShellEmit {
-            Arc::new(|_event| {})
-        }
-    }
-
     fn ports() -> ToolsHostCtx {
         ToolsHostCtx {
             instances: Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
             workspace: std::env::temp_dir(),
             invoker: None,
-            shell: echo_shell::ShellHandle::new(),
             config_store: None,
         }
     }
 
-    /// **声明 ⇒ 认领**：插件声明的每条命令都必须被三个域之一认领。
+    /// **声明 ⇒ 认领**：插件声明的每条命令都必须被两个域之一认领。
     ///
-    /// 三个命令域（shell / instance / tools）各自声明 `COMMANDS`，插件把三者
-    /// 拼起来交给分发器。拼错或漏接时命令会被"认领"成空操作——面板点了没
-    /// 反应也没有错误。这里逐条过一遍（`Null` 载荷被拒算认领）。
+    /// 两个命令域（instance / tools）各自声明 `COMMANDS`，插件把两者拼起来
+    /// 交给分发器。拼错或漏接时命令会被"认领"成空操作——面板点了没反应也
+    /// 没有错误。这里逐条过一遍（`Null` 载荷被拒算认领）。
+    ///
+    /// （`*Shell*` 四条在 `echo-plugin-shell`，那里有自己的同款测试。）
     #[tokio::test]
-    async fn every_declared_command_is_claimed_by_one_of_the_three_domains() {
-        let shell = crate::shell_commands::ShellCommandHandler::new(Arc::new(NoShellHost));
+    async fn every_declared_command_is_claimed_by_one_of_the_two_domains() {
         let instance =
             crate::instance_commands::InstanceCommandHandler::new(Arc::new(NoInstanceHost));
         let tools = crate::tool_commands::ToolsCommandHandler::new(Arc::new(NoToolsHost));
-        let declared: Vec<String> = crate::shell_commands::COMMANDS
+        let declared: Vec<String> = crate::instance_commands::COMMANDS
             .into_iter()
-            .chain(crate::instance_commands::COMMANDS)
             .chain(crate::tool_commands::COMMANDS)
             .map(str::to_string)
             .collect();
         for name in &declared {
-            let claimed = shell.handle(name, serde_json::Value::Null).await.is_some()
-                || instance.handle(name, serde_json::Value::Null).await.is_some()
+            let claimed = instance.handle(name, serde_json::Value::Null).await.is_some()
                 || tools.handle(name, serde_json::Value::Null).await.is_some();
             assert!(claimed, "{name} 声明了但没有处理分支");
         }
         // 反向：没声明的命令不许被认领（分发器永远路由不到它）。
         for handler_claims in [
-            shell.handle("SendMessage", serde_json::Value::Null).await.is_some(),
             instance.handle("SendMessage", serde_json::Value::Null).await.is_some(),
             tools.handle("SendMessage", serde_json::Value::Null).await.is_some(),
         ] {
@@ -374,14 +348,12 @@ mod tests {
     #[test]
     fn mount_provides_and_unmount_revokes_the_service() {
         let ctx = Arc::new(echo_context::Ctx::default());
-        let shell_host: Arc<dyn crate::shell_commands::ShellCommandHost> =
-            Arc::new(NoShellHost);
         let instance_host: Arc<dyn crate::instance_commands::InstanceCommandHost> =
             Arc::new(NoInstanceHost);
         let tools_host: Arc<dyn crate::tool_commands::ToolsCommandHost> =
             Arc::new(NoToolsHost);
         // 宿主接缝按**服务键**注册（全插件化 S6：插件不再收构造参数）。
-        let _keep_shell = ctx.provide(&crate::host_keys::SHELL_HOST, shell_host);
+        // （shell 的键已随工具搬进 `echo-plugin-shell`，本插件不再需要它。）
         let _keep_instance = ctx.provide(&crate::host_keys::INSTANCE_HOST, instance_host);
         let _keep_tools = ctx.provide(&crate::host_keys::TOOLS_HOST, tools_host);
         let plugin = plugin("9.9.9");

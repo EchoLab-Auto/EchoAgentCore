@@ -2,11 +2,16 @@
 //!
 //! ## 为什么 Shell 命令归本插件
 //!
-//! `shell_start` / `shell_exec` / `shell_stop` **工具**本来就住在这里
-//! （`shell_tools.rs`）。面板侧的会话列表 / 启停与模型侧是同一件事的两个
-//! 入口——把它们分开放在两个 crate 里，等于让"Shell 会话"这个概念横跨
-//! 插件边界。现在两侧同一个 crate，宿主的 `apply_command` 只在落内置 match
-//! **之前**问一次插件（`PluginHost::dispatch_command`），命中就返回。
+//! `bash-start` / `bash-exec` / `bash-stop` **工具**就在本 crate（`tools.rs`）。
+//! 面板侧的会话列表 / 启停与模型侧是同一件事的两个入口——把它们分开放在两
+//! 个 crate 里，等于让"Shell 会话"这个概念横跨插件边界。宿主的
+//! `apply_command` 只在落内置 match **之前**问一次插件
+//! （`PluginHost::dispatch_command`），命中就返回。
+//!
+//! 2026-11：本域随 shell 工具一起从 `echo-plugin-tools` 搬出——那是个 6,000
+//! 行的"内置工具集"，而 shell 会话是一个**独立能力**（自己的 `echo-shell`
+//! 机制、自己的进程组生命周期、自己的面板页面）。混在一起的后果是：想关掉
+//! shell 就得关掉整个工具集。
 //!
 //! ## 宿主接缝 = 三项能力
 //!

@@ -1,0 +1,23 @@
+[package]
+name = "echo-plugin-shell"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shell 会话插件：后台 bash 会话工具（bash-start / bash-exec / bash-stop）+ Shell 命令域"
+
+[dependencies]
+echo-defs = { workspace = true }
+echo-context = { workspace = true }
+echo-plugin = { workspace = true }
+echo-protocol = { workspace = true }
+echo-shell = { workspace = true }
+echo-tool = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

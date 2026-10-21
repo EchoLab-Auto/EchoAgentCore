@@ -114,6 +114,13 @@ pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
         echo_agent::tool::builtin::builtin_plugin::plugin(version),
     )?;
 
+    // ── Shell 会话（`bash-start` / `bash-exec` / `bash-stop` + 命令域）──
+    //
+    // 2026-11 从工具集拆出：它有自己的机制依赖（`echo-shell` 的进程组
+    // 生命周期）、自己的面板页面、独立的启停需求。顺序紧跟工具集——不是因为
+    // 依赖（它不依赖 tools.builtin），而是让"工具类插件"在面板里相邻。
+    push_plugin(&mut catalog, echo_plugin_shell::plugin(version))?;
+
     // ── 技能目录（整表 + 命令域）──
     push_plugin(&mut catalog, echo_agent::skill::plugin(version))?;
 

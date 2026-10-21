@@ -113,7 +113,7 @@ QQ 的 10 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 
 **边界**：这是**防误伤**判定，不是权限边界——它只认词元，不解释 shell 语义
 （相对路径 `rm -rf ../`、变量展开、命令替换都不追），绕过方式存在；需要强制
-隔离时用 persona 级工具白名单约束 `bash`。判定目前只覆盖 `bash`：`shell_exec`
+隔离时用 persona 级工具白名单约束 `bash`。判定目前只覆盖 `bash`：`bash-exec`
 仅有自停拦截，不经 rm 判定与危险模式表。
 
 ### 超时治理
@@ -146,9 +146,12 @@ QQ 的 10 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
   主时间线/面板终端实时可见
 - **超时**：单条命令超时（默认 120s，最大 300s）只中止读取、**保留会话**；
   超时文本以 notice 语义返回（面板显示"可能仍在运行"）
-- **工具**：`shell_start` / `shell_exec` / `shell_stop`（builtin 注册，按人格白名单）
+- **工具**：`bash-start` / `bash-exec` / `bash-stop`（2026-11 起由**独立插件**
+  `echo-agent.shell` 提供，按人格白名单门控；此前是 `shell_start` / `shell_exec`
+  / `shell_stop`，隶属内置工具集——改名与拆分是同一轮：它们与一次性工具 `bash`
+  是同一件事的两种模式，名字统一到 `bash-` 前缀后模型不再在两套命名间犹豫）
 - **常驻进程规范**：agent 需要跑常驻进程（文档/开发服务器、watch 构建、本地服务
-  等）时**必须经 shell 会话启动**（`shell_start` + `shell_exec`），禁止用
+  等）时**必须经 shell 会话启动**（`bash-start` + `bash-exec`），禁止用
   `nohup`/`&`/disown 挂野进程——野进程脱离会话模型：不在 Shell 视图可见、无停止
   入口、机器重启即丢失且无人知晓；shell 会话内的常驻进程可见、可停止（`ShellStop`
   终止**整个进程组**：bash 及其全部子孙，含后台任务；自行 `setsid` 脱离进程组的

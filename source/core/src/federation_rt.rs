@@ -1663,7 +1663,6 @@ mod core_util_tests {
     use crate::federation_import::{chunk_utf8, handle_session_import, ImportOutcome};
     use crate::pick_promoted_peer_name;
     use crate::learnable_peer_url;
-    use echo_agent::{AgentConfig, TeamMember};
 
     /// 对端地址学习决策（配对无方向性）：仅填空，不覆盖；空宣告不学习。
     #[test]

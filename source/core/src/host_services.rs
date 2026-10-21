@@ -56,7 +56,8 @@ use echo_agent::{Agent, EventSink};
 
 use echo_plugin_federation::host_keys::{EVENTS as FEDERATION_EVENTS, PORTS};
 use echo_plugin_skills::host_keys::SKILLS_HOST;
-use echo_plugin_tools::host_keys::{INSTANCE_HOST, SHELL_HOST, TOOLS_HOST};
+use echo_plugin_tools::host_keys::{INSTANCE_HOST, TOOLS_HOST};
+use echo_plugin_shell::host_keys::SHELL_HOST;
 use echo_plugin_workspace::host_keys::WORKSPACE_HOST;
 
 /// 组合根手里那些"配置表达不了、只有装配期知道"的句柄。
@@ -319,6 +320,7 @@ impl InstanceControl for PluginInstanceControl {
 pub(crate) fn provided_keys() -> Vec<String> {
     let mut keys = vec![
         // ── 1. 本层注册 ──
+        // Shell 会话（2026-11 独立插件：`echo-agent.shell`）。
         SHELL_HOST.name().to_string(),
         INSTANCE_HOST.name().to_string(),
         TOOLS_HOST.name().to_string(),
@@ -339,6 +341,7 @@ pub(crate) fn provided_keys() -> Vec<String> {
         // ── 3. 插件自 provide ──
         echo_plugin_loop::SERVICE_KEY.to_string(),
         echo_plugin_tools::plugin::SERVICE_KEY.to_string(),
+        echo_plugin_shell::SERVICE_KEY.to_string(),
     ];
     keys.sort();
     keys.dedup();

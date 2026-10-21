@@ -1089,6 +1089,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     factory_federation.invoker.clone(),
                     factory_shell_handle.clone(),
                     echo_agent::tool::builtin::resolve_provider(&tool_ctx),
+                    // Shell 工具由 shell 插件造（2026-11 拆出的独立插件）：
+                    // 未挂载 = 这个 persona 没有 `bash-*` 工具，正是想要的效果。
+                    echo_agent::tool::builtin::resolve_shell_provider(&tool_ctx),
                 );
                 // 工具结果出口卡口（2026-10 安全）：本 persona 注册表注入
                 // 脱敏器——所有工具（内置 / 插件 / 远程 / 子代理直呼）的
@@ -1247,6 +1250,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     instances2.clone(),
                 )
                 .plugin_host(shared_plugin_host.clone())
+                // 进程级 Shell 句柄（2026-11）：面板的 `*Shell*` 命令域经
+                // `Agent::shell()` 读它。不注入时那个槽是**另一个**空句柄，
+                // 面板每条 shell 命令都回「shell manager unavailable」。
+                .shell(factory_shell_handle.clone())
                 .event_sink(event_sink.clone())
                 .team_id(Some(id.clone()))
                 .workspace_store(workspace_store)

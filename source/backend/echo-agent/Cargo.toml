@@ -21,6 +21,7 @@ echo-protocol = { path = "../../protocol/echo-protocol" }
 echo-plugin = { workspace = true }
 echo-plugin-provider-llm = { workspace = true }
 echo-plugin-self-update = { workspace = true }
+echo-plugin-shell = { workspace = true }
 echo-plugin-federation = { workspace = true }
 echo-plugin-management = { workspace = true }
 echo-plugin-skills = { workspace = true }

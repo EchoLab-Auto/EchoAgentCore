@@ -8,7 +8,9 @@ repository.workspace = true
 description = "Shell 会话子系统：bash 子进程 + 哨兵分帧 + 进程组清理 + 流式事件"
 
 [dependencies]
+echo-defs = { workspace = true }
 echo-protocol = { workspace = true }
+echo-tool = { workspace = true }
 echo-context = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -16,6 +18,7 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 parking_lot = "0.12"
 serde = { workspace = true }
+regex = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # bash 进程组清理（向进程组发 SIGKILL）。

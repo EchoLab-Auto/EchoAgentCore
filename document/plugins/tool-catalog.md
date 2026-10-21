@@ -19,6 +19,9 @@ y: 1780
 | 工具 | 分类 | 说明 |
 | --- | --- | --- |
 | `bash` | builtin | Run a shell (bash) command in the project workspace. Returns stdout and stderr. Use for git operations, cargo builds, fi…｜包：`echo-agent.tools.builtin` |
+| `bash-exec` | builtin | Run one command inside a persistent bash session (see bash-start). Output is streamed to the Panel live. Timeout: 120s d…｜包：`echo-agent.shell` |
+| `bash-start` | builtin | Start a persistent background bash session. Commands run in the same shell keep state (cwd, exports, background jobs). R…｜包：`echo-agent.shell` |
+| `bash-stop` | builtin | Stop and destroy a persistent bash session (kills the whole process group, including background jobs).｜包：`echo-agent.shell` |
 | `calculator` | builtin | 计算一个算术表达式，支持 + - * / ( ) 和数字。参数: expression(例如 "(2+3)*4")。｜包：`echo-agent.tools.builtin` |
 | `checklist` | builtin | 管理任务检查清单。操作: create 创建清单, add 添加项(需要 item), list 查看, check 勾选完成(需要 index), uncheck 取消勾选(需要 index), remove 删除项(需要 index),…｜包：`echo-agent.tools.builtin` |
 | `edit_file` | builtin | Replace lines in an existing file. Specify start_line and end_line (inclusive) to replace with new_content. Use this to …｜包：`echo-agent.tools.builtin` |
@@ -30,8 +33,5 @@ y: 1780
 | `list_files` | builtin | List files in a directory. Shows file names, sizes, and types. Use this to explore the project structure. Path may carry…｜包：`echo-agent.tools.builtin` |
 | `read_file` | builtin | Read the contents of a file in the project. Returns the file content with line numbers. Use this to examine source code,…｜包：`echo-agent.tools.builtin` |
 | `search_code` | builtin | Search for a pattern in source files. Returns matching file paths and line numbers. Use this to find function definition…｜包：`echo-agent.tools.builtin` |
-| `shell_exec` | builtin | Run one command inside a persistent shell session (see shell_start). Output is streamed to the Panel live. Timeout: 120s…｜包：`echo-agent.tools.builtin` |
-| `shell_start` | builtin | Start a persistent background bash session. Commands run in the same shell keep state (cwd, exports). Returns session_id…｜包：`echo-agent.tools.builtin` |
-| `shell_stop` | builtin | Stop and destroy a persistent shell session.｜包：`echo-agent.tools.builtin` |
 | `web_search` | builtin | 搜索网页获取最新信息（新闻、天气、百科、实时数据）。参数: query(搜索关键词), max_results(可选, 默认5, 最大10)。｜包：`echo-agent.tools.builtin` |
 | `write_file` | builtin | Create a new file or overwrite an existing file with new content. Use this to create or update source files, config file…｜包：`echo-agent.tools.builtin` |

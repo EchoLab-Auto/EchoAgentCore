@@ -45,9 +45,7 @@ pub mod list_api_profiles;
 pub mod instance_commands;
 pub mod instance_ops;
 pub mod plugin;
-pub mod shell_commands;
 pub mod tool_commands;
-pub mod shell_tools;
 pub mod websearch;
 
 pub use calculator::CalculatorTool;
@@ -58,9 +56,7 @@ pub use list_api_profiles::ListApiProfilesTool;
 pub use instance_ops::{broadcast_to_same_platform, invoke_method, resolve_instance, InstanceOpRunner};
 pub use instance_commands::{InstanceCommandHandler, InstanceCommandHost, COMMANDS as INSTANCE_COMMANDS};
 pub use plugin::{BuiltinToolProvider, BuiltinTools, ToolsHostCtx, PLUGIN_ID};
-pub use shell_commands::{ShellCommandHandler, ShellCommandHost, COMMANDS as SHELL_COMMANDS};
 pub use tool_commands::{ToolsCommandHandler, ToolsCommandHost, COMMANDS as TOOL_COMMANDS};
-pub use shell_tools::{register_shell_tools, ShellExecTool, ShellStartTool, ShellStopTool};
 pub use websearch::WebSearchTool;
 
 /// 远程工具调用出口（`node://<peer>/…` 前缀的分流目标）。
@@ -80,14 +76,13 @@ pub use echo_defs::remote_tool::RemoteInvoker;
 /// `Agent` 构造之前。此前那份 kernel cell **从未被任何代码 set 过**：
 /// `node://` 远程文件/命令分流因此恒报「联邦未接线」。改成参数后，
 /// 装配期传进来的就是运行期用的。
-/// 命令护栏：`run_command` / `shell_exec` 在执行**之前**调用。
+/// 命令护栏（**类型定义在机制层** `echo_shell::CommandGuard`，2026-11）。
 ///
-/// 为什么是注入而不是内置：护栏守的是「宿主自己的服务名」（例如禁止工具
-/// 停掉运行中的 Core），那是宿主身份的一部分，不该硬编码进工具实现。
-/// 实现方（组合根）提供；未注入 = 不做该检查（工具本身仍是沙箱内的）。
-///
-/// 返回 `Err` 即拒绝执行，错误文本原样回给模型。
-pub type CommandGuard = Arc<dyn Fn(&str) -> Result<(), echo_tool::ToolError> + Send + Sync>;
+/// 本 crate 的 `bash`（一次性）与 `echo-plugin-shell` 的 `bash-exec`（会话内）
+/// 都要在执行前问同一句"这条命令能不能跑"，而两个插件互不认识（S12 零依赖）。
+/// 于是类型与默认实现（[`echo_shell::self_stop_guard`]）住在 shell 机制层，
+/// 两边各构造一份——一份实现，零跨插件边。
+pub use echo_shell::CommandGuard;
 
 /// 注册「核心」工具家族：计算 / 检索 / 清单。
 ///
@@ -108,14 +103,16 @@ pub fn register_core_tools(registry: &mut ToolRegistry) {
 mod tests {
     use super::*;
 
-    /// 三个注册函数合起来必须产出互不重名的工具集——重名会被
+    /// 两个注册函数合起来必须产出互不重名的工具集——重名会被
     /// `ToolRegistry::register` 静默覆盖（见 `echo-tool` 的 `name_conflicts`）。
+    ///
+    /// `bash-*` 三个工具在 `echo-plugin-shell`，那里有自己的同款断言；
+    /// 两个插件的工具**跨插件**重名由组合根装配期检查（`name_conflicts`）。
     #[test]
     fn registered_tool_names_are_unique_across_families() {
         let mut registry = ToolRegistry::new();
         register_core_tools(&mut registry);
         register_coding_tools(&mut registry, std::env::temp_dir(), None, None);
-        register_shell_tools(&mut registry, None, echo_shell::ShellHandle::new());
         register_instance_tools(
             &mut registry,
             Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
