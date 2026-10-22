@@ -30,15 +30,28 @@ y: 1060
 
 ```
 .chat-composer-float            定位层（absolute；pointer-events: none）
-├── __halo                      外发光（只在移动端 clip 生效时启用，见下）
-└── NeumorphismCard.__card      卡片：材质 / 圆角 / 边缘高光 / 环境投影
+└── NeumorphismCard.__card      卡片：材质 / 圆角 / 内辉光
     └── __body                  内层：padding + 内容（附件 / ChatComposer / 状态行）
 ```
 
-- **卡片负责**：半透明底（`--nm-glass-bg`）、`backdrop-filter`、1px 内高光边（`--nm-glass-border-opacity`）、`glass=float` 的环境投影。输入区只覆盖两件事：圆角取 `--composer-radius`（选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*` 档位）、挂超椭圆 `clip-path`。
+- **卡片负责**：半透明底（`--nm-glass-bg`）与 `backdrop-filter`。输入区覆盖三件事：圆角取 `--composer-radius`（选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*` 档位）、挂超椭圆 `clip-path`、`box-shadow` 换成内辉光。
 - **`backdrop-filter` 降到 10px**（库默认 20px + saturate）：用 `--nm-glass-blur` 变量覆盖，沿用 2026-09 的拖选性能结论。聚焦/拖选期间 `.chat-composer-float--busy` 直接关掉 blur 并换成不透明底色。
-- **`__halo` 为什么还留着**：`clip-path` 会把元素**自身**的 `box-shadow` 一起裁掉，而移动端卡片要挂超椭圆 clip —— 投影会整体消失。所以投影必须画在未被裁剪的兄弟层上。桌面没有 clip，卡片自带投影已够，`__halo` 用 `display: none` 关掉（否则双重阴影）。同理 `__halo` 不能挂 `backdrop-filter`：`filter` 会创建新的 backdrop root，让卡片的毛玻璃失效。
-- **没有独立描边层了**：`--composer-border` 归零，1px 边由卡片的内高光承担。这牺牲了原来「描边沿超椭圆处处等宽」的性质（内高光沿圆角走，被超椭圆 clip 在 2 处切点附近可能略细），换取结构与全站卡片一致。
+
+### 内辉光（inset）
+
+辉光画在边缘**内侧**向里衰减，不是向外的投影。三层叠加（顺序即叠放）：
+
+| 层 | 作用 | 浅色 | 深色 |
+| --- | --- | --- | --- |
+| `inset 0 0 0 1px` | 1px 边缘亮线（轮廓清晰度，兼作描边） | `--nm-shadow-light` × `--nm-glass-border-opacity` | 同（令牌自动切档） |
+| `inset 0 2px 10px` | 上方内辉光（光从上方落下 → 受光/凹陷感） | `rgba(255,255,255,.5)` | `rgba(255,255,255,.14)` |
+| `inset 0 0 18px` | 四周主辉光 | `rgba(255,255,255,.34)` | `rgba(255,255,255,.1)` |
+
+三个量都可调：`--composer-glow-size` / `--composer-glow` / `--composer-glow-top-size` / `--composer-glow-top`（深色档在 `[data-theme='dark']` 段覆盖）。
+
+**为什么内辉光比外发光更合适**：移动端卡片挂着超椭圆 `clip-path`，而 clip **只裁元素外部** —— 向外的 `box-shadow` 会被整块裁掉（此前要靠一个额外的模糊兄弟层 `__halo` 模拟，桌面端还得单独关掉避免双重阴影）。`inset` 阴影天然在裁剪区内，于是**桌面圆角与移动端超椭圆共用同一份实现**，`__halo` 整层删除。像素实测（402 宽 @3x）：边缘 L=233 → 内部 L=216（光向内衰减 ✓），卡片外 6~18px 处 L=220 与背景一致（无外发光 ✓）。
+
+- **没有独立描边层**：`--composer-border` 归零，1px 边由上面第 ① 层承担。
 
 ## 状态行
 
