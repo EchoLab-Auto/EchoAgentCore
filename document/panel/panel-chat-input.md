@@ -37,7 +37,7 @@ y: 1060
 
 - **卡片负责**：半透明底（`--nm-glass-bg`）、`backdrop-filter`、**`glass="float"` 档的向外环境投影**（`0 4px 16px` ambient + `0 2px 4px` 加深）—— 视觉上是一块**浮在消息之上的磨砂托盘**（悬浮，不是凹槽）。
 - **轮廓也归卡片**（2026-10）：不再由面板写 `clip-path`，而是声明库的两个 prop —— 移动端传 `:clip-path`（设备屏角的偏移曲线），桌面/直角屏传 `:squircle="2.5"`（按卡片生效的 `border-radius` 生成等半径超椭圆）。超椭圆几何内核在 `@echolab-auto/ui-frame/utils`（`sampleCornerOffset` / `squircleClipPath` / `pointsToPathData` …），本仓库的 `src/utils/squircle.ts` 只剩 Panel 特有的组合 `composerOutline` / `composerGeometry` / `composerCornerSpan`。
-- **移动端四角等大**（2026-10 用户报「上两个圆角和下两个圆角不相等」）：轮廓的下角是屏幕角偏移曲线，上角是它关于水平中轴的**镜像**，两角共用同一个「跨度」`R − 留白`。跨度放不下时**抬高输入行**（`--chat-control-h` 取 `max(基准, 2×跨度 − 3×padding − 状态行高)`，R=74.5 的机型 45.6 → 58），而不是让上角吃掉剩余高度 —— 于是四角同形同大（镜像偏差 0）且下角间隙仍恒定（波动 0.03~0.05px）。文本域随输入行一起长高（纵向 padding 取 `(controlH − 1.6em)/2`，单行文字垂直居中）。详见 [移动端布局](./panel-mobile-layout.md)。
+- **移动端四角等大**（用户报「上两个圆角和下两个圆角不相等」）：轮廓的下角是屏幕角偏移曲线，上角是它关于水平中轴的**镜像**，两角共用同一个「跨度」`R − 3vw`（留白 = 屏宽 3%）。跨度放不下时**加厚外壳内边距**（`--composer-padding = max(10px, (2×跨度 − 输入行 − 状态行) / 3)`），而不是让上角吃掉剩余高度 —— 于是四角同形同大（镜像偏差 0）且下角间隙仍恒定（波动 ≤0.06px），输入行与按钮保持在 45.6 的触控基准。详见 [移动端布局](./panel-mobile-layout.md)。
 - 面板仍负责圆角**档位**：`--composer-radius`（桌面 24）+ `--composer-corner-r`（窄屏 = 实际跨度，供内层派生同心圆角），选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*`。
 - **`ChatComposer` 侧另有一处内辉光**：`focus-effect="glow"` —— 聚焦时主色光从输入槽**内部**亮起（`inset 0 0 18px` 光晕 + 1px 内描边，抑制默认外环）。
 - **`backdrop-filter` 降到 10px**（库默认 20px + saturate）：用 `--nm-glass-blur` 变量覆盖，沿用 2026-09 的拖选性能结论。聚焦/拖选期间 `.chat-composer-float--busy` 直接关掉 blur 并换成不透明底色。
