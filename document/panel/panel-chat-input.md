@@ -6,9 +6,9 @@ x: 5120
 y: 1060
 ---
 
-# 输入区与入口行
+# 输入区
 
-> **定位**：会话视图底部的输入侧交互——发送与文本域、图片附件、取消任务的乐观中断，以及入口行按钮矩阵与弹出层的几何、关闭语义。读者：维护 `ChatView` 输入侧、`PanelPopover` 与各弹层的开发者。上游：[会话视图](./panel-chat.md)；入口按钮打开的弹层内容见[桌面端模态与覆盖层](./panel-desktop-overlays.md)、[实例管理·任务·Shell](./panel-instance-tasks.md)。
+> **定位**：会话视图底部输入区的交互——发送与文本域、图片附件、取消任务的乐观中断。读者：维护 `ChatView` 输入侧与库 `ChatComposer` 集成的开发者。上游：[会话视图](./panel-chat.md)；上方的功能条与弹层见本文「入口行」一节。
 
 ## 发送与文本域
 
@@ -28,6 +28,10 @@ y: 1060
   1. 本地 `cancelSessionWork`（`state.ts::cancelSessionWork`）立即生效——活动相位 → completed（浮条/取消按钮即时消失）；该会话 running 任务及其分支 → cancelled；主时间线与分支 tab 内 running 工具卡 → failed 并写入「（已取消）」
   2. 下发 `CancelRequestedWork{session_id, all:false, team_id: 当前Agent}`——`team_id` 必须携带，否则命令路由到默认 Agent，self-coding 场景下"取消 0 个任务"；后端取消成功即回 `AgentCompleted` 对齐状态
   3. 库组件自带的取消按钮不渲染（`cancelable: false`，`@cancel` 仅作转发）
+
+# 入口行
+
+> **定位**：输入区上方的功能条——按钮矩阵、显隐门控，以及各弹出层的几何与关闭语义。读者：维护 `ChatView` 入口行、`PanelPopover` 与各弹层的开发者。上游：[会话视图](./panel-chat.md)；弹层**内容**契约见[桌面端模态与覆盖层](./panel-desktop-overlays.md)、[实例管理·任务·Shell](./panel-instance-tasks.md)。
 
 ## 入口行按钮
 
