@@ -36,8 +36,9 @@ y: 1060
 ```
 
 - **卡片负责**：半透明底（`--nm-glass-bg`）、`backdrop-filter`、**`glass="float"` 档的向外环境投影**（`0 4px 16px` ambient + `0 2px 4px` 加深）—— 视觉上是一块**浮在消息之上的磨砂托盘**（悬浮，不是凹槽）。
-- **轮廓也归卡片**（2026-10）：不再由面板写 `clip-path`，而是声明库的两个 prop —— 移动端传 `:clip-path`（设备屏角的偏移曲线），桌面/直角屏传 `:squircle="2.5"`（按卡片生效的 `border-radius` 生成等半径超椭圆）。超椭圆几何内核在 `@echolab-auto/ui-frame/utils`（`sampleCornerOffset` / `squircleClipPath` / `pointsToPathData` …），本仓库的 `src/utils/squircle.ts` 只剩 Panel 特有的组合 `composerOutline`。
-- 面板仍负责圆角**档位**：`--composer-radius`（桌面 24 / 窄屏走贴角派生），选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*`。
+- **轮廓也归卡片**（2026-10）：不再由面板写 `clip-path`，而是声明库的两个 prop —— 移动端传 `:clip-path`（设备屏角的偏移曲线），桌面/直角屏传 `:squircle="2.5"`（按卡片生效的 `border-radius` 生成等半径超椭圆）。超椭圆几何内核在 `@echolab-auto/ui-frame/utils`（`sampleCornerOffset` / `squircleClipPath` / `pointsToPathData` …），本仓库的 `src/utils/squircle.ts` 只剩 Panel 特有的组合 `composerOutline` / `composerGeometry` / `composerCornerSpan`。
+- **移动端四角等大**（2026-10 用户报「上两个圆角和下两个圆角不相等」）：轮廓的下角是屏幕角偏移曲线，上角是它关于水平中轴的**镜像**，两角共用同一个「跨度」`min(R − 留白, 静止卡片半高)` —— 于是四角同形同大（镜像偏差 0）。跨度由 JS 算好传给 `composerOutline` 的 `cornerMax`；多行输入撑高卡片时它不变，多出来的高度成为竖直直边（形状不跳变）。代价是下角间隙从恒定值放宽到 ±1.7~3.5px，详见 [移动端布局](./panel-mobile-layout.md)。
+- 面板仍负责圆角**档位**：`--composer-radius`（桌面 24）+ `--composer-corner-r`（窄屏 = 实际跨度，供内层派生同心圆角），选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*`。
 - **`ChatComposer` 侧另有一处内辉光**：`focus-effect="glow"` —— 聚焦时主色光从输入槽**内部**亮起（`inset 0 0 18px` 光晕 + 1px 内描边，抑制默认外环）。
 - **`backdrop-filter` 降到 10px**（库默认 20px + saturate）：用 `--nm-glass-blur` 变量覆盖，沿用 2026-09 的拖选性能结论。聚焦/拖选期间 `.chat-composer-float--busy` 直接关掉 blur 并换成不透明底色。
 
