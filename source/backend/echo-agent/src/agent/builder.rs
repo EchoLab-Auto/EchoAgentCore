@@ -221,6 +221,8 @@ impl AgentBuilder {
     /// 运行态装配需要 `&Arc<Self>`）。必填槽缺失 = 装配 bug，fail-fast
     /// panic（消息指明缺哪个）。
     pub fn build(self) -> Arc<Agent> {
+        // `self.config` 下面会被 move 进 `Agent::new`，需要的派生值先取出来。
+        let subagent_timeout_secs = self.config.effective_subagent_timeout_secs();
         let mut agent = Agent::new(
             self.provider,
             self.config,
@@ -265,7 +267,14 @@ impl AgentBuilder {
             agent.set_workspace_store(store);
         }
         if let Some(store) = self.subagent_store {
-            agent.attach_subagent_runtime_with(store, self.subagent_remote_sink);
+            // 默认墙钟上限取配置（`0` = 不限制）。捕获时机必须在 `Agent::new`
+            // 之前 —— `self.config` 在那里被 move 掉了。
+            let subagent_timeout_secs = subagent_timeout_secs;
+            agent.attach_subagent_runtime_with(
+                store,
+                self.subagent_remote_sink,
+                subagent_timeout_secs,
+            );
         }
         if let Some(identity) = self.node_identity {
             agent.set_node_identity(identity);

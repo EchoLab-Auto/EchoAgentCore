@@ -42,6 +42,11 @@ use echo_defs::remote_tool::{remote_tool_name, remote_tool_prefix};
 use echo_defs::token::truncate;
 use echo_tool::{Tool, ToolError, ToolRegistry, ToolResult};
 
+/// 推进回调（见 [`run_subagent_turn`] 的 `progress` 参数）。
+///
+/// `Arc` 而非引用：执行体的看门狗与 turn 本体分别持有，生命周期不同。
+pub type ProgressFn = Arc<dyn Fn() + Send + Sync>;
+
 /// 单次委派结果的可见回灌上限（字符）：子任务结论超过即截断并标注，
 /// 防单个子任务反过来烧掉主上下文。
 pub const MAX_SUBAGENT_RESULT_CHARS: usize = 8 * 1024;
@@ -54,8 +59,34 @@ const COMPLETED_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 #[allow(dead_code)]
 pub const MAX_DELEGATION_DEPTH: u32 = 1;
 
-/// 子任务默认执行超时（秒）。
-const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 600;
+/// 子任务默认执行超时（秒）；`0` = 不设墙钟上限。
+///
+/// 这个值只是**兜底**：宿主编译期会用 `AgentConfig::subagent_timeout_secs`
+/// 覆盖它（见 `SpawnSubagentTool::default_timeout_secs`）。慢模型（kimi 等
+/// 长思考 / 多轮检索）不该被一个固定的 10 分钟砍掉，但"完全不管"也不行 ——
+/// 见 [`SUBAGENT_IDLE_TIMEOUT_SECS`]：墙钟可以不设，卡死必须能被发现。
+pub const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 600;
+
+/// 显式指定墙钟上限时的允许区间（`0` 表示不限制，不参与 clamp）。
+const MIN_SUBAGENT_TIMEOUT_SECS: u64 = 30;
+const MAX_SUBAGENT_TIMEOUT_SECS: u64 = 86_400;
+
+/// 「无进展」看门狗（秒）：子任务连续这么久没有任何推进即中止。
+///
+/// **为什么需要它**：墙钟上限与"慢"是两回事。一个每轮都在推进、只是每轮都
+/// 慢的模型（长思考 + 十几轮工具）不应该被杀；而一个卡在挂死的 HTTP 请求上、
+/// 或者陷入同一工具死循环的任务，无论给多久都完不成。这里用"有没有推进"作
+/// 判据，两者就能分开：
+/// - 推进 = 任一 LLM 返回（含工具调用）/ 任一工具调用完成（见 `run_subagent_turn`
+///   的 `progress` 回调）；
+/// - 空闲时长超过本常量 → 中止，回报里明确写"长时间无进展"而不是"超时"。
+///
+/// 30 分钟：单次 LLM 响应或单次工具调用远够不到这个量级（`bash` 工具自身上限
+/// 300s，最长的推理也就在分钟级），所以它只会命中真正的卡死。
+pub const SUBAGENT_IDLE_TIMEOUT_SECS: u64 = 1800;
+
+/// 看门狗轮询间隔：只影响"发现卡死"的精度，不影响判据。
+pub(crate) const IDLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// `spawn_subagent` 编排工具名（唯一事实来源）。
 pub const SPAWN_SUBAGENT_TOOL: &str = "spawn_subagent";
@@ -233,6 +264,13 @@ pub async fn wait_cancelled(
 /// 子任务的中间过程消耗上下文。
 pub struct SpawnSubagentTool {
     store: Arc<SubagentStore>,
+    /// 未指定 `timeout_secs` 时的默认墙钟上限（秒；`0` = 不限制）。
+    ///
+    /// 放在实例上而不是写死常量，是为了让"默认多久"成为**用户可配置**项：
+    /// 组合根用 `AgentConfig::subagent_timeout_secs` 注入。配置项语义
+    /// （`None` = 用内置 600 / `Some(0)` = 不限制 / `Some(n)` = n 秒）与这里的
+    /// 取值一致，只差一层默认回退。
+    default_timeout_secs: u64,
     /// 拉起子任务的执行闭包（由 Agent 注入，携带 provider/skills/事件发射等
     /// 依赖；保持 `Fn` 而非直接持有 `Arc<Agent>`，避免循环引用）。
     spawn: Arc<dyn Fn(SpawnRequest) + Send + Sync>,
@@ -258,7 +296,11 @@ pub struct SpawnRequest {
     pub task_id: String,
     pub session_id: String,
     pub task: String,
-    pub timeout: std::time::Duration,
+    /// 墙钟上限；`None` = 不限制（慢模型/长任务）。
+    ///
+    /// 不限制**不等于**没有守卫：执行体始终挂着「连续 30 分钟无进展」看门狗
+    /// （[`SUBAGENT_IDLE_TIMEOUT_SECS`]），卡死的任务照样会被中止并回报。
+    pub timeout: Option<std::time::Duration>,
     /// 主 turn 的取消信号：主 turn 取消时子任务一并取消。
     ///
     /// 用定义层的 [`echo_defs::tool::Cancellation`] 而不是具体令牌类型——
@@ -323,7 +365,7 @@ impl Tool for SpawnSubagentTool {
 }
 
 impl SpawnSubagentTool {
-    const DESCRIPTION: &'static str = "把独立子任务委派给一个隔离上下文的子 agent 执行。子 agent 看不到当前对话，task 必须自含全部背景与目标。子任务在后台执行，完成后会作为新事件回报结论；不要在同一轮里重复委派同一任务。适用于探索性检索、批量分析、需要大量中间步骤但只需结论的任务。参数: task(必填, 子任务的完整自含描述), timeout_secs(可选, 默认 600), node(可选, 联邦远程节点名——填入后子任务在该节点执行，多节点并行委派时结果会自动聚合汇报), profile(可选, 指定子代理使用的模型供应商 profile——如 \"kimi\"；可用名单见 list_api_profiles 工具，模型选择规范见 model-profiles 技能；不填 = 继承当前模型)。";
+    const DESCRIPTION: &'static str = "把独立子任务委派给一个隔离上下文的子 agent 执行。子 agent 看不到当前对话，task 必须自含全部背景与目标。子任务在后台执行，完成后会作为新事件回报结论；不要在同一轮里重复委派同一任务。适用于探索性检索、批量分析、需要大量中间步骤但只需结论的任务。参数: task(必填, 子任务的完整自含描述), timeout_secs(可选, 默认 600；**传 0 = 不设墙钟上限**，给慢模型/长任务用——无论如何都还有「无进展 30 分钟」看门狗兜底), node(可选, 联邦远程节点名——填入后子任务在该节点执行，多节点并行委派时结果会自动聚合汇报), profile(可选, 指定子代理使用的模型供应商 profile——如 \"kimi\"；可用名单见 list_api_profiles 工具，模型选择规范见 model-profiles 技能；不填 = 继承当前模型)。";
 
     fn schema() -> Value {
         json!({
@@ -335,7 +377,7 @@ impl SpawnSubagentTool {
                 },
                 "timeout_secs": {
                     "type": "integer",
-                    "description": "执行超时秒数（默认 600）"
+                    "description": "执行超时秒数（默认 600，取值 30~86400）。传 0 = 不设墙钟上限，适合慢模型或需要长时间检索的任务；此时仍有「连续 30 分钟无进展」的看门狗兜底"
                 },
                 "node": {
                     "type": "string",
@@ -356,7 +398,17 @@ impl SpawnSubagentTool {
             store,
             spawn,
             remote_sink: None,
+            default_timeout_secs: DEFAULT_SUBAGENT_TIMEOUT_SECS,
         }
+    }
+
+    /// 覆盖默认墙钟上限（秒；`0` = 不限制）。
+    ///
+    /// 组合根在装配期按 `AgentConfig::subagent_timeout_secs` 调用一次。
+    /// 实例字段而非配置快照：解析在**受理时**发生，所以改配置后重启即生效。
+    pub fn with_default_timeout_secs(mut self, secs: u64) -> Self {
+        self.default_timeout_secs = secs;
+        self
     }
 
     /// 注入远程委派聚合 sink（组合根装配期调用一次）。
@@ -389,11 +441,18 @@ impl SpawnSubagentTool {
                 "spawn_subagent: `task`（非空字符串）必填——子 agent 看不到当前对话，任务描述必须自含背景与目标".to_string()
             })?
             .to_string();
-        let timeout_secs = arguments
+        // 墙钟上限：未指定 → 用配置注入的默认；显式 0 → 不设上限（None）。
+        // 显式正值按 [30s, 24h] 夹紧——上限放宽到一天是为了让"确实要跑很久"
+        // 的任务有合法表达，同时仍然挡掉手滑写出的天文数字。
+        let requested_secs = arguments
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
-            .unwrap_or(DEFAULT_SUBAGENT_TIMEOUT_SECS)
-            .clamp(30, 3600);
+            .unwrap_or(self.default_timeout_secs);
+        let timeout = (requested_secs > 0).then(|| {
+            std::time::Duration::from_secs(
+                requested_secs.clamp(MIN_SUBAGENT_TIMEOUT_SECS, MAX_SUBAGENT_TIMEOUT_SECS),
+            )
+        });
         let task_id = uuid::Uuid::new_v4().to_string();
         // 注册表条目的令牌**独立**（`cancel_all` / 逐项 `finish` 只取消它）：
         // 父取消不再"生一个 child_token"（那需要具体令牌类型），而是在执行体
@@ -425,7 +484,7 @@ impl SpawnSubagentTool {
             task_id: task_id.clone(),
             session_id: session_id.to_string(),
             task: task.clone(),
-            timeout: std::time::Duration::from_secs(timeout_secs),
+            timeout,
             parent_cancel,
             parent_branch_id: parent_branch_id.to_string(),
             node: node.clone(),
@@ -473,6 +532,10 @@ pub async fn run_subagent_turn(
     // federation Phase 3：远程目标节点（peer 名）；Some 时工具调用名
     // 在执行前还原为注册名 `<peer>__<tool>`（见 `remote_tool_name`）。
     remote_peer: Option<&str>,
+    // 推进回调：每轮 LLM 返回、每次工具调用完成各调一次。执行体的「无进展
+    // 看门狗」据此区分**慢**与**卡死**（见 `SUBAGENT_IDLE_TIMEOUT_SECS`）。
+    // 不传 = 没有看门狗（测试 / 直调用途）。
+    progress: Option<ProgressFn>,
 ) -> Result<String> {
     let system_prompt = format!(
         "{base}\n\n# Subagent boundary\nYou are a subagent executing one delegated task in an isolated context. You cannot see the parent conversation and cannot message users directly. Work the task with the available tools, then answer with the final, self-contained result for the parent agent. Do not ask follow-up questions (nobody can answer); make reasonable assumptions and state them in the result.\n\n# Delegated task\n{task}",
@@ -500,6 +563,10 @@ pub async fn run_subagent_turn(
             response = provider.chat(&request) => response?,
             _ = cancel.cancelled() => return Err(anyhow::anyhow!(TURN_CANCELLED)),
         };
+        // 一次 LLM 往返 = 一次推进（哪怕它只产出工具调用或空内容）。
+        if let Some(tick) = progress.as_ref() {
+            tick();
+        }
         if response.truncated() {
             truncation_continues += 1;
             if truncation_continues > MAX_TRUNCATION_CONTINUES {
@@ -556,6 +623,11 @@ pub async fn run_subagent_turn(
                 Err(e) => format!("error: {e}"),
             };
             messages.push(ChatMessage::tool(text, &call.id));
+            // 一次工具往返 = 一次推进（长跑工具期间看门狗不会误判：它在
+            // 完工后打点，而工具自身上限 300s 远小于 30 分钟的空闲阈值）。
+            if let Some(tick) = progress.as_ref() {
+                tick();
+            }
         }
     }
     Err(anyhow::anyhow!(
@@ -776,8 +848,52 @@ mod tests {
         )
         .unwrap();
         let got = timeouts.lock().unwrap().clone();
-        assert_eq!(got[0], std::time::Duration::from_secs(600), "default");
-        assert_eq!(got[1], std::time::Duration::from_secs(30), "clamped to min");
+        assert_eq!(got[0], Some(std::time::Duration::from_secs(600)), "default");
+        assert_eq!(got[1], Some(std::time::Duration::from_secs(30)), "clamped to min");
+    }
+
+    /// 2026-10 用户诉求：「kimi 太慢，能不能不设时间限制」。
+    ///
+    /// 三种取值各有明确语义，别混：未指定 → 配置默认；`0` → 不设墙钟上限；
+    /// 正值 → 夹到 [30s, 24h]。上限从旧的 1 小时放宽到 24 小时同样是这次改动
+    /// 的一部分——「确实要跑很久」需要有合法表达。
+    #[test]
+    fn timeout_zero_means_unlimited_and_positive_is_capped() {
+        let timeouts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let timeouts2 = timeouts.clone();
+        let (tool, _) = tool(Arc::new(move |req| {
+            timeouts2.lock().unwrap().push(req.timeout)
+        }));
+        for args in [
+            json!({"task": "unlimited", "timeout_secs": 0}),
+            json!({"task": "huge", "timeout_secs": 999_999}),
+            json!({"task": "half-hour", "timeout_secs": 1800}),
+        ] {
+            tool.spawn(&args, "s", None, "b").unwrap();
+        }
+        let got = timeouts.lock().unwrap().clone();
+        assert_eq!(got[0], None, "0 = 不设上限");
+        assert_eq!(got[1], Some(std::time::Duration::from_secs(86_400)), "夹到 24h");
+        assert_eq!(got[2], Some(std::time::Duration::from_secs(1800)), "正常值原样透传");
+    }
+
+    /// 配置注入的默认值必须真的生效（而不是被常量吃掉）。
+    #[test]
+    fn default_timeout_secs_comes_from_config_injection() {
+        let timeouts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let timeouts2 = timeouts.clone();
+        let (tool, _) = tool(Arc::new(move |req| {
+            timeouts2.lock().unwrap().push(req.timeout)
+        }));
+        // 宿主注入 0（配置 subagent_timeout_secs = 0 → 全部不限制）
+        let tool = tool.with_default_timeout_secs(0);
+        tool.spawn(&json!({"task": "a"}), "s", None, "b").unwrap();
+        // 显式值仍然压过默认
+        tool.spawn(&json!({"task": "b", "timeout_secs": 120}), "s", None, "b")
+            .unwrap();
+        let got = timeouts.lock().unwrap().clone();
+        assert_eq!(got[0], None, "注入 0 后未指定 = 不限制");
+        assert_eq!(got[1], Some(std::time::Duration::from_secs(120)));
     }
 
     #[test]

@@ -174,6 +174,19 @@ pub struct AgentConfig {
     /// and the LLM receives an error result. `None` disables the timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_timeout_secs: Option<u64>,
+    /// 子代理（`spawn_subagent`）的默认墙钟上限，单位秒。
+    ///
+    /// - `None`：用内置默认 600（10 分钟）——保持历史行为；
+    /// - `Some(0)`：**不设墙钟上限**。慢模型（长思考 + 十几轮检索）不会再被
+    ///   一个固定时长砍掉，适合 kimi 这类每次往返都慢的供应商；
+    /// - `Some(n)`：n 秒（调用方显式传 `timeout_secs` 时仍以显式值为准）。
+    ///
+    /// 「不设上限」不等于没有守卫：子任务还挂着**无进展看门狗**——连续
+    /// `SUBAGENT_IDLE_TIMEOUT_SECS`（1800s）没有任何推进（既没有 LLM 返回、
+    /// 也没有工具调用完成）就中止。卡死的任务照样会被发现并回报，只是判据
+    /// 从「总时长」换成「有没有在往前走」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent_timeout_secs: Option<u64>,
     /// Directory containing `SKILL.md` definitions.
     /// 技能**写入目录**：Save/DeleteSkill 与 Git 安装技能都落在这里
     /// （用户数据目录，自更新不触碰）。
@@ -250,6 +263,7 @@ impl Default for AgentConfig {
             max_tool_iterations: 5,
             max_tokens: 0,
             tool_timeout_secs: Some(120),
+            subagent_timeout_secs: None,
             skills_dir: "skills".into(),
             skills_dirs: Vec::new(),
             plugins_dir: "plugins".into(),
@@ -390,6 +404,15 @@ impl AgentConfig {
     }
 
     /// Effective per-tool timeout (seconds), defaulting to 120 when unset.
+    /// 子代理默认墙钟上限（秒；`0` = 不限制）。`None` → 内置 600。
+    ///
+    /// 与 [`Self::tool_timeout_secs`] 分开：工具的守卫是"单次调用"，子代理
+    /// 是"整条委派"——后者本来就需要长得多的预算，混用一个值只能二选一。
+    pub fn effective_subagent_timeout_secs(&self) -> u64 {
+        self.subagent_timeout_secs
+            .unwrap_or(crate::subagent::DEFAULT_SUBAGENT_TIMEOUT_SECS)
+    }
+
     pub fn effective_tool_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.tool_timeout_secs.unwrap_or(120))
     }
@@ -636,6 +659,44 @@ mod tests {
             cfg.effective_tool_timeout(),
             std::time::Duration::from_secs(5)
         );
+    }
+
+    #[test]
+    /// `subagent_timeout_secs` 的三态语义（2026-10 用户诉求：kimi 太慢，
+    /// 想要"没有时间限制"）。`0` 必须能被序列化/反序列化保留下来 ——
+    /// `skip_serializing_if = "Option::is_none"` 下 `Some(0)` 正常写出，
+    /// 但一旦有人改成 `is_none_or_zero` 之类的写法，`0` 会静默消失、退回 600，
+    /// 于是"关掉超时"变成"还是 10 分钟"。
+    #[test]
+    fn subagent_timeout_three_states_roundtrip() {
+        // 未配置 → 插件内置默认
+        let cfg = AgentConfig::default();
+        assert_eq!(
+            cfg.effective_subagent_timeout_secs(),
+            crate::subagent::DEFAULT_SUBAGENT_TIMEOUT_SECS
+        );
+
+        // Some(0) → 不限制（0 原样保留，不被当成"未设置"）
+        let cfg = AgentConfig {
+            subagent_timeout_secs: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(cfg.effective_subagent_timeout_secs(), 0);
+        let toml_str = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            toml_str.contains("subagent_timeout_secs = 0"),
+            "0 必须写出：{toml_str}"
+        );
+        let parsed: AgentConfig = toml::from_str(&toml_str).expect("parse");
+        assert_eq!(parsed.subagent_timeout_secs, Some(0));
+        assert_eq!(parsed.effective_subagent_timeout_secs(), 0);
+
+        // Some(n) → n
+        let cfg = AgentConfig {
+            subagent_timeout_secs: Some(1800),
+            ..Default::default()
+        };
+        assert_eq!(cfg.effective_subagent_timeout_secs(), 1800);
     }
 
     #[test]

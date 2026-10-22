@@ -23,14 +23,25 @@ impl Agent {
     /// `SubagentToolHooks` 定义，QQ 消息等入站复用同一「结构化 hook →
     /// 新 turn」路径。
     pub fn attach_subagent_runtime(self: &Arc<Self>, store: Arc<crate::subagent::SubagentStore>) {
-        self.attach_subagent_runtime_with(store, None)
+        // 不读配置：`model.config` 是 tokio RwLock，`blocking_read()` 在 runtime
+        // 线程里会 panic，而本方法常被测试（`#[tokio::test]`）调用。要按配置
+        // 定制就用 `attach_subagent_runtime_with`（组合根走 builder）。
+        self.attach_subagent_runtime_with(
+            store,
+            None,
+            crate::subagent::DEFAULT_SUBAGENT_TIMEOUT_SECS,
+        )
     }
 
     /// 带远程委派聚合接缝的版本（组合根用：联邦要按父 turn 分组汇总）。
+    ///
+    /// `default_timeout_secs` 是「未显式传 `timeout_secs` 时的墙钟上限」，
+    /// `0` = 不限制（配置项 `subagent_timeout_secs`，见 `AgentConfig`）。
     pub fn attach_subagent_runtime_with(
         self: &Arc<Self>,
         store: Arc<crate::subagent::SubagentStore>,
         remote_sink: Option<Arc<dyn crate::subagent::RemoteDelegationSink>>,
+        default_timeout_secs: u64,
     ) {
         let agent = Arc::downgrade(self);
         let spawn: SubagentSpawnFn = Arc::new(move |request| {
@@ -56,7 +67,8 @@ impl Agent {
         // - `run_orchestration` 里"按工具名找编排通道"——现在它走普通执行链，
         //   只是覆写了 `Tool::execute_in`。
         let tool = crate::subagent::SpawnSubagentTool::new(store.clone(), spawn_for_tool)
-            .with_opt_remote_sink(remote_sink);
+            .with_opt_remote_sink(remote_sink)
+            .with_default_timeout_secs(default_timeout_secs);
         // 注册到**注册表寿命**（agent 消失时整表释放）：不用 `register_reversible`
         // ——它返回的 `Disposer` 一旦在这里被 drop，工具会当场注销。
         self.tools.register_shared(Arc::new(tool));

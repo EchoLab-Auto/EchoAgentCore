@@ -85,6 +85,43 @@ pub trait SubagentExecutionHost: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
 }
 
+/// 墙钟上限 future：`None` = 永不触发（不设上限）。
+///
+/// 单独成函数而不是内联 `match`：`std::future::pending()` 这条"永挂"分支
+/// 必须能被测试直接验（见 `tests::unlimited_wall_clock_never_fires`），
+/// 而内联在 `select!` 里的版本只能通过"整个子任务不被杀"间接推断。
+pub(crate) async fn wait_wall_clock(limit: Option<std::time::Duration>) {
+    match limit {
+        Some(d) => tokio::time::sleep(d).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// 「无进展」看门狗：`progress` 计数连续 `stall` 不长即返回。
+///
+/// 判据是**推进**而不是**总时长**：慢模型每轮都在动，累加时长再久也不该被杀；
+/// 卡死的任务无论给多久都完不成。两者用同一个计数器区分。
+///
+/// `poll` 只决定发现卡死的精度（生产值 5s，相对 1800s 的阈值可忽略）。
+pub(crate) async fn wait_stalled(
+    progress: Arc<std::sync::atomic::AtomicU64>,
+    stall: std::time::Duration,
+    poll: std::time::Duration,
+) {
+    let mut seen = progress.load(std::sync::atomic::Ordering::Relaxed);
+    let mut since = std::time::Instant::now();
+    loop {
+        tokio::time::sleep(poll).await;
+        let now = progress.load(std::sync::atomic::Ordering::Relaxed);
+        if now != seen {
+            seen = now;
+            since = std::time::Instant::now();
+        } else if since.elapsed() >= stall {
+            return;
+        }
+    }
+}
+
 /// 一次委派请求（与本 crate 的 [`crate::SpawnRequest`] 同形，这里再列一遍
 /// 是为了让执行体的入口签名自解释——它不接受"半个请求"）。
 pub use crate::SpawnRequest as ExecutionRequest;
@@ -225,12 +262,21 @@ pub fn spawn_execution(
                     peer,
                     &task_id,
                     &task,
-                    Some(timeout.as_secs()),
+                    timeout.map(|d| d.as_secs()),
                     SubagentStatus::Running,
                     None,
                 );
             }
 
+            // 推进计数：LLM 每返回一轮、每个工具调用完成各 +1（见
+            // `run_subagent_turn` 的 progress 回调与 `SUBAGENT_IDLE_TIMEOUT_SECS`）。
+            let progress = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let progress_for_turn: crate::ProgressFn = {
+                let counter = progress.clone();
+                std::sync::Arc::new(move || {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                })
+            };
             let run = crate::run_subagent_turn(
                 provider,
                 tools,
@@ -241,10 +287,21 @@ pub fn spawn_execution(
                 max_iterations,
                 max_tokens,
                 node.as_deref(),
+                Some(progress_for_turn),
             );
+            // 看门狗：连续 `SUBAGENT_IDLE_TIMEOUT_SECS` 无推进即中止。**总是**挂着
+            // ——不设墙钟上限时它是唯一守卫；设了上限时它先于上限命中会给出
+            // 更准确的死因（"无进展" vs "跑太久"）。
+            let watchdog = wait_stalled(
+                progress.clone(),
+                std::time::Duration::from_secs(crate::SUBAGENT_IDLE_TIMEOUT_SECS),
+                crate::IDLE_POLL_INTERVAL,
+            );
+            let wall_clock = wait_wall_clock(timeout);
             let outcome = tokio::select! {
                 result = run => Ok(result),
-                _ = tokio::time::sleep(timeout) => Err("timeout"),
+                _ = wall_clock => Err("timeout"),
+                _ = watchdog => Err("stalled"),
                 _ = crate::wait_cancelled(&cancel, parent_cancel.as_deref()) => Err("cancelled"),
             };
             let (success, cancelled, detail) = match outcome {
@@ -258,7 +315,16 @@ pub fn spawn_execution(
                     false,
                     format!(
                         "子任务超时（{} 秒）已中止；可以拆小任务或稍后重试。",
-                        timeout.as_secs()
+                        timeout.map(|d| d.as_secs()).unwrap_or(0)
+                    ),
+                ),
+                Err("stalled") => (
+                    false,
+                    false,
+                    format!(
+                        "子任务连续 {} 秒没有任何进展（疑似卡在网络请求或工具上）已中止；\
+                         与「超时」不同，这不是「跑得太久」而是「不再往前走了」。",
+                        crate::SUBAGENT_IDLE_TIMEOUT_SECS
                     ),
                 ),
                 Err(_) => (false, true, "子任务已随主任务取消".into()),
@@ -376,3 +442,76 @@ fn now_millis() -> i64 {
 }
 
 use tracing::Instrument as _;
+
+#[cfg(test)]
+mod tests {
+    use super::{wait_stalled, wait_wall_clock};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// 没有任何推进 → 一个 stall 窗口后就该结束。
+    #[tokio::test]
+    async fn stall_watchdog_fires_when_nothing_moves() {
+        let counter = Arc::new(AtomicU64::new(0));
+        let started = Instant::now();
+        wait_stalled(counter, Duration::from_millis(150), Duration::from_millis(20)).await;
+        let elapsed = started.elapsed();
+        assert!(elapsed >= Duration::from_millis(150), "不该早于阈值：{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(2), "不该拖过阈值太久：{elapsed:?}");
+    }
+
+    /// 一直在推进 → 不中止；推进停止后才从**那一刻**重新计时。
+    ///
+    /// 这条就是「kimi 太慢」的正解：慢但每轮都在动，累加多久都不该被杀。
+    #[tokio::test]
+    async fn stall_watchdog_never_fires_while_progress_continues() {
+        let counter = Arc::new(AtomicU64::new(0));
+        let bump = {
+            let counter = counter.clone();
+            tokio::spawn(async move {
+                // 500ms 内持续打点，间隔远小于 200ms 的阈值
+                for _ in 0..25 {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+        };
+        let started = Instant::now();
+        wait_stalled(
+            counter.clone(),
+            Duration::from_millis(200),
+            Duration::from_millis(20),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        bump.await.unwrap();
+        // 打点持续 ~500ms，之后还要再等一个 200ms 窗口 → 总计 > 600ms
+        assert!(
+            elapsed >= Duration::from_millis(600),
+            "推进期间不该中止（实际 {elapsed:?}）"
+        );
+    }
+
+    /// `None` = 不设墙钟上限 → 这个 future 永远不 resolve。
+    ///
+    /// 反向断言：如果实现里把 None 当成 0 秒（或某个默认值），这里会立刻返回，
+    /// 测试随即变红——「不限制」被悄悄降级成「立刻超时」是最坏的失败模式。
+    #[tokio::test]
+    async fn unlimited_wall_clock_never_fires() {
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(150),
+            wait_wall_clock(None),
+        )
+        .await;
+        assert!(outcome.is_err(), "None 必须永不触发");
+    }
+
+    /// 有限值则在到点时触发。
+    #[tokio::test]
+    async fn finite_wall_clock_fires_on_deadline() {
+        let started = Instant::now();
+        wait_wall_clock(Some(Duration::from_millis(120))).await;
+        assert!(started.elapsed() >= Duration::from_millis(120));
+    }
+}
