@@ -214,7 +214,7 @@ echo-agent-core dump-config                   # 每行带「来自哪一层」�
 要点：
 
 - `port` 目标键与配置键一一对应，**只有三个**：`management`→`[core].management_address`、`federation`→`[federation].listen`、`federation-advertise`→`[federation].advertise`
-- **QQ / NapCat 端口不在 CLI 管理范围内**（2026-10 移交插件）：`qq` 与 `qq-instance:<id>:<字段>` 两个目标已删除。实例的三端口（反向 WS / OneBot HTTP / WebUI）由插件分配并持久化到实例 state 文件 `[deploy.ports]`；改端口请改配置里的显式值（`[instances.qq.server].bind_address` 或 `[...instances.<id>]` 的对应键），插件会沿用配置值而非重新探测
+- **QQ / NapCat 端口不在 CLI 管理范围内**（已移交插件）：`qq` 与 `qq-instance:<id>:<字段>` 两个目标已删除。实例的三端口（反向 WS / OneBot HTTP / WebUI）由插件分配并持久化到实例 state 文件 `[deploy.ports]`；改端口请改配置里的显式值（`[instances.qq.server].bind_address` 或 `[...instances.<id>]` 的对应键），插件会沿用配置值而非重新探测
 - 缺省值与显式值语义区分（如 `listen` 缺省 = 跟随管理地址合并、显式空串 = 仅连出）
 - 编辑后做 TOML 合法性与**目标值类型复读**自检；`tmp + rename` 原子写
 - **端口合并（缺省）**：联邦监听**缺省合并至管理端口**——NAT 场景**一条映射同时服务面板与联邦**（见 [联邦](../federation/federation.md#配置与管理面)）；管理地址回环 / 空令牌且非回环 / 令牌与 peer 冲突时自动回退独立监听（启动警告）；**显式**同址合并 + 空令牌 + 非回环仍 fail-closed **拒绝启动**

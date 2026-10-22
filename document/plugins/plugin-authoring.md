@@ -289,7 +289,7 @@ SDK 侧实现 `InstancePlugin`（`echo-plugin-sdk`）：`configure`（收配置�
 **模型可见面**。两者独立：可以声明工具而关闭某个能力位（该工具的调用会被
 宿主拦下），但通常应保持一致。
 
-## 模式与参考
+## 实践与验证
 
 - **最小报错即修正**：`InvokeOutcome::Error{code, message}` 的 `message` 是模型可见文本——写清"发生了什么、应该怎么做"（与内置工具的错误口径一致）。
 - **超时自声明**：`ToolContribution.timeout_hint_secs` 与内置工具 `timeout_hint` 同义——宿主守卫取 `max(配置 base, hint + 宽限)`。
@@ -298,7 +298,7 @@ SDK 侧实现 `InstancePlugin`（`echo-plugin-sdk`）：`configure`（收配置�
 - **宿主服务回呼（HostCall）**：插件可回呼宿主注册的命名服务（当前默认提供 `"sanitizer"`：`redact` / `scan` / `register_secret`——处理敏感文本前先脱敏、登记插件自己的凭证）。SDK 侧在 `PluginHandler::on_ready` 收到 `HostClient`（`call_with_timeout` 可调超时，默认 30s）；服务不可用时返回 `Service{code, message}` 错误而非挂死。
 - **参考实现**：`source/plugin/echo-plugin-example/`（websearch + calculator，含 e2e）；协议全消息测试对端 `echo-plugin-host/src/bin/echo-plugin-test-peer.rs`。
 
-## 本地验证
+### 本地验证
 
 ```bash
 # 1) 构建插件

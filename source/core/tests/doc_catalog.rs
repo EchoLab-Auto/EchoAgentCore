@@ -84,11 +84,21 @@ async fn render_tool_catalog() -> String {
     out.push_str("> 本文件由 `source/core/tests/doc_catalog.rs` 生成并校验。\n");
     out.push_str("> 刷新：`UPDATE_DOCS=1 cargo test -p echo-agent-core --test doc_catalog`。\n");
     out.push_str("> 机制说明见 [工具系统](./tools.md)；插件贡献的工具见 [插件化设计](./plugins.md)。\n\n");
-    out.push_str(&format!("共 **{}** 个内置工具。\n\n", rows.len()));
+    // 两个 H2：ProDoc 的悬停分块只认 H2，纯表格文件会没有分块面板。
+    out.push_str("## 工具一览\n\n");
+    out.push_str(&format!("共 **{}** 个内置工具，按注册名排序。\n\n", rows.len()));
     out.push_str("| 工具 | 分类 | 说明 |\n| --- | --- | --- |\n");
     for (name, category, description) in &rows {
         out.push_str(&format!("| `{name}` | {category} | {description} |\n"));
     }
+    out.push_str("\n## 阅读约定\n\n");
+    out.push_str("- **工具**：注册名，模型看到的就是它（`echo_defs::Tool::name`）。\n");
+    out.push_str("- **分类**：面板「工具」页的分组依据（`category`），决定默认启用与否的粒度。\n");
+    out.push_str("- **说明**：工具自述的**截断版**（超 120 字截）。完整用法看工具描述本身、`ToolsList` 事件或面板；\n");
+    out.push_str("  每个工具的参数 schema 与调用语义归 [工具系统](./tools.md)。\n");
+    out.push_str("- **包**：实现该工具的 crate / 插件（`package`），用来判断「这个工具是谁提供的」。\n\n");
+    out.push_str("刷新与门禁见[文档规范](../documentation-guide.md)「自动生成的文件」：改注册表后跑 `UPDATE_DOCS=1`，\n");
+    out.push_str("否则门禁比对失败并给出首个不同行。\n");
     out
 }
 

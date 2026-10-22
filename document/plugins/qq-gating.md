@@ -142,7 +142,7 @@ QQ 插件实例支持**多实例**：一个实例 = 一个 NapCat 容器 + 一�
 | 实例 id | `instance_id`，全局唯一，即**插件实例名**与会话 `@account` 维度 |
 | 归属 | `[instances.qq.instances.<id>].persona = "<team>"` |
 | 端口 | 每实例 3 个宿主端口：反向 WS / OneBot HTTP / WebUI，**由插件分配并持久化**（写入实例 state 文件 `[deploy.ports]`；三级回退 = 配置显式值 > 上次持久化 > 探测空闲。默认实例 `qq` 缺省沿用 3131 / 3000 / 6099 且**不探测**——那三个端口由既有容器持有，宿主侧 bind 探测必然失败） |
-| 容器 | `echo-napcat-<id>`，数据以 **bind mount** 挂在 compose 文件旁（`./data/<id>` → 容器 `/app/napcat/config`、`./data/<id>-files` → `/app/napcat/files`，不是 Docker 命名卷），**compose 由插件生成**（`<数据目录>/napcat/<id>/docker-compose.yml`，幂等：内容不变不写；手改会被下次启动覆盖）。2026-10 之前这两件事在 Core 的 `instance_deploy`——那是让框架持有 NapCat 部署 schema，已移交 |
+| 容器 | `echo-napcat-<id>`，数据以 **bind mount** 挂在 compose 文件旁（`./data/<id>` → 容器 `/app/napcat/config`、`./data/<id>-files` → `/app/napcat/files`，不是 Docker 命名卷），**compose 由插件生成**（`<数据目录>/napcat/<id>/docker-compose.yml`，幂等：内容不变不写；手改会被下次启动覆盖）。这两件事此前在 Core 的 `instance_deploy`——那是让框架持有 NapCat 部署 schema，已移交 |
 | 自动创建 | 人格启用 `echo-agent.instance.qq` 且无归属实例时自动建档（id = 人格 id，重复则 `<id>-2`…）；**默认人格（首个启用者）固定用 legacy id `qq`**，沿用共享容器/端口语义 |
 | 显示名 | 实例化：`QQ（<persona> / <实例>）`；实例名为 `qq` 时 `QQ（<persona>）`；未归属时 `QQ / OneBot`——Panel 多实例下据此区分 |
 | 持久化 | **两处、两个作者**：①Core 把自动建档实例的 **persona** 写回 `[instances.qq.instances.<id>]`（仅缺该字段才写；legacy 实例不写回——不写会让重启后 persona 缺失、被重新分配给默认人格，归属漂移）；②插件把自己的 **ports** 写进实例 state 文件 `[deploy.ports]`。两者刻意分离：persona 是宿主的归属决定，端口是插件的部署状态 |

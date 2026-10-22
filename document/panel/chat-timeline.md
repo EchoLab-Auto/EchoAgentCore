@@ -36,4 +36,4 @@ y: 1340
 
 - 打字机/入场动画**仅**对实时消息（`DisplayMessage.animate === true`）播放；历史回放、刷新加载不播动画
 - 动画为纯视觉层：`animate` 是展示元数据，不进入任何数据/逻辑判断
-- 实现要点：ui-frame `ChatRole` 不含 `reasoning`，必须在 `ChatView` 的消息行渲染层拦截（自渲染行循环；否则未知角色会被渲染成 Agent 气泡）；`pendingReasoning`/`completedReasoning` **已删除**（2026-10 巡检确认是死状态：分支合并块随 ui-frame 移除后无任何读取方，仅剩声明与初始化，已连同声明一并清掉，`state.ts` 只留一行说明）
+- 实现要点：ui-frame `ChatRole` 不含 `reasoning`，必须在 `ChatView` 的消息行渲染层拦截（自渲染行循环；否则未知角色会被渲染成 Agent 气泡）；`pendingReasoning`/`completedReasoning` **已删除**（巡检确认是死状态：分支合并块随 ui-frame 移除后无任何读取方，仅剩声明与初始化，已连同声明一并清掉，`state.ts` 只留一行说明）

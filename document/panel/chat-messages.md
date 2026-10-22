@@ -27,7 +27,7 @@ link: ["chat-list | 列表与滚动", "chat-history | 历史与实时窗口", "c
 
 补充来源：定时器触发以 system 消息插入主时间线（`⏰ 定时器触发 · {task}`，task 截断 160 字符）。
 
-**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（**气泡壳由面板自绘**——原库 `ChatBubble` 已随 ui-frame 2026-10 精简解散，样式吸收进 `MessageItem`；正文用 `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）；**连续的工具 / 推理 / 子代理统一由 `WorkRunGroup` 渲染**（三者合并为同类「工作项」，`WorkRunItem.kind` 区分 `tool`/`reasoning`/`subagent`；合并粒度是**任意相邻工作项**，中间夹着别的角色就断开成组；推理正文层为 `ReasoningText`；契约见[工作行](./chat-work.md)）；ui-frame 的 chat 模块如今只剩**纯原子层**（`ChatComposer` / `ChatFold` / `ChatCopyButton` + `ChatMessage` 类型），吸底滚动是 headless 的 `useChatScroll`——`ChatBubble` / `ChatTray` 均已解散。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义）。
+**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（**气泡壳由面板自绘**——原库 `ChatBubble` 已随 ui-frame 精简解散，样式吸收进 `MessageItem`；正文用 `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）；**连续的工具 / 推理 / 子代理统一由 `WorkRunGroup` 渲染**（三者合并为同类「工作项」，`WorkRunItem.kind` 区分 `tool`/`reasoning`/`subagent`；合并粒度是**任意相邻工作项**，中间夹着别的角色就断开成组；推理正文层为 `ReasoningText`；契约见[工作行](./chat-work.md)）；ui-frame 的 chat 模块如今只剩**纯原子层**（`ChatComposer` / `ChatFold` / `ChatCopyButton` + `ChatMessage` 类型），吸底滚动是 headless 的 `useChatScroll`——`ChatBubble` / `ChatTray` 均已解散。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义）。
 
 ## 气泡几何
 

@@ -146,7 +146,7 @@ QQ 的 10 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
   主时间线/面板终端实时可见
 - **超时**：单条命令超时（默认 120s，最大 300s）只中止读取、**保留会话**；
   超时文本以 notice 语义返回（面板显示"可能仍在运行"）
-- **工具**：`bash-start` / `bash-exec` / `bash-stop`（2026-11 起由**独立插件**
+- **工具**：`bash-start` / `bash-exec` / `bash-stop`（由**独立插件**
   `echo-agent.shell` 提供，按人格白名单门控；此前是 `shell_start` / `shell_exec`
   / `shell_stop`，隶属内置工具集——改名与拆分是同一轮：它们与一次性工具 `bash`
   是同一件事的两种模式，名字统一到 `bash-` 前缀后模型不再在两套命名间犹豫）

@@ -36,11 +36,11 @@ y: 1060
 ```
 
 - **卡片负责**：半透明底（`--nm-glass-bg`）、`backdrop-filter`、**`glass="float"` 档的向外环境投影**（`0 4px 16px` ambient + `0 2px 4px` 加深）—— 视觉上是一块**浮在消息之上的磨砂托盘**（悬浮，不是凹槽）。
-- **轮廓也归卡片**（2026-10）：不再由面板写 `clip-path`，而是声明库的两个 prop —— 移动端传 `:clip-path`（设备屏角的偏移曲线），桌面/直角屏传 `:squircle="2.5"`（按卡片生效的 `border-radius` 生成等半径超椭圆）。超椭圆几何内核在 `@echolab-auto/ui-frame/utils`（`sampleCornerOffset` / `squircleClipPath` / `pointsToPathData` …），本仓库的 `src/utils/squircle.ts` 只剩 Panel 特有的组合 `composerOutline` / `composerGeometry` / `composerCornerSpan`。
+- **轮廓也归卡片**：不再由面板写 `clip-path`，而是声明库的两个 prop —— 移动端传 `:clip-path`（设备屏角的偏移曲线），桌面/直角屏传 `:squircle="2.5"`（按卡片生效的 `border-radius` 生成等半径超椭圆）。超椭圆几何内核在 `@echolab-auto/ui-frame/utils`（`sampleCornerOffset` / `squircleClipPath` / `pointsToPathData` …），本仓库的 `src/utils/squircle.ts` 只剩 Panel 特有的组合 `composerOutline` / `composerGeometry` / `composerCornerSpan`。
 - **移动端四角等大**（用户报「上两个圆角和下两个圆角不相等」）：轮廓的下角是屏幕角偏移曲线，上角是它关于水平中轴的**镜像**，两角共用同一个「跨度」`R − 3vw`（留白 = 屏宽 3%）。跨度放不下时**加厚外壳内边距**（`--composer-padding = max(10px, (2×跨度 − 输入行 − 状态行) / 3)`），而不是让上角吃掉剩余高度 —— 于是四角同形同大（镜像偏差 0）且下角间隙仍恒定（波动 ≤0.06px），输入行与按钮保持在 45.6 的触控基准。详见 [移动端布局](./mobile-layout.md)。
 - 面板仍负责圆角**档位**：`--composer-radius`（桌面 24）+ `--composer-corner-r`（窄屏 = 实际跨度，供内层派生同心圆角），选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*`。
 - **`ChatComposer` 侧另有一处内辉光**：`focus-effect="glow"` —— 聚焦时主色光从输入槽**内部**亮起（`inset 0 0 18px` 光晕 + 1px 内描边，抑制默认外环）。
-- **`backdrop-filter` 降到 10px**（库默认 20px + saturate）：用 `--nm-glass-blur` 变量覆盖，沿用 2026-09 的拖选性能结论。聚焦/拖选期间 `.chat-composer-float--busy` 直接关掉 blur 并换成不透明底色。
+- **`backdrop-filter` 降到 10px**（库默认 20px + saturate）：用 `--nm-glass-blur` 变量覆盖，沿用拖选性能实测结论。聚焦/拖选期间 `.chat-composer-float--busy` 直接关掉 blur 并换成不透明底色。
 
 ### 悬浮：库的 float 档 + 一层投影补层
 
@@ -50,7 +50,7 @@ y: 1060
 
 > clip 裁的是元素**整个渲染结果**，连同它自己的外阴影一起裁掉。实测注入 6px 外投影红环：clip 生效只剩 955 个红像素、关掉 clip 是 47939 —— 差 50 倍。更进一步：**关掉 halo 与关掉卡片 box-shadow 两张截图逐像素相同**（差 ≤1），所以移动端 `glass="float"` 的向外投影贡献为 0，外部明暗 100% 来自 `__halo`。
 
-所以手机上（贴 iPhone 超椭圆屏角、clip 生效）投影画不出来，只能由未裁剪的**兄弟节点**补。它是**两层**（2026-10 用户报「边框有点下宽上窄」后改的）：
+所以手机上（贴 iPhone 超椭圆屏角、clip 生效）投影画不出来，只能由未裁剪的**兄弟节点**补。它是**两层**（因「边框有点下宽上窄」而拆分）：
 
 | 层 | 职责 | 实现 |
 | --- | --- | --- |
@@ -83,7 +83,7 @@ y: 1060
 └────── API 徽标 ──────┘        └─ 相位文案 ─┘
 ```
 
-**整行常驻**（2026-10 用户要求）：只要拿得到 API 信息，`idle` 时也显示 API 徽标 ——
+**整行常驻**（用户要求）：只要拿得到 API 信息，`idle` 时也显示 API 徽标 ——
 「随时能看出这条回答是哪个 API 产出的」比"空闲时省 23px"重要。右侧相位文案仍只在
 忙碌时出现；只有两者都为空（`apiLabel` 与 `activityText` 皆空）时整行才不渲染。
 
@@ -131,7 +131,7 @@ y: 1060
 
 为什么必须按这个顺序而不是直接读[入口行](./chat-entry.md)的「模型」按钮：那个按钮显示的是 **persona 级** `active_api`，而工作区对话可以单独指定 profile（会话级覆盖），两者会不一致——看按钮会看错「这条回答是谁在产出」。悬停 `title` 补两层信息：`来源：本会话覆盖 / persona 激活 / 顶层默认配置 · profile「名字」`。
 
-呈现：**纯文字**（2026-10 用户要求去掉外框）——不设 border / 背景 / 胶囊，静态信息不需要第二层容器，套壳反而和输入区卡片抢层次。与右侧相位文案靠色阶区分：标签 `--nm-text-primary` + `opacity: .75`（实），相位文案 `--nm-text-secondary`（淡）。
+呈现：**纯文字**（用户要求去掉外框）——不设 border / 背景 / 胶囊，静态信息不需要第二层容器，套壳反而和输入区卡片抢层次。与右侧相位文案靠色阶区分：标签 `--nm-text-primary` + `opacity: .75`（实），相位文案 `--nm-text-secondary`（淡）。
 
 几何：`flex: 0 0 auto`（不参与收缩，避免被相位文案挤掉）+ `max-width: 55%`（超长 provider 名内部省略）。55% 不是随手取的——`deepseek / deepseek-flash` 在 320 宽下需要 ~148px，45% 会吃掉最后一两个字符。
 

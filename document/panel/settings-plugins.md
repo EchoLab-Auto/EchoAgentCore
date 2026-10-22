@@ -42,7 +42,7 @@ y: 1060
 - **操作回执**：`PluginOpResult { id, op, ok, message }`——启停与重启的成功/失败按 `ok` 分流成 success / error toast。此前两者都走 `Error { message }`，界面只能靠文案猜
 - **重启**：`RestartPlugin`（卸下 → 重新挂载）——**不改启用状态、不写 `disabled_plugins`**，纯粹让插件按最新配置/外部状态重新初始化。行内是一个 hover 才出现的图标按钮（开关左侧），详情头部另有文字按钮；只对**已启用且不受保护**的插件出现（未挂载没有可重载的实例；管理面重启 = 先断 management WS，同禁用一样被拒）
 - **装配失败可见**：`PluginInfo.error` 非空 = 该插件挂载被跳过（command 不存在 / 握手失败），行卡出红色「失败」徽标、详情出失败原因块。与「用户主动禁用」区分开——两者 `enabled` 都是 false，但前者要人去修配置
-- **外部条目现在真的在清单里**（2026-10 修复）：`plugins.toml` 里 `kind = "stdio"` 的条目由 Core 启动期拉起子进程，此前**从不注册进插件宿主**，于是「外部插件」组里只有实例门控壳、用户装的外部插件完全不可见。现在每个静态条目都会注册一个门控壳（`runtime = "subprocess"` + `builtin = false`）：`enabled = false` 的显示为已禁用（不消失）、启动失败的带 `error`。启停走**子进程控制面**（`PluginHost::SubprocessPluginControl`）：禁用 = 排空并退出该插件进程、启用 = 重新拉起并握手，**立即生效**；重启 = stop + start。改 `command` / 换二进制仍需重启 Core（配置在启动期读取）
+- **外部条目现在真的在清单里**：`plugins.toml` 里 `kind = "stdio"` 的条目由 Core 启动期拉起子进程，此前**从不注册进插件宿主**，于是「外部插件」组里只有实例门控壳、用户装的外部插件完全不可见。现在每个静态条目都会注册一个门控壳（`runtime = "subprocess"` + `builtin = false`）：`enabled = false` 的显示为已禁用（不消失）、启动失败的带 `error`。启停走**子进程控制面**（`PluginHost::SubprocessPluginControl`）：禁用 = 排空并退出该插件进程、启用 = 重新拉起并握手，**立即生效**；重启 = stop + start。改 `command` / 换二进制仍需重启 Core（配置在启动期读取）
 
 ## 详情分区
 

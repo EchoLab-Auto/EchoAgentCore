@@ -137,7 +137,9 @@ y: 2330
 2. 组区域两两不交（含 padding）
 3. 每条连线：端点取边中点、控制点沿法线，采样曲线不落入第三方框
 
-## 引用代码的写法
+## 写作细则：代码引用与生成文件
+
+### 引用代码
 
 跨仓库文档与代码不在同一提交里演进，**行号是不可维护的锚点**：对 Panel 组
 10 篇文档抽样 19 条 `文件:行号` 引用，15 条已漂移（79%）。行号失效时读者仍能找到
@@ -148,13 +150,13 @@ y: 2330
 - 需要范围时写函数/段落名：`SettingsView.vue` 的 `categories` computed、`proxy.rs` 的 `broadcast` 分支
 - 例外：**行号本身是契约**的场合（如源码契约测试断言的 CSS 片段）可保留，但须写明「行号仅供定位，以符号名为准」
 
-## 自动生成的文件（不要手改）
+### 自动生成的文件
 
 少数文档的内容是**从代码生成的**，手改会在下一次门禁被覆盖或判红：
 
 | 文件 | 生成源 | 刷新 |
 | --- | --- | --- |
-| `plugins/tool-catalog.md` | `echo-agent::tool::builtin::register_all` 的真实注册表 | `UPDATE_DOCS=1 cargo test -p echo-agent-core --test doc_catalog` |
+| `plugins/tool-catalog.md` | `echo-agent::tool::builtin::build_registry` 的真实注册表 | `UPDATE_DOCS=1 cargo test -p echo-agent-core --test doc_catalog` |
 
 约定：
 

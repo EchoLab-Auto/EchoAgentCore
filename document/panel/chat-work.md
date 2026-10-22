@@ -26,7 +26,7 @@ link: ["chat-tools | 工具卡与图标行", "chat-reasoning | 推理块"]
 
 ## 子代理委派行
 
-子代理（`spawn_subagent`）一份委派对应**一枚 chip**、全程可见（此前完成回报以原始 JSON 直接渲染成 user 气泡——一条动辄数千字符、占满半屏；2026-10 起与工具/思考同排，不再单独占一整行）：
+子代理（`spawn_subagent`）一份委派对应**一枚 chip**、全程可见（此前完成回报以原始 JSON 直接渲染成 user 气泡——一条动辄数千字符、占满半屏；现与工具/思考同排，不再单独占一整行）：
 
 - **派发**：`SubagentStarted` → 在派发位置插入一条 `subagent` 工作项（青色 chip）——运行中 chip 呼吸（`work-run-pulse-subagent`）+ 右上角青色转圈点；任务摘要不铺在行上，进悬停提示（`title`）与详情头（单行省略）
 - **完成合并**：`<subagent_event>` 钩子到达 → **就地改写该条目**（`running` 转 false、填入 `result` / `success`，保留派发位置），展开后显示结论全文（`.work-run-group__pre` 限高 **220px** 内滚动）；未命中（条目已滚出窗口 / 刷新后先到钩子）则由调用方追加一条——刷新后的历史视图里它落在钩子位置

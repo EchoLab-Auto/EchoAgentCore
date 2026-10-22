@@ -27,7 +27,7 @@ y: 1790
 3. 新增事件/命令变体时两边同时合入；未知变体由 serde 整帧丢弃（不崩溃）
 4. 进程内 mpsc bridge（`create_bridge` / `BackendBridge` / `BackendHandle` / `FanoutHandle`）与 WS 共享同一组类型，主要用于测试；生产部署一律走 WS
 5. **信封字段与事件契约分离**：`seq` / `entry` 是 WS 帧的**顶层**信封字段，不属于 `BackendEvent` 任何变体——增删它们不触发变体兼容规则，也不会让事件反序列化失败（缺省时消费端走 `ignored` 分支 / 回退启发式）；同理，信封级元数据不应塞进事件变体
-#### 协议名迁移（2026-10，已完成）
+#### 协议名迁移
 
 Core 在 `2d46b7d` 把「适配器」这一平台专用抽象整体改名为「插件实例」，**线协议变体名同步改了**，
 Panel 随后在同批迁移中跟齐（Panel `7e8f765`）：
@@ -119,7 +119,7 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 - **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`（`SaveSkill.system` 声明系统提示词技能）、`ReloadSkills`（重载技能目录——广播所有运行中人格 + 管理代理，见 [技能系统](../plugins/skills.md)）、`InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource`（Git 来源技能，见 [技能系统](../plugins/skills.md)）、`SaveTeam/DeleteTeam/ToggleTeam`（`SaveTeam.system_skills` 声明人格系统提示词技能；`TeamInfo.system_skills` / `SkillInfo.system` 随列表事件下发；`SaveTeam.api_profile` / `TeamInfo.api_profile` 声明与回推人格级 API 供应商引用；`PluginInfo.package` 回推插件所属包——横跨 plugin+tool+skill 的组合标签）
 - **运维类**：
   - 插件实例：`Start/Stop/RestartInstance`（按 `name` = 插件实例名寻址）、`StartAllInstances`/`StopAllInstances`（全部插件实例）；**管理面统一通道 `InvokeInstanceOp { instance, method, payload }`**——一切平台专属动作（门控 / 名单 / owner / 登录 / 目录查询）经 `method` 透传（插件侧 `custom` op），响应 `InstanceOpResult`；状态经 `InstanceState` 推送。`instance` 为**必填**实例名（泛化；旧 QQ 专属命令变体已物理删除，旧客户端请迁移）
-  - **线字段兼容**：`instance` 接受旧名 `adapter`（`#[serde(alias = "adapter")]`，2026-10 去适配器化）——**但这只救字段名，救不了变体名**：`StartAdapter` 这类旧命令 Core 已不认识，Panel 必须同批升级（见 §协议名迁移）。同理插件协议的 `IncomingMessage.instance` 也带同一别名，插件宿主回呼的 `submit_input` / `report_*` 载荷则**双读**（`instance` 优先、回退 `adapter`）
+  - **线字段兼容**：`instance` 接受旧名 `adapter`（`#[serde(alias = "adapter")]`，去适配器化时保留的字段别名）——**但这只救字段名，救不了变体名**：`StartAdapter` 这类旧命令 Core 已不认识，Panel 必须同批升级（见 §协议名迁移）。同理插件协议的 `IncomingMessage.instance` 也带同一别名，插件宿主回呼的 `submit_input` / `report_*` 载荷则**双读**（`instance` 优先、回退 `adapter`）
   - 工作区：`RequestWorkspaceSessions` / `SaveWorkspaceSession` / `DeleteWorkspaceSession` / `ActivateWorkspaceSession` / `RequestWorkspaceGitStatus` / `RequestWorkspaceFiles`——会话类命令，**`team_id` 语义必填**（线格式同为 `Option<String>` + 服务端校验）并按 persona 路由；状态即改即存（`echo-workspaces-{id}.json`），git 与文件列表为只读采集（`RequestWorkspaceFiles.path` 以 canonical 前缀校验限定在会话目录及其子孙内，越界返回 `WorkspaceFiles.error`）。**激活 = 进入项目对话通道**（重定义）：前端「本地当前对话」按 `active` 投影——选通道 = 激活、选默认本地会话 = 取消激活；`active` 变化必须广播 `WorkspaceSessions`
   - API：`UpdateApiConfig/SwitchApi/TestApi/QueryApiBalance/QueryApiMetrics/DeleteApi/RenameApi`（`SwitchApi` 全局激活已被 persona 级选用取代——`SaveTeam.api_profile` 引用供应商池；该命令仍可经协议调用，面板 UI 不再暴露；`QueryApiBalance` 查 DeepSeek 官方 `/user/balance`，回 `ApiBalanceResult`〔含 `granted`/`topped_up` 分账〕；`QueryApiMetrics` 读本地积累的余额/用量时间序列〔近 7 天〕，回 `ApiMetrics`；`RenameApi{from,to}` 原子改名——单次 ConfigStore patch 重写池名/`active_api`/`teams[*].api_profile` 并重绑运行中引用，失败零写入，语义见 [配置持久化](../core/config-persistence.md)§改名语义）
 

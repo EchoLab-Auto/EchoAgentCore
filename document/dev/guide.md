@@ -96,7 +96,7 @@ EchoAgentCore/
 - `EventLog` / `SessionEvent` / `derive_messages`（echo-session）— 事件溯源存储、日志投影
 - `ConfigStore`（`echo-config` crate）— TOML 原子读改写（Agent 与插件实例共享，杜绝并发写覆盖）
 - `InstanceHostConfig`（core::config）— **单平台的宿主配置视图**：`platform` / `shared`（透传表）/ `enabled` / ``instances` / `launch`。`CoreConfig.instances: BTreeMap<String, InstanceHostConfig>`，`load()` 遍历 `[instances.<name>]` 全部平台
-- `instance_deploy`（core，单文件 ~230 行）— **只剩实例解析**：读 `[instances.<p>]` 实例表、按 persona 门控自动建档、推导默认 persona、把 persona 写回配置。**端口分配 / 容器名 / compose / 端口持久化已移交插件**（插件 `deploy` 模块）——它们是 NapCat 的部署形状，框架不持有（2026-10 收尾；原 `mod.rs` + `napcat.rs` 两个文件合并瘦身）
+- `instance_deploy`（core，单文件 ~230 行）— **只剩实例解析**：读 `[instances.<p>]` 实例表、按 persona 门控自动建档、推导默认 persona、把 persona 写回配置。**端口分配 / 容器名 / compose / 端口持久化已移交插件**（插件 `deploy` 模块）——它们是 NapCat 的部署形状，框架不持有（原 `mod.rs` + `napcat.rs` 两个文件已合并瘦身）
 - `PluginManifest` / `PluginRegistry`（echo-plugin）— 插件清单与注册表；`echo-plugin-host` 提供 Transport（inproc/stdio）、监督、子进程限额与频率限额（**领域中立**），`RemoteInstance` / `RemoteTool` 的领域适配在 `echo-plugin-adapter`
 - `AgentMessageHook`（echo-agent）— 入站消息进入 agent 的落点（`on_incoming_message` 固有方法，**不是 trait 实现**）：组合根把插件 `submit_input` 队列接到它；平台输出必须走工具
 - **平台回复指引**：由平台中立的边界块（`BoundaryKind::PlatformHook`，只说「走该平台的发送工具」）+ 该平台的 transport 技能（如 `qq-transport`，说明具体工具名与参数）承担；循环层不做代码校验/纠偏。框架文案里不出现平台名与平台技能名

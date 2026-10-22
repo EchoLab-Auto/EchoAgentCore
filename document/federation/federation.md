@@ -101,7 +101,7 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
   受限策略仍受沙箱约束。
 - 全部联邦调用记 `federation` 审计日志（tracing target）
 
-### Panel 身份（2026-11 P1）
+### Panel 身份
 
 「一个 Panel 接入全网」的凭据面：**Panel 身份密钥**（`[federation]
 panel_keys`）与授予级别（`panel_access`）分开表达"谁"和"多大权限"。
@@ -142,7 +142,7 @@ panel_keys`）与授予级别（`panel_access`）分开表达"谁"和"多大权�
   写地址 = 独立监听、显式 `listen = ""` 退回纯连出。未配
   `[federation.peers.*]` 时 accept 侧靠 per-peer token 认证，**不放行
   任何已知链路**——单向暴露不等于可被滥用。
-- **对外地址优先级**（2026-11 起）：① **入站观测**——Panel / 对端连进来时
+- **对外地址优先级**：① **入站观测**——Panel / 对端连进来时
   的 HTTP `Host` 头（「它们眼中的我」，NAT/端口映射下唯一可信来源；池内公网
   优先、同级取最近，回环与通配不入池）→ ② `advertise` → ③ 从 `listen`
   推导。也就是说：**只要有人从公网成功连入过，邀请串自动就是那个公网地址**，
@@ -173,7 +173,7 @@ panel_keys`）与授予级别（`panel_access`）分开表达"谁"和"多大权�
 # hostname -I 首个非回环 IPv4）
 # advertise = "10.10.10.100:3133"
 node_name = "workstation"
-# ── Panel 身份（2026-11 P1）────────────────────────────────────────────
+# ── Panel 身份 ─────────────────────────────────────────────────────────
 # 一个 Panel 用**同一把密钥**接入全网任一节点（面板侧配 [federation]
 # panel_key）。密钥表允许多条以便轮换；与 management_access_token / 任一
 # peer token 必须不同（启动期 fail-closed）。
@@ -225,7 +225,7 @@ peer 令牌相同（路由歧义）；`panel_keys` 与其它两类令牌相同
 `ws://host:port`（空 = 仅接受连入）；同一 token 不得跨 peer 复用——
 在线判定与连入侧名字解析按 token 匹配，复用即歧义（直接拒绝保存）。
 
-### 节点目录与自动发现（2026-11 P2）
+### 节点目录与自动发现
 
 `RequestFederationDirectory` → `FederationDirectory`：应答节点报出自己的
 身份（`node_id` / `node_name` / `listen` / `panel_ready` / `panel_access`）
@@ -244,7 +244,7 @@ peer 令牌相同（路由歧义）；`panel_keys` 与其它两类令牌相同
   「本轮目录里至少一台在线」且「该派生条目的地址与名字都不再被任何目录提到」
   时才执行。
 
-### 主节点失效转移（2026-11 P3，Panel 侧）
+### 主节点失效转移（Panel 侧）
 
 Panel 的**主节点失效转移**语义与联邦一致（**换节点、换会话**，不是会话迁移：
 旧节点上的会话按「大脑集中」原则不可达，恢复后仍在）。判定与回切都保守：
@@ -299,17 +299,17 @@ Panel 的**主节点失效转移**语义与联邦一致（**换节点、换会�
   `<peer>__<tool>` 的 peer 段经 LLM function-name 清洗（非
   `[a-zA-Z0-9_-]` 字符 → `_`），模型/标注回传的清洗形会被**回查解析**为
   原始配置名（`node://` 分流、子代理通知、只读查询三个出口）
-- **联邦不依赖 Supervisor（2026-11 S14）**：`FederationRuntime` 自己维护一张
+- **联邦不依赖 Supervisor**：`FederationRuntime` 自己维护一张
   人格弱引用表（`register_persona` / `live_personas`），人格构造时自己登记、
   死后自动消失。于是泵与查询执行端都不再需要 `AgentSupervisor` / `AgentManager`
   句柄，"全部人格"也不再是每次 clone 一份 `Vec<Persona>`。无人格时联邦事件
   走 `event_fallback`（`__core`）
-- **代理工具按人格安装（2026-11 S13）**：链路 Up 时给**当时存在的**每个
+- **代理工具按人格安装**：链路 Up 时给**当时存在的**每个
   人格各装一份 `peer__*`；**新建人格**时补装已在线的（`adopt_active_links`，
   在 agent factory 里触发）。此前注册只有"Link Up"一个调用点——链路通之后
   新建的人格拿不到任何远程工具，面板看得见它、模型看不见，**且不报错**，
   要等下次断线重连才补上
-- **管理命令域在插件里（2026-11 S11）**：`SaveFederationPeer` /
+- **管理命令域在插件里**：`SaveFederationPeer` /
   `DeleteFederationPeer` / `RequestFederationStatus` / `RequestFederationInvite` /
   `MigrateSession` 的**规则与分发**在 `echo-plugin-federation::admin`（纯函数
   可单测：token 继承 / token 与管理面令牌冲突 / token 跨 peer 唯一 / URL 形状 /
@@ -317,7 +317,7 @@ Panel 的**主节点失效转移**语义与联邦一致（**换节点、换会�
   配置原子写回、断链清理、邀请占位登记、会话迁移）。此前整段处理在
   `core/federation_rt.rs`（约 300 行），插件只声明归属不留实现——那样"归属"
   只有一半是真的
-- **`caps.tools` 的真源（2026-11 S8）**：**工具自己**声明
+- **`caps.tools` 的真源**：**工具自己**声明
   `Tool::remote_capable()`（默认 `false`），组合根在 supervisor 就绪后经
   `Federation::set_tool_reporter` 注入注册表查询，**握手时现取**（插件启停
   即时生效，无需重启）。此前是两处硬编码名单——组合根里写 6 个名字、
@@ -372,7 +372,7 @@ parent_branch_id → 挂起 call_id 集合）：受理时登记、终态时销�
   `AgentBuilder::federation` 下发给每个 persona，再作为 `register_coding_tools`
   的 `invoker` 参数进入工具注册期（联邦关闭 = `None`，带 `node://` 前缀的
   调用报「联邦未接线」，本机路径不受影响）。
-  注：2026-10 工具外迁 `echo-plugin-tools` 时，工具侧曾留下一份 kernel cell
+  注：工具外迁 `echo-plugin-tools` 时，工具侧曾留下一份 kernel cell
   却无人注入，`node://` 分流因此恒报未接线；本次改为显式参数后修复
 - 失败路径：peer 离线/不存在、链路不可用、对端拒绝（白名单/沙箱——
   完全开放策略无沙箱）、超时均原样透传为 ToolError。超时链：工具守卫**默认 120s（可配）** → `RemoteTool` 硬超时 **460s**（守卫 ×1.5 网络余量封顶；`timeout_hint` 同 460s）；路由侧 pending 的 120s 只是**清扫下限**，带显式超时会按 `timeout + 60` 延长

@@ -64,8 +64,8 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 除源码级进程内插件外，系统支持**进程外插件**——插件以任意语言实现、经 stdio 帧协议与宿主通信（`runtime = subprocess`），装载源是 `plugins.toml`（文件不存在即特性休眠），崩溃自动重启（进程级隔离）。Core 自带的进程外组件走同一条路径：插件实例按 `[instances.<platform>.plugin]` 与实例表逐实例生成 `LaunchSpec`（`plugin_id = instance-<platform>-<instance>`、状态文件 `<platform>-<instance>.toml`，命令缺省 `echo-adapter-<platform>`），实例规格由 `instance_deploy` 解析；**平台部署细节（端口分配 / 容器名 / compose）在插件进程内**。
 
 - **装载**：`plugins_runtime::start_with_specs` 把装载器筛出的每条 `LaunchSpec`（plugin_id / command / args / env / config）交给独立 `PluginSupervisor` 拉起，工具与实例贡献再接入 Core；Core 侧对这类插件只保留启停门控，不持有实现
-- **进插件清单**（2026-10 修复）：每个**静态**条目（动态的 QQ 实例 `LaunchSpec` 除外，它们另有实例门控壳）会在插件宿主里注册一个门控壳——`runtime = subprocess` + `builtin = false`，`enabled` 取配置值，启动失败原因填进 `error`。此前它们从不注册，面板的「外部插件」组因此只剩实例壳，用户装的外部插件完全不可见
-- **启停真的停/起子进程**（2026-10 跟进）：门控壳的 mount 仍是 no-op，但 `TogglePlugin` 对这类条目走**子进程控制面**（独立 trait `SubprocessPluginControl`，经 `PluginHost::set_subprocess_control` 注入；组合根用 supervisor 的 `PluginHandle` 实现它）：禁用 = `stop`（排空后进程退出、监督任务留下可重启），启用 = `start`（重新握手、重新申报贡献）。`RestartPlugin` = `stop` + `start`
+- **进插件清单**：每个**静态**条目（动态的 QQ 实例 `LaunchSpec` 除外，它们另有实例门控壳）会在插件宿主里注册一个门控壳——`runtime = subprocess` + `builtin = false`，`enabled` 取配置值，启动失败原因填进 `error`。此前它们从不注册，面板的「外部插件」组因此只剩实例壳，用户装的外部插件完全不可见
+- **启停真的停/起子进程**：门控壳的 mount 仍是 no-op，但 `TogglePlugin` 对这类条目走**子进程控制面**（独立 trait `SubprocessPluginControl`，经 `PluginHost::set_subprocess_control` 注入；组合根用 supervisor 的 `PluginHandle` 实现它）：禁用 = `stop`（排空后进程退出、监督任务留下可重启），启用 = `start`（重新握手、重新申报贡献）。`RestartPlugin` = `stop` + `start`
 - **入站频率限额**（宿主保护）：`Emit` / `Log` 超每秒配额即丢弃并计数，`HostCall` 超限回 `rate_limited` 错误回执（插件能感知背压），`InvokeResult` 永不丢（丢了调用挂死）。缺省 2000 / 500 / 200 每秒——合法插件远够不到，失控循环会被挡住
 - **与可逆停止的区别**：supervisor 的 `Control::Stop` 保留监督任务（可再 `Start`），`Control::Drain` 是终态（任务退出）。前者服务面板启停，后者服务关停/热替换。停止期间调用立刻失败（不排队、不挂死）
 - **与来源维度无关**：进程外可以是「manifest 编译内置 + 实现独立进程」（`instance.qq`），也可以是 manifest 与实现都来自外部；判据是 `runtime`，不是 `builtin`
@@ -77,7 +77,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 | id | kind | 运行形态 | 说明 |
 | --- | --- | --- | --- |
-| `echo-agent.tools.builtin` | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理/供应商清单查询 `list_api_profiles`）；**不含 shell 会话**（2026-11 拆出，见下一行） |
+| `echo-agent.tools.builtin` | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理/供应商清单查询 `list_api_profiles`）；**不含 shell 会话**（已拆出，见下一行） |
 | `echo-agent.shell` | Tool | 进程内 | Shell 会话：`bash-start` / `bash-exec` / `bash-stop` 三个工具 + `*Shell*` 四条命令域（会话列表 / 起 / 执行 / 停）；与 Panel 的 Shell 页面共用同一个进程级 `ShellManager`（进程组生命周期 + 哨兵分帧见 [Shell 子系统](./tools.md)）。**独立插件**的理由：它有自己的一套机制依赖与独立的启停需求——想关 shell 不该连计算器一起关 |
 | `echo-agent.instance.qq` | Instance | **进程外**（`subprocess`） | QQ 插件实例（OneBot v11 反向 WS，实现为独立进程 `echo-adapter-qq`，Core 侧只是门控壳；含 QQ 管理工具；门控机制见 [QQ 实例门控](./qq-gating.md)） |
 | `echo-agent.skills.dir` | Skill | 进程内 | SKILL.md 技能目录（热重载） |
@@ -96,7 +96,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 > **框架侧实现位置**：解耦计划 Phase 3 已把绝大多数内置插件外迁为独立 crate——`echo-plugin-provider-llm`（provider 工厂 + 计量/脱敏装饰）/ `echo-plugin-skills`（技能注册表 + Git 安装）/ `echo-plugin-workspace`（工作区会话与工具）/ `echo-plugin-subagent` / `echo-plugin-loop`（两个纯策略模式）/ `echo-plugin-management`（Panel 连接面 + 会话视图命令域）/ `echo-plugin-self-update`（自更新命令域）/ `echo-plugin-tools`（内置工具集：计算/检索/清单/编码/Shell/实例管理）；工具子系统的跨包机制（`ToolRegistry`）在 `echo-tool`，Shell 机制在 `echo-shell`。**仍内联在 echo-agent 的**只剩 `packages/tools_builtin` 的兼容面（`register_all` 重导出给文档生成与旧调用点 + `api_profiles`）、`packages/instance_ops`（入站 hook 桥 + 通用实例命令域）、`packages/federation`（远程代理工具与查询适配）。公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export 指向新 crate）。完整清单见上述 crate 的公开导出。
 >
-> QQ 工具（`send_*`/`get_*` 共 10 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由插件进程申报（插件仓库 `crates/echo-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。2026-10 去适配器化时 `source/core/src/qq_tools.rs` 已删除——插件实例本就能声明工具，没有留给组合根的特例。
+> QQ 工具（`send_*`/`get_*` 共 10 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由插件进程申报（插件仓库 `crates/echo-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。去适配器化时 `source/core/src/qq_tools.rs` 已删除——插件实例本就能声明工具，没有留给组合根的特例。
 
 ### 内置插件也能由 `plugins.toml` 组合（P4）
 
