@@ -205,7 +205,7 @@ impl AgentBuilder {
     }
 
     /// 敏感信息脱敏器（可选；组合根注入后 Agent 的入站内容、工具事件 /
-    /// 结果、错误消息等出口统一脱敏——见 `document/core/security-redaction-design.md`）。
+    /// 结果、错误消息等出口统一脱敏——见 `document/core/security-redaction.md`）。
     pub fn redactor(mut self, redactor: Arc<dyn echo_defs::sanitize::Redactor>) -> Self {
         self.redactor = Some(redactor);
         self

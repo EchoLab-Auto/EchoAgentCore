@@ -10,7 +10,7 @@
 //!
 //! 脱敏是**出口保证**：允许秘密被读到（同 uid 的 shell 总能读到），但保证
 //! 它永不离开本机——工具结果出口、LLM 请求出口、QQ 外发出口三处卡口都调用
-//! 本 seam 的实现。谁在什么位置调用见 `document/core/security-redaction-design.md`。
+//! 本 seam 的实现。谁在什么位置调用见 `document/core/security-redaction.md`。
 //!
 //! # 实现者约定（硬性）
 //!

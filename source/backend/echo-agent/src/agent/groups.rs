@@ -131,7 +131,7 @@ pub(crate) struct Instrumentation {
     /// 敏感信息脱敏器（组合根注入；None = 透传）。
     ///
     /// 覆盖：入站内容、工具事件与会话落盘的参数、工具结果、LLM 请求出口、
-    /// 插件实例出站。设计见 `document/core/security-redaction-design.md`。
+    /// 插件实例出站。设计见 `document/core/security-redaction.md`。
     pub(crate) redactor: std::sync::RwLock<Option<Arc<dyn echo_defs::sanitize::Redactor>>>,
     /// API 指标存储（余额快照 / token 用量；组合根装配期注入）。
     /// None = 不记录（测试 / 未接线的旧路径）。

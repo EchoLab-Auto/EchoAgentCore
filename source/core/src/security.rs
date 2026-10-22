@@ -6,7 +6,7 @@
 //! - [`sensitive_dirs`]：外发文件需要保护的敏感目录列表（配置目录、
 //!   `~/.ssh` 等——`send_file` 类工具命中即拒发）。
 //!
-//! 脱敏器的消费点（卡口）见 `document/core/security-redaction-design.md`：
+//! 脱敏器的消费点（卡口）见 `document/core/security-redaction.md`：
 //! 工具结果出口、LLM 请求出口、QQ 外发出口、入站与事件落盘。
 
 use std::path::{Path, PathBuf};

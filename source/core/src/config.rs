@@ -100,7 +100,7 @@ pub struct SecuritySection {
 /// `[security.sanitize]`：脱敏服务（默认开启）。
 ///
 /// 三层出口卡口（工具结果 / LLM 请求 / QQ 外发）+ 入站与事件落盘脱敏，
-/// 详见 `document/core/security-redaction-design.md`。`enabled=false` 需要重启
+/// 详见 `document/core/security-redaction.md`。`enabled=false` 需要重启
 /// 生效，且**不再提供运行期一键开关**（安全不变量：脱敏器不可被模型或
 /// 误操作禁用）。
 #[derive(Debug, Clone, Deserialize)]

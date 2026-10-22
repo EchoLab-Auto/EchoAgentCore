@@ -24,7 +24,7 @@
 //! # let _ = resolved;
 //! ```
 //!
-//! 卡口位置与保证边界见 `document/core/security-redaction-design.md`。
+//! 卡口位置与保证边界见 `document/core/security-redaction.md`。
 
 mod registry;
 

@@ -25,7 +25,7 @@
 //! - `spawn` 执行闭包：由宿主注入（携带 provider / skills / 事件发射），
 //!   因此本 crate 不持有 `Agent`，也不产生循环引用。
 //!
-//! 设计文档见 `document/plugins/core-subagent.md`。
+//! 设计文档见 `document/plugins/subagent.md`。
 
 pub mod execution;
 
