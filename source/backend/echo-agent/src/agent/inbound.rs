@@ -12,6 +12,15 @@ use tracing::Instrument as _;
 
 use super::*;
 
+/// 分支任务文本在**快照**里的截断长度（`ReplyBranchStarted` 仍发全文）。
+///
+/// 快照是"重连后重建 UI"用的，任务卡只显示摘要；长 prompt 可达数十 KB，
+/// 每次 timeline 请求都跟着回一遍既浪费带宽又会把日志/事件流撑大。
+const TASK_SNAPSHOT_CHARS: usize = 200;
+
+/// 分支卡的默认目标标签（普通入站分支都回「源会话」；实例分支另有取值）。
+const BRANCH_TARGET_SOURCE: &str = "源会话";
+
 impl Agent {
     pub(crate) fn next_message_sequence(&self) -> u64 {
         self.turns.next_message_sequence.fetch_add(1, Ordering::Relaxed)
@@ -22,6 +31,9 @@ impl Agent {
         session_id: &str,
         message_sequence: u64,
         branch: bool,
+        task: &str,
+        target: &str,
+        started_at_ms: i64,
     ) -> InboundTurnRegistration {
         let id = uuid::Uuid::new_v4().to_string();
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -32,9 +44,42 @@ impl Agent {
                 message_sequence,
                 branch,
                 cancel: cancel.clone(),
+                // 截断与 `ReplyBranchStarted` 的展示口径一致：任务卡只显示
+                // 一行摘要，快照没必要把整段提示词抄一遍（长 prompt 数 KB）。
+                task: task.chars().take(TASK_SNAPSHOT_CHARS).collect(),
+                target: target.to_string(),
+                started_at_ms,
             },
         );
-        InboundTurnRegistration { id, cancel }
+        InboundTurnRegistration {
+            id,
+            cancel,
+            started_at_ms,
+        }
+    }
+
+    /// 运行中的**回复分支**快照（`branch = true` 的入站 turn）。
+    ///
+    /// 与 [`Self::active_turn_session_ids`] 的区别：那个只回答"哪些会话在跑"
+    /// （驱活动浮条），这个带上分支身份与任务文本，足以让 Panel 在重连后
+    /// 把分支卡/任务卡原样重建（见 `ActiveTurnsSnapshot.branches`）。
+    pub fn active_branch_snapshots(&self) -> Vec<super::ActiveBranchSnapshot> {
+        let mut list: Vec<super::ActiveBranchSnapshot> = self
+            .turns
+            .active_inbound_turns
+            .iter()
+            .filter(|turn| turn.branch)
+            .map(|turn| super::ActiveBranchSnapshot {
+                session_id: turn.session_id.clone(),
+                branch_id: turn.key().clone(),
+                message_sequence: turn.message_sequence,
+                task: turn.task.clone(),
+                target: turn.target.clone(),
+                started_at_ms: turn.started_at_ms,
+            })
+            .collect();
+        list.sort_by_key(|b| (b.started_at_ms, b.message_sequence));
+        list
     }
 
     pub(crate) fn finish_inbound_turn(&self, turn_id: &str) {
@@ -148,8 +193,20 @@ impl Agent {
         Option<tokio::sync::OwnedMutexGuard<()>>,
     )> {
         let serial = self.loop_mode() == echo_defs::LoopMode::Single;
+        // 分支的快照元数据：与下面 `ReplyBranchStarted` 用的是同一份取值，
+        // 保证"实时事件"与"重连快照"在 UI 上长得一模一样。
+        let branch_task: String = content.chars().take(TASK_SNAPSHOT_CHARS).collect();
+        let branch_target = BRANCH_TARGET_SOURCE;
+        let branch_started_at_ms = chrono::Utc::now().timestamp_millis();
         let registration = if serial {
-            self.register_inbound_turn(&session.id, message_sequence, true)
+            self.register_inbound_turn(
+                &session.id,
+                message_sequence,
+                true,
+                &branch_task,
+                branch_target,
+                branch_started_at_ms,
+            )
         } else {
             InboundTurnRegistration::default()
         };
@@ -168,7 +225,14 @@ impl Agent {
         let registration = if serial {
             registration
         } else {
-            self.register_inbound_turn(&session.id, message_sequence, true)
+            self.register_inbound_turn(
+                &session.id,
+                message_sequence,
+                true,
+                &branch_task,
+                branch_target,
+                branch_started_at_ms,
+            )
         };
         self.trunk
             .append_event(echo_session::SessionEvent::UserMessage(
@@ -357,8 +421,10 @@ impl Agent {
                 branch_id: branch_id.clone(),
                 message_sequence,
                 task: content.to_string(),
-                target: "源会话".into(),
-                started_at_ms: chrono::Utc::now().timestamp_millis(),
+                target: BRANCH_TARGET_SOURCE.into(),
+                // 与快照里的 started_at_ms 同一份取值——否则重连后重建的
+                // 分支卡与实时收到的那张在排序/耗时上会相差几毫秒。
+                started_at_ms: registration.started_at_ms,
             });
         }
         let result = self

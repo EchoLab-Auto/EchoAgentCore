@@ -240,6 +240,38 @@ impl SessionViewHost for AgentSessionViewHost {
         Box::pin(async move { target.active_turn_session_ids() })
     }
 
+    /// 运行中的回复分支：把 Core 的入站 turn 表翻译成**线上形状**。
+    ///
+    /// 只回 `branch = true` 的入站 turn（单会话串行模式的 turn 不是分支，
+    /// 它的运行态由 `active_turns` 的会话列表表达）。
+    fn active_branches(
+        &self,
+        team_id: Option<String>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Vec<echo_protocol::event::ActiveBranchInfo>,
+                > + Send
+                + '_,
+        >,
+    > {
+        let target = self.target(team_id.as_deref());
+        Box::pin(async move {
+            target
+                .active_branch_snapshots()
+                .into_iter()
+                .map(|b| echo_protocol::event::ActiveBranchInfo {
+                    session_id: b.session_id,
+                    branch_id: b.branch_id,
+                    message_sequence: b.message_sequence,
+                    task: b.task,
+                    target: b.target,
+                    started_at_ms: b.started_at_ms,
+                })
+                .collect()
+        })
+    }
+
     fn emit(&self, event: BackendEvent) {
         self.agent.emit(event);
     }

@@ -112,6 +112,16 @@ pub trait SessionViewHost: Send + Sync {
     ) -> BoxFuture<'_, HistoryView>;
     /// 正在执行 turn 的会话 id（随时间线快照补发）。
     fn active_turns(&self, team_id: Option<String>) -> BoxFuture<'_, Vec<String>>;
+    /// 正在运行的回复分支（随时间线快照补发）。
+    ///
+    /// 默认空实现：TTL/测试宿主不必关心——但生产宿主必须实现，否则重连后
+    /// 分支卡与任务卡仍然只能等新事件（正是本接口要消除的行为）。
+    fn active_branches(
+        &self,
+        _team_id: Option<String>,
+    ) -> BoxFuture<'_, Vec<echo_protocol::event::ActiveBranchInfo>> {
+        Box::pin(async { Vec::new() })
+    }
     /// 事件出口。
     fn emit(&self, event: BackendEvent);
 }
@@ -193,9 +203,11 @@ impl SessionViewHandler {
                 // 浮条 / 取消按钮丢失）。timeline 之后立刻补发——增量与全量都
                 // 发，前端按快照重建 running 集合。
                 let session_ids = self.host.active_turns(team_id.clone()).await;
+                let branches = self.host.active_branches(team_id.clone()).await;
                 self.host.emit(BackendEvent::ActiveTurnsSnapshot {
                     session_ids,
                     team_id,
+                    branches,
                 });
                 Ok(())
             }
@@ -346,6 +358,7 @@ mod tests {
             BackendEvent::ActiveTurnsSnapshot {
                 session_ids: vec![],
                 team_id: None,
+                branches: vec![],
             },
             BackendEvent::TeamsList { teams: vec![] },
         ];
@@ -412,6 +425,7 @@ mod tests {
             BackendEvent::ActiveTurnsSnapshot {
                 session_ids,
                 team_id,
+                ..
             } => {
                 assert_eq!(session_ids, &vec!["tui:local".to_string()]);
                 assert_eq!(team_id.as_deref(), Some("alix"));

@@ -100,6 +100,24 @@ pub struct ShellSessionInfo {
     pub last_output: Option<String>,
 }
 
+/// 运行中的回复分支（`ActiveTurnsSnapshot.branches` 的元素）。
+///
+/// 字段是 `ReplyBranchStarted` 的子集：前端拿到它就能按与实时事件**同一套**
+/// reducer 重建分支卡/任务卡，不必再维护第二条代码路径。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveBranchInfo {
+    pub session_id: String,
+    pub branch_id: String,
+    pub message_sequence: u64,
+    /// 任务文本（Core 侧已截断到 200 字符：任务卡只显示一行摘要）。
+    #[serde(default)]
+    pub task: String,
+    /// 目标标签（普通入站分支为「源会话」）。
+    #[serde(default)]
+    pub target: String,
+    pub started_at_ms: i64,
+}
+
 /// Snapshot of a conversation session, for the TUI session list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
@@ -537,6 +555,17 @@ pub enum BackendEvent {
         session_ids: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         team_id: Option<String>,
+        /// 正在运行的回复分支（带任务文本与起始时刻）。
+        ///
+        /// 必要性：`ReplyBranchStarted` 是**只在分支开始那一刻发一次**的推送
+        /// 事件，Panel 重连/刷新后拿不到它，而协议里没有"查运行分支"的命令
+        /// ——分支卡与任务卡于是永远是空的，只能等下一个分支开始才恢复。
+        /// 快照带上这几项后，前端可在重连时就地重建。
+        ///
+        /// 向后兼容：旧前端忽略该字段；旧 Core 不发时前端按空数组处理
+        /// （只影响重连恢复，不影响实时事件）。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        branches: Vec<ActiveBranchInfo>,
     },
 
     // ── 联邦管理（federation Phase 4）──

@@ -73,11 +73,35 @@ pub(crate) struct ActiveInboundTurn {
     message_sequence: u64,
     branch: bool,
     cancel: tokio_util::sync::CancellationToken,
+    /// 分支任务文本（发给模型的原始内容，超长时截断）。
+    ///
+    /// 存下来的唯一目的是**快照可重建**：`ReplyBranchStarted` 是只在分支
+    /// 开始时发一次的推送事件，Panel 重连/刷新后拿不到它，分支卡与任务卡
+    /// 就永远是空的（协议里也没有"查运行分支"的命令）。快照带上这几项后，
+    /// 前端可以就地重建，不必再要求用户刷新碰运气。
+    task: String,
+    /// 分支目标标签（`源会话` / 实例名等，与 `ReplyBranchStarted.target` 同源）。
+    target: String,
+    started_at_ms: i64,
+}
+
+/// 运行中分支的快照条目（线上形状 = `ReplyBranchStarted` 的子集）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActiveBranchSnapshot {
+    pub session_id: String,
+    pub branch_id: String,
+    pub message_sequence: u64,
+    pub task: String,
+    pub target: String,
+    pub started_at_ms: i64,
 }
 
 pub(crate) struct InboundTurnRegistration {
     pub id: String,
     pub cancel: tokio_util::sync::CancellationToken,
+    /// 分支起始时刻（毫秒）：`ReplyBranchStarted` 与重连快照共用同一份，
+    /// 否则重建出来的分支卡在排序/耗时上会与实时那张差几毫秒。
+    pub started_at_ms: i64,
 }
 
 impl Default for InboundTurnRegistration {
@@ -87,6 +111,7 @@ impl Default for InboundTurnRegistration {
         Self {
             id: String::new(),
             cancel: tokio_util::sync::CancellationToken::new(),
+            started_at_ms: 0,
         }
     }
 }
