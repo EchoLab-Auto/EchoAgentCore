@@ -1,0 +1,235 @@
+---
+id: deploy
+title: "部署与自更新"
+group: 工程
+x: 1920
+y: 1990
+---
+
+# 部署与自更新
+
+> **定位**：本文是部署与运维手册——安装（install.sh 与 curl | bash 一键路径）、容器化部署（npm + Docker）、systemd 服务布局、受控自更新与回滚、日常体检。读者：部署与运维 EchoAgent 的操作者。
+> 相关文档：[协议与数据流](../protocol/protocol.md)、[框架（内核机制）](../core/frame.md)（进程结构）、[开发指南](../dev/guide.md)。
+
+EchoAgent 以 systemd **用户服务**运行（Core + Panel 各自独立）。源码托管于受管 git 仓库，更新走 oneshot 更新单元（构建 → 原子替换 → 重启）。
+
+## 服务与文件布局
+
+| 组件 | 服务单元 | 二进制/静态目录 | 管理仓库 |
+| --- | --- | --- | --- |
+| Core | `echo-agent-core.service` | `~/.local/libexec/echo-agent-core/echo-agent-core-bin` | `~/.local/share/echo-agent-core/source` |
+| Panel | `echo-agent-panel.service` | `~/.local/libexec/echo-agent-panel/{echo-agent-panel-bin,web}` | `~/.local/share/echo-agent-panel/source` |
+| 更新 | `echo-agent-core-update.service` / `echo-agent-panel-update.service` | — | 同上 |
+
+- Core 工作目录：`~/.local/share/echo-agent-core/source`；配置：`~/.config/echo-agent-core/core.toml`
+- Panel 配置：`~/.config/echo-agent-panel/panel.toml`（`[server].bind_address`、`[core].connect_url` 指向 Core management WS）
+- 更新状态：`~/.local/state/echo-agent-{core,panel}/update-status`；安装回滚快照在 `~/.local/state/echo-agent-core/install-rollback/`（事务期间存放 binary/updater/launcher/服务单元/core.toml/revision/status，安装成功后清空）
+
+## 安装（install.sh）
+
+两仓库各自提供 `scripts/install.sh`（Linux + systemd user，无需 root、不动系统目录；`--dry-run` 可预演全部路径）：
+
+- 尊重 `ECHO_PREFIX` / `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_STATE_HOME`
+- 已存在的配置文件保留；重复执行 = 刷新二进制、updater 与服务单元；`--overwrite-config` 以最新模板重写 core.toml（旧文件备份为 `core.toml.bak-<epoch>`；`management_access_token` 沿用旧值，Panel/对端无需换令牌）
+- 安装是事务性的：release 构建完成后快照现有文件，健康检查失败自动恢复并重启旧 Core
+- 服务默认挂在 `default.target`；开机免登录自启需 `sudo loginctl enable-linger "$USER"`
+- **CLI 入口（launcher）**：`~/.local/bin/echo-agent-core`（包装脚本自动注入 `--config`，即上方「管理子命令」的入口）——该目录必须在 PATH 中。安装脚本结束时会检测、缺失即打印修复命令；首装后**同一会话**里若提示 `command not found`：`export PATH="$HOME/.local/bin:$PATH"` 或重开终端/重新登录即可（登录 shell 经 `~/.profile` 自动加入；注意 `~/.profile` 的 PATH 片段只在登录时加载，且要求目录当时已存在）。若重新登录后仍找不到，把该 export 一行加进 `~/.profile`；也始终可用绝对路径 `~/.local/bin/echo-agent-core`
+- 卸载：`./scripts/uninstall.sh`（保留配置与用户数据——媒体库 `media/`、用户技能层 `skills/`）/ `--purge`（连配置目录与数据一起删）
+- 重装：`./scripts/reinstall.sh`——uninstall（保留配置与用户数据）→ install 一步接力，二进制/服务单元全部换新而 core.toml、会话历史、媒体库与用户技能不动；`--overwrite-config` 可同步重置配置（见上），`--dry-run` 分别预演两步而不改动系统；同样兼容 curl | bash 运行
+
+### curl | bash 一键安装/卸载（免 clone）
+
+```bash
+# 安装（Core）
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install.sh | bash
+
+# 卸载（保留配置与会话历史）
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/uninstall-remote.sh | bash
+# 连配置一起删
+curl -fsSL https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/uninstall-remote.sh | bash -s -- --purge
+```
+
+机制与要点：
+
+- **bootstrap 接力**：非 git 检出环境（curl 管道）运行时，脚本先把仓库浅克隆到临时目录、exec 其中的 install/uninstall 脚本接力——后续流程与本地运行完全一致（前置依赖自动安装 → 受管检出 → 构建 → systemd 服务）
+- **前置依赖自动装**：git/cc/pkg-config 等系统命令经发行版包管理器（apt/dnf/pacman/zypper）自动补齐；cargo 缺失时走官方 rustup 用户级安装（无需 root）；`--no-deps` 只检查不安装
+- **首装自动生成 `management_access_token`**（32 字节随机 hex）——暴露 management WS 到局域网开箱即有认证；token 在 `core.toml` 可查，重装/卸载（不带 `--purge`）不丢
+- **私有仓库**：`ECHO_REPOSITORY_URL` 指定 SSH 或镜像地址（`ECHO_REPOSITORY_URL=git@github.com:... curl ... | bash`）；公开仓库匿名可直接跑
+- 全程约 10-20 分钟（rustup + release 构建）；构建期不影响现有服务
+
+### 国内网络（镜像加速）
+
+GitHub 克隆 / rustup / crates.io 在部分网络（典型：国内直连）下缓慢或不可达；
+`--cn-mirror` 一键启用镜像（默认组合：GitHub 克隆走 `gh-proxy.com`、Rust
+生态走 `rsproxy.cn`；`--cn-mirror=tuna` / `=ustc` 可换镜像站）：
+
+```bash
+# 一键安装：镜像拉取脚本本身 + 镜像克隆/构建（raw.githubusercontent.com 直连不可达时）
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/EchoAgentCore/main/scripts/install.sh \
+    | ECHO_CN_MIRROR=1 bash
+
+# 本地（已 clone 仓库）
+./scripts/install.sh --cn-mirror
+# 关闭：--no-cn-mirror / ECHO_CN_MIRROR=0；先核对配置：加 --dry-run
+```
+
+- 单环节覆盖（不必开总开关，只加速需要的环节）：`ECHO_GITHUB_PROXY`
+  （GitHub 克隆代理前缀）、`ECHO_RUSTUP_INIT_URL`、`ECHO_RUSTUP_DIST_SERVER`、
+  `ECHO_RUSTUP_UPDATE_ROOT`、`ECHO_CRATES_MIRROR`（`sparse+https://…`）
+- 语义：默认全直连（不改变既有行为）；每个环节失败自动回退官方端点；
+  crates 镜像在构建前做可达性预检
+- 与依赖自动安装的配合：curl|bash 引导阶段缺 git 时同样自动安装
+  （root/sudo + 可识别包管理器），无需预先手装 git
+
+### 服务加固
+
+长驻 `echo-agent-core.service` 与 oneshot 更新单元均设 `NoNewPrivileges=true`——agent 不再提供 setuid 提权（`run_sudo` 已废弃移除），两个单元都限制被攻破进程/构建脚本的提权面。
+
+## 容器化部署
+
+除宿主 systemd 安装外的第二条投放路径：**npm 编排 + 官方镜像**——
+`npx @echolab-auto/echo-agent up`（包源码在仓库 `npm/echo-agent/`）。
+
+- 形态：本包只生成 `docker-compose.yml` + 配置模板并代理 `docker compose`
+  （`init / up / down / restart / update / logs / status / doctor`）；
+  运行全部在容器里（core + panel + napcat 三容器，专用网络 `echo-agent`）
+- 互访：容器间一律 compose 服务名——Panel `ws://core:3132`；
+  NapCat 反向 WS `ws://core:3131`、OneBot HTTP `http://napcat:3000`
+  （与宿主安装的 `localhost` / `host.docker.internal` 寻址不同，模板已写好）
+- 数据：`~/.echo-agent/{config,data}` 绑定挂载——config 放 core.toml/panel.toml
+  与会话 JSON，data 放媒体库（`ECHO_MEDIA_DIR=/data/media`，与 Panel 的
+  `[server] media_dir` 必须一致）与文件下载
+- docker socket：compose 默认挂 `/var/run/docker.sock` 进 core 容器，供
+  QR 取图（`docker exec`）与发送文件桥接（`docker cp`）；不挂时自动降级
+  （QR 走 WebUI、文件走 HTTP 桥），NapCat 容器本身由 compose 管理
+  （`core.toml` 里 `napcat_auto_start=false`）
+- 镜像：`ghcr.io/echolab-auto/echo-agent-{core,panel}:latest`（两个仓库根目录
+  各有 `Dockerfile`，`.github/workflows/docker.yml` 在版本 tag 上发布）；
+  无预发布镜像时按仓库 Dockerfile 本地构建，改 `.env` 指向 `:local`
+- 与宿主安装**不要同时跑**：容器名（`napcat`）与端口（8080/6099）冲突，
+  `echo-agent doctor` 会检测并提示
+
+## 更新流程（update.sh）
+
+- `--local`（默认）：构建当前源码树（含未提交改动，记为 `+dirty`）；`--remote`：先 fetch + fast-forward 再构建（工作树有改动/游离 HEAD/非快进则拒绝）
+- **原子替换**：先备份现有二进制/静态目录到 rollback 文件，替换后重启服务并健康检查（15s 内 3 次活跃确认）；替换完成即按保留策略修剪历史副本（见下「备份留存」）
+- 失败自动回滚（恢复备份 + 重启）；状态写入 `~/.local/state/echo-agent-*/update-status`
+- 更新器非阻塞文件锁拒绝并发运行；拉取/构建失败时旧二进制不动、不重启
+- Panel 更新包含 `npm run build`（前端产物从 `web/dist` 拷贝到静态目录，需 PATH 中有 npm——nvm 路径）
+- **NapCat 恢复门控**：Core 重启后仅当 `[instances.qq]`（或等价的 `[adapters.qq]`——`update.sh` 的 awk 两个段名都认）`enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（默认实例 3131；多实例由插件在 3140-3190 内分配、持久化在实例 state 的 `[deploy.ports]`——Core 不感知具体端口，故按「全部 NapCat 容器」而非端口清单判定）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
+- **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制核对内置插件 manifest id——框架 8 项（`echo-agent.tools.builtin` / `echo-agent.skills.dir` / `echo-agent.workspace` / `echo-agent.subagent` / `echo-agent.provider.llm` / `echo-agent.management.panel` / 互斥循环模式 `echo-agent.loop.{single,parallel}`）**加上实例插件前缀** `echo-agent.instance.`（`strings` 里能搜到前缀即视为齐备，不逐个枚举平台）。清单与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` + `core::instance_manifests::PLUGIN_ID_PREFIX` 一致，由 `source/core/src/instance_manifests.rs` 的单测守护（修复背景：`echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`echo-agent.menu`/`echo-agent.checklist`/旧驱动 `echo-agent.loop.runner` 等 id 已移除（present_menu 已废弃移除；checklist 为普通内置工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
+
+### 出厂技能同步
+
+自更新只滚**出厂技能层**（`~/.local/share/echo-agent-core/skills-builtin/`）；用户技能层（数据目录 `skills/`，Save/DeleteSkill 与 Git 安装技能的落点）不归更新管，同名技能由用户层覆盖出厂版本。`scripts/update.sh` 按技能目录逐个同步：
+
+- 只同步**含 `SKILL.md`** 的目录——`.sources.json` 之类来源记录不进只读层
+- 目标先清后写：有 `rsync` 时 `rsync -a --delete --exclude='/.git/'`，否则 `rm -rf` + `cp -a`，最后再 `rm -rf <目标>/.git`
+- **绝不带 `.git`**：Git 安装的技能带 `0400` 只读的 `.git/objects/pack/*`，原先整体 `cp -a` 在同路径覆盖时打不开写 → `Permission denied` → 更新在 `installing` 阶段整体失败（二进制已构建却没装上，服务仍跑旧版），且首次能过、此后每次必败。运行期只用 `SKILL.md`，git 历史归用户层管理
+- 目标目录不存在（旧部署未迁移过）时整段跳过，由下次 install/reinstall 补齐
+- **仅 `update.sh` 走这套规则**：`install.sh` 仍是整体 `cp -a "$SOURCE_DIR/skills/."`，不逐技能、不排除 `.git`（清空与补齐语义不同——它负责首次铺设出厂层，重复执行前需先 `uninstall`；`reinstall` 会先跑 `uninstall` 清掉该层，故正常重装路径不受影响）
+
+### 进程外插件二进制同步
+
+`plugins/<包名>/<二进制>` 下的插件二进制与 Core **同版本**部署（协议与 `Hello.config` 语义在同一份仓库里演进，不允许 Core 新 / 插件旧）：
+
+- `install.sh` 按 `PLUGIN_BINARIES` 与 Core 在同一次 `cargo build --release --locked` 里构建，装到 `~/.local/libexec/echo-agent-core/plugins/<包名>/<二进制>`；旧文件纳入安装事务快照，失败回滚时一并还原
+- `update.sh` 用**同一张表**（两脚本一致性由 `source/core/tests/install_script_flag.rs` 守护，同时比对仓库里 `[[bin]] path = "src/main.rs"` 的插件 crate）做版本化替换：旧二进制先落 `<二进制>.rollback`，任一步失败（含重启后健康检查）→ `finalize_failure` 把所有插件还原回上一版
+- 构建产物缺失（例如清单里写了但 crate 被删）只 `warning` 并触发回滚，不会静默留下半套插件
+- 目录不存在（旧部署未跑过新版 `install.sh`）时静默创建——自更新不会因为多了个目录就失败；清单外的目录（用户自装插件）不会被触碰
+- 布局与命名理由见 [插件开发指南](../plugins/plugin-authoring.md)「安装目录约定」
+
+### 备份留存
+
+二进制与静态目录的上一版副本按保留数回收，安装目录不再无限堆积（未修剪时单目录可堆到数百 MiB）：
+
+| 项 | Core | Panel |
+| --- | --- | --- |
+| 安装目录 | `~/.local/libexec/echo-agent-core/` | `~/.local/libexec/echo-agent-panel/` |
+| 参与修剪的副本 | `<binary>.bak-*`、`<binary>.rollback*`、`<binary>.old` | 同左，另加静态目录 `<static-dir>.bak-*`、`<static-dir>.rollback*` |
+| 保留数 | `ECHO_KEEP_BACKUPS`，默认 `4` | 同左 |
+| 本次事务受保护 | `ROLLBACK_BINARY` | `ROLLBACK_BINARY` + `ROLLBACK_STATIC` |
+| 永不修剪 | 二进制本体、`update.sh`、`installed-revision` | 二进制本体、静态目录本体、`update.sh`、`installed-revision` |
+
+- 保留数语义：所有候选**合并计数**（不是每类各 N 个）；`0` = 只留本次事务正在用的回滚副本（其余全清）；非数字取值回落默认 4
+- 排序为 mtime 新→旧（同秒靠时间戳后缀的名字兜底），保留的是**最新的 N 个**，与文件名字典序无关
+- 两个调用点：替换完成后立即修剪（及时回收）+ 成功收尾删掉本次 `.rollback` 后再修剪一次（名额回滚给更早的备份）
+- 修剪只影响磁盘占用，不影响回滚：失败回滚消费的正是本次受保护的 `.rollback`
+
+### 构建产物与诊断口径
+
+release 产物设 `strip = "symbols"`（根 `Cargo.toml` 的 `[profile.release]`）：约 **17.5 MiB**，未剥离时约 23.8 MiB（-26%）。updater 每次更新都要构建并复制 + 备份该二进制，差额每次都要付。
+
+| 保留 | 丢失 |
+| --- | --- |
+| panic 的**消息与源码位置**（`file:line` 是 `.rodata` 里的字符串） | backtrace 的函数名（只剩地址） |
+| 内置插件校验依赖的 manifest id 字符串（`strings` 可扫到） | `nm` / `addr2line` 一类的符号级定位（已安装二进制无符号表） |
+
+- 需要函数名排障时**临时重建带符号版本**，不要指望线上二进制：`cargo build --release -p echo-agent-core --config 'profile.release.strip="none"'`
+- 不启用 LTO / `codegen-units=1`：updater 每次更新都跑 `cargo build --release`，编译时间翻倍不划算
+
+### 状态机与轮询契约
+
+```text
+state=running → state=restarting → state=updated（失败时停在 failed / rolled_back）
+```
+
+- `state=restarting` 在 **systemctl restart 之前**写入（"构建完成、即将重启"）；`updated` 在重启 + QQ 恢复之后才写入（恢复段仅 QQ 启用时执行：自动重连窗口 40s + 兜底重启窗口 90s，最长约 2 分钟；未启用则直接跳过）
+- **self-update 轮询契约**：agent 轮询到 `restarting` 就应立即收尾结束当前 turn（不要等 `updated`——等它的 turn 会被自己的重启杀死，时间线留下僵尸 running 工具条目）；重连后的新 turn 再验证 `updated`
+
+### 自更新注意事项
+
+- **绝不** `systemctl --user stop echo-agent-core.service`：agent 本身运行在 core 进程内，stop 会杀死当前会话，后续 start 永远执行不到（已实际发生）
+- 安全替代：`systemctl --user restart echo-agent-core.service`（原子操作）；确需先停后启时用 `systemd-run --user` 脱离会话执行
+- **用瞬态单元启动 updater**：`update.sh` 自己会 `systemctl --user restart echo-agent-core.service`。若 updater 由 agent 在自己 shell 里直接 `bash update.sh` 起，它与 Core 同处 `echo-agent-core.service` 的 cgroup，restart 清理 cgroup 时被连带杀死（`setsid`/`nohup` 同 cgroup，救不了）——被杀的 updater 只剩「二进制替换 + 重启」，QQ 恢复、revision 写入、插件校验、收尾写 `state=updated` 全部跳过，需人工补写。改用瞬态单元（独立 cgroup，与主服务平级）：`systemd-run --user --collect --unit=echo-agent-update bash ~/.local/libexec/echo-agent-core/update.sh`，进度看 `journalctl --user -u echo-agent-update`；面板/命令触发的自更新（`RequestSelfUpdate` → `handle_self_update`）启动的是独立 oneshot 单元 `echo-agent-core-update.service`，本就不受 restart 牵连
+- **优雅排空（drain-then-exit）**：Core 收到 SIGTERM 后先进入排空模式——拒绝新消息（Panel 主动发送会收到"Core 正在重启"错误提示，重试即可）、等待进行中的回复完成（最多 `SHUTDOWN_DRAIN_SECS = 120s`，期间回复继续实时 emit 到 Panel）再退出；超时仍未完成才强制取消该 turn；`TimeoutStopSec=180s` 兜底保证 drain 窗口内不被 SIGKILL。停机顺序：`pump.abort()`（停命令泵）→ 首个插件实例句柄 `stop()`（停收；插件进程随后由 supervisor 排空）→ `agent.shutdown()`（drain）。异步子任务（`spawn_subagent`）不在 `active_inbound_turns` 计数内，drain 不等待它们；其注册表在内存中、完成回报以新 turn 注入——进程退出即终止，未完成子任务的结果不会补投递（重启后需重新委派）
+- Core 重启后恢复时间线时，进程被杀导致的悬空 running 工具条目会被标注为"已中断"，不再永远显示"运行中"
+
+## 运维命令与体检
+
+`echo-agent-core`（包装脚本自动注入 `--config`，缺省 `core.toml`）内置管理子命令，**直接操作 TOML 文本**（保留注释与其他段）——免手工编辑配置文件：
+
+```bash
+# 端口：查看 / 修改（写回后重启生效）
+echo-agent-core port                          # 列出全部端口（键 = 可直接复制给 set）
+echo-agent-core port set management 4000      # 改端口（沿用现有 host → 127.0.0.1:4000）
+echo-agent-core port set management 0.0.0.0:4000   # 改完整监听地址
+echo-agent-core port set federation 4001      # 联邦监听端口
+echo-agent-core port set federation none      # 仅连出（listen = ""）
+echo-agent-core port set federation-advertise 10.0.0.5:4001   # 邀请串对外宣告
+
+# management_access_token：查看 / 轮换
+echo-agent-core token                         # 打印当前 token（空 = 无认证）
+echo-agent-core token --rotate                # 重新生成并写回（32 字节 hex）
+
+# 外部插件组合：查看分层合成结果（profile → bundles → patches → 行内条目）
+echo-agent-core dump-config                   # 每行带「来自哪一层」来源注释
+```
+
+`dump-config` **只合成不启动**（不拉起插件、不监听端口），用的是与启动路径同一个
+`load()`——合成失败 / 环依赖 / 未知 `requires` 在这里报同一个错并**非零退出**，
+可直接放进部署前自检；`plugins.toml` 不存在时打印一行说明并退出码 0（特性休眠）。
+详见 [插件开发指南](../plugins/plugin-authoring.md)「先看一眼合成结果」。
+
+要点：
+
+- `port` 目标键与配置键一一对应，**只有三个**：`management`→`[core].management_address`、`federation`→`[federation].listen`、`federation-advertise`→`[federation].advertise`
+- **QQ / NapCat 端口不在 CLI 管理范围内**（2026-10 移交插件）：`qq` 与 `qq-instance:<id>:<字段>` 两个目标已删除。实例的三端口（反向 WS / OneBot HTTP / WebUI）由插件分配并持久化到实例 state 文件 `[deploy.ports]`；改端口请改配置里的显式值（`[instances.qq.server].bind_address` 或 `[...instances.<id>]` 的对应键），插件会沿用配置值而非重新探测
+- 缺省值与显式值语义区分（如 `listen` 缺省 = 跟随管理地址合并、显式空串 = 仅连出）
+- 编辑后做 TOML 合法性与**目标值类型复读**自检；`tmp + rename` 原子写
+- **端口合并（缺省）**：联邦监听**缺省合并至管理端口**——NAT 场景**一条映射同时服务面板与联邦**（见 [联邦](../federation/federation.md#配置与管理面)）；管理地址回环 / 空令牌且非回环 / 令牌与 peer 冲突时自动回退独立监听（启动警告）；**显式**同址合并 + 空令牌 + 非回环仍 fail-closed **拒绝启动**
+- 端口变更重启 Core 生效；`port set` 的提示按**编辑后**的合并状态自适应——合并态下改 `management` 会同时提醒 Panel `[[cores]].url`、对端 `[federation.peers.*]` 的 url 与端口映射/`advertise` 三处同步（独立监听只提醒 Panel）
+- 相应配置解析与编辑逻辑见 [配置持久化](../core/config-persistence.md)；QQ 实例端口分配（插件侧）见 [QQ 门控](../plugins/qq-gating.md)
+
+### 日常体检
+
+```bash
+systemctl --user status echo-agent-{core,panel}.service
+systemctl --user is-active echo-agent-{core,panel}.service
+cat ~/.local/state/echo-agent-{core,panel}/update-status
+journalctl --user -u echo-agent-core-update.service
+```
+
+### 回滚
+
+更新失败时 update.sh **自动回滚**（无需人工介入）：本次事务的 `.rollback` 在成功收尾后删除、失败即被回滚消费，不参与长期留存。**被中断**的更新（进程被杀、机器断电）会留下 `<binary>.rollback*` / `.bak-*` / `.old` 一类残片，由下次运行的 `prune_backups` 按保留数回收（见「备份留存」）。需要人工回到更早版本时，从 git 仓库构建旧提交后 `reinstall` 重装。

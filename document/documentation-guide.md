@@ -19,8 +19,8 @@ y: 2330
 |---|---|---|
 | 总览层 | 这是什么、从哪读起 | `index`、`architecture` |
 | 框架层 | 系统如何组成与运转（机制、不变量、边界） | `core`、`frame`、`plugins` |
-| 子系统层 | 某个能力如何设计与实现 | `agents`、`tools`、`panel-*` |
-| 细节/操作层 | 怎么用、怎么运维、精确参考 | `protocol`、`ops-deploy`、`dev-testing` |
+| 子系统层 | 某个能力如何设计与实现 | `agents`、`tools`、`chat`、`settings-*` |
+| 细节/操作层 | 怎么用、怎么运维、精确参考 | `protocol`、`deploy`、`testing` |
 
 写作口吻按层区分：总览层 = 导航 + 要点；框架层 = 机制与边界（**不写实现细节**）；子系统层 = 设计 → 机制 → 细节；细节层 = 面向操作与查询，密度可以高。
 
@@ -34,7 +34,7 @@ y: 2330
 |---|---|---|
 | 根目录 | `index`（入口）、`documentation-guide`（本规范） | 总览 / 工程 |
 | `overview/` | 架构总览与骨架 | 总览 |
-| `core/` | 内核与运行时子系统（`frame`、`core-*`、`security-redaction-design`） | 框架 |
+| `core/` | 内核与运行时子系统（`frame`、`agent-loop`、`agents`、`memory`、`multimodal`、`config-persistence`、`logging`、`security-redaction`） | 框架 |
 | `plugins/` | 插件体系、各插件与插件实例、插件开发指南 | 插件 |
 | `federation/` | 联邦（多机去中心化） | 插件 |
 | `protocol/` | 前后端线协议 | 工程 |
@@ -43,6 +43,18 @@ y: 2330
 | `dev/` | 开发与测试规范 | 工程 |
 
 放置规则：新增文档先选目录——写**当前实现**的进对应主题目录；计划、提案、评审与一次性审计放 `source/research/`，不进本文档群（文档群只留长期有效的参考）。目录内文档引用其他目录用相对路径（`../xxx/`）。
+
+### 文件命名
+
+目录已经表达的主题，文件名里不重复——`panel/` 下不叫 `panel-chat`，`core/` 下不叫 `core-memory`，`ops/` 下不叫 `ops-deploy`。
+
+| 规则 | 示例 |
+|---|---|
+| 入口页与目录同名 | `core/core.md`、`panel/panel.md`、`plugins/plugins.md` |
+| 文件名 = 目录内语义名，语义前缀保留、目录前缀去掉 | `panel/chat-list.md`、`panel/settings-tools.md`、`core/agent-loop.md`、`ops/deploy.md` |
+| `id` 恒等于文件名（不含 `.md`），全群唯一 | `chat-list`、`agent-loop`、`deploy` |
+
+`id` 与文件名绑定后，**改文件名 = 改 id**：`link` 连线与正文相对链接都要同步改（画布坐标、`group` 不受影响）。门禁见下方检查清单。
 
 ## 单篇体例（五条）
 
@@ -54,7 +66,7 @@ y: 2330
 
 ### 四种文档类型的结构模板
 
-#### 总览 / 入口（index、core、panel、dev-guide）
+#### 总览 / 入口（index、core、panel、guide）
 
 定位段 → 系统结构一览（图或清单）→ 阅读路径 → 延伸链接。短小，只做导航与导语。
 
@@ -62,18 +74,18 @@ y: 2330
 
 定位段 → 概念模型（原则、术语、边界）→ 机制（运作方式、生命周期）→ 参考（表格）。不写具体实现位置。
 
-#### 子系统 / 设计（tools、skills、qq-gating、federation、panel-*）
+#### 子系统 / 设计（tools、skills、qq-gating、federation、chat-*）
 
 定位段 → 设计目标 → 运作机制（管道 / 生命周期 / 数据流）→ 细节参考 → 关键决策与边界。历史注记以"现状句 + 必要时一句沿革"消化，不设变更日志节。
 
-#### 细节 / 操作 / 参考（protocol、ops-deploy、dev-testing）
+#### 细节 / 操作 / 参考（protocol、deploy、testing）
 
 定位段 → 按功能域分节（传输 / 命令 / 事件；安装 / 更新 / 回滚…）。表格优先，步骤可密集。
 
 ### 检查清单
 
 - [ ] 有定位段（读者、范围、相关文档）
-- [ ] 位于正确分层目录；跨目录引用用相对路径且无断链
+- [ ] 位于正确分层目录；文件名不带目录前缀；`id` == 文件名；跨目录引用用相对路径且无断链
 - [ ] H2 数量 2-6 条，标题是名词、无日期/编号污染
 - [ ] 概念在前、细节在后；无跨层内容渗漏
 - [ ] 行为性变更未标注日期；无纯过程史段落
@@ -95,7 +107,7 @@ y: 2330
 `index.md` 的「导航地图」flow 是**主干的权威定义**；画布参数区必须与它一致，否则正文与图各说一套。
 
 - **link = 主干导航**（父 → 它的直接子文档）。交叉引用一律走正文相对链接，不进参数区
-- 判据不是「物理目录」，而是 **`index.md` flow 里的父子边**：`core → plugins`、`plugins → federation`、`dev-guide → documentation-guide` 这类跨目录边是合法的（逻辑层级 ≠ 目录层级）；反过来，同目录兄弟互链（`panel-desktop-layout → panel-chat`）不合法
+- 判据不是「物理目录」，而是 **`index.md` flow 里的父子边**：`core → plugins`、`plugins → federation`、`guide → documentation-guide` 这类跨目录边是合法的（逻辑层级 ≠ 目录层级）；反过来，同目录兄弟互链（`desktop-layout → chat`）不合法
 - 新增一条 link 前先看 flow：flow 里没有这条边，就不要加
 - 子节点是否互链：**由该层的入口文档统一导航**，子节点之间不互链（避免画布上出现横七竖八的兄弟边）
 
@@ -147,8 +159,8 @@ y: 2330
 约定：
 
 - 文件首行带 `<!-- 自动生成，请勿手改：<源> -->` 注释——看到它就改代码后重跑生成；
-- 门禁在 `source/core/tests/doc_catalog.rs`：**工具目录新鲜度** + **内置插件 id 不许漏**（`BUILTIN_PLUGIN_IDS` 每项必须出现在 `core-plugins.md`）+ **相对链接可达**（`document/` 全树死链检查）；
-- 生成只覆盖整份文件：想写人工说明就写进相邻的散文文档（如 `core-tools.md`），不要在生成文件里加章节。
+- 门禁在 `source/core/tests/doc_catalog.rs`：**工具目录新鲜度** + **内置插件 id 不许漏**（`BUILTIN_PLUGIN_IDS` 每项必须出现在 `plugins.md`）+ **相对链接可达**（`document/` 全树死链检查）；
+- 生成只覆盖整份文件：想写人工说明就写进相邻的散文文档（如 `tools.md`），不要在生成文件里加章节。
 
 ## 自检与预览
 

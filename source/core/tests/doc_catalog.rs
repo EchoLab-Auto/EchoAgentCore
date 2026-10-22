@@ -6,7 +6,7 @@
 //!    生成。加了工具忘了写文档 → 这里红；改了描述 → 这里也红（目录里存的就是
 //!    描述原文）。
 //! 2. **内置插件清单**：`BUILTIN_PLUGIN_IDS` 的每一项必须出现在
-//!    `document/plugins/core-plugins.md` 的清单里（那个表是手写散文，不做
+//!    `document/plugins/plugins.md` 的清单里（那个表是手写散文，不做
 //!    自动生成，但**不许漏**）。
 //! 3. **相对链接可达**：`document/` 下所有 `](相对路径)` 的目标文件必须存在
 //!    ——重命名文档 / 拆分章节最容易留下死链，而读者点到 404 才知道。
@@ -83,7 +83,7 @@ async fn render_tool_catalog() -> String {
     out.push_str("# 内置工具目录\n\n");
     out.push_str("> 本文件由 `source/core/tests/doc_catalog.rs` 生成并校验。\n");
     out.push_str("> 刷新：`UPDATE_DOCS=1 cargo test -p echo-agent-core --test doc_catalog`。\n");
-    out.push_str("> 机制说明见 [工具系统](./core-tools.md)；插件贡献的工具见 [插件化设计](./core-plugins.md)。\n\n");
+    out.push_str("> 机制说明见 [工具系统](./tools.md)；插件贡献的工具见 [插件化设计](./plugins.md)。\n\n");
     out.push_str(&format!("共 **{}** 个内置工具。\n\n", rows.len()));
     out.push_str("| 工具 | 分类 | 说明 |\n| --- | --- | --- |\n");
     for (name, category, description) in &rows {
@@ -155,7 +155,7 @@ async fn tool_catalog_is_fresh() {
 /// 把散文变成机器产物。这里守的是**不许漏**（新增插件忘了登记是最常见的漂移）。
 #[test]
 fn documented_builtin_plugin_ids_cover_the_constant() {
-    let doc = reading(&repo_root().join("document/plugins/core-plugins.md"));
+    let doc = reading(&repo_root().join("document/plugins/plugins.md"));
     let mut missing = Vec::new();
     for id in echo_agent::plugins::BUILTIN_PLUGIN_IDS {
         if !doc.contains(id) {
@@ -164,7 +164,7 @@ fn documented_builtin_plugin_ids_cover_the_constant() {
     }
     assert!(
         missing.is_empty(),
-        "以下内置插件 id 未出现在 document/plugins/core-plugins.md：{missing:?}"
+        "以下内置插件 id 未出现在 document/plugins/plugins.md：{missing:?}"
     );
 }
 

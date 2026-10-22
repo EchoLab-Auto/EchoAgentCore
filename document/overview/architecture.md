@@ -8,8 +8,8 @@ y: 500
 
 # 架构总览
 
-> **定位**：本文是 EchoAgent 的**架构脊柱**——设计原则、crate 布局与依赖方向、能力接缝、运行时一览、扩展点地图。读者：需要理解系统骨架、准备修改 `source/` 的开发者（治理门禁见 [开发指南](../dev/dev-guide.md)）。
-> 阅读入口：[Core 后端](../core/core.md)；内核机制见 [框架（内核）](../core/frame.md) 与 [插件化设计](../plugins/core-plugins.md)；运行时子系统见 [多 Agent 与会话](../core/core-agents.md)、[Agent 循环](../core/core-agent-loop.md) 等（各见正文链接）。
+> **定位**：本文是 EchoAgent 的**架构脊柱**——设计原则、crate 布局与依赖方向、能力接缝、运行时一览、扩展点地图。读者：需要理解系统骨架、准备修改 `source/` 的开发者（治理门禁见 [开发指南](../dev/guide.md)）。
+> 阅读入口：[Core 后端](../core/core.md)；内核机制见 [框架（内核）](../core/frame.md) 与 [插件化设计](../plugins/plugins.md)；运行时子系统见 [多 Agent 与会话](../core/agents.md)、[Agent 循环](../core/agent-loop.md) 等（各见正文链接）。
 
 ## 设计原则（dsh 模式）
 
@@ -90,7 +90,7 @@ graph BT
 | `echo-defs` | Service Definition 层 | 全部词汇与 trait：LLM / 工具 / 技能 / 平台消息 / **插件实例** / 媒体 / 会话事件 / 联邦节点；零实现、零 harness 依赖。插件实例模块（`plugin_instance`）持有 `PluginInstance` trait（`tool_specs() -> Vec<ToolSpec>`）/ `InstanceManagement` / `ToolSpec` / `InstanceRegistry` / 状态与错误类型，**平台中立**：没有平台名、没有部署形状——QQ 实现是独立进程插件（独立仓库，stdio 协议，宿主经 `RemoteInstance` 接入） |
 | `echo-context` **（框架仓）** | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry`。**零全局态**：不持有进程级单例表——需要共享状态的调用方经 `Ctx` 显式注入 |
 | `echo-session` | 事件溯源会话 | `SessionEvent` 事件集（含模型不可见的推理事件）、`EventLog` append-only 持久化、`derive_messages` 投影、**按会话切片投影**（append 的重投影代价只与本次会话相关）、compaction、`SessionHeader`、v1-v4 兼容迁移 |
-| `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话）见 [Agent 循环](../core/core-agent-loop.md) |
+| `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话）见 [Agent 循环](../core/agent-loop.md) |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现。`openai`/`anthropic` 只依赖 `echo-defs`；`ollama` 是薄包装，**复用 `echo-llm-openai`**（组内一条边） |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性）。Panel 的 Rust 中继对它**零依赖**（不解析负载、按原文转发），TS 前端以 `web/src/protocol.ts` 手写镜像 |
 | `echo-plugin-provider-llm` | 内置插件：LLM provider（Phase 3 ①） | provider 工厂（OpenAI 兼容 / Anthropic Messages / Ollama，含 DeepSeek `/anthropic` 自动路由、Kimi base_url 归一、OpenCode Go/Zen 会话头注入）+ 计量装饰器（`UsageRecorder` 出口）+ 脱敏装饰器；只依赖 `echo-defs` 与三个 provider crate |
@@ -107,7 +107,7 @@ graph BT
 | `echo-tool` | 工具子系统机制 | `ToolRegistry`（可逆注册 + 定义缓存 + 出口脱敏）；`Tool` 词汇在 `echo-defs`，具体工具实现不在此 |
 | `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` **（框架仓）** | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、子进程限额与入站频率限额、可逆停止、conformance 测试。**`echo-plugin-host` 只依赖 `echo-plugin-api` + `echo-plugin-loader`——不认识 `echo-defs`、不认识任何领域词汇**，因此可作领域中立的插件机制复用 |
 | `echo-plugin-adapter` | 远程贡献 → 领域 trait 的适配层 | `RemoteTool`（`ToolContribution` → `echo_defs::tool::Tool`）、`RemoteInstance`/`RemoteInstanceManagement`（`InstanceContribution` → `PluginInstance`/`InstanceManagement`，能力位 fail-closed，动作经 `Invoke("<name>:<op>")`）、`CoreApiService`（插件 → 宿主回呼）；依赖 host + api + defs，**不依赖 `echo-agent` 与组合根**。单独成 crate 的理由：这一层认识领域 trait，而 host 必须保持领域中立 |
-| `echo-agent` | agent 框架 | 命令分发、timeline 投影、trunk、provider 工厂与装配、提示词边界与装配、多 agent 管理。**循环只有 echo-loop 一条轨道**（内置循环已删除，`loop.*` 插件只决定循环模式——见 [Agent 循环](../core/core-agent-loop.md)）。**具体实现多已外迁**：内置工具在 `echo-plugin-tools`、Shell 机制在 `echo-shell`（`shell.rs` 只留宿主侧接线）、技能在 `echo-plugin-skills`、子任务在 `echo-plugin-subagent`、工作区在 `echo-plugin-workspace`、联邦执行层在 `echo-plugin-federation`；`packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面），宿主侧**不认识任何一个内置工具的名字** |
+| `echo-agent` | agent 框架 | 命令分发、timeline 投影、trunk、provider 工厂与装配、提示词边界与装配、多 agent 管理。**循环只有 echo-loop 一条轨道**（内置循环已删除，`loop.*` 插件只决定循环模式——见 [Agent 循环](../core/agent-loop.md)）。**具体实现多已外迁**：内置工具在 `echo-plugin-tools`、Shell 机制在 `echo-shell`（`shell.rs` 只留宿主侧接线）、技能在 `echo-plugin-skills`、子任务在 `echo-plugin-subagent`、工作区在 `echo-plugin-workspace`、联邦执行层在 `echo-plugin-federation`；`packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面），宿主侧**不认识任何一个内置工具的名字** |
 | `echo-config` | TOML 原子读改写 | `ConfigStore` / `ensure_table`（串行化 + tmp+rename）。**不知道任何 section 的含义**——调用方各自拥有自己的段 |
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm` 注册、插件宿主装配与挂载、挂载后解析 `loop` 服务、联邦链路泵、启动 |
@@ -158,11 +158,11 @@ graph BT
 
 ### 事件模型
 
-四类事件各有归属：**生命周期事件**（`echo-loop` 经 `EventBus` 分发，`TurnStart` … `TurnEnd`；清单与拦截点见 [Agent 循环](../core/core-agent-loop.md)）；**会话事件**（`echo-session` 的 append-only 日志，见下节）；**协议事件**（`echo-protocol` 的 `BackendEvent`，经 management WS 供 Panel 消费，见 [协议与数据流](../protocol/protocol.md)）；**能力事件**（timeline 投影是 `EventBus` 的 observe 监听器——`Agent` 不直接写 timeline，显示历史是事件的投影消费者，可独立演进与测试）。
+四类事件各有归属：**生命周期事件**（`echo-loop` 经 `EventBus` 分发，`TurnStart` … `TurnEnd`；清单与拦截点见 [Agent 循环](../core/agent-loop.md)）；**会话事件**（`echo-session` 的 append-only 日志，见下节）；**协议事件**（`echo-protocol` 的 `BackendEvent`，经 management WS 供 Panel 消费，见 [协议与数据流](../protocol/protocol.md)）；**能力事件**（timeline 投影是 `EventBus` 的 observe 监听器——`Agent` 不直接写 timeline，显示历史是事件的投影消费者，可独立演进与测试）。
 
 ### Turn/Step 循环
 
-`TurnRunner` 驱动 `turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。这是**唯一**循环实现（单轨化）：全部输入（含平台 hook / 定时器）经该状态机执行，差异只在提示词边界块；runner 在人格启动与运行期新建时无条件注入，`loop.*` 插件只决定循环模式。工具策略（超时 / 审批 / 审计 / 限流）的设计位置是 `ToolPipeline` 中间件（当前生产路径未注册任何中间件，超时由 harness `tool_guard_timeout` 守卫）。细节与边界见 [Agent 循环](../core/core-agent-loop.md)。
+`TurnRunner` 驱动 `turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。这是**唯一**循环实现（单轨化）：全部输入（含平台 hook / 定时器）经该状态机执行，差异只在提示词边界块；runner 在人格启动与运行期新建时无条件注入，`loop.*` 插件只决定循环模式。工具策略（超时 / 审批 / 审计 / 限流）的设计位置是 `ToolPipeline` 中间件（当前生产路径未注册任何中间件，超时由 harness `tool_guard_timeout` 守卫）。细节与边界见 [Agent 循环](../core/agent-loop.md)。
 
 ### 会话与持久化
 
@@ -172,11 +172,11 @@ graph BT
 - **显示时间线带两个序号**：`seq`（增量同步用，就地更新会推进它，故非单调）与 `ord`（push 时分配、此后永不改变，作**分页锚点**——复用 `seq` 会让运行中工具条目的就地更新造成乱序并漏条目）
 - **归档与保留**：手动 `ArchiveHistory`（支持 `session_id` 会话级）与压缩前自动快照写入 `archives/`（完整快照，保留最新 20 份）
 
-细节见 [会话记忆](../core/core-memory.md)（日志 / 投影 / 压缩）与 [配置持久化](../core/core-config-persistence.md)（文件布局）。
+细节见 [会话记忆](../core/memory.md)（日志 / 投影 / 压缩）与 [配置持久化](../core/config-persistence.md)（文件布局）。
 
 ### 媒体库
 
-入站图片（平台消息图、面板上传图）**落盘为媒体文件，链路上只传引用**：`~/.local/share/echo-agent-core/media/`（`$ECHO_MEDIA_DIR` 可覆盖），引用为 `/media/<id>`（Panel 后端同源提供，浏览器懒加载 + 强缓存）。发往 LLM 前在投影出口把引用还原为 data URI——模型侧与内嵌时代无差别。细节见 [多模态输入](../core/core-multimodal.md)。
+入站图片（平台消息图、面板上传图）**落盘为媒体文件，链路上只传引用**：`~/.local/share/echo-agent-core/media/`（`$ECHO_MEDIA_DIR` 可覆盖），引用为 `/media/<id>`（Panel 后端同源提供，浏览器懒加载 + 强缓存）。发往 LLM 前在投影出口把引用还原为 data URI——模型侧与内嵌时代无差别。细节见 [多模态输入](../core/multimodal.md)。
 
 ### 命令分发
 
@@ -200,7 +200,7 @@ graph BT
 
 ## 关键文档
 
-- [文档总览](../index.md)：文档群入口与阅读路径；[开发指南](../dev/dev-guide.md)：仓库结构、关键抽象、构建与测试、治理门禁
-- [Core 后端](../core/core.md) → [框架（内核）](../core/frame.md) / [插件化设计](../plugins/core-plugins.md)：框架与插件两支主线
-- 运行时子系统：[多 Agent 与会话](../core/core-agents.md)、[Agent 循环](../core/core-agent-loop.md)、[会话记忆](../core/core-memory.md)、[多模态输入](../core/core-multimodal.md)、[配置持久化](../core/core-config-persistence.md)
-- 数据流与部署：[协议与数据流](../protocol/protocol.md)、[部署与自更新](../ops/ops-deploy.md)
+- [文档总览](../index.md)：文档群入口与阅读路径；[开发指南](../dev/guide.md)：仓库结构、关键抽象、构建与测试、治理门禁
+- [Core 后端](../core/core.md) → [框架（内核）](../core/frame.md) / [插件化设计](../plugins/plugins.md)：框架与插件两支主线
+- 运行时子系统：[多 Agent 与会话](../core/agents.md)、[Agent 循环](../core/agent-loop.md)、[会话记忆](../core/memory.md)、[多模态输入](../core/multimodal.md)、[配置持久化](../core/config-persistence.md)
+- 数据流与部署：[协议与数据流](../protocol/protocol.md)、[部署与自更新](../ops/deploy.md)

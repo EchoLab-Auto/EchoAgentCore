@@ -4,13 +4,13 @@ title: "框架（内核）"
 group: 框架
 x: 640
 y: 820
-link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | 多模态输入 | r>l", "config-persistence | 配置持久化 | r>l", "core-logging | 日志与可观测性", "security-redaction | 敏感信息隔离"]
+link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | 多模态输入 | r>l", "config-persistence | 配置持久化 | r>l", "logging | 日志与可观测性", "security-redaction | 敏感信息隔离"]
 ---
 
 # 框架（内核）
 
 > **定位**：本文描述 EchoAgent 的**内核**——插件化软件体系里"让一切插件都能挂上去"的最小机制集：组合与装配、服务定位、事件总线、插件宿主、进程结构。读者：需要理解系统骨架的开发者。
-> 设计原则的完整表述在 [架构总览](../overview/architecture.md)「设计原则」，本文只写内核如何落地它们。姊妹篇：[插件化设计](../plugins/core-plugins.md)（插件体系与装载清单）；运行时子系统见 [多 Agent 与会话](./core-agents.md)、[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)。
+> 设计原则的完整表述在 [架构总览](../overview/architecture.md)「设计原则」，本文只写内核如何落地它们。姊妹篇：[插件化设计](../plugins/plugins.md)（插件体系与装载清单）；运行时子系统见 [多 Agent 与会话](./agents.md)、[会话记忆](./memory.md)、[多模态输入](./multimodal.md)、[配置持久化](./config-persistence.md)。
 
 ## 内核与插件：一切皆插件
 
@@ -19,13 +19,13 @@ link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | �
 - **服务登记 + 显式注入**：服务以稳定键登记在 `Ctx`（`ctx.llm` / `ctx.loop` / `ctx.sanitizer`）供**可发现性与诊断**；实际消费走显式参数——provider 进 `AgentBuilder`、`TurnRunner` 由 `set_loop_runner` 下发。**挂载顺序由 `plugins.toml` 的挂载计划决定，不由服务可用性驱动**
 - **类型化事件 = 扩展点**：`EventBus` 的 Observe / Waterfall / Parallel / Serial 四种分发；waterfall 是 around-middleware（`next()` 委托、不调即短路）
 
-**没有"内核豁免"**：联邦的执行层（路由表 / 代理工具 / 裁决）与自更新都已是内置插件（`echo-agent.federation` / `echo-agent.selfupdate`），可各自独立禁用——禁用后内核照常启动，相关能力显式降级并报出「插件未启用」。仍直连组合根的只有**机制本身**：联邦链路泵（握手 / 心跳 / 重连）与实例部署解析，它们不含能力语义，也就没有开关。装载清单与门控规则见 [插件化设计](../plugins/core-plugins.md)。
+**没有"内核豁免"**：联邦的执行层（路由表 / 代理工具 / 裁决）与自更新都已是内置插件（`echo-agent.federation` / `echo-agent.selfupdate`），可各自独立禁用——禁用后内核照常启动，相关能力显式降级并报出「插件未启用」。仍直连组合根的只有**机制本身**：联邦链路泵（握手 / 心跳 / 重连）与实例部署解析，它们不含能力语义，也就没有开关。装载清单与门控规则见 [插件化设计](../plugins/plugins.md)。
 
 ## 组合根与启动装配
 
 二进制 `echo-agent-core`（`source/core/`）是唯一的组合根，启动按序完成：
 
-1. 加载配置（`core.toml`，见 [配置持久化](./core-config-persistence.md)）
+1. 加载配置（`core.toml`，见 [配置持久化](./config-persistence.md)）
 2. 构建 LLM provider（计量 + 脱敏装饰）并登记 `ctx.llm`
 3. **启动 `plugins.toml` 的子进程插件**（含实例插件进程）——这一步在宿主装配之前，宿主服务（如 `sanitizer`）在启动前先注册好供 `HostCall` 回呼
 4. 装配进程级插件宿主：`PluginRegistry::apply_disabled`（禁用插件只注册不挂载）先于挂载
@@ -55,8 +55,8 @@ link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | �
 
 - Cargo 二进制名 `echo-agent-core`（`source/core/Cargo.toml`），由 systemd 用户服务运行；`install.sh` 安装后落盘为 `$LIBEXEC_DIR/echo-agent-core-bin`（libexec 文件名，非 Cargo bin 名）
 - 库结构：框架机制在 `source/backend/echo-agent`（`agent/`）；插件机制在 `source/plugin/`（host 领域中立、adapter 做领域适配），**内置插件实现各自成 crate**（`echo-plugin-tools` / `-shell` / `-skills` / `-subagent` / `-workspace` / `-management` / `-loop` / `-provider-llm` / `-federation` / `-self-update`），宿主侧 `packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面）；Shell 机制在 `source/shell/echo-shell`。契约层 crate（`echo-defs` / `echo-context` / `echo-session` / `echo-loop` / `echo-protocol` 等）见 [架构总览](../overview/architecture.md) 的 crate 地图
-- 运维命令与部署布局见 [部署与自更新](../ops/ops-deploy.md)
+- 运维命令与部署布局见 [部署与自更新](../ops/deploy.md)
 
 ---
 
-运行时子系统：[多 Agent 与会话](./core-agents.md)（Persona 装配、会话模型、工作区通道）、[Agent 循环](./core-agent-loop.md)、[会话记忆](./core-memory.md)、[多模态输入](./core-multimodal.md)、[配置持久化](./core-config-persistence.md)；插件体系见 [插件化设计](../plugins/core-plugins.md)；安全见 [敏感信息隔离（脱敏服务）](./security-redaction-design.md)。
+运行时子系统：[多 Agent 与会话](./agents.md)（Persona 装配、会话模型、工作区通道）、[Agent 循环](./agent-loop.md)、[会话记忆](./memory.md)、[多模态输入](./multimodal.md)、[配置持久化](./config-persistence.md)；插件体系见 [插件化设计](../plugins/plugins.md)；安全见 [敏感信息隔离（脱敏服务）](./security-redaction.md)。

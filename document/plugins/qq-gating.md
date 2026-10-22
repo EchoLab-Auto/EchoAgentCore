@@ -8,7 +8,7 @@ y: 2260
 
 # QQ 实例门控设计
 
-> **定位**：本文是 `echo-agent.instance.qq` 插件的机制文档——QQ 消息与会话列表信息在到达 agent 之前经过的五层门控、运行时可变性、多实例与容器生命周期、文件接收与语音/文件发送、消息渲染。读者：QQ 实例的使用者与维护者。插件的装载与 persona 门控见 [插件化设计](./core-plugins.md)；多实例涉及的会话/人格模型见 [多 Agent 与会话](../core/core-agents.md)。
+> **定位**：本文是 `echo-agent.instance.qq` 插件的机制文档——QQ 消息与会话列表信息在到达 agent 之前经过的五层门控、运行时可变性、多实例与容器生命周期、文件接收与语音/文件发送、消息渲染。读者：QQ 实例的使用者与维护者。插件的装载与 persona 门控见 [插件化设计](./plugins.md)；多实例涉及的会话/人格模型见 [多 Agent 与会话](../core/agents.md)。
 
 ## 设计目标
 
@@ -179,7 +179,7 @@ QQ 的人格；端口沿用 **3131/3000/6099**（OneBot/WebUI 是既有容器的
 
 - 入站：每实例把消息投给**归属人格**（`AgentMessageHook` 按实例接线），事件带实例名
 - 会话键：`qq:group:<gid>:<uid>@<实例>`；实例名为默认 `qq` 时不加后缀（单实例部署零迁移）
-- 出站工具：**由本插件声明**（`tools.rs` 的 `InstanceContribution.tools`，10 个），每人格按自己实例集合注册；多实例时宿主给 schema 增加可选 `account`（实例名），缺省在多实例下报错列出可选值。平台语义全在声明里——宿主不认识这些工具名（见 [工具系统](./core-tools.md)「工具从哪来」）
+- 出站工具：**由本插件声明**（`tools.rs` 的 `InstanceContribution.tools`，10 个），每人格按自己实例集合注册；多实例时宿主给 schema 增加可选 `account`（实例名），缺省在多实例下报错列出可选值。平台语义全在声明里——宿主不认识这些工具名（见 [工具系统](./tools.md)「工具从哪来」）
 - 管理面（门控/名单/owner/登录）：`InvokeInstanceOp` 的 `instance` 为必填实例名；状态经 `InstanceState` 推送（`scopedKey(core, instance)` 归并）
 - **登录由 Core 代理**：`InvokeInstanceOp{method:"login_status"}`（`InstanceOpResult` 回执）；`login_qrcode` 出二维码（PNG base64，经 `InstanceOpResult` 返回，只进渲染器局部），Panel 不直连 OneBot HTTP / docker
 - **二维码陈旧自动刷新**：`login_qrcode_png` 先探测容器内 PNG 的 mtime，缺失或 >90s（`QR_MAX_AGE_SECS`）时经 WebUI（`webui.json` token → `sha256(token+".napcat")` → `/api/auth/login` → `/api/QQLogin/RefreshQRcode`）让 NapCat 重新生成、等 2s 落盘再取；刷新失败仅告警并退回读现有文件。NapCat 自身轮换循环停摆时（实测会发生），这是"刷新没反应"的解法；新鲜码（<90s）直接返回，不会作废用户刚扫的码

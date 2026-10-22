@@ -12,7 +12,7 @@ y: 1780
 
 > 本文件由 `source/core/tests/doc_catalog.rs` 生成并校验。
 > 刷新：`UPDATE_DOCS=1 cargo test -p echo-agent-core --test doc_catalog`。
-> 机制说明见 [工具系统](./core-tools.md)；插件贡献的工具见 [插件化设计](./core-plugins.md)。
+> 机制说明见 [工具系统](./tools.md)；插件贡献的工具见 [插件化设计](./plugins.md)。
 
 共 **17** 个内置工具。
 

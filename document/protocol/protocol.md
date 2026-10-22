@@ -9,7 +9,7 @@ y: 1790
 # 协议与数据流
 
 > **定位**：本文是前后端线协议（management WebSocket 契约）的参考——契约归属与兼容规则、传输与信封（含事件扇出序号、Bootstrap、共享枚举）、命令、事件（含时间线增量同步）、归属与路由、管理通道与快照。读者：Core / Panel 双端开发者与协议维护者。
-> 相关文档：[架构总览](../overview/architecture.md)、[Panel 交互定义](../panel/panel-interaction.md)、[桌面端布局](../panel/panel-desktop-layout.md)、[联邦](../federation/federation.md)、[部署与自更新](../ops/ops-deploy.md)。
+> 相关文档：[架构总览](../overview/architecture.md)、[Panel 交互定义](../panel/interaction.md)、[桌面端布局](../panel/desktop-layout.md)、[联邦](../federation/federation.md)、[部署与自更新](../ops/deploy.md)。
 
 前后端通过 **management WebSocket**（默认 `0.0.0.0:3132`，开箱即可被局域网连接；`[core] management_access_token` 提供 Bearer 认证，首装自动生成）通信，消息为 JSON 文本帧。令牌缺失/不匹配时在握手阶段返回**标准 HTTP 401**（客户端据此归类为认证失败并提示排查令牌——此前该拒绝路径因响应状态默认 200 被 tungstenite 静默丢弃，客户端只能看到「握手未完成」，令牌问题极难排查）。命令与事件定义在 `source/protocol/echo-protocol`（Core 侧直接使用该 crate；Panel 以 `web/src/protocol.ts` 镜像线格式）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
 
@@ -95,7 +95,7 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 
 ### 连接与 Bootstrap
 
-连接成功后 Panel 发送 Bootstrap 命令组：`RequestState`、（有保存的 Agent 时）`RequestTrunkTimeline{team_id}`、`RequestInstanceStatus`、`RequestTeamsList`、`RequestShellSessions`。去主智能体后 `team_id` 必填且 QQ 不预取（详见 [Panel 交互定义](../panel/panel-interaction.md)、[桌面端布局](../panel/panel-desktop-layout.md) §一）。
+连接成功后 Panel 发送 Bootstrap 命令组：`RequestState`、（有保存的 Agent 时）`RequestTrunkTimeline{team_id}`、`RequestInstanceStatus`、`RequestTeamsList`、`RequestShellSessions`。去主智能体后 `team_id` 必填且 QQ 不预取（详见 [Panel 交互定义](../panel/interaction.md)、[桌面端布局](../panel/desktop-layout.md) §一）。
 
 ### 共享枚举
 
@@ -115,13 +115,13 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 `BackendCommand` 主要分四类：
 
 - **会话类**：`SendMessage`、`CancelRequestedWork`、`ClearHistory`（**`session_id` 可选**：存在 = 仅清该会话的事件/投影/时间线条目，缺省 = 清空该人格全部会话——此前该命令无会话维度、点一次误清整人格）、`ArchiveHistory`（**要求 `session_id`**：仅归档并清空该会话——此前无会话维度、点一次误清整人格；归档数据为内存快照、保留最新 20 份；缺失 = 拒绝（fail-closed：防降级为旧的全量清空））、`CompactHistory`（协议不变：`keep_recent` 默认 40、clamp 10–500；服务端自动先归档再按会话生成 LLM 摘要，失败回退统计文案，见 [架构 §会话与持久化](../overview/architecture.md)）、`RequestTrunkTimeline`（支持 `since_seq` 增量）——**`team_id` 语义必填**（破坏性变更：无"主/默认智能体"；线格式上为 `Option<String>` + `#[serde(default)]`，缺失时由服务端运行期校验回 `Error`，协议层不做反序列化拒绝）；`RequestContext` 增 `session_id`（多会话：返回该会话的上下文快照，缺省回退本地 TUI 会话；`ContextSnapshot` 回带 `session_id`）
-- **Shell 类**：`RequestShellSessions`（可选 `team_id` = 只看该 persona 的会话）/ `ShellStart` / `ShellExec` / `ShellStop`（后台持久 bash，见 [工具系统](../plugins/core-tools.md)；会话按 persona 归属，列表事件回带 `team_id`）
-- **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`（`SaveSkill.system` 声明系统提示词技能）、`ReloadSkills`（重载技能目录——广播所有运行中人格 + 管理代理，见 [技能系统](../plugins/core-skills.md)）、`InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource`（Git 来源技能，见 [技能系统](../plugins/core-skills.md)）、`SaveTeam/DeleteTeam/ToggleTeam`（`SaveTeam.system_skills` 声明人格系统提示词技能；`TeamInfo.system_skills` / `SkillInfo.system` 随列表事件下发；`SaveTeam.api_profile` / `TeamInfo.api_profile` 声明与回推人格级 API 供应商引用；`PluginInfo.package` 回推插件所属包——横跨 plugin+tool+skill 的组合标签）
+- **Shell 类**：`RequestShellSessions`（可选 `team_id` = 只看该 persona 的会话）/ `ShellStart` / `ShellExec` / `ShellStop`（后台持久 bash，见 [工具系统](../plugins/tools.md)；会话按 persona 归属，列表事件回带 `team_id`）
+- **资源类**：`RequestSkillsList/ToolsList/PluginsList/TeamsList`、`ToggleSkill/Tool/Plugin`、`Save/DeleteSkill`（`SaveSkill.system` 声明系统提示词技能）、`ReloadSkills`（重载技能目录——广播所有运行中人格 + 管理代理，见 [技能系统](../plugins/skills.md)）、`InstallSkillFromGit`/`UpdateSkillFromGit`/`RemoveSkillSource`（Git 来源技能，见 [技能系统](../plugins/skills.md)）、`SaveTeam/DeleteTeam/ToggleTeam`（`SaveTeam.system_skills` 声明人格系统提示词技能；`TeamInfo.system_skills` / `SkillInfo.system` 随列表事件下发；`SaveTeam.api_profile` / `TeamInfo.api_profile` 声明与回推人格级 API 供应商引用；`PluginInfo.package` 回推插件所属包——横跨 plugin+tool+skill 的组合标签）
 - **运维类**：
   - 插件实例：`Start/Stop/RestartInstance`（按 `name` = 插件实例名寻址）、`StartAllInstances`/`StopAllInstances`（全部插件实例）；**管理面统一通道 `InvokeInstanceOp { instance, method, payload }`**——一切平台专属动作（门控 / 名单 / owner / 登录 / 目录查询）经 `method` 透传（插件侧 `custom` op），响应 `InstanceOpResult`；状态经 `InstanceState` 推送。`instance` 为**必填**实例名（泛化；旧 QQ 专属命令变体已物理删除，旧客户端请迁移）
   - **线字段兼容**：`instance` 接受旧名 `adapter`（`#[serde(alias = "adapter")]`，2026-10 去适配器化）——**但这只救字段名，救不了变体名**：`StartAdapter` 这类旧命令 Core 已不认识，Panel 必须同批升级（见 §协议名迁移）。同理插件协议的 `IncomingMessage.instance` 也带同一别名，插件宿主回呼的 `submit_input` / `report_*` 载荷则**双读**（`instance` 优先、回退 `adapter`）
   - 工作区：`RequestWorkspaceSessions` / `SaveWorkspaceSession` / `DeleteWorkspaceSession` / `ActivateWorkspaceSession` / `RequestWorkspaceGitStatus` / `RequestWorkspaceFiles`——会话类命令，**`team_id` 语义必填**（线格式同为 `Option<String>` + 服务端校验）并按 persona 路由；状态即改即存（`echo-workspaces-{id}.json`），git 与文件列表为只读采集（`RequestWorkspaceFiles.path` 以 canonical 前缀校验限定在会话目录及其子孙内，越界返回 `WorkspaceFiles.error`）。**激活 = 进入项目对话通道**（重定义）：前端「本地当前对话」按 `active` 投影——选通道 = 激活、选默认本地会话 = 取消激活；`active` 变化必须广播 `WorkspaceSessions`
-  - API：`UpdateApiConfig/SwitchApi/TestApi/QueryApiBalance/QueryApiMetrics/DeleteApi/RenameApi`（`SwitchApi` 全局激活已被 persona 级选用取代——`SaveTeam.api_profile` 引用供应商池；该命令仍可经协议调用，面板 UI 不再暴露；`QueryApiBalance` 查 DeepSeek 官方 `/user/balance`，回 `ApiBalanceResult`〔含 `granted`/`topped_up` 分账〕；`QueryApiMetrics` 读本地积累的余额/用量时间序列〔近 7 天〕，回 `ApiMetrics`；`RenameApi{from,to}` 原子改名——单次 ConfigStore patch 重写池名/`active_api`/`teams[*].api_profile` 并重绑运行中引用，失败零写入，语义见 [配置持久化](../core/core-config-persistence.md)§改名语义）
+  - API：`UpdateApiConfig/SwitchApi/TestApi/QueryApiBalance/QueryApiMetrics/DeleteApi/RenameApi`（`SwitchApi` 全局激活已被 persona 级选用取代——`SaveTeam.api_profile` 引用供应商池；该命令仍可经协议调用，面板 UI 不再暴露；`QueryApiBalance` 查 DeepSeek 官方 `/user/balance`，回 `ApiBalanceResult`〔含 `granted`/`topped_up` 分账〕；`QueryApiMetrics` 读本地积累的余额/用量时间序列〔近 7 天〕，回 `ApiMetrics`；`RenameApi{from,to}` 原子改名——单次 ConfigStore patch 重写池名/`active_api`/`teams[*].api_profile` 并重绑运行中引用，失败零写入，语义见 [配置持久化](../core/config-persistence.md)§改名语义）
 
 ### 多接入点聚合：可广播只读命令
 
@@ -175,10 +175,10 @@ graph LR
 其他事件分组（字段详见 `echo-protocol/src/event.rs`）：
 
 - **插件实例生命周期与管理**：`InstanceStateChanged`（连接态）、`InstanceList`（实例/能力/UI 描述符快照）、`InstanceOpResult`（`InvokeInstanceOp` 响应）、`InstanceState`（状态文档推送）
-- **编排**：`SubagentStarted/Completed`、`ReplyBranchStarted/Content/Completed`、`AgentCompleted`（turn 收尾——含空输出的完成信号）；**推理有两条通路**：实时 `AgentReasoning`（及 `AgentReasoningDelta` 流式）之外，正文同时以 `SessionEvent::Reasoning` 落会话事件日志（**模型不可见**）——历史回填与实时投影形状因此一致，思考条目不会在刷新后被重排（见 [会话记忆](../core/core-memory.md)§可见性边界）
+- **编排**：`SubagentStarted/Completed`、`ReplyBranchStarted/Content/Completed`、`AgentCompleted`（turn 收尾——含空输出的完成信号）；**推理有两条通路**：实时 `AgentReasoning`（及 `AgentReasoningDelta` 流式）之外，正文同时以 `SessionEvent::Reasoning` 落会话事件日志（**模型不可见**）——历史回填与实时投影形状因此一致，思考条目不会在刷新后被重排（见 [会话记忆](../core/memory.md)§可见性边界）
 - **流式输出**：`AgentContentDelta` / `AgentReasoningDelta`（逐段增量，~40ms 合并批；终值仍以 `AgentOutput` / `AgentReasoning` 全量收敛——消费端按 (core, session, branch) 对账，全量到达替换流式内容）。受 `[agent].stream_output` 控制（缺省开）。消费方关闭时 provider **即中止上游读流**（巡检：此前静默读完整流白烧 token；接收端 drop 后首个增量即断，附假 SSE 服务器回归测试）。
 - **Shell**：`ShellSessionsList` / `ShellSessionStarted` / `ShellExecStarted` / `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
-- **状态快照**：`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`SessionHistory`（某会话的显示历史派生：`messages` / `total` / `truncated` / `max_seq`；`max_seq` 是**合并水位线**，显示端按 `seq ≤ max_seq` 判"快照已覆盖"，推理条目不计入——见 [会话记忆](../core/core-memory.md)§显示时间线）、`ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`（`granted`/`topped_up` 分账字段恒下发，失败时为空串）、`ApiMetrics`（余额/用量时间序列——`entries: [{name, balance, usage, cost_currency}]`，见 `event.rs` 的 `ApiMetricsEntry`）、`Error`（也用于信息性 toast）
+- **状态快照**：`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`SessionHistory`（某会话的显示历史派生：`messages` / `total` / `truncated` / `max_seq`；`max_seq` 是**合并水位线**，显示端按 `seq ≤ max_seq` 判"快照已覆盖"，推理条目不计入——见 [会话记忆](../core/memory.md)§显示时间线）、`ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`（`granted`/`topped_up` 分账字段恒下发，失败时为空串）、`ApiMetrics`（余额/用量时间序列——`entries: [{name, balance, usage, cost_currency}]`，见 `event.rs` 的 `ApiMetricsEntry`）、`Error`（也用于信息性 toast）
 - **实例管理（泛化后）**：状态统一经 `InstanceState.state` 文档；查询结果经 `InstanceOpResult.result`。旧 QQ 事件（`GroupList` / `FriendList` / `QqFilterConfig` / `QqGateMode` / `QqLoginStatus` / `QqQrcode` / `QqOwner`）已物理删除
 - **工作区会话**：`WorkspaceSessions`（列表 + 激活标记，`team_id` 归属；**`active` 是项目通道的单一事实来源**——面板/工具 `use` 等所有激活来源都必须广播，前端据此切换本地对话投影）、`WorkspaceGitStatus`（某会话各目录的 git 快照：分支 / 领先落后 / 暂存·修改·未跟踪计数 / 最近提交 / 变更文件列表 / 错误）、`WorkspaceFiles`（某目录一层文件列表：条目含 name/path/is_dir/size，目录在前；隐藏项跳过、超 500 条截断；失败经 `error` 回传——文件浏览器数据源）
 

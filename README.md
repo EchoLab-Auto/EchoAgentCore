@@ -122,7 +122,7 @@ docker run -v ./config:/config -v ./data:/data -p 3131:3131 -p 3132:3132 echo-ag
 | `[federation]` | Core↔Core 联邦；**零配置默认开启**，缺省合并至管理端口 |
 
 前端设置视图发起的修改由 Core 经 `ConfigStore` 原子写回该文件。
-完整配置语义见 [部署与自更新](document/ops/ops-deploy.md) 与 [配置持久化](document/core/core-config-persistence.md)。
+完整配置语义见 [部署与自更新](document/ops/deploy.md) 与 [配置持久化](document/core/config-persistence.md)。
 
 **开发运行**（改本仓库代码时）：
 
@@ -146,23 +146,23 @@ cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 | [overview/architecture.md](document/overview/architecture.md) | 架构总览：crate 布局、能力接缝、扩展点 |
 | [core/frame.md](document/core/frame.md) | 框架内核：装配、服务定位、事件总线、插件宿主、进程结构 |
 | [core/core.md](document/core/core.md) | Core 后端入口：组成与运行速览 |
-| [core/core-agents.md](document/core/core-agents.md) | 多 Agent 与会话：persona、能力隔离 |
-| [core/core-agent-loop.md](document/core/core-agent-loop.md) | Agent 循环：turn/step 状态机 |
-| [core/core-memory.md](document/core/core-memory.md) | 会话记忆：事件溯源、投影、压缩 |
-| [core/core-multimodal.md](document/core/core-multimodal.md) | 多模态输入 |
-| [core/core-config-persistence.md](document/core/core-config-persistence.md) | 配置原子持久化 |
-| [core/security-redaction-design.md](document/core/security-redaction-design.md) | 脱敏出口卡口与保证边界 |
-| [core/core-logging.md](document/core/core-logging.md) | 日志与可观测性：通道分工、打点约定、轮转 |
+| [core/agents.md](document/core/agents.md) | 多 Agent 与会话：persona、能力隔离 |
+| [core/agent-loop.md](document/core/agent-loop.md) | Agent 循环：turn/step 状态机 |
+| [core/memory.md](document/core/memory.md) | 会话记忆：事件溯源、投影、压缩 |
+| [core/multimodal.md](document/core/multimodal.md) | 多模态输入 |
+| [core/config-persistence.md](document/core/config-persistence.md) | 配置原子持久化 |
+| [core/security-redaction.md](document/core/security-redaction.md) | 脱敏出口卡口与保证边界 |
+| [core/logging.md](document/core/logging.md) | 日志与可观测性：通道分工、打点约定、轮转 |
 
 **扩展系统（插件 / 工具 / 技能）**
 
 | 文档 | 内容 |
 |---|---|
-| [plugins/core-plugins.md](document/plugins/core-plugins.md) | 插件化设计：模型、内置清单、进程外插件 |
+| [plugins/plugins.md](document/plugins/plugins.md) | 插件化设计：模型、内置清单、进程外插件 |
 | [plugins/plugin-authoring.md](document/plugins/plugin-authoring.md) | **插件开发指南**（外部作者入口） |
-| [plugins/core-tools.md](document/plugins/core-tools.md) | 工具系统：注册分发、路径约定、调用治理 |
-| [plugins/core-skills.md](document/plugins/core-skills.md) | 技能系统：分层、SKILL.md、热重载、Git 安装 |
-| [plugins/core-subagent.md](document/plugins/core-subagent.md) | Subagent 插件 |
+| [plugins/tools.md](document/plugins/tools.md) | 工具系统：注册分发、路径约定、调用治理 |
+| [plugins/skills.md](document/plugins/skills.md) | 技能系统：分层、SKILL.md、热重载、Git 安装 |
+| [plugins/subagent.md](document/plugins/subagent.md) | Subagent 插件 |
 | [plugins/qq-gating.md](document/plugins/qq-gating.md) | QQ 实例门控 |
 
 **协议与联邦**
@@ -176,9 +176,9 @@ cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 
 | 文档 | 内容 |
 |---|---|
-| [ops/ops-deploy.md](document/ops/ops-deploy.md) | 一键安装、systemd、受控自更新、回滚 |
-| [dev/dev-guide.md](document/dev/dev-guide.md) | 开发指南：仓库结构、关键抽象、编码约定、门禁 |
-| [dev/dev-testing.md](document/dev/dev-testing.md) | 测试策略 |
+| [ops/deploy.md](document/ops/deploy.md) | 一键安装、systemd、受控自更新、回滚 |
+| [dev/guide.md](document/dev/guide.md) | 开发指南：仓库结构、关键抽象、编码约定、门禁 |
+| [dev/testing.md](document/dev/testing.md) | 测试策略 |
 
 **仓库结构**：`source/` 按层分目录（`defs → context / session / loop / tool / shell →
 protocol / federation → plugin → backend → core`），逐 crate 职责见
