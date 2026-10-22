@@ -2,19 +2,45 @@
 set -Eeuo pipefail
 
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-PREFIX=${ECHO_PREFIX:-"$HOME/.local"}
-CONFIG_HOME=${XDG_CONFIG_HOME:-"$HOME/.config"}
-DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
-STATE_HOME=${XDG_STATE_HOME:-"$HOME/.local/state"}
-CONFIG_DIR="$CONFIG_HOME/echo-agent-core"
-DATA_DIR="$DATA_HOME/echo-agent-core"
-STATE_DIR="$STATE_HOME/echo-agent-core"
-LIBEXEC_DIR="$PREFIX/libexec/echo-agent-core"
-BIN_DIR="$PREFIX/bin"
-SYSTEMD_DIR="$CONFIG_HOME/systemd/user"
-# system 作用域（多节点/服务器装法）：install.sh 只写 user 作用域，但存量机器
-# 可能是手工或旧脚本装的 system 单元（如 cloud-server-2）。只探测、不猜。
+# 路径按「装着这份安装的那个用户」推导，与 install.sh 的 derive_paths 同形。
+# system 作用域下安装属于 root（install.sh 只允许 root），所以卸载也要从 root
+# 的家目录算——否则以普通用户身份执行 `--scope system --dry-run` 会打印出
+# 调用者自己的路径，看着像"要删错东西"。
+derive_paths() {
+    local home=$1 use_xdg=$2
+    PREFIX=${ECHO_PREFIX:-"$home/.local"}
+    if ((use_xdg)); then
+        CONFIG_HOME=${XDG_CONFIG_HOME:-"$home/.config"}
+        DATA_HOME=${XDG_DATA_HOME:-"$home/.local/share"}
+        STATE_HOME=${XDG_STATE_HOME:-"$home/.local/state"}
+    else
+        CONFIG_HOME="$home/.config"
+        DATA_HOME="$home/.local/share"
+        STATE_HOME="$home/.local/state"
+    fi
+    CONFIG_DIR="$CONFIG_HOME/echo-agent-core"
+    DATA_DIR="$DATA_HOME/echo-agent-core"
+    STATE_DIR="$STATE_HOME/echo-agent-core"
+    LIBEXEC_DIR="$PREFIX/libexec/echo-agent-core"
+    BIN_DIR="$PREFIX/bin"
+    SYSTEMD_DIR="$CONFIG_HOME/systemd/user"
+}
+derive_paths "$HOME" 1
+# system 作用域（`install.sh --scope system` 的装法，以及存量手工装法）。两种
+# 都要处理：只删自己那种、把另一种静默留下，会得到"卸载了却还在开机重启"。
 SYSTEM_UNIT_DIR=/etc/systemd/system
+
+# 本实例装在哪个作用域。显式 --scope > 环境变量 > 单元文件探测
+# （文件存在才算：服务停着时 is-active 两个作用域都是 inactive，探不出来）。
+SYSTEM_SCOPE_UNIT="$SYSTEM_UNIT_DIR/echo-agent-core.service"
+SERVICE_SCOPE=${ECHO_SERVICE_SCOPE:-}
+if [[ -z "$SERVICE_SCOPE" ]]; then
+    if [[ -e "$SYSTEM_SCOPE_UNIT" ]]; then
+        SERVICE_SCOPE=system
+    else
+        SERVICE_SCOPE=user
+    fi
+fi
 
 PURGE=0
 DRY_RUN=0
@@ -38,6 +64,18 @@ as well. User data under the data directory (media library, user skills layer)
 is always preserved unless --purge.
 
 Options:
+  --scope <user|system> Which systemd scope the installation lives in
+                        (default: auto-detected from where the unit files are;
+                        ECHO_SERVICE_SCOPE is honoured too).
+
+                        `system` needs root and removes the units from
+                        /etc/systemd/system with plain `systemctl`.
+                        Both scopes leave the *other* scope's leftover units
+                        alone unless they are the detected one -- but a stale
+                        unit from a previous layout is still cleaned up when
+                        running as root, because it would keep trying to start
+                        a binary that no longer exists.
+
   --purge            Also remove the config directory ($CONFIG_HOME/echo-agent-core)
   --dry-run          Print resolved paths without changing the system
   --disable-linger   Also turn off linger for this user.
@@ -67,6 +105,14 @@ while (($#)); do
             DISABLE_LINGER=1
             shift
             ;;
+        --scope)
+            SERVICE_SCOPE=${2:-}
+            shift 2
+            ;;
+        --scope=*)
+            SERVICE_SCOPE=${1#--scope=}
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -79,9 +125,32 @@ while (($#)); do
     esac
 done
 
-systemd_available=0
-if systemctl --user show-environment >/dev/null 2>&1; then
+case "$SERVICE_SCOPE" in
+    user|system) ;;
+    *)
+        echo "error: --scope must be 'user' or 'system' (got: '$SERVICE_SCOPE')" >&2
+        exit 2
+        ;;
+esac
+
+if [[ "$SERVICE_SCOPE" == system ]]; then
+    # 安装属于 root，路径也要从 root 的家目录算（见 derive_paths 注释）。
+    SERVICE_HOME=$(getent passwd root 2>/dev/null | cut -d: -f6)
+    derive_paths "${SERVICE_HOME:-/root}" 0
+    # system 作用域的单元在 /etc/systemd/system，只有 root 能停/禁/删。
+    # --dry-run 例外：只打印计划，不动系统。
+    if ((EUID != 0)) && ((!DRY_RUN)); then
+        echo "error: --scope system requires root (units live in $SYSTEM_UNIT_DIR)" >&2
+        echo "       re-run as: sudo $0 --scope system" >&2
+        exit 1
+    fi
     systemd_available=1
+    [[ -x /run/systemd/system ]] || systemd_available=0
+else
+    systemd_available=0
+    if systemctl --user show-environment >/dev/null 2>&1; then
+        systemd_available=1
+    fi
 fi
 
 # ── 环境探测（dry-run 与真实卸载共用同一份判断）─────────────────────
@@ -93,7 +162,9 @@ if [[ -e "/var/lib/systemd/linger/$current_user" ]]; then
     linger_on=1
 fi
 
-# system 作用域单元：存在即说明这台机器不是按 install.sh 的默认路径装的。
+# system 作用域单元：可能是本实例（--scope system 装的），也可能是历史残留
+# （手工/旧脚本装的）。两种都得清——留着它们，下次开机 systemd 会去拉起一个
+# 二进制已被删除的服务。
 system_scope_units=()
 for unit in "${USERS_INSTALLED_UNITS[@]}"; do
     if [[ -e "$SYSTEM_UNIT_DIR/$unit" ]]; then
@@ -112,18 +183,25 @@ linger_note() {
 }
 
 if ((DRY_RUN)); then
-    if ((systemd_available)); then
-        units="$SYSTEMD_DIR/echo-agent-core.service, echo-agent-core-update.service"
+    if [[ "$SERVICE_SCOPE" == system ]]; then
+        units="$SYSTEM_UNIT_DIR/{echo-agent-core.service,echo-agent-core-update.service} (system scope)"
+    elif ((systemd_available)); then
+        units="$SYSTEMD_DIR/echo-agent-core.service, echo-agent-core-update.service (user scope)"
     else
         units="systemd user manager unavailable (units skipped)"
     fi
+    if [[ "$SERVICE_SCOPE" == system ]]; then
+        system_units="$units"
+        units="— (installed in system scope)"
+    fi
     if ((${#system_scope_units[@]})); then
-        system_units="$SYSTEM_UNIT_DIR/{${system_scope_units[*]}} (system scope)"
-    else
+        [[ "$SERVICE_SCOPE" == system ]] || system_units="$SYSTEM_UNIT_DIR/{${system_scope_units[*]}} (leftover, system scope)"
+    elif [[ "$SERVICE_SCOPE" != system ]]; then
         system_units="none"
     fi
     cat <<EOF
 EchoAgentCore uninstall plan
+  scope:     $SERVICE_SCOPE
   systemd:   $units
   system:    $system_units
   launcher:  $BIN_DIR/echo-agent-core
@@ -131,7 +209,7 @@ EchoAgentCore uninstall plan
   data:      $DATA_DIR ($( ((PURGE)) && echo "will be removed" || echo "kept: media, skills — removed: source, skills-builtin" ))
   state:     $STATE_DIR
   config:    $CONFIG_DIR ($( ((PURGE)) && echo "will be removed" || echo "kept — use --purge to remove" ))
-  linger:    $(linger_note)
+  linger:    $( [[ "$SERVICE_SCOPE" == system ]] && echo "not applicable (system scope)" || linger_note )
 EOF
     exit 0
 fi
@@ -139,22 +217,24 @@ fi
 # ── user 作用域单元 ────────────────────────────────────────────────
 # Stop and disable the services before removing their units and binary, so a
 # running Core cannot hold the removed files open or restart mid-uninstall.
-if ((systemd_available)); then
-    for unit in "${USERS_INSTALLED_UNITS[@]}"; do
-        if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
-            echo "==> Stopping $unit"
-            systemctl --user stop "$unit" || true
-        fi
-        if systemctl --user is-enabled --quiet "$unit" 2>/dev/null; then
-            echo "==> Disabling $unit"
-            systemctl --user disable "$unit" || true
-        fi
-    done
-else
-    echo "warning: systemd user manager unavailable; leaving any unit files in place" >&2
+if [[ "$SERVICE_SCOPE" == user ]]; then
+    if ((systemd_available)); then
+        for unit in "${USERS_INSTALLED_UNITS[@]}"; do
+            if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+                echo "==> Stopping $unit"
+                systemctl --user stop "$unit" || true
+            fi
+            if systemctl --user is-enabled --quiet "$unit" 2>/dev/null; then
+                echo "==> Disabling $unit"
+                systemctl --user disable "$unit" || true
+            fi
+        done
+    else
+        echo "warning: systemd user manager unavailable; leaving any unit files in place" >&2
+    fi
 fi
 
-# ── system 作用域单元（存量服务器装法）────────────────────────────
+# ── system 作用域单元（本实例，或历史装法的残留）──────────────────────
 # 这里**不静默跳过**：留着它们，下次开机 systemd 会去拉起一个已经被删掉
 # 二进制的服务，表现为"卸载了却还在崩溃重启"。以 root 运行则直接清；否则
 # 打印出可直接复制的命令（不擅自 sudo，也不假装成功）。
@@ -219,7 +299,7 @@ else
     fi
 fi
 
-if ((systemd_available)); then
+if [[ "$SERVICE_SCOPE" == user ]] && ((systemd_available)); then
     for unit in "${USERS_INSTALLED_UNITS[@]}"; do
         remove_file "$SYSTEMD_DIR/$unit" "systemd unit"
     done
@@ -227,9 +307,13 @@ if ((systemd_available)); then
 fi
 
 # ── linger ────────────────────────────────────────────────────────
+# system 作用域与 linger 无关（单元挂 multi-user.target，开机即起、与会话无关），
+# 此时既不改它、也不报告它——报一句"linger 仍开着"只会让人误以为要处理。
 # 只在显式要求时关，且关之前再确认一次它确实属于"本用户"（永远如此，
 # 因为 install 用的是 `id -un`）——不做跨用户操作。
-if ((DISABLE_LINGER)); then
+if [[ "$SERVICE_SCOPE" == system ]]; then
+    :
+elif ((DISABLE_LINGER)); then
     if ((linger_on)); then
         echo "==> Disabling linger for $current_user"
         if loginctl disable-linger "$current_user" 2>/dev/null &&
@@ -258,9 +342,13 @@ if ((!PURGE)); then
     echo "  Config and session history kept at: $CONFIG_DIR"
     echo "  User data (media, skills) kept at:  $DATA_DIR"
 fi
-if ((linger_on)) && ((!DISABLE_LINGER)); then
+if [[ "$SERVICE_SCOPE" == user ]] && ((linger_on)) && ((!DISABLE_LINGER)); then
     echo "  linger still enabled for $current_user — it keeps /run/user/$UID alive"
     echo "  without a login session. Other user services may depend on it;"
     echo "  turn it off with: loginctl disable-linger $current_user"
 fi
-echo "  Reinstall with: scripts/install.sh"
+if [[ "$SERVICE_SCOPE" == system ]]; then
+    echo "  Reinstall with: sudo scripts/install.sh --scope system"
+else
+    echo "  Reinstall with: scripts/install.sh"
+fi

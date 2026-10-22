@@ -6,9 +6,14 @@ After=network-online.target
 
 [Service]
 Type=simple
+# 作用域相关的运行身份（system 作用域：User=/Group=/HOME；user 作用域：整行省略，
+# 由该用户的 systemd --user 实例提供）。两条作用域都注入 ECHO_SERVICE_SCOPE，
+# 自更新插件与 update.sh 据此选择 `systemctl` / `systemctl --user`。
+@SCOPE_LINES@
 WorkingDirectory=@SOURCE_DIR@
 ExecStart="@BINARY@" --config "@CORE_CONFIG@"
 Environment="ECHO_UPDATE_STATUS_FILE=@STATUS_FILE@"
+@SCOPE_ENV@
 Environment="PATH=@SERVICE_PATH@"
 # A direct SIGTERM/kill (for example from an over-broad pkill) exits cleanly,
 # so on-failure would leave the Core down. systemd still suppresses automatic
@@ -25,4 +30,6 @@ PrivateTmp=true
 UMask=0077
 
 [Install]
-WantedBy=default.target
+# user 作用域挂 default.target（由 linger 保证无人登录也常驻）；
+# system 作用域挂 multi-user.target（开机即起，与会话无关）。
+WantedBy=@WANTED_BY@

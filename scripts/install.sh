@@ -162,26 +162,63 @@ if [[ ! -d "$PROJECT_ROOT/.git" ]] && [[ -z "${ECHO_BOOTSTRAPPED:-}" ]]; then
     export ECHO_BOOTSTRAPPED=1
     exec bash "$BOOTSTRAP_DIR/repo/scripts/install.sh" "$@"
 fi
-PREFIX=${ECHO_PREFIX:-"$HOME/.local"}
-CONFIG_HOME=${XDG_CONFIG_HOME:-"$HOME/.config"}
-DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
-STATE_HOME=${XDG_STATE_HOME:-"$HOME/.local/state"}
-CONFIG_DIR="$CONFIG_HOME/echo-agent-core"
-DATA_DIR="$DATA_HOME/echo-agent-core"
-STATE_DIR="$STATE_HOME/echo-agent-core"
-SOURCE_DIR="$DATA_DIR/source"
-LIBEXEC_DIR="$PREFIX/libexec/echo-agent-core"
-# 插件安装根（约定：`plugins/<包名>/<二进制>`，见插件开发指南「安装目录约定」）。
-PLUGINS_DIR="$LIBEXEC_DIR/plugins"
+# 全部安装路径都由「服务用户的 HOME」推导。
+#
+# 做成函数而不是一段直线代码：system 作用域下 HOME 可能**不是**当前 shell 的
+# $HOME。典型情形是 `sudo scripts/install.sh --scope=system`——sudo 把 HOME
+# 换成 /root，但服务该以谁的身份运行是另一回事（默认取 $SUDO_USER）。所以
+# 参数解析完拿到 --service-user 之后要按对应用户的家目录重算一次。
+#
+# honor_xdg=1 表示沿用调用者的 XDG_* 覆盖（同一用户安装时的既有行为）；
+# 跨用户安装必须用目标用户自己的默认布局，否则会把路径指到调用者的目录里。
+derive_paths() {
+    local home=$1 honor_xdg=$2
+    PREFIX=${ECHO_PREFIX:-"$home/.local"}
+    if ((honor_xdg)); then
+        CONFIG_HOME=${XDG_CONFIG_HOME:-"$home/.config"}
+        DATA_HOME=${XDG_DATA_HOME:-"$home/.local/share"}
+        STATE_HOME=${XDG_STATE_HOME:-"$home/.local/state"}
+    else
+        CONFIG_HOME="$home/.config"
+        DATA_HOME="$home/.local/share"
+        STATE_HOME="$home/.local/state"
+    fi
+    CONFIG_DIR="$CONFIG_HOME/echo-agent-core"
+    DATA_DIR="$DATA_HOME/echo-agent-core"
+    STATE_DIR="$STATE_HOME/echo-agent-core"
+    SOURCE_DIR="$DATA_DIR/source"
+    LIBEXEC_DIR="$PREFIX/libexec/echo-agent-core"
+    # 插件安装根（约定：`plugins/<包名>/<二进制>`，见插件开发指南「安装目录约定」）。
+    PLUGINS_DIR="$LIBEXEC_DIR/plugins"
+    BIN_DIR="$PREFIX/bin"
+    CORE_CONFIG="$CONFIG_DIR/core.toml"
+    STATUS_FILE="$STATE_DIR/update-status"
+}
+derive_paths "$HOME" 1
+
 # 随框架一起安装的**进程外插件二进制**：仓库内 `source/plugin/*` 中
 # `[[bin]] path = "src/main.rs"` 的 crate（`src/bin/*` 是测试夹具，不装）。
 # 守护测试 source/core/tests/install_script_flag.rs 比对本表与仓库实际；
 # 新增/删除可安装插件二进制时，本表与 update.sh 的 PLUGIN_BINARIES 同改。
 PLUGIN_BINARIES=(echo-plugin-example)
-BIN_DIR="$PREFIX/bin"
+
+# 服务作用域（2026-10）：`user`（默认，`systemctl --user`）或 `system`
+# （`/etc/systemd/system`，`systemctl` 无 --user）。
+#
+# 为什么需要这个开关：自更新链路（`echo-plugin-self-update` 启动 updater 单元、
+# `update.sh` 重启 Core）此前把 `--user` 写死在代码里，于是**只有 user 作用域
+# 的自更新是通的**。system 作用域的老装法只能靠一个"假 systemctl"（PATH shim
+# 把 `--user` 抹掉）硬凑，core 自身那次调用还凑不上——按钮点了只会报错。
+# 现在作用域是一等参数：单元里注入 `ECHO_SERVICE_SCOPE`，插件与 update.sh 都
+# 读它，两条作用域都走真实路径，不再需要任何 shim。
+SERVICE_SCOPE=${ECHO_SERVICE_SCOPE:-user}
+# system 作用域下服务以谁的身份运行（本版本固定 root，见下方作用域解析）。
+SERVICE_USER=${ECHO_SERVICE_USER:-}
+# 显式初始化：脚本开了 set -u，而这两个变量只在 system 作用域分支里赋值。
+SERVICE_HOME=""
+ECHO_SKIP_LINGER=0
 SYSTEMD_DIR="$CONFIG_HOME/systemd/user"
-CORE_CONFIG="$CONFIG_DIR/core.toml"
-STATUS_FILE="$STATE_DIR/update-status"
+SYSTEMCTL=(systemctl --user)
 REPOSITORY_URL=${ECHO_REPOSITORY_URL:-}
 START_SERVICE=1
 DRY_RUN=0
@@ -206,6 +243,23 @@ Options:
                         (the previous file is kept as core.toml.bak-<epoch>;
                         an existing management_access_token is carried over)
   --dry-run             Print resolved paths without changing the system
+  --scope <user|system> Which systemd scope to install into (default: user).
+
+                        `user` (default) writes ~/.config/systemd/user units and
+                        drives them with `systemctl --user`; it enables linger so
+                        the service survives logout.
+                        `system` writes /etc/systemd/system units and drives them
+                        with plain `systemctl`; it requires root (run under sudo)
+                        and does not touch linger (linger is a user-scope
+                        lifetime switch and is meaningless here).
+
+                        Both scopes are fully supported, including self-update:
+                        the scope is recorded in the units as ECHO_SERVICE_SCOPE
+                        and read back by the self-update plugin and update.sh.
+  --service-user <name> Service account for system scope. Currently must be
+                        root (default): the updater is a oneshot unit that has to
+                        `systemctl restart` a system-wide unit, and only root can.
+                        Non-root services are the user scope's job.
   --cn-mirror[=PRESET]  Accelerate GitHub clone / rustup / crates.io on slow
                         networks (PRESET: rsproxy|tuna|ustc; default rsproxy).
                         Per-component overrides via environment variables:
@@ -240,6 +294,22 @@ while (($#)); do
             DRY_RUN=1
             shift
             ;;
+        --scope)
+            SERVICE_SCOPE=${2:-}
+            shift 2
+            ;;
+        --scope=*)
+            SERVICE_SCOPE=${1#--scope=}
+            shift
+            ;;
+        --service-user)
+            SERVICE_USER=${2:-}
+            shift 2
+            ;;
+        --service-user=*)
+            SERVICE_USER=${1#--service-user=}
+            shift
+            ;;
         --cn-mirror|--cn-mirror=*|--no-cn-mirror)
             # 已在脚本顶部统一解析（bootstrap 阶段也需要），这里仅消费。
             shift
@@ -262,6 +332,70 @@ while (($#)); do
             ;;
     esac
 done
+
+# ── 作用域解析 ─────────────────────────────────────────────────────────
+case "$SERVICE_SCOPE" in
+    user|system) ;;
+    *)
+        echo "error: --scope must be 'user' or 'system' (got: '$SERVICE_SCOPE')" >&2
+        exit 2
+        ;;
+esac
+
+if [[ "$SERVICE_SCOPE" == system ]]; then
+    # system 作用域要写 /etc/systemd/system 并操作 PID 1 的 manager——必须 root。
+    # 不自动 re-exec sudo：提权失败点埋在执行流中段时，回滚会非常难看。
+    # --dry-run 例外：它只打印解析后的路径，不碰系统，没必要提权。
+    if ((EUID != 0)) && ((!DRY_RUN)); then
+        echo "error: --scope system requires root (it writes /etc/systemd/system)" >&2
+        echo "       re-run as: sudo $0 --scope system" >&2
+        exit 1
+    fi
+    # 本版本 system 作用域固定以 root 运行。原因不是"图省事"：updater 是
+    # oneshot（Type=oneshot, ExecStart=update.sh），它最后要 `systemctl restart`
+    # 一个**系统级**单元，非 root 没有这个权限；而在 systemd 里给 updater 开
+    # 提权路径（polkit 规则 / sudo NOPASSWD）等于把"任意构建脚本可 restart
+    # 系统服务"写成配置，比省下来的隔离更贵。要跑非 root 服务，用 user 作用域。
+    SERVICE_USER=${SERVICE_USER:-root}
+    if [[ "$SERVICE_USER" != root ]]; then
+        echo "error: --scope system currently runs the service as root (got --service-user $SERVICE_USER)" >&2
+        echo "       The updater unit must be able to 'systemctl restart' a system unit," >&2
+        echo "       which only root can do; a non-root layout is not implemented." >&2
+        echo "       Use the default user scope (per-user install) for non-root services." >&2
+        exit 1
+    fi
+    SERVICE_HOME=$(getent passwd root 2>/dev/null | cut -d: -f6)
+    SERVICE_HOME=${SERVICE_HOME:-/root}
+    derive_paths "$SERVICE_HOME" 1
+    SYSTEMD_DIR=/etc/systemd/system
+    SYSTEMCTL=(systemctl)
+    # system 作用域没有 linger 概念：单元挂在 multi-user.target 上，开机即起、
+    # 与会话无关。此时仍给用户开 linger 只是无谓地常驻一个用户管理器。
+    ECHO_SKIP_LINGER=1
+else
+    # 默认作用域：拒绝在 `sudo` 下静默按 root 装（会让单元落进 /root/.config
+    # 而服务以 root 运行，运维以为装到了自己名下）。要 root 就显式 --scope system。
+    if ((EUID == 0)) && [[ -n "${SUDO_USER:-}" ]]; then
+        echo "warning: running as root via sudo but installing the **user** scope:" >&2
+        echo "         units go to $SYSTEMD_DIR (root's home), not to $SUDO_USER's." >&2
+        echo "         To install a system-wide service instead:" >&2
+        echo "           sudo $0 --scope system --service-user $SUDO_USER" >&2
+    fi
+    if ! systemctl --user show-environment >/dev/null 2>&1; then
+        echo "error: systemd user manager is unavailable for this user" >&2
+        echo "       (user scope needs a running user manager; on servers that lack one," >&2
+        echo "        use --scope system instead)" >&2
+        exit 1
+    fi
+    # 已经有 system 作用域的单元时不要静默覆盖布局：两套会同时抢端口。
+    if [[ -e /etc/systemd/system/echo-agent-core.service ]]; then
+        echo "error: system-scope units already exist (/etc/systemd/system/echo-agent-core.service)" >&2
+        echo "       refusing to add a user-scope installation next to them (both would" >&2
+        echo "       bind the same ports). Run: sudo scripts/uninstall.sh --scope system" >&2
+        echo "       or re-install in place with: sudo scripts/install.sh --scope system" >&2
+        exit 1
+    fi
+fi
 
 if [[ -z "$REPOSITORY_URL" ]]; then
     REPOSITORY_URL=$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null || true)
@@ -291,7 +425,7 @@ EchoAgentCore install plan
   binary:     $LIBEXEC_DIR/echo-agent-core-bin
   config:     $CONFIG_DIR
   state:      $STATE_DIR
-  systemd:    $SYSTEMD_DIR
+  systemd:    $SYSTEMD_DIR ($SERVICE_SCOPE scope$( [[ "$SERVICE_SCOPE" == system ]] && echo ", user=$SERVICE_USER" ))
   repository: $REPOSITORY_URL
   branch:     $BRANCH
   start Core: $START_SERVICE
@@ -488,11 +622,6 @@ if [[ "$(uname -s)" != "Linux" ]]; then
     echo "error: the service installer currently supports Linux/systemd only" >&2
     exit 1
 fi
-if ! systemctl --user show-environment >/dev/null 2>&1; then
-    echo "error: systemd user manager is unavailable for this user" >&2
-    exit 1
-fi
-
 install -d -m 755 "$BIN_DIR" "$LIBEXEC_DIR" "$PLUGINS_DIR" "$CONFIG_DIR" "$DATA_DIR" "$STATE_DIR" "$SYSTEMD_DIR"
 
 if [[ ! -d "$SOURCE_DIR/.git" ]]; then
@@ -537,11 +666,11 @@ fi
 
 echo "==> Building release binary"
 core_was_active=0
-if systemctl --user is-active --quiet echo-agent-core.service 2>/dev/null; then
+if "${SYSTEMCTL[@]}" is-active --quiet echo-agent-core.service 2>/dev/null; then
     core_was_active=1
 fi
 core_was_enabled=0
-if systemctl --user is-enabled --quiet echo-agent-core.service 2>/dev/null; then
+if "${SYSTEMCTL[@]}" is-enabled --quiet echo-agent-core.service 2>/dev/null; then
     core_was_enabled=1
 fi
 build_args=(build --release --locked -p echo-agent-core)
@@ -628,14 +757,14 @@ install_rollback() {
         restore_file "$SYSTEMD_DIR/echo-agent-core-update.service" "$ROLLBACK_DIR/update_unit"
         restore_file "$CORE_CONFIG" "$ROLLBACK_DIR/core_config"
         restore_file "$STATE_DIR/installed-revision" "$ROLLBACK_DIR/revision"
-        systemctl --user daemon-reload >/dev/null 2>&1 || true
+        "${SYSTEMCTL[@]}" daemon-reload >/dev/null 2>&1 || true
         if [[ "${core_was_enabled:-0}" == 1 ]]; then
-            systemctl --user enable echo-agent-core.service >/dev/null 2>&1 || true
+            "${SYSTEMCTL[@]}" enable echo-agent-core.service >/dev/null 2>&1 || true
         else
-            systemctl --user disable echo-agent-core.service >/dev/null 2>&1 || true
+            "${SYSTEMCTL[@]}" disable echo-agent-core.service >/dev/null 2>&1 || true
         fi
         if [[ "${core_was_active:-0}" == 1 ]]; then
-            systemctl --user restart echo-agent-core.service >/dev/null 2>&1 || true
+            "${SYSTEMCTL[@]}" restart echo-agent-core.service >/dev/null 2>&1 || true
         fi
         local temporary="$STATUS_FILE.tmp"
         {
@@ -746,6 +875,29 @@ SERVICE_PATH=$(printf '%s\n' \
     "$(dirname -- "$(command -v flock)")" \
     "$BIN_DIR" /usr/local/bin /usr/bin /bin | awk '!seen[$0]++' | paste -sd: -)
 
+# 作用域决定的单元片段。
+#
+# - `@SCOPE_LINES@`：system 作用域要显式声明运行身份与家目录（`User=`/
+#   `Group=`/`Environment=HOME=...`）。user 作用域里这些由用户管理器本身
+#   提供，写死反而会绑到错误的人。
+# - `@SCOPE_ENV@`：两条作用域都注入 `ECHO_SERVICE_SCOPE`——这是自更新插件
+#   与 update.sh 判断该用 `systemctl` 还是 `systemctl --user` 的唯一依据，
+#   比起"运行时探测"更不容易猜错（探测在单元文件残留时会误判）。
+# - `@WANTED_BY@`：user=`default.target`，system=`multi-user.target`。
+if [[ "$SERVICE_SCOPE" == system ]]; then
+    UNIT_SCOPE_LINES="User=$SERVICE_USER
+Group=$(id -gn "$SERVICE_USER" 2>/dev/null || echo "$SERVICE_USER")
+Environment=HOME=$SERVICE_HOME
+Environment=XDG_CONFIG_HOME=$SERVICE_HOME/.config
+Environment=XDG_DATA_HOME=$SERVICE_HOME/.local/share
+Environment=XDG_STATE_HOME=$SERVICE_HOME/.local/state"
+    UNIT_WANTED_BY=multi-user.target
+else
+    UNIT_SCOPE_LINES=""
+    UNIT_WANTED_BY=default.target
+fi
+UNIT_SCOPE_ENV="Environment=\"ECHO_SERVICE_SCOPE=$SERVICE_SCOPE\""
+
 render_unit() {
     local source=$1 destination=$2
     sed \
@@ -755,7 +907,20 @@ render_unit() {
         -e "s|@CORE_CONFIG@|$CORE_CONFIG|g" \
         -e "s|@STATUS_FILE@|$STATUS_FILE|g" \
         -e "s|@SERVICE_PATH@|$SERVICE_PATH|g" \
+        -e "s|@SCOPE_ENV@|$UNIT_SCOPE_ENV|g" \
+        -e "s|@WANTED_BY@|$UNIT_WANTED_BY|g" \
         "$source" >"$destination"
+    # @SCOPE_LINES@ 替换成**多行**片段（或整行删掉）。sed 的替换串里嵌换行
+    # 可读性太差，改用 awk 整行替换；值经环境传入（awk -v 传不了换行）。
+    if [[ -z "$UNIT_SCOPE_LINES" ]]; then
+        sed -i '/@SCOPE_LINES@/d' "$destination"
+    else
+        ECHO_UNIT_SCOPE_LINES="$UNIT_SCOPE_LINES" awk '
+            $0 == "@SCOPE_LINES@" { print ENVIRON["ECHO_UNIT_SCOPE_LINES"]; next }
+            { print }
+        ' "$destination" >"$destination.tmp"
+        mv -f "$destination.tmp" "$destination"
+    fi
     chmod 644 "$destination"
 }
 
@@ -780,6 +945,11 @@ render_unit() {
 # 失败**不中断安装**（服务已经装好了，缺 linger 只是会在登出时停），但必须
 # 显式告警并给出修复命令——静默降级正是这次排查花掉一小时的原因。
 ensure_service_linger() {
+    if [[ "${ECHO_SKIP_LINGER:-0}" == 1 ]]; then
+        # system 作用域单元挂 multi-user.target，开机即起、与会话无关，
+        # 没有"用户管理器随会话死掉"这个问题，也就不需要 linger。
+        return 0
+    fi
     local user
     user=$(id -un)
     if loginctl enable-linger "$user" 2>/dev/null &&
@@ -817,19 +987,19 @@ EOF
 mv -f "$status_temporary" "$STATUS_FILE"
 
 INSTALL_PHASE=activating
-systemctl --user daemon-reload
-systemctl --user enable echo-agent-core.service >/dev/null
+"${SYSTEMCTL[@]}" daemon-reload
+"${SYSTEMCTL[@]}" enable echo-agent-core.service >/dev/null
 # 生命周期前提（必须在 enable 之后：linger 只影响"用户管理器是否常驻"，
 # 与单元自身的 enable 状态无关，但放在同一处便于对照阅读）。
 # 见 ensure_service_linger 的注释：缺这一步，登出即停、重启不自启。
 ensure_service_linger
 if ((START_SERVICE)); then
-    systemctl --user restart echo-agent-core.service
+    "${SYSTEMCTL[@]}" restart echo-agent-core.service
     core_healthy=0
     healthy_checks=0
     for _ in {1..15}; do
         sleep 1
-        if systemctl --user is-active --quiet echo-agent-core.service; then
+        if "${SYSTEMCTL[@]}" is-active --quiet echo-agent-core.service; then
             ((healthy_checks += 1))
             if ((healthy_checks >= 3)); then
                 core_healthy=1
@@ -853,13 +1023,21 @@ for rollback_file in "$ROLLBACK_DIR"/*; do
 done
 rmdir "$ROLLBACK_DIR" 2>/dev/null || true
 
+if [[ "$SERVICE_SCOPE" == system ]]; then
+    scope_hint="systemctl status echo-agent-core.service"
+    log_hint="journalctl -u echo-agent-core.service -f"
+else
+    scope_hint="systemctl --user status echo-agent-core.service"
+    log_hint="journalctl --user -u echo-agent-core.service -f"
+fi
 cat <<EOF
 
 Installation complete.
+  Scope:    $SERVICE_SCOPE$( [[ "$SERVICE_SCOPE" == system ]] && echo " (runs as $SERVICE_USER)" )
   Launcher: $BIN_DIR/echo-agent-core
   Config:   $CORE_CONFIG
-  Service:  systemctl --user status echo-agent-core.service
-  Logs:     journalctl --user -u echo-agent-core.service -f
+  Service:  $scope_hint
+  Logs:     $log_hint
 
 Install the Panel (TUI) frontend separately from the EchoAgentPanel repository.
 EOF

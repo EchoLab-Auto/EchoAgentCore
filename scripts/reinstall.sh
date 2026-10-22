@@ -62,13 +62,45 @@ for arg in "$@"; do
 done
 
 if ((dry_run)); then
-    bash "$PROJECT_ROOT/scripts/uninstall.sh" --dry-run
+    dry_scope=()
+    prev=""
+    for arg in "$@"; do
+        case "$arg" in
+            --scope=*) dry_scope=(--scope "${arg#--scope=}") ;;
+            *)
+                if [[ "$prev" == --scope ]]; then dry_scope=(--scope "$arg"); fi
+                ;;
+        esac
+        prev=$arg
+    done
+    bash "$PROJECT_ROOT/scripts/uninstall.sh" --dry-run "${dry_scope[@]}"
     bash "$PROJECT_ROOT/scripts/install.sh" "$@"
     exit 0
 fi
 
+# 卸载阶段必须知道作用域：两个作用域的单元在**不同目录**，只按默认值去 user
+# 目录找，会把 system 作用域的安装"卸"成空转（单元还在、二进制已删，下次开机
+# systemd 继续拉着它崩溃重启）。--scope 由调用者给出；缺省时 uninstall.sh 自己
+# 按单元文件探测。
+uninstall_args=()
+scope_value=""
+prev=""
+for arg in "$@"; do
+    case "$arg" in
+        --scope=*) scope_value=${arg#--scope=} ;;
+        *)
+            if [[ "$prev" == --scope ]]; then scope_value=$arg; fi
+            ;;
+    esac
+    prev=$arg
+done
+if [[ -n "$scope_value" ]]; then
+    uninstall_args+=(--scope "$scope_value")
+fi
+unset prev
+
 echo "==> Step 1/2: uninstall (keep config)"
-bash "$PROJECT_ROOT/scripts/uninstall.sh"
+bash "$PROJECT_ROOT/scripts/uninstall.sh" "${uninstall_args[@]}"
 
 echo "==> Step 2/2: install"
 exec bash "$PROJECT_ROOT/scripts/install.sh" "$@"

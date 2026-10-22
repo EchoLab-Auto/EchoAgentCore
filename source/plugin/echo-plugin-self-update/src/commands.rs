@@ -34,6 +34,45 @@ pub const COMMANDS: [&str; 2] = ["RequestSelfUpdate", "RequestSelfUpdateStatus"]
 /// updater 单元名（部署形状；换部署方式时只改这里）。
 pub const UPDATE_UNIT: &str = "echo-agent-core-update.service";
 
+/// systemd 作用域（部署形状）：决定用 `systemctl` 还是 `systemctl --user`。
+///
+/// 这两条命令连的是**两套互不可见的 manager**：单元装在
+/// `~/.config/systemd/user` 就归当前用户的 `systemd --user` 管，装在
+/// `/etc/systemd/system` 就归 PID 1 管。敲错不会报"权限不足"，而是
+/// `Unit ... not found` ——在自更新这里表现为"按钮点了只弹一个错"，服务
+/// 完全没动。
+///
+/// 取值来源：`install.sh` 渲染单元时注入的 `ECHO_SERVICE_SCOPE`
+/// （见 `packaging/systemd/*.service.in`）。这是唯一可信来源——**不用运行时
+/// 探测**：两套单元同时存在（旧 system 装法残留 + 新 user 装法）时探测必然
+/// 猜错一个。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceScope {
+    /// 用户管理器（`systemctl --user`），install.sh 的历史默认作用域。
+    User,
+    /// 系统管理器（裸 `systemctl`），单元装在 `/etc/systemd/system`。
+    System,
+}
+
+impl ServiceScope {
+    /// 读 `ECHO_SERVICE_SCOPE`；未设置或取值不认识时退回 `User`
+    /// （install.sh 的历史默认作用域）。
+    pub fn from_env() -> Self {
+        match std::env::var("ECHO_SERVICE_SCOPE").as_deref() {
+            Ok("system") => Self::System,
+            _ => Self::User,
+        }
+    }
+
+    /// 该作用域下 systemctl 需要的前缀参数。
+    pub fn systemctl_scope_args(self) -> &'static [&'static str] {
+        match self {
+            Self::User => &["--user"],
+            Self::System => &[],
+        }
+    }
+}
+
 /// 宿主接缝：本域只需要一个事件出口。
 ///
 /// 刻意**不**给"读配置 / 拿句柄"之类的能力——自更新的全部知识（单元名、
@@ -87,9 +126,16 @@ pub async fn read_status_at(path: &std::path::Path) -> BackendEvent {
 /// agent 自杀不了它）。Graceful Drain 由 Core 的 SIGTERM 处理保证（当前回复
 /// 完整生成后再退）。
 pub async fn start_update(host: &dyn SelfUpdateHost) {
+    start_update_in(host, ServiceScope::from_env()).await
+}
+
+/// 同上，作用域显式给出（测试与非常规部署用）。
+pub async fn start_update_in(host: &dyn SelfUpdateHost, scope: ServiceScope) {
+    let scope_args = scope.systemctl_scope_args();
     // 防重入：已有 update service 在跑就不重复启动。
     let check = tokio::process::Command::new("systemctl")
-        .args(["--user", "is-active", "--quiet", UPDATE_UNIT])
+        .args(scope_args)
+        .args(["is-active", "--quiet", UPDATE_UNIT])
         .status()
         .await;
     if matches!(check, Ok(s) if s.success()) {
@@ -100,7 +146,8 @@ pub async fn start_update(host: &dyn SelfUpdateHost) {
         return;
     }
     let result = tokio::process::Command::new("systemctl")
-        .args(["--user", "start", UPDATE_UNIT])
+        .args(scope_args)
+        .args(["start", UPDATE_UNIT])
         .status()
         .await;
     match result {
@@ -113,7 +160,11 @@ pub async fn start_update(host: &dyn SelfUpdateHost) {
         Ok(s) => {
             host.emit(BackendEvent::Error {
                 session_id: None,
-                message: format!("自更新启动失败（systemctl exit {s}）——请检查 {UPDATE_UNIT}"),
+                message: format!(
+                    "自更新启动失败（systemctl {} exit {s}）——请检查 {UPDATE_UNIT} 是否装在 {} 作用域",
+                    if scope_args.is_empty() { "" } else { "--user" },
+                    if scope_args.is_empty() { "system" } else { "user" },
+                ),
             });
         }
         Err(e) => {
@@ -314,5 +365,26 @@ mod tests {
     #[test]
     fn update_unit_is_the_installed_oneshot_unit() {
         assert_eq!(UPDATE_UNIT, "echo-agent-core-update.service");
+    }
+
+    /// 作用域只影响 systemctl 的前缀参数；system 作用域不能带 `--user`
+    /// （带了就落到另一套 manager 上，报 Unit not found）。
+    #[test]
+    fn scope_maps_to_systemctl_arguments() {
+        assert_eq!(ServiceScope::User.systemctl_scope_args(), &["--user"]);
+        assert!(
+            ServiceScope::System.systemctl_scope_args().is_empty(),
+            "system scope must invoke plain `systemctl`: --user addresses a different manager"
+        );
+    }
+
+    /// 未设置/取值不认识时退回 user：install.sh 的历史默认作用域。
+    /// `from_env` 读进程级环境，这里只断言"没有这个变量"时的行为（CI 不设它）。
+    #[test]
+    fn scope_defaults_to_user_without_env() {
+        if std::env::var("ECHO_SERVICE_SCOPE").is_ok() {
+            return; // 环境污染时跳过（并行测试不该改动进程级环境）
+        }
+        assert_eq!(ServiceScope::from_env(), ServiceScope::User);
     }
 }

@@ -229,7 +229,7 @@ fn installer_enables_linger_for_the_user_unit() {
     // 调用点必须在使用它的单元 enable 之后、restart 之前——顺序反了会在
     // 服务已启动后才补 linger，掩盖"装完就掉"的窗口。
     let enable_at = install
-        .find("systemctl --user enable echo-agent-core.service")
+        .find("\"${SYSTEMCTL[@]}\" enable echo-agent-core.service")
         .expect("install.sh 应 enable 单元");
     let linger_at = install
         .find("ensure_service_linger\n")
@@ -334,5 +334,155 @@ fn uninstaller_handles_system_scope_units() {
     assert!(
         uninstall.contains("system:    "),
         "dry-run 计划里应有一行 system 作用域单元"
+    );
+}
+
+/// `--scope` 必须是**一等参数**，而不是"user 装法 + 补丁"。
+///
+/// 背景（2026-10）：自更新链路两端都把 `--user` 写死——
+/// `echo-plugin-self-update` 启动 updater 单元、`update.sh` 重启 Core。
+/// 于是 system 作用域的老装法只能靠一个 PATH shim（假 `systemctl` 把 `--user`
+/// 抹掉）硬凑，而 core 自身那次调用连 shim 都看不到（它不在 core 单元的 PATH
+/// 里），**面板上的自更新按钮从来没成功过**。
+///
+/// 这条测试钉住三件事：
+/// 1. 两条作用域都解析出正确的 systemctl 形态（不是一处 user、一处 system）；
+/// 2. system 作用域写 `/etc/systemd/system`、挂 `multi-user.target`、带运行身份；
+/// 3. 作用域经 `ECHO_SERVICE_SCOPE` 传给插件与 update.sh（唯一可信来源）。
+#[test]
+fn installer_supports_both_service_scopes() {
+    let install = read_script("install.sh");
+
+    // ① 作用域是一等参数，有两个合法取值。
+    assert!(
+        install.contains("--scope)") && install.contains("--scope=*)"),
+        "install.sh 应解析 --scope <user|system> 与 --scope=system 两种写法"
+    );
+    assert!(
+        install.contains("user|system) ;;"),
+        "--scope 取值必须校验（拼错时 fail-closed，而不是静默退回默认）"
+    );
+
+    // ② 形态切换只发生在两处：单元目录与 systemctl 前缀。
+    assert!(
+        install.contains("SYSTEMD_DIR=/etc/systemd/system"),
+        "system 作用域应写 /etc/systemd/system"
+    );
+    assert!(
+        install.contains("SYSTEMCTL=(systemctl --user)") && install.contains("SYSTEMCTL=(systemctl)"),
+        "两条作用域各有一套 systemctl 前缀"
+    );
+    // 所有操作都走数组：漏一处就会在另一条作用域里操作到错误的 manager。
+    assert!(
+        !install.contains("systemctl --user daemon-reload\n")
+            || install.contains("\"${SYSTEMCTL[@]}\" daemon-reload"),
+        "daemon-reload 应经 SYSTEMCTL 数组"
+    );
+    assert!(
+        install.contains("\"${SYSTEMCTL[@]}\" enable echo-agent-core.service"),
+        "enable 应经 SYSTEMCTL 数组"
+    );
+    assert!(
+        install.contains("\"${SYSTEMCTL[@]}\" restart echo-agent-core.service"),
+        "restart 应经 SYSTEMCTL 数组"
+    );
+    assert!(
+        install.contains("\"${SYSTEMCTL[@]}\" is-active --quiet echo-agent-core.service"),
+        "健康检查应经 SYSTEMCTL 数组"
+    );
+
+    // ③ linger 只属于 user 作用域：system 作用域必须跳过。
+    assert!(
+        install.contains("ECHO_SKIP_LINGER"),
+        "system 作用域不得给用户开 linger（它与会话无关，开了只是常驻多余管理器）"
+    );
+    let linger_guard_at = install
+        .find("ECHO_SKIP_LINGER:-0")
+        .expect("ensure_service_linger 应检查 ECHO_SKIP_LINGER");
+    // 注意匹配**命令行**而不是注释里的同名字样（注释在函数定义之前）。
+    let enable_linger_at = install
+        .find("loginctl enable-linger \"$user\"")
+        .expect("user 作用域仍应 enable-linger");
+    assert!(
+        linger_guard_at < enable_linger_at,
+        "跳过判断必须在调用 loginctl 之前"
+    );
+
+    // ④ 单元模板的三个作用域占位都要被渲染。
+    for placeholder in ["@SCOPE_LINES@", "@SCOPE_ENV@", "@WANTED_BY@"] {
+        assert!(
+            install.contains(placeholder),
+            "render_unit 应替换 {placeholder}"
+        );
+    }
+    assert!(
+        install.contains("multi-user.target") && install.contains("default.target"),
+        "两条作用域的 WantedBy 都要有"
+    );
+
+    // ⑤ 作用域经环境变量下发（插件与 update.sh 据此选 systemctl 形态）。
+    assert!(
+        install.contains("ECHO_SERVICE_SCOPE=$SERVICE_SCOPE"),
+        "单元里应注入 ECHO_SERVICE_SCOPE，供自更新插件与 update.sh 读取"
+    );
+}
+
+/// 单元模板必须真的带占位；否则 install.sh 的 sed 静默替换不到任何东西，
+/// 生成出一份"user 作用域却挂 multi-user.target"这种自相矛盾的单元。
+#[test]
+fn unit_templates_carry_scope_placeholders() {
+    for name in [
+        "packaging/systemd/echo-agent-core.service.in",
+        "packaging/systemd/echo-agent-core-update.service.in",
+    ] {
+        let path = repo_root().join(name);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        assert!(
+            text.contains("@SCOPE_LINES@"),
+            "{name} 缺少 @SCOPE_LINES@（system 作用域的运行身份没有落点）"
+        );
+        assert!(
+            text.contains("@SCOPE_ENV@"),
+            "{name} 缺少 @SCOPE_ENV@（ECHO_SERVICE_SCOPE 注入不到）"
+        );
+    }
+    let core = std::fs::read_to_string(
+        repo_root().join("packaging/systemd/echo-agent-core.service.in"),
+    )
+    .expect("read core unit template");
+    assert!(
+        core.contains("@WANTED_BY@"),
+        "core 单元模板应把 WantedBy 留给安装期决定"
+    );
+}
+
+/// update.sh 也要按作用域选 systemctl：它是 updater 单元的主体，重启失败
+/// 会被判成"更新失败"，而实际上二进制已经换新了——状态与事实错位最难查。
+#[test]
+fn updater_respects_service_scope() {
+    let update = read_script("update.sh");
+    assert!(
+        update.contains("resolve_service_scope"),
+        "update.sh 应解析服务作用域"
+    );
+    assert!(
+        update.contains("ECHO_SERVICE_SCOPE"),
+        "update.sh 应优先采用单元注入的 ECHO_SERVICE_SCOPE"
+    );
+    assert!(
+        update.contains("/etc/systemd/system/echo-agent-core.service"),
+        "缺少 ECHO_SERVICE_SCOPE 时应按单元文件位置探测（手工在 shell 里跑的场景）"
+    );
+    for call in [
+        "\"${SYSTEMCTL[@]}\" restart echo-agent-core.service",
+        "\"${SYSTEMCTL[@]}\" is-active --quiet echo-agent-core.service",
+    ] {
+        assert!(update.contains(call), "update.sh 应经 SYSTEMCTL 调用：{call}");
+    }
+    // 不允许再有裸 `systemctl --user restart`（两条作用域里必有一条是错的）。
+    assert!(
+        !update.contains("\n        systemctl --user restart echo-agent-core.service"),
+        "update.sh 不应把 --user 写死在调用点上"
     );
 }

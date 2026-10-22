@@ -19,6 +19,36 @@ PLUGIN_BINARIES=(echo-plugin-example)
 DEFAULT_STATUS_FILE="$STATE_HOME/echo-agent-core/update-status"
 DEFAULT_SOURCE_DIR="$DATA_HOME/echo-agent-core/source"
 
+# ── 服务作用域 ──────────────────────────────────────────────────────────
+# 本脚本最后要 `systemctl restart` 正在运行的 Core，而 unit 在哪个作用域决定
+# 了该敲 `systemctl` 还是 `systemctl --user`。两者指向**两套互不可见的 manager**：
+# 敲错不是报错而是"查无此单元"，于是重启静默失败、状态文件写 failed，看起来像
+# 构建出错。
+#
+# 取值顺序：
+#   1. ECHO_SERVICE_SCOPE —— install.sh 把它写进单元（唯一可信来源）；
+#   2. 单元文件探测 —— 手工在 shell 里跑本脚本时没有 1，只能看文件在哪；
+#   3. user —— 历史默认值。
+# 探测刻意用**文件存在**而不是 is-active：服务停着的时候 is-active 两个作用域
+# 都是 inactive，探不出东西来。
+resolve_service_scope() {
+    case "${ECHO_SERVICE_SCOPE:-}" in
+        system) echo system; return ;;
+        user) echo user; return ;;
+    esac
+    if [[ -e /etc/systemd/system/echo-agent-core.service ]]; then
+        echo system
+    else
+        echo user
+    fi
+}
+SERVICE_SCOPE=$(resolve_service_scope)
+if [[ "$SERVICE_SCOPE" == system ]]; then
+    SYSTEMCTL=(systemctl)
+else
+    SYSTEMCTL=(systemctl --user)
+fi
+
 SOURCE_DIR=""
 BINARY=""
 STATUS_FILE=""
@@ -213,7 +243,7 @@ rollback_installation() {
         rm -f "$REVISION_FILE" || true
     fi
     if (( ${core_was_active:-0} )); then
-        systemctl --user restart echo-agent-core.service >/dev/null 2>&1 || true
+        "${SYSTEMCTL[@]}" restart echo-agent-core.service >/dev/null 2>&1 || true
     fi
 }
 
@@ -281,7 +311,7 @@ if [[ -f "$STATUS_FILE" ]] && grep -q '^state=running' "$STATUS_FILE" 2>/dev/nul
 fi
 installed=$(cat "$REVISION_FILE" 2>/dev/null || true)
 core_was_active=0
-if systemctl --user is-active --quiet echo-agent-core.service 2>/dev/null; then
+if "${SYSTEMCTL[@]}" is-active --quiet echo-agent-core.service 2>/dev/null; then
     core_was_active=1
 fi
 
@@ -441,14 +471,14 @@ if ((core_was_active)); then
     # state=updated——updated 在重启+QQ 恢复之后才写入，等它的 turn 会被
     # 自己的重启杀死（排空窗口耗尽后 SIGKILL，遗留僵尸 running 工具条目）。
     write_status restarting "binary installed; restarting core (active turns drain first)" "$TARGET"
-    if ! systemctl --user restart echo-agent-core.service; then
+    if ! "${SYSTEMCTL[@]}" restart echo-agent-core.service; then
         restart_failed=1
     else
         restart_failed=1
         healthy_checks=0
         for _ in {1..15}; do
             sleep 1
-            if systemctl --user is-active --quiet echo-agent-core.service; then
+            if "${SYSTEMCTL[@]}" is-active --quiet echo-agent-core.service; then
                 ((healthy_checks += 1))
                 if ((healthy_checks >= 3)); then
                     restart_failed=0
