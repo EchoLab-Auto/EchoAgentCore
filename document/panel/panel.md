@@ -136,7 +136,7 @@ EchoAgentPanel/
 3. 跨窗口的 localStorage 写入应当**合并**而非整体覆盖，避免互相清除对方数据。
 4. 多窗口类问题的排障入口：`window.__echoPanelSessionLog`（会话变更 + reason + 调用栈）与 `window.__echoPanelWorkspaceLog`（工作区广播决策：active / current / mine / decision / next），各留最近 20 条，纯内存、无 IO。
 
-视图渲染与交互细节见[会话视图](./panel-chat.md)及其子文档（消息区 → 列表 / 历史 / 时序 / 工作行 → 工具卡与推理块、输入区与入口行、双侧边栏）、[桌面端布局](./panel-desktop-layout.md)（「持久化的界面状态」、§3.7 跟随判据与缓存共存）。
+视图渲染与交互细节见[会话视图](./panel-chat.md)及其子文档（消息区 → 列表 / 历史 / 时序 / 工作行 → 工具卡与推理块、输入区、入口行、双侧边栏）、[桌面端布局](./panel-desktop-layout.md)（「持久化的界面状态」、§3.7 跟随判据与缓存共存）。
 
 ## 运维与开发
 
@@ -172,5 +172,5 @@ cd web && npm run dev           # 前端热更新（/ws 代理到 :8080）
 
 - 前端文档群（本页之下三支）：
   - **呈现与参考**：[桌面端布局](./panel-desktop-layout.md)（≥768px：外壳几何、层叠秩序、双侧边栏、连接生命周期）→ [桌面端模态与覆盖层](./panel-desktop-overlays.md)；[移动端布局](./panel-mobile-layout.md)（<768px：顶栏与视图菜单、入口行横滚、卡片 Sheet、安全区）→ [移动端模态与覆盖层](./panel-mobile-overlays.md)；[图标体系](./panel-icons.md)（载体 / 尺寸线宽档位 / 语义色 / 防回归）、[关键常量与设计边界](./panel-constants.md)（跨视图常量速查 + 未接线命令清单）
-  - **功能与视图契约**：[交互定义](./panel-interaction.md)（设备无关总入口）→ [会话视图](./panel-chat.md)（消息区 → [列表](./panel-chat-list.md)/[历史](./panel-chat-history.md)/[时序](./panel-chat-timeline.md)/[工作行](./panel-chat-work.md) → [工具卡](./panel-chat-tools.md)/[推理块](./panel-chat-reasoning.md)；[输入区与入口行](./panel-chat-input.md)、[双侧边栏](./panel-chat-rail.md)）、[设置视图](./panel-settings.md)（[API](./panel-settings-api.md)/[技能](./panel-settings-skills.md)/[工具](./panel-settings-tools.md)/[插件](./panel-settings-plugins.md)/[智能体](./panel-settings-agents.md)/[Core 与联邦](./panel-settings-cores.md)/[日志与系统](./panel-settings-logs.md)）、[实例管理·任务·Shell](./panel-instance-tasks.md)、[系统反馈](./panel-system.md)
+  - **功能与视图契约**：[交互定义](./panel-interaction.md)（设备无关总入口）→ [会话视图](./panel-chat.md)（消息区 → [列表](./panel-chat-list.md)/[历史](./panel-chat-history.md)/[时序](./panel-chat-timeline.md)/[工作行](./panel-chat-work.md) → [工具卡](./panel-chat-tools.md)/[推理块](./panel-chat-reasoning.md)；[输入区](./panel-chat-input.md)、[入口行](./panel-chat-entry.md)、[双侧边栏](./panel-chat-rail.md)）、[设置视图](./panel-settings.md)（[API](./panel-settings-api.md)/[技能](./panel-settings-skills.md)/[工具](./panel-settings-tools.md)/[插件](./panel-settings-plugins.md)/[智能体](./panel-settings-agents.md)/[Core 与联邦](./panel-settings-cores.md)/[日志与系统](./panel-settings-logs.md)）、[实例管理·任务·Shell](./panel-instance-tasks.md)、[系统反馈](./panel-system.md)
   - **跨主题**：[协议与数据流](../protocol/protocol.md)（WS 帧格式、命令与事件）、[部署与自更新](../ops/ops-deploy.md)、[联邦（多机）](../federation/federation.md)

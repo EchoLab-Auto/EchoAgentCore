@@ -2,7 +2,7 @@
 id: panel-chat-rail
 title: "双侧边栏（chat-rail）"
 group: 前端
-x: 5440
+x: 5760
 y: 1060
 ---
 

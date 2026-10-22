@@ -4,12 +4,12 @@ title: "Panel 会话视图"
 group: 前端
 x: 3840
 y: 780
-link: ["panel-chat-messages | 消息区", "panel-chat-input | 输入区与入口行", "panel-chat-rail | 双侧边栏"]
+link: ["panel-chat-messages | 消息区", "panel-chat-input | 输入区", "panel-chat-entry | 入口行", "panel-chat-rail | 双侧边栏"]
 ---
 
 # Panel 会话视图
 
-> **定位**：会话（聊天）视图的总览——视图构成、三个分区的职责、组件与数据流地图，以及九篇子契约的入口：消息区（角色与渲染、列表滚动、历史合并、时序动画、工作行）、输入区与入口行、双侧边栏。读者：维护 `ChatView` 及其组件的开发者；实现位置以 `web/src/` 相对路径标注。相关：[交互定义](./panel-interaction.md)、[桌面端布局](./panel-desktop-layout.md)、[桌面端模态与覆盖层](./panel-desktop-overlays.md)。
+> **定位**：会话（聊天）视图的总览——视图构成、三个分区的职责、组件与数据流地图，以及十篇子契约的入口：消息区（角色与渲染、列表滚动、历史合并、时序动画、工作行）、输入区、入口行、双侧边栏。读者：维护 `ChatView` 及其组件的开发者；实现位置以 `web/src/` 相对路径标注。相关：[交互定义](./panel-interaction.md)、[桌面端布局](./panel-desktop-layout.md)、[桌面端模态与覆盖层](./panel-desktop-overlays.md)。
 
 > **多接入点**：会话/人格身份是 `(core, id)`——同名会话（每个 core 都有 `local:tui::local_user`）与同名人格跨 core 可重复。会话视图内所有运行态（activities / branchTabs / 时间线缓存 / 忙碌点）一律按复合键（`keys.ts::sessionKey/teamKey`，`\u0000` 分隔，单接入点退化为裸 id）索引；会话列表与 Agent 菜单在跨 core 同名时显示 core 徽标消歧（`SessionSwitcher` / `AgentSwitcher`，见 [Panel 概览](./panel.md)「配置与运维」）。
 
@@ -22,7 +22,8 @@ link: ["panel-chat-messages | 消息区", "panel-chat-input | 输入区与入口
 ```prodoc-flow
 graph LR
   View[会话视图] --> Msg[消息区|/panel/panel-chat-messages.md]
-  View --> Inp[输入区与入口行|/panel/panel-chat-input.md]
+  View --> Inp[输入区|/panel/panel-chat-input.md]
+  View --> Ent[入口行|/panel/panel-chat-entry.md]
   View --> Rail[双侧边栏|/panel/panel-chat-rail.md]
   Msg --> List[消息列表与滚动|/panel/panel-chat-list.md]
   Msg --> Hist[历史快照与实时窗口|/panel/panel-chat-history.md]
@@ -43,7 +44,8 @@ graph LR
 | ↳ 工作行 | [工作行（工具 / 推理 / 子代理）](./panel-chat-work.md) | 工作项模型与相邻合并、chip 与开合策略、读秒、子代理委派 |
 | ↳↳ 工具 | [工具卡与图标行](./panel-chat-tools.md) | 工具卡生命周期、配对与收尾、图标行折叠/动画/展开 |
 | ↳↳ 推理 | [推理块](./panel-chat-reasoning.md) | 推理块实时与历史、折叠与跟随、落位与可见性 |
-| 输入区 | [输入区与入口行](./panel-chat-input.md) | 发送与文本域、图片附件、取消任务、入口行按钮、弹层几何 |
+| 输入区 | [输入区（ChatComposer）](./panel-chat-input.md) | 发送与文本域、外壳（卡片 / 超椭圆轮廓）、状态行、图片附件、取消任务 |
+| 入口行 | [入口行（功能条）](./panel-chat-entry.md) | 按钮矩阵与显隐门控、六个内容弹层、弹层几何与关闭语义 |
 | 侧栏 | [双侧边栏（chat-rail）](./panel-chat-rail.md) | 两列布局与列显隐、卡片拖动、避让与间距、卡片清单与门控 |
 
 ## 组件与数据流
@@ -58,5 +60,6 @@ graph LR
 
 - **要改消息怎么画**：本页 → [会话消息区](./panel-chat-messages.md) → [消息列表与滚动](./panel-chat-list.md) → [历史快照与实时窗口](./panel-chat-history.md)
 - **要改运行过程怎么呈现**：本页 → [会话消息区](./panel-chat-messages.md) → [工作行](./panel-chat-work.md) → [工具卡与图标行](./panel-chat-tools.md) / [推理块](./panel-chat-reasoning.md)；时序与动画基线见[主时间线时序与动画](./panel-chat-timeline.md)
-- **要改输入与入口**：本页 → [输入区与入口行](./panel-chat-input.md)
+- **要改输入**：本页 → [输入区](./panel-chat-input.md)
+- **要改入口行与弹层**：本页 → [入口行](./panel-chat-entry.md)；弹层内容契约见[桌面端模态与覆盖层](./panel-desktop-overlays.md)
 - **要改侧栏**：本页 → [双侧边栏（chat-rail）](./panel-chat-rail.md)；外壳几何见[桌面端布局](./panel-desktop-layout.md)

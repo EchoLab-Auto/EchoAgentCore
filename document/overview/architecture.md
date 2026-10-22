@@ -93,7 +93,7 @@ graph BT
 | `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话）见 [Agent 循环](../core/core-agent-loop.md) |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现。`openai`/`anthropic` 只依赖 `echo-defs`；`ollama` 是薄包装，**复用 `echo-llm-openai`**（组内一条边） |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性）。Panel 的 Rust 中继对它**零依赖**（不解析负载、按原文转发），TS 前端以 `web/src/protocol.ts` 手写镜像 |
-| `echo-plugin-provider-llm` | 内置插件：LLM provider（Phase 3 ①） | provider 工厂（OpenAI 兼容 / Anthropic Messages / Ollama，含 DeepSeek `/anthropic` 自动路由与 Kimi base_url 归一）+ 计量装饰器（`UsageRecorder` 出口）+ 脱敏装饰器；只依赖 `echo-defs` 与三个 provider crate |
+| `echo-plugin-provider-llm` | 内置插件：LLM provider（Phase 3 ①） | provider 工厂（OpenAI 兼容 / Anthropic Messages / Ollama，含 DeepSeek `/anthropic` 自动路由、Kimi base_url 归一、OpenCode Go/Zen 会话头注入）+ 计量装饰器（`UsageRecorder` 出口）+ 脱敏装饰器；只依赖 `echo-defs` 与三个 provider crate |
 | `echo-plugin-skills` | 内置插件：技能目录（Phase 3 ③） | `SkillRegistry`（递归发现 + 多目录分层合并 + 热重载状态）、SKILL.md frontmatter 解析、Git 来源安装与 `.sources.json`；插件 id 归一走 `echo_defs::plugin_id` |
 | `echo-plugin-subagent` | 内置插件：Subagent 委派（Phase 3 ⑥） | `spawn_subagent` 工具（异步受理 + 立即回执）、`SubagentStore`（取消句柄 + TTL 清扫）、`run_subagent_turn`（隔离上下文的一次性 turn，剥离 spawn 能力防递归）；远程委派经注入的 `RemoteDelegationSink` 上报，插件不依赖联邦实现 |
 | `echo-plugin-loop` | 内置插件：循环模式（Phase 3 ⑦） | `loop.single` / `loop.parallel` 两个纯策略插件的 id / 描述 / manifest 唯一事实来源，`Service{key:"loop"}` 贡献声明；mount 无运行期资源 |

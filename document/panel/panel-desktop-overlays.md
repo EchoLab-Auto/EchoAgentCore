@@ -30,7 +30,7 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 | 全局确认 | `ConfirmDialog` | 库 `NeumorphismModal`（App 根挂载一次，`size=small`） | 任意组件调 `confirmDialog()` | 本文「全局确认与确认形式」 |
 | 目录选择器 | `DirectoryPicker` | 自绘遮罩 + `Teleport to="body"`，`z-index: 60` | 工作区面板「浏览…」 | 本文「目录选择器」 |
 | Git 安装技能 | `SettingsView` 内联 | 库 `NeumorphismModal`（`size=small`、无 footer） | 设置 → 技能 → 工具条「Git 安装」 | [设置 · 技能](./panel-settings-skills.md) |
-| 入口行弹层（六项） | `PanelPopover` | `teleport` 到 body + fixed，`z-index: 30` | 清单 / 会话 / 工作区 / 实例 / 任务 / 模型 | [输入区与入口行](./panel-chat-input.md)「入口行按钮」 |
+| 入口行弹层（六项） | `PanelPopover` | `teleport` 到 body + fixed，`z-index: 30` | 清单 / 会话 / 工作区 / 实例 / 任务 / 模型 | [入口行](./panel-chat-entry.md)「入口行按钮」 |
 | Agent 菜单 | `AgentSwitcher` + `PanelPopover` | 与入口行弹层同一容器（`teleport` 到 body + fixed，宽 360px、内容 `max-height: 52vh`、`z-index: 30`） | 入口行最左的 Agent 卡片 | [桌面端布局](./panel-desktop-layout.md)「Agent 切换器」 |
 
 **层叠秩序**（完整阶梯见[桌面端布局](./panel-desktop-layout.md)「层叠秩序」）：边栏列 4 → 输入区与「回到底部」5 → 入口行 6 → 入口行弹层与 Agent 菜单 30 → 根 chip 速览 40 → 会话区覆盖层 50 → 目录选择器 60 → 拖动幽灵 200 → 库模态与 Toast（库统一分配，恒在应用层之上）。

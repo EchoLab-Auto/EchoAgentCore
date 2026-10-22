@@ -61,7 +61,7 @@ EchoAgent 是运行在本机的 **Agent 核心服务 + Web 管理面板**框架�
 - [panel.md](./panel/panel.md) — Panel 前端（前端层入口）：仓库布局、中继模型、状态管理与数据流 → 下面三支
 - **呈现与参考**：[panel-desktop-layout.md](./panel/panel-desktop-layout.md) — **桌面端布局**（≥768px）：外壳几何、层叠秩序、双侧边栏、卡片、连接生命周期 → [桌面端模态与覆盖层](./panel/panel-desktop-overlays.md)；[panel-mobile-layout.md](./panel/panel-mobile-layout.md) — **移动端布局**（<768px）：顶栏与视图菜单、入口行横滚提示、卡片 Sheet、软键盘与安全区 → [移动端模态与覆盖层](./panel/panel-mobile-overlays.md)；[panel-icons.md](./panel/panel-icons.md) — 图标体系：载体分工、尺寸线宽档位、语义色令牌、防回归守卫；[panel-constants.md](./panel/panel-constants.md) — 关键常量速查 + 协议已定义但 UI 未接线的命令清单
 - **功能与视图契约**：[panel-interaction.md](./panel/panel-interaction.md) — **交互定义**（设备无关）：核心原则、视图层级、导航契约、功能模块清单
-  - [panel-chat.md](./panel/panel-chat.md) — **会话视图**（总览）：视图构成、三分区职责、组件与数据流 → 消息区（[总览](./panel/panel-chat-messages.md)：[列表与滚动](./panel/panel-chat-list.md) · [历史与实时窗口](./panel/panel-chat-history.md) · [时序与动画](./panel/panel-chat-timeline.md) · [工作行](./panel/panel-chat-work.md) → [工具卡与图标行](./panel/panel-chat-tools.md) / [推理块](./panel/panel-chat-reasoning.md)）、[输入区与入口行](./panel/panel-chat-input.md)、[双侧边栏](./panel/panel-chat-rail.md)
+  - [panel-chat.md](./panel/panel-chat.md) — **会话视图**（总览）：视图构成、三分区职责、组件与数据流 → 消息区（[总览](./panel/panel-chat-messages.md)：[列表与滚动](./panel/panel-chat-list.md) · [历史与实时窗口](./panel/panel-chat-history.md) · [时序与动画](./panel/panel-chat-timeline.md) · [工作行](./panel/panel-chat-work.md) → [工具卡与图标行](./panel/panel-chat-tools.md) / [推理块](./panel/panel-chat-reasoning.md)）、[输入区](./panel/panel-chat-input.md)、[入口行](./panel/panel-chat-entry.md)、[双侧边栏](./panel/panel-chat-rail.md)
   - [panel-settings.md](./panel/panel-settings.md) — 设置视图外壳：八分类菜单、共用契约与界面元素树 → 七篇分类子文档：[API](./panel/panel-settings-api.md) · [技能](./panel/panel-settings-skills.md) · [工具](./panel/panel-settings-tools.md) · [插件](./panel/panel-settings-plugins.md) · [智能体](./panel/panel-settings-agents.md) · [Core 与联邦](./panel/panel-settings-cores.md) · [日志与系统](./panel/panel-settings-logs.md)
   - [panel-instance-tasks.md](./panel/panel-instance-tasks.md) — 实例管理·任务·Shell：描述符驱动的插件实例弹层、任务弹层、HTTP 通道
   - [panel-system.md](./panel/panel-system.md) — 系统反馈：Toast 形态与来源、键盘清单、反馈形态的选择
@@ -123,7 +123,8 @@ graph LR
   ChatMsg --> ChatWork[工作行|/panel/panel-chat-work.md]
   ChatWork --> ChatTool[工具卡与图标行|/panel/panel-chat-tools.md]
   ChatWork --> ChatRea[推理块|/panel/panel-chat-reasoning.md]
-  Chat --> ChatInp[输入区与入口行|/panel/panel-chat-input.md]
+  Chat --> ChatInp[输入区|/panel/panel-chat-input.md]
+  Chat --> ChatEnt[入口行|/panel/panel-chat-entry.md]
   Chat --> ChatRail[双侧边栏|/panel/panel-chat-rail.md]
   Inter --> Set[设置视图|/panel/panel-settings.md]
   Set --> SetApi[设置 · API|/panel/panel-settings-api.md]
