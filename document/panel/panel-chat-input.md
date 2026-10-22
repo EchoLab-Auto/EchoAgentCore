@@ -34,24 +34,24 @@ y: 1060
     └── __body                  内层：padding + 内容（附件 / ChatComposer / 状态行）
 ```
 
-- **卡片负责**：半透明底（`--nm-glass-bg`）与 `backdrop-filter`。输入区覆盖三件事：圆角取 `--composer-radius`（选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*` 档位）、挂超椭圆 `clip-path`、`box-shadow` 换成内辉光。
+- **卡片负责**：半透明底（`--nm-glass-bg`）、`backdrop-filter`、以及 **`glass="pressed"` 档的内凹内辉光**（`nm-card-glass-pressed`：三层 `inset` —— 左上内阴影 `--nm-shadow-dark-deep` + 右下内高光 `--nm-shadow-light-deep` + 1px 边缘亮线，强度由 `elevation` 定）。输入区覆盖两件事：圆角取 `--composer-radius`（选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*` 档位）、挂超椭圆 `clip-path`。
+- **`ChatComposer` 侧另有一处内辉光**：`focus-effect="glow"` —— 聚焦时主色光从输入槽**内部**亮起（`inset 0 0 18px` 光晕 + 1px 内描边，抑制默认外环）。
 - **`backdrop-filter` 降到 10px**（库默认 20px + saturate）：用 `--nm-glass-blur` 变量覆盖，沿用 2026-09 的拖选性能结论。聚焦/拖选期间 `.chat-composer-float--busy` 直接关掉 blur 并换成不透明底色。
 
-### 内辉光（inset）
+### 内辉光（inset）— 全部来自 ui-frame
 
-辉光画在边缘**内侧**向里衰减，不是向外的投影。三层叠加（顺序即叠放）：
+**面板侧不写一行 `box-shadow`**，内辉光用库现成的两处实现：
 
-| 层 | 作用 | 浅色 | 深色 |
-| --- | --- | --- | --- |
-| `inset 0 0 0 1px` | 1px 边缘亮线（轮廓清晰度，兼作描边） | `--nm-shadow-light` × `--nm-glass-border-opacity` | 同（令牌自动切档） |
-| `inset 0 2px 10px` | 上方内辉光（光从上方落下 → 受光/凹陷感） | `rgba(255,255,255,.5)` | `rgba(255,255,255,.14)` |
-| `inset 0 0 18px` | 四周主辉光 | `rgba(255,255,255,.34)` | `rgba(255,255,255,.1)` |
+| 位置 | 库机制 | 效果 |
+| --- | --- | --- |
+| 外壳（卡片） | `<NeumorphismCard glass="pressed" :elevation="2">` → `nm-card-glass-pressed` | 常态内凹：`inset 8px 8px 20px --nm-shadow-dark-deep` + `inset -4px -4px 12px --nm-shadow-light-deep` + `inset 0 0 0 1px` 边缘亮线 |
+| 输入槽（聚焦） | `<ChatComposer focus-effect="glow">` | 聚焦时主色内光：`inset 0 0 18px 1px` 光晕（`--nm-primary-color` 34%）+ `inset 0 0 0 1px` 内描边（72%），并抑制默认外环 |
 
-三个量都可调：`--composer-glow-size` / `--composer-glow` / `--composer-glow-top-size` / `--composer-glow-top`（深色档在 `[data-theme='dark']` 段覆盖）。
+档位语义见库的 `GlassVariant`（`float` / `raised` / `pressed`，三档与按钮共用同一套名字）；强度跟随 `elevation`，深浅主题各自取令牌 —— 面板侧不需要按主题另写一套值。
 
-**为什么内辉光比外发光更合适**：移动端卡片挂着超椭圆 `clip-path`，而 clip **只裁元素外部** —— 向外的 `box-shadow` 会被整块裁掉（此前要靠一个额外的模糊兄弟层 `__halo` 模拟，桌面端还得单独关掉避免双重阴影）。`inset` 阴影天然在裁剪区内，于是**桌面圆角与移动端超椭圆共用同一份实现**，`__halo` 整层删除。像素实测（402 宽 @3x）：边缘 L=233 → 内部 L=216（光向内衰减 ✓），卡片外 6~18px 处 L=220 与背景一致（无外发光 ✓）。
+**为什么内辉光比外发光更合适**：移动端卡片挂着超椭圆 `clip-path`，而 clip **只裁元素外部** —— 向外的 `box-shadow` 会被整块裁掉（此前要靠一个额外的模糊兄弟层 `__halo` 模拟，桌面端还得单独关掉避免双重阴影）。`inset` 阴影天然在裁剪区内，于是**桌面圆角与移动端超椭圆共用同一份实现**，`__halo` 整层删除。
 
-- **没有独立描边层**：`--composer-border` 归零，1px 边由上面第 ① 层承担。
+- **没有独立描边层**：`--composer-border` 归零，1px 边由卡片的 `inset 0 0 0 1px` 承担。
 
 ## 状态行
 
@@ -71,6 +71,34 @@ y: 1060
 消息区 `padding-bottom` 的余量仍够（402 宽实测占用 108 ≤ 130 − 8）。
 
 - **位置**：`.chat-composer-float__body`（卡片内层）的最后一项——即在输入区自己的圆角轮廓里、文本域之下（实测文本域底 823 → 状态行顶 829，间隙 6px）。**不在入口行里**：入口行是 `display:flex` 的横滚工具条，插入/移除子项会推着 Agent 切换器到「模型」整排按钮左右移动，文案变长还会抖动；搬进输入区后入口行排布恒定
+
+### 三处等距
+
+```
+┌─ 外壳（卡片）──────────────────────────┐
+│              ↑ P                        │  ① 输入框上边框 → 外壳上边框
+│  ┌─ 输入框 ─────────────┐               │
+│  └──────────────────────┘               │
+│              ↕ P                        │  ② 输入框下边框 → API 徽标
+│  deepseek / deepseek-flash              │
+│              ↕ P                        │  ③ API 徽标 → 外壳下边框
+└─────────────────────────────────────────┘
+```
+
+三处都等于 `P = --composer-padding`（桌面 12 / 窄屏 10）。它们分属三个不同的盒子：
+
+| # | 间距 | 由谁决定 |
+| --- | --- | --- |
+| ① | 输入框上边框 → 外壳上边框 | `__body` 的 `padding-top` |
+| ② | 输入框下边框 → API 徽标 | 状态行的 `margin-top: var(--composer-padding)` |
+| ③ | API 徽标 → 外壳下边框 | `__body` 的 `padding-bottom`，**前提是徽标盒高 = 状态行行高** |
+
+③ 是唯一有陷阱的一条：状态行是 `display:flex; align-items:center`，若徽标盒比行矮，行内会剩一点居中留白，量出来就小于 P。所以：
+
+- 行高由 `--chat-status-h`（17px）单一来源给出（`min-height`）；
+- 徽标的 `line-height` 取**同一个变量**（配 `display:inline-flex; align-items:center` 居中字形），盒子正好铺满行高，上下各 0 余量。
+
+三处都由 `--composer-padding` / `--chat-status-h` 派生，所以「改内边距就三处一起变」是结构性的。**有布局断言守着**（`layout:mobile` 的「三处间距都等于外壳内边距」）：5 个视口实测 `P=10 g1=10 g2=10 g3=10`，最大偏差 0px；桌面档 P=12 时文本域高度是小数（45.598），g1 带 0.39px 亚像素偏移，断言容差 0.6px。
 
 ### API 徽标（左）
 
