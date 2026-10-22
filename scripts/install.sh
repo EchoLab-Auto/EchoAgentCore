@@ -759,6 +759,44 @@ render_unit() {
     chmod 644 "$destination"
 }
 
+# 常驻用户管理器（linger）：user 作用域服务的**生命周期前提**。
+#
+# 不加这一步会发生什么（2026-10 实测，A100 节点）：unit 是 `--user` 作用域，
+# 挂在 `default.target` 上，而 `default.target` 属于 `user@<uid>.service`。
+# 该用户管理器平时**不存在**——它由第一个登录会话拉起、最后一个会话消失后
+# 十秒被 logind 停掉，`user@` 一停，其下所有单元（含 Core）一并被停止。
+#
+# 后果不是"偶发"而是"必然"：运维 SSH 登出 → Core 死；下次有人登录 → Core
+# 又活了。表现为"服务神秘掉线、重启时间与某人登录时间精确重合"。更糟的是
+# `Restart=always` 在这里**完全无效**——unit 不是失败退出，是被上层正常
+# 停止，systemd 语义里显式 stop 之后不自动重启。
+#
+# `loginctl enable-linger` 让该用户管理器开机即起、无人登录也保留，顺带修掉
+# 另一个不易察觉的缺陷：**重启后无人登录时 Core 不会自动启动**。
+#
+# 权限：`set-self-linger` 的 polkit 默认 `allow_any = yes`，普通用户给自己
+# 开免密；只有给别人开才需要授权。所以这步在 root 与普通用户安装下都能成功。
+#
+# 失败**不中断安装**（服务已经装好了，缺 linger 只是会在登出时停），但必须
+# 显式告警并给出修复命令——静默降级正是这次排查花掉一小时的原因。
+ensure_service_linger() {
+    local user
+    user=$(id -un)
+    if loginctl enable-linger "$user" 2>/dev/null &&
+        [[ -e "/var/lib/systemd/linger/$user" ]]; then
+        echo "==> Enabled linger for $user (service survives logout and starts at boot)"
+        return 0
+    fi
+    {
+        echo "warning: could not enable linger for $user."
+        echo "         This service runs in the systemd **user** scope: without linger it"
+        echo "         stops as soon as the last login session ends, and it will NOT start"
+        echo "         at boot until someone logs in."
+        echo "         fix: loginctl enable-linger $user"
+    } >&2
+    return 0
+}
+
 INSTALL_PHASE=units
 render_unit "$PROJECT_ROOT/packaging/systemd/echo-agent-core.service.in" \
     "$SYSTEMD_DIR/echo-agent-core.service"
@@ -781,6 +819,10 @@ mv -f "$status_temporary" "$STATUS_FILE"
 INSTALL_PHASE=activating
 systemctl --user daemon-reload
 systemctl --user enable echo-agent-core.service >/dev/null
+# 生命周期前提（必须在 enable 之后：linger 只影响"用户管理器是否常驻"，
+# 与单元自身的 enable 状态无关，但放在同一处便于对照阅读）。
+# 见 ensure_service_linger 的注释：缺这一步，登出即停、重启不自启。
+ensure_service_linger
 if ((START_SERVICE)); then
     systemctl --user restart echo-agent-core.service
     core_healthy=0

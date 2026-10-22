@@ -196,3 +196,55 @@ fn plugin_directory_install_and_rollback_are_wired() {
         "回滚应把插件二进制还原回上一版"
     );
 }
+
+/// 安装器必须开启 **linger**：user 作用域服务的生命周期前提。
+///
+/// 背景（2026-10-22，A100 节点实测两次）：unit 装成 `--user` 作用域、挂在
+/// `default.target`，而 `default.target` 属于 `user@<uid>.service`。该用户
+/// 管理器由第一个登录会话拉起、最后一个会话消失后十秒被 logind 停掉——
+/// `user@` 一停，其下所有单元（含 Core）一并停止。于是：
+///
+/// - 运维 SSH 登出 3 秒后 Core 死（实测 23:20:00、03:12:35 两次）；
+/// - 下次有人登录 3 秒后 Core 又活（重启时间与登录时间精确重合，
+///   看起来像"远端自动重启"，实际是登录把它带起来的）；
+/// - **机器重启后无人登录时 Core 根本不会起来**（更隐蔽的那一半）。
+///
+/// `Restart=always` 在这里救不了：unit 不是失败退出，是被上层正常停止，
+/// 而 systemd 语义里显式 stop 之后不自动重启。安装器此前全文没有一处
+/// `linger`，因此**每一台按默认路径装出来的机器都带这个缺陷**。
+///
+/// 这条测试守两件事：调用点存在，且失败路径会告警（而不是静默降级）。
+#[test]
+fn installer_enables_linger_for_the_user_unit() {
+    let install = read_script("install.sh");
+    assert!(
+        install.contains("loginctl enable-linger"),
+        "install.sh 必须调用 loginctl enable-linger：\n\
+         缺它则 Core 在最后一个登录会话结束时被停止，且开机不自启"
+    );
+    assert!(
+        install.contains("ensure_service_linger"),
+        "应通过 ensure_service_linger 统一处理（定义 + 调用点各一处）"
+    );
+    // 调用点必须在使用它的单元 enable 之后、restart 之前——顺序反了会在
+    // 服务已启动后才补 linger，掩盖"装完就掉"的窗口。
+    let enable_at = install
+        .find("systemctl --user enable echo-agent-core.service")
+        .expect("install.sh 应 enable 单元");
+    let linger_at = install
+        .find("ensure_service_linger\n")
+        .expect("install.sh 应调用 ensure_service_linger");
+    assert!(
+        linger_at > enable_at,
+        "ensure_service_linger 应在单元 enable 之后调用（当前顺序反了）"
+    );
+    // 失败不得中断安装，但必须显式告警并给出修复命令。
+    assert!(
+        install.contains("loginctl enable-linger $user"),
+        "失败告警里应给出可直接复制的修复命令"
+    );
+    assert!(
+        install.contains("without linger it"),
+        "失败告警应说明后果（否则用户会当作可忽略的噪音）"
+    );
+}
