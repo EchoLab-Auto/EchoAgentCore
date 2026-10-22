@@ -8,7 +8,7 @@ y: 780
 
 # 桌面端模态与覆盖层
 
-> **定位**：**≥768px** 下 Panel 的模态与覆盖层——有哪些、各在哪一层、怎么关、哪些操作必须先问一句。包含与视口无关的内容契约（上下文占用的口径、Agent 配置的字段与白名单语义、确认形式矩阵、分支查看器的行模型、目录选择器的两级浏览）与本视口特有的几何（会话区覆盖层贴边 12px、入口行弹层 520px）。读者：维护 Panel 交互的开发者；上游：[桌面端布局](./panel-desktop-layout.md)；窄屏形态见[移动端模态与覆盖层](./panel-mobile-overlays.md)；相关：[交互定义](./panel-interaction.md)、[设置 · 技能](./panel-settings-skills.md)。
+> **定位**：**≥768px** 下 Panel 的模态与覆盖层——有哪些、各在哪一层、怎么关、哪些操作必须先问一句。包含与视口无关的内容契约（上下文占用的口径、Agent 配置的字段与白名单语义、确认形式矩阵、分支查看器的行模型、目录选择器的两级浏览）与本视口特有的几何（会话区覆盖面板 = 消息区矩形、Agent 菜单 360px）。读者：维护 Panel 交互的开发者；上游：[桌面端布局](./panel-desktop-layout.md)；窄屏形态见[移动端模态与覆盖层](./panel-mobile-overlays.md)；相关：[交互定义](./panel-interaction.md)、[设置 · 技能](./panel-settings-skills.md)。
 
 > **为什么单独成篇**：这些层散落在 `ChatView` / `App.vue` / `SettingsView` / 工作区面板里，最容易出的问题是「多弹一层压住按钮」「Esc 关错原子」「z-index 差 10 被遮」「遮罩点不到」。所以「谁在几层、谁来关、哪种操作要问」集中在这里，改一处就知道牵连谁。
 
@@ -18,35 +18,43 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 
 | 级别 | 行为 | 关闭方式 | 成员 |
 | --- | --- | --- | --- |
-| **轻：内容浮层** | 无遮罩，不拦下层的点击 | 点外部 / `Esc` | 入口行六项（清单 / 会话 / 工作区 / 实例 / 任务 / 模型）、Agent 菜单 |
-| **中：会话区覆盖层** | 遮罩罩住聊天区，顶栏与侧栏仍可用 | 点遮罩空白 | 上下文占用、Agent 配置（`z-index: 50`） |
+| **轻：内容浮层** | 无遮罩，不拦下层的点击 | 点外部 / `Esc` | Agent 菜单（`AgentSwitcher`，唯一保留的锚定浮层） |
+| **中：会话区覆盖面板** | 无遮罩；面板**占满消息区矩形**，入口行按钮浮在面板之上仍可点 | 点面板外 / `Esc` / 再点同一入口按钮 | 入口行七项：会话 / 工作区 / 实例 / 任务 / 清单 / 上下文 / 配置（`SessionOverlay`，2026-10 起统一，互斥） |
 | **重：应用级模态** | 库模态遮罩铺满视口，焦点锁在框内 | 库模态 Esc / ✕ / 明确按钮 | 分支详情、全局确认框、目录选择器、Git 安装技能 |
 
 | 覆盖层 | 组件 | 载体与层位 | 入口 | 契约 |
 | --- | --- | --- | --- | --- |
-| 上下文占用 | `ContextView` + `.ctx-overlay` 外壳 | 会话区内绝对定位 + 遮罩，`z-index: 50` | 入口行「上下文」（受 `echo-agent.management.panel` 插件门控） | 本文「会话区覆盖层」 |
-| Agent 配置 | `AgentConfigModal` | 同上（`z-index: 50`） | 入口行「配置」 | 本文「会话区覆盖层」 |
+| 会话区覆盖面板（七项） | `SessionOverlay`（内容为 `SessionSwitcher` / `WorkspacePanel` / `InstancePanel` / `TasksPanel` / `ChecklistSidebar` / `ContextView` / `AgentConfigModal`） | 会话视图内绝对定位（边界 = 消息区矩形，`z-index: 5`） | 入口行按钮 | 本文「会话区覆盖面板」 |
+| 上下文占用 | `ContextView` | 同上外壳（内容自带头部） | 入口行「上下文」（受 `echo-agent.management.panel` 插件门控） | 本文「会话区覆盖面板」 |
+| Agent 配置 | `AgentConfigModal` | 同上外壳 | 入口行「配置」 | 本文「会话区覆盖面板」 |
 | 分支详情 | `BranchModal` | 库 `NeumorphismModal`（App 根，`size=large`、无 footer） | 侧栏「临时分支」卡的分支行（仅并行多会话模式） | 本文「分支查看器」 |
 | 全局确认 | `ConfirmDialog` | 库 `NeumorphismModal`（App 根挂载一次，`size=small`） | 任意组件调 `confirmDialog()` | 本文「全局确认与确认形式」 |
 | 目录选择器 | `DirectoryPicker` | 自绘遮罩 + `Teleport to="body"`，`z-index: 60` | 工作区面板「浏览…」 | 本文「目录选择器」 |
 | Git 安装技能 | `SettingsView` 内联 | 库 `NeumorphismModal`（`size=small`、无 footer） | 设置 → 技能 → 工具条「Git 安装」 | [设置 · 技能](./panel-settings-skills.md) |
-| 入口行弹层（六项） | `PanelPopover` | `teleport` 到 body + fixed，`z-index: 30` | 清单 / 会话 / 工作区 / 实例 / 任务 / 模型 | [入口行](./panel-chat-entry.md)「入口行按钮」 |
-| Agent 菜单 | `AgentSwitcher` + `PanelPopover` | 与入口行弹层同一容器（`teleport` 到 body + fixed，宽 360px、内容 `max-height: 52vh`、`z-index: 30`） | 入口行最左的 Agent 卡片 | [桌面端布局](./panel-desktop-layout.md)「Agent 切换器」 |
+| Agent 菜单 | `AgentSwitcher` + `PanelPopover` | `teleport` 到 body + fixed，宽 360px、内容 `max-height: 52vh`、`z-index: 30` | 入口行最左的 Agent 卡片 | [桌面端布局](./panel-desktop-layout.md)「Agent 切换器」 |
 
-**层叠秩序**（完整阶梯见[桌面端布局](./panel-desktop-layout.md)「层叠秩序」）：边栏列 4 → 输入区与「回到底部」5 → 入口行 6 → 入口行弹层与 Agent 菜单 30 → 根 chip 速览 40 → 会话区覆盖层 50 → 目录选择器 60 → 拖动幽灵 200 → 库模态与 Toast（库统一分配，恒在应用层之上）。
+**层叠秩序**（完整阶梯见[桌面端布局](./panel-desktop-layout.md)「层叠秩序」）：边栏列 4 → 会话区覆盖面板 5 → 输入区与「回到底部」5 → 入口行 6 → Agent 菜单 30 → 根 chip 速览 40 → 目录选择器 60 → 拖动幽灵 200 → 库模态与 Toast（库统一分配，恒在应用层之上）。
 
-## 会话区覆盖层
+覆盖面板刻意压在入口行（6）**之下**：面板打开时入口行按钮仍然可见可点，于是「换一个面板」是一次点击（点另一个按钮即切），而不是「先关再开」两步。
 
-上下文占用与 Agent 配置共用同一套外壳配方（`ChatView.vue` 的 `.ctx-overlay` 与 `AgentConfigModal.vue` 的 `.agent-config-overlay`）：
+## 会话区覆盖面板
 
-- **遮罩在会话区之内**：`position: absolute; inset: 0`（相对 `.chat-view`），不是全屏——顶栏与侧栏保持可见，读作「仍在同一页里换个焦点」
-- **几何**：卡片距会话框上/左/右 **12px**，底边 = 入口行底偏移 + 30px（按钮高）+ 12px 间隙（`configBottomOffset`；上下文用 `ctxBottomOffsetCss` 复用同一数值）；磨砂玻璃配方——20px 圆角 + `blur(24px) saturate(1.6)` + 描边、投影与内高光
-- **关闭**：点遮罩空白处（`@click.self`）即关；两者都**没有返回按钮**，也**不监听 Esc**（Esc 只属于入口行弹层与库模态）。打开期间「回到底部」按钮隐藏（`.chat-view--overlay-open`）
-- **层位**：`z-index: 50`，高于入口行（6）与入口弹层（30），低于目录选择器（60）
+入口行除 Agent 切换外的七项**共用同一外壳** `SessionOverlay`（2026-10 用户要求：「统一成一种样式，大小等于会话消息区，唤起一个就关掉另一个」）。
+
+**沿革**：改造前同一排按钮打开三种东西——六个 `PanelPopover`（520px 宽、锚在按钮上方、高度自适应）、两个带遮罩的覆盖层（上下文 / 配置，贴会话框 12px）、一个 Agent 菜单。换一个按钮就要重新找面板位置，尺寸也各不相同。
+
+- **几何 = 会话消息区的矩形**：`ChatView` 量 `.chat-view__tray` 相对 `.chat-view` 的四边内缩（并扣掉左右边栏留白 `trayPad*`，即「正文消息列」），经 `inset` 传给外壳；`ResizeObserver` 观察视图根与 tray，另监听输入区高度 / 边栏留白 / 移动端切换——多行输入撑高、键盘弹出、边栏进出都会重算。**为什么不用 fixed + Teleport**：消息区是弹性子项，fixed 要每帧量视口，横滚/缩放必然漂移
+- **互斥是结构性的**：`ChatView` 只有一个 `entryOverlay` id（七选一或 null），任何时刻最多一个为真；`toggleOverlay(id)` 点同一按钮 = 关、点另一按钮 = 直接切
+- **层位 `z-index: 5`**：压在入口行（6）之下 —— 面板打开时入口行按钮仍可见可点（见上「层叠秩序」）
+- **外壳配方**：`--panel-glass-*` 一套（`blur(24px) saturate(1.6)`、24px 圆角、描边 + 内高光 + 大投影），与 RailStack 卡片同源；入场只动 opacity/transform（`prefers-reduced-motion` 下关闭）
+- **关闭**：点面板外（捕获阶段 `pointerdown`）/ `Esc`（捕获并阻断下层）/ 再点同一入口按钮。入口行（`ignore`）与 ui-frame 的 teleport 浮层（下拉/菜单/提示）内的按下**不算外部**——否则点另一个按钮会先关再被 click 重新打开，且下拉选项点不动（`src/floating-layer.ts` 与 `PanelPopover` 共用这份判定）
+- **没有右上角 ✕**：它会与各面板自己的头部控件（工作区的「新建」、实例的「刷新」、上下文的「清空」）重叠，而外壳无法逐面板避让；出口统一为上述三条
+- **内容排布**：外壳默认给 18px 内边距；上下文与 Agent 配置自带头部+分块列表，传 `padded=false` 由内容自己排。清单是「卡片」形态，额外限宽 640px（否则进度条会被拉成一米长）
+- 打开期间「回到底部」按钮隐藏（`.chat-view--overlay-open`）
 
 ### 上下文占用（ContextView）
 
-外壳头部是「上下文占用」+ 当前人格 id（无激活人格时显示 `default`），正文为 `ContextView` 组件（只做内容，几何由外壳给）。打开即按当前（Agent, 会话）发 `RequestContext{team_id, session_id}`，切换会话自动重拉：
+面板头部是「上下文占用」+ 当前人格 id（无激活人格时显示 `default`，`ChatView` 的 `.ctx-pane`），正文为 `ContextView` 组件（只做内容，几何由外壳给）。打开即按当前（Agent, 会话）发 `RequestContext{team_id, session_id}`，切换会话自动重拉：
 
 - **token 仪表盘**：`NeumorphismProgress`（≥90% error、≥70% warning）+ 四项统计——总占用 / 提示词 / 历史 / 上限。**总占用按全部块求和**（Core 的 `total_tokens` 只计历史，单看会出现「提示词 1091t 而总占用 0%」的错位）；比例不足 1% 时显式显示 `<1%`，不取整成 0%
 - **两组折叠块**：「系统提示词与注入块（N）」与「对话历史（N）」，`ChatFold` **默认全展开**，每块内容区 `max-height: 220px` 内滚动；块头 = kind 徽标（覆盖 Core 全部种类，含「工作区会话」「系统提示词」）+ 名称（自动剥掉与徽标重复的前缀）+ token 数 + **占当前上下文总量的百分比** + 占比条（非零块给 0.8% 最小可见宽度，避免「有 token 却画不出条」）
@@ -132,15 +140,15 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 - **请求/响应**：发 `RequestBrowseDirectories{path}`——本机传 `null`，联邦节点传 `node://<peer>`；结果落 `state.browseDirectories[scopedKey(activeRegion, path)]`（`roots` / `entries` / `error`），缓存上限 32 条
 - **两级视图**：栈空 = **浏览根列表**（点根行 = 直接选该根，「›」= 进入浏览）；栈非空 = **子目录列表**（点行 = 选该子目录，「›」= 继续下钻）；面包屑逐级回退 + 「上一级」；底部「选择此目录」仅在栈非空（有当前目录）时可用
 - **回填**：选中即 `emit('select', path)` → 工作区面板把路径**追加**到目录文本框（去重，保留手写 `node://` 路径的能力）后关闭
-- **为何 Teleport**：它常挂在入口行 `PanelPopover` 里——浮层的 `backdrop-filter` 会把 `fixed` 后代的包含块改成自身、`overflow-y: auto` 再行裁剪，遮罩只会罩住 520px 的浮层且 `@click.self` 大面积失效；`teleport` 后 `fixed` / `inset` 才参照视口
+- **为何 Teleport**：它常挂在工作区面板（`SessionOverlay` 内）——外壳的 `backdrop-filter` 会把 `fixed` 后代的包含块改成自身、`overflow: auto` 再行裁剪，遮罩只会罩住面板且 `@click.self` 大面积失效；`teleport` 后 `fixed` / `inset` 才参照视口
 - **权限边界**：浏览根由 Core 限定——**家目录 `~` 在首位**，其后是各本地工作区目录（去重；远程目录由对端各自给根）；进入目录时按根做 canonical 前缀校验（字面前缀 + `/`，避免 `/a/b` 放行 `/a/bc`）。联邦节点还需对端 `allow_queries` 放行 `browse_directories`——越界与未放行都表现为列表里的 `error` 文案（见[联邦](../federation/federation.md)「只读查询」）
 
 ## 桌面端浮层几何
 
 | 浮层 | 几何 |
 | --- | --- |
-| 入口行弹层 | 宽 **520px**（`width` prop 缺省），视口不足时夹到 `100vw - 24px`；锚定按钮上方 `max(8, vh - rect.top + 8)`，水平按锚点中心居中并夹在 12px 边距内；内容区 `max-height: 68vh` |
-| 会话区覆盖层 | 上/左/右 12px，底边 = 入口行底 + 30 + 12；见「会话区覆盖层」 |
+| 会话区覆盖面板 | **= 消息区矩形**（`ChatView` 测量的 `inset`，左右扣掉边栏留白）；见「会话区覆盖面板」 |
+| Agent 菜单 | 宽 **360px**，视口不足时夹到 `100vw - 24px`；锚定 Agent 卡片上方 8px，内容区 `max-height: 52vh`（`PanelPopover` 的 width/maxHeight prop） |
 | 目录选择器 | `min(560px, 92vw)` × `max-height: 72vh`，居中 |
 | 分支查看器 | 库 `large`（`max-width: 720px`）× `max-height: 85vh`，居中 |
 | 全局确认框 | 库 `small`（`max-width: 400px`）× `max-height: 85vh`，居中 |

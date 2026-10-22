@@ -28,11 +28,11 @@ graph TB
   ChatView --> RailR[右侧栏 324px]
   ChatView --> Entry[入口行 z6]
   ChatView --> Composer[悬浮输入区 z5]
+  ChatView --> OvlPane[会话区覆盖面板 z5]
   ChatView --> Pops[PanelPopover z30]
-  ChatView --> CtxOv[会话区覆盖层 z50]
   App --> Branch[BranchModal 库模态]
   App --> Toast[Toast z 库管理]
-  CtxOv --> Ovl[桌面端模态与覆盖层|/panel/panel-desktop-overlays.md]
+  OvlPane --> Ovl[桌面端模态与覆盖层|/panel/panel-desktop-overlays.md]
 ```
 
 | 区域 | 内容 | 几何来源 |
@@ -57,8 +57,7 @@ graph TB
 | 入口行 | `left 20px`、`bottom = entryBottom`、`gap 8px` | `.entry-row` |
 | 侧栏列下界 | `entryBottom + 45px`（入口行实测 37px + 8px 间隙） | `.chat-rail` 的 `bottom` |
 | 「回到底部」按钮 | 36×36；`right = trayPadRight + 16px`、`bottom = entryBottom + 45px` | `.chat-view__jump` |
-| 会话区覆盖层 | 上/左/右 12px；底边 = `entryBottom + 30 + 12` | `configBottomOffset` |
-| 入口行弹层 | 宽 520px、内容 `max-height: 68vh`、锚点上方 8px、边距 12px | `PanelPopover` |
+| 会话区覆盖面板 | = 消息区（`.chat-view__tray`）矩形，左右扣边栏留白；`z-index 5` | `SessionOverlay` + `ChatView` 的 `overlayInset` 测量 |
 | Agent 切换器 | 卡片高 34px；菜单 = `PanelPopover`（宽 360px、内容 `max-height: 52vh`、锚点上方 8px） | `AgentSwitcher.vue` |
 | 设置视图 | 一级菜单 168px、条目列表 250px、API 概览 ≤720px | `SettingsView.vue` / `ApiSettings.vue` |
 | 卡片间距 | 槽位 12px（分隔条净占位 0） | `RailStack.vue` |
@@ -81,17 +80,16 @@ Panel 覆写 ui-frame 的样式时，**裸类选择器压不过库**——库规
 | --- | --- | --- |
 | 基础视图 | 0 | 当前视图组件 |
 | 边栏列 | 4 | 左右侧栏卡片列（`RailStack`） |
+| 会话区覆盖面板 | 5 | `SessionOverlay`（入口行七项共用外壳，几何 = 消息区矩形；**刻意低于入口行**，使按钮在面板打开时仍可点 → 换面板只需一次点击） |
 | 输入区与「回到底部」 | 5 | 会话视图底部输入区、回到底部按钮 |
-| 入口行 | 6 | 配置 / 上下文 / 清单 / 会话 / 工作区 / 实例 / 任务 / 模型 |
-| 入口行弹出层 | 30 | `PanelPopover`（六项共用容器，`teleport` 到 body + fixed） |
-| Agent 菜单 | 30 | `AgentSwitcher` 的上弹菜单，容器同 `PanelPopover`（设置视图同段 30–31） |
+| 入口行 | 6 | 配置 / 上下文 / 清单 / 会话 / 工作区 / 实例 / 任务（+ 最左 Agent 切换） |
+| Agent 菜单 | 30 | `AgentSwitcher` 的上弹菜单（`PanelPopover`；设置视图同段 30–31） |
 | 根 chip 速览 | 40 | 文件浏览器根路径 chip 悬停卡（仅文本、`pointer-events: none`） |
-| 浮层遮罩 | 50 | 会话区覆盖层（上下文 / Agent 配置） |
-| 目录选择器 | 60 | `DirectoryPicker` 全屏模态（`Teleport` 到 body；高于会话区覆盖层） |
+| 目录选择器 | 60 | `DirectoryPicker` 全屏模态（`Teleport` 到 body；高于覆盖面板） |
 | 拖动幽灵 | 200 | 边栏卡片拖拽幽灵（`RailDragGhost`，压住会话区一切悬浮元素） |
 | 模态 / Toast | 库管理 | `--nm-z-overlay: 400` / `--nm-z-toast: 500`，由 ui-frame 统一分配，始终高于应用层 |
 
-清单卡已并入入口行弹层——`.checklist-float` 只是弹层内的 sticky 容器（`z-index: 3`），**不再**在会话视图里独立悬浮。
+清单卡是入口行覆盖面板（`SessionOverlay`）的内容，`.checklist-float` 只是面板内的 sticky 容器（`z-index: 3`），**不再**在会话视图里独立悬浮；面板宽度大于卡片所需，故在 `ChatView` 里额外限宽 640px。
 
 ## 三、主题与设计令牌
 

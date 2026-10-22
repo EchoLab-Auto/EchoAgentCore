@@ -52,7 +52,7 @@ graph LR
 
 - **容器与行渲染**：`ChatView.vue`（消息区 + 吸底输入区 + 入口行 + 双侧栏的组织者，`messageRows` / `renderWindow` / `historyLimit` / `railRegistered` 等都在此）、`MessageItem.vue`（气泡自绘 + `MarkdownLazy` 延迟 Markdown）、`WorkRunGroup.vue`（工作行：`tool` / `reasoning` / `subagent` 三类工作项的 chip 行）、`ReasoningText.vue`、`ToolIcon.vue`
 - **状态与投影**：`state.ts` + `state_domains/timeline.ts`（事件 reducer 与时间线投影）、`chat-adapter.ts`（`toChatMessage` / 时间标签 memo）、`chat-message-cache.ts`（渲染对象缓存）、`trunk-cache.ts`（时间线落盘与还原）、`keys.ts`（`sessionKey` / `teamKey` 复合键）
-- **输入侧与弹层**：`ChatComposer`（库机制原语，`#actions` 由面板自绘）、`PanelPopover`（弹层几何与外部点击关闭）、`ContextView` / `AgentConfigModal` / `WorkspacePanel` / `SessionSwitcher` / `TasksPanel`
+- **输入侧与弹层**：`ChatComposer`（库机制原语，`#actions` 由面板自绘）、`SessionOverlay`（会话区覆盖面板外壳：几何 / 关闭 / 互斥）、`ContextView` / `AgentConfigModal` / `WorkspacePanel` / `SessionSwitcher` / `TasksPanel`
 - **侧栏**：`RailStack.vue`（卡片栈、折叠与分隔条）+ `rail-drag.ts`（跨列拖动）+ `rail-cards.ts`（卡片登记与门控）+ `rail-layout.ts`（列归属与顺序持久化）
 - **单一事实来源**：一切展示由 Core 的 WS 事件流驱动，前端时间线缓存只是加速副本（断连重连按游标补齐）——原则与失败语义见[交互定义](./panel-interaction.md)「核心原则」
 
