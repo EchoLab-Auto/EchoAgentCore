@@ -24,6 +24,22 @@ y: 1060
 - **高度联动**：`--chat-control-h = 内边距×2 + 字号×1.6` 是「单行内框高」的唯一事实来源，附件/发送/取消三个按钮与它等高，字号一变自动跟随（见「入口行」无关，纯输入区内部几何）
 - **断连占位**：placeholder 换成 `未连接到 Core，暂时无法发送`，同时 `disabled`
 
+## 外壳：ui-frame 卡片
+
+输入区的外壳是一个 **`NeumorphismCard`（`glass` 档 + `no-padding`）**，不再自绘描边层与玻璃层：
+
+```
+.chat-composer-float            定位层（absolute；pointer-events: none）
+├── __halo                      外发光（只在移动端 clip 生效时启用，见下）
+└── NeumorphismCard.__card      卡片：材质 / 圆角 / 边缘高光 / 环境投影
+    └── __body                  内层：padding + 内容（附件 / ChatComposer / 状态行）
+```
+
+- **卡片负责**：半透明底（`--nm-glass-bg`）、`backdrop-filter`、1px 内高光边（`--nm-glass-border-opacity`）、`glass=float` 的环境投影。输入区只覆盖两件事：圆角取 `--composer-radius`（选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*` 档位）、挂超椭圆 `clip-path`。
+- **`backdrop-filter` 降到 10px**（库默认 20px + saturate）：用 `--nm-glass-blur` 变量覆盖，沿用 2026-09 的拖选性能结论。聚焦/拖选期间 `.chat-composer-float--busy` 直接关掉 blur 并换成不透明底色。
+- **`__halo` 为什么还留着**：`clip-path` 会把元素**自身**的 `box-shadow` 一起裁掉，而移动端卡片要挂超椭圆 clip —— 投影会整体消失。所以投影必须画在未被裁剪的兄弟层上。桌面没有 clip，卡片自带投影已够，`__halo` 用 `display: none` 关掉（否则双重阴影）。同理 `__halo` 不能挂 `backdrop-filter`：`filter` 会创建新的 backdrop root，让卡片的毛玻璃失效。
+- **没有独立描边层了**：`--composer-border` 归零，1px 边由卡片的内高光承担。这牺牲了原来「描边沿超椭圆处处等宽」的性质（内高光沿圆角走，被超椭圆 clip 在 2 处切点附近可能略细），换取结构与全站卡片一致。
+
 ## 状态行
 
 文本域（含其右侧操作行）**下方**的一行运行态提示，两段：
@@ -41,7 +57,7 @@ y: 1060
 的瞬间输入区会突然长高 23px、入口行跟着跳一下。代价是输入区常驻 91px（原 68px），
 消息区 `padding-bottom` 的余量仍够（402 宽实测占用 108 ≤ 130 − 8）。
 
-- **位置**：`.chat-composer-float__glass` 内部的最后一项——即在输入区自己的圆角轮廓里、文本域之下（实测文本域底 823 → 状态行顶 829，间隙 6px）。**不在入口行里**：入口行是 `display:flex` 的横滚工具条，插入/移除子项会推着 Agent 切换器到「模型」整排按钮左右移动，文案变长还会抖动；搬进输入区后入口行排布恒定
+- **位置**：`.chat-composer-float__body`（卡片内层）的最后一项——即在输入区自己的圆角轮廓里、文本域之下（实测文本域底 823 → 状态行顶 829，间隙 6px）。**不在入口行里**：入口行是 `display:flex` 的横滚工具条，插入/移除子项会推着 Agent 切换器到「模型」整排按钮左右移动，文案变长还会抖动；搬进输入区后入口行排布恒定
 
 ### API 徽标（左）
 
@@ -52,6 +68,8 @@ y: 1060
 3. 顶层默认配置（`state.api.provider` / `state.api.model`）
 
 为什么必须按这个顺序而不是直接读入口行的「模型」按钮：那个按钮显示的是 **persona 级** `active_api`，而工作区对话可以单独指定 profile（会话级覆盖），两者会不一致——看按钮会看错「这条回答是谁在产出」。悬停 `title` 补两层信息：`来源：本会话覆盖 / persona 激活 / 顶层默认配置 · profile「名字」`。
+
+呈现：**纯文字**（2026-10 用户要求去掉外框）——不设 border / 背景 / 胶囊，静态信息不需要第二层容器，套壳反而和输入区卡片抢层次。与右侧相位文案靠色阶区分：标签 `--nm-text-primary` + `opacity: .75`（实），相位文案 `--nm-text-secondary`（淡）。
 
 几何：`flex: 0 0 auto`（不参与收缩，避免被相位文案挤掉）+ `max-width: 55%`（超长 provider 名内部省略）。55% 不是随手取的——`deepseek / deepseek-flash` 在 320 宽下需要 ~148px，45% 会吃掉最后一两个字符。
 
