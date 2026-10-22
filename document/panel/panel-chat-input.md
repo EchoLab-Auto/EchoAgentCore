@@ -30,26 +30,39 @@ y: 1060
 
 ```
 .chat-composer-float            定位层（absolute；pointer-events: none）
-└── NeumorphismCard.__card      卡片：材质 / 圆角 / 内辉光
+├── __halo                      投影补层（仅移动端 clip 生效时显示，见下）
+└── NeumorphismCard.__card      卡片：材质 / 圆角 / 向外环境投影（glass="float"）
     └── __body                  内层：padding + 内容（附件 / ChatComposer / 状态行）
 ```
 
-- **卡片负责**：半透明底（`--nm-glass-bg`）、`backdrop-filter`、以及 **`glass="pressed"` 档的内凹内辉光**（`nm-card-glass-pressed`：三层 `inset` —— 左上内阴影 `--nm-shadow-dark-deep` + 右下内高光 `--nm-shadow-light-deep` + 1px 边缘亮线，强度由 `elevation` 定）。输入区覆盖两件事：圆角取 `--composer-radius`（选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*` 档位）、挂超椭圆 `clip-path`。
+- **卡片负责**：半透明底（`--nm-glass-bg`）、`backdrop-filter`、以及 **`glass="float"` 档的向外环境投影**（`0 4px 16px` ambient + `0 2px 4px` 加深）—— 视觉上是一块**浮在消息之上的磨砂托盘**（悬浮，不是凹槽）。输入区覆盖两件事：圆角取 `--composer-radius`（选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*` 档位）、挂超椭圆 `clip-path`。
 - **`ChatComposer` 侧另有一处内辉光**：`focus-effect="glow"` —— 聚焦时主色光从输入槽**内部**亮起（`inset 0 0 18px` 光晕 + 1px 内描边，抑制默认外环）。
 - **`backdrop-filter` 降到 10px**（库默认 20px + saturate）：用 `--nm-glass-blur` 变量覆盖，沿用 2026-09 的拖选性能结论。聚焦/拖选期间 `.chat-composer-float--busy` 直接关掉 blur 并换成不透明底色。
 
-### 内辉光（inset）— 全部来自 ui-frame
+### 悬浮：库的 float 档 + 一层投影补层
 
-**面板侧不写一行 `box-shadow`**，内辉光用库现成的两处实现：
+外壳的悬浮感来自库的 `NeumorphismCard glass="float"`（向外环境投影 + 半透明底 + `backdrop-filter`），面板侧不写 `box-shadow`。
 
-| 位置 | 库机制 | 效果 |
+**但移动端必须补一层**（`__halo`），原因是 `clip-path`：
+
+> clip 裁的是元素**整个渲染结果**，连同它自己的外阴影一起裁掉。实测注入 6px 外投影红环：clip 生效只剩 955 个红像素、关掉 clip 是 47939 —— 差 50 倍。
+
+所以手机上（贴 iPhone 超椭圆屏角、clip 生效）投影画不出来，只能由未裁剪的**兄弟节点**补：
+
+| 层 | 职责 | 实现 |
 | --- | --- | --- |
-| 外壳（卡片） | `<NeumorphismCard glass="pressed" :elevation="2">` → `nm-card-glass-pressed` | 常态内凹：`inset 8px 8px 20px --nm-shadow-dark-deep` + `inset -4px -4px 12px --nm-shadow-light-deep` + `inset 0 0 0 1px` 边缘亮线 |
-| 输入槽（聚焦） | `<ChatComposer focus-effect="glow">` | 聚焦时主色内光：`inset 0 0 18px 1px` 光晕（`--nm-primary-color` 34%）+ `inset 0 0 0 1px` 内描边（72%），并抑制默认外环 |
+| `__halo` | 柔化 | `filter: blur(16px)` + `translateY(12px)`（光向下偏） |
+| `__halo::before` | 形状 | `background: var(--composer-halo)` + `clip-path: var(--composer-clip)`（与卡片同一轮廓） |
 
-档位语义见库的 `GlassVariant`（`float` / `raised` / `pressed`，三档与按钮共用同一套名字）；强度跟随 `elevation`，深浅主题各自取令牌 —— 面板侧不需要按主题另写一套值。
+- **默认 `display: none`**，只在 `.chat-composer-float--clipped` 下开 —— 桌面没有 clip，卡片自带投影已够，叠一层就是双重阴影。
+- **绝不能挂 `backdrop-filter`**：`filter` 会创建新的 backdrop root，卡片的毛玻璃会失效。
+- 深色主题 `--composer-halo: rgba(0,0,0,.45)`（深底靠影）。
 
-**为什么内辉光比外发光更合适**：移动端卡片挂着超椭圆 `clip-path`，而 clip **只裁元素外部** —— 向外的 `box-shadow` 会被整块裁掉（此前要靠一个额外的模糊兄弟层 `__halo` 模拟，桌面端还得单独关掉避免双重阴影）。`inset` 阴影天然在裁剪区内，于是**桌面圆角与移动端超椭圆共用同一份实现**，`__halo` 整层删除。
+### 输入槽的聚焦内辉光
+
+输入槽自己另有一处内辉光：`<ChatComposer focus-effect="glow">` —— 聚焦时主色光从槽**内部**亮起（`inset 0 0 18px 1px` 光晕 `--nm-primary-color` 34% + `inset 0 0 0 1px` 内描边 72%，并抑制默认外环）。
+
+所以整体是「**悬浮的磨砂外壳 + 聚焦时内部发光的输入槽**」：外壳的悬浮与输入槽的聚焦反馈是两件事，互不冲突。
 
 - **没有独立描边层**：`--composer-border` 归零，1px 边由卡片的 `inset 0 0 0 1px` 承担。
 
