@@ -45,7 +45,8 @@ use echo_protocol::{
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{info, warn};
+use tracing::{
+    debug,info, warn};
 
 /// 联邦入站监听的缺省地址（组合根「端口合并」规划与 `port` 命令共用）。
 ///
@@ -429,7 +430,10 @@ async fn serve_with_listener_and_token(
                 continue;
             }
         };
-        info!(%peer, "Panel connected");
+        // TCP 层：此时既没握手也没分类（可能是 401、联邦链路、探活）——
+        // 记 debug，真正的「Panel 链路已建立」在角色判定之后打（见
+        // `handle_connection`），否则统计出来的连接数会虚高且不可解释。
+        debug!(%peer, "management listener accepted a connection");
 
         let events = events.clone();
         let bridge = bridge.clone();
@@ -442,6 +446,7 @@ async fn serve_with_listener_and_token(
         tokio::spawn(async move {
             if let Err(e) = handle_connection(
                 stream,
+                peer,
                 events,
                 bridge,
                 &access_token,
@@ -462,6 +467,7 @@ async fn serve_with_listener_and_token(
 #[allow(clippy::result_large_err)]
 async fn handle_connection(
     stream: tokio::net::TcpStream,
+    peer: std::net::SocketAddr,
     events: Arc<EventBroker>,
     bridge: Arc<BackendBridge>,
     access_token: &str,
@@ -478,28 +484,53 @@ async fn handle_connection(
         // 独立模式：管理通道 + Panel 身份（`panel_source` 提供 Panel 密钥表；
         // `observer` 仅用于记录入站 Host）。
         None => {
-            let (ws, access) =
-                accept_standalone_ws(stream, access_token, panel_source, observer).await?;
-            serve_management_ws(ws, events, bridge, false, access).await
+            let (ws, access) = accept_standalone_ws(stream, access_token, panel_source, observer)
+                .await
+                .inspect_err(|e| {
+                    // 401 / 非 WS / 探测扫描都从这里返回：此前完全没有日志，
+                    // "Panel 连不上"在 Core 侧看不到任何痕迹。
+                    warn!(%peer, error = %e, "management handshake rejected");
+                })?;
+            info!(
+                %peer,
+                merged = false,
+                access = panel_access_str(access),
+                "panel link up"
+            );
+            serve_management_ws(ws, events, bridge, false, access, peer).await
         }
         // 合并模式：升级回调按令牌分类，升级后按角色分派。
         Some(fed) => {
-            let (ws, role, presented) = accept_merged_ws(stream, access_token, fed.clone()).await?;
+            let (ws, role, presented) = accept_merged_ws(stream, access_token, fed.clone())
+                .await
+                .inspect_err(|e| {
+                    warn!(%peer, error = %e, "management handshake rejected");
+                })?;
             match role {
                 ConnRole::Management => {
+                    info!(%peer, merged = true, access = "admin", "panel link up");
                     serve_management_ws(
                         ws,
                         events,
                         bridge,
                         true,
                         echo_federation::PanelAccess::Admin,
+                        peer,
                     )
                     .await
                 }
                 // Panel 身份：同一条管理 WS，但权限受级别约束（只读时拒绝
                 // 一切写命令，见 `serve_management_ws` 的门）。
                 ConnRole::Panel(access) => {
-                    serve_management_ws(ws, events, bridge, true, access).await
+                    // 联邦级 Panel 身份（跨机接入通常走这条）：记下权限级别，
+                    // 只读被拒的命令才有据可查。
+                    info!(
+                        %peer,
+                        merged = true,
+                        access = panel_access_str(access),
+                        "panel link up"
+                    );
+                    serve_management_ws(ws, events, bridge, true, access, peer).await
                 }
                 ConnRole::Federation => {
                     let result = fed.accept_ws_pub(ws, presented).await;
@@ -711,12 +742,25 @@ async fn accept_merged_ws(
 ///   其余命令就地拒绝并回一条 `Error` 事件（而不是静默丢弃——客户端必须知道
 ///   "我不是没权限，是被降级了"）；
 /// - `off` 理论上不会走到这里（握手期已 401），出现即按只读处理（fail-closed）。
+/// Panel 权限级别的日志短名（`PanelAccess` 的 Debug 输出会随枚举增长变，
+/// 日志字段要稳定可聚合）。
+fn panel_access_str(access: echo_federation::PanelAccess) -> &'static str {
+    use echo_federation::PanelAccess;
+    match access {
+        PanelAccess::Off => "off",
+        PanelAccess::Readonly => "readonly",
+        PanelAccess::Operate => "operate",
+        PanelAccess::Admin => "admin",
+    }
+}
+
 async fn serve_management_ws(
     ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     events: Arc<EventBroker>,
     bridge: Arc<BackendBridge>,
     merged_hint: bool,
     access: echo_federation::PanelAccess,
+    peer: std::net::SocketAddr,
 ) -> anyhow::Result<()> {
     let (mut write, mut read) = ws.split();
 
@@ -731,6 +775,15 @@ async fn serve_management_ws(
     let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(30));
     heartbeat.tick().await; // 首次 tick 立即返回，跳过
     let mut last_seen = std::time::Instant::now();
+
+    // 链路收尾诊断（此前这条连接**没有任何退出日志**：Panel 侧看到的断线在
+    // Core 里查不到痕迹，无从判断是"对端关的"还是"本端判死的"）。
+    let started = std::time::Instant::now();
+    let mut events_out: u64 = 0;
+    let mut commands_in: u64 = 0;
+    // 初值只兜底「select 因其它原因直接落出循环」，正常路径都会被下面覆盖。
+    #[allow(unused_assignments)]
+    let mut close_reason = "loop exited without a recorded reason";
 
     loop {
         tokio::select! {
@@ -747,10 +800,16 @@ async fn serve_management_ws(
                             .await
                             .is_err()
                         {
-                            break; // client gone — subscriber is dropped on return
+                            // client gone — subscriber is dropped on return
+                            close_reason = "event write failed (peer gone)";
+                            break;
                         }
+                        events_out += 1;
                     }
-                    None => break, // bridge closed
+                    None => {
+                        close_reason = "event broker closed";
+                        break;
+                    }
                 }
             }
             // Panel → Agent 命令。
@@ -778,10 +837,12 @@ async fn serve_management_ws(
                                                 .await
                                                 .is_err()
                                             {
-                                                break; // client gone
+                                                close_reason = "event write failed (peer gone)";
+                                                break;
                                             }
                                             continue;
                                         }
+                                        commands_in += 1;
                                         let _ = bridge.send_command(cmd);
                                     }
                                     None => {
@@ -799,33 +860,79 @@ async fn serve_management_ws(
                                                  connection — likely a peer with an unknown token; \
                                                  closing (check [federation.peers.*] token)"
                                             );
+                                            close_reason = "federation frame on management link";
                                             break;
                                         }
                                     }
                                 }
                             }
-                            tokio_tungstenite::tungstenite::Message::Close(_) => break,
+                            tokio_tungstenite::tungstenite::Message::Close(frame) => {
+                                // 关帧码是归因的决定性证据：1001=页面卸载（Panel
+                                // 进程被重启也会这样）/ 1000=对端主动关 / 无码=异常。
+                                match &frame {
+                                    Some(frame) => info!(
+                                        %peer,
+                                        code = u16::from(frame.code),
+                                        reason = %frame.reason,
+                                        "panel sent close"
+                                    ),
+                                    None => info!(%peer, "panel sent close (no code)"),
+                                }
+                                close_reason = "peer sent close";
+                                break;
+                            }
                             _ => {}
                         }
                     }
-                    Some(Err(_)) | None => break,
+                    // read 侧结束 = 对端 TCP 断开 / 协议错误：前者是浏览器或
+                    // Panel 重启，后者多半是版本不匹配，值得区分。
+                    Some(Err(e)) => {
+                        // 错误文本是"网络掉了 vs 协议不匹配"的唯一直接证据。
+                        warn!(%peer, error = %e, "panel read error");
+                        close_reason = "read error (protocol or transport)";
+                        break;
+                    }
+                    None => {
+                        close_reason = "peer closed the socket";
+                        break;
+                    }
                 }
             }
             _ = heartbeat.tick() => {
                 if last_seen.elapsed() > std::time::Duration::from_secs(90) {
-                    break; // 对端已死（无 Pong/任何入站帧）
+                    // 判死：90s 内没有任何入站帧（含 Pong）。这条以前是静默
+                    // break——空闲链路的"无故断开"根本查不出来。
+                    warn!(
+                        %peer,
+                        idle_s = last_seen.elapsed().as_secs(),
+                        "panel link idle timeout; closing (no inbound frame for 90s)"
+                    );
+                    close_reason = "idle timeout (no inbound frame for 90s)";
+                    break;
                 }
                 if write
                     .send(tokio_tungstenite::tungstenite::Message::Ping(Vec::new()))
                     .await
                     .is_err()
                 {
+                    close_reason = "heartbeat write failed (peer gone)";
                     break;
                 }
             }
         }
     }
 
+    info!(
+        %peer,
+        merged = merged_hint,
+        access = panel_access_str(access),
+        elapsed_s = started.elapsed().as_secs(),
+        events_out,
+        commands_in,
+        idle_ms = last_seen.elapsed().as_millis() as u64,
+        reason = close_reason,
+        "panel link down"
+    );
     Ok(())
 }
 
