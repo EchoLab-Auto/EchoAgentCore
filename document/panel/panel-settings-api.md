@@ -50,8 +50,10 @@ y: 1060
 ## 配置表单与快捷模板
 
 - **Profile 名称**：添加模式必填（trim 非空才可保存）；**编辑模式可修改**（原名预填，保存时走两步提交——先 `RenameApi` 原子改名，确认成功后字段有改动才按新名补发 `UpdateApiConfig`；纯改名不重保存、不误激活）。空白/与现有 profile 撞名实时提示并禁用保存；确认前保存按钮锁定，10s 未确认提示失败并保留表单
-- **快捷模板**（6 个，点击填充 provider/base_url/model/思考/推理）：**DeepSeek**（默认官方 Anthropic 端点 `https://api.deepseek.com/anthropic` + `deepseek-v4-flash`；需 OpenAI 格式时手工改为 `/v1` + `deepseek-chat`）、**Kimi For Coding**（Anthropic 兼容端点 `https://api.kimi.com/coding` + `k3`，Key 在 Kimi Code 控制台创建，推理档位 high；provider=`kimi`）、**中转站（OpenAI 兼容）**（provider=`third-party`，base_url/model **留空待填**，占位提示「你的网关/v1」与「中转站模型名」；请求为干净 OpenAI 格式，不携带 DeepSeek 专有 thinking 字段）、OpenAI、Anthropic、Ollama（本地）
-- **Provider 下拉**：固定 deepseek / openai / kimi / third-party 四项，未知值保留为额外选项；选 deepseek/openai/kimi 自动填充对应 base_url/model；第三方需 OpenAI 兼容（有 /anthropic 端点自动识别）。**注意**：中转站=第三方时不会附加 DeepSeek 专有请求字段（`thinking`/`reasoning_effort`），兼容性最好；若要保留思考模式且后端是 DeepSeek，选 deepseek 预设
+- **快捷模板**（8 个，点击填充 provider/base_url/model/思考/推理）：**DeepSeek**（默认官方 Anthropic 端点 `https://api.deepseek.com/anthropic` + `deepseek-v4-flash`；需 OpenAI 格式时手工改为 `/v1` + `deepseek-chat`）、**Kimi For Coding**（Anthropic 兼容端点 `https://api.kimi.com/coding` + `k3`，Key 在 Kimi Code 控制台创建，推理档位 high；provider=`kimi`）、**中转站（OpenAI 兼容）**（provider=`third-party`，base_url/model **留空待填**，占位提示「你的网关/v1」与「中转站模型名」；请求为干净 OpenAI 格式，不携带 DeepSeek 专有 thinking 字段）、**OpenCode Go**（订阅制，`https://opencode.ai/inference/go/openai/v1` + `kimi-k3`；Key 在 opencode.ai Console 创建，形如 `oc_sk_…`；provider=`opencode-go`，密钥走 `OPENCODE_API_KEY`）、**OpenCode Zen**（按量付费，`https://opencode.ai/inference/openai/v1`，与 Go 共用同一个 Console Key）、OpenAI、Anthropic、Ollama（本地）
+- **OpenCode 的两种形态**：Go/Zen 同时提供 Chat Completions（`/openai/v1`，Kimi K3 / GLM-5.x / DeepSeek V4 等）与 Anthropic Messages（`/anthropic`，Claude Haiku / Qwen / MiniMax 等）两套端点——**把 base_url 写成 `/anthropic` 结尾即自动切 Messages 客户端**，provider 名不必改。注意 GPT-5.6/6、Grok、Muse Spark 只提供 OpenAI **Responses** API，本框架未实现，接不了；Gemini 原生端点同理
+- **Provider 下拉**：固定 deepseek / openai / kimi / opencode-go / opencode / third-party 六项，未知值保留为额外选项；选已知项自动填充对应 base_url/model；第三方需 OpenAI 兼容（有 /anthropic 端点自动识别）。**注意**：中转站=第三方时不会附加 DeepSeek 专有请求字段（`thinking`/`reasoning_effort`），兼容性最好；若要保留思考模式且后端是 DeepSeek，选 deepseek 预设
+
 - Model / Base URL（手填）、**API Key**（密码框；标注 已设置/未设置，**留空保持不变**，不回显）、思考模式（启用/禁用）、推理强度（low/high/max）
 - 添加模式初始为空表单（Provider 默认 third-party），快速模板可一键填充
 

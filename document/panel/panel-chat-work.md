@@ -4,14 +4,14 @@ title: "工作行（工具 / 推理 / 子代理）"
 group: 前端
 x: 5760
 y: 1340
-link: ["panel-chat-tools | 工具卡与图标行", "panel-chat-reasoning | 推理块与活动浮条"]
+link: ["panel-chat-tools | 工具卡与图标行", "panel-chat-reasoning | 推理块"]
 ---
 
 # 工作行（工具 / 推理 / 子代理）
 
 > **定位**：消息列里「工作行」这一行类型的契约——连续的工具 / 推理 / 子代理消息为什么合并成同类「工作项」、chip 与小圆角排布、开合策略与读秒从何而来，以及子代理委派行的完整语义。读者：维护 `WorkRunGroup.vue` 与 `state_domains/timeline.ts` 的开发者。
 >
-> **位置**：工作行是[会话消息区](./panel-chat-messages.md)的一种行——合并发生在 `ChatView` 的 `messageRows` 里，滚动、窗口切片、历史合并与缓存都沿用消息区机制（本页不重复）。两种子类型见[工具卡与图标行](./panel-chat-tools.md)与[推理块与活动浮条](./panel-chat-reasoning.md)。
+> **位置**：工作行是[会话消息区](./panel-chat-messages.md)的一种行——合并发生在 `ChatView` 的 `messageRows` 里，滚动、窗口切片、历史合并与缓存都沿用消息区机制（本页不重复）。两种子类型见[工具卡与图标行](./panel-chat-tools.md)与[推理块](./panel-chat-reasoning.md)。
 
 ## 工作行模型
 
@@ -39,7 +39,7 @@ link: ["panel-chat-tools | 工具卡与图标行", "panel-chat-reasoning | 推�
 | 工作项 | 渲染 | 契约 |
 |---|---|---|
 | `tool` | `ToolIcon` chip 行 + 详情卡 | [工具卡与图标行](./panel-chat-tools.md) |
-| `reasoning` | `ReasoningText` 正文层 | [推理块与活动浮条](./panel-chat-reasoning.md) |
+| `reasoning` | `ReasoningText` 正文层 | [推理块](./panel-chat-reasoning.md) |
 | `subagent` | 青色 chip + 结论展开 | 本文「子代理委派行」 |
 
 实现：`WorkRunGroup.vue`（行容器 `work-run-group` + chip 行 `__row`、开合决策 `reconcile`、读秒 ticker）、`ChatView.vue` 的 `messageRows` / `buildWorkRow`（工作项投影与相邻合并、`workRowCache` WeakMap 复用）、`state_domains/timeline.ts`（时间线投影、配对与收尾）、`ToolIcon.vue`（工具图标与运行动画）。同一组件也被**分支详情弹层**复用——`BranchModal.vue` 把分支里的工具调用与思考组装成同样的 `WorkRunItem[]`（`kind: 'work-group'` 行），两处的 chip 行视觉与开合语义因此一致。

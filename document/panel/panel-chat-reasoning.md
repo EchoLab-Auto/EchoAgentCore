@@ -1,14 +1,14 @@
 ---
 id: panel-chat-reasoning
-title: "推理块与活动浮条"
+title: "推理块"
 group: 前端
 x: 5920
 y: 1620
 ---
 
-# 推理块与活动浮条
+# 推理块
 
-> **定位**：工作行 reasoning 项的正文层（`ReasoningText`），以及运行态相位文案的判据（其呈现已迁到输入区状态行）——实时与历史两种呈现、默认折叠与推演滚动跟随、落位与可见性判据。读者：维护 `ReasoningText.vue` / `WorkRunGroup.vue` 的开发者。上游：[工作行](./panel-chat-work.md)；去重与水位线见[历史与实时窗口](./panel-chat-history.md)。
+> **定位**：工作行 reasoning 项的正文层（`ReasoningText`）——实时与历史两种呈现、默认折叠与推演滚动跟随、落位与可见性判据。读者：维护 `ReasoningText.vue` / `WorkRunGroup.vue` 的开发者。上游：[工作行](./panel-chat-work.md)；去重与水位线见[历史与实时窗口](./panel-chat-history.md)。
 
 ## 推理块的呈现
 
@@ -29,11 +29,3 @@ y: 1620
 - **落位**：推理条目按 `state.trunk` 的到达顺序插进时序——思考夹在前后两次工具调用之间，不堆到主回复后面；历史快照与实时窗口合并时同样按这个顺序落位（见[历史与实时窗口](./panel-chat-history.md)）
 - **可见性与去重**：推理**永不**按 seq 水位线过滤；实时孪生被权威条目认领时保留 `seq = 0`（见[历史与实时窗口](./panel-chat-history.md)）。去重只走内容判据：剥掉线上截断标记后比前缀——推理在线上会被 `elide_reasoning_for_wire` 截断，全文与截断文本永远无法「完全相等」，按 strict 判等会把同一条思考判成两条
 
-## 活动浮条（2026-10 已迁出：见输入区状态行）
-
-原先这里是输入区左上方那颗玻璃胶囊浮条。**它已不再是本页的一部分**——搬进了输入区、成为文本域下方的状态行（`.chat-status`），原因与几何见 [输入区](./panel-chat-input.md)「状态行」。
-
-保留这一节只为两件事：
-
-- **相位文案的判据仍在本主题域**：`ChatView.vue` 的 `activityText` 按 `state.activities[key].phase` 分三种——`thinking` → `正在思考：{detail}…`（无 detail 时「正在思考…」）/ `tool` → `正在调用工具 {detail}…`（该工具对当前 persona 不可见时降级为「正在处理…」）/ `subagent` → `子代理工作中：{detail}…`（无 detail 时「子代理工作中…」）。相位由 `state.ts` 在各种 `BackendEvent` 上切换，见 [协议与数据流](../protocol/protocol.md)。
-- **不要再往入口行加状态类元素**：入口行是 `display:flex` 的横滚工具条，插入/移除子项会推动整排按钮左右移动；状态、进度这类「随时出现、文案还会变长」的东西一律进输入区。

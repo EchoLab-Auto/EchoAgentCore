@@ -29,7 +29,7 @@ graph LR
   Msg --> Time[主时间线时序与动画|/panel/panel-chat-timeline.md]
   Msg --> Work[工作行|/panel/panel-chat-work.md]
   Work --> Tool[工具卡与图标行|/panel/panel-chat-tools.md]
-  Work --> Rea[推理块与活动浮条|/panel/panel-chat-reasoning.md]
+  Work --> Rea[推理块|/panel/panel-chat-reasoning.md]
 ```
 
 ## 分区与子契约
@@ -42,7 +42,7 @@ graph LR
 | ↳ 时序 | [主时间线时序与动画](./panel-chat-timeline.md) | 及时性、时序表现、动画反馈与边界 |
 | ↳ 工作行 | [工作行（工具 / 推理 / 子代理）](./panel-chat-work.md) | 工作项模型与相邻合并、chip 与开合策略、读秒、子代理委派 |
 | ↳↳ 工具 | [工具卡与图标行](./panel-chat-tools.md) | 工具卡生命周期、配对与收尾、图标行折叠/动画/展开 |
-| ↳↳ 推理 | [推理块与活动浮条](./panel-chat-reasoning.md) | 推理块实时与历史、折叠与跟随、落位与可见性、浮条 |
+| ↳↳ 推理 | [推理块](./panel-chat-reasoning.md) | 推理块实时与历史、折叠与跟随、落位与可见性 |
 | 输入区 | [输入区与入口行](./panel-chat-input.md) | 发送与文本域、图片附件、取消任务、入口行按钮、弹层几何 |
 | 侧栏 | [双侧边栏（chat-rail）](./panel-chat-rail.md) | 两列布局与列显隐、卡片拖动、避让与间距、卡片清单与门控 |
 
@@ -57,6 +57,6 @@ graph LR
 ## 阅读路径
 
 - **要改消息怎么画**：本页 → [会话消息区](./panel-chat-messages.md) → [消息列表与滚动](./panel-chat-list.md) → [历史快照与实时窗口](./panel-chat-history.md)
-- **要改运行过程怎么呈现**：本页 → [会话消息区](./panel-chat-messages.md) → [工作行](./panel-chat-work.md) → [工具卡与图标行](./panel-chat-tools.md) / [推理块与活动浮条](./panel-chat-reasoning.md)；时序与动画基线见[主时间线时序与动画](./panel-chat-timeline.md)
+- **要改运行过程怎么呈现**：本页 → [会话消息区](./panel-chat-messages.md) → [工作行](./panel-chat-work.md) → [工具卡与图标行](./panel-chat-tools.md) / [推理块](./panel-chat-reasoning.md)；时序与动画基线见[主时间线时序与动画](./panel-chat-timeline.md)
 - **要改输入与入口**：本页 → [输入区与入口行](./panel-chat-input.md)
 - **要改侧栏**：本页 → [双侧边栏（chat-rail）](./panel-chat-rail.md)；外壳几何见[桌面端布局](./panel-desktop-layout.md)

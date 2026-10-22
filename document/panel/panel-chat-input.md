@@ -8,7 +8,7 @@ y: 1060
 
 # 输入区
 
-> **定位**：会话视图底部输入区的交互——发送、文本域、图片附件、取消任务的乐观中断，以及文本域下方的运行状态行。读者：维护 `ChatView` 输入侧与库 `ChatComposer` 集成的开发者。上游：[会话视图](./panel-chat.md)；上方的功能条与弹层见本文「入口行」一节。
+> **定位**：会话视图底部输入区的交互——发送、文本域、图片附件、取消任务的乐观中断，以及文本域下方的运行状态行（会话生效 API + 相位文案）。读者：维护 `ChatView` 输入侧与库 `ChatComposer` 集成的开发者。上游：[会话视图](./panel-chat.md)；上方的功能条与弹层见本文「入口行」一节。
 
 ## 发送
 
@@ -26,13 +26,44 @@ y: 1060
 
 ## 状态行
 
-文本域（含其右侧操作行）**下方**的一行运行态提示：旋转 spinner（0.8s）+ 相位文案，仅当前会话忙碌时存在，相位结束（`completed`/`failed`）即整行移除（不是变灰留白）。
+文本域（含其右侧操作行）**下方**的一行运行态提示，两段：
+
+```
+[ deepseek / deepseek-flash ]  ◌ 正在思考…
+└────── API 徽标 ──────┘        └─ 相位文案 ─┘
+```
+
+仅当前会话忙碌时存在，相位结束（`completed`/`failed`）即整行移除（不是变灰留白）。
 
 - **位置**：`.chat-composer-float__glass` 内部的最后一项——即在输入区自己的圆角轮廓里、文本域之下（实测文本域底 824 → 状态行顶 830，间隙 6px）。**不在入口行里**：入口行是 `display:flex` 的横滚工具条，插入/移除子项会推着 Agent 切换器到「模型」整排按钮左右移动，文案变长还会抖动；搬进输入区后入口行排布恒定
-- **文案**（`ChatView.vue` 的 `activityText`，判据见[推理块与活动浮条](./panel-chat-reasoning.md)）：`正在思考：{detail}…` / `正在调用工具 {detail}…`（工具已对当前 persona 禁用时降级为「正在处理…」）/ `子代理工作中：{detail}…`
-- **截断**：单行 `text-overflow: ellipsis`，桌面不设上限（容器宽度兜底）、窄屏 `max-width: 62vw`——子代理任务名上限 72 字符，不截断会撑高输入区、吃掉消息区可视高度
-- **无障碍**：`role="status"` + `aria-live="polite"`（相位变化播报但不打断输入），spinner 为装饰，`aria-hidden`
-- **带来的一次位移**：状态行出现/消失让输入区高 68 → 90px，入口行按 `entryBottom = 输入区高 + 24` 同步上移（ResizeObserver），二者间隙恒定（桌面 7px / 移动端 10px，均等于 `24 − 屏幕留白`）。消息区 `padding-bottom` 是固定值（桌面 190 / 移动 130），状态行只占 22px，余量足够
+
+### API 徽标（左）
+
+显示**本会话实际生效**的 `provider / model`（`ChatView.vue` 的 `apiLabel`），解析顺序与会话弹层的「会话级 API」下拉严格同源：
+
+1. 会话级覆盖 `state.sessionApiOverrides[sessionId]`
+2. persona 级 `state.api.active_api`
+3. 顶层默认配置（`state.api.provider` / `state.api.model`）
+
+为什么必须按这个顺序而不是直接读入口行的「模型」按钮：那个按钮显示的是 **persona 级** `active_api`，而工作区对话可以单独指定 profile（会话级覆盖），两者会不一致——看按钮会看错「这条回答是谁在产出」。悬停 `title` 补两层信息：`来源：本会话覆盖 / persona 激活 / 顶层默认配置 · profile「名字」`。
+
+几何：`flex: 0 0 auto`（不参与收缩，避免被相位文案挤掉）+ `max-width: 55%`（超长 provider 名内部省略）。55% 不是随手取的——`deepseek / deepseek-flash` 在 320 宽下需要 ~148px，45% 会吃掉最后一两个字符。
+
+### 相位文案（右）
+
+`ChatView.vue` 的 `activityText`，按 `state.activities[key].phase` 三分支：
+
+| phase | 文案 | 由谁置位（`state.ts`） |
+|---|---|---|
+| `thinking` | `正在思考：{detail}…`（无 detail 时「正在思考…」） | `LlmRequest`（发出请求、等模型）；`ToolResult`（工具跑完、等模型继续，detail 为空）；`SubagentCompleted`（detail = 「正在整合 subagent 结果」/「subagent 失败，正在恢复」） |
+| `tool` | `正在调用工具 {detail}…`；该工具对当前 persona 已禁用时降级为「正在处理…」 | `ToolCall`（`tool_name` 非 `run_subagent`） |
+| `subagent` | `子代理工作中：{detail}…`（无 detail 时「子代理工作中…」；detail 截 72 字符） | `ToolCall`（`run_subagent`）或 `SubagentSpawn` |
+
+`completed` / `failed` 不产生文案 —— 整行卸载。
+
+- **截断**：单行长 `text-overflow: ellipsis`；窄屏 `max-width: 62vw`——子代理任务名上限 72 字符，不截断会撑高输入区、吃掉消息区可视高度
+- **无障碍**：live region 只包相位文案（`.chat-status__live`，`role="status"` + `aria-live="polite"`）——API 名是静态信息，重复播报只会吵；spinner 为装饰，`aria-hidden`
+- **带来的一次位移**：状态行出现/消失让输入区高 68 → 91px，入口行按 `entryBottom = 输入区高 + 24` 同步上移（ResizeObserver），二者间隙恒定（桌面 7px / 移动端 10px，均等于 `24 − 屏幕留白`）。消息区 `padding-bottom` 是固定值（桌面 190 / 移动 130），状态行只占 23px，余量足够
 
 ## 图片附件
 
@@ -41,7 +72,7 @@ y: 1060
 ## 取消任务
 
 - 仅当前会话忙碌时出现在操作区。点击 = **先本地乐观中断、再下发命令**（`App.vue` 的 `cancelWork`）：
-  1. 本地 `cancelSessionWork`（`state.ts::cancelSessionWork`）立即生效——活动相位 → completed（浮条/取消按钮即时消失）；该会话 running 任务及其分支 → cancelled；主时间线与分支 tab 内 running 工具卡 → failed 并写入「（已取消）」
+  1. 本地 `cancelSessionWork`（`state.ts::cancelSessionWork`）立即生效——活动相位 → completed（状态行/取消按钮即时消失）；该会话 running 任务及其分支 → cancelled；主时间线与分支 tab 内 running 工具卡 → failed 并写入「（已取消）」
   2. 下发 `CancelRequestedWork{session_id, all:false, team_id: 当前Agent}`——`team_id` 必须携带，否则命令路由到默认 Agent，self-coding 场景下"取消 0 个任务"；后端取消成功即回 `AgentCompleted` 对齐状态
   3. 库组件自带的取消按钮不渲染（`cancelable: false`，`@cancel` 仅作转发）
 
