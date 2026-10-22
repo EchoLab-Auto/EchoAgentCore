@@ -35,7 +35,9 @@ y: 1060
     └── __body                  内层：padding + 内容（附件 / ChatComposer / 状态行）
 ```
 
-- **卡片负责**：半透明底（`--nm-glass-bg`）、`backdrop-filter`、以及 **`glass="float"` 档的向外环境投影**（`0 4px 16px` ambient + `0 2px 4px` 加深）—— 视觉上是一块**浮在消息之上的磨砂托盘**（悬浮，不是凹槽）。输入区覆盖两件事：圆角取 `--composer-radius`（选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*` 档位）、挂超椭圆 `clip-path`。
+- **卡片负责**：半透明底（`--nm-glass-bg`）、`backdrop-filter`、**`glass="float"` 档的向外环境投影**（`0 4px 16px` ambient + `0 2px 4px` 加深）—— 视觉上是一块**浮在消息之上的磨砂托盘**（悬浮，不是凹槽）。
+- **轮廓也归卡片**（2026-10）：不再由面板写 `clip-path`，而是声明库的两个 prop —— 移动端传 `:clip-path`（设备屏角的偏移曲线），桌面/直角屏传 `:squircle="2.5"`（按卡片生效的 `border-radius` 生成等半径超椭圆）。超椭圆几何内核在 `@echolab-auto/ui-frame/utils`（`sampleCornerOffset` / `squircleClipPath` / `pointsToPathData` …），本仓库的 `src/utils/squircle.ts` 只剩 Panel 特有的组合 `composerOutline`。
+- 面板仍负责圆角**档位**：`--composer-radius`（桌面 24 / 窄屏走贴角派生），选择器带 `.chat-composer-float` 前缀压过卡片自己的 `--nm-border-radius-*`。
 - **`ChatComposer` 侧另有一处内辉光**：`focus-effect="glow"` —— 聚焦时主色光从输入槽**内部**亮起（`inset 0 0 18px` 光晕 + 1px 内描边，抑制默认外环）。
 - **`backdrop-filter` 降到 10px**（库默认 20px + saturate）：用 `--nm-glass-blur` 变量覆盖，沿用 2026-09 的拖选性能结论。聚焦/拖选期间 `.chat-composer-float--busy` 直接关掉 blur 并换成不透明底色。
 
