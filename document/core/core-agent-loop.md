@@ -63,7 +63,7 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 
 ## echo-loop：可替换的默认驱动（TurnRunner）
 
-`echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。组合根经 `ctx.loop` 注册 `TurnRunner`（`LoopOptions`：`max_tokens` 与 `max_tool_iterations` 来自配置），挂载不同实现即可改变驱动行为；消费方（agent、UI、hook）只依赖生命周期事件。
+`echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。驱动实例由 `echo-plugin-loop` 在 mount 期构造并 `provide` 成 `loop` 服务（`LoopOptions`：`max_tokens` 与 `max_tool_iterations` 来自配置），组合根在挂载完成后解析它——**解析失败即启动失败**；换驱动 = 换一个 `provide` 同一服务键的插件。消费方（agent、UI、hook）只依赖生命周期事件。
 
 - **生命周期事件**（全部经 `EventBus` 分发）：`TurnStart` / `AgentPreStep`（waterfall，可改写消息或拒绝 step）/ `StepStart` / `AgentRequest`（waterfall，可改写请求）/ `ToolCallRequested` / `ToolResult` / `StepEnd` / `TurnStopping`（Observe——`Serial` 目前无生产发射方）/ `TurnEnd`
 - **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。审批、审计、限流等策略的设计接入方式为管道中间件（非循环代码，新策略 = 一次 `push_pre`/`push_post`；机制已备，当前生产路径未注册任何中间件）；**工具超时守卫**由 harness 侧统一实施（`Agent::tool_guard_timeout`：配置 `tool_timeout_secs` base + 工具自声明 `timeout_hint`）——超时只中止该工具、不中断 turn，结果以 notice 喂回模型，事件日志补记中断结果保持成对
@@ -71,11 +71,11 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 
 ### 注入与分派
 
-**注入**：组合根构建唯一的共享 `TurnRunner`（provider 已包计量 + 脱敏装饰；
-`LoopOptions` 来自配置），并在两处无条件注入（`Agent::set_loop_runner`）：
+**注入**：全场只有一个共享 `TurnRunner`（由 `echo-plugin-loop` `provide`，其 provider
+已包计量 + 脱敏装饰），组合根解析后在两处无条件注入（`Agent::set_loop_runner`）：
 
 - **启动期**：人格启动循环（`apply_capabilities` 之后）；
-- **运行期新建人格**：`set_agent_factory` 的包装。
+- **运行期新建人格**：`AgentManager::set_factory` 注入的重建闭包里同样的注入。
 
 未注入 runner 的 `Agent`（单元测试 / 独立嵌入）在首个 turn 按自身 provider
 与配置惰性构建一个默认 runner（`turn::turn_runner`）。

@@ -14,7 +14,7 @@ link: ["frame | 框架（内核）", "plugins | 插件化设计 | l>b"]
 
 ## Core 的组成
 
-Core（EchoAgentCore）是 Agent 后端核心服务，Rust 实现。组合根在 `source/core/src/main.rs`；核心库为 `source/backend/echo-agent`（框架核心在 `agent/`；插件机制在 `source/plugin/`，内置插件实现各自成 crate；宿主侧 `packages/` 只剩三个仍内联的包：`tools_builtin`（装配壳 + `api_profiles` + 自停拦截）/ `instance_ops` / `federation`），协议定义在 `source/protocol/echo-protocol`。
+Core（EchoAgentCore）是 Agent 后端核心服务，Rust 实现。组合根在 `source/core/src/main.rs`；核心库为 `source/backend/echo-agent`（框架核心在 `agent/`；插件机制在 `source/plugin/`，内置插件实现各自成 crate；宿主侧 `packages/` 只剩三个仍内联的包：`tools_builtin`（只做端口接线——工具实现全在 `echo-plugin-tools`）/ `instance_ops`（入站桥）/ `federation`（兼容面）），协议定义在 `source/protocol/echo-protocol`。
 
 Core 由两支组成：
 
@@ -24,7 +24,7 @@ Core 由两支组成：
 ## 进程与运行速览
 
 - 由 systemd 用户服务运行；组合根为 `source/core/src/main.rs`——二进制 / libexec 命名与启动装配顺序见 [框架（内核）](./frame.md)「进程结构」「组合根与启动装配」
-- Panel 经 management WebSocket 与 Core 通信——所有人格事件直投进程级汇聚点（`EventSink`），单连接即可看到全部活动；运维命令与服务管理见 [部署与自更新](../ops/ops-deploy.md)
+- Panel 经 management WebSocket 与 Core 通信（管理面插件提供，见 [插件化设计](../plugins/core-plugins.md)）——所有人格事件直投进程级汇聚点，单连接即可看到全部活动，机制见 [框架（内核）](./frame.md)「服务定位与事件」；运维命令与服务管理见 [部署与自更新](../ops/ops-deploy.md)
 
 ## 配置入口
 
@@ -39,4 +39,4 @@ Core 由两支组成：
 | `[federation]` | Core↔Core 联邦（`listen` / `node_name` / `[federation.peers.*]`） |
 | `[plugins.*]` | 插件级配置（如 `[plugins.system_prompt]`） |
 
-进程外插件**与内置插件的组合**清单都是同目录的 `plugins.toml`：`kind = "stdio"` 行登记子进程插件，`kind = "builtin"` 行决定内置插件的集合 / 顺序 / 启用态（不存在 = 外部插件特性休眠、内置插件按目录默认全启用；未提到的内置插件照旧挂载）。分层合成结果可用 `echo-agent-core dump-config` 查看。持久化机制、原子写与改名语义见 [配置持久化](./core-config-persistence.md)。
+进程外插件**与内置插件的组合**清单都是同目录的 `plugins.toml`（`kind = "stdio"` 登记子进程插件、`kind = "builtin"` 决定内置插件的集合 / 顺序 / 启用态）——装载语义与 `dump-config` 的用法见 [框架（内核）](./frame.md)「组合根与启动装配」；持久化机制、原子写与改名语义见 [配置持久化](./core-config-persistence.md)。

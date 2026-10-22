@@ -11,15 +11,13 @@ y: 1300
 > **定位**：本文描述 **Core 的配置持久化**——ConfigStore 原子落盘、Agent 配置与 QQ 门控配置的写入路径、加载期迁移，以及会话/工作区文件布局。读者：需要理解"Panel 上改的东西存到哪、怎么存"的开发者。
 > 相关：[Core 后端](./core.md)（配置入口）、[会话记忆](./core-memory.md)（日志与投影机制）、[多 Agent 与会话](./core-agents.md)（人格与会话模型）。
 
-## 概述
-
 EchoAgentCore 的运行期配置写入通过共享 `ConfigStore` 原子化落盘；启动加载不经它（`CoreConfig::load` 直接读文件）。
 
 | 类型 | 机制 | 写入 section |
 |---|---|---|
 | Agent 配置（API key、模型、profiles） | `ConfigStore::patch()` 替换 `[agent]` | `[agent]` |
 | 全局系统提示词 | `persist_system_prompt_plugin()` → `ConfigStore::patch()` | `[plugins.system_prompt].text` |
-| 实例门控配置（gate mode、白名单、黑名单） | **无（不写 core.toml）**——归插件自己的 state 文件，见 §QQ 门控配置持久化 | `<配置目录>/<platform>-<实例>.toml` 的 `[adapters.<platform>]` |
+| 实例门控配置（gate mode、白名单、黑名单） | **无（不写 core.toml）**——归插件自己的 state 文件，见 §实例门控配置持久化 | `<配置目录>/<platform>-<实例>.toml` 的 `[adapters.<platform>]` |
 
 `ConfigStore` 内部使用 `std::sync::Mutex` 序列化所有写入，读写一次全文件，
 各调用者（各 persona 的 Agent + 插件实例宿主视图）共享同一实例，**杜绝并发写互相覆盖**。插件自己的运行期状态（门控/名单/端口）不经过它——那是插件 state 文件的另一个 `ConfigStore` 实例。
@@ -117,7 +115,7 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 
 `[agent].provider` 取值：`openai` / `deepseek` / `third-party`（OpenAI 兼容，base_url 以 `/anthropic` 结尾时自动走 Messages 协议）、`anthropic` / `claude`、`kimi`（Kimi Code 订阅：Anthropic 兼容端点 `https://api.kimi.com/coding`，`x-api-key` 在 Kimi Code Console 创建，推理档位 `output_config.effort` low/high/max）、`ollama`。
 
-## QQ 门控配置持久化（插件侧，2026-10 起）
+## 实例门控配置持久化（插件侧）
 
 > **关键区分**：门控 / 名单 / owner 的持久化**不再写 core.toml**。它们由 QQ 插件
 > 写入自己的**实例 state 文件**（`state_file`，宿主经 `Hello.config` 下发，
@@ -137,8 +135,7 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 | Panel 切黑名单群 / 用户 | `update_denylist()` → 落盘 `[adapters.qq].filter.denylist` |
 | Panel 设 owner | `set_owner()` → 落盘 `[adapters.qq].owner_qq` |
 
-（`command_prefix` 字段仍在插件配置里，但**当前无消费方**——Core 侧的平台消息命令
-已于 2026-10 随「出站面收窄」删除，插件也未实现命令解析。）
+（`command_prefix` 字段仍在插件配置里，但**当前无消费方**——Core 侧的平台消息命令随「出站面收窄」删除，插件也未实现命令解析。）
 
 ### 数据流
 
@@ -146,7 +143,7 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 Panel 操作（实例弹层）
   → BackendCommand::InvokeInstanceOp { instance, method, payload }
       （method = set_gate_mode / update_allowlist / update_denylist / set_owner …）
-  → Agent::apply_command() → apply_instance_command()（按 instance 实例名寻址）
+  → 命令泵 → `echo-plugin-tools::instance_commands`（按 instance 实例名寻址）
     → 进程外插件经 Invoke("<instance>:custom", {method, payload}) 转发
       → 插件更新内存中的 runtime 字段 + 重建过滤管道（立即生效）
       → 插件 ConfigStore::patch(|root| { 在 root["adapters"]["qq"] 下写 gate/filter/owner })
@@ -255,5 +252,5 @@ ports = { reverse_ws = 3131, onebot_http = 3000, webui = 6099 }
   命中」与实测相反，已按实测口径更正）。
 - **协议**：`QueryApiMetrics{name}`（空 = 默认 + 全部 profile）→ `ApiMetrics`
   事件（`entries: [{name, balance[], usage[], cost_currency}]`；`usage` 按
-  小时 × 模型聚合）。实现：`echo-agent/src/metrics.rs`（存储/剪枝/定价）+
+  小时 × 模型聚合）。实现：`echo-plugin-provider-llm` 的 `metrics.rs`（存储/剪枝/定价；`echo-agent/src/metrics.rs` 只留 re-export）+
   `agent/api_admin.rs`（查询响应 / 周期任务）。

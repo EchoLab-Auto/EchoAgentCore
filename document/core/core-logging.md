@@ -83,12 +83,12 @@ tracing::info!(
 
 已知边界：轮转与压缩是同步 IO，发生在写日志的线程上（触发频率很低，量级是每个文件一次）；需要极致吞吐的场景请走 stdout + journald。
 
-## 级别热更新与 panic
+## 级别热更新与排查入口
 
 - **`SIGHUP` 重读 `[logging].level`**：`systemctl --user reload echo-agent-core`（或 `kill -HUP <pid>`）。热更新只换过滤器，不动 writer，因此在途请求不受影响；解析失败时保留原级别并打一条 WARN。改级别不必重启进程（重启要等在途回复 drain）。
 - **panic 钩子**：panic 先以 `ERROR` 事件记一条（含位置与消息），再走默认钩子保留 stderr 与 backtrace。这样配了 `log_file` 时崩溃也能进日志文件，而不是只有 stderr 有。
 
-## 排查入口
+常见排查起点：
 
 | 想知道 | 查什么 |
 |---|---|

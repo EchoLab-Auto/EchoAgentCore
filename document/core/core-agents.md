@@ -24,7 +24,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 - `AgentSupervisor` 按配置创建所有人格；`make_agent` 闭包为每人格独立组装工具注册表（内置工具 + 该人格插件实例**声明的**工具 + 包元数据）
 - 每人格独立事件总线；**所有人格**（含运行期新建）的 `emit` 都直投进程级事件汇聚点（`EventSink`），Panel 单连接即可看到全部活动（无「镜像进默认人格」转接）
-- 会话文件隔离：统一 `echo-sessions-{id}.json`（旧 `echo-sessions.json` 首次启动自动改名迁移）；会话持久化路径与配置 TOML **解耦**（`set_config_store` 只管 `[agent]` TOML，`set_session_persist_path` 另设 JSON 事件溯源文件，绝不可同路径互写）
+- 会话文件隔离：统一 `echo-sessions-{id}.json`（旧 `echo-sessions.json` **只在存在 `default` 人格时**于首次启动改名迁移，迁移条件与版本口径见 [配置持久化](./core-config-persistence.md)「Session 持久化」）；会话持久化路径与配置 TOML **解耦**（`set_config_store` 只管 `[agent]` TOML，`set_session_persist_path` 另设 JSON 事件溯源文件，绝不可同路径互写）
 - **Persona 级 API**：`[agent.teams.{id}].api_profile = "<供应商池名>"` 只做**引用**，值存于全局 `[agent].api_profiles`；配置了引用的人格启动时用 `apply_named_profile` 解析并**独立构建自己的 provider**（不共享默认 provider）；未配置 = 跟随全局默认（顶层 + active_api）
 
 ## 会话模型
@@ -69,13 +69,15 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - 系统提示词注入该通道自己的项目信息（**按会话解析**，见下「提示词解析粒度」）；
 - `workspace` 工具默认操作该工作区；`use` 支持可选 `conversation` 直接激活某对话。
 
-**提示词解析粒度**（多窗口语义）。每轮 turn 组装系统提示词时，工作区块按**本次 turn 的 `session_id`** 解析（`Agent::workspace_prompt_text_for` → `WorkspaceStore::prompt_text_for`），不再无条件读 per-persona 全局 `active`：
+**提示词解析粒度**（多窗口语义）。每轮 turn 组装系统提示词时，工作区块按**本次 turn 的 `session_id`** 解析（`echo-plugin-workspace` 的 `WorkspaceStore::prompt_text_for`），不再无条件读 per-persona 全局 `active`。
+
+这个块**不是**装配函数的位置参数：它以 `Contribution::Text` 的形式由 `PluginHost::collect_text_blocks` 收集后交给 `agent/prompt.rs`，块 `kind` 取插件的 `key`（`workspace`）——装配与"有几个插件要注入内容"解耦，新增这类插件不用改装配签名。
 
 | 本次 turn 的会话 | 注入内容 | 解析路径 |
 | --- | --- | --- |
 | 工作区通道 `local:workspace:<ws>[/<conv>]:<user>` | 该通道所属工作区与对话（名称/描述、当前对话名与 id、目录清单） | `prompt_text_for` |
 | 非通道会话（默认本地会话 `local:tui::local_user`、QQ 会话等） | 回退全局 `active`——单窗口旧语义：激活工作区后默认本地会话仍看得到项目上下文 | `prompt_text` |
-| workspace 插件不在该 persona 白名单 | 不注入 | `workspace_plugin_allowed` |
+| workspace 插件未启用，或不在该 persona 白名单 | 不注入（该插件不产出文本贡献） | 插件启用态 + persona 白名单 |
 
 - **多窗口语义**：`active` 仍是 per-persona 单槽，但它只记录「最后被激活的是谁」，用于本窗口视图跟随（见「前端联动规则」）与非通道会话兜底；**它不再决定某个通道会话拿到哪个项目的上下文**。A 窗口激活 W2 后，B 窗口在 W1 通道发消息仍只拿到 W1 的目录与对话名——按全局 active 注入时，B 的请求会被塞进 W2 的项目上下文（前端无法修正的语义级串台）
 - 两条路径共用 `render_prompt_text` 拼文案，避免同一段提示词在两处漂移；通道 id 解析走 `parse_workspace_channel`，legacy 裸通道（scope 段无 `/`）按 `legacy == true` 定位对话，而不是猜 id 恰好是 `main`
@@ -91,7 +93,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - 正在查看 QQ 等非 Local 来源会话时，本窗口自己的激活回推也不抢回视图（切回 Local 时落到 active 对应通道）；
 - QQ 等外部来源不受切换影响：查看/切换不改 active，独立上下文照旧按会话隔离，激活只改变其提示词注入。
 
-**⑥ 文件浏览器（Panel 侧）**：工作区面板左栏提供**只读文件浏览器**（`RequestWorkspaceFiles` → `WorkspaceFiles`）——多根切换、面包屑导航、目录下钻与回退、文件大小展示。服务端以 canonical 路径前缀校验把浏览范围**限定在会话声明的工作区目录及其子孙内**（符号链接按解析后的真实路径比较；`/a/bc` 不会被 `/a/b` 误放行），越界或不存在经 `WorkspaceFiles.error` 回传；隐藏项（`.` 开头）跳过、单目录超 `FILES_CAP`（500）截断。弹层几何见 [Panel 会话视图](../panel/panel-chat.md)§7.7。
+**⑥ 文件浏览器（Panel 侧）**：工作区面板左栏提供**只读文件浏览器**（`RequestWorkspaceFiles` → `WorkspaceFiles`）——多根切换、面包屑导航、目录下钻与回退、文件大小展示。服务端以 canonical 路径前缀校验把浏览范围**限定在会话声明的工作区目录及其子孙内**（符号链接按解析后的真实路径比较；`/a/bc` 不会被 `/a/b` 误放行），越界或不存在经 `WorkspaceFiles.error` 回传；隐藏项（`.` 开头）跳过、单目录超 `FILES_CAP`（500）截断。前端实现与其门控见 [Panel 双侧边栏](../panel/panel-chat-rail.md)「卡片清单与门控」。
 
 **⑦ 边界**：
 - 既有历史留在默认会话，**不自动迁移**；通道历史从激活起从头积累；
@@ -107,7 +109,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - **Package 跨维度**：勾选/取消勾选一个门控插件 = 启停整个包（plugin + 同名包工具 + 同名包技能，QQ 包示例：send_* 工具与 qq-management/qq-transport 一起开关）；详见 [插件化设计](../plugins/core-plugins.md)「Package」章节
 - **循环模式**（互斥插件 `echo-agent.loop.{single,parallel}`）由白名单推导：空表 = single（默认）；含 `loop.parallel` = parallel。推导单一来源 `TeamMember::loop_mode()`（只看白名单）
 - 全局 `[agent].disabled_tools`（Panel ToggleTool 持久化）启动时逐人格应用
-- **工作区提示注入同受门控**：`workspace` 插件不在该 persona 白名单时，提示词的两条解析路径都返回空（`Agent::workspace_plugin_allowed` 判定）——注入与 `workspace` 工具可见性用同一份白名单，不会出现「工具已禁用、项目上下文还在」
+- **工作区提示注入同受门控**：`workspace` 插件未启用或不在该 persona 白名单时，它不产出文本贡献，提示词里也就没有项目上下文（与 `workspace` 工具的可见性由**同一份白名单**推导）——不会出现「工具已禁用、项目上下文还在」
 
 ## 典型配置
 

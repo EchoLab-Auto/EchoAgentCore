@@ -28,7 +28,7 @@ y: 980
   `elapsed_ms` / 本步 `tool_call_ids`；serde 标签 `kind = "model_step"`，wire
   kind 为 `step/model`）、
   `Compaction`（压缩是显式事件，日志保持可重放；`[历史摘要]` 前缀在投影期恰好渲染一次）
-- `ModelStep` 是**观测缺口补丁（2026-10-19 审计）**：此前日志只有逐个 `ToolCall`，
+- `ModelStep` 是**观测缺口的补丁**：此前日志只有逐个 `ToolCall`，
   没有"这一响应里带了几个工具"的事实，审计只能用相邻 `started_at_ms` 间隔 <1s 猜
   同轮打包（实测 95% 的响应被判定为单调用轮，无法区分"模型只发一个"与"框架丢弃
   并行"）；它还带每步 token 与往返延迟，替代此前只能从 `echo-usage.jsonl` 全局汇总
@@ -46,7 +46,7 @@ y: 980
 - `SessionHeader` 携带 fork/resume 元数据（parent/seed_length/origin/delegation_depth），随日志持久化
 - 持久化：v6 整档 JSON（`events` 为权威，每事件带 `session` 归属；
   `identities`/`timeline` 为持久化投影；v6 起**不再存 `trunk_histories`**，加载时按 `events` 重投影），tmp+rename 原子写；
-  30s 周期保存（dirty 时）+ 关闭时 flush；v1-v4 旧格式加载期自动迁移
+  30s 周期保存（dirty 时）+ 关闭时 flush；**v5 及更旧**格式加载时自动迁移（v1-v4 先经事件化迁移再按 `session` 归因，写回即 v6）——口径与触发条件见 [配置持久化](./core-config-persistence.md)「Session 持久化」
 
 ## 可见性边界
 
