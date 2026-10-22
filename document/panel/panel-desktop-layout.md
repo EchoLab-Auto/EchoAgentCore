@@ -57,7 +57,7 @@ graph TB
 | 入口行 | `left 20px`、`bottom = entryBottom`、`gap 8px` | `.entry-row` |
 | 侧栏列下界 | `entryBottom + 45px`（入口行实测 37px + 8px 间隙） | `.chat-rail` 的 `bottom` |
 | 「回到底部」按钮 | 36×36；`right = trayPadRight + 16px`、`bottom = entryBottom + 45px` | `.chat-view__jump` |
-| 会话区覆盖面板 | 整个会话视图（`top/bottom: 0`，横向扣边栏留白）；内容让开入口行（`reserve`）；`z-index 6` | `SessionOverlay` + `ChatView` 的 `overlayInset` / `overlayReserve` |
+| 会话区覆盖面板 | `top: 0`、`bottom` = 入口行上边缘；横向扣边栏留白；`z-index 6` | `SessionOverlay` + `ChatView` 的 `overlayInset`（实测入口行 rect） |
 | Agent 切换器 | 卡片高 34px；菜单 = `PanelPopover`（宽 360px、内容 `max-height: 52vh`、锚点上方 8px） | `AgentSwitcher.vue` |
 | 设置视图 | 一级菜单 168px、条目列表 250px、API 概览 ≤720px | `SettingsView.vue` / `ApiSettings.vue` |
 | 卡片间距 | 槽位 12px（分隔条净占位 0） | `RailStack.vue` |
@@ -80,8 +80,8 @@ Panel 覆写 ui-frame 的样式时，**裸类选择器压不过库**——库规
 | --- | --- | --- |
 | 基础视图 | 0 | 当前视图组件 |
 | 边栏列 | 4 | 左右侧栏卡片列（`RailStack`） |
-| 会话区覆盖面板 | 6 | `SessionOverlay`（入口行七项共用外壳，几何 = 整个会话视图：盖住输入区，露出侧栏；**低于入口行 7**，使按钮在面板打开时仍可点 → 换面板只需一次点击） |
-| 输入区与「回到底部」 | 5 | 会话视图底部输入区、回到底部按钮（面板打开时被盖住） |
+| 会话区覆盖面板 | 6 | `SessionOverlay`（入口行七项共用外壳，几何 = 会话框顶 → 入口行上边缘，横向露出侧栏；**低于入口行 7**，使按钮在面板打开时仍可点 → 换面板只需一次点击） |
+| 输入区与「回到底部」 | 5 | 会话视图底部输入区、回到底部按钮（面板底边停在其上方，不重叠） |
 | 入口行 | 7 | 配置 / 上下文 / 清单 / 会话 / 工作区 / 实例 / 任务（+ 最左 Agent 切换）；**浮在覆盖面板之上**，面板打开时仍可点 |
 | Agent 菜单 | 30 | `AgentSwitcher` 的上弹菜单（`PanelPopover`；设置视图同段 30–31） |
 | 根 chip 速览 | 40 | 文件浏览器根路径 chip 悬停卡（仅文本、`pointer-events: none`） |
