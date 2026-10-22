@@ -48,18 +48,23 @@ y: 1060
 
 **但移动端必须补一层**（`__halo`），原因是 `clip-path`：
 
-> clip 裁的是元素**整个渲染结果**，连同它自己的外阴影一起裁掉。实测注入 6px 外投影红环：clip 生效只剩 955 个红像素、关掉 clip 是 47939 —— 差 50 倍。
+> clip 裁的是元素**整个渲染结果**，连同它自己的外阴影一起裁掉。实测注入 6px 外投影红环：clip 生效只剩 955 个红像素、关掉 clip 是 47939 —— 差 50 倍。更进一步：**关掉 halo 与关掉卡片 box-shadow 两张截图逐像素相同**（差 ≤1），所以移动端 `glass="float"` 的向外投影贡献为 0，外部明暗 100% 来自 `__halo`。
 
-所以手机上（贴 iPhone 超椭圆屏角、clip 生效）投影画不出来，只能由未裁剪的**兄弟节点**补：
+所以手机上（贴 iPhone 超椭圆屏角、clip 生效）投影画不出来，只能由未裁剪的**兄弟节点**补。它是**两层**（2026-10 用户报「边框有点下宽上窄」后改的）：
 
 | 层 | 职责 | 实现 |
 | --- | --- | --- |
-| `__halo` | 柔化 | `filter: blur(16px)` + `translateY(12px)`（光向下偏） |
-| `__halo::before` | 形状 | `background: var(--composer-halo)` + `clip-path: var(--composer-clip)`（与卡片同一轮廓） |
+| `__halo` | 柔化（两层的模糊一起做） | `filter: blur(10px)`，本体**不再位移** |
+| `__halo::before` | 环境层：四周均匀，给上边补边缘定义 | `background: var(--composer-halo-ambient)`（.08）+ 同一 `clip-path` |
+| `__halo::after` | 落地层：保留「光从上方来」的方向感 | `background: var(--composer-halo)`（.12）+ `translateY(4px)` + 同一 `clip-path` |
+
+**为什么必须两层**：单层 `translateY(12px) + blur(16px)` 而底部只有 12px 余量（间距 = 屏宽 3%），位移 + 模糊 = 28px 被视口硬切，底边挂一条浓暗带（峰值暗化 Δ29 vs 顶部 Δ13）；卡片又是 65% 半透明 + backdrop-filter，影子还透过玻璃把**卡片内部**下半区压暗（Δ13 vs Δ8）。人眼锚定「轮廓旁暗带的宽度和对比度」，于是读成「下宽上窄」—— 而折线本身的镜像偏差其实是 0.00px。
+
+改成双层 + 位移降到 4px 后：顶/底峰值 **1.17×**（原 2.2×）、暗化积分 **1.39×**（原 3.6×）、卡片内部上下差 1（原 5）。
 
 - **默认 `display: none`**，只在 `.chat-composer-float--clipped` 下开 —— 桌面没有 clip，卡片自带投影已够，叠一层就是双重阴影。
 - **绝不能挂 `backdrop-filter`**：`filter` 会创建新的 backdrop root，卡片的毛玻璃会失效。
-- 深色主题 `--composer-halo: rgba(0,0,0,.45)`（深底靠影）。
+- 深色主题两层各自调：`--composer-halo-ambient: rgba(0,0,0,.28)`（环境层，避免四周发闷）、`--composer-halo: rgba(0,0,0,.40)`（落地层）。
 
 ### 输入槽的聚焦内辉光
 
