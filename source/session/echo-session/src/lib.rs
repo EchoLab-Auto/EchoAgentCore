@@ -33,7 +33,10 @@ pub mod legacy;
 pub mod log;
 pub mod session_key;
 
-pub use compaction::{CompactGroup, CompactPreview, CompactionApplied, CompactionSummary};
+pub use compaction::{
+    CompactGroup, CompactPreview, CompactionApplied, CompactionPhase, CompactionProgress,
+    CompactionSummary,
+};
 pub use derive::{derive_messages, project_messages, CompactedRange};
 pub use event::{
     AssistantMessage, CompactionEvent, ReasoningEvent, SessionEvent, ToolCallEvent,

@@ -599,7 +599,7 @@ impl Agent {
                 if let Some(id) = team_id {
                     match self.registry().and_then(|r| r.resolve(&id)) {
                         Some(agent) => {
-                            match agent.trunk.archive_session(&session).await {
+                            match agent.archive_session_with_progress(&session).await {
                                 Ok(path) => {
                                     tracing::info!(
                                         team = %id,
@@ -626,7 +626,7 @@ impl Agent {
                         // （team 匹配）时，按转发语义直接处理自身——与
                         // ClearHistory 的兜底保持一致。
                         None if self.team_id().as_deref() == Some(id.as_str()) => {
-                            match self.trunk.archive_session(&session).await {
+                            match self.archive_session_with_progress(&session).await {
                                 Ok(path) => {
                                     tracing::info!(
                                         team = %id,
@@ -652,7 +652,7 @@ impl Agent {
                         }),
                     }
                 } else {
-                    match self.trunk.archive_session(&session).await {
+                    match self.archive_session_with_progress(&session).await {
                         Ok(path) => {
                             Self::emit_timeline_after_clear(self, None);
                             self.emit_context_snapshot_for().await;

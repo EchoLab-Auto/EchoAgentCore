@@ -117,11 +117,21 @@ impl CompactionHost for AgentCompactionHost<'_> {
         })
     }
 
-    fn progress(&self, message: String) {
-        self.agent.emit(crate::event::BackendEvent::Error {
-            session_id: None,
-            message,
-        });
+    /// 进度 → 线协议事件（面板画进度条）。
+    ///
+    /// 此前是把一句话塞进 `BackendEvent::Error`：面板会把它当**错误**处理
+    /// （弹提示、冻结流式行），而且没有任何分子分母，画不出进度。现在走
+    /// 专用事件，`Error` 只留给真正的失败与终态结果。
+    fn progress(&self, progress: &echo_session::CompactionProgress) {
+        self.agent
+            .emit(crate::event::BackendEvent::CompactionProgress {
+                team_id: self.agent.team_id(),
+                phase: progress.phase.as_str().to_string(),
+                done: progress.done,
+                total: progress.total,
+                sessions: progress.sessions,
+                message: progress.message.clone(),
+            });
     }
 
     fn apply<'a>(
@@ -147,10 +157,77 @@ impl Agent {
     /// 算法在插件里（`echo_plugin_loop::compaction::compact_history`）；本方法
     /// 只负责拿**压缩互斥锁**（2026-10 巡检 🔴：double compact / compact 与
     /// clear_history 竞争会按过时摘要重写日志、统计错乱）然后委托。
+    /// 上报一次压缩/归档进度（`CompactionProgress` 事件）。
+    ///
+    /// 归档与压缩共用同一条进度通道：面板只需订阅一个事件就能画两种操作，
+    /// 不必为"归档"再写一套 UI 状态。
+    pub(crate) fn emit_compaction_progress(
+        &self,
+        phase: echo_session::CompactionPhase,
+        done: usize,
+        total: usize,
+        sessions: usize,
+        message: impl Into<String>,
+    ) {
+        self.emit(crate::event::BackendEvent::CompactionProgress {
+            team_id: self.team_id(),
+            phase: phase.as_str().to_string(),
+            done,
+            total,
+            sessions,
+            message: message.into(),
+        });
+    }
+
+    /// 归档**单个会话**并上报进度（`archive` → `done` / `failed`）。
+    ///
+    /// 归档本身不快（序列化整档 + 写盘 + 清空 + 重投影），但历史大时也会到
+    /// 秒级；更重要的是**它有一个终态**——面板据 `done`/`failed` 收掉进度条，
+    /// 否则按钮会一直转。
+    pub async fn archive_session_with_progress(&self, session_id: &str) -> Result<String, String> {
+        use echo_session::CompactionPhase;
+        self.emit_compaction_progress(
+            CompactionPhase::Archive,
+            0,
+            0,
+            0,
+            format!("正在归档会话 {session_id} 的快照…"),
+        );
+        let result = self.trunk.archive_session(session_id).await;
+        match &result {
+            Ok(path) => self.emit_compaction_progress(
+                CompactionPhase::Done,
+                1,
+                1,
+                1,
+                format!("历史已归档：{path}"),
+            ),
+            Err(error) => self.emit_compaction_progress(
+                CompactionPhase::Failed,
+                0,
+                0,
+                0,
+                format!("归档失败：{error}"),
+            ),
+        }
+        result
+    }
+
     pub async fn compact_history(&self, keep_recent: usize) -> Result<String, String> {
         let _compact_guard = self.trunk.compact_lock().await;
         let host = AgentCompactionHost { agent: self };
-        echo_plugin_loop::compaction::compact_history(&host, keep_recent).await
+        let result = echo_plugin_loop::compaction::compact_history(&host, keep_recent).await;
+        // 失败也上报一次终态：否则面板的进度条会**永远转下去**（它只能靠
+        // 这个事件判断结束）。注意成功路径已在策略内部发过 `done`，这里
+        // 只补失败；`Error` 事件仍由调用方发（那是给用户的提示，不是进度）。
+        if let Err(reason) = &result {
+            use echo_plugin_loop::compaction::CompactionHost as _;
+            host.progress(&echo_session::CompactionProgress::step(
+                echo_session::CompactionPhase::Failed,
+                format!("压缩失败：{reason}"),
+            ));
+        }
+        result
     }
 }
 

@@ -653,6 +653,34 @@ pub enum BackendEvent {
     FederationInvite {
         invite: String,
     },
+    /// 压缩 / 归档的**进度**（`CompactHistory` / `ArchiveHistory` 执行期间）。
+    ///
+    /// 为什么要有独立事件：压缩会逐会话调 LLM 生成摘要，可能持续数分钟。
+    /// 此前 Core 只在开始与结束各发一句话（还借用 `Error` 事件），中间几分钟
+    /// 面板没有任何反馈 —— 用户无法区分"正在跑"与"卡死"，唯一能做的就是
+    /// 刷新重来，而重来会撞上 `compact_lock`（看起来像毫无反应）。
+    ///
+    /// 走线固定：`preview → archive → summarize(逐组递增) → apply → done`
+    /// （失败时最后一步是 `failed`，`message` 带原因）。面板据 `phase`
+    /// 决定进度条形态：`total == 0` 画不确定条，否则按 `done/total` 画。
+    CompactionProgress {
+        /// 归属 team（persona）。多上游面板据此把进度归到对应 agent。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
+        /// 阶段：`preview` / `archive` / `summarize` / `apply` / `done` / `failed`。
+        phase: String,
+        /// 已完成步数。
+        #[serde(default)]
+        done: usize,
+        /// 总步数（0 = 该阶段长度不确定）。
+        #[serde(default)]
+        total: usize,
+        /// 本次操作涉及的会话数。
+        #[serde(default)]
+        sessions: usize,
+        /// 面向用户的一句话（面板直接显示）。
+        message: String,
+    },
     /// The current conversation context snapshot (`RequestContext` response).
     ContextSnapshot {
         /// 快照归属的会话 id（多会话，2026-09；None = 未指定会话的回退口径）。
@@ -1570,6 +1598,7 @@ impl BackendEvent {
             Self::SessionMigrated { .. } => "SessionMigrated",
             Self::SelfUpdateStatus { .. } => "SelfUpdateStatus",
             Self::FederationInvite { .. } => "FederationInvite",
+            Self::CompactionProgress { .. } => "CompactionProgress",
             Self::ContextSnapshot { .. } => "ContextSnapshot",
             Self::ShellSessionsList { .. } => "ShellSessionsList",
             Self::ShellSessionStarted { .. } => "ShellSessionStarted",

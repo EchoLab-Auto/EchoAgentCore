@@ -64,6 +64,107 @@ pub struct CompactionSummary {
     pub replaced_count: usize,
 }
 
+/// 压缩/归档的**阶段**（面板据此决定进度条的形态）。
+///
+/// 走线（`serde` 名字即线上值）：`preview → archive → summarize → apply →
+/// done`（失败时最后一步是 `failed`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionPhase {
+    /// 计算压缩计划（只读，通常几十毫秒）。
+    Preview,
+    /// 写归档快照（磁盘 I/O；历史大时数百毫秒）。
+    Archive,
+    /// 逐组生成摘要——**唯一可能持续数分钟的阶段**，进度条的价值都在这里。
+    Summarize,
+    /// 落地（追加 `CompactionEvent` + 重投影）。
+    Apply,
+    /// 全部完成（`done == total`）。
+    Done,
+    /// 失败（`message` 里是原因）。
+    Failed,
+}
+
+impl CompactionPhase {
+    /// 线上字符串（与 `#[serde(rename_all = "snake_case")]` 一致）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Preview => "preview",
+            Self::Archive => "archive",
+            Self::Summarize => "summarize",
+            Self::Apply => "apply",
+            Self::Done => "done",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// 是否已到终态（面板据此停止转圈）。
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Done | Self::Failed)
+    }
+}
+
+/// 一次压缩/归档的**进度快照**。
+///
+/// 为什么需要它：压缩（逐会话 LLM 摘要）可能持续数分钟，而此前 Core 只在
+/// **开始**时发一句话、结束时发一句话——中间几分钟里面板只有一个静止的
+/// 弹窗，用户无法区分"正在跑"与"卡死了"，只能刷新重来（而重来会撞上
+/// `compact_lock`，看起来像毫无反应）。
+#[derive(Debug, Clone)]
+pub struct CompactionProgress {
+    /// 当前阶段。
+    pub phase: CompactionPhase,
+    /// 已完成步数。
+    pub done: usize,
+    /// 总步数。`0` = 该阶段的长度不确定（例如预览、写快照），面板画
+    /// 不确定进度条（`indeterminate`）。
+    pub total: usize,
+    /// 面向用户的一句话（面板直接显示，不再自己拼文案）。
+    pub message: String,
+    /// 本次压缩涉及的会话数（`summarize` 阶段的 `total` 同源，供面板显示
+    /// "共 N 个会话"）。
+    pub sessions: usize,
+}
+
+impl CompactionProgress {
+    /// 不确定长度的阶段（预览 / 归档 / 落地 / 失败）。
+    pub fn step(phase: CompactionPhase, message: impl Into<String>) -> Self {
+        Self {
+            phase,
+            done: 0,
+            total: 0,
+            message: message.into(),
+            sessions: 0,
+        }
+    }
+
+    /// 有明确分子分母的阶段（逐组摘要 / 完成）。
+    pub fn counted(
+        phase: CompactionPhase,
+        done: usize,
+        total: usize,
+        sessions: usize,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            phase,
+            done,
+            total,
+            message: message.into(),
+            sessions,
+        }
+    }
+
+    /// 百分比（0–100）。`total == 0` 时返回 `None`（面板用不确定态）。
+    pub fn percent(&self) -> Option<u8> {
+        if self.total == 0 {
+            return None;
+        }
+        let raw = (self.done.min(self.total) as f64 / self.total as f64) * 100.0;
+        Some(raw.round().clamp(0.0, 100.0) as u8)
+    }
+}
+
 /// 一次压缩落地的结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionApplied {
@@ -88,6 +189,49 @@ mod tests {
             replaced_count: 3,
         };
         assert!(!summary.summary.contains("[历史摘要]"));
+    }
+
+    /// 进度百分比：`total == 0` 一律 `None`（面板画不确定条），其余夹在 0–100
+    /// 且不因 `done > total`（兜底分组等边界）溢出。
+    #[test]
+    fn progress_percent_handles_unknown_and_overflow() {
+        let unknown = CompactionProgress::step(CompactionPhase::Preview, "…");
+        assert_eq!(unknown.percent(), None, "长度不确定时不该给百分比");
+
+        let mid = CompactionProgress::counted(CompactionPhase::Summarize, 3, 7, 7, "…");
+        assert_eq!(mid.percent(), Some(43));
+
+        let done = CompactionProgress::counted(CompactionPhase::Done, 7, 7, 7, "…");
+        assert_eq!(done.percent(), Some(100));
+
+        // done > total（理论上不该发生，但进度条更不能画出 >100%）
+        let over = CompactionProgress::counted(CompactionPhase::Summarize, 9, 7, 7, "…");
+        assert_eq!(over.percent(), Some(100));
+    }
+
+    /// 线上阶段名是**稳定字符串**（面板按它分支），改名等于破坏兼容。
+    #[test]
+    fn phase_wire_names_are_stable() {
+        assert_eq!(CompactionPhase::Preview.as_str(), "preview");
+        assert_eq!(CompactionPhase::Archive.as_str(), "archive");
+        assert_eq!(CompactionPhase::Summarize.as_str(), "summarize");
+        assert_eq!(CompactionPhase::Apply.as_str(), "apply");
+        assert_eq!(CompactionPhase::Done.as_str(), "done");
+        assert_eq!(CompactionPhase::Failed.as_str(), "failed");
+        // 与 serde 的 rename_all 必须一致（两条路径产出的值不能分叉）
+        let json = serde_json::to_string(&CompactionPhase::Summarize).expect("serialize");
+        assert_eq!(json, "\"summarize\"");
+    }
+
+    /// 终态判定：面板靠它停止转圈（`apply` 之后还有 `done`，不能提前收）。
+    #[test]
+    fn only_done_and_failed_are_terminal() {
+        assert!(!CompactionPhase::Preview.is_terminal());
+        assert!(!CompactionPhase::Archive.is_terminal());
+        assert!(!CompactionPhase::Summarize.is_terminal());
+        assert!(!CompactionPhase::Apply.is_terminal());
+        assert!(CompactionPhase::Done.is_terminal());
+        assert!(CompactionPhase::Failed.is_terminal());
     }
 
     /// `replaced_count` 是**预览时**的量，与落地时的日志长度无关——这是

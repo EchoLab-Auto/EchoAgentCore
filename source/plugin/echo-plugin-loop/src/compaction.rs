@@ -33,7 +33,9 @@ use echo_defs::llm::LlmProvider;
 use echo_defs::message::{ChatMessage, ChatRequest};
 use echo_defs::token::estimate_tokens;
 use echo_session::event::SessionEvent;
-use echo_session::{CompactGroup, CompactPreview, CompactionSummary};
+use echo_session::{
+    CompactGroup, CompactPreview, CompactionPhase, CompactionProgress, CompactionSummary,
+};
 
 /// 一次摘要调用的转录 token 预算（被替换的前缀通常远小于它；超了就按
 /// [`TRANSCRIPT_TIERS`] 收缩）。
@@ -116,8 +118,16 @@ pub trait CompactionHost: Send + Sync {
     > {
         Box::pin(async { None })
     }
-    /// 进度提示（"正在生成摘要…"）。用户等的是这个，不是终态。
-    fn progress(&self, message: String);
+    /// 进度上报（阶段 + 分子分母 + 一句话）。
+    ///
+    /// 用户等的是**这个**，不是终态：压缩逐会话调 LLM，可能跑几分钟。宿主
+    /// 把它翻成线协议事件（`BackendEvent::CompactionProgress`），面板据此画
+    /// 进度条。默认实现丢弃 —— 嵌入式宿主不需要进度。
+    ///
+    /// 约定：必须是**廉价且不阻塞**的（`compact_history` 在每次 LLM 调用前后
+    /// 都会调它）；宿主自己负责节流/丢弃。
+    fn progress(&self, _progress: &CompactionProgress) {}
+
     /// 落地（追加 `CompactionEvent` 并返回统计）。
     fn apply<'a>(
         &'a self,
@@ -141,7 +151,22 @@ pub async fn compact_history(
     host: &dyn CompactionHost,
     keep_recent: usize,
 ) -> Result<String, String> {
+    host.progress(&CompactionProgress::step(
+        CompactionPhase::Preview,
+        "正在计算压缩计划…",
+    ));
     let preview = host.preview(keep_recent)?;
+    let groups = preview.groups.len();
+    host.progress(&CompactionProgress::counted(
+        CompactionPhase::Archive,
+        0,
+        0,
+        groups,
+        format!(
+            "正在归档快照（{groups} 个会话、{} 条事件将被压缩）…",
+            preview.total_replaced
+        ),
+    ));
     let provider = host.provider().await;
     let archive = match host.archive_snapshot().await {
         Ok(path) => Some(path),
@@ -150,17 +175,39 @@ pub async fn compact_history(
             None
         }
     };
-    host.progress(format!(
-        "正在压缩历史：{} 组、{} 条事件，生成 LLM 摘要中…",
-        preview.groups.len(),
-        preview.total_replaced
+    host.progress(&CompactionProgress::counted(
+        CompactionPhase::Summarize,
+        0,
+        groups,
+        groups,
+        format!("开始生成摘要（共 {groups} 组）…"),
     ));
     // 摘要备用出口（2026-10 修复）：人格 profile 欠费（HTTP 402）或端点不可用
     // 时，此前整份历史只剩统计文案——损失比压缩本身大得多。取全局默认 profile
     // 的 provider 作备用，逐组失败时重试一次。
     let fallback = host.fallback_provider().await;
-    let (summaries, llm_count, fallback_count) =
-        summarize_preview(&provider, fallback.as_ref(), &preview, keep_recent).await;
+    // 逐组进度：**每完成一组就报一次**——这是唯一可能持续数分钟的阶段，
+    // 进度条的价值全在这里。
+    let total_groups = preview.groups.len();
+    let reporter = |done: usize, total: usize, session: Option<&str>| {
+        let who = session.map(|s| format!("（{s}）")).unwrap_or_default();
+        host.progress(&CompactionProgress::counted(
+            CompactionPhase::Summarize,
+            done,
+            total,
+            total,
+            format!("正在生成摘要 {done}/{total}{who}…"),
+        ));
+    };
+    let (summaries, llm_count, fallback_count) = summarize_preview_with_progress(
+        &provider,
+        fallback.as_ref(),
+        &preview,
+        keep_recent,
+        &reporter,
+    )
+    .await;
+    debug_assert!(total_groups >= llm_count);
     // 预览切片（事件条数）：落地只替换这批前缀，窗口期新到事件全部留在
     // 保留尾（2026-10 审计修复）。
     let prepared: Vec<CompactionSummary> = summaries
@@ -176,6 +223,13 @@ pub async fn compact_history(
                 .unwrap_or(0),
         })
         .collect();
+    host.progress(&CompactionProgress::counted(
+        CompactionPhase::Apply,
+        groups,
+        groups,
+        groups,
+        "摘要已全部生成，正在写入历史…",
+    ));
     let applied = host
         .apply(keep_recent, prepared, archive.as_deref())
         .await?;
@@ -196,6 +250,13 @@ pub async fn compact_history(
         Some(path) => message.push_str(&format!("；原事件已归档：{path}")),
         None => message.push_str("；注意：归档快照失败或未启用持久化，原事件未备份"),
     }
+    host.progress(&CompactionProgress::counted(
+        CompactionPhase::Done,
+        applied.groups,
+        applied.groups,
+        applied.groups,
+        message.clone(),
+    ));
     Ok(message)
 }
 
@@ -208,10 +269,31 @@ pub async fn summarize_preview(
     preview: &CompactPreview,
     keep_recent: usize,
 ) -> (Vec<SummaryOrFallback>, usize, usize) {
+    summarize_preview_with_progress(
+        provider,
+        fallback,
+        preview,
+        keep_recent,
+        &|_done, _total, _session| {},
+    )
+    .await
+}
+
+/// 同 [`summarize_preview`]，但**每完成一组**就回调一次进度
+/// `(done, total, 会话)`。`progress` 必须是廉价操作（见
+/// [`CompactionHost::progress`] 的说明）。
+pub async fn summarize_preview_with_progress(
+    provider: &Arc<dyn LlmProvider>,
+    fallback: Option<&Arc<dyn LlmProvider>>,
+    preview: &CompactPreview,
+    keep_recent: usize,
+    progress: &(dyn Fn(usize, usize, Option<&str>) + Sync),
+) -> (Vec<SummaryOrFallback>, usize, usize) {
     let mut out = Vec::new();
     let mut llm_count = 0usize;
     let mut fallback_count = 0usize;
-    for group in &preview.groups {
+    let total = preview.groups.len();
+    for (index, group) in preview.groups.iter().enumerate() {
         let primary = summarize_group(provider, group).await;
         let mut retried = false;
         let (summary, from_llm, fallback_reason) = match primary {
@@ -266,6 +348,9 @@ pub async fn summarize_preview(
             from_llm,
             fallback_reason,
         });
+        // 本组已落地（无论 LLM 还是规则回退）：进度**照样前进**——回退也是
+        // 完成了一组，让进度条停住只会让人以为卡了。
+        progress(index + 1, total, group.session.as_deref());
     }
     (out, llm_count, fallback_count)
 }
@@ -544,6 +629,77 @@ mod tests {
         ) -> Result<echo_defs::message::ChatResponse, echo_defs::llm::LlmError> {
             self.chat(_request).await
         }
+    }
+
+    /// 进度序列：**每组都报一次**，且回退组也前进（回退也是完成）。
+    /// 让进度条停住只会让人以为卡了。
+    #[tokio::test]
+    async fn progress_advances_for_every_group_including_fallbacks() {
+        use std::sync::Mutex;
+
+        // 记录进度回调：(done, total)
+        let seen: Arc<Mutex<Vec<(usize, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let provider: Arc<dyn LlmProvider> = Arc::new(ScriptedProvider {
+            reply: "",
+            fail: true,
+        });
+
+        let preview = CompactPreview {
+            groups: vec![
+                group(vec![user("a"), assistant("b")]),
+                group(vec![user("c"), assistant("d")]),
+                group(vec![user("e"), assistant("f")]),
+            ],
+            total_replaced: 6,
+            total_events: 9,
+        };
+        let (summaries, llm, fallback) = summarize_preview_with_progress(
+            &provider,
+            None,
+            &preview,
+            1,
+            &|done, total, _session| sink.lock().unwrap().push((done, total)),
+        )
+        .await;
+        assert_eq!(summaries.len(), 3);
+        assert_eq!((llm, fallback), (0, 3), "全部走规则回退");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(1, 3), (2, 3), (3, 3)],
+            "三组各报一次，分子递增到 total"
+        );
+    }
+
+    /// 主出口失败、备用出口成功时，进度同样只前进一次（不能因"重试"多报）。
+    #[tokio::test]
+    async fn retry_on_fallback_counts_as_one_step() {
+        use std::sync::Mutex;
+        let seen: Arc<Mutex<Vec<(usize, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let primary: Arc<dyn LlmProvider> = Arc::new(ScriptedProvider {
+            reply: "",
+            fail: true,
+        });
+        let fallback: Arc<dyn LlmProvider> = Arc::new(ScriptedProvider {
+            reply: "【历史摘要】ok",
+            fail: false,
+        });
+        let preview = CompactPreview {
+            groups: vec![group(vec![user("a"), assistant("b")])],
+            total_replaced: 2,
+            total_events: 3,
+        };
+        let (_summaries, llm, fallback_count) = summarize_preview_with_progress(
+            &primary,
+            Some(&fallback),
+            &preview,
+            1,
+            &|done, total, _session| sink.lock().unwrap().push((done, total)),
+        )
+        .await;
+        assert_eq!((llm, fallback_count), (1, 0), "备用出口成功计入 LLM 组");
+        assert_eq!(*seen.lock().unwrap(), vec![(1, 1)], "一组只报一次进度");
     }
 
     fn preview_of(events: Vec<SessionEvent>) -> CompactPreview {
