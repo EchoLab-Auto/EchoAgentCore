@@ -60,9 +60,10 @@ impl Default for ModelPrice {
     }
 }
 
-/// 缺省定价表（DeepSeek 官方公开价，2026-10 摘自 api-docs；可被
-/// `[agent.pricing]` 覆盖或清空）。旧模型名 `deepseek-v4-flash` /
-/// `-vision-exp` 按 Flash 价计费——前缀匹配天然覆盖（更具体的条目优先）。
+/// 缺省定价表（DeepSeek / Kimi 官方公开价，2026-10 摘自 api-docs 与
+/// platform.kimi.com/docs/pricing；可被 `[agent.pricing]` 覆盖或清空）。
+/// 旧模型名 `deepseek-v4-flash` / `-vision-exp` 按 Flash 价计费——前缀匹配
+/// 天然覆盖（更具体的条目优先；Kimi 的短名/全名两套命名同理）。
 pub fn default_pricing() -> Vec<ModelPrice> {
     let flash = |model: &str| ModelPrice {
         model: model.into(),
@@ -74,6 +75,19 @@ pub fn default_pricing() -> Vec<ModelPrice> {
         offpeak_cache_hit_input_per_million: Some(0.02),
         currency: "CNY".into(),
     };
+
+    // Kimi 条目构造：输入 / 输出 / 缓存命中（¥/MTok）。Kimi 无空闲折扣。
+    let kimi = |model: &str, input: f64, output: f64, hit: f64| ModelPrice {
+        model: model.into(),
+        input_per_million: input,
+        output_per_million: output,
+        offpeak_input_per_million: None,
+        offpeak_output_per_million: None,
+        cache_hit_input_per_million: Some(hit),
+        offpeak_cache_hit_input_per_million: None,
+        currency: "CNY".into(),
+    };
+
     vec![
         flash("deepseek-flash"),
         flash("deepseek-v4-flash"),
@@ -87,21 +101,33 @@ pub fn default_pricing() -> Vec<ModelPrice> {
             offpeak_cache_hit_input_per_million: Some(0.15),
             currency: "CNY".into(),
         },
-        // Kimi K3（2026-10 审计：未计价条目——k3 的 4.5M tokens 此前零估算）。
-        // 基础价按原口径（约 ¥12/¥32 每百万；官方 K3 API 定价页 2026-10 为
-        // ¥20/¥100，订阅产品请以实际套餐为准）。**缓存命中价补 ¥2/M**：
-        // 官方定价页公开（platform.kimi.com/docs/pricing）；缺失会随缓存
-        // 读取量按未命中价估算，严重虚高（2026-10 归一修复配套）。
-        ModelPrice {
-            model: "k3".into(),
-            input_per_million: 12.0,
-            output_per_million: 32.0,
-            offpeak_input_per_million: None,
-            offpeak_output_per_million: None,
-            cache_hit_input_per_million: Some(2.0),
-            offpeak_cache_hit_input_per_million: None,
-            currency: "CNY".into(),
-        },
+        // ── Kimi（Moonshot）─────────────────────────────────────────────
+        // 官方价：platform.kimi.com/docs/pricing（2026-10-24 校准，¥/MTok）。
+        // 口径对齐：Kimi 把「缓存写入(5min)」按**输入价**计费，正对应本框架的
+        // 「未命中输入」，故 input_per_million 直接填官方输入价；命中价单列
+        // （¥1.30/M 一档）。官方另有「缓存写入(1h) = 2×输入价」，本表无对应
+        // 字段，长 TTL 场景仍会低估。Kimi 无空闲时段折扣 → offpeak_* 全 None。
+        //
+        // 命名两套并存：`/coding` 端点只认短名（k3 / k3.1-pro /
+        // k3.1-pro-highspeed），开放平台认全名（kimi-k3.1-pro …）。全名同时被
+        // `k3` / `kimi-k3` 这类短前缀命中，靠最长前缀选中正确条目——所以
+        // `kimi-*` 别名条目**不能删**：删了 `kimi-k3.1-pro` 会掉到 K3 价的
+        // ¥20/¥100 上（虚高 54%）。
+        kimi("k3.1-pro", 13.0, 68.0, 1.30),
+        kimi("kimi-k3.1-pro", 13.0, 68.0, 1.30),
+        kimi("k3.1-pro-highspeed", 26.0, 136.0, 1.30),
+        kimi("kimi-k3.1-pro-highspeed", 26.0, 136.0, 1.30),
+        // K3：上一代旗舰。此前表内 12/32 是旧口径，官方现价 ¥20/¥100
+        // （低估约 60%）；命中价 ¥2.00 不变。
+        kimi("k3", 20.0, 100.0, 2.00),
+        kimi("kimi-k3", 20.0, 100.0, 2.00),
+        // K2 系列（仅开放平台有；/coding 端点不提供）。2026-12 底下线，仍在
+        // 用的调用不该零估算。
+        kimi("kimi-k2.7-code-highspeed", 13.0, 54.0, 2.60),
+        kimi("kimi-k2.7-code", 6.5, 27.0, 1.30),
+        kimi("kimi-k2.6", 6.5, 27.0, 1.10),
+        // 注：`/coding` 端点的 `kimi-for-coding`（显示名 K2.8 Preview）官方
+        // 定价页未列条目——宁可缺失让面板显式报「未计价」，也不臆造数字。
     ]
 }
 
@@ -117,6 +143,8 @@ mod tests {
         assert!(pricing.iter().any(|p| p.model == "deepseek-flash"));
         assert!(pricing.iter().any(|p| p.model == "deepseek-v4-pro"));
         assert!(pricing.iter().any(|p| p.model == "k3"));
+        assert!(pricing.iter().any(|p| p.model == "k3.1-pro"));
+        assert!(pricing.iter().any(|p| p.model == "k3.1-pro-highspeed"));
         assert!(
             pricing.iter().all(|p| p.currency == "CNY"),
             "缺省币种必须统一（否则成本合计会串币种）"

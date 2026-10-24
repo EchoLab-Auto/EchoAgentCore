@@ -568,6 +568,27 @@ mod tests {
                 .input_per_million,
             9.0
         );
+        // Kimi：短名（/coding 端点）与全名（开放平台）必须都落到 K3.1 Pro 价，
+        // 不能掉到 `k3` 或 `kimi-k3` 前缀上（¥20/¥100 会虚高 54%）。
+        for model in ["k3.1-pro", "kimi-k3.1-pro"] {
+            let price = price_for(&pricing, model).expect("K3.1 Pro 应有定价");
+            assert_eq!(price.model, model, "{model} 必须命中自己的条目");
+            assert_eq!(price.input_per_million, 13.0);
+            assert_eq!(price.output_per_million, 68.0);
+            assert_eq!(price.cache_hit_input_per_million, Some(1.3));
+        }
+        assert_eq!(
+            price_for(&pricing, "k3.1-pro-highspeed")
+                .unwrap()
+                .output_per_million,
+            136.0
+        );
+        // 上一代 K3 走自己的条目（¥20/¥100），且 `k3-256k` 等后缀变体同价。
+        assert_eq!(price_for(&pricing, "k3").unwrap().input_per_million, 20.0);
+        assert_eq!(
+            price_for(&pricing, "k3-256k").unwrap().input_per_million,
+            20.0
+        );
         // 未知模型
         assert!(price_for(&pricing, "gpt-6-astra").is_none());
     }
