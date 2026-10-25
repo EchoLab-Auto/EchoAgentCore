@@ -321,6 +321,7 @@ mod tests {
 
     fn assistant(content: &str) -> SessionEvent {
         SessionEvent::AssistantMessage(AssistantMessage {
+            timestamp: 0,
             content: content.into(),
             reasoning_content: None,
             tool_calls: vec![],
@@ -342,6 +343,7 @@ mod tests {
         let log = vec![
             user("计算"),
             SessionEvent::AssistantMessage(AssistantMessage {
+                timestamp: 0,
                 content: String::new(),
                 reasoning_content: None,
                 tool_calls: vec![echo_defs::message::ToolCall {
@@ -475,6 +477,7 @@ mod tests {
         let log = vec![
             user("计算"),
             SessionEvent::AssistantMessage(AssistantMessage {
+                timestamp: 0,
                 content: String::new(),
                 reasoning_content: None,
                 tool_calls: vec![echo_defs::message::ToolCall {
@@ -518,6 +521,7 @@ mod tests {
             user("第一次"),
             user("第二次"),
             SessionEvent::AssistantMessage(AssistantMessage {
+                timestamp: 0,
                 content: "检查结果".into(),
                 reasoning_content: None,
                 tool_calls: vec![],
@@ -639,6 +643,7 @@ mod tests {
         let log = vec![
             user("你好"),
             SessionEvent::AssistantMessage(AssistantMessage {
+                timestamp: 0,
                 content: String::new(),
                 reasoning_content: Some("思考中".into()),
                 tool_calls: vec![echo_defs::message::ToolCall {
@@ -868,6 +873,7 @@ mod tests {
             }),
             reasoning("a 的思考", 3),
             SessionEvent::AssistantMessage(AssistantMessage {
+                timestamp: 0,
                 content: "回答 a".into(),
                 reasoning_content: None,
                 tool_calls: Vec::new(),
@@ -888,6 +894,7 @@ mod tests {
                 elapsed_ms: Some(1),
             }),
             SessionEvent::AssistantMessage(AssistantMessage {
+                timestamp: 0,
                 content: "回答 b".into(),
                 reasoning_content: None,
                 tool_calls: Vec::new(),
@@ -966,6 +973,7 @@ mod tests {
             }),
             reasoning("中间思考", 2),
             SessionEvent::AssistantMessage(AssistantMessage {
+                timestamp: 0,
                 content: "回答".into(),
                 reasoning_content: None,
                 tool_calls: Vec::new(),

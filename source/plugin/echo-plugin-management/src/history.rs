@@ -118,11 +118,28 @@ limit: usize,
                 if assistant.content.trim().is_empty() {
                     continue;
                 }
+                // 时间取**回答自身的落盘时刻**（2026-10 显示顺序根治）。
+                //
+                // 此前一律用 `last_time`（carry-forward），对 backend 条目那是
+                // 错的语义：它拿的是"上一条带时间的事件"的时间，通常就是上一个
+                // 工具的 `started_at_ms`，可以比回答真实产出时刻早**数十分钟**。
+                // 而实时投影（`timeline.rs`）给同一个回答的是 `Utc::now()`。
+                // 两侧时间不等 → 面板的 `(role, time)` 认不出是同一条 → 同一条
+                // 回答显示两次、其中一份被插到列表靠后位置。
+                //
+                // 旧日志没有该字段（`timestamp == 0`）→ 退回 carry-forward，
+                // 行为与改前一致（那批老数据由前端的内容兜底负责）。
+                let time = if assistant.timestamp > 0 {
+                    last_time = last_time.max(assistant.timestamp);
+                    assistant.timestamp
+                } else {
+                    last_time
+                };
                 // 推理不落日志：`reasoning_content` 不派生（见模块注释）。
                 messages.push(TimelineMessage::backend(
                     assistant.content.clone(),
                     session_id,
-                    last_time,
+                    time,
                     None,
                 ));
             }
@@ -199,15 +216,16 @@ limit: usize,
                         }
                     }
                     None => {
-                        // 未命中（旧版日志缺 ToolCall 事件 / 重复结果）：
-                        // 追加已完成条目，镜像 update_timeline_tool 的
-                        // fallback。ToolResult 事件不带工具名——以 id 兜底
-                        // （纯空 id 的旧版事件用占位名）。
-                        let name = if result.tool_call_id.is_empty() {
-                            "tool".to_string()
-                        } else {
-                            result.tool_call_id.clone()
-                        };
+                        // 未命中（旧版日志缺 ToolCall 事件 / 压缩吃掉了调用 /
+                        // 重复结果）：追加已完成条目，镜像 update_timeline_tool
+                        // 的 fallback。
+                        //
+                        // 名字用**中性占位**（2026-10 修正）：`ToolResult` 事件
+                        // 不带工具名，此前拿 `tool_call_id` 顶上，界面上就出现
+                        // 一个叫 `tool_N1QCMouhKj5KR7WuskLdDcYa` 的"工具"——
+                        // 既不是工具名也不是给人看的字。`id` 仍原样保留在
+                        // `tool_call_id` 里供配对，展示层不需要它。
+                        let name = "tool".to_string();
                         messages.push(TimelineMessage::tool(
                             name.clone(),
                             session_id,
@@ -405,6 +423,89 @@ mod tests {
         })
     }
 
+    fn assistant_event(session: &str, content: &str, timestamp: i64) -> SessionEvent {
+        SessionEvent::AssistantMessage(echo_session::event::AssistantMessage {
+            timestamp,
+            content: content.into(),
+            reasoning_content: None,
+            tool_calls: Vec::new(),
+            session: Some(session.into()),
+        })
+    }
+
+    /// 回答条目的时间 = **回答自身的落盘时刻**（2026-10 显示顺序根治）。
+    ///
+    /// 事故形态：派生给 backend 用 carry-forward（= 上一个工具的开始时刻），
+    /// 实时投影给的是 `Utc::now()`。同一个回合两侧相差数十分钟，面板拿
+    /// `(role, time)` 对齐时认不出是同一条 → 同一条回答显示两次、其中一份被
+    /// 插到列表靠后（用户报「会话区显示顺序出了很大的问题」）。
+    #[test]
+    fn backend_entry_uses_its_own_timestamp_not_carry_forward() {
+        let target = "local:workspace:systemx/base:local_user";
+        let events = vec![
+            user_event(target, "跑一下", 1_700_000_000),
+            SessionEvent::ToolCall(echo_session::event::ToolCallEvent {
+                id: "call-1".into(),
+                name: "bash".into(),
+                arguments: r#"{"command":"sleep 600"}"#.into(),
+                session: Some(target.into()),
+                // 工具在 t+10 开始，跑了 10 分钟
+                started_at_ms: Some(1_700_000_010_000),
+            }),
+            // 回答在 t+610 落盘（工具开始后 10 分钟）
+            assistant_event(target, "跑完了", 1_700_000_610),
+        ];
+        let (messages, _, _) = display_history_for_session(&events, target, 500);
+        let backend = messages
+            .iter()
+            .find(|m| m.kind == "backend")
+            .expect("缺少 backend 条目");
+        assert_eq!(
+            backend.time, 1_700_000_610,
+            "回答必须用自身落盘时刻，不能沿用工具开始时刻（实得 {}）",
+            backend.time
+        );
+    }
+
+    /// 旧日志没有 `timestamp`（=0）：仍按 carry-forward，行为不变（向后兼容）。
+    #[test]
+    fn backend_entry_without_timestamp_falls_back_to_carry_forward() {
+        let target = "s";
+        let events = vec![
+            user_event(target, "问", 1_700_000_000),
+            assistant_event(target, "答", 0),
+        ];
+        let (messages, _, _) = display_history_for_session(&events, target, 500);
+        let backend = messages
+            .iter()
+            .find(|m| m.kind == "backend")
+            .expect("缺少 backend 条目");
+        assert_eq!(backend.time, 1_700_000_000, "缺时间戳时沿用最近已知时间");
+    }
+
+    /// 孤儿工具结果（压缩吃掉了 ToolCall）：名字用中性占位，**不能**把
+    /// `tool_call_id` 当工具名显示（界面上曾出现 `tool_N1QCMouhKj5...`）。
+    #[test]
+    fn orphan_tool_result_uses_neutral_name_and_keeps_the_id() {
+        let target = "s";
+        let events = vec![SessionEvent::ToolResult(
+            echo_session::event::ToolResultEvent {
+                tool_call_id: "tool_N1QCMouhKj5KR7WuskLdDcYa".into(),
+                result: "done".into(),
+                images: Vec::new(),
+                session: Some(target.into()),
+                elapsed_ms: Some(3),
+            },
+        )];
+        let (messages, _, _) = display_history_for_session(&events, target, 500);
+        let tool = messages[0].tool.as_ref().expect("缺少 tool 载荷");
+        assert_eq!(tool.name, "tool", "展示名必须是中性占位");
+        assert_eq!(
+            tool.tool_call_id, "tool_N1QCMouhKj5KR7WuskLdDcYa",
+            "id 仍保留供配对"
+        );
+    }
+
     /// 单会话派生：user → tool（就地补丁结果）→ backend；旁观会话被过滤。
     #[test]
     fn derives_user_tool_and_backend_entries_for_one_session() {
@@ -426,6 +527,7 @@ mod tests {
                 elapsed_ms: Some(12),
             }),
             SessionEvent::AssistantMessage(echo_session::event::AssistantMessage {
+                timestamp: 0,
                 content: "最终回复".into(),
                 reasoning_content: Some("推理不派生".into()),
                 tool_calls: Vec::new(),

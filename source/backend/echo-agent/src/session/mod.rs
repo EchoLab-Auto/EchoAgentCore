@@ -1007,6 +1007,7 @@ fn events_from_messages(
             )),
             ChatRole::Assistant => events.push(echo_session::SessionEvent::AssistantMessage(
                 echo_session::event::AssistantMessage {
+                    timestamp: 0,
                     content: message.content.clone(),
                     reasoning_content: message.reasoning_content.clone(),
                     tool_calls: message.tool_calls.clone().unwrap_or_default(),

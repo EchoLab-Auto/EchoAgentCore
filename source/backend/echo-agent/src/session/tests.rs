@@ -105,6 +105,7 @@ fn legacy_attribution_splits_interleaved_sessions() {
             elapsed_ms: None,
         }),
         echo_session::SessionEvent::AssistantMessage(AssistantMessage {
+            timestamp: 0,
             content: "已回复。".into(),
             reasoning_content: None,
             tool_calls: vec![],
@@ -119,6 +120,7 @@ fn legacy_attribution_splits_interleaved_sessions() {
             session: None,
         }),
         echo_session::SessionEvent::AssistantMessage(AssistantMessage {
+            timestamp: 0,
             content: "你好，本地".into(),
             reasoning_content: None,
             tool_calls: vec![],
@@ -157,6 +159,7 @@ fn legacy_attribution_falls_back_to_first_known_session() {
     use echo_session::event::{AssistantMessage, UserMessage};
     let mut events = vec![
         echo_session::SessionEvent::AssistantMessage(AssistantMessage {
+            timestamp: 0,
             content: "孤儿应答".into(),
             reasoning_content: None,
             tool_calls: vec![],
@@ -216,6 +219,7 @@ async fn interleaved_events_project_per_session() {
         }));
         store.append_event(echo_session::SessionEvent::AssistantMessage(
             AssistantMessage {
+                timestamp: 0,
                 content: format!("{content} 的回复"),
                 reasoning_content: None,
                 tool_calls: vec![],
@@ -458,6 +462,7 @@ async fn save_and_load_roundtrip_restores_trunk_and_identities() {
     ));
     store.append_event(echo_session::SessionEvent::AssistantMessage(
         echo_session::event::AssistantMessage {
+            timestamp: 0,
             session: Some(key.to_session_id()),
             content: "回复".into(),
             reasoning_content: None,
@@ -629,6 +634,7 @@ async fn persisted_history_restores_per_session() {
     ));
     store.append_event(echo_session::SessionEvent::AssistantMessage(
         echo_session::event::AssistantMessage {
+            timestamp: 0,
             session: Some("local:tui::local_user".into()),
             content: "tui reply".into(),
             reasoning_content: None,
@@ -1882,6 +1888,7 @@ fn reasoning_events_reach_display_history_but_not_model_context() {
     ));
     store.append_event(echo_session::SessionEvent::AssistantMessage(
         echo_session::event::AssistantMessage {
+            timestamp: 0,
             content: "回答".into(),
             reasoning_content: None,
             tool_calls: vec![],

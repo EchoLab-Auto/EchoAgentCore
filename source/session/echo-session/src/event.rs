@@ -101,6 +101,19 @@ pub struct MessageSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssistantMessage {
     pub content: String,
+    /// 这条回答**落盘的时刻**（Unix 秒；0 = 旧数据未知）。
+    ///
+    /// 为什么需要（2026-10 显示顺序根治）：显示历史（`history.rs`）原先给
+    /// backend 条目用 carry-forward 时间——沿用最近一条带时间的事件，通常
+    /// 就是上一个工具的 `started_at_ms`；而实时投影（`timeline.rs`）给同一个
+    /// 回答的是 `Utc::now()`。两条路径的时间因此能差**数十分钟**，而面板要
+    /// 拿 `(role, time)` 把"派生历史"与"实时副本"认成同一条：时间不等就认
+    /// 不出，表现为同一条回答显示两次、其中一份被插到列表靠后位置。
+    ///
+    /// 本字段把口径统一（落盘时刻 ≈ 实时投影时刻）。
+    /// `#[serde(default)]` 让旧日志（字段缺失）落到 carry-forward，行为不变。
+    #[serde(default)]
+    pub timestamp: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
     /// Tool calls requested alongside this message; serialized fully (the
@@ -351,6 +364,21 @@ pub(crate) fn tool_result_message(event: &ToolResultEvent) -> ChatMessage {
 mod tests {
     use super::*;
 
+    /// **落盘兼容**：旧日志里的 assistant 事件没有 `timestamp` 字段，必须
+    /// 仍能解析（缺省 0 = 未知 → 派生退回 carry-forward，行为与改前一致）。
+    #[test]
+    fn assistant_message_without_timestamp_deserializes_as_zero() {
+        let raw = r#"{"kind":"assistant_message","content":"旧日志","tool_calls":[]}"#;
+        let event: SessionEvent = serde_json::from_str(raw).expect("旧格式必须可解析");
+        match event {
+            SessionEvent::AssistantMessage(a) => {
+                assert_eq!(a.timestamp, 0);
+                assert_eq!(a.content, "旧日志");
+            }
+            other => panic!("解析成了别的变体：{other:?}"),
+        }
+    }
+
     #[test]
     fn user_message_keeps_image_blocks_but_strips_base64_from_text() {
         let payload = "A".repeat(4096);
@@ -400,6 +428,7 @@ mod tests {
     #[test]
     fn event_roundtrip_preserves_tool_calls() {
         let event = SessionEvent::AssistantMessage(AssistantMessage {
+            timestamp: 0,
             session: None,
             content: String::new(),
             reasoning_content: None,
@@ -430,6 +459,7 @@ mod tests {
             ),
             (
                 SessionEvent::AssistantMessage(AssistantMessage {
+                    timestamp: 0,
                     session: None,
                     content: "ok".into(),
                     reasoning_content: None,

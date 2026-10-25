@@ -269,6 +269,10 @@ impl Agent {
         // the projected order matches request order.
         let event =
             echo_session::SessionEvent::AssistantMessage(echo_session::event::AssistantMessage {
+                // 落盘时刻 = 实时投影时刻（同一个事件前后脚发生），于是
+                // "派生历史"与"实时副本"的同一条回答时间同源，面板的
+                // `(role, time)` 身份才成立（见 `AssistantMessage::timestamp`）。
+                timestamp: chrono::Utc::now().timestamp(),
                 content: reply,
                 reasoning_content: None,
                 tool_calls: vec![],

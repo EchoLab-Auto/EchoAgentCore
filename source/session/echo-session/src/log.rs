@@ -290,6 +290,7 @@ mod tests {
             images: vec![],
         }));
         log.append(SessionEvent::AssistantMessage(AssistantMessage {
+            timestamp: 0,
             session: None,
             content: "回复".into(),
             reasoning_content: None,
@@ -354,6 +355,7 @@ mod tests {
         log.insert_after_sequence(
             1,
             SessionEvent::AssistantMessage(AssistantMessage {
+                timestamp: 0,
                 session: None,
                 content: "完成".into(),
                 reasoning_content: None,
@@ -527,6 +529,7 @@ mod tests {
         log.insert_after_sequence(
             1,
             SessionEvent::AssistantMessage(AssistantMessage {
+                timestamp: 0,
                 session: None,
                 content: "完成".into(),
                 reasoning_content: None,
@@ -573,6 +576,7 @@ mod tests {
         log.insert_after_sequence(
             1,
             SessionEvent::AssistantMessage(AssistantMessage {
+                timestamp: 0,
                 session: None,
                 content: "完成".into(),
                 reasoning_content: None,

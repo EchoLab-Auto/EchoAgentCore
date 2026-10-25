@@ -165,6 +165,7 @@ fn migrate_history(history: &[V4Message]) -> Vec<SessionEvent> {
                 session: None,
             })),
             "assistant" => Some(SessionEvent::AssistantMessage(AssistantMessage {
+                timestamp: 0,
                 content: message.content.clone(),
                 reasoning_content: message.reasoning_content.clone(),
                 // The old format dropped tool_calls; nothing to restore.

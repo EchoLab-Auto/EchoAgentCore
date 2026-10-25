@@ -542,6 +542,7 @@ mod tests {
 
     fn assistant(content: &str) -> SessionEvent {
         SessionEvent::AssistantMessage(AssistantMessage {
+            timestamp: 0,
             content: content.into(),
             reasoning_content: Some("内部推理不应出现在转录里".into()),
             tool_calls: vec![],
