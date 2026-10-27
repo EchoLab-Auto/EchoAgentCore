@@ -128,6 +128,40 @@ pub fn default_pricing() -> Vec<ModelPrice> {
         kimi("kimi-k2.6", 6.5, 27.0, 1.10),
         // 注：`/coding` 端点的 `kimi-for-coding`（显示名 K2.8 Preview）官方
         // 定价页未列条目——宁可缺失让面板显式报「未计价」，也不臆造数字。
+
+        // ── OpenCode Go（订阅制网关）────────────────────────────────────
+        // 币种随条目走：Go 按**美元**计费（Monthly limit 也是美元额度），
+        // 因此这里如实填 USD，而不是折成人民币——汇率会漂，且面板的
+        // `cost_currency` 本来就是**按 profile** 投影的（一个 profile 一套
+        // 网关、一种币种）。
+        //
+        // 口径（platform 官方 Go 页，2026-10）：DeepSeek V4.1 Flash 高峰
+        // $0.30/$1.20、空闲 $0.15/$0.60、缓存命中 $0.006/$0.003；月额度 $80。
+        // 已知近似：本表沿用 DeepSeek 口径判峰（`is_peak_time`：北京时间
+        // 工作日 9-12/14-18 为高峰），而 Go 实际按 DeepSeek 官方的
+        // 00:30-08:30 空闲窗计价——其余夜间时段会低估约一半。
+        ModelPrice {
+            model: "deepseek-v4.1-flash".into(),
+            input_per_million: 0.30,
+            output_per_million: 1.20,
+            offpeak_input_per_million: Some(0.15),
+            offpeak_output_per_million: Some(0.60),
+            cache_hit_input_per_million: Some(0.006),
+            offpeak_cache_hit_input_per_million: Some(0.003),
+            currency: "USD".into(),
+        },
+        // 限时免费档：前缀会被上一条命中，必须显式钉成 0——否则按付费价
+        // 虚报成本（`deepseek-v4.1-flash-free` 更长 → 最长前缀优先命中本行）。
+        ModelPrice {
+            model: "deepseek-v4.1-flash-free".into(),
+            input_per_million: 0.0,
+            output_per_million: 0.0,
+            offpeak_input_per_million: None,
+            offpeak_output_per_million: None,
+            cache_hit_input_per_million: Some(0.0),
+            offpeak_cache_hit_input_per_million: None,
+            currency: "USD".into(),
+        },
     ]
 }
 
@@ -145,10 +179,18 @@ mod tests {
         assert!(pricing.iter().any(|p| p.model == "k3"));
         assert!(pricing.iter().any(|p| p.model == "k3.1-pro"));
         assert!(pricing.iter().any(|p| p.model == "k3.1-pro-highspeed"));
+        // 币种随条目走（`ApiMetricsEntry.cost_currency` 按 profile 投影）：
+        // 缺省一律 CNY，只有 OpenCode Go 的网关条目是 USD。混入其它币种
+        // 说明有人手滑写了错单位。
         assert!(
-            pricing.iter().all(|p| p.currency == "CNY"),
-            "缺省币种必须统一（否则成本合计会串币种）"
+            pricing
+                .iter()
+                .all(|p| p.currency == "CNY" || p.currency == "USD"),
+            "币种只能是 CNY 或 USD"
         );
+        for price in pricing.iter().filter(|p| p.model.starts_with("deepseek-v4.1")) {
+            assert_eq!(price.currency, "USD", "{} 必须按美元计", price.model);
+        }
     }
 
     /// 缺省值：未知字段取 Default（币种 CNY、价格 0），不是报错。

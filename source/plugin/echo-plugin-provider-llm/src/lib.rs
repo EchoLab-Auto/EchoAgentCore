@@ -75,7 +75,7 @@ pub const PROVIDER_KEY: &str = echo_defs::llm::LLM_PROVIDER_SERVICE_KEY;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProviderConfig {
     /// provider 种类：`openai` / `deepseek` / `third-party` / `anthropic` /
-    /// `claude` / `kimi` / `moonshot-coding` / `ollama`。
+    /// `claude` / `kimi` / `moonshot-coding` / `opencode-go` / `ollama`。
     pub provider: String,
     /// API base url（`/anthropic` 结尾时自动走 Anthropic Messages 客户端）。
     pub base_url: String,
@@ -161,6 +161,21 @@ pub fn create_provider(cfg: &ProviderConfig) -> Result<Box<dyn LlmProvider>, Llm
         || cfg.base_url.contains("api.deepseek.com"))
     .then_some((cfg.thinking, cfg.reasoning_effort));
     match provider_kind {
+        // OpenCode Go / Zen（订阅制网关，OpenAI 兼容）：**比普通第三方便多两件
+        // 事**——网关把身份与路由放在请求头里：
+        //   * `x-opencode-session`：稳定会话 id。官方文档明说"每个对话发一个
+        //     稳定 session id"，缺了直接 400 MissingSessionID（先于认证校验）；
+        //   * `user-agent`：官方要求客户端**用自己的** UA 自报家门（而不是通用
+        //     SDK 名），并声明"流量会被监控滥用"。伪装成 opencode 只会更容易
+        //     被判定异常，所以这里如实报 echo-agent。
+        "opencode-go" | "opencode" => {
+            let base = opencode_base_url(&cfg.base_url);
+            let provider = echo_llm_openai::OpenAiProvider::new(&base, &cfg.api_key, &cfg.model)
+                .with_reasoning(cfg.thinking, cfg.reasoning_effort)
+                .with_header("x-opencode-session", &new_session_id())
+                .with_header("user-agent", &client_user_agent());
+            Ok(Box::new(provider))
+        }
         // Kimi For Coding（Kimi Code 订阅）：Anthropic 兼容端点
         //（`https://api.kimi.com/coding/v1/messages`），认证 = Kimi Code Console
         // 创建的 API Key（`x-api-key`），推理档位经 `output_config.effort`。
@@ -198,7 +213,7 @@ pub fn create_provider(cfg: &ProviderConfig) -> Result<Box<dyn LlmProvider>, Llm
             &cfg.model,
         ))),
         other => Err(LlmError::Config(format!(
-            "不支持的 provider: {other} (可选: openai/deepseek/third-party/anthropic/kimi/ollama)"
+            "不支持的 provider: {other} (可选: openai/deepseek/third-party/anthropic/kimi/opencode-go/ollama)"
         ))),
     }
 }
@@ -224,6 +239,63 @@ pub fn kimi_base_url(configured: &str) -> String {
     } else {
         base.to_string()
     }
+}
+
+/// OpenCode Go 的 base_url 归一化。
+///
+/// 官方给的是「base + API 路径」两级拼接：
+/// - 按量付费：`https://opencode.ai/inference` + `/openai/v1/chat/completions`
+/// - Go 订阅：`https://opencode.ai/inference/go` + 同一路径
+///
+/// 本项目的 OpenAI 客户端会自行追加 `/chat/completions`，因此这里接受四种
+/// 写法并统一到「`…/v1` 结尾」：空值、只有 `/inference`、只有
+/// `/inference/go`、以及已经写全的 `/openai/v1`（含误贴进来的
+/// `/chat/completions` 尾巴）。
+pub fn opencode_base_url(configured: &str) -> String {
+    const DEFAULT: &str = "https://opencode.ai/inference/go/openai/v1";
+    let trimmed = configured.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return DEFAULT.to_string();
+    }
+    let base = trimmed
+        .strip_suffix("/chat/completions")
+        .unwrap_or(trimmed)
+        .trim_end_matches('/');
+    if base.is_empty() {
+        return DEFAULT.to_string();
+    }
+    if base.ends_with("/inference") {
+        // 只写了根：按 Go 订阅补全（订阅是本项目的目标场景）。
+        return format!("{base}/go/openai/v1");
+    }
+    if base.ends_with("/inference/go") {
+        return format!("{base}/openai/v1");
+    }
+    base.to_string()
+}
+
+/// 客户端自报 UA（OpenCode 官方要求"用自己的名字"，而不是通用 SDK 名）。
+fn client_user_agent() -> String {
+    format!("echo-agent/{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// 生成一个 OpenCode 网关的稳定会话 id（`ses_` 前缀 + 32 位十六进制）。
+///
+/// **稳定性口径**：provider 实例级——同一次进程内、同一 profile 的所有请求
+/// 共用一个 id，重启后换新。官方要的是"每个对话一个"，本项目的
+/// `ChatRequest` 不携带对话身份，无法做到逐对话；共用 id 只影响网关侧的
+/// 路由与 prompt cache 复用率（功能不受影响），比把对话 id 一路穿到
+/// 35 处构造函数里划算。
+fn new_session_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let seq = u128::from(SEQ.fetch_add(1, Ordering::Relaxed));
+    let mixed = nanos ^ (u128::from(std::process::id()) << 64) ^ (seq << 32);
+    format!("ses_echo_{mixed:032x}")
 }
 
 /// 便捷：把 provider 装箱为 `Arc<dyn LlmProvider>`。
@@ -292,6 +364,59 @@ mod tests {
 
         let p = create_provider(&cfg("kimi", "https://api.kimi.com/coding/v1")).unwrap();
         assert_eq!(p.name(), "anthropic");
+    }
+
+    #[test]
+    fn opencode_go_uses_openai_client_and_normalizes_base_url() {
+        // 各种写法都归一到「…/inference/go/openai/v1」。
+        for configured in [
+            "",
+            "https://opencode.ai/inference/go/openai/v1",
+            "https://opencode.ai/inference/go",
+            "https://opencode.ai/inference",
+            "https://opencode.ai/inference/go/openai/v1/chat/completions",
+            "https://opencode.ai/inference/go/",
+        ] {
+            assert_eq!(
+                opencode_base_url(configured),
+                "https://opencode.ai/inference/go/openai/v1",
+                "configured = {configured:?}"
+            );
+        }
+        // 自建/镜像：原样保留（只去掉结尾斜杠）。
+        assert_eq!(
+            opencode_base_url("https://mirror.example.com/v1/"),
+            "https://mirror.example.com/v1"
+        );
+        // 按量付费（Zen）走同一分支，只差 base_url。
+        assert_eq!(
+            opencode_base_url("https://opencode.ai/inference/openai/v1"),
+            "https://opencode.ai/inference/openai/v1"
+        );
+        let p = create_provider(&cfg("opencode-go", "")).unwrap();
+        assert_eq!(p.name(), "openai");
+    }
+
+    /// session id 必须带 `ses_` 前缀（网关按前缀识别）、长度固定、且每次不同。
+    #[test]
+    fn session_ids_are_well_formed_and_unique() {
+        let a = new_session_id();
+        let b = new_session_id();
+        assert!(a.starts_with("ses_"), "id: {a}");
+        assert_eq!(a.len(), "ses_echo_".len() + 32);
+        assert!(
+            a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "id: {a}"
+        );
+        assert_ne!(a, b);
+    }
+
+    /// UA 报自己的名字（官方要求"用自己的 user agent"），绝不自称 opencode。
+    #[test]
+    fn user_agent_identifies_the_client() {
+        let ua = client_user_agent();
+        assert!(ua.starts_with("echo-agent/"), "ua: {ua}");
+        assert!(!ua.contains("opencode"), "不得伪装成 opencode: {ua}");
     }
 
     #[test]

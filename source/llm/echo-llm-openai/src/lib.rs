@@ -23,6 +23,9 @@ pub struct OpenAiProvider {
     client: reqwest::Client,
     thinking: Option<echo_defs::ThinkingMode>,
     reasoning_effort: echo_defs::ReasoningEffort,
+    /// 逐请求附加的 HTTP 头（`with_header`）。用作网关的**路由/身份**约定，
+    /// 例如 OpenCode Go 要求的 `x-opencode-session` 与客户端自报 UA。
+    extra_headers: reqwest::header::HeaderMap,
 }
 
 /// 读空闲超时（2026-10 巡检 P1）：上游连接建立后慢速滴流（每秒 1 字节）
@@ -53,6 +56,7 @@ impl OpenAiProvider {
             model: model.to_string(),
             thinking: None,
             reasoning_effort: echo_defs::ReasoningEffort::default(),
+            extra_headers: reqwest::header::HeaderMap::new(),
             // 保留连接超时防止上游挂死；不设总超时——思考模式 + 大
             // completion 预算下单次响应可能合法地跑数分钟。
             client: match reqwest::Client::builder()
@@ -77,6 +81,26 @@ impl OpenAiProvider {
         self.reasoning_effort = effort;
         self
     }
+
+    /// 附加一个随每次请求发送的 HTTP 头（同名后者覆盖前者）。
+    ///
+    /// 有些网关把**身份与路由**放在请求头里，而不是 body/URL：
+    /// OpenCode Go 要求 `x-opencode-session`（稳定会话 id，用于路由与
+    /// prompt cache 复用）且要求客户端用自己的 UA 自报家门。头名/头值非法
+    /// 时**跳过并告警**——不 panic，也不让一个可选头毒化整次构建。
+    pub fn with_header(mut self, name: &str, value: &str) -> Self {
+        use reqwest::header::{HeaderName, HeaderValue};
+        match (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            (Ok(n), Ok(v)) => {
+                self.extra_headers.insert(n, v);
+            }
+            _ => tracing::warn!(header = name, "非法 HTTP 头（名或值），已跳过"),
+        }
+        self
+    }
 }
 
 #[async_trait]
@@ -96,6 +120,7 @@ impl LlmProvider for OpenAiProvider {
             .client
             .post(format!("{}/chat/completions", self.base_url))
             .bearer_auth(&self.api_key)
+            .headers(self.extra_headers.clone())
             .json(&body);
         let resp = with_idle_timeout(req.send()).await?;
         let status = resp.status();
@@ -120,10 +145,11 @@ impl LlmProvider for OpenAiProvider {
             .next()
             .ok_or_else(|| LlmError::Api("响应中没有 choices".into()))?;
         let finish_reason = choice.finish_reason;
-        let msg = choice.message;
+        let mut msg = choice.message;
+        let reasoning_content = msg.take_reasoning();
         Ok(ChatResponse {
             content: msg.content,
-            reasoning_content: msg.reasoning_content,
+            reasoning_content,
             stop_reason: finish_reason,
             tool_calls: msg
                 .tool_calls
@@ -135,16 +161,7 @@ impl LlmProvider for OpenAiProvider {
                     arguments: tc.function.arguments,
                 })
                 .collect(),
-            usage: parsed
-                .usage
-                .map(|u| Usage {
-                    prompt_tokens: u.prompt_tokens,
-                    completion_tokens: u.completion_tokens,
-                    prompt_cache_hit_tokens: Some(u.prompt_cache_hit_tokens),
-                    prompt_cache_miss_tokens: Some(u.prompt_cache_miss_tokens),
-                    prompt_cache_creation_tokens: Some(u.prompt_cache_creation_tokens),
-                })
-                .unwrap_or_default(),
+            usage: parsed.usage.map(UsageWire::into_usage).unwrap_or_default(),
         })
     }
 
@@ -160,6 +177,7 @@ impl LlmProvider for OpenAiProvider {
             self.client
                 .post(&endpoint)
                 .bearer_auth(&self.api_key)
+                .headers(self.extra_headers.clone())
                 .json(body)
         };
         let mut resp = with_idle_timeout(send(&body).send()).await?;
@@ -282,13 +300,7 @@ fn parse_sse_event(event: &str) -> Vec<SseOutcome> {
         }
         // usage 帧（choices 为空）先于 choices 处理
         if let Some(usage) = parsed.usage {
-            outcomes.push(SseOutcome::Usage(Usage {
-                prompt_tokens: usage.prompt_tokens,
-                completion_tokens: usage.completion_tokens,
-                prompt_cache_hit_tokens: Some(usage.prompt_cache_hit_tokens),
-                prompt_cache_miss_tokens: Some(usage.prompt_cache_miss_tokens),
-                prompt_cache_creation_tokens: Some(usage.prompt_cache_creation_tokens),
-            }));
+            outcomes.push(SseOutcome::Usage(usage.into_usage()));
         }
         let Some(choice) = parsed.choices.first() else {
             continue;
@@ -319,7 +331,7 @@ fn parse_sse_event(event: &str) -> Vec<SseOutcome> {
                 tool_call_delta: None,
             }));
         }
-        if let Some(reasoning) = &delta.reasoning_content {
+        if let Some(reasoning) = delta.reasoning_content.as_ref().or(delta.reasoning.as_ref()) {
             outcomes.push(SseOutcome::Chunk(ChatChunk {
                 content_delta: None,
                 reasoning_delta: Some(reasoning.clone()),
@@ -484,8 +496,21 @@ struct Choice {
 #[derive(Deserialize)]
 struct MessageWire {
     content: Option<String>,
+    /// DeepSeek/Anthropic 风格字段名。
     reasoning_content: Option<String>,
+    /// OpenAI 兼容网关（OpenCode Go / OpenRouter 等）把思考内容叫 `reasoning`。
+    /// 两个字段**并存而非 alias**：某些网关同时下发两者（一个非空一个 null），
+    /// serde 的 alias 会因重复赋值报错。
+    #[serde(default)]
+    reasoning: Option<String>,
     tool_calls: Option<Vec<ToolCallWire>>,
+}
+
+impl MessageWire {
+    /// 思考内容取值：`reasoning_content` 优先，回落 `reasoning`。
+    fn take_reasoning(&mut self) -> Option<String> {
+        self.reasoning_content.take().or_else(|| self.reasoning.take())
+    }
 }
 
 #[derive(Deserialize)]
@@ -516,6 +541,35 @@ struct UsageWire {
     /// 独立缓存写入价，该字段对 DeepSeek 恒为 0。
     #[serde(default)]
     prompt_cache_creation_tokens: u32,
+    /// OpenAI 官方与 OpenCode Go 等网关的缓存命中口径：
+    /// `prompt_tokens_details.cached_tokens`（OpenAI `prompt_tokens_details`，
+    /// 与 DeepSeek 的 `prompt_cache_hit_tokens` 同义不同名）。缺这个回落，
+    /// 命中量恒 0 → 全部输入按未命中价估值（OpenCode Go 上高 100 倍）。
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetailsWire>,
+}
+
+#[derive(Deserialize)]
+struct PromptTokensDetailsWire {
+    #[serde(default)]
+    cached_tokens: u32,
+}
+
+impl UsageWire {
+    fn into_usage(self) -> Usage {
+        let cached = self
+            .prompt_tokens_details
+            .map(|d| d.cached_tokens)
+            .unwrap_or(0);
+        Usage {
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            // 两家字段名不同，取较大者（同一事实的两种上报，不应双计）。
+            prompt_cache_hit_tokens: Some(self.prompt_cache_hit_tokens.max(cached)),
+            prompt_cache_miss_tokens: Some(self.prompt_cache_miss_tokens),
+            prompt_cache_creation_tokens: Some(self.prompt_cache_creation_tokens),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -550,6 +604,9 @@ struct StreamChoice {
 struct DeltaWire {
     content: Option<String>,
     reasoning_content: Option<String>,
+    /// 见 [`MessageWire::reasoning`]：OpenCode Go / OpenRouter 用 `reasoning`。
+    #[serde(default)]
+    reasoning: Option<String>,
     tool_calls: Option<Vec<StreamToolCallWire>>,
 }
 
@@ -1036,5 +1093,89 @@ mod tests {
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[0]["text"], "result");
         assert_eq!(content[1]["type"], "image_url");
+    }
+
+    // ── 网关兼容：reasoning 字段名 / 缓存命中口径 / 附加请求头 ─────────────
+
+    /// OpenCode Go / OpenRouter 把思考内容叫 `reasoning`（而非 DeepSeek 的
+    /// `reasoning_content`）：流式与非流式都必须认出来，否则思考过程全丢。
+    #[test]
+    fn reasoning_field_is_recognised_in_stream_and_response() {
+        // 流式
+        let outcomes =
+            parse_sse_event(r#"data: {"choices":[{"delta":{"reasoning":"The user"}}]}"#);
+        match &outcomes[0] {
+            SseOutcome::Chunk(c) => assert_eq!(c.reasoning_delta.as_deref(), Some("The user")),
+            other => panic!("expected Chunk, got {other:?}"),
+        }
+        // 非流式：chat() 走 take_reasoning()，这里直接验 wire 层
+        let mut msg: MessageWire = serde_json::from_str(
+            r#"{"content":"你好","reasoning":"先想一下","reasoning_content":null}"#,
+        )
+        .unwrap();
+        assert_eq!(msg.take_reasoning().as_deref(), Some("先想一下"));
+    }
+
+    /// 两个字段同时非空时以 `reasoning_content` 为准（serde alias 会报重复
+    /// 字段错误，所以实现是「两个独立字段 + 取值优先级」）。
+    #[test]
+    fn reasoning_content_wins_when_both_present() {
+        let mut msg: MessageWire = serde_json::from_str(
+            r#"{"content":null,"reasoning":"A","reasoning_content":"B"}"#,
+        )
+        .unwrap();
+        assert_eq!(msg.take_reasoning().as_deref(), Some("B"));
+    }
+
+    /// `prompt_tokens_details.cached_tokens`（OpenAI / OpenCode Go 口径）必须
+    /// 计入缓存命中，否则全部输入按未命中价估值。
+    #[test]
+    fn cached_tokens_details_feed_cache_hit_usage() {
+        let wire: UsageWire = serde_json::from_str(
+            r#"{"prompt_tokens":1000,"completion_tokens":50,
+                "prompt_tokens_details":{"cached_tokens":800}}"#,
+        )
+        .unwrap();
+        let usage = wire.into_usage();
+        assert_eq!(usage.prompt_cache_hit_tokens, Some(800));
+
+        // DeepSeek 口径仍然生效，且两者并存时取较大者（同一事实的两种上报）。
+        let wire: UsageWire = serde_json::from_str(
+            r#"{"prompt_tokens":1000,"completion_tokens":50,
+                "prompt_cache_hit_tokens":700,
+                "prompt_tokens_details":{"cached_tokens":650}}"#,
+        )
+        .unwrap();
+        assert_eq!(wire.into_usage().prompt_cache_hit_tokens, Some(700));
+
+        // 两者都缺失 → 0（不猜）。
+        let wire: UsageWire =
+            serde_json::from_str(r#"{"prompt_tokens":10,"completion_tokens":2}"#).unwrap();
+        assert_eq!(wire.into_usage().prompt_cache_hit_tokens, Some(0));
+    }
+
+    /// `with_header` 把附加头存进客户端配置（非法头跳过而不 panic）。
+    #[test]
+    fn with_header_stores_valid_headers_and_skips_invalid() {
+        let provider = OpenAiProvider::new("http://localhost:1/v1", "k", "m")
+            .with_header("x-opencode-session", "ses_echo_abc")
+            .with_header("user-agent", "echo-agent/1.2.3")
+            // 头名含空格 = 非法 → 跳过，不影响其它头
+            .with_header("bad header", "v");
+        assert_eq!(
+            provider
+                .extra_headers
+                .get("x-opencode-session")
+                .and_then(|v| v.to_str().ok()),
+            Some("ses_echo_abc")
+        );
+        assert_eq!(
+            provider
+                .extra_headers
+                .get("user-agent")
+                .and_then(|v| v.to_str().ok()),
+            Some("echo-agent/1.2.3")
+        );
+        assert_eq!(provider.extra_headers.len(), 2, "非法头必须被跳过");
     }
 }
