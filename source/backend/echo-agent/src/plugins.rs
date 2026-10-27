@@ -267,6 +267,14 @@ pub trait SubprocessPluginControl: Send + Sync {
         id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
 
+    /// 热替换：先启动并校验新进程，再切换流量并排空旧进程。
+    /// 新进程握手失败时旧进程必须继续服务。
+    fn upgrade<'a>(
+        &'a self,
+        id: &'a str,
+        timeout: std::time::Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
     /// 当前运行态快照（None = 不认识这个 id）。
     fn status(&self, id: &str) -> Option<SubprocessStatus>;
 }
@@ -898,6 +906,18 @@ impl PluginHost {
         control.start(id).await
     }
 
+    /// 热替换一个运行中的外部条目；握手失败不会停止旧实例。
+    pub async fn upgrade_subprocess(
+        &self,
+        id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(), String> {
+        let control = self
+            .subprocess_control()
+            .ok_or_else(|| format!("{id}: 子进程控制面未接线"))?;
+        control.upgrade(id, timeout).await
+    }
+
     /// Descriptors for the Panel（**注册序** = 组合 / 配置行序）。
     ///
     /// 不按 id 排序：`plugins.toml` 的行序就是挂载顺序，是配置表达的一部分
@@ -1481,6 +1501,23 @@ mod tests {
             })
         }
 
+        fn upgrade<'a>(
+            &'a self,
+            id: &'a str,
+            _timeout: std::time::Duration,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+        {
+            self.calls.lock().push(format!("upgrade:{id}"));
+            let fail = self.fail;
+            Box::pin(async move {
+                if fail {
+                    Err("upgrade failed".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
         fn status(&self, _id: &str) -> Option<SubprocessStatus> {
             self.state.lock().clone()
         }
@@ -1584,6 +1621,24 @@ mod tests {
         host.stop_subprocess("ext.entry").await.expect("stop ok");
         host.start_subprocess("ext.entry").await.expect("start ok");
         assert_eq!(control.calls(), vec!["stop:ext.entry", "start:ext.entry"]);
+    }
+
+    /// 热替换走 supervisor upgrade，而不是退化成 stop/start 中断服务。
+    #[tokio::test]
+    async fn subprocess_upgrade_uses_hot_replacement() {
+        let host = PluginHost::new();
+        register_plugin(
+            &host,
+            "ext.entry",
+            false,
+            echo_plugin::PluginRuntime::Subprocess,
+        );
+        let control = MockControl::new(None, false);
+        host.set_subprocess_control(control.clone());
+        host.upgrade_subprocess("ext.entry", std::time::Duration::from_secs(30))
+            .await
+            .expect("upgrade ok");
+        assert_eq!(control.calls(), vec!["upgrade:ext.entry"]);
     }
 
     /// 注册序即输出序（不按 id 重排）：`plugins.toml` 的行序是配置表达。

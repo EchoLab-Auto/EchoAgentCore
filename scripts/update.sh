@@ -53,6 +53,8 @@ SOURCE_DIR=""
 BINARY=""
 STATUS_FILE=""
 UPDATE_MODE=local
+UPDATE_SCOPE=auto
+CORE_CONFIG=${XDG_CONFIG_HOME:-"$HOME/.config"}/echo-agent-core/core.toml
 # 二进制目录里保留多少个历史备份（`<binary>.bak-*` / `<binary>.rollback*`）。
 # 每次安装/更新都会留下上一版二进制，多年累积会白占数百 MiB——实测一天内
 # 多次部署后单目录堆到 308 MiB / 12 个文件。默认保留最近 4 个（够回滚几版），
@@ -79,6 +81,11 @@ Options:
                    (default). No fetch or merge is performed.
   --remote         Fetch and fast-forward the clean managed checkout before
                    building (requires network access and a clean checkout).
+  --full           Force a full Core + plugins update and Core restart.
+  --plugins-only   Require an external-plugin-only change and hot upgrade it;
+                   refuse any Core/builtin/config change (fail-closed).
+  --config <path>  Core config used by plugin-upgrade. Default:
+                   $HOME/.config/echo-agent-core/core.toml
   -h, --help       Show this help
 EOF
 }
@@ -103,6 +110,22 @@ while (($#)); do
             ;;
         --remote)
             UPDATE_MODE=remote
+            shift
+            ;;
+        --full)
+            UPDATE_SCOPE=full
+            shift
+            ;;
+        --plugins-only)
+            UPDATE_SCOPE=plugins
+            shift
+            ;;
+        --config)
+            CORE_CONFIG=$2
+            shift 2
+            ;;
+        --config=*)
+            CORE_CONFIG=${1#*=}
             shift
             ;;
         -h|--help)
@@ -143,6 +166,8 @@ ROLLBACK_BINARY=""
 ROLLBACK_UPDATER=""
 # 每个插件二进制本次的回滚副本路径（assoc array；失败时逐个还原）。
 declare -A PLUGIN_ROLLBACKS=()
+SELECTED_PLUGINS=("${PLUGIN_BINARIES[@]}")
+HOT_SWAPPED=()
 temporary=""
 FINALIZED=0
 
@@ -223,7 +248,7 @@ rollback_installation() {
     fi
     if ((PLUGINS_REPLACED)); then
         local _p
-        for _p in "${PLUGIN_BINARIES[@]}"; do
+        for _p in "${SELECTED_PLUGINS[@]}"; do
             if [[ -n "${PLUGIN_ROLLBACKS[$_p]:-}" && -x "${PLUGIN_ROLLBACKS[$_p]}" ]]; then
                 mv -f "${PLUGIN_ROLLBACKS[$_p]}" "$PLUGINS_DIR/$_p/$_p" || true
             fi
@@ -242,7 +267,12 @@ rollback_installation() {
     else
         rm -f "$REVISION_FILE" || true
     fi
-    if (( ${core_was_active:-0} )); then
+    if [[ "$UPDATE_SCOPE" == plugins ]] && (( ${core_was_active:-0} )); then
+        local _p
+        for _p in "${HOT_SWAPPED[@]}"; do
+            "$BINARY" --config "$CORE_CONFIG" plugin-upgrade --binary "$PLUGINS_DIR/$_p/$_p" --timeout 30 >/dev/null 2>&1 || true
+        done
+    elif [[ "$UPDATE_SCOPE" != plugins ]] && (( ${core_was_active:-0} )); then
         "${SYSTEMCTL[@]}" restart echo-agent-core.service >/dev/null 2>&1 || true
     fi
 }
@@ -257,7 +287,7 @@ finalize_failure() {
     FINALIZED=1
     trap - ERR EXIT
     set +e
-    if ((BIN_REPLACED || UPDATER_REPLACED)); then
+    if ((BIN_REPLACED || UPDATER_REPLACED || PLUGINS_REPLACED)); then
         ROLLBACK_ACTIVE=1
         rollback_installation
         write_status rolled_back "$reason; restored previous installation" "${installed:-unknown}" || true
@@ -285,7 +315,7 @@ on_exit() {
     fi
     if ((FINALIZED == 0)) && ((code != 0)); then
         set +e
-        if ((BIN_REPLACED || UPDATER_REPLACED)); then
+        if ((BIN_REPLACED || UPDATER_REPLACED || PLUGINS_REPLACED)); then
             ROLLBACK_ACTIVE=1
             rollback_installation
             write_status rolled_back "update interrupted (exit $code) during $PHASE; restored previous installation" "${installed:-unknown}" || true
@@ -373,11 +403,77 @@ else
     fi
 fi
 
+revision_base() {
+    local value=${1#local:}
+    value=${value%+dirty}
+    if [[ "$value" =~ ^[0-9a-fA-F]{40}$ ]]         && git -C "$SOURCE_DIR" cat-file -e "$value^{commit}" 2>/dev/null; then
+        printf '%s\n' "$value"
+    fi
+}
+
+# 可信基线不明确或含任何非受管插件路径时 fail-closed 到完整更新。
+select_update_scope() {
+    local base=$1 path plugin matched
+    [[ "$UPDATE_SCOPE" == full ]] && return
+    base=$(revision_base "$base")
+    if [[ -z "$base" ]]; then
+        if [[ "$UPDATE_SCOPE" == plugins ]]; then
+            echo "cannot prove plugin-only scope: installed revision is unavailable" >&2
+            return 1
+        fi
+        UPDATE_SCOPE=full
+        return
+    fi
+    local -a changed=()
+    mapfile -t changed < <(
+        git -C "$SOURCE_DIR" diff --name-only "$base" --
+        git -C "$SOURCE_DIR" ls-files --others --exclude-standard
+    )
+    if ((${#changed[@]} == 0)); then
+        if [[ "$UPDATE_SCOPE" == plugins ]]; then
+            echo "no external plugin changes detected" >&2
+            return 1
+        fi
+        UPDATE_SCOPE=full
+        return
+    fi
+    SELECTED_PLUGINS=()
+    for path in "${changed[@]}"; do
+        matched=0
+        for plugin in "${PLUGIN_BINARIES[@]}"; do
+            if [[ "$path" == "source/plugin/$plugin/"* ]]; then
+                matched=1
+                if [[ ! " ${SELECTED_PLUGINS[*]} " =~ " $plugin " ]]; then
+                    SELECTED_PLUGINS+=("$plugin")
+                fi
+                break
+            fi
+        done
+        if ((!matched)); then
+            if [[ "$UPDATE_SCOPE" == plugins ]]; then
+                echo "refusing plugin-only update: non-plugin path changed: $path" >&2
+                return 1
+            fi
+            UPDATE_SCOPE=full
+            SELECTED_PLUGINS=("${PLUGIN_BINARIES[@]}")
+            return
+        fi
+    done
+    UPDATE_SCOPE=plugins
+}
+
+scope_base=${installed:-}
+if [[ "$UPDATE_MODE" == remote ]]; then scope_base=$current; fi
+select_update_scope "$scope_base"
 PHASE=building
-write_status running "building revision $TARGET" "$TARGET"
-# Core + 进程外插件二进制一次构建（同一 target 目录 / 同一 --locked）。
-plugin_build_args=(build --release --locked -p echo-agent-core)
-for _plugin in "${PLUGIN_BINARIES[@]}"; do
+if [[ "$UPDATE_SCOPE" == plugins ]]; then
+    write_status running "hot-building external plugins: ${SELECTED_PLUGINS[*]}" "$TARGET"
+    plugin_build_args=(build --release --locked)
+else
+    write_status running "building revision $TARGET" "$TARGET"
+    plugin_build_args=(build --release --locked -p echo-agent-core)
+fi
+for _plugin in "${SELECTED_PLUGINS[@]}"; do
     plugin_build_args+=(-p "$_plugin")
 done
 cargo "${plugin_build_args[@]}" --manifest-path "$SOURCE_DIR/Cargo.toml"
@@ -388,7 +484,7 @@ PHASE=installing
 # 绝不触碰。目录不存在（旧部署未迁移过）时静默跳过，由下次 install/
 # reinstall 补齐。
 BUILTIN_SKILLS_DIR="$DATA_HOME/echo-agent-core/skills-builtin"
-if [[ -d "$BUILTIN_SKILLS_DIR" && -d "$SOURCE_DIR/skills" ]]; then
+if [[ "$UPDATE_SCOPE" != plugins && -d "$BUILTIN_SKILLS_DIR" && -d "$SOURCE_DIR/skills" ]]; then
     # 逐技能目录同步，且**绝不带 .git**（2026-10-18 实况：一次 git 安装的
     # 技能让自更新整体失败）：
     # ① `git clone` 出来的 `.git/objects/pack/*` 是 0400 只读位，`cp -a`
@@ -412,20 +508,21 @@ if [[ -d "$BUILTIN_SKILLS_DIR" && -d "$SOURCE_DIR/skills" ]]; then
     unset _skill_src _skill_name _skill_dst
 fi
 
-temporary=$(mktemp "${BINARY}.new.XXXXXX")
-install -m 755 "$SOURCE_DIR/target/release/echo-agent-core" "$temporary"
-rollback="${BINARY}.rollback"
-ROLLBACK_BINARY="$rollback"
-if [[ -x "$BINARY" ]]; then
-    rollback_temporary=$(mktemp "${rollback}.new.XXXXXX")
-    install -m 755 "$BINARY" "$rollback_temporary"
-    mv -f "$rollback_temporary" "$rollback"
+if [[ "$UPDATE_SCOPE" != plugins ]]; then
+    temporary=$(mktemp "${BINARY}.new.XXXXXX")
+    install -m 755 "$SOURCE_DIR/target/release/echo-agent-core" "$temporary"
+    rollback="${BINARY}.rollback"
+    ROLLBACK_BINARY="$rollback"
+    if [[ -x "$BINARY" ]]; then
+        rollback_temporary=$(mktemp "${rollback}.new.XXXXXX")
+        install -m 755 "$BINARY" "$rollback_temporary"
+        mv -f "$rollback_temporary" "$rollback"
+    fi
+    mv -f "$temporary" "$BINARY"
+    BIN_REPLACED=1
+    temporary=""
+    prune_backups || true
 fi
-mv -f "$temporary" "$BINARY"
-BIN_REPLACED=1
-temporary=""
-# 替换成功后立即修剪历史备份（保留最近 N 个，见 prune_backups）。
-prune_backups || true
 
 # ── 进程外插件二进制同步（与 Core 同一版本）──
 # Core 与插件必须配套升级：`Hello.config` 的字段语义、协议 capabilities
@@ -434,10 +531,10 @@ prune_backups || true
 # 上一版，不留"半新半旧"的组合。
 # 目录不存在（旧部署尚未跑过新 install.sh）时静默创建——自更新不该因为
 # 多了个目录就失败。
-if ((${#PLUGIN_BINARIES[@]} > 0)); then
+if ((${#SELECTED_PLUGINS[@]} > 0)); then
     install -d -m 755 "$PLUGINS_DIR"
     plugin_failed=0
-    for _plugin in "${PLUGIN_BINARIES[@]}"; do
+    for _plugin in "${SELECTED_PLUGINS[@]}"; do
         plugin_dir="$PLUGINS_DIR/$_plugin"
         plugin_source="$SOURCE_DIR/target/release/$_plugin"
         if [[ ! -x "$plugin_source" ]]; then
@@ -464,7 +561,18 @@ if ((${#PLUGIN_BINARIES[@]} > 0)); then
     fi
 fi
 
-if ((core_was_active)); then
+if [[ "$UPDATE_SCOPE" == plugins ]] && ((core_was_active)); then
+    PHASE=upgrading_plugins
+    if [[ ! -x "$BINARY" || ! -f "$CORE_CONFIG" ]]; then
+        echo "plugin hot upgrade requires the installed Core CLI and config: $BINARY / $CORE_CONFIG" >&2
+        false
+    fi
+    for _plugin in "${SELECTED_PLUGINS[@]}"; do
+        write_status running "hot upgrading $_plugin; core stays active" "$TARGET"
+        "$BINARY" --config "$CORE_CONFIG" plugin-upgrade --binary "$plugin_dir/$_plugin" --timeout 30
+        HOT_SWAPPED+=("$_plugin")
+    done
+elif ((core_was_active)); then
     PHASE=restarting
     # 重启前先落一个"即将重启"的中间终态：正在轮询 update-status 的 agent
     # （self-update 流程）看到 restarting 就应立即结束当前 turn，而不是等
@@ -557,7 +665,7 @@ if ((core_was_active)); then
     fi
 fi
 
-if [[ -f "$SOURCE_DIR/scripts/update.sh" ]]; then
+if [[ "$UPDATE_SCOPE" != plugins && -f "$SOURCE_DIR/scripts/update.sh" ]]; then
     PHASE=refreshing_updater
     updater="$(dirname -- "$BINARY")/update.sh"
     updater_temporary=$(mktemp "${updater}.new.XXXXXX")
@@ -578,8 +686,9 @@ printf '%s\n' "$TARGET" >"$revision_temporary"
 mv -f "$revision_temporary" "$REVISION_FILE"
 # ── 插件感知校验：确认新二进制内含全部内置插件 manifest（id/kind）。 ──
 # 校验失败不视为更新失败（二进制已替换并运行），仅警告并记录。
-PHASE=verifying_plugins
-missing_plugins=""
+if [[ "$UPDATE_SCOPE" != plugins ]]; then
+    PHASE=verifying_plugins
+    missing_plugins=""
 if [[ -x "$BINARY" ]]; then
     # 先落盘再 grep：pipefail 下 `strings | grep -q` 会因 grep -q 提前退出
     # 触发 strings SIGPIPE（退出码 141）而误判全部 missing——与二进制内容无关。
@@ -603,7 +712,10 @@ if [[ -n "$missing_plugins" ]]; then
     echo "missing_plugins=$missing_plugins" >>"$STATUS_FILE"
 fi
 
-if [[ "$UPDATE_MODE" == local ]]; then
+fi
+if [[ "$UPDATE_SCOPE" == plugins ]]; then
+    write_status updated "external plugins hot upgraded; core restart skipped" "$TARGET"
+elif [[ "$UPDATE_MODE" == local ]]; then
     write_status updated "installed successfully from local source" "$TARGET"
 else
     write_status updated "updated successfully" "$TARGET"

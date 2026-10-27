@@ -27,6 +27,7 @@ mod instance_tools;
 mod logging;
 mod node;
 mod plugins_runtime;
+mod plugin_upgrade_cmd;
 mod port_cmd;
 
 /// 管理面插件（Phase 3 ⑧：已外迁为独立 crate，组合根只负责启动它）。
@@ -81,6 +82,20 @@ enum SubCommand {
     /// 被哪一层覆盖成了现在这样"，以及提交前确认合成树符合预期。
     /// plugins.toml 不存在时说明特性休眠（退出码 0，不算错误）。
     DumpConfig,
+    /// 热替换一个已装载的外部进程插件，不重启 Core。
+    /// 新实例握手失败时旧实例继续服务。
+    #[command(name = "plugin-upgrade")]
+    PluginUpgrade {
+        /// plugins.toml 中的外部插件 id；也可改用 --binary 按装载路径解析。
+        #[arg(required_unless_present = "binary")]
+        id: Option<String>,
+        /// 已安装插件二进制路径；按 plugins.toml 分层合成结果反查运行时 id。
+        #[arg(long, conflicts_with = "id", required_unless_present = "id")]
+        binary: Option<PathBuf>,
+        /// 旧实例优雅排空期限（秒）。
+        #[arg(long, default_value_t = 30)]
+        timeout: u64,
+    },
 }
 
 impl Args {
@@ -169,6 +184,19 @@ async fn main() -> Result<()> {
             SubCommand::Token { rotate } => return token_command(&args.config_path(), rotate),
             SubCommand::Port { action } => return port_cmd::run(&args.config_path(), action),
             SubCommand::DumpConfig => return dump_config_command(&args.config_path()),
+            SubCommand::PluginUpgrade {
+                id,
+                binary,
+                timeout,
+            } => {
+                return plugin_upgrade_cmd::run(
+                    &args.config_path(),
+                    id.as_deref(),
+                    binary.as_deref(),
+                    timeout,
+                )
+                .await
+            }
         }
     }
     let path = args.config_path();

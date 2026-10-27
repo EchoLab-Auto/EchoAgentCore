@@ -486,3 +486,41 @@ fn updater_respects_service_scope() {
         "update.sh 不应把 --user 写死在调用点上"
     );
 }
+
+/// 外部插件更新的默认路径必须是热替换；任何无法证明的范围都回退完整更新。
+#[test]
+fn external_plugin_hot_update_is_fail_closed_and_core_restart_free() {
+    let update = read_script("update.sh");
+    for required in [
+        "UPDATE_SCOPE=auto",
+        "--plugins-only)",
+        "select_update_scope",
+        "refusing plugin-only update: non-plugin path changed",
+        "plugin-upgrade --binary \"$plugin_dir/$_plugin\" --timeout 30",
+        "upgrade_preserving_contributions",
+        "HOT_SWAPPED",
+        "core restart skipped",
+    ] {
+        // upgrade_preserving_contributions 在 Rust 装配端；其它在脚本端。
+        if required == "upgrade_preserving_contributions" {
+            let runtime = repo_root()
+                .join("source/core/src/plugins_runtime.rs");
+            let runtime = std::fs::read_to_string(runtime).expect("read plugins runtime");
+            assert!(runtime.contains(required), "外部插件必须使用兼容热替换");
+        } else {
+            assert!(update.contains(required), "update.sh 缺少热更新接线：{required}");
+        }
+    }
+    assert!(
+        update.contains("if [[ \"$UPDATE_SCOPE\" == plugins ]] && ((core_was_active)); then"),
+        "只有插件范围才允许走热更新分支"
+    );
+    assert!(
+        update.contains("elif ((core_was_active)); then\n    PHASE=restarting"),
+        "Core/内置插件变化必须保留完整重启路径"
+    );
+    assert!(
+        update.contains("BIN_REPLACED || UPDATER_REPLACED || PLUGINS_REPLACED"),
+        "只替换插件二进制后失败也必须进入回滚事务"
+    );
+}

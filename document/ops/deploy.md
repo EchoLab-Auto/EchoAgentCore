@@ -112,6 +112,9 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 ## 更新流程（update.sh）
 
 - `--local`（默认）：构建当前源码树（含未提交改动，记为 `+dirty`）；`--remote`：先 fetch + fast-forward 再构建（工作树有改动/游离 HEAD/非快进则拒绝）
+- **变更分流（auto，默认）**：以上次安装 revision 为基线，只有 `PLUGIN_BINARIES` 对应的受管外部插件 crate 发生变化时，走插件热更新；Core、内置插件、共享定义、锁文件、技能或配置有任何变化，自动回退完整更新。`--full` 强制完整更新；`--plugins-only` 要求纯插件变更，无法证明时直接失败，不偷偷扩大更新范围。
+- **插件热更新**：只构建变更插件，事务备份并原子替换其二进制，然后调用 `echo-agent-core plugin-upgrade --binary <path>`。该命令按 `plugins.toml` 分层合成结果把二进制路径反查为运行时插件 id（crate 名与 id 可不同），经认证 management WS 发送 `RestartPlugin`。Core 使用 supervisor 先启动 replacement、完成协议握手并校验贡献集合不变，再原子切换流量、排空旧进程；**Core 不重启**。握手、协议或贡献兼容性失败时旧实例继续服务，updater 恢复旧二进制，并热回滚已经切换的插件。
+- 热更新只覆盖**已装载的静态外部插件**。新增/删除插件、修改装载配置或工具/schema/实例等贡献集合仍需完整 Core 更新与重装配；QQ 动态实例不在静态 `SubprocessControl` 内，不能借这条命令热更新。
 - **原子替换**：先备份现有二进制/静态目录到 rollback 文件，替换后重启服务并健康检查（15s 内 3 次活跃确认）；替换完成即按保留策略修剪历史副本（见下「备份留存」）
 - 失败自动回滚（恢复备份 + 重启）；状态写入 `~/.local/state/echo-agent-*/update-status`
 - 更新器非阻塞文件锁拒绝并发运行；拉取/构建失败时旧二进制不动、不重启
@@ -171,7 +174,9 @@ release 产物设 `strip = "symbols"`（根 `Cargo.toml` 的 `[profile.release]`
 ### 状态机与轮询契约
 
 ```text
-state=running → state=restarting → state=updated（失败时停在 failed / rolled_back）
+完整更新：state=running → state=restarting → state=updated
+插件热更新：state=running（phase=upgrading_plugins）→ state=updated
+（失败时均停在 failed / rolled_back）
 ```
 
 - `state=restarting` 在 **systemctl restart 之前**写入（"构建完成、即将重启"）；`updated` 在重启 + QQ 恢复之后才写入（恢复段仅 QQ 启用时执行：自动重连窗口 40s + 兜底重启窗口 90s，最长约 2 分钟；未启用则直接跳过）

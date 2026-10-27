@@ -286,14 +286,12 @@ impl Agent {
                     });
                     return;
                 }
-                // 外部条目：真的 stop + start 子进程（可逆停止语义，见
-                // `PluginHandle::stop`）——这是「重启」对子进程插件唯一
-                // 说得通的含义，也是它区别于「关再开」的地方（不写配置）。
+                // 外部条目使用 supervisor 的热替换：replacement 握手成功后
+                // 原子切换流量并排空旧进程；握手失败时旧实例继续服务。
                 let result = if self.plugin_host().is_external_entry(&id) {
-                    match self.plugin_host().stop_subprocess(&id).await {
-                        Ok(()) => self.plugin_host().start_subprocess(&id).await,
-                        Err(error) => Err(error),
-                    }
+                    self.plugin_host()
+                        .upgrade_subprocess(&id, std::time::Duration::from_secs(30))
+                        .await
                 } else {
                     self.plugin_host().restart(&id)
                 };

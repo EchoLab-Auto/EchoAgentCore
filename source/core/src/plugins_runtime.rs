@@ -43,6 +43,8 @@ pub struct PluginRuntime {
     /// 只含静态条目：动态 `LaunchSpec`（QQ 实例）另有自己的门控壳，不能
     /// 重复注册。见 [`PluginRuntime::gate_shells`]。
     pub entries: Vec<StaticPluginEntry>,
+    /// 各启动条目的原始 Hello.config；热替换必须原样沿用。
+    launch_configs: std::collections::HashMap<String, serde_json::Value>,
 }
 
 /// `plugins.toml` 静态条目（用于在插件清单里显示**外部插件**）。
@@ -138,6 +140,10 @@ pub async fn start_with_specs(
     // 频率限额用 supervisor 的缺省策略（事件 2000/s、回呼 500/s、日志 200/s
     // ——合法插件远够不到，失控循环会被挡住）。目前不做 per-plugin 配置：
     // 这是宿主保护，不是插件特性。
+    let launch_configs = specs
+        .iter()
+        .map(|spec| (spec.plugin_id.clone(), spec.config.clone()))
+        .collect();
     let supervisor = PluginSupervisor::new();
     register_host_services(&supervisor.host_services());
     // P1：插件实例宿主服务先行注册——插件就绪后其 `submit_input` / `report_*`
@@ -166,6 +172,7 @@ pub async fn start_with_specs(
         skipped,
         core_api,
         entries,
+        launch_configs,
     };
     for reason in &runtime.skipped {
         tracing::debug!(reason = %reason, "plugin entry skipped");
@@ -181,7 +188,7 @@ pub async fn start_with_specs(
 /// 已启动子进程插件的生命周期控制面（组合根注入进 [`PluginHost`]）。
 ///
 /// 持有每个静态条目的 [`PluginHandle`]：面板的启停开关据此**真正停掉子进程**
-/// （而不是只改注册表状态），重启按钮据此 stop + start。
+/// （而不是只改注册表状态），重启按钮据此执行兼容热替换。
 /// 动态条目（QQ 实例）不在表里——它们的生命周期归实例插件。
 pub struct SubprocessControl {
     handles: std::collections::HashMap<String, echo_plugin_host::supervisor::PluginHandle>,
@@ -191,6 +198,8 @@ pub struct SubprocessControl {
     /// 启动就没起来的条目（握手失败 / 命令不存在）：没有 handle，
     /// 但状态应为 **failed** + 原因（面板的「失败」徽标与详情块读它）。
     failed: std::collections::HashMap<String, String>,
+    /// 每个静态条目的启动配置（热替换时原样传给 replacement）。
+    launch_configs: std::collections::HashMap<String, serde_json::Value>,
 }
 
 impl SubprocessControl {
@@ -227,6 +236,7 @@ impl SubprocessControl {
             handles,
             disabled,
             failed,
+            launch_configs: runtime.launch_configs.clone(),
         }
     }
 }
@@ -261,6 +271,28 @@ impl echo_agent::plugins::SubprocessPluginControl for SubprocessControl {
                 .start()
                 .await
                 .map_err(|error| format!("{id} start failed: {error}"))
+        })
+    }
+
+    fn upgrade<'a>(
+        &'a self,
+        id: &'a str,
+        timeout: std::time::Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let handle = self
+                .handles
+                .get(id)
+                .ok_or_else(|| format!("{id}: 不是已启动的外部插件"))?;
+            let config = self
+                .launch_configs
+                .get(id)
+                .cloned()
+                .ok_or_else(|| format!("{id}: 缺少启动配置，拒绝热替换"))?;
+            handle
+                .upgrade_preserving_contributions(config, timeout)
+                .await
+                .map_err(|error| format!("{id} hot upgrade failed: {error}"))
         })
     }
 
