@@ -8,6 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use echo_protocol::bridge::{deserialize_message, serialize_command, WsMessage};
 use echo_protocol::{BackendCommand, BackendEvent};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -96,8 +97,12 @@ pub async fn run(
         let (mut socket, _) = tokio_tungstenite::connect_async(request)
             .await
             .with_context(|| format!("connect management WS {url}"))?;
-        let command = serde_json::to_string(&BackendCommand::RestartPlugin { id: id.clone() })
-            .context("serialize RestartPlugin")?;
+        // 线上信封是 {"type":"command","payload":{…}}；直接 serde 一个裸
+        // BackendCommand 会得到 {"RestartPlugin":{…}}，Core 侧解析失败。
+        let command = serialize_command(&BackendCommand::RestartPlugin { id: id.clone() });
+        if command.is_empty() {
+            bail!("failed to serialize RestartPlugin");
+        }
         socket
             .send(Message::Text(command.into()))
             .await
@@ -108,7 +113,7 @@ pub async fn run(
             let Message::Text(text) = frame else {
                 continue;
             };
-            let Ok(event) = serde_json::from_str::<BackendEvent>(text.as_str()) else {
+            let Some(event) = parse_event(text.as_str()) else {
                 continue;
             };
             match event {
@@ -139,9 +144,45 @@ pub async fn run(
     .context("timed out waiting for plugin upgrade acknowledgement")?
 }
 
+/// 从 WS 文本帧里取出事件（信封是 `{"type":"event","payload":{…}}`）。
+fn parse_event(text: &str) -> Option<BackendEvent> {
+    match deserialize_message(text)? {
+        WsMessage::Event(event) => Some(event),
+        WsMessage::Command(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::management_url;
+    use super::{management_url, parse_event};
+    use echo_protocol::bridge::serialize_event;
+    use echo_protocol::{BackendCommand, BackendEvent};
+
+    /// 回执必须经**信封**解析：裸 `BackendCommand` JSON 在 Core 侧是
+    /// "missing field `type`"（2026-11 实测踩到过），这里钉住两端格式。
+    #[test]
+    fn ws_envelope_round_trips_plugin_op_result() {
+        let event = BackendEvent::PluginOpResult {
+            id: "probe".into(),
+            op: "restart".into(),
+            ok: true,
+            message: "probe 已重启".into(),
+        };
+        let text = serialize_event(&event);
+        match parse_event(&text) {
+            Some(BackendEvent::PluginOpResult { id, op, ok, .. }) => {
+                assert_eq!(id, "probe");
+                assert_eq!(op, "restart");
+                assert!(ok);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        // 命令侧同理：必须是 {"type":"command","payload":{…}}。
+        let command = echo_protocol::bridge::serialize_command(&BackendCommand::RestartPlugin {
+            id: "probe".into(),
+        });
+        assert!(command.contains("\"type\":\"command\""), "{command}");
+    }
 
     #[test]
     fn wildcard_management_addresses_connect_via_loopback() {
