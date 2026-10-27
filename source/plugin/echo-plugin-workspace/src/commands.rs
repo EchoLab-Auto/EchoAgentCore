@@ -547,6 +547,7 @@ fn remote_git_placeholder(directory: &str, message: String) -> WorkspaceGitInfo 
         modified: 0,
         untracked: 0,
         changed_files: Vec::new(),
+        changed_entries: Vec::new(),
         last_commit: None,
         error: Some(message),
     }

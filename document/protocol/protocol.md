@@ -180,7 +180,7 @@ graph LR
 - **Shell**：`ShellSessionsList` / `ShellSessionStarted` / `ShellExecStarted` / `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
 - **状态快照**：`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`SessionHistory`（某会话的显示历史派生：`messages` / `total` / `truncated` / `max_seq`；`max_seq` 是**合并水位线**，显示端按 `seq ≤ max_seq` 判"快照已覆盖"，推理条目不计入——见 [会话记忆](../core/memory.md)§显示时间线）、`ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`（`granted`/`topped_up` 分账字段恒下发，失败时为空串）、`ApiMetrics`（余额/用量时间序列——`entries: [{name, balance, usage, cost_currency}]`，见 `event.rs` 的 `ApiMetricsEntry`）、`Error`（也用于信息性 toast）
 - **实例管理（泛化后）**：状态统一经 `InstanceState.state` 文档；查询结果经 `InstanceOpResult.result`。旧 QQ 事件（`GroupList` / `FriendList` / `QqFilterConfig` / `QqGateMode` / `QqLoginStatus` / `QqQrcode` / `QqOwner`）已物理删除
-- **工作区会话**：`WorkspaceSessions`（列表 + 激活标记，`team_id` 归属；**`active` 是项目通道的单一事实来源**——面板/工具 `use` 等所有激活来源都必须广播，前端据此切换本地对话投影）、`WorkspaceGitStatus`（某会话各目录的 git 快照：分支 / 领先落后 / 暂存·修改·未跟踪计数 / 最近提交 / 变更文件列表 / 错误）、`WorkspaceFiles`（某目录一层文件列表：条目含 name/path/is_dir/size，目录在前；隐藏项跳过、超 500 条截断；失败经 `error` 回传——文件浏览器数据源）
+- **工作区会话**：`WorkspaceSessions`（列表 + 激活标记，`team_id` 归属；**`active` 是项目通道的单一事实来源**——面板/工具 `use` 等所有激活来源都必须广播，前端据此切换本地对话投影）、`WorkspaceGitStatus`（某会话各目录的 git 快照：分支 / 领先落后 / 暂存·修改·未跟踪计数 / 最近提交 / 变更文件列表 / 错误。变更文件给两份：`changed_files` 扁平路径表 + `changed_entries` 带两列 porcelain 状态字符（`{path, index, worktree}`，2026-10 新增，`MM` 同时属两类、归类留给展示侧；前端据此按类别分组展开文件清单。明细**每类各**截断 30 条，计数始终是总数）、`WorkspaceFiles`（某目录一层文件列表：条目含 name/path/is_dir/size，目录在前；隐藏项跳过、超 500 条截断；失败经 `error` 回传——文件浏览器数据源）
 
 ### 工具事件的精确配对
 

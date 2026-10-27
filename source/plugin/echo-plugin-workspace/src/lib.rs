@@ -52,14 +52,16 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use echo_protocol::{
-    WorkspaceConversationInfo, WorkspaceFileEntry, WorkspaceGitInfo, WorkspaceSessionInfo,
+    WorkspaceChangedEntry, WorkspaceConversationInfo, WorkspaceFileEntry, WorkspaceGitInfo,
+    WorkspaceSessionInfo,
 };
 
 use echo_tool::{Tool, ToolError};
 
 /// Cap on directories per session (protects the prompt/tool output size).
 pub const MAX_DIRECTORIES: usize = 32;
-/// Cap on reported changed-file paths per directory.
+/// Cap on reported changed-file entries **per category** (staged / modified /
+/// untracked) for one directory — one category flooding must not evict another.
 const CHANGED_FILES_CAP: usize = 30;
 /// Bound on every single `git` invocation.
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -627,6 +629,7 @@ fn remote_git_placeholder(qualified_directory: &str, message: String) -> Workspa
         modified: 0,
         untracked: 0,
         changed_files: Vec::new(),
+        changed_entries: Vec::new(),
         last_commit: None,
         error: Some(message),
     }
@@ -828,6 +831,7 @@ pub fn collect_dir_git(directory: &str) -> WorkspaceGitInfo {
         modified: 0,
         untracked: 0,
         changed_files: Vec::new(),
+        changed_entries: Vec::new(),
         last_commit: None,
         error: None,
     };
@@ -870,7 +874,12 @@ pub fn collect_dir_git(directory: &str) -> WorkspaceGitInfo {
         info.ahead = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
     }
     // 变更清单（porcelain v1：XY<空格>路径；`??` = 未跟踪）。
+    //
+    // 明细按**类别各自**截断（2026-10）：此前三类共用一个 30 条配额，一个
+    // 目录里上百个未跟踪构建产物会把仅有的几条暂存改动挤出清单——UI 上就是
+    // 标题写着「已暂存 2」、点开却空空如也。
     if let GitOutcome::Ok(out) = run_git(directory, &["status", "--porcelain"]) {
+        let mut listed = [0usize; 3]; // 已暂存 / 已修改 / 未跟踪 各自已收条数
         for line in out.lines() {
             if line.len() < 3 {
                 continue;
@@ -879,20 +888,47 @@ pub fn collect_dir_git(directory: &str) -> WorkspaceGitInfo {
             let x = chars.next().unwrap_or(' ');
             let y = chars.next().unwrap_or(' ');
             let path = line[3..].to_string();
-            if x == '?' && y == '?' {
+            let untracked = x == '?' && y == '?';
+            let staged = !untracked && x != ' ' && x != '?';
+            let modified = !untracked && y != ' ' && y != '?';
+            if untracked {
                 info.untracked += 1;
             } else {
-                if x != ' ' && x != '?' {
+                if staged {
                     info.staged += 1;
                 }
-                if y != ' ' && y != '?' {
+                if modified {
                     info.modified += 1;
                 }
             }
-            if info.changed_files.len() < CHANGED_FILES_CAP {
-                info.changed_files.push(path);
+            // 一个文件可以同时落在两类（`MM` = 已暂存且工作区又改了）：任一类
+            // 还有配额就收进明细，归组交给展示侧（按两列字符自行决定）。
+            let room = (staged && listed[0] < CHANGED_FILES_CAP)
+                || (modified && listed[1] < CHANGED_FILES_CAP)
+                || (untracked && listed[2] < CHANGED_FILES_CAP);
+            if room {
+                if staged {
+                    listed[0] += 1;
+                }
+                if modified {
+                    listed[1] += 1;
+                }
+                if untracked {
+                    listed[2] += 1;
+                }
+                info.changed_entries.push(WorkspaceChangedEntry {
+                    path,
+                    index: x.to_string(),
+                    worktree: y.to_string(),
+                });
             }
         }
+        // 扁平路径表由明细派生（老前端的兼容视图），不另维护一份配额。
+        info.changed_files = info
+            .changed_entries
+            .iter()
+            .map(|e| e.path.clone())
+            .collect();
     }
     // 最近一次提交摘要（仓库无提交时失败 → None）。
     if let GitOutcome::Ok(out) = run_git(directory, &["log", "-1", "--pretty=format:%h %s"]) {
@@ -2062,7 +2098,6 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-    #[test]
     fn collects_git_status_of_the_repo_checkout() {
         // 本仓库 checkout 是真实 git 仓库：断言只读采集能识别它。
         let root = env!("CARGO_MANIFEST_DIR");
@@ -2072,6 +2107,102 @@ mod tests {
         assert!(info.error.is_none(), "no error expected: {info:?}");
     }
 
+    /// 临时 git 仓库脚手架（不提交、不依赖全局 git 身份）：只 `init` + `add`，
+    /// 足够产出 `A `/`AM`/`??` 三种典型 porcelain 行。
+    fn scratch_repo(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("echo-git-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .arg(&root)
+            .status()
+            .expect("git init");
+        assert!(status.success(), "git init failed");
+        root
+    }
+
+    /// 变更明细带两列状态字符（UI 按「已暂存 / 已修改 / 未跟踪」分组展开，
+    /// 扁平路径表做不到）；`changed_files` 由明细派生、两者同源。
+    #[test]
+    fn collects_changed_entries_with_porcelain_status() {
+        let root = scratch_repo("entries");
+        std::fs::write(root.join("staged.txt"), "a").unwrap();
+        std::fs::write(root.join("both.txt"), "b").unwrap();
+        std::fs::write(root.join("loose.txt"), "c").unwrap();
+        for file in ["staged.txt", "both.txt"] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .arg("add")
+                .arg(file)
+                .status()
+                .unwrap()
+                .success());
+        }
+        // 暂存后再改：`AM`（同时属于已暂存与已修改两类）。
+        std::fs::write(root.join("both.txt"), "b-changed").unwrap();
+
+        let info = collect_dir_git(root.to_str().unwrap());
+        assert!(info.is_repo, "{info:?}");
+        assert_eq!(
+            (info.staged, info.modified, info.untracked),
+            (2, 1, 1),
+            "{info:?}"
+        );
+        let find = |name: &str| {
+            info.changed_entries
+                .iter()
+                .find(|e| e.path == name)
+                .unwrap_or_else(|| panic!("{name} missing: {info:?}"))
+        };
+        assert_eq!(find("staged.txt").index, "A");
+        assert_eq!(find("staged.txt").worktree, " ");
+        assert_eq!(find("both.txt").index, "A");
+        assert_eq!(find("both.txt").worktree, "M");
+        assert_eq!(find("loose.txt").index, "?");
+        assert_eq!(find("loose.txt").worktree, "?");
+        // 扁平表与明细同源（老前端看到的正是这一份）。
+        let paths: Vec<&str> = info.changed_files.iter().map(|p| p.as_str()).collect();
+        assert_eq!(paths.len(), info.changed_entries.len(), "{paths:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 明细配额**按类别各算**：未跟踪文件刷屏不能把已暂存改动挤出清单——
+    /// 此前共用一个 30 条配额，UI 上就是「已暂存 1」点开空空如也。
+    #[test]
+    fn changed_entries_are_capped_per_category() {
+        let root = scratch_repo("cap");
+        std::fs::write(root.join("a-staged.txt"), "x").unwrap();
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .arg("add")
+            .arg("a-staged.txt")
+            .status()
+            .unwrap()
+            .success());
+        for i in 0..(CHANGED_FILES_CAP + 5) {
+            std::fs::write(root.join(format!("z-untracked-{i:02}.txt")), "x").unwrap();
+        }
+
+        let info = collect_dir_git(root.to_str().unwrap());
+        assert_eq!(info.untracked, (CHANGED_FILES_CAP + 5) as u32, "{info:?}");
+        let untracked_listed = info
+            .changed_entries
+            .iter()
+            .filter(|e| e.worktree == "?")
+            .count();
+        assert_eq!(untracked_listed, CHANGED_FILES_CAP, "{info:?}");
+        assert!(
+            info.changed_entries
+                .iter()
+                .any(|e| e.path == "a-staged.txt"),
+            "staged change must survive an untracked flood: {info:?}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
     // ── 文件浏览器（collect_dir_files / resolve_within_directories）──
 
     #[test]

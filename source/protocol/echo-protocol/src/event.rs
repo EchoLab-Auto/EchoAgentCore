@@ -1453,14 +1453,41 @@ pub struct WorkspaceGitInfo {
     #[serde(default)]
     pub untracked: u32,
     /// 变更文件路径（`git status --porcelain` 前若干条，供 UI 展示）。
+    ///
+    /// 与 `changed_entries` 由同一次采集派生；保留扁平表是为了老前端能照常
+    /// 显示 chip（新增字段对老代码是纯增量）。
     #[serde(default)]
     pub changed_files: Vec<String>,
+    /// 变更文件明细（路径 + 两列状态字符，2026-10）。
+    ///
+    /// 为什么要有它：UI 要能按「已暂存 / 已修改 / 未跟踪」**分组展开**具体
+    /// 文件，而扁平路径表不带状态，分组无从谈起。保留原始两列字符而不在协议
+    /// 侧归类——一个文件可以同时属于两类（`MM` = 已暂存且工作区又改了），
+    /// 归类是展示侧的决定，协议只传事实。
+    ///
+    /// 老 Core 不发送此字段（`#[serde(default)]` → 空表），前端退回
+    /// `changed_files` 的扁平显示。
+    #[serde(default)]
+    pub changed_entries: Vec<WorkspaceChangedEntry>,
     /// 最近一次提交的摘要（`<short-hash> <subject>`）。
     #[serde(default)]
     pub last_commit: Option<String>,
     /// 采集失败原因（目录不存在 / git 不可用等；非仓库时为 None）。
     #[serde(default)]
     pub error: Option<String>,
+}
+
+/// 一条工作区变更（`git status --porcelain` v1 的两列状态 + 路径）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceChangedEntry {
+    /// 仓库相对路径：porcelain 原样，重命名/复制形态是 `旧 -> 新`。
+    pub path: String,
+    /// 索引区（第 1 列）状态字符：`M`/`A`/`D`/`R`/`C`/`U`；空格 = 索引区无变更。
+    #[serde(default)]
+    pub index: String,
+    /// 工作区（第 2 列）状态字符；`?` = 未跟踪。
+    #[serde(default)]
+    pub worktree: String,
 }
 
 /// 文件浏览器中的一个条目（文件或子目录）。
@@ -1875,5 +1902,43 @@ mod session_history_tests {
                 "kind_name 与 serde tag 分叉（订阅侧会收不到）"
             );
         }
+    }
+
+    /// 变更明细的**线格式**是对面板的契约（`changed_entries[{path,index,worktree}]`，
+    /// 两列状态字符原样传）：字段名一改，面板就退回扁平路径表而不报错——静默
+    /// 降级最难发现，故在此锁死。
+    #[test]
+    fn workspace_changed_entry_wire_shape_is_stable() {
+        let info = WorkspaceGitInfo {
+            directory: "/srv/repo".into(),
+            is_repo: true,
+            branch: Some("main".into()),
+            ahead: 1,
+            behind: 2,
+            staged: 1,
+            modified: 1,
+            untracked: 1,
+            changed_files: vec!["a.rs".into()],
+            changed_entries: vec![WorkspaceChangedEntry {
+                path: "a.rs".into(),
+                index: "M".into(),
+                worktree: "M".into(),
+            }],
+            last_commit: Some("abc1234 init".into()),
+            error: None,
+        };
+        let value = serde_json::to_value(&info).expect("serialize");
+        let entry = &value["changed_entries"][0];
+        assert_eq!(entry["path"], "a.rs");
+        assert_eq!(entry["index"], "M", "索引列字符原样（空格 = 无变更）");
+        assert_eq!(entry["worktree"], "M", "工作区列字符原样");
+        // 老载荷（无 changed_entries）必须仍能反序列化：跨机对端可能还是旧版。
+        let legacy: WorkspaceGitInfo = serde_json::from_value(serde_json::json!({
+            "directory": "/srv/old",
+            "is_repo": true,
+        }))
+        .expect("legacy payload");
+        assert!(legacy.changed_entries.is_empty());
+        assert!(legacy.changed_files.is_empty());
     }
 }
