@@ -27,12 +27,28 @@ link: ["chat-list | 列表与滚动", "chat-history | 历史与实时窗口", "c
 
 补充来源：定时器触发以 system 消息插入主时间线（`⏰ 定时器触发 · {task}`，task 截断 160 字符）。
 
-**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（**气泡壳由面板自绘**——原库 `ChatBubble` 已随 ui-frame 精简解散，样式吸收进 `MessageItem`；正文用 `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）；**连续的工具 / 推理 / 子代理统一由 `WorkRunGroup` 渲染**（三者合并为同类「工作项」，`WorkRunItem.kind` 区分 `tool`/`reasoning`/`subagent`；合并粒度是**任意相邻工作项**，中间夹着别的角色就断开成组；推理正文层为 `ReasoningText`；契约见[工作行](./chat-work.md)）；ui-frame 的 chat 模块如今只剩**纯原子层**（`ChatComposer` / `ChatFold` / `ChatCopyButton` + `ChatMessage` 类型），吸底滚动是 headless 的 `useChatScroll`——`ChatBubble` / `ChatTray` 均已解散。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义）。
+**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（**气泡外壳是 ui-frame `NeumorphismCard` 凸起档**（2026-10-29），角色语义（对齐/色调/非对称圆角）留在 `MessageItem` 自有样式；原库 `ChatBubble` 已随 ui-frame 精简解散，其壳样式曾于 2026-10-13 吸收进面板、2026-10-29 起材质交回卡片组件；正文用 `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）；**连续的工具 / 推理 / 子代理统一由 `WorkRunGroup` 渲染**（三者合并为同类「工作项」，`WorkRunItem.kind` 区分 `tool`/`reasoning`/`subagent`；合并粒度是**任意相邻工作项**，中间夹着别的角色就断开成组；推理正文层为 `ReasoningText`；契约见[工作行](./chat-work.md)）；ui-frame 的 chat 模块如今只剩**纯原子层**（`ChatComposer` / `ChatFold` / `ChatCopyButton` + `ChatMessage` 类型），吸底滚动是 headless 的 `useChatScroll`——`ChatBubble` / `ChatTray` 均已解散。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义）。
 
 ## 气泡几何
 
 **气泡宽度**：宽度完全动态——短消息贴内容收紧（实测最短 186px），长消息/代码/表格撑满消息列可用宽度（随左右侧栏卡片显隐变化，实测 1600px 窗口下 1276px）；`.chat-view__item--msg` 为 flex 列容器（user 靠右 / agent 靠左 / system 居中，依赖库 `align-self`）。面板**不设百分比上限**：普通消息 `max-width: 100%`、system 消息 `92%`（`MessageItem.vue` 自绘，无库默认值需要覆盖）；并隐藏 Markdown 标题锚点
 （其 -22px 绝对定位会撑出横向溢出）。
+
+**气泡材质（2026-10-29 起）**：外壳是 ui-frame `NeumorphismCard` 的**凸起档**（`elevation=1`、
+`radius=16`、`no-padding`）——阴影/圆角/裁剪全归库的台阶高度模型，面板**不再手写 `box-shadow`**
+（否则会以更高特异性压掉 `.nm-card--elevation-*`）。面板侧只剩角色语义三件事：
+
+| 维度 | user | agent | system |
+|---|---|---|---|
+| 对齐 | `align-self: flex-end` | `flex-start` | `center` |
+| 色调 | `--nm-chat-user-bg`（主色 `#cdfa4e` 与表面色 mix：亮 22% / 暗 14%） | `--nm-chat-agent-bg`（`--nm-surface-raised`，比托盘亮一档） | `--nm-chat-system-color`，无气泡 |
+| 非对称圆角 | 压右下角 4px | 压左下角 4px | — |
+
+`elevation=1` 的实际配方：ambient `0 1px 2px`(`--nm-shadow-ambient-sm`) + 暗侧 `4px 4px 10px`
++ 亮侧 `-2px -2px 6px`。选 1 档而非 2/3 档的理由是**几何接近原手写阴影**（`3px 3px 10px`），
+且多条消息连续排布时 2 档（`8px/20px`）的软影会彼此糊在一起。`no-padding` 是因为库 body 留白
+24px 对气泡过大——8px 14px 的 padding 属版面，留在面板侧。`role` / `aria-label` 经 attrs
+透传到卡片根节点，无障碍语义不变。
 
 ## 渲染对象缓存
 
