@@ -27,34 +27,45 @@ link: ["chat-list | 列表与滚动", "chat-history | 历史与实时窗口", "c
 
 补充来源：定时器触发以 system 消息插入主时间线（`⏰ 定时器触发 · {task}`，task 截断 160 字符）。
 
-**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（**气泡外壳是 ui-frame `NeumorphismCard` 凸起档**（2026-10-29），角色语义（对齐 / 色调）留在 `MessageItem` 自有样式，圆角四角等值由卡片 `radius=16` 决定；原库 `ChatBubble` 已随 ui-frame 精简解散，其壳样式曾于 2026-10-13 吸收进面板、2026-10-29 起材质交回卡片组件；正文用 `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）；**连续的工具 / 推理 / 子代理统一由 `WorkRunGroup` 渲染**（三者合并为同类「工作项」，`WorkRunItem.kind` 区分 `tool`/`reasoning`/`subagent`；合并粒度是**任意相邻工作项**，中间夹着别的角色就断开成组；推理正文层为 `ReasoningText`；契约见[工作行](./chat-work.md)）；ui-frame 的 chat 模块如今只剩**纯原子层**（`ChatComposer` / `ChatFold` / `ChatCopyButton` + `ChatMessage` 类型），吸底滚动是 headless 的 `useChatScroll`——`ChatBubble` / `ChatTray` 均已解散。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义）。
+**渲染分工**：行模型与组合归面板——消息行 `MessageItem`（**气泡外壳是 ui-frame `NeumorphismCard` 凸起档**（2026-10-29），面板只留版面（宽度 / padding）与对齐，材质（阴影 / 底色 / 圆角）**零覆盖**、全取组件默认；原库 `ChatBubble` 已随 ui-frame 精简解散，其壳样式曾于 2026-10-13 吸收进面板、2026-10-29 起材质交回卡片组件；正文用 `MarkdownLazy`——doc 模块的 Markdown 渲染**延迟加载**：chunk 未达时以纯文本回退呈现（不阻塞首屏、无空白帧），到达后增强为完整 Markdown；无 Agent 消息的会话完全不加载 doc 模块）；**连续的工具 / 推理 / 子代理统一由 `WorkRunGroup` 渲染**（三者合并为同类「工作项」，`WorkRunItem.kind` 区分 `tool`/`reasoning`/`subagent`；合并粒度是**任意相邻工作项**，中间夹着别的角色就断开成组；推理正文层为 `ReasoningText`；契约见[工作行](./chat-work.md)）；ui-frame 的 chat 模块如今只剩**纯原子层**（`ChatComposer` / `ChatFold` / `ChatCopyButton` + `ChatMessage` 类型），吸底滚动是 headless 的 `useChatScroll`——`ChatBubble` / `ChatTray` 均已解散。库的 chat 组合组件（`ChatMessageList` / `ChatMessageItem` / `ChatToolCallBlock` / `ChatReasoningBlock` / `ChatBranchMergeBlock`）已从 ui-frame 移除（原因：聊天组合属产品语义）。
 
 ## 气泡几何
 
 **气泡宽度**：宽度完全动态——短消息贴内容收紧（实测最短 186px），长消息/代码/表格撑满消息列可用宽度（随左右侧栏卡片显隐变化，实测 1600px 窗口下 1276px）；`.chat-view__item--msg` 为 flex 列容器（user 靠右 / agent 靠左 / system 居中，依赖库 `align-self`）。面板**不设百分比上限**：普通消息 `max-width: 100%`、system 消息 `92%`（`MessageItem.vue` 自绘，无库默认值需要覆盖）；并隐藏 Markdown 标题锚点
 （其 -22px 绝对定位会撑出横向溢出）。
 
-**气泡材质（2026-10-29 起）**：外壳是 ui-frame `NeumorphismCard` 的**凸起档**（`elevation=1`、
-`radius=16`、`no-padding`）——阴影/圆角/裁剪全归库的台阶高度模型，面板**不再手写 `box-shadow`**
-（否则会以更高特异性压掉 `.nm-card--elevation-*`）。面板侧只剩角色语义两件事：
+**气泡材质＝组件原生（2026-10-29 起，用户要求「不要另外加阴影」）**：外壳就是
+`<NeumorphismCard no-padding>`，**材质零覆盖**——
+
+| 材质项 | 取值来源 |
+|---|---|
+| 阴影 | 组件默认档 `nm-card--elevation-2`：`0 2px 4px` ambient + 暗侧 `8px 8px 20px` + 亮侧 `-4px -4px 12px` |
+| 底色 | `--nm-surface-color`（亮 `#e0e0e0` / 暗 `#1c1c1c`），**不再按角色染色** |
+| 圆角 | 组件默认 `--nm-card-radius: 24px`（四角等值），面板不传 `radius` |
+| 裁剪 | 组件自带 `overflow: hidden` |
+
+面板侧只剩**版面与对齐**：
 
 | 维度 | user | agent | system |
 |---|---|---|---|
 | 对齐 | `align-self: flex-end` | `flex-start` | `center` |
-| 色调 | `--nm-chat-user-bg`（主色 `#cdfa4e` 与表面色 mix：亮 22% / 暗 14%） | `--nm-chat-agent-bg`（`--nm-surface-raised`，比托盘亮一档） | `--nm-chat-system-color`，无气泡 |
+| 结构 | 卡片（原生材质） | 卡片（原生材质） | 不套卡片：居中平铺 + 32×1px 细线夹文本 |
 
-**圆角四角等值（16px）**：卡片的 `border-radius: var(--nm-card-radius, 24px)` 取组件
-`radius=16` 下发的值，面板**不覆盖任何一个角**。2026-10-29 之前曾有「非对称圆角开向」
-（靠内一侧收成 `--nm-border-radius-xs` = 4px，意图是给方向一个不依赖颜色的形状线索），
-当日按用户要求撤销：卡片就该是四角同半径，且角色方向已由对齐（左/右）+ 色调（染色 /
-抬升）表达，第三个线索属重复编码。回归断言：`MessageItem.test.ts` 检查面板样式块里
-**没有任何 `border-radius` 声明**（去掉注释后匹配），即圆角所有权完全在库侧。
+**角色区分只剩「左右对齐」一重**（此前还有主色染色与非对称圆角两道，均已按用户要求撤除）。
+若将来需要重新区分，应在 ui-frame 侧给卡片加语义（或在面板传 `elevation` / 覆盖背景），
+而不是在宿主里手写 `box-shadow`——后者会以更高特异性压掉 `.nm-card--elevation-*` 的台阶阴影。
 
-`elevation=1` 的实际配方：ambient `0 1px 2px`(`--nm-shadow-ambient-sm`) + 暗侧 `4px 4px 10px`
-+ 亮侧 `-2px -2px 6px`。选 1 档而非 2/3 档的理由是**几何接近原手写阴影**（`3px 3px 10px`），
-且多条消息连续排布时 2 档（`8px/20px`）的软影会彼此糊在一起。`no-padding` 是因为库 body 留白
-24px 对气泡过大——8px 14px 的 padding 属版面，留在面板侧。`role` / `aria-label` 经 attrs
-透传到卡片根节点，无障碍语义不变。
+回归断言（`MessageItem.test.ts`）：气泡三个自有类（`.msg-item__bubble` / `--user` / `--agent`）
+的声明块里**不得出现** `box-shadow` / `border-radius` / `background` / `filter`；只允许
+`max-width` / `padding` / `align-self` 这类版面声明。
+
+**`no-padding` 是唯一保留的组件 prop**：库 body 默认留白 24px 对气泡过大，而 8px 14px 的
+内边距属**版面**（不是材质），由面板根节点提供。`role` / `aria-label` 经 attrs 透传到卡片
+根节点，无障碍语义不变。
+
+> 若嫌原生默认档偏重（实测焦点气泡下缘外 1px 亮度 186 vs 卡片 224，明度跨度 45 级），
+> **正确做法是改 ui-frame 的 `$elevation-shadows` 或调 `card.elevation` 全局配置**，
+> 而不是在面板里传 `:elevation="1"` 临时压轻——否则同一套台阶在宿主间会各写一份。
 
 ## 渲染对象缓存
 
