@@ -34,7 +34,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - **每个会话拥有独立的模型上下文**（多会话）：事件日志是唯一事实来源，事件带 `session` 归属；`TrunkStore` 按会话投影出各自的 `history`（token 预算逐会话生效），不同会话的上下文互不可见——QQ 私聊、QQ 群、本地 TUI 是独立对话（投影机制详见 [会话记忆](./memory.md)）
 - **本地工作区通道**：本地来源（`platform=local`）的工作区专属对话上下文（`local:workspace:<workspace_id>:local_user`）——激活工作区即切换到的对话，见下节
 - 不同 agent 的上下文完全隔离（各自独立的事件日志与投影）
-- 上下文快照（`RequestContext`）按会话返回（`session_id`；`ContextSnapshot` 回带归属）；`CompactHistory` 按会话分别压缩——**预览 → 归档快照（`archives/*-precompact.json`）→ LLM 交接摘要（失败按组回退规则统计文案）→ 落地**（机制与统计见 [会话记忆](./memory.md)§压缩与归档）；`ClearHistory` **按会话清理**（`session_id` 存在时只清该会话的事件日志/上下文投影/时间线条目；缺省 = 清空该智能体全部会话——用户报告后修复：此前只有 team 维度，面板清理会误清其他会话）
+- 上下文快照（`RequestContext`）按会话返回（`session_id`；`ContextSnapshot` 回带归属）；`CompactHistory` 按 `session_id` 只压缩指定会话——**预览 → 归档快照（`archives/*-precompact.json`）→ LLM 交接摘要（失败按组回退规则统计文案）→ 落地**（机制与统计见 [会话记忆](./memory.md)§压缩与归档）；`ClearHistory` **按会话清理**（`session_id` 存在时只清该会话的事件日志/上下文投影/时间线条目；缺省 = 清空该智能体全部会话——用户报告后修复：此前只有 team 维度，面板清理会误清其他会话）
 - `RequestState` 返回**所有人格**的会话（各会话携带自身 team_id），Panel 按当前 agent 过滤展示
 - **单会话模式下的 QQ 入站投递**：hook 格式化的消息（`<qq_message_hook>`，带完整平台/发送者元数据）投递到该 persona 的**默认本地会话**（`local:tui::local_user`）排队跑 turn——不开临时回复分支（ReplyBranch 是并行模式专属可见性机制）、不发 QQ 临时回复；`group_id=None` 保证普通输出不推 QQ，**是否回复由 agent 自行判断**（qq-transport 技能：回复必须走 send_* 工具，明显无需回应的消息可不回复）。QQ 会话键仍按作用域注册（Panel 会话列表可见），并行多会话模式保持原临时回复分支行为
 - **Panel 前端切换**：当前 agent 持久化于 localStorage（`echo-panel-active-team`），刷新/重连后停留原 agent；切换 agent 先渲染该 agent 的时间线缓存（零等待），再以 `since_seq` 增量刷新

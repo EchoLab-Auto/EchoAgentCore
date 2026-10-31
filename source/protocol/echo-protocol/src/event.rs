@@ -15,7 +15,6 @@ use crate::mode::LoopMode;
 pub type ToolStateEventBuilder =
     std::sync::Arc<dyn Fn(&str, &serde_json::Value) -> BackendEvent + Send + Sync>;
 
-
 /// 技能来源信息（外部 Git 仓库安装）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillSourceInfo {
@@ -667,6 +666,9 @@ pub enum BackendEvent {
         /// 归属 team（persona）。多上游面板据此把进度归到对应 agent。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         team_id: Option<String>,
+        /// 当前操作的会话；仅该会话的窗口展示进度。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
         /// 阶段：`preview` / `archive` / `summarize` / `apply` / `done` / `failed`。
         phase: String,
         /// 已完成步数。

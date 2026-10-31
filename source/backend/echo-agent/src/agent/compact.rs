@@ -28,11 +28,27 @@ use crate::agent::Agent;
 /// 宿主侧端口实现：借用 `&Agent`（trunk / provider / 事件出口都在它身上）。
 struct AgentCompactionHost<'a> {
     agent: &'a Agent,
+    /// Some = 用户指定的单个会话；None = 内部全量维护。
+    session_id: Option<&'a str>,
 }
 
 impl CompactionHost for AgentCompactionHost<'_> {
     fn preview(&self, keep_recent: usize) -> Result<CompactPreview, String> {
-        self.agent.trunk.compact_preview(keep_recent)
+        let mut preview = self.agent.trunk.compact_preview(keep_recent)?;
+        if let Some(session_id) = self.session_id {
+            preview
+                .groups
+                .retain(|group| group.session.as_deref() == Some(session_id));
+            preview.total_replaced = preview
+                .groups
+                .iter()
+                .map(|group| group.replaced_count)
+                .sum();
+            if preview.groups.is_empty() {
+                return Err(format!("会话 {session_id} 历史不足，无需压缩"));
+            }
+        }
+        Ok(preview)
     }
 
     fn archive_snapshot(
@@ -126,6 +142,7 @@ impl CompactionHost for AgentCompactionHost<'_> {
         self.agent
             .emit(crate::event::BackendEvent::CompactionProgress {
                 team_id: self.agent.team_id(),
+                session_id: self.session_id.map(str::to_string),
                 phase: progress.phase.as_str().to_string(),
                 done: progress.done,
                 total: progress.total,
@@ -157,65 +174,72 @@ impl Agent {
     /// 算法在插件里（`echo_plugin_loop::compaction::compact_history`）；本方法
     /// 只负责拿**压缩互斥锁**（2026-10 巡检 🔴：double compact / compact 与
     /// clear_history 竞争会按过时摘要重写日志、统计错乱）然后委托。
-    /// 上报一次压缩/归档进度（`CompactionProgress` 事件）。
-    ///
-    /// 归档与压缩共用同一条进度通道：面板只需订阅一个事件就能画两种操作，
-    /// 不必为"归档"再写一套 UI 状态。
-    pub(crate) fn emit_compaction_progress(
-        &self,
-        phase: echo_session::CompactionPhase,
-        done: usize,
-        total: usize,
-        sessions: usize,
-        message: impl Into<String>,
-    ) {
-        self.emit(crate::event::BackendEvent::CompactionProgress {
-            team_id: self.team_id(),
-            phase: phase.as_str().to_string(),
-            done,
-            total,
-            sessions,
-            message: message.into(),
-        });
-    }
-
     /// 归档**单个会话**并上报进度（`archive` → `done` / `failed`）。
-    ///
-    /// 归档本身不快（序列化整档 + 写盘 + 清空 + 重投影），但历史大时也会到
-    /// 秒级；更重要的是**它有一个终态**——面板据 `done`/`failed` 收掉进度条，
-    /// 否则按钮会一直转。
     pub async fn archive_session_with_progress(&self, session_id: &str) -> Result<String, String> {
         use echo_session::CompactionPhase;
-        self.emit_compaction_progress(
+        let emit = |phase: CompactionPhase, done, total, sessions, message: String| {
+            self.emit(crate::event::BackendEvent::CompactionProgress {
+                team_id: self.team_id(),
+                session_id: Some(session_id.to_string()),
+                phase: phase.as_str().to_string(),
+                done,
+                total,
+                sessions,
+                message,
+            });
+        };
+        emit(
             CompactionPhase::Archive,
             0,
             0,
-            0,
+            1,
             format!("正在归档会话 {session_id} 的快照…"),
         );
         let result = self.trunk.archive_session(session_id).await;
         match &result {
-            Ok(path) => self.emit_compaction_progress(
+            Ok(path) => emit(
                 CompactionPhase::Done,
                 1,
                 1,
                 1,
                 format!("历史已归档：{path}"),
             ),
-            Err(error) => self.emit_compaction_progress(
+            Err(error) => emit(
                 CompactionPhase::Failed,
                 0,
                 0,
-                0,
+                1,
                 format!("归档失败：{error}"),
             ),
         }
         result
     }
 
+    /// 内部全量维护入口；用户命令必须走 compact_session_history。
     pub async fn compact_history(&self, keep_recent: usize) -> Result<String, String> {
+        self.compact_history_scoped(None, keep_recent).await
+    }
+
+    /// 只压缩指定会话；其他会话不参与预览、摘要与落地。
+    pub async fn compact_session_history(
+        &self,
+        session_id: &str,
+        keep_recent: usize,
+    ) -> Result<String, String> {
+        self.compact_history_scoped(Some(session_id), keep_recent)
+            .await
+    }
+
+    async fn compact_history_scoped(
+        &self,
+        session_id: Option<&str>,
+        keep_recent: usize,
+    ) -> Result<String, String> {
         let _compact_guard = self.trunk.compact_lock().await;
-        let host = AgentCompactionHost { agent: self };
+        let host = AgentCompactionHost {
+            agent: self,
+            session_id,
+        };
         let result = echo_plugin_loop::compaction::compact_history(&host, keep_recent).await;
         // 失败也上报一次终态：否则面板的进度条会**永远转下去**（它只能靠
         // 这个事件判断结束）。注意成功路径已在策略内部发过 `done`，这里
@@ -269,12 +293,69 @@ mod tests {
             crate::tool::ToolRegistry::new(),
             Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
         );
-        let host = AgentCompactionHost { agent: &agent };
+        let host = AgentCompactionHost {
+            agent: &agent,
+            session_id: None,
+        };
         let from_agent = agent.model.provider.read().await.clone();
         let from_port = host.provider().await;
         assert!(
             Arc::ptr_eq(&from_agent, &from_port),
             "端口必须交出同一份 provider（否则计量/脱敏装饰会丢）"
         );
+    }
+
+    /// 一个窗口的压缩只能改写自己的目标会话，不能波及同人格的其他窗口。
+    #[tokio::test]
+    async fn compacting_one_session_preserves_every_other_session() {
+        let agent = Agent::new(
+            Arc::new(MockProvider {
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                reply: "【当前目标】继续\n【已完成】旧对话\n【进行中】无\n【关键信息】测试".into(),
+            }),
+            crate::config::AgentConfig::default(),
+            crate::SkillRegistry::new(),
+            crate::tool::ToolRegistry::new(),
+            Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
+        );
+        let a = "local:workspace:proj/win-a:local_user";
+        let b = "local:workspace:proj/win-b:local_user";
+        for session in [a, b] {
+            let events = (0..6)
+                .map(|i| {
+                    echo_session::SessionEvent::UserMessage(echo_session::event::UserMessage {
+                        session: Some(session.into()),
+                        content: format!("message-{i}"),
+                        timestamp: i,
+                        message_sequence: None,
+                        source: None,
+                        images: vec![],
+                    })
+                })
+                .collect();
+            agent.trunk.import_session_events(session, events);
+        }
+
+        agent
+            .compact_session_history(a, 2)
+            .await
+            .expect("compact A");
+        let events = agent.trunk.event_log();
+        let compacted: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                echo_session::SessionEvent::Compaction(compaction) => compaction.session.as_deref(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(compacted, vec![a]);
+        let b_events: Vec<_> = events
+            .iter()
+            .filter(|event| event.session().as_deref() == Some(b))
+            .collect();
+        assert_eq!(b_events.len(), 6, "B 的原始事件必须全部保留");
+        assert!(!b_events
+            .iter()
+            .any(|event| matches!(event, echo_session::SessionEvent::Compaction(_))));
     }
 }

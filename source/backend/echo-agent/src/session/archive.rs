@@ -221,7 +221,7 @@ impl TrunkStore {
         self.clear_session(session_id).await;
         self.push_timeline_blocking(crate::event::TimelineMessage::system(
             format!("会话历史已归档：{archive}（会话 {session_id}）"),
-            String::new(),
+            session_id.to_string(),
             chrono::Utc::now().timestamp(),
         ))
         .await;
@@ -411,7 +411,10 @@ impl TrunkStore {
             format!(
                 "历史已压缩：{total_replaced} 条事件 → {groups_done} 条摘要（各会话保留最近 ≥{keep_recent} 条）{archive_note}"
             ),
-            String::new(),
+            summaries
+                .first()
+                .and_then(|summary| summary.session.clone())
+                .unwrap_or_default(),
             chrono::Utc::now().timestamp(),
         ))
         .await;

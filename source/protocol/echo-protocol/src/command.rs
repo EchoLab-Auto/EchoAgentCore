@@ -114,10 +114,13 @@ pub enum BackendCommand {
         #[serde(default)]
         session_id: Option<String>,
     },
-    /// 压缩某个 team 的历史：旧事件替换为规则摘要（保留最近 keep_recent 条）。
+    /// 压缩指定会话的历史：旧事件替换为摘要（保留最近 keep_recent 条）。
+    /// `session_id` 必填；缺失时服务端拒绝，避免误压该人格的全部会话。
     CompactHistory {
         #[serde(default)]
         team_id: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
         #[serde(default)]
         keep_recent: Option<usize>,
     },

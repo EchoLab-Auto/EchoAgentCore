@@ -2154,8 +2154,10 @@ async fn archive_session_clears_only_the_target_session() {
     {
         let timeline = store.timeline.lock();
         assert!(
-            timeline.iter().all(|m| m.session_id != a_id),
-            "timeline for the archived session is cleared"
+            timeline
+                .iter()
+                .all(|m| m.session_id != a_id || m.content.contains("会话历史已归档")),
+            "only the scoped archive notice may remain for the archived session"
         );
         assert!(timeline
             .iter()
