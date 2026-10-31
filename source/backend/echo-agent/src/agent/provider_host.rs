@@ -169,8 +169,13 @@ impl ProviderCommandHost for AgentProviderCommandHost {
             } else {
                 format!("会话 {session_id} 切换 API 失败（profile 不存在或构建失败）")
             };
-            agent.emit(BackendEvent::Error {
+            // Receipt, not error (2026-10 scope audit): `Error{session_id}`
+            // freezes the session's streaming rows in the panel, and switching
+            // models mid-turn used to freeze the running answer because of it.
+            agent.emit(BackendEvent::Notice {
+                team_id: agent.team_id(),
                 session_id: Some(session_id.clone()),
+                ok,
                 message,
             });
             agent.emit_api_config().await;
@@ -188,8 +193,10 @@ impl ProviderCommandHost for AgentProviderCommandHost {
             // 持久化的 `api_profile`。
             agent.persist_session_api_profile(&session_id, None);
             agent.set_session_provider(&session_id, "").await;
-            agent.emit(BackendEvent::Error {
+            agent.emit(BackendEvent::Notice {
+                team_id: agent.team_id(),
                 session_id: Some(session_id.clone()),
+                ok: true,
                 message: format!("会话 {session_id} 已恢复跟随 persona 级配置"),
             });
             agent.emit_api_config().await;

@@ -411,6 +411,8 @@ impl Agent {
         if self.rebuild_provider(&cfg_snapshot).await {
             self.set_model(cfg_snapshot.model.clone()).await;
         }
+        // Session overrides pointing at the deleted profile must be dropped.
+        self.drop_session_providers_of(name).await;
         for effect in effects {
             if let pool::PoolEffect::Notice(message) = effect {
                 self.emit(BackendEvent::Error {

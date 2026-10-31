@@ -4857,3 +4857,279 @@ async fn agent_emit_delivers_to_subscribed_plugins() {
     assert_eq!(seen.lock().unwrap().len(), 1, "未订阅的事件不该到达插件");
     assert_eq!(host.event_counters().0, 1, "只有那一条进成功计数");
 }
+
+
+/// 2026-10 scope audit: the context snapshot after clear/archive must go to
+/// the operated session.
+///
+/// It used to go through `emit_context_snapshot_for()` (=
+/// `emit_context_snapshot(None)`), which resolved to `local:tui` or "any
+/// existing session". So clearing a non-local session left the panel showing
+/// another session's snapshot — the current window never refreshed and looked
+/// like "the clear did nothing".
+#[tokio::test]
+async fn clear_history_snapshot_targets_the_operated_session() {
+    let provider = Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    });
+    let agent = Arc::new(test_agent(provider));
+    agent.set_team_id(Some("t".into()));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+
+    // Two sessions: the one being cleared (sA) and an unrelated sB — the
+    // "any existing session" fallback would pick sB.
+    for (session, text) in [("sA", "A"), ("sB", "B")] {
+        agent.trunk.import_session_events(
+            session,
+            vec![echo_session::SessionEvent::UserMessage(
+                echo_session::event::UserMessage {
+                    session: Some(session.into()),
+                    content: text.into(),
+                    timestamp: 1,
+                    message_sequence: None,
+                    source: None,
+                    images: vec![],
+                },
+            )],
+        );
+    }
+
+    agent
+        .apply_command(BackendCommand::ClearHistory {
+            team_id: Some("t".into()),
+            session_id: Some("sA".into()),
+        })
+        .await;
+
+    let mut snapshots = Vec::new();
+    let mut notices = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        match event {
+            BackendEvent::ContextSnapshot { session_id, .. } => snapshots.push(session_id),
+            BackendEvent::Notice {
+                session_id,
+                ok,
+                message,
+                ..
+            } => notices.push((session_id, ok, message)),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        snapshots,
+        vec![Some("sA".to_string())],
+        "snapshot must target the cleared session, not another one"
+    );
+    assert!(
+        notices
+            .iter()
+            .any(|(session, ok, message)| session.as_deref() == Some("sA")
+                && *ok
+                && message.contains("已清理")),
+        "clear result must be a session-scoped Notice: {notices:?}"
+    );
+}
+
+/// 2026-10 scope audit: a clear without `session_id` is refused.
+///
+/// The old semantics were "wipe every session of this persona" (event log +
+/// projections + timeline) — irreversible, and no UI entry needs it (the panel
+/// sends the session from both "clear history" and "delete conversation").
+#[tokio::test]
+async fn clear_history_without_session_id_is_rejected_fail_closed() {
+    let provider = Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    });
+    let agent = Arc::new(test_agent(provider));
+    agent.set_team_id(Some("t".into()));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+
+    agent.trunk.import_session_events(
+        "sA",
+        vec![echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some("sA".into()),
+                content: "keep me".into(),
+                timestamp: 1,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        )],
+    );
+
+    agent
+        .apply_command(BackendCommand::ClearHistory {
+            team_id: Some("t".into()),
+            session_id: None,
+        })
+        .await;
+
+    let mut messages = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        if let BackendEvent::Error { message, .. } = event {
+            messages.push(message);
+        }
+    }
+    assert!(
+        messages.iter().any(|m| m.contains("需要指定会话")),
+        "missing session must be refused: {messages:?}"
+    );
+    assert_eq!(
+        agent.trunk.history_for("sA").map(|h| h.lock().len()),
+        Some(1),
+        "refused command must not wipe any session"
+    );
+}
+
+/// 2026-10 scope audit: session-scoped operation receipts use `Notice`
+/// (session + ok), not `Error` — `Error{session_id}` freezes that session's
+/// streaming rows in the panel, and compaction is a background maintenance
+/// operation.
+#[tokio::test]
+async fn compact_result_is_a_session_scoped_notice() {
+    let provider = Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "【当前目标】x".into(),
+    });
+    let agent = Arc::new(test_agent(provider));
+    agent.set_team_id(Some("t".into()));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+
+    // `keep_recent` is clamped to [10, 500], so the log must exceed 10 events.
+    let session = "sA";
+    agent.trunk.import_session_events(
+        session,
+        (0..20)
+            .map(|i| {
+                echo_session::SessionEvent::UserMessage(echo_session::event::UserMessage {
+                    session: Some(session.into()),
+                    content: format!("m{i}"),
+                    timestamp: i,
+                    message_sequence: None,
+                    source: None,
+                    images: vec![],
+                })
+            })
+            .collect(),
+    );
+
+    agent
+        .apply_command(BackendCommand::CompactHistory {
+            team_id: Some("t".into()),
+            session_id: Some(session.into()),
+            keep_recent: Some(2),
+        })
+        .await;
+
+    let mut notices = Vec::new();
+    let mut errors = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        match event {
+            BackendEvent::Notice {
+                session_id,
+                ok,
+                message,
+                ..
+            } => notices.push((session_id, ok, message)),
+            BackendEvent::Error { message, .. } => errors.push(message),
+            _ => {}
+        }
+    }
+    assert!(
+        errors.is_empty(),
+        "the result must not go through Error (the panel treats it as a session failure): {errors:?}"
+    );
+    let (session_id, ok, _message) = notices
+        .iter()
+        .find(|(_, _, message)| message.contains("已压缩"))
+        .cloned()
+        .unwrap_or_else(|| panic!("compaction result must be a Notice: {notices:?}"));
+    assert_eq!(session_id.as_deref(), Some(session), "receipt must carry the session");
+    assert!(ok, "successful receipt has ok=true");
+}
+
+/// 2026-10 scope audit: a compaction without `session_id` is refused instead of
+/// degrading to "compact every session of this persona".
+#[tokio::test]
+async fn compact_without_session_id_is_rejected_fail_closed() {
+    let provider = Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    });
+    let agent = Arc::new(test_agent(provider));
+    agent.set_team_id(Some("t".into()));
+    let (bridge, handle) = crate::create_bridge();
+    agent.attach(Arc::new(handle));
+
+    agent.trunk.import_session_events(
+        "sA",
+        (0..20)
+            .map(|i| {
+                echo_session::SessionEvent::UserMessage(echo_session::event::UserMessage {
+                    session: Some("sA".into()),
+                    content: format!("m{i}"),
+                    timestamp: i,
+                    message_sequence: None,
+                    source: None,
+                    images: vec![],
+                })
+            })
+            .collect(),
+    );
+
+    agent
+        .apply_command(BackendCommand::CompactHistory {
+            team_id: Some("t".into()),
+            session_id: None,
+            keep_recent: Some(2),
+        })
+        .await;
+
+    let mut messages = Vec::new();
+    while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
+        if let BackendEvent::Error { message, .. } = event {
+            messages.push(message);
+        }
+    }
+    assert!(
+        messages.iter().any(|m| m.contains("需要指定会话")),
+        "missing session must be refused: {messages:?}"
+    );
+    let compacted = agent
+        .trunk
+        .event_log()
+        .iter()
+        .any(|e| matches!(e, echo_session::SessionEvent::Compaction(_)));
+    assert!(!compacted, "a refused command must not land any compaction");
+}
+
+/// 2026-10 scope audit: deleting an API profile also drops the session-level
+/// overrides that point at it (otherwise those sessions keep resolving a
+/// profile that no longer exists).
+#[tokio::test]
+async fn deleting_api_profile_drops_session_overrides() {
+    let provider = Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    });
+    let seed: Arc<dyn LlmProvider> = provider.clone();
+    let agent = Arc::new(test_agent(provider));
+    agent.set_team_id(Some("t".into()));
+    // Seed an override without going through provider construction.
+    agent
+        .model
+        .session_providers
+        .insert("sA".into(), ("gone".to_string(), seed));
+    let dropped = agent.drop_session_providers_of("gone").await;
+    assert_eq!(dropped, 1, "the override pointing at the profile is dropped");
+    assert!(
+        agent.model.session_providers.get("sA").is_none(),
+        "no stale override may survive"
+    );
+}

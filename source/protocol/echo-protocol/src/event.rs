@@ -929,6 +929,30 @@ pub enum BackendEvent {
         session_id: Option<String>,
         message: String,
     },
+    /// 会话级**操作回执**（清理 / 归档 / 压缩 / 会话 API 切换的结果）。
+    ///
+    /// 为什么不复用 [`Self::Error`]（2026-10 作用域普查）：
+    /// - `Error{session_id: Some(..), ..}` 在面板语义里是"该会话出错"——面板会
+    ///   冻结该会话的流式行、收尾正在跑的工具行。压缩/归档这类**后台维护操作**
+    ///   的回执走它，会把正在输出的回答"冻住"；
+    /// - `Error{session_id: None, ..}` 又会被**所有窗口**弹成 toast，用户会以为
+    ///   自己的会话也被改了（用户报告的直接诱因）。
+    ///
+    /// 回执带 `session_id` + `ok`：面板据此只在本窗口、且只对本窗口正在看的
+    /// 会话展示，并按 `ok` 选成功/失败样式。真正的回合错误仍走 `Error`。
+    Notice {
+        /// 归属人格（多上游面板据此归到对应 agent）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
+        /// 归属会话。`None` = 人格级/全局操作（此时所有窗口都该看到）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        /// 操作是否成功（面板据此选 toast 配色，不解析文案）。
+        #[serde(default = "default_true")]
+        ok: bool,
+        /// 面向用户的一句话。
+        message: String,
+    },
 
     // ---- PluginInstance management ----
     InstanceList {
@@ -1652,6 +1676,7 @@ impl BackendEvent {
             Self::ApiMetrics { .. } => "ApiMetrics",
             Self::SystemPrompt { .. } => "SystemPrompt",
             Self::Error { .. } => "Error",
+            Self::Notice { .. } => "Notice",
             Self::InstanceList { .. } => "InstanceList",
             Self::InstanceOpResult { .. } => "InstanceOpResult",
             Self::InstanceState { .. } => "InstanceState",
@@ -1942,5 +1967,86 @@ mod session_history_tests {
         .expect("legacy payload");
         assert!(legacy.changed_entries.is_empty());
         assert!(legacy.changed_files.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::BackendEvent;
+
+    /// 会话级操作回执的线上形状（2026-10 作用域普查）。
+    ///
+    /// 契约：变体名 `Notice`（面板按这个名字分流）；`ok` 缺省为 `true`
+    /// （老 Core/手写帧只带 message 时按成功展示，不误报红字）；
+    /// `session_id`/`team_id` 缺省省略，不占带宽也不改变语义。
+    #[test]
+    fn notice_roundtrips_with_minimal_fields() {
+        let event = BackendEvent::Notice {
+            team_id: Some("alix".into()),
+            session_id: Some("local:workspace:proj/conv:local_user".into()),
+            ok: true,
+            message: "已压缩 12 条历史事件".into(),
+        };
+        let json = serde_json::to_value(&event).expect("serialize");
+        assert!(json.get("Notice").is_some(), "变体名必须是 Notice：{json}");
+        let parsed: BackendEvent = serde_json::from_value(json).expect("deserialize");
+        match parsed {
+            BackendEvent::Notice {
+                team_id,
+                session_id,
+                ok,
+                message,
+            } => {
+                assert_eq!(team_id.as_deref(), Some("alix"));
+                assert_eq!(
+                    session_id.as_deref(),
+                    Some("local:workspace:proj/conv:local_user")
+                );
+                assert!(ok);
+                assert_eq!(message, "已压缩 12 条历史事件");
+            }
+            other => panic!("反序列化成了别的变体：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn notice_defaults_to_ok_and_omits_absent_scope() {
+        let parsed: BackendEvent =
+            serde_json::from_str(r#"{"Notice":{"message":"已归档"}}"#).expect("deserialize");
+        match parsed {
+            BackendEvent::Notice {
+                team_id,
+                session_id,
+                ok,
+                message,
+            } => {
+                assert!(ok, "缺省 ok 必须是 true（不误报红字）");
+                assert!(team_id.is_none() && session_id.is_none());
+                assert_eq!(message, "已归档");
+            }
+            other => panic!("反序列化成了别的变体：{other:?}"),
+        }
+        let json = serde_json::to_string(&BackendEvent::Notice {
+            team_id: None,
+            session_id: None,
+            ok: false,
+            message: "压缩失败".into(),
+        })
+        .expect("serialize");
+        assert!(
+            !json.contains("team_id") && !json.contains("session_id"),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn notice_kind_name_is_stable() {
+        let event = BackendEvent::Notice {
+            team_id: None,
+            session_id: None,
+            ok: true,
+            message: String::new(),
+        };
+        assert_eq!(event.kind_name(), "Notice");
     }
 }

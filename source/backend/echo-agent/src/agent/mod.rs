@@ -1121,8 +1121,14 @@ impl Agent {
         let probe = match crate::agent::api_admin::resolve_probe_config(&config, profile_name) {
             Ok(p) => p,
             Err(message) => {
-                self.emit(BackendEvent::Error {
+                // 2026-10 scope audit: a failed switch is a receipt, not a turn
+                // error. `Error{session_id}` makes the panel freeze that
+                // session's streaming rows; the running turn still uses the old
+                // provider, so nothing is actually broken.
+                self.emit(BackendEvent::Notice {
+                    team_id: self.team_id(),
                     session_id: Some(session_id.to_string()),
+                    ok: false,
                     message: format!("session profile resolve failed: {message}"),
                 });
                 return false;
@@ -1132,8 +1138,10 @@ impl Agent {
         let provider = match crate::llm::create_provider(&probe) {
             Ok(p) => Arc::from(p),
             Err(e) => {
-                self.emit(BackendEvent::Error {
+                self.emit(BackendEvent::Notice {
+                    team_id: self.team_id(),
                     session_id: Some(session_id.to_string()),
+                    ok: false,
                     message: format!("session profile provider build failed: {e}"),
                 });
                 return false;
@@ -1179,6 +1187,33 @@ impl Agent {
             }
         }
         rebound
+    }
+
+    /// Drop session-level API overrides that point at a deleted profile
+    /// (2026-10 scope audit).
+    ///
+    /// Pairs with [`Self::rebind_session_providers`]: a rename rebinds, a
+    /// delete must clear — otherwise the session keeps resolving a profile
+    /// that no longer exists ("会话 X 切换 API 失败" on every request) even
+    /// though the user deleted it. The persisted workspace-conversation
+    /// `api_profile` is cleared too, so a restart cannot resurrect it.
+    pub(crate) async fn drop_session_providers_of(&self, profile: &str) -> usize {
+        let sids: Vec<String> = self
+            .model
+            .session_providers
+            .iter()
+            .filter(|entry| entry.value().0 == profile)
+            .map(|entry| entry.key().clone())
+            .collect();
+        let mut dropped = 0usize;
+        for sid in sids {
+            self.model.session_providers.remove(&sid);
+            self.model.session_provider_locks.remove(&sid);
+            self.persist_session_api_profile(&sid, None);
+            dropped += 1;
+            tracing::info!(session = %sid, %profile, "session API override dropped after profile delete");
+        }
+        dropped
     }
 
     pub async fn active_provider(&self) -> String {

@@ -285,6 +285,8 @@ pub enum BackendCommand {
     /// 新建一个后台 shell 会话（持久 bash，可反复执行命令）。
     ShellStart {
         #[serde(default)]
+        team_id: Option<String>,
+        #[serde(default)]
         workdir: Option<String>,
     },
     /// 在指定 shell 会话中执行一条命令（超时内返回输出；超时标注且会话保留）。
@@ -293,9 +295,15 @@ pub enum BackendCommand {
         command: String,
         #[serde(default)]
         timeout_secs: Option<u64>,
+        #[serde(default)]
+        team_id: Option<String>,
     },
     /// 停止（销毁）一个后台 shell 会话。
-    ShellStop { session_id: String },
+    ShellStop {
+        session_id: String,
+        #[serde(default)]
+        team_id: Option<String>,
+    },
     /// Erase agent conversation memory. Scope:
     /// - `session_id = Some(id)`：仅清理该会话（事件日志中归属该会话的
     ///   事件 + 该会话上下文投影 + 时间线中该会话条目）；

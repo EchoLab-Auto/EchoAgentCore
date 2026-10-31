@@ -102,13 +102,17 @@ impl ShellCommandHandler {
                 });
                 Ok(())
             }
-            BackendCommand::ShellStart { workdir } => {
+            BackendCommand::ShellStart { team_id, workdir } => {
                 let Some(manager) = self.host.manager() else {
                     self.notice("shell manager unavailable");
                     return Ok(());
                 };
                 let emit = self.host.progress();
-                let team_id = self.host.team_id();
+                // Ownership: the command's explicit persona wins (the panel sends
+                // the currently selected agent); otherwise fall back to this
+                // executor's persona. Without it sessions land with team_id
+                // None and the panel's per-persona list never shows them.
+                let team_id = team_id.or_else(|| self.host.team_id());
                 match manager.start(workdir, team_id, &emit).await {
                     Ok(info) => {
                         self.host
@@ -123,11 +127,23 @@ impl ShellCommandHandler {
                 session_id,
                 command,
                 timeout_secs,
+                team_id,
             } => {
                 let Some(manager) = self.host.manager() else {
                     self.notice("shell manager unavailable");
                     return Ok(());
                 };
+                // Ownership check (2026-10 scope audit): the panel path used to
+                // check existence only, so any persona that guessed an id
+                // (`sh-1` is enumerable) could run commands inside another
+                // persona's shell. The tool path already went through
+                // `ensure_owned_by`; the panel path was missing the same gate.
+                if let Err(error) = manager
+                    .ensure_owned_by(&session_id, team_id.as_deref().or(self.host.team_id().as_deref()))
+                {
+                    self.notice(format!("shell exec rejected: {error}"));
+                    return Ok(());
+                }
                 let emit = self.host.progress();
                 match manager
                     .exec(&session_id, &command, timeout_secs, &emit)
@@ -141,11 +157,22 @@ impl ShellCommandHandler {
                 }
                 Ok(())
             }
-            BackendCommand::ShellStop { session_id } => {
+            BackendCommand::ShellStop {
+                session_id,
+                team_id,
+            } => {
                 let Some(manager) = self.host.manager() else {
                     self.notice("shell manager unavailable");
                     return Ok(());
                 };
+                // Same gate: killing another persona's process group is
+                // irreversible.
+                if let Err(error) = manager
+                    .ensure_owned_by(&session_id, team_id.as_deref().or(self.host.team_id().as_deref()))
+                {
+                    self.notice(format!("shell stop rejected: {error}"));
+                    return Ok(());
+                }
                 let emit = self.host.progress();
                 match manager.stop(&session_id, &emit).await {
                     Ok(()) => self.notice(format!("shell session {session_id} stopped")),
@@ -244,6 +271,74 @@ mod tests {
             events.as_slice(),
             [BackendEvent::ShellSessionsList { sessions, .. }] if sessions.is_empty()
         ));
+    }
+
+    /// 2026-10 scope audit: the panel command path must enforce ownership —
+    /// before this it only checked existence, so any persona that guessed an id
+    /// (`sh-1` is enumerable) could exec inside / kill another persona's shell.
+    /// The tool path already went through `ensure_owned_by`.
+    #[tokio::test]
+    async fn foreign_persona_cannot_exec_or_stop_a_shell() {
+        let manager = Arc::new(ShellManager::new());
+        let emit: ShellEmit = Arc::new(|_event| {});
+        let owned = manager
+            .start(Some("/tmp".into()), Some("t1".into()), &emit)
+            .await
+            .expect("start owned session");
+        let foreign = manager
+            .start(Some("/tmp".into()), Some("t2".into()), &emit)
+            .await
+            .expect("start foreign session");
+        let (h, host) = handler(FakeHost {
+            manager: Some(manager.clone()),
+            ..Default::default()
+        });
+
+        h.handle(
+            "ShellExec",
+            serde_json::json!({
+                "session_id": foreign.session_id,
+                "command": "echo hacked",
+                "timeout_secs": null,
+            }),
+        )
+        .await
+        .expect("owned by this domain")
+        .expect("a rejected op is not a parse error");
+        h.handle(
+            "ShellStop",
+            serde_json::json!({ "session_id": foreign.session_id }),
+        )
+        .await
+        .expect("owned by this domain")
+        .expect("a rejected op is not a parse error");
+
+        let events = host.events.lock().unwrap().clone();
+        let text: Vec<String> = events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::Error { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            text.iter().any(|m| m.contains("exec rejected")),
+            "cross-persona exec must be refused: {text:?}"
+        );
+        assert!(
+            text.iter().any(|m| m.contains("stop rejected")),
+            "cross-persona stop must be refused: {text:?}"
+        );
+        assert!(
+            manager.session_info(&foreign.session_id).is_some(),
+            "a refused stop must not actually kill the session"
+        );
+        // The gate must not hit our own session.
+        h.handle("ShellStop", serde_json::json!({ "session_id": owned.session_id }))
+            .await
+            .expect("owned by this domain")
+            .expect("own session is fine");
+        assert!(manager.session_info(&owned.session_id).is_none());
     }
 
     /// 不属于本域的命令返回 `None`（让下一个插件/宿主接手）。
