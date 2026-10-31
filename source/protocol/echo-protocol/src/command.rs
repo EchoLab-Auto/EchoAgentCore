@@ -386,6 +386,10 @@ pub enum BackendCommand {
     },
     /// 请求某会话各工作区目录的 git 状态（`git` CLI 采集，只读）。
     /// 响应 `BackendEvent::WorkspaceGitStatus`。
+    /// 注意：这里的 `session_id`（与 [`Self::RequestWorkspaceFiles`] 同）
+    /// 实际承载的是**工作区 id**（`WorkspaceStore` 的键），不是对话会话 id
+    /// ——历史遗留命名。真正的对话会话是 `local:workspace:<ws>/<conv>:…`
+    /// 那种派生通道 id（2026-10 作用域普查确认，改名会破坏线协议，故只此注记）。
     RequestWorkspaceGitStatus {
         #[serde(default)]
         team_id: Option<String>,
@@ -394,6 +398,7 @@ pub enum BackendCommand {
     /// 请求列出某工作区目录下的文件与子目录（文件浏览器，只读）。
     /// `path` 必须是该会话某个工作区目录本身或其后代（服务端以
     /// canonical 路径前缀校验，越界拒绝）。响应 `BackendEvent::WorkspaceFiles`。
+    /// `session_id` 同上（实为工作区 id，非对话会话 id）。
     RequestWorkspaceFiles {
         #[serde(default)]
         team_id: Option<String>,
