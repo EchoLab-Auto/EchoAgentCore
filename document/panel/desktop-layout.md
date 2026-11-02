@@ -30,7 +30,6 @@ graph TB
   ChatView --> Composer[悬浮输入区 z5]
   ChatView --> OvlPane[会话区覆盖面板 z5]
   ChatView --> Pops[PanelPopover z30]
-  App --> Branch[BranchModal 库模态]
   App --> Toast[Toast z 库管理]
   OvlPane --> Ovl[桌面端模态与覆盖层|/panel/desktop-overlays.md]
 ```
@@ -120,7 +119,7 @@ Panel 覆写 ui-frame 的样式时，**裸类选择器压不过库**——库规
 
 - **两列**：左 / 右各一列卡片栈（`RailStack`）；卡片可在列间拖动（`drag-enabled`），落点由 `rail-layout.ts` 持久化
 - **显隐判据**：`railRegistered('left'|'right')`——「该列登记过卡片」而非「当前有可见卡片」。单卡列在卡片门控失效（无激活工作区、插件缺失）时**列不消失**，改为列内空态占位，消息区留白（`trayPadLeft/Right`）稳定不抖动
-- **卡片清单**：连接状态 / 文件浏览器 / Shell / 临时分支，门控细节见[双侧边栏（chat-rail）](./chat-rail.md)「卡片清单与门控」
+- **卡片清单**：连接状态 / 文件浏览器 / Git 状态 / Shell，门控细节见[双侧边栏（chat-rail）](./chat-rail.md)「卡片清单与门控」
 - **拖动**：卡头 `cursor: grab`；拖动渲染跟随指针的幽灵（z200）；换列后只在新列渲染
 
 ### Agent 切换器

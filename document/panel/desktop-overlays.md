@@ -8,7 +8,7 @@ y: 780
 
 # 桌面端模态与覆盖层
 
-> **定位**：**≥768px** 下 Panel 的模态与覆盖层——有哪些、各在哪一层、怎么关、哪些操作必须先问一句。包含与视口无关的内容契约（上下文占用的口径、Agent 配置的字段与白名单语义、确认形式矩阵、分支查看器的行模型、目录选择器的两级浏览）与本视口特有的几何（会话区覆盖面板 = 会话框顶 → 入口行上边缘、Agent 菜单 360px）。读者：维护 Panel 交互的开发者；上游：[桌面端布局](./desktop-layout.md)；窄屏形态见[移动端模态与覆盖层](./mobile-overlays.md)；相关：[交互定义](./interaction.md)、[设置 · 技能](./settings-skills.md)。
+> **定位**：**≥768px** 下 Panel 的模态与覆盖层——有哪些、各在哪一层、怎么关、哪些操作必须先问一句。包含与视口无关的内容契约（上下文占用的口径、Agent 配置的字段与白名单语义、确认形式矩阵、目录选择器的两级浏览）与本视口特有的几何（会话区覆盖面板 = 会话框顶 → 入口行上边缘、Agent 菜单 360px）。读者：维护 Panel 交互的开发者；上游：[桌面端布局](./desktop-layout.md)；窄屏形态见[移动端模态与覆盖层](./mobile-overlays.md)；相关：[交互定义](./interaction.md)、[设置 · 技能](./settings-skills.md)。
 
 > **为什么单独成篇**：这些层散落在 `ChatView` / `App.vue` / `SettingsView` / 工作区面板里，最容易出的问题是「多弹一层压住按钮」「Esc 关错原子」「z-index 差 10 被遮」「遮罩点不到」。所以「谁在几层、谁来关、哪种操作要问」集中在这里，改一处就知道牵连谁。
 
@@ -20,14 +20,13 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 | --- | --- | --- | --- |
 | **轻：内容浮层** | 无遮罩，不拦下层的点击 | 点外部 / `Esc` | Agent 菜单（`AgentSwitcher`，唯一保留的锚定浮层） |
 | **中：会话区覆盖面板** | 无遮罩；面板**上下边界对齐左右侧栏**（上沿 = 会话框顶、下沿 = 侧栏下沿 = 入口行上方 8px），输入区与入口行完整露在下方 | 点面板外 / `Esc` / 再点同一入口按钮 | 入口行七项：会话 / 工作区 / 实例 / 任务 / 清单 / 上下文 / 配置（`SessionOverlay`，统一外壳，互斥） |
-| **重：应用级模态** | 库模态遮罩铺满视口，焦点锁在框内 | 库模态 Esc / ✕ / 明确按钮 | 分支详情、全局确认框、目录选择器、Git 安装技能 |
+| **重：应用级模态** | 库模态遮罩铺满视口，焦点锁在框内 | 库模态 Esc / ✕ / 明确按钮 | 全局确认框、目录选择器、Git 安装技能 |
 
 | 覆盖层 | 组件 | 载体与层位 | 入口 | 契约 |
 | --- | --- | --- | --- | --- |
 | 会话区覆盖面板（七项） | `SessionOverlay`（内容为 `SessionSwitcher` / `WorkspacePanel` / `InstancePanel` / `TasksPanel` / `ChecklistSidebar` / `ContextView` / `AgentConfigModal`） | 会话视图内绝对定位（`top: 0`、`bottom` = 入口行顶，横向扣边栏留白，`z-index: 6`） | 入口行按钮 | 本文「会话区覆盖面板」 |
 | 上下文占用 | `ContextView` | 同上外壳（内容自带头部） | 入口行「上下文」（受 `echo-agent.management.panel` 插件门控） | 本文「会话区覆盖面板」 |
 | Agent 配置 | `AgentConfigModal` | 同上外壳 | 入口行「配置」 | 本文「会话区覆盖面板」 |
-| 分支详情 | `BranchModal` | 库 `NeumorphismModal`（App 根，`size=large`、无 footer） | 侧栏「临时分支」卡的分支行（仅并行多会话模式） | 本文「分支查看器」 |
 | 全局确认 | `ConfirmDialog` | 库 `NeumorphismModal`（App 根挂载一次，`size=small`） | 任意组件调 `confirmDialog()` | 本文「全局确认与确认形式」 |
 | 目录选择器 | `DirectoryPicker` | 自绘遮罩 + `Teleport to="body"`，`z-index: 60` | 工作区面板「浏览…」 | 本文「目录选择器」 |
 | Git 安装技能 | `SettingsView` 内联 | 库 `NeumorphismModal`（`size=small`、无 footer） | 设置 → 技能 → 工具条「Git 安装」 | [设置 · 技能](./settings-skills.md) |
@@ -80,7 +79,6 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 | --- | --- |
 | 名称 / 描述 / 系统提示词 | 提示词留空 = 继承全局 |
 | 启用开关 | **禁用即卸载记忆**（正在运行的该 Agent 会被回收），重启用时重新挂载 |
-| 循环模式 | 分段单选「单会话（默认）/ 并行多会话」——写入 `enabled_plugins` 白名单的 `echo-agent.loop.{single,parallel}` 插件 id（`loop-mode.ts::applyMode` / `deriveMode`） |
 | API 供应商 | 下拉 = 「跟随全局默认配置」+ 全局供应商池各 profile，标签 `name（provider / model）`，**缺 key 时追加「· 无 key」**；保存写入 `SaveTeam.api_profile`，运行期重建该 persona 的 provider（见[设置 · API](./settings-api.md)「Persona 级引用」） |
 
 三类能力复选表（**白名单语义**，空表 = 全部启用；首次取消勾选时先把全量写入列表再移除该项）：
@@ -89,16 +87,6 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 - **启用工具 / 启用技能**：按包（pkg）分组，组级全选
 
 加载与保存：分区头计数在清单未到时显示「…」，分区体用 `LoadHint` 呈现等待 / 慢提示 / 超时重试，空态「（无）」只在确认无数据时出现；**保存即热生效**——勾选变化立刻影响该 Agent 的模型可见能力（全局禁用优先，不受勾选覆盖）。
-
-## 分支查看器
-
-`BranchModal` 挂在 App 根（与全局确认框同级，是仅有的两个应用级库模态之一；`NeumorphismModal size=large`、无 footer）：侧栏「临时分支」卡的分支行点击后，由 `App.vue` 的 `activeBranchId` 驱动打开——与会话视图没有父子关系，也不随视图切换关闭。
-
-- **头部**：`临时分支 · {id 前 8 位}` + 状态标签（运行中 primary / 已完成 success / 已取消 warning / 失败 error）
-- **元信息**：任务；目标 · 会话 id
-- **正文**：分支内活动流，**行模型与主时间线同构**——连续的 `tool` / `reasoning` 合并成 `WorkRunGroup` 的 chip 行（同一组件、同一开合语义；回放路径不播打字机、`animate` 恒 false），`content` 走纯文本气泡、其余 kind 走 muted 文本；消息区 `max-height: 55vh`，新消息自动滚到底；空态「（暂无活动，等待分支执行…）」
-- **运行中**：底部提示「分支执行中…」
-- **分支消失后弹窗不关**：分支 tab 被移除（已合并）时正文换成「（分支已结束并合并到主会话）」
 
 ## 全局确认与确认形式
 
@@ -152,5 +140,4 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 | 会话区覆盖面板 | **上下边界对齐侧栏**：`top: 0`、`bottom` = 同一个 `entryBottom + RAIL_ENTRY_GAP(45)`；横向扣掉边栏留白（左右边界接侧栏内侧）。见「会话区覆盖面板」 |
 | Agent 菜单 | 宽 **360px**，视口不足时夹到 `100vw - 24px`；锚定 Agent 卡片上方 8px，内容区 `max-height: 52vh`（`PanelPopover` 的 width/maxHeight prop） |
 | 目录选择器 | `min(560px, 92vw)` × `max-height: 72vh`，居中 |
-| 分支查看器 | 库 `large`（`max-width: 720px`）× `max-height: 85vh`，居中 |
 | 全局确认框 | 库 `small`（`max-width: 400px`）× `max-height: 85vh`，居中 |

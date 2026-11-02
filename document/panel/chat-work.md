@@ -42,4 +42,4 @@ link: ["chat-tools | 工具卡与图标行", "chat-reasoning | 推理块"]
 | `reasoning` | `ReasoningText` 正文层 | [推理块](./chat-reasoning.md) |
 | `subagent` | 青色 chip + 结论展开 | 本文「子代理委派行」 |
 
-实现：`WorkRunGroup.vue`（行容器 `work-run-group` + chip 行 `__row`、开合决策 `reconcile`、读秒 ticker）、`ChatView.vue` 的 `messageRows` / `buildWorkRow`（工作项投影与相邻合并、`workRowCache` WeakMap 复用）、`state_domains/timeline.ts`（时间线投影、配对与收尾）、`ToolIcon.vue`（工具图标与运行动画）。同一组件也被**分支详情弹层**复用——`BranchModal.vue` 把分支里的工具调用与思考组装成同样的 `WorkRunItem[]`（`kind: 'work-group'` 行），两处的 chip 行视觉与开合语义因此一致。
+实现：`WorkRunGroup.vue`（行容器 `work-run-group` + chip 行 `__row`、开合决策 `reconcile`、读秒 ticker）、`ChatView.vue` 的 `messageRows` / `buildWorkRow`（工作项投影与相邻合并、`workRowCache` WeakMap 复用）、`state_domains/timeline.ts`（时间线投影、配对与收尾）、`ToolIcon.vue`（工具图标与运行动画）。分支详情弹层（`BranchModal.vue`）已随并行多会话模式于 2026-11 删除，不再复用本组件。
