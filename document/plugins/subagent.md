@@ -149,8 +149,8 @@ spawn_subagent 调用的 arguments]」。任务全文始终可从该次调用的
 
 ### 包门控与装配
 
-- 包级门控：`SUBAGENT_PLUGIN_ID` 在 `GATED_PLUGIN_IDS`/`BUILTIN_PLUGIN_IDS`；
-  勾选区可见性经 Panel `PACKAGE_GATED_PLUGIN_IDS`（+`PACKAGE_DISPLAY_NAMES`）
+- 包级门控：`SUBAGENT_PLUGIN_ID` 在 `BUILTIN_PLUGIN_IDS`；它的 `kind = "tool"` 即
+  决定勾选区可见性（Core 随 `PluginInfo.gating` 下发，Panel 只显示）
   镜像；更新器 `scripts/update.sh` 校验清单含 `echo-agent.subagent`
 - 装配（`core/main.rs`）：每 persona 注册 `SpawnSubagentTool`（注册表路径为
   兜底）+ `attach_subagent_runtime` 注入 store 与 spawn 闭包（弱引用 agent，

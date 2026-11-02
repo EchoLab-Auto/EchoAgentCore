@@ -248,8 +248,7 @@ impl Agent {
             | BackendCommand::DeleteApi { .. } => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
-                    message: "API 命令由 echo-agent.provider.llm 插件处理，但该插件未启用"
-                        .into(),
+                    message: "API 命令由 echo-agent.provider.llm 插件处理，但该插件未启用".into(),
                 });
             }
             BackendCommand::RestartPlugin { id } => {
@@ -299,8 +298,7 @@ impl Agent {
             BackendCommand::RequestToolsList | BackendCommand::ToggleTool { .. } => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
-                    message: "工具命令由 echo-agent.tools.builtin 插件处理，但该插件未启用"
-                        .into(),
+                    message: "工具命令由 echo-agent.tools.builtin 插件处理，但该插件未启用".into(),
                 });
             }
             BackendCommand::RequestPluginsList => {
@@ -423,7 +421,8 @@ impl Agent {
             | BackendCommand::ShellStop { .. } => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
-                    message: "shell 命令由 echo-agent.tools.builtin 插件处理，但该插件未启用".into(),
+                    message: "shell 命令由 echo-agent.tools.builtin 插件处理，但该插件未启用"
+                        .into(),
                 });
             }
             // 技能命令域已迁进 `echo-plugin-skills`（全插件化 S3）：技能表、
@@ -695,31 +694,37 @@ impl Agent {
             .plugin_host()
             .descriptors()
             .into_iter()
-            .map(|d| crate::event::PluginInfo {
-                id: d.id,
-                name: d.name,
-                version: d.version,
-                kind: d.kind,
-                description: d.description,
-                entry: d.entry,
-                author: d.author,
-                enabled: d.enabled,
-                builtin: d.builtin,
-                runtime: d.runtime,
-                package: d.package,
-                error: d.error,
-                config_origin: d.config_origin,
-                state: d.state,
-                restarts: d.restarts,
-                generation: d.generation,
-                source_path: d.source_path,
-                command: d.command,
-                args: d.args,
-                env_keys: d.env_keys,
-                required_services: d.required_services,
-                optional_services: d.optional_services,
-                pending_services: d.pending_services,
-                subscribed_events: d.subscribed_events,
+            .map(|d| {
+                // 作用域由 kind 派生（Core 是唯一计算方，Panel 只显示）。
+                // 在 move 掉 `d.kind` 之前算好。
+                let gating = crate::plugins::scope_of_kind(&d.kind).as_str().to_string();
+                crate::event::PluginInfo {
+                    id: d.id,
+                    name: d.name,
+                    version: d.version,
+                    kind: d.kind,
+                    description: d.description,
+                    entry: d.entry,
+                    author: d.author,
+                    enabled: d.enabled,
+                    builtin: d.builtin,
+                    runtime: d.runtime,
+                    package: d.package,
+                    gating,
+                    error: d.error,
+                    config_origin: d.config_origin,
+                    state: d.state,
+                    restarts: d.restarts,
+                    generation: d.generation,
+                    source_path: d.source_path,
+                    command: d.command,
+                    args: d.args,
+                    env_keys: d.env_keys,
+                    required_services: d.required_services,
+                    optional_services: d.optional_services,
+                    pending_services: d.pending_services,
+                    subscribed_events: d.subscribed_events,
+                }
             })
             .collect();
         self.emit(BackendEvent::PluginsList { plugins });

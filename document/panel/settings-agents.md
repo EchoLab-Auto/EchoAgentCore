@@ -33,7 +33,7 @@ y: 1060
 
 | 子块 | 候选与判定 |
 | --- | --- |
-| **插件** | `kind ∈ {instance, management, interaction}` ∪ 包维度门控插件固定清单（tools.builtin / skills.dir / workspace / subagent，与 `capabilities.ts::PACKAGE_GATED_PLUGIN_IDS` 逐项镜像；插件实例不经清单，按 `kind == "instance"` 运行期推导，新增平台零改动）；两者之外的插件如 loop.* 不出现。标签显示中文 kind 名，单一来源 `capabilities.ts::PLUGIN_KIND_LABELS` |
+| **插件** | **只读 Core 的 `PluginInfo.gating`**（`capabilities.ts::pluginCheckboxState` 三态）：`persona` → 可勾；`process` + `kind ∈ {management, interaction}` → **显示但置灰**（标签带「· 进程级」+ 一行说明）；其余 `process` → 不显示。Panel 不再维护插件清单——那份 `PACKAGE_GATED_PLUGIN_IDS` 与 Core 的手写真相必然漂移，已删除。旧 Core 不带该字段时退回 kind 类判定且一律可勾。标签显示中文 kind 名，单一来源 `capabilities.ts::PLUGIN_KIND_LABELS` |
 | **包（Package）** | 一次切换整包工具 + 技能，附成员清单与项数徽标；显示名单一来源 `capabilities.ts::PACKAGE_DISPLAY_NAMES` |
 | **工具** | 按分类分组，自适应多列 |
 | **技能** | 全部技能（含 Git 来源） |

@@ -105,7 +105,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 - `enabled_*` 白名单：非空时仅列出的能力可见（空表 = 全部启用）；工具/技能另有 `disabled_tools`/`disabled_skills` 黑名单细化。**插件维度只有白名单**——persona 级的 `TeamMember` 没有插件黑名单字段（旧配置里写了会被 serde 静默忽略），但**全局的 `[agent].disabled_plugins` 仍然生效**（启动期 `apply_disabled` → 该插件只注册不挂载，`TogglePlugin` 会持久化到它）。两者语义不同：白名单是「这个 persona 看不到」，全局禁用是「整个进程不挂载」。
 - 插件/工具/技能三个维度独立配置；未配置白名单时默认全部启用
-- **保存即热生效**：`SaveTeam` 后目标人格立即重算门控（工具/技能逐名双向：取消勾选禁用、重新勾选恢复；插件包维度按 `GATED_PLUGIN_IDS`）；`ToggleTeam` 重新启用的人格也会补应用门控。全局禁用（`ToggleTool`/`ToggleSkill`/`TogglePlugin` 卸载）优先级高于 persona 名单，且这些全局开关会逐 persona 重算而不是只作用于管理面
+- **保存即热生效**：`SaveTeam` 后目标人格立即重算门控（工具/技能逐名双向：取消勾选禁用、重新勾选恢复；插件包维度按 `kind` 派生的门控集合）；`ToggleTeam` 重新启用的人格也会补应用门控。全局禁用（`ToggleTool`/`ToggleSkill`/`TogglePlugin` 卸载）优先级高于 persona 名单，且这些全局开关会逐 persona 重算而不是只作用于管理面
 - **Package 跨维度**：勾选/取消勾选一个门控插件 = 启停整个包（plugin + 同名包工具 + 同名包技能，QQ 包示例：send_* 工具与 qq-management/qq-transport 一起开关）；详见 [插件化设计](../plugins/plugins.md)「Package」章节
 - **循环模式**（互斥插件 `echo-agent.loop.{single,parallel}`）由白名单推导：空表 = single（默认）；含 `loop.parallel` = parallel。推导单一来源 `TeamMember::loop_mode()`（只看白名单）
 - 全局 `[agent].disabled_tools`（Panel ToggleTool 持久化）启动时逐人格应用

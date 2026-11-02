@@ -28,7 +28,8 @@ y: 1060
 
 | 分组 | 成员判定 | 组头提示 |
 |---|---|---|
-| 包维度门控 | `PACKAGE_GATED_PLUGIN_IDS`（非 instance / management / loop） | 禁用 = 其包内全部工具/技能对所有智能体不可见 |
+| 包维度门控 | Core 下发 `PluginInfo.gating === "persona"`（`kind ∈ {tool, skill, instance}`） | 禁用 = 该 persona 下其包内全部工具/技能不可见（`enabled_plugins` 白名单） |
+| 进程级（只读展示） | `gating === "process"` 且 `kind ∈ {management, interaction}` | 恒定生效、勾不动；显示成置灰项 + 「· 进程级」标签，避免"这能力不存在"的误读 |
 | 平台通道 | `kind ∈ {instance, management}` | 平台连接与管理通道；管理面禁用会切断 Panel 通信（受保护） |
 | 模式插件（互斥） | `kind === 'loop'` | 每智能体的循环模式在「智能体」配置里选；此处全局停用 = 卸载 echo-loop 驱动 |
 | 其它 | 其余（如 provider.llm） | — |

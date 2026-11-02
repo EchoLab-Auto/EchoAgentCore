@@ -320,6 +320,115 @@ mod catalog_shape_tests {
         }
     }
 
+    /// **每个**内置插件的 kind 都必须在 `KIND_SCOPE` 里登记过作用域。
+    ///
+    /// 这是按 kind 派生门控的唯一风险点：新增一种 kind 而忘了想"它该不该随
+    /// persona 白名单关掉"时，`scope_of_kind` 会 fail-closed 到进程级——
+    /// 表现为"用户勾了却用不了"，很难查。所以在**装配期**就报错，并点名
+    /// 缺哪个 kind。
+    ///
+    /// 不手抄 kind 表（那又是一份真相）：遍历真实 catalog 的 manifest。
+    #[test]
+    fn every_catalog_kind_is_classified() {
+        let catalog = catalog("0.0.0-test").expect("目录构造");
+        let mut unclassified = Vec::new();
+        for plugin in &catalog {
+            let manifest = plugin.manifest();
+            if !echo_agent::plugins::kind_is_classified(&manifest.kind) {
+                unclassified.push(format!("{} (kind={})", manifest.id, manifest.kind));
+            }
+        }
+        assert!(
+            unclassified.is_empty(),
+            "以下插件的 kind 未在 `echo_agent::plugins::KIND_SCOPE` 登记，\
+             新增 kind 必须显式声明作用域（Persona = 可被 persona 白名单关掉；\
+             Process = 进程级）：\n{}",
+            unclassified.join("\n")
+        );
+    }
+
+    /// 按 kind 派生出的 persona 门控集合，**逐项覆盖**改造前那份硬编码清单。
+    ///
+    /// 这是删掉 `GATED_PLUGIN_IDS` 的安全绳：先证明"新机制 ≡ 旧行为"，再删。
+    /// 清单值照抄历史（不引用已弃用常量——它下一步就没了）。
+    #[test]
+    fn catalog_gating_covers_the_legacy_entries() {
+        let catalog = catalog("0.0.0-test").expect("目录构造");
+        let registered: Vec<(String, String)> = catalog
+            .iter()
+            .map(|plugin| {
+                let manifest = plugin.manifest();
+                (manifest.id.clone(), manifest.kind.clone())
+            })
+            .collect();
+        let gated = echo_agent::plugins::persona_scoped_ids(&registered);
+
+        // 改造前 `GATED_PLUGIN_IDS: [&str; 5]` 的全部成员。
+        for id in [
+            "echo-agent.tools.builtin",
+            "echo-agent.shell",
+            "echo-agent.skills.dir",
+            "echo-agent.workspace",
+            "echo-agent.subagent",
+        ] {
+            assert!(
+                gated.iter().any(|g| g == id),
+                "旧门控项 {id} 未被按 kind 派生的集合覆盖，实际: {gated:?}"
+            );
+        }
+
+        // 反向：进程级插件不该出现（它们在旧清单里也从来没有）。
+        for id in [
+            "echo-agent.provider.llm",
+            "echo-agent.loop.single",
+            "echo-agent.loop.parallel",
+            "echo-agent.management.panel",
+            "echo-agent.federation",
+            "echo-agent.selfupdate",
+            "echo-agent.session",
+            "echo-agent.transcript",
+        ] {
+            assert!(
+                !gated.iter().any(|g| g == id),
+                "进程级插件 {id} 不该进 persona 门控集合，实际: {gated:?}"
+            );
+        }
+    }
+
+    /// `BUILTIN_PLUGIN_IDS` 与 catalog **双向相等**（谁少了都会点名）。
+    ///
+    /// 那份常量有三个消费方：更新器校验清单（`update.sh`）、文档门禁
+    /// （`plugins.md` 必须登记每个内置插件）、以及"这插件是内部还是外部"的
+    /// 判断。它本身是手写的——**但手写清单只有在被真实来源校验时才安全**，
+    /// 否则漏一个 id 只会让三处校验静默变弱（"更新后二进制缺插件"不再报警）。
+    ///
+    /// 这里用 catalog（真实来源）做双向比对：新增插件忘了登记 → 红；登记了
+    /// 但没进 catalog → 也红。不改成"从 catalog 派生"是因为依赖方向：catalog
+    /// 在 core，`BUILTIN_PLUGIN_IDS` 在 echo-agent，后者看不到前者。
+    #[test]
+    fn builtin_id_list_matches_the_catalog_exactly() {
+        let catalog = catalog("0.0.0-test").expect("目录构造");
+        let from_catalog: std::collections::BTreeSet<String> = catalog
+            .iter()
+            .map(|plugin| plugin.manifest().id.clone())
+            .collect();
+        let declared: std::collections::BTreeSet<String> = echo_agent::plugins::BUILTIN_PLUGIN_IDS
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect();
+
+        let missing_from_list: Vec<&String> = from_catalog.difference(&declared).collect();
+        let missing_from_catalog: Vec<&String> = declared.difference(&from_catalog).collect();
+        assert!(
+            missing_from_list.is_empty() && missing_from_catalog.is_empty(),
+            "`echo_agent::plugins::BUILTIN_PLUGIN_IDS` 与 catalog 漂移：\n\
+             catalog 有、清单缺：{missing_from_list:?}\n\
+             清单有、catalog 缺：{missing_from_catalog:?}\n\
+             → 补 `source/backend/echo-agent/src/plugins.rs` 的常量，并同步 \
+             `scripts/update.sh` 的 expected_ids"
+        );
+    }
+
     /// `llm` 键的 ownership 不得再漂移（2026-11 S10 的更正）。
     ///
     /// 这条守着一段真实的历史误解：`echo-plugin-provider-llm` 里曾有个叫

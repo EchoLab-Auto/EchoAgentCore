@@ -193,6 +193,23 @@ impl SkillRegistry {
         }
     }
 
+    /// 技能维度上实际出现的全部包 id（去重，名称排序）。
+    ///
+    /// `ToolRegistry` 有 `package_of(name)`；技能侧需要"有哪些包"来驱动
+    /// persona 门控（门控按包批量启停，见 `Agent::apply_plugin_gating`）。
+    /// 这里返回集合而不要求先知道包名——否则调用方得自己遍历 `names()` +
+    /// 逐个查 frontmatter。
+    pub fn packages(&self) -> Vec<String> {
+        let mut packages: Vec<String> = self
+            .skills
+            .values()
+            .filter_map(|skill| skill.metadata.package.clone())
+            .collect();
+        packages.sort();
+        packages.dedup();
+        packages
+    }
+
     /// 包内成员名（按 `SKILL.md` frontmatter `package:` 匹配，名称排序）。
     ///
     /// Package 是横跨 plugin + tool + skill 的标签：技能维度的成员即

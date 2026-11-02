@@ -1187,6 +1187,25 @@ pub struct PluginInfo {
     /// 所属包 id（横跨 plugin+tool+skill 的组合标签；未声明 = 插件 id）。
     #[serde(default)]
     pub package: String,
+    /// 作用域：**谁能决定这个插件在某份人格里生效**。
+    ///
+    /// - `persona`：能力型（向模型暴露工具/技能）。出现在「启用插件」勾选区，
+    ///   勾选写 `enabled_plugins` 白名单；
+    /// - `process`：进程级/基础设施。勾选区**不显示**（勾了也不生效），
+    ///   要关就卸载插件或在 `plugins.toml` 里停用。
+    ///
+    /// ## 为什么由 Core 下发，而不是 Panel 自己算
+    ///
+    /// Panel 与 Core 跨仓库，各写一份判据必然漂移——Core 的
+    /// `GATED_PLUGIN_IDS` 与 Panel 的 `PACKAGE_GATED_PLUGIN_IDS` 已经错过两轮
+    /// （`shell` 在 Panel 漏列 → 面板上没有 shell 开关；`session`/`transcript`
+    /// 在 Panel 多列 → 两个勾了不生效的假开关）。现在 Core 按 manifest 的
+    /// `kind` 算一次（`echo_agent::plugins::scope::KIND_SCOPE`），Panel 只显示。
+    ///
+    /// 旧 Core 不发该字段 → 空串，Panel 按"可显示"兼容（宁可多显示一个开关，
+    /// 也不要让老 Core 的插件在 UI 里凭空消失）。
+    #[serde(default)]
+    pub gating: String,
     /// 挂载失败原因（`enabled == false` 且是内置插件时可能有值）。
     ///
     /// 面板据此区分「用户主动禁用」与「装配失败被跳过」——此前协议不带

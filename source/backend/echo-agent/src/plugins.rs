@@ -11,6 +11,10 @@
 //! `SkillSink` 从未实例化、`register_skill_dir` 无调用方），而两个 trait
 //! 把应用领域词汇带进了框架层。随 `MountContext.tools/.skills` 一并删除。
 
+pub mod scope;
+
+pub use scope::{kind_is_classified, persona_scoped_ids, scope_of_kind, PluginScope, KIND_SCOPE};
+
 use std::sync::Arc;
 
 use echo_plugin::{MountContext, PluginDescriptor, PluginRegistry};
@@ -60,20 +64,18 @@ pub use echo_plugin_loop::{
     PARALLEL_PLUGIN_ID as PARALLEL_LOOP_PLUGIN_ID, SINGLE_PLUGIN_ID as SINGLE_LOOP_PLUGIN_ID,
 };
 
-/// 受 persona 名单门控的**框架内置**插件 id。
+/// persona 门控**已经不再是一张插件 id 清单**——判据是 manifest 的 `kind`。
 ///
-/// 实例插件**不在这里**：它们按 `kind == PluginInstance` 在运行期从注册表推导
-/// （见 `Agent::gated_plugin_ids`），框架不需要认识任何平台名——新增平台
-/// 插件自动纳入门控。
-pub const GATED_PLUGIN_IDS: [&str; 5] = [
-    TOOLS_BUILTIN_PLUGIN_ID,
-    SKILLS_DIR_PLUGIN_ID,
-    WORKSPACE_PLUGIN_ID,
-    SUBAGENT_PLUGIN_ID,
-    // 2026-11：shell 从 tools.builtin 拆出后**必须**在这里——persona 白名单
-    // 里没列它时要真的关掉，否则拆出插件反而让"谁都能开 shell"。
-    SHELL_PLUGIN_ID,
-];
+/// 历史：这里曾有 `GATED_PLUGIN_IDS: [&str; N]`，按插件 id 维护。它错过三轮
+/// （`adapter`→`instance` 改名漏改 → 实例插件永远不被门控；`shell` 从
+/// `tools.builtin` 拆出时 Panel 没同步 → 面板上没有 shell 开关；
+/// `session`/`transcript` 跨仓不一致 → 两个勾了不生效的假开关）。
+///
+/// 现在只有一条规则：**`kind` 定作用域**（见 [`scope::KIND_SCOPE`]）。
+/// 新增一个 `tool`/`skill` 插件不需要改任何清单；只有引入新 kind 时才要登记，
+/// 而 `core::builtin_plugins` 的 `every_catalog_kind_is_classified` 会在
+/// 装配期强制这件事。
+pub use scope::persona_scoped_ids as gated_plugin_ids;
 
 /// LLM Provider 插件 id（名义挂载，重启生效）。
 pub const PROVIDER_LLM_PLUGIN_ID: &str = "echo-agent.provider.llm";

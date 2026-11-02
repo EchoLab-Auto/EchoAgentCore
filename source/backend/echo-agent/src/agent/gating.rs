@@ -104,7 +104,31 @@ impl Agent {
             .into_iter()
             .map(|d| (d.id, d.kind))
             .collect();
-        gated_plugin_ids_from(&registered)
+        let mut ids = gated_plugin_ids_from(&registered);
+        // 补充：**工具/技能注册表里实际出现的包 id**。
+        //
+        // 为什么需要这一句：`Agent` 在插件**挂载之前**就构造好了（`make_agent`
+        // 早于 `mount_plan`），那时 `descriptors()` 是空的——只按注册表派生会让
+        // "包维度门控"在启动窗口里完全失效（名单外的人格照样拿到 workspace 的
+        // 工具），直到插件挂载后 `reapply_plugin_gating` 才补上。
+        //
+        // 包标签在**工具注册时**就打好了（组合根装配期，早于挂载），所以这里
+        // 能拿到真实存在的包；由此门控不依赖挂载顺序。
+        for name in self.tools.names() {
+            if let Some(package) = self.tools.package_of(&name) {
+                if !ids.contains(&package) {
+                    ids.push(package);
+                }
+            }
+        }
+        if let Ok(skills) = self.prompt.skills.try_lock() {
+            for package in skills.packages() {
+                if !ids.contains(&package) {
+                    ids.push(package);
+                }
+            }
+        }
+        ids
     }
 
     /// 共享注册表中该插件当前是否启用（无全局锚点 = true，以名单为准）。
@@ -428,27 +452,22 @@ fn persona_skill_allowed(profile: &crate::config::AgentProfile, name: &str) -> b
         && !profile.disabled_skills.iter().any(|s| s == name)
 }
 
-/// 把「框架固定清单 + 运行期注册的实例插件」合成 persona 门控 id 集合。
+/// 从注册表快照派生 persona 门控 id 集合。
 ///
-/// `registered` 是注册表快照 `(插件 id, kind 标签)`。实例插件按
-/// [`crate::plugins::INSTANCE_PLUGIN_KIND`] 判定——**不要硬编码字符串**：
-/// `2d46b7d` 把该名从 `adapter` 改成 `instance` 时，硬编码的比较漏改，导致
-/// 实例插件永远进不了门控集合（白名单管不住 `instance.qq`）。
+/// `registered` 是 `(插件 id, kind 标签)`。判定规则只有一条：**该 kind 的
+/// 作用域是不是 `Persona`**（见 [`crate::plugins::scope::KIND_SCOPE`]）。
 ///
-/// 该标签原本取自 `echo_plugin::PluginKind::PluginInstance`；框架去掉 kind
-/// 枚举后（M2），词汇表归宿主，常量搬到 `plugins` 模块，语义不变。
+/// ## 为什么不再有固定清单
+///
+/// 此前这里是「`GATED_PLUGIN_IDS` 硬编码 5 项 ∪ 按 `kind == "instance"` 派生」的
+/// 双轨逻辑——同一件事两种判据，而固定清单那一轨已经错过三轮（见
+/// `plugins/scope.rs` 模块文档的表格）。现在两条轨并成一条：`kind` 定作用域，
+/// 新增 `tool`/`skill` 插件**不需要改任何清单**。
+///
+/// 硬编码字符串的老坑也随之消失：`2d46b7d` 把 wire 名从 `adapter` 改成
+/// `instance` 时，这里曾因比较字面量而让实例插件永远进不了门控集合。
 fn gated_plugin_ids_from(registered: &[(String, String)]) -> Vec<String> {
-    let mut ids: Vec<String> = crate::plugins::GATED_PLUGIN_IDS
-        .iter()
-        .map(|id| (*id).to_string())
-        .collect();
-    let instance_kind = crate::plugins::INSTANCE_PLUGIN_KIND;
-    for (id, kind) in registered {
-        if kind == instance_kind && !ids.contains(id) {
-            ids.push(id.clone());
-        }
-    }
-    ids
+    crate::plugins::persona_scoped_ids(registered)
 }
 
 #[cfg(test)]
@@ -497,18 +516,36 @@ mod tests {
         }
     }
 
-    /// 框架固定清单始终在内，且不与注册表重复。
+    /// 能力型插件全部在内，且不发生重复。
+    ///
+    /// 取代原先那条「框架固定清单始终在内」的测试：现在没有固定清单了，
+    /// 判据是 kind。重复项的问题也随之消失——派生只遍历注册表一次。
     #[test]
-    fn framework_list_is_always_present_and_deduplicated() {
-        let base = crate::plugins::GATED_PLUGIN_IDS;
-        let ids = gated_plugin_ids_from(&[desc(base[0], "instance")]);
-        for id in base {
-            assert!(ids.iter().any(|x| x == id), "{id} 应在清单里");
+    fn capability_plugins_are_gated_and_deduplicated() {
+        let registered = [
+            desc("echo-agent.tools.builtin", "tool"),
+            desc("echo-agent.skills.dir", "skill"),
+            desc("echo-agent.instance.qq", "instance"),
+        ];
+        let ids = gated_plugin_ids_from(&registered);
+        for id in [
+            "echo-agent.tools.builtin",
+            "echo-agent.skills.dir",
+            "echo-agent.instance.qq",
+        ] {
+            assert!(ids.iter().any(|x| x == id), "{id} 应在门控集合里");
         }
-        assert_eq!(
-            ids.iter().filter(|x| *x == base[0]).count(),
-            1,
-            "同一 id 不得重复"
-        );
+        assert_eq!(ids.len(), registered.len(), "派生不得重复或凭空加项");
+    }
+
+    /// 同一能力型插件既有真身又出现在注册表里时，集合里仍只有一项。
+    ///
+    /// 老机制用 `!ids.contains(id)` 手工去重（因为固定清单与注册表是两份来源）；
+    /// 现在只有一份来源，但这条断言保留——它守的是"派生实现真的只遍历一次"，
+    /// 将来若有人重新引入第二份来源，这里会红。
+    #[test]
+    fn a_plugin_appearing_once_is_listed_once() {
+        let ids = gated_plugin_ids_from(&[desc("echo-agent.shell", "tool")]);
+        assert_eq!(ids, vec!["echo-agent.shell".to_string()]);
     }
 }
