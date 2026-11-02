@@ -8,9 +8,9 @@ y: 2100
 
 # Subagent 插件
 
-> **定位**：本文描述 `echo-agent.subagent` 插件（kind=Tool）——让模型把独立子任务**委派给隔离上下文的子 agent 执行**（子任务有自己的系统提示词与工具循环），结论经结构化 hook **作为新入站分支**回灌主会话、子上下文不回合并。覆盖动机与边界、生命周期、工具与技能、hook 机制、事件与观测、包门控与测试守护。读者：Agent 使用者与插件维护者。
+> **定位**：本文描述 `echo-agent.subagent` 插件（kind=Tool）——让模型把独立子任务**委派给隔离上下文的子 agent 执行**（子任务有自己的系统提示词与工具循环），结论经结构化 hook **作为新的入站 turn** 回灌主会话、子上下文不回合并。覆盖动机与边界、生命周期、工具与技能、hook 机制、事件与观测、包门控与测试守护。读者：Agent 使用者与插件维护者。
 >
-> 实现位置：独立 crate `echo-plugin-subagent`（解耦计划 Phase 3 ⑥，只依赖定义层 `echo-defs` 与工具机制 `echo-tool`）；宿主经 `echo_agent::subagent::…` 兼容路径引用，Agent 侧的接线与执行在 `agent/subagent_runtime.rs`。远程委派的聚合登记经宿主注入的 `RemoteDelegationSink`（组合根实现为 `federation::aggregator::AggregatorDelegationSink`）——插件本身不认识联邦。与 [Agent 循环](../core/agent-loop.md) 的回复分支（同上下文 fork/合并）互为对照；装载与包门控见 [插件化设计](./plugins.md)。
+> 实现位置：独立 crate `echo-plugin-subagent`（解耦计划 Phase 3 ⑥，只依赖定义层 `echo-defs` 与工具机制 `echo-tool`）；宿主经 `echo_agent::subagent::…` 兼容路径引用，Agent 侧的接线与执行在 `agent/subagent_runtime.rs`。远程委派的聚合登记经宿主注入的 `RemoteDelegationSink`（组合根实现为 `federation::aggregator::AggregatorDelegationSink`）——插件本身不认识联邦。与 [Agent 循环](../core/agent-loop.md) 的同会话排队 turn（共享主上下文）互为对照；装载与包门控见 [插件化设计](./plugins.md)。
 
 ## 动机与边界
 
@@ -26,7 +26,7 @@ y: 2100
 
 | 概念 | 上下文 | 回写 trunk | 用途 |
 | --- | --- | --- | --- |
-| 回复分支（loop.parallel） | 主上下文快照 fork | 是（按请求序号合并） | 并发回答多条入站消息 |
+| 同会话排队 turn（唯一循环模式） | 主上下文（前一轮结束后的快照） | 是（回答按请求序号归位） | 常规对话：同一会话一条时间线 |
 | **subagent** | 全新隔离上下文 | 否（结论作为 hook 事件入站） | 委派独立子任务 |
 
 ## 生命周期
@@ -39,12 +39,12 @@ y: 2100
    迭代/截断续跑/取消语义，但**不回写 trunk**、不发会话级 LLM 事件）
 3. 完成/失败/超时/取消 → 发射 `SubagentCompleted`，并把结论包进
    `<subagent_event>` hook 经 `dispatch_subagent_hook` 注入主会话——
-   作为**全新入站分支**（复用 `process_inbound_branch` 完整生命周期，
+   作为**全新的入站 turn**（复用 `process_inbound_branch` 的完整生命周期：登记 → 排队 → 执行，
    `group_id=None` = 后台来源，不推送外部平台）
 4. 主 agent 在新 turn 里消化结论（转告用户/继续推理）；子任务条目保留
    1 小时供观测查询，由注册表后台清扫任务回收
 
-并发与取消：子 turn 不占用 `reply_branch_slots`（异步任务，主 turn 已结束）；
+并发与取消：子 turn 不占用主 turn 的进程级并发限流（`reply_branch_slots`；异步任务，主 turn 已结束）；
 主 turn 取消经令牌链传导到子任务（`parent_cancel.child_token()`），
 `Agent::shutdown` 经 `SubagentStore::cancel_all` 兜底取消全部运行中子任务。
 插件停用（`TogglePlugin`）当前只停用 `spawn_subagent` 工具（包门控）；已受理的
@@ -135,7 +135,7 @@ y: 2100
 | `subagent_id` / `session_id` | 子任务 id 与所属会话 |
 | `task` | 任务描述，上限 4000 字符（见下） |
 | `success` / `result` | 成败与结论文本（受理前拒绝时 `result` 形如「子任务受理失败：…」） |
-| `parent_branch_id` | 发起本次委派的主分支 |
+| `parent_branch_id` | 发起本次委派的 turn 标识（`branch_id`） |
 | `completed_at_ms` | 收尾时刻（epoch 毫秒） |
 
 **`task` 字段的 4000 字符上限**（`subagent_runtime.rs::subagent_task_field`）：

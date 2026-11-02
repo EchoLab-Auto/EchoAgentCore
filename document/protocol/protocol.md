@@ -16,7 +16,7 @@ y: 1790
 ## 仓库拆分与契约归属
 
 - 仓库拆分为 **EchoAgentCore**（后端 agent 服务）与 **EchoAgentPanel**（前端）两个独立仓库，两端可独立构建、发布、演进，仅通过 `echo-protocol` 契约耦合
-- `echo-protocol` 是前端 ⇄ Core **线契约的唯一来源**：只定义 `BackendCommand` / `BackendEvent` / `WsMessage` / bridge / 共享枚举（`ThinkingMode` / `ReasoningEffort` / `LoopMode`），不依赖任何 agent、平台或 UI 代码；serde 表示即线格式
+- `echo-protocol` 是前端 ⇄ Core **线契约的唯一来源**：只定义 `BackendCommand` / `BackendEvent` / `WsMessage` / bridge / 共享枚举（`ThinkingMode` / `ReasoningEffort`），不依赖任何 agent、平台或 UI 代码；serde 表示即线格式
 - Panel 是纯粹的「协议客户端」：不包含任何 agent 或 QQ 逻辑（Rust 中继按原文转发帧、不解析负载；线格式以 `web/src/protocol.ts` 镜像）；后端各 crate 通过 re-export 保持 `echo_agent::…` 路径兼容
 - 协议演进只服务 Panel ⇄ Core 两端；**全网同步更新（不做旧版本兼容）**——语义变更单侧收紧亦可，两端同版本部署（见 §兼容性规则）
 
@@ -60,7 +60,7 @@ Panel 随后在同批迁移中跟齐（Panel `7e8f765`）：
 - Core 监听 `[core] management_address`（默认 `0.0.0.0:3132`），由 `echo-plugin-management` 提供；每个前端建立一条 WS 连接
 - Core 侧事件经 `EventBroker` 扇出到每条连接的独立订阅通道；命令由各连接独立注入
 - 服务端 30s Ping 心跳（90s 无任何入站活动判死断开）；Panel 转发层对双向心跳做透传，空闲连接不会被中间层悄悄断开
-- 断线自动重连（500ms 起、指数退避，**上限按页面可见性分档**：可见 3s / 隐藏 30s——部署或 Core 重启后前台几秒内即恢复，后台省电）；重连后清空运行期状态（分支/任务/活动/工作区缓存）再 Bootstrap——**时间线刻意保留**（刷新加速：内存 + 磁盘缓存按游标 `since_seq` 增量续拉，Core 缺口检测兜底、响应 `full` 时整体替换）
+- 断线自动重连（500ms 起、指数退避，**上限按页面可见性分档**：可见 3s / 隐藏 30s——部署或 Core 重启后前台几秒内即恢复，后台省电）；重连后清空运行期状态（流式行/任务/活动/工作区缓存）再 Bootstrap——**时间线刻意保留**（刷新加速：内存 + 磁盘缓存按游标 `since_seq` 增量续拉，Core 缺口检测兜底、响应 `full` 时整体替换）
 
 ```rust
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
@@ -99,7 +99,7 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 
 ### 共享枚举
 
-`ThinkingMode` / `ReasoningEffort` / `LoopMode` 定义在 `echo-defs::mode`（Service Definition 层），`echo-protocol` re-export 保持 wire 路径：
+`ThinkingMode` / `ReasoningEffort` 定义在 `echo-defs::mode`（Service Definition 层），`echo-protocol` re-export 保持 wire 路径：
 
 | 类型 | 取值（线格式，snake_case） |
 |---|---|
@@ -108,7 +108,7 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 
 > **门控模式不是共享枚举**（泛化后）：历史上 `GateMode`（`none`/`allowlist`/`denylist`）是 `echo-protocol` 的强类型枚举，现已随 QQ 专属命令一并物理删除——门控取值改为 `InvokeInstanceOp{method:"set_gate_mode", payload:{mode}}` 的**参数字符串**，由实例插件自行解释，Core 与 Panel 均不校验取值集合。
 
-`LoopMode` 定义在 `echo-defs::mode`（经 `echo-protocol` 再导出）：per-persona 循环模式，由 `enabled_plugins` 对互斥插件 `echo-agent.loop.{single,parallel}` 推导（单会话为默认与兜底；插件黑名单 `disabled_plugins` 已移除，`SaveTeam`/`TeamInfo` 不再携带该字段——旧端帧中的该字段被 serde 忽略，缺省按空表处理）。**协议变更**：`TeamInfo` 携带 `loop_mode`（`"single"`/`"parallel"`）；面板 `loopModeOf()` 缺省按 single。
+> **`LoopMode` 已删除**（2026-11）：循环只有单会话串行一种模式，`echo-defs::mode` 不再有 `LoopMode`，`echo-protocol` 也不再 re-export；`TeamInfo` 不带 `loop_mode` 字段，Panel 无模式推导 API。旧端帧里若出现该字段会被 serde 忽略；`enabled_plugins` 里的 `echo-agent.loop.{single,parallel}` 也不再表达任何模式（loop 类是进程级插件，见 [Agent 循环](../core/agent-loop.md)§会话内准入）。
 
 ## 命令（Client → Core）
 
@@ -170,12 +170,12 @@ graph LR
   E -->|否| I[正式回答 AgentOutput]
 ```
 
-> 分支事件 `ReplyBranchStarted` / `ReplyBranchCompleted` 只在 **parallel 循环模式**下发（`Agent::shows_reply_branches()` 仅对 `LoopMode::Parallel` 为真）；默认的 `single` 模式不注册分支，事件流是 `MessageReceived → … → AgentOutput → AgentCompleted`。
+> 没有任何「分支可见性」事件：`ReplyBranchStarted` / `ReplyBranchContent` / `ReplyBranchCompleted` 与 `ActiveBranchInfo` 已随并行多会话模式（2026-11）删除，Core 只发这条单线事件流 `MessageReceived → … → AgentOutput → AgentCompleted`。每个 turn 仍带 `branch_id`（turn 标识），用于事件归属与流式对账，但同一条会话的 turn 是串行排队的（见 [Agent 循环](../core/agent-loop.md)§会话内准入）。
 
 其他事件分组（字段详见 `echo-protocol/src/event.rs`）：
 
 - **插件实例生命周期与管理**：`InstanceStateChanged`（连接态）、`InstanceList`（实例/能力/UI 描述符快照）、`InstanceOpResult`（`InvokeInstanceOp` 响应）、`InstanceState`（状态文档推送）
-- **编排**：`SubagentStarted/Completed`、`ReplyBranchStarted/Content/Completed`、`AgentCompleted`（turn 收尾——含空输出的完成信号）；**推理有两条通路**：实时 `AgentReasoning`（及 `AgentReasoningDelta` 流式）之外，正文同时以 `SessionEvent::Reasoning` 落会话事件日志（**模型不可见**）——历史回填与实时投影形状因此一致，思考条目不会在刷新后被重排（见 [会话记忆](../core/memory.md)§可见性边界）
+- **编排**：`SubagentStarted/Completed`、`AgentCompleted`（turn 收尾——含空输出的完成信号）；**推理有两条通路**：实时 `AgentReasoning`（及 `AgentReasoningDelta` 流式）之外，正文同时以 `SessionEvent::Reasoning` 落会话事件日志（**模型不可见**）——历史回填与实时投影形状因此一致，思考条目不会在刷新后被重排（见 [会话记忆](../core/memory.md)§可见性边界）
 - **流式输出**：`AgentContentDelta` / `AgentReasoningDelta`（逐段增量，~40ms 合并批；终值仍以 `AgentOutput` / `AgentReasoning` 全量收敛——消费端按 (core, session, branch) 对账，全量到达替换流式内容）。受 `[agent].stream_output` 控制（缺省开）。消费方关闭时 provider **即中止上游读流**（巡检：此前静默读完整流白烧 token；接收端 drop 后首个增量即断，附假 SSE 服务器回归测试）。
 - **Shell**：`ShellSessionsList` / `ShellSessionStarted` / `ShellExecStarted` / `ShellExecOutput`（流式）/ `ShellExecDone` / `ShellSessionClosed`
 - **状态快照**：`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`SessionHistory`（某会话的显示历史派生：`messages` / `total` / `truncated` / `max_seq`；`max_seq` 是**合并水位线**，显示端按 `seq ≤ max_seq` 判"快照已覆盖"，推理条目不计入——见 [会话记忆](../core/memory.md)§显示时间线）、`ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`（`granted`/`topped_up` 分账字段恒下发，失败时为空串）、`ApiMetrics`（余额/用量时间序列——`entries: [{name, balance, usage, cost_currency}]`，见 `event.rs` 的 `ApiMetricsEntry`）、`Error`（**只用于真正的错误**：面板收到带 `session_id` 的 `Error` 会冻结该会话的流式行并收尾工具行）、`Notice`（**会话级操作回执**：`{team_id?, session_id?, ok, message}`——清理 / 归档 / 压缩 / 会话 API 切换的结果。带 `session_id` 时面板只在本窗口、本会话展示；`ok=false` 表示操作失败但**不代表回合失败**，不打断正在输出的回答。2026-10 作用域普查：此前这些回执借用 `Error`，`session_id: None` 会广播给所有窗口，`session_id: Some` 又会误冻结流式行）
@@ -202,7 +202,7 @@ graph LR
 |---|---|
 | 会话与时间线 | `MessageReceived`、`AgentCompleted`、`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`TimelineEarlier`（更早一页，前端前插、不换同步游标）、`SessionHistory`（按会话派生显示历史；`max_seq` 为合并水位线，推理条目不计入）、`ActiveTurnsSnapshot`、`CompactionProgress`（压缩进度：`phase` = `preview`/`archive`/`summarize`/`apply`/`done`/`failed`，配 `done`/`total`/`sessions`/`message`；`total=0` 时面板画不确定条） |
 | 模型与工具 | `AgentThinking`、`AgentReasoning`、`AgentReasoningDelta`、`AgentOutput`、`AgentContentDelta`、`LlmRequest`、`LlmResponse`、`ToolCall`、`ToolResult` |
-| 分支与子代理 | `ReplyBranchStarted`、`ReplyBranchContent`（**保留变体，当前无生产发射方**——「临时等待回复」机制已删除；分支正文走 `AgentContentDelta` 的 `branch_id`）、`ReplyBranchCompleted`、`SubagentStarted`、`SubagentCompleted` |
+| 子代理 | `SubagentStarted`、`SubagentCompleted`（`ReplyBranchStarted` / `ReplyBranchContent` / `ReplyBranchCompleted` 于 2026-11 随并行多会话模式**删除**；回答正文只走 `AgentOutput` / `AgentContentDelta`，其 `branch_id` 是 turn 标识） |
 | Shell | `ShellSessionsList`、`ShellSessionStarted`、`ShellExecStarted`、`ShellExecOutput`、`ShellExecDone`、`ShellSessionClosed` |
 | 资源清单 | `SkillsList`、`ToolsList`、`PluginsList`、`TeamsList`、`PluginOpResult`（插件操作回执：`{id, op, ok, message}`） |
 | API 供应商 | `ApiConfigUpdated`、`ApiProfilesUpdated`、`ApiTestResult`、`ApiBalanceResult`、`ApiMetrics`、`RemoteApiProfiles`（联邦远端节点的**脱敏**供应商池；peer 离线/未实现查询时 `profiles` 为空、`error` 带原因） |

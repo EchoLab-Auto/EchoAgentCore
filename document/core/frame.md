@@ -31,7 +31,7 @@ link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | �
 4. 装配进程级插件宿主：`PluginRegistry::apply_disabled`（禁用插件只注册不挂载）先于挂载
 5. 一次 `mount_plan` 按 `plugins.toml` 的 `kind = "builtin"` 行序挂载内置插件（无该行 = 目录顺序全启用）——**工具集 / 技能目录 / 工作区 / subagent / 插件实例 / 管理面 / 循环 / provider 全是 mount 的副作用**，management WS 随管理面插件的 mount 起停；同时注册远程插件门控壳与外部条目
 6. 挂载完成后解析 `loop` 服务（由 `echo-plugin-loop` `provide` 的那一个 `TurnRunner`）——**解析失败即启动失败**，不静默降级：没有驱动的 agent 只会收消息不干活，比崩溃更难查
-7. 创建多 agent 监督器，按人格回填循环注入（`loop.single` / `loop.parallel`；同一 runner 实例，模式只改准入策略）
+7. 创建多 agent 监督器，把同一个 `TurnRunner` 注入每个 Agent（`set_loop_runner`；循环只有单会话串行一种准入，没有模式可切）
 
 > `plugins.toml` 与 core.toml 同目录，不存在 = 不报错（外部插件特性休眠、内置插件按目录默认全启用）。`echo-agent-core dump-config` 只打印它的分层合成结果（profile / bundle / patch / 内联层 + 每行来源），用来排查"这行配置从哪来"——不需要真启动。
 

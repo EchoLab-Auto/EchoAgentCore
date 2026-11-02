@@ -697,7 +697,7 @@ impl Agent {
     fn provides_services_for(id: &str) -> Vec<String> {
         let keys: &[&str] = match id {
             "echo-agent.session" => &["echo-agent.session.factory"],
-            "echo-agent.loop.single" | "echo-agent.loop.parallel" => &["loop"],
+            "echo-agent.loop.single" => &["loop"],
             "echo-agent.shell" => &["shell"],
             "echo-agent.tools.builtin" => &["tools.builtin"],
             "echo-agent.provider.llm" => &["llm"],

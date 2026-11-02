@@ -9,7 +9,7 @@ link: ["agent-loop | Agent 循环"]
 
 # 多 Agent 与会话
 
-> **定位**：本文描述 Core 的**多 Agent 人格与会话**机制——Persona 装配、会话模型与归属、工作区会话与项目通道、临时分支、能力隔离。读者：需要理解多 agent 运行方式、会话归属与人格配置的开发者。
+> **定位**：本文描述 Core 的**多 Agent 人格与会话**机制——Persona 装配、会话模型与归属、工作区会话与项目通道、入站 turn 与串行准入、能力隔离。读者：需要理解多 agent 运行方式、会话归属与人格配置的开发者。
 > 相关：[框架（内核）](./frame.md)（内核机制）、[Agent 循环](./agent-loop.md)（循环驱动与准入）、[会话记忆](./memory.md)（日志与投影）、[插件化设计](../plugins/plugins.md)（能力门控）。
 
 Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent（独立 trunk、会话文件、系统提示词、能力白名单）。
@@ -36,15 +36,17 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - 不同 agent 的上下文完全隔离（各自独立的事件日志与投影）
 - 上下文快照（`RequestContext`）按会话返回（`session_id`；`ContextSnapshot` 回带归属）；`CompactHistory` 按 `session_id` 只压缩指定会话——**预览 → 归档快照（`archives/*-precompact.json`）→ LLM 交接摘要（失败按组回退规则统计文案）→ 落地**（机制与统计见 [会话记忆](./memory.md)§压缩与归档）；`ClearHistory` **按会话清理**（`session_id` 存在时只清该会话的事件日志/上下文投影/时间线条目；缺省 = 清空该智能体全部会话——用户报告后修复：此前只有 team 维度，面板清理会误清其他会话）
 - `RequestState` 返回**所有人格**的会话（各会话携带自身 team_id），Panel 按当前 agent 过滤展示
-- **单会话模式下的 QQ 入站投递**：hook 格式化的消息（`<qq_message_hook>`，带完整平台/发送者元数据）投递到该 persona 的**默认本地会话**（`local:tui::local_user`）排队跑 turn——不开临时回复分支（ReplyBranch 是并行模式专属可见性机制）、不发 QQ 临时回复；`group_id=None` 保证普通输出不推 QQ，**是否回复由 agent 自行判断**（qq-transport 技能：回复必须走 send_* 工具，明显无需回应的消息可不回复）。QQ 会话键仍按作用域注册（Panel 会话列表可见），并行多会话模式保持原临时回复分支行为
+- **QQ 入站投递**：hook 格式化的消息（`<qq_message_hook>`，带完整平台/发送者元数据）**永远**投递到该 persona 的**默认本地会话**（`local:tui::local_user`）排队跑 turn——不发 QQ 临时回复；`group_id=None` 保证普通输出不推 QQ，**是否回复由 agent 自行判断**（qq-transport 技能：回复必须走 send_* 工具，明显无需回应的消息可不回复）。平台会话键仍按作用域注册，用于**来源聚类**（Panel 会话列表可见）与**控制回执**（取消等命令的回执记在平台会话上），**不承载 turn**
 - **Panel 前端切换**：当前 agent 持久化于 localStorage（`echo-panel-active-team`），刷新/重连后停留原 agent；切换 agent 先渲染该 agent 的时间线缓存（零等待），再以 `since_seq` 增量刷新
 
-### 临时分支
+### 入站 turn 与串行准入
 
-每条入站消息 = 一个临时回复分支。
+每条入站消息 = 一个 turn（携带 `branch_id` 标识，用于事件归属与流式对账）。
 
-- 分支可见性由**循环模式**控制：并行多会话模式发射 ReplyBranch* 可见性事件、侧边栏有分支卡与「全局」会话项；单会话模式不发射、无分支卡（会话切换统一在入口行「会话」按钮），但分支照常执行合并（可见性开关而非执行开关）；单会话模式还会排队同一会话的 turn（串行准入，见 [Agent 循环](./agent-loop.md)§循环模式）
-- 分支运行期活动实时进主时间线（推理/工具/回答按序穿插），结束仅清理标签
+- 同一会话的 turn 走 **FIFO 串行闸门**：拿到闸门后才记录输入并取上下文快照，因此排队的第二个 turn 看到的是第一轮结束后的上下文（见 [Agent 循环](./agent-loop.md)§会话内准入）。不同会话的 turn 可并发，进程级另有并发限流（`reply_branch_slots`）
+- 排队中也可取消：取消命令按 turn **实际注册的会话**过滤，还在排队等闸门的与正在执行的 turn 都能中断，且不留残回复
+- 不再有"临时回复分支"这层可见性机制：`ReplyBranch*` 事件、侧栏分支卡与「全局」会话项、`ActiveBranchInfo` 已随并行多会话模式（2026-11）一并删除；会话切换统一在入口行「会话」按钮
+- turn 的运行期活动实时进主时间线（推理/工具/回答按序穿插）
 
 
 ## 工作区会话与项目通道
@@ -99,7 +101,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - 既有历史留在默认会话，**不自动迁移**；通道历史从激活起从头积累；
 - 删除工作区**不删除**其对话历史（通道会话保留在列表）；删除**对话**则清空其通道历史（store 删除钩子 → `clear_session`）；
 - 未激活时本地新消息落默认会话；
-- 通道机制与循环模式（single/parallel）无关；会话切换器可见性 = 存在可切换会话（含通道）。
+- 通道机制与循环准入无关（循环只有单会话串行一种）；会话切换器可见性 = 存在可切换会话（含通道）。
 
 ## 能力隔离
 
@@ -107,7 +109,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - 插件/工具/技能三个维度独立配置；未配置白名单时默认全部启用
 - **保存即热生效**：`SaveTeam` 后目标人格立即重算门控（工具/技能逐名双向：取消勾选禁用、重新勾选恢复；插件包维度按 `kind` 派生的门控集合）；`ToggleTeam` 重新启用的人格也会补应用门控。全局禁用（`ToggleTool`/`ToggleSkill`/`TogglePlugin` 卸载）优先级高于 persona 名单，且这些全局开关会逐 persona 重算而不是只作用于管理面
 - **Package 跨维度**：勾选/取消勾选一个门控插件 = 启停整个包（plugin + 同名包工具 + 同名包技能，QQ 包示例：send_* 工具与 qq-management/qq-transport 一起开关）；详见 [插件化设计](../plugins/plugins.md)「Package」章节
-- **循环模式**（互斥插件 `echo-agent.loop.{single,parallel}`）由白名单推导：空表 = single（默认）；含 `loop.parallel` = parallel。推导单一来源 `TeamMember::loop_mode()`（只看白名单）
+- **循环没有模式开关**：`echo-agent.loop.single`（`kind = loop`）是进程级插件——同一会话的 turn 串行排队，一条会话只有一条时间线。它不在 persona 门控集合里，`enabled_plugins` 写不写 loop 类 id 都不改变任何行为（并行多会话模式已于 2026-11 删除，见 [Agent 循环](./agent-loop.md)§会话内准入）
 - 全局 `[agent].disabled_tools`（Panel ToggleTool 持久化）启动时逐人格应用
 - **工作区提示注入同受门控**：`workspace` 插件未启用或不在该 persona 白名单时，它不产出文本贡献，提示词里也就没有项目上下文（与 `workspace` 工具的可见性由**同一份白名单**推导）——不会出现「工具已禁用、项目上下文还在」
 
@@ -117,18 +119,17 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 [agent.teams.alix]
 name = "Alix"
 description = "管理型人格"
-# 空 enabled_plugins = 全部启用 → 单会话（默认）循环模式
+# 空 enabled_plugins = 全部启用（persona 门控集合按插件 kind 派生）
 # （纯对话型人格：enabled_plugins 列全部插件、唯独去掉 tools.builtin 与
 #   skills.dir——黑名单已移除，唯一名单就是白名单）
 
 [agent.teams.self-coding]
 name = "self-coding"
-# 显式开启并行多会话循环模式（侧栏分支卡/全局项/可见分支）
-enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel", "echo-agent.loop.parallel"]
+enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel"]
 # 可选：persona 级 API（引用全局供应商池 [agent].api_profiles 中的 profile 名）
 # api_profile = "openai"   # 不配置 = 跟随全局默认配置
-# 显式写法（等价）：追加 "echo-agent.loop.single"；并行多会话模式则列
-# "echo-agent.loop.parallel"。
+# 循环没有模式可切：`echo-agent.loop.single` 是进程级插件（kind = loop），
+# 不受 persona 白名单支配，写进 enabled_plugins 也不产生任何效果。
 ```
 
 ## 设计取舍与边界

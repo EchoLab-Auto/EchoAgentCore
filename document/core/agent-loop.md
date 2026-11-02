@@ -8,45 +8,46 @@ y: 820
 
 # Agent 循环
 
-> **定位**：本文描述 **Agent 循环**——可插拔驱动（echo-loop `TurnRunner`）的 turn/step 状态机、循环模式（单会话 / 并行多会话）、工具管道，以及 harness（`agent/turn.rs`）如何把一条输入交给唯一的循环驱动执行。读者：需要理解消息如何被循环执行的开发者。
-> 相关：[多 Agent 与会话](./agents.md)（分支与会话准入）、[插件化设计](../plugins/plugins.md)（loop 插件治理）、[工具系统](../plugins/tools.md)（工具执行与超时）。
+> **定位**：本文描述 **Agent 循环**——可插拔驱动（echo-loop `TurnRunner`）的 turn/step 状态机、会话内串行准入（同一会话 FIFO 排队）、工具管道，以及 harness（`agent/turn.rs`）如何把一条输入交给唯一的循环驱动执行。读者：需要理解消息如何被循环执行的开发者。
+> 相关：[多 Agent 与会话](./agents.md)（会话归属与入站投递）、[插件化设计](../plugins/plugins.md)（loop 插件治理）、[工具系统](../plugins/tools.md)（工具执行与超时）。
 
 Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态机 + 工具
-管道）。`echo-agent.loop.{single,parallel}` 插件（kind=Loop，互斥二选一）只表达
-**循环模式**（会话内准入策略），不切换驱动。
+管道）。循环插件也只有**一个**：`echo-agent.loop.single`（`kind = loop`），它
+表达的策略就是"同一会话的 turn 串行排队"，不切换驱动。
 
 > 单轨化（架构评审）：此前存在第二套"内置循环"（`process_message_inner`
 > 内联实现），QQ hook / 定时器 / QQ 会话输入走它、普通输入走 echo-loop；两者
 > 靠"逐项同口径"维持一致并多次漂移。内置循环已删除，边界输入的唯一差异
 > （提示词边界块）由 harness 统一注入。
 
-## 循环模式（单会话 / 并行多会话）
+## 会话内准入：单会话串行（唯一模式）
 
-循环模式是**会话内的准入策略**，二选一，由互斥循环插件在 persona 白名单里
-表达（`echo-agent.loop.single` 默认 / `echo-agent.loop.parallel`）：
+循环只有一种模式：**同一会话的 turn 串行排队，一条会话只有一条时间线**。
 
-| 模式 | 插件 id | 会话内准入 | 分支可见性 | 会话管理 UI |
-| --- | --- | --- | --- | --- |
-| 单会话（默认） | `echo-agent.loop.single` | turn 串行排队（FIFO） | 不发射 `ReplyBranch*` | 隐藏 |
-| 并行多会话 | `echo-agent.loop.parallel` | 各 turn 并发分支 | 发射 `ReplyBranch*` | 显示 |
-
-- **串行语义**：单会话下 `Session.turn_queue`（tokio Mutex，公平 FIFO）是准入
-  闸门；turn 在拿到闸门后才记录输入并取上下文快照，因此排队的第二个 turn 看到
-  的是第一轮结束后的上下文。不同会话互不排队——**另启一个会话就是另一条并行
-  通道**。并行模式下不使用闸门（到达即快照）。
+- **串行闸门**：`Session.turn_queue`（tokio Mutex，公平 FIFO）是准入闸门；turn
+  在拿到闸门之后才记录输入并取上下文快照，因此排队的第二个 turn 看到的是第一轮
+  结束后的上下文，而不是"读到一半的历史"。不同会话互不排队——**另启一个会话
+  就是另一条并行通道**；进程级另有一道并发限流（`reply_branch_slots` 信号量，
+  上限 8），它是限流而非排他。
 - **排队期间可取消**：turn 在等待闸门**之前**就注册进 `active_inbound_turns`，
-  取消命令能中断排队（该 turn 不执行、不留残回复）；QQ 入站注册在分支任务内
-  完成，插件实例入站永不因排队阻塞。
-- **推导**：`TeamMember::loop_mode()`（单一来源）——白名单含 `loop.parallel`
-  → parallel；其余（含白名单为空 = 默认）→ single。
-  插件黑名单已移除，推导只看白名单。相关机制见
-  [配置持久化](./config-persistence.md)。
-- **落地**：两个插件是纯策略插件（mount 无运行期资源）；驱动本体与插件启用态
-  无关，始终注入。模式只能经面板「循环模式」分段单选修改（写白名单）。
+  取消命令按 turn **实际注册的会话**过滤，因此排队中的 turn 也能被中断（该 turn
+  不执行、不留残回复）。插件实例入站把注册放进后台任务，入站 hook 本身不因排队
+  阻塞。（2026-11 修复：此前取消按平台会话过滤，而 turn 实际跑在默认本地会话，
+  于是永远取消不到。）
+- **插件**：`echo-agent.loop.single`（`kind = loop`）是**唯一**循环插件，也是
+  `loop` 服务的提供方——mount 时构造唯一的 `TurnRunner` 并 `provide`，卸载即撤销
+  该服务（组合根解析不到就是启动失败）。`kind = loop` 属**进程级**作用域：
+  persona 白名单不管它，`enabled_plugins` 里写 loop 类 id 不表达任何模式；驱动
+  本体与插件启停无关，始终注入给每个 Agent。
+- **已删除（2026-11）**：并行多会话模式整体移除——`echo-agent.loop.parallel`
+  插件、`LoopMode::Parallel`、`ReplyBranch*` 可见性事件、`ActiveBranchInfo`、
+  `Agent::shows_reply_branches` 一并不存在。旧配置 `enabled_plugins` 里残留的
+  `echo-agent.loop.parallel` 只是一条没有任何效果的旧条目
+  （`echo_plugin_loop::REMOVED_PARALLEL_PLUGIN_ID` 仅留作识别用字面量）。
 
 ## Turn 循环
-- 每条入站消息经[多 Agent 与会话](./agents.md)的临时分支机制进入
-  `process_message_inner`；本层只负责循环本身
+- 每条入站消息经[多 Agent 与会话](./agents.md)的入站闸门（登记 → 排队 → 取快照）
+  进入 `process_message_inner`；本层只负责循环本身
 - 系统提示词按块构建（`agent/prompt.rs` 的 `build_prompt_blocks`，
   [插件化设计](../plugins/plugins.md) 的能力门控作用于各层）：
   基础提示词、**system 技能层**（system:true，见 [技能系统](../plugins/skills.md)）、
@@ -56,7 +57,8 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
   （`agent/boundary.rs` 的 `BoundaryKind`：QQ hook / 定时器 / 后台输入三块文案）
 - 提示词构建的锁纪律：`skills` 的 tokio Mutex guard
   只在 `build_prompt_blocks` 调用作用域内持有，构建完即 drop——guard 跨过
-  LLM await 会让并行模式的第二个 turn 在 `skills.lock()` 上饿死
+  LLM await 会让其他会话的 turn 在 `skills.lock()` 上干等（闸门只串行化本会话，
+  进程内各会话的 turn 是并发的）
 - 循环迭代（`max_tool_iterations`，随附配置缺省 1024；`AgentConfig::default` 代码缺省为 5）：发 LLM 请求 → 有工具调用则逐个执行并回填结果 → 直至产出最终回复或达上限
 - 输出预算：`[agent].max_tokens`（0 = 无上限，后端回退 `DEFAULT_MAX_TOKENS = 128K` 实用上限）；响应被 `max_tokens` 掐断（finish_reason = length/max_tokens）时自动续跑（最多 4 次，提示"继续上次输出"喂回模型；半截工具调用丢弃后重发完整调用）
 - 达上限未完成时报错收尾；工具的超时/失败不中断 loop（见 [工具系统](../plugins/tools.md)）
@@ -92,7 +94,8 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
   `AgentReasoning` 事件）、**每 turn 模型名**、**每 turn 迭代上限**
   （`max_iterations`，运行期调整下一 turn 生效）与 **ChatExecutor**（每 step
   解析当前 provider/预算——运行期 persona API 切换即时生效）、turn 标识
-  （多分支并发时的事件归属）；
+  `branch_id`（事件归属：同一会话的 turn 串行、不同会话的 turn 并发，一条事件
+  属于哪个 turn 靠它）；
 - 工具执行经异步 `ToolExecutor` 直连 `run_tool`（ToolCall/ToolResult 事件与
   事件日志），**超时守卫 + turn 取消竞速**（在途工具可立即中止）、工具产出
   图片透传、成功 `send_*` 触发 visible_reply 抑制；
@@ -111,7 +114,7 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 （架构评审后，`impl Agent` 分布在各文件）：
 
 - `agent/turn.rs`：turn 驱动（上文「注入与分派」）+ `input_boundary`
-- `agent/inbound.rs`：入站 turn 生命周期（分支登记 / 串行闸门 / 取消 / 合并、
+- `agent/inbound.rs`：入站 turn 生命周期（在飞登记 / 串行闸门 / 取消 / 回答合并、
   `process_message`、插件实例入站 `process_inbound_branch` → `run_inbound_turn`）
 - `agent/tool_dispatch.rs`：`run_tool` 统一分派、参数预检、中断结果补记
 - `agent/streaming.rs`：流式增量转发（`AgentContentDelta` / `AgentReasoningDelta`）

@@ -381,7 +381,6 @@ mod catalog_shape_tests {
         for id in [
             "echo-agent.provider.llm",
             "echo-agent.loop.single",
-            "echo-agent.loop.parallel",
             "echo-agent.management.panel",
             "echo-agent.federation",
             "echo-agent.selfupdate",

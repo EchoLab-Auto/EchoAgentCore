@@ -90,13 +90,13 @@ graph BT
 | `echo-defs` | Service Definition 层 | 全部词汇与 trait：LLM / 工具 / 技能 / 平台消息 / **插件实例** / 媒体 / 会话事件 / 联邦节点；零实现、零 harness 依赖。插件实例模块（`plugin_instance`）持有 `PluginInstance` trait（`tool_specs() -> Vec<ToolSpec>`）/ `InstanceManagement` / `ToolSpec` / `InstanceRegistry` / 状态与错误类型，**平台中立**：没有平台名、没有部署形状——QQ 实现是独立进程插件（独立仓库，stdio 协议，宿主经 `RemoteInstance` 接入） |
 | `echo-context` **（框架仓）** | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry`。**零全局态**：不持有进程级单例表——需要共享状态的调用方经 `Ctx` 显式注入 |
 | `echo-session` | 事件溯源会话 | `SessionEvent` 事件集（含模型不可见的推理事件）、`EventLog` append-only 持久化、`derive_messages` 投影、**按会话切片投影**（append 的重投影代价只与本次会话相关）、compaction、`SessionHeader`、v1-v4 兼容迁移。**词汇层**：只导出类型与纯函数，实例与生命周期在 `echo-plugin-session` |
-| `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；循环模式（单会话串行 / 并行多会话）见 [Agent 循环](../core/agent-loop.md) |
+| `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；会话内 FIFO 串行准入（每会话一条时间线）见 [Agent 循环](../core/agent-loop.md) |
 | `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现。`openai`/`anthropic` 只依赖 `echo-defs`；`ollama` 是薄包装，**复用 `echo-llm-openai`**（组内一条边） |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性）。另含显示文本工具 `timeline_text`（定时信封解析 / 单行折叠 / 工具概要截断，供实时投影与派生两条路径共用）。Panel 的 Rust 中继对它**零依赖**（不解析负载、按原文转发），TS 前端以 `web/src/protocol.ts` 手写镜像 |
 | `echo-plugin-provider-llm` | 内置插件：LLM provider（Phase 3 ①） | provider 工厂（OpenAI 兼容 / Anthropic Messages / Ollama，含 DeepSeek `/anthropic` 自动路由、Kimi base_url 归一、OpenCode Go/Zen 会话头注入）+ 计量装饰器（`UsageRecorder` 出口）+ 脱敏装饰器；**API 设置面策略**：池规则（`admin`）、13 条命令域（`commands`）、探针配置解析 / `core.toml` agent 表补丁 / `ApiConfigUpdated` 事件装配 / 「测试 API」全流程（`api_admin`）；只依赖 `echo-defs` 与三个 provider crate |
 | `echo-plugin-skills` | 内置插件：技能目录（Phase 3 ③） | `SkillRegistry`（递归发现 + 多目录分层合并 + 热重载状态）、SKILL.md frontmatter 解析、Git 来源安装与 `.sources.json`；插件 id 归一走 `echo_defs::plugin_id` |
 | `echo-plugin-subagent` | 内置插件：Subagent 委派（Phase 3 ⑥） | `spawn_subagent` 工具（异步受理 + 立即回执）、`SubagentStore`（取消句柄 + TTL 清扫）、`run_subagent_turn`（隔离上下文的一次性 turn，剥离 spawn 能力防递归）；远程委派经注入的 `RemoteDelegationSink` 上报，插件不依赖联邦实现 |
-| `echo-plugin-loop` | 内置插件：循环模式（Phase 3 ⑦） | `loop.single` / `loop.parallel` 两个纯策略插件的 id / 描述 / manifest 唯一事实来源，`Service{key:"loop"}` 贡献声明；mount 无运行期资源 |
+| `echo-plugin-loop` | 内置插件：循环（Phase 3 ⑦） | 唯一循环插件 `loop.single` 的 id / 描述 / manifest 唯一事实来源，`Service{key:"loop"}` 贡献声明；mount 时构造唯一 `TurnRunner` 并 `provide` 该服务（卸载撤销），策略只有"同一会话 turn 串行排队" |
 | `echo-plugin-workspace` | 内置插件：工作区会话（Phase 3 ⑤） | `WorkspaceStore`（每 persona 一份 JSON，原子写）、`workspace` 工具（list/status/use/create/delete）、只读 git 与文件采集、浏览沙箱解析；跨机查询经注入的 `RemoteWorkspaceQuery`，插件不依赖联邦实现 |
 | `echo-plugin-session` | 内置插件：会话子系统（解耦计划 S6） | `TrunkStore` 的实现归属：append-only 事件日志、按会话上下文投影、持久化（tmp+rename 原子写、`save_lock` 串行）、归档轮转（`archives/` 保留 20 份）、压缩编排（预览→归档→摘要→落地，全程 `compact_lock`）、按需派生显示历史、**写命令域**（`ClearHistory` / `ArchiveHistory` / `CompactHistory`，2026-11 S6 补口自宿主迁入）。mount 只 provide 工厂 `echo-agent.session.factory`（每人格一份 trunk，不是单例）；**不依赖任何插件**，只认 `echo-defs`/`echo-protocol`/`echo-session` 词汇 + 插件机制 |
 | `echo-plugin-transcript` | 内置插件：显示层（解耦计划 S8） | 时间线实时投影（`timeline`：哪些事件进面板、字段怎么映射、工具完成态原地合并）+ 会话视图命令域（`session_view`：5 条 `Request*`）。2026-11 自 `echo-plugin-management` 外置：连接面（WS 中继）与显示面（"面板看到什么"）分轴；与 `echo-plugin-session` 的历史派生共用 `echo-protocol::timeline_text`。只依赖词汇层与机制层 |
@@ -109,7 +109,7 @@ graph BT
 | `echo-tool` | 工具子系统机制 | `ToolRegistry`（可逆注册 + 定义缓存 + 出口脱敏）；`Tool` 词汇在 `echo-defs`，具体工具实现不在此 |
 | `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` **（框架仓）** | 插件契约、协议与宿主 | 生命周期钩子（`Plugin`/`PluginManifest`/`PluginRegistry`）；宿主↔插件消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；插件装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、子进程限额与入站频率限额、可逆停止、conformance 测试。**`echo-plugin-host` 只依赖 `echo-plugin-api` + `echo-plugin-loader`——不认识 `echo-defs`、不认识任何领域词汇**，因此可作领域中立的插件机制复用 |
 | `echo-plugin-adapter` | 远程贡献 → 领域 trait 的适配层 | `RemoteTool`（`ToolContribution` → `echo_defs::tool::Tool`）、`RemoteInstance`/`RemoteInstanceManagement`（`InstanceContribution` → `PluginInstance`/`InstanceManagement`，能力位 fail-closed，动作经 `Invoke("<name>:<op>")`）、`CoreApiService`（插件 → 宿主回呼）；依赖 host + api + defs，**不依赖 `echo-agent` 与组合根**。单独成 crate 的理由：这一层认识领域 trait，而 host 必须保持领域中立 |
-| `echo-agent` | agent 框架 | 命令分发、timeline 投影、trunk、provider 工厂与装配、提示词边界与装配、多 agent 管理。**循环只有 echo-loop 一条轨道**（内置循环已删除，`loop.*` 插件只决定循环模式——见 [Agent 循环](../core/agent-loop.md)）。**具体实现多已外迁**：内置工具在 `echo-plugin-tools`、Shell 机制在 `echo-shell`（`shell.rs` 只留宿主侧接线）、技能在 `echo-plugin-skills`、子任务在 `echo-plugin-subagent`、工作区在 `echo-plugin-workspace`、联邦执行层在 `echo-plugin-federation`；`packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面），宿主侧**不认识任何一个内置工具的名字** |
+| `echo-agent` | agent 框架 | 命令分发、timeline 投影、trunk、provider 工厂与装配、提示词边界与装配、多 agent 管理。**循环只有 echo-loop 一条轨道**（内置循环已删除；`echo-agent.loop.single` 是进程级插件，只声明"同一会话 turn 串行排队"这一条策略——见 [Agent 循环](../core/agent-loop.md)）。**具体实现多已外迁**：内置工具在 `echo-plugin-tools`、Shell 机制在 `echo-shell`（`shell.rs` 只留宿主侧接线）、技能在 `echo-plugin-skills`、子任务在 `echo-plugin-subagent`、工作区在 `echo-plugin-workspace`、联邦执行层在 `echo-plugin-federation`；`packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面），宿主侧**不认识任何一个内置工具的名字** |
 | `echo-config` | TOML 原子读改写 | `ConfigStore` / `ensure_table`（串行化 + tmp+rename）。**不知道任何 section 的含义**——调用方各自拥有自己的段 |
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm` 注册、插件宿主装配与挂载、挂载后解析 `loop` 服务、联邦链路泵、启动 |
@@ -164,7 +164,7 @@ graph BT
 
 ### Turn/Step 循环
 
-`TurnRunner` 驱动 `turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。这是**唯一**循环实现（单轨化）：全部输入（含平台 hook / 定时器）经该状态机执行，差异只在提示词边界块；runner 在人格启动与运行期新建时无条件注入，`loop.*` 插件只决定循环模式。工具策略（超时 / 审批 / 审计 / 限流）的设计位置是 `ToolPipeline` 中间件（当前生产路径未注册任何中间件，超时由 harness `tool_guard_timeout` 守卫）。细节与边界见 [Agent 循环](../core/agent-loop.md)。
+`TurnRunner` 驱动 `turn/start → agent/pre-step → step/start → agent/request → llm.chat → tool/call → pipeline(pre/execute/post) → step/end →（循环）→ turn-stopping → turn/end`。这是**唯一**循环实现（单轨化）：全部输入（含平台 hook / 定时器）经该状态机执行，差异只在提示词边界块；runner 在人格启动与运行期新建时无条件注入，同一会话的 turn 由 FIFO 串行闸门排队（唯一模式，没有模式可切）。工具策略（超时 / 审批 / 审计 / 限流）的设计位置是 `ToolPipeline` 中间件（当前生产路径未注册任何中间件，超时由 harness `tool_guard_timeout` 守卫）。细节与边界见 [Agent 循环](../core/agent-loop.md)。
 
 ### 会话与持久化
 

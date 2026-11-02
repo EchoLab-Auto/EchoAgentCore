@@ -38,7 +38,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 - 注册为**可逆**副作用：`Plugin::mount` 返回 disposer（`PluginMountResult`，注册表持有、卸载时调用）；`register_and_mount` 注册并按启用态挂载（禁用插件只注册不挂载）
 - 数据插件（skill/tool）支持热重载（插件目录 5s 轮询）；代码插件需二进制重载
 - **启动顺序**：`apply_disabled` 先于挂载——禁用插件启动时只注册不挂载；persona 白名单的门控**启动期与运行期统一**由 `Agent::apply_capabilities` 承担（门控集合按 `kind` 派生——见 `plugins/scope.rs` 的 `KIND_SCOPE`；最终 = 全局启用 ∧ 白名单）；插件宿主由组合根注入为**进程级单例**（全体人格共享）
-- **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / skills.dir / instance.qq / workspace / subagent）已把组合根装配搬进 mount 闭包，运行期 `TogglePlugin` 停/再启对它们有真实运行效果；`instance.qq` 的启动期 mount 不抢跑（wired 标志在插件实例接线完成后才置位），启动受 `[instances.qq].enabled` 与插件状态双重门控；`loop.{single,parallel}` 的按人格注入依赖 `AgentManager`（注册于挂载之后），启动期 mount 为 no-op——由人格启动循环**回填注入**（见 [Agent 循环](../core/agent-loop.md)「实化与分派」）
+- **mount 实化**：可安全逆注册的插件（management.panel / tools.builtin / skills.dir / instance.qq / workspace / subagent）已把组合根装配搬进 mount 闭包，运行期 `TogglePlugin` 停/再启对它们有真实运行效果；`instance.qq` 的启动期 mount 不抢跑（wired 标志在插件实例接线完成后才置位），启动受 `[instances.qq].enabled` 与插件状态双重门控；`loop.single` 在 mount 里 `provide` 唯一的 `TurnRunner`，但**注入到人格**依赖 `AgentManager`（注册于挂载之后）——由人格启动循环**回填注入**（见 [Agent 循环](../core/agent-loop.md)「注入与分派」）
 - **运行期热更新**：插件/工具/技能勾选在 `SaveTeam` 保存后**立即生效**，无需重启——工具/技能逐名双向应用（取消勾选即禁用、重新勾选即恢复）；全局 `TogglePlugin` 经 mount/unmount 闭包逐 persona 重评估（`reapply_plugin_gating`：全局启用 ∧ persona 名单，名单外不放开、unmount 对全员生效）；`ToggleTool`/`ToggleSkill` 同样逐 persona 重算（`reapply_tool_gating` / `reapply_skill_gating`：persona 黑名单不被全局启用覆盖）
 
 ### 来源与运行形态（两个正交维度）
@@ -86,18 +86,17 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.session` | Session | 进程内 | 会话子系统（2026-11 S6 外置）：事件溯源 trunk、持久化、归档轮转、压缩编排、按需派生显示历史 + 三条写命令（`ClearHistory` / `ArchiveHistory` / `CompactHistory`） |
 | `echo-agent.transcript` | Interaction | 进程内 | 显示层（2026-11 S8 外置）：时间线实时投影 + **会话视图命令域（5 条 `Request*`：`RequestState` / `RequestContext` / `RequestTrunkTimeline` / `RequestTimelineEarlier` / `RequestSessionHistory`，含推理正文线上瘦身）** |
 | `echo-agent.provider.llm` | Provider | 进程内 | LLM 提供方工厂 + 供应商池规则 + **13 条 API / provider 命令域**（`SwitchModel` / `UpdateApiConfig` / `TestApi`… ；provider 构建仍由宿主在配置变更时调用） |
-| `echo-agent.loop.single` | Loop | 进程内 | 单会话循环（默认）：启用时 echo-loop 驱动接管普通输入（启动期回填；生效口径见 [Agent 循环](../core/agent-loop.md)）；会话内 turn 串行排队、无会话管理 UI |
-| `echo-agent.loop.parallel` | Loop | 进程内 | 并行多会话循环：同一 `TurnRunner`（生效口径同 `loop.single`）；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
+| `echo-agent.loop.single` | Loop | 进程内 | **唯一循环插件**：mount 时构造唯一的 echo-loop `TurnRunner` 并 `provide` 成 `loop` 服务（卸载撤销；缺它 = 启动失败）。策略只有一条——同一会话的 turn 串行排队（每会话一条时间线，见 [Agent 循环](../core/agent-loop.md)§会话内准入）；`kind = loop` 属进程级，persona 白名单不参与。`echo-agent.loop.parallel` 已于 2026-11 删除，不再是插件 |
 | `echo-agent.subagent` | Tool | 进程内 | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./subagent.md)） |
 | `echo-agent.management.panel` | Management | 进程内 | 管理面：management WS 桥接（禁用即 Panel 自锁，TogglePlugin 拒绝禁用）+ Panel 身份鉴权（`readonly` 身份只放行 `PANEL_READONLY_COMMANDS`）。**不声明任何命令域**——会话视图 5 条自 S8 起归 `echo-agent.transcript` |
 | `echo-agent.federation` | Federation | 进程内 | Core↔Core 对等链路：远程工具路由表 / 跨机委派聚合 / 跨机只读查询 / 会话迁移 + 6 条联邦命令（`SaveFederationPeer` / `DeleteFederationPeer` / `RequestFederationStatus` / `RequestFederationDirectory` / `RequestFederationInvite` / `MigrateSession`） |
 | `echo-agent.selfupdate` | Orchestration | 进程内 | 自更新：触发 `echo-agent-core-update.service`（oneshot，脱离本进程构建→替换→重启）+ 读状态文件（`RequestSelfUpdate` / `RequestSelfUpdateStatus`；updater 单元名与状态文件布局是**部署形状**，归插件） |
 
-表的来源分两类，别混算：**框架内置 13 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 13]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
+表的来源分两类，别混算：**框架内置 12 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 12]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
 
 联邦（`echo-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
 
-> **框架侧实现位置**：解耦计划 Phase 3 已把绝大多数内置插件外迁为独立 crate——`echo-plugin-provider-llm`（provider 工厂 + 计量/脱敏装饰）/ `echo-plugin-skills`（技能注册表 + Git 安装）/ `echo-plugin-workspace`（工作区会话与工具）/ `echo-plugin-subagent` / `echo-plugin-loop`（两个纯策略模式）/ `echo-plugin-management`（Panel 连接面，**不含命令域**——会话视图 5 条随 S8 归 `echo-plugin-transcript`）/ `echo-plugin-self-update`（自更新命令域）/ `echo-plugin-tools`（内置工具集：计算/检索/清单/编码/实例管理/供应商池查询，**不含 Shell 会话**；Shell 自 S15 独立为 `echo-plugin-shell`）、`echo-plugin-session`（会话 trunk / 持久化 / 压缩编排）、`echo-plugin-transcript`（显示投影 + 会话视图命令域）；工具子系统的跨包机制（`ToolRegistry`）在 `echo-tool`，Shell 机制在 `echo-shell`。**仍内联在 echo-agent 的**只剩三个包：`packages/tools_builtin`（**只剩端口接线**——工具清单的所有权已在插件，`build_registry` 只做"给端口、拿工具箱"；供应商池随 S3 搬进 `echo-plugin-provider-llm`）、`packages/instance_ops`（入站 hook 桥 + 通用实例命令域）、`packages/federation`（远程代理工具与查询适配）。公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export 指向新 crate）。完整清单见上述 crate 的公开导出。
+> **框架侧实现位置**：解耦计划 Phase 3 已把绝大多数内置插件外迁为独立 crate——`echo-plugin-provider-llm`（provider 工厂 + 计量/脱敏装饰）/ `echo-plugin-skills`（技能注册表 + Git 安装）/ `echo-plugin-workspace`（工作区会话与工具）/ `echo-plugin-subagent` / `echo-plugin-loop`（唯一循环插件：提供 `loop` 服务 + 单会话串行策略）/ `echo-plugin-management`（Panel 连接面，**不含命令域**——会话视图 5 条随 S8 归 `echo-plugin-transcript`）/ `echo-plugin-self-update`（自更新命令域）/ `echo-plugin-tools`（内置工具集：计算/检索/清单/编码/实例管理/供应商池查询，**不含 Shell 会话**；Shell 自 S15 独立为 `echo-plugin-shell`）、`echo-plugin-session`（会话 trunk / 持久化 / 压缩编排）、`echo-plugin-transcript`（显示投影 + 会话视图命令域）；工具子系统的跨包机制（`ToolRegistry`）在 `echo-tool`，Shell 机制在 `echo-shell`。**仍内联在 echo-agent 的**只剩三个包：`packages/tools_builtin`（**只剩端口接线**——工具清单的所有权已在插件，`build_registry` 只做"给端口、拿工具箱"；供应商池随 S3 搬进 `echo-plugin-provider-llm`）、`packages/instance_ops`（入站 hook 桥 + 通用实例命令域）、`packages/federation`（远程代理工具与查询适配）。公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export 指向新 crate）。完整清单见上述 crate 的公开导出。
 >
 > QQ 工具（`send_*`/`get_*` 共 11 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由插件进程申报（插件仓库 `crates/echo-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。去适配器化时 `source/core/src/qq_tools.rs` 已删除——插件实例本就能声明工具，没有留给组合根的特例。
 
@@ -126,7 +125,7 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
 - 每个条目可带 `[plugin.limits]`（子进程资源限额：CPU / 地址空间 / 单文件 / fd / 进程数，缺省不限制）——见 [插件开发指南](./plugin-authoring.md)「资源限额」
 - 排查"最终这一行来自哪一层、值是什么"用 `echo-agent-core dump-config`（只合成不启动）
 
-> 以上 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单——`expected_ids` 由**框架 13 项 + 前缀 `echo-agent.instance.`** 组成（不是逐个列实例 id；清单真值在 `scripts/update.sh` 的 `expected_ids` 一行，与 `BUILTIN_PLUGIN_IDS` 由单测守护）；选单（present_menu）已废弃移除，任务清单（checklist）为普通内置工具。
+> 以上 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单——`expected_ids` 由**框架 12 项 + 前缀 `echo-agent.instance.`** 组成（不是逐个列实例 id；清单真值在 `scripts/update.sh` 的 `expected_ids` 一行，与 `BUILTIN_PLUGIN_IDS` 由单测守护）；选单（present_menu）已废弃移除，任务清单（checklist）为普通内置工具。
 
 ## 能力开关（per-persona）
 
@@ -135,19 +134,20 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
 - **前端「启用插件」勾选区的成员规则**：**完全由 Core 判定，Panel 不再维护任何插件清单**。Core 按 manifest 的 `kind` 算作用域（`echo_agent::plugins::scope::KIND_SCOPE`），随 `PluginInfo.gating` 下发：
   - `gating = "persona"`（`kind ∈ {tool, skill, instance}`）→ 显示。勾选写 `enabled_plugins` 白名单，取消即真的关掉该包的工具/技能/实例；
   - `gating = "process"` 且 `kind ∈ {management, interaction}` → **显示但置灰**（标签带「· 进程级」）。它们对每个人格始终生效、勾不动；藏起来会让用户以为这个能力不存在，所以显示成"已勾且不可改"并附一行说明。判据是**能力类别**（用户心智里"这个人格有没有管理/交互能力"），不是"能不能关"；
-  - `gating = "process"` 且其余 kind（`provider` / `loop` / `federation` / `orchestration` / `session`）→ 不显示（它们的开关在别处：API 设置 / 循环模式分段控件 / `plugins.toml`）；
+  - `gating = "process"` 且其余 kind（`provider` / `loop` / `federation` / `orchestration` / `session`）→ 不显示（它们的开关在别处：API 设置 / `plugins.toml`）；
   - 旧 Core 不带 `gating` 字段 → Panel 退回 kind 类判定（`instance` / `management` / `interaction` 可见），不让插件在 UI 里凭空消失。
 
   **为什么不再有清单**：此前 Core 的 `GATED_PLUGIN_IDS` 与 Panel 的 `PACKAGE_GATED_PLUGIN_IDS` 是同一件事的两份手写真相，跨仓库改一处忘另一处就出错。实测错过两轮——`shell` 从 `tools.builtin` 拆出后 Panel 没同步（**面板上没有 shell 开关**，用户无法通过 UI 给任何 persona 启用 `bash-*`）；`session`/`transcript` 进 Panel 清单而 Core 没有（两个**勾了不生效**的假开关）。现在判据只有一处：`kind`。
 
   **新增插件的开销**：`kind = tool/skill` 的插件**零门控改动**；只有引入**新 kind** 时才要在 `KIND_SCOPE` 登记，而未登记的 kind 会在装配期被 `every_catalog_kind_is_classified` 拦下并点名（fail-closed 到进程级，避免"用户勾了却用不了"）。
-- **循环模式推导**（互斥，默认与兜底都是单会话）：见 [Agent 循环](../core/agent-loop.md)§循环模式（单一来源 `TeamMember::loop_mode()`）
+- **循环没有模式可切**：`echo-agent.loop.single`（`kind = loop`）是**进程级**插件，persona 白名单不管它——`enabled_plugins` 里写 loop 类 id 不产生任何效果；同一会话的 turn 串行排队是唯一行为（见 [Agent 循环](../core/agent-loop.md)§会话内准入）
 - **包级聚合**：白名单里的插件 id 即包 id——一次勾选同时门控该插件的生命周期与同名包的工具、技能（QQ 包见「Package」节）
 - **其余插件当前生效范围**：
   - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具（skills.dir 为全部技能）对所有 persona 批量禁用（对 LLM 不可见），启用按各 persona 名单恢复——**仅作用于目标 persona 时用 Agent 配置弹层的勾选**（运行期双向、即时生效）
   - `instance.qq`：禁用 = 停止 QQ 插件实例进程 + QQ 工具包禁用；启用 = 启动 + 按名单恢复
   - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_plugins` 移除该 id 后重启 Core）。**防自锁保护**：经 `TogglePlugin` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
-  - `loop.single` / `loop.parallel`：**纯策略插件**——只表达循环模式（单会话串行 / 并行多会话，由白名单推导 `LoopMode`），mount 无运行期资源。驱动本体（echo-loop `TurnRunner`）是唯一循环实现，组合根在人格启动与运行期新建时无条件注入，不随插件启停切换（单轨化后内置循环已删除）。详见 [Agent 循环](../core/agent-loop.md)「注入与分派」
+  - `loop.single`：**唯一循环插件**（`kind = loop`，进程级）——mount 时构造唯一的 echo-loop `TurnRunner` 并 `provide` 成 `loop` 服务，卸载撤销该服务；`loop` 服务缺失 = 启动失败。策略只有一条：同一会话的 turn 串行排队（每会话一条时间线），没有模式可切，persona 白名单不参与。详见 [Agent 循环](../core/agent-loop.md)「会话内准入」
+  - `provider.llm`：**命令域随插件启停**（13 条 API / provider 命令禁用后回落到宿主兜底并明确报错），但 provider 的**构造**仍由宿主在配置变更时完成——运行中替换 provider 涉及在途 turn，不因插件挂载而改变
   - `provider.llm`：**命令域随插件启停**（13 条 API / provider 命令禁用后回落到宿主兜底并明确报错），但 provider 的**构造**仍由宿主在配置变更时完成——运行中替换 provider 涉及在途 turn，不因插件挂载而改变
   - `selfupdate`：进程级、`kind = orchestration`（按人格启停是假开关——挂载是进程级的，命令分发不看人格白名单）
 - **优先级**：全局禁用（`TogglePlugin` 卸载 / `[agent].disabled_tools|skills`）> persona 名单；全局重新启用不会越过 persona 名单，hook 后由 `Agent::reapply_*` 重算
