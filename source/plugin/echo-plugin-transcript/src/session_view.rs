@@ -1,5 +1,7 @@
 //! 会话视图命令域：面板的 5 条"把会话讲给你看"的命令由本插件处理。
 //!
+//! 2026-11 S8 自 `echo-plugin-management` 外置（理由见 `timeline` 的模块注释）。
+//!
 //! ## 为什么这个域归本 crate
 //!
 //! 本 crate 已经拥有**显示时间线的投影策略**（[`super::timeline`]：哪些事件
@@ -32,7 +34,7 @@ use std::sync::Arc;
 
 use echo_protocol::{BackendCommand, BackendEvent, TimelineMessage};
 
-use crate::timeline::elide_reasoning_for_wire;
+use echo_protocol::timeline_text::elide_reasoning_for_wire;
 
 /// 本插件处理的命令名（都属"会话视图投影"，写操作不在此列）。
 pub const COMMANDS: [&str; 5] = [

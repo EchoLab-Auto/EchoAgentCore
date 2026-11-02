@@ -15,7 +15,7 @@ use echo_context::ServiceKey;
 use echo_federation::Federation;
 use echo_protocol::BackendBridge;
 
-use crate::session_view::SessionViewHost;
+
 
 /// 管理面需要宿主提供的一切。
 pub trait ManagementHost: Send + Sync {
@@ -42,6 +42,5 @@ pub trait ManagementHost: Send + Sync {
 pub static MANAGEMENT_HOST: ServiceKey<Arc<dyn ManagementHost>> =
     ServiceKey::new("echo-agent.host.management");
 
-/// 会话视图命令域的宿主接缝（面板快照 / 上下文 / 时间线 / 派生历史）。
-pub static SESSION_VIEW_HOST: ServiceKey<Arc<dyn SessionViewHost>> =
-    ServiceKey::new("echo-agent.host.session_view");
+// 会话视图宿主接缝已随显示层外置到 `echo-plugin-transcript`
+//（`echo_plugin_transcript::SESSION_VIEW_HOST_KEY`，同名线键）。

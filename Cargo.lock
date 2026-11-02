@@ -368,6 +368,7 @@ dependencies = [
  "echo-plugin-skills",
  "echo-plugin-subagent",
  "echo-plugin-tools",
+ "echo-plugin-transcript",
  "echo-plugin-workspace",
  "echo-protocol",
  "echo-sanitize",
@@ -421,6 +422,7 @@ dependencies = [
  "echo-plugin-skills",
  "echo-plugin-subagent",
  "echo-plugin-tools",
+ "echo-plugin-transcript",
  "echo-plugin-workspace",
  "echo-protocol",
  "echo-sanitize",
@@ -819,6 +821,21 @@ dependencies = [
  "tracing",
  "uuid",
  "walkdir",
+]
+
+[[package]]
+name = "echo-plugin-transcript"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "echo-context",
+ "echo-defs",
+ "echo-plugin",
+ "echo-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

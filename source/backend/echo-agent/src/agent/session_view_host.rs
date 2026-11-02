@@ -1,7 +1,7 @@
 //! 会话视图命令域的**宿主能力实现**（全插件化 S5）。
 //!
 //! 与 `provider_host` / `skills_host` / `tools_host` 同构：**"发什么、按什么
-//! 顺序、怎么瘦身"在插件**（`echo_plugin_management::session_view`），宿主只
+//! 顺序、怎么瘦身"在插件**（`echo_plugin_transcript::session_view`），宿主只
 //! 提供"只有它读得到"的那些数据：
 //!
 //! | 宿主提供 | 唯一性来源 |
@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use echo_plugin_management::session_view::{
+use echo_plugin_transcript::session_view::{
     EarlierView, HistoryView, SessionViewHost, TimelineView,
 };
 use echo_protocol::BackendEvent;

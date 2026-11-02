@@ -96,7 +96,7 @@ pub use echo_plugin_federation::PLUGIN_ID as FEDERATION_PLUGIN_ID;
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_PLUGIN_IDS: [&str; 11] = [
+pub const BUILTIN_PLUGIN_IDS: [&str; 13] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SHELL_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
@@ -104,6 +104,10 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 11] = [
     SUBAGENT_PLUGIN_ID,
     FEDERATION_PLUGIN_ID,
     MANAGEMENT_PANEL_PLUGIN_ID,
+    // 会话子系统（2026-11 S6 外置）与显示层（S8 外置）。
+    // 会话插件的命令域（清理/归档/压缩）在 persona 白名单之外时应被关掉。
+    echo_plugin_session::PLUGIN_ID,
+    echo_plugin_transcript::PLUGIN_ID,
     SINGLE_LOOP_PLUGIN_ID,
     PARALLEL_LOOP_PLUGIN_ID,
     PROVIDER_LLM_PLUGIN_ID,

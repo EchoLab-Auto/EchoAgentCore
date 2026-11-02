@@ -29,8 +29,6 @@
 //! 时的对端连接接收）与 tokio/tungstenite——不依赖 `echo-agent`。
 
 pub mod host_keys;
-pub mod session_view;
-pub mod timeline;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -1832,26 +1830,14 @@ mod tests {
     }
 }
 
-/// 构造插件：管理面监听 + 会话视图命令域。
-///
-/// **零参数**（全插件化 S6）：监听地址缺省值 / 令牌 / Panel 桥 / 合并模式的
-/// 联邦句柄经 [`host_keys::MANAGEMENT_HOST`] 解析，会话视图的数据面经
-/// [`host_keys::SESSION_VIEW_HOST`] 解析。
-///
-/// 唯一仍走 `MountContext::config` 的是**地址覆盖**——`plugins.toml` 的
-/// `[plugin.config] address`。它刻意不经过 trait：配置是"这一份部署怎么调"，
-/// 而 trait 表达"宿主能提供什么"。令牌**不接受**插件配置覆盖（插件配置会进
-/// 插件清单接口与日志排查面，凭证放那里等于主动泄漏）。
-///
-/// **自锁语义**：禁用本插件 = 关闭 Panel 通道本身，恢复需编辑 `core.toml` 的
-/// `disabled_plugins` 后重启（`TogglePlugin` 对它有专门拒绝）。
+// 构造入口见文件前部的 `plugin()`（管理面监听 + 会话视图命令域外置后的
+// 瘦身版）。此处保留历史注释位置以便追溯。
 pub fn plugin(version: &str) -> std::sync::Arc<dyn echo_plugin::Plugin> {
     use echo_plugin::{BuiltinPlugin, Inject, PluginManifest, ServiceSlot};
 
     let management = ServiceSlot::<std::sync::Arc<dyn host_keys::ManagementHost>>::new();
-    let view = ServiceSlot::<std::sync::Arc<dyn session_view::SessionViewHost>>::new();
-    let (bind_mgmt, bind_view) = (management.clone(), view.clone());
-    let (serve_view, bind_serve_mgmt) = (view.clone(), management.clone());
+    let bind_mgmt = management.clone();
+    let bind_serve_mgmt = management.clone();
 
     let manifest = PluginManifest::builtin(
         PLUGIN_ID,
@@ -1859,12 +1845,11 @@ pub fn plugin(version: &str) -> std::sync::Arc<dyn echo_plugin::Plugin> {
         version,
         "management",
         "panel",
-        "Panel management WS 桥接（合并模式下同时承接联邦入站）+ 会话视图命令域",
+        "Panel management WS 桥接（合并模式下同时承接联邦入站）",
     );
     std::sync::Arc::new(
         BuiltinPlugin::new(manifest, move |mctx| {
             let keep_mgmt = bind_mgmt.bind(mctx, &host_keys::MANAGEMENT_HOST)?;
-            let keep_view = bind_view.bind(mctx, &host_keys::SESSION_VIEW_HOST)?;
             let host = bind_serve_mgmt
                 .get()
                 .ok_or_else(|| echo_plugin::PluginMountError::Mount("management host 未绑定".into()))?;
@@ -1898,8 +1883,6 @@ pub fn plugin(version: &str) -> std::sync::Arc<dyn echo_plugin::Plugin> {
                     None => serve_with_token_observing(&addr, bridge, token, observer).await,
                 };
                 if let Err(error) = result {
-                    // 管理面监听退出 = Panel 通道失效（合并模式下联邦入站一并
-                    // 失效）；升级为 error 并给出排查线索。
                     tracing::error!(
                         error = %error,
                         "management WS server stopped — Panel channel{} down; \
@@ -1911,32 +1894,12 @@ pub fn plugin(version: &str) -> std::sync::Arc<dyn echo_plugin::Plugin> {
             let abort = server.abort_handle();
             Ok(vec![
                 keep_mgmt,
-                keep_view,
                 echo_context::Disposer::from_fn(move || abort.abort()),
             ])
         })
-        .with_inject(Inject::new([
-            host_keys::MANAGEMENT_HOST.name().to_string(),
-            host_keys::SESSION_VIEW_HOST.name().to_string(),
-        ]))
-        .with_commands(session_view::COMMANDS)
-        .with_command_handler_async(move |name, payload| {
-            let serve_view = serve_view.clone();
-            Box::pin(async move {
-                let Some(view) = serve_view.get() else {
-                    return Err(format!(
-                        "命令 {name} 到 {PLUGIN_ID} 时插件尚未挂载（会话视图接缝未绑定）"
-                    ));
-                };
-                session_view::SessionViewHandler::new(view)
-                    .handle(&name, payload)
-                    .await
-                    .unwrap_or_else(|| {
-                        Err(format!(
-                            "命令 {name} 被 {PLUGIN_ID} 声明，但 session-view 处理器没有认领它"
-                        ))
-                    })
-            })
-        }),
+        .with_inject(Inject::new([host_keys::MANAGEMENT_HOST.name().to_string()])),
     )
 }
+
+
+

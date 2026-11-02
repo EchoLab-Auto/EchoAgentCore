@@ -152,6 +152,12 @@ pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
     // ── subagent 委派（纯身份：工具与 hook 在 echo-agent 侧实现）──
     push_builtin_identity(&mut catalog, version, echo_agent::plugins::SUBAGENT_PLUGIN_ID)?;
 
+    // ── 显示层（时间线投影 + 会话视图命令域）──
+    //
+    // 2026-11 S8 自 management 外置：连接面与显示面分轴。会话视图宿主接缝
+    // 的线键不变（`echo-agent.host.session_view`），只是注册方换到了这里。
+    push_plugin(&mut catalog, echo_plugin_transcript::plugin(version))?;
+
     // ── 管理面（Panel 通道 + 会话视图命令域）──
     push_plugin(&mut catalog, echo_plugin_management::plugin(version))?;
 

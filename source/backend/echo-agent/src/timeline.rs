@@ -1,4 +1,4 @@
-//! 显示时间线的**宿主端口**与兼容路径（策略在 [`echo_plugin_management::timeline`]）。
+//! 显示时间线的**宿主端口**与兼容路径（策略在 [`echo_plugin_transcript::timeline`]）。
 //!
 //! ## 搬家后的分工
 //!
@@ -16,12 +16,12 @@
 //! 本模块保留 `crate::timeline::…` 这条路径（`session::history` 的派生显示
 //! 历史与 `commands.rs` 的 wire 瘦身都在用），内容全部是 re-export。
 
-use echo_plugin_management::timeline::{TimelineHost, ToolCompletion};
+use echo_plugin_transcript::timeline::{TimelineHost, ToolCompletion};
 use echo_protocol::TimelineMessage;
 
 use crate::session::TrunkStore;
 
-pub use echo_plugin_management::timeline::{
+pub use echo_plugin_transcript::timeline::{
     elide_reasoning_for_wire, summarize_timeline_value, timeline_timer_task, truncate_one_line,
     TimelineProjector, WIRE_REASONING_HEAD_CHARS, WIRE_REASONING_KEEP_FULL,
 };

@@ -251,7 +251,7 @@ async fn apply_via_session_view(agent: &Arc<Agent>, cmd: BackendCommand) {
     let host = Arc::new(crate::agent::session_view_host::AgentSessionViewHost::new(
         Arc::clone(agent),
     ));
-    let handler = echo_plugin_management::session_view::SessionViewHandler::new(host);
+    let handler = echo_plugin_transcript::session_view::SessionViewHandler::new(host);
     handler
         .handle(cmd.kind_name(), cmd.payload_value())
         .await

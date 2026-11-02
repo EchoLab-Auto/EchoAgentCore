@@ -296,14 +296,14 @@ impl Agent {
         // the projector as an observe listener so `emit` fans out to it. The
         // returned disposer must be held for the agent's lifetime, or the
         // subscription unwinds immediately.
-        // **投影策略在插件里**（`echo_plugin_management::timeline`）：哪些
+        // **投影策略在插件里**（`echo_plugin_transcript::timeline`）：哪些
         // 事件进面板、字段怎么映射、工具完成态怎么合并。宿主只提供端口
         // （`TrunkTimelineHost`：push / next_seq / complete_running_tool）。
         let timeline_host: std::sync::Arc<crate::timeline::TrunkTimelineHost> =
             std::sync::Arc::new(crate::timeline::TrunkTimelineHost::new(trunk.clone()));
         let timeline_projector: std::sync::Arc<
-            echo_plugin_management::timeline::TimelineProjector<crate::timeline::TrunkTimelineHost>,
-        > = std::sync::Arc::new(echo_plugin_management::timeline::TimelineProjector::new(
+            echo_plugin_transcript::timeline::TimelineProjector<crate::timeline::TrunkTimelineHost>,
+        > = std::sync::Arc::new(echo_plugin_transcript::timeline::TimelineProjector::new(
             timeline_host,
         ));
         let _timeline_projection = timeline_projector.subscribe(&event_bus);

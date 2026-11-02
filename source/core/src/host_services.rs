@@ -38,7 +38,8 @@ use std::sync::Arc;
 use echo_context::{Ctx, Disposer};
 use echo_defs::plugin_instance::PluginInstance;
 use echo_federation::Federation;
-use echo_plugin_management::host_keys::{ManagementHost, MANAGEMENT_HOST, SESSION_VIEW_HOST};
+use echo_plugin_management::host_keys::{ManagementHost, MANAGEMENT_HOST};
+use echo_plugin_transcript::SESSION_VIEW_HOST_KEY;
 use echo_protocol::BackendBridge;
 use echo_plugin_provider_llm::host_keys::PROVIDER_HOST;
 use echo_plugin_self_update::host_keys::EVENTS as SELF_UPDATE_EVENTS;
@@ -198,9 +199,9 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
     put(
         &mut keep,
         ctx,
-        &SESSION_VIEW_HOST,
+        &SESSION_VIEW_HOST_KEY,
         Arc::new(AgentSessionViewHost::new(wiring.agent.clone()))
-            as Arc<dyn echo_plugin_management::session_view::SessionViewHost>,
+            as Arc<dyn echo_plugin_transcript::session_view::SessionViewHost>,
     );
 
     // ── 会话写命令域（清理 / 归档 / 压缩）──
@@ -348,7 +349,7 @@ pub(crate) fn provided_keys() -> Vec<String> {
         PORTS.name().to_string(),
         FEDERATION_EVENTS.name().to_string(),
         MANAGEMENT_HOST.name().to_string(),
-        SESSION_VIEW_HOST.name().to_string(),
+        echo_plugin_transcript::SESSION_VIEW_HOST_KEY.name().to_string(),
         // 会话写命令域（清理 / 归档 / 压缩）：2026-11 S6 从宿主迁进会话插件。
         echo_plugin_session::SESSION_COMMAND_HOST_KEY.name().to_string(),
         PROVIDER_HOST.name().to_string(),

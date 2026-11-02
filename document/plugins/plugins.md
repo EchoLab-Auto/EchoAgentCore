@@ -82,6 +82,8 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | `echo-agent.instance.qq` | Instance | **进程外**（`subprocess`） | QQ 插件实例（OneBot v11 反向 WS，实现为独立进程 `echo-adapter-qq`，Core 侧只是门控壳；含 QQ 管理工具；门控机制见 [QQ 实例门控](./qq-gating.md)） |
 | `echo-agent.skills.dir` | Skill | 进程内 | SKILL.md 技能目录（热重载） |
 | `echo-agent.workspace` | Tool | 进程内 | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](../core/agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
+| `echo-agent.session` | Session | 进程内 | 会话子系统（2026-11 S6 外置）：事件溯源 trunk、持久化、归档轮转、压缩编排、按需派生显示历史 + 三条写命令（`ClearHistory` / `ArchiveHistory` / `CompactHistory`） |
+| `echo-agent.transcript` | Interaction | 进程内 | 显示层（2026-11 S8 外置）：时间线实时投影 + 会话视图命令域（5 条 `Request*`：快照 / 上下文 / 翻页 / 历史） |
 | `echo-agent.provider.llm` | Provider | 进程内 | LLM 提供方工厂 + 供应商池规则 + **13 条 API / provider 命令域**（`SwitchModel` / `UpdateApiConfig` / `TestApi`… ；provider 构建仍由宿主在配置变更时调用） |
 | `echo-agent.loop.single` | Loop | 进程内 | 单会话循环（默认）：启用时 echo-loop 驱动接管普通输入（启动期回填；生效口径见 [Agent 循环](../core/agent-loop.md)）；会话内 turn 串行排队、无会话管理 UI |
 | `echo-agent.loop.parallel` | Loop | 进程内 | 并行多会话循环：同一 `TurnRunner`（生效口径同 `loop.single`）；会话内可并发分支、显示会话管理 UI（与 single 互斥） |
@@ -129,7 +131,7 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
 
 - 每个插件 id 均可放入 agent 的 `enabled_plugins`（白名单；空表 = 全部启用）
 - **插件黑名单 `disabled_plugins` 已移除**：与白名单语义重复（前端首次取消勾选即物化全量白名单），既有配置在加载期物化进白名单（见 [配置持久化](../core/config-persistence.md)）；运行期 `SaveTeam` 只写白名单
-- **前端「启用插件」勾选区的成员规则**（两处 UI：智能体配置弹层 ⚙ 配置、设置视图智能体编辑器；判定单一来源 = Panel `capabilities.ts::isPluginCheckboxVisible`）：`kind ∈ {instance, management, interaction}` **∪** 下列包维度门控插件固定清单（`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本表 `GATED_PLUGIN_IDS` 的 4 项逐项镜像）：`tools.builtin` / `skills.dir` / `workspace` / `subagent`。**插件实例不在清单内**——两侧都按 `kind == "instance"` 运行期推导（Core `Agent::gated_plugin_ids()` 遍历插件注册表；Panel 同判定的 `isPluginCheckboxVisible`），因此新增平台插件无需改任何清单。其余插件（`loop.*` 由循环模式分段控件管理、`provider.llm` / `selfupdate` 为**进程级**能力）**不出现**在该勾选区。保存后写回 TOML
+- **前端「启用插件」勾选区的成员规则**（两处 UI：智能体配置弹层 ⚙ 配置、设置视图智能体编辑器；判定单一来源 = Panel `capabilities.ts::isPluginCheckboxVisible`）：`kind ∈ {instance, management, interaction}` **∪** 下列包维度门控插件固定清单（`capabilities.ts::PACKAGE_GATED_PLUGIN_IDS`，与本表 `GATED_PLUGIN_IDS` 的 6 项逐项镜像）：`tools.builtin` / `skills.dir` / `workspace` / `subagent` / `session` / `transcript`。**插件实例不在清单内**——两侧都按 `kind == "instance"` 运行期推导（Core `Agent::gated_plugin_ids()` 遍历插件注册表；Panel 同判定的 `isPluginCheckboxVisible`），因此新增平台插件无需改任何清单。其余插件（`loop.*` 由循环模式分段控件管理、`provider.llm` / `selfupdate` 为**进程级**能力）**不出现**在该勾选区。保存后写回 TOML
 - **循环模式推导**（互斥，默认与兜底都是单会话）：见 [Agent 循环](../core/agent-loop.md)§循环模式（单一来源 `TeamMember::loop_mode()`）
 - **包级聚合**：白名单里的插件 id 即包 id——一次勾选同时门控该插件的生命周期与同名包的工具、技能（QQ 包见「Package」节）
 - **其余插件当前生效范围**：
