@@ -75,7 +75,7 @@ impl PluginScope {
 /// | `skill` | Persona | 同上（技能注入系统提示词） |
 /// | `instance` | Persona | 平台实例决定"这个人格收不收 QQ 消息"，是人格级能力 |
 /// | `provider` | Process | LLM 供应商是进程级配置；人格级选择走 `persona_api` 字段，不走白名单 |
-/// | `loop` | Process | 循环模式由 `loop_mode()` 从互斥名单推导，不是"关掉某个插件" |
+/// | `loop` | Process | 循环驱动是进程级单例，不是"关掉某个插件" |
 /// | `management` | Process | Panel 连接面——关掉即自锁，不该出现在人格勾选区 |
 /// | `federation` | Process | Core↔Core 链路是部署形状，不是人格能力 |
 /// | `orchestration` | Process | 自更新等运维能力，进程级 |
@@ -153,7 +153,6 @@ mod tests {
             desc("echo-agent.instance.qq", "instance"),
             desc("echo-agent.provider.llm", "provider"),
             desc("echo-agent.loop.single", "loop"),
-            desc("echo-agent.loop.parallel", "loop"),
             desc("echo-agent.management.panel", "management"),
             desc("echo-agent.federation", "federation"),
             desc("echo-agent.selfupdate", "orchestration"),
@@ -187,7 +186,6 @@ mod tests {
         for id in [
             "echo-agent.provider.llm",
             "echo-agent.loop.single",
-            "echo-agent.loop.parallel",
             "echo-agent.management.panel",
             "echo-agent.federation",
             "echo-agent.selfupdate",

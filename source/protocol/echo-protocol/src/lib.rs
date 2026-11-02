@@ -7,7 +7,7 @@
 //! - [`event::BackendEvent`] — events the Core emits to frontends, plus the
 //!   snapshot types they carry ([`SessionInfo`], [`TimelineMessage`], ...).
 //! - [`mode`] — shared enums ([`ThinkingMode`],
-//!   [`ReasoningEffort`], [`LoopMode`]) referenced by both sides of the protocol.
+//!   [`ReasoningEffort`]) referenced by both sides of the protocol.
 //! - [`bridge`] — the in-process mpsc bridge pair and the WebSocket wire
 //!   format ([`WsMessage`], [`serialize_command`], [`serialize_event`],
 //!   [`deserialize_message`]).
@@ -48,4 +48,4 @@ pub use event::{
     WorkspaceConversationInfo, WorkspaceDirectory, WorkspaceFileEntry, WorkspaceGitInfo,
     WorkspaceSessionInfo,
 };
-pub use mode::{LoopMode, ReasoningEffort, ThinkingMode};
+pub use mode::{ReasoningEffort, ThinkingMode};

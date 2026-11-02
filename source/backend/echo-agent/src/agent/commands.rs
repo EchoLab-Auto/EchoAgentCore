@@ -688,6 +688,24 @@ impl Agent {
         self.emit(BackendEvent::TeamsList { teams });
     }
 
+    /// 插件**提供**的服务键（依赖树的"我贡献什么"半边）。
+    ///
+    /// 这些键就是各插件 crate 里声明的服务常量（`echo-plugin-session` 的
+    /// `SESSION_FACTORY_SERVICE`、`echo-plugin-loop` 的 `SERVICE_KEY` 等），
+    /// Core 与插件之间的契约。大多数插件不提供任何服务（只消费宿主接缝），
+    /// 返回空。
+    fn provides_services_for(id: &str) -> Vec<String> {
+        let keys: &[&str] = match id {
+            "echo-agent.session" => &["echo-agent.session.factory"],
+            "echo-agent.loop.single" | "echo-agent.loop.parallel" => &["loop"],
+            "echo-agent.shell" => &["shell"],
+            "echo-agent.tools.builtin" => &["tools.builtin"],
+            "echo-agent.provider.llm" => &["llm"],
+            _ => &[],
+        };
+        keys.iter().map(|k| k.to_string()).collect()
+    }
+
     /// Emit the full plugin list (`BackendEvent::PluginsList`).
     pub async fn emit_plugins_list(&self) {
         let plugins: Vec<crate::event::PluginInfo> = self
@@ -695,6 +713,8 @@ impl Agent {
             .descriptors()
             .into_iter()
             .map(|d| {
+                // id 在 move 进 PluginInfo 之前取一份，用于查 provides 映射。
+                let id = d.id.clone();
                 // 作用域由 kind 派生（Core 是唯一计算方，Panel 只显示）。
                 // 在 move 掉 `d.kind` 之前算好。
                 let gating = crate::plugins::scope_of_kind(&d.kind).as_str().to_string();
@@ -721,6 +741,7 @@ impl Agent {
                     args: d.args,
                     env_keys: d.env_keys,
                     required_services: d.required_services,
+                    provides_services: Self::provides_services_for(&id),
                     optional_services: d.optional_services,
                     pending_services: d.pending_services,
                     subscribed_events: d.subscribed_events,

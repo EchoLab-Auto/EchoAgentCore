@@ -3,7 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::mode::LoopMode;
 
 /// 状态快照 → 线上事件的构造器。
 ///
@@ -97,24 +96,6 @@ pub struct ShellSessionInfo {
     /// 最近一次执行结果（截断到 4096 字符，供列表预览）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_output: Option<String>,
-}
-
-/// 运行中的回复分支（`ActiveTurnsSnapshot.branches` 的元素）。
-///
-/// 字段是 `ReplyBranchStarted` 的子集：前端拿到它就能按与实时事件**同一套**
-/// reducer 重建分支卡/任务卡，不必再维护第二条代码路径。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActiveBranchInfo {
-    pub session_id: String,
-    pub branch_id: String,
-    pub message_sequence: u64,
-    /// 任务文本（Core 侧已截断到 200 字符：任务卡只显示一行摘要）。
-    #[serde(default)]
-    pub task: String,
-    /// 目标标签（普通入站分支为「源会话」）。
-    #[serde(default)]
-    pub target: String,
-    pub started_at_ms: i64,
 }
 
 /// Snapshot of a conversation session, for the TUI session list.
@@ -421,31 +402,6 @@ pub enum BackendEvent {
         session_id: String,
         success: bool,
     },
-    /// A QQ message was routed through an isolated temporary reply branch.
-    ReplyBranchStarted {
-        session_id: String,
-        branch_id: String,
-        message_sequence: u64,
-        task: String,
-        target: String,
-        started_at_ms: i64,
-    },
-    /// Content generated for a temporary QQ wait reply. It stays in the
-    /// branch inspector and is never appended to the main chat transcript.
-    ReplyBranchContent {
-        session_id: String,
-        branch_id: String,
-        content: String,
-    },
-    /// A temporary reply branch finished or was cancelled.
-    ReplyBranchCompleted {
-        session_id: String,
-        branch_id: String,
-        message_sequence: u64,
-        success: bool,
-        cancelled: bool,
-        completed_at_ms: i64,
-    },
     /// Agent invoked a tool.
     ToolCall {
         session_id: String,
@@ -554,17 +510,6 @@ pub enum BackendEvent {
         session_ids: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         team_id: Option<String>,
-        /// 正在运行的回复分支（带任务文本与起始时刻）。
-        ///
-        /// 必要性：`ReplyBranchStarted` 是**只在分支开始那一刻发一次**的推送
-        /// 事件，Panel 重连/刷新后拿不到它，而协议里没有"查运行分支"的命令
-        /// ——分支卡与任务卡于是永远是空的，只能等下一个分支开始才恢复。
-        /// 快照带上这几项后，前端可在重连时就地重建。
-        ///
-        /// 向后兼容：旧前端忽略该字段；旧 Core 不发时前端按空数组处理
-        /// （只影响重连恢复，不影响实时事件）。
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        branches: Vec<ActiveBranchInfo>,
     },
 
     // ── 联邦管理（federation Phase 4）──
@@ -1119,14 +1064,6 @@ pub struct TeamInfo {
     /// Number of active sessions owned by this agent.
     #[serde(default)]
     pub sessions: usize,
-    /// 该 agent 的循环模式（互斥循环插件推导：`echo-agent.loop.{single,parallel}`）。
-    /// single（默认）：侧边栏不显示「会话」「临时分支」卡片与「全局」分组，
-    /// 后端不发射 ReplyBranch* 可见性事件，同一会话的 turn 串行排队；
-    /// parallel：全部可见、同一会话可并发分支。取代旧
-    /// reply_branches_enabled / global_session_enabled / chat_sessions_enabled
-    /// 三布尔（2026-09 协议变更）。
-    #[serde(default)]
-    pub loop_mode: LoopMode,
     /// Persona system prompt (empty = inherits global prompt/skills).
     #[serde(default)]
     pub system_prompt: String,
@@ -1248,6 +1185,18 @@ pub struct PluginInfo {
     /// 与 `error` 一起回答「为什么不挂载」：Core 挂载前逐个校验，缺失即拒绝。
     #[serde(default)]
     pub required_services: Vec<String>,
+    /// 本插件**提供**的服务键（`Ctx::provide` 注册进服务表的键；空 = 不提供服务）。
+    ///
+    /// 依赖树的另一半：`required_services` 是"我需要谁"，`provides_services`
+    /// 是"我贡献了什么"。两者合起来，Panel 才能画出**插件 → 服务 → 插件**的
+    /// 有向图（否则只能画出"所有插件都依赖宿主服务表"这棵两层星型，没有树形
+    /// 依赖关系可言）。
+    ///
+    /// 大多数插件不提供任何服务（它们只消费宿主接缝），所以字段常为空；
+    /// 提供服务的插件（如 `echo-plugin-session` 的 `echo-agent.session.factory`、
+    /// `echo-plugin-loop` 的 `loop`）是依赖树的**中间节点**。
+    #[serde(default)]
+    pub provides_services: Vec<String>,
     /// 软依赖（`Inject::optional`；缺失不阻止挂载）。
     #[serde(default)]
     pub optional_services: Vec<String>,
@@ -1660,9 +1609,6 @@ impl BackendEvent {
             Self::AgentReasoning { .. } => "AgentReasoning",
             Self::SubagentStarted { .. } => "SubagentStarted",
             Self::SubagentCompleted { .. } => "SubagentCompleted",
-            Self::ReplyBranchStarted { .. } => "ReplyBranchStarted",
-            Self::ReplyBranchContent { .. } => "ReplyBranchContent",
-            Self::ReplyBranchCompleted { .. } => "ReplyBranchCompleted",
             Self::ToolCall { .. } => "ToolCall",
             Self::ToolResult { .. } => "ToolResult",
             Self::AgentContentDelta { .. } => "AgentContentDelta",

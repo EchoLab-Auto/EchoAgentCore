@@ -66,58 +66,27 @@ pub(crate) use echo_defs::llm::TURN_CANCELLED;
 const SHUTDOWN_DRAIN_SECS: u64 = 120;
 const MAX_CONCURRENT_REPLY_BRANCHES: usize = 8;
 
-/// 循环模式互斥插件 id（见 plugins.rs）：`loop.single`（单会话，默认）与
-/// `loop.parallel`（并行多会话）。两者 mount 同一 TurnRunner，模式经
-/// `TeamMember::loop_mode` 推导。
-pub use crate::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
+/// 循环插件 id（见 plugins.rs）。只有一个模式：每会话一条时间线。
+///
+/// 这里保留再导出是因为 `enabled_plugins` 白名单里会出现它（历史配置与
+/// 人格能力清单都按插件 id 表达），别名让调用点不必知道它来自哪个 crate。
+pub use crate::plugins::SINGLE_LOOP_PLUGIN_ID;
 
+/// 一个正在执行的入站 turn。
+///
+/// 只留三项：会话身份（活动浮条按会话聚合）、请求序号（取消时"取最新"）、
+/// 取消令牌。并行模式删掉后，不再需要分支身份与任务摘要——一条会话永远只有
+/// 一个 turn 在跑，浮条显示的也就是那一条。
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveInboundTurn {
     session_id: String,
     message_sequence: u64,
-    branch: bool,
     cancel: tokio_util::sync::CancellationToken,
-    /// 分支任务文本（发给模型的原始内容，超长时截断）。
-    ///
-    /// 存下来的唯一目的是**快照可重建**：`ReplyBranchStarted` 是只在分支
-    /// 开始时发一次的推送事件，Panel 重连/刷新后拿不到它，分支卡与任务卡
-    /// 就永远是空的（协议里也没有"查运行分支"的命令）。快照带上这几项后，
-    /// 前端可以就地重建，不必再要求用户刷新碰运气。
-    task: String,
-    /// 分支目标标签（`源会话` / 实例名等，与 `ReplyBranchStarted.target` 同源）。
-    target: String,
-    started_at_ms: i64,
-}
-
-/// 运行中分支的快照条目（线上形状 = `ReplyBranchStarted` 的子集）。
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ActiveBranchSnapshot {
-    pub session_id: String,
-    pub branch_id: String,
-    pub message_sequence: u64,
-    pub task: String,
-    pub target: String,
-    pub started_at_ms: i64,
 }
 
 pub(crate) struct InboundTurnRegistration {
     pub id: String,
     pub cancel: tokio_util::sync::CancellationToken,
-    /// 分支起始时刻（毫秒）：`ReplyBranchStarted` 与重连快照共用同一份，
-    /// 否则重建出来的分支卡在排序/耗时上会与实时那张差几毫秒。
-    pub started_at_ms: i64,
-}
-
-impl Default for InboundTurnRegistration {
-    /// 并行模式先取闸门再注册：占位值不进入注册表（`id` 为空时
-    /// `finish_inbound_turn` 是 no-op，取消令牌不会被使用）。
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            cancel: tokio_util::sync::CancellationToken::new(),
-            started_at_ms: 0,
-        }
-    }
 }
 
 /// The agent：per-persona 的**作用域**（对应 Cordis 的 `ctx.fork()`），不是插件。
@@ -578,44 +547,6 @@ impl Agent {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
-    }
-
-    /// 该 agent 的循环模式（互斥循环插件推导，见
-    /// [`crate::plugins::SINGLE_LOOP_PLUGIN_ID`] /
-    /// [`crate::plugins::PARALLEL_LOOP_PLUGIN_ID`]）。
-    /// 未配置 capabilities 时默认 `Single`（单会话，见
-    /// [`echo_defs::LoopMode`]）。
-    pub fn loop_mode(&self) -> echo_defs::LoopMode {
-        let guard = self
-            .identity.capabilities
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match guard.as_ref() {
-            None => echo_defs::LoopMode::Single,
-            Some(cap) => cap.loop_mode(),
-        }
-    }
-
-    /// 测试专用：直接设置循环模式（绕过 capabilities 白名单推导）。
-    #[cfg(test)]
-    pub(crate) async fn set_loop_mode_for_test(&self, mode: echo_defs::LoopMode) {
-        use crate::config::TeamMember;
-        let plugin = match mode {
-            echo_defs::LoopMode::Single => crate::plugins::SINGLE_LOOP_PLUGIN_ID,
-            echo_defs::LoopMode::Parallel => crate::plugins::PARALLEL_LOOP_PLUGIN_ID,
-        };
-        self.apply_capabilities(&TeamMember {
-            enabled_plugins: vec![plugin.into()],
-            ..Default::default()
-        })
-        .await;
-        debug_assert_eq!(self.loop_mode(), mode);
-    }
-
-    /// 临时回复分支的可见性是否开启：仅并行模式发射 ReplyBranch* 可见性
-    /// 事件；单会话模式分支仍执行并合并，仅面板不可见。
-    pub fn shows_reply_branches(&self) -> bool {
-        self.loop_mode() == echo_defs::LoopMode::Parallel
     }
 
     /// Number of active sessions (for the Panel agent overview).

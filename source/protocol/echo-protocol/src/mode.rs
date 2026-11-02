@@ -4,4 +4,4 @@
 //! module re-exports them so `echo_protocol::ThinkingMode` etc. keep working —
 //! the wire contract must not own policy types.
 
-pub use echo_defs::mode::{LoopMode, ReasoningEffort, ThinkingMode};
+pub use echo_defs::mode::{ReasoningEffort, ThinkingMode};

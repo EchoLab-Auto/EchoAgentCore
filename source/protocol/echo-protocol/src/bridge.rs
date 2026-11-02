@@ -342,27 +342,6 @@ mod tests {
                 branch_id: "b1".into(),
                 content: "considering options".into(),
             },
-            BackendEvent::ReplyBranchStarted {
-                session_id: "s1".into(),
-                branch_id: "b1".into(),
-                message_sequence: 2,
-                task: "reply".into(),
-                target: "QQ 私聊 1".into(),
-                started_at_ms: 10,
-            },
-            BackendEvent::ReplyBranchContent {
-                session_id: "s1".into(),
-                branch_id: "b1".into(),
-                content: "still working".into(),
-            },
-            BackendEvent::ReplyBranchCompleted {
-                session_id: "s1".into(),
-                branch_id: "b1".into(),
-                message_sequence: 2,
-                success: true,
-                cancelled: false,
-                completed_at_ms: 20,
-            },
             BackendEvent::AgentCompleted {
                 session_id: "s1".into(),
             },
@@ -374,9 +353,6 @@ mod tests {
                 WsMessage::Event(BackendEvent::SubagentStarted { session_id, .. })
                 | WsMessage::Event(BackendEvent::SubagentCompleted { session_id, .. })
                 | WsMessage::Event(BackendEvent::AgentReasoning { session_id, .. })
-                | WsMessage::Event(BackendEvent::ReplyBranchStarted { session_id, .. })
-                | WsMessage::Event(BackendEvent::ReplyBranchContent { session_id, .. })
-                | WsMessage::Event(BackendEvent::ReplyBranchCompleted { session_id, .. })
                 | WsMessage::Event(BackendEvent::AgentCompleted { session_id }) => {
                     assert_eq!(session_id, "s1");
                 }

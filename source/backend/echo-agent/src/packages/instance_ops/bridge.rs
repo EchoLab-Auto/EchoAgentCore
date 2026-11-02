@@ -61,21 +61,16 @@ impl AgentMessageHook {
         let received_at_ms = chrono::Utc::now().timestamp_millis();
         let message_sequence = agent.next_message_sequence();
 
-        // 单会话模式：turn 与展示都在默认本地会话进行——展示层事件
+        // turn 与展示都在默认本地会话进行——展示层事件
         // （SessionUpdated/MessageReceived）也要落在默认会话 id 上，否则
         // 实时消息显示在 QQ 会话、turn 却跑在默认会话（两边都看不到完整
         // 对话）。消息元数据保留 QQ 来源（平台/发送者/群），Panel 的来源
         // 标签照常显示。
-        let single_mode = agent.loop_mode() == echo_defs::LoopMode::Single;
-        let display_session = if single_mode {
-            agent.trunk.get_or_create(
-                &crate::session::SessionKey::local_tui(),
-                "local user".into(),
-                None,
-            )
-        } else {
-            session.clone()
-        };
+        let display_session = agent.trunk.get_or_create(
+            &crate::session::SessionKey::local_tui(),
+            "local user".into(),
+            None,
+        );
         let display_session_id = display_session.id.clone();
 
         tracing::info!(
@@ -120,9 +115,15 @@ impl AgentMessageHook {
             agent
                 .record_incoming_and_snapshot(&session, &hook_input)
                 .await;
-            let cancelled = agent.cancel_requested_work(&session_id, cancel_all).await;
+            // 取消必须按 **turn 实际注册的会话** 过滤，而不是平台会话：
+            // turn 跑在默认本地会话（display_session），平台会话只承载来源。
+            // 此前这里传平台 session_id，单会话模式下永远取消不到——并行模式
+            // 删掉后才暴露出来（那时 display_session 就是平台会话，恰好能对上）。
+            let cancelled = agent
+                .cancel_requested_work(&display_session_id, cancel_all)
+                .await;
             tracing::info!(
-                session = %session_id,
+                session = %display_session_id,
                 message_sequence,
                 cancel_all,
                 cancelled,
@@ -144,21 +145,12 @@ impl AgentMessageHook {
             return Ok(());
         }
 
-        // 单会话模式（默认）：入站消息投递到该 persona 的**默认本地会话**
-        // （local:tui::local_user）——hook 输入带完整平台/发送者元数据，由
-        // agent 自行判断是否回复（qq-transport 技能约束回复必须走发送工具）。
-        // 不再为每条消息开临时回复分支（ReplyBranch 生命周期是并行模式
-        // 专属的可见性机制）。
-        if single_mode {
-            Arc::clone(agent)
-                .process_inbound_branch(&display_session, &hook_input, message_sequence)
-                .await;
-            return Ok(());
-        }
-
-        // 并行多会话模式：每条消息开临时回复分支（保持原行为）。
+        // 入站消息投递到该 persona 的**默认本地会话**（local:tui::local_user）
+        // ——hook 输入带完整平台/发送者元数据，由 agent 自行判断是否回复
+        // （qq-transport 技能约束回复必须走发送工具）。平台会话本身仍被创建
+        // （上面 `get_or_create`），用于聚类来源与审计，但不承载 turn。
         Arc::clone(agent)
-            .process_inbound_branch(&session, &hook_input, message_sequence)
+            .process_inbound_branch(&display_session, &hook_input, message_sequence)
             .await;
         Ok(())
     }
@@ -451,15 +443,14 @@ mod tests {
         }
     }
 
-    /// 切到并行多会话模式（这些用例断言并发分支语义；单会话是默认模式）。
-    async fn use_parallel_mode(agent: &Arc<Agent>) {
+    /// 显式声明循环插件（贴近真实人格配置；单会话本就是默认）。
+    async fn use_single_loop(agent: &Arc<Agent>) {
         agent
             .apply_capabilities(&crate::config::TeamMember {
-                enabled_plugins: vec![crate::plugins::PARALLEL_LOOP_PLUGIN_ID.into()],
+                enabled_plugins: vec![crate::plugins::SINGLE_LOOP_PLUGIN_ID.into()],
                 ..Default::default()
             })
             .await;
-        assert_eq!(agent.loop_mode(), echo_defs::LoopMode::Parallel);
     }
 
     /// 记录 `PluginInstance::send_message` 的控制回复（取消回执 / 等待回复走
@@ -477,27 +468,36 @@ mod tests {
     #[tokio::test]
     async fn routes_message_through_one_way_hook() {
         let hook = AgentMessageHook::new(mock_agent("后台完成"));
-        // 本用例断言并行模式的分支语义（会话作用域注册在分支内）。
-        use_parallel_mode(&hook.agent).await;
+        use_single_loop(&hook.agent).await;
         let result = hook.on_incoming_message(dm_message("hello")).await;
         assert_eq!(result, Ok(()));
+        // turn 跑在默认本地会话（每会话一条时间线）；平台会话另行创建，
+        // 只承载"来源"（面板按它聚类，不承载 turn）。
+        let local_key = SessionKey::local_tui();
         wait_until(|| {
             hook.agent
                 .trunk
                 .all()
-                .first()
+                .iter()
+                .find(|s| s.session_key == local_key)
                 .and_then(|session| session.history.try_lock())
                 .is_some_and(|history| history.len() >= 4)
         })
         .await;
 
-        // The session was created with the QQ scoping.
+        // 平台会话保留 QQ 作用域（来源可追溯）。
         let sessions = hook.agent.trunk.all();
-        assert_eq!(sessions.len(), 1);
-        let session = &sessions[0];
-        assert_eq!(session.session_key.platform, "qq");
-        assert_eq!(session.session_key.scope, "dm");
-        assert_eq!(session.session_key.user_id, "123456");
+        let platform_session = sessions
+            .iter()
+            .find(|s| s.session_key.platform == "qq")
+            .expect("平台会话应当被创建（来源聚类）");
+        assert_eq!(platform_session.session_key.scope, "dm");
+        assert_eq!(platform_session.session_key.user_id, "123456");
+
+        let session = sessions
+            .iter()
+            .find(|s| s.session_key == local_key)
+            .expect("默认本地会话承载 turn");
         let history = session.history.lock();
         assert!(history[0].content.starts_with("<qq_message_hook>"));
         assert!(history[0].content.contains("\"event\": \"qq_message\""));
@@ -516,30 +516,40 @@ mod tests {
     #[tokio::test]
     async fn group_message_uses_group_scope() {
         let hook = AgentMessageHook::new(mock_agent("ok"));
-        // 并行模式：会话按群作用域创建（单会话模式消息投递到默认会话）。
-        use_parallel_mode(&hook.agent).await;
+        use_single_loop(&hook.agent).await;
         let mut msg = dm_message("hello");
         msg.channel = ChannelType::Group {
             group_id: "999".into(),
         };
         let _ = hook.on_incoming_message(msg).await;
-        // 默认单会话模式：入站分支在任务内注册（不阻塞 QQ 入站），
-        // 因此等历史里出现该条用户事件再断言。
+        let local_key = SessionKey::local_tui();
+        // 入站在任务内注册（不阻塞 QQ 入站），因此等该条用户事件落到默认会话。
         wait_until(|| {
             hook.agent
                 .trunk
                 .all()
-                .first()
+                .iter()
+                .find(|s| s.session_key == local_key)
                 .and_then(|session| session.history.try_lock())
                 .is_some_and(|history| !history.is_empty())
         })
         .await;
 
+        // 群作用域体现在平台会话上（来源）；turn 的历史在默认会话里，
+        // hook 输入里带着群的完整元数据。
         let sessions = hook.agent.trunk.all();
-        let session = &sessions[0];
-        assert_eq!(session.session_key.scope, "group");
-        assert_eq!(session.session_key.scope_id, "999");
-        let history = session.history.lock();
+        let platform_session = sessions
+            .iter()
+            .find(|s| s.session_key.platform == "qq")
+            .expect("平台会话应当被创建（来源聚类）");
+        assert_eq!(platform_session.session_key.scope, "group");
+        assert_eq!(platform_session.session_key.scope_id, "999");
+
+        let local = sessions
+            .iter()
+            .find(|s| s.session_key == local_key)
+            .expect("默认本地会话承载 turn");
+        let history = local.history.lock();
         assert!(history[0].content.contains("\"type\": \"group\""));
         assert!(history[0].content.contains("\"group_id\": \"999\""));
     }
@@ -550,7 +560,7 @@ mod tests {
     #[tokio::test]
     async fn single_mode_delivers_to_default_session_without_branch() {
         let hook = AgentMessageHook::new(mock_agent("后台完成"));
-        assert_eq!(hook.agent.loop_mode(), echo_defs::LoopMode::Single);
+
         let (bridge, handle) = crate::create_bridge();
         hook.agent.attach(std::sync::Arc::new(handle));
         let result = hook.on_incoming_message(dm_message("hello")).await;
@@ -670,8 +680,14 @@ mod tests {
         assert!(*reply_rx.borrow());
     }
 
+    /// 同一会话两条入站 + 一条取消命令：第一条在跑、第二条在闸门上排队，
+    /// 两者都是"进行中"，取消全部把它们一起停掉。
+    ///
+    /// （并行模式下这两条曾是并发分支；删掉并行后它们变成串行排队，但"取消
+    /// 全部"要停的仍然是两条——排队中的那条同样可被取消，这是排队必须先注册
+    /// 的原因。）
     #[tokio::test]
-    async fn occupied_conversation_branches_and_recall_cancels_running_turns() {
+    async fn queued_and_running_turns_are_both_cancelled_by_recall() {
         let entered = Arc::new(AtomicUsize::new(0));
         let sends = Arc::new(AtomicUsize::new(0));
         let seen_sequences = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -693,7 +709,7 @@ mod tests {
             tools,
             Arc::new(echo_defs::plugin_instance::InstanceRegistry::new()),
         ));
-        use_parallel_mode(&agent).await;
+        use_single_loop(&agent).await;
         let hook = AgentMessageHook::new(Arc::clone(&agent));
 
         hook.on_incoming_message(dm_message("第一句话"))
@@ -703,15 +719,16 @@ mod tests {
         hook.on_incoming_message(dm_message("第二句话"))
             .await
             .unwrap();
-        wait_until(|| entered.load(Ordering::SeqCst) >= 2).await;
-        assert_eq!(agent.active_inbound_turn_count(), 2);
-        assert_eq!(agent.active_inbound_branch_count(), 2);
+        // 串行闸门：第二条在排队，尚未进入模型——但已注册为"进行中"。
+        // 注册（`register_inbound_turn`）发生在闸门外、append 之前，所以等注册表
+        // 计数即可；落盘要等拿到闸，排队中的 turn 反而**不会**落盘用户事件。
+        wait_until(|| agent.active_inbound_turn_count() == 2).await;
+        assert_eq!(entered.load(Ordering::SeqCst), 1);
         let snapshots = seen_sequences
             .lock()
             .expect("seen sequences poisoned")
             .clone();
-        assert!(snapshots.iter().any(|sequences| sequences == &[1]));
-        assert!(snapshots.iter().any(|sequences| sequences == &[1, 2]));
+        assert_eq!(snapshots, vec![vec![1]]);
 
         hook.on_incoming_message(dm_message("取消全部任务"))
             .await
@@ -720,14 +737,34 @@ mod tests {
         // 取消回执不再由框架代发（2026-10 选项 B）：不经过任何发送工具。
         assert_eq!(sends.load(Ordering::SeqCst), 0);
 
-        let session = agent.trunk.all().pop().unwrap();
+        // 取消命令自身走 `record_control_reply`（记控制回执，不是用户 turn）。
+        // 落盘的用户序列存在合法竞态：第二条（seq=2）可能在闸门外就被取消
+        // （不落盘），也可能在第一条让出闸后拿到闸、落盘再被取消（序列含 2）。
+        // 两种结果都正确，所以这里只断言**第一条一定在**、且序列里**没有**第三条
+        // 用户 turn（取消命令不是用户 turn）。
+        let session = agent
+            .trunk
+            .all()
+            .into_iter()
+            .find(|s| s.session_key == SessionKey::local_tui())
+            .expect("默认会话承载 turn");
         let history = session.history.lock();
         let user_sequences = history
             .iter()
             .filter_map(|message| crate::agent::structured_message_sequence(&message.content))
             .collect::<Vec<_>>();
-        assert_eq!(user_sequences, vec![1, 2, 3]);
-        assert!(history
+        assert!(user_sequences.contains(&1), "第一条用户消息必须在: {user_sequences:?}");
+        assert!(!user_sequences.contains(&3), "取消命令不是用户 turn: {user_sequences:?}");
+        // 取消回执记在**平台会话**（控制回执走 `record_control_reply(&session, …)`，
+        // 与 turn 所在的默认会话不是同一个）——两条路径分属两个会话，别混着查。
+        let platform_session = agent
+            .trunk
+            .all()
+            .into_iter()
+            .find(|s| s.session_key.platform == "qq")
+            .expect("平台会话存在");
+        let platform_history = platform_session.history.lock();
+        assert!(platform_history
             .iter()
             .any(|message| message.content == "已停止 2 个进行中的任务。"));
     }

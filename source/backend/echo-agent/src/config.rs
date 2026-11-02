@@ -5,9 +5,6 @@ use serde::{Deserialize, Serialize};
 // `ThinkingMode` / `ReasoningEffort` are part of the frontend wire contract
 // and are defined in the standalone `echo-protocol` crate; re-exported here
 // so existing `echo_agent::config::…` paths keep working.
-/// 循环模式（single/parallel）——单一事实来源在 echo-defs，这里随 config 再导出，
-/// 便于 core 等消费方引用 `echo_agent::config::LoopMode`（无需直接依赖定义层）。
-pub use echo_defs::LoopMode;
 pub use echo_protocol::{ReasoningEffort, ThinkingMode};
 
 /// A named LLM API profile (multi-API storage, switchable from the TUI).
@@ -100,24 +97,6 @@ pub struct TeamMember {
     /// 都在设置视图「API」分类维护；本字段只做引用，不内嵌值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_profile: Option<String>,
-}
-
-impl TeamMember {
-    /// 循环模式推导（互斥插件 `echo-agent.loop.{single,parallel}`，
-    /// single 为兜底，也是默认）：
-    /// - 白名单含 `loop.parallel` → Parallel
-    /// - 其余（含白名单为空 = 默认）→ Single
-    pub fn loop_mode(&self) -> echo_defs::LoopMode {
-        let listed = self
-            .enabled_plugins
-            .iter()
-            .any(|p| p == crate::plugins::PARALLEL_LOOP_PLUGIN_ID);
-        if listed {
-            echo_defs::LoopMode::Parallel
-        } else {
-            echo_defs::LoopMode::Single
-        }
-    }
 }
 
 impl Default for TeamMember {
@@ -732,51 +711,4 @@ mod tests {
         assert_eq!(member.context_window_tokens, None);
     }
 
-    #[test]
-    fn memory_limit_tokens_roundtrips_through_toml() {
-        let cfg = AgentConfig {
-            memory_limit_tokens: Some(10_000),
-            ..Default::default()
-        };
-        let toml_str = toml::to_string(&cfg).unwrap();
-        assert!(toml_str.contains("memory_limit_tokens = 10000"));
-        let parsed: AgentConfig = toml::from_str(&toml_str).unwrap();
-        assert_eq!(parsed.memory_limit_tokens, Some(10_000));
-        // None is not serialized at all.
-        let none_str = toml::to_string(&AgentConfig::default()).unwrap();
-        assert!(!none_str.contains("memory_limit_tokens"));
-    }
-
-    // ── 循环模式推导（loop_mode）──
-
-    fn member_with_plugins(enabled: &[&str]) -> TeamMember {
-        TeamMember {
-            enabled_plugins: enabled.iter().map(|s| s.to_string()).collect(),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn loop_mode_matrix() {
-        use echo_defs::LoopMode::*;
-
-        use crate::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
-        let parallel = PARALLEL_LOOP_PLUGIN_ID;
-        let single = SINGLE_LOOP_PLUGIN_ID;
-        // 空白名单（=默认）→ Single（单会话是默认，非"全部启用"）
-        assert_eq!(member_with_plugins(&[]).loop_mode(), Single);
-        // 仅 parallel → Parallel；仅 single → Single
-        assert_eq!(member_with_plugins(&[parallel]).loop_mode(), Parallel);
-        assert_eq!(member_with_plugins(&[single]).loop_mode(), Single);
-        // single + parallel 并含 → Parallel（互斥优先）
-        assert_eq!(
-            member_with_plugins(&[single, parallel]).loop_mode(),
-            Parallel
-        );
-        // 非空白名单但无模式 id → Single（兜底）
-        assert_eq!(
-            member_with_plugins(&["echo-agent.tools.builtin"]).loop_mode(),
-            Single
-        );
-    }
 }

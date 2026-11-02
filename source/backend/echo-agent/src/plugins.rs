@@ -48,21 +48,11 @@ pub const SUBAGENT_PLUGIN_ID: &str = "echo-agent.subagent";
 /// （`echo-shell` 的进程组生命周期）、自己的面板页面、独立的启停需求。
 /// 声明与实现都在 [`echo_plugin_shell`]，这里是兼容别名。
 pub use echo_plugin_shell::PLUGIN_ID as SHELL_PLUGIN_ID;
-/// 循环模式互斥插件（按 persona 二选一，single 为推导兜底，也是默认）。
+/// 循环插件（声明已外迁到 [`echo_plugin_loop`]，解耦计划 Phase 3 ⑦）。
 ///
-/// 声明（id / 名称 / 描述 / manifest）已外迁到 [`echo_plugin_loop`]
-/// （解耦计划 Phase 3 ⑦）——这里是**兼容别名**，配置与门控读的是同一批
-/// 字面量，不另存一份：
-/// - `loop.single`：单会话循环（默认）——同一会话内 turn 串行排队，
-///   无会话管理 UI（会话卡/全局分组隐藏）、回执分支不可见（后端不发射
-///   `ReplyBranch*` 事件，分支照常执行合并）；
-/// - `loop.parallel`：并行多会话循环——同一会话可并发分支，
-///   会话列表/全局会话/可见回执分支全套。
-///   两者 mount 的是同一个 TurnRunner（驱动本体），真实效果是 per-persona
-///   白名单推导出的 `LoopMode`（见 `TeamMember::loop_mode`）。
-pub use echo_plugin_loop::{
-    PARALLEL_PLUGIN_ID as PARALLEL_LOOP_PLUGIN_ID, SINGLE_PLUGIN_ID as SINGLE_LOOP_PLUGIN_ID,
-};
+/// 这里留**兼容别名**，配置与门控读的是同一批字面量，不另存一份。
+/// 只有一个模式：同一会话内 turn 串行排队（`loop.parallel` 已于 2026-11 删除）。
+pub use echo_plugin_loop::SINGLE_PLUGIN_ID as SINGLE_LOOP_PLUGIN_ID;
 
 /// persona 门控**已经不再是一张插件 id 清单**——判据是 manifest 的 `kind`。
 ///
@@ -98,7 +88,7 @@ pub use echo_plugin_federation::PLUGIN_ID as FEDERATION_PLUGIN_ID;
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_PLUGIN_IDS: [&str; 13] = [
+pub const BUILTIN_PLUGIN_IDS: [&str; 12] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SHELL_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
@@ -111,7 +101,6 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 13] = [
     echo_plugin_session::PLUGIN_ID,
     echo_plugin_transcript::PLUGIN_ID,
     SINGLE_LOOP_PLUGIN_ID,
-    PARALLEL_LOOP_PLUGIN_ID,
     PROVIDER_LLM_PLUGIN_ID,
     SELF_UPDATE_PLUGIN_ID,
 ];

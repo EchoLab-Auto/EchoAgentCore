@@ -618,41 +618,6 @@ async fn toggle_management_panel_plugin_disable_is_refused() {
 }
 
 #[tokio::test]
-async fn reply_branch_visibility_follows_loop_mode() {
-    use echo_agent::config::TeamMember;
-    use echo_agent::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
-    let (agent, _provider) = test_agent("ok");
-    // 未配置 capabilities：默认单会话（分支不可见、turn 串行）。
-    assert_eq!(agent.loop_mode(), echo_defs::LoopMode::Single);
-    assert!(!agent.shows_reply_branches());
-    // 并行多会话 → 可见性事件开启
-    agent
-        .apply_capabilities(&TeamMember {
-            enabled_plugins: vec![PARALLEL_LOOP_PLUGIN_ID.into()],
-            ..Default::default()
-        })
-        .await;
-    assert_eq!(agent.loop_mode(), echo_defs::LoopMode::Parallel);
-    assert!(agent.shows_reply_branches());
-    // 单会话 id → 关闭（分支仍执行，仅不发射可见性事件）
-    agent
-        .apply_capabilities(&TeamMember {
-            enabled_plugins: vec![SINGLE_LOOP_PLUGIN_ID.into()],
-            ..Default::default()
-        })
-        .await;
-    assert!(!agent.shows_reply_branches());
-    // 非空白名单无模式 id → 单会话兜底
-    agent
-        .apply_capabilities(&TeamMember {
-            enabled_plugins: vec!["echo-agent.tools.builtin".into()],
-            ..Default::default()
-        })
-        .await;
-    assert!(!agent.shows_reply_branches());
-}
-
-#[tokio::test]
 async fn toggle_skill_enables_and_disables() {
     let (agent, _provider) = test_agent("ok");
     agent.skills().lock().await.register(echo_agent::Skill {
@@ -958,15 +923,6 @@ async fn turn_emits_lifecycle_events_in_order() {
     let (bridge, handle) = echo_agent::create_bridge();
     agent.attach(Arc::new(handle));
 
-    // 该用例冻结的是含可见回执分支的完整生命周期 → 取并行多会话模式
-    //（默认单会话不发射 ReplyBranch*，生命周期少两个事件）。
-    agent
-        .apply_capabilities(&echo_agent::config::TeamMember {
-            enabled_plugins: vec![echo_agent::plugins::PARALLEL_LOOP_PLUGIN_ID.into()],
-            ..Default::default()
-        })
-        .await;
-
     let key = SessionKey::parse("qq:dm::123").unwrap();
     let session = agent.trunk.get_or_create(&key, "u".into(), None);
     agent.process_message(&session, "计算").await.unwrap();
@@ -983,14 +939,12 @@ async fn turn_emits_lifecycle_events_in_order() {
     let lifecycle: Vec<&str> = events
         .iter()
         .map(|ev| match ev {
-            BackendEvent::ReplyBranchStarted { .. } => "branch_started",
             BackendEvent::AgentThinking { .. } => "thinking",
             BackendEvent::LlmRequest { .. } => "llm_request",
             BackendEvent::LlmResponse { .. } => "llm_response",
             BackendEvent::ToolCall { .. } => "tool_call",
             BackendEvent::ToolResult { .. } => "tool_result",
             BackendEvent::AgentCompleted { .. } => "agent_completed",
-            BackendEvent::ReplyBranchCompleted { .. } => "branch_completed",
             _ => "other",
         })
         .filter(|kind| *kind != "other")
@@ -999,7 +953,6 @@ async fn turn_emits_lifecycle_events_in_order() {
     assert_eq!(
         lifecycle,
         vec![
-            "branch_started",
             "thinking",
             "llm_request",
             "llm_response",
@@ -1008,7 +961,6 @@ async fn turn_emits_lifecycle_events_in_order() {
             "llm_request",
             "llm_response",
             "agent_completed",
-            "branch_completed",
         ],
         "turn lifecycle order frozen: {lifecycle:?}"
     );

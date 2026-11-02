@@ -10,11 +10,6 @@ pub struct MockProvider {
     pub reply: String,
 }
 
-struct ConcurrentProvider {
-    entered: Arc<AtomicUsize>,
-    release: Arc<tokio::sync::Semaphore>,
-}
-
 #[async_trait::async_trait]
 impl LlmProvider for MockProvider {
     fn name(&self) -> &str {
@@ -44,47 +39,6 @@ impl LlmProvider for MockProvider {
     }
 }
 
-#[async_trait::async_trait]
-impl LlmProvider for ConcurrentProvider {
-    fn name(&self) -> &str {
-        "concurrent"
-    }
-
-    fn default_model(&self) -> &str {
-        "concurrent"
-    }
-
-    async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError> {
-        self.entered.fetch_add(1, Ordering::SeqCst);
-        self.release
-            .acquire()
-            .await
-            .expect("release semaphore should stay open")
-            .forget();
-        let sequence = request
-            .messages
-            .iter()
-            .filter_map(|message| structured_message_sequence(&message.content))
-            .next_back()
-            .unwrap_or_default();
-        Ok(ChatResponse {
-            stop_reason: None,
-            content: Some(format!("reply-{sequence}")),
-            reasoning_content: None,
-            tool_calls: Vec::new(),
-            usage: Usage::default(),
-        })
-    }
-
-    async fn chat_stream(
-        &self,
-        request: &ChatRequest,
-        _tx: tokio::sync::mpsc::UnboundedSender<ChatChunk>,
-    ) -> Result<ChatResponse, LlmError> {
-        // 测试桩：流式与非流式同效（主对话默认经此路径；增量断言由专门用例覆盖）。
-        self.chat(request).await
-    }
-}
 
 /// 记录每次请求看到的历史，并在测试放行前一直挂起（用于单会话排队断言）。
 #[derive(Clone)]
@@ -445,14 +399,6 @@ async fn timeline_associates_reasoning_with_the_final_output() {
         branch_id: branch_id.into(),
         content: "先查资料".into(),
     });
-    agent.emit(BackendEvent::ReplyBranchCompleted {
-        session_id: session_id.into(),
-        branch_id: branch_id.into(),
-        message_sequence: 1,
-        success: true,
-        cancelled: false,
-        completed_at_ms: 1000,
-    });
     agent.emit(BackendEvent::AgentOutput {
         session_id: session_id.into(),
         content: "done".into(),
@@ -489,58 +435,7 @@ async fn agent_replies_and_remembers() {
     assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
 }
 
-/// 并行多会话模式：同一会话的多个 turn 并发进入模型，按请求序号合并。
-#[tokio::test]
-async fn parallel_mode_runs_turns_concurrently_and_merges_by_request_sequence() {
-    let entered = Arc::new(AtomicUsize::new(0));
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
-    let provider = Arc::new(ConcurrentProvider {
-        entered: Arc::clone(&entered),
-        release: Arc::clone(&release),
-    });
-    let agent = Arc::new(test_agent(provider));
-    agent
-        .set_loop_mode_for_test(echo_defs::LoopMode::Parallel)
-        .await;
-    let session = agent
-        .trunk
-        .get_or_create(&SessionKey::local_tui(), "user".into(), None);
-    let first =
-        r#"<backend_message_hook>{"message_sequence":1,"content":"first"}</backend_message_hook>"#;
-    let second =
-        r#"<backend_message_hook>{"message_sequence":2,"content":"second"}</backend_message_hook>"#;
-
-    let first_task = {
-        let agent = Arc::clone(&agent);
-        let session = session.clone();
-        tokio::spawn(async move { agent.process_message(&session, first).await })
-    };
-    let second_task = {
-        let agent = Arc::clone(&agent);
-        let session = session.clone();
-        tokio::spawn(async move { agent.process_message(&session, second).await })
-    };
-
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while entered.load(Ordering::SeqCst) < 2 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("both branches should enter the provider concurrently");
-    release.add_permits(2);
-    first_task.await.unwrap().unwrap();
-    second_task.await.unwrap().unwrap();
-
-    let history = session.history.lock();
-    assert_eq!(history.len(), 4);
-    assert_eq!(structured_message_sequence(&history[0].content), Some(1));
-    assert_eq!(history[1].content, "reply-1");
-    assert_eq!(structured_message_sequence(&history[2].content), Some(2));
-    assert_eq!(history[3].content, "reply-2");
-}
-
-/// 单会话模式（默认）：同一会话的 turn 串行排队——第二个 turn 拿到的是
+/// 每会话一条时间线：同一会话的 turn 串行排队——第二个 turn 拿到的是
 /// 第一轮结束后的上下文（能看到 reply-1），且不会并发进入模型。
 #[tokio::test]
 async fn single_mode_serialises_turns_and_second_turn_sees_the_first_reply() {
@@ -551,8 +446,7 @@ async fn single_mode_serialises_turns_and_second_turn_sees_the_first_reply() {
         gate: Arc::new(tokio::sync::Semaphore::new(0)),
     });
     let agent = Arc::new(test_agent(provider.clone()));
-    // 默认即单会话：不做任何配置。
-    assert_eq!(agent.loop_mode(), echo_defs::LoopMode::Single);
+    // 每会话一条时间线：不做任何配置。
     let session = agent
         .trunk
         .get_or_create(&SessionKey::local_tui(), "user".into(), None);
@@ -712,7 +606,6 @@ async fn single_mode_runs_cross_session_turns_in_parallel() {
         gate: Arc::new(tokio::sync::Semaphore::new(0)),
     });
     let agent = Arc::new(test_agent(provider.clone()));
-    assert_eq!(agent.loop_mode(), echo_defs::LoopMode::Single);
     let session_a = agent
         .trunk
         .get_or_create(&SessionKey::local_tui(), "user".into(), None);

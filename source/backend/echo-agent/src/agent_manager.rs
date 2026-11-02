@@ -507,10 +507,6 @@ impl AgentManager {
                 enabled: agents.contains_key(id),
                 system_skills: p.system_skills.clone(),
                 sessions: agents.get(id).map(|r| r.agent.session_count()).unwrap_or(0),
-                // 循环模式：互斥循环插件推导（single 为兜底，也是默认），
-                // 单一来源 TeamMember::loop_mode；parallel 才展示会话管理 UI
-                // 并发射 ReplyBranch* 可见性事件。
-                loop_mode: p.loop_mode(),
                 system_prompt: p.system_prompt.clone(),
                 disabled_tools: p.disabled_tools.clone(),
                 disabled_skills: p.disabled_skills.clone(),
@@ -558,35 +554,6 @@ mod tests {
         AgentManager::build(&raw, |_id, _p| {
             panic!("factory must not be called in tests")
         })
-    }
-
-    #[test]
-    fn infos_reports_loop_mode_per_member() {
-        use crate::plugins::{PARALLEL_LOOP_PLUGIN_ID, SINGLE_LOOP_PLUGIN_ID};
-        let mut raw = AgentConfig::default();
-        raw.teams.insert(
-            "bot".into(),
-            member_with_plugins(&[PARALLEL_LOOP_PLUGIN_ID]),
-        );
-        raw.teams.insert(
-            "coder".into(),
-            member_with_plugins(&[SINGLE_LOOP_PLUGIN_ID]),
-        );
-        raw.teams.insert(
-            "bare".into(),
-            member_with_plugins(&["echo-agent.tools.builtin"]),
-        );
-        raw.disabled_teams = vec!["bot".into(), "coder".into(), "bare".into()];
-        let mgr = manager_with(raw);
-        let infos = mgr.infos();
-        let mode_of = |id: &str| {
-            let info = infos.iter().find(|t| t.id == id).unwrap();
-            info.loop_mode
-        };
-        assert_eq!(mode_of("bot"), echo_defs::LoopMode::Parallel);
-        assert_eq!(mode_of("coder"), echo_defs::LoopMode::Single);
-        // 非空白名单无模式 id → Single（兜底）
-        assert_eq!(mode_of("bare"), echo_defs::LoopMode::Single);
     }
 
     /// 节点身份作为**参数**下发（P3 终态，不再经 kernel cell）：
