@@ -49,6 +49,7 @@ pub fn build_registry(
     config_store: echo_config::ConfigStore,
     invoker: Option<echo_plugin_tools::RemoteInvoker>,
     shell: echo_shell::ShellHandle,
+    session_query: Option<std::sync::Arc<dyn echo_defs::session_query::SessionQuery>>,
     provider: Option<std::sync::Arc<dyn BuiltinToolProvider>>,
     shell_provider: Option<std::sync::Arc<dyn ShellToolProvider>>,
 ) -> crate::tool::ToolRegistry {
@@ -59,6 +60,7 @@ pub fn build_registry(
         invoker,
         // 共享配置存储：`list_api_profiles` 读供应商池的唯一入口。
         config_store: Some(config_store),
+        session_query,
     };
     let mut registry = provider.registry(&cx);
 
@@ -68,7 +70,7 @@ pub fn build_registry(
     //
     // 与 `tools.builtin` 同一个降级口径：**装配期**插件尚未挂载（`make_agent`
     // 早于 `mount_plan`），此时回退到插件的 standalone 实现；"这个使用者看不
-    // 看得到"由 persona 门控（`GATED_PLUGIN_IDS` 含 `echo-agent.shell`）与
+    // 看得到"由 persona 门控（`kind` 定作用域：`tool` 属 Persona 级）与
     // 包级启停负责——那是运行期的事，不该在构造工具表时表达。
     let shell_provider =
         shell_provider.unwrap_or_else(echo_plugin_shell::standalone_provider);
@@ -107,6 +109,7 @@ mod tests {
             None,
             echo_shell::ShellHandle::new(),
             None,
+            None,
             // 带上 shell 插件造的工具一起查重名：两个插件产出的名字同处一张
             // 注册表，撞名会被静默覆盖（这正是本测试要抓的）。
             Some(crate::tool::builtin::standalone_shell_provider()),
@@ -128,6 +131,7 @@ mod tests {
             store,
             None,
             echo_shell::ShellHandle::new(),
+            None,
             None,
             None,
         );

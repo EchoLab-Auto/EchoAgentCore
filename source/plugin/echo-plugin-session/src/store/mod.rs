@@ -17,6 +17,7 @@ use dashmap::DashMap;
 pub mod archive;
 pub mod history;
 pub mod persist;
+pub mod query;
 pub mod timeline;
 
 // 显示历史的合并水位线：agent 命令层要用（`RequestSessionHistory`）。
@@ -704,6 +705,14 @@ impl TrunkStore {
     /// The full event log (oldest first) — the durable source of truth.
     pub fn event_log(&self) -> Vec<echo_session::SessionEvent> {
         self.event_log.log()
+    }
+
+    /// 只取归属某会话的事件（不克隆其它会话的历史）。
+    ///
+    /// 只读查询（`store::query`，`list_sessions`/`read_session` 工具的后端）
+    /// 走这条：多会话日志里按会话过滤能少拷 1/N，与投影热路径同口径。
+    pub fn events_for_session(&self, session_id: &str) -> Vec<echo_session::SessionEvent> {
+        self.event_log.events_for_session(session_id)
     }
 
     /// 导入某会话的完整事件集（会话迁移 P3-2b）：追加到事实来源日志并重投影

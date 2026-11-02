@@ -13,6 +13,7 @@ pub(crate) mod prompt;
 pub mod provider_host;
 pub mod registry;
 pub mod session_commands_host;
+pub mod session_query;
 pub mod session_view_host;
 mod streaming;
 pub mod subagent_host;

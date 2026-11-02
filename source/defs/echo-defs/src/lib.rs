@@ -45,6 +45,7 @@ pub mod plugin_instance;
 pub mod remote_tool;
 pub mod sanitize;
 pub mod session;
+pub mod session_query;
 pub mod skill;
 pub mod subagent;
 pub mod token;

@@ -1109,6 +1109,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // "插件是否已挂载"上只问一次——挂上了就解析 provider，没挂上直接构造
     // 同一实现（见 `tools_builtin` 模块文档）。
     let tool_ctx = ctx.clone();
+    // 会话只读查询的共享注册表：工具在 `build_registry` 里就要拿到端口，而
+    // 每个 persona 的 trunk 在 `AgentBuilder::build()` 之后才存在——所以先建
+    // 注册表、建好 agent 再回填（`register` 拿的是 trunk 的克隆句柄）。
+    // 端口只读；工具侧不碰持久化文件，读的是内存里的活 trunk。
+    let session_queries =
+        std::sync::Arc::new(echo_agent::agent::session_query::SessionQueryRegistry::new());
+    let factory_session_queries = session_queries.clone();
     let make_agent: Arc<dyn Fn(String, AgentProfile) -> Arc<Agent> + Send + Sync> = Arc::new(
         move |id: String, profile: AgentProfile| -> Arc<Agent> {
             let provider_arc2 = factory_provider.clone();
@@ -1156,6 +1163,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     agents_config_store.clone(),
                     factory_federation.invoker.clone(),
                     factory_shell_handle.clone(),
+                    Some(factory_session_queries.clone()),
                     echo_agent::tool::builtin::resolve_provider(&tool_ctx),
                     // Shell 工具由 shell 插件造（2026-11 拆出的独立插件）：
                     // 未挂载 = 这个 persona 没有 `bash-*` 工具，正是想要的效果。
@@ -1201,7 +1209,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 插件维度已于 2026-09 移除，只受工具级白/黑名单控制。
                 // 工作区会话（workspace 插件）：每 persona 独立存储 + 工具。
                 // 存储文件与配置 TOML 解耦（独立 JSON，绝不同路径互写）；
-                // 插件未列入该 persona 白名单时工具会被门控禁用（GATED_PLUGIN_IDS）。
+                // 插件未列入该 persona 白名单时工具会被门控禁用（判据是插件 kind，见 `plugins::scope`）。
                 let workspace_store =
                     std::sync::Arc::new(echo_agent::workspace::WorkspaceStore::load(Some(
                         config_store_path.with_file_name(format!("echo-workspaces-{id}.json")),
@@ -1373,6 +1381,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     }
                 }
                 let built = builder.session_persist_path(file).build();
+                factory_session_queries.register(id.clone(), &built.trunk);
                 // **新建人格补装远程工具**（2026-11 S13）。
                 //
                 // 此前 `register_remote_tools` 只在链路 Up 时跑一次：链路已通

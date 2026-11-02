@@ -16,7 +16,7 @@ y: 1780
 
 ## 工具一览
 
-共 **17** 个内置工具，按注册名排序。
+共 **19** 个内置工具，按注册名排序。
 
 | 工具 | 分类 | 说明 |
 | --- | --- | --- |
@@ -33,7 +33,9 @@ y: 1780
 | `instance_stop` | builtin | Stop a running platform instance plugin. Use 'all' to stop all running instances.｜包：`echo-agent.tools.builtin` |
 | `list_api_profiles` | builtin | 列出可用的模型供应商（API profile）：名称 / 服务商 / 模型 / 端点 / API Key 就绪状态。用于为 spawn_subagent 的 `profile` 参数挑选目标模型（模型选择规范见 model-profiles…｜包：`echo-agent.tools.builtin` |
 | `list_files` | builtin | List files in a directory. Shows file names, sizes, and types. Use this to explore the project structure. Path may carry…｜包：`echo-agent.tools.builtin` |
+| `list_sessions` | builtin | 列出当前人格的历史会话及最近消息。只读；结果按最近活跃排序，支持 limit（默认50，最大200）。｜包：`echo-agent.tools.builtin` |
 | `read_file` | builtin | Read the contents of a file in the project. Returns the file content with line numbers. Use this to examine source code,…｜包：`echo-agent.tools.builtin` |
+| `read_session` | builtin | 只读查看历史会话。view=model 返回模型实际可见的压缩上下文；view=audit 返回消息、工具调用/耗时及模型步骤/token/耗时。默认当前会话；limit 默认50、最大200；工具结果正文默认不返回，需 include_t…｜包：`echo-agent.tools.builtin` |
 | `search_code` | builtin | Search for a pattern in source files. Returns matching file paths and line numbers. Use this to find function definition…｜包：`echo-agent.tools.builtin` |
 | `web_search` | builtin | 搜索网页获取最新信息（新闻、天气、百科、实时数据）。参数: query(搜索关键词), max_results(可选, 默认5, 最大10)。｜包：`echo-agent.tools.builtin` |
 | `write_file` | builtin | Create a new file or overwrite an existing file with new content. Use this to create or update source files, config file…｜包：`echo-agent.tools.builtin` |

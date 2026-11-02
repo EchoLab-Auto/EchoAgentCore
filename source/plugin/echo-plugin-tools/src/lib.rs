@@ -45,6 +45,7 @@ pub mod list_api_profiles;
 pub mod instance_commands;
 pub mod instance_ops;
 pub mod plugin;
+pub mod session;
 pub mod tool_commands;
 pub mod websearch;
 

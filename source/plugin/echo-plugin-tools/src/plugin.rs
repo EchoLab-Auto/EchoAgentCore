@@ -55,6 +55,9 @@ pub struct ToolsHostCtx {
     /// 共享配置存储（`list_api_profiles` 读供应商池用；None = 未接线，
     /// 该工具不注册——与"列不出供应商"相比，不注册是更诚实的降级）。
     pub config_store: Option<echo_config::ConfigStore>,
+    /// 会话只读查询端口（`list_sessions` / `read_session` 的数据源）。
+    /// `None` = 未接线：**不注册**这两个工具，而不是给一个读盘或空结果的实现。
+    pub session_query: Option<Arc<dyn echo_defs::session_query::SessionQuery>>,
 }
 
 /// 内置工具集的构造契约：端口进，配好的工具箱出。
@@ -77,6 +80,11 @@ impl BuiltinToolProvider for BuiltinTools {
         // 插件（全插件化 S3）——本工具因此也搬进来了。
         if let Some(store) = &cx.config_store {
             registry.register(Arc::new(crate::ListApiProfilesTool::new(store.clone())));
+        }
+        // 会话只读查询：数据源是宿主的活 `TrunkStore`（不是持久化 JSON）。
+        if let Some(query) = &cx.session_query {
+            registry.register(Arc::new(crate::session::ListSessionsTool::new(query.clone())));
+            registry.register(Arc::new(crate::session::ReadSessionTool::new(query.clone())));
         }
         crate::register_instance_tools(&mut registry, cx.instances.clone());
         crate::register_coding_tools(
@@ -270,6 +278,7 @@ mod tests {
             workspace: std::env::temp_dir(),
             invoker: None,
             config_store: None,
+            session_query: None,
         }
     }
 
