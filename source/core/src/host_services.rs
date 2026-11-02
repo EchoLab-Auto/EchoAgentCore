@@ -45,6 +45,7 @@ use echo_plugin_self_update::host_keys::EVENTS as SELF_UPDATE_EVENTS;
 use tracing::warn;
 
 use echo_agent::agent_manager::AgentManager;
+use echo_agent::agent::session_commands_host::AgentSessionCommandHost;
 use echo_agent::agent::session_view_host::AgentSessionViewHost;
 use echo_agent::agent::provider_host::AgentProviderCommandHost;
 use echo_agent::agent::shell_host::{AgentInstanceCommandHost, AgentShellCommandHost};
@@ -202,6 +203,15 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
             as Arc<dyn echo_plugin_management::session_view::SessionViewHost>,
     );
 
+    // ── 会话写命令域（清理 / 归档 / 压缩）──
+    put(
+        &mut keep,
+        ctx,
+        &echo_plugin_session::SESSION_COMMAND_HOST_KEY,
+        Arc::new(AgentSessionCommandHost::new(wiring.agent.clone()))
+            as Arc<dyn echo_plugin_session::SessionCommandHost>,
+    );
+
     // ── 供应商 / API 命令域 ──
     put(
         &mut keep,
@@ -339,6 +349,8 @@ pub(crate) fn provided_keys() -> Vec<String> {
         FEDERATION_EVENTS.name().to_string(),
         MANAGEMENT_HOST.name().to_string(),
         SESSION_VIEW_HOST.name().to_string(),
+        // 会话写命令域（清理 / 归档 / 压缩）：2026-11 S6 从宿主迁进会话插件。
+        echo_plugin_session::SESSION_COMMAND_HOST_KEY.name().to_string(),
         PROVIDER_HOST.name().to_string(),
         SELF_UPDATE_EVENTS.name().to_string(),
         INSTANCE_CONTROL.name().to_string(),

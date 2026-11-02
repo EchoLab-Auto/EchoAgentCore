@@ -24,6 +24,7 @@ pub mod delta_batch;
 pub mod entry_identity;
 pub mod event;
 pub mod mode;
+pub mod timeline_text;
 
 pub use delta_batch::{DeltaBatcher, Emit, DEFAULT_BATCH_WINDOW};
 pub use entry_identity::EntryTracker;

@@ -103,6 +103,39 @@ fn ulid_now() -> String {
     out
 }
 
+/// 本节点身份（NodeId + 运行区域展示名）——会话线格式的出处标注。
+///
+/// 2026-11 自 `echo-agent::lib.rs` 下沉：会话插件（`echo-plugin-session`）
+/// 需要它来渲染 `SessionInfo`，而插件不能依赖宿主。字段语义原样保留：
+/// 空串 = 未注入/未命名，线格式上表现为「字段不下发」。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NodeIdentity {
+    /// federation NodeId（空 = 未注入，纯嵌入式用法）。
+    pub node_id: String,
+    /// 运行区域展示名（空 = 回退 NodeId）。
+    pub region_name: String,
+}
+
+impl NodeIdentity {
+    /// 构造一份身份（`region_name` 可为空串 = 回退 NodeId）。
+    pub fn new(node_id: impl Into<String>, region_name: impl Into<String>) -> Self {
+        Self {
+            node_id: node_id.into(),
+            region_name: region_name.into(),
+        }
+    }
+
+    /// 写出线格式用的 `node_id`（空 → `None`，字段不下发）。
+    pub fn node_id_field(&self) -> Option<String> {
+        (!self.node_id.is_empty()).then(|| self.node_id.clone())
+    }
+
+    /// 写出线格式用的 `region_name`（空 → `None`，字段不下发）。
+    pub fn region_name_field(&self) -> Option<String> {
+        (!self.region_name.is_empty()).then(|| self.region_name.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

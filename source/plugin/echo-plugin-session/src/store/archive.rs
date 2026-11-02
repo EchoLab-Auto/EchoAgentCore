@@ -190,7 +190,7 @@ impl TrunkStore {
             .ok_or_else(|| "会话快照序列化失败（时间线锁被占用）".to_string())?;
         let archive = self.write_archive_file(&data, None)?;
         self.clear_history().await;
-        self.push_timeline_blocking(crate::event::TimelineMessage::system(
+        self.push_timeline_blocking(echo_protocol::TimelineMessage::system(
             format!("历史已归档：{archive}"),
             String::new(),
             chrono::Utc::now().timestamp(),
@@ -219,7 +219,7 @@ impl TrunkStore {
             .ok_or_else(|| "会话快照序列化失败（时间线锁被占用）".to_string())?;
         let archive = self.write_archive_file(&data, None)?;
         self.clear_session(session_id).await;
-        self.push_timeline_blocking(crate::event::TimelineMessage::system(
+        self.push_timeline_blocking(echo_protocol::TimelineMessage::system(
             format!("会话历史已归档：{archive}（会话 {session_id}）"),
             session_id.to_string(),
             chrono::Utc::now().timestamp(),
@@ -407,7 +407,7 @@ impl TrunkStore {
         let archive_note = archive
             .map(|p| format!("，原事件已归档：{p}"))
             .unwrap_or_default();
-        self.push_timeline_blocking(crate::event::TimelineMessage::system(
+        self.push_timeline_blocking(echo_protocol::TimelineMessage::system(
             format!(
                 "历史已压缩：{total_replaced} 条事件 → {groups_done} 条摘要（各会话保留最近 ≥{keep_recent} 条）{archive_note}"
             ),

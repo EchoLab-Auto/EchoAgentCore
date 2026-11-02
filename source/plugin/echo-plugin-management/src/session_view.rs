@@ -4,7 +4,8 @@
 //!
 //! 本 crate 已经拥有**显示时间线的投影策略**（[`super::timeline`]：哪些事件
 //! 进面板、字段怎么映射、工具完成态怎么原地合并、推理条目发前端怎么瘦身）
-//! 与**按会话派生显示历史**（[`super::history`]）。而 `RequestState` /
+//! 与**会话视图的命令面**。按会话派生显示历史已随会话子系统外置到
+//! `echo-plugin-session::store::history`（2026-11 S6）。而 `RequestState` /
 //! `RequestContext` / `RequestTrunkTimeline` / `RequestTimelineEarlier` /
 //! `RequestSessionHistory` 正好是同一件事的命令面：**"面板看到什么"**。
 //!

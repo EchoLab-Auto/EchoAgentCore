@@ -29,7 +29,6 @@
 //! 时的对端连接接收）与 tokio/tungstenite——不依赖 `echo-agent`。
 
 pub mod host_keys;
-pub mod history;
 pub mod session_view;
 pub mod timeline;
 

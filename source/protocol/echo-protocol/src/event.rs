@@ -685,6 +685,13 @@ pub enum BackendEvent {
     },
     /// The current conversation context snapshot (`RequestContext` response).
     ContextSnapshot {
+        /// 快照归属的**人格**（2026-10 作用域普查）。
+        ///
+        /// 面板按 `(core, team, session)` 归档快照：同一个 core 内多个人格都可能
+        /// 有 `local:tui::local_user` 这个会话 id，只按 `(core, session)` 存会让
+        /// A 人格的快照覆盖 B 人格的（切人格后上下文面板显示别人的 tokens/消息）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team_id: Option<String>,
         /// 快照归属的会话 id（多会话，2026-09；None = 未指定会话的回退口径）。
         #[serde(default)]
         session_id: Option<String>,

@@ -1,5 +1,10 @@
 //! 按会话派生**显示历史**（事件日志 → 显示时间线形状）。
 //!
+//! 2026-11 自 `echo-plugin-management` 迁入：派生规则是**会话的投影**，与
+//! trunk 同一归属；留在管理面插件里会让"会话怎么派"与"面板怎么传"共用一次
+//! 编译，也触发插件互依赖门禁（`scripts/deps-policy.txt` 第 4 条）。共用的
+//! 显示文本工具已下沉到 `echo-protocol::timeline_text`。
+//!
 //! ## 为什么在这里
 //!
 //! 显示时间线是每人格一条、上限 1024 条的 FIFO 窗口——长期无活动的会话条目
@@ -40,7 +45,8 @@ use std::collections::HashMap;
 
 use echo_protocol::{TimelineMessage, TimelineSource, TimelineTool};
 
-use crate::timeline::{summarize_timeline_value, timeline_timer_task, truncate_one_line};
+use echo_protocol::timeline_text::{summarize_timeline_value, timeline_timer_task, truncate_one_line};
+use crate::store::TrunkStore;
 
 pub fn display_history_for_session(
 events: &[echo_session::SessionEvent],
@@ -642,5 +648,19 @@ mod tests {
     #[test]
     fn watermark_is_zero_for_empty_input() {
         assert_eq!(history_watermark(vec![], "s"), 0);
+    }
+}
+
+impl TrunkStore {
+    /// 从事件日志为单个会话派生显示历史（最近 `limit` 条，时间升序）。
+    ///
+    /// 返回 `(messages, total, truncated)`。规则全在上面的自由函数里，这里
+    /// 只把日志交出去——**一行转发**（2026-11 外置前它在宿主 `session/`）。
+    pub fn display_history_for_session(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> (Vec<TimelineMessage>, usize, bool) {
+        display_history_for_session(&self.event_log(), session_id, limit)
     }
 }

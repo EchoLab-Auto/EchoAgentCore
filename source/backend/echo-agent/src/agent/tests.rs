@@ -917,8 +917,7 @@ async fn clear_history_resends_remaining_timeline_not_empty() {
     agent.trunk.push_timeline(entry("sA", "A 的消息"));
     agent.trunk.push_timeline(entry("sB", "B 的消息"));
 
-    agent
-        .apply_command(BackendCommand::ClearHistory {
+    apply_session_command(&agent, BackendCommand::ClearHistory {
             team_id: Some("t".into()),
             session_id: Some("sA".into()),
         })
@@ -942,6 +941,28 @@ async fn clear_history_resends_remaining_timeline_not_empty() {
         "only the sibling session's entry remains: {messages:?}"
     );
     assert_eq!(messages[0].session_id, "sB");
+}
+
+/// 会话写命令走**插件路径**（2026-11 S6）。
+///
+/// 这三条命令归属 `echo-plugin-session`，宿主只剩接缝；测试直接构造
+/// 「插件处理器 + 宿主适配器」——那正是生产路径的两段
+/// （命令泵 → 插件 `handle` → `SessionCommandHost` trait）。
+async fn apply_session_command(agent: &Arc<Agent>, cmd: BackendCommand) {
+    let host = Arc::new(
+        crate::agent::session_commands_host::AgentSessionCommandHost::new(Arc::clone(agent)),
+    );
+    // 命令泵把插件的 `Err` 翻成一条 `Error` 事件（见 `apply_command` 的
+    // 分发分支）；测试照做，事件序列才与生产一致。
+    if let Err(message) = echo_plugin_session::commands::SessionCommandHandler::new(host)
+        .apply_command(cmd)
+        .await
+    {
+        agent.emit(BackendEvent::Error {
+            session_id: None,
+            message,
+        });
+    }
 }
 
 /// 2026-10 审计回归：无 session_id 的 ArchiveHistory 必须**拒绝**——
@@ -973,8 +994,7 @@ async fn archive_history_without_session_id_is_rejected_fail_closed() {
         ord: 0,
     });
 
-    agent
-        .apply_command(BackendCommand::ArchiveHistory {
+    apply_session_command(&agent, BackendCommand::ArchiveHistory {
             team_id: Some("t".into()),
             session_id: None,
         })
@@ -4896,8 +4916,7 @@ async fn clear_history_snapshot_targets_the_operated_session() {
         );
     }
 
-    agent
-        .apply_command(BackendCommand::ClearHistory {
+    apply_session_command(&agent, BackendCommand::ClearHistory {
             team_id: Some("t".into()),
             session_id: Some("sA".into()),
         })
@@ -4962,8 +4981,7 @@ async fn clear_history_without_session_id_is_rejected_fail_closed() {
         )],
     );
 
-    agent
-        .apply_command(BackendCommand::ClearHistory {
+    apply_session_command(&agent, BackendCommand::ClearHistory {
             team_id: Some("t".into()),
             session_id: None,
         })
@@ -5019,8 +5037,7 @@ async fn compact_result_is_a_session_scoped_notice() {
             .collect(),
     );
 
-    agent
-        .apply_command(BackendCommand::CompactHistory {
+    apply_session_command(&agent, BackendCommand::CompactHistory {
             team_id: Some("t".into()),
             session_id: Some(session.into()),
             keep_recent: Some(2),
@@ -5083,8 +5100,7 @@ async fn compact_without_session_id_is_rejected_fail_closed() {
             .collect(),
     );
 
-    agent
-        .apply_command(BackendCommand::CompactHistory {
+    apply_session_command(&agent, BackendCommand::CompactHistory {
             team_id: Some("t".into()),
             session_id: None,
             keep_recent: Some(2),

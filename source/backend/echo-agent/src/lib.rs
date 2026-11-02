@@ -11,47 +11,8 @@
 //!
 //! Platform instances are managed through [`echo_defs::plugin_instance::InstanceRegistry`].
 
-/// 本进程的节点身份：federation `NodeId`（`node-<ulid>`）+ 运行区域展示名。
-///
-/// `SessionInfo` / `TeamInfo` 等线格式携带它们，供多节点聚合客户端区分同名
-/// 会话 / 人格（每个 Core 的 `local:tui::local_user`、`default` 都可能相同），
-/// 并把「agent 运行在哪个区域」作为一等属性。
-///
-/// **装配方式（P3 终态）**：组合根在启动时构造**一份**，显式交给
-/// [`agent_manager::AgentManager`] 与每个 [`agent::Agent`]——不再经进程级
-/// kernel cell 存取，也不再为存放它而泄漏字符串。多节点/多区域场景下
-/// 「身份」是构造参数，不是进程全局事实。
-///
-/// 为什么不再是 `'static`：旧实现把两个 `String` 各 `Box::leak` 一次以塞进
-/// 进程级槽位；改成参数后按值持有（`Clone` 开销 = 两次小字符串拷贝），
-/// 展示路径（`SessionInfo`/`TeamInfo` 构造）本就每次都要 `String`。
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct NodeIdentity {
-    /// federation NodeId（空 = 未注入，纯嵌入式用法）。
-    pub node_id: String,
-    /// 运行区域展示名（空 = 回退 NodeId）。
-    pub region_name: String,
-}
-
-impl NodeIdentity {
-    /// 构造一份身份（`region_name` 可为空串 = 回退 NodeId）。
-    pub fn new(node_id: impl Into<String>, region_name: impl Into<String>) -> Self {
-        Self {
-            node_id: node_id.into(),
-            region_name: region_name.into(),
-        }
-    }
-
-    /// 写出线格式用的 `node_id`（空 → `None`，字段不下发）。
-    pub fn node_id_field(&self) -> Option<String> {
-        (!self.node_id.is_empty()).then(|| self.node_id.clone())
-    }
-
-    /// 写出线格式用的 `region_name`（空 → `None`，字段不下发）。
-    pub fn region_name_field(&self) -> Option<String> {
-        (!self.region_name.is_empty()).then(|| self.region_name.clone())
-    }
-}
+/// 节点身份词汇已下沉到 `echo-defs`（会话插件也要用它，而插件不能依赖宿主）。
+pub use echo_defs::node::NodeIdentity;
 
 pub mod agent;
 pub mod agent_manager;

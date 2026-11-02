@@ -24,6 +24,7 @@ echo-plugin-self-update = { workspace = true }
 echo-plugin-shell = { workspace = true }
 echo-plugin-federation = { workspace = true }
 echo-plugin-management = { workspace = true }
+echo-plugin-session = { workspace = true }
 echo-plugin-skills = { workspace = true }
 echo-plugin-loop = { workspace = true }
 echo-tool = { workspace = true }

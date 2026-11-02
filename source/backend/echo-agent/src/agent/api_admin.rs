@@ -1,10 +1,26 @@
-//! API 供应商与 profile 管理（API 设置面）。
+//! API 供应商与 profile 管理（API 设置面）——**宿主侧只剩状态副作用**。
 //!
-//! 从 `agent/mod.rs` 拆出（框架优化）：`Agent` 的 API 配置 CRUD（update/
-//! switch/delete/test/balance）、provider 热重建、配置持久化与探测配置
-//! 解析。边界干净：只依赖 config + provider 工厂 + emit。纯移动零行为变化。
+//! ## 分工（2026-11 S7）
+//!
+//! | 关注点 | 归属 |
+//! |---|---|
+//! | 探针配置解析、指标目标、`core.toml` 补丁、`ApiConfigUpdated` 事件装配、探针文案、测试 API 全流程 | `echo_plugin_provider_llm::api_admin`（插件） |
+//! | 池规则（空字段继承 / 空 key 保留 / 改名连带） | `echo_plugin_provider_llm::admin`（插件，更早搬过） |
+//! | `Agent.model.config` 的锁、provider 重建、落盘、余额/指标落库、周期任务 | 本文件（宿主） |
+//!
+//! 判据是"有没有状态"：纯函数与文案搬得走，`tokio::RwLock<AgentConfig>` 与
+//! 网络/存储副作用搬不走。
+//!
+//! ## 一处口径复制与它的守卫
+//!
+//! [`echo_plugin_provider_llm::api_admin::ApiSnapshot`] ���制了 `AgentConfig`
+//! 的四个解析口径。`api_snapshot_matches_agent_config` 测试守着两者同输入
+//! 同输出——复制是"插件不依赖宿主配置类型"的代价，测试是这笔代价的利息。
 
 use super::*;
+use echo_plugin_provider_llm::api_admin::{
+    self as admin_api, ApiAdminHost, ApiSnapshot,
+};
 
 impl Agent {
     /// Current API configuration summary (for the TUI settings form).
@@ -35,40 +51,9 @@ impl Agent {
             cfg.api_profiles = snapshot.profiles;
             cfg.active_api = snapshot.active_api;
         }
-        let mut resolved = cfg.clone();
-        resolved.apply_active_profile();
-        let key_set = !resolved.effective_api_key().is_empty();
-        let profiles: Vec<crate::event::ApiProfileInfo> = cfg
-            .api_profiles
-            .iter()
-            .map(|p| crate::event::ApiProfileInfo {
-                name: p.name.clone(),
-                provider: p.provider.clone(),
-                model: p.model.clone(),
-                base_url: p.base_url.clone(),
-                api_key_set: !p.api_key.is_empty(),
-                thinking: p.thinking,
-                reasoning_effort: p.reasoning_effort,
-            })
-            .collect();
         let model = self.active_model().await;
-        vec![
-            BackendEvent::ApiConfigUpdated {
-                provider: resolved.provider.clone(),
-                model,
-                base_url: resolved.effective_base_url(),
-                api_key_set: key_set,
-                thinking: resolved.thinking,
-                reasoning_effort: resolved.reasoning_effort,
-                system_prompt: cfg.system_prompt.clone(),
-                active_api: cfg.active_api.clone(),
-                profiles: profiles.clone(),
-            },
-            BackendEvent::ApiProfilesUpdated {
-                active_api: cfg.active_api.clone(),
-                profiles,
-            },
-        ]
+        // 事件形状（谁带生效值、谁带池原样）是协议知识 → 插件里装配。
+        admin_api::api_config_events(&api_snapshot_of(&cfg), &model)
     }
 
     /// Rebuild the LLM provider from the current config snapshot.
@@ -593,71 +578,11 @@ impl Agent {
     /// `name` empty tests the active (top-level) config; otherwise the named
     /// profile's values are used. Emits `BackendEvent::ApiTestResult`; the
     /// active provider is never modified.
-    pub(crate) async fn test_api_config(&self, name: &str) {
-        let timestamp_start = std::time::Instant::now();
-        let config = self.model.config.read().await.clone();
-
-        // Resolve the config to test: named profile or the active default.
-        let probe = match resolve_probe_config(&config, name) {
-            Ok(probe) => probe,
-            Err(message) => {
-                self.emit(BackendEvent::ApiTestResult {
-                    name: name.into(),
-                    ok: false,
-                    message,
-                    latency_ms: timestamp_start.elapsed().as_millis() as u64,
-                });
-                return;
-            }
-        };
-
-        // Build a throwaway provider from the probe config.
-        let provider = match create_provider(&probe) {
-            Ok(provider) => provider,
-            Err(error) => {
-                self.emit(BackendEvent::ApiTestResult {
-                    name: name.into(),
-                    ok: false,
-                    message: format!("provider build failed: {error}"),
-                    latency_ms: timestamp_start.elapsed().as_millis() as u64,
-                });
-                return;
-            }
-        };
-
-        let model = probe.model.clone();
-        let request = ChatRequest {
-            model: model.clone(),
-            messages: vec![ChatMessage::user("ping")],
-            tools: None,
-            temperature: Some(0.0),
-            max_tokens: Some(4),
-        };
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(20), provider.chat(&request)).await;
-
-        let latency_ms = timestamp_start.elapsed().as_millis() as u64;
-        let (ok, message) = match result {
-            Ok(Ok(response)) => (
-                true,
-                match response.content {
-                    Some(content) if !content.trim().is_empty() => format!(
-                        "OK ({}) — 响应: {}",
-                        model,
-                        echo_defs::token::truncate(content.trim(), 60)
-                    ),
-                    _ => format!("OK ({model}) — 收到空响应"),
-                },
-            ),
-            Ok(Err(error)) => (false, format!("请求失败: {error}")),
-            Err(_) => (false, "请求超时（>20s）".into()),
-        };
-        self.emit(BackendEvent::ApiTestResult {
-            name: name.into(),
-            ok,
-            message,
-            latency_ms,
-        });
+    pub(crate) async fn test_api_config(self: &std::sync::Arc<Self>, name: &str) {
+        // 全流程（解析探针配置 → 探针 → 文案 → 事件）在插件里；宿主只提供
+        // 「一次读取快照」与「一次探针往返」两个副作用出口。
+        let host = AgentApiAdminHost::new(Arc::clone(self));
+        admin_api::run_test_api(&host, name).await;
     }
 
     /// 查询 API 账户余额（目前仅 DeepSeek 官方端点支持 `/user/balance`）。
@@ -941,45 +866,16 @@ impl Agent {
     }
 }
 
-/// 把 `cfg` 快照序列化进 `root["agent"]`（改名与常规持久化共用，保证
-/// 「api_key 保留」「teams/disabled_teams 以磁盘为准」两条口径不漂移）。
+/// 把 `cfg` 快照序列化进 `root["agent"]`。
 ///
-/// - `api_key` 排除在 `AgentConfig` 泛型序列化之外：显式键非空时写入该值，
-///   否则保留磁盘现值——任何无关保存都不得把文件里的 key 抹掉；
-/// - `teams` / `disabled_teams` 由 AgentManager 独立持久化：快照里的副本
-///   可能已过期，一律以磁盘为准，避免"某次无关保存把人格名单写回旧值"。
+/// **补丁规则在插件里**（`echo_plugin_provider_llm::api_admin::patch_agent_table`）：
+/// 「api_key 保留磁盘值」「teams 以磁盘为准」是 API 设置面的口径，不是宿主的。
+/// 宿主只负责把它自己的配置类型序列化成表（`#[serde(skip_serializing)]` 之类
+/// 的细节宿主最清楚）。
 fn patch_agent_table(root: &mut toml::Table, cfg: &AgentConfig) -> Result<(), String> {
-    let mut value =
+    let value =
         toml::Value::try_from(cfg).map_err(|e| format!("serialize agent config: {e}"))?;
-    let key_value = if cfg.api_key.is_empty() {
-        root.get("agent")
-            .and_then(|agent| agent.get("api_key"))
-            .cloned()
-    } else {
-        Some(toml::Value::String(cfg.api_key.clone()))
-    };
-    if let Some(key_value) = key_value {
-        value
-            .as_table_mut()
-            .expect("serialized agent config is a table")
-            .insert("api_key".into(), key_value);
-    }
-    let table = value
-        .as_table_mut()
-        .expect("serialized agent config is a table");
-    for key in ["teams", "disabled_teams"] {
-        let disk = root.get("agent").and_then(|agent| agent.get(key)).cloned();
-        match disk {
-            Some(v) => {
-                table.insert(key.into(), v);
-            }
-            None => {
-                table.remove(key);
-            }
-        }
-    }
-    root.insert("agent".into(), value);
-    Ok(())
+    admin_api::patch_agent_table(root, value, &cfg.api_key)
 }
 
 /// 一次余额查询的结果（金额为原始字符串，如 `"1287.91"`）。
@@ -1014,13 +910,7 @@ pub(crate) use echo_plugin_provider_llm::balance::deepseek_balance_endpoint;
 /// profile——空名的解析会合入该 profile），去重跳过空名，避免同一账户
 /// 产生双份序列。
 fn metrics_targets(config: &AgentConfig) -> Vec<String> {
-    let active = config.active_api.trim();
-    let mut targets = Vec::with_capacity(config.api_profiles.len() + 1);
-    if active.is_empty() || !config.api_profiles.iter().any(|p| p.name == active) {
-        targets.push(String::new());
-    }
-    targets.extend(config.api_profiles.iter().map(|p| p.name.clone()));
-    targets
+    admin_api::metrics_targets(&api_snapshot_of(config))
 }
 
 /// Build the config snapshot used for a connectivity probe.
@@ -1033,40 +923,186 @@ pub(crate) fn resolve_probe_config(
     config: &crate::config::AgentConfig,
     name: &str,
 ) -> Result<crate::config::AgentConfig, String> {
-    let mut probe = config.clone();
-    if name.is_empty() {
-        probe.apply_active_profile();
-    } else {
-        let profile = config
-            .api_profiles
-            .iter()
-            .find(|p| p.name == name)
-            .ok_or_else(|| format!("profile not found: {name}"))?;
-        // 与 apply_active_profile 一致的宽松语义：profile 的空字段
-        // 回退到当前生效值，避免字段残缺的 profile 测不出本来的配置。
-        if !profile.provider.is_empty() {
-            probe.provider = profile.provider.clone();
-        }
-        if !profile.model.is_empty() {
-            probe.model = profile.model.clone();
-        }
-        if !profile.base_url.is_empty() {
-            probe.base_url = profile.base_url.clone();
-        }
-        if !profile.api_key.is_empty() {
-            probe.api_key = profile.api_key.clone();
-        }
-        probe.thinking = profile.thinking;
-        probe.reasoning_effort = profile.reasoning_effort;
+    let snapshot = api_snapshot_of(config);
+    let probe = admin_api::resolve_probe_config(&snapshot, name)?;
+    // 探针只用到 API 那几项，其余（pricing / max_tokens / 工具配置）沿用原
+    // 快照——provider 构建会读它们。
+    let mut out = config.clone();
+    out.provider = probe.provider;
+    out.model = probe.model;
+    out.base_url = probe.base_url;
+    out.api_key = probe.api_key;
+    out.thinking = probe.thinking;
+    out.reasoning_effort = probe.reasoning_effort;
+    Ok(out)
+}
+
+/// 宿主配置 → 插件认识的窄视图（插件不依赖 `AgentConfig`）。
+pub(crate) fn api_snapshot_of(config: &AgentConfig) -> ApiSnapshot {
+    ApiSnapshot {
+        provider: config.provider.clone(),
+        model: config.model.clone(),
+        base_url: config.base_url.clone(),
+        api_key: config.api_key.clone(),
+        thinking: config.thinking,
+        reasoning_effort: config.reasoning_effort,
+        api_profiles: config.api_profiles.clone(),
+        active_api: config.active_api.clone(),
+        system_prompt: config.system_prompt.clone(),
     }
-    probe.api_key = probe.effective_api_key();
-    probe.base_url = probe.effective_base_url();
-    if probe.provider.is_empty() {
-        return Err(format!(
-            "provider not set (name={name}); 请先在设置中配置 Provider/API 或激活某个 profile"
-        ));
+}
+
+/// 窄视图 → 宿主配置（沿用 `base` 的其余字段）。
+fn config_from_snapshot(base: &AgentConfig, snapshot: &ApiSnapshot) -> AgentConfig {
+    let mut out = base.clone();
+    out.provider = snapshot.provider.clone();
+    out.model = snapshot.model.clone();
+    out.base_url = snapshot.base_url.clone();
+    out.api_key = snapshot.api_key.clone();
+    out.thinking = snapshot.thinking;
+    out.reasoning_effort = snapshot.reasoning_effort;
+    out.api_profiles = snapshot.api_profiles.clone();
+    out.active_api = snapshot.active_api.clone();
+    out
+}
+
+/// [`ApiAdminHost`] 的宿主实现：一个 persona 视角的 API 设置副作用出口。
+pub(crate) struct AgentApiAdminHost {
+    agent: Arc<Agent>,
+}
+
+impl AgentApiAdminHost {
+    pub(crate) fn new(agent: Arc<Agent>) -> Self {
+        Self { agent }
     }
-    Ok(probe)
+}
+
+impl ApiAdminHost for AgentApiAdminHost {
+    fn snapshot(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ApiSnapshot> + Send + '_>> {
+        Box::pin(async move {
+            let config = self.agent.model.config.read().await.clone();
+            api_snapshot_of(&config)
+        })
+    }
+
+    fn rebuild_provider<'a>(
+        &'a self,
+        snapshot: ApiSnapshot,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move {
+            let base = self.agent.model.config.read().await.clone();
+            let config = config_from_snapshot(&base, &snapshot);
+            self.agent.rebuild_provider(&config).await
+        })
+    }
+
+    fn persist<'a>(
+        &'a self,
+        snapshot: ApiSnapshot,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let base = self.agent.model.config.read().await.clone();
+            let config = config_from_snapshot(&base, &snapshot);
+            self.agent.persist_config(&config).await;
+        })
+    }
+
+    fn probe<'a>(
+        &'a self,
+        snapshot: ApiSnapshot,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            // 探针用**临时** provider（不碰运行中的那个）：建失败 / 超时都
+            // 只影响这一次测试。
+            let base = self.agent.model.config.read().await.clone();
+            let probe_config = config_from_snapshot(&base, &snapshot);
+            let provider = create_provider(&probe_config)
+                .map_err(|error| format!("provider build failed: {error}"))?;
+            let request = ChatRequest {
+                model: probe_config.model.clone(),
+                messages: vec![ChatMessage::user("ping")],
+                tools: None,
+                temperature: Some(0.0),
+                max_tokens: Some(4),
+            };
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                provider.chat(&request),
+            )
+            .await
+            {
+                Ok(Ok(response)) => Ok(response.content.unwrap_or_default()),
+                Ok(Err(error)) => Err(format!("{error}")),
+                Err(_) => Err("请求超时（>20s）".into()),
+            }
+        })
+    }
+
+    fn emit(&self, event: BackendEvent) {
+        self.agent.emit(event);
+    }
+}
+
+#[cfg(test)]
+mod snapshot_parity_tests {
+    use super::*;
+
+    /// 插件侧的 [`ApiSnapshot`] 复制了 `AgentConfig` 的四个解析口径。
+    ///
+    /// 这条测试守着两份实现不漂移：同一份配置喂给两边，四个解析结果必须
+    /// 逐项相同。它存在的前提是"复制换来了插件不依赖宿主配置类型"，代价
+    /// 由这里付利息。
+    #[test]
+    fn api_snapshot_matches_agent_config() {
+        let mut config = AgentConfig {
+            provider: "openai".into(),
+            model: "top".into(),
+            base_url: String::new(),
+            api_key: "k".into(),
+            ..Default::default()
+        };
+        config.api_profiles.push(ApiProfile {
+            name: "p1".into(),
+            provider: "deepseek".into(),
+            model: "m1".into(),
+            base_url: "https://example.invalid".into(),
+            ..Default::default()
+        });
+
+        // 口径一：无激活 profile 时快照保持顶层值。
+        let snapshot = api_snapshot_of(&config);
+        assert_eq!(snapshot.effective_api_key(), config.effective_api_key());
+        assert_eq!(snapshot.effective_base_url(), config.effective_base_url());
+        assert_eq!(snapshot.active_profile().map(|p| &p.name), config.active_profile().map(|p| &p.name));
+
+        // 口径二：激活 profile 的非空覆盖。
+        config.active_api = "p1".into();
+        let snapshot = api_snapshot_of(&config);
+        let mut agent_side = config.clone();
+        agent_side.apply_active_profile();
+        let mut plugin_side = snapshot.clone();
+        plugin_side.apply_active_profile();
+        assert_eq!(plugin_side.provider, agent_side.provider);
+        assert_eq!(plugin_side.model, agent_side.model);
+        assert_eq!(plugin_side.base_url, agent_side.base_url);
+        assert_eq!(plugin_side.api_key, agent_side.api_key);
+        assert_eq!(plugin_side.thinking, agent_side.thinking);
+        assert_eq!(plugin_side.reasoning_effort, agent_side.reasoning_effort);
+        assert_eq!(plugin_side.effective_api_key(), agent_side.effective_api_key());
+        assert_eq!(plugin_side.effective_base_url(), agent_side.effective_base_url());
+
+        // 口径三：探针配置解析（具名 profile 的空字段回退）。
+        let host_probe = resolve_probe_config(&config, "p1").expect("host probe");
+        let plugin_probe = admin_api::resolve_probe_config(&snapshot, "p1").expect("plugin probe");
+        assert_eq!(host_probe.model, plugin_probe.model);
+        assert_eq!(host_probe.base_url, plugin_probe.base_url);
+        assert_eq!(host_probe.api_key, plugin_probe.api_key);
+
+        // 口径四：指标目标列表。
+        assert_eq!(metrics_targets(&config), admin_api::metrics_targets(&snapshot));
+    }
 }
 
 #[cfg(test)]

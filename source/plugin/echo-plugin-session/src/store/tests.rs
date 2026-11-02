@@ -407,7 +407,7 @@ async fn session_info_has_platform_fields() {
     let store = TrunkStore::new(1000);
     let key = SessionKey::parse("qq:group:789:456").unwrap();
     let s = store.get_or_create(&key, "bob".into(), Some("TestGroup".into()));
-    let info = s.info("last msg".into(), &crate::NodeIdentity::default());
+    let info = s.info("last msg".into(), &echo_defs::node::NodeIdentity::default());
     assert_eq!(info.platform, "qq");
     assert_eq!(info.scope, "group");
     assert_eq!(info.user_id, "456");
@@ -424,12 +424,12 @@ async fn session_info_carries_injected_node_identity() {
     let store = TrunkStore::new(1000);
     let key = SessionKey::parse("local:tui::local_user").expect("valid session id");
     let s = store.get_or_create(&key, "alice".into(), None);
-    let identity = crate::NodeIdentity::new("node-01abc", "办公机");
+    let identity = echo_defs::node::NodeIdentity::new("node-01abc", "办公机");
     let info = s.info(String::new(), &identity);
     assert_eq!(info.node_id.as_deref(), Some("node-01abc"));
     assert_eq!(info.region_name.as_deref(), Some("办公机"));
     // 区域名为空 = 字段不下发（回退 NodeId 由前端做）。
-    let bare = crate::NodeIdentity::new("node-01abc", "");
+    let bare = echo_defs::node::NodeIdentity::new("node-01abc", "");
     let info = s.info(String::new(), &bare);
     assert_eq!(info.node_id.as_deref(), Some("node-01abc"));
     assert_eq!(info.region_name, None);
@@ -708,7 +708,7 @@ fn v2_shared_object_migrates_into_first_identity() {
 fn timeline_push_caps_at_max_and_keeps_newest() {
     let store = TrunkStore::new(1000);
     for i in 0..(TRUNK_TIMELINE_MAX + 50) {
-        store.push_timeline(crate::event::TimelineMessage {
+        store.push_timeline(echo_protocol::TimelineMessage {
             kind: "user".into(),
             content: format!("msg-{i}"),
             session_id: "local:tui::local_user".into(),
@@ -750,7 +750,7 @@ async fn clear_history_wipes_log_trunk_timeline_and_disk() {
             images: vec![],
         },
     ));
-    store.push_timeline(crate::event::TimelineMessage {
+    store.push_timeline(echo_protocol::TimelineMessage {
         kind: "user".into(),
         content: "记住我".into(),
         session_id: "local:tui::local_user".into(),
@@ -803,7 +803,7 @@ async fn clear_session_only_wipes_target_and_keeps_siblings() {
             images: vec![],
         })
     };
-    let timeline_msg = |session: &str, content: &str, ts: i64| crate::event::TimelineMessage {
+    let timeline_msg = |session: &str, content: &str, ts: i64| echo_protocol::TimelineMessage {
         kind: "user".into(),
         content: content.into(),
         session_id: session.into(),
@@ -1017,7 +1017,7 @@ async fn clear_session_keeps_legacy_unattributed_events() {
 async fn timeline_probe_counters_track_writes() {
     use std::sync::atomic::Ordering::Relaxed;
     let store = TrunkStore::new(1000);
-    let message = |session: &str| crate::event::TimelineMessage {
+    let message = |session: &str| echo_protocol::TimelineMessage {
         kind: "user".into(),
         content: "x".into(),
         session_id: session.into(),
@@ -1080,12 +1080,12 @@ async fn timeline_roundtrips_through_the_persisted_file() {
     let _ = std::fs::remove_file(&path);
     let store = TrunkStore::new(1000);
     store.set_persist_path(&path);
-    store.push_timeline(crate::event::TimelineMessage {
+    store.push_timeline(echo_protocol::TimelineMessage {
         kind: "user".into(),
         content: "你好".into(),
         session_id: "qq:dm::123".into(),
         time: 1700000000,
-        source: Some(crate::event::TimelineSource {
+        source: Some(echo_protocol::TimelineSource {
             instance_name: "qq".into(),
             platform: "qq".into(),
             user_id: "123".into(),
@@ -1101,7 +1101,7 @@ async fn timeline_roundtrips_through_the_persisted_file() {
         seq: 0,
         ord: 0,
     });
-    store.push_timeline(crate::event::TimelineMessage {
+    store.push_timeline(echo_protocol::TimelineMessage {
         kind: "backend".into(),
         content: "回复".into(),
         session_id: "qq:dm::123".into(),
@@ -1155,7 +1155,7 @@ fn v3_file_without_timeline_loads_with_empty_timeline() {
 }
 
 fn push_user(store: &TrunkStore, content: &str) {
-    store.push_timeline(crate::event::TimelineMessage {
+    store.push_timeline(echo_protocol::TimelineMessage {
         kind: "user".into(),
         content: content.into(),
         session_id: "local:tui::local_user".into(),
@@ -1332,10 +1332,10 @@ async fn timeline_seq_survives_save_load() {
 #[test]
 fn baseline_tool_message_structure_is_lost_on_roundtrip() {
     let message = ChatMessage {
-        role: crate::llm::ChatRole::Assistant,
+        role: echo_defs::message::ChatRole::Assistant,
         content: "".into(),
         reasoning_content: None,
-        tool_calls: Some(vec![crate::llm::ToolCall {
+        tool_calls: Some(vec![echo_defs::message::ToolCall {
             id: "call_1".into(),
             name: "send_private_msg".into(),
             arguments: r#"{"user_id":123,"content":"hi"}"#.into(),
@@ -1413,7 +1413,7 @@ fn oversized_newest_message_is_truncated_to_fit_the_budget() {
     let mut history = vec![ChatMessage::user("x".repeat(600))];
     trim_by_tokens(&mut history, 100);
     assert_eq!(history.len(), 1);
-    let tokens = crate::llm::estimate_message_tokens(&history[0]);
+    let tokens = echo_defs::token::estimate_message_tokens(&history[0]);
     assert!(
         tokens <= 100,
         "truncated message must fit the budget, got {tokens} tokens"
@@ -2040,7 +2040,7 @@ async fn apply_compaction_keeps_events_arriving_after_preview() {
     store.append_event(ev_user(sid, "窗口期新消息 A"));
     store.append_event(ev_user(sid, "窗口期新消息 B"));
 
-    let summaries = vec![crate::session::CompactionSummary {
+    let summaries = vec![echo_session::CompactionSummary {
         session: Some(sid.to_string()),
         summary: "[历史摘要] 前 7 条的摘要".into(),
         replaced_count: preview.total_replaced,
@@ -2291,7 +2291,7 @@ fn restore_timeline_renumbers_mixed_ord_strictly_increasing() {
     let store = TrunkStore::new(200_000);
     let mut timeline = Vec::new();
     for (index, ord) in [0u64, 5, 0, 7, 0].into_iter().enumerate() {
-        let mut message = crate::event::TimelineMessage::backend(
+        let mut message = echo_protocol::TimelineMessage::backend(
             format!("m{index}"),
             "s1",
             1000 + index as i64,
@@ -2321,7 +2321,7 @@ fn restore_timeline_renumbers_mixed_ord_strictly_increasing() {
 fn timeline_window_tail_returns_newest_page_and_flags_truncation() {
     let store = TrunkStore::new(200_000);
     for i in 0..50 {
-        store.push_timeline(crate::event::TimelineMessage::backend(
+        store.push_timeline(echo_protocol::TimelineMessage::backend(
             format!("m{i}"),
             "s1",
             1000 + i,
@@ -2348,7 +2348,7 @@ fn timeline_window_tail_returns_newest_page_and_flags_truncation() {
 fn timeline_page_walks_backwards_by_ord_without_gaps_or_duplicates() {
     let store = TrunkStore::new(200_000);
     for i in 0..50 {
-        store.push_timeline(crate::event::TimelineMessage::backend(
+        store.push_timeline(echo_protocol::TimelineMessage::backend(
             format!("m{i}"),
             "s1",
             1000 + i,
@@ -2391,7 +2391,7 @@ fn timeline_page_walks_backwards_by_ord_without_gaps_or_duplicates() {
 fn timeline_page_survives_non_monotonic_seq_and_live_appends() {
     let store = TrunkStore::new(200_000);
     for i in 0..30 {
-        store.push_timeline(crate::event::TimelineMessage::backend(
+        store.push_timeline(echo_protocol::TimelineMessage::backend(
             format!("m{i}"),
             "s1",
             1000 + i,
@@ -2430,7 +2430,7 @@ fn timeline_page_survives_non_monotonic_seq_and_live_appends() {
     collected = next;
     assert!(more1);
     for i in 30..35 {
-        store.push_timeline(crate::event::TimelineMessage::backend(
+        store.push_timeline(echo_protocol::TimelineMessage::backend(
             format!("m{i}"),
             "s1",
             2000 + i,
@@ -2468,7 +2468,7 @@ fn timeline_page_at_start_and_beyond_bounds() {
     assert!(store.timeline_page(0, 10).0.is_empty(), "空时间线返回空页");
 
     for i in 0..5 {
-        store.push_timeline(crate::event::TimelineMessage::backend(
+        store.push_timeline(echo_protocol::TimelineMessage::backend(
             format!("m{i}"),
             "s1",
             1000 + i,

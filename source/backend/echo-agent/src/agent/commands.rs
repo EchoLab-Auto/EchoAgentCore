@@ -70,6 +70,7 @@ impl Agent {
             .collect();
         let blocks = self.context_blocks(resolved.as_deref(), &history).await;
         vec![BackendEvent::ContextSnapshot {
+            team_id: self.team_id(),
             session_id: resolved,
             messages,
             blocks,
@@ -128,29 +129,6 @@ impl Agent {
         )
     }
 
-    /// 按范围清理人格记忆：`Some(session)` = 仅该会话；`None` = 全部会话。
-    async fn clear_one_session(agent: &Agent, session: &str) {
-        agent.trunk.clear_session(session).await;
-        // Session API cleanup consistency: the history is gone, so the override
-        // must go too (otherwise the session silently reuses the old profile).
-        agent.model.session_providers.remove(session);
-    }
-
-    /// 清理后的闭环：重发实际剩余时间线 + 该会话的快照 + 会话级回执。
-    ///
-    /// 快照必须发给**被清理的会话**：走 `emit_context_snapshot(None)` 会落到
-    /// 本地 TUI 会话，当前窗口的上下文面板因此不刷新（2026-10 作用域普查）。
-    async fn notify_session_cleared(agent: &Agent, team_id: Option<String>, session: &str) {
-        Self::emit_timeline_after_clear(agent, team_id.clone());
-        agent.emit_context_snapshot(Some(session)).await;
-        agent.emit(BackendEvent::Notice {
-            team_id,
-            session_id: Some(session.to_string()),
-            ok: true,
-            message: format!("会话历史已清理（{session}）"),
-        });
-    }
-
     /// 会话级 API 覆盖的持久化（2026-10 用户报障修复）：把
     /// `local:workspace:` 通道的覆盖写入对应工作区对话（`profile` = `None`
     /// 清除）。非工作区会话直接跳过。落盘失败 emit `BackendEvent::Error`
@@ -179,23 +157,6 @@ impl Agent {
         }
     }
 
-    /// 清理历史后向面板重发**实际剩余**的显示时间线（全量重建语义）。
-    ///
-    /// 2026-10 用户报告修复：此前无条件发 `messages: Vec::new()`——面板把
-    /// "空全量"当权威数据，会清掉**整个本地聊天缓存**（含未被清理的其他
-    /// 会话），且本地游标被推进到最新、刷新也拉不回来（增量=空）。改为发
-    /// 清理后的真实剩余条目（快照为同步短锁 clone，不存在降级为空的路径）。
-    fn emit_timeline_after_clear(agent: &Agent, team_id: Option<String>) {
-        let messages = agent.trunk.timeline_snapshot();
-        let messages = crate::timeline::elide_reasoning_for_wire(messages);
-        agent.emit(BackendEvent::TrunkTimeline {
-            messages,
-            seq: agent.trunk.timeline_seq(),
-            team_id,
-            full: true,
-            has_more: false, // 全量重建：已含全部条目
-        });
-    }
     pub async fn apply_command(self: &std::sync::Arc<Self>, cmd: BackendCommand) {
         // ---- 去主智能体：会话类命令按显式 team_id 路由 ----
         // 每个智能体一律平等；没有"默认人格"兜底，缺失 team_id 直接报错。
@@ -503,57 +464,21 @@ impl Agent {
                         .into(),
                 });
             }
-            BackendCommand::ClearHistory {
-                team_id,
-                session_id,
-            } => {
-                // Session-scoped clear (2026-10 用户报告修复): only the target
-                // session — before this it was team-only, so the panel's
-                // "clear history" wiped every session of that persona (QQ
-                // dm/groups, other workspace conversations).
-                //
-                // Migration fail-closed (2026-10 作用域普查): without a
-                // session the old semantics were FULL wipe (event log +
-                // projections + timeline), and no UI entry needs it (the panel
-                // always sends the session). Same contract as Archive/Compact:
-                // missing = stale client, refuse instead of degrading.
-                let Some(session) = session_id.clone().filter(|s| !s.is_empty()) else {
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message:
-                            "清理历史需要指定会话（session_id 缺失——客户端过旧，请升级面板后重试）"
-                                .into(),
-                    });
-                    return;
-                };
-                match team_id {
-                    Some(id) => match self.registry().and_then(|r| r.resolve(&id)) {
-                        Some(agent) => {
-                            Self::clear_one_session(&agent, &session).await;
-                            tracing::info!(team = %id, session = %session, "clear history command applied");
-                            Self::notify_session_cleared(&agent, Some(id), &session).await;
-                        }
-                        // No manager (embedded/tests) but the command already
-                        // reached the target persona (team matches): handle it
-                        // ourselves, same as the RequestTrunkTimeline fallback.
-                        None if self.team_id().as_deref() == Some(id.as_str()) => {
-                            Self::clear_one_session(self, &session).await;
-                            tracing::info!(team = %id, session = %session, "clear history command applied (self)");
-                            Self::notify_session_cleared(self, Some(id), &session).await;
-                        }
-                        None => self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("team {id} 不存在"),
-                        }),
-                    },
-                    // `requires_explicit_team` already rejects team-less calls;
-                    // this is only a defensive fallback with the same semantics.
-                    None => {
-                        Self::clear_one_session(self, &session).await;
-                        tracing::info!(session = %session, "clear history command applied (no team scope)");
-                        Self::notify_session_cleared(self, None, &session).await;
-                    }
-                }
+            // ── 会话写命令（清理 / 归档 / 压缩）已迁进 `echo-plugin-session` ──
+            //
+            // 校验（session_id 缺失 = 拒绝）、fail-closed 文案、归档进度事件、
+            // 清理后重发真实剩余时间线、回执——全在插件的 `commands` 域。宿主
+            // 只留"只有它做得了"的四件事（人格解析 / 压缩 / 快照 / 覆盖表），
+            // 见 `AgentSessionCommandHost`。这里只剩"插件未启用"的兜底。
+            BackendCommand::ClearHistory { .. }
+            | BackendCommand::ArchiveHistory { .. }
+            | BackendCommand::CompactHistory { .. } => {
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message:
+                        "会话写命令（清理/归档/压缩）由 echo-agent.session 插件处理，但该插件未启用"
+                            .into(),
+                });
             }
             BackendCommand::CancelRequestedWork {
                 session_id,
@@ -568,177 +493,6 @@ impl Agent {
             }
             BackendCommand::RequestTeamsList => {
                 self.emit_teams_list().await;
-            }
-            BackendCommand::ArchiveHistory {
-                team_id,
-                session_id,
-            } => {
-                // 迁移期 fail-closed（2026-10 审计）：无 session_id 的归档在
-                // 旧语义下是"整档归档 + **全量清空**"——误清代价不可恢复，
-                // 且没有任何 UI 入口需要它（唯一客户端面板已升级为必带
-                // session_id）。缺失即视为过旧客户端：拒绝，而非降级执行
-                // 全量清空。
-                let Some(session) = session_id.filter(|s| !s.is_empty()) else {
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message:
-                            "归档需要指定会话（session_id 缺失——客户端过旧，请升级面板后重试）"
-                                .into(),
-                    });
-                    return;
-                };
-                // 会话级归档（2026-10 审计）：只归档并清空该会话，其他会话
-                // 不受影响——与面板「归档当前会话」的承诺对齐。此前该命令
-                // 无会话维度，点一次清掉同人格全部会话（「清理历史记忆」
-                // 同类漏网）。
-                if let Some(id) = team_id {
-                    match self.registry().and_then(|r| r.resolve(&id)) {
-                        Some(agent) => {
-                            match agent.archive_session_with_progress(&session).await {
-                                Ok(path) => {
-                                    tracing::info!(
-                                        team = %id,
-                                        session = %session,
-                                        "archive history command applied"
-                                    );
-                                    // 归档后重发**实际剩余**的显示时间线（全量）——
-                                    // 与会话级清理同一闭环（2026-10 审计：此前不重发，
-                                    // 面板残留被归档会话的旧聊天）。
-                                    Self::emit_timeline_after_clear(&agent, Some(id.clone()));
-                                    agent.emit_context_snapshot(Some(&session)).await;
-                                    agent.emit(BackendEvent::Notice {
-                                        team_id: Some(id.clone()),
-                                        session_id: Some(session.clone()),
-                                        ok: true,
-                                        message: format!("历史已归档：{path}"),
-                                    });
-                                }
-                                Err(e) => agent.emit(BackendEvent::Notice {
-                                    team_id: Some(id.clone()),
-                                    session_id: Some(session.clone()),
-                                    ok: false,
-                                    message: format!("归档失败：{e}"),
-                                }),
-                            }
-                        }
-                        // 无管理器（嵌入式/测试）但消息已送达目标人格本体
-                        // （team 匹配）时，按转发语义直接处理自身——与
-                        // ClearHistory 的兜底保持一致。
-                        None if self.team_id().as_deref() == Some(id.as_str()) => {
-                            match self.archive_session_with_progress(&session).await {
-                                Ok(path) => {
-                                    tracing::info!(
-                                        team = %id,
-                                        session = %session,
-                                        "archive history command applied (self)"
-                                    );
-                                    Self::emit_timeline_after_clear(self, Some(id.clone()));
-                                    self.emit_context_snapshot(Some(&session)).await;
-                                    self.emit(BackendEvent::Notice {
-                                        team_id: Some(id.clone()),
-                                        session_id: Some(session.clone()),
-                                        ok: true,
-                                        message: format!("历史已归档：{path}"),
-                                    });
-                                }
-                                Err(e) => self.emit(BackendEvent::Notice {
-                                    team_id: Some(id.clone()),
-                                    session_id: Some(session.clone()),
-                                    ok: false,
-                                    message: format!("归档失败：{e}"),
-                                }),
-                            }
-                        }
-                        None => self.emit(BackendEvent::Error {
-                            session_id: None,
-                            message: format!("team {id} 不存在"),
-                        }),
-                    }
-                } else {
-                    match self.archive_session_with_progress(&session).await {
-                        Ok(path) => {
-                            Self::emit_timeline_after_clear(self, None);
-                            self.emit_context_snapshot(Some(&session)).await;
-                            self.emit(BackendEvent::Notice {
-                                team_id: None,
-                                session_id: Some(session.clone()),
-                                ok: true,
-                                message: format!("历史已归档：{path}"),
-                            });
-                        }
-                        Err(e) => self.emit(BackendEvent::Notice {
-                            team_id: None,
-                            session_id: Some(session.clone()),
-                            ok: false,
-                            message: format!("归档失败：{e}"),
-                        }),
-                    }
-                }
-            }
-            BackendCommand::CompactHistory {
-                team_id,
-                session_id,
-                keep_recent,
-            } => {
-                // Fail-closed (2026-10 用户报告修复): the panel button promises
-                // "compact the current session". A stale client without a
-                // session must NOT silently degrade to compacting every session
-                // of that persona — that was the reported bug.
-                let Some(session) = session_id.filter(|s| !s.is_empty()) else {
-                    self.emit(BackendEvent::Error {
-                        session_id: None,
-                        message:
-                            "压缩需要指定会话（session_id 缺失——客户端过旧，请升级面板后重试）"
-                                .into(),
-                    });
-                    return;
-                };
-                let keep = keep_recent.unwrap_or(40).clamp(10, 500);
-                // team routing: resolve the target persona; without a team_id
-                // (or an unresolved one) run on this agent.
-                let target = match team_id.as_deref() {
-                    Some(id) => self.registry().and_then(|r| r.resolve(id)),
-                    None => None,
-                };
-                let result = match &target {
-                    Some(agent) => agent.compact_session_history(&session, keep).await,
-                    None => match team_id.as_deref() {
-                        Some(id) if self.team_id().as_deref() != Some(id) => {
-                            Err(format!("team {id} 不存在"))
-                        }
-                        _ => self.compact_session_history(&session, keep).await,
-                    },
-                };
-                match result {
-                    Ok(msg) => match &target {
-                        Some(agent) => {
-                            Self::emit_timeline_after_clear(agent, team_id.clone());
-                            agent.emit_context_snapshot(Some(&session)).await;
-                            agent.emit(BackendEvent::Notice {
-                                team_id: team_id.clone(),
-                                session_id: Some(session.clone()),
-                                ok: true,
-                                message: msg,
-                            });
-                        }
-                        None => {
-                            Self::emit_timeline_after_clear(self, team_id.clone());
-                            self.emit_context_snapshot(Some(&session)).await;
-                            self.emit(BackendEvent::Notice {
-                                team_id: team_id.clone(),
-                                session_id: Some(session.clone()),
-                                ok: true,
-                                message: msg,
-                            });
-                        }
-                    },
-                    Err(e) => self.emit(BackendEvent::Notice {
-                        team_id: team_id.clone(),
-                        session_id: Some(session.clone()),
-                        ok: false,
-                        message: format!("压缩失败：{e}"),
-                    }),
-                }
             }
             // 团队 CRUD（SaveTeam / DeleteTeam / ToggleTeam）：**进程级命令**，
             // 由 [`crate::process_commands`] 在命令泵里先处理，不该到达任何

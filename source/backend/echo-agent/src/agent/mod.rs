@@ -12,6 +12,7 @@ mod plugin_reload;
 pub(crate) mod prompt;
 pub mod provider_host;
 pub mod registry;
+pub mod session_commands_host;
 pub mod session_view_host;
 mod streaming;
 pub mod subagent_host;
@@ -49,6 +50,8 @@ use crate::config::{AgentConfig, ApiProfile};
 use crate::event::BackendEvent;
 use crate::llm::{create_provider, ChatChunk, ChatMessage, ChatRequest, LlmProvider, ToolCall};
 use crate::session::{Session, TrunkStore};
+// 会话工厂契约（解耦计划 S6）：`Agent::new` 经它要 trunk，而不是直接构造。
+use echo_plugin_session::SessionFactory as _;
 use crate::skill::SkillRegistry;
 use crate::tool::ToolRegistry;
 
@@ -277,7 +280,13 @@ impl Agent {
         // The agent owns exactly ONE conversation context: the trunk. Every
         // inbound message forks a temporary branch from a trunk snapshot and
         // merges back in append-only order (see `process_message`).
-        let trunk = TrunkStore::new(config.effective_memory_limit_tokens());
+        //
+        // 会话子系统的**实现归属是 `echo-plugin-session`**（解耦计划 S6）：
+        // 这里经 `SessionFactory` 契约要一个 trunk，而不是直接 `TrunkStore::new`。
+        // 好处是换实现只需在组合根换一份工厂；`new` 保持原签名不动，因此
+        // 现有调用点（含测试）零改动。
+        let trunk = echo_plugin_session::DefaultSessionFactory
+            .create(config.effective_memory_limit_tokens(), None);
         let eviction_trunk = trunk.clone();
         let cancel = tokio_util::sync::CancellationToken::new();
         let eviction_cancel = cancel.clone();

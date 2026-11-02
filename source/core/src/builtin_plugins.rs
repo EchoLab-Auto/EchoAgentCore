@@ -108,6 +108,13 @@ fn push_plugin(catalog: &mut Vec<Arc<dyn Plugin>>, plugin: Arc<dyn Plugin>) -> a
 pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
     let mut catalog: Vec<Arc<dyn Plugin>> = Vec::new();
 
+    // ── 会话子系统（事件日志 / 投影 / 持久化 / 压缩编排）──
+    //
+    // 第一个挂：它 provide 的 `echo-agent.session.factory` 是"造一个 trunk"
+    // 的唯一入口，排在其它插件之前可以让后续插件在 mount 期就能解析到。
+    // 它自己不依赖任何服务（工厂是纯构造），所以位置只影响可读性。
+    push_plugin(&mut catalog, echo_plugin_session::plugin(version))?;
+
     // ── 内置工具集（工具清单所有权在插件里）──
     push_plugin(
         &mut catalog,
@@ -455,6 +462,21 @@ mod tests {
         .with_commands(["Shared"]));
         let err = reject_duplicate_commands(&[one, two]).expect_err("重名必须报错");
         assert!(err.to_string().contains("Shared"), "{err}");
+    }
+
+    /// 会话子系统必须出现在目录里（2026-11 S6 外置后的回归锚点）。
+    ///
+    /// 它此前是 `echo-agent/src/session/` 下的宿主模块，不在目录里；外置成
+    /// 插件后如果漏登记，`Agent::new` 仍能编译（工厂是普通类型），但面板的
+    /// 插件清单里就少一个——这条断言把"漏登记"变成启动期失败。
+    #[test]
+    fn catalog_contains_the_session_plugin() {
+        let catalog = catalog("0.0.0-test").expect("目录构造");
+        let ids: Vec<&str> = catalog.iter().map(|p| p.manifest().id.as_str()).collect();
+        assert!(
+            ids.contains(&echo_plugin_session::PLUGIN_ID),
+            "会话插件未登记：{ids:?}"
+        );
     }
 
     /// 声明宿主保留命令 → 装配期失败（分发器永远不会路由给它）。

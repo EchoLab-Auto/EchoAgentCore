@@ -161,7 +161,7 @@ impl TrunkStore {
                         entries
                             .iter()
                             .filter_map(|entry| {
-                                serde_json::from_value::<crate::event::TimelineMessage>(
+                                serde_json::from_value::<echo_protocol::TimelineMessage>(
                                     entry.clone(),
                                 )
                                 .ok()
@@ -226,7 +226,7 @@ impl TrunkStore {
                     entries
                         .iter()
                         .filter_map(|entry| {
-                            serde_json::from_value::<crate::event::TimelineMessage>(entry.clone())
+                            serde_json::from_value::<echo_protocol::TimelineMessage>(entry.clone())
                                 .ok()
                         })
                         .collect::<Vec<_>>()
@@ -376,7 +376,7 @@ impl TrunkStore {
                 entries
                     .iter()
                     .filter_map(|entry| {
-                        serde_json::from_value::<crate::event::TimelineMessage>(entry.clone()).ok()
+                        serde_json::from_value::<echo_protocol::TimelineMessage>(entry.clone()).ok()
                     })
                     .collect::<Vec<_>>()
             })
