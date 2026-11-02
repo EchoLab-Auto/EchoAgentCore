@@ -186,4 +186,4 @@ echo-prodoc view ./document --host 0.0.0.0 --port 3344 --no-open
 ### 参考
 
 - 画布渲染工具：ProDoc（`echo-prodoc`，源码仓库 DocRenderer）；**格式权威定义**见 `.claude/skills/prodoc-format/SKILL.md`（同样的内容也随技能分发在 `skills/skill-echo-prodoc/SKILL.md`，两者 name 同为 `prodoc-format`），渲染器交互细节见 DocRenderer 的《ProDoc 规则定义》
-- 体例来源：ui-frame 仓库《文档分层与撰写规范》（`document/develop/documentation-guide.md`）
+- 体例来源：ui-frame 仓库《文档分层与撰写规范》（`ui-frame:document/develop/documentation-guide.md`，**不在本仓**）

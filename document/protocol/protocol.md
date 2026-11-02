@@ -200,7 +200,7 @@ graph LR
 
 | 域 | 变体 |
 |---|---|
-| 会话与时间线 | `MessageReceived`、`AgentCompleted`、`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`TimelineEarlier`（更早一页，前端前插、不换同步游标）、`SessionHistory`（按会话派生显示历史；`max_seq` 为合并水位线，推理条目不计入）、`ActiveTurnsSnapshot` |
+| 会话与时间线 | `MessageReceived`、`AgentCompleted`、`SessionUpdated`、`ContextSnapshot`、`TrunkTimeline`、`TimelineEarlier`（更早一页，前端前插、不换同步游标）、`SessionHistory`（按会话派生显示历史；`max_seq` 为合并水位线，推理条目不计入）、`ActiveTurnsSnapshot`、`CompactionProgress`（压缩进度：`phase` = `preview`/`archive`/`summarize`/`apply`/`done`/`failed`，配 `done`/`total`/`sessions`/`message`；`total=0` 时面板画不确定条） |
 | 模型与工具 | `AgentThinking`、`AgentReasoning`、`AgentReasoningDelta`、`AgentOutput`、`AgentContentDelta`、`LlmRequest`、`LlmResponse`、`ToolCall`、`ToolResult` |
 | 分支与子代理 | `ReplyBranchStarted`、`ReplyBranchContent`（**保留变体，当前无生产发射方**——「临时等待回复」机制已删除；分支正文走 `AgentContentDelta` 的 `branch_id`）、`ReplyBranchCompleted`、`SubagentStarted`、`SubagentCompleted` |
 | Shell | `ShellSessionsList`、`ShellSessionStarted`、`ShellExecStarted`、`ShellExecOutput`、`ShellExecDone`、`ShellSessionClosed` |
@@ -209,6 +209,7 @@ graph LR
 | 插件实例 | `InstanceStateChanged`、`InstanceList`、`InstanceOpResult`、`InstanceState` |
 | 工作区 | `WorkspaceSessions`、`WorkspaceGitStatus`、`WorkspaceFiles`、`BrowseDirectories`（`RequestBrowseDirectories` 响应，目录选择器数据源） |
 | 提示词与清单 | `SystemPrompt`（当前系统提示词插件文本）、`ChecklistUpdated`（工具发布的结构化可视化快照，如清单工具 → 清单面板） |
+| 插件事件 | `PluginEvent`（插件自定义事件通道：`{plugin, name, payload, at_ms}`——`plugin` 为来源插件 id（宿主自发的为空串），`name` 点分小写约定，`payload` 自由 JSON；前端按 `plugin`+`name` 订阅，未知事件落 `ignored` 分支） |
 | 联邦与运维 | `FederationStatus`、`FederationInvite`、`SessionMigrated`、`SelfUpdateStatus`、`Error`、`Notice`（会话级操作回执） |
 
 

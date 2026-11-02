@@ -71,7 +71,7 @@ pub fn manifest(version: &str) -> echo_plugin::PluginManifest {
 /// | 贡献 | 内容 |
 /// |---|---|
 /// | `mount` | persona 门控开关（联邦能力随白名单启停） |
-/// | `Contribution::Command` | 7 条命令（见 [`commands::COMMANDS`]） |
+/// | `Contribution::Command` | 6 条命令（见 [`commands::COMMANDS`]） |
 ///
 /// 实现留在组合根（`Federation` 句柄与 `ConfigStore` 是它的所有物），
 /// 本插件负责**归属关系**与未接线时的兜底语义。

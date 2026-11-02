@@ -10,6 +10,13 @@
 //!    自动生成，但**不许漏**）。
 //! 3. **相对链接可达**：`document/` 下所有 `](相对路径)` 的目标文件必须存在
 //!    ——重命名文档 / 拆分章节最容易留下死链，而读者点到 404 才知道。
+//! 4. **散文里的数字**：`plugins.md` 声称的「框架内置 N 项」与 `[&str; N]`
+//!    必须等于 `BUILTIN_PLUGIN_IDS.len()`。第 2 类检查只问「id 出现过没有」，
+//!    于是"表里 13 行、正文写 10 项"能从门禁底下走过去（2026-11 实际发生过）。
+//! 5. **非 document 目录的文档引用**：`config/*.toml` 与 `skills/**/SKILL.md`
+//!    也会写 `document/xxx.md` 路径。第 3 类只扫 `document/` 自身，扫不到它们
+//!    ——出厂配置模板指向一个不存在的文件名，用户点开就是 404。
+//! 6. **插件命令名**：每个插件 `COMMANDS` 里的名字都得在文档里出现过。
 //!
 //! 刷新方式：`UPDATE_DOCS=1 cargo test -p echo-agent-core --test doc_catalog`
 //! 会把生成类文件重写一遍（只改自动生成的部分，人工章节不受影响）。
@@ -43,6 +50,9 @@ async fn render_tool_catalog() -> String {
         store,
         None,
         echo_agent::shell::ShellHandle::new(),
+        Some(std::sync::Arc::new(
+            echo_agent::agent::session_query::SessionQueryRegistry::new(),
+        )),
         None,
         // Shell 工具（`bash-start` / `bash-exec` / `bash-stop`）由 shell 插件造
         // （2026-11 拆出）——目录要包含它们，所以这里给它一个 standalone provider。
@@ -175,6 +185,175 @@ fn documented_builtin_plugin_ids_cover_the_constant() {
     assert!(
         missing.is_empty(),
         "以下内置插件 id 未出现在 document/plugins/plugins.md：{missing:?}"
+    );
+}
+
+/// `plugins.md` 里的**数字**必须与代码一致，而不只是"id 出现过"。
+///
+/// 上一条检查有个洞：它只问 `doc.contains(id)`，所以 13 个 id 全在表里时它绿，
+/// 而正文那句「**框架内置 10 项**（`BUILTIN_PLUGIN_IDS: [&str; 10]`）」照样错
+/// ——2026-11 审计实测就是这个形状（表 13 行、正文 10 项，同一节自相矛盾）。
+/// 散文数字没有生成渠道，只能这样钉住。
+#[test]
+fn plugins_doc_counts_match_the_code() {
+    let doc = reading(&repo_root().join("document/plugins/plugins.md"));
+    let expected = echo_agent::plugins::BUILTIN_PLUGIN_IDS.len();
+
+    let claimed = doc
+        .split("框架内置 ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse::<usize>().ok())
+        .expect("plugins.md 必须写「框架内置 N 项」（数字紧跟其后）");
+    assert_eq!(
+        claimed, expected,
+        "plugins.md 声称框架内置 {claimed} 项，代码是 {expected} 项"
+    );
+
+    let literal = doc
+        .split("BUILTIN_PLUGIN_IDS: [&str; ")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .and_then(|n| n.parse::<usize>().ok())
+        .expect("plugins.md 必须写出 `BUILTIN_PLUGIN_IDS: [&str; N]` 的字面长度");
+    assert_eq!(
+        literal, expected,
+        "plugins.md 写的是 [&str; {literal}]，代码是 [&str; {expected}]"
+    );
+}
+
+/// 配置模板、技能文档与正文里的**裸** `document/xxx.md` 路径也必须可达。
+///
+/// `document_relative_links_resolve` 只看 `](相对路径)` 形态、且只遍历
+/// `document/` 自己。于是三类真实引用从门禁底下走过去：
+/// 出厂配置模板的注释（`config/echo-agent-core.toml` 曾指向
+/// `document/core/core-logging.md`，实际文件名是 `logging.md`）、
+/// 会下发到用户数据目录的 `skills/**/SKILL.md`、以及文档正文里写成反引号的
+/// 裸路径（`document/develop/…` 这种本仓根本不存在的目录）。
+#[test]
+fn bare_document_paths_resolve() {
+    let root = repo_root();
+    let mut sources: Vec<PathBuf> = Vec::new();
+    // `document/` 也要扫：正文裸路径与链接是两种写法。
+    for dir in ["config", "skills", "document"] {
+        let mut stack = vec![root.join(dir)];
+        while let Some(current) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&current) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path
+                    .extension()
+                    .is_some_and(|e| e == "toml" || e == "md")
+                {
+                    sources.push(path);
+                }
+            }
+        }
+    }
+
+    let mut dead = Vec::new();
+    for path in sources {
+        for (line_no, line) in reading(&path).lines().enumerate() {
+            for (start, _) in line.match_indices("document/") {
+                // 外链里的片段（`…/blob/main/document/x.md`）是别仓路径。
+                if line[..start].ends_with('/') {
+                    continue;
+                }
+                // 跨仓路径写成 `<仓名>:document/…`，带前缀即声明"不在本仓"。
+                if line[..start].ends_with(':') {
+                    continue;
+                }
+                let target: String = line[start..]
+                    .chars()
+                    .take_while(|c| {
+                        !c.is_whitespace() && !matches!(c, '`' | ')' | '（' | ',' | '。' | '；')
+                    })
+                    .collect();
+                if !target.ends_with(".md") {
+                    continue;
+                }
+                if !root.join(&target).exists() {
+                    dead.push(format!(
+                        "{}:{} → {}",
+                        path.strip_prefix(&root).unwrap_or(&path).display(),
+                        line_no + 1,
+                        target
+                    ));
+                }
+            }
+        }
+    }
+    dead.sort();
+    dead.dedup();
+    assert!(
+        dead.is_empty(),
+        "有 {} 条指向不存在文档的引用：\n{}",
+        dead.len(),
+        dead.join("\n")
+    );
+}
+
+/// 每个插件声明的命令名都必须出现在文档里。
+///
+/// 命令域归插件之后，"新增一条命令"改的是插件的 `COMMANDS` 常量，而
+/// `document/` 里那份清单（`protocol.md` 的完整变体表、`plugins.md` 的插件表）
+/// 是手写的——漏登记不会有任何编译期信号。这里逐条问一遍"文档提过吗"。
+///
+/// 只查"出现过"，不查归属哪个插件：后者需要把散文结构与 `COMMANDS` 对齐，
+/// 而那张表的说明列是人写的高信号内容，不值得为自动校验改写成机器形状。
+#[test]
+fn every_declared_command_is_mentioned_in_docs() {
+    let commands: Vec<(&str, &[&str])> = vec![
+        (
+            "echo-plugin-session",
+            &echo_plugin_session::commands::COMMANDS,
+        ),
+        (
+            "echo-plugin-transcript",
+            &echo_plugin_transcript::session_view::COMMANDS,
+        ),
+        ("echo-plugin-shell", &echo_plugin_shell::commands::COMMANDS),
+        (
+            "echo-plugin-federation",
+            &echo_plugin_federation::commands::COMMANDS,
+        ),
+        (
+            "echo-plugin-provider-llm",
+            &echo_plugin_provider_llm::commands::COMMANDS,
+        ),
+    ];
+    let mut docs = String::new();
+    let mut stack = vec![repo_root().join("document")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                docs.push_str(&reading(&path));
+            }
+        }
+    }
+
+    let mut missing = Vec::new();
+    for (crate_name, list) in commands {
+        for name in list {
+            if !docs.contains(name) {
+                missing.push(format!("{crate_name}::{name}"));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "以下插件命令未出现在 document/ 任何一篇里（新增命令请登记到 protocol.md 的完整变体表）：\n{}",
+        missing.join("\n")
     );
 }
 

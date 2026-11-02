@@ -6,7 +6,7 @@
 level = "info"    # trace | debug | info | warn | error（改完 SIGHUP 即可生效，不必重启）
 format = "text"   # text（人读）| json（采集；事件自动携带当前 span）
 # 日志文件路径。留空 = stdout（systemd/journald；Docker 中可用 docker logs 查看）。
-# 非空 = 轮转文件（见下面四项）。详见 document/core/core-logging.md。
+# 非空 = 轮转文件（见下面四项）。详见 document/core/logging.md。
 log_file = ""
 max_file_size_mb = 20   # 单文件上限
 max_files = 5           # 保留文件总数（当前文件 + 归档）

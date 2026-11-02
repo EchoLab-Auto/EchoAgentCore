@@ -1,7 +1,7 @@
 ---
 name: long-task-efficiency
 description: 长任务执行效率 — 每次响应打包 2-4 条独立调用（跨轮等待中位 2.4s，懒得分轮代价最大）；同一文件同段内最多读 2 次，第 2 次必须放大范围；**等待等条件不等时间**（无条件 sleep 占过一次会话 61% 工具耗时的 2989s；改用 `until <cond>; do sleep 2; done`，>30s 命令后台化 + 期间并行推进）；>20K 字符输出落盘分页，禁整读；每 50 步一次检查点与拆分判断 (常驻)
-keywords: [长任务, 效率, 批处理, 并行, 往返, 轮次, 轮询, 重试, 重试失败, 超时, 上下文, bash, 检查点, checkpoint, 读文件, 分页, 落盘, 后台, shell_start]
+keywords: [长任务, 效率, 批处理, 并行, 往返, 轮次, 轮询, 重试, 重试失败, 超时, 上下文, bash, 检查点, checkpoint, 读文件, 分页, 落盘, 后台, bash-exec]
 ---
 
 # 长任务执行效率
@@ -87,13 +87,13 @@ keywords: [长任务, 效率, 批处理, 并行, 往返, 轮次, 轮询, 重试,
 
 ```bash
 # ❌ 测试 130s 就完了，剩下 70s 纯等
-(cargo test --workspace > /tmp/t.log 2>&1; echo DONE >> /tmp/t.log) & sleep 200; cat /tmp/t.log
+(cargo test --workspace > /tmp/t.log 2>&1; echo "EXIT=$?" >> /tmp/t.log) & sleep 200; cat /tmp/t.log
 ```
 
 ```bash
 # ✅ 条件一满足立刻返回；同一件事，只多写一个 until
-(cargo test --workspace > /tmp/t.log 2>&1; echo DONE >> /tmp/t.log) &
-until grep -q DONE /tmp/t.log 2>/dev/null; do sleep 2; done; cat /tmp/t.log
+(cargo test --workspace > /tmp/t.log 2>&1; echo "EXIT=$?" >> /tmp/t.log) &
+until grep -q '^EXIT=' /tmp/t.log 2>/dev/null; do sleep 2; done; cat /tmp/t.log
 ```
 
 轮询**严格更快**：`sleep 200` 只能等满 200 秒，`until` 在 130 秒就返回。
@@ -103,7 +103,7 @@ until grep -q DONE /tmp/t.log 2>/dev/null; do sleep 2; done; cat /tmp/t.log
 
 | 场景 | ❌ 不要 | ✅ 这样写 |
 | --- | --- | --- |
-| 等后台任务 | `(job > log) & sleep 200; cat log` | `(job > log 2>&1; echo DONE >> log) &`<br>`until grep -q DONE log 2>/dev/null; do sleep 2; done; cat log` |
+| 等后台任务 | `(job > log) & sleep 200; cat log` | `(job > log 2>&1; echo "EXIT=$?" >> log) &`<br>`until grep -q '^EXIT=' log 2>/dev/null; do sleep 2; done; cat log` |
 | 等服务/进程就绪 | `systemctl restart x; sleep 60` | `systemctl restart x`<br>`for i in $(seq 1 60); do [ "$(systemctl --user is-active x)" = active ] && break; sleep 2; done` |
 | 等文件/端口 | `job & sleep 30; test -f f` | `until test -f f; do sleep 1; done` |
 | 真要脱离执行 | `sleep 45; systemctl restart x` | `systemd-run --user --collect --unit=<name> bash -c '…'`（立刻返回） |
@@ -113,7 +113,7 @@ until grep -q DONE /tmp/t.log 2>/dev/null; do sleep 2; done; cat /tmp/t.log
 ### 例外（这些不是浪费）
 
 - **几秒内的短 `sleep`**：等文件落盘、等子进程起头；
-- **`shell_exec` 里的等待**：本来就是跑常驻进程的会话；
+- **`bash-exec` 里的等待**：本来就是跑常驻进程的会话，等待属于命令本身；
 - **测试夹具**：为构造"超时"场景写长 `sleep` 是正当用法。
 
 ### 等待期间仍然要并行
@@ -127,17 +127,23 @@ until grep -q DONE /tmp/t.log 2>/dev/null; do sleep 2; done; cat /tmp/t.log
 **启动即并行（模板）**：
 
 ```bash
-# 后台跑长任务，立刻返回
-nohup_or_session: shell_start → shell_exec "cargo build --release > /tmp/b.log 2>&1 &"
+# 一条 bash 调用：后台起长任务，立刻返回（重定向 + 哨兵缺一不可）
+(cargo build --release > /tmp/b.log 2>&1; echo "EXIT=$?" >> /tmp/b.log) &
 # 同一响应里继续发别的独立调用
 grep -n "TODO" src/**/*.rs | head -20
 git status --short
 ```
+
+有 `bash-start` / `bash-exec`（`echo-agent.shell` 已启用）时，改用会话：
+`bash-start(workdir=...)` 拿 session_id，再 `bash-exec(session_id, "<同一条命令>")`——
+输出实时进面板，超时**不销毁会话**，可以直接再 poll 一次。
+
+必须在**一条命令内**等（拿不到后台句柄时）：
+
 ```bash
-# 必须在一条命令内等：把轮询写进命令本身，一次拿结论
 for i in $(seq 1 20); do
-  grep -q "BUILD OK" /tmp/b.log && break
-  sleep 10
+  grep -q "EXIT=" /tmp/b.log && break
+  sleep 2
 done; tail -20 /tmp/b.log
 ```
 
@@ -201,7 +207,7 @@ prompt 涨到 30 万 token（p90 往返 14.4s 的长尾主要来自这里）。
 
 1. 这轮我是不是只发了 1 条**不依赖上一条**的调用？（是 → 下轮打包成 2–3 条）
 2. 有没有文件被读了第 3 次？（有 → 下次一次读足 / 改 grep 定位 + 精确段）
-3. 有没有 `sleep` 轮询？（有 → 改 `shell_start` 或 `&`+`wait`，期间干别的）
+3. 有没有无条件 `sleep`？（有 → 改 `until 条件` 轮询，或 `&` 后台化，期间干别的）
 4. 有没有刚 `error:` 过就原样重发？（有 → 停下改策略）
 5. 有没有 >20K 字符的输出被整读进上下文？（有 → 落盘 + tail/grep）
 6. 步数过 50 了吗？（过了 → 做检查点三问，含"该不该委派"）

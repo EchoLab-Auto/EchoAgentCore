@@ -13,27 +13,52 @@ You can interact with the project's source code using these tools:
 - `search_code` — Search for a pattern across source files
 - `write_file` — Create or overwrite a file with new content
 - `edit_file` — Replace specific lines in a file (start_line to end_line)
-- `bash` — Run a terminal command (e.g. `cargo build`, `git status`). Timeout 30s, workspace-restricted, dangerous commands blocked.
-- `shell_start` — Start a persistent background shell session (keeps cwd/env across commands). Returns a session id.
-- `shell_exec` — Run a command inside an existing shell session (long-running servers, watchers, builds).
-- `shell_stop` — Stop and destroy a shell session.
+- `bash` — Run a terminal command (e.g. `cargo build`, `git status`). Timeout 120s (max 300s via `timeout_secs`), workspace-restricted, dangerous commands blocked.
+- `bash-start` — Start a persistent background bash session (keeps cwd/env/background jobs across commands). Returns a session id. Optional `workdir`.
+- `bash-exec` — Run one command inside an existing session (`session_id` + `command`). Output streams to the Panel live; on timeout the session is **kept**, so you can poll again.
+- `bash-stop` — Stop a session and kill its whole process group (bash + all descendants, including background jobs).
+
+> 这三个工具由 `echo-agent.shell` 插件提供，只有该插件在人格白名单里才可用。
+> **不在白名单时**用下面「没有 shell 插件时」的写法，功能等价。
 
 ## Long-running processes
 
-要跑常驻进程（文档/开发服务器、watch 构建、本地服务等）时，**必须用
-`shell_start` + `shell_exec`，不要用 `nohup`/`&`/disown 挂野进程**：
+要跑常驻进程（文档/开发服务器、watch 构建、本地服务等）时，**优先用
+`bash-start` + `bash-exec`**（前提：该人格启用了 `echo-agent.shell`）：
 
-- shell 会话有 session_id，会出现在 Shell 视图里（可见、输出可回读）；
-  `shell_stop` 终止整个会话进程组（bash 及其全部子孙，含后台任务）；
-  nohup 挂的进程脱离框架，只能手动 kill，机器重启即丢失且无人知晓
-- 同一 session 内命令保持 cwd 与环境变量（先 `cd` 再启动，或 `shell_start`
+- 会话有 session_id，会出现在 Shell 视图里（可见、输出可回读）；
+  `bash-stop` 终止整个会话进程组（bash 及其全部子孙，含后台任务）；
+  用 `nohup` 挂的进程脱离框架，只能手动 kill，机器重启即丢失且无人知晓
+- 同一 session 内命令保持 cwd 与环境变量（先 `cd` 再启动，或 `bash-start`
   传 workdir）
-- 例子：`shell_start(workdir=项目目录)` → `shell_exec(session_id, "echo-prodoc view document/")`
-  → 结束时 `shell_stop(session_id)`
+- 例子：`bash-start(workdir=项目目录)` → `bash-exec(session_id, "echo-prodoc view document/")`
+  → 结束时 `bash-stop(session_id)`
 - **需要跨 Core 重启存活 / 开机自启 / 对外长期可达**的服务（文档站点、长期
   服务等）**不属于 shell 会话模型**：用 `systemd-run --user --unit=<名称>` 交给
   用户级 systemd 托管（`systemctl --user status/stop <名称>` 管理）——shell 会话
   是运行期资源，Core 重启即回收，刻意不承担跨重启职责
+
+### 没有 shell 插件时：`bash` 也能安全后台化
+
+`bash` 工具用 `wait_with_output()` 等 stdout 到 EOF，所以**裸 `&` 仍会阻塞到
+子进程结束**（实测 `(sleep 8; echo A) &` 阻塞满 8 秒）。必须**重定向 + 哨兵**，
+两者缺一不可——加上之后实测 **2ms 返回**：
+
+```bash
+# 一句一条：后台起任务 + 等哨兵 + 拿尾部（不会空转，条件满足立刻返回）
+(cargo test --workspace > /tmp/t.log 2>&1; echo "EXIT=$?" >> /tmp/t.log) &
+until grep -q '^EXIT=' /tmp/t.log 2>/dev/null; do sleep 2; done
+tail -20 /tmp/t.log
+```
+
+要**这一轮就返回、不阻塞**（同轮还要发别的独立调用），去掉 `until` 两行即可：
+
+```bash
+(cargo build --release > /tmp/b.log 2>&1; echo "EXIT=$?" >> /tmp/b.log) &
+```
+
+下一轮再 `until grep -q '^EXIT=' /tmp/b.log 2>/dev/null; do sleep 2; done; tail -20 /tmp/b.log`。
+**没有 `EXIT=` 哨兵时 `until` 会永远等下去**——哨兵和重定向必须成对出现。
 
 ## When to use
 

@@ -9,7 +9,7 @@ y: 500
 # 图标体系
 
 > **定位**：Panel 侧图标的唯一实现规范——图标载体、尺寸/线宽档位、语义色、防回归。**这是视觉规范，不是交互契约**：它规定「图标用哪个载体、多大、多粗、什么颜色」，不规定「用户在哪看到它、点击后发生什么」（后者见[交互定义](./interaction.md)）。读者：Panel 前端开发者、ui-frame 维护者。
-> 上游规范：ui-frame 仓库 `document/develop/design-philosophy.md` §8「图标体系」（尺寸七档 / 线宽六档语义）。
+> 上游规范：ui-frame 仓库 `ui-frame:document/develop/design-philosophy.md` §8「图标体系」（尺寸七档 / 线宽六档语义）——**跨仓路径**，本仓没有 `document/develop/`。
 
 ---
 

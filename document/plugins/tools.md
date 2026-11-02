@@ -15,8 +15,9 @@ link: ["tool-catalog | 内置工具目录"]
 ## 注册与分发
 
 > **完整工具清单**见 [内置工具目录](./tool-catalog.md)——由
-> `echo-agent::tool::builtin::register_all` **自动生成并校验**（加工具忘了
-> 更新会在门禁红）。本文只讲机制与门控，不复述清单，避免两处漂移。
+> `echo-agent::tool::builtin::build_registry` **自动生成并校验**（加工具忘了
+> 更新会在门禁红：`source/core/tests/doc_catalog.rs` 的 `tool_catalog_is_fresh`）。
+> 本文只讲机制与门控，不复述清单，避免两处漂移。
 
 - `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（`echo-tool` crate；`echo-agent` 保留 `echo_agent::tool::…` 兼容路径）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
 - 注册是可逆副作用：`register_reversible` 返回 `Disposer`，插件卸载即撤销
@@ -28,9 +29,9 @@ link: ["tool-catalog | 内置工具目录"]
 
 | 来源 | 声明方式 | 归属包 | 例子 |
 | --- | --- | --- | --- |
-| 内置工具 | 组合根在 `main.rs` 直接 `register` | `echo-agent.tools.builtin` | `bash` / `read_file` / `write_file` / `calculator` / `web_search` |
+| 内置工具 | 插件 `BuiltinToolProvider::registry(&ToolsHostCtx)` 声明（`echo-plugin-tools`）；组合根只**递端口**（实例表 / 工作区根 / 联邦出口 / 配置存储 / 会话查询） | `echo-agent.tools.builtin` | `bash` / `read_file` / `write_file` / `calculator` / `web_search` |
 | 子进程插件工具 | 插件 `Contribution::Tool`（`ToolContribution`）→ 宿主 `RemoteTool` 转 `Tool` | 插件自报 `package` | 试点插件 `echo-plugin-example` 的 `calculator` / `web_search` |
-| **插件实例声明的工具** | 实例插件 `InstanceContribution.tools` → `PluginInstance::tool_specs()` → 宿主通用桥 | `ToolContribution.package` | QQ 的 10 个工具（见下） |
+| **插件实例声明的工具** | 实例插件 `InstanceContribution.tools` → `PluginInstance::tool_specs()` → 宿主通用桥 | `ToolContribution.package` | QQ 的 11 个工具（见下） |
 
 #### 实例工具：声明驱动 + 通用桥
 
@@ -51,7 +52,33 @@ link: ["tool-catalog | 内置工具目录"]
 `ToolContribution.visible_reply` 给值，未知工具默认 `false`。
 
 字段全貌与声明示例见 [插件开发指南](./plugin-authoring.md)「实例插件」节；
-QQ 的 10 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
+QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
+
+### 会话只读查询：`list_sessions` / `read_session`
+
+模型需要「回看历史会话 / 自己的工具调用与耗时」时用这两个工具，**不读盘**：
+
+| 工具 | 作用 |
+| --- | --- |
+| `list_sessions` | 列出**当前人格**的会话（按最近活跃排序，`limit` 默认 50 / 最大 200） |
+| `read_session` | 读一个会话：`view=model` 是模型实际可见的压缩上下文；`view=audit` 是原始事件审计投影（消息 / 工具调用+耗时 / 模型步骤+token+耗时） |
+
+**数据来源是内存里的活 `TrunkStore`，不是持久化 JSON**：会话事件每 30s 才落盘一次，
+直接读 `echo-sessions-*.json` 会拿到滞后快照，还要自己复刻文件格式与人格路由。
+查询走 `EventLog::events_for_session`（只克隆本会话事件），不触发全量深拷。
+
+**为什么它不在 `echo-plugin-session` 里直接注册工具**：插件之间不得互相依赖
+（`scripts/deps-policy.txt` 第 4 条）。分工是——
+
+- `echo-plugin-session`：拥有数据与查询语义（`store::query`，`SessionQueryView` 两视图）；
+- `echo-defs::session_query`：存储中立的 `SessionQuery` 只读端口（定义层）；
+- `echo-plugin-tools`：只做工具适配（schema / 参数 / 错误文案），端口未接线即不注册；
+- 宿主 `AgentSessionQueryHost`：按调用者 `team_id` 解析目标 persona 的 trunk ——
+  **不能跨人格读**，解析不到即报错，不回退到"自己"。
+
+`include_tool_results` 默认 `false`：工具输出可能有 MB 级文本与 base64，默认只回
+`elapsed_ms` / `completed` / `succeeded`，需要时再显式打开。老日志缺耗时字段时返回
+`null`，不补零——"未记录"与"0ms"是两件事。
 
 ## 文件工具的路径约定
 
@@ -91,7 +118,7 @@ QQ 的 10 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 
 | 闸 | 实现 | 拦什么 |
 | --- | --- | --- |
-| 自停拦截 | `echo-agent::packages::tools_builtin::reject_core_self_stop`（**留在宿主**：它拦的是「从自己进程里停掉 Core」，属组合根/宿主职责，不在工具插件里） | 从自己的进程里 `systemctl stop/kill echo-agent-core`（含 `bash -c` 包裹）——会让后续清理/启动步骤来不及跑 |
+| 自停拦截 | `echo_plugin_tools::plugin::core_self_stop_guard()`（**在工具插件里**，构造 bash 工具时注入）；`bash-exec` 用机制层的默认实现 `echo_shell::self_stop_guard()`——两者规则同一套，各构造一份，插件间零依赖 | 从自己的进程里 `systemctl stop/kill echo-agent-core`（含 `bash -c` 包裹）——会让后续清理/启动步骤来不及跑 |
 | rm 目标判定 | `coding.rs::dangerous_rm_root_target` | 递归 + 强制的 `rm` 指向根目录、根级通配 `/*`、或根下一级系统目录 |
 | 危险模式 | `coding.rs` 的模式表（`mkfs.` / `dd if=` / fork bomb / `> /dev/sda`） | 对整条命令串子串匹配 |
 | 提权 | `RunCommandTool::execute` 的行首 `sudo` 检测 | `bash` 无交互 tty、提权工具已废弃——直接拒绝并提示改用无需 root 的方案 |
@@ -151,12 +178,14 @@ QQ 的 10 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
   / `shell_stop`，隶属内置工具集——改名与拆分是同一轮：它们与一次性工具 `bash`
   是同一件事的两种模式，名字统一到 `bash-` 前缀后模型不再在两套命名间犹豫）
 - **常驻进程规范**：agent 需要跑常驻进程（文档/开发服务器、watch 构建、本地服务
-  等）时**必须经 shell 会话启动**（`bash-start` + `bash-exec`），禁止用
-  `nohup`/`&`/disown 挂野进程——野进程脱离会话模型：不在 Shell 视图可见、无停止
-  入口、机器重启即丢失且无人知晓；shell 会话内的常驻进程可见、可停止（`ShellStop`
-  终止**整个进程组**：bash 及其全部子孙，含后台任务；自行 `setsid` 脱离进程组的
-  后代除外）、输出可回读（技能侧同一约定见 `skills/coding/SKILL.md`「Long-running
-  processes」）
+  等）时**优先经 shell 会话启动**（`bash-start` + `bash-exec`）——会话内的常驻进程
+  在 Shell 视图可见、可停止（`ShellStop` 终止**整个进程组**：bash 及其全部子孙，
+  含后台任务；自行 `setsid` 脱离进程组的后代除外）、输出可回读。
+  **不推荐** `nohup`/`disown` 挂野进程：脱离会话模型后不在 Shell 视图可见、无停止
+  入口、机器重启即丢失且无人知晓。
+  但**该人格未启用 `echo-agent.shell` 时**（插件被门控关掉），一次性 `bash` 的
+  `&` + 重定向 + 哨兵是唯一可行的后台化手段，属于正确用法而非"野进程"——
+  详见 `skills/coding/SKILL.md`「没有 shell 插件时」。
 - **跨生命周期服务**：需要**跨 Core 重启存活 / 开机自启 / 对外长期
   可达**的进程（文档站点、长期服务等）不属于会话模型——用 `systemd-run --user
   --unit=<名称>` 交给用户级 systemd 托管（`systemctl --user status/stop <名称>`

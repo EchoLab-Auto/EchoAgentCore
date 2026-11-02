@@ -101,7 +101,7 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 | `ECHO_ACCESS_TOKEN` 覆盖 | 环境变量存在 **且** 该平台 `enabled` | 写入共享层 `server.access_token`（覆盖配置文件里的值） |
 | `mode = "builtin"` 清空 | 该平台 `mode` 为 `builtin` | 打警告并清空 → 按 `plugin` 模式运行（内置路径已随实例插件化移除） |
 | `[federation].listen` 是否显式 | 总是 | 额外记一个 `listen_explicit` 标记——serde 填充后分不清「缺省」与「显式同值」，两者语义不同（缺省=自动合并管理端口） |
-| `api_key` 环境回退 | `agent.api_key` 为空 | 按 provider 取名：`anthropic`/`claude` → `ANTHROPIC_API_KEY`，其余 → `OPENAI_API_KEY` |
+| `api_key` 环境回退 | `agent.api_key` 为空 | 按 provider 取名（`AgentConfig::effective_api_key`）：`anthropic`/`claude` → `ANTHROPIC_API_KEY`；`deepseek` → `DEEPSEEK_API_KEY`（缺失时回退 `OPENAI_API_KEY`）；`ollama` 不取环境变量（本地模型无 key）；其余 → `OPENAI_API_KEY` |
 
 ### 不持久化的内容
 

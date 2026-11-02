@@ -12,6 +12,13 @@ y: 2420
 
 > **状态**：协议冻结、宿主（inproc/stdio）、插件 SDK、试点插件、`plugins.toml` 装载**全部可用**，工具贡献已端到端跑通；**安全限额已落地**（`[plugin.limits]` 子进程 rlimit + 入站频率限额 + 可逆停止）；热替换仍在推进。技能/服务贡献为后续方向。
 
+> **框架在哪**：`echo-plugin` / `echo-plugin-api` / `echo-plugin-host` / `echo-plugin-loader` /
+> `echo-plugin-sdk` / `echo-context` 六件套住在**独立仓库**
+> [plugin-framework](https://github.com/EchoLab-Auto/plugin-framework)，**不在本仓**。
+> Core 通过 workspace 的 git 依赖按 tag 钉版本（`Cargo.toml` 的 `echo-plugin-* = { git = …, tag = "v0.11.2" }`），
+> 所以在本仓 `cargo grep echo_plugin_sdk` 找不到源码——要读实现或改框架去那个仓。
+> 本仓内 `source/plugin/*` 是**用框架写的业务插件**，不是框架本身。
+
 ## 五分钟上手
 
 新建一个 crate（依赖 `echo-plugin-sdk`），实现 `PluginHandler` 并交给 `serve_stdio`：
@@ -123,8 +130,9 @@ mode = "fast"
 ### 同一个文件也管内置插件
 
 内置插件的 manifest 还带一个宿主词汇 `kind`（`tool` / `skill` / `provider` /
-`loop` / `federation` / `management` / `orchestration` / `instance`）。它决定
-**这插件挂在一层还是一份**：
+`loop` / `federation` / `management` / `orchestration` / `instance` /
+`interaction` / `session`）。它是**开放字符串**（框架不校验取值），宿主只用它
+决定**这插件挂在一层还是一份**：
 
 - `kind ∈ {tool, skill, provider}` → 每人格一份**独立实例**，挂在该人格的
   子作用域里（`Ctx` 是宿主服务表的 `child`，适配器绑该人格自己的工具表 /
@@ -175,7 +183,7 @@ processes = 64         # 子进程数；超限 → fork 失败（按 uid 计，�
 多层叠加后"最终这一行到底长什么样、来自哪一层"靠人推演容易出错，用子命令直接看：
 
 ```bash
-echo-agent-core dump-config -c ~/.config/echo-agent-core/echo-agent-core.toml
+echo-agent-core dump-config -c ~/.config/echo-agent-core/core.toml
 ```
 
 输出是**合成后**的 TOML，每个条目上方带来源注释（`layer` 从 0 起：bundle 先、
@@ -200,21 +208,23 @@ name = "echo-plugin-example"
 - stdout 只有 TOML 正文（`>` 落盘、`diff` 两份合成结果都干净）。
 - `--config` 可写在子命令**前或后**（`dump-config -c x` 与 `-c x dump-config` 等价）。
 
-## 五类贡献（当前只接通两类）
+## 七类贡献（当前接通四类）
 
-`Contribution` 是插件向宿主申报能力的唯一入口，枚举有 **5 个变体**——但宿主当前只消费其中
-**2 个**，写错类型会被静默忽略（不报错、不崩溃，就是没有效果）：
+`Contribution` 是插件向宿主申报能力的唯一入口，枚举有 **7 个变体**——宿主当前消费其中
+**4 个**；未接线的三个写错类型会被静默忽略（不报错、不崩溃，就是没有效果）：
 
 | 变体 | 宿主是否消费 | 实际落点 |
 | --- | --- | --- |
 | `Contribution::Tool` | ✅ 已接线 | `echo-plugin-adapter::tool` 的 `RemoteTool` → 注册进该人格的 `ToolRegistry`（经句柄 `invoke("<tool>")` 转发）（经 `Invoke("<plugin>:<tool>")` 转发） |
 | `Contribution::PluginInstance` | ✅ 已接线 | `echo-plugin-adapter::instance_contributions` 汇总 → 组合根注册进 `InstanceRegistry`（`bootstrap` 只负责启动与握手）（平台插件的正常入口，见下节） |
+| `Contribution::Command` | ✅ 已接线 | 命令域归插件（framework v0.8）：宿主 `PluginHost::dispatch_command` 按声明的命令名分发，认领后由插件返回结果（`echo-plugin-shell` / `echo-plugin-transcript` / `echo-plugin-session` 等）。宿主自我管理面（`TogglePlugin` 等）**不允许**被接管——把自我管理交给被管理者是自锁 |
+| `Contribution::Text` | ✅ 已接线 | 有序文本拼接（framework v0.8）：`PluginHost::collect_text_blocks` 取各插件的提示词块，按序拼进系统提示词（`echo-plugin-workspace` 的工作区区块即此路径） |
 | `Contribution::Skill` | ❌ 未接线 | SDK 侧只取 `skill.name`（`serve.rs` 的日志用途）；技能实际走 `skills.dir` 插件的目录扫描，不从插件贡献取 |
 | `Contribution::Service` | ❌ 未接线 | SDK 侧只取 `service.key` 用于日志 |
-| `Contribution::Events` | ❌ 未接线 | 宿主无处理分支——**要做事件订阅，目前只能注册为工具或在实例插件内向宿主回呼** |
+| `Contribution::Events` | ❌ 未接线 | 宿主无处理分支——**要做事件订阅，目前只能注册为工具或在实例插件内向宿主回呼**（进程内插件另有等价物见 `Plugin::subscribed_events`） |
 
-所以「插件能贡献什么」的现实答案是：**工具**，以及（平台类插件的）**插件实例**。写 `Service` /
-`Events` 不会生效——协议层留了位置，宿主侧尚未实现，别指望它。
+所以「插件能贡献什么」的现实答案是：**工具**、**插件实例**（平台类）、**命令域**、**提示词文本块**。
+写 `Skill` / `Service` / `Events` 不会生效——协议层留了位置，宿主侧尚未实现，别指望它。
 
 ## 协议约定（宿主 ↔ 插件）
 
@@ -296,7 +306,7 @@ SDK 侧实现 `InstancePlugin`（`echo-plugin-sdk`）：`configure`（收配置�
 - **多模态**：`InvokeOutcome::Ok.images`（图片 URL / data URI）与内置工具 `execute_rich` 同口径。
 - **零全局态纪律**：插件进程内不要持有进程级可变单例（`static OnceLock` 等）——用实例字段（见试点插件的 `WebSearch` 持 client 的做法）。
 - **宿主服务回呼（HostCall）**：插件可回呼宿主注册的命名服务（当前默认提供 `"sanitizer"`：`redact` / `scan` / `register_secret`——处理敏感文本前先脱敏、登记插件自己的凭证）。SDK 侧在 `PluginHandler::on_ready` 收到 `HostClient`（`call_with_timeout` 可调超时，默认 30s）；服务不可用时返回 `Service{code, message}` 错误而非挂死。
-- **参考实现**：`source/plugin/echo-plugin-example/`（websearch + calculator，含 e2e）；协议全消息测试对端 `echo-plugin-host/src/bin/echo-plugin-test-peer.rs`。
+- **参考实现**：`source/plugin/echo-plugin-example/`（websearch + calculator，含 e2e）；协议全消息测试对端 `echo-plugin-test-peer`（在**框架仓** `plugin-framework` 的 `crates/echo-plugin-host/src/bin/echo-plugin-test-peer.rs`，不在本仓）。
 
 ### 本地验证
 

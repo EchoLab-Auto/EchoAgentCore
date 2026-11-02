@@ -25,7 +25,7 @@ y: 500
 |---|---|---|
 | 多接入点复合键 | `(core, id)`，`<core>\u0000<id>`；core 为空退化为裸 id（单 core 行为与磁盘缓存零变化） | keys.ts |
 | 命令目标路由 | 显式 targetCore > 会话归属 > 人格归属 > activeRegion；解析不出且 knownCores>1 时拒发提示 | `connection.ts` 的 `resolveTargetCore` |
-| WS 重连退避 | 500ms ×2，上限 30s | connection.ts |
+| WS 重连退避 | 500ms ×2 指数退避；上限**按可见性分档**：页面可见 3s / 隐藏 30s（`RETRY_CAP_VISIBLE_MS` / `RETRY_CAP_HIDDEN_MS`） | connection.ts |
 | 加载态阈值 | 显示延迟 150ms；最短可见 400ms；慢 6s；超时 20s | pending.ts |
 | 前台自愈 / 中继收割 | 探测帧 5s 判死；一侧 90s 无帧断链；转发写阻塞 10s 断链 | connection.ts / proxy.rs |
 | Toast | 6s；队列/同屏 8；≤512 字符；右上 | `state.ts` 的 `pushToast` / `App.vue` 的 Toast 桥 / `ToastProvider` 的 `max-count` |
