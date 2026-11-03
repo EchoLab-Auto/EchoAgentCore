@@ -413,6 +413,49 @@ mod tests {
         assert!(matches!(events[1], BackendEvent::Notice { ok: true, .. }));
     }
 
+    /// 归档必须**上报进度**：`archive` 起手一条、终态（`done` / `failed`）一条。
+    ///
+    /// 这条锁的是面板进度条的数据源（2026-11 死代码清理时发现归档路径零测试
+    /// 覆盖）。空 trunk 走 `Err("没有可归档的历史")`——顺带验证失败路径也发
+    /// 终态，否则面板的进度条会永远转着（用户以为还在跑）。
+    #[tokio::test]
+    async fn archive_reports_progress_and_a_terminal_phase() {
+        let (handler, host) = handler();
+        handler
+            .handle(
+                "ArchiveHistory",
+                serde_json::json!({ "team_id": null, "session_id": "s1" }),
+            )
+            .await
+            .expect("claimed")
+            .expect("归档失败走事件回执，不进 Err");
+        let events = host.events.lock().unwrap();
+        let phases: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                BackendEvent::CompactionProgress { phase, .. } => Some(phase.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            phases.first().copied(),
+            Some("archive"),
+            "起手必须有 archive 进度（面板据此起进度条）: {events:?}"
+        );
+        assert!(
+            matches!(phases.last().copied(), Some("done" | "failed")),
+            "终态必须是 done 或 failed，否则进度条永远转: {phases:?}"
+        );
+        // 空 trunk → 失败终态；随后还有一条 ok=false 的回执
+        assert_eq!(phases.last().copied(), Some("failed"), "{phases:?}");
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::Notice { ok: false, .. })),
+            "失败要有回执: {events:?}"
+        );
+    }
+
     /// 压缩保留区间与旧实现一致：默认 40，夹在 10..=500。
     #[tokio::test]
     async fn compact_clamps_keep_recent_like_before() {
