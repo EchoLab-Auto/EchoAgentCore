@@ -247,10 +247,14 @@ impl echo_agent::plugins::SubprocessPluginControl for SubprocessControl {
         id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
         Box::pin(async move {
-            let handle = self
-                .handles
-                .get(id)
-                .ok_or_else(|| format!("{id}: 不是已启动的外部插件"))?;
+            let Some(handle) = self.handles.get(id) else {
+                // 启动失败 / 配置里就没启动的条目同样允许禁用：
+                // 这时没有子进程可停，操作语义是「保持不启动」而非失败。
+                if self.disabled.contains(id) || self.failed.contains_key(id) {
+                    return Ok(());
+                }
+                return Err(format!("{id}: 未知外部插件"));
+            };
             handle
                 .stop(std::time::Duration::from_secs(5))
                 .await
