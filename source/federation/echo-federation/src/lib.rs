@@ -11,6 +11,8 @@
 //!   接入全网任一节点，权限由被接入节点自己的 `panel_access` 决定。挂在
 //!   [`Federation`] 上是因为合并端口的 WS 升级回调只能同步读它。
 
+pub mod plugin;
+
 pub mod error;
 pub mod frame;
 pub mod invite;

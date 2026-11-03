@@ -1708,6 +1708,25 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             .iter()
             .map(|plugin| plugin.manifest().id.clone())
             .collect();
+        // ── kernel 插件不可禁用（fail-closed）──────────────────────────
+        //
+        // `kind = "kernel"` 的插件是其它插件的运行地基（词汇 / 线契约 /
+        // 工具注册表 / 事件日志 / 配置存储 / 循环驱动）。`plugins.toml` 里给
+        // 它们写 `enabled = false` 时**启动失败并点名**——而不是像能力插件
+        // 那样"注册但不挂载"。
+        //
+        // 为什么必须失败而不是静默跳过：静默跳过等于给了运维一个**假动作**
+        // （"我关掉了它，系统还在跑"），而实际后果要么是启动到一半才发现
+        // 缺东西，要么是运行期某个能力静默失效。假动作比不给开关更糟。
+        if let Some(off) = echo_agent::plugins::disabled_kernel_plugins(&catalog_ids, &plan) {
+            return Err(anyhow::anyhow!(
+                "plugins.toml 试图禁用 kernel 插件 {off:?}——它们是其它插件的运行地基\
+                 （kind = \"kernel\"），禁用后系统无法启动。\n\
+                 请删掉那一行的 `enabled = false`，或在 `[security.sanitize]` 这类\
+                 专属开关里关闭对应能力（脱敏）而不是禁用插件。"
+            )
+            .context("kernel plugin cannot be disabled"));
+        }
         let (order, diagnostics) = echo_agent::plugins::resolve_mount_order(&catalog_ids, &plan);
         for diagnostic in &diagnostics {
             warn!(%diagnostic, "builtin mount plan");

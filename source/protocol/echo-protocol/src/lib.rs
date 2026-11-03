@@ -18,6 +18,8 @@
 //! `ws://…:3132` — field/variant names must stay stable; new fields need
 //! `#[serde(default)]` to keep old peers decodable.
 
+pub mod plugin;
+
 pub mod bridge;
 pub mod command;
 pub mod delta_batch;

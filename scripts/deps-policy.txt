@@ -34,13 +34,13 @@
 defs/echo-defs
 
 # ── 中间层（只依赖底座）────────────────────────────────────────────────
-session/echo-session                    echo-defs
-loop/echo-loop                          echo-context echo-defs
-protocol/echo-protocol                  echo-context echo-defs
-security/echo-sanitize                  echo-defs
-tool/echo-tool                          echo-context echo-defs echo-sanitize
-shell/echo-shell                        echo-context echo-defs echo-protocol echo-tool
-federation/echo-federation              echo-defs
+session/echo-session                    echo-defs echo-plugin
+loop/echo-loop                          echo-context echo-defs echo-plugin
+protocol/echo-protocol                  echo-context echo-defs echo-plugin
+security/echo-sanitize                  echo-defs echo-plugin
+tool/echo-tool                          echo-context echo-defs echo-plugin echo-sanitize
+shell/echo-shell                        echo-context echo-defs echo-plugin echo-protocol echo-tool
+federation/echo-federation              echo-defs echo-plugin
 config/echo-config
 backend/echo-test-utils                 echo-defs
 
@@ -68,4 +68,4 @@ plugin/echo-plugin-shell                echo-context echo-defs echo-plugin echo-
 # ── 业务层与组合根 ─────────────────────────────────────────────────────
 # echo-agent 是业务 crate：**只有组合根可以依赖它**。
 backend/echo-agent                      echo-config echo-shell echo-context echo-plugin-shell echo-defs echo-federation echo-plugin-federation echo-plugin-management echo-plugin-session echo-plugin-transcript echo-loop echo-plugin echo-plugin-loop echo-plugin-provider-llm echo-plugin-sanitize echo-plugin-self-update echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-sanitize echo-session echo-test-utils echo-tool
-core                                     echo-agent echo-config echo-context echo-plugin-shell echo-defs echo-federation echo-loop echo-plugin echo-plugin-adapter echo-plugin-federation echo-plugin-host echo-plugin-loader echo-plugin-loop echo-plugin-management echo-plugin-provider-llm echo-plugin-sanitize echo-plugin-session echo-plugin-transcript echo-plugin-self-update echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-sanitize echo-session
+core                                     echo-agent echo-config echo-context echo-plugin-shell echo-defs echo-shell echo-tool echo-federation echo-loop echo-plugin echo-plugin-adapter echo-plugin-federation echo-plugin-host echo-plugin-loader echo-plugin-loop echo-plugin-management echo-plugin-provider-llm echo-plugin-sanitize echo-plugin-session echo-plugin-transcript echo-plugin-self-update echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-sanitize echo-session

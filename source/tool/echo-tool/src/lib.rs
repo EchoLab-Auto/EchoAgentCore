@@ -19,6 +19,8 @@
 
 pub use echo_defs::tool::{Tool, ToolDefinition, ToolError, ToolResult};
 
+pub mod plugin;
+
 pub mod execute;
 pub use execute::{
     invalid_tool_arguments, tool_state, ToolCallContext, ToolExecutionHost, ToolExecutor,

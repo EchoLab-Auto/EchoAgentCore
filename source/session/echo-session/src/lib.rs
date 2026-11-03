@@ -25,6 +25,8 @@
 //! | [`header`] | `SessionHeader` fork/resume metadata |
 //! | [`legacy`] | migration from the pre-event-sourced `echo-sessions.json` v4 format |
 
+pub mod plugin;
+
 pub mod compaction;
 pub mod derive;
 pub mod event;

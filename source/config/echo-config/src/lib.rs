@@ -197,3 +197,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+/// 插件 id：本 crate 在 `catalog` 里的身份。
+///
+/// 与 `echo-defs` 同理：本 crate 零 `echo-*` 依赖（TOML I/O 不该知道任何
+/// 宿主词汇），manifest 因此由组合根用 `push_builtin_identity` 声明。
+pub const PLUGIN_ID: &str = "echo-agent.kernel.config";

@@ -14,9 +14,12 @@ path = "src/main.rs"
 [dependencies]
 echo-defs.workspace = true
 echo-config.workspace = true
+echo-sanitize.workspace = true
 echo-protocol.workspace = true
 echo-context.workspace = true
 echo-session.workspace = true
+echo-tool = { workspace = true }
+echo-shell = { workspace = true }
 echo-loop.workspace = true
 echo-agent.workspace = true
 echo-plugin = { workspace = true }
@@ -56,4 +59,3 @@ flate2.workspace = true
 # 脱敏实现已归 `echo-plugin-sanitize`：组合根只在**测试**里直接构造
 # `RegistryRedactor`（其余路径一律走插件导出的 `build`）。
 [dev-dependencies]
-echo-sanitize.workspace = true

@@ -81,7 +81,7 @@ impl PluginScope {
 /// | `orchestration` | Process | 自更新等运维能力，进程级 |
 /// | `session` | Process | 会话 trunk 是数据层；关掉它等于"没有人格"，不是可选项 |
 /// | `interaction` | Process | 显示投影/人在环交互面，进程级 |
-pub const KIND_SCOPE: [(&str, PluginScope); 11] = [
+pub const KIND_SCOPE: [(&str, PluginScope); 12] = [
     ("tool", PluginScope::Persona),
     ("skill", PluginScope::Persona),
     // 实例类 kind 引用宿主常量而非字面量：`2d46b7d` 把 wire 名从 `adapter`
@@ -97,6 +97,10 @@ pub const KIND_SCOPE: [(&str, PluginScope); 11] = [
     // 安全能力是**不变量**，不是某个人格的选项：脱敏被关掉等于密钥明文
     // 外泄，所以它归进程级（人格白名单碰不到它）。
     ("security", PluginScope::Process),
+    // 运行地基（2026-11：取消「中间层 / 插件」二分后新增）。词汇、线契约、
+    // 工具注册表、事件日志、配置存储、循环驱动——它们是其它插件的地基，
+    // 既不该被哪个 persona 关掉，也不该被 `plugins.toml` 关掉。
+    ("kernel", PluginScope::Process),
 ];
 
 /// 某 kind 的作用域。

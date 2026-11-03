@@ -68,3 +68,14 @@ pub use token::{
     truncate, truncate_message_to_tokens, truncate_text_to_tokens,
 };
 pub use tool::{Tool, ToolDefinition, ToolError};
+
+/// 插件 id：本 crate 在 `catalog` 里的身份。
+///
+/// **为什么 id 在这里，而 manifest 在宿主**：本 crate 的铁律是「零 `echo-*`
+/// 依赖」——manifest 类型来自框架仓的 `echo-plugin`，引进来就破了这条线。
+/// 所以 id 归本 crate（配置与 Panel 读的就是这个字面量），manifest 由组合根
+/// 用 `push_builtin_identity` 声明（与 `echo-agent.subagent` 同款）。
+///
+/// 2026-11 之前本 crate 没有身份——它是"只是库"的中间层。取消那个二分之后，
+/// 每个 crate 都以插件形态出现在 Panel 里，包括只有 trait 与纯函数的它。
+pub const PLUGIN_ID: &str = "echo-agent.kernel.defs";

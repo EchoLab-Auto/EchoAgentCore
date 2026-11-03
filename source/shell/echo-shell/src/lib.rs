@@ -23,6 +23,9 @@ use tokio::sync::mpsc;
 
 use echo_protocol::ShellSessionInfo;
 
+pub mod plugin;
+
+
 pub const MAX_SHELL_SESSIONS: usize = 8;
 /// 单条命令默认超时（秒）。
 pub const DEFAULT_EXEC_TIMEOUT_SECS: u64 = 120;

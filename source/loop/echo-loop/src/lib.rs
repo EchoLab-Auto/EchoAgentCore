@@ -21,6 +21,8 @@
 //! | [`pipeline`] | the tool execution pipeline (waterfall around middleware) |
 //! | [`runner`] | the `TurnRunner` state machine |
 
+pub mod plugin;
+
 pub mod event;
 pub mod pipeline;
 pub mod runner;

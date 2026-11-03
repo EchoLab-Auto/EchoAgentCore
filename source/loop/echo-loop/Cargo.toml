@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+echo-plugin = { workspace = true }
 echo-defs = { path = "../../defs/echo-defs" }
 echo-context = { workspace = true }
 tokio.workspace = true

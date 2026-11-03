@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+echo-plugin = { workspace = true }
 echo-defs.workspace = true
 tokio.workspace = true
 serde.workspace = true

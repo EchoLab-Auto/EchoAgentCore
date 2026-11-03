@@ -87,7 +87,7 @@ pub use echo_plugin_federation::PLUGIN_ID as FEDERATION_PLUGIN_ID;
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_PLUGIN_IDS: [&str; 13] = [
+pub const BUILTIN_PLUGIN_IDS: [&str; 22] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SHELL_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
@@ -104,6 +104,22 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 13] = [
     SELF_UPDATE_PLUGIN_ID,
     // 安全不变量（`kind = "security"`，进程级、不可被 persona 关闭）。
     echo_plugin_sanitize::PLUGIN_ID,
+    // ── 运行地基（`kind = "kernel"`，2026-11 取消「中间层 / 插件」二分）──
+    //
+    // 这 9 项此前是「只是库」的 crate，没有 manifest、不进 Panel 清单。
+    // 现在它们和其它插件同形：有 manifest、进 catalog、出现在 Panel 里。
+    // `kind = kernel` 的语义是「**不可禁用**」——`plugins.toml` 写
+    // `enabled = false` 会让启动失败并指出具体哪一条（见
+    // `mount_plan_when_ready`），而不是静默跳过。
+    echo_defs::PLUGIN_ID,
+    echo_config::PLUGIN_ID,
+    echo_protocol::plugin::PLUGIN_ID,
+    echo_session::plugin::PLUGIN_ID,
+    echo_tool::plugin::PLUGIN_ID,
+    echo_shell::plugin::PLUGIN_ID,
+    echo_federation::plugin::PLUGIN_ID,
+    echo_sanitize::plugin::PLUGIN_ID,
+    echo_loop::plugin::PLUGIN_ID,
 ];
 
 /// 插件**不得**接管的命令（宿主自我管理面）。
@@ -189,6 +205,33 @@ impl MountStep {
             enabled,
         }
     }
+}
+
+/// 挑出 `plugins.toml` 里被 `enabled = false` 的 **kernel** 插件（若有）。
+///
+/// `kind = "kernel"` 的插件是其它插件的运行地基，禁不掉（理由见
+/// `source/*/*/src/plugin.rs` 的模块文档）。返回第一个违规项——启动方能据此
+/// **明确失败**，而不是像能力插件那样"注册但不挂载"（那是假动作：运维以为
+/// 关掉了一个可有可无的东西，实际后果是启动到一半缺东西）。
+///
+/// `catalog_ids` 用来确认 id 真实存在：写错 id 的 `enabled = false` 不算违规
+/// （它本来就不会挂载，只会在 mount plan 诊断里 warn）。
+pub fn disabled_kernel_plugins(catalog_ids: &[String], plan: &[MountStep]) -> Option<String> {
+    const KERNEL_IDS: [&str; 9] = [
+        echo_defs::PLUGIN_ID,
+        echo_config::PLUGIN_ID,
+        echo_protocol::plugin::PLUGIN_ID,
+        echo_session::plugin::PLUGIN_ID,
+        echo_tool::plugin::PLUGIN_ID,
+        echo_shell::plugin::PLUGIN_ID,
+        echo_federation::plugin::PLUGIN_ID,
+        echo_sanitize::plugin::PLUGIN_ID,
+        echo_loop::plugin::PLUGIN_ID,
+    ];
+    plan.iter()
+        .filter(|step| !step.enabled)
+        .map(|step| step.id.clone())
+        .find(|id| KERNEL_IDS.contains(&id.as_str()) && catalog_ids.iter().any(|c| c == id))
 }
 
 /// 把「内置目录顺序」与「配置给出的挂载计划」解析成**实际挂载序列**。

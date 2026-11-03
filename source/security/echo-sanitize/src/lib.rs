@@ -23,3 +23,5 @@ mod registry;
 
 pub use registry::{placeholder, RegistryRedactor};
 
+pub mod plugin;
+

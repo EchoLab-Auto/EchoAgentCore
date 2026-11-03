@@ -108,6 +108,43 @@ fn push_plugin(catalog: &mut Vec<Arc<dyn Plugin>>, plugin: Arc<dyn Plugin>) -> a
 pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
     let mut catalog: Vec<Arc<dyn Plugin>> = Vec::new();
 
+    // ── 运行地基（`kind = "kernel"`）──
+    //
+    // 2026-11：取消「中间层 / 插件」二分。这 9 个此前是"只是库"的 crate，
+    // 现在与其它插件同形（有 manifest、进 Panel 清单、可 mount/unmount）。
+    // 排最前是因为它们提供的是**其它插件的地基**——先登记身份，读配置时
+    // 就能看到完整清单。
+    //
+    // **`mount` 是纯身份声明**（空 disposer）：地基的运行期实例（工具注册表 /
+    // 事件日志 / Shell 管理器…）有归属问题（每 persona 一份，或要绑定宿主
+    // 事件出口），由组合根构造后经服务键交给消费者，不在 mount 里申请。
+    //
+    // `echo-defs` 与 `echo-config` 零 `echo-*` 依赖（铁律），manifest 只能用
+    // `push_builtin_identity` 声明——它们的 id 常量仍在各自 crate 里。
+    push_builtin_identity(&mut catalog, version, echo_defs::PLUGIN_ID)?;
+    push_builtin_identity(&mut catalog, version, echo_config::PLUGIN_ID)?;
+    for plugin in echo_protocol::plugin::plugins(version) {
+        push_plugin(&mut catalog, plugin)?;
+    }
+    for plugin in echo_session::plugin::plugins(version) {
+        push_plugin(&mut catalog, plugin)?;
+    }
+    for plugin in echo_tool::plugin::plugins(version) {
+        push_plugin(&mut catalog, plugin)?;
+    }
+    for plugin in echo_shell::plugin::plugins(version) {
+        push_plugin(&mut catalog, plugin)?;
+    }
+    for plugin in echo_federation::plugin::plugins(version) {
+        push_plugin(&mut catalog, plugin)?;
+    }
+    for plugin in echo_sanitize::plugin::plugins(version) {
+        push_plugin(&mut catalog, plugin)?;
+    }
+    for plugin in echo_loop::plugin::plugins(version) {
+        push_plugin(&mut catalog, plugin)?;
+    }
+
     // ── 会话子系统（事件日志 / 投影 / 持久化 / 压缩编排）──
     //
     // 第一个挂：它 provide 的 `echo-agent.session.factory` 是"造一个 trunk"
@@ -269,6 +306,19 @@ fn push_builtin_identity(
             "subagent",
             "委派独立子任务给隔离上下文的子 agent：spawn_subagent 工具 + 完成后 <subagent_event> hook 回灌主 agent",
         ),
+        // 零 `echo-*` 依赖的两个 crate（铁律）：manifest 只能在这里声明。
+        echo_defs::PLUGIN_ID => (
+            "词汇与接缝",
+            "kernel",
+            "defs",
+            "定义层：9 个能力接缝 trait 与全部跨边界词汇（零 echo-* 依赖）",
+        ),
+        echo_config::PLUGIN_ID => (
+            "配置存储",
+            "kernel",
+            "config",
+            "TOML 原子读改写（tmp+rename，不认识任何段语义）",
+        ),
         _ => (id, "tool", id, "内置插件"),
     };
     push_builtin(
@@ -414,6 +464,56 @@ mod catalog_shape_tests {
     /// 这里用 catalog（真实来源）做双向比对：新增插件忘了登记 → 红；登记了
     /// 但没进 catalog → 也红。不改成"从 catalog 派生"是因为依赖方向：catalog
     /// 在 core，`BUILTIN_PLUGIN_IDS` 在 echo-agent，后者看不到前者。
+    /// kernel 插件**禁不掉**：`plugins.toml` 里 `enabled = false` 必须被
+    /// `disabled_kernel_plugins` 抓到（启动据此失败），而能力插件照旧可关。
+    ///
+    /// 这条锁的是「不给假动作」：如果哪天有人把 kernel 从这张表里漏掉，
+    /// 运维写 `enabled = false` 就会被静默忽略，而系统半死不活地起来。
+    #[test]
+    fn kernel_plugins_cannot_be_disabled_but_capabilities_can() {
+        use echo_agent::plugins::{disabled_kernel_plugins, MountStep};
+
+        let catalog = catalog("0.0.0-test").expect("目录构造");
+        let ids: Vec<String> = catalog
+            .iter()
+            .map(|plugin| plugin.manifest().id.clone())
+            .collect();
+
+        // 每个 kernel crate 的 id 都要在 catalog 里（否则下面的门禁不生效）。
+        for id in [
+            echo_defs::PLUGIN_ID,
+            echo_config::PLUGIN_ID,
+            echo_protocol::plugin::PLUGIN_ID,
+            echo_session::plugin::PLUGIN_ID,
+            echo_tool::plugin::PLUGIN_ID,
+            echo_shell::plugin::PLUGIN_ID,
+            echo_federation::plugin::PLUGIN_ID,
+            echo_sanitize::plugin::PLUGIN_ID,
+            echo_loop::plugin::PLUGIN_ID,
+        ] {
+            assert!(ids.iter().any(|c| c == id), "kernel {id} 不在 catalog 里");
+        }
+
+        // ① 能力插件可关：不报违规。
+        let plan = vec![MountStep::new(echo_agent::plugins::SHELL_PLUGIN_ID, false)];
+        assert_eq!(disabled_kernel_plugins(&ids, &plan), None);
+
+        // ② kernel 插件不可关：必须被抓到并点名。
+        let plan = vec![
+            MountStep::new(echo_agent::plugins::SHELL_PLUGIN_ID, false),
+            MountStep::new(echo_tool::plugin::PLUGIN_ID, false),
+        ];
+        assert_eq!(
+            disabled_kernel_plugins(&ids, &plan).as_deref(),
+            Some(echo_tool::plugin::PLUGIN_ID)
+        );
+
+        // ③ 写错 id 的 `enabled = false` 不算违规（它本来就挂不上，
+        //    由 mount plan 诊断去 warn，不该因此让启动失败）。
+        let plan = vec![MountStep::new("echo-agent.kernel.nonexistent", false)];
+        assert_eq!(disabled_kernel_plugins(&ids, &plan), None);
+    }
+
     #[test]
     fn builtin_id_list_matches_the_catalog_exactly() {
         let catalog = catalog("0.0.0-test").expect("目录构造");

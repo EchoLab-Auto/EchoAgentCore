@@ -8,9 +8,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+echo-plugin = { workspace = true }
 echo-defs = { path = "../../defs/echo-defs" }
 echo-context = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# mount() 的纯身份测试需要构造 MountContext。
