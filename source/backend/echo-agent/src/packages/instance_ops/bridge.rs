@@ -12,10 +12,23 @@
 //! 2026-11 全插件化 S3 审计：本文件曾与 `commands.rs`（实例命令域，429 行）
 //! 同处一个目录，让"桥接"看起来像 adapter 能力的一部分。命令域已搬进
 //! `echo-plugin-tools`，本文件留在宿主是**刻意的**（理由见上）。
+//!
+//! ## 2026-11 二次审计：留下来的与下沉出去的
+//!
+//! 本文件原有两段**纯函数**，与"核心编排"无关，已下沉定义层：
+//!
+//! | 原位置 | 现位置 | 为什么下沉 |
+//! |---|---|---|
+//! | `format_hook_input` | [`echo_defs::input_marker::format_instance_hook`] | 它是 hook 信封的**构造方**，而解析方（`structured_message_sequence` / `hook_payload`）一直在定义层——两侧靠字符串字面量对齐 `"message_sequence"`，改字段名不会有编译错误，只会静默丢序号 |
+//! | `recall_command_scope` | [`echo_defs::control_command::cancel_scope`] | 判据是"用户打了什么字"，与平台、与 agent 运行态都无关；各入口各写一份就会出现"取消在 A 平台生效、B 平台不生效" |
+//!
+//! 留下来的部分（会话键构造、展示会话选择、事件发射、turn 准入、取消执行、
+//! 脱敏）**每一项都要 `Arc<Agent>`**——它们的共同点是「改变 agent 的状态」，
+//! 这正是核心编排，搬不走。
 
 use std::sync::Arc;
 
-use echo_defs::chat::{ChannelType, IncomingMessage};
+use echo_defs::chat::IncomingMessage;
 
 use crate::agent::Agent;
 use crate::event::BackendEvent;
@@ -107,11 +120,12 @@ impl AgentMessageHook {
             team_id: None,
         });
 
-        let hook_input = format_hook_input(&msg, message_sequence, received_at_ms);
+        let hook_input =
+            echo_defs::input_marker::format_instance_hook(&msg, message_sequence, received_at_ms);
 
         // Cancellation is a transport-level control command. Handle it before
         // reserving a conversation turn so it can interrupt work immediately.
-        if let Some(cancel_all) = recall_command_scope(&msg.content) {
+        if let Some(cancel_all) = echo_defs::control_command::cancel_scope(&msg.content) {
             agent
                 .record_incoming_and_snapshot(&session, &hook_input)
                 .await;
@@ -156,103 +170,16 @@ impl AgentMessageHook {
     }
 }
 
-/// Encode an instance event as a clearly marked, structured hook input.
-/// Message content stays inside JSON so it cannot be confused with source
-/// metadata such as sender or group identifiers.
-fn format_hook_input(msg: &IncomingMessage, message_sequence: u64, received_at_ms: i64) -> String {
-    let channel = match &msg.channel {
-        ChannelType::Direct => serde_json::json!({
-            "type": "private"
-        }),
-        ChannelType::Group { group_id } => serde_json::json!({
-            "type": "group",
-            "group_id": group_id,
-            "group_name": msg.group_name
-        }),
-    };
-    // 文件附件（已下载到本机）：path 为绝对路径，工具可直接读；下载失败
-    // 时 path=null 并以 error 说明原因。
-    let files: Vec<serde_json::Value> = msg
-        .files
-        .iter()
-        .map(|f| {
-            serde_json::json!({
-                "name": f.name,
-                "path": f.path,
-                "size": f.size,
-                "error": f.error,
-            })
-        })
-        .collect();
-    let payload = serde_json::json!({
-        "event": format!("{}_message", msg.platform),
-        "instance": msg.instance_name,
-        "platform": msg.platform,
-        "channel": channel,
-        "sender": {
-            "user_id": msg.user_id,
-            "name": msg.user_name
-        },
-        "at_me": msg.at_me,
-        "timestamp": msg.timestamp,
-        "received_at_ms": received_at_ms,
-        "message_sequence": message_sequence,
-        "content": msg.content,
-        "metadata": msg.metadata,
-        "images": msg.images,
-        "files": files
-    });
-    crate::input_marker::wrap_hook_value(&msg.platform, &payload)
-}
-
-/// Returns `Some(true)` for "cancel all" and `Some(false)` for the newest task.
-fn recall_command_scope(content: &str) -> Option<bool> {
-    let normalized = content
-        .trim()
-        .to_lowercase()
-        .chars()
-        .filter(|ch| !ch.is_whitespace() && !"，。！？,.!?；;：:".contains(*ch))
-        .collect::<String>();
-    let cancel_all = [
-        "全部停止",
-        "停止全部任务",
-        "取消全部任务",
-        "撤回全部任务",
-        "终止全部任务",
-        "cancelall",
-        "/cancelall",
-        "/stopall",
-    ];
-    if cancel_all.contains(&normalized.as_str()) {
-        return Some(true);
-    }
-    let cancel_one = [
-        "停止任务",
-        "停止当前任务",
-        "停下当前任务",
-        "取消任务",
-        "取消当前任务",
-        "取消刚才的任务",
-        "撤回任务",
-        "撤回刚才的任务",
-        "终止任务",
-        "终止当前任务",
-        "/cancel",
-        "/stop",
-        "/abort",
-    ];
-    cancel_one.contains(&normalized.as_str()).then_some(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use echo_defs::chat::ChannelType;
     use crate::llm::{
         ChatChunk, ChatRequest, ChatResponse, LlmError, LlmProvider, ToolCall, Usage,
     };
     use crate::tool::{Tool, ToolError};
     use async_trait::async_trait;
-    use echo_defs::chat::{ChannelType, IncomingMessage};
+    use echo_defs::chat::IncomingMessage;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct BridgeProvider {
@@ -629,7 +556,7 @@ mod tests {
                 error: Some("获取下载链接失败：boom".into()),
             },
         ];
-        let text = format_hook_input(&msg, 7, 123);
+        let text = echo_defs::input_marker::format_instance_hook(&msg, 7, 123);
         let payload = crate::input_marker::hook_payload(&text).expect("hook payload");
         let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(value["message_sequence"], 7);
@@ -644,7 +571,7 @@ mod tests {
     #[test]
     fn hook_input_without_files_has_empty_list() {
         let msg = dm_message("hi");
-        let text = format_hook_input(&msg, 1, 1);
+        let text = echo_defs::input_marker::format_instance_hook(&msg, 1, 1);
         let payload = crate::input_marker::hook_payload(&text).expect("hook payload");
         let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(value["files"], serde_json::json!([]));
@@ -659,7 +586,7 @@ mod tests {
             "tester".into(),
             None,
         );
-        let hook_input = format_hook_input(&msg, 1, chrono::Utc::now().timestamp_millis());
+        let hook_input = echo_defs::input_marker::format_instance_hook(&msg, 1, chrono::Utc::now().timestamp_millis());
         let snapshot = agent
             .record_incoming_and_snapshot(&session, &hook_input)
             .await;
@@ -767,25 +694,5 @@ mod tests {
         assert!(platform_history
             .iter()
             .any(|message| message.content == "已停止 2 个进行中的任务。"));
-    }
-
-    #[test]
-    fn recall_detection_is_explicit_and_avoids_normal_questions() {
-        assert_eq!(recall_command_scope("取消当前任务"), Some(false));
-        assert_eq!(recall_command_scope(" /cancel-all "), None);
-        assert_eq!(recall_command_scope("取消全部任务"), Some(true));
-        assert_eq!(recall_command_scope("取消任务应该如何实现？"), None);
-        assert_eq!(recall_command_scope("不要取消，继续执行"), None);
-        // Bare words must NOT cancel — they are ordinary conversation.
-        assert_eq!(recall_command_scope("停"), None);
-        assert_eq!(recall_command_scope("取消"), None);
-        assert_eq!(recall_command_scope("stop"), None);
-        assert_eq!(recall_command_scope("cancel"), None);
-        assert_eq!(recall_command_scope("算了"), None);
-        assert_eq!(recall_command_scope("不用了"), None);
-        // Slash commands still work.
-        assert_eq!(recall_command_scope("/cancel"), Some(false));
-        assert_eq!(recall_command_scope("/stop"), Some(false));
-        assert_eq!(recall_command_scope("/stopall"), Some(true));
     }
 }

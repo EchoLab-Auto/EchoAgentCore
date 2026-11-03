@@ -198,7 +198,14 @@ echo-plugin-provider-llm/src/providers/
 
 ### 结构化输入标记
 
-标记的单一事实来源是 `echo_defs::input_marker`（`echo-agent` 侧只留 re-export）：构造（`wrap_hook`）、判定、解析（`structured_message_sequence`，限制在标记开头、防普通文本误读）集中一处，改格式只改一处。**判定不依赖平台名**——`platform_hook_of` 按位置匹配任意 `<X_message_hook>` 并返回平台名，`FIXED_INPUT_MARKERS` 只列宿主内部的两类并优先排除；新增平台因此不需要改这个模块。演进方向：来源判定从 content 字符串改为 `MessageReceived` 的结构化 origin 字段。
+标记的单一事实来源是 `echo_defs::input_marker`（`echo-agent` 侧只留 re-export）：构造（`wrap_hook` / **`format_instance_hook`**——一条入站消息 → 完整 payload 信封）、判定、解析（`structured_message_sequence`，限制在标记开头、防普通文本误读）集中一处，改格式只改一处。**构造与解析必须同住一个模块**：`format_instance_hook` 写的 `"message_sequence"` 正是 `structured_message_sequence` 读的那个字段，两侧分居不同 crate 时靠字符串字面量对齐——改字段名不会有任何编译错误，只会静默丢序号。**判定不依赖平台名**——`platform_hook_of` 按位置匹配任意 `<X_message_hook>` 并返回平台名，`FIXED_INPUT_MARKERS` 只列宿主内部的两类并优先排除；新增平台因此不需要改这个模块。演进方向：来源判定从 content 字符串改为 `MessageReceived` 的结构化 origin 字段。
+
+平台无关的**控制命令词汇**同样在定义层：`echo_defs::control_command::cancel_scope`
+（`"取消当前任务"` → 只停最新一个 / `"全部停止"` → 全停 / 其余 → `None` 交给模型）。
+判据是**用户打了什么字**，与平台无关；若各入口各写一份，会出现"取消在 A 平台
+生效、在 B 平台不生效"的跨平台不一致。宿主只负责**执行**（按令牌取消 turn），
+不负责**识别**。匹配口径刻意严格：只认整条输入等于某个词条，不认包含——伪装
+成命令的自由文本会让 agent 静默不回复，比漏判更难被用户理解。
 
 ## 扩展点地图
 

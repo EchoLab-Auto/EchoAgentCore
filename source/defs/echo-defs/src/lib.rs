@@ -31,6 +31,7 @@
 
 pub mod api_profile;
 pub mod chat;
+pub mod control_command;
 pub mod input_marker;
 pub mod llm;
 pub mod media;

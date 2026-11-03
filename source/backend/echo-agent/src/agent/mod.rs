@@ -1354,10 +1354,6 @@ pub(crate) fn structured_message_sequence(content: &str) -> Option<u64> {
     crate::input_marker::structured_message_sequence(content)
 }
 
-/// 模型可见的工具参数预检：schema 声明的必需字段缺失时，返回纠正性错误
-/// [`crate::instance_bridge::format_hook_input`]); this pulls them into the
-/// durable `UserMessage` event so session replay keeps the multimodal
-/// content. Returns an empty vec for plain text.
 /// 单张图片（URL 或 data URI 字符串）进入持久化/模型请求的上限。
 ///
 /// 上限对齐各入口的内嵌上限：QQ 插件实例按解码后 ≤10MB 内嵌
@@ -1366,6 +1362,14 @@ pub(crate) fn structured_message_sequence(content: &str) -> Option<u64> {
 /// 走 image 块，体积不影响 token，超限只发生在编码前的极端输入上。
 const MAX_INPUT_IMAGE_CHARS: usize = 16 * 1024 * 1024;
 
+/// 从结构化输入的 payload 里抽出图片，随 `UserMessage` 事件落库。
+///
+/// 图片必须进 durable 事件（而不是只存在于当次请求）：不这样做，session
+/// replay 就重建不出多模态内容，历史里的图片会变成一句空文本。
+/// 纯文本输入返回空 `Vec`。
+///
+/// 信封与 payload 的构造在 [`echo_defs::input_marker::format_instance_hook`]
+/// （定义层，构造与解析同一处）；这里只做"取出来 + 限长"。
 pub(crate) fn extract_input_images(content: &str) -> Vec<String> {
     let Some(payload) = crate::input_marker::hook_payload(content) else {
         return Vec::new();
