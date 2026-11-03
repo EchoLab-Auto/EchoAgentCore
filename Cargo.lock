@@ -353,9 +353,6 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-federation",
- "echo-llm-anthropic",
- "echo-llm-ollama",
- "echo-llm-openai",
  "echo-loop",
  "echo-plugin",
  "echo-plugin-federation",
@@ -566,11 +563,9 @@ dependencies = [
  "async-trait",
  "base64",
  "echo-defs",
- "echo-plugin-api",
  "echo-plugin-host",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -594,7 +589,6 @@ dependencies = [
  "echo-plugin",
  "echo-protocol",
  "echo-tool",
- "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -648,16 +642,12 @@ name = "echo-plugin-management"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
  "echo-context",
- "echo-defs",
  "echo-federation",
  "echo-plugin",
  "echo-protocol",
- "echo-session",
  "futures-util",
  "serde_json",
- "sha2",
  "tokio",
  "tokio-tungstenite",
  "tracing",
@@ -695,7 +685,6 @@ dependencies = [
  "echo-protocol",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -731,7 +720,6 @@ dependencies = [
  "echo-tool",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -790,7 +778,6 @@ dependencies = [
  "reqwest",
  "serde_json",
  "tokio",
- "tokio-util",
  "toml",
  "tracing",
  "uuid",
@@ -870,16 +857,12 @@ name = "echo-shell"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "echo-context",
- "echo-defs",
  "echo-protocol",
  "echo-tool",
  "libc",
  "parking_lot",
  "regex",
- "serde",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -1985,17 +1968,6 @@ name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest",
-]
-
-[[package]]
-name = "sha2"
-version = "0.10.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",

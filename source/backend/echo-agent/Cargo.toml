@@ -14,9 +14,6 @@ echo-federation = { path = "../../federation/echo-federation" }
 echo-context = { workspace = true }
 echo-loop = { path = "../../loop/echo-loop" }
 echo-session = { path = "../../session/echo-session" }
-echo-llm-openai = { path = "../../llm/echo-llm-openai" }
-echo-llm-anthropic = { path = "../../llm/echo-llm-anthropic" }
-echo-llm-ollama = { path = "../../llm/echo-llm-ollama" }
 echo-protocol = { path = "../../protocol/echo-protocol" }
 echo-plugin = { workspace = true }
 echo-plugin-provider-llm = { workspace = true }
