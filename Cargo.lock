@@ -686,7 +686,6 @@ dependencies = [
  "echo-defs",
  "echo-plugin",
  "echo-sanitize",
- "serde_json",
  "tracing",
 ]
 
@@ -847,7 +846,6 @@ name = "echo-sanitize"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
- "echo-context",
  "echo-defs",
  "regex",
  "tracing",

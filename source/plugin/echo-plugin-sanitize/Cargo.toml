@@ -13,6 +13,3 @@ echo-context = { workspace = true }
 echo-plugin = { workspace = true }
 echo-sanitize = { path = "../../security/echo-sanitize" }
 tracing = { workspace = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }

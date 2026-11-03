@@ -37,7 +37,7 @@ defs/echo-defs
 session/echo-session                    echo-defs
 loop/echo-loop                          echo-context echo-defs
 protocol/echo-protocol                  echo-context echo-defs
-security/echo-sanitize                  echo-context echo-defs
+security/echo-sanitize                  echo-defs
 tool/echo-tool                          echo-context echo-defs echo-sanitize
 shell/echo-shell                        echo-context echo-defs echo-protocol echo-tool
 federation/echo-federation              echo-defs
