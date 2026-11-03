@@ -13,7 +13,7 @@
 //! | [`message`] | chat-completion vocabulary: `ChatRole`, `ChatMessage`, `ToolCall`, `ChatRequest`, ... |
 //! | [`llm`] | the `LlmProvider` seam: trait + transport-agnostic `LlmError` |
 //! | [`tool`] | the `Tool` seam: trait, `ToolError`, `ToolDefinition` |
-//! | [`skill`] | the skill seam: `Skill`, `SkillMetadata`, `SkillProvider` trait |
+//! | [`skill`] | the skill vocabulary: `Skill`, `SkillMetadata` |
 //! | [`chat`] | chat vocabulary: platform-agnostic message/target/channel types |
 //! | [`instance`] | the instance seam: `PluginInstance` trait, `InstanceInfo`/`InstanceError`, `InstanceManagement` |
 //! | [`plugin_id`] | plugin-id vocabulary: instance namespace prefixes + `canonical_plugin_id` |
@@ -21,7 +21,6 @@
 //! | [`mode`] | shared policy enums (`ThinkingMode`, `ReasoningEffort`) |
 //! | [`token`] | pure token-estimation/truncation helpers |
 //! | [`media`] | multimodal payload hygiene: embedded base64 → placeholder text |
-//! | [`session`] | the event-sourced session seam: `SessionEvent` + `SessionStore` traits |
 //! | [`sanitize`] | the sensitive-data seam: `Redactor` trait (scan / redact / register) |
 //! # Dependency rules
 //!
@@ -44,7 +43,6 @@ pub mod pricing;
 pub mod plugin_instance;
 pub mod remote_tool;
 pub mod sanitize;
-pub mod session;
 pub mod session_query;
 pub mod skill;
 pub mod subagent;
@@ -65,7 +63,6 @@ pub use plugin_instance::{
     InstanceConnectionState, InstanceError, InstanceInfo, InstanceManagement, PluginInstance,
     ToolSpec,
 };
-pub use session::{SessionEvent, SessionStore};
 pub use token::{
     estimate_history_tokens, estimate_image_tokens, estimate_message_tokens, estimate_tokens,
     truncate, truncate_message_to_tokens, truncate_text_to_tokens,

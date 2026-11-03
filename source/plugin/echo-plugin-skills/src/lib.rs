@@ -9,7 +9,7 @@
 //! - [`install`]：外部 Git 来源技能的安装 / 更新 / 移除与 `.sources.json`
 //!   来源记录。
 //!
-//! `Skill` / `SkillMetadata` 词汇与 `SkillProvider` 接缝仍在定义层
+//! `Skill` / `SkillMetadata` 词汇仍在定义层
 //! [`echo_defs::skill`](echo_defs)；插件 id 归一走 [`echo_defs::plugin_id`]。
 //!
 //! **依赖纪律**：只依赖定义层与 walkdir/serde/thiserror——不依赖

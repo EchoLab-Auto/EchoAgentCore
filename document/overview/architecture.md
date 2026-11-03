@@ -149,7 +149,7 @@ graph BT
 |---|---|---|---|
 | LLM | `echo_defs::LlmProvider` | `echo-llm-openai`/`anthropic`/`ollama` | `echo-agent` 工厂 + `echo-loop` runner |
 | 工具 | `echo_defs::Tool` | `echo-tool::ToolRegistry` + 内置工具插件 `echo-plugin-tools` + 外部插件贡献经 `echo-plugin-adapter::RemoteTool` | agent 循环 |
-| 技能 | `echo_defs::SkillProvider` | `echo-plugin-skills` 的 `SkillRegistry`（本地文件 + 多目录分层合并；`echo-agent` 侧只留 re-export 兼容面） | prompt 组装 |
+| 技能 | `echo_defs::skill::{Skill, SkillMetadata}`（词汇） | `echo-plugin-skills` 的 `SkillRegistry`（本地文件 + 多目录分层合并；`echo-agent` 侧只留 re-export 兼容面） | prompt 组装 |
 | 插件实例模型工具 | `echo_defs::plugin_instance::ToolSpec`（`PluginInstance::tool_specs`）；wire 侧对应 `echo_plugin_api::ToolContribution` | 实例插件贡献（`InstanceContribution.tools`） | `echo-plugin-tools::instance_bridge`（合并 / `account` 寻址 / 出站闸门 `gate_outbound` / `invoke_custom` 透传） |
 | 平台生命周期 | `echo_defs::plugin_instance::PluginInstance` | 实例插件（**进程外**，宿主经 `echo-plugin-adapter::RemoteInstance` 接入——当前唯一样本是 `echo-agent.instance.qq`，实现在独立仓库） | agent + 实例工具 |
 | 默认驱动 | `echo_loop::TurnRunner` | `echo-plugin-loop`（mount 期构造并 `provide` `loop` 服务键） | 组合根挂载后解析 `loop`，再经 `Agent::set_loop_runner` 注入全体人格；**解析失败即启动失败**（没有驱动的 agent 只收消息不干活，静默比崩溃难查） |

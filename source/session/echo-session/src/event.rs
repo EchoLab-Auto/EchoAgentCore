@@ -286,12 +286,6 @@ impl SessionEvent {
     }
 }
 
-impl echo_defs::SessionEvent for SessionEvent {
-    fn kind(&self) -> &'static str {
-        self.kind()
-    }
-}
-
 impl From<UserMessage> for SessionEvent {
     fn from(value: UserMessage) -> Self {
         SessionEvent::UserMessage(value)
