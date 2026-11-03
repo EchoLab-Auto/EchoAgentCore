@@ -787,7 +787,7 @@ pub enum BackendEvent {
     PluginsList {
         plugins: Vec<PluginInfo>,
     },
-    /// **插件操作回执**（`TogglePlugin` / `RestartPlugin` 的结构化结果）。
+    /// **插件操作回执**（`RestartPlugin` 的结构化结果）。
     ///
     /// 为什么需要：此前成功与失败都走 `Error { message }`——面板无法把
     /// 「操作成功」与「真错误」分开渲染，只能靠文案猜。现在按操作回一条
@@ -1107,8 +1107,7 @@ pub struct PluginInfo {
     pub entry: String,
     #[serde(default)]
     pub author: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+
     /// Whether the plugin ships inside the binary.
     ///
     /// **来源**维度：门控 manifest 编译在 Core 里，但实现可能在独立进程

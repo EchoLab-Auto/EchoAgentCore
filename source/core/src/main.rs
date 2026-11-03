@@ -455,17 +455,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 &cfg.core.management_access_token,
                 |t| fed.has_peer_token_sync(t),
             )?;
-            if cfg
-                .agent
-                .disabled_plugins
-                .iter()
-                .any(|p| p == echo_agent::plugins::MANAGEMENT_PANEL_PLUGIN_ID)
-            {
-                warn!(
-                    "端口合并已生效（联邦与管理面共用监听端口），但管理面插件被禁用——\
-                     管理通道与联邦入站均不会启动（仅出站联邦继续工作）"
-                );
-            }
         }
         // 合并模式下联邦不自行监听（入站挂在管理面监听端）；独立模式按
         // 规划值监听；纯连出（显式空串）为 None。
@@ -1528,7 +1517,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     //
     // 插件实例的接线（hook/handler/config store）在插件挂载之后才完成；
     // qq_wired 标志保证启动期 mount 不抢跑启动插件实例（启动期由接线后的
-    // 门控启动负责），运行期 TogglePlugin 才真正 start/stop。
+    // 门控启动负责），运行期由重启（stop + start）换实现。
     let qq_wired = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let qq_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
     // 回合驱动：**由 `echo-plugin-loop` 在挂载时 provide**，本块结束时解析出来。
@@ -1590,25 +1579,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 必须在任何 mount 之前：`mount` 取的是当时登记的值。
         plugin_host.set_configs(plugins_runtime::builtin_configs(&args.config_path()));
 
-        // 先应用持久化的禁用状态再挂载：register_and_mount 对禁用插件只注册
-        // 不挂载，禁用的插件在启动时不获得任何副作用。
-        plugin_host
-            .registry
-            .apply_disabled(&cfg.agent.disabled_plugins);
-        // `plugins.toml` 里 `enabled = false` 的外部条目：注册进清单但**不挂载**。
-        // 必须在 mount_plan 之前收敛——mount_plan 会跳过处于禁用态的条目。
-        // 这是配置选择（不是故障），面板显示「已禁用」；要真正停掉子进程得
-        // 重启 Core（子进程的生死由 `plugins_runtime` 在启动期决定）。
-        if let Some(runtime) = &plugin_runtime {
-            plugin_host.disable_plugins(
-                &runtime
-                    .entries
-                    .iter()
-                    .filter(|entry| entry.kind != "builtin" && !entry.enabled)
-                    .map(|entry| entry.id.clone())
-                    .collect::<Vec<_>>(),
-            );
-        }
 
         let version = env!("CARGO_PKG_VERSION");
         // 配置化组合（P4）：内置插件的**构造**留在代码里（mount 闭包要
@@ -1696,6 +1666,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             })
             .unwrap_or_default()
         {
+            // `enabled = false` 的条目直接不进目录：不注册、不出现在清单。
+            // 清单的语义是「当前挂载的插件」，配置关掉的条目连"存在"都不该
+            // 上报（否则用户看到一条永远点不亮的死条目）。
+            if !entry.enabled {
+                continue;
+            }
             let entry = crate::builtin_plugins::ExternalEntry {
                 id: entry.id.clone(),
                 name: entry.name.clone(),
@@ -1886,7 +1862,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 启动期与运行期统一：apply_capabilities 同时承担
         // persona 白名单（工具/技能/门控插件；插件黑名单已移除）、全局
         // [agent].disabled_tools / disabled_skills、以及共享注册表里被
-        // TogglePlugin 卸载的插件。
+        // 已卸载的插件。
         persona.agent.apply_capabilities(&persona.profile).await;
         persona.agent.set_loop_runner(loop_runner.clone());
         persona.agent.start_session_save_task();

@@ -107,9 +107,9 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 12] = [
 
 /// 插件**不得**接管的命令（宿主自我管理面）。
 ///
-/// 理由很具体：插件管理命令（`TogglePlugin` / `RestartPlugin` /
-/// `RequestPluginsList`）如果被某个插件抢走，人在面板上点"禁用"就再也点不
-/// 回来了——把自我管理面交给被管理者，是自锁。
+/// 理由很具体：插件管理命令（`RestartPlugin` / `RequestPluginsList`）如果
+/// 被某个插件抢走，人在面板上就再也点不动它们了——把自我管理面交给被管理
+/// 者，是自锁。
 ///
 /// **`MigrateSession` 曾列在这里，是个真 bug**：实现明明在联邦插件的命令
 /// 处理链（`FederationPorts::command_handler` → `handle_migrate_session`），
@@ -130,11 +130,7 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 12] = [
 ///
 /// `SendMessage` / `Cancel` 不在此列：聊天入口归宿主核心是当前的架构事实，但
 /// 那是"还没搬"，不是"不能搬"；真有需要时把这条删掉即可，不需要动机制。
-pub const HOST_RESERVED_COMMANDS: &[&str] = &[
-    "TogglePlugin",
-    "RestartPlugin",
-    "RequestPluginsList",
-];
+pub const HOST_RESERVED_COMMANDS: &[&str] = &["RestartPlugin", "RequestPluginsList"];
 
 /// 该命令是否属于宿主自我管理面（插件不得接管）。
 pub fn command_is_host_reserved(name: &str) -> bool {
@@ -146,7 +142,7 @@ pub fn command_is_host_reserved(name: &str) -> bool {
 /// 语义：白名单非空 = 仅列出的插件；空白名单 = 全部允许。
 /// 启动期逐人格门控（core main.rs）与运行期 `Agent::apply_capabilities` /
 /// `Agent::reapply_plugin_gating` 共用本判定，避免两套规则漂移。
-/// （插件黑名单 `disabled_plugins` 已于 2026-09-11 移除，白名单单轨。）
+/// （persona 白名单单轨：不在名单里的插件对该人格不生效。）
 pub fn profile_allows_plugin(profile: &crate::config::TeamMember, plugin_id: &str) -> bool {
     if profile.enabled_plugins.is_empty() {
         return true;
@@ -503,7 +499,7 @@ impl PluginHost {
             if !Self::PERSONA_SCOPED_KINDS.contains(&kind.as_str()) {
                 continue;
             }
-            // 进程级禁用（`core.toml` 的 `disabled_plugins` / 挂载计划）照旧生效。
+            // 挂载计划（`plugins.toml` 的 builtin 行）照旧生效。
             if !self.registry.is_enabled(&id) {
                 continue;
             }
@@ -563,9 +559,8 @@ impl PluginHost {
 
     /// Register a plugin and mount it (composition root).
     ///
-    /// A plugin whose persisted state is disabled (see
-    /// [`PluginRegistry::apply_disabled`]) is registered but **not mounted**:
-    /// disabled plugins must never acquire side effects at boot.
+    /// 配置层（`plugins.toml` 的 `enabled = false`）判为不挂载的插件在这里
+    /// 只注册、不 mount：不挂载就不该产生任何副作用。
     pub fn register_and_mount(&self, plugin: Arc<dyn echo_plugin::Plugin>) -> Result<(), String> {
         let id = plugin.manifest().id.clone();
         self.registry.register(Arc::clone(&plugin))?;
@@ -581,9 +576,8 @@ impl PluginHost {
     /// 配置化组合（P4）：按**挂载计划**注册 + 挂载一批内置插件。
     ///
     /// 与逐个 [`Self::register_and_mount`] 的差别只有两点：顺序由计划决定，
-    /// 计划里 `enabled = false` 的条目**不挂载**（但照样注册——Panel 的插件
-    /// 清单要能看到它、并能就地启用）。已持久化的禁用状态（`core.toml` 的
-    /// `disabled_plugins`）在这里再收敛一次：两者任一为禁用即不挂载。
+    /// 计划里 `enabled = false` 的条目**不挂载**（也不进 Panel 清单：
+    /// 清单只列当前挂载的插件）。
     ///
     /// 返回 `(已注册数, 已挂载 id, 错误)`：单个挂载失败不影响其余（启动
     /// 期"尽力而为"语义，与既有 `mount_all` 一致）；注册冲突（同 id 重复）
@@ -801,15 +795,6 @@ impl PluginHost {
         self.registry.refresh_event_interest();
     }
 
-    /// **仅测试用**：同步切换启用状态（生产路径走 async 的 [`Self::set_enabled`]，
-    /// 那条要读写配置/子进程；测试只关心事件闸门）。
-    #[cfg(test)]
-    fn set_plugin_enabled_for_tests(&self, id: &str, enabled: bool) {
-        self.registry
-            .set_enabled(id, enabled, &self.ctx())
-            .expect("set_enabled");
-    }
-
     // ── 命令处理 + 有序文本块（plugin-framework v0.8）────────────────────
 
     /// **把一条命令分发给插件**（`Contribution::Command`）。
@@ -885,7 +870,7 @@ impl PluginHost {
         self.subprocess_control()?.status(id)
     }
 
-    /// 停止一个外部条目（可逆；进程内插件请走 [`Self::set_enabled`]）。
+    /// 停止一个外部条目（可逆）。
     pub async fn stop_subprocess(&self, id: &str) -> Result<(), String> {
         let control = self
             .subprocess_control()
@@ -938,40 +923,15 @@ impl PluginHost {
         ds
     }
 
-    /// 切换插件启用状态（**领域编排**：分派到子进程或框架注册表，然后落盘）。
+    /// 重载一个插件（卸下 → 重新挂载）。
     ///
-    /// 与框架 [`PluginRegistry::enable`] 的分工：框架只管"挂载/卸载 + 状态"，
-    /// 本方法额外做三件本项目的事——外部条目的子进程真的停/起、`plugins.toml`
-    /// 的 `disabled_plugins` 写回、失败原因进清单。
-    ///
-    /// Runtime toggle; persists via the configured `disabled_plugins` hook.
-    pub async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
-        let result = self.registry.set_enabled(id, enabled, &self.ctx());
-        if result.is_ok() {
-            }
-        result
-    }
-
-    /// 重载一个插件（卸下 → 重新挂载）；**不改**启用状态。
-    ///
-    /// 语义与 `set_enabled(false)` + `set_enabled(true)` 等价，但不写
-    /// `disabled_plugins`、不触发持久化——面板的「重启」按钮走这条，
-    /// 免掉"重启一次就在配置里留一条禁用记录"的副作用。
+    /// 面板的「重启」按钮走这条：让插件按新配置 / 新外部依赖重新初始化
+    /// （子进程重连、实例进程重启），不触碰任何持久化状态。
     pub fn restart(&self, id: &str) -> Result<(), String> {
         let result = self.registry.restart(id, &self.ctx());
         if result.is_ok() {
             }
         result
-    }
-
-    /// 把一批插件标记为禁用（**只改注册表状态**，不写配置、不持久化）。
-    ///
-    /// 用途：`plugins.toml` 里 `enabled = false` 的外部条目——配置选择让它
-    /// 不启动，清单里应显示为「已禁用」而不是消失（消失会让人以为配置写错了）。
-    pub fn disable_plugins(&self, ids: &[String]) {
-        if !ids.is_empty() {
-            self.registry.apply_disabled(ids);
-        }
     }
 
     /// 记录「定义从哪来 / 怎么启动」（组合根装配期，面板技术信息用）。
@@ -1943,19 +1903,20 @@ mod tests {
         );
     }
 
-    /// 订阅 `*` 收全部；未挂载（禁用）的订阅者收不到，且**不占位**兴趣集。
+    /// 订阅 `*` 收全部；**卸载**后收不到，且不占位兴趣集。
+    ///
+    /// （禁用开关已删除：插件只有"挂载"与"没挂载"两态，卸载就是闸门关闭。）
     #[test]
-    fn wildcard_subscription_and_unmounted_subscribers() {
+    fn wildcard_subscription_closes_when_unmounted() {
         let host = PluginHost::new();
         host.set_mount_ctx(echo_plugin::MountContext::new());
         let all = subscribe_probe(&host, "obs.all", &[echo_plugin::ALL_EVENTS]);
         assert!(host.wants_event("AnythingAtAll"));
 
-        // 禁用后：既收不到，也不该让热路径继续打开。
-        host.set_plugin_enabled_for_tests("obs.all", false);
+        host.registry.unmount("obs.all").expect("unmount");
         assert!(
             !host.has_event_subscribers(),
-            "唯一订阅者被禁用后闸门应关闭"
+            "唯一订阅者卸载后闸门应关闭"
         );
         assert_eq!(
             host.deliver_backend_event(&echo_protocol::BackendEvent::Error {
@@ -1965,17 +1926,6 @@ mod tests {
             0
         );
         assert!(all.lock().unwrap().is_empty());
-
-        // 重新启用 → 闸门重开（refresh 挂在 set_enabled 上）。
-        host.set_plugin_enabled_for_tests("obs.all", true);
-        assert!(host.has_event_subscribers());
-        assert_eq!(
-            host.deliver_backend_event(&echo_protocol::BackendEvent::Error {
-                session_id: None,
-                message: "x".into(),
-            }),
-            1
-        );
     }
 
     /// 重入保护：插件在 `on_event` 里再次触发投递，内层被丢弃而不是递归。

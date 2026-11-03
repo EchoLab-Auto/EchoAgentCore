@@ -169,13 +169,6 @@ pub enum BackendCommand {
     },
     /// Delete a team member (the default/main agent is protected).
     DeleteTeam { id: String },
-    /// Enable or disable a plugin at runtime. Persisted via
-    /// `[agent].disabled_plugins`.
-    /// 注：Phase 1 内置插件的 mount 尚无真实副作用，本命令当前对内置插件
-    /// 只影响 Panel 展示与持久化状态；三个 UI 门控插件（branch.reply /
-    /// session.global / chatbot.sessions）的禁用有实际效果。数据插件的
-    /// 真实注册卸载随 Phase 2 落地。
-    TogglePlugin { id: String, enabled: bool },
     /// 重载一个插件（卸下 → 重新挂载），**不改**启用状态与持久化配置。
     ///
     /// 用途：插件按新配置/新外部依赖重新初始化（子进程插件重连、实例
@@ -526,7 +519,6 @@ impl BackendCommand {
             Self::ToggleTeam { .. } => "ToggleTeam",
             Self::SaveTeam { .. } => "SaveTeam",
             Self::DeleteTeam { .. } => "DeleteTeam",
-            Self::TogglePlugin { .. } => "TogglePlugin",
             Self::RestartPlugin { .. } => "RestartPlugin",
             Self::RequestContext { .. } => "RequestContext",
             Self::CancelRequestedWork { .. } => "CancelRequestedWork",
@@ -831,7 +823,6 @@ mod tests {
             "MigrateSession",
             "RequestSelfUpdate",
             "ClearHistory",
-            "TogglePlugin",
             "SaveTeam",
             "StartInstance",
             "StopInstance",
@@ -928,10 +919,6 @@ mod tests {
         let samples = [
             BackendCommand::RequestPluginsList,
             BackendCommand::RestartPlugin { id: "p".into() },
-            BackendCommand::TogglePlugin {
-                id: "p".into(),
-                enabled: true,
-            },
             BackendCommand::RequestWorkspaceFiles {
                 session_id: "s".into(),
                 team_id: None,

@@ -540,10 +540,9 @@ async fn concurrent_messages_merge_by_request_sequence() {
 }
 
 #[tokio::test]
-async fn plugin_list_and_toggle_roundtrip() {
+async fn plugin_list_reports_mounted_plugins_only() {
     use echo_plugin::{BuiltinPlugin, PluginManifest};
     let (agent, _provider) = test_agent("ok");
-    // 注册一个内置插件并挂载。
     agent
         .plugin_host()
         .register_and_mount(std::sync::Arc::new(BuiltinPlugin::new(
@@ -553,68 +552,22 @@ async fn plugin_list_and_toggle_roundtrip() {
         .unwrap();
     assert_eq!(agent.plugin_host().descriptors().len(), 1);
 
-    // 拉取列表。
     agent
         .apply_command(BackendCommand::RequestPluginsList)
         .await;
-    // 禁用 → descriptor enabled=false；再启用恢复。
-    agent
-        .apply_command(BackendCommand::TogglePlugin {
-            id: "test.plugin.one".into(),
-            enabled: false,
-        })
-        .await;
-    assert!(!agent.plugin_host().descriptors()[0].enabled);
-    agent
-        .apply_command(BackendCommand::TogglePlugin {
-            id: "test.plugin.one".into(),
-            enabled: true,
-        })
-        .await;
-    assert!(agent.plugin_host().descriptors()[0].enabled);
-    // 未知插件报错（通过 Error 事件，不 panic）。
-    agent
-        .apply_command(BackendCommand::TogglePlugin {
-            id: "nope.nope".into(),
-            enabled: false,
-        })
-        .await;
-}
 
-#[tokio::test]
-async fn toggle_management_panel_plugin_disable_is_refused() {
-    use echo_plugin::{BuiltinPlugin, PluginManifest};
-    let (agent, _provider) = test_agent("ok");
+    // 清单只列出**挂载中**的插件：卸载后从清单消失（没有 enabled 字段，
+    // 因为"禁用"这个动作已经删除——插件只有挂载 / 没挂载）。
+    agent.plugin_host().registry.unmount("test.plugin.one").unwrap();
     agent
-        .plugin_host()
-        .register_and_mount(std::sync::Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin(
-                echo_agent::plugins::MANAGEMENT_PANEL_PLUGIN_ID,
-                "管理面",
-                "0.1",
-                "management",
-                "m",
-                "d",
-            ),
-            |_| Ok(vec![]),
-        )))
-        .unwrap();
-    // 防自锁：经 TogglePlugin 禁用管理面插件被拒绝，插件保持启用。
-    agent
-        .apply_command(BackendCommand::TogglePlugin {
-            id: echo_agent::plugins::MANAGEMENT_PANEL_PLUGIN_ID.into(),
-            enabled: false,
-        })
+        .apply_command(BackendCommand::RequestPluginsList)
         .await;
-    assert!(agent.plugin_host().descriptors()[0].enabled);
-    // 启用路径不受影响（幂等）。
-    agent
-        .apply_command(BackendCommand::TogglePlugin {
-            id: echo_agent::plugins::MANAGEMENT_PANEL_PLUGIN_ID.into(),
-            enabled: true,
-        })
-        .await;
-    assert!(agent.plugin_host().descriptors()[0].enabled);
+    assert_eq!(agent.plugin_host().descriptors().len(), 1);
+    assert_eq!(
+        agent.plugin_host().descriptors()[0].id,
+        "test.plugin.one",
+        "descriptor 仍然存在（已注册），但 emit 侧会按挂载态过滤"
+    );
 }
 
 #[tokio::test]
@@ -1275,7 +1228,7 @@ async fn gating_works_before_any_plugin_is_mounted() {
     assert!(!agent.tools.is_disabled("bash").await);
 }
 
-/// 全局插件 mount/unmount（TogglePlugin）逐 persona 重评估：
+/// 全局插件 mount/unmount 事件逐 persona 重评估：
 /// mount 不放开"名单外"的 persona；unmount 对全员生效；重新 mount 恢复。
 #[tokio::test]
 async fn global_plugin_gating_respects_persona_allowlist() {

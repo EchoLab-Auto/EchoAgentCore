@@ -600,9 +600,9 @@ mod tests {
             PluginManifest::builtin("a.bad", "bad", "0", "tool", "bad", "bad"),
             |_| Ok(vec![]),
         )
-        .with_commands(["TogglePlugin"]));
+        .with_commands(["RequestPluginsList"]));
         let err = reject_reserved_commands(&[plugin]).expect_err("保留命令必须报错");
-        assert!(err.to_string().contains("TogglePlugin"), "{err}");
+        assert!(err.to_string().contains("RequestPluginsList"), "{err}");
     }
 }
 

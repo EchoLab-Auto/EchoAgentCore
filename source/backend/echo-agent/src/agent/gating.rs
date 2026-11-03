@@ -16,7 +16,7 @@ impl Agent {
     ///   skills are visible to this agent; empty => everything is available.
     /// - `disabled_*` denylists refine afterwards (keeps old configs working).
     /// - 全局禁用（`[agent].disabled_tools/disabled_skills`、共享注册表中被
-    ///   `TogglePlugin` 卸载的插件）优先于 persona 名单。
+    ///   已卸载的插件）优先于 persona 名单。
     ///
     /// 与旧实现的区别：**逐名双向应用**（取消勾选即禁用、重新勾选即恢复，
     /// 此前只有禁用方向，重勾必须重启才生效），且插件维度只作用于本
@@ -52,7 +52,7 @@ impl Agent {
 
         // 3) 门控插件（包/表维度）：仅在"不允许"时禁用——与启动期逐人格
         //    门控同语义；重新允许的恢复由上面的逐名双向步骤完成。全局状态
-        //    （注册表）优先：运行期 TogglePlugin 的卸载不会被本步骤反向覆盖。
+        //    （注册表）优先：运行期卸载不会被本步骤反向覆盖。
         for plugin_id in self.gated_plugin_ids() {
             let allowed = crate::plugins::profile_allows_plugin(profile, &plugin_id)
                 && self.plugin_globally_enabled(&plugin_id);

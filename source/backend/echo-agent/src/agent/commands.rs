@@ -304,106 +304,6 @@ impl Agent {
             BackendCommand::RequestPluginsList => {
                 self.emit_plugins_list().await;
             }
-            BackendCommand::TogglePlugin { id, enabled } => {
-                // 防自锁：管理面插件承载 management WS，经命令禁用它 = Panel 立即
-                // 断连且无法经 UI 恢复。拒绝经 TogglePlugin 禁用——确需禁用只能
-                // 编辑 core.toml 的 disabled_plugins 后重启 Core。
-                if !enabled && id == crate::plugins::MANAGEMENT_PANEL_PLUGIN_ID {
-                    self.emit(BackendEvent::PluginOpResult {
-                        id: id.clone(),
-                        op: "disable".into(),
-                        ok: false,
-                        message: "管理面插件禁用即关闭 management 通道（Panel 自锁），如需禁用请编辑 core.toml 的 disabled_plugins 后重启 Core".into(),
-                    });
-                    return;
-                }
-                // 外部条目（`plugins.toml` 的 stdio 插件）有独立子进程：
-                // 启用/禁用要**真的停掉/拉起进程**，只改注册表状态是不够的
-                // （用户点了「禁用」却发现插件还在跑，比没有开关更糟）。
-                if self.plugin_host().is_external_entry(&id) {
-                    let result = if enabled {
-                        self.plugin_host().start_subprocess(&id).await
-                    } else {
-                        self.plugin_host().stop_subprocess(&id).await
-                    };
-                    let op = if enabled { "enable" } else { "disable" };
-                    match result {
-                        Ok(()) => {
-                            // 同步注册表挂载态（descriptors 的 enabled 与进程
-                            // 状态必须一致，否则面板显示「启用」但进程已停）。
-                            let _ = self.plugin_host().set_enabled(&id, enabled).await;
-                            let mut cfg = self.model.config.write().await;
-                            cfg.disabled_plugins.retain(|p| p != &id);
-                            if !enabled {
-                                cfg.disabled_plugins.push(id.clone());
-                            }
-                            let cfg_snapshot = cfg.clone();
-                            drop(cfg);
-                            self.persist_config(&cfg_snapshot).await;
-                            self.emit(BackendEvent::PluginOpResult {
-                                id: id.clone(),
-                                op: op.into(),
-                                ok: true,
-                                message: if enabled {
-                                    format!("{id} 已启动")
-                                } else {
-                                    format!("{id} 已停止（子进程已退出）")
-                                },
-                            });
-                            self.emit_plugins_list().await;
-                        }
-                        Err(error) => {
-                            self.emit(BackendEvent::PluginOpResult {
-                                id: id.clone(),
-                                op: op.into(),
-                                ok: false,
-                                message: error,
-                            });
-                            self.emit_plugins_list().await;
-                        }
-                    }
-                    return;
-                }
-                match self.plugin_host().set_enabled(&id, enabled).await {
-                    Ok(()) => {
-                        // Persist so the choice survives restarts.
-                        let mut cfg = self.model.config.write().await;
-                        cfg.disabled_plugins.retain(|p| p != &id);
-                        if !enabled {
-                            cfg.disabled_plugins.push(id.clone());
-                        }
-                        let cfg_snapshot = cfg.clone();
-                        drop(cfg);
-                        self.persist_config(&cfg_snapshot).await;
-                        self.emit(BackendEvent::PluginOpResult {
-                            id: id.clone(),
-                            op: if enabled {
-                                "enable".into()
-                            } else {
-                                "disable".into()
-                            },
-                            ok: true,
-                            message: format!("{id} 已{}", if enabled { "启用" } else { "禁用" }),
-                        });
-                        self.emit_plugins_list().await;
-                    }
-                    Err(e) => {
-                        // 结构化回执（面板按 ok 分流渲染）+ 刷新列表
-                        //（失败时状态可能已被部分改变，以列表为准）。
-                        self.emit(BackendEvent::PluginOpResult {
-                            id: id.clone(),
-                            op: if enabled {
-                                "enable".into()
-                            } else {
-                                "disable".into()
-                            },
-                            ok: false,
-                            message: format!("toggle plugin failed: {e}"),
-                        });
-                        self.emit_plugins_list().await;
-                    }
-                }
-            }
             BackendCommand::RenameApi { .. } => {
                 // RenameApi 是**进程级**命令（改的是全局供应商池，不是某个人格），
                 // 由 [`crate::process_commands`] 在命令泵里处理。这里 fail-closed。
@@ -712,6 +612,9 @@ impl Agent {
             .plugin_host()
             .descriptors()
             .into_iter()
+            // 清单的语义是「当前挂载的插件」，不是「曾经发现的插件」：
+            // 禁用即卸载，已卸载的插件不再出现在管理面清单里。
+            .filter(|d| d.enabled)
             .map(|d| {
                 // id 在 move 进 PluginInfo 之前取一份，用于查 provides 映射。
                 let id = d.id.clone();
@@ -719,14 +622,13 @@ impl Agent {
                 // 在 move 掉 `d.kind` 之前算好。
                 let gating = crate::plugins::scope_of_kind(&d.kind).as_str().to_string();
                 crate::event::PluginInfo {
-                    id: d.id,
+                    id: d.id.clone(),
                     name: d.name,
                     version: d.version,
                     kind: d.kind,
                     description: d.description,
                     entry: d.entry,
                     author: d.author,
-                    enabled: d.enabled,
                     builtin: d.builtin,
                     runtime: d.runtime,
                     package: d.package,

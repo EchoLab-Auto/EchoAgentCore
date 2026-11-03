@@ -186,9 +186,6 @@ pub struct AgentConfig {
     /// Tools disabled at runtime (survives restarts).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_tools: Vec<String>,
-    /// Plugins disabled at runtime (survives restarts).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub disabled_plugins: Vec<String>,
     /// Team members. Empty = single default agent (legacy behavior).
     #[serde(default)]
     pub teams: std::collections::BTreeMap<String, TeamMember>,
@@ -248,7 +245,6 @@ impl Default for AgentConfig {
             plugins_dir: "plugins".into(),
             disabled_skills: Vec::new(),
             disabled_tools: Vec::new(),
-            disabled_plugins: Vec::new(),
             teams: std::collections::BTreeMap::new(),
             disabled_teams: Vec::new(),
             memory_limit_tokens: None,
@@ -640,7 +636,6 @@ mod tests {
         );
     }
 
-    #[test]
     /// `subagent_timeout_secs` 的三态语义（2026-10 用户诉求：kimi 太慢，
     /// 想要"没有时间限制"）。`0` 必须能被序列化/反序列化保留下来 ——
     /// `skip_serializing_if = "Option::is_none"` 下 `Some(0)` 正常写出，
