@@ -44,8 +44,5 @@ pub use event::{
 };
 pub use header::SessionHeader;
 pub use legacy::{migrate_v4_document, MigrationError};
-pub use log::{EventLog, EventLogError};
+pub use log::EventLog;
 pub use session_key::SessionKey;
-
-/// The on-disk format version for event logs.
-pub const LOG_FORMAT_VERSION: u32 = 5;

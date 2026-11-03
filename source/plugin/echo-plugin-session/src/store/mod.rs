@@ -491,14 +491,6 @@ impl TrunkStore {
             .map(|entry| Arc::clone(entry.value()))
     }
 
-    /// 已登记上下文的全部会话 id。
-    pub fn history_sessions(&self) -> Vec<String> {
-        self.session_histories
-            .iter()
-            .map(|entry| entry.key().clone())
-            .collect()
-    }
-
     pub fn get(&self, session_id: &str) -> Option<Session> {
         self.identities.get(session_id).map(|s| s.clone())
     }
@@ -536,20 +528,6 @@ impl TrunkStore {
         self.session_histories
             .iter()
             .map(|entry| entry.value().try_lock().map(|h| h.len()).unwrap_or(0))
-            .sum()
-    }
-
-    /// 全部会话投影的估算 token 总数。
-    pub fn trunk_tokens(&self) -> usize {
-        self.session_histories
-            .iter()
-            .map(|entry| {
-                entry
-                    .value()
-                    .try_lock()
-                    .map(|h| estimate_history_tokens(&h))
-                    .unwrap_or(0)
-            })
             .sum()
     }
 

@@ -299,11 +299,6 @@ fn new_session_id() -> String {
     format!("ses_echo_{mixed:032x}")
 }
 
-/// 便捷：把 provider 装箱为 `Arc<dyn LlmProvider>`。
-pub fn create_provider_arc(cfg: &ProviderConfig) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    create_provider(cfg).map(Arc::from)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

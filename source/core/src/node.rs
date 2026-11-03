@@ -13,7 +13,8 @@ use tracing::info;
 /// 持久化文件名（与配置 TOML 同目录）。
 pub const NODE_FILE: &str = "echo-node.json";
 
-/// 持久化文档。`node_name` 预留人类可读别名（Phase 1 配置段消费）。
+/// 持久化文档。`node_name` 是人类可读别名：读配置时作为 `node.name` 的
+/// **回退值**（见 `main.rs` 的 `node_doc.node_name.clone()`）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodeDocument {
     pub node_id: String,

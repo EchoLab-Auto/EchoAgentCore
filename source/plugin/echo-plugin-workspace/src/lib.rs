@@ -2098,15 +2098,6 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
-    fn collects_git_status_of_the_repo_checkout() {
-        // 本仓库 checkout 是真实 git 仓库：断言只读采集能识别它。
-        let root = env!("CARGO_MANIFEST_DIR");
-        let info = collect_dir_git(root);
-        assert!(info.is_repo, "repo checkout should be detected: {info:?}");
-        assert!(info.branch.is_some(), "branch should be read: {info:?}");
-        assert!(info.error.is_none(), "no error expected: {info:?}");
-    }
-
     /// 临时 git 仓库脚手架（不提交、不依赖全局 git 身份）：只 `init` + `add`，
     /// 足够产出 `A `/`AM`/`??` 三种典型 porcelain 行。
     fn scratch_repo(tag: &str) -> std::path::PathBuf {

@@ -12,7 +12,6 @@ pub use echo_shell::{
     MAX_SHELL_SESSIONS,
 };
 
-use crate::event::BackendEvent;
 use echo_shell::ShellEvent as InnerShellEvent;
 
 /// 面向命令处理层：把事件通到指定 Agent 的 emit。
@@ -27,7 +26,3 @@ pub fn shell_emit_for_self(agent: &crate::agent::Agent) -> ShellEmit {
         emit(shell_event_to_backend(event));
     })
 }
-
-// 显式引用一遍事件类型，确保 re-export 的表面对本模块使用者是完整的。
-#[allow(dead_code)]
-fn _backend_event_is_used(_: &BackendEvent) {}

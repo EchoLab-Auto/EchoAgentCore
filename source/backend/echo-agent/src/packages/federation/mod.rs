@@ -17,9 +17,8 @@ pub use echo_plugin_federation::workspace_query;
 pub use echo_plugin_federation::{
     notify_remote_subagent, path_within_roots, proxy_schema, remote_tool_candidates,
     remote_tool_name, remote_tool_prefix, sanitize_peer_component, AggregateDeliver,
-    ExecutorPolicy, FederationCommandFuture, FederationPorts, FederationWorkspaceQuery,
-    InvokeRouter, PendingInvoke, RemoteQuerier, RemoteSubagentNotifier, RemoteTool,
-    WorkspaceQueryHandle,
+    ExecutorPolicy, FederationPorts, FederationWorkspaceQuery, InvokeRouter, PendingInvoke,
+    RemoteQuerier, RemoteSubagentNotifier, RemoteTool, WorkspaceQueryHandle,
 };
 // `SubagentStatus` 的**源头**是机制层（线协议词汇），插件只是 re-export。
 pub use echo_federation::SubagentStatus;

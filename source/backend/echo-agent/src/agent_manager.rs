@@ -483,13 +483,6 @@ impl AgentManager {
         }
     }
 
-    /// Persisted disable list (runtime toggles, survives restarts).
-    pub fn disabled_list(&self) -> Vec<String> {
-        let mut v = self.disabled.lock().clone();
-        v.sort();
-        v
-    }
-
     /// Snapshot for the Panel (AgentsList event) — all known profiles with
     /// running state and session counts.
     pub fn infos(&self) -> Vec<TeamInfo> {

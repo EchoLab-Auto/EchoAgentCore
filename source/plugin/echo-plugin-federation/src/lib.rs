@@ -20,8 +20,8 @@
 //! `echo-defs`（定义）、`echo-plugin-workspace`（它消费的查询 trait）。
 //! 它们此前住在宿主 `packages/federation` 里，唯一的宿主依赖是
 //! `FederationPorts::command_handler` 的类型 `Fn(&Agent, cmd)`——而真正需要
-//! 的只是 `emit`（见 [`ports::FederationCommandHandler`]）。把这一个类型改成
-//! 不依赖 `Agent`，整块 1,698 行就能搬出来。
+//! 的只是 `emit`（现在是 [`ports::FederationAdmin`] 逐动作接口）。把这一层
+//! 改成不依赖 `Agent`，整块 1,698 行就能搬出来。
 //!
 //! 于是"联邦"成为一个可独立禁用、可独立替换的能力：禁用后内核照常启动，
 //! 远程工具报「联邦未接线」、远程目录降级为不可采集（显式降级，不 panic）。
@@ -45,8 +45,8 @@ pub use workspace_query::{workspace_query, FederationWorkspaceQuery, WorkspaceQu
 
 pub use commands::{FederationCommandBridge, COMMANDS as FEDERATION_COMMANDS};
 pub use ports::{
-    notify_remote_subagent, path_within_roots, AggregateDeliver, FederationCommandHandler,
-    FederationCommandFuture, FederationPorts, RemoteQuerier, RemoteSubagentNotifier, RemoteInvoker,
+    notify_remote_subagent, path_within_roots, AggregateDeliver, FederationPorts, RemoteQuerier,
+    RemoteSubagentNotifier, RemoteInvoker,
 };
 
 /// 插件 id（宿主既有的联邦插件 id 与本常量同源字面量）。

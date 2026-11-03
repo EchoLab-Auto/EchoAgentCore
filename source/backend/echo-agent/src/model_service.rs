@@ -115,11 +115,6 @@ impl ModelService {
             .get(session_id)
             .map(|entry| Arc::clone(&entry.value().1))
     }
-
-    /// 清掉某会话的 provider 覆盖（切回 persona 默认时用）。
-    pub fn clear_session_provider(&self, session_id: &str) {
-        self.session_providers.remove(session_id);
-    }
 }
 
 #[cfg(test)]
@@ -179,7 +174,8 @@ mod tests {
         assert_ne!(svc.config_snapshot().await.model, "x");
     }
 
-    /// 会话级覆盖：设置后能按会话取到，清掉后回到 persona 默认（None）。
+    /// 会话级覆盖：设置后能按会话取到；清除走 `set_session_provider(sid, "")`
+    /// （宿主命令路径 → `session_providers.remove`），之后回落到 persona 默认。
     #[test]
     fn session_provider_set_and_clear() {
         let svc = ModelService::new(Arc::new(Noop), AgentConfig::default());
@@ -187,7 +183,7 @@ mod tests {
             .insert("s1".into(), ("prof".into(), Arc::new(Noop)));
         assert!(svc.session_provider("s1").is_some());
         assert!(svc.session_provider("s2").is_none());
-        svc.clear_session_provider("s1");
+        svc.session_providers.remove("s1");
         assert!(svc.session_provider("s1").is_none(), "清掉后应回落到默认");
     }
 }

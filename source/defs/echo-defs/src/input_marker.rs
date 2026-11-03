@@ -45,11 +45,6 @@ pub const TIMER_EVENT_OPEN: &str = "<timer_event>";
 /// The timer-event envelope closer.
 pub const TIMER_EVENT_CLOSE: &str = "</timer_event>";
 
-/// Wrap a payload in the timer-event envelope.
-pub fn wrap_timer(payload: impl std::fmt::Display) -> String {
-    format!("{TIMER_EVENT_OPEN}{payload}{TIMER_EVENT_CLOSE}")
-}
-
 /// The fixed (non-platform) structured input markers.
 ///
 /// Platform hooks are **not** listed here — they are matched positionally by

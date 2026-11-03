@@ -46,11 +46,6 @@ impl NodeId {
             None => (None, reference),
         }
     }
-
-    /// 组装一条全局引用：`node://<node>/<local>`。
-    pub fn qualify(node: &str, local: &str) -> String {
-        format!("node://{node}/{local}")
-    }
 }
 
 impl fmt::Display for NodeId {
@@ -167,16 +162,6 @@ mod tests {
         let (node, local) = NodeId::split_ref("node://node-abc/");
         assert_eq!(node, Some("node-abc"));
         assert_eq!(local, "");
-    }
-
-    #[test]
-    fn qualify_roundtrip() {
-        let q = NodeId::qualify("node-abc", "local:workspace:ws1:local_user");
-        assert_eq!(q, "node://node-abc/local:workspace:ws1:local_user");
-        assert_eq!(
-            NodeId::split_ref(&q),
-            (Some("node-abc"), "local:workspace:ws1:local_user")
-        );
     }
 
     #[test]

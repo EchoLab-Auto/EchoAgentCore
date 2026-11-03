@@ -341,27 +341,6 @@ pub fn plan_rename(
     })
 }
 
-/// 改名生效后的副作用清单（宿主在落盘成功后执行）。
-pub fn rename_effects(from: &str, to: &str, active_changed: bool, teams_changed: bool) -> Vec<PoolEffect> {
-    let mut effects = vec![
-        PoolEffect::RebuildProvider,
-        PoolEffect::BroadcastApiConfig,
-        PoolEffect::Notice(format!("renamed API config: {from} → {to}")),
-    ];
-    if active_changed {
-        // 激活项改名：provider 名字在构建时烘焙，必须重建（已在列表里）。
-        // 这里只补"重绑会话覆盖"的语义标记——宿主把它实现为
-        // `rebind_session_providers`。
-        effects.push(PoolEffect::Notice(format!(
-            "active API renamed: session overrides rebound"
-        )));
-    }
-    if teams_changed {
-        effects.push(PoolEffect::BroadcastTeams);
-    }
-    effects
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

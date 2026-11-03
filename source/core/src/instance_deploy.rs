@@ -94,10 +94,6 @@ pub fn resolve_instances(
 
     out
 }
-
-/// 深合并两张 TOML 表（实例覆盖 ⊕ 共享层）——留给需要预览合并结果的调用方
-/// （宿主只做透传，实际合并与派生由插件完成）。
-#[cfg_attr(not(test), allow(dead_code))]
 /// 写回实例配置时该用哪个段名。
 ///
 /// Core 读取时 `[instances.<platform>]` 与 `[adapters.<platform>]` 是同一个字段的

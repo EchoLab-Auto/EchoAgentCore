@@ -34,14 +34,6 @@ impl ChannelType {
             ChannelType::Group { group_id } => Some(group_id.as_str()),
         }
     }
-
-    /// String representation for use in session IDs / display.
-    pub fn as_scope(&self) -> &str {
-        match self {
-            ChannelType::Direct => "dm",
-            ChannelType::Group { .. } => "group",
-        }
-    }
 }
 
 impl std::fmt::Display for ChannelType {

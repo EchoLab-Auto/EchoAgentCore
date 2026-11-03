@@ -414,13 +414,6 @@ impl ToolRegistry {
         }
     }
 
-    /// All disabled tool names.
-    pub async fn disabled_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.disabled.read().await.iter().cloned().collect();
-        names.sort();
-        names
-    }
-
     /// Build (or reuse) the tool definition list sent to the LLM.
     ///
     /// Disabled tools are excluded: the model never sees them, and calls

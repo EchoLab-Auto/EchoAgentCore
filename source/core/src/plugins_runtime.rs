@@ -4,7 +4,7 @@
 //! 休眠（零行为变化）。
 //!
 //! 语义：
-//! - [`start_if_configured`]：`config_path.with_file_name("plugins.toml")`
+//! - [`start_with_specs`]：`config_path.with_file_name("plugins.toml")`
 //!   不存在 → `None`（debug 日志）。存在 → [`echo_plugin_loader::load`]
 //!   合成 / 校验插件树；失败 → warn + `None`。之后 best-effort 启动全部
 //!   enabled 的 stdio 插件（单个失败逐条 warn 但继续）。成功 →
@@ -68,21 +68,7 @@ pub struct StaticPluginEntry {
     pub env_keys: Vec<String>,
 }
 
-/// 若 `<config_path 同目录>/plugins.toml` 存在则装载并启动；否则休眠。
-///
-/// `register_host_services`：插件启动**前**的宿主服务注册钩子（P2）——
-/// 组合根在此把可回呼服务（如 `"sanitizer"`）注册进
-/// [`HostServiceRegistry`]；插件随后经 `HostCall` 调用。无
-/// plugins.toml（特性休眠）时钩子不执行（注册表无消费者，无副作用）。
-#[allow(dead_code)] // 保留 API：测试与"仅静态 plugins.toml"调用形态。
-pub async fn start_if_configured(
-    config_path: &Path,
-    register_host_services: impl FnOnce(&HostServiceRegistry),
-) -> Option<PluginRuntime> {
-    start_with_specs(config_path, register_host_services, Vec::new()).await
-}
-
-/// [`start_if_configured`] 的动态实例版（P1.8，2026-10 实例插件化）：
+/// 启动入口（P1.8，2026-10 实例插件化）：
 /// 在 `plugins.toml` 静态条目之外追加组合根即时组装的 [`LaunchSpec`]——
 /// 实例插件按**实例**拉起（每实例独立进程 / Hello.config），而
 /// `plugins.toml` 只加载一次，无法承载运行期分配（端口 / persona / state 文件）。
@@ -583,7 +569,7 @@ mod tests {
         let dir = unique_dir("missing");
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let config_path = dir.join("echo-agent-core.toml");
-        assert!(start_if_configured(&config_path, |_| {}).await.is_none());
+        assert!(start_with_specs(&config_path, |_| {}, Vec::new()).await.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -941,7 +927,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp dir");
         std::fs::write(dir.join("plugins.toml"), "not = valid = toml [[[").expect("write toml");
         let config_path = dir.join("echo-agent-core.toml");
-        assert!(start_if_configured(&config_path, |_| {}).await.is_none());
+        assert!(start_with_specs(&config_path, |_| {}, Vec::new()).await.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

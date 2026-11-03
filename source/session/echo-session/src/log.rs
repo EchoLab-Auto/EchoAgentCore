@@ -1,28 +1,10 @@
-//! The append-only event log and its durable persistence.
+//! The append-only, in-memory event log（落盘在 `echo-plugin-session` 的
+//! `store::persist`：本类型只提供日志语义与取锁，不碰文件系统）。
 
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::event::SessionEvent;
-use crate::LOG_FORMAT_VERSION;
-
-/// Persistence errors.
-#[derive(Debug, Error)]
-pub enum EventLogError {
-    #[error("log read failed: {0}")]
-    Read(String),
-    #[error("log parse failed: {0}")]
-    Parse(String),
-    #[error("log serialize failed: {0}")]
-    Serialize(String),
-    #[error("log write failed: {0}")]
-    Write(String),
-    #[error("unsupported log version {0}")]
-    UnsupportedVersion(u32),
-}
 
 /// An append-only, per-session event log.
 ///
@@ -31,8 +13,8 @@ pub enum EventLogError {
 /// by mutating or deleting earlier events. The log is the single source of
 /// truth — the model context is derived from it, never stored alongside it.
 ///
-/// Persistence is a whole-log JSON document (atomic tmp+rename), versioned by
-/// [`LOG_FORMAT_VERSION`].
+/// 本类型不碰文件系统：落盘是 `echo-plugin-session` 的 `store::persist`
+/// （整份 trunk 文档 + 原子 tmp+rename），版本号归那边所有。
 #[derive(Debug, Clone, Default)]
 pub struct EventLog {
     events: Arc<Mutex<Vec<SessionEvent>>>,
@@ -218,60 +200,6 @@ impl EventLog {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_empty()
     }
-
-    /// Serialize the whole log (the durable representation).
-    pub fn serialize(&self) -> Result<String, EventLogError> {
-        // 持锁序列化（`with_events`）而不是先 `log()` 全量克隆：省掉一次
-        // MB 级深拷。锁在序列化期间被持有——调用方若在意"别阻塞 append"
-        // （如 30s 周期落盘），自己先 `log()` 克隆再序列化（`persist.rs`
-        // 就是这么做的），代价是那次克隆。
-        self.with_events(|events| {
-            serde_json::to_string_pretty(&LogDocument {
-                version: LOG_FORMAT_VERSION,
-                events: events.to_vec(),
-            })
-        })
-        .map_err(|e| EventLogError::Serialize(e.to_string()))
-    }
-
-    /// Parse a serialized log document.
-    pub fn deserialize(data: &str) -> Result<Vec<SessionEvent>, EventLogError> {
-        let doc: LogDocument =
-            serde_json::from_str(data).map_err(|e| EventLogError::Parse(e.to_string()))?;
-        if doc.version != LOG_FORMAT_VERSION {
-            return Err(EventLogError::UnsupportedVersion(doc.version));
-        }
-        Ok(doc.events)
-    }
-
-    /// Atomically persist the log to `path` (tmp + rename).
-    pub fn save_to(&self, path: &Path) -> Result<(), EventLogError> {
-        let data = self.serialize()?;
-        let tmp = format!("{}.tmp", path.display());
-        std::fs::write(&tmp, &data).map_err(|e| EventLogError::Write(e.to_string()))?;
-        std::fs::rename(&tmp, path).map_err(|e| EventLogError::Write(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Load a log from `path`; a missing file yields an empty log.
-    pub fn load_from(&self, path: &Path) -> Result<Vec<SessionEvent>, EventLogError> {
-        let data = std::fs::read_to_string(path).map_err(|e| EventLogError::Read(e.to_string()))?;
-        Self::deserialize(&data)
-    }
-
-    /// The persistence path convention for a session id.
-    pub fn path_for(dir: &Path, session_id: &str) -> PathBuf {
-        // Session ids contain ':' which is invalid on Windows; sanitize.
-        let safe = session_id.replace(':', "_");
-        dir.join(format!("{safe}.json"))
-    }
-}
-
-/// On-disk envelope for the event log.
-#[derive(Debug, Serialize, Deserialize)]
-struct LogDocument {
-    version: u32,
-    events: Vec<SessionEvent>,
 }
 
 #[cfg(test)]
@@ -599,18 +527,19 @@ mod tests {
             timestamp: 1_700_000_000,
             session: Some("s1".into()),
         }));
-        let data = log.serialize().unwrap();
+        let data = serde_json::to_string_pretty(&log.log()).unwrap();
         // 落盘用 `kind` 标签（pretty JSON，别依赖空格形态）
         let doc: serde_json::Value = serde_json::from_str(&data).unwrap();
         assert_eq!(
-            doc.pointer("/events/0/kind").and_then(|v| v.as_str()),
+            doc.pointer("/0/kind").and_then(|v| v.as_str()),
             Some("reasoning"),
             "{data}"
         );
-        assert_eq!(EventLog::deserialize(&data).unwrap(), log.log());
+        let roundtrip: Vec<SessionEvent> = serde_json::from_str(&data).unwrap();
+        assert_eq!(roundtrip, log.log());
 
-        let minimal = r#"{"version":5,"events":[{"kind":"reasoning","content":"旧数据"}]}"#;
-        let parsed = EventLog::deserialize(minimal).unwrap();
+        let minimal = r#"[{"kind":"reasoning","content":"旧数据"}]"#;
+        let parsed: Vec<SessionEvent> = serde_json::from_str(minimal).unwrap();
         match &parsed[0] {
             SessionEvent::Reasoning(event) => {
                 assert_eq!(event.content, "旧数据");
@@ -621,45 +550,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn serialize_deserialize_roundtrip() {
-        let log = sample_log();
-        let data = log.serialize().unwrap();
-        let restored = EventLog::deserialize(&data).unwrap();
-        assert_eq!(restored, log.log());
-    }
-
-    #[test]
-    fn save_and_load_via_file() {
-        let log = sample_log();
-        let path =
-            std::env::temp_dir().join(format!("echo-session-log-test-{}.json", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        log.save_to(&path).unwrap();
-        let loaded = EventLog::new();
-        let restored = loaded.load_from(&path).unwrap();
-        assert_eq!(restored.len(), 2);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn unsupported_version_is_rejected() {
-        let err = EventLog::deserialize(r#"{"version": 99, "events": []}"#).unwrap_err();
-        assert!(matches!(err, EventLogError::UnsupportedVersion(99)));
-    }
-
-    #[test]
-    fn malformed_document_is_parse_error() {
-        assert!(matches!(
-            EventLog::deserialize("not json"),
-            Err(EventLogError::Parse(_))
-        ));
-    }
-
-    #[test]
-    fn path_for_sanitizes_colons() {
-        let dir = Path::new("/tmp");
-        let path = EventLog::path_for(dir, "qq:dm::123");
-        assert_eq!(path, PathBuf::from("/tmp/qq_dm__123.json"));
-    }
 }

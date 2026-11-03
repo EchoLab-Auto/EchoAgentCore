@@ -109,14 +109,6 @@ impl ToolPipeline {
             ToolPipelineResult::Continue => ToolPipelineResult::ShortCircuit(result),
         }
     }
-
-    pub fn pre_len(&self) -> usize {
-        self.pre.len()
-    }
-
-    pub fn post_len(&self) -> usize {
-        self.post.len()
-    }
 }
 
 #[cfg(test)]

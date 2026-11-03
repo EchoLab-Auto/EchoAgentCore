@@ -121,16 +121,6 @@ impl FanoutHandle {
     pub fn try_recv_command(&self) -> Option<BackendCommand> {
         self.command_rx.try_lock().ok()?.try_recv().ok()
     }
-
-    /// Receive commands (for task-based consumption).
-    pub async fn recv_command(&self) -> Option<BackendCommand> {
-        self.command_rx.lock().await.recv().await
-    }
-
-    /// Get a sender for commands (to share with subscribers).
-    pub fn command_sender(&self) -> mpsc::UnboundedSender<BackendCommand> {
-        self.command_tx.clone()
-    }
 }
 
 // ── WebSocket message types ────────────────────────────────────────────────

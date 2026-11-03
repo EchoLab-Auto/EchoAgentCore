@@ -19,7 +19,6 @@ use std::sync::Arc;
 
 use echo_plugin::{MountContext, PluginDescriptor, PluginRegistry};
 
-use crate::skill::Skill;
 
 /// 内置插件 id（组合根与挂/卸效果共用，避免字符串漂移）。
 /// 实例类插件的 `kind` 标签。
@@ -786,15 +785,6 @@ impl PluginHost {
         self.registry.deliver_event_guarded(event)
     }
 
-    /// 重算**订阅兴趣集**。
-    ///
-    /// **委托给框架**（v0.10）：注册表在挂载 / 卸载 / 启停 / 重启 / reconcile
-    /// 之后自己调。本方法保留是为了既有调用点（宿主侧的 `reconcile` 与
-    /// 测试）；它现在是幂等的显式补刷，不再是"必须记得调"的负担。
-    pub fn refresh_event_interest(&self) {
-        self.registry.refresh_event_interest();
-    }
-
     // ── 命令处理 + 有序文本块（plugin-framework v0.8）────────────────────
 
     /// **把一条命令分发给插件**（`Contribution::Command`）。
@@ -863,11 +853,6 @@ impl PluginHost {
             .into_iter()
             .find(|d| d.id == id)
             .is_some_and(|d| d.runtime == "subprocess" && !d.builtin)
-    }
-
-    /// 外部条目的运行态（None = 不是外部条目 / 未接线）。
-    pub fn subprocess_status(&self, id: &str) -> Option<SubprocessStatus> {
-        self.subprocess_control()?.status(id)
     }
 
     /// 停止一个外部条目（可逆）。
@@ -982,63 +967,6 @@ impl PluginHost {
         K: Into<String>,
     {
         self.registry.set_configs(configs);
-    }
-
-    /// 按 `kind` 标签筛选插件快照。
-    ///
-    /// `kind` 现在是**宿主自定义的开放标签**（框架不再有枚举），因此入参是
-    /// `&str`：调用方用本 crate 自己的常量，框架不设词汇表。
-    pub fn plugins_of_kind(&self, kind: &str) -> Vec<PluginDescriptor> {
-        self.descriptors()
-            .into_iter()
-            .filter(|d| d.kind == kind)
-            .collect()
-    }
-}
-
-/// Mount a skill plugin: registers a `Skill` into the skill registry.
-/// The caller supplies the full metadata (used by builtin skill plugins
-/// that are compiled into the binary).
-pub fn register_skill(
-    skills: &skill_registry_handle::SkillRegistryHandle,
-    name: &str,
-    description: &str,
-    keywords: Vec<String>,
-    always: bool,
-    category: &str,
-    content: &str,
-) {
-    let mut guard = skills.lock();
-    guard.register(Skill::direct(
-        name,
-        description,
-        keywords,
-        always,
-        category,
-        content,
-    ));
-}
-
-/// A tiny handle so plugins can register skills without importing the agent's
-/// Mutex type directly. Created by the composition root around the agent's
-/// skill registry.
-pub mod skill_registry_handle {
-    use std::sync::Arc;
-
-    use crate::skill::SkillRegistry;
-
-    #[derive(Clone)]
-    pub struct SkillRegistryHandle {
-        inner: Arc<tokio::sync::Mutex<SkillRegistry>>,
-    }
-
-    impl SkillRegistryHandle {
-        pub fn new(inner: Arc<tokio::sync::Mutex<SkillRegistry>>) -> Self {
-            Self { inner }
-        }
-        pub fn lock(&self) -> tokio::sync::MutexGuard<'_, SkillRegistry> {
-            self.inner.blocking_lock()
-        }
     }
 }
 

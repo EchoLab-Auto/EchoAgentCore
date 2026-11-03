@@ -313,21 +313,6 @@ pub async fn run_test_api(host: &dyn ApiAdminHost, name: &str) {
     });
 }
 
-/// 配置变更后的**共同收尾**：先落盘、再广播。
-///
-/// 顺序不可换：`api_config_events` 以共享存储为准，必须在本次变更写入
-/// `core.toml` 之后发，否则面板读到的是旧列表（2026-10 用户报障）。
-pub async fn persist_then_broadcast(
-    host: &dyn ApiAdminHost,
-    snapshot: ApiSnapshot,
-    model: &str,
-) {
-    host.persist(snapshot.clone()).await;
-    for event in api_config_events(&snapshot, model) {
-        host.emit(event);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

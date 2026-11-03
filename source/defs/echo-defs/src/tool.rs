@@ -111,23 +111,6 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    /// 只带会话（直接调用 / 测试用）。
-    pub fn for_session(session_id: impl Into<String>) -> Self {
-        Self {
-            session_id: session_id.into(),
-            ..Default::default()
-        }
-    }
-
-    /// 命名分支的会话上下文。
-    pub fn for_branch(session_id: impl Into<String>, branch_id: impl Into<String>) -> Self {
-        Self {
-            session_id: session_id.into(),
-            branch_id: branch_id.into(),
-            ..Default::default()
-        }
-    }
-
     /// 是否已被取消（无取消信号 = 永不取消）。
     pub fn is_cancelled(&self) -> bool {
         self.cancel

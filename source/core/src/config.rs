@@ -383,7 +383,6 @@ impl Default for FederationSection {
 /// SubagentSpawn 按 allow_subagent 门控（未授予即拒并回 Failed 终态）。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-#[allow(dead_code)] // peers 表保留完整 schema（部分字段经 ExecutorPolicy 物化消费）
 pub struct FederationPeerSection {
     /// `ws://host:3133`；空 = 仅接受该 peer 连入（纯被动）。
     pub url: String,

@@ -44,25 +44,6 @@ use crate::aggregator;
 
 pub use echo_federation::SubagentStatus;
 
-/// 联邦管理命令的异步返回（组合根的实现要 await 网络 / 磁盘）。
-///
-/// 保留别名是为了 `ports` 的既有读者；处理链本身已迁到
-/// [`crate::admin::FederationAdminHost`]（每个动作一个方法，不再是一条
-/// 收整条命令的大回调）。
-pub type FederationCommandFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
-
-/// 联邦管理命令处理器：`BackendCommand` 进，副作用（发事件）出。
-///
-/// 装配期由组合根构造（它持有 `Federation` 句柄、`ConfigStore` 与事件出口），
-/// 插件命令域只负责"这条命令归我"的注册关系。
-/// v0.11 之前的管理面回调形状（一条命令一个回调 → 整条处理在宿主）。
-///
-/// **已废弃**：新代码用 [`crate::admin::FederationAdminHost`]。保留类型别名
-/// 只是为了让下游能平滑迁移（`echo-agent` 已不再使用它）。
-pub type FederationCommandHandler =
-    Arc<dyn Fn(echo_protocol::BackendCommand) -> FederationCommandFuture + Send + Sync>;
-
 /// 联邦管理面的状态迁移出口（`Arc` 包装，装配期放进
 /// [`FederationPorts::admin`]）。
 pub type FederationAdmin = Arc<dyn crate::admin::FederationAdminHost>;

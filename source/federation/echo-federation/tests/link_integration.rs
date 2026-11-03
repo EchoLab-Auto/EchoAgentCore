@@ -340,9 +340,6 @@ async fn wait_up_opt(
     .flatten()
 }
 
-#[allow(dead_code)]
-fn assert_fed_arc(_: Arc<Federation>) {}
-
 /// 地址互告（配对无方向性基础）：Hello 携带本机 `advertise`，对端在
 /// 链路 Up 的 PeerInfo 里可见——装配层据此学习对端地址、双方皆可重连。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

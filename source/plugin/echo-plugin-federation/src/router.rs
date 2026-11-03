@@ -26,8 +26,6 @@ use echo_tool::ToolRegistry;
 /// 等待中的出站调用：中间输出聚合 + 终态通知。
 struct PendingCall {
     peer: String,
-    #[allow(dead_code)] // 观测/审计预留（v1 仅日志未消费）
-    tool: String,
     started: Instant,
     /// 存活上限：`sweep` 据此判定条目是否已泄漏（见 [`InvokeRouter::sweep`]）。
     ttl: Duration,
@@ -269,7 +267,6 @@ impl InvokeRouter {
             call_id.clone(),
             PendingCall {
                 peer: peer_node.to_string(),
-                tool: tool.to_string(),
                 started: Instant::now(),
                 ttl: pending_ttl(timeout),
                 chunks: chunk_tx,
@@ -317,7 +314,6 @@ impl InvokeRouter {
             call_id.clone(),
             PendingCall {
                 peer: peer_node.to_string(),
-                tool: format!("query:{kind:?}"),
                 started: Instant::now(),
                 ttl: pending_ttl(None),
                 chunks: chunk_tx,

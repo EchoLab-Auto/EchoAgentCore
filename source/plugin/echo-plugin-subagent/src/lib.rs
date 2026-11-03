@@ -54,11 +54,6 @@ pub const MAX_SUBAGENT_RESULT_CHARS: usize = 8 * 1024;
 /// 已完成任务条目在注册表中的保留时间（到点由清扫任务移除）。
 const COMPLETED_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
 
-/// 子 agent 允许的最大委派深度：子 agent 的 spawn 能力被剥离（深度 1），
-/// 不存在递归委派；常量保留给未来显式深度放宽。
-#[allow(dead_code)]
-pub const MAX_DELEGATION_DEPTH: u32 = 1;
-
 /// 子任务默认执行超时（秒）；`0` = 不设墙钟上限。
 ///
 /// 这个值只是**兜底**：宿主编译期会用 `AgentConfig::subagent_timeout_secs`
@@ -171,16 +166,6 @@ impl SubagentStore {
     pub fn finish(&self, id: &str, status: SubagentStatus) -> bool {
         if let Some(mut entry) = self.entries.get_mut(id) {
             entry.info.status = status;
-            entry.cancel.cancel();
-            true
-        } else {
-            false
-        }
-    }
-
-    #[allow(dead_code)]
-    fn cancel(&self, id: &str) -> bool {
-        if let Some(entry) = self.entries.get(id) {
             entry.cancel.cancel();
             true
         } else {
@@ -515,8 +500,8 @@ impl SpawnSubagentTool {
 ///
 /// 与主循环的差异：
 /// - 系统提示词 = base + subagent 边界说明 + 任务；历史为空；
-/// - 工具 = 注册表定义**剥离 `spawn_subagent`**（单层委派，深度上限
-///   [`MAX_DELEGATION_DEPTH`]）；
+/// - 工具 = 注册表定义**剥离 `spawn_subagent`**（单层委派：子 agent
+///   不能再派子 agent，因此不存在递归）；
 /// - 不发 AgentThinking/LlmRequest 等会话级事件（子任务的观测走
 ///   `SubagentStarted/SubagentCompleted`），只记录推理回调给主分支。
 #[allow(clippy::too_many_arguments)]

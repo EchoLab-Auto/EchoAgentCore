@@ -84,7 +84,9 @@ impl PluginScope {
 pub const KIND_SCOPE: [(&str, PluginScope); 10] = [
     ("tool", PluginScope::Persona),
     ("skill", PluginScope::Persona),
-    ("instance", PluginScope::Persona),
+    // 实例类 kind 引用宿主常量而非字面量：`2d46b7d` 把 wire 名从 `adapter`
+    // 改成 `instance` 时，硬编码比较的地方漏改，实例插件永远进不了门控集合。
+    (super::INSTANCE_PLUGIN_KIND, PluginScope::Persona),
     ("provider", PluginScope::Process),
     ("loop", PluginScope::Process),
     ("management", PluginScope::Process),

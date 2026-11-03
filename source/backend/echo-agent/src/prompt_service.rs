@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use crate::agent::boundary::{BoundaryKind, PromptBlock};
+use crate::agent::boundary::PromptBlock;
 use crate::skill::SkillRegistry;
 
 /// 提示词装配服务（见模块文档）。
@@ -90,31 +90,5 @@ impl PromptService {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn cache_prompt(&self, prompt: String) {
         *self.system_prompt_cache.write().await = Some(prompt);
-    }
-
-    /// 装配系统提示词块（**纯装配**：素材由调用方按需提供）。
-    ///
-    /// 与自由函数 [`crate::agent::prompt::build_prompt_blocks`] 的分工：那个是
-    /// 纯函数（便于单测），本方法是它在服务上的入口——锁技能表、调纯函数、
-    /// 返回结果。**不做缓存**（带 `content` 的装配与输入强相关，缓存无意义）。
-    #[allow(dead_code)] // 预留：装配入口迁到服务（下一步把 turn.rs 的调用改过来）
-    pub(crate) async fn assemble(
-        &self,
-        base_prompt: &str,
-        content: &str,
-        boundary: Option<BoundaryKind>,
-        persona_system_skills: &[String],
-        plugin_blocks: &[(echo_plugin::PluginTextBlock, String)],
-    ) -> Vec<PromptBlock> {
-        let skills = self.skills.lock().await;
-        crate::agent::prompt::build_prompt_blocks(
-            &skills,
-            base_prompt,
-            content,
-            boundary,
-            persona_system_skills,
-            plugin_blocks,
-        )
-        .await
     }
 }

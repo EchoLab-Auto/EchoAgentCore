@@ -13,8 +13,6 @@
 
 #[allow(unused_imports)]
 use crate::*;
-#[allow(unused_imports)]
-use anyhow::Context;
 
 /// 重载动作的类型擦除：`reload::Handle<EnvFilter, Formatter<..>>` 的第二个
 /// 类型参数随输出目标（journald 的 stdout / 轮转文件）与格式（text/json）

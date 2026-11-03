@@ -5,8 +5,6 @@
 
 #[allow(unused_imports)]
 use crate::*;
-#[allow(unused_imports)]
-use anyhow::Context;
 
 /// 进程级核心服务代理的固定 id（组合根 `make_agent("__core", ..)` 同一口径）。
 ///

@@ -174,47 +174,6 @@ impl Agent {
     /// 算法在插件里（`echo_plugin_loop::compaction::compact_history`）；本方法
     /// 只负责拿**压缩互斥锁**（2026-10 巡检 🔴：double compact / compact 与
     /// clear_history 竞争会按过时摘要重写日志、统计错乱）然后委托。
-    /// 归档**单个会话**并上报进度（`archive` → `done` / `failed`）。
-    pub async fn archive_session_with_progress(&self, session_id: &str) -> Result<String, String> {
-        use echo_session::CompactionPhase;
-        let emit = |phase: CompactionPhase, done, total, sessions, message: String| {
-            self.emit(crate::event::BackendEvent::CompactionProgress {
-                team_id: self.team_id(),
-                session_id: Some(session_id.to_string()),
-                phase: phase.as_str().to_string(),
-                done,
-                total,
-                sessions,
-                message,
-            });
-        };
-        emit(
-            CompactionPhase::Archive,
-            0,
-            0,
-            1,
-            format!("正在归档会话 {session_id} 的快照…"),
-        );
-        let result = self.trunk.archive_session(session_id).await;
-        match &result {
-            Ok(path) => emit(
-                CompactionPhase::Done,
-                1,
-                1,
-                1,
-                format!("历史已归档：{path}"),
-            ),
-            Err(error) => emit(
-                CompactionPhase::Failed,
-                0,
-                0,
-                1,
-                format!("归档失败：{error}"),
-            ),
-        }
-        result
-    }
-
     /// 内部全量维护入口；用户命令必须走 compact_session_history。
     pub async fn compact_history(&self, keep_recent: usize) -> Result<String, String> {
         self.compact_history_scoped(None, keep_recent).await
