@@ -734,9 +734,20 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 先于 provider 构建：provider 以脱敏装饰器包装后分发给全部下游
     //（LLM 请求出口卡口）；同时把脱敏器注册进服务定位器（"sanitizer"），
     // 供进程内插件与消费者解析。关闭需编辑 core.toml + 重启（无运行期开关）。
+    // 构造在 `echo-plugin-sanitize`（实现归插件，宿主只提供秘密表）。
+    // 时机必须在挂载之前：脱敏是 **LLM 出口的装饰器**，`llm` 服务要以
+    // 「已脱敏」的形态进 `Ctx`，而 `echo-plugin-loop` 把它当硬依赖。
+    // 见该 crate 的模块文档「为什么构造不能在 mount 里做」。
     let redactor: Option<Arc<dyn echo_defs::sanitize::Redactor>> = if cfg.security.sanitize.enabled
     {
-        Some(crate::security::build_redactor(&cfg))
+        let spec = crate::security::redactor_spec(&cfg);
+        let redactor = echo_plugin_sanitize::build(&spec);
+        tracing::info!(
+            secrets = spec.secrets.len(),
+            patterns = spec.patterns.len(),
+            "sanitize: redactor ready (builtin patterns + config secrets)"
+        );
+        Some(redactor)
     } else {
         warn!(
                 "security.sanitize.enabled=false — 敏感信息脱敏已关闭（不推荐；编辑 core.toml 后重启生效）"
@@ -775,9 +786,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         echo_defs::llm::LLM_PROVIDER_SERVICE_KEY,
         provider_arc.clone(),
     );
-    // 脱敏服务（"sanitizer" 键；进程内插件经 MountContext.ctx 解析）。
+    // 脱敏服务（键由 `echo-plugin-sanitize` 声明；进程内插件经
+    // `MountContext.ctx` 解析，子进程插件经 HostCall 同名服务走同一实例）。
     let _sanitizer_keep: Option<echo_context::Disposer> = redactor.as_ref().map(|redactor| {
-        ctx.register::<Arc<dyn echo_defs::sanitize::Redactor>>("sanitizer", redactor.clone())
+        ctx.register::<Arc<dyn echo_defs::sanitize::Redactor>>(
+            echo_plugin_sanitize::SERVICE_KEY,
+            redactor.clone(),
+        )
     });
 
     // 回合驱动（`loop` 服务）：**由 `echo-plugin-loop` 插件在 mount 里构造并
@@ -985,7 +1000,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         |services| {
             if let Some(redactor) = &redactor {
                 services.register(
-                    "sanitizer",
+                    echo_plugin_sanitize::SERVICE_KEY,
                     std::sync::Arc::new(crate::security::SanitizerHostService::new(
                         redactor.clone(),
                     )),

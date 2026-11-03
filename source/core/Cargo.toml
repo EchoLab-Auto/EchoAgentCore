@@ -14,7 +14,6 @@ path = "src/main.rs"
 [dependencies]
 echo-defs.workspace = true
 echo-config.workspace = true
-echo-sanitize.workspace = true
 echo-protocol.workspace = true
 echo-context.workspace = true
 echo-session.workspace = true
@@ -35,6 +34,7 @@ echo-plugin-workspace = { workspace = true }
 echo-plugin-subagent = { workspace = true }
 echo-plugin-provider-llm = { workspace = true }
 echo-plugin-self-update = { workspace = true }
+echo-plugin-sanitize = { workspace = true }
 echo-plugin-shell = { workspace = true }
 echo-federation = { path = "../federation/echo-federation" }
 getrandom = "0.2"
@@ -53,4 +53,7 @@ futures-util.workspace = true
 chrono.workspace = true
 flate2.workspace = true
 
-# 无 dev-dependencies：集成测试（core/tests/）只依赖本 crate 与既有依赖。
+# 脱敏实现已归 `echo-plugin-sanitize`：组合根只在**测试**里直接构造
+# `RegistryRedactor`（其余路径一律走插件导出的 `build`）。
+[dev-dependencies]
+echo-sanitize.workspace = true

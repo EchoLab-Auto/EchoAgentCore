@@ -1,0 +1,18 @@
+[package]
+name = "echo-plugin-sanitize"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "脱敏服务插件（echo-agent.security.sanitize）：构造 redactor 并声明 \"sanitizer\" 服务"
+
+[dependencies]
+echo-defs = { workspace = true }
+echo-context = { workspace = true }
+echo-plugin = { workspace = true }
+echo-sanitize = { path = "../../security/echo-sanitize" }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

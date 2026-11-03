@@ -161,6 +161,16 @@ pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
     // ── 管理面（Panel 通道 + 会话视图命令域）──
     push_plugin(&mut catalog, echo_plugin_management::plugin(version))?;
 
+    // ── 脱敏（安全不变量；`kind = "security"` → 进程级，人格关不掉）──
+    //
+    // 纯身份插件：脱敏器在**挂载之前**就由组合根构造（它是 LLM 出口的
+    // 装饰器，必须随 `llm` 服务一起进 `Ctx`）——见该 crate 的模块文档。
+    // 进目录的意义是：可观测（Panel 清单）、可配置（`plugins.toml` 的
+    // builtin 行）、进文档门禁、换实现只需换插件。
+    for plugin in echo_plugin_sanitize::plugins(version) {
+        push_plugin(&mut catalog, plugin)?;
+    }
+
     // ── LLM provider（工厂 + 池规则 + API 命令域）──
     push_plugin(&mut catalog, echo_plugin_provider_llm::plugin(version))?;
 

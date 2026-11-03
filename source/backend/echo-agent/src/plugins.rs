@@ -87,7 +87,7 @@ pub use echo_plugin_federation::PLUGIN_ID as FEDERATION_PLUGIN_ID;
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_PLUGIN_IDS: [&str; 12] = [
+pub const BUILTIN_PLUGIN_IDS: [&str; 13] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SHELL_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
@@ -102,6 +102,8 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 12] = [
     SINGLE_LOOP_PLUGIN_ID,
     PROVIDER_LLM_PLUGIN_ID,
     SELF_UPDATE_PLUGIN_ID,
+    // 安全不变量（`kind = "security"`，进程级、不可被 persona 关闭）。
+    echo_plugin_sanitize::PLUGIN_ID,
 ];
 
 /// 插件**不得**接管的命令（宿主自我管理面）。

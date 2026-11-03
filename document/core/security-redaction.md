@@ -33,14 +33,18 @@ echo-defs::sanitize          契约：Redactor trait（redact / scan / register�
       ▲                       零实现、零依赖；SecretHit 不携带明文（审计安全）
 echo-sanitize（crate）       默认实现：RegistryRedactor
       ▲                       字面值注册表（Aho-Corasick 最左最长）+ 保守模式集
-core 组合根                  构建 + 注入 + 服务注册（"sanitizer" 键）
+echo-plugin-sanitize         插件（`echo-agent.security.sanitize`，kind=security）
+      ▲                       构造 `build(&RedactorSpec)`；纯身份 mount
+core 组合根                  收集秘密表 → 调插件构造 → 注册 "sanitizer" 键
       ▲                       见 source/core/src/security.rs 与 main.rs
 卡口                         工具出口 / LLM 出口 / QQ 外发 / 入站 / 落盘
 ```
 
+**宿主与插件的分界**：宿主知道"这台部署上哪些字符串是秘密"（`redactor_spec(&cfg)`：配置里的 api_key、env 回退、实例凭据字段、`extra_*`），插件知道"怎么脱敏"（模式集、Aho-Corasick、占位符形状）。换实现 = 换插件，宿主侧只调 `echo_plugin_sanitize::build` 一个函数名。插件契约见 [脱敏插件](../plugins/sanitize.md)。
+
 - **契约**（`source/defs/echo-defs/src/sanitize.rs`）：`Redactor` 为对象安全 trait；实现约定「绝不 panic、命中不含明文、幂等（占位符不再被识别）」。占位符格式 `【已隐藏:<label>】`。
 - **默认实现**（`source/security/echo-sanitize/`）：字面值进 Aho-Corasick 自动机（一次扫描全部命中），模式集用 `regex`；登记须 ≥8 字符且不含占位符括号（防空转与误报）；label 净化防注入。
-- **服务定位**：组合根经 `Ctx::register::<Arc<dyn Redactor>>("sanitizer", …)` 注册（`echo_sanitize::REDACTOR` 为强类型 `ServiceKey`）；进程内插件在 `MountContext.ctx` 里解析（见「插件接入」）。
+- **服务定位**：组合根经 `Ctx::register::<Arc<dyn Redactor>>("sanitizer", …)` 注册；键的**单一真值**是 `echo_plugin_sanitize::SERVICE_KEY`（强类型形式 `service_key()`），注册方与解析方都引用它。进程内插件在 `MountContext.ctx` 里解析（见「插件接入」）。
 - **无运行期一键开关**：脱敏器是安全不变量（同管理面插件不可经命令禁用的口径）——关闭只能编辑 `core.toml` 并重启，让停机与告知成为明确动作。
 
 ## 出口卡口（调用点）

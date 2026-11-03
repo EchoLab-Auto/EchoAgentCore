@@ -22,6 +22,7 @@ members = [
     "source/plugin/echo-plugin-federation",
     "source/plugin/echo-plugin-loop",
     "source/plugin/echo-plugin-self-update",
+    "source/plugin/echo-plugin-sanitize",
     "source/plugin/echo-plugin-shell",
     "source/plugin/echo-plugin-subagent",
     "source/plugin/echo-plugin-workspace",
@@ -94,6 +95,7 @@ echo-plugin-skills = { path = "source/plugin/echo-plugin-skills" }
 echo-plugin-federation = { path = "source/plugin/echo-plugin-federation" }
 echo-plugin-loop = { path = "source/plugin/echo-plugin-loop" }
 echo-plugin-self-update = { path = "source/plugin/echo-plugin-self-update" }
+echo-plugin-sanitize = { path = "source/plugin/echo-plugin-sanitize" }
 echo-plugin-shell = { path = "source/plugin/echo-plugin-shell" }
 echo-plugin-subagent = { path = "source/plugin/echo-plugin-subagent" }
 echo-plugin-workspace = { path = "source/plugin/echo-plugin-workspace" }

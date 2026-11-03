@@ -29,6 +29,7 @@ echo-tool = { workspace = true }
 echo-shell = { workspace = true }
 echo-plugin-tools = { workspace = true }
 echo-plugin-subagent = { workspace = true }
+echo-plugin-sanitize = { workspace = true }
 echo-plugin-workspace = { workspace = true }
 tokio.workspace = true
 parking_lot = "0.12"

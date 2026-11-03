@@ -9,7 +9,7 @@ link: ["tools | 工具系统", "skills | 技能系统", "subagent | Subagent 插
 
 # 插件化设计
 
-> **定位**：本文是插件体系的入口——插件模型（**来源**与**运行形态**两个正交维度）与装载机制、**全部内置插件清单**、能力开关（per-persona 门控）与扩展方式。各插件的机制细节见子篇：[工具系统](./tools.md)、[技能系统](./skills.md)、[Subagent 插件](./subagent.md)、[QQ 实例门控](./qq-gating.md)、[联邦（多机）](../federation/federation.md)、[插件开发指南](./plugin-authoring.md)。读者：需要理解或扩展插件体系的开发者；内核机制（插件宿主、事件总线）见 [框架（内核）](../core/frame.md)。
+> **定位**：本文是插件体系的入口——插件模型（**来源**与**运行形态**两个正交维度）与装载机制、**全部内置插件清单**、能力开关（per-persona 门控）与扩展方式。**每个插件有自己的一篇**，从下表点进去：那篇写「这个插件作为可插拔单位长什么样」（身份、贡献、宿主接缝、启停、失败模式），机制原理仍留在对应子系统文档里。读者：需要理解或扩展插件体系的开发者；内核机制（插件宿主、事件总线）见 [框架（内核）](../core/frame.md)。
 
 ## 设计原则
 
@@ -32,7 +32,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 ## 插件模型
 
 - 核心类型：`PluginManifest`（id/name/version/kind/entry/description + `builtin` / `runtime` / `package`）+ `BuiltinPlugin` + `MountContext`
-- **插件类型（`kind`，**开放字符串**）**：`skill` / `tool` / `provider` / `loop` / `instance` / `orchestration` / `management` / `interaction` / `session` / `federation`
+- **插件类型（`kind`，**开放字符串**）**：`skill` / `tool` / `provider` / `loop` / `instance` / `orchestration` / `management` / `interaction` / `session` / `federation` / `security`
   - **没有 `PluginKind` 枚举**（框架 M2 去业务化：`echo-plugin` 只存 `kind: String`，不校验取值）。宿主只对 `instance` 做语义判定（`INSTANCE_PLUGIN_KIND`）；Panel 的中文显示名表 `PLUGIN_KIND_LABELS` 是**另一份**，新增 kind 时要记得同步它
   - `interaction`：**人在环交互面**——模型发起、用户在 Panel 应答（Panel 内的问答 UI + 专用应答通道），与 `instance` / `management` 同属「整类能力开关」，在 Panel「启用插件」勾选区按 kind 即可见（`capabilities.ts::isPluginCheckboxVisible` 的 kind 类判定）。原选单（`present_menu`）已废弃移除，但该 kind **并非空置**：`echo-agent.transcript`（显示投影 + 会话视图命令域）就是 `interaction`——它做的事是"把会话讲给人看"
 - 注册为**可逆**副作用：`Plugin::mount` 返回 disposer（`PluginMountResult`，注册表持有、卸载时调用）；`register_and_mount` 注册并按启用态挂载（禁用插件只注册不挂载）
@@ -76,27 +76,30 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 ## 内置插件清单
 
-| id | kind | 运行形态 | 说明 |
+| 插件（id 即文档链接） | kind | 运行形态 | 一句话 |
 | --- | --- | --- | --- |
-| `echo-agent.tools.builtin` | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理；`list_api_profiles` 与 `list_sessions`/`read_session` 由宿主端口**条件注册**——端口未接线时不注册，而不是给一个空实现）；**不含 shell 会话**（已拆出，见下一行） |
-| `echo-agent.shell` | Tool | 进程内 | Shell 会话：`bash-start` / `bash-exec` / `bash-stop` 三个工具 + `*Shell*` 四条命令域（会话列表 / 起 / 执行 / 停）；与 Panel 的 Shell 页面共用同一个进程级 `ShellManager`（进程组生命周期 + 哨兵分帧见 [Shell 子系统](./tools.md)）。**独立插件**的理由：它有自己的一套机制依赖与独立的启停需求——想关 shell 不该连计算器一起关 |
-| `echo-agent.instance.qq` | Instance | **进程外**（`subprocess`） | QQ 插件实例（OneBot v11 反向 WS，实现为独立进程 `echo-adapter-qq`，Core 侧只是门控壳；含 QQ 管理工具；门控机制见 [QQ 实例门控](./qq-gating.md)） |
-| `echo-agent.skills.dir` | Skill | 进程内 | SKILL.md 技能目录（热重载） |
-| `echo-agent.workspace` | Tool | 进程内 | 工作区会话管理（workspace 工具包：多会话/多目录管理、git 状态、**只读文件浏览器**（`RequestWorkspaceFiles`）；**激活 = 进入项目对话通道**——本地对话切换 + 系统提示词注入，见 [多 Agent 与会话](../core/agents.md)§工作区会话与项目通道；Panel 入口行「工作区」面板） |
-| `echo-agent.session` | Session | 进程内 | 会话子系统（2026-11 S6 外置）：事件溯源 trunk、持久化、归档轮转、压缩编排、按需派生显示历史 + 三条写命令（`ClearHistory` / `ArchiveHistory` / `CompactHistory`） |
-| `echo-agent.transcript` | Interaction | 进程内 | 显示层（2026-11 S8 外置）：时间线实时投影 + **会话视图命令域（5 条 `Request*`：`RequestState` / `RequestContext` / `RequestTrunkTimeline` / `RequestTimelineEarlier` / `RequestSessionHistory`，含推理正文线上瘦身）** |
-| `echo-agent.provider.llm` | Provider | 进程内 | LLM 提供方工厂 + 供应商池规则 + **13 条 API / provider 命令域**（`SwitchModel` / `UpdateApiConfig` / `TestApi`… ；provider 构建仍由宿主在配置变更时调用） |
-| `echo-agent.loop.single` | Loop | 进程内 | **唯一循环插件**：mount 时构造唯一的 echo-loop `TurnRunner` 并 `provide` 成 `loop` 服务（卸载撤销；缺它 = 启动失败）。策略只有一条——同一会话的 turn 串行排队（每会话一条时间线，见 [Agent 循环](../core/agent-loop.md)§会话内准入）；`kind = loop` 属进程级，persona 白名单不参与。`echo-agent.loop.parallel` 已于 2026-11 删除，不再是插件 |
-| `echo-agent.subagent` | Tool | 进程内 | Subagent 委派：spawn_subagent 工具（隔离上下文子任务）+ 完成后 `<subagent_event>` hook 回灌 + subagent-delegation 技能（见 [Subagent 插件](./subagent.md)） |
-| `echo-agent.management.panel` | Management | 进程内 | 管理面：management WS 桥接（禁用即 Panel 自锁，TogglePlugin 拒绝禁用）+ Panel 身份鉴权（`readonly` 身份只放行 `PANEL_READONLY_COMMANDS`）。**不声明任何命令域**——会话视图 5 条自 S8 起归 `echo-agent.transcript` |
-| `echo-agent.federation` | Federation | 进程内 | Core↔Core 对等链路：远程工具路由表 / 跨机委派聚合 / 跨机只读查询 / 会话迁移 + 6 条联邦命令（`SaveFederationPeer` / `DeleteFederationPeer` / `RequestFederationStatus` / `RequestFederationDirectory` / `RequestFederationInvite` / `MigrateSession`） |
-| `echo-agent.selfupdate` | Orchestration | 进程内 | 自更新：触发 `echo-agent-core-update.service`（oneshot，脱离本进程构建→替换→重启）+ 读状态文件（`RequestSelfUpdate` / `RequestSelfUpdateStatus`；updater 单元名与状态文件布局是**部署形状**，归插件） |
+| [`echo-agent.tools.builtin`](./tools.md) | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理）；**不含 shell 会话** |
+| [`echo-agent.shell`](./shell.md) | Tool | 进程内 | 后台 bash 会话 + Shell 面板命令域 |
+| [`echo-agent.workspace`](./workspace.md) | Tool | 进程内 | 工作区会话（多目录管理 + git 状态 + 只读文件浏览） |
+| [`echo-agent.subagent`](./subagent.md) | Tool | 进程内 | 委派隔离上下文的子任务 + 完成后回灌 |
+| [`echo-agent.skills.dir`](./skills.md) | Skill | 进程内 | SKILL.md 技能目录（热重载） |
+| [`echo-agent.provider.llm`](./provider-llm.md) | Provider | 进程内 | provider 工厂 + 计量/脱敏装饰 + API 命令域 |
+| [`echo-agent.loop.single`](./loop.md) | Loop | 进程内 | 唯一循环插件：提供 `loop` 服务，同会话 turn 串行排队 |
+| [`echo-agent.security.sanitize`](./sanitize.md) | Security | 进程内 | 脱敏（安全不变量，**人格关不掉**）；`kind = security` → 进程级 |
+| [`echo-agent.session`](./session.md) | Session | 进程内 | 事件溯源 trunk、持久化、压缩编排 |
+| [`echo-agent.transcript`](./transcript.md) | Interaction | 进程内 | 时间线投影 + 会话视图命令域 |
+| [`echo-agent.management.panel`](./management-panel.md) | Management | 进程内 | Panel 连接面（**禁用即自锁**） |
+| [`echo-agent.federation`](../federation/federation.md) | Federation | 进程内 | Core↔Core 对等链路：远程工具 / 跨机委派 / 会话迁移 |
+| [`echo-agent.selfupdate`](./selfupdate.md) | Orchestration | 进程内 | 自更新触发与状态查询（部署形状归插件） |
+| [`echo-agent.instance.qq`](./qq-gating.md) | Instance | **进程外** | QQ 插件实例（OneBot v11 反向 WS，独立进程） |
 
-表的来源分两类，别混算：**框架内置 12 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 12]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
+表的来源分两类，别混算：**框架内置 13 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 13]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
 
 联邦（`echo-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
 
-> **框架侧实现位置**：解耦计划 Phase 3 已把绝大多数内置插件外迁为独立 crate——`echo-plugin-provider-llm`（provider 工厂 + 计量/脱敏装饰）/ `echo-plugin-skills`（技能注册表 + Git 安装）/ `echo-plugin-workspace`（工作区会话与工具）/ `echo-plugin-subagent` / `echo-plugin-loop`（唯一循环插件：提供 `loop` 服务 + 单会话串行策略）/ `echo-plugin-management`（Panel 连接面，**不含命令域**——会话视图 5 条随 S8 归 `echo-plugin-transcript`）/ `echo-plugin-self-update`（自更新命令域）/ `echo-plugin-tools`（内置工具集：计算/检索/清单/编码/实例管理/供应商池查询，**不含 Shell 会话**；Shell 自 S15 独立为 `echo-plugin-shell`）、`echo-plugin-session`（会话 trunk / 持久化 / 压缩编排）、`echo-plugin-transcript`（显示投影 + 会话视图命令域）；工具子系统的跨包机制（`ToolRegistry`）在 `echo-tool`，Shell 机制在 `echo-shell`。**仍内联在 echo-agent 的**只剩三个包：`packages/tools_builtin`（**只剩端口接线**——工具清单的所有权已在插件，`build_registry` 只做"给端口、拿工具箱"；供应商池随 S3 搬进 `echo-plugin-provider-llm`）、`packages/instance_ops`（入站 hook 桥 + 通用实例命令域）、`packages/federation`（远程代理工具与查询适配）。公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export 指向新 crate）。完整清单见上述 crate 的公开导出。
+> **框架侧实现位置**：每个内置插件都是一个独立 crate（`source/plugin/echo-plugin-*`），上表第一列的链接即它的契约文档。工具子系统的跨包机制（`ToolRegistry`）在 `echo-tool`，Shell 机制在 `echo-shell`——**机制层**放词汇与通用实现，**插件 crate** 放「这台部署上要不要装、装了之后给谁用」。
+>
+> **仍内联在 echo-agent 的**只剩三个包：`packages/tools_builtin`（**只剩端口接线**——工具清单的所有权已在插件，`build_registry` 只做「给端口、拿工具箱」）、`packages/instance_ops`（入站 hook 桥 + 通用实例命令域）、`packages/federation`（远程代理工具与查询适配）。公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export 指向新 crate）。
 >
 > QQ 工具（`send_*`/`get_*` 共 11 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由插件进程申报（插件仓库 `crates/echo-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。去适配器化时 `source/core/src/qq_tools.rs` 已删除——插件实例本就能声明工具，没有留给组合根的特例。
 
@@ -125,7 +128,7 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
 - 每个条目可带 `[plugin.limits]`（子进程资源限额：CPU / 地址空间 / 单文件 / fd / 进程数，缺省不限制）——见 [插件开发指南](./plugin-authoring.md)「资源限额」
 - 排查"最终这一行来自哪一层、值是什么"用 `echo-agent-core dump-config`（只合成不启动）
 
-> 以上 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单——`expected_ids` 由**框架 12 项 + 前缀 `echo-agent.instance.`** 组成（不是逐个列实例 id；清单真值在 `scripts/update.sh` 的 `expected_ids` 一行，与 `BUILTIN_PLUGIN_IDS` 由单测守护）；选单（present_menu）已废弃移除，任务清单（checklist）为普通内置工具。
+> 以上 id 也是更新器（`scripts/update.sh`）插件感知校验的核对清单——`expected_ids` 由**框架 13 项 + 前缀 `echo-agent.instance.`** 组成（不是逐个列实例 id；清单真值在 `scripts/update.sh` 的 `expected_ids` 一行，与 `BUILTIN_PLUGIN_IDS` 由单测守护）；选单（present_menu）已废弃移除，任务清单（checklist）为普通内置工具。
 
 ## 能力开关（per-persona）
 

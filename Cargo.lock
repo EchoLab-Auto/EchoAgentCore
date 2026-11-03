@@ -359,6 +359,7 @@ dependencies = [
  "echo-plugin-loop",
  "echo-plugin-management",
  "echo-plugin-provider-llm",
+ "echo-plugin-sanitize",
  "echo-plugin-self-update",
  "echo-plugin-session",
  "echo-plugin-shell",
@@ -413,6 +414,7 @@ dependencies = [
  "echo-plugin-loop",
  "echo-plugin-management",
  "echo-plugin-provider-llm",
+ "echo-plugin-sanitize",
  "echo-plugin-self-update",
  "echo-plugin-session",
  "echo-plugin-shell",
@@ -674,6 +676,18 @@ dependencies = [
  "toml",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "echo-plugin-sanitize"
+version = "0.1.0"
+dependencies = [
+ "echo-context",
+ "echo-defs",
+ "echo-plugin",
+ "echo-sanitize",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

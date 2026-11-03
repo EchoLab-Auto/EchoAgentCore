@@ -1,7 +1,8 @@
 //! 敏感信息防护的组合根辅助（2026-10 脱敏服务装配）。
 //!
-//! - [`build_redactor`]：从 `[security.sanitize]` 与配置中的凭证字段构建
-//!   进程级脱敏器（内置模式 + 全部已知密钥 + 用户追加值 / 模式）；
+//! - [`redactor_spec`]：从 `[security.sanitize]` 与配置中的凭证字段收集
+//!   「要脱敏哪些值」（**构造本身在 `echo-plugin-sanitize`**——实现归插件，
+//!   宿主只提供秘密表）；
 //! - [`OutboundPolicy`]：QQ 外发命中策略（`block` / `redact`）；
 //! - [`sensitive_dirs`]：外发文件需要保护的敏感目录列表（配置目录、
 //!   `~/.ssh` 等——`send_file` 类工具命中即拒发）。
@@ -13,7 +14,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use echo_defs::sanitize::{HitKind, Redactor};
-use echo_sanitize::RegistryRedactor;
 use serde_json::{json, Value};
 
 use crate::config::CoreConfig;
@@ -103,7 +103,11 @@ impl echo_plugin_host::HostService for SanitizerHostService {
     }
 }
 
-/// 构建进程级脱敏器：内置保守模式 + 全部已知密钥 + 用户追加配置。
+/// 收集"要脱敏哪些值"——**只有宿主知道的那一半**。
+///
+/// 构造本身在 `echo-plugin-sanitize`（`build(&spec)`）：本函数不认识任何
+/// 脱敏实现，只回答"这台部署上哪些字符串是秘密"。这份切分让换脱敏实现
+/// 等于换插件，而不用改组合根。
 ///
 /// 登记来源：
 /// - `[agent]` 顶层 `api_key` 与 `[agent.api_profiles.*]` 的 `api_key`；
@@ -113,21 +117,24 @@ impl echo_plugin_host::HostService for SanitizerHostService {
 ///   的字符串值——**不点名任何平台**，新增平台自动纳入）；
 /// - `[security.sanitize]` 的 `extra_secrets`（label `extra:<序号>`）与
 ///   `extra_patterns`（名字 → regex）。
-pub fn build_redactor(cfg: &CoreConfig) -> Arc<dyn Redactor> {
-    let redactor = RegistryRedactor::with_builtin_patterns();
+pub fn redactor_spec(cfg: &CoreConfig) -> echo_plugin_sanitize::RedactorSpec {
+    let mut spec = echo_plugin_sanitize::RedactorSpec::default();
     let agent = &cfg.agent;
     if !agent.api_key.trim().is_empty() {
-        redactor.register_secret(&agent.api_key, "api_key");
+        spec.secrets.push((agent.api_key.clone(), "api_key".into()));
     }
     for profile in &agent.api_profiles {
         if !profile.api_key.trim().is_empty() {
-            redactor.register_secret(&profile.api_key, &format!("api_key:{}", profile.name));
+            spec.secrets.push((
+                profile.api_key.clone(),
+                format!("api_key:{}", profile.name),
+            ));
         }
     }
     for var in ["DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] {
         if let Ok(value) = std::env::var(var) {
             if !value.trim().is_empty() {
-                redactor.register_secret(&value, &format!("env:{var}"));
+                spec.secrets.push((value, format!("env:{var}")));
             }
         }
     }
@@ -138,31 +145,23 @@ pub fn build_redactor(cfg: &CoreConfig) -> Arc<dyn Redactor> {
     // 插件新增任意凭据字段都被自动纳入脱敏。
     for host in cfg.instances.values() {
         for (path, value) in collect_credential_values(&host.shared) {
-            redactor.register_secret(&value, &format!("{}:{path}", host.platform));
+            spec.secrets
+                .push((value, format!("{}:{path}", host.platform)));
         }
         for (id, instance) in &host.instances {
             for (path, value) in collect_credential_values(&instance.overrides) {
-                redactor.register_secret(&value, &format!("{}:{id}:{path}", host.platform));
+                spec.secrets
+                    .push((value, format!("{}:{id}:{path}", host.platform)));
             }
         }
     }
     for (index, value) in cfg.security.sanitize.extra_secrets.iter().enumerate() {
-        redactor.register_secret(value, &format!("extra:{index}"));
+        spec.secrets.push((value.clone(), format!("extra:{index}")));
     }
     for (name, pattern) in &cfg.security.sanitize.extra_patterns {
-        if let Err(error) = redactor.register_pattern(name, pattern) {
-            tracing::warn!(
-                pattern = name,
-                %error,
-                "security.sanitize.extra_patterns: pattern rejected"
-            );
-        }
+        spec.patterns.insert(name.clone(), pattern.clone());
     }
-    tracing::info!(
-        entries = redactor.registered_count(),
-        "sanitize: redactor ready (builtin patterns + config secrets)"
-    );
-    Arc::new(redactor)
+    spec
 }
 
 /// 外发文件需要保护的敏感目录（`send_file` / `send_image` / `send_voice`
@@ -238,6 +237,8 @@ fn collect_credential_values(table: &toml::Table) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    use echo_sanitize::RegistryRedactor;
+
     use echo_defs::sanitize::sensitive_local_path;
 
     use super::*;
@@ -304,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn build_redactor_registers_configured_secrets() {
+    fn redactor_spec_carries_configured_secrets_into_the_plugin() {
         let mut cfg = CoreConfig::default();
         cfg.agent.api_key = "sk-configsecretsk-configsecret".into();
         cfg.security.sanitize.extra_secrets = vec!["corp-extra-secret-1".into()];
@@ -312,7 +313,7 @@ mod tests {
             .sanitize
             .extra_patterns
             .insert("corp_id".into(), r"corp2-[A-Z0-9]{8}".into());
-        let redactor = build_redactor(&cfg);
+        let redactor = echo_plugin_sanitize::build(&redactor_spec(&cfg));
         let report = redactor.redact(
             "key=sk-configsecretsk-configsecret extra=corp-extra-secret-1 id=corp2-ABCDEFGH",
         );

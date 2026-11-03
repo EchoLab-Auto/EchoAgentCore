@@ -359,7 +359,7 @@ pub(crate) fn provided_keys() -> Vec<String> {
         // provider 实例：键由 provider 插件声明（`PROVIDER_KEY`），值由组合根
         // 按配置构建——两侧同源，见该常量的文档。
         echo_defs::llm::LLM_PROVIDER_SERVICE_KEY.to_string(),
-        "sanitizer".to_string(),
+        echo_plugin_sanitize::SERVICE_KEY.to_string(),
         // ── 3. 插件自 provide ──
         echo_plugin_loop::SERVICE_KEY.to_string(),
         echo_plugin_tools::plugin::SERVICE_KEY.to_string(),
