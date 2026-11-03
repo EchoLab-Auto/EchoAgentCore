@@ -281,14 +281,6 @@ impl SkillRegistry {
         self.skills.keys().cloned().collect()
     }
 
-    pub fn enabled_names(&self) -> Vec<String> {
-        self.skills
-            .values()
-            .filter(|s| s.metadata.enabled)
-            .map(|s| s.metadata.name.clone())
-            .collect()
-    }
-
     pub fn len(&self) -> usize {
         self.skills.len()
     }

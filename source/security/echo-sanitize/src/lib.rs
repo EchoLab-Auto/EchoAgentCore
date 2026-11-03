@@ -11,18 +11,11 @@
 //!
 //! # 装配（组合根）
 //!
-//! ```no_run
-//! # use std::sync::Arc;
-//! # use echo_defs::sanitize::Redactor;
-//! let redactor: Arc<dyn Redactor> = Arc::new(echo_sanitize::RegistryRedactor::with_builtin_patterns());
-//! redactor.register_secret("sk-xxxxxxxxxxxxxxxx", "api_key:deepseek");
-//! # let ctx: Arc<echo_context::Ctx> = Arc::new(echo_context::Ctx::default());
-//! // 进程级注册（与 "llm" / "loop" 同款）：
-//! let _keep = ctx.register::<Arc<dyn Redactor>>("sanitizer", redactor.clone());
-//! // 消费方（含进程内插件）：
-//! let resolved = ctx.service(&echo_sanitize::REDACTOR);
-//! # let _ = resolved;
-//! ```
+//! 进程内：`RegistryRedactor::with_builtin_patterns()` 交给宿主的
+//! `SanitizerHostService`（`core/src/security.rs`），再以**名字** `"sanitizer"`
+//! 注册进宿主服务表（`core/src/host_services.rs`）——子进程插件经
+//! `HostCall { service = "sanitizer", method = "redact" | "scan" |
+//! "register_secret" }` 调用，不共享 `Arc`（跨进程拿不到）。
 //!
 //! 卡口位置与保证边界见 `document/core/security-redaction.md`。
 
@@ -30,14 +23,3 @@ mod registry;
 
 pub use registry::{placeholder, RegistryRedactor};
 
-use echo_context::ServiceKey;
-use echo_defs::sanitize::Redactor;
-use std::sync::Arc;
-
-/// 服务定位器键（`"sanitizer"`）。
-///
-/// 注册方：`ctx.register::<Arc<dyn Redactor>>("sanitizer", redactor)`；
-/// 消费方：`ctx.service(&echo_sanitize::REDACTOR)` 或
-/// `ctx.resolve::<Arc<dyn Redactor>>("sanitizer")`——两者类型必须一致
-/// （存储的正是 `Arc<dyn Redactor>`）。
-pub static REDACTOR: ServiceKey<Arc<dyn Redactor>> = ServiceKey::new("sanitizer");

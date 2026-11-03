@@ -293,7 +293,7 @@ pub struct SubprocessStatus {
 ///
 /// 剩下的三件**本项目的语义**，框架不该知道：
 ///
-/// 1. [`Self::mount_plan`]：`plugins.toml` 的三层合成结果 → 挂载计划
+/// 1. [`Self::mount_plan_when_ready`]：`plugins.toml` 的三层合成结果 → 挂载计划
 ///    （配置格式是本项目的）；
 /// 2. [`Self::deliver_backend_event`]：`BackendEvent` → `PluginEvent` 的翻译
 ///    （领域词汇是本项目的）；
@@ -581,56 +581,12 @@ impl PluginHost {
     /// 返回 `(已注册数, 已挂载 id, 错误)`：单个挂载失败不影响其余（启动
     /// 期"尽力而为"语义，与既有 `mount_all` 一致）；注册冲突（同 id 重复）
     /// 是装配 bug，记进错误但不中断。
-    pub fn mount_plan(
-        &self,
-        catalog: Vec<Arc<dyn echo_plugin::Plugin>>,
-        plan: &[MountStep],
-    ) -> (usize, Vec<String>, Vec<String>) {
-        let mut errors: Vec<String> = Vec::new();
-        // 先全部注册：Panel 清单的完整性不依赖配置写了哪些行。
-        let mut by_id: Vec<(String, Arc<dyn echo_plugin::Plugin>)> = Vec::new();
-        for plugin in catalog {
-            let id = plugin.manifest().id.clone();
-            if let Err(e) = self.registry.register(Arc::clone(&plugin)) {
-                errors.push(e);
-                continue;
-            }
-            by_id.push((id, plugin));
-        }
-        let registered = by_id.len();
-        // 计划禁用 → 收敛进注册表的启用状态（启动期一次性，不写回配置）。
-        let disabled: Vec<String> = plan
-            .iter()
-            .filter(|step| !step.enabled)
-            .map(|step| step.id.clone())
-            .collect();
-        if !disabled.is_empty() {
-            self.registry.apply_disabled(&disabled);
-        }
-        let ctx = self.ctx();
-        let mut mounted = Vec::new();
-        for step in plan {
-            if !by_id.iter().any(|(id, _)| id == &step.id) {
-                continue; // 未注册（构造失败或计划里是未知 id）
-            }
-            if !self.registry.is_enabled(&step.id) {
-                continue;
-            }
-            match self.registry.mount(&step.id, &ctx) {
-                Ok(_) => mounted.push(step.id.clone()),
-                Err(e) => errors.push(format!("plugin {} mount failed: {e}", step.id)),
-            }
-        }
-        (registered, mounted, errors)
-    }
-
     /// 配置化组合的**就绪等待**版本：注册 + 按计划挂载，每个插件都先等它的
     /// `inject` 就绪（最多 `timeout`；见 `echo_plugin::PluginRegistry::
     /// mount_when_ready`）。
     ///
-    /// 与 [`Self::mount_plan`] 的唯一差别是"依赖暂时没到"的处理：`mount_plan`
-    /// 立即失败（启动即报错），这里等一等再判。对现网无行为差异——正常启动
-    /// 时依赖早已注册，第一次检查就命中，一次 `contains` 的开销。
+    /// "依赖暂时没到"时等一等再判（而不是立即报错）。对现网无行为差异——
+    /// 正常启动时依赖早已注册，第一次检查就命中，一次 `contains` 的开销。
     ///
     /// 返回 `(已注册数, 已挂载 id, 仍在等依赖的 (id, 缺的键), 错误)`。
     /// 「仍在等」不算失败：它们留在 `pending` 里，依赖到了由

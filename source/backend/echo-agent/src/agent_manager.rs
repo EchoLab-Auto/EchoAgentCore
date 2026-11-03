@@ -243,10 +243,6 @@ impl AgentManager {
         *self.node_identity.write() = identity;
     }
 
-    pub fn default_id(&self) -> String {
-        self.default_id.clone()
-    }
-
     pub fn agent_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self.agents.read().keys().cloned().collect();
         ids.sort();
