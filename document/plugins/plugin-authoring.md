@@ -99,8 +99,8 @@ patches = ["local.patch"]    # 之后按序叠加
 id = "example"                        # 唯一 id（= 插件实例 id，握手比对）
 kind = "stdio"                        # builtin | stdio | dylib | wasm
                                       # 当前可用：stdio 子进程 + builtin 内置行；dylib / wasm 未实现
-name = "echo-plugin-example"          # 说明性名称（stdio 下 command 才是真实路径）
-command = "/home/me/.local/libexec/echo-agent-core/plugins/echo-plugin-example/echo-plugin-example"
+name = "echo-plugin-demo"            # 说明性名称（stdio 下 command 才是真实路径）
+command = "/home/me/.local/libexec/echo-agent-core/plugins/echo-plugin-demo/echo-plugin-demo"
 args = ["--stdio"]                    # 可选
 env = { MY_MODE = "prod" }            # 可选（宿主环境默认不继承，仅透传 PATH）
 enabled = true                        # 可选，缺省 true
@@ -121,7 +121,7 @@ mode = "fast"
 ```
 
 - 目录名 = **Cargo 包名**（不是运行期插件 id——id 写在二进制里的 manifest 中，安装器静态读不到）；二进制名与包名一致。
-- 随框架一同安装的插件集合由 `scripts/install.sh` 的 `PLUGIN_BINARIES` 决定（当前：`echo-plugin-example`），`update.sh` 用同一张表同步升级——**两者必须一致**，由 `source/core/tests/install_script_flag.rs` 守护（同时比对「仓库里 `[[bin]] path = "src/main.rs"` 的插件 crate」）。
+- 随框架一同安装的插件集合由 `scripts/install.sh` 的 `PLUGIN_BINARIES` 决定（当前为空：仓库里只有 `echo-plugin-adapter` 这类**不装机**的进程内插件 crate，外部插件按需自建），`update.sh` 用同一张表同步升级——**两者必须一致**，由 `source/core/tests/install_script_flag.rs` 守护（同时比对「仓库里 `[[bin]] path = "src/main.rs"` 的插件 crate」）。
 - 自更新的插件替换是**版本化**的：旧二进制留成 `<二进制>.rollback`，任何后续步骤失败（含健康检查）都会把全部插件还原回上一版，不留"Core 新 / 插件旧"的半新组合。
 - 自己的插件可以放在同一目录下（`plugins/<你>/<二进制>`），`plugins.toml` 的 `command` 指过去即可；自更新不会碰清单外的目录。
 
@@ -152,8 +152,8 @@ mode = "fast"
 [[plugin]]
 id = "example"
 kind = "stdio"
-name = "echo-plugin-example"
-command = "/opt/echo/plugins/echo-plugin-example"
+name = "echo-plugin-demo"
+command = "/opt/echo/plugins/echo-plugin-demo"
 
 [plugin.limits]
 cpu_seconds = 3600     # CPU 时间（秒）；用尽 → SIGXCPU
@@ -192,11 +192,11 @@ patch 其次、本文件行内条目最后）：
 ```text
 # --- example (layer 1: local.patch.toml) ---
 [[plugin]]
-command = "/opt/echo/plugins/echo-plugin-example"   # patch 整行替换后的值
+command = "/opt/echo/plugins/echo-plugin-demo"   # patch 整行替换后的值
 enabled = true
 id = "example"
 kind = "stdio"
-name = "echo-plugin-example"
+name = "echo-plugin-demo"
 ```
 
 要点：
@@ -306,17 +306,17 @@ SDK 侧实现 `InstancePlugin`（`echo-plugin-sdk`）：`configure`（收配置�
 - **多模态**：`InvokeOutcome::Ok.images`（图片 URL / data URI）与内置工具 `execute_rich` 同口径。
 - **零全局态纪律**：插件进程内不要持有进程级可变单例（`static OnceLock` 等）——用实例字段（见试点插件的 `WebSearch` 持 client 的做法）。
 - **宿主服务回呼（HostCall）**：插件可回呼宿主注册的命名服务（当前默认提供 `"sanitizer"`：`redact` / `scan` / `register_secret`——处理敏感文本前先脱敏、登记插件自己的凭证）。SDK 侧在 `PluginHandler::on_ready` 收到 `HostClient`（`call_with_timeout` 可调超时，默认 30s）；服务不可用时返回 `Service{code, message}` 错误而非挂死。
-- **参考实现**：`source/plugin/echo-plugin-example/`（websearch + calculator，含 e2e）；协议全消息测试对端 `echo-plugin-test-peer`（在**框架仓** `plugin-framework` 的 `crates/echo-plugin-host/src/bin/echo-plugin-test-peer.rs`，不在本仓）。
+- **参考实现**：协议全消息测试对端 `echo-plugin-test-peer`（在**框架仓** `plugin-framework` 的 `crates/echo-plugin-host/src/bin/echo-plugin-test-peer.rs`，不在本仓）；真实外部插件可参考 `echo-hpc-platform`。
 
 ### 本地验证
 
 ```bash
 # 1) 构建插件
-cargo build --release -p echo-plugin-example
+cargo build --release -p echo-plugin-demo
 
 # 2) 安装到约定目录
-install -Dm755 target/release/echo-plugin-example \
-  ~/.local/libexec/echo-agent-core/plugins/echo-plugin-example/echo-plugin-example
+install -Dm755 target/release/echo-plugin-demo \
+  ~/.local/libexec/echo-agent-core/plugins/echo-plugin-demo/echo-plugin-demo
 
 # 3) 写 plugins.toml（core.toml 同目录，格式见「装载」节）
 # 4) 重启 Core：systemctl --user restart echo-agent-core.service

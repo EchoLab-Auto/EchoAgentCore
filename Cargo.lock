@@ -583,18 +583,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-example"
-version = "0.1.0"
-dependencies = [
- "echo-plugin-host",
- "echo-plugin-sdk",
- "regex",
- "reqwest",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "echo-plugin-federation"
 version = "0.1.0"
 dependencies = [
@@ -696,20 +684,6 @@ dependencies = [
  "toml",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "echo-plugin-sdk"
-version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/plugin-framework?tag=v0.11.2#bdc5623196d02831e423c71e67a68437fd32442f"
-dependencies = [
- "async-trait",
- "echo-plugin-api",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
 ]
 
 [[package]]

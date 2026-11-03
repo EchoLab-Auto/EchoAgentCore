@@ -17,7 +17,6 @@ members = [
     "source/backend/echo-test-utils",
     "source/core",
     "source/plugin/echo-plugin-adapter",
-    "source/plugin/echo-plugin-example",
     "source/plugin/echo-plugin-provider-llm",
     "source/plugin/echo-plugin-skills",
     "source/plugin/echo-plugin-federation",
@@ -89,8 +88,6 @@ echo-plugin = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = 
 echo-plugin-api = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
 echo-plugin-host = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
 echo-plugin-adapter = { path = "source/plugin/echo-plugin-adapter" }
-echo-plugin-sdk = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
-echo-plugin-example = { path = "source/plugin/echo-plugin-example" }
 echo-plugin-loader = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
 echo-plugin-provider-llm = { path = "source/plugin/echo-plugin-provider-llm" }
 echo-plugin-skills = { path = "source/plugin/echo-plugin-skills" }

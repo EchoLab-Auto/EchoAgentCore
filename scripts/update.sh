@@ -15,7 +15,7 @@ DEFAULT_BINARY="$PREFIX/libexec/echo-agent-core/echo-agent-core-bin"
 # **必须与 install.sh 的 PLUGIN_BINARIES 一致**（守护测试：
 # source/core/tests/install_script_flag.rs）；自更新与首装装同一套。
 PLUGINS_DIR="$PREFIX/libexec/echo-agent-core/plugins"
-PLUGIN_BINARIES=(echo-plugin-example)
+PLUGIN_BINARIES=()
 DEFAULT_STATUS_FILE="$STATE_HOME/echo-agent-core/update-status"
 DEFAULT_SOURCE_DIR="$DATA_HOME/echo-agent-core/source"
 

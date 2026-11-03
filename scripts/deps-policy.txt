@@ -49,7 +49,6 @@ backend/echo-test-utils                 echo-defs
 
 # ── 插件机制层 ─────────────────────────────────────────────────────────
 # host 只认协议：领域适配（RemoteTool / RemoteInstance）已迁到 echo-plugin-adapter。
-plugin/echo-plugin-example              echo-plugin-host echo-plugin-sdk
 # 领域适配层：把协议贡献翻译成 echo-defs 的 Tool / PluginInstance trait。
 # 宿主保持领域中立（只认 echo-plugin-api），故适配器单独成 crate。
 plugin/echo-plugin-adapter              echo-plugin-host echo-plugin-api echo-defs

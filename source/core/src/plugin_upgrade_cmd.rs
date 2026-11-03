@@ -38,7 +38,7 @@ fn management_url(address: &str) -> String {
 }
 
 /// 按安装路径反查 plugins.toml 的运行时 id。crate/二进制名与插件 id
-/// 不强制相同（例如 echo-plugin-example 的运行时 id 是 example）。
+/// 不强制相同（例如 bin 名叫 `echo-plugin-demo`、运行时 id 叫 `demo`）。
 fn resolve_plugin_id(
     config_path: &Path,
     id: Option<&str>,

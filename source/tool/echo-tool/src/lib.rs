@@ -107,7 +107,7 @@ pub struct ToolRegistry {
     /// 注册期出现过的**重名**（name → 首次被覆盖时的说明）。
     ///
     /// 为什么记：`insert` 是静默覆盖——一个插件和一个内置工具叫同一个名字
-    /// 时，后者会无声无息地顶掉前者（实测风险：`echo-plugin-example` 的
+    /// 时，后者会无声无息地顶掉前者（实测风险：一个外部插件的
     /// `calculator` / `web_search` 与内置工具同名）。重名本身**是事件**，
     /// 必须留痕：组合根装配完读一次，Panel 详情页也可展示。
     conflicts: tokio::sync::RwLock<std::collections::BTreeMap<String, String>>,
@@ -1222,7 +1222,7 @@ mod tests {
     }
 
     /// 重名不是「无所谓」：后者静默顶掉前者，必须留痕（否则插件能无声劫持
-    /// 内置工具——`echo-plugin-example` 与内置 `calculator` / `web_search`
+    /// 内置工具——外部插件自报的同名工具与内置 `calculator` / `web_search`
     /// 同名，正是这个坑）。
     #[tokio::test]
     async fn duplicate_registration_is_recorded_as_conflict() {

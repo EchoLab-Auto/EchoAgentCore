@@ -114,7 +114,7 @@ graph BT
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm` 注册、插件宿主装配与挂载、挂载后解析 `loop` 服务、联邦链路泵、启动 |
 
-> 另有 `echo-test-utils`（跨 crate 复用的测试夹具）与 `echo-plugin-example`（插件示例 / conformance 样板）两个 dev crate，不进运行时依赖链。
+> 另有 `echo-test-utils`（跨 crate 复用的测试夹具）这个 dev crate，不进运行时依赖链。
 
 依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；其上为中间层（`echo-protocol` / `echo-config` / `echo-session` / `echo-tool` / `echo-shell` / `echo-llm-*` / `echo-federation` / `echo-sanitize`）与插件层（`echo-plugin*` 与全部内置插件 crate）◄ `echo-agent` ◄ `echo-agent-core`（bin）。三条容易记错的归属：
 

@@ -1242,7 +1242,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     );
                 }
                 // 装配完成即检查工具重名：`insert` 是覆盖语义，撞名会让后
-                // 注册的实现无声顶掉前者（典型：启用 `echo-plugin-example`
+                // 注册的实现无声顶掉前者（典型：启用某个外部插件
                 // 后它的 `calculator` / `web_search` 与内置工具同名）。
                 // 这里升级为 error 并点名，避免「功能悄悄换了个实现」。
                 let conflicts = t.name_conflicts();

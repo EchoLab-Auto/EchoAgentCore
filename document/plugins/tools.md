@@ -30,7 +30,7 @@ link: ["tool-catalog | 内置工具目录"]
 | 来源 | 声明方式 | 归属包 | 例子 |
 | --- | --- | --- | --- |
 | 内置工具 | 插件 `BuiltinToolProvider::registry(&ToolsHostCtx)` 声明（`echo-plugin-tools`）；组合根只**递端口**（实例表 / 工作区根 / 联邦出口 / 配置存储 / 会话查询） | `echo-agent.tools.builtin` | `bash` / `read_file` / `write_file` / `calculator` / `web_search` |
-| 子进程插件工具 | 插件 `Contribution::Tool`（`ToolContribution`）→ 宿主 `RemoteTool` 转 `Tool` | 插件自报 `package` | 试点插件 `echo-plugin-example` 的 `calculator` / `web_search` |
+| 子进程插件工具 | 插件 `Contribution::Tool`（`ToolContribution`）→ 宿主 `RemoteTool` 转 `Tool` | 插件自报 `package` | 任意外部插件声明的工具（如 `hpc` 包的 18 个） |
 | **插件实例声明的工具** | 实例插件 `InstanceContribution.tools` → `PluginInstance::tool_specs()` → 宿主通用桥 | `ToolContribution.package` | QQ 的 11 个工具（见下） |
 
 #### 实例工具：声明驱动 + 通用桥

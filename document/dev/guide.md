@@ -43,13 +43,9 @@ EchoAgentCore/
 │   ├── config/echo-config/    # TOML 原子读改写（不认识任何段语义）
 │   ├── tool/echo-tool/        # 工具子系统机制（ToolRegistry 可逆注册 + 出口脱敏）
 │   ├── shell/echo-shell/      # Shell 会话机制（bash 子进程 + 哨兵分帧 + 进程组清理）
-│   ├── plugin/echo-plugin/         # Plugin trait / PluginManifest / 注册表
-│   ├── plugin/echo-plugin-api/     # 插件协议契约（消息/贡献类型，冻结）
-│   ├── plugin/echo-plugin-loader/  # 分层插件配置合成（plugins.toml，按 id 整行替换）
-│   ├── plugin/echo-plugin-sdk/     # 插件侧运行时 SDK（stdio 服务）
-│   ├── plugin/echo-plugin-host/    # 插件宿主（Transport/Supervisor/rlimit/频率限额；领域中立）
 │   ├── plugin/echo-plugin-adapter/ # 协议贡献 → 领域 trait（RemoteTool / RemoteInstance / CoreApiService）
-│   ├── plugin/echo-plugin-example/ # 试点插件（websearch + calculator）
+│   │                               # 注：`echo-plugin` / `-api` / `-loader` / `-sdk` / `-host`
+│   │                               # 五件套在**框架仓** `plugin-framework`，不在本仓
 │   ├── plugin/echo-plugin-tools/   # 内置工具集（read/write/edit/list/search/run_command/shell_*/instance_*）
 │   ├── plugin/echo-plugin-skills/  # 内置插件：技能目录
 │   ├── plugin/echo-plugin-subagent/# 内置插件：spawn_subagent
