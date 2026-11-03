@@ -1515,12 +1515,9 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         ));
     }
 
-    core_agent
-        .apply_capabilities(&echo_agent::AgentProfile {
-            enabled: true,
-            ..Default::default()
-        })
-        .await;
+    // 能力应用（`core_agent.apply_capabilities`）**挪到插件挂载之后**——见下方
+    // 「插件挂载完成」处。它在这里跑的话，门控集合只看得到工具/技能包标签，
+    // 看不到任何 descriptor（注册表还空着）。
 
     // ---- Plugin host: mount built-in modules as plugins ----
     // 插件化组合根：每个内置模块（工具集/技能/插件实例/编排/管理面/LLM/Loop）
@@ -1832,6 +1829,29 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             "plugins mounted"
         );
     }
+
+    // ---- 能力应用（必须在插件挂载之后）----
+    //
+    // 顺序理由：`apply_capabilities` 的门控集合是 `gated_plugin_ids()`，它的
+    // 主要来源是注册表 descriptor。挂载之前那个集合是空的——虽然工具/技能的
+    // **包标签**能兜住（注册早于挂载，见 `gating_works_before_any_plugin_is_mounted`），
+    // 但"兜住"是巧合级别的保障：一个不注册工具的能力型插件就漏了。
+    //
+    // 所以：**先挂载，再应用能力**。persona 的门控本来就在下面的启动循环里应用
+    // （那里也在挂载之后），这里补的是 `core_agent`——它在挂载前就被构造好了，
+    // 此前的能力应用因此跑在空注册表上。
+    core_agent
+        .apply_capabilities(&echo_agent::AgentProfile {
+            enabled: true,
+            ..Default::default()
+        })
+        .await;
+    // 门控集合的可观测性：排查"这个 persona 为什么看不见某插件"时，
+    // 先看这行日志，不必去读代码猜来源（descriptor / 包标签 / 实例）。
+    tracing::debug!(
+        gated = ?core_agent.gated_plugin_ids_snapshot(),
+        "core agent gating derived after plugin mount"
+    );
 
     // ---- Background shell sessions（进程级，面板 + 工具共用）----
     {

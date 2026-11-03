@@ -1232,6 +1232,49 @@ async fn persona_plugin_checkbox_round_trip_applies_immediately() {
     );
 }
 
+/// **启动窗口不变式**：`Agent` 早于插件挂载构造，那时注册表里空无一物。
+///
+/// 这是真实启动顺序（`make_agent` → `host_services::register` → `mount_plan`）：
+/// `host_services` 需要 `Arc<Agent>` 才能装插件要的宿主接缝，所以 agent 必须先
+/// 存在；等插件挂上时 persona 早已构造完毕。
+///
+/// 结论：门控的完整性**不能依赖挂载**。第二个来源是工具/技能的**包标签**
+/// （组合根注册工具时打好，早于挂载）——这条测试把它钉住。
+///
+/// `agent_with_gated_caps` 从不调用 `set_plugin_host`，`plugin_host()` 回落到
+/// 一个空宿主，因此它天然复现了"挂载前"的状态。
+#[tokio::test]
+async fn gating_works_before_any_plugin_is_mounted() {
+    let agent = agent_with_gated_caps();
+
+    // 前置：注册表确实一个插件都没有——这就是 make_agent 时刻的真实状态。
+    // 若将来启动顺序被改成"先挂插件再建 agent"，这条断言会红，提醒改写下面
+    // 的推理（那时门控集合会直接来自 descriptor，包标签只是冗余保险）。
+    assert!(
+        agent.plugin_host().registry.descriptors().is_empty(),
+        "本测试的前提是「尚无插件挂载」；启动顺序已变则需重写本用例"
+    );
+
+    // 但门控集合仍然覆盖了两个包维度插件——来自工具包标签，不来自注册表。
+    let gated = agent.gated_plugin_ids_snapshot();
+    for id in [WORKSPACE_PLUGIN_ID, TOOLS_BUILTIN_PLUGIN_ID] {
+        assert!(
+            gated.iter().any(|g| g == id),
+            "挂载前也必须能派生出门控项 {id}，实际: {gated:?}"
+        );
+    }
+
+    // 而且真的生效：名单里没有 workspace → 它的工具被禁用。
+    agent
+        .apply_capabilities(&persona_with_plugins(&[TOOLS_BUILTIN_PLUGIN_ID]))
+        .await;
+    assert!(
+        agent.tools.is_disabled("workspace").await,
+        "挂载前 apply_capabilities 也必须关掉名单外的包"
+    );
+    assert!(!agent.tools.is_disabled("bash").await);
+}
+
 /// 全局插件 mount/unmount（TogglePlugin）逐 persona 重评估：
 /// mount 不放开"名单外"的 persona；unmount 对全员生效；重新 mount 恢复。
 #[tokio::test]

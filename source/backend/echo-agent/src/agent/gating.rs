@@ -131,6 +131,16 @@ impl Agent {
         ids
     }
 
+    /// 当前 persona 门控集合的快照（诊断用：启动日志、面板、测试）。
+    ///
+    /// 暴露它是因为这个集合的**完整性与启动顺序有关**：`Agent` 早于插件挂载
+    /// 构造（`make_agent` → `mount_plan`），那一刻注册表里没有 descriptor。
+    /// 集合因此还有第二个来源——工具/技能的**包标签**（注册时打好，早于挂载）。
+    /// 想知道"某个 persona 到底会被哪些插件门控"，直接看这里，不要猜。
+    pub fn gated_plugin_ids_snapshot(&self) -> Vec<String> {
+        self.gated_plugin_ids()
+    }
+
     /// 共享注册表中该插件当前是否启用（无全局锚点 = true，以名单为准）。
     fn plugin_globally_enabled(&self, plugin_id: &str) -> bool {
         // 同上：`is_enabled` 对未注册 id 返回 true，与旧 `None => true` 等价。
