@@ -62,7 +62,7 @@ impl EventLog {
     ///
     /// 语义与 `log().into_iter().filter(|e| e.session() == Some(id))` 完全
     /// 一致——包括 `session == None` 的未归因旧事件**不会**被任何会话取到
-    /// （与 `derive_messages_for` 的过滤条件同义）。
+    /// （与 `derive_messages` 的调用方过滤条件同义）。
     pub fn events_for_session(&self, session_id: &str) -> Vec<SessionEvent> {
         self.events
             .lock()

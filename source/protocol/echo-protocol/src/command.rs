@@ -77,8 +77,8 @@ pub enum BackendCommand {
     /// 必须精确存在。成功回 `ApiConfigUpdated` + `ApiProfilesUpdated`
     /// （teams 有变更时补 `TeamsList`）；失败回 `Error` 且零写入。
     RenameApi { from: String, to: String },
-    /// Request a full state snapshot (responded with `BackendEvent::SessionUpdated`
-    /// per session plus a fresh [`crate::BackendState`] via the bridge).
+    /// Request a full state snapshot（逐会话回 `BackendEvent::SessionUpdated`
+    /// 等事件流，不发状态结构体）。
     RequestState,
     /// Enable or disable a skill.
     ToggleSkill { name: String, enabled: bool },

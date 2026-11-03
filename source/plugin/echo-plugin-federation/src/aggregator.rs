@@ -8,6 +8,8 @@
 //!
 //! - **登记**：`SpawnSubagentTool::spawn` 受理远程委派（`node=Some`）时
 //!   调用 [`register_remote_subagent`]；
+//! - **登记**：经 `AggregatorDelegationSink`（`RemoteDelegationSink` 的实现，
+//!   组合根注入子代理插件）；
 //! - **销账**：终态 `SubagentEvent` 到达时调用 [`settle_remote_subagent`]
 //!   （组合根两处：大脑侧本地完成经 notifier 出口前、联邦泵收到对端
 //!   `SubagentEvent` 帧——后者服务执行端真正执行并回报的场景）；
@@ -234,21 +236,6 @@ impl echo_defs::subagent::RemoteDelegationSink for AggregatorDelegationSink {
         self.aggregator
             .register(session_id, parent_branch_id, call_id, peer, task);
     }
-}
-
-/// 登记远程委派（`SpawnSubagentTool::spawn` 受理 `node=Some` 时调用）。
-///
-/// 直接持有聚合器的调用方（插件 sink / 测试）用这个；Agent 侧常规路径走
-/// `FederationPorts` → `AggregatorDelegationSink`。
-pub fn register_remote_subagent(
-    aggregator: &RemoteSubagentAggregator,
-    session_id: &str,
-    parent_branch_id: &str,
-    call_id: &str,
-    peer: &str,
-    task: &str,
-) {
-    aggregator.register(session_id, parent_branch_id, call_id, peer, task);
 }
 
 /// 终态销账（Agent 的 notifier 出口 / 组合根联邦泵 SubagentEvent 分支调用）；

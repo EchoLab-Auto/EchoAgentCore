@@ -40,7 +40,7 @@ pub use command::{
     PANEL_READONLY_COMMANDS,
 };
 pub use event::{
-    ApiBalancePoint, ApiMetricsEntry, ApiProfileInfo, ApiUsagePoint, BackendEvent, BackendState,
+    ApiBalancePoint, ApiMetricsEntry, ApiProfileInfo, ApiUsagePoint, BackendEvent,
     BrowseRoot, ContextBlockInfo, ContextMessageInfo, FederatedNodeInfo, FederationLinkState,
     FederationPeerInfo, InstanceMetadataEntry, InstanceStatus, PluginInfo, SessionInfo,
     ShellSessionInfo, SkillInfo, SkillSourceInfo, TeamInfo, TimelineMessage, TimelineSource,

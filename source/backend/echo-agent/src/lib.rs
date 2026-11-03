@@ -58,7 +58,7 @@ pub use command::BackendCommand;
 pub use config::{AgentConfig, AgentProfile, ReasoningEffort, TeamMember, ThinkingMode};
 pub use echo_plugin_skills::{Skill, SkillRegistry};
 pub use event::{
-    ApiProfileInfo, BackendEvent, BackendState, ContextMessageInfo, SessionInfo, TimelineMessage,
+    ApiProfileInfo, BackendEvent, ContextMessageInfo, SessionInfo, TimelineMessage,
     TimelineSource, TimelineTool,
 };
 pub use llm::LlmProvider;

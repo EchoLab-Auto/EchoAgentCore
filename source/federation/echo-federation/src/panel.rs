@@ -143,12 +143,6 @@ pub struct PanelGate {
 }
 
 impl PanelGate {
-    pub fn new(identity: PanelIdentity) -> Self {
-        Self {
-            inner: Arc::new(RwLock::new(identity)),
-        }
-    }
-
     /// 整体替换（配置热更新/启动装配）。
     pub fn set(&self, identity: PanelIdentity) {
         if let Ok(mut slot) = self.inner.write() {

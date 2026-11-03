@@ -7,15 +7,6 @@ use crate::event::{
     assistant_message, tool_result_message, user_message, CompactionEvent, SessionEvent,
 };
 
-/// A compaction result: the events replaced and the summary that stands in.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompactedRange {
-    /// Number of leading events replaced.
-    pub replaced_count: usize,
-    /// The summary text replacing them.
-    pub summary: String,
-}
-
 /// Project the full model-facing message list from the log, honoring any
 /// compaction events.
 ///
@@ -128,49 +119,14 @@ fn flush_tool_calls(
 /// tool_use message and its result. Providers reject both shapes (Anthropic:
 /// HTTP 400 "tool_use ids were found without tool_result blocks"), so dangling
 /// calls gain a synthetic error result and orphan results are dropped.
+///
+/// **调用方负责先按会话过滤**：多会话上下文的 hot path 从事件日志取该会话
+/// 的切片（`EventLog::events_for_session`）再传进来，省掉全量克隆与过滤。
+/// `Compaction.replaced_count` 按**传入集合的条数**生效，传全量日志会切错
+/// 前缀——所以传进来的必须就是"某一会话"的事件（与 `compact_preview` 的
+/// 分组口径一致）。
 pub fn derive_messages(log: &[SessionEvent], token_budget: usize) -> Vec<ChatMessage> {
     let mut messages = project_messages(log);
-    merge_consecutive_assistant_messages(&mut messages);
-    trim_to_budget(&mut messages, token_budget);
-    repair_tool_pairing(&mut messages);
-    messages
-}
-
-/// Per-session variant（多会话上下文，2026-09）：先按归属过滤，再投影。
-///
-/// `session == Some(id)` 只保留归属该会话的事件（其会话的压缩事件同样
-/// 按过滤后的位置计算覆盖区间）；`session == None` 保留未归因事件
-/// （旧版日志按此投影，加载期归因迁移后不再出现）。
-/// 工具调用配对修复在过滤后的子集上运行——不同会话的事件绝不互见，
-/// 这正是每个来源独立上下文的关键。
-pub fn derive_messages_for(
-    log: &[SessionEvent],
-    session: Option<&str>,
-    token_budget: usize,
-) -> Vec<ChatMessage> {
-    let filtered: Vec<SessionEvent> = log
-        .iter()
-        .filter(|event| event.session() == session)
-        .cloned()
-        .collect();
-    derive_messages_from_filtered(&filtered, token_budget)
-}
-
-/// 对**已按会话过滤**的事件集做投影（与 [`derive_messages_for`] 同一步骤）。
-///
-/// 拆出来是为了让调用方省掉"全量克隆 + 再过滤"：`TrunkStore::reproject`
-/// 的 hot path 直接从事件日志取该会话的事件（`EventLog::events_for_session`），
-/// 不必为一次 append 深克隆整份日志（多会话时是 O(全部)。
-///
-/// 前置条件：`events` 的过滤条件必须是 `event.session() == Some(session)`
-/// （与 [`derive_messages_for`] 内部一致）——`Compaction.replaced_count` 按
-/// **本组事件条数**语义生效（`compact_preview` 也是按会话分组计算的），
-/// 传全量日志会切错前缀。
-pub fn derive_messages_from_filtered(
-    events: &[SessionEvent],
-    token_budget: usize,
-) -> Vec<ChatMessage> {
-    let mut messages = project_messages(events);
     merge_consecutive_assistant_messages(&mut messages);
     trim_to_budget(&mut messages, token_budget);
     repair_tool_pairing(&mut messages);
@@ -283,24 +239,6 @@ pub fn trim_to_budget(messages: &mut Vec<ChatMessage>, token_budget: usize) {
             echo_defs::token::truncate_message_to_tokens(last, token_budget);
         }
     }
-}
-
-/// Build a compaction event replacing the leading `replaced_count` events
-/// with `summary`. The log must have at least that many events.
-pub fn compact_prefix(
-    log: &[SessionEvent],
-    replaced_count: usize,
-    summary: impl Into<String>,
-) -> Option<CompactionEvent> {
-    if replaced_count == 0 || replaced_count > log.len() {
-        return None;
-    }
-    Some(CompactionEvent {
-        replaced_count,
-        summary: summary.into(),
-        archive: None,
-        session: None,
-    })
 }
 
 #[cfg(test)]
@@ -618,6 +556,46 @@ mod tests {
         assert!(!messages[0].content.contains("[历史摘要] [历史摘要]"));
     }
 
+    /// 超预算的单条消息必须就地截断，且带上截断标记（不能静默丢内容）。
+    #[test]
+    fn trim_truncates_an_oversized_newest_message() {
+        // 600 CJK chars ≈ 600 tokens, budget 100 → must be truncated.
+        let mut messages = vec![ChatMessage::user("x".repeat(600))];
+        trim_to_budget(&mut messages, 100);
+        assert_eq!(messages.len(), 1);
+        let tokens = echo_defs::token::estimate_message_tokens(&messages[0]);
+        assert!(
+            tokens <= 100,
+            "truncated message must fit the budget, got {tokens} tokens"
+        );
+        assert!(
+            messages[0].content.contains("内容过长已截断"),
+            "truncation marker expected"
+        );
+    }
+
+    /// 预算充裕时一条都不砍（trim 只在超预算时生效）。
+    #[test]
+    fn trim_leaves_short_histories_untouched() {
+        let mut messages = vec![ChatMessage::user("你好"), ChatMessage::assistant("好的")];
+        trim_to_budget(&mut messages, 100);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "你好");
+    }
+
+    /// 截断必须保住结构化输入标记的头部（`message_sequence` 在那里）——
+    /// 丢失它会让面板的输入顺序判读失效。
+    #[test]
+    fn trim_keeps_the_structured_input_header() {
+        let hook = r#"<qq_message_hook>
+{"channel":{"type":"private"},"message_sequence":42,"content":"请分析这份超长文档"}</qq_message_hook>"#;
+        let mut messages = vec![ChatMessage::user(hook)];
+        trim_to_budget(&mut messages, 60);
+        let remaining = &messages[0].content;
+        assert!(remaining.starts_with("<qq_message_hook>"));
+        assert!(remaining.contains("\"message_sequence\":42"));
+    }
+
     #[test]
     fn derive_trims_oldest_first() {
         // 600 CJK chars ≈ 600 tokens per message; budget 100 keeps the last.
@@ -625,14 +603,6 @@ mod tests {
         let messages = derive_messages(&log, 100);
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "最终回复");
-    }
-
-    #[test]
-    fn compact_prefix_validates_range() {
-        let log = vec![user("a"), user("b")];
-        assert!(compact_prefix(&log, 0, "s").is_none());
-        assert!(compact_prefix(&log, 3, "s").is_none());
-        assert_eq!(compact_prefix(&log, 2, "s").unwrap().replaced_count, 2);
     }
 
     /// Runtime invariant: every projected message is reconstructable from the
@@ -850,79 +820,6 @@ mod tests {
         })
     }
 
-    /// `derive_messages_from_filtered` 必须与 `derive_messages_for` 等价
-    /// （前者只是省掉"全量克隆 + 过滤"，语义不能漂）。
-    #[test]
-    fn filtered_projection_matches_full_projection() {
-        let mut log = vec![
-            SessionEvent::UserMessage(UserMessage {
-                content: "问题 a".into(),
-                timestamp: 1,
-                message_sequence: None,
-                source: None,
-                images: Vec::new(),
-                session: Some("a".into()),
-            }),
-            SessionEvent::UserMessage(UserMessage {
-                content: "问题 b".into(),
-                timestamp: 2,
-                message_sequence: None,
-                source: None,
-                images: Vec::new(),
-                session: Some("b".into()),
-            }),
-            reasoning("a 的思考", 3),
-            SessionEvent::AssistantMessage(AssistantMessage {
-                timestamp: 0,
-                content: "回答 a".into(),
-                reasoning_content: None,
-                tool_calls: Vec::new(),
-                session: Some("a".into()),
-            }),
-            SessionEvent::ToolCall(ToolCallEvent {
-                id: "c1".into(),
-                name: "bash".into(),
-                arguments: "{}".into(),
-                session: Some("a".into()),
-                started_at_ms: Some(4_000),
-            }),
-            SessionEvent::ToolResult(ToolResultEvent {
-                tool_call_id: "c1".into(),
-                result: "ok".into(),
-                images: Vec::new(),
-                session: Some("a".into()),
-                elapsed_ms: Some(1),
-            }),
-            SessionEvent::AssistantMessage(AssistantMessage {
-                timestamp: 0,
-                content: "回答 b".into(),
-                reasoning_content: None,
-                tool_calls: Vec::new(),
-                session: Some("b".into()),
-            }),
-        ];
-        // 未归因旧事件：两种路径都不应把它算进任何会话
-        log.push(SessionEvent::UserMessage(UserMessage {
-            content: "legacy".into(),
-            timestamp: 5,
-            message_sequence: None,
-            source: None,
-            images: Vec::new(),
-            session: None,
-        }));
-
-        for session in ["a", "b"] {
-            let full = derive_messages_for(&log, Some(session), 100_000);
-            let filtered: Vec<SessionEvent> = log
-                .iter()
-                .filter(|e| e.session() == Some(session))
-                .cloned()
-                .collect();
-            let from_filtered = derive_messages_from_filtered(&filtered, 100_000);
-            assert_eq!(full, from_filtered, "会话 {session} 的两种投影必须一致");
-        }
-    }
-
     /// 压缩语义在"先过滤"下仍正确：`replaced_count` 按**本组**事件条数生效
     /// （`compact_preview` 也是按会话分组算的），过滤掉别的会话不会切错前缀。
     #[test]
@@ -951,7 +848,7 @@ mod tests {
                 session: Some("a".into()),
             }),
         ];
-        let messages = derive_messages_from_filtered(&events, 100_000);
+        let messages = derive_messages(&events, 100_000);
         let texts: Vec<&str> = messages.iter().map(|m| m.content.as_str()).collect();
         // 旧问题被摘要替换，新问题保留
         assert_eq!(texts.len(), 2, "{messages:?}");

@@ -5,7 +5,7 @@
 //! `echo_agent::event::…` paths keep working.
 
 pub use echo_protocol::{
-    ApiBalancePoint, ApiMetricsEntry, ApiProfileInfo, ApiUsagePoint, BackendEvent, BackendState,
+    ApiBalancePoint, ApiMetricsEntry, ApiProfileInfo, ApiUsagePoint, BackendEvent,
     BrowseRoot, ContextBlockInfo, ContextMessageInfo, InstanceMetadataEntry, InstanceStatus,
     PluginInfo, SessionInfo, ShellSessionInfo, SkillInfo, SkillSourceInfo, TimelineMessage,
     TimelineSource, TimelineTool, ToolInfo, WorkspaceFileEntry, WorkspaceGitInfo,

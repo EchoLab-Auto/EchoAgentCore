@@ -27,7 +27,6 @@ pub use history::history_watermark;
 use echo_protocol::SessionInfo;
 use echo_defs::llm::LlmProvider;
 use echo_defs::message::ChatMessage;
-use echo_defs::token::{estimate_history_tokens, estimate_message_tokens};
 
 /// 结构化会话标识（口径单源 = `echo_session::SessionKey`，解耦计划
 /// Phase 3 ⑤：词汇下沉，使工作区插件与其它插件能直接构造会话 id）。
@@ -605,7 +604,7 @@ impl TrunkStore {
     /// 从**已按会话过滤**的事件集投影并写入句柄。
     fn install_projection(&self, session_id: &str, events: &[echo_session::SessionEvent]) {
         // 先在锁外完成投影。
-        let mut projected = echo_session::derive::derive_messages_from_filtered(
+        let mut projected = echo_session::derive::derive_messages(
             events,
             self.memory_limit_tokens.load(Ordering::Relaxed),
         );
@@ -734,29 +733,6 @@ impl TrunkStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
-    }
-}
-
-/// Trim a history by the token budget: drop messages from the head until the
-/// total fits. Always keeps the newest message so the latest input survives.
-///
-/// If even the newest message alone exceeds the budget, its content is
-/// truncated (head preserved) so the trunk can never exceed the budget.
-pub fn trim_by_tokens(history: &mut Vec<ChatMessage>, token_limit: usize) {
-    let mut total: usize = estimate_history_tokens(history);
-    let mut head = 0usize;
-    while history.len() - head > 1 && total > token_limit {
-        total = total.saturating_sub(estimate_message_tokens(&history[head]));
-        head += 1;
-    }
-    if head > 0 {
-        history.drain(..head);
-    }
-    // The last remaining message may still exceed the budget on its own.
-    if let Some(last) = history.last_mut() {
-        if estimate_message_tokens(last) > token_limit {
-            echo_defs::token::truncate_message_to_tokens(last, token_limit);
-        }
     }
 }
 

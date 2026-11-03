@@ -1,7 +1,6 @@
 //! Events emitted by the agent backend to subscribers (TUI, API, ...).
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 
 /// 状态快照 → 线上事件的构造器。
@@ -1568,17 +1567,6 @@ pub struct ApiUsagePoint {
     /// 估算费用（按 `[agent.pricing]` 定价表；无匹配价格 = None）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub est_cost: Option<f64>,
-}
-
-/// Full state snapshot sent to the TUI on connect.
-#[derive(Debug, Clone, Default)]
-pub struct BackendState {
-    pub instances: HashMap<String, InstanceStatus>,
-    pub active_model: String,
-    pub active_provider: String,
-    pub system_prompt: String,
-    pub enabled_skills: Vec<String>,
-    pub sessions: Vec<SessionInfo>,
 }
 
 /// `BackendEvent` is dispatchable on the harness event bus: the enum derives

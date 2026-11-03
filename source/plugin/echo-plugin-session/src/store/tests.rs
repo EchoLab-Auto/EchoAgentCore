@@ -1408,43 +1408,6 @@ async fn concurrent_get_or_create_yields_single_identity() {
 }
 
 #[test]
-fn oversized_newest_message_is_truncated_to_fit_the_budget() {
-    // 600 CJK chars ≈ 600 tokens, budget 100 → must be truncated.
-    let mut history = vec![ChatMessage::user("x".repeat(600))];
-    trim_by_tokens(&mut history, 100);
-    assert_eq!(history.len(), 1);
-    let tokens = echo_defs::token::estimate_message_tokens(&history[0]);
-    assert!(
-        tokens <= 100,
-        "truncated message must fit the budget, got {tokens} tokens"
-    );
-    assert!(
-        history[0].content.contains("内容过长已截断"),
-        "truncation marker expected"
-    );
-}
-
-#[test]
-fn short_histories_are_never_trimmed() {
-    let mut history = vec![ChatMessage::user("你好"), ChatMessage::assistant("好的")];
-    trim_by_tokens(&mut history, 100);
-    assert_eq!(history.len(), 2);
-    assert_eq!(history[0].content, "你好");
-}
-
-#[test]
-fn structured_hook_keeps_its_sequence_after_truncation() {
-    let hook = r#"<qq_message_hook>
-{"channel":{"type":"private"},"message_sequence":42,"content":"请分析这份超长文档"}</qq_message_hook>"#;
-    let mut history = vec![ChatMessage::user(hook)];
-    trim_by_tokens(&mut history, 60);
-    let remaining = &history[0].content;
-    // Sequence must survive the truncation (it lives at the head).
-    assert!(remaining.starts_with("<qq_message_hook>"));
-    assert!(remaining.contains("\"message_sequence\":42"));
-}
-
-#[test]
 fn evict_idle_drops_stale_identity_but_keeps_context() {
     let store = TrunkStore::new(1000);
     let key = SessionKey::parse("qq:dm::111").unwrap();

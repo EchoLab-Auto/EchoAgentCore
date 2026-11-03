@@ -29,7 +29,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::frame::{FedError, FedFrame, NodeCaps, NodeHello, PROTOCOL_VERSION};
+use crate::frame::{FedFrame, NodeCaps, NodeHello, PROTOCOL_VERSION};
 
 /// 应用层心跳间隔（WS 自带 Ping 之外的存活证据）。
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -1210,19 +1210,6 @@ pub fn bearer_request(
         );
     }
     Ok(req)
-}
-
-/// FedError → 帧（辅助）。
-pub fn error_frame(
-    call_id: Option<String>,
-    code: FedError,
-    message: impl Into<String>,
-) -> FedFrame {
-    FedFrame::Error {
-        call_id,
-        code,
-        message: message.into(),
-    }
 }
 
 #[cfg(test)]

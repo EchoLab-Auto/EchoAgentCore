@@ -20,7 +20,7 @@
 //! | module | owns |
 //! |---|---|
 //! | [`event`] | `SessionEvent` and per-kind payload structs |
-//! | [`log`] | the append-only [`EventLog`] and its durable persistence |
+//! | [`log`] | the append-only in-memory [`EventLog`] (locking + log semantics) |
 //! | [`derive`] | `derive_messages` projection + compaction |
 //! | [`header`] | `SessionHeader` fork/resume metadata |
 //! | [`legacy`] | migration from the pre-event-sourced `echo-sessions.json` v4 format |
@@ -37,7 +37,7 @@ pub use compaction::{
     CompactGroup, CompactPreview, CompactionApplied, CompactionPhase, CompactionProgress,
     CompactionSummary,
 };
-pub use derive::{derive_messages, project_messages, CompactedRange};
+pub use derive::{derive_messages, project_messages};
 pub use event::{
     AssistantMessage, CompactionEvent, ReasoningEvent, SessionEvent, ToolCallEvent,
     ToolResultEvent, UserMessage,

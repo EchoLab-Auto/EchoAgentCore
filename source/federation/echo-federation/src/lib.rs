@@ -26,6 +26,6 @@ pub use frame::{
 };
 pub use invite::{decode_invite, encode_invite, generate_token, InvitePayload, INVITE_SCHEME};
 pub use link::{
-    bearer_request, error_frame, Federation, LinkEvent, LinkHandle, PeerConfig, PeerInfo,
+    bearer_request, Federation, LinkEvent, LinkHandle, PeerConfig, PeerInfo,
 };
 pub use panel::{PanelAccess, PanelGate, PanelIdentity};

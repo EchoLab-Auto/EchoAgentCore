@@ -22,7 +22,7 @@
 //! ## 协议化挂载
 //!
 //! 按解耦计划「可内联编译」的口径，本插件以 inproc 运输层装载：它向宿主
-//! 声明一个服务贡献 [`service_contribution`]（`Service{key:"loop"}`），
+//! 声明服务键 [`SERVICE_KEY`]（`"loop"`），
 //! 说明"循环服务由本插件族提供"；真正的 runner 实例由组合根构造（带计量与
 //! 脱敏装饰）后注册进 `Ctx`，服务键与贡献声明同源。
 //!
@@ -53,7 +53,6 @@ use std::sync::Arc;
 use echo_context::Disposer;
 use echo_loop::{LoopOptions, ToolPipeline, TurnRunner};
 use echo_plugin::{BuiltinPlugin, Inject, MountContext, Plugin, PluginManifest, PluginMountResult};
-use echo_plugin_api::ServiceContribution;
 
 /// 循环插件 id。**字面量冻结**：用户配置的 `enabled_plugins` 里可能还写着它
 /// （历史配置、旧版本导出），改名即让那些配置静默失效。
@@ -68,18 +67,6 @@ pub const REMOVED_PARALLEL_PLUGIN_ID: &str = "echo-agent.loop.parallel";
 
 /// 本插件族贡献的服务键（`Ctx` 服务定位命名空间，与 runner 注册键同值）。
 pub const SERVICE_KEY: &str = "loop";
-
-/// 服务贡献声明（`Service{key:"loop", kind:"loop"}`）。
-///
-/// 协议化挂载时随 `Register` 上报——消费者据此知道循环服务存在，
-/// 而不是硬编码一个具体驱动类型。
-pub fn service_contribution() -> ServiceContribution {
-    ServiceContribution {
-        key: SERVICE_KEY.to_string(),
-        kind: "loop".to_string(),
-        version: 1,
-    }
-}
 
 /// 循环插件的声明（id / 名称 / 描述的唯一事实来源）。
 ///
@@ -102,9 +89,7 @@ pub fn declarations() -> [(&'static str, &'static str, &'static str); 1] {
 /// 组合根若删掉 `ctx.register::<Arc<TurnRunner>>("loop", …)`，启动期就会**明确
 /// 失败**并给出可用服务清单，而不是"插件挂载成功、运行期才发现驱动不存在"。
 ///
-/// 服务键与贡献声明同源：[`service_contribution().key`] 是唯一真值。
-///
-/// [`service_contribution().key`]: service_contribution
+/// 服务键的唯一真值是 [`SERVICE_KEY`]。
 pub fn plugins(version: &str) -> Vec<Arc<dyn Plugin>> {
     // 声明式注入（plugin-framework v0.6 的 `Inject`）：硬依赖 = `llm`
     // （构造 TurnRunner 需要）。
