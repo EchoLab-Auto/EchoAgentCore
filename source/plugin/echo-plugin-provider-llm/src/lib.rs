@@ -43,6 +43,14 @@ pub mod balance;
 pub mod host_keys;
 pub mod commands;
 pub mod metrics;
+/// 各协议客户端（OpenAI 兼容 / Anthropic Messages / Ollama）。
+///
+/// 2026-11 合并进来的三个原独立 crate（`echo-llm-*`）——判据见该模块文档。
+///
+/// **私有模块**：它们是本插件对 `LlmProvider` 契约的**实现细节**，不是对外
+/// API。外部只认 `create_provider(&ProviderConfig)`（返回 `Box<dyn LlmProvider>`），
+/// 换实现不需要外部改任何代码——这正是 `LlmProvider` 在 `echo-defs` 的意义。
+mod providers;
 
 mod metering;
 mod redacting;
@@ -171,7 +179,7 @@ pub fn create_provider(cfg: &ProviderConfig) -> Result<Box<dyn LlmProvider>, Llm
         //     被判定异常，所以这里如实报 echo-agent。
         "opencode-go" | "opencode" => {
             let base = opencode_base_url(&cfg.base_url);
-            let provider = echo_llm_openai::OpenAiProvider::new(&base, &cfg.api_key, &cfg.model)
+            let provider = providers::openai::OpenAiProvider::new(&base, &cfg.api_key, &cfg.model)
                 .with_reasoning(cfg.thinking, cfg.reasoning_effort)
                 .with_header("x-opencode-session", &new_session_id())
                 .with_header("user-agent", &client_user_agent());
@@ -183,14 +191,14 @@ pub fn create_provider(cfg: &ProviderConfig) -> Result<Box<dyn LlmProvider>, Llm
         "kimi" | "moonshot-coding" => {
             let base = kimi_base_url(&cfg.base_url);
             let provider =
-                echo_llm_anthropic::AnthropicProvider::new(&base, &cfg.api_key, &cfg.model)
+                providers::anthropic::AnthropicProvider::new(&base, &cfg.api_key, &cfg.model)
                     .with_reasoning(cfg.thinking, cfg.reasoning_effort);
             Ok(Box::new(provider))
         }
         "openai" | "deepseek" | "third-party" if anthropic_style => {
             // DeepSeek 的 /anthropic 端点只实现 Messages API（POST /v1/messages）
             let mut provider =
-                echo_llm_anthropic::AnthropicProvider::new(&cfg.base_url, &cfg.api_key, &cfg.model);
+                providers::anthropic::AnthropicProvider::new(&cfg.base_url, &cfg.api_key, &cfg.model);
             if let Some((thinking, effort)) = deepseek_reasoning {
                 provider = provider.with_reasoning(thinking, effort);
             }
@@ -198,18 +206,18 @@ pub fn create_provider(cfg: &ProviderConfig) -> Result<Box<dyn LlmProvider>, Llm
         }
         "openai" | "deepseek" | "third-party" => {
             let mut provider =
-                echo_llm_openai::OpenAiProvider::new(&cfg.base_url, &cfg.api_key, &cfg.model);
+                providers::openai::OpenAiProvider::new(&cfg.base_url, &cfg.api_key, &cfg.model);
             if let Some((thinking, effort)) = deepseek_reasoning {
                 provider = provider.with_reasoning(thinking, effort);
             }
             Ok(Box::new(provider))
         }
-        "anthropic" | "claude" => Ok(Box::new(echo_llm_anthropic::AnthropicProvider::new(
+        "anthropic" | "claude" => Ok(Box::new(providers::anthropic::AnthropicProvider::new(
             &cfg.base_url,
             &cfg.api_key,
             &cfg.model,
         ))),
-        "ollama" => Ok(Box::new(echo_llm_ollama::OllamaProvider::new(
+        "ollama" => Ok(Box::new(providers::ollama::OllamaProvider::new(
             &cfg.base_url,
             &cfg.model,
         ))),

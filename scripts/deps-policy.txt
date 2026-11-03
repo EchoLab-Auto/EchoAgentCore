@@ -41,9 +41,6 @@ security/echo-sanitize                  echo-defs
 tool/echo-tool                          echo-context echo-defs echo-sanitize
 shell/echo-shell                        echo-context echo-defs echo-protocol echo-tool
 federation/echo-federation              echo-defs
-llm/echo-llm-openai                     echo-defs
-llm/echo-llm-anthropic                  echo-defs
-llm/echo-llm-ollama                     echo-defs echo-llm-openai
 config/echo-config
 backend/echo-test-utils                 echo-defs
 
@@ -54,7 +51,7 @@ backend/echo-test-utils                 echo-defs
 plugin/echo-plugin-adapter              echo-plugin-host echo-plugin-api echo-defs
 
 # ── Phase 3 外迁的内置插件 ─────────────────────────────────────────────
-plugin/echo-plugin-provider-llm         echo-config echo-context echo-defs echo-llm-anthropic echo-llm-ollama echo-llm-openai echo-plugin echo-protocol
+plugin/echo-plugin-provider-llm         echo-config echo-context echo-defs echo-plugin echo-protocol
 plugin/echo-plugin-skills               echo-defs echo-context echo-plugin echo-protocol
 plugin/echo-plugin-self-update          echo-context echo-plugin echo-protocol
 plugin/echo-plugin-federation           echo-defs echo-context echo-federation echo-plugin echo-protocol echo-tool
@@ -70,5 +67,5 @@ plugin/echo-plugin-shell                echo-context echo-defs echo-plugin echo-
 
 # ── 业务层与组合根 ─────────────────────────────────────────────────────
 # echo-agent 是业务 crate：**只有组合根可以依赖它**。
-backend/echo-agent                      echo-config echo-shell echo-context echo-plugin-shell echo-defs echo-federation echo-plugin-federation echo-plugin-management echo-plugin-session echo-plugin-transcript echo-llm-anthropic echo-llm-ollama echo-llm-openai echo-loop echo-plugin echo-plugin-loop echo-plugin-provider-llm echo-plugin-sanitize echo-plugin-self-update echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-sanitize echo-session echo-test-utils echo-tool
+backend/echo-agent                      echo-config echo-shell echo-context echo-plugin-shell echo-defs echo-federation echo-plugin-federation echo-plugin-management echo-plugin-session echo-plugin-transcript echo-loop echo-plugin echo-plugin-loop echo-plugin-provider-llm echo-plugin-sanitize echo-plugin-self-update echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-sanitize echo-session echo-test-utils echo-tool
 core                                     echo-agent echo-config echo-context echo-plugin-shell echo-defs echo-federation echo-loop echo-plugin echo-plugin-adapter echo-plugin-federation echo-plugin-host echo-plugin-loader echo-plugin-loop echo-plugin-management echo-plugin-provider-llm echo-plugin-sanitize echo-plugin-session echo-plugin-transcript echo-plugin-self-update echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-sanitize echo-session

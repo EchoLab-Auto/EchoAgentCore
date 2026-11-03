@@ -1,9 +1,9 @@
 ---
 id: config-persistence
 title: "配置持久化"
-group: 框架
-x: 960
-y: 1300
+group: Core
+x: 1920
+y: 1200
 ---
 
 # 配置持久化
@@ -246,7 +246,7 @@ ports = { reverse_ws = 3131, onebot_http = 3000, webui = 6099 }
   `cache_hit_tokens` 为其子集。Anthropic 协议端点（原生 / DeepSeek / Kimi
   兼容）的原始 `input_tokens` **不含**缓存读取/写入（实测：同前缀
   复调 input 234 + cache_read 128 = 首调 input 362）——provider 侧已把三者
-  求和归一（`echo-llm-anthropic::normalize_usage`）；旧 JSONL 行中
+  求和归一（`echo_plugin_provider_llm::providers::anthropic::normalize_usage`）；旧 JSONL 行中
   「命中数 > prompt」的行是修复前口径（prompt=未命中），`usage_slices`
   读取时归一补全。展示与估价统一按此口径（此前注释「input_tokens 包含
   命中」与实测相反，已按实测口径更正）。

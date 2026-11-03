@@ -2,8 +2,8 @@
 id: architecture
 title: "架构总览"
 group: 总览
-x: 320
-y: 500
+x: 160
+y: 360
 ---
 
 # 架构总览
@@ -29,7 +29,6 @@ graph BT
   Ctx[echo-context<br>Ctx/EventBus/Disposer]
   Session[echo-session<br>事件溯源]
   Loop[echo-loop<br>TurnRunner]
-  LLM[echo-llm-*<br>OpenAI/Anthropic/Ollama]
   Proto[echo-protocol<br>线契约]
   Sanitize[echo-sanitize<br>脱敏]
   Config[echo-config<br>TOML 原子读改写]
@@ -91,7 +90,6 @@ graph BT
 | `echo-context` **（框架仓）** | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry`。**零全局态**：不持有进程级单例表——需要共享状态的调用方经 `Ctx` 显式注入 |
 | `echo-session` | 事件溯源会话 | `SessionEvent` 事件集（含模型不可见的推理事件）、`EventLog` append-only 持久化、`derive_messages` 投影、**按会话切片投影**（append 的重投影代价只与本次会话相关）、compaction、`SessionHeader`、v1-v4 兼容迁移。**词汇层**：只导出类型与纯函数，实例与生命周期在 `echo-plugin-session` |
 | `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；会话内 FIFO 串行准入（每会话一条时间线）见 [Agent 循环](../core/agent-loop.md) |
-| `echo-llm-*` | LLM provider | OpenAI/Anthropic/Ollama 实现。`openai`/`anthropic` 只依赖 `echo-defs`；`ollama` 是薄包装，**复用 `echo-llm-openai`**（组内一条边） |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性）。另含显示文本工具 `timeline_text`（定时信封解析 / 单行折叠 / 工具概要截断，供实时投影与派生两条路径共用）。Panel 的 Rust 中继对它**零依赖**（不解析负载、按原文转发），TS 前端以 `web/src/protocol.ts` 手写镜像 |
 | `echo-plugin-provider-llm` | 内置插件：LLM provider（Phase 3 ①） | provider 工厂（OpenAI 兼容 / Anthropic Messages / Ollama，含 DeepSeek `/anthropic` 自动路由、Kimi base_url 归一、OpenCode Go/Zen 会话头注入）+ 计量装饰器（`UsageRecorder` 出口）+ 脱敏装饰器；**API 设置面策略**：池规则（`admin`）、13 条命令域（`commands`）、探针配置解析 / `core.toml` agent 表补丁 / `ApiConfigUpdated` 事件装配 / 「测试 API」全流程（`api_admin`）；只依赖 `echo-defs` 与三个 provider crate |
 | `echo-plugin-skills` | 内置插件：技能目录（Phase 3 ③） | `SkillRegistry`（递归发现 + 多目录分层合并 + 热重载状态）、SKILL.md frontmatter 解析、Git 来源安装与 `.sources.json`；插件 id 归一走 `echo_defs::plugin_id` |
@@ -117,7 +115,7 @@ graph BT
 
 > 另有 `echo-test-utils`（跨 crate 复用的测试夹具）这个 dev crate，不进运行时依赖链。
 
-依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；其上为中间层（`echo-protocol` / `echo-config` / `echo-session` / `echo-tool` / `echo-shell` / `echo-llm-*` / `echo-federation` / `echo-sanitize`）与插件层（`echo-plugin*` 与全部内置插件 crate）◄ `echo-agent` ◄ `echo-agent-core`（bin）。三条容易记错的归属：
+依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；其上为中间层（`echo-protocol` / `echo-config` / `echo-session` / `echo-tool` / `echo-shell` / `echo-federation` / `echo-sanitize`）与插件层（`echo-plugin*` 与全部内置插件 crate）◄ `echo-agent` ◄ `echo-agent-core`（bin）。三条容易记错的归属：
 
 - **`PluginInstance` trait 在 `echo-defs`**（`echo_defs::plugin_instance`；`InstanceError` / `InstanceInfo` / `InstanceConnectionState` / `InstanceManagement` 同）；**协议侧贡献类型 `ToolContribution` / `InstanceContribution` 在 `echo-plugin-api`**，两者由 `echo-plugin-adapter` 桥接
 - **`echo-config` 只做 TOML 原子读改写**，不认识任何配置段的语义（旧 `echo-adapter` crate 已删除，其注册表并入 `echo-defs::plugin_instance`）
@@ -138,9 +136,22 @@ graph BT
 - **`EventBus` 类型化事件**：`Event` trait（Any + Clone + Debug + Send + Sync），按事件 `TypeId` 分组监听器；四种分发——`Observe`（扇出）/ `Waterfall`（around-middleware，不调 `next()` 即短路）/ `Parallel`（每监听器一份事件副本并发）/ `Serial`（按序；**当前实现与 `Observe` 等价**，「首个拒绝即停止」为预留语义）。`emit_sync` 覆盖同步热路径（Observe/Waterfall），`emit` 支持全部模式；`echo-protocol` 为 `BackendEvent` 实现 `Event`（依赖方向仍为 context ◄ protocol）
 - **`ScopedRegistry` 作用域注册**：全局条目 + per-scope 条目，lookup 先 scoped 后 global（shadowing），scope 卸载时条目随 disposer 撤销
 
-### LLM provider crates
+### LLM provider 实现（`echo-plugin-provider-llm::providers`）
 
-三个 provider 各自独立成 crate，只依赖 `echo-defs`（词汇/trait/策略枚举/token 纯函数）+ 传输依赖（reqwest/futures/tokio），可独立演进与测试；`echo-llm-ollama` 是薄包装，复用 `echo-llm-openai` 指向 `{base}/v1`。`echo-agent` 只保留 `create_provider` 工厂与装配，不承载 provider 实现；新增 provider = 一个新 crate 实现 `echo_defs::LlmProvider` + 注册（演进方向：以 `ctx.llm` 注册表查找替代工厂字符串 match，支持运行期热替换）。
+三个协议的客户端（OpenAI 兼容 / Anthropic Messages / Ollama）是 `echo-plugin-provider-llm` 的**私有模块**，不再是独立 crate：
+
+```text
+echo-plugin-provider-llm/src/providers/
+├── openai.rs       1181 行  OpenAI 兼容（含 DeepSeek / Moonshot / vLLM）
+├── anthropic.rs    1458 行  Anthropic Messages
+└── ollama.rs         82 行  Ollama（薄包装，复用 openai 指向 {base}/v1）
+```
+
+**为什么合并（2026-11）**：它们此前是 `source/llm/echo-llm-*` 三个 crate，被 `deps-policy.txt` 归入"中间层"。但中间层的定义是**被多方复用的底座**，而三者的消费者各只有一个（`echo-plugin-provider-llm`），仓外零引用。也就是说那三个 crate 边界换来的不是"可替换点"，只是目录层级——协议差异靠的是 `LlmProvider` trait（在 `echo-defs`），不是 crate 之间的抽象。
+
+判据（下一个"该不该独立成 crate"的决定可用）：**消费者 = 1 → 是那个消费者的实现细节，合并；消费者 > 1 → 是共用底座，独立**（对照：`echo-sanitize` 被 `echo-agent` / `echo-tool` / 插件三处用，因此保留）。
+
+链路不变：`echo-agent::llm::create_provider`（配置投影 + 指标出口的宿主 glue）→ `echo-plugin-provider-llm::create_provider`（按 provider 名与 `base_url` 后缀路由到某个客户端的工厂）。新增 provider = 在 `providers/` 加一个文件 + 在工厂的 match 里加一条分支；跨仓库的外部 provider 仍可实现 `echo_defs::LlmProvider` 自行注册（演进方向：以 `ctx.llm` 注册表查找替代工厂字符串 match，支持运行期热替换）。
 
 ## 能力接缝
 
@@ -148,7 +159,7 @@ graph BT
 
 | Seam | Service Definition | Provider | Consumer |
 |---|---|---|---|
-| LLM | `echo_defs::LlmProvider` | `echo-llm-openai`/`anthropic`/`ollama` | `echo-agent` 工厂 + `echo-loop` runner |
+| LLM | `echo_defs::LlmProvider` | `echo-plugin-provider-llm`（内置 `providers::{openai,anthropic,ollama}`；外部 provider 自行实现 trait） | `echo-agent` 工厂 + `echo-loop` runner |
 | 工具 | `echo_defs::Tool` | `echo-tool::ToolRegistry` + 内置工具插件 `echo-plugin-tools` + 外部插件贡献经 `echo-plugin-adapter::RemoteTool` | agent 循环 |
 | 技能 | `echo_defs::skill::{Skill, SkillMetadata}`（词汇） | `echo-plugin-skills` 的 `SkillRegistry`（本地文件 + 多目录分层合并；`echo-agent` 侧只留 re-export 兼容面） | prompt 组装 |
 | 插件实例模型工具 | `echo_defs::plugin_instance::ToolSpec`（`PluginInstance::tool_specs`）；wire 侧对应 `echo_plugin_api::ToolContribution` | 实例插件贡献（`InstanceContribution.tools`） | `echo-plugin-tools::instance_bridge`（合并 / `account` 寻址 / 出站闸门 `gate_outbound` / `invoke_custom` 透传） |

@@ -6,9 +6,6 @@ members = [
     "source/tool/echo-tool",
     "source/shell/echo-shell",
     "source/loop/echo-loop",
-    "source/llm/echo-llm-openai",
-    "source/llm/echo-llm-anthropic",
-    "source/llm/echo-llm-ollama",
     "source/security/echo-sanitize",
     "source/protocol/echo-protocol",
     "source/federation/echo-federation",
@@ -79,9 +76,6 @@ echo-session = { path = "source/session/echo-session" }
 echo-tool = { path = "source/tool/echo-tool" }
 echo-shell = { path = "source/shell/echo-shell" }
 echo-loop = { path = "source/loop/echo-loop" }
-echo-llm-openai = { path = "source/llm/echo-llm-openai" }
-echo-llm-anthropic = { path = "source/llm/echo-llm-anthropic" }
-echo-llm-ollama = { path = "source/llm/echo-llm-ollama" }
 echo-protocol = { path = "source/protocol/echo-protocol" }
 echo-agent = { path = "source/backend/echo-agent" }
 echo-test-utils = { path = "source/backend/echo-test-utils" }

@@ -489,49 +489,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-llm-anthropic"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "echo-defs",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "echo-llm-ollama"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "echo-defs",
- "echo-llm-openai",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "echo-llm-openai"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "echo-defs",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "echo-loop"
 version = "0.1.0"
 dependencies = [
@@ -664,11 +621,9 @@ dependencies = [
  "echo-config",
  "echo-context",
  "echo-defs",
- "echo-llm-anthropic",
- "echo-llm-ollama",
- "echo-llm-openai",
  "echo-plugin",
  "echo-protocol",
+ "futures-util",
  "reqwest",
  "serde",
  "serde_json",

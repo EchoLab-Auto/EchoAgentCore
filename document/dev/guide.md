@@ -2,8 +2,8 @@
 id: guide
 title: "开发指南"
 group: 工程
-x: 1920
-y: 2190
+x: 960
+y: 3760
 link: ["testing | 测试策略", "documentation-guide | 文档规范"]
 ---
 
@@ -38,7 +38,6 @@ EchoAgentCore/
 │   ├── context/echo-context/  # Ctx 服务定位 / EventBus / Disposer / ScopedRegistry / kernel.rs
 │   ├── session/echo-session/  # 事件溯源会话存储（EventLog + derive_messages）
 │   ├── loop/echo-loop/        # TurnRunner 默认驱动 + ToolPipeline
-│   ├── llm/echo-llm-*/        # LLM provider crates（openai/anthropic/ollama）
 │   ├── security/echo-sanitize/  # 脱敏服务（出口卡口，注册表式 Redactor）
 │   ├── config/echo-config/    # TOML 原子读改写（不认识任何段语义）
 │   ├── tool/echo-tool/        # 工具子系统机制（ToolRegistry 可逆注册 + 出口脱敏）
