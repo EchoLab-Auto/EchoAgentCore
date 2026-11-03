@@ -272,10 +272,13 @@ pub struct PluginLaunchSection {
 
 /// 单个 QQ 实例的配置覆盖项（缺省继承 `[instances.qq]` 共享默认）。
 ///
-/// - `persona` / `ports` / `enabled` = 宿主字段（实例归属 / 端口分配 / 启停）；
-/// - 其余键（`server` / `owner_qq` / `napcat_*` / 插件新增键…）进
-///   [`config`](Self::config) 覆盖片段，与共享层深合并后原样下发插件
+/// - `persona` / `enabled` = 宿主字段（实例归属 / 启停）；
+/// - 其余键（`server` / `owner_qq` / `napcat_*` / 插件新增键…）经
+///   [`overrides`](Self::overrides) 收下，与共享层深合并后原样下发插件
 ///   （宿主不重复插件 schema，新增字段自动透传）。
+///
+/// 注：旧文档里还列着 `ports`——该字段早已不存在（端口分配改由插件自己在
+/// `overrides` 里读），文档漂移现已修正。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct PlatformInstanceSection {
