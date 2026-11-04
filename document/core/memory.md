@@ -1,9 +1,9 @@
 ---
 id: memory
 title: "会话记忆"
-group: 框架
-x: 960
-y: 980
+group: Core
+x: 1280
+y: 1200
 ---
 
 # 会话记忆

@@ -1,9 +1,9 @@
 ---
 id: plugin-authoring
 title: "插件开发指南"
-group: 插件
-x: 960
-y: 2420
+group: Core
+x: 8000
+y: 1200
 ---
 
 # 插件开发指南（外部进程插件）

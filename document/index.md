@@ -2,9 +2,9 @@
 id: index
 title: "EchoAgent 文档总览"
 group: 总览
-x: 1520
-y: 100
-link: ["architecture | 架构总览", "core | Core 后端 | b>l", "panel | Panel 前端", "protocol | 协议与数据流", "deploy | 部署与自更新 | r>t", "guide | 开发指南 | b>l"]
+x: 160
+y: 80
+link: ["architecture | 架构总览", "core | Core 后端 | r>l", "panel | Panel 前端 | r>l", "protocol | 协议与数据流 | r>l", "deploy | 部署与自更新 | r>l", "guide | 开发指南 | r>l"]
 ---
 
 # EchoAgent 文档总览
@@ -101,12 +101,22 @@ graph LR
   Frame --> Persist[配置持久化|/core/config-persistence.md]
   Frame --> Logging[日志与可观测性|/core/logging.md]
   Frame --> Security[敏感信息隔离|/core/security-redaction.md]
-  Plugins --> Tools[工具系统|/plugins/tools.md]
+  Plugins --> Kernel[运行地基|/plugins/kernel.md]
+  Plugins --> Tools[工具集|/plugins/tools.md]
   Tools --> ToolCat[内置工具目录|/plugins/tool-catalog.md]
-  Plugins --> Skills[技能系统|/plugins/skills.md]
-  Plugins --> Subagent[Subagent 插件|/plugins/subagent.md]
-  Plugins --> Gating[QQ 实例门控|/plugins/qq-gating.md]
-  Plugins --> Fed[联邦（多机）|/federation/federation.md]
+  Plugins --> ShellPlugin[Shell 会话|/plugins/shell.md]
+  Plugins --> WsPlugin[工作区|/plugins/workspace.md]
+  Plugins --> Subagent[Subagent|/plugins/subagent.md]
+  Plugins --> Skills[技能目录|/plugins/skills.md]
+  Plugins --> ProvPlugin[LLM Provider|/plugins/provider-llm.md]
+  Plugins --> LoopPlugin[循环|/plugins/loop.md]
+  Plugins --> Sanitize[脱敏|/plugins/sanitize.md]
+  Plugins --> SessPlugin[会话|/plugins/session.md]
+  Plugins --> TransPlugin[显示层|/plugins/transcript.md]
+  Plugins --> MgmtPlugin[管理面|/plugins/management-panel.md]
+  Plugins --> Fed[联邦|/federation/federation.md]
+  Plugins --> SelfUpd[自更新|/plugins/selfupdate.md]
+  Plugins --> Gating[QQ 实例|/plugins/qq-gating.md]
   Plugins --> Author[插件开发指南|/plugins/plugin-authoring.md]
   Panel --> Desk[桌面端布局|/panel/desktop-layout.md]
   Desk --> DeskOv[桌面端模态与覆盖层|/panel/desktop-overlays.md]
@@ -142,12 +152,10 @@ graph LR
 
 ## 目录分层
 
-物理目录按主题分层：
-
 - `overview/` 入口与骨架；`core/` 内核与运行时子系统；`plugins/` 插件体系与各插件；`federation/` 联邦；`protocol/` 线协议
 - `panel/` 前端及视图契约；`ops/` 部署运维；`dev/` 开发规范
 - 根目录只保留 `index.md`（入口）与 `documentation-guide.md`（写作规范）
-- 画布参数 `group` 暂保留原分组（总览/框架/插件/前端/工程），与目录对应关系见 [文档规范](./documentation-guide.md)
+- 画布参数 `group` 分四个：**总览 / Core / 前端 / 工程**。`core/`、`plugins/`、`federation/` 同属 `Core`——框架本身是插件化设计的（`core` 由「框架（内核）」与「插件化设计」两支组成），画布上它们是 Core 组内并列的两条分支列，不是两个并列大类。对应关系与坐标规则见 [文档规范](./documentation-guide.md)
 
 ### 文档约定（速览）
 

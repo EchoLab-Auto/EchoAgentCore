@@ -2,9 +2,9 @@
 id: kernel
 title: "运行地基（kernel 插件）"
 group: Core
-x: 7040
-y: 640
-link: ["plugins | 插件化设计", "architecture | 架构总览"]
+x: 3200
+y: 1200
+link: []
 ---
 
 # 运行地基（`kind = "kernel"`）

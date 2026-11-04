@@ -2,8 +2,8 @@
 id: settings-plugins
 title: "设置 · 插件"
 group: 前端
-x: 3520
-y: 1060
+x: 3200
+y: 2600
 ---
 
 # 设置 · 插件

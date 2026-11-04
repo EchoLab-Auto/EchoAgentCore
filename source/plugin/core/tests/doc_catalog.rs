@@ -17,6 +17,11 @@
 //!    也会写 `document/xxx.md` 路径。第 3 类只扫 `document/` 自身，扫不到它们
 //!    ——出厂配置模板指向一个不存在的文件名，用户点开就是 404。
 //! 6. **插件命令名**：每个插件 `COMMANDS` 里的名字都得在文档里出现过。
+//! 7. **插件树一比一**（`document/plugins/plugins.md`）：12 个内置插件 +
+//!    实例插件 `echo-agent.instance.qq`，每一项都必须写成 `| [`id`](路径) |`
+//!    形态、且那个路径真实存在。第 2 类只查「id 字符串出现过没有」——一行纯
+//!    文本也算过，而画布上 `plugins` 的子树正是从这些链接长出来的：漏一个
+//!    链接，插件树就少一个节点，读者从树上走不到它的契约。
 //!
 //! 刷新方式：`UPDATE_DOCS=1 cargo test -p echo-agent-core --test doc_catalog`
 //! 会把生成类文件重写一遍（只改自动生成的部分，人工章节不受影响）。
@@ -85,9 +90,10 @@ async fn render_tool_catalog() -> String {
     out.push_str("---\n");
     out.push_str("id: tool-catalog\n");
     out.push_str("title: \"内置工具目录\"\n");
-    out.push_str("group: 插件\n");
-    out.push_str("x: 960\n");
-    out.push_str("y: 1780\n");
+    out.push_str("group: Core\n");
+    // `x` / `y` 归 `tools/prodoc_layout.py`（画布坐标的唯一写者），这里不写：
+    // 两个写者争同一字段时，刷新一次就把布局改回去，再跑布局又变回来，永远
+    // 在两者之间来回。`assert_fresh` 比对时也剥掉这两行。
     out.push_str("---\n\n");
     out.push_str(&format!(
         "{GENERATED_MARKER}`echo-agent::tool::builtin::build_registry`） -->\n\n"
@@ -133,7 +139,19 @@ fn summarize(description: &str) -> String {
 fn assert_fresh(relative: &str, generated: String) {
     let path = repo_root().join(relative);
     let current = std::fs::read_to_string(&path).unwrap_or_default();
-    if current == generated {
+    // 画布坐标归 `tools/prodoc_layout.py`：生成器不产 `x` / `y`，磁盘上那份
+    // 由布局脚本写入。比对时两侧都剥掉，否则每重排一次布局这条门禁就红一次。
+    let strip_layout = |text: &str| {
+        text.lines()
+            .filter(|line| {
+                let line = line.trim_start();
+                !(line.starts_with("x: ") || line.starts_with("y: "))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let (current_cmp, generated_cmp) = (strip_layout(&current), strip_layout(&generated));
+    if current_cmp == generated_cmp {
         return;
     }
     if std::env::var_os("UPDATE_DOCS").is_some() {
@@ -143,17 +161,17 @@ fn assert_fresh(relative: &str, generated: String) {
         return;
     }
     // 差异定位：给出首个不同行，省得人从头 diff 两百行。
-    let first_diff = current
+    let first_diff = current_cmp
         .lines()
-        .zip(generated.lines())
+        .zip(generated_cmp.lines())
         .enumerate()
         .find(|(_, (a, b))| a != b)
         .map(|(i, (a, b))| format!("第 {} 行:\n  磁盘: {a}\n  生成: {b}", i + 1))
         .unwrap_or_else(|| {
             format!(
                 "行数不同（磁盘 {} / 生成 {}）",
-                current.lines().count(),
-                generated.lines().count()
+                current_cmp.lines().count(),
+                generated_cmp.lines().count()
             )
         });
     panic!(
@@ -187,6 +205,50 @@ fn documented_builtin_plugin_ids_cover_the_constant() {
     assert!(
         missing.is_empty(),
         "以下内置插件 id 未出现在 document/plugins/plugins.md：{missing:?}"
+    );
+}
+
+/// 插件树一比一：每个插件 id 必须**带一个可达的文档链接**。
+///
+/// 与上一条的分工：上一条问「id 字符串在不在」，这条问「树节点对不对」。
+/// 画布上 `plugins` 的子节点完全由这些链接生成（`link` 与正文表格由
+/// `tools/prodoc_layout.py` 一起维护），所以少一个链接 = 少一个节点，
+/// 多一个链接 = 树上挂了一个不存在的插件。
+#[test]
+fn every_plugin_has_a_reachable_document_link() {
+    let doc_path = repo_root().join("document/plugins/plugins.md");
+    let doc = reading(&doc_path);
+    let base = doc_path.parent().expect("document/plugins");
+
+    let mut ids: Vec<&str> = echo_agent::plugins::BUILTIN_PLUGIN_IDS.to_vec();
+    ids.push("echo-agent.instance.qq");
+
+    let mut missing = Vec::new();
+    let mut dangling = Vec::new();
+    for id in ids {
+        let needle = format!("| [`{id}`](");
+        let Some(start) = doc.find(&needle) else {
+            missing.push(id);
+            continue;
+        };
+        let rest = &doc[start + needle.len()..];
+        let Some(end) = rest.find(')') else {
+            dangling.push(format!("{id}（链接未闭合）"));
+            continue;
+        };
+        let relative = &rest[..end];
+        if !base.join(relative).is_file() {
+            dangling.push(format!("{id} → {relative}"));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "以下插件 id 在 document/plugins/plugins.md 的清单里没有文档链接（插件树会少节点）：{missing:?}"
+    );
+    assert!(
+        dangling.is_empty(),
+        "以下插件的文档链接不可达（插件树指向不存在的文件）：{dangling:?}"
     );
 }
 

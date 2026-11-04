@@ -1,10 +1,10 @@
 ---
 id: frame
 title: "框架（内核）"
-group: 框架
-x: 640
-y: 820
-link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | 多模态输入 | r>l", "config-persistence | 配置持久化 | r>l", "logging | 日志与可观测性", "security-redaction | 敏感信息隔离"]
+group: Core
+x: 960
+y: 920
+link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | 多模态输入", "config-persistence | 配置持久化", "logging | 日志与可观测性", "security-redaction | 敏感信息隔离"]
 ---
 
 # 框架（内核）

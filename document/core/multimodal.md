@@ -1,9 +1,9 @@
 ---
 id: multimodal
 title: "多模态输入"
-group: 框架
-x: 960
-y: 1140
+group: Core
+x: 1600
+y: 1200
 ---
 
 # 多模态输入（图片）

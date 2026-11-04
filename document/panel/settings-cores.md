@@ -2,8 +2,8 @@
 id: settings-cores
 title: "设置 · Core 与联邦"
 group: 前端
-x: 4160
-y: 1060
+x: 3840
+y: 2600
 ---
 
 # 设置 · Core 与联邦

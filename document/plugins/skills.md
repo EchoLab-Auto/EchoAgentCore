@@ -1,9 +1,9 @@
 ---
 id: skills
 title: "技能系统"
-group: 插件
-x: 960
-y: 1940
+group: Core
+x: 4800
+y: 1200
 ---
 
 # 技能系统

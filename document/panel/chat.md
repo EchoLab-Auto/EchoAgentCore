@@ -2,8 +2,8 @@
 id: chat
 title: "Panel 会话视图"
 group: 前端
-x: 3840
-y: 780
+x: 6520
+y: 2320
 link: ["chat-messages | 消息区", "chat-input | 输入区", "chat-entry | 入口行", "chat-rail | 双侧边栏"]
 ---
 

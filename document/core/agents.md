@@ -1,9 +1,9 @@
 ---
 id: agents
 title: "多 Agent 与会话"
-group: 框架
+group: Core
 x: 960
-y: 820
+y: 1200
 link: ["agent-loop | Agent 循环"]
 ---
 

@@ -1,9 +1,9 @@
 ---
 id: logging
 title: "日志与可观测性"
-group: 框架
-x: 960
-y: 1440
+group: Core
+x: 2240
+y: 1200
 ---
 
 # 日志与可观测性

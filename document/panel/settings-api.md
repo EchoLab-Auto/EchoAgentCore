@@ -2,8 +2,8 @@
 id: settings-api
 title: "设置 · API"
 group: 前端
-x: 2560
-y: 1060
+x: 2240
+y: 2600
 ---
 
 # 设置 · API

@@ -1,9 +1,9 @@
 ---
 id: tool-catalog
 title: "内置工具目录"
-group: 插件
-x: 960
-y: 1780
+group: Core
+x: 3520
+y: 1480
 ---
 
 <!-- 自动生成，请勿手改：`echo-agent::tool::builtin::build_registry`） -->

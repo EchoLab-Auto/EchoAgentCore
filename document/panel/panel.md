@@ -2,8 +2,8 @@
 id: panel
 title: "Panel 前端"
 group: 前端
-x: 3360
-y: 220
+x: 960
+y: 1760
 link: ["desktop-layout | 桌面端布局", "mobile-layout | 移动端布局", "icons | 图标体系", "constants | 常量与边界", "interaction | 交互定义"]
 ---
 

@@ -9,3 +9,6 @@ echo-sessions.json
 /downloads/
 /skills/.sources.json
 /skills/*/.git/
+
+# Python 工具的运行期缓存
+/tools/__pycache__/

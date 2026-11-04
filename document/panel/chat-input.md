@@ -2,8 +2,8 @@
 id: chat-input
 title: "输入区（ChatComposer）"
 group: 前端
-x: 5120
-y: 1060
+x: 6720
+y: 2600
 ---
 
 # 输入区（ChatComposer）

@@ -2,8 +2,8 @@
 id: system
 title: "Panel 系统反馈"
 group: 前端
-x: 3200
-y: 780
+x: 4800
+y: 2320
 ---
 
 # Panel 系统反馈

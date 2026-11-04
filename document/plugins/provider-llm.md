@@ -2,7 +2,7 @@
 id: provider-llm
 title: "LLM Provider 插件"
 group: Core
-x: 4800
+x: 5120
 y: 1200
 ---
 

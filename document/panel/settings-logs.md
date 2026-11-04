@@ -2,8 +2,8 @@
 id: settings-logs
 title: "设置 · 日志与系统"
 group: 前端
-x: 4480
-y: 1060
+x: 4160
+y: 2600
 ---
 
 # 设置 · 日志与系统

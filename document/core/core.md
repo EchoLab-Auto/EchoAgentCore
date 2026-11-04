@@ -1,10 +1,10 @@
 ---
 id: core
 title: "Core 后端"
-group: 框架
-x: 320
-y: 820
-link: ["frame | 框架（内核）", "plugins | 插件化设计 | l>b"]
+group: Core
+x: 960
+y: 640
+link: ["frame | 框架（内核）", "plugins | 插件化设计 | b>t"]
 ---
 
 # Core 框架

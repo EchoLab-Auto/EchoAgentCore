@@ -2,8 +2,8 @@
 id: mobile-overlays
 title: "移动端模态与覆盖层"
 group: 前端
-x: 2240
-y: 780
+x: 1280
+y: 2320
 ---
 
 # 移动端模态与覆盖层

@@ -2,9 +2,9 @@
 id: sanitize
 title: "脱敏（安全不变量）"
 group: Core
-x: 6160
-y: 1040
-link: ["plugins | 插件化设计", "security-redaction | 敏感信息隔离"]
+x: 5760
+y: 1200
+link: []
 ---
 
 # 脱敏（`echo-agent.security.sanitize`）

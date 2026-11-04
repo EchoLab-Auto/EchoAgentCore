@@ -2,9 +2,9 @@
 id: plugins
 title: "插件化设计"
 group: Core
-x: 5440
+x: 5600
 y: 920
-link: ["tools | 工具集", "shell | Shell 会话", "workspace | 工作区", "subagent | Subagent", "skills | 技能目录", "provider-llm | LLM Provider", "loop | 循环", "sanitize | 脱敏", "session | 会话", "transcript | 显示层", "management-panel | 管理面", "federation | 联邦", "selfupdate | 自更新", "qq-gating | QQ 实例", "plugin-authoring | 插件开发"]
+link: ["kernel | 运行地基", "tools | 工具集", "shell | Shell 会话", "workspace | 工作区", "subagent | Subagent", "skills | 技能目录", "provider-llm | LLM Provider", "loop | 循环", "sanitize | 脱敏", "session | 会话", "transcript | 显示层", "management-panel | 管理面", "federation | 联邦", "selfupdate | 自更新", "qq-gating | QQ 实例", "plugin-authoring | 插件开发"]
 ---
 
 # 插件化设计

@@ -2,8 +2,8 @@
 id: interaction
 title: "Panel 交互定义"
 group: 前端
-x: 3360
-y: 500
+x: 4860
+y: 2040
 link: ["settings | 设置视图", "instance-tasks | 实例管理·任务·Shell", "system | 系统反馈", "chat | 会话视图"]
 ---
 

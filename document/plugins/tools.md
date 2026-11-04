@@ -1,9 +1,9 @@
 ---
 id: tools
 title: "工具系统"
-group: 插件
-x: 960
-y: 1620
+group: Core
+x: 3520
+y: 1200
 link: ["tool-catalog | 内置工具目录"]
 ---
 

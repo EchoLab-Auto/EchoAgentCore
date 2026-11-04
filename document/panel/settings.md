@@ -2,9 +2,9 @@
 id: settings
 title: "Panel 设置视图"
 group: 前端
-x: 2560
-y: 780
-link: ["settings-api | API 设置 | b>t", "settings-skills | 技能 | b>t", "settings-tools | 工具 | b>t", "settings-plugins | 插件 | b>t", "settings-agents | 智能体 | b>t", "settings-cores | Core 与联邦 | b>t", "settings-logs | 日志与系统 | b>t"]
+x: 3200
+y: 2320
+link: ["settings-api | API 设置", "settings-skills | 技能", "settings-tools | 工具", "settings-plugins | 插件", "settings-agents | 智能体", "settings-cores | Core 与联邦", "settings-logs | 日志与系统"]
 ---
 
 # Panel 设置视图

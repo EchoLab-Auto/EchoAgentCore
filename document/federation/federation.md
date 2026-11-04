@@ -1,9 +1,9 @@
 ---
 id: federation
 title: "联邦（多机去中心化）"
-group: 框架
-x: 320
-y: 980
+group: Core
+x: 7040
+y: 1200
 link: []
 ---
 

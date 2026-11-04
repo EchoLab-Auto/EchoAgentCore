@@ -1,9 +1,9 @@
 ---
 id: agent-loop
 title: "Agent 循环"
-group: 框架
-x: 1280
-y: 820
+group: Core
+x: 960
+y: 1480
 ---
 
 # Agent 循环
