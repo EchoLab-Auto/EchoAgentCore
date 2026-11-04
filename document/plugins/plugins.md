@@ -2,9 +2,9 @@
 id: plugins
 title: "插件化设计"
 group: Core
-x: 5760
+x: 5600
 y: 920
-link: ["kernel | 运行地基", "tools | 工具集", "shell | Shell 会话", "workspace | 工作区", "subagent | Subagent", "skills | 技能目录", "provider-llm | LLM Provider", "loop | 循环", "sanitize | 脱敏", "session | 会话", "transcript | 显示层", "management-panel | 管理面", "embedded-panel | 内嵌 Panel", "federation | 联邦", "selfupdate | 自更新", "qq-gating | QQ 实例", "plugin-authoring | 插件开发"]
+link: ["kernel | 运行地基", "tools | 工具集", "shell | Shell 会话", "workspace | 工作区", "subagent | Subagent", "skills | 技能目录", "provider-llm | LLM Provider", "loop | 循环", "sanitize | 脱敏", "session | 会话", "transcript | 显示层", "management-panel | 管理面", "federation | 联邦", "selfupdate | 自更新", "qq-gating | QQ 实例", "plugin-authoring | 插件开发"]
 ---
 
 # 插件化设计
@@ -32,7 +32,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 ## 插件模型
 
 - 核心类型：`PluginManifest`（id/name/version/kind/entry/description + `builtin` / `runtime` / `package`）+ `BuiltinPlugin` + `MountContext`
-- **插件类型（`kind`，**开放字符串**）**：`kernel` / `skill` / `tool` / `provider` / `loop` / `instance` / `orchestration` / `management` / `panel` / `interaction` / `session` / `federation` / `security`
+- **插件类型（`kind`，**开放字符串**）**：`kernel` / `skill` / `tool` / `provider` / `loop` / `instance` / `orchestration` / `management` / `interaction` / `session` / `federation` / `security`
   - **没有 `PluginKind` 枚举**（框架 M2 去业务化：`echo-plugin` 只存 `kind: String`，不校验取值）。宿主只对 `instance` 做语义判定（`INSTANCE_PLUGIN_KIND`）；Panel 的中文显示名表 `PLUGIN_KIND_LABELS` 是**另一份**，新增 kind 时要记得同步它
   - `interaction`：**人在环交互面**——模型发起、用户在 Panel 应答（Panel 内的问答 UI + 专用应答通道），与 `instance` / `management` 同属「整类能力开关」，在 Panel「启用插件」勾选区按 kind 即可见（`capabilities.ts::isPluginCheckboxVisible` 的 kind 类判定）。原选单（`present_menu`）已废弃移除，但该 kind **并非空置**：`echo-agent.transcript`（显示投影 + 会话视图命令域）就是 `interaction`——它做的事是"把会话讲给人看"
 - 注册为**可逆**副作用：`Plugin::mount` 返回 disposer（`PluginMountResult`，注册表持有、卸载时调用）；`register_and_mount` 注册并按启用态挂载（禁用插件只注册不挂载）
@@ -97,14 +97,15 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | [`echo-agent.session`](./session.md) | Session | 进程内 | 事件溯源 trunk、持久化、压缩编排 |
 | [`echo-agent.transcript`](./transcript.md) | Interaction | 进程内 | 时间线投影 + 会话视图命令域 |
 | [`echo-agent.management.panel`](./management-panel.md) | Management | 进程内 | Panel 连接面（**禁用即自锁**） |
-| [`echo-agent.panel.web`](./embedded-panel.md) | Panel | 进程内 | 可选 Web Panel；**缺省不挂载**，独立 Panel 外壳仍可用 |
 | [`echo-agent.federation`](../federation/federation.md) | Federation | 进程内 | Core↔Core 对等链路：远程工具 / 跨机委派 / 会话迁移 |
 | [`echo-agent.selfupdate`](./selfupdate.md) | Orchestration | 进程内 | 自更新触发与状态查询（部署形状归插件） |
 | [`echo-agent.instance.qq`](./qq-gating.md) | Instance | **进程外** | QQ 插件实例（OneBot v11 反向 WS，独立进程） |
 
 > **`Kernel` 是什么**：2026-11 取消「中间层 / 插件」二分之后新增的类别——提供其它插件的**运行地基**（词汇 / 线契约 / 注册表 / 事件日志 / 配置存储 / 循环驱动）。它们与其它插件同形（有 manifest、进 catalog、出现在本表），但**不可禁用**：`plugins.toml` 写 `enabled = false` 会让启动失败并点名。逐条理由见 [运行地基](./kernel.md)。
 
-表的来源分两类，别混算：**框架内置 22 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 22]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
+表的来源分两类，别混算：**框架内置 21 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 21]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
+
+> **Panel 进程内插件的实现完全在 Panel 仓**（`source/echo-plugin-panel`）。Core 的组合根只引用其公开工厂，不持有 Panel 代码；挂载语义与本文相同，默认不启用。详见 Panel 仓文档。
 
 联邦（`echo-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
 

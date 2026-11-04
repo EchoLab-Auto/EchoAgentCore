@@ -397,7 +397,7 @@ fn plugins_do_not_depend_on_other_plugins() {
         }
     }
     assert!(
-        plugins_seen >= 23,
+        plugins_seen >= 22,
         "只扫到 {plugins_seen} 个插件 crate（路径规则改过？）"
     );
     assert!(

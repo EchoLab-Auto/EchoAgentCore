@@ -2,7 +2,7 @@
 id: selfupdate
 title: "自更新插件"
 group: Core
-x: 7680
+x: 7360
 y: 1200
 ---
 

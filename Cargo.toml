@@ -25,7 +25,6 @@ members = [
     "source/plugin/echo-plugin-session",
     "source/plugin/echo-plugin-transcript",
     "source/plugin/echo-plugin-management",
-    "source/plugin/echo-plugin-panel",
     "source/plugin/echo-plugin-tools",
 ]
 
@@ -93,7 +92,7 @@ echo-plugin-shell = { path = "source/plugin/echo-plugin-shell" }
 echo-plugin-subagent = { path = "source/plugin/echo-plugin-subagent" }
 echo-plugin-workspace = { path = "source/plugin/echo-plugin-workspace" }
 echo-plugin-management = { path = "source/plugin/echo-plugin-management" }
-echo-plugin-panel = { path = "source/plugin/echo-plugin-panel" }
+echo-plugin-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", branch = "main" }
 echo-plugin-session = { path = "source/plugin/echo-plugin-session" }
 echo-plugin-transcript = { path = "source/plugin/echo-plugin-transcript" }
 echo-plugin-tools = { path = "source/plugin/echo-plugin-tools" }

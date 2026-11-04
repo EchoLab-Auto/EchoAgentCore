@@ -9,7 +9,7 @@
 //! ## 与配置的关系（这是 dsh 的形态）
 //!
 //! ```text
-//!   builtin_plugins::catalog()   ← 本文件：代码里的插件目录（构造 + mount）
+//!   builtin_plugins::catalog_with()   ← 本文件：代码里的插件目录（构造 + mount）
 //!              ↓
 //!   plugins.toml 的 builtin 行   ← 配置：顺序、启用状态、每插件的 config
 //!              ↓
@@ -105,7 +105,19 @@ fn push_plugin(catalog: &mut Vec<Arc<dyn Plugin>>, plugin: Arc<dyn Plugin>) -> a
 /// **配置驱动的那部分不在目录里**：平台实例插件（id 由 `[instances.<平台>]`
 /// 派生）与外部插件条目（`plugins.toml` 的行）由调用点在目录之后追加——它们
 /// 的"存在性"取决于这份部署的配置，而不是这个二进制里有什么。
+#[cfg(test)]
 pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
+    catalog_with(version, std::iter::empty())
+}
+
+/// 组合根可以把来自**任意 crate** 的内置插件附加到目录。
+///
+/// 这是外部仓进程内插件的唯一装配接缝：实现、配置与生命周期全留在那个
+/// crate；本目录不需要知道它的领域、ID 或挂载细节。空迭代器保持原目录。
+pub(crate) fn catalog_with(
+    version: &str,
+    additional: impl IntoIterator<Item = Arc<dyn Plugin>>,
+) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
     let mut catalog: Vec<Arc<dyn Plugin>> = Vec::new();
 
     // ── 运行地基（`kind = "kernel"`）──
@@ -216,17 +228,16 @@ pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
         push_plugin(&mut catalog, plugin)?;
     }
 
-    // ── Web Panel（可选；缺省不挂载）──
-    //
-    // 复用 Panel 仓的 echo-web-server 运行库；独立 `echo-agent-panel` 外壳
-    // 继续可用。只有 plugins.toml 里显式 `enabled = true` 才占用 HTTP 端口。
-    push_plugin(&mut catalog, echo_plugin_panel::plugin(version))?;
-
     // ── LLM provider（工厂 + 池规则 + API 命令域）──
     push_plugin(&mut catalog, echo_plugin_provider_llm::plugin(version))?;
 
     // ── 自更新（updater 单元 + 状态文件）──
     push_plugin(&mut catalog, echo_plugin_self_update::plugin(version))?;
+
+    // 外部仓的进程内插件和本仓目录走同一套身份、配置与冲突检查。
+    for plugin in additional {
+        push_plugin(&mut catalog, plugin)?;
+    }
 
     reject_duplicate_commands(&catalog)?;
     reject_reserved_commands(&catalog)?;
@@ -647,27 +658,15 @@ mod catalog_shape_tests {
     }
 
     /// 目录里不许有幽灵条目：id 的空段（`echo-agent.instance.`）是派生 bug。
-    /// 可选 Panel 默认不监听；显式配置启用才进入实际挂载。
     #[test]
-    fn embedded_panel_is_opt_in() {
-        let catalog = catalog("0.0.0-test").expect("目录构造");
-        let ids: Vec<String> = catalog.iter().map(|p| p.manifest().id.clone()).collect();
-        let (plan, _) = echo_agent::plugins::resolve_mount_order(&ids, &[]);
-        let step = plan
-            .iter()
-            .find(|step| step.id == echo_plugin_panel::PLUGIN_ID)
-            .unwrap();
-        assert!(!step.enabled);
-        let explicit = vec![echo_agent::plugins::MountStep::new(
-            echo_plugin_panel::PLUGIN_ID,
-            true,
-        )];
-        let (plan, _) = echo_agent::plugins::resolve_mount_order(&ids, &explicit);
-        let step = plan
-            .iter()
-            .find(|step| step.id == echo_plugin_panel::PLUGIN_ID)
-            .unwrap();
-        assert!(step.enabled);
+    fn additional_plugins_share_identity_validation_and_command_checks() {
+        use echo_plugin::{BuiltinPlugin, PluginManifest};
+        let extra: Arc<dyn Plugin> = Arc::new(BuiltinPlugin::new(
+            PluginManifest::builtin("example.web", "Web", "0", "panel", "web", "external"),
+            |_| Ok(Vec::new()),
+        ));
+        let catalog = catalog_with("0.0.0-test", [extra]).unwrap();
+        assert!(catalog.iter().any(|p| p.manifest().id == "example.web"));
     }
 
     #[test]

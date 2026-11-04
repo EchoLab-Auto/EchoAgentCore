@@ -80,14 +80,16 @@ pub use echo_plugin_self_update::PLUGIN_ID as SELF_UPDATE_PLUGIN_ID;
 /// （全插件化 S3）——这里是**兼容别名**，门控与配置读的是同一批字面量。
 pub use echo_plugin_federation::PLUGIN_ID as FEDERATION_PLUGIN_ID;
 
-/// 框架自身声明的内置插件 id（**不含插件实例**）。
+/// 本仓声明的内置插件 id（**不含插件实例与外部仓的可选进程内插件**）。
+///
+/// 外部仓插件的实现、文档与身份归所属仓库；其目录装配在组合根单独追加，
+/// 不让本清单反向要求 Core 持有它们的领域文档。
 ///
 /// 实例插件 id 由组合根声明（`core::instance_manifests`，按前缀
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_PLUGIN_IDS: [&str; 22] = [
-    "echo-agent.panel.web",
+pub const BUILTIN_PLUGIN_IDS: [&str; 21] = [
     TOOLS_BUILTIN_PLUGIN_ID,
     SHELL_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
@@ -257,7 +259,7 @@ pub fn disabled_kernel_plugins(catalog_ids: &[String], plan: &[MountStep]) -> Op
 ///
 /// Web Panel 监听外部端口，编译进 Core 不应等于默认开放服务。这个默认
 /// 只影响挂载计划，不改变 `PluginManifest` 或全局 TogglePlugin 语义。
-pub const DEFAULT_DISABLED_PLUGIN_IDS: [&str; 1] = ["echo-agent.panel.web"];
+pub const DEFAULT_DISABLED_PLUGIN_IDS: [&str; 0] = [];
 
 pub fn resolve_mount_order(
     catalog_ids: &[String],
