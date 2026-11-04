@@ -368,7 +368,11 @@ fn plugins_do_not_depend_on_other_plugins() {
         if !cargo.exists() {
             continue;
         }
-        let name = dir.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let name = dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         if matches!(name.as_str(), "echo-agent" | "echo-test-utils" | "core") {
             continue;
         }
@@ -392,7 +396,10 @@ fn plugins_do_not_depend_on_other_plugins() {
             }
         }
     }
-    assert!(plugins_seen >= 23, "只扫到 {plugins_seen} 个插件 crate（路径规则改过？）");
+    assert!(
+        plugins_seen >= 23,
+        "只扫到 {plugins_seen} 个插件 crate（路径规则改过？）"
+    );
     assert!(
         violations.is_empty(),
         "插件之间不得互相依赖（S12）：\n{}\n\

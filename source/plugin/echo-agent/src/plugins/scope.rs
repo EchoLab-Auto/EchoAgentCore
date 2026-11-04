@@ -81,7 +81,7 @@ impl PluginScope {
 /// | `orchestration` | Process | 自更新等运维能力，进程级 |
 /// | `session` | Process | 会话 trunk 是数据层；关掉它等于"没有人格"，不是可选项 |
 /// | `interaction` | Process | 显示投影/人在环交互面，进程级 |
-pub const KIND_SCOPE: [(&str, PluginScope); 12] = [
+pub const KIND_SCOPE: [(&str, PluginScope); 13] = [
     ("tool", PluginScope::Persona),
     ("skill", PluginScope::Persona),
     // 实例类 kind 引用宿主常量而非字面量：`2d46b7d` 把 wire 名从 `adapter`
@@ -90,6 +90,7 @@ pub const KIND_SCOPE: [(&str, PluginScope); 12] = [
     ("provider", PluginScope::Process),
     ("loop", PluginScope::Process),
     ("management", PluginScope::Process),
+    ("panel", PluginScope::Process),
     ("federation", PluginScope::Process),
     ("orchestration", PluginScope::Process),
     ("session", PluginScope::Process),

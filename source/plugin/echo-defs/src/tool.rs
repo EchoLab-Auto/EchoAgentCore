@@ -84,7 +84,9 @@ pub trait Cancellation: Send + Sync {
     /// 取消完成时 resolve；**已取消则立即完成**。
     ///
     /// 返回 boxed future 是为了对象安全（`dyn Cancellation`）。
-    fn when_cancelled(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
+    fn when_cancelled(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
 }
 
 /// 一次工具调用的**上下文**（工具可以要，但大多数不需要）。

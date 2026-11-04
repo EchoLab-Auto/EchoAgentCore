@@ -1689,7 +1689,10 @@ mod tests {
                 "{}: 包装后丢了路径参数声明（远程沙箱会失效）",
                 tool.name()
             );
-            assert_eq!(wrapped.produces_visible_output(), tool.produces_visible_output());
+            assert_eq!(
+                wrapped.produces_visible_output(),
+                tool.produces_visible_output()
+            );
             assert_eq!(wrapped.state_key(), tool.state_key());
         }
     }

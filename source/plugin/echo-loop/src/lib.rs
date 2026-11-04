@@ -32,7 +32,4 @@ pub use event::{
     TurnEnd, TurnStart, TurnStopping,
 };
 pub use pipeline::{ToolPipeline, ToolPipelineResult};
-pub use runner::{
-    ChatExecutor, LoopError, LoopOptions, ToolExecutor,
-    ToolOutcome, TurnRunner,
-};
+pub use runner::{ChatExecutor, LoopError, LoopOptions, ToolExecutor, ToolOutcome, TurnRunner};

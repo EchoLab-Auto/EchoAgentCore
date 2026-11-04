@@ -51,7 +51,9 @@ fn resolve_plugin_id(
         return Ok(id.to_string());
     }
     let binary = binary.context("either plugin id or --binary is required")?;
-    let wanted = binary.canonicalize().unwrap_or_else(|_| binary.to_path_buf());
+    let wanted = binary
+        .canonicalize()
+        .unwrap_or_else(|_| binary.to_path_buf());
     let tree = echo_plugin_loader::load(&config_path.with_file_name("plugins.toml"))
         .context("load plugins.toml for --binary lookup")?;
     let matches: Vec<&str> = tree
@@ -67,7 +69,10 @@ fn resolve_plugin_id(
         .collect();
     match matches.as_slice() {
         [id] => Ok((*id).to_string()),
-        [] => bail!("no external plugin in plugins.toml uses {}", binary.display()),
+        [] => bail!(
+            "no external plugin in plugins.toml uses {}",
+            binary.display()
+        ),
         _ => bail!("multiple plugins in plugins.toml use {}", binary.display()),
     }
 }

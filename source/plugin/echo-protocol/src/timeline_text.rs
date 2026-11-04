@@ -10,8 +10,6 @@
 //!
 //! 它们操作的类型全是 `&str` / `serde_json::Value`，没有领域状态，下沉无损。
 
-
-
 /// 从 `<timer_event>` 载荷里取任务摘要（可解析时）。
 pub fn timeline_timer_task(content: &str) -> Option<String> {
     let body = content

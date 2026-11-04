@@ -3,9 +3,9 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+use super::openai::OpenAiProvider;
 use echo_defs::llm::{LlmError, LlmProvider};
 use echo_defs::message::{ChatRequest, ChatResponse};
-use super::openai::OpenAiProvider;
 
 /// Ollama exposes an OpenAI-compatible endpoint, so this is a thin wrapper
 /// around [`OpenAiProvider`] pointed at `{base_url}/v1`.

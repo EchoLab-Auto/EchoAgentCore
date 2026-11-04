@@ -68,7 +68,7 @@ y: 1200
 | `echo-llm-anthropic` | 本插件 —— 仓外 0 |
 | `echo-llm-ollama` | 本插件 —— 仓外 0 |
 
-「中间层」的定义是**被多方复用的底座**（如 `echo-tool` 被 7 个 crate 用、`echo-sanitize` 被 3 处用）。这三个各自只有一个真消费者，crate 边界换来的不是"可替换点"而是目录层级——协议差异靠的是 `LlmProvider` trait（在 `echo-defs`），不是 crate 之间的抽象。
+「中间层」的定义是**被多方复用的底座**（如 `echo-tool` 被 7 个 crate 用）。这三个各自只有一个真消费者，crate 边界换来的不是"可替换点"而是目录层级——协议差异靠的是 `LlmProvider` trait（在 `echo-defs`），不是 crate 之间的抽象。
 
 可用判据：**消费者 = 1 → 是那个消费者的实现细节，合并；消费者 > 1 → 是共用底座，独立**。合并后 `providers` 是**私有模块**：外部只认 `create_provider(&ProviderConfig)`，换实现不需要外部改任何代码——这正是把 `LlmProvider` 放在 `echo-defs` 的意义。
 

@@ -1,11 +1,9 @@
 //! 敏感信息隔离 seam（service definition 层）。
 //!
-//! [`Redactor`] 是"扫描 / 脱敏 / 登记"能力的可替换契约：默认实现位于
-//! `echo-sanitize` crate（字面值注册表 + 保守模式集），经 `Ctx` 服务定位器
-//! [`Redactor`] 是"扫描 / 脱敏 / 登记"能力的可替换契约：默认实现位于
-//! `echo-sanitize` crate（字面值注册表 + 保守模式集），经 `Ctx` 服务定位器
-//! 以 `"sanitizer"` 键注册（与 `"llm"` / `"loop"` 同款机制；`echo-sanitize`
-//! 另提供强类型 `echo_context::ServiceKey` 常量供消费方解析）。
+//! [`Redactor`] 是"扫描 / 脱敏 / 登记"能力的可替换契约：默认实现
+//! `RegistryRedactor`（字面值注册表 + 保守模式集）住在 `echo-plugin-sanitize`
+//! 插件内，经 `Ctx` 服务定位器以 `"sanitizer"` 键注册（与 `"llm"` / `"loop"`
+//! 同款机制；该插件另提供强类型 `echo_context::ServiceKey` 供消费方解析）。
 //! # 定位
 //!
 //! 脱敏是**出口保证**：允许秘密被读到（同 uid 的 shell 总能读到），但保证
@@ -163,7 +161,9 @@ pub fn sensitive_local_path(raw: &str, protected: &[PathBuf]) -> Option<PathBuf>
     if !path.is_absolute() {
         return None;
     }
-    let resolved = path.canonicalize().unwrap_or_else(|_| normalize_lexically(&path));
+    let resolved = path
+        .canonicalize()
+        .unwrap_or_else(|_| normalize_lexically(&path));
     protected
         .iter()
         .find(|dir| resolved.starts_with(dir))

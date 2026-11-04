@@ -2,7 +2,7 @@
 id: federation
 title: "联邦（多机去中心化）"
 group: Core
-x: 7040
+x: 7360
 y: 1200
 link: []
 ---

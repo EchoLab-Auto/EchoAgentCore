@@ -25,23 +25,21 @@ pub(crate) async fn deliver_aggregate_summary(
 ) {
     for (_id, agent) in rt.live_personas().await {
         if agent.trunk.get(&summary.session_id).is_some() {
-            agent
-                .trunk
-                .push_timeline(echo_protocol::TimelineMessage {
-                    seq: 0, // push_timeline 内部分配
-                    kind: "system".into(),
-                    content: summary.text.clone(),
-                    session_id: summary.session_id.clone(),
-                    time: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs() as i64)
-                        .unwrap_or(0),
-                    source: None,
-                    reasoning: None,
-                    tool: None,
-                    images: None,
-                    ord: 0, // push_timeline 内部分配（分页锚点）
-                });
+            agent.trunk.push_timeline(echo_protocol::TimelineMessage {
+                seq: 0, // push_timeline 内部分配
+                kind: "system".into(),
+                content: summary.text.clone(),
+                session_id: summary.session_id.clone(),
+                time: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0),
+                source: None,
+                reasoning: None,
+                tool: None,
+                images: None,
+                ord: 0, // push_timeline 内部分配（分页锚点）
+            });
             return;
         }
     }

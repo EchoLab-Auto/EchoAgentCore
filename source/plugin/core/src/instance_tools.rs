@@ -8,6 +8,4 @@
 //! 保留 `crate::instance_tools::…` 这条路径（`main.rs` 的装配点在用）；
 //! 内容全部 re-export。
 
-pub use echo_plugin_tools::instance_bridge::{
-    register_instance_tools_multi, OutboundGate,
-};
+pub use echo_plugin_tools::instance_bridge::{register_instance_tools_multi, OutboundGate};

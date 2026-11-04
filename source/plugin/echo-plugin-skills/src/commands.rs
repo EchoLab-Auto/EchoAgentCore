@@ -25,8 +25,8 @@
 
 use std::sync::Arc;
 
-use echo_protocol::{BackendCommand, BackendEvent, SkillInfo, SkillSourceInfo};
 use crate::SkillRegistry;
+use echo_protocol::{BackendCommand, BackendEvent, SkillInfo, SkillSourceInfo};
 
 /// 本插件处理的命令名。
 pub const COMMANDS: [&str; 8] = [
@@ -282,12 +282,14 @@ pub fn skills_list(skills: &SkillRegistry, skills_dir: &std::path::Path) -> Vec<
             package: skill.metadata.package.clone(),
             content: skill.instructions.clone(),
             system: skill.metadata.system,
-            source: sources.get(&skill.metadata.name).map(|src| SkillSourceInfo {
-                url: src.url.clone(),
-                rev: src.rev.clone(),
-                branch: src.branch.clone(),
-                installed_at: src.installed_at.clone(),
-            }),
+            source: sources
+                .get(&skill.metadata.name)
+                .map(|src| SkillSourceInfo {
+                    url: src.url.clone(),
+                    rev: src.rev.clone(),
+                    branch: src.branch.clone(),
+                    installed_at: src.installed_at.clone(),
+                }),
         })
         .collect();
     list.sort_by_key(|skill| skill.name.clone());
@@ -354,8 +356,11 @@ pub fn save_skill_file(skills_dir: &str, draft: &SkillDraft) -> Result<(), Strin
         frontmatter.push_str("system: true\n");
     }
     frontmatter.push_str("---\n");
-    std::fs::write(skill_dir.join("SKILL.md"), format!("{frontmatter}{}", draft.content))
-        .map_err(|e| format!("cannot write SKILL.md: {e}"))?;
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        format!("{frontmatter}{}", draft.content),
+    )
+    .map_err(|e| format!("cannot write SKILL.md: {e}"))?;
     Ok(())
 }
 
@@ -413,9 +418,8 @@ mod tests {
         fn reload(
             &self,
             _write_dir: &str,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<bool, String>> + Send + '_>,
-        > {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send + '_>>
+        {
             Box::pin(async { Ok(true) })
         }
         fn set_enabled(
@@ -453,12 +457,10 @@ mod tests {
             );
         }
         // 反向：没声明的命令不许被认领（否则分发器永远路由不到它）。
-        assert!(
-            handler
-                .handle("SendMessage", serde_json::Value::Null)
-                .await
-                .is_none()
-        );
+        assert!(handler
+            .handle("SendMessage", serde_json::Value::Null)
+            .await
+            .is_none());
     }
 
     fn setup() -> (SkillsCommandHandler, Arc<FakeHost>, std::path::PathBuf) {
@@ -497,7 +499,9 @@ mod tests {
         assert!(body.contains("keywords: [a, b]"), "{body}");
         assert!(body.contains("# 正文"), "{body}");
         let events = host.events.lock().unwrap();
-        assert!(events.iter().any(|e| matches!(e, BackendEvent::SkillsList { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, BackendEvent::SkillsList { .. })));
         assert!(events.iter().any(|e| matches!(
             e,
             BackendEvent::Error { message, .. } if message.contains("saved")
@@ -550,8 +554,18 @@ mod tests {
     #[tokio::test]
     async fn toggle_delegates_to_the_host_and_reports_not_found() {
         let (h, host, dir) = setup();
-        call(&h, "ToggleSkill", serde_json::json!({"name": "alpha", "enabled": false})).await;
-        call(&h, "ToggleSkill", serde_json::json!({"name": "ghost", "enabled": true})).await;
+        call(
+            &h,
+            "ToggleSkill",
+            serde_json::json!({"name": "alpha", "enabled": false}),
+        )
+        .await;
+        call(
+            &h,
+            "ToggleSkill",
+            serde_json::json!({"name": "ghost", "enabled": true}),
+        )
+        .await;
         assert_eq!(
             *host.enabled_calls.lock().unwrap(),
             vec![("alpha".to_string(), false), ("ghost".to_string(), true)]
@@ -564,8 +578,14 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(notices.iter().any(|m| m.contains("alpha disabled")), "{notices:?}");
-        assert!(notices.iter().any(|m| m.contains("ghost not found")), "{notices:?}");
+        assert!(
+            notices.iter().any(|m| m.contains("alpha disabled")),
+            "{notices:?}"
+        );
+        assert!(
+            notices.iter().any(|m| m.contains("ghost not found")),
+            "{notices:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -593,7 +613,12 @@ mod tests {
             }),
         )
         .await;
-        call(&h, "RemoveSkillSource", serde_json::json!({"name": "gamma"})).await;
+        call(
+            &h,
+            "RemoveSkillSource",
+            serde_json::json!({"name": "gamma"}),
+        )
+        .await;
         assert!(dir.join("gamma/SKILL.md").exists(), "文件必须留存");
         let events = host.events.lock().unwrap();
         assert!(events.iter().rev().any(|e| matches!(

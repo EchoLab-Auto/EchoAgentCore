@@ -6,7 +6,6 @@ members = [
     "source/plugin/echo-tool",
     "source/plugin/echo-shell",
     "source/plugin/echo-loop",
-    "source/plugin/echo-sanitize",
     "source/plugin/echo-protocol",
     "source/plugin/echo-federation",
     "source/plugin/echo-agent",
@@ -26,6 +25,7 @@ members = [
     "source/plugin/echo-plugin-session",
     "source/plugin/echo-plugin-transcript",
     "source/plugin/echo-plugin-management",
+    "source/plugin/echo-plugin-panel",
     "source/plugin/echo-plugin-tools",
 ]
 
@@ -71,7 +71,6 @@ strip = "symbols"
 echo-defs = { path = "source/plugin/echo-defs" }
 echo-config = { path = "source/plugin/echo-config" }
 echo-context = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
-echo-sanitize = { path = "source/plugin/echo-sanitize" }
 echo-session = { path = "source/plugin/echo-session" }
 echo-tool = { path = "source/plugin/echo-tool" }
 echo-shell = { path = "source/plugin/echo-shell" }
@@ -94,6 +93,7 @@ echo-plugin-shell = { path = "source/plugin/echo-plugin-shell" }
 echo-plugin-subagent = { path = "source/plugin/echo-plugin-subagent" }
 echo-plugin-workspace = { path = "source/plugin/echo-plugin-workspace" }
 echo-plugin-management = { path = "source/plugin/echo-plugin-management" }
+echo-plugin-panel = { path = "source/plugin/echo-plugin-panel" }
 echo-plugin-session = { path = "source/plugin/echo-plugin-session" }
 echo-plugin-transcript = { path = "source/plugin/echo-plugin-transcript" }
 echo-plugin-tools = { path = "source/plugin/echo-plugin-tools" }

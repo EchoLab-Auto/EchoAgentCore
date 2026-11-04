@@ -47,12 +47,7 @@ impl<H: crate::instance_commands::InstanceCommandHost + ?Sized> InstanceOpRunner
     /// 处理一条 `InvokeInstanceOp`。
     ///
     /// `instance` 是命令里携带的实例名（可能为空 = 请求按注册表回退）。
-    pub async fn invoke(
-        &self,
-        instance: &str,
-        method: &str,
-        payload: serde_json::Value,
-    ) {
+    pub async fn invoke(&self, instance: &str, method: &str, payload: serde_json::Value) {
         let instances = self.host.instances();
         tracing::info!(instance, method, "InvokeInstanceOp");
         let target = match resolve_instance(&instances, instance) {
@@ -108,12 +103,7 @@ impl<H: crate::instance_commands::InstanceCommandHost + ?Sized> InstanceOpRunner
         });
     }
 
-    fn ack(
-        &self,
-        instance: &str,
-        method: &str,
-        outcome: Result<serde_json::Value, String>,
-    ) {
+    fn ack(&self, instance: &str, method: &str, outcome: Result<serde_json::Value, String>) {
         let (result, error) = match outcome {
             Ok(result) => (result, None),
             Err(message) => (serde_json::Value::Null, Some(message)),

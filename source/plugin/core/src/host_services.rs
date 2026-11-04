@@ -39,27 +39,27 @@ use echo_context::{Ctx, Disposer};
 use echo_defs::plugin_instance::PluginInstance;
 use echo_federation::Federation;
 use echo_plugin_management::host_keys::{ManagementHost, MANAGEMENT_HOST};
-use echo_plugin_transcript::SESSION_VIEW_HOST_KEY;
-use echo_protocol::BackendBridge;
 use echo_plugin_provider_llm::host_keys::PROVIDER_HOST;
 use echo_plugin_self_update::host_keys::EVENTS as SELF_UPDATE_EVENTS;
+use echo_plugin_transcript::SESSION_VIEW_HOST_KEY;
+use echo_protocol::BackendBridge;
 use tracing::warn;
 
-use echo_agent::agent_manager::AgentManager;
+use echo_agent::agent::provider_host::AgentProviderCommandHost;
 use echo_agent::agent::session_commands_host::AgentSessionCommandHost;
 use echo_agent::agent::session_view_host::AgentSessionViewHost;
-use echo_agent::agent::provider_host::AgentProviderCommandHost;
 use echo_agent::agent::shell_host::{AgentInstanceCommandHost, AgentShellCommandHost};
 use echo_agent::agent::skills_host::AgentSkillsCommandHost;
 use echo_agent::agent::tools_host::AgentToolsCommandHost;
 use echo_agent::agent::workspace_host::AgentWorkspaceHost;
+use echo_agent::agent_manager::AgentManager;
 use echo_agent::federation::FederationPorts;
 use echo_agent::{Agent, EventSink};
 
 use echo_plugin_federation::host_keys::{EVENTS as FEDERATION_EVENTS, PORTS};
+use echo_plugin_shell::host_keys::SHELL_HOST;
 use echo_plugin_skills::host_keys::SKILLS_HOST;
 use echo_plugin_tools::host_keys::{INSTANCE_HOST, TOOLS_HOST};
-use echo_plugin_shell::host_keys::SHELL_HOST;
 use echo_plugin_workspace::host_keys::WORKSPACE_HOST;
 
 /// 组合根手里那些"配置表达不了、只有装配期知道"的句柄。
@@ -109,7 +109,6 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
             Err(error) => warn!(service = key.name(), %error, "host service already provided"),
         }
     }
-
 
     // ── 内置工具集：三个命令域各一个键 ──
     put(
@@ -181,7 +180,12 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
 
     // ── 联邦：出口集合 + 事件出口 ──
     put(&mut keep, ctx, &PORTS, wiring.federation.clone());
-    put(&mut keep, ctx, &FEDERATION_EVENTS, wiring.event_sink.clone());
+    put(
+        &mut keep,
+        ctx,
+        &FEDERATION_EVENTS,
+        wiring.event_sink.clone(),
+    );
 
     // ── 管理面：监听参数 + 会话视图数据面 ──
     put(
@@ -223,20 +227,25 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
     );
 
     // ── 自更新：只要事件出口 ──
-    put(&mut keep, ctx, &SELF_UPDATE_EVENTS, wiring.event_sink.clone());
+    put(
+        &mut keep,
+        ctx,
+        &SELF_UPDATE_EVENTS,
+        wiring.event_sink.clone(),
+    );
 
     // ── 平台实例（配置派生）：启停控制 ──
     if let Some(instance) = wiring.instance.clone() {
         put(
-        &mut keep,
-        ctx,
-        &INSTANCE_CONTROL,
+            &mut keep,
+            ctx,
+            &INSTANCE_CONTROL,
             Arc::new(PluginInstanceControl {
                 instance,
                 wired: wiring.instance_wired.clone(),
                 running: wiring.instance_running.clone(),
             }) as Arc<dyn InstanceControl>,
-    );
+        );
     }
 
     keep
@@ -349,9 +358,13 @@ pub(crate) fn provided_keys() -> Vec<String> {
         PORTS.name().to_string(),
         FEDERATION_EVENTS.name().to_string(),
         MANAGEMENT_HOST.name().to_string(),
-        echo_plugin_transcript::SESSION_VIEW_HOST_KEY.name().to_string(),
+        echo_plugin_transcript::SESSION_VIEW_HOST_KEY
+            .name()
+            .to_string(),
         // 会话写命令域（清理 / 归档 / 压缩）：2026-11 S6 从宿主迁进会话插件。
-        echo_plugin_session::SESSION_COMMAND_HOST_KEY.name().to_string(),
+        echo_plugin_session::SESSION_COMMAND_HOST_KEY
+            .name()
+            .to_string(),
         PROVIDER_HOST.name().to_string(),
         SELF_UPDATE_EVENTS.name().to_string(),
         INSTANCE_CONTROL.name().to_string(),

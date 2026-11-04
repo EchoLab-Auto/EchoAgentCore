@@ -112,7 +112,11 @@ impl UpsertInput {
 ///    必然失败且误导用户；
 /// 2. **更新时"空 = 保留原值"**——`api_key` 留空表示"不改密钥"，不是清空；
 /// 3. **非空 name 立即设为 active**（用户刚配的就是要用的）。
-pub fn upsert(state: &mut PoolState<'_>, defaults: &PoolDefaults, input: UpsertInput) -> Vec<PoolEffect> {
+pub fn upsert(
+    state: &mut PoolState<'_>,
+    defaults: &PoolDefaults,
+    input: UpsertInput,
+) -> Vec<PoolEffect> {
     let target = input.target().to_string();
     let keep_key = input.api_key.is_empty();
     if input.name.is_empty() {
@@ -142,14 +146,20 @@ pub fn upsert(state: &mut PoolState<'_>, defaults: &PoolDefaults, input: UpsertI
             },
         )
     } else {
-        (input.provider.clone(), input.model.clone(), input.base_url.clone())
+        (
+            input.provider.clone(),
+            input.model.clone(),
+            input.base_url.clone(),
+        )
     };
     let profile = match state.profiles.iter_mut().find(|p| p.name == input.name) {
         Some(profile) => profile,
         None => {
-            state
-                .profiles
-                .push(ApiProfile::new(input.name.clone(), provider.clone(), model.clone()));
+            state.profiles.push(ApiProfile::new(
+                input.name.clone(),
+                provider.clone(),
+                model.clone(),
+            ));
             let index = state.profiles.len() - 1;
             &mut state.profiles[index]
         }
@@ -186,10 +196,7 @@ pub fn upsert(state: &mut PoolState<'_>, defaults: &PoolDefaults, input: UpsertI
 /// 与 [`upsert`] 分开是因为语义不同：这里不去动 `active_api`——"改默认"与
 /// "切到某个 profile"是两件事，清了 active 会让下次请求落到一个用户没选过
 /// 的配置上。
-pub fn update_defaults(
-    defaults: &mut PoolDefaults,
-    input: &UpsertInput,
-) -> Vec<PoolEffect> {
+pub fn update_defaults(defaults: &mut PoolDefaults, input: &UpsertInput) -> Vec<PoolEffect> {
     let keep_key = input.api_key.is_empty();
     if !input.provider.is_empty() {
         defaults.provider = input.provider.clone();
@@ -253,9 +260,7 @@ pub fn delete(state: &mut PoolState<'_>, name: &str) -> Vec<PoolEffect> {
     let before = state.profiles.len();
     state.profiles.retain(|profile| profile.name != name);
     if state.profiles.len() == before {
-        return vec![PoolEffect::Notice(format!(
-            "API config not found: {name}"
-        ))];
+        return vec![PoolEffect::Notice(format!("API config not found: {name}"))];
     }
     if *state.active_api == name {
         state.active_api.clear();
@@ -301,11 +306,7 @@ pub fn validate_profile_name(name: &str) -> Result<(), String> {
 /// 一致性要求（2026-10）：先在克隆上算全新状态 → 宿主单次落盘（失败即中止，
 /// 内存从未提交 = 天然回滚）→ 提交内存 → 运行时传播。所以这里只**算**，
 /// 不提交。
-pub fn plan_rename(
-    state: &PoolState<'_>,
-    from: &str,
-    to: &str,
-) -> Result<RenamePlan, String> {
+pub fn plan_rename(state: &PoolState<'_>, from: &str, to: &str) -> Result<RenamePlan, String> {
     validate_profile_name(to)?;
     let to = to.trim();
     // `from` 精确匹配（不 trim——历史遗留含空白的名也要能被改名）。
@@ -403,7 +404,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(profiles[0].provider, "openai", "空 provider 不该被默认值覆盖");
+        assert_eq!(
+            profiles[0].provider, "openai",
+            "空 provider 不该被默认值覆盖"
+        );
         assert_eq!(profiles[0].model, "gpt-y");
         assert_eq!(profiles[0].api_key, "sk-old", "空 key = 不改密钥");
     }
@@ -486,8 +490,12 @@ mod tests {
             "a",
         );
         let st = state(&mut profiles, &mut active);
-        assert!(plan_rename(&st, "a", "b").unwrap_err().contains("already exists"));
-        assert!(plan_rename(&st, "ghost", "c").unwrap_err().contains("not found"));
+        assert!(plan_rename(&st, "a", "b")
+            .unwrap_err()
+            .contains("already exists"));
+        assert!(plan_rename(&st, "ghost", "c")
+            .unwrap_err()
+            .contains("not found"));
         assert!(plan_rename(&st, "a", "").is_err(), "空名必须被拒");
         let long = "x".repeat(129);
         assert!(plan_rename(&st, "a", &long).is_err(), "超长名必须被拒");

@@ -3,6 +3,8 @@
 //! Extracted from ad-hoc `#[cfg(test)]` mocks so that every crate can use
 //! the same implementations as a `[dev-dependency]`:
 //! - [`MockInstance`] — a scriptable platform instance.
+//! - [`FakeRedactor`] — a minimal `Redactor` for exercising sanitize seams
+//!   (tool-result gate / outbound gate) without a concrete implementation.
 //! - [`temp_config_file`] — a temp TOML file with automatic cleanup.
 //!
 //! Note: this crate deliberately depends only on echo-instance, never on
@@ -11,6 +13,9 @@
 //! identity. Mock LLM providers live inside echo-agent's own test module.
 
 pub use instance::MockInstance;
+pub use redactor::{placeholder, FakeRedactor};
+
+mod redactor;
 
 /// Create a temporary TOML config file in the system temp dir.
 ///

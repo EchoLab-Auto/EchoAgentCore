@@ -68,12 +68,13 @@ mod tests {
     /// 不是报错（`#[serde(default)]` 是配置兼容性的关键）。
     #[test]
     fn missing_optional_fields_fall_back_to_defaults() {
-        let parsed: ApiProfile =
-            toml::from_str(r#"name = "a"
+        let parsed: ApiProfile = toml::from_str(
+            r#"name = "a"
 provider = "openai"
 model = "m"
-"#)
-            .expect("老配置必须能解析");
+"#,
+        )
+        .expect("老配置必须能解析");
         assert_eq!(parsed.name, "a");
         assert!(parsed.base_url.is_empty());
         assert!(!parsed.key_set());

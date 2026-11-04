@@ -14,7 +14,9 @@ use super::*;
 
 impl Agent {
     pub(crate) fn next_message_sequence(&self) -> u64 {
-        self.turns.next_message_sequence.fetch_add(1, Ordering::Relaxed)
+        self.turns
+            .next_message_sequence
+            .fetch_add(1, Ordering::Relaxed)
     }
 
     pub(crate) fn register_inbound_turn(
@@ -42,7 +44,8 @@ impl Agent {
     /// Cancel the newest active turn belonging to the command sender.
     pub(crate) fn cancel_inbound_turns(&self, session_id: &str, all: bool) -> usize {
         let mut turns = self
-            .turns.active_inbound_turns
+            .turns
+            .active_inbound_turns
             .iter()
             .filter(|turn| turn.session_id == session_id)
             .map(|turn| (turn.message_sequence, turn.cancel.clone()))
@@ -60,7 +63,8 @@ impl Agent {
 
     pub(crate) fn cancel_all_inbound_turns(&self) -> usize {
         let turns = self
-            .turns.active_inbound_turns
+            .turns
+            .active_inbound_turns
             .iter()
             .map(|turn| turn.cancel.clone())
             .collect::<Vec<_>>();
@@ -293,7 +297,8 @@ impl Agent {
     /// `ActiveTurnsSnapshot` 事件；见 protocol event 文档）。
     pub fn active_turn_session_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self
-            .turns.active_inbound_turns
+            .turns
+            .active_inbound_turns
             .iter()
             .map(|t| t.session_id.clone())
             .collect();
@@ -389,7 +394,14 @@ impl Agent {
                 return;
             };
             agent
-                .run_inbound_turn(session, content, message_sequence, registration, history_snapshot, slot)
+                .run_inbound_turn(
+                    session,
+                    content,
+                    message_sequence,
+                    registration,
+                    history_snapshot,
+                    slot,
+                )
                 .await;
         });
     }

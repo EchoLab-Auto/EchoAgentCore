@@ -12,32 +12,32 @@
 //! `ApiProfile` 都下沉了）——宿主侧**不再认识任何一个内置工具的名字**。
 
 // 工具实现已外迁到 `echo-plugin-tools`；这里保留原模块路径作为宿主兼容面。
-pub use echo_plugin_tools::{
-    coding, plugin as builtin_plugin, BuiltinToolProvider, BuiltinTools, ListApiProfilesTool,
-    ToolsHostCtx,
-};
-/// 服务表解析（`tools.builtin`）：插件挂上了就有，没挂上返回 `None`。
-pub use echo_plugin_tools::plugin::{resolve_provider, standalone_provider};
-/// 工具管理面命令域的宿主接缝。
-pub use echo_plugin_tools::tool_commands::{
-    ToolsCommandHost as ToolsCommandHostAlias, ToolsCommandHandler,
-};
-/// 实例命令域的宿主接缝。
-pub use echo_plugin_tools::instance_commands::{
-    InstanceCommandHost as InstanceCommandHostAlias, InstanceCommandHandler,
-};
 /// Shell 命令域的宿主接缝（组合根实现、插件消费）。
 ///
 /// 2026-11：`shell_*` 工具与 `*Shell*` 命令随 shell 会话一起搬进独立插件
 /// `echo-plugin-shell`（`bash-start` / `bash-exec` / `bash-stop`）。这里保留
 /// re-export 是为了宿主侧既有路径不变。
 pub use echo_plugin_shell::commands::{
-    ShellCommandHost as ShellCommandHostAlias, ShellCommandHandler,
+    ShellCommandHandler, ShellCommandHost as ShellCommandHostAlias,
 };
 /// Shell 工具集的构造契约（插件提供、宿主调用）。
 pub use echo_plugin_shell::{
     resolve_provider as resolve_shell_provider, standalone_provider as standalone_shell_provider,
     ShellHostCtx, ShellToolProvider,
+};
+/// 实例命令域的宿主接缝。
+pub use echo_plugin_tools::instance_commands::{
+    InstanceCommandHandler, InstanceCommandHost as InstanceCommandHostAlias,
+};
+/// 服务表解析（`tools.builtin`）：插件挂上了就有，没挂上返回 `None`。
+pub use echo_plugin_tools::plugin::{resolve_provider, standalone_provider};
+/// 工具管理面命令域的宿主接缝。
+pub use echo_plugin_tools::tool_commands::{
+    ToolsCommandHandler, ToolsCommandHost as ToolsCommandHostAlias,
+};
+pub use echo_plugin_tools::{
+    coding, plugin as builtin_plugin, BuiltinToolProvider, BuiltinTools, ListApiProfilesTool,
+    ToolsHostCtx,
 };
 
 /// 组装一个 persona 的内置工具集：**实现全在插件里**，这里只传端口。
@@ -72,8 +72,7 @@ pub fn build_registry(
     // 早于 `mount_plan`），此时回退到插件的 standalone 实现；"这个使用者看不
     // 看得到"由 persona 门控（`kind` 定作用域：`tool` 属 Persona 级）与
     // 包级启停负责——那是运行期的事，不该在构造工具表时表达。
-    let shell_provider =
-        shell_provider.unwrap_or_else(echo_plugin_shell::standalone_provider);
+    let shell_provider = shell_provider.unwrap_or_else(echo_plugin_shell::standalone_provider);
     let shell_registry = shell_provider.registry(&ShellHostCtx {
         shell: shell.clone(),
         guard: Some(echo_shell::self_stop_guard()),

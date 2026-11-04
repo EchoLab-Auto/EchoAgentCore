@@ -25,7 +25,6 @@ use echo_protocol::ShellSessionInfo;
 
 pub mod plugin;
 
-
 pub const MAX_SHELL_SESSIONS: usize = 8;
 /// 单条命令默认超时（秒）。
 pub const DEFAULT_EXEC_TIMEOUT_SECS: u64 = 120;
@@ -114,7 +113,8 @@ where
 /// 护栏守的是**宿主自己的服务名**（例如禁止工具停掉运行中的 Core），那是
 /// 宿主身份的一部分。实现方（组合根 / 插件装配）决定用哪个守卫；未注入 =
 /// 不做该检查（工具本身仍在沙箱内）。
-pub type CommandGuard = std::sync::Arc<dyn Fn(&str) -> Result<(), echo_tool::ToolError> + Send + Sync>;
+pub type CommandGuard =
+    std::sync::Arc<dyn Fn(&str) -> Result<(), echo_tool::ToolError> + Send + Sync>;
 
 /// 拒绝会从 Core 自己的进程树里停掉 / 杀掉 Core 服务的命令。
 ///

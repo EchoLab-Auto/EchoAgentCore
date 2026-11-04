@@ -319,13 +319,8 @@ impl Tool for SpawnSubagentTool {
     /// **无上下文**调用（面板调试 / 直接经注册表执行）：会话与分支用占位值，
     /// 且不传播取消——子任务完成 hook 回灌到 `local:subagent::direct`。
     async fn execute(&self, arguments: Value) -> Result<String, ToolError> {
-        self.spawn(
-            &arguments,
-            "local:subagent::direct",
-            None,
-            "subagent",
-        )
-        .map_err(ToolError::InvalidArguments)
+        self.spawn(&arguments, "local:subagent::direct", None, "subagent")
+            .map_err(ToolError::InvalidArguments)
     }
 
     /// **主路径**：会话 / 分支 / 取消信号全部来自调用上下文。
@@ -338,14 +333,9 @@ impl Tool for SpawnSubagentTool {
         cx: &echo_defs::tool::ToolContext,
         arguments: Value,
     ) -> Result<ToolResult, ToolError> {
-        self.spawn(
-            &arguments,
-            &cx.session_id,
-            cx.cancel.clone(),
-            &cx.branch_id,
-        )
-        .map(ToolResult::text)
-        .map_err(ToolError::InvalidArguments)
+        self.spawn(&arguments, &cx.session_id, cx.cancel.clone(), &cx.branch_id)
+            .map(ToolResult::text)
+            .map_err(ToolError::InvalidArguments)
     }
 }
 
@@ -647,13 +637,8 @@ mod tests {
             }),
         );
         // 无 node：Some(None)（被调用过、node 为 None）
-        tool.spawn(
-            &serde_json::json!({"task": "t"}),
-            "s",
-            None,
-            "b",
-        )
-        .unwrap();
+        tool.spawn(&serde_json::json!({"task": "t"}), "s", None, "b")
+            .unwrap();
         assert_eq!(captured.lock().unwrap().clone(), Some(None));
         // 有 node：透传
         tool.spawn(
@@ -681,13 +666,8 @@ mod tests {
             }),
         );
         // 无 profile：Some(None)（被调用过、profile 为 None）
-        tool.spawn(
-            &serde_json::json!({"task": "t"}),
-            "s",
-            None,
-            "b",
-        )
-        .unwrap();
+        tool.spawn(&serde_json::json!({"task": "t"}), "s", None, "b")
+            .unwrap();
         assert_eq!(captured.lock().unwrap().clone(), Some(None));
         // 有 profile：trim 后透传
         tool.spawn(
@@ -748,12 +728,7 @@ mod tests {
     fn spawn_rejects_empty_task_with_corrective_message() {
         let (tool, store) = tool(Arc::new(|_| {}));
         let error = tool
-            .spawn(
-                &json!({"task": "  "}),
-                "local:tui::one",
-                None,
-                "b",
-            )
+            .spawn(&json!({"task": "  "}), "local:tui::one", None, "b")
             .unwrap_err();
         assert!(error.contains("task"), "{error}");
         assert!(error.contains("自含"), "{error}");
@@ -801,7 +776,13 @@ mod tests {
         let handle = tokio::spawn({
             let own = own.clone();
             let parent = parent.clone();
-            async move { wait_cancelled(&own, Some(parent.as_ref() as &dyn echo_defs::tool::Cancellation)).await }
+            async move {
+                wait_cancelled(
+                    &own,
+                    Some(parent.as_ref() as &dyn echo_defs::tool::Cancellation),
+                )
+                .await
+            }
         });
         (parent.0).cancel();
         tokio::time::timeout(std::time::Duration::from_secs(1), handle)
@@ -818,23 +799,16 @@ mod tests {
         let (tool, _) = tool(Arc::new(move |req| {
             timeouts2.lock().unwrap().push(req.timeout)
         }));
-        tool.spawn(
-            &json!({"task": "a"}),
-            "s",
-            None,
-            "b",
-        )
-        .unwrap();
-        tool.spawn(
-            &json!({"task": "b", "timeout_secs": 1}),
-            "s",
-            None,
-            "b",
-        )
-        .unwrap();
+        tool.spawn(&json!({"task": "a"}), "s", None, "b").unwrap();
+        tool.spawn(&json!({"task": "b", "timeout_secs": 1}), "s", None, "b")
+            .unwrap();
         let got = timeouts.lock().unwrap().clone();
         assert_eq!(got[0], Some(std::time::Duration::from_secs(600)), "default");
-        assert_eq!(got[1], Some(std::time::Duration::from_secs(30)), "clamped to min");
+        assert_eq!(
+            got[1],
+            Some(std::time::Duration::from_secs(30)),
+            "clamped to min"
+        );
     }
 
     /// 2026-10 用户诉求：「kimi 太慢，能不能不设时间限制」。
@@ -858,8 +832,16 @@ mod tests {
         }
         let got = timeouts.lock().unwrap().clone();
         assert_eq!(got[0], None, "0 = 不设上限");
-        assert_eq!(got[1], Some(std::time::Duration::from_secs(86_400)), "夹到 24h");
-        assert_eq!(got[2], Some(std::time::Duration::from_secs(1800)), "正常值原样透传");
+        assert_eq!(
+            got[1],
+            Some(std::time::Duration::from_secs(86_400)),
+            "夹到 24h"
+        );
+        assert_eq!(
+            got[2],
+            Some(std::time::Duration::from_secs(1800)),
+            "正常值原样透传"
+        );
     }
 
     /// 配置注入的默认值必须真的生效（而不是被常量吃掉）。
@@ -981,13 +963,8 @@ mod tests {
         let sink = Arc::new(RecordingSink::default());
         let tool = SpawnSubagentTool::new(SubagentStore::new(), Arc::new(|_| {}))
             .with_remote_sink(sink.clone());
-        tool.spawn(
-            &json!({"task": "本机任务"}),
-            "sess-1",
-            None,
-            "turn-7",
-        )
-        .unwrap();
+        tool.spawn(&json!({"task": "本机任务"}), "sess-1", None, "turn-7")
+            .unwrap();
         assert!(sink.calls().is_empty(), "本机委派不进远程聚合分组");
     }
 

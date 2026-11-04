@@ -135,8 +135,10 @@ async fn hello_tools_come_from_injected_reporter() {
         b_events,
         sd_b.clone(),
     );
-    let live: Arc<std::sync::RwLock<Vec<String>>> =
-        Arc::new(std::sync::RwLock::new(vec!["read_file".into(), "write_file".into()]));
+    let live: Arc<std::sync::RwLock<Vec<String>>> = Arc::new(std::sync::RwLock::new(vec![
+        "read_file".into(),
+        "write_file".into(),
+    ]));
     let live_writer = live.clone();
     fed_b
         .set_tool_reporter(Arc::new(move || live_writer.read().unwrap().clone()))

@@ -40,7 +40,9 @@ use crate::{wrap_subagent_event, SubagentStatus, SubagentStore, SPAWN_SUBAGENT_T
 /// 宿主端口：执行体需要的九件事（每一项都是"只有宿主知道"）。
 pub trait SubagentExecutionHost: Send + Sync {
     /// 主会话的系统提示词（子任务继承它作为 base）。
-    fn base_prompt(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + '_>>;
+    fn base_prompt(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send + '_>>;
     /// 本机工具定义（执行体会剥掉 `spawn_subagent`，单层委派）。
     fn tool_definitions(
         &self,
@@ -389,7 +391,11 @@ struct Reject<'a> {
     reason: String,
 }
 
-async fn reject(host: &Arc<dyn SubagentExecutionHost>, store: &Arc<SubagentStore>, reject: Reject<'_>) {
+async fn reject(
+    host: &Arc<dyn SubagentExecutionHost>,
+    store: &Arc<SubagentStore>,
+    reject: Reject<'_>,
+) {
     let Reject {
         task_id,
         session_id,
@@ -455,10 +461,21 @@ mod tests {
     async fn stall_watchdog_fires_when_nothing_moves() {
         let counter = Arc::new(AtomicU64::new(0));
         let started = Instant::now();
-        wait_stalled(counter, Duration::from_millis(150), Duration::from_millis(20)).await;
+        wait_stalled(
+            counter,
+            Duration::from_millis(150),
+            Duration::from_millis(20),
+        )
+        .await;
         let elapsed = started.elapsed();
-        assert!(elapsed >= Duration::from_millis(150), "不该早于阈值：{elapsed:?}");
-        assert!(elapsed < Duration::from_secs(2), "不该拖过阈值太久：{elapsed:?}");
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "不该早于阈值：{elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "不该拖过阈值太久：{elapsed:?}"
+        );
     }
 
     /// 一直在推进 → 不中止；推进停止后才从**那一刻**重新计时。
@@ -499,11 +516,7 @@ mod tests {
     /// 测试随即变红——「不限制」被悄悄降级成「立刻超时」是最坏的失败模式。
     #[tokio::test]
     async fn unlimited_wall_clock_never_fires() {
-        let outcome = tokio::time::timeout(
-            Duration::from_millis(150),
-            wait_wall_clock(None),
-        )
-        .await;
+        let outcome = tokio::time::timeout(Duration::from_millis(150), wait_wall_clock(None)).await;
         assert!(outcome.is_err(), "None 必须永不触发");
     }
 

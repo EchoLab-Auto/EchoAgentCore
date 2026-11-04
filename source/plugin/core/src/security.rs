@@ -125,10 +125,8 @@ pub fn redactor_spec(cfg: &CoreConfig) -> echo_plugin_sanitize::RedactorSpec {
     }
     for profile in &agent.api_profiles {
         if !profile.api_key.trim().is_empty() {
-            spec.secrets.push((
-                profile.api_key.clone(),
-                format!("api_key:{}", profile.name),
-            ));
+            spec.secrets
+                .push((profile.api_key.clone(), format!("api_key:{}", profile.name)));
         }
     }
     for var in ["DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"] {
@@ -191,7 +189,6 @@ pub fn sensitive_dirs(config_path: &Path) -> Vec<PathBuf> {
 }
 /// 敏感路径判定（词汇归定义层，与工具插件的出站闸门共用）。
 
-
 /// 递归收集 TOML 表里「看起来是凭据」的字符串值（键名形态匹配）。
 ///
 /// 命中键名（小写比较，含即算）：`token` / `secret` / `password` /
@@ -237,7 +234,7 @@ fn collect_credential_values(table: &toml::Table) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use echo_sanitize::RegistryRedactor;
+    use echo_plugin_sanitize::RegistryRedactor;
 
     use echo_defs::sanitize::sensitive_local_path;
 

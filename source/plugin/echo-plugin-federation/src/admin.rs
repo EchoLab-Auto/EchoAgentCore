@@ -132,10 +132,7 @@ pub fn validate_peer_name(name: &str) -> Result<String, String> {
 ///
 /// 空 token 必须拒绝：accept 侧 `!known.is_empty()` 会永远拒绝、dial 侧不发
 /// 认证头——表现是"保存成功但连不上，且日志里什么也没有"。
-pub fn resolve_token(
-    provided: &str,
-    existing: Option<&PeerSummary>,
-) -> Result<String, String> {
+pub fn resolve_token(provided: &str, existing: Option<&PeerSummary>) -> Result<String, String> {
     let provided = provided.trim();
     if !provided.is_empty() {
         return Ok(provided.to_string());
@@ -357,15 +354,13 @@ async fn handle(
             host.remove_peer(&name).await;
             emit(host.status_event().await);
         }
-        BackendCommand::RequestFederationInvite => {
-            match create_invite(host).await {
-                Ok(invite) => emit(BackendEvent::FederationInvite { invite }),
-                Err(message) => emit(BackendEvent::Error {
-                    session_id: None,
-                    message,
-                }),
-            }
-        }
+        BackendCommand::RequestFederationInvite => match create_invite(host).await {
+            Ok(invite) => emit(BackendEvent::FederationInvite { invite }),
+            Err(message) => emit(BackendEvent::Error {
+                session_id: None,
+                message,
+            }),
+        },
         _ => {}
     }
     serde_json::Value::Null
@@ -451,8 +446,14 @@ mod tests {
         assert_eq!(resolve_token("new", Some(&existing)).as_deref(), Ok("new"));
         assert!(resolve_token("", None).is_err(), "新建必须给 token");
         assert!(
-            resolve_token("", Some(&PeerSummary { name: "a".into(), token: String::new() }))
-                .is_err(),
+            resolve_token(
+                "",
+                Some(&PeerSummary {
+                    name: "a".into(),
+                    token: String::new()
+                })
+            )
+            .is_err(),
             "旧值也是空时不能当继承成功"
         );
     }
@@ -460,7 +461,10 @@ mod tests {
     #[test]
     fn token_must_differ_from_management_token() {
         assert!(validate_token_not_management("t", None).is_ok());
-        assert!(validate_token_not_management("t", Some("")).is_ok(), "空管理令牌不参战");
+        assert!(
+            validate_token_not_management("t", Some("")).is_ok(),
+            "空管理令牌不参战"
+        );
         assert!(validate_token_not_management("t", Some("t")).is_err());
     }
 
@@ -468,8 +472,14 @@ mod tests {
     #[test]
     fn token_must_be_unique_across_peers() {
         let peers = vec![
-            PeerSummary { name: "a".into(), token: "t1".into() },
-            PeerSummary { name: "b".into(), token: String::new() },
+            PeerSummary {
+                name: "a".into(),
+                token: "t1".into(),
+            },
+            PeerSummary {
+                name: "b".into(),
+                token: String::new(),
+            },
         ];
         assert!(validate_token_unique("c", "t2", peers.iter()).is_ok());
         let err = validate_token_unique("c", "t1", peers.iter()).expect_err("冲突必须拒绝");
@@ -483,7 +493,10 @@ mod tests {
         assert!(validate_peer_url("").is_ok(), "空 = 仅接受连入");
         assert!(validate_peer_url("ws://10.0.0.1:3133").is_ok());
         assert!(validate_peer_url("wss://host:443/path").is_ok());
-        assert!(validate_peer_url("http://host:80").is_err(), "必须是 ws/wss");
+        assert!(
+            validate_peer_url("http://host:80").is_err(),
+            "必须是 ws/wss"
+        );
         assert!(validate_peer_url("ws://host").is_err(), "缺端口");
         assert!(validate_peer_url("ws://:3133").is_err(), "缺主机");
         assert!(validate_peer_url("ws://host:99999").is_err(), "端口越界");
@@ -523,7 +536,12 @@ mod tests {
         );
         // 独立监听：观测值的端口属于管理面，邀请必须用联邦监听端口。
         assert_eq!(
-            invite_host("0.0.0.0:3133", "10.10.10.100:3133", Some("10.10.10.100:3132")).as_deref(),
+            invite_host(
+                "0.0.0.0:3133",
+                "10.10.10.100:3133",
+                Some("10.10.10.100:3132")
+            )
+            .as_deref(),
             Some("10.10.10.100:3133")
         );
         // 回环观测值对远端无意义 → 忽略它，回退 advertise。

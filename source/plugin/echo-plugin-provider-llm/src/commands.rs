@@ -132,9 +132,7 @@ impl ProviderCommandHandler {
         let cmd: BackendCommand = match serde_json::from_value(tagged) {
             Ok(cmd) => cmd,
             Err(error) => {
-                return Some(Err(format!(
-                    "provider 命令载荷解析失败（{name}）: {error}"
-                )))
+                return Some(Err(format!("provider 命令载荷解析失败（{name}）: {error}")))
             }
         };
         Some(self.apply(cmd).await.map(|()| serde_json::Value::Null))
@@ -287,7 +285,11 @@ mod tests {
             self.log(format!("switch_api:{name}"));
             Box::pin(async {})
         }
-        fn set_session_api<'a>(&'a self, session_id: &'a str, profile: &'a str) -> BoxFuture<'a, ()> {
+        fn set_session_api<'a>(
+            &'a self,
+            session_id: &'a str,
+            profile: &'a str,
+        ) -> BoxFuture<'a, ()> {
             self.log(format!("set_session_api:{session_id}:{profile}"));
             Box::pin(async {})
         }
@@ -298,7 +300,8 @@ mod tests {
         fn remote_api_profiles<'a>(
             &'a self,
             peer: &'a str,
-        ) -> BoxFuture<'a, Result<(Option<serde_json::Value>, Vec<serde_json::Value>), String>> {
+        ) -> BoxFuture<'a, Result<(Option<serde_json::Value>, Vec<serde_json::Value>), String>>
+        {
             self.log(format!("remote_api_profiles:{peer}"));
             let result = self
                 .remote
@@ -338,7 +341,10 @@ mod tests {
     async fn non_domain_command_is_not_claimed() {
         let (h, host) = handler();
         let out = h
-            .handle("SendMessage", serde_json::json!({"session_id":"s","content":"x"}))
+            .handle(
+                "SendMessage",
+                serde_json::json!({"session_id":"s","content":"x"}),
+            )
             .await;
         assert!(out.is_none());
         assert!(host.calls().is_empty());
@@ -373,15 +379,17 @@ mod tests {
     async fn remote_profiles_failure_becomes_an_error_event() {
         let (h, host) = handler();
         *host.remote.lock().unwrap() = Some(Err("peer offline".into()));
-        h.handle(
-            "RequestRemoteApiProfiles",
-            serde_json::json!({"peer":"n1"}),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        h.handle("RequestRemoteApiProfiles", serde_json::json!({"peer":"n1"}))
+            .await
+            .unwrap()
+            .unwrap();
         match &host.events()[0] {
-            BackendEvent::RemoteApiProfiles { peer, error, profiles, .. } => {
+            BackendEvent::RemoteApiProfiles {
+                peer,
+                error,
+                profiles,
+                ..
+            } => {
                 assert_eq!(peer, "n1");
                 assert_eq!(error.as_deref(), Some("peer offline"));
                 assert!(profiles.is_empty());

@@ -25,15 +25,14 @@
 //! 命令域（`SaveWorkspaceSession` 等 Agent 方法与事件发射）留在宿主
 //! `echo-agent`（`agent/workspace_commands.rs`）——那是接线，不是插件实现。
 
-pub mod host_keys;
 pub mod commands;
+pub mod host_keys;
 
 /// 插件 id（**唯一真值**在这里；宿主的 `WORKSPACE_PLUGIN_ID` 是它的别名）。
 ///
 /// 为什么放插件侧：id 是"这个插件叫什么"，属于插件自己。宿主定义一份常量再
 /// 让插件猜，两边一改就漂移。
 pub const PLUGIN_ID: &str = "echo-agent.workspace";
-
 
 /// 一次远程查询的 future（结果 = 对端回推的 JSON 载荷）���
 ///

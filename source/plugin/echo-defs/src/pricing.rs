@@ -188,7 +188,10 @@ mod tests {
                 .all(|p| p.currency == "CNY" || p.currency == "USD"),
             "币种只能是 CNY 或 USD"
         );
-        for price in pricing.iter().filter(|p| p.model.starts_with("deepseek-v4.1")) {
+        for price in pricing
+            .iter()
+            .filter(|p| p.model.starts_with("deepseek-v4.1"))
+        {
             assert_eq!(price.currency, "USD", "{} 必须按美元计", price.model);
         }
     }

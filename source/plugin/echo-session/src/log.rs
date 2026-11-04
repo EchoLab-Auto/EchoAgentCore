@@ -3,7 +3,6 @@
 
 use std::sync::{Arc, Mutex};
 
-
 use crate::event::SessionEvent;
 
 /// An append-only, per-session event log.
@@ -549,5 +548,4 @@ mod tests {
             other => panic!("wrong variant: {other:?}"),
         }
     }
-
 }

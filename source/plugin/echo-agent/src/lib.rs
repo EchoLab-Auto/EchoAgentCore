@@ -58,8 +58,8 @@ pub use command::BackendCommand;
 pub use config::{AgentConfig, AgentProfile, ReasoningEffort, TeamMember, ThinkingMode};
 pub use echo_plugin_skills::{Skill, SkillRegistry};
 pub use event::{
-    ApiProfileInfo, BackendEvent, ContextMessageInfo, SessionInfo, TimelineMessage,
-    TimelineSource, TimelineTool,
+    ApiProfileInfo, BackendEvent, ContextMessageInfo, SessionInfo, TimelineMessage, TimelineSource,
+    TimelineTool,
 };
 pub use llm::LlmProvider;
 pub use packages::instance_ops::bridge::AgentMessageHook;

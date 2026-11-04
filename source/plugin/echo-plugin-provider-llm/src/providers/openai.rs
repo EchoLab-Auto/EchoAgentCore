@@ -331,7 +331,11 @@ fn parse_sse_event(event: &str) -> Vec<SseOutcome> {
                 tool_call_delta: None,
             }));
         }
-        if let Some(reasoning) = delta.reasoning_content.as_ref().or(delta.reasoning.as_ref()) {
+        if let Some(reasoning) = delta
+            .reasoning_content
+            .as_ref()
+            .or(delta.reasoning.as_ref())
+        {
             outcomes.push(SseOutcome::Chunk(ChatChunk {
                 content_delta: None,
                 reasoning_delta: Some(reasoning.clone()),
@@ -509,7 +513,9 @@ struct MessageWire {
 impl MessageWire {
     /// 思考内容取值：`reasoning_content` 优先，回落 `reasoning`。
     fn take_reasoning(&mut self) -> Option<String> {
-        self.reasoning_content.take().or_else(|| self.reasoning.take())
+        self.reasoning_content
+            .take()
+            .or_else(|| self.reasoning.take())
     }
 }
 
@@ -1102,8 +1108,7 @@ mod tests {
     #[test]
     fn reasoning_field_is_recognised_in_stream_and_response() {
         // 流式
-        let outcomes =
-            parse_sse_event(r#"data: {"choices":[{"delta":{"reasoning":"The user"}}]}"#);
+        let outcomes = parse_sse_event(r#"data: {"choices":[{"delta":{"reasoning":"The user"}}]}"#);
         match &outcomes[0] {
             SseOutcome::Chunk(c) => assert_eq!(c.reasoning_delta.as_deref(), Some("The user")),
             other => panic!("expected Chunk, got {other:?}"),
@@ -1120,10 +1125,9 @@ mod tests {
     /// 字段错误，所以实现是「两个独立字段 + 取值优先级」）。
     #[test]
     fn reasoning_content_wins_when_both_present() {
-        let mut msg: MessageWire = serde_json::from_str(
-            r#"{"content":null,"reasoning":"A","reasoning_content":"B"}"#,
-        )
-        .unwrap();
+        let mut msg: MessageWire =
+            serde_json::from_str(r#"{"content":null,"reasoning":"A","reasoning_content":"B"}"#)
+                .unwrap();
         assert_eq!(msg.take_reasoning().as_deref(), Some("B"));
     }
 

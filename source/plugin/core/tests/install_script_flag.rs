@@ -372,7 +372,8 @@ fn installer_supports_both_service_scopes() {
         "system 作用域应写 /etc/systemd/system"
     );
     assert!(
-        install.contains("SYSTEMCTL=(systemctl --user)") && install.contains("SYSTEMCTL=(systemctl)"),
+        install.contains("SYSTEMCTL=(systemctl --user)")
+            && install.contains("SYSTEMCTL=(systemctl)"),
         "两条作用域各有一套 systemctl 前缀"
     );
     // 所有操作都走数组：漏一处就会在另一条作用域里操作到错误的 manager。
@@ -450,10 +451,9 @@ fn unit_templates_carry_scope_placeholders() {
             "{name} 缺少 @SCOPE_ENV@（ECHO_SERVICE_SCOPE 注入不到）"
         );
     }
-    let core = std::fs::read_to_string(
-        repo_root().join("packaging/systemd/echo-agent-core.service.in"),
-    )
-    .expect("read core unit template");
+    let core =
+        std::fs::read_to_string(repo_root().join("packaging/systemd/echo-agent-core.service.in"))
+            .expect("read core unit template");
     assert!(
         core.contains("@WANTED_BY@"),
         "core 单元模板应把 WantedBy 留给安装期决定"
@@ -481,7 +481,10 @@ fn updater_respects_service_scope() {
         "\"${SYSTEMCTL[@]}\" restart echo-agent-core.service",
         "\"${SYSTEMCTL[@]}\" is-active --quiet echo-agent-core.service",
     ] {
-        assert!(update.contains(call), "update.sh 应经 SYSTEMCTL 调用：{call}");
+        assert!(
+            update.contains(call),
+            "update.sh 应经 SYSTEMCTL 调用：{call}"
+        );
     }
     // 不允许再有裸 `systemctl --user restart`（两条作用域里必有一条是错的）。
     assert!(
@@ -506,12 +509,14 @@ fn external_plugin_hot_update_is_fail_closed_and_core_restart_free() {
     ] {
         // upgrade_preserving_contributions 在 Rust 装配端；其它在脚本端。
         if required == "upgrade_preserving_contributions" {
-            let runtime = repo_root()
-                .join("source/plugin/core/src/plugins_runtime.rs");
+            let runtime = repo_root().join("source/plugin/core/src/plugins_runtime.rs");
             let runtime = std::fs::read_to_string(runtime).expect("read plugins runtime");
             assert!(runtime.contains(required), "外部插件必须使用兼容热替换");
         } else {
-            assert!(update.contains(required), "update.sh 缺少热更新接线：{required}");
+            assert!(
+                update.contains(required),
+                "update.sh 缺少热更新接线：{required}"
+            );
         }
     }
     assert!(

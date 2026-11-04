@@ -42,8 +42,7 @@ use echo_protocol::{
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{
-    debug,info, warn};
+use tracing::{debug, info, warn};
 
 /// 联邦入站监听的缺省地址（组合根「端口合并」规划与 `port` 命令共用）。
 ///
@@ -182,7 +181,14 @@ pub async fn serve_with_federation(
     access_token: String,
     federation: Arc<echo_federation::Federation>,
 ) -> anyhow::Result<()> {
-    serve_internal(addr, bridge, access_token, Some(federation.clone()), Some(federation)).await
+    serve_internal(
+        addr,
+        bridge,
+        access_token,
+        Some(federation.clone()),
+        Some(federation),
+    )
+    .await
 }
 
 async fn serve_internal(
@@ -501,8 +507,8 @@ async fn handle_connection(
             let (ws, role, presented) = accept_merged_ws(stream, access_token, fed.clone())
                 .await
                 .inspect_err(|e| {
-                    warn!(%peer, error = %e, "management handshake rejected");
-                })?;
+                warn!(%peer, error = %e, "management handshake rejected");
+            })?;
             match role {
                 ConnRole::Management => {
                     info!(%peer, merged = true, access = "admin", "panel link up");
@@ -1606,19 +1612,19 @@ mod tests {
         // 同一个请求，但把 `Host` 换成"客户端眼中本机的地址"（公网/NAT 视角）。
         let client_request_from = |token: Option<&str>, host: &str| {
             let mut request = client_request(token);
-            request
-                .headers_mut()
-                .insert("host", host.parse().unwrap());
+            request.headers_mut().insert("host", host.parse().unwrap());
             request
         };
 
         // ⓪ 观测地址（2026-11）：合并端握手回调必须把客户端用的 `Host` 记进
         // 联邦观测表——邀请串据此宣告「别人实际连我用的地址」。
         assert_eq!(fed.observed_host_sync(), None);
-        let (mut observed_ws, _) =
-            tokio_tungstenite::connect_async(client_request_from(Some("mgmt-tok"), "114.132.241.46:3132"))
-                .await
-                .expect("host-carrying upgrade");
+        let (mut observed_ws, _) = tokio_tungstenite::connect_async(client_request_from(
+            Some("mgmt-tok"),
+            "114.132.241.46:3132",
+        ))
+        .await
+        .expect("host-carrying upgrade");
         assert_eq!(
             fed.observed_host_sync().as_deref(),
             Some("114.132.241.46"),
@@ -1850,9 +1856,9 @@ pub fn plugin(version: &str) -> std::sync::Arc<dyn echo_plugin::Plugin> {
     std::sync::Arc::new(
         BuiltinPlugin::new(manifest, move |mctx| {
             let keep_mgmt = bind_mgmt.bind(mctx, &host_keys::MANAGEMENT_HOST)?;
-            let host = bind_serve_mgmt
-                .get()
-                .ok_or_else(|| echo_plugin::PluginMountError::Mount("management host 未绑定".into()))?;
+            let host = bind_serve_mgmt.get().ok_or_else(|| {
+                echo_plugin::PluginMountError::Mount("management host 未绑定".into())
+            })?;
 
             // `plugins.toml` 覆盖监听地址（唯一走这条路的一项）。
             let default_addr = host.default_address();
@@ -1900,6 +1906,3 @@ pub fn plugin(version: &str) -> std::sync::Arc<dyn echo_plugin::Plugin> {
         .with_inject(Inject::new([host_keys::MANAGEMENT_HOST.name().to_string()])),
     )
 }
-
-
-

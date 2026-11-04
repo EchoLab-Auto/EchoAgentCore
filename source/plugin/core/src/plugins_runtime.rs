@@ -569,7 +569,9 @@ mod tests {
         let dir = unique_dir("missing");
         std::fs::create_dir_all(&dir).expect("create temp dir");
         let config_path = dir.join("echo-agent-core.toml");
-        assert!(start_with_specs(&config_path, |_| {}, Vec::new()).await.is_none());
+        assert!(start_with_specs(&config_path, |_| {}, Vec::new())
+            .await
+            .is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -927,7 +929,9 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp dir");
         std::fs::write(dir.join("plugins.toml"), "not = valid = toml [[[").expect("write toml");
         let config_path = dir.join("echo-agent-core.toml");
-        assert!(start_with_specs(&config_path, |_| {}, Vec::new()).await.is_none());
+        assert!(start_with_specs(&config_path, |_| {}, Vec::new())
+            .await
+            .is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

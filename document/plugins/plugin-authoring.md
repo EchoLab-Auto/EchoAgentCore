@@ -2,7 +2,7 @@
 id: plugin-authoring
 title: "插件开发指南"
 group: Core
-x: 8000
+x: 8320
 y: 1200
 ---
 

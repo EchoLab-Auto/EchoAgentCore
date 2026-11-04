@@ -47,8 +47,9 @@ impl SubagentExecutionHost for AgentSubagentHost {
 
     fn tool_definitions(
         &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<echo_defs::tool::ToolDefinition>> + Send + '_>>
-    {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Vec<echo_defs::tool::ToolDefinition>> + Send + '_>,
+    > {
         let agent = Arc::clone(&self.agent);
         Box::pin(async move { (*agent.tools.definitions().await).clone() })
     }
@@ -71,9 +72,8 @@ impl SubagentExecutionHost for AgentSubagentHost {
         profile: &'a str,
     ) -> std::pin::Pin<
         Box<
-            dyn std::future::Future<
-                    Output = Result<Arc<dyn crate::llm::LlmProvider>, String>,
-                > + Send
+            dyn std::future::Future<Output = Result<Arc<dyn crate::llm::LlmProvider>, String>>
+                + Send
                 + 'a,
         >,
     > {
@@ -87,10 +87,7 @@ impl SubagentExecutionHost for AgentSubagentHost {
         let agent = Arc::clone(&self.agent);
         Box::pin(async move {
             let config = agent.model.config.read().await;
-            (
-                config.max_tool_iterations,
-                config.effective_max_tokens(),
-            )
+            (config.max_tool_iterations, config.effective_max_tokens())
         })
     }
 

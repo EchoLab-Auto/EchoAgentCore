@@ -79,7 +79,10 @@ struct Target {
 
 impl Target {
     /// 按 `team_id` 解析目标；解析失败返回用户可读的失败原因。
-    fn resolve(host: &Arc<dyn SessionCommandHost>, team_id: Option<String>) -> Result<Self, String> {
+    fn resolve(
+        host: &Arc<dyn SessionCommandHost>,
+        team_id: Option<String>,
+    ) -> Result<Self, String> {
         match team_id {
             None => Ok(Self {
                 team_id: None,
@@ -123,18 +126,17 @@ impl SessionCommandHandler {
         let tagged = serde_json::json!({ name: payload });
         let cmd: BackendCommand = match serde_json::from_value(tagged) {
             Ok(cmd) => cmd,
-            Err(error) => {
-                return Some(Err(format!(
-                    "会话写命令载荷解析失败（{name}）: {error}"
-                )))
-            }
+            Err(error) => return Some(Err(format!("会话写命令载荷解析失败（{name}）: {error}"))),
         };
-        Some(self.apply_command(cmd).await.map(|()| serde_json::Value::Null))
+        Some(
+            self.apply_command(cmd)
+                .await
+                .map(|()| serde_json::Value::Null),
+        )
     }
 
     /// 强类型入口：宿主/测试已有一条 `BackendCommand` 时，省掉 JSON 往返。
     pub async fn apply_command(&self, cmd: BackendCommand) -> Result<(), String> {
-
         match cmd {
             BackendCommand::ClearHistory {
                 team_id,
@@ -206,10 +208,7 @@ impl SessionCommandHandler {
                 let keep = keep_recent.unwrap_or(40).clamp(10, 500);
                 // 压缩要 provider + 策略插件 → 委托宿主（见模块注释的表）。
                 // team 解析也在宿主里做：失败要回 `team {id} 不存在`。
-                let result = self
-                    .host
-                    .compact(team_id.clone(), &session, keep)
-                    .await;
+                let result = self.host.compact(team_id.clone(), &session, keep).await;
                 match result {
                     Ok(message) => {
                         let target = match Target::resolve(&self.host, team_id) {
@@ -289,12 +288,7 @@ impl SessionCommandHandler {
         );
         let result = target.trunk.archive_session(session).await;
         match &result {
-            Ok(path) => emit(
-                CompactionPhase::Done,
-                1,
-                1,
-                format!("历史已归档：{path}"),
-            ),
+            Ok(path) => emit(CompactionPhase::Done, 1, 1, format!("历史已归档：{path}")),
             Err(error) => emit(CompactionPhase::Failed, 0, 0, format!("归档失败：{error}")),
         }
         result
@@ -352,11 +346,10 @@ mod tests {
             session_id: &'a str,
             keep_recent: usize,
         ) -> BoxFuture<'a, Result<String, String>> {
-            self.compact_calls.lock().unwrap().push((
-                team_id,
-                session_id.to_string(),
-                keep_recent,
-            ));
+            self.compact_calls
+                .lock()
+                .unwrap()
+                .push((team_id, session_id.to_string(), keep_recent));
             let result = self
                 .compact_result
                 .lock()
@@ -386,7 +379,10 @@ mod tests {
     async fn missing_session_is_refused_not_widened() {
         let (handler, host) = handler();
         let out = handler
-            .handle("ClearHistory", serde_json::json!({ "team_id": null, "session_id": null }))
+            .handle(
+                "ClearHistory",
+                serde_json::json!({ "team_id": null, "session_id": null }),
+            )
             .await
             .expect("claimed");
         assert!(out.is_err(), "缺 session 必须报错: {out:?}");

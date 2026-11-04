@@ -149,7 +149,11 @@ impl FederationRuntime {
     ///
     /// 幂等：人格重建（禁用再启用 / 保存后重跑 factory）会用新实例覆盖旧条目，
     /// 于是 `live_personas()` 永远只看到**当前**那一个。
-    pub(crate) async fn register_persona(&self, id: &str, agent: &std::sync::Arc<echo_agent::Agent>) {
+    pub(crate) async fn register_persona(
+        &self,
+        id: &str,
+        agent: &std::sync::Arc<echo_agent::Agent>,
+    ) {
         let mut list = self.personas.write().await;
         let weak = std::sync::Arc::downgrade(agent);
         if let Some(entry) = list.iter_mut().find(|(existing, _)| existing == id) {
@@ -225,9 +229,7 @@ impl FederationRuntime {
     ///
     /// 唯一的真失败是"既没人格也没接线 `__core`"——那时返回空集，调用方
     /// 按 Forbidden 明确回执（而不是让调用方空等超时）。
-    pub(crate) async fn executor_hosts(
-        &self,
-    ) -> Vec<(String, std::sync::Arc<echo_agent::Agent>)> {
+    pub(crate) async fn executor_hosts(&self) -> Vec<(String, std::sync::Arc<echo_agent::Agent>)> {
         let live = self.live_personas().await;
         if !live.is_empty() {
             return live;
@@ -752,7 +754,9 @@ pub(crate) async fn broadcast_federation_status(rt: &FederationRuntime) {
 /// 非 `full_access` 对端的每个绝对路径都会被判越界——fail-closed 到不可用，
 /// 而 `allow_queries = ["*"]` 的互信对端根本看不出差别（沙箱被豁免），
 /// 于是问题只在收紧配置的节点上才暴露。
-fn executor_roots(hosts: &[(String, std::sync::Arc<echo_agent::Agent>)]) -> Vec<std::path::PathBuf> {
+fn executor_roots(
+    hosts: &[(String, std::sync::Arc<echo_agent::Agent>)],
+) -> Vec<std::path::PathBuf> {
     let mut roots: Vec<std::path::PathBuf> = Vec::new();
     for (_id, agent) in hosts {
         if let Some(store) = agent.workspace_store() {
@@ -1100,12 +1104,9 @@ pub(crate) async fn learn_peer_dial_address(
     };
     // 自指防护：对端宣告的竟是本机地址 → 学习只会导致自拨回环。
     let observed = rt.federation.observed_host_sync();
-    let own = echo_plugin_federation::admin::invite_host(
-        &rt.listen,
-        &rt.advertise,
-        observed.as_deref(),
-    )
-    .map(|host_port| format!("ws://{host_port}"));
+    let own =
+        echo_plugin_federation::admin::invite_host(&rt.listen, &rt.advertise, observed.as_deref())
+            .map(|host_port| format!("ws://{host_port}"));
     if own.as_deref() == Some(url.as_str()) {
         return;
     }
@@ -1305,8 +1306,6 @@ pub(crate) fn pick_promoted_peer_name(
     }
     base
 }
-
-
 
 /// 代理工具的包标签（Down 时按它整包禁用）。
 ///
@@ -1628,8 +1627,8 @@ mod remote_tool_install_tests {
         };
         // 本机 schema 复制要用到同名工具定义；没有定义时 proxy_schema 仍会
         // 产出可调用工具（描述退化为简版），这正是它设计上的降级路径。
-        let keepers = super::register_remote_tools_for_agent(&rt, &alice, &peer_info(caps), "gpu-box")
-            .await;
+        let keepers =
+            super::register_remote_tools_for_agent(&rt, &alice, &peer_info(caps), "gpu-box").await;
         assert_eq!(keepers.len(), 2, "两个候选工具都该注册");
         let names = alice.tools.names();
         assert!(
@@ -1710,10 +1709,7 @@ mod remote_tool_install_tests {
         rt.register_persona("alice", &alice2).await;
         let live = rt.live_personas().await;
         assert_eq!(live.len(), 1, "同 id 必须覆盖而不是追加：{}", live.len());
-        assert!(
-            Arc::ptr_eq(&live[0].1, &alice2),
-            "覆盖后必须是新实例"
-        );
+        assert!(Arc::ptr_eq(&live[0].1, &alice2), "覆盖后必须是新实例");
 
         // 旧实例被 drop（模拟人格被删除）→ 自动从表里消失。
         //
@@ -1831,7 +1827,11 @@ mod remote_tool_install_tests {
 
         let hosts = rt.executor_hosts().await;
         let roots = super::executor_roots(&hosts);
-        assert_eq!(roots.len(), 1, "无工作区会话时必须有且仅有一个兜底根: {roots:?}");
+        assert_eq!(
+            roots.len(),
+            1,
+            "无工作区会话时必须有且仅有一个兜底根: {roots:?}"
+        );
         assert_eq!(
             roots[0],
             std::env::current_dir().unwrap(),
@@ -1860,8 +1860,8 @@ mod remote_tool_install_tests {
 mod core_util_tests {
     use super::online_node_for_peer;
     use crate::federation_import::{chunk_utf8, handle_session_import, ImportOutcome};
-    use crate::pick_promoted_peer_name;
     use crate::learnable_peer_url;
+    use crate::pick_promoted_peer_name;
 
     /// 对端地址学习决策（配对无方向性）：仅填空，不覆盖；空宣告不学习。
     #[test]
@@ -1992,12 +1992,10 @@ mod core_util_tests {
     pub(crate) fn session_import_buffers_chunks_then_reports_missing_persona() {
         let rt = super::remote_tool_install_tests::runtime(std::path::Path::new("/tmp"));
         let mut imports = std::collections::HashMap::new();
-        let (acked, outcome) =
-            handle_session_import(&rt, &import_frame(0, 2, "[]"), &mut imports);
+        let (acked, outcome) = handle_session_import(&rt, &import_frame(0, 2, "[]"), &mut imports);
         assert_eq!(acked, 1);
         assert!(matches!(outcome, ImportOutcome::Pending));
-        let (acked, outcome) =
-            handle_session_import(&rt, &import_frame(1, 2, ""), &mut imports);
+        let (acked, outcome) = handle_session_import(&rt, &import_frame(1, 2, ""), &mut imports);
         assert_eq!(acked, 2);
         match outcome {
             ImportOutcome::Failed(message) => assert!(message.contains("不存在")),
@@ -2010,12 +2008,10 @@ mod core_util_tests {
     pub(crate) fn session_import_duplicate_chunks_are_idempotent() {
         let rt = super::remote_tool_install_tests::runtime(std::path::Path::new("/tmp"));
         let mut imports = std::collections::HashMap::new();
-        let (acked, _) =
-            handle_session_import(&rt, &import_frame(0, 3, "[]"), &mut imports);
+        let (acked, _) = handle_session_import(&rt, &import_frame(0, 3, "[]"), &mut imports);
         assert_eq!(acked, 1);
         // 重发第 0 块：ack 仍为 1，不倒退。
-        let (acked, _) =
-            handle_session_import(&rt, &import_frame(0, 3, "[]"), &mut imports);
+        let (acked, _) = handle_session_import(&rt, &import_frame(0, 3, "[]"), &mut imports);
         assert_eq!(acked, 1);
         // 乱序：先到第 2 块不推进前缀（ack 仍 1）。
         let (acked, _) = handle_session_import(&rt, &import_frame(2, 3, ""), &mut imports);
@@ -2043,8 +2039,7 @@ mod core_util_tests {
     pub(crate) fn session_import_rejects_bad_header() {
         let rt = super::remote_tool_install_tests::runtime(std::path::Path::new("/tmp"));
         let mut imports = std::collections::HashMap::new();
-        let (acked, outcome) =
-            handle_session_import(&rt, &import_frame(0, 0, "[]"), &mut imports);
+        let (acked, outcome) = handle_session_import(&rt, &import_frame(0, 0, "[]"), &mut imports);
         assert_eq!(acked, 0);
         assert!(matches!(outcome, ImportOutcome::Failed(_)));
         assert!(imports.is_empty());

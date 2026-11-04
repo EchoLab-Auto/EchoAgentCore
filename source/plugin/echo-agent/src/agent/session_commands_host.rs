@@ -35,7 +35,9 @@ impl AgentSessionCommandHost {
 
     /// 解析目标 persona（`None` / 解析不到 = 本 agent）。
     fn target(&self, team_id: &str) -> Option<Arc<Agent>> {
-        self.agent.registry().and_then(|manager| manager.resolve(team_id))
+        self.agent
+            .registry()
+            .and_then(|manager| manager.resolve(team_id))
     }
 }
 
@@ -85,7 +87,9 @@ impl SessionCommandHost for AgentSessionCommandHost {
             match team_id.as_deref() {
                 Some(id) => match agent.registry().and_then(|manager| manager.resolve(id)) {
                     Some(target) => target.compact_session_history(&session, keep_recent).await,
-                    None if agent.team_id().as_deref() != Some(id) => Err(format!("team {id} 不存在")),
+                    None if agent.team_id().as_deref() != Some(id) => {
+                        Err(format!("team {id} 不存在"))
+                    }
                     None => agent.compact_session_history(&session, keep_recent).await,
                 },
                 None => agent.compact_session_history(&session, keep_recent).await,

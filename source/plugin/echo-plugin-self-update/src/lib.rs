@@ -27,9 +27,9 @@
 
 use std::sync::Arc;
 
+pub mod commands;
 /// 自更新命令域（`RequestSelfUpdate` / `RequestSelfUpdateStatus`）。
 pub mod host_keys;
-pub mod commands;
 
 /// 插件 id（`plugins.toml` / Panel 插件清单同一口径）。
 pub const PLUGIN_ID: &str = "echo-agent.selfupdate";
@@ -76,7 +76,9 @@ pub fn plugin(version: &str) -> Arc<dyn echo_plugin::Plugin> {
                     .handle(&name, payload)
                     .await
                     .unwrap_or_else(|| {
-                        Err(format!("命令 {name} 被 {PLUGIN_ID} 声明，但 self-update 处理器没有认领它"))
+                        Err(format!(
+                            "命令 {name} 被 {PLUGIN_ID} 声明，但 self-update 处理器没有认领它"
+                        ))
                     })
             })
         }),

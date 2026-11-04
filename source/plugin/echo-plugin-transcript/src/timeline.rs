@@ -106,10 +106,7 @@ impl<H: TimelineHost + ?Sized + 'static> TimelineProjector<H> {
                 if instance_name == "timer" {
                     let task = timeline_timer_task(content);
                     let content = match task {
-                        Some(task) => format!(
-                            "定时任务触发 · {}",
-                            truncate_one_line(&task, 120)
-                        ),
+                        Some(task) => format!("定时任务触发 · {}", truncate_one_line(&task, 120)),
                         None => "定时任务触发".into(),
                     };
                     self.host.push(TimelineMessage::system(
@@ -303,7 +300,10 @@ mod tests {
         }
     }
 
-    fn projector() -> (std::sync::Arc<TimelineProjector<FakeHost>>, std::sync::Arc<FakeHost>) {
+    fn projector() -> (
+        std::sync::Arc<TimelineProjector<FakeHost>>,
+        std::sync::Arc<FakeHost>,
+    ) {
         let host = std::sync::Arc::new(FakeHost::default());
         (
             std::sync::Arc::new(TimelineProjector::new(host.clone())),

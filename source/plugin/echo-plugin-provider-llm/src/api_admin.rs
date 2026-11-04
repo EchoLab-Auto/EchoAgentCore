@@ -239,10 +239,7 @@ pub fn api_config_events(snapshot: &ApiSnapshot, model: &str) -> Vec<BackendEven
 /// 探针结果 → `(ok, message)`（面板文案）。
 ///
 /// `content` 是模型回复正文；`Err` 是请求失败原因（已含超时）。
-pub fn probe_result(
-    model: &str,
-    outcome: Result<String, String>,
-) -> (bool, String) {
+pub fn probe_result(model: &str, outcome: Result<String, String>) -> (bool, String) {
     match outcome {
         Ok(content) => {
             let content = content.trim().to_string();
@@ -370,7 +367,10 @@ mod tests {
     #[test]
     fn metrics_targets_dedupes_the_active_profile() {
         let snapshot = snapshot();
-        assert_eq!(metrics_targets(&snapshot), vec!["".to_string(), "p1".into()]);
+        assert_eq!(
+            metrics_targets(&snapshot),
+            vec!["".to_string(), "p1".into()]
+        );
         let mut active = snapshot.clone();
         active.active_api = "p1".into();
         assert_eq!(metrics_targets(&active), vec!["p1".to_string()]);
@@ -422,7 +422,10 @@ mod tests {
         let events = api_config_events(&snapshot, "eff-model");
         match &events[0] {
             BackendEvent::ApiConfigUpdated {
-                provider, model, active_api, ..
+                provider,
+                model,
+                active_api,
+                ..
             } => {
                 assert_eq!(provider, "deepseek");
                 assert_eq!(model, "eff-model");

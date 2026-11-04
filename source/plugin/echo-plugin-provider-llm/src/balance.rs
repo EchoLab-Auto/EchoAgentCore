@@ -183,7 +183,9 @@ mod tests {
             api_key: "sk-x".into(),
             ..Default::default()
         };
-        let error = fetch_balance(&probe).await.expect_err("非 DeepSeek 必须失败");
+        let error = fetch_balance(&probe)
+            .await
+            .expect_err("非 DeepSeek 必须失败");
         assert!(error.contains("api.example.com"), "{error}");
     }
 

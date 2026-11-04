@@ -110,7 +110,7 @@ pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
 
     // ── 运行地基（`kind = "kernel"`）──
     //
-    // 2026-11：取消「中间层 / 插件」二分。这 9 个此前是"只是库"的 crate，
+    // 2026-11：取消「中间层 / 插件」二分。这 8 个此前是"只是库"的 crate，
     // 现在与其它插件同形（有 manifest、进 Panel 清单、可 mount/unmount）。
     // 排最前是因为它们提供的是**其它插件的地基**——先登记身份，读配置时
     // 就能看到完整清单。
@@ -121,6 +121,13 @@ pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
     //
     // `echo-defs` 与 `echo-config` 零 `echo-*` 依赖（铁律），manifest 只能用
     // `push_builtin_identity` 声明——它们的 id 常量仍在各自 crate 里。
+    //
+    // **`echo-sanitize` 不在这一列**（原第 9 个，2026-11 二次收敛）：它的
+    // 唯一生产消费者就是 `echo-plugin-sanitize` 的 `build()`，按
+    // `architecture.md` 的判据（消费者 = 1 → 合并）不该独立成 crate；
+    // 而脱敏本身也不是「禁用后起不来」的地基，占着禁不掉的 kernel 位等于
+    // 给运维一个假动作。实现与身份现同在 `echo-plugin-sanitize`
+    // （`kind = "security"`，唯一关闭路径是 `core.toml`）。
     push_builtin_identity(&mut catalog, version, echo_defs::PLUGIN_ID)?;
     push_builtin_identity(&mut catalog, version, echo_config::PLUGIN_ID)?;
     for plugin in echo_protocol::plugin::plugins(version) {
@@ -136,9 +143,6 @@ pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
         push_plugin(&mut catalog, plugin)?;
     }
     for plugin in echo_federation::plugin::plugins(version) {
-        push_plugin(&mut catalog, plugin)?;
-    }
-    for plugin in echo_sanitize::plugin::plugins(version) {
         push_plugin(&mut catalog, plugin)?;
     }
     for plugin in echo_loop::plugin::plugins(version) {
@@ -187,7 +191,11 @@ pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
     push_plugin(&mut catalog, echo_plugin_federation::plugin(version))?;
 
     // ── subagent 委派（纯身份：工具与 hook 在 echo-agent 侧实现）──
-    push_builtin_identity(&mut catalog, version, echo_agent::plugins::SUBAGENT_PLUGIN_ID)?;
+    push_builtin_identity(
+        &mut catalog,
+        version,
+        echo_agent::plugins::SUBAGENT_PLUGIN_ID,
+    )?;
 
     // ── 显示层（时间线投影 + 会话视图命令域）──
     //
@@ -208,6 +216,12 @@ pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
         push_plugin(&mut catalog, plugin)?;
     }
 
+    // ── Web Panel（可选；缺省不挂载）──
+    //
+    // 复用 Panel 仓的 echo-web-server 运行库；独立 `echo-agent-panel` 外壳
+    // 继续可用。只有 plugins.toml 里显式 `enabled = true` 才占用 HTTP 端口。
+    push_plugin(&mut catalog, echo_plugin_panel::plugin(version))?;
+
     // ── LLM provider（工厂 + 池规则 + API 命令域）──
     push_plugin(&mut catalog, echo_plugin_provider_llm::plugin(version))?;
 
@@ -225,39 +239,43 @@ pub(crate) fn catalog(version: &str) -> anyhow::Result<Vec<Arc<dyn Plugin>>> {
 /// 参数只剩平台名（配置事实）；启停控制从 [`crate::host_services::INSTANCE_CONTROL`]
 /// 服务键解析——那是宿主的运行期句柄，不该出现在目录签名里。
 pub(crate) fn instance_plugin(version: &str, platform: &str) -> Arc<dyn Plugin> {
-    
     let plugin_id = crate::instance_manifests::plugin_id_for(platform);
     let name = format!("{platform} 插件实例");
     let description = format!("{platform} 平台实例插件（独立进程）");
     let plugin_id_for_mount = plugin_id.clone();
-    Arc::new(
-        BuiltinPlugin::new(
-            PluginManifest::builtin(&plugin_id, &name, version, "instance", platform, description)
-                // 实例插件化收尾（P1.9，2026-10）：实现由独立进程提供，这里只是
-                // 门控壳。必须显式声明，否则面板按 builtin=true 把它显示成
-                // 「内部插件」。
-                .with_runtime(PluginRuntime::Subprocess),
-            move |mctx| {
-                // 启停控制是可选的：没有实例句柄的部署（不跑平台）照样能挂上。
-                let control = mctx.service(&crate::host_services::INSTANCE_CONTROL);
-                if let Some(control) = &control {
-                    if control.is_wired() {
-                        let control = Arc::clone(control);
-                        tokio::spawn(async move { control.start().await });
-                    }
+    Arc::new(BuiltinPlugin::new(
+        PluginManifest::builtin(
+            &plugin_id,
+            &name,
+            version,
+            "instance",
+            platform,
+            description,
+        )
+        // 实例插件化收尾（P1.9，2026-10）：实现由独立进程提供，这里只是
+        // 门控壳。必须显式声明，否则面板按 builtin=true 把它显示成
+        // 「内部插件」。
+        .with_runtime(PluginRuntime::Subprocess),
+        move |mctx| {
+            // 启停控制是可选的：没有实例句柄的部署（不跑平台）照样能挂上。
+            let control = mctx.service(&crate::host_services::INSTANCE_CONTROL);
+            if let Some(control) = &control {
+                if control.is_wired() {
+                    let control = Arc::clone(control);
+                    tokio::spawn(async move { control.start().await });
                 }
-                let plugin_id = plugin_id_for_mount.clone();
-                Ok(vec![Disposer::from_fn(move || {
-                    // 卸载：停实例（门控由宿主的挂载/卸载事件统一拨）。
-                    if let Some(control) = &control {
-                        let control = Arc::clone(control);
-                        tokio::spawn(async move { control.stop().await });
-                    }
-                    let _ = &plugin_id;
-                })])
-            },
-        ),
-    )
+            }
+            let plugin_id = plugin_id_for_mount.clone();
+            Ok(vec![Disposer::from_fn(move || {
+                // 卸载：停实例（门控由宿主的挂载/卸载事件统一拨）。
+                if let Some(control) = &control {
+                    let control = Arc::clone(control);
+                    tokio::spawn(async move { control.stop().await });
+                }
+                let _ = &plugin_id;
+            })])
+        },
+    ))
 }
 
 /// 外部插件条目（`plugins.toml` 的非 builtin 行）的**名单壳**。
@@ -265,10 +283,7 @@ pub(crate) fn instance_plugin(version: &str, platform: &str) -> Arc<dyn Plugin> 
 /// 子进程由 supervisor 拉起，这里的 mount 是**名义挂载**——它让条目出现在面板
 /// 的插件清单里（此前用户装的插件在清单里根本看不到）。禁用要重启 Core 生效，
 /// 重启按钮对这类条目回「请重启 Core」。
-pub(crate) fn external_plugin(
-    version: &str,
-    entry: &ExternalEntry,
-) -> Arc<dyn Plugin> {
+pub(crate) fn external_plugin(version: &str, entry: &ExternalEntry) -> Arc<dyn Plugin> {
     Arc::new(BuiltinPlugin::new(
         // `builtin = false`：来源维度上它不是编译进本二进制的（面板的来源徽标
         // 读这个字段，分组读 `runtime`——两者正交，别互相顶替）。
@@ -488,7 +503,6 @@ mod catalog_shape_tests {
             echo_tool::plugin::PLUGIN_ID,
             echo_shell::plugin::PLUGIN_ID,
             echo_federation::plugin::PLUGIN_ID,
-            echo_sanitize::plugin::PLUGIN_ID,
             echo_loop::plugin::PLUGIN_ID,
         ] {
             assert!(ids.iter().any(|c| c == id), "kernel {id} 不在 catalog 里");
@@ -633,6 +647,29 @@ mod catalog_shape_tests {
     }
 
     /// 目录里不许有幽灵条目：id 的空段（`echo-agent.instance.`）是派生 bug。
+    /// 可选 Panel 默认不监听；显式配置启用才进入实际挂载。
+    #[test]
+    fn embedded_panel_is_opt_in() {
+        let catalog = catalog("0.0.0-test").expect("目录构造");
+        let ids: Vec<String> = catalog.iter().map(|p| p.manifest().id.clone()).collect();
+        let (plan, _) = echo_agent::plugins::resolve_mount_order(&ids, &[]);
+        let step = plan
+            .iter()
+            .find(|step| step.id == echo_plugin_panel::PLUGIN_ID)
+            .unwrap();
+        assert!(!step.enabled);
+        let explicit = vec![echo_agent::plugins::MountStep::new(
+            echo_plugin_panel::PLUGIN_ID,
+            true,
+        )];
+        let (plan, _) = echo_agent::plugins::resolve_mount_order(&ids, &explicit);
+        let step = plan
+            .iter()
+            .find(|step| step.id == echo_plugin_panel::PLUGIN_ID)
+            .unwrap();
+        assert!(step.enabled);
+    }
+
     #[test]
     fn catalog_ids_are_well_formed() {
         let catalog = catalog("0.0.0-test").expect("目录构造");
@@ -675,16 +712,20 @@ mod tests {
     /// 同一条命令被两个插件声明 → 装配期失败（否则先挂上的静默赢）。
     #[test]
     fn duplicate_command_declarations_are_rejected() {
-        let one = Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin("a.one", "a", "0", "tool", "a", "a"),
-            |_| Ok(vec![]),
-        )
-        .with_commands(["Shared"]));
-        let two = Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin("a.two", "b", "0", "tool", "b", "b"),
-            |_| Ok(vec![]),
-        )
-        .with_commands(["Shared"]));
+        let one = Arc::new(
+            BuiltinPlugin::new(
+                PluginManifest::builtin("a.one", "a", "0", "tool", "a", "a"),
+                |_| Ok(vec![]),
+            )
+            .with_commands(["Shared"]),
+        );
+        let two = Arc::new(
+            BuiltinPlugin::new(
+                PluginManifest::builtin("a.two", "b", "0", "tool", "b", "b"),
+                |_| Ok(vec![]),
+            )
+            .with_commands(["Shared"]),
+        );
         let err = reject_duplicate_commands(&[one, two]).expect_err("重名必须报错");
         assert!(err.to_string().contains("Shared"), "{err}");
     }
@@ -707,11 +748,13 @@ mod tests {
     /// 声明宿主保留命令 → 装配期失败（分发器永远不会路由给它）。
     #[test]
     fn reserved_command_declarations_are_rejected() {
-        let plugin = Arc::new(BuiltinPlugin::new(
-            PluginManifest::builtin("a.bad", "bad", "0", "tool", "bad", "bad"),
-            |_| Ok(vec![]),
-        )
-        .with_commands(["RequestPluginsList"]));
+        let plugin = Arc::new(
+            BuiltinPlugin::new(
+                PluginManifest::builtin("a.bad", "bad", "0", "tool", "bad", "bad"),
+                |_| Ok(vec![]),
+            )
+            .with_commands(["RequestPluginsList"]),
+        );
         let err = reject_reserved_commands(&[plugin]).expect_err("保留命令必须报错");
         assert!(err.to_string().contains("RequestPluginsList"), "{err}");
     }

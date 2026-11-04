@@ -20,7 +20,7 @@ link: []
 | 来源 / 运行形态 | 内置（`builtin = true`）/ 进程内 |
 | 作用域 | **`Process`**（`KIND_SCOPE`）——人格白名单碰不到它 |
 | 实现 crate | `source/plugin/echo-plugin-sanitize` |
-| 默认 provider | `echo-sanitize` 的 `RegistryRedactor` |
+| 默认 provider | 本插件内的 `RegistryRedactor`（`src/registry.rs`） |
 
 ## 贡献
 

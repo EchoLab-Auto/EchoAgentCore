@@ -91,6 +91,11 @@ mod tests {
         let script_path = repo_root.join("scripts/update.sh");
         let script = std::fs::read_to_string(&script_path)
             .unwrap_or_else(|e| panic!("read {}: {e}", script_path.display()));
+        // Panel 内嵌是可选内置，但 update.sh 的二进制清单校验也必须覆盖。
+        assert!(
+            script.contains("echo-agent.panel.web"),
+            "update.sh 缺少可选 Panel 插件 id"
+        );
 
         // 脚本里的固定清单（`expected_ids="..."` 那一行）。
         let line = script

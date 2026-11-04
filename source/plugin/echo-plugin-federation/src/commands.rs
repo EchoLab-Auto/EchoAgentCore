@@ -106,10 +106,7 @@ mod tests {
         let (bridge, _events) = bridge(FederationPorts::unlinked());
         for name in ["SendMessage", "ToggleTool", "RequestPluginsList", ""] {
             assert!(
-                bridge
-                    .handle(name, serde_json::Value::Null)
-                    .await
-                    .is_none(),
+                bridge.handle(name, serde_json::Value::Null).await.is_none(),
                 "{name} 不该被联邦认领"
             );
         }
@@ -121,7 +118,10 @@ mod tests {
         let (unwired, _events) = bridge(FederationPorts::unlinked());
         // 未接线时先走"联邦未启用"分支（不解析载荷）：不许 panic。
         unwired
-            .handle("SaveFederationPeer", serde_json::json!({"peer": {"bogus": 1}}))
+            .handle(
+                "SaveFederationPeer",
+                serde_json::json!({"peer": {"bogus": 1}}),
+            )
             .await
             .expect("本域命令")
             .ok();
@@ -130,7 +130,10 @@ mod tests {
         ports.admin = Some(Arc::new(NoopAdmin));
         let (wired, _events) = bridge(ports);
         let error = wired
-            .handle("SaveFederationPeer", serde_json::json!({"peer": {"bogus": 1}}))
+            .handle(
+                "SaveFederationPeer",
+                serde_json::json!({"peer": {"bogus": 1}}),
+            )
             .await
             .expect("本域命令")
             .expect_err("载荷非法必须报错");
@@ -367,7 +370,10 @@ mod tests {
             })
             .unwrap_or_else(|| panic!("必须发出邀请串事件：{events:?}"));
         assert!(invite.starts_with("echofed://"), "{invite}");
-        assert!(invite.contains("10.0.0.1%3A3133") || invite.contains("10.0.0.1:3133"), "{invite}");
+        assert!(
+            invite.contains("10.0.0.1%3A3133") || invite.contains("10.0.0.1:3133"),
+            "{invite}"
+        );
         let registered = host.registered.lock().unwrap();
         assert_eq!(registered.len(), 1, "必须登记占位");
         assert!(registered[0].0.starts_with("invite-"), "{registered:?}");

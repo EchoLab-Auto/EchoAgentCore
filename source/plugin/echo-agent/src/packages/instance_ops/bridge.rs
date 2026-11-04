@@ -173,12 +173,12 @@ impl AgentMessageHook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use echo_defs::chat::ChannelType;
     use crate::llm::{
         ChatChunk, ChatRequest, ChatResponse, LlmError, LlmProvider, ToolCall, Usage,
     };
     use crate::tool::{Tool, ToolError};
     use async_trait::async_trait;
+    use echo_defs::chat::ChannelType;
     use echo_defs::chat::IncomingMessage;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -586,7 +586,11 @@ mod tests {
             "tester".into(),
             None,
         );
-        let hook_input = echo_defs::input_marker::format_instance_hook(&msg, 1, chrono::Utc::now().timestamp_millis());
+        let hook_input = echo_defs::input_marker::format_instance_hook(
+            &msg,
+            1,
+            chrono::Utc::now().timestamp_millis(),
+        );
         let snapshot = agent
             .record_incoming_and_snapshot(&session, &hook_input)
             .await;
@@ -680,8 +684,14 @@ mod tests {
             .iter()
             .filter_map(|message| crate::agent::structured_message_sequence(&message.content))
             .collect::<Vec<_>>();
-        assert!(user_sequences.contains(&1), "第一条用户消息必须在: {user_sequences:?}");
-        assert!(!user_sequences.contains(&3), "取消命令不是用户 turn: {user_sequences:?}");
+        assert!(
+            user_sequences.contains(&1),
+            "第一条用户消息必须在: {user_sequences:?}"
+        );
+        assert!(
+            !user_sequences.contains(&3),
+            "取消命令不是用户 turn: {user_sequences:?}"
+        );
         // 取消回执记在**平台会话**（控制回执走 `record_control_reply(&session, …)`，
         // 与 turn 所在的默认会话不是同一个）——两条路径分属两个会话，别混着查。
         let platform_session = agent

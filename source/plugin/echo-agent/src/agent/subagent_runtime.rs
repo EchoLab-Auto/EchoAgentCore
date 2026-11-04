@@ -72,8 +72,10 @@ impl Agent {
         // 注册到**注册表寿命**（agent 消失时整表释放）：不用 `register_reversible`
         // ——它返回的 `Disposer` 一旦在这里被 drop，工具会当场注销。
         self.tools.register_shared(Arc::new(tool));
-        self.tools
-            .set_package(crate::subagent::SPAWN_SUBAGENT_TOOL, crate::plugins::SUBAGENT_PLUGIN_ID);
+        self.tools.set_package(
+            crate::subagent::SPAWN_SUBAGENT_TOOL,
+            crate::plugins::SUBAGENT_PLUGIN_ID,
+        );
         store.spawn_sweeper(self.turns.cancel.clone());
     }
 
@@ -100,7 +102,9 @@ impl Agent {
             );
             return;
         };
-        let host = Arc::new(crate::agent::subagent_host::AgentSubagentHost::new(Arc::clone(self)));
+        let host = Arc::new(crate::agent::subagent_host::AgentSubagentHost::new(
+            Arc::clone(self),
+        ));
         crate::subagent::execution::spawn_execution(host, store, request);
     }
 

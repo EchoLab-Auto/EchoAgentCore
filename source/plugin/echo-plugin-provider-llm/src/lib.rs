@@ -39,9 +39,9 @@ pub mod admin;
 pub mod api_admin;
 pub mod api_pool;
 pub mod balance;
+pub mod commands;
 /// 供应商 / API 命令域（全插件化 S5：13 条命令的归属关系）。
 pub mod host_keys;
-pub mod commands;
 pub mod metrics;
 /// 各协议客户端（OpenAI 兼容 / Anthropic Messages / Ollama）。
 ///
@@ -129,9 +129,7 @@ pub fn plugin(version: &str) -> Arc<dyn echo_plugin::Plugin> {
             let keep = bind.bind(mctx, &host_keys::PROVIDER_HOST)?;
             Ok(vec![keep])
         })
-        .with_inject(Inject::new([
-            host_keys::PROVIDER_HOST.name().to_string(),
-        ]))
+        .with_inject(Inject::new([host_keys::PROVIDER_HOST.name().to_string()]))
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
             let serve = serve.clone();
@@ -145,7 +143,9 @@ pub fn plugin(version: &str) -> Arc<dyn echo_plugin::Plugin> {
                     .handle(&name, payload)
                     .await
                     .unwrap_or_else(|| {
-                        Err(format!("命令 {name} 被 {PLUGIN_ID} 声明，但 provider 处理器没有认领它"))
+                        Err(format!(
+                            "命令 {name} 被 {PLUGIN_ID} 声明，但 provider 处理器没有认领它"
+                        ))
                     })
             })
         }),

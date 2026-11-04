@@ -399,9 +399,7 @@ impl TurnRunner {
                     .run(call, move || {
                         let session_id = session_id_owned.clone();
                         let call = call_for_executor.clone();
-                        Box::pin(async move {
-                            execute_tool(&session_id, "", &call).await
-                        })
+                        Box::pin(async move { execute_tool(&session_id, "", &call).await })
                     })
                     .await;
                 let outcome = match result {

@@ -558,7 +558,11 @@ async fn plugin_list_reports_mounted_plugins_only() {
 
     // 清单只列出**挂载中**的插件：卸载后从清单消失（没有 enabled 字段，
     // 因为"禁用"这个动作已经删除——插件只有挂载 / 没挂载）。
-    agent.plugin_host().registry.unmount("test.plugin.one").unwrap();
+    agent
+        .plugin_host()
+        .registry
+        .unmount("test.plugin.one")
+        .unwrap();
     agent
         .apply_command(BackendCommand::RequestPluginsList)
         .await;
@@ -589,10 +593,9 @@ async fn toggle_skill_enables_and_disables() {
     // 命令域归插件（全插件化 S3）：驱动**插件侧处理器**而不是 `apply_command`
     // ——后者在"插件未安装"时会回"插件未启用"。这样测的仍是能力本身
     // （启停 + 持久化 + 全局策略），而不依赖插件装配。
-    let host: Arc<dyn echo_agent::skill::commands::SkillsCommandHost> =
-        Arc::new(echo_agent::agent::skills_host::AgentSkillsCommandHost::new(
-            agent.clone(),
-        ));
+    let host: Arc<dyn echo_agent::skill::commands::SkillsCommandHost> = Arc::new(
+        echo_agent::agent::skills_host::AgentSkillsCommandHost::new(agent.clone()),
+    );
     let handler = echo_agent::skill::commands::SkillsCommandHandler::new(host);
 
     handler
@@ -1447,9 +1450,9 @@ async fn package_gating_spans_tools_and_skills() {
 /// `echo-plugin-provider-llm` 认领，测试直接打宿主接缝（插件侧的派发测试在
 /// 那个 crate 里），于是这些用例仍然只验证"命令做了什么"。
 async fn apply_via_provider_plugin(agent: &Arc<Agent>, cmd: BackendCommand) {
-    let host = Arc::new(echo_agent::agent::provider_host::AgentProviderCommandHost::new(
-        Arc::clone(agent),
-    ));
+    let host = Arc::new(
+        echo_agent::agent::provider_host::AgentProviderCommandHost::new(Arc::clone(agent)),
+    );
     let handler = echo_plugin_provider_llm::commands::ProviderCommandHandler::new(host);
     handler
         .handle(cmd.kind_name(), cmd.payload_value())
@@ -1476,12 +1479,18 @@ async fn spawn_subagent_exists_only_when_runtime_attached() {
     // 未装配：注册表里没有它（模型看不到 schema，调用按未注册报错）。
     let (bare, _) = test_agent("ok");
     assert!(
-        !bare.tools.names().contains(&SPAWN_SUBAGENT_TOOL.to_string()),
+        !bare
+            .tools
+            .names()
+            .contains(&SPAWN_SUBAGENT_TOOL.to_string()),
         "未装配运行态时不该注册"
     );
     // 装配后：注册表里有它，且带 subagent 插件包标签（门控按包生效）。
     let (agent, _) = test_agent_with_subagent("ok");
-    assert!(agent.tools.names().contains(&SPAWN_SUBAGENT_TOOL.to_string()));
+    assert!(agent
+        .tools
+        .names()
+        .contains(&SPAWN_SUBAGENT_TOOL.to_string()));
     assert_eq!(
         agent.tools.package_of(SPAWN_SUBAGENT_TOOL).as_deref(),
         Some(echo_agent::plugins::SUBAGENT_PLUGIN_ID),

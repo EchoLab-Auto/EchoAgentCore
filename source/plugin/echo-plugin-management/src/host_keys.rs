@@ -15,8 +15,6 @@ use echo_context::ServiceKey;
 use echo_federation::Federation;
 use echo_protocol::BackendBridge;
 
-
-
 /// 管理面需要宿主提供的一切。
 pub trait ManagementHost: Send + Sync {
     /// `core.toml` 里的监听地址（缺省值；`plugins.toml` 可覆盖）。

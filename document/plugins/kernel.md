@@ -46,7 +46,6 @@ link: []
 | `echo-agent.kernel.tool` | 工具无处注册，模型看不到任何工具 |
 | `echo-agent.kernel.shell` | `bash-*` 工具全部失效 |
 | `echo-agent.kernel.federation` | 对端解析不了帧（链路跨进程，格式是硬契约） |
-| `echo-agent.kernel.sanitize` | 内核照常启动，但不再脱敏——见下方「唯一的例外」 |
 | `echo-agent.kernel.loop` | 没有 turn/step 驱动，输入永不被消费 |
 
 在 `plugins.toml` 里给它们写 `enabled = false` 时，**启动失败并点名那一条**：
@@ -55,15 +54,22 @@ link: []
 Error: kernel plugin cannot be disabled: plugins.toml 试图禁用 kernel 插件
 "echo-agent.kernel.tool"——它们是其它插件的运行地基（kind = "kernel"），
 禁用后系统无法启动。
+请删掉那一行的 `enabled = false`，或在 `[security.sanitize]` 这类
+专属开关里关闭对应能力（脱敏）而不是禁用插件。
 ```
 
 为什么不是"静默跳过"：那等于给了运维一个**假动作**——"我关掉了它，系统还在跑"。实际后果要么是启动到一半才发现缺东西，要么是运行期某个能力静默失效。假动作比不给开关更糟。
 
-### 唯一的例外：`kernel.sanitize`
+## 脱敏为什么不在这里
 
-脱敏技术上可关（内核照常起，只是不再脱敏），但它标为 kernel 的理由是**安全不变量不该出现在能力开关里**。真正的关闭路径是 `core.toml` 的 `[security.sanitize].enabled = false`——它需要重启，并在启动日志里发一条明确的 `warn!`。
+`echo-agent.kernel.sanitize` 曾是这个列表的第 9 项（crate `echo-sanitize`，2026-11 与其它中间层一起补了 manifest）。2026-11 二次收敛时撤销，两条理由：
 
-## 九个成员
+1. **不符合判据**。kernel 的判据是「禁用之后系统还能不能起来」；脱敏关掉后内核照常启动，只是不再脱敏。它自己也一直在文档里被称作「唯一的例外」——一个需要例外的判据其实是判据没写对。
+2. **没有消费者**。该 crate 在生产路径上的唯一引用是 `echo-plugin-sanitize` 的 `build()`，其余全在 `#[cfg(test)]` 里。按 [架构总览](../overview/architecture.md) 的判据（消费者 = 1 → 合并），它本就该是那个插件的实现细节。
+
+现在：实现（`registry.rs`）+ 构造（`build`）+ 身份（`kind = "security"`）同处 `echo-plugin-sanitize`。关闭脱敏的唯一路径仍是 `core.toml` 的 `[security.sanitize].enabled = false`（需重启 + 启动日志 `warn!`），见 [敏感信息隔离](../core/security-redaction.md)。
+
+## 八个成员
 
 | id | crate | 职责 | 有运行期状态 |
 |---|---|---|---|
@@ -74,7 +80,6 @@ Error: kernel plugin cannot be disabled: plugins.toml 试图禁用 kernel 插件
 | `echo-agent.kernel.tool` | `echo-tool` | `ToolRegistry`：可逆注册 + 定义缓存 + 出口脱敏 | ✅ `ToolRegistry` |
 | `echo-agent.kernel.shell` | `echo-shell` | bash 子进程会话：进程组生命周期 + 哨兵分帧 | ✅ `ShellManager` |
 | `echo-agent.kernel.federation` | `echo-federation` | Core↔Core 线协议：帧 / Hello / 邀请 / 重连 | ✅ 链路 |
-| `echo-agent.kernel.sanitize` | `echo-sanitize` | `RegistryRedactor`：Aho-Corasick + 保守模式集 | ✅ 脱敏器 |
 | `echo-agent.kernel.loop` | `echo-loop` | `TurnRunner`：turn/step 状态机 + `ToolPipeline` | ✅ 状态机类型 |
 
 ## `mount` 为什么是空的（纯身份声明）
@@ -87,7 +92,6 @@ Error: kernel plugin cannot be disabled: plugins.toml 试图禁用 kernel 插件
 | `session` | 每 persona 一份 trunk（`echo-plugin-session` 持有） | 在此 provide 会造出"全局日志"的假象 |
 | `shell` | `ShellManager` 要绑定宿主事件出口 | 那是组合根装配期的信息 |
 | `federation` | 链路泵要 peers 表 + 出站通道 | 只有组合根知道 |
-| `sanitize` | 脱敏器必须在 `llm` 服务注册**之前**就绪 | 插件 mount 发生在那之后 |
 | `config` | `ConfigStore` 要配置路径（`--config` 参数） | 插件在挂载期拿不到 |
 | `defs` / `protocol` | — | 纯编译期概念，没有运行期对象可注册 |
 | `loop` | `TurnRunner` 由 `echo-plugin-loop` 在 mount 里构造 | 本 crate 只提供状态机**类型** |

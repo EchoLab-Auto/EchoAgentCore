@@ -35,15 +35,15 @@ use std::sync::Arc;
 
 use echo_tool::ToolRegistry;
 
-pub mod host_keys;
 pub mod calculator;
 pub mod checklist;
 pub mod coding;
+pub mod host_keys;
 pub mod instance;
 pub mod instance_bridge;
-pub mod list_api_profiles;
 pub mod instance_commands;
 pub mod instance_ops;
+pub mod list_api_profiles;
 pub mod plugin;
 pub mod session;
 pub mod tool_commands;
@@ -53,9 +53,13 @@ pub use calculator::CalculatorTool;
 pub use checklist::ChecklistTool;
 pub use coding::{register_coding_tools, RemoteAwareTool};
 pub use instance::register_instance_tools;
+pub use instance_commands::{
+    InstanceCommandHandler, InstanceCommandHost, COMMANDS as INSTANCE_COMMANDS,
+};
+pub use instance_ops::{
+    broadcast_to_same_platform, invoke_method, resolve_instance, InstanceOpRunner,
+};
 pub use list_api_profiles::ListApiProfilesTool;
-pub use instance_ops::{broadcast_to_same_platform, invoke_method, resolve_instance, InstanceOpRunner};
-pub use instance_commands::{InstanceCommandHandler, InstanceCommandHost, COMMANDS as INSTANCE_COMMANDS};
 pub use plugin::{BuiltinToolProvider, BuiltinTools, ToolsHostCtx, PLUGIN_ID};
 pub use tool_commands::{ToolsCommandHandler, ToolsCommandHost, COMMANDS as TOOL_COMMANDS};
 pub use websearch::WebSearchTool;

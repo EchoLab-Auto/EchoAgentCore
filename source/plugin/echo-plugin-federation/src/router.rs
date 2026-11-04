@@ -634,7 +634,13 @@ mod tests {
     /// 建一个装好文件的注册表（5 个文件工具 + bash，语义同内置工具族）。
     fn file_registry() -> Arc<ToolRegistry> {
         let registry = Arc::new(ToolRegistry::new());
-        for name in ["read_file", "write_file", "edit_file", "list_files", "search_code"] {
+        for name in [
+            "read_file",
+            "write_file",
+            "edit_file",
+            "list_files",
+            "search_code",
+        ] {
             registry.register_shared(Arc::new(DeclaredTool {
                 name,
                 remote: true,

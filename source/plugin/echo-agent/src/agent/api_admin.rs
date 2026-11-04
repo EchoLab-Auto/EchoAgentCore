@@ -18,9 +18,7 @@
 //! 同输出——复制是"插件不依赖宿主配置类型"的代价，测试是这笔代价的利息。
 
 use super::*;
-use echo_plugin_provider_llm::api_admin::{
-    self as admin_api, ApiAdminHost, ApiSnapshot,
-};
+use echo_plugin_provider_llm::api_admin::{self as admin_api, ApiAdminHost, ApiSnapshot};
 
 impl Agent {
     /// Current API configuration summary (for the TUI settings form).
@@ -273,7 +271,8 @@ impl Agent {
                     }
                 }
                 pool::PoolEffect::BroadcastApiConfig => {}
-                pool::PoolEffect::Notice(_) | pool::PoolEffect::Persist
+                pool::PoolEffect::Notice(_)
+                | pool::PoolEffect::Persist
                 | pool::PoolEffect::BroadcastTeams => {}
             }
         }
@@ -873,8 +872,7 @@ impl Agent {
 /// 宿主只负责把它自己的配置类型序列化成表（`#[serde(skip_serializing)]` 之类
 /// 的细节宿主最清楚）。
 fn patch_agent_table(root: &mut toml::Table, cfg: &AgentConfig) -> Result<(), String> {
-    let value =
-        toml::Value::try_from(cfg).map_err(|e| format!("serialize agent config: {e}"))?;
+    let value = toml::Value::try_from(cfg).map_err(|e| format!("serialize agent config: {e}"))?;
     admin_api::patch_agent_table(root, value, &cfg.api_key)
 }
 
@@ -978,7 +976,9 @@ impl AgentApiAdminHost {
 }
 
 impl ApiAdminHost for AgentApiAdminHost {
-    fn snapshot(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ApiSnapshot> + Send + '_>> {
+    fn snapshot(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ApiSnapshot> + Send + '_>> {
         Box::pin(async move {
             let config = self.agent.model.config.read().await.clone();
             api_snapshot_of(&config)
@@ -1010,9 +1010,8 @@ impl ApiAdminHost for AgentApiAdminHost {
     fn probe<'a>(
         &'a self,
         snapshot: ApiSnapshot,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
+    {
         Box::pin(async move {
             // 探针用**临时** provider（不碰运行中的那个）：建失败 / 超时都
             // 只影响这一次测试。
@@ -1027,11 +1026,8 @@ impl ApiAdminHost for AgentApiAdminHost {
                 temperature: Some(0.0),
                 max_tokens: Some(4),
             };
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(20),
-                provider.chat(&request),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_secs(20), provider.chat(&request))
+                .await
             {
                 Ok(Ok(response)) => Ok(response.content.unwrap_or_default()),
                 Ok(Err(error)) => Err(format!("{error}")),
@@ -1075,7 +1071,10 @@ mod snapshot_parity_tests {
         let snapshot = api_snapshot_of(&config);
         assert_eq!(snapshot.effective_api_key(), config.effective_api_key());
         assert_eq!(snapshot.effective_base_url(), config.effective_base_url());
-        assert_eq!(snapshot.active_profile().map(|p| &p.name), config.active_profile().map(|p| &p.name));
+        assert_eq!(
+            snapshot.active_profile().map(|p| &p.name),
+            config.active_profile().map(|p| &p.name)
+        );
 
         // 口径二：激活 profile 的非空覆盖。
         config.active_api = "p1".into();
@@ -1090,8 +1089,14 @@ mod snapshot_parity_tests {
         assert_eq!(plugin_side.api_key, agent_side.api_key);
         assert_eq!(plugin_side.thinking, agent_side.thinking);
         assert_eq!(plugin_side.reasoning_effort, agent_side.reasoning_effort);
-        assert_eq!(plugin_side.effective_api_key(), agent_side.effective_api_key());
-        assert_eq!(plugin_side.effective_base_url(), agent_side.effective_base_url());
+        assert_eq!(
+            plugin_side.effective_api_key(),
+            agent_side.effective_api_key()
+        );
+        assert_eq!(
+            plugin_side.effective_base_url(),
+            agent_side.effective_base_url()
+        );
 
         // 口径三：探针配置解析（具名 profile 的空字段回退）。
         let host_probe = resolve_probe_config(&config, "p1").expect("host probe");
@@ -1101,7 +1106,10 @@ mod snapshot_parity_tests {
         assert_eq!(host_probe.api_key, plugin_probe.api_key);
 
         // 口径四：指标目标列表。
-        assert_eq!(metrics_targets(&config), admin_api::metrics_targets(&snapshot));
+        assert_eq!(
+            metrics_targets(&config),
+            admin_api::metrics_targets(&snapshot)
+        );
     }
 }
 

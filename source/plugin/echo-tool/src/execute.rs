@@ -49,7 +49,11 @@ pub struct ToolInvocation {
 }
 
 impl ToolInvocation {
-    pub fn new(id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
@@ -91,7 +95,6 @@ pub trait ToolExecutionHost: Send + Sync {
         result: &ToolResult,
         elapsed_ms: u64,
     );
-
 }
 
 /// 参数预检：schema 声明的必需字段缺失时返回纠正性错误文案。
@@ -195,19 +198,9 @@ impl ToolExecutor {
         let characters = result.text.chars().count();
         let failed = result.text.starts_with("error:");
         if elapsed_ms >= 1000 || failed {
-            tracing::info!(
-                elapsed_ms,
-                chars = characters,
-                failed,
-                "tool finished"
-            );
+            tracing::info!(elapsed_ms, chars = characters, failed, "tool finished");
         } else {
-            tracing::debug!(
-                elapsed_ms,
-                chars = characters,
-                failed,
-                "tool finished"
-            );
+            tracing::debug!(elapsed_ms, chars = characters, failed, "tool finished");
         }
         host.on_result(cx, call, &result, elapsed_ms);
         result
@@ -242,8 +235,8 @@ impl ToolExecutor {
                     .map_err(|error| error.to_string()),
             },
         };
-        let mut result = outcome
-            .unwrap_or_else(|error| ToolResult::text(format!("error: {error}")));
+        let mut result =
+            outcome.unwrap_or_else(|error| ToolResult::text(format!("error: {error}")));
         // 结果出口脱敏（第二道保险：工具自己也可能把秘密读进结果）。
         let (result_text, hit_count) = host.redact(&result.text);
         if hit_count > 0 {
@@ -362,7 +355,11 @@ mod tests {
             Ok(echo_defs::tool::ToolResult::text(format!(
                 "text={} session={}",
                 arguments["text"].as_str().unwrap_or_default(),
-                if cx.session_id.is_empty() { "none" } else { &cx.session_id },
+                if cx.session_id.is_empty() {
+                    "none"
+                } else {
+                    &cx.session_id
+                },
             )))
         }
     }
@@ -422,8 +419,16 @@ mod tests {
         let result = ex
             .run(&rec, &cx(), &ToolInvocation::new("c1", "echo", "{}"))
             .await;
-        assert!(result.text.starts_with("error: 工具参数无效"), "{}", result.text);
-        assert!(result.text.contains("text"), "要指出缺哪个字段：{}", result.text);
+        assert!(
+            result.text.starts_with("error: 工具参数无效"),
+            "{}",
+            result.text
+        );
+        assert!(
+            result.text.contains("text"),
+            "要指出缺哪个字段：{}",
+            result.text
+        );
     }
 
     /// 非法 JSON → 回显原始参数，错误以 `error:` 开头（模型的失败判据）。
@@ -462,7 +467,13 @@ mod tests {
             team_id: Some("alix".into()),
             cancel: None,
         };
-        let result = ex.run(&rec, &ctx, &ToolInvocation::new("c1", "echo", r#"{"text":"hi"}"#)).await;
+        let result = ex
+            .run(
+                &rec,
+                &ctx,
+                &ToolInvocation::new("c1", "echo", r#"{"text":"hi"}"#),
+            )
+            .await;
         assert_eq!(result.text, "text=hi session=sess-42");
     }
 
@@ -485,6 +496,9 @@ mod tests {
             ..Default::default()
         };
         assert!(ctx.is_cancelled(), "带取消信号且已取消");
-        assert!(!ToolCallContext::default().is_cancelled(), "无信号 = 永不取消");
+        assert!(
+            !ToolCallContext::default().is_cancelled(),
+            "无信号 = 永不取消"
+        );
     }
 }

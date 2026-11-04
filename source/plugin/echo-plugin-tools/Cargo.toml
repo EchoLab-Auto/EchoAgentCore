@@ -29,6 +29,5 @@ tracing = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
-echo-sanitize = { workspace = true }
 uuid = { workspace = true }
 echo-test-utils = { workspace = true }

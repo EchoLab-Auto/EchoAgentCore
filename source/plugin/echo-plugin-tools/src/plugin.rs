@@ -83,8 +83,12 @@ impl BuiltinToolProvider for BuiltinTools {
         }
         // 会话只读查询：数据源是宿主的活 `TrunkStore`（不是持久化 JSON）。
         if let Some(query) = &cx.session_query {
-            registry.register(Arc::new(crate::session::ListSessionsTool::new(query.clone())));
-            registry.register(Arc::new(crate::session::ReadSessionTool::new(query.clone())));
+            registry.register(Arc::new(crate::session::ListSessionsTool::new(
+                query.clone(),
+            )));
+            registry.register(Arc::new(crate::session::ReadSessionTool::new(
+                query.clone(),
+            )));
         }
         crate::register_instance_tools(&mut registry, cx.instances.clone());
         crate::register_coding_tools(
@@ -194,8 +198,7 @@ pub fn plugin(version: &str) -> Arc<dyn Plugin> {
         .with_command_handler_async(move |name, payload| {
             let (instance, tools) = (b_instance.clone(), b_tools.clone());
             Box::pin(async move {
-                let (Some(instance_host), Some(tools_host)) = (instance.get(), tools.get())
-                else {
+                let (Some(instance_host), Some(tools_host)) = (instance.get(), tools.get()) else {
                     return Err(format!(
                         "命令 {name} 到 {PLUGIN_ID} 时插件尚未挂载（宿主接缝未绑定）"
                     ));
@@ -231,9 +234,7 @@ pub fn service_key() -> echo_context::ServiceKey<Arc<dyn BuiltinToolProvider>> {
 ///
 /// 返回 `None` 表示插件未挂载（禁用了 / 还没挂上）——调用方据此降级
 /// （宿主当前的口径是**直接构造**同一实现，见组合根注释）。
-pub fn resolve_provider(
-    ctx: &echo_context::Ctx,
-) -> Option<Arc<dyn BuiltinToolProvider>> {
+pub fn resolve_provider(ctx: &echo_context::Ctx) -> Option<Arc<dyn BuiltinToolProvider>> {
     ctx.service(&service_key())
 }
 
@@ -300,14 +301,23 @@ mod tests {
             .map(str::to_string)
             .collect();
         for name in &declared {
-            let claimed = instance.handle(name, serde_json::Value::Null).await.is_some()
+            let claimed = instance
+                .handle(name, serde_json::Value::Null)
+                .await
+                .is_some()
                 || tools.handle(name, serde_json::Value::Null).await.is_some();
             assert!(claimed, "{name} 声明了但没有处理分支");
         }
         // 反向：没声明的命令不许被认领（分发器永远路由不到它）。
         for handler_claims in [
-            instance.handle("SendMessage", serde_json::Value::Null).await.is_some(),
-            tools.handle("SendMessage", serde_json::Value::Null).await.is_some(),
+            instance
+                .handle("SendMessage", serde_json::Value::Null)
+                .await
+                .is_some(),
+            tools
+                .handle("SendMessage", serde_json::Value::Null)
+                .await
+                .is_some(),
         ] {
             assert!(!handler_claims, "未声明的命令不该被认领");
         }
@@ -359,8 +369,7 @@ mod tests {
         let ctx = Arc::new(echo_context::Ctx::default());
         let instance_host: Arc<dyn crate::instance_commands::InstanceCommandHost> =
             Arc::new(NoInstanceHost);
-        let tools_host: Arc<dyn crate::tool_commands::ToolsCommandHost> =
-            Arc::new(NoToolsHost);
+        let tools_host: Arc<dyn crate::tool_commands::ToolsCommandHost> = Arc::new(NoToolsHost);
         // 宿主接缝按**服务键**注册（全插件化 S6：插件不再收构造参数）。
         // （shell 的键已随工具搬进 `echo-plugin-shell`，本插件不再需要它。）
         let _keep_instance = ctx.provide(&crate::host_keys::INSTANCE_HOST, instance_host);
@@ -376,9 +385,6 @@ mod tests {
         for d in mounted {
             d.dispose();
         }
-        assert!(
-            resolve_provider(&ctx).is_none(),
-            "卸载后服务键必须消失"
-        );
+        assert!(resolve_provider(&ctx).is_none(), "卸载后服务键必须消失");
     }
 }

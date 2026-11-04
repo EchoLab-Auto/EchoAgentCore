@@ -82,7 +82,8 @@ pub(crate) struct EventEgress {
     /// 例：`echo-plugin-tools` 注册 `checklist → ChecklistUpdated`。
     ///
     /// 与出口同组的原因：这张表**就是**出口的一部分（它决定"状态的出口形状"）。
-    pub(crate) state_events: std::sync::RwLock<std::collections::HashMap<String, ToolStateEventBuilder>>,
+    pub(crate) state_events:
+        std::sync::RwLock<std::collections::HashMap<String, ToolStateEventBuilder>>,
 }
 
 /// 「谁在跑」：turn 驱动、并发闸、在飞表、序号、退出信号。
@@ -107,10 +108,7 @@ pub(crate) struct TurnState {
 }
 
 impl TurnState {
-    pub(crate) fn new(
-        reply_slots: usize,
-        cancel: tokio_util::sync::CancellationToken,
-    ) -> Self {
+    pub(crate) fn new(reply_slots: usize, cancel: tokio_util::sync::CancellationToken) -> Self {
         Self {
             runner: tokio::sync::RwLock::new(None),
             reply_branch_slots: tokio::sync::Semaphore::new(reply_slots),
@@ -178,8 +176,7 @@ impl PluginSubsystem {
 pub(crate) struct PluginPorts {
     /// 工作区会话存储（`echo-agent.workspace` 插件；组合根按 persona 注入）。
     /// None = 未挂载（命令会回明确错误）。
-    pub(crate) workspace_store:
-        std::sync::RwLock<Option<Arc<crate::workspace::WorkspaceStore>>>,
+    pub(crate) workspace_store: std::sync::RwLock<Option<Arc<crate::workspace::WorkspaceStore>>>,
     /// Shell 子系统句柄（`echo-agent.tools.builtin` 的 shell 工具族用它）。
     /// 句柄本身总是存在（内部空槽），bind 之后才有 manager。
     pub(crate) shell: echo_shell::ShellHandle,
@@ -211,6 +208,7 @@ impl PluginPorts {
 /// 而不是每轮 turn 一次。
 #[derive(Default)]
 pub(crate) struct ManagerLink {
-    pub(crate) registry: std::sync::RwLock<Option<std::sync::Weak<dyn crate::agent::registry::AgentRegistry>>>,
+    pub(crate) registry:
+        std::sync::RwLock<Option<std::sync::Weak<dyn crate::agent::registry::AgentRegistry>>>,
     pub(crate) warned: std::sync::atomic::AtomicBool,
 }

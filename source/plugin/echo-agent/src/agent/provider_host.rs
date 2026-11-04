@@ -209,10 +209,7 @@ impl ProviderCommandHost for AgentProviderCommandHost {
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<
-                    Output = Result<
-                        (Option<serde_json::Value>, Vec<serde_json::Value>),
-                        String,
-                    >,
+                    Output = Result<(Option<serde_json::Value>, Vec<serde_json::Value>), String>,
                 > + Send
                 + 'a,
         >,

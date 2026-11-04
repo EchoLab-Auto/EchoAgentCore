@@ -57,9 +57,10 @@ impl TimelineHost for TrunkTimelineHost {
             timeline.iter_mut().rev().find(|entry| {
                 entry.kind == "tool"
                     && entry.session_id == patch.session_id
-                    && entry.tool.as_ref().is_some_and(|tool| {
-                        tool.name == patch.tool_name && tool.output.is_none()
-                    })
+                    && entry
+                        .tool
+                        .as_ref()
+                        .is_some_and(|tool| tool.name == patch.tool_name && tool.output.is_none())
             })
         } else {
             timeline.iter_mut().rev().find(|entry| {
@@ -133,7 +134,10 @@ mod tests {
         assert!(updated, "应找到运行中的条目");
         let snapshot = trunk.timeline_snapshot();
         assert_eq!(snapshot.len(), 1, "就地更新不是追加");
-        assert_eq!(snapshot[0].tool.as_ref().unwrap().output.as_deref(), Some("done"));
+        assert_eq!(
+            snapshot[0].tool.as_ref().unwrap().output.as_deref(),
+            Some("done")
+        );
         assert!(
             snapshot[0].seq > before,
             "完成态必须推进 seq（否则前端一直显示 running）"

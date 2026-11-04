@@ -14,20 +14,20 @@ use clap::Parser;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-mod builtin_plugins;
-mod host_services;
 mod agent_supervisor;
+mod builtin_plugins;
 mod config;
 mod federation_admin_host;
 mod federation_import;
 mod federation_rt;
+mod host_services;
 mod instance_deploy;
 mod instance_manifests;
 mod instance_tools;
 mod logging;
 mod node;
-mod plugins_runtime;
 mod plugin_upgrade_cmd;
+mod plugins_runtime;
 mod port_cmd;
 
 /// 管理面插件（Phase 3 ⑧：已外迁为独立 crate，组合根只负责启动它）。
@@ -325,9 +325,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 进程级事件出口的延迟槽位：联邦命令处理器在装配期就要绑好（端口集合
     // 是值，构造后不再改），而 bridge 与 `event_sink` 在更后面才建立。
     // 一次写、多次读。
-    let federation_emit_slot: std::sync::Arc<
-        std::sync::OnceLock<echo_agent::EventSink>,
-    > = std::sync::Arc::new(std::sync::OnceLock::new());
+    let federation_emit_slot: std::sync::Arc<std::sync::OnceLock<echo_agent::EventSink>> =
+        std::sync::Arc::new(std::sync::OnceLock::new());
     // Shell 子系统句柄（技债清理：替代两个进程级锚点）。工具注册与 agent
     // 构造都早于 ShellManager 本体，所以先建空槽、就绪后再 bind。
     let shell_handle = echo_agent::shell::ShellHandle::new();
@@ -1594,7 +1593,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 必须在任何 mount 之前：`mount` 取的是当时登记的值。
         plugin_host.set_configs(plugins_runtime::builtin_configs(&args.config_path()));
 
-
         let version = env!("CARGO_PKG_VERSION");
         // 配置化组合（P4）：内置插件的**构造**留在代码里（mount 闭包要
         // 捕获运行期句柄：端口 / token / 实例句柄 / broker…），但**集合、
@@ -1627,7 +1625,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 bridge: bridge.clone(),
                 management_address: cfg.core.management_address.clone(),
                 management_token: cfg.core.management_access_token.clone(),
-                merged_federation: if merged { Some(merge_fed.clone()) } else { None },
+                merged_federation: if merged {
+                    Some(merge_fed.clone())
+                } else {
+                    None
+                },
                 // 观测出处：合并与否都给——独立监听时 Panel 连的端口正是
                 // 管理端口，邀请串要宣告「它用的那个地址」（2026-11）。
                 federation_observer: Some(merge_fed.clone()),
@@ -1692,9 +1694,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 name: entry.name.clone(),
                 kind: entry.kind.clone(),
             };
-            catalog.push(crate::builtin_plugins::external_plugin(
-                version, &entry,
-            ));
+            catalog.push(crate::builtin_plugins::external_plugin(version, &entry));
         }
 
         // ── 按计划挂载（配置化组合 P4 的落点）──

@@ -35,8 +35,8 @@ use std::sync::Arc;
 
 use echo_context::Ctx;
 use echo_plugin_provider_llm::commands::ProviderCommandHost;
-use echo_plugin_skills::commands::SkillsCommandHost;
 use echo_plugin_shell::commands::ShellCommandHost;
+use echo_plugin_skills::commands::SkillsCommandHost;
 use echo_plugin_tools::tool_commands::ToolsCommandHost;
 
 use crate::agent::provider_host::AgentProviderCommandHost;

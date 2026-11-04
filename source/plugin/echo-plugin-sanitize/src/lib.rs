@@ -1,19 +1,28 @@
 //! # echo-plugin-sanitize — 脱敏服务插件（`echo-agent.security.sanitize`）
 //!
-//! [`echo_defs::sanitize::Redactor`] 的**插件化装配**：默认实现
-//! [`RegistryRedactor`]（`echo-sanitize` crate）在这里被构造出来，宿主不再
-//! 认识任何具体实现。
+//! [`echo_defs::sanitize::Redactor`] 的**实现 + 装配**：默认实现
+//! [`RegistryRedactor`]（模块 [`registry`]）在本 crate 内，宿主不再认识任何
+//! 具体实现。
 //!
-//! ## 为什么需要它（2026-11，与全插件化其它能力对齐）
+//! ## 为什么实现住在这里（2026-11 二次收敛）
 //!
-//! 此前 `core/src/security.rs::build_redactor` 直接
-//! `use echo_sanitize::RegistryRedactor`——脱敏是**唯一**一个「有定义层
-//! trait、却没有插件绑定」的能力：其余七个接缝（`LlmProvider` / `Tool` /
-//! `PluginInstance` / `SessionQuery` / `RemoteDelegationSink` /
-//! `RemoteWorkspaceQuery` / `Redactor` 本身）都有对应插件，只有脱敏的实现
-//! 长在组合根里。于是"替换脱敏实现"等于"改 Core 源码"。
+//! 2026-11 第一次改造只搬了**构造**：`core/src/security.rs::build_redactor`
+//! 不再 `use echo_sanitize::RegistryRedactor`，改调本 crate 的 [`build`]。
+//! 但那时实现仍住在独立的 `echo-sanitize` crate 里，于是留下两个问题：
 //!
-//! 现在反过来：**构造归本插件，宿主只提供秘密表**。
+//! 1. 那个 crate 的**生产消费者只有一个**——就是本 crate 的 [`build`]；
+//!    其余引用全在 `#[cfg(test)]` 里。按
+//!    `document/overview/architecture.md` 的判据（消费者 = 1 → 合并），
+//!    它不该独立成 crate。
+//! 2. 「中间层全部成为插件」那一轮给它补了个 `kind = "kernel"` 的空壳
+//!    manifest，而 kernel 的判据是「禁用后系统起不来」——脱敏明显不符合
+//!    （它自己的注释都写着"这一条是能力而非地基"）。于是一个禁不掉的
+//!    kernel 成员，实际却是个可有可无的空动作。
+//!
+//! 现在合并：**实现（`registry.rs`）+ 构造（[`build`]）+ 身份（本文件）**
+//! 同处一个 crate，`kernel` 收回「禁用即失败」的语义纯度。
+//! 形态与 session 那对一致——词汇在定义层（`echo_defs::sanitize`），
+//! 实例与实现归插件。
 //!
 //! ## 为什么构造不能在 `mount` 里做（与其它插件的关键差别）
 //!
@@ -22,13 +31,12 @@
 //! | 能力 | 就绪时点 | 为什么 |
 //! |---|---|---|
 //! | `loop` / `tools.builtin` / `shell` | **mount 期** | 消费者（agent turn、工具调用）发生在挂载之后 |
-//! | 脱敏 | **挂载之前** | 它是 **LLM 出口的装饰器**：`llm` 服务必须以「已脱敏」的形态注册进 `Ctx`，而 `echo-plugin-loop` 声明 `llm` 为硬依赖——挂载期才解析。红actor 若在 mount 里构造，`llm` 就先注册了未脱敏的那份，装饰永远追不上 |
+//! | 脱敏 | **挂载之前** | 它是 **LLM 出口的装饰器**：`llm` 服务必须以「已脱敏」的形态注册进 `Ctx`，而 `echo-plugin-loop` 声明 `llm` 为硬依赖——挂载期才解析。脱敏器若在 mount 里构造，`llm` 就先注册了未脱敏的那份，装饰永远追不上 |
 //!
 //! 于是分工是「**实现归插件、时机归宿主**」：宿主在启动早期调
-//! [`build`]，本插件在 `mount` 里做**存在性声明**（与 `echo-agent.subagent`
-//! 的纯身份插件同款：`mount` 返回空 disposer，服务键在
-//! `host_services::provided_keys()` 里静态登记）。这样换实现 = 换插件，
-//! 而不用改装配顺序。
+//! [`build`]，本插件在 `mount` 里做**存在性声明**（`mount` 返回空 disposer，
+//! 服务键在 `host_services::provided_keys()` 里静态登记）。这样换实现 =
+//! 换插件，而不用改装配顺序。
 //!
 //! > 若将来把「LLM 出口装饰」也做成插件（即 `RedactingProvider` 的装配由
 //! > 本插件负责），构造就能搬回 `mount`。前提是先给 `Ctx` 一个**可替换**
@@ -45,6 +53,10 @@
 //!   （`[security.sanitize].enabled = false`）并重启，让停机与告知成为明确动作。
 //! - **占位符不含明文**、**命中幂等**、**绝不 panic**：实现约定见
 //!   [`echo_defs::sanitize::Redactor`]。
+
+mod registry;
+
+pub use registry::{placeholder, RegistryRedactor};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -82,7 +94,7 @@ pub struct RedactorSpec {
 /// **组合根在挂载之前调用它**（理由见模块文档）。`spec` 为空也合法——
 /// 那只是"没有已知秘密"，模式集（`sk-…` / `ghp_…` / PEM 头等）照常生效。
 pub fn build(spec: &RedactorSpec) -> Arc<dyn Redactor> {
-    let redactor = echo_sanitize::RegistryRedactor::with_builtin_patterns();
+    let redactor = RegistryRedactor::with_builtin_patterns();
     for (value, label) in &spec.secrets {
         redactor.register_secret(value, label);
     }
@@ -170,7 +182,11 @@ mod tests {
         let report = redactor.redact("key=sk-abcdefghijklmnop end");
         assert!(report.changed, "已登记的秘密必须被替换");
         assert!(!report.text.contains("sk-abcdefghijklmnop"));
-        assert!(report.text.contains("api_key"), "label 进占位符: {}", report.text);
+        assert!(
+            report.text.contains("api_key"),
+            "label 进占位符: {}",
+            report.text
+        );
     }
 
     #[test]
@@ -215,7 +231,11 @@ mod tests {
         };
         let redactor = build(&spec);
         let report = redactor.redact(secret);
-        assert!(!report.text.contains(secret), "占位符泄露了明文: {}", report.text);
+        assert!(
+            !report.text.contains(secret),
+            "占位符泄露了明文: {}",
+            report.text
+        );
         // 审计侧（SecretHit）同样不带明文。
         for hit in redactor.scan(secret) {
             assert!(!hit.label.contains(secret));

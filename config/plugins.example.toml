@@ -55,6 +55,25 @@ patches = []
 # [plugin.config]
 # address = "127.0.0.1:8737"
 
+# ── 可选的进程内 Web Panel（2026-11）──
+#
+# 编译进 Core ≠ 开启 Web 服务：只有显式 enabled = true 才挂载/监听。
+# 与独立 echo-agent-panel 共用 echo-web-server 运行库，两种部署可并存。
+# config_file 可复用现有多上游/SSH/联邦发现配置；插件里的 bind/static_dir 优先。
+# 缺省仅允许 loopback；对局域网/公网开放必须 access_token_secret_file + allow_remote=true。
+#
+# [[plugin]]
+# id = "echo-agent.panel.web"
+# kind = "builtin"
+# name = "Web Panel"
+# enabled = true
+# [plugin.config]
+# bind = "127.0.0.1:8080"
+# static_dir = "/home/me/.local/libexec/echo-agent-panel/web"
+# config_file = "/home/me/.config/echo-agent-panel/panel.toml"
+# core = "ws://127.0.0.1:3132"
+# access_token_secret_file = "/home/me/.config/echo-agent-panel/token"
+
 # ── 子进程资源限额（可选） ──
 #
 # 只对 kind = "stdio" 生效（进程内实现没有独立进程可限）。

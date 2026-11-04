@@ -132,9 +132,7 @@ impl FederationAdminHost for RuntimeAdminHost {
             );
             entry.insert(
                 "allow_queries".into(),
-                toml::Value::Array(
-                    allow_queries.into_iter().map(toml::Value::String).collect(),
-                ),
+                toml::Value::Array(allow_queries.into_iter().map(toml::Value::String).collect()),
             );
             Ok(())
         }) {

@@ -19,7 +19,8 @@ impl Agent {
         if plugins_dir.trim().is_empty()
             || !std::path::Path::new(&plugins_dir).exists()
             || self
-                .plugins.reload_started
+                .plugins
+                .reload_started
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_err()
         {

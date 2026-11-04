@@ -705,5 +705,4 @@ mod tests {
         assert_eq!(member.memory_limit_tokens, None);
         assert_eq!(member.context_window_tokens, None);
     }
-
 }

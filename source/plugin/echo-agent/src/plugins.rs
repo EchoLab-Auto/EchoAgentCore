@@ -19,7 +19,6 @@ use std::sync::Arc;
 
 use echo_plugin::{MountContext, PluginDescriptor, PluginRegistry};
 
-
 /// 内置插件 id（组合根与挂/卸效果共用，避免字符串漂移）。
 /// 实例类插件的 `kind` 标签。
 ///
@@ -30,28 +29,28 @@ use echo_plugin::{MountContext, PluginDescriptor, PluginRegistry};
 /// 硬编码比较的地方漏改，导致实例插件永远进不了 persona 门控集合。
 pub const INSTANCE_PLUGIN_KIND: &str = "instance";
 
+/// 技能目录插件 id（同上，源头在 [`echo_plugin_skills`]）。
+pub use echo_plugin_skills::PLUGIN_ID as SKILLS_DIR_PLUGIN_ID;
 /// 内置工具集插件 id（**声明与实现都在 [`echo_plugin_tools`]**，这里是兼容
 /// 别名——配置、门控、面板读的是同一批字面量）。
 pub use echo_plugin_tools::PLUGIN_ID as TOOLS_BUILTIN_PLUGIN_ID;
-/// 技能目录插件 id（同上，源头在 [`echo_plugin_skills`]）。
-pub use echo_plugin_skills::PLUGIN_ID as SKILLS_DIR_PLUGIN_ID;
 pub const MANAGEMENT_PANEL_PLUGIN_ID: &str = "echo-agent.management.panel";
 /// 工作区会话管理插件（workspace）：Panel 侧多会话/多目录管理 + git 状态，
 /// 模型侧 `workspace` 工具与激活会话的系统提示注入。
 pub const WORKSPACE_PLUGIN_ID: &str = "echo-agent.workspace";
 /// Subagent 委派插件 id（包 id 同名：`spawn_subagent` 工具 + subagent 技能随包门控）。
 pub const SUBAGENT_PLUGIN_ID: &str = "echo-agent.subagent";
+/// 循环插件（声明已外迁到 [`echo_plugin_loop`]，解耦计划 Phase 3 ⑦）。
+///
+/// 这里留**兼容别名**，配置与门控读的是同一批字面量，不另存一份。
+/// 只有一个模式：同一会话内 turn 串行排队（`loop.parallel` 已于 2026-11 删除）。
+pub use echo_plugin_loop::SINGLE_PLUGIN_ID as SINGLE_LOOP_PLUGIN_ID;
 /// Shell 会话插件 id（`bash-start` / `bash-exec` / `bash-stop` + `*Shell*` 命令域）。
 ///
 /// 2026-11 从 `echo-agent.tools.builtin` 拆出：shell 会话有自己的一套机制
 /// （`echo-shell` 的进程组生命周期）、自己的面板页面、独立的启停需求。
 /// 声明与实现都在 [`echo_plugin_shell`]，这里是兼容别名。
 pub use echo_plugin_shell::PLUGIN_ID as SHELL_PLUGIN_ID;
-/// 循环插件（声明已外迁到 [`echo_plugin_loop`]，解耦计划 Phase 3 ⑦）。
-///
-/// 这里留**兼容别名**，配置与门控读的是同一批字面量，不另存一份。
-/// 只有一个模式：同一会话内 turn 串行排队（`loop.parallel` 已于 2026-11 删除）。
-pub use echo_plugin_loop::SINGLE_PLUGIN_ID as SINGLE_LOOP_PLUGIN_ID;
 
 /// persona 门控**已经不再是一张插件 id 清单**——判据是 manifest 的 `kind`。
 ///
@@ -88,6 +87,7 @@ pub use echo_plugin_federation::PLUGIN_ID as FEDERATION_PLUGIN_ID;
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
 pub const BUILTIN_PLUGIN_IDS: [&str; 22] = [
+    "echo-agent.panel.web",
     TOOLS_BUILTIN_PLUGIN_ID,
     SHELL_PLUGIN_ID,
     SKILLS_DIR_PLUGIN_ID,
@@ -118,7 +118,6 @@ pub const BUILTIN_PLUGIN_IDS: [&str; 22] = [
     echo_tool::plugin::PLUGIN_ID,
     echo_shell::plugin::PLUGIN_ID,
     echo_federation::plugin::PLUGIN_ID,
-    echo_sanitize::plugin::PLUGIN_ID,
     echo_loop::plugin::PLUGIN_ID,
 ];
 
@@ -216,8 +215,15 @@ impl MountStep {
 ///
 /// `catalog_ids` 用来确认 id 真实存在：写错 id 的 `enabled = false` 不算违规
 /// （它本来就不会挂载，只会在 mount plan 诊断里 warn）。
+///
+/// **脱敏（`echo-agent.security.sanitize`）不在这张表里，是刻意的**：它是
+/// 安全不变量，却是**能力而非地基**（关掉后内核照常起，只是不再脱敏），
+/// 判据「禁用后系统能不能起来」不成立。它真正的关闭路径是 `core.toml` 的
+/// `[security.sanitize].enabled = false`（需重启 + 启动日志 `warn!`）。
+/// 2026-11 之前它另有一个 `kind = "kernel"` 的空壳身份（crate
+/// `echo-sanitize`），已随该 crate 并入 `echo-plugin-sanitize` 一并退役。
 pub fn disabled_kernel_plugins(catalog_ids: &[String], plan: &[MountStep]) -> Option<String> {
-    const KERNEL_IDS: [&str; 9] = [
+    const KERNEL_IDS: [&str; 8] = [
         echo_defs::PLUGIN_ID,
         echo_config::PLUGIN_ID,
         echo_protocol::plugin::PLUGIN_ID,
@@ -225,7 +231,6 @@ pub fn disabled_kernel_plugins(catalog_ids: &[String], plan: &[MountStep]) -> Op
         echo_tool::plugin::PLUGIN_ID,
         echo_shell::plugin::PLUGIN_ID,
         echo_federation::plugin::PLUGIN_ID,
-        echo_sanitize::plugin::PLUGIN_ID,
         echo_loop::plugin::PLUGIN_ID,
     ];
     plan.iter()
@@ -248,13 +253,27 @@ pub fn disabled_kernel_plugins(catalog_ids: &[String], plan: &[MountStep]) -> Op
 /// 缺省即挂载，配置只能**显式**改变某个内置插件的顺序或启用状态。
 ///
 /// 计划为空（无 `plugins.toml`）→ 目录顺序原样返回，与改造前完全一致。
+/// 可选插件：未出现在配置中时保持禁用；显式 `enabled = true` 才挂载。
+///
+/// Web Panel 监听外部端口，编译进 Core 不应等于默认开放服务。这个默认
+/// 只影响挂载计划，不改变 `PluginManifest` 或全局 TogglePlugin 语义。
+pub const DEFAULT_DISABLED_PLUGIN_IDS: [&str; 1] = ["echo-agent.panel.web"];
+
 pub fn resolve_mount_order(
     catalog_ids: &[String],
     plan: &[MountStep],
 ) -> (Vec<MountStep>, Vec<String>) {
     let mut diagnostics = Vec::new();
+    // 在补默认启用条目前派生默认关闭计划：可选插件显式出现与否决定行为。
+    let plan: Vec<MountStep> = DEFAULT_DISABLED_PLUGIN_IDS
+        .iter()
+        .filter(|id| catalog_ids.iter().any(|known| known == **id))
+        .filter(|id| !plan.iter().any(|step| step.id == **id))
+        .map(|id| MountStep::new((*id).to_string(), false))
+        .chain(plan.iter().cloned())
+        .collect();
     let mut ordered: Vec<MountStep> = Vec::with_capacity(catalog_ids.len());
-    let mut seen: Vec<&str> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
     for step in plan {
         if !catalog_ids.iter().any(|id| id == &step.id) {
             diagnostics.push(format!(
@@ -263,18 +282,18 @@ pub fn resolve_mount_order(
             ));
             continue;
         }
-        if seen.contains(&step.id.as_str()) {
+        if seen.contains(&step.id) {
             diagnostics.push(format!(
                 "mount plan repeats builtin plugin `{}` (first wins)",
                 step.id
             ));
             continue;
         }
-        seen.push(&step.id);
+        seen.push(step.id.clone());
         ordered.push(step.clone());
     }
     for id in catalog_ids {
-        if !seen.contains(&id.as_str()) {
+        if !seen.contains(id) {
             ordered.push(MountStep::new(id.clone(), true));
         }
     }
@@ -915,8 +934,7 @@ impl PluginHost {
     /// （子进程重连、实例进程重启），不触碰任何持久化状态。
     pub fn restart(&self, id: &str) -> Result<(), String> {
         let result = self.registry.restart(id, &self.ctx());
-        if result.is_ok() {
-            }
+        if result.is_ok() {}
         result
     }
 
@@ -1009,17 +1027,16 @@ mod tests {
         }
     }
 
-    fn probe(id: &str, kind: &str) -> (Arc<dyn echo_plugin::Plugin>, Arc<parking_lot::Mutex<Option<Arc<echo_tool::ToolRegistry>>>>) {
+    fn probe(
+        id: &str,
+        kind: &str,
+    ) -> (
+        Arc<dyn echo_plugin::Plugin>,
+        Arc<parking_lot::Mutex<Option<Arc<echo_tool::ToolRegistry>>>>,
+    ) {
         let seen = Arc::new(parking_lot::Mutex::new(None));
         let plugin = Arc::new(ScopeProbePlugin {
-            manifest: echo_plugin::PluginManifest::builtin(
-                id,
-                id,
-                "0.0.0",
-                kind,
-                id,
-                "test probe",
-            ),
+            manifest: echo_plugin::PluginManifest::builtin(id, id, "0.0.0", kind, id, "test probe"),
             seen_tools: Arc::clone(&seen),
         });
         (plugin as Arc<dyn echo_plugin::Plugin>, seen)
@@ -1040,7 +1057,9 @@ mod tests {
             &self,
             _request: &crate::llm::ChatRequest,
         ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
-            Err(crate::llm::LlmError::Config("not used in scope tests".into()))
+            Err(crate::llm::LlmError::Config(
+                "not used in scope tests".into(),
+            ))
         }
         async fn chat_stream(
             &self,
@@ -1132,8 +1151,16 @@ mod tests {
         assert_eq!(scope_a.mounted, vec!["test.tool".to_string()]);
         assert_eq!(scope_b.mounted, vec!["test.tool".to_string()]);
 
-        let pa = scope_a.scope.registry().plugin("test.tool").expect("plugin a");
-        let pb = scope_b.scope.registry().plugin("test.tool").expect("plugin b");
+        let pa = scope_a
+            .scope
+            .registry()
+            .plugin("test.tool")
+            .expect("plugin a");
+        let pb = scope_b
+            .scope
+            .registry()
+            .plugin("test.tool")
+            .expect("plugin b");
         assert!(
             !Arc::ptr_eq(&pa, &pb),
             "两层必须是不同实例（同一实例会让 ServiceSlot 互相覆盖）"
@@ -1843,10 +1870,7 @@ mod tests {
         assert!(host.wants_event("AnythingAtAll"));
 
         host.registry.unmount("obs.all").expect("unmount");
-        assert!(
-            !host.has_event_subscribers(),
-            "唯一订阅者卸载后闸门应关闭"
-        );
+        assert!(!host.has_event_subscribers(), "唯一订阅者卸载后闸门应关闭");
         assert_eq!(
             host.deliver_backend_event(&echo_protocol::BackendEvent::Error {
                 session_id: None,

@@ -45,13 +45,15 @@ use std::collections::HashMap;
 
 use echo_protocol::{TimelineMessage, TimelineSource, TimelineTool};
 
-use echo_protocol::timeline_text::{summarize_timeline_value, timeline_timer_task, truncate_one_line};
 use crate::store::TrunkStore;
+use echo_protocol::timeline_text::{
+    summarize_timeline_value, timeline_timer_task, truncate_one_line,
+};
 
 pub fn display_history_for_session(
-events: &[echo_session::SessionEvent],
-session_id: &str,
-limit: usize,
+    events: &[echo_session::SessionEvent],
+    session_id: &str,
+    limit: usize,
 ) -> (Vec<TimelineMessage>, usize, bool) {
     let mut messages: Vec<TimelineMessage> = Vec::new();
     // 已发出、等待结果的工具条目：tool_call_id → 条目索引。结果到达时
@@ -81,11 +83,7 @@ limit: usize,
                             }
                             None => "定时任务触发".into(),
                         };
-                        messages.push(TimelineMessage::system(
-                            content,
-                            session_id,
-                            user.timestamp,
-                        ));
+                        messages.push(TimelineMessage::system(content, session_id, user.timestamp));
                     }
                     _ => {
                         // 图片规范化（与实时投影一致）：媒体引用（`/media/<id>`）
@@ -290,7 +288,6 @@ pub fn history_watermark(
         .max()
         .unwrap_or(0)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -574,22 +571,32 @@ mod tests {
         assert_eq!(messages.len(), 2, "后台 hook 不派生：{messages:?}");
         assert_eq!(messages[0].kind, "user");
         assert_eq!(messages[1].kind, "system");
-        assert!(messages[1].content.contains("提醒喝水"), "{}", messages[1].content);
+        assert!(
+            messages[1].content.contains("提醒喝水"),
+            "{}",
+            messages[1].content
+        );
     }
 
     /// 压缩事件 → system 条目（含替换条数）。
     #[test]
     fn compaction_renders_a_system_entry() {
-        let events = vec![SessionEvent::Compaction(echo_session::event::CompactionEvent {
-            replaced_count: 5,
-            summary: "摘要体".into(),
-            archive: None,
-            session: Some("s".into()),
-        })];
+        let events = vec![SessionEvent::Compaction(
+            echo_session::event::CompactionEvent {
+                replaced_count: 5,
+                summary: "摘要体".into(),
+                archive: None,
+                session: Some("s".into()),
+            },
+        )];
         let (messages, total, _) = display_history_for_session(&events, "s", 500);
         assert_eq!(total, 1);
         assert_eq!(messages[0].kind, "system");
-        assert!(messages[0].content.contains("替换 5"), "{}", messages[0].content);
+        assert!(
+            messages[0].content.contains("替换 5"),
+            "{}",
+            messages[0].content
+        );
     }
 
     /// 推理与工具**真实交错**（按到达顺序，不是全堆到末尾）。

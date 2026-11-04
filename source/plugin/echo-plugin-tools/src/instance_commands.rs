@@ -69,7 +69,9 @@ impl InstanceCommandHandler {
         let tagged = serde_json::json!({ name: payload });
         let cmd: BackendCommand = match serde_json::from_value(tagged) {
             Ok(cmd) => cmd,
-            Err(error) => return Some(Err(format!("instance 命令载荷解析失败（{name}）: {error}"))),
+            Err(error) => {
+                return Some(Err(format!("instance 命令载荷解析失败（{name}）: {error}")))
+            }
         };
         Some(self.apply(cmd).await.map(|()| serde_json::Value::Null))
     }
@@ -166,10 +168,9 @@ impl InstanceCommandHandler {
 
     /// 广播实例清单（投影见 [`instance_list`]）。
     fn emit_list(&self, instances: &Arc<InstanceRegistry>) {
-        self.host
-            .emit(BackendEvent::InstanceList {
-                instances: instance_list(instances),
-            });
+        self.host.emit(BackendEvent::InstanceList {
+            instances: instance_list(instances),
+        });
     }
 
     fn notice(&self, message: impl Into<String>) {
@@ -191,31 +192,31 @@ impl InstanceCommandHandler {
 pub fn instance_list(instances: &Arc<InstanceRegistry>) -> Vec<InstanceStatus> {
     instances
         .list_info()
-            .into_iter()
-            .map(|info| {
-                let handle = instances.get(&info.name);
-                // 实例附加信息（persona / 容器 / URL / 绑定地址）经管理面
-                // `cached_state` 取（W3.4 单源化：与 `InstanceState` 同一份
-                // 状态文档；缺管理面 / 无状态时留空，线上字段本就 Option）。
-                let instance = handle
-                    .as_ref()
-                    .and_then(|a| a.management().and_then(|m| m.cached_state()))
-                    .map(|state| state["instance"].clone())
-                    .unwrap_or_default();
-                InstanceStatus {
-                    bind_address: instance["bind_address"].as_str().unwrap_or("").to_string(),
-                    persona: instance["persona"].as_str().map(str::to_string),
-                    connected: matches!(info.status, InstanceConnectionState::Connected),
-                    running: !matches!(info.status, InstanceConnectionState::Stopped),
-                    self_id: info.self_id,
-                    started_at: info.started_at,
-                    ui: handle.as_ref().and_then(|a| a.ui_descriptor()),
-                    session_labels: handle.as_ref().and_then(|a| a.session_labels()),
-                    metadata: Vec::<InstanceMetadataEntry>::new(),
-                    display_name: info.display_name,
-                    name: info.name,
-                    platform: Some(info.platform),
-                }
+        .into_iter()
+        .map(|info| {
+            let handle = instances.get(&info.name);
+            // 实例附加信息（persona / 容器 / URL / 绑定地址）经管理面
+            // `cached_state` 取（W3.4 单源化：与 `InstanceState` 同一份
+            // 状态文档；缺管理面 / 无状态时留空，线上字段本就 Option）。
+            let instance = handle
+                .as_ref()
+                .and_then(|a| a.management().and_then(|m| m.cached_state()))
+                .map(|state| state["instance"].clone())
+                .unwrap_or_default();
+            InstanceStatus {
+                bind_address: instance["bind_address"].as_str().unwrap_or("").to_string(),
+                persona: instance["persona"].as_str().map(str::to_string),
+                connected: matches!(info.status, InstanceConnectionState::Connected),
+                running: !matches!(info.status, InstanceConnectionState::Stopped),
+                self_id: info.self_id,
+                started_at: info.started_at,
+                ui: handle.as_ref().and_then(|a| a.ui_descriptor()),
+                session_labels: handle.as_ref().and_then(|a| a.session_labels()),
+                metadata: Vec::<InstanceMetadataEntry>::new(),
+                display_name: info.display_name,
+                name: info.name,
+                platform: Some(info.platform),
+            }
         })
         .collect()
 }
@@ -282,7 +283,10 @@ mod tests {
         let events = host.events.lock().unwrap();
         match events.first() {
             Some(BackendEvent::Error { message, .. }) => {
-                assert!(message.contains("ghost") && message.contains("not found"), "{message}")
+                assert!(
+                    message.contains("ghost") && message.contains("not found"),
+                    "{message}"
+                )
             }
             other => panic!("期望 not found 错误，得到 {other:?}"),
         }

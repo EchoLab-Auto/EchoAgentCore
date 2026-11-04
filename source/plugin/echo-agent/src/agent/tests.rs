@@ -1,8 +1,8 @@
-use echo_tool::execute::invalid_tool_arguments;
 use super::*;
 use crate::llm::{ChatChunk, ChatResponse, LlmError, Usage};
 use crate::session::SessionKey;
 use crate::tool::{Tool, ToolError};
+use echo_tool::execute::invalid_tool_arguments;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct MockProvider {
@@ -38,7 +38,6 @@ impl LlmProvider for MockProvider {
         self.chat(request).await
     }
 }
-
 
 /// 记录每次请求看到的历史，并在测试放行前一直挂起（用于单会话排队断言）。
 #[derive(Clone)]
@@ -156,7 +155,9 @@ async fn tool_state_event_is_emitted_only_when_a_binding_exists() {
         name: "checklist".into(),
         arguments: r#"{"operation":"create","name":"smoke"}"#.into(),
     };
-    agent.run_tool("local:tui::local_user", "branch-1", &call).await;
+    agent
+        .run_tool("local:tui::local_user", "branch-1", &call)
+        .await;
 
     // ① 没有绑定 → 不发（工具声明了状态，但没人认领线上形状）。
     assert!(
@@ -178,15 +179,17 @@ async fn tool_state_event_is_emitted_only_when_a_binding_exists() {
         name: "checklist".into(),
         arguments: r#"{"operation":"add","name":"smoke","item":"hello"}"#.into(),
     };
-    agent.run_tool("local:tui::local_user", "branch-1", &call).await;
+    agent
+        .run_tool("local:tui::local_user", "branch-1", &call)
+        .await;
 
     let events = received.lock().unwrap();
     let found = events
         .iter()
         .find_map(|event| match event {
-            BackendEvent::ChecklistUpdated { session_id, state, .. } => {
-                Some((session_id.clone(), state.clone()))
-            }
+            BackendEvent::ChecklistUpdated {
+                session_id, state, ..
+            } => Some((session_id.clone(), state.clone())),
             _ => None,
         })
         .expect("注册绑定后必须发 ChecklistUpdated");
@@ -810,11 +813,14 @@ async fn clear_history_resends_remaining_timeline_not_empty() {
     agent.trunk.push_timeline(entry("sA", "A 的消息"));
     agent.trunk.push_timeline(entry("sB", "B 的消息"));
 
-    apply_session_command(&agent, BackendCommand::ClearHistory {
+    apply_session_command(
+        &agent,
+        BackendCommand::ClearHistory {
             team_id: Some("t".into()),
             session_id: Some("sA".into()),
-        })
-        .await;
+        },
+    )
+    .await;
 
     let mut news = Vec::new();
     while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
@@ -887,11 +893,14 @@ async fn archive_history_without_session_id_is_rejected_fail_closed() {
         ord: 0,
     });
 
-    apply_session_command(&agent, BackendCommand::ArchiveHistory {
+    apply_session_command(
+        &agent,
+        BackendCommand::ArchiveHistory {
             team_id: Some("t".into()),
             session_id: None,
-        })
-        .await;
+        },
+    )
+    .await;
 
     let mut errors = Vec::new();
     let mut timeline_broadcasts = 0usize;
@@ -4052,7 +4061,7 @@ async fn run_tool_redacts_secrets_from_real_bash_output_and_log() {
         tools,
         Arc::new(InstanceRegistry::new()),
     );
-    let redactor = Arc::new(echo_sanitize::RegistryRedactor::new());
+    let redactor = Arc::new(echo_plugin_sanitize::RegistryRedactor::new());
     redactor.register_secret(KEY, "api_key:test");
     agent.set_redactor(redactor);
 
@@ -4771,7 +4780,6 @@ async fn agent_emit_delivers_to_subscribed_plugins() {
     assert_eq!(host.event_counters().0, 1, "只有那一条进成功计数");
 }
 
-
 /// 2026-10 scope audit: the context snapshot after clear/archive must go to
 /// the operated session.
 ///
@@ -4809,11 +4817,14 @@ async fn clear_history_snapshot_targets_the_operated_session() {
         );
     }
 
-    apply_session_command(&agent, BackendCommand::ClearHistory {
+    apply_session_command(
+        &agent,
+        BackendCommand::ClearHistory {
             team_id: Some("t".into()),
             session_id: Some("sA".into()),
-        })
-        .await;
+        },
+    )
+    .await;
 
     let mut snapshots = Vec::new();
     let mut notices = Vec::new();
@@ -4874,11 +4885,14 @@ async fn clear_history_without_session_id_is_rejected_fail_closed() {
         )],
     );
 
-    apply_session_command(&agent, BackendCommand::ClearHistory {
+    apply_session_command(
+        &agent,
+        BackendCommand::ClearHistory {
             team_id: Some("t".into()),
             session_id: None,
-        })
-        .await;
+        },
+    )
+    .await;
 
     let mut messages = Vec::new();
     while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
@@ -4930,12 +4944,15 @@ async fn compact_result_is_a_session_scoped_notice() {
             .collect(),
     );
 
-    apply_session_command(&agent, BackendCommand::CompactHistory {
+    apply_session_command(
+        &agent,
+        BackendCommand::CompactHistory {
             team_id: Some("t".into()),
             session_id: Some(session.into()),
             keep_recent: Some(2),
-        })
-        .await;
+        },
+    )
+    .await;
 
     let mut notices = Vec::new();
     let mut errors = Vec::new();
@@ -4960,7 +4977,11 @@ async fn compact_result_is_a_session_scoped_notice() {
         .find(|(_, _, message)| message.contains("已压缩"))
         .cloned()
         .unwrap_or_else(|| panic!("compaction result must be a Notice: {notices:?}"));
-    assert_eq!(session_id.as_deref(), Some(session), "receipt must carry the session");
+    assert_eq!(
+        session_id.as_deref(),
+        Some(session),
+        "receipt must carry the session"
+    );
     assert!(ok, "successful receipt has ok=true");
 }
 
@@ -4993,12 +5014,15 @@ async fn compact_without_session_id_is_rejected_fail_closed() {
             .collect(),
     );
 
-    apply_session_command(&agent, BackendCommand::CompactHistory {
+    apply_session_command(
+        &agent,
+        BackendCommand::CompactHistory {
             team_id: Some("t".into()),
             session_id: None,
             keep_recent: Some(2),
-        })
-        .await;
+        },
+    )
+    .await;
 
     let mut messages = Vec::new();
     while let Ok(event) = bridge.event_rx.lock().await.try_recv() {
@@ -5036,7 +5060,10 @@ async fn deleting_api_profile_drops_session_overrides() {
         .session_providers
         .insert("sA".into(), ("gone".to_string(), seed));
     let dropped = agent.drop_session_providers_of("gone").await;
-    assert_eq!(dropped, 1, "the override pointing at the profile is dropped");
+    assert_eq!(
+        dropped, 1,
+        "the override pointing at the profile is dropped"
+    );
     assert!(
         agent.model.session_providers.get("sA").is_none(),
         "no stale override may survive"

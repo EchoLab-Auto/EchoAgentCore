@@ -114,7 +114,8 @@ impl Agent {
         let (base, persona_skills, plugin_blocks) = {
             let base = self.model.config.read().await.system_prompt.clone();
             let persona_skills = self
-                .identity.capabilities
+                .identity
+                .capabilities
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()

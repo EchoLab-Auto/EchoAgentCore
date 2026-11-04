@@ -148,9 +148,7 @@ pub fn service_key() -> echo_context::ServiceKey<Arc<dyn ShellToolProvider>> {
 ///
 /// 组合根用它构造每个 agent 的 shell 工具——未挂载 = 没有 `bash-*` 工具
 /// （而不是"有工具但执行时报错"）。
-pub fn resolve_provider(
-    ctx: &Arc<echo_context::Ctx>,
-) -> Option<Arc<dyn ShellToolProvider>> {
+pub fn resolve_provider(ctx: &Arc<echo_context::Ctx>) -> Option<Arc<dyn ShellToolProvider>> {
     ctx.service(&service_key())
 }
 

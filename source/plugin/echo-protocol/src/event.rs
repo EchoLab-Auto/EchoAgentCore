@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-
 /// 状态快照 → 线上事件的构造器。
 ///
 /// 工具用 `Tool::state_key` 声明"我执行完有可见状态"，而**这状态长什么线上

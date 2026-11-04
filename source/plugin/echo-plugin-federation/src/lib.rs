@@ -35,18 +35,18 @@ pub mod remote_tool;
 pub mod router;
 pub mod workspace_query;
 
+pub use admin::{Emit as FederationEmit, FederationAdminHost};
+pub use ports::FederationAdmin;
 pub use remote_tool::{
     proxy_schema, remote_tool_name, remote_tool_prefix, sanitize_peer_component, RemoteTool,
 };
 pub use router::{remote_tool_candidates, ExecutorPolicy, InvokeRouter, PendingInvoke};
-pub use admin::{Emit as FederationEmit, FederationAdminHost};
-pub use ports::FederationAdmin;
 pub use workspace_query::{workspace_query, FederationWorkspaceQuery, WorkspaceQueryHandle};
 
 pub use commands::{FederationCommandBridge, COMMANDS as FEDERATION_COMMANDS};
 pub use ports::{
-    notify_remote_subagent, path_within_roots, AggregateDeliver, FederationPorts, RemoteQuerier,
-    RemoteSubagentNotifier, RemoteInvoker,
+    notify_remote_subagent, path_within_roots, AggregateDeliver, FederationPorts, RemoteInvoker,
+    RemoteQuerier, RemoteSubagentNotifier,
 };
 
 /// 插件 id（宿主既有的联邦插件 id 与本常量同源字面量）。
@@ -81,7 +81,8 @@ pub fn plugin(version: &str) -> std::sync::Arc<dyn echo_plugin::Plugin> {
     // **零参数**（全插件化 S6）：出口集合与事件出口都是装配期构造的进程级
     // 对象，经服务表解析（[`host_keys::PORTS`] / [`host_keys::EVENTS`]）。
     let ports = ServiceSlot::<std::sync::Arc<FederationPorts>>::new();
-    let events = ServiceSlot::<std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>>::new();
+    let events =
+        ServiceSlot::<std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>>::new();
     let (bind_ports, bind_events) = (ports.clone(), events.clone());
     let (serve_ports, serve_events) = (ports.clone(), events.clone());
 

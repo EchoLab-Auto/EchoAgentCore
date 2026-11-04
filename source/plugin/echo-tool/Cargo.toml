@@ -17,4 +17,4 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
-echo-sanitize = { workspace = true }
+echo-test-utils = { workspace = true }

@@ -118,7 +118,6 @@ impl ToolExecutionHost for AgentToolHost<'_> {
             }
         }
     }
-
 }
 
 impl Agent {
@@ -134,10 +133,10 @@ impl Agent {
     ) -> crate::tool::ToolResult {
         // 取消信号：本分支（若有）的令牌包一层定义层能力递进去——工具要
         // 「主 turn 取消时我也停」时自己等它，宿主不必知道谁需要。
-        let cancel = self
-            .cancel_signal_of(branch_id)
-            .map(|token| std::sync::Arc::new(TurnCancellation(token))
-                as std::sync::Arc<dyn echo_defs::tool::Cancellation>);
+        let cancel = self.cancel_signal_of(branch_id).map(|token| {
+            std::sync::Arc::new(TurnCancellation(token))
+                as std::sync::Arc<dyn echo_defs::tool::Cancellation>
+        });
         let cx = ToolCallContext {
             session_id: session_id.to_string(),
             branch_id: branch_id.to_string(),
@@ -202,7 +201,6 @@ pub(super) fn tool_timeout_notice(tool: &str, secs: u64) -> String {
     )
 }
 
-
 /// 状态快照 → 线上事件的构造器（词汇在协议层：插件与宿主都要用）。
 pub use echo_protocol::ToolStateEventBuilder;
 
@@ -231,7 +229,8 @@ impl Agent {
         &self,
         branch_id: &str,
     ) -> Option<tokio_util::sync::CancellationToken> {
-        self.turns.active_inbound_turns
+        self.turns
+            .active_inbound_turns
             .get(branch_id)
             .map(|turn| turn.cancel.clone())
     }
@@ -248,11 +247,7 @@ impl Agent {
     /// ```
     ///
     /// 同 key 重复注册 = 后到者赢（插件重装时刷新形状；这也是热重载的语义）。
-    pub fn register_tool_state_event(
-        &self,
-        key: impl Into<String>,
-        build: ToolStateEventBuilder,
-    ) {
+    pub fn register_tool_state_event(&self, key: impl Into<String>, build: ToolStateEventBuilder) {
         if let Ok(mut map) = self.egress.state_events.write() {
             map.insert(key.into(), build);
         }
@@ -260,7 +255,8 @@ impl Agent {
 
     /// 查一个状态 key 的线上事件构造器（执行链用；无绑定 = `None`）。
     pub(crate) fn tool_state_event(&self, key: &str) -> Option<ToolStateEventBuilder> {
-        self.egress.state_events
+        self.egress
+            .state_events
             .read()
             .ok()
             .and_then(|map| map.get(key).cloned())

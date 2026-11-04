@@ -10,7 +10,6 @@ repository.workspace = true
 [dependencies]
 echo-defs = { path = "../echo-defs" }
 echo-config = { workspace = true }
-echo-sanitize = { workspace = true }
 echo-federation = { path = "../echo-federation" }
 echo-context = { workspace = true }
 echo-loop = { path = "../echo-loop" }

@@ -93,9 +93,7 @@ pub fn cancel_scope(content: &str) -> Option<bool> {
     if CANCEL_ALL.contains(&normalized.as_str()) {
         return Some(true);
     }
-    CANCEL_ONE
-        .contains(&normalized.as_str())
-        .then_some(false)
+    CANCEL_ONE.contains(&normalized.as_str()).then_some(false)
 }
 
 #[cfg(test)]
@@ -118,13 +116,7 @@ mod tests {
 
     #[test]
     fn cancel_one_phrases_are_recognised() {
-        for input in [
-            "取消当前任务",
-            "停止任务",
-            " /cancel ",
-            "/stop",
-            "/abort",
-        ] {
+        for input in ["取消当前任务", "停止任务", " /cancel ", "/stop", "/abort"] {
             assert_eq!(cancel_scope(input), Some(false), "{input}");
         }
     }

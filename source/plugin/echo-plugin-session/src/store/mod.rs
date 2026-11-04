@@ -24,9 +24,9 @@ pub mod timeline;
 // 只导出这一个函数——其余派生实现细节留在模块内。
 pub use history::history_watermark;
 
-use echo_protocol::SessionInfo;
 use echo_defs::llm::LlmProvider;
 use echo_defs::message::ChatMessage;
+use echo_protocol::SessionInfo;
 
 /// 结构化会话标识（口径单源 = `echo_session::SessionKey`，解耦计划
 /// Phase 3 ⑤：词汇下沉，使工作区插件与其它插件能直接构造会话 id）。
@@ -105,7 +105,11 @@ impl Session {
     /// 传入——Session 本身不持有身份，避免每会话复制一份；缺省空身份 =
     /// 字段不下发（嵌入式/测试用法）。P3 终态：身份是参数，不再从
     /// 进程级 kernel cell 读取。
-    pub fn info(&self, last_message: String, identity: &echo_defs::node::NodeIdentity) -> SessionInfo {
+    pub fn info(
+        &self,
+        last_message: String,
+        identity: &echo_defs::node::NodeIdentity,
+    ) -> SessionInfo {
         SessionInfo {
             id: self.id.clone(),
             node_id: identity.node_id_field(),
@@ -706,11 +710,7 @@ impl TrunkStore {
 
     /// Insert an event after the last user event carrying `sequence`
     /// (concurrent-branch merge), then re-project the trunk cache.
-    pub fn insert_event_after_sequence(
-        &self,
-        sequence: u64,
-        event: echo_session::SessionEvent,
-    ) {
+    pub fn insert_event_after_sequence(&self, sequence: u64, event: echo_session::SessionEvent) {
         let session = event.session().map(str::to_string);
         self.event_log.insert_after_sequence(sequence, event);
         self.reproject(&session);

@@ -230,9 +230,8 @@ mod tests {
             _team_id: Option<String>,
             _session_id: &'a str,
             _keep_recent: usize,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>,
-        > {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + 'a>>
+        {
             Box::pin(async { Ok(String::new()) })
         }
     }

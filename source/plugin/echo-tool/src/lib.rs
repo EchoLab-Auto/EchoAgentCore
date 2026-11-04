@@ -1137,7 +1137,7 @@ mod tests {
         }
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(LeakyTool));
-        let redactor = Arc::new(echo_sanitize::RegistryRedactor::with_builtin_patterns());
+        let redactor = Arc::new(echo_test_utils::FakeRedactor::with_builtin_patterns());
         redactor.register_secret(KEY, "api_key:test");
         registry.set_redactor(Some(redactor));
 
@@ -1171,7 +1171,7 @@ mod tests {
         }
         let mut registry = ToolRegistry::new();
         registry.register(Arc::new(ErrTool));
-        let redactor = Arc::new(echo_sanitize::RegistryRedactor::new());
+        let redactor = Arc::new(echo_test_utils::FakeRedactor::new());
         redactor.register_secret(KEY, "api_key:test");
         registry.set_redactor(Some(redactor));
 

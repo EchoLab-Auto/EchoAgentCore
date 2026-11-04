@@ -42,7 +42,6 @@ EchoAgentCore/
 │       ├── echo-tool/         # kernel：工具注册与执行机制
 │       ├── echo-shell/        # kernel：持久 Shell 会话机制
 │       ├── echo-loop/         # kernel：TurnRunner + ToolPipeline
-│       ├── echo-sanitize/     # kernel：脱敏机制
 │       ├── echo-federation/   # kernel：Core↔Core 链路与帧协议
 │       ├── echo-plugin-adapter/    # 协议贡献 → 领域 trait
 │       ├── echo-plugin-tools/      # 内置工具集
@@ -50,13 +49,14 @@ EchoAgentCore/
 │       ├── echo-plugin-skills/     # 技能目录
 │       ├── echo-plugin-subagent/   # spawn_subagent
 │       ├── echo-plugin-workspace/  # 工作区会话
-│       ├── echo-plugin-management/ # 管理面 WS（Panel 中继）
+│       ├── echo-plugin-management/ # Core management WS
+│       ├── echo-plugin-panel/      # 可选进程内 Web Panel（复用 Panel 运行库）
 │       ├── echo-plugin-loop/       # loop.single 策略
 │       ├── echo-plugin-provider-llm/ # provider 工厂 + 计量/脱敏装饰器
 │       ├── echo-plugin-session/    # 会话持久化与压缩编排
 │       ├── echo-plugin-transcript/ # 时间线投影
 │       ├── echo-plugin-federation/ # 联邦工具路由与命令域
-│       ├── echo-plugin-sanitize/   # 脱敏服务贡献
+│       ├── echo-plugin-sanitize/   # 脱敏：实现（registry.rs）+ 装配 + 身份
 │       ├── echo-plugin-self-update/# 自更新
 │       ├── echo-agent/        # 业务宿主与 Agent 编排（不是可替换能力插件）
 │       ├── echo-test-utils/   # 共享测试 mock（仅 dev-dependency）

@@ -337,8 +337,14 @@ mod tests {
     #[tokio::test]
     async fn write_commands_are_not_claimed() {
         let (h, host) = handler();
-        assert!(h.handle("ClearHistory", serde_json::json!({})).await.is_none());
-        assert!(h.handle("SendMessage", serde_json::json!({})).await.is_none());
+        assert!(h
+            .handle("ClearHistory", serde_json::json!({}))
+            .await
+            .is_none());
+        assert!(h
+            .handle("SendMessage", serde_json::json!({}))
+            .await
+            .is_none());
         assert!(host.events.lock().unwrap().is_empty());
     }
 

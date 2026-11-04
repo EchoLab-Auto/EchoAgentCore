@@ -257,10 +257,7 @@ impl echo_tool::Tool for InstanceToolBridge {
 ///
 /// 约定：返回对象带 `success: false` 视为失败（`error` 字段给原因）；否则
 /// 原样把结果 JSON 交给模型（`message_id` 等字段由插件决定）。
-fn render_managed_outcome(
-    tool: &str,
-    outcome: Value,
-) -> Result<String, echo_tool::ToolError> {
+fn render_managed_outcome(tool: &str, outcome: Value) -> Result<String, echo_tool::ToolError> {
     use echo_tool::ToolError;
     if outcome.get("success").and_then(Value::as_bool) == Some(false) {
         return Err(ToolError::Execution(
@@ -624,7 +621,7 @@ mod tests {
     #[tokio::test]
     async fn gate_blocks_sensitive_text_for_every_instance_tool() {
         use echo_defs::sanitize::Redactor as _;
-        let redactor = Arc::new(echo_sanitize::RegistryRedactor::new());
+        let redactor = Arc::new(echo_test_utils::FakeRedactor::new());
         redactor.register_secret("sk-secret-123", "test");
         let gate = Arc::new(OutboundGate {
             redactor,

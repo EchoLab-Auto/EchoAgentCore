@@ -8,6 +8,7 @@ mod compact;
 mod gating;
 pub(crate) mod groups;
 mod inbound;
+pub mod persona_hosts;
 mod plugin_reload;
 pub(crate) mod prompt;
 pub mod provider_host;
@@ -15,17 +16,16 @@ pub mod registry;
 pub mod session_commands_host;
 pub mod session_query;
 pub mod session_view_host;
+pub mod shell_host;
+pub mod skills_host;
 mod streaming;
 pub mod subagent_host;
 mod subagent_runtime;
 mod tool_dispatch;
 mod tool_exec;
+pub mod tools_host;
 mod turn;
 mod workspace_commands;
-pub mod persona_hosts;
-pub mod shell_host;
-pub mod skills_host;
-pub mod tools_host;
 pub mod workspace_host;
 // 命令域按包拆分：QQ 侧在 `crate::packages::instance_ops::commands`，
 // 工作区侧在本目录 `workspace_commands.rs`（插件实现已外迁到
@@ -52,9 +52,9 @@ use crate::event::BackendEvent;
 use crate::llm::{create_provider, ChatChunk, ChatMessage, ChatRequest, LlmProvider, ToolCall};
 use crate::session::{Session, TrunkStore};
 // 会话工厂契约（解耦计划 S6）：`Agent::new` 经它要 trunk，而不是直接构造。
-use echo_plugin_session::SessionFactory as _;
 use crate::skill::SkillRegistry;
 use crate::tool::ToolRegistry;
+use echo_plugin_session::SessionFactory as _;
 
 /// 「本轮被调用方取消」的错误文案（口径单源 = `echo_defs::llm`）。
 ///
@@ -376,7 +376,11 @@ impl Agent {
 
     /// 当前脱敏器（未注入 / 锁中毒 = None，全部脱敏路径按透传处理）。
     pub(crate) fn redactor(&self) -> Option<Arc<dyn echo_defs::sanitize::Redactor>> {
-        self.instrumentation.redactor.read().ok().and_then(|slot| slot.clone())
+        self.instrumentation
+            .redactor
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone())
     }
 
     /// 注入指标存储（组合根装配期；`AgentBuilder::metrics` 调用）。
@@ -392,7 +396,11 @@ impl Agent {
 
     /// 当前指标存储（未注入 / 锁中毒 = None，记录与查询路径按跳过处理）。
     pub(crate) fn metrics(&self) -> Option<Arc<crate::metrics::MetricsStore>> {
-        self.instrumentation.metrics.read().ok().and_then(|slot| slot.clone())
+        self.instrumentation
+            .metrics
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone())
     }
 
     /// 文本脱敏：无脱敏器或未命中时返回原文副本。
@@ -500,14 +508,16 @@ impl Agent {
 
     pub fn set_team_id(&self, team_id: Option<String>) {
         *self
-            .identity.team_id
+            .identity
+            .team_id
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = team_id.clone();
         self.trunk.set_team_id(team_id);
     }
 
     pub fn team_id(&self) -> Option<String> {
-        self.identity.team_id
+        self.identity
+            .team_id
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -520,14 +530,16 @@ impl Agent {
     /// 字段，后者更直观。
     pub fn set_node_identity(&self, identity: crate::NodeIdentity) {
         *self
-            .identity.node_identity
+            .identity
+            .node_identity
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = identity;
     }
 
     /// 当前节点身份（未注入 = 全空）。
     pub fn node_identity(&self) -> crate::NodeIdentity {
-        self.identity.node_identity
+        self.identity
+            .node_identity
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -536,14 +548,16 @@ impl Agent {
     /// 注入联邦出口集合（组合根装配期；`AgentBuilder::federation` 调用）。
     pub fn set_federation(&self, ports: std::sync::Arc<crate::federation::FederationPorts>) {
         *self
-            .ports.federation
+            .ports
+            .federation
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = ports;
     }
 
     /// 当前联邦出口集合（未注入 = 全部为空，即联邦未接线）。
     pub fn federation(&self) -> std::sync::Arc<crate::federation::FederationPorts> {
-        self.ports.federation
+        self.ports
+            .federation
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -565,7 +579,8 @@ impl Agent {
     /// 进程级插件宿主（组合根注入；未注入时为该 agent 自带的空宿主，
     /// 便于单元测试）。
     pub fn plugin_host(&self) -> std::sync::Arc<crate::plugins::PluginHost> {
-        self.plugins.host
+        self.plugins
+            .host
             .read()
             .map(|g| g.clone())
             .unwrap_or_else(|_| std::sync::Arc::new(crate::plugins::PluginHost::new()))
@@ -620,13 +635,15 @@ impl Agent {
     /// （`None => {}` 让 Panel 收到空清单而日志里什么也没有）。
     pub fn registry(&self) -> Option<std::sync::Arc<dyn crate::agent::registry::AgentRegistry>> {
         let found = self
-            .manager.registry
+            .manager
+            .registry
             .read()
             .ok()
             .and_then(|slot| slot.as_ref().and_then(|weak| weak.upgrade()));
         if found.is_none()
             && !self
-                .manager.warned
+                .manager
+                .warned
                 .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
             tracing::warn!(
@@ -657,7 +674,11 @@ impl Agent {
 
     /// 本 agent 的全局禁用策略（未注入 = None，调用方回退自身配置快照）。
     pub fn global_policy(&self) -> Option<std::sync::Arc<GlobalPolicy>> {
-        self.plugins.global_policy.read().ok().and_then(|slot| slot.clone())
+        self.plugins
+            .global_policy
+            .read()
+            .ok()
+            .and_then(|slot| slot.clone())
     }
 
     /// 注入进程级事件汇聚点（组合根对每个 persona 调用一次）。
@@ -723,7 +744,8 @@ impl Agent {
 
     /// 当前 persona 的工作区会话存储（None = 插件未挂载）。
     pub fn workspace_store(&self) -> Option<std::sync::Arc<crate::workspace::WorkspaceStore>> {
-        self.ports.workspace_store
+        self.ports
+            .workspace_store
             .read()
             .ok()
             .and_then(|slot| slot.clone())
@@ -731,7 +753,8 @@ impl Agent {
 
     /// Non-blocking poll for a frontend command (used by the command pump).
     pub fn try_recv_command(&self) -> Option<BackendCommand> {
-        self.egress.handle
+        self.egress
+            .handle
             .try_read()
             .ok()?
             .as_ref()
@@ -784,7 +807,8 @@ impl Agent {
         // team，才能过滤实时消息（避免串线）。
         let event = self.annotate_team(event);
         self.deliver_event_to_plugins(&event);
-        self.egress.bus
+        self.egress
+            .bus
             .emit_sync(event.clone(), echo_context::DispatchMode::Observe);
         // 汇聚点优先：组合根把所有 persona 都接到同一个进程级汇聚点，
         // 「谁挂到 Panel」不再取决于是否为默认人格。
@@ -793,7 +817,8 @@ impl Agent {
             return;
         }
         if let Some(h) = self
-            .egress.handle
+            .egress
+            .handle
             .try_read()
             .ok()
             .as_ref()
@@ -1200,7 +1225,12 @@ impl Agent {
         // **persona 白名单仍然生效**：插件挂载是进程级的，但"这个人格能不能
         // 看到它的内容"是 per-persona 的（`enabled_plugins`）。过滤钩子在这里，
         // 判断逻辑在 `profile_allows_plugin`——框架只提供"按 id 过滤"。
-        let capabilities = self.identity.capabilities.lock().ok().and_then(|cap| cap.clone());
+        let capabilities = self
+            .identity
+            .capabilities
+            .lock()
+            .ok()
+            .and_then(|cap| cap.clone());
         self.plugin_host().collect_text_blocks(
             &serde_json::json!({
                 "session_id": session_id,
@@ -1325,7 +1355,6 @@ impl Agent {
         self.prompt.cache_prompt(prompt.clone()).await;
         prompt
     }
-
 }
 
 /// 实例清单事件（`RequestState` 全量快照与测试共用**同一份**投影入口）。

@@ -43,7 +43,10 @@ impl AgentSessionViewHost {
 }
 
 /// 全量路径取窗口尾部：`limit` 为 None/0 时返回全部。
-fn window_tail(trunk: &crate::session::TrunkStore, limit: Option<usize>) -> (Vec<crate::event::TimelineMessage>, bool) {
+fn window_tail(
+    trunk: &crate::session::TrunkStore,
+    limit: Option<usize>,
+) -> (Vec<crate::event::TimelineMessage>, bool) {
     match limit {
         Some(n) if n > 0 => trunk.timeline_window_tail(n),
         _ => (trunk.timeline_snapshot(), false),
@@ -131,11 +134,7 @@ impl SessionViewHost for AgentSessionViewHost {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<BackendEvent>> + Send + '_>> {
         // 会话隔离：team 指定时用该成员自己的 trunk（不同记忆）。
         let target = self.target(team_id.as_deref());
-        Box::pin(async move {
-            target
-                .context_snapshot_events(session_id.as_deref())
-                .await
-        })
+        Box::pin(async move { target.context_snapshot_events(session_id.as_deref()).await })
     }
 
     fn trunk_timeline(
@@ -143,7 +142,8 @@ impl SessionViewHost for AgentSessionViewHost {
         team_id: Option<String>,
         since_seq: u64,
         limit: Option<usize>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<TimelineView>> + Send + '_>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<TimelineView>> + Send + '_>>
+    {
         let target = self.target(team_id.as_deref());
         Box::pin(async move {
             // `since_seq > 0` 走增量快照；增量窗口不完整（None）回退全量。

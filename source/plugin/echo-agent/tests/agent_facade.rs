@@ -54,11 +54,8 @@ fn agent_fields() -> Vec<String> {
 
 /// 分组结构体里的字段名（`src/agent/groups.rs` 的所有 `pub(crate) <name>:`）。
 fn grouped_fields() -> BTreeSet<String> {
-    let src = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/agent/groups.rs"
-    ))
-    .expect("read agent/groups.rs");
+    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/agent/groups.rs"))
+        .expect("read agent/groups.rs");
     let mut out = BTreeSet::new();
     for line in src.lines() {
         let line = line.trim();
@@ -108,20 +105,37 @@ fn grouped_state_never_leaks_back_onto_the_facade() {
     let facade: BTreeSet<String> = agent_fields().into_iter().collect();
     let leaked: Vec<&str> = [
         // EventEgress
-        "handle", "event_sink", "event_bus", "tool_state_events",
+        "handle",
+        "event_sink",
+        "event_bus",
+        "tool_state_events",
         // TurnState
-        "loop_runner", "reply_branch_slots", "active_inbound_turns",
-        "next_message_sequence", "draining", "cancel",
+        "loop_runner",
+        "reply_branch_slots",
+        "active_inbound_turns",
+        "next_message_sequence",
+        "draining",
+        "cancel",
         // Identity
-        "team_id", "node_identity", "capabilities",
+        "team_id",
+        "node_identity",
+        "capabilities",
         // Instrumentation
-        "redactor", "metrics", "gating_log_state",
+        "redactor",
+        "metrics",
+        "gating_log_state",
         // PluginSubsystem
-        "plugin_host", "global_policy", "plugin_reload_started",
+        "plugin_host",
+        "global_policy",
+        "plugin_reload_started",
         // PluginPorts
-        "workspace_store", "shell", "subagent", "federation",
+        "workspace_store",
+        "shell",
+        "subagent",
+        "federation",
         // ManagerLink
-        "registry", "manager_warned",
+        "registry",
+        "manager_warned",
     ]
     .into_iter()
     .filter(|name| facade.contains(*name))

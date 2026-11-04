@@ -79,11 +79,7 @@ impl ShellCommandHandler {
         let tagged = serde_json::json!({ name: payload });
         let cmd: BackendCommand = match serde_json::from_value(tagged) {
             Ok(cmd) => cmd,
-            Err(error) => {
-                return Some(Err(format!(
-                    "shell 命令载荷解析失败（{name}）: {error}"
-                )))
-            }
+            Err(error) => return Some(Err(format!("shell 命令载荷解析失败（{name}）: {error}"))),
         };
         Some(self.apply(cmd).await.map(|()| serde_json::Value::Null))
     }
@@ -96,10 +92,8 @@ impl ShellCommandHandler {
                     .manager()
                     .map(|m| m.list(team_id.as_deref()))
                     .unwrap_or_default();
-                self.host.emit(BackendEvent::ShellSessionsList {
-                    sessions,
-                    team_id,
-                });
+                self.host
+                    .emit(BackendEvent::ShellSessionsList { sessions, team_id });
                 Ok(())
             }
             BackendCommand::ShellStart { team_id, workdir } => {
@@ -115,8 +109,9 @@ impl ShellCommandHandler {
                 let team_id = team_id.or_else(|| self.host.team_id());
                 match manager.start(workdir, team_id, &emit).await {
                     Ok(info) => {
-                        self.host
-                            .emit(BackendEvent::ShellSessionStarted { session: info.clone() });
+                        self.host.emit(BackendEvent::ShellSessionStarted {
+                            session: info.clone(),
+                        });
                         self.notice(format!("shell session started: {}", info.session_id));
                     }
                     Err(error) => self.notice(format!("shell start failed: {error}")),
@@ -138,9 +133,10 @@ impl ShellCommandHandler {
                 // (`sh-1` is enumerable) could run commands inside another
                 // persona's shell. The tool path already went through
                 // `ensure_owned_by`; the panel path was missing the same gate.
-                if let Err(error) = manager
-                    .ensure_owned_by(&session_id, team_id.as_deref().or(self.host.team_id().as_deref()))
-                {
+                if let Err(error) = manager.ensure_owned_by(
+                    &session_id,
+                    team_id.as_deref().or(self.host.team_id().as_deref()),
+                ) {
                     self.notice(format!("shell exec rejected: {error}"));
                     return Ok(());
                 }
@@ -167,9 +163,10 @@ impl ShellCommandHandler {
                 };
                 // Same gate: killing another persona's process group is
                 // irreversible.
-                if let Err(error) = manager
-                    .ensure_owned_by(&session_id, team_id.as_deref().or(self.host.team_id().as_deref()))
-                {
+                if let Err(error) = manager.ensure_owned_by(
+                    &session_id,
+                    team_id.as_deref().or(self.host.team_id().as_deref()),
+                ) {
                     self.notice(format!("shell stop rejected: {error}"));
                     return Ok(());
                 }
@@ -334,10 +331,13 @@ mod tests {
             "a refused stop must not actually kill the session"
         );
         // The gate must not hit our own session.
-        h.handle("ShellStop", serde_json::json!({ "session_id": owned.session_id }))
-            .await
-            .expect("owned by this domain")
-            .expect("own session is fine");
+        h.handle(
+            "ShellStop",
+            serde_json::json!({ "session_id": owned.session_id }),
+        )
+        .await
+        .expect("owned by this domain")
+        .expect("own session is fine");
         assert!(manager.session_info(&owned.session_id).is_none());
     }
 
@@ -367,7 +367,10 @@ mod tests {
     async fn unknown_extra_fields_are_tolerated() {
         let (h, _host) = handler(FakeHost::default());
         let outcome = h
-            .handle("ShellStart", serde_json::json!({"workdir": null, "future": 1}))
+            .handle(
+                "ShellStart",
+                serde_json::json!({"workdir": null, "future": 1}),
+            )
             .await
             .expect("仍是本域命令");
         assert!(outcome.is_ok(), "多余字段不该让命令失败");

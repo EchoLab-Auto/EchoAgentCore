@@ -183,14 +183,20 @@ mod tests {
     #[tokio::test]
     async fn toggle_reports_and_broadcasts_only_on_success() {
         let (h, host) = handler();
-        h.handle("ToggleTool", serde_json::json!({"name": "bash", "enabled": false}))
-            .await
-            .expect("本域命令")
-            .expect("ok");
-        h.handle("ToggleTool", serde_json::json!({"name": "ghost", "enabled": true}))
-            .await
-            .expect("本域命令")
-            .expect("ok");
+        h.handle(
+            "ToggleTool",
+            serde_json::json!({"name": "bash", "enabled": false}),
+        )
+        .await
+        .expect("本域命令")
+        .expect("ok");
+        h.handle(
+            "ToggleTool",
+            serde_json::json!({"name": "ghost", "enabled": true}),
+        )
+        .await
+        .expect("本域命令")
+        .expect("ok");
         let events = host.events.lock().unwrap();
         let lists = events
             .iter()
