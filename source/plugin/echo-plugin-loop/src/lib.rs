@@ -91,7 +91,7 @@ pub fn declarations() -> [(&'static str, &'static str, &'static str); 1] {
 ///
 /// 服务键的唯一真值是 [`SERVICE_KEY`]。
 pub fn plugins(version: &str) -> Vec<Arc<dyn Plugin>> {
-    // 声明式注入（plugin-framework v0.6 的 `Inject`）：硬依赖 = `llm`
+    // 声明式注入（echo-fabric-arch v0.6 的 `Inject`）：硬依赖 = `llm`
     // （构造 TurnRunner 需要）。
     //
     // 键来自**定义层**（宿主 ↔ 插件契约，`scripts/deps-policy.txt` 不允许

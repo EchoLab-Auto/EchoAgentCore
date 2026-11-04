@@ -61,7 +61,7 @@ EchoAgentCore/
 │       ├── echo-test-utils/   # 共享测试 mock（仅 dev-dependency）
 │       └── core/              # echo-agent-core 二进制（组合根 + 治理门禁测试）
 │       # `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` 五件套在框架仓
-│       # `plugin-framework`；QQ 等实例插件也在独立仓库，经 adapter 接入。
+│       # `echo-fabric-arch`；QQ 等实例插件也在独立仓库，经 adapter 接入。
 │       # 目录统一只规定物理归属，不改变 kernel / 能力插件 / 宿主的依赖方向。
 ├── document/                  # 文档群（index + overview/core/plugins/panel/protocol/federation/ops/dev/design 分层）
 ├── npm/echo-agent/            # 容器化部署 CLI（Docker 编排；node:test 测试）

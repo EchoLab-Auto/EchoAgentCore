@@ -801,7 +801,7 @@ pub enum BackendEvent {
         /// 人读说明（成功也带一句，便于 toast 直接显示）。
         message: String,
     },
-    /// **插件事件**（plugin-framework v0.7 的事件通道出口）。
+    /// **插件事件**（echo-fabric-arch v0.7 的事件通道出口）。
     ///
     /// 插件在运行期 `emit` 的东西（注册表自己也会发 `plugin.mounted` /
     /// `plugin.unmounted`）经这里到前端。`name` / `payload` 是**插件与宿主

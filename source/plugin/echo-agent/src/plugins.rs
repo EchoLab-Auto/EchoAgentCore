@@ -352,7 +352,7 @@ pub struct SubprocessStatus {
 ///
 /// ## 它现在只剩三件事（2026-11，框架 v0.10 运行态上收）
 ///
-/// 框架（`plugin-framework`）已经把**与领域无关的运行态**收进
+/// 框架（`echo-fabric-arch`）已经把**与领域无关的运行态**收进
 /// `PluginRegistry`：挂载上下文缓存、事件订阅兴趣集、投递重入保护、投递
 /// 计数。此前这四样由本结构自己维护（多出 ~150 行状态 + 一处 `EventInterest`
 /// 影子结构），现在一行都不留。
@@ -807,7 +807,7 @@ impl PluginHost {
         self.registry.deliver_event_guarded(event)
     }
 
-    // ── 命令处理 + 有序文本块（plugin-framework v0.8）────────────────────
+    // ── 命令处理 + 有序文本块（echo-fabric-arch v0.8）────────────────────
 
     /// **把一条命令分发给插件**（`Contribution::Command`）。
     ///
@@ -1580,7 +1580,7 @@ mod tests {
         assert!(!profile_allows_plugin(&member, TOOLS_BUILTIN_PLUGIN_ID));
     }
 
-    // ── 声明式注入：就绪等待 + 依赖变更追平（plugin-framework v0.6）──────
+    // ── 声明式注入：就绪等待 + 依赖变更追平（echo-fabric-arch v0.6）──────
 
     fn inject_plugin(
         id: &str,
@@ -1680,7 +1680,7 @@ mod tests {
         assert!(host.reconcile().is_noop());
     }
 
-    // ── 插件事件通道（plugin-framework v0.7）─────────────────────────────
+    // ── 插件事件通道（echo-fabric-arch v0.7）─────────────────────────────
 
     /// 宿主注入出口后：插件 `emit` 的事件带自己的 id 到达宿主；
     /// 注册表自己发的 lifecycle 事件（`plugin.mounted`）也走同一个出口。
@@ -1767,7 +1767,7 @@ mod tests {
         );
     }
 
-    // ── 宿主 → 插件：事件投递（plugin-framework v0.7 接线）───────────────
+    // ── 宿主 → 插件：事件投递（echo-fabric-arch v0.7 接线）───────────────
 
     /// 挂一个订阅 `subs` 的插件，返回它收到的事件名列表。
     fn subscribe_probe(

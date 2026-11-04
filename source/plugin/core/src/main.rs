@@ -1554,7 +1554,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 挂载上下文只带服务定位器（框架层零领域依赖；`tools`/`skills` 两个
         // sink 是死代码，2026-10 M2 删除——见 echo_agent::plugins 模块文档）。
         plugin_host.set_mount_ctx(MountContext::new().with_ctx(ctx.clone()));
-        // 插件事件出口（plugin-framework v0.7）：插件 `emit` 的东西（含注册表
+        // 插件事件出口（echo-fabric-arch v0.7）：插件 `emit` 的东西（含注册表
         // 自己发的 `plugin.mounted` / `plugin.unmounted`）转成
         // `BackendEvent::PluginEvent` 走进程级汇聚点到面板。
         //
@@ -1746,7 +1746,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         for diagnostic in &diagnostics {
             warn!(%diagnostic, "builtin mount plan");
         }
-        // 就绪等待（plugin-framework v0.6）：每个插件挂载前先等它的
+        // 就绪等待（echo-fabric-arch v0.6）：每个插件挂载前先等它的
         // `inject` 就绪，最多 2s。现网正常启动时依赖早已注册，第一次检查
         // 就命中（开销 = 一次 contains）；只有在组合根装配顺序将来被打乱、
         // 或依赖由异步任务稍后注册时，这 2s 才是真的等待而不是立刻报错。
@@ -1770,7 +1770,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             // 管理面/工具集继续跑只会让人以为"服务起来了但一片空白"。
             return Err(anyhow::anyhow!(mount_errors.join("; ")).context("mount builtin plugins"));
         }
-        // 声明式注入的**响应端**（plugin-framework v0.6）：服务表的增删
+        // 声明式注入的**响应端**（echo-fabric-arch v0.6）：服务表的增删
         // 会沿父链广播 `Change`，这里把变化交给 `reconcile`——依赖到位的
         // pending 插件自动挂上、依赖消失的自动卸下。没有这条订阅，`inject`
         // 就只是"启动期检查一次"，而不是声明式。

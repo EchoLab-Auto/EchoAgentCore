@@ -191,7 +191,7 @@ impl Agent {
                 }
             }
         }
-        // ── 命令域归插件（plugin-framework v0.8 的 `Contribution::Command`）──
+        // ── 命令域归插件（echo-fabric-arch v0.8 的 `Contribution::Command`）──
         //
         // 在落内置 match **之前**问一次插件：有插件声明处理这条命令就交给它，
         // 内置分支不再执行。于是"某个命令域归某个插件"是**注册关系**——

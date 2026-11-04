@@ -78,7 +78,7 @@ graph BT
 > 依赖边以 `cargo metadata --format-version 1 --no-deps`（仅 normal 依赖）实测为准。`echo-context` **不依赖** `echo-defs`（零 echo-* 依赖）；组合根另直接依赖全部中间层 crate 与全部内置插件 crate，图中只画主干边（内置插件各自只依赖定义层/机制层，边略）。**依赖白名单的单一真值是 `scripts/deps-policy.txt`**——`scripts/check-deps.sh`（CI `deps-lint`）与 `source/plugin/core/tests/plugin_dependency_direction.rs`（cargo test）共读同一份，新增 crate 未登记即失败。
 
 > **归属（框架外迁）**：下表里带「框架仓」标记的 crate **不在本仓**，
-> 而是独立仓库 [plugin-framework](https://github.com/EchoLab-Auto/plugin-framework)
+> 而是独立仓库 [echo-fabric-arch](https://github.com/EchoLab-Auto/echo-fabric-arch)
 > （`v0.11.1`），由本仓的 `Cargo.toml` 以 `git + tag` 引用。它们与任何应用 crate
 > 无反向依赖，可被其它 Rust 应用单独使用。本仓 `source/plugin/`
 > 下只剩**框架的使用者**（内置插件）与领域适配层。

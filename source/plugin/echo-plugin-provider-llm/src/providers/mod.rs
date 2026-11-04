@@ -14,7 +14,7 @@
 //!   → llm/echo-llm-anthropic（自身）、plugin/echo-plugin-provider-llm
 //! ```
 //!
-//! 仓外同样是零引用（`echo-adapter-qq` / `plugin-framework` /
+//! 仓外同样是零引用（`echo-adapter-qq` / `echo-fabric-arch` /
 //! `echo-hpc-platform` 都不依赖它们）。也就是说：**三个 crate 边界换来的不是
 //! "可替换点"，只是目录层级** —— 协议差异靠的是 `LlmProvider` trait（在
 //! `echo-defs`），不是这三个 crate 之间的抽象。

@@ -4722,7 +4722,7 @@ async fn instance_list_fills_platform_ui_and_session_labels() {
     assert_eq!(value["session_labels"]["dm"], serde_json::json!("私聊"));
 }
 
-// ── 宿主 → 插件的事件投递（plugin-framework v0.7 接线）──
+// ── 宿主 → 插件的事件投递（echo-fabric-arch v0.7 接线）──
 
 /// `Agent::emit` 是**唯一**的领域事件汇聚点：订阅了某事件名的插件应当收到它，
 /// 且热路径闸门（无人订阅时一次原子 load 返回）在挂上订阅者后打开。

@@ -828,7 +828,7 @@ impl Agent {
         }
     }
 
-    /// 把一条领域事件投给订阅了它的已挂载插件（plugin-framework v0.7 事件通道）。
+    /// 把一条领域事件投给订阅了它的已挂载插件（echo-fabric-arch v0.7 事件通道）。
     ///
     /// **热路径**：`emit` 会被流式正文逐 token 调用，所以门槛是
     /// `has_event_subscribers()`——**一次原子 load**，无人订阅就立刻返回。

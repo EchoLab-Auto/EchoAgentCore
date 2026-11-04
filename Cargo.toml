@@ -69,7 +69,7 @@ strip = "symbols"
 [workspace.dependencies]
 echo-defs = { path = "source/plugin/echo-defs" }
 echo-config = { path = "source/plugin/echo-config" }
-echo-context = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
+echo-context = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.11.2" }
 echo-session = { path = "source/plugin/echo-session" }
 echo-tool = { path = "source/plugin/echo-tool" }
 echo-shell = { path = "source/plugin/echo-shell" }
@@ -77,11 +77,11 @@ echo-loop = { path = "source/plugin/echo-loop" }
 echo-protocol = { path = "source/plugin/echo-protocol" }
 echo-agent = { path = "source/plugin/echo-agent" }
 echo-test-utils = { path = "source/plugin/echo-test-utils" }
-echo-plugin = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
-echo-plugin-api = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
-echo-plugin-host = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
+echo-plugin = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.11.2" }
+echo-plugin-api = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.11.2" }
+echo-plugin-host = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.11.2" }
 echo-plugin-adapter = { path = "source/plugin/echo-plugin-adapter" }
-echo-plugin-loader = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
+echo-plugin-loader = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.11.2" }
 echo-plugin-provider-llm = { path = "source/plugin/echo-plugin-provider-llm" }
 echo-plugin-skills = { path = "source/plugin/echo-plugin-skills" }
 echo-plugin-federation = { path = "source/plugin/echo-plugin-federation" }

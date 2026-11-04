@@ -14,7 +14,7 @@ y: 1200
 
 > **框架在哪**：`echo-plugin` / `echo-plugin-api` / `echo-plugin-host` / `echo-plugin-loader` /
 > `echo-plugin-sdk` / `echo-context` 六件套住在**独立仓库**
-> [plugin-framework](https://github.com/EchoLab-Auto/plugin-framework)，**不在本仓**。
+> [echo-fabric-arch](https://github.com/EchoLab-Auto/echo-fabric-arch)，**不在本仓**。
 > Core 通过 workspace 的 git 依赖按 tag 钉版本（`Cargo.toml` 的 `echo-plugin-* = { git = …, tag = "v0.11.2" }`），
 > 所以在本仓 `cargo grep echo_plugin_sdk` 找不到源码——要读实现或改框架去那个仓。
 > 本仓内 `source/plugin/*` 是**用框架写的业务插件**，不是框架本身。
@@ -306,7 +306,7 @@ SDK 侧实现 `InstancePlugin`（`echo-plugin-sdk`）：`configure`（收配置�
 - **多模态**：`InvokeOutcome::Ok.images`（图片 URL / data URI）与内置工具 `execute_rich` 同口径。
 - **零全局态纪律**：插件进程内不要持有进程级可变单例（`static OnceLock` 等）——用实例字段（见试点插件的 `WebSearch` 持 client 的做法）。
 - **宿主服务回呼（HostCall）**：插件可回呼宿主注册的命名服务（当前默认提供 `"sanitizer"`：`redact` / `scan` / `register_secret`——处理敏感文本前先脱敏、登记插件自己的凭证）。SDK 侧在 `PluginHandler::on_ready` 收到 `HostClient`（`call_with_timeout` 可调超时，默认 30s）；服务不可用时返回 `Service{code, message}` 错误而非挂死。
-- **参考实现**：协议全消息测试对端 `echo-plugin-test-peer`（在**框架仓** `plugin-framework` 的 `crates/echo-plugin-host/src/bin/echo-plugin-test-peer.rs`，不在本仓）；真实外部插件可参考 `echo-hpc-platform`。
+- **参考实现**：协议全消息测试对端 `echo-plugin-test-peer`（在**框架仓** `echo-fabric-arch` 的 `crates/echo-plugin-host/src/bin/echo-plugin-test-peer.rs`，不在本仓）；真实外部插件可参考 `echo-hpc-platform`。
 
 ### 本地验证
 
