@@ -174,9 +174,12 @@ impl PluginSubsystem {
 /// 共同点：**都没有插件就没它们**，且都必须"优雅缺省"——未挂载时命令回明确
 /// 错误，而不是 panic 或静默换实现。这是 S1 定下的降级纪律。
 pub(crate) struct PluginPorts {
-    /// 工作区会话存储（`echo-agent.workspace` 插件；组合根按 persona 注入）。
-    /// None = 未挂载（命令会回明确错误）。
-    pub(crate) workspace_store: std::sync::RwLock<Option<Arc<crate::workspace::WorkspaceStore>>>,
+    /// 工作区状态**镜像**（`echo-agent.workspace` 插件推送的快照；组合根按
+    /// persona 注入）。None = 未挂载（命令由插件回明确错误）。
+    ///
+    /// store 本身在插件仓（`echo-plugin-workspace`）里，宿主只读镜像。
+    pub(crate) workspace_mirror:
+        std::sync::RwLock<Option<Arc<crate::agent::workspace_mirror::WorkspaceMirror>>>,
     /// Shell 子系统句柄（`echo-agent.tools.builtin` 的 shell 工具族用它）。
     /// 句柄本身总是存在（内部空槽），bind 之后才有 manager。
     pub(crate) shell: echo_shell::ShellHandle,
@@ -191,7 +194,7 @@ pub(crate) struct PluginPorts {
 impl PluginPorts {
     pub(crate) fn unlinked() -> Self {
         Self {
-            workspace_store: std::sync::RwLock::new(None),
+            workspace_mirror: std::sync::RwLock::new(None),
             shell: echo_shell::ShellHandle::new(),
             subagent: std::sync::RwLock::new(None),
             federation: std::sync::RwLock::new(Arc::new(

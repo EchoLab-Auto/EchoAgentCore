@@ -133,28 +133,46 @@ impl Agent {
     /// `local:workspace:` 通道的覆盖写入对应工作区对话（`profile` = `None`
     /// 清除）。非工作区会话直接跳过。落盘失败 emit `BackendEvent::Error`
     /// 带消息（不再静默——存量工作区此前 find 失败导致选择过一会「失效」）。
-    pub(crate) fn persist_session_api_profile(&self, session_id: &str, profile: Option<&str>) {
-        let Some((ws_id, conv_id)) = crate::workspace::parse_workspace_channel(session_id) else {
+    pub(crate) fn persist_session_api_profile(
+        self: &std::sync::Arc<Self>,
+        session_id: &str,
+        profile: Option<&str>,
+    ) {
+        // store 在插件里（独立仓库）——写入必须经命令通道回到**唯一写者**。
+        // 宿主只持有镜像（只读），所以这里不能像迁移前那样直接改内存。
+        if echo_plugin_workspace::store::parse_workspace_channel(session_id).is_none() {
             return;
-        };
-        let Some(store) = self.workspace_store() else {
-            return;
-        };
-        let result = match conv_id.as_deref() {
-            Some(conv_id) => store.set_conversation_api_profile(&ws_id, conv_id, profile),
-            // legacy 裸通道：按 `legacy == true` 定位（不猜 id=="main"）。
-            None => store.set_legacy_conversation_api_profile(&ws_id, profile),
-        };
-        if let Err(message) = result {
-            // Receipt, not error: a failed persist does not affect the runtime
-            // override nor the running turn (2026-10 作用域普查).
-            self.emit(BackendEvent::Notice {
-                team_id: self.team_id(),
-                session_id: Some(session_id.to_string()),
-                ok: false,
-                message: format!("会话 {session_id} API 覆盖持久化失败：{message}"),
-            });
         }
+        let host = self.plugin_host();
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            tracing::debug!("no tokio runtime; workspace api profile persist skipped");
+            return;
+        };
+        let agent = std::sync::Arc::clone(self);
+        let team_id = self.team_id();
+        let session_id = session_id.to_string();
+        let profile = profile.map(str::to_string);
+        handle.spawn(async move {
+            let payload = serde_json::json!({
+                "team_id": team_id,
+                "session_id": session_id,
+                "profile": profile,
+            });
+            // 回执而不是错误：持久化失败不影响运行期覆盖，也不打断正在跑的
+            // turn（2026-10 作用域普查结论）。`None` = 插件未挂载，静默跳过
+            // （与迁移前"没有 store 就 return"同语义）。
+            if let Some(Err(message)) = host
+                .dispatch_raw("WorkspaceSetConversationApiProfile", payload)
+                .await
+            {
+                agent.emit(BackendEvent::Notice {
+                    team_id: agent.team_id(),
+                    session_id: Some(session_id.clone()),
+                    ok: false,
+                    message: format!("会话 {session_id} API 覆盖持久化失败：{message}"),
+                });
+            }
+        });
     }
 
     pub async fn apply_command(self: &std::sync::Arc<Self>, cmd: BackendCommand) {
@@ -417,8 +435,15 @@ impl Agent {
                 // 工作区通道（激活 = 进入项目对话）：昵称解析为工作区名，重建
                 // 不退化（正常路径由激活 ensure 注册，这里是兜底）。
                 let nickname = if key.scope == "workspace" {
-                    self.workspace_store()
-                        .and_then(|store| store.get(&key.scope_id))
+                    // 昵称来自插件推送的镜像（不再有宿主 store）。
+                    self.workspace_mirror()
+                        .and_then(|mirror| {
+                            mirror
+                                .snapshot()
+                                .sessions
+                                .into_iter()
+                                .find(|ws| ws.id == key.scope_id)
+                        })
                         .map(|ws| ws.name)
                         .filter(|name| !name.is_empty())
                         .unwrap_or_else(|| key.scope_id.clone())

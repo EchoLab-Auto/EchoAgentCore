@@ -827,6 +827,19 @@ impl PluginHost {
             .await
     }
 
+    /// 把一条**非线协议**命令分发给插件（按名字 + 自由 JSON 载荷）。
+    ///
+    /// 用途：跨仓库边界的宿主内部动作——插件拥有数据（store）而宿主不能直接
+    /// 写它，只能经命令通道回来。面板不会发这类名字，因此它们不进
+    /// `BackendCommand`（协议词汇表保持只描述前端可见命令）。
+    pub async fn dispatch_raw(
+        &self,
+        name: &str,
+        payload: serde_json::Value,
+    ) -> Option<Result<serde_json::Value, String>> {
+        self.registry.dispatch_command_async(name, payload).await
+    }
+
     /// 某条命令当前归谁处理（诊断/测试用）。
     pub fn command_owner(&self, name: &str) -> Option<String> {
         self.registry.command_owner(name)

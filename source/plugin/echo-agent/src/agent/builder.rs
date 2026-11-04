@@ -12,7 +12,7 @@
 //!
 //! - **必填槽**（[`AgentBuilder::plugin_host`] / [`AgentBuilder::event_sink`]）：
 //!   缺失即 bug——`build()` 直接 panic（fail-fast，不静默降级）。
-//! - **可选槽**（workspace_store / team_id / persona_api / config_store /
+//! - **可选槽**（workspace_mirror / team_id / persona_api / config_store /
 //!   session_persist_path / subagent_store）：None 是合法运行时状态
 //!   （如未启用 QQ 工作区插件）。
 //! - **不进 Builder 的运行期接线**：`attach`（BackendHandle 桥）、
@@ -46,7 +46,8 @@ pub struct AgentBuilder {
     event_sink: Option<EventSink>,
     // ── 可选槽 ──
     team_id: Option<String>,
-    workspace_store: Option<Arc<crate::workspace::WorkspaceStore>>,
+    workspace_mirror:
+        Option<Arc<crate::agent::workspace_mirror::WorkspaceMirror>>,
     /// 进程级 Shell 会话句柄（2026-11）：面板的 `*Shell*` 命令域经
     /// `Agent::shell()` 访问它。
     ///
@@ -96,7 +97,7 @@ impl AgentBuilder {
             plugin_host: None,
             event_sink: None,
             team_id: None,
-            workspace_store: None,
+            workspace_mirror: None,
             shell: None,
             persona_api: None,
             active_model: None,
@@ -159,9 +160,12 @@ impl AgentBuilder {
         self
     }
 
-    /// 工作区会话存储（`echo-agent.workspace` 插件；未挂载 = None）。
-    pub fn workspace_store(mut self, store: Arc<crate::workspace::WorkspaceStore>) -> Self {
-        self.workspace_store = Some(store);
+    /// 工作区状态镜像（`echo-agent.workspace` 插件推送的快照；未挂载 = None）。
+    pub fn workspace_mirror(
+        mut self,
+        mirror: Arc<crate::agent::workspace_mirror::WorkspaceMirror>,
+    ) -> Self {
+        self.workspace_mirror = Some(mirror);
         self
     }
 
@@ -263,8 +267,8 @@ impl AgentBuilder {
         if let Some(policy) = self.global_policy {
             agent.set_global_policy(policy);
         }
-        if let Some(store) = self.workspace_store {
-            agent.set_workspace_store(store);
+        if let Some(mirror) = self.workspace_mirror {
+            agent.set_workspace_mirror(mirror);
         }
         if let Some(store) = self.subagent_store {
             // 默认墙钟上限取配置（`0` = 不限制）。捕获时机必须在 `Agent::new`

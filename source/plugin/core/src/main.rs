@@ -1077,6 +1077,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .map(|r| r.tools())
                 .unwrap_or_default(),
         );
+    // 工作区状态镜像（每个 persona 一份）：插件 emit `workspace.changed` 时
+    // 由事件桥写入，宿主读它渲染会话通道 / 广播列表。
+    let workspace_mirrors: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<echo_agent::agent::workspace_mirror::WorkspaceMirror>>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let factory_workspace_mirrors = workspace_mirrors.clone();
     let factory_plugin_tools = plugin_tools.clone();
 
     // 多人格装配闭包：persona id + profile -> 独立 Agent 实例。
@@ -1135,6 +1141,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             let config_store_path = factory_config_path.clone();
             let agents_config_store = factory_config_store.clone();
             let pt = factory_plugin_tools.clone();
+            let workspace_mirrors = factory_workspace_mirrors.clone();
             let tool_ctx = tool_ctx.clone();
             let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             {
@@ -1213,18 +1220,21 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 // 工作区会话（workspace 插件）：每 persona 独立存储 + 工具。
                 // 存储文件与配置 TOML 解耦（独立 JSON，绝不同路径互写）；
                 // 插件未列入该 persona 白名单时工具会被门控禁用（判据是插件 kind，见 `plugins::scope`）。
-                let workspace_store =
-                    std::sync::Arc::new(echo_agent::workspace::WorkspaceStore::load(Some(
-                        config_store_path.with_file_name(format!("echo-workspaces-{id}.json")),
-                    )));
-                t.register(std::sync::Arc::new(
-                    echo_agent::workspace::WorkspaceTool::new(workspace_store.clone())
-                        // 跨机查询经宿主适配器注入（Phase 3 ⑤：插件不认识联邦；
-                        // 联邦未接线时插件自动降级为「远程不可采集」）。
-                        .with_remote_query(echo_agent::federation::workspace_query(
-                            factory_federation.querier.clone(),
-                        )),
-                ));
+                // 工作区插件已迁出为独立仓库（`echo-plugin-workspace`）：store
+                // 归插件所有（文档名/路径不变，旧数据可直接读），宿主这边只剩
+                // 两样东西——
+                //   1. 状态镜像（插件 emit `workspace.changed` 时刷新）；
+                //   2. 工具代理（`WorkspaceTool`：把调用转发给插件的
+                //      `WorkspaceToolCall` 入口，描述/参数 schema 取自插件）。
+                let workspace_mirror =
+                    std::sync::Arc::new(echo_agent::agent::workspace_mirror::WorkspaceMirror::new());
+                workspace_mirrors
+                    .lock()
+                    .expect("workspace mirror registry")
+                    .insert(id.clone(), workspace_mirror.clone());
+                t.register(std::sync::Arc::new(echo_agent::agent::workspace_tool::WorkspaceTool::new(
+                    shared_plugin_host.clone(),
+                )));
                 t.set_package("workspace", echo_agent::plugins::WORKSPACE_PLUGIN_ID);
                 // Subagent 委派（subagent 插件）：**注册归插件接线**（2026-11 S7）。
                 //
@@ -1335,7 +1345,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .shell(factory_shell_handle.clone())
                 .event_sink(event_sink.clone())
                 .team_id(Some(id.clone()))
-                .workspace_store(workspace_store)
+                .workspace_mirror(workspace_mirror)
                 .persona_api(profile.api_profile.clone())
                 .config_store(agents_config_store.clone())
                 .subagent_store(subagent_store.clone())
@@ -1570,9 +1580,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             // 安全前提：`reapply_plugin_gating` 内部会再算一次
             // `persona_allows_plugin`，所以"挂上 = 全局可用"不会突破白名单。
             let gating_manager = gating_manager.clone();
+            // 工作区插件的事件桥（2026-11 插件迁出 Core）：三类 `workspace.*`
+            // 事件在宿主侧翻译成会话子系统动作（镜像刷新 / 通道注册 /
+            // 广播 / 清历史），消费掉就不再作为 `PluginEvent` 透传——它们是
+            // 宿主内部协议，不是给面板看的插件事件。
+            let workspace_manager = gating_manager.clone();
             plugin_host.set_event_sink(std::sync::Arc::new(
                 move |event: echo_plugin::PluginEvent| {
                     crate::host_services::gating_from_plugin_event(&gating_manager, &event);
+                    if crate::host_services::workspace_from_plugin_event(&workspace_manager, &event)
+                    {
+                        return;
+                    }
                     sink(echo_protocol::BackendEvent::PluginEvent {
                         plugin: event.plugin,
                         name: event.name,
@@ -1615,7 +1634,6 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         _host_service_keep = crate::host_services::register(
             &ctx,
             crate::host_services::HostWiring {
-                manager: gating_manager.clone(),
                 agent: agent.clone(),
                 event_sink: event_sink.clone(),
                 federation: federation_ports.clone(),

@@ -217,8 +217,8 @@ name = "echo-plugin-demo"
 | --- | --- | --- |
 | `Contribution::Tool` | ✅ 已接线 | `echo-plugin-adapter::tool` 的 `RemoteTool` → 注册进该人格的 `ToolRegistry`（经句柄 `invoke("<tool>")` 转发）（经 `Invoke("<plugin>:<tool>")` 转发） |
 | `Contribution::PluginInstance` | ✅ 已接线 | `echo-plugin-adapter::instance_contributions` 汇总 → 组合根注册进 `InstanceRegistry`（`bootstrap` 只负责启动与握手）（平台插件的正常入口，见下节） |
-| `Contribution::Command` | ✅ 已接线 | 命令域归插件（framework v0.8）：宿主 `PluginHost::dispatch_command` 按声明的命令名分发，认领后由插件返回结果（`echo-plugin-shell` / `echo-plugin-transcript` / `echo-plugin-session` 等）。宿主自我管理面（`TogglePlugin` 等）**不允许**被接管——把自我管理交给被管理者是自锁 |
-| `Contribution::Text` | ✅ 已接线 | 有序文本拼接（framework v0.8）：`PluginHost::collect_text_blocks` 取各插件的提示词块，按序拼进系统提示词（`echo-plugin-workspace` 的工作区区块即此路径） |
+| `Contribution::Command` | ✅ **仅进程内** | 命令域归插件（framework v0.8）：宿主 `PluginHost::dispatch_command` 按声明的命令名分发，认领后由插件返回结果（`echo-plugin-shell` / `echo-plugin-transcript` / `echo-plugin-session` 等）。宿主自我管理面（`TogglePlugin` 等）**不允许**被接管——把自我管理交给被管理者是自锁。**stdio 轨不支**：`Contribution::Command` 在 Core 侧没有消费方（`echo-plugin-adapter` 只把 `Tool` / `PluginInstance` 变成领域 trait），声明了也不会收到 `Invoke` |
+| `Contribution::Text` | ✅ **仅进程内** | 有序文本拼接（framework v0.8）：`PluginHost::collect_text_blocks` 取各插件的提示词块，按序拼进系统提示词（`echo-plugin-workspace` 的工作区区块即此路径）。**stdio 轨不支**：协议没有「取文本」的帧、SDK 把 Text 排除在可寻址贡献之外、宿主收集只遍历进程内注册表 |
 | `Contribution::Skill` | ❌ 未接线 | SDK 侧只取 `skill.name`（`serve.rs` 的日志用途）；技能实际走 `skills.dir` 插件的目录扫描，不从插件贡献取 |
 | `Contribution::Service` | ❌ 未接线 | SDK 侧只取 `service.key` 用于日志 |
 | `Contribution::Events` | ❌ 未接线 | 宿主无处理分支——**要做事件订阅，目前只能注册为工具或在实例插件内向宿主回呼**（进程内插件另有等价物见 `Plugin::subscribed_events`） |

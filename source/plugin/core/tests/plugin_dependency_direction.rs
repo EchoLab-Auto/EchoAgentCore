@@ -396,8 +396,10 @@ fn plugins_do_not_depend_on_other_plugins() {
             }
         }
     }
+    // 21 = 22 - 1：`echo-plugin-workspace` 2026-11 迁出为独立仓库
+    // （`echo-plugin-workspace`），不再在 `source/plugin/` 下。
     assert!(
-        plugins_seen >= 22,
+        plugins_seen >= 21,
         "只扫到 {plugins_seen} 个插件 crate（路径规则改过？）"
     );
     assert!(

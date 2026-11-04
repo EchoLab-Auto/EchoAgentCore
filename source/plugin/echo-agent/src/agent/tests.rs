@@ -2672,57 +2672,29 @@ async fn echo_loop_path_injects_persona_skills_and_workspace() {
             ..Default::default()
         })
         .await;
-    let store = Arc::new(crate::workspace::WorkspaceStore::load(None));
-    store
-        .upsert(echo_protocol::WorkspaceSessionInfo {
-            id: "proj".into(),
-            name: "Proj".into(),
-            description: String::new(),
-            directories: vec!["/srv/proj".into()],
-
-            conversations: vec![],
-            last_conversation: None,
-        })
-        .unwrap();
-    store.set_active(Some("proj".into()), None).unwrap();
     // 工作区块由 **workspace 插件**贡献（`Contribution::Text`），不是 Agent
-    // 自己拼的——所以这里也得把插件装上（与组合根同款接法）。
-    {
-        let host = Arc::new(crate::plugins::PluginHost::new());
-        let prompt_store = store.clone();
-        host.register_and_mount(Arc::new(
-            echo_plugin::BuiltinPlugin::new(
-                echo_plugin::PluginManifest::builtin(
-                    crate::plugins::WORKSPACE_PLUGIN_ID,
-                    "工作区会话",
-                    "1",
-                    "tool",
-                    "workspace",
-                    "",
-                ),
-                |_| Ok(vec![]),
-            )
-            .with_text_blocks([echo_plugin::PluginTextBlock::new(
-                "workspace",
-                "工作区会话",
-                50,
-            )])
-            .with_text_block_content(move |key, ctx| {
-                if key != "workspace" {
-                    return None;
-                }
-                match ctx.get("session_id").and_then(|v| v.as_str()) {
-                    Some(session) if !session.is_empty() => prompt_store
-                        .prompt_text_for(session)
-                        .or_else(|| prompt_store.prompt_text()),
-                    _ => prompt_store.prompt_text(),
-                }
-            }),
-        ))
-        .expect("mount workspace plugin");
-        agent.set_plugin_host(host);
-    }
-    agent.set_workspace_store(store.clone());
+    // 自己拼的——所以这里装上真插件（与组合根同款接法），store 也由它持有。
+    let state = {
+        let state_dir = workspace_state_dir("prompt-inject");
+        let state = install_workspace_plugin(&agent, &state_dir);
+        let store = state.store("t");
+        store
+            .upsert(echo_plugin_workspace::wire::WorkspaceSessionInfo {
+                id: "proj".into(),
+                name: "Proj".into(),
+                description: String::new(),
+                directories: vec!["/srv/proj".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        store.set_active(Some("proj".into()), None).unwrap();
+        agent.set_workspace_mirror(Arc::new(
+            crate::agent::workspace_mirror::WorkspaceMirror::new(),
+        ));
+        state
+    };
+    let _ = state;
+    agent.set_team_id(Some("t".into()));
 
     let runner = Arc::new(echo_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
@@ -3467,36 +3439,98 @@ async fn tool_execution_failure_is_surfaced_to_llm() {
 
 // ── 工作区会话（workspace 插件）──
 
-/// 给一个 agent 装上**完整的** workspace 插件（命令域 + 提示词块 + 门控）。
+/// 在给定插件宿主上挂载 workspace 插件（状态目录隔离），返回插件状态句柄。
 ///
-/// 为什么测试也要走真装配：工作区命令域已迁进插件（`Contribution::Command`），
-/// `apply_command` 先问插件再落内置分支。只 `set_workspace_store` 而不装插件，
-/// 测的是"宿主兜底分支"——那不是线上路径。
+/// `bridge` 非空时同时接上插件事件桥（镜像刷新 / 后端事件转发）；为空则只
+/// 挂插件（测试只关心工具或提示词块时）。
 ///
-/// `AgentWorkspaceHost` 用"单元素 agent 快照"构造（生产传 manager 快照），
-/// 同一份实现两种装配。
-fn install_workspace_plugin(agent: &Arc<Agent>) {
-    let host = Arc::new(
-        crate::agent::workspace_host::AgentWorkspaceHost::from_agents(
-            {
-                let agent = Arc::clone(agent);
-                move || vec![Arc::clone(&agent)]
-            },
-            Arc::new(|_event| {}),
-            None,
-        ),
-    );
-    let plugin_host = Arc::new(crate::plugins::PluginHost::new());
-    // 宿主接缝经服务表（全插件化 S6：插件构造不再收参数）。
-    let ctx = std::sync::Arc::new(echo_context::Ctx::default());
-    let _keep = ctx
-        .provide(&echo_plugin_workspace::host_keys::WORKSPACE_HOST, host)
-        .expect("workspace host 注册");
-    plugin_host.set_mount_ctx(echo_plugin::MountContext::new().with_ctx(ctx));
+/// **顺序是硬约束**：配置（`set_configs`）与事件出口（`set_event_sink`）
+/// 都必须在 `register_and_mount` **之前**——`mount` 取的是当时登记的值，
+/// 之后设置对已挂载插件无效（生产组合同理，见 `main.rs` 的注释）。
+fn mount_workspace_plugin(
+    plugin_host: &Arc<crate::plugins::PluginHost>,
+    temp_dir: &std::path::Path,
+    bridge: Option<&Arc<Agent>>,
+) -> Arc<echo_plugin_workspace::PluginState> {
+    // 1) 状态目录隔离：每个测试用独立 temp 目录，互不串档。
+    plugin_host.set_configs([(
+        echo_plugin_workspace::PLUGIN_ID,
+        serde_json::json!({ "state_dir": temp_dir.to_string_lossy() }),
+    )]);
+    // 2) 事件桥：插件 emit → 宿主动作（镜像刷新 + 后端事件转发）。
+    //    与组合根 `host_services::workspace_from_plugin_event` 同语义，
+    //    保证测试与线上走同一条逻辑。
+    if let Some(agent) = bridge {
+        let agent = Arc::clone(agent);
+        plugin_host.set_event_sink(std::sync::Arc::new(move |event| {
+            match event.name.as_str() {
+                echo_plugin_workspace::events::CHANGED => {
+                    let snapshot =
+                        crate::agent::workspace_mirror::WorkspaceSnapshot::from_event_payload(
+                            &event.payload,
+                        );
+                    agent.apply_workspace_snapshot(snapshot);
+                }
+                echo_plugin_workspace::events::BACKEND_EVENT => {
+                    if let Ok(backend_event) =
+                        serde_json::from_value::<crate::event::BackendEvent>(event.payload.clone())
+                    {
+                        agent.emit(backend_event);
+                    }
+                }
+                echo_plugin_workspace::events::CONVERSATION_DELETED => {
+                    // 删除对话 → 清空该通道历史（生产里由组合根调用同一方法）。
+                    let workspace_id = event
+                        .payload
+                        .get("workspace_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    if let Some(conversation) = event
+                        .payload
+                        .get("conversation")
+                        .cloned()
+                        .and_then(|v| {
+                            serde_json::from_value::<
+                                echo_plugin_workspace::wire::WorkspaceConversationInfo,
+                            >(v)
+                            .ok()
+                        })
+                    {
+                        agent.clear_workspace_conversation_channel(workspace_id, &conversation);
+                    }
+                }
+                _ => {}
+            }
+        }));
+    }
+    // 3) 挂载（此时配置与出口都已就位）。
+    let (plugin, state) = echo_plugin_workspace::plugin_with_state("test");
     plugin_host
-        .register_and_mount(echo_plugin_workspace::plugin("test"))
+        .register_and_mount(plugin)
         .expect("mount workspace plugin");
-    agent.set_plugin_host(plugin_host);
+    state
+}
+
+/// 给一个 agent 装上 workspace 插件并接好事件桥（最常用的组合）。
+fn install_workspace_plugin(
+    agent: &Arc<Agent>,
+    temp_dir: &std::path::Path,
+) -> Arc<echo_plugin_workspace::PluginState> {
+    let plugin_host = Arc::new(crate::plugins::PluginHost::new());
+    // agent 先持有宿主，插件的事件桥才能在挂载前拿到 agent 句柄。
+    agent.set_plugin_host(plugin_host.clone());
+    mount_workspace_plugin(&plugin_host, temp_dir, Some(agent))
+}
+
+/// 每个工作区测试的独立状态目录。
+fn workspace_state_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "echo-workspace-state-{}-{tag}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create state dir");
+    dir
 }
 
 /// 工作区命令走 team 路由（去主智能体后不落"默认人格"兜底），
@@ -3508,16 +3542,13 @@ async fn workspace_commands_lifecycle() {
         reply: "ok".into(),
     })));
     agent.set_team_id(Some("t".into()));
-    let path = std::env::temp_dir().join(format!(
-        "echo-workspace-agent-test-{}.json",
-        std::process::id()
+    let state_dir = workspace_state_dir("lifecycle");
+    let state = install_workspace_plugin(&agent, &state_dir);
+    // store 归插件所有，宿主只留镜像（生产由组合根建镜像；测试这里手动接）。
+    agent.set_workspace_mirror(Arc::new(
+        crate::agent::workspace_mirror::WorkspaceMirror::new(),
     ));
-    std::fs::remove_file(&path).ok();
-    agent.set_workspace_store(Arc::new(crate::workspace::WorkspaceStore::load(Some(
-        path.clone(),
-    ))));
-
-    install_workspace_plugin(&agent);
+    let _ = &state;
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
 
@@ -3587,8 +3618,8 @@ async fn workspace_commands_lifecycle() {
     assert_eq!(git.len(), 1);
     assert!(git[0].is_repo, "repo checkout detected: {git:?}");
 
-    // 提示注入：激活后 build_prompt_blocks 含 workspace 区块。
-    let store = agent.workspace_store().expect("store attached");
+    // 提示注入：激活后插件按 store 产出工作区区块正文。
+    let store = state.store("t");
     let text = store.prompt_text().expect("active prompt text");
     assert!(text.contains("core"));
     assert!(text.contains(env!("CARGO_MANIFEST_DIR")));
@@ -3617,7 +3648,7 @@ async fn workspace_commands_lifecycle() {
         "channel session registered"
     );
 
-    std::fs::remove_file(&path).ok();
+    let _ = std::fs::remove_dir_all(&state_dir);
 }
 
 /// 文件浏览器：列出会话目录（拒绝越界路径，返回条目含目录与文件）。
@@ -3628,16 +3659,11 @@ async fn workspace_files_command_lists_within_scope() {
         reply: "ok".into(),
     })));
     agent.set_team_id(Some("t".into()));
-    let path = std::env::temp_dir().join(format!(
-        "echo-workspace-files-test-{}.json",
-        std::process::id()
+    let state_dir = workspace_state_dir("files");
+    install_workspace_plugin(&agent, &state_dir);
+    agent.set_workspace_mirror(Arc::new(
+        crate::agent::workspace_mirror::WorkspaceMirror::new(),
     ));
-    std::fs::remove_file(&path).ok();
-    agent.set_workspace_store(Arc::new(crate::workspace::WorkspaceStore::load(Some(
-        path.clone(),
-    ))));
-
-    install_workspace_plugin(&agent);
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
 
@@ -3708,38 +3734,47 @@ async fn workspace_files_command_lists_within_scope() {
         "unexpected: {error:?}"
     );
 
-    std::fs::remove_file(&path).ok();
+    let _ = std::fs::remove_dir_all(&state_dir);
 }
 
-/// 通道广播唯一入口（store 变更钩子）：
-/// - 重启恢复：装配前 store 已带 active → `set_workspace_store` 补注册通道；
+/// 通道广播唯一入口（插件快照 → 宿主动作）：
+/// - 启动补注册：镜像里已有 active → `set_workspace_mirror` 补注册通道；
 /// - 模型侧 `workspace` 工具 `use`：与面板命令同一条广播路径
 ///   （`WorkspaceSessions` + 通道 `SessionUpdated`）。
 #[tokio::test]
 async fn workspace_channel_tool_use_broadcasts() {
-    let store = Arc::new(crate::workspace::WorkspaceStore::load(None));
-    for (id, name) in [("core", "Core"), ("docs", "Docs")] {
-        store
-            .upsert(echo_protocol::WorkspaceSessionInfo {
-                id: id.into(),
-                name: name.into(),
-                description: String::new(),
-                directories: vec!["/srv/x".into()],
-
-                conversations: vec![],
-                last_conversation: None,
-            })
-            .unwrap();
-    }
-    // 模拟持久化恢复：激活发生在进程装配之前。
-    store.set_active(Some("core".into()), None).unwrap();
-
+    let state_dir = workspace_state_dir("tool-use");
     let agent = Arc::new(test_agent(Arc::new(MockProvider {
         calls: Arc::new(AtomicUsize::new(0)),
         reply: "ok".into(),
     })));
     agent.set_team_id(Some("t".into()));
-    agent.set_workspace_store(store.clone());
+    let state = install_workspace_plugin(&agent, &state_dir);
+    let store = state.store("t");
+    for (id, name) in [("core", "Core"), ("docs", "Docs")] {
+        store
+            .upsert(echo_plugin_workspace::wire::WorkspaceSessionInfo {
+                id: id.into(),
+                name: name.into(),
+                description: String::new(),
+                directories: vec!["/srv/x".into()],
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    // 模拟持久化恢复：激活发生在进程装配之前（插件启动时读盘即有 active）。
+    store.set_active(Some("core".into()), None).unwrap();
+
+    // 装配镜像时带上当前快照（生产里插件启动期的首次 changed 可能早于
+    // persona 建好，组合根用镜像兜住；这里显式模拟那个顺序）。
+    let mirror = Arc::new(crate::agent::workspace_mirror::WorkspaceMirror::new());
+    let (sessions, active) = store.snapshot();
+    mirror.replace(crate::agent::workspace_mirror::WorkspaceSnapshot {
+        active_conversation: store.active_pair().map(|(_, conv)| conv.id),
+        active,
+        sessions,
+    });
+    agent.set_workspace_mirror(mirror);
     assert!(
         agent
             .trunk
@@ -3752,11 +3787,18 @@ async fn workspace_channel_tool_use_broadcasts() {
     let (bridge, handle) = crate::create_bridge();
     agent.attach(Arc::new(handle));
 
-    // 模型侧工具直接切换激活（不经命令路径）。
-    let tool = crate::workspace::WorkspaceTool::new(store.clone());
-    crate::tool::Tool::execute(&tool, serde_json::json!({"operation": "use", "id": "docs"}))
-        .await
-        .expect("tool use");
+    // 模型侧工具直接切换激活（经宿主代理 → 插件 store；不经命令路径）。
+    let tool = crate::agent::workspace_tool::WorkspaceTool::new(agent.plugin_host());
+    crate::tool::Tool::execute_in(
+        &tool,
+        &echo_defs::tool::ToolContext {
+            team_id: Some("t".into()),
+            ..Default::default()
+        },
+        serde_json::json!({"operation": "use", "id": "docs"}),
+    )
+    .await
+    .expect("tool use");
     // workspace_after_change 是异步 spawn（2026-10 会话级 API 恢复）——
     // 等一拍让钩子完成。
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -3796,9 +3838,19 @@ async fn workspace_channel_tool_use_broadcasts() {
 /// 删除对话 → 通道历史经 store 钩子清空。
 #[tokio::test]
 async fn workspace_conversation_channels_and_delete_cleanup() {
-    let store = Arc::new(crate::workspace::WorkspaceStore::load(None));
+    let state_dir = workspace_state_dir("conv-cleanup");
+    let agent = Arc::new(test_agent(Arc::new(MockProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        reply: "ok".into(),
+    })));
+    agent.set_team_id(Some("t".into()));
+    let state = install_workspace_plugin(&agent, &state_dir);
+    agent.set_workspace_mirror(Arc::new(
+        crate::agent::workspace_mirror::WorkspaceMirror::new(),
+    ));
+    let store = state.store("t");
     store
-        .upsert(echo_protocol::WorkspaceSessionInfo {
+        .upsert(echo_plugin_workspace::wire::WorkspaceSessionInfo {
             id: "proj".into(),
             name: "Proj".into(),
             directories: vec!["/srv/proj".into()],
@@ -3808,7 +3860,7 @@ async fn workspace_conversation_channels_and_delete_cleanup() {
     let conv = store
         .upsert_conversation(
             "proj",
-            echo_protocol::WorkspaceConversationInfo {
+            echo_plugin_workspace::wire::WorkspaceConversationInfo {
                 id: String::new(),
                 name: "支线".into(),
                 legacy: false,
@@ -3817,12 +3869,6 @@ async fn workspace_conversation_channels_and_delete_cleanup() {
         )
         .unwrap();
     assert_eq!(conv.id, "conv", "CJK 名 slug 回退 conv");
-
-    let agent = Arc::new(test_agent(Arc::new(MockProvider {
-        calls: Arc::new(AtomicUsize::new(0)),
-        reply: "ok".into(),
-    })));
-    agent.set_workspace_store(store.clone());
 
     // 激活指定对话 → 通道 id 带对话段，昵称 = 工作区 · 对话。
     store
@@ -3890,22 +3936,14 @@ async fn workspace_conversation_channels_and_delete_cleanup() {
 /// 白名单内人格工具可见且激活会话时注入「工作区会话」区块。
 #[tokio::test]
 async fn workspace_plugin_gates_tool_and_prompt_block() {
+    let state_dir = workspace_state_dir("gating");
+    // 插件宿主先建好：工具注册是 `&mut`（必须在 `Agent::new` 之前），
+    // 而工具代理需要 host 句柄——所以顺序是 host → 挂插件 → 注册工具 → 建 agent。
+    let plugin_host = Arc::new(crate::plugins::PluginHost::new());
+    let state = mount_workspace_plugin(&plugin_host, &state_dir, None);
     let mut tools = ToolRegistry::new();
-    let store = Arc::new(crate::workspace::WorkspaceStore::load(None));
-    store
-        .upsert(echo_protocol::WorkspaceSessionInfo {
-            id: "proj".into(),
-            name: "Proj".into(),
-            description: String::new(),
-            directories: vec!["/srv/proj".into()],
-
-            conversations: vec![],
-            last_conversation: None,
-        })
-        .unwrap();
-    store.set_active(Some("proj".into()), None).unwrap();
-    tools.register(Arc::new(crate::workspace::WorkspaceTool::new(
-        store.clone(),
+    tools.register(Arc::new(crate::agent::workspace_tool::WorkspaceTool::new(
+        plugin_host.clone(),
     )));
     tools.set_package("workspace", crate::plugins::WORKSPACE_PLUGIN_ID);
     let agent = Arc::new(Agent::new(
@@ -3918,42 +3956,19 @@ async fn workspace_plugin_gates_tool_and_prompt_block() {
         tools,
         Arc::new(InstanceRegistry::new()),
     ));
-    // **文本块的来源是这个插件本身**（`Contribution::Text`）：把插件装上，
-    // 内容按 `{"team_id", "session_id"}` 上下文算——与组合根里的接法一致。
-    let host = Arc::new(crate::plugins::PluginHost::new());
-    {
-        let prompt_store = store.clone();
-        let plugin = echo_plugin::BuiltinPlugin::new(
-            echo_plugin::PluginManifest::builtin(
-                crate::plugins::WORKSPACE_PLUGIN_ID,
-                "工作区会话",
-                "1",
-                "tool",
-                "workspace",
-                "",
-            ),
-            |_| Ok(vec![]),
-        )
-        .with_text_blocks([echo_plugin::PluginTextBlock::new(
-            "workspace",
-            "工作区会话",
-            50,
-        )])
-        .with_text_block_content(move |key, ctx| {
-            if key != "workspace" {
-                return None;
-            }
-            match ctx.get("session_id").and_then(|v| v.as_str()) {
-                Some(session) if !session.is_empty() => prompt_store
-                    .prompt_text_for(session)
-                    .or_else(|| prompt_store.prompt_text()),
-                _ => prompt_store.prompt_text(),
-            }
-        });
-        host.register_and_mount(Arc::new(plugin)).expect("mount");
-    }
-    agent.set_plugin_host(host);
-    agent.set_workspace_store(store);
+    agent.set_plugin_host(plugin_host);
+    agent.set_team_id(Some("t".into()));
+    let store = state.store("t");
+    store
+        .upsert(echo_plugin_workspace::wire::WorkspaceSessionInfo {
+            id: "proj".into(),
+            name: "Proj".into(),
+            description: String::new(),
+            directories: vec!["/srv/proj".into()],
+            ..Default::default()
+        })
+        .unwrap();
+    store.set_active(Some("proj".into()), None).unwrap();
 
     // 白名单含 workspace → 工具可见 + 提示区块注入。
     agent
@@ -4008,6 +4023,7 @@ async fn workspace_plugin_gates_tool_and_prompt_block() {
         !blocks.iter().any(|b| b.key == "workspace"),
         "workspace block hidden without the plugin"
     );
+    let _ = std::fs::remove_dir_all(&state_dir);
 }
 
 /// 缺 team_id 的工作区命令被拒绝（与其它会话类命令同一约定）。

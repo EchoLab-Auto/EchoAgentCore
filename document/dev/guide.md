@@ -48,7 +48,7 @@ EchoAgentCore/
 │       ├── echo-plugin-shell/      # Shell 工具与命令域
 │       ├── echo-plugin-skills/     # 技能目录
 │       ├── echo-plugin-subagent/   # spawn_subagent
-│       ├── echo-plugin-workspace/  # 工作区会话
+#       （echo-plugin-workspace 已迁出为独立仓库，不在本目录）
 │       ├── echo-plugin-management/ # Core management WS
 │       ├── echo-plugin-loop/       # loop.single 策略
 │       ├── echo-plugin-provider-llm/ # provider 工厂 + 计量/脱敏装饰器

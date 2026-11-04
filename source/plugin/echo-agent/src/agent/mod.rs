@@ -26,7 +26,8 @@ mod tool_exec;
 pub mod tools_host;
 mod turn;
 mod workspace_commands;
-pub mod workspace_host;
+pub mod workspace_mirror;
+pub mod workspace_tool;
 // 命令域按包拆分：QQ 侧在 `crate::packages::instance_ops::commands`，
 // 工作区侧在本目录 `workspace_commands.rs`（插件实现已外迁到
 // `echo-plugin-workspace`，此处只留 Agent 接线）。
@@ -691,65 +692,60 @@ impl Agent {
         }
     }
 
-    /// 注入该 persona 的工作区会话存储（`echo-agent.workspace` 插件）。
+    /// 接线工作区状态镜像（`echo-agent.workspace` 插件推送的快照）。
     ///
-    /// 同时完成三件事（激活 = 进入项目对话，2026-09-14）：
-    /// 1. 写入存储槽（命令处理 + 工具 + 提示词注入共用同一实例）；
-    /// 2. 接线**变更钩子**——store 任何成功变更（面板命令 / 模型 `use`
-    ///    工具）后统一广播 `WorkspaceSessions` 并确保通道会话注册，
-    ///    「变更 → 广播」只有一个入口（弱引用，不构成循环）；
-    /// 3. 若持久化的 `active` 存在（重启恢复），把对应通道会话补注册，
-    ///    Panel 的会话列表/投影在连接后即可见（不广播：事件汇聚点尚未接入）。
-    pub fn set_workspace_store(
+    /// 与迁移前的 `set_workspace_store` 相比少了两条钩子：store 已经不在宿主
+    /// 里了（插件自己拥有、自己落盘、自己发 `workspace.changed` 事件），宿主
+    /// 只接收快照并跑会话子系统的那半段（确保通道 + 广播）。启动补注册仍然
+    /// 需要——面板连上之前插件可能已经发过快照。
+    pub fn set_workspace_mirror(
         self: &std::sync::Arc<Self>,
-        store: std::sync::Arc<crate::workspace::WorkspaceStore>,
+        mirror: std::sync::Arc<crate::agent::workspace_mirror::WorkspaceMirror>,
     ) {
-        if let Ok(mut slot) = self.ports.workspace_store.write() {
-            *slot = Some(store.clone());
-        } else {
-            tracing::warn!("workspace store slot busy, ignoring set_workspace_store");
-            return;
-        }
-        let weak = std::sync::Arc::downgrade(self);
-        store.set_on_change(std::sync::Arc::new(move || {
-            if let Some(agent) = weak.upgrade() {
-                let handle = tokio::runtime::Handle::try_current();
-                if let Ok(handle) = handle {
-                    handle.spawn(async move {
-                        agent.workspace_after_change().await;
-                    });
-                }
-            }
-        }));
-        // 多对话（2026-10）：删除对话 → 清空其通道历史（会话级清理语义，
-        // 与面板 ClearHistory 同路径；面板命令与模型工具都经 store 钩子）。
-        let weak2 = std::sync::Arc::downgrade(self);
-        store.set_on_conversation_deleted(std::sync::Arc::new(move |ws_id, conv| {
-            let Some(agent) = weak2.upgrade() else {
+        match self.ports.workspace_mirror.write() {
+            Ok(mut slot) => *slot = Some(mirror),
+            Err(_) => {
+                tracing::warn!("workspace mirror slot busy, ignoring set_workspace_mirror");
                 return;
-            };
-            let scope = crate::workspace::channel_scope_id(ws_id, conv);
-            let session_id = crate::session::SessionKey::local_workspace(&scope).to_session_id();
-            let trunk = agent.trunk.clone();
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    trunk.clear_session(&session_id).await;
-                    tracing::info!(%session_id, "workspace conversation channel cleared on delete");
-                });
             }
-        }));
-        // 启动补注册：active 持久化 → 通道会话常驻（幂等）。
+        }
+        // 启动补注册：插件推送过的 active → 通道会话常驻（幂等）。
         self.ensure_workspace_channel_for_active();
     }
 
-    /// 当前 persona 的工作区会话存储（None = 插件未挂载）。
-    pub fn workspace_store(&self) -> Option<std::sync::Arc<crate::workspace::WorkspaceStore>> {
+    /// 当前 persona 的工作区状态镜像（None = 插件未挂载）。
+    pub fn workspace_mirror(
+        &self,
+    ) -> Option<std::sync::Arc<crate::agent::workspace_mirror::WorkspaceMirror>> {
         self.ports
-            .workspace_store
+            .workspace_mirror
             .read()
             .ok()
             .and_then(|slot| slot.clone())
     }
+
+    /// 收下插件推来的工作区快照并跑完宿主的后半段（确保通道 + 广播）。
+    ///
+    /// 由组合根的插件事件桥在收到 `workspace.changed` 时调用；`spawn` 是因为
+    /// 事件桥是同步闭包，而续接会话级 provider 需要 `await`。
+    pub fn apply_workspace_snapshot(
+        self: &std::sync::Arc<Self>,
+        snapshot: crate::agent::workspace_mirror::WorkspaceSnapshot,
+    ) {
+        let Some(mirror) = self.workspace_mirror() else {
+            return;
+        };
+        mirror.replace(snapshot);
+        let agent = std::sync::Arc::clone(self);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                agent.workspace_after_change().await;
+            });
+        } else {
+            tracing::debug!("no tokio runtime; workspace change broadcast skipped");
+        }
+    }
+
 
     /// Non-blocking poll for a frontend command (used by the command pump).
     pub fn try_recv_command(&self) -> Option<BackendCommand> {
@@ -1163,7 +1159,10 @@ impl Agent {
     /// that no longer exists ("会话 X 切换 API 失败" on every request) even
     /// though the user deleted it. The persisted workspace-conversation
     /// `api_profile` is cleared too, so a restart cannot resurrect it.
-    pub(crate) async fn drop_session_providers_of(&self, profile: &str) -> usize {
+    pub(crate) async fn drop_session_providers_of(
+        self: &std::sync::Arc<Self>,
+        profile: &str,
+    ) -> usize {
         let sids: Vec<String> = self
             .model
             .session_providers

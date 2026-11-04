@@ -129,7 +129,7 @@ fn grouped_state_never_leaks_back_onto_the_facade() {
         "global_policy",
         "plugin_reload_started",
         // PluginPorts
-        "workspace_store",
+        "workspace_mirror",
         "shell",
         "subagent",
         "federation",

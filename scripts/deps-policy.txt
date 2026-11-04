@@ -56,7 +56,6 @@ plugin/echo-plugin-self-update             echo-context echo-plugin echo-protoco
 plugin/echo-plugin-federation              echo-defs echo-context echo-federation echo-plugin echo-protocol echo-tool
 plugin/echo-plugin-loop                    echo-context echo-defs echo-loop echo-plugin echo-plugin-api echo-session
 plugin/echo-plugin-subagent                echo-defs echo-federation echo-protocol echo-tool
-plugin/echo-plugin-workspace               echo-context echo-defs echo-plugin echo-protocol echo-session echo-tool
 plugin/echo-plugin-management              echo-plugin echo-context echo-defs echo-federation echo-protocol echo-session
 plugin/echo-plugin-session                 echo-context echo-defs echo-plugin echo-protocol echo-session
 plugin/echo-plugin-sanitize                echo-context echo-defs echo-plugin

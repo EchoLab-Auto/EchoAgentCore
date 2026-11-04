@@ -759,9 +759,10 @@ fn executor_roots(
 ) -> Vec<std::path::PathBuf> {
     let mut roots: Vec<std::path::PathBuf> = Vec::new();
     for (_id, agent) in hosts {
-        if let Some(store) = agent.workspace_store() {
-            let (sessions, _) = store.snapshot();
-            for s in sessions {
+        // 工作区列表来自插件推送的镜像（store 已随插件迁出 Core）。
+        if let Some(mirror) = agent.workspace_mirror() {
+            let snapshot = mirror.snapshot();
+            for s in snapshot.sessions {
                 for d in s.directories {
                     // 远程目录是占位标注，不参与本机沙箱。
                     if !d.is_remote() {
@@ -777,6 +778,24 @@ fn executor_roots(
         }
     }
     roots
+}
+
+/// 全部运行中 persona 的工作区目录并集（沙箱根 / 只读查询的判定基础）。
+///
+/// 数据来自插件推送的镜像：store 已随工作区插件迁出 Core（独立仓库），宿主
+/// 只读镜像，不再有 `agent.workspace_store()`。
+async fn all_workspace_directories(
+    rt: &FederationRuntime,
+) -> Vec<echo_plugin_workspace::wire::WorkspaceDirectory> {
+    let mut all: Vec<echo_plugin_workspace::wire::WorkspaceDirectory> = Vec::new();
+    for (_id, agent) in rt.executor_hosts().await {
+        if let Some(mirror) = agent.workspace_mirror() {
+            for session in mirror.snapshot().sessions {
+                all.extend(session.directories);
+            }
+        }
+    }
+    all
 }
 
 /// 只读查询执行端（Phase 5）。
@@ -844,15 +863,7 @@ pub(crate) async fn handle_federation_query(
                 .policy_of(from)
                 .map(|p| p.is_full_access())
                 .unwrap_or(false);
-            let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
-            for (_id, agent) in rt.executor_hosts().await {
-                if let Some(store) = agent.workspace_store() {
-                    let (sessions, _) = store.snapshot();
-                    for s in sessions {
-                        all_dirs.extend(s.directories);
-                    }
-                }
-            }
+            let all_dirs = all_workspace_directories(rt).await;
             let collected = tokio::task::spawn_blocking(move || {
                 let resolved = if full_access {
                     let p = std::path::Path::new(&dir)
@@ -884,15 +895,7 @@ pub(crate) async fn handle_federation_query(
                 .policy_of(from)
                 .map(|p| p.is_full_access())
                 .unwrap_or(false);
-            let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
-            for (_id, agent) in rt.executor_hosts().await {
-                if let Some(store) = agent.workspace_store() {
-                    let (sessions, _) = store.snapshot();
-                    for s in sessions {
-                        all_dirs.extend(s.directories);
-                    }
-                }
-            }
+            let all_dirs = all_workspace_directories(rt).await;
             let collected = tokio::task::spawn_blocking(move || {
                 let resolved = if full_access {
                     let p = std::path::Path::new(&dir)
@@ -975,17 +978,17 @@ pub(crate) async fn handle_federation_query(
             };
             // 浏览根 = 全部 persona 工作区目录并集 ∪ HOME（与大脑侧本机
             // 浏览同一逻辑——browse_roots helper）。
-            let mut all_dirs: Vec<echo_protocol::WorkspaceDirectory> = Vec::new();
+            let mut all_dirs: Vec<echo_plugin_workspace::wire::WorkspaceDirectory> = Vec::new();
             let mut labels: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
+            // 数据来自插件镜像（store 已随插件迁出 Core）。
             for (_id, agent) in rt.executor_hosts().await {
-                if let Some(store) = agent.workspace_store() {
-                    let (sessions, _) = store.snapshot();
-                    for s in sessions {
-                        for dir in &s.directories {
+                if let Some(mirror) = agent.workspace_mirror() {
+                    for session in mirror.snapshot().sessions {
+                        for dir in &session.directories {
                             labels
                                 .entry(dir.path().to_string())
-                                .or_insert_with(|| s.name.clone());
+                                .or_insert_with(|| session.name.clone());
                             all_dirs.push(dir.clone());
                         }
                     }

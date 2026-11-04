@@ -51,7 +51,6 @@ use echo_agent::agent::session_view_host::AgentSessionViewHost;
 use echo_agent::agent::shell_host::{AgentInstanceCommandHost, AgentShellCommandHost};
 use echo_agent::agent::skills_host::AgentSkillsCommandHost;
 use echo_agent::agent::tools_host::AgentToolsCommandHost;
-use echo_agent::agent::workspace_host::AgentWorkspaceHost;
 use echo_agent::agent_manager::AgentManager;
 use echo_agent::federation::FederationPorts;
 use echo_agent::{Agent, EventSink};
@@ -60,7 +59,6 @@ use echo_plugin_federation::host_keys::{EVENTS as FEDERATION_EVENTS, PORTS};
 use echo_plugin_shell::host_keys::SHELL_HOST;
 use echo_plugin_skills::host_keys::SKILLS_HOST;
 use echo_plugin_tools::host_keys::{INSTANCE_HOST, TOOLS_HOST};
-use echo_plugin_workspace::host_keys::WORKSPACE_HOST;
 
 /// 组合根手里那些"配置表达不了、只有装配期知道"的句柄。
 ///
@@ -68,8 +66,6 @@ use echo_plugin_workspace::host_keys::WORKSPACE_HOST;
 /// 联邦端口集合。**插件不再看到这个结构体**——它是本文件的入参形式，不是
 /// 插件契约。
 pub(crate) struct HostWiring {
-    /// persona 管理器（门控要遍历全部人格）。
-    pub manager: Arc<AgentManager>,
     /// 代表 agent（大部分命令域的 per-persona 接缝以它为锚点）。
     pub agent: Arc<Agent>,
     /// 进程级事件出口（联邦 / 自更新的回执走它）。
@@ -152,32 +148,15 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
             as Arc<dyn echo_agent::skill::commands::SkillsCommandHost>,
     );
 
-    // ── 工作区（store 按 team_id 解析：进程级一个插件、per-persona 多份 store）──
-    let manager_for_agents = wiring.manager.clone();
-    put(
-        &mut keep,
-        ctx,
-        &WORKSPACE_HOST,
-        Arc::new(AgentWorkspaceHost::from_agents(
-            move || {
-                manager_for_agents
-                    .all()
-                    .into_iter()
-                    .map(|running| Arc::clone(&running.agent))
-                    .collect()
-            },
-            wiring.event_sink.clone(),
-            // 跨机目录查询（2026-11 S14 修）：此前这里是 `None`，于是**面板**
-            // 的 `RequestBrowseDirectories` / `RequestWorkspaceFiles` 走
-            // `node://` 时一律回「联邦未接线：远程目录浏览不可用」——而模型侧
-            // 的 `workspace` 工具（组合根注册时传了 adapter）是好的。
-            // 同一个能力两条路径两种行为，是纯粹的漏接线。
-            Some(echo_agent::federation::workspace_query(
-                wiring.federation.querier.clone(),
-            )) as Option<Arc<dyn echo_defs::workspace::RemoteWorkspaceQuery>>,
-        )) as Arc<dyn echo_agent::workspace::commands::WorkspaceHost>,
-    );
-
+    // ── 工作区 ──
+    //
+    // 此前这里注入 `WORKSPACE_HOST`（`AgentWorkspaceHost`：store 查表 + emit +
+    // 浏览根 + 联邦查询），供进程内插件使用。工作区插件 2026-11 迁出为独立
+    // 仓库后，它自己拥有 store、自己发事件，宿主这四条能力全部不再需要：
+    //   - store → 插件持有（宿主只留只读镜像）
+    //   - emit  → 插件 emit 插件事件，组合根翻译成 BackendEvent（见 main.rs）
+    //   - 浏览根 → 插件自己遍历自己的 store
+    //   - 联邦查询 → 插件侧降级（跨机浏览/ git 需宿主联邦，见插件 README）
     // ── 联邦：出口集合 + 事件出口 ──
     put(&mut keep, ctx, &PORTS, wiring.federation.clone());
     put(
@@ -354,7 +333,6 @@ pub(crate) fn provided_keys() -> Vec<String> {
         INSTANCE_HOST.name().to_string(),
         TOOLS_HOST.name().to_string(),
         SKILLS_HOST.name().to_string(),
-        WORKSPACE_HOST.name().to_string(),
         PORTS.name().to_string(),
         FEDERATION_EVENTS.name().to_string(),
         MANAGEMENT_HOST.name().to_string(),
@@ -408,6 +386,105 @@ pub(crate) fn gating_from_plugin_event(
         }
         "plugin.unmounted" => {
             apply_plugin_gating(manager, &event.plugin, false);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 工作区插件事件 → 宿主动作（返回 `true` = 本事件已被工作区桥消费，
+/// 不再作为 `PluginEvent` 透传给面板）。
+///
+/// 三类事件（协议见插件仓 `echo-plugin-workspace` 的模块文档）：
+///
+/// - `workspace.backend_event`：载荷是**要发给前端的 `BackendEvent`**（插件
+///   自己拼好了线形状）——按 `team_id` 找到人格出口，事件原样进面板；
+/// - `workspace.changed`：插件推来全量快照 → 写进该人格的镜像，再跑宿主的
+///   那半段（确保会话通道 + 广播 `SessionUpdated` / `WorkspaceSessions`）；
+/// - `workspace.conversation_deleted`：清空被删对话的通道历史。
+///
+/// 为什么在宿主翻译：这几件事都动宿主的会话子系统（通道 / provider / 事件
+/// 出口），插件不认识它们，也不该认识。
+pub(crate) fn workspace_from_plugin_event(
+    manager: &Arc<AgentManager>,
+    event: &echo_plugin::PluginEvent,
+) -> bool {
+    match event.name.as_str() {
+        echo_plugin_workspace::events::BACKEND_EVENT => {
+            let team_id = event
+                .payload
+                .as_object()
+                .and_then(|object| object.values().next())
+                .and_then(|body| body.get("team_id"))
+                .and_then(|value| value.as_str())
+                .filter(|id| !id.is_empty())
+                .map(str::to_string);
+            match serde_json::from_value::<echo_protocol::BackendEvent>(event.payload.clone()) {
+                Ok(backend_event) => match team_id.and_then(|id| manager.get(&id)) {
+                    // 有人格归属 → 走它的出口（team 标注由 `Agent::emit` 负责）。
+                    Some(running) => running.agent.emit(backend_event),
+                    // 无人格归属（浏览目录这类全局命令）→ 交给事件汇聚点。
+                    None => tracing::debug!(
+                        name = %event.name,
+                        "workspace backend event without a resolvable persona; dropped"
+                    ),
+                },
+                Err(error) => tracing::warn!(
+                    %error,
+                    "workspace.backend_event 载荷不是合法的 BackendEvent（插件与宿主线格式漂移？）"
+                ),
+            }
+            true
+        }
+        echo_plugin_workspace::events::CHANGED => {
+            let snapshot =
+                echo_agent::agent::workspace_mirror::WorkspaceSnapshot::from_event_payload(
+                    &event.payload,
+                );
+            let team_id = event
+                .payload
+                .get("team_id")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            match manager.get(team_id) {
+                Some(running) => running.agent.apply_workspace_snapshot(snapshot),
+                None => tracing::warn!(
+                    %team_id,
+                    "workspace.changed 指向未知人格（人格刚被禁/删？），快照丢弃"
+                ),
+            }
+            true
+        }
+        echo_plugin_workspace::events::CONVERSATION_DELETED => {
+            let team_id = event
+                .payload
+                .get("team_id")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let workspace_id = event
+                .payload
+                .get("workspace_id")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let Some(conversation) = event
+                .payload
+                .get("conversation")
+                .cloned()
+                .and_then(|value| {
+                    serde_json::from_value::<echo_plugin_workspace::wire::WorkspaceConversationInfo>(
+                        value,
+                    )
+                    .ok()
+                })
+            else {
+                tracing::warn!("workspace.conversation_deleted 缺 conversation 载荷");
+                return true;
+            };
+            if let Some(running) = manager.get(team_id) {
+                running
+                    .agent
+                    .clear_workspace_conversation_channel(workspace_id, &conversation);
+            }
             true
         }
         _ => false,

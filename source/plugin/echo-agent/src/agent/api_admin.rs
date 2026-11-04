@@ -357,7 +357,7 @@ impl Agent {
     ///
     /// **规则在插件里**（`echo_plugin_provider_llm::admin::delete`）：池里本来
     /// 就没有时只回"not found"，宿主据此**不落盘、不重建 provider**（零写入）。
-    pub(crate) async fn delete_api(&self, name: &str) {
+    pub(crate) async fn delete_api(self: &std::sync::Arc<Self>, name: &str) {
         use echo_plugin_provider_llm::admin as pool;
         let mut config = self.model.config.write().await;
         let effects = {
@@ -540,11 +540,8 @@ impl Agent {
         self.rebind_renamed_profile(from, to, active_renamed, new_cfg)
             .await;
         let _ = self.rebind_session_providers(from, to).await;
-        if let Some(store) = self.workspace_store() {
-            if let Err(e) = store.rename_api_profile(from, Some(to)) {
-                tracing::warn!(error = %e, %from, %to, "workspace api ref rewrite failed");
-            }
-        }
+        // 工作区对话里的 `api_profile` 引用由插件持有 → 经命令通道传播。
+        self.rename_workspace_api_refs(from, to).await;
         // 2) 全部运行中 persona（与 ClearHistory 的枚举口径一致）。
         if let Some(mgr) = self.registry() {
             for running in mgr.all() {
@@ -553,22 +550,50 @@ impl Agent {
                     .rebind_renamed_profile(from, to, active_renamed, new_cfg)
                     .await;
                 agent.rebind_session_providers(from, to).await;
-                if let Some(store) = agent.workspace_store() {
-                    match store.rename_api_profile(from, Some(to)) {
-                        Ok(0) => {}
-                        Ok(n) => tracing::info!(
-                            team = %running.id,
-                            count = n,
-                            "workspace api refs rewritten after rename"
-                        ),
-                        Err(e) => tracing::warn!(
-                            team = %running.id,
-                            error = %e,
-                            "workspace api ref rewrite failed"
-                        ),
-                    }
+                match agent.rename_workspace_api_refs_now(from, to).await {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(
+                        team = %running.id,
+                        count = n,
+                        "workspace api refs rewritten after rename"
+                    ),
+                    Err(e) => tracing::warn!(
+                        team = %running.id,
+                        error = %e,
+                        "workspace api ref rewrite failed"
+                    ),
                 }
             }
+        }
+    }
+
+    /// 改名传播到工作区对话引用（**异步入口**：只在有 tokio 运行时可用）。
+    ///
+    /// 分隔成两个方法是因为调用点不同：进程内传播已经在 async 上下文里
+    /// （直接用 `_now`），而单 agent 入口可能不在——那里就 spawn 一份。
+    async fn rename_workspace_api_refs(&self, from: &str, to: &str) {
+        if let Err(error) = self.rename_workspace_api_refs_now(from, to).await {
+            tracing::warn!(%error, %from, %to, "workspace api ref rewrite failed");
+        }
+    }
+
+    /// 经命令通道让插件改写工作区对话里的 `api_profile` 引用，返回改写条数。
+    ///
+    /// 宿主不再持有 store：store 属于插件（独立仓库），宿主只能请求它改。
+    async fn rename_workspace_api_refs_now(&self, from: &str, to: &str) -> Result<usize, String> {
+        let host = self.plugin_host();
+        let payload = serde_json::json!({
+            "team_id": self.team_id(),
+            "from": from,
+            "to": to,
+        });
+        match host.dispatch_raw("WorkspaceRenameApiProfile", payload).await {
+            None => Ok(0),
+            Some(Ok(value)) => Ok(value
+                .get("changed")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize),
+            Some(Err(message)) => Err(message),
         }
     }
 

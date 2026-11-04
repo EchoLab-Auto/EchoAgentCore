@@ -1179,13 +1179,8 @@ dependencies = [
 name = "echo-plugin-workspace"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "echo-context",
- "echo-defs",
  "echo-plugin",
- "echo-protocol",
- "echo-session",
- "echo-tool",
  "serde",
  "serde_json",
  "tokio",
