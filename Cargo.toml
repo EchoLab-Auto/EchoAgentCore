@@ -1,18 +1,18 @@
 [workspace]
 resolver = "2"
 members = [
-    "source/defs/echo-defs",
-    "source/session/echo-session",
-    "source/tool/echo-tool",
-    "source/shell/echo-shell",
-    "source/loop/echo-loop",
-    "source/security/echo-sanitize",
-    "source/protocol/echo-protocol",
-    "source/federation/echo-federation",
-    "source/backend/echo-agent",
-    "source/config/echo-config",
-    "source/backend/echo-test-utils",
-    "source/core",
+    "source/plugin/echo-defs",
+    "source/plugin/echo-session",
+    "source/plugin/echo-tool",
+    "source/plugin/echo-shell",
+    "source/plugin/echo-loop",
+    "source/plugin/echo-sanitize",
+    "source/plugin/echo-protocol",
+    "source/plugin/echo-federation",
+    "source/plugin/echo-agent",
+    "source/plugin/echo-config",
+    "source/plugin/echo-test-utils",
+    "source/plugin/core",
     "source/plugin/echo-plugin-adapter",
     "source/plugin/echo-plugin-provider-llm",
     "source/plugin/echo-plugin-skills",
@@ -68,17 +68,17 @@ opt-level = 1
 strip = "symbols"
 
 [workspace.dependencies]
-echo-defs = { path = "source/defs/echo-defs" }
-echo-config = { path = "source/config/echo-config" }
+echo-defs = { path = "source/plugin/echo-defs" }
+echo-config = { path = "source/plugin/echo-config" }
 echo-context = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
-echo-sanitize = { path = "source/security/echo-sanitize" }
-echo-session = { path = "source/session/echo-session" }
-echo-tool = { path = "source/tool/echo-tool" }
-echo-shell = { path = "source/shell/echo-shell" }
-echo-loop = { path = "source/loop/echo-loop" }
-echo-protocol = { path = "source/protocol/echo-protocol" }
-echo-agent = { path = "source/backend/echo-agent" }
-echo-test-utils = { path = "source/backend/echo-test-utils" }
+echo-sanitize = { path = "source/plugin/echo-sanitize" }
+echo-session = { path = "source/plugin/echo-session" }
+echo-tool = { path = "source/plugin/echo-tool" }
+echo-shell = { path = "source/plugin/echo-shell" }
+echo-loop = { path = "source/plugin/echo-loop" }
+echo-protocol = { path = "source/plugin/echo-protocol" }
+echo-agent = { path = "source/plugin/echo-agent" }
+echo-test-utils = { path = "source/plugin/echo-test-utils" }
 echo-plugin = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
 echo-plugin-api = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
 echo-plugin-host = { git = "https://github.com/EchoLab-Auto/plugin-framework", tag = "v0.11.2" }
@@ -97,7 +97,7 @@ echo-plugin-management = { path = "source/plugin/echo-plugin-management" }
 echo-plugin-session = { path = "source/plugin/echo-plugin-session" }
 echo-plugin-transcript = { path = "source/plugin/echo-plugin-transcript" }
 echo-plugin-tools = { path = "source/plugin/echo-plugin-tools" }
-echo-federation = { path = "source/federation/echo-federation" }
+echo-federation = { path = "source/plugin/echo-federation" }
 
 # async runtime
 tokio = { version = "1", features = ["full"] }

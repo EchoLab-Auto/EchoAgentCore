@@ -34,34 +34,36 @@ EchoAgentCore/
 ├── config/                    # Core TOML 配置模板（含 plugins.toml 插件树）
 ├── skills/                    # SKILL.md 技能定义（运行时热重载）
 ├── source/
-│   ├── defs/echo-defs/        # Service Definition 层（词汇 + trait，零实现）
-│   ├── context/echo-context/  # Ctx 服务定位 / EventBus / Disposer / ScopedRegistry / kernel.rs
-│   ├── session/echo-session/  # 事件溯源会话存储（EventLog + derive_messages）
-│   ├── loop/echo-loop/        # TurnRunner 默认驱动 + ToolPipeline
-│   ├── security/echo-sanitize/  # 脱敏服务（出口卡口，注册表式 Redactor）
-│   ├── config/echo-config/    # TOML 原子读改写（不认识任何段语义）
-│   ├── tool/echo-tool/        # 工具子系统机制（ToolRegistry 可逆注册 + 出口脱敏）
-│   ├── shell/echo-shell/      # Shell 会话机制（bash 子进程 + 哨兵分帧 + 进程组清理）
-│   ├── plugin/echo-plugin-adapter/ # 协议贡献 → 领域 trait（RemoteTool / RemoteInstance / CoreApiService）
-│   │                               # 注：`echo-plugin` / `-api` / `-loader` / `-sdk` / `-host`
-│   │                               # 五件套在**框架仓** `plugin-framework`，不在本仓
-│   ├── plugin/echo-plugin-tools/   # 内置工具集（read/write/edit/list/search/run_command/shell_*/instance_*）
-│   ├── plugin/echo-plugin-skills/  # 内置插件：技能目录
-│   ├── plugin/echo-plugin-subagent/# 内置插件：spawn_subagent
-│   ├── plugin/echo-plugin-workspace/# 内置插件：工作区会话
-│   ├── plugin/echo-plugin-management/ # 内置插件：管理面 WS（Panel 中继）
-│   ├── plugin/echo-plugin-loop/    # 内置插件：loop.single（唯一循环插件：provide TurnRunner + 会话内串行）
-│   ├── plugin/echo-plugin-provider-llm/ # 内置插件：provider 工厂 + 计量/脱敏装饰器
-│   ├── federation/echo-federation/ # 联邦层：Core↔Core 对等链路（frame/invite/link）
-│   ├── backend/
-│   │   ├── echo-agent/        # Agent 框架（宿主，具体实现多已外迁到 plugin/ 与 shell/）
-│   │   │   ├── agent/         # 循环/命令分派/边界/提示词/压缩/门控/流式/工具分派
-│   │   │   ├── session/       # 会话持久化（v6 整档 JSON）与恢复
-│   │   │   └── packages/      # 仍留在宿主的包：instance_ops / federation / tools_builtin（兼容面）
-│   │   └── echo-test-utils/   # 共享测试 mock（仅 dev-dependency）
-│   │   # QQ 插件实例（OneBot 类型 / 反向 WS / NapCat 管理）已迁出为独立进程插件
-│   │   # （独立仓库；宿主经 echo-plugin-adapter 的 RemoteInstance 接入）
-│   └── core/                  # echo-agent-core 二进制（组合根 + 治理门禁测试）
+│   └── plugin/                # 本仓全部 Rust crate 的唯一源码根
+│       ├── echo-defs/         # kernel：词汇 + 能力接缝 trait（零 echo-* 依赖）
+│       ├── echo-config/       # kernel：TOML 原子读改写
+│       ├── echo-protocol/     # kernel：管理面协议与事件桥
+│       ├── echo-session/      # kernel：事件溯源会话机制
+│       ├── echo-tool/         # kernel：工具注册与执行机制
+│       ├── echo-shell/        # kernel：持久 Shell 会话机制
+│       ├── echo-loop/         # kernel：TurnRunner + ToolPipeline
+│       ├── echo-sanitize/     # kernel：脱敏机制
+│       ├── echo-federation/   # kernel：Core↔Core 链路与帧协议
+│       ├── echo-plugin-adapter/    # 协议贡献 → 领域 trait
+│       ├── echo-plugin-tools/      # 内置工具集
+│       ├── echo-plugin-shell/      # Shell 工具与命令域
+│       ├── echo-plugin-skills/     # 技能目录
+│       ├── echo-plugin-subagent/   # spawn_subagent
+│       ├── echo-plugin-workspace/  # 工作区会话
+│       ├── echo-plugin-management/ # 管理面 WS（Panel 中继）
+│       ├── echo-plugin-loop/       # loop.single 策略
+│       ├── echo-plugin-provider-llm/ # provider 工厂 + 计量/脱敏装饰器
+│       ├── echo-plugin-session/    # 会话持久化与压缩编排
+│       ├── echo-plugin-transcript/ # 时间线投影
+│       ├── echo-plugin-federation/ # 联邦工具路由与命令域
+│       ├── echo-plugin-sanitize/   # 脱敏服务贡献
+│       ├── echo-plugin-self-update/# 自更新
+│       ├── echo-agent/        # 业务宿主与 Agent 编排（不是可替换能力插件）
+│       ├── echo-test-utils/   # 共享测试 mock（仅 dev-dependency）
+│       └── core/              # echo-agent-core 二进制（组合根 + 治理门禁测试）
+│       # `echo-plugin` / `-api` / `-loader` / `-sdk` / `-host` 五件套在框架仓
+│       # `plugin-framework`；QQ 等实例插件也在独立仓库，经 adapter 接入。
+│       # 目录统一只规定物理归属，不改变 kernel / 能力插件 / 宿主的依赖方向。
 ├── document/                  # 文档群（index + overview/core/plugins/panel/protocol/federation/ops/dev/design 分层）
 ├── npm/echo-agent/            # 容器化部署 CLI（Docker 编排；node:test 测试）
 ├── docker/entrypoint.sh       # Core 容器入口
@@ -134,11 +136,11 @@ cargo test -p echo-agent
 
 ### 治理门禁（CI）
 
-- **依赖方向门禁**（单一真值 `scripts/deps-policy.txt`，双门禁共读）：`scripts/check-deps.sh`（CI `deps-lint` job）+ `source/core/tests/plugin_dependency_direction.rs`（随 `cargo test` 跑）。每个 crate 一行**完整白名单**（不是增量），新增 crate 未登记即 fail-closed；`echo-agent` 只允许出现在 `core/`（组合根）；方向只向下（定义层 → 机制层 → 插件层 → 宿主 → 组合根）
-- **平台无关门禁**（`source/core/tests/platform_agnostic.rs`）：机制层 / 插件层（除 `backend/echo-agent` 与 `core`）的 `.rs` 去掉注释与测试代码后不得出现平台名——「新增平台 = 写实例插件、框架侧零改动」靠它守着
-- **无全局态门禁**（`source/core/tests/no_global_state.rs`）：全 source 扫 `static` + `OnceLock`/`LazyLock`，白名单只有 `echo-context/kernel.rs`（相等断言，只减不增）
-- **文档门禁**（`source/core/tests/doc_catalog.rs`）：工具目录新鲜度（`UPDATE_DOCS=1` 重新生成）+ 内置插件 id 不许漏 + `document/` 全树死链检查
-- **config 模板测试**（`source/core/tests/config_template.rs`）：`config/echo-agent-core.toml` 必须是合法 TOML 且含运行时依赖的 section，防模板漂移；并入 `cargo test`
+- **依赖方向门禁**（单一真值 `scripts/deps-policy.txt`，双门禁共读）：`scripts/check-deps.sh`（CI `deps-lint` job）+ `source/plugin/core/tests/plugin_dependency_direction.rs`（随 `cargo test` 跑）。每个 crate 一行**完整白名单**（不是增量），新增 crate 未登记即 fail-closed；`echo-agent` 只允许出现在 `plugin/core/`（组合根）；方向只向下（定义层 → 机制层 → 插件层 → 宿主 → 组合根）
+- **平台无关门禁**（`source/plugin/core/tests/platform_agnostic.rs`）：机制层 / 插件层（除 `echo-agent`、`echo-test-utils` 与 `core`）的 `.rs` 去掉注释与测试代码后不得出现平台名——「新增平台 = 写实例插件、框架侧零改动」靠它守着
+- **无全局态门禁**（`source/plugin/core/tests/no_global_state.rs`）：全 source 扫 `static` + `OnceLock`/`LazyLock`，白名单只有 `echo-context/kernel.rs`（相等断言，只减不增）
+- **文档门禁**（`source/plugin/core/tests/doc_catalog.rs`）：工具目录新鲜度（`UPDATE_DOCS=1` 重新生成）+ 内置插件 id 不许漏 + `document/` 全树死链检查
+- **config 模板测试**（`source/plugin/core/tests/config_template.rs`）：`config/echo-agent-core.toml` 必须是合法 TOML 且含运行时依赖的 section，防模板漂移；并入 `cargo test`
 - **跨仓库清单同步**（人工核对 + 测试守护）：新增/移除插件时——Core `BUILTIN_PLUGIN_IDS`（与 catalog 双向相等，测试守着）、更新器 `expected_ids`、Panel `PACKAGE_DISPLAY_NAMES`（**门控清单已删除**：按 `kind` 派生后由 Core 下发，见 `plugins/scope.rs`）；新增**插件类型**（`PluginKind`）时 Core `as_str` wire 名与 Panel `PLUGIN_KIND_LABELS` 同改；协议新增命令/事件时 echo-protocol ⇄ `web/src/protocol.ts` 同改。守护测试：`capabilities.test.ts`（Panel 清单对齐）、`instance_manifests.rs` 的单测（Core `BUILTIN_PLUGIN_IDS` + 实例前缀 ⇄ 更新器 `expected_ids`；曾因 `orchestration` 移除后清单残留、每次更新误报缺 manifest 而补齐）、`update.sh` 插件感知校验（安装后核对二进制）、`protocol-sync.test.ts`（Panel 协议镜像：事件 reduce⊆union、联邦命令存在性快照、unit 命令字符串形态、禁止 `as unknown as` 双重断言绕过——补齐联邦 4 命令后归零）。详见 [插件化设计](../plugins/plugins.md)「新增包维度门控插件时的同步清单」
 
 命令与 CI 作业矩阵见 [测试策略](./testing.md)「质量门禁（CI）」。

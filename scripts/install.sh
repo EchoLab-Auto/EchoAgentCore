@@ -198,7 +198,7 @@ derive_paths "$HOME" 1
 
 # 随框架一起安装的**进程外插件二进制**：仓库内 `source/plugin/*` 中
 # `[[bin]] path = "src/main.rs"` 的 crate（`src/bin/*` 是测试夹具，不装）。
-# 守护测试 source/core/tests/install_script_flag.rs 比对本表与仓库实际；
+# 守护测试 source/plugin/core/tests/install_script_flag.rs 比对本表与仓库实际；
 # 新增/删除可安装插件二进制时，本表与 update.sh 的 PLUGIN_BINARIES 同改。
 PLUGIN_BINARIES=()
 

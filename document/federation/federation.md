@@ -15,9 +15,9 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 跨机器的工作区执行工具、委派子任务、做只读查询。典型场景：联合调试
 （A 机改代码、B 机起服务）、跨机部署验证、能力互补（GPU/专有环境）。
 
-实现分布：`source/federation/echo-federation`（帧与链路）+
-`source/backend/echo-agent/src/packages/federation`（执行层）+
-`source/core/src/federation_rt.rs`（路由泵 `federation_router_pump` + 代理注册 + 状态快照）、`source/core/src/federation_import.rs`（迁移导入）；`source/core/src/main.rs` 只做装配与 `tokio::spawn`。
+实现分布：`source/plugin/echo-federation`（帧与链路）+
+`source/plugin/echo-agent/src/packages/federation`（执行层）+
+`source/plugin/core/src/federation_rt.rs`（路由泵 `federation_router_pump` + 代理注册 + 状态快照）、`source/plugin/core/src/federation_import.rs`（迁移导入）；`source/plugin/core/src/main.rs` 只做装配与 `tokio::spawn`。
 
 ## 设计原则
 

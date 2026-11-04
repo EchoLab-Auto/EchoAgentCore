@@ -1,7 +1,7 @@
 //! # echo-plugin-management — 管理面 WebSocket 插件（解耦计划 Phase 3 ⑧）
 //!
 //! Panel 的连接面：监听一个地址、接受 WS 连接，把命令/事件在 Panel 与 Agent
-//! 之间中继。原 `source/core/management.rs` 的独立 crate 化。
+//! 之间中继。原 `source/plugin/core/management.rs` 的独立 crate 化。
 //!
 //! ## 为什么它本来就是「协议驱动」
 //!

@@ -2,7 +2,7 @@
 # Dependency-direction lint —— 依赖方向的 CI 门禁（纯 bash，无需编译）。
 #
 # 白名单的**单一真值来源**是 `scripts/deps-policy.txt`；同一份文件也被
-# `source/core/tests/plugin_dependency_direction.rs` 读取。这意味着不存在
+# `source/plugin/core/tests/plugin_dependency_direction.rs` 读取。这意味着不存在
 # 「CI 的清单和 cargo test 的清单各说一套」的可能——此前正是如此：本脚本
 # 硬编码 14 个 crate，Phase 3 新增的 7 个一个都没检查，脚本报 OK 而实际
 # 越界无人发现。
@@ -64,8 +64,8 @@ while read -r crate _; do
     if [ "$dep" = "echo-agent-core" ]; then
       fail "VIOLATION: $crate depends on echo-agent-core (binary crate, never a dependency)"
     fi
-    if [ "$dep" = "echo-agent" ] && [ "$crate" != "core" ]; then
-      fail "VIOLATION: $crate depends on echo-agent (business crate; only 'core' may)"
+    if [ "$dep" = "echo-agent" ] && [ "$crate" != "plugin/core" ]; then
+      fail "VIOLATION: $crate depends on echo-agent (business crate; only 'plugin/core' may)"
     fi
   done
 done < "$POLICY"

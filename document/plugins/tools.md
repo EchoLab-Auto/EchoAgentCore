@@ -16,7 +16,7 @@ link: ["tool-catalog | 内置工具目录"]
 
 > **完整工具清单**见 [内置工具目录](./tool-catalog.md)——由
 > `echo-agent::tool::builtin::build_registry` **自动生成并校验**（加工具忘了
-> 更新会在门禁红：`source/core/tests/doc_catalog.rs` 的 `tool_catalog_is_fresh`）。
+> 更新会在门禁红：`source/plugin/core/tests/doc_catalog.rs` 的 `tool_catalog_is_fresh`）。
 > 本文只讲机制与门控，不复述清单，避免两处漂移。
 
 - `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（`echo-tool` crate；`echo-agent` 保留 `echo_agent::tool::…` 兼容路径）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
@@ -158,7 +158,7 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 
 ## 后台 Shell 会话（持久 bash）
 
-进程级 `ShellManager`（机制 crate `echo-shell`；`backend/echo-agent/src/shell.rs` 只是兼容 re-export）管理**持久 bash 会话**：
+进程级 `ShellManager`（机制 crate `echo-shell`；`plugin/echo-agent/src/shell.rs` 只是兼容 re-export）管理**持久 bash 会话**：
 与 Panel Shell 面板共用同一会话，LLM 与用户看到的是同一终端上下文。
 
 - **会话模型**：每个会话 = 一个 `bash --noprofile --norc` 子进程（stdin/stdout/stderr 管道），

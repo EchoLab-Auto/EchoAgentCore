@@ -17,7 +17,7 @@
 //! 这一层是「插件机制的复用边界」：`echo-plugin-host` 不带 `echo-defs` 依赖，
 //! 才能作为一个**领域中立**的 Rust 插件机制被别的项目拿去用；而适配器认识
 //! 领域 trait，属于 agent 框架侧。两者分开后，依赖方向由
-//! `scripts/deps-policy.txt` 与 `source/core/tests/plugin_dependency_direction.rs`
+//! `scripts/deps-policy.txt` 与 `source/plugin/core/tests/plugin_dependency_direction.rs`
 //! 双门禁守着，不会有人把它们再合回去。
 //!
 //! 依赖纪律：只依赖 `echo-plugin-host`（机制）+ `echo-defs`（领域词汇）+

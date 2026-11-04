@@ -1,0 +1,61 @@
+[package]
+name = "echo-agent-core"
+description = "EchoAgentCore — agent core service: LLM agent loop + QQ adapter + management WebSocket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "echo-agent-core"
+path = "src/main.rs"
+
+[dependencies]
+echo-defs.workspace = true
+echo-config.workspace = true
+echo-sanitize.workspace = true
+echo-protocol.workspace = true
+echo-context.workspace = true
+echo-session.workspace = true
+echo-tool = { workspace = true }
+echo-shell = { workspace = true }
+echo-loop.workspace = true
+echo-agent.workspace = true
+echo-plugin = { workspace = true }
+echo-plugin-host = { workspace = true }
+echo-plugin-adapter = { workspace = true }
+echo-plugin-federation = { workspace = true }
+echo-plugin-loader = { workspace = true }
+echo-plugin-loop = { workspace = true }
+echo-plugin-session = { workspace = true }
+echo-plugin-transcript = { workspace = true }
+echo-plugin-management = { workspace = true }
+echo-plugin-tools = { workspace = true }
+echo-plugin-skills = { workspace = true }
+echo-plugin-workspace = { workspace = true }
+echo-plugin-subagent = { workspace = true }
+echo-plugin-provider-llm = { workspace = true }
+echo-plugin-self-update = { workspace = true }
+echo-plugin-sanitize = { workspace = true }
+echo-plugin-shell = { workspace = true }
+echo-federation = { path = "../echo-federation" }
+getrandom = "0.2"
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+async-trait.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+# 日志：本地日期判定（按天轮转）与归档 gzip。
+chrono.workspace = true
+flate2.workspace = true
+
+# 脱敏实现已归 `echo-plugin-sanitize`：组合根只在**测试**里直接构造
+# `RegistryRedactor`（其余路径一律走插件导出的 `build`）。
+[dev-dependencies]

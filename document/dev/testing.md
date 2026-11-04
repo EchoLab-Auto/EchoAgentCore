@@ -40,7 +40,7 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Teamless multi-agent & QQ instances** (echo-agent + core): session
   commands reject a missing `team_id` (no default agent), the process-level
   `EventSink` fans in every persona's events without double delivery, and
-  `source/core/src/instance_deploy.rs` covers **实例解析**——显式实例保留配置的
+  `source/plugin/core/src/instance_deploy.rs` covers **实例解析**——显式实例保留配置的
   persona 与顺序、无实例表时造 legacy 单实例、按已启用插件的人格自动建档
   （默认人格沿用 legacy id）、平台未启用时产出为空、实例覆盖原样透传。
   **端口分配 / 容器名 / compose 的测试已随代码移到插件仓库**（`deploy` 模块的

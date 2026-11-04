@@ -13,7 +13,7 @@ PREFIX=${ECHO_PREFIX:-"$HOME/.local"}
 DEFAULT_BINARY="$PREFIX/libexec/echo-agent-core/echo-agent-core-bin"
 # 随框架安装的进程外插件二进制（`plugins/<包名>/<二进制>`）。
 # **必须与 install.sh 的 PLUGIN_BINARIES 一致**（守护测试：
-# source/core/tests/install_script_flag.rs）；自更新与首装装同一套。
+# source/plugin/core/tests/install_script_flag.rs）；自更新与首装装同一套。
 PLUGINS_DIR="$PREFIX/libexec/echo-agent-core/plugins"
 PLUGIN_BINARIES=()
 DEFAULT_STATUS_FILE="$STATE_HOME/echo-agent-core/update-status"
@@ -695,7 +695,7 @@ if [[ -x "$BINARY" ]]; then
     strings_tmp=$(mktemp "${BINARY}.strings.XXXXXX")
     strings "$BINARY" >"$strings_tmp" || true
     # 与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` 必须一致（守护测试：
-    # source/core/src/instance_manifests.rs 的单测把两侧并起来比）；
+    # source/plugin/core/src/instance_manifests.rs 的单测把两侧并起来比）；
     # 移除插件时两处同改。
     # 实例插件 id 自 2026-10 由平台名派生（`echo-agent.instance.<platform>`），
     # 无法静态枚举——校验**前缀**即可确认派生逻辑进了二进制。其余为框架内置。

@@ -161,7 +161,7 @@ y: 2330
 约定：
 
 - 文件首行带 `<!-- 自动生成，请勿手改：<源> -->` 注释——看到它就改代码后重跑生成；
-- 门禁在 `source/core/tests/doc_catalog.rs`：**工具目录新鲜度** + **内置插件 id 不许漏**（`BUILTIN_PLUGIN_IDS` 每项必须出现在 `plugins.md`）+ **相对链接可达**（`document/` 全树死链检查）；
+- 门禁在 `source/plugin/core/tests/doc_catalog.rs`：**工具目录新鲜度** + **内置插件 id 不许漏**（`BUILTIN_PLUGIN_IDS` 每项必须出现在 `plugins.md`）+ **相对链接可达**（`document/` 全树死链检查）；
 - 生成只覆盖整份文件：想写人工说明就写进相邻的散文文档（如 `tools.md`），不要在生成文件里加章节。
 
 ## 自检与预览

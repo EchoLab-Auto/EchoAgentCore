@@ -96,7 +96,7 @@ y: 2100
 `echo-plugin-subagent` 的 `wrap_subagent_event` 承担。
 
 异步编排工具接入 echo-loop 的接口是 `SubagentToolHooks`
-（`source/loop/echo-loop/src/runner.rs`，由 `process_via_echo_loop` 装配进
+（`source/plugin/echo-loop/src/runner.rs`，由 `process_via_echo_loop` 装配进
 `RunExtras`）：
 
 - `is_async_tool(name)`：认领异步编排工具（当前仅 `spawn_subagent`）

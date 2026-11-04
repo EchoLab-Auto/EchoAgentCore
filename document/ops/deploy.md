@@ -120,7 +120,7 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 - 更新器非阻塞文件锁拒绝并发运行；拉取/构建失败时旧二进制不动、不重启
 - Panel 更新包含 `npm run build`（前端产物从 `web/dist` 拷贝到静态目录，需 PATH 中有 npm——nvm 路径）
 - **NapCat 恢复门控**：Core 重启后仅当 `[instances.qq]`（或等价的 `[adapters.qq]`——`update.sh` 的 awk 两个段名都认）`enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（默认实例 3131；多实例由插件在 3140-3190 内分配、持久化在实例 state 的 `[deploy.ports]`——Core 不感知具体端口，故按「全部 NapCat 容器」而非端口清单判定）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
-- **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制核对内置插件 manifest id——框架 **12 项**（`echo-agent.tools.builtin` / `echo-agent.shell` / `echo-agent.skills.dir` / `echo-agent.workspace` / `echo-agent.subagent` / `echo-agent.federation` / `echo-agent.provider.llm` / `echo-agent.selfupdate` / `echo-agent.management.panel` / `echo-agent.session` / `echo-agent.transcript` / 循环插件 `echo-agent.loop.single`）**加上实例插件前缀** `echo-agent.instance.`（`strings` 里能搜到前缀即视为齐备，不逐个枚举平台）。清单是 `scripts/update.sh` 的 `expected_ids` 一行，必须与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` + `core::instance_manifests::PLUGIN_ID_PREFIX` 一致，由 `source/core/src/instance_manifests.rs` 的单测守护（修复背景：`echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`echo-agent.menu`/`echo-agent.checklist`/旧驱动 `echo-agent.loop.runner` 等 id 已移除（present_menu 已废弃移除；checklist 为普通内置工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
+- **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制核对内置插件 manifest id——框架 **12 项**（`echo-agent.tools.builtin` / `echo-agent.shell` / `echo-agent.skills.dir` / `echo-agent.workspace` / `echo-agent.subagent` / `echo-agent.federation` / `echo-agent.provider.llm` / `echo-agent.selfupdate` / `echo-agent.management.panel` / `echo-agent.session` / `echo-agent.transcript` / 循环插件 `echo-agent.loop.single`）**加上实例插件前缀** `echo-agent.instance.`（`strings` 里能搜到前缀即视为齐备，不逐个枚举平台）。清单是 `scripts/update.sh` 的 `expected_ids` 一行，必须与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` + `core::instance_manifests::PLUGIN_ID_PREFIX` 一致，由 `source/plugin/core/src/instance_manifests.rs` 的单测守护（修复背景：`echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`echo-agent.menu`/`echo-agent.checklist`/旧驱动 `echo-agent.loop.runner` 等 id 已移除（present_menu 已废弃移除；checklist 为普通内置工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
 
 ### 出厂技能同步
 
@@ -137,7 +137,7 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 `plugins/<包名>/<二进制>` 下的插件二进制与 Core **同版本**部署（协议与 `Hello.config` 语义在同一份仓库里演进，不允许 Core 新 / 插件旧）：
 
 - `install.sh` 按 `PLUGIN_BINARIES` 与 Core 在同一次 `cargo build --release --locked` 里构建，装到 `~/.local/libexec/echo-agent-core/plugins/<包名>/<二进制>`；旧文件纳入安装事务快照，失败回滚时一并还原
-- `update.sh` 用**同一张表**（两脚本一致性由 `source/core/tests/install_script_flag.rs` 守护，同时比对仓库里 `[[bin]] path = "src/main.rs"` 的插件 crate）做版本化替换：旧二进制先落 `<二进制>.rollback`，任一步失败（含重启后健康检查）→ `finalize_failure` 把所有插件还原回上一版
+- `update.sh` 用**同一张表**（两脚本一致性由 `source/plugin/core/tests/install_script_flag.rs` 守护，同时比对仓库里 `[[bin]] path = "src/main.rs"` 的插件 crate）做版本化替换：旧二进制先落 `<二进制>.rollback`，任一步失败（含重启后健康检查）→ `finalize_failure` 把所有插件还原回上一版
 - 构建产物缺失（例如清单里写了但 crate 被删）只 `warning` 并触发回滚，不会静默留下半套插件
 - 目录不存在（旧部署未跑过新版 `install.sh`）时静默创建——自更新不会因为多了个目录就失败；清单外的目录（用户自装插件）不会被触碰
 - 布局与命名理由见 [插件开发指南](../plugins/plugin-authoring.md)「安装目录约定」

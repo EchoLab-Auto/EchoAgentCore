@@ -23,7 +23,7 @@ link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | �
 
 ## 组合根与启动装配
 
-二进制 `echo-agent-core`（`source/core/`）是唯一的组合根，启动按序完成：
+二进制 `echo-agent-core`（`source/plugin/core/`）是唯一的组合根，启动按序完成：
 
 1. 加载配置（`core.toml`，见 [配置持久化](./config-persistence.md)）
 2. 构建 LLM provider（计量 + 脱敏装饰）并登记 `ctx.llm`
@@ -53,8 +53,8 @@ link: ["agents | 多 Agent 与会话", "memory | 会话记忆", "multimodal | �
 
 ## 进程结构
 
-- Cargo 二进制名 `echo-agent-core`（`source/core/Cargo.toml`），由 systemd 用户服务运行；`install.sh` 安装后落盘为 `$LIBEXEC_DIR/echo-agent-core-bin`（libexec 文件名，非 Cargo bin 名）
-- 库结构：框架机制在 `source/backend/echo-agent`（`agent/`）；插件机制在 `source/plugin/`（host 领域中立、adapter 做领域适配），**内置插件实现各自成 crate**（`echo-plugin-tools` / `-shell` / `-skills` / `-subagent` / `-workspace` / `-management` / `-loop` / `-provider-llm` / `-federation` / `-self-update`），宿主侧 `packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面）；Shell 机制在 `source/shell/echo-shell`。契约层 crate（`echo-defs` / `echo-context` / `echo-session` / `echo-loop` / `echo-protocol` 等）见 [架构总览](../overview/architecture.md) 的 crate 地图
+- Cargo 二进制名 `echo-agent-core`（`source/plugin/core/Cargo.toml`），由 systemd 用户服务运行；`install.sh` 安装后落盘为 `$LIBEXEC_DIR/echo-agent-core-bin`（libexec 文件名，非 Cargo bin 名）
+- 库结构：框架机制在 `source/plugin/echo-agent`（`agent/`）；插件机制在 `source/plugin/`（host 领域中立、adapter 做领域适配），**内置插件实现各自成 crate**（`echo-plugin-tools` / `-shell` / `-skills` / `-subagent` / `-workspace` / `-management` / `-loop` / `-provider-llm` / `-federation` / `-self-update`），宿主侧 `packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面）；Shell 机制在 `source/plugin/echo-shell`。契约层 crate（`echo-defs` / `echo-context` / `echo-session` / `echo-loop` / `echo-protocol` 等）见 [架构总览](../overview/architecture.md) 的 crate 地图
 - 运维命令与部署布局见 [部署与自更新](../ops/deploy.md)
 
 ---

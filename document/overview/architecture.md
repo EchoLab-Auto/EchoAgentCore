@@ -76,7 +76,7 @@ graph BT
   Bin --> Fed
 ```
 
-> 依赖边以 `cargo metadata --format-version 1 --no-deps`（仅 normal 依赖）实测为准。`echo-context` **不依赖** `echo-defs`（零 echo-* 依赖）；组合根另直接依赖全部中间层 crate 与全部内置插件 crate，图中只画主干边（内置插件各自只依赖定义层/机制层，边略）。**依赖白名单的单一真值是 `scripts/deps-policy.txt`**——`scripts/check-deps.sh`（CI `deps-lint`）与 `source/core/tests/plugin_dependency_direction.rs`（cargo test）共读同一份，新增 crate 未登记即失败。
+> 依赖边以 `cargo metadata --format-version 1 --no-deps`（仅 normal 依赖）实测为准。`echo-context` **不依赖** `echo-defs`（零 echo-* 依赖）；组合根另直接依赖全部中间层 crate 与全部内置插件 crate，图中只画主干边（内置插件各自只依赖定义层/机制层，边略）。**依赖白名单的单一真值是 `scripts/deps-policy.txt`**——`scripts/check-deps.sh`（CI `deps-lint`）与 `source/plugin/core/tests/plugin_dependency_direction.rs`（cargo test）共读同一份，新增 crate 未登记即失败。
 
 > **归属（框架外迁）**：下表里带「框架仓」标记的 crate **不在本仓**，
 > 而是独立仓库 [plugin-framework](https://github.com/EchoLab-Auto/plugin-framework)
@@ -121,7 +121,7 @@ graph BT
 - **`echo-config` 只做 TOML 原子读改写**，不认识任何配置段的语义（旧 `echo-adapter` crate 已删除，其注册表并入 `echo-defs::plugin_instance`）
 - **入站过滤与平台细节都在实例插件进程内**：宿主侧不持有过滤管道、不认识平台名
 
-**依赖白名单的单一真值是 `scripts/deps-policy.txt`**（`scripts/check-deps.sh` 与 `source/core/tests/plugin_dependency_direction.rs` 双门禁共读，新增 crate 未登记即 fail-closed）；扩展插件只依赖定义层。旧 crate（`echo-agent` / `echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
+**依赖白名单的单一真值是 `scripts/deps-policy.txt`**（`scripts/check-deps.sh` 与 `source/plugin/core/tests/plugin_dependency_direction.rs` 双门禁共读，新增 crate 未登记即 fail-closed）；扩展插件只依赖定义层。旧 crate（`echo-agent` / `echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
 
 ### 定义层（echo-defs）
 
