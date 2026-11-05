@@ -19,18 +19,18 @@ y: 4040
 ### 单元测试（`#[test]` / `#[tokio::test]`）
 Located next to the code in `#[cfg(test)] mod tests` blocks.
 
-- **Protocol** (QQ 插件仓库 `crates/echo-core`): OneBot event parsing for every variant family
+- **Protocol** (QQ 模块仓库 `crates/echo-core`): OneBot event parsing for every variant family
   (message / notice / request / meta), message segments, action builders,
   unknown-type preservation, sender nickname (card vs nickname fallback).
 - **Wire protocol** (echo-protocol): command/event WS round-trips,
   malformed frame handling, FanoutHandle subscriber pruning.
-- **Filtering**（**已随去适配器化搬到插件仓库** `crates/echo-adapter-qq/src/filter.rs` 的
+- **Filtering**（**已随去适配器化搬到模块仓库** `crates/echo-adapter-qq/src/filter.rs` 的
   `#[cfg(test)]` 内联测试，Core 侧已无过滤实现）：allowlist / denylist / rate limit（滑动
   窗口 + 实时过期 + per-user/per-group/global 三桶隔离）/ keyword / content length /
-  admin bypass、管道顺序与短路。名单**持久化契约**另在插件仓库 `tests/filter_persist.rs`：
+  admin bypass、管道顺序与短路。名单**持久化契约**另在模块仓库 `tests/filter_persist.rs`：
   `persist_filter` 对名单表是整表替换写入，必须原样带回 `group_members_open`——否则
   Panel 上任一名单编辑都会把「群成员放行」开关静默清掉。
-- **Security** (`echo-plugin-tools`): 相对路径的穿越防护（read/write/edit 共用
+- **Security** (`echo-module-tools`): 相对路径的穿越防护（read/write/edit 共用
   `guard_relative_path`：canonicalize 目标或最近已存在祖先，拦 `../..` 与
   区外符号链接；写工具在创建目录前校验，区外不留空目录）、绝对路径按显式
   意图放行（多仓库工作流，三个 ops 同一约定，均有正向用例）、危险命令模式、
@@ -40,10 +40,10 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Teamless multi-agent & QQ instances** (echo-agent + core): session
   commands reject a missing `team_id` (no default agent), the process-level
   `EventSink` fans in every persona's events without double delivery, and
-  `source/plugin/core/src/instance_deploy.rs` covers **实例解析**——显式实例保留配置的
-  persona 与顺序、无实例表时造 legacy 单实例、按已启用插件的人格自动建档
+  `source/modules/core/src/instance_deploy.rs` covers **实例解析**——显式实例保留配置的
+  persona 与顺序、无实例表时造 legacy 单实例、按已启用模块的人格自动建档
   （默认人格沿用 legacy id）、平台未启用时产出为空、实例覆盖原样透传。
-  **端口分配 / 容器名 / compose 的测试已随代码移到插件仓库**（`deploy` 模块的
+  **端口分配 / 容器名 / compose 的测试已随代码移到模块仓库**（`deploy` 模块的
   单元测试：深合并 / 三级端口回退 / 派生键 / compose 幂等）。
 - **LLM providers** (OpenAI / Anthropic): request body builders (tool-call
   grouping, system-message joining, malformed-argument fallback).
@@ -64,9 +64,9 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Media migration** (echo-agent session): 加载期把历史事件
   （content 内嵌 + images 字段）与时间线 data URI 落盘改写且幂等；投影出口
   把 `/media/<id>` 还原为 data URI（`persisted_refs_inline_on_projection_for_model`）。
-- **Media download** (QQ 插件仓库 `crates/echo-adapter-qq`): 远程图下载经
+- **Media download** (QQ 模块仓库 `crates/echo-adapter-qq`): 远程图下载经
   `store_media` 登记（字节/MIME 与源一致）、失败保留原 URL、data URI / 已有引用透传。
-- **QQ 表情渲染** (QQ 插件仓库 echo-core + adapter): face id → 名称对照表有序性/未知回退、
+- **QQ 表情渲染** (QQ 模块仓库 echo-core + adapter): face id → 名称对照表有序性/未知回退、
   `readable_text` 混合渲染（`[表情:呲牙]`、`[骰子:6]`、纯表情消息不再整条丢弃）。
 
 ### 属性测试（proptest）
@@ -80,7 +80,7 @@ Generated inputs that must satisfy invariants:
 
 ### 集成测试（`tests/` 目录）
 
-- （QQ 插件仓库）`crates/echo-server/tests/reverse_ws.rs` — real WS server + raw WebSocket client:
+- （QQ 模块仓库）`crates/echo-server/tests/reverse_ws.rs` — real WS server + raw WebSocket client:
   event dispatch → handler → action → response correlation, token rejection,
   handler-priority chain fall-through, connection lifecycle (tracker insert/remove).
 - `echo-agent/tests/agent_integration.rs` — real Agent driven through the backend:
@@ -88,14 +88,14 @@ Generated inputs that must satisfy invariants:
   propagation, model switch, API profile switch/delete, skill toggle, **skill
   keyword → prompt injection**, **non-trigger caching**, **concurrent turn
   serialization** (slow provider → no interleaving).
-- `source/plugin/echo-plugin-management`（inline integration tests）— management WS 中继、token 鉴权与端口合并
+- `source/modules/echo-module-management`（inline integration tests）— management WS 中继、token 鉴权与端口合并
   server on ephemeral port: Panel command → agent backend, agent event → Panel
   forward.
-- （QQ 插件仓库）`crates/echo-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`（插件侧领域类型，保留）、
+- （QQ 模块仓库）`crates/echo-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`（模块侧领域类型，保留）、
   `napcat/mod.rs`、`handler.rs`；`tests/` 目录两个集成测试 `owner_qq.rs` + `filter_persist.rs`）— NapCat client
   against a `wiremock` HTTP server:
   login status detection, WebUI fallback, reverse-WS config, QR fetch.
-  Multi-instance plugins (`QqAdapter::with_instance(id, persona, cfg)`)
+  Multi-instance modules (`QqAdapter::with_instance(id, persona, cfg)`)
   carry their instance name/display name and persona metadata.
 - `echo-web-server/tests/media.rs`（Panel 仓库）— `/media/{name}` 路由端到端：
   文件字节与 Content-Type 正确、`immutable` 强缓存头、目录穿越 / 未知文件 404。
@@ -113,7 +113,7 @@ Multi-threaded tokio runtime (`#[tokio::test(flavor = "multi_thread")]`):
 ### 面板前端与部署 CLI（非 cargo）
 
 - **Panel web（vitest + @vue/test-utils，570 条 / 70 文件，最近校准）**：`ChatView` 图片渲染契约
-  （`/media/<id>` 懒加载 / 空串省略占位 / data URI 兼容）、设置视图技能/工具/插件
+  （`/media/<id>` 懒加载 / 空串省略占位 / data URI 兼容）、设置视图技能/工具/模块
   工作台（筛选、分组维度、详情分区、交叉跳转、脏状态）、右侧栏连接状态卡、
   智能体编辑器分区、协议编解码回归等。**加载态跟踪契约**：
   `pending.ts` 三态推进（150ms 延迟显示 / 6s 慢 / 20s 超时 / 可见后最短 400ms）、

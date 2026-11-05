@@ -72,7 +72,7 @@ isOverflow = count >= usable    // count = total || input+output+cache.read+cach
 ## 5. 溢出专项处理（`compaction.ts:340-356, 468-549`）
 
 - **重放**：被动溢出（`overflow:true`）时，找压缩提示前最近一条真实用户消息 → 压缩后重建该消息（媒体附件降级为 `[Attached mime: name]` 文本，这正是溢出常见肇因），让 agent 重新回答
-- **自动续跑**：压缩完注入 synthetic 用户消息 "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."（metadata `compaction_continue:true`，插件 `experimental.compaction.autocontinue` 可关）
+- **自动续跑**：压缩完注入 synthetic 用户消息 "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."（metadata `compaction_continue:true`，模块 `experimental.compaction.autocontinue` 可关）
 - **压缩自身放不下**：报 `ContextOverflowError`——"Conversation history too large to compact…" / "Session too large to compact…even after stripping media"
 - 压缩全程有事件（`session.compacted`；v2 还有 Started/Ended 带 summary+recent）
 
@@ -92,7 +92,7 @@ isOverflow = count >= usable    // count = total || input+output+cache.read+cach
                 "preserve_recent_tokens": 8000, "tail_turns": 3 }
 ```
 - 环境变量：`OPENCODE_DISABLE_AUTOCOMPACT` / `OPENCODE_DISABLE_PRUNE`
-- 插件钩子：`experimental.session.compacting`（注入 context 或整体替换压缩提示）、`experimental.compaction.autocontinue`
+- 模块钩子：`experimental.session.compacting`（注入 context 或整体替换压缩提示）、`experimental.compaction.autocontinue`
 - v2 迁移映射：`preserve_recent_tokens → keep.tokens`，`reserved → buffer`（`config/v2-compat.ts`）
 
 ## 8. 行为保证（测试用例摘录，`compaction.test.ts`）
@@ -102,7 +102,7 @@ isOverflow = count >= usable    // count = total || input+output+cache.read+cach
 - "shrinks retained tail to fit preserve token budget" / "retains a split turn suffix…" / "falls back to full summary…"
 - "anchors repeated compactions with the previous summary" / "keeps recent pre-compaction turns across repeated compactions"
 - "replays the prior user turn on overflow when earlier context exists"
-- "adds synthetic continue prompt when auto is enabled" / "allows plugins to disable…"
+- "adds synthetic continue prompt when auto is enabled" / "allows modules to disable…"
 - "does not allow tool calls while generating the summary"
 - "marks summary message as errored on compact result"
 - "compacts old completed tool output" / "skips protected skill tool output"

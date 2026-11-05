@@ -8,8 +8,8 @@ y: 1200
 
 # 敏感信息隔离（脱敏服务）
 
-> **定位**：本文描述敏感信息隔离服务（脱敏器）——威胁模型、保证边界、各出口卡口（工具结果 / LLM 请求 / QQ 外发 / 入站落盘）、配置与运维（存量扫描与清理）、插件接入点。读者：框架维护者、插件作者与部署运维者。
-> 相关文档：[插件化设计](../plugins/plugins.md)（服务定位与插件体系）、[工具系统](../plugins/tools.md)（工具执行出口）、[QQ 实例门控](../plugins/qq-gating.md)（外发语义）、[插件开发指南](../plugins/plugin-authoring.md)（插件侧接入）。
+> **定位**：本文描述敏感信息隔离服务（脱敏器）——威胁模型、保证边界、各出口卡口（工具结果 / LLM 请求 / QQ 外发 / 入站落盘）、配置与运维（存量扫描与清理）、模块接入点。读者：框架维护者、模块作者与部署运维者。
+> 相关文档：[模块化设计](../modules/modules.md)（服务定位与模块体系）、[工具系统](../modules/tools.md)（工具执行出口）、[QQ 实例门控](../modules/qq-gating.md)（外发语义）、[模块开发指南](../modules/module-authoring.md)（模块侧接入）。
 
 ## 威胁模型与保证边界
 
@@ -31,29 +31,29 @@ y: 1200
 ```
 echo-defs::sanitize          契约：Redactor trait（redact / scan / register）
       ▲                       零实现、零依赖；SecretHit 不携带明文（审计安全）
-echo-plugin-sanitize         默认实现：RegistryRedactor（src/registry.rs）
+echo-module-sanitize         默认实现：RegistryRedactor（src/registry.rs）
       ▲                       字面值注册表（Aho-Corasick 最左最长）+ 保守模式集
-echo-plugin-sanitize         插件（`echo-agent.security.sanitize`，kind=security）
+echo-module-sanitize         模块（`echo-agent.security.sanitize`，kind=security）
       ▲                       构造 `build(&RedactorSpec)`；纯身份 mount
-core 组合根                  收集秘密表 → 调插件构造 → 注册 "sanitizer" 键
-      ▲                       见 source/plugin/core/src/security.rs 与 main.rs
+core 组合根                  收集秘密表 → 调模块构造 → 注册 "sanitizer" 键
+      ▲                       见 source/modules/core/src/security.rs 与 main.rs
 卡口                         工具出口 / LLM 出口 / QQ 外发 / 入站 / 落盘
 ```
 
-**宿主与插件的分界**：宿主知道"这台部署上哪些字符串是秘密"（`redactor_spec(&cfg)`：配置里的 api_key、env 回退、实例凭据字段、`extra_*`），插件知道"怎么脱敏"（模式集、Aho-Corasick、占位符形状）。换实现 = 换插件，宿主侧只调 `echo_plugin_sanitize::build` 一个函数名。插件契约见 [脱敏插件](../plugins/sanitize.md)。
+**宿主与模块的分界**：宿主知道"这台部署上哪些字符串是秘密"（`redactor_spec(&cfg)`：配置里的 api_key、env 回退、实例凭据字段、`extra_*`），模块知道"怎么脱敏"（模式集、Aho-Corasick、占位符形状）。换实现 = 换模块，宿主侧只调 `echo_module_sanitize::build` 一个函数名。模块契约见 [脱敏模块](../modules/sanitize.md)。
 
-- **契约**（`source/plugin/echo-defs/src/sanitize.rs`）：`Redactor` 为对象安全 trait；实现约定「绝不 panic、命中不含明文、幂等（占位符不再被识别）」。占位符格式 `【已隐藏:<label>】`。
-- **默认实现**（`source/plugin/echo-plugin-sanitize/src/registry.rs`）：字面值进 Aho-Corasick 自动机（一次扫描全部命中），模式集用 `regex`；登记须 ≥8 字符且不含占位符括号（防空转与误报）；label 净化防注入。
-- **服务定位**：组合根经 `Ctx::register::<Arc<dyn Redactor>>("sanitizer", …)` 注册；键的**单一真值**是 `echo_plugin_sanitize::SERVICE_KEY`（强类型形式 `service_key()`），注册方与解析方都引用它。进程内插件在 `MountContext.ctx` 里解析（见「插件接入」）。
-- **无运行期一键开关**：脱敏器是安全不变量（同管理面插件不可经命令禁用的口径）——关闭只能编辑 `core.toml` 并重启，让停机与告知成为明确动作。
+- **契约**（`source/modules/echo-defs/src/sanitize.rs`）：`Redactor` 为对象安全 trait；实现约定「绝不 panic、命中不含明文、幂等（占位符不再被识别）」。占位符格式 `【已隐藏:<label>】`。
+- **默认实现**（`source/modules/echo-module-sanitize/src/registry.rs`）：字面值进 Aho-Corasick 自动机（一次扫描全部命中），模式集用 `regex`；登记须 ≥8 字符且不含占位符括号（防空转与误报）；label 净化防注入。
+- **服务定位**：组合根经 `Ctx::register::<Arc<dyn Redactor>>("sanitizer", …)` 注册；键的**单一真值**是 `echo_module_sanitize::SERVICE_KEY`（强类型形式 `service_key()`），注册方与解析方都引用它。进程内模块在 `MountContext.ctx` 里解析（见「模块接入」）。
+- **无运行期一键开关**：脱敏器是安全不变量（同管理面模块不可经命令禁用的口径）——关闭只能编辑 `core.toml` 并重启，让停机与告知成为明确动作。
 
 ## 出口卡口（调用点）
 
 | # | 卡口 | 位置 | 覆盖 |
 |---|---|---|---|
-| 1 | 工具结果出口 | `ToolRegistry::execute` / `execute_rich_in` 出口（结果文本与错误消息，出口持有脱敏器） | 一切工具：内置 / 插件 / 远程 / **子代理直呼** / 联邦路由 |
-| 2 | LLM 请求出口 | `echo-plugin-provider-llm::redacting::wrap_redacting`（装饰 provider，请求侧全文扫描；`echo_agent::llm` 只 re-export） | 全部 LLM 出口：turn 循环（echo-loop）/ 子代理 / 等待回复 |
-| 3 | 插件实例外发出口 | `echo-plugin-tools::instance_bridge` 的 `gate_outbound`（**全部**插件实例工具，不按 `send_` 前缀；组合根侧的 `core::instance_tools` 只是 re-export） | 文本命中按策略阻断/替换（`block` 默认 / `redact`）；`file_path`/`file`/`image` 落在敏感目录直接拒发 |
+| 1 | 工具结果出口 | `ToolRegistry::execute` / `execute_rich_in` 出口（结果文本与错误消息，出口持有脱敏器） | 一切工具：内置 / 模块 / 远程 / **子代理直呼** / 联邦路由 |
+| 2 | LLM 请求出口 | `echo-module-provider-llm::redacting::wrap_redacting`（装饰 provider，请求侧全文扫描；`echo_agent::llm` 只 re-export） | 全部 LLM 出口：turn 循环（echo-loop）/ 子代理 / 等待回复 |
+| 3 | 模块实例外发出口 | `echo-module-tools::instance_bridge` 的 `gate_outbound`（**全部**模块实例工具，不按 `send_` 前缀；组合根侧的 `core::instance_tools` 只是 re-export） | 文本命中按策略阻断/替换（`block` 默认 / `redact`）；`file_path`/`file`/`image` 落在敏感目录直接拒发 |
 | 4 | 入站与落盘 | `Agent::process_message` / `process_inbound_branch` / `record_incoming_and_snapshot` / `run_tool` 参数 | 用户与 QQ 输入、工具调用参数（事件与会话日志）、工具结果事件 |
 | 5 | 密钥登记 | 启动构建（`core::security::build_redactor`）+ `Agent::rebuild_provider` 热同步 | 顶层与 profile 的 `api_key`、env 回退、**实例配置里按键名形态识别的凭据**（键名含 `token`/`secret`/`password`/`api_key`/`apikey` 且值 ≥8 字符，递归扫 `shared` 与各实例 `overrides`——不点名平台）、用户追加值 |
 
@@ -88,23 +88,23 @@ extra_secrets = []        # 追加精确值（label 自动编号 extra:<序号>�
   - 残留视同泄漏：先在供应商侧轮换密钥，再清理文件。
 - **部署建议**：core.toml 权限 0600（本机自更新脚本已按此安装）；Panel 管理端不在本机网络裸绑（见部署文档）。
 
-## 插件接入与测试
+## 模块接入与测试
 
-**进程内插件**（`echo-plugin` 体系）：
+**进程内模块**（`echo-module` 体系）：
 
 ```rust
 // 挂载时经 MountContext 拿到的 Ctx 解析（与 "llm" / "loop" 同款）：
-if let Some(redactor) = ctx.service(&echo_plugin_sanitize::service_key()) {
+if let Some(redactor) = ctx.service(&echo_module_sanitize::service_key()) {
     let clean = redactor.redact(user_text).text;   // 或 scan() 只检查
 }
 ```
 
-**子进程插件**（stdio 协议）：插件经 `HostCall` 回呼宿主服务（`service = "sanitizer"`，方法 `redact` / `scan` / `register_secret`），宿主在 `PluginSupervisor.host_services()` 注册表路由（`echo-plugin-host/src/host_service.rs`；SDK 侧 `HostClient` + `PluginHandler::on_ready` 获取句柄）。协议新增变体不改变版本号（只增语义）。
+**子进程模块**（stdio 协议）：模块经 `HostCall` 回呼宿主服务（`service = "sanitizer"`，方法 `redact` / `scan` / `register_secret`），宿主在 `ModuleSupervisor.host_services()` 注册表路由（`echo-module-host/src/host_service.rs`；SDK 侧 `HostClient` + `ModuleHandler::on_ready` 获取句柄）。协议新增变体不改变版本号（只增语义）。
 
 **测试不变量**（改脱敏相关代码必须保持）：
 
-- `echo-plugin-sanitize` 单测：字面值 / 模式 / 幂等 / 占位符不二次命中 / 短值忽略；
+- `echo-module-sanitize` 单测：字面值 / 模式 / 幂等 / 占位符不二次命中 / 短值忽略；
 - `echo-agent`：工具出口（结果与错误）脱敏、请求侧永不泄漏（RecordingProvider 断言）；
 - `core`：QQ 闸门（block 阻断不回显 / redact 替换 / 敏感目录拒发）、配置构建登记；
-- 协议回呼：`echo-plugin-host/tests/host_call.rs`（HostCall 路由 / 未知服务错误）与 SDK 侧 `HostClient` 往返 / 超时测试（`echo-plugin-sdk`）；
+- 协议回呼：`echo-module-host/tests/host_call.rs`（HostCall 路由 / 未知服务错误）与 SDK 侧 `HostClient` 往返 / 超时测试（`echo-module-sdk`）；
 - 端到端演练（`echo-agent`：`run_tool_redacts_secrets_from_real_bash_output_and_log`）：真实 bash 读含密钥文件 → 工具结果与会话事件日志零明文、参数日志记占位符而执行不受影响；QQ 零出站由出站闸门测试覆盖。

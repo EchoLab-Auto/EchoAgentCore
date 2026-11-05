@@ -1,0 +1,152 @@
+//! Shared mocks and test helpers for the EchoAgentCore workspace.
+//!
+//! Extracted from ad-hoc `#[cfg(test)]` mocks so that every crate can use
+//! the same implementations as a `[dev-dependency]`:
+//! - [`MockInstance`] — a scriptable platform instance.
+//! - [`FakeRedactor`] — a minimal `Redactor` for exercising sanitize seams
+//!   (tool-result gate / outbound gate) without a concrete implementation.
+//! - [`temp_config_file`] — a temp TOML file with automatic cleanup.
+//!
+//! Note: this crate deliberately depends only on echo-instance, never on
+//! echo-agent — agent crates' `[dev-dependencies]` on this crate would
+//! otherwise compile echo-agent twice (dev-dependency cycle), breaking type
+//! identity. Mock LLM providers live inside echo-agent's own test module.
+
+pub use instance::MockInstance;
+pub use redactor::{placeholder, FakeRedactor};
+
+mod redactor;
+
+/// Create a temporary TOML config file in the system temp dir.
+///
+/// The file is removed on drop; returns the path so callers can hand it to
+/// `set_config_path` / `set_persist_path` etc.
+pub fn temp_config_file(name: &str, content: &str) -> TempFile {
+    let path = std::env::temp_dir().join(format!("echo-test-{name}-{}.toml", uuid_lite()));
+    std::fs::write(&path, content).expect("write temp config");
+    TempFile { path }
+}
+
+/// RAII guard that removes a temp file when dropped.
+pub struct TempFile {
+    path: std::path::PathBuf,
+}
+
+impl TempFile {
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// A short random-ish suffix (test-only, uniqueness is all that matters).
+fn uuid_lite() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    format!("{nanos:x}")
+}
+
+mod instance {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use async_trait::async_trait;
+    use echo_defs::module_instance::{
+        InstanceConnectionState, InstanceError, InstanceInfo, ModuleInstance,
+    };
+
+    /// A scriptable `ModuleInstance` for registry and integration tests.
+    pub struct MockInstance {
+        pub name: String,
+        pub configured: bool,
+        pub started: AtomicBool,
+        /// Filter state updated via `update_allowlist` / `update_denylist`.
+        pub allowlist_users: std::sync::Mutex<Vec<String>>,
+        pub allowlist_groups: std::sync::Mutex<Vec<String>>,
+        pub denylist_users: std::sync::Mutex<Vec<String>>,
+        pub denylist_groups: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl MockInstance {
+        pub fn new(name: &str, configured: bool) -> Self {
+            Self {
+                name: name.into(),
+                configured,
+                started: AtomicBool::new(false),
+                allowlist_users: std::sync::Mutex::new(Vec::new()),
+                allowlist_groups: std::sync::Mutex::new(Vec::new()),
+                denylist_users: std::sync::Mutex::new(Vec::new()),
+                denylist_groups: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        pub fn is_started(&self) -> bool {
+            self.started.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl ModuleInstance for MockInstance {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn display_name(&self) -> &str {
+            &self.name
+        }
+        fn platform(&self) -> &str {
+            "mock"
+        }
+        fn is_configured(&self) -> bool {
+            self.configured
+        }
+        fn status_info(&self) -> InstanceInfo {
+            InstanceInfo {
+                name: self.name.clone(),
+                display_name: self.name.clone(),
+                status: if self.is_started() {
+                    InstanceConnectionState::Connected
+                } else {
+                    InstanceConnectionState::Stopped
+                },
+                self_id: None,
+                started_at: None,
+                platform: "mock".into(),
+                configured: self.configured,
+            }
+        }
+        async fn start(&self) -> Result<(), InstanceError> {
+            self.started.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn stop(&self) -> Result<(), InstanceError> {
+            self.started.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+}
+
+/// Minimal standalone sanity check that the helpers compile and work.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn temp_file_creates_and_removes() {
+        let path = {
+            let f = temp_config_file("probe", "[agent]\nprovider = \"mock\"\n");
+            assert!(f.path().exists());
+            let content = std::fs::read_to_string(f.path()).unwrap();
+            assert!(content.contains("[agent]"));
+            f.path().to_path_buf()
+        };
+        // Dropped above; the file must be gone.
+        assert!(!path.exists());
+    }
+}

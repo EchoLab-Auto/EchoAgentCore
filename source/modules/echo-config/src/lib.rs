@@ -1,0 +1,205 @@
+//! Centralised, atomic TOML config persistence.
+//!
+//! Several subsystems (`Agent::persist_config`, API-profile tooling, federation
+//! peers) used to read, patch and rewrite the same config file independently —
+//! concurrent writes could silently lose each other's changes. `ConfigStore`
+//! serialises all writes through a mutex and writes atomically (tmp file +
+//! rename).
+//!
+//! 归属（解耦计划 B3）：本 crate 属**机制层**——TOML 原子读改写是通用件，
+//! 不含任何业务词汇（无 qq/deepseek/panel/workspace/persona 命中，实测）。
+//! 物理位置与其它内置模块统一在 `source/modules/`；目录同居不改变它
+//! 零业务、零 echo-* 依赖的底座性质。`scripts/deps-policy.txt` 把它登记为零
+//! echo-* 依赖的底座 crate。
+//!
+//! **This crate knows nothing about any section's meaning**: it stores an
+//! opaque `toml::Table`. Callers own their sections; `ensure_table` only
+//! guarantees "this key is a table" so a hand-edited file cannot panic us.
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+/// Error type for config store operations.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigStoreError {
+    #[error("config read failed: {0}")]
+    Read(String),
+    #[error("config parse failed: {0}")]
+    Parse(String),
+    #[error("config serialize failed: {0}")]
+    Serialize(String),
+    #[error("config write failed: {0}")]
+    Write(String),
+}
+
+/// Shared, atomic access to one TOML config file.
+#[derive(Clone)]
+pub struct ConfigStore {
+    inner: Arc<ConfigStoreInner>,
+}
+
+struct ConfigStoreInner {
+    path: PathBuf,
+    /// Serialises read-modify-write cycles; held across the file I/O so two
+    /// patchers cannot interleave and lose updates.
+    ///
+    /// Deliberately a `std::sync::Mutex` (not tokio): `patch` is called from
+    /// both async contexts and from synchronous `ModuleInstance` trait methods.
+    write_lock: Mutex<()>,
+}
+
+impl ConfigStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            inner: Arc::new(ConfigStoreInner {
+                path: path.into(),
+                write_lock: Mutex::new(()),
+            }),
+        }
+    }
+
+    /// The config file path this store manages.
+    pub fn path(&self) -> &Path {
+        &self.inner.path
+    }
+
+    /// Read the whole document as a TOML table.
+    pub fn read(&self) -> Result<toml::Table, ConfigStoreError> {
+        let content = std::fs::read_to_string(&self.inner.path)
+            .map_err(|e| ConfigStoreError::Read(e.to_string()))?;
+        toml::from_str(&content).map_err(|e| ConfigStoreError::Parse(e.to_string()))
+    }
+
+    /// Atomically apply `f` to the document and write it back.
+    ///
+    /// `f` is responsible for mutating only what it owns; the whole file is
+    /// serialised and rewritten so no section is ever lost. A missing file
+    /// starts from an empty document (the write recreates it).
+    pub fn patch(
+        &self,
+        f: impl FnOnce(&mut toml::Table) -> Result<(), String>,
+    ) -> Result<(), ConfigStoreError> {
+        let _guard = self
+            .inner
+            .write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut root = match self.read() {
+            Ok(r) => r,
+            Err(ConfigStoreError::Read(_)) => toml::Table::new(),
+            Err(e) => return Err(e),
+        };
+        f(&mut root).map_err(ConfigStoreError::Write)?;
+        self.write(&root)
+    }
+
+    /// Serialise and atomically write the whole document.
+    fn write(&self, root: &toml::Table) -> Result<(), ConfigStoreError> {
+        let updated =
+            toml::to_string_pretty(root).map_err(|e| ConfigStoreError::Serialize(e.to_string()))?;
+        let tmp = format!("{}.tmp", self.inner.path.display());
+        std::fs::write(&tmp, &updated).map_err(|e| ConfigStoreError::Write(e.to_string()))?;
+        if let Err(e) = std::fs::rename(&tmp, &self.inner.path) {
+            // Don't leave a stale .tmp behind.
+            let _ = std::fs::remove_file(&tmp);
+            return Err(ConfigStoreError::Write(format!(
+                "rename to {}: {e}",
+                self.inner.path.display()
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Get or create a sub-table inside `parent`.
+///
+/// If the key holds a non-table value (hand-edited/corrupted config), it is
+/// replaced with an empty table instead of panicking.
+pub fn ensure_table<'a>(parent: &'a mut toml::Table, key: &str) -> &'a mut toml::Table {
+    if !matches!(parent.get(key), Some(toml::Value::Table(_))) {
+        tracing::warn!(key = %key, "config section is not a table, replacing with empty table");
+        parent.insert(key.into(), toml::Value::Table(toml::Table::new()));
+    }
+    match parent.get_mut(key) {
+        Some(toml::Value::Table(t)) => t,
+        _ => unreachable!("just inserted a table at {key}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "echo-config-store-{name}-{}.toml",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn patch_creates_missing_file_and_section() {
+        let path = temp_path("create");
+        let store = ConfigStore::new(path.clone());
+        store
+            .patch(|root| {
+                ensure_table(ensure_table(root, "outer"), "inner")
+                    .insert("mode".into(), toml::Value::String("allowlist".into()));
+                Ok(())
+            })
+            .unwrap();
+        let root = store.read().unwrap();
+        assert_eq!(root["outer"]["inner"]["mode"].as_str(), Some("allowlist"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn patch_preserves_unrelated_sections() {
+        let path = temp_path("preserve");
+        std::fs::write(
+            &path,
+            "[agent]\nprovider = \"openai\"\nmodel = \"m1\"\n\n[other]\nkeep = true\n",
+        )
+        .unwrap();
+        let store = ConfigStore::new(path.clone());
+        store
+            .patch(|root| {
+                let agent = ensure_table(root, "agent");
+                agent.insert("model".into(), toml::Value::String("m2".into()));
+                Ok(())
+            })
+            .unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("model = \"m2\""));
+        assert!(
+            content.contains("keep = true"),
+            "unrelated section lost:\n{content}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn patch_overwrites_non_table_value_safely() {
+        let path = temp_path("nontable");
+        std::fs::write(&path, "[outer]\ninner = \"disabled\"\n").unwrap();
+        let store = ConfigStore::new(path.clone());
+        store
+            .patch(|root| {
+                ensure_table(ensure_table(root, "outer"), "inner")
+                    .insert("mode".into(), toml::Value::String("none".into()));
+                Ok(())
+            })
+            .unwrap();
+        let root = store.read().unwrap();
+        assert_eq!(root["outer"]["inner"]["mode"].as_str(), Some("none"));
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+/// 模块 id：本 crate 在 `catalog` 里的身份。
+///
+/// 与 `echo-defs` 同理：本 crate 零 `echo-*` 依赖（TOML I/O 不该知道任何
+/// 宿主词汇），manifest 因此由组合根用 `push_builtin_identity` 声明。
+pub const MODULE_ID: &str = "echo-agent.kernel.config";

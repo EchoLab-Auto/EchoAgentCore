@@ -25,7 +25,7 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 | 覆盖层 | 组件 | 载体与层位 | 入口 | 契约 |
 | --- | --- | --- | --- | --- |
 | 会话区覆盖面板（七项） | `SessionOverlay`（内容为 `SessionSwitcher` / `WorkspacePanel` / `InstancePanel` / `TasksPanel` / `ChecklistSidebar` / `ContextView` / `AgentConfigModal`） | 会话视图内绝对定位（`top: 0`、`bottom` = 入口行顶，横向扣边栏留白，`z-index: 6`） | 入口行按钮 | 本文「会话区覆盖面板」 |
-| 上下文占用 | `ContextView` | 同上外壳（内容自带头部） | 入口行「上下文」（受 `echo-agent.management.panel` 插件门控） | 本文「会话区覆盖面板」 |
+| 上下文占用 | `ContextView` | 同上外壳（内容自带头部） | 入口行「上下文」（受 `echo-agent.management.panel` 模块门控） | 本文「会话区覆盖面板」 |
 | Agent 配置 | `AgentConfigModal` | 同上外壳 | 入口行「配置」 | 本文「会话区覆盖面板」 |
 | 全局确认 | `ConfirmDialog` | 库 `NeumorphismModal`（App 根挂载一次，`size=small`） | 任意组件调 `confirmDialog()` | 本文「全局确认与确认形式」 |
 | 目录选择器 | `DirectoryPicker` | 自绘遮罩 + `Teleport to="body"`，`z-index: 60` | 工作区面板「浏览…」 | 本文「目录选择器」 |
@@ -73,7 +73,7 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 
 ### Agent 配置（AgentConfigModal）
 
-锚定会话区的磨砂覆盖层，头部标题「配置 Agent：{名}」+ 人格 id；点遮罩、右上 ✕、取消、保存后关闭。打开时并行拉取技能 / 工具 / 插件三份清单（各自登记 `sendPending`）。字段：
+锚定会话区的磨砂覆盖层，头部标题「配置 Agent：{名}」+ 人格 id；点遮罩、右上 ✕、取消、保存后关闭。打开时并行拉取技能 / 工具 / 模块三份清单（各自登记 `sendPending`）。字段：
 
 | 字段 | 语义 |
 | --- | --- |
@@ -83,7 +83,7 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 
 三类能力复选表（**白名单语义**，空表 = 全部启用；首次取消勾选时先把全量写入列表再移除该项）：
 
-- **启用插件**：成员 = `kind ∈ {instance, management, interaction}` ∪ 包维度门控插件固定清单（单一来源 `capabilities.ts::isPluginCheckboxVisible`，与设置视图同一常量，见[插件化设计](../plugins/plugins.md)「新增包维度门控插件时的同步清单」）；组内按 kind 分「平台实例 / 交互 / 管理面」（`PLUGIN_GROUP_LABELS`，`adapter → 平台实例` 为旧 Core 的 wire 名兼容）
+- **启用模块**：成员 = `kind ∈ {instance, management, interaction}` ∪ 包维度门控模块固定清单（单一来源 `capabilities.ts::isModuleCheckboxVisible`，与设置视图同一常量，见[模块化设计](../modules/modules.md)「新增包维度门控模块时的同步清单」）；组内按 kind 分「平台实例 / 交互 / 管理面」（`MODULE_GROUP_LABELS`，`adapter → 平台实例` 为旧 Core 的 wire 名兼容）
 - **启用工具 / 启用技能**：按包（pkg）分组，组级全选
 
 加载与保存：分区头计数在清单未到时显示「…」，分区体用 `LoadHint` 呈现等待 / 慢提示 / 超时重试，空态「（无）」只在确认无数据时出现；**保存即热生效**——勾选变化立刻影响该 Agent 的模型可见能力（全局禁用优先，不受勾选覆盖）。
@@ -108,7 +108,7 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 
 | 操作 | 确认形式 |
 | --- | --- |
-| 禁用「管理面」插件 | **禁止**——Core 拒绝 `TogglePlugin`；UI 在开关提示与影响文案里明示「禁用即断连自锁」（无法经界面恢复），确需禁用只能改 `core.toml` 的 `disabled_plugins` 后重启 |
+| 禁用「管理面」模块 | **禁止**——Core 拒绝 `ToggleModule`；UI 在开关提示与影响文案里明示「禁用即断连自锁」（无法经界面恢复），确需禁用只能改 `core.toml` 的 `disabled_modules` 后重启 |
 | 删除智能体 | 只剩一个时**拒绝**（warning toast「至少保留一个智能体，不能删除最后一个」）；否则确认框（danger，不可恢复） |
 | 迁移运行区域 | 确认框（danger，列出三件副作用：目标区创建/更新该 agent、从当前区删除、**会话历史不随迁**） |
 | 删除技能 | 确认框（danger，提示会删除 `SKILL.md` 文件） |
@@ -118,7 +118,7 @@ Panel 的浮层按**阻断强度**分三级——轻的不拦人，重的必须�
 | 归档 / 压缩历史 | 确认框（danger；压缩文案明示「作用于该人格全部会话」，归档明示「只清当前会话」） |
 | 清理历史记忆 | **两步按钮**——首击变「确认清理？不可恢复」，再击才发命令 |
 | 删除工作区会话 / 删除对话 | 确认框（danger；删对话会同时发 `ClearHistory` 清该对话的历史） |
-| 实例动作按钮 | 确认框（danger）**当且仅当**插件描述符给该按钮声明了 `confirm` 文案——文案与动作都由描述符决定，Panel 无平台专属逻辑（见[实例管理·任务·Shell](./instance-tasks.md)） |
+| 实例动作按钮 | 确认框（danger）**当且仅当**模块描述符给该按钮声明了 `confirm` 文案——文案与动作都由描述符决定，Panel 无平台专属逻辑（见[实例管理·任务·Shell](./instance-tasks.md)） |
 | 删除 API Profile | **无确认**，立即下发 `DeleteApi` |
 | 更新 Git 技能 | **无确认**，立即下发 `UpdateSkillFromGit` |
 

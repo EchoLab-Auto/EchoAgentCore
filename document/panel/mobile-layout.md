@@ -75,7 +75,7 @@ graph TB
 | 项 | 图标 | 副标题 |
 | --- | --- | --- |
 | 聊天 | `message` | 消息、输入与入口行 |
-| 设置 | `gear` | API、技能、插件与 Core 连接 |
+| 设置 | `gear` | API、技能、模块与 Core 连接 |
 | Shell | `clipboard` | Shell 会话列表与详情 |
 
 - 当前项高亮 + `check` 图标 + `aria-current="page"`；选中即切换并关闭，点遮罩 / 关闭按钮只关闭、不切换

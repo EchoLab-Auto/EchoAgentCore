@@ -8,7 +8,7 @@ After=network-online.target
 Type=simple
 # 作用域相关的运行身份（system 作用域：User=/Group=/HOME；user 作用域：整行省略，
 # 由该用户的 systemd --user 实例提供）。两条作用域都注入 ECHO_SERVICE_SCOPE，
-# 自更新插件与 update.sh 据此选择 `systemctl` / `systemctl --user`。
+# 自更新模块与 update.sh 据此选择 `systemctl` / `systemctl --user`。
 @SCOPE_LINES@
 WorkingDirectory=@SOURCE_DIR@
 ExecStart="@BINARY@" --config "@CORE_CONFIG@"

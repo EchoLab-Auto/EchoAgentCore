@@ -21,7 +21,7 @@ export function dockerAvailable() {
   return hasCommand('docker', ['--version']);
 }
 
-/** `docker compose` 插件是否可用。 */
+/** `docker compose` 模块是否可用。 */
 export function composeAvailable() {
   return hasCommand('docker', ['compose', 'version']);
 }

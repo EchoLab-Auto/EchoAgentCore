@@ -5,7 +5,7 @@
 # - 关键挂载：
 #     /config  宿主目录绑定：core.toml + 会话/工作区 JSON（Core 会写这里）
 #     /data    持久数据：媒体库（ECHO_MEDIA_DIR）、下载文件、NapCat 编排文件
-# - 内置 docker CLI + compose 插件（可选挂 /var/run/docker.sock）：
+# - 内置 docker CLI + compose 模块（可选挂 /var/run/docker.sock）：
 #     取 QQ 登录二维码（docker exec 读容器内 PNG）、发送文件时的 docker cp 桥接、
 #     以及把 NapCat 容器交给 Core 管理（napcat_auto_start=true）时使用。
 #     不挂 socket 时自动降级：二维码走 NapCat WebUI、文件走本地 HTTP 桥。
@@ -24,7 +24,7 @@ RUN cargo build --release --locked -p echo-agent-core
 
 FROM debian:bookworm-slim
 
-# docker CLI + compose 插件：容器内需要调用宿主 Docker（socket 挂载）——
+# docker CLI + compose 模块：容器内需要调用宿主 Docker（socket 挂载）——
 # QR 取图、docker cp 文件桥、NapCat 容器生命周期管理都依赖它。
 ARG TARGETARCH
 ARG DOCKER_CLI_VERSION=27.3.1
@@ -49,10 +49,10 @@ RUN apt-get update \
          | tar xz -C /tmp \
     && mv /tmp/docker/docker /usr/local/bin/docker \
     && find /tmp/docker -mindepth 1 -delete \
-    && mkdir -p /usr/local/lib/docker/cli-plugins \
+    && mkdir -p /usr/local/lib/docker/cli-modules \
     && curl -fsSL "${COMPOSE_MIRROR}/${COMPOSE_VERSION}/docker-compose-linux-${arch}" \
-         -o /usr/local/lib/docker/cli-plugins/docker-compose \
-    && chmod +x /usr/local/bin/docker /usr/local/lib/docker/cli-plugins/docker-compose
+         -o /usr/local/lib/docker/cli-modules/docker-compose \
+    && chmod +x /usr/local/bin/docker /usr/local/lib/docker/cli-modules/docker-compose
 
 WORKDIR /app
 COPY --from=builder /app/target/release/echo-agent-core /usr/local/bin/echo-agent-core

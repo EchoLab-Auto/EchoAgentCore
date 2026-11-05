@@ -1,9 +1,9 @@
 # EchoAgentCore
 
-可独立部署的 **Agent 核心服务**：LLM agent 循环 + 工具/技能系统 + 会话记忆 + 插件体系，
+可独立部署的 **Agent 核心服务**：LLM agent 循环 + 工具/技能系统 + 会话记忆 + 模块体系，
 通过 management WebSocket 向前端提供统一的命令/事件协议。
 
-平台接入（QQ / OneBot v11 等）由**独立进程插件**提供——插件崩溃不影响内核。
+平台接入（QQ / OneBot v11 等）由**独立进程模块**提供——模块崩溃不影响内核。
 本仓库是 **Core（后端）**；Web 面板在独立仓库
 [EchoAgentPanel](https://github.com/EchoLab-Auto/EchoAgentPanel)。
 
@@ -17,7 +17,7 @@
 ```
 
 **能力一览**：多 agent 人格与会话隔离 · 工具/技能热插拔 · 事件溯源记忆与压缩 ·
-进程外插件（崩溃隔离 + 跨语言）· Core↔Core 联邦（多机去中心化）· 脱敏与 token 治理。
+进程外模块（崩溃隔离 + 跨语言）· Core↔Core 联邦（多机去中心化）· 脱敏与 token 治理。
 
 ---
 
@@ -118,7 +118,7 @@ docker run -v ./config:/config -v ./data:/data -p 3131:3131 -p 3132:3132 echo-ag
 |---|---|
 | `[agent]` | provider / model / base_url / api_key（env 覆盖：`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`）、记忆预算、技能目录、多 API profile |
 | `[core]` | `management_address`（默认 `0.0.0.0:3132`）、`management_access_token` |
-| `[adapters.qq]` | 平台实例——Core 只读 `enabled` 与启动段，**其余键原样透传插件** |
+| `[adapters.qq]` | 平台实例——Core 只读 `enabled` 与启动段，**其余键原样透传模块** |
 | `[federation]` | Core↔Core 联邦；**零配置默认开启**，缺省合并至管理端口 |
 
 前端设置视图发起的修改由 Core 经 `ConfigStore` 原子写回该文件。
@@ -144,7 +144,7 @@ cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 | 文档 | 内容 |
 |---|---|
 | [overview/architecture.md](document/overview/architecture.md) | 架构总览：crate 布局、能力接缝、扩展点 |
-| [core/frame.md](document/core/frame.md) | 框架内核：装配、服务定位、事件总线、插件宿主、进程结构 |
+| [core/frame.md](document/core/frame.md) | 框架内核：装配、服务定位、事件总线、模块宿主、进程结构 |
 | [core/core.md](document/core/core.md) | Core 后端入口：组成与运行速览 |
 | [core/agents.md](document/core/agents.md) | 多 Agent 与会话：persona、能力隔离 |
 | [core/agent-loop.md](document/core/agent-loop.md) | Agent 循环：turn/step 状态机 |
@@ -154,16 +154,16 @@ cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 | [core/security-redaction.md](document/core/security-redaction.md) | 脱敏出口卡口与保证边界 |
 | [core/logging.md](document/core/logging.md) | 日志与可观测性：通道分工、打点约定、轮转 |
 
-**扩展系统（插件 / 工具 / 技能）**
+**扩展系统（模块 / 工具 / 技能）**
 
 | 文档 | 内容 |
 |---|---|
-| [plugins/plugins.md](document/plugins/plugins.md) | 插件化设计：模型、内置清单、进程外插件 |
-| [plugins/plugin-authoring.md](document/plugins/plugin-authoring.md) | **插件开发指南**（外部作者入口） |
-| [plugins/tools.md](document/plugins/tools.md) | 工具系统：注册分发、路径约定、调用治理 |
-| [plugins/skills.md](document/plugins/skills.md) | 技能系统：分层、SKILL.md、热重载、Git 安装 |
-| [plugins/subagent.md](document/plugins/subagent.md) | Subagent 插件 |
-| [plugins/qq-gating.md](document/plugins/qq-gating.md) | QQ 实例门控 |
+| [modules/modules.md](document/modules/modules.md) | 模块化设计：模型、内置清单、进程外模块 |
+| [modules/module-authoring.md](document/modules/module-authoring.md) | **模块开发指南**（外部作者入口） |
+| [modules/tools.md](document/modules/tools.md) | 工具系统：注册分发、路径约定、调用治理 |
+| [modules/skills.md](document/modules/skills.md) | 技能系统：分层、SKILL.md、热重载、Git 安装 |
+| [modules/subagent.md](document/modules/subagent.md) | Subagent 模块 |
+| [modules/qq-gating.md](document/modules/qq-gating.md) | QQ 实例门控 |
 
 **协议与联邦**
 
@@ -181,7 +181,7 @@ cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 | [dev/testing.md](document/dev/testing.md) | 测试策略 |
 
 **仓库结构**：`source/` 按层分目录（`defs → context / session / loop / tool / shell →
-protocol / federation → plugin → backend → core`），逐 crate 职责见
+protocol / federation → module → backend → core`），逐 crate 职责见
 [架构总览的 crate 表](document/overview/architecture.md)。
 
 ---

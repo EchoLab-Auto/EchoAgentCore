@@ -13,7 +13,7 @@ Panel 前端 / 工程化），主线程逐条核验（file:line 抽查 + serde/�
 
 | 提交 | 级别 | 内容 |
 | --- | --- | --- |
-| `ac71b23` | P1×3 | 联邦出站写 30s 超时（对端不读时冻结 select 循环的僵尸链路）；邀请串 token 改加密级熵源（Uuid::new_v4；配对即全权限）；插件事件缓冲封顶 1024 + 丢弃计数 |
+| `ac71b23` | P1×3 | 联邦出站写 30s 超时（对端不读时冻结 select 循环的僵尸链路）；邀请串 token 改加密级熵源（Uuid::new_v4；配对即全权限）；模块事件缓冲封顶 1024 + 丢弃计数 |
 | `5e51439` | P1×2 P2×2 | QQ 连接事件实例名（多实例串台）；GateMode/Owner 多实例广播（共享配置段分叉）；file_bridge 4 处阻塞调用转 spawn_blocking；git 安装 120s 硬超时 + 慢速中止 + 输出重定向防管道自锁 |
 | `ad33da4` | — | docker 探测缓存改实例级（修上一笔引入的进程级 static——被 `no_global_state` 棘轮守护拦下，治理有效性实证） |
 | `871882b` | P1×3 | `clear_history` 补取 `compact_lock`（压缩窗口内清空被 replace_all 复活）；`shell_emit_for_self` 去 unsafe（改 `emit_handle` 安全出口）；会话导入缓冲三防线（TTL 清扫 / 并发上限 32 / 单块 192KB 校验） |
@@ -56,7 +56,7 @@ Panel 前端 / 工程化），主线程逐条核验（file:line 抽查 + serde/�
 
 ### P2（选摘）
 - `router.rs` InvokeOutput 满 64 容量静默丢帧（建议丢帧计数/日志）
-- 插件重启预算只增不减（建议时间窗重置）；握手期 HostCall 直接丢弃
+- 模块重启预算只增不减（建议时间窗重置）；握手期 HostCall 直接丢弃
 - `stdio.rs` shutdown 超时未 killpg（孙进程泄漏；需 libc）
 - `napcat/service.rs` 盲删猜测卷名（应从 compose 解析）
 - `command.rs::command_clearance` 默认 `_ => Agent`（当前无执行强制点）
@@ -75,7 +75,7 @@ Panel 前端 / 工程化），主线程逐条核验（file:line 抽查 + serde/�
    通道 unbounded、federation link 事件通道 64 容量阻塞读循环——统一高水位策略
 
 ## 三、正面核验（维持良好）
-- `no_global_state` 棘轮、`update_script_plugins`、`config_template`、
+- `no_global_state` 棘轮、`update_script_modules`、`config_template`、
   `install_script_flag` 等守护测试体系真实有效（本轮两次实战拦截）
 - 事件溯源 + 重投影（event_log 单一事实来源）、replace_all 原子替换、
   幂等重发、脱敏 Aho-Corasick 等设计成熟

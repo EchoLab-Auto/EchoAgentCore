@@ -16,11 +16,11 @@ EchoAgentCore 的运行期配置写入通过共享 `ConfigStore` 原子化落盘
 | 类型 | 机制 | 写入 section |
 |---|---|---|
 | Agent 配置（API key、模型、profiles） | `ConfigStore::patch()` 替换 `[agent]` | `[agent]` |
-| 全局系统提示词 | `persist_system_prompt_plugin()` → `ConfigStore::patch()` | `[plugins.system_prompt].text` |
-| 实例门控配置（gate mode、白名单、黑名单） | **无（不写 core.toml）**——归插件自己的 state 文件，见 §实例门控配置持久化 | `<配置目录>/<platform>-<实例>.toml` 的 `[adapters.<platform>]` |
+| 全局系统提示词 | `persist_system_prompt_module()` → `ConfigStore::patch()` | `[modules.system_prompt].text` |
+| 实例门控配置（gate mode、白名单、黑名单） | **无（不写 core.toml）**——归模块自己的 state 文件，见 §实例门控配置持久化 | `<配置目录>/<platform>-<实例>.toml` 的 `[adapters.<platform>]` |
 
 `ConfigStore` 内部使用 `std::sync::Mutex` 序列化所有写入，读写一次全文件，
-各调用者（各 persona 的 Agent + 插件实例宿主视图）共享同一实例，**杜绝并发写互相覆盖**。插件自己的运行期状态（门控/名单/端口）不经过它——那是插件 state 文件的另一个 `ConfigStore` 实例。
+各调用者（各 persona 的 Agent + 模块实例宿主视图）共享同一实例，**杜绝并发写互相覆盖**。模块自己的运行期状态（门控/名单/端口）不经过它——那是模块 state 文件的另一个 `ConfigStore` 实例。
 
 写入流程：`read TOML → apply patch → write to .tmp → rename`（原子替换）。
 
@@ -34,7 +34,7 @@ EchoAgentCore 的运行期配置写入通过共享 `ConfigStore` 原子化落盘
 | `/api key <key>` | 修改 API key → `persist_config()` |
 | `/api model <name>` | 修改模型 → `persist_config()` |
 | `/api provider <name>` | 修改 provider → `persist_config()` |
-| `/api prompt <text>` / Panel 系统提示词保存 | 修改 system prompt → `persist_system_prompt_plugin()`（写 `[plugins.system_prompt].text`，不动 `[agent]`） |
+| `/api prompt <text>` / Panel 系统提示词保存 | 修改 system prompt → `persist_system_prompt_module()`（写 `[modules.system_prompt].text`，不动 `[agent]`） |
 | `/api new <name>` | 新建 profile → `persist_config()` |
 | Panel「编辑 Profile → 改名称」保存 | 原子改名（`RenameApi`）→ **单次** `ConfigStore::patch()` 同时改写 `api_profiles` 名 / `active_api` / `teams[*].api_profile`，落盘成功后重绑运行中 persona、会话级覆盖与各 persona 工作区对话引用（见下「改名语义」） |
 
@@ -66,11 +66,11 @@ Agent 始终使用单一全局 Trunk（每个 persona 独立一份事件日志�
 ```text
 Core 启动时 --config 指定的文件（如 config/echo-agent-core.local.toml）
 
-ConfigStore 由 main.rs 创建一次，分发给各 persona 的 Agent 与插件实例宿主视图（都指向同一 core.toml 的 `[agent]` / `[instances.<platform>]` section）：
+ConfigStore 由 main.rs 创建一次，分发给各 persona 的 Agent 与模块实例宿主视图（都指向同一 core.toml 的 `[agent]` / `[instances.<platform>]` section）：
   let config_store = echo_config::ConfigStore::new(args.config_path());
-  // 插件实例的 **persona** 写回经同一 ConfigStore（段名沿用用户已用的
+  // 模块实例的 **persona** 写回经同一 ConfigStore（段名沿用用户已用的
   // `[adapters.<platform>.instances.<id>]` 或 `[instances.<platform>.instances.<id>]`）；
-  // **端口不写回**——端口由插件自己分配并持久化到实例 state 文件
+  // **端口不写回**——端口由模块自己分配并持久化到实例 state 文件
   // make_agent 内：每个 persona 共享同一个 config_store（agents_config_store.clone()），
   // 会话文件路径独立设置（JSON，见下）。
 ```
@@ -99,43 +99,43 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 | `api_profiles` 按名去重 | 总是 | 保留首个同名 profile（历史上重复持久化 bug 的自愈） |
 | `command_prefix` 归一化 | 值为空 | 填 `/` |
 | `ECHO_ACCESS_TOKEN` 覆盖 | 环境变量存在 **且** 该平台 `enabled` | 写入共享层 `server.access_token`（覆盖配置文件里的值） |
-| `mode = "builtin"` 清空 | 该平台 `mode` 为 `builtin` | 打警告并清空 → 按 `plugin` 模式运行（内置路径已随实例插件化移除） |
+| `mode = "builtin"` 清空 | 该平台 `mode` 为 `builtin` | 打警告并清空 → 按 `module` 模式运行（内置路径已随实例模块化移除） |
 | `[federation].listen` 是否显式 | 总是 | 额外记一个 `listen_explicit` 标记——serde 填充后分不清「缺省」与「显式同值」，两者语义不同（缺省=自动合并管理端口） |
 | `api_key` 环境回退 | `agent.api_key` 为空 | 按 provider 取名（`AgentConfig::effective_api_key`）：`anthropic`/`claude` → `ANTHROPIC_API_KEY`；`deepseek` → `DEEPSEEK_API_KEY`（缺失时回退 `OPENAI_API_KEY`）；`ollama` 不取环境变量（本地模型无 key）；其余 → `OPENAI_API_KEY` |
 
 ### 不持久化的内容
 
 以下配置只在启动时从文件读取，运行时修改不持久化：
-- **`[instances.<platform>.server]` / `[instances.<platform>.trigger]`** —— 这两个段整体由**插件**读取
-  （bind_address / heartbeat_interval / dm_auto_reply / group_at_reply 都在插件侧消费）；
-  Core 只从共享层 `server.access_token` 取管理令牌。改这些键要重启（Core 与插件各自只在启动读）
+- **`[instances.<platform>.server]` / `[instances.<platform>.trigger]`** —— 这两个段整体由**模块**读取
+  （bind_address / heartbeat_interval / dm_auto_reply / group_at_reply 都在模块侧消费）；
+  Core 只从共享层 `server.access_token` 取管理令牌。改这些键要重启（Core 与模块各自只在启动读）
 - `[logging]`
 
 ### provider 取值
 
 `[agent].provider` 取值：`openai` / `deepseek` / `third-party`（OpenAI 兼容，base_url 以 `/anthropic` 结尾时自动走 Messages 协议）、`anthropic` / `claude`、`kimi`（Kimi Code 订阅：Anthropic 兼容端点 `https://api.kimi.com/coding`，`x-api-key` 在 Kimi Code Console 创建，推理档位 `output_config.effort` low/high/max）、`ollama`。
 
-## 实例门控配置持久化（插件侧）
+## 实例门控配置持久化（模块侧）
 
-> **关键区分**：门控 / 名单 / owner 的持久化**不再写 core.toml**。它们由 QQ 插件
+> **关键区分**：门控 / 名单 / owner 的持久化**不再写 core.toml**。它们由 QQ 模块
 > 写入自己的**实例 state 文件**（`state_file`，宿主经 `Hello.config` 下发，
 > 路径形如 `<配置目录>/qq-<实例>.toml`（与 core.toml 同目录，不是媒体/数据目录），段落为 `[adapters.qq]`。
 >
 > Core 侧只剩两类写：`[agent]`（persona 名单 / provider 等，`Agent::persist_config`）
 > 与实例 persona（自动建档时写回 `[instances.<p>.instances.<id>]`）。两处用**同一个**
-> `ConfigStore` 实例，靠内部 `Mutex` 串行化；插件的 state 文件是**另一个文件、
+> `ConfigStore` 实例，靠内部 `Mutex` 串行化；模块的 state 文件是**另一个文件、
 > 另一个 `ConfigStore` 实例**，因此两者不可能互相覆盖。
 
 ### 触发时机
 
-| 操作 | 插件侧动作 |
+| 操作 | 模块侧动作 |
 |---|---|
 | Panel 切换门控模式 | `set_gate_mode()` → 落盘 `[adapters.qq].gate.mode` |
 | Panel 切白名单群 / 用户 | `update_allowlist()` → 落盘 `[adapters.qq].filter.allowlist` |
 | Panel 切黑名单群 / 用户 | `update_denylist()` → 落盘 `[adapters.qq].filter.denylist` |
 | Panel 设 owner | `set_owner()` → 落盘 `[adapters.qq].owner_qq` |
 
-（`command_prefix` 字段仍在插件配置里，但**当前无消费方**——Core 侧的平台消息命令随「出站面收窄」删除，插件也未实现命令解析。）
+（`command_prefix` 字段仍在模块配置里，但**当前无消费方**——Core 侧的平台消息命令随「出站面收窄」删除，模块也未实现命令解析。）
 
 ### 数据流
 
@@ -143,12 +143,12 @@ WebSocket API 下发，持久化统一在 Core 进程内完成。
 Panel 操作（实例弹层）
   → BackendCommand::InvokeInstanceOp { instance, method, payload }
       （method = set_gate_mode / update_allowlist / update_denylist / set_owner …）
-  → 命令泵 → `echo-plugin-tools::instance_commands`（按 instance 实例名寻址）
-    → 进程外插件经 Invoke("<instance>:custom", {method, payload}) 转发
-      → 插件更新内存中的 runtime 字段 + 重建过滤管道（立即生效）
-      → 插件 ConfigStore::patch(|root| { 在 root["adapters"]["qq"] 下写 gate/filter/owner })
+  → 命令泵 → `echo-module-tools::instance_commands`（按 instance 实例名寻址）
+    → 进程外模块经 Invoke("<instance>:custom", {method, payload}) 转发
+      → 模块更新内存中的 runtime 字段 + 重建过滤管道（立即生效）
+      → 模块 ConfigStore::patch(|root| { 在 root["adapters"]["qq"] 下写 gate/filter/owner })
         → 读取 state 文件 → 修改 → 写入 .tmp → rename（原子）
-      → 插件回推 report_ui_state（管理面快照 → InstanceState 事件）
+      → 模块回推 report_ui_state（管理面快照 → InstanceState 事件）
 ```
 
 ### 写入的 section（实例 state 文件，**不是** core.toml）
@@ -179,12 +179,12 @@ ports = { reverse_ws = 3131, onebot_http = 3000, webui = 6099 }
 
 ### 线程安全
 
-- 插件侧运行时字段（门控 / 名单 / owner）由 `StdMutex` 保护
-- 落盘时锁 `config_store`（插件自己那个 `ConfigStore` 的内部 Mutex），**不阻塞消息处理**
+- 模块侧运行时字段（门控 / 名单 / owner）由 `StdMutex` 保护
+- 落盘时锁 `config_store`（模块自己那个 `ConfigStore` 的内部 Mutex），**不阻塞消息处理**
 - `ConfigStore` 的 Mutex 是 `std::sync::Mutex`（非 tokio），一次 patch 持锁时间仅限文件 I/O
-- Core 与插件的 `ConfigStore` 是**两个实例、两个文件**，不存在跨进程锁竞争
+- Core 与模块的 `ConfigStore` 是**两个实例、两个文件**，不存在跨进程锁竞争
 
-### 不持久化的内容（插件侧）
+### 不持久化的内容（模块侧）
 
 - `rebuild_filter_pipeline()` 不触发持久化（只重建管道，不修改配置）
 - `get_filter_config()` 只读不写
@@ -208,7 +208,7 @@ ports = { reverse_ws = 3131, onebot_http = 3000, webui = 6099 }
 
 会话（消息历史）的持久化由 `TrunkStore` 管理，与上述配置持久化是独立子系统——格式、保存触发与加载恢复机制见 [会话记忆](./memory.md)。文件层面：每 persona 独立 `~/.config/echo-agent-core/echo-sessions-{id}.json`（严禁合并）——旧默认专用的 `echo-sessions.json` 仅当存在 `default` 人格时于首次启动自动改名迁移，配置里没有 `default` 时旧文件保持原样不动；v5 及更旧格式加载时自动迁移（无归属事件按 hook 内容归因：QQ 私聊/群/backend 推导 + 粘滞继承 + 兜底本地会话，下次保存写回 v6；v1-v4 旧格式先经事件化迁移再归因）。
 
-工作区会话（`echo-agent.workspace` 插件）独立持久化于
+工作区会话（`echo-agent.workspace` 模块）独立持久化于
 `~/.config/echo-agent-core/echo-workspaces-{id}.json`（每 persona 一份；
 `{active, active_conversation, sessions[]}` 文档，任何变更即时原子写回）——与配置 TOML、会话
 **所有激活来源（面板/工具 `use`）都必须广播 `WorkspaceSessions`**。
@@ -246,11 +246,11 @@ ports = { reverse_ws = 3131, onebot_http = 3000, webui = 6099 }
   `cache_hit_tokens` 为其子集。Anthropic 协议端点（原生 / DeepSeek / Kimi
   兼容）的原始 `input_tokens` **不含**缓存读取/写入（实测：同前缀
   复调 input 234 + cache_read 128 = 首调 input 362）——provider 侧已把三者
-  求和归一（`echo_plugin_provider_llm::providers::anthropic::normalize_usage`）；旧 JSONL 行中
+  求和归一（`echo_module_provider_llm::providers::anthropic::normalize_usage`）；旧 JSONL 行中
   「命中数 > prompt」的行是修复前口径（prompt=未命中），`usage_slices`
   读取时归一补全。展示与估价统一按此口径（此前注释「input_tokens 包含
   命中」与实测相反，已按实测口径更正）。
 - **协议**：`QueryApiMetrics{name}`（空 = 默认 + 全部 profile）→ `ApiMetrics`
   事件（`entries: [{name, balance[], usage[], cost_currency}]`；`usage` 按
-  小时 × 模型聚合）。实现：`echo-plugin-provider-llm` 的 `metrics.rs`（存储/剪枝/定价；`echo-agent/src/metrics.rs` 只留 re-export）+
+  小时 × 模型聚合）。实现：`echo-module-provider-llm` 的 `metrics.rs`（存储/剪枝/定价；`echo-agent/src/metrics.rs` 只留 re-export）+
   `agent/api_admin.rs`（查询响应 / 周期任务）。

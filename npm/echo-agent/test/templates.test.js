@@ -92,7 +92,7 @@ describe('core.toml 容器模式模板', () => {
     assert.match(coreToml, /dir = "\/data\/downloads"/);
   });
 
-  it('默认人格启用管理面插件（否则面板连不上会话）', () => {
+  it('默认人格启用管理面模块（否则面板连不上会话）', () => {
     assert.match(coreToml, /echo-agent\.management\.panel/);
   });
 });

@@ -29,7 +29,7 @@ max_tool_iterations = 1024
 memory_limit_tokens = 800000
 skills_dir = "/app/skills"
 
-[plugins.system_prompt]
+[modules.system_prompt]
 text = "请你使用中文"
 
 # 一个默认人格（可在 Panel「设置 → 智能体」里增删改）
@@ -37,7 +37,7 @@ text = "请你使用中文"
 name = "助手"
 description = "通用助手"
 enabled = true
-enabled_plugins = [
+enabled_modules = [
     "echo-agent.instance.qq",
     "echo-agent.management.panel",
     "echo-agent.tools.builtin",

@@ -9,10 +9,10 @@ y: 1480
 # Agent 循环
 
 > **定位**：本文描述 **Agent 循环**——可插拔驱动（echo-loop `TurnRunner`）的 turn/step 状态机、会话内串行准入（同一会话 FIFO 排队）、工具管道，以及 harness（`agent/turn.rs`）如何把一条输入交给唯一的循环驱动执行。读者：需要理解消息如何被循环执行的开发者。
-> 相关：[多 Agent 与会话](./agents.md)（会话归属与入站投递）、[插件化设计](../plugins/plugins.md)（loop 插件治理）、[工具系统](../plugins/tools.md)（工具执行与超时）。
+> 相关：[多 Agent 与会话](./agents.md)（会话归属与入站投递）、[模块化设计](../modules/modules.md)（loop 模块治理）、[工具系统](../modules/tools.md)（工具执行与超时）。
 
 Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态机 + 工具
-管道）。循环插件也只有**一个**：`echo-agent.loop.single`（`kind = loop`），它
+管道）。循环模块也只有**一个**：`echo-agent.loop.single`（`kind = loop`），它
 表达的策略就是"同一会话的 turn 串行排队"，不切换驱动。
 
 > 单轨化（架构评审）：此前存在第二套"内置循环"（`process_message_inner`
@@ -31,29 +31,29 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
   上限 8），它是限流而非排他。
 - **排队期间可取消**：turn 在等待闸门**之前**就注册进 `active_inbound_turns`，
   取消命令按 turn **实际注册的会话**过滤，因此排队中的 turn 也能被中断（该 turn
-  不执行、不留残回复）。插件实例入站把注册放进后台任务，入站 hook 本身不因排队
+  不执行、不留残回复）。模块实例入站把注册放进后台任务，入站 hook 本身不因排队
   阻塞。（2026-11 修复：此前取消按平台会话过滤，而 turn 实际跑在默认本地会话，
   于是永远取消不到。）
-- **插件**：`echo-agent.loop.single`（`kind = loop`）是**唯一**循环插件，也是
+- **模块**：`echo-agent.loop.single`（`kind = loop`）是**唯一**循环模块，也是
   `loop` 服务的提供方——mount 时构造唯一的 `TurnRunner` 并 `provide`，卸载即撤销
   该服务（组合根解析不到就是启动失败）。`kind = loop` 属**进程级**作用域：
-  persona 白名单不管它，`enabled_plugins` 里写 loop 类 id 不表达任何模式；驱动
-  本体与插件启停无关，始终注入给每个 Agent。
+  persona 白名单不管它，`enabled_modules` 里写 loop 类 id 不表达任何模式；驱动
+  本体与模块启停无关，始终注入给每个 Agent。
 - **已删除（2026-11）**：并行多会话模式整体移除——`echo-agent.loop.parallel`
-  插件、`LoopMode::Parallel`、`ReplyBranch*` 可见性事件、`ActiveBranchInfo`、
-  `Agent::shows_reply_branches` 一并不存在。旧配置 `enabled_plugins` 里残留的
+  模块、`LoopMode::Parallel`、`ReplyBranch*` 可见性事件、`ActiveBranchInfo`、
+  `Agent::shows_reply_branches` 一并不存在。旧配置 `enabled_modules` 里残留的
   `echo-agent.loop.parallel` 只是一条没有任何效果的旧条目
-  （`echo_plugin_loop::REMOVED_PARALLEL_PLUGIN_ID` 仅留作识别用字面量）。
+  （`echo_module_loop::REMOVED_PARALLEL_MODULE_ID` 仅留作识别用字面量）。
 
 ## Turn 循环
 - 每条入站消息经[多 Agent 与会话](./agents.md)的入站闸门（登记 → 排队 → 取快照）
   进入 `process_message_inner`；本层只负责循环本身
 - 系统提示词按块构建（`agent/prompt.rs` 的 `build_prompt_blocks`，
-  [插件化设计](../plugins/plugins.md) 的能力门控作用于各层）：
-  基础提示词、**system 技能层**（system:true，见 [技能系统](../plugins/skills.md)）、
+  [模块化设计](../modules/modules.md) 的能力门控作用于各层）：
+  基础提示词、**system 技能层**（system:true，见 [技能系统](../modules/skills.md)）、
   **persona 级系统技能**（`TeamMember.system_skills` 引用）、技能清单、
   常驻/触发技能、**工作区会话**
-  （workspace 插件启用且有激活会话时注入名称 + 目录清单）、输入边界规则
+  （workspace 模块启用且有激活会话时注入名称 + 目录清单）、输入边界规则
   （`agent/boundary.rs` 的 `BoundaryKind`：QQ hook / 定时器 / 后台输入三块文案）
 - 提示词构建的锁纪律：`skills` 的 tokio Mutex guard
   只在 `build_prompt_blocks` 调用作用域内持有，构建完即 drop——guard 跨过
@@ -61,11 +61,11 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
   进程内各会话的 turn 是并发的）
 - 循环迭代（`max_tool_iterations`，随附配置缺省 1024；`AgentConfig::default` 代码缺省为 5）：发 LLM 请求 → 有工具调用则逐个执行并回填结果 → 直至产出最终回复或达上限
 - 输出预算：`[agent].max_tokens`（0 = 无上限，后端回退 `DEFAULT_MAX_TOKENS = 128K` 实用上限）；响应被 `max_tokens` 掐断（finish_reason = length/max_tokens）时自动续跑（最多 4 次，提示"继续上次输出"喂回模型；半截工具调用丢弃后重发完整调用）
-- 达上限未完成时报错收尾；工具的超时/失败不中断 loop（见 [工具系统](../plugins/tools.md)）
+- 达上限未完成时报错收尾；工具的超时/失败不中断 loop（见 [工具系统](../modules/tools.md)）
 
 ## echo-loop：可替换的默认驱动（TurnRunner）
 
-`echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。驱动实例由 `echo-plugin-loop` 在 mount 期构造并 `provide` 成 `loop` 服务（`LoopOptions`：`max_tokens` 与 `max_tool_iterations` 来自配置），组合根在挂载完成后解析它——**解析失败即启动失败**；换驱动 = 换一个 `provide` 同一服务键的插件。消费方（agent、UI、hook）只依赖生命周期事件。
+`echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。驱动实例由 `echo-module-loop` 在 mount 期构造并 `provide` 成 `loop` 服务（`LoopOptions`：`max_tokens` 与 `max_tool_iterations` 来自配置），组合根在挂载完成后解析它——**解析失败即启动失败**；换驱动 = 换一个 `provide` 同一服务键的模块。消费方（agent、UI、hook）只依赖生命周期事件。
 
 - **生命周期事件**（全部经 `EventBus` 分发）：`TurnStart` / `AgentPreStep`（waterfall，可改写消息或拒绝 step）/ `StepStart` / `AgentRequest`（waterfall，可改写请求）/ `ToolCallRequested` / `ToolResult` / `StepEnd` / `TurnStopping`（Observe——`Serial` 目前无生产发射方）/ `TurnEnd`
 - **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。审批、审计、限流等策略的设计接入方式为管道中间件（非循环代码，新策略 = 一次 `push_pre`/`push_post`；机制已备，当前生产路径未注册任何中间件）；**工具超时守卫**由 harness 侧统一实施（`Agent::tool_guard_timeout`：配置 `tool_timeout_secs` base + 工具自声明 `timeout_hint`）——超时只中止该工具、不中断 turn，结果以 notice 喂回模型，事件日志补记中断结果保持成对
@@ -73,7 +73,7 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 
 ### 注入与分派
 
-**注入**：全场只有一个共享 `TurnRunner`（由 `echo-plugin-loop` `provide`，其 provider
+**注入**：全场只有一个共享 `TurnRunner`（由 `echo-module-loop` `provide`，其 provider
 已包计量 + 脱敏装饰），组合根解析后在两处无条件注入（`Agent::set_loop_runner`）：
 
 - **启动期**：人格启动循环（`apply_capabilities` 之后）；
@@ -115,10 +115,10 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 
 - `agent/turn.rs`：turn 驱动（上文「注入与分派」）+ `input_boundary`
 - `agent/inbound.rs`：入站 turn 生命周期（在飞登记 / 串行闸门 / 取消 / 回答合并、
-  `process_message`、插件实例入站 `process_inbound_branch` → `run_inbound_turn`）
+  `process_message`、模块实例入站 `process_inbound_branch` → `run_inbound_turn`）
 - `agent/tool_dispatch.rs`：`run_tool` 统一分派、参数预检、中断结果补记
 - `agent/streaming.rs`：流式增量转发（`AgentContentDelta` / `AgentReasoningDelta`）
-- `agent/plugin_reload.rs`：数据插件热重载
+- `agent/module_reload.rs`：数据模块热重载
 
 - `agent/boundary.rs`：`PromptBlock`（提示词命名块，供面板 token 用量可视化）+
   `BoundaryKind`（三种输入边界的提示词文案）

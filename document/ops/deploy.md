@@ -112,15 +112,15 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 ## 更新流程（update.sh）
 
 - `--local`（默认）：构建当前源码树（含未提交改动，记为 `+dirty`）；`--remote`：先 fetch + fast-forward 再构建（工作树有改动/游离 HEAD/非快进则拒绝）
-- **变更分流（auto，默认）**：以上次安装 revision 为基线，只有 `PLUGIN_BINARIES` 对应的受管外部插件 crate 发生变化时，走插件热更新；Core、内置插件、共享定义、锁文件、技能或配置有任何变化，自动回退完整更新。`--full` 强制完整更新；`--plugins-only` 要求纯插件变更，无法证明时直接失败，不偷偷扩大更新范围。
-- **插件热更新**：只构建变更插件，事务备份并原子替换其二进制，然后调用 `echo-agent-core plugin-upgrade --binary <path>`。该命令按 `plugins.toml` 分层合成结果把二进制路径反查为运行时插件 id（crate 名与 id 可不同），经认证 management WS 发送 `RestartPlugin`。Core 使用 supervisor 先启动 replacement、完成协议握手并校验贡献集合不变，再原子切换流量、排空旧进程；**Core 不重启**。握手、协议或贡献兼容性失败时旧实例继续服务，updater 恢复旧二进制，并热回滚已经切换的插件。
-- 热更新只覆盖**已装载的静态外部插件**。新增/删除插件、修改装载配置或工具/schema/实例等贡献集合仍需完整 Core 更新与重装配；QQ 动态实例不在静态 `SubprocessControl` 内，不能借这条命令热更新。
+- **变更分流（auto，默认）**：以上次安装 revision 为基线，只有 `MODULE_BINARIES` 对应的受管外部模块 crate 发生变化时，走模块热更新；Core、内置模块、共享定义、锁文件、技能或配置有任何变化，自动回退完整更新。`--full` 强制完整更新；`--modules-only` 要求纯模块变更，无法证明时直接失败，不偷偷扩大更新范围。
+- **模块热更新**：只构建变更模块，事务备份并原子替换其二进制，然后调用 `echo-agent-core module-upgrade --binary <path>`。该命令按 `modules.toml` 分层合成结果把二进制路径反查为运行时模块 id（crate 名与 id 可不同），经认证 management WS 发送 `RestartModule`。Core 使用 supervisor 先启动 replacement、完成协议握手并校验贡献集合不变，再原子切换流量、排空旧进程；**Core 不重启**。握手、协议或贡献兼容性失败时旧实例继续服务，updater 恢复旧二进制，并热回滚已经切换的模块。
+- 热更新只覆盖**已装载的静态外部模块**。新增/删除模块、修改装载配置或工具/schema/实例等贡献集合仍需完整 Core 更新与重装配；QQ 动态实例不在静态 `SubprocessControl` 内，不能借这条命令热更新。
 - **原子替换**：先备份现有二进制/静态目录到 rollback 文件，替换后重启服务并健康检查（15s 内 3 次活跃确认）；替换完成即按保留策略修剪历史副本（见下「备份留存」）
 - 失败自动回滚（恢复备份 + 重启）；状态写入 `~/.local/state/echo-agent-*/update-status`
 - 更新器非阻塞文件锁拒绝并发运行；拉取/构建失败时旧二进制不动、不重启
 - Panel 更新包含 `npm run build`（前端产物从 `web/dist` 拷贝到静态目录，需 PATH 中有 npm——nvm 路径）
-- **NapCat 恢复门控**：Core 重启后仅当 `[instances.qq]`（或等价的 `[adapters.qq]`——`update.sh` 的 awk 两个段名都认）`enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（默认实例 3131；多实例由插件在 3140-3190 内分配、持久化在实例 state 的 `[deploy.ports]`——Core 不感知具体端口，故按「全部 NapCat 容器」而非端口清单判定）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
-- **Core 插件感知校验**（`verifying_plugins` 阶段）：安装后对二进制核对内置插件 manifest id——框架 **12 项**（`echo-agent.tools.builtin` / `echo-agent.shell` / `echo-agent.skills.dir` / `echo-agent.workspace` / `echo-agent.subagent` / `echo-agent.federation` / `echo-agent.provider.llm` / `echo-agent.selfupdate` / `echo-agent.management.panel` / `echo-agent.session` / `echo-agent.transcript` / 循环插件 `echo-agent.loop.single`）**加上实例插件前缀** `echo-agent.instance.`（`strings` 里能搜到前缀即视为齐备，不逐个枚举平台）。清单是 `scripts/update.sh` 的 `expected_ids` 一行，必须与 `echo_agent::plugins::BUILTIN_PLUGIN_IDS` + `core::instance_manifests::PLUGIN_ID_PREFIX` 一致，由 `source/plugin/core/src/instance_manifests.rs` 的单测守护（修复背景：`echo-agent.orchestration` 在编排插件删除后残留于清单，每次更新都误报「缺少内置插件 manifest」）；`echo-agent.menu`/`echo-agent.checklist`/旧驱动 `echo-agent.loop.runner` 等 id 已移除（present_menu 已废弃移除；checklist 为普通内置工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
+- **NapCat 恢复门控**：Core 重启后仅当 `[instances.qq]`（或等价的 `[adapters.qq]`——`update.sh` 的 awk 两个段名都认）`enabled = true` 且存在 `napcat` / `echo-napcat-*` 容器时，才等待反向 WS（默认实例 3131；多实例由模块在 3140-3190 内分配、持久化在实例 state 的 `[deploy.ports]`——Core 不感知具体端口，故按「全部 NapCat 容器」而非端口清单判定）自动重连（40s 窗口），超时才 `docker restart` 兜底（遍历所有 NapCat 容器）；QQ 未启用时整段跳过——不再无谓重启容器
+- **Core 模块感知校验**（`verifying_modules` 阶段）：安装后对二进制核对内置模块 manifest id——框架 **12 项**（`echo-agent.tools.builtin` / `echo-agent.shell` / `echo-agent.skills.dir` / `echo-agent.workspace` / `echo-agent.subagent` / `echo-agent.federation` / `echo-agent.provider.llm` / `echo-agent.selfupdate` / `echo-agent.management.panel` / `echo-agent.session` / `echo-agent.transcript` / 循环模块 `echo-agent.loop.single`）**加上实例模块前缀** `echo-agent.instance.`（`strings` 里能搜到前缀即视为齐备，不逐个枚举平台）。清单是 `scripts/update.sh` 的 `expected_ids` 一行，必须与 `echo_agent::modules::BUILTIN_MODULE_IDS` + `core::instance_manifests::MODULE_ID_PREFIX` 一致，由 `source/modules/core/src/instance_manifests.rs` 的单测守护（修复背景：`echo-agent.orchestration` 在编排模块删除后残留于清单，每次更新都误报「缺少内置模块 manifest」）；`echo-agent.menu`/`echo-agent.checklist`/旧驱动 `echo-agent.loop.runner` 等 id 已移除（present_menu 已废弃移除；checklist 为普通内置工具）。实现先 `strings > 临时文件` 再 `grep -q`——管道直连 `strings | grep -q` 在 pipefail 下会因 grep 提前退出触发 SIGPIPE（141）误报全部 missing
 
 ### 出厂技能同步
 
@@ -132,15 +132,15 @@ curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/EchoLab-Auto/E
 - 目标目录不存在（旧部署未迁移过）时整段跳过，由下次 install/reinstall 补齐
 - **仅 `update.sh` 走这套规则**：`install.sh` 仍是整体 `cp -a "$SOURCE_DIR/skills/."`，不逐技能、不排除 `.git`（清空与补齐语义不同——它负责首次铺设出厂层，重复执行前需先 `uninstall`；`reinstall` 会先跑 `uninstall` 清掉该层，故正常重装路径不受影响）
 
-### 进程外插件二进制同步
+### 进程外模块二进制同步
 
-`plugins/<包名>/<二进制>` 下的插件二进制与 Core **同版本**部署（协议与 `Hello.config` 语义在同一份仓库里演进，不允许 Core 新 / 插件旧）：
+`modules/<包名>/<二进制>` 下的模块二进制与 Core **同版本**部署（协议与 `Hello.config` 语义在同一份仓库里演进，不允许 Core 新 / 模块旧）：
 
-- `install.sh` 按 `PLUGIN_BINARIES` 与 Core 在同一次 `cargo build --release --locked` 里构建，装到 `~/.local/libexec/echo-agent-core/plugins/<包名>/<二进制>`；旧文件纳入安装事务快照，失败回滚时一并还原
-- `update.sh` 用**同一张表**（两脚本一致性由 `source/plugin/core/tests/install_script_flag.rs` 守护，同时比对仓库里 `[[bin]] path = "src/main.rs"` 的插件 crate）做版本化替换：旧二进制先落 `<二进制>.rollback`，任一步失败（含重启后健康检查）→ `finalize_failure` 把所有插件还原回上一版
-- 构建产物缺失（例如清单里写了但 crate 被删）只 `warning` 并触发回滚，不会静默留下半套插件
-- 目录不存在（旧部署未跑过新版 `install.sh`）时静默创建——自更新不会因为多了个目录就失败；清单外的目录（用户自装插件）不会被触碰
-- 布局与命名理由见 [插件开发指南](../plugins/plugin-authoring.md)「安装目录约定」
+- `install.sh` 按 `MODULE_BINARIES` 与 Core 在同一次 `cargo build --release --locked` 里构建，装到 `~/.local/libexec/echo-agent-core/modules/<包名>/<二进制>`；旧文件纳入安装事务快照，失败回滚时一并还原
+- `update.sh` 用**同一张表**（两脚本一致性由 `source/modules/core/tests/install_script_flag.rs` 守护，同时比对仓库里 `[[bin]] path = "src/main.rs"` 的模块 crate）做版本化替换：旧二进制先落 `<二进制>.rollback`，任一步失败（含重启后健康检查）→ `finalize_failure` 把所有模块还原回上一版
+- 构建产物缺失（例如清单里写了但 crate 被删）只 `warning` 并触发回滚，不会静默留下半套模块
+- 目录不存在（旧部署未跑过新版 `install.sh`）时静默创建——自更新不会因为多了个目录就失败；清单外的目录（用户自装模块）不会被触碰
+- 布局与命名理由见 [模块开发指南](../modules/module-authoring.md)「安装目录约定」
 
 ### 备份留存
 
@@ -166,7 +166,7 @@ release 产物设 `strip = "symbols"`（根 `Cargo.toml` 的 `[profile.release]`
 | 保留 | 丢失 |
 | --- | --- |
 | panic 的**消息与源码位置**（`file:line` 是 `.rodata` 里的字符串） | backtrace 的函数名（只剩地址） |
-| 内置插件校验依赖的 manifest id 字符串（`strings` 可扫到） | `nm` / `addr2line` 一类的符号级定位（已安装二进制无符号表） |
+| 内置模块校验依赖的 manifest id 字符串（`strings` 可扫到） | `nm` / `addr2line` 一类的符号级定位（已安装二进制无符号表） |
 
 - 需要函数名排障时**临时重建带符号版本**，不要指望线上二进制：`cargo build --release -p echo-agent-core --config 'profile.release.strip="none"'`
 - 不启用 LTO / `codegen-units=1`：updater 每次更新都跑 `cargo build --release`，编译时间翻倍不划算
@@ -175,7 +175,7 @@ release 产物设 `strip = "symbols"`（根 `Cargo.toml` 的 `[profile.release]`
 
 ```text
 完整更新：state=running → state=restarting → state=updated
-插件热更新：state=running（phase=upgrading_plugins）→ state=updated
+模块热更新：state=running（phase=upgrading_modules）→ state=updated
 （失败时均停在 failed / rolled_back）
 ```
 
@@ -186,8 +186,8 @@ release 产物设 `strip = "symbols"`（根 `Cargo.toml` 的 `[profile.release]`
 
 - **绝不** `systemctl --user stop echo-agent-core.service`：agent 本身运行在 core 进程内，stop 会杀死当前会话，后续 start 永远执行不到（已实际发生）
 - 安全替代：`systemctl --user restart echo-agent-core.service`（原子操作）；确需先停后启时用 `systemd-run --user` 脱离会话执行
-- **用瞬态单元启动 updater**：`update.sh` 自己会 `systemctl --user restart echo-agent-core.service`。若 updater 由 agent 在自己 shell 里直接 `bash update.sh` 起，它与 Core 同处 `echo-agent-core.service` 的 cgroup，restart 清理 cgroup 时被连带杀死（`setsid`/`nohup` 同 cgroup，救不了）——被杀的 updater 只剩「二进制替换 + 重启」，QQ 恢复、revision 写入、插件校验、收尾写 `state=updated` 全部跳过，需人工补写。改用瞬态单元（独立 cgroup，与主服务平级）：`systemd-run --user --collect --unit=echo-agent-update bash ~/.local/libexec/echo-agent-core/update.sh`，进度看 `journalctl --user -u echo-agent-update`；面板/命令触发的自更新（`RequestSelfUpdate` → `handle_self_update`）启动的是独立 oneshot 单元 `echo-agent-core-update.service`，本就不受 restart 牵连
-- **优雅排空（drain-then-exit）**：Core 收到 SIGTERM 后先进入排空模式——拒绝新消息（Panel 主动发送会收到"Core 正在重启"错误提示，重试即可）、等待进行中的回复完成（最多 `SHUTDOWN_DRAIN_SECS = 120s`，期间回复继续实时 emit 到 Panel）再退出；超时仍未完成才强制取消该 turn；`TimeoutStopSec=180s` 兜底保证 drain 窗口内不被 SIGKILL。停机顺序：`pump.abort()`（停命令泵）→ 首个插件实例句柄 `stop()`（停收；插件进程随后由 supervisor 排空）→ `agent.shutdown()`（drain）。异步子任务（`spawn_subagent`）不在 `active_inbound_turns` 计数内，drain 不等待它们；其注册表在内存中、完成回报以新 turn 注入——进程退出即终止，未完成子任务的结果不会补投递（重启后需重新委派）
+- **用瞬态单元启动 updater**：`update.sh` 自己会 `systemctl --user restart echo-agent-core.service`。若 updater 由 agent 在自己 shell 里直接 `bash update.sh` 起，它与 Core 同处 `echo-agent-core.service` 的 cgroup，restart 清理 cgroup 时被连带杀死（`setsid`/`nohup` 同 cgroup，救不了）——被杀的 updater 只剩「二进制替换 + 重启」，QQ 恢复、revision 写入、模块校验、收尾写 `state=updated` 全部跳过，需人工补写。改用瞬态单元（独立 cgroup，与主服务平级）：`systemd-run --user --collect --unit=echo-agent-update bash ~/.local/libexec/echo-agent-core/update.sh`，进度看 `journalctl --user -u echo-agent-update`；面板/命令触发的自更新（`RequestSelfUpdate` → `handle_self_update`）启动的是独立 oneshot 单元 `echo-agent-core-update.service`，本就不受 restart 牵连
+- **优雅排空（drain-then-exit）**：Core 收到 SIGTERM 后先进入排空模式——拒绝新消息（Panel 主动发送会收到"Core 正在重启"错误提示，重试即可）、等待进行中的回复完成（最多 `SHUTDOWN_DRAIN_SECS = 120s`，期间回复继续实时 emit 到 Panel）再退出；超时仍未完成才强制取消该 turn；`TimeoutStopSec=180s` 兜底保证 drain 窗口内不被 SIGKILL。停机顺序：`pump.abort()`（停命令泵）→ 首个模块实例句柄 `stop()`（停收；模块进程随后由 supervisor 排空）→ `agent.shutdown()`（drain）。异步子任务（`spawn_subagent`）不在 `active_inbound_turns` 计数内，drain 不等待它们；其注册表在内存中、完成回报以新 turn 注入——进程退出即终止，未完成子任务的结果不会补投递（重启后需重新委派）
 - Core 重启后恢复时间线时，进程被杀导致的悬空 running 工具条目会被标注为"已中断"，不再永远显示"运行中"
 
 ## 运维命令与体检
@@ -207,24 +207,24 @@ echo-agent-core port set federation-advertise 10.0.0.5:4001   # 邀请串对外�
 echo-agent-core token                         # 打印当前 token（空 = 无认证）
 echo-agent-core token --rotate                # 重新生成并写回（32 字节 hex）
 
-# 外部插件组合：查看分层合成结果（profile → bundles → patches → 行内条目）
+# 外部模块组合：查看分层合成结果（profile → bundles → patches → 行内条目）
 echo-agent-core dump-config                   # 每行带「来自哪一层」来源注释
 ```
 
-`dump-config` **只合成不启动**（不拉起插件、不监听端口），用的是与启动路径同一个
+`dump-config` **只合成不启动**（不拉起模块、不监听端口），用的是与启动路径同一个
 `load()`——合成失败 / 环依赖 / 未知 `requires` 在这里报同一个错并**非零退出**，
-可直接放进部署前自检；`plugins.toml` 不存在时打印一行说明并退出码 0（特性休眠）。
-详见 [插件开发指南](../plugins/plugin-authoring.md)「先看一眼合成结果」。
+可直接放进部署前自检；`modules.toml` 不存在时打印一行说明并退出码 0（特性休眠）。
+详见 [模块开发指南](../modules/module-authoring.md)「先看一眼合成结果」。
 
 要点：
 
 - `port` 目标键与配置键一一对应，**只有三个**：`management`→`[core].management_address`、`federation`→`[federation].listen`、`federation-advertise`→`[federation].advertise`
-- **QQ / NapCat 端口不在 CLI 管理范围内**（已移交插件）：`qq` 与 `qq-instance:<id>:<字段>` 两个目标已删除。实例的三端口（反向 WS / OneBot HTTP / WebUI）由插件分配并持久化到实例 state 文件 `[deploy.ports]`；改端口请改配置里的显式值（`[instances.qq.server].bind_address` 或 `[...instances.<id>]` 的对应键），插件会沿用配置值而非重新探测
+- **QQ / NapCat 端口不在 CLI 管理范围内**（已移交模块）：`qq` 与 `qq-instance:<id>:<字段>` 两个目标已删除。实例的三端口（反向 WS / OneBot HTTP / WebUI）由模块分配并持久化到实例 state 文件 `[deploy.ports]`；改端口请改配置里的显式值（`[instances.qq.server].bind_address` 或 `[...instances.<id>]` 的对应键），模块会沿用配置值而非重新探测
 - 缺省值与显式值语义区分（如 `listen` 缺省 = 跟随管理地址合并、显式空串 = 仅连出）
 - 编辑后做 TOML 合法性与**目标值类型复读**自检；`tmp + rename` 原子写
 - **端口合并（缺省）**：联邦监听**缺省合并至管理端口**——NAT 场景**一条映射同时服务面板与联邦**（见 [联邦](../federation/federation.md#配置与管理面)）；管理地址回环 / 空令牌且非回环 / 令牌与 peer 冲突时自动回退独立监听（启动警告）；**显式**同址合并 + 空令牌 + 非回环仍 fail-closed **拒绝启动**
 - 端口变更重启 Core 生效；`port set` 的提示按**编辑后**的合并状态自适应——合并态下改 `management` 会同时提醒 Panel `[[cores]].url`、对端 `[federation.peers.*]` 的 url 与端口映射/`advertise` 三处同步（独立监听只提醒 Panel）
-- 相应配置解析与编辑逻辑见 [配置持久化](../core/config-persistence.md)；QQ 实例端口分配（插件侧）见 [QQ 门控](../plugins/qq-gating.md)
+- 相应配置解析与编辑逻辑见 [配置持久化](../core/config-persistence.md)；QQ 实例端口分配（模块侧）见 [QQ 门控](../modules/qq-gating.md)
 
 ### 日常体检
 

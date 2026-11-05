@@ -14,7 +14,7 @@ y: 2040
 
 以下 `BackendCommand` 在协议层存在，但当前 UI 无任何入口——属有意留白而非缺陷，新增入口时按本文档规范补充：
 - `SwitchModel` / `SwitchProvider` / `SetSystemPrompt`（模型与提示词经 API 设置/AgentConfig 覆盖）
-- `StartAllInstances` / `StopAllInstances`（逐个插件实例控制已覆盖）
+- `StartAllInstances` / `StopAllInstances`（逐个模块实例控制已覆盖）
 - 实例管理（门控/名单/owner/登录）：统一 `InvokeInstanceOp`；owner 显示为只读
 
 > `RequestSystemPrompt` 已接线：切 core 时随「单值管理面」重拉发送（`connection.ts::requestActiveRegionManagement`），`pending.ts` 的关联表登记 `SystemPrompt` 响应销账；**但 Panel 不落状态**——`AppState.model` / `systemPrompt` 字段已删除（事件写入后零读取方；模型名可由 api/会话归属推导，`SystemPrompt` 回推文本仅面向调试）。`InstallSkillFromGit` / `UpdateSkillFromGit` / `RemoveSkillSource` 亦已接线（见 [设置 · 技能](./settings-skills.md)），均不再属于本清单。
@@ -52,7 +52,7 @@ y: 2040
 | Agent 切换器 | 卡片高 34px（窄屏 ≤140px 宽、隐藏区域徽标）；菜单 = `PanelPopover` 宽 360px / 内容 `max-height: 52vh`（窄屏贴底全宽） | `AgentSwitcher.vue` 的卡片样式 + `PanelPopover.vue` |
 | 轮询：日志 / 任务耗时 | 5s / 1s | `LogView.vue` 的自动刷新定时器 / `TasksPanel.vue` 的耗时刷新（QQ 登录状态为 WS 事件驱动，无轮询） |
 | HTTP 超时 | 10s | `api.ts` 的 `FETCH_TIMEOUT_MS` |
-| 二维码有效期 / 定时器摘要截断 | 约 2 分钟；160 字符 | 插件实例描述符 `image` 节点（`login_qrcode`，`instance-ui` 渲染器呈现）/ `helpers.ts` 的定时器摘要截断 |
+| 二维码有效期 / 定时器摘要截断 | 约 2 分钟；160 字符 | 模块实例描述符 `image` 节点（`login_qrcode`，`instance-ui` 渲染器呈现）/ `helpers.ts` 的定时器摘要截断 |
 
 ## 维护约定
 

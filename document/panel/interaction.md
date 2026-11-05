@@ -32,7 +32,7 @@ graph TB
   Sets --> Api[API 设置|/panel/settings-api.md]
   Sets --> Skills[技能|/panel/settings-skills.md]
   Sets --> Tools[工具|/panel/settings-tools.md]
-  Sets --> Plugins[插件|/panel/settings-plugins.md]
+  Sets --> Modules[模块|/panel/settings-modules.md]
   Sets --> Teams[智能体|/panel/settings-agents.md]
   Sets --> Cores[Core 连接与联邦|/panel/settings-cores.md]
   Sets --> Logs[日志与系统|/panel/settings-logs.md]
@@ -41,7 +41,7 @@ graph TB
 | 视图 | 职责 | 进入方式 |
 | --- | --- | --- |
 | 会话 | 消息时间线、输入、入口行、实例/任务/工作区弹层 | 默认视图；顶栏「聊天」（桌面）或视图菜单（移动端） |
-| 设置 | API / 技能 / 工具 / 插件 / 智能体 / Core 连接 / 联邦 / 日志 | 顶栏「设置」或视图菜单 |
+| 设置 | API / 技能 / 工具 / 模块 / 智能体 / Core 连接 / 联邦 / 日志 | 顶栏「设置」或视图菜单 |
 | Shell | 单条 Shell 会话的终端详情（输入、输出流、停止） | 侧栏 Shell 卡「详情」**或**视图菜单（v2：移动端新增入口） |
 
 - **模态与覆盖层**浮于全部视图之上：分支详情、会话区覆盖面板（入口行七项）、全局确认框、目录选择器——层位与契约按视口分列于[桌面端模态与覆盖层](./desktop-overlays.md)与[移动端模态与覆盖层](./mobile-overlays.md)
@@ -77,7 +77,7 @@ graph LR
 | 实例门控 | 门控模式 / 白名单 / 黑名单 / owner / 登录态 | 即时下发 `InvokeInstanceOp` | 编辑即生效；运营态经 `InstanceState` 回推 |
 | 任务与清单 | 任务列表（按会话过滤）、清单进度 | 查看、跳转 | 只读视图；空态区分「无任务」与「加载中」 |
 | Shell | 会话列表、单会话输出流 | 新建、输入、停止 | 输出流式追加；会话列表来自 `ShellSessionsList` |
-| 设置 | 八分类（API/技能/工具/插件/智能体/Core 连接/系统/日志） | 编辑、保存、安装、重载 | 脏检查（切换分类前确认是否放弃）；安装进度实时可见；分类细节见[设置视图](./settings.md)子文档 |
+| 设置 | 八分类（API/技能/工具/模块/智能体/Core 连接/系统/日志） | 编辑、保存、安装、重载 | 脏检查（切换分类前确认是否放弃）；安装进度实时可见；分类细节见[设置视图](./settings.md)子文档 |
 | 视图导航 | 当前视图、当前会话、Agent 选择 | 切换 | 按标签页持久化；点会话强制回会话视图 |
 
 ## 五、交互模块树
@@ -96,7 +96,7 @@ graph TB
   Set --> S1[API 设置|/panel/settings-api.md]
   Set --> S2[技能|/panel/settings-skills.md]
   Set --> S3[工具|/panel/settings-tools.md]
-  Set --> S4[插件|/panel/settings-plugins.md]
+  Set --> S4[模块|/panel/settings-modules.md]
   Set --> S5[智能体|/panel/settings-agents.md]
   Set --> S6[Core 连接与联邦|/panel/settings-cores.md]
   Set --> S7[日志与系统|/panel/settings-logs.md]

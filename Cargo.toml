@@ -1,30 +1,30 @@
 [workspace]
 resolver = "2"
 members = [
-    "source/plugin/echo-defs",
-    "source/plugin/echo-session",
-    "source/plugin/echo-tool",
-    "source/plugin/echo-shell",
-    "source/plugin/echo-loop",
-    "source/plugin/echo-protocol",
-    "source/plugin/echo-federation",
-    "source/plugin/echo-agent",
-    "source/plugin/echo-config",
-    "source/plugin/echo-test-utils",
-    "source/plugin/core",
-    "source/plugin/echo-plugin-adapter",
-    "source/plugin/echo-plugin-provider-llm",
-    "source/plugin/echo-plugin-skills",
-    "source/plugin/echo-plugin-federation",
-    "source/plugin/echo-plugin-loop",
-    "source/plugin/echo-plugin-self-update",
-    "source/plugin/echo-plugin-sanitize",
-    "source/plugin/echo-plugin-shell",
-    "source/plugin/echo-plugin-subagent",
-    "source/plugin/echo-plugin-session",
-    "source/plugin/echo-plugin-transcript",
-    "source/plugin/echo-plugin-management",
-    "source/plugin/echo-plugin-tools",
+    "source/modules/echo-defs",
+    "source/modules/echo-session",
+    "source/modules/echo-tool",
+    "source/modules/echo-shell",
+    "source/modules/echo-loop",
+    "source/modules/echo-protocol",
+    "source/modules/echo-federation",
+    "source/modules/echo-agent",
+    "source/modules/echo-config",
+    "source/modules/echo-test-utils",
+    "source/modules/core",
+    "source/modules/echo-module-adapter",
+    "source/modules/echo-module-provider-llm",
+    "source/modules/echo-module-skills",
+    "source/modules/echo-module-federation",
+    "source/modules/echo-module-loop",
+    "source/modules/echo-module-self-update",
+    "source/modules/echo-module-sanitize",
+    "source/modules/echo-module-shell",
+    "source/modules/echo-module-subagent",
+    "source/modules/echo-module-session",
+    "source/modules/echo-module-transcript",
+    "source/modules/echo-module-management",
+    "source/modules/echo-module-tools",
 ]
 
 [workspace.package]
@@ -66,38 +66,38 @@ opt-level = 1
 strip = "symbols"
 
 [workspace.dependencies]
-echo-defs = { path = "source/plugin/echo-defs" }
-echo-config = { path = "source/plugin/echo-config" }
-echo-context = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.14.0" }
-echo-session = { path = "source/plugin/echo-session" }
-echo-tool = { path = "source/plugin/echo-tool" }
-echo-shell = { path = "source/plugin/echo-shell" }
-echo-loop = { path = "source/plugin/echo-loop" }
-echo-protocol = { path = "source/plugin/echo-protocol" }
-echo-agent = { path = "source/plugin/echo-agent" }
-echo-test-utils = { path = "source/plugin/echo-test-utils" }
-echo-plugin = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.14.0" }
-echo-plugin-api = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.14.0" }
-echo-plugin-host = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.14.0" }
-echo-plugin-adapter = { path = "source/plugin/echo-plugin-adapter" }
-echo-plugin-loader = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.14.0" }
-echo-plugin-provider-llm = { path = "source/plugin/echo-plugin-provider-llm" }
-echo-plugin-skills = { path = "source/plugin/echo-plugin-skills" }
-echo-plugin-federation = { path = "source/plugin/echo-plugin-federation" }
-echo-plugin-loop = { path = "source/plugin/echo-plugin-loop" }
-echo-plugin-self-update = { path = "source/plugin/echo-plugin-self-update" }
-echo-plugin-sanitize = { path = "source/plugin/echo-plugin-sanitize" }
-echo-plugin-shell = { path = "source/plugin/echo-plugin-shell" }
-echo-plugin-subagent = { path = "source/plugin/echo-plugin-subagent" }
-# 工作区会话插件已迁出为独立仓库 crate-workspace（业务逻辑全在那边，
-# Core 只做通用接线）；crate 名保持 echo-plugin-workspace 不变。
-echo-plugin-workspace = { git = "https://github.com/EchoLab-Auto/crate-workspace", branch = "main" }
-echo-plugin-management = { path = "source/plugin/echo-plugin-management" }
-echo-plugin-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", branch = "main" }
-echo-plugin-session = { path = "source/plugin/echo-plugin-session" }
-echo-plugin-transcript = { path = "source/plugin/echo-plugin-transcript" }
-echo-plugin-tools = { path = "source/plugin/echo-plugin-tools" }
-echo-federation = { path = "source/plugin/echo-federation" }
+echo-defs = { path = "source/modules/echo-defs" }
+echo-config = { path = "source/modules/echo-config" }
+echo-context = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
+echo-session = { path = "source/modules/echo-session" }
+echo-tool = { path = "source/modules/echo-tool" }
+echo-shell = { path = "source/modules/echo-shell" }
+echo-loop = { path = "source/modules/echo-loop" }
+echo-protocol = { path = "source/modules/echo-protocol" }
+echo-agent = { path = "source/modules/echo-agent" }
+echo-test-utils = { path = "source/modules/echo-test-utils" }
+echo-module = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
+echo-module-api = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
+echo-module-host = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
+echo-module-adapter = { path = "source/modules/echo-module-adapter" }
+echo-module-loader = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
+echo-module-provider-llm = { path = "source/modules/echo-module-provider-llm" }
+echo-module-skills = { path = "source/modules/echo-module-skills" }
+echo-module-federation = { path = "source/modules/echo-module-federation" }
+echo-module-loop = { path = "source/modules/echo-module-loop" }
+echo-module-self-update = { path = "source/modules/echo-module-self-update" }
+echo-module-sanitize = { path = "source/modules/echo-module-sanitize" }
+echo-module-shell = { path = "source/modules/echo-module-shell" }
+echo-module-subagent = { path = "source/modules/echo-module-subagent" }
+# 工作区会话模块已迁出为独立仓库 crate-workspace（业务逻辑全在那边，
+# Core 只做通用接线）；crate 名保持 echo-module-workspace 不变。
+echo-module-workspace = { git = "https://github.com/EchoLab-Auto/crate-workspace", branch = "main" }
+echo-module-management = { path = "source/modules/echo-module-management" }
+echo-module-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", branch = "main" }
+echo-module-session = { path = "source/modules/echo-module-session" }
+echo-module-transcript = { path = "source/modules/echo-module-transcript" }
+echo-module-tools = { path = "source/modules/echo-module-tools" }
+echo-federation = { path = "source/modules/echo-federation" }
 
 # async runtime
 tokio = { version = "1", features = ["full"] }

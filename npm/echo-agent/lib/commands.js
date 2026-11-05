@@ -66,7 +66,7 @@ function ensureDocker() {
   }
   if (!composeAvailable()) {
     throw new Error(
-      'docker compose 插件不可用。Docker Desktop 自带；Linux 请安装 docker-compose-plugin。',
+      'docker compose 模块不可用。Docker Desktop 自带；Linux 请安装 docker-compose-module。',
     );
   }
 }
@@ -192,13 +192,13 @@ export async function doctor({ dir }) {
     hardFailure = true;
   }
 
-  // compose 插件
+  // compose 模块
   if (dockerAvailable()) {
     if (composeAvailable()) {
       const version = await runCapture('docker', ['compose', 'version']);
       checks.push(['ok', 'docker compose', version.stdout.trim()]);
     } else {
-      checks.push(['fail', 'docker compose', '插件不可用（Linux 需 docker-compose-plugin）']);
+      checks.push(['fail', 'docker compose', '模块不可用（Linux 需 docker-compose-module）']);
       hardFailure = true;
     }
   }

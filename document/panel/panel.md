@@ -107,16 +107,16 @@ EchoAgentPanel/
 
 ### 多窗口语义
 
-多个浏览器窗口同时连 Panel 是**正常用法**（多标签页 = 多条 Core 连接）。每个窗口有独立的 `state`（`store.ts` 模块级 reactive 单例，天然 per-tab）与独立 WS 连接；串台的根因不是「共享了状态」，而是**把窗口态当成全局态**——「本窗口在看哪个视图/会话/Agent」只属于窗口，工作区 `active`、插件实例运行态、配置属于 Core。归属判据如下：
+多个浏览器窗口同时连 Panel 是**正常用法**（多标签页 = 多条 Core 连接）。每个窗口有独立的 `state`（`store.ts` 模块级 reactive 单例，天然 per-tab）与独立 WS 连接；串台的根因不是「共享了状态」，而是**把窗口态当成全局态**——「本窗口在看哪个视图/会话/Agent」只属于窗口，工作区 `active`、模块实例运行态、配置属于 Core。归属判据如下：
 
 | 类别 | 归属 | 跨窗口行为与实现 |
 | --- | --- | --- |
 | 视图与选择（当前视图 / 当前会话 / 当前 Agent / 草稿 / 滚动位置） | 窗口 | 内存 per-tab；持久化走 `tab-prefs.ts` 两层：`readPref` / `writePref` = 本标签页 `sessionStorage` 权威 + `localStorage` 作新标签默认（`echo-panel-view`、`echo-panel-active-team` / `-core`，新标签继承最近默认、刷新恢复自己）；`readTabOnly` / `writeTabOnly` = **严格 per-tab**（`echo-panel-session` 当前会话只写 `sessionStorage`，绝不被别的窗口继承） |
 | 边栏布局与列表宽 | 全部窗口 | 仍是共享 `localStorage` 键（`echo-panel-rail-cards` / `echo-panel-rail-layout` / `echo-panel-caps-list-width`）：**最后写者胜**，另一窗口刷新后才生效 |
-| 业务状态（teams / sessions / 时间线 / 活动 / 分支 / 清单 / 插件实例 / Shell） | Core | 同一事件广播给每条连接，各窗口按 `(core, team_id)` 过滤后渲染 |
+| 业务状态（teams / sessions / 时间线 / 活动 / 分支 / 清单 / 模块实例 / Shell） | Core | 同一事件广播给每条连接，各窗口按 `(core, team_id)` 过滤后渲染 |
 | **单槽服务器状态**（工作区 `active` / `active_conversation`） | Core（per-persona 单例） | **必须按来源区分**：本窗口发 `ActivateWorkspaceSession` 前登记意图（`workspace.ts::noteLocalActivateIntent`），回推时按 `(active, active_conversation)` 匹配并**一次性消费**（`takeLocalActivateIntent`，5s TTL + 对话维度严格匹配）；`decideOnWorkspaceBroadcast` 给三态——自己的激活 `follow`、他端变更 `keep`（只同步面板高亮与切换器激活标记）、本地通道失效 `reset` 到**中立默认会话**（`LOCAL_DEFAULT_SESSION`，不是 active 投影） |
 | 共享键（`echo-panel-token`、`echo-panel-trunk-cache`） | 全部窗口 | 令牌共享是设计；时间线缓存**合并写**——本窗口条目优先、预算余量内保留他窗口的 `(core, team)` 条目（`trunk-cache.ts::serializeTrunkCache` / `foreignTeamEntries`），`activeTeamKey` 读内存 `state.activeTeamId`（仅引导期回落共享默认键），两窗口不再互相冲掉「零等待首屏」 |
-| 服务端动作（启停插件实例 / 改配置 / 自更新 / 重启） | Core | 动作本身全局生效，**多窗口无从隔离**（属预期） |
+| 服务端动作（启停模块实例 / 改配置 / 自更新 / 重启） | Core | 动作本身全局生效，**多窗口无从隔离**（属预期） |
 
 广播型副作用另需三条同源过滤，否则「他端的操作」会以别种形态出现在本窗口：
 
@@ -172,5 +172,5 @@ cd web && npm run dev           # 前端热更新（/ws 代理到 :8080）
 
 - 前端文档群（本页之下三支）：
   - **呈现与参考**：[桌面端布局](./desktop-layout.md)（≥768px：外壳几何、层叠秩序、双侧边栏、连接生命周期）→ [桌面端模态与覆盖层](./desktop-overlays.md)；[移动端布局](./mobile-layout.md)（<768px：顶栏与视图菜单、入口行横滚、卡片 Sheet、安全区）→ [移动端模态与覆盖层](./mobile-overlays.md)；[图标体系](./icons.md)（载体 / 尺寸线宽档位 / 语义色 / 防回归）、[关键常量与设计边界](./constants.md)（跨视图常量速查 + 未接线命令清单）
-  - **功能与视图契约**：[交互定义](./interaction.md)（设备无关总入口）→ [会话视图](./chat.md)（消息区 → [列表](./chat-list.md)/[历史](./chat-history.md)/[时序](./chat-timeline.md)/[工作行](./chat-work.md) → [工具卡](./chat-tools.md)/[推理块](./chat-reasoning.md)；[输入区](./chat-input.md)、[入口行](./chat-entry.md)、[双侧边栏](./chat-rail.md)）、[设置视图](./settings.md)（[API](./settings-api.md)/[技能](./settings-skills.md)/[工具](./settings-tools.md)/[插件](./settings-plugins.md)/[智能体](./settings-agents.md)/[Core 与联邦](./settings-cores.md)/[日志与系统](./settings-logs.md)）、[实例管理·任务·Shell](./instance-tasks.md)、[系统反馈](./system.md)
+  - **功能与视图契约**：[交互定义](./interaction.md)（设备无关总入口）→ [会话视图](./chat.md)（消息区 → [列表](./chat-list.md)/[历史](./chat-history.md)/[时序](./chat-timeline.md)/[工作行](./chat-work.md) → [工具卡](./chat-tools.md)/[推理块](./chat-reasoning.md)；[输入区](./chat-input.md)、[入口行](./chat-entry.md)、[双侧边栏](./chat-rail.md)）、[设置视图](./settings.md)（[API](./settings-api.md)/[技能](./settings-skills.md)/[工具](./settings-tools.md)/[模块](./settings-modules.md)/[智能体](./settings-agents.md)/[Core 与联邦](./settings-cores.md)/[日志与系统](./settings-logs.md)）、[实例管理·任务·Shell](./instance-tasks.md)、[系统反馈](./system.md)
   - **跨主题**：[协议与数据流](../protocol/protocol.md)（WS 帧格式、命令与事件）、[部署与自更新](../ops/deploy.md)、[联邦（多机）](../federation/federation.md)

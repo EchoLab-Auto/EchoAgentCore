@@ -18,8 +18,8 @@ You can interact with the project's source code using these tools:
 - `bash-exec` — Run one command inside an existing session (`session_id` + `command`). Output streams to the Panel live; on timeout the session is **kept**, so you can poll again.
 - `bash-stop` — Stop a session and kill its whole process group (bash + all descendants, including background jobs).
 
-> 这三个工具由 `echo-agent.shell` 插件提供，只有该插件在人格白名单里才可用。
-> **不在白名单时**用下面「没有 shell 插件时」的写法，功能等价。
+> 这三个工具由 `echo-agent.shell` 模块提供，只有该模块在人格白名单里才可用。
+> **不在白名单时**用下面「没有 shell 模块时」的写法，功能等价。
 
 ## Long-running processes
 
@@ -38,7 +38,7 @@ You can interact with the project's source code using these tools:
   用户级 systemd 托管（`systemctl --user status/stop <名称>` 管理）——shell 会话
   是运行期资源，Core 重启即回收，刻意不承担跨重启职责
 
-### 没有 shell 插件时：`bash` 也能安全后台化
+### 没有 shell 模块时：`bash` 也能安全后台化
 
 `bash` 工具用 `wait_with_output()` 等 stdout 到 EOF，所以**裸 `&` 仍会阻塞到
 子进程结束**（实测 `(sleep 8; echo A) &` 阻塞满 8 秒）。必须**重定向 + 哨兵**，

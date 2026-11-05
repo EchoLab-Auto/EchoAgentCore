@@ -38,7 +38,7 @@
 | 行为测试 | `test/session/compaction.test.ts` | 36+ 用例（isOverflow:382、create:566、prune:626、process:814）；BUG 复现 455-545 |
 | 回滚交互 | `test/session/revert-compact.test.ts` | 压缩与 revert 的清理、消息边界 |
 | 用户文档：配置 | `packages/web/src/content/docs/config.mdx:747-765` | `compaction` 选项说明 |
-| 用户文档：插件钩子 | `packages/web/src/content/docs/plugins.mdx:337-395` | `experimental.session.compacting` 注入/替换 |
+| 用户文档：模块钩子 | `packages/web/src/content/docs/modules.mdx:337-395` | `experimental.session.compacting` 注入/替换 |
 | 用户文档：agent | `packages/web/src/content/docs/agents.mdx:95-100` | compaction agent 说明 |
 | v2 术语表 | 仓库根 `CONTEXT.md` | System Context / Context Epoch / Safe Provider-Turn Boundary 等 |
 

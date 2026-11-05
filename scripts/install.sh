@@ -188,28 +188,28 @@ derive_paths() {
     STATE_DIR="$STATE_HOME/echo-agent-core"
     SOURCE_DIR="$DATA_DIR/source"
     LIBEXEC_DIR="$PREFIX/libexec/echo-agent-core"
-    # 插件安装根（约定：`plugins/<包名>/<二进制>`，见插件开发指南「安装目录约定」）。
-    PLUGINS_DIR="$LIBEXEC_DIR/plugins"
+    # 模块安装根（约定：`modules/<包名>/<二进制>`，见模块开发指南「安装目录约定」）。
+    MODULES_DIR="$LIBEXEC_DIR/modules"
     BIN_DIR="$PREFIX/bin"
     CORE_CONFIG="$CONFIG_DIR/core.toml"
     STATUS_FILE="$STATE_DIR/update-status"
 }
 derive_paths "$HOME" 1
 
-# 随框架一起安装的**进程外插件二进制**：仓库内 `source/plugin/*` 中
+# 随框架一起安装的**进程外模块二进制**：仓库内 `source/modules/*` 中
 # `[[bin]] path = "src/main.rs"` 的 crate（`src/bin/*` 是测试夹具，不装）。
-# 守护测试 source/plugin/core/tests/install_script_flag.rs 比对本表与仓库实际；
-# 新增/删除可安装插件二进制时，本表与 update.sh 的 PLUGIN_BINARIES 同改。
-PLUGIN_BINARIES=()
+# 守护测试 source/modules/core/tests/install_script_flag.rs 比对本表与仓库实际；
+# 新增/删除可安装模块二进制时，本表与 update.sh 的 MODULE_BINARIES 同改。
+MODULE_BINARIES=()
 
 # 服务作用域（2026-10）：`user`（默认，`systemctl --user`）或 `system`
 # （`/etc/systemd/system`，`systemctl` 无 --user）。
 #
-# 为什么需要这个开关：自更新链路（`echo-plugin-self-update` 启动 updater 单元、
+# 为什么需要这个开关：自更新链路（`echo-module-self-update` 启动 updater 单元、
 # `update.sh` 重启 Core）此前把 `--user` 写死在代码里，于是**只有 user 作用域
 # 的自更新是通的**。system 作用域的老装法只能靠一个"假 systemctl"（PATH shim
 # 把 `--user` 抹掉）硬凑，core 自身那次调用还凑不上——按钮点了只会报错。
-# 现在作用域是一等参数：单元里注入 `ECHO_SERVICE_SCOPE`，插件与 update.sh 都
+# 现在作用域是一等参数：单元里注入 `ECHO_SERVICE_SCOPE`，模块与 update.sh 都
 # 读它，两条作用域都走真实路径，不再需要任何 shim。
 SERVICE_SCOPE=${ECHO_SERVICE_SCOPE:-user}
 # system 作用域下服务以谁的身份运行（本版本固定 root，见下方作用域解析）。
@@ -255,7 +255,7 @@ Options:
 
                         Both scopes are fully supported, including self-update:
                         the scope is recorded in the units as ECHO_SERVICE_SCOPE
-                        and read back by the self-update plugin and update.sh.
+                        and read back by the self-update module and update.sh.
   --service-user <name> Service account for system scope. Currently must be
                         root (default): the updater is a oneshot unit that has to
                         `systemctl restart` a system-wide unit, and only root can.
@@ -622,7 +622,7 @@ if [[ "$(uname -s)" != "Linux" ]]; then
     echo "error: the service installer currently supports Linux/systemd only" >&2
     exit 1
 fi
-install -d -m 755 "$BIN_DIR" "$LIBEXEC_DIR" "$PLUGINS_DIR" "$CONFIG_DIR" "$DATA_DIR" "$STATE_DIR" "$SYSTEMD_DIR"
+install -d -m 755 "$BIN_DIR" "$LIBEXEC_DIR" "$MODULES_DIR" "$CONFIG_DIR" "$DATA_DIR" "$STATE_DIR" "$SYSTEMD_DIR"
 
 if [[ ! -d "$SOURCE_DIR/.git" ]]; then
     echo "==> Creating managed source checkout"
@@ -674,10 +674,10 @@ if "${SYSTEMCTL[@]}" is-enabled --quiet echo-agent-core.service 2>/dev/null; the
     core_was_enabled=1
 fi
 build_args=(build --release --locked -p echo-agent-core)
-# 进程外插件二进制与 Core 同一次 cargo 调用构建（同一个 target 目录、
+# 进程外模块二进制与 Core 同一次 cargo 调用构建（同一个 target 目录、
 # 同一套 --locked / 镜像参数），避免第二轮解析依赖。
-for _plugin in "${PLUGIN_BINARIES[@]}"; do
-    build_args+=(-p "$_plugin")
+for _module in "${MODULE_BINARIES[@]}"; do
+    build_args+=(-p "$_module")
 done
 build_args+=(--manifest-path "$SOURCE_DIR/Cargo.toml")
 if [[ -n "$CRATES_MIRROR" ]]; then
@@ -734,8 +734,8 @@ snapshot_file "$BIN_DIR/echo-agent-core" "$ROLLBACK_DIR/launcher"
 snapshot_file "$SYSTEMD_DIR/echo-agent-core.service" "$ROLLBACK_DIR/core_unit"
 snapshot_file "$SYSTEMD_DIR/echo-agent-core-update.service" "$ROLLBACK_DIR/update_unit"
 snapshot_file "$CORE_CONFIG" "$ROLLBACK_DIR/core_config"
-for _plugin in "${PLUGIN_BINARIES[@]}"; do
-    snapshot_file "$PLUGINS_DIR/$_plugin/$_plugin" "$ROLLBACK_DIR/plugin-$_plugin"
+for _module in "${MODULE_BINARIES[@]}"; do
+    snapshot_file "$MODULES_DIR/$_modules/$_module" "$ROLLBACK_DIR/module-$_module"
 done
 snapshot_file "$STATE_DIR/installed-revision" "$ROLLBACK_DIR/revision"
 snapshot_file "$STATUS_FILE" "$ROLLBACK_DIR/status"
@@ -749,8 +749,8 @@ install_rollback() {
     if [[ "${INSTALL_TRANSACTION:-0}" == 1 ]]; then
         restore_file "$LIBEXEC_DIR/echo-agent-core-bin" "$ROLLBACK_DIR/binary"
         restore_file "$LIBEXEC_DIR/update.sh" "$ROLLBACK_DIR/updater"
-        for _plugin in "${PLUGIN_BINARIES[@]}"; do
-            restore_file "$PLUGINS_DIR/$_plugin/$_plugin" "$ROLLBACK_DIR/plugin-$_plugin"
+        for _module in "${MODULE_BINARIES[@]}"; do
+            restore_file "$MODULES_DIR/$_modules/$_module" "$ROLLBACK_DIR/module-$_module"
         done
         restore_file "$BIN_DIR/echo-agent-core" "$ROLLBACK_DIR/launcher"
         restore_file "$SYSTEMD_DIR/echo-agent-core.service" "$ROLLBACK_DIR/core_unit"
@@ -783,17 +783,17 @@ trap install_rollback ERR
 binary_temporary=$(mktemp "$LIBEXEC_DIR/echo-agent-core-bin.new.XXXXXX")
 install -m 755 "$SOURCE_DIR/target/release/echo-agent-core" "$binary_temporary"
 mv -f "$binary_temporary" "$LIBEXEC_DIR/echo-agent-core-bin"
-# 进程外插件二进制：`plugins/<包名>/<二进制>`——plugins.toml 的 command
-# 直接指这里。目录一次建好，便于用户往同一处放自己的插件。
-for _plugin in "${PLUGIN_BINARIES[@]}"; do
-    plugin_dir="$PLUGINS_DIR/$_plugin"
-    install -d -m 755 "$plugin_dir"
-    plugin_temporary=$(mktemp "$plugin_dir/$_plugin.new.XXXXXX")
-    install -m 755 "$SOURCE_DIR/target/release/$_plugin" "$plugin_temporary"
-    mv -f "$plugin_temporary" "$plugin_dir/$_plugin"
-    echo "==> Installed plugin binary: $plugin_dir/$_plugin"
+# 进程外模块二进制：`modules/<包名>/<二进制>`——modules.toml 的 command
+# 直接指这里。目录一次建好，便于用户往同一处放自己的模块。
+for _module in "${MODULE_BINARIES[@]}"; do
+    module_dir="$MODULES_DIR/$_module"
+    install -d -m 755 "$module_dir"
+    module_temporary=$(mktemp "$module_dir/$_module.new.XXXXXX")
+    install -m 755 "$SOURCE_DIR/target/release/$_module" "$module_temporary"
+    mv -f "$module_temporary" "$module_dir/$_module"
+    echo "==> Installed module binary: $module_dir/$_module"
 done
-unset _plugin plugin_dir plugin_temporary
+unset _module module_dir module_temporary
 updater_temporary=$(mktemp "$LIBEXEC_DIR/update.sh.new.XXXXXX")
 install -m 755 "$PROJECT_ROOT/scripts/update.sh" "$updater_temporary"
 mv -f "$updater_temporary" "$LIBEXEC_DIR/update.sh"
@@ -880,7 +880,7 @@ SERVICE_PATH=$(printf '%s\n' \
 # - `@SCOPE_LINES@`：system 作用域要显式声明运行身份与家目录（`User=`/
 #   `Group=`/`Environment=HOME=...`）。user 作用域里这些由用户管理器本身
 #   提供，写死反而会绑到错误的人。
-# - `@SCOPE_ENV@`：两条作用域都注入 `ECHO_SERVICE_SCOPE`——这是自更新插件
+# - `@SCOPE_ENV@`：两条作用域都注入 `ECHO_SERVICE_SCOPE`——这是自更新模块
 #   与 update.sh 判断该用 `systemctl` 还是 `systemctl --user` 的唯一依据，
 #   比起"运行时探测"更不容易猜错（探测在单元文件残留时会误判）。
 # - `@WANTED_BY@`：user=`default.target`，system=`multi-user.target`。

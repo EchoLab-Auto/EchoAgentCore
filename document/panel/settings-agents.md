@@ -8,7 +8,7 @@ y: 2600
 
 # 设置 · 智能体
 
-> **定位**：智能体（persona）编辑器——头部信息卡与三个折叠分区（基础信息 / 系统提示词 / 启用的能力）、粘性页脚与只读详情视图。清单与选中语义见[设置视图](./settings.md)「资源工作区通用契约」。读者：维护智能体配置界面的开发者；相关：[多 Agent 与会话](../core/agents.md)（persona 装配与能力隔离）、[设置 · API](./settings-api.md)（`api_profile` 引用）、[设置 · 插件](./settings-plugins.md)（插件与包来源）。
+> **定位**：智能体（persona）编辑器——头部信息卡与三个折叠分区（基础信息 / 系统提示词 / 启用的能力）、粘性页脚与只读详情视图。清单与选中语义见[设置视图](./settings.md)「资源工作区通用契约」。读者：维护智能体配置界面的开发者；相关：[多 Agent 与会话](../core/agents.md)（persona 装配与能力隔离）、[设置 · API](./settings-api.md)（`api_profile` 引用）、[设置 · 模块](./settings-modules.md)（模块与包来源）。
 
 ## 头部信息卡
 
@@ -21,7 +21,7 @@ y: 2600
 - **ID** 必填 + `/^[A-Za-z0-9_-]+$/`（编辑时锁定，留空回退为名称）
 - **名称**必填、描述
 - **启用开关**
-- **循环模式无开关**：唯一模式 = 同一会话的 turn 串行排队；`echo-agent.loop.single` 是进程级插件，不在人格能力白名单里（并行多会话已于 2026-11 删除）
+- **循环模式无开关**：唯一模式 = 同一会话的 turn 串行排队；`echo-agent.loop.single` 是进程级模块，不在人格能力白名单里（并行多会话已于 2026-11 删除）
 
 ## 系统提示词
 
@@ -29,18 +29,18 @@ y: 2600
 
 ## 启用的能力
 
-摘要 `N 插件 · N 工具 · N 技能`，空表显示「不限制（全部可用）」。四个子块以 `NeumorphismDivider` 分隔：
+摘要 `N 模块 · N 工具 · N 技能`，空表显示「不限制（全部可用）」。四个子块以 `NeumorphismDivider` 分隔：
 
 | 子块 | 候选与判定 |
 | --- | --- |
-| **插件** | **只读 Core 的 `PluginInfo.gating`**（`capabilities.ts::pluginCheckboxState` 三态）：`persona` → 可勾；`process` + `kind ∈ {management, interaction}` → **显示但置灰**（标签带「· 进程级」+ 一行说明）；其余 `process` → 不显示。Panel 不再维护插件清单——那份 `PACKAGE_GATED_PLUGIN_IDS` 与 Core 的手写真相必然漂移，已删除。旧 Core 不带该字段时退回 kind 类判定且一律可勾。标签显示中文 kind 名，单一来源 `capabilities.ts::PLUGIN_KIND_LABELS` |
+| **模块** | **只读 Core 的 `ModuleInfo.gating`**（`capabilities.ts::moduleCheckboxState` 三态）：`persona` → 可勾；`process` + `kind ∈ {management, interaction}` → **显示但置灰**（标签带「· 进程级」+ 一行说明）；其余 `process` → 不显示。Panel 不再维护模块清单——那份 `PACKAGE_GATED_MODULE_IDS` 与 Core 的手写真相必然漂移，已删除。旧 Core 不带该字段时退回 kind 类判定且一律可勾。标签显示中文 kind 名，单一来源 `capabilities.ts::MODULE_KIND_LABELS` |
 | **包（Package）** | 一次切换整包工具 + 技能，附成员清单与项数徽标；显示名单一来源 `capabilities.ts::PACKAGE_DISPLAY_NAMES` |
 | **工具** | 按分类分组，自适应多列 |
 | **技能** | 全部技能（含 Git 来源） |
 
-判定单一来源 = `capabilities.ts::isPluginCheckboxVisible`——UI 不自行推断候选集，避免与 Core 的门控语义分叉。
+判定单一来源 = `capabilities.ts::isModuleCheckboxVisible`——UI 不自行推断候选集，避免与 Core 的门控语义分叉。
 
-> 原「禁用的能力」（插件黑名单复选）分区已移除——插件维度只保留白名单（空表 = 全部启用，取消勾选即物化），既有黑名单配置由 Core 加载期物化进白名单；`disabled_tools` / `disabled_skills` 仍可在详情视图看到（error 色标签组）。
+> 原「禁用的能力」（模块黑名单复选）分区已移除——模块维度只保留白名单（空表 = 全部启用，取消勾选即物化），既有黑名单配置由 Core 加载期物化进白名单；`disabled_tools` / `disabled_skills` 仍可在详情视图看到（error 色标签组）。
 
 ## 保存、删除与详情视图
 

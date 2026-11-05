@@ -28,7 +28,7 @@ keywords: [自更新, 更新框架, 部署, update, 升级, 重启服务]
 直接启动的 updater 身处 `echo-agent-core.service` 的 cgroup：`systemctl
 restart` 清理 cgroup 会把它连带杀死（`setsid`/`nohup` 同 cgroup，救不了；
 已实测复发多次）。被杀的 updater 只剩「二进制替换 + 重启」：QQ 恢复 /
-revision 写入 / 插件校验 / 收尾写 `state=updated` 全跳过，需要人工补写。
+revision 写入 / 模块校验 / 收尾写 `state=updated` 全跳过，需要人工补写。
 瞬态单元处于**独立 cgroup**（与主服务平级，本机实测验证），restart 不牵连。
 
 ```bash
@@ -88,23 +88,23 @@ bash ~/.local/libexec/echo-agent-panel/update.sh \
 2. 启动时间：`systemctl --user show echo-agent-core --property=ActiveEnterTimestamp`
 3. 新二进制生效：比较二进制 mtime 与重启时间是否一致
    `ls -la ~/.local/libexec/echo-agent-core/echo-agent-core-bin`
-4. 功能符号：`strings <二进制> | grep -c "<新增标识>"`（如功能名、插件 id）
+4. 功能符号：`strings <二进制> | grep -c "<新增标识>"`（如功能名、模块 id）
 5. 启动日志：`journalctl --user -u echo-agent-core --no-pager -n 40`
    - 应看到 `agent supervisor ready agents=[...]`、
-     `plugins mounted plugins=[...]`、`sessions restored` 等行
+     `modules mounted modules=[...]`、`sessions restored` 等行
 6. 【回退路径】update-status 停在 state=running/restarting 且服务已重启：人工补写（用 systemd-run 启动时通常无需本节）。
    背景（已实际发生）：从 agent 的 shell 启动 update.sh 时，脚本身处
    echo-agent-core.service 的 cgroup——`systemctl restart` 清理 cgroup 会
    连带杀死 update.sh 自身（restart 阻塞期间被 SIGTERM），后续阶段
-   （restoring_qq / committing / verifying_plugins / 收尾写 updated）全部
+   （restoring_qq / committing / verifying_modules / 收尾写 updated）全部
    不执行。二进制已替换、服务已重启、QQ 自行重连，仅状态与收尾残留。
    人工补写清单（按成功收尾的实际格式）：
    - `installed-revision` ← `local:<HEAD 短 sha>`（有未提交改动时加 `+dirty`）
-   - `update-status` ← state=updated / phase=verifying_plugins /
+   - `update-status` ← state=updated / phase=verifying_modules /
      revision 同上 / message=installed successfully from local source /
      pid=<原 update.sh PID> / updated_at=<当前 UTC>
-   - 手动跑 verifying_plugins 等价校验：`strings <二进制>` 后逐个 grep 9 个
-     内置插件 id（清单见 ops/deploy.md）
+   - 手动跑 verifying_modules 等价校验：`strings <二进制>` 后逐个 grep 9 个
+     内置模块 id（清单见 ops/deploy.md）
    - 删除残留 `<binary>.rollback`（成功路径会删）
    - 同步核查：`diff scripts/update.sh ~/.local/libexec/echo-agent-core/update.sh`
      （refreshing_updater 阶段未执行的替代检查）

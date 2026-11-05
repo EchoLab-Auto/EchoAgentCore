@@ -1,0 +1,59 @@
+[package]
+name = "echo-agent"
+description = "EchoAgentCore agent framework — LLM providers, tools, skills, memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+echo-defs = { path = "../echo-defs" }
+echo-config = { workspace = true }
+echo-federation = { path = "../echo-federation" }
+echo-context = { workspace = true }
+echo-loop = { path = "../echo-loop" }
+echo-session = { path = "../echo-session" }
+echo-protocol = { path = "../echo-protocol" }
+echo-module = { workspace = true }
+echo-module-provider-llm = { workspace = true }
+echo-module-self-update = { workspace = true }
+echo-module-shell = { workspace = true }
+echo-module-federation = { workspace = true }
+echo-module-management = { workspace = true }
+echo-module-session = { workspace = true }
+echo-module-transcript = { workspace = true }
+echo-module-skills = { workspace = true }
+echo-module-loop = { workspace = true }
+echo-tool = { workspace = true }
+echo-shell = { workspace = true }
+echo-module-tools = { workspace = true }
+echo-module-subagent = { workspace = true }
+echo-module-sanitize = { workspace = true }
+echo-module-workspace = { workspace = true }
+tokio.workspace = true
+parking_lot = "0.12"
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+dashmap.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+walkdir.workspace = true
+regex.workspace = true
+toml.workspace = true
+tokio-util.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# bash 进程组清理（ChildGroupGuard 向进程组发 SIGKILL）。
+libc = "0.2"
+
+[dev-dependencies]
+filetime = "0.2"
+echo-test-utils = { path = "../echo-test-utils" }
+proptest = "1"

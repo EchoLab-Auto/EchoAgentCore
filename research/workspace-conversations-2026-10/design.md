@@ -4,7 +4,7 @@
 > **背景**：当前一个工作区 = 一条本地通道会话（`local:workspace:<ws_id>:local_user`，
 > 1:1 映射）。用户场景：同一项目里并行推进多条任务线，各自独立上下文
 > （类�� ChatGPT 的「项目 vs 会话」）。
-> **读者**：维护 workspace 插件 / 会话体系 / 面板的开发者。
+> **读者**：维护 workspace 模块 / 会话体系 / 面板的开发者。
 > 相关：[多 Agent 与会话](../../document/core/core-agents.md)§工作区会话与项目通道。
 >
 > **v2 修订说明**：v1 的「默认对话（main）特权」被用户质疑后重审——结论是
@@ -35,7 +35,7 @@
 ```
 
 - `SessionKey` 结构**不动**：`scope_id` 直接携带 `<ws_id>/<conv_id>` 字符串，
-  消费方（workspace 插件、面板分组）以 `split_once('/')` 拆分。
+  消费方（workspace 模块、面板分组）以 `split_once('/')` 拆分。
   `SessionKey::parse` 用 `splitn(4, ':')`，`/` 不与冒号冲突；
   `slugify` 只产出 `[a-z0-9-]`（`mod.rs:333`），`/` 天然不出现在 id 中，
   无解析歧义。conv_id 同样 slug 化，且门禁不允许 `/`。

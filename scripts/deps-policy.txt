@@ -2,7 +2,7 @@
 #
 # 两处门禁共读本文件，避免「CI 绿但实际越界」：
 #   - `scripts/check-deps.sh`（CI 的 dependency-direction-lint job，纯 bash）
-#   - `source/plugin/core/tests/plugin_dependency_direction.rs`（cargo test）
+#   - `source/modules/core/tests/module_dependency_direction.rs`（cargo test）
 #
 # 格式：`<source/ 下相对目录> <允许的 echo-* 依赖...>`（空白分隔）
 #   - 空行与 `#` 注释被忽略；
@@ -12,17 +12,17 @@
 # 纪律：
 #   1. **新增 crate 必须登记**——两处门禁都会报「未登记」并失败（fail-closed），
 #      忘登记不会静默放行；
-#   2. **`echo-agent`（业务 crate）只允许出现在 `plugin/core`**（组合根）；
+#   2. **`echo-agent`（业务 crate）只允许出现在 `modules/core`**（组合根）；
 #      `echo-agent-core` 是二进制名，不应被任何 crate 依赖；
-#   3. 方向只向下：定义层 → 机制层 → 插件层 → 宿主 → 组合根。想在插件里用
+#   3. 方向只向下：定义层 → 机制层 → 模块层 → 宿主 → 组合根。想在模块里用
 #      框架能力，走服务键 / `HostCall` / trait 注入，而不是 `use echo_agent::…`。
-#   4. **插件之间互不依赖**（2026-11 S12）。想共用类型 = 那个类型该下沉到
+#   4. **模块之间互不依赖**（2026-11 S12）。想共用类型 = 那个类型该下沉到
 #      `echo-defs`（它是"跨边界词汇"）；想调用能力 = 走服务键。允许的例外
-#      只有机制 crate：`echo-plugin` / `echo-plugin-api` / `echo-plugin-host`
-#      / `echo-plugin-sdk` / `echo-plugin-loader`——它们是"插件怎么装"，
-#      不是"某个插件"。
+#      只有机制 crate：`echo-module` / `echo-module-api` / `echo-module-host`
+#      / `echo-module-sdk` / `echo-module-loader`——它们是"模块怎么装"，
+#      不是"某个模块"。
 #
-#      为什么这条要写死：2026-11 实测有 4 处插件互依赖（federation → subagent
+#      为什么这条要写死：2026-11 实测有 4 处模块互依赖（federation → subagent
 #      / tools / workspace，tools → provider-llm），全部是"一个 trait/struct
 #      长在了错的一边"。它们一直能编译、一直没人拦——于是想替换 federation
 #      就必须先接受 subagent。收紧后同类问题在 `cargo build` 就红。
@@ -31,39 +31,39 @@
 # document/design/decoupling-plan.md。
 
 # ── 定义层（零 echo-* 依赖）────────────────────────────────────────────
-plugin/echo-defs
+modules/echo-defs
 
-# ── kernel 插件（只依赖底座）────────────────────────────────────────────────
-plugin/echo-session                        echo-defs echo-plugin
-plugin/echo-loop                           echo-context echo-defs echo-plugin
-plugin/echo-protocol                       echo-context echo-defs echo-plugin
-plugin/echo-tool                           echo-context echo-defs echo-plugin echo-test-utils
-plugin/echo-shell                          echo-context echo-defs echo-plugin echo-protocol echo-tool
-plugin/echo-federation                     echo-defs echo-plugin
-plugin/echo-config
-plugin/echo-test-utils                     echo-defs
+# ── kernel 模块（只依赖底座）────────────────────────────────────────────────
+modules/echo-session                        echo-defs echo-module
+modules/echo-loop                           echo-context echo-defs echo-module
+modules/echo-protocol                       echo-context echo-defs echo-module
+modules/echo-tool                           echo-context echo-defs echo-module echo-test-utils
+modules/echo-shell                          echo-context echo-defs echo-module echo-protocol echo-tool
+modules/echo-federation                     echo-defs echo-module
+modules/echo-config
+modules/echo-test-utils                     echo-defs
 
-# ── 插件机制层 ─────────────────────────────────────────────────────────
-# host 只认协议：领域适配（RemoteTool / RemoteInstance）已迁到 echo-plugin-adapter。
-# 领域适配层：把协议贡献翻译成 echo-defs 的 Tool / PluginInstance trait。
-# 宿主保持领域中立（只认 echo-plugin-api），故适配器单独成 crate。
-plugin/echo-plugin-adapter                 echo-plugin-host echo-plugin-api echo-defs
+# ── 模块机制层 ─────────────────────────────────────────────────────────
+# host 只认协议：领域适配（RemoteTool / RemoteInstance）已迁到 echo-module-adapter。
+# 领域适配层：把协议贡献翻译成 echo-defs 的 Tool / ModuleInstance trait。
+# 宿主保持领域中立（只认 echo-module-api），故适配器单独成 crate。
+modules/echo-module-adapter                 echo-module-host echo-module-api echo-defs
 
-# ── Phase 3 外迁的内置插件 ─────────────────────────────────────────────
-plugin/echo-plugin-provider-llm            echo-config echo-context echo-defs echo-plugin echo-protocol
-plugin/echo-plugin-skills                  echo-defs echo-context echo-plugin echo-protocol
-plugin/echo-plugin-self-update             echo-context echo-plugin echo-protocol
-plugin/echo-plugin-federation              echo-defs echo-context echo-federation echo-plugin echo-protocol echo-tool
-plugin/echo-plugin-loop                    echo-context echo-defs echo-loop echo-plugin echo-plugin-api echo-session
-plugin/echo-plugin-subagent                echo-defs echo-federation echo-protocol echo-tool
-plugin/echo-plugin-management              echo-plugin echo-context echo-defs echo-federation echo-protocol echo-session
-plugin/echo-plugin-session                 echo-context echo-defs echo-plugin echo-protocol echo-session
-plugin/echo-plugin-sanitize                echo-context echo-defs echo-plugin
-plugin/echo-plugin-transcript              echo-context echo-defs echo-plugin echo-protocol echo-session
-plugin/echo-plugin-tools                   echo-config echo-context echo-defs echo-plugin echo-protocol echo-shell echo-test-utils echo-tool
-plugin/echo-plugin-shell                   echo-context echo-defs echo-plugin echo-protocol echo-shell echo-tool
+# ── Phase 3 外迁的内置模块 ─────────────────────────────────────────────
+modules/echo-module-provider-llm            echo-config echo-context echo-defs echo-module echo-protocol
+modules/echo-module-skills                  echo-defs echo-context echo-module echo-protocol
+modules/echo-module-self-update             echo-context echo-module echo-protocol
+modules/echo-module-federation              echo-defs echo-context echo-federation echo-module echo-protocol echo-tool
+modules/echo-module-loop                    echo-context echo-defs echo-loop echo-module echo-module-api echo-session
+modules/echo-module-subagent                echo-defs echo-federation echo-protocol echo-tool
+modules/echo-module-management              echo-module echo-context echo-defs echo-federation echo-protocol echo-session
+modules/echo-module-session                 echo-context echo-defs echo-module echo-protocol echo-session
+modules/echo-module-sanitize                echo-context echo-defs echo-module
+modules/echo-module-transcript              echo-context echo-defs echo-module echo-protocol echo-session
+modules/echo-module-tools                   echo-config echo-context echo-defs echo-module echo-protocol echo-shell echo-test-utils echo-tool
+modules/echo-module-shell                   echo-context echo-defs echo-module echo-protocol echo-shell echo-tool
 
-# ── 业务库与组合根（同处 plugin/，但不是能力插件）─────────────────────────────────────────────────────
+# ── 业务库与组合根（同处 modules/，但不是能力模块）─────────────────────────────────────────────────────
 # echo-agent 是业务 crate：**只有组合根可以依赖它**。
-plugin/echo-agent                          echo-config echo-shell echo-context echo-plugin-shell echo-defs echo-federation echo-plugin-federation echo-plugin-management echo-plugin-session echo-plugin-transcript echo-loop echo-plugin echo-plugin-loop echo-plugin-provider-llm echo-plugin-sanitize echo-plugin-self-update echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-session echo-test-utils echo-tool
-plugin/core                                echo-agent echo-config echo-context echo-plugin-shell echo-defs echo-shell echo-tool echo-federation echo-loop echo-plugin echo-plugin-adapter echo-plugin-federation echo-plugin-host echo-plugin-loader echo-plugin-loop echo-plugin-management echo-plugin-panel echo-plugin-provider-llm echo-plugin-sanitize echo-plugin-session echo-plugin-transcript echo-plugin-self-update echo-plugin-skills echo-plugin-subagent echo-plugin-tools echo-plugin-workspace echo-protocol echo-session
+modules/echo-agent                          echo-config echo-shell echo-context echo-module-shell echo-defs echo-federation echo-module-federation echo-module-management echo-module-session echo-module-transcript echo-loop echo-module echo-module-loop echo-module-provider-llm echo-module-sanitize echo-module-self-update echo-module-skills echo-module-subagent echo-module-tools echo-module-workspace echo-protocol echo-session echo-test-utils echo-tool
+modules/core                                echo-agent echo-config echo-context echo-module-shell echo-defs echo-shell echo-tool echo-federation echo-loop echo-module echo-module-adapter echo-module-federation echo-module-host echo-module-loader echo-module-loop echo-module-management echo-module-panel echo-module-provider-llm echo-module-sanitize echo-module-session echo-module-transcript echo-module-self-update echo-module-skills echo-module-subagent echo-module-tools echo-module-workspace echo-protocol echo-session

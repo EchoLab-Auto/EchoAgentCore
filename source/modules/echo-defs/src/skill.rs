@@ -1,0 +1,72 @@
+//! The skill seam — vocabulary types and the provider trait.
+//!
+//! A skill is a SKILL.md-driven capability with progressive disclosure:
+//! Tier-1 metadata (name + description + keywords) is always cheap to load
+//! into the system prompt; Tier-2 full instructions load when the skill
+//! triggers. The concrete file discovery/loader lives in a provider crate,
+//! never here.
+
+/// Skill metadata (Tier 1 — cheap, always loaded).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillMetadata {
+    pub name: String,
+    pub description: String,
+    /// Keywords that trigger this skill when they appear in a message.
+    pub keywords: Vec<String>,
+    /// Whether this skill is included in every conversation.
+    pub always: bool,
+    /// 系统提示词 skill：内容注入 base 区（身份/规则）。任意 SKILL.md
+    /// 声明 `system: true` 即成为可插拔系统提示词的一部分。
+    pub system: bool,
+    pub enabled: bool,
+    /// UI grouping category (empty = "未分类" on the frontend).
+    pub category: String,
+    /// Owning package id (from SKILL.md frontmatter `package:`); None = standalone.
+    pub package: Option<String>,
+}
+
+/// A loaded skill definition (Tier 2 — full instructions).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skill {
+    pub metadata: SkillMetadata,
+    pub instructions: String,
+}
+
+impl Skill {
+    /// Build a skill directly from parts (used by builtin skill modules and
+    /// tests; file-based discovery goes through the loader instead).
+    pub fn direct(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        keywords: Vec<String>,
+        always: bool,
+        category: impl Into<String>,
+        instructions: impl Into<String>,
+    ) -> Self {
+        Self {
+            metadata: SkillMetadata {
+                name: name.into(),
+                description: description.into(),
+                keywords,
+                always,
+                system: false,
+                enabled: true,
+                category: category.into(),
+                package: None,
+            },
+            instructions: instructions.into(),
+        }
+    }
+
+    /// Whether a message triggers this skill (keyword match, case-insensitive).
+    pub fn matches(&self, content: &str) -> bool {
+        if !self.metadata.enabled {
+            return false;
+        }
+        let lower = content.to_lowercase();
+        self.metadata
+            .keywords
+            .iter()
+            .any(|k| !k.is_empty() && lower.contains(&k.to_lowercase()))
+    }
+}

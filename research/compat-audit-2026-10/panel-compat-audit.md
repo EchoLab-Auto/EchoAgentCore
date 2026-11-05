@@ -39,7 +39,7 @@
 
 - web/src/protocol.ts:193-196 — `TeamInfo.orchestration_mode`「旧字段（过渡期兼容）：parallel 记为 'chatbot'」 — [REMOVE]
 - web/src/protocol.ts:201-206 — `loopModeOf`：旧字段 `chatbot → parallel` 兜底 — [REMOVE]
-- web/src/protocol.ts:211-219 — `LEGACY_MODE_PLUGIN_IDS`（旧编排/驱动插件 id，保存防御用） — [REMOVE]
+- web/src/protocol.ts:211-219 — `LEGACY_MODE_MODULE_IDS`（旧编排/驱动模块 id，保存防御用） — [REMOVE]
 - web/src/protocol.ts:336-337 — `TimelineTool.tool_call_id`「旧 core 无此字段，回退按名配对」 — [REMOVE]
 - web/src/protocol.ts:340-343 — `started_at_ms` / `elapsed_ms`「新 core 提供」——旧 core 缺失 — [REMOVE]
 - web/src/protocol.ts:355-356 — `TimelineMessage.seq` 可选「新 core 提供」 — [REMOVE]
@@ -47,9 +47,9 @@
 - web/src/protocol.ts:607 — `TrunkTimeline` 的 `seq?` / `full?` 可选（`full` 缺省时前端走旧启发式） — [REMOVE]
 - web/src/protocol.ts:658-661 — `ApiBalanceResult.granted` / `topped_up`「旧 Core 可能缺省」 — [REMOVE]
 
-## 前端：循环模式旧插件 id
+## 前端：循环模式旧模块 id
 
-- web/src/loop-mode.ts:13,18-22 — `PARALLEL_IDS` 含 `LEGACY_MODE_PLUGIN_IDS`（任一旧 id → parallel） — [REMOVE]
+- web/src/loop-mode.ts:13,18-22 — `PARALLEL_IDS` 含 `LEGACY_MODE_MODULE_IDS`（任一旧 id → parallel） — [REMOVE]
 - web/src/loop-mode.ts:30,53-55 — `stripLegacyModeIds` 保存防御（注释：core 也会迁移映射） — [REMOVE]
 - web/src/__tests__/loop-mode.test.ts:18-21 — 测试：任一 legacy 模式 id 推导为 parallel — [REMOVE]
 - web/src/__tests__/loop-mode.test.ts:47-49 — 测试：`stripLegacyModeIds` 剔除 retired ids — [REMOVE]

@@ -18,7 +18,7 @@ y: 4040
 | 层 | 回答的问题 | 代表文档 |
 |---|---|---|
 | 总览层 | 这是什么、从哪读起 | `index`、`architecture` |
-| 机制层 | 系统如何组成与运转（机制、不变量、边界） | `core`、`frame`、`plugins` |
+| 机制层 | 系统如何组成与运转（机制、不变量、边界） | `core`、`frame`、`modules` |
 | 子系统层 | 某个能力如何设计与实现 | `agents`、`tools`、`chat`、`settings-*` |
 | 细节/操作层 | 怎么用、怎么运维、精确参考 | `protocol`、`deploy`、`testing` |
 
@@ -35,18 +35,18 @@ y: 4040
 | 根目录 | `index`（入口）、`documentation-guide`（本规范） | 总览 / 工程 |
 | `overview/` | 架构总览与骨架 | 总览 |
 | `core/` | 内核与运行时子系统（`frame`、`agent-loop`、`agents`、`memory`、`multimodal`、`config-persistence`、`logging`、`security-redaction`） | Core |
-| `plugins/` | 插件体系入口 + **每个插件一篇**（一插件一文档）+ 插件开发指南 | Core |
-| `federation/` | 联邦（多机去中心化）——它是 `echo-agent.federation` 插件的文档，按主题独立成目录 | Core |
+| `modules/` | 模块体系入口 + **每个模块一篇**（一模块一文档）+ 模块开发指南 | Core |
+| `federation/` | 联邦（多机去中心化）——它是 `echo-agent.federation` 模块的文档，按主题独立成目录 | Core |
 | `protocol/` | 前后端线协议 | 工程 |
 | `panel/` | Panel 前端与各视图契约 | 前端 |
 | `ops/` | 部署与运维 | 工程 |
 | `dev/` | 开发与测试规范 | 工程 |
 
-**为什么 `core/` 与 `plugins/` 同属一个组**：框架本身就是插件化设计的——`core` 由「框架（内核）」与「插件化设计」两支组成（见 [Core 后端](./core/core.md)「Core 的组成」）。把二者拆成两个并列的顶层分组，等于在画布上宣称"框架不是插件化的、插件是框架之外的东西"，与实现相反。画布上它们仍是 Core 组内的两条分支列（内核列 / 插件列，中间留一列空位），层级关系由 `core → frame → 子系统`、`core → plugins → 各插件` 两张连线网表达。
+**为什么 `core/` 与 `modules/` 同属一个组**：框架本身就是模块化设计的——`core` 由「框架（内核）」与「模块化设计」两支组成（见 [Core 后端](./core/core.md)「Core 的组成」）。把二者拆成两个并列的顶层分组，等于在画布上宣称"框架不是模块化的、模块是框架之外的东西"，与实现相反。画布上它们仍是 Core 组内的两条分支列（内核列 / 模块列，中间留一列空位），层级关系由 `core → frame → 子系统`、`core → modules → 各模块` 两张连线网表达。
 
-**插件树是一比一的**：`plugins.md` 的表格必须逐项覆盖 `BUILTIN_PLUGIN_IDS` 的全部 22 项 + 实例插件 `echo-agent.instance.qq`，且每项都带一个**可达的文档链接**。判据不是「值不值得写一篇」，而是「插件树要能被逐项核对」——一个 id 在表里但没有树节点，读者就无法从那棵树走到它的契约；反过来，画布上多出一个不对应任何插件的节点，说明它在清单里没有位置。
+**模块树是一比一的**：`modules.md` 的表格必须逐项覆盖 `BUILTIN_MODULE_IDS` 的全部 22 项 + 实例模块 `echo-agent.instance.qq`，且每项都带一个**可达的文档链接**。判据不是「值不值得写一篇」，而是「模块树要能被逐项核对」——一个 id 在表里但没有树节点，读者就无法从那棵树走到它的契约；反过来，画布上多出一个不对应任何模块的节点，说明它在清单里没有位置。
 
-唯一的合并是 `kernel`：9 个 `kind = kernel` 插件（`defs` / `config` / `protocol` / `session` / `tool` / `shell` / `federation` / `sanitize` / `loop`）共用 [运行地基](./plugins/kernel.md) 一篇。它们的分界判据完全一致（都是"别人的运行地基"、都禁不掉），逐篇会得到 9 份几乎相同的「纯身份声明」——合并成一篇讲共性，逐个职责用一张表列。**其余 14 项一 id 一篇**。
+唯一的合并是 `kernel`：9 个 `kind = kernel` 模块（`defs` / `config` / `protocol` / `session` / `tool` / `shell` / `federation` / `sanitize` / `loop`）共用 [运行地基](./modules/kernel.md) 一篇。它们的分界判据完全一致（都是"别人的运行地基"、都禁不掉），逐篇会得到 9 份几乎相同的「纯身份声明」——合并成一篇讲共性，逐个职责用一张表列。**其余 14 项一 id 一篇**。
 
 ### 三条结构不变量（`tools/prodoc_layout.py` 装配期即拦）
 
@@ -58,9 +58,9 @@ y: 4040
 | **无多父** | 同一个框被两条 `link` 指向，它有两个"上家"，树不再是树 | `doc b 有多个父节点（a / c）` |
 | **无孤立根** | `index` 之外的框没有入边，就漂在画布上，读者从入口走不到它 | （由"根 = index 唯一"的布局规则暴露） |
 
-最常见的违反方式是**写背链**：在子文档里写下指回父文档的 `link`（`sanitize → plugins`）。这不是"补一条反向导航"，而是把父文档变成子文档的子节点。**要表达「相关」就走正文相对链接**，参数区留空。
+最常见的违反方式是**写背链**：在子文档里写下指回父文档的 `link`（`sanitize → modules`）。这不是"补一条反向导航"，而是把父文档变成子文档的子节点。**要表达「相关」就走正文相对链接**，参数区留空。
 
-每篇插件文档的**必答四问**（各占一节，节名可变，2–6 条 H2 的约束不变）：
+每篇模块文档的**必答四问**（各占一节，节名可变，2–6 条 H2 的约束不变）：
 
 | 必答 | 内容 |
 |---|---|
@@ -69,9 +69,9 @@ y: 4040
 | **启停与门控** | persona 白名单还属进程级、有没有自锁、全局关掉的实际效果 |
 | **边界** | 它不做什么，以及对应的机制细节去哪篇读 |
 
-外加一节「**为什么是独立插件**」——它与相邻插件的分界判据。**这一节不是锦上添花**：一个插件说不清"为什么不能并进别人"，通常说明它还不该独立。
+外加一节「**为什么是独立模块**」——它与相邻模块的分界判据。**这一节不是锦上添花**：一个模块说不清"为什么不能并进别人"，通常说明它还不该独立。
 
-**机制原理不写进插件文档**——那属于对应子系统（Shell 的进程组生命周期在 `plugins/tools.md`，压缩算法在 `core/agent-loop.md`，脱敏算法在 `core/security-redaction.md`），插件文档只回答「这个可插拔单位长什么样」。例外是**该机制只在这里写过**（`skills` / `subagent` / `qq-gating` 三篇同时承担机制文档），此时按机制文档的体例写，四问仍须覆盖。
+**机制原理不写进模块文档**——那属于对应子系统（Shell 的进程组生命周期在 `modules/tools.md`，压缩算法在 `core/agent-loop.md`，脱敏算法在 `core/security-redaction.md`），模块文档只回答「这个可插拔单位长什么样」。例外是**该机制只在这里写过**（`skills` / `subagent` / `qq-gating` 三篇同时承担机制文档），此时按机制文档的体例写，四问仍须覆盖。
 
 `group` 与「四层」（总览 / 机制 / 子系统 / 细节）**不是一回事**：四层是**阅读距离**（决定写作口吻与细节密度），`group` 是**画布分区**（决定位置）。一篇「机制层」文档可以落在 `Core` 组，也可以落在 `工程` 组。
 
@@ -81,9 +81,9 @@ y: 4040
 
 | 规则 | 示例 |
 |---|---|
-| 入口页与目录同名 | `core/core.md`、`panel/panel.md`、`plugins/plugins.md` |
+| 入口页与目录同名 | `core/core.md`、`panel/panel.md`、`modules/modules.md` |
 | 文件名 = 目录内语义名，语义前缀保留、目录前缀去掉 | `panel/chat-list.md`、`panel/settings-tools.md`、`core/agent-loop.md`、`ops/deploy.md` |
-| 插件文档按插件短名命名（去掉公共前缀 `echo-agent.`） | `echo-agent.shell` → `plugins/shell.md`、`echo-agent.provider.llm` → `plugins/provider-llm.md` |
+| 模块文档按模块短名命名（去掉公共前缀 `echo-agent.`） | `echo-agent.shell` → `modules/shell.md`、`echo-agent.provider.llm` → `modules/provider-llm.md` |
 | `id` 恒等于文件名（不含 `.md`），全群唯一 | `chat-list`、`agent-loop`、`deploy` |
 
 `id` 与文件名绑定后，**改文件名 = 改 id**：`link` 连线与正文相对链接都要同步改（画布坐标、`group` 不受影响）。门禁见下方检查清单。
@@ -102,7 +102,7 @@ y: 4040
 
 定位段 → 系统结构一览（图或清单）→ 阅读路径 → 延伸链接。短小，只做导航与导语。
 
-#### 框架 / 机制（frame、plugins、agents、memory）
+#### 框架 / 机制（frame、modules、agents、memory）
 
 定位段 → 概念模型（原则、术语、边界）→ 机制（运作方式、生命周期）→ 参考（表格）。不写具体实现位置。
 
@@ -139,7 +139,7 @@ y: 4040
 `index.md` 的「导航地图」flow 是**主干的权威定义**；画布参数区必须与它一致，否则正文与图各说一套。
 
 - **link = 主干导航**（父 → 它的直接子文档）。交叉引用一律走正文相对链接，不进参数区
-- 判据不是「物理目录」，而是 **`index.md` flow 里的父子边**：`core → plugins`、`plugins → federation`、`guide → documentation-guide` 这类跨目录边是合法的（逻辑层级 ≠ 目录层级）；反过来，同目录兄弟互链（`desktop-layout → chat`）不合法
+- 判据不是「物理目录」，而是 **`index.md` flow 里的父子边**：`core → modules`、`modules → federation`、`guide → documentation-guide` 这类跨目录边是合法的（逻辑层级 ≠ 目录层级）；反过来，同目录兄弟互链（`desktop-layout → chat`）不合法
 - 新增一条 link 前先看 flow：flow 里没有这条边，就不要加
 - 子节点是否互链：**由该层的入口文档统一导航**，子节点之间不互链（避免画布上出现横七竖八的兄弟边）
 
@@ -162,12 +162,12 @@ python3 tools/prodoc_layout.py --write --verify   # 落盘并按真实渲染几�
 | 组内 y 层距 | **160**（同层）/ **280**（跨层） | 同层并列用 160；父子分层用 280，给连接边留弧顶 |
 | 同排多子 | 从左到右按 fork 顺序 | 与正文清单顺序对齐，读者能靠位置记住 |
 | 组根位置 | 贴本组**左边界**（`x = 960`），左侧留出 `index` 扇出通道 | 组根是跨组边的落点；只有它的左边界固定，长边才能走空通道而不穿框 |
-| 父节点对齐 | `Core` **左对齐**（贴子群最左）；`前端` **居中**（落子群正中） | Core 是双主干（内核列 / 插件列），左对齐让主干连成一条竖线；前端是多叉树，居中避免长斜边 |
+| 父节点对齐 | `Core` **左对齐**（贴子群最左）；`前端` **居中**（落子群正中） | Core 是双主干（内核列 / 模块列），左对齐让主干连成一条竖线；前端是多叉树，居中避免长斜边 |
 
 三个例外是设计出来的，不是随手摆的：
 
 - `index` 独占左上角（`x = 160`），六条出边统一从**右边界**离开（`r>l`），沿通道下行后各自进组根；`architecture` 在它正下方
-- `Core` 的两条分支列之间**空一整列**（内核列 `960..2560`，插件列 `3200..4800`）——留出间隔，"两支同属 Core"才看得出来；不留空位时 12 个框连成一排，读者只能靠连线猜分组
+- `Core` 的两条分支列之间**空一整列**（内核列 `960..2560`，模块列 `3200..4800`）——留出间隔，"两支同属 Core"才看得出来；不留空位时 12 个框连成一排，读者只能靠连线猜分组
 - `工程` 组的三个根（`protocol` / `deploy` / `guide`）**同层竖排**在同一列（`x = 960`，`y` 步距 160）——它们都要落在通道右边界上，否则根到远端组的长边会横穿中间组带
 
 ### 连接边：只在避障时显式写
@@ -179,7 +179,7 @@ python3 tools/prodoc_layout.py --write --verify   # 落盘并按真实渲染几�
 | 边 | 写法 | 为什么 |
 | --- | --- | --- |
 | `index → core / panel / protocol / deploy / guide` | `r>l` | 从 `index` 右边界出发、沿左侧通道下行，进组根左边界；通道内无框，曲线不可能穿框 |
-| `core → plugins` | `b>t` | `frame` 与 `plugins` 同层、同在 `core` 之下；`b>t` 让两支并列成扇形，而自动选边会判成左右相接，让 `frame` 被绕过 |
+| `core → modules` | `b>t` | `frame` 与 `modules` 同层、同在 `core` 之下；`b>t` 让两支并列成扇形，而自动选边会判成左右相接，让 `frame` 被绕过 |
 
 判断方法：按两框中心算，`|Δy| ≥ |Δx|` 走上下、否则走左右；若这条曲线在途中扫到别的框，就换边。**能靠通道解决的，不要靠挪框解决**——一旦为某条边挪动组带，全部组的对齐都跟着散。
 
@@ -213,12 +213,12 @@ python3 tools/prodoc_layout.py --verify --from-disk   # 校验磁盘上的现有
 
 | 文件 | 生成源 | 刷新 |
 | --- | --- | --- |
-| `plugins/tool-catalog.md` | `echo-agent::tool::builtin::build_registry` 的真实注册表 | `UPDATE_DOCS=1 cargo test -p echo-agent-core --test doc_catalog` |
+| `modules/tool-catalog.md` | `echo-agent::tool::builtin::build_registry` 的真实注册表 | `UPDATE_DOCS=1 cargo test -p echo-agent-core --test doc_catalog` |
 
 约定：
 
 - 文件首行带 `<!-- 自动生成，请勿手改：<源> -->` 注释——看到它就改代码后重跑生成；
-- 门禁在 `source/plugin/core/tests/doc_catalog.rs`：**工具目录新鲜度** + **内置插件 id 不许漏**（`BUILTIN_PLUGIN_IDS` 每项必须出现在 `plugins.md`）+ **相对链接可达**（`document/` 全树死链检查）；
+- 门禁在 `source/modules/core/tests/doc_catalog.rs`：**工具目录新鲜度** + **内置模块 id 不许漏**（`BUILTIN_MODULE_IDS` 每项必须出现在 `modules.md`）+ **相对链接可达**（`document/` 全树死链检查）；
 - 生成只覆盖整份文件：想写人工说明就写进相邻的散文文档（如 `tools.md`），不要在生成文件里加章节。
 
 ## 自检与预览

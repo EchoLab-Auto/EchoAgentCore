@@ -38,7 +38,7 @@ memory_limit_tokens = 800000
 # stream_output = true
 skills_dir = "skills"                    # 用户技能目录（读写：Save/DeleteSkill 与 Git 安装技能落这里；递归发现 SKILL.md，运行时自动热重载）
 # skills_dirs = ["/path/to/skills-builtin"]  # 附加只读技能层（出厂技能；发现时与本目录合并，同名以 skills_dir 覆盖——2026-10 技能分层）
-# plugins_dir = "plugins"                  # plugin.toml 插件目录（5s 热重载）
+# modules_dir = "modules"                  # module.toml 模块目录（5s 热重载）
 
 # ── 多 agent 人格（可选）───────────────────────────────────────────────
 # 每个 profile = 一个独立 Agent（独立记忆/会话文件/系统提示词）。
@@ -67,25 +67,25 @@ skills_dir = "skills"                    # 用户技能目录（读写：Save/De
 # description = "专注于框架自更新"
 # memory_limit_tokens = 200000          # 只给这个 agent 较小的记忆预算
 
-[plugins.system_prompt]
-# 系统提示词插件：由 Core 注入，可在 Panel 顶部“系统提示词”中编辑保存。
+[modules.system_prompt]
+# 系统提示词模块：由 Core 注入，可在 Panel 顶部“系统提示词”中编辑保存。
 # 留空表示不注入基础系统提示词。
 text = "请你使用中文"
 
 [adapters.qq]
 # 是否启用 QQ 适配器（启动时自动连接 NapCat）。
 enabled = false
-# QQ 适配器以**独立进程插件**运行（stdio 协议，按实例拉起；2026-10
-# 适配器插件化——内置路径已移除）。配置插件二进制（示例）：
-#   [instances.qq.plugin]
-#   command = "echo-adapter-qq"   # 插件二进制（绝对路径 / PATH 名）。
+# QQ 适配器以**独立进程模块**运行（stdio 协议，按实例拉起；2026-10
+# 适配器模块化——内置路径已移除）。配置模块二进制（示例）：
+#   [instances.qq.module]
+#   command = "echo-adapter-qq"   # 模块二进制（绝对路径 / PATH 名）。
 #                                 # 不写则按平台名派生 `echo-adapter-<platform>`
 #   args = []
 # 运行期状态（门控 / 名单 / owner）落盘在配置目录的 qq-<实例>.toml，
 # 重启自动回灌；入站消息 / 连接态经 stdio 协议回呼 Core。
 # NapCat OneBot HTTP API，用于读取完整群和好友列表。
 napcat_onebot_url = "http://localhost:3000"
-# NapCat Docker 容器由 QQ 插件托管：启动实例时确保容器在跑（compose up）。
+# NapCat Docker 容器由 QQ 模块托管：启动实例时确保容器在跑（compose up）。
 # 若 Docker CLI 缺失/无权限，启动会在 Panel 中报错。
 napcat_auto_start = true
 # 停止实例（含 Core 停机/自更新）时是否联动停容器。**默认保持 false**：
@@ -103,7 +103,7 @@ command_prefix = "/"
 
 # ── QQ 多实例（可选）──────────────────────────────────────────────
 # 每个实例 = 一个 NapCat 容器 + 一条反向 WS 通道 + 一个 QQ 账号，互不冲突；
-# 实例归属某人格（一个人格可挂多个实例）。启用了本适配器插件的 persona
+# 实例归属某人格（一个人格可挂多个实例）。启用了本适配器模块的 persona
 # 若没有归属实例，Core 会自动建档并按空闲端口分配（端口写回下方 [...]ports）。
 #
 # [adapters.qq.instances.alix-two]

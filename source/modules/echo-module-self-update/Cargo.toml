@@ -1,0 +1,15 @@
+[package]
+name = "echo-module-self-update"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "自更新模块：触发 updater 单元 + 读状态文件（部署形状归模块，不再住在组合根）"
+
+[dependencies]
+echo-context = { workspace = true }
+echo-module = { workspace = true }
+echo-protocol = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }

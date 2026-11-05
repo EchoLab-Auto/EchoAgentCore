@@ -9,15 +9,15 @@ link: []
 
 # 联邦（多机去中心化 Agent）
 
-> **定位**：本文描述联邦（多机去中心化）——Core↔Core 对等链路的设计原则、协议与安全模型、配置与管理面、跨机工具调用/委派/查询/文件协作/会话迁移，以及 Panel 侧的多节点调度。读者：多机部署的使用者与联邦功能的维护者。联邦的装载与门控见 [插件化设计](../plugins/plugins.md)；节点内的会话与工作区模型见 [多 Agent 与会话](../core/agents.md)。
+> **定位**：本文描述联邦（多机去中心化）——Core↔Core 对等链路的设计原则、协议与安全模型、配置与管理面、跨机工具调用/委派/查询/文件协作/会话迁移，以及 Panel 侧的多节点调度。读者：多机部署的使用者与联邦功能的维护者。联邦的装载与门控见 [模块化设计](../modules/modules.md)；节点内的会话与工作区模型见 [多 Agent 与会话](../core/agents.md)。
 
 Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，agent 可以
 跨机器的工作区执行工具、委派子任务、做只读查询。典型场景：联合调试
 （A 机改代码、B 机起服务）、跨机部署验证、能力互补（GPU/专有环境）。
 
-实现分布：`source/plugin/echo-federation`（帧与链路）+
-`source/plugin/echo-agent/src/packages/federation`（执行层）+
-`source/plugin/core/src/federation_rt.rs`（路由泵 `federation_router_pump` + 代理注册 + 状态快照）、`source/plugin/core/src/federation_import.rs`（迁移导入）；`source/plugin/core/src/main.rs` 只做装配与 `tokio::spawn`。
+实现分布：`source/modules/echo-federation`（帧与链路）+
+`source/modules/echo-agent/src/packages/federation`（执行层）+
+`source/modules/core/src/federation_rt.rs`（路由泵 `federation_router_pump` + 代理注册 + 状态快照）、`source/modules/core/src/federation_import.rs`（迁移导入）；`source/modules/core/src/main.rs` 只做装配与 `tokio::spawn`。
 
 ## 设计原则
 
@@ -210,7 +210,7 @@ allow_queries = ["*"]         # 只读查询白名单（workspace_files/workspac
 绑定非回环（`echo-agent-core token --rotate` 补救）；管理令牌与任一
 peer 令牌相同（路由歧义）；`panel_keys` 与其它两类令牌相同
 （`validate_panel_identity`）；运行时 `SaveFederationPeer` 同拦冲突令牌。
-合并监听挂**管理面插件生命周期**（禁用管理面 = 联邦入站同停，出站连出
+合并监听挂**管理面模块生命周期**（禁用管理面 = 联邦入站同停，出站连出
 不受影响）。
 
 **Panel 管理**（设置·Core 连接页·联邦区块）：`SaveFederationPeer` /
@@ -309,24 +309,24 @@ Panel 的**主节点失效转移**语义与联邦一致（**换节点、换会�
   在 agent factory 里触发）。此前注册只有"Link Up"一个调用点——链路通之后
   新建的人格拿不到任何远程工具，面板看得见它、模型看不见，**且不报错**，
   要等下次断线重连才补上
-- **管理命令域在插件里**：`SaveFederationPeer` /
+- **管理命令域在模块里**：`SaveFederationPeer` /
   `DeleteFederationPeer` / `RequestFederationStatus` / `RequestFederationInvite` /
-  `MigrateSession` 的**规则与分发**在 `echo-plugin-federation::admin`（纯函数
+  `MigrateSession` 的**规则与分发**在 `echo-module-federation::admin`（纯函数
   可单测：token 继承 / token 与管理面令牌冲突 / token 跨 peer 唯一 / URL 形状 /
   邀请地址推导）；**状态迁移**由组合根实现 `FederationAdminHost`（落 peer、
   配置原子写回、断链清理、邀请占位登记、会话迁移）。此前整段处理在
-  `core/federation_rt.rs`（约 300 行），插件只声明归属不留实现——那样"归属"
+  `core/federation_rt.rs`（约 300 行），模块只声明归属不留实现——那样"归属"
   只有一半是真的
 - **`caps.tools` 的真源**：**工具自己**声明
   `Tool::remote_capable()`（默认 `false`），组合根在 supervisor 就绪后经
-  `Federation::set_tool_reporter` 注入注册表查询，**握手时现取**（插件启停
+  `Federation::set_tool_reporter` 注入注册表查询，**握手时现取**（模块启停
   即时生效，无需重启）。此前是两处硬编码名单——组合根里写 6 个名字、
-  联邦插件里再写同样 6 个求交集：插件新加的工具永远进不了远程面，任一改名
+  联邦模块里再写同样 6 个求交集：模块新加的工具永远进不了远程面，任一改名
   会静默掉出去（两侧都没有任何报错）。执行端准入同样按声明裁决：注册表里
   没有 → `UnknownCall`；有但未声明 → `Forbidden`（**即使 `allow_tools=["*"]`**）
   ——这条闸门此前不存在，配对互信档下任何工具名都能穿透执行
 - **远程沙箱的范围**由工具声明的 `Tool::path_arguments()` 决定（文件类工具
-  是 `["path"]`）：绝对路径必须落在执行端工作区根并集内。插件新加的文件工具
+  是 `["path"]`）：绝对路径必须落在执行端工作区根并集内。模块新加的文件工具
   自动享有同一条保护；`bash` 的边界是 peer 策略而不是目录（`command` 是命令行
   不是路径，假装有沙箱会更糟）
 - **监听顺序即协议契约**：`Federation::run`（监听 + 连出）延后到工具上报
@@ -372,7 +372,7 @@ parent_branch_id → 挂起 call_id 集合）：受理时登记、终态时销�
   `AgentBuilder::federation` 下发给每个 persona，再作为 `register_coding_tools`
   的 `invoker` 参数进入工具注册期（联邦关闭 = `None`，带 `node://` 前缀的
   调用报「联邦未接线」，本机路径不受影响）。
-  注：工具外迁 `echo-plugin-tools` 时，工具侧曾留下一份 kernel cell
+  注：工具外迁 `echo-module-tools` 时，工具侧曾留下一份 kernel cell
   却无人注入，`node://` 分流因此恒报未接线；本次改为显式参数后修复
 - 失败路径：peer 离线/不存在、链路不可用、对端拒绝（白名单/沙箱——
   完全开放策略无沙箱）、超时均原样透传为 ToolError。超时链：工具守卫**默认 120s（可配）** → `RemoteTool` 硬超时 **460s**（守卫 ×1.5 网络余量封顶；`timeout_hint` 同 460s）；路由侧 pending 的 120s 只是**清扫下限**，带显式超时会按 `timeout + 60` 延长
@@ -462,7 +462,7 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
   Panel 的 `activeRegion` 是**派生量**（只在选 agent / 会话归属 / TeamsList
   校正时写入），所有命令路由、事件过滤、设置/QQ/联邦等管理面归属都由它决定
   ——**选 agent 即选区域**。无 team/session 的管理事件（`ApiConfigUpdated` /
-  `SkillsList` / `ToolsList` / `PluginsList` / `SystemPrompt` / `Instance*` /
+  `SkillsList` / `ToolsList` / `ModulesList` / `SystemPrompt` / `Instance*` /
   `Federation*` / `SelfUpdateStatus`）只接受当前区域（`activeRegion`）的响应，
   避免广播/竞态响应串台；区域切换时 `resetManagementState` +
   `requestActiveRegionManagement` 定向重拉。实例管理态按 `(region, instance)`
@@ -483,7 +483,7 @@ Panel 侧调度器（`web/src/scheduler.ts`）在**新会话创建**时按策略
 - `{"core": "<name>", "frame": {...}}` → 定向该接入点（联邦节点）；
 - `{"broadcast": true, "frame": {...}}` → 广播给全部在线接入点（仅只读发现
   命令：`RequestState` / `RequestTeamsList` / `RequestInstanceStatus` / `RequestShellSessions` /
-  `RequestTrunkTimeline`（前端引导命令组）与清单类 `RequestPluginsList` / `RequestSkillsList` /
+  `RequestTrunkTimeline`（前端引导命令组）与清单类 `RequestModulesList` / `RequestSkillsList` /
   `RequestToolsList` 等——权威清单是 `echo_protocol::command::BROADCAST_READONLY_COMMANDS`；
   探活走 WS 层 Ping 控制帧 + 重连探测，**不经广播壳**，协议里也没有 `Ping` 命令）；
 - 无壳 → 仅单接入点语义下直接转发；多接入点下拒绝（不猜测命令语义）。

@@ -744,20 +744,20 @@ dependencies = [
  "echo-defs",
  "echo-federation",
  "echo-loop",
- "echo-plugin",
- "echo-plugin-federation",
- "echo-plugin-loop",
- "echo-plugin-management",
- "echo-plugin-provider-llm",
- "echo-plugin-sanitize",
- "echo-plugin-self-update",
- "echo-plugin-session",
- "echo-plugin-shell",
- "echo-plugin-skills",
- "echo-plugin-subagent",
- "echo-plugin-tools",
- "echo-plugin-transcript",
- "echo-plugin-workspace",
+ "echo-module",
+ "echo-module-federation",
+ "echo-module-loop",
+ "echo-module-management",
+ "echo-module-provider-llm",
+ "echo-module-sanitize",
+ "echo-module-self-update",
+ "echo-module-session",
+ "echo-module-shell",
+ "echo-module-skills",
+ "echo-module-subagent",
+ "echo-module-tools",
+ "echo-module-transcript",
+ "echo-module-workspace",
  "echo-protocol",
  "echo-session",
  "echo-shell",
@@ -795,24 +795,24 @@ dependencies = [
  "echo-defs",
  "echo-federation",
  "echo-loop",
- "echo-plugin",
- "echo-plugin-adapter",
- "echo-plugin-federation",
- "echo-plugin-host",
- "echo-plugin-loader",
- "echo-plugin-loop",
- "echo-plugin-management",
- "echo-plugin-panel",
- "echo-plugin-provider-llm",
- "echo-plugin-sanitize",
- "echo-plugin-self-update",
- "echo-plugin-session",
- "echo-plugin-shell",
- "echo-plugin-skills",
- "echo-plugin-subagent",
- "echo-plugin-tools",
- "echo-plugin-transcript",
- "echo-plugin-workspace",
+ "echo-module",
+ "echo-module-adapter",
+ "echo-module-federation",
+ "echo-module-host",
+ "echo-module-loader",
+ "echo-module-loop",
+ "echo-module-management",
+ "echo-module-panel",
+ "echo-module-provider-llm",
+ "echo-module-sanitize",
+ "echo-module-self-update",
+ "echo-module-session",
+ "echo-module-shell",
+ "echo-module-skills",
+ "echo-module-subagent",
+ "echo-module-tools",
+ "echo-module-transcript",
+ "echo-module-workspace",
  "echo-protocol",
  "echo-session",
  "echo-shell",
@@ -840,8 +840,8 @@ dependencies = [
 
 [[package]]
 name = "echo-context"
-version = "0.14.0"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.14.0#0da765be37df2ddb864e991adfa16bfec5a67237"
+version = "0.15.0"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.15.0#a0f16e09c58e8912c1d7b7206651172b0fee6274"
 dependencies = [
  "dashmap",
  "thiserror 2.0.20",
@@ -869,7 +869,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "echo-defs",
- "echo-plugin",
+ "echo-module",
  "futures-util",
  "serde",
  "serde_json",
@@ -888,7 +888,7 @@ dependencies = [
  "chrono",
  "echo-context",
  "echo-defs",
- "echo-plugin",
+ "echo-module",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -896,9 +896,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin"
-version = "0.14.0"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.14.0#0da765be37df2ddb864e991adfa16bfec5a67237"
+name = "echo-module"
+version = "0.15.0"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.15.0#a0f16e09c58e8912c1d7b7206651172b0fee6274"
 dependencies = [
  "echo-context",
  "serde",
@@ -909,29 +909,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-adapter"
+name = "echo-module-adapter"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64",
  "echo-defs",
- "echo-plugin-host",
+ "echo-module-host",
  "serde",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "echo-plugin-api"
-version = "0.14.0"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.14.0#0da765be37df2ddb864e991adfa16bfec5a67237"
+name = "echo-module-api"
+version = "0.15.0"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.15.0#a0f16e09c58e8912c1d7b7206651172b0fee6274"
 dependencies = [
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "echo-plugin-federation"
+name = "echo-module-federation"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -939,7 +939,7 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-federation",
- "echo-plugin",
+ "echo-module",
  "echo-protocol",
  "echo-tool",
  "serde_json",
@@ -948,14 +948,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-host"
-version = "0.14.0"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.14.0#0da765be37df2ddb864e991adfa16bfec5a67237"
+name = "echo-module-host"
+version = "0.15.0"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.15.0#a0f16e09c58e8912c1d7b7206651172b0fee6274"
 dependencies = [
  "async-trait",
  "base64",
- "echo-plugin-api",
- "echo-plugin-loader",
+ "echo-module-api",
+ "echo-module-loader",
  "libc",
  "serde_json",
  "thiserror 2.0.20",
@@ -964,9 +964,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-loader"
-version = "0.14.0"
-source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.14.0#0da765be37df2ddb864e991adfa16bfec5a67237"
+name = "echo-module-loader"
+version = "0.15.0"
+source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.15.0#a0f16e09c58e8912c1d7b7206651172b0fee6274"
 dependencies = [
  "serde",
  "serde_json",
@@ -975,15 +975,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-loop"
+name = "echo-module-loop"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "echo-context",
  "echo-defs",
  "echo-loop",
- "echo-plugin",
- "echo-plugin-api",
+ "echo-module",
+ "echo-module-api",
  "echo-session",
  "serde_json",
  "tokio",
@@ -991,13 +991,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-management"
+name = "echo-module-management"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "echo-context",
  "echo-federation",
- "echo-plugin",
+ "echo-module",
  "echo-protocol",
  "futures-util",
  "serde_json",
@@ -1007,13 +1007,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-panel"
+name = "echo-module-panel"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#a441d02c2ca837db213ae8aa2c2af09d94880735"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#b493375e67c3df10ef7ec4571dddf179a462a83a"
 dependencies = [
  "anyhow",
  "echo-context",
- "echo-plugin",
+ "echo-module",
  "echo-web-server",
  "serde",
  "serde_json",
@@ -1022,7 +1022,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-provider-llm"
+name = "echo-module-provider-llm"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -1030,7 +1030,7 @@ dependencies = [
  "echo-config",
  "echo-context",
  "echo-defs",
- "echo-plugin",
+ "echo-module",
  "echo-protocol",
  "futures-util",
  "reqwest",
@@ -1043,37 +1043,37 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-sanitize"
+name = "echo-module-sanitize"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
  "echo-context",
  "echo-defs",
- "echo-plugin",
+ "echo-module",
  "regex",
  "tracing",
 ]
 
 [[package]]
-name = "echo-plugin-self-update"
+name = "echo-module-self-update"
 version = "0.1.0"
 dependencies = [
  "echo-context",
- "echo-plugin",
+ "echo-module",
  "echo-protocol",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "echo-plugin-session"
+name = "echo-module-session"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "dashmap",
  "echo-context",
  "echo-defs",
- "echo-plugin",
+ "echo-module",
  "echo-protocol",
  "echo-session",
  "filetime",
@@ -1086,13 +1086,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-shell"
+name = "echo-module-shell"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "echo-context",
  "echo-defs",
- "echo-plugin",
+ "echo-module",
  "echo-protocol",
  "echo-shell",
  "echo-tool",
@@ -1101,13 +1101,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-skills"
+name = "echo-module-skills"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "echo-context",
  "echo-defs",
- "echo-plugin",
+ "echo-module",
  "echo-protocol",
  "serde",
  "serde_json",
@@ -1119,7 +1119,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-subagent"
+name = "echo-module-subagent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1138,14 +1138,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-tools"
+name = "echo-module-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "echo-config",
  "echo-context",
  "echo-defs",
- "echo-plugin",
+ "echo-module",
  "echo-protocol",
  "echo-shell",
  "echo-test-utils",
@@ -1162,13 +1162,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-transcript"
+name = "echo-module-transcript"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "echo-context",
  "echo-defs",
- "echo-plugin",
+ "echo-module",
  "echo-protocol",
  "serde",
  "serde_json",
@@ -1177,12 +1177,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-plugin-workspace"
+name = "echo-module-workspace"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/crate-workspace?branch=main#9a0040b3e0db0fdac320c882a4011f52143fd5de"
+source = "git+https://github.com/EchoLab-Auto/crate-workspace?branch=main#66b645ad2e9777fcdb437bd9667a4d0a914f71df"
 dependencies = [
  "echo-context",
- "echo-plugin",
+ "echo-module",
  "serde",
  "serde_json",
  "tokio",
@@ -1195,7 +1195,7 @@ version = "0.1.0"
 dependencies = [
  "echo-context",
  "echo-defs",
- "echo-plugin",
+ "echo-module",
  "serde",
  "serde_json",
  "tokio",
@@ -1208,7 +1208,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "echo-defs",
- "echo-plugin",
+ "echo-module",
  "proptest",
  "serde",
  "serde_json",
@@ -1221,7 +1221,7 @@ name = "echo-shell"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "echo-plugin",
+ "echo-module",
  "echo-protocol",
  "echo-tool",
  "libc",
@@ -1248,7 +1248,7 @@ dependencies = [
  "async-trait",
  "echo-context",
  "echo-defs",
- "echo-plugin",
+ "echo-module",
  "echo-test-utils",
  "serde_json",
  "tokio",
@@ -1258,7 +1258,7 @@ dependencies = [
 [[package]]
 name = "echo-web-server"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#a441d02c2ca837db213ae8aa2c2af09d94880735"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#b493375e67c3df10ef7ec4571dddf179a462a83a"
 dependencies = [
  "anyhow",
  "axum",

@@ -96,5 +96,5 @@ tracing::info!(
 | 时间花在哪个工具 | 慢调用/失败恒 `INFO` 的 `tool call finished`（带 `elapsed_ms`） |
 | 子代理卡在哪 | `subagent started` 是否有配对的 `subagent finished` |
 | 联邦为什么不通 | `federation dial failing`（首次 + 每 60 次 WARN）/ `federation link up` |
-| 插件为什么没生效 | `plugin tool package toggled`（只在状态翻转时出现） |
+| 模块为什么没生效 | `module tool package toggled`（只在状态翻转时出现） |
 | 崩溃现场 | `panic caught by logging hook` |

@@ -10,11 +10,11 @@ link: ["agent-loop | Agent 循环"]
 # 多 Agent 与会话
 
 > **定位**：本文描述 Core 的**多 Agent 人格与会话**机制——Persona 装配、会话模型与归属、工作区会话与项目通道、入站 turn 与串行准入、能力隔离。读者：需要理解多 agent 运行方式、会话归属与人格配置的开发者。
-> 相关：[框架（内核）](./frame.md)（内核机制）、[Agent 循环](./agent-loop.md)（循环驱动与准入）、[会话记忆](./memory.md)（日志与投影）、[插件化设计](../plugins/plugins.md)（能力门控）。
+> 相关：[框架（内核）](./frame.md)（内核机制）、[Agent 循环](./agent-loop.md)（循环驱动与准入）、[会话记忆](./memory.md)（日志与投影）、[模块化设计](../modules/modules.md)（能力门控）。
 
 Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent（独立 trunk、会话文件、系统提示词、能力白名单）。
 
-> **无「主智能体」**：所有智能体一律平等，没有受保护的"主/默认"角色。进程级职责（管理面、插件宿主、全局策略、Shell、插件实例）由组合根的**核心服务代理**（`__core`，非人格、不出现在 TeamsList）承担；会话类命令必须显式携带 `team_id`，缺失直接报错。
+> **无「主智能体」**：所有智能体一律平等，没有受保护的"主/默认"角色。进程级职责（管理面、模块宿主、全局策略、Shell、模块实例）由组合根的**核心服务代理**（`__core`，非人格、不出现在 TeamsList）承担；会话类命令必须显式携带 `team_id`，缺失直接报错。
 >
 > **未配置 `[agent.teams.*]` = 零人格**（按用户要求）：新建/新装 Core **不再自动合成 "default" 人格**（此前每台新节点都会凭空多出一个"默认" agent）。空配置启动即零智能体，由 Panel「设置 → 智能体 → 新建智能体」按需创建。
 
@@ -22,7 +22,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 ## Persona 装配
 
-- `AgentSupervisor` 按配置创建所有人格；`make_agent` 闭包为每人格独立组装工具注册表（内置工具 + 该人格插件实例**声明的**工具 + 包元数据）
+- `AgentSupervisor` 按配置创建所有人格；`make_agent` 闭包为每人格独立组装工具注册表（内置工具 + 该人格模块实例**声明的**工具 + 包元数据）
 - 每人格独立事件总线；**所有人格**（含运行期新建）的 `emit` 都直投进程级事件汇聚点（`EventSink`），Panel 单连接即可看到全部活动（无「镜像进默认人格」转接）
 - 会话文件隔离：统一 `echo-sessions-{id}.json`（旧 `echo-sessions.json` **只在存在 `default` 人格时**于首次启动改名迁移，迁移条件与版本口径见 [配置持久化](./config-persistence.md)「Session 持久化」）；会话持久化路径与配置 TOML **解耦**（`set_config_store` 只管 `[agent]` TOML，`set_session_persist_path` 另设 JSON 事件溯源文件，绝不可同路径互写）
 - **Persona 级 API**：`[agent.teams.{id}].api_profile = "<供应商池名>"` 只做**引用**，值存于全局 `[agent].api_profiles`；配置了引用的人格启动时用 `apply_named_profile` 解析并**独立构建自己的 provider**（不共享默认 provider）；未配置 = 跟随全局默认（顶层 + active_api）
@@ -51,7 +51,7 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 ## 工作区会话与项目通道
 
-工作区会话（`echo-agent.workspace` 插件）是**项目上下文**：「激活」不只是换提示词，而是**进入项目对话**。
+工作区会话（`echo-agent.workspace` 模块）是**项目上下文**：「激活」不只是换提示词，而是**进入项目对话**。
 
 **① 对话会话扩展——本地工作区通道**。本地来源的对话会话分两种形态：
 
@@ -71,15 +71,15 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 - 系统提示词注入该通道自己的项目信息（**按会话解析**，见下「提示词解析粒度」）；
 - `workspace` 工具默认操作该工作区；`use` 支持可选 `conversation` 直接激活某对话。
 
-**提示词解析粒度**（多窗口语义）。每轮 turn 组装系统提示词时，工作区块按**本次 turn 的 `session_id`** 解析（`echo-plugin-workspace` 的 `WorkspaceStore::prompt_text_for`），不再无条件读 per-persona 全局 `active`。
+**提示词解析粒度**（多窗口语义）。每轮 turn 组装系统提示词时，工作区块按**本次 turn 的 `session_id`** 解析（`echo-module-workspace` 的 `WorkspaceStore::prompt_text_for`），不再无条件读 per-persona 全局 `active`。
 
-这个块**不是**装配函数的位置参数：它以 `Contribution::Text` 的形式由 `PluginHost::collect_text_blocks` 收集后交给 `agent/prompt.rs`，块 `kind` 取插件的 `key`（`workspace`）——装配与"有几个插件要注入内容"解耦，新增这类插件不用改装配签名。
+这个块**不是**装配函数的位置参数：它以 `Contribution::Text` 的形式由 `ModuleHost::collect_text_blocks` 收集后交给 `agent/prompt.rs`，块 `kind` 取模块的 `key`（`workspace`）——装配与"有几个模块要注入内容"解耦，新增这类模块不用改装配签名。
 
 | 本次 turn 的会话 | 注入内容 | 解析路径 |
 | --- | --- | --- |
 | 工作区通道 `local:workspace:<ws>[/<conv>]:<user>` | 该通道所属工作区与对话（名称/描述、当前对话名与 id、目录清单） | `prompt_text_for` |
 | 非通道会话（默认本地会话 `local:tui::local_user`、QQ 会话等） | 回退全局 `active`——单窗口旧语义：激活工作区后默认本地会话仍看得到项目上下文 | `prompt_text` |
-| workspace 插件未启用，或不在该 persona 白名单 | 不注入（该插件不产出文本贡献） | 插件启用态 + persona 白名单 |
+| workspace 模块未启用，或不在该 persona 白名单 | 不注入（该模块不产出文本贡献） | 模块启用态 + persona 白名单 |
 
 - **多窗口语义**：`active` 仍是 per-persona 单槽，但它只记录「最后被激活的是谁」，用于本窗口视图跟随（见「前端联动规则」）与非通道会话兜底；**它不再决定某个通道会话拿到哪个项目的上下文**。A 窗口激活 W2 后，B 窗口在 W1 通道发消息仍只拿到 W1 的目录与对话名——按全局 active 注入时，B 的请求会被塞进 W2 的项目上下文（前端无法修正的语义级串台）
 - 两条路径共用 `render_prompt_text` 拼文案，避免同一段提示词在两处漂移；通道 id 解析走 `parse_workspace_channel`，legacy 裸通道（scope 段无 `/`）按 `legacy == true` 定位对话，而不是猜 id 恰好是 `main`
@@ -105,13 +105,13 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 
 ## 能力隔离
 
-- `enabled_*` 白名单：非空时仅列出的能力可见（空表 = 全部启用）；工具/技能另有 `disabled_tools`/`disabled_skills` 黑名单细化。**插件维度只有白名单**——persona 级的 `TeamMember` 没有插件黑名单字段（旧配置里写了会被 serde 静默忽略），但**全局的 `[agent].disabled_plugins` 仍然生效**（启动期 `apply_disabled` → 该插件只注册不挂载，`TogglePlugin` 会持久化到它）。两者语义不同：白名单是「这个 persona 看不到」，全局禁用是「整个进程不挂载」。
-- 插件/工具/技能三个维度独立配置；未配置白名单时默认全部启用
-- **保存即热生效**：`SaveTeam` 后目标人格立即重算门控（工具/技能逐名双向：取消勾选禁用、重新勾选恢复；插件包维度按 `kind` 派生的门控集合）；`ToggleTeam` 重新启用的人格也会补应用门控。全局禁用（`ToggleTool`/`ToggleSkill`/`TogglePlugin` 卸载）优先级高于 persona 名单，且这些全局开关会逐 persona 重算而不是只作用于管理面
-- **Package 跨维度**：勾选/取消勾选一个门控插件 = 启停整个包（plugin + 同名包工具 + 同名包技能，QQ 包示例：send_* 工具与 qq-management/qq-transport 一起开关）；详见 [插件化设计](../plugins/plugins.md)「Package」章节
-- **循环没有模式开关**：`echo-agent.loop.single`（`kind = loop`）是进程级插件——同一会话的 turn 串行排队，一条会话只有一条时间线。它不在 persona 门控集合里，`enabled_plugins` 写不写 loop 类 id 都不改变任何行为（并行多会话模式已于 2026-11 删除，见 [Agent 循环](./agent-loop.md)§会话内准入）
+- `enabled_*` 白名单：非空时仅列出的能力可见（空表 = 全部启用）；工具/技能另有 `disabled_tools`/`disabled_skills` 黑名单细化。**模块维度只有白名单**——persona 级的 `TeamMember` 没有模块黑名单字段（旧配置里写了会被 serde 静默忽略），但**全局的 `[agent].disabled_modules` 仍然生效**（启动期 `apply_disabled` → 该模块只注册不挂载，`ToggleModule` 会持久化到它）。两者语义不同：白名单是「这个 persona 看不到」，全局禁用是「整个进程不挂载」。
+- 模块/工具/技能三个维度独立配置；未配置白名单时默认全部启用
+- **保存即热生效**：`SaveTeam` 后目标人格立即重算门控（工具/技能逐名双向：取消勾选禁用、重新勾选恢复；模块包维度按 `kind` 派生的门控集合）；`ToggleTeam` 重新启用的人格也会补应用门控。全局禁用（`ToggleTool`/`ToggleSkill`/`ToggleModule` 卸载）优先级高于 persona 名单，且这些全局开关会逐 persona 重算而不是只作用于管理面
+- **Package 跨维度**：勾选/取消勾选一个门控模块 = 启停整个包（module + 同名包工具 + 同名包技能，QQ 包示例：send_* 工具与 qq-management/qq-transport 一起开关）；详见 [模块化设计](../modules/modules.md)「Package」章节
+- **循环没有模式开关**：`echo-agent.loop.single`（`kind = loop`）是进程级模块——同一会话的 turn 串行排队，一条会话只有一条时间线。它不在 persona 门控集合里，`enabled_modules` 写不写 loop 类 id 都不改变任何行为（并行多会话模式已于 2026-11 删除，见 [Agent 循环](./agent-loop.md)§会话内准入）
 - 全局 `[agent].disabled_tools`（Panel ToggleTool 持久化）启动时逐人格应用
-- **工作区提示注入同受门控**：`workspace` 插件未启用或不在该 persona 白名单时，它不产出文本贡献，提示词里也就没有项目上下文（与 `workspace` 工具的可见性由**同一份白名单**推导）——不会出现「工具已禁用、项目上下文还在」
+- **工作区提示注入同受门控**：`workspace` 模块未启用或不在该 persona 白名单时，它不产出文本贡献，提示词里也就没有项目上下文（与 `workspace` 工具的可见性由**同一份白名单**推导）——不会出现「工具已禁用、项目上下文还在」
 
 ## 典型配置
 
@@ -119,17 +119,17 @@ Core 支持**多 agent 人格**：`[agent.teams.*]` 每项 = 一个独立 Agent�
 [agent.teams.alix]
 name = "Alix"
 description = "管理型人格"
-# 空 enabled_plugins = 全部启用（persona 门控集合按插件 kind 派生）
-# （纯对话型人格：enabled_plugins 列全部插件、唯独去掉 tools.builtin 与
+# 空 enabled_modules = 全部启用（persona 门控集合按模块 kind 派生）
+# （纯对话型人格：enabled_modules 列全部模块、唯独去掉 tools.builtin 与
 #   skills.dir——黑名单已移除，唯一名单就是白名单）
 
 [agent.teams.self-coding]
 name = "self-coding"
-enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel"]
+enabled_modules = ["echo-agent.tools.builtin", "echo-agent.management.panel"]
 # 可选：persona 级 API（引用全局供应商池 [agent].api_profiles 中的 profile 名）
 # api_profile = "openai"   # 不配置 = 跟随全局默认配置
-# 循环没有模式可切：`echo-agent.loop.single` 是进程级插件（kind = loop），
-# 不受 persona 白名单支配，写进 enabled_plugins 也不产生任何效果。
+# 循环没有模式可切：`echo-agent.loop.single` 是进程级模块（kind = loop），
+# 不受 persona 白名单支配，写进 enabled_modules 也不产生任何效果。
 ```
 
 ## 设计取舍与边界
@@ -140,5 +140,5 @@ enabled_plugins = ["echo-agent.tools.builtin", "echo-agent.management.panel"]
 - **兼容性**：无 `[agent.teams]` 配置 = **零 agent**（按用户要求：不再自动合成 `default` 人格；显式配置 `[agent.teams.default]` 时它也只是普通 id、无特权）；`SendMessage`/会话类命令缺少 `team_id` 会被明确拒绝（Panel 与 Core 同版本部署）
 - **删除保护**：仅"至少保留一个智能体"；不再有受保护成员
 - **Provider 粒度**：支持 persona 级 API 引用（见上「Persona 装配」）；运行期 `SaveTeam` 改 `api_profile` 立即经 `apply_persona_api` 重建该人格 provider（全局 `UpdateApiConfig`/`SwitchApi` 只作用于管理面/全局默认，不自动广播到其他人格）
-- QQ/平台消息按**实例归属人格**路由：每个启用 `echo-agent.instance.qq` 的人格拥有自己的 QQ 实例（容器 + 反向 WS 通道），见 [QQ 实例门控](../plugins/qq-gating.md)「多实例」
+- QQ/平台消息按**实例归属人格**路由：每个启用 `echo-agent.instance.qq` 的人格拥有自己的 QQ 实例（容器 + 反向 WS 通道），见 [QQ 实例门控](../modules/qq-gating.md)「多实例」
 - 每人格可独立配置记忆预算：`[agent.teams.{id}].memory_limit_tokens` / `context_window_tokens`（未配置 = 继承全局）

@@ -23,15 +23,15 @@ source/federation/echo-federation/src/frame.rs:221-223 — QueryKind::WorkspaceG
 source/core/src/config.rs:73 — CoreConfig.server 旧配置段（自动迁移到 [adapters.qq.server]） — [REMOVE]
 source/core/src/config.rs:75 — CoreConfig.bot 旧配置段（自动迁移到 [adapters.qq]） — [REMOVE]
 source/core/src/config.rs:139 — QqSection 注释：未配置 instances 时按 legacy 单实例 qq 解析 — [GRAY]?
-source/core/src/config.rs:313-325 — migrate_plugin_lists 文档：旧编排/驱动 id 归一化 + per-persona 黑名单物化（本函数即旧配置迁移器） — [REMOVE]
-source/core/src/config.rs:336 — 迁移日志「migrated legacy loop plugin ids → loop.{single,parallel}」 — [REMOVE]
-source/core/src/config.rs:347-352 — 旧 disabled_plugins 黑名单物化进白名单并清空（旧配置兼容） — [REMOVE]
+source/core/src/config.rs:313-325 — migrate_module_lists 文档：旧编排/驱动 id 归一化 + per-persona 黑名单物化（本函数即旧配置迁移器） — [REMOVE]
+source/core/src/config.rs:336 — 迁移日志「migrated legacy loop module ids → loop.{single,parallel}」 — [REMOVE]
+source/core/src/config.rs:347-352 — 旧 disabled_modules 黑名单物化进白名单并清空（旧配置兼容） — [REMOVE]
 source/core/src/config.rs:405-409 — 注释「内存迁移，首次落盘自愈（与 legacy [server]/[bot] 迁移同范式）」 — [REMOVE]
 source/core/src/config.rs:420-440 — Backward compat 分支：[adapters.qq] 未启用时回退旧 [server]/[bot] 段 — [REMOVE]
 source/core/src/config.rs:431 — 加载日志「using legacy [server] config — consider migrating」 — [REMOVE]
 source/core/src/config.rs:447 — ECHO_ACCESS_TOKEN「Also apply to legacy」写回旧 server 段 — [REMOVE]
 source/core/src/config.rs:488-506 — 测试 legacy_federation_enabled_field_is_ignored（旧 enabled=false 必须被忽略） — [REMOVE]
-source/core/src/config.rs:574-609 — 测试 migrate_plugin_lists_normalizes_legacy_ids_and_materializes_blacklists — [REMOVE]
+source/core/src/config.rs:574-609 — 测试 migrate_module_lists_normalizes_legacy_ids_and_materializes_blacklists — [REMOVE]
 source/core/src/config.rs:624-643 — 测试 legacy_config_migrates_to_qq_adapter（旧 [server]/[bot] 迁移） — [REMOVE]
 source/core/src/main.rs:192-194 — 注释「联邦始终开启（已取消 enabled 开关）」 — [DOC]
 source/core/src/main.rs:609-612 — 兼容旧单实例路径：取第一个实例当默认 qq_adapter — [GRAY]?
@@ -52,7 +52,7 @@ source/core/src/qq_instances.rs:441-450 — 测试默认人格在他人格实例
 source/backend/echo-agent/src/config.rs:24 — ThinkingMode 注释「Defaults to enabled for old profiles」（旧 profile 缺字段默认） — [GRAY]?
 source/backend/echo-agent/src/config.rs:27 — ReasoningEffort 注释「Defaults to max for old profiles」（旧 profile 缺字段默认） — [GRAY]?
 source/backend/echo-agent/src/config.rs:129 — TeamMember 文档标注旧名 `[agent.profiles.{id}]`（未见别名/迁移实现，疑陈旧） — [DOC]
-source/backend/echo-agent/src/config.rs:152-159 — TeamMember.disabled_plugins「DEPRECATED，仅保留反序列化供加载期迁移，不再写回」 — [REMOVE]
+source/backend/echo-agent/src/config.rs:152-159 — TeamMember.disabled_modules「DEPRECATED，仅保留反序列化供加载期迁移，不再写回」 — [REMOVE]
 source/backend/echo-agent/src/config.rs:202-207 — loop_mode 注释含旧编排模式 id 判定（依赖 PARALLEL_MODE_IDS 中的旧 id） — [REMOVE]
 source/backend/echo-agent/src/config.rs:300-303 — AgentConfig.memory_limit「DEPRECATED，仅为配置兼容反序列化保留」 — [REMOVE]
 source/backend/echo-agent/src/config.rs:457-458 — effective_memory_limit_tokens 文档：legacy memory_limit 不再参与计算 — [REMOVE]
@@ -60,24 +60,24 @@ source/backend/echo-agent/src/config.rs:512-529 — 测试 legacy_config_default
 source/backend/echo-agent/src/config.rs:642-646 — 测试 legacy_shared_context_is_ignored_and_not_serialized（依赖 serde 忽略未知字段） — [REMOVE]
 source/backend/echo-agent/src/config.rs:654-659 — 测试注释「Legacy message-count field no longer participates」 — [REMOVE]
 source/backend/echo-agent/src/config.rs:818-823 — 测试「任一旧编排模式 id → Parallel（向后兼容推导）」 — [REMOVE]
-source/backend/echo-agent/src/config.rs:845-856 — 测试「已废弃插件黑名单不影响推导（含旧 id）」 — [REMOVE]
+source/backend/echo-agent/src/config.rs:845-856 — 测试「已废弃模块黑名单不影响推导（含旧 id）」 — [REMOVE]
 source/backend/echo-agent/src/config.rs:860-870 — 测试 team_member_blacklist_is_deserialization_only（旧字段反序列化容忍、不写回） — [REMOVE]
-source/backend/echo-agent/src/plugins.rs:23-26 — LEGACY_CHECKLIST_PLUGIN_ID（已移除插件的 id，仅供迁移剔除） — [REMOVE]
-source/backend/echo-agent/src/plugins.rs:33-35 — LEGACY_MENU_PLUGIN_ID（同上） — [REMOVE]
-source/backend/echo-agent/src/plugins.rs:49-50 — LEGACY_LOOP_RUNNER_PLUGIN_ID（旧驱动 id，迁移剔除） — [REMOVE]
-source/backend/echo-agent/src/plugins.rs:52-56 — LEGACY_CHATBOT_MODE_IDS[3]（旧编排模式 id，迁移映射） — [REMOVE]
-source/backend/echo-agent/src/plugins.rs:58-63 — PARALLEL_MODE_IDS 把 3 个旧 id 视为 parallel — [REMOVE]
-source/backend/echo-agent/src/plugins.rs:65-103 — normalize_mode_plugins：旧 id 折叠/剔除（配置加载与 SaveTeam 防御共用） — [REMOVE]
-source/backend/echo-agent/src/plugins.rs:150-178 — convert_plugin_blacklist_to_whitelist：旧黑名单→白名单物化 — [REMOVE]
-source/backend/echo-agent/src/plugins.rs:360-389 — 测试 normalize_mode_plugins_maps_legacy_ids — [REMOVE]
-source/backend/echo-agent/src/plugins.rs:391-405 — 测试 normalize_mode_plugins_drops_legacy_menu_and_checklist — [REMOVE]
+source/backend/echo-agent/src/modules.rs:23-26 — LEGACY_CHECKLIST_MODULE_ID（已移除模块的 id，仅供迁移剔除） — [REMOVE]
+source/backend/echo-agent/src/modules.rs:33-35 — LEGACY_MENU_MODULE_ID（同上） — [REMOVE]
+source/backend/echo-agent/src/modules.rs:49-50 — LEGACY_LOOP_RUNNER_MODULE_ID（旧驱动 id，迁移剔除） — [REMOVE]
+source/backend/echo-agent/src/modules.rs:52-56 — LEGACY_CHATBOT_MODE_IDS[3]（旧编排模式 id，迁移映射） — [REMOVE]
+source/backend/echo-agent/src/modules.rs:58-63 — PARALLEL_MODE_IDS 把 3 个旧 id 视为 parallel — [REMOVE]
+source/backend/echo-agent/src/modules.rs:65-103 — normalize_mode_modules：旧 id 折叠/剔除（配置加载与 SaveTeam 防御共用） — [REMOVE]
+source/backend/echo-agent/src/modules.rs:150-178 — convert_module_blacklist_to_whitelist：旧黑名单→白名单物化 — [REMOVE]
+source/backend/echo-agent/src/modules.rs:360-389 — 测试 normalize_mode_modules_maps_legacy_ids — [REMOVE]
+source/backend/echo-agent/src/modules.rs:391-405 — 测试 normalize_mode_modules_drops_legacy_menu_and_checklist — [REMOVE]
 source/backend/echo-agent/src/agent_manager.rs:74-96 — 无 profiles 配置时 legacy 单默认 agent（当前默认兜底行为） — [GRAY]?
 source/backend/echo-agent/src/agent_manager.rs:226-228 — save_profile 归一化旧 id「防御旧 panel 回写」 — [REMOVE]
 source/backend/echo-agent/src/agent_manager.rs:329-331 — TeamInfo is_default「过渡期保留恒 false，下个协议版本删除」 — [REMOVE]
 source/backend/echo-agent/src/agent_manager.rs:334-338 — 注释「旧字段过渡期同时下发」（旧字段已不在线格式中，疑陈旧） — [DOC]
 source/backend/echo-agent/src/agent_manager.rs:448 — 测试注释「新字段与旧（过渡）字段必须一致」（旧字段已删除，疑陈旧） — [DOC]
-source/backend/echo-agent/src/agent_manager.rs:458-483 — 测试 save_profile_normalizes_legacy_mode_plugin_ids — [REMOVE]
-source/backend/echo-agent/src/agent_manager.rs:485-500 — 测试 saved_profile_ignores_deprecated_plugin_blacklist — [REMOVE]
+source/backend/echo-agent/src/agent_manager.rs:458-483 — 测试 save_profile_normalizes_legacy_mode_module_ids — [REMOVE]
+source/backend/echo-agent/src/agent_manager.rs:485-500 — 测试 saved_profile_ignores_deprecated_module_blacklist — [REMOVE]
 source/backend/echo-agent/src/lib.rs:69-79 — 重组前的兼容 re-export（公开路径保持原样） — [GRAY]?
 source/backend/echo-agent/src/packages/mod.rs:25 — 注释：echo_agent::tool::… / subagent::… 经 lib.rs 兼容 re-export — [GRAY]?
 source/backend/echo-agent/src/packages/tool/mod.rs:18 — 兼容既有 `tool::builtin` 路径的 re-export 说明 — [GRAY]?
@@ -178,14 +178,14 @@ config/echo-agent-core.toml:39 — 「不配置 teams = 单默认 agent，行为
 document/overview/architecture.md:55 — echo-session 职责含「v1-v4 兼容迁移」 — [DOC]
 document/overview/architecture.md:65 — 旧 crate re-export echo_defs 类型「保持 echo_agent::… 路径兼容」 — [DOC]
 document/overview/architecture.md:110 — 「v1-v4 旧格式加载期自动迁移」 — [DOC]
-document/core/core-agent-loop.md:37 — 插件黑名单已移除，推导只看白名单；旧 id 迁移见配置持久化 — [DOC]
+document/core/core-agent-loop.md:37 — 模块黑名单已移除，推导只看白名单；旧 id 迁移见配置持久化 — [DOC]
 document/core/core-agent-loop.md:127 — CancelRequestedWork team_id「#[serde(default)] 向后兼容」 — [DOC]
 document/core/core-agents.md:25 — 旧 echo-sessions.json 首次启动自动改名迁移 — [DOC]
 document/core/core-agents.md:88 — 含 loop.parallel（或旧编排模式 id）= parallel — [DOC]
 document/core/core-agents.md:108-109 — 旧编排模式 id/旧驱动 id 加载期自动迁移 — [DOC]
 document/core/core-agents.md:117 — 无 [agent.teams] 的旧配置=单 agent；旧协议无 team_id 被拒绝 — [DOC]
 document/core/core-config-persistence.md:82 — legacy [server]/[bot] → [adapters.qq]（显式值才触发） — [DOC]
-document/core/core-config-persistence.md:85-90 — 旧插件 id 归一化 + SaveTeam 防御旧 Panel 回写 — [DOC]
+document/core/core-config-persistence.md:85-90 — 旧模块 id 归一化 + SaveTeam 防御旧 Panel 回写 — [DOC]
 document/core/core-config-persistence.md:185 — 旧会话文件改名 + v5/更旧格式自动迁移 — [DOC]
 document/core/core-memory.md:28 — v1-v4 旧格式加载期自动迁移 — [DOC]
 document/federation/federation.md:106 — 旧配置 enabled=false 会被忽略（字段已移除） — [DOC]
@@ -196,11 +196,11 @@ document/protocol/protocol.md:20 — 后端 crate re-export 保持 echo_agent::�
 document/protocol/protocol.md:62 — SwitchApi 全局激活已被 persona 级选用取代，「协议字段保留兼容，UI 不再暴露」 — [DOC]
 document/protocol/protocol.md:93 — ApiBalanceResult 分账字段 serde(default) 对旧前端兼容 — [DOC]
 document/protocol/protocol.md:99 — BackgroundTask* 保留事件（Core 无发射方、TUI 仍在消费故不删） — [DOC]
-document/protocol/protocol.md:125 — 旧端帧中 disabled_plugins 被 serde 忽略 — [DOC]
+document/protocol/protocol.md:125 — 旧端帧中 disabled_modules 被 serde 忽略 — [DOC]
 document/protocol/protocol.md:143 — OrchestrationMode「旧编排模式兼容名」（TeamInfo 字段已移除） — [DOC]
 document/protocol/protocol.md:179-183 — 兼容性规则：旧 Core 缺字段默认值、旧端未知变体整帧丢弃 — [DOC]
-document/plugins/adapter-qq-gating.md:159-165 — legacy 单实例语义与默认人格恒为 qq — [DOC]
-document/plugins/adapter-qq-gating.md:126 — 枚举 snake_case 序列化「与旧版 wire 格式完全兼容」 — [DOC]
+document/modules/adapter-qq-gating.md:159-165 — legacy 单实例语义与默认人格恒为 qq — [DOC]
+document/modules/adapter-qq-gating.md:126 — 枚举 snake_case 序列化「与旧版 wire 格式完全兼容」 — [DOC]
 document/panel/panel-qq-tasks.md:17 — 兼容旧 Core：无 persona 元数据时退化展示 — [DOC]
 document/panel/panel-qq-tasks.md:19 — 单实例时行为与旧版一致 — [DOC]
 document/panel/panel-qq-tasks.md:29 — 后台/并行标签与 awaiting/integrated 状态为「保留适配」（Core 侧体系已移除） — [DOC]
@@ -215,6 +215,6 @@ document/dev/dev-testing.md:41 — 测试覆盖 qq_instances legacy 端口/共�
 
 ## 核验备注（非清单项）
 
-- `echo-federation/src/link.rs:632-644` 的 protocol_version 校验为**严格相等**（当前行为，未见旧版本容忍分支）；`echo-plugin-api/src/protocol.rs:17-19` 的 `compatible()` 在 v1 为严格相等——均为当前协商/拒绝逻辑，不属旧版兼容债。相关「版本不兼容拒绝」测试（conformance/tests）同为当前行为守护。
+- `echo-federation/src/link.rs:632-644` 的 protocol_version 校验为**严格相等**（当前行为，未见旧版本容忍分支）；`echo-module-api/src/protocol.rs:17-19` 的 `compatible()` 在 v1 为严格相等——均为当前协商/拒绝逻辑，不属旧版兼容债。相关「版本不兼容拒绝」测试（conformance/tests）同为当前行为守护。
 - 第三方端点类「兼容」措辞（DeepSeek/Anthropic/OpenAI 兼容端点、Kimi、`echo-sanitize` 网关、`echo-llm-*` 实现）与「provider 容错解析」不属本类债务，未列入。
-- `config/plugins.example.toml` 无命中；`document` 中「已移除/已取消」多为已完成的能力下线或状态文案，未列入。
+- `config/modules.example.toml` 无命中；`document` 中「已移除/已取消」多为已完成的能力下线或状态文案，未列入。

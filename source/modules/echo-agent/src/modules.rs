@@ -1,0 +1,1980 @@
+//! Agent module host — bridges `echo_module` registry to the agent's concrete
+//! registries (tools, skills, services) so built-in modules mount as modules.
+//!
+//! The Agent owns a [`ModuleRegistry`]; the composition root registers
+//! built-in modules (tools/skills/instances/loop/…) and supplies the effects
+//! they need at mount time. Modules never import echo-agent; the host is the
+//! only instance.
+//!
+//! 历史（2026-10 M2）：本文件曾提供 `ToolSink` / `SkillSink` 两个"窄接缝"
+//! 给模块注册工具与技能。审计发现它们是死代码（`register_tool` 零调用、
+//! `SkillSink` 从未实例化、`register_skill_dir` 无调用方），而两个 trait
+//! 把应用领域词汇带进了框架层。随 `MountContext.tools/.skills` 一并删除。
+
+pub mod scope;
+
+pub use scope::{kind_is_classified, persona_scoped_ids, scope_of_kind, ModuleScope, KIND_SCOPE};
+
+use std::sync::Arc;
+
+use echo_module::{ModuleDescriptor, ModuleRegistry, MountContext};
+
+/// 内置模块 id（组合根与挂/卸效果共用，避免字符串漂移）。
+/// 实例类模块的 `kind` 标签。
+///
+/// 框架不再有 `ModuleKind` 枚举（M2 去业务化），词汇表归宿主所有：这里是
+/// 「哪些模块按实例模块处理」的**唯一真值**，别处一律引用本常量。
+///
+/// 为什么值得一个常量：`2d46b7d` 把 wire 名从 `adapter` 改成 `instance` 时，
+/// 硬编码比较的地方漏改，导致实例模块永远进不了 persona 门控集合。
+pub const INSTANCE_MODULE_KIND: &str = "instance";
+
+/// 技能目录模块 id（同上，源头在 [`echo_module_skills`]）。
+pub use echo_module_skills::MODULE_ID as SKILLS_DIR_MODULE_ID;
+/// 内置工具集模块 id（**声明与实现都在 [`echo_module_tools`]**，这里是兼容
+/// 别名——配置、门控、面板读的是同一批字面量）。
+pub use echo_module_tools::MODULE_ID as TOOLS_BUILTIN_MODULE_ID;
+pub const MANAGEMENT_PANEL_MODULE_ID: &str = "echo-agent.management.panel";
+/// 工作区会话管理模块（workspace）：Panel 侧多会话/多目录管理 + git 状态，
+/// 模型侧 `workspace` 工具与激活会话的系统提示注入。
+pub const WORKSPACE_MODULE_ID: &str = "echo-agent.workspace";
+/// Subagent 委派模块 id（包 id 同名：`spawn_subagent` 工具 + subagent 技能随包门控）。
+pub const SUBAGENT_MODULE_ID: &str = "echo-agent.subagent";
+/// 循环模块（声明已外迁到 [`echo_module_loop`]，解耦计划 Phase 3 ⑦）。
+///
+/// 这里留**兼容别名**，配置与门控读的是同一批字面量，不另存一份。
+/// 只有一个模式：同一会话内 turn 串行排队（`loop.parallel` 已于 2026-11 删除）。
+pub use echo_module_loop::SINGLE_MODULE_ID as SINGLE_LOOP_MODULE_ID;
+/// Shell 会话模块 id（`bash-start` / `bash-exec` / `bash-stop` + `*Shell*` 命令域）。
+///
+/// 2026-11 从 `echo-agent.tools.builtin` 拆出：shell 会话有自己的一套机制
+/// （`echo-shell` 的进程组生命周期）、自己的面板页面、独立的启停需求。
+/// 声明与实现都在 [`echo_module_shell`]，这里是兼容别名。
+pub use echo_module_shell::MODULE_ID as SHELL_MODULE_ID;
+
+/// persona 门控**已经不再是一张模块 id 清单**——判据是 manifest 的 `kind`。
+///
+/// 历史：这里曾有 `GATED_MODULE_IDS: [&str; N]`，按模块 id 维护。它错过三轮
+/// （`adapter`→`instance` 改名漏改 → 实例模块永远不被门控；`shell` 从
+/// `tools.builtin` 拆出时 Panel 没同步 → 面板上没有 shell 开关；
+/// `session`/`transcript` 跨仓不一致 → 两个勾了不生效的假开关）。
+///
+/// 现在只有一条规则：**`kind` 定作用域**（见 [`scope::KIND_SCOPE`]）。
+/// 新增一个 `tool`/`skill` 模块不需要改任何清单；只有引入新 kind 时才要登记，
+/// 而 `core::builtin_modules` 的 `every_catalog_kind_is_classified` 会在
+/// 装配期强制这件事。
+pub use scope::persona_scoped_ids as gated_module_ids;
+
+/// LLM Provider 模块 id（名义挂载，重启生效）。
+pub const PROVIDER_LLM_MODULE_ID: &str = "echo-agent.provider.llm";
+
+/// 自更新模块 id（`RequestSelfUpdate` / `RequestSelfUpdateStatus` 的归属）。
+///
+/// 声明与实现都在 [`echo_module_self_update`]——这里是**兼容别名**，面板
+/// 模块清单与配置读的是同一批字面量。
+pub use echo_module_self_update::MODULE_ID as SELF_UPDATE_MODULE_ID;
+
+/// 联邦模块 id：Core↔Core 对等链路（远程工具 / 跨机委派 / 会话迁移）。
+///
+/// 声明（id / 名称 / 描述 / manifest）与实现都在 [`echo_module_federation`]
+/// （全模块化 S3）——这里是**兼容别名**，门控与配置读的是同一批字面量。
+pub use echo_module_federation::MODULE_ID as FEDERATION_MODULE_ID;
+
+/// 本仓声明的内置模块 id（**不含模块实例与外部仓的可选进程内模块**）。
+///
+/// 外部仓模块的实现、文档与身份归所属仓库；其目录装配在组合根单独追加，
+/// 不让本清单反向要求 Core 持有它们的领域文档。
+///
+/// 实例模块 id 由组合根声明（`core::instance_manifests`，按前缀
+/// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
+/// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
+/// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
+pub const BUILTIN_MODULE_IDS: [&str; 20] = [
+    TOOLS_BUILTIN_MODULE_ID,
+    SHELL_MODULE_ID,
+    SKILLS_DIR_MODULE_ID,
+    SUBAGENT_MODULE_ID,
+    FEDERATION_MODULE_ID,
+    MANAGEMENT_PANEL_MODULE_ID,
+    // 会话子系统（2026-11 S6 外置）与显示层（S8 外置）。
+    // 会话模块的命令域（清理/归档/压缩）在 persona 白名单之外时应被关掉。
+    echo_module_session::MODULE_ID,
+    echo_module_transcript::MODULE_ID,
+    SINGLE_LOOP_MODULE_ID,
+    PROVIDER_LLM_MODULE_ID,
+    SELF_UPDATE_MODULE_ID,
+    // 安全不变量（`kind = "security"`，进程级、不可被 persona 关闭）。
+    echo_module_sanitize::MODULE_ID,
+    // ── 运行地基（`kind = "kernel"`，2026-11 取消「中间层 / 模块」二分）──
+    //
+    // 这 9 项此前是「只是库」的 crate，没有 manifest、不进 Panel 清单。
+    // 现在它们和其它模块同形：有 manifest、进 catalog、出现在 Panel 里。
+    // `kind = kernel` 的语义是「**不可禁用**」——`modules.toml` 写
+    // `enabled = false` 会让启动失败并指出具体哪一条（见
+    // `mount_plan_when_ready`），而不是静默跳过。
+    echo_defs::MODULE_ID,
+    echo_config::MODULE_ID,
+    echo_protocol::module::MODULE_ID,
+    echo_session::module::MODULE_ID,
+    echo_tool::module::MODULE_ID,
+    echo_shell::module::MODULE_ID,
+    echo_federation::module::MODULE_ID,
+    echo_loop::module::MODULE_ID,
+];
+
+/// 模块**不得**接管的命令（宿主自我管理面）。
+///
+/// 理由很具体：模块管理命令（`RestartModule` / `RequestModulesList`）如果
+/// 被某个模块抢走，人在面板上就再也点不动它们了——把自我管理面交给被管理
+/// 者，是自锁。
+///
+/// **`MigrateSession` 曾列在这里，是个真 bug**：实现明明在联邦模块的命令
+/// 处理链（`FederationPorts::command_handler` → `handle_migrate_session`），
+/// 保留名单却让分发器永远不路由过去，命令落进宿主兜底并报"联邦模块未启用"
+/// ——面板上的「迁移会话」从来就没成功过。它不会造成自锁，本来就不该保留
+/// （2026-11 修掉；正是 `reject_reserved_commands` 装配期检查抓出来的）。
+///
+/// ## 名单的两条纪律
+///
+/// 1. **只列真实存在的命令**。此前这里放着 `SetModuleConfig` / `Shutdown`
+///    ——两者在 `BackendCommand` 里**根本不存在**，于是名单看起来在守两件
+///    事，实际一件也没守（测试 `reserved_commands_exist_in_the_protocol`）。
+/// 2. **被保留的命令必须有人处理**。名单本身不会让命令生效，它只是"别交给
+///    模块"；真正的处理者要在宿主 `apply_command` 里。曾经的
+///    `RequestSelfUpdate` 就是反例：既被保留（模块收不到），实现又只在模块
+///    那一侧——两条命令必失败（2026-11 修掉，改由 `echo-agent.selfupdate`
+///    模块认领）。
+///
+/// `SendMessage` / `Cancel` 不在此列：聊天入口归宿主核心是当前的架构事实，但
+/// 那是"还没搬"，不是"不能搬"；真有需要时把这条删掉即可，不需要动机制。
+pub const HOST_RESERVED_COMMANDS: &[&str] = &["RestartModule", "RequestModulesList"];
+
+/// 该命令是否属于宿主自我管理面（模块不得接管）。
+pub fn command_is_host_reserved(name: &str) -> bool {
+    HOST_RESERVED_COMMANDS.contains(&name)
+}
+
+/// 某 persona 的白名单是否允许一个模块 id。
+///
+/// 语义：白名单非空 = 仅列出的模块；空白名单 = 全部允许。
+/// 启动期逐人格门控（core main.rs）与运行期 `Agent::apply_capabilities` /
+/// `Agent::reapply_module_gating` 共用本判定，避免两套规则漂移。
+/// （persona 白名单单轨：不在名单里的模块对该人格不生效。）
+pub fn profile_allows_module(profile: &crate::config::TeamMember, module_id: &str) -> bool {
+    if profile.enabled_modules.is_empty() {
+        return true;
+    }
+    let wanted = canonical_module_id(module_id);
+    profile
+        .enabled_modules
+        .iter()
+        .any(|listed| canonical_module_id(listed) == wanted)
+}
+
+/// 实例模块 id 的旧前缀（词汇归定义层 `echo_defs::module_id`；
+/// 此别名保留既有路径）。
+pub use echo_defs::module_id::LEGACY_INSTANCE_MODULE_PREFIX;
+
+/// 实例模块 id 的现役前缀（别名，见 [`LEGACY_INSTANCE_MODULE_PREFIX`]）。
+pub use echo_defs::module_id::INSTANCE_MODULE_PREFIX;
+
+/// 把旧实例模块 id 归一为现役形态；其余 id 原样返回。
+///
+/// 实现见 `echo_defs::module_id::canonical_module_id`——技能加载器与
+/// 组合根都走同一口径，不各自维护一份映射。
+pub use echo_defs::module_id::canonical_module_id;
+
+/// 配置化组合（P4）：**一步挂载决定**——某个内置模块要不要挂载。
+///
+/// 只表达"挂载与否"，不表达"怎么构造"：内置模块的 mount 闭包要捕获
+/// 组合根的运行期句柄（端口 / token / 实例句柄 / broker…），构造只能在
+/// 代码里发生；能交给配置的是**集合、顺序、启用状态**。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountStep {
+    /// 内置模块 id（与 `ModuleManifest::id` 一致）。
+    pub id: String,
+    /// 是否挂载（`false` = 注册但保持未挂载，Panel 显示为已禁用）。
+    pub enabled: bool,
+}
+
+impl MountStep {
+    /// 构造一步决定。
+    pub fn new(id: impl Into<String>, enabled: bool) -> Self {
+        Self {
+            id: id.into(),
+            enabled,
+        }
+    }
+}
+
+/// 挑出 `modules.toml` 里被 `enabled = false` 的 **kernel** 模块（若有）。
+///
+/// `kind = "kernel"` 的模块是其它模块的运行地基，禁不掉（理由见
+/// `source/*/*/src/module.rs` 的模块文档）。返回第一个违规项——启动方能据此
+/// **明确失败**，而不是像能力模块那样"注册但不挂载"（那是假动作：运维以为
+/// 关掉了一个可有可无的东西，实际后果是启动到一半缺东西）。
+///
+/// `catalog_ids` 用来确认 id 真实存在：写错 id 的 `enabled = false` 不算违规
+/// （它本来就不会挂载，只会在 mount plan 诊断里 warn）。
+///
+/// **脱敏（`echo-agent.security.sanitize`）不在这张表里，是刻意的**：它是
+/// 安全不变量，却是**能力而非地基**（关掉后内核照常起，只是不再脱敏），
+/// 判据「禁用后系统能不能起来」不成立。它真正的关闭路径是 `core.toml` 的
+/// `[security.sanitize].enabled = false`（需重启 + 启动日志 `warn!`）。
+/// 2026-11 之前它另有一个 `kind = "kernel"` 的空壳身份（crate
+/// `echo-sanitize`），已随该 crate 并入 `echo-module-sanitize` 一并退役。
+pub fn disabled_kernel_modules(catalog_ids: &[String], plan: &[MountStep]) -> Option<String> {
+    const KERNEL_IDS: [&str; 8] = [
+        echo_defs::MODULE_ID,
+        echo_config::MODULE_ID,
+        echo_protocol::module::MODULE_ID,
+        echo_session::module::MODULE_ID,
+        echo_tool::module::MODULE_ID,
+        echo_shell::module::MODULE_ID,
+        echo_federation::module::MODULE_ID,
+        echo_loop::module::MODULE_ID,
+    ];
+    plan.iter()
+        .filter(|step| !step.enabled)
+        .map(|step| step.id.clone())
+        .find(|id| KERNEL_IDS.contains(&id.as_str()) && catalog_ids.iter().any(|c| c == id))
+}
+
+/// 把「内置目录顺序」与「配置给出的挂载计划」解析成**实际挂载序列**。
+///
+/// 语义（保守优先，任何配置都不会"顺手关掉一堆东西"）：
+///
+/// 1. 计划里出现的 id **按计划顺序**排在前面，启用状态取计划值；
+/// 2. 计划里出现、目录里没有的 id → 诊断（配置写错了），不挂载；
+/// 3. 目录里有、计划里**没提到**的 id → 追加在末尾、默认启用。
+///
+/// 第 3 条是关键：`modules.toml` 长期只用来登记**子进程**模块（实例模块
+/// 等），绝大多数部署里它一个内置 id 都不提。若"计划未提到 = 不挂载"，
+/// 这些部署会一夜之间失去全部内置模块（工具集 / 技能 / 管理面…）。所以
+/// 缺省即挂载，配置只能**显式**改变某个内置模块的顺序或启用状态。
+///
+/// 计划为空（无 `modules.toml`）→ 目录顺序原样返回，与改造前完全一致。
+/// 可选模块：未出现在配置中时保持禁用；显式 `enabled = true` 才挂载。
+///
+/// Web Panel 监听外部端口，编译进 Core 不应等于默认开放服务。这个默认
+/// 只影响挂载计划，不改变 `ModuleManifest` 或全局 ToggleModule 语义。
+pub const DEFAULT_DISABLED_MODULE_IDS: [&str; 0] = [];
+
+pub fn resolve_mount_order(
+    catalog_ids: &[String],
+    plan: &[MountStep],
+) -> (Vec<MountStep>, Vec<String>) {
+    let mut diagnostics = Vec::new();
+    // 在补默认启用条目前派生默认关闭计划：可选模块显式出现与否决定行为。
+    let plan: Vec<MountStep> = DEFAULT_DISABLED_MODULE_IDS
+        .iter()
+        .filter(|id| catalog_ids.iter().any(|known| known == **id))
+        .filter(|id| !plan.iter().any(|step| step.id == **id))
+        .map(|id| MountStep::new((*id).to_string(), false))
+        .chain(plan.iter().cloned())
+        .collect();
+    let mut ordered: Vec<MountStep> = Vec::with_capacity(catalog_ids.len());
+    let mut seen: Vec<String> = Vec::new();
+    for step in plan {
+        if !catalog_ids.iter().any(|id| id == &step.id) {
+            diagnostics.push(format!(
+                "mount plan names unknown builtin module `{}` (ignored)",
+                step.id
+            ));
+            continue;
+        }
+        if seen.contains(&step.id) {
+            diagnostics.push(format!(
+                "mount plan repeats builtin module `{}` (first wins)",
+                step.id
+            ));
+            continue;
+        }
+        seen.push(step.id.clone());
+        ordered.push(step.clone());
+    }
+    for id in catalog_ids {
+        if !seen.contains(id) {
+            ordered.push(MountStep::new(id.clone(), true));
+        }
+    }
+    (ordered, diagnostics)
+}
+
+/// 子进程模块（`modules.toml` 里的外部条目）的**生命周期控制面**。
+///
+/// 为什么是 trait 而不是直接依赖 `echo-module-host`：本 crate 是框架层，
+/// 刻意不认识监督者（宿主实现细节）；而"停/起一个子进程"又必须由持有
+/// supervisor 句柄的组合根来做。trait 把两件事分开——类型在框架层，
+/// 实现在组合根。
+///
+/// 进程内模块不走这条路（它们的启停由注册表 mount/unmount 完成）。
+pub trait SubprocessModuleControl: Send + Sync {
+    /// 停止（可逆）：排空后停在 `stopped`，之后还能 [`Self::start`]。
+    fn stop<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
+    /// 从停止态重新拉起（重新握手）。
+    fn start<'a>(
+        &'a self,
+        id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
+    /// 热替换：先启动并校验新进程，再切换流量并排空旧进程。
+    /// 新进程握手失败时旧进程必须继续服务。
+    fn upgrade<'a>(
+        &'a self,
+        id: &'a str,
+        timeout: std::time::Duration,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
+
+    /// 当前运行态快照（None = 不认识这个 id）。
+    fn status(&self, id: &str) -> Option<SubprocessStatus>;
+}
+
+/// 子进程模块运行态快照（面板展示 + 决策）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubprocessStatus {
+    /// `pending` / `ready` / `draining` / `stopped` / `failed`。
+    pub state: String,
+    /// 崩溃后自动重启次数。
+    pub restarts: u32,
+    /// 连接代际（每次就绪自增）。
+    pub generation: u64,
+    /// `state == failed` 时的原因。
+    pub error: Option<String>,
+}
+
+/// The agent's module host: **本项目对模块机制的领域适配层**。
+///
+/// ## 它现在只剩三件事（2026-11，框架 v0.10 运行态上收）
+///
+/// 框架（`echo-fabric-arch`）已经把**与领域无关的运行态**收进
+/// `ModuleRegistry`：挂载上下文缓存、事件订阅兴趣集、投递重入保护、投递
+/// 计数。此前这四样由本结构自己维护（多出 ~150 行状态 + 一处 `EventInterest`
+/// 影子结构），现在一行都不留。
+///
+/// 剩下的三件**本项目的语义**，框架不该知道：
+///
+/// 1. [`Self::mount_plan_when_ready`]：`modules.toml` 的三层合成结果 → 挂载计划
+///    （配置格式是本项目的）；
+/// 2. [`Self::deliver_backend_event`]：`BackendEvent` → `ModuleEvent` 的翻译
+///    （领域词汇是本项目的）；
+/// 3. 子进程控制的分派（`stop_subprocess` / `start_subprocess` /
+///    `is_external_entry`）：外部模块由本项目的 `modules.toml` 声明、由本
+///    项目的 supervisor 拉起。
+///    （`reconcile` 重入保护也留在这里：它防的是**本宿主**在
+///    `Ctx::on_change` 回调里重入，属编排问题。）
+///
+/// ## 判据
+///
+/// 「框架知道这件事吗？」——知道（生命周期、事件、兴趣集）就上收；不知道
+/// （`modules.toml` 长什么样、`BackendEvent` 是什么、子进程怎么起）就留这里。
+/// 这比"宿主包一层更安全"务实：包着只会让两边都有半份实现的可能。
+pub struct ModuleHost {
+    pub registry: ModuleRegistry,
+    /// 子进程模块生命周期（组合根注入；None = 无外部条目或未接线）。
+    subprocess: parking_lot::RwLock<Option<Arc<dyn SubprocessModuleControl>>>,
+    /// `reconcile` 重入保护：依赖变更回调里挂载模块会再注册服务、再触发
+    /// 回调——不加这道闸就是无限递归。
+    ///
+    /// 留在这里而不是上收：它防的是**本宿主**在 `Ctx::on_change` 回调里
+    /// 重入，属编排问题（框架的 `reconcile` 不知道自己被谁调）。
+    reconciling: std::sync::atomic::AtomicBool,
+    /// **根作用域**（2026-11 S10）：`ModuleScope::root(宿主服务表)`。
+    ///
+    /// 根作用域 = 进程级：联邦链路、管理面监听、provider、自更新、实例门控
+    /// 都只有一份，挂在这一层。子作用域（每人格一个）从它的 `Ctx::child()`
+    /// 派生，父链继承宿主服务、自身遮蔽同名键。
+    ///
+    /// 晚绑定（`attach_root_ctx`）：`ModuleHost` 在 `Agent` 构造期就要存在，
+    /// 而宿主服务表要到组合根的装配中段才成型。
+    root: parking_lot::RwLock<Option<Arc<echo_module::ModuleScope>>>,
+    /// **persona 作用域**（team_id → 那一层）。
+    ///
+    /// 值为 `Weak<Agent>` 而不持 `Arc`：`Agent → modules.host → scope → Agent`
+    /// 会成环（persona 重启后旧 Agent 永远 drop 不掉）。判"这层过期了吗"用
+    /// `Weak::ptr_eq`——同一 team_id 换了 Agent 就是过期，重建。
+    persona_scopes: parking_lot::RwLock<std::collections::HashMap<String, Arc<PersonaScope>>>,
+    /// persona 作用域的模块**目录工厂**（同一份 `catalog()` 再调一次 = 一批
+    /// 全新实例）。
+    ///
+    /// 为什么必须是工厂而不是目录本身：模块实例内部持有 `ServiceSlot`
+    /// （`mount` 时绑定宿主适配器）。同一个 `Arc<dyn Module>` 挂进两个作用域
+    /// 会让两层的槽互相覆盖——第一个人格的适配器被第二个人格顶掉，而且没有
+    /// 任何报错。**必须重新构造**。
+    persona_catalog: parking_lot::RwLock<Option<PersonaCatalogFn>>,
+}
+
+/// 目录工厂：每次调用产出一批**全新**模块实例。
+pub type PersonaCatalogFn = Arc<dyn Fn() -> Vec<Arc<dyn echo_module::Module>> + Send + Sync>;
+
+/// 一个人格的模块作用域：独立 `Ctx`（父链继承）+ 独立注册表 + 已挂模块。
+pub struct PersonaScope {
+    /// 本层作用域（`ModuleScope::root(child_ctx)`）。
+    pub scope: Arc<echo_module::ModuleScope>,
+    /// 建这一层时的 agent（弱引用：见 `ModuleHost::persona_scopes` 的环说明）。
+    agent: std::sync::Weak<crate::agent::Agent>,
+    /// 本层挂上的模块 id（诊断 / 面板）。
+    pub mounted: Vec<String>,
+    /// persona 宿主适配器的服务登记（`provide` 的返回值）：活到本层销毁。
+    _hosts: Vec<echo_context::Disposer>,
+}
+
+impl PersonaScope {
+    /// 这一层是否仍对应**当前**的 agent（persona 重启后为 false）。
+    pub fn matches(&self, agent: &Arc<crate::agent::Agent>) -> bool {
+        self.agent
+            .upgrade()
+            .map(|current| Arc::ptr_eq(&current, agent))
+            .unwrap_or(false)
+    }
+
+    /// 本层的服务表（persona `Ctx`）。
+    pub fn ctx(&self) -> &Arc<echo_context::Ctx> {
+        self.scope.ctx()
+    }
+}
+
+impl std::fmt::Debug for PersonaScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PersonaScope")
+            .field("mounted", &self.mounted)
+            .field("alive", &self.agent.strong_count())
+            .finish()
+    }
+}
+
+impl Default for ModuleHost {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ModuleHost {
+    pub fn new() -> Self {
+        Self {
+            registry: ModuleRegistry::new(),
+            subprocess: parking_lot::RwLock::new(None),
+            reconciling: std::sync::atomic::AtomicBool::new(false),
+            root: parking_lot::RwLock::new(None),
+            persona_scopes: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            persona_catalog: parking_lot::RwLock::new(None),
+        }
+    }
+
+    /// Attach the mount context (tools/skills/services). Call once at boot
+    /// before mounting anything.
+    ///
+    /// **委托给框架**（v0.10）：注册表自己缓存它，之后的
+    /// `enable` / `restart_cached` / `reconcile_cached` 不必再传。
+    pub fn set_mount_ctx(&self, ctx: MountContext) {
+        self.registry.set_mount_ctx(ctx);
+    }
+
+    // ── 作用域（2026-11 S10：对齐 `ctx.fork()`）──────────────────────────
+
+    /// 绑定**根作用域**（组合根在宿主服务注册完成后调用一次）。
+    ///
+    /// 之后 `persona_scope` 才能从这层 `Ctx::child()` 派生人格作用域。
+    /// 晚绑定时不报错——没有根作用域只意味着"没有人格作用域可用"，
+    /// 命令照旧走进程级分发（与 S10 之前完全一致）。
+    pub fn attach_root_ctx(&self, ctx: Arc<echo_context::Ctx>) {
+        let scope = echo_module::ModuleScope::root(ctx);
+        *self.root.write() = Some(scope);
+    }
+
+    /// 根作用域（None = 还没 `attach_root_ctx`）。
+    pub fn root_scope(&self) -> Option<Arc<echo_module::ModuleScope>> {
+        self.root.read().clone()
+    }
+
+    /// 注入 persona 作用域的模块**目录工厂**。
+    ///
+    /// 传工厂而不是目录：见 [`Self::persona_catalog`] 字段的环/槽覆盖说明。
+    pub fn set_persona_catalog(&self, catalog: PersonaCatalogFn) {
+        *self.persona_catalog.write() = Some(catalog);
+    }
+
+    /// persona 作用域里挂哪些模块：由 manifest 的 `kind` 决定（**宿主词汇**，
+    /// 框架只透传）。
+    ///
+    /// 判据是"这些模块的宿主适配器是不是 per-persona 的"：
+    ///
+    /// | kind | 适配器 | 一层还是一份 |
+    /// |---|---|---|
+    /// | `tool` | `ToolsCommandHost`（每人格的工具表） | 每人格 |
+    /// | `skill` | `SkillsCommandHost`（每人格的技能表） | 每人格 |
+    /// | `provider` | `ProviderCommandHost`（每人格的模型配置） | 每人格 |
+    /// | `loop` / `federation` / `management` / `orchestration` / `instance` | 进程级单例 | 进程 |
+    ///
+    /// 这里出现字面量 `kind` 不是"宿主认识模块名"的复发：`kind` 本来就是宿主
+    /// 的分类词汇（框架文档明确它"开放标签、框架从不按它分支"），而"哪类模块
+    /// 该按人格隔离"是**宿主策略**，不是模块知识。
+    const PERSONA_SCOPED_KINDS: [&'static str; 3] = ["tool", "skill", "provider"];
+
+    /// 取（必要时建立）某个人格的作用域。
+    ///
+    /// 返回 `None` 的情形都是"照旧走进程级"：无根作用域 / 无目录工厂 /
+    /// 这个 agent 没有 team_id（进程级核心服务代理不属于任何人格）。
+    pub fn persona_scope(&self, agent: &Arc<crate::agent::Agent>) -> Option<Arc<PersonaScope>> {
+        let team_id = agent.team_id()?;
+        {
+            let existing = self.persona_scopes.read();
+            if let Some(scope) = existing.get(&team_id) {
+                if scope.matches(agent) {
+                    return Some(Arc::clone(scope));
+                }
+            }
+        }
+        let mut scopes = self.persona_scopes.write();
+        // 双检：并发建两次没有意义，但也不能让后者覆盖前者的已挂模块。
+        if let Some(scope) = scopes.get(&team_id) {
+            if scope.matches(agent) {
+                return Some(Arc::clone(scope));
+            }
+            tracing::info!(
+                team_id = %team_id,
+                "persona 换了 agent（重启/重建）——重建模块作用域，适配器改绑新实例"
+            );
+        }
+        let built = self.build_persona_scope(&team_id, agent)?;
+        scopes.insert(team_id, Arc::clone(&built));
+        Some(built)
+    }
+
+    fn build_persona_scope(
+        &self,
+        team_id: &str,
+        agent: &Arc<crate::agent::Agent>,
+    ) -> Option<Arc<PersonaScope>> {
+        let root = self.root_scope()?;
+        let factory = self.persona_catalog.read().clone()?;
+        // 子作用域：父链继承宿主服务（实例 / 联邦端口 / 管理面…）。
+        let child = root.ctx().child();
+        let hosts = crate::agent::persona_hosts::provide(&child, agent);
+        let scope = echo_module::ModuleScope::root(child);
+        let mut mounted = Vec::new();
+        for module in factory() {
+            let id = module.manifest().id.clone();
+            let kind = module.manifest().kind.clone();
+            if !Self::PERSONA_SCOPED_KINDS.contains(&kind.as_str()) {
+                continue;
+            }
+            // 挂载计划（`modules.toml` 的 builtin 行）照旧生效。
+            if !self.registry.is_enabled(&id) {
+                continue;
+            }
+            match scope.mount(module) {
+                Ok(()) => mounted.push(id),
+                Err(error) => {
+                    // 单个人格挂不上不拖垮整个作用域：其余模块照常工作，
+                    // 缺的那条命令由模块的"未挂载"分支回明确错误。
+                    tracing::warn!(
+                        team_id = %team_id, module = %id, %error,
+                        "persona 作用域挂载失败（该命令域在此人格不可用）"
+                    );
+                }
+            }
+        }
+        tracing::info!(
+            team_id = %team_id,
+            modules = ?mounted,
+            "persona 模块作用域就绪（ctx.fork：独立 Ctx + 独立注册表）"
+        );
+        Some(Arc::new(PersonaScope {
+            scope,
+            agent: Arc::downgrade(agent),
+            mounted,
+            _hosts: hosts,
+        }))
+    }
+
+    /// **按作用域分发命令**：先问该人格的作用域，落空再问进程级。
+    ///
+    /// 为什么"先人格后进程"：persona 作用域是根作用域的子集（只挂
+    /// `tool/skill/provider`），两层的命令域**不重叠**；所以顺序不影响结果，
+    /// 只影响一次查找的代价。先问人格是为了让"这条命令归谁"在日志/诊断里
+    /// 与实际的执行者一致。
+    pub async fn dispatch_command_for(
+        &self,
+        agent: &Arc<crate::agent::Agent>,
+        command: &echo_protocol::BackendCommand,
+    ) -> Option<Result<serde_json::Value, String>> {
+        let name = command.kind_name();
+        if let Some(scope) = self.persona_scope(agent) {
+            if scope.scope.registry().command_owner(name).is_some() {
+                return scope
+                    .scope
+                    .registry()
+                    .dispatch_command_async(name, command.payload_value())
+                    .await;
+            }
+        }
+        self.dispatch_command(command).await
+    }
+
+    /// 挂载上下文（测试与 [`Self::reconcile`] 共用；不是公开 API）。
+    pub(crate) fn ctx(&self) -> MountContext {
+        self.registry.mount_ctx().unwrap_or_default()
+    }
+
+    /// Register a module and mount it (composition root).
+    ///
+    /// 配置层（`modules.toml` 的 `enabled = false`）判为不挂载的模块在这里
+    /// 只注册、不 mount：不挂载就不该产生任何副作用。
+    pub fn register_and_mount(&self, module: Arc<dyn echo_module::Module>) -> Result<(), String> {
+        let id = module.manifest().id.clone();
+        self.registry.register(Arc::clone(&module))?;
+        if !self.registry.is_enabled(&id) {
+            return Ok(());
+        }
+        self.registry
+            .mount(&id, &self.ctx())
+            .map_err(|e| format!("module {id} mount failed: {e}"))?;
+        Ok(())
+    }
+
+    /// 配置化组合（P4）：按**挂载计划**注册 + 挂载一批内置模块。
+    ///
+    /// 与逐个 [`Self::register_and_mount`] 的差别只有两点：顺序由计划决定，
+    /// 计划里 `enabled = false` 的条目**不挂载**（也不进 Panel 清单：
+    /// 清单只列当前挂载的模块）。
+    ///
+    /// 返回 `(已注册数, 已挂载 id, 错误)`：单个挂载失败不影响其余（启动
+    /// 期"尽力而为"语义，与既有 `mount_all` 一致）；注册冲突（同 id 重复）
+    /// 是装配 bug，记进错误但不中断。
+    /// 配置化组合的**就绪等待**版本：注册 + 按计划挂载，每个模块都先等它的
+    /// `inject` 就绪（最多 `timeout`；见 `echo_module::ModuleRegistry::
+    /// mount_when_ready`）。
+    ///
+    /// "依赖暂时没到"时等一等再判（而不是立即报错）。对现网无行为差异——
+    /// 正常启动时依赖早已注册，第一次检查就命中，一次 `contains` 的开销。
+    ///
+    /// 返回 `(已注册数, 已挂载 id, 仍在等依赖的 (id, 缺的键), 错误)`。
+    /// 「仍在等」不算失败：它们留在 `pending` 里，依赖到了由
+    /// [`Self::reconcile`] 挂上。
+    pub async fn mount_plan_when_ready(
+        &self,
+        catalog: Vec<Arc<dyn echo_module::Module>>,
+        plan: &[MountStep],
+        timeout: std::time::Duration,
+    ) -> (usize, Vec<String>, Vec<(String, Vec<String>)>, Vec<String>) {
+        let mut errors: Vec<String> = Vec::new();
+        let mut by_id: Vec<(String, Arc<dyn echo_module::Module>)> = Vec::new();
+        for module in catalog {
+            let id = module.manifest().id.clone();
+            if let Err(e) = self.registry.register(Arc::clone(&module)) {
+                errors.push(e);
+                continue;
+            }
+            by_id.push((id, module));
+        }
+        let registered = by_id.len();
+        let disabled: Vec<String> = plan
+            .iter()
+            .filter(|step| !step.enabled)
+            .map(|step| step.id.clone())
+            .collect();
+        if !disabled.is_empty() {
+            self.registry.apply_disabled(&disabled);
+        }
+        let ctx = self.ctx();
+        let mut mounted = Vec::new();
+        let mut waiting = Vec::new();
+        for step in plan {
+            if !by_id.iter().any(|(id, _)| id == &step.id) {
+                continue;
+            }
+            if !self.registry.is_enabled(&step.id) {
+                continue;
+            }
+            match self
+                .registry
+                .mount_when_ready(&step.id, &ctx, timeout)
+                .await
+            {
+                Ok(_) => mounted.push(step.id.clone()),
+                Err(echo_module::ModuleMountError::MissingService { key, .. }) => {
+                    // 依赖没到：**不算错误**，进 pending 等依赖变更。
+                    waiting.push((step.id.clone(), vec![key]));
+                }
+                Err(e) => errors.push(format!("module {} mount failed: {e}", step.id)),
+            }
+        }
+        (registered, mounted, waiting, errors)
+    }
+
+    /// 依赖变更后重新核对注册表（`inject` 的响应端）。
+    ///
+    /// 语义见 `echo_module::ModuleRegistry::reconcile`：pending 里依赖已齐的
+    /// 挂上、已挂载但依赖消失的卸下。**重入保护**：挂载动作会注册服务、再触发
+    /// 变更通知，没有这道闸就是递归。
+    ///
+    /// 组合根可以在 `ctx.on_change` 回调里直接调它——这是"声明式注入"真正
+    /// 生效的地方（不是启动期检查一次，而是依赖变化时自动追平）。
+    pub fn reconcile(&self) -> echo_module::ReconcileReport {
+        use std::sync::atomic::Ordering;
+        if self.reconciling.swap(true, Ordering::SeqCst) {
+            return echo_module::ReconcileReport::default();
+        }
+        struct Reset<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _reset = Reset(&self.reconciling);
+        let report = self.registry.reconcile(&self.ctx());
+        // 挂上/卸下会改变"谁在订阅"——不刷新的话热路径会按旧集合判断。
+        report
+    }
+
+    /// 注入**模块事件出口**（组合根装配期一次）。
+    ///
+    /// 模块 `emit` 的事件（含注册表自己发的 `module.mounted` /
+    /// `module.unmounted`）经它出去；组合根把它接到进程级事件汇聚点，
+    /// 于是前端能看到"模块在干什么"。未注入 = 静默丢弃（降级不是错误）。
+    pub fn set_event_sink(&self, sink: echo_module::EventSink) {
+        self.registry.set_event_sink(sink);
+    }
+
+    /// 把一条**模块事件**投递给订阅了它的已挂载模块（返回成功投递数）。
+    ///
+    /// 这是**模块自己发的**事件（`MountContext::emit`）的回流路径：一个模块
+    /// emit 的东西，其他订阅了同名事件的模块也能看到。宿主领域事件走
+    /// [`Self::deliver_backend_event`]。
+    pub fn deliver_module_event(&self, event: &echo_module::ModuleEvent) -> usize {
+        self.deliver_guarded(event)
+    }
+
+    /// 把一条**宿主领域事件**（`BackendEvent`）转投给订阅了它的模块。
+    ///
+    /// ## 谁调、什么时候
+    ///
+    /// `Agent::emit` 在事件上总线之后调这里——**同一个汇聚点**，所以模块看到
+    /// 的事件顺序与面板一致。事件名用 [`echo_protocol::BackendEvent::kind_name`]
+    /// （零分配，等于 serde 的线上 tag），载荷是整条事件序列化成的 JSON。
+    ///
+    /// ## 成本
+    ///
+    /// 热路径保护分三层，没有订阅者时**一层就返回**：
+    /// 1. [`Self::has_event_subscribers`] —— 一次原子 load（`Agent::emit` 先调它）；
+    /// 2. [`Self::wants_event`] —— 读缓存的名字集合，不做序列化；
+    /// 3. 只有真的有人订阅这个名字，才 `serde_json::to_value` 一次。
+    ///
+    /// 所以「没有任何模块订阅事件」的部署（当前全部部署）**零额外开销**；
+    /// 有人订阅 `*` 才会为每条事件付一次序列化——那是订阅方明确选择的。
+    pub fn deliver_backend_event(&self, event: &echo_protocol::BackendEvent) -> usize {
+        let name = event.kind_name();
+        if !self.wants_event(name) {
+            return 0;
+        }
+        // 只在这一步付序列化代价（有人真的订阅了这个名字）。
+        let payload = match serde_json::to_value(event) {
+            Ok(serde_json::Value::Object(mut map)) => {
+                map.remove(name).unwrap_or(serde_json::Value::Null)
+            }
+            Ok(other) => other,
+            Err(error) => {
+                tracing::warn!(%error, %name, "module event payload serialization failed");
+                return 0;
+            }
+        };
+        let module_event = echo_module::ModuleEvent::host(name, payload);
+        self.deliver_guarded(&module_event)
+    }
+
+    /// 是否有任何已挂载模块订阅了事件（热路径的快速判定）。
+    ///
+    /// **委托给框架**（v0.10）：兴趣集由注册表在挂/卸/启停后自己刷新，宿主
+    /// 不必记得调。
+    pub fn has_event_subscribers(&self) -> bool {
+        self.registry.has_event_subscribers()
+    }
+
+    /// 该事件名当前是否有人订阅（不做序列化，供调用方提前分流）。
+    pub fn wants_event(&self, name: &str) -> bool {
+        self.registry.wants_event(name)
+    }
+
+    /// 投递 + 重入保护 + 计数（**委托给框架**的
+    /// [`ModuleRegistry::deliver_event_guarded`]）。
+    fn deliver_guarded(&self, event: &echo_module::ModuleEvent) -> usize {
+        self.registry.deliver_event_guarded(event)
+    }
+
+    // ── 命令处理 + 有序文本块（echo-fabric-arch v0.8）────────────────────
+
+    /// **把一条命令分发给模块**（`Contribution::Command`）。
+    ///
+    /// 返回 `None` = 没有已挂载模块声明这个命令（调用方走默认分支）；
+    /// `Some(Ok(v))` / `Some(Err(e))` = 模块处理了（成功 / 失败）。
+    ///
+    /// 命令名用 [`echo_protocol::BackendCommand::kind_name`]（零分配），载荷用
+    /// [`echo_protocol::BackendCommand::payload_value`]（剥掉外层 tag）。模块
+    /// 可以用 `serde_json::from_value::<BackendCommand>` 拿回强类型——共享
+    /// 词汇在 `echo-protocol`，那正是它该在的地方。
+    pub async fn dispatch_command(
+        &self,
+        command: &echo_protocol::BackendCommand,
+    ) -> Option<Result<serde_json::Value, String>> {
+        self.registry
+            .dispatch_command_async(command.kind_name(), command.payload_value())
+            .await
+    }
+
+    /// 把一条**非线协议**命令分发给模块（按名字 + 自由 JSON 载荷）。
+    ///
+    /// 用途：跨仓库边界的宿主内部动作——模块拥有数据（store）而宿主不能直接
+    /// 写它，只能经命令通道回来。面板不会发这类名字，因此它们不进
+    /// `BackendCommand`（协议词汇表保持只描述前端可见命令）。
+    pub async fn dispatch_raw(
+        &self,
+        name: &str,
+        payload: serde_json::Value,
+    ) -> Option<Result<serde_json::Value, String>> {
+        self.registry.dispatch_command_async(name, payload).await
+    }
+
+    /// 某条命令当前归谁处理（诊断/测试用）。
+    pub fn command_owner(&self, name: &str) -> Option<String> {
+        self.registry.command_owner(name)
+    }
+
+    /// 收集已挂载模块贡献的**有序文本块**（按 `order` 升序，空内容丢弃）。
+    ///
+    /// `keep` 是**按模块 id 的过滤钩子**：宿主的"这个使用者能看什么"是按
+    /// 使用者决定的（EchoAgent 里是 persona 白名单），而模块挂载是进程级的。
+    /// 传 `|_| true` 表示不过滤。
+    pub fn collect_text_blocks(
+        &self,
+        context: &serde_json::Value,
+        keep: impl Fn(&str) -> bool,
+    ) -> Vec<(echo_module::ModuleTextBlock, String)> {
+        self.registry.collect_text_blocks_filtered(context, keep)
+    }
+
+    /// 事件投递计数（成功条数, 失败条数）——诊断用。
+    pub fn event_counters(&self) -> (u64, u64) {
+        self.registry.event_counters()
+    }
+
+    /// 眼下还缺依赖的模块（`id → 缺的键`）。
+    pub fn pending_inject(&self) -> Vec<(String, Vec<String>)> {
+        self.registry.pending_inject()
+    }
+
+    /// 注入子进程模块控制面（组合根装配期，一次）。
+    pub fn set_subprocess_control(&self, control: Arc<dyn SubprocessModuleControl>) {
+        *self.subprocess.write() = Some(control);
+    }
+
+    /// 子进程模块控制面（None = 未接线 / 无外部条目）。
+    pub fn subprocess_control(&self) -> Option<Arc<dyn SubprocessModuleControl>> {
+        self.subprocess.read().clone()
+    }
+
+    /// 某个模块是不是**外部条目**（`modules.toml` 的 stdio 条目）。
+    ///
+    /// 判据：`runtime == subprocess && !builtin`——实例门控壳是
+    /// `subprocess + builtin`（manifest 编译在 Core 里），不属于这一类。
+    pub fn is_external_entry(&self, id: &str) -> bool {
+        self.registry
+            .descriptors()
+            .into_iter()
+            .find(|d| d.id == id)
+            .is_some_and(|d| d.runtime == "subprocess" && !d.builtin)
+    }
+
+    /// 停止一个外部条目（可逆）。
+    pub async fn stop_subprocess(&self, id: &str) -> Result<(), String> {
+        let control = self
+            .subprocess_control()
+            .ok_or_else(|| format!("{id}: 子进程控制面未接线"))?;
+        control.stop(id).await
+    }
+
+    /// 拉起一个已停止的外部条目。
+    pub async fn start_subprocess(&self, id: &str) -> Result<(), String> {
+        let control = self
+            .subprocess_control()
+            .ok_or_else(|| format!("{id}: 子进程控制面未接线"))?;
+        control.start(id).await
+    }
+
+    /// 热替换一个运行中的外部条目；握手失败不会停止旧实例。
+    pub async fn upgrade_subprocess(
+        &self,
+        id: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(), String> {
+        let control = self
+            .subprocess_control()
+            .ok_or_else(|| format!("{id}: 子进程控制面未接线"))?;
+        control.upgrade(id, timeout).await
+    }
+
+    /// Descriptors for the Panel（**注册序** = 组合 / 配置行序）。
+    ///
+    /// 不按 id 排序：`modules.toml` 的行序就是挂载顺序，是配置表达的一部分
+    /// （面板按返回序渲染，用户看到的顺序与自己写的顺序一致）。
+    /// 子进程模块的运行态在这里拼进去（`state` / `restarts` / `generation`），
+    /// 因为注册表本身不持有进程句柄。
+    pub fn descriptors(&self) -> Vec<ModuleDescriptor> {
+        let mut ds = self.registry.descriptors();
+        if let Some(control) = self.subprocess_control() {
+            for d in &mut ds {
+                if let Some(status) = control.status(&d.id) {
+                    d.state = status.state;
+                    d.restarts = status.restarts;
+                    d.generation = status.generation;
+                    // 运行态失败但没别的错误来源时，用它补上（面板的「失败」
+                    // 徽标读 error，只有 state 没有 error 会看不出所以然）。
+                    if d.error.is_none() {
+                        d.error = status.error;
+                    }
+                }
+            }
+        }
+        ds
+    }
+
+    /// 重载一个模块（卸下 → 重新挂载）。
+    ///
+    /// 面板的「重启」按钮走这条：让模块按新配置 / 新外部依赖重新初始化
+    /// （子进程重连、实例进程重启），不触碰任何持久化状态。
+    pub fn restart(&self, id: &str) -> Result<(), String> {
+        let result = self.registry.restart(id, &self.ctx());
+        if result.is_ok() {}
+        result
+    }
+
+    /// 记录「定义从哪来 / 怎么启动」（组合根装配期，面板技术信息用）。
+    pub fn set_definitions<I, K>(&self, definitions: I)
+    where
+        I: IntoIterator<Item = (K, echo_module::ModuleDefinition)>,
+        K: Into<String>,
+    {
+        for (id, definition) in definitions {
+            self.registry.set_definition(id, definition);
+        }
+    }
+
+    /// 记录模块装配/启动失败原因（组合根在拉起子进程模块后写入）。
+    pub fn set_module_errors<I, K, V>(&self, errors: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        for (id, error) in errors {
+            self.registry.set_module_error(id, error);
+        }
+    }
+
+    /// 记录模块的配置来源层（组合根装载 `modules.toml` 后写入）。
+    pub fn set_config_origins<I, K, V>(&self, origins: I)
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.registry.set_config_origins(origins);
+    }
+
+    /// 下发模块的配置（组合根装载 `modules.toml` 后写入）。
+    ///
+    /// 这是**内置模块拿到自己那份配置的唯一通路**：`modules.toml` 里
+    /// `kind = "builtin"` 行的 `[module.config]` 经这里进入注册表，`mount`
+    /// 时按 id 注入 [`echo_module::MountContext::config`]。模块因此不必自己去
+    /// 找 `modules.toml`、解析分层合成结果，也不会读到别人的配置。
+    ///
+    /// 时序：`set_configs` 必须在挂载**之前**（启动期）或重新启用**之前**
+    /// （运行期）调用——`mount` 取的是当时登记的值。
+    pub fn set_configs<I, K>(&self, configs: I)
+    where
+        I: IntoIterator<Item = (K, serde_json::Value)>,
+        K: Into<String>,
+    {
+        self.registry.set_configs(configs);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── persona 作用域（S10：对齐 `ctx.fork()`）────────────────────────
+
+    /// 测试用模块：`kind` 可控、记下自己 mount 时看到的 `ctx` 键，带一条命令。
+    struct ScopeProbeModule {
+        manifest: echo_module::ModuleManifest,
+        /// mount 时本层 `Ctx` 里 TOOLS_HOST 指向的注册表（识别"绑到谁"）。
+        seen_tools: Arc<parking_lot::Mutex<Option<Arc<echo_tool::ToolRegistry>>>>,
+    }
+
+    impl echo_module::Module for ScopeProbeModule {
+        fn manifest(&self) -> &echo_module::ModuleManifest {
+            &self.manifest
+        }
+        fn mount(&self, ctx: &echo_module::MountContext) -> echo_module::ModuleMountResult {
+            if let Some(mctx) = ctx.ctx.as_ref() {
+                let host = mctx
+                    .service(&echo_module_tools::host_keys::TOOLS_HOST)
+                    .expect("persona 作用域必须先提供 TOOLS_HOST");
+                *self.seen_tools.lock() = Some(host.registry());
+            }
+            Ok(Vec::new())
+        }
+        fn handled_commands(&self) -> Vec<String> {
+            vec!["ToggleTool".to_string()]
+        }
+        fn handle_command(
+            &self,
+            name: &str,
+            _payload: &serde_json::Value,
+        ) -> Option<Result<serde_json::Value, String>> {
+            (name == "ToggleTool").then(|| Ok(serde_json::json!({"by": self.manifest.id.clone()})))
+        }
+    }
+
+    fn probe(
+        id: &str,
+        kind: &str,
+    ) -> (
+        Arc<dyn echo_module::Module>,
+        Arc<parking_lot::Mutex<Option<Arc<echo_tool::ToolRegistry>>>>,
+    ) {
+        let seen = Arc::new(parking_lot::Mutex::new(None));
+        let module = Arc::new(ScopeProbeModule {
+            manifest: echo_module::ModuleManifest::builtin(id, id, "0.0.0", kind, id, "test probe"),
+            seen_tools: Arc::clone(&seen),
+        });
+        (module as Arc<dyn echo_module::Module>, seen)
+    }
+
+    /// 最小 provider：作用域测试不跑模型，只要一个合法的 `LlmProvider`。
+    struct NullProvider;
+
+    #[async_trait::async_trait]
+    impl crate::llm::LlmProvider for NullProvider {
+        fn name(&self) -> &str {
+            "null"
+        }
+        fn default_model(&self) -> &str {
+            "null"
+        }
+        async fn chat(
+            &self,
+            _request: &crate::llm::ChatRequest,
+        ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
+            Err(crate::llm::LlmError::Config(
+                "not used in scope tests".into(),
+            ))
+        }
+        async fn chat_stream(
+            &self,
+            request: &crate::llm::ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<crate::llm::ChatChunk>,
+        ) -> Result<crate::llm::ChatResponse, crate::llm::LlmError> {
+            self.chat(request).await
+        }
+    }
+
+    fn scope_agent(team: &str) -> Arc<crate::agent::Agent> {
+        let agent = Arc::new(crate::agent::Agent::new(
+            Arc::new(NullProvider),
+            crate::config::AgentConfig::default(),
+            crate::skill::SkillRegistry::new(),
+            echo_tool::ToolRegistry::new(),
+            Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
+        ));
+        agent.set_team_id(Some(team.to_string()));
+        agent
+    }
+
+    /// **每个 persona 拿到自己的宿主适配器**——这是 `ctx.fork()` 的全部意义。
+    ///
+    /// 反例（S10 之前）：四个 `Agent*CommandHost` 一律绑进程级核心服务代理，
+    /// 命令"作用于谁"只能靠调用方恰好持有哪个 `Arc`，或靠一段逐人格 fan-out
+    /// 补回来。
+    #[tokio::test]
+    async fn persona_scopes_bind_their_own_host_adapters() {
+        let host = ModuleHost::new();
+        let root_ctx = Arc::new(echo_context::Ctx::default());
+        host.attach_root_ctx(root_ctx);
+        host.set_persona_catalog(Arc::new(|| Vec::new()));
+
+        let a = scope_agent("a");
+        let b = scope_agent("b");
+        let scope_a = host.persona_scope(&a).expect("persona a 作用域");
+        let scope_b = host.persona_scope(&b).expect("persona b 作用域");
+
+        let tools_a = scope_a
+            .ctx()
+            .service(&echo_module_tools::host_keys::TOOLS_HOST)
+            .expect("TOOLS_HOST")
+            .registry();
+        let tools_b = scope_b
+            .ctx()
+            .service(&echo_module_tools::host_keys::TOOLS_HOST)
+            .expect("TOOLS_HOST")
+            .registry();
+        assert!(
+            Arc::ptr_eq(&tools_a, &a.tools),
+            "a 的适配器必须指向 a 的工具表"
+        );
+        assert!(
+            Arc::ptr_eq(&tools_b, &b.tools),
+            "b 的适配器必须指向 b 的工具表"
+        );
+        assert!(
+            !Arc::ptr_eq(&tools_a, &tools_b),
+            "两个人格不能共用同一份适配器（那正是 S10 之前的形状）"
+        );
+        // 父链继承：shell / 实例等进程级服务对子作用域仍可见。
+        assert!(
+            scope_a
+                .ctx()
+                .service(&echo_module_shell::host_keys::SHELL_HOST)
+                .is_some(),
+            "子作用域必须继承根层的进程级能力"
+        );
+    }
+
+    /// persona 作用域里的模块是**新实例**，不是根层那份的克隆。
+    ///
+    /// 这条防的是最阴的一类 bug：模块实例内部持有 `ServiceSlot`，同一实例
+    /// 挂进两层会让两层的槽互相覆盖——第一个人格的适配器被第二个人格顶掉，
+    /// 全程没有任何报错（只是"命令作用到了别人身上"）。
+    #[tokio::test]
+    async fn persona_scoped_modules_are_fresh_instances() {
+        let host = ModuleHost::new();
+        host.attach_root_ctx(Arc::new(echo_context::Ctx::default()));
+        host.set_persona_catalog(Arc::new(|| {
+            vec![probe("test.tool", "tool").0, probe("test.loop", "loop").0]
+        }));
+
+        let scope_a = host.persona_scope(&scope_agent("a")).expect("scope a");
+        let scope_b = host.persona_scope(&scope_agent("b")).expect("scope b");
+
+        // 只有 kind = tool/skill/provider 进人格作用域。
+        assert_eq!(scope_a.mounted, vec!["test.tool".to_string()]);
+        assert_eq!(scope_b.mounted, vec!["test.tool".to_string()]);
+
+        let pa = scope_a
+            .scope
+            .registry()
+            .module("test.tool")
+            .expect("module a");
+        let pb = scope_b
+            .scope
+            .registry()
+            .module("test.tool")
+            .expect("module b");
+        assert!(
+            !Arc::ptr_eq(&pa, &pb),
+            "两层必须是不同实例（同一实例会让 ServiceSlot 互相覆盖）"
+        );
+    }
+
+    /// persona 换了 agent（重启 / 运行时重建）→ 作用域重建，适配器改绑新实例。
+    #[tokio::test]
+    async fn persona_scope_is_rebuilt_when_the_agent_changes() {
+        let host = ModuleHost::new();
+        host.attach_root_ctx(Arc::new(echo_context::Ctx::default()));
+        host.set_persona_catalog(Arc::new(|| Vec::new()));
+
+        let first = scope_agent("a");
+        let scope_first = host.persona_scope(&first).expect("scope 1");
+        let second = scope_agent("a"); // 同 id、不同实例 = persona 重建
+        let scope_second = host.persona_scope(&second).expect("scope 2");
+        assert!(
+            !Arc::ptr_eq(&scope_first.scope, &scope_second.scope),
+            "换了 agent 必须重建作用域（否则命令作用在已经没人用的旧实例上）"
+        );
+        let tools = scope_second
+            .ctx()
+            .service(&echo_module_tools::host_keys::TOOLS_HOST)
+            .expect("TOOLS_HOST")
+            .registry();
+        assert!(
+            Arc::ptr_eq(&tools, &second.tools),
+            "重建后的适配器必须指向新 agent"
+        );
+        // 同一个 agent 再来一次 = 复用，不重建。
+        let again = host.persona_scope(&second).expect("scope 3");
+        assert!(Arc::ptr_eq(&scope_second.scope, &again.scope));
+    }
+
+    /// 命令按作用域分发：人格作用域认领的命令在那一层执行。
+    #[tokio::test]
+    async fn dispatch_command_for_uses_the_persona_scope() {
+        let host = ModuleHost::new();
+        host.attach_root_ctx(Arc::new(echo_context::Ctx::default()));
+        // 根层挂一个同名命令域的模块（模拟进程级 + 人格级并存的现状）。
+        host.set_persona_catalog(Arc::new(|| vec![probe("test.tool.persona", "tool").0]));
+
+        let agent = scope_agent("a");
+        let command = echo_protocol::BackendCommand::ToggleTool {
+            name: "x".into(),
+            enabled: true,
+        };
+        let outcome = host
+            .dispatch_command_for(&agent, &command)
+            .await
+            .expect("persona 作用域认得这条命令");
+        assert_eq!(
+            outcome.expect("ok")["by"],
+            "test.tool.persona",
+            "必须由人格作用域里那份模块处理"
+        );
+
+        // 没有人格（核心服务代理）→ 回落根层，根层没人认领 → None。
+        let core = Arc::new(crate::agent::Agent::new(
+            Arc::new(NullProvider),
+            crate::config::AgentConfig::default(),
+            crate::skill::SkillRegistry::new(),
+            echo_tool::ToolRegistry::new(),
+            Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
+        ));
+        assert!(
+            host.dispatch_command_for(&core, &command).await.is_none(),
+            "没有 team_id 的 agent 不该拿到人格作用域"
+        );
+    }
+
+    // ── 宿主保留名单的纪律 ──────────────────────────────────────────────
+
+    /// 名单里的每个名字都必须是**真实存在**的命令。
+    ///
+    /// 反例（2026-11 之前）：`SetModuleConfig` / `Shutdown` 在
+    /// `BackendCommand` 里根本不存在——名单看着守了两件事，其实一件也没守。
+    /// 这类"死的守卫"比没有守卫更糟：它让人以为这条路被封住了。
+    ///
+    /// 判据用协议源码里的 `kind_name` 分支（`Self::X { .. } => "X",`）——那是
+    /// 命令名与枚举变体**唯一**的权威映射，框架分发读的也是它。
+    #[test]
+    fn reserved_commands_exist_in_the_protocol() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../echo-protocol/src/command.rs"
+        ));
+        // `pub fn kind_name` 之后到下一个 `}` 收尾的那一段。
+        let start = source
+            .find("pub fn kind_name")
+            .expect("命令协议里应有 kind_name");
+        let body = &source[start..];
+        let end = body.find("\n    }").expect("kind_name 应有收尾");
+        let body = &body[..end];
+        let names: Vec<&str> = body
+            .match_indices("=> \"")
+            .filter_map(|(index, _)| {
+                let rest = &body[index + 4..];
+                let close = rest.find('"')?;
+                Some(&rest[..close])
+            })
+            .collect();
+        assert!(
+            names.len() > 40,
+            "kind_name 解析出 {} 个名字——解析器可能跟不上协议格式",
+            names.len()
+        );
+        for reserved in HOST_RESERVED_COMMANDS {
+            assert!(
+                names.contains(reserved),
+                "宿主保留名单里的 {reserved:?} 不是真实命令（协议里没有这个变体）"
+            );
+        }
+    }
+
+    // ── 配置化组合：挂载计划解析 ─────────────────────────────────────────
+
+    fn catalog() -> Vec<String> {
+        vec!["a".to_string(), "b".to_string(), "c".to_string()]
+    }
+
+    /// 空计划（无 modules.toml）→ 目录顺序原样、全部启用：与改造前逐字一致。
+    #[test]
+    fn empty_plan_keeps_catalog_order_and_enables_everything() {
+        let (order, diagnostics) = resolve_mount_order(&catalog(), &[]);
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            order,
+            vec![
+                MountStep::new("a", true),
+                MountStep::new("b", true),
+                MountStep::new("c", true)
+            ]
+        );
+    }
+
+    /// **关键安全语义**：计划只提到一个内置 id 时，其余内置仍要挂载。
+    ///
+    /// 现网 `modules.toml` 多半只登记子进程模块、一个内置 id 都不提；
+    /// 若"未提到 = 不挂载"，这些部署会一夜之间失去工具集/技能/管理面。
+    #[test]
+    fn unmentioned_builtins_stay_mounted_after_named_ones() {
+        let (order, diagnostics) = resolve_mount_order(&catalog(), &[MountStep::new("c", false)]);
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            order,
+            vec![
+                MountStep::new("c", false), // 计划里提到的排前面（并禁用）
+                MountStep::new("a", true),
+                MountStep::new("b", true)
+            ]
+        );
+    }
+
+    /// 计划可重排：顺序决定挂载先后（配置化组合的表达力所在）。
+    #[test]
+    fn plan_reorders_mounting() {
+        let (order, _) = resolve_mount_order(
+            &catalog(),
+            &[MountStep::new("b", true), MountStep::new("a", true)],
+        );
+        assert_eq!(
+            order,
+            vec![
+                MountStep::new("b", true),
+                MountStep::new("a", true),
+                MountStep::new("c", true)
+            ]
+        );
+    }
+
+    /// 写错 id（拼错 / 已下线）→ 诊断而不是静默忽略；重复 → 首个生效。
+    #[test]
+    fn unknown_and_duplicate_ids_are_reported() {
+        let (order, diagnostics) = resolve_mount_order(
+            &catalog(),
+            &[
+                MountStep::new("ghost", true),
+                MountStep::new("b", false),
+                MountStep::new("b", true),
+            ],
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.contains("ghost")),
+            "{diagnostics:?}"
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.contains("repeats")),
+            "{diagnostics:?}"
+        );
+        // 首个 b（disabled）生效，后一个不覆盖它——重复不制造第二种解释。
+        assert_eq!(order[0], MountStep::new("b", false));
+        assert_eq!(order.len(), 3, "unknown id must not be inserted: {order:?}");
+    }
+
+    // ── 子进程模块控制面（外部条目）────────────────────────────────────
+
+    /// 测试用控制面：记录调用、按需返回状态。
+    struct MockControl {
+        calls: parking_lot::Mutex<Vec<String>>,
+        state: parking_lot::Mutex<Option<SubprocessStatus>>,
+        fail: bool,
+    }
+
+    impl MockControl {
+        fn new(state: Option<SubprocessStatus>, fail: bool) -> Arc<Self> {
+            Arc::new(Self {
+                calls: parking_lot::Mutex::new(Vec::new()),
+                state: parking_lot::Mutex::new(state),
+                fail,
+            })
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().clone()
+        }
+    }
+
+    impl SubprocessModuleControl for MockControl {
+        fn stop<'a>(
+            &'a self,
+            id: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+        {
+            self.calls.lock().push(format!("stop:{id}"));
+            let fail = self.fail;
+            Box::pin(async move {
+                if fail {
+                    Err("stop failed".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        fn start<'a>(
+            &'a self,
+            id: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+        {
+            self.calls.lock().push(format!("start:{id}"));
+            let fail = self.fail;
+            Box::pin(async move {
+                if fail {
+                    Err("start failed".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        fn upgrade<'a>(
+            &'a self,
+            id: &'a str,
+            _timeout: std::time::Duration,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>
+        {
+            self.calls.lock().push(format!("upgrade:{id}"));
+            let fail = self.fail;
+            Box::pin(async move {
+                if fail {
+                    Err("upgrade failed".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        fn status(&self, _id: &str) -> Option<SubprocessStatus> {
+            self.state.lock().clone()
+        }
+    }
+
+    fn register_module(
+        host: &ModuleHost,
+        id: &str,
+        builtin: bool,
+        runtime: echo_module::ModuleRuntime,
+    ) {
+        host.registry
+            .register(Arc::new(echo_module::BuiltinModule::new(
+                echo_module::ModuleManifest::builtin(id, id, "1", "tool", id, "")
+                    .with_runtime(runtime)
+                    .with_builtin_flag(builtin),
+                |_| Ok(vec![]),
+            )))
+            .expect("register");
+    }
+
+    /// 外部条目判定：`subprocess + !builtin`——实例门控壳
+    /// （`subprocess + builtin`）**不算**，它的生命周期归实例模块。
+    #[test]
+    fn external_entry_is_subprocess_and_not_builtin() {
+        let host = ModuleHost::new();
+        register_module(
+            &host,
+            "ext.entry",
+            false,
+            echo_module::ModuleRuntime::Subprocess,
+        );
+        register_module(
+            &host,
+            "instance.shell",
+            true,
+            echo_module::ModuleRuntime::Subprocess,
+        );
+        register_module(
+            &host,
+            "inproc.builtin",
+            true,
+            echo_module::ModuleRuntime::InProcess,
+        );
+        assert!(host.is_external_entry("ext.entry"));
+        assert!(!host.is_external_entry("instance.shell"));
+        assert!(!host.is_external_entry("inproc.builtin"));
+        // 未知 id 不 panic、不算外部条目。
+        assert!(!host.is_external_entry("ghost"));
+    }
+
+    /// `descriptors()` 把运行态拼进去（注册表不持有进程句柄）。
+    #[test]
+    fn descriptors_merge_subprocess_state() {
+        let host = ModuleHost::new();
+        register_module(
+            &host,
+            "ext.entry",
+            false,
+            echo_module::ModuleRuntime::Subprocess,
+        );
+        // 未接线：state 为空（进程内语义），不出错。
+        assert_eq!(host.descriptors()[0].state, "");
+
+        host.set_subprocess_control(MockControl::new(
+            Some(SubprocessStatus {
+                state: "failed".into(),
+                restarts: 3,
+                generation: 7,
+                error: Some("crash loop".into()),
+            }),
+            false,
+        ));
+        let d = &host.descriptors()[0];
+        assert_eq!(d.state, "failed");
+        assert_eq!(d.restarts, 3);
+        assert_eq!(d.generation, 7);
+        // 运行态失败原因补进 error（面板「失败」徽标读它）。
+        assert_eq!(d.error.as_deref(), Some("crash loop"));
+    }
+
+    /// stop / start 转发到控制面；未接线时给可读错误而不是静默 no-op。
+    #[tokio::test]
+    async fn subprocess_stop_and_start_forward_to_control() {
+        let host = ModuleHost::new();
+        register_module(
+            &host,
+            "ext.entry",
+            false,
+            echo_module::ModuleRuntime::Subprocess,
+        );
+        // 未接线：明确报错（不是"成功但什么都没做"）。
+        let err = host
+            .stop_subprocess("ext.entry")
+            .await
+            .expect_err("no control");
+        assert!(err.contains("未接线"), "{err}");
+
+        let control = MockControl::new(None, false);
+        host.set_subprocess_control(control.clone());
+        host.stop_subprocess("ext.entry").await.expect("stop ok");
+        host.start_subprocess("ext.entry").await.expect("start ok");
+        assert_eq!(control.calls(), vec!["stop:ext.entry", "start:ext.entry"]);
+    }
+
+    /// 热替换走 supervisor upgrade，而不是退化成 stop/start 中断服务。
+    #[tokio::test]
+    async fn subprocess_upgrade_uses_hot_replacement() {
+        let host = ModuleHost::new();
+        register_module(
+            &host,
+            "ext.entry",
+            false,
+            echo_module::ModuleRuntime::Subprocess,
+        );
+        let control = MockControl::new(None, false);
+        host.set_subprocess_control(control.clone());
+        host.upgrade_subprocess("ext.entry", std::time::Duration::from_secs(30))
+            .await
+            .expect("upgrade ok");
+        assert_eq!(control.calls(), vec!["upgrade:ext.entry"]);
+    }
+
+    /// 注册序即输出序（不按 id 重排）：`modules.toml` 的行序是配置表达。
+    #[test]
+    fn descriptor_order_follows_registration() {
+        let host = ModuleHost::new();
+        for id in ["zzz", "aaa", "mmm"] {
+            register_module(&host, id, true, echo_module::ModuleRuntime::InProcess);
+        }
+        let ids: Vec<String> = host.descriptors().into_iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec!["zzz", "aaa", "mmm"]);
+    }
+
+    #[test]
+    fn profile_allows_module_is_whitelist_only() {
+        use crate::config::TeamMember;
+        // 空白名单 = 全部允许
+        let member = TeamMember::default();
+        assert!(profile_allows_module(&member, TOOLS_BUILTIN_MODULE_ID));
+        // 白名单非空 = 仅列出项
+        let member = TeamMember {
+            enabled_modules: vec![SKILLS_DIR_MODULE_ID.to_string()],
+            ..Default::default()
+        };
+        assert!(profile_allows_module(&member, SKILLS_DIR_MODULE_ID));
+        assert!(!profile_allows_module(&member, TOOLS_BUILTIN_MODULE_ID));
+    }
+
+    // ── 声明式注入：就绪等待 + 依赖变更追平（echo-fabric-arch v0.6）──────
+
+    fn inject_module(
+        id: &str,
+        service: &str,
+        mounted: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Arc<dyn echo_module::Module> {
+        use std::sync::atomic::Ordering;
+        Arc::new(
+            echo_module::BuiltinModule::new(
+                echo_module::ModuleManifest::builtin(id, id, "1", "tool", "", ""),
+                move |_| {
+                    mounted.fetch_add(1, Ordering::SeqCst);
+                    Ok(vec![])
+                },
+            )
+            .with_inject(echo_module::Inject::new([service])),
+        )
+    }
+
+    /// 启动期：依赖没到 → 模块进 pending（**不算失败**），依赖到了由一个
+    /// `reconcile` 挂上。这是"声明式注入"在宿主侧的完整闭环。
+    #[tokio::test]
+    async fn pending_inject_mounts_once_the_service_arrives() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let host = ModuleHost::new();
+        let ctx = std::sync::Arc::new(echo_context::Ctx::default());
+        host.set_mount_ctx(echo_module::MountContext::new().with_ctx(ctx.clone()));
+
+        let mounted = Arc::new(AtomicUsize::new(0));
+        let catalog: Vec<Arc<dyn echo_module::Module>> =
+            vec![inject_module("i.loop", "loop", mounted.clone())];
+
+        let (_, up, waiting, errors) = host
+            .mount_plan_when_ready(
+                catalog,
+                &[MountStep::new("i.loop", true)],
+                std::time::Duration::ZERO,
+            )
+            .await;
+        assert!(up.is_empty());
+        assert!(errors.is_empty(), "缺依赖不该算错误: {errors:?}");
+        assert_eq!(
+            waiting,
+            vec![("i.loop".to_string(), vec!["loop".to_string()])]
+        );
+        assert_eq!(mounted.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            host.pending_inject(),
+            vec![("i.loop".to_string(), vec!["loop".to_string()])]
+        );
+
+        // 服务到位 → reconcile 追平。
+        let keep = ctx.register::<u8>("loop", 1u8);
+        let report = host.reconcile();
+        assert_eq!(report.mounted, vec!["i.loop".to_string()]);
+        assert_eq!(mounted.load(Ordering::SeqCst), 1);
+        assert!(host.pending_inject().is_empty());
+
+        // 服务消失 → reconcile 卸下。
+        keep.dispose();
+        let report = host.reconcile();
+        assert_eq!(report.unmounted, vec!["i.loop".to_string()]);
+        assert_eq!(
+            host.pending_inject(),
+            vec![("i.loop".to_string(), vec!["loop".to_string()])]
+        );
+    }
+
+    /// `reconcile` 的重入保护：在服务变更回调里调用它（真实用法）不能递归。
+    #[test]
+    fn reconcile_is_reentrancy_safe_from_a_change_callback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let host = Arc::new(ModuleHost::new());
+        let ctx = Arc::new(echo_context::Ctx::default());
+        host.set_mount_ctx(echo_module::MountContext::new().with_ctx(ctx.clone()));
+
+        let mounted = Arc::new(AtomicUsize::new(0));
+        host.registry
+            .register(inject_module("i.cb", "svc", mounted.clone()))
+            .unwrap();
+        // 首次挂载失败 → pending。
+        assert!(host.registry.mount("i.cb", &host.ctx()).is_err());
+
+        // 订阅在回调里 reconcile（与 main.rs 的接法一致）。
+        let host_for_cb = host.clone();
+        let _sub = ctx.on_change(move |_| {
+            host_for_cb.reconcile();
+        });
+
+        // 注册服务触发回调 → 回调里 reconcile → 模块挂上；挂载过程里
+        // 若再触发回调，重入位会让内层直接返回（否则这里会栈溢出）。
+        let _keep = ctx.register::<u8>("svc", 1u8);
+        assert_eq!(mounted.load(Ordering::SeqCst), 1);
+        assert!(host.pending_inject().is_empty());
+
+        // 幂等：再核一次不动。
+        assert!(host.reconcile().is_noop());
+    }
+
+    // ── 模块事件通道（echo-fabric-arch v0.7）─────────────────────────────
+
+    /// 宿主注入出口后：模块 `emit` 的事件带自己的 id 到达宿主；
+    /// 注册表自己发的 lifecycle 事件（`module.mounted`）也走同一个出口。
+    #[test]
+    fn module_events_reach_the_host_sink_with_ids() {
+        use std::sync::Mutex;
+        let host = ModuleHost::new();
+        let seen: Arc<Mutex<Vec<echo_module::ModuleEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = seen.clone();
+        host.set_event_sink(Arc::new(move |event| sink_seen.lock().unwrap().push(event)));
+        host.set_mount_ctx(echo_module::MountContext::new());
+        host.register_and_mount(Arc::new(echo_module::BuiltinModule::new(
+            echo_module::ModuleManifest::builtin("ev.p", "p", "1", "tool", "", ""),
+            |mctx: &echo_module::MountContext| {
+                mctx.emit("tool.done", serde_json::json!({"ok": true}));
+                Ok(vec![])
+            },
+        )))
+        .expect("mount ok");
+
+        let events = seen.lock().unwrap().clone();
+        let mounted = events
+            .iter()
+            .find(|e| e.name == "module.mounted")
+            .expect("lifecycle 事件应到达宿主");
+        assert_eq!(mounted.payload["id"], "ev.p");
+        let emitted = events
+            .iter()
+            .find(|e| e.name == "tool.done")
+            .expect("模块 emit 应到达宿主");
+        assert_eq!(emitted.module, "ev.p", "出口自动填来源 id");
+        assert_eq!(emitted.payload["ok"], true);
+    }
+
+    /// 未注入出口 = 静默丢弃：挂载照常成功（降级不是错误）。
+    #[test]
+    fn missing_event_sink_does_not_break_mounting() {
+        let host = ModuleHost::new();
+        host.set_mount_ctx(echo_module::MountContext::new());
+        host.register_and_mount(Arc::new(echo_module::BuiltinModule::new(
+            echo_module::ModuleManifest::builtin("ev.bare", "b", "1", "tool", "", ""),
+            |mctx: &echo_module::MountContext| {
+                mctx.emit("nobody.listens", serde_json::Value::Null);
+                Ok(vec![])
+            },
+        )))
+        .expect("没有出口也不该失败");
+        assert_eq!(host.descriptors().len(), 1);
+    }
+
+    /// 宿主 → 模块的投递：只有订阅了的已挂载模块收到。
+    #[test]
+    fn host_delivers_events_only_to_subscribers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let host = ModuleHost::new();
+        host.set_mount_ctx(echo_module::MountContext::new());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        host.register_and_mount(Arc::new(
+            echo_module::BuiltinModule::new(
+                echo_module::ModuleManifest::builtin("ev.sub", "s", "1", "tool", "", ""),
+                |_| Ok(vec![]),
+            )
+            .with_subscriptions([echo_module::ALL_EVENTS])
+            .with_event_handler(move |_: &echo_module::ModuleEvent| {
+                h.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        ))
+        .expect("mount ok");
+
+        assert_eq!(
+            host.deliver_module_event(&echo_module::ModuleEvent::host(
+                "tool.called",
+                serde_json::Value::Null
+            )),
+            1
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        // descriptor 里能看到订阅声明（面板据此显示）
+        assert_eq!(
+            host.descriptors()[0].subscribed_events,
+            vec![echo_module::ALL_EVENTS.to_string()]
+        );
+    }
+
+    // ── 宿主 → 模块：事件投递（echo-fabric-arch v0.7 接线）───────────────
+
+    /// 挂一个订阅 `subs` 的模块，返回它收到的事件名列表。
+    fn subscribe_probe(
+        host: &ModuleHost,
+        id: &str,
+        subs: &[&str],
+    ) -> Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> {
+        let seen: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let module = echo_module::BuiltinModule::new(
+            echo_module::ModuleManifest::builtin(id, id, "1", "tool", "", ""),
+            |_| Ok(vec![]),
+        )
+        .with_subscriptions(subs.to_vec())
+        .with_event_handler(move |event: &echo_module::ModuleEvent| {
+            sink.lock()
+                .unwrap()
+                .push((event.name.clone(), event.payload.clone()));
+            Ok(())
+        });
+        host.register_and_mount(Arc::new(module)).expect("mount ok");
+        seen
+    }
+
+    /// 领域事件（`BackendEvent`）→ 按 `kind_name()` 投给订阅者，载荷是
+    /// 该变体的**内层**对象（外层 tag 已被剥掉，与模块事件同构）。
+    #[test]
+    fn backend_events_reach_subscribers_with_unwrapped_payload() {
+        let host = ModuleHost::new();
+        host.set_mount_ctx(echo_module::MountContext::new());
+        let seen = subscribe_probe(&host, "obs.tools", &["ToolCall"]);
+
+        assert!(host.has_event_subscribers(), "有订阅者后热路径闸门应打开");
+        assert!(host.wants_event("ToolCall"));
+        assert!(
+            !host.wants_event("AgentContentDelta"),
+            "没订阅的名字不该通过"
+        );
+
+        let delivered = host.deliver_backend_event(&echo_protocol::BackendEvent::ToolCall {
+            session_id: "s1".into(),
+            team_id: None,
+            tool_name: "bash".into(),
+            arguments: r#"{"cmd":"ls"}"#.into(),
+            tool_call_id: "call-1".into(),
+            branch_id: String::new(),
+            started_at_ms: None,
+        });
+        assert_eq!(delivered, 1);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "ToolCall");
+        // 内层对象：能直接取到字段（不需要先挖一层 ["ToolCall"]）
+        assert_eq!(seen[0].1["tool_name"], "bash");
+        // `arguments` 在协议里是**字符串**（模型给的原始 JSON 文本），模块拿到
+        // 的也一模一样——框架不做解析，避免替模块决定 schema。
+        assert_eq!(seen[0].1["arguments"], r#"{"cmd":"ls"}"#);
+        assert_eq!(seen[0].1["tool_call_id"], "call-1");
+        assert!(seen[0].1.get("ToolCall").is_none(), "外层 tag 应已剥掉");
+    }
+
+    /// 没订阅的名字**不做序列化**：`wants_event` 是热路径的第二道闸。
+    #[test]
+    fn unsubscribed_event_names_are_filtered_before_serialization() {
+        let host = ModuleHost::new();
+        host.set_mount_ctx(echo_module::MountContext::new());
+        // 出口先接上（否则挂载时那条 lifecycle 事件没人接）。
+        let emitted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let e = emitted.clone();
+        host.set_event_sink(Arc::new(move |_| {
+            e.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        subscribe_probe(&host, "obs.one", &["ToolCall"]);
+        let lifecycle = emitted.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(lifecycle, 1, "挂载产生一条 module.mounted");
+
+        // 没人订阅 Error → 0 次投递，且**不进失败计数**（过滤不是错误）
+        assert_eq!(
+            host.deliver_backend_event(&echo_protocol::BackendEvent::Error {
+                session_id: None,
+                message: "x".into(),
+            }),
+            0
+        );
+        assert_eq!(host.event_counters(), (0, 0));
+        assert_eq!(
+            emitted.load(std::sync::atomic::Ordering::SeqCst),
+            lifecycle,
+            "被过滤的事件不该产生任何对外 emitted"
+        );
+    }
+
+    /// 订阅 `*` 收全部；**卸载**后收不到，且不占位兴趣集。
+    ///
+    /// （禁用开关已删除：模块只有"挂载"与"没挂载"两态，卸载就是闸门关闭。）
+    #[test]
+    fn wildcard_subscription_closes_when_unmounted() {
+        let host = ModuleHost::new();
+        host.set_mount_ctx(echo_module::MountContext::new());
+        let all = subscribe_probe(&host, "obs.all", &[echo_module::ALL_EVENTS]);
+        assert!(host.wants_event("AnythingAtAll"));
+
+        host.registry.unmount("obs.all").expect("unmount");
+        assert!(!host.has_event_subscribers(), "唯一订阅者卸载后闸门应关闭");
+        assert_eq!(
+            host.deliver_backend_event(&echo_protocol::BackendEvent::Error {
+                session_id: None,
+                message: "x".into(),
+            }),
+            0
+        );
+        assert!(all.lock().unwrap().is_empty());
+    }
+
+    /// 重入保护：模块在 `on_event` 里再次触发投递，内层被丢弃而不是递归。
+    #[test]
+    fn reentrant_delivery_is_dropped_instead_of_recursing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let host = Arc::new(ModuleHost::new());
+        host.set_mount_ctx(echo_module::MountContext::new());
+        let depth = Arc::new(AtomicUsize::new(0));
+        let observed_max = Arc::new(AtomicUsize::new(0));
+        let (d, o, h) = (depth.clone(), observed_max.clone(), host.clone());
+        host.register_and_mount(Arc::new(
+            echo_module::BuiltinModule::new(
+                echo_module::ModuleManifest::builtin("obs.re", "r", "1", "tool", "", ""),
+                |_| Ok(vec![]),
+            )
+            .with_subscriptions([echo_module::ALL_EVENTS])
+            .with_event_handler(move |_| {
+                let now = d.fetch_add(1, Ordering::SeqCst) + 1;
+                o.fetch_max(now, Ordering::SeqCst);
+                // 在回调里再次投递（真实场景：模块处理事件时调了个会发事件的
+                // 宿主 API）。没有重入位这里会栈溢出。
+                h.deliver_backend_event(&echo_protocol::BackendEvent::Error {
+                    session_id: None,
+                    message: "nested".into(),
+                });
+                d.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        ))
+        .expect("mount ok");
+
+        assert_eq!(
+            host.deliver_backend_event(&echo_protocol::BackendEvent::Error {
+                session_id: None,
+                message: "outer".into(),
+            }),
+            1,
+            "外层投递成功；内层被丢弃"
+        );
+        assert_eq!(observed_max.load(Ordering::SeqCst), 1, "不该嵌套");
+        let (ok, failed) = host.event_counters();
+        assert_eq!(ok, 1);
+        assert_eq!(failed, 1, "被丢弃的内层记一次失败");
+    }
+
+    /// 模块自己 emit 的事件也会回流给订阅了同名的**其他**模块。
+    #[test]
+    fn module_emitted_events_flow_back_to_other_subscribers() {
+        let host = ModuleHost::new();
+        host.set_mount_ctx(echo_module::MountContext::new());
+        let seen = subscribe_probe(&host, "obs.listener", &["custom.ping"]);
+        host.deliver_module_event(&echo_module::ModuleEvent::new(
+            "obs.emitter",
+            "custom.ping",
+            serde_json::json!({"n": 1}),
+        ));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "custom.ping");
+        assert_eq!(seen[0].1["n"], 1);
+    }
+
+    /// 没有任何订阅者时：热路径闸门关闭（`Agent::emit` 因此一次原子 load
+    /// 就返回），且投递是 no-op。
+    #[test]
+    fn no_subscribers_keeps_the_hot_path_closed() {
+        let host = ModuleHost::new();
+        host.set_mount_ctx(echo_module::MountContext::new());
+        host.register_and_mount(Arc::new(echo_module::BuiltinModule::new(
+            echo_module::ModuleManifest::builtin("plain", "p", "1", "tool", "", ""),
+            |_| Ok(vec![]),
+        )))
+        .expect("mount ok");
+        assert!(!host.has_event_subscribers());
+        assert!(!host.wants_event("ToolCall"));
+        assert_eq!(
+            host.deliver_backend_event(&echo_protocol::BackendEvent::Error {
+                session_id: None,
+                message: "x".into(),
+            }),
+            0
+        );
+    }
+}
