@@ -1178,6 +1178,7 @@ dependencies = [
 [[package]]
 name = "echo-plugin-workspace"
 version = "0.1.0"
+source = "git+https://github.com/EchoLab-Auto/crate-workspace?branch=main#53a36cdba22f8f4e83f16eee708d234ff19e8f16"
 dependencies = [
  "echo-context",
  "echo-plugin",

@@ -17,10 +17,10 @@ y: 1200
 ## 身份与归属（2026-11 迁出 Core）
 
 插件已从 Core 的 `source/plugin/` **迁出为独立仓库**
-（`EchoLab-Auto/echo-plugin-workspace`），Core 以 git 依赖引入：
+（`EchoLab-Auto/crate-workspace`），Core 以 git 依赖引入：
 
 ```toml
-echo-plugin-workspace = { git = "https://github.com/EchoLab-Auto/echo-plugin-workspace", branch = "main" }
+echo-plugin-workspace = { git = "https://github.com/EchoLab-Auto/crate-workspace", branch = "main" }
 ```
 
 | 项 | 值 |

@@ -89,10 +89,9 @@ echo-plugin-self-update = { path = "source/plugin/echo-plugin-self-update" }
 echo-plugin-sanitize = { path = "source/plugin/echo-plugin-sanitize" }
 echo-plugin-shell = { path = "source/plugin/echo-plugin-shell" }
 echo-plugin-subagent = { path = "source/plugin/echo-plugin-subagent" }
-# 工作区会话插件已迁出为独立仓库（业务逻辑全在那边，Core 只做通用接线）：
-#   git = "https://github.com/EchoLab-Auto/echo-plugin-workspace", branch = "main"
-# 本地开发/未推送时用 path。
-echo-plugin-workspace = { path = "/home/evence/code_file/gitlab/echo-tech/echo-plugin-workspace/crates/echo-plugin-workspace" }
+# 工作区会话插件已迁出为独立仓库 crate-workspace（业务逻辑全在那边，
+# Core 只做通用接线）；crate 名保持 echo-plugin-workspace 不变。
+echo-plugin-workspace = { git = "https://github.com/EchoLab-Auto/crate-workspace", branch = "main" }
 echo-plugin-management = { path = "source/plugin/echo-plugin-management" }
 echo-plugin-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", branch = "main" }
 echo-plugin-session = { path = "source/plugin/echo-plugin-session" }

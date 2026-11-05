@@ -88,7 +88,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 | [`echo-agent.kernel.loop`](./kernel.md) | Kernel | 进程内 | 循环驱动：`TurnRunner` 状态机 + `ToolPipeline` |
 | [`echo-agent.tools.builtin`](./tools.md) | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理）；**不含 shell 会话** |
 | [`echo-agent.shell`](./shell.md) | Tool | 进程内 | 后台 bash 会话 + Shell 面板命令域 |
-| [`echo-agent.workspace`](./workspace.md) | Tool | 进程内（**独立仓**） | 工作区会话（多目录管理 + git 状态 + 只读文件浏览）。2026-11 迁出 Core 至 `EchoLab-Auto/echo-plugin-workspace`：store 与命令域归插件，宿主只留只读镜像 + 工具代理 |
+| [`echo-agent.workspace`](./workspace.md) | Tool | 进程内（**独立仓**） | 工作区会话（多目录管理 + git 状态 + 只读文件浏览）。2026-11 迁出 Core 至 `EchoLab-Auto/crate-workspace`：store 与命令域归插件，宿主只留只读镜像 + 工具代理 |
 | [`echo-agent.subagent`](./subagent.md) | Tool | 进程内 | 委派隔离上下文的子任务 + 完成后回灌 |
 | [`echo-agent.skills.dir`](./skills.md) | Skill | 进程内 | SKILL.md 技能目录（热重载） |
 | [`echo-agent.provider.llm`](./provider-llm.md) | Provider | 进程内 | provider 工厂 + 计量/脱敏装饰 + API 命令域 |
