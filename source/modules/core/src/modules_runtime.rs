@@ -584,7 +584,7 @@ mod tests {
         let config_path = dir.join("echo-agent-core.toml");
         let spec = echo_module_host::bootstrap::LaunchSpec {
             module_id: "adapter-qq-test".to_string(),
-            command: "/nonexistent/echo-adapter-qq-test".to_string(),
+            command: "/nonexistent/agent-module-adapter-qq-test".to_string(),
             args: vec![],
             env: Default::default(),
             config: serde_json::json!({"name": "qq-test"}),

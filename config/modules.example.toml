@@ -13,13 +13,13 @@ patches = []
 
 # ── 适配器模块（2026-10 适配器模块化） ──
 #
-# 适配器模块（如 echo-adapter-qq）不走本文件的静态条目：Core 按 QQ 实例
+# 适配器模块（如 agent-module-adapter-qq）不走本文件的静态条目：Core 按 QQ 实例
 # 组装其 Hello.config（实例名 / persona / 端口分配 / 状态文件），在
 # core.toml 的 [adapters.qq] 里声明：
 #
 #   mode = "module"
 #   [adapters.qq.module]
-#   command = "/path/to/echo-adapter-qq"
+#   command = "/path/to/agent-module-adapter-qq"
 #
 # 本文件面向普通（工具 / 服务）模块。
 

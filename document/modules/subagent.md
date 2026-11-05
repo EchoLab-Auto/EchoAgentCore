@@ -6,7 +6,9 @@ x: 4480
 y: 1200
 ---
 
-# Subagent 模块
+# Subagent
+
+> 实现已迁至独立仓库 `EchoLab-Auto/agent-module-subagent`，Core 通过 git 依赖引入。 模块
 
 > **定位**：本文描述 `echo-agent.subagent` 模块（kind=Tool）——让模型把独立子任务**委派给隔离上下文的子 agent 执行**（子任务有自己的系统提示词与工具循环），结论经结构化 hook **作为新的入站 turn** 回灌主会话、子上下文不回合并。覆盖动机与边界、生命周期、工具与技能、hook 机制、事件与观测、包门控与测试守护。读者：Agent 使用者与模块维护者。
 >

@@ -3,7 +3,7 @@
 //! 这里把一条平台消息变成一次 agent turn：会话键构造（多实例维度）、单/并行
 //! 模式的展示会话选择、`SessionUpdated` / `MessageReceived` 事件、turn 启动、
 //! 内容脱敏。**这是核心入站编排，不是 adapter 能力**——adapter 能力（平台
-//! 协议、收发消息）在 `echo-module-adapter` 与独立仓库的 `echo-adapter-qq`
+//! 协议、收发消息）在 `echo-module-adapter` 与独立仓库的 `agent-module-adapter-qq`
 //! 里，早已出进程。
 //!
 //! 它**不是** trait 实现：实例跑在进程外，接线归组合根（模块 `submit_input`

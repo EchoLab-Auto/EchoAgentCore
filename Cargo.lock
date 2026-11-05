@@ -1121,6 +1121,7 @@ dependencies = [
 [[package]]
 name = "echo-module-subagent"
 version = "0.1.0"
+source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#60a554026be4687ecbbfad353405da9cfd1dfd85"
 dependencies = [
  "anyhow",
  "async-trait",

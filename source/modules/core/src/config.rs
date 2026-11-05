@@ -248,7 +248,7 @@ impl InstanceHostConfig {
 ///
 /// 全部字段缺省为空（`derive(Default)`）——**`command` 必须留空**：空值让
 /// 组合根按平台名派生 `echo-adapter-<platform>`（见 `main.rs`）。此前这里
-/// 硬编码 `echo-adapter-qq`，配置 `[instances.telegram]` 而没写
+/// 硬编码 `agent-module-adapter-qq`，配置 `[instances.telegram]` 而没写
 /// `[instances.telegram.module].command` 时会因"默认值非空"跳过派生，直接
 /// 拉起 QQ 的二进制——多平台部署默认拉错模块，且没有任何报错。改配置时
 /// 不要给 `command` 补默认值。
@@ -558,7 +558,7 @@ enabled = true
 command_prefix = "!"
 
 [instances.qq.module]
-command = "echo-adapter-qq"
+command = "agent-module-adapter-qq"
 
 [instances.telegram]
 enabled = true
@@ -620,7 +620,7 @@ napcat_container = "napcat-qq"
 persona = "alix"
 
 [adapters.qq.module]
-command = "/opt/echo/echo-adapter-qq"
+command = "/opt/echo/agent-module-adapter-qq"
 "#,
         )
         .unwrap();
@@ -632,7 +632,7 @@ command = "/opt/echo/echo-adapter-qq"
         );
         assert_eq!(
             config.instances["qq"].launch.command,
-            "/opt/echo/echo-adapter-qq"
+            "/opt/echo/agent-module-adapter-qq"
         );
         // 平台自有键原样留在透传表里（宿主不解释）。
         assert_eq!(
@@ -767,7 +767,7 @@ mode = "module"
 enabled = true
 
 [instances.qq.module]
-command = "/opt/echo/echo-adapter-qq"
+command = "/opt/echo/agent-module-adapter-qq"
 args = ["--verbose"]
 
 [instances.qq.instances.alix-two]
@@ -782,7 +782,7 @@ bind_address = "0.0.0.0:9999"
         assert_eq!(config.instances["qq"].mode, "module");
         assert_eq!(
             config.instances["qq"].launch.command,
-            "/opt/echo/echo-adapter-qq"
+            "/opt/echo/agent-module-adapter-qq"
         );
         assert_eq!(config.instances["qq"].launch.args, vec!["--verbose"]);
         // flatten 共享层仍生效（mode/module 不吞掉模块实例配置字段）。
@@ -814,7 +814,7 @@ enabled = true
         let config = CoreConfig::load(&path).unwrap();
         assert_eq!(config.instances["qq"].mode, "");
         // 缺省 command 必须留空——留给组合根按平台名派生。若这里回退成硬编码
-        // `echo-adapter-qq`，`[instances.telegram]` 之类的配置会静默拉起 QQ 二进制。
+        // `agent-module-adapter-qq`，`[instances.telegram]` 之类的配置会静默拉起 QQ 二进制。
         assert_eq!(config.instances["qq"].launch.command, "");
         std::fs::remove_file(&path).ok();
     }

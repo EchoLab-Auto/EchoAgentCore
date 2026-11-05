@@ -612,7 +612,7 @@ elif ((core_was_active)); then
     qq_connected() {
         command -v ss >/dev/null 2>&1 || return 1
         # 多实例：反向 WS 端口为 3131（legacy）或 3140-3190（模块自动分配，
-        # 见 echo-adapter-qq 的 deploy::REVERSE_RANGE）。下面刻意放宽到
+        # 见 agent-module-adapter-qq 的 deploy::REVERSE_RANGE）。下面刻意放宽到
         # 3131 + 3140-3399：端口由模块决定、Core 与脚本都不感知。
         # 注意不要匹配 3132（管理面端口）。
         ss -Htn state established 2>/dev/null \

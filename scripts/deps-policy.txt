@@ -55,7 +55,6 @@ modules/echo-module-skills                  echo-defs echo-context echo-module e
 modules/echo-module-self-update             echo-context echo-module echo-protocol
 modules/echo-module-federation              echo-defs echo-context echo-federation echo-module echo-protocol echo-tool
 modules/echo-module-loop                    echo-context echo-defs echo-loop echo-module echo-module-api echo-session
-modules/echo-module-subagent                echo-defs echo-federation echo-protocol echo-tool
 modules/echo-module-management              echo-module echo-context echo-defs echo-federation echo-protocol echo-session
 modules/echo-module-session                 echo-context echo-defs echo-module echo-protocol echo-session
 modules/echo-module-sanitize                echo-context echo-defs echo-module

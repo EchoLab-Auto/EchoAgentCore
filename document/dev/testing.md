@@ -24,7 +24,7 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
   unknown-type preservation, sender nickname (card vs nickname fallback).
 - **Wire protocol** (echo-protocol): command/event WS round-trips,
   malformed frame handling, FanoutHandle subscriber pruning.
-- **Filtering**（**已随去适配器化搬到模块仓库** `crates/echo-adapter-qq/src/filter.rs` 的
+- **Filtering**（**已随去适配器化搬到模块仓库** `crates/echo-module-adapter-qq/src/filter.rs` 的
   `#[cfg(test)]` 内联测试，Core 侧已无过滤实现）：allowlist / denylist / rate limit（滑动
   窗口 + 实时过期 + per-user/per-group/global 三桶隔离）/ keyword / content length /
   admin bypass、管道顺序与短路。名单**持久化契约**另在模块仓库 `tests/filter_persist.rs`：
@@ -64,7 +64,7 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Media migration** (echo-agent session): 加载期把历史事件
   （content 内嵌 + images 字段）与时间线 data URI 落盘改写且幂等；投影出口
   把 `/media/<id>` 还原为 data URI（`persisted_refs_inline_on_projection_for_model`）。
-- **Media download** (QQ 模块仓库 `crates/echo-adapter-qq`): 远程图下载经
+- **Media download** (QQ 模块仓库 `crates/echo-module-adapter-qq`): 远程图下载经
   `store_media` 登记（字节/MIME 与源一致）、失败保留原 URL、data URI / 已有引用透传。
 - **QQ 表情渲染** (QQ 模块仓库 echo-core + adapter): face id → 名称对照表有序性/未知回退、
   `readable_text` 混合渲染（`[表情:呲牙]`、`[骰子:6]`、纯表情消息不再整条丢弃）。
@@ -91,7 +91,7 @@ Generated inputs that must satisfy invariants:
 - `source/modules/echo-module-management`（inline integration tests）— management WS 中继、token 鉴权与端口合并
   server on ephemeral port: Panel command → agent backend, agent event → Panel
   forward.
-- （QQ 模块仓库）`crates/echo-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`（模块侧领域类型，保留）、
+- （QQ 模块仓库）`crates/echo-module-adapter-qq`（src 内 `#[cfg(test)]` 内联测试——`adapter/mod.rs`（模块侧领域类型，保留）、
   `napcat/mod.rs`、`handler.rs`；`tests/` 目录两个集成测试 `owner_qq.rs` + `filter_persist.rs`）— NapCat client
   against a `wiremock` HTTP server:
   login status detection, WebUI fallback, reverse-WS config, QR fetch.

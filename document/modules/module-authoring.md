@@ -293,7 +293,7 @@ SDK 侧实现 `InstanceModule`（`echo-module-sdk`）：`configure`（收配置�
 示例（QQ 模块的做法）：`send_group_msg` / `send_private_msg` / `send_file` /
 `send_image` / `send_voice` / `send_json_card` 声明 `visible_reply: true`；
 `get_group_list` / `get_friend_list` / `get_group_member_info` /
-`get_group_msg_history` 为 `false`。完整 schema 见 `echo-adapter-qq` 仓的
+`get_group_msg_history` 为 `false`。完整 schema 见 `agent-module-adapter-qq` 仓的
 `src/tools.rs`（与迁出前的 Core 内置版逐字一致）。
 
 ### 能力位 ≠ 工具声明

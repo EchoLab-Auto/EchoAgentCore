@@ -51,7 +51,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 | `runtime` | 模块的实现代码在哪跑 | 本进程内 / 独立子进程 | manifest 侧是 `ModuleRuntime` 枚举、声明缺省 `InProcess`（进程内时序列化省略该键）；wire 侧 `ModuleInfo.runtime` 是字符串（`ModuleRuntime::as_str` → `in_process` / `subprocess`），旧 Core 不发 → 空串，Panel 按进程内兼容 |
 
 - **来源维度**：`builtin` 由 manifest 自己声明，`ModuleDescriptor::from(&ModuleManifest)` 直取字段——不再硬编码为真，也不按装载路径猜。内置注册走构造器 `ModuleManifest::builtin(...)`（显式 `builtin = true`），磁盘 `module.toml` 反序列化得到 `false`。`reload_data_modules` 以 `!desc.builtin` 识别「发现型模块」，故删掉 `module.toml` 后热轮询能卸载已挂载项（此前恒为内置，卸载分支永不触发）。
-- **运行形态维度**：由 manifest 显式声明（`with_runtime(ModuleRuntime::Subprocess)`）。现行唯一 `subprocess` 成员是 `instance.qq`——门控 manifest 编译在 Core 里（`builtin = true`），实现却由独立进程 `echo-adapter-qq` 提供；描述文字不算数，前端读的是字段。
+- **运行形态维度**：由 manifest 显式声明（`with_runtime(ModuleRuntime::Subprocess)`）。现行唯一 `subprocess` 成员是 `instance.qq`——门控 manifest 编译在 Core 里（`builtin = true`），实现却由独立进程 `agent-module-adapter-qq` 提供；描述文字不算数，前端读的是字段。
 - **协议与 Panel**：`ModulesList` 逐项下发 `{ builtin, runtime }`；旧 Core 不发 `runtime`（空串），Panel 按进程内兼容。设置视图「内部 / 外部模块」分组只看**运行位置**（`runtime == 'subprocess'` → 外部组；`runtime` 缺失才回退按 `builtin === false` 推断），`builtin` 仅作旧 Core 兼容回退与详情标签。
 - **术语**：本文「内置模块」指 `builtin`（来源），「进程内 / 进程外」指 `runtime`（运行位置）——两者不再同义，勿用其一代替另一。
 
@@ -89,7 +89,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 | [`echo-agent.tools.builtin`](./tools.md) | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理）；**不含 shell 会话** |
 | [`echo-agent.shell`](./shell.md) | Tool | 进程内 | 后台 bash 会话 + Shell 面板命令域 |
 | [`echo-agent.workspace`](./workspace.md) | Tool | 进程内（**独立仓**） | 工作区会话（多目录管理 + git 状态 + 只读文件浏览）。2026-11 迁出 Core 至 `EchoLab-Auto/crate-workspace`：store 与命令域归模块，宿主只留只读镜像 + 工具代理 |
-| [`echo-agent.subagent`](./subagent.md) | Tool | 进程内 | 委派隔离上下文的子任务 + 完成后回灌 |
+| [`echo-agent.subagent`](./subagent.md) | Tool | 进程内（**独立仓**） | 委派隔离上下文的子任务 + 完成后回灌；实现位于 `EchoLab-Auto/agent-module-subagent` |
 | [`echo-agent.skills.dir`](./skills.md) | Skill | 进程内 | SKILL.md 技能目录（热重载） |
 | [`echo-agent.provider.llm`](./provider-llm.md) | Provider | 进程内 | provider 工厂 + 计量/脱敏装饰 + API 命令域 |
 | [`echo-agent.loop.single`](./loop.md) | Loop | 进程内 | 唯一循环模块：提供 `loop` 服务，同会话 turn 串行排队 |
@@ -113,7 +113,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 >
 > **仍内联在 echo-agent 的**只剩三个包：`packages/tools_builtin`（**只剩端口接线**——工具清单的所有权已在模块，`build_registry` 只做「给端口、拿工具箱」）、`packages/instance_ops`（入站 hook 桥 + 通用实例命令域）、`packages/federation`（远程代理工具与查询适配）。公开路径保持原样（`echo_agent::subagent::…` 等经 lib.rs 兼容 re-export 指向新 crate）。
 >
-> QQ 工具（`send_*`/`get_*` 共 11 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由模块进程申报（模块仓库 `crates/echo-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。去适配器化时 `source/modules/core/src/qq_tools.rs` 已删除——模块实例本就能声明工具，没有留给组合根的特例。
+> QQ 工具（`send_*`/`get_*` 共 11 个）**不再由 Core 实现**：它们作为 `ToolContribution` 由模块进程申报（模块仓库 `crates/echo-module-adapter-qq/src/tools.rs`），Core 只做注册与门控（`packages/instance_ops` 的入站/出站桥）。去适配器化时 `source/modules/core/src/qq_tools.rs` 已删除——模块实例本就能声明工具，没有留给组合根的特例。
 
 ### 内置模块也能由 `modules.toml` 组合（P4）
 

@@ -9,7 +9,7 @@ y: 2320
 # Panel 实例管理 · 任务 · Shell
 
 > **定位**：本文覆盖三块与平台无关的交互（**交互语义**；描述符字段与线协议的权威定义在[协议与数据流](../protocol/protocol.md)，本文只写 Panel 侧怎么用）——**实例弹出层**（描述符驱动的设备管理界面）、入口行任务弹层、Shell 列表与详情视图，以及 HTTP 旁路通道（卡片状态、取消约定 = 乐观中断 + `team_id` 命令、通道超时）。读者：维护 Panel 模块实例 / 任务 / Shell 交互的开发者。
-> Panel 不认识任何具体平台：弹层的布局由模块下发的描述符（`InstanceStatus.ui`）声明、动作经 `InvokeInstanceOp` 透传、状态经 `InstanceState` 回推。当前在册的实例模块只有 `echo-agent.instance.qq`——它是**进程外模块**：manifest 编译在 Core 里，实现却是独立进程（独立仓库 `echo-adapter-qq`），Core 侧只有门控壳（模块体系的两维度见 [模块化设计](../modules/modules.md)）。下文举的扫码 / 门控 / 名单都是**该模块描述符的内容**，不是 Panel 的能力边界，也不是 Core 的内置功能。相关：[交互定义](./interaction.md)、[会话视图](./chat.md)、[模块开发指南](../modules/module-authoring.md)。
+> Panel 不认识任何具体平台：弹层的布局由模块下发的描述符（`InstanceStatus.ui`）声明、动作经 `InvokeInstanceOp` 透传、状态经 `InstanceState` 回推。当前在册的实例模块只有 `echo-agent.instance.qq`——它是**进程外模块**：manifest 编译在 Core 里，实现却是独立进程（独立仓库 `agent-module-adapter-qq`），Core 侧只有门控壳（模块体系的两维度见 [模块化设计](../modules/modules.md)）。下文举的扫码 / 门控 / 名单都是**该模块描述符的内容**，不是 Panel 的能力边界，也不是 Core 的内置功能。相关：[交互定义](./interaction.md)、[会话视图](./chat.md)、[模块开发指南](../modules/module-authoring.md)。
 
 ## 实例管理（描述符驱动的弹出层）
 

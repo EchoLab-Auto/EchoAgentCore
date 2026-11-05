@@ -15,7 +15,7 @@
 //! 它叫 "bridge"，实质是**入站入口**：会话键构造、单/并行模式的展示会话
 //! 选择、`SessionUpdated` / `MessageReceived` 事件、turn 启动、脱敏——每一件
 //! 都是核心编排。真正的 adapter 能力（平台协议、收发消息）在
-//! `echo-module-adapter` 与独立仓库的 `echo-adapter-qq` 里，早已出进程。
+//! `echo-module-adapter` 与独立仓库的 `agent-module-adapter-qq` 里，早已出进程。
 //!
 //! 强行把它搬进模块只会得到"模块反向调用宿主入站流程"的接口，那比现在
 //! 更难读、也没有替换收益（谁会替换掉"平台消息进 agent"这条路？）。

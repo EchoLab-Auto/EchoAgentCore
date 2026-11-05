@@ -396,10 +396,10 @@ fn modules_do_not_depend_on_other_modules() {
             }
         }
     }
-    // 21 = 22 - 1：`echo-module-workspace` 2026-11 迁出为独立仓库
-    // （`echo-module-workspace`），不再在 `source/modules/` 下。
+    // 20 = 22 - 2：workspace 与 subagent 已迁出为独立仓库，
+    // 不再在 `source/modules/` 下。
     assert!(
-        modules_seen >= 21,
+        modules_seen >= 20,
         "只扫到 {modules_seen} 个模块 crate（路径规则改过？）"
     );
     assert!(
