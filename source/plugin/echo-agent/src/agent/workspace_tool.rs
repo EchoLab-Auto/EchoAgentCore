@@ -101,7 +101,10 @@ mod tests {
     fn facade_reuses_plugin_metadata() {
         let tool = WorkspaceTool::new(Arc::new(PluginHost::new()));
         assert_eq!(tool.name(), echo_plugin_workspace::tool::TOOL_NAME);
-        assert_eq!(tool.description(), echo_plugin_workspace::tool::description());
+        assert_eq!(
+            tool.description(),
+            echo_plugin_workspace::tool::description()
+        );
         assert_eq!(tool.parameters(), echo_plugin_workspace::tool::parameters());
         assert_eq!(tool.category(), "plugin");
     }

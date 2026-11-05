@@ -3485,11 +3485,8 @@ fn mount_workspace_plugin(
                         .get("workspace_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or_default();
-                    if let Some(conversation) = event
-                        .payload
-                        .get("conversation")
-                        .cloned()
-                        .and_then(|v| {
+                    if let Some(conversation) =
+                        event.payload.get("conversation").cloned().and_then(|v| {
                             serde_json::from_value::<
                                 echo_plugin_workspace::wire::WorkspaceConversationInfo,
                             >(v)
@@ -3524,10 +3521,8 @@ fn install_workspace_plugin(
 
 /// 每个工作区测试的独立状态目录。
 fn workspace_state_dir(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "echo-workspace-state-{}-{tag}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("echo-workspace-state-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create state dir");
     dir

@@ -46,8 +46,7 @@ pub struct AgentBuilder {
     event_sink: Option<EventSink>,
     // ── 可选槽 ──
     team_id: Option<String>,
-    workspace_mirror:
-        Option<Arc<crate::agent::workspace_mirror::WorkspaceMirror>>,
+    workspace_mirror: Option<Arc<crate::agent::workspace_mirror::WorkspaceMirror>>,
     /// 进程级 Shell 会话句柄（2026-11）：面板的 `*Shell*` 命令域经
     /// `Agent::shell()` 访问它。
     ///

@@ -15,7 +15,7 @@ y: 1200
 > **框架在哪**：`echo-plugin` / `echo-plugin-api` / `echo-plugin-host` / `echo-plugin-loader` /
 > `echo-plugin-sdk` / `echo-context` 六件套住在**独立仓库**
 > [echo-fabric-arch](https://github.com/EchoLab-Auto/echo-fabric-arch)，**不在本仓**。
-> Core 通过 workspace 的 git 依赖按 tag 钉版本（`Cargo.toml` 的 `echo-plugin-* = { git = …, tag = "v0.11.2" }`），
+> Core 通过 workspace 的 git 依赖按 tag 钉版本（`Cargo.toml` 的 `echo-plugin-* = { git = …, tag = "v0.14.0" }`），
 > 所以在本仓 `cargo grep echo_plugin_sdk` 找不到源码——要读实现或改框架去那个仓。
 > 本仓内 `source/plugin/*` 是**用框架写的业务插件**，不是框架本身。
 
@@ -26,7 +26,6 @@ y: 1200
 ```rust
 use echo_plugin_sdk::{
     async_trait, serve_stdio, Contribution, InvokeOutcome, InvokeRequest, PluginHandler,
-    ToolContribution,
 };
 use echo_plugin_sdk::serde_json::json;
 
@@ -35,20 +34,22 @@ struct MyPlugin;
 #[async_trait]
 impl PluginHandler for MyPlugin {
     fn contributions(&self) -> Vec<Contribution> {
-        vec![Contribution::Tool(ToolContribution {
+        vec![Contribution::Custom {
+            kind: "echo-agent.tool".into(),
             name: "hello".into(),
-            description: "示例工具：回显问候".into(),
-            parameters: json!({
-                "type": "object",
-                "properties": { "name": {"type": "string"} },
-                "required": ["name"]
+            payload: json!({
+                "name": "hello",
+                "description": "示例工具：回显问候",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "name": {"type": "string"} },
+                    "required": ["name"]
+                },
+                "category": "plugin",
+                "package": "my-plugin",
+                "visible_reply": false
             }),
-            category: "plugin".into(),
-            timeout_hint_secs: None,
-            package: Some("my-plugin".into()),
-            // 成功调用是否即产生平台可见输出（普通插件工具填 false）
-            visible_reply: false,
-        })]
+        }]
     }
 
     async fn invoke(&self, req: InvokeRequest) -> InvokeOutcome {
@@ -208,23 +209,25 @@ name = "echo-plugin-demo"
 - stdout 只有 TOML 正文（`>` 落盘、`diff` 两份合成结果都干净）。
 - `--config` 可写在子命令**前或后**（`dump-config -c x` 与 `-c x dump-config` 等价）。
 
-## 七类贡献（当前接通四类）
+## 框架贡献与 Core 自定义分类
 
-`Contribution` 是插件向宿主申报能力的唯一入口，枚举有 **7 个变体**——宿主当前消费其中
-**4 个**；未接线的三个写错类型会被静默忽略（不报错、不崩溃，就是没有效果）：
+`echo-fabric-arch` v0.14 的 `Contribution` 只保留领域中立的
+`Service` / `Events` / `Command` / `Text` / `Custom` 五种形状。Core 的工具与聊天实例
+都是业务词汇，使用 `Custom` 承载；DTO 与分类名定义在宿主适配层
+`echo-plugin-adapter::contract`，而不是框架仓。
 
-| 变体 | 宿主是否消费 | 实际落点 |
-| --- | --- | --- |
-| `Contribution::Tool` | ✅ 已接线 | `echo-plugin-adapter::tool` 的 `RemoteTool` → 注册进该人格的 `ToolRegistry`（经句柄 `invoke("<tool>")` 转发）（经 `Invoke("<plugin>:<tool>")` 转发） |
-| `Contribution::PluginInstance` | ✅ 已接线 | `echo-plugin-adapter::instance_contributions` 汇总 → 组合根注册进 `InstanceRegistry`（`bootstrap` 只负责启动与握手）（平台插件的正常入口，见下节） |
-| `Contribution::Command` | ✅ **仅进程内** | 命令域归插件（framework v0.8）：宿主 `PluginHost::dispatch_command` 按声明的命令名分发，认领后由插件返回结果（`echo-plugin-shell` / `echo-plugin-transcript` / `echo-plugin-session` 等）。宿主自我管理面（`TogglePlugin` 等）**不允许**被接管——把自我管理交给被管理者是自锁。**stdio 轨不支**：`Contribution::Command` 在 Core 侧没有消费方（`echo-plugin-adapter` 只把 `Tool` / `PluginInstance` 变成领域 trait），声明了也不会收到 `Invoke` |
-| `Contribution::Text` | ✅ **仅进程内** | 有序文本拼接（framework v0.8）：`PluginHost::collect_text_blocks` 取各插件的提示词块，按序拼进系统提示词（`echo-plugin-workspace` 的工作区区块即此路径）。**stdio 轨不支**：协议没有「取文本」的帧、SDK 把 Text 排除在可寻址贡献之外、宿主收集只遍历进程内注册表 |
-| `Contribution::Skill` | ❌ 未接线 | SDK 侧只取 `skill.name`（`serve.rs` 的日志用途）；技能实际走 `skills.dir` 插件的目录扫描，不从插件贡献取 |
-| `Contribution::Service` | ❌ 未接线 | SDK 侧只取 `service.key` 用于日志 |
-| `Contribution::Events` | ❌ 未接线 | 宿主无处理分支——**要做事件订阅，目前只能注册为工具或在实例插件内向宿主回呼**（进程内插件另有等价物见 `Plugin::subscribed_events`） |
+| 分类 / 变体 | Core 消费方式 |
+| --- | --- |
+| `Custom { kind: "echo-agent.tool", name, payload }` | 解码工具声明，适配为 `RemoteTool`；按 `name` 寻址 |
+| `Custom { kind: "echo-agent.instance", name, payload }` | 解码实例声明，注册 `RemoteInstance`；操作按 `name:<op>` 寻址 |
+| `Contribution::Command` | 仅进程内：按命令名分发给声明它的插件 |
+| `Contribution::Text` | 仅进程内：按 order 收集文本块 |
+| `Contribution::Service` / `Events` | 框架提供通用形状；Core 的外部进程消费方按业务需要另行接线 |
 
-所以「插件能贡献什么」的现实答案是：**工具**、**插件实例**（平台类）、**命令域**、**提示词文本块**。
-写 `Skill` / `Service` / `Events` 不会生效——协议层留了位置，宿主侧尚未实现，别指望它。
+`Custom.payload` 的 schema 由 Core 与插件共同约定，框架不解释。工具声明至少包含
+`name` / `description` / `parameters`，实例声明包含 `name` / `platform` /
+`display_name` / `capabilities`。实例的 `Custom.name` 必须与 `payload.name` 一致，
+否则宿主拒绝认领，避免把调用路由到另一个实例。
 
 ## 协议约定（宿主 ↔ 插件）
 
@@ -247,7 +250,7 @@ name = "echo-plugin-demo"
 ## 实例插件
 
 实例插件不是「插件的一个变体」，而是**用同一套协议承载平台接入**：注册一个
-`Contribution::PluginInstance`，此后生命周期、收发、目录查询、管理动作、以及对模型
+`Custom { kind: "echo-agent.instance", .. }`，此后生命周期、收发、目录查询、管理动作、以及对模型
 暴露的工具，全部经 `Invoke("<实例名>:<op>")` 路由到你实现的 `InstancePlugin::invoke_op`。
 
 SDK 侧实现 `InstancePlugin`（`echo-plugin-sdk`）：`configure`（收配置，`Err` 即

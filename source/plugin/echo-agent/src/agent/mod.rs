@@ -746,7 +746,6 @@ impl Agent {
         }
     }
 
-
     /// Non-blocking poll for a frontend command (used by the command pump).
     pub fn try_recv_command(&self) -> Option<BackendCommand> {
         self.egress

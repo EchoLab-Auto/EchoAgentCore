@@ -587,12 +587,14 @@ impl Agent {
             "from": from,
             "to": to,
         });
-        match host.dispatch_raw("WorkspaceRenameApiProfile", payload).await {
+        match host
+            .dispatch_raw("WorkspaceRenameApiProfile", payload)
+            .await
+        {
             None => Ok(0),
-            Some(Ok(value)) => Ok(value
-                .get("changed")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize),
+            Some(Ok(value)) => {
+                Ok(value.get("changed").and_then(|v| v.as_u64()).unwrap_or(0) as usize)
+            }
             Some(Err(message)) => Err(message),
         }
     }

@@ -21,9 +21,7 @@
 
 use std::sync::RwLock;
 
-use echo_plugin_workspace::wire::{
-    WorkspaceConversationInfo, WorkspaceSessionInfo,
-};
+use echo_plugin_workspace::wire::{WorkspaceConversationInfo, WorkspaceSessionInfo};
 
 /// `workspace.changed` 事件携带的状态快照。
 #[derive(Debug, Clone, Default, serde::Deserialize)]

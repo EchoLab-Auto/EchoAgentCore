@@ -471,10 +471,10 @@ pub(crate) fn workspace_from_plugin_event(
                 .get("conversation")
                 .cloned()
                 .and_then(|value| {
-                    serde_json::from_value::<echo_plugin_workspace::wire::WorkspaceConversationInfo>(
-                        value,
-                    )
-                    .ok()
+                    serde_json::from_value::<
+                            echo_plugin_workspace::wire::WorkspaceConversationInfo,
+                        >(value)
+                        .ok()
                 })
             else {
                 tracing::warn!("workspace.conversation_deleted 缺 conversation 载荷");

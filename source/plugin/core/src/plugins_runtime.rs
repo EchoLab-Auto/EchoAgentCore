@@ -137,11 +137,11 @@ pub async fn start_with_specs(
     let core_api = Arc::new(CoreApiService::new());
     supervisor
         .host_services()
-        .register("core_api", core_api.clone());
+        .register_async("core_api", core_api.clone());
     // 旧插件按名 `adapter_host` 查找宿主服务（双注册过渡，2026-10 去适配器化）。
     supervisor
         .host_services()
-        .register("adapter_host", core_api.clone());
+        .register_async("adapter_host", core_api.clone());
     let started = echo_plugin_host::bootstrap::start_plugins(&supervisor, specs).await;
     for (plugin_id, error) in &started.errors {
         tracing::warn!(plugin = %plugin_id, %error, "subprocess plugin start failed");
@@ -346,7 +346,7 @@ pub struct RemoteInstanceHandle {
     pub instance: Arc<RemoteInstance>,
     /// 入站消息队列 receiver（插件 `submit_input` 的出站端；
     /// 每实例串行 worker 消费）。
-    pub inbound_rx: tokio::sync::mpsc::Receiver<echo_plugin_host::api::IncomingMessage>,
+    pub inbound_rx: tokio::sync::mpsc::Receiver<echo_plugin_adapter::IncomingMessage>,
 }
 
 impl PluginRuntime {

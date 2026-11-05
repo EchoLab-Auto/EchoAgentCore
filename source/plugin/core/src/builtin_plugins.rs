@@ -544,6 +544,9 @@ mod catalog_shape_tests {
         let catalog = catalog("0.0.0-test").expect("目录构造");
         let from_catalog: std::collections::BTreeSet<String> = catalog
             .iter()
+            // catalog 同时装着外部仓的可选进程内插件；它们故意不属于
+            // Core 的默认 BUILTIN_PLUGIN_IDS，不能把“可选”误报成漏登记。
+            .filter(|plugin| plugin.manifest().id != echo_plugin_workspace::PLUGIN_ID)
             .map(|plugin| plugin.manifest().id.clone())
             .collect();
         let declared: std::collections::BTreeSet<String> = echo_agent::plugins::BUILTIN_PLUGIN_IDS

@@ -25,6 +25,7 @@
 
 #![warn(missing_docs)]
 
+pub mod contract;
 pub mod instance;
 pub mod tool;
 
@@ -35,7 +36,8 @@ pub use instance::{
 pub use tool::{PluginHandleTools, RemoteTool};
 
 // 便捷：贡献类型从协议层转出，适配器的使用者不必同时依赖 api crate。
-pub use echo_plugin_host::api::{Contribution, InstanceContribution, ToolContribution};
+pub use contract::{IncomingMessage, InstanceCapabilities, InstanceContribution, ToolContribution};
+pub use echo_plugin_host::api::Contribution;
 
 use std::sync::Arc;
 
@@ -66,9 +68,8 @@ pub fn instance_contributions(
         .flat_map(|h| {
             h.contributions()
                 .into_iter()
-                .filter_map(|c| match c {
-                    Contribution::PluginInstance(instance) => Some((instance, h.clone())),
-                    _ => None,
+                .filter_map(|c| {
+                    contract::instance_from_custom(&c).map(|instance| (instance, h.clone()))
                 })
                 .collect::<Vec<_>>()
         })

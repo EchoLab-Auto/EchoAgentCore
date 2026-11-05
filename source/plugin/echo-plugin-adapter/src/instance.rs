@@ -21,7 +21,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use echo_plugin_host::api::{IncomingMessage, InstanceContribution, InvokeContext, InvokeOutcome};
+use crate::contract::{ChannelType as WireChannelType, IncomingMessage, InstanceContribution};
+use echo_plugin_host::api::{InvokeContext, InvokeOutcome};
 use echo_plugin_host::{PluginHandle, PluginState, TransportError};
 
 /// 入站队列容量上限（每实例；满 → `backpressure` 错误码，插件退避）。
@@ -543,6 +544,33 @@ impl CoreApiService {
             .cloned()
     }
 
+    /// 校验回呼确实来自创建该实例的插件进程。`caller` 由 supervisor
+    /// 从连接归属填写；payload 里的实例名不再是自报身份的唯一依据。
+    fn authorize(
+        &self,
+        caller: &str,
+        instance_name: &str,
+    ) -> Result<Arc<RemoteInstance>, (String, String)> {
+        let instance = self.get(instance_name).ok_or_else(|| {
+            (
+                "instance_not_found".to_string(),
+                format!("instance {instance_name} not registered"),
+            )
+        })?;
+        if instance.handle.plugin_id() != caller {
+            return Err((
+                "forbidden".to_string(),
+                format!("plugin {caller} cannot operate instance {instance_name}"),
+            ));
+        }
+        Ok(instance)
+    }
+
+    #[cfg(test)]
+    fn call(&self, method: &str, payload: Value) -> Result<Value, (String, String)> {
+        self.dispatch("adapter-plugin", method, payload)
+    }
+
     /// 全部已注册远程插件实例（`StartedPlugins::instances` 汇总用）。
     pub fn instances(&self) -> Vec<Arc<RemoteInstance>> {
         self.instances
@@ -560,8 +588,25 @@ impl Default for CoreApiService {
     }
 }
 
-impl echo_plugin_host::HostService for CoreApiService {
-    fn call(&self, method: &str, payload: Value) -> Result<Value, (String, String)> {
+#[async_trait]
+impl echo_plugin_host::AsyncHostService for CoreApiService {
+    async fn call(
+        &self,
+        cx: echo_plugin_host::CallContext,
+        method: &str,
+        payload: Value,
+    ) -> Result<Value, (String, String)> {
+        self.dispatch(&cx.caller, method, payload)
+    }
+}
+
+impl CoreApiService {
+    fn dispatch(
+        &self,
+        caller: &str,
+        method: &str,
+        payload: Value,
+    ) -> Result<Value, (String, String)> {
         // 旧插件调 `deliver_message`（2026-10 去适配器化改名，双接受过渡）。
         let method = if method == "deliver_message" {
             "submit_input"
@@ -579,6 +624,7 @@ impl echo_plugin_host::HostService for CoreApiService {
                             )
                         })?;
                 let instance_name = message.instance.clone();
+                self.authorize(caller, &instance_name)?;
                 let Some(tx) = self
                     .inbound_queues
                     .lock()
@@ -611,6 +657,7 @@ impl echo_plugin_host::HostService for CoreApiService {
                     .or_else(|| payload["adapter"].as_str())
                     .unwrap_or("")
                     .to_string();
+                self.authorize(caller, &instance_name)?;
                 let connected = payload["connected"].as_bool().unwrap_or(false);
                 let self_id = payload["self_id"].as_str().map(str::to_string);
                 let Some(instance) = self.get(&instance_name) else {
@@ -635,6 +682,7 @@ impl echo_plugin_host::HostService for CoreApiService {
                     .or_else(|| payload["adapter"].as_str())
                     .unwrap_or("")
                     .to_string();
+                self.authorize(caller, &instance_name)?;
                 let Some(instance) = self.get(&instance_name) else {
                     return Err((
                         "instance_not_found".to_string(),
@@ -662,6 +710,7 @@ impl echo_plugin_host::HostService for CoreApiService {
                     .or_else(|| payload["adapter"].as_str())
                     .unwrap_or("")
                     .to_string();
+                self.authorize(caller, &instance_name)?;
                 let state = payload["state"].clone();
                 let Some(instance) = self.get(&instance_name) else {
                     return Err((
@@ -681,7 +730,21 @@ impl echo_plugin_host::HostService for CoreApiService {
                 });
                 Ok(json!({}))
             }
-            "store_media" => self.store_media(&payload),
+            "store_media" => {
+                let known_caller = self
+                    .instances
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .values()
+                    .any(|instance| instance.handle.plugin_id() == caller);
+                if !known_caller {
+                    return Err((
+                        "forbidden".to_string(),
+                        format!("plugin {caller} cannot store media"),
+                    ));
+                }
+                self.store_media(&payload)
+            }
             other => Err((
                 "method_not_found".to_string(),
                 format!("unknown core_api method: {other}"),
@@ -700,8 +763,8 @@ pub fn message_to_incoming(message: IncomingMessage) -> echo_defs::chat::Incomin
     use echo_defs::chat::{ChannelType, IncomingFile, IncomingMessage};
 
     let channel = match message.channel {
-        echo_plugin_host::api::ChannelType::Dm => ChannelType::Direct,
-        echo_plugin_host::api::ChannelType::Group { group_id } => ChannelType::Group { group_id },
+        WireChannelType::Dm => ChannelType::Direct,
+        WireChannelType::Group { group_id } => ChannelType::Group { group_id },
     };
     let files: Vec<IncomingFile> = message
         .files
@@ -742,13 +805,10 @@ pub fn message_to_incoming(message: IncomingMessage) -> echo_defs::chat::Incomin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::{InstanceCapabilities, InstanceContribution};
     use echo_defs::plugin_instance::{InstanceManagement as _, PluginInstance as _};
-    use echo_plugin_host::api::{
-        capabilities, ChannelType, HostToPlugin, IncomingMessage, InstanceCapabilities,
-        InstanceContribution, PluginToHost, Register, Welcome,
-    };
+    use echo_plugin_host::api::{HostToPlugin, PluginToHost, Register, Welcome};
     use echo_plugin_host::inproc::{InprocIo, InprocPlugin, InprocTransport};
-    use echo_plugin_host::HostService as _;
     use echo_plugin_host::PluginSpec;
     use echo_plugin_host::PluginSupervisor;
     use serde_json::json;
@@ -783,9 +843,9 @@ mod tests {
     }
 
     /// 注册插件实例贡献的 loopback 测试插件。
-    struct InstancePlugin;
+    struct MockInstancePlugin;
 
-    impl InprocPlugin for InstancePlugin {
+    impl InprocPlugin for MockInstancePlugin {
         fn run(self: Box<Self>, mut io: InprocIo) -> Pin<Box<dyn Future<Output = ()> + Send>> {
             Box::pin(async move {
                 loop {
@@ -799,16 +859,12 @@ mod tests {
                                     protocol: hello.protocol.clone(),
                                     version: hello.version,
                                     plugin_id: hello.plugin_id.clone(),
-                                    capabilities: vec![capabilities::PLUGIN_INSTANCE.to_string()],
+                                    capabilities: vec!["instances".to_string()],
                                 }))
                                 .await;
                             let _ = io
                                 .send(PluginToHost::Register(Register {
-                                    contributions: vec![
-                                        echo_plugin_host::api::Contribution::PluginInstance(
-                                            contribution(),
-                                        ),
-                                    ],
+                                    contributions: vec![contribution().into_custom()],
                                 }))
                                 .await;
                             let _ = io.send(PluginToHost::Ready).await;
@@ -851,17 +907,14 @@ mod tests {
         let handle = supervisor
             .start(
                 spec(),
-                Box::new(InprocTransport::new(|_| Box::new(InstancePlugin))),
+                Box::new(InprocTransport::new(|_| Box::new(MockInstancePlugin))),
             )
             .await
             .expect("handshake ok");
         let instances: Vec<_> = handle
             .contributions()
             .into_iter()
-            .filter_map(|c| match c {
-                echo_plugin_host::api::Contribution::PluginInstance(a) => Some(a),
-                _ => None,
-            })
+            .filter_map(|c| crate::contract::instance_from_custom(&c))
             .collect();
         assert_eq!(instances.len(), 1);
         let instance = RemoteInstance::new(instances[0].clone(), handle.clone());
@@ -924,7 +977,7 @@ mod tests {
         let handle = supervisor
             .start(
                 spec(),
-                Box::new(InprocTransport::new(|_| Box::new(InstancePlugin))),
+                Box::new(InprocTransport::new(|_| Box::new(MockInstancePlugin))),
             )
             .await
             .expect("handshake ok");
@@ -961,22 +1014,27 @@ mod tests {
         let handle = supervisor
             .start(
                 spec(),
-                Box::new(InprocTransport::new(|_| Box::new(InstancePlugin))),
+                Box::new(InprocTransport::new(|_| Box::new(MockInstancePlugin))),
             )
             .await
             .expect("handshake ok");
         let instances: Vec<_> = handle
             .contributions()
             .into_iter()
-            .filter_map(|c| match c {
-                echo_plugin_host::api::Contribution::PluginInstance(a) => Some(a),
-                _ => None,
-            })
+            .filter_map(|c| crate::contract::instance_from_custom(&c))
             .collect();
         let instance = RemoteInstance::new(instances[0].clone(), handle.clone());
 
         let service = CoreApiService::new();
         let mut rx = service.register(instance.clone());
+        let forbidden = service
+            .dispatch(
+                "another-plugin",
+                "report_state",
+                json!({"instance": "qq", "connected": true}),
+            )
+            .expect_err("another plugin process must not mutate this instance");
+        assert_eq!(forbidden.0, "forbidden");
 
         // submit_input：入队回执 accepted。
         let message = IncomingMessage {
@@ -984,7 +1042,7 @@ mod tests {
             platform: "qq".into(),
             user_id: "123".into(),
             user_name: Some("Alice".into()),
-            channel: ChannelType::Dm,
+            channel: WireChannelType::Dm,
             group_name: None,
             content: "hello".into(),
             timestamp: 1,
@@ -1066,7 +1124,7 @@ mod tests {
                     platform: "qq".into(),
                     user_id: "1".into(),
                     user_name: None,
-                    channel: ChannelType::Dm,
+                    channel: WireChannelType::Dm,
                     group_name: None,
                     content: "x".into(),
                     timestamp: 1,
@@ -1095,10 +1153,7 @@ mod tests {
         let png = [0x89u8, b'P', b'N', b'G', 1, 2, 3];
         let b64 = base64::engine::general_purpose::STANDARD.encode(png);
         let by_bytes = service
-            .call(
-                "store_media",
-                json!({"bytes_b64": b64, "mime": "image/png"}),
-            )
+            .store_media(&json!({"bytes_b64": b64, "mime": "image/png"}))
             .expect("bytes ok");
         let reference = by_bytes["ref"].as_str().unwrap().to_string();
         assert!(
@@ -1112,20 +1167,14 @@ mod tests {
         let src = dir.join("src.bin");
         std::fs::write(&src, png).unwrap();
         let by_path = service
-            .call(
-                "store_media",
-                json!({"path": src.to_str().unwrap(), "mime": "image/png"}),
-            )
+            .store_media(&json!({"path": src.to_str().unwrap(), "mime": "image/png"}))
             .expect("path ok");
         assert_eq!(by_path["ref"], json!(reference));
 
-        let err = service.call("store_media", json!({})).unwrap_err();
+        let err = service.store_media(&json!({})).unwrap_err();
         assert_eq!(err.0, "invalid_payload");
         let err = service
-            .call(
-                "store_media",
-                json!({"path": dir.join("missing").to_str().unwrap()}),
-            )
+            .store_media(&json!({"path": dir.join("missing").to_str().unwrap()}))
             .unwrap_err();
         assert_eq!(err.0, "invalid_payload");
 
@@ -1140,7 +1189,7 @@ mod tests {
             platform: "qq".into(),
             user_id: "123".into(),
             user_name: Some("Alice".into()),
-            channel: ChannelType::Group {
+            channel: WireChannelType::Group {
                 group_id: "456".into(),
             },
             group_name: Some("开发群".into()),
@@ -1183,7 +1232,7 @@ mod tests {
             platform: "qq".into(),
             user_id: "1".into(),
             user_name: None,
-            channel: ChannelType::Dm,
+            channel: WireChannelType::Dm,
             group_name: None,
             content: "x".into(),
             timestamp: 0,
@@ -1223,16 +1272,12 @@ mod tests {
                                     protocol: hello.protocol.clone(),
                                     version: hello.version,
                                     plugin_id: hello.plugin_id.clone(),
-                                    capabilities: vec![capabilities::PLUGIN_INSTANCE.to_string()],
+                                    capabilities: vec!["instances".to_string()],
                                 }))
                                 .await;
                             let _ = io
                                 .send(PluginToHost::Register(Register {
-                                    contributions: vec![
-                                        echo_plugin_host::api::Contribution::PluginInstance(
-                                            contribution(),
-                                        ),
-                                    ],
+                                    contributions: vec![contribution().into_custom()],
                                 }))
                                 .await;
                             let _ = io.send(PluginToHost::Ready).await;
@@ -1254,10 +1299,7 @@ mod tests {
         let instances: Vec<_> = handle
             .contributions()
             .into_iter()
-            .filter_map(|c| match c {
-                echo_plugin_host::api::Contribution::PluginInstance(a) => Some(a),
-                _ => None,
-            })
+            .filter_map(|c| crate::contract::instance_from_custom(&c))
             .collect();
         assert_eq!(instances.len(), 1, "fixture 应注册一个插件实例贡献");
         RemoteInstance::new(instances[0].clone(), handle.clone())
@@ -1368,7 +1410,7 @@ mod tests {
         let handle = supervisor
             .start(
                 spec(),
-                Box::new(InprocTransport::new(|_| Box::new(InstancePlugin))),
+                Box::new(InprocTransport::new(|_| Box::new(MockInstancePlugin))),
             )
             .await
             .expect("handshake ok");

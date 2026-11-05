@@ -1080,7 +1080,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 工作区状态镜像（每个 persona 一份）：插件 emit `workspace.changed` 时
     // 由事件桥写入，宿主读它渲染会话通道 / 广播列表。
     let workspace_mirrors: std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<echo_agent::agent::workspace_mirror::WorkspaceMirror>>>,
+        std::sync::Mutex<
+            std::collections::HashMap<
+                String,
+                std::sync::Arc<echo_agent::agent::workspace_mirror::WorkspaceMirror>,
+            >,
+        >,
     > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let factory_workspace_mirrors = workspace_mirrors.clone();
     let factory_plugin_tools = plugin_tools.clone();
@@ -1226,15 +1231,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 //   1. 状态镜像（插件 emit `workspace.changed` 时刷新）；
                 //   2. 工具代理（`WorkspaceTool`：把调用转发给插件的
                 //      `WorkspaceToolCall` 入口，描述/参数 schema 取自插件）。
-                let workspace_mirror =
-                    std::sync::Arc::new(echo_agent::agent::workspace_mirror::WorkspaceMirror::new());
+                let workspace_mirror = std::sync::Arc::new(
+                    echo_agent::agent::workspace_mirror::WorkspaceMirror::new(),
+                );
                 workspace_mirrors
                     .lock()
                     .expect("workspace mirror registry")
                     .insert(id.clone(), workspace_mirror.clone());
-                t.register(std::sync::Arc::new(echo_agent::agent::workspace_tool::WorkspaceTool::new(
-                    shared_plugin_host.clone(),
-                )));
+                t.register(std::sync::Arc::new(
+                    echo_agent::agent::workspace_tool::WorkspaceTool::new(
+                        shared_plugin_host.clone(),
+                    ),
+                ));
                 t.set_package("workspace", echo_agent::plugins::WORKSPACE_PLUGIN_ID);
                 // Subagent 委派（subagent 插件）：**注册归插件接线**（2026-11 S7）。
                 //
@@ -1758,8 +1766,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let optional_ids = catalog
             .iter()
             .filter(|plugin| {
-                !echo_agent::plugins::BUILTIN_PLUGIN_IDS
-                    .contains(&plugin.manifest().id.as_str())
+                !echo_agent::plugins::BUILTIN_PLUGIN_IDS.contains(&plugin.manifest().id.as_str())
             })
             .map(|plugin| plugin.manifest().id.clone())
             .collect::<Vec<_>>();

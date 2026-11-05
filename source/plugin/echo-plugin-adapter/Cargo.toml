@@ -8,6 +8,7 @@ repository.workspace = true
 description = "远程插件的领域适配层：贡献 → EchoAgent 的 Tool / PluginInstance trait（宿主保持领域中立）"
 
 [dependencies]
+serde = { workspace = true }
 echo-plugin-host = { workspace = true }
 echo-defs = { workspace = true }
 async-trait = { workspace = true }

@@ -103,7 +103,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个插件手写 extern "C" �
 
 > **`Kernel` 是什么**：2026-11 取消「中间层 / 插件」二分之后新增的类别——提供其它插件的**运行地基**（词汇 / 线契约 / 注册表 / 事件日志 / 配置存储 / 循环驱动）。它们与其它插件同形（有 manifest、进 catalog、出现在本表），但**不可禁用**：`plugins.toml` 写 `enabled = false` 会让启动失败并点名。逐条理由见 [运行地基](./kernel.md)。
 
-表的来源分两类，别混算：**框架内置 21 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 21]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
+表的来源分两类，别混算：**框架内置 20 项**（`echo_agent::plugins::BUILTIN_PLUGIN_IDS: [&str; 20]`，`builtin = true`，实现同在 Core 进程内）与**插件实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::PLUGIN_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
 
 > **Panel 进程内插件的实现完全在 Panel 仓**（`source/echo-plugin-panel`）。Core 的组合根只引用其公开工厂，不持有 Panel 代码；挂载语义与本文相同，默认不启用。详见 Panel 仓文档。
 

@@ -81,11 +81,7 @@ impl Agent {
         let active_conversation = snapshot.active_pair().map(|(_, conv)| conv.id);
         self.emit(BackendEvent::WorkspaceSessions {
             team_id: self.team_id(),
-            sessions: snapshot
-                .sessions
-                .iter()
-                .map(to_protocol_session)
-                .collect(),
+            sessions: snapshot.sessions.iter().map(to_protocol_session).collect(),
             active: snapshot.active.clone(),
             active_conversation,
         });

@@ -28,7 +28,8 @@ use serde_json::Value;
 
 use echo_defs::tool::{Tool, ToolError, ToolResult};
 
-use echo_plugin_host::api::{Contribution, InvokeContext, InvokeOutcome, ToolContribution};
+use crate::contract::{tool_from_custom, ToolContribution};
+use echo_plugin_host::api::{InvokeContext, InvokeOutcome};
 use echo_plugin_host::PluginHandle;
 
 /// 插件工具在宿主侧的 `Tool` 插件实例。
@@ -136,9 +137,8 @@ impl PluginHandleTools for PluginHandle {
     fn remote_tools(&self) -> Vec<Arc<RemoteTool>> {
         self.contributions()
             .into_iter()
-            .filter_map(|c| match c {
-                Contribution::Tool(tool) => Some(Arc::new(RemoteTool::new(self.clone(), tool))),
-                _ => None,
+            .filter_map(|c| {
+                tool_from_custom(&c).map(|tool| Arc::new(RemoteTool::new(self.clone(), tool)))
             })
             .collect()
     }
@@ -147,9 +147,7 @@ impl PluginHandleTools for PluginHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use echo_plugin_host::api::{
-        Contribution, PluginToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION,
-    };
+    use echo_plugin_host::api::{PluginToHost, Register, Welcome, PROTOCOL_NAME, PROTOCOL_VERSION};
     use echo_plugin_host::inproc::{InprocIo, InprocPlugin, InprocTransport};
     use echo_plugin_host::PluginSpec;
     use echo_plugin_host::PluginSupervisor;
@@ -178,7 +176,7 @@ mod tests {
                                 .await;
                             let _ = io
                                 .send(PluginToHost::Register(Register {
-                                    contributions: vec![Contribution::Tool(ToolContribution {
+                                    contributions: vec![ToolContribution {
                                         name: "add".into(),
                                         description: "两数之和".into(),
                                         parameters: json!({"type": "object"}),
@@ -186,7 +184,8 @@ mod tests {
                                         timeout_hint_secs: Some(5),
                                         package: None,
                                         visible_reply: false,
-                                    })],
+                                    }
+                                    .into_custom()],
                                 }))
                                 .await;
                             let _ = io.send(PluginToHost::Ready).await;
@@ -262,9 +261,8 @@ mod tests {
         let handle = start_handle().await;
         // 直接造一个指向不存在贡献的插件实例：错误码应透传进 message。
         let contributions = handle.contributions();
-        let Contribution::Tool(mut tc) = contributions.into_iter().next().unwrap() else {
-            panic!("expected tool contribution");
-        };
+        let mut tc = tool_from_custom(&contributions.into_iter().next().unwrap())
+            .expect("expected tool contribution");
         tc.name = "missing".into();
         let tool = RemoteTool::new(handle.clone(), tc);
         let err = tool.execute(json!({})).await.expect_err("error");
@@ -276,9 +274,8 @@ mod tests {
     #[tokio::test]
     async fn context_keys_are_split_from_payload() {
         let handle = start_handle().await;
-        let Contribution::Tool(tc) = handle.contributions().into_iter().next().unwrap() else {
-            panic!("expected tool contribution");
-        };
+        let tc = tool_from_custom(&handle.contributions().into_iter().next().unwrap())
+            .expect("expected tool contribution");
         let mut tc = tc;
         tc.name = "ctx".into();
         let tool = RemoteTool::new(handle.clone(), tc);
