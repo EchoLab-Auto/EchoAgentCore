@@ -1749,9 +1749,18 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             )
             .context("kernel plugin cannot be disabled"));
         }
+        // 外部仓的可选进程内插件：**显式启用才挂载**。
+        //
+        // Panel 与工作区都归外部仓。只给 Panel 特判会让 workspace 在写了
+        // plugins.toml 时被漏掉默认禁用，出现「只想加载 Core 内置插件，
+        // workspace 却仍被挂载」的部署偏差。按 catalog 是否位于
+        // BUILTIN_PLUGIN_IDS 判定，新增外部仓可选插件自动获得同一语义。
         let optional_ids = catalog
             .iter()
-            .filter(|plugin| matches!(plugin.manifest().id.as_str(), "echo-agent.panel.web"))
+            .filter(|plugin| {
+                !echo_agent::plugins::BUILTIN_PLUGIN_IDS
+                    .contains(&plugin.manifest().id.as_str())
+            })
             .map(|plugin| plugin.manifest().id.clone())
             .collect::<Vec<_>>();
         let plan = optional_ids
