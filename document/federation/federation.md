@@ -15,7 +15,8 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
 跨机器的工作区执行工具、委派子任务、做只读查询。典型场景：联合调试
 （A 机改代码、B 机起服务）、跨机部署验证、能力互补（GPU/专有环境）。
 
-实现分布：`source/modules/echo-federation`（帧与链路）+
+实现分布：`source/modules/echo-federation`（**业务无关的通用连接模块**）+
+`source/modules/echo-agent-federation`（Core 帧、能力与 Panel 身份适配）+
 `source/modules/echo-agent/src/packages/federation`（执行层）+
 `source/modules/core/src/federation_rt.rs`（路由泵 `federation_router_pump` + 代理注册 + 状态快照）、`source/modules/core/src/federation_import.rs`（迁移导入）；`source/modules/core/src/main.rs` 只做装配与 `tokio::spawn`。
 
@@ -45,7 +46,17 @@ Core↔Core 对等链路：每台机器运行完整、平等的 Core 节点，ag
   `{path, node}` 表），读旧写新自动迁移；远程目录在提示词/git/文件
   浏览中标注为占位（不参与本机采集）
 
-## 链路与协议（`echo-federation` crate）
+## 链路与协议
+
+### 通用模块边界
+
+`echo-federation` 不依赖任何 EchoAgent crate，可单独复制到其他 Rust 软件：
+应用帧是泛型 `Frame`，握手能力是任意 JSON；模块只负责监听/拨出、Bearer
+认证、握手、心跳、重连、双向去重、邀请与诊断。业务请求和权限裁决不属于
+该 crate。Core 的 `echo-agent-federation` 通过 `Frame::{encode_wire, decode_wire}`
+保留既有 `FedFrame` 线格式，并提供 `NodeCaps` 与 Panel 身份。
+
+### Core 链路与协议
 
 每节点同时监听（`[federation] listen`；**缺省跟随管理地址合并**，见
 下文「端口合并」；显式地址 = 独立监听、惯例端口 :3133，显式

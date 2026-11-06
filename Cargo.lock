@@ -739,10 +739,10 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
+ "echo-agent-federation",
  "echo-config",
  "echo-context",
  "echo-defs",
- "echo-federation",
  "echo-loop",
  "echo-module",
  "echo-module-federation",
@@ -790,10 +790,10 @@ dependencies = [
  "chrono",
  "clap",
  "echo-agent",
+ "echo-agent-federation",
  "echo-config",
  "echo-context",
  "echo-defs",
- "echo-federation",
  "echo-loop",
  "echo-module",
  "echo-module-adapter",
@@ -827,6 +827,24 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "echo-agent-federation"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "echo-defs",
+ "echo-federation 0.1.0",
+ "echo-module",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -866,6 +884,22 @@ dependencies = [
 [[package]]
 name = "echo-federation"
 version = "0.1.0"
+dependencies = [
+ "base64",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "echo-federation"
+version = "0.1.0"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentCore?branch=main#4b5c83664944fd184b524c2b8b2fc77b67f833a1"
 dependencies = [
  "base64",
  "echo-defs",
@@ -936,9 +970,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "dashmap",
+ "echo-agent-federation",
  "echo-context",
  "echo-defs",
- "echo-federation",
  "echo-module",
  "echo-protocol",
  "echo-tool",
@@ -995,8 +1029,8 @@ name = "echo-module-management"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "echo-agent-federation",
  "echo-context",
- "echo-federation",
  "echo-module",
  "echo-protocol",
  "futures-util",
@@ -1128,7 +1162,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "echo-defs",
- "echo-federation",
+ "echo-federation 0.1.0 (git+https://github.com/EchoLab-Auto/EchoAgentCore?branch=main)",
  "echo-protocol",
  "echo-tool",
  "serde_json",
@@ -1349,7 +1383,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2484,7 +2518,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2844,7 +2878,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3311,7 +3345,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3905,7 +3939,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

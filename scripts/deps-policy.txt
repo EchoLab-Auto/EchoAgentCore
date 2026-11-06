@@ -39,7 +39,8 @@ modules/echo-loop                           echo-context echo-defs echo-module
 modules/echo-protocol                       echo-context echo-defs echo-module
 modules/echo-tool                           echo-context echo-defs echo-module echo-test-utils
 modules/echo-shell                          echo-context echo-defs echo-module echo-protocol echo-tool
-modules/echo-federation                     echo-defs echo-module
+modules/echo-federation
+modules/echo-agent-federation                     echo-defs echo-module
 modules/echo-config
 modules/echo-test-utils                     echo-defs
 

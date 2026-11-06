@@ -1,31 +1,20 @@
-//! EchoAgentCore 联邦层（federation Phase 1）：Core↔Core 对等链路。
+//! # echo-federation — 可平移的去中心化连接模块
 //!
-//! - [`frame`]：`FedFrame` 线协议（工具调用/委派/查询帧 + 握手能力协商）
-//! - [`link`]：连接管理（监听/连出、Hello/Welcome 握手、per-peer Bearer
-//!   认证、心跳保活、断线重连、回环拒绝）
+//! 每个节点同时可以监听与主动拨出。连接建立后双向对称，支持 Bearer 认证、
+//! 握手版本检查、自连接拒绝、重复链路收敛、心跳、重连与地址学习。
 //!
-//! Phase 1 只提供链路；工具路由（Phase 2）与远程委派（Phase 3）消费
-//! [`LinkEvent`] 与 [`Federation::send_to`]。
-//!
-//! - [`panel`]：**联邦级 Panel 身份**（2026-11 P1）——一个 Panel 用同一把密钥
-//!   接入全网任一节点，权限由被接入节点自己的 `panel_access` 决定。挂在
-//!   [`Federation`] 上是因为合并端口的 WS 升级回调只能同步读它。
-
-pub mod module;
+//! 本 crate 只依赖通用异步/序列化/WebSocket 库，不认识 Agent、工具、会话、
+//! 工作区或任何具体应用。宿主通过 [`WireFrame::Application`] 定义自己的协议，
+//! 通过 [`Federation::set_capability_reporter`] 上报自定义能力元数据。
 
 pub mod error;
 pub mod frame;
 pub mod invite;
 pub mod link;
-pub mod panel;
 
 pub use error::FederationError;
-pub use frame::{
-    call_origin, new_call_id, FedError, FedFrame, InvokeRequest, InvokeResult, InvokeVerdict,
-    NodeCaps, NodeHello, OutputStream, QueryKind, QueryRequest, QueryResultFrame,
-    SessionImportAckFrame, SessionImportFrame, SessionImportResultFrame, SubagentEventFrame,
-    SubagentSpawnRequest, SubagentStatus, PROTOCOL_VERSION,
-};
+pub use frame::{Frame, NodeHello, WireFrame, PROTOCOL_VERSION};
 pub use invite::{decode_invite, encode_invite, generate_token, InvitePayload, INVITE_SCHEME};
-pub use link::{bearer_request, Federation, LinkEvent, LinkHandle, PeerConfig, PeerInfo};
-pub use panel::{PanelAccess, PanelGate, PanelIdentity};
+pub use link::{
+    bearer_request, Federation, LinkEvent, LinkHandle, PeerConfig, PeerDiagnostics, PeerInfo,
+};

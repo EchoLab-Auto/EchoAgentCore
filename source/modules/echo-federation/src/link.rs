@@ -29,7 +29,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::frame::{FedFrame, NodeCaps, NodeHello, PROTOCOL_VERSION};
+use crate::frame::{Frame, NodeHello, WireFrame, PROTOCOL_VERSION};
+use serde_json::Value;
 
 /// 应用层心跳间隔（WS 自带 Ping 之外的存活证据）。
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -94,7 +95,7 @@ pub struct PeerInfo {
     pub node_id: String,
     pub node_name: Option<String>,
     pub version: String,
-    pub caps: NodeCaps,
+    pub caps: Value,
     /// 对端宣告的可拨地址（`ws://host:port`；None = 对端未宣告/未监听）。
     /// 装配层（core/main.rs）据此学习对端地址 → 双向重连（配对无方向性）。
     pub advertise: Option<String>,
@@ -123,7 +124,7 @@ pub struct PeerDiagnostics {
 
 /// 链路事件（路由层/装配层消费）。
 #[derive(Debug, Clone)]
-pub enum LinkEvent {
+pub enum LinkEvent<A: Frame> {
     /// 链路就绪（握手完成）。
     Up(PeerInfo),
     /// 链路断开（对端关闭/判死/网络错误）。
@@ -132,16 +133,16 @@ pub enum LinkEvent {
         reason: String,
     },
     /// 收到业务帧（Hello/Welcome/Ping/Pong 已由链路层消化）。
-    Frame { from: String, frame: FedFrame },
+    Frame { from: String, frame: A },
 }
 
 /// 链路句柄：向对端发帧。
 #[derive(Debug, Clone)]
-pub struct LinkHandle {
+pub struct LinkHandle<A: Frame> {
     /// 本链路是否属于"优选连接"（由 node_id 较小的一方拨出；见
     /// `run_link` 的双向 dial 去重规则）。优选连接不被非优选连接顶掉。
     preferred: bool,
-    tx: mpsc::Sender<FedFrame>,
+    tx: mpsc::Sender<WireFrame<A>>,
     /// 本链路使用的共享密钥（状态判定/占位 peer 匹配用）。
     token: String,
     /// 链路代际标识：进程内单调递增，摘除时比对——仅当注册的还是
@@ -149,24 +150,29 @@ pub struct LinkHandle {
     generation: u64,
 }
 
-impl LinkHandle {
+impl<A: Frame> LinkHandle<A> {
     /// 异步发送（背压：通道满返回错误而非阻塞，调用方决定重试/放弃）。
-    /// Err 侧是 `Box<FedFrame>`（帧体积大，Box 保持错误轻量）。
-    pub fn send(&self, frame: FedFrame) -> Result<(), Box<FedFrame>> {
-        self.tx.try_send(frame).map_err(|e| match e {
-            mpsc::error::TrySendError::Full(f) | mpsc::error::TrySendError::Closed(f) => {
-                Box::new(f)
-            }
-        })
+    pub fn send(&self, frame: A) -> Result<(), Box<A>> {
+        self.tx
+            .try_send(WireFrame::Application(frame))
+            .map_err(|e| {
+                let frame = match e {
+                    mpsc::error::TrySendError::Full(f) | mpsc::error::TrySendError::Closed(f) => f,
+                };
+                match frame {
+                    WireFrame::Application(frame) => Box::new(frame),
+                    _ => unreachable!("LinkHandle only sends application frames"),
+                }
+            })
     }
 }
 
 /// 联邦管理器：持有全部链路与事件出口。
-pub struct Federation {
+pub struct Federation<A: Frame> {
     node_id: String,
     node_name: Option<String>,
     version: String,
-    caps: NodeCaps,
+    caps: Value,
     /// 本机对外宣告的可拨地址（`ws://host:port`；None = 未监听/不宣告）。
     /// 握手 Hello/Welcome 携带；对端学习后即可反向连入本机（2026-10）。
     local_advertise: Option<String>,
@@ -189,7 +195,7 @@ pub struct Federation {
     /// 一个长度 ≤ 8 的 Vec），不会阻塞运行时。
     observed_hosts: Arc<std::sync::RwLock<Vec<String>>>,
     /// node_id → 链路句柄（活跃链路）。
-    links: Arc<RwLock<HashMap<String, LinkHandle>>>,
+    links: Arc<RwLock<HashMap<String, LinkHandle<A>>>>,
     /// 链路代际计数（见 LinkHandle::generation）。
     link_generation: std::sync::atomic::AtomicU64,
     /// per-peer 连出循环取消表（peer 配置名 → 取消哨）：
@@ -205,44 +211,24 @@ pub struct Federation {
     /// 最近一次从对端 Hello 学到的可拨地址（peer 配置名 → url；跨断链
     /// 保留，peer 删除时清理）——地址漂移的"一键修复"数据源。
     known_advertise: RwLock<std::collections::HashMap<String, String>>,
-    /// 负载上报句柄（P2 调度器）：握手 hello 时调用取当前活跃 turn
-    /// 数——对端调度器拿到的是**实时**负载而非启动快照。由装配层
-    /// （core/main.rs，持有 supervisor）注入；未注入时 hello 报 0。
-    load_reporter: RwLock<Option<std::sync::Arc<dyn Fn() -> u32 + Send + Sync>>>,
-    /// 远程可调用工具上报句柄（2026-11 S8）：握手 hello 时调用取**当前**
-    /// 可被远程调用的工具名——真源是每个工具自己的 `remote_capable()`
-    /// 声明（经 `ToolRegistry::remote_capable_names` 汇总）。
-    ///
-    /// 为什么是回调而不是构造参数：`Federation::new` 在组合根里比模块挂载
-    /// 早得多（此刻还没有任何工具注册表）。注入后 hello 每次现取，所以
-    /// 运行期启用/停用模块会直接反映到下一次握手，而不用重启节点。
-    /// 未注入 = 宣告空集（fail-closed：宁可少宣告，不可宣告了接不了）。
-    tool_reporter: RwLock<Option<std::sync::Arc<dyn Fn() -> Vec<String> + Send + Sync>>>,
-    /// **联邦级 Panel 身份**门（P1，2026-11）：一套密钥 + 一个授权级别，
-    /// 供合并端口的同步升级回调判定「这条管理连接来自哪个 Panel、给多大权限」。
-    ///
-    /// 为什么挂在 `Federation` 上：升级回调只能拿到 `Arc<Federation>`（与
-    /// [`Self::has_peer_token_sync`] 同款理由），而 `[federation] panel_keys`
-    /// 本来就写在联邦配置段里。
-    ///
-    /// 热更新：装配层在启动时 [`Self::set_panel_identity`] 一次；将来支持
-    /// 配置热重载时再调用即可（`PanelGate` 内部 `RwLock`）。
-    panel_gate: crate::panel::PanelGate,
+    /// 应用自定义能力元数据上报器；每次握手现取。
+    capability_reporter: RwLock<Option<std::sync::Arc<dyn Fn() -> Value + Send + Sync>>>,
     /// 事件出口（路由层订阅）。
-    event_tx: mpsc::Sender<LinkEvent>,
+    event_tx: mpsc::Sender<LinkEvent<A>>,
     shutdown: watch::Sender<bool>,
 }
 
-impl Federation {
+impl<A: Frame> Federation<A> {
     /// 创建管理器；`event_tx` 由调用方提供（缓冲即背压边界）。
     /// `advertise` = 本机对外可拨地址（`ws://host:port`；None = 不宣告）。
     pub fn new(
         node_id: String,
         node_name: Option<String>,
-        caps: NodeCaps,
+        version: String,
+        caps: Value,
         peers: Vec<PeerConfig>,
         advertise: Option<String>,
-        event_tx: mpsc::Sender<LinkEvent>,
+        event_tx: mpsc::Sender<LinkEvent<A>>,
         shutdown: watch::Sender<bool>,
     ) -> Arc<Self> {
         let synced_tokens = std::sync::RwLock::new(
@@ -255,7 +241,7 @@ impl Federation {
         Arc::new(Self {
             node_id,
             node_name,
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version,
             caps,
             local_advertise: advertise,
             peers: RwLock::new(peers),
@@ -267,56 +253,25 @@ impl Federation {
             last_peer_infos: RwLock::new(std::collections::HashMap::new()),
             dial_health: RwLock::new(std::collections::HashMap::new()),
             known_advertise: RwLock::new(std::collections::HashMap::new()),
-            load_reporter: RwLock::new(None),
-            tool_reporter: RwLock::new(None),
-            panel_gate: crate::panel::PanelGate::default(),
+            capability_reporter: RwLock::new(None),
             event_tx,
             shutdown,
         })
     }
 
     fn hello(&self) -> NodeHello {
-        let mut caps = self.caps.clone();
-        // 实时负载注入（P2 调度器）：装配层已注入 reporter 时，握手
-        // 宣告当前活跃 turn 数（try_read 失败=注入中，用启动快照 0）。
-        if let Ok(guard) = self.load_reporter.try_read() {
-            if let Some(reporter) = guard.as_ref() {
-                caps.active_turns = reporter();
-            }
-        }
-        // 远程可调用工具（2026-11 S8）：工具自己的 `remote_capable()` 声明，
-        // 汇总自注册表。**覆盖**构造时的快照——那个快照只在未注入 reporter
-        // 的场合有意义（单测 / 早启动），生产装配一律走 reporter。
-        match self.tool_reporter.try_read() {
-            Ok(guard) => match guard.as_ref() {
-                Some(reporter) => caps.tools = reporter(),
-                None => {
-                    // 装配顺序错了（监听早于工具注册表就绪）：对端会以为本机
-                    // 什么活都接不了，且**不会重问**——所以这条必须显性报警，
-                    // 而不是安静地宣告空集。组合根已在注入 reporter 之后才
-                    // 起监听/连出（见 core/main.rs），所以正常运行时不会出现。
-                    tracing::warn!(
-                        target: "federation",
-                        "hello: tool reporter not injected yet — advertising no remote tools; \
-                         peer will register no proxy tools until reconnect"
-                    );
-                }
-            },
-            Err(_) => {
-                // 注入中（写锁未释放）：本次握手保守地不宣告，下次握手会好。
-                tracing::debug!(target: "federation", "hello: tool reporter busy — empty tools");
-            }
-        }
-        // Panel 身份开放状态：同样在握手时现取（配置热更新后下一个握手即生效）。
-        caps.panel_ready = self.panel_gate.is_open();
+        let caps = self
+            .capability_reporter
+            .try_read()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|reporter| reporter()))
+            .unwrap_or_else(|| self.caps.clone());
         NodeHello {
             node_id: self.node_id.clone(),
             node_name: self.node_name.clone(),
             protocol_version: PROTOCOL_VERSION,
             version: self.version.clone(),
             caps,
-            // 观测地址优先（2026-11）：手工 advertise 可能只在本机视角成立
-            // （云机 NAT 后的内网 IP），对端据它回拨必然超时。
             advertise: self.effective_advertise_sync(),
         }
     }
@@ -392,22 +347,14 @@ impl Federation {
     }
 
     /// 注入负载上报句柄（装配层：core/main.rs 持 supervisor 后调用）。
-    pub async fn set_load_reporter(&self, reporter: std::sync::Arc<dyn Fn() -> u32 + Send + Sync>) {
-        *self.load_reporter.write().await = Some(reporter);
-    }
-
-    /// 注入"远程可调用工具"的真源（组合根：全部 persona 的工具注册表）。
-    ///
-    /// 组装顺序：`Federation` 先建（此时还没有工具注册表）→ persona/supervisor
-    /// 就绪 → 调用本方法。此后每次握手都现取，模块启停即时生效。
-    pub async fn set_tool_reporter(
+    /// 安装应用能力元数据上报器；不解释字段的业务含义。
+    pub async fn set_capability_reporter(
         &self,
-        reporter: std::sync::Arc<dyn Fn() -> Vec<String> + Send + Sync>,
+        reporter: std::sync::Arc<dyn Fn() -> Value + Send + Sync>,
     ) {
-        *self.tool_reporter.write().await = Some(reporter);
+        *self.capability_reporter.write().await = Some(reporter);
     }
 
-    /// 运行时新增/更新 peer（Phase 4）：配置写表；有 url 即补起连出循环。
     pub async fn add_peer(self: &Arc<Self>, peer: PeerConfig) {
         {
             let mut peers = self.peers.write().await;
@@ -454,32 +401,6 @@ impl Federation {
     ///
     /// 幂等：重复调用即整体替换（配置热更新）。空密钥表或 `Off` 级别 =
     /// 不接受 Panel 身份（默认状态）。
-    pub fn set_panel_identity(&self, identity: crate::panel::PanelIdentity) {
-        self.panel_gate.set(identity);
-    }
-
-    /// 本节点是否对外接受 Panel 身份（握手 `caps.panel_ready` 与
-    /// `FederationStatus.panel_ready` 的数据源）。
-    pub fn panel_ready_sync(&self) -> bool {
-        self.panel_gate.is_open()
-    }
-
-    /// 本节点授予 Panel 身份的级别（常量，装配期确定）。
-    pub fn panel_access_sync(&self) -> crate::panel::PanelAccess {
-        self.panel_gate.identity().access()
-    }
-
-    /// 同步版 Panel 身份判定（合并端口/独立监听的升级回调专用）：
-    /// 命中返回该身份应得的级别，未命中返回 `None`（→ 401）。
-    ///
-    /// **空凭据恒不命中**（同 `has_peer_token_sync` 的纪律：空令牌不是
-    /// "万能令牌"）。
-    pub fn panel_gate_sync(&self, token: &str) -> Option<crate::panel::PanelAccess> {
-        self.panel_gate.lookup(token)
-    }
-
-    /// 同步版 per-peer 令牌判定（端口合并的升级回调专用；空令牌恒不
-    /// 命中）。命中即该连接应归为联邦链路。
     pub fn has_peer_token_sync(&self, token: &str) -> bool {
         if token.is_empty() {
             return false;
@@ -604,7 +525,7 @@ impl Federation {
 
     /// 按 **peer 配置名**查最近链路的对端能力（Up 时登记于
     /// PeerInfo；2026-10 P2 调度器负载输入）。链路断开/未知时 None。
-    pub async fn peer_caps(&self, peer_name: &str) -> Option<NodeCaps> {
+    pub async fn peer_caps(&self, peer_name: &str) -> Option<Value> {
         let infos = self.last_peer_infos.read().await;
         infos.get(peer_name).map(|i| i.caps.clone())
     }
@@ -628,7 +549,7 @@ impl Federation {
     }
 
     /// 向指定节点发帧。
-    pub async fn send_to(&self, node_id: &str, frame: FedFrame) -> Result<(), Box<FedFrame>> {
+    pub async fn send_to(&self, node_id: &str, frame: A) -> Result<(), Box<A>> {
         match self.links.read().await.get(node_id) {
             Some(handle) => handle.send(frame),
             None => Err(Box::new(frame)),
@@ -852,7 +773,7 @@ impl Federation {
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
         let (mut write, mut read) = ws.split();
-        let hello = FedFrame::Hello(self.hello());
+        let hello = WireFrame::<A>::Hello(self.hello());
 
         // 主动方（Bearer 已在 connect 请求头完成）先发 Hello；被动方先收 Hello。
         if dial_peer.is_some() {
@@ -865,8 +786,8 @@ impl Federation {
             .await
             .map_err(|_| FederationError::HelloTimeout)?
             .ok_or(FederationError::LinkClosedBeforeHello)??;
-        let peer_hello: NodeHello = match serde_json::from_str::<FedFrame>(first.to_text()?) {
-            Ok(FedFrame::Hello(h)) | Ok(FedFrame::Welcome(h)) => h,
+        let peer_hello: NodeHello = match A::decode_wire(first.to_text()?) {
+            Ok(WireFrame::<A>::Hello(h)) | Ok(WireFrame::<A>::Welcome(h)) => h,
             _ => {
                 return Err(FederationError::Handshake(
                     "first frame is not Hello/Welcome".into(),
@@ -877,14 +798,14 @@ impl Federation {
 
         if dial_peer.is_none() {
             // 被动方回握。
-            let text = serde_json::to_string(&FedFrame::Welcome(self.hello()))?;
+            let text = serde_json::to_string(&WireFrame::<A>::Welcome(self.hello()))?;
             send_with_timeout(&mut write, Message::Text(text)).await?;
         } else {
             // 主动方应收到 Welcome；若收到的是 Hello（双方同时 dial），按
             // node_id 字典序小的一方断开重连（天然防撞）。
             if matches!(
-                serde_json::from_str::<FedFrame>(first.to_text()?),
-                Ok(FedFrame::Hello(_))
+                A::decode_wire(first.to_text()?),
+                Ok(WireFrame::<A>::Hello(_))
             ) && self.node_id < peer_hello.node_id
             {
                 return Err(FederationError::Handshake(
@@ -931,7 +852,7 @@ impl Federation {
         } else {
             info.node_id < self.node_id
         };
-        let (out_tx, mut out_rx) = mpsc::channel::<FedFrame>(OUTBOUND_CAP);
+        let (out_tx, mut out_rx) = mpsc::channel::<WireFrame<A>>(OUTBOUND_CAP);
         let generation = self
             .link_generation
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1027,7 +948,7 @@ impl Federation {
         &self,
         read: &mut R,
         write: &mut W,
-        out_rx: &mut mpsc::Receiver<FedFrame>,
+        out_rx: &mut mpsc::Receiver<WireFrame<A>>,
         info: &PeerInfo,
     ) -> Result<(), FederationError>
     where
@@ -1044,7 +965,7 @@ impl Federation {
                 frame = out_rx.recv() => {
                     match frame {
                         Some(frame) => {
-                            let text = serde_json::to_string(&frame)?;
+                            let text = A::encode_wire(&frame)?;
                             send_with_timeout(&mut *write, Message::Text(text)).await?;
                         }
                         // 通道关闭 = 本链路已被顶掉（replace）/被移除：主动
@@ -1058,17 +979,23 @@ impl Federation {
                     match inbound {
                         Some(Ok(Message::Text(text))) => {
                             last_seen = Instant::now();
-                            match serde_json::from_str::<FedFrame>(&text) {
-                                Ok(FedFrame::Ping { sent_at_ms }) => {
-                                    let pong = FedFrame::Pong { sent_at_ms: now_ms(), echo_ms: sent_at_ms };
+                            match A::decode_wire(&text) {
+                                Ok(WireFrame::<A>::Ping { sent_at_ms }) => {
+                                    let pong = WireFrame::<A>::Pong { sent_at_ms: now_ms(), echo_ms: sent_at_ms };
                                     send_with_timeout(&mut *write, Message::Text(serde_json::to_string(&pong)?)).await?;
                                 }
-                                Ok(FedFrame::Pong { .. }) => { /* 存活证据已刷新 */ }
-                                Ok(frame) => {
+                                Ok(WireFrame::<A>::Pong { .. }) => { /* 存活证据已刷新 */ }
+                                Ok(WireFrame::Application(frame)) => {
                                     let event = LinkEvent::Frame { from: info.node_id.clone(), frame };
                                     if self.event_tx.send(event).await.is_err() {
                                         return Err(FederationError::EventSinkClosed);
                                     }
+                                }
+                                Ok(WireFrame::Error { message }) => {
+                                    tracing::warn!(peer = %info.node_id, %message, "federation control error");
+                                }
+                                Ok(WireFrame::Hello(_)) | Ok(WireFrame::Welcome(_)) => {
+                                    tracing::debug!(peer = %info.node_id, "duplicate federation handshake ignored");
                                 }
                                 Err(e) => {
                                     tracing::warn!(peer = %info.node_id, error = %e, "bad federation frame");
@@ -1090,7 +1017,7 @@ impl Federation {
                             secs: DEAD_AFTER.as_secs(),
                         });
                     }
-                    let ping = FedFrame::Ping { sent_at_ms: now_ms() };
+                    let ping = WireFrame::<A>::Ping { sent_at_ms: now_ms() };
                     send_with_timeout(&mut *write, Message::Text(serde_json::to_string(&ping)?)).await?;
                 }
                 _ = shutdown_rx.changed() => return Err(FederationError::Shutdown),
@@ -1265,13 +1192,14 @@ mod tests {
         .expect("就绪 Sink 不应超时");
     }
 
-    fn test_fed() -> Arc<Federation> {
-        let (tx, _rx) = mpsc::channel(8);
+    fn test_fed() -> Arc<Federation<Value>> {
+        let (tx, _rx) = mpsc::channel::<LinkEvent<Value>>(8);
         let (shutdown, _) = watch::channel(false);
         Federation::new(
             "node-test".into(),
             Some("test".into()),
-            NodeCaps::default(),
+            "test".into(),
+            Value::default(),
             Vec::new(),
             None,
             tx,
@@ -1283,12 +1211,13 @@ mod tests {
     /// 的地址——手工 advertise 常停在 NAT 后的内网 IP，对端照着拨必然超时。
     #[tokio::test]
     async fn observed_host_overrides_advertised_address() {
-        let (tx, _rx) = mpsc::channel(8);
+        let (tx, _rx) = mpsc::channel::<LinkEvent<Value>>(8);
         let (shutdown, _) = watch::channel(false);
         let fed = Federation::new(
             "node-test".into(),
             Some("test".into()),
-            NodeCaps::default(),
+            "test".into(),
+            Value::default(),
             Vec::new(),
             Some("ws://10.1.0.8:3132".into()), // 云机自行推导出的内网地址
             tx,

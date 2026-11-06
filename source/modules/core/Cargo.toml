@@ -39,7 +39,7 @@ echo-module-provider-llm = { workspace = true }
 echo-module-self-update = { workspace = true }
 echo-module-sanitize = { workspace = true }
 echo-module-shell = { workspace = true }
-echo-federation = { path = "../echo-federation" }
+echo-federation = { package = "echo-agent-federation", path = "../echo-agent-federation" }
 getrandom = "0.2"
 tokio.workspace = true
 serde.workspace = true

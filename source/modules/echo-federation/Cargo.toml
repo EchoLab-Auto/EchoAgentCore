@@ -1,6 +1,6 @@
 [package]
 name = "echo-federation"
-description = "EchoAgentCore federation layer — Core↔Core 对等链路（FedFrame、握手/心跳/认证、回环防护）"
+description = "业务无关的去中心化节点连接、认证、心跳、重连与通用应用帧传输"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-echo-module = { workspace = true }
-echo-defs.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

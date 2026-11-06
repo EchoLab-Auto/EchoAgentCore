@@ -8,6 +8,7 @@ members = [
     "source/modules/echo-loop",
     "source/modules/echo-protocol",
     "source/modules/echo-federation",
+    "source/modules/echo-agent-federation",
     "source/modules/echo-agent",
     "source/modules/echo-config",
     "source/modules/echo-test-utils",
@@ -96,7 +97,7 @@ echo-module-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", br
 echo-module-session = { path = "source/modules/echo-module-session" }
 echo-module-transcript = { path = "source/modules/echo-module-transcript" }
 echo-module-tools = { path = "source/modules/echo-module-tools" }
-echo-federation = { path = "source/modules/echo-federation" }
+echo-federation = { package = "echo-agent-federation", path = "source/modules/echo-agent-federation" }
 
 # async runtime
 tokio = { version = "1", features = ["full"] }
@@ -141,5 +142,5 @@ aho-corasick = "1"
 [patch."https://github.com/EchoLab-Auto/EchoAgentCore"]
 echo-defs = { path = "source/modules/echo-defs" }
 echo-tool = { path = "source/modules/echo-tool" }
-echo-federation = { path = "source/modules/echo-federation" }
+echo-federation = { package = "echo-agent-federation", path = "source/modules/echo-agent-federation" }
 echo-protocol = { path = "source/modules/echo-protocol" }
