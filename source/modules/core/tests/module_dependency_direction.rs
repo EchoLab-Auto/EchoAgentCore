@@ -353,7 +353,7 @@ fn walk_rs(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
 /// 真值来源，这里给出可执行的诊断信息（点名是哪两个模块、该怎么修）。
 #[test]
 fn modules_do_not_depend_on_other_modules() {
-    const MECHANISM: [&str; 7] = [
+    const MECHANISM: [&str; 8] = [
         "echo-module",
         "echo-module-api",
         "echo-module-host",
@@ -361,6 +361,7 @@ fn modules_do_not_depend_on_other_modules() {
         "echo-module-loader",
         "echo-module-federation",
         "echo-module-tools",
+        "echo-module-loop",
     ];
     let root = repo_root().join("source/modules");
     let mut violations = Vec::new();
