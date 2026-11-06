@@ -51,7 +51,7 @@ pub enum LlmError {
 /// 一轮内允许的截断自动续跑次数上限：输出被 max_tokens 截断时把残片
 /// 入栈让模型接着写；超过上限按错误上报，不再静默重试。
 ///
-/// **口径单源**（2026-10 巡检）：内置循环（echo-agent）与 echo-loop 曾各
+/// **口径单源**（2026-10 巡检）：内置循环（echo-agent）与 echo-module-loop 曾各
 /// 持一份（已漂移）——统一在此定义，两处引用同一常量。
 pub const MAX_TRUNCATION_CONTINUES: usize = 4;
 
@@ -59,7 +59,7 @@ pub const MAX_TRUNCATION_CONTINUES: usize = 4;
 ///
 /// 取消不是故障：调用方（主 turn / 子 agent / 会话排空）主动中止时，错误
 /// 消息一律用这一句，使上层能按字符串识别而不必依赖错误变体——内置循环、
-/// echo-loop 与 subagent 曾各写一份字面量，收敛到此处。
+/// echo-module-loop 与 subagent 曾各写一份字面量，收敛到此处。
 pub const TURN_CANCELLED: &str = "agent turn cancelled by requester";
 
 /// 截断续跑时喂给模型的提示（user 角色，区别于真实用户输入）。

@@ -8,15 +8,15 @@ y: 1480
 
 # Agent 循环
 
-> **定位**：本文描述 **Agent 循环**——可插拔驱动（echo-loop `TurnRunner`）的 turn/step 状态机、会话内串行准入（同一会话 FIFO 排队）、工具管道，以及 harness（`agent/turn.rs`）如何把一条输入交给唯一的循环驱动执行。读者：需要理解消息如何被循环执行的开发者。
+> **定位**：本文描述 **Agent 循环**——可插拔驱动（echo-module-loop `TurnRunner`）的 turn/step 状态机、会话内串行准入（同一会话 FIFO 排队）、工具管道，以及 harness（`agent/turn.rs`）如何把一条输入交给唯一的循环驱动执行。读者：需要理解消息如何被循环执行的开发者。
 > 相关：[多 Agent 与会话](./agents.md)（会话归属与入站投递）、[模块化设计](../modules/modules.md)（loop 模块治理）、[工具系统](../modules/tools.md)（工具执行与超时）。
 
-Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态机 + 工具
+Agent 循环只有**一个驱动**：echo-module-loop `TurnRunner`（turn/step 状态机 + 工具
 管道）。循环模块也只有**一个**：`echo-agent.loop.single`（`kind = loop`），它
 表达的策略就是"同一会话的 turn 串行排队"，不切换驱动。
 
 > 单轨化（架构评审）：此前存在第二套"内置循环"（`process_message_inner`
-> 内联实现），QQ hook / 定时器 / QQ 会话输入走它、普通输入走 echo-loop；两者
+> 内联实现），QQ hook / 定时器 / QQ 会话输入走它、普通输入走 echo-module-loop；两者
 > 靠"逐项同口径"维持一致并多次漂移。内置循环已删除，边界输入的唯一差异
 > （提示词边界块）由 harness 统一注入。
 
@@ -63,9 +63,9 @@ Agent 循环只有**一个驱动**：echo-loop `TurnRunner`（turn/step 状态�
 - 输出预算：`[agent].max_tokens`（0 = 无上限，后端回退 `DEFAULT_MAX_TOKENS = 128K` 实用上限）；响应被 `max_tokens` 掐断（finish_reason = length/max_tokens）时自动续跑（最多 4 次，提示"继续上次输出"喂回模型；半截工具调用丢弃后重发完整调用）
 - 达上限未完成时报错收尾；工具的超时/失败不中断 loop（见 [工具系统](../modules/tools.md)）
 
-## echo-loop：可替换的默认驱动（TurnRunner）
+## echo-module-loop：可替换的默认驱动（TurnRunner）
 
-`echo-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。驱动实例由 `echo-module-loop` 在 mount 期构造并 `provide` 成 `loop` 服务（`LoopOptions`：`max_tokens` 与 `max_tool_iterations` 来自配置），组合根在挂载完成后解析它——**解析失败即启动失败**；换驱动 = 换一个 `provide` 同一服务键的模块。消费方（agent、UI、hook）只依赖生命周期事件。
+`echo-module-loop` crate 把驱动抽象为 **turn/step 状态机**（对齐 dsh 的 turn/step 模型）：turn 消化一条输入直到不再欠债；step = 一次模型请求 + 它引发的工具执行。驱动实例由 `echo-module-loop` 在 mount 期构造并 `provide` 成 `loop` 服务（`LoopOptions`：`max_tokens` 与 `max_tool_iterations` 来自配置），组合根在挂载完成后解析它——**解析失败即启动失败**；换驱动 = 换一个 `provide` 同一服务键的模块。消费方（agent、UI、hook）只依赖生命周期事件。
 
 - **生命周期事件**（全部经 `EventBus` 分发）：`TurnStart` / `AgentPreStep`（waterfall，可改写消息或拒绝 step）/ `StepStart` / `AgentRequest`（waterfall，可改写请求）/ `ToolCallRequested` / `ToolResult` / `StepEnd` / `TurnStopping`（Observe——`Serial` 目前无生产发射方）/ `TurnEnd`
 - **工具执行管道**（`ToolPipeline`）：`pre-execute → execute → post-execute` 的 waterfall around-middleware；每个阶段收 `&ToolCall` + `next()` 句柄，不调 `next()` 即短路。审批、审计、限流等策略的设计接入方式为管道中间件（非循环代码，新策略 = 一次 `push_pre`/`push_post`；机制已备，当前生产路径未注册任何中间件）；**工具超时守卫**由 harness 侧统一实施（`Agent::tool_guard_timeout`：配置 `tool_timeout_secs` base + 工具自声明 `timeout_hint`）——超时只中止该工具、不中断 turn，结果以 notice 喂回模型，事件日志补记中断结果保持成对

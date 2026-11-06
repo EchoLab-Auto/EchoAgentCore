@@ -21,7 +21,7 @@ link: ["tool-catalog | 内置工具目录"]
 
 - `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（`echo-tool` crate；`echo-agent` 保留 `echo_agent::tool::…` 兼容路径）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
 - 注册是可逆副作用：`register_reversible` 返回 `Disposer`，模块卸载即撤销
-- 分派入口有两条：turn 内走 echo-loop 的工具管线（`spawn_subagent` 经其异步 hook 通道，见 [Subagent 模块](./subagent.md)）；集成测试与直接调用走 `run_tool`（对 `spawn_subagent` 同样特判）。其余工具一律走注册表
+- 分派入口有两条：turn 内走 echo-module-loop 的工具管线（`spawn_subagent` 经其异步 hook 通道，见 [Subagent 模块](./subagent.md)）；集成测试与直接调用走 `run_tool`（对 `spawn_subagent` 同样特判）。其余工具一律走注册表
 
 ### 工具从哪来（三个来源）
 
@@ -108,7 +108,7 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
   `invalid_tool_arguments`（纯函数：比对 schema `required` 与实参，缺失列表 +
   原始参数回显 + schema 一并写入文案——只说"command required" 会让模型原样重试，
   形成空参调用退化循环）
-- 异步编排工具（`spawn_subagent`）经 echo-loop 的 hook 通道直入管线、不经注册表
+- 异步编排工具（`spawn_subagent`）经 echo-module-loop 的 hook 通道直入管线、不经注册表
   预检，缺参由工具自身的纠正性文案兜底
 
 ### 危险命令判定

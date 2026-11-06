@@ -7,7 +7,7 @@ use echo_context::{EventBus, WaterfallDecision};
 use echo_defs::llm::LlmError;
 use echo_defs::llm::LlmProvider;
 use echo_defs::message::{ChatChunk, ChatRequest, ChatResponse, ToolCall, Usage};
-use echo_loop::{
+use echo_module_loop::{
     AgentPreStep, AgentRequest, StepStart, ToolCallRequested, ToolResult, TurnEnd, TurnRunner,
     TurnStart,
 };
@@ -70,12 +70,13 @@ async fn turn_emits_lifecycle_events_in_order() {
             stop_reason: Some("end_turn".into()),
         },
     ]);
-    let pipeline: Arc<echo_loop::ToolPipeline> = Arc::new(echo_loop::ToolPipeline::new());
+    let pipeline: Arc<echo_module_loop::ToolPipeline> =
+        Arc::new(echo_module_loop::ToolPipeline::new());
     let runner = TurnRunner::new(
         bus.clone(),
         llm,
         pipeline,
-        echo_loop::LoopOptions::default(),
+        echo_module_loop::LoopOptions::default(),
     );
 
     let lifecycle = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -103,9 +104,9 @@ async fn turn_emits_lifecycle_events_in_order() {
             tokio_util::sync::CancellationToken::new(),
             &|_s: &str, _b: &str, call: &ToolCall| {
                 let text = format!("执行了 {}", call.name);
-                Box::pin(async move { echo_loop::ToolOutcome::text(text) })
+                Box::pin(async move { echo_module_loop::ToolOutcome::text(text) })
                     as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = echo_loop::ToolOutcome> + Send>,
+                        Box<dyn std::future::Future<Output = echo_module_loop::ToolOutcome> + Send>,
                     >
             },
             Default::default(),
@@ -141,8 +142,8 @@ async fn pre_step_rejection_closes_turn_without_request() {
     let runner = TurnRunner::new(
         bus.clone(),
         llm,
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     );
     // A waterfall listener rejects the step.
     let _reject = bus.subscribe::<AgentPreStep, _>(|pre_step, _| {
@@ -157,15 +158,18 @@ async fn pre_step_rejection_closes_turn_without_request() {
             vec![],
             tokio_util::sync::CancellationToken::new(),
             &|_: &str, _: &str, _: &ToolCall| {
-                Box::pin(async { echo_loop::ToolOutcome::text("") })
+                Box::pin(async { echo_module_loop::ToolOutcome::text("") })
                     as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = echo_loop::ToolOutcome> + Send>,
+                        Box<dyn std::future::Future<Output = echo_module_loop::ToolOutcome> + Send>,
                     >
             },
             Default::default(),
         )
         .await;
-    assert!(matches!(result, Err(echo_loop::LoopError::StepRejected)));
+    assert!(matches!(
+        result,
+        Err(echo_module_loop::LoopError::StepRejected)
+    ));
 }
 
 #[tokio::test]
@@ -196,8 +200,8 @@ async fn truncated_output_continues_instead_of_empty_reply() {
     let runner = TurnRunner::new(
         bus,
         llm,
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     );
     let executed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = executed.clone();
@@ -210,9 +214,9 @@ async fn truncated_output_continues_instead_of_empty_reply() {
             tokio_util::sync::CancellationToken::new(),
             &move |_s: &str, _b: &str, call: &ToolCall| {
                 seen.lock().unwrap().push(call.name.clone());
-                Box::pin(async { echo_loop::ToolOutcome::text("") })
+                Box::pin(async { echo_module_loop::ToolOutcome::text("") })
                     as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = echo_loop::ToolOutcome> + Send>,
+                        Box<dyn std::future::Future<Output = echo_module_loop::ToolOutcome> + Send>,
                     >
             },
             Default::default(),
@@ -240,8 +244,8 @@ async fn repeated_truncation_gives_up_with_error() {
     let runner = TurnRunner::new(
         bus,
         llm,
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     );
     let result = runner
         .run(
@@ -251,13 +255,16 @@ async fn repeated_truncation_gives_up_with_error() {
             vec![],
             tokio_util::sync::CancellationToken::new(),
             &|_: &str, _: &str, _: &ToolCall| {
-                Box::pin(async { echo_loop::ToolOutcome::text("") })
+                Box::pin(async { echo_module_loop::ToolOutcome::text("") })
                     as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = echo_loop::ToolOutcome> + Send>,
+                        Box<dyn std::future::Future<Output = echo_module_loop::ToolOutcome> + Send>,
                     >
             },
             Default::default(),
         )
         .await;
-    assert!(matches!(result, Err(echo_loop::LoopError::Truncated(_))));
+    assert!(matches!(
+        result,
+        Err(echo_module_loop::LoopError::Truncated(_))
+    ));
 }

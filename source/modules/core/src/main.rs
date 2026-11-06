@@ -1554,7 +1554,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     let qq_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
     // 回合驱动：**由 `echo-module-loop` 在挂载时 provide**，本块结束时解析出来。
     // 声明在这里（块外）是为了后面每个人格接线（`set_loop_runner`）用同一实例。
-    let loop_runner: Arc<echo_loop::TurnRunner>;
+    let loop_runner: Arc<echo_module_loop::TurnRunner>;
     // 宿主能力的注册句柄：**必须活到进程结束**。
     //
     // 服务是 RAII 的（`Disposer` 落下即注销），而模块在 `mount` 里按服务键
@@ -1831,7 +1831,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // 在挂载完成后才解析它。解析失败 = 模块没装/挂载失败——**启动失败**
         // （没有驱动的 agent 只会收消息不干活，静默比崩溃难查）。
         loop_runner = ctx
-            .resolve::<Arc<echo_loop::TurnRunner>>("loop")
+            .resolve::<Arc<echo_module_loop::TurnRunner>>("loop")
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "`loop` 服务未提供：echo-module-loop 未挂载或挂载失败（驱动由该模块 provide）"

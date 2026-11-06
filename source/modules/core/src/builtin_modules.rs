@@ -157,9 +157,6 @@ pub(crate) fn catalog_with(
     for module in echo_federation::module::modules(version) {
         push_module(&mut catalog, module)?;
     }
-    for module in echo_loop::module::modules(version) {
-        push_module(&mut catalog, module)?;
-    }
 
     // ── 会话子系统（事件日志 / 投影 / 持久化 / 压缩编排）──
     //
@@ -186,7 +183,7 @@ pub(crate) fn catalog_with(
 
     // ── 循环模式（二选一，纯策略）──
     //
-    // 驱动本体只有一个（echo-loop TurnRunner，2026-10 单轨化），两个模式模块
+    // 驱动本体只有一个（echo-module-loop TurnRunner，2026-10 单轨化），两个模式模块
     // 只表达策略（per-persona 白名单推导的 `LoopMode`）；mount/unmount 不切换
     // 驱动、不注册任何运行期资源。
     //
@@ -514,7 +511,6 @@ mod catalog_shape_tests {
             echo_tool::module::MODULE_ID,
             echo_shell::module::MODULE_ID,
             echo_federation::module::MODULE_ID,
-            echo_loop::module::MODULE_ID,
         ] {
             assert!(ids.iter().any(|c| c == id), "kernel {id} 不在 catalog 里");
         }

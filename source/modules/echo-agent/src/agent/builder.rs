@@ -16,7 +16,7 @@
 //!   session_persist_path / subagent_store）：None 是合法运行时状态
 //!   （如未启用 QQ 工作区模块）。
 //! - **不进 Builder 的运行期接线**：`attach`（BackendHandle 桥）、
-//!   `set_loop_runner` / `set_use_echo_loop`（echo-loop 驱动注入时机晚于
+//!   `set_loop_runner` / `set_use_echo_module_loop`（echo-module-loop 驱动注入时机晚于
 //!   装配）、`set_model` / `set_persona_api`（async 运行期版本）——
 //!   保留在 `Agent` 上。
 //!

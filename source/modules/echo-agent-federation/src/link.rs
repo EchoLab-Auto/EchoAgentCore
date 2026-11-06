@@ -2,7 +2,6 @@
 //! Core 的 `FedFrame`、能力元数据和 Panel 身份。
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use echo_fabric_federation as fabric;
 use fabric::WireFrame;

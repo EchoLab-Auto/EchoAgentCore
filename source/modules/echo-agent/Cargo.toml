@@ -12,7 +12,6 @@ echo-defs = { path = "../echo-defs" }
 echo-config = { workspace = true }
 echo-federation = { package = "echo-agent-federation", path = "../echo-agent-federation" }
 echo-context = { workspace = true }
-echo-loop = { path = "../echo-loop" }
 echo-session = { path = "../echo-session" }
 echo-protocol = { path = "../echo-protocol" }
 echo-module = { workspace = true }

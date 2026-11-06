@@ -91,14 +91,14 @@ y: 1200
 技能 frontmatter 声明 `package: echo-agent.subagent`，随包级门控与工具一起
 启停（见 [模块化设计](./modules.md)「Package」章节）。
 
-## Hook 机制（echo-loop 注入接口）
+## Hook 机制（echo-module-loop 注入接口）
 
 子任务完成通知与 QQ 消息/定时器同族：**结构化 hook → 新入站 turn**。
 `<subagent_event>` 包装与解析由 `input_marker` 同族的
 `echo-module-subagent` 的 `wrap_subagent_event` 承担。
 
-异步编排工具接入 echo-loop 的接口是 `SubagentToolHooks`
-（`source/modules/echo-loop/src/runner.rs`，由 `process_via_echo_loop` 装配进
+异步编排工具接入 echo-module-loop 的接口是 `SubagentToolHooks`
+（`source/modules/echo-module-loop/src/runner.rs`，由 `process_via_echo_module_loop` 装配进
 `RunExtras`）：
 
 - `is_async_tool(name)`：认领异步编排工具（当前仅 `spawn_subagent`）
@@ -108,14 +108,14 @@ y: 1200
 - `extra_tool_definitions`：模型可见 schema 追加接口（当前装配为 `None`——`spawn_subagent` 的 schema 由注册表统一提供，避免重复工具名）
 
 `run_tool`（集成测试与直接分派入口）同样特判 `spawn_subagent`，与 hook 路径
-语义一致（turn 只经 echo-loop 的 hook 通道）。
+语义一致（turn 只经 echo-module-loop 的 hook 通道）。
 
 ## 事件与观测
 
 委派有三条观测面：**调用面**（一次普通的工具调用）、**任务面**（子任务自身的
 生命周期）与**回灌面**（结论如何进入主会话）。
 
-- **调用面**：`spawn_subagent` 经 echo-loop 的异步 hook 通道直入管线、不走
+- **调用面**：`spawn_subagent` 经 echo-module-loop 的异步 hook 通道直入管线、不走
   `run_tool`，调用与回执仍按普通工具口径落账（`agent/turn.rs` 的
   `execute_async_subagent`）：先写 `ToolCall`（`arguments` 出口脱敏，带
   `started_at_ms`）→ 受理或拒绝后写配对的 `ToolResult`（回执文本，带

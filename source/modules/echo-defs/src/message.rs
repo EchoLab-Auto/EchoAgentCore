@@ -94,7 +94,7 @@ impl ChatMessage {
     }
     /// Build the assistant message that carries tool calls (content + reasoning).
     ///
-    /// 规范构造器（2026-10 巡检）：内置循环与 echo-loop 曾各写一份等价
+    /// 规范构造器（2026-10 巡检）：内置循环与 echo-module-loop 曾各写一份等价
     /// 构造（存在漂移风险）——统一在此。
     pub fn assistant_with_tool_calls(
         content: impl Into<String>,

@@ -52,14 +52,14 @@ core 组合根                  收集秘密表 → 调模块构造 → 注册 "
 | # | 卡口 | 位置 | 覆盖 |
 |---|---|---|---|
 | 1 | 工具结果出口 | `ToolRegistry::execute` / `execute_rich_in` 出口（结果文本与错误消息，出口持有脱敏器） | 一切工具：内置 / 模块 / 远程 / **子代理直呼** / 联邦路由 |
-| 2 | LLM 请求出口 | `echo-module-provider-llm::redacting::wrap_redacting`（装饰 provider，请求侧全文扫描；`echo_agent::llm` 只 re-export） | 全部 LLM 出口：turn 循环（echo-loop）/ 子代理 / 等待回复 |
+| 2 | LLM 请求出口 | `echo-module-provider-llm::redacting::wrap_redacting`（装饰 provider，请求侧全文扫描；`echo_agent::llm` 只 re-export） | 全部 LLM 出口：turn 循环（echo-module-loop）/ 子代理 / 等待回复 |
 | 3 | 模块实例外发出口 | `echo-module-tools::instance_bridge` 的 `gate_outbound`（**全部**模块实例工具，不按 `send_` 前缀；组合根侧的 `core::instance_tools` 只是 re-export） | 文本命中按策略阻断/替换（`block` 默认 / `redact`）；`file_path`/`file`/`image` 落在敏感目录直接拒发 |
 | 4 | 入站与落盘 | `Agent::process_message` / `process_inbound_branch` / `record_incoming_and_snapshot` / `run_tool` 参数 | 用户与 QQ 输入、工具调用参数（事件与会话日志）、工具结果事件 |
 | 5 | 密钥登记 | 启动构建（`core::security::build_redactor`）+ `Agent::rebuild_provider` 热同步 | 顶层与 profile 的 `api_key`、env 回退、**实例配置里按键名形态识别的凭据**（键名含 `token`/`secret`/`password`/`api_key`/`apikey` 且值 ≥8 字符，递归扫 `shared` 与各实例 `overrides`——不点名平台）、用户追加值 |
 
 设计取舍：
 
-- **卡口放在注册表出口而非 `ToolPipeline` 中间件**：pipeline 仅 echo-loop 路径使用（生产零中间件），注册表出口覆盖全部执行路径（含子代理直呼与联邦）。
+- **卡口放在注册表出口而非 `ToolPipeline` 中间件**：pipeline 仅 echo-module-loop 路径使用（生产零中间件），注册表出口覆盖全部执行路径（含子代理直呼与联邦）。
 - **双保险**：`run_tool` 在编排工具（如 `spawn_subagent` 结论）路径再脱敏一次；幂等保证重复扫描无副作用。
 - **请求侧脱敏不处理响应侧**：上下文已被保证干净，模型不可能复述未见的秘密；流式 chunk 逐段扫描会破坏跨 chunk 的值，故明确不做。
 - **QQ 出站闸门用「文本全扫 + 文件路径拒发」**：`block` 时不回显任何片段（错误只说命中处数）；`redact` 时占位符替换后照发。

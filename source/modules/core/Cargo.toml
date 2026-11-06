@@ -19,7 +19,6 @@ echo-context.workspace = true
 echo-session.workspace = true
 echo-tool = { workspace = true }
 echo-shell = { workspace = true }
-echo-loop.workspace = true
 echo-agent.workspace = true
 echo-module = { workspace = true }
 echo-module-host = { workspace = true }

@@ -6,7 +6,7 @@
 //! - `echo-balances.jsonl`：周期任务（`[agent].balance_snapshot_secs`）与
 //!   手动「查余额」成功后的余额快照；
 //! - `echo-usage.jsonl`：每次 LLM 调用的 token 用量（经 provider 计量
-//!   装饰器记录，覆盖内置循环 / echo-loop / 子代理 / 压缩等全部出口）。
+//!   装饰器记录，覆盖内置循环 / echo-module-loop / 子代理 / 压缩等全部出口）。
 //!
 //! 面板经 `QueryApiMetrics` 读取近 [`METRICS_WINDOW_MS`] 窗口：余额原样、
 //! 用量按小时 × 模型聚合，并附 `[agent.pricing]` 定价表的费用估算。文件按

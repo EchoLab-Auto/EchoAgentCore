@@ -85,7 +85,6 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 | [`echo-agent.kernel.tool`](./kernel.md) | Kernel | 进程内 | 工具机制：`ToolRegistry`（可逆注册 + 定义缓存 + 出口脱敏） |
 | [`echo-agent.kernel.shell`](./kernel.md) | Kernel | 进程内 | Shell 机制：进程组生命周期 + 哨兵分帧 |
 | [`echo-agent.kernel.federation`](./kernel.md) | Kernel | 进程内 | 联邦线协议：帧 / Hello / 邀请 / 重连 |
-| [`echo-agent.kernel.loop`](./kernel.md) | Kernel | 进程内 | 循环驱动：`TurnRunner` 状态机 + `ToolPipeline` |
 | [`echo-agent.tools.builtin`](./tools.md) | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理）；**不含 shell 会话** |
 | [`echo-agent.shell`](./shell.md) | Tool | 进程内 | 后台 bash 会话 + Shell 面板命令域 |
 | [`echo-agent.workspace`](./workspace.md) | Tool | 进程内（**独立仓**） | 工作区会话（多目录管理 + git 状态 + 只读文件浏览）。2026-11 迁出 Core 至 `EchoLab-Auto/crate-workspace`：store 与命令域归模块，宿主只留只读镜像 + 工具代理 |
@@ -103,7 +102,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 
 > **`Kernel` 是什么**：2026-11 取消「中间层 / 模块」二分之后新增的类别——提供其它模块的**运行地基**（词汇 / 线契约 / 注册表 / 事件日志 / 配置存储 / 循环驱动）。它们与其它模块同形（有 manifest、进 catalog、出现在本表），但**不可禁用**：`modules.toml` 写 `enabled = false` 会让启动失败并点名。逐条理由见 [运行地基](./kernel.md)。
 
-表的来源分两类，别混算：**框架内置 20 项**（`echo_agent::modules::BUILTIN_MODULE_IDS: [&str; 20]`，`builtin = true`，实现同在 Core 进程内）与**模块实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::MODULE_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
+表的来源分两类，别混算：**框架内置 19 项**（`echo_agent::modules::BUILTIN_MODULE_IDS: [&str; 19]`，`builtin = true`，实现同在 Core 进程内）与**模块实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::MODULE_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
 
 > **Panel 进程内模块的实现完全在 Panel 仓**（`source/echo-module-panel`）。Core 的组合根只引用其公开工厂，不持有 Panel 代码；挂载语义与本文相同，默认不启用。详见 Panel 仓文档。
 
@@ -161,7 +160,7 @@ enabled = false                   # 不挂载（仍注册，Panel 清单可见�
   - `tools.builtin` / `skills.dir`：禁用 = 该包全部工具（skills.dir 为全部技能）对所有 persona 批量禁用（对 LLM 不可见），启用按各 persona 名单恢复——**仅作用于目标 persona 时用 Agent 配置弹层的勾选**（运行期双向、即时生效）
   - `instance.qq`：禁用 = 停止 QQ 模块实例进程 + QQ 工具包禁用；启用 = 启动 + 按名单恢复
   - `management.panel`：禁用 = 关闭 management WS（**注意自锁**：Panel 将断连，恢复需编辑 core.toml 的 `disabled_modules` 移除该 id 后重启 Core）。**防自锁保护**：经 `ToggleModule` 禁用它会被 Core 拒绝（Error 事件明示，状态不变）——禁用与恢复都只能走 core.toml + 重启
-  - `loop.single`：**唯一循环模块**（`kind = loop`，进程级）——mount 时构造唯一的 echo-loop `TurnRunner` 并 `provide` 成 `loop` 服务，卸载撤销该服务；`loop` 服务缺失 = 启动失败。策略只有一条：同一会话的 turn 串行排队（每会话一条时间线），没有模式可切，persona 白名单不参与。详见 [Agent 循环](../core/agent-loop.md)「会话内准入」
+  - `loop.single`：**唯一循环模块**（`kind = loop`，进程级）——mount 时构造唯一的 echo-module-loop `TurnRunner` 并 `provide` 成 `loop` 服务，卸载撤销该服务；`loop` 服务缺失 = 启动失败。策略只有一条：同一会话的 turn 串行排队（每会话一条时间线），没有模式可切，persona 白名单不参与。详见 [Agent 循环](../core/agent-loop.md)「会话内准入」
   - `provider.llm`：**命令域随模块启停**（13 条 API / provider 命令禁用后回落到宿主兜底并明确报错），但 provider 的**构造**仍由宿主在配置变更时完成——运行中替换 provider 涉及在途 turn，不因模块挂载而改变
   - `provider.llm`：**命令域随模块启停**（13 条 API / provider 命令禁用后回落到宿主兜底并明确报错），但 provider 的**构造**仍由宿主在配置变更时完成——运行中替换 provider 涉及在途 turn，不因模块挂载而改变
   - `selfupdate`：进程级、`kind = orchestration`（按人格启停是假开关——挂载是进程级的，命令分发不看人格白名单）

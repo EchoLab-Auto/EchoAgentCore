@@ -19,7 +19,7 @@ impl Agent {
     ///
     /// 同时接线 spawn 执行闭包：子任务以隔离上下文后台执行，完成时经
     /// `<subagent_event>` hook（`crate::subagent::wrap_subagent_event`）作为
-    /// 新入站分支通知主 agent——hook 机制由 echo-loop 的
+    /// 新入站分支通知主 agent——hook 机制由 echo-module-loop 的
     /// `SubagentToolHooks` 定义，QQ 消息等入站复用同一「结构化 hook →
     /// 新 turn」路径。
     pub fn attach_subagent_runtime(self: &Arc<Self>, store: Arc<crate::subagent::SubagentStore>) {

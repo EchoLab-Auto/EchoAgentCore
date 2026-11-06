@@ -1,4 +1,4 @@
-//! Turn 驱动（harness 侧）：把一条已登记的输入交给 echo-loop `TurnRunner`
+//! Turn 驱动（harness 侧）：把一条已登记的输入交给 echo-module-loop `TurnRunner`
 //! 执行，并负责提示词构建、工具执行器（超时 / 取消 / visible_reply）、
 //! 流式转发与 runner 生命周期事件 → Panel 事件的翻译。
 //!
@@ -38,7 +38,7 @@ pub(super) fn input_boundary(session: &Session, content: &str) -> Option<Boundar
 impl Agent {
     /// 当前 turn 驱动：组合根注入的共享 runner；未注入（单元测试 / 独立
     /// 嵌入）时按本 agent 的 provider 与配置惰性构建一个默认 runner 并缓存。
-    pub(super) async fn turn_runner(&self) -> std::sync::Arc<echo_loop::TurnRunner> {
+    pub(super) async fn turn_runner(&self) -> std::sync::Arc<echo_module_loop::TurnRunner> {
         if let Some(runner) = self.turns.runner.read().await.clone() {
             return runner;
         }
@@ -50,11 +50,11 @@ impl Agent {
             let cfg = self.model.config.read().await;
             (cfg.max_tool_iterations.max(1), cfg.effective_max_tokens())
         };
-        let runner = std::sync::Arc::new(echo_loop::TurnRunner::new(
+        let runner = std::sync::Arc::new(echo_module_loop::TurnRunner::new(
             std::sync::Arc::new(echo_context::EventBus::default()),
             self.model.provider.read().await.clone(),
-            std::sync::Arc::new(echo_loop::ToolPipeline::new()),
-            echo_loop::LoopOptions {
+            std::sync::Arc::new(echo_module_loop::ToolPipeline::new()),
+            echo_module_loop::LoopOptions {
                 max_tool_iterations,
                 max_tokens,
             },
@@ -63,9 +63,9 @@ impl Agent {
         runner
     }
 
-    /// 驱动一轮 turn（**唯一循环实现**：echo-loop `TurnRunner`）。
+    /// 驱动一轮 turn（**唯一循环实现**：echo-module-loop `TurnRunner`）。
     ///
-    /// 2026-10 架构评审单轨化：此前普通输入走 echo-loop、QQ hook / 定时器 /
+    /// 2026-10 架构评审单轨化：此前普通输入走 echo-module-loop、QQ hook / 定时器 /
     /// QQ 会话走内置循环（两套 ~300 行的同构循环，靠"逐项同口径"注释维持
     /// 一致，已多次漂移）。内置循环对边界输入的唯一差异是提示词边界块
     /// （[`BoundaryKind`]），现由本函数统一注入；其余语义（截断续写、超时
@@ -167,7 +167,7 @@ impl Agent {
         // 被判定为单调用轮，无法区分"模型只发一个"与"框架丢弃并行"）。
         //
         // 时钟在同 turn 的 AgentRequest 观察者里刷新，在 ModelResponse 里
-        // 读差值——两者都是 emit_sync、顺序固定（见 echo-loop runner）。
+        // 读差值——两者都是 emit_sync、顺序固定（见 echo-module-loop runner）。
         let step_clock: std::sync::Arc<std::sync::Mutex<std::time::Instant>> =
             std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
         let step_seq = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -185,20 +185,22 @@ impl Agent {
                 let sid = session_id.clone();
                 let turn = branch_id.to_string();
                 let clock = std::sync::Arc::clone(&step_clock);
-                disposers.push(bus.observe::<echo_loop::AgentRequest, _>(move |evt| {
-                    // session + turn 双过滤：并行模式同会话并发分支时
-                    // 各 turn 的订阅互不串收（2026-10 巡检）。
-                    if evt.session_id == sid && evt.turn_id.as_deref() == Some(turn.as_str()) {
-                        // 模型请求发出：记下时刻，供本步 ModelStep 算往返耗时。
-                        if let Ok(mut slot) = clock.lock() {
-                            *slot = std::time::Instant::now();
+                disposers.push(
+                    bus.observe::<echo_module_loop::AgentRequest, _>(move |evt| {
+                        // session + turn 双过滤：并行模式同会话并发分支时
+                        // 各 turn 的订阅互不串收（2026-10 巡检）。
+                        if evt.session_id == sid && evt.turn_id.as_deref() == Some(turn.as_str()) {
+                            // 模型请求发出：记下时刻，供本步 ModelStep 算往返耗时。
+                            if let Ok(mut slot) = clock.lock() {
+                                *slot = std::time::Instant::now();
+                            }
+                            emit(BackendEvent::LlmRequest {
+                                session_id: evt.session_id.clone(),
+                                model: evt.request.model.clone(),
+                            });
                         }
-                        emit(BackendEvent::LlmRequest {
-                            session_id: evt.session_id.clone(),
-                            model: evt.request.model.clone(),
-                        });
-                    }
-                }));
+                    }),
+                );
             }
             {
                 let emit = emit_handle.clone();
@@ -207,45 +209,47 @@ impl Agent {
                 let clock = std::sync::Arc::clone(&step_clock);
                 let seq = std::sync::Arc::clone(&step_seq);
                 let trunk = self.trunk.clone();
-                disposers.push(bus.observe::<echo_loop::ModelResponse, _>(move |evt| {
-                    if evt.session_id == sid && evt.turn_id.as_deref() == Some(turn.as_str()) {
-                        // 本步往返耗时（请求发出 → 响应到达）。
-                        let elapsed_ms = clock
-                            .lock()
-                            .ok()
-                            .map(|since| since.elapsed().as_millis() as u64);
-                        // 步号自增：`StepStart` 没有 turn_id（并发分支无法
-                        // 归因），故用本 turn 自己的计数，口径与 runner 的
-                        // step_index 一致（每步一次 ModelResponse）。
-                        let step_index = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        // 落 durable 事件（模型不可见 / 不进时间线 / 不进
-                        // 压缩转录）：审计据此算"每轮打包了几个工具"、每步
-                        // 的 token 与延迟（2026-10-19 审计缺口）。
-                        trunk.append_event(echo_session::SessionEvent::ModelStep(
-                            echo_session::event::ModelStepEvent {
-                                step_index,
+                disposers.push(
+                    bus.observe::<echo_module_loop::ModelResponse, _>(move |evt| {
+                        if evt.session_id == sid && evt.turn_id.as_deref() == Some(turn.as_str()) {
+                            // 本步往返耗时（请求发出 → 响应到达）。
+                            let elapsed_ms = clock
+                                .lock()
+                                .ok()
+                                .map(|since| since.elapsed().as_millis() as u64);
+                            // 步号自增：`StepStart` 没有 turn_id（并发分支无法
+                            // 归因），故用本 turn 自己的计数，口径与 runner 的
+                            // step_index 一致（每步一次 ModelResponse）。
+                            let step_index = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            // 落 durable 事件（模型不可见 / 不进时间线 / 不进
+                            // 压缩转录）：审计据此算"每轮打包了几个工具"、每步
+                            // 的 token 与延迟（2026-10-19 审计缺口）。
+                            trunk.append_event(echo_session::SessionEvent::ModelStep(
+                                echo_session::event::ModelStepEvent {
+                                    step_index,
+                                    model: evt.model.clone(),
+                                    prompt_tokens: evt.prompt_tokens,
+                                    completion_tokens: evt.completion_tokens,
+                                    tool_call_ids: evt
+                                        .tool_calls
+                                        .iter()
+                                        .map(|call| call.id.clone())
+                                        .collect(),
+                                    turn: evt.turn_id.clone(),
+                                    elapsed_ms,
+                                    started_at_ms: chrono::Utc::now().timestamp_millis(),
+                                    session: Some(evt.session_id.clone()),
+                                },
+                            ));
+                            emit(BackendEvent::LlmResponse {
+                                session_id: evt.session_id.clone(),
                                 model: evt.model.clone(),
                                 prompt_tokens: evt.prompt_tokens,
                                 completion_tokens: evt.completion_tokens,
-                                tool_call_ids: evt
-                                    .tool_calls
-                                    .iter()
-                                    .map(|call| call.id.clone())
-                                    .collect(),
-                                turn: evt.turn_id.clone(),
-                                elapsed_ms,
-                                started_at_ms: chrono::Utc::now().timestamp_millis(),
-                                session: Some(evt.session_id.clone()),
-                            },
-                        ));
-                        emit(BackendEvent::LlmResponse {
-                            session_id: evt.session_id.clone(),
-                            model: evt.model.clone(),
-                            prompt_tokens: evt.prompt_tokens,
-                            completion_tokens: evt.completion_tokens,
-                        });
-                    }
-                }));
+                            });
+                        }
+                    }),
+                );
             }
             disposers
         };
@@ -260,7 +264,7 @@ impl Agent {
         let stream_emitter = self.emit_handle();
         let stream_session = session_id.clone();
         let stream_branch = branch_id.to_string();
-        let chat_executor: echo_loop::ChatExecutor<'_> = &|mut request: ChatRequest| {
+        let chat_executor: echo_module_loop::ChatExecutor<'_> = &|mut request: ChatRequest| {
             let this = self;
             let emitter = stream_emitter.clone();
             let sid = stream_session.clone();
@@ -287,7 +291,7 @@ impl Agent {
         // 取消令牌的克隆副本（executor 闭包持有其引用；原令牌稍后 move 进
         // runner.run，#[E0505] 的规避——两者语义一致，同源取消）。
         let cancel_for_tools = turn_cancel.clone();
-        let executor: echo_loop::ToolExecutor<'_> =
+        let executor: echo_module_loop::ToolExecutor<'_> =
             &|sid: &str, _branch: &str, call: &crate::llm::ToolCall| {
                 let this = self;
                 let call = call.clone();
@@ -317,7 +321,7 @@ impl Agent {
                                             let _ = visible.send(true);
                                         }
                                     }
-                                    echo_loop::ToolOutcome::with_images(
+                                    echo_module_loop::ToolOutcome::with_images(
                                         tool_result.text.clone(),
                                         tool_result.images.clone(),
                                     )
@@ -332,7 +336,7 @@ impl Agent {
                                         true,
                                         tool_started.elapsed().as_millis() as u64,
                                     );
-                                    echo_loop::ToolOutcome::text(text)
+                                    echo_module_loop::ToolOutcome::text(text)
                                 }
                             }
                         }
@@ -345,7 +349,7 @@ impl Agent {
                                 false,
                                 tool_started.elapsed().as_millis() as u64,
                             );
-                            echo_loop::ToolOutcome::text("error: tool execution cancelled")
+                            echo_module_loop::ToolOutcome::text("error: tool execution cancelled")
                         }
                     }
                 })
@@ -361,7 +365,7 @@ impl Agent {
             //
             // 现在工具自己声明（`Tool::execute_in` + `ToolContext`）：它就是注册表
             // 里的一个普通工具，事件日志、脱敏、超时全部由同一条执行链负责。
-            let extras = echo_loop::runner::RunExtras {
+            let extras = echo_module_loop::runner::RunExtras {
                 tools: Some(tools),
                 on_reasoning: Some(&reasoning_cb),
                 model: Some(model),
@@ -398,7 +402,7 @@ impl Agent {
                 );
                 Ok(reply)
             }
-            Err(echo_loop::runner::LoopError::Cancelled) => Err(anyhow!(TURN_CANCELLED)),
+            Err(echo_module_loop::runner::LoopError::Cancelled) => Err(anyhow!(TURN_CANCELLED)),
             Err(other) => {
                 // 模型错误（含 provider 返回的 402/余额不足）：发
                 // AgentCompleted 收尾 busy 状态 + 把错误事件给

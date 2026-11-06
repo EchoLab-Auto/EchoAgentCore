@@ -110,7 +110,7 @@ impl Tool for RemoteTool {
                 self.peer_node
             )));
         }
-        // 3. 等终态（硬超时兜底；正常情况下 echo-loop 的工具守卫先触发）。
+        // 3. 等终态（硬超时兜底；正常情况下 echo-module-loop 的工具守卫先触发）。
         match tokio::time::timeout(REMOTE_TIMEOUT, pending.wait()).await {
             Ok(Ok(result)) if result.success => Ok(result.output),
             Ok(Ok(result)) => Err(ToolError::Execution(format!(

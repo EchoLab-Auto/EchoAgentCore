@@ -1,57 +1,30 @@
-//! # echo-module-loop — 循环模块（解耦计划 Phase 3 ⑦）
+//! # echo-module-loop — Agent 循环模块
 //!
-//! 一个**纯策略**模块 [`SINGLE_MODULE_ID`]（`echo-agent.loop.single`）：同一会话
-//! 的 turn 串行排队，后续输入等待前一轮结束。
+//! 本 crate 合并原 `echo-loop` 驱动本体与 `echo-module-loop` 装配层：
+//! - [`runner`]：turn/step 状态机与默认 `TurnRunner`；
+//! - [`pipeline`]：工具执行瀑布管道；
+//! - [`event`]：循环生命周期事件；
+//! - [`module`]：构造 runner 并向 `Ctx` 提供 `loop` 服务。
 //!
-//! **并行多会话模式（`echo-agent.loop.parallel`）已删除**（2026-11）：它让同一
-//! 会话可以并发多个 turn 分支，代价是"读到一半的上下文"和"两条回答互相看不见"
-//! ——对一个人格来说这不是能力，是不确定性。删除后一条会话永远只有一条时间线，
-//! 配上面的 `ReplyBranch*` 可见性事件与 `LoopMode` 类型一并消失。
-//!
-//! ## 为什么 mount 是空的
-//!
-//! 驱动本��只有一个（`echo-loop` 的 `TurnRunner`，2026-10 单轨化），它在人格
-//! 装配时**无条件注入**；两个模块不切换驱动，只表达策略——真实生效值是
-//! per-persona 白名单推导出的 [`echo_defs::LoopMode`]（写进 `enabled_modules`
-//! 的模块 id，空表即单会话）。因此：
-//!
-//! - mount / unmount **不注册任何运行期资源**（无副作用 = 无泄漏）；
-//! - 模块 id 本身是**配置契约**：已在用户配置里的 `enabled_modules` 条目
-//!   必须继续匹配，故 id 字面量在这里冻结，改动即破坏向后兼容。
-//!
-//! ## 协议化挂载
-//!
-//! 按解耦计划「可内联编译」的口径，本模块以 inproc 运输层装载：它向宿主
-//! 声明服务键 [`SERVICE_KEY`]（`"loop"`），
-//! 说明"循环服务由本模块族提供"；真正的 runner 实例由组合根构造（带计量与
-//! 脱敏装饰）后注册进 `Ctx`，服务键与贡献声明同源。
-//!
-//! ## 提供 `loop` 服务（v0.9 起）
-//!
-//! 这两个模块不再只是"声明一个键"：`mount` 会**真的构造** `TurnRunner` 并
-//! `provide` 到 `Ctx` 的 `loop` 键——服务由模块提供，不是组合根建好再借模块
-//! 的名义登记。构造所需的东西都从上下文来：
-//!
-//! - `Ctx[LLM_PROVIDER_SERVICE_KEY]`（`Arc<dyn LlmProvider>`）：硬依赖，
-//!   由**组合根**注册（键由定义层给出，本 crate 不依赖 provider 模块）；
-//! - `MountContext.config`：`LoopOptions` 的两个字段（`max_tool_iterations` /
-//!   `max_tokens`）可由 `modules.toml` 覆盖，缺省回退 `LoopOptions::default()`。
-//!
-//! 卸载时 `provide` 返回的 `Disposer` 撤销服务——`loop` 键随之消失，订阅了它
-//! 的模块由 `reconcile` 自动卸下（这就是"服务提供方也是一个模块"该有的行为）。
-//!
-//! **依赖纪律**：只依赖机制层（`echo-module` / `echo-module-api` /
-//! `echo-context`）、驱动本体（`echo-loop`）与定义层（`echo-defs`）——不依赖
-//! `echo-agent`，也不依赖任何宿主业务类型。
+//! 同一会话的 turn 串行排队。循环实现、模块清单和生命周期现在只有一个归属。
 
 #![warn(missing_docs)]
 
 pub mod compaction;
+pub mod event;
+pub mod pipeline;
+pub mod runner;
+
+pub use event::{
+    AgentPreStep, AgentRequest, ModelResponse, StepEnd, StepStart, ToolCallRequested, ToolResult,
+    TurnEnd, TurnStart, TurnStopping,
+};
+pub use pipeline::{ToolPipeline, ToolPipelineResult};
+pub use runner::{ChatExecutor, LoopError, LoopOptions, ToolExecutor, ToolOutcome, TurnRunner};
 
 use std::sync::Arc;
 
 use echo_context::Disposer;
-use echo_loop::{LoopOptions, ToolPipeline, TurnRunner};
 use echo_module::{BuiltinModule, Inject, Module, ModuleManifest, ModuleMountResult, MountContext};
 
 /// 循环模块 id。**字面量冻结**：用户配置的 `enabled_modules` 里可能还写着它

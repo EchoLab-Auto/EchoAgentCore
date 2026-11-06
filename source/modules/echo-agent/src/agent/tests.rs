@@ -1535,12 +1535,12 @@ async fn rename_api_persist_failure_leaves_memory_unchanged() {
     std::fs::remove_file(&blocker).ok();
 }
 
-/// echo-loop turn 的请求模型与 provider 成对（会话覆盖 = profile 模型）：
+/// echo-module-loop turn 的请求模型与 provider 成对（会话覆盖 = profile 模型）：
 /// 2026-10 用户报障回归——此前请求模型取 persona active_model，打到覆盖
 /// 端点 404 model_not_found。LlmRequest 事件在模型调用前发出，断言不依赖
 /// 调用成功（覆盖端点指向空端口）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn echo_loop_turn_uses_session_override_model() {
+async fn echo_module_loop_turn_uses_session_override_model() {
     let persona = Arc::new(ScriptedProvider::new(vec![]));
     let agent = Arc::new(Agent::new(
         persona.clone(),
@@ -1581,11 +1581,11 @@ async fn echo_loop_turn_uses_session_override_model() {
         "覆盖 provider 应构建成功"
     );
 
-    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+    let runner = Arc::new(echo_module_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
         persona.clone(),
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
 
@@ -2339,10 +2339,10 @@ async fn tool_loop_replays_reasoning_content_on_the_next_request() {
 }
 
 /// 回归：生产装配（组合根）把 spawn_subagent 注册进注册表并接线运行态后，
-/// echo-loop 路径发送的工具名必须唯一——重复会让 API 拒绝整个请求
+/// echo-module-loop 路径发送的工具名必须唯一——重复会让 API 拒绝整个请求
 ///（"Tool names must be unique"）。
 #[tokio::test]
-async fn echo_loop_tool_names_stay_unique_when_spawn_subagent_is_registered() {
+async fn echo_module_loop_tool_names_stay_unique_when_spawn_subagent_is_registered() {
     let provider = Arc::new(ScriptedProvider::new(vec![ChatResponse {
         stop_reason: None,
         content: Some("done".into()),
@@ -2372,11 +2372,11 @@ async fn echo_loop_tool_names_stay_unique_when_spawn_subagent_is_registered() {
         agent.allows_dynamic_tool(crate::subagent::SPAWN_SUBAGENT_TOOL),
         "模块允许 + 运行态已接线"
     );
-    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+    let runner = Arc::new(echo_module_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
         provider.clone(),
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
 
@@ -2453,11 +2453,11 @@ async fn spawn_subagent_call_and_receipt_are_recorded_in_event_log() {
     ));
     // 不接运行态：本用例验证"记录先行"——即便受理被拒（运行态未接线），
     // 调用与回执也必须成对落库（与 run_tool 的权限前置记录同口径）。
-    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+    let runner = Arc::new(echo_module_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
         provider.clone(),
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
     let (bridge, handle) = crate::create_bridge();
@@ -2535,11 +2535,11 @@ async fn spawn_subagent_call_and_receipt_are_recorded_in_event_log() {
         "面板 ToolResult 缺失"
     );
 }
-/// echo-loop 路径的工具超时守卫（2026-09-26 补：此前该路径没有守卫，
-/// 挂死的工具会永久拖住 turn——内置循环的外圈守卫在 echo-loop 上不生效）。
+/// echo-module-loop 路径的工具超时守卫（2026-09-26 补：此前该路径没有守卫，
+/// 挂死的工具会永久拖住 turn——内置循环的外圈守卫在 echo-module-loop 上不生效）。
 /// 超时后 turn 继续（notice 喂回模型），事件日志补记中断结果、不留悬空调用。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn echo_loop_path_guards_hung_tools_with_timeout() {
+async fn echo_module_loop_path_guards_hung_tools_with_timeout() {
     struct HungTool;
     #[async_trait::async_trait]
     impl crate::tool::Tool for HungTool {
@@ -2591,11 +2591,11 @@ async fn echo_loop_path_guards_hung_tools_with_timeout() {
         tools,
         Arc::new(InstanceRegistry::new()),
     ));
-    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+    let runner = Arc::new(echo_module_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
         provider.clone(),
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
 
@@ -2637,11 +2637,11 @@ async fn echo_loop_path_guards_hung_tools_with_timeout() {
     );
 }
 
-/// echo-loop 路径的提示词分层与内置循环一致（2026-09-30 修复回归）：
-/// persona 系统技能与工作区会话注入在 echo-loop 路径同样生效——此前
+/// echo-module-loop 路径的提示词分层与内置循环一致（2026-09-30 修复回归）：
+/// persona 系统技能与工作区会话注入在 echo-module-loop 路径同样生效——此前
 /// `build_prompt_blocks` 传 `&[]`/None，两层在普通输入上静默丢失。
 #[tokio::test]
-async fn echo_loop_path_injects_persona_skills_and_workspace() {
+async fn echo_module_loop_path_injects_persona_skills_and_workspace() {
     let mut skills = SkillRegistry::new();
     skills.register(crate::skill::Skill::direct(
         "persona-style",
@@ -2696,11 +2696,11 @@ async fn echo_loop_path_injects_persona_skills_and_workspace() {
     let _ = state;
     agent.set_team_id(Some("t".into()));
 
-    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+    let runner = Arc::new(echo_module_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
         provider.clone(),
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
 
@@ -2713,24 +2713,24 @@ async fn echo_loop_path_injects_persona_skills_and_workspace() {
     let system = requests[0].messages[0].content.clone();
     assert!(
         system.contains("PERSONA_SKILL_MARKER"),
-        "persona 系统技能必须注入（echo-loop 路径）: {system}"
+        "persona 系统技能必须注入（echo-module-loop 路径）: {system}"
     );
     assert!(
         system.contains("# 当前工作区会话"),
-        "工作区会话必须注入（echo-loop 路径）: {system}"
+        "工作区会话必须注入（echo-module-loop 路径）: {system}"
     );
 }
 
-/// echo-loop 路径 UI 事件对齐（2026-10 巡检）：与内置循环同屏同字段——
+/// echo-module-loop 路径 UI 事件对齐（2026-10 巡检）：与内置循环同屏同字段——
 /// AgentThinking 起、LlmRequest/LlmResponse（经 runner 总线翻译）、
 /// AgentReasoning（回调）、AgentCompleted 收；并写 last_prompt_blocks
 /// （/context 视图）。
-/// 回归（2026-10 生产事故）：DeepSeek 402/余额不足时，echo-loop 路径
+/// 回归（2026-10 生产事故）：DeepSeek 402/余额不足时，echo-module-loop 路径
 /// 必须在**收尾时**发 `AgentCompleted` + `Error` 事件——此前 `Err(other)`
 /// 分支静默吞掉，用户在面板看到的是"转了圈后什么都没发生"、busy 浮条
 /// 永久挂着。本测试模拟"provider 返回错误"（如 402 余额不足）。
 #[tokio::test]
-async fn echo_loop_model_error_surfaces_completed_and_error_events() {
+async fn echo_module_loop_model_error_surfaces_completed_and_error_events() {
     use crate::llm::LlmError;
     // 模拟 provider 返回错误（402/余额不足）。
     struct FailingProvider;
@@ -2760,11 +2760,11 @@ async fn echo_loop_model_error_surfaces_completed_and_error_events() {
         ToolRegistry::new(),
         Arc::new(InstanceRegistry::new()),
     ));
-    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+    let runner = Arc::new(echo_module_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
         Arc::new(FailingProvider),
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
     let (bridge, handle) = crate::create_bridge();
@@ -2813,7 +2813,7 @@ async fn echo_loop_model_error_surfaces_completed_and_error_events() {
 }
 
 #[tokio::test]
-async fn echo_loop_path_emits_panel_lifecycle_events() {
+async fn echo_module_loop_path_emits_panel_lifecycle_events() {
     let provider = Arc::new(ScriptedProvider::new(vec![ChatResponse {
         stop_reason: None,
         content: Some("done".into()),
@@ -2834,11 +2834,11 @@ async fn echo_loop_path_emits_panel_lifecycle_events() {
         ToolRegistry::new(),
         Arc::new(InstanceRegistry::new()),
     ));
-    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+    let runner = Arc::new(echo_module_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
         provider.clone(),
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
     let (bridge, handle) = crate::create_bridge();
@@ -2971,10 +2971,10 @@ async fn last_prompt_blocks_are_scoped_per_session() {
     );
 }
 
-/// echo-loop 路径动态模型（2026-10 巡检）：runner 构造期固化改为每 turn
+/// echo-module-loop 路径动态模型（2026-10 巡检）：runner 构造期固化改为每 turn
 /// 解析——运行期 set_model 在下一 turn 的请求与 LlmRequest 事件中生效。
 #[tokio::test]
-async fn echo_loop_path_uses_active_model_per_turn() {
+async fn echo_module_loop_path_uses_active_model_per_turn() {
     let provider = Arc::new(ScriptedProvider::new(vec![ChatResponse {
         stop_reason: None,
         content: Some("done".into()),
@@ -2989,11 +2989,11 @@ async fn echo_loop_path_uses_active_model_per_turn() {
         ToolRegistry::new(),
         Arc::new(InstanceRegistry::new()),
     ));
-    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+    let runner = Arc::new(echo_module_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
         provider.clone(),
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
     agent.set_model("runtime-model".into()).await;
@@ -3009,10 +3009,10 @@ async fn echo_loop_path_uses_active_model_per_turn() {
     );
 }
 
-/// echo-loop 路径工具图片透传（2026-10 巡检）：execute_rich 产出的图片
+/// echo-module-loop 路径工具图片透传（2026-10 巡检）：execute_rich 产出的图片
 /// 必须进入下一轮请求的工具消息（此前只取 text——多模态链路上丢失）。
 #[tokio::test]
-async fn echo_loop_path_carries_tool_images_into_next_request() {
+async fn echo_module_loop_path_carries_tool_images_into_next_request() {
     struct ImageTool;
     #[async_trait::async_trait]
     impl Tool for ImageTool {
@@ -3068,11 +3068,11 @@ async fn echo_loop_path_carries_tool_images_into_next_request() {
         tools,
         Arc::new(InstanceRegistry::new()),
     ));
-    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+    let runner = Arc::new(echo_module_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
         provider.clone(),
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
     let session = agent
@@ -3096,11 +3096,11 @@ async fn echo_loop_path_carries_tool_images_into_next_request() {
     );
 }
 
-/// echo-loop 路径在途工具取消（2026-10 巡检）：turn 取消后挂起的工具执行
+/// echo-module-loop 路径在途工具取消（2026-10 巡检）：turn 取消后挂起的工具执行
 /// 必须立即中止（此前取消延迟至工具自然结束），事件日志补记中断结果
 /// 保持成对。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn echo_loop_path_cancels_in_flight_tool() {
+async fn echo_module_loop_path_cancels_in_flight_tool() {
     struct GatedHungTool {
         started: Arc<tokio::sync::Notify>,
     }
@@ -3145,11 +3145,11 @@ async fn echo_loop_path_cancels_in_flight_tool() {
         tools,
         Arc::new(InstanceRegistry::new()),
     ));
-    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+    let runner = Arc::new(echo_module_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
         provider.clone(),
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
     let session = agent
@@ -4457,10 +4457,10 @@ async fn stream_output_disabled_skips_chat_stream_and_deltas() {
     assert!(!has_delta, "关闭流式后不应有增量事件");
 }
 
-/// 主对话流式（echo-loop 路径，生产路径）：ChatExecutor 的增量转发与内置
+/// 主对话流式（echo-module-loop 路径，生产路径）：ChatExecutor 的增量转发与内置
 /// 循环同口径（增量先于终值；拼接与全量一致）。
 #[tokio::test]
-async fn echo_loop_path_forwards_streaming_deltas() {
+async fn echo_module_loop_path_forwards_streaming_deltas() {
     let provider = Arc::new(StreamingProvider {
         full: ChatResponse {
             content: Some("流式回复".into()),
@@ -4495,11 +4495,11 @@ async fn echo_loop_path_forwards_streaming_deltas() {
         ToolRegistry::new(),
         Arc::new(InstanceRegistry::new()),
     ));
-    let runner = Arc::new(echo_loop::runner::TurnRunner::new(
+    let runner = Arc::new(echo_module_loop::runner::TurnRunner::new(
         Arc::new(echo_context::EventBus::default()),
         provider.clone(),
-        Arc::new(echo_loop::ToolPipeline::new()),
-        echo_loop::LoopOptions::default(),
+        Arc::new(echo_module_loop::ToolPipeline::new()),
+        echo_module_loop::LoopOptions::default(),
     ));
     agent.set_loop_runner(runner);
     let (bridge, handle) = crate::create_bridge();
@@ -4534,9 +4534,9 @@ async fn echo_loop_path_forwards_streaming_deltas() {
         .collect();
     assert_eq!(
         content_deltas, "流式回复",
-        "echo-loop 路径正文增量: {events:?}"
+        "echo-module-loop 路径正文增量: {events:?}"
     );
-    assert_eq!(reasoning_deltas, "推", "echo-loop 路径推理增量");
+    assert_eq!(reasoning_deltas, "推", "echo-module-loop 路径推理增量");
     let last_delta = events
         .iter()
         .rposition(|e| {
@@ -4589,7 +4589,7 @@ async fn delta_forwarder_batches_and_flushes_on_close() {
 }
 
 /// 2026-10 单轨化回归：QQ hook / 定时器 / QQ 会话后台输入原走内置循环，
-/// 现与普通输入同经 echo-loop——提示词边界块必须照常注入，普通输入不注入。
+/// 现与普通输入同经 echo-module-loop——提示词边界块必须照常注入，普通输入不注入。
 #[tokio::test]
 async fn single_track_loop_injects_input_boundary_blocks() {
     let final_reply = || ChatResponse {
@@ -4634,7 +4634,11 @@ async fn single_track_loop_injects_input_boundary_blocks() {
         .unwrap();
 
     let requests = provider.requests.lock().await.clone();
-    assert_eq!(requests.len(), 3, "三条输入都经 echo-loop 各请求一次");
+    assert_eq!(
+        requests.len(),
+        3,
+        "三条输入都经 echo-module-loop 各请求一次"
+    );
     let system = |i: usize| requests[i].messages[0].content.clone();
     assert!(
         !system(0).contains("# Platform message boundary"),

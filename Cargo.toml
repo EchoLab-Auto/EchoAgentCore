@@ -5,7 +5,6 @@ members = [
     "source/modules/echo-session",
     "source/modules/echo-tool",
     "source/modules/echo-shell",
-    "source/modules/echo-loop",
     "source/modules/echo-protocol",
     "source/modules/echo-federation",
     "source/modules/echo-agent-federation",
@@ -72,7 +71,6 @@ echo-context = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag =
 echo-session = { path = "source/modules/echo-session" }
 echo-tool = { path = "source/modules/echo-tool" }
 echo-shell = { path = "source/modules/echo-shell" }
-echo-loop = { path = "source/modules/echo-loop" }
 echo-protocol = { path = "source/modules/echo-protocol" }
 echo-agent = { path = "source/modules/echo-agent" }
 echo-test-utils = { path = "source/modules/echo-test-utils" }

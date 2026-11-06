@@ -498,8 +498,8 @@ impl Agent {
 
     /// Assign the team id and tag the trunk (sessions created later carry
     /// it in SessionInfo). Call once at boot before any message arrives.
-    /// 注入共享 turn 驱动（echo-loop TurnRunner；组合根装配时调用）。
-    pub fn set_loop_runner(&self, runner: std::sync::Arc<echo_loop::runner::TurnRunner>) {
+    /// 注入共享 turn 驱动（echo-module-loop TurnRunner；组合根装配时调用）。
+    pub fn set_loop_runner(&self, runner: std::sync::Arc<echo_module_loop::runner::TurnRunner>) {
         if let Ok(mut slot) = self.turns.runner.try_write() {
             *slot = Some(runner);
         } else {

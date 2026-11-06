@@ -2,7 +2,7 @@
 //!
 //! [`MeteringProvider`] 实现 [`LlmProvider`]，在每次 `chat` **成功后**把
 //! `usage`（prompt / completion tokens）交给宿主注入的 [`UsageRecorder`]。
-//! 覆盖所有经包装 provider 的调用：内置循环、echo-loop、等待回复、压缩、
+//! 覆盖所有经包装 provider 的调用：内置循环、echo-module-loop、等待回复、压缩、
 //! 子代理——组合根把它们接到同一被包装句柄（与脱敏装饰器同一装配点）。
 //!
 //! 归属口径：`profile` 在**包装构建时**快照——provider 在每次 API 切换 /

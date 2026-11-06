@@ -28,7 +28,7 @@ graph BT
   Defs[echo-defs<br>Service Definition<br>（ModuleInstance trait / InstanceManagement 在此）]
   Ctx[echo-context<br>Ctx/EventBus/Disposer]
   Session[echo-session<br>事件溯源]
-  Loop[echo-loop<br>TurnRunner]
+  Loop[echo-module-loop<br>TurnRunner]
   Proto[echo-protocol<br>线契约]
   Config[echo-config<br>TOML 原子读改写]
   Fed[echo-federation<br>Core↔Core 联邦]
@@ -88,7 +88,7 @@ graph BT
 | `echo-defs` | Service Definition 层 | 全部词汇与 trait：LLM / 工具 / 技能 / 平台消息 / **模块实例** / 媒体 / 会话事件 / 联邦节点；零实现、零 harness 依赖。模块实例模块（`module_instance`）持有 `ModuleInstance` trait（`tool_specs() -> Vec<ToolSpec>`）/ `InstanceManagement` / `ToolSpec` / `InstanceRegistry` / 状态与错误类型，**平台中立**：没有平台名、没有部署形状——QQ 实现是独立进程模块（独立仓库，stdio 协议，宿主经 `RemoteInstance` 接入） |
 | `echo-context` **（框架仓）** | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry`。**零全局态**：不持有进程级单例表——需要共享状态的调用方经 `Ctx` 显式注入 |
 | `echo-session` | 事件溯源会话 | `SessionEvent` 事件集（含模型不可见的推理事件）、`EventLog` append-only 持久化、`derive_messages` 投影、**按会话切片投影**（append 的重投影代价只与本次会话相关）、compaction、`SessionHeader`、v1-v4 兼容迁移。**词汇层**：只导出类型与纯函数，实例与生命周期在 `echo-module-session` |
-| `echo-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；会话内 FIFO 串行准入（每会话一条时间线）见 [Agent 循环](../core/agent-loop.md) |
+| `echo-module-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；会话内 FIFO 串行准入（每会话一条时间线）见 [Agent 循环](../core/agent-loop.md) |
 | `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性）。另含显示文本工具 `timeline_text`（定时信封解析 / 单行折叠 / 工具概要截断，供实时投影与派生两条路径共用）。Panel 的 Rust 中继对它**零依赖**（不解析负载、按原文转发），TS 前端以 `web/src/protocol.ts` 手写镜像 |
 | `echo-module-provider-llm` | 内置模块：LLM provider（Phase 3 ①） | provider 工厂（OpenAI 兼容 / Anthropic Messages / Ollama，含 DeepSeek `/anthropic` 自动路由、Kimi base_url 归一、OpenCode Go/Zen 会话头注入）+ 计量装饰器（`UsageRecorder` 出口）+ 脱敏装饰器；**API 设置面策略**：池规则（`admin`）、13 条命令域（`commands`）、探针配置解析 / `core.toml` agent 表补丁 / `ApiConfigUpdated` 事件装配 / 「测试 API」全流程（`api_admin`）；只依赖 `echo-defs` 与三个 provider crate |
 | `echo-module-skills` | 内置模块：技能目录（Phase 3 ③） | `SkillRegistry`（递归发现 + 多目录分层合并 + 热重载状态）、SKILL.md frontmatter 解析、Git 来源安装与 `.sources.json`；模块 id 归一走 `echo_defs::module_id` |
@@ -107,7 +107,7 @@ graph BT
 | `echo-tool` | 工具子系统机制 | `ToolRegistry`（可逆注册 + 定义缓存 + 出口脱敏）；`Tool` 词汇在 `echo-defs`，具体工具实现不在此 |
 | `echo-module` / `-api` / `-loader` / `-sdk` / `-host` **（框架仓）** | 模块契约、协议与宿主 | 生命周期钩子（`Module`/`ModuleManifest`/`ModuleRegistry`）；宿主↔模块消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；模块装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、子进程限额与入站频率限额、可逆停止、conformance 测试。**`echo-module-host` 只依赖 `echo-module-api` + `echo-module-loader`——不认识 `echo-defs`、不认识任何领域词汇**，因此可作领域中立的模块机制复用 |
 | `echo-module-adapter` | 远程贡献 → 领域 trait 的适配层 | `RemoteTool`（`ToolContribution` → `echo_defs::tool::Tool`）、`RemoteInstance`/`RemoteInstanceManagement`（`InstanceContribution` → `ModuleInstance`/`InstanceManagement`，能力位 fail-closed，动作经 `Invoke("<name>:<op>")`）、`CoreApiService`（模块 → 宿主回呼）；依赖 host + api + defs，**不依赖 `echo-agent` 与组合根**。单独成 crate 的理由：这一层认识领域 trait，而 host 必须保持领域中立 |
-| `echo-agent` | agent 框架 | 命令分发、timeline 投影、trunk、provider 工厂与装配、提示词边界与装配、多 agent 管理。**循环只有 echo-loop 一条轨道**（内置循环已删除；`echo-agent.loop.single` 是进程级模块，只声明"同一会话 turn 串行排队"这一条策略——见 [Agent 循环](../core/agent-loop.md)）。**具体实现多已外迁**：内置工具在 `echo-module-tools`、Shell 机制在 `echo-shell`（`shell.rs` 只留宿主侧接线）、技能在 `echo-module-skills`、子任务在 `echo-module-subagent`、工作区在 `echo-module-workspace`、联邦执行层在 `echo-module-federation`；`packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面），宿主侧**不认识任何一个内置工具的名字** |
+| `echo-agent` | agent 框架 | 命令分发、timeline 投影、trunk、provider 工厂与装配、提示词边界与装配、多 agent 管理。**循环只有 echo-module-loop 一条轨道**（内置循环已删除；`echo-agent.loop.single` 是进程级模块，只声明"同一会话 turn 串行排队"这一条策略——见 [Agent 循环](../core/agent-loop.md)）。**具体实现多已外迁**：内置工具在 `echo-module-tools`、Shell 机制在 `echo-shell`（`shell.rs` 只留宿主侧接线）、技能在 `echo-module-skills`、子任务在 `echo-module-subagent`、工作区在 `echo-module-workspace`、联邦执行层在 `echo-module-federation`；`packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面），宿主侧**不认识任何一个内置工具的名字** |
 | `echo-config` | TOML 原子读改写 | `ConfigStore` / `ensure_table`（串行化 + tmp+rename）。**不知道任何 section 的含义**——调用方各自拥有自己的段 |
 | `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm` 注册、模块宿主装配与挂载、挂载后解析 `loop` 服务、联邦链路泵、启动 |
@@ -158,12 +158,12 @@ echo-module-provider-llm/src/providers/
 
 | Seam | Service Definition | Provider | Consumer |
 |---|---|---|---|
-| LLM | `echo_defs::LlmProvider` | `echo-module-provider-llm`（内置 `providers::{openai,anthropic,ollama}`；外部 provider 自行实现 trait） | `echo-agent` 工厂 + `echo-loop` runner |
+| LLM | `echo_defs::LlmProvider` | `echo-module-provider-llm`（内置 `providers::{openai,anthropic,ollama}`；外部 provider 自行实现 trait） | `echo-agent` 工厂 + `echo-module-loop` runner |
 | 工具 | `echo_defs::Tool` | `echo-tool::ToolRegistry` + 内置工具模块 `echo-module-tools` + 外部模块贡献经 `echo-module-adapter::RemoteTool` | agent 循环 |
 | 技能 | `echo_defs::skill::{Skill, SkillMetadata}`（词汇） | `echo-module-skills` 的 `SkillRegistry`（本地文件 + 多目录分层合并；`echo-agent` 侧只留 re-export 兼容面） | prompt 组装 |
 | 模块实例模型工具 | `echo_defs::module_instance::ToolSpec`（`ModuleInstance::tool_specs`）；wire 侧对应 `echo_module_api::ToolContribution` | 实例模块贡献（`InstanceContribution.tools`） | `echo-module-tools::instance_bridge`（合并 / `account` 寻址 / 出站闸门 `gate_outbound` / `invoke_custom` 透传） |
 | 平台生命周期 | `echo_defs::module_instance::ModuleInstance` | 实例模块（**进程外**，宿主经 `echo-module-adapter::RemoteInstance` 接入——当前唯一样本是 `echo-agent.instance.qq`，实现在独立仓库） | agent + 实例工具 |
-| 默认驱动 | `echo_loop::TurnRunner` | `echo-module-loop`（mount 期构造并 `provide` `loop` 服务键） | 组合根挂载后解析 `loop`，再经 `Agent::set_loop_runner` 注入全体人格；**解析失败即启动失败**（没有驱动的 agent 只收消息不干活，静默比崩溃难查） |
+| 默认驱动 | `echo_module_loop::TurnRunner` | `echo-module-loop`（mount 期构造并 `provide` `loop` 服务键） | 组合根挂载后解析 `loop`，再经 `Agent::set_loop_runner` 注入全体人格；**解析失败即启动失败**（没有驱动的 agent 只收消息不干活，静默比崩溃难查） |
 
 ## 运行时一览
 
@@ -171,7 +171,7 @@ echo-module-provider-llm/src/providers/
 
 ### 事件模型
 
-四类事件各有归属：**生命周期事件**（`echo-loop` 经 `EventBus` 分发，`TurnStart` … `TurnEnd`；清单与拦截点见 [Agent 循环](../core/agent-loop.md)）；**会话事件**（`echo-session` 的 append-only 日志，见下节）；**协议事件**（`echo-protocol` 的 `BackendEvent`，经 management WS 供 Panel 消费，见 [协议与数据流](../protocol/protocol.md)）；**能力事件**（timeline 投影是 `EventBus` 的 observe 监听器——`Agent` 不直接写 timeline，显示历史是事件的投影消费者，可独立演进与测试）。
+四类事件各有归属：**生命周期事件**（`echo-module-loop` 经 `EventBus` 分发，`TurnStart` … `TurnEnd`；清单与拦截点见 [Agent 循环](../core/agent-loop.md)）；**会话事件**（`echo-session` 的 append-only 日志，见下节）；**协议事件**（`echo-protocol` 的 `BackendEvent`，经 management WS 供 Panel 消费，见 [协议与数据流](../protocol/protocol.md)）；**能力事件**（timeline 投影是 `EventBus` 的 observe 监听器——`Agent` 不直接写 timeline，显示历史是事件的投影消费者，可独立演进与测试）。
 
 ### Turn/Step 循环
 

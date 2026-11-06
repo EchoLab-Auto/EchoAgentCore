@@ -11,7 +11,9 @@ description = "循环模块（解耦计划 Phase 3 ⑦）：loop.single 的策�
 echo-defs = { workspace = true }
 # 驱动本体 + 服务表：模块在 mount 里构造 `TurnRunner` 并 provide 到 `loop`。
 echo-context = { workspace = true }
-echo-loop = { workspace = true }
+tokio-util = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
 echo-module = { workspace = true }
 echo-module-api = { workspace = true }
 # 压缩策略：转录渲染 / 分层裁剪 / 摘要调用（词汇在 echo-session）。

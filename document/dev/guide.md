@@ -41,7 +41,7 @@ EchoAgentCore/
 │       ├── echo-session/      # kernel：事件溯源会话机制
 │       ├── echo-tool/         # kernel：工具注册与执行机制
 │       ├── echo-shell/        # kernel：持久 Shell 会话机制
-│       ├── echo-loop/         # kernel：TurnRunner + ToolPipeline
+│       ├── echo-module-loop/         # kernel：TurnRunner + ToolPipeline
 │       ├── echo-federation/   # kernel：Core↔Core 链路与帧协议
 │       ├── echo-module-adapter/    # 协议贡献 → 领域 trait
 │       ├── echo-module-tools/      # 内置工具集
@@ -88,7 +88,7 @@ EchoAgentCore/
 **机制与运行时抽象**：
 
 - `Ctx` / `EventBus` / `Disposer` / `ScopedRegistry`（echo-context）— 服务定位、类型化事件（Observe/Waterfall/Parallel/Serial）、可逆注册、作用域 shadowing
-- `TurnRunner` / `ToolPipeline`（echo-loop）— turn/step 状态机与工具执行管道
+- `TurnRunner` / `ToolPipeline`（echo-module-loop）— turn/step 状态机与工具执行管道
 - `EventLog` / `SessionEvent` / `derive_messages`（echo-session）— 事件溯源存储、日志投影
 - `ConfigStore`（`echo-config` crate）— TOML 原子读改写（Agent 与模块实例共享，杜绝并发写覆盖）
 - `InstanceHostConfig`（core::config）— **单平台的宿主配置视图**：`platform` / `shared`（透传表）/ `enabled` / ``instances` / `launch`。`CoreConfig.instances: BTreeMap<String, InstanceHostConfig>`，`load()` 遍历 `[instances.<name>]` 全部平台

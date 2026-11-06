@@ -91,9 +91,9 @@ pub(crate) struct EventEgress {
 /// 六件事都是 turn 生命周期的不同刻面。此前"在飞 turn"与"序号"分居两处，
 /// 出现过"序号分配了但 turn 没登记"的窗口（面板看到序号跳号）。
 pub(crate) struct TurnState {
-    /// Turn 驱动（echo-loop TurnRunner，唯一循环实现）。组合根注入共享
+    /// Turn 驱动（echo-module-loop TurnRunner，唯一循环实现）。组合根注入共享
     /// runner；未注入时首个 turn 按本 agent 的 provider/配置惰性构建。
-    pub(crate) runner: tokio::sync::RwLock<Option<Arc<echo_loop::runner::TurnRunner>>>,
+    pub(crate) runner: tokio::sync::RwLock<Option<Arc<echo_module_loop::runner::TurnRunner>>>,
     /// 并行回复分支上限（`MAX_CONCURRENT_REPLY_BRANCHES`）：限流而非排他。
     pub(crate) reply_branch_slots: tokio::sync::Semaphore,
     /// 在飞入站 turn（会话键 → 句柄）：并发去重与"同一会话串行"的判据。
