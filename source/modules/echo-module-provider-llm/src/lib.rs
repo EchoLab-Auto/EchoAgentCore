@@ -77,6 +77,9 @@ pub const MODULE_ID: &str = "echo-agent.provider.llm";
 /// "读本 crate 就能看到它依赖/涉及哪些键"的局部性。
 pub const PROVIDER_KEY: &str = echo_defs::llm::LLM_PROVIDER_SERVICE_KEY;
 
+/// 本模块消费的循环服务键。
+pub const LOOP_SERVICE_KEY: &str = echo_module_loop::SERVICE_KEY;
+
 /// 构建一个 provider 所需的配置投影。
 ///
 /// 与宿主 `AgentConfig` 的同名子集一一对应，但**不含**任何业务字段
@@ -129,7 +132,10 @@ pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
             let keep = bind.bind(mctx, &host_keys::PROVIDER_HOST)?;
             Ok(vec![keep])
         })
-        .with_inject(Inject::new([host_keys::PROVIDER_HOST.name().to_string()]))
+        .with_inject(Inject::new([
+            host_keys::PROVIDER_HOST.name().to_string(),
+            LOOP_SERVICE_KEY.to_string(),
+        ]))
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
             let serve = serve.clone();

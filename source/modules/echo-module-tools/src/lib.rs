@@ -60,7 +60,7 @@ pub use instance_ops::{
     broadcast_to_same_platform, invoke_method, resolve_instance, InstanceOpRunner,
 };
 pub use list_api_profiles::ListApiProfilesTool;
-pub use module::{BuiltinToolProvider, BuiltinTools, ToolsHostCtx, MODULE_ID};
+pub use module::{BuiltinToolProvider, BuiltinTools, ToolsHostCtx, MODULE_ID, SERVICE_KEY};
 pub use tool_commands::{ToolsCommandHandler, ToolsCommandHost, COMMANDS as TOOL_COMMANDS};
 pub use websearch::WebSearchTool;
 

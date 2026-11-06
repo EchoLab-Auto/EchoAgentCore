@@ -120,7 +120,10 @@ pub fn module(version: &str) -> Arc<dyn Module> {
             disposers.push(bind.bind(mctx, &host_keys::SHELL_HOST)?);
             Ok(disposers)
         })
-        .with_inject(Inject::new([host_keys::SHELL_HOST.name().to_string()]))
+        .with_inject(Inject::new([
+            echo_module_tools::SERVICE_KEY.to_string(),
+            host_keys::SHELL_HOST.name().to_string(),
+        ]))
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
             let serve = serve.clone();

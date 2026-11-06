@@ -38,6 +38,9 @@ pub const MODULE_ID: &str = "echo-agent.tools.builtin";
 /// 服务键：内置工具集的构造器（`Arc<dyn BuiltinToolProvider>`）。
 pub const SERVICE_KEY: &str = "tools.builtin";
 
+/// 本模块消费的循环服务键。
+pub const LOOP_SERVICE_KEY: &str = echo_module_loop::SERVICE_KEY;
+
 /// 宿主要塞给工具箱的**端口**（都是"运行时才知道"的东西）。
 ///
 /// 每项都对应工具箱里一个真实接缝（见 lib.rs 的「接缝」章节）——多一项都
@@ -181,6 +184,7 @@ pub fn module(version: &str) -> Arc<dyn Module> {
             Ok(disposers)
         })
         .with_inject(Inject::new([
+            LOOP_SERVICE_KEY.to_string(),
             crate::host_keys::INSTANCE_HOST.name().to_string(),
             crate::host_keys::TOOLS_HOST.name().to_string(),
         ]))
