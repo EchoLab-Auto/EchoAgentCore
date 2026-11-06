@@ -172,6 +172,9 @@ pub(crate) fn catalog_with(
     // ── 技能目录（整表 + 命令域）──
     push_module(&mut catalog, echo_agent::skill::module(version))?;
 
+    // ── LLM provider 与循环驱动（先 provider，再 loop）──
+    push_module(&mut catalog, echo_module_provider_llm::module(version))?;
+
     // ── 循环模式（二选一，纯策略）──
     //
     // 驱动本体只有一个（echo-module-loop TurnRunner，2026-10 单轨化），两个模式模块
@@ -215,9 +218,6 @@ pub(crate) fn catalog_with(
     for module in echo_module_sanitize::modules(version) {
         push_module(&mut catalog, module)?;
     }
-
-    // ── LLM provider（工厂 + 池规则 + API 命令域）──
-    push_module(&mut catalog, echo_module_provider_llm::module(version))?;
 
     // ── 自更新（updater 单元 + 状态文件）──
     push_module(&mut catalog, echo_module_self_update::module(version))?;
