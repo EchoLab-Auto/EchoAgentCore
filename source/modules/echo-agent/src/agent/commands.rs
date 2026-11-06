@@ -625,7 +625,7 @@ impl Agent {
             "echo-agent.loop.single" => &["loop"],
             "echo-agent.shell" => &["shell"],
             "echo-agent.tools.builtin" => &["tools.builtin"],
-            "echo-agent.provider.llm" => &["llm"],
+            "echo-agent.provider.llm" => &[],
             _ => &[],
         };
         keys.iter().map(|k| k.to_string()).collect()
