@@ -683,17 +683,63 @@ impl ModuleHost {
             if !self.registry.is_enabled(&step.id) {
                 continue;
             }
-            match self
-                .registry
-                .mount_when_ready(&step.id, &ctx, timeout)
-                .await
-            {
+            let module = by_id
+                .iter()
+                .find(|(id, _)| id == &step.id)
+                .map(|(_, module)| Arc::clone(module))
+                .expect("catalog membership checked above");
+            let required = module.inject().required;
+            let missing = ctx
+                .ctx
+                .as_ref()
+                .map(|cx| {
+                    required
+                        .iter()
+                        .filter(|key| !cx.contains(key))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| required.clone());
+            if !missing.is_empty() {
+                // 先继续尝试其它模块：上游可能在本计划后面。等待只留给已经
+                // 尝试完一轮、但仍无法满足的依赖，避免串行挂载把上游饿死。
+                waiting.push((step.id.clone(), missing));
+                continue;
+            }
+            match self.registry.mount(&step.id, &ctx) {
                 Ok(_) => mounted.push(step.id.clone()),
-                Err(echo_module::ModuleMountError::MissingService { key, .. }) => {
-                    // 依赖没到：**不算错误**，进 pending 等依赖变更。
-                    waiting.push((step.id.clone(), vec![key]));
-                }
                 Err(e) => errors.push(format!("module {} mount failed: {e}", step.id)),
+            }
+        }
+        if !waiting.is_empty() {
+            let wait_timeout = timeout / plan.len().max(1) as u32;
+            for step in plan {
+                let Some((_, required)) = waiting
+                    .iter()
+                    .find(|(id, _)| id == &step.id)
+                    .cloned()
+                    .map(|(id, keys)| (id, keys))
+                else {
+                    continue;
+                };
+                match self
+                    .registry
+                    .mount_when_ready(&step.id, &ctx, wait_timeout)
+                    .await
+                {
+                    Ok(_) => {
+                        mounted.push(step.id.clone());
+                        waiting.retain(|(id, _)| id != &step.id);
+                    }
+                    Err(echo_module::ModuleMountError::MissingService { key, .. }) => {
+                        waiting.retain(|(id, _)| id != &step.id);
+                        waiting.push((step.id.clone(), vec![key]));
+                    }
+                    Err(e) => {
+                        waiting.retain(|(id, _)| id != &step.id);
+                        errors.push(format!("module {} mount failed: {e}", step.id));
+                    }
+                }
             }
         }
         (registered, mounted, waiting, errors)
