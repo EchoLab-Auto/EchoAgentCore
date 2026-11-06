@@ -3,7 +3,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use echo_agent_federation::{FedFrame, Federation, LinkEvent, NodeCaps, PeerConfig, PROTOCOL_VERSION};
+use echo_agent_federation::{
+    FedFrame, Federation, LinkEvent, NodeCaps, PeerConfig, PROTOCOL_VERSION,
+};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 

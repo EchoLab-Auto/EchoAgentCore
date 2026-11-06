@@ -15,7 +15,7 @@ pub mod module;
 
 pub mod error;
 pub mod frame;
-pub mod invite;
+pub use echo_fabric_federation::invite;
 pub mod link;
 pub mod panel;
 

@@ -835,7 +835,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "echo-defs",
- "echo-federation 0.1.0",
+ "echo-federation",
  "echo-module",
  "futures-util",
  "serde",
@@ -886,24 +886,6 @@ name = "echo-federation"
 version = "0.1.0"
 dependencies = [
  "base64",
- "futures-util",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tokio-tungstenite 0.24.0",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "echo-federation"
-version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentCore?branch=main#4b5c83664944fd184b524c2b8b2fc77b67f833a1"
-dependencies = [
- "base64",
- "echo-defs",
- "echo-module",
  "futures-util",
  "serde",
  "serde_json",
@@ -1155,14 +1137,14 @@ dependencies = [
 [[package]]
 name = "echo-module-subagent"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#60a554026be4687ecbbfad353405da9cfd1dfd85"
+source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#945c0c299723962f904e3483bd9971fa49d526ea"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
  "dashmap",
+ "echo-agent-federation",
  "echo-defs",
- "echo-federation 0.1.0 (git+https://github.com/EchoLab-Auto/EchoAgentCore?branch=main)",
  "echo-protocol",
  "echo-tool",
  "serde_json",
@@ -1383,7 +1365,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2518,7 +2500,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2878,7 +2860,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3345,7 +3327,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3939,7 +3921,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

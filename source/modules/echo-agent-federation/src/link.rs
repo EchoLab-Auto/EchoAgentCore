@@ -142,13 +142,25 @@ impl Federation {
             tool_reporter: Arc::new(std::sync::RwLock::new(None)),
             panel_gate: PanelGate::default(),
         });
-        tokio::spawn(async move {
+        let forward = async move {
             while let Some(event) = inner_rx.recv().await {
                 if event_tx.send(from_fabric_event(event)).await.is_err() {
                     break;
                 }
             }
-        });
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(forward);
+        } else {
+            // 配置解析等同步单测也会构造 Federation；此时不能无条件 tokio::spawn。
+            std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("federation event forwarder runtime")
+                    .block_on(forward);
+            });
+        }
         fed
     }
 
@@ -321,7 +333,3 @@ pub fn bearer_request(
 ) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, FederationError> {
     fabric::bearer_request(url, token)
 }
-
-// Keep Duration referenced by the previous public implementation's generated docs.
-#[allow(dead_code)]
-const _: Option<Duration> = None;
