@@ -9,7 +9,7 @@ members = [
     "source/modules/echo-module-federation",
     "source/modules/echo-agent",
     "source/modules/echo-config",
-    "source/modules/echo-test-utils",
+    "source/test/utils",
     "source/modules/core",
     "source/modules/echo-module-adapter",
     "source/modules/echo-module-provider-llm",
@@ -71,7 +71,7 @@ echo-session = { path = "source/modules/echo-session" }
 
 echo-protocol = { path = "source/modules/echo-protocol" }
 echo-agent = { path = "source/modules/echo-agent" }
-echo-test-utils = { path = "source/modules/echo-test-utils" }
+echo-test-utils = { path = "source/test/utils" }
 echo-module = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
 echo-module-api = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
 echo-module-host = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }

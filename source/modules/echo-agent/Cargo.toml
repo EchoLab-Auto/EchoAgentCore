@@ -51,5 +51,5 @@ libc = "0.2"
 
 [dev-dependencies]
 filetime = "0.2"
-echo-test-utils = { path = "../echo-test-utils" }
+echo-test-utils = { path = "../../test/utils" }
 proptest = "1"
