@@ -17,9 +17,7 @@ use std::time::{Duration, Instant};
 use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
 
-use echo_federation::{
-    new_call_id, FedFrame, InvokeRequest, InvokeResult, InvokeVerdict, NodeCaps,
-};
+use crate::{new_call_id, FedFrame, InvokeRequest, InvokeResult, InvokeVerdict, NodeCaps};
 
 use echo_tool::ToolRegistry;
 
@@ -93,8 +91,8 @@ impl ExecutorPolicy {
     }
 
     /// 查询授权：`node_status` 恒允许；其余需显式列出（`*` 全放行）。
-    pub fn query_allowed(&self, kind: echo_federation::QueryKind) -> bool {
-        use echo_federation::QueryKind;
+    pub fn query_allowed(&self, kind: crate::QueryKind) -> bool {
+        use crate::QueryKind;
         // NodeStatus 与 ApiProfiles 恒允许：前者无害遥测，后者只回脱敏
         // 供应商元数据（key 明文永不过线）——分布式供应商发现需要
         // 开箱可用（2026-10 分布式供应商共享设计）。
@@ -300,12 +298,12 @@ impl InvokeRouter {
     pub fn query(
         self: &Arc<Self>,
         peer_node: &str,
-        kind: echo_federation::QueryKind,
+        kind: crate::QueryKind,
         subject: String,
         team_id: String,
         since_seq: u64,
         limit: u32,
-    ) -> (echo_federation::QueryRequest, PendingInvoke) {
+    ) -> (crate::QueryRequest, PendingInvoke) {
         self.sweep();
         let call_id = new_call_id(&self.local_node);
         let (chunk_tx, chunk_rx) = mpsc::channel(64);
@@ -321,7 +319,7 @@ impl InvokeRouter {
             },
         );
         (
-            echo_federation::QueryRequest {
+            crate::QueryRequest {
                 call_id: call_id.clone(),
                 kind,
                 subject,
@@ -450,10 +448,10 @@ impl InvokeRouter {
     ) -> FedFrame {
         let call_id = request.call_id.clone();
         // 回环帧：origin 是本机（跨机回环，恶意或误配）——拒绝。
-        if echo_federation::call_origin(&call_id) == self.local_node {
+        if crate::call_origin(&call_id) == self.local_node {
             return FedFrame::Error {
                 call_id: Some(call_id),
-                code: echo_federation::FedError::LoopDetected,
+                code: crate::FedError::LoopDetected,
                 message: "call_id origin is local node".into(),
             };
         }
@@ -482,7 +480,7 @@ impl InvokeRouter {
         let Some(tool) = registry.get(&request.tool) else {
             return FedFrame::Error {
                 call_id: Some(call_id),
-                code: echo_federation::FedError::UnknownCall,
+                code: crate::FedError::UnknownCall,
                 message: format!("executor has no tool named `{}`", request.tool),
             };
         };
@@ -494,7 +492,7 @@ impl InvokeRouter {
             );
             return FedFrame::Error {
                 call_id: Some(call_id),
-                code: echo_federation::FedError::Forbidden,
+                code: crate::FedError::Forbidden,
                 message: format!("tool `{}` is not remote-capable on this node", request.tool),
             };
         }
@@ -527,7 +525,7 @@ impl InvokeRouter {
                     );
                     return FedFrame::Error {
                         call_id: Some(call_id),
-                        code: echo_federation::FedError::Forbidden,
+                        code: crate::FedError::Forbidden,
                         message: format!(
                             "absolute path in `{arg}` outside workspace roots (federation sandbox)"
                         ),
@@ -596,7 +594,7 @@ pub fn remote_tool_candidates(caps: &NodeCaps) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use echo_federation::NodeCaps;
+    use crate::NodeCaps;
 
     /// 最小工具：**按声明**控制远程面与路径参数。
     ///
@@ -717,7 +715,7 @@ mod tests {
             "node-b",
             &FedFrame::Error {
                 call_id: Some(req.call_id.clone()),
-                code: echo_federation::FedError::Forbidden,
+                code: crate::FedError::Forbidden,
                 message: "执行端未加载任何 persona，联邦工具通道不可用".into(),
             },
         );
@@ -739,7 +737,7 @@ mod tests {
             "node-b",
             &FedFrame::Error {
                 call_id: None,
-                code: echo_federation::FedError::Internal,
+                code: crate::FedError::Internal,
                 message: "boom".into(),
             },
         );
@@ -841,7 +839,7 @@ mod tests {
             &FedFrame::InvokeOutput {
                 call_id: req.call_id.clone(),
                 chunk: "partial...".into(),
-                stream: echo_federation::OutputStream::Stdout,
+                stream: crate::OutputStream::Stdout,
             },
         );
         router.dispatch_frame(
@@ -888,7 +886,7 @@ mod tests {
         assert!(matches!(
             reply,
             FedFrame::Error {
-                code: echo_federation::FedError::LoopDetected,
+                code: crate::FedError::LoopDetected,
                 ..
             }
         ));
@@ -964,7 +962,7 @@ mod tests {
                 matches!(
                     reply,
                     FedFrame::Error {
-                        code: echo_federation::FedError::Forbidden,
+                        code: crate::FedError::Forbidden,
                         ..
                     }
                 ),
@@ -1033,7 +1031,7 @@ mod tests {
 
     #[test]
     fn query_authorization_defaults() {
-        use echo_federation::QueryKind;
+        use crate::QueryKind;
         let default = ExecutorPolicy::default();
         assert!(default.query_allowed(QueryKind::NodeStatus));
         assert!(!default.query_allowed(QueryKind::SessionSnapshot));
@@ -1073,7 +1071,7 @@ mod tests {
         let router = InvokeRouter::new("node-a".into());
         let (req, pending) = router.query(
             "node-b",
-            echo_federation::QueryKind::NodeStatus,
+            crate::QueryKind::NodeStatus,
             String::new(),
             String::new(),
             0,
@@ -1081,7 +1079,7 @@ mod tests {
         );
         router.dispatch_frame(
             "node-b",
-            &FedFrame::QueryResult(echo_federation::QueryResultFrame {
+            &FedFrame::QueryResult(crate::QueryResultFrame {
                 call_id: req.call_id,
                 success: true,
                 payload: serde_json::json!({"node_id": "node-b"}),
@@ -1147,7 +1145,7 @@ mod tests {
             matches!(
                 unknown,
                 FedFrame::Error {
-                    code: echo_federation::FedError::UnknownCall,
+                    code: crate::FedError::UnknownCall,
                     ..
                 }
             ),
@@ -1171,7 +1169,7 @@ mod tests {
             matches!(
                 not_remote,
                 FedFrame::Error {
-                    code: echo_federation::FedError::Forbidden,
+                    code: crate::FedError::Forbidden,
                     ..
                 }
             ),

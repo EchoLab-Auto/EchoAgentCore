@@ -14,7 +14,7 @@ pub(crate) const CORE_AGENT_ID: &str = "__core";
 
 /// 联邦路由上下文（Phase 2）：路由泵与代理工具注册共用的句柄束。
 pub(crate) struct FederationRuntime {
-    pub(crate) federation: Arc<echo_federation::Federation>,
+    pub(crate) federation: Arc<echo_module_federation::Federation>,
     pub(crate) router: Arc<echo_agent::federation::InvokeRouter>,
     /// peer 配置名 → node_id（Link Up 时登记；代理工具命名用配置名）。
     pub(crate) peer_names:
@@ -112,14 +112,14 @@ impl FederationRuntime {
         let node_id = self.peer_names.read().await.get(peer_name).cloned()?;
         let (request, pending) = self.router.query(
             &node_id,
-            echo_federation::QueryKind::NodeStatus,
+            echo_module_federation::QueryKind::NodeStatus,
             String::new(),
             String::new(),
             0,
             0,
         );
         self.federation
-            .send_to(&node_id, echo_federation::FedFrame::Query(request))
+            .send_to(&node_id, echo_module_federation::FedFrame::Query(request))
             .await
             .ok()?;
         let result = tokio::time::timeout(std::time::Duration::from_secs(3), pending.wait())
@@ -419,7 +419,7 @@ impl FederationRuntime {
 ///   outbound 通道回传）；其余帧派发给出站等待表
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn federation_router_pump(
-    mut rx: tokio::sync::mpsc::Receiver<echo_federation::LinkEvent>,
+    mut rx: tokio::sync::mpsc::Receiver<echo_module_federation::LinkEvent>,
     rt: Arc<FederationRuntime>,
     peer_policies: std::sync::Arc<
         tokio::sync::RwLock<
@@ -432,7 +432,7 @@ pub(crate) async fn federation_router_pump(
 ) {
     // 执行端结果回传通道：handle_invoke spawn 的执行任务 → 本泵统一发送。
     let (outbound_tx, mut outbound_rx) =
-        tokio::sync::mpsc::channel::<(String, echo_federation::FedFrame)>(64);
+        tokio::sync::mpsc::channel::<(String, echo_module_federation::FedFrame)>(64);
     // 目标侧会话导入缓冲（P3-2b）：transfer_id → 有序分块。
     let mut imports: std::collections::HashMap<String, federation_import::ImportBuffer> =
         std::collections::HashMap::new();
@@ -455,7 +455,7 @@ pub(crate) async fn federation_router_pump(
             event = rx.recv() => {
                 let Some(event) = event else { break };
                 match event {
-                    echo_federation::LinkEvent::Up(info) => {
+                    echo_module_federation::LinkEvent::Up(info) => {
                         tracing::info!(
                             target: "federation",
                             peer = %info.node_id, name = %info.peer_name,
@@ -508,7 +508,7 @@ pub(crate) async fn federation_router_pump(
                         learn_peer_dial_address(&rt, &info).await;
                         broadcast_federation_status(&rt).await;
                     }
-                    echo_federation::LinkEvent::Down { peer_node_id, reason } => {
+                    echo_module_federation::LinkEvent::Down { peer_node_id, reason } => {
                         tracing::info!(target: "federation", peer = %peer_node_id, %reason, "link down");
                         rt.router.drop_peer(&peer_node_id);
                         let package = peer_package(&rt, &peer_node_id).await;
@@ -524,8 +524,8 @@ pub(crate) async fn federation_router_pump(
                         // 链路状态变化 → 面板联邦页实时刷新。
                         broadcast_federation_status(&rt).await;
                     }
-                    echo_federation::LinkEvent::Frame { from, frame } => {
-                        if let echo_federation::FedFrame::Invoke(request) = frame {
+                    echo_module_federation::LinkEvent::Frame { from, frame } => {
+                        if let echo_module_federation::FedFrame::Invoke(request) = frame {
                             // 执行宿主：人格优先、零人格回退 `__core`。用
                             // `executor_hosts()` 而**不是** `live_personas()`：
                             // 纯执行节点按设计可以零人格，但它的 bash / 文件
@@ -546,9 +546,9 @@ pub(crate) async fn federation_router_pump(
                                     target: "federation", from = %from, call_id = %request.call_id,
                                     "invoke rejected: no executor host on this node"
                                 );
-                                let reply = echo_federation::FedFrame::Error {
+                                let reply = echo_module_federation::FedFrame::Error {
                                     call_id: Some(request.call_id.clone()),
-                                    code: echo_federation::FedError::Forbidden,
+                                    code: echo_module_federation::FedError::Forbidden,
                                     message: "执行端没有任何执行宿主（零人格且未接线核心服务代理），联邦工具通道不可用".into(),
                                 };
                                 if rt.federation.send_to(&from, reply).await.is_err() {
@@ -563,14 +563,14 @@ pub(crate) async fn federation_router_pump(
                             if rt.federation.send_to(&from, reply).await.is_err() {
                                 tracing::warn!(target: "federation", peer = %from, "invoke reply send failed");
                             }
-                        } else if let echo_federation::FedFrame::Query(req) = frame {
+                        } else if let echo_module_federation::FedFrame::Query(req) = frame {
                             // 只读查询执行端（Phase 5）：白名单裁决 → 本机采集 →
                             // QueryResult 回传。
                             let reply = handle_federation_query(&rt, &from, req).await;
                             if rt.federation.send_to(&from, reply).await.is_err() {
                                 tracing::warn!(target: "federation", peer = %from, "query reply send failed");
                             }
-                        } else if let echo_federation::FedFrame::SubagentSpawn(req) = &frame {
+                        } else if let echo_module_federation::FedFrame::SubagentSpawn(req) = &frame {
                             // 执行端门控（Phase 3 消费）：peer 未授
                             // allow_subagent 时拒绝受理——此前只记审计就放行，
                             // 配置的 allow_subagent = false 形同虚设。拒绝以
@@ -596,10 +596,10 @@ pub(crate) async fn federation_router_pump(
                                     from = %from, call_id = %req.call_id,
                                     "remote subagent rejected (allow_subagent not granted)"
                                 );
-                                let reply = echo_federation::FedFrame::SubagentEvent(
-                                    echo_federation::SubagentEventFrame {
+                                let reply = echo_module_federation::FedFrame::SubagentEvent(
+                                    echo_module_federation::SubagentEventFrame {
                                         call_id: req.call_id.clone(),
-                                        status: echo_federation::SubagentStatus::Failed,
+                                        status: echo_module_federation::SubagentStatus::Failed,
                                         result: Some(format!(
                                             "peer {} 未授予远程委派（allow_subagent = false）",
                                             peer_name.as_deref().unwrap_or(&from)
@@ -620,7 +620,7 @@ pub(crate) async fn federation_router_pump(
                                 task = %req.task.chars().take(120).collect::<String>(),
                                 "remote subagent spawned on this node"
                             );
-                        } else if let echo_federation::FedFrame::SubagentEvent(ev) = &frame {
+                        } else if let echo_module_federation::FedFrame::SubagentEvent(ev) = &frame {
                             tracing::info!(
                                 target: "federation",
                                 from = %from, call_id = %ev.call_id, status = ?ev.status,
@@ -638,13 +638,13 @@ pub(crate) async fn federation_router_pump(
                             {
                                 federation_import::deliver_aggregate_summary(&rt, summary).await;
                             }
-                        } else if let echo_federation::FedFrame::SessionImport(import) = &frame {
+                        } else if let echo_module_federation::FedFrame::SessionImport(import) = &frame {
                             // 目标侧（P3-2b）：聚合分块 + 每块 ack（流控/重发）；
                             // 凑齐后 spawn_blocking 导入，终态经 Result 回源。
                             let (acked, outcome) =
                                 federation_import::handle_session_import(&rt, import, &mut imports);
-                            let ack = echo_federation::FedFrame::SessionImportAck(
-                                echo_federation::SessionImportAckFrame {
+                            let ack = echo_module_federation::FedFrame::SessionImportAck(
+                                echo_module_federation::SessionImportAckFrame {
                                     transfer_id: import.transfer_id.clone(),
                                     acked_upto: acked,
                                 },
@@ -681,14 +681,14 @@ pub(crate) async fn federation_router_pump(
                                     });
                                 }
                             }
-                        } else if let echo_federation::FedFrame::SessionImportAck(ack) = &frame {
+                        } else if let echo_module_federation::FedFrame::SessionImportAck(ack) = &frame {
                             // 源侧（P3-2b）：目标 ack → 推进本任务窗口。
                             federation_import::note_session_import_ack(
                                 &rt,
                                 &ack.transfer_id,
                                 ack.acked_upto,
                             );
-                        } else if let echo_federation::FedFrame::SessionImportResult(result) = &frame
+                        } else if let echo_module_federation::FedFrame::SessionImportResult(result) = &frame
                         {
                             // 源侧（P3-2b）：目标终态回执 → 面板结果事件。
                             let message = if result.success {
@@ -809,9 +809,9 @@ async fn all_workspace_directories(
 pub(crate) async fn handle_federation_query(
     rt: &FederationRuntime,
     from: &str,
-    req: echo_federation::QueryRequest,
-) -> echo_federation::FedFrame {
-    use echo_federation::{FedFrame, QueryKind, QueryResultFrame};
+    req: echo_module_federation::QueryRequest,
+) -> echo_module_federation::FedFrame {
+    use echo_module_federation::{FedFrame, QueryKind, QueryResultFrame};
     let call_id = req.call_id.clone();
     let ok = |payload: serde_json::Value| {
         FedFrame::QueryResult(QueryResultFrame {
@@ -1088,7 +1088,7 @@ pub(crate) async fn handle_federation_query(
 /// 已配置/已学习的地址；对端呼叫本机地址（同机双节点等）时跳过。
 pub(crate) async fn learn_peer_dial_address(
     rt: &FederationRuntime,
-    info: &echo_federation::PeerInfo,
+    info: &echo_module_federation::PeerInfo,
 ) {
     // 解析后的配置名（邀请占位已提升为最终名）。
     let name = rt
@@ -1125,7 +1125,7 @@ pub(crate) async fn learn_peer_dial_address(
         tracing::warn!(target: "federation", %name, error = %e, "learn peer url: config write failed");
     }
     rt.federation
-        .add_peer(echo_federation::PeerConfig {
+        .add_peer(echo_module_federation::PeerConfig {
             name: name.clone(),
             url: url.clone(),
             token: cfg.token.clone(),
@@ -1215,7 +1215,7 @@ pub(crate) async fn promote_paired_invite_placeholders(
         }
         // 2. 运行时：登记 peer（url 空 = 仅接受连入）+ 满权限策略。
         rt.federation
-            .add_peer(echo_federation::PeerConfig {
+            .add_peer(echo_module_federation::PeerConfig {
                 name: promoted.clone(),
                 url: String::new(),
                 token: token.clone(),
@@ -1336,7 +1336,7 @@ fn peer_tool_package(peer_name: &str) -> String {
 pub(crate) async fn register_remote_tools_for_agent(
     rt: &FederationRuntime,
     agent: &std::sync::Arc<echo_agent::Agent>,
-    info: &echo_federation::PeerInfo,
+    info: &echo_module_federation::PeerInfo,
     peer_name: &str,
 ) -> Vec<echo_context::Disposer> {
     let candidates = echo_agent::federation::remote_tool_candidates(&info.caps);
@@ -1374,7 +1374,7 @@ pub(crate) async fn register_remote_tools_for_agent(
 /// 按对端 caps 给**全部** persona 注册代理工具（链路 Up 时调）。
 pub(crate) async fn register_remote_tools(
     rt: &FederationRuntime,
-    info: &echo_federation::PeerInfo,
+    info: &echo_module_federation::PeerInfo,
     peer_name: &str,
 ) {
     let candidates = echo_agent::federation::remote_tool_candidates(&info.caps);
@@ -1575,10 +1575,10 @@ mod remote_tool_install_tests {
     pub(super) fn runtime(dir: &std::path::Path) -> Arc<super::FederationRuntime> {
         let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
-        let federation = echo_federation::Federation::new(
+        let federation = echo_module_federation::Federation::new(
             "node-local".into(),
             None,
-            echo_federation::NodeCaps::default(),
+            echo_module_federation::NodeCaps::default(),
             Vec::new(),
             None,
             event_tx,
@@ -1603,8 +1603,8 @@ mod remote_tool_install_tests {
         })
     }
 
-    fn peer_info(caps: echo_federation::NodeCaps) -> echo_federation::PeerInfo {
-        echo_federation::PeerInfo {
+    fn peer_info(caps: echo_module_federation::NodeCaps) -> echo_module_federation::PeerInfo {
+        echo_module_federation::PeerInfo {
             node_id: "node-remote".into(),
             node_name: Some("gpu-box".into()),
             version: "0.0.0".into(),
@@ -1624,7 +1624,7 @@ mod remote_tool_install_tests {
         let alice = new_agent("alice");
         let bob = new_agent("bob");
 
-        let caps = echo_federation::NodeCaps {
+        let caps = echo_module_federation::NodeCaps {
             tools: vec!["read_file".into(), "bash".into()],
             ..Default::default()
         };
@@ -1683,7 +1683,7 @@ mod remote_tool_install_tests {
         let keepers = super::register_remote_tools_for_agent(
             &rt,
             &alice,
-            &peer_info(echo_federation::NodeCaps::default()),
+            &peer_info(echo_module_federation::NodeCaps::default()),
             "gpu-box",
         )
         .await;
@@ -1978,8 +1978,8 @@ mod core_util_tests {
         index: u32,
         total: u32,
         data: &str,
-    ) -> echo_federation::SessionImportFrame {
-        echo_federation::SessionImportFrame {
+    ) -> echo_module_federation::SessionImportFrame {
+        echo_module_federation::SessionImportFrame {
             transfer_id: "mig-1".into(),
             session_id: "local:tui::local_user".into(),
             team_id: "alix".into(),
@@ -2078,7 +2078,7 @@ mod directory_tests {
         let dir = tmpdir("directory");
         let rt = runtime(&dir);
         rt.federation
-            .add_peer(echo_federation::PeerConfig {
+            .add_peer(echo_module_federation::PeerConfig {
                 name: "gpu-box".into(),
                 url: "ws://10.0.0.9:3132".into(),
                 token: "peer-tok".into(),
@@ -2136,9 +2136,9 @@ mod directory_tests {
 
         // 开放为 operate。
         rt.federation
-            .set_panel_identity(echo_federation::PanelIdentity::new(
+            .set_panel_identity(echo_module_federation::PanelIdentity::new(
                 vec!["super-secret-panel-key".into()],
-                echo_federation::PanelAccess::Operate,
+                echo_module_federation::PanelAccess::Operate,
             ));
         let event = rt.status_event().await;
         match &event {

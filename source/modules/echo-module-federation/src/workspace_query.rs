@@ -10,7 +10,7 @@
 //! 未接线（联邦关闭）时组合根不注入本类型，模块的远程目录自然降级为
 //! 「远程不可采集」占位——单机部署零影响。
 
-use echo_federation::QueryKind;
+use crate::QueryKind;
 // 定义层（S12）：trait 的声明方是 workspace 模块、实现方是本 crate，
 // 但它既不属于谁——放在定义层，两边都不必依赖对方。
 use echo_defs::workspace::{QueryFuture, RemoteWorkspaceQuery};

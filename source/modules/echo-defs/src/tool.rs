@@ -228,7 +228,7 @@ pub trait Tool: Send + Sync {
     /// 后果是模块新加的工具**永远**进不了远程面，而工具改名会静默掉出去。
     ///
     /// 声明 `true` 的效果：本工具名出现在握手 `NodeCaps.tools` 里
-    /// （见 `echo_federation::Federation::hello`），对端据此注册代理工具；
+    /// （见 `echo_module_federation::Federation::hello`），对端据此注册代理工具；
     /// 同时本机作为执行端时，联邦入口会放行对它的 Invoke。
     fn remote_capable(&self) -> bool {
         false

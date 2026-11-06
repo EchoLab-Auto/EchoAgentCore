@@ -1,6 +1,6 @@
 # 将通用联邦连接模块用于其他软件
 
-`source/modules/echo-federation` 是独立、业务无关的 Rust crate。它只负责去中心化
+`source/modules/echo-module-federation` 是独立、业务无关的 Rust crate。它只负责去中心化
 节点之间的连接生命周期，不包含 Agent、工具、会话、工作区或 Panel 业务。
 
 ## 最小接入
@@ -8,7 +8,7 @@
 应用定义自己的消息和节点能力：
 
 ```rust
-use echo_federation::{Federation, Frame, LinkEvent, PeerConfig};
+use echo_module_federation::{Federation, Frame, LinkEvent, PeerConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{mpsc, watch};
@@ -61,11 +61,11 @@ while let Some(event) = event_rx.recv().await {
 | 邀请编解码与地址观测 | 邀请展示及配对后的配置落盘 |
 | 连接诊断和节点能力元数据透传 | 解释能力字段及执行对应功能 |
 
-完整可执行的双节点测试见 `source/modules/echo-federation/tests/reusable.rs`。
+完整可执行的双节点测试见 `source/modules/echo-module-federation/tests/reusable.rs`。
 该测试使用库存业务消息，而不是任何 Core 类型。
 
 ## 既有协议适配
 
 需要兼容已有应用协议时，可覆盖 `Frame::encode_wire` 和 `Frame::decode_wire`。
-Core 的 `echo-agent-federation` 正是通过这种适配保留原来的 `FedFrame` 格式；
+Core 的 `echo-module-federation` 的根模块 正是通过这种适配保留原来的 `FedFrame` 格式；
 通用模块本身不依赖该适配层。

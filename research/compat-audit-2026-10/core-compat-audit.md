@@ -5,18 +5,18 @@
 
 ## source/federation（Core↔Core 线协议）
 
-source/federation/echo-federation/src/frame.rs:8 — 帧协议约定「新增字段一律 serde(default)，新旧节点混部时旧端点可解码新帧」 — [DOC]
-source/federation/echo-federation/src/frame.rs:85 — NodeHello.node_name 的 serde(default)+skip（旧 Hello 缺字段容忍；当前 None 也会省略） — [GRAY]?
-source/federation/echo-federation/src/frame.rs:89 — NodeHello.version 的 serde(default)：当前发送方恒写该字段，default 仅服务旧端点 — [REMOVE]
-source/federation/echo-federation/src/frame.rs:91 — NodeHello.caps 的 serde(default)：当前发送方恒写该字段，default 仅服务旧端点 — [REMOVE]
-source/federation/echo-federation/src/frame.rs:98 — NodeHello.advertise 的 serde(default)+skip（当前 None 省略 + 旧对端缺字段容忍） — [GRAY]?
-source/federation/echo-federation/src/frame.rs:202-205 — QueryRequest.team_id serde(default)，空值=旧行为（逐 persona 取首个命中，歧义） — [REMOVE]
-source/federation/echo-federation/src/frame.rs:348 — 测试注释「旧大脑缺 team_id 的查询可解码」 — [REMOVE]
-source/federation/echo-federation/src/frame.rs:385 — 测试注释「旧端点（缺字段的 JSON）可解码」 — [REMOVE]
-source/federation/echo-federation/src/frame.rs:387-395 — 测试 invoke_request_decodes_without_new_fields（旧端点缺 args/workdir/timeout 可解码） — [REMOVE]
-source/federation/echo-federation/src/frame.rs:396-404 — 测试 query_request_decodes_without_team_id — [REMOVE]
-source/federation/echo-federation/src/frame.rs:427-429 — 测试用例「老端点缺 caps/version/node_name/advertise 也可解码」 — [REMOVE]
-source/federation/echo-federation/src/frame.rs:221-223 — QueryKind::WorkspaceGitStatus 注释：旧对端不认识该变体时整帧丢弃、降级为不可采集 — [GRAY]?
+source/federation/echo-module-federation/src/frame.rs:8 — 帧协议约定「新增字段一律 serde(default)，新旧节点混部时旧端点可解码新帧」 — [DOC]
+source/federation/echo-module-federation/src/frame.rs:85 — NodeHello.node_name 的 serde(default)+skip（旧 Hello 缺字段容忍；当前 None 也会省略） — [GRAY]?
+source/federation/echo-module-federation/src/frame.rs:89 — NodeHello.version 的 serde(default)：当前发送方恒写该字段，default 仅服务旧端点 — [REMOVE]
+source/federation/echo-module-federation/src/frame.rs:91 — NodeHello.caps 的 serde(default)：当前发送方恒写该字段，default 仅服务旧端点 — [REMOVE]
+source/federation/echo-module-federation/src/frame.rs:98 — NodeHello.advertise 的 serde(default)+skip（当前 None 省略 + 旧对端缺字段容忍） — [GRAY]?
+source/federation/echo-module-federation/src/frame.rs:202-205 — QueryRequest.team_id serde(default)，空值=旧行为（逐 persona 取首个命中，歧义） — [REMOVE]
+source/federation/echo-module-federation/src/frame.rs:348 — 测试注释「旧大脑缺 team_id 的查询可解码」 — [REMOVE]
+source/federation/echo-module-federation/src/frame.rs:385 — 测试注释「旧端点（缺字段的 JSON）可解码」 — [REMOVE]
+source/federation/echo-module-federation/src/frame.rs:387-395 — 测试 invoke_request_decodes_without_new_fields（旧端点缺 args/workdir/timeout 可解码） — [REMOVE]
+source/federation/echo-module-federation/src/frame.rs:396-404 — 测试 query_request_decodes_without_team_id — [REMOVE]
+source/federation/echo-module-federation/src/frame.rs:427-429 — 测试用例「老端点缺 caps/version/node_name/advertise 也可解码」 — [REMOVE]
+source/federation/echo-module-federation/src/frame.rs:221-223 — QueryKind::WorkspaceGitStatus 注释：旧对端不认识该变体时整帧丢弃、降级为不可采集 — [GRAY]?
 
 ## source/core（Core 组合根）
 
@@ -215,6 +215,6 @@ document/dev/dev-testing.md:41 — 测试覆盖 qq_instances legacy 端口/共�
 
 ## 核验备注（非清单项）
 
-- `echo-federation/src/link.rs:632-644` 的 protocol_version 校验为**严格相等**（当前行为，未见旧版本容忍分支）；`echo-module-api/src/protocol.rs:17-19` 的 `compatible()` 在 v1 为严格相等——均为当前协商/拒绝逻辑，不属旧版兼容债。相关「版本不兼容拒绝」测试（conformance/tests）同为当前行为守护。
+- `echo-module-federation/src/link.rs:632-644` 的 protocol_version 校验为**严格相等**（当前行为，未见旧版本容忍分支）；`echo-module-api/src/protocol.rs:17-19` 的 `compatible()` 在 v1 为严格相等——均为当前协商/拒绝逻辑，不属旧版兼容债。相关「版本不兼容拒绝」测试（conformance/tests）同为当前行为守护。
 - 第三方端点类「兼容」措辞（DeepSeek/Anthropic/OpenAI 兼容端点、Kimi、`echo-sanitize` 网关、`echo-llm-*` 实现）与「provider 容错解析」不属本类债务，未列入。
 - `config/modules.example.toml` 无命中；`document` 中「已移除/已取消」多为已完成的能力下线或状态文案，未列入。

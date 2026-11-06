@@ -21,7 +21,7 @@ pub use echo_module_federation::{
     RemoteQuerier, RemoteSubagentNotifier, RemoteTool, WorkspaceQueryHandle,
 };
 // `SubagentStatus` 的**源头**是机制层（线协议词汇），模块只是 re-export。
-pub use echo_federation::SubagentStatus;
+pub use echo_module_federation::SubagentStatus;
 
 /// node:// 远程文件 / 命令分流出口（类型与 `echo-module-tools` 共享）。
 pub type RemoteInvoker = echo_module_federation::RemoteInvoker;

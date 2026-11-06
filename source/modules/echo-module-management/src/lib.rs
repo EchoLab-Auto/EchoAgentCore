@@ -25,7 +25,7 @@
 //!   让一个 Panel 用同一把密钥接入全网任一节点，服务端按级别（只读/操作/
 //!   管理）强制边界——见 [`ConnRole::Panel`] 与 [`serve_management_ws`]。
 //!
-//! 依赖纪律：只依赖 `echo-protocol`（线契约）、`echo-federation`（合并端口
+//! 依赖纪律：只依赖 `echo-protocol`（线契约）、`echo-module-federation`（合并端口
 //! 时的对端连接接收）与 tokio/tungstenite——不依赖 `echo-agent`。
 
 pub mod host_keys;
@@ -161,14 +161,14 @@ pub async fn serve_with_token(
 
 /// 独立监听 + 联邦观测出处（2026-11）：监听与管理面行为同
 /// [`serve_with_token`]，但升级回调会把入站连接的 `Host` 记进
-/// [`echo_federation::Federation::note_observed_host_sync`]——邀请串据此
+/// [`echo_module_federation::Federation::note_observed_host_sync`]——邀请串据此
 /// 选「别人连我时实际用的地址」（独立监听时联邦不经本端口，所以这里只
 /// 借用它的观测表，不分流）。
 pub async fn serve_with_token_observing(
     addr: &str,
     bridge: Arc<BackendBridge>,
     access_token: String,
-    observer: Option<Arc<echo_federation::Federation>>,
+    observer: Option<Arc<echo_module_federation::Federation>>,
 ) -> anyhow::Result<()> {
     serve_internal(addr, bridge, access_token, None, observer).await
 }
@@ -179,7 +179,7 @@ pub async fn serve_with_federation(
     addr: &str,
     bridge: Arc<BackendBridge>,
     access_token: String,
-    federation: Arc<echo_federation::Federation>,
+    federation: Arc<echo_module_federation::Federation>,
 ) -> anyhow::Result<()> {
     serve_internal(
         addr,
@@ -195,8 +195,8 @@ async fn serve_internal(
     addr: &str,
     bridge: Arc<BackendBridge>,
     access_token: String,
-    federation: Option<Arc<echo_federation::Federation>>,
-    observer: Option<Arc<echo_federation::Federation>>,
+    federation: Option<Arc<echo_module_federation::Federation>>,
+    observer: Option<Arc<echo_module_federation::Federation>>,
 ) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -362,7 +362,7 @@ pub fn validate_merged(
 /// `level` 来自 `[federation].panel_access`；`keys` 来自 `panel_keys`。
 pub fn validate_panel_identity(
     keys: &[String],
-    level: echo_federation::PanelAccess,
+    level: echo_module_federation::PanelAccess,
     management_token: &str,
     has_peer_token: impl Fn(&str) -> bool,
 ) -> anyhow::Result<()> {
@@ -416,8 +416,8 @@ async fn serve_with_listener_and_token(
     listener: TcpListener,
     bridge: Arc<BackendBridge>,
     access_token: String,
-    federation: Option<Arc<echo_federation::Federation>>,
-    observer: Option<Arc<echo_federation::Federation>>,
+    federation: Option<Arc<echo_module_federation::Federation>>,
+    observer: Option<Arc<echo_module_federation::Federation>>,
 ) -> anyhow::Result<()> {
     let events = Arc::new(EventBroker::new(bridge.clone()));
     let event_runner = events.clone();
@@ -475,13 +475,13 @@ async fn handle_connection(
     bridge: Arc<BackendBridge>,
     access_token: &str,
     // 合并模式的联邦句柄（Some = 联邦入站与本端口共用监听）。
-    federation: Option<Arc<echo_federation::Federation>>,
+    federation: Option<Arc<echo_module_federation::Federation>>,
     // 入站 Host 观测出处（独立模式也用它学"别人怎么连我"）。
-    observer: Option<Arc<echo_federation::Federation>>,
+    observer: Option<Arc<echo_module_federation::Federation>>,
     // **Panel 身份密钥表**出处（P1）：合并模式下与 `federation` 同一个句柄，
     // 独立模式下就是 `observer`。单独一个参数是为了让"谁提供 panel 判定"
     // 在调用点显式可读（两者在两种模式下恰好同源，但不是同一个概念）。
-    panel_source: Option<Arc<echo_federation::Federation>>,
+    panel_source: Option<Arc<echo_module_federation::Federation>>,
 ) -> anyhow::Result<()> {
     match federation {
         // 独立模式：管理通道 + Panel 身份（`panel_source` 提供 Panel 密钥表；
@@ -517,7 +517,7 @@ async fn handle_connection(
                         events,
                         bridge,
                         true,
-                        echo_federation::PanelAccess::Admin,
+                        echo_module_federation::PanelAccess::Admin,
                         peer,
                     )
                     .await
@@ -557,7 +557,7 @@ pub(crate) enum ConnRole {
     /// **联邦级 Panel 身份**（P1，2026-11）：持 `[federation] panel_keys` 之一
     /// 的客户端。走管理 WS，但权限由 `panel_access` 决定（`Readonly` 时
     /// 只放行 `PANEL_READONLY_COMMANDS`）。
-    Panel(echo_federation::PanelAccess),
+    Panel(echo_module_federation::PanelAccess),
 }
 
 /// 合并监听端的令牌分类（决策表如下）：
@@ -577,7 +577,7 @@ fn classify_token(
     presented: &str,
     management_token: &str,
     has_peer_token: impl Fn(&str) -> bool,
-    panel_of: impl Fn(&str) -> Option<echo_federation::PanelAccess>,
+    panel_of: impl Fn(&str) -> Option<echo_module_federation::PanelAccess>,
 ) -> Option<ConnRole> {
     if !management_token.is_empty() && constant_time_eq(presented, management_token) {
         return Some(ConnRole::Management);
@@ -603,7 +603,7 @@ fn classify_token(
 /// （兼容旧行为，一律按管理）。
 ///
 /// 返回（已升级连接, 该连接的权限级别）。`Management` 恒等于
-/// [`echo_federation::PanelAccess::Admin`]——本机管理面本来就是全权。
+/// [`echo_module_federation::PanelAccess::Admin`]——本机管理面本来就是全权。
 ///
 /// 为什么独立模式也要认 Panel 密钥：`[federation] listen` 显式独立（或
 /// 缺省合并被保守回退）时，Panel 身份的入口就在管理监听上。若只在合并
@@ -613,13 +613,13 @@ fn classify_token(
 async fn accept_standalone_ws(
     stream: tokio::net::TcpStream,
     access_token: &str,
-    panel_source: Option<Arc<echo_federation::Federation>>,
-    observer: Option<Arc<echo_federation::Federation>>,
+    panel_source: Option<Arc<echo_module_federation::Federation>>,
+    observer: Option<Arc<echo_module_federation::Federation>>,
 ) -> anyhow::Result<(
     tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
-    echo_federation::PanelAccess,
+    echo_module_federation::PanelAccess,
 )> {
-    use echo_federation::PanelAccess as Level;
+    use echo_module_federation::PanelAccess as Level;
     // 独立监听：没有令牌时也要能观测 `Host`（升级回调是唯一的时机——升级
     // 完成后握手头就没了），所以空/非空令牌两条路径都走带回调的升级。
     let access_token = access_token.to_string();
@@ -677,7 +677,7 @@ async fn accept_standalone_ws(
 async fn accept_merged_ws(
     stream: tokio::net::TcpStream,
     management_token: &str,
-    federation: Arc<echo_federation::Federation>,
+    federation: Arc<echo_module_federation::Federation>,
 ) -> anyhow::Result<(
     tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
     ConnRole,
@@ -747,8 +747,8 @@ async fn accept_merged_ws(
 /// - `off` 理论上不会走到这里（握手期已 401），出现即按只读处理（fail-closed）。
 /// Panel 权限级别的日志短名（`PanelAccess` 的 Debug 输出会随枚举增长变，
 /// 日志字段要稳定可聚合）。
-fn panel_access_str(access: echo_federation::PanelAccess) -> &'static str {
-    use echo_federation::PanelAccess;
+fn panel_access_str(access: echo_module_federation::PanelAccess) -> &'static str {
+    use echo_module_federation::PanelAccess;
     match access {
         PanelAccess::Off => "off",
         PanelAccess::Readonly => "readonly",
@@ -762,7 +762,7 @@ async fn serve_management_ws(
     events: Arc<EventBroker>,
     bridge: Arc<BackendBridge>,
     merged_hint: bool,
-    access: echo_federation::PanelAccess,
+    access: echo_module_federation::PanelAccess,
     peer: std::net::SocketAddr,
 ) -> anyhow::Result<()> {
     let (mut write, mut read) = ws.split();
@@ -853,7 +853,7 @@ async fn serve_management_ws(
                                         // 连接（未知 peer 令牌 + 空管理令牌的
                                         // 兼容分支）——明确记录并断开。
                                         if merged_hint
-                                            && serde_json::from_str::<echo_federation::FedFrame>(
+                                            && serde_json::from_str::<echo_module_federation::FedFrame>(
                                                 &text,
                                             )
                                             .is_ok()
@@ -967,10 +967,10 @@ pub(crate) fn handle_inbound_text(text: &str) -> Option<InboundFrame> {
 /// | `Readonly` | 只放行 `PANEL_READONLY_COMMANDS`，其余拒绝并说明 |
 /// | `Operate` / `Admin` | 不设门（等同管理面） |
 fn readonly_rejection(
-    access: echo_federation::PanelAccess,
+    access: echo_module_federation::PanelAccess,
     cmd: &echo_protocol::BackendCommand,
 ) -> Option<String> {
-    use echo_federation::PanelAccess;
+    use echo_module_federation::PanelAccess;
     match access {
         PanelAccess::Off => Some("该连接没有操作权限（Panel 身份未授予）".to_string()),
         PanelAccess::Readonly => {
@@ -1366,7 +1366,7 @@ mod tests {
     /// 启动时直接拒绝，运维当场知道改哪里。
     #[test]
     fn panel_identity_validation_is_fail_closed() {
-        use echo_federation::PanelAccess;
+        use echo_module_federation::PanelAccess;
         let no_peers = |_: &str| false;
         let key = |k: &str| vec![k.to_string()];
 
@@ -1412,7 +1412,7 @@ mod tests {
     /// 的连接都会拿到 Panel 权限——这一条测试把它钉死。
     #[test]
     fn panel_identity_classification_carries_level() {
-        use echo_federation::PanelAccess;
+        use echo_module_federation::PanelAccess;
         let peers = ["peer-token-1".to_string()];
         let has = |t: &str| peers.iter().any(|p| p == t);
         let panel = |t: &str| (t == "panel-key-1").then_some(PanelAccess::Readonly);
@@ -1450,7 +1450,7 @@ mod tests {
     /// `merged_port_routes_by_token_namespace`。
     #[test]
     fn readonly_panel_gate_blocks_writes() {
-        use echo_federation::PanelAccess;
+        use echo_module_federation::PanelAccess;
         let observe = echo_protocol::BackendCommand::RequestState;
         let write = echo_protocol::BackendCommand::SendMessage {
             session_id: "s1".into(),
@@ -1562,17 +1562,17 @@ mod tests {
         // 假“核心”的联邦实例：含一个已知 peer（token = "peer-tok"）。
         let (fed_events, _fed_rx) = tokio::sync::mpsc::channel(16);
         let (fed_shutdown, _fed_sd) = tokio::sync::watch::channel(false);
-        let fed = echo_federation::Federation::new(
+        let fed = echo_module_federation::Federation::new(
             "node-merged-host".into(),
             None,
-            echo_federation::NodeCaps {
+            echo_module_federation::NodeCaps {
                 tools: vec![],
                 subagent: false,
                 workspaces: vec![],
                 active_turns: 0,
                 panel_ready: false,
             },
-            vec![echo_federation::PeerConfig {
+            vec![echo_module_federation::PeerConfig {
                 name: "remote".into(),
                 url: String::new(),
                 token: "peer-tok".into(),
@@ -1656,12 +1656,12 @@ mod tests {
         let (mut fed_ws, _) = tokio_tungstenite::connect_async(client_request(Some("peer-tok")))
             .await
             .expect("peer token must upgrade");
-        let hello = echo_federation::FedFrame::Hello(echo_federation::NodeHello {
+        let hello = echo_module_federation::FedFrame::Hello(echo_module_federation::NodeHello {
             node_id: "node-remote".into(),
             node_name: None,
-            protocol_version: echo_federation::PROTOCOL_VERSION,
+            protocol_version: echo_module_federation::PROTOCOL_VERSION,
             version: "test".into(),
-            caps: echo_federation::NodeCaps {
+            caps: echo_module_federation::NodeCaps {
                 tools: vec![],
                 subagent: false,
                 workspaces: vec![],
@@ -1681,10 +1681,10 @@ mod tests {
             .expect("welcome timeout")
             .expect("welcome frame")
             .expect("welcome ok");
-        let frame: echo_federation::FedFrame =
+        let frame: echo_module_federation::FedFrame =
             serde_json::from_str(&reply.into_text().unwrap()).unwrap();
         assert!(
-            matches!(frame, echo_federation::FedFrame::Welcome(_)),
+            matches!(frame, echo_module_federation::FedFrame::Welcome(_)),
             "expected Welcome on merged port, got {frame:?}"
         );
         fed_ws.close(None).await.ok();
@@ -1713,16 +1713,16 @@ mod tests {
     /// ④ 未配置 Panel 身份时，同一把密钥 = 401（不因"没配"而放行）。
     #[tokio::test]
     async fn merged_port_honours_panel_identity_level() {
-        use echo_federation::{PanelAccess, PanelIdentity};
+        use echo_module_federation::{PanelAccess, PanelIdentity};
         let (bridge, handle) = echo_protocol::create_bridge();
         let bridge = Arc::new(bridge);
 
         let (fed_events, _fed_rx) = tokio::sync::mpsc::channel(16);
         let (fed_shutdown, _fed_sd) = tokio::sync::watch::channel(false);
-        let fed = echo_federation::Federation::new(
+        let fed = echo_module_federation::Federation::new(
             "node-panel-host".into(),
             None,
-            echo_federation::NodeCaps {
+            echo_module_federation::NodeCaps {
                 tools: vec![],
                 subagent: false,
                 workspaces: vec![],

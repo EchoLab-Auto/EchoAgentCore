@@ -3,14 +3,14 @@
 
 use std::sync::Arc;
 
-use echo_fabric_federation as fabric;
+use crate::connection as fabric;
 use fabric::WireFrame;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 
+use crate::connection::FederationError;
 use crate::frame::{FedFrame, NodeCaps, NodeHello};
 use crate::panel::{PanelAccess, PanelGate, PanelIdentity};
-use crate::FederationError;
 
 pub use fabric::{PeerConfig, PeerDiagnostics};
 pub type LinkHandle = fabric::LinkHandle<FedFrame>;

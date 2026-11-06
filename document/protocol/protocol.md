@@ -238,7 +238,7 @@ Panel web 后端同源提供）。渲染侧（Panel）直接 `<img src="/media/.
 
 ### 联邦管理
 
-Core↔Core 联邦（`echo-federation` crate，惯例端口 :3133；`[federation].listen` **缺省合并至管理端口**——单监听按令牌分流，显式地址 = 独立监听、显式空串 = 纯连出）是**独立链路**——与
+Core↔Core 联邦（`echo-module-federation` crate，惯例端口 :3133；`[federation].listen` **缺省合并至管理端口**——单监听按令牌分流，显式地址 = 独立监听、显式空串 = 纯连出）是**独立链路**——与
 Panel 的 management WS 并存，帧类型为 `FedFrame`（工具调用 Invoke 三段式、
 委派 SubagentSpawn/Event、只读查询 Query/QueryResult）。契约见
 [联邦](../federation/federation.md)；演进规则与本协议一致（externally-tagged +

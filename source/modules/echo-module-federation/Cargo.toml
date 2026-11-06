@@ -9,7 +9,12 @@ description = "联邦执行层模块：远程工具路由表 / 代理工具 / �
 
 [dependencies]
 echo-defs = { workspace = true }
-echo-federation = { workspace = true }
+serde.workspace = true
+thiserror.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+base64.workspace = true
+uuid.workspace = true
 echo-tool = { workspace = true }
 echo-context = { workspace = true }
 echo-module = { workspace = true }

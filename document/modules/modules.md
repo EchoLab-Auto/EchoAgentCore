@@ -18,7 +18,7 @@ link: ["kernel | 运行地基", "tools | 工具集", "shell | Shell 会话", "wo
 1. **一切皆模块**：LLM provider、TurnRunner、工具、技能、模块实例、编排、management server 均为模块，无特权核心模块
 2. 模块 = manifest + 生命周期钩子；注册是可逆副作用（disposer）
 3. **热重载优先于重启**：数据类模块（技能/工具/清单）秒级热重载；代码类模块不热重载——provider / loop 经原子二进制替换 + 进程重启生效，模块实例实现作为进程外模块随 Core 重启重建
-4. 模块**不 import `echo-agent`**（只有组合根可以），可按需依赖定义层（`echo-defs` / `echo-module` / `echo-context`）与机制层（`echo-tool` / `echo-shell` / `echo-protocol` / `echo-session` / `echo-federation`）；逐 crate 的完整白名单在 `scripts/deps-policy.txt`，方向只向下
+4. 模块**不 import `echo-agent`**（只有组合根可以），可按需依赖定义层（`echo-defs` / `echo-module` / `echo-context`）与机制层（`echo-tool` / `echo-shell` / `echo-protocol` / `echo-session` / `echo-module-federation`）；逐 crate 的完整白名单在 `scripts/deps-policy.txt`，方向只向下
 
 ### 为什么不用动态库（.so）模块
 
@@ -84,7 +84,6 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 | [`echo-agent.kernel.session`](./kernel.md) | Kernel | 进程内 | 事件溯源：`SessionEvent` / `EventLog` / 投影 / compaction |
 | [`echo-agent.kernel.tool`](./kernel.md) | Kernel | 进程内 | 工具机制：`ToolRegistry`（可逆注册 + 定义缓存 + 出口脱敏） |
 | [`echo-agent.kernel.shell`](./kernel.md) | Kernel | 进程内 | Shell 机制：进程组生命周期 + 哨兵分帧 |
-| [`echo-agent.kernel.federation`](./kernel.md) | Kernel | 进程内 | 联邦线协议：帧 / Hello / 邀请 / 重连 |
 | [`echo-agent.tools.builtin`](./tools.md) | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理）；**不含 shell 会话** |
 | [`echo-agent.shell`](./shell.md) | Tool | 进程内 | 后台 bash 会话 + Shell 面板命令域 |
 | [`echo-agent.workspace`](./workspace.md) | Tool | 进程内（**独立仓**） | 工作区会话（多目录管理 + git 状态 + 只读文件浏览）。2026-11 迁出 Core 至 `EchoLab-Auto/crate-workspace`：store 与命令域归模块，宿主只留只读镜像 + 工具代理 |
@@ -102,11 +101,11 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 
 > **`Kernel` 是什么**：2026-11 取消「中间层 / 模块」二分之后新增的类别——提供其它模块的**运行地基**（词汇 / 线契约 / 注册表 / 事件日志 / 配置存储 / 循环驱动）。它们与其它模块同形（有 manifest、进 catalog、出现在本表），但**不可禁用**：`modules.toml` 写 `enabled = false` 会让启动失败并点名。逐条理由见 [运行地基](./kernel.md)。
 
-表的来源分两类，别混算：**框架内置 19 项**（`echo_agent::modules::BUILTIN_MODULE_IDS: [&str; 19]`，`builtin = true`，实现同在 Core 进程内）与**模块实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::MODULE_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
+表的来源分两类，别混算：**框架内置 18 项**（`echo_agent::modules::BUILTIN_MODULE_IDS: [&str; 18]`，`builtin = true`，实现同在 Core 进程内）与**模块实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::MODULE_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
 
 > **Panel 进程内模块的实现完全在 Panel 仓**（`source/echo-module-panel`）。Core 的组合根只引用其公开工厂，不持有 Panel 代码；挂载语义与本文相同，默认不启用。详见 Panel 仓文档。
 
-联邦（`echo-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
+联邦（`echo-module-federation`）为对等链路包——跨机工具调用、委派与只读查询，机制见 [联邦（多机）](../federation/federation.md)。
 
 > **框架侧实现位置**：每个内置模块都是一个独立 crate（`source/modules/echo-module-*`），上表第一列的链接即它的契约文档。工具子系统的跨包机制（`ToolRegistry`）在 `echo-tool`，Shell 机制在 `echo-shell`——**机制层**放词汇与通用实现，**模块 crate** 放「这台部署上要不要装、装了之后给谁用」。
 >

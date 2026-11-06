@@ -45,7 +45,6 @@ link: []
 | `echo-agent.kernel.session` | 读不出已有会话文件（用户的全部历史） |
 | `echo-agent.kernel.tool` | 工具无处注册，模型看不到任何工具 |
 | `echo-agent.kernel.shell` | `bash-*` 工具全部失效 |
-| `echo-agent.kernel.federation` | 对端解析不了帧（链路跨进程，格式是硬契约） |
 
 在 `modules.toml` 里给它们写 `enabled = false` 时，**启动失败并点名那一条**：
 
@@ -68,7 +67,7 @@ Error: kernel module cannot be disabled: modules.toml 试图禁用 kernel 模块
 
 现在：实现（`registry.rs`）+ 构造（`build`）+ 身份（`kind = "security"`）同处 `echo-module-sanitize`。关闭脱敏的唯一路径仍是 `core.toml` 的 `[security.sanitize].enabled = false`（需重启 + 启动日志 `warn!`），见 [敏感信息隔离](../core/security-redaction.md)。
 
-## 七个成员
+## 六个成员
 
 | id | crate | 职责 | 有运行期状态 |
 |---|---|---|---|
@@ -78,7 +77,6 @@ Error: kernel module cannot be disabled: modules.toml 试图禁用 kernel 模块
 | `echo-agent.kernel.session` | `echo-session` | `SessionEvent` 事件集 / `EventLog` / `derive_messages` / compaction | ✅ `EventLog` |
 | `echo-agent.kernel.tool` | `echo-tool` | `ToolRegistry`：可逆注册 + 定义缓存 + 出口脱敏 | ✅ `ToolRegistry` |
 | `echo-agent.kernel.shell` | `echo-shell` | bash 子进程会话：进程组生命周期 + 哨兵分帧 | ✅ `ShellManager` |
-| `echo-agent.kernel.federation` | `echo-agent-federation`（业务适配）+ `echo-federation`（通用连接） | 对等链路、认证、邀请、重连 | ✅ 链路 |
 
 ## `mount` 为什么是空的（纯身份声明）
 

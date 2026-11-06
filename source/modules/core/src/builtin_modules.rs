@@ -154,9 +154,6 @@ pub(crate) fn catalog_with(
     for module in echo_shell::module::modules(version) {
         push_module(&mut catalog, module)?;
     }
-    for module in echo_federation::module::modules(version) {
-        push_module(&mut catalog, module)?;
-    }
 
     // ── 会话子系统（事件日志 / 投影 / 持久化 / 压缩编排）──
     //
@@ -510,7 +507,6 @@ mod catalog_shape_tests {
             echo_session::module::MODULE_ID,
             echo_tool::module::MODULE_ID,
             echo_shell::module::MODULE_ID,
-            echo_federation::module::MODULE_ID,
         ] {
             assert!(ids.iter().any(|c| c == id), "kernel {id} 不在 catalog 里");
         }

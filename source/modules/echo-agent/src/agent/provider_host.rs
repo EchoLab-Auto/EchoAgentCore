@@ -223,7 +223,7 @@ impl ProviderCommandHost for AgentProviderCommandHost {
                 Some(querier) => {
                     querier(
                         peer.clone(),
-                        echo_federation::QueryKind::ApiProfiles,
+                        echo_module_federation::QueryKind::ApiProfiles,
                         String::new(),
                     )
                     .await

@@ -18,8 +18,8 @@
 
 use std::sync::Arc;
 
-use echo_federation::PeerConfig;
 use echo_module_federation::admin::{Emit, FederationAdminHost, PeerSave, PeerSummary};
+use echo_module_federation::PeerConfig;
 use echo_protocol::BackendEvent;
 
 use crate::federation_rt::FederationRuntime;

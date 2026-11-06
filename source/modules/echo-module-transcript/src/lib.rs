@@ -31,7 +31,7 @@
 //! ## 依赖纪律
 //!
 //! 只依赖词汇层（`echo-defs` / `echo-protocol` / `echo-session`）与机制层
-//! （`echo-context` / `echo-federation`），**不依赖任何其它模块**。
+//! （`echo-context` / `echo-module-federation`），**不依赖任何其它模块**。
 
 use std::sync::Arc;
 

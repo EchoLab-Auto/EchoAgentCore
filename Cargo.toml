@@ -6,8 +6,7 @@ members = [
     "source/modules/echo-tool",
     "source/modules/echo-shell",
     "source/modules/echo-protocol",
-    "source/modules/echo-federation",
-    "source/modules/echo-agent-federation",
+    "source/modules/echo-module-federation",
     "source/modules/echo-agent",
     "source/modules/echo-config",
     "source/modules/echo-test-utils",
@@ -95,7 +94,6 @@ echo-module-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", br
 echo-module-session = { path = "source/modules/echo-module-session" }
 echo-module-transcript = { path = "source/modules/echo-module-transcript" }
 echo-module-tools = { path = "source/modules/echo-module-tools" }
-echo-federation = { package = "echo-agent-federation", path = "source/modules/echo-agent-federation" }
 
 # async runtime
 tokio = { version = "1", features = ["full"] }
@@ -138,7 +136,7 @@ aho-corasick = "1"
 # Subagent 独立仓以 git 依赖引用 Core 基础 crate；宿主必须将其实例
 # 重定向至当前工作区，避免 path 与 git 各生成一份 trait 类型。
 [patch."https://github.com/EchoLab-Auto/EchoAgentCore"]
+echo-module-federation = { path = "source/modules/echo-module-federation" }
 echo-defs = { path = "source/modules/echo-defs" }
 echo-tool = { path = "source/modules/echo-tool" }
-echo-federation = { package = "echo-agent-federation", path = "source/modules/echo-agent-federation" }
 echo-protocol = { path = "source/modules/echo-protocol" }

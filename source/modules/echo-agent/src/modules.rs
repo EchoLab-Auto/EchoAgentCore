@@ -89,7 +89,7 @@ pub use echo_module_federation::MODULE_ID as FEDERATION_MODULE_ID;
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_MODULE_IDS: [&str; 19] = [
+pub const BUILTIN_MODULE_IDS: [&str; 18] = [
     TOOLS_BUILTIN_MODULE_ID,
     SHELL_MODULE_ID,
     SKILLS_DIR_MODULE_ID,
@@ -118,7 +118,6 @@ pub const BUILTIN_MODULE_IDS: [&str; 19] = [
     echo_session::module::MODULE_ID,
     echo_tool::module::MODULE_ID,
     echo_shell::module::MODULE_ID,
-    echo_federation::module::MODULE_ID,
 ];
 
 /// 模块**不得**接管的命令（宿主自我管理面）。
@@ -223,14 +222,13 @@ impl MountStep {
 /// 2026-11 之前它另有一个 `kind = "kernel"` 的空壳身份（crate
 /// `echo-sanitize`），已随该 crate 并入 `echo-module-sanitize` 一并退役。
 pub fn disabled_kernel_modules(catalog_ids: &[String], plan: &[MountStep]) -> Option<String> {
-    const KERNEL_IDS: [&str; 7] = [
+    const KERNEL_IDS: [&str; 6] = [
         echo_defs::MODULE_ID,
         echo_config::MODULE_ID,
         echo_protocol::module::MODULE_ID,
         echo_session::module::MODULE_ID,
         echo_tool::module::MODULE_ID,
         echo_shell::module::MODULE_ID,
-        echo_federation::module::MODULE_ID,
     ];
     plan.iter()
         .filter(|step| !step.enabled)

@@ -42,7 +42,7 @@ EchoAgentCore/
 │       ├── echo-tool/         # kernel：工具注册与执行机制
 │       ├── echo-shell/        # kernel：持久 Shell 会话机制
 │       ├── echo-module-loop/         # kernel：TurnRunner + ToolPipeline
-│       ├── echo-federation/   # kernel：Core↔Core 链路与帧协议
+│       ├── echo-module-federation/   # kernel：Core↔Core 链路与帧协议
 │       ├── echo-module-adapter/    # 协议贡献 → 领域 trait
 │       ├── echo-module-tools/      # 内置工具集
 │       ├── echo-module-shell/      # Shell 工具与命令域
@@ -100,7 +100,7 @@ EchoAgentCore/
 
 ## 编码约定
 
-- **错误处理**：库 crate 用 `thiserror` 定义具体错误类型（如 `echo_federation::FederationError`）；`anyhow` 只用于应用层（`echo-agent` 的 harness 与 `echo-agent-core` 组合根）。库错误经 `?` 自动转为 `anyhow::Error`
+- **错误处理**：库 crate 用 `thiserror` 定义具体错误类型（如 `echo_module_federation::FederationError`）；`anyhow` 只用于应用层（`echo-agent` 的 harness 与 `echo-agent-core` 组合根）。库错误经 `?` 自动转为 `anyhow::Error`
 - **锁**：持锁期间不 `.await` 的同步锁优先用 `parking_lot`（无中毒、`lock()` 直接返回 guard）；必须用 `std::sync` 锁的 crate 一律 `.lock().unwrap_or_else(std::sync::PoisonError::into_inner)`，生产代码不 `unwrap()` / `expect()` 锁（测试代码不限）
 - **异步路径不阻塞**：async 函数及其同步调用链里不 `std::thread::sleep` / 自旋重试；阻塞 IO（git、子进程）经 `tokio::task::spawn_blocking`
 - **文件规模**：单个源文件超过 ~1500 行（测试文件除外）即按职责拆子模块（`impl` 可分布在多个文件）

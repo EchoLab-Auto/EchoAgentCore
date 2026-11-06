@@ -220,9 +220,9 @@ pub fn invite_host(listen: &str, advertise: &str, observed: Option<&str>) -> Opt
     // ① 观测地址（2026-11）：端口**一律取联邦监听端口**——观测值里的端口
     // 属于管理面，独立监听时两者不同（合并时相同，故行为不变）。
     if let Some(observed) = observed.map(str::trim).filter(|o| !o.is_empty()) {
-        if let Some(host) = echo_federation::invite::host_of(observed) {
-            if echo_federation::invite::host_rank(host) > 0 {
-                if let Some(host_port) = echo_federation::invite::replace_host(listen, host) {
+        if let Some(host) = crate::connection::invite::host_of(observed) {
+            if crate::connection::invite::host_rank(host) > 0 {
+                if let Some(host_port) = crate::connection::invite::replace_host(listen, host) {
                     return Some(host_port);
                 }
             }
@@ -407,8 +407,8 @@ async fn create_invite(host: &dyn FederationAdminHost) -> Result<String, String>
                 .into(),
         );
     };
-    let token = echo_federation::generate_token();
-    let invite = echo_federation::encode_invite(&host_port, &token, host.node_name().as_deref());
+    let token = crate::generate_token();
+    let invite = crate::encode_invite(&host_port, &token, host.node_name().as_deref());
     let placeholder = invite_placeholder(&token);
     let stale = host.register_invite(&placeholder, &token).await;
     if !stale.is_empty() {

@@ -23,13 +23,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::error::FederationError;
+use crate::connection::error::FederationError;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::frame::{Frame, NodeHello, WireFrame, PROTOCOL_VERSION};
+use crate::connection::frame::{Frame, NodeHello, WireFrame, PROTOCOL_VERSION};
 use serde_json::Value;
 
 /// 应用层心跳间隔（WS 自带 Ping 之外的存活证据）。
@@ -415,7 +415,7 @@ impl<A: Frame> Federation<A> {
     /// 记录一次入站连接观测到的 `Host`（同步：WS 升级回调专用）。
     ///
     /// 只记「可用于对外邀请」的主机名（回环/通配直接丢弃，见
-    /// [`crate::invite::note_observed`]）；池内去重且最近优先。
+    /// [`crate::connection::invite::note_observed`]）；池内去重且最近优先。
     pub fn note_observed_host_sync(&self, host: &str) {
         let cap = OBSERVED_HOST_CAP;
         let recorded = {
@@ -423,7 +423,7 @@ impl<A: Frame> Federation<A> {
                 .observed_hosts
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            crate::invite::note_observed(&mut hosts, host, cap)
+            crate::connection::invite::note_observed(&mut hosts, host, cap)
         };
         if recorded {
             // 运维排查面：邀请串 / Hello 宣告的地址来自这里（连接频率低，
@@ -444,7 +444,7 @@ impl<A: Frame> Federation<A> {
             .observed_hosts
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        crate::invite::pick_observed_host(&hosts)
+        crate::connection::invite::pick_observed_host(&hosts)
     }
 
     /// Hello 里宣告的本机可拨地址：观测地址优先（替换主机部分、端口不变），
@@ -454,7 +454,7 @@ impl<A: Frame> Federation<A> {
         let Some(observed) = self.observed_host_sync() else {
             return self.local_advertise.clone();
         };
-        crate::invite::replace_host(advertise.trim_start_matches("ws://"), &observed)
+        crate::connection::invite::replace_host(advertise.trim_start_matches("ws://"), &observed)
             .map(|host_port| format!("ws://{host_port}"))
             .or_else(|| self.local_advertise.clone())
     }
@@ -1081,7 +1081,7 @@ async fn accept_with_auth(
             // 比本机推导的 advertise 更接近真相（NAT/端口映射下尤其如此）。
             if let Some(host) = request.headers().get("host").and_then(|v| v.to_str().ok()) {
                 let cap = OBSERVED_HOST_CAP;
-                crate::invite::note_observed(
+                crate::connection::invite::note_observed(
                     &mut observed_hosts
                         .write()
                         .unwrap_or_else(std::sync::PoisonError::into_inner),

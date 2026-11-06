@@ -42,7 +42,7 @@ use crate::aggregator;
 // 装配产生），拆成 5 个参数只是在每层签名里重复同一件事；而集合本身是
 // **值**（Clone 廉价、无全局槽位），不构成新的耦合点。
 
-pub use echo_federation::SubagentStatus;
+pub use crate::SubagentStatus;
 
 /// 联邦管理面的状态迁移出口（`Arc` 包装，装配期放进
 /// [`FederationPorts::admin`]）。
@@ -68,7 +68,7 @@ pub type RemoteInvoker = echo_defs::remote_tool::RemoteInvoker;
 pub type RemoteQuerier = std::sync::Arc<
     dyn Fn(
             String,
-            echo_federation::QueryKind,
+            crate::QueryKind,
             String,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,

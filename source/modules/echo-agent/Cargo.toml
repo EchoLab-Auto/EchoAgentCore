@@ -10,7 +10,6 @@ repository.workspace = true
 [dependencies]
 echo-defs = { path = "../echo-defs" }
 echo-config = { workspace = true }
-echo-federation = { package = "echo-agent-federation", path = "../echo-agent-federation" }
 echo-context = { workspace = true }
 echo-session = { path = "../echo-session" }
 echo-protocol = { path = "../echo-protocol" }

@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use echo_federation::SubagentStatus;
+use crate::SubagentStatus;
 
 /// 聚合摘要中单个成员结果的字符上限（防单个长结果烧掉聚合消息）。
 const MEMBER_RESULT_MAX_CHARS: usize = 500;

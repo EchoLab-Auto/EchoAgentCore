@@ -15,7 +15,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use echo_federation::{FedFrame, Federation};
+use crate::{FedFrame, Federation};
 
 use crate::router::InvokeRouter;
 use echo_tool::{Tool, ToolError};

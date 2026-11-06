@@ -341,7 +341,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             .federation
             .peers
             .iter()
-            .map(|(name, p)| echo_federation::PeerConfig {
+            .map(|(name, p)| echo_module_federation::PeerConfig {
                 name: name.clone(),
                 url: p.url.clone(),
                 token: p.token.clone(),
@@ -359,7 +359,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         // `[federation] panel_keys` + `panel_access`：一个 Panel 用同一把密钥
         // 接入全网任一节点，权限由**本节点**决定。解析与校验都在这里做
         // （fail-closed：配置写错宁可起不来，也不要"以为开了其实没开"）。
-        let panel_access = echo_federation::PanelAccess::parse(&cfg.federation.panel_access)
+        let panel_access = echo_module_federation::PanelAccess::parse(&cfg.federation.panel_access)
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "[federation] panel_access = {:?} 不是合法级别（可选 off / readonly / operate / admin）",
@@ -372,7 +372,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             &cfg.core.management_access_token,
             |t| cfg.federation.peers.values().any(|p| p.token == t),
         )?;
-        let caps = echo_federation::NodeCaps {
+        let caps = echo_module_federation::NodeCaps {
             tools: Vec::new(),
             subagent: true,
             workspaces: Vec::new(),
@@ -421,7 +421,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             None,
         )
         .map(|host_port| format!("ws://{host_port}"));
-        let fed = echo_federation::Federation::new(
+        let fed = echo_module_federation::Federation::new(
             node_doc.node_id.clone(),
             cfg.federation
                 .node_name
@@ -435,7 +435,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         );
         // Panel 身份注入（P1）：握手 `caps.panel_ready` 与合并端口/独立监听
         // 的令牌分流都从这里取（`Federation::panel_gate_sync`）。
-        fed.set_panel_identity(echo_federation::PanelIdentity::new(
+        fed.set_panel_identity(echo_module_federation::PanelIdentity::new(
             cfg.federation.panel_keys.clone(),
             panel_access,
         ));
@@ -553,23 +553,24 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                             );
                             return;
                         };
-                        let frame = if matches!(status, echo_federation::SubagentStatus::Running) {
-                            echo_federation::FedFrame::SubagentSpawn(
-                                echo_federation::SubagentSpawnRequest {
-                                    call_id,
-                                    task,
-                                    timeout_secs,
-                                },
-                            )
-                        } else {
-                            echo_federation::FedFrame::SubagentEvent(
-                                echo_federation::SubagentEventFrame {
-                                    call_id,
-                                    status,
-                                    result,
-                                },
-                            )
-                        };
+                        let frame =
+                            if matches!(status, echo_module_federation::SubagentStatus::Running) {
+                                echo_module_federation::FedFrame::SubagentSpawn(
+                                    echo_module_federation::SubagentSpawnRequest {
+                                        call_id,
+                                        task,
+                                        timeout_secs,
+                                    },
+                                )
+                            } else {
+                                echo_module_federation::FedFrame::SubagentEvent(
+                                    echo_module_federation::SubagentEventFrame {
+                                        call_id,
+                                        status,
+                                        result,
+                                    },
+                                )
+                            };
                         let _ = rt.federation.send_to(&node_id, frame).await;
                     });
                 },
@@ -597,7 +598,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                         let call_id = pending.call_id.clone();
                         if rt
                             .federation
-                            .send_to(&node_id, echo_federation::FedFrame::Query(request))
+                            .send_to(&node_id, echo_module_federation::FedFrame::Query(request))
                             .await
                             .is_err()
                         {
@@ -635,7 +636,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     let call_id = pending.call_id.clone();
                     if rt
                         .federation
-                        .send_to(&node_id, echo_federation::FedFrame::Invoke(request))
+                        .send_to(&node_id, echo_module_federation::FedFrame::Invoke(request))
                         .await
                         .is_err()
                     {

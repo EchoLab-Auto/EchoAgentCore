@@ -96,15 +96,17 @@ pub(crate) fn session_import_result(
     success: bool,
     imported_events: usize,
     message: String,
-) -> echo_federation::FedFrame {
-    echo_federation::FedFrame::SessionImportResult(echo_federation::SessionImportResultFrame {
-        transfer_id: transfer_id.to_string(),
-        session_id: session_id.to_string(),
-        target_peer: target_peer.to_string(),
-        success,
-        imported_events,
-        message,
-    })
+) -> echo_module_federation::FedFrame {
+    echo_module_federation::FedFrame::SessionImportResult(
+        echo_module_federation::SessionImportResultFrame {
+            transfer_id: transfer_id.to_string(),
+            session_id: session_id.to_string(),
+            target_peer: target_peer.to_string(),
+            success,
+            imported_events,
+            message,
+        },
+    )
 }
 
 /// 目标侧会话导入缓冲：transfer_id → 有序分块 + 回执标签。
@@ -164,7 +166,7 @@ pub(crate) fn contiguous_acked(chunks: &[Option<String>]) -> u32 {
 /// `acked_upto` 是连续收到的块数（回 ack 推进源窗口 / 触发重发）。
 pub(crate) fn handle_session_import(
     rt: &crate::federation_rt::FederationRuntime,
-    frame: &echo_federation::SessionImportFrame,
+    frame: &echo_module_federation::SessionImportFrame,
     imports: &mut std::collections::HashMap<String, ImportBuffer>,
 ) -> (u32, ImportOutcome) {
     let total = frame.chunk_total as usize;
@@ -361,7 +363,7 @@ pub(crate) async fn handle_migrate_session(
         ));
         return;
     }
-    let transfer_id = echo_federation::new_call_id(rt.federation.local_node_id());
+    let transfer_id = echo_module_federation::new_call_id(rt.federation.local_node_id());
     let total = chunks.len() as u32;
     let source_team = persona_id.clone();
     // 注册 ack 通道（泵收到目标 SessionImportAck 时推进）。
@@ -384,8 +386,8 @@ pub(crate) async fn handle_migrate_session(
                 break Ok(());
             }
             if next < total && next < acked.saturating_add(SESSION_IMPORT_WINDOW) {
-                let frame =
-                    echo_federation::FedFrame::SessionImport(echo_federation::SessionImportFrame {
+                let frame = echo_module_federation::FedFrame::SessionImport(
+                    echo_module_federation::SessionImportFrame {
                         transfer_id: transfer_id.clone(),
                         session_id: session_id.clone(),
                         team_id: source_team.clone(),
@@ -393,7 +395,8 @@ pub(crate) async fn handle_migrate_session(
                         chunk_index: next,
                         chunk_total: total,
                         data: chunks[next as usize].clone(),
-                    });
+                    },
+                );
                 match rt.federation.send_to(&node_id, frame).await {
                     Ok(()) => next += 1,
                     Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,

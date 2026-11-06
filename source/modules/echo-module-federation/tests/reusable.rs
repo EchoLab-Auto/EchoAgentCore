@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use echo_federation::{Federation, Frame, LinkEvent, PeerConfig};
+use echo_module_federation::connection::{Federation, Frame, LinkEvent, PeerConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, watch};
@@ -155,10 +155,11 @@ async fn arbitrary_application_messages_cross_two_nodes() {
 
 #[test]
 fn wire_protocol_does_not_impose_business_fields() {
-    let frame = echo_federation::WireFrame::Application(InventoryMessage::Reserved {
-        sku: "x".into(),
-        ok: true,
-    });
+    let frame =
+        echo_module_federation::connection::WireFrame::Application(InventoryMessage::Reserved {
+            sku: "x".into(),
+            ok: true,
+        });
     let encoded = InventoryMessage::encode_wire(&frame).unwrap();
     assert!(encoded.contains("Reserved"));
     let decoded = InventoryMessage::decode_wire(&encoded).unwrap();

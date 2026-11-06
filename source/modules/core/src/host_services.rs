@@ -37,7 +37,7 @@ use std::sync::Arc;
 
 use echo_context::{Ctx, Disposer};
 use echo_defs::module_instance::ModuleInstance;
-use echo_federation::Federation;
+use echo_module_federation::Federation;
 use echo_module_management::host_keys::{ManagementHost, MANAGEMENT_HOST};
 use echo_module_provider_llm::host_keys::PROVIDER_HOST;
 use echo_module_self_update::host_keys::EVENTS as SELF_UPDATE_EVENTS;

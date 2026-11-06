@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use echo_agent_federation::{
+use echo_module_federation::{
     FedFrame, Federation, LinkEvent, NodeCaps, PeerConfig, PROTOCOL_VERSION,
 };
 use tokio::net::TcpListener;
@@ -304,7 +304,7 @@ async fn protocol_version_mismatch_is_rejected() {
         tx,
         sd,
     );
-    let mut hello = echo_agent_federation::NodeHello {
+    let mut hello = echo_module_federation::NodeHello {
         node_id: "node-b".into(),
         node_name: None,
         protocol_version: PROTOCOL_VERSION + 1,
@@ -322,14 +322,14 @@ async fn protocol_version_mismatch_is_rejected() {
 async fn wait_up(
     rx: &mut mpsc::Receiver<LinkEvent>,
     within: Duration,
-) -> echo_agent_federation::PeerInfo {
+) -> echo_module_federation::PeerInfo {
     wait_up_opt(rx, within).await.expect("link should come up")
 }
 
 async fn wait_up_opt(
     rx: &mut mpsc::Receiver<LinkEvent>,
     within: Duration,
-) -> Option<echo_agent_federation::PeerInfo> {
+) -> Option<echo_module_federation::PeerInfo> {
     tokio::time::timeout(within, async {
         loop {
             match rx.recv().await {
@@ -601,7 +601,7 @@ async fn wrong_token_gets_http_401() {
     });
 
     // 1) 错误 token：标准 HTTP 401。
-    let request = echo_agent_federation::bearer_request(&addr, "wrong-token").unwrap();
+    let request = echo_module_federation::bearer_request(&addr, "wrong-token").unwrap();
     let error = tokio_tungstenite::connect_async(request)
         .await
         .expect_err("wrong token must be rejected");
@@ -617,7 +617,7 @@ async fn wrong_token_gets_http_401() {
     }
 
     // 2) 正确 token：正常升级（101）。
-    let request = echo_agent_federation::bearer_request(&addr, "right-token").unwrap();
+    let request = echo_module_federation::bearer_request(&addr, "right-token").unwrap();
     let ws = tokio_tungstenite::connect_async(request)
         .await
         .expect("authorized handshake must succeed");

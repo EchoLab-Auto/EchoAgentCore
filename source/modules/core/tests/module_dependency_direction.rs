@@ -346,18 +346,20 @@ fn walk_rs(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
 ///
 /// 例外只有机制 crate（"模块怎么装"，不是"某个模块"）：
 /// `echo-module` / `echo-module-api` / `echo-module-host` / `echo-module-sdk`
-/// / `echo-module-loader`。
+/// / `echo-module-loader`。`echo-module-federation` 的通用连接与 Panel 端口合并
+/// 共用同一监听/认证接缝，因此它是管理面允许直接依赖的基础设施例外。
 ///
 /// 本条与 `scripts/deps-policy.txt` 的白名单**互为冗余**：policy 是人读的
 /// 真值来源，这里给出可执行的诊断信息（点名是哪两个模块、该怎么修）。
 #[test]
 fn modules_do_not_depend_on_other_modules() {
-    const MECHANISM: [&str; 5] = [
+    const MECHANISM: [&str; 6] = [
         "echo-module",
         "echo-module-api",
         "echo-module-host",
         "echo-module-sdk",
         "echo-module-loader",
+        "echo-module-federation",
     ];
     let root = repo_root().join("source/modules");
     let mut violations = Vec::new();
@@ -396,10 +398,9 @@ fn modules_do_not_depend_on_other_modules() {
             }
         }
     }
-    // 20 = 22 - 2：workspace 与 subagent 已迁出为独立仓库，
-    // 不再在 `source/modules/` 下。
+    // 18 = 22 - 2 - 2：workspace/subagent 迁出，loop/federation 实现合并。
     assert!(
-        modules_seen >= 20,
+        modules_seen >= 18,
         "只扫到 {modules_seen} 个模块 crate（路径规则改过？）"
     );
     assert!(

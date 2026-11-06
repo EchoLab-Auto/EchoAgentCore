@@ -31,7 +31,7 @@ graph BT
   Loop[echo-module-loop<br>TurnRunner]
   Proto[echo-protocol<br>线契约]
   Config[echo-config<br>TOML 原子读改写]
-  Fed[echo-federation<br>Core↔Core 联邦]
+  Fed[echo-module-federation<br>Core↔Core 联邦]
   Module[echo-module<br>生命周期钩子]
   ModuleApi[echo-module-api<br>协议与贡献类型]
   ModuleLoader[echo-module-loader]
@@ -100,7 +100,7 @@ graph BT
 | `echo-module-management` | 内置模块：管理面 WS（Phase 3 ⑧） | Panel 连接中继（`EventBroker` 单接收者 → 每连接一订阅、按序分配 `seq`）、token 鉴权与常量时间比较、端口合并规划 `plan_federation_listen` + fail-closed `validate_merged`、心跳保活；**不需要 Agent 句柄**，只认线契约。显示层已外置到 `echo-module-transcript` |
 | `echo-module-tools` | 内置模块：内置工具集（Phase 3 之后的延续工作） | `echo-agent.tools.builtin` 的实现：计算/检索（`calculator`/`web_search`）、清单（`checklist`）、模块实例管理（`instance_*`）、编码（`read_file`/`write_file`/`edit_file`/`list_files`/`search_code`/`bash`）。两个外部能力**经注入**：`RemoteInvoker`（`node://` 远程调用）、工作区根——未注入时显式降级（「联邦未接线」），不静默换实现 |
 | `echo-module-shell` | 内置模块：Shell 会话 | `echo-agent.shell` 的实现：`bash-start` / `bash-exec` / `bash-stop` 三个工具 + 四条 `*Shell*` 面板命令。机制依赖 `echo-shell`（进程组生命周期 + 哨兵分帧），与工具集**互不依赖**；拆出的理由是独立的启停需求与独立的机制依赖——想关 shell 不该连计算器一起关 |
-| `echo-module-federation` | 内置模块：联邦执行层（`echo-agent.federation`） | 调用调度路由表（`call_id → oneshot`）、`RemoteTool` 代理工具（`<peer>__<tool>`）、白名单裁决与执行端、工作区跨机查询、联邦命令域。只依赖 `echo-federation` / `echo-tool` / `echo-defs` 等机制层，**可独立禁用**：关掉后内核照常启动，远程工具显式降级为「联邦未接线」；链路泵（握手 / 心跳 / 重连 / 回环防护）仍在组合根 |
+| `echo-module-federation` | 内置模块：联邦执行层（`echo-agent.federation`） | 调用调度路由表（`call_id → oneshot`）、`RemoteTool` 代理工具（`<peer>__<tool>`）、白名单裁决与执行端、工作区跨机查询、联邦命令域。只依赖 `echo-module-federation` / `echo-tool` / `echo-defs` 等机制层，**可独立禁用**：关掉后内核照常启动，远程工具显式降级为「联邦未接线」；链路泵（握手 / 心跳 / 重连 / 回环防护）仍在组合根 |
 | `echo-module-sanitize` | 内置模块：脱敏（`echo-agent.security.sanitize`，`kind = security` → **进程级**） | 脱敏的**实现 + 装配**：宿主收集秘密表（`[agent]` / profiles / env / 实例凭据 / `extra_*`），模块用 `build(&RedactorSpec)` 构造 `RegistryRedactor`——组合根不再认识任何脱敏实现。唯一的特殊性：构造必须在**挂载之前**（脱敏是 LLM 出口的装饰器，`llm` 服务要以已脱敏形态进 `Ctx`），所以 `mount` 是纯身份声明。契约见 [脱敏模块](../modules/sanitize.md) |
 | `echo-module-self-update` | 内置模块：自更新（`echo-agent.selfupdate`） | `RequestSelfUpdate` / `RequestSelfUpdateStatus` 两条命令的归属模块，连同 updater 单元名、状态文件布局与重入判定；零参数（宿主能力经服务表解析），只经事件出口说话。做成内置模块而非「宿主自我管理面」的理由：命令认领不该由一张保留名单守卫，而「第三方不得劫持自更新」用编译进本二进制 + 启动即挂载满足更准确 |
 | `echo-shell` | Shell 会话机制 | 每会话一个 `bash --noprofile --norc`（独立进程组，销毁整组终止）、写命令 + 随机哨兵双写分帧（stdout/stderr 两路专职读取，避免假超时）、会话串行/跨会话并行、`MAX_SHELL_SESSIONS` 上限、事件经注入 emit 广播；宿主侧接线（`shell_emit_for_self` 等要拿 `Agent` 的部分）留在 `echo-agent::shell` |
@@ -109,12 +109,12 @@ graph BT
 | `echo-module-adapter` | 远程贡献 → 领域 trait 的适配层 | `RemoteTool`（`ToolContribution` → `echo_defs::tool::Tool`）、`RemoteInstance`/`RemoteInstanceManagement`（`InstanceContribution` → `ModuleInstance`/`InstanceManagement`，能力位 fail-closed，动作经 `Invoke("<name>:<op>")`）、`CoreApiService`（模块 → 宿主回呼）；依赖 host + api + defs，**不依赖 `echo-agent` 与组合根**。单独成 crate 的理由：这一层认识领域 trait，而 host 必须保持领域中立 |
 | `echo-agent` | agent 框架 | 命令分发、timeline 投影、trunk、provider 工厂与装配、提示词边界与装配、多 agent 管理。**循环只有 echo-module-loop 一条轨道**（内置循环已删除；`echo-agent.loop.single` 是进程级模块，只声明"同一会话 turn 串行排队"这一条策略——见 [Agent 循环](../core/agent-loop.md)）。**具体实现多已外迁**：内置工具在 `echo-module-tools`、Shell 机制在 `echo-shell`（`shell.rs` 只留宿主侧接线）、技能在 `echo-module-skills`、子任务在 `echo-module-subagent`、工作区在 `echo-module-workspace`、联邦执行层在 `echo-module-federation`；`packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面），宿主侧**不认识任何一个内置工具的名字** |
 | `echo-config` | TOML 原子读改写 | `ConfigStore` / `ensure_table`（串行化 + tmp+rename）。**不知道任何 section 的含义**——调用方各自拥有自己的段 |
-| `echo-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
+| `echo-module-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm` 注册、模块宿主装配与挂载、挂载后解析 `loop` 服务、联邦链路泵、启动 |
 
 > 另有 `echo-test-utils`（跨 crate 复用的测试夹具）这个 dev crate，不进运行时依赖链。
 
-依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；其上为中间层（`echo-protocol` / `echo-config` / `echo-session` / `echo-tool` / `echo-shell` / `echo-federation`）与模块层（`echo-module*` 与全部内置模块 crate）◄ `echo-agent` ◄ `echo-agent-core`（bin）。三条容易记错的归属：
+依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；其上为中间层（`echo-protocol` / `echo-config` / `echo-session` / `echo-tool` / `echo-shell` / `echo-module-federation`）与模块层（`echo-module*` 与全部内置模块 crate）◄ `echo-agent` ◄ `echo-agent-core`（bin）。三条容易记错的归属：
 
 - **`ModuleInstance` trait 在 `echo-defs`**（`echo_defs::module_instance`；`InstanceError` / `InstanceInfo` / `InstanceConnectionState` / `InstanceManagement` 同）；**协议侧贡献类型 `ToolContribution` / `InstanceContribution` 在 `echo-module-api`**，两者由 `echo-module-adapter` 桥接
 - **`echo-config` 只做 TOML 原子读改写**，不认识任何配置段的语义（旧 `echo-adapter` crate 已删除，其注册表并入 `echo-defs::module_instance`）
