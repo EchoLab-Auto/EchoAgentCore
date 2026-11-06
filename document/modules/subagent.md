@@ -12,7 +12,7 @@ y: 1200
 
 > **定位**：本文描述 `echo-agent.subagent` 模块（kind=Tool）——让模型把独立子任务**委派给隔离上下文的子 agent 执行**（子任务有自己的系统提示词与工具循环），结论经结构化 hook **作为新的入站 turn** 回灌主会话、子上下文不回合并。覆盖动机与边界、生命周期、工具与技能、hook 机制、事件与观测、包门控与测试守护。读者：Agent 使用者与模块维护者。
 >
-> 实现位置：独立 crate `echo-module-subagent`（解耦计划 Phase 3 ⑥，只依赖定义层 `echo-defs` 与工具机制 `echo-tool`）；宿主经 `echo_agent::subagent::…` 兼容路径引用，Agent 侧的接线与执行在 `agent/subagent_runtime.rs`。远程委派的聚合登记经宿主注入的 `RemoteDelegationSink`（组合根实现为 `federation::aggregator::AggregatorDelegationSink`）——模块本身不认识联邦。与 [Agent 循环](../core/agent-loop.md) 的同会话排队 turn（共享主上下文）互为对照；装载与包门控见 [模块化设计](./modules.md)。
+> 实现位置：独立 crate `echo-module-subagent`（解耦计划 Phase 3 ⑥，只依赖定义层 `echo-defs` 与工具机制 `echo-module-tools`）；宿主经 `echo_agent::subagent::…` 兼容路径引用，Agent 侧的接线与执行在 `agent/subagent_runtime.rs`。远程委派的聚合登记经宿主注入的 `RemoteDelegationSink`（组合根实现为 `federation::aggregator::AggregatorDelegationSink`）——模块本身不认识联邦。与 [Agent 循环](../core/agent-loop.md) 的同会话排队 turn（共享主上下文）互为对照；装载与包门控见 [模块化设计](./modules.md)。
 
 ## 动机与边界
 

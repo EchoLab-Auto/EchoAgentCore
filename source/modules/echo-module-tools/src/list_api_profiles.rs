@@ -11,8 +11,8 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::{Tool, ToolError};
 use echo_defs::api_profile::{parse_pool, PoolSnapshot};
-use echo_tool::{Tool, ToolError};
 
 pub struct ListApiProfilesTool {
     store: echo_config::ConfigStore,

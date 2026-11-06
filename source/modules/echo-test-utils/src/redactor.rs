@@ -4,7 +4,7 @@
 //!
 //! ## Why this exists (2026-11)
 //!
-//! `echo-tool` / `echo-module-tools` used to instantiate
+//! `echo-module-tools` / `echo-module-tools` used to instantiate
 //! `echo_sanitize::RegistryRedactor` directly in their `#[cfg(test)]` modules.
 //! Two problems with that:
 //!

@@ -798,9 +798,7 @@ dependencies = [
  "echo-module-workspace",
  "echo-protocol",
  "echo-session",
- "echo-shell",
  "echo-test-utils",
- "echo-tool",
  "filetime",
  "futures-util",
  "libc",
@@ -851,8 +849,6 @@ dependencies = [
  "echo-module-workspace",
  "echo-protocol",
  "echo-session",
- "echo-shell",
- "echo-tool",
  "flate2",
  "futures-util",
  "getrandom 0.2.17",
@@ -944,8 +940,8 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-module",
+ "echo-module-tools",
  "echo-protocol",
- "echo-tool",
  "futures-util",
  "serde",
  "serde_json",
@@ -1101,14 +1097,18 @@ name = "echo-module-shell"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "echo-context",
  "echo-defs",
  "echo-module",
+ "echo-module-tools",
  "echo-protocol",
- "echo-shell",
- "echo-tool",
+ "libc",
+ "parking_lot",
+ "regex",
  "serde_json",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1132,7 +1132,7 @@ dependencies = [
 [[package]]
 name = "echo-module-subagent"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#fdfc2aa16ab8a81a1fc3f02e6d164ca8b458ebeb"
+source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#92a37239dac518f50aab128125acf1e550ad0dc8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1140,8 +1140,8 @@ dependencies = [
  "dashmap",
  "echo-defs",
  "echo-module-federation",
+ "echo-module-tools",
  "echo-protocol",
- "echo-tool",
  "serde_json",
  "tokio",
  "tokio-util",
@@ -1159,9 +1159,7 @@ dependencies = [
  "echo-defs",
  "echo-module",
  "echo-protocol",
- "echo-shell",
  "echo-test-utils",
- "echo-tool",
  "libc",
  "regex",
  "reqwest",
@@ -1229,21 +1227,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-shell"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "echo-module",
- "echo-protocol",
- "echo-tool",
- "libc",
- "parking_lot",
- "regex",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "echo-test-utils"
 version = "0.1.0"
 dependencies = [
@@ -1251,20 +1234,6 @@ dependencies = [
  "echo-defs",
  "serde_json",
  "tokio",
-]
-
-[[package]]
-name = "echo-tool"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "echo-context",
- "echo-defs",
- "echo-module",
- "echo-test-utils",
- "serde_json",
- "tokio",
- "tracing",
 ]
 
 [[package]]

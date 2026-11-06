@@ -699,7 +699,7 @@ if [[ -x "$BINARY" ]]; then
     # 移除模块时两处同改。
     # 实例模块 id 自 2026-10 由平台名派生（`echo-agent.instance.<platform>`），
     # 无法静态枚举——校验**前缀**即可确认派生逻辑进了二进制。其余为框架内置。
-    expected_ids="echo-agent.instance. echo-agent.tools.builtin echo-agent.shell echo-agent.skills.dir echo-agent.subagent echo-agent.federation echo-agent.provider.llm echo-agent.selfupdate echo-agent.loop.single echo-agent.management.panel echo-agent.session echo-agent.transcript echo-agent.security.sanitize echo-agent.kernel.defs echo-agent.kernel.config echo-agent.kernel.protocol echo-agent.kernel.session echo-agent.kernel.tool echo-agent.kernel.shell"
+    expected_ids="echo-agent.instance. echo-agent.tools.builtin echo-agent.shell echo-agent.skills.dir echo-agent.subagent echo-agent.federation echo-agent.provider.llm echo-agent.selfupdate echo-agent.loop.single echo-agent.management.panel echo-agent.session echo-agent.transcript echo-agent.security.sanitize echo-agent.kernel.defs echo-agent.kernel.config echo-agent.kernel.protocol echo-agent.kernel.session"
     for id in $expected_ids; do
         if ! grep -q "$id" "$strings_tmp"; then
             missing_modules="$missing_modules $id"

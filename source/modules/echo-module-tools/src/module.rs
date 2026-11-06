@@ -29,8 +29,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::ToolRegistry;
 use echo_module::{BuiltinModule, Module, ModuleManifest, MountContext};
-use echo_tool::ToolRegistry;
 
 /// 模块 id（宿主 `modules::TOOLS_BUILTIN_MODULE_ID` 与本常量同源字面量）。
 pub const MODULE_ID: &str = "echo-agent.tools.builtin";
@@ -127,7 +127,7 @@ pub fn core_self_stop_guard() -> crate::CommandGuard {
     let regex = regex::Regex::new(PATTERN).expect("self-stop regex is valid");
     std::sync::Arc::new(move |command: &str| {
         if regex.is_match(command) {
-            return Err(echo_tool::ToolError::Execution(
+            return Err(crate::ToolError::Execution(
                 "blocked command: stopping or killing echo-agent-core from inside its own process would terminate this tool before later cleanup/start steps run. Use `systemctl --user restart echo-agent-core.service` or the managed updater `scripts/update.sh` instead.".into(),
             ));
         }
@@ -260,8 +260,8 @@ mod tests {
     struct NoToolsHost;
 
     impl crate::tool_commands::ToolsCommandHost for NoToolsHost {
-        fn registry(&self) -> Arc<echo_tool::ToolRegistry> {
-            Arc::new(echo_tool::ToolRegistry::new())
+        fn registry(&self) -> Arc<crate::ToolRegistry> {
+            Arc::new(crate::ToolRegistry::new())
         }
         fn set_enabled(
             &self,

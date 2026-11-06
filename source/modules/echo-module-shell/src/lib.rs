@@ -8,7 +8,7 @@
 //!
 //! | 维度 | 内置工具集 | Shell 会话 |
 //! |---|---|---|
-//! | 机制依赖 | 纯函数 + 可选 `echo-shell` | **必须** `echo-shell`（进程组生命周期） |
+//! | 机制依赖 | 纯函数 + 可选 `echo-module-shell` | **必须** `echo-module-shell`（进程组生命周期） |
 //! | 状态 | 无（除 checklist 的会话内状态） | 长驻子进程 + 哨兵分帧 |
 //! | 面板 | 工具列表里几行 | 独立的 Shell 页面（会话卡 / 实时流） |
 //! | 关闭需求 | "我不想要 shell" → 不想连计算器一起关 | 独立启停 |
@@ -32,12 +32,16 @@
 
 use std::sync::Arc;
 
+pub use crate::session::{CommandGuard, ShellHandle};
+
 use echo_module::{BuiltinModule, Inject, Module, ModuleManifest, MountContext, ServiceSlot};
-use echo_shell::{CommandGuard, ShellHandle};
-use echo_tool::ToolRegistry;
+use echo_module_tools::ToolRegistry;
+#[allow(ambiguous_glob_reexports)]
+pub use session::*;
 
 pub mod commands;
 pub mod host_keys;
+pub mod session;
 pub mod tools;
 
 /// 模块 id（`modules.toml` / Panel 模块清单同一口径）。
@@ -48,7 +52,7 @@ pub const SERVICE_KEY: &str = "shell";
 
 /// 宿主要塞给工具箱的**端口**（都是"运行时才知道"的东西）。
 pub struct ShellHostCtx {
-    /// Shell 会话管理器句柄（`echo-shell`）。
+    /// Shell 会话管理器句柄（`echo-module-shell`）。
     pub shell: ShellHandle,
     /// 命令护栏（`None` = 不做该检查）。
     pub guard: Option<CommandGuard>,

@@ -17,15 +17,15 @@
 //!
 //! ## `progress` 为什么要单独给
 //!
-//! `echo_shell::ShellEmit` 是 `echo-shell` 的类型（`Fn(ShellEvent)`），不是
+//! `echo_module_shell::ShellEmit` 是 `echo-module-shell` 的类型（`Fn(ShellEvent)`），不是
 //! 协议事件。模块不该为了它去认识 `BackendEvent` 的构造方式，宿主直接把
 //! 「shell 事件 → 面板事件」的翻译闭包交出去（`shell_emit_for_self` 同款）。
 
 use std::sync::Arc;
 
 use echo_module_shell::commands::ShellCommandHost;
+use echo_module_shell::{ShellEmit, ShellManager};
 use echo_protocol::BackendEvent;
-use echo_shell::{ShellEmit, ShellManager};
 
 use crate::agent::Agent;
 

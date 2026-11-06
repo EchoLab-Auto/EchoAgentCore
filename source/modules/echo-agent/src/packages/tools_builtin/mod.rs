@@ -48,7 +48,7 @@ pub fn build_registry(
     workspace: std::path::PathBuf,
     config_store: echo_config::ConfigStore,
     invoker: Option<echo_module_tools::RemoteInvoker>,
-    shell: echo_shell::ShellHandle,
+    shell: echo_module_shell::ShellHandle,
     session_query: Option<std::sync::Arc<dyn echo_defs::session_query::SessionQuery>>,
     provider: Option<std::sync::Arc<dyn BuiltinToolProvider>>,
     shell_provider: Option<std::sync::Arc<dyn ShellToolProvider>>,
@@ -75,7 +75,7 @@ pub fn build_registry(
     let shell_provider = shell_provider.unwrap_or_else(echo_module_shell::standalone_provider);
     let shell_registry = shell_provider.registry(&ShellHostCtx {
         shell: shell.clone(),
-        guard: Some(echo_shell::self_stop_guard()),
+        guard: Some(echo_module_shell::self_stop_guard()),
     });
     for name in shell_registry.names() {
         let Some(tool) = shell_registry.get(&name) else {
@@ -106,7 +106,7 @@ mod tests {
             dir.clone(),
             store,
             None,
-            echo_shell::ShellHandle::new(),
+            echo_module_shell::ShellHandle::new(),
             None,
             None,
             // 带上 shell 模块造的工具一起查重名：两个模块产出的名字同处一张
@@ -129,7 +129,7 @@ mod tests {
             dir.clone(),
             store,
             None,
-            echo_shell::ShellHandle::new(),
+            echo_module_shell::ShellHandle::new(),
             None,
             None,
             None,

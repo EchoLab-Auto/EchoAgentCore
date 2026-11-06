@@ -669,7 +669,7 @@ impl Agent {
     }
 
     /// Shell 子系统句柄（见字段文档）。
-    pub fn shell(&self) -> &echo_shell::ShellHandle {
+    pub fn shell(&self) -> &echo_module_shell::ShellHandle {
         &self.ports.shell
     }
 

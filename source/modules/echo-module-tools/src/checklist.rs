@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use echo_tool::{Tool, ToolError};
+use crate::{Tool, ToolError};
 
 #[derive(Debug, Clone)]
 struct ChecklistItem {

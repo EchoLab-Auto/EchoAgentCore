@@ -19,7 +19,7 @@ link: ["tool-catalog | 内置工具目录"]
 > 更新会在门禁红：`source/modules/core/tests/doc_catalog.rs` 的 `tool_catalog_is_fresh`）。
 > 本文只讲机制与门控，不复述清单，避免两处漂移。
 
-- `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（`echo-tool` crate；`echo-agent` 保留 `echo_agent::tool::…` 兼容路径）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
+- `Tool` trait 定义在 echo-defs（Service Definition 层）；`ToolRegistry`（`echo-module-tools` crate；`echo-agent` 保留 `echo_agent::tool::…` 兼容路径）按名注册，启停热切换（`disabled_tools` 持久化于 `[agent]`）
 - 注册是可逆副作用：`register_reversible` 返回 `Disposer`，模块卸载即撤销
 - 分派入口有两条：turn 内走 echo-module-loop 的工具管线（`spawn_subagent` 经其异步 hook 通道，见 [Subagent 模块](./subagent.md)）；集成测试与直接调用走 `run_tool`（对 `spawn_subagent` 同样特判）。其余工具一律走注册表
 
@@ -118,7 +118,7 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 
 | 闸 | 实现 | 拦什么 |
 | --- | --- | --- |
-| 自停拦截 | `echo_module_tools::module::core_self_stop_guard()`（**在工具模块里**，构造 bash 工具时注入）；`bash-exec` 用机制层的默认实现 `echo_shell::self_stop_guard()`——两者规则同一套，各构造一份，模块间零依赖 | 从自己的进程里 `systemctl stop/kill echo-agent-core`（含 `bash -c` 包裹）——会让后续清理/启动步骤来不及跑 |
+| 自停拦截 | `echo_module_tools::module::core_self_stop_guard()`（**在工具模块里**，构造 bash 工具时注入）；`bash-exec` 用机制层的默认实现 `echo_module_shell::self_stop_guard()`——两者规则同一套，各构造一份，模块间零依赖 | 从自己的进程里 `systemctl stop/kill echo-agent-core`（含 `bash -c` 包裹）——会让后续清理/启动步骤来不及跑 |
 | rm 目标判定 | `coding.rs::dangerous_rm_root_target` | 递归 + 强制的 `rm` 指向根目录、根级通配 `/*`、或根下一级系统目录 |
 | 危险模式 | `coding.rs` 的模式表（`mkfs.` / `dd if=` / fork bomb / `> /dev/sda`） | 对整条命令串子串匹配 |
 | 提权 | `RunCommandTool::execute` 的行首 `sudo` 检测 | `bash` 无交互 tty、提权工具已废弃——直接拒绝并提示改用无需 root 的方案 |
@@ -158,7 +158,7 @@ QQ 的 11 个工具与其平台语义见 [QQ 实例门控](./qq-gating.md)。
 
 ## 后台 Shell 会话（持久 bash）
 
-进程级 `ShellManager`（机制 crate `echo-shell`；`modules/echo-agent/src/shell.rs` 只是兼容 re-export）管理**持久 bash 会话**：
+进程级 `ShellManager`（机制 crate `echo-module-shell`；`modules/echo-agent/src/shell.rs` 只是兼容 re-export）管理**持久 bash 会话**：
 与 Panel Shell 面板共用同一会话，LLM 与用户看到的是同一终端上下文。
 
 - **会话模型**：每个会话 = 一个 `bash --noprofile --norc` 子进程（stdin/stdout/stderr 管道），

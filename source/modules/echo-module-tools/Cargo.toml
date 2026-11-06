@@ -10,8 +10,6 @@ description = "内置工具集（echo-agent.tools.builtin）：计算/检索/清
 [dependencies]
 toml = { workspace = true }
 echo-defs = { workspace = true }
-echo-tool = { workspace = true }
-echo-shell = { workspace = true }
 echo-context = { workspace = true }
 echo-module = { workspace = true }
 echo-config = { workspace = true }

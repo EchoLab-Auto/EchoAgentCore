@@ -38,7 +38,7 @@ graph BT
   ModuleSdk[echo-module-sdk<br>模块 SDK]
   ModuleHost[echo-module-host<br>运输/监督（领域中立）]
   ModuleAdapter[echo-module-adapter<br>贡献→领域 trait]
-  Shell[echo-shell<br>Shell 会话机制]
+  Shell[echo-module-shell<br>Shell 会话机制]
   Agent[echo-agent<br>agent 框架]
   Bin[echo-agent-core<br>组合根]
   LLM --> Defs
@@ -99,22 +99,22 @@ graph BT
 | `echo-module-transcript` | 内置模块：显示层（解耦计划 S8） | 时间线实时投影（`timeline`：哪些事件进面板、字段怎么映射、工具完成态原地合并）+ 会话视图命令域（`session_view`：5 条 `Request*`）。2026-11 自 `echo-module-management` 外置：连接面（WS 中继）与显示面（"面板看到什么"）分轴；与 `echo-module-session` 的历史派生共用 `echo-protocol::timeline_text`。只依赖词汇层与机制层 |
 | `echo-module-management` | 内置模块：管理面 WS（Phase 3 ⑧） | Panel 连接中继（`EventBroker` 单接收者 → 每连接一订阅、按序分配 `seq`）、token 鉴权与常量时间比较、端口合并规划 `plan_federation_listen` + fail-closed `validate_merged`、心跳保活；**不需要 Agent 句柄**，只认线契约。显示层已外置到 `echo-module-transcript` |
 | `echo-module-tools` | 内置模块：内置工具集（Phase 3 之后的延续工作） | `echo-agent.tools.builtin` 的实现：计算/检索（`calculator`/`web_search`）、清单（`checklist`）、模块实例管理（`instance_*`）、编码（`read_file`/`write_file`/`edit_file`/`list_files`/`search_code`/`bash`）。两个外部能力**经注入**：`RemoteInvoker`（`node://` 远程调用）、工作区根——未注入时显式降级（「联邦未接线」），不静默换实现 |
-| `echo-module-shell` | 内置模块：Shell 会话 | `echo-agent.shell` 的实现：`bash-start` / `bash-exec` / `bash-stop` 三个工具 + 四条 `*Shell*` 面板命令。机制依赖 `echo-shell`（进程组生命周期 + 哨兵分帧），与工具集**互不依赖**；拆出的理由是独立的启停需求与独立的机制依赖——想关 shell 不该连计算器一起关 |
-| `echo-module-federation` | 内置模块：联邦执行层（`echo-agent.federation`） | 调用调度路由表（`call_id → oneshot`）、`RemoteTool` 代理工具（`<peer>__<tool>`）、白名单裁决与执行端、工作区跨机查询、联邦命令域。只依赖 `echo-module-federation` / `echo-tool` / `echo-defs` 等机制层，**可独立禁用**：关掉后内核照常启动，远程工具显式降级为「联邦未接线」；链路泵（握手 / 心跳 / 重连 / 回环防护）仍在组合根 |
+| `echo-module-shell` | 内置模块：Shell 会话 | `echo-agent.shell` 的实现：`bash-start` / `bash-exec` / `bash-stop` 三个工具 + 四条 `*Shell*` 面板命令。机制依赖 `echo-module-shell`（进程组生命周期 + 哨兵分帧），与工具集**互不依赖**；拆出的理由是独立的启停需求与独立的机制依赖——想关 shell 不该连计算器一起关 |
+| `echo-module-federation` | 内置模块：联邦执行层（`echo-agent.federation`） | 调用调度路由表（`call_id → oneshot`）、`RemoteTool` 代理工具（`<peer>__<tool>`）、白名单裁决与执行端、工作区跨机查询、联邦命令域。只依赖 `echo-module-federation` / `echo-module-tools` / `echo-defs` 等机制层，**可独立禁用**：关掉后内核照常启动，远程工具显式降级为「联邦未接线」；链路泵（握手 / 心跳 / 重连 / 回环防护）仍在组合根 |
 | `echo-module-sanitize` | 内置模块：脱敏（`echo-agent.security.sanitize`，`kind = security` → **进程级**） | 脱敏的**实现 + 装配**：宿主收集秘密表（`[agent]` / profiles / env / 实例凭据 / `extra_*`），模块用 `build(&RedactorSpec)` 构造 `RegistryRedactor`——组合根不再认识任何脱敏实现。唯一的特殊性：构造必须在**挂载之前**（脱敏是 LLM 出口的装饰器，`llm` 服务要以已脱敏形态进 `Ctx`），所以 `mount` 是纯身份声明。契约见 [脱敏模块](../modules/sanitize.md) |
 | `echo-module-self-update` | 内置模块：自更新（`echo-agent.selfupdate`） | `RequestSelfUpdate` / `RequestSelfUpdateStatus` 两条命令的归属模块，连同 updater 单元名、状态文件布局与重入判定；零参数（宿主能力经服务表解析），只经事件出口说话。做成内置模块而非「宿主自我管理面」的理由：命令认领不该由一张保留名单守卫，而「第三方不得劫持自更新」用编译进本二进制 + 启动即挂载满足更准确 |
-| `echo-shell` | Shell 会话机制 | 每会话一个 `bash --noprofile --norc`（独立进程组，销毁整组终止）、写命令 + 随机哨兵双写分帧（stdout/stderr 两路专职读取，避免假超时）、会话串行/跨会话并行、`MAX_SHELL_SESSIONS` 上限、事件经注入 emit 广播；宿主侧接线（`shell_emit_for_self` 等要拿 `Agent` 的部分）留在 `echo-agent::shell` |
-| `echo-tool` | 工具子系统机制 | `ToolRegistry`（可逆注册 + 定义缓存 + 出口脱敏）；`Tool` 词汇在 `echo-defs`，具体工具实现不在此 |
+| `echo-module-shell` | Shell 会话机制 | 每会话一个 `bash --noprofile --norc`（独立进程组，销毁整组终止）、写命令 + 随机哨兵双写分帧（stdout/stderr 两路专职读取，避免假超时）、会话串行/跨会话并行、`MAX_SHELL_SESSIONS` 上限、事件经注入 emit 广播；宿主侧接线（`shell_emit_for_self` 等要拿 `Agent` 的部分）留在 `echo-agent::shell` |
+| `echo-module-tools` | 工具子系统机制 | `ToolRegistry`（可逆注册 + 定义缓存 + 出口脱敏）；`Tool` 词汇在 `echo-defs`，具体工具实现不在此 |
 | `echo-module` / `-api` / `-loader` / `-sdk` / `-host` **（框架仓）** | 模块契约、协议与宿主 | 生命周期钩子（`Module`/`ModuleManifest`/`ModuleRegistry`）；宿主↔模块消息（握手/调用/取消/事件/排空）、贡献类型与版本协商；模块装载与 SDK；Transport（inproc/stdio）、监督与崩溃重启、子进程限额与入站频率限额、可逆停止、conformance 测试。**`echo-module-host` 只依赖 `echo-module-api` + `echo-module-loader`——不认识 `echo-defs`、不认识任何领域词汇**，因此可作领域中立的模块机制复用 |
 | `echo-module-adapter` | 远程贡献 → 领域 trait 的适配层 | `RemoteTool`（`ToolContribution` → `echo_defs::tool::Tool`）、`RemoteInstance`/`RemoteInstanceManagement`（`InstanceContribution` → `ModuleInstance`/`InstanceManagement`，能力位 fail-closed，动作经 `Invoke("<name>:<op>")`）、`CoreApiService`（模块 → 宿主回呼）；依赖 host + api + defs，**不依赖 `echo-agent` 与组合根**。单独成 crate 的理由：这一层认识领域 trait，而 host 必须保持领域中立 |
-| `echo-agent` | agent 框架 | 命令分发、timeline 投影、trunk、provider 工厂与装配、提示词边界与装配、多 agent 管理。**循环只有 echo-module-loop 一条轨道**（内置循环已删除；`echo-agent.loop.single` 是进程级模块，只声明"同一会话 turn 串行排队"这一条策略——见 [Agent 循环](../core/agent-loop.md)）。**具体实现多已外迁**：内置工具在 `echo-module-tools`、Shell 机制在 `echo-shell`（`shell.rs` 只留宿主侧接线）、技能在 `echo-module-skills`、子任务在 `echo-module-subagent`、工作区在 `echo-module-workspace`、联邦执行层在 `echo-module-federation`；`packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面），宿主侧**不认识任何一个内置工具的名字** |
+| `echo-agent` | agent 框架 | 命令分发、timeline 投影、trunk、provider 工厂与装配、提示词边界与装配、多 agent 管理。**循环只有 echo-module-loop 一条轨道**（内置循环已删除；`echo-agent.loop.single` 是进程级模块，只声明"同一会话 turn 串行排队"这一条策略——见 [Agent 循环](../core/agent-loop.md)）。**具体实现多已外迁**：内置工具在 `echo-module-tools`、Shell 机制在 `echo-module-shell`（`shell.rs` 只留宿主侧接线）、技能在 `echo-module-skills`、子任务在 `echo-module-subagent`、工作区在 `echo-module-workspace`、联邦执行层在 `echo-module-federation`；`packages/` 只剩三个内联包（`tools_builtin` 端口接线 / `instance_ops` 入站桥 / `federation` 兼容面），宿主侧**不认识任何一个内置工具的名字** |
 | `echo-config` | TOML 原子读改写 | `ConfigStore` / `ensure_table`（串行化 + tmp+rename）。**不知道任何 section 的含义**——调用方各自拥有自己的段 |
 | `echo-module-federation` | 联邦链路（Core↔Core） | `FedFrame` 线协议、Hello/Welcome 握手、per-peer 认证、心跳/重连/回环防护、邀请串；详见 [联邦](../federation/federation.md) |
 | `echo-agent-core`（bin） | 组合根 | 配置加载、Ctx 装配、`ctx.llm` 注册、模块宿主装配与挂载、挂载后解析 `loop` 服务、联邦链路泵、启动 |
 
 > 另有 `echo-test-utils`（跨 crate 复用的测试夹具）这个 dev crate，不进运行时依赖链。
 
-依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；其上为中间层（`echo-protocol` / `echo-config` / `echo-session` / `echo-tool` / `echo-shell` / `echo-module-federation`）与模块层（`echo-module*` 与全部内置模块 crate）◄ `echo-agent` ◄ `echo-agent-core`（bin）。三条容易记错的归属：
+依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；其上为中间层（`echo-protocol` / `echo-config` / `echo-session` / `echo-module-tools` / `echo-module-shell` / `echo-module-federation`）与模块层（`echo-module*` 与全部内置模块 crate）◄ `echo-agent` ◄ `echo-agent-core`（bin）。三条容易记错的归属：
 
 - **`ModuleInstance` trait 在 `echo-defs`**（`echo_defs::module_instance`；`InstanceError` / `InstanceInfo` / `InstanceConnectionState` / `InstanceManagement` 同）；**协议侧贡献类型 `ToolContribution` / `InstanceContribution` 在 `echo-module-api`**，两者由 `echo-module-adapter` 桥接
 - **`echo-config` 只做 TOML 原子读改写**，不认识任何配置段的语义（旧 `echo-adapter` crate 已删除，其注册表并入 `echo-defs::module_instance`）
@@ -148,7 +148,7 @@ echo-module-provider-llm/src/providers/
 
 **为什么合并（2026-11）**：它们此前是 `source/llm/echo-llm-*` 三个 crate，被 `deps-policy.txt` 归入"中间层"。但中间层的定义是**被多方复用的底座**，而三者的消费者各只有一个（`echo-module-provider-llm`），仓外零引用。也就是说那三个 crate 边界换来的不是"可替换点"，只是目录层级——协议差异靠的是 `LlmProvider` trait（在 `echo-defs`），不是 crate 之间的抽象。
 
-判据（下一个"该不该独立成 crate"的决定可用）：**消费者 = 1 → 是那个消费者的实现细节，合并；消费者 > 1 → 是共用底座，独立**（对照：`echo-tool` 被 7 个 crate 用，因此保留；反例是 `echo-sanitize`——它的生产消费者只有 `echo-module-sanitize` 一处，2026-11 已并入该模块）。
+判据（下一个"该不该独立成 crate"的决定可用）：**消费者 = 1 → 是那个消费者的实现细节，合并；消费者 > 1 → 是共用底座，独立**（对照：`echo-module-tools` 被 7 个 crate 用，因此保留；反例是 `echo-sanitize`——它的生产消费者只有 `echo-module-sanitize` 一处，2026-11 已并入该模块）。
 
 链路不变：`echo-agent::llm::create_provider`（配置投影 + 指标出口的宿主 glue）→ `echo-module-provider-llm::create_provider`（按 provider 名与 `base_url` 后缀路由到某个客户端的工厂）。新增 provider = 在 `providers/` 加一个文件 + 在工厂的 match 里加一条分支；跨仓库的外部 provider 仍可实现 `echo_defs::LlmProvider` 自行注册（演进方向：以 `ctx.llm` 注册表查找替代工厂字符串 match，支持运行期热替换）。
 
@@ -159,7 +159,7 @@ echo-module-provider-llm/src/providers/
 | Seam | Service Definition | Provider | Consumer |
 |---|---|---|---|
 | LLM | `echo_defs::LlmProvider` | `echo-module-provider-llm`（内置 `providers::{openai,anthropic,ollama}`；外部 provider 自行实现 trait） | `echo-agent` 工厂 + `echo-module-loop` runner |
-| 工具 | `echo_defs::Tool` | `echo-tool::ToolRegistry` + 内置工具模块 `echo-module-tools` + 外部模块贡献经 `echo-module-adapter::RemoteTool` | agent 循环 |
+| 工具 | `echo_defs::Tool` | `echo-module-tools::ToolRegistry` + 内置工具模块 `echo-module-tools` + 外部模块贡献经 `echo-module-adapter::RemoteTool` | agent 循环 |
 | 技能 | `echo_defs::skill::{Skill, SkillMetadata}`（词汇） | `echo-module-skills` 的 `SkillRegistry`（本地文件 + 多目录分层合并；`echo-agent` 侧只留 re-export 兼容面） | prompt 组装 |
 | 模块实例模型工具 | `echo_defs::module_instance::ToolSpec`（`ModuleInstance::tool_specs`）；wire 侧对应 `echo_module_api::ToolContribution` | 实例模块贡献（`InstanceContribution.tools`） | `echo-module-tools::instance_bridge`（合并 / `account` 寻址 / 出站闸门 `gate_outbound` / `invoke_custom` 透传） |
 | 平台生命周期 | `echo_defs::module_instance::ModuleInstance` | 实例模块（**进程外**，宿主经 `echo-module-adapter::RemoteInstance` 接入——当前唯一样本是 `echo-agent.instance.qq`，实现在独立仓库） | agent + 实例工具 |

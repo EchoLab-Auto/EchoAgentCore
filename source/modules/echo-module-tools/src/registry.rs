@@ -1,4 +1,4 @@
-//! # echo-tool — 工具子系统机制（解耦计划 Phase 3 前置）
+//! # echo-module-tools — 工具子系统机制（解耦计划 Phase 3 前置）
 //!
 //! `Tool` 词汇与接缝在定义层 [`echo_defs::tool`]；本 crate 只持有**运行期
 //! 机制** [`ToolRegistry`]——原 `echo-agent::packages::tool` 的独立 crate 化，
@@ -19,10 +19,7 @@
 
 pub use echo_defs::tool::{Tool, ToolDefinition, ToolError, ToolResult};
 
-pub mod module;
-
-pub mod execute;
-pub use execute::{
+pub use crate::execute::{
     invalid_tool_arguments, tool_state, ToolCallContext, ToolExecutionHost, ToolExecutor,
     ToolInvocation,
 };

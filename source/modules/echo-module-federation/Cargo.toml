@@ -15,7 +15,7 @@ tokio-tungstenite.workspace = true
 futures-util.workspace = true
 base64.workspace = true
 uuid.workspace = true
-echo-tool = { workspace = true }
+echo-module-tools = { workspace = true }
 echo-context = { workspace = true }
 echo-module = { workspace = true }
 echo-protocol = { workspace = true }

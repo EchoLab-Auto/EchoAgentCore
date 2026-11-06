@@ -48,7 +48,7 @@ pub use echo_module_loop::SINGLE_MODULE_ID as SINGLE_LOOP_MODULE_ID;
 /// Shell 会话模块 id（`bash-start` / `bash-exec` / `bash-stop` + `*Shell*` 命令域）。
 ///
 /// 2026-11 从 `echo-agent.tools.builtin` 拆出：shell 会话有自己的一套机制
-/// （`echo-shell` 的进程组生命周期）、自己的面板页面、独立的启停需求。
+/// （`echo-module-shell` 的进程组生命周期）、自己的面板页面、独立的启停需求。
 /// 声明与实现都在 [`echo_module_shell`]，这里是兼容别名。
 pub use echo_module_shell::MODULE_ID as SHELL_MODULE_ID;
 
@@ -89,7 +89,7 @@ pub use echo_module_federation::MODULE_ID as FEDERATION_MODULE_ID;
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_MODULE_IDS: [&str; 18] = [
+pub const BUILTIN_MODULE_IDS: [&str; 16] = [
     TOOLS_BUILTIN_MODULE_ID,
     SHELL_MODULE_ID,
     SKILLS_DIR_MODULE_ID,
@@ -116,8 +116,6 @@ pub const BUILTIN_MODULE_IDS: [&str; 18] = [
     echo_config::MODULE_ID,
     echo_protocol::module::MODULE_ID,
     echo_session::module::MODULE_ID,
-    echo_tool::module::MODULE_ID,
-    echo_shell::module::MODULE_ID,
 ];
 
 /// 模块**不得**接管的命令（宿主自我管理面）。
@@ -222,13 +220,11 @@ impl MountStep {
 /// 2026-11 之前它另有一个 `kind = "kernel"` 的空壳身份（crate
 /// `echo-sanitize`），已随该 crate 并入 `echo-module-sanitize` 一并退役。
 pub fn disabled_kernel_modules(catalog_ids: &[String], plan: &[MountStep]) -> Option<String> {
-    const KERNEL_IDS: [&str; 6] = [
+    const KERNEL_IDS: [&str; 4] = [
         echo_defs::MODULE_ID,
         echo_config::MODULE_ID,
         echo_protocol::module::MODULE_ID,
         echo_session::module::MODULE_ID,
-        echo_tool::module::MODULE_ID,
-        echo_shell::module::MODULE_ID,
     ];
     plan.iter()
         .filter(|step| !step.enabled)
@@ -1009,7 +1005,7 @@ mod tests {
     struct ScopeProbeModule {
         manifest: echo_module::ModuleManifest,
         /// mount 时本层 `Ctx` 里 TOOLS_HOST 指向的注册表（识别"绑到谁"）。
-        seen_tools: Arc<parking_lot::Mutex<Option<Arc<echo_tool::ToolRegistry>>>>,
+        seen_tools: Arc<parking_lot::Mutex<Option<Arc<echo_module_tools::ToolRegistry>>>>,
     }
 
     impl echo_module::Module for ScopeProbeModule {
@@ -1042,7 +1038,7 @@ mod tests {
         kind: &str,
     ) -> (
         Arc<dyn echo_module::Module>,
-        Arc<parking_lot::Mutex<Option<Arc<echo_tool::ToolRegistry>>>>,
+        Arc<parking_lot::Mutex<Option<Arc<echo_module_tools::ToolRegistry>>>>,
     ) {
         let seen = Arc::new(parking_lot::Mutex::new(None));
         let module = Arc::new(ScopeProbeModule {
@@ -1085,7 +1081,7 @@ mod tests {
             Arc::new(NullProvider),
             crate::config::AgentConfig::default(),
             crate::skill::SkillRegistry::new(),
-            echo_tool::ToolRegistry::new(),
+            echo_module_tools::ToolRegistry::new(),
             Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
         ));
         agent.set_team_id(Some(team.to_string()));
@@ -1234,7 +1230,7 @@ mod tests {
             Arc::new(NullProvider),
             crate::config::AgentConfig::default(),
             crate::skill::SkillRegistry::new(),
-            echo_tool::ToolRegistry::new(),
+            echo_module_tools::ToolRegistry::new(),
             Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
         ));
         assert!(

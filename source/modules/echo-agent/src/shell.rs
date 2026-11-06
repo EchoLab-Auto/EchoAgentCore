@@ -1,18 +1,18 @@
-//! Shell 子系统的宿主侧接线（实现已外迁到 [`echo_shell`]）。
+//! Shell 子系统的宿主侧接线（实现已外迁到 [`echo_module_shell`]）。
 //!
-//! - 机制（`ShellManager` / 哨兵分帧 / 进程组清理 / 事件类型）在 `echo-shell`；
+//! - 机制（`ShellManager` / 哨兵分帧 / 进程组清理 / 事件类型）在 `echo-module-shell`；
 //! - **Agent 耦合的两个函数留在这里**：`shell_emit_for_self` 要拿 `Agent` 的
 //!   emit 句柄，`shell_event_to_backend` 只是类型转换（也可在模块侧用）——
 //!   留在宿主是因为 `Agent` 属宿主，机制 crate 不该反向认识它。
 //!
 //! 公开路径 `echo_agent::shell::…` 保持不变（re-export），调用点零改动。
 
-pub use echo_shell::{
+pub use echo_module_shell::{
     shell_emit_for, shell_event_to_backend, ShellEmit, ShellEvent, ShellHandle, ShellManager,
     MAX_SHELL_SESSIONS,
 };
 
-use echo_shell::ShellEvent as InnerShellEvent;
+use echo_module_shell::ShellEvent as InnerShellEvent;
 
 /// 面向命令处理层：把事件通到指定 Agent 的 emit。
 ///

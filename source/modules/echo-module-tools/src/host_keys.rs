@@ -4,7 +4,7 @@
 //!
 //! 键 = 「我需要什么」的声明，属于**需求方**。宿主实现这些 trait、按同一批
 //! 键注册（它依赖本 crate，方向天然正确）。于是组合根里可以写
-//! `echo_module_tools::module(version)` —— 不带任何 `Arc<dyn …>` 参数，
+//! `crate::module(version)` —— 不带任何 `Arc<dyn …>` 参数，
 //! 接线全部发生在服务表里（`MountContext::require`）。
 //!
 //! Shell 命令域的键**不在这里**（2026-11）：它随 `shell_*` 工具一起搬进

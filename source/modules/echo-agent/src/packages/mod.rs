@@ -21,7 +21,7 @@
 //! | `echo-agent.management.panel` | `echo-module-management` |
 //! | `echo-agent.loop.{single,parallel}` | `echo-module-loop` |
 //!
-//! 工具子系统的**跨包机制**（`ToolRegistry`）亦已外迁到 `echo-tool`；
+//! 工具子系统的**跨包机制**（`ToolRegistry`）亦已外迁到 `echo-module-tools`；
 //! 本目录不再有 `tool/` 子目录。
 //!
 //! 本模块**物理私有**（`mod packages`）：对外公开路径保持重组前原样

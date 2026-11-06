@@ -148,12 +148,6 @@ pub(crate) fn catalog_with(
     for module in echo_session::module::modules(version) {
         push_module(&mut catalog, module)?;
     }
-    for module in echo_tool::module::modules(version) {
-        push_module(&mut catalog, module)?;
-    }
-    for module in echo_shell::module::modules(version) {
-        push_module(&mut catalog, module)?;
-    }
 
     // ── 会话子系统（事件日志 / 投影 / 持久化 / 压缩编排）──
     //
@@ -170,7 +164,7 @@ pub(crate) fn catalog_with(
 
     // ── Shell 会话（`bash-start` / `bash-exec` / `bash-stop` + 命令域）──
     //
-    // 2026-11 从工具集拆出：它有自己的机制依赖（`echo-shell` 的进程组
+    // 2026-11 从工具集拆出：它有自己的机制依赖（`echo-module-shell` 的进程组
     // 生命周期）、自己的面板页面、独立的启停需求。顺序紧跟工具集——不是因为
     // 依赖（它不依赖 tools.builtin），而是让"工具类模块"在面板里相邻。
     push_module(&mut catalog, echo_module_shell::module(version))?;
@@ -505,8 +499,6 @@ mod catalog_shape_tests {
             echo_config::MODULE_ID,
             echo_protocol::module::MODULE_ID,
             echo_session::module::MODULE_ID,
-            echo_tool::module::MODULE_ID,
-            echo_shell::module::MODULE_ID,
         ] {
             assert!(ids.iter().any(|c| c == id), "kernel {id} 不在 catalog 里");
         }
@@ -518,11 +510,11 @@ mod catalog_shape_tests {
         // ② kernel 模块不可关：必须被抓到并点名。
         let plan = vec![
             MountStep::new(echo_agent::modules::SHELL_MODULE_ID, false),
-            MountStep::new(echo_tool::module::MODULE_ID, false),
+            MountStep::new(echo_session::module::MODULE_ID, false),
         ];
         assert_eq!(
             disabled_kernel_modules(&ids, &plan).as_deref(),
-            Some(echo_tool::module::MODULE_ID)
+            Some(echo_session::module::MODULE_ID)
         );
 
         // ③ 写错 id 的 `enabled = false` 不算违规（它本来就挂不上，

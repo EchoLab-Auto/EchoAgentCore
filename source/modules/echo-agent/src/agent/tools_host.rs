@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use echo_module_tools::tool_commands::ToolsCommandHost;
+use echo_module_tools::ToolRegistry;
 use echo_protocol::BackendEvent;
-use echo_tool::ToolRegistry;
 
 use crate::agent::registry::AgentRegistry;
 use crate::agent::Agent;

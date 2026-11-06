@@ -23,8 +23,6 @@ echo-module-session = { workspace = true }
 echo-module-transcript = { workspace = true }
 echo-module-skills = { workspace = true }
 echo-module-loop = { workspace = true }
-echo-tool = { workspace = true }
-echo-shell = { workspace = true }
 echo-module-tools = { workspace = true }
 echo-module-subagent = { workspace = true }
 echo-module-sanitize = { workspace = true }

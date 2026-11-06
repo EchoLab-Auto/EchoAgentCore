@@ -9,7 +9,7 @@
 //! （`ModuleHost::dispatch_command`），命中就返回。
 //!
 //! 2026-11：本域随 shell 工具一起从 `echo-module-tools` 搬出——那是个 6,000
-//! 行的"内置工具集"，而 shell 会话是一个**独立能力**（自己的 `echo-shell`
+//! 行的"内置工具集"，而 shell 会话是一个**独立能力**（自己的 `echo-module-shell`
 //! 机制、自己的进程组生命周期、自己的面板页面）。混在一起的后果是：想关掉
 //! shell 就得关掉整个工具集。
 //!
@@ -24,12 +24,12 @@
 //! 逐条对着原实现里的 `self.xxx()` 调的——**多一项都意味着模块多知道一件
 //! 宿主内部结构**。`shell_emit_for_self` 那种"给 shell 的进度回调"由宿主
 //! 在 `manager()` 之外单独给（[`ShellCommandHost::progress`]），因为它是
-//! `echo-shell` 的类型，模块只是转交。
+//! `echo-module-shell` 的类型，模块只是转交。
 
 use std::sync::Arc;
 
+use crate::session::{ShellEmit, ShellManager};
 use echo_protocol::{BackendCommand, BackendEvent};
-use echo_shell::{ShellEmit, ShellManager};
 
 /// 本模块处理的命令名（面板探测与文档用；`dispatch_command` 按名字匹配）。
 pub const COMMANDS: [&str; 4] = [
@@ -47,7 +47,7 @@ pub trait ShellCommandHost: Send + Sync {
     fn emit(&self, event: BackendEvent);
     /// 执行命令的 persona id（新会话归属）。`None` = 无归属。
     fn team_id(&self) -> Option<String>;
-    /// 给 `echo-shell` 的进度回调（host `shell_emit_for_self` 的同款）。
+    /// 给 `echo-module-shell` 的进度回调（host `shell_emit_for_self` 的同款）。
     fn progress(&self) -> ShellEmit;
 }
 

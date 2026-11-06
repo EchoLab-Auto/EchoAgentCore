@@ -182,7 +182,7 @@ pub(crate) struct ModulePorts {
         std::sync::RwLock<Option<Arc<crate::agent::workspace_mirror::WorkspaceMirror>>>,
     /// Shell 子系统句柄（`echo-agent.tools.builtin` 的 shell 工具族用它）。
     /// 句柄本身总是存在（内部空槽），bind 之后才有 manager。
-    pub(crate) shell: echo_shell::ShellHandle,
+    pub(crate) shell: echo_module_shell::ShellHandle,
     /// Subagent 模块运行态：子任务注册表 + spawn 执行闭包（组合根装配；
     /// None = 模块未启用，`spawn_subagent` 对模型不可见）。
     pub(crate) subagent: std::sync::RwLock<Option<crate::agent::SubagentRuntime>>,
@@ -195,7 +195,7 @@ impl ModulePorts {
     pub(crate) fn unlinked() -> Self {
         Self {
             workspace_mirror: std::sync::RwLock::new(None),
-            shell: echo_shell::ShellHandle::new(),
+            shell: echo_module_shell::ShellHandle::new(),
             subagent: std::sync::RwLock::new(None),
             federation: std::sync::RwLock::new(Arc::new(
                 crate::federation::FederationPorts::unlinked(),

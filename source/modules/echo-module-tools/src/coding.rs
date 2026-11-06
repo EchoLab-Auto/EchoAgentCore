@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use echo_tool::{Tool, ToolError, ToolRegistry};
+use crate::{Tool, ToolError, ToolRegistry};
 
 /// Canonicalised workspace root for containment checks.
 ///

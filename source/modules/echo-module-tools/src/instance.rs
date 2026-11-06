@@ -6,8 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::{Tool, ToolError, ToolRegistry};
 use echo_defs::module_instance::InstanceRegistry;
-use echo_tool::{Tool, ToolError, ToolRegistry};
 
 // ── InstanceStatusTool ──
 

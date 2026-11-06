@@ -3,7 +3,7 @@
 //! （2026-11 全模块化 S6：从组合根 `core/instance_tools.rs` 搬进本 crate。
 //! 它是「模块实例能力」的工具面，和 `instance.rs` 的 `instance_*` 管理工具
 //! 同属一件事——此前住在组合根只因为工具要有 `echo-agent::Tool`，而那个
-//! trait 已经在 `echo-tool` 里。）
+//! trait 已经在 `echo-module-tools` 里。）
 //!
 //! **平台语义不在本仓库**：工具名 / 描述 / 参数 schema 全部来自
 //! [`echo_defs::module_instance::ModuleInstance::tool_specs`]（远程模块实例 = 模块
@@ -16,7 +16,7 @@
 //!    （敏感文本按策略阻断/替换；文件参数命中敏感目录直接拒发）。
 //!
 //! 执行 = `invoke_custom(<工具名>, <参数>)`（见 [`invoke_management`]）。
-//! 工具实现 `echo_tool::Tool`——工具机制 crate（模块本来就依赖它）。
+//! 工具实现 `crate::Tool`——工具机制 crate（模块本来就依赖它）。
 
 use std::sync::Arc;
 
@@ -113,7 +113,7 @@ impl InstanceSet {
 /// `send_` / `get_` 前缀猜。前缀猜测是「工具名前缀 = 平台语义」的隐式耦合：
 /// 换个平台换套命名就漏标。
 pub fn register_instance_tools_multi(
-    registry: &mut echo_tool::ToolRegistry,
+    registry: &mut crate::ToolRegistry,
     instances: Vec<Arc<dyn ModuleInstance>>,
     gate: Option<Arc<OutboundGate>>,
 ) -> Vec<(String, Option<String>)> {
@@ -210,7 +210,7 @@ struct InstanceToolBridge {
 }
 
 #[async_trait]
-impl echo_tool::Tool for InstanceToolBridge {
+impl crate::Tool for InstanceToolBridge {
     fn name(&self) -> &str {
         &self.spec.name
     }
@@ -223,8 +223,8 @@ impl echo_tool::Tool for InstanceToolBridge {
     fn produces_visible_output(&self) -> bool {
         self.spec.visible_reply
     }
-    async fn execute(&self, arguments: Value) -> Result<String, echo_tool::ToolError> {
-        use echo_tool::ToolError;
+    async fn execute(&self, arguments: Value) -> Result<String, crate::ToolError> {
+        use crate::ToolError;
 
         // 出站闸门（2026-10 安全）：所有模块实例工具都跨平台边界，统一过闸
         // （敏感文本按策略阻断/替换；文件参数命中敏感目录直接拒发）。不再按
@@ -257,8 +257,8 @@ impl echo_tool::Tool for InstanceToolBridge {
 ///
 /// 约定：返回对象带 `success: false` 视为失败（`error` 字段给原因）；否则
 /// 原样把结果 JSON 交给模型（`message_id` 等字段由模块决定）。
-fn render_managed_outcome(tool: &str, outcome: Value) -> Result<String, echo_tool::ToolError> {
-    use echo_tool::ToolError;
+fn render_managed_outcome(tool: &str, outcome: Value) -> Result<String, crate::ToolError> {
+    use crate::ToolError;
     if outcome.get("success").and_then(Value::as_bool) == Some(false) {
         return Err(ToolError::Execution(
             outcome
@@ -290,8 +290,8 @@ fn gate_outbound(
     name: &str,
     arguments: Value,
     gate: &OutboundGate,
-) -> Result<Value, echo_tool::ToolError> {
-    use echo_tool::ToolError;
+) -> Result<Value, crate::ToolError> {
+    use crate::ToolError;
     // 1) 文件参数：落在敏感目录（配置 / 凭据目录）→ 直接拒发。
     for key in ["file_path", "file", "image"] {
         if let Some(raw) = arguments.get(key).and_then(|value| value.as_str()) {
@@ -494,8 +494,8 @@ mod tests {
 
     fn registry_with(
         instances: Vec<Arc<dyn ModuleInstance>>,
-    ) -> (echo_tool::ToolRegistry, Vec<(String, Option<String>)>) {
-        let mut registry = echo_tool::ToolRegistry::new();
+    ) -> (crate::ToolRegistry, Vec<(String, Option<String>)>) {
+        let mut registry = crate::ToolRegistry::new();
         let names = register_instance_tools_multi(&mut registry, instances, None);
         (registry, names)
     }
@@ -629,7 +629,7 @@ mod tests {
             policy: OutboundPolicy::Block,
         });
 
-        let mut tools = echo_tool::ToolRegistry::new();
+        let mut tools = crate::ToolRegistry::new();
         register_instance_tools_multi(
             &mut tools,
             vec![Arc::new(MockInstance::new("a", vec![spec("upload")]))],

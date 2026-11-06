@@ -1,6 +1,6 @@
 //! 后台 bash 会话工具：`bash-start` / `bash-exec` / `bash-stop`。
 //!
-//! 与 Panel 的 Shell 面板共用同一个进程级 [`ShellHandle`]（`echo-shell` 的
+//! 与 Panel 的 Shell 面板共用同一个进程级 [`ShellHandle`]（`echo-module-shell` 的
 //! 会话管理器）：LLM 可借此维护持久 shell 上下文（cd、变量、长任务），面板
 //! 做终端可视化。
 //!
@@ -26,7 +26,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 
-use echo_shell::{CommandGuard, ShellHandle};
+use crate::session::{CommandGuard, ShellHandle};
 
 /// 这次调用的归属人格。
 ///
@@ -44,9 +44,9 @@ fn requester<'a>(
 
 /// 注册 shell 工具（`bash-start` / `bash-exec` / `bash-stop`）。
 ///
-/// `guard`：执行前的命令护栏（见 [`echo_shell::self_stop_guard`]）。
+/// `guard`：执行前的命令护栏（见 [`echo_module_shell::self_stop_guard`]）。
 pub fn register_shell_tools(
-    registry: &mut echo_tool::ToolRegistry,
+    registry: &mut echo_module_tools::ToolRegistry,
     guard: Option<CommandGuard>,
     shell: ShellHandle,
 ) {
@@ -66,7 +66,7 @@ pub struct BashStartTool {
 }
 
 #[async_trait]
-impl echo_tool::Tool for BashStartTool {
+impl echo_module_tools::Tool for BashStartTool {
     fn name(&self) -> &str {
         "bash-start"
     }
@@ -81,7 +81,10 @@ impl echo_tool::Tool for BashStartTool {
             }
         })
     }
-    async fn execute(&self, arguments: serde_json::Value) -> Result<String, echo_tool::ToolError> {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+    ) -> Result<String, echo_module_tools::ToolError> {
         self.apply(None, arguments).await
     }
 
@@ -90,7 +93,7 @@ impl echo_tool::Tool for BashStartTool {
         &self,
         cx: &echo_defs::tool::ToolContext,
         arguments: serde_json::Value,
-    ) -> Result<echo_defs::tool::ToolResult, echo_tool::ToolError> {
+    ) -> Result<echo_defs::tool::ToolResult, echo_module_tools::ToolError> {
         self.apply(Some(cx), arguments)
             .await
             .map(echo_defs::tool::ToolResult::text)
@@ -102,17 +105,16 @@ impl BashStartTool {
         &self,
         cx: Option<&echo_defs::tool::ToolContext>,
         arguments: serde_json::Value,
-    ) -> Result<String, echo_tool::ToolError> {
-        let manager = self
-            .shell
-            .manager()
-            .ok_or_else(|| echo_tool::ToolError::Execution("shell manager unavailable".into()))?;
+    ) -> Result<String, echo_module_tools::ToolError> {
+        let manager = self.shell.manager().ok_or_else(|| {
+            echo_module_tools::ToolError::Execution("shell manager unavailable".into())
+        })?;
         let workdir = arguments["workdir"].as_str().map(|s| s.to_string());
         let team_id = requester(cx, &arguments).map(str::to_string);
         let info = manager
             .start(workdir, team_id, &self.shell.emit())
             .await
-            .map_err(echo_tool::ToolError::Execution)?;
+            .map_err(echo_module_tools::ToolError::Execution)?;
         Ok(format!(
             "shell session started: {} (workdir: {})",
             info.session_id, info.workdir
@@ -130,7 +132,7 @@ pub struct BashExecTool {
 }
 
 #[async_trait]
-impl echo_tool::Tool for BashExecTool {
+impl echo_module_tools::Tool for BashExecTool {
     fn name(&self) -> &str {
         "bash-exec"
     }
@@ -148,7 +150,10 @@ impl echo_tool::Tool for BashExecTool {
             "required": ["session_id", "command"]
         })
     }
-    async fn execute(&self, arguments: serde_json::Value) -> Result<String, echo_tool::ToolError> {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+    ) -> Result<String, echo_module_tools::ToolError> {
         self.apply(None, arguments).await
     }
 
@@ -156,7 +161,7 @@ impl echo_tool::Tool for BashExecTool {
         &self,
         cx: &echo_defs::tool::ToolContext,
         arguments: serde_json::Value,
-    ) -> Result<echo_defs::tool::ToolResult, echo_tool::ToolError> {
+    ) -> Result<echo_defs::tool::ToolResult, echo_module_tools::ToolError> {
         self.apply(Some(cx), arguments)
             .await
             .map(echo_defs::tool::ToolResult::text)
@@ -168,30 +173,29 @@ impl BashExecTool {
         &self,
         cx: Option<&echo_defs::tool::ToolContext>,
         arguments: serde_json::Value,
-    ) -> Result<String, echo_tool::ToolError> {
-        let session_id = arguments["session_id"]
-            .as_str()
-            .ok_or_else(|| echo_tool::ToolError::InvalidArguments("session_id required".into()))?;
-        let command = arguments["command"]
-            .as_str()
-            .ok_or_else(|| echo_tool::ToolError::InvalidArguments("command required".into()))?;
+    ) -> Result<String, echo_module_tools::ToolError> {
+        let session_id = arguments["session_id"].as_str().ok_or_else(|| {
+            echo_module_tools::ToolError::InvalidArguments("session_id required".into())
+        })?;
+        let command = arguments["command"].as_str().ok_or_else(|| {
+            echo_module_tools::ToolError::InvalidArguments("command required".into())
+        })?;
         if let Some(guard) = &self.guard {
             guard(command)?;
         }
         let timeout = arguments["timeout_secs"].as_u64().map(|t| t.min(300));
-        let manager = self
-            .shell
-            .manager()
-            .ok_or_else(|| echo_tool::ToolError::Execution("shell manager unavailable".into()))?;
+        let manager = self.shell.manager().ok_or_else(|| {
+            echo_module_tools::ToolError::Execution("shell manager unavailable".into())
+        })?;
         // 归属校验（2026-10）：不得操作其他智能体的 shell 会话。
         let requester = requester(cx, &arguments);
         manager
             .ensure_owned_by(session_id, requester)
-            .map_err(echo_tool::ToolError::Execution)?;
+            .map_err(echo_module_tools::ToolError::Execution)?;
         let (output, success, timed_out) = manager
             .exec(session_id, command, timeout, &self.shell.emit())
             .await
-            .map_err(echo_tool::ToolError::Execution)?;
+            .map_err(echo_module_tools::ToolError::Execution)?;
         let mut text = output;
         if timed_out {
             text.push_str("\n[notice: command timed out; session kept, you may retry or continue]");
@@ -211,7 +215,7 @@ pub struct BashStopTool {
 }
 
 #[async_trait]
-impl echo_tool::Tool for BashStopTool {
+impl echo_module_tools::Tool for BashStopTool {
     fn name(&self) -> &str {
         "bash-stop"
     }
@@ -227,7 +231,10 @@ impl echo_tool::Tool for BashStopTool {
             "required": ["session_id"]
         })
     }
-    async fn execute(&self, arguments: serde_json::Value) -> Result<String, echo_tool::ToolError> {
+    async fn execute(
+        &self,
+        arguments: serde_json::Value,
+    ) -> Result<String, echo_module_tools::ToolError> {
         self.apply(None, arguments).await
     }
 
@@ -235,7 +242,7 @@ impl echo_tool::Tool for BashStopTool {
         &self,
         cx: &echo_defs::tool::ToolContext,
         arguments: serde_json::Value,
-    ) -> Result<echo_defs::tool::ToolResult, echo_tool::ToolError> {
+    ) -> Result<echo_defs::tool::ToolResult, echo_module_tools::ToolError> {
         self.apply(Some(cx), arguments)
             .await
             .map(echo_defs::tool::ToolResult::text)
@@ -247,23 +254,22 @@ impl BashStopTool {
         &self,
         cx: Option<&echo_defs::tool::ToolContext>,
         arguments: serde_json::Value,
-    ) -> Result<String, echo_tool::ToolError> {
-        let session_id = arguments["session_id"]
-            .as_str()
-            .ok_or_else(|| echo_tool::ToolError::InvalidArguments("session_id required".into()))?;
-        let manager = self
-            .shell
-            .manager()
-            .ok_or_else(|| echo_tool::ToolError::Execution("shell manager unavailable".into()))?;
+    ) -> Result<String, echo_module_tools::ToolError> {
+        let session_id = arguments["session_id"].as_str().ok_or_else(|| {
+            echo_module_tools::ToolError::InvalidArguments("session_id required".into())
+        })?;
+        let manager = self.shell.manager().ok_or_else(|| {
+            echo_module_tools::ToolError::Execution("shell manager unavailable".into())
+        })?;
         // 归属校验（2026-10）：不得停止其他智能体的 shell 会话。
         let requester = requester(cx, &arguments);
         manager
             .ensure_owned_by(session_id, requester)
-            .map_err(echo_tool::ToolError::Execution)?;
+            .map_err(echo_module_tools::ToolError::Execution)?;
         manager
             .stop(session_id, &self.shell.emit())
             .await
-            .map_err(echo_tool::ToolError::Execution)?;
+            .map_err(echo_module_tools::ToolError::Execution)?;
         Ok(format!("shell session {session_id} stopped"))
     }
 }

@@ -5,9 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
+use crate::{Tool, ToolError, ToolResult};
 use echo_defs::session_query::{SessionQuery, SessionQueryView};
 use echo_defs::tool::ToolContext;
-use echo_tool::{Tool, ToolError, ToolResult};
 
 const MAX_LIMIT: usize = 200;
 

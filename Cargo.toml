@@ -3,8 +3,8 @@ resolver = "2"
 members = [
     "source/modules/echo-defs",
     "source/modules/echo-session",
-    "source/modules/echo-tool",
-    "source/modules/echo-shell",
+    "source/modules/echo-module-tools",
+    "source/modules/echo-module-shell",
     "source/modules/echo-protocol",
     "source/modules/echo-module-federation",
     "source/modules/echo-agent",
@@ -68,8 +68,7 @@ echo-defs = { path = "source/modules/echo-defs" }
 echo-config = { path = "source/modules/echo-config" }
 echo-context = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
 echo-session = { path = "source/modules/echo-session" }
-echo-tool = { path = "source/modules/echo-tool" }
-echo-shell = { path = "source/modules/echo-shell" }
+
 echo-protocol = { path = "source/modules/echo-protocol" }
 echo-agent = { path = "source/modules/echo-agent" }
 echo-test-utils = { path = "source/modules/echo-test-utils" }
@@ -136,7 +135,8 @@ aho-corasick = "1"
 # Subagent 独立仓以 git 依赖引用 Core 基础 crate；宿主必须将其实例
 # 重定向至当前工作区，避免 path 与 git 各生成一份 trait 类型。
 [patch."https://github.com/EchoLab-Auto/EchoAgentCore"]
+echo-module-tools = { path = "source/modules/echo-module-tools" }
+echo-module-shell = { path = "source/modules/echo-module-shell" }
 echo-module-federation = { path = "source/modules/echo-module-federation" }
 echo-defs = { path = "source/modules/echo-defs" }
-echo-tool = { path = "source/modules/echo-tool" }
 echo-protocol = { path = "source/modules/echo-protocol" }

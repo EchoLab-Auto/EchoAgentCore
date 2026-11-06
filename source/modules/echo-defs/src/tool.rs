@@ -214,7 +214,7 @@ pub trait Tool: Send + Sync {
     /// 为什么放在 trait 上：执行链此前用 `if call.name == "checklist"` 判断，
     /// 等于把"哪个工具有状态面板"写成执行链里的一张名单——新增一个有状态的
     /// 工具要改执行链、改宿主分派、再改面板。现在这是**工具自己的声明**，
-    /// 执行链只问一句（见 `echo_tool::execute::tool_state`）。
+    /// 执行链只问一句（见 `echo_module_tools::execute::tool_state`）。
     fn state_key(&self) -> Option<&'static str> {
         None
     }

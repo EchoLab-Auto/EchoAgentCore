@@ -17,8 +17,8 @@ echo-config.workspace = true
 echo-protocol.workspace = true
 echo-context.workspace = true
 echo-session.workspace = true
-echo-tool = { workspace = true }
-echo-shell = { workspace = true }
+echo-module-tools = { workspace = true }
+echo-module-shell = { workspace = true }
 echo-agent.workspace = true
 echo-module = { workspace = true }
 echo-module-host = { workspace = true }
@@ -30,14 +30,12 @@ echo-module-session = { workspace = true }
 echo-module-transcript = { workspace = true }
 echo-module-management = { workspace = true }
 echo-module-panel = { workspace = true }
-echo-module-tools = { workspace = true }
 echo-module-skills = { workspace = true }
 echo-module-workspace = { workspace = true }
 echo-module-subagent = { workspace = true }
 echo-module-provider-llm = { workspace = true }
 echo-module-self-update = { workspace = true }
 echo-module-sanitize = { workspace = true }
-echo-module-shell = { workspace = true }
 getrandom = "0.2"
 tokio.workspace = true
 serde.workspace = true

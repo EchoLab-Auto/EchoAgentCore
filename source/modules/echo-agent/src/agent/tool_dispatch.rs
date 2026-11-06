@@ -1,7 +1,7 @@
 //! 工具分派（宿主侧）：把 `Agent` 的能力实现成执行链的四个接缝。
 //!
 //! 2026-11 全模块化 S2：执行链本体（参数预检 / 超时口径 / 调用与结果成对 /
-//! 出口脱敏）已搬进机制层 [`echo_tool::execute`]。本文件只剩**宿主的三件事**：
+//! 出口脱敏）已搬进机制层 [`echo_module_tools::execute`]。本文件只剩**宿主的三件事**：
 //!
 //! | 接缝 | 本文件的实现 |
 //! |---|---|
@@ -20,7 +20,7 @@
 //! 判据很简单：**执行链不该认识任何一个具体工具的名字**。名字只出现在两个
 //! 地方——工具自己的实现、以及绑定它的那行注册。
 
-use echo_tool::execute::{tool_state, ToolCallContext, ToolExecutionHost, ToolInvocation};
+use echo_module_tools::execute::{tool_state, ToolCallContext, ToolExecutionHost, ToolInvocation};
 
 use super::*;
 
@@ -76,7 +76,7 @@ impl ToolExecutionHost for AgentToolHost<'_> {
         &self,
         cx: &ToolCallContext,
         call: &ToolInvocation,
-        result: &echo_tool::ToolResult,
+        result: &echo_module_tools::ToolResult,
         elapsed_ms: u64,
     ) {
         let agent = &self.agent;
@@ -151,8 +151,8 @@ impl Agent {
 
     /// 执行器实例（每次调用构造一次：它只持有两个 `Arc`，构造成本可忽略，
     /// 换来的是"执行链接缝绑定本 agent"这件事不需要存字段）。
-    pub(crate) fn tool_executor(&self) -> echo_tool::execute::ToolExecutor {
-        echo_tool::execute::ToolExecutor::new(self.tools.clone())
+    pub(crate) fn tool_executor(&self) -> echo_module_tools::execute::ToolExecutor {
+        echo_module_tools::execute::ToolExecutor::new(self.tools.clone())
     }
 
     /// Record the `ToolResult` for a call whose `run_tool` future was dropped

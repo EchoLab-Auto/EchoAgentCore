@@ -1,4 +1,4 @@
-//! # echo-shell — Shell 会话子系统
+//! # echo-module-shell — Shell 会话子系统
 //!
 //! 设计要点：
 //! - 每个会话 = 一个 `bash --noprofile --norc` 子进程（stdin/stdout/stderr 管道），
@@ -22,8 +22,6 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 
 use echo_protocol::ShellSessionInfo;
-
-pub mod module;
 
 pub const MAX_SHELL_SESSIONS: usize = 8;
 /// 单条命令默认超时（秒）。
@@ -114,7 +112,7 @@ where
 /// 宿主身份的一部分。实现方（组合根 / 模块装配）决定用哪个守卫；未注入 =
 /// 不做该检查（工具本身仍在沙箱内）。
 pub type CommandGuard =
-    std::sync::Arc<dyn Fn(&str) -> Result<(), echo_tool::ToolError> + Send + Sync>;
+    std::sync::Arc<dyn Fn(&str) -> Result<(), echo_module_tools::ToolError> + Send + Sync>;
 
 /// 拒绝会从 Core 自己的进程树里停掉 / 杀掉 Core 服务的命令。
 ///
@@ -133,7 +131,7 @@ pub fn self_stop_guard() -> CommandGuard {
     let regex = regex::Regex::new(PATTERN).expect("self-stop regex is valid");
     std::sync::Arc::new(move |command: &str| {
         if regex.is_match(command) {
-            return Err(echo_tool::ToolError::Execution(
+            return Err(echo_module_tools::ToolError::Execution(
                 "blocked command: stopping or killing echo-agent-core from inside its own process would terminate this tool before later cleanup/start steps run. Use `systemctl --user restart echo-agent-core.service` or the managed updater `scripts/update.sh` instead.".into(),
             ));
         }

@@ -12,14 +12,14 @@
 //! | 清单 | `checklist` | 按会话隔离（`Tool::execute` 的会话键） |
 //! | 模块实例管理 | `instance_*` | 依赖 `echo-defs` 的 `InstanceRegistry`（平台中立） |
 //! | 编码 | `read_file` / `write_file` / `edit_file` / `list_files` / `search_code` / `run_command` | 工作区根内沙箱；`node://` 前缀经注入的 [`RemoteInvoker`] 转发 |
-//! | Shell | `shell_*` | 依赖 `echo-shell` 的会话管理器（进程组 + 哨兵分帧） |
+//! | Shell | `shell_*` | 依赖 `echo-module-shell` 的会话管理器（进程组 + 哨兵分帧） |
 //!
 //! ## 接缝（为什么需要它）
 //!
 //! 三个外部能力经**注入**而非全局获取——这是本 crate 能脱离业务 crate 的前提：
 //!
 //! - [`RemoteInvoker`]：`node://` 远程文件/命令调用（联邦子系统实现）；
-//! - `echo_shell`：Shell 会话管理器与事件发射（宿主装配时设置）；
+//! - `echo_module_shell`：Shell 会话管理器与事件发射（宿主装配时设置）；
 //! - 工作区根：构造时传入 `PathBuf`（不做目录发现）。
 //!
 //! 未注入时的行为与注入后一致地**可预测**：远程前缀报「联邦未接线」、
@@ -27,17 +27,16 @@
 //!
 //! ## 依赖纪律
 //!
-//! 只依赖 `echo-defs`（词汇）/ `echo-tool`（工具机制）/ `echo-shell`
+//! 只依赖 `echo-defs`（词汇）/ `echo-module-tools`（工具机制）/ `echo-module-shell`
 //! （Shell 机制）+ 基础 crate；**不依赖 `echo-agent`**，也不依赖组合根。
 //! `scripts/deps-policy.txt` 与 `module_dependency_direction.rs` 双门禁守着。
 
 use std::sync::Arc;
 
-use echo_tool::ToolRegistry;
-
 pub mod calculator;
 pub mod checklist;
 pub mod coding;
+pub mod execute;
 pub mod host_keys;
 pub mod instance;
 pub mod instance_bridge;
@@ -45,6 +44,7 @@ pub mod instance_commands;
 pub mod instance_ops;
 pub mod list_api_profiles;
 pub mod module;
+pub mod registry;
 pub mod session;
 pub mod tool_commands;
 pub mod websearch;
@@ -68,7 +68,7 @@ pub use websearch::WebSearchTool;
 ///
 /// **类型定义在定义层**（`echo_defs::remote_tool::RemoteInvoker`，2026-11 S12）：
 /// 声明方是本 crate（`node://` 的消费方），实现方是联邦子系统。此前类型住在
-/// 这里，于是联邦模块不得不 `use echo_module_tools::RemoteInvoker`——两个互不
+/// 这里，于是联邦模块不得不 `use crate::RemoteInvoker`——两个互不
 /// 相干的模块因此结了 Cargo 依赖。
 pub use echo_defs::remote_tool::RemoteInvoker;
 
@@ -81,13 +81,13 @@ pub use echo_defs::remote_tool::RemoteInvoker;
 /// `Agent` 构造之前。此前那份 kernel cell **从未被任何代码 set 过**：
 /// `node://` 远程文件/命令分流因此恒报「联邦未接线」。改成参数后，
 /// 装配期传进来的就是运行期用的。
-/// 命令护栏（**类型定义在机制层** `echo_shell::CommandGuard`，2026-11）。
+/// 命令护栏（**类型定义在机制层** `echo_module_shell::CommandGuard`，2026-11）。
 ///
 /// 本 crate 的 `bash`（一次性）与 `echo-module-shell` 的 `bash-exec`（会话内）
 /// 都要在执行前问同一句"这条命令能不能跑"，而两个模块互不认识（S12 零依赖）。
-/// 于是类型与默认实现（[`echo_shell::self_stop_guard`]）住在 shell 机制层，
+/// 于是类型与默认实现（[`echo_module_shell::self_stop_guard`]）住在 shell 机制层，
 /// 两边各构造一份——一份实现，零跨模块边。
-pub use echo_shell::CommandGuard;
+pub type CommandGuard = std::sync::Arc<dyn Fn(&str) -> Result<(), ToolError> + Send + Sync>;
 
 /// 注册「核心」工具家族：计算 / 检索 / 清单。
 ///
@@ -109,7 +109,7 @@ mod tests {
     use super::*;
 
     /// 两个注册函数合起来必须产出互不重名的工具集——重名会被
-    /// `ToolRegistry::register` 静默覆盖（见 `echo-tool` 的 `name_conflicts`）。
+    /// `ToolRegistry::register` 静默覆盖（见 `echo-module-tools` 的 `name_conflicts`）。
     ///
     /// `bash-*` 三个工具在 `echo-module-shell`，那里有自己的同款断言；
     /// 两个模块的工具**跨模块**重名由组合根装配期检查（`name_conflicts`）。
@@ -139,3 +139,7 @@ mod tests {
         }
     }
 }
+
+pub use registry::{
+    ModuleTool, ModuleToolRegistration, Tool, ToolDefinition, ToolError, ToolRegistry, ToolResult,
+};

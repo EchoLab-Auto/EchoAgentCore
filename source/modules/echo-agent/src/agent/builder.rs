@@ -59,7 +59,7 @@ pub struct AgentBuilder {
     /// `bash-*` 工具是好的**（它用的是工具注册时传进去的那份句柄）。
     ///
     /// 同一能力两条路径两种行为，是纯粹的漏接线。这里补上唯一正确的来源。
-    shell: Option<echo_shell::ShellHandle>,
+    shell: Option<echo_module_shell::ShellHandle>,
     persona_api: Option<String>,
     active_model: Option<String>,
     config_store: Option<ConfigStore>,
@@ -113,7 +113,7 @@ impl AgentBuilder {
     }
 
     /// 注入进程级 Shell 句柄（与工具注册用的是**同一份**）。
-    pub fn shell(mut self, handle: echo_shell::ShellHandle) -> Self {
+    pub fn shell(mut self, handle: echo_module_shell::ShellHandle) -> Self {
         self.shell = Some(handle);
         self
     }

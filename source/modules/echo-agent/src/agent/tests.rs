@@ -2,7 +2,7 @@ use super::*;
 use crate::llm::{ChatChunk, ChatResponse, LlmError, Usage};
 use crate::session::SessionKey;
 use crate::tool::{Tool, ToolError};
-use echo_tool::execute::invalid_tool_arguments;
+use echo_module_tools::execute::invalid_tool_arguments;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct MockProvider {

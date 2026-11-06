@@ -39,8 +39,8 @@ EchoAgentCore/
 │       ├── echo-config/       # kernel：TOML 原子读改写
 │       ├── echo-protocol/     # kernel：管理面协议与事件桥
 │       ├── echo-session/      # kernel：事件溯源会话机制
-│       ├── echo-tool/         # kernel：工具注册与执行机制
-│       ├── echo-shell/        # kernel：持久 Shell 会话机制
+│       ├── echo-module-tools/         # kernel：工具注册与执行机制
+│       ├── echo-module-shell/        # kernel：持久 Shell 会话机制
 │       ├── echo-module-loop/         # kernel：TurnRunner + ToolPipeline
 │       ├── echo-module-federation/   # kernel：Core↔Core 链路与帧协议
 │       ├── echo-module-adapter/    # 协议贡献 → 领域 trait

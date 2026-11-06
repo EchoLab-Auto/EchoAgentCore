@@ -16,7 +16,7 @@
 //! ## 为什么这是一个独立 crate（全模块化 S3）
 //!
 //! 这四件事（路由表 / 代理工具 / 聚合器 / 跨机查询）**只依赖机制层**：
-//! `echo-module-federation`（线协议与链路）、`echo-tool`（工具词汇与注册表）、
+//! `echo-module-federation`（线协议与链路）、`echo-module-tools`（工具词汇与注册表）、
 //! `echo-defs`（定义）、`echo-module-workspace`（它消费的查询 trait）。
 //! 它们此前住在宿主 `packages/federation` 里，唯一的宿主依赖是
 //! `FederationPorts::command_handler` 的类型 `Fn(&Agent, cmd)`——而真正需要
