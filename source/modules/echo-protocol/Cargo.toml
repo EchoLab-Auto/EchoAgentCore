@@ -1,0 +1,11 @@
+[package]
+name = "echo-protocol"
+description = "Compatibility facade for the management protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+echo-module-management = { path = "../echo-module-management" }

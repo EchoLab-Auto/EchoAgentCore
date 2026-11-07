@@ -35,6 +35,7 @@ modules/echo-defs                         echo-context
 
 # ── kernel 模块（只依赖底座）────────────────────────────────────────────────
 modules/echo-session                        echo-defs echo-module
+modules/echo-protocol                    echo-module-management
 modules/echo-module-management              echo-module echo-context echo-defs echo-module-federation echo-session
 modules/echo-config
 modules/echo-module-tools echo-config echo-context echo-defs echo-module echo-module-management echo-test-utils

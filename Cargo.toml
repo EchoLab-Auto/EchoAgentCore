@@ -19,6 +19,7 @@ members = [
     "source/modules/echo-module-session",
     "source/modules/echo-module-transcript",
     "source/modules/echo-module-management",
+    "source/modules/echo-protocol",
     "source/modules/echo-module-tools",
 ]
 
@@ -80,7 +81,7 @@ echo-module-loop = { path = "source/modules/echo-module-loop" }
 echo-module-self-update = { path = "source/modules/echo-module-self-update" }
 echo-module-sanitize = { path = "source/modules/echo-module-sanitize" }
 echo-module-shell = { path = "source/modules/echo-module-shell" }
-echo-module-subagent = { path = "/home/evence/code_file/gitlab/echo-tech/agent-module-subagent/crates/echo-module-subagent" }
+echo-module-subagent = { git = "https://github.com/EchoLab-Auto/agent-module-subagent", branch = "main" }
 # 工作区会话模块已迁出为独立仓库 crate-workspace（业务逻辑全在那边，
 # Core 只做通用接线）；crate 名保持 echo-module-workspace 不变。
 echo-module-workspace = { git = "https://github.com/EchoLab-Auto/crate-workspace", branch = "main" }
@@ -131,6 +132,7 @@ aho-corasick = "1"
 # Subagent 独立仓以 git 依赖引用 Core 基础 crate；宿主必须将其实例
 # 重定向至当前工作区，避免 path 与 git 各生成一份 trait 类型。
 [patch."https://github.com/EchoLab-Auto/EchoAgentCore"]
+echo-protocol = { path = "source/modules/echo-protocol" }
 echo-module-tools = { path = "source/modules/echo-module-tools" }
 echo-module-shell = { path = "source/modules/echo-module-shell" }
 echo-module-federation = { path = "source/modules/echo-module-federation" }
