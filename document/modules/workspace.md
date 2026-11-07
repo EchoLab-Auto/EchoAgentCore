@@ -17,10 +17,10 @@ y: 1200
 ## 身份与归属（2026-11 迁出 Core）
 
 模块已从 Core 的 `source/modules/` **迁出为独立仓库**
-（`EchoLab-Auto/crate-workspace`），Core 以 git 依赖引入：
+（`EchoLab-Auto/agent-module-workspace`），Core 以 git 依赖引入：
 
 ```toml
-echo-module-workspace = { git = "https://github.com/EchoLab-Auto/crate-workspace", branch = "main" }
+echo-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-workspace", branch = "main" }
 ```
 
 | 项 | 值 |

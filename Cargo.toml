@@ -82,9 +82,9 @@ echo-module-self-update = { path = "source/modules/echo-module-self-update" }
 echo-module-sanitize = { path = "source/modules/echo-module-sanitize" }
 echo-module-shell = { path = "source/modules/echo-module-shell" }
 echo-module-subagent = { git = "https://github.com/EchoLab-Auto/agent-module-subagent", branch = "main" }
-# 工作区会话模块已迁出为独立仓库 crate-workspace（业务逻辑全在那边，
+# 工作区会话模块已迁出为独立仓库 agent-module-workspace（业务逻辑全在那边，
 # Core 只做通用接线）；crate 名保持 echo-module-workspace 不变。
-echo-module-workspace = { git = "https://github.com/EchoLab-Auto/crate-workspace", branch = "main" }
+echo-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-workspace", branch = "main" }
 echo-module-management = { package = "echo-module-management", path = "source/modules/echo-module-management" }
 echo-module-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", branch = "main" }
 echo-module-session = { path = "source/modules/echo-module-session" }
