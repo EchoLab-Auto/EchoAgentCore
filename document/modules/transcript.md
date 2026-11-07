@@ -62,4 +62,4 @@ y: 1200
 
 - 它**不产生**事件：时间线的数据源是宿主的事件总线，本模块只决定「哪些进、怎么映射」
 - 它**不做**持久化：写窗口落到 `TrunkStore`，持久化归 [会话模块](./session.md)
-- 协议形状归 [协议与数据流](../protocol/protocol.md)：本模块产出的是 `echo-protocol` 的类型，帧编码不在这里
+- 协议形状归 [协议与数据流](../protocol/protocol.md)：本模块产出的是 `echo-module-management` 的类型，帧编码不在这里

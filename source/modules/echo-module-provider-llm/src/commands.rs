@@ -22,7 +22,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use echo_defs::api_profile::{ReasoningEffort, ThinkingMode};
-use echo_protocol::{BackendCommand, BackendEvent};
+use echo_module_management::protocol::{BackendCommand, BackendEvent};
 
 /// 本模块处理的命令名（`RenameApi` 是**进程级**命令，归组合根，不在此列）。
 pub const COMMANDS: [&str; 13] = [

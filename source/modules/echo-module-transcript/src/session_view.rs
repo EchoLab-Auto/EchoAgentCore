@@ -32,9 +32,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use echo_protocol::{BackendCommand, BackendEvent, TimelineMessage};
+use echo_module_management::protocol::{BackendCommand, BackendEvent, TimelineMessage};
 
-use echo_protocol::timeline_text::elide_reasoning_for_wire;
+use echo_module_management::protocol::timeline_text::elide_reasoning_for_wire;
 
 /// 本模块处理的命令名（都属"会话视图投影"，写操作不在此列）。
 pub const COMMANDS: [&str; 5] = [
@@ -250,7 +250,7 @@ impl SessionViewHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use echo_protocol::TimelineMessage;
+    use echo_module_management::protocol::TimelineMessage;
     use std::sync::Mutex;
 
     /// 假宿主：断言"哪条命令读哪个接缝、发了哪些事件、顺序如何"。

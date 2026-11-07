@@ -108,7 +108,7 @@ active_conversation: Option<String>,  // 新增：对话 id
    `conversations`（`action: list/create/rename/delete`，`workspace` 缺省 =
    当前激活工作区）——模型可自主开新任务线。
 
-### 协议（echo-protocol）
+### 协议（echo-module-management）
 
 - `WorkspaceSessionInfo.conversations: Vec<WorkspaceConversationInfo>`
   （serde default；旧 Core 缺失 → Panel 视为仅存量对话）

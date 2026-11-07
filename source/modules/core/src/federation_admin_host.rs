@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use echo_module_federation::admin::{Emit, FederationAdminHost, PeerSave, PeerSummary};
 use echo_module_federation::PeerConfig;
-use echo_protocol::BackendEvent;
+use echo_module_management::protocol::BackendEvent;
 
 use crate::federation_rt::FederationRuntime;
 
@@ -72,12 +72,12 @@ impl FederationAdminHost for RuntimeAdminHost {
         self.rt.node_name.clone()
     }
 
-    async fn status_event(&self) -> BackendEvent {
-        self.rt.status_event().await
+    async fn status_event(&self) -> echo_module_federation::FederationEvent {
+        backend_to_fed(self.rt.status_event().await)
     }
 
-    async fn directory_event(&self) -> BackendEvent {
-        self.rt.directory_event().await
+    async fn directory_event(&self) -> echo_module_federation::FederationEvent {
+        backend_to_fed(self.rt.directory_event().await)
     }
 
     async fn apply_peer(&self, peer: PeerSave) {
@@ -251,15 +251,41 @@ impl FederationAdminHost for RuntimeAdminHost {
         session_id: String,
         team_id: Option<String>,
         target_peer: String,
-        emit: Emit,
-    ) {
+    ) -> serde_json::Value {
+        use std::sync::{Arc, Mutex};
+        let last: Arc<Mutex<Option<echo_module_federation::FederationEvent>>> =
+            Arc::new(Mutex::new(None));
+        let slot = last.clone();
+        let emit: Emit = Arc::new(move |ev| {
+            *slot.lock().unwrap() = Some(ev);
+        });
+        // 适配：federation_import 用 BackendEvent emit；桥成 FederationEvent。
+        let be_emit: Arc<dyn Fn(BackendEvent) + Send + Sync> = {
+            let emit = emit.clone();
+            Arc::new(move |be| emit(backend_to_fed(be)))
+        };
         crate::federation_import::handle_migrate_session(
-            emit,
+            be_emit,
             &self.rt,
             session_id,
             team_id,
             target_peer,
         )
         .await;
+        let ev = last.lock().unwrap().take();
+        serde_json::to_value(&ev).unwrap_or(serde_json::Value::Null)
     }
+}
+
+/// BackendEvent → FederationEvent（字段同形，serde 往返）。
+fn backend_to_fed(
+    be: BackendEvent,
+) -> echo_module_federation::FederationEvent {
+    serde_json::to_value(&be)
+        .ok()
+        .and_then(|v| serde_json::from_value::<echo_module_federation::FederationEvent>(v).ok())
+        .unwrap_or(echo_module_federation::FederationEvent::Error {
+            session_id: None,
+            message: "event 转换失败".into(),
+        })
 }

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use echo_context::ServiceKey;
-use echo_protocol::BackendEvent;
+use echo_module_management::protocol::BackendEvent;
 
 /// 进程级事件出口。
 pub static EVENTS: ServiceKey<Arc<dyn Fn(BackendEvent) + Send + Sync>> =

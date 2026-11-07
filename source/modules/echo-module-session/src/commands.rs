@@ -27,8 +27,8 @@
 
 use std::sync::Arc;
 
-use echo_protocol::timeline_text::elide_reasoning_for_wire;
-use echo_protocol::{BackendCommand, BackendEvent};
+use echo_module_management::protocol::timeline_text::elide_reasoning_for_wire;
+use echo_module_management::protocol::{BackendCommand, BackendEvent};
 use echo_session::CompactionPhase;
 
 use crate::store::TrunkStore;

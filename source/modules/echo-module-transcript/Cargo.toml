@@ -11,7 +11,7 @@ description = "显示层模块（解耦计划 S8）：时间线实时投影 + �
 echo-module = { workspace = true }
 echo-context = { workspace = true }
 echo-defs = { path = "../echo-defs" }
-echo-protocol = { path = "../echo-protocol" }
+echo-module-management = { path = "../echo-module-management" }
 chrono = { workspace = true }
 tokio.workspace = true
 tracing.workspace = true

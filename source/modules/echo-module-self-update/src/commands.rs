@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use echo_protocol::{BackendCommand, BackendEvent};
+use echo_module_management::protocol::{BackendCommand, BackendEvent};
 
 /// 本模块处理的命令名。
 pub const COMMANDS: [&str; 2] = ["RequestSelfUpdate", "RequestSelfUpdateStatus"];

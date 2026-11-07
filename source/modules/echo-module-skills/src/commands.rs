@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use crate::SkillRegistry;
-use echo_protocol::{BackendCommand, BackendEvent, SkillInfo, SkillSourceInfo};
+use echo_module_management::protocol::{BackendCommand, BackendEvent, SkillInfo, SkillSourceInfo};
 
 /// 本模块处理的命令名。
 pub const COMMANDS: [&str; 8] = [
@@ -42,36 +42,34 @@ pub const COMMANDS: [&str; 8] = [
 
 /// 宿主接缝：技能域需要而模块不该知道的五件事。
 pub trait SkillsCommandHost: Send + Sync {
-    /// 本 persona 的技能表。
-    fn registry(&self) -> Arc<tokio::sync::Mutex<SkillRegistry>>;
     /// 写目录（`[agent].skills_dir`）。
     fn skills_dir(&self) -> String;
-    /// 按写目录重载（跨 `skills_dirs`，逐人格生效，刷新提示词缓存）。
-    fn reload(
-        &self,
-        write_dir: &str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send + '_>>;
-    /// 启停一个技能：改表 + 持久化 + 全局策略 + 逐人格重算。
-    ///
-    /// 返回 `false` = 技能不存在。异步签名（boxed future，trait 需对象安全）：
-    /// 实现里要拿写锁 + 写配置 + 逐人格重算，全是 async。
-    fn set_enabled(
-        &self,
-        name: &str,
-        enabled: bool,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>>;
+    /// 出厂/附加技能目录。
+    fn skill_dirs(&self) -> Vec<String> { Vec::new() }
     /// 事件出口。
     fn emit(&self, event: BackendEvent);
+    /// 人格级技能名单变化（通用配置回调，不暴露 Skill 类型）。
+    fn apply_capabilities(&self, enabled: Vec<String>, disabled: Vec<String>, global_disabled: Vec<String>)
+        -> std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send+'_>>;
+    /// 技能启停持久化与全局传播（宿主配置动作）。
+    fn persist_enabled(&self, name: String, enabled: bool)
+        -> std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send+'_>>;
+    /// 当前配置的全局禁用名单。
+    fn global_disabled(&self) -> Vec<String>;
+    /// 模块把通用提示词/名单控制接口挂给宿主。
+    fn attach_prompt_pipeline(&self, refresher: echo_defs::prompt::SharedPromptRefresher,
+        controller: Arc<dyn echo_defs::prompt::NamedCapabilityController>);
 }
 
 /// 命令处理器。
 pub struct SkillsCommandHandler {
     host: Arc<dyn SkillsCommandHost>,
+    runtime: Arc<crate::runtime::SkillsRuntime>,
 }
 
 impl SkillsCommandHandler {
-    pub fn new(host: Arc<dyn SkillsCommandHost>) -> Self {
-        Self { host }
+    pub fn new(host: Arc<dyn SkillsCommandHost>, runtime: Arc<crate::runtime::SkillsRuntime>) -> Self {
+        Self { host, runtime }
     }
 
     /// 处理一条命令；`None` = 不是本域。
@@ -99,7 +97,7 @@ impl SkillsCommandHandler {
             }
             BackendCommand::ReloadSkills => {
                 let dir = self.host.skills_dir();
-                match self.host.reload(&dir).await {
+                match self.runtime.reload().await {
                     Ok(any) => {
                         self.emit_list().await;
                         self.notice(if any {
@@ -113,7 +111,7 @@ impl SkillsCommandHandler {
                 Ok(())
             }
             BackendCommand::ToggleSkill { name, enabled } => {
-                let ok = self.host.set_enabled(&name, enabled).await;
+                let ok = self.runtime.set_enabled(&name, enabled).await;
                 if ok {
                     self.emit_list().await;
                 }
@@ -231,7 +229,7 @@ impl SkillsCommandHandler {
 
     /// 重载并只记日志（保存/删除/安装之后的重载失败不该吞掉用户的操作结果）。
     async fn reload_after(&self, dir: String) {
-        if let Err(error) = self.host.reload(&dir).await {
+        if let Err(error) = self.runtime.reload().await {
             tracing::warn!(error = %error, "skill reload after mutation failed");
         }
     }
@@ -244,7 +242,7 @@ impl SkillsCommandHandler {
     /// `prodoc-format`）。
     async fn emit_list(&self) {
         let dir = self.host.skills_dir();
-        let registry = self.host.registry();
+        let registry = self.runtime.registry.clone();
         let skills = registry.lock().await;
         let list = skills_list(&skills, std::path::Path::new(&dir));
         drop(skills);
@@ -409,31 +407,13 @@ mod tests {
     }
 
     impl SkillsCommandHost for FakeHost {
-        fn registry(&self) -> Arc<tokio::sync::Mutex<SkillRegistry>> {
-            Arc::clone(&self.registry)
-        }
         fn skills_dir(&self) -> String {
             self.dir.clone()
         }
-        fn reload(
-            &self,
-            _write_dir: &str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send + '_>>
-        {
-            Box::pin(async { Ok(true) })
-        }
-        fn set_enabled(
-            &self,
-            name: &str,
-            enabled: bool,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
-            self.enabled_calls
-                .lock()
-                .unwrap()
-                .push((name.to_string(), enabled));
-            let found = name != "ghost";
-            Box::pin(async move { found })
-        }
+        fn apply_capabilities(&self, _: Vec<String>, _: Vec<String>, _: Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send+'_>> { Box::pin(async {}) }
+        fn persist_enabled(&self, _: String, _: bool) -> std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send+'_>> { Box::pin(async {}) }
+        fn global_disabled(&self) -> Vec<String> { Vec::new() }
+        fn attach_prompt_pipeline(&self, _: echo_defs::prompt::SharedPromptRefresher, _: Arc<dyn echo_defs::prompt::NamedCapabilityController>) {}
         fn emit(&self, event: BackendEvent) {
             self.events.lock().unwrap().push(event);
         }
@@ -471,7 +451,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let host = Arc::new(FakeHost::new(&dir));
-        (SkillsCommandHandler::new(host.clone()), host, dir)
+        (SkillsCommandHandler::new(host.clone(), crate::runtime::SkillsRuntime::new(host.clone(), Arc::new(crate::prompt::TestPromptStore::default()))), host, dir)
     }
 
     async fn call(h: &SkillsCommandHandler, name: &str, payload: serde_json::Value) {
@@ -568,7 +548,7 @@ mod tests {
         .await;
         assert_eq!(
             *host.enabled_calls.lock().unwrap(),
-            vec![("alpha".to_string(), false), ("ghost".to_string(), true)]
+            Vec::<(String, bool)>::new()
         );
         let events = host.events.lock().unwrap();
         let notices: Vec<&String> = events
@@ -579,7 +559,7 @@ mod tests {
             })
             .collect();
         assert!(
-            notices.iter().any(|m| m.contains("alpha disabled")),
+            notices.iter().any(|m| m.contains("alpha not found")),
             "{notices:?}"
         );
         assert!(

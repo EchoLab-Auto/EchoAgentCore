@@ -22,7 +22,7 @@ Located next to the code in `#[cfg(test)] mod tests` blocks.
 - **Protocol** (QQ 模块仓库 `crates/echo-core`): OneBot event parsing for every variant family
   (message / notice / request / meta), message segments, action builders,
   unknown-type preservation, sender nickname (card vs nickname fallback).
-- **Wire protocol** (echo-protocol): command/event WS round-trips,
+- **Wire protocol** (echo-module-management): command/event WS round-trips,
   malformed frame handling, FanoutHandle subscriber pruning.
 - **Filtering**（**已随去适配器化搬到模块仓库** `crates/echo-module-adapter-qq/src/filter.rs` 的
   `#[cfg(test)]` 内联测试，Core 侧已无过滤实现）：allowlist / denylist / rate limit（滑动

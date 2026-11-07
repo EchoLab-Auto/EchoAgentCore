@@ -29,7 +29,9 @@
 //! 时间线是**投影**，不是第二事实源：它只从事件派生，永不回写事件日志。所以
 //! 投影器可以随时重建（`session::history` 就走同一批规则）。
 
-use echo_protocol::{BackendEvent, TimelineMessage, TimelineSource, TimelineTool};
+use echo_module_management::protocol::{
+    BackendEvent, TimelineMessage, TimelineSource, TimelineTool,
+};
 
 /// 宿主端口：投影器需要的三件事。
 pub trait TimelineHost: Send + Sync {
@@ -250,11 +252,11 @@ impl<H: TimelineHost + ?Sized + 'static> TimelineProjector<H> {
     }
 }
 
-pub use echo_protocol::timeline_text::{
+pub use echo_module_management::protocol::timeline_text::{
     elide_reasoning_for_wire, WIRE_REASONING_HEAD_CHARS, WIRE_REASONING_KEEP_FULL,
 };
 
-pub use echo_protocol::timeline_text::{
+pub use echo_module_management::protocol::timeline_text::{
     summarize_timeline_value, timeline_timer_task, truncate_one_line,
 };
 

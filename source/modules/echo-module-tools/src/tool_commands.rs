@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use crate::ToolRegistry;
-use echo_protocol::{BackendCommand, BackendEvent, ToolInfo};
+use echo_module_management::protocol::{BackendCommand, BackendEvent, ToolInfo};
 
 /// 本模块处理的命令名。
 pub const COMMANDS: [&str; 2] = ["RequestToolsList", "ToggleTool"];

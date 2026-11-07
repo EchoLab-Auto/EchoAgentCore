@@ -1,28 +1,53 @@
 [package]
 name = "echo-module-loop"
+description = "EchoAgentCore unified Agent and model-tool loop module"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "循环模块（解耦计划 Phase 3 ⑦）：loop.single 的策略声明与 loop 服务贡献"
 
 [dependencies]
-echo-defs = { workspace = true }
-# 驱动本体 + 服务表：模块在 mount 里构造 `TurnRunner` 并 provide 到 `loop`。
+echo-defs = { path = "../echo-defs" }
+echo-config = { workspace = true }
 echo-context = { workspace = true }
-tokio-util = { workspace = true }
-thiserror = { workspace = true }
-chrono = { workspace = true }
+echo-session = { path = "../echo-session" }
+echo-module-management = { path = "../echo-module-management" }
 echo-module = { workspace = true }
-echo-module-api = { workspace = true }
-# 压缩策略：转录渲染 / 分层裁剪 / 摘要调用（词汇在 echo-session）。
-echo-session = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
+echo-module-provider-llm = { workspace = true }
+echo-module-self-update = { workspace = true }
+echo-module-shell = { workspace = true }
+echo-module-federation = { workspace = true }
+echo-module-session = { workspace = true }
+echo-module-transcript = { workspace = true }
+echo-module-skills = { workspace = true }
+echo-module-tools = { workspace = true }
+echo-module-subagent = { workspace = true }
+echo-module-sanitize = { workspace = true }
+echo-module-workspace = { workspace = true }
+tokio.workspace = true
+parking_lot = "0.12"
+futures-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+dashmap.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+walkdir.workspace = true
+regex.workspace = true
+toml.workspace = true
+tokio-util.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# bash 进程组清理（ChildGroupGuard 向进程组发 SIGKILL）。
+libc = "0.2"
 
 [dev-dependencies]
-# 提供 loop 服务的测试要造一个 `llm` provider（trait 是 async 的）+ 拼配置 JSON。
-async-trait = { workspace = true }
-serde_json = { workspace = true }
-tokio = { workspace = true }
+filetime = "0.2"
+echo-test-utils = { path = "../../test/utils" }
+proptest = "1"

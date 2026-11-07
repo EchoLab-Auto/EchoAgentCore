@@ -11,7 +11,7 @@ description = "Shell 会话模块：后台 bash 会话工具（bash-start / bash
 echo-defs = { workspace = true }
 echo-context = { workspace = true }
 echo-module = { workspace = true }
-echo-protocol = { workspace = true }
+echo-module-management = { workspace = true }
 echo-module-tools = { workspace = true }
 chrono.workspace = true
 uuid.workspace = true

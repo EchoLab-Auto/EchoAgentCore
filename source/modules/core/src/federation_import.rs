@@ -21,25 +21,27 @@ use crate::FederationRuntime;
 
 pub(crate) async fn deliver_aggregate_summary(
     rt: &crate::federation_rt::FederationRuntime,
-    summary: echo_agent::federation::aggregator::AggregateSummary,
+    summary: echo_module_loop::federation::aggregator::AggregateSummary,
 ) {
     for (_id, agent) in rt.live_personas().await {
         if agent.trunk.get(&summary.session_id).is_some() {
-            agent.trunk.push_timeline(echo_protocol::TimelineMessage {
-                seq: 0, // push_timeline 内部分配
-                kind: "system".into(),
-                content: summary.text.clone(),
-                session_id: summary.session_id.clone(),
-                time: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0),
-                source: None,
-                reasoning: None,
-                tool: None,
-                images: None,
-                ord: 0, // push_timeline 内部分配（分页锚点）
-            });
+            agent
+                .trunk
+                .push_timeline(echo_module_management::protocol::TimelineMessage {
+                    seq: 0, // push_timeline 内部分配
+                    kind: "system".into(),
+                    content: summary.text.clone(),
+                    session_id: summary.session_id.clone(),
+                    time: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0),
+                    source: None,
+                    reasoning: None,
+                    tool: None,
+                    images: None,
+                    ord: 0, // push_timeline 内部分配（分页锚点）
+                });
             return;
         }
     }
@@ -120,7 +122,7 @@ pub(crate) struct ImportBuffer {
 
 /// 凑齐后的导入任务：由泵 spawn 到阻塞线程执行（大日志投影不阻塞联邦泵）。
 pub(crate) struct ImportReady {
-    trunk: echo_agent::TrunkStore,
+    trunk: echo_module_loop::TrunkStore,
     session_id: String,
     transfer_id: String,
     target_peer: String,
@@ -293,7 +295,7 @@ pub(crate) fn note_session_import_ack(
 /// 会话迁移（P3-2b）：源侧导出会话事件日志 → 按块经联邦送到目标节点 →
 /// 目标导入到同名 persona 的事实来源日志 → 回执驱动结果事件。
 pub(crate) async fn handle_migrate_session(
-    emit: std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>,
+    emit: std::sync::Arc<dyn Fn(echo_module_management::protocol::BackendEvent) + Send + Sync>,
     rt: &FederationRuntime,
     session_id: String,
     team_id: Option<String>,
@@ -303,13 +305,15 @@ pub(crate) async fn handle_migrate_session(
     let sid = session_id.clone();
     let tp = target_peer.clone();
     let fail = move |message: String| {
-        emit_fail(echo_protocol::BackendEvent::SessionMigrated {
-            session_id: sid.clone(),
-            target_peer: tp.clone(),
-            new_session_id: None,
-            message,
-            success: false,
-        });
+        emit_fail(
+            echo_module_management::protocol::BackendEvent::SessionMigrated {
+                session_id: sid.clone(),
+                target_peer: tp.clone(),
+                new_session_id: None,
+                message,
+                success: false,
+            },
+        );
     };
     // 1) 目标 peer 在线 + node_id 反查。
     let Some(node_id) = rt.peer_names.read().await.get(&target_peer).cloned() else {
@@ -426,13 +430,15 @@ pub(crate) async fn handle_migrate_session(
         "已向「{target_peer}」发送 {total} 个分块（{} 条事件），等待目标确认",
         events.len()
     );
-    emit(echo_protocol::BackendEvent::SessionMigrated {
-        session_id,
-        target_peer,
-        new_session_id: None, // 待目标 SessionImportResult 回执确认
-        message,
-        success: true,
-    });
+    emit(
+        echo_module_management::protocol::BackendEvent::SessionMigrated {
+            session_id,
+            target_peer,
+            new_session_id: None, // 待目标 SessionImportResult 回执确认
+            message,
+            success: true,
+        },
+    );
 }
 
 #[cfg(test)]

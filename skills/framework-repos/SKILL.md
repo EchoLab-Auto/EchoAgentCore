@@ -19,7 +19,7 @@ EchoAgent 框架由两个 Git 仓库组成，所有框架相关的修改、构�
 
 - Core 的源码在仓库内 `source/` 子目录（Rust workspace），例如：
   - `source/modules/echo-agent/src/agent/mod.rs`
-  - `source/modules/echo-protocol/src/event.rs`
+  - `source/modules/echo-module-management/src/event.rs`
 - Panel 的源码在仓库内 `web/src/`（React/TS）与 `source/`（Rust 后端）
 - 配置文件：
   - Core：`~/.config/echo-agent-core/core.toml`

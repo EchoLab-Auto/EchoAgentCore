@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{new_call_id, FedFrame, InvokeRequest, InvokeResult, InvokeVerdict, NodeCaps};
 
-use echo_module_tools::ToolRegistry;
+use echo_defs::registry::ToolRegistry;
 
 /// 等待中的出站调用：中间输出聚合 + 终态通知。
 struct PendingCall {
@@ -618,7 +618,7 @@ mod tests {
         async fn execute(
             &self,
             _arguments: serde_json::Value,
-        ) -> Result<String, echo_module_tools::ToolError> {
+        ) -> Result<String, echo_defs::tool::ToolError> {
             Ok(format!("{} ran", self.name))
         }
         fn remote_capable(&self) -> bool {

@@ -11,12 +11,12 @@ y: 3440
 > **定位**：本文是前后端线协议（management WebSocket 契约）的参考——契约归属与兼容规则、传输与信封（含事件扇出序号、Bootstrap、共享枚举）、命令、事件（含时间线增量同步）、归属与路由、管理通道与快照。读者：Core / Panel 双端开发者与协议维护者。
 > 相关文档：[架构总览](../overview/architecture.md)、[Panel 交互定义](../panel/interaction.md)、[桌面端布局](../panel/desktop-layout.md)、[联邦](../federation/federation.md)、[部署与自更新](../ops/deploy.md)。
 
-前后端通过 **management WebSocket**（默认 `0.0.0.0:3132`，开箱即可被局域网连接；`[core] management_access_token` 提供 Bearer 认证，首装自动生成）通信，消息为 JSON 文本帧。令牌缺失/不匹配时在握手阶段返回**标准 HTTP 401**（客户端据此归类为认证失败并提示排查令牌——此前该拒绝路径因响应状态默认 200 被 tungstenite 静默丢弃，客户端只能看到「握手未完成」，令牌问题极难排查）。命令与事件定义在 `source/modules/echo-protocol`（Core 侧直接使用该 crate；Panel 以 `web/src/protocol.ts` 镜像线格式）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
+前后端通过 **management WebSocket**（默认 `0.0.0.0:3132`，开箱即可被局域网连接；`[core] management_access_token` 提供 Bearer 认证，首装自动生成）通信，消息为 JSON 文本帧。令牌缺失/不匹配时在握手阶段返回**标准 HTTP 401**（客户端据此归类为认证失败并提示排查令牌——此前该拒绝路径因响应状态默认 200 被 tungstenite 静默丢弃，客户端只能看到「握手未完成」，令牌问题极难排查）。命令与事件定义在 `source/modules/echo-module-management`（Core 侧直接使用该 crate；Panel 以 `web/src/protocol.ts` 镜像线格式）——**类型定义的唯一来源是该 crate，修改协议必须先改 crate**；本文档是对它的说明性描述。
 
 ## 仓库拆分与契约归属
 
-- 仓库拆分为 **EchoAgentCore**（后端 agent 服务）与 **EchoAgentPanel**（前端）两个独立仓库，两端可独立构建、发布、演进，仅通过 `echo-protocol` 契约耦合
-- `echo-protocol` 是前端 ⇄ Core **线契约的唯一来源**：只定义 `BackendCommand` / `BackendEvent` / `WsMessage` / bridge / 共享枚举（`ThinkingMode` / `ReasoningEffort`），不依赖任何 agent、平台或 UI 代码；serde 表示即线格式
+- 仓库拆分为 **EchoAgentCore**（后端 agent 服务）与 **EchoAgentPanel**（前端）两个独立仓库，两端可独立构建、发布、演进，仅通过 `echo-module-management` 契约耦合
+- `echo-module-management` 是前端 ⇄ Core **线契约的唯一来源**：只定义 `BackendCommand` / `BackendEvent` / `WsMessage` / bridge / 共享枚举（`ThinkingMode` / `ReasoningEffort`），不依赖任何 agent、平台或 UI 代码；serde 表示即线格式
 - Panel 是纯粹的「协议客户端」：不包含任何 agent 或 QQ 逻辑（Rust 中继按原文转发帧、不解析负载；线格式以 `web/src/protocol.ts` 镜像）；后端各 crate 通过 re-export 保持 `echo_agent::…` 路径兼容
 - 协议演进只服务 Panel ⇄ Core 两端；**全网同步更新（不做旧版本兼容）**——语义变更单侧收紧亦可，两端同版本部署（见 §兼容性规则）
 
@@ -77,17 +77,17 @@ pub enum WsMessage {
 {"type":"event","payload":{"AgentOutput":{"session_id":"...","content":"...","branch_id":null}},"seq":4127}
 ```
 
-序列化助手：`serialize_command` / `serialize_event` / `serialize_event_sequenced` / `serialize_event_identified` / `deserialize_message`（`echo_protocol::bridge`）；无法解析的帧记日志后丢弃。
+序列化助手：`serialize_command` / `serialize_event` / `serialize_event_sequenced` / `serialize_event_identified` / `deserialize_message`（`echo_module_management::protocol::bridge`）；无法解析的帧记日志后丢弃。
 
 ### 事件扇出序号
 
-Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEvent { seq, event }`，`echo-protocol/src/bridge.rs`）：
+Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEvent { seq, event }`，`echo-module-management/src/bridge.rs`）：
 
 - **语义**：Core **进程内**单调递增序号（从 1 起，重启归 1），标识"这条 Core 发出的第 N 条事件"，不标识任何业务对象。由 WS 扇出点 `echo-module-management` 的 `EventBroker` 在**持订阅者表锁之前** `fetch_add` 分配，因此编号与投递顺序严格一致——多订阅者（多窗口 / 多 Panel / 中继的多个上游连接）看到同一套编号，不会错位
 - **编码**：`serialize_event_sequenced` 把序号作为顶层字段附加（`{"type":"event","payload":{…},"seq":N}`）；`serialize_event` 保留不带序号的形态，两者共用同一实现。放顶层而不是塞进 `BackendEvent` 变体，是为了不动事件契约——新增事件变体不必记得带序号，旧 Panel 的 serde 也只会忽略这个多余字段
-- **条目身份**：`serialize_event_identified` 在序号之外附加 `entry`（`{"type":"event","payload":{…},"seq":N,"entry":"…"}`）。语义 = **同一条逻辑条目的所有事件共享同一 id**：一段流式输出的全部增量与它的终值同 id（`backend:<session>:<branch>:<n>` / `reasoning:<session>:<branch>:<n>`），工具调用与它的结果同 id（`tool:<session>:<tool_call_id>`，id 为空时不分配）。`<n>` 是 Core 进程级单调计数。由扇出层（`echo-module-management::EventBroker` 持有的 `echo_protocol::entry_identity::EntryTracker`）在**持锁投递之前**推进，因此多订阅者看到同一套 id；缺省（旧版 Core / 无身份概念的事件）时不写该键，Panel 全部消费点回退原判据
+- **条目身份**：`serialize_event_identified` 在序号之外附加 `entry`（`{"type":"event","payload":{…},"seq":N,"entry":"…"}`）。语义 = **同一条逻辑条目的所有事件共享同一 id**：一段流式输出的全部增量与它的终值同 id（`backend:<session>:<branch>:<n>` / `reasoning:<session>:<branch>:<n>`），工具调用与它的结果同 id（`tool:<session>:<tool_call_id>`，id 为空时不分配）。`<n>` 是 Core 进程级单调计数。由扇出层（`echo-module-management::EventBroker` 持有的 `echo_module_management::protocol::entry_identity::EntryTracker`）在**持锁投递之前**推进，因此多订阅者看到同一套 id；缺省（旧版 Core / 无身份概念的事件）时不写该键，Panel 全部消费点回退原判据
 - **时间线分页**：首屏 `RequestTrunkTimeline { since_seq, limit }` 只取**最新** N 条（渲染窗口通常 200 级），响应 `TrunkTimeline { …, has_more }` 表示是否被截断；更早的内容按 `RequestTimelineEarlier { team_id, before_ord, limit }` → `TimelineEarlier { messages, has_more }` 向上翻页——`before_ord` 是已加载最老条目的**位置序号**（`TimelineMessage.ord`，push 时分配且永不改变），消费端把 `messages` **前插**到已加载列表头部、**不动同步游标**。**锚点不能用 `seq`**：运行中的工具条目会被就地更新并推进 `seq`（位置不变、序号变大），实测 1024 条里 46 处非单调，按 `seq` 定位会过早截断并漏条目（逐页拼接只还原 842/1024）；也不能用「已加载条数」——分页期间的新增会让「从尾部数 N 条」整体错位。`limit` 服务端 clamp 1–500。两条命令分开的理由：`TrunkTimeline.full` 的语义是「替换缓存」，而翻页是「前插」——混在一条里消费端难以判断该替换还是该前插。`limit` 只作用于全量路径：增量是缺口补齐，截断会让游标与实际内容不一致。
-- **流式增量合批**：扇出层（`echo-module-management::EventBroker`）在 **60 ms 窗口**内把**连续同键**增量（会话 + 分支 + 角色）合并成一帧再下发（`echo_protocol::delta_batch::DeltaBatcher`）。语义不变——合并后的 `delta` 就是原增量的顺序拼接，消费端本来就是「追加到当前流式行」，逐字到达与成块到达的最终文本一致；条目身份也随合并后的帧保留。三条硬约束：① 只合并**连续同键**增量，不同分支 / 不同 entry 的文本绝不进同一帧（否则消费端分不清属于哪一行）；② 任何**非增量**事件到达时先冲出全部挂起再加它自己——工具开始是「分步边界」（Panel 的 `freezeStreams`），不能让它越过前面的叙述；③ deadline 从**第一条**增量算起（不随合并顺延），最坏延迟 = 窗口 + 20 ms 检查间隔。合批只发生在前端扇出这一层：时间线投影等进程内观察者收到的仍是原始事件（它们本就忽略增量）
+- **流式增量合批**：扇出层（`echo-module-management::EventBroker`）在 **60 ms 窗口**内把**连续同键**增量（会话 + 分支 + 角色）合并成一帧再下发（`echo_module_management::protocol::delta_batch::DeltaBatcher`）。语义不变——合并后的 `delta` 就是原增量的顺序拼接，消费端本来就是「追加到当前流式行」，逐字到达与成块到达的最终文本一致；条目身份也随合并后的帧保留。三条硬约束：① 只合并**连续同键**增量，不同分支 / 不同 entry 的文本绝不进同一帧（否则消费端分不清属于哪一行）；② 任何**非增量**事件到达时先冲出全部挂起再加它自己——工具开始是「分步边界」（Panel 的 `freezeStreams`），不能让它越过前面的叙述；③ deadline 从**第一条**增量算起（不随合并顺延），最坏延迟 = 窗口 + 20 ms 检查间隔。合批只发生在前端扇出这一层：时间线投影等进程内观察者收到的仍是原始事件（它们本就忽略增量）
 - **消费方契约（Panel）**：按 `(core, seq)` 分桶观察（`web/src/event-seq.ts` 的 `observeEventSeq`）——`baseline` 首帧建基线、`contiguous` 连续、`gap` 跳号（`missed` = 缺失条数）即**按 timeline 游标补拉**（`RequestTrunkTimeline{ team_id, since_seq }`，`connection.ts` 的 `requestTimelineResync`，带最小间隔限流）、`reset` 序号回退（Core 重启归 1、中继补发旧帧）只重取基线不报警、`ignored` 帧上无序号（旧 Core）跳过校验。判定的职责边界：只观察不修复，修复动作由连接层发起
 - **为什么要它**：中继半死、重连窗口、标签页后台节流都可能让事件**静默丢失**；没有序号时前端无从得知，某条 `ToolResult` 丢了工具行就永远停在「运行中」，只能刷新页面。回合收尾兜底只能止住读秒，救不回丢失的内容（工具输出、回答片段、列表更新）
 - **与时间线条目 `seq` 无关**：帧序号标识 Core → Panel 的事件流连续性（进程内、重启归 1），`TimelineMessage.seq` 标识时间线条目（`RequestTrunkTimeline{since_seq}` 用的是它）；两者不可互作游标
@@ -99,16 +99,16 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 
 ### 共享枚举
 
-`ThinkingMode` / `ReasoningEffort` 定义在 `echo-defs::mode`（Service Definition 层），`echo-protocol` re-export 保持 wire 路径：
+`ThinkingMode` / `ReasoningEffort` 定义在 `echo-defs::mode`（Service Definition 层），`echo-module-management` re-export 保持 wire 路径：
 
 | 类型 | 取值（线格式，snake_case） |
 |---|---|
 | `ThinkingMode` | `"enabled"` / `"disabled"` |
 | `ReasoningEffort` | `"low"` / `"high"` / `"max"` |
 
-> **门控模式不是共享枚举**（泛化后）：历史上 `GateMode`（`none`/`allowlist`/`denylist`）是 `echo-protocol` 的强类型枚举，现已随 QQ 专属命令一并物理删除——门控取值改为 `InvokeInstanceOp{method:"set_gate_mode", payload:{mode}}` 的**参数字符串**，由实例模块自行解释，Core 与 Panel 均不校验取值集合。
+> **门控模式不是共享枚举**（泛化后）：历史上 `GateMode`（`none`/`allowlist`/`denylist`）是 `echo-module-management` 的强类型枚举，现已随 QQ 专属命令一并物理删除——门控取值改为 `InvokeInstanceOp{method:"set_gate_mode", payload:{mode}}` 的**参数字符串**，由实例模块自行解释，Core 与 Panel 均不校验取值集合。
 
-> **`LoopMode` 已删除**（2026-11）：循环只有单会话串行一种模式，`echo-defs::mode` 不再有 `LoopMode`，`echo-protocol` 也不再 re-export；`TeamInfo` 不带 `loop_mode` 字段，Panel 无模式推导 API。旧端帧里若出现该字段会被 serde 忽略；`enabled_modules` 里的 `echo-agent.loop.{single,parallel}` 也不再表达任何模式（loop 类是进程级模块，见 [Agent 循环](../core/agent-loop.md)§会话内准入）。
+> **`LoopMode` 已删除**（2026-11）：循环只有单会话串行一种模式，`echo-defs::mode` 不再有 `LoopMode`，`echo-module-management` 也不再 re-export；`TeamInfo` 不带 `loop_mode` 字段，Panel 无模式推导 API。旧端帧里若出现该字段会被 serde 忽略；`enabled_modules` 里的 `echo-agent.loop.{single,parallel}` 也不再表达任何模式（loop 类是进程级模块，见 [Agent 循环](../core/agent-loop.md)§会话内准入）。
 
 ## 命令（Client → Core）
 
@@ -133,11 +133,11 @@ Core → Panel 的每条事件帧带一个**顶层** `seq` 字段（`SequencedEv
 
 - Panel 前端以 `broadcast: true` 信封发送发现类命令（`RequestState` / `RequestTeamsList` 等），中继见该标志即转发给**全部在线上游**；不带标志的命令按信封/会话归属路由到单一目标节点，不会扇出。
 - 中继侧实现见 `echo-web-server/src/proxy.rs`（`{"broadcast": true, "frame": …}` 分支）与 `web/src/connection.ts`（`broadcastEnvelope`）。**中继端当前不维护只读白名单**——判断权在前端调用方；新增可广播命令只需在前端用该信封发送，中继零改动。
-- Core 侧 `BROADCAST_READONLY_COMMANDS` / `is_broadcast_readonly()`（`echo-protocol/src/command.rs`）保留为**命令分类的语义快照**（供测试与文档引用），不再是中继的运行时开关。
+- Core 侧 `BROADCAST_READONLY_COMMANDS` / `is_broadcast_readonly()`（`echo-module-management/src/command.rs`）保留为**命令分类的语义快照**（供测试与文档引用），不再是中继的运行时开关。
 
 ### 完整变体清单
 
-按功能域列出全部 `BackendCommand` 变体（载荷字段见 `echo-protocol/src/command.rs`）：
+按功能域列出全部 `BackendCommand` 变体（载荷字段见 `echo-module-management/src/command.rs`）：
 
 | 域 | 变体 |
 |---|---|
@@ -172,7 +172,7 @@ graph LR
 
 > 没有任何「分支可见性」事件：`ReplyBranchStarted` / `ReplyBranchContent` / `ReplyBranchCompleted` 与 `ActiveBranchInfo` 已随并行多会话模式（2026-11）删除，Core 只发这条单线事件流 `MessageReceived → … → AgentOutput → AgentCompleted`。每个 turn 仍带 `branch_id`（turn 标识），用于事件归属与流式对账，但同一条会话的 turn 是串行排队的（见 [Agent 循环](../core/agent-loop.md)§会话内准入）。
 
-其他事件分组（字段详见 `echo-protocol/src/event.rs`）：
+其他事件分组（字段详见 `echo-module-management/src/event.rs`）：
 
 - **模块实例生命周期与管理**：`InstanceStateChanged`（连接态）、`InstanceList`（实例/能力/UI 描述符快照）、`InstanceOpResult`（`InvokeInstanceOp` 响应）、`InstanceState`（状态文档推送）
 - **编排**：`SubagentStarted/Completed`、`AgentCompleted`（turn 收尾——含空输出的完成信号）；**推理有两条通路**：实时 `AgentReasoning`（及 `AgentReasoningDelta` 流式）之外，正文同时以 `SessionEvent::Reasoning` 落会话事件日志（**模型不可见**）——历史回填与实时投影形状因此一致，思考条目不会在刷新后被重排（见 [会话记忆](../core/memory.md)§可见性边界）
@@ -196,7 +196,7 @@ graph LR
 
 ### 完整变体清单
 
-按功能域列出全部 `BackendEvent` 变体（字段见 `echo-protocol/src/event.rs`）：
+按功能域列出全部 `BackendEvent` 变体（字段见 `echo-module-management/src/event.rs`）：
 
 | 域 | 变体 |
 |---|---|

@@ -3,7 +3,7 @@
 //! 2026-11 自 `echo-module-management` 迁入：派生规则是**会话的投影**，与
 //! trunk 同一归属；留在管理面模块里会让"会话怎么派"与"面板怎么传"共用一次
 //! 编译，也触发模块互依赖门禁（`scripts/deps-policy.txt` 第 4 条）。共用的
-//! 显示文本工具已下沉到 `echo-protocol::timeline_text`。
+//! 显示文本工具已下沉到 `echo-module-management::timeline_text`。
 //!
 //! ## 为什么在这里
 //!
@@ -43,10 +43,10 @@
 
 use std::collections::HashMap;
 
-use echo_protocol::{TimelineMessage, TimelineSource, TimelineTool};
+use echo_module_management::protocol::{TimelineMessage, TimelineSource, TimelineTool};
 
 use crate::store::TrunkStore;
-use echo_protocol::timeline_text::{
+use echo_module_management::protocol::timeline_text::{
     summarize_timeline_value, timeline_timer_task, truncate_one_line,
 };
 

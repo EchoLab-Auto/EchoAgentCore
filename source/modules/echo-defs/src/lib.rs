@@ -49,6 +49,10 @@ pub mod skill;
 pub mod subagent;
 pub mod token;
 pub mod tool;
+pub mod prompt;
+pub mod disposer;
+pub mod execute;
+pub mod registry;
 pub mod workspace;
 
 pub use chat::{ChannelType, IncomingFile, IncomingMessage};

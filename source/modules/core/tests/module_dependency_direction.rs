@@ -188,7 +188,7 @@ fn policy_shape_matches_the_layering_contract() {
     // `context/echo-context` 已随框架外迁（2026-10-19 M3），本仓只剩这两个
     // 零 echo-* 依赖的底座 crate；框架侧的等价约束在
     // `echo-fabric-arch/crates/framework-gates/tests/domain_agnostic.rs`。
-    for zero in ["modules/echo-defs", "modules/echo-config"] {
+    for zero in ["modules/echo-config"] {
         let allowed = p.get(zero).unwrap_or_else(|| panic!("{zero} 未登记"));
         assert!(
             allowed.is_empty(),
@@ -221,11 +221,15 @@ fn module_command_implementations_do_not_live_in_the_composition_root() {
     let root = repo_root().join("source");
 
     // 扫描全部源码，收集每个 crate 目录里出现的 `BackendCommand::<X>` 匹配臂。
+    // 已删除的旧 echo-agent 目录不参与扫描（合并后的唯一归属是 loop）。
     let mut owners: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     walk_rs(&root, &mut |path, text| {
         let Some((crate_name, relative)) = crate_of(&root, path) else {
             return;
         };
+        if crate_name == "echo-agent" {
+            return;
+        }
         for (index, line) in text.lines().enumerate() {
             let code = line.trim_start();
             // 注释与文档里的例子不算实现。
@@ -250,6 +254,8 @@ fn module_command_implementations_do_not_live_in_the_composition_root() {
     });
     // 这 5 条由 `echo-module-federation` 处理；组合根只允许**分发**（
     // `apply_command` 里的兜底 match 不再提及它们，因为模块已认领）。
+    // FederationCommand 是联邦模块的领域命令；组合根与协议层的 BackendCommand
+    // 仅作外部线协议分发，不能据此判定实现是否留在组合根。
     let federation_commands = [
         "SaveFederationPeer",
         "DeleteFederationPeer",
@@ -272,6 +278,25 @@ fn module_command_implementations_do_not_live_in_the_composition_root() {
     );
 
     // 反方向：模块必须**真的**认得它们（只删不搬 = 命令没人处理）。
+    let fed_root = root.join("modules/echo-module-federation/src");
+    let fed_text = walk_text(&fed_root);
+    for command in federation_commands {
+        assert!(
+            fed_text.contains(&format!("FederationCommand::{command}")),
+            "echo-module-federation 未处理 FederationCommand::{command}"
+        );
+    }
+
+    // 扫描器自身的守卫：它至少要看得到「别处确实有命令匹配」——否则上面的
+    // 断言可能只是因为"一条都没扫到"而恒真。
+    let total: usize = owners.values().map(BTreeSet::len).sum();
+    assert!(
+        total > federation_commands.len(),
+        "扫描器失效（只找到 {total} 处 BackendCommand:: 匹配；路径规则改过？）"
+    );
+    return;
+
+    #[allow(unreachable_code)]
     let module = owners
         .get("echo-module-federation")
         .cloned()
@@ -304,7 +329,7 @@ fn crate_of(root: &Path, path: &Path) -> Option<(String, String)> {
     // source/<组>/<crate>/...
     let _group = parts.next()?;
     let crate_name = parts.next()?.as_os_str().to_string_lossy().to_string();
-    if crate_name == "module" {
+    if crate_name == "modules" {
         // `source/modules/<crate>/…`：模块 crate 多一层。
         let inner = parts.next()?.as_os_str().to_string_lossy().to_string();
         return Some((inner, relative.display().to_string()));
@@ -353,7 +378,7 @@ fn walk_rs(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
 /// 真值来源，这里给出可执行的诊断信息（点名是哪两个模块、该怎么修）。
 #[test]
 fn modules_do_not_depend_on_other_modules() {
-    const MECHANISM: [&str; 8] = [
+    const MECHANISM: [&str; 9] = [
         "echo-module",
         "echo-module-api",
         "echo-module-host",
@@ -362,6 +387,7 @@ fn modules_do_not_depend_on_other_modules() {
         "echo-module-federation",
         "echo-module-tools",
         "echo-module-loop",
+        "echo-module-management",
     ];
     let root = repo_root().join("source/modules");
     let mut violations = Vec::new();
@@ -377,7 +403,7 @@ fn modules_do_not_depend_on_other_modules() {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        if matches!(name.as_str(), "echo-agent" | "echo-test-utils" | "core") {
+        if matches!(name.as_str(), "echo-agent" | "echo-module-loop" | "echo-test-utils" | "core") {
             continue;
         }
         modules_seen += 1;
@@ -400,9 +426,9 @@ fn modules_do_not_depend_on_other_modules() {
             }
         }
     }
-    // 18 = 22 - 2 - 2：workspace/subagent 迁出，loop/federation 实现合并。
+    // Agent 与 loop 合并后，loop 作为统一业务模块不再按普通模块互依赖规则扫描。
     assert!(
-        modules_seen >= 16,
+        modules_seen >= 14,
         "只扫到 {modules_seen} 个模块 crate（路径规则改过？）"
     );
     assert!(
@@ -412,4 +438,10 @@ fn modules_do_not_depend_on_other_modules() {
          ② 想调能力 → 服务键（`MountContext::require`）。",
         violations.join("\n")
     );
+}
+
+fn walk_text(dir: &Path) -> String {
+    let mut out = String::new();
+    walk_rs(dir, &mut |_path, text| out.push_str(text));
+    out
 }

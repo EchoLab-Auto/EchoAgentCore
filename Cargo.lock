@@ -772,52 +772,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "dashmap",
- "echo-config",
- "echo-context",
- "echo-defs",
- "echo-module",
- "echo-module-federation",
- "echo-module-loop",
- "echo-module-management",
- "echo-module-provider-llm",
- "echo-module-sanitize",
- "echo-module-self-update",
- "echo-module-session",
- "echo-module-shell",
- "echo-module-skills",
- "echo-module-subagent",
- "echo-module-tools",
- "echo-module-transcript",
- "echo-module-workspace",
- "echo-protocol",
- "echo-session",
- "echo-test-utils",
- "filetime",
- "futures-util",
- "libc",
- "parking_lot",
- "proptest",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "toml",
- "tracing",
- "uuid",
- "walkdir",
-]
-
-[[package]]
 name = "echo-agent-core"
 version = "0.1.0"
 dependencies = [
@@ -825,7 +779,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
- "echo-agent",
  "echo-config",
  "echo-context",
  "echo-defs",
@@ -847,7 +800,6 @@ dependencies = [
  "echo-module-tools",
  "echo-module-transcript",
  "echo-module-workspace",
- "echo-protocol",
  "echo-session",
  "flate2",
  "futures-util",
@@ -886,6 +838,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "echo-context",
  "proptest",
  "serde",
  "serde_json",
@@ -940,8 +893,6 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-module",
- "echo-module-tools",
- "echo-protocol",
  "futures-util",
  "serde",
  "serde_json",
@@ -983,18 +934,44 @@ dependencies = [
 name = "echo-module-loop"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chrono",
+ "dashmap",
+ "echo-config",
  "echo-context",
  "echo-defs",
  "echo-module",
- "echo-module-api",
+ "echo-module-federation",
+ "echo-module-management",
+ "echo-module-provider-llm",
+ "echo-module-sanitize",
+ "echo-module-self-update",
+ "echo-module-session",
+ "echo-module-shell",
+ "echo-module-skills",
+ "echo-module-subagent",
+ "echo-module-tools",
+ "echo-module-transcript",
+ "echo-module-workspace",
  "echo-session",
+ "echo-test-utils",
+ "filetime",
+ "futures-util",
+ "libc",
+ "parking_lot",
+ "proptest",
+ "regex",
+ "reqwest",
+ "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "toml",
  "tracing",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]
@@ -1003,20 +980,22 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "echo-context",
+ "echo-defs",
  "echo-module",
  "echo-module-federation",
- "echo-protocol",
  "futures-util",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.24.0",
+ "tokio-util",
  "tracing",
 ]
 
 [[package]]
 name = "echo-module-panel"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#b493375e67c3df10ef7ec4571dddf179a462a83a"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#3503bcb2ca6a31137dc45e03beee8a01a854fb0b"
 dependencies = [
  "anyhow",
  "echo-context",
@@ -1038,8 +1017,7 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-module",
- "echo-module-loop",
- "echo-protocol",
+ "echo-module-management",
  "futures-util",
  "reqwest",
  "serde",
@@ -1068,7 +1046,7 @@ version = "0.1.0"
 dependencies = [
  "echo-context",
  "echo-module",
- "echo-protocol",
+ "echo-module-management",
  "serde_json",
  "tokio",
 ]
@@ -1082,7 +1060,7 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-module",
- "echo-protocol",
+ "echo-module-management",
  "echo-session",
  "filetime",
  "parking_lot",
@@ -1102,8 +1080,8 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-module",
+ "echo-module-management",
  "echo-module-tools",
- "echo-protocol",
  "libc",
  "parking_lot",
  "regex",
@@ -1116,11 +1094,12 @@ dependencies = [
 name = "echo-module-skills"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "echo-context",
  "echo-defs",
  "echo-module",
- "echo-protocol",
+ "echo-module-management",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1133,7 +1112,6 @@ dependencies = [
 [[package]]
 name = "echo-module-subagent"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#92a37239dac518f50aab128125acf1e550ad0dc8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1141,8 +1119,8 @@ dependencies = [
  "dashmap",
  "echo-defs",
  "echo-module-federation",
+ "echo-module-management",
  "echo-module-tools",
- "echo-protocol",
  "serde_json",
  "tokio",
  "tokio-util",
@@ -1159,8 +1137,7 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-module",
- "echo-module-loop",
- "echo-protocol",
+ "echo-module-management",
  "echo-test-utils",
  "libc",
  "regex",
@@ -1181,7 +1158,7 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-module",
- "echo-protocol",
+ "echo-module-management",
  "serde",
  "serde_json",
  "tokio",
@@ -1194,19 +1171,6 @@ version = "0.1.0"
 source = "git+https://github.com/EchoLab-Auto/crate-workspace?branch=main#66b645ad2e9777fcdb437bd9667a4d0a914f71df"
 dependencies = [
  "echo-context",
- "echo-module",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "echo-protocol"
-version = "0.1.0"
-dependencies = [
- "echo-context",
- "echo-defs",
  "echo-module",
  "serde",
  "serde_json",
@@ -1241,7 +1205,7 @@ dependencies = [
 [[package]]
 name = "echo-web-server"
 version = "0.1.0"
-source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#b493375e67c3df10ef7ec4571dddf179a462a83a"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#3503bcb2ca6a31137dc45e03beee8a01a854fb0b"
 dependencies = [
  "anyhow",
  "axum",

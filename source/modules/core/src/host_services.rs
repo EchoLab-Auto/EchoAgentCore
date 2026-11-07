@@ -39,21 +39,21 @@ use echo_context::{Ctx, Disposer};
 use echo_defs::module_instance::ModuleInstance;
 use echo_module_federation::Federation;
 use echo_module_management::host_keys::{ManagementHost, MANAGEMENT_HOST};
+use echo_module_management::protocol::BackendBridge;
 use echo_module_provider_llm::host_keys::PROVIDER_HOST;
 use echo_module_self_update::host_keys::EVENTS as SELF_UPDATE_EVENTS;
 use echo_module_transcript::SESSION_VIEW_HOST_KEY;
-use echo_protocol::BackendBridge;
 use tracing::warn;
 
-use echo_agent::agent::provider_host::AgentProviderCommandHost;
-use echo_agent::agent::session_commands_host::AgentSessionCommandHost;
-use echo_agent::agent::session_view_host::AgentSessionViewHost;
-use echo_agent::agent::shell_host::{AgentInstanceCommandHost, AgentShellCommandHost};
-use echo_agent::agent::skills_host::AgentSkillsCommandHost;
-use echo_agent::agent::tools_host::AgentToolsCommandHost;
-use echo_agent::agent_manager::AgentManager;
-use echo_agent::federation::FederationPorts;
-use echo_agent::{Agent, EventSink};
+use echo_module_loop::agent::provider_host::AgentProviderCommandHost;
+use echo_module_loop::agent::session_commands_host::AgentSessionCommandHost;
+use echo_module_loop::agent::session_view_host::AgentSessionViewHost;
+use echo_module_loop::agent::shell_host::{AgentInstanceCommandHost, AgentShellCommandHost};
+use echo_module_loop::agent::skills_host::AgentSkillsCommandHost;
+use echo_module_loop::agent::tools_host::AgentToolsCommandHost;
+use echo_module_loop::agent_manager::AgentManager;
+use echo_module_loop::federation::FederationPorts;
+use echo_module_loop::{Agent, EventSink};
 
 use echo_module_federation::host_keys::{EVENTS as FEDERATION_EVENTS, PORTS};
 use echo_module_shell::host_keys::SHELL_HOST;
@@ -112,21 +112,21 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
         ctx,
         &SHELL_HOST,
         Arc::new(AgentShellCommandHost::new(wiring.agent.clone()))
-            as Arc<dyn echo_agent::tool::builtin::ShellCommandHostAlias>,
+            as Arc<dyn echo_module_loop::tool::builtin::ShellCommandHostAlias>,
     );
     put(
         &mut keep,
         ctx,
         &INSTANCE_HOST,
         Arc::new(AgentInstanceCommandHost::new(wiring.agent.clone()))
-            as Arc<dyn echo_agent::tool::builtin::InstanceCommandHostAlias>,
+            as Arc<dyn echo_module_loop::tool::builtin::InstanceCommandHostAlias>,
     );
     put(
         &mut keep,
         ctx,
         &TOOLS_HOST,
         Arc::new(AgentToolsCommandHost::new(wiring.agent.clone()))
-            as Arc<dyn echo_agent::tool::builtin::ToolsCommandHostAlias>,
+            as Arc<dyn echo_module_loop::tool::builtin::ToolsCommandHostAlias>,
     );
 
     // ── 工具状态 → 线上事件（**绑定方声明**，2026-11 S7）──
@@ -139,13 +139,21 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
         wiring.agent.register_tool_state_event(key, build);
     }
 
+    // ── 通用提示词存储：skills 主动写入 ──
+    put(
+        &mut keep,
+        ctx,
+        &echo_module_skills::host_keys::PROMPT_STORE,
+        wiring.agent.prompt_store(),
+    );
+
     // ── 技能目录 ──
     put(
         &mut keep,
         ctx,
         &SKILLS_HOST,
         Arc::new(AgentSkillsCommandHost::new(wiring.agent.clone()))
-            as Arc<dyn echo_agent::skill::commands::SkillsCommandHost>,
+            as Arc<dyn echo_module_loop::skill::commands::SkillsCommandHost>,
     );
 
     // ── 工作区 ──
@@ -159,12 +167,17 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
     //   - 联邦查询 → 模块侧降级（跨机浏览/ git 需宿主联邦，见模块 README）
     // ── 联邦：出口集合 + 事件出口 ──
     put(&mut keep, ctx, &PORTS, wiring.federation.clone());
-    put(
-        &mut keep,
-        ctx,
-        &FEDERATION_EVENTS,
-        wiring.event_sink.clone(),
-    );
+    let fed_sink = wiring.event_sink.clone();
+    let fed_events: std::sync::Arc<
+        dyn Fn(echo_module_federation::FederationEvent) + Send + Sync,
+    > = std::sync::Arc::new(move |ev| {
+        if let Ok(json) = serde_json::to_string(&ev) {
+            if let Ok(be) = serde_json::from_str::<echo_module_management::protocol::BackendEvent>(&json) {
+                fed_sink(be);
+            }
+        }
+    });
+    put(&mut keep, ctx, &FEDERATION_EVENTS, fed_events);
 
     // ── 管理面：监听参数 + 会话视图数据面 ──
     put(
@@ -333,6 +346,7 @@ pub(crate) fn provided_keys() -> Vec<String> {
         INSTANCE_HOST.name().to_string(),
         TOOLS_HOST.name().to_string(),
         SKILLS_HOST.name().to_string(),
+        echo_module_skills::host_keys::PROMPT_STORE.name().to_string(),
         PORTS.name().to_string(),
         FEDERATION_EVENTS.name().to_string(),
         MANAGEMENT_HOST.name().to_string(),
@@ -419,7 +433,9 @@ pub(crate) fn workspace_from_module_event(
                 .and_then(|value| value.as_str())
                 .filter(|id| !id.is_empty())
                 .map(str::to_string);
-            match serde_json::from_value::<echo_protocol::BackendEvent>(event.payload.clone()) {
+            match serde_json::from_value::<echo_module_management::protocol::BackendEvent>(
+                event.payload.clone(),
+            ) {
                 Ok(backend_event) => match team_id.and_then(|id| manager.get(&id)) {
                     // 有人格归属 → 走它的出口（team 标注由 `Agent::emit` 负责）。
                     Some(running) => running.agent.emit(backend_event),
@@ -438,7 +454,7 @@ pub(crate) fn workspace_from_module_event(
         }
         echo_module_workspace::events::CHANGED => {
             let snapshot =
-                echo_agent::agent::workspace_mirror::WorkspaceSnapshot::from_event_payload(
+                echo_module_loop::agent::workspace_mirror::WorkspaceSnapshot::from_event_payload(
                     &event.payload,
                 );
             let team_id = event

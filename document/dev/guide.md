@@ -37,7 +37,7 @@ EchoAgentCore/
 │   └── modules/                # 本仓全部 Rust crate 的唯一源码根
 │       ├── echo-defs/         # kernel：词汇 + 能力接缝 trait（零 echo-* 依赖）
 │       ├── echo-config/       # kernel：TOML 原子读改写
-│       ├── echo-protocol/     # kernel：管理面协议与事件桥
+│       ├── echo-module-management/     # kernel：管理面协议与事件桥
 │       ├── echo-session/      # kernel：事件溯源会话机制
 │       ├── echo-module-tools/         # kernel：工具注册与执行机制
 │       ├── echo-module-shell/        # kernel：持久 Shell 会话机制
@@ -96,7 +96,7 @@ EchoAgentCore/
 - `ModuleManifest` / `ModuleRegistry`（echo-module）— 模块清单与注册表；`echo-module-host` 提供 Transport（inproc/stdio）、监督、子进程限额与频率限额（**领域中立**），`RemoteInstance` / `RemoteTool` 的领域适配在 `echo-module-adapter`
 - `AgentMessageHook`（echo-agent）— 入站消息进入 agent 的落点（`on_incoming_message` 固有方法，**不是 trait 实现**）：组合根把模块 `submit_input` 队列接到它；平台输出必须走工具
 - **平台回复指引**：由平台中立的边界块（`BoundaryKind::PlatformHook`，只说「走该平台的发送工具」）+ 该平台的 transport 技能（如 `qq-transport`，说明具体工具名与参数）承担；循环层不做代码校验/纠偏。框架文案里不出现平台名与平台技能名
-- `FanoutHandle`（echo-protocol::bridge）— 多订阅者事件扇出（自动清理失效订阅者）；进程内 mpsc 路径不带扇出序号，生产 WS 路径带
+- `FanoutHandle`（echo-module-management::bridge）— 多订阅者事件扇出（自动清理失效订阅者）；进程内 mpsc 路径不带扇出序号，生产 WS 路径带
 
 ## 编码约定
 
@@ -140,6 +140,6 @@ cargo test -p echo-agent
 - **无全局态门禁**（`source/modules/core/tests/no_global_state.rs`）：全 source 扫 `static` + `OnceLock`/`LazyLock`，白名单只有 `echo-context/kernel.rs`（相等断言，只减不增）
 - **文档门禁**（`source/modules/core/tests/doc_catalog.rs`）：工具目录新鲜度（`UPDATE_DOCS=1` 重新生成）+ 内置模块 id 不许漏 + `document/` 全树死链检查
 - **config 模板测试**（`source/modules/core/tests/config_template.rs`）：`config/echo-agent-core.toml` 必须是合法 TOML 且含运行时依赖的 section，防模板漂移；并入 `cargo test`
-- **跨仓库清单同步**（人工核对 + 测试守护）：新增/移除模块时——Core `BUILTIN_MODULE_IDS`（与 catalog 双向相等，测试守着）、更新器 `expected_ids`、Panel `PACKAGE_DISPLAY_NAMES`（**门控清单已删除**：按 `kind` 派生后由 Core 下发，见 `modules/scope.rs`）；新增**模块类型**（`ModuleKind`）时 Core `as_str` wire 名与 Panel `MODULE_KIND_LABELS` 同改；协议新增命令/事件时 echo-protocol ⇄ `web/src/protocol.ts` 同改。守护测试：`capabilities.test.ts`（Panel 清单对齐）、`instance_manifests.rs` 的单测（Core `BUILTIN_MODULE_IDS` + 实例前缀 ⇄ 更新器 `expected_ids`；曾因 `orchestration` 移除后清单残留、每次更新误报缺 manifest 而补齐）、`update.sh` 模块感知校验（安装后核对二进制）、`protocol-sync.test.ts`（Panel 协议镜像：事件 reduce⊆union、联邦命令存在性快照、unit 命令字符串形态、禁止 `as unknown as` 双重断言绕过——补齐联邦 4 命令后归零）。详见 [模块化设计](../modules/modules.md)「新增包维度门控模块时的同步清单」
+- **跨仓库清单同步**（人工核对 + 测试守护）：新增/移除模块时——Core `BUILTIN_MODULE_IDS`（与 catalog 双向相等，测试守着）、更新器 `expected_ids`、Panel `PACKAGE_DISPLAY_NAMES`（**门控清单已删除**：按 `kind` 派生后由 Core 下发，见 `modules/scope.rs`）；新增**模块类型**（`ModuleKind`）时 Core `as_str` wire 名与 Panel `MODULE_KIND_LABELS` 同改；协议新增命令/事件时 echo-module-management ⇄ `web/src/protocol.ts` 同改。守护测试：`capabilities.test.ts`（Panel 清单对齐）、`instance_manifests.rs` 的单测（Core `BUILTIN_MODULE_IDS` + 实例前缀 ⇄ 更新器 `expected_ids`；曾因 `orchestration` 移除后清单残留、每次更新误报缺 manifest 而补齐）、`update.sh` 模块感知校验（安装后核对二进制）、`protocol-sync.test.ts`（Panel 协议镜像：事件 reduce⊆union、联邦命令存在性快照、unit 命令字符串形态、禁止 `as unknown as` 双重断言绕过——补齐联邦 4 命令后归零）。详见 [模块化设计](../modules/modules.md)「新增包维度门控模块时的同步清单」
 
 命令与 CI 作业矩阵见 [测试策略](./testing.md)「质量门禁（CI）」。

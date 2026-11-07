@@ -14,7 +14,7 @@ link: ["frame | 框架（内核）", "modules | 模块化设计 | b>t"]
 
 ## Core 的组成
 
-Core（EchoAgentCore）是 Agent 后端核心服务，Rust 实现。组合根在 `source/modules/core/src/main.rs`；核心库为 `source/modules/echo-agent`（框架核心在 `agent/`；模块机制在 `source/modules/`，内置模块实现各自成 crate；宿主侧 `packages/` 只剩三个仍内联的包：`tools_builtin`（只做端口接线——工具实现全在 `echo-module-tools`）/ `instance_ops`（入站桥）/ `federation`（兼容面）），协议定义在 `source/modules/echo-protocol`。
+Core（EchoAgentCore）是 Agent 后端核心服务，Rust 实现。组合根在 `source/modules/core/src/main.rs`；核心库为 `source/modules/echo-agent`（框架核心在 `agent/`；模块机制在 `source/modules/`，内置模块实现各自成 crate；宿主侧 `packages/` 只剩三个仍内联的包：`tools_builtin`（只做端口接线——工具实现全在 `echo-module-tools`）/ `instance_ops`（入站桥）/ `federation`（兼容面）），协议定义在 `source/modules/echo-module-management`。
 
 Core 由两支组成：
 

@@ -708,7 +708,7 @@ fn v2_shared_object_migrates_into_first_identity() {
 fn timeline_push_caps_at_max_and_keeps_newest() {
     let store = TrunkStore::new(1000);
     for i in 0..(TRUNK_TIMELINE_MAX + 50) {
-        store.push_timeline(echo_protocol::TimelineMessage {
+        store.push_timeline(echo_module_management::protocol::TimelineMessage {
             kind: "user".into(),
             content: format!("msg-{i}"),
             session_id: "local:tui::local_user".into(),
@@ -750,7 +750,7 @@ async fn clear_history_wipes_log_trunk_timeline_and_disk() {
             images: vec![],
         },
     ));
-    store.push_timeline(echo_protocol::TimelineMessage {
+    store.push_timeline(echo_module_management::protocol::TimelineMessage {
         kind: "user".into(),
         content: "记住我".into(),
         session_id: "local:tui::local_user".into(),
@@ -803,18 +803,19 @@ async fn clear_session_only_wipes_target_and_keeps_siblings() {
             images: vec![],
         })
     };
-    let timeline_msg = |session: &str, content: &str, ts: i64| echo_protocol::TimelineMessage {
-        kind: "user".into(),
-        content: content.into(),
-        session_id: session.into(),
-        time: ts,
-        source: None,
-        reasoning: None,
-        tool: None,
-        images: None,
-        seq: 0,
-        ord: 0,
-    };
+    let timeline_msg =
+        |session: &str, content: &str, ts: i64| echo_module_management::protocol::TimelineMessage {
+            kind: "user".into(),
+            content: content.into(),
+            session_id: session.into(),
+            time: ts,
+            source: None,
+            reasoning: None,
+            tool: None,
+            images: None,
+            seq: 0,
+            ord: 0,
+        };
 
     // 会话 A（待清理）与 B（必须完好）各写事件 + 时间线条目。
     store.append_event(user_event(
@@ -1017,7 +1018,7 @@ async fn clear_session_keeps_legacy_unattributed_events() {
 async fn timeline_probe_counters_track_writes() {
     use std::sync::atomic::Ordering::Relaxed;
     let store = TrunkStore::new(1000);
-    let message = |session: &str| echo_protocol::TimelineMessage {
+    let message = |session: &str| echo_module_management::protocol::TimelineMessage {
         kind: "user".into(),
         content: "x".into(),
         session_id: session.into(),
@@ -1080,12 +1081,12 @@ async fn timeline_roundtrips_through_the_persisted_file() {
     let _ = std::fs::remove_file(&path);
     let store = TrunkStore::new(1000);
     store.set_persist_path(&path);
-    store.push_timeline(echo_protocol::TimelineMessage {
+    store.push_timeline(echo_module_management::protocol::TimelineMessage {
         kind: "user".into(),
         content: "你好".into(),
         session_id: "qq:dm::123".into(),
         time: 1700000000,
-        source: Some(echo_protocol::TimelineSource {
+        source: Some(echo_module_management::protocol::TimelineSource {
             instance_name: "qq".into(),
             platform: "qq".into(),
             user_id: "123".into(),
@@ -1101,7 +1102,7 @@ async fn timeline_roundtrips_through_the_persisted_file() {
         seq: 0,
         ord: 0,
     });
-    store.push_timeline(echo_protocol::TimelineMessage {
+    store.push_timeline(echo_module_management::protocol::TimelineMessage {
         kind: "backend".into(),
         content: "回复".into(),
         session_id: "qq:dm::123".into(),
@@ -1155,7 +1156,7 @@ fn v3_file_without_timeline_loads_with_empty_timeline() {
 }
 
 fn push_user(store: &TrunkStore, content: &str) {
-    store.push_timeline(echo_protocol::TimelineMessage {
+    store.push_timeline(echo_module_management::protocol::TimelineMessage {
         kind: "user".into(),
         content: content.into(),
         session_id: "local:tui::local_user".into(),
@@ -2254,7 +2255,7 @@ fn restore_timeline_renumbers_mixed_ord_strictly_increasing() {
     let store = TrunkStore::new(200_000);
     let mut timeline = Vec::new();
     for (index, ord) in [0u64, 5, 0, 7, 0].into_iter().enumerate() {
-        let mut message = echo_protocol::TimelineMessage::backend(
+        let mut message = echo_module_management::protocol::TimelineMessage::backend(
             format!("m{index}"),
             "s1",
             1000 + index as i64,
@@ -2284,7 +2285,7 @@ fn restore_timeline_renumbers_mixed_ord_strictly_increasing() {
 fn timeline_window_tail_returns_newest_page_and_flags_truncation() {
     let store = TrunkStore::new(200_000);
     for i in 0..50 {
-        store.push_timeline(echo_protocol::TimelineMessage::backend(
+        store.push_timeline(echo_module_management::protocol::TimelineMessage::backend(
             format!("m{i}"),
             "s1",
             1000 + i,
@@ -2311,7 +2312,7 @@ fn timeline_window_tail_returns_newest_page_and_flags_truncation() {
 fn timeline_page_walks_backwards_by_ord_without_gaps_or_duplicates() {
     let store = TrunkStore::new(200_000);
     for i in 0..50 {
-        store.push_timeline(echo_protocol::TimelineMessage::backend(
+        store.push_timeline(echo_module_management::protocol::TimelineMessage::backend(
             format!("m{i}"),
             "s1",
             1000 + i,
@@ -2354,7 +2355,7 @@ fn timeline_page_walks_backwards_by_ord_without_gaps_or_duplicates() {
 fn timeline_page_survives_non_monotonic_seq_and_live_appends() {
     let store = TrunkStore::new(200_000);
     for i in 0..30 {
-        store.push_timeline(echo_protocol::TimelineMessage::backend(
+        store.push_timeline(echo_module_management::protocol::TimelineMessage::backend(
             format!("m{i}"),
             "s1",
             1000 + i,
@@ -2393,7 +2394,7 @@ fn timeline_page_survives_non_monotonic_seq_and_live_appends() {
     collected = next;
     assert!(more1);
     for i in 30..35 {
-        store.push_timeline(echo_protocol::TimelineMessage::backend(
+        store.push_timeline(echo_module_management::protocol::TimelineMessage::backend(
             format!("m{i}"),
             "s1",
             2000 + i,
@@ -2431,7 +2432,7 @@ fn timeline_page_at_start_and_beyond_bounds() {
     assert!(store.timeline_page(0, 10).0.is_empty(), "空时间线返回空页");
 
     for i in 0..5 {
-        store.push_timeline(echo_protocol::TimelineMessage::backend(
+        store.push_timeline(echo_module_management::protocol::TimelineMessage::backend(
             format!("m{i}"),
             "s1",
             1000 + i,

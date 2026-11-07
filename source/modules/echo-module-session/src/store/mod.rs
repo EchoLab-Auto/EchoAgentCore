@@ -26,7 +26,7 @@ pub use history::history_watermark;
 
 use echo_defs::llm::LlmProvider;
 use echo_defs::message::ChatMessage;
-use echo_protocol::SessionInfo;
+use echo_module_management::protocol::SessionInfo;
 
 /// 结构化会话标识（口径单源 = `echo_session::SessionKey`，解耦计划
 /// Phase 3 ⑤：词汇下沉，使工作区模块与其它模块能直接构造会话 id）。
@@ -155,7 +155,7 @@ pub struct TrunkStore {
     /// retain），持锁期间绝不 `.await`、不做 IO / 序列化。此前为 tokio Mutex，
     /// 同步调用方只能 `try_lock` + `thread::sleep` 自旋（阻塞 runtime worker，
     /// 竞争时还会静默丢条目）——2026-10 架构评审修复。
-    timeline: Arc<parking_lot::Mutex<Vec<echo_protocol::TimelineMessage>>>,
+    timeline: Arc<parking_lot::Mutex<Vec<echo_module_management::protocol::TimelineMessage>>>,
     /// Timeline 单调序号：每次新增/更新条目递增。前端用它做增量同步
     ///（RequestTrunkTimeline.since_seq + TrunkTimeline.seq），避免切换
     /// agent 时全量重传。
@@ -286,7 +286,9 @@ impl TimelineProbeSample {
 /// 会话级 provider 覆盖条目：`(profile 名, provider)`。
 pub type SessionProviderEntry = (String, Arc<dyn LlmProvider>);
 
-fn timeline_sessions_summary(timeline: &[echo_protocol::TimelineMessage]) -> String {
+fn timeline_sessions_summary(
+    timeline: &[echo_module_management::protocol::TimelineMessage],
+) -> String {
     let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for message in timeline {
         *counts.entry(message.session_id.as_str()).or_default() += 1;

@@ -5,9 +5,6 @@ members = [
     "source/modules/echo-session",
     "source/modules/echo-module-tools",
     "source/modules/echo-module-shell",
-    "source/modules/echo-protocol",
-    "source/modules/echo-module-federation",
-    "source/modules/echo-agent",
     "source/modules/echo-config",
     "source/test/utils",
     "source/modules/core",
@@ -69,8 +66,7 @@ echo-config = { path = "source/modules/echo-config" }
 echo-context = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
 echo-session = { path = "source/modules/echo-session" }
 
-echo-protocol = { path = "source/modules/echo-protocol" }
-echo-agent = { path = "source/modules/echo-agent" }
+echo-protocol = { package = "echo-module-management", path = "source/modules/echo-module-management" }
 echo-test-utils = { path = "source/test/utils" }
 echo-module = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
 echo-module-api = { git = "https://github.com/EchoLab-Auto/echo-fabric-arch", tag = "v0.15.0" }
@@ -84,11 +80,11 @@ echo-module-loop = { path = "source/modules/echo-module-loop" }
 echo-module-self-update = { path = "source/modules/echo-module-self-update" }
 echo-module-sanitize = { path = "source/modules/echo-module-sanitize" }
 echo-module-shell = { path = "source/modules/echo-module-shell" }
-echo-module-subagent = { git = "https://github.com/EchoLab-Auto/agent-module-subagent", branch = "main" }
+echo-module-subagent = { path = "/home/evence/code_file/gitlab/echo-tech/agent-module-subagent/crates/echo-module-subagent" }
 # 工作区会话模块已迁出为独立仓库 crate-workspace（业务逻辑全在那边，
 # Core 只做通用接线）；crate 名保持 echo-module-workspace 不变。
 echo-module-workspace = { git = "https://github.com/EchoLab-Auto/crate-workspace", branch = "main" }
-echo-module-management = { path = "source/modules/echo-module-management" }
+echo-module-management = { package = "echo-module-management", path = "source/modules/echo-module-management" }
 echo-module-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", branch = "main" }
 echo-module-session = { path = "source/modules/echo-module-session" }
 echo-module-transcript = { path = "source/modules/echo-module-transcript" }
@@ -139,4 +135,3 @@ echo-module-tools = { path = "source/modules/echo-module-tools" }
 echo-module-shell = { path = "source/modules/echo-module-shell" }
 echo-module-federation = { path = "source/modules/echo-module-federation" }
 echo-defs = { path = "source/modules/echo-defs" }
-echo-protocol = { path = "source/modules/echo-protocol" }

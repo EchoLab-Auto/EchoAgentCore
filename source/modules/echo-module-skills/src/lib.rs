@@ -23,6 +23,8 @@ pub mod host_keys;
 pub mod install;
 /// SKILL.md 解析/热重载加载器。
 pub mod loader;
+pub mod prompt;
+pub mod runtime;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -53,19 +55,44 @@ pub fn manifest(version: &str) -> echo_module::ModuleManifest {
 /// 得到它"是另一件事。宿主监听 `module.mounted` / `module.unmounted` 统一拨
 /// （见组合根），模块因此不必再拿一个 `gate` 闭包。
 pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
-    use echo_module::{BuiltinModule, Inject, ModuleTextBlock, ServiceSlot};
+    use echo_module::{BuiltinModule, Inject, ServiceSlot};
 
     let host = ServiceSlot::<Arc<dyn commands::SkillsCommandHost>>::new();
+    let runtime = ServiceSlot::<Arc<runtime::SkillsRuntime>>::new();
+    let bind_runtime = runtime.clone();
+    let serve_runtime = runtime.clone();
     let bind = host.clone();
     let serve = host.clone();
+    let prompt_host = host.clone();
     Arc::new(
         BuiltinModule::new(manifest(version), move |mctx| {
             let keep = bind.bind(mctx, &host_keys::SKILLS_HOST)?;
-            Ok(vec![keep])
+            let store = mctx.require(&host_keys::PROMPT_STORE)?;
+            let skill_host = prompt_host.get().ok_or_else(|| echo_module::ModuleMountError::Mount("skills host 未绑定".into()))?;
+            let skill_runtime = runtime::SkillsRuntime::new(skill_host.clone(), store.clone());
+            bind_runtime.set(skill_runtime.clone());
+            skill_host.attach_prompt_pipeline(skill_runtime.prompt.clone(), skill_runtime.clone());
+            let initial = skill_runtime.clone();
+            tokio::spawn(async move {
+                if let Err(error) = initial.reload().await {
+                    tracing::warn!(%error, "initial skills load failed");
+                }
+            });
+            let refresher: echo_defs::prompt::SharedPromptRefresher = skill_runtime.prompt.clone();
+            let ctx = mctx.ctx.as_ref().ok_or_else(|| echo_module::ModuleMountError::Mount("缺少 Ctx".into()))?;
+            let store_keep = ctx.provide(&host_keys::PROMPT_REFRESHER, refresher)
+                .map_err(|e| echo_module::ModuleMountError::Mount(e.to_string()))?;
+            let runtime_keep = ctx.provide(&host_keys::SKILLS_RUNTIME, skill_runtime)
+                .map_err(|e| echo_module::ModuleMountError::Mount(e.to_string()))?;
+            Ok(vec![keep, store_keep, runtime_keep])
         })
-        .with_inject(Inject::new([host_keys::SKILLS_HOST.name().to_string()]))
+        .with_inject(Inject::new([
+            host_keys::SKILLS_HOST.name().to_string(),
+            host_keys::PROMPT_STORE.name().to_string(),
+        ]))
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
+            let serve_runtime = serve_runtime.clone();
             let serve = serve.clone();
             Box::pin(async move {
                 let Some(host) = serve.get() else {
@@ -74,7 +101,7 @@ pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
                         MODULE_ID
                     ));
                 };
-                commands::SkillsCommandHandler::new(host)
+                commands::SkillsCommandHandler::new(host, serve_runtime.get().ok_or_else(|| "skills runtime 未挂载".to_string())?)
                     .handle(&name, payload)
                     .await
                     .unwrap_or_else(|| {
@@ -84,10 +111,6 @@ pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
                     })
             })
         })
-        // 文本块：把本 persona 已启用的技能描述注入系统提示词。
-        // 内容仍在宿主的提示词装配里实现（它需要 persona 白名单与缓存），
-        // 这里只声明"本模块提供一个块"——面板据此显示与分组。
-        .with_text_blocks([ModuleTextBlock::new("skills", "技能清单", 40)]),
     )
 }
 

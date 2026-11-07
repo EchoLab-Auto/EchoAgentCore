@@ -1,0 +1,11 @@
+//! Communication bridge between agent backend and frontends (TUI / API).
+//!
+//! The definitions live in the standalone [`echo_module_management::protocol`] crate (the
+//! frontend–Core wire contract); this module re-exports them so existing
+//! `echo_agent::bridge::…` paths keep working.
+
+pub use echo_module_management::protocol::{
+    create_bridge, deserialize_message, serialize_command, serialize_event,
+    serialize_event_sequenced, BackendBridge, BackendHandle, FanoutHandle, SequencedEvent,
+    WsMessage,
+};

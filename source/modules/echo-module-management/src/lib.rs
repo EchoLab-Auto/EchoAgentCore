@@ -5,7 +5,7 @@
 //!
 //! ## 为什么它本来就是「协议驱动」
 //!
-//! 中继两侧都只碰 `echo-protocol` 的类型：入站帧 → `BackendCommand` 塞进
+//! 中继两侧都只碰 `echo-module-management` 的类型：入站帧 → `BackendCommand` 塞进
 //! bridge；bridge 的事件 → 带 `seq` + `entry id` 序列化成帧发回。**没有一处
 //! 需要 `Agent` 句柄**——服务化后这一点被显式化：函数签名里不再有
 //! `Arc<Agent>` 参数（此前它已标注 `_agent` 未使用）。
@@ -25,18 +25,21 @@
 //!   让一个 Panel 用同一把密钥接入全网任一节点，服务端按级别（只读/操作/
 //!   管理）强制边界——见 [`ConnRole::Panel`] 与 [`serve_management_ws`]。
 //!
-//! 依赖纪律：只依赖 `echo-protocol`（线契约）、`echo-module-federation`（合并端口
+//! 依赖纪律：只依赖 `echo-module-management`（线契约）、`echo-module-federation`（合并端口
 //! 时的对端连接接收）与 tokio/tungstenite——不依赖 `echo-agent`。
 
 pub mod host_keys;
+pub mod protocol;
+
+pub use protocol::*;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use echo_protocol::{
-    serialize_event_identified, BackendBridge, BackendEvent, DeltaBatcher, EntryTracker,
+use crate::protocol::{
+    serialize_event_identified, BackendBridge, DeltaBatcher, EntryTracker,
     SequencedEvent,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -52,6 +55,8 @@ pub const DEFAULT_FEDERATION_LISTEN: &str = "0.0.0.0:3133";
 
 /// 模块 id（`modules.toml` / Panel 模块清单同一口径）。
 pub const MODULE_ID: &str = "echo-agent.management.panel";
+/// 协议词汇的兼容身份（原 echo-protocol crate 的管理面显示 id）。
+pub const PROTOCOL_MODULE_ID: &str = "echo-agent.kernel.protocol";
 
 /// Broadcasts agent events to every connected Panel.
 ///
@@ -741,7 +746,7 @@ async fn accept_merged_ws(
 /// `access` = 本连接的权限级别（P1，2026-11）：
 ///
 /// - 本机管理令牌 / Panel 身份的 `operate` / `admin` → 不设门（与原行为一致）；
-/// - Panel 身份的 `readonly` → **只放行** [`echo_protocol::PANEL_READONLY_COMMANDS`]，
+/// - Panel 身份的 `readonly` → **只放行** [`crate::protocol::PANEL_READONLY_COMMANDS`]，
 ///   其余命令就地拒绝并回一条 `Error` 事件（而不是静默丢弃——客户端必须知道
 ///   "我不是没权限，是被降级了"）；
 /// - `off` 理论上不会走到这里（握手期已 401），出现即按只读处理（fail-closed）。
@@ -827,8 +832,8 @@ async fn serve_management_ws(
                                         // 只读 Panel 身份的门（P1）：边界在服务端
                                         // 强制，客户端自律不算边界。
                                         if let Some(reason) = readonly_rejection(access, &cmd) {
-                                            let frame = echo_protocol::serialize_event(
-                                                &echo_protocol::BackendEvent::Error {
+                                            let frame = crate::protocol::serialize_event(
+                                                &crate::protocol::BackendEvent::Error {
                                                     session_id: None,
                                                     message: reason,
                                                 },
@@ -942,7 +947,7 @@ async fn serve_management_ws(
 /// One parsed inbound frame from the Panel.
 #[derive(Debug)]
 pub(crate) enum InboundFrame {
-    Command(echo_protocol::BackendCommand),
+    Command(crate::protocol::BackendCommand),
 }
 
 /// Parse one inbound WS text frame.
@@ -950,8 +955,10 @@ pub(crate) enum InboundFrame {
 /// Returns `None` for non-command frames (events, malformed payloads) —
 /// those are ignored by the management channel.
 pub(crate) fn handle_inbound_text(text: &str) -> Option<InboundFrame> {
-    match echo_protocol::deserialize_message(text) {
-        Some(echo_protocol::WsMessage::Command(cmd)) => Some(InboundFrame::Command(cmd)),
+    match crate::protocol::deserialize_message(text) {
+        Some(crate::protocol::WsMessage::Command(cmd)) => {
+            Some(InboundFrame::Command(cmd))
+        }
         _ => None,
     }
 }
@@ -968,14 +975,14 @@ pub(crate) fn handle_inbound_text(text: &str) -> Option<InboundFrame> {
 /// | `Operate` / `Admin` | 不设门（等同管理面） |
 fn readonly_rejection(
     access: echo_module_federation::PanelAccess,
-    cmd: &echo_protocol::BackendCommand,
+    cmd: &crate::protocol::BackendCommand,
 ) -> Option<String> {
     use echo_module_federation::PanelAccess;
     match access {
         PanelAccess::Off => Some("该连接没有操作权限（Panel 身份未授予）".to_string()),
         PanelAccess::Readonly => {
             let name = cmd.kind_name();
-            if echo_protocol::is_panel_readonly_allowed(name) {
+            if crate::protocol::is_panel_readonly_allowed(name) {
                 None
             } else {
                 Some(format!(
@@ -990,7 +997,7 @@ fn readonly_rejection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use echo_protocol::BackendCommand;
+    use crate::protocol::BackendCommand;
 
     #[test]
     fn parses_command_frame() {
@@ -1076,8 +1083,12 @@ mod tests {
     // ── End-to-end WS server ──────────────────────────────────────────────
 
     /// A provider that is never actually called (management needs an Agent).
-    async fn start_test_server() -> (Arc<BackendBridge>, echo_protocol::BackendHandle, String) {
-        let (bridge, handle) = echo_protocol::create_bridge();
+    async fn start_test_server() -> (
+        Arc<BackendBridge>,
+        crate::protocol::BackendHandle,
+        String,
+    ) {
+        let (bridge, handle) = crate::protocol::create_bridge();
         let bridge = Arc::new(bridge);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
@@ -1095,9 +1106,10 @@ mod tests {
             .await
             .expect("connect");
 
-        let text = echo_protocol::serialize_command(&BackendCommand::SwitchModel {
-            model: "gpt-x".into(),
-        });
+        let text =
+            crate::protocol::serialize_command(&BackendCommand::SwitchModel {
+                model: "gpt-x".into(),
+            });
         ws.send(tokio_tungstenite::tungstenite::Message::Text(text))
             .await
             .expect("send");
@@ -1127,20 +1139,22 @@ mod tests {
             .expect("connect");
 
         // Emit an event from the agent side; the server forwards it.
-        handle.emit(echo_protocol::BackendEvent::AgentOutput {
-            session_id: "s1".into(),
-            team_id: None,
-            content: "回复".into(),
-            branch_id: None,
-        });
+        handle.emit(
+            crate::protocol::BackendEvent::AgentOutput {
+                session_id: "s1".into(),
+                team_id: None,
+                content: "回复".into(),
+                branch_id: None,
+            },
+        );
 
         // The forwarder polls every 100ms.
         let mut received = None;
         for _ in 0..20 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) = ws.next().await {
-                if let Some(echo_protocol::WsMessage::Event(ev)) =
-                    echo_protocol::deserialize_message(&text)
+                if let Some(crate::protocol::WsMessage::Event(ev)) =
+                    crate::protocol::deserialize_message(&text)
                 {
                     received = Some(ev);
                     break;
@@ -1149,7 +1163,9 @@ mod tests {
         }
         let ev = received.expect("event forwarded to panel");
         match ev {
-            echo_protocol::BackendEvent::AgentOutput { content, .. } => assert_eq!(content, "回复"),
+            crate::protocol::BackendEvent::AgentOutput { content, .. } => {
+                assert_eq!(content, "回复")
+            }
             other => panic!("wrong event: {other:?}"),
         }
         let _ = bridge;
@@ -1159,7 +1175,7 @@ mod tests {
     /// 流式增量合批（2026-10）在**扇出层**生效：连续同类增量合并为一帧下发，
     /// 且非增量事件（工具开始）先把挂起的增量冲出——保序是硬约束。
     ///
-    /// 这条测试锁的是**接线**（`DeltaBatcher` 自己的单测在 echo-protocol），
+    /// 这条测试锁的是**接线**（`DeltaBatcher` 自己的单测在 echo-module-management），
     /// 因为合批一旦顺序错乱，Panel 就会把工具后的正文并进工具前那一行
     /// （历史上"思考 chip 堆到正文后面"的同型问题）。
     #[tokio::test]
@@ -1171,17 +1187,18 @@ mod tests {
         // 订阅完成后再发事件（broker 只投给已订阅连接）。
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-        let delta = |text: &str| echo_protocol::BackendEvent::AgentContentDelta {
-            session_id: "s1".into(),
-            team_id: None,
-            branch_id: "b1".into(),
-            delta: text.into(),
-        };
+        let delta =
+            |text: &str| crate::protocol::BackendEvent::AgentContentDelta {
+                session_id: "s1".into(),
+                team_id: None,
+                branch_id: "b1".into(),
+                delta: text.into(),
+            };
         // 三个连续增量 + 一个工具调用（分步边界）。
         handle.emit(delta("he"));
         handle.emit(delta("llo"));
         handle.emit(delta(" world"));
-        handle.emit(echo_protocol::BackendEvent::ToolCall {
+        handle.emit(crate::protocol::BackendEvent::ToolCall {
             session_id: "s1".into(),
             team_id: None,
             tool_name: "bash".into(),
@@ -1202,16 +1219,17 @@ mod tests {
                         .get("entry")
                         .and_then(|v| v.as_str())
                         .map(std::string::ToString::to_string);
-                    let Some(echo_protocol::WsMessage::Event(ev)) =
-                        echo_protocol::deserialize_message(&text)
+                    let Some(crate::protocol::WsMessage::Event(ev)) =
+                        crate::protocol::deserialize_message(&text)
                     else {
                         continue;
                     };
                     match ev {
-                        echo_protocol::BackendEvent::AgentContentDelta { delta, .. } => {
-                            frames.push((format!("delta:{delta}"), entry))
-                        }
-                        echo_protocol::BackendEvent::ToolCall { .. } => {
+                        crate::protocol::BackendEvent::AgentContentDelta {
+                            delta,
+                            ..
+                        } => frames.push((format!("delta:{delta}"), entry)),
+                        crate::protocol::BackendEvent::ToolCall { .. } => {
                             frames.push(("tool".into(), entry));
                             break;
                         }
@@ -1257,7 +1275,7 @@ mod tests {
     /// 缺失/不匹配」误诊为协议或网络故障（云机端口映射场景实况）。
     #[tokio::test]
     async fn unauthorized_panel_gets_http_401_not_silent_close() {
-        let (bridge, _handle) = echo_protocol::create_bridge();
+        let (bridge, _handle) = crate::protocol::create_bridge();
         let bridge = Arc::new(bridge);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
@@ -1451,14 +1469,14 @@ mod tests {
     #[test]
     fn readonly_panel_gate_blocks_writes() {
         use echo_module_federation::PanelAccess;
-        let observe = echo_protocol::BackendCommand::RequestState;
-        let write = echo_protocol::BackendCommand::SendMessage {
+        let observe = crate::protocol::BackendCommand::RequestState;
+        let write = crate::protocol::BackendCommand::SendMessage {
             session_id: "s1".into(),
             content: "hi".into(),
             images: vec![],
             team_id: None,
         };
-        let secret = echo_protocol::BackendCommand::RequestFederationInvite;
+        let secret = crate::protocol::BackendCommand::RequestFederationInvite;
         // 只读：观察类放行，写/密钥类拒绝。
         assert_eq!(readonly_rejection(PanelAccess::Readonly, &observe), None);
         assert!(readonly_rejection(PanelAccess::Readonly, &write)
@@ -1556,7 +1574,7 @@ mod tests {
     /// ③ 未知令牌 → 标准 HTTP 401。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn merged_port_routes_by_token_namespace() {
-        let (bridge, handle) = echo_protocol::create_bridge();
+        let (bridge, handle) = crate::protocol::create_bridge();
         let bridge = Arc::new(bridge);
 
         // 假“核心”的联邦实例：含一个已知 peer（token = "peer-tok"）。
@@ -1637,7 +1655,9 @@ mod tests {
             .await
             .expect("management token must upgrade");
         let text =
-            echo_protocol::serialize_command(&BackendCommand::SwitchModel { model: "m".into() });
+            crate::protocol::serialize_command(&BackendCommand::SwitchModel {
+                model: "m".into(),
+            });
         mgmt_ws
             .send(tokio_tungstenite::tungstenite::Message::Text(text))
             .await
@@ -1714,7 +1734,7 @@ mod tests {
     #[tokio::test]
     async fn merged_port_honours_panel_identity_level() {
         use echo_module_federation::{PanelAccess, PanelIdentity};
-        let (bridge, handle) = echo_protocol::create_bridge();
+        let (bridge, handle) = crate::protocol::create_bridge();
         let bridge = Arc::new(bridge);
 
         let (fed_events, _fed_rx) = tokio::sync::mpsc::channel(16);
@@ -1776,7 +1796,9 @@ mod tests {
 
         // ② 写命令被拒：后端**收不到**，并且本连接收到一条 Error 说明。
         let write =
-            echo_protocol::serialize_command(&BackendCommand::SwitchModel { model: "m".into() });
+            crate::protocol::serialize_command(&BackendCommand::SwitchModel {
+                model: "m".into(),
+            });
         panel_ws
             .send(tokio_tungstenite::tungstenite::Message::Text(write))
             .await
@@ -1786,11 +1808,11 @@ mod tests {
             .expect("rejection timeout")
             .expect("rejection frame")
             .expect("rejection ok");
-        let frame: echo_protocol::WsMessage =
+        let frame: crate::protocol::WsMessage =
             serde_json::from_str(&reply.into_text().unwrap()).unwrap();
         match frame {
-            echo_protocol::WsMessage::Event(event) => match event {
-                echo_protocol::BackendEvent::Error { message, .. } => {
+            crate::protocol::WsMessage::Event(event) => match event {
+                crate::protocol::BackendEvent::Error { message, .. } => {
                     assert!(
                         message.contains("SwitchModel"),
                         "rejection must name the command: {message}"
@@ -1806,7 +1828,8 @@ mod tests {
         );
 
         // ③ 观察命令放行：后端收到（只读身份看得到东西）。
-        let observe = echo_protocol::serialize_command(&BackendCommand::RequestState);
+        let observe =
+            crate::protocol::serialize_command(&BackendCommand::RequestState);
         panel_ws
             .send(tokio_tungstenite::tungstenite::Message::Text(observe))
             .await

@@ -20,10 +20,10 @@ pub const MODULE_ID_PREFIX: &str = "echo-agent.instance.";
 ///
 /// 用户配置的 `enabled_modules`、技能文件 frontmatter 的 `package:` 里可能
 /// 仍是旧 id——归一逻辑的唯一实现在
-/// [`echo_agent::modules::canonical_module_id`]（框架层，技能加载与 persona
+/// [`echo_module_loop::modules::canonical_module_id`]（框架层，技能加载与 persona
 /// 白名单共用），这里只保留常量供跨清单守护测试断言「脚本不再列旧前缀」。
 #[cfg_attr(not(test), allow(dead_code))]
-pub const LEGACY_MODULE_ID_PREFIX: &str = echo_agent::modules::LEGACY_INSTANCE_MODULE_PREFIX;
+pub const LEGACY_MODULE_ID_PREFIX: &str = echo_module_loop::modules::LEGACY_INSTANCE_MODULE_PREFIX;
 
 /// 由平台名派生实例模块 id。
 pub fn module_id_for(platform: &str) -> String {
@@ -45,7 +45,7 @@ mod tests {
 
     #[test]
     fn legacy_ids_are_canonicalised() {
-        use echo_agent::modules::canonical_module_id;
+        use echo_module_loop::modules::canonical_module_id;
         assert_eq!(
             canonical_module_id("echo-agent.adapter.qq"),
             "echo-agent.instance.qq"
@@ -67,7 +67,7 @@ mod tests {
     }
 
     /// 跨清单守护：`scripts/update.sh::expected_ids` 必须与
-    /// `echo_agent::modules::BUILTIN_MODULE_IDS` ∪ 本模块的 id **前缀**一致。
+    /// `echo_module_loop::modules::BUILTIN_MODULE_IDS` ∪ 本模块的 id **前缀**一致。
     ///
     /// 历史：两份清单曾静默漂移（`echo-agent.orchestration` 移除后残留在
     /// 脚本里整整一周，每次更新误报「缺少内置模块 manifest」）。本测试把
@@ -103,7 +103,7 @@ mod tests {
             .split_whitespace()
             .collect();
 
-        let mut declared: Vec<&str> = echo_agent::modules::BUILTIN_MODULE_IDS.to_vec();
+        let mut declared: Vec<&str> = echo_module_loop::modules::BUILTIN_MODULE_IDS.to_vec();
         // `echo-agent.orchestration` 已移除（2026-09），若脚本里还有它必须报错。
         assert!(
             !listed.contains(&"echo-agent.orchestration"),

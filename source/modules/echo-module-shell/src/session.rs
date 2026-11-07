@@ -21,7 +21,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 
-use echo_protocol::ShellSessionInfo;
+use echo_module_management::protocol::ShellSessionInfo;
 
 pub const MAX_SHELL_SESSIONS: usize = 8;
 /// 单条命令默认超时（秒）。
@@ -609,8 +609,8 @@ pub fn shell_emit_for(translate: impl Fn(ShellEvent) + Send + Sync + 'static) ->
 }
 
 /// 把 ShellEvent 翻译为 BackendEvent。
-pub fn shell_event_to_backend(event: ShellEvent) -> echo_protocol::BackendEvent {
-    use echo_protocol::BackendEvent;
+pub fn shell_event_to_backend(event: ShellEvent) -> echo_module_management::protocol::BackendEvent {
+    use echo_module_management::protocol::BackendEvent;
     match event {
         ShellEvent::Started(session) => BackendEvent::ShellSessionStarted { session },
         ShellEvent::ExecStarted {

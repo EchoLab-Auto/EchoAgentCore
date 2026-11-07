@@ -14,18 +14,16 @@ path = "src/main.rs"
 [dependencies]
 echo-defs.workspace = true
 echo-config.workspace = true
-echo-protocol.workspace = true
 echo-context.workspace = true
 echo-session.workspace = true
 echo-module-tools = { workspace = true }
 echo-module-shell = { workspace = true }
-echo-agent.workspace = true
+echo-module-loop = { workspace = true }
 echo-module = { workspace = true }
 echo-module-host = { workspace = true }
 echo-module-adapter = { workspace = true }
 echo-module-federation = { workspace = true }
 echo-module-loader = { workspace = true }
-echo-module-loop = { workspace = true }
 echo-module-session = { workspace = true }
 echo-module-transcript = { workspace = true }
 echo-module-management = { workspace = true }

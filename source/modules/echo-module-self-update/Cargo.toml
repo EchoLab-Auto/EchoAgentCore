@@ -10,6 +10,6 @@ description = "自更新模块：触发 updater 单元 + 读状态文件（部�
 [dependencies]
 echo-context = { workspace = true }
 echo-module = { workspace = true }
-echo-protocol = { workspace = true }
+echo-module-management = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

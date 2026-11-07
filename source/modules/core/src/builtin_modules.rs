@@ -142,9 +142,7 @@ pub(crate) fn catalog_with(
     // （`kind = "security"`，唯一关闭路径是 `core.toml`）。
     push_builtin_identity(&mut catalog, version, echo_defs::MODULE_ID)?;
     push_builtin_identity(&mut catalog, version, echo_config::MODULE_ID)?;
-    for module in echo_protocol::module::modules(version) {
-        push_module(&mut catalog, module)?;
-    }
+    push_builtin_identity(&mut catalog, version, echo_module_management::PROTOCOL_MODULE_ID)?;
     for module in echo_session::module::modules(version) {
         push_module(&mut catalog, module)?;
     }
@@ -159,7 +157,7 @@ pub(crate) fn catalog_with(
     // ── 内置工具集（工具清单所有权在模块里）──
     push_module(
         &mut catalog,
-        echo_agent::tool::builtin::builtin_module::module(version),
+        echo_module_loop::tool::builtin::builtin_module::module(version),
     )?;
 
     // ── Shell 会话（`bash-start` / `bash-exec` / `bash-stop` + 命令域）──
@@ -170,7 +168,7 @@ pub(crate) fn catalog_with(
     push_module(&mut catalog, echo_module_shell::module(version))?;
 
     // ── 技能目录（整表 + 命令域）──
-    push_module(&mut catalog, echo_agent::skill::module(version))?;
+    push_module(&mut catalog, echo_module_loop::skill::module(version))?;
 
     // ── LLM provider 与循环驱动（先 provider，再 loop）──
     push_module(&mut catalog, echo_module_provider_llm::module(version))?;
@@ -197,7 +195,7 @@ pub(crate) fn catalog_with(
     push_builtin_identity(
         &mut catalog,
         version,
-        echo_agent::modules::SUBAGENT_MODULE_ID,
+        echo_module_loop::modules::SUBAGENT_MODULE_ID,
     )?;
 
     // ── 显示层（时间线投影 + 会话视图命令域）──
@@ -314,7 +312,7 @@ fn push_builtin_identity(
     id: &str,
 ) -> anyhow::Result<()> {
     let (name, kind, route, description) = match id {
-        echo_agent::modules::SUBAGENT_MODULE_ID => (
+        echo_module_loop::modules::SUBAGENT_MODULE_ID => (
             "Subagent 委派",
             "tool",
             "subagent",
@@ -352,7 +350,7 @@ fn reject_reserved_commands(catalog: &[Arc<dyn Module>]) -> anyhow::Result<()> {
     for module in catalog {
         let id = module.manifest().id.clone();
         for command in module.handled_commands() {
-            if echo_agent::modules::command_is_host_reserved(&command) {
+            if echo_module_loop::modules::command_is_host_reserved(&command) {
                 return Err(anyhow::anyhow!(
                     "{id} declares host-reserved command {command}: the dispatcher will never \
                      route it to the module (remove the declaration or the reservation)"
@@ -408,13 +406,13 @@ mod catalog_shape_tests {
         let mut unclassified = Vec::new();
         for module in &catalog {
             let manifest = module.manifest();
-            if !echo_agent::modules::kind_is_classified(&manifest.kind) {
+            if !echo_module_loop::modules::kind_is_classified(&manifest.kind) {
                 unclassified.push(format!("{} (kind={})", manifest.id, manifest.kind));
             }
         }
         assert!(
             unclassified.is_empty(),
-            "以下模块的 kind 未在 `echo_agent::modules::KIND_SCOPE` 登记，\
+            "以下模块的 kind 未在 `echo_module_loop::modules::KIND_SCOPE` 登记，\
              新增 kind 必须显式声明作用域（Persona = 可被 persona 白名单关掉；\
              Process = 进程级）：\n{}",
             unclassified.join("\n")
@@ -435,7 +433,7 @@ mod catalog_shape_tests {
                 (manifest.id.clone(), manifest.kind.clone())
             })
             .collect();
-        let gated = echo_agent::modules::persona_scoped_ids(&registered);
+        let gated = echo_module_loop::modules::persona_scoped_ids(&registered);
 
         // 改造前 `GATED_MODULE_IDS: [&str; 5]` 的全部成员。
         for id in [
@@ -485,7 +483,7 @@ mod catalog_shape_tests {
     /// 运维写 `enabled = false` 就会被静默忽略，而系统半死不活地起来。
     #[test]
     fn kernel_modules_cannot_be_disabled_but_capabilities_can() {
-        use echo_agent::modules::{disabled_kernel_modules, MountStep};
+        use echo_module_loop::modules::{disabled_kernel_modules, MountStep};
 
         let catalog = catalog("0.0.0-test").expect("目录构造");
         let ids: Vec<String> = catalog
@@ -497,19 +495,19 @@ mod catalog_shape_tests {
         for id in [
             echo_defs::MODULE_ID,
             echo_config::MODULE_ID,
-            echo_protocol::module::MODULE_ID,
+            echo_module_management::PROTOCOL_MODULE_ID,
             echo_session::module::MODULE_ID,
         ] {
             assert!(ids.iter().any(|c| c == id), "kernel {id} 不在 catalog 里");
         }
 
         // ① 能力模块可关：不报违规。
-        let plan = vec![MountStep::new(echo_agent::modules::SHELL_MODULE_ID, false)];
+        let plan = vec![MountStep::new(echo_module_loop::modules::SHELL_MODULE_ID, false)];
         assert_eq!(disabled_kernel_modules(&ids, &plan), None);
 
         // ② kernel 模块不可关：必须被抓到并点名。
         let plan = vec![
-            MountStep::new(echo_agent::modules::SHELL_MODULE_ID, false),
+            MountStep::new(echo_module_loop::modules::SHELL_MODULE_ID, false),
             MountStep::new(echo_session::module::MODULE_ID, false),
         ];
         assert_eq!(
@@ -533,7 +531,7 @@ mod catalog_shape_tests {
             .filter(|module| module.manifest().id != echo_module_workspace::MODULE_ID)
             .map(|module| module.manifest().id.clone())
             .collect();
-        let declared: std::collections::BTreeSet<String> = echo_agent::modules::BUILTIN_MODULE_IDS
+        let declared: std::collections::BTreeSet<String> = echo_module_loop::modules::BUILTIN_MODULE_IDS
             .iter()
             .map(|id| (*id).to_string())
             .collect();
@@ -542,7 +540,7 @@ mod catalog_shape_tests {
         let missing_from_catalog: Vec<&String> = declared.difference(&from_catalog).collect();
         assert!(
             missing_from_list.is_empty() && missing_from_catalog.is_empty(),
-            "`echo_agent::modules::BUILTIN_MODULE_IDS` 与 catalog 漂移：\n\
+            "`echo_module_loop::modules::BUILTIN_MODULE_IDS` 与 catalog 漂移：\n\
              catalog 有、清单缺：{missing_from_list:?}\n\
              清单有、catalog 缺：{missing_from_catalog:?}\n\
              → 补 `source/modules/echo-agent/src/modules.rs` 的常量，并同步 \

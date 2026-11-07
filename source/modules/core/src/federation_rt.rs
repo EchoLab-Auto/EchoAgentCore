@@ -15,7 +15,7 @@ pub(crate) const CORE_AGENT_ID: &str = "__core";
 /// 联邦路由上下文（Phase 2）：路由泵与代理工具注册共用的句柄束。
 pub(crate) struct FederationRuntime {
     pub(crate) federation: Arc<echo_module_federation::Federation>,
-    pub(crate) router: Arc<echo_agent::federation::InvokeRouter>,
+    pub(crate) router: Arc<echo_module_loop::federation::InvokeRouter>,
     /// peer 配置名 → node_id（Link Up 时登记；代理工具命名用配置名）。
     pub(crate) peer_names:
         std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
@@ -32,7 +32,7 @@ pub(crate) struct FederationRuntime {
     /// 运行时更新即生效（此前启动期冻结会让白名单静默失效到重启）。
     pub(crate) peer_policies: std::sync::Arc<
         tokio::sync::RwLock<
-            std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
+            std::collections::HashMap<String, echo_module_loop::federation::ExecutorPolicy>,
         >,
     >,
     /// 远程代理工具的注册保活句柄：node_id → 该 peer 的全部 Disposer
@@ -86,10 +86,10 @@ pub(crate) struct FederationRuntime {
     /// 不需要任何"清扫已删人格"的代码路径。
     ///
     /// 语义与 `supervisor.personas()` 等价：都是"当前活着的、启用的人格"。
-    pub(crate) personas: tokio::sync::RwLock<Vec<(String, std::sync::Weak<echo_agent::Agent>)>>,
+    pub(crate) personas: tokio::sync::RwLock<Vec<(String, std::sync::Weak<echo_module_loop::Agent>)>>,
     /// 进程级事件兜底出口（`core_agent`）：**没有**任何人格时联邦状态事件
     /// 仍要送到 Panel（否则链路变化静默丢失）。弱引用，理由同上。
-    pub(crate) event_fallback: std::sync::RwLock<Option<std::sync::Weak<echo_agent::Agent>>>,
+    pub(crate) event_fallback: std::sync::RwLock<Option<std::sync::Weak<echo_module_loop::Agent>>>,
 }
 
 impl FederationRuntime {
@@ -103,7 +103,7 @@ impl FederationRuntime {
             return Some(id.clone());
         }
         map.iter()
-            .find(|(name, _)| echo_agent::federation::sanitize_peer_component(name) == peer)
+            .find(|(name, _)| echo_module_loop::federation::sanitize_peer_component(name) == peer)
             .map(|(_, id)| id.clone())
     }
 
@@ -140,7 +140,7 @@ impl FederationRuntime {
     pub(crate) async fn peer_policy_for(
         &self,
         peer_name: &str,
-    ) -> Option<echo_agent::federation::ExecutorPolicy> {
+    ) -> Option<echo_module_loop::federation::ExecutorPolicy> {
         self.peer_policies.read().await.get(peer_name).cloned()
     }
 
@@ -152,7 +152,7 @@ impl FederationRuntime {
     pub(crate) async fn register_persona(
         &self,
         id: &str,
-        agent: &std::sync::Arc<echo_agent::Agent>,
+        agent: &std::sync::Arc<echo_module_loop::Agent>,
     ) {
         let mut list = self.personas.write().await;
         let weak = std::sync::Arc::downgrade(agent);
@@ -167,7 +167,7 @@ impl FederationRuntime {
     /// 当前**活着**的人格（`Weak` 升级失败 = 已被删除/替换）。
     ///
     /// 顺带把死条目摘掉（这就是"清扫"的全部，不需要定时器）。
-    pub(crate) async fn live_personas(&self) -> Vec<(String, std::sync::Arc<echo_agent::Agent>)> {
+    pub(crate) async fn live_personas(&self) -> Vec<(String, std::sync::Arc<echo_module_loop::Agent>)> {
         let mut list = self.personas.write().await;
         let mut live = Vec::with_capacity(list.len());
         list.retain(|(id, weak)| match weak.upgrade() {
@@ -184,7 +184,7 @@ impl FederationRuntime {
     pub(crate) async fn persona_by_id(
         &self,
         id: &str,
-    ) -> Option<std::sync::Arc<echo_agent::Agent>> {
+    ) -> Option<std::sync::Arc<echo_module_loop::Agent>> {
         let list = self.personas.read().await;
         list.iter()
             .find(|(existing, _)| existing == id)
@@ -205,14 +205,14 @@ impl FederationRuntime {
     /// 为空）的两个能力一起静默消失：链路事件无处可发、远程调用一律
     /// Forbidden（2026-10 实测：云端中转节点链路正常、工具表看着有 6 个，
     /// 调用全失败）。
-    pub(crate) fn set_core_agent(&self, agent: &std::sync::Arc<echo_agent::Agent>) {
+    pub(crate) fn set_core_agent(&self, agent: &std::sync::Arc<echo_module_loop::Agent>) {
         if let Ok(mut slot) = self.event_fallback.write() {
             *slot = Some(std::sync::Arc::downgrade(agent));
         }
     }
 
     /// 核心服务代理（`None` = 组合根未接线 / 已被 drop）。
-    pub(crate) fn core_agent(&self) -> Option<std::sync::Arc<echo_agent::Agent>> {
+    pub(crate) fn core_agent(&self) -> Option<std::sync::Arc<echo_module_loop::Agent>> {
         self.event_fallback
             .read()
             .ok()
@@ -229,7 +229,7 @@ impl FederationRuntime {
     ///
     /// 唯一的真失败是"既没人格也没接线 `__core`"——那时返回空集，调用方
     /// 按 Forbidden 明确回执（而不是让调用方空等超时）。
-    pub(crate) async fn executor_hosts(&self) -> Vec<(String, std::sync::Arc<echo_agent::Agent>)> {
+    pub(crate) async fn executor_hosts(&self) -> Vec<(String, std::sync::Arc<echo_module_loop::Agent>)> {
         let live = self.live_personas().await;
         if !live.is_empty() {
             return live;
@@ -243,7 +243,10 @@ impl FederationRuntime {
     /// 活着的；无人格（全部被禁用）时回退到 `core_agent`——否则链路变化静默丢失。
     ///
     /// 取第一个而不是"找特定人格"：事件是进程级的，谁发都一样。
-    pub(crate) async fn emit_federation_event(&self, event: echo_protocol::BackendEvent) {
+    pub(crate) async fn emit_federation_event(
+        &self,
+        event: echo_module_management::protocol::BackendEvent,
+    ) {
         if let Some((_, agent)) = self.live_personas().await.into_iter().next() {
             agent.emit(event);
             return;
@@ -258,7 +261,7 @@ impl FederationRuntime {
         }
     }
 
-    pub(crate) async fn status_event(&self) -> echo_protocol::BackendEvent {
+    pub(crate) async fn status_event(&self) -> echo_module_management::protocol::BackendEvent {
         let active: std::collections::HashSet<String> =
             self.federation.active_peers().await.into_iter().collect();
         let configs = self.federation.peer_configs().await;
@@ -306,7 +309,7 @@ impl FederationRuntime {
                 // 最后在线时刻 + 最近学到的对端宣告地址——Panel 把"持续
                 // 连不上"显性化并给出"改用对端宣告地址"的修复路径。
                 let diag = self.federation.peer_diagnostics(&p.name).await;
-                peers.push(echo_protocol::FederationPeerInfo {
+                peers.push(echo_module_management::protocol::FederationPeerInfo {
                     name: p.name.clone(),
                     url: p.url,
                     token: String::new(),
@@ -328,9 +331,9 @@ impl FederationRuntime {
                         .map(|x| x.allow_queries.clone())
                         .unwrap_or_default(),
                     link: if online {
-                        echo_protocol::FederationLinkState::Online
+                        echo_module_management::protocol::FederationLinkState::Online
                     } else {
-                        echo_protocol::FederationLinkState::Offline
+                        echo_module_management::protocol::FederationLinkState::Offline
                     },
                     active_turns,
                     node_id: matched_node,
@@ -341,7 +344,7 @@ impl FederationRuntime {
                 });
             }
         }
-        echo_protocol::BackendEvent::FederationStatus {
+        echo_module_management::protocol::BackendEvent::FederationStatus {
             enabled: true,
             node_id: self.federation.local_node_id().to_string(),
             node_name: self.node_name.clone(),
@@ -364,7 +367,7 @@ impl FederationRuntime {
     /// - `url` = 本机拨号地址（配置值，可能是内网/VPN——Panel 未必可达）；
     /// - `advertise` = 对端**自己宣告**的可拨地址（握手学到，跨断链保留）——
     ///   Panel 应优先用它，这正是地址漂移场景下唯一正确的那个。
-    pub(crate) async fn directory_event(&self) -> echo_protocol::BackendEvent {
+    pub(crate) async fn directory_event(&self) -> echo_module_management::protocol::BackendEvent {
         let active: std::collections::HashSet<String> =
             self.federation.active_peers().await.into_iter().collect();
         let peer_names = self.peer_names.read().await.clone();
@@ -376,7 +379,7 @@ impl FederationRuntime {
             let online = !node_id.is_empty() && active.contains(&node_id)
                 || self.federation.is_link_token_online(&config.token).await;
             let info = self.federation.peer_info(&config.name).await;
-            nodes.push(echo_protocol::FederatedNodeInfo {
+            nodes.push(echo_module_management::protocol::FederatedNodeInfo {
                 name: config.name.clone(),
                 node_id: if node_id.is_empty() {
                     info.as_ref().map(|i| i.node_id.clone()).unwrap_or_default()
@@ -397,7 +400,7 @@ impl FederationRuntime {
                 panel_ready: info.as_ref().map(|i| i.caps.panel_ready).unwrap_or(false),
             });
         }
-        echo_protocol::BackendEvent::FederationDirectory {
+        echo_module_management::protocol::BackendEvent::FederationDirectory {
             node_id: self.federation.local_node_id().to_string(),
             node_name: self.node_name.clone(),
             listen: self.listen.clone(),
@@ -423,12 +426,12 @@ pub(crate) async fn federation_router_pump(
     rt: Arc<FederationRuntime>,
     peer_policies: std::sync::Arc<
         tokio::sync::RwLock<
-            std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
+            std::collections::HashMap<String, echo_module_loop::federation::ExecutorPolicy>,
         >,
     >,
     // 联邦出口集合：泵侧销账要用与 Agent 侧**同一个**聚合器（P3 终态：
     // 参数下发，不再摸 kernel cell）。
-    ports: Arc<echo_agent::federation::FederationPorts>,
+    ports: Arc<echo_module_loop::federation::FederationPorts>,
 ) {
     // 执行端结果回传通道：handle_invoke spawn 的执行任务 → 本泵统一发送。
     let (outbound_tx, mut outbound_rx) =
@@ -629,7 +632,7 @@ pub(crate) async fn federation_router_pump(
                             // P3-3 聚合销账：组内全部终态时，聚合摘要
                             // 投递父会话 timeline（assistant 系统消息）。
                             if let Some(summary) =
-                                echo_agent::federation::aggregator::settle_remote_subagent(
+                                echo_module_loop::federation::aggregator::settle_remote_subagent(
                                     &ports.aggregator,
                                     &ev.call_id,
                                     ev.status,
@@ -699,7 +702,7 @@ pub(crate) async fn federation_router_pump(
                             } else {
                                 format!("迁移失败：{}", result.message)
                             };
-                            let event = echo_protocol::BackendEvent::SessionMigrated {
+                            let event = echo_module_management::protocol::BackendEvent::SessionMigrated {
                                 session_id: result.session_id.clone(),
                                 target_peer: result.target_peer.clone(),
                                 new_session_id: result
@@ -755,7 +758,7 @@ pub(crate) async fn broadcast_federation_status(rt: &FederationRuntime) {
 /// 而 `allow_queries = ["*"]` 的互信对端根本看不出差别（沙箱被豁免），
 /// 于是问题只在收紧配置的节点上才暴露。
 fn executor_roots(
-    hosts: &[(String, std::sync::Arc<echo_agent::Agent>)],
+    hosts: &[(String, std::sync::Arc<echo_module_loop::Agent>)],
 ) -> Vec<std::path::PathBuf> {
     let mut roots: Vec<std::path::PathBuf> = Vec::new();
     for (_id, agent) in hosts {
@@ -874,9 +877,9 @@ pub(crate) async fn handle_federation_query(
                     }
                     Ok(p)
                 } else {
-                    echo_agent::workspace::resolve_within_directories(&all_dirs, &dir)
+                    echo_module_loop::workspace::resolve_within_directories(&all_dirs, &dir)
                 }?;
-                echo_agent::workspace::collect_dir_files(&resolved)
+                echo_module_loop::workspace::collect_dir_files(&resolved)
             })
             .await;
             match collected {
@@ -906,9 +909,9 @@ pub(crate) async fn handle_federation_query(
                     }
                     p
                 } else {
-                    echo_agent::workspace::resolve_within_directories(&all_dirs, &dir)?
+                    echo_module_loop::workspace::resolve_within_directories(&all_dirs, &dir)?
                 };
-                Ok::<_, String>(echo_agent::workspace::collect_dir_git(
+                Ok::<_, String>(echo_module_loop::workspace::collect_dir_git(
                     &resolved.to_string_lossy(),
                 ))
             })
@@ -994,7 +997,7 @@ pub(crate) async fn handle_federation_query(
                     }
                 }
             }
-            let roots = echo_agent::workspace::browse_roots(&all_dirs, &labels);
+            let roots = echo_module_loop::workspace::browse_roots(&all_dirs, &labels);
             if requested.is_empty() {
                 return ok(serde_json::json!({
                     "roots": roots,
@@ -1003,8 +1006,8 @@ pub(crate) async fn handle_federation_query(
             }
             let collected = tokio::task::spawn_blocking(move || {
                 let resolved =
-                    echo_agent::workspace::resolve_within_browse_roots(&roots, &requested)?;
-                echo_agent::workspace::collect_child_dirs(&resolved)
+                    echo_module_loop::workspace::resolve_within_browse_roots(&roots, &requested)?;
+                echo_module_loop::workspace::collect_child_dirs(&resolved)
             })
             .await;
             match collected {
@@ -1151,7 +1154,7 @@ pub(crate) fn learnable_peer_url(existing_url: &str, advertised: Option<&str>) -
 
 pub(crate) async fn promote_paired_invite_placeholders(
     rt: &FederationRuntime,
-    policies: &mut std::collections::HashMap<String, echo_agent::federation::ExecutorPolicy>,
+    policies: &mut std::collections::HashMap<String, echo_module_loop::federation::ExecutorPolicy>,
 ) {
     let configs = rt.federation.peer_configs().await;
     // 占位判定走**登记表**（2026-10 审计 P1-1）：此前按「名字前缀 invite-」
@@ -1223,10 +1226,10 @@ pub(crate) async fn promote_paired_invite_placeholders(
             .await;
         policies.insert(
             promoted.clone(),
-            echo_agent::federation::ExecutorPolicy::full(),
+            echo_module_loop::federation::ExecutorPolicy::full(),
         );
         rt.router
-            .set_policy(node_id, echo_agent::federation::ExecutorPolicy::full());
+            .set_policy(node_id, echo_module_loop::federation::ExecutorPolicy::full());
         // 3. 映射替换 + 移除占位。
         rt.peer_names.write().await.remove(&placeholder);
         rt.peer_names
@@ -1335,11 +1338,11 @@ fn peer_tool_package(peer_name: &str) -> String {
 /// - 人格新建 → 只给自己调一次（`adopt_active_links`）。
 pub(crate) async fn register_remote_tools_for_agent(
     rt: &FederationRuntime,
-    agent: &std::sync::Arc<echo_agent::Agent>,
+    agent: &std::sync::Arc<echo_module_loop::Agent>,
     info: &echo_module_federation::PeerInfo,
     peer_name: &str,
 ) -> Vec<echo_context::Disposer> {
-    let candidates = echo_agent::federation::remote_tool_candidates(&info.caps);
+    let candidates = echo_module_loop::federation::remote_tool_candidates(&info.caps);
     if candidates.is_empty() {
         return Vec::new();
     }
@@ -1348,8 +1351,8 @@ pub(crate) async fn register_remote_tools_for_agent(
     let mut keepers = Vec::with_capacity(candidates.len());
     for remote_name in &candidates {
         let (description, parameters) =
-            echo_agent::federation::proxy_schema(&definitions, remote_name, peer_name);
-        let tool = std::sync::Arc::new(echo_agent::federation::RemoteTool::new(
+            echo_module_loop::federation::proxy_schema(&definitions, remote_name, peer_name);
+        let tool = std::sync::Arc::new(echo_module_loop::federation::RemoteTool::new(
             peer_name,
             &info.node_id,
             remote_name,
@@ -1361,7 +1364,7 @@ pub(crate) async fn register_remote_tools_for_agent(
         // 保活：drop 即注销，绝不能当临时值。
         keepers.push(agent.tools.register_reversible(tool));
         agent.tools.set_package(
-            &echo_agent::federation::remote_tool_name(peer_name, remote_name),
+            &echo_module_loop::federation::remote_tool_name(peer_name, remote_name),
             &package,
         );
     }
@@ -1377,7 +1380,7 @@ pub(crate) async fn register_remote_tools(
     info: &echo_module_federation::PeerInfo,
     peer_name: &str,
 ) {
-    let candidates = echo_agent::federation::remote_tool_candidates(&info.caps);
+    let candidates = echo_module_loop::federation::remote_tool_candidates(&info.caps);
     if candidates.is_empty() {
         return;
     }
@@ -1466,7 +1469,7 @@ fn prune_deleted_personas(rt: &FederationRuntime) {
 /// 幂等：已注册过的人格再调一次只会覆盖自己的桶（先删后插），不会重复注册。
 pub(crate) async fn adopt_active_links(
     rt: &FederationRuntime,
-    agent: &std::sync::Arc<echo_agent::Agent>,
+    agent: &std::sync::Arc<echo_module_loop::Agent>,
     persona_id: &str,
 ) {
     // 先清扫：这个入口在每次人格新建时都会跑，是顺手的回收点。
@@ -1498,9 +1501,9 @@ pub(crate) async fn adopt_active_links(
         let count = keepers.len();
         // 记下**工具名**而不只是数量：这条日志是排查"新人格为什么看不见
         // 远程工具"的唯一线索（此前连数量都没有）。
-        let installed: Vec<String> = echo_agent::federation::remote_tool_candidates(&info.caps)
+        let installed: Vec<String> = echo_module_loop::federation::remote_tool_candidates(&info.caps)
             .iter()
-            .map(|tool| echo_agent::federation::remote_tool_name(&peer_name, tool))
+            .map(|tool| echo_module_loop::federation::remote_tool_name(&peer_name, tool))
             .collect();
         {
             let mut slot = rt
@@ -1537,7 +1540,7 @@ mod remote_tool_install_tests {
     struct NullProvider;
 
     #[async_trait::async_trait]
-    impl echo_agent::llm::LlmProvider for NullProvider {
+    impl echo_module_loop::llm::LlmProvider for NullProvider {
         fn name(&self) -> &str {
             "null"
         }
@@ -1546,25 +1549,25 @@ mod remote_tool_install_tests {
         }
         async fn chat(
             &self,
-            _request: &echo_agent::llm::ChatRequest,
-        ) -> Result<echo_agent::llm::ChatResponse, echo_agent::llm::LlmError> {
-            Err(echo_agent::llm::LlmError::Config("not used".into()))
+            _request: &echo_module_loop::llm::ChatRequest,
+        ) -> Result<echo_module_loop::llm::ChatResponse, echo_module_loop::llm::LlmError> {
+            Err(echo_module_loop::llm::LlmError::Config("not used".into()))
         }
         async fn chat_stream(
             &self,
-            request: &echo_agent::llm::ChatRequest,
-            _tx: tokio::sync::mpsc::UnboundedSender<echo_agent::llm::ChatChunk>,
-        ) -> Result<echo_agent::llm::ChatResponse, echo_agent::llm::LlmError> {
+            request: &echo_module_loop::llm::ChatRequest,
+            _tx: tokio::sync::mpsc::UnboundedSender<echo_module_loop::llm::ChatChunk>,
+        ) -> Result<echo_module_loop::llm::ChatResponse, echo_module_loop::llm::LlmError> {
             self.chat(request).await
         }
     }
 
-    fn new_agent(team: &str) -> Arc<echo_agent::Agent> {
-        let agent = Arc::new(echo_agent::Agent::new(
+    fn new_agent(team: &str) -> Arc<echo_module_loop::Agent> {
+        let agent = Arc::new(echo_module_loop::Agent::new(
             Arc::new(NullProvider),
-            echo_agent::AgentConfig::default(),
-            echo_agent::skill::SkillRegistry::new(),
-            echo_agent::tool::ToolRegistry::new(),
+            echo_module_loop::AgentConfig::default(),
+            echo_module_loop::skill::SkillRegistry::new(),
+            echo_module_loop::tool::ToolRegistry::new(),
             Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
         ));
         agent.set_team_id(Some(team.to_string()));
@@ -1586,7 +1589,7 @@ mod remote_tool_install_tests {
         );
         Arc::new(super::FederationRuntime {
             federation,
-            router: echo_agent::federation::InvokeRouter::new("node-local".into()),
+            router: echo_module_loop::federation::InvokeRouter::new("node-local".into()),
             peer_names: Arc::new(tokio::sync::RwLock::new(Default::default())),
             node_to_peer: Arc::new(tokio::sync::RwLock::new(Default::default())),
             config_store: echo_config::ConfigStore::new(dir.join("core.toml")),
@@ -1741,7 +1744,7 @@ mod remote_tool_install_tests {
         let rt = runtime(&dir);
 
         // ① 什么都没有：不 panic（只记 warn）。
-        rt.emit_federation_event(echo_protocol::BackendEvent::Error {
+        rt.emit_federation_event(echo_module_management::protocol::BackendEvent::Error {
             session_id: None,
             message: "x".into(),
         })
@@ -1755,7 +1758,7 @@ mod remote_tool_install_tests {
         core.attach_event_sink(Arc::new(move |event| {
             sink.lock().unwrap().push(event.kind_name().to_string());
         }));
-        rt.emit_federation_event(echo_protocol::BackendEvent::Error {
+        rt.emit_federation_event(echo_module_management::protocol::BackendEvent::Error {
             session_id: None,
             message: "y".into(),
         })
@@ -2086,7 +2089,7 @@ mod directory_tests {
             .await;
 
         match rt.directory_event().await {
-            echo_protocol::BackendEvent::FederationDirectory {
+            echo_module_management::protocol::BackendEvent::FederationDirectory {
                 node_id,
                 listen,
                 panel_ready,
@@ -2123,7 +2126,7 @@ mod directory_tests {
 
         // 未配置：off。
         match rt.status_event().await {
-            echo_protocol::BackendEvent::FederationStatus {
+            echo_module_management::protocol::BackendEvent::FederationStatus {
                 panel_ready,
                 panel_access,
                 ..
@@ -2142,7 +2145,7 @@ mod directory_tests {
             ));
         let event = rt.status_event().await;
         match &event {
-            echo_protocol::BackendEvent::FederationStatus {
+            echo_module_management::protocol::BackendEvent::FederationStatus {
                 panel_ready,
                 panel_access,
                 ..

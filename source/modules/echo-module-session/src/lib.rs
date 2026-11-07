@@ -38,12 +38,12 @@
 //!
 //! ## 依赖纪律
 //!
-//! 只依赖词汇层（`echo-defs` / `echo-protocol` / `echo-session`）与模块机制
+//! 只依赖词汇层（`echo-defs` / `echo-module-management` / `echo-session`）与模块机制
 //! （`echo-module` / `echo-context`）——**不依赖 `echo-agent`，也不依赖任何
 //! 其它模块**（`scripts/deps-policy.txt` 第 4 条的门禁会拦）。
 //!
 //! 显示历史派生（`store::history`）与实时投影（`echo-module-management` 的
-//! `timeline`）共用的一批文本工具，已下沉到 `echo-protocol::timeline_text`
+//! `timeline`）共用的一批文本工具，已下沉到 `echo-module-management::timeline_text`
 //! ——共用逻辑的下沉方向永远是"往共同的下游"，不是模块互相 `use`。
 
 use std::path::PathBuf;
@@ -218,7 +218,7 @@ mod tests {
             Arc::new(TrunkStore::new(1000))
         }
         fn forget_session_provider(&self, _session_id: &str) {}
-        fn emit(&self, _event: echo_protocol::BackendEvent) {}
+        fn emit(&self, _event: echo_module_management::protocol::BackendEvent) {}
         fn emit_context_snapshot<'a>(
             &'a self,
             _session_id: &'a str,

@@ -107,7 +107,7 @@ echo-module-workspace = { git = "https://github.com/EchoLab-Auto/crate-workspace
 - 文档路径：`$XDG_CONFIG_HOME/echo-agent-core/echo-workspaces-{team_id}.json`
   （模块配置 `[module.config] state_dir` 可覆盖）——**与迁出前同一路径**，旧数据
   直接可读，无需迁移。
-- 线类型：模块仓 `wire` 模块是 `echo-protocol` 的**镜像**（字段名逐字一致）。
+- 线类型：模块仓 `wire` 模块是 `echo-module-management` 的**镜像**（字段名逐字一致）。
   为什么不用同一套类型：Core 以 git 依赖引入模块仓，模块反向依赖 Core 的 crate
   就是包级循环依赖，Cargo 直接拒绝。两侧的边界收在
   `workspace_commands::to_protocol_session`，任一侧加字段都会在编译期报错。

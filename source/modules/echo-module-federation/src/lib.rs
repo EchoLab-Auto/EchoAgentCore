@@ -14,12 +14,16 @@ pub mod host_keys;
 pub mod link;
 pub mod panel;
 pub mod ports;
+pub mod protocol;
+mod service;
+pub use protocol::{FederatedNodeInfo, FederationLinkState, FederationPeerInfo};
+pub use service::{FederationCommand, FederationEvent};
 pub mod remote_tool;
 pub mod router;
 pub mod workspace_query;
 
 pub use admin::{Emit as FederationEmit, FederationAdminHost};
-pub use commands::{FederationCommandBridge, COMMANDS as FEDERATION_COMMANDS};
+pub use commands::COMMANDS as FEDERATION_COMMANDS;
 pub use connection::{decode_invite, encode_invite, generate_token, InvitePayload, INVITE_SCHEME};
 pub use error::FederationError;
 pub use frame::{
@@ -67,42 +71,43 @@ pub fn manifest(version: &str) -> echo_module::ModuleManifest {
 ///
 /// 实现留在组合根（`Federation` 句柄与 `ConfigStore` 是它的所有物），
 /// 本模块负责**归属关系**与未接线时的兜底语义。
+/// 联邦协议经管理面总线发送时的扩展挂载点：服务方提供命令名，调用方用
+/// `COMMANDS` 里的名称把服务自己的 JSON 载荷交给本模块，不经集中式协议 crate。
+pub async fn handle_command(
+    admin: &dyn FederationAdminHost,
+    name: &str,
+    payload: serde_json::Value,
+) -> Option<Result<serde_json::Value, String>> {
+    admin::dispatch_service(admin, name, payload).await
+}
+
 pub fn module(version: &str) -> std::sync::Arc<dyn echo_module::Module> {
     use echo_module::{BuiltinModule, Inject, ServiceSlot};
 
     // **零参数**（全模块化 S6）：出口集合与事件出口都是装配期构造的进程级
     // 对象，经服务表解析（[`host_keys::PORTS`] / [`host_keys::EVENTS`]）。
     let ports = ServiceSlot::<std::sync::Arc<FederationPorts>>::new();
-    let events =
-        ServiceSlot::<std::sync::Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>>::new();
-    let (bind_ports, bind_events) = (ports.clone(), events.clone());
-    let (serve_ports, serve_events) = (ports.clone(), events.clone());
+    let (bind_ports, serve_ports) = (ports.clone(), ports.clone());
 
     std::sync::Arc::new(
         BuiltinModule::new(manifest(version), move |mctx| {
-            let mut disposers = vec![
-                bind_ports.bind(mctx, &host_keys::PORTS)?,
-                bind_events.bind(mctx, &host_keys::EVENTS)?,
-            ];
+            let mut disposers = vec![bind_ports.bind(mctx, &host_keys::PORTS)?];
             // persona 门控不在这里（宿主监听挂载/卸载事件统一拨）。
             disposers.shrink_to_fit();
             Ok(disposers)
         })
-        .with_inject(Inject::new([
-            host_keys::PORTS.name().to_string(),
-            host_keys::EVENTS.name().to_string(),
-        ]))
+        .with_inject(Inject::new([host_keys::PORTS.name().to_string()]))
         .with_commands(commands::COMMANDS)
         .with_command_handler_async(move |name, payload| {
-            let (ports, events) = (serve_ports.clone(), serve_events.clone());
+            let ports = serve_ports.clone();
             Box::pin(async move {
-                let (Some(ports), Some(events)) = (ports.get(), events.get()) else {
+                let Some(ports) = ports.get() else {
                     return Err(format!(
                         "命令 {name} 到 {} 时模块尚未挂载（宿主接缝未绑定）",
                         MODULE_ID
                     ));
                 };
-                commands::FederationCommandBridge::new(ports, events)
+                commands::FederationCommandBridge::new(ports)
                     .handle(&name, payload)
                     .await
                     .unwrap_or_else(|| {

@@ -18,7 +18,7 @@ link: ["kernel | 运行地基", "tools | 工具集", "shell | Shell 会话", "wo
 1. **一切皆模块**：LLM provider、TurnRunner、工具、技能、模块实例、编排、management server 均为模块，无特权核心模块
 2. 模块 = manifest + 生命周期钩子；注册是可逆副作用（disposer）
 3. **热重载优先于重启**：数据类模块（技能/工具/清单）秒级热重载；代码类模块不热重载——provider / loop 经原子二进制替换 + 进程重启生效，模块实例实现作为进程外模块随 Core 重启重建
-4. 模块**不 import `echo-agent`**（只有组合根可以），可按需依赖定义层（`echo-defs` / `echo-module` / `echo-context`）与机制层（`echo-module-tools` / `echo-module-shell` / `echo-protocol` / `echo-session` / `echo-module-federation`）；逐 crate 的完整白名单在 `scripts/deps-policy.txt`，方向只向下
+4. 模块**不 import `echo-agent`**（只有组合根可以），可按需依赖定义层（`echo-defs` / `echo-module` / `echo-context`）与机制层（`echo-module-tools` / `echo-module-shell` / `echo-module-management` / `echo-session` / `echo-module-federation`）；逐 crate 的完整白名单在 `scripts/deps-policy.txt`，方向只向下
 
 ### 为什么不用动态库（.so）模块
 

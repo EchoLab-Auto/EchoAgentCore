@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use crate::{FedFrame, Federation};
 
 use crate::router::InvokeRouter;
-use echo_module_tools::{Tool, ToolError};
+use echo_defs::tool::{Tool, ToolError};
 
 pub use echo_defs::remote_tool::{remote_tool_name, remote_tool_prefix, sanitize_peer_component};
 

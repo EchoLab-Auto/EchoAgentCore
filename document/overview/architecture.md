@@ -29,7 +29,7 @@ graph BT
   Ctx[echo-context<br>Ctx/EventBus/Disposer]
   Session[echo-session<br>事件溯源]
   Loop[echo-module-loop<br>TurnRunner]
-  Proto[echo-protocol<br>线契约]
+  Proto[echo-module-management<br>线契约]
   Config[echo-config<br>TOML 原子读改写]
   Fed[echo-module-federation<br>Core↔Core 联邦]
   Module[echo-module<br>生命周期钩子]
@@ -89,14 +89,14 @@ graph BT
 | `echo-context` **（框架仓）** | 机制层 | `Ctx` 服务定位、`EventBus` 类型化事件、`Disposer` 可逆注册、`ScopedRegistry`。**零全局态**：不持有进程级单例表——需要共享状态的调用方经 `Ctx` 显式注入 |
 | `echo-session` | 事件溯源会话 | `SessionEvent` 事件集（含模型不可见的推理事件）、`EventLog` append-only 持久化、`derive_messages` 投影、**按会话切片投影**（append 的重投影代价只与本次会话相关）、compaction、`SessionHeader`、v1-v4 兼容迁移。**词汇层**：只导出类型与纯函数，实例与生命周期在 `echo-module-session` |
 | `echo-module-loop` | Agent 循环驱动 | `TurnRunner` turn/step 状态机、`ToolPipeline` 工具执行管道；会话内 FIFO 串行准入（每会话一条时间线）见 [Agent 循环](../core/agent-loop.md) |
-| `echo-protocol` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性）。另含显示文本工具 `timeline_text`（定时信封解析 / 单行折叠 / 工具概要截断，供实时投影与派生两条路径共用）。Panel 的 Rust 中继对它**零依赖**（不解析负载、按原文转发），TS 前端以 `web/src/protocol.ts` 手写镜像 |
+| `echo-module-management` | 线契约 | `BackendCommand`/`BackendEvent`/bridge（事件帧带扇出序号，供消费方校验事件流连续性）。另含显示文本工具 `timeline_text`（定时信封解析 / 单行折叠 / 工具概要截断，供实时投影与派生两条路径共用）。Panel 的 Rust 中继对它**零依赖**（不解析负载、按原文转发），TS 前端以 `web/src/protocol.ts` 手写镜像 |
 | `echo-module-provider-llm` | 内置模块：LLM provider（Phase 3 ①） | provider 工厂（OpenAI 兼容 / Anthropic Messages / Ollama，含 DeepSeek `/anthropic` 自动路由、Kimi base_url 归一、OpenCode Go/Zen 会话头注入）+ 计量装饰器（`UsageRecorder` 出口）+ 脱敏装饰器；**API 设置面策略**：池规则（`admin`）、13 条命令域（`commands`）、探针配置解析 / `core.toml` agent 表补丁 / `ApiConfigUpdated` 事件装配 / 「测试 API」全流程（`api_admin`）；只依赖 `echo-defs` 与三个 provider crate |
 | `echo-module-skills` | 内置模块：技能目录（Phase 3 ③） | `SkillRegistry`（递归发现 + 多目录分层合并 + 热重载状态）、SKILL.md frontmatter 解析、Git 来源安装与 `.sources.json`；模块 id 归一走 `echo_defs::module_id` |
 | `echo-module-subagent` | 内置模块：Subagent 委派（Phase 3 ⑥） | `spawn_subagent` 工具（异步受理 + 立即回执）、`SubagentStore`（取消句柄 + TTL 清扫）、`run_subagent_turn`（隔离上下文的一次性 turn，剥离 spawn 能力防递归）；远程委派经注入的 `RemoteDelegationSink` 上报，模块不依赖联邦实现 |
 | `echo-module-loop` | 内置模块：循环（Phase 3 ⑦） | 唯一循环模块 `loop.single` 的 id / 描述 / manifest 唯一事实来源，`Service{key:"loop"}` 贡献声明；mount 时构造唯一 `TurnRunner` 并 `provide` 该服务（卸载撤销），策略只有"同一会话 turn 串行排队" |
 | `echo-module-workspace` | **独立仓**模块：工作区会话（2026-11 迁出 Core，git 依赖引入） | `WorkspaceStore`（每 persona 一份 JSON，原子写）、`workspace` 工具、只读 git 与文件采集、浏览沙箱解析；宿主只留**只读镜像**（`WorkspaceMirror`）+ 工具代理，模块经 `workspace.changed` 等三条模块事件驱动宿主的会话通道；跨机目录降级为占位（模块不依赖联邦实现） |
-| `echo-module-session` | 内置模块：会话子系统（解耦计划 S6） | `TrunkStore` 的实现归属：append-only 事件日志、按会话上下文投影、持久化（tmp+rename 原子写、`save_lock` 串行）、归档轮转（`archives/` 保留 20 份）、压缩编排（预览→归档→摘要→落地，全程 `compact_lock`）、按需派生显示历史、**写命令域**（`ClearHistory` / `ArchiveHistory` / `CompactHistory`，2026-11 S6 补口自宿主迁入）。mount 只 provide 工厂 `echo-agent.session.factory`（每人格一份 trunk，不是单例）；**不依赖任何模块**，只认 `echo-defs`/`echo-protocol`/`echo-session` 词汇 + 模块机制 |
-| `echo-module-transcript` | 内置模块：显示层（解耦计划 S8） | 时间线实时投影（`timeline`：哪些事件进面板、字段怎么映射、工具完成态原地合并）+ 会话视图命令域（`session_view`：5 条 `Request*`）。2026-11 自 `echo-module-management` 外置：连接面（WS 中继）与显示面（"面板看到什么"）分轴；与 `echo-module-session` 的历史派生共用 `echo-protocol::timeline_text`。只依赖词汇层与机制层 |
+| `echo-module-session` | 内置模块：会话子系统（解耦计划 S6） | `TrunkStore` 的实现归属：append-only 事件日志、按会话上下文投影、持久化（tmp+rename 原子写、`save_lock` 串行）、归档轮转（`archives/` 保留 20 份）、压缩编排（预览→归档→摘要→落地，全程 `compact_lock`）、按需派生显示历史、**写命令域**（`ClearHistory` / `ArchiveHistory` / `CompactHistory`，2026-11 S6 补口自宿主迁入）。mount 只 provide 工厂 `echo-agent.session.factory`（每人格一份 trunk，不是单例）；**不依赖任何模块**，只认 `echo-defs`/`echo-module-management`/`echo-session` 词汇 + 模块机制 |
+| `echo-module-transcript` | 内置模块：显示层（解耦计划 S8） | 时间线实时投影（`timeline`：哪些事件进面板、字段怎么映射、工具完成态原地合并）+ 会话视图命令域（`session_view`：5 条 `Request*`）。2026-11 自 `echo-module-management` 外置：连接面（WS 中继）与显示面（"面板看到什么"）分轴；与 `echo-module-session` 的历史派生共用 `echo-module-management::timeline_text`。只依赖词汇层与机制层 |
 | `echo-module-management` | 内置模块：管理面 WS（Phase 3 ⑧） | Panel 连接中继（`EventBroker` 单接收者 → 每连接一订阅、按序分配 `seq`）、token 鉴权与常量时间比较、端口合并规划 `plan_federation_listen` + fail-closed `validate_merged`、心跳保活；**不需要 Agent 句柄**，只认线契约。显示层已外置到 `echo-module-transcript` |
 | `echo-module-tools` | 内置模块：内置工具集（Phase 3 之后的延续工作） | `echo-agent.tools.builtin` 的实现：计算/检索（`calculator`/`web_search`）、清单（`checklist`）、模块实例管理（`instance_*`）、编码（`read_file`/`write_file`/`edit_file`/`list_files`/`search_code`/`bash`）。两个外部能力**经注入**：`RemoteInvoker`（`node://` 远程调用）、工作区根——未注入时显式降级（「联邦未接线」），不静默换实现 |
 | `echo-module-shell` | 内置模块：Shell 会话 | `echo-agent.shell` 的实现：`bash-start` / `bash-exec` / `bash-stop` 三个工具 + 四条 `*Shell*` 面板命令。机制依赖 `echo-module-shell`（进程组生命周期 + 哨兵分帧），与工具集**互不依赖**；拆出的理由是独立的启停需求与独立的机制依赖——想关 shell 不该连计算器一起关 |
@@ -114,13 +114,13 @@ graph BT
 
 > 另有 `echo-test-utils`（跨 crate 复用的测试夹具）这个 dev crate，不进运行时依赖链。
 
-依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；其上为中间层（`echo-protocol` / `echo-config` / `echo-session` / `echo-module-tools` / `echo-module-shell` / `echo-module-federation`）与模块层（`echo-module*` 与全部内置模块 crate）◄ `echo-agent` ◄ `echo-agent-core`（bin）。三条容易记错的归属：
+依赖方向收敛为单向下游：**两个互不依赖的底座**——`echo-defs`（零 harness 依赖）与 `echo-context`（零 echo-* 依赖，**不依赖 `echo-defs`**）；其上为中间层（`echo-module-management` / `echo-config` / `echo-session` / `echo-module-tools` / `echo-module-shell` / `echo-module-federation`）与模块层（`echo-module*` 与全部内置模块 crate）◄ `echo-agent` ◄ `echo-agent-core`（bin）。三条容易记错的归属：
 
 - **`ModuleInstance` trait 在 `echo-defs`**（`echo_defs::module_instance`；`InstanceError` / `InstanceInfo` / `InstanceConnectionState` / `InstanceManagement` 同）；**协议侧贡献类型 `ToolContribution` / `InstanceContribution` 在 `echo-module-api`**，两者由 `echo-module-adapter` 桥接
 - **`echo-config` 只做 TOML 原子读改写**，不认识任何配置段的语义（旧 `echo-adapter` crate 已删除，其注册表并入 `echo-defs::module_instance`）
 - **入站过滤与平台细节都在实例模块进程内**：宿主侧不持有过滤管道、不认识平台名
 
-**依赖白名单的单一真值是 `scripts/deps-policy.txt`**（`scripts/check-deps.sh` 与 `source/modules/core/tests/module_dependency_direction.rs` 双门禁共读，新增 crate 未登记即 fail-closed）；扩展模块只依赖定义层。旧 crate（`echo-agent` / `echo-protocol`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
+**依赖白名单的单一真值是 `scripts/deps-policy.txt`**（`scripts/check-deps.sh` 与 `source/modules/core/tests/module_dependency_direction.rs` 双门禁共读，新增 crate 未登记即 fail-closed）；扩展模块只依赖定义层。旧 crate（`echo-agent` / `echo-module-management`）re-export `echo_defs` 类型，保持 `echo_agent::…` 等路径兼容。
 
 ### 定义层（echo-defs）
 
@@ -132,7 +132,7 @@ graph BT
 
 - **`Ctx` 服务定位**：按字符串 key 注册/解析；注册 `Arc<dyn Trait>`（trait 对象存入 `Box<dyn Any>`，resolve 时 downcast 回同一类型）或具体 `Clone + 'static` 值——字符串键便于配置与诊断，且允许同一 trait 多实例按名共存
 - **`Disposer` 可逆注册**：`Ctx::register` / `EventBus::subscribe` / 注册表方法都返回 `Disposer`；注册必须持有 disposer 才生效（组合根持有 `ctx` 注册），装配方需明确管理生命周期
-- **`EventBus` 类型化事件**：`Event` trait（Any + Clone + Debug + Send + Sync），按事件 `TypeId` 分组监听器；四种分发——`Observe`（扇出）/ `Waterfall`（around-middleware，不调 `next()` 即短路）/ `Parallel`（每监听器一份事件副本并发）/ `Serial`（按序；**当前实现与 `Observe` 等价**，「首个拒绝即停止」为预留语义）。`emit_sync` 覆盖同步热路径（Observe/Waterfall），`emit` 支持全部模式；`echo-protocol` 为 `BackendEvent` 实现 `Event`（依赖方向仍为 context ◄ protocol）
+- **`EventBus` 类型化事件**：`Event` trait（Any + Clone + Debug + Send + Sync），按事件 `TypeId` 分组监听器；四种分发——`Observe`（扇出）/ `Waterfall`（around-middleware，不调 `next()` 即短路）/ `Parallel`（每监听器一份事件副本并发）/ `Serial`（按序；**当前实现与 `Observe` 等价**，「首个拒绝即停止」为预留语义）。`emit_sync` 覆盖同步热路径（Observe/Waterfall），`emit` 支持全部模式；`echo-module-management` 为 `BackendEvent` 实现 `Event`（依赖方向仍为 context ◄ protocol）
 - **`ScopedRegistry` 作用域注册**：全局条目 + per-scope 条目，lookup 先 scoped 后 global（shadowing），scope 卸载时条目随 disposer 撤销
 
 ### LLM provider 实现（`echo-module-provider-llm::providers`）
@@ -171,7 +171,7 @@ echo-module-provider-llm/src/providers/
 
 ### 事件模型
 
-四类事件各有归属：**生命周期事件**（`echo-module-loop` 经 `EventBus` 分发，`TurnStart` … `TurnEnd`；清单与拦截点见 [Agent 循环](../core/agent-loop.md)）；**会话事件**（`echo-session` 的 append-only 日志，见下节）；**协议事件**（`echo-protocol` 的 `BackendEvent`，经 management WS 供 Panel 消费，见 [协议与数据流](../protocol/protocol.md)）；**能力事件**（timeline 投影是 `EventBus` 的 observe 监听器——`Agent` 不直接写 timeline，显示历史是事件的投影消费者，可独立演进与测试）。
+四类事件各有归属：**生命周期事件**（`echo-module-loop` 经 `EventBus` 分发，`TurnStart` … `TurnEnd`；清单与拦截点见 [Agent 循环](../core/agent-loop.md)）；**会话事件**（`echo-session` 的 append-only 日志，见下节）；**协议事件**（`echo-module-management` 的 `BackendEvent`，经 management WS 供 Panel 消费，见 [协议与数据流](../protocol/protocol.md)）；**能力事件**（timeline 投影是 `EventBus` 的 observe 监听器——`Agent` 不直接写 timeline，显示历史是事件的投影消费者，可独立演进与测试）。
 
 ### Turn/Step 循环
 

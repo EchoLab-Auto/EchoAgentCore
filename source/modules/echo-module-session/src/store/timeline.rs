@@ -10,7 +10,7 @@ impl TrunkStore {
     ///
     /// 条目 seq 在锁内赋值并与计数器同步推进（仅在条目真正入列时递增），
     /// 保证 `timeline_snapshot_since` 的按 seq 过滤语义成立。
-    pub fn push_timeline(&self, message: echo_protocol::TimelineMessage) {
+    pub fn push_timeline(&self, message: echo_module_management::protocol::TimelineMessage) {
         let mut timeline = self.timeline.lock();
         self.push_timeline_locked(&mut timeline, message);
         drop(timeline);
@@ -26,7 +26,10 @@ impl TrunkStore {
     /// 绕过 seq 与 pushed 计数、也不裁剪——(a) 提示行 seq=0，增量同步
     /// （since_seq）永远看不到它；(b) 探针对账恒等式在下一采样点误报
     /// 失衡（差一条未计数的插入）。
-    pub async fn push_timeline_blocking(&self, message: echo_protocol::TimelineMessage) {
+    pub async fn push_timeline_blocking(
+        &self,
+        message: echo_module_management::protocol::TimelineMessage,
+    ) {
         let mut timeline = self.timeline.lock();
         self.push_timeline_locked(&mut timeline, message);
         drop(timeline);
@@ -36,8 +39,8 @@ impl TrunkStore {
     /// 入列共享实现（调用方持锁）：赋 seq、推进 pushed、执行 cap 裁剪。
     pub(super) fn push_timeline_locked(
         &self,
-        timeline: &mut Vec<echo_protocol::TimelineMessage>,
-        mut message: echo_protocol::TimelineMessage,
+        timeline: &mut Vec<echo_module_management::protocol::TimelineMessage>,
+        mut message: echo_module_management::protocol::TimelineMessage,
     ) {
         message.seq = self
             .timeline_seq
@@ -80,7 +83,7 @@ impl TrunkStore {
     /// Point-in-time snapshot of the display timeline (oldest first).
     /// 全量快照：同步短锁内 clone，永不返回"空顶替"（历史上空快照曾被
     /// 当"空全量"发给前端而清空本地聊天缓存）。
-    pub fn timeline_snapshot(&self) -> Vec<echo_protocol::TimelineMessage> {
+    pub fn timeline_snapshot(&self) -> Vec<echo_module_management::protocol::TimelineMessage> {
         self.timeline.lock().clone()
     }
 
@@ -98,7 +101,7 @@ impl TrunkStore {
     pub fn timeline_snapshot_since(
         &self,
         since_seq: u64,
-    ) -> Option<(Vec<echo_protocol::TimelineMessage>, u64)> {
+    ) -> Option<(Vec<echo_module_management::protocol::TimelineMessage>, u64)> {
         let current = self.timeline_seq();
         if since_seq > current {
             // 游标超前于当前序号（如对端缓存自 core 重启前）：无法对齐。
@@ -138,7 +141,7 @@ impl TrunkStore {
     pub fn timeline_window_tail(
         &self,
         limit: usize,
-    ) -> (Vec<echo_protocol::TimelineMessage>, bool) {
+    ) -> (Vec<echo_module_management::protocol::TimelineMessage>, bool) {
         let timeline = self.timeline.lock();
         if limit == 0 || timeline.len() <= limit {
             return (timeline.clone(), false);
@@ -161,7 +164,7 @@ impl TrunkStore {
         &self,
         before_ord: u64,
         limit: usize,
-    ) -> (Vec<echo_protocol::TimelineMessage>, bool) {
+    ) -> (Vec<echo_module_management::protocol::TimelineMessage>, bool) {
         let timeline = self.timeline.lock();
         let total = timeline.len();
         if total == 0 || limit == 0 {
@@ -187,7 +190,9 @@ impl TrunkStore {
     ///
     /// 同步短锁：调用方不得跨 `.await` 持有返回的 guard（编译期由
     /// parking_lot guard 的 `!Send` 保证不会被带进 spawn 的 future）。
-    pub fn timeline_mut(&self) -> parking_lot::MutexGuard<'_, Vec<echo_protocol::TimelineMessage>> {
+    pub fn timeline_mut(
+        &self,
+    ) -> parking_lot::MutexGuard<'_, Vec<echo_module_management::protocol::TimelineMessage>> {
         self.timeline.lock()
     }
 
@@ -200,7 +205,10 @@ impl TrunkStore {
     /// run_tool 的 ToolResult 永远不会到达，条目 output 永远为 null，
     /// 前端会一直显示"运行中"。恢复时把这类条目标注为中断并分配新
     /// seq（增量同步会把完成态重新投递给已连接的前端）。
-    pub(super) fn restore_timeline(&self, timeline: Vec<echo_protocol::TimelineMessage>) {
+    pub(super) fn restore_timeline(
+        &self,
+        timeline: Vec<echo_module_management::protocol::TimelineMessage>,
+    ) {
         let mut max_seq = timeline.iter().map(|entry| entry.seq).max().unwrap_or(0);
         let mut timeline = timeline;
         let mut interrupted = 0usize;

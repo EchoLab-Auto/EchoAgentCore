@@ -122,7 +122,7 @@ y: 1200
   `elapsed_ms`）。于是 spawn 时延可算，`task` / `profile` / `node` /
   `timeout_secs` 实参可查，面板委派行与普通工具行同源同账
 - **任务面**：`SubagentStarted { session_id, task }` / `SubagentCompleted { session_id, success }`
-  （`echo-protocol` 事件，Panel 据此渲染子任务状态；`started` 的 `task` 是全文、
+  （`echo-module-management` 事件，Panel 据此渲染子任务状态；`started` 的 `task` 是全文、
   不受下面的 4000 字符上限约束；入口：会话视图入口行「任务」弹层，按当前会话
   过滤展示）
 - **回灌面**：完成 hook 作为 `MessageReceived { instance_name: "subagent" }`

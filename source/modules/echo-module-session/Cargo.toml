@@ -11,7 +11,7 @@ description = "会话子系统模块（解耦计划 S6）：事件溯源 trunk�
 echo-module = { workspace = true }
 echo-context = { workspace = true }
 echo-defs = { path = "../echo-defs" }
-echo-protocol = { path = "../echo-protocol" }
+echo-module-management = { path = "../echo-module-management" }
 echo-session = { path = "../echo-session" }
 tokio.workspace = true
 parking_lot = "0.12"

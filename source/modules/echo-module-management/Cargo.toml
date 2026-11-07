@@ -9,10 +9,12 @@ description = "管理面 WebSocket 模块（解耦计划 Phase 3 ⑧）：Panel 
 
 [dependencies]
 echo-module = { workspace = true }
-echo-protocol = { workspace = true }
+echo-defs = { workspace = true }
+serde.workspace = true
+tokio-util = { workspace = true }
 # 时间线投影：事件总线订阅 + 消息词汇（都在机制层）+ 图片规范化 + 定时信封解析。
 echo-context = { workspace = true }
-echo-module-federation = { workspace = true }
+echo-module-federation = { path = "../echo-module-federation" }
 anyhow = { workspace = true }
 futures-util = { workspace = true }
 tokio = { workspace = true }

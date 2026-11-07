@@ -23,7 +23,7 @@
 
 use echo_defs::api_profile::ApiProfile;
 use echo_defs::mode::{ReasoningEffort, ThinkingMode};
-use echo_protocol::event::{ApiProfileInfo, BackendEvent};
+use echo_module_management::protocol::event::{ApiProfileInfo, BackendEvent};
 
 /// API 相关配置的**窄视图**：只带设置面需要的字段。
 ///

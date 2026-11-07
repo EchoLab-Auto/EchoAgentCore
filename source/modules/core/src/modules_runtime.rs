@@ -10,7 +10,7 @@
 //!   enabled 的 stdio 模块（单个失败逐条 warn 但继续）。成功 →
 //!   `tracing::info!(count, skipped)` 并返回 [`ModuleRuntime`]。
 //! - [`ModuleRuntime::tools`]：全部已启动模块的远程工具模块实例
-//!   （`Arc<RemoteTool>`——`RemoteTool` 已实现 `echo_agent::tool::Tool`，
+//!   （`Arc<RemoteTool>`——`RemoteTool` 已实现 `echo_module_loop::tool::Tool`，
 //!   注册时可直接向上转型为 `Arc<dyn Tool>`；同时保留 `package()` 供注册
 //!   方打「按包分组」标签）。
 //! - [`ModuleRuntime::shutdown`]：5s 期限排空全部句柄（best-effort）。
@@ -227,7 +227,7 @@ impl SubprocessControl {
     }
 }
 
-impl echo_agent::modules::SubprocessModuleControl for SubprocessControl {
+impl echo_module_loop::modules::SubprocessModuleControl for SubprocessControl {
     fn stop<'a>(
         &'a self,
         id: &'a str,
@@ -286,12 +286,12 @@ impl echo_agent::modules::SubprocessModuleControl for SubprocessControl {
         })
     }
 
-    fn status(&self, id: &str) -> Option<echo_agent::modules::SubprocessStatus> {
+    fn status(&self, id: &str) -> Option<echo_module_loop::modules::SubprocessStatus> {
         // 没有 handle 的两种已知情形（都要给出明确状态，不能"查不到"）：
         // ① 启动就没起来 → failed + 原因；② 配置关掉从未启动 → stopped。
         let Some(handle) = self.handles.get(id) else {
             if let Some(error) = self.failed.get(id) {
-                return Some(echo_agent::modules::SubprocessStatus {
+                return Some(echo_module_loop::modules::SubprocessStatus {
                     state: "failed".to_string(),
                     restarts: 0,
                     generation: 0,
@@ -301,7 +301,7 @@ impl echo_agent::modules::SubprocessModuleControl for SubprocessControl {
             return self
                 .disabled
                 .contains(id)
-                .then(|| echo_agent::modules::SubprocessStatus {
+                .then(|| echo_module_loop::modules::SubprocessStatus {
                     state: "stopped".to_string(),
                     restarts: 0,
                     generation: 0,
@@ -309,7 +309,7 @@ impl echo_agent::modules::SubprocessModuleControl for SubprocessControl {
                 });
         };
         let state = handle.state();
-        Some(echo_agent::modules::SubprocessStatus {
+        Some(echo_module_loop::modules::SubprocessStatus {
             state: state.as_str().to_string(),
             restarts: handle.restarts(),
             generation: handle.generation(),
@@ -443,8 +443,8 @@ pub fn dump_config(config_path: &Path) -> Result<Option<String>, echo_module_loa
 ///   （Panel 清单可见、可就地启用），只是启动时不挂载。
 ///
 /// 未在计划里出现的内置模块仍按目录顺序挂载——见
-/// [`echo_agent::modules::resolve_mount_order`] 的说明。
-pub fn builtin_mount_plan(config_path: &Path) -> Vec<echo_agent::modules::MountStep> {
+/// [`echo_module_loop::modules::resolve_mount_order`] 的说明。
+pub fn builtin_mount_plan(config_path: &Path) -> Vec<echo_module_loop::modules::MountStep> {
     use echo_module_loader::EntryKind;
     let path = config_path.with_file_name("modules.toml");
     if !path.exists() {
@@ -455,7 +455,7 @@ pub fn builtin_mount_plan(config_path: &Path) -> Vec<echo_agent::modules::MountS
             .entries
             .iter()
             .filter(|entry| entry.kind == EntryKind::Builtin)
-            .map(|entry| echo_agent::modules::MountStep::new(entry.id.clone(), entry.enabled))
+            .map(|entry| echo_module_loop::modules::MountStep::new(entry.id.clone(), entry.enabled))
             .collect(),
         Err(error) => {
             // 与启动路径同款：坏文件 warn 后按"无配置"继续（内置模块照旧
@@ -469,7 +469,7 @@ pub fn builtin_mount_plan(config_path: &Path) -> Vec<echo_agent::modules::MountS
 /// `modules.toml` 里内置行（`kind = "builtin"`）的 `[module.config]` → 配置表。
 ///
 /// 这是**配置下发**的装载端：结果交给
-/// [`echo_agent::modules::ModuleHost::set_configs`]，注册表在 `mount` 时按 id
+/// [`echo_module_loop::modules::ModuleHost::set_configs`]，注册表在 `mount` 时按 id
 /// 注入 `MountContext.config`，于是 in-process 模块不必自己去找并解析
 /// `modules.toml`（也就不会读到别人的配置）。
 ///
@@ -800,7 +800,7 @@ mod tests {
                 Ok(Vec::new())
             },
         );
-        let host = echo_agent::modules::ModuleHost::new();
+        let host = echo_module_loop::modules::ModuleHost::new();
         host.set_configs(builtin_configs(&dir.join("echo-agent-core.toml")));
         host.register_and_mount(Arc::new(module)).expect("mount ok");
 

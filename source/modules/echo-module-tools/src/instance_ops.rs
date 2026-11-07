@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use echo_defs::module_instance::{InstanceRegistry, ModuleInstance};
-use echo_protocol::BackendEvent;
+use echo_module_management::protocol::BackendEvent;
 
 /// 写方法：这些方法的配置在**共享段**（gating 平台跨实例一致），调用后要
 /// 对齐同 platform 的其余实例并刷新状态。

@@ -78,7 +78,7 @@ pub const MODULE_ID: &str = "echo-agent.provider.llm";
 pub const PROVIDER_KEY: &str = echo_defs::llm::LLM_PROVIDER_SERVICE_KEY;
 
 /// 本模块消费的循环服务键。
-pub const LOOP_SERVICE_KEY: &str = echo_module_loop::SERVICE_KEY;
+pub const LOOP_SERVICE_KEY: &str = "loop";
 
 /// 构建一个 provider 所需的配置投影。
 ///

@@ -51,14 +51,14 @@ async fn render_tool_catalog() -> String {
     let dir = std::env::temp_dir().join(format!("echo-doc-catalog-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create temp dir");
     let store = echo_config::ConfigStore::new(dir.join("core.toml"));
-    let registry = echo_agent::tool::builtin::build_registry(
+    let registry = echo_module_loop::tool::builtin::build_registry(
         std::sync::Arc::new(echo_defs::module_instance::InstanceRegistry::new()),
         dir.clone(),
         store,
         None,
-        echo_agent::shell::ShellHandle::new(),
+        echo_module_loop::shell::ShellHandle::new(),
         Some(std::sync::Arc::new(
-            echo_agent::agent::session_query::SessionQueryRegistry::new(),
+            echo_module_loop::agent::session_query::SessionQueryRegistry::new(),
         )),
         None,
         // Shell 工具（`bash-start` / `bash-exec` / `bash-stop`）由 shell 模块造
@@ -204,7 +204,7 @@ async fn tool_catalog_is_fresh() {
 fn documented_builtin_module_ids_cover_the_constant() {
     let doc = reading(&repo_root().join("document/modules/modules.md"));
     let mut missing = Vec::new();
-    for id in echo_agent::modules::BUILTIN_MODULE_IDS {
+    for id in echo_module_loop::modules::BUILTIN_MODULE_IDS {
         if !doc.contains(id) {
             missing.push(id);
         }
@@ -227,7 +227,7 @@ fn every_module_has_a_reachable_document_link() {
     let doc = reading(&doc_path);
     let base = doc_path.parent().expect("document/modules");
 
-    let mut ids: Vec<&str> = echo_agent::modules::BUILTIN_MODULE_IDS.to_vec();
+    let mut ids: Vec<&str> = echo_module_loop::modules::BUILTIN_MODULE_IDS.to_vec();
     ids.push("echo-agent.instance.qq");
 
     let mut missing = Vec::new();
@@ -268,7 +268,7 @@ fn every_module_has_a_reachable_document_link() {
 #[test]
 fn modules_doc_counts_match_the_code() {
     let doc = reading(&repo_root().join("document/modules/modules.md"));
-    let expected = echo_agent::modules::BUILTIN_MODULE_IDS.len();
+    let expected = echo_module_loop::modules::BUILTIN_MODULE_IDS.len();
 
     let claimed = doc
         .split("框架内置 ")

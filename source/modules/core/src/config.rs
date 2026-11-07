@@ -71,7 +71,7 @@ impl Default for SystemPromptModule {
 #[serde(default)]
 pub struct CoreConfig {
     pub logging: LoggingSection,
-    pub agent: echo_agent::AgentConfig,
+    pub agent: echo_module_loop::AgentConfig,
     pub modules: ModulesSection,
     pub core: CoreSection,
     /// Core↔Core 联邦链路（零配置缺省开启：缺省监听 `0.0.0.0:3133`，详见 [`FederationSection`]）。

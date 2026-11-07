@@ -8,7 +8,7 @@ use echo_defs::message::{ChatMessage, ChatRequest, ChatResponse, ToolCall};
 use echo_defs::LlmProvider;
 use thiserror::Error;
 
-use crate::event::{
+use crate::loop_event::{
     AgentPreStep, AgentRequest, ModelResponse, StepEnd, StepStart, ToolCallRequested, ToolResult,
     TurnEnd, TurnStart, TurnStopping,
 };

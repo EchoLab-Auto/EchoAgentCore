@@ -23,11 +23,14 @@ struct ChecklistItem {
 /// 为什么在模块里：`Tool::state_key` 是本工具声明"我有可见状态"，而"这状态
 /// 长什么线上事件"是**协议形状**——把两者放在一起，新增一个有状态面板的
 /// 工具就只需要：实现 `state_key` + 提供一个绑定。执行链与组合根都不参与。
-pub fn state_event_binding() -> (&'static str, echo_protocol::ToolStateEventBuilder) {
+pub fn state_event_binding() -> (
+    &'static str,
+    echo_module_management::protocol::ToolStateEventBuilder,
+) {
     (
         "checklist",
         std::sync::Arc::new(|session_id: &str, state: &serde_json::Value| {
-            echo_protocol::BackendEvent::ChecklistUpdated {
+            echo_module_management::protocol::BackendEvent::ChecklistUpdated {
                 session_id: session_id.to_string(),
                 state: state.clone(),
                 team_id: None, // annotate_team 统一补
@@ -40,7 +43,10 @@ pub fn state_event_binding() -> (&'static str, echo_protocol::ToolStateEventBuil
 ///
 /// 只有一个元素（清单）也保留成"列表"：新增第二个有状态工具时，改的是这个
 /// 函数，而不是组合根。
-pub fn all_state_event_bindings() -> Vec<(&'static str, echo_protocol::ToolStateEventBuilder)> {
+pub fn all_state_event_bindings() -> Vec<(
+    &'static str,
+    echo_module_management::protocol::ToolStateEventBuilder,
+)> {
     vec![state_event_binding()]
 }
 

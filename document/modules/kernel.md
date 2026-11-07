@@ -17,7 +17,7 @@ link: []
 
 | | 中间层 | 模块 |
 |---|---|---|
-| 例子 | `echo-module-tools` / `echo-session` / `echo-protocol` | `echo-module-tools` / `-shell` / `-session` |
+| 例子 | `echo-module-tools` / `echo-session` / `echo-module-management` | `echo-module-tools` / `-shell` / `-session` |
 | 有 `ModuleManifest` | ❌ | ✅ |
 | 进 `catalog` | ❌ | ✅ |
 | 出现在 Panel 清单 | ❌ | ✅ |
@@ -69,7 +69,7 @@ Error: kernel module cannot be disabled: modules.toml 试图禁用 kernel 模块
 |---|---|---|---|
 | `echo-agent.kernel.defs` | `echo-defs` | 9 个能力接缝 trait 与全部跨边界词汇（**零 `echo-*` 依赖**） | ❌ 纯 trait + 纯函数 |
 | `echo-agent.kernel.config` | `echo-config` | TOML 原子读改写（tmp+rename，不认识任何段语义） | ✅ `ConfigStore` |
-| `echo-agent.kernel.protocol` | `echo-protocol` | `BackendCommand` / `BackendEvent` / bridge / `timeline_text` | ❌ 纯数据 |
+| `echo-agent.kernel.protocol` | `echo-module-management` | `BackendCommand` / `BackendEvent` / bridge / `timeline_text` | ❌ 纯数据 |
 | `echo-agent.kernel.session` | `echo-session` | `SessionEvent` 事件集 / `EventLog` / `derive_messages` / compaction | ✅ `EventLog` |
 
 ## `mount` 为什么是空的（纯身份声明）

@@ -29,7 +29,7 @@
 use std::sync::Arc;
 
 use crate::session::{ShellEmit, ShellManager};
-use echo_protocol::{BackendCommand, BackendEvent};
+use echo_module_management::protocol::{BackendCommand, BackendEvent};
 
 /// 本模块处理的命令名（面板探测与文档用；`dispatch_command` 按名字匹配）。
 pub const COMMANDS: [&str; 4] = [
@@ -53,7 +53,7 @@ pub trait ShellCommandHost: Send + Sync {
 
 /// 命令处理器：把"名字 + 载荷"还原成强类型命令后逐条处理。
 ///
-/// 依赖 `echo-protocol`（命令 / 事件词汇的正确归属，与 workspace 模块同款
+/// 依赖 `echo-module-management`（命令 / 事件词汇的正确归属，与 workspace 模块同款
 /// 口径）：模块与宿主共享的是**协议**，不是宿主内部类型。
 pub struct ShellCommandHandler {
     host: Arc<dyn ShellCommandHost>,
@@ -196,7 +196,7 @@ impl ShellCommandHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use echo_protocol::BackendEvent;
+    use echo_module_management::protocol::BackendEvent;
     use std::sync::Mutex;
 
     #[derive(Default)]

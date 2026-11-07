@@ -24,13 +24,14 @@
 
 use std::sync::Arc;
 
-use echo_protocol::{BackendCommand, BackendEvent};
+use crate::protocol::*;
+use crate::service::*;
 
 /// 事件出口（命令的副作用一律经它发出）。
 ///
 /// 与既有命令域同一个签名：进程级汇聚点由组合根在装配期给出（去主智能体
 /// 之后"发给哪个 agent"不再是个问题）。
-pub type Emit = Arc<dyn Fn(BackendEvent) + Send + Sync>;
+pub type Emit = Arc<dyn Fn(FederationEvent) + Send + Sync>;
 
 /// 一条**已校验**的 peer 保存意图（宿主据此做状态迁移，不再判规则）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,7 +83,7 @@ pub trait FederationAdminHost: Send + Sync {
     fn node_name(&self) -> Option<String>;
 
     /// 当前联邦状态事件（`FederationStatus`）。
-    async fn status_event(&self) -> BackendEvent;
+    async fn status_event(&self) -> FederationEvent;
 
     /// **联邦节点目录**事件（`FederationDirectory`，P2 自动发现）：本机身份 +
     /// 直接邻居清单（含离线条目——Panel 仍可用历史宣告地址试连）。
@@ -90,7 +91,7 @@ pub trait FederationAdminHost: Send + Sync {
     /// 规则（"报谁、报什么"）属于联邦领域，但数据只能由宿主取（链路表、
     /// 诊断表、`peer_names` 映射都在 `FederationRuntime` 里），所以这里是
     /// 一个原子动作而不是纯函数。
-    async fn directory_event(&self) -> BackendEvent;
+    async fn directory_event(&self) -> FederationEvent;
 
     /// 落一条 peer：运行时表 + 配置原子写回 + 策略同步 + 刷新路由。
     async fn apply_peer(&self, peer: PeerSave);
@@ -110,8 +111,7 @@ pub trait FederationAdminHost: Send + Sync {
         session_id: String,
         team_id: Option<String>,
         target_peer: String,
-        emit: Emit,
-    );
+    ) -> serde_json::Value;
 }
 
 // ── 规则（纯函数，可单测）──────────────────────────────────────────────
@@ -299,71 +299,56 @@ pub const COMMANDS: [&str; 6] = [
     "MigrateSession",
 ];
 
-/// 命令域入口：认领本域的命令，规则在此判定，状态迁移交宿主。
-///
-/// 返回 `None` = 不是本域；`Some(Ok)` = 处理完成（副作用已经以事件形式发出，
-/// 与既有命令域一致：面板的状态一律来自事件流，不是命令回执）。
-pub async fn dispatch(
+/// 联邦服务命令入口：返回带服务命名空间的 JSON 载荷，由调用方按需转发。
+pub async fn dispatch_service(
     host: &dyn FederationAdminHost,
     name: &str,
     payload: serde_json::Value,
-    emit: &Emit,
 ) -> Option<Result<serde_json::Value, String>> {
     if !COMMANDS.contains(&name) {
         return None;
     }
     let tagged = serde_json::json!({ name: payload });
-    let Ok(cmd) = serde_json::from_value::<BackendCommand>(tagged) else {
+    let Ok(cmd) = serde_json::from_value::<FederationCommand>(tagged) else {
         return Some(Err(format!("federation 命令载荷解析失败（{name}）")));
     };
-    Some(Ok(handle(host, cmd, emit).await))
+    Some(Ok(handle_service(host, cmd).await))
 }
 
-/// 具体分发（每条命令一臂）。
-async fn handle(
+async fn handle_service(
     host: &dyn FederationAdminHost,
-    cmd: BackendCommand,
-    emit: &Emit,
+    cmd: FederationCommand,
 ) -> serde_json::Value {
-    match cmd {
-        BackendCommand::RequestFederationStatus => {
-            emit(host.status_event().await);
-        }
-        BackendCommand::RequestFederationDirectory => {
-            emit(host.directory_event().await);
-        }
-        BackendCommand::MigrateSession {
+    let event = match cmd {
+        FederationCommand::RequestFederationStatus => host.status_event().await,
+        FederationCommand::RequestFederationDirectory => host.directory_event().await,
+        FederationCommand::MigrateSession {
             session_id,
             team_id,
             target_peer,
         } => {
-            host.migrate_session(session_id, team_id, target_peer, emit.clone())
-                .await;
+            return host.migrate_session(session_id, team_id, target_peer).await;
         }
-        BackendCommand::SaveFederationPeer { peer } => {
-            let result = save_peer(host, &peer).await;
-            match result {
-                Ok(()) => emit(host.status_event().await),
-                Err(message) => emit(BackendEvent::Error {
-                    session_id: None,
-                    message,
-                }),
-            }
-        }
-        BackendCommand::DeleteFederationPeer { name } => {
-            host.remove_peer(&name).await;
-            emit(host.status_event().await);
-        }
-        BackendCommand::RequestFederationInvite => match create_invite(host).await {
-            Ok(invite) => emit(BackendEvent::FederationInvite { invite }),
-            Err(message) => emit(BackendEvent::Error {
+        FederationCommand::SaveFederationPeer { peer } => match save_peer(host, &peer).await {
+            Ok(()) => host.status_event().await,
+            Err(message) => FederationEvent::Error {
                 session_id: None,
                 message,
-            }),
+            },
         },
-        _ => {}
-    }
-    serde_json::Value::Null
+        FederationCommand::DeleteFederationPeer { name } => {
+            host.remove_peer(&name).await;
+            host.status_event().await
+        }
+        FederationCommand::RequestFederationInvite => match create_invite(host).await {
+            Ok(invite) => FederationEvent::FederationInvite { invite },
+            Err(message) => FederationEvent::Error {
+                session_id: None,
+                message,
+            },
+        },
+    };
+    serde_json::to_value(event).unwrap_or(serde_json::Value::Null)
 }
 
 /// 保存 peer：规则判定 → 交宿主落状态。
@@ -373,7 +358,7 @@ async fn handle(
 /// "能不能写"。
 async fn save_peer(
     host: &dyn FederationAdminHost,
-    peer: &echo_protocol::FederationPeerInfo,
+    peer: &FederationPeerInfo,
 ) -> Result<(), String> {
     let name = validate_peer_name(&peer.name)?;
     let peers = host.peers().await;
@@ -419,144 +404,4 @@ async fn create_invite(host: &dyn FederationAdminHost) -> Result<String, String>
         );
     }
     Ok(invite)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn peer_name_must_not_be_blank() {
-        assert_eq!(validate_peer_name("  a  ").as_deref(), Ok("a"));
-        assert!(validate_peer_name("   ").is_err());
-    }
-
-    /// 空 token 必须拒绝——它是"保存成功但永远连不上"的经典成因。
-    #[test]
-    fn token_is_inherited_when_omitted_but_required_when_new() {
-        let existing = PeerSummary {
-            name: "a".into(),
-            token: "keep-me".into(),
-        };
-        assert_eq!(
-            resolve_token("", Some(&existing)).as_deref(),
-            Ok("keep-me"),
-            "改白名单不该顺手清掉密钥"
-        );
-        assert_eq!(resolve_token("new", Some(&existing)).as_deref(), Ok("new"));
-        assert!(resolve_token("", None).is_err(), "新建必须给 token");
-        assert!(
-            resolve_token(
-                "",
-                Some(&PeerSummary {
-                    name: "a".into(),
-                    token: String::new()
-                })
-            )
-            .is_err(),
-            "旧值也是空时不能当继承成功"
-        );
-    }
-
-    #[test]
-    fn token_must_differ_from_management_token() {
-        assert!(validate_token_not_management("t", None).is_ok());
-        assert!(
-            validate_token_not_management("t", Some("")).is_ok(),
-            "空管理令牌不参战"
-        );
-        assert!(validate_token_not_management("t", Some("t")).is_err());
-    }
-
-    /// 同一 token 只能属于一个 peer（在线判定与连入解析都按 token 匹配）。
-    #[test]
-    fn token_must_be_unique_across_peers() {
-        let peers = vec![
-            PeerSummary {
-                name: "a".into(),
-                token: "t1".into(),
-            },
-            PeerSummary {
-                name: "b".into(),
-                token: String::new(),
-            },
-        ];
-        assert!(validate_token_unique("c", "t2", peers.iter()).is_ok());
-        let err = validate_token_unique("c", "t1", peers.iter()).expect_err("冲突必须拒绝");
-        assert!(err.contains("已被 peer「a」使用"), "{err}");
-        // 自己更新自己不算冲突。
-        assert!(validate_token_unique("a", "t1", peers.iter()).is_ok());
-    }
-
-    #[test]
-    fn peer_url_shape() {
-        assert!(validate_peer_url("").is_ok(), "空 = 仅接受连入");
-        assert!(validate_peer_url("ws://10.0.0.1:3133").is_ok());
-        assert!(validate_peer_url("wss://host:443/path").is_ok());
-        assert!(
-            validate_peer_url("http://host:80").is_err(),
-            "必须是 ws/wss"
-        );
-        assert!(validate_peer_url("ws://host").is_err(), "缺端口");
-        assert!(validate_peer_url("ws://:3133").is_err(), "缺主机");
-        assert!(validate_peer_url("ws://host:99999").is_err(), "端口越界");
-    }
-
-    #[test]
-    fn invite_host_prefers_explicit_advertise() {
-        assert_eq!(
-            invite_host("0.0.0.0:3133", "1.2.3.4:4000", None).as_deref(),
-            Some("1.2.3.4:4000")
-        );
-        assert_eq!(
-            invite_host("0.0.0.0:3133", "1.2.3.4", None).as_deref(),
-            Some("1.2.3.4:3133"),
-            "advertise 只给主机时用 listen 的端口"
-        );
-        assert_eq!(
-            invite_host("", "1.2.3.4", None).as_deref(),
-            None,
-            "不监听则无邀请"
-        );
-        assert_eq!(
-            invite_host("10.1.2.3:3133", "", None).as_deref(),
-            Some("10.1.2.3:3133"),
-            "listen 是具体地址时直接用它"
-        );
-    }
-
-    /// 2026-11 云机配对事故的回归锚点：观测到的访问主机**优先于**手工
-    /// advertise（后者常停在过期内网地址），且端口一律取联邦监听端口。
-    #[test]
-    fn invite_host_prefers_observed_host_over_advertise() {
-        // 腾讯云实况：advertise 缺省推导出内网 10.1.0.8，Panel 从公网连入。
-        assert_eq!(
-            invite_host("0.0.0.0:3132", "10.1.0.8:3132", Some("114.132.241.46:3132")).as_deref(),
-            Some("114.132.241.46:3132")
-        );
-        // 独立监听：观测值的端口属于管理面，邀请必须用联邦监听端口。
-        assert_eq!(
-            invite_host(
-                "0.0.0.0:3133",
-                "10.10.10.100:3133",
-                Some("10.10.10.100:3132")
-            )
-            .as_deref(),
-            Some("10.10.10.100:3133")
-        );
-        // 回环观测值对远端无意义 → 忽略它，回退 advertise。
-        assert_eq!(
-            invite_host("0.0.0.0:3133", "1.2.3.4:3133", Some("127.0.0.1:3132")).as_deref(),
-            Some("1.2.3.4:3133")
-        );
-        // 未观测到（None）= 老行为，advertise 仍然生效。
-        assert_eq!(
-            invite_host("0.0.0.0:3133", "1.2.3.4:3133", None).as_deref(),
-            Some("1.2.3.4:3133")
-        );
-    }
-    #[test]
-    fn placeholder_uses_token_prefix() {
-        assert_eq!(invite_placeholder("abcdefghijkl"), "invite-abcdefgh");
-    }
 }

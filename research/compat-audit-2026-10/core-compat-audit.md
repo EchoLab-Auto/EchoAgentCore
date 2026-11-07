@@ -126,31 +126,31 @@ source/session/echo-session/src/event.rs:401-407 — 测试 pre-2026-09 文件�
 source/session/echo-session/src/derive.rs:135 — 注释：session=None 保留未归因事件（旧版日志按此投影） — [DATA]
 source/session/echo-session/src/derive.rs:577 — 测试 legacy summaries 单 marker — [DATA]
 
-## source/protocol/echo-protocol
+## source/protocol/echo-module-management
 
-source/protocol/echo-protocol/src/lib.rs:19 — 文档：新增字段 serde(default) 让旧对端可解码 — [DOC]
-source/protocol/echo-protocol/src/lib.rs:35 — 导出已退役的 OrchestrationMode（仅旧前端兼容） — [REMOVE]
-source/protocol/echo-protocol/src/event.rs:71 — SessionInfo.node_id 注释「单节点/旧 Core 缺省 None」 — [GRAY]?
-source/protocol/echo-protocol/src/event.rs:153 — TimelineTool.tool_call_id「empty = legacy entry」 — [DATA]
-source/protocol/echo-protocol/src/event.rs:177 — TimelineMessage.session_id「Empty = legacy entries」 — [DATA]
-source/protocol/echo-protocol/src/event.rs:191 — TimelineMessage.seq「0 = 旧版/重启前条目」 — [DATA]
-source/protocol/echo-protocol/src/event.rs:380-404 — BackgroundTask{Started,Completed,Integrated} 保留事件（Core 侧体系已移除、当前无发射方，因旧消费者仍消费而保留枚举） — [GRAY]?
-source/protocol/echo-protocol/src/event.rs:412 — ToolCall.tool_call_id「empty = legacy peer (pre-id protocol)」 — [GRAY]?
-source/protocol/echo-protocol/src/event.rs:416 — ToolCall.branch_id「empty for pre-branch legacy paths」 — [GRAY]?
-source/protocol/echo-protocol/src/event.rs:430 — ToolResult.tool_call_id「empty = legacy peer」 — [GRAY]?
-source/protocol/echo-protocol/src/event.rs:437 — ToolResult.branch_id「empty for pre-branch legacy paths」 — [GRAY]?
-source/protocol/echo-protocol/src/event.rs:542 — ContextSnapshot.session_id「None = 旧 Core 的全局口径」 — [GRAY]?
-source/protocol/echo-protocol/src/event.rs:559 — ShellSessionsList.team_id「旧 core 无此字段时前端不过滤」 — [GRAY]?
-source/protocol/echo-protocol/src/command.rs:42 — SwitchApi 全局激活已被 persona 级 api_profile 取代，协议字段保留兼容、UI 不再暴露 — [GRAY]?
-source/protocol/echo-protocol/src/event.rs:873-891 — OrchestrationMode 已退役枚举 + From<LoopMode>（旧前端兼容；当前无消费者） — [REMOVE]
-source/protocol/echo-protocol/src/event.rs:908-909 — TeamInfo.is_default 过渡期字段（恒 false，下个协议版本删除） — [REMOVE]
-source/protocol/echo-protocol/src/event.rs:923-927 — 注释引用已删除的旧三布尔（reply_branches_enabled 等，2026-09 协议变更） — [DOC]
-source/protocol/echo-protocol/src/event.rs:1047-1052 — WorkspaceDirectory untagged：旧格式纯字符串可反序列化，读旧写新 — [DATA]
-source/protocol/echo-protocol/src/event.rs:1259-1270 — 测试 directories_accept_legacy_strings_and_qualified_tables — [DATA]
-source/protocol/echo-protocol/src/command.rs:321 — UpdateQqAllowlist.adapter「None = 唯一实例/legacy qq」 — [GRAY]?
-source/protocol/echo-protocol/src/command.rs:391 — MigrateSession.team_id None = 逐 persona 查找「兼容旧前端」 — [REMOVE]
-source/protocol/echo-protocol/src/bridge.rs:252-270 — 测试 legacy_agent_output_without_branch_id_still_decodes（旧 Core 序列化缺 branch_id） — [REMOVE]
-source/protocol/echo-protocol/src/bridge.rs:363-377 — 测试 session_info_without_node_id_deserializes（旧 Core SessionInfo 无 node_id） — [REMOVE]
+source/protocol/echo-module-management/src/lib.rs:19 — 文档：新增字段 serde(default) 让旧对端可解码 — [DOC]
+source/protocol/echo-module-management/src/lib.rs:35 — 导出已退役的 OrchestrationMode（仅旧前端兼容） — [REMOVE]
+source/protocol/echo-module-management/src/event.rs:71 — SessionInfo.node_id 注释「单节点/旧 Core 缺省 None」 — [GRAY]?
+source/protocol/echo-module-management/src/event.rs:153 — TimelineTool.tool_call_id「empty = legacy entry」 — [DATA]
+source/protocol/echo-module-management/src/event.rs:177 — TimelineMessage.session_id「Empty = legacy entries」 — [DATA]
+source/protocol/echo-module-management/src/event.rs:191 — TimelineMessage.seq「0 = 旧版/重启前条目」 — [DATA]
+source/protocol/echo-module-management/src/event.rs:380-404 — BackgroundTask{Started,Completed,Integrated} 保留事件（Core 侧体系已移除、当前无发射方，因旧消费者仍消费而保留枚举） — [GRAY]?
+source/protocol/echo-module-management/src/event.rs:412 — ToolCall.tool_call_id「empty = legacy peer (pre-id protocol)」 — [GRAY]?
+source/protocol/echo-module-management/src/event.rs:416 — ToolCall.branch_id「empty for pre-branch legacy paths」 — [GRAY]?
+source/protocol/echo-module-management/src/event.rs:430 — ToolResult.tool_call_id「empty = legacy peer」 — [GRAY]?
+source/protocol/echo-module-management/src/event.rs:437 — ToolResult.branch_id「empty for pre-branch legacy paths」 — [GRAY]?
+source/protocol/echo-module-management/src/event.rs:542 — ContextSnapshot.session_id「None = 旧 Core 的全局口径」 — [GRAY]?
+source/protocol/echo-module-management/src/event.rs:559 — ShellSessionsList.team_id「旧 core 无此字段时前端不过滤」 — [GRAY]?
+source/protocol/echo-module-management/src/command.rs:42 — SwitchApi 全局激活已被 persona 级 api_profile 取代，协议字段保留兼容、UI 不再暴露 — [GRAY]?
+source/protocol/echo-module-management/src/event.rs:873-891 — OrchestrationMode 已退役枚举 + From<LoopMode>（旧前端兼容；当前无消费者） — [REMOVE]
+source/protocol/echo-module-management/src/event.rs:908-909 — TeamInfo.is_default 过渡期字段（恒 false，下个协议版本删除） — [REMOVE]
+source/protocol/echo-module-management/src/event.rs:923-927 — 注释引用已删除的旧三布尔（reply_branches_enabled 等，2026-09 协议变更） — [DOC]
+source/protocol/echo-module-management/src/event.rs:1047-1052 — WorkspaceDirectory untagged：旧格式纯字符串可反序列化，读旧写新 — [DATA]
+source/protocol/echo-module-management/src/event.rs:1259-1270 — 测试 directories_accept_legacy_strings_and_qualified_tables — [DATA]
+source/protocol/echo-module-management/src/command.rs:321 — UpdateQqAllowlist.adapter「None = 唯一实例/legacy qq」 — [GRAY]?
+source/protocol/echo-module-management/src/command.rs:391 — MigrateSession.team_id None = 逐 persona 查找「兼容旧前端」 — [REMOVE]
+source/protocol/echo-module-management/src/bridge.rs:252-270 — 测试 legacy_agent_output_without_branch_id_still_decodes（旧 Core 序列化缺 branch_id） — [REMOVE]
+source/protocol/echo-module-management/src/bridge.rs:363-377 — 测试 session_info_without_node_id_deserializes（旧 Core SessionInfo 无 node_id） — [REMOVE]
 
 ## source/backend/echo-adapter-qq
 

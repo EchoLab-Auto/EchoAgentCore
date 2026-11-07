@@ -12,7 +12,7 @@ y: 1200
 
 ## 它为什么本来就是协议驱动的
 
-中继两侧都只碰 `echo-protocol` 的类型：入站帧 → `BackendCommand` 塞进 bridge；bridge 的事件 → 带 `seq` + entry id 序列化成帧发回。**没有一处需要 `Agent` 句柄**——服务化后这一点被显式化：函数签名里不再有 `Arc<Agent>` 参数（此前它已标注 `_agent` 未使用）。
+中继两侧都只碰 `echo-module-management` 的类型：入站帧 → `BackendCommand` 塞进 bridge；bridge 的事件 → 带 `seq` + entry id 序列化成帧发回。**没有一处需要 `Agent` 句柄**——服务化后这一点被显式化：函数签名里不再有 `Arc<Agent>` 参数（此前它已标注 `_agent` 未使用）。
 
 所以它的外置成本极低：原 `source/modules/core/management.rs` 整体搬成 crate，加一个 `mount` 闭包起监听、返回 `abort()` 作 disposer。
 

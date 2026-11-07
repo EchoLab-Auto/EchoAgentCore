@@ -39,7 +39,7 @@ pub const MODULE_ID: &str = "echo-agent.tools.builtin";
 pub const SERVICE_KEY: &str = "tools.builtin";
 
 /// 本模块消费的循环服务键。
-pub const LOOP_SERVICE_KEY: &str = echo_module_loop::SERVICE_KEY;
+pub const LOOP_SERVICE_KEY: &str = "loop";
 
 /// 宿主要塞给工具箱的**端口**（都是"运行时才知道"的东西）。
 ///
@@ -258,7 +258,7 @@ mod tests {
         fn instances(&self) -> Arc<echo_defs::module_instance::InstanceRegistry> {
             Arc::new(echo_defs::module_instance::InstanceRegistry::new())
         }
-        fn emit(&self, _event: echo_protocol::BackendEvent) {}
+        fn emit(&self, _event: echo_module_management::protocol::BackendEvent) {}
     }
 
     struct NoToolsHost;
@@ -274,7 +274,7 @@ mod tests {
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + '_>> {
             Box::pin(async { false })
         }
-        fn emit(&self, _event: echo_protocol::BackendEvent) {}
+        fn emit(&self, _event: echo_module_management::protocol::BackendEvent) {}
     }
 
     fn ports() -> ToolsHostCtx {

@@ -42,7 +42,9 @@ pub const MODULE_ID: &str = "echo-agent.selfupdate";
 pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
     use echo_module::{BuiltinModule, Inject, ModuleManifest, ServiceSlot};
 
-    let events = ServiceSlot::<Arc<dyn Fn(echo_protocol::BackendEvent) + Send + Sync>>::new();
+    let events = ServiceSlot::<
+        Arc<dyn Fn(echo_module_management::protocol::BackendEvent) + Send + Sync>,
+    >::new();
     let bind = events.clone();
     let serve = events.clone();
     let manifest = ModuleManifest::builtin(
