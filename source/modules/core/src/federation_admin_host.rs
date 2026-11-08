@@ -278,9 +278,7 @@ impl FederationAdminHost for RuntimeAdminHost {
 }
 
 /// BackendEvent → FederationEvent（字段同形，serde 往返）。
-fn backend_to_fed(
-    be: BackendEvent,
-) -> echo_module_federation::FederationEvent {
+fn backend_to_fed(be: BackendEvent) -> echo_module_federation::FederationEvent {
     serde_json::to_value(&be)
         .ok()
         .and_then(|v| serde_json::from_value::<echo_module_federation::FederationEvent>(v).ok())

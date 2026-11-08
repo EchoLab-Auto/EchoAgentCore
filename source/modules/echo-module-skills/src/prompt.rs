@@ -31,7 +31,11 @@ pub fn prompt_blocks(
     let mut persona_skills: Vec<&crate::Skill> = skills
         .all()
         .into_iter()
-        .filter(|skill| persona_system_skills.iter().any(|name| name == &skill.metadata.name))
+        .filter(|skill| {
+            persona_system_skills
+                .iter()
+                .any(|name| name == &skill.metadata.name)
+        })
         .collect();
     persona_skills.sort_by(|a, b| a.metadata.name.cmp(&b.metadata.name));
     for skill in persona_skills {
@@ -56,7 +60,10 @@ pub fn prompt_blocks(
             key: format!("skill:{}", skill.metadata.name),
             label: format!("常驻技能 · {}", skill.metadata.name),
             kind: "skill".into(),
-            content: format!("# Active skill: {}\n{}", skill.metadata.name, skill.instructions),
+            content: format!(
+                "# Active skill: {}\n{}",
+                skill.metadata.name, skill.instructions
+            ),
         });
     }
     if let Some(skill) = matched {
@@ -64,7 +71,10 @@ pub fn prompt_blocks(
             key: format!("triggered:{}", skill.metadata.name),
             label: format!("触发技能 · {}", skill.metadata.name),
             kind: "triggered".into(),
-            content: format!("# Triggered skill: {}\n{}", skill.metadata.name, skill.instructions),
+            content: format!(
+                "# Triggered skill: {}\n{}",
+                skill.metadata.name, skill.instructions
+            ),
         });
     }
     blocks
@@ -84,7 +94,6 @@ pub fn prompt_json(
     }
 }
 
-
 /// skills 模块的通用刷新器：Agent 只提供自由 JSON，不接触技能概念。
 pub struct SkillPromptRefresher {
     pub registry: std::sync::Arc<tokio::sync::Mutex<crate::SkillRegistry>>,
@@ -93,10 +102,17 @@ pub struct SkillPromptRefresher {
 
 impl echo_defs::prompt::PromptRefresher for SkillPromptRefresher {
     fn refresh(&self, context: &serde_json::Value) {
-        let Ok(skills) = self.registry.try_lock() else { return };
-        let content = context.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        let persona: Vec<String> = context.get("persona_system_skills")
-            .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        let Ok(skills) = self.registry.try_lock() else {
+            return;
+        };
+        let content = context
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let persona: Vec<String> = context
+            .get("persona_system_skills")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
         let blocks = prompt_blocks(&skills, content, &persona);
         self.store.replace("skills", blocks);
         self.store.invalidate();

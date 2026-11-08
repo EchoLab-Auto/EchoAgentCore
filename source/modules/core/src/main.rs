@@ -35,8 +35,8 @@ use echo_module_management as management;
 mod security;
 
 use config::CoreConfig;
-use echo_module_loop::{Agent, AgentProfile};
 use echo_defs::module_instance::ModuleInstance;
+use echo_module_loop::{Agent, AgentProfile};
 #[allow(unused_imports)]
 use federation_rt::*;
 use logging::init_tracing;
@@ -296,7 +296,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // 「运行区域」属性，供多节点聚合客户端区分同名会话/人格）。
     // P3 终态：**按值构造、显式下发**给 AgentManager 与每个 Agent
     // （`make_agent` 闭包），不再写进程级 kernel cell。
-    let node_identity = echo_module_loop::NodeIdentity::new(node_doc.node_id.clone(), region_name);
+    let node_identity =
+        echo_module_loop::NodeIdentity::new(node_doc.node_id.clone(), region_name.clone());
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -486,7 +487,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                 .federation
                 .node_name
                 .clone()
-                .or(node_doc.node_name.clone()),
+                .or(node_doc.node_name.clone())
+                // 已有部署常只配 [core].region_name；握手也宣告它，避免
+                // 对端把持久 node_id 的短码误当成人类可读节点名。
+                .or_else(|| Some(region_name.clone())),
             peer_policies: peer_policies.clone(),
             remote_tool_keepers: std::sync::Mutex::new(std::collections::HashMap::new()),
             merged_management_token: if merged {
@@ -776,8 +780,11 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     // LLM 出口装饰：先包计量（token 用量记录），再包脱敏（请求出口卡口），
     // 之后才分发给一切下游（runner / agent / subagent）。
     let base_provider: Arc<dyn echo_module_loop::LlmProvider> = Arc::from(provider);
-    let base_provider =
-        echo_module_loop::llm::wrap_metering(base_provider, metrics_store.clone(), base_profile_key);
+    let base_provider = echo_module_loop::llm::wrap_metering(
+        base_provider,
+        metrics_store.clone(),
+        base_profile_key,
+    );
     let provider_arc: Arc<dyn echo_module_loop::LlmProvider> = match &redactor {
         Some(redactor) => echo_module_loop::llm::wrap_redacting(base_provider, redactor.clone()),
         None => base_provider,
@@ -1071,7 +1078,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         }
         map
     };
-    let module_tools: std::sync::Arc<Vec<std::sync::Arc<echo_module_adapter::RemoteTool>>> =
+    let module_tools: std::sync::Arc<Vec<std::sync::Arc<echo_module_loop::adapter::RemoteTool>>> =
         std::sync::Arc::new(
             module_runtime
                 .as_ref()
@@ -1313,9 +1320,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                                     name.clone(),
                                 );
                                 let provider = match &redactor2 {
-                                    Some(redactor) => {
-                                        echo_module_loop::llm::wrap_redacting(provider, redactor.clone())
-                                    }
+                                    Some(redactor) => echo_module_loop::llm::wrap_redacting(
+                                        provider,
+                                        redactor.clone(),
+                                    ),
                                     None => provider,
                                 };
                                 Some(provider)
@@ -1769,7 +1777,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let optional_ids = catalog
             .iter()
             .filter(|module| {
-                !echo_module_loop::modules::BUILTIN_MODULE_IDS.contains(&module.manifest().id.as_str())
+                !echo_module_loop::modules::BUILTIN_MODULE_IDS
+                    .contains(&module.manifest().id.as_str())
             })
             .map(|module| module.manifest().id.clone())
             .collect::<Vec<_>>();
@@ -1779,7 +1788,8 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
             .map(|id| echo_module_loop::modules::MountStep::new(id.clone(), false))
             .chain(plan.iter().cloned())
             .collect::<Vec<_>>();
-        let (order, diagnostics) = echo_module_loop::modules::resolve_mount_order(&catalog_ids, &plan);
+        let (order, diagnostics) =
+            echo_module_loop::modules::resolve_mount_order(&catalog_ids, &plan);
         for diagnostic in &diagnostics {
             warn!(%diagnostic, "builtin mount plan");
         }
@@ -1980,7 +1990,7 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         let mut inbound_rx = handle.inbound_rx;
         tokio::spawn(async move {
             while let Some(message) = inbound_rx.recv().await {
-                let incoming = echo_module_adapter::message_to_incoming(message);
+                let incoming = echo_module_loop::adapter::message_to_incoming(message);
                 if let Err(error) = hook.on_incoming_message(incoming).await {
                     tracing::warn!(
                         instance = %worker_instance,

@@ -11,7 +11,6 @@ use crate::commands::SkillsCommandHost;
 pub static SKILLS_HOST: ServiceKey<Arc<dyn SkillsCommandHost>> =
     ServiceKey::new("echo-agent.host.skills");
 
-
 /// Agent 提供的通用提示词存储（模块只写自己的 owner 命名空间）。
 pub static PROMPT_STORE: ServiceKey<echo_defs::prompt::SharedPromptStore> =
     ServiceKey::new("echo-agent.host.prompt_store");

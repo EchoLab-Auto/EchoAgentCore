@@ -45,20 +45,32 @@ pub trait SkillsCommandHost: Send + Sync {
     /// 写目录（`[agent].skills_dir`）。
     fn skills_dir(&self) -> String;
     /// 出厂/附加技能目录。
-    fn skill_dirs(&self) -> Vec<String> { Vec::new() }
+    fn skill_dirs(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// 事件出口。
     fn emit(&self, event: BackendEvent);
     /// 人格级技能名单变化（通用配置回调，不暴露 Skill 类型）。
-    fn apply_capabilities(&self, enabled: Vec<String>, disabled: Vec<String>, global_disabled: Vec<String>)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send+'_>>;
+    fn apply_capabilities(
+        &self,
+        enabled: Vec<String>,
+        disabled: Vec<String>,
+        global_disabled: Vec<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
     /// 技能启停持久化与全局传播（宿主配置动作）。
-    fn persist_enabled(&self, name: String, enabled: bool)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send+'_>>;
+    fn persist_enabled(
+        &self,
+        name: String,
+        enabled: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>;
     /// 当前配置的全局禁用名单。
     fn global_disabled(&self) -> Vec<String>;
     /// 模块把通用提示词/名单控制接口挂给宿主。
-    fn attach_prompt_pipeline(&self, refresher: echo_defs::prompt::SharedPromptRefresher,
-        controller: Arc<dyn echo_defs::prompt::NamedCapabilityController>);
+    fn attach_prompt_pipeline(
+        &self,
+        refresher: echo_defs::prompt::SharedPromptRefresher,
+        controller: Arc<dyn echo_defs::prompt::NamedCapabilityController>,
+    );
 }
 
 /// 命令处理器。
@@ -68,7 +80,10 @@ pub struct SkillsCommandHandler {
 }
 
 impl SkillsCommandHandler {
-    pub fn new(host: Arc<dyn SkillsCommandHost>, runtime: Arc<crate::runtime::SkillsRuntime>) -> Self {
+    pub fn new(
+        host: Arc<dyn SkillsCommandHost>,
+        runtime: Arc<crate::runtime::SkillsRuntime>,
+    ) -> Self {
         Self { host, runtime }
     }
 
@@ -410,10 +425,30 @@ mod tests {
         fn skills_dir(&self) -> String {
             self.dir.clone()
         }
-        fn apply_capabilities(&self, _: Vec<String>, _: Vec<String>, _: Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send+'_>> { Box::pin(async {}) }
-        fn persist_enabled(&self, _: String, _: bool) -> std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send+'_>> { Box::pin(async {}) }
-        fn global_disabled(&self) -> Vec<String> { Vec::new() }
-        fn attach_prompt_pipeline(&self, _: echo_defs::prompt::SharedPromptRefresher, _: Arc<dyn echo_defs::prompt::NamedCapabilityController>) {}
+        fn apply_capabilities(
+            &self,
+            _: Vec<String>,
+            _: Vec<String>,
+            _: Vec<String>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            Box::pin(async {})
+        }
+        fn persist_enabled(
+            &self,
+            _: String,
+            _: bool,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            Box::pin(async {})
+        }
+        fn global_disabled(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn attach_prompt_pipeline(
+            &self,
+            _: echo_defs::prompt::SharedPromptRefresher,
+            _: Arc<dyn echo_defs::prompt::NamedCapabilityController>,
+        ) {
+        }
         fn emit(&self, event: BackendEvent) {
             self.events.lock().unwrap().push(event);
         }
@@ -451,7 +486,17 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let host = Arc::new(FakeHost::new(&dir));
-        (SkillsCommandHandler::new(host.clone(), crate::runtime::SkillsRuntime::new(host.clone(), Arc::new(crate::prompt::TestPromptStore::default()))), host, dir)
+        (
+            SkillsCommandHandler::new(
+                host.clone(),
+                crate::runtime::SkillsRuntime::new(
+                    host.clone(),
+                    Arc::new(crate::prompt::TestPromptStore::default()),
+                ),
+            ),
+            host,
+            dir,
+        )
     }
 
     async fn call(h: &SkillsCommandHandler, name: &str, payload: serde_json::Value) {

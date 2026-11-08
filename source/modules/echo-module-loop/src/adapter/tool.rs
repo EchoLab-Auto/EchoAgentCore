@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use echo_defs::tool::{Tool, ToolError, ToolResult};
 
-use crate::contract::{tool_from_custom, ToolContribution};
+use crate::adapter::contract::{tool_from_custom, ToolContribution};
 use echo_module_host::api::{InvokeContext, InvokeOutcome};
 use echo_module_host::ModuleHandle;
 

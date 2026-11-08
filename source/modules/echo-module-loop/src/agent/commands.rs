@@ -600,9 +600,10 @@ impl Agent {
     /// （`process_commands`），那处不必为此构造模块 handler——但它读的仍是
     /// 模块导出的同一份投影，不是第二套实现。
     pub async fn emit_skills_list(&self) {
-        if let Some(controller) = self.prompt.capability_controller() { controller.emit_list().await; }
+        if let Some(controller) = self.prompt.capability_controller() {
+            controller.emit_list().await;
+        }
     }
-
 
     /// Emit the team list (`BackendEvent::TeamsList`).
     pub async fn emit_teams_list(&self) {

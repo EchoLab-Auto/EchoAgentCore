@@ -1168,16 +1168,23 @@ mod tests {
         host.set_persona_catalog(Arc::new(|| vec![echo_module_workspace::module("test")]));
         let agent = scope_agent("workspace-event-test");
         let scope = host.persona_scope(&agent).expect("persona scope");
-        let result = scope.scope.registry().dispatch_command_async(
-            "RequestWorkspaceSessions",
-            serde_json::json!({"team_id": "workspace-event-test"}),
-        ).await;
+        let result = scope
+            .scope
+            .registry()
+            .dispatch_command_async(
+                "RequestWorkspaceSessions",
+                serde_json::json!({"team_id": "workspace-event-test"}),
+            )
+            .await;
         assert!(matches!(result, Some(Ok(_))), "{result:?}");
         let events = seen.lock().unwrap();
-        assert!(events.iter().any(|event| {
-            event.name == echo_module_workspace::events::BACKEND_EVENT
-                && event.payload["WorkspaceSessions"]["team_id"] == "workspace-event-test"
-        }), "workspace response must reach the host event bridge: {events:?}");
+        assert!(
+            events.iter().any(|event| {
+                event.name == echo_module_workspace::events::BACKEND_EVENT
+                    && event.payload["WorkspaceSessions"]["team_id"] == "workspace-event-test"
+            }),
+            "workspace response must reach the host event bridge: {events:?}"
+        );
     }
 
     /// **每个 persona 拿到自己的宿主适配器**——这是 `ctx.fork()` 的全部意义。

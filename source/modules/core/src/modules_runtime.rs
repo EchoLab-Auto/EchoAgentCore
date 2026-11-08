@@ -24,9 +24,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use echo_module_adapter::{CoreApiService, RemoteInstance, RemoteTool};
 use echo_module_host::bootstrap::StartedModules;
 use echo_module_host::{HostServiceRegistry, ModuleSupervisor};
+use echo_module_loop::adapter::{CoreApiService, RemoteInstance, RemoteTool};
 
 /// 已装载并启动的子进程模块运行时。
 pub struct ModuleRuntime {
@@ -298,15 +298,14 @@ impl echo_module_loop::modules::SubprocessModuleControl for SubprocessControl {
                     error: Some(error.clone()),
                 });
             }
-            return self
-                .disabled
-                .contains(id)
-                .then(|| echo_module_loop::modules::SubprocessStatus {
+            return self.disabled.contains(id).then(|| {
+                echo_module_loop::modules::SubprocessStatus {
                     state: "stopped".to_string(),
                     restarts: 0,
                     generation: 0,
                     error: None,
-                });
+                }
+            });
         };
         let state = handle.state();
         Some(echo_module_loop::modules::SubprocessStatus {
@@ -346,13 +345,13 @@ pub struct RemoteInstanceHandle {
     pub instance: Arc<RemoteInstance>,
     /// 入站消息队列 receiver（模块 `submit_input` 的出站端；
     /// 每实例串行 worker 消费）。
-    pub inbound_rx: tokio::sync::mpsc::Receiver<echo_module_adapter::IncomingMessage>,
+    pub inbound_rx: tokio::sync::mpsc::Receiver<echo_module_loop::adapter::IncomingMessage>,
 }
 
 impl ModuleRuntime {
     /// 全部已启动模块的远程工具模块实例（未注册工具贡献的模块贡献空表）。
     pub fn tools(&self) -> Vec<Arc<RemoteTool>> {
-        echo_module_adapter::tools_of(&self.started)
+        echo_module_loop::adapter::tools_of(&self.started)
     }
 
     /// 全部已启动模块的模块实例贡献的远程模块实例（P1，2026-10 实例模块化）。
@@ -362,7 +361,7 @@ impl ModuleRuntime {
     /// 随元组带出）；组合根随后把模块实例注册进 `InstanceRegistry`，并把
     /// receiver 接到消息送达入口（见 `main.rs` 装配）。
     pub fn instances(&self) -> Vec<RemoteInstanceHandle> {
-        echo_module_adapter::instance_contributions(&self.started)
+        echo_module_loop::adapter::instance_contributions(&self.started)
             .into_iter()
             .map(|(contribution, handle)| {
                 let instance = RemoteInstance::new(contribution, handle);

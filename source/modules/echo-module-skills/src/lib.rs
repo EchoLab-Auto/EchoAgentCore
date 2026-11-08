@@ -68,7 +68,9 @@ pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
         BuiltinModule::new(manifest(version), move |mctx| {
             let keep = bind.bind(mctx, &host_keys::SKILLS_HOST)?;
             let store = mctx.require(&host_keys::PROMPT_STORE)?;
-            let skill_host = prompt_host.get().ok_or_else(|| echo_module::ModuleMountError::Mount("skills host 未绑定".into()))?;
+            let skill_host = prompt_host
+                .get()
+                .ok_or_else(|| echo_module::ModuleMountError::Mount("skills host 未绑定".into()))?;
             let skill_runtime = runtime::SkillsRuntime::new(skill_host.clone(), store.clone());
             bind_runtime.set(skill_runtime.clone());
             skill_host.attach_prompt_pipeline(skill_runtime.prompt.clone(), skill_runtime.clone());
@@ -79,10 +81,15 @@ pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
                 }
             });
             let refresher: echo_defs::prompt::SharedPromptRefresher = skill_runtime.prompt.clone();
-            let ctx = mctx.ctx.as_ref().ok_or_else(|| echo_module::ModuleMountError::Mount("缺少 Ctx".into()))?;
-            let store_keep = ctx.provide(&host_keys::PROMPT_REFRESHER, refresher)
+            let ctx = mctx
+                .ctx
+                .as_ref()
+                .ok_or_else(|| echo_module::ModuleMountError::Mount("缺少 Ctx".into()))?;
+            let store_keep = ctx
+                .provide(&host_keys::PROMPT_REFRESHER, refresher)
                 .map_err(|e| echo_module::ModuleMountError::Mount(e.to_string()))?;
-            let runtime_keep = ctx.provide(&host_keys::SKILLS_RUNTIME, skill_runtime)
+            let runtime_keep = ctx
+                .provide(&host_keys::SKILLS_RUNTIME, skill_runtime)
                 .map_err(|e| echo_module::ModuleMountError::Mount(e.to_string()))?;
             Ok(vec![keep, store_keep, runtime_keep])
         })
@@ -101,16 +108,21 @@ pub fn module(version: &str) -> Arc<dyn echo_module::Module> {
                         MODULE_ID
                     ));
                 };
-                commands::SkillsCommandHandler::new(host, serve_runtime.get().ok_or_else(|| "skills runtime 未挂载".to_string())?)
-                    .handle(&name, payload)
-                    .await
-                    .unwrap_or_else(|| {
-                        Err(format!(
-                            "命令 {name} 被 {MODULE_ID} 声明，但 skills 处理器没有认领它"
-                        ))
-                    })
+                commands::SkillsCommandHandler::new(
+                    host,
+                    serve_runtime
+                        .get()
+                        .ok_or_else(|| "skills runtime 未挂载".to_string())?,
+                )
+                .handle(&name, payload)
+                .await
+                .unwrap_or_else(|| {
+                    Err(format!(
+                        "命令 {name} 被 {MODULE_ID} 声明，但 skills 处理器没有认领它"
+                    ))
+                })
             })
-        })
+        }),
     )
 }
 

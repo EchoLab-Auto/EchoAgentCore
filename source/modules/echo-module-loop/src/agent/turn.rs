@@ -119,7 +119,13 @@ impl Agent {
             let module_blocks = self.collect_module_text_blocks(&session_id, content);
             (base, module_blocks)
         };
-        let blocks = crate::agent::prompt::build_prompt_blocks(&base, boundary, &module_blocks, self.prompt.contributed_blocks()).await;
+        let blocks = crate::agent::prompt::build_prompt_blocks(
+            &base,
+            boundary,
+            &module_blocks,
+            self.prompt.contributed_blocks(),
+        )
+        .await;
         let system_prompt = crate::agent::prompt::join_prompt_blocks(&blocks);
         // `/context` 视图：保存最近一次提示词块（按会话记录，多会话互不覆盖）。
         self.prompt.remember(&session_id, blocks);
@@ -167,22 +173,20 @@ impl Agent {
                 let sid = session_id.clone();
                 let turn = branch_id.to_string();
                 let clock = std::sync::Arc::clone(&step_clock);
-                disposers.push(
-                    bus.observe::<crate::AgentRequest, _>(move |evt| {
-                        // session + turn 双过滤：并行模式同会话并发分支时
-                        // 各 turn 的订阅互不串收（2026-10 巡检）。
-                        if evt.session_id == sid && evt.turn_id.as_deref() == Some(turn.as_str()) {
-                            // 模型请求发出：记下时刻，供本步 ModelStep 算往返耗时。
-                            if let Ok(mut slot) = clock.lock() {
-                                *slot = std::time::Instant::now();
-                            }
-                            emit(BackendEvent::LlmRequest {
-                                session_id: evt.session_id.clone(),
-                                model: evt.request.model.clone(),
-                            });
+                disposers.push(bus.observe::<crate::AgentRequest, _>(move |evt| {
+                    // session + turn 双过滤：并行模式同会话并发分支时
+                    // 各 turn 的订阅互不串收（2026-10 巡检）。
+                    if evt.session_id == sid && evt.turn_id.as_deref() == Some(turn.as_str()) {
+                        // 模型请求发出：记下时刻，供本步 ModelStep 算往返耗时。
+                        if let Ok(mut slot) = clock.lock() {
+                            *slot = std::time::Instant::now();
                         }
-                    }),
-                );
+                        emit(BackendEvent::LlmRequest {
+                            session_id: evt.session_id.clone(),
+                            model: evt.request.model.clone(),
+                        });
+                    }
+                }));
             }
             {
                 let emit = emit_handle.clone();
@@ -191,47 +195,45 @@ impl Agent {
                 let clock = std::sync::Arc::clone(&step_clock);
                 let seq = std::sync::Arc::clone(&step_seq);
                 let trunk = self.trunk.clone();
-                disposers.push(
-                    bus.observe::<crate::ModelResponse, _>(move |evt| {
-                        if evt.session_id == sid && evt.turn_id.as_deref() == Some(turn.as_str()) {
-                            // 本步往返耗时（请求发出 → 响应到达）。
-                            let elapsed_ms = clock
-                                .lock()
-                                .ok()
-                                .map(|since| since.elapsed().as_millis() as u64);
-                            // 步号自增：`StepStart` 没有 turn_id（并发分支无法
-                            // 归因），故用本 turn 自己的计数，口径与 runner 的
-                            // step_index 一致（每步一次 ModelResponse）。
-                            let step_index = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            // 落 durable 事件（模型不可见 / 不进时间线 / 不进
-                            // 压缩转录）：审计据此算"每轮打包了几个工具"、每步
-                            // 的 token 与延迟（2026-10-19 审计缺口）。
-                            trunk.append_event(echo_session::SessionEvent::ModelStep(
-                                echo_session::event::ModelStepEvent {
-                                    step_index,
-                                    model: evt.model.clone(),
-                                    prompt_tokens: evt.prompt_tokens,
-                                    completion_tokens: evt.completion_tokens,
-                                    tool_call_ids: evt
-                                        .tool_calls
-                                        .iter()
-                                        .map(|call| call.id.clone())
-                                        .collect(),
-                                    turn: evt.turn_id.clone(),
-                                    elapsed_ms,
-                                    started_at_ms: chrono::Utc::now().timestamp_millis(),
-                                    session: Some(evt.session_id.clone()),
-                                },
-                            ));
-                            emit(BackendEvent::LlmResponse {
-                                session_id: evt.session_id.clone(),
+                disposers.push(bus.observe::<crate::ModelResponse, _>(move |evt| {
+                    if evt.session_id == sid && evt.turn_id.as_deref() == Some(turn.as_str()) {
+                        // 本步往返耗时（请求发出 → 响应到达）。
+                        let elapsed_ms = clock
+                            .lock()
+                            .ok()
+                            .map(|since| since.elapsed().as_millis() as u64);
+                        // 步号自增：`StepStart` 没有 turn_id（并发分支无法
+                        // 归因），故用本 turn 自己的计数，口径与 runner 的
+                        // step_index 一致（每步一次 ModelResponse）。
+                        let step_index = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        // 落 durable 事件（模型不可见 / 不进时间线 / 不进
+                        // 压缩转录）：审计据此算"每轮打包了几个工具"、每步
+                        // 的 token 与延迟（2026-10-19 审计缺口）。
+                        trunk.append_event(echo_session::SessionEvent::ModelStep(
+                            echo_session::event::ModelStepEvent {
+                                step_index,
                                 model: evt.model.clone(),
                                 prompt_tokens: evt.prompt_tokens,
                                 completion_tokens: evt.completion_tokens,
-                            });
-                        }
-                    }),
-                );
+                                tool_call_ids: evt
+                                    .tool_calls
+                                    .iter()
+                                    .map(|call| call.id.clone())
+                                    .collect(),
+                                turn: evt.turn_id.clone(),
+                                elapsed_ms,
+                                started_at_ms: chrono::Utc::now().timestamp_millis(),
+                                session: Some(evt.session_id.clone()),
+                            },
+                        ));
+                        emit(BackendEvent::LlmResponse {
+                            session_id: evt.session_id.clone(),
+                            model: evt.model.clone(),
+                            prompt_tokens: evt.prompt_tokens,
+                            completion_tokens: evt.completion_tokens,
+                        });
+                    }
+                }));
             }
             disposers
         };

@@ -90,7 +90,7 @@ pub(crate) fn provide(ctx: &Arc<Ctx>, agent: &Arc<Agent>) -> Vec<echo_context::D
     );
     // 提示词刷新器由 skills 模块挂载后回写；Agent 仅持有通用 trait。
     if let Some(refresher) = ctx.resolve::<echo_defs::prompt::SharedPromptRefresher>(
-        echo_module_skills::host_keys::PROMPT_REFRESHER.name()
+        echo_module_skills::host_keys::PROMPT_REFRESHER.name(),
     ) {
         agent.prompt.set_refresher(refresher);
     }

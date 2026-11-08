@@ -21,7 +21,6 @@ echo-module-shell = { workspace = true }
 echo-module-loop = { workspace = true }
 echo-module = { workspace = true }
 echo-module-host = { workspace = true }
-echo-module-adapter = { workspace = true }
 echo-module-federation = { workspace = true }
 echo-module-loader = { workspace = true }
 echo-module-session = { workspace = true }

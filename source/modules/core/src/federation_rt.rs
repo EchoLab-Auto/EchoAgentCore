@@ -86,7 +86,8 @@ pub(crate) struct FederationRuntime {
     /// 不需要任何"清扫已删人格"的代码路径。
     ///
     /// 语义与 `supervisor.personas()` 等价：都是"当前活着的、启用的人格"。
-    pub(crate) personas: tokio::sync::RwLock<Vec<(String, std::sync::Weak<echo_module_loop::Agent>)>>,
+    pub(crate) personas:
+        tokio::sync::RwLock<Vec<(String, std::sync::Weak<echo_module_loop::Agent>)>>,
     /// 进程级事件兜底出口（`core_agent`）：**没有**任何人格时联邦状态事件
     /// 仍要送到 Panel（否则链路变化静默丢失）。弱引用，理由同上。
     pub(crate) event_fallback: std::sync::RwLock<Option<std::sync::Weak<echo_module_loop::Agent>>>,
@@ -97,14 +98,46 @@ impl FederationRuntime {
     /// 可能是**工具名清洗形**（空格/点/中文 → `_`，如 `my_node`），而
     /// `peer_names` 键是原始配置名（`my node`）——直接 get 会失配、通知
     /// 静默丢弃。先精确匹配，再按清洗规则反查原始配置名。
+    /// 将配置名、工具名清洗形、节点显示名解析为稳定 node_id。
+    /// 显示名仅是别名；调用与身份始终落到 node_id，不写回人工配置。
     pub(crate) async fn resolve_peer_node(&self, peer: &str) -> Option<String> {
-        let map = self.peer_names.read().await;
-        if let Some(id) = map.get(peer) {
+        let requested = peer.trim();
+        if requested.is_empty() {
+            return None;
+        }
+        let map = self.peer_names.read().await.clone();
+        if let Some(id) = map.get(requested) {
             return Some(id.clone());
         }
-        map.iter()
-            .find(|(name, _)| echo_module_loop::federation::sanitize_peer_component(name) == peer)
+        if let Some(id) = map
+            .iter()
+            .find(|(name, _)| {
+                echo_module_loop::federation::sanitize_peer_component(name) == requested
+            })
             .map(|(_, id)| id.clone())
+        {
+            return Some(id);
+        }
+        let mut candidates = Vec::new();
+        for (config_name, node_id) in &map {
+            if node_id == requested {
+                candidates.push(node_id.clone());
+                continue;
+            }
+            if let Some(info) = self.federation.peer_info(config_name).await {
+                if info.node_name.as_deref().is_some_and(|name| {
+                    name.trim() == requested
+                        || echo_module_loop::federation::sanitize_peer_component(name) == requested
+                }) {
+                    candidates.push(node_id.clone());
+                }
+            }
+        }
+        candidates.sort();
+        candidates.dedup();
+        // 多个 peer 配置指向同一节点是合法的（内外网地址），因此按 id 去重；
+        // 真正同名不同节点时不猜测，避免把命令路由到错误机器。
+        (candidates.len() == 1).then(|| candidates.remove(0))
     }
 
     /// 实时拉取对端负载（Query(NodeStatus) 3s 短超时；失败 None 退快照）。
@@ -167,7 +200,9 @@ impl FederationRuntime {
     /// 当前**活着**的人格（`Weak` 升级失败 = 已被删除/替换）。
     ///
     /// 顺带把死条目摘掉（这就是"清扫"的全部，不需要定时器）。
-    pub(crate) async fn live_personas(&self) -> Vec<(String, std::sync::Arc<echo_module_loop::Agent>)> {
+    pub(crate) async fn live_personas(
+        &self,
+    ) -> Vec<(String, std::sync::Arc<echo_module_loop::Agent>)> {
         let mut list = self.personas.write().await;
         let mut live = Vec::with_capacity(list.len());
         list.retain(|(id, weak)| match weak.upgrade() {
@@ -229,7 +264,9 @@ impl FederationRuntime {
     ///
     /// 唯一的真失败是"既没人格也没接线 `__core`"——那时返回空集，调用方
     /// 按 Forbidden 明确回执（而不是让调用方空等超时）。
-    pub(crate) async fn executor_hosts(&self) -> Vec<(String, std::sync::Arc<echo_module_loop::Agent>)> {
+    pub(crate) async fn executor_hosts(
+        &self,
+    ) -> Vec<(String, std::sync::Arc<echo_module_loop::Agent>)> {
         let live = self.live_personas().await;
         if !live.is_empty() {
             return live;
@@ -336,6 +373,11 @@ impl FederationRuntime {
                         echo_module_management::protocol::FederationLinkState::Offline
                     },
                     active_turns,
+                    node_name: self
+                        .federation
+                        .peer_info(&p.name)
+                        .await
+                        .and_then(|info| info.node_name),
                     node_id: matched_node,
                     consecutive_failures: diag.consecutive_failures,
                     last_error: diag.last_error,
@@ -1228,8 +1270,10 @@ pub(crate) async fn promote_paired_invite_placeholders(
             promoted.clone(),
             echo_module_loop::federation::ExecutorPolicy::full(),
         );
-        rt.router
-            .set_policy(node_id, echo_module_loop::federation::ExecutorPolicy::full());
+        rt.router.set_policy(
+            node_id,
+            echo_module_loop::federation::ExecutorPolicy::full(),
+        );
         // 3. 映射替换 + 移除占位。
         rt.peer_names.write().await.remove(&placeholder);
         rt.peer_names
@@ -1346,32 +1390,65 @@ pub(crate) async fn register_remote_tools_for_agent(
     if candidates.is_empty() {
         return Vec::new();
     }
+    let configured: Vec<String> = rt
+        .federation
+        .peer_configs()
+        .await
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    let aliases = peer_tool_aliases(peer_name, info.node_name.as_deref(), &configured);
     let package = peer_tool_package(peer_name);
     let definitions = agent.tools.definitions().await;
-    let mut keepers = Vec::with_capacity(candidates.len());
-    for remote_name in &candidates {
-        let (description, parameters) =
-            echo_module_loop::federation::proxy_schema(&definitions, remote_name, peer_name);
-        let tool = std::sync::Arc::new(echo_module_loop::federation::RemoteTool::new(
-            peer_name,
-            &info.node_id,
-            remote_name,
-            description,
-            parameters,
-            rt.federation.clone(),
-            rt.router.clone(),
-        ));
-        // 保活：drop 即注销，绝不能当临时值。
-        keepers.push(agent.tools.register_reversible(tool));
-        agent.tools.set_package(
-            &echo_module_loop::federation::remote_tool_name(peer_name, remote_name),
-            &package,
-        );
+    let mut keepers = Vec::with_capacity(candidates.len() * aliases.len());
+    for alias in &aliases {
+        for remote_name in &candidates {
+            let (description, parameters) =
+                echo_module_loop::federation::proxy_schema(&definitions, remote_name, alias);
+            let tool = std::sync::Arc::new(echo_module_loop::federation::RemoteTool::new(
+                alias,
+                &info.node_id,
+                remote_name,
+                description,
+                parameters,
+                rt.federation.clone(),
+                rt.router.clone(),
+            ));
+            keepers.push(agent.tools.register_reversible(tool));
+            agent.tools.set_package(
+                &echo_module_loop::federation::remote_tool_name(alias, remote_name),
+                &package,
+            );
+        }
     }
-    // 重连语义：Down 时整包禁用，Up 必须整包重新启用（首次注册时包不在
-    // 禁用集，本调用无害幂等）。
+    // 旧工具名和友好名共享 canonical peer 包，断链时不会留下可用别名。
     agent.tools.set_package_enabled(&package, true);
     keepers
+}
+
+/// 自动生成 peer 的显示名修正：宣告名优先，旧工具名作为可执行别名保留。
+/// 人工配置名一律不动，不能因为对端改名就重写用户的策略键。
+fn peer_tool_aliases(
+    configured: &str,
+    advertised: Option<&str>,
+    existing: &[String],
+) -> Vec<String> {
+    let generated = configured
+        .strip_prefix("node-")
+        .is_some_and(|s| s.len() == 8);
+    let friendly = advertised
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .filter(|name| *name != configured)
+        .filter(|name| {
+            !existing
+                .iter()
+                .any(|other| other != configured && other == *name)
+        });
+    match (generated, friendly) {
+        (true, Some(name)) => vec![name.to_string(), configured.to_string()],
+        _ => vec![configured.to_string()],
+    }
 }
 
 /// 按对端 caps 给**全部** persona 注册代理工具（链路 Up 时调）。
@@ -1501,10 +1578,23 @@ pub(crate) async fn adopt_active_links(
         let count = keepers.len();
         // 记下**工具名**而不只是数量：这条日志是排查"新人格为什么看不见
         // 远程工具"的唯一线索（此前连数量都没有）。
-        let installed: Vec<String> = echo_module_loop::federation::remote_tool_candidates(&info.caps)
-            .iter()
-            .map(|tool| echo_module_loop::federation::remote_tool_name(&peer_name, tool))
+        let configured: Vec<String> = rt
+            .federation
+            .peer_configs()
+            .await
+            .into_iter()
+            .map(|p| p.name)
             .collect();
+        let remote_candidates = echo_module_loop::federation::remote_tool_candidates(&info.caps);
+        let installed: Vec<String> =
+            peer_tool_aliases(&peer_name, info.node_name.as_deref(), &configured)
+                .iter()
+                .flat_map(|alias| {
+                    remote_candidates.iter().map(move |tool| {
+                        echo_module_loop::federation::remote_tool_name(alias, tool)
+                    })
+                })
+                .collect();
         {
             let mut slot = rt
                 .remote_tool_keepers
@@ -1617,6 +1707,24 @@ mod remote_tool_install_tests {
         }
     }
 
+    #[test]
+    fn generated_peer_gets_friendly_tool_and_legacy_alias() {
+        let existing = vec!["node-01m436f8".into(), "A100-40g".into()];
+        assert_eq!(
+            super::peer_tool_aliases("node-01m436f8", Some("ai_station"), &existing),
+            vec!["ai_station", "node-01m436f8"]
+        );
+        // 同名被其他 peer 占用时不得劫持它的工具；人工名永不自动改。
+        assert_eq!(
+            super::peer_tool_aliases("node-01m436f8", Some("A100-40g"), &existing),
+            vec!["node-01m436f8"]
+        );
+        assert_eq!(
+            super::peer_tool_aliases("A100-40g", Some("new-name"), &existing),
+            vec!["A100-40g"]
+        );
+    }
+
     /// 核心行为：给**一个**人格装远程工具 = 它自己的注册表里出现 `peer__*`，
     /// 且打到正确的包标签（Down 时按包整包禁用，标错就禁不掉）。
     #[tokio::test]
@@ -1677,6 +1785,32 @@ mod remote_tool_install_tests {
     }
 
     /// 对端没宣告任何可远程工具 → 不装、返回空句柄（不是错误）。
+    #[tokio::test]
+    async fn generated_peer_registers_friendly_and_legacy_tools_in_one_package() {
+        let dir = std::env::temp_dir().join(format!("echo-peer-alias-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rt = runtime(&dir);
+        let agent = new_agent("alice");
+        let mut info = peer_info(echo_module_federation::NodeCaps {
+            tools: vec!["bash".into()],
+            ..Default::default()
+        });
+        info.node_name = Some("ai_station".into());
+        let keepers =
+            super::register_remote_tools_for_agent(&rt, &agent, &info, "node-01m436f8").await;
+        assert_eq!(keepers.len(), 2);
+        for name in ["ai_station__bash", "node-01m436f8__bash"] {
+            assert!(agent.tools.names().contains(&name.to_string()));
+            assert_eq!(
+                agent.tools.package_of(name).as_deref(),
+                Some("echo-agent.federation.node-01m436f8")
+            );
+        }
+        drop(keepers);
+        assert!(agent.tools.names().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn peer_without_remote_tools_installs_nothing() {
         let dir = std::env::temp_dir().join(format!("echo-adopt-empty-{}", std::process::id()));

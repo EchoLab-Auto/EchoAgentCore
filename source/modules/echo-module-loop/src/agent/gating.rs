@@ -41,9 +41,13 @@ impl Agent {
         }
 
         // 2) 技能模块接收通用名单并自行更新注册表。
-        self.prompt.apply_named_capabilities(
-            profile.enabled_skills.clone(), profile.disabled_skills.clone(), global_disabled_skills,
-        ).await;
+        self.prompt
+            .apply_named_capabilities(
+                profile.enabled_skills.clone(),
+                profile.disabled_skills.clone(),
+                global_disabled_skills,
+            )
+            .await;
         self.prompt.invalidate().await;
 
         // 3) 门控模块（包/表维度）：仅在"不允许"时禁用——与启动期逐人格
@@ -119,7 +123,11 @@ impl Agent {
             }
         }
         if let Some(controller) = self.prompt.capability_controller() {
-            for package in controller.packages() { if !ids.contains(&package) { ids.push(package); } }
+            for package in controller.packages() {
+                if !ids.contains(&package) {
+                    ids.push(package);
+                }
+            }
         }
         ids
     }
@@ -168,9 +176,10 @@ impl Agent {
     pub async fn reapply_skill_gating(&self, name: &str, globally_enabled: bool) -> bool {
         if let Some(controller) = self.prompt.capability_controller() {
             controller.set_enabled(name, globally_enabled).await
-        } else { false }
+        } else {
+            false
+        }
     }
-
 
     /// Persona 级 API：设置本 agent 对全局供应商池的引用（不重建）。
     /// `None` = 跟随全局默认配置；`Some(name)` = 使用池中该 profile。
@@ -338,7 +347,6 @@ impl Agent {
         if let Some(controller) = self.prompt.capability_controller() {
             controller.set_package_enabled(module_id, enabled);
         }
-
     }
 
     /// 记录模块的最终启用态；返回 `true` 表示相对上次记录发生了变化。

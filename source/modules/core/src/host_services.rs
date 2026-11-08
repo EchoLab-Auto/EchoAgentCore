@@ -168,15 +168,16 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
     // ── 联邦：出口集合 + 事件出口 ──
     put(&mut keep, ctx, &PORTS, wiring.federation.clone());
     let fed_sink = wiring.event_sink.clone();
-    let fed_events: std::sync::Arc<
-        dyn Fn(echo_module_federation::FederationEvent) + Send + Sync,
-    > = std::sync::Arc::new(move |ev| {
-        if let Ok(json) = serde_json::to_string(&ev) {
-            if let Ok(be) = serde_json::from_str::<echo_module_management::protocol::BackendEvent>(&json) {
-                fed_sink(be);
+    let fed_events: std::sync::Arc<dyn Fn(echo_module_federation::FederationEvent) + Send + Sync> =
+        std::sync::Arc::new(move |ev| {
+            if let Ok(json) = serde_json::to_string(&ev) {
+                if let Ok(be) =
+                    serde_json::from_str::<echo_module_management::protocol::BackendEvent>(&json)
+                {
+                    fed_sink(be);
+                }
             }
-        }
-    });
+        });
     put(&mut keep, ctx, &FEDERATION_EVENTS, fed_events);
 
     // ── 管理面：监听参数 + 会话视图数据面 ──
@@ -346,7 +347,9 @@ pub(crate) fn provided_keys() -> Vec<String> {
         INSTANCE_HOST.name().to_string(),
         TOOLS_HOST.name().to_string(),
         SKILLS_HOST.name().to_string(),
-        echo_module_skills::host_keys::PROMPT_STORE.name().to_string(),
+        echo_module_skills::host_keys::PROMPT_STORE
+            .name()
+            .to_string(),
         PORTS.name().to_string(),
         FEDERATION_EVENTS.name().to_string(),
         MANAGEMENT_HOST.name().to_string(),

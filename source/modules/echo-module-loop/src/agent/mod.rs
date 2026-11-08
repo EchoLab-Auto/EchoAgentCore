@@ -288,24 +288,57 @@ impl Agent {
                 dirs: Vec<String>,
             }
             impl echo_module_skills::commands::SkillsCommandHost for TestHost {
-                fn skills_dir(&self) -> String { self.dir.clone() }
-                fn skill_dirs(&self) -> Vec<String> { self.dirs.clone() }
+                fn skills_dir(&self) -> String {
+                    self.dir.clone()
+                }
+                fn skill_dirs(&self) -> Vec<String> {
+                    self.dirs.clone()
+                }
                 fn emit(&self, _: BackendEvent) {}
-                fn apply_capabilities(&self, _: Vec<String>, _: Vec<String>, _: Vec<String>) -> std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send+'_>> { Box::pin(async {}) }
-                fn persist_enabled(&self, _: String, _: bool) -> std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send+'_>> { Box::pin(async {}) }
-                fn global_disabled(&self) -> Vec<String> { Vec::new() }
-                fn attach_prompt_pipeline(&self, _: echo_defs::prompt::SharedPromptRefresher, _: Arc<dyn echo_defs::prompt::NamedCapabilityController>) {}
+                fn apply_capabilities(
+                    &self,
+                    _: Vec<String>,
+                    _: Vec<String>,
+                    _: Vec<String>,
+                ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>
+                {
+                    Box::pin(async {})
+                }
+                fn persist_enabled(
+                    &self,
+                    _: String,
+                    _: bool,
+                ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>
+                {
+                    Box::pin(async {})
+                }
+                fn global_disabled(&self) -> Vec<String> {
+                    Vec::new()
+                }
+                fn attach_prompt_pipeline(
+                    &self,
+                    _: echo_defs::prompt::SharedPromptRefresher,
+                    _: Arc<dyn echo_defs::prompt::NamedCapabilityController>,
+                ) {
+                }
             }
-            let host: Arc<dyn echo_module_skills::commands::SkillsCommandHost> = Arc::new(TestHost {
-                dir: config.skills_dir.clone(), dirs: config.skills_dirs.clone(),
-            });
+            let host: Arc<dyn echo_module_skills::commands::SkillsCommandHost> =
+                Arc::new(TestHost {
+                    dir: config.skills_dir.clone(),
+                    dirs: config.skills_dirs.clone(),
+                });
             *prompt.skills.try_lock().expect("fresh skill registry") = skills;
-            let runtime = echo_module_skills::runtime::SkillsRuntime::with_registry(host, prompt.clone(), prompt.skills.clone());
+            let runtime = echo_module_skills::runtime::SkillsRuntime::with_registry(
+                host,
+                prompt.clone(),
+                prompt.skills.clone(),
+            );
             prompt.set_refresher(runtime.prompt.clone());
             prompt.set_capability_controller(runtime);
         }
 
-        let module_host = std::sync::Arc::new(crate::modules::ModuleHost::new_without_skill_prompt());
+        let module_host =
+            std::sync::Arc::new(crate::modules::ModuleHost::new_without_skill_prompt());
         let agent = Self {
             model: Arc::new(crate::model_service::ModelService::new(provider, config)),
             tools: Arc::new(tools),
@@ -492,9 +525,12 @@ impl Agent {
     /// 同名覆盖）」。传入的 `write_dir` 仅用于判断用户层是否存在（不存在
     /// 只意味着没有用户技能，出厂层仍照常加载）。
     pub(crate) async fn reload_skills(&self, _write_dir: &str) -> Result<bool, String> {
-        if let Some(controller) = self.prompt.capability_controller() { controller.reload().await } else { Ok(false) }
+        if let Some(controller) = self.prompt.capability_controller() {
+            controller.reload().await
+        } else {
+            Ok(false)
+        }
     }
-
 
     /// Assign the team id and tag the trunk (sessions created later carry
     /// it in SessionInfo). Call once at boot before any message arrives.
@@ -581,9 +617,19 @@ impl Agent {
     /// 便于单元测试）。
     /// 通用提示词刷新入口：本轮输入作为自由上下文交给 skills 模块。
     pub(crate) fn refresh_prompt_contributions(&self, session_id: &str, content: &str) {
-        let persona_system_skills = self.identity.capabilities.lock().ok()
-            .and_then(|cap| cap.as_ref().map(|c| c.system_skills.clone())).unwrap_or_default();
-        let refresher = self.prompt.refresher.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let persona_system_skills = self
+            .identity
+            .capabilities
+            .lock()
+            .ok()
+            .and_then(|cap| cap.as_ref().map(|c| c.system_skills.clone()))
+            .unwrap_or_default();
+        let refresher = self
+            .prompt
+            .refresher
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         if let Some(refresher) = refresher {
             refresher.refresh(&serde_json::json!({
                 "session_id": session_id, "content": content,
@@ -1231,8 +1277,13 @@ impl Agent {
         // 没有指定会话 → 上下文为空。模块负责决定"空上下文下有没有内容"
         // （如工作区模块在无 active 会话时不贡献块）。
         let module_blocks = self.collect_module_text_blocks("", "");
-        crate::agent::prompt::build_prompt_blocks(&base, None, &module_blocks, self.prompt.contributed_blocks())
-            .await
+        crate::agent::prompt::build_prompt_blocks(
+            &base,
+            None,
+            &module_blocks,
+            self.prompt.contributed_blocks(),
+        )
+        .await
     }
 
     /// 收集模块贡献的文本块，上下文带**本次 turn 的会话 id 与人格 id**。
@@ -1356,7 +1407,13 @@ impl Agent {
         let base = self.model.config.read().await.system_prompt.clone();
         self.refresh_prompt_contributions("", content);
         let module_blocks = self.collect_module_text_blocks("", content);
-        let blocks = crate::agent::prompt::build_prompt_blocks(&base, None, &module_blocks, self.prompt.contributed_blocks()).await;
+        let blocks = crate::agent::prompt::build_prompt_blocks(
+            &base,
+            None,
+            &module_blocks,
+            self.prompt.contributed_blocks(),
+        )
+        .await;
         crate::agent::prompt::join_prompt_blocks(&blocks)
     }
 }

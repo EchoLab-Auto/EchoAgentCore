@@ -32,6 +32,8 @@
 pub mod api_profile;
 pub mod chat;
 pub mod control_command;
+pub mod disposer;
+pub mod execute;
 pub mod input_marker;
 pub mod llm;
 pub mod media;
@@ -42,6 +44,8 @@ pub mod module_id;
 pub mod module_instance;
 pub mod node;
 pub mod pricing;
+pub mod prompt;
+pub mod registry;
 pub mod remote_tool;
 pub mod sanitize;
 pub mod session_query;
@@ -49,10 +53,6 @@ pub mod skill;
 pub mod subagent;
 pub mod token;
 pub mod tool;
-pub mod prompt;
-pub mod disposer;
-pub mod execute;
-pub mod registry;
 pub mod workspace;
 
 pub use chat::{ChannelType, IncomingFile, IncomingMessage};

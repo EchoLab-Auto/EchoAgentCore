@@ -37,11 +37,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
 use crate::protocol::{
-    serialize_event_identified, BackendBridge, DeltaBatcher, EntryTracker,
-    SequencedEvent,
+    serialize_event_identified, BackendBridge, DeltaBatcher, EntryTracker, SequencedEvent,
 };
+use anyhow::Context;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex};
@@ -956,9 +955,7 @@ pub(crate) enum InboundFrame {
 /// those are ignored by the management channel.
 pub(crate) fn handle_inbound_text(text: &str) -> Option<InboundFrame> {
     match crate::protocol::deserialize_message(text) {
-        Some(crate::protocol::WsMessage::Command(cmd)) => {
-            Some(InboundFrame::Command(cmd))
-        }
+        Some(crate::protocol::WsMessage::Command(cmd)) => Some(InboundFrame::Command(cmd)),
         _ => None,
     }
 }
@@ -1083,11 +1080,7 @@ mod tests {
     // ── End-to-end WS server ──────────────────────────────────────────────
 
     /// A provider that is never actually called (management needs an Agent).
-    async fn start_test_server() -> (
-        Arc<BackendBridge>,
-        crate::protocol::BackendHandle,
-        String,
-    ) {
+    async fn start_test_server() -> (Arc<BackendBridge>, crate::protocol::BackendHandle, String) {
         let (bridge, handle) = crate::protocol::create_bridge();
         let bridge = Arc::new(bridge);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1106,10 +1099,9 @@ mod tests {
             .await
             .expect("connect");
 
-        let text =
-            crate::protocol::serialize_command(&BackendCommand::SwitchModel {
-                model: "gpt-x".into(),
-            });
+        let text = crate::protocol::serialize_command(&BackendCommand::SwitchModel {
+            model: "gpt-x".into(),
+        });
         ws.send(tokio_tungstenite::tungstenite::Message::Text(text))
             .await
             .expect("send");
@@ -1139,14 +1131,12 @@ mod tests {
             .expect("connect");
 
         // Emit an event from the agent side; the server forwards it.
-        handle.emit(
-            crate::protocol::BackendEvent::AgentOutput {
-                session_id: "s1".into(),
-                team_id: None,
-                content: "回复".into(),
-                branch_id: None,
-            },
-        );
+        handle.emit(crate::protocol::BackendEvent::AgentOutput {
+            session_id: "s1".into(),
+            team_id: None,
+            content: "回复".into(),
+            branch_id: None,
+        });
 
         // The forwarder polls every 100ms.
         let mut received = None;
@@ -1187,13 +1177,12 @@ mod tests {
         // 订阅完成后再发事件（broker 只投给已订阅连接）。
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-        let delta =
-            |text: &str| crate::protocol::BackendEvent::AgentContentDelta {
-                session_id: "s1".into(),
-                team_id: None,
-                branch_id: "b1".into(),
-                delta: text.into(),
-            };
+        let delta = |text: &str| crate::protocol::BackendEvent::AgentContentDelta {
+            session_id: "s1".into(),
+            team_id: None,
+            branch_id: "b1".into(),
+            delta: text.into(),
+        };
         // 三个连续增量 + 一个工具调用（分步边界）。
         handle.emit(delta("he"));
         handle.emit(delta("llo"));
@@ -1225,10 +1214,9 @@ mod tests {
                         continue;
                     };
                     match ev {
-                        crate::protocol::BackendEvent::AgentContentDelta {
-                            delta,
-                            ..
-                        } => frames.push((format!("delta:{delta}"), entry)),
+                        crate::protocol::BackendEvent::AgentContentDelta { delta, .. } => {
+                            frames.push((format!("delta:{delta}"), entry))
+                        }
                         crate::protocol::BackendEvent::ToolCall { .. } => {
                             frames.push(("tool".into(), entry));
                             break;
@@ -1655,9 +1643,7 @@ mod tests {
             .await
             .expect("management token must upgrade");
         let text =
-            crate::protocol::serialize_command(&BackendCommand::SwitchModel {
-                model: "m".into(),
-            });
+            crate::protocol::serialize_command(&BackendCommand::SwitchModel { model: "m".into() });
         mgmt_ws
             .send(tokio_tungstenite::tungstenite::Message::Text(text))
             .await
@@ -1796,9 +1782,7 @@ mod tests {
 
         // ② 写命令被拒：后端**收不到**，并且本连接收到一条 Error 说明。
         let write =
-            crate::protocol::serialize_command(&BackendCommand::SwitchModel {
-                model: "m".into(),
-            });
+            crate::protocol::serialize_command(&BackendCommand::SwitchModel { model: "m".into() });
         panel_ws
             .send(tokio_tungstenite::tungstenite::Message::Text(write))
             .await
@@ -1828,8 +1812,7 @@ mod tests {
         );
 
         // ③ 观察命令放行：后端收到（只读身份看得到东西）。
-        let observe =
-            crate::protocol::serialize_command(&BackendCommand::RequestState);
+        let observe = crate::protocol::serialize_command(&BackendCommand::RequestState);
         panel_ws
             .send(tokio_tungstenite::tungstenite::Message::Text(observe))
             .await

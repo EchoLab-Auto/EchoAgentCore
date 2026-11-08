@@ -403,7 +403,10 @@ fn modules_do_not_depend_on_other_modules() {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        if matches!(name.as_str(), "echo-agent" | "echo-module-loop" | "echo-test-utils" | "core") {
+        if matches!(
+            name.as_str(),
+            "echo-agent" | "echo-module-loop" | "echo-test-utils" | "core"
+        ) {
             continue;
         }
         modules_seen += 1;

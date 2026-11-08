@@ -21,7 +21,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use crate::contract::{ChannelType as WireChannelType, IncomingMessage, InstanceContribution};
+use crate::adapter::contract::{
+    ChannelType as WireChannelType, IncomingMessage, InstanceContribution,
+};
 use echo_module_host::api::{InvokeContext, InvokeOutcome};
 use echo_module_host::{ModuleHandle, ModuleState, TransportError};
 
@@ -805,7 +807,7 @@ pub fn message_to_incoming(message: IncomingMessage) -> echo_defs::chat::Incomin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::{InstanceCapabilities, InstanceContribution};
+    use crate::adapter::contract::{InstanceCapabilities, InstanceContribution};
     use echo_defs::module_instance::{InstanceManagement as _, ModuleInstance as _};
     use echo_module_host::api::{HostToModule, ModuleToHost, Register, Welcome};
     use echo_module_host::inproc::{InprocIo, InprocModule, InprocTransport};
@@ -914,7 +916,7 @@ mod tests {
         let instances: Vec<_> = handle
             .contributions()
             .into_iter()
-            .filter_map(|c| crate::contract::instance_from_custom(&c))
+            .filter_map(|c| crate::adapter::contract::instance_from_custom(&c))
             .collect();
         assert_eq!(instances.len(), 1);
         let instance = RemoteInstance::new(instances[0].clone(), handle.clone());
@@ -1021,7 +1023,7 @@ mod tests {
         let instances: Vec<_> = handle
             .contributions()
             .into_iter()
-            .filter_map(|c| crate::contract::instance_from_custom(&c))
+            .filter_map(|c| crate::adapter::contract::instance_from_custom(&c))
             .collect();
         let instance = RemoteInstance::new(instances[0].clone(), handle.clone());
 
@@ -1299,7 +1301,7 @@ mod tests {
         let instances: Vec<_> = handle
             .contributions()
             .into_iter()
-            .filter_map(|c| crate::contract::instance_from_custom(&c))
+            .filter_map(|c| crate::adapter::contract::instance_from_custom(&c))
             .collect();
         assert_eq!(instances.len(), 1, "fixture 应注册一个模块实例贡献");
         RemoteInstance::new(instances[0].clone(), handle.clone())

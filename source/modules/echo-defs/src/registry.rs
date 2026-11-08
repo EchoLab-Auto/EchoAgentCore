@@ -790,11 +790,16 @@ mod tests {
     }
     impl TestRedactor {
         fn new() -> Self {
-            Self { inner: std::sync::RwLock::new(TestRedactorInner::default()) }
+            Self {
+                inner: std::sync::RwLock::new(TestRedactorInner::default()),
+            }
         }
         fn with_builtin_patterns() -> Self {
             Self {
-                inner: std::sync::RwLock::new(TestRedactorInner { secrets: Vec::new(), builtin_sk: true }),
+                inner: std::sync::RwLock::new(TestRedactorInner {
+                    secrets: Vec::new(),
+                    builtin_sk: true,
+                }),
             }
         }
     }
@@ -805,7 +810,11 @@ mod tests {
         fn redact(&self, text: &str) -> crate::sanitize::RedactReport {
             let hits = self.scan(text);
             if hits.is_empty() {
-                return crate::sanitize::RedactReport { text: text.to_string(), changed: false, hits };
+                return crate::sanitize::RedactReport {
+                    text: text.to_string(),
+                    changed: false,
+                    hits,
+                };
             }
             let mut out = String::new();
             let mut cursor = 0usize;
@@ -815,7 +824,11 @@ mod tests {
                 cursor = hit.span.1;
             }
             out.push_str(&text[cursor..]);
-            crate::sanitize::RedactReport { text: out, changed: true, hits }
+            crate::sanitize::RedactReport {
+                text: out,
+                changed: true,
+                hits,
+            }
         }
         fn scan(&self, text: &str) -> Vec<crate::sanitize::SecretHit> {
             let inner = self.inner.read().unwrap();
@@ -833,7 +846,11 @@ mod tests {
                     if bytes[i] == b's' && bytes[i + 1] == b'k' && bytes.get(i + 2) == Some(&b'-') {
                         let start = i;
                         let mut end = i + 3;
-                        while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' || bytes[end] == b'-') {
+                        while end < bytes.len()
+                            && (bytes[end].is_ascii_alphanumeric()
+                                || bytes[end] == b'_'
+                                || bytes[end] == b'-')
+                        {
                             end += 1;
                         }
                         if end > start + 3 {
@@ -866,17 +883,25 @@ mod tests {
             hits
         }
         fn register_secret(&self, value: &str, label: &str) {
-            self.inner.write().unwrap().secrets.push((value.to_string(), label.to_string()));
+            self.inner
+                .write()
+                .unwrap()
+                .secrets
+                .push((value.to_string(), label.to_string()));
         }
-        fn register_pattern(&self, _name: &str, _pattern: &str) -> Result<(), crate::sanitize::PatternError> {
+        fn register_pattern(
+            &self,
+            _name: &str,
+            _pattern: &str,
+        ) -> Result<(), crate::sanitize::PatternError> {
             Ok(())
         }
         fn registered_count(&self) -> usize {
             self.inner.read().unwrap().secrets.len()
         }
     }
-    use async_trait::async_trait;
     use crate::sanitize::Redactor;
+    use async_trait::async_trait;
 
     struct StubTool {
         name: &'static str,

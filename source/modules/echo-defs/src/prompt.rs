@@ -26,14 +26,24 @@ pub trait PromptRefresher: Send + Sync {
 pub type SharedPromptStore = Arc<dyn PromptStore>;
 pub type SharedPromptRefresher = Arc<dyn PromptRefresher>;
 
-
 /// 通用名单型能力控制（技能/规则包等均可实现），由模块注册给宿主。
 #[async_trait::async_trait]
 pub trait NamedCapabilityController: Send + Sync {
-    async fn apply(&self, enabled: Vec<String>, disabled: Vec<String>, global_disabled: Vec<String>);
-    async fn reload(&self) -> Result<bool, String> { Ok(false) }
-    async fn set_enabled(&self, _name: &str, _enabled: bool) -> bool { false }
+    async fn apply(
+        &self,
+        enabled: Vec<String>,
+        disabled: Vec<String>,
+        global_disabled: Vec<String>,
+    );
+    async fn reload(&self) -> Result<bool, String> {
+        Ok(false)
+    }
+    async fn set_enabled(&self, _name: &str, _enabled: bool) -> bool {
+        false
+    }
     fn set_package_enabled(&self, _package: &str, _enabled: bool) {}
     async fn emit_list(&self) {}
-    fn packages(&self) -> Vec<String> { Vec::new() }
+    fn packages(&self) -> Vec<String> {
+        Vec::new()
+    }
 }

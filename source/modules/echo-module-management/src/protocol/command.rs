@@ -17,11 +17,17 @@ pub enum BackendCommand {
         team_id: Option<String>,
     },
     /// Switch the active model.
-    SwitchModel { model: String },
+    SwitchModel {
+        model: String,
+    },
     /// Switch the active provider.
-    SwitchProvider { provider: String },
+    SwitchProvider {
+        provider: String,
+    },
     /// Replace the system prompt (owned by the Core module, not the API config).
-    SetSystemPrompt { prompt: String },
+    SetSystemPrompt {
+        prompt: String,
+    },
     /// Request the current system prompt module text.
     RequestSystemPrompt,
     /// Update an API profile (or the top-level default when `name` is empty).
@@ -39,7 +45,9 @@ pub enum BackendCommand {
         reasoning_effort: Option<ReasoningEffort>,
     },
     /// Switch to an API profile by name (empty = top-level default).
-    SwitchApi { name: String },
+    SwitchApi {
+        name: String,
+    },
     /// 会话级 API 覆盖（2026-10）：该会话的 LLM 请求走指定 profile
     /// 的 provider；`profile` 空串 = 清除覆盖（回到跟随 persona 级）。
     /// team_id 必填（去主智能体后会话类命令的显式归属）。
@@ -57,34 +65,53 @@ pub enum BackendCommand {
     /// 经 `Query(ApiProfiles)` 拉取，回 `RemoteApiProfiles` 事件
     /// （provider/model/base_url/key_set——api_key 明文永不过线）。
     /// Frontend-only 管理命令。
-    RequestRemoteApiProfiles { peer: String },
+    RequestRemoteApiProfiles {
+        peer: String,
+    },
     /// Test connectivity of an API config: `name` empty = top-level default,
     /// otherwise that profile. Replies with `BackendEvent::ApiTestResult`.
-    TestApi { name: String },
+    TestApi {
+        name: String,
+    },
     /// Query account balance of an API config (DeepSeek endpoint only):
     /// `name` empty = top-level default, otherwise that profile.
     /// Replies with `BackendEvent::ApiBalanceResult`.
-    QueryApiBalance { name: String },
+    QueryApiBalance {
+        name: String,
+    },
     /// 请求 API profile 的**本地积累指标**（余额快照 + token 用量时间序列）：
     /// `name` 空 = 默认配置 + 全部 profile；非空 = 指定 profile。
     /// 回 `BackendEvent::ApiMetrics`（单事件，每个请求目标一条 entry）。
-    QueryApiMetrics { name: String },
+    QueryApiMetrics {
+        name: String,
+    },
     /// Delete an API profile by name.
-    DeleteApi { name: String },
+    DeleteApi {
+        name: String,
+    },
     /// 原子改名 API profile：重写全部按名引用（供应商池条目名 / `active_api` /
     /// `teams[*].api_profile`），并重绑运行中的 persona 引用、会话覆盖与
     /// 工作区对话引用。`to` 去空白后必须非空且不与现有名字冲突；`from`
     /// 必须精确存在。成功回 `ApiConfigUpdated` + `ApiProfilesUpdated`
     /// （teams 有变更时补 `TeamsList`）；失败回 `Error` 且零写入。
-    RenameApi { from: String, to: String },
+    RenameApi {
+        from: String,
+        to: String,
+    },
     /// Request a full state snapshot（逐会话回 `BackendEvent::SessionUpdated`
     /// 等事件流，不发状态结构体）。
     RequestState,
     /// Enable or disable a skill.
-    ToggleSkill { name: String, enabled: bool },
+    ToggleSkill {
+        name: String,
+        enabled: bool,
+    },
     /// Enable or disable a registered tool at runtime. Disabled tools are
     /// hidden from the model and calls fail; persisted via `[agent]`.
-    ToggleTool { name: String, enabled: bool },
+    ToggleTool {
+        name: String,
+        enabled: bool,
+    },
     /// Create or overwrite a `SKILL.md` file in the configured skills
     /// directory. `name` is the directory/file key; content is the markdown
     /// body (the frontmatter is regenerated from the metadata fields).
@@ -102,7 +129,9 @@ pub enum BackendCommand {
         system: bool,
     },
     /// Delete a skill directory under the configured skills directory.
-    DeleteSkill { name: String },
+    DeleteSkill {
+        name: String,
+    },
     /// 归档某个 team 的历史会话（快照到 archives/ 并清空当前历史）。
     ///
     /// `session_id` 存在时**会话级**：只归档并清空该会话（2026-10 审计
@@ -131,7 +160,10 @@ pub enum BackendCommand {
     /// Responds with `BackendEvent::TeamsList`.
     RequestTeamsList,
     /// Enable or disable a team member at runtime (unloads memory/logs).
-    ToggleTeam { id: String, enabled: bool },
+    ToggleTeam {
+        id: String,
+        enabled: bool,
+    },
     /// Create or update a team member (persisted to [agent].teams).
     SaveTeam {
         id: String,
@@ -168,12 +200,16 @@ pub enum BackendCommand {
         api_profile: Option<String>,
     },
     /// Delete a team member (the default/main agent is protected).
-    DeleteTeam { id: String },
+    DeleteTeam {
+        id: String,
+    },
     /// 重载一个模块（卸下 → 重新挂载），**不改**启用状态与持久化配置。
     ///
     /// 用途：模块按新配置/新外部依赖重新初始化（子进程模块重连、实例
     /// 模块重启进程）；管理面模块被拒绝（重启 = Panel 断连）。
-    RestartModule { id: String },
+    RestartModule {
+        id: String,
+    },
     /// Request a snapshot of a conversation context (`BackendEvent::ContextSnapshot`).
     ///
     /// 多会话（2026-09）：`session_id` 指定要查看的会话上下文；缺省回退
@@ -210,9 +246,13 @@ pub enum BackendCommand {
         branch: Option<String>,
     },
     /// 更新从 Git 安装的 skill（根据 sources 记录 fetch + reset）。
-    UpdateSkillFromGit { name: String },
+    UpdateSkillFromGit {
+        name: String,
+    },
     /// 移除 Git 来源记录（不删除目录；目录删除仍用 DeleteSkill）。
-    RemoveSkillSource { name: String },
+    RemoveSkillSource {
+        name: String,
+    },
     RequestTrunkTimeline {
         #[serde(default)]
         team_id: Option<String>,
@@ -317,11 +357,17 @@ pub enum BackendCommand {
         session_id: Option<String>,
     },
     /// Start an instance by name.
-    StartInstance { name: String },
+    StartInstance {
+        name: String,
+    },
     /// Stop an instance by name.
-    StopInstance { name: String },
+    StopInstance {
+        name: String,
+    },
     /// Restart an instance.
-    RestartInstance { name: String },
+    RestartInstance {
+        name: String,
+    },
     /// Request the current instance status list.
     RequestInstanceStatus,
     /// 调用一个模块实例管理方法（W2.1，2026-10 模块实例管理通道）。

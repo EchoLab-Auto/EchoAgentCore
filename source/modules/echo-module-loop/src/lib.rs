@@ -17,19 +17,21 @@ pub use echo_defs::node::NodeIdentity;
 // 原通用循环驱动与模块装配：现在与 Agent 业务同 crate 发布。
 pub mod compaction;
 pub mod loop_event;
+pub mod loop_module;
 pub mod pipeline;
 pub mod runner;
-pub mod loop_module;
 
 pub use loop_event::{
     AgentPreStep, AgentRequest, ModelResponse, StepEnd, StepStart, ToolCallRequested, ToolResult,
     TurnEnd, TurnStart, TurnStopping,
 };
+pub use loop_module::{
+    declarations, modules, REMOVED_PARALLEL_MODULE_ID, SERVICE_KEY, SINGLE_MODULE_ID,
+};
 pub use pipeline::{ToolPipeline, ToolPipelineResult};
 pub use runner::{ChatExecutor, LoopError, LoopOptions, ToolExecutor, ToolOutcome, TurnRunner};
-pub use loop_module::{declarations, modules, SINGLE_MODULE_ID, REMOVED_PARALLEL_MODULE_ID, SERVICE_KEY};
 
-
+pub mod adapter;
 pub mod agent;
 pub mod agent_manager;
 pub mod api_pool;

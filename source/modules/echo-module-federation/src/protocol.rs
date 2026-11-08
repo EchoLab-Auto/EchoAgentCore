@@ -31,6 +31,9 @@ pub struct FederationPeerInfo {
     /// 节点身份（Link Up 后解析到的 node_id）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
+    /// 对端握手宣告的人类可读名；只用于显示，配置名仍是策略键。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
     /// 该 peer 正在执行的 turn 数（活跃快照）。
     #[serde(default)]
     pub active_turns: u32,

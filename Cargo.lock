@@ -783,7 +783,6 @@ dependencies = [
  "echo-context",
  "echo-defs",
  "echo-module",
- "echo-module-adapter",
  "echo-module-federation",
  "echo-module-host",
  "echo-module-loader",
@@ -862,19 +861,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "echo-module-adapter"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "echo-defs",
- "echo-module-host",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "echo-module-api"
 version = "0.15.0"
 source = "git+https://github.com/EchoLab-Auto/echo-fabric-arch?tag=v0.15.0#a0f16e09c58e8912c1d7b7206651172b0fee6274"
@@ -936,6 +922,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "dashmap",
  "echo-config",
@@ -943,6 +930,7 @@ dependencies = [
  "echo-defs",
  "echo-module",
  "echo-module-federation",
+ "echo-module-host",
  "echo-module-management",
  "echo-module-provider-llm",
  "echo-module-sanitize",

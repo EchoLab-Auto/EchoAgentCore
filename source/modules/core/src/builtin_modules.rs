@@ -142,7 +142,11 @@ pub(crate) fn catalog_with(
     // （`kind = "security"`，唯一关闭路径是 `core.toml`）。
     push_builtin_identity(&mut catalog, version, echo_defs::MODULE_ID)?;
     push_builtin_identity(&mut catalog, version, echo_config::MODULE_ID)?;
-    push_builtin_identity(&mut catalog, version, echo_module_management::PROTOCOL_MODULE_ID)?;
+    push_builtin_identity(
+        &mut catalog,
+        version,
+        echo_module_management::PROTOCOL_MODULE_ID,
+    )?;
     for module in echo_session::module::modules(version) {
         push_module(&mut catalog, module)?;
     }
@@ -502,7 +506,10 @@ mod catalog_shape_tests {
         }
 
         // ① 能力模块可关：不报违规。
-        let plan = vec![MountStep::new(echo_module_loop::modules::SHELL_MODULE_ID, false)];
+        let plan = vec![MountStep::new(
+            echo_module_loop::modules::SHELL_MODULE_ID,
+            false,
+        )];
         assert_eq!(disabled_kernel_modules(&ids, &plan), None);
 
         // ② kernel 模块不可关：必须被抓到并点名。
@@ -531,10 +538,11 @@ mod catalog_shape_tests {
             .filter(|module| module.manifest().id != echo_module_workspace::MODULE_ID)
             .map(|module| module.manifest().id.clone())
             .collect();
-        let declared: std::collections::BTreeSet<String> = echo_module_loop::modules::BUILTIN_MODULE_IDS
-            .iter()
-            .map(|id| (*id).to_string())
-            .collect();
+        let declared: std::collections::BTreeSet<String> =
+            echo_module_loop::modules::BUILTIN_MODULE_IDS
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect();
 
         let missing_from_list: Vec<&String> = from_catalog.difference(&declared).collect();
         let missing_from_catalog: Vec<&String> = declared.difference(&from_catalog).collect();

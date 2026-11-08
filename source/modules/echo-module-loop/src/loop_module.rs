@@ -1,9 +1,9 @@
 //! 循环模块的装配入口（原 lib.rs 尾部，合并后独立成模块）。
 
-use std::sync::Arc;
+use crate::{LoopOptions, ToolPipeline, TurnRunner};
 use echo_context::Disposer;
 use echo_module::{BuiltinModule, Inject, Module, ModuleManifest, ModuleMountResult, MountContext};
-use crate::{LoopOptions, ToolPipeline, TurnRunner};
+use std::sync::Arc;
 
 /// 循环模块 id。**字面量冻结**：用户配置的 `enabled_modules` 里可能还写着它
 /// （历史配置、旧版本导出），改名即让那些配置静默失效。

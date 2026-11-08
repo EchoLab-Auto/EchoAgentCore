@@ -285,8 +285,8 @@ use tracing::Instrument as _;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::tool::ToolError;
+    use async_trait::async_trait;
     use std::sync::Mutex;
 
     /// 记录宿主侧收到的每一次回调（顺序即协议顺序）。

@@ -49,7 +49,8 @@ pub(crate) struct PromptService {
     /// 模块主动写入的通用提示词块，按 owner 隔离。
     contributed: std::sync::RwLock<BTreeMap<String, Vec<echo_defs::prompt::PromptBlock>>>,
     pub(crate) refresher: std::sync::RwLock<Option<echo_defs::prompt::SharedPromptRefresher>>,
-    capability_controller: std::sync::RwLock<Option<Arc<dyn echo_defs::prompt::NamedCapabilityController>>>,
+    capability_controller:
+        std::sync::RwLock<Option<Arc<dyn echo_defs::prompt::NamedCapabilityController>>>,
 }
 
 impl PromptService {
@@ -105,39 +106,79 @@ impl PromptService {
 
 impl PromptService {
     pub(crate) fn set_refresher(&self, refresher: echo_defs::prompt::SharedPromptRefresher) {
-        *self.refresher.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(refresher);
+        *self
+            .refresher
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(refresher);
     }
 
-    pub(crate) fn set_capability_controller(&self, controller: Arc<dyn echo_defs::prompt::NamedCapabilityController>) {
-        *self.capability_controller.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controller);
+    pub(crate) fn set_capability_controller(
+        &self,
+        controller: Arc<dyn echo_defs::prompt::NamedCapabilityController>,
+    ) {
+        *self
+            .capability_controller
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(controller);
     }
 
-    pub(crate) async fn apply_named_capabilities(&self, enabled: Vec<String>, disabled: Vec<String>, global_disabled: Vec<String>) {
-        let controller = self.capability_controller.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
-        if let Some(controller) = controller { controller.apply(enabled, disabled, global_disabled).await; }
+    pub(crate) async fn apply_named_capabilities(
+        &self,
+        enabled: Vec<String>,
+        disabled: Vec<String>,
+        global_disabled: Vec<String>,
+    ) {
+        let controller = self
+            .capability_controller
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(controller) = controller {
+            controller.apply(enabled, disabled, global_disabled).await;
+        }
     }
 
-    pub(crate) fn capability_controller(&self) -> Option<Arc<dyn echo_defs::prompt::NamedCapabilityController>> {
-        self.capability_controller.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    pub(crate) fn capability_controller(
+        &self,
+    ) -> Option<Arc<dyn echo_defs::prompt::NamedCapabilityController>> {
+        self.capability_controller
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub(crate) fn contributed_blocks(&self) -> Vec<PromptBlock> {
-        self.contributed.read().unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values().flatten().map(|b| PromptBlock {
-                key: b.key.clone(), label: b.label.clone(), kind: b.kind.clone(), content: b.content.clone(),
-            }).collect()
+        self.contributed
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .flatten()
+            .map(|b| PromptBlock {
+                key: b.key.clone(),
+                label: b.label.clone(),
+                kind: b.kind.clone(),
+                content: b.content.clone(),
+            })
+            .collect()
     }
 }
 
 impl echo_defs::prompt::PromptStore for PromptService {
     fn replace(&self, owner: &str, blocks: Vec<echo_defs::prompt::PromptBlock>) {
-        self.contributed.write().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.contributed
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(owner.to_string(), blocks);
     }
     fn remove(&self, owner: &str) {
-        self.contributed.write().unwrap_or_else(std::sync::PoisonError::into_inner).remove(owner);
+        self.contributed
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(owner);
     }
     fn invalidate(&self) {
-        if let Ok(mut cache) = self.system_prompt_cache.try_write() { *cache = None; }
+        if let Ok(mut cache) = self.system_prompt_cache.try_write() {
+            *cache = None;
+        }
     }
 }

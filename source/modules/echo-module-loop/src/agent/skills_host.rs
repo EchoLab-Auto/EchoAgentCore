@@ -37,40 +37,73 @@ pub struct AgentSkillsCommandHost {
 
 impl AgentSkillsCommandHost {
     pub fn attach_runtime(&self, runtime: Arc<echo_module_skills::runtime::SkillsRuntime>) {
-        if let Ok(mut slot) = self.runtime.write() { *slot = Some(runtime); }
+        if let Ok(mut slot) = self.runtime.write() {
+            *slot = Some(runtime);
+        }
     }
 
     pub fn new(origin: Arc<Agent>) -> Self {
         let registry = origin.registry();
-        Self { origin, registry, runtime: std::sync::RwLock::new(None) }
+        Self {
+            origin,
+            registry,
+            runtime: std::sync::RwLock::new(None),
+        }
     }
 }
 
 impl SkillsCommandHost for AgentSkillsCommandHost {
     fn skills_dir(&self) -> String {
-        self.origin.model.config.try_read().map(|c| c.skills_dir.clone()).unwrap_or_default()
+        self.origin
+            .model
+            .config
+            .try_read()
+            .map(|c| c.skills_dir.clone())
+            .unwrap_or_default()
     }
     fn skill_dirs(&self) -> Vec<String> {
-        self.origin.model.config.try_read().map(|c| c.skills_dirs.clone()).unwrap_or_default()
+        self.origin
+            .model
+            .config
+            .try_read()
+            .map(|c| c.skills_dirs.clone())
+            .unwrap_or_default()
     }
-    fn apply_capabilities(&self, enabled: Vec<String>, disabled: Vec<String>, global_disabled: Vec<String>)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send+'_>> {
+    fn apply_capabilities(
+        &self,
+        enabled: Vec<String>,
+        disabled: Vec<String>,
+        global_disabled: Vec<String>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         let runtime = self.runtime.read().ok().and_then(|r| r.clone());
-        Box::pin(async move { if let Some(runtime) = runtime { runtime.apply_capabilities(enabled, disabled, global_disabled).await; } })
+        Box::pin(async move {
+            if let Some(runtime) = runtime {
+                runtime
+                    .apply_capabilities(enabled, disabled, global_disabled)
+                    .await;
+            }
+        })
     }
-    fn persist_enabled(&self, name: String, enabled: bool)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output=()>+Send+'_>> {
+    fn persist_enabled(
+        &self,
+        name: String,
+        enabled: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         let origin = self.origin.clone();
         let registry = self.registry.clone();
         Box::pin(async move {
             let snapshot = {
                 let mut config = origin.model.config.write().await;
                 config.disabled_skills.retain(|n| n != &name);
-                if !enabled { config.disabled_skills.push(name.clone()); }
+                if !enabled {
+                    config.disabled_skills.push(name.clone());
+                }
                 config.clone()
             };
             origin.persist_config(&snapshot).await;
-            if let Some(policy) = origin.global_policy() { policy.set_skill_enabled(&name, enabled); }
+            if let Some(policy) = origin.global_policy() {
+                policy.set_skill_enabled(&name, enabled);
+            }
             if let Some(registry) = registry {
                 for running in registry.all() {
                     running.agent.apply_capabilities(&running.profile).await;
@@ -79,11 +112,23 @@ impl SkillsCommandHost for AgentSkillsCommandHost {
         })
     }
     fn global_disabled(&self) -> Vec<String> {
-        self.origin.global_policy().map(|p| p.disabled_skills())
-            .unwrap_or_else(|| self.origin.model.config.try_read().map(|c| c.disabled_skills.clone()).unwrap_or_default())
+        self.origin
+            .global_policy()
+            .map(|p| p.disabled_skills())
+            .unwrap_or_else(|| {
+                self.origin
+                    .model
+                    .config
+                    .try_read()
+                    .map(|c| c.disabled_skills.clone())
+                    .unwrap_or_default()
+            })
     }
-    fn attach_prompt_pipeline(&self, refresher: echo_defs::prompt::SharedPromptRefresher,
-        controller: Arc<dyn echo_defs::prompt::NamedCapabilityController>) {
+    fn attach_prompt_pipeline(
+        &self,
+        refresher: echo_defs::prompt::SharedPromptRefresher,
+        controller: Arc<dyn echo_defs::prompt::NamedCapabilityController>,
+    ) {
         self.origin.attach_prompt_pipeline(refresher, controller);
     }
     fn emit(&self, event: BackendEvent) {
@@ -111,7 +156,10 @@ mod tests {
         let expected_dir = agent.model.config.try_read().unwrap().skills_dir.clone();
         let host = AgentSkillsCommandHost::new(agent.clone());
         assert_eq!(host.skills_dir(), expected_dir);
-        assert_eq!(host.skill_dirs(), agent.model.config.try_read().unwrap().skills_dirs);
+        assert_eq!(
+            host.skill_dirs(),
+            agent.model.config.try_read().unwrap().skills_dirs
+        );
     }
 
     /// 表里没有的技能：启停回 `false`（面板据此显示 not found）。

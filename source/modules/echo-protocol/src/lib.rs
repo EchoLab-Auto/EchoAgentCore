@@ -1,6 +1,6 @@
 //! Compatibility facade: the management module owns the protocol.
 pub use echo_module_management::protocol::*;
-pub use echo_module_management::protocol::{event, command};
+pub use echo_module_management::protocol::{command, event};
 
 /// Compatibility module identity.
 pub mod module {
