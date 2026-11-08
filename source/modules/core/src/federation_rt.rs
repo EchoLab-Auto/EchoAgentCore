@@ -504,6 +504,7 @@ pub(crate) async fn federation_router_pump(
                         tracing::info!(
                             target: "federation",
                             peer = %info.node_id, name = %info.peer_name,
+                            node_name = ?info.node_name,
                             version = %info.version, tools = ?info.caps.tools,
                             "link up"
                         );
