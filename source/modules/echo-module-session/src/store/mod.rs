@@ -15,6 +15,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 
 pub mod archive;
+pub mod archives;
 pub mod history;
 pub mod persist;
 pub mod query;
@@ -360,6 +361,18 @@ impl TrunkStore {
     }
 
     /// Set the file path for session persistence.
+    /// 当前持久化文件路径（`None` = 纯内存）。
+    ///
+    /// 归档目录从它派生（`parent/archives`），所以 `archives` /
+    /// `archive` 两个子模块都要读它——加访问器而不是把字段提成 `pub(crate)`：
+    /// 字段是 `Mutex`，直读会把锁语义散到各处。
+    pub fn persist_path(&self) -> Option<std::path::PathBuf> {
+        self.persist_path
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+    }
+
     pub fn set_persist_path(&self, path: impl Into<std::path::PathBuf>) {
         *self
             .persist_path

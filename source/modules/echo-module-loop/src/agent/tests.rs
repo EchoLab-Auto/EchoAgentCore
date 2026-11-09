@@ -807,6 +807,7 @@ async fn clear_history_resends_remaining_timeline_not_empty() {
         reasoning: None,
         tool: None,
         images: None,
+        archive: None,
         seq: 0,
         ord: 0,
     };
@@ -889,6 +890,7 @@ async fn archive_history_without_session_id_is_rejected_fail_closed() {
         reasoning: None,
         tool: None,
         images: None,
+        archive: None,
         seq: 0,
         ord: 0,
     });

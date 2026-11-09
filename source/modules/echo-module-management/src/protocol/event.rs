@@ -201,6 +201,25 @@ pub struct TimelineTool {
     pub elapsed_ms: Option<u64>,
 }
 
+/// 一份压缩前归档的**元信息**（不解析内容）。
+///
+/// 读取走 `RequestSessionArchiveHistory`（要解析 JSON，一份可有 20 MB）；
+/// 清单只要 `stat`，所以分两段——面板先列出来，用户点了才读。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionArchiveEntry {
+    /// 文件名（读取时按它寻址；不接受面板传来的任意路径）。
+    pub name: String,
+    /// 归档时间（文件名内嵌的 UTC 时间戳转 epoch 秒；解析不出为 0）。
+    #[serde(default)]
+    pub created_at: i64,
+    /// 文件大小（字节）。
+    #[serde(default)]
+    pub size: u64,
+    /// 归档原因（文件名后缀，如 `precompact`；无后缀为空）。
+    #[serde(default)]
+    pub reason: String,
+}
+
 /// One persisted trunk timeline entry. The timeline is a *display* history
 /// (up to `TRUNK_TIMELINE_MAX` entries) that survives TUI restarts; it is
 /// independent of the LLM-facing trunk context, which is token-bounded.
@@ -224,6 +243,12 @@ pub struct TimelineMessage {
     /// Multimodal media attached to the message (URLs / data URIs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
+    /// 本条目对应的**压缩前归档**文件名（只有压缩提示行会带）。
+    ///
+    /// 面板据此在"上下文已压缩"那一行给出「查看压缩前的历史」入口——
+    /// 没有它就只能猜"哪份归档对应这次压缩"（同一天可能有多次压缩）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<String>,
     /// 条目级单调序号（push 与就地更新都会推进）；0 = 旧版/重启前条目。
     /// 增量同步（since_seq）按此过滤，就地更新的工具条目会被重新投递。
     #[serde(default)]
@@ -260,6 +285,7 @@ impl TimelineMessage {
             reasoning: None,
             tool: None,
             images: (!images.is_empty()).then_some(images),
+            archive: None,
             seq: 0,
             ord: 0,
         }
@@ -281,6 +307,7 @@ impl TimelineMessage {
             reasoning,
             tool: None,
             images: None,
+            archive: None,
             seq: 0,
             ord: 0,
         }
@@ -302,6 +329,7 @@ impl TimelineMessage {
             reasoning: None,
             tool: Some(tool),
             images: None,
+            archive: None,
             seq: 0,
             ord: 0,
         }
@@ -318,6 +346,7 @@ impl TimelineMessage {
             reasoning: None,
             tool: None,
             images: None,
+            archive: None,
             seq: 0,
             ord: 0,
         }
@@ -721,6 +750,33 @@ pub enum BackendEvent {
         /// 跳过窗口里已被快照覆盖的条目；0 = 该会话不在窗口内）。
         #[serde(default)]
         max_seq: u64,
+    },
+    /// 压缩前归档清单（`RequestSessionArchives` 的响应）。
+    SessionArchives {
+        #[serde(default)]
+        team_id: Option<String>,
+        archives: Vec<SessionArchiveEntry>,
+    },
+    /// 一份压缩前归档按会话投影出的显示历史
+    /// （`RequestSessionArchiveHistory` 的响应）。
+    ///
+    /// 与 `SessionHistory` 分开而不是复用：归档是**只读快照**，没有
+    /// `max_seq` 水位线语义（它不参与实时合并），也不该被面板的合并逻辑
+    /// 当成"最新快照"去认领实时条目。
+    SessionArchiveHistory {
+        #[serde(default)]
+        team_id: Option<String>,
+        session_id: String,
+        /// 归档文件名（回显）。
+        archive: String,
+        messages: Vec<TimelineMessage>,
+        /// 投影出的条目总数（截断前）。
+        total: usize,
+        /// true = 因 limit 只含最近 limit 条。
+        truncated: bool,
+        /// 解析/读取失败原因（`messages` 为空）。面板按只读提示展示。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// API configuration changed (for TUI settings form).
     ApiConfigUpdated {
@@ -1501,6 +1557,8 @@ impl BackendEvent {
             Self::TrunkTimeline { .. } => "TrunkTimeline",
             Self::TimelineEarlier { .. } => "TimelineEarlier",
             Self::SessionHistory { .. } => "SessionHistory",
+            Self::SessionArchives { .. } => "SessionArchives",
+            Self::SessionArchiveHistory { .. } => "SessionArchiveHistory",
             Self::ApiConfigUpdated { .. } => "ApiConfigUpdated",
             Self::RemoteApiProfiles { .. } => "RemoteApiProfiles",
             Self::ApiProfilesUpdated { .. } => "ApiProfilesUpdated",

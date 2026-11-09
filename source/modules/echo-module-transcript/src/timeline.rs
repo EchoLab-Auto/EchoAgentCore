@@ -163,6 +163,7 @@ impl<H: TimelineHost + ?Sized + 'static> TimelineProjector<H> {
                     reasoning: None,
                     tool: None,
                     images: None,
+                    archive: None,
                     seq: 0, // 由宿主赋递增序号
                     ord: 0, // 由宿主赋（分页锚点，此后不变）
                 });
@@ -515,6 +516,7 @@ mod tests {
                 reasoning: None,
                 tool: None,
                 images: None,
+                archive: None,
                 seq: 0,
                 ord: 0,
             })
@@ -543,6 +545,7 @@ mod tests {
                 reasoning: None,
                 tool: None,
                 images: None,
+                archive: None,
                 seq: index as u64,
                 ord: index as u64,
             });

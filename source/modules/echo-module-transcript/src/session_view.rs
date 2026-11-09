@@ -37,12 +37,14 @@ use echo_module_management::protocol::{BackendCommand, BackendEvent, TimelineMes
 use echo_module_management::protocol::timeline_text::elide_reasoning_for_wire;
 
 /// 本模块处理的命令名（都属"会话视图投影"，写操作不在此列）。
-pub const COMMANDS: [&str; 5] = [
+pub const COMMANDS: [&str; 7] = [
     "RequestState",
     "RequestContext",
     "RequestTrunkTimeline",
     "RequestTimelineEarlier",
     "RequestSessionHistory",
+    "RequestSessionArchives",
+    "RequestSessionArchiveHistory",
 ];
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -82,6 +84,19 @@ pub struct HistoryView {
     pub max_seq: u64,
 }
 
+/// 一份压缩前归档的投影结果（只读快照）。
+#[derive(Debug, Clone, Default)]
+pub struct ArchiveHistoryView {
+    /// 派生出的条目（时间升序）。
+    pub messages: Vec<TimelineMessage>,
+    /// 截断前的总数。
+    pub total: usize,
+    /// `true` = 因 limit 只含最近 limit 条。
+    pub truncated: bool,
+    /// 读取 / 解析失败原因（`messages` 为空）。
+    pub error: Option<String>,
+}
+
 /// 宿主接缝：会话视图需要而模块不该知道的五项能力。
 pub trait SessionViewHost: Send + Sync {
     /// 面板重连时的**全量状态快照**（按发出顺序排列的事件）。
@@ -113,6 +128,19 @@ pub trait SessionViewHost: Send + Sync {
         session_id: String,
         limit: Option<usize>,
     ) -> BoxFuture<'_, HistoryView>;
+    /// 列出该人格的**压缩前归档**（只 stat，不解析内容）。
+    fn session_archives(
+        &self,
+        team_id: Option<String>,
+    ) -> BoxFuture<'_, Vec<echo_module_management::protocol::SessionArchiveEntry>>;
+    /// 读一份归档并按会话投影成显示历史。
+    fn session_archive_history(
+        &self,
+        team_id: Option<String>,
+        session_id: String,
+        archive: String,
+        limit: Option<usize>,
+    ) -> BoxFuture<'_, ArchiveHistoryView>;
     /// 正在执行 turn 的会话 id（随时间线快照补发）。
     fn active_turns(&self, team_id: Option<String>) -> BoxFuture<'_, Vec<String>>;
     /// 事件出口。
@@ -239,6 +267,35 @@ impl SessionViewHandler {
                 });
                 Ok(())
             }
+            BackendCommand::RequestSessionArchives { team_id } => {
+                let archives = self.host.session_archives(team_id.clone()).await;
+                self.host.emit(BackendEvent::SessionArchives {
+                    team_id,
+                    archives,
+                });
+                Ok(())
+            }
+            BackendCommand::RequestSessionArchiveHistory {
+                team_id,
+                session_id,
+                archive,
+                limit,
+            } => {
+                let view = self
+                    .host
+                    .session_archive_history(team_id.clone(), session_id.clone(), archive.clone(), limit)
+                    .await;
+                self.host.emit(BackendEvent::SessionArchiveHistory {
+                    team_id,
+                    session_id,
+                    archive,
+                    messages: view.messages,
+                    total: view.total,
+                    truncated: view.truncated,
+                    error: view.error,
+                });
+                Ok(())
+            }
             other => Err(format!(
                 "session-view 命令域不处理 {:?}（注册关系与命令泵不一致）",
                 other.kind_name()
@@ -276,6 +333,7 @@ mod tests {
             reasoning: None,
             tool: None,
             images: None,
+            archive: None,
             ord: seq,
         }
     }
@@ -320,7 +378,24 @@ mod tests {
             let v = self.history.lock().unwrap().clone();
             Box::pin(async move { v })
         }
-        fn active_turns(&self, _team_id: Option<String>) -> BoxFuture<'_, Vec<String>> {
+        fn session_archives(
+        &self,
+        _team_id: Option<String>,
+    ) -> BoxFuture<'_, Vec<echo_module_management::protocol::SessionArchiveEntry>> {
+        Box::pin(async { Vec::new() })
+    }
+
+    fn session_archive_history(
+        &self,
+        _team_id: Option<String>,
+        _session_id: String,
+        _archive: String,
+        _limit: Option<usize>,
+    ) -> BoxFuture<'_, ArchiveHistoryView> {
+        Box::pin(async { ArchiveHistoryView::default() })
+    }
+
+    fn active_turns(&self, _team_id: Option<String>) -> BoxFuture<'_, Vec<String>> {
             let v = self.turns.lock().unwrap().clone();
             Box::pin(async move { v })
         }
@@ -514,6 +589,12 @@ mod tests {
             "RequestTrunkTimeline": {"team_id":"t","since_seq":0,"limit":10},
             "RequestTimelineEarlier": {"before_ord":5,"limit":200},
             "RequestSessionHistory": {"session_id":"s","limit":500},
+            "RequestSessionArchives": {"team_id":"t"},
+            "RequestSessionArchiveHistory": {
+                "team_id":"t","session_id":"s",
+                "archive":"echo-sessions-t-20260101-000000-000-precompact.json",
+                "limit":500
+            },
         });
         for name in COMMANDS {
             let out = h.handle(name, payloads[name].clone()).await;

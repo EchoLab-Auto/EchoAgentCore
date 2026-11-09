@@ -170,6 +170,7 @@ pub fn display_history_for_session(
                     reasoning: None,
                     tool: None,
                     images: None,
+                    archive: None,
                     seq: 0,
                     ord: 0, // 派生条目：非时间线缓冲条目，无需分页锚点
                 });
@@ -252,11 +253,29 @@ pub fn display_history_for_session(
             // 显示时间线不为它造条目（与实时投影保持一致：实时也不发）。
             echo_session::SessionEvent::ModelStep(_) => {}
             echo_session::SessionEvent::Compaction(compaction) => {
-                messages.push(TimelineMessage::system(
-                    format!("上下文已压缩 · 替换 {} 条事件", compaction.replaced_count),
+                // 归档文件名（`CompactionEvent.archive` 是完整路径，这里只留
+                // 文件名：线上形状要稳定，且面板只按名字回查，不碰路径）。
+                let archive = compaction
+                    .archive
+                    .as_deref()
+                    .and_then(|path| std::path::Path::new(path).file_name())
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string);
+                let mut message = TimelineMessage::system(
+                    format!(
+                        "上下文已压缩 · 替换 {} 条事件{}",
+                        compaction.replaced_count,
+                        if archive.is_some() {
+                            "（原件已归档，可查看压缩前的历史）"
+                        } else {
+                            ""
+                        }
+                    ),
                     session_id,
                     last_time,
-                ));
+                );
+                message.archive = archive;
+                messages.push(message);
             }
         }
     }
@@ -374,6 +393,7 @@ mod tests {
                 reasoning: None,
                 tool: None,
                 images: None,
+                archive: None,
                 seq: 5,
                 ord: 0,
             },
@@ -386,6 +406,7 @@ mod tests {
                 reasoning: None,
                 tool: None,
                 images: None,
+                archive: None,
                 seq: 99,
                 ord: 1,
             },

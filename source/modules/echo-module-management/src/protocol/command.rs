@@ -310,6 +310,28 @@ pub enum BackendCommand {
         #[serde(default)]
         limit: Option<usize>,
     },
+    /// 列出某 persona 的**压缩前归档**（`archives/` 下的快照文件名与大小）。
+    /// 响应 `BackendEvent::SessionArchives`。
+    ///
+    /// 为什么需要：压缩会把事件日志里的前缀换成一条摘要（原件写入
+    /// `archives/`），投影与时间线从此看不到那段历史。用户要能回看"压缩前
+    /// 到底聊了什么"，只能靠这些归档——所以把清单与读取分开：列清单很便宜
+    /// （只 stat 文件），读取才解析 JSON（一份可有 20 MB）。
+    RequestSessionArchives {
+        #[serde(default)]
+        team_id: Option<String>,
+    },
+    /// 读一份压缩前归档，按会话投影成显示历史。
+    /// 响应 `BackendEvent::SessionArchiveHistory`。
+    RequestSessionArchiveHistory {
+        #[serde(default)]
+        team_id: Option<String>,
+        session_id: String,
+        /// 归档文件名（`SessionArchives` 的 `name` 字段；不接受任意路径）。
+        archive: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     /// 请求后台 shell 会话列表（带 team_id 时只返回该 persona 的会话）。
     RequestShellSessions {
         #[serde(default)]
@@ -553,6 +575,8 @@ impl BackendCommand {
             Self::RequestTrunkTimeline { .. } => "RequestTrunkTimeline",
             Self::RequestTimelineEarlier { .. } => "RequestTimelineEarlier",
             Self::RequestSessionHistory { .. } => "RequestSessionHistory",
+            Self::RequestSessionArchives { .. } => "RequestSessionArchives",
+            Self::RequestSessionArchiveHistory { .. } => "RequestSessionArchiveHistory",
             Self::RequestShellSessions { .. } => "RequestShellSessions",
             Self::ShellStart { .. } => "ShellStart",
             Self::ShellExec { .. } => "ShellExec",

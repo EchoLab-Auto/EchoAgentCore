@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use echo_module_management::protocol::BackendEvent;
 use echo_module_transcript::session_view::{
+    ArchiveHistoryView,
     EarlierView, HistoryView, SessionViewHost, TimelineView,
 };
 
@@ -228,6 +229,59 @@ impl SessionViewHost for AgentSessionViewHost {
                 total,
                 truncated,
                 max_seq,
+            }
+        })
+    }
+
+    fn session_archives(
+        &self,
+        team_id: Option<String>,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Vec<echo_module_management::protocol::SessionArchiveEntry>,
+                > + Send
+                + '_,
+        >,
+    > {
+        // 只 stat 文件（不解析内容）：一份归档可达 20+ MB，人格目录里十几份。
+        let target = self.target(team_id.as_deref());
+        Box::pin(async move { target.trunk.list_archives() })
+    }
+
+    fn session_archive_history(
+        &self,
+        team_id: Option<String>,
+        session_id: String,
+        archive: String,
+        limit: Option<usize>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = ArchiveHistoryView> + Send + '_>,
+    > {
+        // 归档是**压缩前的全量事件日志**：压缩会把前缀从在线日志里摘掉换成
+        // 摘要，所以"压缩前聊了什么"只有这里还留着。解析 20 MB JSON 是阻塞
+        // I/O + CPU，放到 blocking 线程，别占 tokio worker。
+        let limit = limit.unwrap_or(500).clamp(1, 5000);
+        let target = self.target(team_id.as_deref());
+        Box::pin(async move {
+            let trunk = target.trunk.clone();
+            let joined = tokio::task::spawn_blocking(move || {
+                trunk.read_archive_history(&archive, &session_id, limit)
+            })
+            .await;
+            match joined {
+                Ok((messages, total, truncated, error)) => ArchiveHistoryView {
+                    messages,
+                    total,
+                    truncated,
+                    error,
+                },
+                Err(error) => ArchiveHistoryView {
+                    messages: Vec::new(),
+                    total: 0,
+                    truncated: false,
+                    error: Some(format!("读取归档的后台任务失败：{error}")),
+                },
             }
         })
     }

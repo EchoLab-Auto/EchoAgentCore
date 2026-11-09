@@ -374,7 +374,9 @@ impl Agent {
             | BackendCommand::RequestContext { .. }
             | BackendCommand::RequestTrunkTimeline { .. }
             | BackendCommand::RequestTimelineEarlier { .. }
-            | BackendCommand::RequestSessionHistory { .. } => {
+            | BackendCommand::RequestSessionHistory { .. }
+            | BackendCommand::RequestSessionArchives { .. }
+            | BackendCommand::RequestSessionArchiveHistory { .. } => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
                     message: "会话视图命令由 echo-agent.management.panel 模块处理，但该模块未启用"

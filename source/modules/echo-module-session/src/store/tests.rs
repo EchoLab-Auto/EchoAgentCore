@@ -717,6 +717,7 @@ fn timeline_push_caps_at_max_and_keeps_newest() {
             reasoning: None,
             tool: None,
             images: None,
+            archive: None,
             seq: 0,
             ord: 0,
         });
@@ -759,6 +760,7 @@ async fn clear_history_wipes_log_trunk_timeline_and_disk() {
         reasoning: None,
         tool: None,
         images: None,
+        archive: None,
         seq: 0,
         ord: 0,
     });
@@ -813,6 +815,7 @@ async fn clear_session_only_wipes_target_and_keeps_siblings() {
             reasoning: None,
             tool: None,
             images: None,
+            archive: None,
             seq: 0,
             ord: 0,
         };
@@ -1027,6 +1030,7 @@ async fn timeline_probe_counters_track_writes() {
         reasoning: None,
         tool: None,
         images: None,
+        archive: None,
         seq: 0,
         ord: 0,
     };
@@ -1099,6 +1103,7 @@ async fn timeline_roundtrips_through_the_persisted_file() {
         reasoning: None,
         tool: None,
         images: None,
+        archive: None,
         seq: 0,
         ord: 0,
     });
@@ -1111,6 +1116,7 @@ async fn timeline_roundtrips_through_the_persisted_file() {
         reasoning: Some(vec!["先分析".into()]),
         tool: None,
         images: None,
+        archive: None,
         seq: 0,
         ord: 0,
     });
@@ -1165,6 +1171,7 @@ fn push_user(store: &TrunkStore, content: &str) {
         reasoning: None,
         tool: None,
         images: None,
+        archive: None,
         seq: 0,
         ord: 0,
     });

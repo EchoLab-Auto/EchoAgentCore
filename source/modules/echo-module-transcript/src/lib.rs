@@ -107,14 +107,18 @@ mod tests {
 
     /// 命令域必须与此前 management 完全一致（5 条），不能丢。
     #[test]
-    fn declares_the_five_session_view_commands() {
-        assert_eq!(session_view::COMMANDS.len(), 5);
+    fn declares_the_session_view_commands() {
+        // 7 = 五个会话视图命令 + 两个压缩前归档命令（2026-11：压缩会把历史
+        // 前缀换成摘要，原件只剩归档，面板要能列/读）
+        assert_eq!(session_view::COMMANDS.len(), 7);
         for name in [
             "RequestState",
             "RequestContext",
             "RequestTrunkTimeline",
             "RequestTimelineEarlier",
             "RequestSessionHistory",
+            "RequestSessionArchives",
+            "RequestSessionArchiveHistory",
         ] {
             assert!(session_view::COMMANDS.contains(&name), "缺 {name}");
         }
