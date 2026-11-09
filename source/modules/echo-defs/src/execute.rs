@@ -216,6 +216,38 @@ impl ToolExecutor {
         cx: &ToolCallContext,
         call: &ToolInvocation,
     ) -> ToolResult {
+        // 上游异常防御（2026-11-09）：网关在后端之间做路由切换时，观测到流式
+        // `tool_calls` 里 **`function.name` 被丢掉、只剩 arguments**（同一时刻
+        // id 形态从 `call_<32hex>` 变成 `call_00_<base62>`，参数 JSON 也被重新
+        // 序列化）。旧行为是两个后果叠加：注册表查不到 → `找不到工具: `（模型
+        // 看不出缺的是"名字"，只能反复瞎试），且没有任何 warn（运维侧完全看不
+        // 见上游异常）。实测一轮 turn 里模型重试 25 次、烧掉约 50 万输入 token。
+        //
+        // 这里把「缺名字」与「名字写错」分开：前者是可自纠的协议错误——回一条
+        // 点名全部可用工具的提示，并记一条 warn 供定位上游。
+        if call.name.trim().is_empty() {
+            let mut names: Vec<String> = self
+                .registry
+                .definitions()
+                .await
+                .iter()
+                .map(|definition| definition.name.clone())
+                .collect();
+            names.sort();
+            tracing::warn!(
+                session = %cx.session_id,
+                tool_call_id = %call.id,
+                arguments = %truncate(&call.arguments, 160),
+                available = names.len(),
+                "tool call arrived without a function name (upstream stripped it?)"
+            );
+            return ToolResult::text(format!(
+                "error: 工具调用缺少函数名（function.name 是空字符串，上游没有回传）。\
+                 可用工具: {}。请重新发起调用，function.name 取上列之一；\
+                 若仍然缺少名字，说明上游通道异常，不要继续重试，直接告知用户。",
+                names.join(", ")
+            ));
+        }
         let outcome = match serde_json::from_str::<Value>(&call.arguments) {
             Err(error) => Err(format!(
                 "error: 工具参数不是合法 JSON（{error}）。你发送的原始参数: {}。\
@@ -440,6 +472,32 @@ mod tests {
             .await;
         assert!(result.text.starts_with("error:"), "{}", result.text);
         assert!(result.text.contains("{not json"), "{}", result.text);
+    }
+
+    /// 空工具名（上游丢 `function.name`）→ 可自纠的错误：点名可用工具，
+    /// 而不是 `找不到工具: `（模型看不出缺的是"名字"，会一直瞎试）。
+    #[tokio::test]
+    async fn blank_tool_name_gets_a_corrective_error_listing_tools() {
+        let (ex, rec) = executor(true);
+        let result = ex
+            .run(&rec, &cx(), &ToolInvocation::new("c1", "", "{}"))
+            .await;
+        assert!(result.text.starts_with("error:"), "{}", result.text);
+        assert!(
+            result.text.contains("缺少函数名"),
+            "要指明是名字缺失：{}",
+            result.text
+        );
+        assert!(
+            result.text.contains("echo"),
+            "要点名可用工具：{}",
+            result.text
+        );
+        assert!(
+            !result.text.contains("找不到工具"),
+            "缺名字不该退化成「找不到工具」：{}",
+            result.text
+        );
     }
 
     /// 未注册的工具 → 错误文本（不是 panic，也不悄悄成功）。

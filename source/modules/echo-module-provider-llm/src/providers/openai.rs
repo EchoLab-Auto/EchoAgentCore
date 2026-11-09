@@ -116,22 +116,46 @@ impl LlmProvider for OpenAiProvider {
     async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, LlmError> {
         let body =
             build_request_body_with_reasoning(request, false, self.thinking, self.reasoning_effort);
-        let req = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .headers(self.extra_headers.clone())
-            .json(&body);
-        let resp = with_idle_timeout(req.send()).await?;
-        let status = resp.status();
-        let text = with_idle_timeout(resp.text()).await?;
-        if !status.is_success() {
+        let endpoint = format!("{}/chat/completions", self.base_url);
+        let send = || {
+            self.client
+                .post(&endpoint)
+                .bearer_auth(&self.api_key)
+                .headers(self.extra_headers.clone())
+                .json(&body)
+        };
+        // 瞬时网关故障重试（见 `is_transient_gateway_error`）：chat 无副作用，
+        // 重发安全。
+        let mut attempt = 0usize;
+        let text = loop {
+            let resp = with_idle_timeout(send().send()).await?;
+            let status = resp.status();
+            let text = with_idle_timeout(resp.text()).await?;
+            if status.is_success() {
+                break text;
+            }
+            if attempt < TRANSIENT_RETRIES
+                && is_transient_gateway_error(status.as_u16(), &text)
+            {
+                let backoff = TRANSIENT_BACKOFF_MS[attempt];
+                attempt += 1;
+                tracing::warn!(
+                    model = %self.model,
+                    status = status.as_u16(),
+                    attempt,
+                    backoff_ms = backoff,
+                    body = %echo_defs::token::truncate(&text, 200),
+                    "upstream transient failure; retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                continue;
+            }
             return Err(LlmError::Api(format!(
                 "HTTP {status}: {}{}",
                 echo_defs::token::truncate(&text, 300),
                 html_endpoint_hint(&text)
             )));
-        }
+        };
         let parsed: OpenAIResponse = serde_json::from_str(&text).map_err(|e| {
             LlmError::Parse(format!(
                 "{e} — body: {}{}",
@@ -180,38 +204,52 @@ impl LlmProvider for OpenAiProvider {
                 .headers(self.extra_headers.clone())
                 .json(body)
         };
-        let mut resp = with_idle_timeout(send(&body).send()).await?;
-        // 兼容不接受 `stream_options` 的网关：400 且原因指向该字段时去掉重试
-        // 一次（OpenAI/DeepSeek/Kimi 官方端点均支持；此为第三方代理保险）。
-        if resp.status().as_u16() == 400 {
-            let text = resp
+        // 握手阶段的重试（2026-11-09）：只重发"还没开始读流"的失败——
+        // 一旦进入 `bytes_stream()` 就不能重来了（增量已经发出去一部分）。
+        //   * 瞬时网关故障（5xx / 429 / 转述的上游失败）→ 退避后重发；
+        //   * 400 且原因指向 `stream_options` → 去掉该字段重发一次（有些网关
+        //     不认它；OpenAI/DeepSeek/Kimi 官方端点都支持，这是第三方代理保险）。
+        let mut body = body;
+        let mut attempt = 0usize;
+        let resp = loop {
+            let candidate = with_idle_timeout(send(&body).send()).await?;
+            let status = candidate.status();
+            if status.is_success() {
+                break candidate;
+            }
+            let text = candidate
                 .text()
                 .await
                 .map_err(|e| LlmError::Http(e.to_string()))?;
-            if text.contains("stream_options") {
-                let mut retry = body.clone();
-                if let Some(obj) = retry.as_object_mut() {
+            if status.as_u16() == 400
+                && text.contains("stream_options")
+                && body.get("stream_options").is_some()
+            {
+                if let Some(obj) = body.as_object_mut() {
                     obj.remove("stream_options");
                 }
-                resp = with_idle_timeout(send(&retry).send()).await?;
-            } else {
-                return Err(LlmError::Api(format!(
-                    "HTTP 400: {}",
-                    echo_defs::token::truncate(&text, 300)
-                )));
+                tracing::debug!(model = %self.model, "gateway rejected stream_options; retrying without it");
+                continue;
             }
-        }
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp
-                .text()
-                .await
-                .map_err(|e| LlmError::Http(e.to_string()))?;
+            if attempt < TRANSIENT_RETRIES && is_transient_gateway_error(status.as_u16(), &text) {
+                let backoff = TRANSIENT_BACKOFF_MS[attempt];
+                attempt += 1;
+                tracing::warn!(
+                    model = %self.model,
+                    status = status.as_u16(),
+                    attempt,
+                    backoff_ms = backoff,
+                    body = %echo_defs::token::truncate(&text, 200),
+                    "upstream transient failure; retrying stream handshake"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                continue;
+            }
             return Err(LlmError::Api(format!(
                 "HTTP {status}: {}",
                 echo_defs::token::truncate(&text, 300)
             )));
-        }
+        };
         let mut stream = resp.bytes_stream();
         let mut buffer = String::new();
         let mut acc = ChatStreamAccumulator::new();
@@ -251,7 +289,55 @@ impl LlmProvider for OpenAiProvider {
                 }
             }
         }
-        Ok(acc.finish())
+        let response = acc.finish();
+        // 上游丢工具名的补救（2026-11-09）：整份流式响应里 tool_calls 全都没有
+        // 名字时，用**同一请求的非流式**通路重取一次。观测到丢名只发生在流式
+        // 转发路径上（非流式响应完整），所以这是最省的一次补救：一次额外请求
+        // 换回整轮可用，胜过让模型对着 `找不到工具: ` 空转几十次。
+        if !response.tool_calls.is_empty()
+            && response
+                .tool_calls
+                .iter()
+                .all(|call| call.name.trim().is_empty())
+        {
+            tracing::warn!(
+                model = %self.model,
+                calls = response.tool_calls.len(),
+                "streamed tool calls arrived without function names; retrying once (non-stream)"
+            );
+            match self.chat(request).await {
+                Ok(retry)
+                    if !retry.tool_calls.is_empty()
+                        && retry
+                            .tool_calls
+                            .iter()
+                            .all(|call| !call.name.trim().is_empty()) =>
+                {
+                    tracing::warn!(
+                        model = %self.model,
+                        calls = retry.tool_calls.len(),
+                        "non-stream retry recovered the tool names"
+                    );
+                    // 文本/思考沿用流式那份（已增量发过，不能重复），
+                    // 工具调用与用量以非流式为准。
+                    return Ok(ChatResponse {
+                        tool_calls: retry.tool_calls,
+                        usage: retry.usage,
+                        stop_reason: retry.stop_reason,
+                        ..response
+                    });
+                }
+                Ok(_) => {
+                    tracing::warn!(model = %self.model, "non-stream retry still has no tool names")
+                }
+                Err(error) => tracing::warn!(
+                    model = %self.model,
+                    error = %error,
+                    "non-stream retry failed"
+                ),
+            }
+        }
+        Ok(response)
     }
 }
 
@@ -318,8 +404,17 @@ fn parse_sse_event(event: &str) -> Vec<SseOutcome> {
                     tool_call_delta: Some(ToolCallDelta {
                         index: tc.index.unwrap_or(0),
                         id: tc.id.clone(),
-                        name: tc.function.as_ref().and_then(|f| f.name.clone()),
-                        arguments: tc.function.as_ref().and_then(|f| f.arguments.clone()),
+                        // `function.name` 优先，回落顶格 `name`（见 wire 注释）。
+                        name: tc
+                            .function
+                            .as_ref()
+                            .and_then(|f| f.name.clone())
+                            .or_else(|| tc.name.clone()),
+                        arguments: tc
+                            .function
+                            .as_ref()
+                            .and_then(|f| f.arguments.clone())
+                            .or_else(|| tc.arguments.as_ref().map(wire_arguments)),
                     }),
                 }));
             }
@@ -472,6 +567,25 @@ fn html_endpoint_hint(body: &str) -> &'static str {
     }
 }
 
+/// 上游瞬时故障判定（2026-11-09）。
+///
+/// 网关会把自己的**上游失败**包成 HTTP 400 + `{"type":"server_error"}`：
+/// 实测收到过 `Upstream request failed: [MissingParameter] Invalid request:
+/// missing required parameter trace_id: <hex>`——那是网关到后端的某次请求失败
+/// 后回吐的转述，请求体本身没问题（同一份请求隔一会儿再发就正常）。这类错误
+/// 必须与"请求本身有问题"分开：400 参数错、401 认证、404 端点都不会因为重发
+/// 而变好，重试纯浪费；5xx / 429 / 网关转述的上游失败就值得再试一次。
+fn is_transient_gateway_error(status: u16, body: &str) -> bool {
+    matches!(status, 429 | 500..=599)
+        || (status == 400
+            && (body.contains("\"type\":\"server_error\"") || body.contains("Upstream request failed")))
+}
+
+/// 瞬时故障的重试预算：1 次首发 + 2 次重试；退避够短（400ms / 1.2s），
+/// 不把用户的等待拖成"卡住"。
+const TRANSIENT_RETRIES: usize = 2;
+const TRANSIENT_BACKOFF_MS: [u64; TRANSIENT_RETRIES] = [400, 1200];
+
 fn role_str(role: echo_defs::message::ChatRole) -> &'static str {
     match role {
         echo_defs::message::ChatRole::System => "system",
@@ -621,6 +735,22 @@ struct StreamToolCallWire {
     index: Option<usize>,
     id: Option<String>,
     function: Option<StreamFunctionWire>,
+    /// 顶格 `name`：少数 OpenAI 兼容适配器（含网关在某些后端之上的转发路径）
+    /// 不把工具名放进 `function`。2026-11-09 实测 `function.name` 被整段丢掉、
+    /// 只剩 `arguments`，而工具名恰好走的是这个位置。
+    #[serde(default)]
+    name: Option<String>,
+    /// 顶格 `arguments`：可能是字符串，也可能是已解析的对象（按对象序列化回去）。
+    #[serde(default)]
+    arguments: Option<serde_json::Value>,
+}
+
+/// 顶格 `arguments` 归一成字符串（字符串原样，对象/数组序列化）。
+fn wire_arguments(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -631,6 +761,53 @@ struct StreamFunctionWire {
 
 #[cfg(test)]
 mod tests {
+    /// 顶格 `name` / `arguments`（不放在 `function` 里）：少数 OpenAI 兼容
+    /// 适配器就这么发。2026-11-09 上游丢 `function.name` 的事故里，工具名
+    /// 只在整份响应级别缺失——多认一种形状就多一条活路。
+    /// 瞬时网关故障的判定边界：网关转述的上游失败值得重试，参数/认证错误不值得。
+    #[test]
+    fn transient_gateway_errors_are_told_apart_from_request_errors() {
+        // 2026-11-09 实测原文：网关把自己的上游失败包成 400。
+        let upstream_failure = r#"{"error":{"type":"server_error","message":"Upstream request failed: [MissingParameter] Invalid request: missing required parameter trace_id: 64c1"}}"#;
+        assert!(is_transient_gateway_error(400, upstream_failure));
+        assert!(is_transient_gateway_error(500, "boom"));
+        assert!(is_transient_gateway_error(502, ""));
+        assert!(is_transient_gateway_error(429, "slow down"));
+        // 请求本身有问题：重发只会得到同样的错误。
+        assert!(!is_transient_gateway_error(400, r#"{"error":{"message":"invalid model"}}"#));
+        assert!(!is_transient_gateway_error(401, r#"{"error":{"message":"bad key"}}"#));
+        assert!(!is_transient_gateway_error(404, "not found"));
+    }
+
+    #[test]
+    fn top_level_tool_call_name_is_accepted() {
+        let event = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_00_x","name":"bash","arguments":"{\"command\":\"echo hi\"}"}]}}]}"#;
+        match parse_sse_event(event).pop() {
+            Some(SseOutcome::Chunk(chunk)) => {
+                let delta = chunk.tool_call_delta.expect("tool call delta");
+                assert_eq!(delta.name.as_deref(), Some("bash"));
+                assert_eq!(delta.arguments.as_deref(), Some(r#"{"command":"echo hi"}"#));
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
+    /// 顶格 `arguments` 是已解析对象时也要归一成字符串。
+    #[test]
+    fn top_level_object_arguments_are_serialized() {
+        let event = r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"name":"bash","arguments":{"command":"echo hi"}}]}}]}"#;
+        match parse_sse_event(event).pop() {
+            Some(SseOutcome::Chunk(chunk)) => {
+                let delta = chunk.tool_call_delta.expect("tool call delta");
+                assert_eq!(delta.name.as_deref(), Some("bash"));
+                let args = delta.arguments.expect("arguments");
+                assert!(args.contains("echo hi"), "{args}");
+                assert!(args.starts_with('{'), "{args}");
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+
     #[test]
     fn html_endpoint_hint_detects_webpage_bodies() {
         assert!(!html_endpoint_hint("{\"ok\":true}").contains("提示"));

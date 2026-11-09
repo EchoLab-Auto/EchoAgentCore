@@ -248,6 +248,10 @@ impl TurnRunner {
             .unwrap_or(self.options.max_tool_iterations)
             .max(1);
         let mut truncation_continues = 0usize;
+        // 上游丢工具名的连续步数（2026-11-09）。provider 侧已经在整份响应
+        // 都没名字时非流式重试一次；这里兜住「重试也失败」的情况——否则模型
+        // 只能对着一串 `找不到工具: ` 反复瞎试，实测可烧掉几十万输入 token。
+        let mut nameless_streak = 0usize;
 
         for step_index in 0..max_iterations {
             if cancel.is_cancelled() {
@@ -372,6 +376,30 @@ impl TurnRunner {
                     DispatchMode::Observe,
                 );
                 return Ok(reply);
+            }
+
+            // 整个响应里的工具调用都没有名字 = 上游把 `function.name` 丢了。
+            // 给两次自纠机会（模型看得到「缺少函数名 + 可用工具清单」），
+            // 第三次直接收尾：通道坏在链路上，让模型继续试只是白烧钱。
+            if response
+                .tool_calls
+                .iter()
+                .all(|call| call.name.trim().is_empty())
+            {
+                nameless_streak += 1;
+                if nameless_streak >= 3 {
+                    tracing::warn!(
+                        session = %session_id,
+                        streak = nameless_streak,
+                        "upstream keeps returning tool calls without names; aborting turn"
+                    );
+                    return Err(LoopError::Model(
+                        "上游连续 3 步没有回传工具名（function.name 为空），本轮已中止；请稍后重试或切换模型供应商"
+                            .into(),
+                    ));
+                }
+            } else {
+                nameless_streak = 0;
             }
 
             // The model wants tools: record the assistant turn, execute each
