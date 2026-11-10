@@ -1,4 +1,4 @@
-//! 压缩前归档的**清单与回放**（2026-11）。
+//! 压缩前归档的**读取与切片**（2026-11）。
 //!
 //! ## 为什么需要
 //!
@@ -7,25 +7,47 @@
 //! "压缩前到底聊了什么"在投影、显示时间线、面板里都**看不见了**——只有
 //! `archives/` 里那份快照还留着全量事件日志。用户要能回看，就得从这里读。
 //!
-//! ## 两段式（清单便宜、读取才贵）
+//! ## 这里只做 I/O，不做投影
 //!
-//! - 清单：`read_dir` + `metadata`，不解析内容。归档单份可达 20+ MB，
-//!   人格目录里可能有十几份。
-//! - 读取：解析 JSON 取 `events` 数组，再用**与在线历史完全相同**的派生函数
-//!   （[`super::history::display_history_for_session`]）投影——同一批展示规则
-//!   （工具概要截断 / 定时信封 / 单行折叠）自然一致，不会出现"归档里看到的
-//!   和在线看到的形状不同"。
+//! 本模块的职责是"把归档里某会话的前 N 条事件读出来"，投影交给
+//! [`super::history::display_history_extended`]——它与在线历史共用同一批展示
+//! 规则（工具概要截断 / 定时信封 / 单行折叠），所以归档里看到的形状和在线
+//! 看到的一致。这条分工也让派生逻辑可以单测（喂假事件即可，不必造 20 MB
+//! JSON）。
+//!
+//! ## 切片为什么按**事件**数
+//!
+//! `CompactionEvent.replaced_count` 是**按会话数的事件数**：一次工具调用 +
+//! 它的结果 = 2 条事件、派生后只有 1 行。所以边界只能按事件切，"取前 N 条
+//! 消息"会切歪。
 //!
 //! ## 安全边界
 //!
-//! 只接受**文件名**（面板传回来的 `SessionArchiveEntry.name`）：路径分隔符、
-//! `..` 一律拒绝，且必须能在本团队 `archives/` 目录里 stat 到。归档是只读的
-//! 事实记录，不存在"写回"路径。
+//! 只接受**文件名**：路径分隔符、`..` 一律拒绝，且必须能在本团队
+//! `archives/` 目录里找到。归档是只读的事实记录，不存在"写回"路径。
 
-use echo_module_management::protocol::{SessionArchiveEntry, TimelineMessage};
+use std::sync::{Arc, Mutex};
 
-use super::history::display_history_for_session;
+use echo_session::SessionEvent;
+
 use super::TrunkStore;
+
+/// 归档解析缓存条目上限。
+///
+/// 一份归档 18–23 MB，解析一次 1–3 s，而同一层会被反复请求（展开→收起→
+/// 再展开、分页都会重走派生）。缓存**整份会话事件**（不是投影结果，因为
+/// 不同请求的 `count` 可能不同）。一层事件带推理全文可达数 MB，所以只留
+/// 最近 4 份——再多是白占内存。
+const ARCHIVE_CACHE_ENTRIES: usize = 4;
+
+/// 缓存键：路径 + mtime + 大小 + 会话 + 条数。
+///
+/// 带上 mtime/大小是为了归档被轮转后同名文件（理论上不会，但轮转策略可能
+/// 变成复用文件名）不会被旧缓存命中。
+type ArchiveCacheKey = (String, i64, u64, String, usize);
+
+static ARCHIVE_CACHE: Mutex<Vec<(ArchiveCacheKey, Arc<Vec<SessionEvent>>)>> =
+    Mutex::new(Vec::new());
 
 /// 归档文件名合法性（只允许本模块自己生成的那种名字）。
 fn is_safe_archive_name(name: &str) -> bool {
@@ -37,38 +59,12 @@ fn is_safe_archive_name(name: &str) -> bool {
         && name.ends_with(".json")
 }
 
-/// 从归档文件名里解析内嵌的 UTC 时间戳（`{stem}-YYYYMMDD-HHMMSS[-SSS][-reason].json`）。
-///
-/// 只在能完整解析时返回 `Some`（解析不出就返回 0 让面板显示"未知时间"，
-/// 不猜）。
-fn created_at_of(name: &str, stem: &str) -> (i64, String) {
-    let Some(rest) = name.strip_prefix(stem).and_then(|r| r.strip_prefix('-')) else {
-        return (0, String::new());
-    };
-    let Some(stamp) = rest.strip_suffix(".json") else {
-        return (0, String::new());
-    };
-    let mut parts = stamp.split('-');
-    let (Some(date), Some(clock)) = (parts.next(), parts.next()) else {
-        return (0, String::new());
-    };
-    if date.len() != 8 || clock.len() != 6 {
-        return (0, String::new());
-    }
-    // 剩余部分：`[毫秒]-[reason]` 或 `[reason]`
-    let rest: Vec<&str> = parts.collect();
-    let reason = rest
-        .iter()
-        .find(|part| part.len() != 3 || !part.chars().all(|c| c.is_ascii_digit()))
-        .map(|part| part.to_string())
-        .unwrap_or_default();
-    let Ok(naive) = chrono::NaiveDateTime::parse_from_str(
-        &format!("{date}{clock}"),
-        "%Y%m%d%H%M%S",
-    ) else {
-        return (0, reason);
-    };
-    (naive.and_utc().timestamp(), reason)
+/// 归档文档里我们关心的部分（其余字段——header / identities / timeline /
+/// version——反序列化时忽略）。
+#[derive(serde::Deserialize)]
+struct ArchiveDocument {
+    #[serde(default)]
+    events: Vec<SessionEvent>,
 }
 
 impl TrunkStore {
@@ -79,122 +75,106 @@ impl TrunkStore {
         dir.is_dir().then_some(dir)
     }
 
-    /// 压缩前归档清单（按文件名倒序 = 时间倒序，最新的在前）。
-    pub fn list_archives(&self) -> Vec<SessionArchiveEntry> {
-        let Some(dir) = self.archives_dir() else {
-            return Vec::new();
-        };
-        let stem = self
-            .persist_path()
-            .and_then(|path| path.file_stem().and_then(|s| s.to_str()).map(str::to_string))
-            .unwrap_or_default();
-        let Ok(read) = std::fs::read_dir(&dir) else {
-            return Vec::new();
-        };
-        let mut entries: Vec<SessionArchiveEntry> = read
-            .flatten()
-            .filter_map(|entry| {
-                let name = entry.file_name().to_str()?.to_string();
-                if !is_safe_archive_name(&name) {
-                    return None;
-                }
-                // 只列**本团队**的归档（stem 锚定：别把其他人格的归档混进来）
-                if !stem.is_empty() && !name.starts_with(&format!("{stem}-")) {
-                    return None;
-                }
-                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                let (created_at, reason) = created_at_of(&name, &stem);
-                Some(SessionArchiveEntry {
-                    name,
-                    created_at,
-                    size,
-                    reason,
-                })
-            })
-            .collect();
-        entries.sort_by(|a, b| b.name.cmp(&a.name));
-        entries
-    }
-
-    /// 读一份归档并按会话投影成显示历史（`archive_history` 名字已被
-    /// 「归档当前会话」占用，故加 `read_` 前缀）。
+    /// 读 `archive` 里 `session_id` 的**前** `count` 条事件（压缩边界切分）。
     ///
-    /// 返回 `(messages, total, truncated, error)`。读取/解析失败不 panic
-    /// （面板要显示原因，而不是让命令悬空）。
-    pub fn read_archive_history(
+    /// 返回 `(events, error)`；`error` 非空时 `events` 为空（面板据此显示
+    /// "归档已清理"而不是空列表）。读取/解析失败不 panic——归档是可选的历史，
+    /// 坏一份不该让整个历史请求失败。
+    ///
+    /// 阻塞 I/O + CPU（解析 20 MB JSON），调用方应放到 `spawn_blocking`。
+    pub fn archive_prefix_events(
         &self,
         archive: &str,
         session_id: &str,
-        limit: usize,
-    ) -> (Vec<TimelineMessage>, usize, bool, Option<String>) {
+        count: usize,
+    ) -> (Vec<SessionEvent>, Option<String>) {
         if !is_safe_archive_name(archive) {
-            return (
-                Vec::new(),
-                0,
-                false,
-                Some(format!("归档名不合法：{archive}")),
-            );
+            return (Vec::new(), Some(format!("归档名不合法：{archive}")));
         }
         let Some(dir) = self.archives_dir() else {
             return (
                 Vec::new(),
-                0,
-                false,
                 Some("该 persona 没有归档目录（未启用持久化？）".into()),
             );
         };
         let path = dir.join(archive);
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(raw) => raw,
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
             Err(error) => {
                 // 归档有**保留上限**（`DEFAULT_ARCHIVE_MAX_FILES`，20 份）：
                 // 压缩越频繁，越早的归档越可能已被清理。这条提示要让人知道
-                // "不是坏了，是被轮转掉了"，以及"哪些还在"。
+                // "不是坏了，是被轮转掉了"。
                 let hint = if error.kind() == std::io::ErrorKind::NotFound {
                     "该归档已被清理（archives 只保留最近 20 份），更早的压缩历史不再可读"
                 } else {
                     "读取归档失败"
                 };
-                return (Vec::new(), 0, false, Some(format!("{hint}：{error}")));
+                return (Vec::new(), Some(format!("{hint}：{error}")));
             }
         };
-        // 归档是 trunk 文档（`{ events, header, identities, timeline, version }`）：
-        // 只要 `events`——那是压缩前的全量事件日志，投影的真源。
-        let document: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(value) => value,
+        let mtime = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|delta| delta.as_secs() as i64)
+            .unwrap_or(0);
+        let key: ArchiveCacheKey = (
+            path.to_string_lossy().into_owned(),
+            mtime,
+            metadata.len(),
+            session_id.to_string(),
+            count,
+        );
+        if let Some(hit) = cache_lookup(&key) {
+            return ((*hit).clone(), None);
+        }
+
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) => return (Vec::new(), Some(format!("读取归档失败：{error}"))),
+        };
+        // 直接反序列化成事件数组（不经 `serde_json::Value` 中转：20 MB 文档
+        // 走 Value 会多一份完整语法树，峰值内存翻倍）。
+        let document: ArchiveDocument = match serde_json::from_str(&raw) {
+            Ok(document) => document,
             Err(error) => {
                 return (
                     Vec::new(),
-                    0,
-                    false,
-                    Some(format!("归档不是合法 JSON：{error}")),
+                    Some(format!("归档不是合法的事件文档：{error}")),
                 )
             }
         };
-        let Some(events_value) = document.get("events") else {
-            return (
-                Vec::new(),
-                0,
-                false,
-                Some("归档里没有 events 字段（格式不符）".into()),
-            );
-        };
-        let events: Vec<echo_session::SessionEvent> = match serde_json::from_value(
-            events_value.clone(),
-        ) {
-            Ok(events) => events,
-            Err(error) => {
-                return (
-                    Vec::new(),
-                    0,
-                    false,
-                    Some(format!("归档事件反序列化失败：{error}")),
-                )
-            }
-        };
-        let (messages, total, truncated) =
-            display_history_for_session(&events, session_id, limit);
-        (messages, total, truncated, None)
+        let events: Vec<SessionEvent> = document
+            .events
+            .into_iter()
+            .filter(|event| event.session() == Some(session_id))
+            .take(count)
+            .collect();
+        let events = Arc::new(events);
+        cache_store(key, events.clone());
+        ((*events).clone(), None)
+    }
+}
+
+/// 取缓存（命中即提到队尾 = LRU 刷新）。
+fn cache_lookup(key: &ArchiveCacheKey) -> Option<Arc<Vec<SessionEvent>>> {
+    let mut cache = ARCHIVE_CACHE.lock().ok()?;
+    let position = cache.iter().position(|(k, _)| k == key)?;
+    let entry = cache.remove(position);
+    let value = entry.1.clone();
+    cache.push(entry);
+    Some(value)
+}
+
+/// 写缓存（超出上限丢队首 = 最久未用）。
+fn cache_store(key: ArchiveCacheKey, events: Arc<Vec<SessionEvent>>) {
+    let Ok(mut cache) = ARCHIVE_CACHE.lock() else {
+        return;
+    };
+    cache.retain(|(k, _)| k != &key);
+    cache.push((key, events));
+    while cache.len() > ARCHIVE_CACHE_ENTRIES {
+        cache.remove(0);
     }
 }
 
@@ -204,29 +184,28 @@ mod tests {
 
     #[test]
     fn archive_name_guard_rejects_path_traversal() {
-        assert!(is_safe_archive_name("echo-sessions-x-20261109-022842-820-precompact.json"));
+        assert!(is_safe_archive_name(
+            "echo-sessions-x-20261109-022842-820-precompact.json"
+        ));
         assert!(!is_safe_archive_name("../etc/passwd"));
         assert!(!is_safe_archive_name("a/b.json"));
         assert!(!is_safe_archive_name("compaction.json.bak"));
         assert!(!is_safe_archive_name(""));
     }
 
+    /// 缓存命中返回同一份内容，且不会因为超出上限而丢最新的。
     #[test]
-    fn created_at_parses_filename_stamp_and_reason() {
-        let stem = "echo-sessions-EchoCode";
-        let (ts, reason) =
-            created_at_of("echo-sessions-EchoCode-20261109-022842-820-precompact.json", stem);
-        assert!(ts > 0, "时间戳应解析成功: {ts}");
-        assert_eq!(reason, "precompact");
-
-        // 无 reason、带毫秒
-        let (ts2, reason2) =
-            created_at_of("echo-sessions-EchoCode-20261104-035520-063.json", stem);
-        assert!(ts2 > 0);
-        assert_eq!(reason2, "");
-
-        // 日期段非法 → 0（不猜）
-        let (ts3, _) = created_at_of("echo-sessions-EchoCode-XXXX0403-035520.json", stem);
-        assert_eq!(ts3, 0);
+    fn cache_is_lru_and_bounded() {
+        let make = |n: usize| (format!("/tmp/a{n}.json"), 1, 1, format!("s{n}"), n);
+        for i in 0..(ARCHIVE_CACHE_ENTRIES + 2) {
+            cache_store(make(i), Arc::new(Vec::new()));
+        }
+        let cache = ARCHIVE_CACHE.lock().unwrap();
+        assert_eq!(cache.len(), ARCHIVE_CACHE_ENTRIES);
+        // 最早的几份被淘汰，最后一份还在。
+        assert!(!cache.iter().any(|(k, _)| k == &make(0)));
+        assert!(cache
+            .iter()
+            .any(|(k, _)| k == &make(ARCHIVE_CACHE_ENTRIES + 1)));
     }
 }

@@ -37,14 +37,12 @@ use echo_module_management::protocol::{BackendCommand, BackendEvent, TimelineMes
 use echo_module_management::protocol::timeline_text::elide_reasoning_for_wire;
 
 /// 本模块处理的命令名（都属"会话视图投影"，写操作不在此列）。
-pub const COMMANDS: [&str; 7] = [
+pub const COMMANDS: [&str; 5] = [
     "RequestState",
     "RequestContext",
     "RequestTrunkTimeline",
     "RequestTimelineEarlier",
     "RequestSessionHistory",
-    "RequestSessionArchives",
-    "RequestSessionArchiveHistory",
 ];
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -82,19 +80,10 @@ pub struct HistoryView {
     pub truncated: bool,
     /// 合并水位线：该会话在显示时间线里的最大 seq（0 = 不在窗口内）。
     pub max_seq: u64,
-}
-
-/// 一份压缩前归档的投影结果（只读快照）。
-#[derive(Debug, Clone, Default)]
-pub struct ArchiveHistoryView {
-    /// 派生出的条目（时间升序）。
-    pub messages: Vec<TimelineMessage>,
-    /// 截断前的总数。
-    pub total: usize,
-    /// `true` = 因 limit 只含最近 limit 条。
-    pub truncated: bool,
-    /// 读取 / 解析失败原因（`messages` 为空）。
-    pub error: Option<String>,
+    /// 上面还有更早的历史没展开（压缩边界存在且归档还读得到）。
+    pub has_older: bool,
+    /// 上面还有历史但归档已被轮转清理（读不到了）。
+    pub older_unavailable: bool,
 }
 
 /// 宿主接缝：会话视图需要而模块不该知道的五项能力。
@@ -122,25 +111,15 @@ pub trait SessionViewHost: Send + Sync {
         limit: Option<usize>,
     ) -> BoxFuture<'_, EarlierView>;
     /// 按会话派生显示历史。
+    ///
+    /// `expand_depth` = 把压缩前归档接进同一条消息流，展开几层（None = 不展开）。
     fn session_history(
         &self,
         team_id: Option<String>,
         session_id: String,
         limit: Option<usize>,
+        expand_depth: Option<usize>,
     ) -> BoxFuture<'_, HistoryView>;
-    /// 列出该人格的**压缩前归档**（只 stat，不解析内容）。
-    fn session_archives(
-        &self,
-        team_id: Option<String>,
-    ) -> BoxFuture<'_, Vec<echo_module_management::protocol::SessionArchiveEntry>>;
-    /// 读一份归档并按会话投影成显示历史。
-    fn session_archive_history(
-        &self,
-        team_id: Option<String>,
-        session_id: String,
-        archive: String,
-        limit: Option<usize>,
-    ) -> BoxFuture<'_, ArchiveHistoryView>;
     /// 正在执行 turn 的会话 id（随时间线快照补发）。
     fn active_turns(&self, team_id: Option<String>) -> BoxFuture<'_, Vec<String>>;
     /// 事件出口。
@@ -252,47 +231,26 @@ impl SessionViewHandler {
                 team_id,
                 session_id,
                 limit,
+                expand_depth,
             } => {
                 let view = self
                     .host
-                    .session_history(team_id.clone(), session_id.clone(), limit)
+                    .session_history(
+                        team_id.clone(),
+                        session_id.clone(),
+                        limit,
+                        expand_depth,
+                    )
                     .await;
                 self.host.emit(BackendEvent::SessionHistory {
                     team_id,
                     session_id,
-                    messages: view.messages,
+                    messages: elide_reasoning_for_wire(view.messages),
                     total: view.total,
                     truncated: view.truncated,
                     max_seq: view.max_seq,
-                });
-                Ok(())
-            }
-            BackendCommand::RequestSessionArchives { team_id } => {
-                let archives = self.host.session_archives(team_id.clone()).await;
-                self.host.emit(BackendEvent::SessionArchives {
-                    team_id,
-                    archives,
-                });
-                Ok(())
-            }
-            BackendCommand::RequestSessionArchiveHistory {
-                team_id,
-                session_id,
-                archive,
-                limit,
-            } => {
-                let view = self
-                    .host
-                    .session_archive_history(team_id.clone(), session_id.clone(), archive.clone(), limit)
-                    .await;
-                self.host.emit(BackendEvent::SessionArchiveHistory {
-                    team_id,
-                    session_id,
-                    archive,
-                    messages: view.messages,
-                    total: view.total,
-                    truncated: view.truncated,
-                    error: view.error,
+                    has_older: view.has_older,
+                    older_unavailable: view.older_unavailable,
                 });
                 Ok(())
             }
@@ -374,28 +332,12 @@ mod tests {
             _team_id: Option<String>,
             _session_id: String,
             _limit: Option<usize>,
+            _expand_depth: Option<usize>,
         ) -> BoxFuture<'_, HistoryView> {
             let v = self.history.lock().unwrap().clone();
             Box::pin(async move { v })
         }
-        fn session_archives(
-        &self,
-        _team_id: Option<String>,
-    ) -> BoxFuture<'_, Vec<echo_module_management::protocol::SessionArchiveEntry>> {
-        Box::pin(async { Vec::new() })
-    }
-
-    fn session_archive_history(
-        &self,
-        _team_id: Option<String>,
-        _session_id: String,
-        _archive: String,
-        _limit: Option<usize>,
-    ) -> BoxFuture<'_, ArchiveHistoryView> {
-        Box::pin(async { ArchiveHistoryView::default() })
-    }
-
-    fn active_turns(&self, _team_id: Option<String>) -> BoxFuture<'_, Vec<String>> {
+        fn active_turns(&self, _team_id: Option<String>) -> BoxFuture<'_, Vec<String>> {
             let v = self.turns.lock().unwrap().clone();
             Box::pin(async move { v })
         }
@@ -553,6 +495,8 @@ mod tests {
             total: 120,
             truncated: true,
             max_seq: 7,
+            has_older: false,
+            older_unavailable: false,
         };
         h.handle(
             "RequestSessionHistory",

@@ -404,20 +404,17 @@ impl TrunkStore {
         };
         // 变换已原子提交；投影重建并立即持久化。
         self.reproject_all();
-        let archive_note = archive
-            .map(|p| format!("，原事件已归档：{p}"))
-            .unwrap_or_default();
-        self.push_timeline_blocking(echo_module_management::protocol::TimelineMessage::system(
-            format!(
-                "历史已压缩：{total_replaced} 条事件 → {groups_done} 条摘要（各会话保留最近 ≥{keep_recent} 条）{archive_note}"
-            ),
-            summaries
-                .first()
-                .and_then(|summary| summary.session.clone())
-                .unwrap_or_default(),
-            chrono::Utc::now().timestamp(),
-        ))
-        .await;
+        // **不往显示时间线推"历史已压缩"回执**（2026-11）。
+        //
+        // 旧行为把一条全局系统行 push 进时间线，于是它夹在对话中间（而且带
+        // 的是完整归档路径）。压缩本来就以**每条会话自己的** `Compaction`
+        // 事件留在事件日志里——`display_history_for_session` 会为它派生一行
+        // 「上下文已压缩 · 替换 N 条事件（原件已归档，可查看压缩前的历史）」，
+        // 位置正确、归属正确、还带归档名。回执是重复信息，且只该进进度流
+        // （`CompactionProgress`，见 `commands.rs`）。
+        //
+        // `total_replaced` / `groups_done` 仍作为返回值给调用方写进度事件。
+        let _ = (total_replaced, groups_done);
         self.mark_dirty();
         self.save_now().await;
         Ok(CompactionApplied {

@@ -19,7 +19,6 @@ use std::sync::Arc;
 
 use echo_module_management::protocol::BackendEvent;
 use echo_module_transcript::session_view::{
-    ArchiveHistoryView,
     EarlierView, HistoryView, SessionViewHost, TimelineView,
 };
 
@@ -42,6 +41,13 @@ impl AgentSessionViewHost {
             .unwrap_or_else(|| Arc::clone(&self.agent))
     }
 }
+
+/// 单次请求允许展开的压缩前归档层数上限。
+///
+/// 压缩链实测最长 6 层（`echo-agent/v` 2026-11：6 份归档、合计约 125 MB）。
+/// 每层一次 20+ MB JSON 解析，面板逐层点击时最多也就点到这么深；再大就是
+/// 异常数据，别让它把一次请求拖成分钟级。
+const MAX_EXPAND_DEPTH: usize = 8;
 
 /// 全量路径取窗口尾部：`limit` 为 None/0 时返回全部。
 fn window_tail(
@@ -207,15 +213,32 @@ impl SessionViewHost for AgentSessionViewHost {
         team_id: Option<String>,
         session_id: String,
         limit: Option<usize>,
+        expand_depth: Option<usize>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HistoryView> + Send + '_>> {
         // 按会话派生显示历史（2026-10 面板「会话无消息」修复）：共享显示
         // 时间线有 1024 条上限、跨会话 FIFO 淘汰，旧会话条目可能被整体挤出；
         // 事件日志按会话分区且完整，因此从这里按需派生。
+        //
+        // `expand_depth`（2026-11）：压缩把日志前缀换成一条摘要，那段历史
+        // 只在 `archives/` 里——展开就是把归档里的前缀事件派生后**接在同一条
+        // 消息流前面**（面板因此不需要任何拼接逻辑）。层数由面板控制：归档
+        // 20+ MB，压缩链实测可达 6 层，一次多解析一层就多一份解析耗时。
         let limit = limit.unwrap_or(500).clamp(1, 2000);
+        let depth = expand_depth
+            .filter(|depth| *depth > 0)
+            .map(|depth| depth.min(MAX_EXPAND_DEPTH));
         let target = self.target(team_id.as_deref());
         Box::pin(async move {
-            let (messages, total, truncated) =
-                target.trunk.display_history_for_session(&session_id, limit);
+            let trunk = target.trunk.clone();
+            let sid = session_id.clone();
+            let history = if depth.is_some() {
+                // 展开要解析 20+ MB JSON（阻塞 I/O + CPU）：别占 tokio worker。
+                tokio::task::spawn_blocking(move || trunk.display_history_extended(&sid, limit, depth))
+                    .await
+                    .unwrap_or_default()
+            } else {
+                trunk.display_history_extended(&sid, limit, None)
+            };
             // 合并水位线：派生时该会话在显示时间线中的最大 seq。
             // **必须与派生范围一致**（`history_watermark` 排除推理——推理不落
             // 事件日志、派生不含；若把它计进水位线，前端会把实时推理判成
@@ -225,63 +248,12 @@ impl SessionViewHost for AgentSessionViewHost {
                 session_id.as_str(),
             );
             HistoryView {
-                messages,
-                total,
-                truncated,
+                messages: history.messages,
+                total: history.total,
+                truncated: history.truncated,
                 max_seq,
-            }
-        })
-    }
-
-    fn session_archives(
-        &self,
-        team_id: Option<String>,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Vec<echo_module_management::protocol::SessionArchiveEntry>,
-                > + Send
-                + '_,
-        >,
-    > {
-        // 只 stat 文件（不解析内容）：一份归档可达 20+ MB，人格目录里十几份。
-        let target = self.target(team_id.as_deref());
-        Box::pin(async move { target.trunk.list_archives() })
-    }
-
-    fn session_archive_history(
-        &self,
-        team_id: Option<String>,
-        session_id: String,
-        archive: String,
-        limit: Option<usize>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = ArchiveHistoryView> + Send + '_>,
-    > {
-        // 归档是**压缩前的全量事件日志**：压缩会把前缀从在线日志里摘掉换成
-        // 摘要，所以"压缩前聊了什么"只有这里还留着。解析 20 MB JSON 是阻塞
-        // I/O + CPU，放到 blocking 线程，别占 tokio worker。
-        let limit = limit.unwrap_or(500).clamp(1, 5000);
-        let target = self.target(team_id.as_deref());
-        Box::pin(async move {
-            let trunk = target.trunk.clone();
-            let joined = tokio::task::spawn_blocking(move || {
-                trunk.read_archive_history(&archive, &session_id, limit)
-            })
-            .await;
-            match joined {
-                Ok((messages, total, truncated, error)) => ArchiveHistoryView {
-                    messages,
-                    total,
-                    truncated,
-                    error,
-                },
-                Err(error) => ArchiveHistoryView {
-                    messages: Vec::new(),
-                    total: 0,
-                    truncated: false,
-                    error: Some(format!("读取归档的后台任务失败：{error}")),
-                },
+                has_older: history.has_older,
+                older_unavailable: history.older_unavailable,
             }
         })
     }

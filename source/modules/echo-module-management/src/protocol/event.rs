@@ -201,25 +201,6 @@ pub struct TimelineTool {
     pub elapsed_ms: Option<u64>,
 }
 
-/// 一份压缩前归档的**元信息**（不解析内容）。
-///
-/// 读取走 `RequestSessionArchiveHistory`（要解析 JSON，一份可有 20 MB）；
-/// 清单只要 `stat`，所以分两段——面板先列出来，用户点了才读。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SessionArchiveEntry {
-    /// 文件名（读取时按它寻址；不接受面板传来的任意路径）。
-    pub name: String,
-    /// 归档时间（文件名内嵌的 UTC 时间戳转 epoch 秒；解析不出为 0）。
-    #[serde(default)]
-    pub created_at: i64,
-    /// 文件大小（字节）。
-    #[serde(default)]
-    pub size: u64,
-    /// 归档原因（文件名后缀，如 `precompact`；无后缀为空）。
-    #[serde(default)]
-    pub reason: String,
-}
-
 /// One persisted trunk timeline entry. The timeline is a *display* history
 /// (up to `TRUNK_TIMELINE_MAX` entries) that survives TUI restarts; it is
 /// independent of the LLM-facing trunk context, which is token-bounded.
@@ -750,33 +731,15 @@ pub enum BackendEvent {
         /// 跳过窗口里已被快照覆盖的条目；0 = 该会话不在窗口内）。
         #[serde(default)]
         max_seq: u64,
-    },
-    /// 压缩前归档清单（`RequestSessionArchives` 的响应）。
-    SessionArchives {
+        /// 上面还有更早的历史**没展开**（日志里存在压缩边界 `Compaction`，
+        /// 其归档还读得到）。面板据此在分隔行上给「展开压缩前的历史」，
+        /// 而不是让人反复点「加载更早」——归档不参与分页（一次一层）。
         #[serde(default)]
-        team_id: Option<String>,
-        archives: Vec<SessionArchiveEntry>,
-    },
-    /// 一份压缩前归档按会话投影出的显示历史
-    /// （`RequestSessionArchiveHistory` 的响应）。
-    ///
-    /// 与 `SessionHistory` 分开而不是复用：归档是**只读快照**，没有
-    /// `max_seq` 水位线语义（它不参与实时合并），也不该被面板的合并逻辑
-    /// 当成"最新快照"去认领实时条目。
-    SessionArchiveHistory {
+        has_older: bool,
+        /// 上面确实还有历史，但归档已被轮转清理（`archives/` 只保留最近
+        /// 20 份），读不到了。面板据此显示「更早的归档已清理」并停止展开。
         #[serde(default)]
-        team_id: Option<String>,
-        session_id: String,
-        /// 归档文件名（回显）。
-        archive: String,
-        messages: Vec<TimelineMessage>,
-        /// 投影出的条目总数（截断前）。
-        total: usize,
-        /// true = 因 limit 只含最近 limit 条。
-        truncated: bool,
-        /// 解析/读取失败原因（`messages` 为空）。面板按只读提示展示。
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        error: Option<String>,
+        older_unavailable: bool,
     },
     /// API configuration changed (for TUI settings form).
     ApiConfigUpdated {
@@ -1557,8 +1520,6 @@ impl BackendEvent {
             Self::TrunkTimeline { .. } => "TrunkTimeline",
             Self::TimelineEarlier { .. } => "TimelineEarlier",
             Self::SessionHistory { .. } => "SessionHistory",
-            Self::SessionArchives { .. } => "SessionArchives",
-            Self::SessionArchiveHistory { .. } => "SessionArchiveHistory",
             Self::ApiConfigUpdated { .. } => "ApiConfigUpdated",
             Self::RemoteApiProfiles { .. } => "RemoteApiProfiles",
             Self::ApiProfilesUpdated { .. } => "ApiProfilesUpdated",
@@ -1729,6 +1690,8 @@ mod session_history_tests {
             total: 42,
             truncated: true,
             max_seq: 7,
+            has_older: true,
+            older_unavailable: false,
         };
         let value = serde_json::to_value(&event).unwrap();
         assert_eq!(
@@ -1751,6 +1714,8 @@ mod session_history_tests {
                 total,
                 truncated,
                 max_seq,
+                has_older,
+                older_unavailable,
             } => {
                 assert_eq!(team_id.as_deref(), Some("t"));
                 assert_eq!(session_id, "s");
@@ -1759,6 +1724,8 @@ mod session_history_tests {
                 assert_eq!(total, 42);
                 assert!(truncated);
                 assert_eq!(max_seq, 7);
+                assert!(has_older);
+                assert!(!older_unavailable);
             }
             other => panic!("wrong variant: {other:?}"),
         }

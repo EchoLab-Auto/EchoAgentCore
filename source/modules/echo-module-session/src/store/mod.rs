@@ -23,7 +23,10 @@ pub mod timeline;
 
 // 显示历史的合并水位线：agent 命令层要用（`RequestSessionHistory`）。
 // 只导出这一个函数——其余派生实现细节留在模块内。
-pub use history::history_watermark;
+pub use history::{
+    history_watermark, ArchiveEventSource, ExpandContext, ExtendedHistory,
+    EXPAND_DEPTH_PER_REQUEST, EXPAND_HARD_CAP,
+};
 
 use echo_defs::llm::LlmProvider;
 use echo_defs::message::ChatMessage;

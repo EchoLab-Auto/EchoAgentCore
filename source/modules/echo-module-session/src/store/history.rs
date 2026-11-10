@@ -288,6 +288,194 @@ pub fn display_history_for_session(
     (messages, total, truncated)
 }
 
+/// 单次展开请求允许解析的归档份数（= 层数）。
+///
+/// 一份归档 18–23 MB、一层 500–1500 条消息，而压缩链实测可达 6 层
+/// （`echo-agent/v` 2026-11 就是 6 层、合计约 125 MB）。一次请求只解析
+/// **一层**：用户看到分隔行再点下一层，比"等六份 JSON 全解析完"好得多。
+pub const EXPAND_DEPTH_PER_REQUEST: usize = 1;
+
+/// 单次返回的条目硬上限（防病态数据把一帧塞进几十万条）。
+///
+/// 实测最长链：`echo-agent/v` 2026-11 全展开 6 层 = 4895 条（每层 700–900
+/// 条）。所以上限必须高于"最长的真实链"，否则用户点到底反而看到被截断的
+/// 视图、还会以为"展开失败"。20000 是安全阀，正常数据永远碰不到。
+pub const EXPAND_HARD_CAP: usize = 20000;
+
+/// 「展开压缩前归档」需要的事件来源（由 store 实现：读文件 + 解析 + 切片）。
+///
+/// 之所以做成 trait：派生规则（本模块）与文件 I/O（`archives` 模块）分开，
+/// 本模块的测试可以喂假数据，不必造 20 MB JSON。
+pub trait ArchiveEventSource {
+    /// 读 `archive` 里 `session_id` 的**前** `count` 条事件。
+    ///
+    /// 返回 `(events, error)`：`error` 非空 = 读不到（归档被轮转清理 /
+    /// 解析失败），此时 `events` 为空。
+    fn archive_prefix_events(
+        &self,
+        archive: &str,
+        session_id: &str,
+        count: usize,
+    ) -> (Vec<echo_session::SessionEvent>, Option<String>);
+}
+
+/// 一次展开的上下文。
+pub struct ExpandContext<'a> {
+    pub source: &'a dyn ArchiveEventSource,
+    /// 本次请求还能**解析**几份归档（0 = 只标 `has_older`，不真读）。
+    pub depth: usize,
+}
+
+/// 派生结果 + 展开状态。
+#[derive(Debug, Clone, Default)]
+pub struct ExtendedHistory {
+    /// 时间升序的条目（展开时含压缩前的部分）。
+    pub messages: Vec<TimelineMessage>,
+    /// 截断前的总数。
+    pub total: usize,
+    /// `true` = 因 limit / 硬上限只含尾部一部分。
+    pub truncated: bool,
+    /// 上面还有更早的历史**没展开**（日志里存在压缩边界且归档还在）——
+    /// 面板据此在分隔行上给「展开」，而不是「加载更早」。
+    pub has_older: bool,
+    /// 上面确实还有历史，但归档已被轮转清理（读不到了）。
+    pub older_unavailable: bool,
+}
+
+/// 该会话**最近一个**压缩边界：`(归档文件名, 被替换的事件数)`。
+///
+/// 取最后一条（离尾部最近）：日志形如 `[C_最新, ...保留尾]`，`C_最新` 的
+/// 归档里才是"压缩前的最近内容"。更早的压缩边界在那一层的 `events` 里，
+/// 展开它之后自然出现。
+fn newest_compaction(
+    events: &[echo_session::SessionEvent],
+    session_id: &str,
+) -> Option<(String, usize)> {
+    events.iter().rev().find_map(|event| match event {
+        echo_session::SessionEvent::Compaction(compaction)
+            if compaction.session.as_deref() == Some(session_id) =>
+        {
+            let archive = compaction
+                .archive
+                .as_deref()
+                .and_then(|path| std::path::Path::new(path).file_name())
+                .and_then(|name| name.to_str())
+                .map(str::to_string)?;
+            // replaced_count = 0 的压缩行没有可展开内容（历史遗留/异常）。
+            (compaction.replaced_count > 0).then_some((archive, compaction.replaced_count))
+        }
+        _ => None,
+    })
+}
+
+/// 派生显示历史，并**按需把压缩前归档接上去**（2026-11）。
+///
+/// ## 为什么在这里拼
+///
+/// 面板要的是"像普通上下文一样"的一条连续消息流：同一滚动区、同一套行模型、
+/// 同一个「加载更早」。如果让前端把实时历史与归档回放拼起来，它就得自己
+/// 复刻边界规则（事件级 `replaced_count`、多会话分组、递归层），还要处理
+/// 重复条目——那是**投影知识**，应该只存在一处。
+///
+/// ## 边界怎么切（关键）
+///
+/// 归档是压缩**之前**的全量日志快照，`CompactionEvent.replaced_count` 是
+/// **按会话数的事件数**（不是消息数：一次工具调用 + 其结果 = 2 事件 = 1 行）。
+/// 所以取该会话事件的**前 `replaced_count` 条**，派生后拼在分隔行之前。
+/// 拿消息数去切会切歪。
+///
+/// ## 一次一层
+///
+/// `expand.depth` 控制本次能解析几份归档（见 [`EXPAND_DEPTH_PER_REQUEST`]）；
+/// 更深的层在结果里保留 Compaction 分隔行，用户再点一次即可（`has_older`）。
+pub fn display_history_extended(
+    events: &[echo_session::SessionEvent],
+    session_id: &str,
+    limit: usize,
+    expand: Option<&ExpandContext<'_>>,
+) -> ExtendedHistory {
+    // 先全额派生：limit 的裁剪放到最后做（否则无法判断"还有多少没给"）。
+    let (mut messages, _, _) = display_history_for_session(events, session_id, usize::MAX);
+    // 未展开时：日志里存在压缩边界 = 上面还有历史可展开。
+    let mut has_older = messages.iter().any(|message| message.archive.is_some());
+    let mut older_unavailable = false;
+
+    if let Some(context) = expand {
+        if context.depth > 0 {
+            if let Some((archive, replaced)) = newest_compaction(events, session_id) {
+                let (prefix_events, error) =
+                    context.source.archive_prefix_events(&archive, session_id, replaced);
+                match error {
+                    // 归档被轮转清理 / 解析失败：分隔行留着（让用户知道这里
+                    // 曾经有历史），但不再提供「继续展开」。
+                    Some(_) => {
+                        older_unavailable = true;
+                        has_older = false;
+                    }
+                    None => {
+                        let inner = display_history_extended(
+                            &prefix_events,
+                            session_id,
+                            usize::MAX,
+                            Some(&ExpandContext {
+                                source: context.source,
+                                depth: context.depth - 1,
+                            }),
+                        );
+                        let mut joined = inner.messages;
+                        joined.extend(messages);
+                        messages = joined;
+                        // 最上面那一层决定"还能不能再展开"。
+                        has_older = inner.has_older;
+                        older_unavailable = inner.older_unavailable;
+                    }
+                }
+            }
+        }
+    }
+
+    // 截断：保留**最近**的一部分。
+    //
+    // 但压缩边界那一行必须留下（`pin`）：它是面板唯一的入口，而它恰好是最老
+    // 的那一行——按"保留尾部"的规则第一个被丢掉（实测：某会话历史 895 条、
+    // 面板只请求 300 条 → 入口直接消失，用户看不到任何"展开压缩前的历史"）。
+    // 语义上也成立：那一行是**窗口顶端的标尺**，不是随窗口漂移的内容。
+    let pin = messages
+        .iter()
+        .find(|message| message.archive.is_some())
+        .cloned();
+    let total = messages.len();
+    let mut truncated = total > EXPAND_HARD_CAP;
+    let mut kept = total;
+    if truncated {
+        kept = EXPAND_HARD_CAP;
+        // 触顶说明"更早的没给全"，用户仍可继续展开（层数还能加）。
+        has_older = true;
+    } else if expand.is_none() && total > limit.max(1) {
+        kept = limit.max(1);
+        truncated = true;
+    }
+    if kept < total {
+        messages.drain(..total - kept);
+        if let Some(pin) = pin {
+            // 尾窗里已经有同名边界（= 它本来就在保留范围内）就不重复插。
+            let already = messages
+                .iter()
+                .any(|message| message.archive == pin.archive);
+            if !already {
+                messages.insert(0, pin);
+            }
+        }
+    }
+    ExtendedHistory {
+        messages,
+        total,
+        truncated,
+        has_older,
+        older_unavailable,
+    }
+}
+
 /// 会话历史合并水位线：`timeline` 中该会话、**派生会覆盖的 kind** 的最大 seq。
 ///
 /// 前端拿它过滤实时条目（`seq <= 水位线` = 快照已覆盖）。
@@ -672,10 +860,290 @@ mod tests {
         assert_eq!(history_watermark(vec![mine, theirs], "a"), 3);
     }
 
+    // ── 压缩前归档展开（2026-11）─────────────────────────────────────
+    //
+    // 这批测试锁的是**边界切分**：`replaced_count` 是事件数、不是消息数，
+    // 拿消息数去切会切歪（一次工具调用 + 它的结果 = 2 事件 = 1 行）。
+
+    fn compaction_event(session: &str, replaced: usize, archive: &str) -> SessionEvent {
+        SessionEvent::Compaction(echo_session::event::CompactionEvent {
+            replaced_count: replaced,
+            summary: "摘要".into(),
+            archive: Some(format!("/tmp/archives/{archive}")),
+            session: Some(session.into()),
+        })
+    }
+
+    /// 假事件源：`归档名 -> 该归档里该会话的事件`。
+    struct FakeSource(Vec<(String, Vec<SessionEvent>)>);
+
+    impl FakeSource {
+        fn new(entries: Vec<(&str, Vec<SessionEvent>)>) -> Self {
+            Self(
+                entries
+                    .into_iter()
+                    .map(|(name, events)| (name.to_string(), events))
+                    .collect(),
+            )
+        }
+    }
+
+    impl ArchiveEventSource for FakeSource {
+        fn archive_prefix_events(
+            &self,
+            archive: &str,
+            _session_id: &str,
+            count: usize,
+        ) -> (Vec<SessionEvent>, Option<String>) {
+            match self.0.iter().find(|(name, _)| name == archive) {
+                Some((_, events)) => (
+                    events.iter().take(count).cloned().collect(),
+                    None,
+                ),
+                None => (Vec::new(), Some(format!("该归档已被清理：{archive}"))),
+            }
+        }
+    }
+
+    /// 未展开：只标 `has_older`，不碰归档（默认折叠的数据来源）。
+    #[test]
+    fn without_expand_only_flags_has_older() {
+        let events = vec![
+            compaction_event("s", 2, "a.json"),
+            user_event("s", "压缩后", 3),
+        ];
+        let history = display_history_extended(&events, "s", 500, None);
+        // 分隔行 + 压缩后那条。
+        assert_eq!(history.messages.len(), 2);
+        assert!(history.has_older);
+        assert!(!history.older_unavailable);
+        assert_eq!(
+            history.messages[0].archive.as_deref(),
+            Some("a.json"),
+            "分隔行必须带归档名，否则面板没有入口"
+        );
+    }
+
+    /// 展开一层：归档里的**前 replaced_count 条**事件派生后拼在分隔行之前。
+    #[test]
+    fn expand_prepends_the_archived_prefix() {
+        let events = vec![
+            compaction_event("s", 2, "a.json"),
+            user_event("s", "压缩后", 3),
+        ];
+        // 归档里有 3 条该会话事件，但 replaced_count = 2 → 只取前 2 条。
+        let source = FakeSource::new(vec![(
+            "a.json",
+            vec![
+                user_event("s", "压缩前1", 1),
+                user_event("s", "压缩前2", 2),
+                user_event("s", "已经在日志里", 3),
+            ],
+        )]);
+        let history = display_history_extended(
+            &events,
+            "s",
+            500,
+            Some(&ExpandContext {
+                source: &source,
+                depth: EXPAND_DEPTH_PER_REQUEST,
+            }),
+        );
+        let contents: Vec<&str> = history
+            .messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect();
+        assert_eq!(
+            contents,
+            vec![
+                "压缩前1",
+                "压缩前2",
+                "上下文已压缩 · 替换 2 条事件（原件已归档，可查看压缩前的历史）",
+                "压缩后",
+            ],
+            "前缀必须拼在分隔行之前，且不能把保留尾重复进来"
+        );
+        assert!(!history.has_older, "该层没有更早的压缩边界了");
+    }
+
+    /// 边界按**事件**切：工具调用 + 结果 = 2 事件 = 1 行，`replaced_count`
+    /// 若被当成消息数会少切一半。
+    #[test]
+    fn expand_slices_by_events_not_messages() {
+        let call = SessionEvent::ToolCall(echo_session::event::ToolCallEvent {
+            id: "c1".into(),
+            name: "echo".into(),
+            arguments: "{}".into(),
+            session: Some("s".into()),
+            started_at_ms: None,
+        });
+        let result = SessionEvent::ToolResult(echo_session::event::ToolResultEvent {
+            tool_call_id: "c1".into(),
+            result: "done".into(),
+            images: Vec::new(),
+            session: Some("s".into()),
+            elapsed_ms: None,
+        });
+        let events = vec![
+            compaction_event("s", 2, "a.json"),
+            user_event("s", "压缩后", 3),
+        ];
+        let source = FakeSource::new(vec![(
+            "a.json",
+            vec![call, result, user_event("s", "更早", 0)],
+        )]);
+        let history = display_history_extended(
+            &events,
+            "s",
+            500,
+            Some(&ExpandContext {
+                source: &source,
+                depth: EXPAND_DEPTH_PER_REQUEST,
+            }),
+        );
+        // 2 条事件 = 工具行 1 条（调用与结果配对）；第 3 条事件不该进来。
+        assert_eq!(history.messages[0].kind, "tool");
+        assert_eq!(history.messages[0].tool.as_ref().unwrap().output.as_deref(), Some("done"));
+        assert!(
+            !history.messages.iter().any(|m| m.content == "更早"),
+            "replaced_count 之外的事件不能带进来"
+        );
+    }
+
+    /// 归档被轮转清理：标 `older_unavailable`，不再说"还能展开"。
+    #[test]
+    fn missing_archive_is_reported_not_silently_empty() {
+        let events = vec![
+            compaction_event("s", 2, "gone.json"),
+            user_event("s", "压缩后", 3),
+        ];
+        let source = FakeSource::new(vec![]);
+        let history = display_history_extended(
+            &events,
+            "s",
+            500,
+            Some(&ExpandContext {
+                source: &source,
+                depth: EXPAND_DEPTH_PER_REQUEST,
+            }),
+        );
+        assert!(history.older_unavailable);
+        assert!(!history.has_older);
+        assert_eq!(history.messages.len(), 2, "分隔行与保留尾都还在");
+    }
+
+    /// 一次只展开一层：更深的边界留着让用户再点（`has_older` 保持 true）。
+    #[test]
+    fn one_layer_per_request() {
+        let events = vec![
+            compaction_event("s", 1, "b.json"),
+            user_event("s", "压缩后", 2),
+        ];
+        // b.json 里还有一条更早的压缩边界（指向 c.json）。
+        let source = FakeSource::new(vec![("b.json", vec![compaction_event("s", 1, "c.json")])]);
+        let history = display_history_extended(
+            &events,
+            "s",
+            500,
+            Some(&ExpandContext {
+                source: &source,
+                depth: EXPAND_DEPTH_PER_REQUEST,
+            }),
+        );
+        // 展开一层：b 里的前缀（那条更早的分隔行）+ 原来的分隔行 + 保留尾。
+        assert_eq!(history.messages.len(), 3);
+        assert!(history.has_older, "更深的层要留给下一次点击");
+        assert_eq!(
+            history.messages[0].archive.as_deref(),
+            Some("c.json"),
+            "更深的分隔行也带自己的归档名"
+        );
+
+        // 给两层的预算 → 连 c 也展开。
+        let source2 = FakeSource::new(vec![
+            ("b.json", vec![compaction_event("s", 1, "c.json")]),
+            ("c.json", vec![user_event("s", "最早", 0)]),
+        ]);
+        let deep = display_history_extended(
+            &events,
+            "s",
+            500,
+            Some(&ExpandContext {
+                source: &source2,
+                depth: 2,
+            }),
+        );
+        assert!(deep.messages.iter().any(|m| m.content == "最早"));
+        assert!(!deep.has_older);
+    }
+
+    /// 展开时忽略 limit（一次给完整层），未展开时按 limit 取尾部。
+    #[test]
+    fn expand_ignores_limit_but_unexpanded_truncates() {
+        let events = vec![
+            compaction_event("s", 2, "a.json"),
+            user_event("s", "压缩后", 3),
+        ];
+        let source = FakeSource::new(vec![(
+            "a.json",
+            vec![user_event("s", "压缩前1", 1), user_event("s", "压缩前2", 2)],
+        )]);
+        let expanded = display_history_extended(
+            &events,
+            "s",
+            1,
+            Some(&ExpandContext {
+                source: &source,
+                depth: EXPAND_DEPTH_PER_REQUEST,
+            }),
+        );
+        assert_eq!(expanded.messages.len(), 4, "展开时 limit 不生效");
+        assert!(!expanded.truncated);
+
+        // 未展开：按 limit 取尾部，**但压缩边界那一行被钉在窗口顶端**
+        // （它是面板唯一的入口，被尾部截断丢掉就再也点不到了）。
+        let plain = display_history_extended(&events, "s", 1, None);
+        assert_eq!(plain.messages.len(), 2);
+        assert!(plain.truncated);
+        assert_eq!(plain.total, 2, "total 是截断前的数量");
+        assert_eq!(
+            plain.messages[0].archive.as_deref(),
+            Some("a.json"),
+            "边界行必须留在窗口里"
+        );
+        assert_eq!(plain.messages[1].content, "压缩后");
+    }
+
+    /// 边界行在尾部窗口内时**不重复**插入（窗口够大 → 原样返回）。
+    #[test]
+    fn boundary_row_is_not_duplicated_when_it_fits() {
+        let events = vec![
+            compaction_event("s", 2, "a.json"),
+            user_event("s", "压缩后", 3),
+        ];
+        let history = display_history_extended(&events, "s", 500, None);
+        assert_eq!(history.messages.len(), 2, "不该多出一条边界副本");
+        assert!(!history.truncated);
+    }
+
     /// 空输入 / 无可派生条目 → 水位线 0。
     #[test]
     fn watermark_is_zero_for_empty_input() {
         assert_eq!(history_watermark(vec![], "s"), 0);
+    }
+}
+
+/// `TrunkStore` 就是归档事件的来源：读文件 + 解析 + 按会话切片都在
+/// `store::archives` 里（I/O），本模块只管投影。
+impl ArchiveEventSource for TrunkStore {
+    fn archive_prefix_events(
+        &self,
+        archive: &str,
+        session_id: &str,
+        count: usize,
+    ) -> (Vec<echo_session::SessionEvent>, Option<String>) {
+        self.archive_prefix_events(archive, session_id, count)
     }
 }
 
@@ -690,5 +1158,27 @@ impl TrunkStore {
         limit: usize,
     ) -> (Vec<TimelineMessage>, usize, bool) {
         display_history_for_session(&self.event_log(), session_id, limit)
+    }
+
+    /// 派生显示历史，并按需把**压缩前归档**接上去（粘贴进同一条消息流）。
+    ///
+    /// `expand_depth`：允许本次解析几层归档（`None`/`Some(0)` = 不展开，
+    /// 只在结果里标 `has_older`）。一次一层见
+    /// [`EXPAND_DEPTH_PER_REQUEST`]。
+    ///
+    /// 注意：本方法会在调用线程里**同步解析 JSON**（一份可达 20+ MB）。
+    /// 调用方要么在 `spawn_blocking` 里，要么接受这次阻塞。
+    pub fn display_history_extended(
+        &self,
+        session_id: &str,
+        limit: usize,
+        expand_depth: Option<usize>,
+    ) -> ExtendedHistory {
+        let events = self.event_log();
+        let context = expand_depth.filter(|depth| *depth > 0).map(|depth| ExpandContext {
+            source: self as &dyn ArchiveEventSource,
+            depth,
+        });
+        display_history_extended(&events, session_id, limit, context.as_ref())
     }
 }

@@ -303,34 +303,28 @@ pub enum BackendCommand {
     /// 请求某会话的**显示历史**（从事件日志按会话派生；2026-10 修复面板
     /// 「会话无消息」——共享显示时间线按 FIFO 淘汰后旧会话条目不可见）。
     /// `limit`：最多返回条目数（缺省 500；服务端 clamp [1, 2000]，取最近 N 条）。
+    ///
+    /// `expand_depth`（2026-11）：把**压缩前归档**接进同一条消息流，展开
+    /// 几层（`None`/`0` = 不展开，只标 `has_older`）。
+    ///
+    /// 压缩把日志前缀换成一条摘要、原件写进 `archives/`，那段历史在投影里
+    /// 永久消失——不展开的话面板只能看到一个"上下文已压缩"的断点。
+    ///
+    /// 为什么是「层数」而不是布尔：压缩链实测可达 6 层（`echo-agent/v`
+    /// 2026-11 就是 6 层、合计约 125 MB），每层要一次 20+ MB 的 JSON 解析。
+    /// 面板每点一次「展开更早的」把层数 +1，服务端只解析**这一次新增**的
+    /// 那层（浅层命中缓存）。
+    ///
+    /// 展开时**忽略 `limit`**（一次给完整层，否则用户要点十几次才跨过压缩
+    /// 边界），仅受服务端硬上限约束。
     RequestSessionHistory {
         #[serde(default)]
         team_id: Option<String>,
         session_id: String,
         #[serde(default)]
         limit: Option<usize>,
-    },
-    /// 列出某 persona 的**压缩前归档**（`archives/` 下的快照文件名与大小）。
-    /// 响应 `BackendEvent::SessionArchives`。
-    ///
-    /// 为什么需要：压缩会把事件日志里的前缀换成一条摘要（原件写入
-    /// `archives/`），投影与时间线从此看不到那段历史。用户要能回看"压缩前
-    /// 到底聊了什么"，只能靠这些归档——所以把清单与读取分开：列清单很便宜
-    /// （只 stat 文件），读取才解析 JSON（一份可有 20 MB）。
-    RequestSessionArchives {
         #[serde(default)]
-        team_id: Option<String>,
-    },
-    /// 读一份压缩前归档，按会话投影成显示历史。
-    /// 响应 `BackendEvent::SessionArchiveHistory`。
-    RequestSessionArchiveHistory {
-        #[serde(default)]
-        team_id: Option<String>,
-        session_id: String,
-        /// 归档文件名（`SessionArchives` 的 `name` 字段；不接受任意路径）。
-        archive: String,
-        #[serde(default)]
-        limit: Option<usize>,
+        expand_depth: Option<usize>,
     },
     /// 请求后台 shell 会话列表（带 team_id 时只返回该 persona 的会话）。
     RequestShellSessions {
@@ -575,8 +569,6 @@ impl BackendCommand {
             Self::RequestTrunkTimeline { .. } => "RequestTrunkTimeline",
             Self::RequestTimelineEarlier { .. } => "RequestTimelineEarlier",
             Self::RequestSessionHistory { .. } => "RequestSessionHistory",
-            Self::RequestSessionArchives { .. } => "RequestSessionArchives",
-            Self::RequestSessionArchiveHistory { .. } => "RequestSessionArchiveHistory",
             Self::RequestShellSessions { .. } => "RequestShellSessions",
             Self::ShellStart { .. } => "ShellStart",
             Self::ShellExec { .. } => "ShellExec",
@@ -936,11 +928,13 @@ mod tests {
             team_id: Some("t".into()),
             session_id: "s".into(),
             limit: Some(100),
+            expand_depth: None,
         };
         let text = serde_json::to_string(&cmd).unwrap();
+        // `expand_depth: None` 序列化为 null（面板镜像时按"显式传"处理）。
         assert_eq!(
             text,
-            r#"{"RequestSessionHistory":{"team_id":"t","session_id":"s","limit":100}}"#
+            r#"{"RequestSessionHistory":{"team_id":"t","session_id":"s","limit":100,"expand_depth":null}}"#
         );
         let back: BackendCommand = serde_json::from_str(&text).unwrap();
         assert_eq!(back, cmd);
@@ -954,6 +948,7 @@ mod tests {
                 team_id: None,
                 session_id: "s".into(),
                 limit: None,
+                expand_depth: None,
             }
         );
         let null: BackendCommand = serde_json::from_str(

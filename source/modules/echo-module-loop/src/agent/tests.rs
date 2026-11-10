@@ -753,6 +753,7 @@ async fn request_session_history_derives_from_the_event_log() {
             team_id: Some("t".into()),
             session_id: target.into(),
             limit: None,
+            expand_depth: None,
         },
     )
     .await;
