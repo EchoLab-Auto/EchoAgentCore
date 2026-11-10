@@ -69,11 +69,14 @@ pub trait TeamAdmin: Send + Sync {
     /// 接收者是 `Arc<Self>` 而不是 `&self`：新建人格时要把 manager 自己交给
     /// 新 agent 做绑定，`&self` 拿不到 `Arc`。`Arc<Self>` 是**对象安全**的
     /// 接收者（稳定 Rust 支持），所以 `Arc<dyn TeamAdmin>` 上照常可调。
+    /// 写入一个人格 profile。
+    ///
+    /// 启停由 `profile.enabled` 携带（2026-11 单轨）：不再另传一个 `enabled`
+    /// ——两个参数并存时，"配置里写 false、实际却实例化了"这种分叉迟早出现。
     fn save_profile(
         self: Arc<Self>,
         id: &str,
         profile: TeamMember,
-        enabled: bool,
     ) -> Result<(), String>;
 
     /// 删除一个人格。

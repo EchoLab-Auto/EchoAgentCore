@@ -160,8 +160,9 @@ pub fn metrics_targets(snapshot: &ApiSnapshot) -> Vec<String> {
 ///
 /// - `api_key` 排除在泛型序列化之外：显式键非空时写入该值，否则**保留磁盘
 ///   现值**——任何无关保存都不得把文件里的 key 抹掉；
-/// - `teams` / `disabled_teams` 由人格管理器独立持久化：快照里的副本可能已
-///   过期，一律以磁盘为准，避免"某次无关保存把人格名单写回旧值"。
+/// - `teams` 由人格管理器独立持久化：快照里的副本可能已过期，一律以磁盘
+///   为准，避免"某次无关保存把人格名单写回旧值"；`disabled_teams` 已废弃，
+///   直接清掉（启停单轨到 `teams.<id>.enabled`）。
 ///
 /// 参数是**已经序列化好的表**而不是宿主的配置类型：补丁规则是本模块的知识，
 /// 而"怎么序列化"是宿主的（`#[serde(skip_serializing)]` 之类）。
@@ -183,17 +184,20 @@ pub fn patch_agent_table(
     if let Some(key_value) = key_value {
         table.insert("api_key".into(), key_value);
     }
-    for key in ["teams", "disabled_teams"] {
-        let disk = root.get("agent").and_then(|agent| agent.get(key)).cloned();
-        match disk {
-            Some(value) => {
-                table.insert(key.into(), value);
-            }
-            None => {
-                table.remove(key);
-            }
+    // `teams` 由人格管理器独立持久化：快照里的副本可能过期，一律以磁盘为准。
+    let teams = root.get("agent").and_then(|agent| agent.get("teams")).cloned();
+    match teams {
+        Some(value) => {
+            table.insert("teams".into(), value);
+        }
+        None => {
+            table.remove("teams");
         }
     }
+    // `disabled_teams` **已废弃**（2026-11：启停单轨到 `teams.<id>.enabled`）。
+    // 不再从磁盘保住它——那会让一个已经失效的开关一直躺在配置里，而且它真
+    // 值已被 `AgentManager::build` 折进 `enabled`（见该函数的迁移注释）。
+    table.remove("disabled_teams");
     root.insert("agent".into(), agent_value);
     Ok(())
 }

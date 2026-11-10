@@ -124,7 +124,7 @@ async fn save_team(cmd: &BackendCommand, host: &ProcessCommandHost) {
         context_window_tokens: *context_window_tokens,
         api_profile: api_profile.clone(),
     };
-    if let Err(e) = Arc::clone(&host.admin).save_profile(id, profile.clone(), *enabled) {
+    if let Err(e) = Arc::clone(&host.admin).save_profile(id, profile.clone()) {
         host.error(format!("save agent failed: {e}"));
         return;
     }

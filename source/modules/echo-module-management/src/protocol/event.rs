@@ -1054,8 +1054,20 @@ pub struct TeamInfo {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// **配置态**：该人格是否被启用（`teams.<id>.enabled`）。
+    ///
+    /// 与 [`Self::running`] 分开（2026-11）：此前这里上报的是"运行时 map 里
+    /// 有没有它"，于是任何**没能启动**的原因（模块装配失败、工厂报错）都会
+    /// 被面板显示成"已禁用"——用户在配置里点一次保存，就把一次临时故障
+    /// 固化成了持久的 `enabled = false`。
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// **运行态**：该人格现在是否有活着的实例。
+    ///
+    /// `enabled = true` 且 `running = false` = 启动失败（或正在重建），
+    /// 面板据此显示"未运行"，而不是谎报"已禁用"。
+    #[serde(default)]
+    pub running: bool,
     /// 该 agent 系统提示词由哪些 skill 组成（空 = 回退 system_prompt 字段）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub system_skills: Vec<String>,

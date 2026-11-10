@@ -2149,6 +2149,12 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                                 tbl.insert(id.clone(), v);
                             }
                             agent.insert("teams".into(), toml::Value::Table(tbl));
+                            // 已废弃字段清理（2026-11）：人格启停单轨到
+                            // `teams.<id>.enabled`，`disabled_teams` 只作旧
+                            // 配置的读入兼容（`AgentManager::build` 把它折进
+                            // `enabled`）。留着它反而危险——用户在面板里重新
+                            // 启用后，下次启动会被这份旧名单再按回 false。
+                            agent.remove("disabled_teams");
                             Ok(())
                         })
                         .map_err(|e| e.to_string())

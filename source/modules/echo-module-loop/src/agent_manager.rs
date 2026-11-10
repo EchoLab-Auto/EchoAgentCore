@@ -76,9 +76,8 @@ pub struct AgentManager {
     default_id: String,
     /// All team member definitions (including disabled ones), for rebuild.
     teams: parking_lot::RwLock<HashMap<String, TeamMember>>,
-    /// Running instances (disabled ones are absent).
+    /// Running instances（**纯运行态**：`agents` 里有没有 = 现在跑不跑）。
     agents: parking_lot::RwLock<HashMap<String, RunningAgent>>,
-    disabled: parking_lot::Mutex<Vec<String>>,
     /// Persistence hook: writes the profiles map back to TOML (or any store).
     config_writer: parking_lot::Mutex<Option<ConfigWriter>>,
     /// 本节点身份（NodeId + 运行区域名）：`infos()` 把它写进每条 `TeamInfo`，
@@ -131,9 +130,8 @@ impl crate::agent::registry::TeamAdmin for AgentManager {
         self: Arc<Self>,
         id: &str,
         profile: TeamMember,
-        enabled: bool,
     ) -> Result<(), String> {
-        AgentManager::save_profile(&self, id, profile, enabled)
+        AgentManager::save_profile(&self, id, profile)
     }
 
     fn delete_profile(&self, id: &str) -> Result<(), String> {
@@ -187,6 +185,12 @@ impl AgentManager {
             if p.name.is_empty() {
                 p.name = id.clone();
             }
+            // 旧配置迁移（2026-11）：`disabled_teams` 里的 id → `enabled = false`。
+            // 两个字段此前表达同一件事（判定是 `!enabled || disabled.contains`），
+            // 现在单轨到 `enabled`；旧文件写过的名单在这里折进去，行为不变。
+            if raw.disabled_teams.iter().any(|disabled| disabled == id) {
+                p.enabled = false;
+            }
             profiles.insert(id.clone(), p);
         }
         // 未配置人格 = 零人格（2026-10 用户请求）：此前 `teams` 为空会合成
@@ -196,10 +200,10 @@ impl AgentManager {
         // 由 Panel「设置 → 智能体 → 新建智能体」（或手写 `[agent.teams.<id>]`）
         // 按需创建。
         let teams = parking_lot::RwLock::new(profiles);
-        let disabled: Vec<String> = raw.disabled_teams.clone();
         let mut agents = HashMap::new();
         for (id, profile) in teams.read().iter() {
-            if !profile.enabled || disabled.contains(id) {
+            // 单轨：跑不跑只看 `enabled`（旧 `disabled_teams` 已在上面折进来）。
+            if !profile.enabled {
                 continue;
             }
             let p = profile.clone();
@@ -230,7 +234,6 @@ impl AgentManager {
             default_id,
             teams,
             agents: parking_lot::RwLock::new(agents),
-            disabled: parking_lot::Mutex::new(disabled),
             config_writer: parking_lot::Mutex::new(None),
             node_identity: parking_lot::RwLock::new(crate::NodeIdentity::default()),
             factory: parking_lot::RwLock::new(None),
@@ -331,7 +334,6 @@ impl AgentManager {
             return Err(format!("agent not found: {id}"));
         }
         let mut agents = self.agents.write();
-        let mut disabled = self.disabled.lock();
         if enabled {
             if !agents.contains_key(id) {
                 let profile = self.teams.read().get(id).cloned().unwrap();
@@ -340,20 +342,15 @@ impl AgentManager {
                 let running = RunningAgent::bound(self, id.to_string(), profile, agent);
                 agents.insert(id.to_string(), running);
             }
-            disabled.retain(|d| d != id);
         } else {
+            // 卸下实例 = 释放它持有的上下文投影；磁盘上的会话文件不动。
             agents.remove(id);
-            if !disabled.contains(&id.to_string()) {
-                disabled.push(id.to_string());
-            }
         }
-        // Keep the profile's persisted flag in lockstep with the runtime
-        // registry. Otherwise a ToggleTeam(false) would appear disabled only
-        // until the next rebuild, then restart as enabled.
+        // 单轨（2026-11）：`enabled` 就是唯一事实——配置里一份、运行时 map
+        // 一份，两者不再需要第三个列表来"保持同步"。
         if let Some(profile) = self.teams.write().get_mut(id) {
             profile.enabled = enabled;
         }
-        drop(disabled);
         self.persist_profiles()?;
         Ok(())
     }
@@ -396,7 +393,6 @@ impl AgentManager {
         self: &std::sync::Arc<Self>,
         id: &str,
         profile: TeamMember,
-        enabled: bool,
     ) -> Result<(), String> {
         let mut profile = profile;
         // 合并语义：传入 profile 的 per-agent 预算为 None 且旧 profile 已有值时
@@ -409,15 +405,9 @@ impl AgentManager {
                 profile.context_window_tokens = old.context_window_tokens;
             }
         }
+        // 启停单轨（2026-11）：`profile.enabled` 是唯一事实，运行时 map 跟着它走。
+        let enabled = profile.enabled;
         self.teams.write().insert(id.to_string(), profile.clone());
-        {
-            let mut disabled = self.disabled.lock();
-            if enabled {
-                disabled.retain(|d| d != id);
-            } else if !disabled.contains(&id.to_string()) {
-                disabled.push(id.to_string());
-            }
-        }
         let running = self.agents.read().contains_key(id);
         if enabled && !running {
             let agent = self
@@ -460,9 +450,6 @@ impl AgentManager {
         }
         self.teams.write().remove(id);
         self.agents.write().remove(id);
-        let mut disabled = self.disabled.lock();
-        disabled.retain(|d| d != id);
-        drop(disabled);
         self.persist_profiles()?;
         Ok(())
     }
@@ -493,7 +480,10 @@ impl AgentManager {
                 region_name: identity.region_name_field(),
                 name: p.name.clone(),
                 description: p.description.clone(),
-                enabled: agents.contains_key(id),
+                // 配置态读 profile（不再拿运行时 map 冒充）：两个状态必须能
+                // 分开看到，否则"启动失败"会被误显示成"被禁用"。
+                enabled: p.enabled,
+                running: agents.contains_key(id),
                 system_skills: p.system_skills.clone(),
                 sessions: agents.get(id).map(|r| r.agent.session_count()).unwrap_or(0),
                 system_prompt: p.system_prompt.clone(),
@@ -537,8 +527,8 @@ mod tests {
         }
     }
 
-    /// 构造 manager：测试成员全部放进 disabled_teams，build 不调 factory
-    ///（factory 缺失会 panic——确保测试不触碰实例化路径）。
+    /// 构造 manager：调用方须保证成员都是 `enabled: false`（或 `disabled`），
+    /// build 才不会调 factory（factory 缺失会 panic——确保测试不触碰实例化路径）。
     fn manager_with(raw: AgentConfig) -> AgentManager {
         AgentManager::build(&raw, |_id, _p| {
             panic!("factory must not be called in tests")
@@ -550,8 +540,13 @@ mod tests {
     #[test]
     fn infos_carry_injected_node_identity() {
         let mut raw = AgentConfig::default();
-        raw.teams.insert("a".into(), member_with_modules(&[]));
-        raw.disabled_teams = vec!["a".into()];
+        raw.teams.insert(
+            "a".into(),
+            TeamMember {
+                enabled: false,
+                ..member_with_modules(&[])
+            },
+        );
         let mgr = manager_with(raw);
         // 未注入 → 字段不下发（嵌入式/测试用法）。
         let info = &mgr.infos()[0];
@@ -570,6 +565,7 @@ mod tests {
         assert_eq!(info.region_name, None);
     }
 
+    /// 未启用的人格不实例化；`TeamInfo` 里**配置态**与**运行态**分开上报。
     #[test]
     fn disabled_profile_is_not_instantiated() {
         let mut raw = AgentConfig::default();
@@ -585,7 +581,57 @@ mod tests {
         });
         assert!(manager.agent_ids().is_empty());
         assert_eq!(manager.team_ids(), vec!["disabled"]);
+        let info = &manager.infos()[0];
+        assert!(!info.enabled, "配置态 = 未启用");
+        assert!(!info.running, "运行态 = 没有实例");
+    }
+
+    /// 旧配置迁移（2026-11）：`disabled_teams` 里的 id 折成 `enabled = false`。
+    ///
+    /// 两个字段此前表达同一件事（`!enabled || disabled.contains`）。迁移只在
+    /// **读**时做一次，写回时把废字段清掉（见配置写回处），否则用户在面板里
+    /// 重新启用后，下次启动会被这份旧名单再按回去。
+    #[test]
+    fn legacy_disabled_teams_migrate_into_enabled() {
+        let mut raw = AgentConfig::default();
+        raw.teams.insert(
+            "legacy".into(),
+            TeamMember {
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        raw.disabled_teams = vec!["legacy".into()];
+        let manager = AgentManager::build(&raw, |_id, _profile| {
+            panic!("legacy-disabled profiles must not instantiate an Agent")
+        });
+        assert!(manager.agent_ids().is_empty(), "必须按禁用处理");
         assert!(!manager.infos()[0].enabled);
+    }
+
+    /// 启停单轨：`set_enabled` 之后配置态与运行态同步，且**不需要**第三个
+    /// 名单来保持一致（旧实现的 `disabled` 列表已删）。
+    #[tokio::test]
+    async fn set_enabled_is_the_single_source_of_truth() {
+        let mut raw = AgentConfig::default();
+        raw.teams.insert("a".into(), TeamMember {
+            enabled: true,
+            ..Default::default()
+        });
+        let manager = std::sync::Arc::new(AgentManager::build(&raw, stub_agent));
+        assert!(manager.infos()[0].running);
+
+        manager
+            .set_enabled("a", false, stub_agent)
+            .expect("disable");
+        let info = &manager.infos()[0];
+        assert!(!info.enabled, "配置态跟着关");
+        assert!(!info.running, "运行态跟着关");
+
+        manager.set_enabled("a", true, stub_agent).expect("enable");
+        let info = &manager.infos()[0];
+        assert!(info.enabled);
+        assert!(info.running, "重新启用 = 经工厂重建实例");
     }
 
     /// 2026-10 用户请求回归：**未配置任何 `[agent.teams.*]` 时不得合成
@@ -675,10 +721,11 @@ mod tests {
             TeamMember {
                 name: "Carol".into(),
                 api_profile: Some("alpha".into()),
+                // 未启用：不进运行时，但配置里的 API 引用仍要算进引用计数。
+                enabled: false,
                 ..Default::default()
             },
         );
-        raw.disabled_teams = vec!["carol".into()];
         let mgr = AgentManager::build(&raw, stub_agent);
 
         assert_eq!(

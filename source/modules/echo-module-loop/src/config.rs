@@ -189,7 +189,16 @@ pub struct AgentConfig {
     /// Team members. Empty = single default agent (legacy behavior).
     #[serde(default)]
     pub teams: std::collections::BTreeMap<String, TeamMember>,
-    /// Team members disabled at runtime (survives restarts).
+    /// **已废弃（2026-11）**：人格启停单轨到 `teams.<id>.enabled`。
+    ///
+    /// 保留字段只为**读**旧配置：`AgentManager::build` 会把这里的 id 迁移成
+    /// `teams.<id>.enabled = false`，此后不再写回（`skip_serializing_if`
+    /// 让空列表不出现在 TOML 里）。
+    ///
+    /// 为什么收敛：`enabled` 与它表达同一件事，`build` 的判定因此写成
+    /// `!profile.enabled || disabled.contains(id)`，`set_enabled` 每次改要
+    /// 手工同步三处（profile / 本列表 / 运行时 map），注释里写着 "Keep in
+    /// lockstep"——靠人记住的同步迟早漂。单轨后运行时 map 回归纯运行态。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_teams: Vec<String>,
     /// Token budget for the global conversation trunk (the context fed to the
