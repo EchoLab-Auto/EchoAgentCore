@@ -50,6 +50,9 @@ impl AgentMessageHook {
     /// event emission, turn start). A successful return only acknowledges
     /// processing; it never carries text for the instance to send back.
     pub async fn on_incoming_message(&self, msg: IncomingMessage) -> Result<(), String> {
+        // 懒加载（2026-11）：平台入站消息是"真正要用这份历史"的第一个信号
+        // ——先读盘，再建会话/turn。
+        self.agent.trunk.ensure_loaded().await;
         let agent = &self.agent;
         // 多实例维度：模块实例名即 QQ 实例名（非 "qq" 时进会话键）。
         // 实例名 == 平台名 = 默认实例，不写 account 维度（多实例才需要区分）。

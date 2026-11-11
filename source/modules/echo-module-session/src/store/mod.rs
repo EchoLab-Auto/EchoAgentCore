@@ -131,6 +131,33 @@ impl Session {
 }
 
 /// Registry of source identities with per-session conversation contexts.
+/// 会话数据加载到哪一步了（2026-11 懒加载）。
+///
+/// 为什么分两档：面板**启动就要**知道有哪些会话（列表、计数、"最后一条
+/// 消息"），但那份 20 MB 事件日志只有真正要聊天/要历史时才用得上。
+/// 元信息档用 [`serde::de::IgnoredAny`] 跳过 `events` / `timeline`——解析器
+/// 只做词法推进、不建树，20 MB 文件的峰值内存从"整棵 JSON 树"降到常数级。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LoadStage {
+    /// 什么都没读（磁盘上可能躺着一份完整历史）。
+    Untouched = 0,
+    /// 只读了身份与头部：会话列表/计数可用，事件日志与显示时间线还没读。
+    Metadata = 1,
+    /// 全量：事件日志 + 显示时间线 + 各会话投影都在内存里。
+    Full = 2,
+}
+
+impl LoadStage {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Untouched,
+            1 => Self::Metadata,
+            _ => Self::Full,
+        }
+    }
+}
+
 pub struct TrunkStore {
     /// Owning team id (None = default). Set once by the Agent.
     team_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
@@ -192,6 +219,14 @@ pub struct TrunkStore {
     header: std::sync::Mutex<Option<echo_session::SessionHeader>>,
     persist_path: std::sync::Mutex<Option<std::path::PathBuf>>,
     dirty: std::sync::atomic::AtomicBool,
+    /// 加载阶段（2026-11 懒加载，见 [`LoadStage`]）。
+    ///
+    /// 启动期不再对每个人格全量读盘：一份 `echo-sessions-<team>.json` 实测
+    /// 20+ MB、上万条事件，四个常驻人格加起来把整个事件日志钉在内存里
+    /// （`Arc<Mutex<Vec<SessionEvent>>>`），进程 RSS 随人格数线性上涨。
+    load_stage: Arc<std::sync::atomic::AtomicU8>,
+    /// 加载串行闸：并发的首批请求只触发**一次**读盘。
+    load_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Clone for TrunkStore {
@@ -229,6 +264,8 @@ impl Clone for TrunkStore {
             dirty: std::sync::atomic::AtomicBool::new(
                 self.dirty.load(std::sync::atomic::Ordering::Relaxed),
             ),
+            load_stage: Arc::clone(&self.load_stage),
+            load_gate: Arc::clone(&self.load_gate),
         }
     }
 }
@@ -360,6 +397,10 @@ impl TrunkStore {
             header: std::sync::Mutex::new(None),
             persist_path: std::sync::Mutex::new(None),
             dirty: std::sync::atomic::AtomicBool::new(false),
+            // 纯内存 store（未设 persist_path）同样是"未加载"——`ensure_*`
+            // 发现没有路径会直接落到 `Full`（没有东西可读）。
+            load_stage: Arc::new(std::sync::atomic::AtomicU8::new(LoadStage::Untouched as u8)),
+            load_gate: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -567,7 +608,21 @@ impl TrunkStore {
     ///
     /// The caller must hold `session.turn_lock` (or otherwise serialize
     /// writers) so the event order matches the projected message order.
+    /// 写路径的自检（2026-11 懒加载）：未全量加载就改数据，说明有入口漏了
+    /// `ensure_loaded`。**不 panic**（线上不值得为此挂掉），但必须留下痕迹
+    /// ——否则"改了却存不下去"（未加载的档不会被写盘）会静默丢数据。
+    fn warn_if_unloaded(&self, op: &str) {
+        if !self.is_loaded() {
+            tracing::warn!(
+                op,
+                stage = ?self.load_stage(),
+                "session mutation before full load (missing ensure_loaded?)"
+            );
+        }
+    }
+
     pub fn append_event(&self, event: echo_session::SessionEvent) {
+        self.warn_if_unloaded("append_event");
         let session = event.session().map(str::to_string);
         // 模型不可见事件（推理 / 模型往返观测）不改变投影：跳过重建。
         // 投影重建是 O(本会话事件数) 的整份克隆——长会话里每次 append

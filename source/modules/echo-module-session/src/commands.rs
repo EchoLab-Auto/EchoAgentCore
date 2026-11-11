@@ -78,6 +78,20 @@ struct Target {
 }
 
 impl Target {
+    /// 解析目标并**确保它的会话数据已加载**（2026-11 懒加载）。
+    ///
+    /// 会话写命令（清理 / 归档 / 压缩）全都要读改事件日志：未加载时动手改的
+    /// 只是一份空内存，而落盘又被"文件已存在且没读过"的守卫挡住——命令会
+    /// 报成功却什么都没发生。所以三个命令统一走这里。
+    async fn resolve_loaded(
+        host: &Arc<dyn SessionCommandHost>,
+        team_id: Option<String>,
+    ) -> Result<Self, String> {
+        let target = Self::resolve(host, team_id)?;
+        target.trunk.ensure_loaded().await;
+        Ok(target)
+    }
+
     /// 按 `team_id` 解析目标；解析失败返回用户可读的失败原因。
     fn resolve(
         host: &Arc<dyn SessionCommandHost>,
@@ -143,7 +157,7 @@ impl SessionCommandHandler {
                 session_id,
             } => {
                 let session = require_session(session_id, "清理历史")?;
-                let target = match Target::resolve(&self.host, team_id) {
+                let target = match Target::resolve_loaded(&self.host, team_id).await {
                     Ok(target) => target,
                     Err(message) => {
                         self.host.emit(BackendEvent::Error {
@@ -169,7 +183,7 @@ impl SessionCommandHandler {
                 session_id,
             } => {
                 let session = require_session(session_id, "归档")?;
-                let target = match Target::resolve(&self.host, team_id) {
+                let target = match Target::resolve_loaded(&self.host, team_id).await {
                     Ok(target) => target,
                     Err(message) => {
                         self.host.emit(BackendEvent::Error {
@@ -211,7 +225,7 @@ impl SessionCommandHandler {
                 let result = self.host.compact(team_id.clone(), &session, keep).await;
                 match result {
                     Ok(message) => {
-                        let target = match Target::resolve(&self.host, team_id) {
+                        let target = match Target::resolve_loaded(&self.host, team_id).await {
                             Ok(target) => target,
                             // 压缩已经成功、宿主也已发过终态；这里只是没法
                             // 重发时间线（拿不到 trunk）。不当成失败。

@@ -430,6 +430,9 @@ impl Agent {
                 images,
                 team_id: _,
             } => {
+                // 懒加载（2026-11）：**第一次真正要用这份历史**时才读盘。
+                // 启动期不读，闲置人格就不占那份 20 MB 事件日志的内存。
+                self.trunk.ensure_loaded().await;
                 // Parse or fall back to local TUI session key.
                 let key = SessionKey::parse(&session_id).unwrap_or_else(SessionKey::local_tui);
                 // 工作区通道（激活 = 进入项目对话）：昵称解析为工作区名，重建

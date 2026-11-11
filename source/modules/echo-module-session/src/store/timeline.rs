@@ -11,6 +11,7 @@ impl TrunkStore {
     /// 条目 seq 在锁内赋值并与计数器同步推进（仅在条目真正入列时递增），
     /// 保证 `timeline_snapshot_since` 的按 seq 过滤语义成立。
     pub fn push_timeline(&self, message: echo_module_management::protocol::TimelineMessage) {
+        self.warn_if_unloaded("push_timeline");
         let mut timeline = self.timeline.lock();
         self.push_timeline_locked(&mut timeline, message);
         drop(timeline);

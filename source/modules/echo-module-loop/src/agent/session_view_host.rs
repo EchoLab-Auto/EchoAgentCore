@@ -66,6 +66,14 @@ impl SessionViewHost for AgentSessionViewHost {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<BackendEvent>> + Send + '_>> {
         let agent = Arc::clone(&self.agent);
         Box::pin(async move {
+            // 会话列表只需要**身份**（谁有哪些会话），不需要事件日志与
+            // 显示时间线：走元信息档，20 MB 文件用 `IgnoredAny` 跳过 body。
+            agent.trunk.ensure_metadata().await;
+            if let Some(mgr) = agent.registry() {
+                for running in mgr.all() {
+                    running.agent.trunk.ensure_metadata().await;
+                }
+            }
             let mut events = agent.api_config_events().await;
             // 会话列表要覆盖**所有人格**：每个会话由事件自带 team_id
             //（SessionInfo.team_id / emit 的 annotate_team），Panel 按当前
@@ -141,7 +149,11 @@ impl SessionViewHost for AgentSessionViewHost {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<BackendEvent>> + Send + '_>> {
         // 会话隔离：team 指定时用该成员自己的 trunk（不同记忆）。
         let target = self.target(team_id.as_deref());
-        Box::pin(async move { target.context_snapshot_events(session_id.as_deref()).await })
+        Box::pin(async move {
+            // 上下文占用要读事件日志里的历史长度 → 需要全量加载。
+            target.trunk.ensure_loaded().await;
+            target.context_snapshot_events(session_id.as_deref()).await
+        })
     }
 
     fn trunk_timeline(
@@ -153,6 +165,9 @@ impl SessionViewHost for AgentSessionViewHost {
     {
         let target = self.target(team_id.as_deref());
         Box::pin(async move {
+            // 显示时间线是面板聊天区的内容：读到它就要全量（时间线本身在
+            // 事件日志文件里，与 body 同一份 JSON）。
+            target.trunk.ensure_loaded().await;
             // `since_seq > 0` 走增量快照；增量窗口不完整（None）回退全量。
             // `full` 标志告知前端本次是替换还是追加/修补——前端不再凭 seq
             // 大小猜测（全量误当增量会整段重复，空增量误当全量会清空聊天）。
@@ -229,6 +244,8 @@ impl SessionViewHost for AgentSessionViewHost {
             .map(|depth| depth.min(MAX_EXPAND_DEPTH));
         let target = self.target(team_id.as_deref());
         Box::pin(async move {
+            // 历史派生要读**事件日志**（唯一事实来源）→ 全量加载。
+            target.trunk.ensure_loaded().await;
             let trunk = target.trunk.clone();
             let sid = session_id.clone();
             let history = if depth.is_some() {

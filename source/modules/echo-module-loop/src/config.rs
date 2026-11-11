@@ -186,6 +186,17 @@ pub struct AgentConfig {
     /// Tools disabled at runtime (survives restarts).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disabled_tools: Vec<String>,
+    /// **会话懒加载**（2026-11，默认开）。
+    ///
+    /// 关闭时启动期对每个人格全量读 `echo-sessions-<team>.json`（旧行为）：
+    /// 一份实测 20+ MB、上万条事件，全部常驻 `Arc<Mutex<Vec<SessionEvent>>>`。
+    /// 打开后启动只读元信息（身份 + 头部，用 `IgnoredAny` 跳过 body），
+    /// 事件日志在首次聊天 / 首次看历史时才读。
+    ///
+    /// 留这个开关是为了**可回退**：懒加载改变了"什么时候读盘"，出问题时
+    /// 一行配置就能回到旧行为，不必重编二进制。
+    #[serde(default = "default_true")]
+    pub lazy_sessions: bool,
     /// Team members. Empty = single default agent (legacy behavior).
     #[serde(default)]
     pub teams: std::collections::BTreeMap<String, TeamMember>,
@@ -254,6 +265,7 @@ impl Default for AgentConfig {
             modules_dir: "modules".into(),
             disabled_skills: Vec::new(),
             disabled_tools: Vec::new(),
+            lazy_sessions: true,
             teams: std::collections::BTreeMap::new(),
             disabled_teams: Vec::new(),
             memory_limit_tokens: None,
@@ -714,4 +726,9 @@ mod tests {
         assert_eq!(member.memory_limit_tokens, None);
         assert_eq!(member.context_window_tokens, None);
     }
+}
+
+/// serde 默认：`true`（新增的开关一律"默认开、显式关"）。
+fn default_true() -> bool {
+    true
 }

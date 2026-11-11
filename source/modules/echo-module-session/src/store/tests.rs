@@ -441,6 +441,206 @@ fn temp_sessions_path(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("echo-trunk-{name}-{}.json", std::process::id()))
 }
 
+// ── 懒加载（2026-11）─────────────────────────────────────────────────
+//
+// 启动期不再全量读盘：一份 `echo-sessions-<team>.json` 实测 20+ MB，全量
+// 读进来的事件日志会一直钉在内存里（`Arc<Mutex<Vec<SessionEvent>>>`）。现在
+// 分两档——元信息（身份/头部）先读，body 等真正要用时才读。
+//
+// 这批测试锁两条**安全**约束（比性能更关键）：
+//   1. 没读过 body 时**绝不覆盖已有的档**（否则空文档抹掉 20 MB 历史）；
+//   2. 元信息档能给出会话列表/计数，但事件日志仍为空。
+
+/// 造一份带事件的档，返回路径。
+async fn seed_session_file(name: &str, sessions: &[(&str, &str)]) -> std::path::PathBuf {
+    let path = temp_sessions_path(name);
+    let _ = std::fs::remove_file(&path);
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    for (key, content) in sessions {
+        let key = SessionKey::parse(key).unwrap();
+        store.get_or_create(&key, "u".into(), None);
+        store.append_event(echo_session::SessionEvent::UserMessage(
+            echo_session::event::UserMessage {
+                session: Some(key.to_session_id()),
+                content: (*content).into(),
+                timestamp: 1700000000,
+                message_sequence: None,
+                source: None,
+                images: vec![],
+            },
+        ));
+    }
+    store.save_now().await;
+    assert!(path.exists(), "种子档应写出来");
+    path
+}
+
+/// 未加载的 store **不得**覆盖已有档：序列化出来的是空文档，写下去等于
+/// 把磁盘上的历史抹掉。
+#[tokio::test]
+async fn unloaded_store_never_overwrites_an_existing_file() {
+    let path = seed_session_file("lazy-guard", &[("qq:dm:1:1", "早前的历史")]).await;
+    let before = std::fs::read_to_string(&path).unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    // 未加载就尝试落盘（模拟"周期保存先于任何请求触发"）。
+    store.mark_dirty();
+    store.save_now().await;
+
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        before,
+        "未加载的 trunk 写盘会把历史抹成空文档"
+    );
+}
+
+/// 元信息档：身份读到了（面板能列会话/计数），事件日志仍为空。
+#[tokio::test]
+async fn ensure_metadata_loads_identities_but_not_events() {
+    let path = seed_session_file(
+        "lazy-meta",
+        &[("qq:dm:1:1", "早前的历史"), ("qq:group:9:2", "群里的历史")],
+    )
+    .await;
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    store.ensure_metadata().await;
+
+    assert_eq!(store.load_stage(), LoadStage::Metadata);
+    assert!(!store.is_loaded(), "元信息档不是全量");
+    assert_eq!(store.len(), 2, "会话身份要读到（否则面板丢会话）");
+    assert!(
+        store.event_log().is_empty(),
+        "事件日志不该被元信息档读进来"
+    );
+    // 头部（v6 档里是 null）应被补成顶层 header，与启动期同语义。
+    assert!(store.header().is_some());
+}
+
+/// 身份为空但事件非空的旧档：元信息档**退回全量**（否则面板看不到会话）。
+///
+/// 实测本机 `alix` / `Alice` 的档就是这样：`identities: []`，会话只能从事件
+/// 的 `session` 字段派生。跳过事件的元信息档会给出"零会话"，用户以为历史丢了。
+#[tokio::test]
+async fn metadata_falls_back_to_full_when_identities_are_empty() {
+    // 手工构造：有事件、`identities` 为空（模拟旧档）。
+    let path = temp_sessions_path("lazy-noident");
+    let _ = std::fs::remove_file(&path);
+    let doc = serde_json::json!({
+        "version": 6,
+        "header": null,
+        "identities": [],
+        "timeline": [],
+        "events": [
+            {"kind": "user_message", "session": "local:tui::local_user",
+             "content": "旧的历史", "timestamp": 1700000000,
+             "message_sequence": null, "source": null, "images": []}
+        ]
+    });
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    store.ensure_metadata().await;
+
+    assert!(
+        store.is_loaded(),
+        "身份为空时元信息档不够用，必须退回全量"
+    );
+    assert_eq!(store.len(), 1, "会话要从事件派生出来（面板才有得选）");
+    assert_eq!(store.event_log().len(), 1);
+}
+
+/// 真·空档（没有会话也没有事件）：同样退回全量——**故意的**。
+///
+/// 判据只看"身份数为 0"，因为元信息档刻意跳过事件，无法再细分"空档"和
+/// "旧档"。对空档而已，body 本来就是空数组，全量加载约等于零成本；反过来
+/// 给空档加特例，就得在 `ensure_metadata` 里同时判事件数——那要把 body 读
+/// 进来，等于白费懒加载。
+#[tokio::test]
+async fn empty_file_also_falls_back_and_costs_nothing() {
+    let path = temp_sessions_path("lazy-empty");
+    let _ = std::fs::remove_file(&path);
+    let doc = serde_json::json!({
+        "version": 6, "header": null, "identities": [], "timeline": [], "events": []
+    });
+    std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    let started = std::time::Instant::now();
+    store.ensure_metadata().await;
+
+    assert!(store.is_loaded());
+    assert_eq!(store.len(), 0);
+    assert!(store.event_log().is_empty());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "空档的全量加载必须是毫秒级"
+    );
+}
+
+/// `ensure_loaded` 补齐 body，且从元信息档升级不会丢身份。
+#[tokio::test]
+async fn ensure_loaded_promotes_metadata_to_full() {
+    let path = seed_session_file("lazy-full", &[("qq:dm:1:1", "早前的历史")]).await;
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    store.ensure_metadata().await;
+    store.ensure_loaded().await;
+
+    assert_eq!(store.load_stage(), LoadStage::Full);
+    assert_eq!(store.len(), 1);
+    assert_eq!(store.event_log().len(), 1, "事件日志要读进来");
+    // 历史投影可用（面板/模型都能看到那条消息）。
+    let key = SessionKey::parse("qq:dm:1:1").unwrap();
+    let history = store
+        .history_for(&key.to_session_id())
+        .expect("会话投影应存在");
+    // 投影是 `Arc<Mutex<Vec<ChatMessage>>>`（克隆共享），按锁内长度断言。
+    assert_eq!(history.lock().len(), 1);
+}
+
+/// 全量加载之后落盘恢复正常（未加载守卫不该把正常保存也挡住）。
+#[tokio::test]
+async fn loaded_store_saves_normally() {
+    let path = seed_session_file("lazy-save", &[("qq:dm:1:1", "早前的历史")]).await;
+
+    let store = TrunkStore::new(1000);
+    store.set_persist_path(&path);
+    store.ensure_loaded().await;
+    let key = SessionKey::parse("qq:dm:1:1").unwrap();
+    store.append_event(echo_session::SessionEvent::UserMessage(
+        echo_session::event::UserMessage {
+            session: Some(key.to_session_id()),
+            content: "新的".into(),
+            timestamp: 1700000001,
+            message_sequence: None,
+            source: None,
+            images: vec![],
+        },
+    ));
+    store.save_now().await;
+
+    let restored = TrunkStore::new(1000);
+    restored.set_persist_path(&path);
+    assert_eq!(restored.load_from_file().await, 1);
+    assert_eq!(restored.event_log().len(), 2, "新旧事件都在");
+}
+
+/// 纯内存 store（无 persist_path）没有东西可读：直接 Full。
+#[tokio::test]
+async fn memory_only_store_is_full_after_ensure() {
+    let store = TrunkStore::new(1000);
+    assert_eq!(store.load_stage(), LoadStage::Untouched);
+    store.ensure_loaded().await;
+    assert!(store.is_loaded());
+}
+
 #[tokio::test]
 async fn save_and_load_roundtrip_restores_trunk_and_identities() {
     let path = temp_sessions_path("roundtrip");

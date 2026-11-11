@@ -36,6 +36,23 @@ impl TrunkStore {
                 .store(false, std::sync::atomic::Ordering::Relaxed);
             return;
         };
+        // **没读过就别盖掉已有的档**（2026-11 懒加载的第一条硬约束）。
+        //
+        // 未加载的 trunk 序列化出来是一份「events: []、timeline: []」的空
+        // 文档——写下去等于把磁盘上那份 20 MB 历史抹掉。`dirty` 保持置位，
+        // 等真正加载完再落盘。
+        //
+        // 判据是**文件在不在**而不是"阶段是不是 Full"：新建人格的档本来
+        // 就不存在（第一次保存必须能写出去）。文件存在 + 没全量加载 =
+        // 内存里不是这份文件的内容 → 跳过。
+        if self.load_stage() != LoadStage::Full && path.exists() {
+            tracing::debug!(
+                path = %path.display(),
+                stage = ?self.load_stage(),
+                "session save skipped: existing file not loaded yet"
+            );
+            return;
+        }
         let Some(data) = self.serialize() else {
             // Serialization failure — nothing was written, retry next tick.
             return;
@@ -52,24 +69,142 @@ impl TrunkStore {
         }
         self.dirty
             .store(false, std::sync::atomic::Ordering::Relaxed);
+        // 写出去了 = 内存里的状态就是磁盘上的状态。这条路径包含"新建人格的
+        // 第一份档"（本来没有历史可读），不必再回读一次；也让后续写入不再
+        // 被上面那条 `path.exists()` 守卫挡住。
+        if self.load_stage() != LoadStage::Full {
+            self.set_load_stage(LoadStage::Full);
+        }
+    }
+
+    /// 当前加载阶段。
+    pub fn load_stage(&self) -> LoadStage {
+        LoadStage::from_u8(self.load_stage.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    fn set_load_stage(&self, stage: LoadStage) {
+        self.load_stage
+            .store(stage as u8, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 全量数据是否已在内存里。
+    pub fn is_loaded(&self) -> bool {
+        self.load_stage() == LoadStage::Full
+    }
+
+    /// 读磁盘上的会话文件（`None` = 没有持久化路径 / 读失败）。
+    async fn read_persist_file(&self) -> Option<String> {
+        let path = self.persist_path.lock().ok().and_then(|slot| slot.clone())?;
+        tokio::fs::read_to_string(path).await.ok()
     }
 
     /// Load sessions from JSON file. Returns count of restored sessions.
     pub async fn load_from_file(&self) -> usize {
-        let path = {
-            self.persist_path
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-        };
-        let Some(ref path) = path else {
+        let Some(data) = self.read_persist_file().await else {
+            // 没有路径 / 读不出来：没有东西可加载，直接视为已加载（否则
+            // 每次请求都会重试读盘一次）。
+            self.set_load_stage(LoadStage::Full);
             return 0;
         };
-        let data = match tokio::fs::read_to_string(path).await {
-            Ok(d) => d,
-            Err(_) => return 0,
+        let restored = self.deserialize(&data);
+        self.set_load_stage(LoadStage::Full);
+        // 加载完成 = 内存里的状态就是磁盘上的状态，不必再写一遍。
+        self.dirty
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        restored
+    }
+
+    /// **只读元信息**（身份 + 头部），跳过事件日志与显示时间线。
+    ///
+    /// 面板启动就要会话列表与计数，但那份 20 MB 事件日志只有聊天/看历史时
+    /// 才用得上。这里用 [`serde::de::IgnoredAny`] 让解析器**跳过** `events`
+    /// 与 `timeline`（只做词法推进、不建树）：实测 21 MB 文件从"解析成整棵
+    /// JSON 树（数百 MB 峰值）"降到常数级内存。
+    ///
+    /// 已经是 `Metadata` 或 `Full` 阶段时是空操作。
+    pub async fn ensure_metadata(&self) {
+        if self.load_stage() != LoadStage::Untouched {
+            return;
+        }
+        let _gate = self.load_gate.lock().await;
+        if self.load_stage() != LoadStage::Untouched {
+            return;
+        }
+        let Some(data) = self.read_persist_file().await else {
+            self.set_load_stage(LoadStage::Full);
+            return;
         };
-        self.deserialize(&data)
+        #[derive(serde::Deserialize)]
+        struct MetadataDocument {
+            #[serde(default)]
+            header: Option<echo_session::SessionHeader>,
+            #[serde(default)]
+            identities: Vec<serde_json::Value>,
+            /// 跳过（不建树）。
+            #[serde(default)]
+            events: serde::de::IgnoredAny,
+            #[serde(default)]
+            timeline: serde::de::IgnoredAny,
+        }
+        match serde_json::from_str::<MetadataDocument>(&data) {
+            Ok(document) => {
+                if let Some(header) = document.header {
+                    self.set_header(header);
+                }
+                self.restore_identity_labels(&document.identities);
+            }
+            // 旧格式（v1–v4：数组根 / 无 events 字段）：元信息档读不出来，
+            // 交给全量加载时的迁移路径处理（那里能读 v1–v4）。
+            Err(error) => {
+                tracing::debug!(
+                    error = %error,
+                    "session metadata preload failed; deferring to full load"
+                );
+            }
+        }
+        // 与全量加载同语义：没有 header 的档补顶层 header（分支/续跑元数据
+        // 依赖它）。放在这里而不是只由调用方补——两处补会出现"谁先谁后"的
+        // 隐性约定。
+        if self.header().is_none() {
+            self.set_header(echo_session::SessionHeader::top_level("trunk"));
+        }
+        // **身份为空 = 元信息档不够用，退回全量**（关键回退，别删）。
+        //
+        // 旧档（v5 及更早写入过的，或曾由 `attribute_legacy_events` 迁移的）
+        // 里 `identities` 是空数组，会话只能从**事件的 `session` 字段**派生。
+        // 元信息档刻意跳过事件，于是会话列表会是空的——面板会显示"没有会话"，
+        // 用户以为历史丢了。实测本机 alix / Alice 就是这种档（703 / 20 条事件、
+        // identities 为 0）。
+        if self.len() == 0 {
+            tracing::debug!(
+                "session metadata has no identities; falling back to full load"
+            );
+            self.load_from_file().await;
+            return;
+        }
+        self.set_load_stage(LoadStage::Metadata);
+    }
+
+    /// **确保全量数据在内存里**（事件日志 + 显示时间线 + 各会话投影）。
+    ///
+    /// 所有"要读历史 / 要跑 turn / 要写事件"的入口在动手前调用本方法。
+    /// 并发的首批请求由 `load_gate` 串行化——只有第一个真读盘。
+    ///
+    /// 没有持久化路径的纯内存 store 直接进 `Full`（没有东西可读）。
+    pub async fn ensure_loaded(&self) {
+        if self.is_loaded() {
+            return;
+        }
+        let _gate = self.load_gate.lock().await;
+        if self.is_loaded() {
+            return;
+        }
+        self.load_from_file().await;
+        // 与启动期同语义：没有 header 的档补一个顶层 header（分支/续跑
+        // 元数据依赖它）。
+        if self.header().is_none() {
+            self.set_header(echo_session::SessionHeader::top_level("trunk"));
+        }
     }
 
     /// Serialize the trunk and identity labels. Returns `None` on failure so
@@ -116,13 +251,15 @@ impl TrunkStore {
 
         // v5/v6: event log is authoritative. Re-project per session from it.
         if let Some(events) = root["events"].as_array() {
-            if let Ok(header) = serde_json::from_value::<Option<echo_session::SessionHeader>>(
+            // 只在文件**确实带 header**时覆盖：懒加载下内存里可能已经装好
+            // 默认 header（`ensure_loaded` 补的），文件里是 null 不该把它清掉。
+            if let Ok(Some(header)) = serde_json::from_value::<Option<echo_session::SessionHeader>>(
                 root["header"].clone(),
             ) {
                 *self
                     .header
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = header;
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(header);
             }
             let mut events: Vec<echo_session::SessionEvent> = events
                 .iter()
@@ -148,7 +285,7 @@ impl TrunkStore {
                 if media_migrated {
                     self.mark_dirty();
                 }
-                let count = self.restore_identity_labels(&root);
+                let count = self.restore_identity_labels(&identity_values_of(&root));
                 // 事件日志里出现但身份元数据缺失的会话也要补建（含归属）——
                 // 否则 Panel 会话列表丢项。
                 self.ensure_identities_for_events(&events);
@@ -217,7 +354,7 @@ impl TrunkStore {
             }
             self.event_log.extend(all_events.clone());
             // Fall through to the identity/timeline restore below.
-            let count = self.restore_identity_labels(&root);
+            let count = self.restore_identity_labels(&identity_values_of(&root));
             self.ensure_histories_for_events(&all_events);
             self.reproject_all();
             let mut restored_timeline = root["timeline"]
@@ -248,16 +385,7 @@ impl TrunkStore {
     }
 
     /// Restore identity labels from a v4/v5 document root.
-    pub(super) fn restore_identity_labels(&self, root: &serde_json::Value) -> usize {
-        let identity_values = match root {
-            serde_json::Value::Array(sessions) => sessions.as_slice(),
-            serde_json::Value::Object(_) => root["identities"]
-                .as_array()
-                .or_else(|| root["sessions"].as_array())
-                .map(Vec::as_slice)
-                .unwrap_or(&[]),
-            _ => &[],
-        };
+    pub(super) fn restore_identity_labels(&self, identity_values: &[serde_json::Value]) -> usize {
         let mut count = 0;
         for s in identity_values {
             let Some(_id) = s["id"].as_str() else {
@@ -399,5 +527,18 @@ impl TrunkStore {
             "display timeline replaced from legacy document"
         );
         count
+    }
+}
+
+/// 从持久化文档里取身份数组（v1 数组根 / v5+ 的 `identities`、兼容 `sessions`）。
+fn identity_values_of(root: &serde_json::Value) -> Vec<serde_json::Value> {
+    match root {
+        serde_json::Value::Array(sessions) => sessions.clone(),
+        serde_json::Value::Object(_) => root["identities"]
+            .as_array()
+            .or_else(|| root["sessions"].as_array())
+            .cloned()
+            .unwrap_or_default(),
+        _ => Vec::new(),
     }
 }

@@ -1943,11 +1943,29 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
     //   2026-10 技术债清理：`module_host_global` 已删除。）
     // Turn 驱动注入：所有人格共享组合根的 TurnRunner（含计量/脱敏装饰的
     // provider 与配置预算）。运行期新建人格由 set_agent_factory 的包装覆盖。
-    // Restore persisted sessions and start periodic save (all personas).
+    // 会话数据：**懒加载**（2026-11，`[agent].lazy_sessions`，默认开）。
+    //
+    // 旧行为对每个人格全量读盘：一份 `echo-sessions-<team>.json` 实测 20+ MB、
+    // 上万条事件，全部钉在内存里（`Arc<Mutex<Vec<SessionEvent>>>`），闲置人格
+    // 也照付。现在启动只读**元信息**（身份 + 头部；`IgnoredAny` 跳过 body，
+    // 峰值内存常数级），事件日志等第一次聊天/看历史时再读（见
+    // `TrunkStore::ensure_loaded` 的各个调用点）。
+    //
+    // 未加载的 trunk **不会被落盘**（`write_to_disk` 的硬约束）——否则那份
+    // 空文档会把磁盘上的历史抹掉。
+    let lazy_sessions = cfg.agent.lazy_sessions;
     for persona in supervisor.personas() {
-        let restored = persona.agent.load_sessions().await;
-        if restored > 0 {
-            info!(agent = %persona.id, restored, "sessions restored from disk");
+        if lazy_sessions {
+            persona.agent.trunk.ensure_metadata().await;
+            let sessions = persona.agent.session_count();
+            if sessions > 0 {
+                info!(agent = %persona.id, sessions, "session metadata preloaded (lazy)");
+            }
+        } else {
+            let restored = persona.agent.load_sessions().await;
+            if restored > 0 {
+                info!(agent = %persona.id, restored, "sessions restored from disk");
+            }
         }
         if persona.agent.trunk.header().is_none() {
             persona
