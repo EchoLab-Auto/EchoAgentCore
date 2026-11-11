@@ -737,6 +737,27 @@ mod tests {
         );
     }
 
+    /// 内嵌 Panel 模块必须出现在**带外部模块**的目录里（2026-11）。
+    ///
+    /// 它来自 Panel 仓（`echo-module-panel`），由组合根经
+    /// [`crate::external_builtin_modules`] 塞进目录。漏登记的表现是：`modules.toml`
+    /// 里写 `id = "echo-agent.panel.web"` 却报 "unknown builtin module"，
+    /// 而用户看到的是"我明明启用了它，端口没起来"。
+    #[test]
+    fn catalog_contains_the_embedded_panel_module() {
+        let core = crate::config::CoreSection::default();
+        let catalog = catalog_with(
+            "0.0.0-test",
+            crate::external_builtin_modules("0.0.0-test", &core),
+        )
+        .expect("目录构造");
+        let ids: Vec<&str> = catalog.iter().map(|p| p.manifest().id.as_str()).collect();
+        assert!(
+            ids.contains(&echo_module_panel::MODULE_ID),
+            "内嵌 Panel 模块未登记：{ids:?}"
+        );
+    }
+
     /// 声明宿主保留命令 → 装配期失败（分发器永远不会路由给它）。
     #[test]
     fn reserved_command_declarations_are_rejected() {

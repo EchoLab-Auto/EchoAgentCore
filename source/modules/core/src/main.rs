@@ -1685,10 +1685,13 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
         module_host.attach_root_ctx(ctx.clone());
         {
             let version = version.to_string();
+            // 人格目录的工厂闭包要 `'static`：把宿主默认值先取出来（`cfg`
+            // 本身活不到那儿，且 `CoreSection` 只有两个 String）。
+            let core_section = cfg.core.clone();
             module_host.set_persona_catalog(std::sync::Arc::new(move || {
                 match crate::builtin_modules::catalog_with(
                     &version,
-                    external_builtin_modules(&version),
+                    external_builtin_modules(&version, &core_section),
                 ) {
                     Ok(catalog) => catalog,
                     Err(error) => {
@@ -1705,7 +1708,10 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
 
         // ── 内置模块目录：零参数（纯静态：这个二进制里有什么）──
         let mut catalog =
-            crate::builtin_modules::catalog_with(version, external_builtin_modules(version))?;
+            crate::builtin_modules::catalog_with(
+                version,
+                external_builtin_modules(version, &cfg.core),
+            )?;
         // 配置驱动的两项在目录之后追加：平台实例（id 由 `[instances.<平台>]`
         // 派生）与外部条目（`modules.toml` 的非 builtin 行）——它们的"存在"
         // 取决于这份部署的配置，不该混进静态目录的签名。
@@ -2334,6 +2340,26 @@ mod tests {
 /// 这里只做「工厂 → 目录」的通用装配：模块的 ID、manifest、配置校验、
 /// mount/unmount 和资源释放全部由所属 crate 提供；Core 不持有其实现。
 /// 没有显式列出的外部模块不会被自动扫描/启动。
-fn external_builtin_modules(version: &str) -> Vec<Arc<dyn echo_module::Module>> {
-    vec![echo_module_panel::module(version)]
+///
+/// ## 为什么要传 `PanelDefaults`
+///
+/// 内嵌 Panel 连的是**本进程**的管理面，而那份地址与令牌本来就在组合根手里
+/// （`core.toml` 的 `[core]`）。不注入的话，用户为了"连自己"得在模块配置里
+/// 再抄一遍令牌——而模块配置会进诊断/清单面，凭证放那里等于主动泄漏（该
+/// crate 的文档也明令禁止）。于是唯一干净的路径是：**宿主在装配期把这两个
+/// 事实交出去**，模块配置面保持"可公开"。
+///
+/// 缺省部署（`modules.toml` 没有 panel 行）不受影响：外部仓的可选模块默认
+/// 不挂载，注入的默认值只是躺在那里没人用。
+fn external_builtin_modules(
+    version: &str,
+    core: &crate::config::CoreSection,
+) -> Vec<Arc<dyn echo_module::Module>> {
+    vec![echo_module_panel::module_with_defaults(
+        version,
+        Some(echo_module_panel::PanelDefaults {
+            core_url: core.management_address.clone(),
+            core_access_token: core.management_access_token.clone(),
+        }),
+    )]
 }
