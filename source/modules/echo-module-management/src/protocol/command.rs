@@ -476,6 +476,28 @@ pub enum BackendCommand {
         #[serde(default)]
         path: Option<String>,
     },
+
+    // ---- ProDoc 文档群（prodoc 模块：把 Markdown 目录读成文档图）----
+    /// 扫描一个文档根并**推回**全量快照。
+    ///
+    /// 回执只有统计（`{root, documents, bytes, truncated}`），**内容走模块
+    /// 事件**（`ModuleEvent{name:"prodoc.bundle"}`）：一份快照可能几百 KB，
+    /// 塞进命令回执会和面板的 pending / 重放逻辑缠在一起，而模块事件通道
+    /// 本来就是为"服务器主动推"设计的。
+    ///
+    /// `root` 必须是模块配置 `roots` 允许的范围内（缺省只有 HOME）。
+    RequestProDocBundle {
+        #[serde(default)]
+        team_id: Option<String>,
+        root: String,
+    },
+    /// 目录选择器的逐层浏览：`path = None` 给根列表，给路径给子目录。
+    BrowseProDocDirs {
+        #[serde(default)]
+        path: Option<String>,
+    },
+    /// 可打开的根列表 + 生效的上限（面板初次连接时拉一次）。
+    ProDocRoots,
     /// Start all configured instances.
     StartAllInstances,
     /// Stop all running instances.
@@ -586,6 +608,9 @@ impl BackendCommand {
             Self::RequestWorkspaceGitStatus { .. } => "RequestWorkspaceGitStatus",
             Self::RequestWorkspaceFiles { .. } => "RequestWorkspaceFiles",
             Self::RequestBrowseDirectories { .. } => "RequestBrowseDirectories",
+            Self::RequestProDocBundle { .. } => "RequestProDocBundle",
+            Self::BrowseProDocDirs { .. } => "BrowseProDocDirs",
+            Self::ProDocRoots { .. } => "ProDocRoots",
             Self::StartAllInstances { .. } => "StartAllInstances",
             Self::StopAllInstances { .. } => "StopAllInstances",
             Self::RequestSkillsList { .. } => "RequestSkillsList",
@@ -693,6 +718,10 @@ pub const PANEL_READONLY_COMMANDS: &[&str] = &[
     "RequestWorkspaceGitStatus",
     "RequestWorkspaceFiles",
     "RequestBrowseDirectories",
+    // ProDoc（只读：扫描与浏览，P1 无写盘）
+    "RequestProDocBundle",
+    "BrowseProDocDirs",
+    "ProDocRoots",
     // 联邦（只读：状态与目录；邀请串与增删 peer 不在其列）
     "RequestFederationStatus",
     "RequestFederationDirectory",

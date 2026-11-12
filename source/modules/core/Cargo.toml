@@ -24,6 +24,7 @@ echo-module-host = { workspace = true }
 echo-module-federation = { workspace = true }
 echo-module-loader = { workspace = true }
 echo-module-session = { workspace = true }
+echo-module-prodoc = { workspace = true }
 echo-module-transcript = { workspace = true }
 echo-module-management = { workspace = true }
 echo-module-panel = { workspace = true }

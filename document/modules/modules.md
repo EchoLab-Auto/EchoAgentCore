@@ -4,7 +4,7 @@ title: "模块化设计"
 group: Core
 x: 5600
 y: 920
-link: ["kernel | 运行地基", "tools | 工具集", "shell | Shell 会话", "workspace | 工作区", "subagent | Subagent", "skills | 技能目录", "provider-llm | LLM Provider", "loop | 循环", "sanitize | 脱敏", "session | 会话", "transcript | 显示层", "management-panel | 管理面", "federation | 联邦", "selfupdate | 自更新", "qq-gating | QQ 实例", "module-authoring | 模块开发"]
+link: ["kernel | 运行地基", "tools | 工具集", "shell | Shell 会话", "workspace | 工作区", "prodoc | 文档群", "subagent | Subagent", "skills | 技能目录", "provider-llm | LLM Provider", "loop | 循环", "sanitize | 脱敏", "session | 会话", "transcript | 显示层", "management-panel | 管理面", "federation | 联邦", "selfupdate | 自更新", "qq-gating | QQ 实例", "module-authoring | 模块开发"]
 ---
 
 # 模块化设计
@@ -85,6 +85,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 | [`echo-agent.tools.builtin`](./tools.md) | Tool | 进程内 | 内置工具集（计算/搜索/编码/实例管理）；**不含 shell 会话** |
 | [`echo-agent.shell`](./shell.md) | Tool | 进程内 | 后台 bash 会话 + Shell 面板命令域 |
 | [`echo-agent.workspace`](./workspace.md) | Tool | 进程内（**独立仓**） | 工作区会话（多目录管理 + git 状态 + 只读文件浏览）。2026-11 迁出 Core 至 `EchoLab-Auto/agent-module-workspace`：store 与命令域归模块，宿主只留只读镜像 + 工具代理 |
+| [`echo-agent.prodoc`](./prodoc.md) | Tool | 进程内 | ProDoc 文档群：把一棵 Markdown 目录读成文档图（只读 + 上限），渲染在浏览器（`DocGraphViewer`） |
 | [`echo-agent.subagent`](./subagent.md) | Tool | 进程内（**独立仓**） | 委派隔离上下文的子任务 + 完成后回灌；实现位于 `EchoLab-Auto/agent-module-subagent` |
 | [`echo-agent.skills.dir`](./skills.md) | Skill | 进程内 | SKILL.md 技能目录（热重载） |
 | [`echo-agent.provider.llm`](./provider-llm.md) | Provider | 进程内 | provider 工厂 + 计量/脱敏装饰 + API 命令域 |
@@ -99,7 +100,7 @@ Rust ABI 不稳定；`libloading` + C ABI 要求每个模块手写 extern "C" �
 
 > **`Kernel` 是什么**：2026-11 取消「中间层 / 模块」二分之后新增的类别——提供其它模块的**运行地基**（词汇 / 线契约 / 注册表 / 事件日志 / 配置存储 / 循环驱动）。它们与其它模块同形（有 manifest、进 catalog、出现在本表），但**不可禁用**：`modules.toml` 写 `enabled = false` 会让启动失败并点名。逐条理由见 [运行地基](./kernel.md)。
 
-表的来源分两类，别混算：**框架内置 16 项**（`echo_agent::modules::BUILTIN_MODULE_IDS: [&str; 16]`，`builtin = true`，实现同在 Core 进程内）与**模块实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::MODULE_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
+表的来源分两类，别混算：**框架内置 17 项**（`echo_agent::modules::BUILTIN_MODULE_IDS: [&str; 17]`，`builtin = true`，实现同在 Core 进程内）与**模块实例 1 项**（`echo-agent.instance.qq`）——后者的 id 不是硬编码，由组合根按前缀 `echo_agent.instance.<平台名>` 声明（`core::instance_manifests::MODULE_ID_PREFIX`），新增平台只加配置不改框架。运行形态一列独立于来源：`instance.qq` 即「框架声明 manifest + 进程外实现」的现行样本。
 
 > **Panel 进程内模块的实现完全在 Panel 仓**（`source/echo-module-panel`）。Core 的组合根只引用其公开工厂，不持有 Panel 代码；挂载语义与本文相同，默认不启用。详见 Panel 仓文档。
 

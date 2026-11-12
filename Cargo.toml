@@ -16,6 +16,7 @@ members = [
     "source/modules/echo-module-sanitize",
     "source/modules/echo-module-shell",
     "source/modules/echo-module-session",
+    "source/modules/echo-module-prodoc",
     "source/modules/echo-module-transcript",
     "source/modules/echo-module-management",
     "source/modules/echo-protocol",
@@ -86,6 +87,7 @@ echo-module-workspace = { git = "https://github.com/EchoLab-Auto/agent-module-wo
 echo-module-management = { package = "echo-module-management", path = "source/modules/echo-module-management" }
 echo-module-panel = { git = "https://github.com/EchoLab-Auto/EchoAgentPanel", branch = "main" }
 echo-module-session = { path = "source/modules/echo-module-session" }
+echo-module-prodoc = { path = "source/modules/echo-module-prodoc" }
 echo-module-transcript = { path = "source/modules/echo-module-transcript" }
 echo-module-tools = { path = "source/modules/echo-module-tools" }
 

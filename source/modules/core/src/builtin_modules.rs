@@ -192,6 +192,12 @@ pub(crate) fn catalog_with(
     // ── 工作区会话（命令域 + 提示词块）──
     push_module(&mut catalog, echo_module_workspace::module(version))?;
 
+    // ── ProDoc 文档群（只读命令域）──
+    //
+    // 进程级（kind = "tool" → persona 门控集合，与 workspace 同级）：文档根
+    // 由配置给出，不随人格变化；但命令里带 team_id，面板按人格过滤事件。
+    push_module(&mut catalog, echo_module_prodoc::module(version))?;
+
     // ── 联邦（命令域 + 远程工具路由）──
     push_module(&mut catalog, echo_module_federation::module(version))?;
 

@@ -89,7 +89,7 @@ pub use echo_module_federation::MODULE_ID as FEDERATION_MODULE_ID;
 /// `echo-agent.instance.<平台名>` 生成）——框架不认识平台名。
 /// 与 `scripts/update.sh::expected_ids` 的对齐校验由 `core::instance_manifests`
 /// 的单测把两侧并起来比（每项 id 必须出现在 update.sh 的校验清单里）。
-pub const BUILTIN_MODULE_IDS: [&str; 16] = [
+pub const BUILTIN_MODULE_IDS: [&str; 17] = [
     TOOLS_BUILTIN_MODULE_ID,
     SHELL_MODULE_ID,
     SKILLS_DIR_MODULE_ID,
@@ -100,6 +100,9 @@ pub const BUILTIN_MODULE_IDS: [&str; 16] = [
     // 会话模块的命令域（清理/归档/压缩）在 persona 白名单之外时应被关掉。
     echo_module_session::MODULE_ID,
     echo_module_transcript::MODULE_ID,
+    // ProDoc 文档群（2026-11）：只读文档域，跟着 workspace 一起受 persona 门控
+    // ——关掉它的表现是「面板里没有文档入口」，而不是留下一条永远超时的命令。
+    echo_module_prodoc::MODULE_ID,
     SINGLE_LOOP_MODULE_ID,
     PROVIDER_LLM_MODULE_ID,
     SELF_UPDATE_MODULE_ID,

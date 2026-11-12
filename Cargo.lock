@@ -789,6 +789,7 @@ dependencies = [
  "echo-module-loop",
  "echo-module-management",
  "echo-module-panel",
+ "echo-module-prodoc",
  "echo-module-provider-llm",
  "echo-module-sanitize",
  "echo-module-self-update",
@@ -932,6 +933,7 @@ dependencies = [
  "echo-module-federation",
  "echo-module-host",
  "echo-module-management",
+ "echo-module-prodoc",
  "echo-module-provider-llm",
  "echo-module-sanitize",
  "echo-module-self-update",
@@ -989,6 +991,18 @@ dependencies = [
  "echo-context",
  "echo-module",
  "echo-web-server",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "echo-module-prodoc"
+version = "0.1.0"
+dependencies = [
+ "echo-context",
+ "echo-module",
  "serde",
  "serde_json",
  "tokio",

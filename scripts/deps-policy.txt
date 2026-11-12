@@ -38,6 +38,7 @@ modules/echo-session                        echo-defs echo-module
 modules/echo-protocol                    echo-module-management
 modules/echo-module-management              echo-module echo-context echo-defs echo-module-federation echo-session
 modules/echo-config
+modules/echo-module-prodoc               echo-module echo-context
 modules/echo-module-tools echo-config echo-context echo-defs echo-module echo-module-management echo-test-utils
 modules/echo-module-shell                   echo-context echo-defs echo-module echo-module-management echo-module-tools
 test/utils                                echo-defs
@@ -52,11 +53,11 @@ modules/echo-module-provider-llm echo-config echo-context echo-defs echo-module 
 modules/echo-module-skills                  echo-defs echo-context echo-module echo-module-management
 modules/echo-module-self-update             echo-context echo-module echo-module-management
 modules/echo-module-federation              echo-defs echo-context echo-module echo-module-management echo-module-tools
-modules/echo-module-loop                    echo-config echo-context echo-defs echo-module echo-module-api echo-module-federation echo-module-management echo-module-provider-llm echo-module-sanitize echo-module-self-update echo-module-session echo-module-shell echo-module-skills echo-module-subagent echo-module-tools echo-module-transcript echo-module-workspace echo-session echo-test-utils echo-module-host
+modules/echo-module-loop                    echo-config echo-context echo-defs echo-module echo-module-api echo-module-federation echo-module-management echo-module-provider-llm echo-module-sanitize echo-module-self-update echo-module-session echo-module-shell echo-module-skills echo-module-subagent echo-module-tools echo-module-transcript echo-module-workspace echo-session echo-test-utils echo-module-host echo-module-prodoc
 modules/echo-module-session                 echo-context echo-defs echo-module echo-module-management echo-session
 modules/echo-module-sanitize                echo-context echo-defs echo-module
 modules/echo-module-transcript              echo-context echo-defs echo-module echo-module-management echo-session
 
 # ── 业务库与组合根（同处 modules/，但不是能力模块）─────────────────────────────────────────────────────
 # echo-agent 是业务 crate：**只有组合根可以依赖它**。
-modules/core echo-module-loop echo-config echo-context echo-module-shell echo-defs echo-module-shell echo-module-tools echo-module-federation echo-module echo-module-federation echo-module-host echo-module-loader echo-module-loop echo-module-management echo-module-panel echo-module-provider-llm echo-module-sanitize echo-module-session echo-module-transcript echo-module-self-update echo-module-skills echo-module-subagent echo-module-tools echo-module-workspace echo-module-management echo-session
+modules/core echo-module-loop echo-config echo-context echo-module-shell echo-defs echo-module-shell echo-module-tools echo-module-federation echo-module echo-module-federation echo-module-host echo-module-loader echo-module-loop echo-module-management echo-module-panel echo-module-provider-llm echo-module-sanitize echo-module-session echo-module-transcript echo-module-self-update echo-module-skills echo-module-subagent echo-module-tools echo-module-workspace echo-module-management echo-session echo-module-prodoc

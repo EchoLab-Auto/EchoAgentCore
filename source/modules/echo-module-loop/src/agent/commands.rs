@@ -568,6 +568,16 @@ impl Agent {
                     message: "workspace 模块未启用（该命令由 echo-agent.workspace 处理）".into(),
                 });
             }
+            // ProDoc 文档域：由 `echo-agent.prodoc` 模块处理（上面的模块分发）。
+            // 落到这里说明模块没装 / 被禁用——给明确文案，别让面板画布空转。
+            BackendCommand::RequestProDocBundle { .. }
+            | BackendCommand::BrowseProDocDirs { .. }
+            | BackendCommand::ProDocRoots => {
+                self.emit(BackendEvent::Error {
+                    session_id: None,
+                    message: "prodoc 模块未启用（该命令由 echo-agent.prodoc 处理）".into(),
+                });
+            }
             // 联邦 / 自更新命令域已迁进 `echo-module-federation`（全模块化
             // S3）：实现仍在组合根（`Federation` 句柄与 `ConfigStore` 是它的
             // 所有物，经 `ports.command_handler` 下发），但**归属关系**归模块
