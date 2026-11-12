@@ -53,7 +53,6 @@ pub mod skill;
 pub mod subagent;
 pub mod token;
 pub mod tool;
-pub mod workspace;
 
 pub use chat::{ChannelType, IncomingFile, IncomingMessage};
 pub use llm::{LlmError, LlmProvider};

@@ -20,7 +20,6 @@ pub use protocol::{FederatedNodeInfo, FederationLinkState, FederationPeerInfo};
 pub use service::{FederationCommand, FederationEvent};
 pub mod remote_tool;
 pub mod router;
-pub mod workspace_query;
 
 pub use admin::{Emit as FederationEmit, FederationAdminHost};
 pub use commands::COMMANDS as FEDERATION_COMMANDS;
@@ -43,7 +42,6 @@ pub use remote_tool::{
     proxy_schema, remote_tool_name, remote_tool_prefix, sanitize_peer_component, RemoteTool,
 };
 pub use router::{remote_tool_candidates, ExecutorPolicy, InvokeRouter, PendingInvoke};
-pub use workspace_query::{workspace_query, FederationWorkspaceQuery, WorkspaceQueryHandle};
 
 /// 模块 id（宿主既有的联邦模块 id 与本常量同源字面量）。
 pub const MODULE_ID: &str = "echo-agent.federation";

@@ -89,6 +89,53 @@ pub(crate) struct HostWiring {
     pub federation_observer: Option<Arc<Federation>>,
 }
 
+/// 工作区模块的跨机查询接缝：把三个语义方法映射到联邦查询出口。
+///
+/// ## 为什么由组合根实现
+///
+/// 契约声明方是**消费方**（`echo-module-workspace`），但网络那一半（发
+/// `FedFrame::Query`、吃 `allow_queries` 授权、按 peer 路由）属联邦子系统。
+/// 组合根同时依赖两侧，是唯一能同时看见"语义"与"传输"的地方——所以它在
+/// 这里，而不是在任何一个模块里。
+///
+/// ## 未接线
+///
+/// `querier` 为 `None`（联邦未装配）时每个方法都立即回可读错误；模块据此
+/// 显示「不可采集」占位。**不是** panic，也不该静默返回空结果——空结果会被
+/// 人误读成"对端目录是空的"。
+struct HostRemoteWorkspaceQuery {
+    querier: Option<echo_module_federation::RemoteQuerier>,
+}
+
+impl HostRemoteWorkspaceQuery {
+    /// 发起一次联邦查询；未接线时立即返回可读错误。
+    fn query(
+        &self,
+        peer: String,
+        kind: echo_module_federation::QueryKind,
+        subject: String,
+    ) -> echo_module_workspace::QueryFuture {
+        match &self.querier {
+            Some(querier) => querier(peer, kind, subject),
+            None => Box::pin(async { Err("联邦未接线：远程工作区查询不可用".to_string()) }),
+        }
+    }
+}
+
+impl echo_module_workspace::RemoteWorkspaceQuery for HostRemoteWorkspaceQuery {
+    fn git_status(&self, peer: String, path: String) -> echo_module_workspace::QueryFuture {
+        self.query(peer, echo_module_federation::QueryKind::WorkspaceGitStatus, path)
+    }
+
+    fn list_files(&self, peer: String, path: String) -> echo_module_workspace::QueryFuture {
+        self.query(peer, echo_module_federation::QueryKind::WorkspaceFiles, path)
+    }
+
+    fn browse(&self, peer: String, path: String) -> echo_module_workspace::QueryFuture {
+        self.query(peer, echo_module_federation::QueryKind::BrowseDirectories, path)
+    }
+}
+
 /// 把全部宿主能力注册进服务表。返回的 `Disposer` 需要活到进程结束。
 pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
     let mut keep = Vec::new();
@@ -164,7 +211,19 @@ pub(crate) fn register(ctx: &Arc<Ctx>, wiring: HostWiring) -> Vec<Disposer> {
     //   - store → 模块持有（宿主只留只读镜像）
     //   - emit  → 模块 emit 模块事件，组合根翻译成 BackendEvent（见 main.rs）
     //   - 浏览根 → 模块自己遍历自己的 store
-    //   - 联邦查询 → 模块侧降级（跨机浏览/ git 需宿主联邦，见模块 README）
+    //
+    // 唯一还回来的能力是**跨机查询接缝**（2026-11）：`node://` 目录的 git /
+    // 文件 / 浏览必须在**对端**机器上跑，网络那一半只能宿主做。契约
+    // （`RemoteWorkspaceQuery`）声明在模块侧——它是消费方；这里只做
+    // 「语义方法 → 联邦 `QueryKind`」的一行映射。
+    put(
+        &mut keep,
+        ctx,
+        &echo_module_workspace::REMOTE_QUERY,
+        Arc::new(HostRemoteWorkspaceQuery {
+            querier: wiring.federation.querier.clone(),
+        }) as echo_module_workspace::RemoteQueryHandle,
+    );
     // ── 联邦：出口集合 + 事件出口 ──
     put(&mut keep, ctx, &PORTS, wiring.federation.clone());
     let fed_sink = wiring.event_sink.clone();
@@ -512,6 +571,73 @@ pub(crate) fn workspace_from_module_event(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// 三个语义方法必须映射到**对的** `QueryKind` 且原样透传 `(peer, path)`。
+    ///
+    /// 这层只有三行映射，但错了的表现极隐蔽：对端会拿"列文件"的请求去跑
+    /// git，回一个空清单，面板显示成"目录是空的"而不是报错。
+    #[tokio::test]
+    async fn remote_query_maps_semantic_methods_to_query_kinds() {
+        use echo_module_workspace::RemoteWorkspaceQuery;
+
+        let seen: Arc<std::sync::Mutex<Vec<(String, String, String)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let querier: echo_module_federation::RemoteQuerier = Arc::new(move |peer, kind, subject| {
+            recorder
+                .lock()
+                .unwrap()
+                .push((peer, format!("{kind:?}"), subject));
+            Box::pin(async { Ok(serde_json::json!({"ok": true})) })
+        });
+        let host = HostRemoteWorkspaceQuery {
+            querier: Some(querier),
+        };
+
+        host.git_status("gpu-box".into(), "/srv/repo".into()).await.unwrap();
+        host.list_files("gpu-box".into(), "/srv/repo".into()).await.unwrap();
+        host.browse("gpu-box".into(), "/".into()).await.unwrap();
+
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            vec![
+                (
+                    "gpu-box".to_string(),
+                    "WorkspaceGitStatus".to_string(),
+                    "/srv/repo".to_string()
+                ),
+                (
+                    "gpu-box".to_string(),
+                    "WorkspaceFiles".to_string(),
+                    "/srv/repo".to_string()
+                ),
+                (
+                    "gpu-box".to_string(),
+                    "BrowseDirectories".to_string(),
+                    "/".to_string()
+                ),
+            ]
+        );
+    }
+
+    /// 联邦未装配（`querier = None`）→ 三个方法都回可读错误，不 panic、
+    /// 不静默返回空载荷（空载荷会被读成"对端目录是空的"）。
+    #[tokio::test]
+    async fn remote_query_without_federation_fails_readably() {
+        use echo_module_workspace::RemoteWorkspaceQuery;
+        let host = HostRemoteWorkspaceQuery { querier: None };
+        assert!(host
+            .git_status("gpu-box".into(), "/srv/repo".into())
+            .await
+            .unwrap_err()
+            .contains("联邦未接线"));
+        assert!(host
+            .list_files("gpu-box".into(), "/srv/repo".into())
+            .await
+            .is_err());
+        assert!(host.browse("gpu-box".into(), "/".into()).await.is_err());
+    }
 
     /// 生命周期事件名 → 门控方向的映射（两行代码，但写反了没人发现）。
     #[test]

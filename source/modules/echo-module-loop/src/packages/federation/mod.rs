@@ -12,13 +12,12 @@
 pub use echo_module_federation::aggregator;
 pub use echo_module_federation::remote_tool;
 pub use echo_module_federation::router;
-pub use echo_module_federation::workspace_query;
 
 pub use echo_module_federation::{
     notify_remote_subagent, path_within_roots, proxy_schema, remote_tool_candidates,
     remote_tool_name, remote_tool_prefix, sanitize_peer_component, AggregateDeliver,
-    ExecutorPolicy, FederationPorts, FederationWorkspaceQuery, InvokeRouter, PendingInvoke,
-    RemoteQuerier, RemoteSubagentNotifier, RemoteTool, WorkspaceQueryHandle,
+    ExecutorPolicy, FederationPorts, InvokeRouter, PendingInvoke, RemoteQuerier,
+    RemoteSubagentNotifier, RemoteTool,
 };
 // `SubagentStatus` 的**源头**是机制层（线协议词汇），模块只是 re-export。
 pub use echo_module_federation::SubagentStatus;
