@@ -17,7 +17,7 @@
 //! | 扫描上限 | 无 | 单文件 1 MB / 2000 篇 / 总计 32 MB |
 //! | 跳过目录 | 5 个固定名 | 同 5 个 + 跳过隐藏目录 |
 //! | 交付 | 内联进虚拟模块源码 | 模块事件（`ModuleEvent`） |
-//! | 写盘 | 有（save / delete） | P1 无，只读 |
+//! | 写盘 | 有（save / delete + diff3 合并） | 有（save / delete；**合并交前端**） |
 //!
 //! 上限是必须的：CLI 是一次性页面加载，超量顶多慢；本模块走 WS 推送，一个
 //! 大目录能瞬间生成几十 MB 的事件消息，把面板的模块事件环形缓冲（200 条）
@@ -33,6 +33,7 @@
 pub mod bundle;
 pub mod commands;
 pub mod paths;
+pub mod write;
 
 use std::sync::{Arc, RwLock};
 
@@ -52,6 +53,55 @@ pub mod events {
     pub const ROOTS: &str = "prodoc.roots";
     /// 目录选择器的一层（`BrowseProDocDirs` 的**唯一**出口）。
     pub const DIRS: &str = "prodoc.dirs";
+    /// 单文件读取回执（`ReadProDocFile`）。
+    pub const FILE: &str = "prodoc.file";
+    /// 保存回执（`SaveProDocFile`）：成功 / 冲突（附磁盘当前内容）。
+    pub const SAVED: &str = "prodoc.saved";
+    /// 删除回执（`DeleteProDocFile`）。
+    pub const DELETED: &str = "prodoc.deleted";
+}
+
+/// 写操作回执（`prodoc.file` / `prodoc.saved` / `prodoc.deleted` 的共同形状）。
+///
+/// 用同一个结构而不是三套：三种操作的判定分支高度重叠（内容比对 → 冲突时
+/// 附磁盘内容），共用一份便于"改造一处、三处同时正确"。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WriteAck {
+    /// 面板生成的关联 id（原样带回）。
+    pub request_id: Option<String>,
+    pub team_id: Option<String>,
+    /// 文档根（绝对路径）。
+    pub root: String,
+    /// 相对路径。
+    pub path: String,
+    /// 操作是否成功。
+    pub ok: bool,
+    /// 失败原因（人话，直接显示）。
+    pub error: Option<String>,
+    /// 是否需要前端合并：磁盘内容既不是 `base` 也不是本次提交内容。
+    pub conflict: bool,
+    /// 磁盘当前内容（冲突时前端据此跑 diff3；也用于并排对照）。
+    ///
+    /// `None` = 文件不存在（冲突原因之一是"磁盘上已被删除"）。
+    pub disk: Option<String>,
+    /// 读取结果（仅 `ReadProDocFile`）。
+    pub content: Option<String>,
+}
+
+impl WriteAck {
+    fn into_json(&self) -> Value {
+        json!({
+            "request_id": self.request_id,
+            "team_id": self.team_id,
+            "root": self.root,
+            "path": self.path,
+            "ok": self.ok,
+            "error": self.error,
+            "conflict": self.conflict,
+            "disk": self.disk,
+            "content": self.content,
+        })
+    }
 }
 
 /// 一个可打开的文档根（面板下拉框的一项）。
@@ -221,6 +271,16 @@ impl ModuleState {
                 "entries": entries,
             }),
         );
+    }
+
+    /// 推一条写操作回执（读取 / 保存 / 删除共用同一条管道）。
+    ///
+    /// `request_id` 由面板生成并原样带回：三条写命令的载荷形状几乎相同，而
+    /// 事件**没有**天然的关联键（一个文件可以连续存两次）。靠 `(root, path)`
+    /// 匹配会在快速连点时错配——面板补丁数据要落到刚提交的那一份，而不是
+    /// 上一次的。
+    pub fn emit_write(&self, event: &str, payload: WriteAck) {
+        self.emit_event(event, payload.into_json());
     }
 
     /// 推一条失败（面板据此显示错误条）。

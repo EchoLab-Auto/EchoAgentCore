@@ -572,7 +572,10 @@ impl Agent {
             // 落到这里说明模块没装 / 被禁用——给明确文案，别让面板画布空转。
             BackendCommand::RequestProDocBundle { .. }
             | BackendCommand::BrowseProDocDirs { .. }
-            | BackendCommand::ProDocRoots => {
+            | BackendCommand::ProDocRoots
+            | BackendCommand::ReadProDocFile { .. }
+            | BackendCommand::SaveProDocFile { .. }
+            | BackendCommand::DeleteProDocFile { .. } => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
                     message: "prodoc 模块未启用（该命令由 echo-agent.prodoc 处理）".into(),

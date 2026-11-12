@@ -498,6 +498,45 @@ pub enum BackendCommand {
     },
     /// 可打开的根列表 + 生效的上限（面板初次连接时拉一次）。
     ProDocRoots,
+    /// 读单个文档的磁盘原文（冲突面板并排对照 + 合并基准）。
+    /// 响应 `ModuleEvent{name:"prodoc.file"}`。
+    ReadProDocFile {
+        #[serde(default)]
+        team_id: Option<String>,
+        root: String,
+        path: String,
+        /// 面板生成的回执关联 id（模块原样带回）。
+        #[serde(default)]
+        request_id: Option<String>,
+    },
+    /// 保存单个文档（带 `base` 冲突检测）。
+    ///
+    /// `base` = 客户端依据的磁盘内容；缺省 = 无条件覆盖（新建文件走这条）。
+    /// 冲突时回执带 `disk`（磁盘当前内容），前端据此跑 diff3 后以
+    /// `base = disk` 重发——**合并留在前端**：CLI 用的是
+    /// `prodoc-core/merge.ts` 的 diff3，在 Rust 复刻保证不了语义一致。
+    SaveProDocFile {
+        #[serde(default)]
+        team_id: Option<String>,
+        root: String,
+        path: String,
+        content: String,
+        #[serde(default)]
+        base: Option<String>,
+        #[serde(default)]
+        request_id: Option<String>,
+    },
+    /// 删除单个文档（`base` 不匹配则取消删除）。
+    DeleteProDocFile {
+        #[serde(default)]
+        team_id: Option<String>,
+        root: String,
+        path: String,
+        #[serde(default)]
+        base: Option<String>,
+        #[serde(default)]
+        request_id: Option<String>,
+    },
     /// Start all configured instances.
     StartAllInstances,
     /// Stop all running instances.
@@ -611,6 +650,9 @@ impl BackendCommand {
             Self::RequestProDocBundle { .. } => "RequestProDocBundle",
             Self::BrowseProDocDirs { .. } => "BrowseProDocDirs",
             Self::ProDocRoots { .. } => "ProDocRoots",
+            Self::ReadProDocFile { .. } => "ReadProDocFile",
+            Self::SaveProDocFile { .. } => "SaveProDocFile",
+            Self::DeleteProDocFile { .. } => "DeleteProDocFile",
             Self::StartAllInstances { .. } => "StartAllInstances",
             Self::StopAllInstances { .. } => "StopAllInstances",
             Self::RequestSkillsList { .. } => "RequestSkillsList",
@@ -718,10 +760,11 @@ pub const PANEL_READONLY_COMMANDS: &[&str] = &[
     "RequestWorkspaceGitStatus",
     "RequestWorkspaceFiles",
     "RequestBrowseDirectories",
-    // ProDoc（只读：扫描与浏览，P1 无写盘）
+    // ProDoc（只读：扫描 / 浏览 / 读单文件；Save/Delete 不在其列）
     "RequestProDocBundle",
     "BrowseProDocDirs",
     "ProDocRoots",
+    "ReadProDocFile",
     // 联邦（只读：状态与目录；邀请串与增删 peer 不在其列）
     "RequestFederationStatus",
     "RequestFederationDirectory",

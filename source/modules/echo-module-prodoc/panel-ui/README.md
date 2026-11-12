@@ -35,6 +35,21 @@ PANEL_UI_EXTENSIONS=/abs/path/to/echo-module-prodoc/panel-ui npm test
 事件**：宿主 `apply_command` 只认 `Err`（转成错误事件），`Ok(value)` 被直接丢弃。这条
 如果搞错，表现是"命令发了、界面永远转圈"，而且日志一片安静。
 
+## 写盘与冲突合并
+
+保存走 `write.ts` 的 `saveFile`：带 `base` 提交 → 冲突时用 vendored 的 `merge3`
+自动合并 → 以 `base = 磁盘当前内容` 重发。**合并刻意留在前端**：CLI 用的就是
+`prodoc-core/merge.ts` 这份 diff3，在 Rust 复刻必然语义分叉。
+
+`merge3` 是动态 `import()`：只有真出现"磁盘被外部改过"时才加载那 6 KB。
+
+## vendored 目录
+
+| 目录 | 内容 | 来源 |
+|---|---|---|
+| `vendor/prodoc-renderer/` | `index.js` + `index.css` + 精简 `index.d.ts` | `DocRenderer/packages/prodoc-renderer/dist` |
+| `vendor/prodoc-core/` | `pure.js` + 其依赖 chunk + 精简 `pure.d.ts` | `DocRenderer/packages/prodoc-core/dist`（只用 `merge3`） |
+
 ## vendored 渲染器
 
 `vendor/prodoc-renderer/` 是 ProDoc 仓 `packages/prodoc-renderer/dist` 的产物
@@ -50,9 +65,12 @@ PANEL_UI_EXTENSIONS=/abs/path/to/echo-module-prodoc/panel-ui npm test
 删掉 `index.js` 末尾的 `//# sourceMappingURL=` 行（否则 vitest 会抱怨找不到 .map），
 再跑一遍 `npm run build` 与 `npm test`。
 
-## P1 只读
+## 已知缺口：冲突面板的磁盘对照
 
-`ProDocPanel.vue` 显式给了一个**总是拒绝**的 `saveHandler`：ProDoc 自带的编辑入口
-需要写处理器，不给的话点保存只会得到"未提供写处理器"——那对用户是噪音。所以这里
-把原因说清楚（"当前只读，写盘属 P2"），而不是让编辑按钮看起来能用。假成功更糟：
-用户以为存了，刷新后改动消失。
+`DocGraphViewer` 触发冲突面板时会调它源码里硬编码的
+`fetch('/__prodoc_api/raw')` 读磁盘原文——面板没有这个端点，所以并排对照的
+"磁盘一侧"是空的。
+
+不影响保存与合并（那两条走我们自己的 handler），"采用我的版本"仍按
+`disk = undefined` 强制覆盖。补齐要给组件加 `readHandler` prop：那是上游改动，
+不在这里偷偷改 vendored 产物（下次同步 dist 就丢）。

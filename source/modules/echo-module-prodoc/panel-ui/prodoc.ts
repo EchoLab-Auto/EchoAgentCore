@@ -67,6 +67,28 @@ export const BUNDLE_EVENT = 'prodoc.bundle';
 export const ERROR_EVENT = 'prodoc.error';
 export const ROOTS_EVENT = 'prodoc.roots';
 export const DIRS_EVENT = 'prodoc.dirs';
+/** 单文件读取回执。 */
+export const FILE_EVENT = 'prodoc.file';
+/** 保存回执（成功 / 冲突）。 */
+export const SAVED_EVENT = 'prodoc.saved';
+/** 删除回执。 */
+export const DELETED_EVENT = 'prodoc.deleted';
+
+/** 写操作回执（三条写命令共用的形状，见模块的 `WriteAck`）。 */
+export interface WriteAckEvent {
+  request_id?: string | null;
+  team_id?: string | null;
+  root: string;
+  path: string;
+  ok: boolean;
+  error?: string | null;
+  /** 需要前端合并（磁盘内容既不是 base 也不是本次提交内容）。 */
+  conflict?: boolean;
+  /** 磁盘当前内容；`null` = 文件不存在。 */
+  disk?: string | null;
+  /** 读取结果（仅 `prodoc.file`）。 */
+  content?: string | null;
+}
 
 /**
  * 状态键：`core|team|root`。
@@ -89,6 +111,8 @@ export function collectProDocEvents(events: readonly ModuleEventLike[]): {
   errors: ProDocErrorEvent[];
   roots: ProDocRootsEvent | null;
   dirs: ProDocDirsEvent | null;
+  /** 写回执（**不去重**：每个 request_id 各是一份，越界去重会吞掉连续保存）。 */
+  acks: WriteAckEvent[];
 } {
   const bundles: ProDocBundleEvent[] = [];
   const seenBundleKeys = new Set<string>();
@@ -96,6 +120,7 @@ export function collectProDocEvents(events: readonly ModuleEventLike[]): {
   const seenErrorKeys = new Set<string>();
   let roots: ProDocRootsEvent | null = null;
   let dirs: ProDocDirsEvent | null = null;
+  const acks: WriteAckEvent[] = [];
 
   // 事件数组是「新的在前」（state.ts 用 unshift + slice）。所以：
   // - 同一个 root 的多份快照，**第一条**（最新）才是要用的；
@@ -128,11 +153,36 @@ export function collectProDocEvents(events: readonly ModuleEventLike[]): {
       case DIRS_EVENT:
         dirs = dirs ?? normalizeDirs(payload);
         break;
+      case FILE_EVENT:
+      case SAVED_EVENT:
+      case DELETED_EVENT: {
+        const ack = normalizeAck(payload);
+        if (ack) acks.push(ack);
+        break;
+      }
       default:
         break;
     }
   }
-  return { bundles, errors, roots, dirs };
+  return { bundles, errors, roots, dirs, acks };
+}
+
+/** 写回执归一：`root`/`path` 缺失的一律丢弃（无法定位到具体文件）。 */
+function normalizeAck(payload: Record<string, unknown>): WriteAckEvent | null {
+  const root = typeof payload.root === 'string' ? payload.root : '';
+  const path = typeof payload.path === 'string' ? payload.path : '';
+  if (!root || !path) return null;
+  return {
+    request_id: typeof payload.request_id === 'string' ? payload.request_id : null,
+    team_id: typeof payload.team_id === 'string' ? payload.team_id : null,
+    root,
+    path,
+    ok: payload.ok === true,
+    error: typeof payload.error === 'string' ? payload.error : null,
+    conflict: payload.conflict === true,
+    disk: typeof payload.disk === 'string' ? payload.disk : null,
+    content: typeof payload.content === 'string' ? payload.content : null,
+  };
 }
 
 /** 载荷校验：形状不对的事件直接丢掉（模块与扩展版本漂移时不该崩面板）。 */

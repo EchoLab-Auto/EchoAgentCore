@@ -1,12 +1,13 @@
-//! ProDoc 命令域（P1：只读）。
+//! ProDoc 命令域。
 //!
-//! 三条命令：
-//!
-//! | 命令 | 用途 |
-//! |---|---|
-//! | `RequestProDocBundle` | 打开一个文档根，推回全量文件快照 |
-//! | `BrowseProDocDirs` | 目录选择器的逐层浏览（只列子目录） |
-//! | `ProDocRoots` | 可打开的根列表（配置 + 各人格工作区目录） |
+//! | 命令 | 用途 | 只读 |
+//! |---|---|---|
+//! | `RequestProDocBundle` | 打开一个文档根，推回全量文件快照 | 是 |
+//! | `BrowseProDocDirs` | 目录选择器的逐层浏览（只列子目录） | 是 |
+//! | `ProDocRoots` | 可打开的根列表（配置 + 各人格工作区目录） | 是 |
+//! | `ReadProDocFile` | 读单文件原文（冲突对照 / 合并基准） | 是 |
+//! | `SaveProDocFile` | 保存单文件（带 `base` 冲突检测） | **否** |
+//! | `DeleteProDocFile` | 删除单文件（带 `base` 冲突检测） | **否** |
 //!
 //! 命令本身**只回执成功/失败**，文档内容走模块事件（见 `lib.rs` 的事件协议）：
 //! 一份快照可能几百 KB，塞进命令回执会和面板的轮询/重放逻辑缠在一起，而事件
@@ -17,13 +18,17 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 use crate::bundle::{self, ScanError};
-use crate::{Caps, DirEntry, ModuleState, RootEntry};
+use crate::write::{self, WriteOutcome};
+use crate::{events, Caps, DirEntry, ModuleState, RootEntry, WriteAck};
 
 /// 本模块处理的命令（`Contribution::Command` 的 `name`）。
-pub const COMMANDS: [&str; 3] = [
+pub const COMMANDS: [&str; 6] = [
     "RequestProDocBundle",
     "BrowseProDocDirs",
     "ProDocRoots",
+    "ReadProDocFile",
+    "SaveProDocFile",
+    "DeleteProDocFile",
 ];
 
 /// 命令入口（返回 `None` = 不认领，不是错误）。
@@ -41,6 +46,9 @@ pub async fn handle(state: &ModuleState, name: &str, payload: Value) -> Option<R
         "RequestProDocBundle" => request_bundle(state, team_id, &payload).await,
         "BrowseProDocDirs" => browse(state, &payload),
         "ProDocRoots" => roots(state),
+        "ReadProDocFile" => read_file(state, team_id, &payload),
+        "SaveProDocFile" => save_file(state, team_id, &payload).await,
+        "DeleteProDocFile" => delete_file(state, team_id, &payload).await,
         other => return Some(Err(format!("命令 {other} 被声明但处理器没有认领它"))),
     };
     Some(outcome)
@@ -98,6 +106,136 @@ async fn request_bundle(
             Err(message)
         }
     }
+}
+
+// ── 单文件读写 ───────────────────────────────────────────────────────────
+
+/// 从载荷里取必填字段（三个写命令共用的形状）。
+fn required<'a>(payload: &'a Value, field: &str, command: &str) -> Result<&'a str, String> {
+    payload
+        .get(field)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("{command} 缺少 {field}"))
+}
+
+/// 三个写命令的共同前置：解析 root / path / request_id，并校验 root 在允许范围内。
+fn write_target<'a>(
+    state: &ModuleState,
+    team_id: Option<&str>,
+    payload: &'a Value,
+    command: &str,
+) -> Result<(std::path::PathBuf, &'a str, Option<&'a str>), String> {
+    let config = state.config();
+    let root_raw = required(payload, "root", command)?;
+    let path = required(payload, "path", command)?;
+    let root = PathBuf::from(root_raw);
+    if let Err(message) = check_allowed(&config.roots, &root) {
+        state.emit_error(team_id, root_raw, &message);
+        return Err(message);
+    }
+    let request_id = payload
+        .get("request_id")
+        .and_then(|value| value.as_str())
+        .filter(|id| !id.is_empty());
+    Ok((root, path, request_id))
+}
+
+/// 读单文件（`ReadProDocFile`）：冲突对照与合并基准都靠它。
+fn read_file(
+    state: &ModuleState,
+    team_id: Option<String>,
+    payload: &Value,
+) -> Result<Value, String> {
+    let (root, path, request_id) = write_target(state, team_id.as_deref(), payload, "ReadProDocFile")?;
+    let mut ack = write::read(&root, path);
+    ack.request_id = request_id.map(str::to_string);
+    ack.team_id = team_id;
+    let ok = ack.ok;
+    state.emit_write(events::FILE, ack);
+    Ok(json!({"ok": ok}))
+}
+
+/// 保存单文件（`SaveProDocFile`）。
+///
+/// 判断全在 [`crate::write::save`]，这里只做"把结果翻译成回执"——两者分开是
+/// 因为写盘语义要与 CLI 逐条对齐，掺进命令解析会看不清哪条是"CLI 也这么做"、
+/// 哪条是"我们额外加的"。
+async fn save_file(
+    state: &ModuleState,
+    team_id: Option<String>,
+    payload: &Value,
+) -> Result<Value, String> {
+    let (root, path, request_id) = write_target(state, team_id.as_deref(), payload, "SaveProDocFile")?;
+    let content = required(payload, "content", "SaveProDocFile")?.to_string();
+    let base = payload.get("base").and_then(|value| value.as_str());
+    // 写盘是阻塞 IO：文档目录可能在网络盘上，一次 rename 就能卡住整条命令通道。
+    let root_for_task = root.clone();
+    let path_for_task = path.to_string();
+    let base_for_task = base.map(str::to_string);
+    let outcome = tokio::task::spawn_blocking(move || {
+        write::save(&root_for_task, &path_for_task, &content, base_for_task.as_deref())
+    })
+    .await
+    .map_err(|error| format!("保存任务失败: {error}"))?;
+
+    let mut ack = WriteAck {
+        request_id: request_id.map(str::to_string),
+        team_id,
+        root: root.to_string_lossy().into_owned(),
+        path: path.to_string(),
+        ..Default::default()
+    };
+    match outcome {
+        WriteOutcome::Written => ack.ok = true,
+        WriteOutcome::Conflict { disk, error } => {
+            ack.conflict = true;
+            ack.disk = disk;
+            ack.error = Some(error);
+        }
+        WriteOutcome::Failed(message) => ack.error = Some(message),
+    }
+    let ok = ack.ok;
+    state.emit_write(events::SAVED, ack);
+    Ok(json!({"ok": ok}))
+}
+
+/// 删除单文件（`DeleteProDocFile`）。
+async fn delete_file(
+    state: &ModuleState,
+    team_id: Option<String>,
+    payload: &Value,
+) -> Result<Value, String> {
+    let (root, path, request_id) =
+        write_target(state, team_id.as_deref(), payload, "DeleteProDocFile")?;
+    let base = payload.get("base").and_then(|value| value.as_str());
+    let root_for_task = root.clone();
+    let path_for_task = path.to_string();
+    let base_for_task = base.map(str::to_string);
+    let outcome = tokio::task::spawn_blocking(move || {
+        write::delete(&root_for_task, &path_for_task, base_for_task.as_deref())
+    })
+    .await
+    .map_err(|error| format!("删除任务失败: {error}"))?;
+
+    let mut ack = WriteAck {
+        request_id: request_id.map(str::to_string),
+        team_id,
+        root: root.to_string_lossy().into_owned(),
+        path: path.to_string(),
+        ..Default::default()
+    };
+    match outcome {
+        WriteOutcome::Written => ack.ok = true,
+        WriteOutcome::Conflict { disk, error } => {
+            ack.conflict = true;
+            ack.disk = disk;
+            ack.error = Some(error);
+        }
+        WriteOutcome::Failed(message) => ack.error = Some(message),
+    }
+    let ok = ack.ok;
+    state.emit_write(events::DELETED, ack);
+    Ok(json!({"ok": ok}))
 }
 
 /// 目录选择器：列 `path` 下的子目录（`BrowseProDocDirs`）。
@@ -379,6 +517,175 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["guide".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 写命令的事件收集器（与快照测试共用形状）。
+    fn collect_writes(state: &ModuleState) -> std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>> {
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        state.set_event_sink(std::sync::Arc::new(move |event| {
+            sink.lock()
+                .unwrap()
+                .push((event.name.clone(), event.payload.clone()));
+        }));
+        seen
+    }
+
+    fn writes_of(
+        seen: &std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+        name: &str,
+    ) -> Vec<Value> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|(event, _)| event == name)
+            .map(|(_, payload)| payload.clone())
+            .collect()
+    }
+
+    /// 保存：带 base 且磁盘未变 → 写盘并回 `saved.ok`（request_id 原样带回）。
+    #[tokio::test]
+    async fn save_writes_and_echoes_request_id() {
+        let dir = temp_dir("save");
+        let root = dir.join("docs");
+        std::fs::write(root.join("a.md"), "v1").expect("seed");
+        let state = state_with(&root);
+        let seen = collect_writes(&state);
+
+        handle(
+            &state,
+            "SaveProDocFile",
+            json!({
+                "team_id": "t", "root": root.to_string_lossy(), "path": "a.md",
+                "content": "v2", "base": "v1", "request_id": "req-1",
+            }),
+        )
+        .await
+        .expect("claimed")
+        .expect("ok");
+
+        assert_eq!(std::fs::read_to_string(root.join("a.md")).unwrap(), "v2");
+        let acks = writes_of(&seen, crate::events::SAVED);
+        assert_eq!(acks.len(), 1);
+        assert_eq!(acks[0]["request_id"], "req-1");
+        assert_eq!(acks[0]["ok"], true);
+        assert_eq!(acks[0]["conflict"], false);
+    }
+
+    /// 保存冲突：**不写盘**，回执带磁盘当前内容（前端靠它跑 diff3）。
+    #[tokio::test]
+    async fn save_conflict_returns_disk_content() {
+        let dir = temp_dir("save-conflict");
+        let root = dir.join("docs");
+        std::fs::write(root.join("a.md"), "disk-edit").expect("seed");
+        let state = state_with(&root);
+        let seen = collect_writes(&state);
+
+        handle(
+            &state,
+            "SaveProDocFile",
+            json!({
+                "team_id": "t", "root": root.to_string_lossy(), "path": "a.md",
+                "content": "mine", "base": "stale-base",
+            }),
+        )
+        .await
+        .expect("claimed")
+        .expect("ok");
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.md")).unwrap(),
+            "disk-edit",
+            "冲突时不该写盘"
+        );
+        let acks = writes_of(&seen, crate::events::SAVED);
+        assert_eq!(acks[0]["conflict"], true);
+        assert_eq!(acks[0]["disk"], "disk-edit");
+    }
+
+    /// 读取：原文逐字返回（末尾无换行也要一致，否则 base 比对永远不等）。
+    #[tokio::test]
+    async fn read_returns_raw_content() {
+        let dir = temp_dir("read");
+        let root = dir.join("docs");
+        std::fs::write(root.join("a.md"), "---\nid: a\n---\n结尾没有换行").expect("seed");
+        let state = state_with(&root);
+        let seen = collect_writes(&state);
+
+        handle(
+            &state,
+            "ReadProDocFile",
+            json!({"root": root.to_string_lossy(), "path": "a.md", "request_id": "r1"}),
+        )
+        .await
+        .expect("claimed")
+        .expect("ok");
+
+        let acks = writes_of(&seen, crate::events::FILE);
+        assert_eq!(acks[0]["ok"], true);
+        assert_eq!(acks[0]["content"], "---\nid: a\n---\n结尾没有换行");
+    }
+
+    /// 删除：磁盘未变则删掉；变了则冲突且保留文件。
+    #[tokio::test]
+    async fn delete_respects_base() {
+        let dir = temp_dir("delete");
+        let root = dir.join("docs");
+        std::fs::write(root.join("a.md"), "changed").expect("seed");
+        std::fs::write(root.join("b.md"), "as-seen").expect("seed");
+        let state = state_with(&root);
+        let seen = collect_writes(&state);
+
+        handle(
+            &state,
+            "DeleteProDocFile",
+            json!({"root": root.to_string_lossy(), "path": "a.md", "base": "stale"}),
+        )
+        .await
+        .expect("claimed")
+        .expect("ok");
+        assert!(root.join("a.md").exists(), "冲突时不该删");
+
+        handle(
+            &state,
+            "DeleteProDocFile",
+            json!({"root": root.to_string_lossy(), "path": "b.md", "base": "as-seen"}),
+        )
+        .await
+        .expect("claimed")
+        .expect("ok");
+        assert!(!root.join("b.md").exists(), "base 匹配应删掉");
+
+        let acks = writes_of(&seen, crate::events::DELETED);
+        assert_eq!(acks[0]["conflict"], true);
+        assert_eq!(acks[1]["ok"], true);
+    }
+
+    /// 写越权：root 不在白名单 → 错误事件，不碰文件。
+    #[tokio::test]
+    async fn save_outside_allowed_root_is_rejected() {
+        let dir = temp_dir("save-escape");
+        let root = dir.join("docs");
+        let state = state_with(&root);
+        let seen = collect_writes(&state);
+        let outside = std::env::temp_dir().join("echo-prodoc-elsewhere-write");
+        std::fs::create_dir_all(&outside).expect("mkdir");
+
+        let outcome = handle(
+            &state,
+            "SaveProDocFile",
+            json!({
+                "root": outside.to_string_lossy(), "path": "x.md", "content": "boom",
+            }),
+        )
+        .await
+        .expect("claimed");
+        assert!(outcome.unwrap_err().contains("允许范围"));
+        assert!(!outside.join("x.md").exists());
+        assert_eq!(writes_of(&seen, crate::events::SAVED).len(), 0, "不该发成功回执");
+        assert_eq!(writes_of(&seen, crate::events::ERROR).len(), 1);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     /// 根列表命令：事件里带生效上限（面板要显示"最多 2000 篇"这类说明）。

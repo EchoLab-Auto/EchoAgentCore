@@ -42,6 +42,7 @@ import {
   bundleKeyOf,
   collectProDocEvents,
 } from './prodoc';
+import { dispatchWriteAcks } from './write';
 
 /** 一个文档根的当前状态。 */
 export interface ProDocEntry {
@@ -145,7 +146,9 @@ function setup(context: PanelAppContext): void {
   watch(
     () => state.moduleEvents.length,
     () => {
-      const { bundles, errors, roots, dirs } = collectProDocEvents(state.moduleEvents);
+      const { bundles, errors, roots, dirs, acks } = collectProDocEvents(state.moduleEvents);
+      // 写回执按 request_id 派发（见 `write.ts`）：保存/删除的 Promise 在等它。
+      dispatchWriteAcks(acks);
       for (const bundle of bundles) applyBundle(bundle);
       for (const error of errors) applyError(error);
       if (roots) {

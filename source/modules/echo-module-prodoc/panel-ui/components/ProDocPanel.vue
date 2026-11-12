@@ -3,12 +3,17 @@
 //!
 //! 两态：**选目录**（还没有文档根）与**看画布**（已打开）。
 //!
-//! ## P1 是只读的，而且是"明确拒绝"而不是"假装能编"
+//! ## 编辑：冲突合并交前端
 //!
-//! `DocGraphViewer` 自带编辑入口。不给 `saveHandler` 时它会在点保存后报
-//! "未提供写处理器"——那文案对用户是噪音。所以这里**显式**给一个总是拒绝
-//! 的 handler，把话说清楚（"当前只读：写盘属 P2"），而不是让编辑按钮看起来能用。
-//! 假成功更糟：用户以为存了，刷新后改动消失。
+//! `saveHandler` 走 [`../write.ts`] 的 `saveFile`：带 `base` 提交，冲突时用
+//! vendored 的 `merge3`（与 ProDoc CLI 同一份实现）自动合并后重发。
+//!
+//! 组件触发冲突面板（改动重叠、无法自动合并）时会调 `readDiskContent`——那是
+//! 它在源码里硬编码的 `fetch('/__prodoc_api/raw')`，面板里没有这个端点，所以
+//! 并排对照的"磁盘一侧"会显示为空。**这处缺口是有意留着的**：给组件加
+//! `readHandler` prop 属于上游改动，不在这里悄悄改 vendored 产物（那样下次
+//! 同步 dist 就丢）。缺了它不影响保存/合并，"采用我的版本"仍按 `disk=undefined`
+//! 走强制覆盖。
 //!
 //! ## 目录选择用两级
 //!
@@ -24,6 +29,7 @@ import { DocGraphViewer } from '../vendor/prodoc-renderer/index.js';
 import '../vendor/prodoc-renderer/index.css';
 import { activeEntry, browse, openRoot, prodoc, refresh, requestRoots } from '../index';
 import { breadcrumbs, describeBundle, parentPath } from '../prodoc';
+import { deleteFile, saveFile } from '../write';
 
 const props = defineProps<{ teamId: string | null; sessionId?: string }>();
 
@@ -35,14 +41,22 @@ const crumbs = computed(() => breadcrumbs(prodoc.browsePath, browseRoots.value))
 const summary = computed(() => (entry.value ? describeBundle(entry.value) : ''));
 
 /**
- * 写盘一律拒绝（P1）。
+ * 保存：交给 `write.ts`（其中包含与 CLI 一致的三路合并重试）。
  *
- * 返回 `SaveResult` 而不是抛错：组件的 `normalizeSaveResult` 会把 `false`
- * 也归一成 `{ok:false}`，但不带原因的失败只会 toast 一句"保存失败"——用户
- * 不知道该去改配置还是等版本。
+ * 这里只负责把"当前打开的根"补进目标——组件的 handler 签名只有
+ * `(path, content, base)`，没有 root 概念（它以为自己在单根应用里）。
  */
-function readOnlySave(): { ok: boolean; error: string } {
-  return { ok: false, error: '文档当前为只读（写盘属 P2）：请用编辑器改文件，改完点右上角刷新' };
+function handleSave(path: string, content: string, base?: string) {
+  const root = prodoc.root;
+  if (!root) return Promise.resolve({ ok: false, error: '没有打开的文档根' });
+  return saveFile({ teamId: props.teamId, core: core.value, root }, path, content, base);
+}
+
+/** 删除：同保存，不做合并（文件都删了没有可合并对象）。 */
+function handleDelete(path: string, base?: string) {
+  const root = prodoc.root;
+  if (!root) return Promise.resolve({ ok: false, error: '没有打开的文档根' });
+  return deleteFile({ teamId: props.teamId, core: core.value, root }, path, base);
 }
 
 function pick(root: string): void {
@@ -113,7 +127,8 @@ onMounted(() => {
       <div v-else-if="!entry.error" class="prodoc-canvas">
         <DocGraphViewer
           :files="entry.files"
-          :save-handler="readOnlySave"
+          :save-handler="handleSave"
+          :delete-handler="handleDelete"
         />
       </div>
     </template>
