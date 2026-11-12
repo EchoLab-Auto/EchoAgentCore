@@ -575,7 +575,8 @@ impl Agent {
             | BackendCommand::ProDocRoots
             | BackendCommand::ReadProDocFile { .. }
             | BackendCommand::SaveProDocFile { .. }
-            | BackendCommand::DeleteProDocFile { .. } => {
+            | BackendCommand::DeleteProDocFile { .. }
+            | BackendCommand::ProDocCheck { .. } => {
                 self.emit(BackendEvent::Error {
                     session_id: None,
                     message: "prodoc 模块未启用（该命令由 echo-agent.prodoc 处理）".into(),

@@ -74,6 +74,33 @@ export const SAVED_EVENT = 'prodoc.saved';
 /** 删除回执。 */
 export const DELETED_EVENT = 'prodoc.deleted';
 
+/** 检查报告（`ProDocReport`，`prodoc.report`）。 */
+export const REPORT_EVENT = 'prodoc.report';
+
+/** 一条检查结果（级别 / 规则名与 CLI 的 `CheckIssue` 同词）。 */
+export interface CheckIssue {
+  level: 'error' | 'warning' | 'info';
+  rule: string;
+  message: string;
+  file?: string;
+}
+
+/** 一份检查报告。 */
+export interface ProDocReportEvent {
+  team_id?: string | null;
+  root: string;
+  stats?: {
+    documents?: number;
+    relations?: number;
+    groups?: number;
+    errors?: number;
+    warnings?: number;
+  };
+  issues?: CheckIssue[];
+  /** 无**错误级**问题（警告不算失败）。 */
+  ok?: boolean;
+}
+
 /** 写操作回执（三条写命令共用的形状，见模块的 `WriteAck`）。 */
 export interface WriteAckEvent {
   request_id?: string | null;
@@ -113,6 +140,8 @@ export function collectProDocEvents(events: readonly ModuleEventLike[]): {
   dirs: ProDocDirsEvent | null;
   /** 写回执（**不去重**：每个 request_id 各是一份，越界去重会吞掉连续保存）。 */
   acks: WriteAckEvent[];
+  /** 最近一份检查报告（按 root 去重取最新）。 */
+  reports: ProDocReportEvent[];
 } {
   const bundles: ProDocBundleEvent[] = [];
   const seenBundleKeys = new Set<string>();
@@ -121,6 +150,8 @@ export function collectProDocEvents(events: readonly ModuleEventLike[]): {
   let roots: ProDocRootsEvent | null = null;
   let dirs: ProDocDirsEvent | null = null;
   const acks: WriteAckEvent[] = [];
+  const reports: ProDocReportEvent[] = [];
+  const seenReportKeys = new Set<string>();
 
   // 事件数组是「新的在前」（state.ts 用 unshift + slice）。所以：
   // - 同一个 root 的多份快照，**第一条**（最新）才是要用的；
@@ -153,6 +184,15 @@ export function collectProDocEvents(events: readonly ModuleEventLike[]): {
       case DIRS_EVENT:
         dirs = dirs ?? normalizeDirs(payload);
         break;
+      case REPORT_EVENT: {
+        const report = normalizeReport(payload);
+        if (!report) break;
+        const key = bundleKeyOf(report);
+        if (seenReportKeys.has(key)) break;
+        seenReportKeys.add(key);
+        reports.push(report);
+        break;
+      }
       case FILE_EVENT:
       case SAVED_EVENT:
       case DELETED_EVENT: {
@@ -164,7 +204,28 @@ export function collectProDocEvents(events: readonly ModuleEventLike[]): {
         break;
     }
   }
-  return { bundles, errors, roots, dirs, acks };
+  return { bundles, errors, roots, dirs, acks, reports };
+}
+
+/** 检查报告归一：缺 root 的丢掉（无法归到某个文档根）。 */
+function normalizeReport(payload: Record<string, unknown>): ProDocReportEvent | null {
+  const root = typeof payload.root === 'string' ? payload.root : '';
+  if (!root) return null;
+  const issues = Array.isArray(payload.issues)
+    ? (payload.issues as CheckIssue[]).filter(
+        (issue) =>
+          issue &&
+          typeof issue.message === 'string' &&
+          ['error', 'warning', 'info'].includes(issue.level),
+      )
+    : [];
+  return {
+    team_id: typeof payload.team_id === 'string' ? payload.team_id : null,
+    root,
+    stats: (payload.stats as ProDocReportEvent['stats']) ?? undefined,
+    issues,
+    ok: payload.ok === true,
+  };
 }
 
 /** 写回执归一：`root`/`path` 缺失的一律丢弃（无法定位到具体文件）。 */

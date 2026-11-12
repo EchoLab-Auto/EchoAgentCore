@@ -65,6 +65,14 @@ PANEL_UI_EXTENSIONS=/abs/path/to/echo-module-prodoc/panel-ui npm test
 删掉 `index.js` 末尾的 `//# sourceMappingURL=` 行（否则 vitest 会抱怨找不到 .map），
 再跑一遍 `npm run build` 与 `npm test`。
 
+## 检查
+
+工具栏的「检查」按钮发 `ProDocCheck`，报告走模块事件 `prodoc.report`，按错误 /
+警告 / 提示分组展示。有**错误级**问题才自动展开——纯警告是草稿的常态，不该挡
+住画布。
+
+同一份检查也暴露成宿主工具 `prodoc_check`，模型可以直接调用。
+
 ## 已知缺口：冲突面板的磁盘对照
 
 `DocGraphViewer` 触发冲突面板时会调它源码里硬编码的

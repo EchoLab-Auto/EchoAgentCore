@@ -18,17 +18,23 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 
 use crate::bundle::{self, ScanError};
+use crate::check;
 use crate::write::{self, WriteOutcome};
 use crate::{events, Caps, DirEntry, ModuleState, RootEntry, WriteAck};
 
+/// 检查命令名（宿主侧 `prodoc_check` 工具按它分发——写成常量而不是两处
+/// 字面量：工具与命令的名字一旦漂移，表现是"工具存在但永远说模块未启用"）。
+pub const CHECK_COMMAND: &str = "ProDocCheck";
+
 /// 本模块处理的命令（`Contribution::Command` 的 `name`）。
-pub const COMMANDS: [&str; 6] = [
+pub const COMMANDS: [&str; 7] = [
     "RequestProDocBundle",
     "BrowseProDocDirs",
     "ProDocRoots",
     "ReadProDocFile",
     "SaveProDocFile",
     "DeleteProDocFile",
+    "ProDocCheck",
 ];
 
 /// 命令入口（返回 `None` = 不认领，不是错误）。
@@ -49,6 +55,7 @@ pub async fn handle(state: &ModuleState, name: &str, payload: Value) -> Option<R
         "ReadProDocFile" => read_file(state, team_id, &payload),
         "SaveProDocFile" => save_file(state, team_id, &payload).await,
         "DeleteProDocFile" => delete_file(state, team_id, &payload).await,
+        "ProDocCheck" => pro_check(state, team_id, &payload).await,
         other => return Some(Err(format!("命令 {other} 被声明但处理器没有认领它"))),
     };
     Some(outcome)
@@ -106,6 +113,59 @@ async fn request_bundle(
             Err(message)
         }
     }
+}
+
+/// 文档图检查（`ProDocCheck`）。
+///
+/// 扫描 + 检查一起在阻塞线程里跑：两者都是纯 CPU + 文件读，一个几千篇的文档群
+/// 能把命令通道占住几百毫秒。报告走事件（`prodoc.report`），回执只给统计。
+async fn pro_check(
+    state: &ModuleState,
+    team_id: Option<String>,
+    payload: &Value,
+) -> Result<Value, String> {
+    let config = state.config();
+    let raw = required(payload, "root", "ProDocCheck")?;
+    let root = PathBuf::from(raw);
+    if let Err(message) = check_allowed(&config.roots, &root) {
+        state.emit_error(team_id.as_deref(), raw, &message);
+        return Err(message);
+    }
+
+    let scan_root = root.clone();
+    let scan_config = config.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let bundle = bundle::scan(&scan_root, &scan_config)?;
+        Ok::<_, ScanError>(check::check(&bundle.files))
+    })
+    .await
+    .map_err(|error| format!("检查任务失败: {error}"))?;
+
+    let report = match outcome {
+        Ok(report) => report,
+        Err(error) => {
+            let message = match &error {
+                ScanError::RootUnavailable(text) => text.clone(),
+                ScanError::Empty => format!("{raw}里没有任何 .md 文件"),
+            };
+            state.emit_error(team_id.as_deref(), raw, &message);
+            return Err(message);
+        }
+    };
+    let stats = report.stats.clone();
+    let has_errors = report.has_errors();
+    state.emit_report(team_id.as_deref(), raw, &report);
+    // 回执带**完整报告**：面板走事件（不看回执），而工具代理拿的是回执——
+    // 它要能把逐条问题念给模型听。两条出口共用同一份数据，不额外存状态。
+    Ok(json!({
+        "root": raw,
+        "documents": stats.documents,
+        "relations": stats.relations,
+        "errors": stats.errors,
+        "warnings": stats.warnings,
+        "ok": !has_errors,
+        "issues": report.issues,
+    }))
 }
 
 // ── 单文件读写 ───────────────────────────────────────────────────────────
@@ -505,9 +565,9 @@ mod tests {
         let events = seen.lock().unwrap().clone();
         let children_event = events
             .iter()
-            .filter(|(name, _)| name == crate::events::DIRS)
+            .rev()
+            .find(|(name, _)| name == crate::events::DIRS)
             .map(|(_, payload)| payload.clone())
-            .last()
             .expect("应有第二条 prodoc.dirs");
         let names: Vec<String> = children_event["entries"]
             .as_array()
@@ -684,6 +744,62 @@ mod tests {
         assert!(outcome.unwrap_err().contains("允许范围"));
         assert!(!outside.join("x.md").exists());
         assert_eq!(writes_of(&seen, crate::events::SAVED).len(), 0, "不该发成功回执");
+        assert_eq!(writes_of(&seen, crate::events::ERROR).len(), 1);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    /// 检查命令：报告走 `prodoc.report` 事件（含 stats 与逐条 issues）。
+    #[tokio::test]
+    async fn check_command_emits_report() {
+        let dir = temp_dir("check");
+        // 独立的根：`temp_dir` 那份是按"已有两篇正常文档"预置的，混进来会把
+        // 断言变成"依赖别的用例的种子"。
+        let root = dir.join("only");
+        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::write(root.join("a.md"), "---\nid: a\nlink: [\"ghost\"]\n---\n# A\n")
+            .expect("seed");
+        let state = state_with(&root);
+        let seen = collect_writes(&state);
+
+        let receipt = handle(
+            &state,
+            "ProDocCheck",
+            json!({"team_id": "t", "root": root.to_string_lossy()}),
+        )
+        .await
+        .expect("claimed")
+        .expect("ok");
+
+        assert_eq!(receipt["documents"], 1);
+        assert_eq!(receipt["errors"], 1);
+        assert_eq!(receipt["ok"], false);
+
+        let reports = writes_of(&seen, crate::events::REPORT);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0]["stats"]["documents"], 1);
+        assert_eq!(reports[0]["issues"][0]["rule"], "broken-link");
+        assert_eq!(reports[0]["ok"], false);
+    }
+
+    /// 检查越权：root 不在白名单 → 错误事件，不发报告。
+    #[tokio::test]
+    async fn check_outside_allowed_root_is_rejected() {
+        let dir = temp_dir("check-escape");
+        let root = dir.join("docs");
+        let state = state_with(&root);
+        let seen = collect_writes(&state);
+        let outside = std::env::temp_dir().join("echo-prodoc-elsewhere-check");
+        std::fs::create_dir_all(&outside).expect("mkdir");
+
+        let outcome = handle(
+            &state,
+            "ProDocCheck",
+            json!({"root": outside.to_string_lossy()}),
+        )
+        .await
+        .expect("claimed");
+        assert!(outcome.unwrap_err().contains("允许范围"));
+        assert_eq!(writes_of(&seen, crate::events::REPORT).len(), 0);
         assert_eq!(writes_of(&seen, crate::events::ERROR).len(), 1);
         let _ = std::fs::remove_dir_all(&outside);
     }

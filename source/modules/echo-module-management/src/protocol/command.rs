@@ -537,6 +537,16 @@ pub enum BackendCommand {
         #[serde(default)]
         request_id: Option<String>,
     },
+    /// 文档图检查（断链 / 自身连线 / 重复 id / 环 / 孤立 / 空正文 / 超长 /
+    /// 缺参数区 / 单轴坐标）。
+    ///
+    /// 报告走 `ModuleEvent{name:"prodoc.report"}`（含统计与逐条 issue）；
+    /// 回执只给计数。**检查有问题不等于命令失败**：文档可以有意留草稿。
+    ProDocCheck {
+        #[serde(default)]
+        team_id: Option<String>,
+        root: String,
+    },
     /// Start all configured instances.
     StartAllInstances,
     /// Stop all running instances.
@@ -653,6 +663,7 @@ impl BackendCommand {
             Self::ReadProDocFile { .. } => "ReadProDocFile",
             Self::SaveProDocFile { .. } => "SaveProDocFile",
             Self::DeleteProDocFile { .. } => "DeleteProDocFile",
+            Self::ProDocCheck { .. } => "ProDocCheck",
             Self::StartAllInstances { .. } => "StartAllInstances",
             Self::StopAllInstances { .. } => "StopAllInstances",
             Self::RequestSkillsList { .. } => "RequestSkillsList",
@@ -765,6 +776,7 @@ pub const PANEL_READONLY_COMMANDS: &[&str] = &[
     "BrowseProDocDirs",
     "ProDocRoots",
     "ReadProDocFile",
+    "ProDocCheck",
     // 联邦（只读：状态与目录；邀请串与增删 peer 不在其列）
     "RequestFederationStatus",
     "RequestFederationDirectory",

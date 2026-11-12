@@ -14,6 +14,7 @@ import {
   BUNDLE_EVENT,
   DIRS_EVENT,
   ERROR_EVENT,
+  REPORT_EVENT,
   ROOTS_EVENT,
   breadcrumbs,
   bundleKeyOf,
@@ -140,6 +141,61 @@ describe('collectProDocEvents', () => {
     expect(result.bundles).toEqual([]);
     expect(result.roots).toBeNull();
     expect(result.dirs).toBeNull();
+  });
+});
+
+describe('检查报告（prodoc.report）', () => {
+  const report = (payload: Record<string, unknown>) => ({
+    module: MODULE,
+    name: REPORT_EVENT,
+    payload: { root: '/srv/docs', ...payload },
+  });
+
+  it('解析统计与逐条 issue', () => {
+    const { reports } = collectProDocEvents([
+      report({
+        stats: { documents: 5, relations: 3, errors: 1, warnings: 2 },
+        issues: [
+          { level: 'error', rule: 'broken-link', message: '引用了不存在的文档 "ghost"', file: 'a.md' },
+          { level: 'warning', rule: 'orphan', message: '孤立', file: 'b.md' },
+        ],
+        ok: false,
+      }),
+    ]);
+    expect(reports).toHaveLength(1);
+    expect(reports[0].stats?.errors).toBe(1);
+    expect(reports[0].issues?.[0].rule).toBe('broken-link');
+    expect(reports[0].ok).toBe(false);
+  });
+
+  it('同一 root 只取最新一份', () => {
+    const { reports } = collectProDocEvents([
+      report({ stats: { errors: 0 }, issues: [] }),
+      report({ stats: { errors: 9 }, issues: [{ level: 'error', rule: 'x', message: '旧' }] }),
+    ]);
+    expect(reports).toHaveLength(1);
+    expect(reports[0].stats?.errors).toBe(0);
+  });
+
+  it('非法级别 / 缺 message 的条目被过滤（别让脏数据进渲染）', () => {
+    const { reports } = collectProDocEvents([
+      report({
+        issues: [
+          { level: 'fatal', rule: 'x', message: '未知级别' },
+          { level: 'error', rule: 'y' },
+          { level: 'info', rule: 'no-frame', message: '正常' },
+        ],
+      }),
+    ]);
+    expect(reports[0].issues).toHaveLength(1);
+    expect(reports[0].issues?.[0].rule).toBe('no-frame');
+  });
+
+  it('缺 root 的报告被丢弃', () => {
+    const { reports } = collectProDocEvents([
+      { module: MODULE, name: REPORT_EVENT, payload: { stats: {}, issues: [] } },
+    ]);
+    expect(reports).toHaveLength(0);
   });
 });
 

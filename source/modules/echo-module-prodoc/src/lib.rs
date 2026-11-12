@@ -31,6 +31,7 @@
 //! 这条路是**现成的**——不需要给线协议加变体，也就不需要改 Panel 的类型定义。
 
 pub mod bundle;
+pub mod check;
 pub mod commands;
 pub mod paths;
 pub mod write;
@@ -59,6 +60,8 @@ pub mod events {
     pub const SAVED: &str = "prodoc.saved";
     /// 删除回执（`DeleteProDocFile`）。
     pub const DELETED: &str = "prodoc.deleted";
+    /// 检查报告（`ProDocCheck`）。
+    pub const REPORT: &str = "prodoc.report";
 }
 
 /// 写操作回执（`prodoc.file` / `prodoc.saved` / `prodoc.deleted` 的共同形状）。
@@ -89,7 +92,7 @@ pub struct WriteAck {
 }
 
 impl WriteAck {
-    fn into_json(&self) -> Value {
+    fn to_json(&self) -> Value {
         json!({
             "request_id": self.request_id,
             "team_id": self.team_id,
@@ -280,7 +283,25 @@ impl ModuleState {
     /// 匹配会在快速连点时错配——面板补丁数据要落到刚提交的那一份，而不是
     /// 上一次的。
     pub fn emit_write(&self, event: &str, payload: WriteAck) {
-        self.emit_event(event, payload.into_json());
+        self.emit_event(event, payload.to_json());
+    }
+
+    /// 推一份检查报告。
+    ///
+    /// 报告里既有**错误也有警告**，所以不复用 `emit_error`：错误事件在面板上
+    /// 是"这次操作失败了"的红条，而检查有问题不代表命令失败——文档本来就允许
+    /// 有未完成的草稿。
+    pub fn emit_report(&self, team_id: Option<&str>, root: &str, report: &check::Report) {
+        self.emit_event(
+            events::REPORT,
+            json!({
+                "team_id": team_id,
+                "root": root,
+                "stats": report.stats,
+                "issues": report.issues,
+                "ok": !report.has_errors(),
+            }),
+        );
     }
 
     /// 推一条失败（面板据此显示错误条）。

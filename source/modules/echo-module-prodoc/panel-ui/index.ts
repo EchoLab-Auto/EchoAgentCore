@@ -39,6 +39,7 @@ const ProDocPanel = defineAsyncComponent(() => import('./components/ProDocPanel.
 import {
   type ProDocBundleEvent,
   type ProDocDirsEvent,
+  type ProDocReportEvent,
   bundleKeyOf,
   collectProDocEvents,
 } from './prodoc';
@@ -82,6 +83,10 @@ export const prodoc = reactive({
   browseEntries: [] as Array<{ name: string; path: string; is_dir: boolean }>,
   /** 目录选择器里的根列表（浏览事件也带一份）。 */
   browseRoots: [] as Array<{ label: string; path: string }>,
+  /** `core|team|root` → 最近一次检查报告。 */
+  reports: {} as Record<string, ProDocReportEvent>,
+  /** 已发检查命令、还没收到报告。 */
+  checking: false,
 });
 
 /** 门控：模块启用（team 没关它）。 */
@@ -122,6 +127,9 @@ export function openRoot(teamId: string | null, core: string | null, root: strin
   const key = bundleKeyOf({ team_id: teamId, core, root });
   prodoc.entries[key] = { ...(prodoc.entries[key] ?? emptyEntry(core ?? '')), loading: true, error: null };
   prodoc.root = root;
+  // 换根之后旧的"检查中"状态不属于新根——不复位的话「检查」按钮会一直显示
+  // 忙碌，而那个报告的请求其实早就不作数了。
+  prodoc.checking = false;
   sendCommand({ RequestProDocBundle: { team_id: teamId, root } }, core ?? undefined);
 }
 
@@ -135,6 +143,19 @@ export function requestRoots(core: string | null): void {
   sendCommand({ ProDocRoots: {} }, core ?? undefined);
 }
 
+/** 跑一次文档图检查（报告走事件，不占回执）。 */
+export function check(teamId: string | null, core: string | null): void {
+  if (!prodoc.root) return;
+  prodoc.checking = true;
+  sendCommand({ ProDocCheck: { team_id: teamId ?? undefined, root: prodoc.root } }, core ?? undefined);
+}
+
+/** 当前根的检查报告（没有则 null）。 */
+export function activeReport(teamId: string | null, core: string | null): ProDocReportEvent | null {
+  const key = activeKey(teamId, core);
+  return key ? prodoc.reports[key] ?? null : null;
+}
+
 /** 请求目录选择器的一层（`path = null` = 根列表）。 */
 export function browse(core: string | null, path: string | null): void {
   sendCommand({ BrowseProDocDirs: { path } }, core ?? undefined);
@@ -146,7 +167,11 @@ function setup(context: PanelAppContext): void {
   watch(
     () => state.moduleEvents.length,
     () => {
-      const { bundles, errors, roots, dirs, acks } = collectProDocEvents(state.moduleEvents);
+      const { bundles, errors, roots, dirs, acks, reports } = collectProDocEvents(state.moduleEvents);
+      for (const report of reports) {
+        prodoc.reports[bundleKeyOf(report)] = report;
+        prodoc.checking = false;
+      }
       // 写回执按 request_id 派发（见 `write.ts`）：保存/删除的 Promise 在等它。
       dispatchWriteAcks(acks);
       for (const bundle of bundles) applyBundle(bundle);

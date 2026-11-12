@@ -1252,6 +1252,19 @@ async fn run_core(args: Args, cfg: CoreConfig) -> Result<()> {
                     ),
                 ));
                 t.set_package("workspace", echo_module_loop::modules::WORKSPACE_MODULE_ID);
+                // ProDoc 文档群检查（prodoc 模块）：同一种代理形态——工具在宿主
+                // 注册表里，检查逻辑在模块（`ProDocCheck` 命令）。不注册的话
+                // 「模型能不能查文档图」就取决于有没有人记得加这一段，
+                // 而模块本身已经挂上了。
+                t.register(std::sync::Arc::new(
+                    echo_module_loop::agent::prodoc_tool::ProDocCheckTool::new(
+                        shared_module_host.clone(),
+                    ),
+                ));
+                t.set_package(
+                    echo_module_loop::agent::prodoc_tool::TOOL_NAME,
+                    echo_module_prodoc::MODULE_ID,
+                );
                 // Subagent 委派（subagent 模块）：**注册归模块接线**（2026-11 S7）。
                 //
                 // 此前这里手工注册占位工具 + 打包标签，而真正的执行闭包由

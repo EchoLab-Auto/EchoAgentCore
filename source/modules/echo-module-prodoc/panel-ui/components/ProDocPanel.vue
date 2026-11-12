@@ -21,13 +21,13 @@
 //! 只给根，遇到"文档在根下面三层"就得改 modules.toml；只给浏览器，每次都要
 //! 从家目录一路点进去。
 
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import NeumorphismButton from '@echolab-auto/ui-frame/components/NeumorphismButton';
 import { state } from '@echo-agent/panel';
 import PanelIcon from '@echo-agent/panel/components/PanelIcon';
 import { DocGraphViewer } from '../vendor/prodoc-renderer/index.js';
 import '../vendor/prodoc-renderer/index.css';
-import { activeEntry, browse, openRoot, prodoc, refresh, requestRoots } from '../index';
+import { activeEntry, activeReport, browse, check, openRoot, prodoc, refresh, requestRoots } from '../index';
 import { breadcrumbs, describeBundle, parentPath } from '../prodoc';
 import { deleteFile, saveFile } from '../write';
 
@@ -39,6 +39,26 @@ const roots = computed(() => prodoc.roots);
 const browseRoots = computed(() => (prodoc.browseRoots.length > 0 ? prodoc.browseRoots : prodoc.roots));
 const crumbs = computed(() => breadcrumbs(prodoc.browsePath, browseRoots.value));
 const summary = computed(() => (entry.value ? describeBundle(entry.value) : ''));
+const report = computed(() => activeReport(props.teamId, core.value));
+/** 检查面板是否展开（有错误时默认展开——那是用户最想看的）。 */
+const reportOpen = ref(false);
+watch(
+  () => report.value?.issues?.length ?? 0,
+  (count, previous) => {
+    // 只在**新报告到达**时自动展开，不覆盖用户手动收起。
+    if (count > (previous ?? 0) && (report.value?.stats?.errors ?? 0) > 0) {
+      reportOpen.value = true;
+    }
+  },
+);
+const grouped = computed(() => {
+  const issues = report.value?.issues ?? [];
+  return [
+    { level: 'error' as const, title: '错误', items: issues.filter((item) => item.level === 'error') },
+    { level: 'warning' as const, title: '警告', items: issues.filter((item) => item.level === 'warning') },
+    { level: 'info' as const, title: '提示', items: issues.filter((item) => item.level === 'info') },
+  ].filter((group) => group.items.length > 0);
+});
 
 /**
  * 保存：交给 `write.ts`（其中包含与 CLI 一致的三路合并重试）。
@@ -94,6 +114,16 @@ onMounted(() => {
           <span class="prodoc-summary">{{ summary }}</span>
         </div>
         <div class="prodoc-bar-actions">
+          <NeumorphismButton
+            variant="glass"
+            shape="pill"
+            size="small"
+            :disabled="prodoc.checking"
+            title="检查文档图：断链 / 重复 id / 环 / 孤立…"
+            @click="check(teamId, core)"
+          >
+            {{ prodoc.checking ? '检查中…' : '检查' }}
+          </NeumorphismButton>
           <NeumorphismButton variant="glass" shape="pill" size="small" @click="refresh(teamId, core)">
             刷新
           </NeumorphismButton>
@@ -118,6 +148,31 @@ onMounted(() => {
           </li>
         </ul>
       </details>
+
+      <!-- 检查结果：有错误时默认展开，纯警告时收起（草稿是常态，不该挡画布） -->
+      <section v-if="report" class="prodoc-report">
+        <button class="prodoc-report-head" @click="reportOpen = !reportOpen">
+          <PanelIcon :name="report.stats?.errors ? 'circle-close' : 'circle-info'" size="sm" />
+          <span>
+            检查：{{ report.stats?.documents ?? 0 }} 篇 ·
+            {{ report.stats?.errors ?? 0 }} 个错误 / {{ report.stats?.warnings ?? 0 }} 条警告
+          </span>
+          <span class="prodoc-report-toggle">{{ reportOpen ? '收起' : '展开' }}</span>
+        </button>
+        <div v-if="reportOpen" class="prodoc-report-body">
+          <p v-if="grouped.length === 0" class="prodoc-empty">没有发现问题。</p>
+          <template v-for="group in grouped" :key="group.level">
+            <h4 :class="['prodoc-report-level', `is-${group.level}`]">{{ group.title }}</h4>
+            <ul>
+              <li v-for="(issue, index) in group.items" :key="`${issue.rule}-${index}`">
+                <code>{{ issue.rule }}</code>
+                <span>{{ issue.message }}</span>
+                <em v-if="issue.file">{{ issue.file }}</em>
+              </li>
+            </ul>
+          </template>
+        </div>
+      </section>
 
       <div v-if="entry.loading" class="prodoc-loading">
         <PanelIcon name="circle-info" size="sm" />
@@ -264,6 +319,66 @@ onMounted(() => {
   padding-left: 18px;
   max-height: 120px;
   overflow: auto;
+}
+
+.prodoc-report {
+  border-radius: 10px;
+  background: var(--echo-color-surface-raised, rgba(0, 0, 0, 0.04));
+  font-size: 12px;
+}
+
+.prodoc-report-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.prodoc-report-toggle {
+  margin-left: auto;
+  opacity: 0.6;
+}
+
+.prodoc-report-body {
+  padding: 0 10px 10px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.prodoc-report-body ul {
+  margin: 2px 0 6px;
+  padding-left: 16px;
+}
+
+.prodoc-report-body li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  line-height: 1.7;
+}
+
+.prodoc-report-body em {
+  opacity: 0.62;
+  font-style: normal;
+  font-family: var(--echo-font-mono, monospace);
+}
+
+.prodoc-report-level {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.prodoc-report-level.is-error {
+  color: var(--echo-color-danger, #b23);
 }
 
 .prodoc-loading {

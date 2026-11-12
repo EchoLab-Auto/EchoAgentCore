@@ -68,8 +68,9 @@ CLI 是一次性页面加载，超量顶多慢；本模块走 WS 推送，一个
 | `ReadProDocFile` | 读单文件原文（冲突对照 / 合并基准） | 是 |
 | `SaveProDocFile` | 保存单文件（带 `base` 冲突检测，原子写） | 否 |
 | `DeleteProDocFile` | 删除单文件（`base` 不匹配则取消） | 否 |
+| `ProDocCheck` | 文档图检查（断链 / 自连 / 重复 id / 环 / 孤立…） | 是 |
 
-`ReadProDocFile` 在 `PANEL_READONLY_COMMANDS` 里，`Save`/`Delete` **不在**——只读面板能看不能改。
+`ReadProDocFile` / `ProDocCheck` 在 `PANEL_READONLY_COMMANDS` 里，`Save`/`Delete` **不在**——只读面板能看不能改。
 
 ## 配置
 
@@ -96,6 +97,23 @@ max_total_bytes = 33554432
 - 写盘用同目录临时文件 + `rename`（直接 `write` 在中断时会把参数区截断，下次扫描就会把它当成无参数区的文件、节点 id 从文件名推断，连线全断）。
 
 冲突后的合并**留在前端**：CLI 用的是 `prodoc-core/merge.ts` 的 265 行 hunk 级 diff3，在 Rust 里复刻必然与它语义分叉，结果是"面板说合并成功、命令行说冲突"。所以前端拿到 `disk` 后跑 vendored 的同一份 `merge3`，干净就以 `base = disk` 重发一次；有重叠才报冲突块数交给用户。两次往返换来两端行为一致，是刻意的取舍。
+
+## 文档图检查（`prodoc_check` 工具 / `ProDocCheck` 命令）
+
+检查在 Rust 里重新实现了一遍**图结构**那部分（`check.rs`），因为 agent 不能起一个
+Node 进程去跑 CLI。复刻就有分叉风险，所以：
+
+1. **边界是刻意划的**——本模块覆盖断链 / 自连 / 重复 id / 环 / 孤立 / 空正文 /
+   超长 / 缺参数区 / 单轴坐标；group 相关两项（多 group 声明 / 显式几何冲突）不
+   覆盖，那是纯布局外观问题。需要那两项请跑 CLI。
+2. **对照过 CLI**：`tests/cli_parity.rs` 留了一个手动跑的对照入口（`#[ignore]`，
+   需要 `PRODOC_FIXTURE`），文件头记录了 2026-11 的实测结果——10 篇文档 / 6 条
+   连线 / 3 个错误 / 7 条警告，两边逐项一致。
+
+模型侧入口是宿主注册的 `prodoc_check` 工具（`echo-module-loop` 的
+`agent/prodoc_tool.rs`，与 `workspace` 工具同一种代理形态）：工具在宿主注册表里，
+检查逻辑在模块，中间只传 `team_id` 与 `root`。面板侧是画布工具栏的「检查」按钮，
+报告按错误 / 警告 / 提示分组展示。
 
 ## 尚未实现
 

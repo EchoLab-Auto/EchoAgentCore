@@ -27,6 +27,7 @@ pub mod tools_host;
 mod turn;
 mod workspace_commands;
 pub mod workspace_mirror;
+pub mod prodoc_tool;
 pub mod workspace_tool;
 // 命令域按包拆分：QQ 侧在 `crate::packages::instance_ops::commands`，
 // 工作区侧在本目录 `workspace_commands.rs`（模块实现已外迁到
