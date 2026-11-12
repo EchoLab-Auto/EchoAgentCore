@@ -133,6 +133,7 @@ dependencies = [
 [[package]]
 name = "agent-module-panel"
 version = "0.1.0"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#40f2e5fa1dc33dba724d4abb81317ea1eae480bb"
 dependencies = [
  "anyhow",
  "echo-context",
@@ -261,6 +262,7 @@ dependencies = [
 [[package]]
 name = "agent-module-subagent"
 version = "0.1.0"
+source = "git+https://github.com/EchoLab-Auto/agent-module-subagent?branch=main#6f1eaaf322d4d16cb8326a10468b0807e67d0043"
 dependencies = [
  "agent-module-federation",
  "agent-module-tools",
@@ -317,6 +319,7 @@ dependencies = [
 [[package]]
 name = "agent-module-workspace"
 version = "0.1.0"
+source = "git+https://github.com/EchoLab-Auto/agent-module-workspace?branch=main#70fd8c31fdd8c563debc59b4e3f6a5dc1cd7a53d"
 dependencies = [
  "echo-context",
  "echo-module",
@@ -1212,6 +1215,7 @@ dependencies = [
 [[package]]
 name = "echo-web-server"
 version = "0.1.0"
+source = "git+https://github.com/EchoLab-Auto/EchoAgentPanel?branch=main#40f2e5fa1dc33dba724d4abb81317ea1eae480bb"
 dependencies = [
  "anyhow",
  "axum",
